@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -153,6 +154,27 @@ namespace AsynGyanis::TestSupport
         }
 
         /**
+         * @brief 在临时目录内写入**二进制**文件，字节按原样落盘
+         * @param fileName 相对文件名
+         * @param content 要写的字节（可含 0x00 与 0x0A）
+         * @return true 写入成功
+         * @details 与 writeFile() 分开而不是加个模式参数：文本模式在 Windows 上会把 0x0A 翻成 CRLF，
+         *          凡断言按字节数或内容逐字节比对的夹具（密钥、镜像、DER 编码）用了它就会静默改变长度，
+         *          而那正是这类用例要钉住的东西
+         */
+        bool writeBinaryFile(const std::string &fileName, const std::string &content) const
+        {
+            std::ofstream file(m_path / fileName, std::ios::out | std::ios::binary | std::ios::trunc);
+            if (!file.is_open())
+            {
+                return false;
+            }
+            file.write(content.data(), static_cast<std::streamsize>(content.size()));
+            file.close();
+            return !file.fail();
+        }
+
+        /**
          * @brief 在临时目录的子路径下写入文本文件
          * @param relativePath 相对于临时目录的路径，缺失的父目录会被创建
          * @param content 文件内容
@@ -177,6 +199,25 @@ namespace AsynGyanis::TestSupport
     private:
         std::filesystem::path m_path; ///< 临时目录绝对路径
     };
+
+    /**
+     * @brief 造一段内容确定的字节串，供需要「同名不同内容」或「不同名同内容」的夹具使用
+     * @param seed 种子：同 seed 得到同一份，异 seed 得到互不相同的
+     * @param length 字节数
+     * @return std::string 原始字节（按值返回，可含 0x00）
+     * @details 不用随机数：用例要可复现——随机内容会让「两份夹具恰好相同」这种极端情形把对照组变成
+     *          偶发失败，而失败也无法在同一台机器上重放。写文件请配
+     *          TemporaryDirectory::writeBinaryFile()，文本模式会改动 0x0A。
+     */
+    inline std::string makeBytePattern(const unsigned int seed, const std::size_t length)
+    {
+        std::string bytes(length, '\0');
+        for (std::size_t index = 0; index < bytes.size(); ++index)
+        {
+            bytes[index] = static_cast<char>(static_cast<unsigned char>((index * 7U + seed * 31U + 11U) & 0xFFU));
+        }
+        return bytes;
+    }
 
     /**
      * @brief 在时限内轮询等待条件成立（避免固定 sleep 造成的偶发失败）

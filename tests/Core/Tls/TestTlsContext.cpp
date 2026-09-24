@@ -1355,41 +1355,24 @@ namespace AsynGyanis::Core
         constexpr std::size_t kAes256TicketKeyBytes = 80;
 
         /**
-         * @brief 造一份内容确定的票据密钥字节
-         * @param seed 种子：同 seed 得到同一份密钥（跨上下文共享就是这么建模的），异 seed 得到不同密钥
-         * @param length 密钥长度，取 48 或 80 两种合法布局之一
-         * @return std::string 密钥原始字节
-         * @details 不用 RAND_bytes：用例要可复现——密钥随机时，「两个上下文恰好生成了同一份密钥」
-         *          这种极端情形会让对照组假绿，而失败也无法在同一台机器上重放
-         */
-        std::string makeTicketKeyBytes(const unsigned int seed, const std::size_t length = kAes128TicketKeyBytes)
-        {
-            std::string key(length, '\0');
-            for (std::size_t index = 0; index < key.size(); ++index)
-            {
-                key[index] = static_cast<char>(static_cast<unsigned char>((index * 7U + seed * 31U + 11U) & 0xFFU));
-            }
-            return key;
-        }
-
-        /**
-         * @brief 把一份密钥字节写成临时目录里的**二进制**文件
+         * @brief 在临时目录里写一份内容确定的票据密钥文件
          * @param directory 用例独占的临时目录
          * @param fileName 文件名
-         * @param keyBytes 密钥原始字节
+         * @param seed 密钥内容种子：同 seed 得到同一份密钥（跨上下文共享就是这么建模的），
+         *             异 seed 得到互不相同的密钥
+         * @param length 密钥长度，取 48 或 80 两种合法布局之一
          * @return std::string 文件路径文本
-         * @note 不能借用 TestSupport::TemporaryDirectory::writeFile()：它按文本模式打开，
-         *       Windows 上会把 0x0A 翻成 CRLF，密钥长度当场就错了，而错的长度正是本组要拒的东西
+         * @details 字节内容走共享夹具 makeBytePattern()，落盘走 writeBinaryFile()——后者是必须的：
+         *          密钥里有 0x0A，文本模式在 Windows 上会翻成 CRLF，长度当场就错，
+         *          而错的长度正是本组用例要拒的东西。不用随机数是为了可复现：随机内容下
+         *          「两个上下文恰好生成了同一份密钥」这种极端情形会让对照组偶发假绿
          */
         std::string writeTicketKeyFile(const AsynGyanis::TestSupport::TemporaryDirectory &directory, const std::string &fileName,
-                                       const std::string &keyBytes)
+                                       const unsigned int seed, const std::size_t length = kAes128TicketKeyBytes)
         {
-            const std::filesystem::path keyPath = directory.path() / fileName;
-            std::ofstream               file(keyPath, std::ios::out | std::ios::binary | std::ios::trunc);
-            EXPECT_TRUE(file.is_open()) << "密钥文件写不出来：" << keyPath.string();
-            file.write(keyBytes.data(), static_cast<std::streamsize>(keyBytes.size()));
-            file.close();
-            return keyPath.string();
+            EXPECT_TRUE(directory.writeBinaryFile(fileName, AsynGyanis::TestSupport::makeBytePattern(seed, length)))
+                    << "密钥文件写不出来：" << fileName;
+            return (directory.path() / fileName).string();
         }
 
         /**
@@ -1412,15 +1395,15 @@ namespace AsynGyanis::Core
     TEST(TlsContext, SharedTicketKeyLetsAnotherContextResumeTheSession)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyShared");
-        const std::string                           keyFile = writeTicketKeyFile(directory, "ticket.key", makeTicketKeyBytes(1));
+        const std::string                           keyFile = writeTicketKeyFile(directory, "ticket.key", 1);
 
         TlsContext issuingContext;
         installFixtureCertificate(issuingContext);
-        ASSERT_TRUE(issuingContext.loadSessionTicketKeys({keyFile}));
+        issuingContext.loadSessionTicketKeys({keyFile});
 
         TlsContext resumingContext;
         installFixtureCertificate(resumingContext);
-        ASSERT_TRUE(resumingContext.loadSessionTicketKeys({keyFile}));
+        resumingContext.loadSessionTicketKeys({keyFile});
 
         SslContextPointer clientContext = createClientContext();
         ASSERT_NE(clientContext, nullptr);
@@ -1475,17 +1458,17 @@ namespace AsynGyanis::Core
     TEST(TlsContext, RotatedTicketKeyStillDecryptsTicketsFromPreviousKey)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyRotated");
-        const std::string                           previousKeyFile = writeTicketKeyFile(directory, "previous.key", makeTicketKeyBytes(2));
-        const std::string                           currentKeyFile  = writeTicketKeyFile(directory, "current.key", makeTicketKeyBytes(3));
+        const std::string                           previousKeyFile = writeTicketKeyFile(directory, "previous.key", 2);
+        const std::string                           currentKeyFile  = writeTicketKeyFile(directory, "current.key", 3);
 
         TlsContext issuingContext;
         installFixtureCertificate(issuingContext);
-        ASSERT_TRUE(issuingContext.loadSessionTicketKeys({previousKeyFile}));
+        issuingContext.loadSessionTicketKeys({previousKeyFile});
 
         // 轮换后的形状：首份是当前密钥（用它签发），上一份留着只用于解开旧票据
         TlsContext rotatedContext;
         installFixtureCertificate(rotatedContext);
-        ASSERT_TRUE(rotatedContext.loadSessionTicketKeys({currentKeyFile, previousKeyFile}));
+        rotatedContext.loadSessionTicketKeys({currentKeyFile, previousKeyFile});
 
         SslContextPointer clientContext = createClientContext();
         ASSERT_NE(clientContext, nullptr);
@@ -1509,16 +1492,16 @@ namespace AsynGyanis::Core
     TEST(TlsContext, UnknownTicketKeyIsDeclinedWithoutBreakingHandshake)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyUnknown");
-        const std::string                           firstKeyFile  = writeTicketKeyFile(directory, "first.key", makeTicketKeyBytes(4));
-        const std::string                           secondKeyFile = writeTicketKeyFile(directory, "second.key", makeTicketKeyBytes(5));
+        const std::string                           firstKeyFile  = writeTicketKeyFile(directory, "first.key", 4);
+        const std::string                           secondKeyFile = writeTicketKeyFile(directory, "second.key", 5);
 
         TlsContext issuingContext;
         installFixtureCertificate(issuingContext);
-        ASSERT_TRUE(issuingContext.loadSessionTicketKeys({firstKeyFile}));
+        issuingContext.loadSessionTicketKeys({firstKeyFile});
 
         TlsContext unrelatedContext;
         installFixtureCertificate(unrelatedContext);
-        ASSERT_TRUE(unrelatedContext.loadSessionTicketKeys({secondKeyFile}));
+        unrelatedContext.loadSessionTicketKeys({secondKeyFile});
 
         SslContextPointer clientContext = createClientContext();
         ASSERT_NE(clientContext, nullptr);
@@ -1543,16 +1526,16 @@ namespace AsynGyanis::Core
     TEST(TlsContext, ReloadCertificateReplaysTicketKeys)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyReload");
-        const std::string                           keyFile = writeTicketKeyFile(directory, "ticket.key", makeTicketKeyBytes(6));
+        const std::string                           keyFile = writeTicketKeyFile(directory, "ticket.key", 6);
 
         TlsContext reloadedContext;
         installFixtureCertificate(reloadedContext);
-        ASSERT_TRUE(reloadedContext.loadSessionTicketKeys({keyFile}));
+        reloadedContext.loadSessionTicketKeys({keyFile});
         ASSERT_TRUE(reloadedContext.reloadCertificate()) << "证书换代本身失败了，本用例的前提不成立";
 
         TlsContext resumingContext;
         installFixtureCertificate(resumingContext);
-        ASSERT_TRUE(resumingContext.loadSessionTicketKeys({keyFile}));
+        resumingContext.loadSessionTicketKeys({keyFile});
 
         SslContextPointer clientContext = createClientContext();
         ASSERT_NE(clientContext, nullptr);
@@ -1576,15 +1559,15 @@ namespace AsynGyanis::Core
     TEST(TlsContext, ResumesWithAes256TicketKey)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyAes256");
-        const std::string keyFile = writeTicketKeyFile(directory, "ticket256.key", makeTicketKeyBytes(7, kAes256TicketKeyBytes));
+        const std::string keyFile = writeTicketKeyFile(directory, "ticket256.key", 7, kAes256TicketKeyBytes);
 
         TlsContext issuingContext;
         installFixtureCertificate(issuingContext);
-        ASSERT_TRUE(issuingContext.loadSessionTicketKeys({keyFile}));
+        issuingContext.loadSessionTicketKeys({keyFile});
 
         TlsContext resumingContext;
         installFixtureCertificate(resumingContext);
-        ASSERT_TRUE(resumingContext.loadSessionTicketKeys({keyFile}));
+        resumingContext.loadSessionTicketKeys({keyFile});
 
         SslContextPointer clientContext = createClientContext();
         ASSERT_NE(clientContext, nullptr);
@@ -1608,10 +1591,10 @@ namespace AsynGyanis::Core
     TEST(TlsContext, RejectsTicketKeyFileWithWrongLength)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyWrongLength");
-        const std::string tooShort = writeTicketKeyFile(directory, "short.key", makeTicketKeyBytes(8, kAes128TicketKeyBytes - 1));
-        const std::string tooLong  = writeTicketKeyFile(directory, "long.key", makeTicketKeyBytes(9, kAes256TicketKeyBytes + 1));
+        const std::string tooShort = writeTicketKeyFile(directory, "short.key", 8, kAes128TicketKeyBytes - 1);
+        const std::string tooLong  = writeTicketKeyFile(directory, "long.key", 9, kAes256TicketKeyBytes + 1);
         // 64 字节夹在两种合法布局中间，最容易被当成「差不多就行」放过
-        const std::string inBetween = writeTicketKeyFile(directory, "middle.key", makeTicketKeyBytes(10, 64));
+        const std::string inBetween = writeTicketKeyFile(directory, "middle.key", 10, 64);
 
         TlsContext context;
         installFixtureCertificate(context);
@@ -1620,7 +1603,7 @@ namespace AsynGyanis::Core
         EXPECT_THROW(context.loadSessionTicketKeys({inBetween}), CoreException);
 
         // 列表里有一份不对就整批拒绝：半份生效的密钥环比不生效更难排查
-        const std::string valid = writeTicketKeyFile(directory, "valid.key", makeTicketKeyBytes(11));
+        const std::string valid = writeTicketKeyFile(directory, "valid.key", 11);
         EXPECT_THROW(context.loadSessionTicketKeys({valid, inBetween}), CoreException);
     }
 
@@ -1635,21 +1618,35 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 文件读不出来按 false 报告，与证书、OCSP 的加载接口同一口径
+     * @brief 文件读不出来时当场抛，且消息点名是哪一份
+     * @details 与证书、OCSP 的「返回 false + OpenSSL 错误栈可查」不同口径：文件读不出来在 OpenSSL 那边
+     *          没有记录，只回 false 等于什么都不说。这类配置的失败表现是恢复命中率莫名归零，
+     *          所以告状必须能直接指到那份文件
      */
-    TEST(TlsContext, ReportsFalseForUnreadableTicketKeyFile)
+    TEST(TlsContext, NamesTheTicketKeyFileItCannotRead)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyMissing");
+        const std::string                           missingPath = (directory.path() / "missing.key").string();
 
         TlsContext context;
         installFixtureCertificate(context);
-        EXPECT_FALSE(context.loadSessionTicketKeys({(directory.path() / "missing.key").string()}));
 
-        // 空文件同样算读不出来：readFileBytes 的判据是「读到了且非空」
-        std::ofstream emptyFile(directory.path() / "empty.key", std::ios::out | std::ios::binary | std::ios::trunc);
+        try
+        {
+            context.loadSessionTicketKeys({missingPath});
+            FAIL() << "读不出来的密钥文件应当当场抛，而不是悄悄不装";
+        } catch (const Base::Exception &failure)
+        {
+            const std::string message = failure.what();
+            EXPECT_TRUE(message.find("missing.key") != std::string::npos) << "消息没点名是哪一份文件：" << message;
+        }
+
+        // 空文件同样算读不出来：判据是「读到了且非空」，长度 0 既不是 48 也不是 80
+        const std::string emptyPath = (directory.path() / "empty.key").string();
+        std::ofstream     emptyFile(directory.path() / "empty.key", std::ios::out | std::ios::binary | std::ios::trunc);
         ASSERT_TRUE(emptyFile.is_open());
         emptyFile.close();
-        EXPECT_FALSE(context.loadSessionTicketKeys({(directory.path() / "empty.key").string()}));
+        EXPECT_THROW(context.loadSessionTicketKeys({emptyPath}), CoreException);
     }
 
     // ============================================================================

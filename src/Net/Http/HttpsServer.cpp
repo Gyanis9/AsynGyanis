@@ -201,10 +201,10 @@ namespace AsynGyanis::Net
         return m_tlsContext.loadOcspResponse(ocspResponseFile);
     }
 
-    bool HttpsServer::loadSessionTicketKeys(const std::vector<std::string> &keyFiles)
+    void HttpsServer::loadSessionTicketKeys(const std::vector<std::string> &keyFiles)
     {
         // 同 reloadCertificate()：纯转发，密钥环的存放、快照替换与换代复现都由 TlsContext 负责
-        return m_tlsContext.loadSessionTicketKeys(keyFiles);
+        m_tlsContext.loadSessionTicketKeys(keyFiles);
     }
 
 } // namespace AsynGyanis::Net

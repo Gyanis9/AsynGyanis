@@ -136,11 +136,12 @@ namespace AsynGyanis::Core
          * @param keyFiles 密钥文件路径列表，**二进制**内容，每份 48 或 80 字节
          *        （`openssl rand 48 > ticket.key` 即可产出；48 走 AES-128、80 走 AES-256，可混用）。
          *        首份用于签发新票据，其余只用于解开轮换窗口内旧密钥签发的票据
-         * @return true 全部密钥已装载并生效（此后新建的 SSL 用它）；false 表示某个文件读不出来或为空，
-         *         此时保持原状态不变——已装的密钥继续用，没装过的仍按 OpenSSL 默认走内部随机密钥
-         * @throws CoreException 列表为空，或某份密钥的长度既不是 48 也不是 80。长度决定票据正文用的
-         *         AES 密钥长度，写错就是配置错误：当场拒绝好过静默退化成「不发票据」，
-         *         后者的表现只是恢复命中率莫名其妙地掉到零
+         * @throws CoreException 列表为空、某份文件读不出来或为空、某份长度既不是 48 也不是 80；
+         *         消息点名是哪一份文件。口径与本类的 loadCertificate() 系列不同（那些返回 false，
+         *         原因留在 OpenSSL 错误栈里可查）：文件读不出来在 OpenSSL 那边没有记录，只回一个
+         *         false 等于什么都不说，而这类配置错误的表现恰恰是「恢复命中率莫名归零」
+         * @note 长度决定 HMAC 段与 AES 段怎么切，写错就是配置错误：当场拒绝好过静默退化成
+         *       「一张票据都不发」
          * @note 不装载时按 OpenSSL 默认，每个 SSL_CTX 自己随机生成一份密钥，于是有两处代价：
          *       ①多进程/多机之间票据互不通用，客户端第二次连接若被 SO_REUSEPORT 分到另一个
          *       worker，恢复必然落空、只能退回全量握手；②reloadCertificate() 换代后旧票据全废。
@@ -152,9 +153,9 @@ namespace AsynGyanis::Core
          *       替换是原子的整份快照，握手线程要么看到旧的整份、要么看到新的整份
          * @note 密钥文件按私钥同级保管（属主可读、不入版本库）：拿到它就能解开本服务签发的所有票据，
          *       进而解密被抓走的会话
-         * @see reloadCertificate()
+         * @see SessionTicketKeyRing, reloadCertificate()
          */
-        bool loadSessionTicketKeys(const std::vector<std::string> &keyFiles) const;
+        void loadSessionTicketKeys(const std::vector<std::string> &keyFiles) const;
 
     private:
         /**

@@ -1,15 +1,12 @@
 #include "Core/Tls/TlsContext.h"
 #include "Core/Exception/CoreException.h"
+#include "Core/Tls/SessionTicketKeyRing.h"
 
-#include <openssl/core_names.h>
-#include <openssl/evp.h>
 #include <openssl/ocsp.h>
-#include <openssl/params.h>
 #include <openssl/ssl.h>
 
 #include <atomic>
 #include <csignal>
-#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -217,215 +214,6 @@ namespace AsynGyanis::Core
             return SSL_TLSEXT_ERR_OK;
         }
 
-        /// 票据密钥的两种合法长度（字节）：48 = 名 16 + HMAC 16 + AES-128 密钥 16；80 = 名 16 + HMAC 32 + AES-256 密钥 32
-        constexpr std::size_t kTicketKeyLengthAes128 = 48;
-        constexpr std::size_t kTicketKeyLengthAes256 = 80;
-
-        /// 票据里标识「用哪份密钥」的名字段长度，与 OpenSSL 的 TLSEXT_KEYNAME_LENGTH 同值
-        constexpr std::size_t kTicketKeyNameLength = 16;
-
-        /// AES-256 布局里 HMAC 段与 AES 段各自的长度（80 字节减去名字段后两等分）
-        constexpr std::size_t kTicketAes256SegmentLength = 32;
-
-        /**
-         * @brief 判断一份密钥字节的长度是否可用（长度决定 HMAC 段与 AES 段的切分，错一位就会读越界）
-         * @param length 密钥字节数
-         * @return bool true 表示是 48 或 80 这两种合法布局之一
-         */
-        bool isUsableTicketKeyLength(const std::size_t length) noexcept
-        {
-            return length == kTicketKeyLengthAes128 || length == kTicketKeyLengthAes256;
-        }
-
-        /**
-         * @brief 按上下文存放的会话票据密钥环
-         * @details 与装订数据同一套理由：回调跑在握手线程上，解引用一个可能已析构的 TlsContext 会悬垂，
-         *          因此持有者的生死跟随 SSL_CTX 本身。密钥用原子 shared_ptr 快照，使
-         *          loadSessionTicketKeys() 能在服务运行中安全替换整份密钥环。
-         */
-        struct SessionTicketKeyRing
-        {
-            std::atomic<std::shared_ptr<const std::vector<std::string>>> keys{std::shared_ptr<const std::vector<std::string>>{}};
-        };
-
-        /**
-         * @brief 取密钥环的 ex_data 下标（首次调用时注册，释放回调负责 delete 持有者）
-         * @return int 下标；注册失败返回 -1，调用方据此跳过票据密钥能力
-         */
-        int sessionTicketKeyExDataIndex()
-        {
-            static const int index = SSL_CTX_get_ex_new_index(
-                    0, nullptr, nullptr, nullptr,
-                    [](void *, void *pointer, CRYPTO_EX_DATA *, int, long, void *)
-                    {
-                        delete static_cast<SessionTicketKeyRing *>(pointer);
-                    });
-            return index;
-        }
-
-        /**
-         * @brief 会话票据密钥回调：签发用环里首份密钥，解开按票据带来的密钥名在环里找
-         * @param ssl 当前握手对象
-         * @param keyName 密钥名缓冲（16 字节）：签发时**必须由本回调写入**，解开时是票据里带来的
-         * @param iv 初始化向量：签发时 OpenSSL 已填好随机值，解开时来自票据
-         * @param cipherContext 票据正文的加解密上下文
-         * @param macContext 票据校验码的 MAC 上下文
-         * @param isEncrypting 非 0 表示签发新票据，0 表示解开对端带来的票据
-         * @return int 1 成功；2 解开成功但命中的是轮换前的旧密钥（OpenSSL 据此顺手换发一张新票据）；
-         *         0 婉拒——本次不签发、或不认这张票据，握手退回全量；**任何分支都不返回 -1**
-         * @warning -1 在 OpenSSL 3.x 的这个回调里是「致命错误、中止握手」，不是「婉拒」
-         *          （实测 3.6.2：客户端带来一张本服务不认的票据，整条握手以
-         *          `SSL routines::internal error` 收场）。婉拒要用 0——nginx 的同一回调在
-         *          「密钥名对不上」时也返回 0。票据只是加速手段，密钥对不上不该让连接建不起来
-         * @details 签发时把密钥名写进 keyName 是**必需的一步**：票据里的名字段取自这块缓冲，
-         *          不写就是 OpenSSL 生成的随机名，下次解密时环里任何一份都对不上（表现是
-         *          共享密钥装了、恢复却永远不命中）。环里一份密钥都没有时同样回 0 婉拒，
-         *          而不是让 OpenSSL 退回它自己那份随机密钥——回调一旦装上，内部密钥那条路就不再生效
-         */
-        int selectSessionTicketKey(SSL *ssl, unsigned char *keyName, unsigned char *iv, EVP_CIPHER_CTX *cipherContext,
-                                   EVP_MAC_CTX *macContext, int isEncrypting)
-        {
-            SSL_CTX *context = SSL_get_SSL_CTX(ssl);
-            if (context == nullptr)
-            {
-                return 0;
-            }
-
-            const auto *ring = static_cast<const SessionTicketKeyRing *>(
-                    SSL_CTX_get_ex_data(context, sessionTicketKeyExDataIndex()));
-            if (ring == nullptr)
-            {
-                return 0;
-            }
-
-            const std::shared_ptr<const std::vector<std::string>> keys = ring->keys.load(std::memory_order_acquire);
-            if (!keys || keys->empty())
-            {
-                return 0;
-            }
-
-            // 校验码算法与 OpenSSL 内部一致取 SHA256；参数数组要的是可写的名字缓冲，不能直接给字面量
-            char macDigestName[] = "SHA256";
-            const OSSL_PARAM macParameters[] = {
-                OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, macDigestName, 0),
-                OSSL_PARAM_construct_end()};
-
-            // 签发只用首份——轮换的语义就是「新的签、旧的解」；解开则按名字在环里逐份比对
-            std::size_t chosenIndex = 0;
-            if (isEncrypting == 0)
-            {
-                chosenIndex = keys->size(); // 越界值兼作「没找到」的哨兵
-                for (std::size_t index = 0; index < keys->size(); ++index)
-                {
-                    if (std::memcmp(keyName, (*keys)[index].data(), kTicketKeyNameLength) == 0)
-                    {
-                        chosenIndex = index;
-                        break;
-                    }
-                }
-
-                if (chosenIndex == keys->size())
-                {
-                    // 名字对不上环里任何一份：这张票据不是本服务签的，或签它的那份密钥已被摘掉
-                    return 0;
-                }
-            }
-
-            const std::string &key = (*keys)[chosenIndex];
-            // 段切分完全由长度决定，因此在做偏移算术之前再确认一次长度合法：装载与换代两条入口
-            // 都校验过，这里挡的是「将来新增第三条入口忘了校验」——错一位就是读越界的密钥材料
-            if (!isUsableTicketKeyLength(key.size()))
-            {
-                return 0;
-            }
-
-            // 名字段之后 HMAC 段与 AES 段等长，两种合法长度都按这一条切
-            const std::size_t cipherKeyLength = (key.size() - kTicketKeyNameLength) / 2;
-            const auto       *hmacKey         = reinterpret_cast<const unsigned char *>(key.data()) + kTicketKeyNameLength;
-            const auto       *aesKey          = hmacKey + cipherKeyLength;
-            const EVP_CIPHER *cipher          = cipherKeyLength == kTicketAes256SegmentLength ? EVP_aes_256_cbc() : EVP_aes_128_cbc();
-
-            if (isEncrypting != 0)
-            {
-                // 票据里的名字段就是这块缓冲的内容，写进去下次才认得出来
-                std::memcpy(keyName, key.data(), kTicketKeyNameLength);
-                if (EVP_EncryptInit_ex(cipherContext, cipher, nullptr, aesKey, iv) != 1)
-                {
-                    return 0;
-                }
-            } else if (EVP_DecryptInit_ex(cipherContext, cipher, nullptr, aesKey, iv) != 1)
-            {
-                return 0;
-            }
-
-            if (EVP_MAC_init(macContext, hmacKey, cipherKeyLength, macParameters) != 1)
-            {
-                return 0;
-            }
-
-            // 命中的是首份（当前密钥）就照常收下；命中轮换前的旧密钥则回 2，让对端拿到一张新票据
-            return (isEncrypting != 0 || chosenIndex == 0) ? 1 : 2;
-        }
-
-        /**
-         * @brief 把一份密钥环挂到指定上下文（后一次调用整份覆盖前一次）
-         * @param context 目标上下文
-         * @param keys 密钥字节串列表，首份用于签发；调用方已校验过每份的长度
-         */
-        void attachSessionTicketKeys(SSL_CTX *context, std::vector<std::string> keys)
-        {
-            const int index = sessionTicketKeyExDataIndex();
-            if (index < 0)
-            {
-                return;
-            }
-
-            auto *ring = static_cast<SessionTicketKeyRing *>(SSL_CTX_get_ex_data(context, index));
-            if (ring == nullptr)
-            {
-                ring = new SessionTicketKeyRing();
-                if (SSL_CTX_set_ex_data(context, index, ring) != 1)
-                {
-                    delete ring;
-                    return;
-                }
-
-                // 回调只在首次装上密钥环时挂一次：没配过密钥的上下文保持 OpenSSL 默认行为
-                // （每个 SSL_CTX 自己随机生成一份密钥），与本方法被调用之前完全一致
-                SSL_CTX_set_tlsext_ticket_key_evp_cb(context, selectSessionTicketKey);
-            }
-            ring->keys.store(std::make_shared<const std::vector<std::string>>(std::move(keys)), std::memory_order_release);
-        }
-
-        /**
-         * @brief 按路径逐份读出票据密钥，长度非法的当场告状
-         * @param keyFiles 密钥文件路径列表，顺序即密钥环顺序（首份用于签发）
-         * @param output 出参，逐份密钥的原始字节；失败时内容不保证可用
-         * @return true 全部读到且长度合法；false 表示某个文件读不出来或为空
-         * @throws CoreException 某份密钥的长度既不是 48 也不是 80
-         */
-        bool readSessionTicketKeys(const std::vector<std::string> &keyFiles, std::vector<std::string> &output)
-        {
-            output.clear();
-            output.reserve(keyFiles.size());
-
-            for (const std::string &keyFile: keyFiles)
-            {
-                std::string keyBytes;
-                if (!readFileBytes(keyFile, keyBytes))
-                {
-                    return false;
-                }
-                if (!isUsableTicketKeyLength(keyBytes.size()))
-                {
-                    throw CoreException("装载会话票据密钥失败：" + keyFile + " 是 " + std::to_string(keyBytes.size()) +
-                                        " 字节，只接受 48（AES-128）或 80（AES-256）字节的二进制密钥"
-                                        "（openssl rand 48 > ticket.key 即可产出）");
-                }
-                output.push_back(std::move(keyBytes));
-            }
-            return true;
-        }
     } // namespace
 
     TlsContext::TlsContext()
@@ -622,23 +410,17 @@ namespace AsynGyanis::Core
         if (!m_sessionTicketKeyFiles.empty())
         {
             std::vector<std::string> ticketKeys;
-            bool                     areKeysUsable = true;
             try
             {
-                areKeysUsable = readSessionTicketKeys(m_sessionTicketKeyFiles, ticketKeys);
+                SessionTicketKeyRing::readKeyFiles(m_sessionTicketKeyFiles, ticketKeys);
             } catch (const CoreException &)
             {
-                // 密钥文件在两次续期之间被换成了长度不对的内容：换代失败，旧上下文继续服务，
-                // 异常不往运维线程外抛（reloadCertificate() 的失败语义是 false，不是抛）
-                areKeysUsable = false;
-            }
-
-            if (!areKeysUsable)
-            {
+                // 密钥文件在两次续期之间被删掉或换成了长度不对的内容：本次换代失败，旧上下文继续服务。
+                // 异常不往运维线程外抛——reloadCertificate() 的失败语义是 false，不是抛
                 SSL_CTX_free(newContext);
                 return false;
             }
-            attachSessionTicketKeys(newContext, std::move(ticketKeys));
+            SessionTicketKeyRing::install(newContext, std::move(ticketKeys));
         }
 
         SSL_CTX *previousContext = m_context;
@@ -743,27 +525,17 @@ namespace AsynGyanis::Core
         return true;
     }
 
-    bool TlsContext::loadSessionTicketKeys(const std::vector<std::string> &keyFiles) const
+    void TlsContext::loadSessionTicketKeys(const std::vector<std::string> &keyFiles) const
     {
-        if (keyFiles.empty())
-        {
-            // 空列表不是「取消共享」而是「一张票据都不发」：回调已经装上，OpenSSL 的内部随机密钥
-            // 那条路就不再生效了。这种配置错误必须当场告状，而不是让恢复命中率悄悄归零
-            throw CoreException("装载会话票据密钥失败：密钥文件列表为空；不需要共享票据密钥就不要调用本方法");
-        }
-
-        // 先读文件再进锁：读盘不持锁，避免把文件 IO 拖进与 createSSL() 争用的关键区
+        // 先读文件再进锁：读盘不持锁，避免把文件 IO 拖进与 createSSL() 争用的关键区。
+        // 列表为空、读不出来、长度不合法三种都在这里当场抛，消息点名是哪一份文件
         std::vector<std::string> keys;
-        if (!readSessionTicketKeys(keyFiles, keys))
-        {
-            return false;
-        }
+        SessionTicketKeyRing::readKeyFiles(keyFiles, keys);
 
         std::lock_guard<std::mutex> guard(m_contextMutex);
-        attachSessionTicketKeys(m_context, std::move(keys));
+        SessionTicketKeyRing::install(m_context, std::move(keys));
         // 记住路径：reloadCertificate() 按它重读，保证密钥与证书一起换代
         m_sessionTicketKeyFiles = keyFiles;
-        return true;
     }
 
     SSL_CTX *TlsContext::nativeHandle() const

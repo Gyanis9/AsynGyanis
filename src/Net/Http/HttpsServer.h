@@ -243,13 +243,13 @@ namespace AsynGyanis::Net
          *
          * @param keyFiles 密钥文件路径列表（**二进制**，每份 48 或 80 字节），首份用于签发新票据、
          *                 其余只用于解开轮换窗口内的旧票据
-         * @return true 已生效；false 某个文件读不出来或为空，此时保持原状态
-         * @throws Core::CoreException 列表为空，或某份密钥长度既不是 48 也不是 80
+         * @throws Core::CoreException 列表为空、某份文件读不出来或为空、某份长度既不是 48 也不是 80；
+         *         消息点名是哪一份文件
          * @note 在开始接受连接之前调用；此后新建的连接用它，已建立的连接不受影响
          * @note 密钥文件按私钥同级保管：拿到它就能解开本服务签发的所有票据
          * @see Core::TlsContext::loadSessionTicketKeys(), reloadCertificate()
          */
-        bool loadSessionTicketKeys(const std::vector<std::string> &keyFiles);
+        void loadSessionTicketKeys(const std::vector<std::string> &keyFiles);
 
     private:
         /**
