@@ -83,6 +83,11 @@ namespace AsynGyanis::Net
         m_isAdopted(true)
     {
         // 非阻塞由 AsyncSocket 的该构造函数设置（继承来的监听套接字通常是阻塞的）
+        //
+        // 监听标记要在这里补：本对象此后绝不会再调 listen()（见 TcpAcceptor::listen() 里那条
+        // 「绝不能重新 listen」的短路），少了这个标记，收口时就会按连接的收口方式去 shutdown 端点，
+        // 把同一端点上新一代的引用一起停掉——换代当场变成空窗
+        m_listenSocket.markAsListening();
     }
 
     bool TcpAcceptor::bind()

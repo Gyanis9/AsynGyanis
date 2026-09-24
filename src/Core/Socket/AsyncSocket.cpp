@@ -107,7 +107,7 @@ namespace AsynGyanis::Core
 
     AsyncSocket::AsyncSocket(AsyncSocket &&other) noexcept :
         m_loop(other.m_loop), m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1)),
-        m_watcher(std::move(other.m_watcher))
+        m_watcher(std::move(other.m_watcher)), m_isListening(other.m_isListening)
     {
     }
 
@@ -119,6 +119,9 @@ namespace AsynGyanis::Core
             m_fileDescriptor = std::exchange(other.m_fileDescriptor, -1);
             // 注册对象随指针转移：它在堆上，epoll 里记的地址因此保持不变
             m_watcher = std::move(other.m_watcher);
+            // 监听标记也要跟着搬：丢了它，一个监听套接字会在被移动过一次之后按连接的收口方式
+            // 去 shutdown 端点（正是换代那条链不能做的事）
+            m_isListening = other.m_isListening;
         }
         return *this;
     }
@@ -169,7 +172,17 @@ namespace AsynGyanis::Core
 
     bool AsyncSocket::listen(const int backlog) const
     {
-        return ::listen(m_fileDescriptor, backlog) == 0;
+        if (::listen(m_fileDescriptor, backlog) != 0)
+        {
+            return false;
+        }
+        markAsListening();
+        return true;
+    }
+
+    void AsyncSocket::markAsListening() const noexcept
+    {
+        m_isListening = true;
     }
 
     Task<> AsyncSocket::asyncConnect(const sockaddr *const address, const socklen_t addressLength) const
@@ -454,14 +467,21 @@ namespace AsynGyanis::Core
             // 少了这一步，正在等待可读/可写的协程会永久挂起
             m_watcher.reset();
 
-            // 只关发送半轴：FIN 当场发出，随后清理入站队列期间对端仍能读完我们已经写出去的响应
-            ::shutdown(m_fileDescriptor, SHUT_WR);
+            // 监听套接字只关自己这一份引用：shutdown 打在**端点**上，同一端点的其它引用会一起停掉。
+            // 零停机换代里新一代正是拿着同一端点的另一份引用在服务，交棒方一 shutdown 就等于把端口
+            // 上的监听一起关掉（实测父代收口后子代 10/10 连不上）。监听套接字也没有半关、
+            // 也没有「本端不再读的入站字节」一说，直接关描述符就到位
+            if (!m_isListening)
+            {
+                // 只关发送半轴：FIN 当场发出，随后清理入站队列期间对端仍能读完我们已经写出去的响应
+                ::shutdown(m_fileDescriptor, SHUT_WR);
 
-            // 接收队列里还有本端不再会读的字节时关闭，栈会改发 RST 而不是 FIN，对端把自己已收到、
-            // 还没来得及读的响应一并丢掉（管线化时第二个请求最容易踩到）；先把它们丢干净
-            discardUnreadInboundData(m_fileDescriptor);
+                // 接收队列里还有本端不再会读的字节时关闭，栈会改发 RST 而不是 FIN，对端把自己已收到、
+                // 还没来得及读的响应一并丢掉（管线化时第二个请求最容易踩到）；先把它们丢干净
+                discardUnreadInboundData(m_fileDescriptor);
 
-            ::shutdown(m_fileDescriptor, SHUT_RDWR);
+                ::shutdown(m_fileDescriptor, SHUT_RDWR);
+            }
             Platform::FileDescriptor::close(m_fileDescriptor);
             m_fileDescriptor = -1;
         }

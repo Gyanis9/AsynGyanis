@@ -104,8 +104,21 @@ namespace AsynGyanis::Core
          * @brief 开始监听 socket（用于服务端）
          * @param backlog 连接等待队列的最大长度，一般传 kDefaultListenBacklog
          * @return 成功返回 true，失败返回 false
+         * @note 成功即等价于调用过一次 markAsListening()：本对象此后按监听套接字的方式收口
          */
         bool listen(int backlog) const;
+
+        /**
+         * @brief 声明「本端已经在监听」，让收口时只关掉自己这一份引用
+         * @details 为什么需要单独声明：listen() 之外还有「接手别人交来的监听描述符」那条路
+         *          （零停机换代的新一代），描述符到本进程时已经是监听态，本对象不会再调 listen()。
+         *          少了这个标记，收口就会走连接的收口流程去 shutdown(SHUT_RDWR)——那打在**端点**上，
+         *          同一端点的其它引用会一起停掉，也就是把新一代正在服务的端口关掉，换代当场变成空窗。
+         *          标记是 mutable 且不改任何 I/O 行为，因此 listen() 与本方法都保持 const。
+         * @note 只对确实处于监听态的描述符调用：给一条已建立的连接打标记，收口时就不会发出 FIN，
+         *       对端要把连接读完才收得到 EOF 的那半轴也一起没了
+         */
+        void markAsListening() const noexcept;
 
         /**
          * @brief 异步连接远端服务器（协程式）
@@ -326,5 +339,9 @@ namespace AsynGyanis::Core
          *          允许一个方向有等待者）；`mutable` 是因为等待方法本身是 const 而首次等待要建对象。
          */
         mutable std::unique_ptr<IoWatcher> m_watcher;
+
+        /// 本描述符是否处于监听态（见 markAsListening()）：它决定收口时能不能对端点做 shutdown，
+        /// 因此必须跟着对象移动。mutable 是因为标记由 const 的 listen()/markAsListening() 写入
+        mutable bool m_isListening{false};
     };
 } // namespace AsynGyanis::Core

@@ -1,4 +1,4 @@
-// AsyncSocket 单元测试：创建、移动语义、bind/listen 生命周期、地址查询与关闭唤醒
+// AsyncSocket 单元测试：创建、移动语义、bind/listen 生命周期、地址查询、关闭唤醒与监听收口的引用边界
 //
 // 关闭唤醒那几条用例不引入事件循环线程：与 TestIoWatcher 同一手法，
 // 事件分发与调度推进由测试自己在同一线程上完成，时序因此完全确定。
@@ -34,6 +34,13 @@
 #include <string_view>
 #include <thread>
 #include <type_traits>
+
+#if !ASYN_PLATFORM_WIN32
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 namespace AsynGyanis::Core
 {
@@ -378,6 +385,54 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(asyncSocket.listen(AsyncSocket::kDefaultListenBacklog));
 
         asyncSocket.close();
+    }
+
+    /**
+     * @brief 验证监听套接字收口只关掉本端这一份引用，不把端点一起停掉
+     * @details 零停机换代靠的就是「同一端点上有两份引用」：新一代从 SCM_RIGHTS 里收到的那一份，
+     *          与 POSIX 上 dup() 出来的这一份同性质（指向同一个开放文件描述）。收口若照已建立连接的
+     *          流程去 shutdown(SHUT_RDWR)，停的是**端点**而不是本端引用，另一份就再也接不到连接
+     *          （父代收口后子代十次连接全失败的实测就是这么来的）。
+     *          只在 POSIX 上断言：Windows 上 dup 不出「同一端点的第二份引用」，那句柄移交要跨进程
+     *          才成立，那条链由 samples/core_upgrade 在真机上验。
+     */
+    TEST(AsyncSocket, CloseOfListeningSocketLeavesDuplicatedDescriptorAccepting)
+    {
+#if !ASYN_PLATFORM_WIN32
+        EventLoop loop;
+        AsyncSocket listener = AsyncSocket::create(loop);
+        ASSERT_TRUE(listener.bind(InetAddress::localhost(0)));
+        ASSERT_TRUE(listener.listen(4));
+        const std::uint16_t port = listener.localAddress().port();
+
+        const int adoptedDescriptor = ::dup(listener.fileDescriptor());
+        ASSERT_GE(adoptedDescriptor, 0) << "dup 失败就构造不出「同一端点的第二份引用」";
+
+        listener.close();
+
+        const int client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_GE(client, 0);
+        sockaddr_in address{};
+        address.sin_family      = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port        = htons(port);
+        const bool isConnected = ::connect(client, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0;
+        EXPECT_TRUE(isConnected) << "关掉本端引用把端点一起停了：换代时新一代接不到连接";
+        if (isConnected)
+        {
+            // 连接已在队列里，另一份引用上应当直接 accept 得到它
+            const int accepted = Platform::Socket::accept(adoptedDescriptor, nullptr, nullptr);
+            EXPECT_GE(accepted, 0);
+            if (accepted >= 0)
+            {
+                Platform::FileDescriptor::close(accepted);
+            }
+        }
+        Platform::FileDescriptor::close(client);
+        Platform::FileDescriptor::close(adoptedDescriptor);
+#else
+        GTEST_SKIP() << "Windows 上 dup 不出同一端点的第二份引用，这条判据在 POSIX 侧实测";
+#endif
     }
 
     /**
