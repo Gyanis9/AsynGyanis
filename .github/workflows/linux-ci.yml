@@ -193,9 +193,10 @@ jobs:
       - name: 编译 Database（含真机驱动分支；告警同样是失败）
         run: cmake --build build/mysql-driver-check --target Database -- -k 0
 
-  # io_uring 事件后端的**只编译**覆盖：该分支只在显式开关下参与编译（默认走 epoll），
-  # 此前从未在任何 CI 里编过——接口或宏漂移只有人工本地构建才会发现。这里只编 Core，
-  # 不做任何运行验证。
+  # io_uring 事件后端：编译**并且真的跑一遍用例**。该分支只在显式开关下参与编译（默认走 epoll），
+  # 而三后端共用一套契约、多数断言在 epoll 后端下恒绿——只在一台后端上跑等于没测（io_uring 不校验
+  # 描述符、改掩码时机与 epoll 不同，这两处真实偏离就是这么找到的）。内核不放行 io_uring 时跳过运行
+  # 而不是让全仓 PR 变红：这一步要抓的是后端契约回归，不是 runner 的内核策略。
   #
   # mimalloc 分支不在其中：它要先在 conanfile 里声明依赖（find_package(mimalloc REQUIRED)），
   # 而本仓库的 Conan 依赖清单里没有它——加作业之前得先补依赖，见 PR 说明。
@@ -225,18 +226,36 @@ jobs:
       - name: 探测 Conan profile
         run: conan profile detect --force
 
-      - name: 配置（io_uring 事件后端）
+      - name: 配置（io_uring 事件后端；带上用例，否则等于只编了一遍）
         run: |
           cmake -S . -B build/io-uring-check -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DASYN_WITH_IO_URING=ON \
             -DDATABASE_WITH_MYSQL=OFF \
-            -DASYN_BUILD_TESTS=OFF \
+            -DASYN_BUILD_TESTS=ON \
             -DASYN_BUILD_SAMPLES=OFF \
             -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$PWD/conan_provider.cmake"
 
-      - name: 编译 Core（io_uring 分支；告警同样是失败）
-        run: cmake --build build/io-uring-check --target Core -- -k 0
+      - name: 编译 Core 与 Core 用例（io_uring 分支；告警同样是失败）
+        run: cmake --build build/io-uring-check --target TestCore -- -k 0
+
+      - name: 探测本 runner 是否放行 io_uring
+        id: uring-usable
+        run: |
+          disabled=$(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo 0)
+          if [ "$disabled" != "0" ]; then
+            echo "isUsable=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::内核已禁用 io_uring（io_uring_disabled=$disabled），本作业退化为只编译"
+          else
+            echo "isUsable=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 跑事件循环与后端契约用例（io_uring 后端）
+        if: steps.uring-usable.outputs.isUsable == 'true'
+        run: |
+          ctest --test-dir build/io-uring-check \
+            -R "Epoll|IoWatcher|Timer|TimerQueue|EventLoop|Scheduler|ThreadPool|IoContext|Uring" \
+            -j 4 --output-on-failure
 
   # 线程竞态检测：TSan 与 ASan 互斥（不能同时插桩），因此另起一个构建目录，只跑**并发相关**的
   # 用例集，把 CI 时间压在可接受范围（本机 Linux 上可以直接跑全量）。事件循环、线程池与跨循环
@@ -433,3 +452,59 @@ jobs:
           name: echo-h3-log
           path: /tmp/echo-h3.log
           if-no-files-found: ignore
+
+  # 行覆盖率：此前「覆盖率只能手工量」（本机全量含真库用例 76.2% 行覆盖），CI 里没有任何数字，
+  # 也没有门禁。这里补上：跑一遍全量用例收 .gcda，用 gcovr 汇总，按行覆盖率下限把关。
+  # 阈值故意取在实测下游——本作业不带 MySQL/Redis 真库分支，天然比手工基线低一截；首日就红的
+  # 门禁只会教会人忽略红。要提阈值，请实测之后连同 COVERAGE_LINE_FLOOR 一起改，两处必须同解。
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+      COVERAGE_LINE_FLOOR: "60"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 安装 Conan 与 gcovr
+        run: |
+          python3 -m venv "$HOME/cov-venv"
+          "$HOME/cov-venv/bin/pip" install "conan>=2.25" gcovr
+          echo "$HOME/cov-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置（--coverage 插桩；关掉 sanitizer——两种插桩互相干扰，且门禁另有作业）
+        run: |
+          cmake -S . -B build/coverage -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DENABLE_SANITIZERS=OFF \
+            -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_C_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
+            -DDATABASE_WITH_MYSQL=OFF \
+            -DASYN_BUILD_SAMPLES=OFF \
+            -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$PWD/conan_provider.cmake"
+
+      - name: 编译全部用例（-k 0 收集式失败，一次看全所有编译错误）
+        run: cmake --build build/coverage -- -k 0
+
+      - name: 跑用例生成 .gcda
+        run: ctest --test-dir build/coverage -j 4
+
+      - name: 汇总行覆盖率并按下限把关
+        run: |
+          # 阈值判断交给 gcovr 自己（--fail-under-line 直接决定退出码）：自己 grep + 截取
+          # 百分比字符串会随输出格式漂移，宁可让工具负责
+          gcovr --root "$PWD" --filter 'src/' --exclude-unreachable-branches \
+            --fail-under-line "$COVERAGE_LINE_FLOOR" --txt | tee /tmp/gcovr.txt
