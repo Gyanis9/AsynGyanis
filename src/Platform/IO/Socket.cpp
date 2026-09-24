@@ -3,6 +3,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
+#include <cstring>
 #include <limits>
 #include <mutex>
 
@@ -295,4 +296,255 @@ namespace AsynGyanis::Platform
         return ::sendfile(socketDescriptor, fileDescriptor, &sendOffset, clampedLength);
     }
 #endif
+
+    namespace
+    {
+        /// 移交消息的定长头：地址族与类型随载荷一起过去，接收侧据此校验「收到的确实是我等的那类套接字」
+        struct HandoffHeader
+        {
+            std::uint16_t family{0};        ///< 地址族（AF_INET / AF_INET6 ...）
+            std::uint16_t socketType{0};    ///< 套接字类型（SOCK_STREAM ...）
+            std::uint32_t blobByteCount{0}; ///< 载荷字节数：Windows 是 WSAPROTOCOL_INFO，POSIX 恒为 0
+        };
+
+        /**
+         * @brief 按阻塞语义把整段字节写完
+         * @param descriptor 通道套接字
+         * @param bytes 待写字节
+         * @param length 字节数
+         * @return true 全部写完
+         */
+        bool writeAll(int descriptor, const char *bytes, std::size_t length)
+        {
+            std::size_t written = 0;
+            while (written < length)
+            {
+#if ASYN_PLATFORM_WIN32
+                const int pieceLength = ::send(descriptor, bytes + written, static_cast<int>(length - written), 0);
+#else
+                const int pieceLength = static_cast<int>(::send(descriptor, bytes + written, length - written, MSG_NOSIGNAL));
+#endif
+                if (pieceLength <= 0)
+                {
+                    return false;
+                }
+                written += static_cast<std::size_t>(pieceLength);
+            }
+            return true;
+        }
+
+        /**
+         * @brief 按阻塞语义把整段字节读满
+         * @param descriptor 通道套接字
+         * @param bytes 输出缓冲
+         * @param length 期望字节数
+         * @return true 读满；通道提前关闭或读坏返回 false
+         * @note 读不满就是「消息不完整」，调用方必须整体作废而不是拿半截载荷去重建套接字
+         */
+        bool readAll(int descriptor, char *bytes, std::size_t length)
+        {
+            std::size_t read = 0;
+            while (read < length)
+            {
+                const int pieceLength = ::recv(descriptor, bytes + read, static_cast<int>(length - read), 0);
+                if (pieceLength <= 0)
+                {
+                    return false;
+                }
+                read += static_cast<std::size_t>(pieceLength);
+            }
+            return true;
+        }
+
+        /**
+         * @brief 取一个套接字的地址族与类型，填进移交头
+         * @param descriptor 目标套接字
+         * @param header 输出：填好 family 与 socketType 的头
+         * @return true 两项都取到
+         * @note 地址族的问法两家不同：Linux 有 SO_DOMAIN，Windows 没有，只能从本地地址的
+         *       sa_family 读回来——移交头只是给接收侧做一致性核对的，两条路都给得出同一个值
+         */
+        bool fillHandoffHeaderIdentity(int descriptor, HandoffHeader &header)
+        {
+            int type             = 0;
+            // 长度参数的类型两家不同（Winsock 是 int*，POSIX 是 socklen_t*）：一律用 socklen_t，
+            // 它在 Windows 上就是 winsock2 给的 int 别名
+            socklen_t valueLength = static_cast<socklen_t>(sizeof(type));
+            if (::getsockopt(descriptor, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&type), &valueLength) != 0)
+            {
+                return false;
+            }
+            header.socketType = static_cast<std::uint16_t>(type);
+
+#ifdef SO_DOMAIN
+            int family = 0;
+            valueLength = static_cast<socklen_t>(sizeof(family));
+            if (::getsockopt(descriptor, SOL_SOCKET, SO_DOMAIN, reinterpret_cast<char *>(&family), &valueLength) != 0)
+            {
+                return false;
+            }
+#else
+            sockaddr_storage localAddress{};
+            socklen_t        localAddressLength = static_cast<socklen_t>(sizeof(localAddress));
+            if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&localAddress), &localAddressLength) != 0)
+            {
+                return false;
+            }
+            const int family = localAddress.ss_family;
+#endif
+            header.family = static_cast<std::uint16_t>(family);
+            return true;
+        }
+    } // namespace
+
+    bool Socket::writeListeningSocketHandoff(const int channelDescriptor, const int listenDescriptor, const std::uint64_t targetProcessId) noexcept
+    {
+        if (channelDescriptor < 0 || listenDescriptor < 0)
+        {
+            PlatformError::setLastErrorCode(EINVAL);
+            return false;
+        }
+
+        HandoffHeader header;
+        if (!fillHandoffHeaderIdentity(listenDescriptor, header))
+        {
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            return false;
+        }
+
+#if ASYN_PLATFORM_WIN32
+        // Winsock 的复制接口按**进程号**认目标，不需要先把对方 OpenProcess 成句柄；
+        // 交给本进程（自测与「同进程内换一份描述符」的用法）也是同一条路
+        WSAPROTOCOL_INFOW protocolInfo{};
+        const int duplicationResult = ::WSADuplicateSocketW(static_cast<SOCKET>(listenDescriptor), static_cast<DWORD>(targetProcessId), &protocolInfo);
+        if (duplicationResult != 0)
+        {
+            PlatformError::setLastErrorCode(::WSAGetLastError());
+            return false;
+        }
+
+        header.blobByteCount = sizeof(WSAPROTOCOL_INFOW);
+        if (!writeAll(channelDescriptor, reinterpret_cast<const char *>(&header), sizeof(header)))
+        {
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            return false;
+        }
+        if (!writeAll(channelDescriptor, reinterpret_cast<const char *>(&protocolInfo), sizeof(protocolInfo)))
+        {
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            return false;
+        }
+        return true;
+#else
+        // POSIX 的载荷走控制消息而不是字节流：头里 blobByteCount 恒为 0，描述符随 SCM_RIGHTS 一起过，
+        // 因此本平台上「交给哪个进程」由内核在传递时决定，参数不需要用
+        (void) targetProcessId;
+        header.blobByteCount = 0U;
+        char controlBuffer[CMSG_SPACE(sizeof(int))] = {};
+        iovec dataVector{reinterpret_cast<void *>(&header), sizeof(header)};
+        msghdr message{};
+        message.msg_iov        = &dataVector;
+        message.msg_iovlen     = 1;
+        message.msg_control    = controlBuffer;
+        message.msg_controllen = sizeof(controlBuffer);
+
+        cmsghdr *controlHeader = CMSG_FIRSTHDR(&message);
+        controlHeader->cmsg_level = SOL_SOCKET;
+        controlHeader->cmsg_type  = SCM_RIGHTS;
+        controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
+        std::memcpy(CMSG_DATA(controlHeader), &listenDescriptor, sizeof(listenDescriptor));
+
+        if (::sendmsg(channelDescriptor, &message, 0) < 0)
+        {
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            return false;
+        }
+        return true;
+#endif
+    }
+
+    int Socket::readListeningSocketHandoff(const int channelDescriptor) noexcept
+    {
+        if (channelDescriptor < 0)
+        {
+            PlatformError::setLastErrorCode(EINVAL);
+            return -1;
+        }
+
+#if ASYN_PLATFORM_WIN32
+        HandoffHeader header{};
+        if (!readAll(channelDescriptor, reinterpret_cast<char *>(&header), sizeof(header)))
+        {
+            // 头都没收齐就是「没有一条完整消息」，报通道的错而不是猜一个格式
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            return -1;
+        }
+        if (header.blobByteCount != sizeof(WSAPROTOCOL_INFOW))
+        {
+            // 载荷长度不像本平台的载体：那是别的版本或别的平台写来的，猜着读只会拿到半个套接字
+            PlatformError::setLastErrorCode(EINVAL);
+            return -1;
+        }
+
+        WSAPROTOCOL_INFOW protocolInfo{};
+        if (!readAll(channelDescriptor, reinterpret_cast<char *>(&protocolInfo), sizeof(protocolInfo)))
+        {
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            return -1;
+        }
+
+        // FROM_PROTOCOL_INFO 是交给 af/type/protocol 这三个参数的哨兵，意思是「三项都按协议信息里
+        // 带的来」；交 0 会被当成「地址族 AF_UNSPEC 的空套接字」而建不出对端那个监听口。
+        // dwFlags 交 0：重建出的套接字与交出方同一形态（阻塞），要挂进完成端口的调用方自己改重叠
+        const SOCKET receivedSocket = ::WSASocketW(FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, &protocolInfo, 0, 0);
+        if (receivedSocket == INVALID_SOCKET)
+        {
+            PlatformError::setLastErrorCode(::WSAGetLastError());
+            return -1;
+        }
+        return static_cast<int>(receivedSocket);
+#else
+        HandoffHeader header{};
+        char          controlBuffer[CMSG_SPACE(sizeof(int))] = {};
+        iovec         dataVector{reinterpret_cast<void *>(&header), sizeof(header)};
+        msghdr        message{};
+        message.msg_iov        = &dataVector;
+        message.msg_iovlen     = 1;
+        message.msg_control    = controlBuffer;
+        message.msg_controllen = sizeof(controlBuffer);
+
+        const ssize_t receivedLength = ::recvmsg(channelDescriptor, &message, 0);
+        if (receivedLength < 0)
+        {
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            return -1;
+        }
+        if (static_cast<std::size_t>(receivedLength) < sizeof(header) || (message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 ||
+            header.blobByteCount != 0U)
+        {
+            // 头没收全、或控制消息被截断，都等于「这份移交不可信」：整体作废，
+            // 不要拿半个描述符去 accept——那比失败更难查
+            PlatformError::setLastErrorCode(EINVAL);
+            return -1;
+        }
+
+        int receivedDescriptor = -1;
+        for (const cmsghdr *controlHeader = CMSG_FIRSTHDR(&message); controlHeader != nullptr;
+             controlHeader                = CMSG_NXTHDR(&message, const_cast<cmsghdr *>(controlHeader)))
+        {
+            if (controlHeader->cmsg_level == SOL_SOCKET && controlHeader->cmsg_type == SCM_RIGHTS &&
+                controlHeader->cmsg_len >= CMSG_LEN(sizeof(int)))
+            {
+                std::memcpy(&receivedDescriptor, CMSG_DATA(controlHeader), sizeof(receivedDescriptor));
+                break;
+            }
+        }
+        if (receivedDescriptor < 0)
+        {
+            PlatformError::setLastErrorCode(EBADF);
+            return -1;
+        }
+        return receivedDescriptor;
+#endif
+    }
 } // namespace AsynGyanis::Platform

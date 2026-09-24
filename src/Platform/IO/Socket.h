@@ -272,5 +272,44 @@ namespace AsynGyanis::Platform
          */
         static ssize_t sendFileChunk(int socketDescriptor, int fileDescriptor, std::uint64_t offset, std::size_t length) noexcept;
 #endif
+
+        // ============================================================================
+        // 跨进程移交监听套接字：零停机换代的地基
+        // ============================================================================
+
+        /**
+         * @brief 通过一条已连通的字节通道，把一个监听套接字交给另一个进程
+         *
+         * @details 两个平台走各自的系统机制，线路格式统一成「定长头 + 平台特定的载体」，
+         *          因此两侧的收发必须配对本层的这一对函数：
+         *          @li Windows 用 WSADuplicateSocketW 向目标进程换一份 WSAPROTOCOL_INFO，把这张
+         *              协议信息作为载荷写出——套接字句柄本身不会随 spawn 继承，这是本机上唯一
+         *              能把监听态交给别的进程的路子；
+         *          @li POSIX 用 sendmsg 的 SCM_RIGHTS 控制消息直接把描述符送过去，头里只带地址族
+         *              与类型（内核会在目标进程里重装这个描述符）。
+         *          头一份都收不全（通道被关）与平台不支持都按失败报告，不返回「半个套接字」。
+         * @param channelDescriptor 已连通的通道套接字（本函数按阻塞语义收发完整一条消息）
+         * @param listenDescriptor 要移交的监听套接字；必须已经 listen() 过
+         * @param targetProcessId 接收方进程号（Windows 按进程号认目标；POSIX 上内核自己处理）
+         * @return true 已完整写出
+         * @return false 平台不支持、参数非法或通道写坏，原因见 PlatformError::lastErrorCode()
+         * @note 通道是普通字节流：本层不校验「对面就是我要交给的那个进程」，那是调用方建通道时
+         *       的责任（同一台机器上的 loopback/匿名管道都算本机）
+         */
+        static bool writeListeningSocketHandoff(int channelDescriptor, int listenDescriptor, std::uint64_t targetProcessId) noexcept;
+
+        /**
+         * @brief 从通道里收下对端移交来的监听套接字
+         * @details 与 writeListeningSocketHandoff 成对：读出头与载体，在本进程里重建一个可直接
+         *          accept() 的监听套接字。Windows 走 WSASocketW(FROM_PROTOCOL_INFO)，
+         *          POSIX 直接取 SCM_RIGHTS 里重装好的描述符。
+         * @param channelDescriptor 已连通的通道套接字（按阻塞语义收完整一条消息）
+         * @return int 新描述符（监听态与 backlog 都跟着过来，已排队连接也一并继承）；失败返回 -1
+         *         并置错误码——不会返回「半个套接字」
+         * @note 换代的关键性质在这里：本端 accept 到的是**上一代进程还在服务时**就已排队的连接，
+         *       因此新进程接手期间监听端口不曾关闭，也就没有 ECONNREFUSED 的空窗
+         */
+        static int readListeningSocketHandoff(int channelDescriptor) noexcept;
+
     };
 } // namespace AsynGyanis::Platform

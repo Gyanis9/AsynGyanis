@@ -14,6 +14,7 @@ add_executable(TestPlatform
         IO/TestTimerFileDescriptor.cpp
         IO/TestConsole.cpp
         IO/TestSocket.cpp
+        IO/TestSocketHandoff.cpp
         IO/TestDatagramSocket.cpp
         IO/TestSocketZeroCopySend.cpp
         IO/TestMemoryMappedFile.cpp
