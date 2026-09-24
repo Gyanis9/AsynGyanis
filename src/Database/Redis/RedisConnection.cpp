@@ -1205,7 +1205,7 @@ namespace AsynGyanis::Database
 
         // 两类订阅各自退，各按自己记下的条数收确认。带错一条就会把另一类的确认吃掉，
         // 因此先退干净的先清零，不让两类共用一个计数
-        for (const std::pair<std::string_view, std::size_t *> command : {
+        for (const std::pair<std::string_view, std::size_t *> &command : {
                      std::pair{std::string_view{"UNSUBSCRIBE"}, &m_channelSubscriptionCount},
                      std::pair{std::string_view{"PUNSUBSCRIBE"}, &m_patternSubscriptionCount}})
         {
