@@ -293,8 +293,13 @@ namespace AsynGyanis::Platform
          * @param targetProcessId 接收方进程号（Windows 按进程号认目标；POSIX 上内核自己处理）
          * @return true 已完整写出
          * @return false 平台不支持、参数非法或通道写坏，原因见 PlatformError::lastErrorCode()
-         * @note 通道是普通字节流：本层不校验「对面就是我要交给的那个进程」，那是调用方建通道时
-         *       的责任（同一台机器上的 loopback/匿名管道都算本机）
+         * @note **POSIX 上通道必须是 AF_UNIX 流套接字**。内核只在 unix 域里随 SCM_RIGHTS 送描述符：
+         *       同一段代码走 loopback TCP 时 sendmsg 与 recvmsg 都返回成功、8 字节数据一字不差，
+         *       只有控制消息被静默丢掉（实测 recvmsg 后 msg_controllen 归 0），接收侧于是只拿得到
+         *       「一个描述符也没有」。实测对照：AF_UNIX 通道 recvmsg 后 controllen=24 且能拿到可用
+         *       描述符，TCP 通道 controllen=0。Windows 侧载荷是普通字节，任何字节流通道都行。
+         * @note 通道本身不带鉴权：本层不校验「对面就是我要交给的那个进程」，那是调用方建通道时的
+         *       责任（POSIX 上 unix 域套接字的文件权限就是那道门，Windows 上 loopback 即本机）
          */
         static bool writeListeningSocketHandoff(int channelDescriptor, int listenDescriptor, std::uint64_t targetProcessId) noexcept;
 
@@ -303,9 +308,12 @@ namespace AsynGyanis::Platform
          * @details 与 writeListeningSocketHandoff 成对：读出头与载体，在本进程里重建一个可直接
          *          accept() 的监听套接字。Windows 走 WSASocketW(FROM_PROTOCOL_INFO)，
          *          POSIX 直接取 SCM_RIGHTS 里重装好的描述符。
-         * @param channelDescriptor 已连通的通道套接字（按阻塞语义收完整一条消息）
+         * @param channelDescriptor 已连通的通道套接字（按阻塞语义收完整一条消息；POSIX 上必须是
+         *        AF_UNIX 流套接字，见 writeListeningSocketHandoff 的那条 @note）
          * @return int 新描述符（监听态与 backlog 都跟着过来，已排队连接也一并继承）；失败返回 -1
          *         并置错误码——不会返回「半个套接字」
+         * @note 错误码的读法：EINVAL 表示「收到的不像本平台的移交消息」（长度不对或载荷被截断），
+         *       EBADF 表示「字节收齐了但里面没有描述符」——POSIX 上这一条几乎都是通道用错了类型
          * @note 换代的关键性质在这里：本端 accept 到的是**上一代进程还在服务时**就已排队的连接，
          *       因此新进程接手期间监听端口不曾关闭，也就没有 ECONNREFUSED 的空窗
          */

@@ -313,17 +313,16 @@ namespace AsynGyanis::Platform
          * @param bytes 待写字节
          * @param length 字节数
          * @return true 全部写完
+         * @note 只有 Windows 侧用到：那边把协议信息当字节流写过去，POSIX 侧的描述符随 sendmsg 的
+         *       控制消息过、没有这段字节要写（匿名 namespace 里没人调用的函数在 GCC 是错误，故整体门控）
          */
+#if ASYN_PLATFORM_WIN32
         bool writeAll(int descriptor, const char *bytes, std::size_t length)
         {
             std::size_t written = 0;
             while (written < length)
             {
-#if ASYN_PLATFORM_WIN32
                 const int pieceLength = ::send(descriptor, bytes + written, static_cast<int>(length - written), 0);
-#else
-                const int pieceLength = static_cast<int>(::send(descriptor, bytes + written, length - written, MSG_NOSIGNAL));
-#endif
                 if (pieceLength <= 0)
                 {
                     return false;
@@ -355,6 +354,7 @@ namespace AsynGyanis::Platform
             }
             return true;
         }
+#endif
 
         /**
          * @brief 取一个套接字的地址族与类型，填进移交头
