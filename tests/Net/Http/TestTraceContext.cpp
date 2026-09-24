@@ -221,7 +221,7 @@ namespace AsynGyanis::Net
 
     TEST(TraceState, UpsertMovesOwnKeyToFrontAndTruncatesToTheLimit)
     {
-        const std::optional<TraceState> parsed = TraceState::parse("a=1,b=2,c=3");
+        std::optional<TraceState> parsed = TraceState::parse("a=1,b=2,c=3");
         ASSERT_TRUE(parsed.has_value());
         TraceState state = std::move(*parsed);
 
