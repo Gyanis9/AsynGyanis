@@ -386,7 +386,8 @@ int main(int argc, char **argv)
         LOG_INFO("                  客户端第二次连接被分到别的进程也能恢复会话；不给则每进程一份随机密钥、跨进程必落空");
         LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
         LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
-        LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）");
+        LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）；"
+            "同时让 TCP 侧响应带上 alt-svc 通告，客户端由此自己学到 h3 端口");
         LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
         LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz；开了 --h3 时 h3 的请求数/状态码类一并计入");
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
@@ -642,11 +643,23 @@ int main(int argc, char **argv)
         return Net::compressionMiddleware();
     };
 
+    // --h3 与 TCP 监听在同一个端口号的 UDP 上（见下面 h3 启动那段），所以通告值能直接推出来：
+    // 不必让部署方再报一次端口（报错了客户端会一直撞一个没人听的端口），也不需要新开关。
+    // 只在 TCP 侧的路由器上挂——已经在 h3 上的请求不需要被告知怎么切到 h3，中间件自己也按协议版本跳过
+    const auto advertiseHttp3IfEnabled = [&](Net::Router &router)
+    {
+        if (useHttp3)
+        {
+            router.addMiddleware(Net::altSvcMiddleware(port));
+        }
+    };
+
     // 按 --https 决定造哪种协议的服务器；返回基类指针，两条路径共用一套构造逻辑
     const auto buildHttpServer = [&](Core::EventLoop &loop)
     {
         auto server = std::make_unique<Net::HttpServer>(loop, *address);
         setupRoutes(server->router());
+        advertiseHttp3IfEnabled(server->router());
         server->setPerIpConnectionLimiter(perIpConnectionLimiter);
         server->setMaxConnections(configuration.maximumConnections);
         server->setLimits(configuration.limits);
@@ -694,6 +707,7 @@ int main(int argc, char **argv)
             server->loadSessionTicketKeys(ticketKeyFiles);
         }
         setupRoutes(server->router());
+        advertiseHttp3IfEnabled(server->router());
         if (compressResponses)
         {
             server->router().addMiddleware(makeCompressionMiddleware(loop));
