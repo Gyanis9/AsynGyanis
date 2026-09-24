@@ -85,6 +85,7 @@ add_executable(TestNet
         WebSocket/TestWebSocketHandshake.cpp
         WebSocket/TestWebSocketFrame.cpp
         WebSocket/TestWebSocketSession.cpp
+        WebSocket/TestWebSocketHub.cpp
         WebSocket/TestWebSocketUtf8.cpp
 
         Http2/TestHttp2Frame.cpp

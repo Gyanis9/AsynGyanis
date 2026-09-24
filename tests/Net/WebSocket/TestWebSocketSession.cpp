@@ -14,6 +14,7 @@
 #include "Net/Http/Router.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
+#include "Net/WebSocket/WebSocketHub.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
 #include <gtest/gtest.h>
@@ -1378,6 +1379,82 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(readUntilLength(client, accumulated, handshake.size() + expectedEcho.size(), kWaitTimeout));
         EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake) << "未提供扩展时 101 不得多出扩展头";
         EXPECT_EQ(accumulated.substr(handshake.size()), expectedEcho) << "未协商就不该压缩回帧";
+    }
+
+    // ============================================================================
+    // 与 WebSocketHub 合用：一条连接收到的消息扇给同一条循环上的其它连接
+    // ============================================================================
+
+    /**
+     * @brief 端到端钉「由 A 的业务协程替 B 写」这条嵌套路径
+     *
+     * @details WebSocketHub 自己的用例用的是可控的假发送回调，那三条纪律（单写者、合并、有界）
+     *          在那里已经钉死。这里换成真会话：B 的处理器正挂在 receive() 上、它的会话协程挂在
+     *          socket 读上，而写 B 的字节是 A 的协程在跑——这条嵌套写路径与真实收尾之间会不会
+     *          互相插字节，只有真 sockets 能证。
+     *
+     *          不必额外等「两条都进了房间」：处理器在 receive() 之前先 subscribe，而 101 是同一个
+     *          会话协程在它之前写出去的，因此客户端收到 101 时订阅必然已经发生（单循环逐事件推进）。
+     */
+    TEST(WebSocketHubFanout, ReachesAnotherConnectionOnTheSameSessionLoop)
+    {
+        // hub 先于服务器声明：析构顺序因此是「先停服务器、后拆 hub」，会话协程收尾时的除名
+        // 一定打在一个还活着的集线器上（反过来就是往已析构的对象里摘成员）
+        WebSocketHub hub;
+
+        const HttpTestSupport::RouteRegistrar registrar = [&hub](Router &router, Core::EventLoop &)
+        {
+            router.any(std::string(kHandshakePath), [&hub](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                response.upgradeToWebSocket([&hub](WebSocketPeer &peer) -> Core::Task<>
+                {
+                    const auto subscription = hub.subscribe("lobby", peer);
+                    while (const std::optional<WebSocketMessage> message = co_await peer.receive())
+                    {
+                        // 扇给全员，发起者自己也在名单里：这是集线器的语义，不是漏掉了排除自己
+                        co_await hub.publish("lobby", message->payload);
+                    }
+                    co_return;
+                });
+                co_return;
+            });
+        };
+
+        const std::unique_ptr<RunningHttpServerFixture> server = std::make_unique<RunningHttpServerFixture>(
+                HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        constexpr std::string_view kBroadcastText = "broadcast hello";
+
+        LoopbackClient speaker(server->listeningPort());
+        LoopbackClient listener(server->listeningPort());
+        ASSERT_TRUE(speaker.isValid());
+        ASSERT_TRUE(listener.isValid());
+
+        const std::string handshake = expectedHandshakeResponseText();
+        // 服务端发出的文本帧不带掩码，负载是原文：整帧逐字节比对，帧头与长度一并钉住
+        const std::string expectedFrame = serverFrameBytes(0x1, kBroadcastText);
+
+        std::string speakerBytes;
+        std::string listenerBytes;
+        ASSERT_TRUE(speaker.sendText(upgradeRequestText(), kWaitTimeout));
+        ASSERT_TRUE(readUntilLength(speaker, speakerBytes, handshake.size(), kWaitTimeout)) << "发起方的握手没完成";
+        ASSERT_TRUE(listener.sendText(upgradeRequestText(), kWaitTimeout));
+        ASSERT_TRUE(readUntilLength(listener, listenerBytes, handshake.size(), kWaitTimeout)) << "接收方的握手没完成";
+        EXPECT_EQ(listenerBytes, handshake);
+
+        ASSERT_TRUE(speaker.sendText(maskedClientFrame(0x1, kBroadcastText), kWaitTimeout));
+
+        ASSERT_TRUE(readUntilLength(listener, listenerBytes, handshake.size() + expectedFrame.size(), kWaitTimeout))
+                << "另一个成员没收到扇出的那条";
+        EXPECT_EQ(listenerBytes.substr(handshake.size()), expectedFrame);
+
+        ASSERT_TRUE(readUntilLength(speaker, speakerBytes, handshake.size() + expectedFrame.size(), kWaitTimeout))
+                << "发起者自己也是成员，不该被排除在扇出之外";
+        EXPECT_EQ(speakerBytes.substr(handshake.size()), expectedFrame);
+
+        EXPECT_EQ(hub.memberCount("lobby"), 2U);
+        EXPECT_EQ(hub.droppedMessageCount(), 0U) << "两条都跟得上：不该有任何一条被丢掉";
     }
 
 } // namespace AsynGyanis::Net

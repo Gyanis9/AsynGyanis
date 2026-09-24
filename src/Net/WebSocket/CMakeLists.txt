@@ -8,6 +8,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketFrame.cpp
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketPeer.h
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketPeer.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/WebSocketHub.h
+        ${CMAKE_CURRENT_LIST_DIR}/WebSocketHub.cpp
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketUtf8.h
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketUtf8.cpp
 )
