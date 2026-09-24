@@ -172,6 +172,23 @@ namespace AsynGyanis::Net
             }
 
             /**
+             * @brief 用「已经在监听中的套接字」构造测试服务器：不 bind、不 listen
+             * @details 这条构造入口是零停机换代的落点（新一代直接用交来的描述符接受连接），
+             *          所以它与按地址构造共享同一份钩子配置，用例只需换构造方式。
+             * @param loop 事件循环
+             * @param adoptedListeningDescriptor 已在监听状态的文件描述符，所有权交给基类
+             * @param options 钩子行为、连接类型与并发上限
+             * @param stopObserved 交给连接对象的停止观察标记
+             */
+            TestTcpServer(Core::EventLoop &loop, const int adoptedListeningDescriptor, const ServerTestOptions &options,
+                          std::atomic<bool> &stopObserved) :
+                TcpServer(loop, adoptedListeningDescriptor), m_options(options), m_stopObserved(&stopObserved)
+            {
+                setMaxConnections(options.maxConnections);
+                setPerIpConnectionLimiter(options.perIpLimiter);
+            }
+
+            /**
              * @brief 为重 accepted 的连接创建会话对象
              * @details 重写 TcpServer::createConnection()（基类为纯虚）。这里按配置开关决定
              *          返回正常连接、返回空指针还是抛异常，并顺手记录套接字两端的端口，
@@ -1031,5 +1048,83 @@ namespace AsynGyanis::Net
                 kImmediateCompletionTimeout)) << "非正期限下忙碌连接没有被立刻强关：上界 kImmediateCompletionTimeout";
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout)) << "强关没有通知到连接：上界 kWaitTimeout";
         EXPECT_FALSE(fixture.server().isRunning());
+    }
+    /**
+     * @brief 「接手已在监听的套接字」这条构造入口必须真的能对外服务
+     *
+     * @details 零停机换代的第二半全靠它：新一代不 bind、不 listen，直接用交来的描述符接受连接。
+     *          跨进程的移交本身由 Platform 层的 SocketHandoff 用例覆盖，这条钉的是「引擎拿到那个
+     *          描述符之后能不能干活」——该入口此前没有任何直测，而它是整条换代链路上唯一还没
+     *          被直接验过的公共面。
+     */
+    TEST(TcpServerAdoptedListener, ServesConnectionsOnTheHandedOverSocket)
+    {
+        // 本用例直接用平台套接字，所以自己负责 Winsock 初始化：ctest 是逐用例起进程的，
+        // 不能假定「同二进制里别的用例已经把平台初始化好了」
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        // 先自己造一个已在监听状态的套接字：端口交给内核挑，服务器不许再 bind 一次
+        const int descriptor = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_GE(descriptor, 0);
+        sockaddr_in address{};
+        address.sin_family      = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port        = 0;
+        ASSERT_EQ(::bind(descriptor, reinterpret_cast<sockaddr *>(&address), sizeof(address)), 0);
+        ASSERT_EQ(::listen(descriptor, 16), 0);
+        socklen_t addressLength = static_cast<socklen_t>(sizeof(address));
+        ASSERT_EQ(::getsockname(descriptor, reinterpret_cast<sockaddr *>(&address), &addressLength), 0);
+        const std::uint16_t listeningPort = ntohs(address.sin_port);
+        ASSERT_GT(listeningPort, 0U);
+
+        Core::EventLoop      loop;
+        std::atomic<bool>    stopObserved{false};
+        std::thread          loopThread([&loop]
+        {
+            loop.run();
+        });
+
+        ServerTestOptions options; ///< 默认 FinishImmediately：连接建好就收口，够证明「确实接受到了」
+        TestTcpServer       server(loop, descriptor, options, stopObserved);
+        // 描述符的所有权已交给服务器：从这里起不再用 ASSERT，失败也要走完收口路径
+        AsynGyanis::Core::Task<void> startTask = server.start();
+        loop.scheduler().scheduleRemote(startTask.handle());
+
+        // 接手来的端口应当被原样报出来：偷偷重绑另一个端口，这条先红
+        std::uint16_t reportedPort = 0U;
+        for (int attempt = 0; attempt < 200 && reportedPort == 0U; ++attempt)
+        {
+            reportedPort = server.listeningPort();
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        EXPECT_EQ(reportedPort, listeningPort) << "接手入口没有报出交来的端口";
+
+        const int client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        EXPECT_GE(client, 0);
+        if (client >= 0)
+        {
+            const int connected = ::connect(client, reinterpret_cast<const sockaddr *>(&address), sizeof(address));
+            EXPECT_EQ(connected, 0) << "连不上接手来的监听端口：那个套接字没在服务";
+            Platform::FileDescriptor::close(client);
+        }
+
+        std::size_t createdConnections = 0U;
+        for (int attempt = 0; attempt < 200 && createdConnections == 0U; ++attempt)
+        {
+            createdConnections = server.createConnectionCalls();
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        EXPECT_GE(createdConnections, 1U) << "接受循环没能在交来的描述符上收到连接";
+        EXPECT_EQ(server.recordedLocalPort(), listeningPort) << "会话看到的本地端口不是交来的那个";
+
+        // 收口顺序要按线程契约来：close() 只能在跑这条循环的线程上调，所以投递过去，
+        // 等接受循环真的退出之后再停循环——否则 startTask 的帧会在协程还挂着时被析构
+        loop.scheduler().postRemote([&server]
+        {
+            server.close();
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        loop.stop();
+        loopThread.join();
     }
 } // namespace AsynGyanis::Net
