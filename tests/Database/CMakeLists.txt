@@ -38,6 +38,7 @@ add_executable(TestDatabase
         Redis/TestRedisConnection.cpp
         Redis/TestRedisResult.cpp
         Redis/TestRedisIntegration.cpp
+        Redis/TestRedisSubscription.cpp
 )
 
 target_link_libraries(TestDatabase PRIVATE

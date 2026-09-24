@@ -11,7 +11,11 @@
 
 #include "Database/Common/DatabaseConnection.h"
 
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -26,6 +30,40 @@ struct redisReply;
 namespace AsynGyanis::Database
 {
     /**
+     * @brief 服务端主动推来的一条订阅回复
+     *
+     * @details Redis 把「订阅确认」与「消息」都写成三或四个元素的数组，靠第一个元素区分：
+     *          message / pmessage / subscribe / unsubscribe / psubscribe / punsubscribe
+     *          （RESP3 的 smessage/ssubscribe 同理，本结构按形状收下）。
+     *          认不出的 kind 原样留在 kind 里、不猜也不丢：服务端将来加新形态时，调用方仍然看得见，
+     *          比在这里静默过滤掉要好排查。
+     */
+    struct RedisPushReply
+    {
+        std::string    kind;                     ///< 回复类型：message / pmessage / subscribe / unsubscribe ...
+        std::string    channel;                  ///< 消息所在频道；pmessage 时是实际命中的那个频道
+        std::string    pattern;                  ///< 仅 pmessage 有值：命中的模式
+        std::string    payload;                  ///< 消息正文；订阅类回复没有这一段，留空
+        std::int64_t   subscriptionCount{0};     ///< 订阅类回复里的当前订阅数；消息类为 0
+    };
+
+    /**
+     * @brief 一条键空间通知（keyspace notifications）拆出来的两半
+     *
+     * @details 服务端有两种频道形状，两半内容正好互换，只按频道名分不出来：
+     *          @li `__keyspace@<库>__:<键>` —— 正文是事件名；
+     *          @li `__keyevent@<库>__:<事件>` —— 正文是被改动的键。
+     *          本结构按「键 / 事件」两个语义字段给出，调用方不必自己记哪种形状。
+     */
+    struct RedisKeyspaceNotification
+    {
+        std::int64_t database{0};      ///< 通知来自哪个键空间
+        bool         isKeyEvent{false}; ///< true 表示走的是 __keyevent__（正文是键），false 是 __keyspace__（正文是事件）
+        std::string  key;              ///< 被改动的键
+        std::string  event;            ///< 事件名（set / del / expired / evicted ...）
+    };
+
+    /**
      * @brief Redis 键值存储连接
      *
      * @details 可选编译：未取得 hiredis 时编译为报错桩（各执行入口把「当前构建未编译 Redis 驱动」写入
@@ -36,9 +74,10 @@ namespace AsynGyanis::Database
      *
      * @warning 管道命令登记后不立即发送，flushPipeline() 之前不会有任何网络往返；
      *          中途的传输层失败会丢弃尚未读回的回复并断开连接，Redis 侧无法回滚已执行的命令。
-     * @warning 不支持订阅式用法（SUBSCRIBE/PSUBSCRIBE/监视模式）：本类按「一条命令一次读回复」
-     *          的模型执行，一旦对端切到推送模式，后续回复会与命令错位——调用方若需要订阅，
-     *          请自行使用 hiredis 的异步 API。发出这类命令不会被拦下（那等于替调用方决定用途），
+     * @warning 订阅要走本类给出的那组入口（subscribe()/psubscribe()/readPushReply()），不要拿
+     *          execute() 直接发 SUBSCRIBE：本类按「一条命令一次读回复」的模型执行，一旦对端切到推送
+     *          模式，后续回复就会与命令错位。那组入口把「读干确认回复」与「按形状解推送」都做了，
+     *          并且把这条连接标成订阅形态。发出这类命令不会被 execute() 拦下（那等于替调用方决定用途），
      *          但连接归还时会直接断开而不是带着错位的回复流回池。
      */
     class RedisConnection : public DatabaseConnection
@@ -194,6 +233,75 @@ namespace AsynGyanis::Database
             return m_redisContext;
         }
 
+        // ============================================================================
+        // 订阅与推送消费：本类的「一条命令一条回复」模型在这里换成「持续读推送」
+        // ============================================================================
+
+        /**
+         * @brief 订阅若干频道，并把这条连接切到推送形态
+         * @details 走的是同一条 argv 发送路径，因此频道名二进制安全（含空格与内嵌 '\0' 都不丢）。
+         *          服务端为**每个频道**回一条 subscribe 确认，本方法把它们读干后才返回——留着不读，
+         *          第一份确认就会被下一个 readPushReply() 当成消息交出去。
+         * @param channels 频道名列表；为空时不发送任何字节并直接返回 false（那是调用方的错，
+         *                 不该让服务端去回一个「SUBSCRIBE 需要至少一个参数」的错话）
+         * @return true 命令已发出且确认回复收齐
+         * @return false 频道列表为空、未连接或收发失败，原因见 lastError()
+         * @note 订阅是连接级会话状态：这条连接不能再交回连接池。归还时 resetSessionState() 会直接
+         *       断开它（回复流已与命令错位，留着比丢掉便宜）
+        */
+        bool subscribe(std::span<const std::string_view> channels);
+
+        /**
+         * @brief 按模式订阅（PSUBSCRIBE），确认回复同样在本方法内收干
+         * @param patterns 模式列表（Glob 风格，如 `__keyspace@0__:*`），语义与限制同 subscribe()
+         * @return true 命令已发出且确认回复收齐
+         * @return false 模式列表为空、未连接或收发失败，原因见 lastError()
+         */
+        bool psubscribe(std::span<const std::string_view> patterns);
+
+        /**
+         * @brief 退掉全部频道与模式订阅，把这条连接送回「一条命令一条回复」的形态
+         * @details 不带参数的 UNSUBSCRIBE / PUNSUBSCRIBE 会为**每个当前订阅**回一条确认，本方法按
+         *          服务端给出的订阅数计数读到归零。之后这条连接可以安全地交给池复用
+         *          （见 resetSessionState() 里那条「退不出去就断开」的判据）。
+         * @return true 两类订阅都已退干净（本来就没订阅也算成功）
+         * @return false 未连接或收发失败，原因见 lastError()；此时订阅状态不确定，调用方应断开重连
+         */
+        bool unsubscribeAll();
+
+        /**
+         * @brief 读一条服务端推来的回复，最多等 waitTimeout
+         * @details 本驱动是同步的，因此「等」就落在调用线程上：要么由调用方放到工作线程上跑，
+         *          要么给一个有限时长。等超时**不算失败**——返回空值、连接保持可用，这是持续消费
+         *          的正常节奏（否则每轮空等都得重连）。
+         * @param waitTimeout 本次等待上限；非正值表示不设本次超时，按连接当前的 queryTimeout() 等
+         * @return std::optional<RedisPushReply> 收到一条推送；超时时返回空值
+         * @return std::nullopt 也用于「读坏了」的情况——那种情形 lastError() 非空且连接已断开，
+         *         两种空值靠 lastError() 区分（推送本身可以载荷为空，所以不拿空字符串表达失败）
+         */
+        [[nodiscard]] std::optional<RedisPushReply> readPushReply(std::chrono::milliseconds waitTimeout);
+
+        /**
+         * @brief 这条连接当前是否停在订阅形态
+         * @return true 至少有一条频道或模式订阅未退；此时不要把它交回池
+         */
+        [[nodiscard]] bool isSubscribing() const noexcept
+        {
+            return m_channelSubscriptionCount + m_patternSubscriptionCount > 0;
+        }
+
+        /**
+         * @brief 把一条键空间通知的频道与正文拆成「键 / 事件」两个语义字段
+         * @details 两种频道形状的两半正好互换（见 RedisKeyspaceNotification），这件事容易记反，
+         *          因此放在库里而不是让每个使用方各抄一遍。
+         * @param channel 推送的频道名，形如 `__keyspace@3__:user:42` 或 `__keyevent@0__:set`
+         * @param payload 推送的正文（另一种内容）
+         * @return std::optional<RedisKeyspaceNotification> 认得出形状时给出拆好的两半
+         * @return std::nullopt 频道不是这两种形状（前缀不对、缺分隔符、库号不是十进制整数）
+         */
+        [[nodiscard]] static std::optional<RedisKeyspaceNotification> parseKeyspaceNotification(std::string_view channel,
+                                                                                               std::string_view payload);
+
     protected:
         /**
          * @brief 把新的 queryTimeout() 立刻落到已建立的上下文上
@@ -239,6 +347,18 @@ namespace AsynGyanis::Database
          */
         void noteSessionCommand(std::string_view commandName, bool isAccepted) noexcept;
 
+        /**
+         * @brief 发出 SUBSCRIBE / PSUBSCRIBE，并把服务端为每个目标回的确认证干
+         * @details subscribe() 与 psubscribe() 只差命令名与一处文案，发送、记账与「确认必须收干」
+         *          三件事完全相同，因此共用本助手（两条各抄一遍的话，「确认没读干净」这个坑会漏修一次）
+         * @param commandName 命令名（"SUBSCRIBE" / "PSUBSCRIBE"）
+         * @param targets 频道名或模式名列表，非空由调用方保证（空列表在本方法里直接判失败）
+         * @return true 命令已发出且 targets.size() 条确认全部收干（第一条是这条命令本身的回复，
+         *         由发送路径顺手收走；剩下几条在本方法里读干）
+         * @return false 未连接、收发失败或确认数对不上，原因见 lastError()
+         */
+        bool startSubscription(std::string_view commandName, std::span<const std::string_view> targets);
+
         redisContext *m_redisContext{nullptr}; ///< hiredis 连接上下文，本对象独占所有权，未连接时为 nullptr
 
         // 之所以在登记时就切词而不是原样缓存命令文本：命令文本的合法性错误能在 pipelineCommand()
@@ -251,6 +371,12 @@ namespace AsynGyanis::Database
         int  m_configuredKeySpaceIndex{0};      ///< 配置里那个键空间编号，即一条新会话应当停在的库
         int  m_currentKeySpaceIndex{0};         ///< 本会话实际所在的键空间编号，与上面不等时归还前 SELECT 回去
         bool m_isSessionModeChanged{false};     ///< 是否进入了退不回去的会话模式（MONITOR/订阅/HELLO）：归还时断开这条连接
+
+        // 两类订阅各记各的条数：服务端 UNSUBSCRIBE / PUNSUBSCRIBE 的确认里那个整数是**两类合计**
+        // 的剩余订阅数，光看回复分不出「这一类退完了没」，因此按类记账才知道每条命令该收几条确认。
+        // 订阅期间这条连接归调用方独占，本地记的数与服务端一致
+        std::size_t m_channelSubscriptionCount{0}; ///< 当前活跃的频道订阅条数
+        std::size_t m_patternSubscriptionCount{0}; ///< 当前活跃的模式订阅条数
     };
 
 } // namespace AsynGyanis::Database

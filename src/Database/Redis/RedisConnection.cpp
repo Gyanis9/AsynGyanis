@@ -19,6 +19,7 @@
 #include "Database/Redis/RedisReplyText.h"
 
 #include <array>
+#include <cerrno>
 #include <charconv>
 #include <cstddef>
 #include <limits>
@@ -29,8 +30,14 @@
 
 #endif // DATABASE_HAS_REDIS
 
+// 下面这几样在两种构建下都要能用：parseKeyspaceNotification() 是与驱动无关的纯字符串工作，
+// 桩构建也得有它（否则「没有 hiredis」会顺带让一个能用、能测的解析器消失）
+#include <charconv>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Database
 {
@@ -451,6 +458,11 @@ namespace AsynGyanis::Database
         // 记账必须跟着归零，否则重连后的第一次归还白发一条 DISCARD / UNWATCH
         m_isInTransaction = false;
         m_isWatchingKeys  = false;
+
+        // 订阅同样随会话消失：新连接上一条订阅都不剩。两个计数不归零，isSubscribing() 就会谎报，
+        // 而 unsubscribeAll() 会去等一批服务端根本不会发的确认（每条都等满一次确认时限）
+        m_channelSubscriptionCount = 0;
+        m_patternSubscriptionCount = 0;
 
         // 会话模式与库位也随会话一起没了：下一次 connect() 会按配置重设这两格
         m_isSessionModeChanged = false;
@@ -1012,5 +1024,336 @@ namespace AsynGyanis::Database
     {
         return DatabaseType::Redis;
     }
+
+    // ==========================================================================
+    // 订阅与推送消费
+    //
+    // 单独成块放在驱动分支之外：这一块里只有 parseKeyspaceNotification() 是纯字符串工作，
+    // 两种构建（有 hiredis / 缺 hiredis）都要能用、也都要能测；其余四个入口需要收发回复，
+    // 因此按驱动在不在分成两份实现。
+    // ==========================================================================
+
+    std::optional<RedisKeyspaceNotification> RedisConnection::parseKeyspaceNotification(const std::string_view channel,
+                                                                                        const std::string_view payload)
+    {
+        static constexpr std::string_view kKeyspacePrefix = "__keyspace@";
+        static constexpr std::string_view KeyEventPrefix  = "__keyevent@";
+
+        const bool isKeyEvent = channel.starts_with(KeyEventPrefix);
+        if (!isKeyEvent && !channel.starts_with(kKeyspacePrefix))
+        {
+            return std::nullopt;
+        }
+
+        // 前缀之后到 ':' 之间是「库号 + 固定的一对下划线」，剩下整段是键或事件名。用第一个 ':' 切而不是
+        // 按固定宽度：键本身带 ':'（user:42 这种写法极常见），从后面切会把键名截掉
+        const std::size_t bodyStart = (isKeyEvent ? KeyEventPrefix : kKeyspacePrefix).size();
+        const std::size_t separator = channel.find(':', bodyStart);
+        if (separator == std::string_view::npos || separator < bodyStart + 2 || channel[separator - 2] != '_'
+            || channel[separator - 1] != '_' || separator + 1 >= channel.size())
+        {
+            // 缺这一对下划线就不是本机制发出的频道（__keyspace@3:user:42 看着像，但它不是）
+            return std::nullopt;
+        }
+
+        RedisKeyspaceNotification notification;
+        notification.isKeyEvent = isKeyEvent;
+
+        // 库号必须是纯十进制整数：__keyspace@abc__:k 这种频道不猜
+        const std::string_view databaseText = channel.substr(bodyStart, separator - bodyStart - 2);
+        const auto *const databaseBegin     = databaseText.data();
+        const auto *const databaseEnd       = databaseBegin + databaseText.size();
+        if (std::from_chars(databaseBegin, databaseEnd, notification.database) != std::from_chars_result{databaseEnd, std::errc{}}
+            || notification.database < 0)
+        {
+            return std::nullopt;
+        }
+
+        const std::string_view nameOnChannel = channel.substr(separator + 1);
+        if (isKeyEvent)
+        {
+            // __keyevent@0__:set 的正文是被改动的键；__keyspace@3__:user:42 的正文是事件名
+            notification.event = std::string(nameOnChannel);
+            notification.key   = std::string(payload);
+        }
+        else
+        {
+            notification.key   = std::string(nameOnChannel);
+            notification.event = std::string(payload);
+        }
+        return notification;
+    }
+
+#ifdef DATABASE_HAS_REDIS
+
+    namespace
+    {
+        /**
+         * @brief 取推送回复数组里的第 index 个元素，按字符串读出
+         * @param reply 服务端回的那条数组回复
+         * @param index 下标
+         * @return std::string 元素的字节内容；下标越界或该元素不带字符串时为空串
+         * @note 元素访问按 elements / element[] 这一对名字走，理由见本文件里 RedisResult 的同款注释：
+         *       各 hiredis 版本把数组暴露成什么并不一致
+         */
+        std::string pushReplyField(const redisReply &reply, const std::size_t index)
+        {
+            if (index >= reply.elements || reply.element == nullptr)
+            {
+                return {};
+            }
+            const redisReply *const element = reply.element[index];
+            if (element == nullptr || element->str == nullptr)
+            {
+                return {};
+            }
+            return std::string(element->str, element->len);
+        }
+
+        /**
+         * @brief 取订阅类回复末尾那个「当前订阅数」
+         * @param reply 服务端回的那条数组回复
+         * @param index 计数所在的元素下标
+         * @return std::int64_t 计数；该元素不带整数时给 0（不猜）
+         */
+        std::int64_t pushReplyCount(const redisReply &reply, const std::size_t index)
+        {
+            if (index >= reply.elements || reply.element == nullptr)
+            {
+                return 0;
+            }
+            const redisReply *const element = reply.element[index];
+            if (element == nullptr || element->type != REDIS_REPLY_INTEGER)
+            {
+                return 0;
+            }
+            return element->integer;
+        }
+
+        /// 收订阅/退订确认时的单次等待上限：确认紧随命令到达，等满这么久就是没来（按失败收场）
+        constexpr std::chrono::milliseconds kConfirmationWait{5000};
+    } // namespace
+
+    bool RedisConnection::subscribe(const std::span<const std::string_view> channels)
+    {
+        return startSubscription("SUBSCRIBE", channels);
+    }
+
+    bool RedisConnection::psubscribe(const std::span<const std::string_view> patterns)
+    {
+        return startSubscription("PSUBSCRIBE", patterns);
+    }
+
+    bool RedisConnection::startSubscription(const std::string_view commandName, const std::span<const std::string_view> targets)
+    {
+        m_lastError.clear();
+
+        if (targets.empty())
+        {
+            // 空目标不该发出去：服务端会回「ERR wrong number of arguments」，而那看着像本类没接好命令。
+            // 更要紧的是发出过一条订阅命令就会把连接标成推送形态，白丢一条可复用的连接
+            m_lastError = "Redis 订阅命令没有目标：SUBSCRIBE 要至少一个频道，PSUBSCRIBE 要至少一个模式";
+            return false;
+        }
+
+        std::vector<std::string_view> argumentValues;
+        argumentValues.reserve(targets.size() + 1);
+        argumentValues.push_back(commandName);
+        argumentValues.insert(argumentValues.end(), targets.begin(), targets.end());
+
+        // 发送与「服务端认了这条命令」的判据都复用同一条路径：它顺手把 m_isSessionModeChanged 记上
+        // （订阅是退不回去的会话状态，见 noteSessionCommand），归还时池会断开这条连接
+        if (executeArguments(argumentValues) == nullptr)
+        {
+            return false;
+        }
+
+        // 按类记条数：unsubscribeAll() 要知道每条退订命令该收几确认（回复里那个整数是两类合计，
+        // 单看它分不出「这一类退干净了没」）
+        std::size_t &subscriptionCount = commandName == "PSUBSCRIBE" ? m_patternSubscriptionCount : m_channelSubscriptionCount;
+        subscriptionCount += targets.size();
+
+        // 服务端为**每个目标**各回一条确认。第一条已经作为这条命令的回复被 executeArguments 取走了
+        // （那一刻连接还没进入推送形态，配对是成立的），因此这里只补收剩下的 targets.size() - 1 条。
+        // 多等一条会一直等到超时——服务端根本没有那一条；少等一条则把确认留在流里，
+        // 下一次 readPushReply() 就会把「subscribe 确认」当成消息交给调用方
+        for (std::size_t index = 1; index < targets.size(); ++index)
+        {
+            if (!readPushReply(kConfirmationWait).has_value())
+            {
+                if (m_lastError.empty())
+                {
+                    // 超时不是失败路径给的错误，这里补一句：确认没收齐就是订阅状态不确定
+                    m_lastError = "没有等齐服务端为这条订阅命令回的确认，订阅状态不确定";
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool RedisConnection::unsubscribeAll()
+    {
+        m_lastError.clear();
+
+        if (!isSubscribing())
+        {
+            // 本来就没订阅：什么都不发。发 UNSUBSCRIBE 会在服务端那边回一条确认，
+            // 白付一次往返，而调用方要的是「退干净了」这个结论
+            return true;
+        }
+
+        // 两类订阅各自退，各按自己记下的条数收确认。带错一条就会把另一类的确认吃掉，
+        // 因此先退干净的先清零，不让两类共用一个计数
+        for (const std::pair<std::string_view, std::size_t *> command : {
+                     std::pair{std::string_view{"UNSUBSCRIBE"}, &m_channelSubscriptionCount},
+                     std::pair{std::string_view{"PUNSUBSCRIBE"}, &m_patternSubscriptionCount}})
+        {
+            const std::size_t outstanding = *command.second;
+            if (outstanding == 0)
+            {
+                continue; // 这一类本来就没有订阅：不发命令，也就没有要收的确认
+            }
+
+            const std::array<std::string_view, 1> arguments{command.first};
+            if (executeArguments(arguments) == nullptr)
+            {
+                *command.second = 0;
+                return false;
+            }
+
+            // 同一条命令的回复路径已经收走第一条确认，剩下 outstanding - 1 条在这里收干
+            for (std::size_t index = 1; index < outstanding; ++index)
+            {
+                if (!readPushReply(kConfirmationWait).has_value())
+                {
+                    if (m_lastError.empty())
+                    {
+                        m_lastError = "没有等齐服务端为退订命令回的确认，订阅状态不确定：请按断开重连处理";
+                    }
+                    *command.second = 0;
+                    return false;
+                }
+            }
+            *command.second = 0;
+        }
+
+        // 订阅全退了，但 m_isSessionModeChanged 保持原样：这条连接确实经历过推送形态，
+        // 让池按既有判据把它换掉比赌「服务端与我这边状态一致」便宜，判据只有一处
+        return true;
+    }
+
+    std::optional<RedisPushReply> RedisConnection::readPushReply(const std::chrono::milliseconds waitTimeout)
+    {
+        m_lastError.clear();
+
+        if (m_redisContext == nullptr)
+        {
+            m_lastError = "未连接到 Redis，读不到推送";
+            return std::nullopt;
+        }
+
+        // 本次等待上限临时盖在连接的 queryTimeout 之上：订阅消费的节奏归调用方定，
+        // 读完必须还原——留着这个小值会把下一条普通命令提前判成超时
+        const bool usesOwnWait = waitTimeout.count() > 0;
+        if (usesOwnWait)
+        {
+            const struct timeval ownTimeout = makeTimeval(static_cast<int>(waitTimeout.count()));
+            if (redisSetTimeout(m_redisContext, ownTimeout) != REDIS_OK)
+            {
+                captureError("设置 Redis 推送等待时限失败");
+                static_cast<void>(applyQueryTimeout());
+                return std::nullopt;
+            }
+        }
+
+        void      *rawReplyPointer = nullptr;
+        const int  readStatus      = redisGetReply(m_redisContext, &rawReplyPointer);
+        const int  nativeErrno     = errno; // 紧接着就取：后面任何一次调用都会把它冲掉
+
+        // 「这次没等到消息」的判据。hiredis 1.1 起读超时是 REDIS_ERR_TIMEOUT（本机 hiredis 1.3.0
+        // 实测 err==6、errstr=="recv timeout"）；更早的版本走 REDIS_ERR_IO + errno，一并认下。
+        // 认不出的一律按真失败处理：宁可多断开一次，也不要把一条已经坏了的上下文当成「只是没消息」继续等
+        const bool timedOut = m_redisContext->err == REDIS_ERR_TIMEOUT
+                              || (m_redisContext->err == REDIS_ERR_IO
+                                  && (nativeErrno == EAGAIN || nativeErrno == EWOULDBLOCK || nativeErrno == ETIMEDOUT));
+
+        if (usesOwnWait)
+        {
+            static_cast<void>(applyQueryTimeout());
+        }
+
+        if (readStatus != REDIS_OK || rawReplyPointer == nullptr)
+        {
+            if (timedOut)
+            {
+                // 等不到消息是持续消费的正常节奏，不是失败：hiredis 把超时报成上下文错误，
+                // 但套接字与读缓冲都没坏，清掉错误标记就能接着读下一条
+                m_redisContext->err         = 0;
+                m_redisContext->errstr[0]   = '\0';
+                return std::nullopt;
+            }
+            captureError("读取 Redis 推送失败");
+            disconnect();
+            return std::nullopt;
+        }
+
+        auto *const reply = static_cast<redisReply *>(rawReplyPointer);
+        // 所有权在这条路径上一直归本函数：既没交给 RedisResult 也没被连接持有，读完必须自己释放
+        const std::string kind = pushReplyField(*reply, 0);
+
+        RedisPushReply push;
+        push.kind = kind;
+        if (kind == "pmessage")
+        {
+            push.pattern  = pushReplyField(*reply, 1);
+            push.channel  = pushReplyField(*reply, 2);
+            push.payload  = pushReplyField(*reply, 3);
+        }
+        else if (kind == "message" || kind == "smessage")
+        {
+            push.channel = pushReplyField(*reply, 1);
+            push.payload = pushReplyField(*reply, 2);
+        }
+        else
+        {
+            // subscribe / unsubscribe / psubscribe / punsubscribe，以及本机制还不认识的 kind：
+            // 一律按「第 2 段是目标、第 3 段是计数」的形状读，认不出的字段留空而不报错——
+            // 服务端将来加新形态时调用方仍然看得见它，比在这里静默丢掉好查
+            push.channel            = pushReplyField(*reply, 1);
+            push.subscriptionCount  = pushReplyCount(*reply, 2);
+        }
+
+        freeReplyObject(reply);
+        return push;
+    }
+
+#else // DATABASE_HAS_REDIS —— 桩实现：订阅入口同样明确失败
+
+    bool RedisConnection::subscribe(const std::span<const std::string_view>)
+    {
+        m_lastError = kMissingDriverError;
+        return false;
+    }
+
+    bool RedisConnection::psubscribe(const std::span<const std::string_view>)
+    {
+        m_lastError = kMissingDriverError;
+        return false;
+    }
+
+    bool RedisConnection::unsubscribeAll()
+    {
+        m_lastError = kMissingDriverError;
+        return false;
+    }
+
+    std::optional<RedisPushReply> RedisConnection::readPushReply(const std::chrono::milliseconds)
+    {
+        m_lastError = kMissingDriverError;
+        return std::nullopt;
+    }
+
+#endif // DATABASE_HAS_REDIS
 
 } // namespace AsynGyanis::Database
