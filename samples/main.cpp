@@ -11,6 +11,7 @@
 #include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Process/WorkerSupervisor.h"
+#include "Core/Tls/SessionTicketKeyRing.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Scheduler.h"
@@ -266,6 +267,8 @@ int main(int argc, char **argv)
     bool        showUsage = false;
     std::string certificateFile = "cert.pem";
     std::string keyFile  = "key.pem";
+    /// 会话票据密钥文件，可重复给（首份签发、其余只解开旧票据）；空 = 按 OpenSSL 默认随机密钥
+    std::vector<std::string> ticketKeyFiles;
     std::string configFile;
 
     for (int i = 1; i < argc; ++i)
@@ -328,6 +331,12 @@ int main(int argc, char **argv)
             certificateFile = Samples::readOptionValue(argc, argv, i, "--cert", "一个证书文件路径");
             ++i;
         }
+        else if (arg == "--ticket-key")
+        {
+            // 可重复：轮换的形态就是「新的插首位、旧的留在后面」，与 nginx 的同名指令一致
+            ticketKeyFiles.push_back(Samples::readOptionValue(argc, argv, i, "--ticket-key", "一个会话票据密钥文件路径（48 或 80 字节）"));
+            ++i;
+        }
         else if (arg == "--key")
         {
             keyFile = Samples::readOptionValue(argc, argv, i, "--key", "一个私钥文件路径");
@@ -371,7 +380,10 @@ int main(int argc, char **argv)
     {
         LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
         LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c] [--h3]");
-        LOG_INFO("                  [--max-connections-per-ip N] [--metrics] [--config <文件>]");
+        LOG_INFO("                  [--ticket-key <文件>] [--max-connections-per-ip N] [--metrics] [--config <文件>]");
+        LOG_INFO("  --ticket-key TLS 会话票据密钥文件（48 或 80 字节二进制，openssl rand 48 > ticket.key）：");
+        LOG_INFO("                  可重复给（首份签发、其余只解旧票据，即轮换）。多进程 --workers 下各进程装同一份，");
+        LOG_INFO("                  客户端第二次连接被分到别的进程也能恢复会话；不给则每进程一份随机密钥、跨进程必落空");
         LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
         LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
         LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）");
@@ -486,6 +498,28 @@ int main(int argc, char **argv)
     {
         LOG_ERROR("--h3 需要证书：QUIC 自带 TLS，请与 --https 一起用（--cert/--key）");
         return 1;
+    }
+
+    if (!ticketKeyFiles.empty() && !useHttps)
+    {
+        // 票据是 TLS 的东西：明文 HTTP 上没有它的位置，静默收下就等于让部署方以为共享已经生效
+        LOG_ERROR("--ticket-key 需要 TLS：请与 --https（或 --h3，它自带 TLS）一起用");
+        return 1;
+    }
+
+    if (!ticketKeyFiles.empty())
+    {
+        // 启动期先把密钥文件校验一遍：不合格要的是「一句人话 + 退出码 1」，而不是把异常抛穿到
+        // 建服务器的循环线程上。真正装载仍在各服务器构造时做（换代要按路径重读，路径才是身份）
+        try
+        {
+            std::vector<std::string> validatedKeys;
+            Core::SessionTicketKeyRing::readKeyFiles(ticketKeyFiles, validatedKeys);
+        } catch (const Base::Exception &keyFailure)
+        {
+            LOG_ERROR_FMT("echo_server 启动失败：{}", keyFailure.what());
+            return 1;
+        }
     }
 
     if (threads == 0)
@@ -654,6 +688,11 @@ int main(int argc, char **argv)
     const auto buildHttpsServer = [&](Core::EventLoop &loop)
     {
         auto server = std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile);
+        // 各 worker 进程装同一份密钥，客户端被分到哪个进程都解得开票据；不给则每进程一份随机密钥
+        if (!ticketKeyFiles.empty())
+        {
+            server->loadSessionTicketKeys(ticketKeyFiles);
+        }
         setupRoutes(server->router());
         if (compressResponses)
         {
@@ -774,6 +813,7 @@ int main(int argc, char **argv)
         Net::QuicServer::Configuration http3Configuration;
         http3Configuration.certificateFile = certificateFile;
         http3Configuration.privateKeyFile  = keyFile;
+        http3Configuration.sessionTicketKeyFiles = ticketKeyFiles;
         // 与 h1/h2 用同一份解析上限：h3 的正文总量上限同样不该由样本自己去猜
         http3Configuration.parserLimits    = configuration.parserLimits;
         // 在途正文预算与 HTTP 侧共用同一份账：h3 的正文也驻留在进程内存里，
