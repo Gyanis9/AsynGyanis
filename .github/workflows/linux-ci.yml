@@ -203,10 +203,22 @@ jobs:
       - name: 构建 echo_server
         run: cmake --build build/debug --target echo_server -- -k 0
 
+      # h2spec 是**别人写的** HTTP/2 裁判：146 条判据直接引 RFC 的句子，自家探针查不出的
+      # 「两边都错在同一种理解上」由它查。取固定版本的官方发布包（不自己编 Go），失败就让它红——
+      # 拿不到裁判与裁判判不过，都需要被人看见
+      - name: 取 h2spec（跨实现一致性裁判）
+        run: |
+          set -euo pipefail
+          h2spec_version=v2.6.0
+          curl -sSfL -o /tmp/h2spec.tgz \
+            "https://github.com/summerwind/h2spec/releases/download/${h2spec_version}/h2spec_linux_amd64.tar.gz"
+          tar -xzf /tmp/h2spec.tgz -C /tmp
+          /tmp/h2spec --version
+
       - name: 降低 ASLR 熵（稳定 AddressSanitizer）
         run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
 
-      - name: 起服务端并跑两条跨实现探针
+      - name: 起服务端并跑跨实现探针
         run: |
           # 最后一个参数是 URL，其余全转给 curl；等到真能应答才开测——ASan 下的启动比平时慢，
           # 不等就绪就会拿到「000」这种与协议无关的红
@@ -233,10 +245,16 @@ jobs:
             > /tmp/tls.log 2>&1 &
           tls_pid=$!
 
-          # 四条都要跑完再收：任一失败就让作业红，并把服务端日志留成产物
+          # 都要跑完再收：任一失败就让作业红，并把服务端日志留成产物
           status=0
           wait_ready --http2-prior-knowledge "http://127.0.0.1:18080/json" \
             && bash scripts/h2_adversarial_probe.sh 18080 || status=1
+          # 同一台 h2c 服务端再过一次外部裁判；--strict 把那几条「实现可选」的也一并判了
+          wait_ready --http2-prior-knowledge "http://127.0.0.1:18080/json" \
+            && /tmp/h2spec -h 127.0.0.1 -p 18080 --strict || status=1
+          # TLS 侧走 ALPN 挑出 h2：与明文那条判的是同一套规则，但走的是另一条协商路径
+          wait_ready -k "https://127.0.0.1:18443/json" \
+            && /tmp/h2spec -h 127.0.0.1 -p 18443 --tls --insecure || status=1
           wait_ready "http://127.0.0.1:18081/json" \
             && python scripts/ws_interop_probe.py 127.0.0.1 18081 || status=1
           wait_ready -k "https://127.0.0.1:18443/json" \
