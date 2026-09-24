@@ -1247,17 +1247,21 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 两种成因分开报：kColumns 整张为空＝这个类型根本没特化 TableSchema（此时表名也是空串），
                 // 报「声明了自增主键且没有其它列」会把人指到一个自己没写过的声明上；
-                // 只有确实列出了列、却只剩自增主键，才是下面这条文案描述的那种「根本没有可写内容」
+                // 只有确实列出了列、却只剩自增主键，才是下面这条文案描述的那种「根本没有可写内容」。
+                // 写成 if constexpr / else 而不是「throw 之后再 throw」：两条 throw 在任一实例化里都只有
+                // 一条可达，MSVC 会把另一条报成 C4702 无法访问的代码（本仓 /WX，整模块因此编不过）
                 if constexpr (std::tuple_size_v<decltype(TableSchema<T>::kColumns)> == 0)
                 {
                     throw Base::LogicException("Queryable: 无法生成 INSERT，这个类型没有可用的 TableSchema 特化"
                                                "（kColumns 与表名都是空的），请用 Column() 为该类型声明至少一列");
                 }
-
-                // 只剩自增主键：一条 VALUES 都没有的 INSERT 不是「写法不同」而是根本没有可写内容，
-                // 交给方言只会生成语法错误的语句，这里按编程错误当场拒绝
-                throw Base::LogicException("Queryable: 表 " + std::string(TableSchema<T>::kTableName) +
-                                           " 声明了自增主键且没有其它列，无法生成 INSERT");
+                else
+                {
+                    // 只剩自增主键：一条 VALUES 都没有的 INSERT 不是「写法不同」而是根本没有可写内容，
+                    // 交给方言只会生成语法错误的语句，这里按编程错误当场拒绝
+                    throw Base::LogicException("Queryable: 表 " + std::string(TableSchema<T>::kTableName) +
+                                               " 声明了自增主键且没有其它列，无法生成 INSERT");
+                }
             }
 
             return columnNames;
