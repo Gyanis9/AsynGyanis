@@ -1812,9 +1812,12 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：尾部头块只校验语法、不交出字段；END_STREAM 照常半关对端方向，并交出一条零长收尾片段（§8.1）
+     * @brief 钉住：尾部头块的字段随那条 END_STREAM 收口信号一起交出，content-length 除外（§8.1）
+     * @details 尾部头块必须自带 END_STREAM（§7.1），所以「正文收齐」与「尾部字段到齐」是同一件事，
+     *          本层不为它另开一条事件通道。收口信号本身仍是零长的：上层只按 endStream 判定收齐，
+     *          少了它，以尾部头块收尾的请求永远进不了路由。
      */
-    TEST(Http2Connection, ValidatesTrailerHeaderBlocksWithoutDeliveringThem)
+    TEST(Http2Connection, DeliversTrailerHeaderBlockFieldsWithTheClosingSignal)
     {
         Http2Connection connection;
         completeHandshake(connection);
@@ -1822,20 +1825,22 @@ namespace AsynGyanis::Net
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
-        // 合法的尾部头块：字段有意丢弃（与 HttpParser 对分块 trailer 的既有处置一致），但流要按 END_STREAM 半关。
-        // 交出的那一条是**零长**的收尾信号：上层只按 Http2ReceivedData::endStream 判定正文收齐，
-        // 少了它，以尾部头块收尾的请求永远等不到收齐、不会进路由
+        // 合法的尾部头块：字段落到收口信号上，流按 END_STREAM 半关
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            hpackLiteralField("x-checksum", "42"))),
+                                            hpackLiteralField("x-checksum", "42") + hpackLiteralField("content-length", "999"))),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
         EXPECT_TRUE(connection.takeRequests().empty()) << "尾部头块不是新请求";
         const std::vector<Http2ReceivedData> trailerData = connection.takeReceivedData();
         ASSERT_EQ(trailerData.size(), 1U) << "收尾信号必须交给上层：以尾部头块收尾的请求靠它才知道正文收齐了";
         EXPECT_EQ(trailerData[0].streamId, 1U);
-        EXPECT_TRUE(trailerData[0].data.empty()) << "交出的只有收尾信号，尾部头块的字段一个都不在里面";
+        EXPECT_TRUE(trailerData[0].data.empty()) << "交出的只有收尾信号与尾部字段，正文一个字节都不补";
         EXPECT_TRUE(trailerData[0].endStream);
         EXPECT_EQ(trailerData[0].flowControlByteCount, 0U);
+        // 与 HttpParser 同一张过滤表：定界字段不进 trailer 档（连接特定字段根本到不了这里，前一步就是流错误）
+        ASSERT_EQ(trailerData[0].trailerFields.size(), 1U) << "尾部字段没交出来，或多交了定界字段";
+        EXPECT_EQ(trailerData[0].trailerFields[0].name, "x-checksum");
+        EXPECT_EQ(trailerData[0].trailerFields[0].value, "42");
         Http2StreamState streamState{};
         ASSERT_TRUE(connection.tryGetStreamState(1U, streamState));
         EXPECT_EQ(streamState, Http2StreamState::HalfClosedRemote);

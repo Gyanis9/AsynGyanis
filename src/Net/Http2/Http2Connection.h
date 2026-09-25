@@ -138,7 +138,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief 从对端收到的一段正文（DATA 帧的应用数据）
+     * @brief 从对端收到的一段正文（DATA 帧的应用数据），或一枚尾部头块收尾时的那条收口信号
      */
     struct Http2ReceivedData
     {
@@ -146,6 +146,11 @@ namespace AsynGyanis::Net
         std::string data;          ///< 应用数据；空串表示零长 DATA 帧（§6.1 允许，常见于带 END_STREAM 的收尾帧）
         bool endStream{false};     ///< 对端在这片数据上置了 END_STREAM：该流的对端方向到此为止
         std::size_t flowControlByteCount{0}; ///< 本片占用的流控字节数：DATA 帧负载原长（含 padding，§6.9.1 要求 padding 也计入）
+        /// 这条流到此为止时一并交出的尾部字段（RFC 9113 §8.1 的 trailing header 块），按线上到达顺序。
+        /// 只有尾部头块造出的那条收口信号会非空——尾部头块必须自带 END_STREAM（§7.1），因此「正文收齐」
+        /// 与「尾部字段到齐」天然是同一件事，不需要另一条事件通道去排先后。
+        /// 定界字段（content-length）与伪头不会出现在这里，连接层已按 h1 同一张表筛掉/判错
+        std::vector<HpackHeaderField> trailerFields;
     };
 
     /**
@@ -539,7 +544,7 @@ namespace AsynGyanis::Net
         enum class HeaderBlockPurpose
         {
             Request,  ///< 新请求：过了校验就交出请求对象
-            Trailers, ///< 尾部头块：只校验语法（§8.1.2.1 禁止伪头），字段有意丢弃
+            Trailers, ///< 尾部头块：按 §8.1.2.1 校验语法，字段随那条 END_STREAM 收口信号交出
             Discard   ///< 已拒绝或已终止的流：解完即丢，只为让动态表与对端同步
         };
 

@@ -126,15 +126,20 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 拼一个只带普通头、并以上面收尾的尾部头块帧（RFC 9113 §8.1）
+         * @details 故意同时带一条 content-length：它是 h1 与 h2 共用的那张过滤表要拦的东西，
+         *          只带一个合法头的尾部块证明不了「交付」与「全量交付」的区别。
          * @param streamId 流号
          * @return std::string 完整帧字节
          */
         std::string makeTrailersFrame(const std::uint32_t streamId)
         {
-            // 尾部头块里不得出现伪头（:method 之类），因此用一个普通头；它同时是 END_STREAM 的载体
-            return encodeHttp2HeadersFrame(
-                    Http2HeadersPayload{.endStream = true, .endHeaders = true, .headerBlockFragment = hpackLiteralField("x-trailer", "done")},
-                    streamId);
+            // 尾部头块里不得出现伪头（:method 之类），因此用普通头；它同时是 END_STREAM 的载体
+            return encodeHttp2HeadersFrame(Http2HeadersPayload{.endStream = true,
+                                                               .endHeaders = true,
+                                                               .headerBlockFragment =
+                                                                       hpackLiteralField("x-trailer", "done")
+                                                                       + hpackLiteralField("content-length", "999")},
+                                           streamId);
         }
 
         /// 一条明文 h2 客户端：只负责「发字节、把收到的字节解成帧」
@@ -878,21 +883,24 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：以尾部头块收尾的请求（trailers 带 END_STREAM）照常被路由——尾部头块也是消息结尾（RFC 9113 §8.1）
+     * @brief 钉住：以尾部头块收尾的请求照常被路由，且尾部字段到了业务手里（RFC 9113 §8.1）
      * @details 会话只按 `Http2ReceivedData::endStream` 判定「正文收齐」，不读流状态；连接层若在
      *          尾部头块分支只把流置成 half-closed (remote) 而不产出收尾片段，这条请求就永远等不到
      *          收齐、不会进路由（客户端只能等到超时）。本用例的响应必须在时限内出现。
+     *          响应回显「正文 + 从 trailer 档读到的值」两件事：尾部字段与正文挤在同一条收口信号上，
+     *          只验响应出现，验不出业务读得到它；content-length 必须读不到（它进的是过滤表不是业务）。
      */
     TEST(Http2CleartextSession, ServesRequestWhoseBodyEndsWithTrailers)
     {
         const std::string_view requestBody = "trailed-body";
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [requestBody](Router &router, Core::EventLoop &)
+        const std::string expectedBody = std::string(requestBody) + "|tf=done|tcl=no";
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [expectedBody](Router &router, Core::EventLoop &)
         {
-            router.post("/echo", [requestBody](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+            router.post("/echo", [expectedBody](HttpRequest &request, HttpResponse &response) -> Core::Task<>
             {
-                // 回显正文：只有正文真被收齐了，回显才等于原样
-                static_cast<void>(requestBody);
-                response.setBody(request.body());
+                // 回显正文与 trailer：只有正文真被收齐、尾部字段也落了档，回显才等于预期
+                response.setBody(std::string(request.body()) + "|tf=" + request.getTrailerField("x-trailer").value_or("-")
+                                 + "|tcl=" + (request.getTrailerField("content-length").has_value() ? "yes" : "no"));
                 co_return;
             });
         }, HttpParserLimits{}, [](TestHttpServer &server)
@@ -929,7 +937,7 @@ namespace AsynGyanis::Net
                                      kWaitTimeout)) << "以尾部头块收尾的请求没有被路由（正文收齐没有被识别）";
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
-        EXPECT_EQ(responseDataPayload(frames, 1U), requestBody) << "回显的正文与原请求不一致：正文没有被完整收齐";
+        EXPECT_EQ(responseDataPayload(frames, 1U), expectedBody) << "正文没有被完整收齐，或尾部字段没有交进业务手里";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";

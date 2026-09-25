@@ -541,6 +541,14 @@ namespace AsynGyanis::Net
         {
             PendingRequest &pending = requestIterator->second;
 
+            // 尾部字段先落到这条流的请求对象上，再处理收尾：路由与唤醒流式正文读取器都在后面，
+            // 业务读到「正文收齐」时 trailer 必须已经在位（h1 侧同样是解析器先提交整条报文、
+            // HttpRequestBody 才以 isComplete() 收尾）
+            for (const HpackHeaderField &trailerField: receivedData.trailerFields)
+            {
+                pending.request.addTrailerField(trailerField.name, trailerField.value);
+            }
+
             // 流式路由：正文进那条流自己的缓冲，业务按到达批次取走；窗口在**被消费**时才还
             // （见 HttpStreamBody），因此这里不调 creditReceivedData——那正是背压的落点
             if (pending.isStreamingBody)
