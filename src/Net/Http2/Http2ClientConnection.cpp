@@ -404,6 +404,10 @@ namespace AsynGyanis::Net
     void Http2ClientConnection::releasePumpLease() noexcept
     {
         m_isPumpLeaseTaken = false;
+        // 交还通路时必须把挂在 StreamAwaiter 上的人叫一遍：他们的 await_ready 里那条「此刻没人驱动
+        // 连接」只有在被恢复的那一刻才会重新看过。不叫的话，最后一个驱动者收工之后通路就没人读了
+        // ——晚到的响应（服务端把这条连接放着、过一会儿才答）会一直躺在那里，等到请求自己的时限
+        wakeWaitingStreams();
     }
 
     void Http2ClientConnection::wakeWaitingStreams() noexcept
