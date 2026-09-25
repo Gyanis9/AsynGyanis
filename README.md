@@ -73,26 +73,20 @@
 
 ### 前置依赖
 
-- **CMake** ≥ 3.20、**Conan** ≥ 2.0（改走 vcpkg 的场合换成 **vcpkg**，两条路线见下）
+- **CMake** ≥ 3.20、**Conan** ≥ 2.0（依赖与打包只走 Conan 这一条路线）
 - **编译器**：MSVC ≥ 19.40 / GCC ≥ 13 / Clang ≥ 17（需支持 C++23 标准）
 - **系统**：Windows ≥ 10 或 Linux（事件后端：Linux epoll、Windows 完成端口；Linux 另可用 `ASYN_WITH_IO_URING` 换 io_uring，需内核 5.6+）
 
 第三方依赖由 `conan_provider.cmake` 在 CMake 配置阶段自动安装（`conan install --build=missing`），无需手工执行。
 
-不想引入 Conan 的场合（比如工程本身已在用 vcpkg）可改走根 `vcpkg.json` 这份清单，两条路线并存：
+包管理**只维护 Conan 这一条路线**：`conandata.yml` 是唯一的一份依赖事实。曾加过根 `vcpkg.json`
+与自带端口（`packaging/vcpkg/`），已删除——两条清单要并行维护同一批依赖，改依赖时漏改一边就会
+分叉，而 CI 只跑 Conan，那份第二清单没有闸门看。同理删掉了为 vcpkg 的 brotli 端口导出名兜底的
+`cmake/Findbrotli.cmake`：Conan 的 brotli 直接给 `brotli::brotli`，不需要退化路径。
 
-```bash
-cmake -S . -B build \
-  -DCMAKE_TOOLCHAIN_FILE=<vcpkg 目录>/scripts/buildsystems/vcpkg.cmake \
-  -DVCPKG_MANIFEST_FEATURES=tests
-```
-
-`tests` 这个特征才拉 googletest 与当作 HTTP/3 跨实现裁判的 nghttp3，只编库的话不带它们。
-**两份清单是并行维护的两处事实，改依赖时必须一起改**；两处对不齐时以 `conandata.yml` 为准
-（Conan 路线是 CI 在跑的那条）。一处刻意的不对称：MySQL 客户端只有 Conan 侧有（vcpkg 没有
-`libmysqlclient` 这个端口，只有需要手工接受 Oracle 许可的 `libmysql`），vcpkg 路线因此固定
-按 `-DDATABASE_WITH_MYSQL=OFF` 走——真实驱动本来就按可选依赖处理，探测不到即编成「每个入口
-给一条中文错误」的桩。
+依赖清单只有一份 `conandata.yml`（配 `packaging/conan/conanfile.py` 这份配方），改依赖只改这里，
+CI 也只跑这一条路线。MySQL 驱动是配方里的 `with_mysql` 选项（默认关）：不带它时相关入口给一条
+中文错误而不是编不过，因此「少一个可选依赖」从来不是构建失败的理由。
 
 ### 构建与测试
 
@@ -131,17 +125,6 @@ target_link_libraries(app PRIVATE AsynGyanis::Net)
 
 Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费方链接后**运行需要 ASan 运行库 DLL**；
 不想带这些依赖就用 `release` 预设产出的包。
-
-也可以用 vcpkg 把它当包安装（端口与版本注册表在 `packaging/vcpkg/registry/`，源码取发布标签）：
-
-```bash
-vcpkg install asyn-gyanis:x64-linux --overlay-ports=<本仓库路径>/packaging/vcpkg/registry/ports
-# 事件后端与分配器按特征开：asyn-gyanis[io-uring,mimalloc]:x64-linux
-```
-
-之后消费方的写法与上面完全一致（`find_package(AsynGyanis COMPONENTS Net ...)`）；
-`packaging/vcpkg/smoke/` 就是照这个写法做的冒烟工程，装完包后用 vcpkg 工具链编它并跑一次，
-可以确认「包真的把依赖带给了别人」而不只是「编译时找得到」。
 
 ### 真机用例（数据库）
 
@@ -439,11 +422,9 @@ AsynGyanis/
 ├── conanfile.py            # 依赖清单由 conandata.yml 驱动
 ├── conandata.yml           # 第三方依赖与版本
 ├── conan_provider.cmake    # CMake 侧自动触发 conan install
-├── vcpkg.json              # 同一批依赖的 vcpkg 清单（库依赖 + tests / mimalloc / io-uring 特征）
 ├── samples/                # 按模块拆开的自检示例 + echo_server（部署形态），总跑见 scripts/run_samples.py
 ├── benchmarks/             # 性能基线与门禁脚本、热路径微基准、进程外压测脚本
 ├── packaging/conan/        # Conan 库包配方与消费方冒烟测试
-├── packaging/vcpkg/        # vcpkg 端口与版本注册表 + 消费方冒烟测试
 ├── scripts/                # 发布版本一致性门禁、示例总跑、跨实现验收探针（QUIC/h3/WS/h2）
 ├── src/
 │   ├── Platform/           # 平台底层（OS 调用的唯一出处）：IO / FileSystem / System

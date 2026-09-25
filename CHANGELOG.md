@@ -179,19 +179,12 @@
   头部后面而不是把它清掉：只有带 `:status` 的那一段才算「一个新的响应头部」，否则 gRPC 那类
   「正文 + trailers」的响应只剩尾部字段，业务读 `content-type` 会读到空。
 
-- **可以用 vcpkg 消费这个框架了**：新增根 `vcpkg.json`（与 `conandata.yml` 同一批依赖的清单，
-  库依赖 + `tests` / `mimalloc` / `io-uring` 三个特征）与一份自带的端口加版本注册表
-  （`packaging/vcpkg/registry/`，源码取发布标签），装完即是同一个 `find_package(AsynGyanis)`。
-  为打通 vcpkg 侧的导出名，新增 `cmake/Findbrotli.cmake`：vcpkg 的 brotli 端口只导出
-  `unofficial-brotli` 这个包名，而上游与 Conan 给的是 `brotli::brotli` 一族——这个模块先按配置模式
-  找真正的 brotli（找到就直接返回，Conan 路线的产物逐字节不变），找不到才退到 `unofficial-brotli`
-  并补齐目标名。它会随包配置一起装出来，消费方的 `find_dependency(brotli)` 因此与构建时同源。
-  两处与包管理器有关的现状：MySQL 客户端在 vcpkg 侧没有对应端口（只有需要手工接受 Oracle 许可的
-  `libmysql`），因此这条路线固定不编真实 MySQL 驱动（本来按可选依赖处理，入口会返回一条中文错误）；
-  要推到公共注册表前还缺一份 LICENSE 文件（README 写了 MIT 但没有落成文件，`vcpkg_install_copyright`
-  过不去），当前只在自带注册表里发。
-
 ### 变更
+
+- **包路线只留 Conan**：根 `vcpkg.json`、自带端口与版本注册表（`packaging/vcpkg/`）、以及为 vcpkg
+  的 brotli 端口导出名兜底的 `cmake/Findbrotli.cmake` 一并删除。留两条清单等于把同一批依赖记在两个
+  地方，改依赖时漏改一边就悄悄分叉，而 CI 只看 Conan 这一条——没有闸门看的第二清单不如没有。
+  依赖事实只有 `conandata.yml` 一份；`brotli::brotli` 由 Conan 直接给出，不再需要退化路径。
 
 - **出站请求的时限现在也管住 TCP 连接那一段**：`HttpClient` 的 `requestTimeout` 过去只覆盖握手、发送、
   收完响应三段，连接那一步交给内核的 SYN 重试兜底。这在 Windows 上是死等：完成端口后端把「可写」当作
