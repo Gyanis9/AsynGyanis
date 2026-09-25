@@ -525,7 +525,8 @@ namespace AsynGyanis::Net
         // 内存与连接都被一条永不完成的帧占着
         if (payloadLength > static_cast<std::uint64_t>(kMaximumFramePayloadLength))
         {
-            recordFailure(true, std::format("单帧负载 {} 字节超出上限 {} 字节：请改用分片消息（RFC 6455 §5.4）拆成多条帧发送",
+            recordFailure(true, std::format("单帧负载 {} 字节超出上限 {} 字节：本端把单条消息的总上限定在同一档，"
+                                            "分片也救不了这条消息，请缩小消息体量",
                                             payloadLength, kMaximumFramePayloadLength));
             return false;
         }

@@ -114,11 +114,14 @@ namespace AsynGyanis::Net
     class WebSocketFrameDecoder
     {
     public:
-        /// 单帧负载上限 1 MiB：单帧体量按「能一次放进内存也不拖垮服务端」取，更大的数据请用分片消息
-        static constexpr std::size_t kMaximumFramePayloadLength = 1ull * 1024 * 1024;
-
         /// 分片消息重组后的总上限 8 MiB：与 HttpParser 的请求体上限同档，防止用无限分片撑爆内存
         static constexpr std::size_t kMaximumMessagePayloadLength = 8ull * 1024 * 1024;
+
+        /// 单帧负载上限：取的就是消息总上限那一个数。原先这里另设 1 MiB，于是「一条 4 MiB 的消息
+        /// 拆成 4 片收、整片发来却按 1009 断掉」——而浏览器与多数客户端是**一条消息一帧**发的
+        /// （Chrome 只在自身分片策略下才拆），这种自相矛盾的限制只伤互操作，不省内存：最坏情况
+        /// 本来就是消息总上限那一档（无限分片同样能攒到它）
+        static constexpr std::size_t kMaximumFramePayloadLength = kMaximumMessagePayloadLength;
 
         /**
          * @brief 构造解码器：全部状态为初态，可直接开始解码。

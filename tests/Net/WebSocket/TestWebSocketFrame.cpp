@@ -625,7 +625,10 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 单帧负载超过 1 MiB 判错，且「超限」与协议错误可区分
+     * @brief 单帧负载超过上限判错，且「超限」与协议错误可区分
+     * @details 上限只在「声明」阶段生效：对端报一个天文数字的长度就必须当场撞线，否则本端会一直等着
+     *          那些永远不来的字节。单帧上限取的是消息总上限那一档（浏览器类客户端一条消息发一帧，
+     *          另设更小的帧上限只会把合法的大消息判死），故这里的判据与消息总量同源。
      */
     TEST(WebSocketFrame, RejectsSingleFrameOverTheFrameLimit)
     {
@@ -638,7 +641,7 @@ namespace AsynGyanis::Net
 
         EXPECT_TRUE(containsText(reason, "上限")) << "原因里要给上限数值";
         EXPECT_TRUE(decoder.isLimitExceeded()) << "超限必须能与协议错误区分开";
-        EXPECT_TRUE(containsText(reason, "分片")) << "原因里要给替代做法";
+        EXPECT_TRUE(containsText(reason, "消息")) << "原因里要说清「分片也不更宽松」这条替代做法";
     }
 
     /**
@@ -648,16 +651,11 @@ namespace AsynGyanis::Net
     {
         WebSocketFrameDecoder decoder;
 
-        // 每片恰好用满单帧上限（1 MiB），发满 8 片正好触到消息总上限（8 MiB），第 9 片的帧头就撞线
-        const std::string maximumFragment(WebSocketFrameDecoder::kMaximumFramePayloadLength, 'z');
-        EXPECT_EQ(feed(decoder, makeMaskedClientFrame(WebSocketOpCode::Binary, maximumFragment, false)), WebSocketDecodeStatus::NeedMore);
-
-        constexpr std::size_t kFragmentCount = 8;
-        for (std::size_t fragmentIndex = 1; fragmentIndex < kFragmentCount; ++fragmentIndex)
-        {
-            EXPECT_EQ(feed(decoder, makeMaskedClientFrame(WebSocketOpCode::Continuation, maximumFragment, false)), WebSocketDecodeStatus::NeedMore)
-                    << "第 " << fragmentIndex + 1 << " 片";
-        }
+        // 每片用半个单帧上限（4 MiB），两片正好触到消息总上限（8 MiB），第三片哪怕只声明 1 字节也撞线。
+        // 刻意用「小于单帧上限」的分片：这条判据考的是重组总量，不该被帧上限那一道先挡住
+        const std::string fragment(WebSocketFrameDecoder::kMaximumMessagePayloadLength / 2, 'z');
+        EXPECT_EQ(feed(decoder, makeMaskedClientFrame(WebSocketOpCode::Binary, fragment, false)), WebSocketDecodeStatus::NeedMore);
+        EXPECT_EQ(feed(decoder, makeMaskedClientFrame(WebSocketOpCode::Continuation, fragment, false)), WebSocketDecodeStatus::NeedMore);
 
         // 此刻已重组 8 MiB：再来一片哪怕只声明 1 字节，总量也会越界
         const std::string reason = feedAndExpectError(decoder, makeMaskedFrameHead(WebSocketOpCode::Continuation, 1, true, kRfcExampleMaskKey));
