@@ -201,12 +201,6 @@ namespace AsynGyanis::Net
          */
         void release(std::unique_ptr<HttpOutboundConnection> connection);
 
-        /**
-         * @brief 收掉所有过期空闲连接
-         * @return std::size_t 被收口的条数
-         */
-        std::size_t purgeIdle();
-
         /// 当前空闲条数（测试与观测用）
         [[nodiscard]] std::size_t idleConnectionCount() const noexcept;
 

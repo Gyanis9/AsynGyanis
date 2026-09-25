@@ -177,7 +177,7 @@ namespace AsynGyanis::Net
         const Clock::time_point now = Clock::now();
         std::vector<IdleEntry> &entries = groupIterator->second;
         // 从队尾取：队尾是最近用完的那条，还热着（对端的空闲计时也还没走完）。留在队头的先过期，
-        // 由下面的过期检查顺手收掉
+        // 由下面的可用性判据顺手收掉
         while (!entries.empty())
         {
             IdleEntry entry = std::move(entries.back());
@@ -206,7 +206,9 @@ namespace AsynGyanis::Net
         std::vector<IdleEntry> &entries = m_idleByEndpoint[connection->endpointKey()];
         const Clock::time_point now = Clock::now();
 
-        // 先把过期的清掉再腾位置：越界时收的是队头（最旧的那条），新用完的这条留在队尾
+        // 先把过期的清掉再腾位置：越界时收的是队头（最旧的那条），新用完的这条留在队尾。
+        // 这里只判时间——空闲表里的连接不可能已被关掉（关连接的那几条路径都不会把它交回池），
+        // 取用侧多加的那道 isOpen() 是给「交出去之前必须可用」兜底的，两处问的不是一个问题
         for (std::size_t index = entries.size(); index > 0; --index)
         {
             if (now - entries[index - 1].idleSince > m_config.idleTimeout)
@@ -219,40 +221,6 @@ namespace AsynGyanis::Net
             entries.erase(entries.begin());
         }
         entries.push_back(IdleEntry{.connection = std::move(connection), .idleSince = now});
-    }
-
-    std::size_t HttpOutboundConnectionPool::purgeIdle()
-    {
-        const Clock::time_point now = Clock::now();
-        std::size_t purgedConnectionCount = 0;
-        for (auto groupIterator = m_idleByEndpoint.begin(); groupIterator != m_idleByEndpoint.end();)
-        {
-            std::vector<IdleEntry> &entries = groupIterator->second;
-            // 就地压实而不是逐条 erase：逐条摘会把后面的元素整段前移，一次清理变成 O(n²)
-            std::size_t keptCount = 0;
-            for (std::size_t index = 0; index < entries.size(); ++index)
-            {
-                if (now - entries[index].idleSince > m_config.idleTimeout || !entries[index].connection->isOpen())
-                {
-                    ++purgedConnectionCount;
-                    continue;
-                }
-                if (keptCount != index)
-                {
-                    entries[keptCount] = std::move(entries[index]);
-                }
-                ++keptCount;
-            }
-            entries.resize(keptCount);
-
-            if (entries.empty())
-            {
-                groupIterator = m_idleByEndpoint.erase(groupIterator);
-                continue;
-            }
-            ++groupIterator;
-        }
-        return purgedConnectionCount;
     }
 
     std::size_t HttpOutboundConnectionPool::idleConnectionCount() const noexcept

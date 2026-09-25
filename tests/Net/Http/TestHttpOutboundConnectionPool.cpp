@@ -203,4 +203,41 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.statusCodes[1], 200);
         EXPECT_EQ(outcome.idleConnectionCount, 2U) << "两个端口该各留一条空闲连接，而不是互相顶掉";
     }
+
+    /**
+     * @brief 钉住：closeIdleConnections() 真的把空闲连接收掉，客户端与服务端两侧一起归零
+     * @details 这个方法的存在理由是「客户端还要留着，但手上的连接先放掉」——一轮突发出站结束后想把
+     *          描述符还给系统，而不必等整个客户端析构。光靠取用时顺手清过期做不到这件事：一条还在
+     *          空闲时限内的连接没人来取就一直占着两边。判据两头一起看——只量客户端那侧的话，
+     *          closeAll() 里什么都不做也可能通过。
+     */
+    TEST(HttpOutboundConnectionPool, CloseIdleConnectionsReleasesSocketsOnBothSides)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
+
+        // 客户端必须活到读完服务端统计之后（同复用那条用例的理由）：它一析构，在册连接数就自己归零了
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        PooledRunOutcome outcome;
+        const std::vector<std::string> urls{helloUrl(fixture.listeningPort())};
+        auto work = runPooledTask(loop, client, urls, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        ASSERT_EQ(outcome.idleConnectionCount, 1U) << "前置条件没成立：这条请求没在池里留下空闲连接";
+
+        client.closeIdleConnections();
+
+        EXPECT_EQ(client.idleConnectionCount(), 0U) << "调用之后池里还有存货";
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().stats().activeConnectionCount == 0U;
+                },
+                kPooledWaitTimeout)) << "服务端仍把那条连接记在册：本端只是丢了指针，没真的收口";
+    }
 } // namespace AsynGyanis::Net

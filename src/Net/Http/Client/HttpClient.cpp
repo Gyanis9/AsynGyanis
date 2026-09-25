@@ -548,8 +548,9 @@ namespace AsynGyanis::Net
                     scheme, authority, method, u.path, extraHeaders, body, *exchangeBudget);
             // 先礼貌收尾再离开：通路析构只会留下一个 abrupt 的收口，对端要把它记成一次错误
             co_await client.shutdown();
-            if (response.statusCode == 0)
+            if (!response.isOk())
             {
+                // 状态码为 0（没收到响应头）或被对端中途 RST/GOAWAY 掉：都不算一次成功的出站
                 co_return nullptr;
             }
             auto result = std::make_unique<HttpClientResponse>();
