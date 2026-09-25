@@ -34,9 +34,11 @@ namespace AsynGyanis::Net
         , m_decoder(Http2FrameLimits{.maximumFrameSizeByteCount = config.maximumFrameByteSize})
     {
         m_connectionSendWindowByteCount = kHttp2InitialWindowSizeByteCount;
-        if (config.maximumOpenedStreamCount == 0U)
+        if (config.maximumOpenedStreamCount == 0U || config.maximumOpenedStreamCount > kMaximumOpenedStreamCount)
         {
-            throw Base::InvalidArgumentException("Http2ClientConnection: 本端开流额度为 0，这条连接一条流也提不出。");
+            throw Base::InvalidArgumentException(
+                    "Http2ClientConnection: 本端开流额度必须落在 1 到 2^30 之间：填 0 一条流都提不出，"
+                    "填得更大就会让流号越过 RFC 7540 §5.1.1 的 2^31-1 上界。");
         }
     }
 
@@ -108,26 +110,38 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> Http2ClientConnection::flushOutgoing()
     {
-        if (m_outgoing.empty())
+        // 判死了也要把攒下的字节送出去：连接级违规的收场是「先交代一句 GOAWAY 再断」（§6.8），
+        // 而那正是 failConnection 攒进缓冲的东西——按健康状态把这一段短路掉，对端就只看到一个断掉的通路
+        while (!m_outgoing.empty())
         {
-            co_return m_isHealthy;
-        }
-        std::string pending;
-        pending.swap(m_outgoing);
-        bool isWritten = false;
-        try
-        {
-            isWritten = co_await m_transport->send(pending);
-        } catch (const std::exception &)
-        {
-            // 通路抛异常（含被本端时限看门狗当场关掉）等于这条连接死了：折成「写失败」，绝不让异常
-            // 穿过协程帧逃给调用方——帧就地销毁后调用方那次 co_await 永远等不到恢复，现场只表现为卡死
-            isWritten = false;
-        }
-        if (!isWritten)
-        {
-            fail("写出 HTTP/2 帧失败：通路已不可用");
-            co_return false;
+            if (m_isFlushInProgress)
+            {
+                // 写权在别人手上：等它放开。同一条通路同一时刻只许一个协程在 send，否则两条各写一半
+                // 套接字缓冲，对端解出来的就是撕开的帧；更糟的是第二个等待者会撞上传输层
+                // 「一个方向只许一个等待者」的约束，当场把连接判死
+                co_await FlushTurnAwaiter(*this);
+                continue;
+            }
+            m_isFlushInProgress = true;
+            const FlushTurnGuard guard(*this);
+            std::string pending;
+            pending.swap(m_outgoing);
+            bool isWritten = false;
+            try
+            {
+                isWritten = co_await m_transport->send(pending);
+            } catch (const std::exception &)
+            {
+                // 通路抛异常（含被本端时限看门狗当场关掉）等于这条连接死了：折成「写失败」，绝不让异常
+                // 穿过协程帧逃给调用方——帧就地销毁后调用方的 co_await 永远等不到恢复，现场只表现为卡死
+                isWritten = false;
+            }
+            if (!isWritten)
+            {
+                fail("写出 HTTP/2 帧失败：通路已不可用");
+                co_return false;
+            }
+            // 我写的是换出来的那一段；等在写权上的人被我叫醒后会接着写它新攒的部分
         }
         co_return m_isHealthy;
     }
@@ -437,6 +451,22 @@ namespace AsynGyanis::Net
         return true;
     }
 
+    void Http2ClientConnection::wakeFlushWaiters() noexcept
+    {
+        // 先把手上的这批取走再逐个投：唤醒期间可能又有人排队，那批留给下一轮
+        std::vector<std::coroutine_handle<>> waiters;
+        waiters.swap(m_flushWaiters);
+        for (const std::coroutine_handle<> waiter: waiters)
+        {
+            m_loop.scheduler().schedule(waiter);
+        }
+    }
+
+    void Http2ClientConnection::FlushTurnAwaiter::await_suspend(const std::coroutine_handle<> waiter) noexcept
+    {
+        m_connection->m_flushWaiters.push_back(waiter);
+    }
+
     bool Http2ClientConnection::appendHeaderBlockFragment(PendingStream &stream, const std::string_view fragment)
     {
         // 拼接上限是本端策略：CONTINUATION 可以无限续，不设闸门等于让对端用一个头块撑爆内存。
@@ -712,23 +742,27 @@ namespace AsynGyanis::Net
                 }
                 continue;
             }
-            if (stream.isReset)
+            if (stream.isReset || stream.isResponseComplete)
             {
-                // 流已被对端中止：再切正文就是送出不可能被读到的字节
+                // 流已被对端中止、或响应已经收齐（413/401 这类「上传没完就先答」）：再切正文就是
+                // 送出不可能被读到的字节。已经拿到的那份响应由调用方收走，不当成失败丢掉
                 co_return false;
             }
             const std::size_t chunkByteCount =
                     std::min(static_cast<std::size_t>(availableByteCount),
                              std::min(body.size() - offset, static_cast<std::size_t>(m_peerMaximumFrameByteSize)));
             const bool isLastChunk = offset + chunkByteCount >= body.size();
+            // 窗口先扣再写：写是一次 await，这期间别人看的必须是扣过的账。两条流各自按同一份连接
+            // 窗口算一遍，总量就会越过对端通告的上界（§6.9.1 的 FLOW_CONTROL_ERROR）
+            m_connectionSendWindowByteCount -= static_cast<std::int64_t>(chunkByteCount);
+            stream.sendWindowByteCount -= static_cast<std::int64_t>(chunkByteCount);
+            stream.response.isAnyByteSent = true;
             appendOutgoing(encodeHttp2Frame(Http2FrameType::Data, isLastChunk ? kHttp2FlagEndStream : 0U, stream.streamId,
                                             body.substr(offset, chunkByteCount)));
             if (!co_await flushOutgoing())
             {
                 co_return false;
             }
-            m_connectionSendWindowByteCount -= static_cast<std::int64_t>(chunkByteCount);
-            stream.sendWindowByteCount -= static_cast<std::int64_t>(chunkByteCount);
             offset += chunkByteCount;
         }
         co_return true;
@@ -785,7 +819,15 @@ namespace AsynGyanis::Net
                                         streamId, headerBlock));
 
         const RequestDeadlineGuard<Http2ClientConnection> deadline(m_loop, *this, waitTimeout, "Http2ClientConnection");
-        if (!co_await flushOutgoing() || (!body.empty() && !co_await sendBody(stream, body)))
+        const bool isHeadWritten = co_await flushOutgoing();
+        if (isHeadWritten)
+        {
+            // 写成功才算「发出去了」：通路本来就死着的话这次写会失败，那仍属于「对端在我们手里把连接
+            // 收了」那一支，调用方重来一次不算把非幂等请求做两遍
+            stream.response.isAnyByteSent = true;
+        }
+        const bool isBodyWritten = !isHeadWritten || body.empty() || co_await sendBody(stream, body);
+        if (!isHeadWritten || !isBodyWritten)
         {
             const auto failedIterator = m_pendingStreams.find(streamId);
             if (failedIterator != m_pendingStreams.end())
@@ -821,15 +863,24 @@ namespace AsynGyanis::Net
             }
         }
 
+        bool isConcluded = false;
         const auto remainingIterator = m_pendingStreams.find(streamId);
         if (remainingIterator != m_pendingStreams.end())
         {
+            isConcluded = remainingIterator->second.isResponseComplete || remainingIterator->second.isReset;
             response = std::move(remainingIterator->second.response);
             m_pendingStreams.erase(remainingIterator);
         }
+        if (!isConcluded && response.errorMessage.empty())
+        {
+            // 没有结论的收场一律算失败。状态码解出来了但流没走完（对端半路收口、被本端时限掐掉）时，
+            // 把 200 连同半截正文一起交出去是最坏的结果：调用方看不出自己拿到的是残缺正文，
+            // 而 isOk() 又会因为它带着头一个状态码而判成成功
+            response.errorMessage = m_errorMessage.empty() ? "响应没收齐就收场了：通路已断开，正文不完整" : m_errorMessage;
+        }
         if (response.statusCode == 0 && response.errorMessage.empty())
         {
-            response.errorMessage = m_errorMessage.empty() ? "没等到完整的响应" : m_errorMessage;
+            response.errorMessage = m_errorMessage.empty() ? "响应里没有 :status" : m_errorMessage;
         }
         co_await retireIfStreamBudgetSpent();
         co_return response;

@@ -418,6 +418,242 @@ namespace AsynGyanis::Net
             return encodeHttp2SettingsFrame(payload);
         }
 
+        /// 「请求发出过、对端没答」这一位的结论
+        struct SentFlagRunOutcome
+        {
+            bool isStarted{false};
+            bool isAnyByteSent{false};
+            bool isAnyByteReceived{false};
+            int statusCode{0};
+            bool isOk{false};
+        };
+
+        /**
+         * @brief 把本端发来的请求整段读掉、却始终不作答，然后收口的对端
+         * @details 先读后关是关键：不读就关会把已发出去的字节连着 RST 一起丢掉，那一支应当判成
+         *          「没发出去、可以重来」，就测不到「发出去了但没人答」这一位了。
+         */
+        Core::Task<void> runSilentClosingPeer(Core::EventLoop &loop, TcpStream peer)
+        {
+            Http2FrameDecoder decoder;
+            std::array<char, 24> preface{};
+            static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
+            const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+            co_await peer.writeAll(greeting.data(), greeting.size());
+            // 把 HEADERS 与 DATA 读干净（正文只有一条帧），然后一个字都不答就退栈收口
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 2));
+            co_return;
+        }
+
+        /// 提一条带正文的 POST，把两位「发出过 / 收到过」带回来
+        Core::Task<void> runSentFlagClient(Core::EventLoop &loop, TcpStream clientSide, SentFlagRunOutcome &outcome)
+        {
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+            const Http2ClientResponse response = co_await connection->request(
+                    "http", "peer", "POST", "/upload", {}, std::string(4U * 1024U, 'y'), kClientWaitTimeout);
+            outcome.isAnyByteSent = response.isAnyByteSent;
+            outcome.isAnyByteReceived = response.isAnyByteReceived;
+            outcome.statusCode = response.statusCode;
+            outcome.isOk = response.isOk();
+            loop.stop();
+            co_return;
+        }
+
+        /// 「对端只给了半截响应就收口」的结论
+        struct TruncatedRunOutcome
+        {
+            bool isStarted{false};
+            int statusCode{0};        ///< 解出来的状态码：它确实是 200，判据不在这里
+            std::string body;         ///< 已收到的那半截正文
+            std::string errorMessage; ///< 失败原因；修之前这里是空的
+            bool isOk{false};         ///< isOk() 的返回值——这条用例的主判据
+        };
+
+        /**
+         * @brief 回一句 200 与一段 DATA 就把通路收口的对端（两边都不给 END_STREAM）
+         * @details 收口发生在协程 co_return 时：通路是本协程按值持有的，帧栈一退套接字就关掉
+         */
+        Core::Task<void> runTruncatingPeer(Core::EventLoop &loop, TcpStream peer)
+        {
+            Http2FrameDecoder decoder;
+            std::array<char, 24> preface{};
+            static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
+            const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+            co_await peer.writeAll(greeting.data(), greeting.size());
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 HEADERS
+
+            HpackEncoder peerEncoder;
+            const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
+            const std::string bytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock)
+                                      + makeFrame(Http2FrameType::Data, 0U, 1U, "half-body");
+            co_await peer.writeAll(bytes.data(), bytes.size());
+            // 之后什么都不发：本端要等的 END_STREAM 永远不会来。按住通路不收也不断，让本端自己的
+            // 请求时限去掐——比「关掉套接字制造 EOF」稳定：回路上带未读数据收口会变成 RST，
+            // 那时连已经送出去的那句 200 都可能一起丢掉，判据就测不到「截断」这件事了
+            Core::Timer holdTimer(loop);
+            co_await holdTimer.waitFor(std::chrono::milliseconds{600});
+            co_return;
+        }
+
+        /// 走一趟「半截响应」：本端必须把它判成失败，而不是「200 加一段短正文」
+        Core::Task<void> runTruncatedClient(Core::EventLoop &loop, TcpStream clientSide, TruncatedRunOutcome &outcome)
+        {
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+            const Http2ClientResponse response = co_await connection->request(
+                    "http", "peer", "GET", "/tick", {}, {}, std::chrono::milliseconds{200});
+            outcome.statusCode = response.statusCode;
+            outcome.body = response.body;
+            outcome.errorMessage = response.errorMessage;
+            outcome.isOk = response.isOk();
+            loop.stop();
+            co_return;
+        }
+
+        /// 「两条大正文同时堵在写上」的结论
+        struct ContendedWriteRunOutcome
+        {
+            bool isStarted{false};
+            bool isHealthyWhileStalled{false};   ///< 两条都堵着、通路还活着时连接是否仍算可用
+            std::size_t inFlightWhileStalled{0}; ///< 同一刻在途的流数
+            std::size_t finishedRequestCount{0}; ///< 两条是否都收了口
+            std::string peerDecodeErrorText;     ///< 对端解帧的报错：被撕开的字节会在这里露出来
+        };
+
+        /**
+         * @brief 先通告一个大接收窗口、按住一段时间不收字节、之后才开始解帧的对端
+         * @details 窗口必须大：协议默认的 65535 发送窗口会让第二条流卡在流控上，压根到不了套接字，
+         *          而本条要量的正是「两个协程同时堵在同一条通路的写上」。按住不收，512 KiB 的正文
+         *          一定能把套接字缓冲塞满，两边都在等可写。
+         */
+        Core::Task<void> runSlowDrainingPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received,
+                                             const std::chrono::milliseconds holdTime)
+        {
+            Http2SettingsPayload window;
+            window.parameters.push_back(Http2Setting{
+                    .identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize),
+                    .value = 8U * 1024U * 1024U});
+            const std::string greeting = encodeHttp2SettingsFrame(window);
+            co_await peer.writeAll(greeting.data(), greeting.size());
+
+            Core::Timer holdTimer(loop);
+            co_await holdTimer.waitFor(holdTime);
+
+            Http2FrameDecoder decoder;
+            // 解帧之前先把 24 字节前奏吃掉：它不是帧，直接喂给解码器只会报「帧头不合规」
+            std::array<char, 24> preface{};
+            static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
+            try
+            {
+                while (true)
+                {
+                    const PeerFrames batch = co_await readPeerFrames(peer, decoder, 1);
+                    for (const Http2Frame &frame: batch.frames)
+                    {
+                        received.frames.push_back(frame);
+                    }
+                    if (!batch.errorText.empty())
+                    {
+                        received.errorText = batch.errorText;
+                        break;
+                    }
+                    if (batch.frames.empty())
+                    {
+                        break; // 通路收口
+                    }
+                }
+            } catch (const std::exception &)
+            {
+                // 本端按时限掐掉通路：解到哪儿算哪儿
+            }
+            co_return;
+        }
+
+        /// 提起一条大正文的 POST：正文注定发不完，要看的只有它有没有把连接弄坏
+        Core::Task<void> runStalledPost(Http2ClientConnection &connection, const std::string &body,
+                                       std::size_t &finishedRequestCount)
+        {
+            static_cast<void>(co_await connection.request("http", "peer", "POST", "/upload", {}, body,
+                                                         std::chrono::milliseconds{400}));
+            ++finishedRequestCount;
+            co_return;
+        }
+
+        /**
+         * @brief 给足窗口、之后**一个字节都不读**的对端
+         * @details 上面那条慢读对端要的是「解帧无错」，这一条要的是「写一定堵住在套接字上」：连接窗口
+         *          先按 8 MiB 续上（不然两条流各发 64 KiB 就停在流控上，压根到不了套接字缓冲），
+         *          之后本端不 read——套接字发送缓冲一满，两边就同时堵在写上。
+         */
+        Core::Task<void> runNeverReadingPeer(Core::EventLoop &loop, TcpStream peer, const std::chrono::milliseconds holdTime)
+        {
+            Http2SettingsPayload window;
+            window.parameters.push_back(Http2Setting{
+                    .identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize),
+                    .value = 8U * 1024U * 1024U});
+            // 连接级 WINDOW_UPDATE 的增量按 32 位大端排：这里是 8 MiB。0 是非法增量（§6.9.1），不能写
+            const std::string connectionCredit{static_cast<char>(0x00), static_cast<char>(0x80),
+                                               static_cast<char>(0x00), static_cast<char>(0x00)};
+            const std::string greeting = encodeHttp2SettingsFrame(window)
+                                         + rawFrameBytes(static_cast<std::uint8_t>(Http2FrameType::WindowUpdate), 0U, 0U,
+                                                         connectionCredit);
+            co_await peer.writeAll(greeting.data(), greeting.size());
+            Core::Timer holdTimer(loop);
+            co_await holdTimer.waitFor(holdTime);
+            co_return; // 就此退栈：本端看到的是一句 200 都没有、通路还在但字节发不出去
+        }
+
+        /**
+         * @brief 两条 512 KiB 正文并发提交，在它们都堵在写上时采样连接状态
+         */
+        Core::Task<void> runContendedWriteClient(Core::EventLoop &loop, TcpStream clientSide,
+                                                ContendedWriteRunOutcome &outcome, const std::size_t bodyByteCount)
+        {
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+            if (outcome.isStarted)
+            {
+                const std::string body(bodyByteCount, 'x');
+                std::size_t finishedRequestCount = 0;
+                Core::Task<void> first = runStalledPost(*connection, body, finishedRequestCount);
+                Core::Task<void> second = runStalledPost(*connection, body, finishedRequestCount);
+                if (!first.isReady())
+                {
+                    loop.scheduler().schedule(first.handle());
+                }
+                if (!second.isReady())
+                {
+                    loop.scheduler().schedule(second.handle());
+                }
+
+                // 等两条都真的挂上去了再采样：这是在等本端自己的计数，不是在睡
+                const auto settleDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+                while (connection->inFlightStreamCount() < 2U && std::chrono::steady_clock::now() < settleDeadline)
+                {
+                    Core::Timer settleTimer(loop);
+                    co_await settleTimer.waitFor(std::chrono::milliseconds{1});
+                }
+                outcome.inFlightWhileStalled = connection->inFlightStreamCount();
+                outcome.isHealthyWhileStalled = connection->isHealthy();
+
+                const auto drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+                while (finishedRequestCount < 2U && std::chrono::steady_clock::now() < drainDeadline)
+                {
+                    Core::Timer drainTimer(loop);
+                    co_await drainTimer.waitFor(std::chrono::milliseconds{1});
+                }
+                outcome.finishedRequestCount = finishedRequestCount;
+            }
+            loop.stop();
+            co_return;
+        }
+
         /**
          * @brief 开局按脚本回一段字节、之后只等本端收场的对端
          * @details 本端遇到连接级违规时应当按 §6.8 交代一条带错误码的 GOAWAY，而不是无声把通路关掉——
@@ -948,6 +1184,137 @@ namespace AsynGyanis::Net
             }
         }
         EXPECT_EQ(peerHeadersFrameCount, 1U) << "对端看到了第二条 HEADERS：额度闸没拦住，流号会一路涨到回绕";
+    }
+
+    /**
+     * @brief 钉住「发出过字节」这一位：请求整个交上通路、对端一个字节没答就收口
+     * @details 出站侧「能不能重来一次」就靠这两位（发出过 / 收到过）分开判：只看收到过没有，会把
+     *          「POST 已整个发出、对端只是没答完」当成空闲期被对端收掉的连接，于是重发一遍。
+     *          这条用例钉的是判据的输入：isAnyByteSent 为真、isAnyByteReceived 为假、整体算失败。
+     *          置位刻意放在写成功之后——通路本来就死着时那次写会失败，那一支仍该是「可以重来」。
+     */
+    TEST(Http2ClientConnection, MarksARequestAsSentWhenThePeerAnsweredNothing)
+    {
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        SentFlagRunOutcome outcome;
+        auto peerWork = runSilentClosingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
+        auto clientWork = runSentFlagClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_TRUE(outcome.isAnyByteSent) << "正文已整个交上通路，这一位却为假：复用侧会把它当成可以重来一次";
+        EXPECT_FALSE(outcome.isAnyByteReceived) << "对端一个字都没答，这一位不该为真";
+        EXPECT_EQ(outcome.statusCode, 0);
+        EXPECT_FALSE(outcome.isOk) << "发出过却什么也没收到，必须算失败（重发与否由调用方按这两位决定）";
+    }
+
+    /**
+     * @brief 钉住：没等到 END_STREAM 的响应不算收齐，即便状态码已经解出来
+     * @details 对端先回一句 200 和一段 DATA 就再没下文（这里由请求时限把通路掐断来制造），本端手里
+     *          确实有「200」——但把它连同半截正文当成一次成功响应交出去，是最坏的结局：调用方看不出
+     *          自己拿到的是残缺正文，正文短了、校验失败了都只能事后猜。判据三条一起看：状态码保留
+     *          （排查时要看得出是对端半路没写完）、isOk() 为假、失败原因非空。
+     */
+    TEST(Http2ClientConnection, RejectsAResponseThatNeverGotEndStream)
+    {
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        TruncatedRunOutcome outcome;
+        auto peerWork = runTruncatingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
+        auto clientWork = runTruncatedClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，后面的判据无从谈起";
+        EXPECT_EQ(outcome.statusCode, 200) << "已解出的状态码要留着：它说明这是「截断」而不是「什么都没收到」";
+        EXPECT_EQ(outcome.body, "half-body") << "半截正文本身要原样交回来，正文长度：" << outcome.body.size();
+        EXPECT_FALSE(outcome.isOk) << "没有 END_STREAM 就不是一个收齐的响应，200 也不能算成功";
+        EXPECT_FALSE(outcome.errorMessage.empty()) << "判成失败就得给一句原因，否则调用方不知道断在哪";
+    }
+
+    /**
+     * @brief 钉住：两条大正文同时堵在写上时，后到的那个排队等写权，不去撞开第二条写
+     * @details 通路读只能有一个等待者，这一点由驱动租约管住了；写没有这个限制，但「一次 send 只送一段
+     *          字节」意味着两个协程同时在写会把同一帧的字节撕成两段交错送出去，而传输层的等待器一个
+     *          方向只登记一个等待者——第二个会当场撞出用法错误，本层把它折成「通路不可用」，一条好好的
+     *          连接就因为没人读套接字而死掉了。判据两条各拦一种失效：连接仍然可用（没被第二次写撞死）、
+     *          对端解帧无错（字节没被撕开）。
+     */
+    TEST(Http2ClientConnection, KeepsTheConnectionUsableWhileTwoWritersAreStalled)
+    {
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames received;
+        ContendedWriteRunOutcome outcome;
+        auto peerWork = runSlowDrainingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received,
+                                           std::chrono::milliseconds{200});
+        auto clientWork = runContendedWriteClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome,
+                                                 512U * 1024U);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，两条请求根本没机会上路";
+        ASSERT_EQ(outcome.inFlightWhileStalled, 2U) << "两条大正文没能同时在途：这条用例没测到并发写";
+        EXPECT_TRUE(outcome.isHealthyWhileStalled) << "第二个写协程撞开了同一条通路的写：连接被自己人判死了";
+        EXPECT_EQ(outcome.finishedRequestCount, 2U) << "两条请求都该在自己的时限到点后收口，不能被写权挂住";
+        EXPECT_TRUE(received.errorText.empty()) << "对端解帧报错，说明写出去的字节被撕开了：" << received.errorText;
+
+        // 同一趟顺带钉住连接级窗口的账：本端通告的是流级大窗口，连接窗口仍是协议默认的 65535，而对端
+        // 一次 WINDOW_UPDATE 都没发 —— 两条流合起来发的 DATA 就不能越过那 65535 字节。窗口是在写之前
+        // 扣还是之后扣，差别正在这里：之后扣的话第二条看到的还是满窗，两条各发一轮就越了界
+        std::size_t dataPayloadByteCount = 0;
+        for (const Http2Frame &frame: received.frames)
+        {
+            if (frame.header.type == Http2FrameType::Data)
+            {
+                dataPayloadByteCount += frame.payload.size();
+            }
+        }
+        EXPECT_LE(dataPayloadByteCount, 65535U) << "越过对端连接发送窗口：" << dataPayloadByteCount << " 字节";
+    }
+
+    /**
+     * @brief 钉住写权：两条流真的同时堵在套接字写上时，连接不能被自己人判死
+     * @details 上一条靠「对端晚点才开始读」限制总量，顺带钉住连接窗口；这一条把连接窗口也续到 8 MiB
+     *          并且**一个字节都不读**，让两条 8 MiB 的正文确实堆在套接字发送缓冲上——只有堵在那里，
+     *          「第二个写协程自己去碰通路」这件事才会发生。传输层的等待器一个方向只登记一个等待者，
+     *          第二个会撞出用法错误，本层把它折成「通路不可用」：一条只是没人读的连接就此死掉。
+     *          判据取堵在那儿那一刻的采样：连接仍算可用、两条流都还在途。
+     */
+    TEST(Http2ClientConnection, QueuesSecondWriterWhileTheSocketBufferIsFull)
+    {
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        ContendedWriteRunOutcome outcome;
+        auto peerWork = runNeverReadingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)),
+                                            std::chrono::milliseconds{600});
+        auto clientWork = runContendedWriteClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome,
+                                                8U * 1024U * 1024U);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，两条请求根本没机会上路";
+        ASSERT_EQ(outcome.inFlightWhileStalled, 2U) << "两条大正文没能同时在途：这条用例没测到并发写";
+        EXPECT_TRUE(outcome.isHealthyWhileStalled) << "第二个写协程自己去碰了通路，把一条只是没人读的连接判死了";
+        EXPECT_EQ(outcome.finishedRequestCount, 2U) << "两条请求都该在自己的时限到点后收口";
     }
 
     /**

@@ -33,6 +33,10 @@ namespace AsynGyanis::Net
         /// 这条流上有没有收到过对端的任何帧。复用连接时靠它区分「对端在我们手里把连接收了」（可以重来
         /// 一次）与「响应本身出问题了」（重发会把非幂等请求做两遍）——与 HTTP/1.1 侧同一位判据
         bool isAnyByteReceived{false};
+        /// 这条流上有没有把字节写上过通路（只在写成功之后置位，写失败的算「没发出去」）。
+        /// 光看 isAnyByteReceived 不够：请求正文已整个交出去、对端还没答完时被时限掐掉，同样是
+        /// 「一个字节没收到」，按那条判就会把非幂等请求悄悄做两遍
+        bool isAnyByteSent{false};
 
         /// 是否成功收齐（拿到状态码且没有被对端中止）
         [[nodiscard]] bool isOk() const noexcept
@@ -54,8 +58,11 @@ namespace AsynGyanis::Net
     class Http2ClientConnection
     {
     public:
+        /// 一条连接最多能开几条流的上界：客户端流号取 1、3、5…，且不得越过 2^31-1（RFC 7540 §5.1.1）
+        static constexpr std::uint32_t kMaximumOpenedStreamCount = 1U << 30;
+
         /// 本端的接收能力：前两项既写进 SETTINGS 通告给对端，也被本端自己守住；
-        /// 第三项是本端内部的缓冲闸门，不对外承诺
+        /// 后面两项是本端内部的闸门（头块缓冲、开流配额），不对外承诺
         struct Config
         {
             std::uint32_t initialWindowByteCount{64u * 1024};  ///< 本端愿意为一条流缓冲多少未读正文字节
@@ -67,7 +74,7 @@ namespace AsynGyanis::Net
             /// 严格递增、不过 2^31-1，故 (2^31-1 + 1) / 2 = 2^30 条到顶。见顶之后本端不再提新流，并在
             /// 最后一条流收齐时交代一条 NO_ERROR 的 GOAWAY 主动退场，由连接池换一条新的——长命连接的
             /// 流号会用完，这不是理论问题：一条待命连接按一万请求每秒约 30 小时就到界
-            std::uint32_t maximumOpenedStreamCount{1U << 30};
+            std::uint32_t maximumOpenedStreamCount{kMaximumOpenedStreamCount};
         };
 
         /**
@@ -75,8 +82,8 @@ namespace AsynGyanis::Net
          * @param loop 所属事件循环：时限看门狗的定时器用它，本对象此后只在这条循环上用
          * @param transport 已连上（TLS 已握手且 ALPN 选到 h2）的通路，所有权交给本对象
          * @throws Base::InvalidArgumentException 帧上限越出合法区间：那等于通告一个非法的
-         *         SETTINGS_MAX_FRAME_SIZE，帧解码器当场就拒；开流额度填 0 也走这条——
-         *         那条连接一条流都提不出，留着只会让每个请求都空跑一次
+         *         SETTINGS_MAX_FRAME_SIZE，帧解码器当场就拒。开流额度填 0 或填得比 §5.1.1 的上界
+         *         （2^30 条）还大也走这条：前者一条流都提不出，后者会让流号越过 2^31-1
          */
         Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport)
             : Http2ClientConnection(loop, std::move(transport), Config{})
@@ -177,6 +184,61 @@ namespace AsynGyanis::Net
 
         private:
             Http2ClientConnection &m_connection; ///< 归属连接
+        };
+
+        /**
+         * @brief 写出权的作用域守卫：离开作用域（含异常展开）时放开写权并叫醒排队的人
+         * @details 与 PumpLease 分开的理由：读整条通路只能有一个等待者，写却没有这个限制，但
+         *          「一次 send 只送一段字节」意味着两个协程同时在写会把帧撕成跨两半的字节流。
+         *          写权可以层层嵌套地问（驱动者读完顺手回帧时也在写），所以它必须独立于读租约。
+         */
+        class FlushTurnGuard
+        {
+        public:
+            /// @param connection 已把 m_isFlushInProgress 置真的那条连接
+            explicit FlushTurnGuard(Http2ClientConnection &connection) noexcept : m_connection(connection) {}
+
+            /// 放开写权并叫醒排队的写者
+            ~FlushTurnGuard() noexcept
+            {
+                m_connection.m_isFlushInProgress = false;
+                m_connection.wakeFlushWaiters();
+            }
+
+            FlushTurnGuard(const FlushTurnGuard &) = delete;
+            FlushTurnGuard &operator=(const FlushTurnGuard &) = delete;
+
+        private:
+            Http2ClientConnection &m_connection; ///< 归属连接
+        };
+
+        /**
+         * @brief flushOutgoing() 的等待体：写权在别人手上时挂起来，等它放开
+         * @details 醒来不带走任何东西——它只看一眼待发缓冲还剩多少，所以等待体不额外带状态。
+         */
+        class FlushTurnAwaiter
+        {
+        public:
+            /// @param connection 所属连接（生命周期由本次等待覆盖）
+            explicit FlushTurnAwaiter(Http2ClientConnection &connection) noexcept : m_connection(&connection) {}
+
+            /**
+             * @brief 写权空着就不用挂：调用方会自己去抢这一轮
+             * @return true 不必挂起
+             */
+            [[nodiscard]] bool await_ready() const noexcept { return !m_connection->m_isFlushInProgress; }
+
+            /**
+             * @brief 把本协程排进写队
+             * @param waiter 当前协程句柄
+             */
+            void await_suspend(std::coroutine_handle<> waiter) noexcept;
+
+            /// 醒来即完成：接下来由调用方自己再看一眼写权与待发缓冲
+            void await_resume() const noexcept {}
+
+        private:
+            Http2ClientConnection *m_connection; ///< 归属连接（非拥有）
         };
 
         /**
@@ -283,6 +345,9 @@ namespace AsynGyanis::Net
         /// 叫醒挂在这条连接上的请求协程：它们会各自再看一眼自己的流，需要驱动的那个来接租约
         void wakeWaitingStreams() noexcept;
 
+        /// 叫醒排队等写权的协程：它们会各自再抢一轮，抢到的那个把待发字节写出去
+        void wakeFlushWaiters() noexcept;
+
         /// 把攒下的待发字节一次写出去（写完清空）；通路出错时为 false
         Core::Task<bool> flushOutgoing();
 
@@ -329,8 +394,10 @@ namespace AsynGyanis::Net
         std::int64_t m_peerMaximumFrameByteSize{16384};       ///< 对端能收的最大帧负载
         std::uint32_t m_peerInitialStreamWindowByteCount{65535}; ///< 对端通告的流初始窗口，用于换算新流窗口
         std::map<std::uint32_t, PendingStream> m_pendingStreams;
-        bool m_isPumpLeaseTaken{false};            ///< 这一轮谁在驱动通路的读写：同一时刻只许一个
+        bool m_isPumpLeaseTaken{false};            ///< 这一轮谁在读通路并顺带回帧：同一时刻只许一个
         std::size_t m_waitingStreamCount{0};       ///< 挂在 StreamAwaiter 上的请求协程数
+        bool m_isFlushInProgress{false};           ///< 写权在谁手上：两个协程同时 send 会把帧撕开
+        std::vector<std::coroutine_handle<>> m_flushWaiters; ///< 排队等写权的协程
         bool m_isHealthy{true};                    ///< 连接层是否还能用
         bool m_isPeerGoAway{false};                ///< 对端是否已通告收尾
         bool m_isPeerSettingsReceived{false};      ///< 是否已收到对端的 SETTINGS（能提请求的前提）
