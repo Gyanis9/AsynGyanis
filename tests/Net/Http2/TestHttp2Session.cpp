@@ -2173,15 +2173,21 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findHeaderValue(firstHeaders, "connection"), "") << "h2 收尾通告只走 GOAWAY，不得出现 connection 头";
         EXPECT_EQ(responseDataPayload(frames, 1U), "served-hello");
 
-        // 第二条：要么已被受理（在 GOAWAY 通告的流号之内），要么被明确拒绝——不允许既无响应也无拒绝
+        // 第二条：要么已被受理（在 GOAWAY 通告的流号之内），要么被明确拒绝——不允许既无响应也无拒绝。
+        // 等的是「两者之一」而不是「先判有没有 END_STREAM 再决定等谁」：按流分协程之后每条响应当场自己
+        // 写出，第二条的帧可能落在下一次写里，先只看一眼就下结论会把「晚一点到的响应」读成静默丢弃
         if (!hasEndStream(frames, 3U))
         {
             ASSERT_TRUE(client.pumpUntil(frames,
                                          [](const std::vector<TestFrame> &receivedFrames)
                                          {
-                                             return findFrame(receivedFrames, Http2FrameType::RstStream) != nullptr;
+                                             return hasEndStream(receivedFrames, 3U)
+                                                    || findFrame(receivedFrames, Http2FrameType::RstStream) != nullptr;
                                          },
                                          kWaitTimeout)) << "第二条请求既没有响应也没有 RST_STREAM：被静默丢弃了";
+        }
+        if (!hasEndStream(frames, 3U))
+        {
             const TestFrame *const resetFrame = findFrame(frames, Http2FrameType::RstStream);
             ASSERT_NE(resetFrame, nullptr);
             EXPECT_EQ(resetFrame->streamId, 3U) << "被拒绝的应当是第二条请求的流";

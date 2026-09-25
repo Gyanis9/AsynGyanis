@@ -11,6 +11,7 @@
 
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequest.h"
@@ -27,6 +28,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <coroutine>
 #include <map>
 #include <memory>
 #include <optional>
@@ -236,6 +238,101 @@ namespace AsynGyanis::Net
             // 完成，全连接共用一份会让后来者覆盖前一条流尚未发出的内容
             HttpResponse response;      ///< 本条流的响应对象：路由前本来就是空的，不必为「上一条报文残留」复位
             HttpRequestBody bodyStream; ///< 本条流的流式正文读取器：交付给 request.bodyStream()，来源就是上面那份 streamBody
+
+            /// 等正文的协程（本条流的处理器只有一条，因此至多一个等待者）。由会话在收到这段流的新
+            /// 正文、收尾或断开时唤醒——读套接字只有会话循环这一个驱动者，处理器不许自己去读
+            std::coroutine_handle<> bodyWaiter{};
+            bool isServeClaimed{false};  ///< 已进入服务：处理器协程已创建，或隧道已就地接手
+            bool isTaskStarted{false};   ///< 协程已 resume 过第一次（惰性协程创建时停在初始挂起点）
+            bool isServeFinished{false}; ///< 处理器协程已跑完，结论在 serveOutcome 里，等会话摘记录
+            bool hasPendingWake{false};  ///< 本流有新正文/收尾/断开，等回到安全点唤醒挂着的处理器
+            RequestServeOutcome serveOutcome{RequestServeOutcome::Served}; ///< 跑完的结论，由会话摘记录时处置
+
+            /// 本条流的处理器协程。**必须排在记录的最后**：成员按声明逆序销毁，帧要在这条流的
+            /// 请求/响应/正文还在时先拆掉（帧里的局部对象按引用使它们）
+            std::optional<Core::Task<>> serveTask;
+        };
+
+        /**
+         * @brief 等这条流的下一次正文到达（或收尾、断开）
+         * @details 与 h3 侧 BodyWaitAwaiter 同一形状：h2 的读通路只有会话循环一个驱动者，处理器
+         *          不能自己去读一批，只能挂起；新字节到达时只置记录上的标记，回到循环的安全点再由
+         *          wakeStreamingRequestWaiters() 唤醒，避免在连接层回调里就地恢复协程。
+         */
+        class BodyWaitAwaiter
+        {
+        public:
+            /**
+             * @brief 绑定要等的那条流
+             * @param pending 目标流的记录（活在 m_pendingRequests 里，非拥有）；为空时视为无进展
+             */
+            explicit BodyWaitAwaiter(PendingRequest *pending) noexcept : m_pending(pending) {}
+
+            /// 已收尾、已断开、或缓冲里还有没交付的字节时不必挂起：调用方回头就能拿到结论
+            [[nodiscard]] bool await_ready() const noexcept
+            {
+                return m_pending == nullptr || m_pending->streamBody.isComplete() || m_pending->streamBody.isBroken()
+                       || m_pending->streamBody.pendingByteCount() != 0;
+            }
+
+            /// 记下等待者（本条流的处理器只有一条协程，因此至多一个）
+            void await_suspend(const std::coroutine_handle<> waiter) const noexcept
+            {
+                m_pending->bodyWaiter = waiter;
+            }
+
+            static void await_resume() noexcept {}
+
+        private:
+            PendingRequest *m_pending{nullptr}; ///< 目标流的记录（非拥有）
+        };
+
+        /**
+         * @brief 写权等待体：写权在别人手上时挂起来，等它放开
+         * @details 与客户端侧 Http2ClientConnection 的同一判据：一条通路同一时刻只许一个协程在 send，
+         *          否则两条各写一半套接字缓冲，对端解出来的就是撕开的帧；更糟的是第二个等待者会撞上
+         *          传输层「一个方向只许一个等待者」的约束，当场把连接判死。
+         */
+        class FlushTurnAwaiter
+        {
+        public:
+            /// @param session 所属会话（生命周期由本次等待覆盖）
+            explicit FlushTurnAwaiter(Http2Session &session) noexcept : m_session(&session) {}
+
+            /// 写权空着就不用挂：调用方会自己去抢这一轮
+            [[nodiscard]] bool await_ready() const noexcept { return !m_session->m_isFlushInProgress; }
+
+            /// 把本协程排进写队
+            void await_suspend(const std::coroutine_handle<> waiter) const noexcept;
+
+            /// 醒来即完成：接下来由调用方自己再看一眼写权与待发缓冲
+            void await_resume() const noexcept {}
+
+        private:
+            Http2Session *m_session; ///< 所属会话（非拥有）
+        };
+
+        /**
+         * @brief 写权的 RAII 放开：析构即让给排队的下一个写者
+         */
+        class FlushTurnGuard
+        {
+        public:
+            /// @param session 拿走写权的会话
+            explicit FlushTurnGuard(Http2Session &session) noexcept : m_session(&session) {}
+
+            FlushTurnGuard(const FlushTurnGuard &) = delete;
+            FlushTurnGuard &operator=(const FlushTurnGuard &) = delete;
+
+            /// 放开写权并叫醒排队的写者
+            ~FlushTurnGuard() noexcept
+            {
+                m_session->m_isFlushInProgress = false;
+                m_session->wakeFlushWaiters();
+            }
+
+        private:
+            Http2Session *m_session; ///< 归属会话
         };
 
         /**
@@ -264,16 +361,83 @@ namespace AsynGyanis::Net
         void absorbOneReceivedData(const Http2ReceivedData &receivedData);
 
         /**
-         * @brief 把正文已收齐（或已超限）的请求逐条交给路由并发送响应
-         *
-         * @details 分两轮：先服务全部非隧道请求（各自把响应排入待发字节），再服务隧道请求——
-         *          **隧道会一直跑到收尾**（它自己驱动这条连接的读写），因此它必须是最后一件事，
-         *          排在它后面的请求没有机会被服务。这一轮的次序保证「隧道请求与非隧道请求同批到达时，
-         *          普通请求先拿到响应，而不是被隧道挡住」。
-         * @return true 全部已服务的响应都排入待发字节
+         * @brief 把正文已收齐（或已超限）且尚未发起的请求各自起一条处理器协程
+         * @details 一条流一条协程：起完之后本函数**不等业务**，立刻返回给主循环继续读下一批字节。
+         *          业务挂起时（等正文、等自己的 I/O）由调度器就地恢复它自己那条协程，会话循环不必陪着等
+         *          ——这正是消除队头阻塞的那一步：以前慢处理器会把同连接其它流的请求挡在读通路之外。
+         *          隧道不在此列：它要自己驱动这条连接的读写，因此留到 serveWebSocketTunnels() 就地跑。
+         */
+        void startReadyRequestTasks();
+
+        /**
+         * @brief 收掉跑完的处理器协程：按各自结论记数、摘记录
+         * @details 摘记录这一步必须留在会话循环里做，不能由协程自己摘——它跑完最后一行时就站在
+         *          自己那条记录的成员之上（协程帧按引用使着响应与正文），就地释放等于从舞台上拆地板。
+         * @return true 没有连接级的失败
+         * @return false 有协程报出「连接不可用」，调用方应停止循环
+         */
+        [[nodiscard]] bool retireFinishedRequestTasks();
+
+        /**
+         * @brief 把「对端已取消这条流」转发给正在等正文的处理器
+         * @details 处理器发起之后，未就绪记录的那条清理路径就不再经过它：RST 只有连接层看得见，
+         *          不标断不叫醒，业务会永远挂在 bodyStream()->readNext() 上
+         */
+        void noteCancelledStreams();
+
+        /**
+         * @brief 唤醒有新正文、已收尾或已断开的流式请求处理器
+         * @details 只在主循环的安全点调用（连接层回调之外）：正文到达发生在 absorb 里，就地恢复
+         *          协程会让调用栈在连接层的帧里穿到业务里去
+         */
+        void wakeStreamingRequestWaiters();
+
+        /**
+         * @brief 就地服务隧道请求（它自己驱动这条连接的读写，因此必须排在所有普通派发之后）
+         * @details 一条连接同一时刻只许一个读驱动者：隧道开着时再来的扩展 CONNECT 回 503，
+         *          这条判据与「会话循环此刻在隧道协程里、不能同时再读一次」是同一件事
+         * @return true 隧道正常收尾或没有隧道
          * @return false 写出失败（连接已不可用），调用方应停止循环
          */
-        [[nodiscard]] Core::Task<bool> servePendingRequests();
+        [[nodiscard]] Core::Task<bool> serveWebSocketTunnels();
+
+        /**
+         * @brief 叫醒排队等写权的协程
+         */
+        void wakeFlushWaiters() noexcept;
+
+        /// 收口时每轮等处理器跑完的一拍时长：一拍 1 毫秒，让事件循环有时间推进到期定时器与别的会话
+        static constexpr std::chrono::milliseconds kServeDrainTickInterval{1};
+
+        /// 收口时等在飞处理器跑完的让轮上限（≈ 1 秒）。正常一两条就能收完（承载已死，挂在正文上的
+        /// 等待都立刻落空），走到上限说明有处理器卡在与会话无关的等待上——此时只记一条错误日志，
+        /// 记录**不**摘：它的协程帧还可能停在业务自己的等待上，摘掉等于把活帧留在调度器手里
+        static constexpr std::size_t kServeDrainRoundLimit = 1024;
+
+        /**
+         * @brief 一条流的处理器协程外壳：跑完把结论写回记录
+         * @details 结论写进记录而不是返回给谁：这条协程是分离跑的，起它的主循环不等它，
+         *          只在每轮的安全点摘已经跑完的记录（retireFinishedRequestTasks）
+         * @param pending 本条流的记录（协程帧按引用使着它，因此摘记录的顺序有讲究）
+         * @return Core::Task<> 协程；惰性启动，第一次 resume 才开跑
+         */
+        [[nodiscard]] Core::Task<> serveRequestTask(PendingRequest &pending);
+
+        /**
+         * @brief 为一条已可服务的请求创建处理器协程并排进叫醒队列
+         * @param pending 本条流的记录
+         */
+        void startOneServeTask(PendingRequest &pending);
+
+        /**
+         * @brief 会话退出前收拢在飞的处理器：先让它们的每一处等待落空，再等它们跑完自己的收尾
+         * @details 带着活帧退出等于把悬空协程留在调度器手里——业务恢复时踩的是已析构的会话与记录。
+         *          做法与 h3 侧「先唤醒再销毁」同一条：正文标断、叫醒挂在正文上的协程，然后一拍一拍
+         *          等它们自己跑完（每一拍是事件循环上的一小段计时器等待，见 kServeDrainTickInterval）。
+         *          业务停在与会话无关的等待上时本函数会一直等下去，只在到上限时记一条错误日志——
+         *          摘记录等于把还在跑的协程帧连同它按着的请求与响应一起毁掉。
+         */
+        [[nodiscard]] Core::Task<> drainInFlightServes();
 
         /**
          * @brief 服务一条请求：统计、request-id、路由、错误改写与响应发送
@@ -536,6 +700,7 @@ namespace AsynGyanis::Net
         std::vector<char> m_receiveBuffer;    ///< 回退路径自己的接收窗口
 
         Http2Connection m_connection;                 ///< HTTP/2 连接层状态机（协议状态、帧与窗口全在它里面）
+        Core::EventLoop &m_loop;                      ///< 本会话所在的事件循环：收口时要在它上面拍一小段（见 drainInFlightServes）
         Core::Scheduler &m_scheduler;                     ///< 本会话所在事件循环的调度器
         Router &m_router;                             ///< 路由器引用（与基类指向同一对象）
         HttpParserLimits m_parserLimits{};            ///< HTTP/2 路径只用 maximumBodySize，其余字段不适用
@@ -553,7 +718,13 @@ namespace AsynGyanis::Net
         std::map<std::uint32_t, PendingRequest> m_pendingRequests;
         std::size_t m_servedRequestCount{0};          ///< 本连接已服务的请求条数（单连接上限的判据）
         bool m_isGoAwaySent{false};                   ///< 是否已因达到请求上限发过收尾 GOAWAY：同一原因只发一条
-        HttpRequest *m_servingRequest{nullptr};       ///< 正在路由的请求（连接关停时对它转成协作式取消）
+        /// 在飞的处理器协程条数：一条连接可以同时有多条流在服务，「忙」因此要计数而不是布尔量——
+        /// 第一条起时置忙、最后一条收尾才置闲，否则先跑完的那条会把还在等业务的本连接交回空闲清扫
+        std::size_t m_activeServeCount{0};
+        /// 写权是否已被某个协程拿走：一条通路同一时刻只许一个协程在 send（两个协程各写一半会把帧撕开，
+        /// 而且传输层一个方向只许一个等待者，抢槽会当场把连接判死）
+        bool m_isFlushInProgress{false};
+        std::vector<std::coroutine_handle<>> m_flushWaiters; ///< 排队等写权的协程（放开时一次性叫醒）
         bool m_isConnectionUnusable{false};           ///< 本侧是否已判定写不出去：置位后所有写出短路，同一次故障只留一条日志
     };
 } // namespace AsynGyanis::Net

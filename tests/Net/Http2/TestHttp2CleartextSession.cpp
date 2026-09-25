@@ -29,6 +29,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -1010,6 +1011,89 @@ namespace AsynGyanis::Net
         ASSERT_NE(goAwayFrame, nullptr);
         EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::NoError) << "优雅关停的收尾通告带 NO_ERROR";
         EXPECT_EQ(readGoAwayLastStreamId(goAwayFrame->payload), 1U) << "已处理的最后流号是 1：对端据此知道它不必重试这条请求";
+        EXPECT_TRUE(client.waitForClosure(frames, kWaitTimeout)) << "GOAWAY 之后连接没有关闭";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：处理器在会话循环之外才跑完的连接，优雅关停照样发出收尾 GOAWAY——忙标记由处理器自己结清
+     * @details 上一条用例的处理器不挂起，会话在同一轮里就把它摘掉并复位忙标记，掩盖了「复位挂在摘记录
+     *          那一步」这种写法。本条把处理器挂到定时器上：响应写出之后循环就停在「等对端再发字节」上，
+     *          再也不会走摘记录那一步。此时若忙标记不在处理器末尾结清，连接就永久算「忙」——drain 每一步
+     *          都跳过它，等满期限被强关，对端只收到裸 TCP 关闭而收不到 GOAWAY（RFC 9113 §6.8 的收尾语义
+     *          就此丢失）。drain 按节拍轮询忙标记，因此这里不需要任何 sleep 补时机。
+     */
+    TEST(Http2CleartextSession, SendsGoAwayAfterHandlerThatResumedOutsideTheLoop)
+    {
+        std::atomic<bool> handlerStarted{false};
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30},
+                                         SlowRouteOptions{std::chrono::milliseconds{100}, &handlerStarted}, {}, HttpParserLimits{},
+                                         [](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // /slow 的处理器挂到定时器上：响应一定是在循环之外的那次唤醒里写出的
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/slow"), true), kWaitTimeout));
+        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&handlerStarted]
+        {
+            return handlerStarted.load(std::memory_order_acquire);
+        },
+                                                              kWaitTimeout)) << "慢路由的处理器没有被进入";
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "挂过定时器的请求没有在时限内服务完";
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 1U), "served-slow");
+
+        // 此刻循环已重新停在读等待上：只有处理器自己结清忙标记，drain 才会认为这条连接可以收口
+        ASSERT_TRUE(fixture.drainServer(std::chrono::milliseconds{1000}, kWaitTimeout)) << "drain 没有在时限内完成";
+
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<Http2Frame> &receivedFrames)
+                                     {
+                                         for (const Http2Frame &frame: receivedFrames)
+                                         {
+                                             if (frame.header.type == Http2FrameType::GoAway)
+                                             {
+                                                 return true;
+                                             }
+                                         }
+                                         return false;
+                                     },
+                                     kWaitTimeout)) << "服务完一条挂过定时器的请求之后，关停时没有收到收尾 GOAWAY";
+
+        const Http2Frame *goAwayFrame = nullptr;
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.type == Http2FrameType::GoAway)
+            {
+                goAwayFrame = &frame;
+                break;
+            }
+        }
+        ASSERT_NE(goAwayFrame, nullptr);
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::NoError) << "优雅关停的收尾通告带 NO_ERROR";
+        EXPECT_EQ(readGoAwayLastStreamId(goAwayFrame->payload), 1U) << "已处理的最后流号是 1";
         EXPECT_TRUE(client.waitForClosure(frames, kWaitTimeout)) << "GOAWAY 之后连接没有关闭";
         EXPECT_FALSE(fixture.startThrew());
     }
