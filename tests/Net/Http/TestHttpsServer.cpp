@@ -675,6 +675,61 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        /// 「同一条池化 h2 连接上顺序跑一批请求」的结论
+        struct SustainedRunOutcome
+        {
+            std::size_t successCount{0};        ///< 状态码与正文都对上的条数
+            std::size_t mismatchCount{0};       ///< 正文与本轮序号对不上的条数（串流时会跳起来）
+            std::size_t heldConnectionCount{0}; ///< 跑完之后池里留着的 h2 连接条数
+            std::size_t inFlightAfterRun{0};    ///< 跑完之后最忙一条连接上还在途的流数
+            std::string firstError;             ///< 第一条不合的说明
+        };
+
+        /**
+         * @brief 在同一条池化 h2 连接上顺序发 requestCount 条 GET，每条的正文都得是它自己那个序号
+         * @details 一条一条问是要把「复用」这一支跑长：头块的 HPACK 动态表、按流的发送窗口、在途流表
+         *          这些连接级状态，两条请求时可能恰好错不开，跑两百条就会错开。序号是服务端递增出来的，
+         *          因此「答串了」与「少了/多了字节」都能从正文本身看出来，而不是只看状态码 200。
+         *          跑完再读池里的连接条数与在途流数：前者钉住「这一批确实走在复用上」，后者钉住
+         *          「收口的流都从在途表里摘走了」——留在表里的话，容器的 LSan 会连着这份表一起报。
+         * @param loop 承载这批请求的事件循环（跑完由本协程叫停）
+         * @param client 被测客户端（持有池）
+         * @param url 请求地址
+         * @param requestCount 发几条
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runSustainedPooledGets(Core::EventLoop &loop, HttpClient &client, const std::string &url,
+                                                const std::size_t requestCount, SustainedRunOutcome &outcome)
+        {
+            for (std::size_t index = 0U; index < requestCount; ++index)
+            {
+                const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
+                const std::string expected = "tick-" + std::to_string(index);
+                if (!response || response->statusCode != 200)
+                {
+                    if (outcome.firstError.empty())
+                    {
+                        outcome.firstError = "第 " + std::to_string(index) + " 条没拿到 200";
+                    }
+                    continue;
+                }
+                if (response->body != expected)
+                {
+                    ++outcome.mismatchCount;
+                    if (outcome.firstError.empty())
+                    {
+                        outcome.firstError = "第 " + std::to_string(index) + " 条的正文是 " + response->body;
+                    }
+                    continue;
+                }
+                ++outcome.successCount;
+            }
+            outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
+            outcome.inFlightAfterRun = client.http2MaximumInFlightStreamCount();
+            loop.stop();
+            co_return;
+        }
+
         /**
          * @brief 注册一条「进门即计数、按住 400 毫秒再回正文」的 GET 路由（路径 /slow）
          * @details 400 毫秒是给客户端侧留的观察窗口：慢到够在客户端循环里采样到「请求仍在途」，
@@ -1122,6 +1177,55 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.secondStatusCode, 200) << "两条并发请求有条没收口：复用把请求做丢了";
         EXPECT_TRUE(outcome.firstReasonPhrase.empty());
         EXPECT_TRUE(outcome.secondReasonPhrase.empty());
+    }
+
+    /**
+     * @brief 钉住：同一条池化 h2 连接上顺序跑两百条请求，每条都拿回自己那份正文
+     * @details 连接级状态（HPACK 动态表、按流发送窗口、在途流表）在两条请求时可能恰好错不开，跑长一
+     *          批才错得开。正文由服务端按进门次序编号，因此「答串到别的流上」「字节多一截少一截」都会
+     *          从正文本身露出来，而不是被一个 200 盖过去。另外两条读数把复用与收尾各钉一遍：跑完之后
+     *          池里仍是一条连接（这一批确实走的是复用），在途流为零（收口的流都从表里摘走了——留着
+     *          的话容器的 LSan 会连着这份表一起报出来）。
+     */
+    TEST(HttpsServer, PooledClientServesSustainedTrafficOnOneHttp2Connection)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        std::atomic<std::size_t> tickCounter{0U};
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                                          [&tickCounter](Router &router, Core::EventLoop &)
+                                          {
+                                              const auto handler = [&tickCounter](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                              {
+                                                  const std::size_t ordinal = tickCounter.fetch_add(1U);
+                                                  response.setBody("tick-" + std::to_string(ordinal));
+                                                  co_return;
+                                              };
+                                              router.get("/tick", handler);
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        // 地址必须是具名对象：驱动协程按引用拿着它，跨过每一次 co_await 之后还要读
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/tick";
+        constexpr std::size_t kRequestCount = 200U;
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        SustainedRunOutcome outcome;
+        auto work = runSustainedPooledGets(loop, client, url, kRequestCount, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_TRUE(outcome.firstError.empty()) << "第一条不合的：" << outcome.firstError;
+        EXPECT_EQ(outcome.successCount, kRequestCount) << "状态码与正文都对上的条数不足";
+        EXPECT_EQ(outcome.mismatchCount, 0U) << "有请求拿回了别人的正文：复用把响应串到别的流上了";
+        EXPECT_EQ(outcome.heldConnectionCount, 1U) << "这一批没走复用在同一条连接上";
+        EXPECT_EQ(outcome.inFlightAfterRun, 0U) << "收口之后在途流没清零：流表在长连接上越积越多";
     }
 
     /**
