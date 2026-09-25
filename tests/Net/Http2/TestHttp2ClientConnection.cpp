@@ -167,6 +167,35 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 手拼一帧：绕过帧编码器对「未定义类型」的拒绝
+         * @details 自家的 encodeHttp2Frame 不接受 §6 之外的类型值（那是写出侧的守门，合理），而对端可以
+         *          照 §4.1 送来任意类型字节——要验本端「忽略未知帧」这条 MUST，只能按线上格式自己排字节。
+         * @param type 线上类型字节
+         * @param flags 标志位
+         * @param streamId 流号（R 位须为 0）
+         * @param payload 负载
+         * @return std::string 9 字节帧头加负载
+         */
+        std::string rawFrameBytes(const std::uint8_t type, const std::uint8_t flags, const std::uint32_t streamId,
+                                  const std::string_view payload)
+        {
+            const std::size_t length = payload.size();
+            std::string bytes;
+            bytes.reserve(kHttp2FrameHeaderByteCount + length);
+            bytes.push_back(static_cast<char>((length >> 16) & 0xFFU));
+            bytes.push_back(static_cast<char>((length >> 8) & 0xFFU));
+            bytes.push_back(static_cast<char>(length & 0xFFU));
+            bytes.push_back(static_cast<char>(type));
+            bytes.push_back(static_cast<char>(flags));
+            bytes.push_back(static_cast<char>((streamId >> 24) & 0xFFU));
+            bytes.push_back(static_cast<char>((streamId >> 16) & 0xFFU));
+            bytes.push_back(static_cast<char>((streamId >> 8) & 0xFFU));
+            bytes.push_back(static_cast<char>(streamId & 0xFFU));
+            bytes.append(payload);
+            return bytes;
+        }
+
+        /**
          * @brief 一条按脚本行事的对端：验前奏、发自己的 SETTINGS 与 PING、回一条 200
          * @details 脚本不做任何宽松处理：本端少发一条 ACK、把空正文请求的 END_STREAM 漏掉，这里都会
          *          直接体现在「攒到的帧」上，由用例逐条断言。通路被本端关掉时不报错，只把已攒到的交出。
@@ -194,7 +223,11 @@ namespace AsynGyanis::Net
                             // 自己的 SETTINGS 空负载（全按协议默认），外加一条 PING 探本端会不会原样 ACK
                             isGreetingSent = true;
                             const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {})
-                                                       + makeFrame(Http2FrameType::Ping, 0U, 0U, "12345678");
+                                                       + makeFrame(Http2FrameType::Ping, 0U, 0U, "12345678")
+                                                       // 夹一条本端不认识的帧类型：§4.1/§5.5 要求「忽略」而不是
+                                                       // 判死，判死的话这条请求就拿不到 200 了。未定义类型只能
+                                                       // 手拼——自家的帧编码器会拒绝产出它
+                                                       + rawFrameBytes(100U, 0U, 1U, "noise");
                             co_await peer.writeAll(greeting.data(), greeting.size());
                         }
                         if (frame.header.type == Http2FrameType::Headers && !isAnswered)
@@ -227,7 +260,7 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        /// 走「描述符对 + 脚本对端」这一趟的结论
+        /// 本端走完全程的结论（走「描述符对 + 脚本对端」这一趟）
         struct RawPairRunOutcome
         {
             bool isStarted{false};      ///< 前奏是否走完
@@ -241,14 +274,55 @@ namespace AsynGyanis::Net
             auto connection = std::make_unique<Http2ClientConnection>(
                     loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
-            if (outcome.isStarted)
+
+            // 前奏没成也要把 request 问一句：它会把连接判死的原话带回来，否则用例只剩「没走通」一个字
+            Http2ClientResponse response = co_await connection->request(
+                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.statusCode = response.statusCode;
+            outcome.errorMessage = std::move(response.errorMessage);
+            co_await connection->shutdown();
+            co_return;
+        }
+
+        /// 一段只带单个参数的 SETTINGS 原文（对端照它通告一个越界值）
+        std::string singleSettingFrameBytes(const Http2SettingIdentifier identifier, const std::uint32_t value)
+        {
+            Http2SettingsPayload payload;
+            payload.parameters.push_back(
+                    Http2Setting{.identifier = static_cast<std::uint16_t>(identifier), .value = value});
+            return encodeHttp2SettingsFrame(payload);
+        }
+
+        /**
+         * @brief 只回一段坏 SETTINGS 的对端脚本：看本端怎么收场
+         * @details 本端应当按 §6.8 交代一条带错误码的 GOAWAY 再判死，而不是无声关掉通路——现场只剩
+         *          「连接没了」对排查没有任何价值，对端也无从知道自己哪条通告踩了线。
+         */
+        Core::Task<void> runBadSettingsPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received,
+                                            const std::string badSettingsBytes)
+        {
+            Http2FrameDecoder decoder;
+            try
             {
-                Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {}, {},
-                                                                            kClientWaitTimeout);
-                outcome.statusCode = response.statusCode;
-                outcome.errorMessage = std::move(response.errorMessage);
-                co_await connection->shutdown();
+                std::array<char, 24> preface{};
+                co_await peer.readExact(preface.data(), preface.size());
+                static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
+                co_await peer.writeAll(badSettingsBytes.data(), badSettingsBytes.size());
+                received = co_await readPeerFrames(peer, decoder, 1);         // 期望：一条带错误码的 GOAWAY
+            } catch (const std::exception &)
+            {
+                // 本端收口了通路：已攒到的帧照样交给用例
             }
+            loop.stop();
+            co_return;
+        }
+
+        /// 本端一侧只走到前奏：start() 的结论就是判据
+        Core::Task<void> runBadSettingsClient(Core::EventLoop &loop, TcpStream clientSide, bool &isStarted)
+        {
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            isStarted = co_await connection->start(kClientWaitTimeout);
             co_return;
         }
     } // namespace
@@ -462,5 +536,57 @@ namespace AsynGyanis::Net
         EXPECT_EQ(goAwayPayload.lastStreamId, 1U) << "已受理的最后一条流之外，对端可以把更后面的流整个不当回事";
         EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::NoError))
                 << "正常收尾不该带错误码";
+    }
+
+    /**
+     * @brief 钉住：对端 SETTINGS 的越界取值一条都不能落进账本，且收场要带 GOAWAY 说明原因
+     * @details 三条各踩中 §6.5.2 的一档：MAX_FRAME_SIZE 低于下界（本端按它切正文，收到 0 就是每帧 0
+     *          字节的死循环）、INITIAL_WINDOW_SIZE 越过 2^31-1、ENABLE_PUSH 不是布尔。判据两条一起看：
+     *          start() 必须失败，且本端要说出一条带对应错误码的 GOAWAY——只把连接判死而不吭声，对端
+     *          只看到一个断掉的通路，排查时什么也问不出来。
+     */
+    TEST(Http2ClientConnection, RejectsIllegalPeerSettingsWithGoAway)
+    {
+        /// 一条越界的 SETTINGS 参数，连同本端应当回的错误码
+        struct IllegalSetting
+        {
+            const char *label;                      ///< 失败信息里说清踩了哪一档
+            Http2SettingIdentifier identifier;      ///< 参数标识
+            std::uint32_t value;                    ///< 越界取值
+            Http2ErrorCode expectedCode;            ///< 本端该在 GOAWAY 里带的错误码
+        };
+        const std::vector<IllegalSetting> illegalSettings = {
+            IllegalSetting{"MAX_FRAME_SIZE 低于下界", Http2SettingIdentifier::MaxFrameSize, 1U, Http2ErrorCode::ProtocolError},
+            IllegalSetting{"INITIAL_WINDOW_SIZE 越过 2^31-1", Http2SettingIdentifier::InitialWindowSize, 0x80000000U,
+                           Http2ErrorCode::FlowControlError},
+            IllegalSetting{"ENABLE_PUSH 不是布尔", Http2SettingIdentifier::EnablePush, 2U, Http2ErrorCode::ProtocolError},
+        };
+
+        for (const IllegalSetting &entry: illegalSettings)
+        {
+            int clientDescriptor = -1;
+            int peerDescriptor = -1;
+            ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor)) << entry.label;
+
+            Core::EventLoop loop;
+            PeerFrames received;
+            bool isStarted = true;
+            auto peerWork = runBadSettingsPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received,
+                                               singleSettingFrameBytes(entry.identifier, entry.value));
+            auto clientWork = runBadSettingsClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), isStarted);
+            static_cast<void>(peerWork.handle().resume());
+            static_cast<void>(clientWork.handle().resume());
+            loop.run();
+
+            EXPECT_FALSE(isStarted) << entry.label << "：越界的通告被当合法参数收下了";
+            const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
+            ASSERT_NE(goAway, nullptr) << entry.label << "：本端判死却没按 §6.8 发 GOAWAY，对端只看到一个断掉的连接";
+            Http2GoAwayPayload payload;
+            std::string errorText;
+            ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, payload, &errorText)) << errorText;
+            EXPECT_EQ(static_cast<std::uint16_t>(payload.errorCode), static_cast<std::uint16_t>(entry.expectedCode))
+                    << entry.label << "：GOAWAY 里的错误码不对，现场会顺着错方向查";
+            EXPECT_EQ(payload.lastStreamId, 0U) << entry.label << "：还没提过任何流，last-stream-id 该是 0";
+        }
     }
 } // namespace AsynGyanis::Net

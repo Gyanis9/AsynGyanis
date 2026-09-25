@@ -35,11 +35,7 @@ namespace AsynGyanis::Net
     /// 客户端前奏的 24 字节（RFC 7540 §3.5）：服务端必须先原样收到它，之后的字节才按帧解释
     inline constexpr std::string_view kHttp2ConnectionPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
-    /// 流控窗口的初值（RFC 7540 §6.9.2）：连接级窗口恒以它为初值，流级初值随 SETTINGS_INITIAL_WINDOW_SIZE 变化
-    inline constexpr std::uint32_t kHttp2InitialWindowSizeByteCount = 65535;
-
-    /// 流控窗口的上限（RFC 7540 §6.9.2）：任何窗口超过 2^31-1 一律判 FLOW_CONTROL_ERROR
-    inline constexpr std::uint32_t kHttp2MaximumWindowSizeByteCount = 0x7FFFFFFFU;
+    // 窗口初值与上限两条常量在 Http2Frame.h：那是角色中立的协议数值，服务端与客户端两侧共用一份
 
     /**
      * @brief 一条流的状态（RFC 7540 §5.1 的状态机，本端不实现推送故没有 reserved 两态）

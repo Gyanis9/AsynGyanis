@@ -11,7 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <optional>
+#include <format>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,30 +23,7 @@ namespace AsynGyanis::Net
         /// 一次从通路上读的字节数：半帧由解码器自己留着，与服务端侧同一档
         constexpr std::size_t kReadChunkByteCount = 8192;
 
-        /// 协议规定的流控窗口初值（RFC 7540 §6.9.2）：SETTINGS 到达前两边都按它算
-        constexpr std::int64_t kProtocolInitialWindowByteCount = 65535;
-
-        /// 窗口能表示的上界（31 位）：加上增量越过它就是 §6.9.1 的流控错误
-        constexpr std::int64_t kMaximumWindowByteCount = 2147483647;
-
-        /**
-         * @brief 从对端 SETTINGS 里取一个参数
-         * @param payload 已解析的对端 SETTINGS
-         * @param identifier 要取的参数标识
-         * @return std::optional<std::uint32_t> 没通告时为空，调用方按协议初值兜底
-         */
-        std::optional<std::uint32_t> findSetting(const Http2SettingsPayload &payload,
-                                                 const Http2SettingIdentifier identifier)
-        {
-            for (const Http2Setting &setting: payload.parameters)
-            {
-                if (static_cast<Http2SettingIdentifier>(setting.identifier) == identifier)
-                {
-                    return setting.value;
-                }
-            }
-            return std::nullopt;
-        }
+        // 窗口初值与上限两条常量在 Http2Frame.h：那是角色中立的协议数值，两条方向共用一份
     } // namespace
 
     Http2ClientConnection::Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport,
@@ -56,8 +33,8 @@ namespace AsynGyanis::Net
         , m_config(config)
         , m_decoder(Http2FrameLimits{.maximumFrameSizeByteCount = config.maximumFrameByteSize})
     {
-        m_connectionSendWindowByteCount = kProtocolInitialWindowByteCount;
-        m_streamSendWindowByteCount = kProtocolInitialWindowByteCount;
+        m_connectionSendWindowByteCount = kHttp2InitialWindowSizeByteCount;
+        m_streamSendWindowByteCount = kHttp2InitialWindowSizeByteCount;
     }
 
     bool Http2ClientConnection::isHealthy() const noexcept
@@ -191,15 +168,15 @@ namespace AsynGyanis::Net
             }
             if (status == Http2FrameDecodeStatus::Error)
             {
-                fail("帧解码失败：" + m_decoder.errorMessage());
-                co_return false;
+                failConnection(Http2ErrorCode::ProtocolError, "帧解码失败：" + m_decoder.errorMessage());
+                break; // 不在这里 co_return：收尾那次写出要把本端攒下的 GOAWAY 送出去
             }
             // 帧就绪：consumedByteCount() 是「本帧到哪里结束」的唯一出处，本次调用没吃掉的都属下一帧
             offset += m_decoder.consumedByteCount();
             const Http2Frame frame = m_decoder.takeFrame();
             if (!handleFrame(frame))
             {
-                co_return false;
+                break; // 同上：handleFrame 判死前攒下的 GOAWAY 也得有机会上线
             }
         }
 
@@ -236,11 +213,12 @@ namespace AsynGyanis::Net
                 return true;
             case Http2FrameType::PushPromise:
                 // 本端在 SETTINGS 里已通告 ENABLE_PUSH=0，对端还推就是协议违反（§6.6）
-                fail("收到 PUSH_PROMISE，但本端已通告 ENABLE_PUSH=0");
+                failConnection(Http2ErrorCode::ProtocolError, "收到 PUSH_PROMISE，但本端已通告 ENABLE_PUSH=0");
                 return false;
         }
-        fail("收到了未知的帧类型");
-        return false;
+        // 帧层对不认识的类型照收（§5.5：未知帧类型 MUST 忽略，其空间等效于连接级），
+        // 判死反而是违规——扩展帧本来就该能被旧实现安全略过
+        return true;
     }
 
     bool Http2ClientConnection::handleSettingsFrame(const Http2Frame &frame)
@@ -249,41 +227,116 @@ namespace AsynGyanis::Net
         std::string errorText;
         if (!parseHttp2SettingsPayload(frame, payload, &errorText))
         {
-            fail("SETTINGS 帧不合规：" + errorText);
+            failConnection(Http2ErrorCode::ProtocolError, "SETTINGS 帧不合规：" + errorText);
             return false;
         }
         if (payload.isAcknowledgement)
         {
-            // 对端在 ACK 本端的 SETTINGS：没有要改的账
+            // 本端只在 start() 里发过一次 SETTINGS，因此 ACK 也只能有一次（§6.5.3）：多出来的一条
+            // 说明对端把账记错了，留着它等于承认后面每条 SETTINGS 都可以各回一次确认
+            if (m_isOwnSettingsAcknowledged)
+            {
+                failConnection(Http2ErrorCode::ProtocolError,
+                               "收到多余的 SETTINGS ACK：本端只发过一次 SETTINGS（RFC 7540 §6.5.3）");
+                return false;
+            }
+            m_isOwnSettingsAcknowledged = true;
             return true;
         }
+        return applyPeerSettings(payload);
+    }
 
-        if (const std::optional<std::uint32_t> initialWindow =
-                    findSetting(payload, Http2SettingIdentifier::InitialWindowSize);
-            initialWindow.has_value())
+    bool Http2ClientConnection::applyPeerSettings(const Http2SettingsPayload &payload)
+    {
+        for (const Http2Setting &setting: payload.parameters)
         {
-            // §6.9.2：改了初值要按差值追溯地调整已在途的流的窗口，否则新旧两条流按两套账算
-            const std::int64_t deltaByteCount = static_cast<std::int64_t>(*initialWindow)
-                                              - static_cast<std::int64_t>(m_peerInitialStreamWindowByteCount);
-            m_streamSendWindowByteCount += deltaByteCount;
-            m_peerInitialStreamWindowByteCount = *initialWindow;
-        }
-        if (const std::optional<std::uint32_t> maximumFrame = findSetting(payload, Http2SettingIdentifier::MaxFrameSize);
-            maximumFrame.has_value())
-        {
-            m_peerMaximumFrameByteSize = *maximumFrame;
-        }
-        if (const std::optional<std::uint32_t> headerTableSize = findSetting(payload, Http2SettingIdentifier::HeaderTableSize);
-            headerTableSize.has_value())
-        {
-            // 对端替它的解码器要一个表大小，本端的编码器照它修剪（RFC 7541 §4.4）
-            m_encoder.setMaximumDynamicTableSizeByteCount(*headerTableSize);
+            switch (static_cast<Http2SettingIdentifier>(setting.identifier))
+            {
+                case Http2SettingIdentifier::HeaderTableSize:
+                    // 对端通告的是它解码侧的表上限：本端编码器的动态表不得超过它（RFC 7541 §4.2）
+                    m_encoder.setMaximumDynamicTableSizeByteCount(setting.value);
+                    break;
+                case Http2SettingIdentifier::EnablePush:
+                case Http2SettingIdentifier::EnableConnectProtocol:
+                    if (setting.value > 1U)
+                    {
+                        // 两条布尔型参数同理：0/1 之外的取值没有第三种语义可推（§6.5.2 与 RFC 8441 §3）
+                        failConnection(Http2ErrorCode::ProtocolError,
+                                       std::format("对端 SETTINGS 的参数 {} 取值 {} 非法：布尔型只允许 0 或 1（RFC 7540 §6.5.2）",
+                                                   setting.identifier, setting.value));
+                        return false;
+                    }
+                    break;
+                case Http2SettingIdentifier::InitialWindowSize:
+                {
+                    if (setting.value > kHttp2MaximumWindowSizeByteCount)
+                    {
+                        failConnection(Http2ErrorCode::FlowControlError,
+                                       std::format("对端 SETTINGS 的 INITIAL_WINDOW_SIZE 取值 {} 超过上限 2^31-1（RFC 7540 §6.5.2）",
+                                                   setting.value));
+                        return false;
+                    }
+                    // §6.9.2：改了初值要按差值追溯地调整在途那条流的窗口，否则新旧两条流按两套账算；
+                    // 平移之后越过上限同样是流控错误（对端把窗口"改大到装不下"也是它挑的）
+                    const std::int64_t deltaByteCount = static_cast<std::int64_t>(setting.value)
+                                                      - static_cast<std::int64_t>(m_peerInitialStreamWindowByteCount);
+                    m_streamSendWindowByteCount += deltaByteCount;
+                    if (m_streamSendWindowByteCount > static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
+                    {
+                        failConnection(Http2ErrorCode::FlowControlError,
+                                       std::format("对端把 INITIAL_WINDOW_SIZE 改成 {} 之后，在途流的发送窗口超过上限 2^31-1（RFC 7540 §6.9.2）",
+                                                   setting.value));
+                        return false;
+                    }
+                    m_peerInitialStreamWindowByteCount = setting.value;
+                    break;
+                }
+                case Http2SettingIdentifier::MaxFrameSize:
+                    if (setting.value < kHttp2DefaultMaximumFrameSize || setting.value > kHttp2MaximumMaximumFrameSize)
+                    {
+                        // 这一条不只是合法性问题：本端按它切正文，收到 0 就是每帧 0 字节的死循环
+                        failConnection(Http2ErrorCode::ProtocolError,
+                                       std::format("对端 SETTINGS 的 MAX_FRAME_SIZE 取值 {} 越界：合法区间是 [{}, {}]（RFC 7540 §6.5.2）",
+                                                   setting.value, kHttp2DefaultMaximumFrameSize, kHttp2MaximumMaximumFrameSize));
+                        return false;
+                    }
+                    m_peerMaximumFrameByteSize = setting.value;
+                    break;
+                case Http2SettingIdentifier::MaxConcurrentStreams:
+                case Http2SettingIdentifier::MaxHeaderListSize:
+                    // 对端限制的是「本端能同时提几条流 / 能发多大的头列表」：本层一次只提一条请求，
+                    // 也不做发送侧的头列表预算，因此这两条收下即无事可做（不做没有消费方的记账）
+                    break;
+                default:
+                    // 未知标识必须忽略（§6.5.2）——扩展参数的含义不在本层
+                    break;
+            }
         }
 
         m_isPeerSettingsReceived = true;
         // 每条非 ACK 的 SETTINGS 都要回一个 ACK（§6.5.3），否则对端会一直等在确认上
-        appendOutgoing(encodeHttp2Frame(Http2FrameType::Settings, kHttp2FlagAcknowledge, 0U, {}));
+        appendOutgoing(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}));
         return true;
+    }
+
+    std::uint32_t Http2ClientConnection::lastOpenedStreamId() const noexcept
+    {
+        // m_nextStreamId 是「下一条要用的流号」，本端开过的最后一条是它减 2；一条都没开过时给 0
+        return m_nextStreamId >= 2U ? m_nextStreamId - 2U : 0U;
+    }
+
+    void Http2ClientConnection::failConnection(const Http2ErrorCode errorCode, std::string reason)
+    {
+        if (m_isHealthy)
+        {
+            // 连接级出错也要按 §6.8 交代一句：GOAWAY 带错误码，对端才知道是哪条法被本端判死了。
+            // 只攒不写——写由 pumpSome 的收尾统一做，这里再早退就不会把这条 GOAWAY 送出去
+            Http2GoAwayPayload payload;
+            payload.lastStreamId = lastOpenedStreamId();
+            payload.errorCode = errorCode;
+            appendOutgoing(encodeHttp2GoAwayFrame(payload));
+        }
+        fail(std::move(reason));
     }
 
     bool Http2ClientConnection::finishHeaderBlock(const std::uint32_t streamId)
@@ -296,7 +349,7 @@ namespace AsynGyanis::Net
         {
             // HPACK 动态表是连接级状态：解不开就等于两边的表已经错位，留着连接只会让后面的每个
             // 头块都解歪（§7.5.1 要求按 COMPRESSION_ERROR 收尾连接）
-            fail("响应头块解码失败：" + errorText);
+            failConnection(Http2ErrorCode::CompressionError, "响应头块解码失败：" + errorText);
             return false;
         }
 
@@ -329,7 +382,7 @@ namespace AsynGyanis::Net
         std::string errorText;
         if (!parseHttp2HeadersPayload(frame, payload, &errorText))
         {
-            fail("HEADERS 帧不合规：" + errorText);
+            failConnection(Http2ErrorCode::ProtocolError, "HEADERS 帧不合规：" + errorText);
             return false;
         }
         m_continuationStreamId = frame.header.streamId;
@@ -360,13 +413,13 @@ namespace AsynGyanis::Net
         std::string errorText;
         if (!parseHttp2ContinuationPayload(frame, payload, &errorText))
         {
-            fail("CONTINUATION 帧不合规：" + errorText);
+            failConnection(Http2ErrorCode::ProtocolError, "CONTINUATION 帧不合规：" + errorText);
             return false;
         }
         if (!m_isAwaitingContinuation || frame.header.streamId != m_continuationStreamId)
         {
             // §6.10：CONTINUATION 必须紧跟着同一段头块的前序帧，中间夹了别的帧就是连接错误
-            fail("收到不该出现的 CONTINUATION");
+            failConnection(Http2ErrorCode::ProtocolError, "收到不该出现的 CONTINUATION");
             return false;
         }
         m_pendingHeaderBlock.append(payload.headerBlockFragment);
@@ -384,7 +437,7 @@ namespace AsynGyanis::Net
         std::string errorText;
         if (!parseHttp2DataPayload(frame, payload, &errorText))
         {
-            fail("DATA 帧不合规：" + errorText);
+            failConnection(Http2ErrorCode::ProtocolError, "DATA 帧不合规：" + errorText);
             return false;
         }
         const std::uint32_t streamId = frame.header.streamId;
@@ -410,22 +463,22 @@ namespace AsynGyanis::Net
         std::string errorText;
         if (!parseHttp2WindowUpdatePayload(frame, payload, &errorText))
         {
-            fail("WINDOW_UPDATE 帧不合规：" + errorText);
+            failConnection(Http2ErrorCode::ProtocolError, "WINDOW_UPDATE 帧不合规：" + errorText);
             return false;
         }
         if (frame.header.streamId == 0U)
         {
             m_connectionSendWindowByteCount += static_cast<std::int64_t>(payload.windowSizeIncrement);
-            if (m_connectionSendWindowByteCount > kMaximumWindowByteCount)
+            if (m_connectionSendWindowByteCount > static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
             {
                 // 连接级窗口越界是**连接**的账坏了：§6.9.1 要求按连接错误 FLOW_CONTROL_ERROR 收口
-                fail("连接级流控窗口越过 31 位上界");
+                failConnection(Http2ErrorCode::FlowControlError, "连接级流控窗口越过 31 位上界（RFC 7540 §6.9.1）");
                 return false;
             }
             return true;
         }
         m_streamSendWindowByteCount += static_cast<std::int64_t>(payload.windowSizeIncrement);
-        if (m_streamSendWindowByteCount > kMaximumWindowByteCount)
+        if (m_streamSendWindowByteCount > static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
         {
             // 单流溢出只结这条流（与自家服务端同一条判据），牵连不到别的流
             const auto iterator = m_pendingStreams.find(frame.header.streamId);
@@ -446,7 +499,7 @@ namespace AsynGyanis::Net
         std::string errorText;
         if (!parseHttp2GoAwayPayload(frame, payload, &errorText))
         {
-            fail("GOAWAY 帧不合规：" + errorText);
+            failConnection(Http2ErrorCode::ProtocolError, "GOAWAY 帧不合规：" + errorText);
             return false;
         }
         m_isPeerGoAway = true;
@@ -467,7 +520,7 @@ namespace AsynGyanis::Net
         std::string errorText;
         if (!parseHttp2RstStreamPayload(frame, payload, &errorText))
         {
-            fail("RST_STREAM 帧不合规：" + errorText);
+            failConnection(Http2ErrorCode::ProtocolError, "RST_STREAM 帧不合规：" + errorText);
             return false;
         }
         const auto iterator = m_pendingStreams.find(frame.header.streamId);
@@ -487,7 +540,7 @@ namespace AsynGyanis::Net
         std::string errorText;
         if (!parseHttp2PingPayload(frame, payload, &errorText))
         {
-            fail("PING 帧不合规：" + errorText);
+            failConnection(Http2ErrorCode::ProtocolError, "PING 帧不合规：" + errorText);
             return false;
         }
         if (payload.isAcknowledgement)
@@ -614,7 +667,7 @@ namespace AsynGyanis::Net
         if (isHealthy())
         {
             Http2GoAwayPayload payload;
-            payload.lastStreamId = m_nextStreamId >= 2U ? m_nextStreamId - 2U : 0U;
+            payload.lastStreamId = lastOpenedStreamId();
             payload.errorCode = Http2ErrorCode::NoError;
             appendOutgoing(encodeHttp2GoAwayFrame(payload));
             static_cast<void>(co_await flushOutgoing());

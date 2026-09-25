@@ -89,6 +89,12 @@ namespace AsynGyanis::Net
     /// 流号字段是 31 位，最高位 R 必须为 0（RFC 7540 §4.1）
     inline constexpr std::uint32_t kHttp2MaximumStreamId = 0x7FFFFFFF;
 
+    /// 流控窗口的初值（RFC 7540 §6.9.2）：连接级窗口恒以它为初值，流级初值随 SETTINGS_INITIAL_WINDOW_SIZE 变化
+    inline constexpr std::uint32_t kHttp2InitialWindowSizeByteCount = 65535;
+
+    /// 流控窗口的上限（RFC 7540 §6.9.2）：任何窗口超过 2^31-1 一律判 FLOW_CONTROL_ERROR，两条方向都适用
+    inline constexpr std::uint32_t kHttp2MaximumWindowSizeByteCount = 0x7FFFFFFFU;
+
     /// DATA / HEADERS 的 END_STREAM 标志（RFC 7540 §6.1、§6.2）
     inline constexpr std::uint8_t kHttp2FlagEndStream = 0x1;
 

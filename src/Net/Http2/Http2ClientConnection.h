@@ -169,6 +169,22 @@ namespace AsynGyanis::Net
         /// 归还本端已消费的接收窗口（连接级 + 流级各一条）
         void creditWindow(std::uint32_t streamId, std::uint32_t increment);
 
+        /**
+         * @brief 按 §6.5.2 与 §6.9.2 过一遍对端 SETTINGS 的取值并落进本端账本
+         * @details 取值法排在应用之前：一条越界的参数哪怕排在末尾，也不能先把前面几条吃进账本再判死。
+         *          ENABLE_PUSH 与 ENABLE_CONNECT_PROTOCOL 只允许 0/1，INITIAL_WINDOW_SIZE 不得越过
+         *          2^31-1（连"改大之后在途流的窗口越界"也算），MAX_FRAME_SIZE 必须落在 [16384, 2^24-1]。
+         * @param payload 已解析的对端 SETTINGS
+         * @return true 全部取值合法且已生效
+         */
+        bool applyPeerSettings(const Http2SettingsPayload &payload);
+
+        /// 本端开过的最后一条流号：GOAWAY 的 last-stream-id 用它（没开过任何流时为 0）
+        [[nodiscard]] std::uint32_t lastOpenedStreamId() const noexcept;
+
+        /// 连接级失败：先按 §6.8 攒一条带错误码的 GOAWAY，再把连接判死
+        void failConnection(Http2ErrorCode errorCode, std::string reason);
+
         /// 攒进待发缓冲
         void appendOutgoing(std::string frameBytes);
 
@@ -191,6 +207,7 @@ namespace AsynGyanis::Net
         bool m_isHealthy{true};                    ///< 连接层是否还能用
         bool m_isPeerGoAway{false};                ///< 对端是否已通告收尾
         bool m_isPeerSettingsReceived{false};      ///< 是否已收到对端的 SETTINGS（能提请求的前提）
+        bool m_isOwnSettingsAcknowledged{false};   ///< 对端是否已 ACK 过本端那一条 SETTINGS（只许 ACK 一次）
         bool m_isAwaitingContinuation{false};      ///< 正在收一段头块，等 CONTINUATION
         std::uint32_t m_continuationStreamId{0};   ///< 那段没收完的头块属于哪条流
         std::string m_pendingHeaderBlock;          ///< 头块片段攒在这里，END_HEADERS 时一次解码
