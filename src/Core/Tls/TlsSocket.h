@@ -181,6 +181,11 @@ namespace AsynGyanis::Core
         };
 
         std::unique_ptr<SSL, SslDeleter> m_ssl;                  ///< OpenSSL SSL 对象，RAII 管理
+        /// 是否有一次 SSL_write 停在「WANT_WRITE，记录还在 SSL 内部待发」的中间状态上。
+        /// OpenSSL 规定这种重试之前不许插入 SSL_read——插进去的话 SSL_read 会替写侧把待发记录
+        /// 冲出去，写侧随后又按同一份数据重试，同一段明文在线上有两份，对端按记录解析当场错位。
+        /// 读写各由一条协程驱动时这条禁令只能在本层守：见 asyncSend()/asyncReceive() 里的置位与让轮
+        mutable bool m_isWritePending{false};
         /// 「反方向已被占用」时让出一次调度的时长：远小于任何握手/读超时口径，
         /// 只用来把控制权交回事件循环，让对方那个方向的协程先跑一步。
         /// 5ms 而非 1ms：对方方向靠自己的 I/O 事件推进，与本间隔无关，间隔只决定「本方向多久后

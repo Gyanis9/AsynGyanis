@@ -181,6 +181,17 @@ namespace AsynGyanis::Core
             // 恢复后先过闸门再交给 SSL_read
             requireLiveContext("TLS 读取");
 
+            // 写侧还有没重试完的记录时不能插一次 SSL_read：那会由读侧替写侧把待发记录冲出去，
+            // 写侧随后又按同一份数据重试，同一段明文在线上有两份（OpenSSL 明令禁止的交错）
+            if (m_isWritePending)
+            {
+                if (!co_await yieldForPeerProgress())
+                {
+                    throw CoreException("TLS 读取失败：等写侧收掉待发记录时定时器不可用（描述符耗尽？）");
+                }
+                continue;
+            }
+
             const int ret = SSL_read(m_ssl.get(), buffer, static_cast<int>(length));
             if (ret > 0)
             {
@@ -240,6 +251,19 @@ namespace AsynGyanis::Core
             throw Base::InvalidArgumentException("TLS 写入的长度超出单次调用上限（底层接口按 int 收长度）：请分批写入");
         }
 
+        // 出口统一落旗：牌子留在异常路径上会把读侧永久锁在让轮里，而那时连接已经不能用了。
+        // 成功返回也走这里——写侧把待发记录收掉之后，读侧就不再受这条规矩约束
+        struct WritePendingGuard
+        {
+            explicit WritePendingGuard(bool *const flag) noexcept : m_flag(flag) {}
+            ~WritePendingGuard() noexcept { *m_flag = false; }
+
+            WritePendingGuard(const WritePendingGuard &) = delete;
+            WritePendingGuard &operator=(const WritePendingGuard &) = delete;
+
+            bool *const m_flag; ///< 要落下的一面旗（指向所属 TlsSocket 的 m_isWritePending）
+        } writePendingGuard{&m_isWritePending};
+
         while (true)
         {
             // 本端可能在任何一个让出点上被 close()（等可写、等可读、为反方向让出一次调度），
@@ -249,12 +273,16 @@ namespace AsynGyanis::Core
             const int ret = SSL_write(m_ssl.get(), buffer, static_cast<int>(length));
             if (ret > 0)
             {
+                // 记录已被 SSL 收下，读侧可以插进来（读侧的让轮就到这里为止）
+                m_isWritePending = false;
                 co_return static_cast<ssize_t>(ret);
             }
 
             const int error = SSL_get_error(m_ssl.get(), ret);
             if (error == SSL_ERROR_WANT_WRITE)
             {
+                // 从这一刻起这条记录在 SSL 内部等着被重试：见 m_isWritePending 的说明
+                m_isWritePending = true;
                 // 与读侧对称：写方向若已被写协程占着（一条 TlsSocket 上读写各由一个协程驱动），
                 // 不能去抢等待槽——抢槽会直接抛 LogicException，把一次可自愈的等待变成硬故障。
                 // 让出一次调度，由占槽的一方先把字节发出去，再回来重试
@@ -276,6 +304,8 @@ namespace AsynGyanis::Core
 
             if (error == SSL_ERROR_WANT_READ)
             {
+                // 这条等待要求读侧真的能读：先把「写侧待发」的牌子落下，否则读侧会一直让轮下去
+                m_isWritePending = false;
                 // TLS 1.3 的 KeyUpdate（以及握手期）会让 SSL_write 需要先读：读方向若已有读协程
                 // 在等，同样不能抢槽——让出一次调度，由读侧把那批握手字节吃进来再重试
                 if (m_socket.isWaitingReadable())
