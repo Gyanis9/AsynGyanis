@@ -409,11 +409,10 @@ namespace AsynGyanis::Net
          *          HEADERS 才开始回答，并且按**倒序**作答（后到的那条先回），每条响应的正文写成
          *          「peer-body-<那条请求的 :path>」：正文按请求各自的身份回，判据就不依赖子协程被
          *          调度的先后，只看每条请求拿回的是不是自己那份。
-         * @param loop 所属事件循环
          * @param peer 对端一侧的通路
          * @param openedRequests 输出：开始作答之前收到的「流号 + :path」，按到达顺序
          */
-        Core::Task<void> runMultiplexPeer(Core::EventLoop &loop, TcpStream peer,
+        Core::Task<void> runMultiplexPeer(TcpStream peer,
                                           std::vector<std::pair<std::uint32_t, std::string>> &openedRequests)
         {
             Http2FrameDecoder decoder;
@@ -845,7 +844,7 @@ namespace AsynGyanis::Net
 
         std::vector<std::pair<std::uint32_t, std::string>> openedRequests;
         MultiplexRunOutcome outcome;
-        auto peerWork = runMultiplexPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), openedRequests);
+        auto peerWork = runMultiplexPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), openedRequests);
         auto clientWork = runMultiplexTask(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
