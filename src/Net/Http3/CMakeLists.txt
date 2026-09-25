@@ -1,5 +1,5 @@
 # Net/Http3 —— HTTP/3 协议层（自研）：帧编解码、QPACK（含动态表）、连接级状态机与会话到既有 HTTP 层的映射。
-# 库本身不再依赖第三方 h3 实现；nghttp3 只在测试里当跨实现裁判（见 tests/Net/CMakeLists.txt）。
+# 库本身不依赖第三方 h3 实现；测试的对端也是自带的字节级实现（见 tests/Net/CMakeLists.txt）。
 set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Http3Error.h
         ${CMAKE_CURRENT_LIST_DIR}/Http3Error.cpp

@@ -1,6 +1,4 @@
-// HTTP/3 会话层的用例：本端单向流的绑定、SETTINGS 的产出，以及请求到 Router 的映射 前三条只驱动会话本身——单向流的开流口与流数据出口都是测试给的假实现，因此不涉及 ngtcp2 与真实
-// UDP，考的是会话把请求映射到 Router 与响应写回这套接线是否合规矩。最后几条走**真字节**：测试侧自建一条客户端 nghttp3 连接当对端，
-// 请求的头块由它真编成 QPACK、响应也由它真解回来，中间不经 UDP——服务端这一侧已经是自研实现，这份对拍正是留着当裁判用的。
+// HTTP/3 会话层的用例：本端单向流的绑定、SETTINGS 的产出、请求到 Router 的映射，以及隧道与限额这套状态机。前几条只驱动会话本身——单向流的开流口与流数据出口都是测试给的假实现，因此不涉及 QUIC 与真实 UDP。后面的真字节用例由测试自带的字节级对端（Http3ClientPeer）驱动：请求按 RFC 9114/9204 排成帧、响应按帧解回来，中间同样不经 UDP。为什么对端是自己写的：链接进来的第三方实现与被测代码同属一次构建、可以一起改软，那种「跨实现裁判」迟早只剩名字。字节合不合规范的判定因此在进程外做（scripts/h3_acceptance.py 与 scripts/quic_cross_check.sh 用 aioquic 真握手真编解），本文件留的是状态机与业务映射的回归判据。
 #include "Net/Http3/Http3Session.h"
 
 #include "Core/Coroutine/Task.h"
@@ -11,8 +9,6 @@
 
 #include <gtest/gtest.h>
 
-#include <nghttp3/nghttp3.h>
-
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -20,8 +16,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <format>
 #include <functional>
 #include <map>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -90,11 +88,14 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 测试侧的 HTTP/3 客户端：一条客户端 nghttp3 连接
+         * @brief 测试侧的 HTTP/3 客户端：按 RFC 9114/9204 自己排字节，不链接第三方 h3 实现
          *
-         * @details 与 `TestQuicServer` 里用 ngtcp2 搭客户端同一个道理：被测的是服务端这一侧，
-         *          对端用一个独立实现（这里是 nghttp3 的客户端侧）来当。它不碰 UDP 与 QUIC，
-         *          字节直接在内存里递来递去，因此考的是 h3 层的编解码与映射。
+         * @details 只做三件事：把请求编成 HEADERS/DATA 帧分趟交出去、把会话回的字节按帧读回来、
+         *          把解出的字段与正文攒成一份可比对的响应视图。头块用本层的 QpackEncoder 编、
+         *          QpackDecoder 解，因此这里的判据是「会话的状态机与业务映射对不对」；
+         *          「字节合不合规范」由**进程外**的独立实现裁定——`scripts/h3_acceptance.py` 与
+         *          `scripts/quic_cross_check.sh` 拿 aioquic 真握手、真编解。第三方实现不再链接进测试
+         *          可执行体：链接进来的裁判与被测代码同属一次构建、可以一起改软，那种「跨实现」迟早只剩名字。
          */
         class Http3ClientPeer
         {
@@ -110,6 +111,8 @@ namespace AsynGyanis::Net
                 std::vector<std::pair<std::string, std::string>> headerFields;
                 std::string                        body;         ///< 正文
                 bool                               isComplete{false}; ///< 是否收到了收尾
+                /// 排字节或解字节时撞到的第一句报错：判据失败时用它分清「服务端没回」与「回了但解不开」
+                std::string                        decodeError;
 
                 /// 数某个头名出现了几次
                 [[nodiscard]] std::size_t countOf(const std::string &name) const
@@ -119,54 +122,42 @@ namespace AsynGyanis::Net
             };
 
             /**
-             * @brief 造一条测试侧的客户端 nghttp3 连接
+             * @brief 造一条测试侧的 h3 对端：先把控制流与 QPACK 两条流的开头排进待发队列
              * @param maximumFieldSectionSizeByteCount 写进本端 SETTINGS_MAX_FIELD_SECTION_SIZE 的取值，
-             *        0 表示沿用 nghttp3 的默认值（用例用它通告一个很小的上限，看服务端怎么处置）
+             *        0 表示不报这项（对端因此不受约束）；用例用它通告一个很小的上限，看服务端怎么处置
+             * @details 这三段字节随第一次取写一同交给会话，与真实客户端「连上就先报自我约束」同一趟
              */
             explicit Http3ClientPeer(const std::uint64_t maximumFieldSectionSizeByteCount = 0)
+                    : m_answerDecoder(QpackDecoderSettings{.maximumTableCapacityByteCount = 0,
+                                                           .maximumBlockedStreamCount = 0,
+                                                           .maximumFieldSectionSizeByteCount = maximumFieldSectionSizeByteCount})
             {
-                nghttp3_settings settings;
-                nghttp3_settings_default(&settings);
+                // 本端 SETTINGS 报两项自我约束：动态表容量 0、阻塞流 0（RFC 9204 §5）。容量 0 让服务端
+                // 只能用静态表与字面量，响应头块因此不依赖任何编码器流指令，也就没有「先等表补齐」这条路
+                Http3SettingsFrame settingsFrame;
+                settingsFrame.settings.emplace_back(Http3SettingId::QpackMaxTableCapacity, 0U);
+                settingsFrame.settings.emplace_back(Http3SettingId::QpackBlockedStreams, 0U);
                 if (maximumFieldSectionSizeByteCount != 0)
                 {
-                    settings.max_field_section_size = maximumFieldSectionSizeByteCount;
+                    settingsFrame.settings.emplace_back(Http3SettingId::MaxFieldSectionSize, maximumFieldSectionSizeByteCount);
                 }
+                std::string controlStreamBytes;
+                appendHttp3StreamTypeHeader(controlStreamBytes, Http3StreamType::Control);
+                appendHttp3Frame(controlStreamBytes, settingsFrame);
+                m_pendingWrites.push_back(PendingWrite{kClientControlStreamId, toStreamBytes(controlStreamBytes), false});
 
-                const nghttp3_callbacks callbacks = makeCallbacks();
-                if (nghttp3_conn_client_new(&m_connection, &callbacks, &settings, nullptr, this) != 0)
-                {
-                    m_connection = nullptr;
-                    return;
-                }
-
-                // 客户端也要有自己的三条单向流：控制流 2、QPACK 编码流 6、解码流 10
-                // （少了它们 nghttp3 连自己的 SETTINGS 与 QPACK 指令都发不出去）
-                if (nghttp3_conn_bind_control_stream(m_connection, kClientControlStreamId) != 0 ||
-                    nghttp3_conn_bind_qpack_streams(m_connection, kClientQpackEncoderStreamId, kClientQpackDecoderStreamId) != 0)
-                {
-                    nghttp3_conn_del(m_connection);
-                    m_connection = nullptr;
-                }
-            }
-
-            ~Http3ClientPeer()
-            {
-                if (m_connection != nullptr)
-                {
-                    nghttp3_conn_del(m_connection);
-                    m_connection = nullptr;
-                }
+                // QPACK 的两条流在容量 0 下一条指令都不产，但流本身要按 RFC 9114 §6.2 报出类型
+                std::string encoderStreamBytes;
+                appendHttp3StreamTypeHeader(encoderStreamBytes, Http3StreamType::QpackEncoder);
+                m_pendingWrites.push_back(PendingWrite{kClientQpackEncoderStreamId, toStreamBytes(encoderStreamBytes), false});
+                std::string decoderStreamBytes;
+                appendHttp3StreamTypeHeader(decoderStreamBytes, Http3StreamType::QpackDecoder);
+                m_pendingWrites.push_back(PendingWrite{kClientQpackDecoderStreamId, toStreamBytes(decoderStreamBytes), false});
             }
 
             Http3ClientPeer(const Http3ClientPeer &) = delete;
 
             Http3ClientPeer &operator=(const Http3ClientPeer &) = delete;
-
-            /// 会话是否可用
-            [[nodiscard]] bool isUsable() const noexcept
-            {
-                return m_connection != nullptr;
-            }
 
             /**
              * @brief 提交一条请求，并把由此产生的全部待发字节取出来
@@ -179,139 +170,91 @@ namespace AsynGyanis::Net
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节（含控制流与请求流）
              */
             std::vector<CapturedStreamData> submitRequest(const std::string &method, const std::string &path, const std::string &authority,
-                                                        const std::int64_t requestStreamId = kFirstRequestStreamId,
-                                                        const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
+                                                          const std::int64_t requestStreamId = kFirstRequestStreamId,
+                                                          const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
             {
-                std::vector<nghttp3_nv> headerFields = makePseudoHeaders(method, path, authority);
-                for (const auto &[name, value]: extraHeaders)
-                {
-                    headerFields.push_back(nghttp3_nv{reinterpret_cast<const std::uint8_t *>(name.data()),
-                                                     reinterpret_cast<const std::uint8_t *>(value.data()), name.size(), value.size(),
-                                                     NGHTTP3_NV_FLAG_NONE});
-                }
-
-                if (nghttp3_conn_submit_request(m_connection, requestStreamId, headerFields.data(), headerFields.size(), nullptr, nullptr) != 0)
-                {
-                    return {};
-                }
-                return takeOutgoingBytes();
+                queueRequestHead(method, path, authority, {}, extraHeaders, requestStreamId, true);
+                return drainPendingWrites();
             }
 
             /**
-             * @brief 提交一条带正文的请求：正文由数据读取回调按批给出
+             * @brief 提交一条带正文的请求：正文按批分成多条 DATA 帧
              * @param method 方法原文
              * @param path 路径（:path）
              * @param authority 权威主机（:authority）
              * @param body 正文
-             * @param chunkByteCount 每次回调给出的字节数（分批到达就是这样造出来的）
-             * @param extraHeaders 伪头之后追加的普通头（如 expect、content-length）：
-             *        nghttp3 只按显式给出的字段编头块，不会自己补这些
-             * @return true 请求已提交（字节要靠 takeNextWriteStep() 逐步取出）
+             * @param chunkByteCount 每批的字节数（分批到达就是这样造出来的）
+             * @param extraHeaders 伪头之后追加的普通头（如 expect、content-length）：本对端只按显式
+             *        给出的字段编头块，不会自己补
+             * @return true 头块与各批正文都排进了待发队列；false 头块没能编出来（原因看 response().decodeError）
+             * @note 只排队不取字节：要靠 takeNextWriteStep() 一段一段送到服务端，才能测「正文收齐之前
+             *       处理器已经进去」这类边收边读的路径
              */
             bool submitRequestWithBody(const std::string &method, const std::string &path, const std::string &authority, std::string body,
                                        const std::size_t chunkByteCount,
                                        const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
             {
-                m_requestBody           = std::move(body);
-                m_requestBodyOffset     = 0;
-                m_requestChunkByteCount = chunkByteCount;
-
-                std::vector<nghttp3_nv> headerFields = makePseudoHeaders(method, path, authority);
-                for (const auto &[name, value]: extraHeaders)
+                const std::size_t stepByteCount = chunkByteCount == 0 ? body.size() : chunkByteCount;
+                // 没有正文就没有 DATA 帧，收尾只能压在头那一趟上，否则这条流永远等不到 END_STREAM
+                queueRequestHead(method, path, authority, {}, extraHeaders, kFirstRequestStreamId, body.empty());
+                for (std::size_t offset = 0; offset < body.size(); offset += stepByteCount)
                 {
-                    // nghttp3_nv 只存指针：参数是调用方持有的引用，寿命覆盖到本次提交
-                    headerFields.push_back(nghttp3_nv{reinterpret_cast<const std::uint8_t *>(name.data()),
-                                                     reinterpret_cast<const std::uint8_t *>(value.data()), name.size(), value.size(),
-                                                     NGHTTP3_NV_FLAG_NONE});
+                    const std::size_t remainingByteCount = body.size() - offset;
+                    const std::size_t thisStepByteCount  = (stepByteCount < remainingByteCount) ? stepByteCount : remainingByteCount;
+                    queueDataFrame(kFirstRequestStreamId, body.substr(offset, thisStepByteCount),
+                                   offset + thisStepByteCount >= body.size());
                 }
-                nghttp3_data_reader           dataReader{};
-                dataReader.read_data = readRequestBody;
-                return nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), &dataReader,
-                                                   this) == 0;
+                return m_response.decodeError.empty();
             }
 
             /**
-             * @brief 只取一次写出的字节：把请求分步送到服务端，模拟正文随时间到达
-             * @return CapturedStreamData 本次写出的片段；没有待发字节时 streamId 为 -1
+             * @brief 只取一段待发字节：把请求分步送到服务端，模拟正文随时间到达
+             * @return CapturedStreamData 本次的片段；没有待发字节时 streamId 为 -1
              */
             CapturedStreamData takeNextWriteStep()
             {
-                CapturedStreamData step;
-                step.streamId = -1;
-
-                nghttp3_vec vectors[8]{};
-                std::int64_t      streamId = -1;
-                int               isFinal  = 0;
-                const nghttp3_ssize vectorCount = nghttp3_conn_writev_stream(m_connection, &streamId, &isFinal, vectors, 8);
-                if (vectorCount <= 0 || streamId == -1)
+                if (m_pendingWrites.empty())
                 {
-                    return step;
+                    CapturedStreamData emptyStep;
+                    emptyStep.streamId = -1;
+                    return emptyStep;
                 }
-
-                std::size_t totalLength = 0;
-                for (nghttp3_ssize vectorIndex = 0; vectorIndex < vectorCount; ++vectorIndex)
-                {
-                    step.bytes.insert(step.bytes.end(), vectors[vectorIndex].base, vectors[vectorIndex].base + vectors[vectorIndex].len);
-                    totalLength += vectors[vectorIndex].len;
-                }
-                step.streamId    = streamId;
-                step.isEndStream = isFinal != 0;
-                nghttp3_conn_add_write_offset(m_connection, streamId, totalLength);
-                return step;
+                PendingWrite write = std::move(m_pendingWrites.front());
+                m_pendingWrites.pop_front();
+                return CapturedStreamData{write.streamId, std::move(write.bytes), write.isEndStream};
             }
 
-            /**
-             * @brief 提交一条扩展 CONNECT（RFC 9220）请求，并把 WebSocket 帧当作请求数据随后发出
-             * @param path 路径（:path）
-             * @param authority 权威主机（:authority）
-             * @param firstWebSocketFrame 隧道建立后要发的第一条 WebSocket 帧字节
-             * @return std::vector<CapturedStreamData> 按流号分好的待发字节（含请求头与随后的帧）
-             * @note 必须带数据读取回调而不是 nullptr：后者意味着「请求到此结束」，而对端之后还要在
-             *       同一条流上发 WebSocket 帧，那时服务端会把 DATA 判成 H3_FRAME_UNEXPECTED。
-             *       回调给出最后一条帧之后报「暂时没有」而不是 EOF——隧道到对端关流为止都开着
-             */
             /**
              * @brief 提交一条「不带任何请求正文」的扩展 CONNECT：递交即 END_STREAM
              * @param path 路径（:path）
              * @param authority 权威主机（:authority）
              * @param extraHeaders 伪头之后追加的普通头（本用例用来带 sec-websocket-extensions）
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节
-             * @note 与 submitWebSocketTunnel 的区别只有一处：不挂数据读取回调，因此请求在这批字节
-             *       之后就收尾——「头与 END_STREAM 同一趟到达」正是这条路径
+             * @note 与 submitWebSocketTunnel 的区别只有一处：头那一趟就收尾——「头与 END_STREAM 同一趟
+             *       到达」正是这条路径
              */
             std::vector<CapturedStreamData> submitEndedWebSocketTunnel(const std::string &path, const std::string &authority,
                                                                        const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
             {
-                std::vector<nghttp3_nv> headerFields = makePseudoHeaders("CONNECT", path, authority, "websocket");
-                for (const auto &[name, value]: extraHeaders)
-                {
-                    // nghttp3_nv 只存指针：参数由调用方持有，寿命覆盖到本次提交
-                    headerFields.push_back(nghttp3_nv{reinterpret_cast<const std::uint8_t *>(name.data()),
-                                                     reinterpret_cast<const std::uint8_t *>(value.data()), name.size(), value.size(),
-                                                     NGHTTP3_NV_FLAG_NONE});
-                }
-                if (nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), nullptr,
-                                                nullptr) != 0)
-                {
-                    return {};
-                }
-                return takeOutgoingBytes();
+                queueRequestHead("CONNECT", path, authority, "websocket", extraHeaders, kFirstRequestStreamId, true);
+                return drainPendingWrites();
             }
 
+            /**
+             * @brief 提交一条扩展 CONNECT（RFC 9220）请求，并把第一条 WebSocket 帧当作请求数据随后发出
+             * @param path 路径（:path）
+             * @param authority 权威主机（:authority）
+             * @param firstWebSocketFrame 隧道建立后要发的第一条 WebSocket 帧字节
+             * @return std::vector<CapturedStreamData> 按流号分好的待发字节（含请求头与随后的帧）
+             * @note 头那一趟**不能**收尾：对端之后还要在同一条流上发 WebSocket 帧，
+             *       服务端会把收尾之后的 DATA 判成 H3_FRAME_UNEXPECTED
+             */
             std::vector<CapturedStreamData> submitWebSocketTunnel(const std::string &path, const std::string &authority,
-                                                                 std::string firstWebSocketFrame)
+                                                                  const std::string &firstWebSocketFrame)
             {
-                m_tunnelFrames.push_back(std::move(firstWebSocketFrame));
-
-                const std::vector<nghttp3_nv> headerFields = makePseudoHeaders("CONNECT", path, authority, "websocket");
-                nghttp3_data_reader           dataReader{};
-                dataReader.read_data = readTunnelBody;
-                if (nghttp3_conn_submit_request(m_connection, kFirstRequestStreamId, headerFields.data(), headerFields.size(), &dataReader,
-                                                this) != 0)
-                {
-                    return {};
-                }
-                return takeOutgoingBytes();
+                queueRequestHead("CONNECT", path, authority, "websocket", {}, kFirstRequestStreamId, false);
+                queueDataFrame(kFirstRequestStreamId, firstWebSocketFrame, false);
+                return drainPendingWrites();
             }
 
             /**
@@ -319,23 +262,64 @@ namespace AsynGyanis::Net
              * @param webSocketFrame 帧字节
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节
              */
-            std::vector<CapturedStreamData> sendWebSocketFrame(std::string webSocketFrame)
+            std::vector<CapturedStreamData> sendWebSocketFrame(const std::string &webSocketFrame)
             {
-                m_tunnelFrames.push_back(std::move(webSocketFrame));
-                // 上一批交完之后读回调报的是「暂时没有」，库里正等着这一声才会再来取
-                static_cast<void>(nghttp3_conn_resume_stream(m_connection, kFirstRequestStreamId));
-                return takeOutgoingBytes();
+                // 隧道到对端关流为止都开着：每一趟都不收尾
+                queueDataFrame(kFirstRequestStreamId, webSocketFrame, false);
+                return drainPendingWrites();
             }
 
-            /// 把服务端回的字节喂进来解出响应
+            /**
+             * @brief 把服务端回的字节喂进来解出响应
+             * @param streamId 这段字节所在的流号
+             * @param data 字节（可以只到半帧，剩下的等下一趟）
+             * @param isEndStream 这一趟是否把该流收尾
+             */
             void receive(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
             {
-                if (m_connection == nullptr)
+                // 只解请求流（客户端发起的双向流 ≡ 0 mod 4）：单向流上是会话的控制流与 QPACK 流，
+                // 本对端通告的是容量 0，那些字节没有一样需要解
+                if (streamId % 4 != 0)
                 {
                     return;
                 }
-                static_cast<void>(
-                        nghttp3_conn_read_stream2(m_connection, streamId, data.data(), data.size(), isEndStream ? 1 : 0, m_timestamp++));
+
+                const auto existingReader = m_frameReaders.find(streamId);
+                Http3FrameReader &reader =
+                        existingReader != m_frameReaders.end()
+                                ? *existingReader->second
+                                : *m_frameReaders.emplace(streamId, std::make_unique<Http3FrameReader>(kPeerFrameByteLimit)).first->second;
+
+                if (const auto fed = reader.feed(data); !fed.has_value())
+                {
+                    recordDecodeError("响应帧解不开：" + fed.error().message);
+                    return;
+                }
+                while (true)
+                {
+                    const auto nextFrame = reader.nextFrame();
+                    if (!nextFrame.has_value())
+                    {
+                        recordDecodeError("响应帧不合布局：" + nextFrame.error().message);
+                        return;
+                    }
+                    if (!nextFrame->has_value())
+                    {
+                        break;
+                    }
+                    handleResponseFrame(streamId, **nextFrame);
+                }
+
+                if (!isEndStream)
+                {
+                    return;
+                }
+                m_response.isComplete = true;
+                // 收尾时缓冲里不该剩半截帧：那是「最后一个帧被截断」，真实对端按 §7.1 要判错
+                if (const std::size_t residualByteCount = reader.pendingByteCount(); residualByteCount != 0)
+                {
+                    recordDecodeError(std::format("响应流收尾时还剩 {} 字节未成帧", residualByteCount));
+                }
             }
 
             /// 解出来的响应
@@ -345,227 +329,212 @@ namespace AsynGyanis::Net
             }
 
         private:
-            /**
-             * @brief 反复取待发字节直到没有
-             * @return std::vector<CapturedStreamData> 按流号分好的片段
-             */
-            std::vector<CapturedStreamData> takeOutgoingBytes()
+            /// 一段待交给会话的流数据：一次「写」一段
+            struct PendingWrite
             {
-                std::vector<CapturedStreamData> chunks;
-                std::map<std::int64_t, std::size_t> chunkIndexByStreamId;
+                std::int64_t              streamId{0}; ///< 流号
+                std::vector<std::uint8_t> bytes;       ///< 该趟的字节
+                bool                      isEndStream{false}; ///< 这一趟是否把流收尾
+            };
 
-                for (std::size_t writeIndex = 0; writeIndex < 64; ++writeIndex)
-                {
-                    nghttp3_vec vectors[8]{};
-                    std::int64_t      streamId = -1;
-                    int               isFinal  = 0;
-                    const nghttp3_ssize vectorCount = nghttp3_conn_writev_stream(m_connection, &streamId, &isFinal, vectors, 8);
-                    if (vectorCount < 0 || (vectorCount == 0 && streamId == -1))
-                    {
-                        break;
-                    }
+            /// 单帧「帧头 + 载荷」的上限：够装下用例里最大的头块与正文段
+            static constexpr std::size_t kPeerFrameByteLimit = 64U * 1024U;
 
-                    std::size_t totalLength = 0;
-                    for (nghttp3_ssize vectorIndex = 0; vectorIndex < vectorCount; ++vectorIndex)
-                    {
-                        totalLength += vectors[vectorIndex].len;
-                    }
-
-                    // 同一条流可能分几次产出（头块一段、正文一段），这里按流号合并成一条，
-                    // 免得下游把「同一流的第二次产出」当成收尾之后的意外字节
-                    if (const auto existing = chunkIndexByStreamId.find(streamId); existing != chunkIndexByStreamId.end())
-                    {
-                        CapturedStreamData &chunk = chunks[existing->second];
-                        for (nghttp3_ssize vectorIndex = 0; vectorIndex < vectorCount; ++vectorIndex)
-                        {
-                            chunk.bytes.insert(chunk.bytes.end(), vectors[vectorIndex].base, vectors[vectorIndex].base + vectors[vectorIndex].len);
-                        }
-                        chunk.isEndStream = chunk.isEndStream || isFinal != 0;
-                    } else
-                    {
-                        CapturedStreamData chunk;
-                        chunk.streamId = streamId;
-                        chunk.isEndStream = isFinal != 0;
-                        for (nghttp3_ssize vectorIndex = 0; vectorIndex < vectorCount; ++vectorIndex)
-                        {
-                            chunk.bytes.insert(chunk.bytes.end(), vectors[vectorIndex].base, vectors[vectorIndex].base + vectors[vectorIndex].len);
-                        }
-                        chunkIndexByStreamId.emplace(streamId, chunks.size());
-                        chunks.push_back(std::move(chunk));
-                    }
-
-                    nghttp3_conn_add_write_offset(m_connection, streamId, totalLength);
-                }
-                return chunks;
+            /**
+             * @brief 把一段文本缓冲转成流字节
+             * @param bytes 二进制安全的文本缓冲
+             * @return std::vector<std::uint8_t> 同样的字节
+             */
+            [[nodiscard]] static std::vector<std::uint8_t> toStreamBytes(const std::string &bytes)
+            {
+                return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
             }
 
-            /// 客户端侧的响应回调：:status 与正文都由这里记下
-            static int onReceiveHeader(nghttp3_conn *, std::int64_t, std::int32_t, nghttp3_rcbuf *name, nghttp3_rcbuf *value, std::uint8_t, void *userData,
-                                       void *);
-            static int onReceiveData(nghttp3_conn *, std::int64_t, const std::uint8_t *data, std::size_t dataLength, void *userData, void *);
-            static int onEndStream(nghttp3_conn *, std::int64_t, void *userData, void *);
-            static int onStreamClose(nghttp3_conn *, std::int64_t, std::uint64_t, void *userData, void *);
-            static void onRandom(std::uint8_t *destination, std::size_t destinationLength);
-            static nghttp3_ssize readRequestBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, std::size_t vectorCount, std::uint32_t *flags,
-                                                void *connectionUserData, void *streamUserData);
-            static nghttp3_ssize readTunnelBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, std::size_t vectorCount, std::uint32_t *flags,
-                                               void *connectionUserData, void *streamUserData);
+            /**
+             * @brief 把一帧的「类型 + 长度 + 载荷」排成字节并追加到待发队列
+             * @param streamId 该帧所在的流号
+             * @param frameType 帧类型的线上取值（§7.1）
+             * @param payload 帧载荷原文
+             * @param isEndStream 这一趟是否把流收尾
+             */
+            void queueFrame(const std::int64_t streamId, const Http3FrameType frameType, const std::string &payload, const bool isEndStream)
+            {
+                std::string frameBytes;
+                appendHttp3FrameWithPayload(frameBytes, frameType,
+                                            std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size()));
+                m_pendingWrites.push_back(PendingWrite{streamId, toStreamBytes(frameBytes), isEndStream});
+            }
 
             /**
-             * @brief 造出请求的四个伪头
+             * @brief 造出请求的伪头字段行
              * @param method 方法原文
              * @param path 路径
              * @param authority 权威主机
-             * @return std::vector<nghttp3_nv> 伪头数组（名字是常量、取值来自参数，逐条给出 namelen）
+             * @param protocol :protocol 取值，空串表示不带（普通请求都不带）
+             * @return std::vector<QpackHeaderField> 按伪头应在前的顺序给出
              */
-            static std::vector<nghttp3_nv> makePseudoHeaders(std::string_view method, std::string_view path, std::string_view authority,
-                                                            std::string_view protocol = {})
+            [[nodiscard]] static std::vector<QpackHeaderField> makePseudoFields(const std::string &method, const std::string &path,
+                                                                                const std::string &authority, const std::string &protocol)
             {
-                const auto makeHeaderField = [](const char *const name, const std::string_view value)
-                {
-                    return nghttp3_nv{reinterpret_cast<const std::uint8_t *>(name), reinterpret_cast<const std::uint8_t *>(value.data()),
-                                      std::strlen(name), value.size(), NGHTTP3_NV_FLAG_NONE};
-                };
-                // 取值一律以视图给出：nghttp3_nv 只存指针，而 :scheme 用常量、其余指向调用方的实参，
-                // 三者的寿命都覆盖到提交那一刻（曾经把它做成函数内的局部 std::string，返回即悬空）
-                std::vector<nghttp3_nv> headerFields{makeHeaderField(":method", method), makeHeaderField(":scheme", kRequestScheme),
-                                                     makeHeaderField(":authority", authority), makeHeaderField(":path", path)};
+                std::vector<QpackHeaderField> headerFields{QpackHeaderField{":method", method},
+                                                           QpackHeaderField{":scheme", kRequestScheme},
+                                                           QpackHeaderField{":authority", authority},
+                                                           QpackHeaderField{":path", path}};
                 if (!protocol.empty())
                 {
                     // 扩展 CONNECT 用（RFC 9220）：伪头必须排在普通头之前，追加在末尾即可
-                    headerFields.push_back(makeHeaderField(":protocol", protocol));
+                    headerFields.push_back(QpackHeaderField{":protocol", protocol});
                 }
                 return headerFields;
             }
 
-            static nghttp3_callbacks makeCallbacks() noexcept
+            /**
+             * @brief 把一条请求的头块编成 HEADERS 帧排进待发队列
+             * @param method 方法原文
+             * @param path 路径（:path）
+             * @param authority 权威主机（:authority）
+             * @param protocol :protocol 取值，空串表示普通请求
+             * @param extraHeaders 伪头之后追加的普通头
+             * @param requestStreamId 承载该请求的双向流号
+             * @param isEndStream 头这一趟是否顺带收尾
+             */
+            void queueRequestHead(const std::string &method, const std::string &path, const std::string &authority,
+                                  const std::string &protocol, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
+                                  const std::int64_t requestStreamId, const bool isEndStream)
             {
-                nghttp3_callbacks callbacks{};
-                callbacks.recv_header  = onReceiveHeader;
-                callbacks.recv_data    = onReceiveData;
-                callbacks.end_stream   = onEndStream;
-                callbacks.stream_close = onStreamClose;
-                callbacks.rand         = onRandom;
-                return callbacks;
+                std::vector<QpackHeaderField> headerFields = makePseudoFields(method, path, authority, protocol);
+                for (const auto &[name, value]: extraHeaders)
+                {
+                    headerFields.push_back(QpackHeaderField{name, value});
+                }
+
+                // 每个头块单独一个编码器：容量 0 下没有跨头块的表状态要继承
+                QpackEncoder            encoder(0, 0, 0);
+                std::string             headerBlock;
+                std::string             encoderStreamBytes;
+                const auto              encoded = encoder.encodeFieldSection(static_cast<std::uint64_t>(requestStreamId),
+                                                                             std::span<const QpackHeaderField>(headerFields), headerBlock,
+                                                                             encoderStreamBytes);
+                if (!encoded.has_value())
+                {
+                    recordDecodeError("请求头块没能编出来：" + encoded.error().message);
+                    return;
+                }
+                if (!encoderStreamBytes.empty())
+                {
+                    // 只用静态表与字面量就不该有编码器流指令（RFC 9204 §2.2.2.2）：出现了说明容量 0 没被守住
+                    recordDecodeError("本端通告容量 0，请求头块却产生了 QPACK 编码器流指令");
+                }
+                queueFrame(requestStreamId, Http3FrameType::Headers, headerBlock, isEndStream);
             }
 
-            nghttp3_conn    *m_connection{nullptr};   ///< 客户端连接
-            DecodedResponse  m_response;              ///< 解出来的响应
-            nghttp3_tstamp   m_timestamp{1};          ///< read_stream2 的时间戳（单调递增即可）
-            std::string      m_requestBody;           ///< 待发的请求正文
-            std::size_t      m_requestBodyOffset{0};  ///< 正文已交给 nghttp3 的字节数
-            std::size_t      m_requestChunkByteCount{0}; ///< 每次回调给出的正文批大小
+            /**
+             * @brief 把一段正文编成 DATA 帧排进待发队列
+             * @param streamId 承载正文的流号
+             * @param payload 正文
+             * @param isEndStream 这一趟是否把流收尾
+             */
+            void queueDataFrame(const std::int64_t streamId, const std::string &payload, const bool isEndStream)
+            {
+                queueFrame(streamId, Http3FrameType::Data, payload, isEndStream);
+            }
 
-            /// 隧道待发的 WebSocket 帧：一条一条交出去，隧道流到对端关流为止都不收尾
-            std::deque<std::string> m_tunnelFrames;
-            /// 已经交给 nghttp3 的那条帧：库里只借指针，交出去的这条得活到下一次回调
-            std::string m_inFlightTunnelFrame;
+            /// 反复取待发字节直到没有，同一条流的几趟合并成一条
+            std::vector<CapturedStreamData> drainPendingWrites()
+            {
+                std::vector<CapturedStreamData> chunks;
+                std::map<std::int64_t, std::size_t> chunkIndexByStreamId;
+                while (!m_pendingWrites.empty())
+                {
+                    PendingWrite write = std::move(m_pendingWrites.front());
+                    m_pendingWrites.pop_front();
+                    // 同一条流可能分几次产出（头一块、正文一块），合并成一条，免得下游把「同一流的
+                    // 第二次产出」当成收尾之后的意外字节
+                    if (const auto existing = chunkIndexByStreamId.find(write.streamId); existing != chunkIndexByStreamId.end())
+                    {
+                        CapturedStreamData &chunk = chunks[existing->second];
+                        chunk.bytes.insert(chunk.bytes.end(), write.bytes.begin(), write.bytes.end());
+                        chunk.isEndStream = chunk.isEndStream || write.isEndStream;
+                        continue;
+                    }
+                    chunkIndexByStreamId.emplace(write.streamId, chunks.size());
+                    chunks.push_back(CapturedStreamData{write.streamId, std::move(write.bytes), write.isEndStream});
+                }
+                return chunks;
+            }
+
+            /**
+             * @brief 处置从请求流上解出来的一帧
+             * @param streamId 该帧所在的流号
+             * @param frame 帧
+             */
+            void handleResponseFrame(const std::int64_t streamId, const Http3Frame &frame)
+            {
+                if (const auto *headers = std::get_if<Http3HeadersFrame>(&frame); headers != nullptr)
+                {
+                    std::vector<QpackHeaderField> fields;
+                    std::string                   decoderStreamBytes;
+                    const auto decoded = m_answerDecoder.decodeFieldSection(static_cast<std::uint64_t>(streamId), headers->encodedFieldSection,
+                                                                            fields, decoderStreamBytes);
+                    if (!decoded.has_value())
+                    {
+                        recordDecodeError("响应头块解不开：" + decoded.error().message);
+                        return;
+                    }
+                    if (*decoded == QpackFieldSectionDecodeStatus::Blocked)
+                    {
+                        recordDecodeError("响应头块引用了动态表，而本端通告的是容量 0");
+                        return;
+                    }
+                    for (const auto &field: fields)
+                    {
+                        noteResponseField(field);
+                    }
+                    return;
+                }
+                if (const auto *body = std::get_if<Http3DataFrame>(&frame); body != nullptr)
+                {
+                    m_response.body.append(reinterpret_cast<const char *>(body->payload.data()), body->payload.size());
+                }
+                // 其余帧（SETTINGS/GOAWAY/未知类型）按 §9「必须忽略」处置：本对端只关心请求流上的响应
+            }
+
+            /**
+             * @brief 记下一条响应字段：:status 单独计数，其余按到达顺序入表
+             * @param field 一条字段行
+             */
+            void noteResponseField(const QpackHeaderField &field)
+            {
+                if (field.name == ":status")
+                {
+                    m_response.status = std::atoi(field.value.c_str());
+                    m_response.statuses.push_back(m_response.status);
+                    return;
+                }
+                m_response.headerFields.emplace_back(field.name, field.value);
+                m_response.headers[field.name] = field.value;
+            }
+
+            /**
+             * @brief 只留下第一条报错：后面的失败多半是它的连带后果
+             * @param message 中文可操作文案
+             */
+            void recordDecodeError(std::string message)
+            {
+                if (m_response.decodeError.empty())
+                {
+                    m_response.decodeError = std::move(message);
+                }
+            }
+
+            /// 待交给会话的字节：一条「写」一段，取一步交一步，正文分批到达就是这样造出来的
+            std::deque<PendingWrite> m_pendingWrites;
+            /// 每条请求流一个帧读取器：响应的头与正文可能分好几趟到齐
+            std::map<std::int64_t, std::unique_ptr<Http3FrameReader>> m_frameReaders;
+            /// 解响应头块用的解码器：按本端通告的自我约束建表（容量 0，即只认静态表与字面量）
+            QpackDecoder m_answerDecoder;
+            DecodedResponse m_response;
         };
-
-        int Http3ClientPeer::onReceiveHeader(nghttp3_conn *, std::int64_t, std::int32_t, nghttp3_rcbuf *name, nghttp3_rcbuf *value, std::uint8_t,
-                                            void *userData, void *)
-        {
-            auto *peer = static_cast<Http3ClientPeer *>(userData);
-            if (peer == nullptr)
-            {
-                return 0;
-            }
-            const nghttp3_vec nameBuffer  = nghttp3_rcbuf_get_buf(name);
-            const nghttp3_vec valueBuffer = nghttp3_rcbuf_get_buf(value);
-            const std::string headerName(reinterpret_cast<const char *>(nameBuffer.base), nameBuffer.len);
-            const std::string headerValue(reinterpret_cast<const char *>(valueBuffer.base), valueBuffer.len);
-
-            if (headerName == ":status")
-            {
-                peer->m_response.status = std::atoi(headerValue.c_str());
-                peer->m_response.statuses.push_back(peer->m_response.status);
-            } else
-            {
-                peer->m_response.headerFields.emplace_back(headerName, headerValue);
-                peer->m_response.headers[headerName] = headerValue;
-            }
-            return 0;
-        }
-
-        int Http3ClientPeer::onReceiveData(nghttp3_conn *, std::int64_t, const std::uint8_t *data, const std::size_t dataLength, void *userData, void *)
-        {
-            auto *peer = static_cast<Http3ClientPeer *>(userData);
-            if (peer != nullptr)
-            {
-                peer->m_response.body.append(reinterpret_cast<const char *>(data), dataLength);
-            }
-            return 0;
-        }
-
-        int Http3ClientPeer::onEndStream(nghttp3_conn *, std::int64_t, void *userData, void *)
-        {
-            auto *peer = static_cast<Http3ClientPeer *>(userData);
-            if (peer != nullptr)
-            {
-                peer->m_response.isComplete = true;
-            }
-            return 0;
-        }
-
-        int Http3ClientPeer::onStreamClose(nghttp3_conn *, std::int64_t, std::uint64_t, void *, void *)
-        {
-            return 0;
-        }
-
-        nghttp3_ssize Http3ClientPeer::readRequestBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, const std::size_t vectorCount,
-                                                      std::uint32_t *flags, void *, void *streamUserData)
-        {
-            auto *peer = static_cast<Http3ClientPeer *>(streamUserData);
-            if (peer == nullptr || vectorCount == 0 || peer->m_requestBodyOffset >= peer->m_requestBody.size())
-            {
-                *flags = NGHTTP3_DATA_FLAG_EOF;
-                return 0;
-            }
-
-            const std::size_t remainingByteCount = peer->m_requestBody.size() - peer->m_requestBodyOffset;
-            const std::size_t chunkByteCount =
-                    (peer->m_requestChunkByteCount < remainingByteCount) ? peer->m_requestChunkByteCount : remainingByteCount;
-            vectors[0].base = reinterpret_cast<std::uint8_t *>(peer->m_requestBody.data() + peer->m_requestBodyOffset);
-            vectors[0].len  = chunkByteCount;
-            peer->m_requestBodyOffset += chunkByteCount;
-            // 只有这一批就是最后一批时才收尾，否则后面还有正文
-            *flags = (peer->m_requestBodyOffset >= peer->m_requestBody.size()) ? NGHTTP3_DATA_FLAG_EOF : NGHTTP3_DATA_FLAG_NONE;
-            return 1;
-        }
-
-        nghttp3_ssize Http3ClientPeer::readTunnelBody(nghttp3_conn *, std::int64_t, nghttp3_vec *vectors, const std::size_t vectorCount,
-                                                     std::uint32_t *flags, void *connectionUserData, void *)
-        {
-            auto *peer = static_cast<Http3ClientPeer *>(connectionUserData);
-            if (peer == nullptr || vectorCount == 0)
-            {
-                *flags = NGHTTP3_DATA_FLAG_EOF;
-                return 0;
-            }
-            if (peer->m_tunnelFrames.empty())
-            {
-                // 隧道还开着、这一批没帧可发：报「暂时没有」而不是 EOF——EOF 会把发送侧关掉，
-                // 而隧道要一直开着，之后 sendWebSocketFrame() 会唤醒这里再来取
-                return NGHTTP3_ERR_WOULDBLOCK;
-            }
-
-            // 库里只借走指针，所以这条帧要挪到成员里活到下一次回调（队列里那份随即销毁）
-            peer->m_inFlightTunnelFrame = std::move(peer->m_tunnelFrames.front());
-            peer->m_tunnelFrames.pop_front();
-            vectors[0].base = reinterpret_cast<std::uint8_t *>(peer->m_inFlightTunnelFrame.data());
-            vectors[0].len  = peer->m_inFlightTunnelFrame.size();
-            *flags          = NGHTTP3_DATA_FLAG_NONE;
-            return 1;
-        }
-
-        void Http3ClientPeer::onRandom(std::uint8_t *destination, const std::size_t destinationLength)
-        {
-            // 本用例不考流量分析的抗性，固定字节即可（nghttp3 只要求可预期地给出一些字节）
-            for (std::size_t index = 0; index < destinationLength; ++index)
-            {
-                destination[index] = static_cast<std::uint8_t>(index * 31U + 7U);
-            }
-        }
 
         /**
          * @brief 把一条「即时完成」的协程推到结束
@@ -663,7 +632,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 真字节往返：客户端提的请求经 QPACK 编出来，服务端解出来交给 Router，响应再解回客户端
-     * @details 头块由客户端 nghttp3 真编、响应由它真解，因此这条用例同时钉住「映射对不对」与
+     * @details 头块由对端真编、响应由它真解，因此这条用例同时钉住「映射对不对」与
      *          「两端字节能不能互通」——比只调 add* 接口的单元断言强一层
      */
     TEST(Http3Session, DispatchesRequestThroughRouterAndAnswersWithRealBytes)
@@ -700,7 +669,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hello", "example.com");
         ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
@@ -737,8 +705,8 @@ namespace AsynGyanis::Net
      * @brief 畸形请求头：回 400 而不是作废整条连接，也不把请求交给业务
      * @details RFC 9114 §4.1.2 允许服务端在重置之前先答一个错。这条把「连接层判定 → 会话作答」
      *          这一段接起来测——连接层已单测过会发通知，此处钉的是通知真的变成了一个能解开的响应。
-     *          非法字节由本层自己的 QPACK 编码器造（nghttp3 客户端不会替我们产出畸形字段名），
-     *          而响应仍由 nghttp3 真解回来，判据保持跨实现。
+     *          非法字节由本层自己的 QPACK 编码器直接造（对端的提交入口只编用例点名的字段，带不出畸形字段名），
+     *          作答则由测试侧的解码器解回来。
      */
     TEST(Http3Session, AnswersMalformedRequestHeadWithFourHundredAndKeepsConnection)
     {
@@ -800,7 +768,8 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(isAnswerOnRequestStream) << "作答没出现在流 0 上：一共只回了 " << sentStreamData.size() << " 段，全是别的流";
 
         // 作答由本层的帧读取器与 QPACK 解码器解回来：这条要钉的是「会话真的回了一份能解开、
-        // 且收尾完整的 400」，跨实现的字节对齐由前面几条 nghttp3 真字节用例负责，这里不重复那份判据
+        // 且收尾完整的 400」。这条用例没走对端（畸形字节要绕过它的提交入口），因此这里的解回
+        // 只作观察用；跨实现的字节对齐归 scripts/h3_acceptance.py 那套进程外探针判
         std::string answerBytes;
         bool isAnswerEnded = false;
         for (const CapturedStreamData &chunk: sentStreamData)
@@ -886,7 +855,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("HEAD", "/bench", "example.com");
         ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
@@ -1019,7 +987,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/cookies");
         EXPECT_EQ(response.countOf("set-cookie"), 2U) << "可重复响应头只剩一条，第二条被单值视图吃掉了";
@@ -1064,7 +1031,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/dated");
         const auto                             dateHeader = response.headers.find("date");
@@ -1092,7 +1058,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/plain");
         const auto contentTypeHeader = response.headers.find("content-type");
@@ -1122,7 +1087,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/bogus");
         EXPECT_EQ(response.status, 500) << "越界状态码没有改回 500，而是把这条流的响应废掉了";
@@ -1153,7 +1117,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4,
                                                {{"expect", "100-continue"}, {"content-length", "4"}}))
                 << "客户端没能提交这条带正文的请求";
@@ -1203,7 +1166,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4, {{"content-length", "4"}}))
                 << "客户端没能提交这条带正文的请求";
         for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
@@ -1262,7 +1224,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         // 第一条：处理器抛异常，必须是 500（而不是没有响应、也不是异常穿出去）
         for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/boom", "example.com"))
@@ -1330,7 +1291,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/hello", "example.com"))
         {
@@ -1389,7 +1349,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         const std::string oversizeBody = "0123456789abcdef"; // 16 字节，超过上限 8
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, oversizeBody.size()));
         for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
@@ -1450,7 +1409,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const std::string oversizeBody = "0123456789abcdef"; // 16 字节，超过上限 8
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, oversizeBody.size()));
@@ -1539,7 +1497,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable());
         const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/stream", "example.com");
         ASSERT_FALSE(requestChunks.empty());
         for (const CapturedStreamData &chunk: requestChunks)
@@ -1603,7 +1560,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable());
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", body, kChunkByteCount));
 
         // 只送到「处理器拿到第一批」为止：此刻正文还远没收齐，处理器却已经进去了
@@ -1650,7 +1606,7 @@ namespace AsynGyanis::Net
     }
     /**
      * @brief 对端取消（RESET_STREAM）一条正在收正文的流：会话在下一个安全点把它整条回收
-     * @details nghttp3 看不到 QUIC 层的重置信号。少了承载层这一路通知，被取消的请求会连同已攒下的
+     * @details 会话层自己看不到 QUIC 层的重置信号。少了承载层这一路通知，被取消的请求会连同已攒下的
      *          正文一直留在会话里（对端还能靠归还的 STREAMS 额度反复重来），等正文的处理器更是永远
      *          等不到唤醒。这条用例钉住三件事：处理器被唤醒收尾、请求不再被应答、计入单流取消
      */
@@ -1692,7 +1648,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", body, kChunkByteCount));
 
         // 只送到「处理器进入且读到第一批」为止：此刻正文还没收完，这条流是活的
@@ -1764,7 +1719,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const std::vector<CapturedStreamData> requestChunks = peer.submitEndedWebSocketTunnel("/chat", "example.com");
         ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
@@ -1820,7 +1774,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         // 带一条帧而不带 END_STREAM：隧道建起来、业务读完这一条，然后挂在 receive() 上等下一条
         const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
         const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame("hello", mask);
@@ -1874,7 +1827,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         // 只带一条帧、不带 END_STREAM：隧道建起来，业务读完这一条后挂在 receive() 上等下一条
         const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
         const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame("hello", mask);
@@ -1956,7 +1908,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
         const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame("hello", mask);
         const std::vector<CapturedStreamData> requestChunks =
@@ -2017,7 +1968,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const std::string oversizeBody = "0123456789abcdef"; // 16 字节，超过预算 8
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, oversizeBody.size()));
@@ -2145,7 +2095,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const std::string body(4096, 'z');
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/streaming-upload", "example.com", body, body.size()));
@@ -2209,7 +2158,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const std::string body(2048, 'q');
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/streaming-no-content", "example.com", body, body.size()));
@@ -2267,7 +2215,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const std::string body = "0123456789"; // 10 字节，在 16 的预算之内
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", body, body.size()));
@@ -2338,7 +2285,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable());
         // 隧道建立后要发的帧：带掩码的文本帧（构造器见 makeMaskedTextFrame）
         const std::string                 payload = "hello";
         const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
@@ -2427,7 +2373,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         const std::vector<CapturedStreamData> requestChunks =
                 peer.submitEndedWebSocketTunnel("/chat", "example.com", {{"sec-websocket-extensions", "permessage-deflate; client_max_window_bits"}});
         for (const CapturedStreamData &chunk: requestChunks)
@@ -2467,7 +2412,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         for (const CapturedStreamData &chunk: peer.submitEndedWebSocketTunnel("/chat", "example.com"))
         {
             session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
@@ -2508,7 +2452,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/stream");
 
         EXPECT_FALSE(observedRequestId.empty()) << "生成器在场时业务必须读到落定好的 request-id";
@@ -2537,7 +2480,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         const std::vector<CapturedStreamData> requestChunks =
                 peer.submitRequest("GET", "/whoami", "example.com", kFirstRequestStreamId, {{"x-request-id", "trace-me"}});
         for (const CapturedStreamData &chunk: requestChunks)
@@ -2577,7 +2519,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/plain");
         EXPECT_EQ(response.headers.count("x-request-id"), 0U) << "空 id 也要回显，等于给对端一个空头";
@@ -2609,7 +2550,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         // 一条请求一轮：提交、喂会话、派发、把服务端的字节交回客户端
         const auto serveOne = [&](const std::int64_t requestStreamId)
@@ -2672,7 +2612,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
 
         // 第一条：答完之后连接就该通告排空
         for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/hello", "example.com", kFirstRequestStreamId))
@@ -2733,7 +2672,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         const std::string oversizeBody(32, 'x');
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, 4));
 
@@ -2795,7 +2733,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hello", "example.com");
         ASSERT_FALSE(requestChunks.empty());
         // 请求流号取常量：peer 交出的第一段往往是本端单向流（控制流 2、编码器流 6）的字节
@@ -2846,7 +2783,6 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hello", "example.com");
         ASSERT_FALSE(requestChunks.empty());
         // 请求流号取常量：peer 交出的第一段往往是本端单向流（控制流 2、编码器流 6）的字节
@@ -2899,9 +2835,8 @@ namespace AsynGyanis::Net
                    });
         session.attachRouter(router);
 
-        // 对端（真 nghttp3 客户端）通告只肯收 60 字节的头段：响应头段远超它，本端因此不作答这条流
+        // 对端通告只肯收 60 字节的头段：响应头段远超它，本端因此不作答这条流
         Http3ClientPeer peer{60U};
-        ASSERT_TRUE(peer.isUsable()) << "测试侧的客户端 h3 连接没建起来";
         static_cast<void>(answerOneGet(session, peer, sentStreamData, "/wide"));
 
         EXPECT_FALSE(session.isBroken()) << "错在本端也只该作废一条流，不该把整条会话判死";

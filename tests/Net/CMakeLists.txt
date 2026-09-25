@@ -104,15 +104,15 @@ find_package(ZLIB REQUIRED)
 find_package(zstd REQUIRED)
 find_package(brotli REQUIRED)
 
-# HTTP/3 用例要直接用 nghttp3 的客户端侧当对端（Net 对 nghttp3 是私有链接、头文件不外泄），因此这里也重新找一次
-find_package(nghttp3 REQUIRED)
+# HTTP/3 用例的对端是测试自己按 RFC 9114/9204 排字节的（TestHttp3Session 的 Http3ClientPeer）：
+# 曾经链接 nghttp3 当跨实现裁判，但链接进来的裁判与被测代码同属一次构建、可以一起改软，
+# 字节级的一致性判定已移到进程外（scripts/h3_acceptance.py 与 scripts/quic_cross_check.sh 用 aioquic）
 
 target_link_libraries(TestNet PRIVATE
         Net
         ZLIB::ZLIB
         zstd::libzstd
         brotli::brotli
-        nghttp3::nghttp3
         GTest::gtest
         GTest::gtest_main
 )

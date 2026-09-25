@@ -5,11 +5,17 @@
 
 用法：
     python3 h3_acceptance.py <host> <port> <path> [期望状态码] [正文应包含的片段]
+    python3 h3_acceptance.py <host> <port> <path> --head
+    python3 h3_acceptance.py <host> <port> <path> --stream [期望状态码] [正文片段]
+    python3 h3_acceptance.py <host> <port> <path> --expect-header content-length=2 \
+        --expect-header date
     python3 h3_acceptance.py <host> <port> <path> --websocket <帧负载文本>
     python3 h3_acceptance.py <host> <port> <path> --accept-encoding gzip [期望状态码] [正文片段]
-前一条发普通 GET；带 --websocket 时改成扩展 CONNECT（RFC 9220）隧道，在同一流上发两条 WebSocket
-帧并核对回显。带 --accept-encoding 时在请求里声明该编码，并按响应里的 content-encoding 把正文
-解回来再核对片段（探针只带 gzip 解码器）。退出码 0 表示核对通过；非 0 打印原因后退出。
+第一条发普通 GET；--head 换成 HEAD（响应不许有正文）；--stream 在此之上再要求正文分趟到达且不带
+content-length（流式响应的形状）；--expect-header 可重复，按名字数响应头（带 =值 时比取值）；
+带 --websocket 时改成扩展 CONNECT（RFC 9220）隧道，在同一流上发两条 WebSocket 帧并核对回显。
+带 --accept-encoding 时在请求里声明该编码，并按响应里的 content-encoding 把正文解回来再核对片段
+（探针只带 gzip 解码器）。退出码 0 表示核对通过；非 0 打印原因后退出。
 
 依赖：pip install aioquic
 """
@@ -38,26 +44,55 @@ SETTINGS_SETTLE_SECONDS = 0.5
 _trace_enabled = bool(os.environ.get("ASYN_H3_TRACE"))
 
 
+class ProbeH3Connection(H3Connection):
+    """知道「本端这条流发的是 HEAD」的 H3Connection。
+
+    aioquic 的编解码器不记请求方法：它把响应里的 content-length 当成「后面该来这么多正文字节」，
+    HEAD 的响应因此被它判成 `content-length does not match data size` 并作废整条连接。RFC 9110
+    §9.3.2 明确允许 HEAD 给出 GET 会发出的那份头部而不带正文，因此探针在自己标记过的流上跳过这一项
+    长度核对。跳过的只有这一处：帧的布局、QPACK 的解析、伪头齐备性与控制流规则仍由独立实现判定。
+    """
+
+    def __init__(self, quic, server=False):
+        super().__init__(quic, server)
+        # 本端在这几条流上发的是 HEAD：响应不许有正文
+        self.head_stream_ids = set()
+
+    def _check_content_length(self, stream):
+        # self._stream 是 aioquic 内部的「流号 → H3Stream」表（1.3.0 的字段名）：换了版本它会直接
+        # 抛 AttributeError，探针随之报错而不是静默放过，所以照着用即可
+        if any(stream is self._stream.get(stream_id) for stream_id in self.head_stream_ids):
+            return
+        super()._check_content_length(stream)
+
+
 class Http3Probe(QuicConnectionProtocol):
     """一条 h3 客户端连接：发一条请求、把响应收全。"""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._http = H3Connection(self._quic)
+        self._http = ProbeH3Connection(self._quic)
         self._stream_id = None
         self.status = None
         self.headers = {}
+        # 可重复头（Set-Cookie 一类）只有原始列表数得清条数：dict 会把同名的折叠成最后一条
+        self.raw_headers = []
         self.body = bytearray()
         self.finished = asyncio.Event()
+        # 收到过几个 DATA 事件：流式响应「分趟到达」的直接证据（拼起来的总字节数看不出分趟）
+        self.data_event_count = 0
         # 隧道用：隧道不会收尾（没有 END_STREAM），因此按「收够这么多字节」判完成
         self.expected_byte_count = None
         self.enough_bytes = asyncio.Event()
 
-    def send_get(self, authority, path, accept_encoding=None):
-        """在一条新的双向流上发一条 GET（请求立即收尾，无正文）。"""
+    def send_get(self, authority, path, accept_encoding=None, method="GET"):
+        """在一条新的双向流上发一条请求（请求立即收尾，无正文）。
+
+        :param method: 方法原文；HEAD 走同一条路径，只是期望响应没有正文
+        """
         self._stream_id = self._quic.get_next_available_stream_id()
         headers = [
-            (b":method", b"GET"),
+            (b":method", method.encode()),
             (b":scheme", b"https"),
             (b":authority", authority.encode()),
             (b":path", path.encode()),
@@ -65,6 +100,8 @@ class Http3Probe(QuicConnectionProtocol):
         # 带上 accept-encoding 才能验到压缩那一条链路：不声明的客户端本就不该收到编码正文
         if accept_encoding is not None:
             headers.append((b"accept-encoding", accept_encoding.encode()))
+        if method == "HEAD":
+            self._http.head_stream_ids.add(self._stream_id)
         self._http.send_headers(stream_id=self._stream_id, headers=headers, end_stream=True)
         self.transmit()
 
@@ -102,6 +139,7 @@ class Http3Probe(QuicConnectionProtocol):
             if http_event.stream_id != self._stream_id:
                 continue
             if isinstance(http_event, HeadersReceived):
+                self.raw_headers.extend(http_event.headers)
                 for name, value in http_event.headers:
                     if name == b":status":
                         self.status = int(value)
@@ -111,6 +149,7 @@ class Http3Probe(QuicConnectionProtocol):
                 if getattr(http_event, "stream_ended", False):
                     self.finished.set()
             else:
+                self.data_event_count += 1
                 self.body += http_event.data
                 if self.expected_byte_count is not None and len(self.body) >= self.expected_byte_count:
                     self.enough_bytes.set()
@@ -169,13 +208,13 @@ def make_quic_configuration(idle_timeout_seconds=None):
     return configuration
 
 
-async def run_probe(host, port, path, accept_encoding=None):
-    """跑完一条 GET 并返回探针（含状态码与正文）。"""
+async def run_probe(host, port, path, accept_encoding=None, method="GET"):
+    """跑完一条请求并返回探针（含状态码与正文）。"""
     async with connect(host, port, configuration=make_quic_configuration(), create_protocol=Http3Probe) as client:
         # 先让服务端的 SETTINGS 到达再发请求（RFC 9114 §6.2.1 的口径）：aioquic 1.3.0 没有公开
         # 的 SETTINGS 事件可等，这里用一小段确定性的等待代替
         await asyncio.sleep(SETTINGS_SETTLE_SECONDS)
-        client.send_get(f"{host}:{port}", path, accept_encoding)
+        client.send_get(f"{host}:{port}", path, accept_encoding, method)
         await asyncio.wait_for(client.finished.wait(), timeout=HANDSHAKE_TIMEOUT_SECONDS)
         return client
 
@@ -217,10 +256,66 @@ def run_websocket_mode(host, port, path, text):
     return 0
 
 
+def check_expected_headers(client, expected_headers):
+    """按名字核对响应头：同名多条时数条数，给了期望值就逐条比。
+
+    :param client: 跑完的探针
+    :param expected_headers: 形如 ``name`` 或 ``name=value`` 的期望串（value 允许是 *，只要求存在）
+    :return: 不合期望的说明列表，空列表表示全部对上
+    """
+    problems = []
+    for expectation in expected_headers:
+        name, separator, value = expectation.partition("=")
+        actual_values = [raw_value.decode() for raw_name, raw_value in client.raw_headers if raw_name.decode() == name]
+        if not actual_values:
+            problems.append(f"响应里没有头 {name!r}")
+            continue
+        if separator and value != "*":
+            counts = {}
+            for actual_value in actual_values:
+                counts[actual_value] = counts.get(actual_value, 0) + 1
+            if value not in counts:
+                problems.append(f"头 {name!r} 的取值不符：期望 {value!r}，实得 {sorted(counts)}")
+    return problems
+
+
+def run_head_mode(host, port, path, expected_headers=None):
+    """HEAD 验收：状态码与 content-length 都要在，正文一个字节都不许出现在线上。
+
+    RFC 9110 §9.3.2 要 HEAD 的响应给出「GET 会给出的那份头部」而不带正文。严格的对端会把多出来的
+    正文当成畸形响应，所以这条放在进程外判；本端自解自只会把「正文没删干净」读成正常。
+
+    :param expected_headers: 与 GET 路径同一份响应头期望（HEAD 必须给出 GET 会发出的那份头部）
+    """
+    try:
+        client = asyncio.run(run_probe(host, port, path, method="HEAD"))
+    except Exception as probe_error:  # noqa: BLE001 - 验收探针要把任何失败原因如实报出来
+        print(f"HTTP/3 HEAD 请求失败：{type(probe_error).__name__}: {probe_error}", file=sys.stderr)
+        return 1
+
+    print(f"status={client.status} headers={client.headers} 线上 {len(client.body)} 字节"
+          f"（DATA 事件 {client.data_event_count} 个）")
+    if not 200 <= client.status < 400:
+        print(f"HEAD 没有拿到 2xx/3xx：实得 {client.status}", file=sys.stderr)
+        return 1
+    if client.body:
+        print(f"HEAD 的响应带了正文（{len(client.body)} 字节）：RFC 9110 §9.3.2 不许", file=sys.stderr)
+        return 1
+    if "content-length" not in client.headers:
+        print("HEAD 的响应仍要给出 GET 会发出的那份长度，实得没有 content-length", file=sys.stderr)
+        return 1
+    for problem in check_expected_headers(client, expected_headers or []):
+        print(problem, file=sys.stderr)
+        return 1
+    print("HTTP/3 HEAD 验收通过")
+    return 0
+
+
 def main():
     if len(sys.argv) < 4:
         print("用法：h3_acceptance.py <host> <port> <path> [期望状态码] [正文片段] "
-              "[--websocket <文本>] [--accept-encoding <编码>]", file=sys.stderr)
+              "[--websocket <文本>] [--accept-encoding <编码>] [--head] [--stream] "
+              "[--expect-header <名[=值]>]", file=sys.stderr)
         return 2
 
     host = sys.argv[1]
@@ -235,29 +330,45 @@ def main():
             return 2
         return run_websocket_mode(host, port, path, sys.argv[websocket_index + 1])
 
-    # 带 --accept-encoding 时按响应里的 content-encoding 把正文解回来再比对片段：只看压缩后的
-    # 字节会把「压根没压」与「压了但解不开」都当成通过
-    accept_encoding = None
-    if "--accept-encoding" in sys.argv:
-        encoding_index = sys.argv.index("--accept-encoding")
-        if encoding_index + 1 >= len(sys.argv):
-            print("--accept-encoding 后面要给出编码名（本探针只解得开 gzip）", file=sys.stderr)
-            return 2
-        accept_encoding = sys.argv[encoding_index + 1]
+    # 流式响应的判据要单独看「分了几趟」：正文拼起来一样长，看不出是没分趟还是并成了一趟
+    expect_stream = "--stream" in sys.argv
 
-    # 位置参数与开关分开取：开关本身和紧跟它的取值都不算位置参数，否则状态码会读到开关名
+    # 一次线性扫描把开关与位置参数分开收：带值的开关连它的取值一起吃掉，剩下的才按位置读
+    # （原先按「在不在列表里」逐个捞，加一个带值开关就要改两处过滤，改漏一次状态码会读到开关名）
+    accept_encoding = None
+    expected_headers = []
     positional_arguments = []
-    skip_next_value = False
-    for argument in sys.argv[1:]:
-        if skip_next_value:
-            skip_next_value = False
+    index = 1
+    while index < len(sys.argv):
+        argument = sys.argv[index]
+        if argument == "--accept-encoding":
+            if index + 1 >= len(sys.argv):
+                print("--accept-encoding 后面要给出编码名（本探针只解得开 gzip）", file=sys.stderr)
+                return 2
+            accept_encoding = sys.argv[index + 1]
+            index += 2
             continue
-        if argument in ("--websocket", "--accept-encoding"):
-            skip_next_value = True
+        if argument == "--expect-header":
+            if index + 1 >= len(sys.argv):
+                print("--expect-header 后面要给出头名（可跟 =期望值）", file=sys.stderr)
+                return 2
+            expected_headers.append(sys.argv[index + 1])
+            index += 2
+            continue
+        if argument.startswith("--"):
+            # 无值开关（--head/--stream 一类）在前面已有分支判定，这里只负责别把它当成位置参数
+            index += 1
             continue
         positional_arguments.append(argument)
+        index += 1
+
+    # 位置参数：期望状态码与正文片段都排在 host/port/path 之后
     expected_status = int(positional_arguments[3]) if len(positional_arguments) > 3 else 200
     expected_body = positional_arguments[4] if len(positional_arguments) > 4 else None
+
+    # HEAD 走另一条判定（期望的响应头在这里已解析完，交给它一并核）
+    if "--head" in sys.argv:
+        return run_head_mode(host, port, path, expected_headers)
 
     try:
         client = asyncio.run(run_probe(host, port, path, accept_encoding))
@@ -287,9 +398,28 @@ def main():
     if client.status != expected_status:
         print(f"状态码不符：期望 {expected_status}，实得 {client.status}", file=sys.stderr)
         return 1
+    # 线上正文字节数必须等于头部声明的长度（压缩时按编码后的算）：这条由探针自己核，
+    # 因为 HEAD 场景已让 aioquic 免去同样的核对，两条路径不能一条严一条松
+    declared_length = client.headers.get("content-length")
+    if declared_length is not None and declared_length.isdigit() and int(declared_length) != len(client.body):
+        print(f"content-length 与线上正文字节数不符：头部 {declared_length}，实得 {len(client.body)}", file=sys.stderr)
+        return 1
     if expected_body is not None and expected_body not in body_text:
         print(f"正文里没有 {expected_body!r}", file=sys.stderr)
         return 1
+    if expect_stream:
+        if client.data_event_count < 2:
+            print(f"流式响应没有分趟到达：只收到 {client.data_event_count} 个 DATA 事件", file=sys.stderr)
+            return 1
+        if "content-length" in client.headers:
+            print(f"流式响应的长度此刻还不知道，不该带 content-length，实得 {client.headers['content-length']!r}", file=sys.stderr)
+            return 1
+    if expected_headers:
+        header_problems = check_expected_headers(client, expected_headers)
+        if header_problems:
+            for problem in header_problems:
+                print(problem, file=sys.stderr)
+            return 1
     print("HTTP/3 验收通过")
     return 0
 

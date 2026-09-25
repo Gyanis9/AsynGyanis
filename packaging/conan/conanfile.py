@@ -34,8 +34,8 @@ from conan.tools.files import copy
 # Database 模块的 SQLite 与 Redis 驱动分别走 sqlite3 与 hiredis。
 # **这份清单必须与 src/*/CMakeLists.txt 里的 find_package(... REQUIRED) 对齐**：漏一项，
 # 包就在 configure 阶段直接失败（本清单曾漏掉 zstd/brotli/nghttp3，conan create 从来没跑到过）
-# HTTP/3 的帧与 QPACK 已全部自研，nghttp3 只在仓库自带的测试里当跨实现裁判，
-# 因此它**不进**库包：包消费方不会拿到一条用不上的 find_dependency。
+# HTTP/3 的帧与 QPACK 已全部自研，测试的对端也是自带的字节级实现，仓库任何一侧都不再链接
+# 第三方 h3 实现，因此它既不进库包也不进测试依赖。
 BASE_REQUIREMENTS = [
     "zlib/1.3.1",
     "zstd/1.5.7",

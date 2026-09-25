@@ -1,7 +1,7 @@
 /**
  * 覆盖 HTTP/3 协议状态机：流的分类、控制流规则、帧交错、头部判定接线、QPACK 阻塞与额度归还。
  * 载体是一个假传输层——开流口给号、写出口攒字节、额度口记账，因此状态机全程在内存里跑完，
- * 不碰 socket 也不碰事件循环。字节级的跨实现对照在 TestHttp3Session 的 nghttp3 真字节用例里。
+ * 不碰 socket 也不碰事件循环。字节级的跨实现对照在进程外做（scripts/h3_acceptance.py 用 aioquic）。
  */
 
 #include "Net/Http3/Http3Connection.h"
@@ -203,8 +203,8 @@ namespace
 
     /**
      * @brief 用一个独立的编码器产出头段字节
-     * @details 这里的目的是给状态机喂「结构正确的字节」，QPACK 自身的字节正确性由 TestQpack 与
-     *          TestHttp3Session 里对 nghttp3 的真字节对拍负责，本文件不重复那份判据。
+     * @details 这里的目的是给状态机喂「结构正确的字节」，QPACK 自身的字节正确性由 TestQpack 的逐字节
+     *          断言与进程外的 aioquic 探针负责，本文件不重复那份判据。
      */
     [[nodiscard]] std::string encodeSection(std::vector<QpackHeaderField> fields, std::string &encoderStreamBytes)
     {

@@ -523,9 +523,10 @@ jobs:
           path: /tmp/clang-tidy.log
           if-no-files-found: ignore
 
-  # HTTP/3 互通验收：用 aioquic（独立实现）当对端，向 echo_server 的 h3 端点发一条 GET 与一条
-  # 扩展 CONNECT（RFC 9220）WebSocket 隧道。自写探针会与实现共享同一批误解，独立实现不会——
-  # 这一层协议此前只有手工 .bat 触发，回归时没有任何流水线会变红，这里把它接上。
+  # HTTP/3 互通验收：用 aioquic（独立实现）当对端，按场景打 echo_server 的 h3 端点——GET 的响应头
+  # 逐条核、HEAD 不许带正文、流式响应要分趟、大正文按序拼回、声明 gzip 就得真压上、扩展 CONNECT
+  # （RFC 9220）隧道要回显。h3 会话用例的对端是测试自己按 RFC 排字节的（第三方实现已移出构建），
+  # 它对「字节合不合规范」只算自证，这份判定必须由不认识本仓代码的实现来出。
   # 用 Release 构建：验收量的是协议能否互通，插桩只会拖慢握手。
   http3-acceptance:
     runs-on: ubuntu-latest
@@ -560,28 +561,8 @@ jobs:
         run: |
           cmake --build build/release --target echo_server quic_probe_server
 
-      - name: HTTP/3 验收（GET + RFC 9220 WebSocket 隧道）
-        run: |
-          # 证书用仓库内的测试夹具：探针以 CERT_NONE 连接，夹具的 CN 与 SAN 不参与校验
-          ./build/release/samples/echo_server --port 18443 --threads 1 \
-            --https --h3 --cert tests/Core/fixtures/test_cert.pem --key tests/Core/fixtures/test_key.pem \
-            > /tmp/echo-h3.log 2>&1 &
-          SERVER_PID=$!
-
-          # 先等 UDP 端口就绪：探针自带 10 秒握手超时，这里最多轮询 20 秒
-          for attempt in $(seq 1 20); do
-            if python3 scripts/h3_acceptance.py 127.0.0.1 18443 /bench 200 >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-          done
-
-          # 正式验收：两条都必须通过，否则这一步红
-          python3 scripts/h3_acceptance.py 127.0.0.1 18443 /bench 200
-          python3 scripts/h3_acceptance.py 127.0.0.1 18443 /ws --websocket "hello-h3"
-
-          kill "$SERVER_PID"
-          wait "$SERVER_PID" 2>/dev/null || true
+      - name: HTTP/3 跨实现验收（GET/HEAD/流式/大正文/压缩/WebSocket 隧道）
+        run: ASYN_H3_CROSS_LOG=/tmp/echo-h3.log bash scripts/h3_cross_check.sh build/release "$(command -v python3)"
 
       # QUIC 服务端的对外行为此前由链接进来的 ngtcp2 裁定，那条裁判已拆掉：换成进程外的 aioquic，
       # 判据由独立实现的解析器给出（同树互测暴露不出共享的误解，还会跟着被测代码一起被改松）。
