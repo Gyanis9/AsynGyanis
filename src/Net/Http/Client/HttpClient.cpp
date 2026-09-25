@@ -1,4 +1,5 @@
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
@@ -299,35 +300,216 @@ namespace AsynGyanis::Net
             std::optional<Core::Task<>> m_watchdog;           ///< 看门狗协程帧：置空即撤销
         };
 
-        /// 用 asyncSend 发完一整段（TlsSocket 没有 writeAll，SSL_write 默认全部或失败）
-        Core::Task<bool> sendAll(Core::TlsSocket &socket, const std::string_view data)
+        /// 一次出站交换的结论：响应，以及「有没有读到过响应的第一个字节」
+        struct OutboundExchange
         {
-            std::size_t offset = 0;
-            while (offset < data.size())
+            std::unique_ptr<HttpClientResponse> response;
+            bool isAnyByteReceived{false};
+        };
+
+        /**
+         * @brief 从整体时限里扣掉已经花掉的那一段
+         * @details 契约是「握手、发送、收完响应三段之和」：分两段各给一次完整时限，等于把契约放宽
+         *          一倍。返回空表示预算已经用完，调用方据此直接判失败。
+         * @param startedAt 本次请求的开始时刻
+         * @param requestTimeout 整体时限
+         * @return std::optional<std::chrono::milliseconds> 还剩多少；已经用尽则为空
+         */
+        std::optional<std::chrono::milliseconds> remainingBudget(const std::chrono::steady_clock::time_point startedAt,
+                                                                const std::chrono::milliseconds requestTimeout)
+        {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - startedAt);
+            if (elapsed >= requestTimeout)
             {
-                const ssize_t n = co_await socket.asyncSend(data.data() + offset, data.size() - offset);
-                if (n <= 0) co_return false;
-                offset += static_cast<std::size_t>(n);
+                return std::nullopt;
             }
-            co_return true;
+            return requestTimeout - elapsed;
         }
 
-        // ─── HTTPS 连路 ──────────────────────────────────────────────
-        Core::Task<std::unique_ptr<HttpClientResponse>> doHttpsRequest(
-                Core::EventLoop &loop, const std::string_view method,
-                const ParsedUrl &u, const std::string_view contentType,
-                const std::string_view body, const std::chrono::milliseconds requestTimeout)
+        /**
+         * @brief 按响应头判断这条连接还能不能接着用
+         * @details 对端声明 close 就不能再用（RFC 9112 §9.6：那是对本条连接的收尾声明）。没写这条头
+         *          就是 HTTP/1.1 的默认，可以继续用。1.0 的对端默认收完就关，而解析器不把版本号交出
+         *          来：那一档走「用了才发现对端已关」的路径——读回来的是干净的 0 字节，调用方按
+         *          「一个字节都没收到」重开一条，不会把上一条的尾巴接到下一条头上。
+         * @param responseHeaders 已收齐响应的头部字段（名与值按收到的顺序原样留着）
+         * @return true 这条连接还能再发一条请求
+         */
+        bool isResponseReusable(const std::vector<std::pair<std::string, std::string>> &responseHeaders)
         {
-            // 1. 解析主机名
-            auto addrs = co_await Core::AsyncResolver::resolve(loop, u.host, u.port);
-            if (addrs.empty()) co_return nullptr;
+            constexpr std::string_view kConnectionHeaderName = "connection";
+            for (const auto &header: responseHeaders)
+            {
+                if (header.first.size() != kConnectionHeaderName.size())
+                {
+                    continue;
+                }
+                bool isConnectionHeader = true;
+                for (std::size_t index = 0; index < kConnectionHeaderName.size(); ++index)
+                {
+                    char folded = header.first[index];
+                    if (folded >= 'A' && folded <= 'Z')
+                    {
+                        folded = static_cast<char>(folded + ('a' - 'A'));
+                    }
+                    if (folded != kConnectionHeaderName[index])
+                    {
+                        isConnectionHeader = false;
+                        break;
+                    }
+                }
+                if (isConnectionHeader)
+                {
+                    return header.second.find("close") == std::string::npos;
+                }
+            }
+            return true;
+        }
 
-            // 2. 连接
+        /**
+         * @brief 拼出请求文
+         * @param method 方法，原样写进请求行
+         * @param u 已拆开的 URL
+         * @param contentType 正文媒体类型，只随非空正文写出
+         * @param body 正文
+         * @param isKeepAlive 这次请求是否走复用连接：走复用就明写 keep-alive，不走则沿用 close
+         * @return std::string 完整的请求文（含正文）
+         */
+        std::string buildRequestText(const std::string_view method, const ParsedUrl &u, const std::string_view contentType,
+                                     const std::string_view body, const bool isKeepAlive)
+        {
+            std::string request;
+            request.reserve(256 + body.size());
+            request += method; request += ' ';
+            request += u.path; request += " HTTP/1.1\r\n";
+            appendHostHeader(request, u);
+            if (!body.empty())
+            {
+                request += "Content-Type: "; request += contentType; request += "\r\n";
+                request += "Content-Length: "; request += std::to_string(body.size()); request += "\r\n";
+            }
+            // 明写 keep-alive：HTTP/1.1 本就是它，但对端与中间盒都可能按 1.0 的默认值办事
+            request += isKeepAlive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+            request += "\r\n";
+            request += body;
+            return request;
+        }
+
+        /**
+         * @brief 在一条已建立的连接上走完一次请求/响应
+         * @param loop 所属事件循环（看门狗的定时器用它）
+         * @param connection 已连上、TLS 也已握手完的连接
+         * @param requestText 完整请求文
+         * @param isHeadRequest 这是不是 HEAD：HEAD 的应答一律在头块之后结束（RFC 9112 §6.3 第 1 条），
+         *        不标记的话「不带 Content-Length 的 HEAD 应答」会被当成读到关闭，客户端只能干等
+         * @param requestTimeout 本次交换的时限（调用方已把前面几段花掉的时间扣掉）
+         * @return OutboundExchange 响应与「有没有读到过字节」；响应为空即失败
+         */
+        Core::Task<OutboundExchange> exchangeOnConnection(Core::EventLoop &loop, HttpOutboundConnection &connection,
+                                                         const std::string &requestText, const bool isHeadRequest,
+                                                         const std::chrono::milliseconds requestTimeout)
+        {
+            const DeadlineGuard<HttpOutboundConnection> deadline(loop, connection, requestTimeout);
+            OutboundExchange exchange;
+            if (isHeadRequest)
+            {
+                connection.parser().markAsHeadResponse();
+            }
+            try
+            {
+                if (!co_await connection.send(requestText))
+                {
+                    co_return exchange;
+                }
+
+                std::array<char, 4096> buffer{};
+                while (true)
+                {
+                    const ssize_t receivedByteCount = co_await connection.receive(buffer.data(), buffer.size());
+                    if (receivedByteCount < 0)
+                    {
+                        co_return exchange;
+                    }
+                    if (receivedByteCount == 0)
+                    {
+                        break;
+                    }
+                    exchange.isAnyByteReceived = true;
+                    connection.parser().feed({buffer.data(), static_cast<std::size_t>(receivedByteCount)});
+                    if (connection.parser().isComplete())
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (const std::exception &)
+            {
+                // 等待中套接字被关掉（超时掐断、对端收尾）时底层抛异常：本接口的契约是「失败返回空响应」，
+                // 异常不许逃给调用方。抛出点之后的字节序已经不可信，这条连接当场收口——绝不还回池里
+                connection.close();
+                co_return exchange;
+            }
+            if (!connection.parser().isComplete())
+            {
+                connection.parser().endOfStream();
+            }
+            if (!connection.parser().isComplete() || connection.parser().hasFailed())
+            {
+                co_return exchange;
+            }
+
+            const HttpResponseInfo &parsed = connection.parser().result();
+            auto response = std::make_unique<HttpClientResponse>();
+            response->statusCode = parsed.statusCode;
+            response->reasonPhrase = parsed.reasonPhrase;
+            response->headers = parsed.headers;
+            response->body = parsed.body;
+            exchange.response = std::move(response);
+            co_return exchange;
+        }
+
+        /**
+         * @brief 建一条明文连接
+         * @param loop 所属事件循环
+         * @param key 目标身份（主机与端口；TLS 位由调用方按 scheme 定）
+         * @return std::unique_ptr<HttpOutboundConnection> 连上了就交出连接，连接失败返回空
+         */
+        Core::Task<std::unique_ptr<HttpOutboundConnection>> establishPlainConnection(Core::EventLoop &loop,
+                                                                                    const HttpOutboundEndpointKey &key)
+        {
+            auto stream = co_await TcpClient::connect(loop, key.host, key.port);
+            if (!stream)
+            {
+                co_return nullptr;
+            }
+            co_return HttpOutboundConnection::forPlain(key, std::move(*stream));
+        }
+
+        /**
+         * @brief 建一条 TLS 连接：解析 → 连上 → 建 SSL → 设 SNI 与主机名校验 → 握手
+         * @details 握手成功之前这条连接还不属于池：它可能停在「对端不说话」上，所以握手自己受时限
+         *          约束，超时就把 SSL 与底层描述符一起丢掉（原实现也是这一段一路管到响应收完，这里
+         *          只是把它拆成「握手」与「交换」两段，各拿剩余的预算）。
+         * @param loop 所属事件循环
+         * @param u 已拆开的 URL
+         * @param handshakeTimeout 握手一段的时限
+         * @return std::unique_ptr<HttpOutboundConnection> 握手成功就交出连接；任一步失败返回空
+         */
+        Core::Task<std::unique_ptr<HttpOutboundConnection>> establishSecureConnection(
+                Core::EventLoop &loop, const ParsedUrl &u, const std::chrono::milliseconds handshakeTimeout)
+        {
+            HttpOutboundEndpointKey key{u.host, u.port, true};
+
+            auto addrs = co_await Core::AsyncResolver::resolve(loop, u.host, u.port);
+            if (addrs.empty())
+            {
+                co_return nullptr;
+            }
             Core::AsyncSocket sock = Core::AsyncSocket::create(loop);
             try { co_await sock.asyncConnect(addrs[0]); }
             catch (const Base::Exception &) { co_return nullptr; }
 
-            // 3. 创建 SSL
             auto *ctx = clientSslCtx();
             if (!ctx) co_return nullptr;
             SSL *ssl = SSL_new(ctx);
@@ -341,9 +523,9 @@ namespace AsynGyanis::Net
                 co_return nullptr;
             }
 
-            // 4. 设置 SNI 与**主机名校验**：链校验只证明「证书由受信 CA 签发」，不证明
-            //    「签发的对象就是我们要访问的那台主机」——少了这一步，任何受信 CA 给他域签的
-            //    证书都能冒充目标（CWE-297）。IP 字面量与 DNS 名的匹配规则不同，必须分开设置
+            // 设 SNI 与**主机名校验**：链校验只证明「证书由受信 CA 签发」，不证明「签发的对象就是我们
+            // 要访问的那台主机」——少了这一步，任何受信 CA 给他域签的证书都能冒充目标（CWE-297）。
+            // IP 字面量与 DNS 名的匹配规则不同，必须分开设置
             SSL_set_tlsext_host_name(ssl, u.host.c_str());
             if (isIpLiteral(u.host))
             {
@@ -353,121 +535,103 @@ namespace AsynGyanis::Net
                 SSL_set1_host(ssl, u.host.c_str());
             }
 
-            // 5. 创建 TlsSocket 并握手。看门狗声明在套接字之后：此刻起（握手到收完响应）
-            //    每一步都受请求级时限约束，而任何返回路径都会先撤销看门狗再销毁套接字
-            Core::TlsSocket tlsSocket(ssl, loop, std::move(sock), Core::TlsSocket::Role::Client);
-            const DeadlineGuard<Core::TlsSocket> deadline(loop, tlsSocket, requestTimeout);
-            try { co_await tlsSocket.handshake(); }
-            catch (const Base::Exception &) { co_return nullptr; }
-
-            // 6. 发送请求
-            std::string request;
-            request.reserve(256 + body.size());
-            request += method; request += ' ';
-            request += u.path; request += " HTTP/1.1\r\n";
-            appendHostHeader(request, u);
-            if (!body.empty())
-            {
-                request += "Content-Type: "; request += contentType; request += "\r\n";
-                request += "Content-Length: "; request += std::to_string(body.size()); request += "\r\n";
-            }
-            request += "Connection: close\r\n\r\n";
-            request += body;
-
-            // 6-7. 发送与接收。整段包在 try 里：套接字在等待中被关闭（超时掐断、对端收尾）
-            //      时底层会抛异常，而本接口的契约是失败返回空响应，异常不该逃给调用方
+            auto tlsSocket = std::make_unique<Core::TlsSocket>(ssl, loop, std::move(sock), Core::TlsSocket::Role::Client);
+            const DeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, handshakeTimeout);
             try
             {
-                if (!co_await sendAll(tlsSocket, request)) co_return nullptr;
-
-                HttpResponseParser parser;
-                if (method == "HEAD")
-                {
-                    // 对 HEAD 的应答一律在头块之后结束（RFC 9112 §6.3 第 1 条）：不标记的话
-                    // 「不带 Content-Length 的 HEAD 应答」会被当成读到关闭，客户端只能干等
-                    parser.markAsHeadResponse();
-                }
-                std::array<char, 4096> buf{};
-                while (true)
-                {
-                    const ssize_t n = co_await tlsSocket.asyncReceive(buf.data(), buf.size());
-                    if (n <= 0) break;
-                    parser.feed({buf.data(), static_cast<std::size_t>(n)});
-                    if (parser.isComplete()) break;
-                }
-                if (!parser.isComplete()) parser.endOfStream();
-                if (!parser.isComplete() || parser.hasFailed()) co_return nullptr;
-
-                auto res = std::make_unique<HttpClientResponse>();
-                res->statusCode   = parser.result().statusCode;
-                res->reasonPhrase = parser.result().reasonPhrase;
-                res->headers      = parser.result().headers;
-                res->body         = parser.result().body;
-                co_return res;
-            } catch (const Base::Exception &)
+                co_await tlsSocket->handshake();
+            }
+            catch (const Base::Exception &)
             {
                 co_return nullptr;
             }
+            co_return HttpOutboundConnection::forSecure(key, std::move(tlsSocket));
         }
 
-        // ─── 明文 HTTP 连路 ─────────────────────────────────────────
-        Core::Task<std::unique_ptr<HttpClientResponse>> doPlainRequest(
-                Core::EventLoop &loop, const std::string_view method,
-                const ParsedUrl &u, const std::string_view contentType,
-                const std::string_view body, const std::chrono::milliseconds requestTimeout)
+        /**
+         * @brief 走完一次出站请求：有池就先复用、用完还回去，没池就按一次一条连接的老口径
+         * @param loop 所属事件循环
+         * @param method 方法
+         * @param u 已拆开的 URL
+         * @param contentType 正文媒体类型
+         * @param body 正文
+         * @param requestTimeout 整体时限（握手、发送、收完响应三段之和）
+         * @param pool 空闲连接池；为空即一次一条连接
+         * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
+         */
+        Core::Task<std::unique_ptr<HttpClientResponse>> performRequest(
+                Core::EventLoop &loop, const std::string_view method, const ParsedUrl &u,
+                const std::string_view contentType, const std::string_view body,
+                const std::chrono::milliseconds requestTimeout, HttpOutboundConnectionPool *pool)
         {
-            auto streamPtr = co_await TcpClient::connect(loop, u.host, u.port);
-            if (!streamPtr) co_return nullptr;
-            auto &stream = *streamPtr;
+            const std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::now();
+            const bool isKeepAlive = pool != nullptr;
+            const std::string requestText = buildRequestText(method, u, contentType, body, isKeepAlive);
+            const bool isHeadRequest = method == "HEAD";
 
-            // 与 HTTPS 连路同一道闸：连上之后的每一步都受请求级时限约束
-            const DeadlineGuard<TcpStream> deadline(loop, stream, requestTimeout);
-
-            std::string request;
-            request.reserve(256 + body.size());
-            request += method; request += ' ';
-            request += u.path; request += " HTTP/1.1\r\n";
-            appendHostHeader(request, u);
-            if (!body.empty())
+            if (pool != nullptr)
             {
-                request += "Content-Type: "; request += contentType; request += "\r\n";
-                request += "Content-Length: "; request += std::to_string(body.size()); request += "\r\n";
+                const HttpOutboundEndpointKey key{u.host, u.port, u.scheme == "https"};
+                if (auto reused = pool->acquire(key))
+                {
+                    const std::optional<std::chrono::milliseconds> reusedBudget = remainingBudget(startedAt, requestTimeout);
+                    if (reusedBudget.has_value())
+                    {
+                        OutboundExchange exchange = co_await exchangeOnConnection(loop, *reused, requestText, isHeadRequest,
+                                                                                 *reusedBudget);
+                        if (exchange.response)
+                        {
+                            if (isResponseReusable(exchange.response->headers))
+                            {
+                                reused->prepareForNextRequest();
+                                pool->release(std::move(reused));
+                            }
+                            co_return std::move(exchange.response);
+                        }
+                        // 复用来的连接上连一个字节都没读到：这多半是对端在我们手里空闲期间把它关掉了
+                        // （keep-alive 的经典竞态）。换一条新连接重来一次，对调用方仍是一次成功请求；
+                        // 读到过字节才失败的不能重来——那已经是「响应本身有问题」，重发会把非幂等请求做两遍
+                        if (exchange.isAnyByteReceived)
+                        {
+                            co_return nullptr;
+                        }
+                        reused->close();
+                    }
+                }
             }
-            request += "Connection: close\r\n\r\n";
-            request += body;
 
-            // 与 HTTPS 连路同一处置：等待中被关闭的套接字会抛异常，这里统一折成空响应
-            try
+            std::unique_ptr<HttpOutboundConnection> connection;
+            if (u.scheme == "https")
             {
-                co_await stream.writeAll(request.data(), request.size());
-
-                HttpResponseParser parser;
-                if (method == "HEAD")
+                const std::optional<std::chrono::milliseconds> handshakeBudget = remainingBudget(startedAt, requestTimeout);
+                if (!handshakeBudget.has_value())
                 {
-                    // 与 HTTPS 连路同一处置：HEAD 的应答在头块之后结束，不等正文也不等关闭
-                    parser.markAsHeadResponse();
+                    co_return nullptr;
                 }
-                std::array<char, 4096> buf{};
-                while (true)
-                {
-                    const ssize_t n = co_await stream.read(buf.data(), buf.size());
-                    if (n <= 0) break;
-                    parser.feed({buf.data(), static_cast<std::size_t>(n)});
-                    if (parser.isComplete()) break;
-                }
-                if (!parser.isComplete()) parser.endOfStream();
-                if (!parser.isComplete() || parser.hasFailed()) co_return nullptr;
-
-                auto res = std::make_unique<HttpClientResponse>();
-                res->statusCode   = parser.result().statusCode;
-                res->reasonPhrase = parser.result().reasonPhrase;
-                res->headers      = parser.result().headers;
-                res->body         = parser.result().body;
-                co_return res;
-            } catch (const Base::Exception &)
+                connection = co_await establishSecureConnection(loop, u, *handshakeBudget);
+            }
+            else
+            {
+                connection = co_await establishPlainConnection(loop, HttpOutboundEndpointKey{u.host, u.port, false});
+            }
+            if (!connection)
             {
                 co_return nullptr;
             }
+
+            const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
+            if (!exchangeBudget.has_value())
+            {
+                co_return nullptr;
+            }
+            OutboundExchange exchange = co_await exchangeOnConnection(loop, *connection, requestText, isHeadRequest,
+                                                                     *exchangeBudget);
+            if (exchange.response && pool != nullptr && isResponseReusable(exchange.response->headers))
+            {
+                connection->prepareForNextRequest();
+                pool->release(std::move(connection));
+            }
+            co_return std::move(exchange.response);
         }
     }
 
@@ -475,9 +639,7 @@ namespace AsynGyanis::Net
                                                                    const std::chrono::milliseconds requestTimeout)
     {
         auto u = parseUrl(url);
-        if (u.scheme == "https")
-            co_return co_await doHttpsRequest(loop, "GET", u, {}, {}, requestTimeout);
-        co_return co_await doPlainRequest(loop, "GET", u, {}, {}, requestTimeout);
+        co_return co_await performRequest(loop, "GET", u, {}, {}, requestTimeout, nullptr);
     }
 
     Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::post(
@@ -485,8 +647,37 @@ namespace AsynGyanis::Net
             const std::chrono::milliseconds requestTimeout)
     {
         auto u = parseUrl(url);
-        if (u.scheme == "https")
-            co_return co_await doHttpsRequest(loop, "POST", u, contentType, body, requestTimeout);
-        co_return co_await doPlainRequest(loop, "POST", u, contentType, body, requestTimeout);
+        co_return co_await performRequest(loop, "POST", u, contentType, body, requestTimeout, nullptr);
+    }
+
+    HttpClient::HttpClient(Core::EventLoop &loop, const HttpOutboundConnectionPool::Config poolConfig) noexcept
+        : m_loop(&loop)
+        , m_pool(poolConfig)
+    {
+    }
+
+    Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::get(std::string_view url,
+                                                                   const std::chrono::milliseconds requestTimeout)
+    {
+        auto u = parseUrl(url);
+        co_return co_await performRequest(*m_loop, "GET", u, {}, {}, requestTimeout, &m_pool);
+    }
+
+    Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::post(
+            std::string_view url, std::string_view contentType, std::string_view body,
+            const std::chrono::milliseconds requestTimeout)
+    {
+        auto u = parseUrl(url);
+        co_return co_await performRequest(*m_loop, "POST", u, contentType, body, requestTimeout, &m_pool);
+    }
+
+    std::size_t HttpClient::idleConnectionCount() const noexcept
+    {
+        return m_pool.idleConnectionCount();
+    }
+
+    void HttpClient::closeIdleConnections() noexcept
+    {
+        m_pool.closeAll();
     }
 } // namespace AsynGyanis::Net

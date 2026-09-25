@@ -376,6 +376,8 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住重置语义：reset() 之后可以复用同一对象解析下一条响应
+     * @details 连「上一条是 HEAD」这一项状态也要一起清掉：keep-alive 上复用同一个解析器时，漏了它
+     *          会让第二条响应也在头块之后收口——正文被静默丢掉，而状态码看着完全正常。
      */
     TEST(HttpResponseParser, ResetAllowsReuse)
     {
@@ -384,5 +386,13 @@ namespace AsynGyanis::Net
         parser.reset();
         EXPECT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"));
         EXPECT_EQ(parser.result().body, "abc");
+
+        parser.reset();
+        parser.markAsHeadResponse();
+        EXPECT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n"));
+        EXPECT_TRUE(parser.result().body.empty()) << "HEAD 的应答本就不该有正文";
+        parser.reset();
+        EXPECT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));
+        EXPECT_EQ(parser.result().body, "ok") << "reset() 没清掉 HEAD 标记：下一条带长度的响应被按 HEAD 收口了";
     }
 } // namespace AsynGyanis::Net

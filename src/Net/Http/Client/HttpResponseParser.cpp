@@ -423,6 +423,9 @@ namespace AsynGyanis::Net
         m_headerBlockByteCount = 0;
         m_chunkPhase = ChunkPhase::SizeLine;
         m_chunkSize = 0;
+        // HEAD 的标记也是「按请求」的状态：keep-alive 上复用同一个解析器时，漏了它会让第二条响应
+        // 也在头块之后收口——正文被静默丢掉，而状态码看着完全正常
+        m_isHeadResponse = false;
     }
 
     void HttpResponseParser::endOfStream()

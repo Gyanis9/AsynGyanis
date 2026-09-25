@@ -33,6 +33,7 @@ add_executable(TestNet
         Http/TestHttpServer.cpp
         Http/TestHttpStaticFileTransfer.cpp
         Http/TestHttpClient.cpp
+        Http/TestHttpOutboundConnectionPool.cpp
         Http/TestHttpResponseParser.cpp
         Http/TestHttpServerLimits.cpp
         Http/TestStaticFileMappingCache.cpp

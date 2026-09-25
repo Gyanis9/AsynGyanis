@@ -9,6 +9,7 @@
 #pragma once
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpResponseParser.h"
+#include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -82,5 +83,50 @@ namespace AsynGyanis::Net
         static Core::Task<std::unique_ptr<HttpClientResponse>> post(Core::EventLoop &loop, std::string_view url,
                                                                      std::string_view contentType, std::string_view body,
                                                                      std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
+
+        /**
+         * @brief 建一个带空闲连接池的客户端：同一目标主机的连续请求复用一条 keep-alive 连接
+         * @details 静态的 get()/post() 一次一条连接、收尾就关；对同一台主机反复出站时，每次都要重做
+         *          DNS、TCP 与 TLS 握手。本实例把这些摊掉：用完且对端没声明 close 的连接还回池里，
+         *          下次同主机同端口的请求先复用它。
+         * @param loop 所属事件循环。实例连同它的池只在这条循环上用——协程挂起期间被别的线程驱动会
+         *        踩坏套接字状态，因此本对象不跨线程共享（与框架里每条连接归属一个循环的约定同一口径）
+         * @param poolConfig 池的规模参数：空闲多久收口、每个目标最多留几条
+         */
+        explicit HttpClient(Core::EventLoop &loop, HttpOutboundConnectionPool::Config poolConfig = {}) noexcept;
+
+        /**
+         * @brief 发一次 GET，能复用就复用空闲连接
+         * @param url 目标地址，口径同静态的 get()
+         * @param requestTimeout 整体时限，语义同静态的 get()：握手、发送、收完响应三段之和
+         * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
+         * @note 复用的那条连接如果对端已经关掉，本次请求会**自动重开一条再来一次**——这是 keep-alive
+         *       的固有竞态（对端随时可以收掉空闲连接），不是失败。读到过响应字节之后的失败不重发：
+         *       那已经是「响应本身有问题」，重发会把非幂等请求做两遍
+         */
+        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> get(
+                std::string_view url, std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
+
+        /**
+         * @brief 发一次 POST，复用与重试口径同 get()
+         * @param url 目标地址
+         * @param contentType 正文媒体类型
+         * @param body 正文
+         * @param requestTimeout 整体时限，语义同 get()
+         * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
+         */
+        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> post(
+                std::string_view url, std::string_view contentType, std::string_view body,
+                std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
+
+        /// 当前空闲、可被复用的连接条数
+        [[nodiscard]] std::size_t idleConnectionCount() const noexcept;
+
+        /// 收掉所有空闲连接：在途请求用的连接不受影响
+        void closeIdleConnections() noexcept;
+
+    private:
+        Core::EventLoop *m_loop{nullptr};   ///< 所属事件循环（不拥有）
+        HttpOutboundConnectionPool m_pool;  ///< 本客户端的空闲连接池
     };
 } // namespace AsynGyanis::Net
