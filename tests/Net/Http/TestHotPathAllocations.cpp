@@ -25,9 +25,10 @@
 //     对象按连接复用、容量留着，h2 每条流一份；这条形状刚钉下时是 18 次 / 2824 字节；
 //   · 一条请求新建一个 HttpRequest 逐条装 10 条头部：不预留 24 次 / 2588 字节，先留 4 条 128 字节
 //     是 12 次 / 2080 字节。HTTP/3 收请求头走的正是这条形状（请求对象随流新建，头部一条一条写进去）；
-//   · 答一条 h2 响应：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 2 次 / 243 字节（一千次共
-//     2014 次，多出那 14 次是 HPACK 动态表的插入与逐出）。这条量下来不是靶子——字段行那份向量本来
-//     就 reserve(8) 过，响应头部的取值多数字符短到进小串内联；
+//   · 答一条 h2 响应：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 1 次 / 163 字节（一千次共
+//     1014 次，多出那 14 次是 HPACK 动态表的插入与逐出）。这条量下来不是靶子——字段行那份向量本来
+//     就 reserve(8) 过，响应头部的取值多数字符短到进小串内联；连接侧那一次是 HPACK 编出来的头块串，
+//     帧本身直接追加进待发缓冲（a4101eb 起正文一帧装得下时也不再抄进该流队列，故从 2 次降到 1 次）；
 //   · 组一帧 256 字节分块帧：每次新建串 1 次 / 272 字节，复用帧缓冲 0 次；
 //   · 一条 h2 连接握手到关掉：每连接的固定成本（空闲连接也要付，故只作打印对照）。
 // 同一条形状在 Debug（带迭代器调试代理）下的读数只作打印参考，确切值按 Release 钉。
@@ -90,10 +91,10 @@ namespace AsynGyanis::Net
         // 预留那一档只留 4 条 / 128 字节（HTTP/3 收头实际用的猜测值），超出部分照常扩容
         constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand = 24000U;
         constexpr std::uint64_t kAssemblyWithSmallReserveTotalAllocationsPerThousand = 12000U;
-        // 答一条 h2 响应分两段：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 2 次 / 243 字节。
+        // 答一条 h2 响应分两段：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 1 次 / 163 字节。
         // 连接侧按一千次的原值钉：HPACK 动态表的插入与逐出不是每轮一次，摊平会把这点抖动抹平
         constexpr std::uint64_t kResponseCollectTotalAllocationsPerThousand = 3000U;
-        constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand = 2014U;
+        constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand = 1014U;
         // 每条额外头部应当不额外向堆要一次：HPACK 解出的字段直接落进请求的头部存储，
         // 名字与值都短到进小串内联，所以这里钉 0——哪天逐字段暂存容器回来了，这条先红
         constexpr std::uint64_t kMarginalAllocationsPerHeaderField = 0U;
