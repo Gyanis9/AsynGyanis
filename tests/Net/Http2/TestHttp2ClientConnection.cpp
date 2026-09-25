@@ -294,12 +294,13 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 只回一段坏 SETTINGS 的对端脚本：看本端怎么收场
-         * @details 本端应当按 §6.8 交代一条带错误码的 GOAWAY 再判死，而不是无声关掉通路——现场只剩
-         *          「连接没了」对排查没有任何价值，对端也无从知道自己哪条通告踩了线。
+         * @brief 开局按脚本回一段字节、之后只等本端收场的对端
+         * @details 本端遇到连接级违规时应当按 §6.8 交代一条带错误码的 GOAWAY，而不是无声把通路关掉——
+         *          现场只剩「连接没了」对排查没有价值，对端也无从知道自己哪一步踩了线。收场之后本端
+         *          可能还会先发自己的请求帧（正文洪泛那条就是这种顺序），所以要一直读到看见 GOAWAY。
          */
-        Core::Task<void> runBadSettingsPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received,
-                                            const std::string badSettingsBytes)
+        Core::Task<void> runOpeningPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received,
+                                        const std::string openingBytes)
         {
             Http2FrameDecoder decoder;
             try
@@ -307,11 +308,27 @@ namespace AsynGyanis::Net
                 std::array<char, 24> preface{};
                 co_await peer.readExact(preface.data(), preface.size());
                 static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
-                co_await peer.writeAll(badSettingsBytes.data(), badSettingsBytes.size());
-                received = co_await readPeerFrames(peer, decoder, 1);         // 期望：一条带错误码的 GOAWAY
+                co_await peer.writeAll(openingBytes.data(), openingBytes.size());
+                while (findFrame(received.frames, Http2FrameType::GoAway, false) == nullptr)
+                {
+                    PeerFrames batch = co_await readPeerFrames(peer, decoder, 1);
+                    for (const Http2Frame &frame: batch.frames)
+                    {
+                        received.frames.push_back(frame);
+                    }
+                    if (!batch.errorText.empty())
+                    {
+                        received.errorText = std::move(batch.errorText);
+                        break;
+                    }
+                    if (batch.frames.empty())
+                    {
+                        break; // 通路收口而没等到 GOAWAY：让用例去判这条失败
+                    }
+                }
             } catch (const std::exception &)
             {
-                // 本端收口了通路：已攒到的帧照样交给用例
+                // 本端中途关掉了通路：已攒到的帧照样交给用例
             }
             loop.stop();
             co_return;
@@ -571,8 +588,8 @@ namespace AsynGyanis::Net
             Core::EventLoop loop;
             PeerFrames received;
             bool isStarted = true;
-            auto peerWork = runBadSettingsPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received,
-                                               singleSettingFrameBytes(entry.identifier, entry.value));
+            auto peerWork = runOpeningPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received,
+                                           singleSettingFrameBytes(entry.identifier, entry.value));
             auto clientWork = runBadSettingsClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), isStarted);
             static_cast<void>(peerWork.handle().resume());
             static_cast<void>(clientWork.handle().resume());
@@ -588,5 +605,42 @@ namespace AsynGyanis::Net
                     << entry.label << "：GOAWAY 里的错误码不对，现场会顺着错方向查";
             EXPECT_EQ(payload.lastStreamId, 0U) << entry.label << "：还没提过任何流，last-stream-id 该是 0";
         }
+    }
+
+    /**
+     * @brief 钉住：对端用一串 CONTINUATION 洪泛头块时，本端在撑爆内存之前收口
+     * @details 帧上限只钳得住单帧，攒起来的头块可以一段一段无限续——不设闸门就是一个远端可打的内存
+     *          DoS。两条判据：这次请求必须以失败收场（半个头块不能当响应交回调用方），且要按 §6.8 回
+     *          一条 ENHANCE_YOUR_CALM 的 GOAWAY。只结这条流不行：本端不肯存下的片段交不给 HPACK
+     *          解码器，两边的动态表就此错位，留着连接只会让后面每条响应都解歪。
+     */
+    TEST(Http2ClientConnection, RefusesToBufferAnOverSizedHeaderBlock)
+    {
+        const std::string flood = makeFrame(Http2FrameType::Settings, 0U, 0U, {})
+                                  + makeFrame(Http2FrameType::Headers, 0U, 1U, std::string(8192U, 'x'))
+                                  + makeFrame(Http2FrameType::Continuation, 0U, 1U, std::string(8193U, 'x'));
+
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames received;
+        RawPairRunOutcome outcome;
+        auto peerWork = runOpeningPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, flood);
+        auto clientWork = runRawPairClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_EQ(outcome.statusCode, 0) << "越界的头块被当响应收了：" << outcome.errorMessage;
+        EXPECT_FALSE(outcome.errorMessage.empty()) << "收场原因必须带回给调用方";
+        const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
+        ASSERT_NE(goAway, nullptr) << "本端静默关掉通路，对端不知道为什么";
+        Http2GoAwayPayload payload;
+        std::string errorText;
+        ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, payload, &errorText)) << errorText;
+        EXPECT_EQ(static_cast<std::uint16_t>(payload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::EnhanceYourCalm))
+                << "内存闸门触发的收口要报 ENHANCE_YOUR_CALM，报成协议错误会把排查带去别处";
     }
 } // namespace AsynGyanis::Net

@@ -339,6 +339,23 @@ namespace AsynGyanis::Net
         fail(std::move(reason));
     }
 
+    bool Http2ClientConnection::appendHeaderBlockFragment(const std::string_view fragment)
+    {
+        // 拼接上限是本端策略：CONTINUATION 可以无限续，不设闸门等于让对端用一个头块撑爆内存。
+        // 越界只能终止连接而不能只结这条流（服务端侧是同一条判据）：本端不肯存下的片段交不给 HPACK
+        // 解码器，两边的动态表就此错位，留着连接只会让后面每条响应都解歪
+        if (m_pendingHeaderBlock.size() + fragment.size() > m_config.maximumHeaderBlockByteCount)
+        {
+            failConnection(Http2ErrorCode::EnhanceYourCalm,
+                           std::format("流 {} 的头块压缩后已超过本端上限 {} 字节（HEADERS 与 CONTINUATION 片段之和）："
+                                       "本端无法在撑爆内存的前提下继续同步 HPACK 动态表，只能终止连接，请对端减小头列表",
+                                       m_continuationStreamId, m_config.maximumHeaderBlockByteCount));
+            return false;
+        }
+        m_pendingHeaderBlock.append(fragment);
+        return true;
+    }
+
     bool Http2ClientConnection::finishHeaderBlock(const std::uint32_t streamId)
     {
         std::vector<HpackHeaderField> headerFields;
@@ -386,8 +403,12 @@ namespace AsynGyanis::Net
             return false;
         }
         m_continuationStreamId = frame.header.streamId;
-        m_pendingHeaderBlock = payload.headerBlockFragment;
+        m_pendingHeaderBlock.clear();
         m_isAwaitingContinuation = !payload.endHeaders;
+        if (!appendHeaderBlockFragment(payload.headerBlockFragment))
+        {
+            return false;
+        }
         if (m_isAwaitingContinuation)
         {
             return true;
@@ -422,8 +443,11 @@ namespace AsynGyanis::Net
             failConnection(Http2ErrorCode::ProtocolError, "收到不该出现的 CONTINUATION");
             return false;
         }
-        m_pendingHeaderBlock.append(payload.headerBlockFragment);
         m_isAwaitingContinuation = !payload.endHeaders;
+        if (!appendHeaderBlockFragment(payload.headerBlockFragment))
+        {
+            return false;
+        }
         if (m_isAwaitingContinuation)
         {
             return true;

@@ -51,11 +51,15 @@ namespace AsynGyanis::Net
     class Http2ClientConnection
     {
     public:
-        /// 本端 SETTINGS 通告的接收能力；两项都既要发出去、也要被本端自己守住
+        /// 本端的接收能力：前两项既写进 SETTINGS 通告给对端，也被本端自己守住；
+        /// 第三项是本端内部的缓冲闸门，不对外承诺
         struct Config
         {
             std::uint32_t initialWindowByteCount{64u * 1024};  ///< 本端愿意为一条流缓冲多少未读正文字节
             std::uint32_t maximumFrameByteSize{16u * 1024};    ///< 本端能收的最大帧负载，合法区间 [16384, 16777215]
+            /// 单个头块（HEADERS 与其后 CONTINUATION 片段之和）的压缩后字节上限，与服务端侧同档：
+            /// CONTINUATION 可以无限续，不设闸门等于让对端用一个头块把本端内存撑掉
+            std::size_t maximumHeaderBlockByteCount{16u * 1024};
         };
 
         /**
@@ -153,6 +157,9 @@ namespace AsynGyanis::Net
 
         /// 把收完的一段头块解进对应流的响应里；解码失败时把连接判死（动态表已错位）
         bool finishHeaderBlock(std::uint32_t streamId);
+
+        /// 把头块片段攒进缓冲；越过本端上限时终止连接——不肯存的片段没法交给 HPACK 解码器，两边的动态表会从此错位
+        bool appendHeaderBlockFragment(std::string_view fragment);
 
         /// 从通路上读一段字节、处理其中完整的帧，并把攒下的回帧一次写出；返回 false 表示通路不可用
         Core::Task<bool> pumpSome();
