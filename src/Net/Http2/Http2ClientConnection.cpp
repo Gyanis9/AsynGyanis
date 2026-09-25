@@ -116,6 +116,10 @@ namespace AsynGyanis::Net
         // 对端的 SETTINGS 是本端开始提请求的前提：它带着流初始窗口、帧上限与动态表大小，
         // 少一样都会让第一帧就按错的账发出去
         const RequestDeadlineGuard<Http2ClientConnection> deadline(m_loop, *this, waitTimeout, "Http2ClientConnection");
+        // 前奏期间把驱动权拿在手上：契约是「前奏走完才把对象交给别的协程」，但真有请求挤进来，
+        // 它会挂在等待体上等我叫醒，而不是自己跑去读同一条通路
+        static_cast<void>(tryTakePumpLease());
+        const PumpLease startLease(*this);
         while (isHealthy() && !m_isPeerSettingsReceived)
         {
             if (!co_await pumpSome())
@@ -307,8 +311,9 @@ namespace AsynGyanis::Net
                     break;
                 case Http2SettingIdentifier::MaxConcurrentStreams:
                 case Http2SettingIdentifier::MaxHeaderListSize:
-                    // 对端限制的是「本端能同时提几条流 / 能发多大的头列表」：本层一次只提一条请求，
-                    // 也不做发送侧的头列表预算，因此这两条收下即无事可做（不做没有消费方的记账）
+                    // 对端限制的是「本端能同时提几条流 / 能发多大的头列表」：本层不代调用方节流，也不做
+                    // 发送侧的头列表预算（要节流的是调用方：它才知道排队与快速失败哪个更合适）。收下即
+                    // 无事可做，也就不留没有消费方的记账
                     break;
                 default:
                     // 未知标识必须忽略（§6.5.2）——扩展参数的含义不在本层
@@ -340,6 +345,66 @@ namespace AsynGyanis::Net
             appendOutgoing(encodeHttp2GoAwayFrame(payload));
         }
         fail(std::move(reason));
+    }
+
+    bool Http2ClientConnection::tryTakePumpLease() noexcept
+    {
+        if (m_isPumpLeaseTaken)
+        {
+            return false;
+        }
+        m_isPumpLeaseTaken = true;
+        return true;
+    }
+
+    void Http2ClientConnection::releasePumpLease() noexcept
+    {
+        m_isPumpLeaseTaken = false;
+    }
+
+    void Http2ClientConnection::wakeWaitingStreams() noexcept
+    {
+        if (m_waitingStreamCount == 0U)
+        {
+            return;
+        }
+        m_waitingStreamCount = 0U;
+        for (auto &entry: m_pendingStreams)
+        {
+            if (const std::coroutine_handle<> waiter = std::exchange(entry.second.waiter, nullptr); waiter != nullptr)
+            {
+                // 排到本层循环的调度器上，而不是在驱动者的栈上直接恢复：驱动者与等待者可能为同一批
+                // 帧来回互叫好几趟，内联恢复会把调用栈按往返次数叠起来
+                m_loop.scheduler().schedule(waiter);
+            }
+        }
+    }
+
+    bool Http2ClientConnection::StreamAwaiter::await_ready() const noexcept
+    {
+        const auto iterator = m_connection->m_pendingStreams.find(m_streamId);
+        if (iterator == m_connection->m_pendingStreams.end())
+        {
+            return true; // 记录都不在了，没有可等的东西
+        }
+        const PendingStream &stream = iterator->second;
+        // 「此刻没人驱动连接」这一条不能省：等着的人里必须有一个去当驱动者，否则全体挂起、
+        // 连上再没人读字节，连接就地僵在这里
+        return stream.isResponseComplete || stream.isReset || !m_connection->isHealthy()
+               || !m_connection->m_isPumpLeaseTaken;
+    }
+
+    bool Http2ClientConnection::StreamAwaiter::await_suspend(const std::coroutine_handle<> waiter) noexcept
+    {
+        auto &connection = *m_connection;
+        const auto iterator = connection.m_pendingStreams.find(m_streamId);
+        if (iterator == connection.m_pendingStreams.end())
+        {
+            return false; // 挂不上就不挂：让协程继续往下走，它自己的收尾逻辑会处理
+        }
+        iterator->second.waiter = waiter;
+        ++connection.m_waitingStreamCount;
+        return true;
     }
 
     bool Http2ClientConnection::appendHeaderBlockFragment(PendingStream &stream, const std::string_view fragment)
@@ -604,7 +669,13 @@ namespace AsynGyanis::Net
             if (availableByteCount <= 0)
             {
                 // 窗口用尽：等对端的 WINDOW_UPDATE。等待期间照常处理它送来的其它帧，否则就成了
-                // 「本端不发、对端也不发」的双向死锁
+                // 「本端不发、对端也不发」的双向死锁；驱动权在别人手上时先让开，等叫醒再看窗口
+                if (!tryTakePumpLease())
+                {
+                    co_await StreamAwaiter(*this, stream.streamId);
+                    continue;
+                }
+                const PumpLease lease(*this);
                 if (!co_await pumpSome())
                 {
                     co_return false;
@@ -700,6 +771,13 @@ namespace AsynGyanis::Net
             {
                 break;
             }
+            if (!tryTakePumpLease())
+            {
+                // 别人在驱动这条通路：他会顺手把我们的流往前推，推完这一轮把挂着的人叫醒
+                co_await StreamAwaiter(*this, streamId);
+                continue;
+            }
+            const PumpLease lease(*this);
             if (!co_await pumpSome())
             {
                 break;
@@ -739,5 +817,7 @@ namespace AsynGyanis::Net
         // 这里**不清**在途流的记录：每条流的记录由提起它的那个请求协程自己收走（它可能正拿着这条记录的
         // 引用跨 co_await，就地清掉等于把引用悬空）。本端判死之后所有等待方都会因 isHealthy() 转假而收尾
         m_transport->close();
+        // 挂在这条连接上的请求协程不需要在这里叫：它们都是挂在「驱动者」身上等的，而通路一关，正在
+        // 读通路的驱动者必然醒来（读到异常），它在放开租约时统一叫醒大家
     }
 } // namespace AsynGyanis::Net

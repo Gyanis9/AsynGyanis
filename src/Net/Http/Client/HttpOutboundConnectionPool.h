@@ -212,23 +212,32 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 取回某台主机上留着的那条 HTTP/2 连接
-         * @details h2 一条连接就够：多路复用是**流级**的，同一条连接上再开第二条只是白占一个
-         *          描述符与一份 HPACK 动态表。已被对端收尾或通路已断的连接在这里当场收口并返回空，
-         *          调用方据此重开一条——「空闲期间对端把连接关了」这件事在这里只能靠取用后的第一次
-         *          读写暴露出来，所以能不能重来一次由调用方按「有没有收到过响应的第一个字节」判。
+         * @details h2 的连接可以**同时**给好几个请求用（复用发生在流上），所以这里不交出所有权：
+         *          取到的人手里只是一份共同持有的引用，取用次数不影响它在池里的位置。已断开或已被
+         *          对端收尾的那条在这里当场作废并返回空——判死不留缓存，HPACK 动态表跟着连接一起作废。
          * @param endpointKey 目标身份
-         * @return std::unique_ptr<Http2ClientConnection> 可用则交出所有权；没有可复用的返回空
+         * @return std::shared_ptr<Http2ClientConnection> 可用则给出一份引用；没有可复用的返回空
          */
-        [[nodiscard]] std::unique_ptr<Http2ClientConnection> acquireHttp2(const HttpOutboundEndpointKey &endpointKey);
+        [[nodiscard]] std::shared_ptr<Http2ClientConnection> acquireHttp2(const HttpOutboundEndpointKey &endpointKey);
 
         /**
-         * @brief 用完还回来；已经不可用的连接当场收口
-         * @param connection 这次请求结束后的 h2 连接（交出所有权；传空等同于本就没建起来）
+         * @brief 把一条刚建好的 h2 连接放进缓存；不可用的直接不收
+         * @param endpointKey 这条连接的目标身份
+         * @param connection 已完成前奏的连接（与调用方共同持有）
          */
-        void releaseHttp2(std::unique_ptr<Http2ClientConnection> connection);
+        void adoptHttp2(const HttpOutboundEndpointKey &endpointKey, std::shared_ptr<Http2ClientConnection> connection);
 
         /// 池里留着的 h2 连接条数（测试与观测用；与下面那条 h1 的空闲数各量各的）
         [[nodiscard]] std::size_t idleHttp2ConnectionCount() const noexcept;
+
+        /**
+         * @brief 最忙的那条 h2 连接上同时在途的流数（测试与观测用）
+         * @details 单看连接条数判不出复用：两条连接各服务一条请求，与一条连接同时服务两条，那个数都是 2。
+         *          这里取的是各条连接的**最大值**，也就是本端实测到的复用度——一台主机只留一条连接，
+         *          故「连接一条、复用度二」只能解释为两条请求共用了同一条连接。
+         * @return std::size_t 各条留着的 h2 连接里在途流数最大的那个；池里没货返回 0
+         */
+        [[nodiscard]] std::size_t http2MaximumInFlightStreamCount() const noexcept;
 
         /// 当前空闲条数（测试与观测用）
         [[nodiscard]] std::size_t idleConnectionCount() const noexcept;
@@ -249,10 +258,9 @@ namespace AsynGyanis::Net
         /// 按键分组的空闲连接：键的顺序不稳定问题不成问题（这里只按组取用，不对外给出次序）
         std::map<HttpOutboundEndpointKey, std::vector<IdleEntry>> m_idleByEndpoint;
 
-        /// 每台主机留一条 h2 连接：它不进上面那张表——h1 的空闲表管的是「一条连接一次一个请求」，
-        /// 而 h2 的连接在两次请求之间本来就是待命状态，套同一套空闲时限只会在对端还认它的时候
-        /// 白白重做握手
-        std::map<HttpOutboundEndpointKey, std::unique_ptr<Http2ClientConnection>> m_http2ByEndpoint;
+        /// 每台主机留一条 h2 连接，与调用方共同持有：它不像 h1 那样一次租给一个请求，也不按
+        /// idleTimeout 收（对端还认它就一直用），要收的是「已经断了」这件事——只在取用时判
+        std::map<HttpOutboundEndpointKey, std::shared_ptr<Http2ClientConnection>> m_http2ByEndpoint;
         Config m_config;
     };
 } // namespace AsynGyanis::Net

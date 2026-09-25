@@ -5,6 +5,7 @@
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http2/Http2ClientConnection.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace AsynGyanis::Net
@@ -246,30 +247,35 @@ namespace AsynGyanis::Net
         m_idleByEndpoint.clear();
         for (auto &entry: m_http2ByEndpoint)
         {
-            // 只 close 不 shutdown：这条入口的语义是「立刻把描述符还掉」，而发 GOAWAY 要等一次写出
-            entry.second->close();
+            // 只收空闲的那部分（与 h1 侧同一个契约）：h2 的连接是与调用方共同持有的，这里 close()
+            // 一条正被人用的连接等于把别人的请求掐了。只 close 不 shutdown：这条入口的语义是「立刻
+            // 把描述符还掉」，而发 GOAWAY 要等一次写出
+            if (entry.second->inFlightStreamCount() == 0U)
+            {
+                entry.second->close();
+            }
         }
         m_http2ByEndpoint.clear();
     }
 
     HttpOutboundConnectionPool::~HttpOutboundConnectionPool() = default;
 
-    std::unique_ptr<Http2ClientConnection> HttpOutboundConnectionPool::acquireHttp2(const HttpOutboundEndpointKey &endpointKey)
+    std::shared_ptr<Http2ClientConnection> HttpOutboundConnectionPool::acquireHttp2(const HttpOutboundEndpointKey &endpointKey)
     {
         const auto iterator = m_http2ByEndpoint.find(endpointKey);
         if (iterator == m_http2ByEndpoint.end())
         {
             return nullptr;
         }
-        std::unique_ptr<Http2ClientConnection> connection = std::move(iterator->second);
-        m_http2ByEndpoint.erase(iterator);
         // 交出去之前先问一句还能不能用：对端在空闲期间把连接收掉时，连接层已经知道这件事了。
         // 判死就不回头——HPACK 动态表跟着连接一起作废，再拿它发下一条只会解歪
-        if (!connection->isHealthy())
+        if (!iterator->second->isHealthy())
         {
+            m_http2ByEndpoint.erase(iterator);
             return nullptr;
         }
-        return connection;
+        // 不摘走：h2 的连接能同时供几条请求用，摘走等于每次取用都独占一条
+        return iterator->second;
     }
 
     std::size_t HttpOutboundConnectionPool::idleHttp2ConnectionCount() const noexcept
@@ -277,14 +283,32 @@ namespace AsynGyanis::Net
         return m_http2ByEndpoint.size();
     }
 
-    void HttpOutboundConnectionPool::releaseHttp2(std::unique_ptr<Http2ClientConnection> connection)
+    std::size_t HttpOutboundConnectionPool::http2MaximumInFlightStreamCount() const noexcept
+    {
+        std::size_t maximumStreamCount = 0;
+        for (const auto &entry: m_http2ByEndpoint)
+        {
+            // 逐条取最大而不是求和：求和会把「两条连接各一条流」也算成 2，那样就分不出复用了
+            maximumStreamCount = std::max(maximumStreamCount, entry.second->inFlightStreamCount());
+        }
+        return maximumStreamCount;
+    }
+
+    void HttpOutboundConnectionPool::adoptHttp2(const HttpOutboundEndpointKey &endpointKey,
+                                                std::shared_ptr<Http2ClientConnection> connection)
     {
         if (connection == nullptr || !connection->isHealthy())
         {
-            return; // 不可用的那条就地作废：函数返回即析构，通路当场关掉
+            return; // 不可用的那条不收：最后一个持有者放手时通路随之关掉
         }
-        // 一台主机只留一条：h2 的并发在流上，第二条连接换不来更多吞吐，只多占一份描述符与一张
-        // HPACK 动态表。留着的这条被新来的顶掉时，旧的那条随之析构收口
-        m_http2ByEndpoint[connection->endpointKey()] = std::move(connection);
+        // 一台主机只留一条：h2 的并发在流上，第二条连接换不来更多吞吐，只多占一个描述符与一张
+        // HPACK 动态表。已经有货就收下一条（旧的那条继续被在途请求持有，去留不由这里做主）
+        const auto iterator = m_http2ByEndpoint.find(endpointKey);
+        if (iterator != m_http2ByEndpoint.end() && iterator->second->isHealthy())
+        {
+            return;
+        }
+        m_http2ByEndpoint[endpointKey] = std::move(connection);
     }
+
 } // namespace AsynGyanis::Net

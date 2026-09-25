@@ -36,6 +36,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -576,6 +577,177 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        /// 一条池化连接同时供两条并发请求时的结论
+        struct SharedConnectionRunOutcome
+        {
+            int         warmupStatusCode{0};               ///< 暖场那条（当时池里还没东西可复用）的状态码
+            std::string warmupReasonPhrase;                ///< 暖场那条的原因短语，h2 没有这一项
+            int         firstStatusCode{0};                ///< 第一条并发请求的状态码；0 表示这条失败了
+            int         secondStatusCode{0};               ///< 第二条并发请求的状态码；0 表示这条失败了
+            std::string firstReasonPhrase;                 ///< 第一条的原因短语
+            std::string secondReasonPhrase;                ///< 第二条的原因短语
+            std::size_t heldConnectionCount{0};            ///< 采样那一刻池里留着的 h2 连接条数
+            std::size_t multiplexedStreamCount{0};         ///< 采样那一刻最忙一条连接上同时在途的流数
+        };
+
+        /**
+         * @brief 发一条 GET，把状态码与原因短语写回调用方给的格子
+         * @details 输出走引用而不是返回值：这条协程要和兄弟协程并发跑在同一个循环上，驱动协程不能
+         *          直接 co_await 它（一个 Task 只能被读一次），只能事后读这些格子。
+         * @param client 被测客户端（持有池）
+         * @param url 请求地址
+         * @param statusCode 输出：状态码；失败为 0
+         * @param reasonPhrase 输出：原因短语，h2 没有这一项
+         * @param finishedRequestCount 输出：已收口的条数，驱动协程据此判断何时可以停
+         */
+        Core::Task<void> runOnePooledGet(HttpClient &client, const std::string &url, int &statusCode,
+                                        std::string &reasonPhrase, std::size_t &finishedRequestCount)
+        {
+            const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
+            statusCode = response ? response->statusCode : 0;
+            reasonPhrase = response ? response->reasonPhrase : std::string{};
+            ++finishedRequestCount;
+            co_return;
+        }
+
+        /**
+         * @brief 每 1 毫秒让出一次循环，直到谓词为真或时限用完
+         * @details 有界：上限用完既不抛也不挂，让调用方把「没等到」报成断言失败。用在客户端循环里，
+         *          是因为这几处的时机只能由循环自己推进（测试线程一等就会把协程卡死）。
+         * @param loop 承载等待的事件循环
+         * @param isSatisfied 每轮询问一次的谓词
+         * @param timeout 等待上限
+         */
+        Core::Task<void> waitUntil(Core::EventLoop &loop, const std::function<bool()> &isSatisfied,
+                                   const std::chrono::milliseconds timeout)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (!isSatisfied() && std::chrono::steady_clock::now() < deadline)
+            {
+                Core::Timer pollTimer(loop);
+                co_await pollTimer.waitFor(std::chrono::milliseconds{1});
+            }
+            co_return;
+        }
+
+        /**
+         * @brief 先暖场一条让池里留下连接，再并发发两条，并在两条都还在途时采样复用度
+         * @details 采样点读的是客户端自己的计数（池里的连接条数与最忙一条上的在途流数），因此不需要
+         *          「睡一段时间再看」——慢路由把那两条请求按在途中，采样协程每 1 毫秒让出一次循环，
+         *          时机由计数本身决定。暖场那一条是必需的：冷池里两条并发请求各要开一条连接，
+         *          那时候复用度为 1 才是对的行为。
+         * @param loop 客户端事件循环
+         * @param client 被测客户端（持有池）
+         * @param warmUrl 暖场地址（快路由）
+         * @param slowUrl 并发地址（慢路由）
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runSharedConnectionGets(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl,
+                                                 const std::string &slowUrl, SharedConnectionRunOutcome &outcome)
+        {
+            const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
+            outcome.warmupStatusCode = warmup ? warmup->statusCode : 0;
+            outcome.warmupReasonPhrase = warmup ? warmup->reasonPhrase : std::string{};
+
+            std::size_t finishedRequestCount = 0;
+            Core::Task<void> first = runOnePooledGet(client, slowUrl, outcome.firstStatusCode,
+                                                    outcome.firstReasonPhrase, finishedRequestCount);
+            Core::Task<void> second = runOnePooledGet(client, slowUrl, outcome.secondStatusCode,
+                                                     outcome.secondReasonPhrase, finishedRequestCount);
+            if (!first.isReady())
+            {
+                loop.scheduler().schedule(first.handle());
+            }
+            if (!second.isReady())
+            {
+                loop.scheduler().schedule(second.handle());
+            }
+
+            // 两次有界的轮询：时机由计数本身决定，不靠睡
+            co_await waitUntil(loop, [&client] { return client.http2MaximumInFlightStreamCount() >= 2U; },
+                               std::chrono::seconds{2});
+            outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
+            outcome.multiplexedStreamCount = client.http2MaximumInFlightStreamCount();
+
+            co_await waitUntil(loop, [&finishedRequestCount] { return finishedRequestCount >= 2U; },
+                               std::chrono::seconds{4});
+            loop.stop();
+            co_return;
+        }
+
+        /**
+         * @brief 注册一条「进门即计数、按住 400 毫秒再回正文」的 GET 路由（路径 /slow）
+         * @details 400 毫秒是给客户端侧留的观察窗口：慢到够在客户端循环里采样到「请求仍在途」，
+         *          又远不到默认的请求时限。等待挂在服务器的循环上，不占线程。
+         * @param router 被测服务器的路由器
+         * @param serverLoop 服务器的事件循环（定时器挂在它上面）
+         * @param entryCount 可选的输出：处理器每被进一次加一，空指针表示不计数
+         */
+        void registerHoldingRoute(Router &router, Core::EventLoop &serverLoop, std::atomic<std::size_t> *const entryCount)
+        {
+            router.get("/slow",
+                       [&serverLoop, entryCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            {
+                if (entryCount != nullptr)
+                {
+                    ++(*entryCount);
+                }
+                Core::Timer processingTimer(serverLoop);
+                co_await processingTimer.waitFor(std::chrono::milliseconds{400});
+                response.setBody("served-slow");
+                co_return;
+            });
+        }
+
+        /// 「请求还在途就收口空闲连接」的结论
+        struct CloseWhileBusyRunOutcome
+        {
+            int         warmupStatusCode{0};       ///< 暖场那条的状态码：它把连接放进池里，是后面的前提
+            int         statusCode{0};             ///< 在途那条请求最终的状态码
+            std::string reasonPhrase;              ///< 在途那条的原因短语，h2 没有这一项
+            std::size_t inFlightWhenClosed{0};     ///< 收口那一刻最忙一条连接上的在途流数
+            std::size_t heldBeforeClose{0};        ///< 收口之前池里留着的 h2 连接条数
+            std::size_t heldAfterClose{0};         ///< 收口之后池里留着的 h2 连接条数
+        };
+
+        /**
+         * @brief 暖场一条、再起一条慢请求，等它上了线就调用 closeIdleConnections()
+         * @details 收口点刻意落在「请求在途」这段时间里：这条入口的契约是只收空闲的，正被人用的那条
+         *          不能掐。判据用「慢路由被进了几次」而不是「请求是否 200」——把在途请求掐断之后，
+         *          调用方仍可能走一遍重连重来，状态码照样是 200，只有重复进入会露出那次重发。
+         * @param loop 客户端事件循环
+         * @param client 被测客户端（持有池）
+         * @param warmUrl 暖场地址（快路由）
+         * @param slowUrl 在途地址（慢路由）
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runCloseWhileBusy(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl,
+                                          const std::string &slowUrl, CloseWhileBusyRunOutcome &outcome)
+        {
+            const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
+            outcome.warmupStatusCode = warmup ? warmup->statusCode : 0;
+
+            std::size_t finishedRequestCount = 0;
+            Core::Task<void> busy = runOnePooledGet(client, slowUrl, outcome.statusCode, outcome.reasonPhrase,
+                                                    finishedRequestCount);
+            if (!busy.isReady())
+            {
+                loop.scheduler().schedule(busy.handle());
+            }
+
+            co_await waitUntil(loop, [&client] { return client.http2MaximumInFlightStreamCount() >= 1U; },
+                               std::chrono::seconds{2});
+            outcome.inFlightWhenClosed = client.http2MaximumInFlightStreamCount();
+            outcome.heldBeforeClose = client.idleHttp2ConnectionCount();
+            client.closeIdleConnections();
+            outcome.heldAfterClose = client.idleHttp2ConnectionCount();
+
+            co_await waitUntil(loop, [&finishedRequestCount] { return finishedRequestCount >= 1U; },
+                               std::chrono::seconds{4});
+            loop.stop();
+            co_return;
+        }
+
         /**
          * @brief 临时把 SSL_CERT_FILE 指向某张证书，让出站客户端信任它
          * @details 客户端只认系统 CA 库（SSL_CTX_set_default_verify_paths），而仓库夹具是自签的；
@@ -842,6 +1014,95 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.heldConnectionCount, 1U) << "三条请求之后池里没留着 h2 连接：每条都在重做握手";
         EXPECT_EQ(outcome.activeWhileHeld, 1U) << "服务端侧的连接数与客户端对不上：复用没成立";
         EXPECT_EQ(outcome.activeAfterClose, 0U) << "closeIdleConnections 之后服务端还认着这条连接：本端只是丢了指针";
+    }
+
+    /**
+     * @brief 钉住：池里已有一条 h2 连接时，两条并发请求共用这一条而不是各开一条
+     * @details 判据是采样那一刻「池里一条连接、最忙那条上两条在途流」：一台主机只留一条连接，这个组合
+     *          只能解释为两条请求共用了同一条通路。若取用时把连接从池里摘走（那是 h1 的租用语义），
+     *          第二条就问不到货、只能重做一遍 TLS 握手，采样会停在「一条连接、一条流」——而那正是
+     *          本条要拦住的退化。两条都以 200 收口，顺带钉住复用没把并发请求做丢；原因短语全空钉住
+     *          这三条走的都是 h2。
+     */
+    TEST(HttpsServer, PooledClientMultiplexesConcurrentRequestsOnOneConnection)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                                          [](Router &router, Core::EventLoop &serverLoop)
+                                          {
+                                              registerHoldingRoute(router, serverLoop, nullptr);
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        const std::string hostPrefix = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
+        // 两个地址必须是具名对象：驱动协程按引用拿着它们，跨过 co_await 之后还要读
+        const std::string warmUrl = hostPrefix + "/hello";
+        const std::string slowUrl = hostPrefix + "/slow";
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        SharedConnectionRunOutcome outcome;
+        auto work = runSharedConnectionGets(loop, client, warmUrl, slowUrl, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+        EXPECT_EQ(outcome.warmupStatusCode, 200) << "暖场那条没成功：后面的采样就没有前提";
+        EXPECT_TRUE(outcome.warmupReasonPhrase.empty()) << "暖场那条走的是 HTTP/1.1：ALPN 没选到 h2，复用无从谈起";
+        EXPECT_EQ(outcome.heldConnectionCount, 1U) << "两条并发请求在途时池里不是一条连接：复用没成立";
+        EXPECT_EQ(outcome.multiplexedStreamCount, 2U) << "最忙那条连接上只有一条在途流：第二条请求另开了一条连接";
+        EXPECT_EQ(outcome.firstStatusCode, 200);
+        EXPECT_EQ(outcome.secondStatusCode, 200) << "两条并发请求有条没收口：复用把请求做丢了";
+        EXPECT_TRUE(outcome.firstReasonPhrase.empty());
+        EXPECT_TRUE(outcome.secondReasonPhrase.empty());
+    }
+
+    /**
+     * @brief 钉住：closeIdleConnections() 只收空闲的那部分，正被人用的 h2 连接不受影响
+     * @details 主判据是「慢路由只被进了一次」：把在途的那条也关掉时，客户端会重连再发一遍，状态码
+     *          仍是 200，只有重复进入能露出那次悄悄的重发。另外三条把前提与放手一侧钉住：收口那一刻
+     *          请求确实在途（否则这条什么都没测到）、收口之前池里确实有一条、收口之后池里确实空了。
+     */
+    TEST(HttpsServer, CloseIdleConnectionsLeavesInFlightHttp2RequestAlone)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        // 计数器先声明、夹具后声明：处理器在服务器的循环线程上摸它，夹具销毁时那条线程已经 join 完
+        std::atomic<std::size_t> slowHandlerEntryCount{0};
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                                          [&slowHandlerEntryCount](Router &router, Core::EventLoop &serverLoop)
+                                          {
+                                              registerHoldingRoute(router, serverLoop, &slowHandlerEntryCount);
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        const std::string hostPrefix = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
+        const std::string warmUrl = hostPrefix + "/hello";
+        const std::string slowUrl = hostPrefix + "/slow";
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        CloseWhileBusyRunOutcome outcome;
+        auto work = runCloseWhileBusy(loop, client, warmUrl, slowUrl, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(outcome.warmupStatusCode, 200) << "暖场那条没成功：池里就没有等着收口的连接";
+        EXPECT_EQ(outcome.inFlightWhenClosed, 1U) << "收口那一刻那条请求并不在途：这条用例什么都没测到";
+        EXPECT_EQ(outcome.heldBeforeClose, 1U) << "收口之前池里不是一条连接：前提没成立";
+        EXPECT_EQ(outcome.heldAfterClose, 0U) << "closeIdleConnections 之后池里还留着那条：本端没放手";
+        EXPECT_EQ(outcome.statusCode, 200) << "在途的那条请求被收口打断了";
+        EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 1U)
+                << "慢路由被进了两次：在途请求被掐断之后又悄悄重发了一遍";
     }
 
     /**

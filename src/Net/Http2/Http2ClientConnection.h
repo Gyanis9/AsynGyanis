@@ -102,7 +102,12 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<bool> start(std::chrono::milliseconds waitTimeout);
 
         /**
-         * @brief 提交一条请求并等它**收齐**（本层一次只提一条请求，对端的 MAX_CONCURRENT_STREAMS 因此无需记账）
+         * @brief 提交一条请求并等它收齐；同一条连接上可以并发提多条（各占一条流）
+         * @details 并发的正确性由两件事保证：通路同一时刻只有一个协程在读（驱动租约），而解出来的帧
+         *          按流号分发到各自的记录上；驱动者跑完一轮把挂着的人都叫醒，谁发现自己那条流还没收齐
+         *          就接手驱动。对端的 MAX_CONCURRENT_STREAMS 本层不代作节流：几条并发请求就占几条流，
+         *          越限时由对端回 REFUSED_STREAM，本层既不排队也不重发（把它翻译成「等一等再来」是调用方
+         *          的策略，本层不知道调用方愿意排队还是愿意快速失败）。
          * @param scheme 目标 URI 的协议名，写进 :scheme（只允许 "http" 与 "https"）
          * @param authority 目标主机[:端口]，写进 :authority
          * @param method 请求方法，写进 :method
@@ -135,13 +140,76 @@ namespace AsynGyanis::Net
         /// 通路是否还能用（没被对端收掉、也没被本端判死或关掉）
         [[nodiscard]] bool isHealthy() const noexcept;
 
-        /**
-         * @brief 这条连接的目标身份，透传自底层通路
-         * @return const HttpOutboundEndpointKey & 池按它归组复用
-         */
-        [[nodiscard]] const HttpOutboundEndpointKey &endpointKey() const noexcept { return m_transport->endpointKey(); }
+        /// 在途（已提出、还没收齐）的流条数：连接池据此判断这条连接是不是正被人用着
+        [[nodiscard]] std::size_t inFlightStreamCount() const noexcept { return m_pendingStreams.size(); }
 
     private:
+        /**
+         * @brief 驱动权的作用域守卫：离开作用域（含异常展开）时放开租约并叫醒挂着的人
+         * @details 少了这一层，一次穿过请求协程的异常就会把租约留在一个已经不跑的协程手上：通路再没人
+         *          去读，别人挂着的流也就永远等不到叫醒——表现是整条连接静默卡死，比一次超时长得多。
+         */
+        class PumpLease
+        {
+        public:
+            /// @param connection 已被 tryTakePumpLease() 取走租约的那条连接
+            explicit PumpLease(Http2ClientConnection &connection) noexcept : m_connection(connection) {}
+
+            /// 放开租约并叫醒等待者
+            ~PumpLease() noexcept
+            {
+                m_connection.releasePumpLease();
+                m_connection.wakeWaitingStreams();
+            }
+
+            PumpLease(const PumpLease &) = delete;
+            PumpLease &operator=(const PumpLease &) = delete;
+
+        private:
+            Http2ClientConnection &m_connection; ///< 归属连接
+        };
+
+        /**
+         * @brief request() 的等待体：这条流暂时没有我可驱动的份，挂起来等驱动者叫醒
+         * @details 一条连接同一时刻只能有一个协程在读通路（通路读是单等待者的），但响应可以落到
+         *          任何一条流上——所以「驱动者」顺手替所有人读，读完把挂着的人叫醒。这里的关键是
+         *          await_ready 的判断：只要没人驱动这条连接，等待者就必须自己上，否则大家都在等
+         *          一个不存在的驱动者，连接就地僵住。
+         */
+        class StreamAwaiter
+        {
+        public:
+            /**
+             * @brief 构造等待体
+             * @param connection 所属连接对象（生命周期由本次等待覆盖）
+             * @param streamId 等的是哪条流
+             */
+            StreamAwaiter(Http2ClientConnection &connection, const std::uint32_t streamId) noexcept
+                : m_connection(&connection), m_streamId(streamId)
+            {
+            }
+
+            /**
+             * @brief 这条流已有结论、或此刻没人驱动连接时就地完成（后者由我本人去驱动）
+             * @return true 不必挂起
+             */
+            [[nodiscard]] bool await_ready() const noexcept;
+
+            /**
+             * @brief 把本协程登记在这条流上，等驱动者的下一轮叫醒
+             * @param waiter 当前协程句柄
+             * @return true 已登记、可以挂起；false 没处登记（记录已不在），协程直接继续往下走
+             */
+            bool await_suspend(std::coroutine_handle<> waiter) noexcept;
+
+            /// 醒来即完成：结论本来就在流记录里，等待体不额外带东西
+            void await_resume() const noexcept {}
+
+        private:
+            Http2ClientConnection *m_connection; ///< 所属连接（非拥有）
+            std::uint32_t m_streamId;            ///< 等的那条流
+        };
+
         /// 一条在途请求的收包状态。窗口与头块片段按流记：同一条连接上并发跑几条时，各自的账不能互相顶
         struct PendingStream
         {
@@ -174,6 +242,18 @@ namespace AsynGyanis::Net
 
         /// 从通路上读一段字节、处理其中完整的帧，并把攒下的回帧一次写出；返回 false 表示通路不可用
         Core::Task<bool> pumpSome();
+
+        /**
+         * @brief 试着当这一轮的连接驱动者：已经有人在读通路时返回 false
+         * @return true 租约归我，调用方必须配对调用 releasePumpLease()
+         */
+        [[nodiscard]] bool tryTakePumpLease() noexcept;
+
+        /// 交出驱动权。只放开租约不叫醒人——叫醒由驱动者在处理完这一轮之后统一做
+        void releasePumpLease() noexcept;
+
+        /// 叫醒挂在这条连接上的请求协程：它们会各自再看一眼自己的流，需要驱动的那个来接租约
+        void wakeWaitingStreams() noexcept;
 
         /// 把攒下的待发字节一次写出去（写完清空）；通路出错时为 false
         Core::Task<bool> flushOutgoing();
@@ -221,6 +301,8 @@ namespace AsynGyanis::Net
         std::int64_t m_peerMaximumFrameByteSize{16384};       ///< 对端能收的最大帧负载
         std::uint32_t m_peerInitialStreamWindowByteCount{65535}; ///< 对端通告的流初始窗口，用于换算新流窗口
         std::map<std::uint32_t, PendingStream> m_pendingStreams;
+        bool m_isPumpLeaseTaken{false};            ///< 这一轮谁在驱动通路的读写：同一时刻只许一个
+        std::size_t m_waitingStreamCount{0};       ///< 挂在 StreamAwaiter 上的请求协程数
         bool m_isHealthy{true};                    ///< 连接层是否还能用
         bool m_isPeerGoAway{false};                ///< 对端是否已通告收尾
         bool m_isPeerSettingsReceived{false};      ///< 是否已收到对端的 SETTINGS（能提请求的前提）

@@ -582,6 +582,7 @@ namespace AsynGyanis::Net
         {
             const std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::now();
             const bool isKeepAlive = pool != nullptr;
+            const HttpOutboundEndpointKey endpointKey{u.host, u.port, u.scheme == "https"};
             // 请求文按要再拼：h2 那一支用不上它（帧里没有请求行），提前拼一份等于把正文整块多拷一次
             const auto makeRequestText = [&]
             {
@@ -591,15 +592,13 @@ namespace AsynGyanis::Net
 
             if (pool != nullptr)
             {
-                const HttpOutboundEndpointKey key{u.host, u.port, u.scheme == "https"};
                 // h2 的待命连接问在 h1 的空闲表之前：一台主机的 ALPN 结果是稳定的，两处不会同时有货
-                if (auto cachedHttp2 = pool->acquireHttp2(key); cachedHttp2 != nullptr)
+                if (auto cachedHttp2 = pool->acquireHttp2(endpointKey); cachedHttp2 != nullptr)
                 {
                     Http2Exchange cachedExchange = co_await exchangeOnHttp2(
                             *cachedHttp2, u, method, contentType, body, startedAt, requestTimeout);
                     if (cachedExchange.response)
                     {
-                        pool->releaseHttp2(std::move(cachedHttp2));
                         co_return std::move(cachedExchange.response);
                     }
                     if (cachedExchange.isAnyByteReceived)
@@ -610,7 +609,7 @@ namespace AsynGyanis::Net
                     // 条竞态）。这条就此作废——不作废也没有下一句，HPACK 动态表跟着连接一起丢——
                     // 直接往下重开一条重来一次，对调用方仍是一次成功请求
                 }
-                if (auto reused = pool->acquire(key))
+                if (auto reused = pool->acquire(endpointKey))
                 {
                     const std::optional<std::chrono::milliseconds> reusedBudget = remainingBudget(startedAt, requestTimeout);
                     if (reusedBudget.has_value())
@@ -651,7 +650,7 @@ namespace AsynGyanis::Net
             }
             else
             {
-                connection = co_await establishPlainConnection(loop, HttpOutboundEndpointKey{u.host, u.port, false});
+                connection = co_await establishPlainConnection(loop, endpointKey);
             }
             if (!connection)
             {
@@ -662,24 +661,22 @@ namespace AsynGyanis::Net
                 // ALPN 选到了 h2：换一种说话方式。前奏在这里走——从池里拿回来的那条早就走过了，
                 // 所以这一步只属于「刚建好的」这一支
                 const std::optional<std::chrono::milliseconds> startBudget = remainingBudget(startedAt, requestTimeout);
-                auto http2Connection = std::make_unique<Http2ClientConnection>(loop, std::move(connection));
+                auto http2Connection = std::make_shared<Http2ClientConnection>(loop, std::move(connection));
                 if (!startBudget.has_value() || !co_await http2Connection->start(*startBudget))
                 {
                     co_return nullptr;
                 }
                 Http2Exchange freshExchange = co_await exchangeOnHttp2(
                         *http2Connection, u, method, contentType, body, startedAt, requestTimeout);
-                if (pool != nullptr)
-                {
-                    if (http2Connection->isHealthy())
-                    {
-                        pool->releaseHttp2(std::move(http2Connection));
-                    }
-                }
-                else
+                if (pool == nullptr)
                 {
                     // 没有池就是一次性的：主动 shutdown 而不是任其析构，否则对端把这次收口记成 abrupt
                     co_await http2Connection->shutdown();
+                }
+                else if (http2Connection->isHealthy())
+                {
+                    // 收进池里留着待命；不健康的那条不收，跟着最后一个持有者一起收口
+                    pool->adoptHttp2(endpointKey, std::move(http2Connection));
                 }
                 co_return std::move(freshExchange.response);
             }
@@ -745,6 +742,11 @@ namespace AsynGyanis::Net
     std::size_t HttpClient::idleHttp2ConnectionCount() const noexcept
     {
         return m_pool.idleHttp2ConnectionCount();
+    }
+
+    std::size_t HttpClient::http2MaximumInFlightStreamCount() const noexcept
+    {
+        return m_pool.http2MaximumInFlightStreamCount();
     }
 
     void HttpClient::closeIdleConnections() noexcept

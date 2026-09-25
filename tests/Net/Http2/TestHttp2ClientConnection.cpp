@@ -12,6 +12,8 @@
 
 #include <array>
 #include <chrono>
+#include <algorithm>
+#include <coroutine>
 #include <memory>
 #include <string>
 #include <thread>
@@ -342,6 +344,190 @@ namespace AsynGyanis::Net
             isStarted = co_await connection->start(kClientWaitTimeout);
             co_return;
         }
+        /// 两条请求同时在一条连接上跑完之后留下的结论
+        struct MultiplexRunOutcome
+        {
+            bool isStarted{false};
+            std::vector<std::string> bodies;   ///< 每条请求的正文，按提交顺序
+            std::vector<std::string> errors;   ///< 每条请求的失败原因（成功时为空串）
+        };
+
+        /**
+         * @brief 会合点：等 N 个子协程全部回来，再叫起驱动者
+         * @details 最后一个完成的人负责唤醒，且走循环的调度器而不是在子协程的栈上直接恢复——
+         *          驱动者一收尾就会销毁存着子协程的容器，那正好是正在跑 arrive() 的那个自己。
+         */
+        class JoinGate
+        {
+        public:
+            /**
+             * @brief 构造会合点
+             * @param loop 唤醒投递到哪条循环
+             * @param expectedCount 要等几个子协程
+             */
+            JoinGate(Core::EventLoop &loop, const std::size_t expectedCount) noexcept
+                : m_loop(&loop), m_remaining(expectedCount)
+            {
+            }
+
+            /// 一个子协程回来了；最后一个负责把驱动者排上调度器
+            void arrive() noexcept
+            {
+                if (--m_remaining != 0U || m_waiter == nullptr)
+                {
+                    return;
+                }
+                const std::coroutine_handle<> waiter = std::exchange(m_waiter, nullptr);
+                m_loop->scheduler().schedule(waiter);
+            }
+
+            /// 已经到齐就不挂
+            [[nodiscard]] bool await_ready() const noexcept { return m_remaining == 0U; }
+
+            /**
+             * @brief 登记驱动协程，等最后一个子协程来叫醒
+             * @param waiter 当前协程句柄
+             * @return true 恒挂起（构造时 expectedCount>=1，不会到齐后才进来）
+             */
+            bool await_suspend(const std::coroutine_handle<> waiter) noexcept
+            {
+                m_waiter = waiter;
+                return true;
+            }
+
+            void await_resume() const noexcept {}
+
+        private:
+            Core::EventLoop *m_loop;            ///< 唤醒投递的目标循环
+            std::size_t m_remaining;            ///< 还差几个子协程
+            std::coroutine_handle<> m_waiter{}; ///< 挂着等他们的驱动协程
+        };
+
+        /**
+         * @brief 一条「先把两条请求都收下、再倒序作答」的对端脚本
+         * @details 判并发不能靠计时：慢机器上「排队也来得及」的读法会假绿。这里让对端收齐两条
+         *          HEADERS 才开始回答，并且按**倒序**作答（后到的那条先回），每条响应的正文写成
+         *          「peer-body-<那条请求的 :path>」：正文按请求各自的身份回，判据就不依赖子协程被
+         *          调度的先后，只看每条请求拿回的是不是自己那份。
+         * @param loop 所属事件循环
+         * @param peer 对端一侧的通路
+         * @param openedRequests 输出：开始作答之前收到的「流号 + :path」，按到达顺序
+         */
+        Core::Task<void> runMultiplexPeer(Core::EventLoop &loop, TcpStream peer,
+                                          std::vector<std::pair<std::uint32_t, std::string>> &openedRequests)
+        {
+            Http2FrameDecoder decoder;
+            HpackDecoder pathDecoder;
+            try
+            {
+                std::array<char, 24> preface{};
+                co_await peer.readExact(preface.data(), preface.size());
+                static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
+                const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+                co_await peer.writeAll(greeting.data(), greeting.size());
+
+                while (openedRequests.size() < 2U)
+                {
+                    PeerFrames batch = co_await readPeerFrames(peer, decoder, 1);
+                    for (const Http2Frame &frame: batch.frames)
+                    {
+                        if (frame.header.type == Http2FrameType::Headers)
+                        {
+                            std::vector<HpackHeaderField> headerFields;
+                            std::string decodeErrorText;
+                            // 头块照样得解完：本端的编码器在动态表里留着前面几条，跳过就不动了
+                            if (pathDecoder.decode(frame.payload, headerFields, &decodeErrorText))
+                            {
+                                openedRequests.emplace_back(frame.header.streamId,
+                                                            findHeaderValue(headerFields, ":path"));
+                            }
+                        }
+                    }
+                    if (!batch.errorText.empty() || batch.frames.empty())
+                    {
+                        co_return; // 解帧出错或通路收口：把已收到的部分交给用例
+                    }
+                }
+
+                for (auto iterator = openedRequests.rbegin(); iterator != openedRequests.rend(); ++iterator)
+                {
+                    const std::uint32_t streamId = iterator->first;
+                    HpackEncoder peerEncoder;
+                    const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
+                    std::string answer = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, streamId, headerBlock);
+                    const std::string bodyText = "peer-body-" + iterator->second;
+                    answer += makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, streamId, bodyText);
+                    co_await peer.writeAll(answer.data(), answer.size());
+                }
+
+                // 本端收尾会发一条 GOAWAY；收到或通路断开就结束
+                while (true)
+                {
+                    PeerFrames batch = co_await readPeerFrames(peer, decoder, 1);
+                    for (const Http2Frame &frame: batch.frames)
+                    {
+                        if (frame.header.type == Http2FrameType::GoAway)
+                        {
+                            co_return;
+                        }
+                    }
+                    if (batch.frames.empty())
+                    {
+                        co_return;
+                    }
+                }
+            } catch (const std::exception &)
+            {
+                // 本端收口了通路：脚本就此为止，已收到的部分交给用例
+            }
+            co_return;
+        }
+
+        /// 一条并发请求：结果写进 outcome 的第 index 格，回来就在 gate 上记一笔
+        Core::Task<void> runOneMultiplexRequest(Http2ClientConnection &connection, const std::size_t index,
+                                                MultiplexRunOutcome &outcome, JoinGate &gate)
+        {
+            Http2ClientResponse response = co_await connection.request("http", "peer", "GET",
+                                                                      index == 0U ? "/tick-a" : "/tick-b",
+                                                                      {}, {}, kClientWaitTimeout);
+            outcome.bodies[index] = std::move(response.body);
+            outcome.errors[index] = std::move(response.errorMessage);
+            gate.arrive();
+            co_return;
+        }
+
+        /// 走「描述符对 + 多路复用对端」这一趟：两条请求同时在一条连接上
+        Core::Task<void> runMultiplexTask(Core::EventLoop &loop, TcpStream clientSide, MultiplexRunOutcome &outcome)
+        {
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+            if (outcome.isStarted)
+            {
+                constexpr std::size_t kRequestCount = 2U;
+                outcome.bodies.resize(kRequestCount);
+                outcome.errors.resize(kRequestCount);
+                JoinGate gate(loop, kRequestCount);
+                std::vector<Core::Task<void> > children;
+                children.reserve(kRequestCount);
+                for (std::size_t index = 0; index < kRequestCount; ++index)
+                {
+                    children.push_back(runOneMultiplexRequest(*connection, index, outcome, gate));
+                }
+                for (Core::Task<void> &child: children)
+                {
+                    if (!child.isReady())
+                    {
+                        loop.scheduler().schedule(child.handle());
+                    }
+                }
+                co_await gate;
+                co_await connection->shutdown();
+            }
+            loop.stop();
+            co_return;
+        }
+
     } // namespace
 
     /**
@@ -642,5 +828,41 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, payload, &errorText)) << errorText;
         EXPECT_EQ(static_cast<std::uint16_t>(payload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::EnhanceYourCalm))
                 << "内存闸门触发的收口要报 ENHANCE_YOUR_CALM，报成协议错误会把排查带去别处";
+    }
+
+    /**
+     * @brief 钉住：一条连接上同时跑两条请求，且响应按流号各归各的
+     * @details 对端收齐两条 HEADERS 才开始回答，并按**倒序**作答——本端要是把两条排成队，第一条永远
+     *          等不到「两条都到」；本端要是按到达顺序而不是按流号分发响应，正文就会串到另一条请求上。
+     *          两条判据都是结构性的，不靠计时，慢机器上不会假绿也不会假红。
+     */
+    TEST(Http2ClientConnection, ServesTwoConcurrentRequestsOnOneConnection)
+    {
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        std::vector<std::pair<std::uint32_t, std::string>> openedRequests;
+        MultiplexRunOutcome outcome;
+        auto peerWork = runMultiplexPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), openedRequests);
+        auto clientWork = runMultiplexTask(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        ASSERT_TRUE(outcome.isStarted) << "连接前奏没走完";
+        ASSERT_EQ(outcome.bodies.size(), 2U);
+        EXPECT_TRUE(outcome.errors[0].empty()) << "第一条失败：" << outcome.errors[0];
+        EXPECT_TRUE(outcome.errors[1].empty()) << "第二条失败：" << outcome.errors[1];
+        ASSERT_EQ(openedRequests.size(), 2U) << "对端没能同时收到两条请求：本端还在排队发";
+        // 流号按提交顺序可能是 1、3 也可能是 3、1（调度先后不由本层规定），但两条合起来必须是 1 与 3：
+        // 客户端流号必须奇数且严格递增（§5.1.1）
+        std::vector<std::uint32_t> streamIds{openedRequests[0].first, openedRequests[1].first};
+        std::sort(streamIds.begin(), streamIds.end());
+        EXPECT_EQ(streamIds[0], 1U) << "客户端首条流必须是 1（§5.1.1）";
+        EXPECT_EQ(streamIds[1], 3U) << "第二条该是 3：流号奇数且严格递增";
+        EXPECT_EQ(outcome.bodies[0], "peer-body-/tick-a") << "第一条拿到了别人的响应：" << outcome.bodies[0];
+        EXPECT_EQ(outcome.bodies[1], "peer-body-/tick-b") << "第二条拿到了别人的响应：" << outcome.bodies[1];
     }
 } // namespace AsynGyanis::Net

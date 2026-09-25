@@ -130,6 +130,13 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::size_t idleHttp2ConnectionCount() const noexcept;
 
+        /**
+         * @brief 最忙的那条待命 h2 连接上同时在途的流数（本端实测到的复用度）
+         * @details 与上面的连接条数一起读：「一条连接 + 复用度二」才是并发请求共用同一条连接的证据
+         * @return std::size_t 各条连接在途流数的最大值；池里没货返回 0
+         */
+        [[nodiscard]] std::size_t http2MaximumInFlightStreamCount() const noexcept;
+
         /// 收掉所有空闲连接：在途请求用的连接不受影响
         void closeIdleConnections() noexcept;
 
