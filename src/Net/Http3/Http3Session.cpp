@@ -19,6 +19,7 @@ namespace AsynGyanis::Net
         constexpr const char *kContentTypeHeaderName = "content-type"; ///< 正文媒体类型
         constexpr const char *kContentLengthHeaderName = "content-length"; ///< 正文长度
         constexpr const char *kDateHeaderName = "date";                ///< 响应生成时刻
+        constexpr const char *kTrailerHeaderName = "trailer";            ///< 尾部字段声明头（RFC 9110 §6.5.1）
         constexpr const char *kDefaultContentTypeValue = "text/plain"; ///< 有正文却没设类型时的缺省值
 
         /// 把字符串按字节交给只认「指针 + 长度」的接口，不留零终止的假设
@@ -91,6 +92,12 @@ namespace AsynGyanis::Net
                         LOG_DEBUG_FMT("Http3Session: 流 {} 的流式响应正文长度由 DATA 给出，已丢弃 content-length 响应头", streamId);
                         return;
                     }
+                    if (response.hasTrailerFields() && headerName == kTrailerHeaderName)
+                    {
+                        // 声明按已登记的尾部字段生成（见本函数末尾）：两条并存对端读到的就是两份可能
+                        // 不一致的承诺——与 h1 的 appendHead、h2 的采集器同一条处置
+                        return;
+                    }
                     if (headerName == kContentTypeHeaderName)
                     {
                         hasContentTypeHeader = true;
@@ -124,6 +131,36 @@ namespace AsynGyanis::Net
                 fieldLines.push_back(QpackHeaderField{.name = std::string(kDateHeaderName),
                                                       .value = std::string(currentHttpDateText())});
             }
+            if (response.hasTrailerFields())
+            {
+                // 与 h1/h2 同一条承诺：正文之后还有这些字段（RFC 9110 §6.5.1）。三条通路的声明都取自
+                // HttpResponse::trailerDeclarationValue()，拼法只有一处
+                fieldLines.push_back(QpackHeaderField{.name = std::string(kTrailerHeaderName),
+                                                      .value = response.trailerDeclarationValue()});
+            }
+            return fieldLines;
+        }
+
+        /**
+         * @brief 把响应登记的尾部字段摊平成 h3 的尾段字段行（不含 :status 与任何伪头）
+         * @details 字段形状已在 HttpResponse::addTrailerField 一处把住，这里只做容器转换；
+         *          尾段自己的合规判定由 Http3Connection 的校验器做（它才是能拒绝伪头的那一层）。
+         * @param response 业务写好的响应
+         * @return 按登记顺序排列的字段行；没登记时为空表，调用方据此根本不交尾段
+         */
+        [[nodiscard]] std::vector<QpackHeaderField> collectResponseTrailerFieldLines(const HttpResponse &response)
+        {
+            std::vector<QpackHeaderField> fieldLines;
+            if (!response.hasTrailerFields())
+            {
+                return fieldLines;
+            }
+            fieldLines.reserve(4U);
+            response.forEachTrailerField(
+                    [&fieldLines](const std::string_view name, const std::string_view value)
+                    {
+                        fieldLines.push_back(QpackHeaderField{std::string(name), std::string(value)});
+                    });
             return fieldLines;
         }
 
@@ -539,7 +576,7 @@ namespace AsynGyanis::Net
             if (response.isChunkedResponse())
             {
                 // 流式响应：响应头与各块在处理器写的过程中已经出去了，这里只做收尾
-                finishStreamingResponse(streamId, response);
+                finishStreamingResponse(streamId, response, handlerException == nullptr);
                 // 中途抛异常的流式响应只发了一半，落账等于把半成品记成已应答（与 h2 同一判据）
                 if (m_metrics != nullptr && handlerException == nullptr)
                 {
@@ -1161,7 +1198,7 @@ namespace AsynGyanis::Net
         if (response.isChunkedResponse())
         {
             // 流式响应：响应头与各块在处理器写的过程中已经出去了，这里只做收尾
-            finishStreamingResponse(streamId, response);
+            finishStreamingResponse(streamId, response, handlerException == nullptr);
         } else
         {
             finalizeResponseForHttp3(streamId, response);
@@ -1579,7 +1616,7 @@ namespace AsynGyanis::Net
         co_return !state->isStreamClosed;
     }
 
-    void Http3Session::finishStreamingResponse(const std::int64_t streamId, HttpResponse &response)
+    void Http3Session::finishStreamingResponse(const std::int64_t streamId, HttpResponse &response, const bool isBodyComplete)
     {
         const std::shared_ptr<StreamingResponse> state = streamingResponseFor(streamId);
         if (!state->isHeadSent)
@@ -1594,8 +1631,24 @@ namespace AsynGyanis::Net
             return; // 已经收过口（或会话已作废）：再交一次 END_STREAM 只会报错
         }
 
-        // 收尾：交出「正文到此为止」，连接层把最后一段与 END_STREAM 一起送出去
+        // 收尾：交出「正文到此为止」，连接层把最后一段与 END_STREAM 一起送出去。登记过尾部字段时
+        // 这次收尾改由尾段那个帧承担（RFC 9114 §4.3：尾段之后什么都不剩），位置与 h1 的
+        // 「终止块 + 字段段 + 空行」、h2 的尾部头块一一对应
         state->isFinished = true;
+        const std::vector<QpackHeaderField> trailerFieldLines =
+                isBodyComplete && !response.isStreamingBodySuppressed() ? collectResponseTrailerFieldLines(response)
+                                                                        : std::vector<QpackHeaderField>{};
+        if (!trailerFieldLines.empty())
+        {
+            if (const auto submitted = m_connection->submitResponseTrailers(streamId, trailerFieldLines); !submitted)
+            {
+                handleResponseSubmissionFailure(streamId, "提交响应尾段", submitted.error().message,
+                                                toHttp3ErrorCode(submitted.error().kind));
+                return;
+            }
+            flushPendingStreamData();
+            return;
+        }
         if (const auto appended = m_connection->appendResponseBody(streamId, std::span<const std::uint8_t>{}, true); !appended)
         {
             handleResponseSubmissionFailure(streamId, "收尾流式响应", appended.error().message, toHttp3ErrorCode(appended.error().kind));
@@ -1621,17 +1674,33 @@ namespace AsynGyanis::Net
         // 头部与 h1/h2 逐字同源：采集器负责丢连接特定字段、逐条展开可重复头并补齐类型/长度/日期
         const std::vector<QpackHeaderField> fieldLines = collectResponseFieldLines(streamId, response, false);
 
+        // 没有正文时交完头就收尾；有正文则头先走（不结束流），紧接一次把整段正文推过去并收尾。
+        // 带尾部字段时收尾交给尾段那个帧（RFC 9114 §4.3 里尾段之后什么都不剩），头与正文都不许带 FIN
+        const std::vector<QpackHeaderField> trailerFieldLines =
+                isHeadRequest ? std::vector<QpackHeaderField>{} : collectResponseTrailerFieldLines(response);
+        const bool hasTrailers = !trailerFieldLines.empty();
+
         // 没有正文时交完头就收尾；有正文则头先走（不结束流），紧接一次把整段正文推过去并收尾
-        if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, !hasBody); !submitted)
+        if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, !hasBody && !hasTrailers); !submitted)
         {
             handleResponseSubmissionFailure(streamId, "提交响应头", submitted.error().message, toHttp3ErrorCode(submitted.error().kind));
             return;
         }
         if (hasBody)
         {
-            if (const auto appended = m_connection->appendResponseBody(streamId, asBytes(body), true); !appended)
+            if (const auto appended = m_connection->appendResponseBody(streamId, asBytes(body), !hasTrailers); !appended)
             {
                 handleResponseSubmissionFailure(streamId, "提交响应正文", appended.error().message, toHttp3ErrorCode(appended.error().kind));
+                return;
+            }
+        }
+        if (hasTrailers)
+        {
+            if (const auto submitted = m_connection->submitResponseTrailers(streamId, trailerFieldLines); !submitted)
+            {
+                // 走到这里正文已经交出，这条响应因此是「发了一半就断」：原因记下来，按既有口径把
+                // 该中止的流中止掉（handleResponseSubmissionFailure 里带着线上错误码）
+                handleResponseSubmissionFailure(streamId, "提交响应尾段", submitted.error().message, toHttp3ErrorCode(submitted.error().kind));
             }
         }
     }

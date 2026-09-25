@@ -396,6 +396,39 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 按到达顺序取一条流上的每个头块（响应头部与尾部头块）
+         * @details 尾部头块是这条流上的第二个 HEADERS，只取第一块的助手看不见它——而出站 trailer 的
+         *          落点正是那第二个，END_STREAM 也必须落在它上面（RFC 9113 §7.1）。
+         * @param frames 已收到的帧
+         * @param streamId 流号
+         * @return std::vector<std::string> 每个元素是一个完整头块的字节（CONTINUATION 已并回前一块）
+         */
+        std::vector<std::string> headerBlocksOfStream(const std::vector<TestFrame> &frames, const std::uint32_t streamId)
+        {
+            std::vector<std::string> blocks;
+            std::string              current;
+            for (const TestFrame &frame: frames)
+            {
+                if (frame.streamId != streamId || (frame.type != Http2FrameType::Headers && frame.type != Http2FrameType::Continuation))
+                {
+                    continue;
+                }
+                current += frame.payload;
+                // END_HEADERS 落在哪一帧，头块就在哪一帧结束（§6.10）
+                if ((frame.flags & kHttp2FlagEndHeaders) != 0)
+                {
+                    blocks.push_back(current);
+                    current.clear();
+                }
+            }
+            if (!current.empty())
+            {
+                blocks.push_back(current); // 头块没收尾：仍交出去，让用例的断言去发现它不完整
+            }
+            return blocks;
+        }
+
+        /**
          * @brief 取一条流上收到的全部 DATA 净负载
          * @param frames 已收到的帧
          * @param streamId 流号
@@ -2379,6 +2412,98 @@ namespace AsynGyanis::Net
         EXPECT_EQ(stats.status2xxCount, 2u) << "被取消的响应不得计入状态码分类";
         EXPECT_EQ(stats.badRequestCount, 0u) << "对端取消是它的正当权利（RFC 9113 §8.1），不是协议错误";
         EXPECT_EQ(stats.streamCancelledCount, 1u) << "被取消的那条流应单独计入「单流取消」这一类";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：业务登记的尾部字段发成这条流上的第二个头块，END_STREAM 落在它身上而不是最后一片 DATA
+     * @details RFC 9113 §7.1 把两件事绑在一起：尾部头块必须自带 END_STREAM。于是最后一片 DATA 不许带它，
+     *          否则这条流在尾部字段之前就结束了，那几行字段就没有位置（本端再想发会被连接层按「本端已收尾」
+     *          拒掉）。头部的 trailer 声明一并钉住：那是让对端知道「正文之后还有东西」的唯一途径
+     *          （RFC 9110 §6.5.1），也是三条出站通路共用的同一份拼法。
+     */
+    TEST(Http2Session, SendsTrailerHeaderBlockCarryingTheEndStreamFlag)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        RunningHttp2ServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {},
+                                          [](Router &router, Core::EventLoop &)
+                                          {
+                                              router.get("/trailing", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                              {
+                                                  static_cast<void>(response.addTrailerField("x-checksum", "abc123"));
+                                                  static_cast<void>(response.addTrailerField("x-rows", "2"));
+                                                  response.setBody("trailed-body");
+                                                  co_return;
+                                              });
+                                          });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return countFrames(receivedFrames, Http2FrameType::Settings) >= 1;
+                                     },
+                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/trailing"), true), kWaitTimeout));
+
+        ASSERT_TRUE(client.pumpUntil(frames,
+                                     [](const std::vector<TestFrame> &receivedFrames)
+                                     {
+                                         return hasEndStream(receivedFrames, 1U);
+                                     },
+                                     kWaitTimeout)) << "带尾部字段的响应没有在时限内收口：上界 kWaitTimeout";
+
+        const std::vector<std::string> blocks = headerBlocksOfStream(frames, 1U);
+        ASSERT_EQ(blocks.size(), 2U) << "这条流上应当恰好有两个头块：响应头部与尾部头块";
+        HpackDecoder responseDecoder;
+        const std::vector<HpackHeaderField> headFields = decodeResponseHeaderBlock(responseDecoder, blocks[0]);
+        EXPECT_EQ(findHeaderValue(headFields, ":status"), "200");
+        EXPECT_EQ(findHeaderValue(headFields, "trailer"), "x-checksum, x-rows") << "头部没声明，或声明的字段与实际到货的对不上";
+        const std::vector<HpackHeaderField> trailerFields = decodeResponseHeaderBlock(responseDecoder, blocks[1]);
+        EXPECT_EQ(findHeaderValue(trailerFields, "x-checksum"), "abc123");
+        EXPECT_EQ(findHeaderValue(trailerFields, "x-rows"), "2");
+        EXPECT_TRUE(findHeaderValue(trailerFields, ":status").empty()) << "尾部头块里不许有伪头（§8.1.2.1）";
+        EXPECT_EQ(responseDataPayload(frames, 1U), "trailed-body") << "正文应当完整，尾部字段排在它之后";
+
+        // END_STREAM 的落点：唯一一片 DATA 不许带它，收尾由尾部头块承担（也就不需要那个零长 DATA 末片）
+        const TestFrame *lastDataFrame = nullptr;
+        const TestFrame *trailerFrame  = nullptr;
+        std::size_t      headerFrameCount = 0U;
+        for (const TestFrame &frame: frames)
+        {
+            if (frame.streamId != 1U)
+            {
+                continue;
+            }
+            if (frame.type == Http2FrameType::Data)
+            {
+                lastDataFrame = &frame;
+            }
+            if (frame.type == Http2FrameType::Headers)
+            {
+                ++headerFrameCount;
+                if (headerFrameCount == 2U)
+                {
+                    trailerFrame = &frame;
+                }
+            }
+        }
+        ASSERT_NE(lastDataFrame, nullptr);
+        EXPECT_EQ((lastDataFrame->flags & kHttp2FlagEndStream), 0U) << "最后一片 DATA 带了 END_STREAM，尾部字段就没有位置了";
+        ASSERT_NE(trailerFrame, nullptr);
+        EXPECT_NE((trailerFrame->flags & kHttp2FlagEndStream), 0U) << "尾部头块必须自带 END_STREAM（§7.1）";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";

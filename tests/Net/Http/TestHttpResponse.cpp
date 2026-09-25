@@ -980,4 +980,125 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(response.hasHeader("content-encoding")) << "reset 之后不得残留存在性";
         EXPECT_FALSE(response.hasHeader("etag"));
     }
+
+    // ============================================================================
+    // 尾部字段（trailer）：出站侧的独立存储与两条序列化出口
+    // ============================================================================
+
+    /**
+     * @brief 钉住：尾部字段自成一档存储，绝不并头部，且按登记顺序可遍历
+     * @details 「尾部字段顶着头部的身份」是这一档存储存在的全部理由：`content-length` 这类字段一旦
+     *          出现在头部视图里，同一份响应就有两个长度解释位置。遍历口径与头部那条共用权威记录，
+     *          同名两条各访问一次、顺序即登记顺序。
+     */
+    TEST(HttpResponse, KeepsTrailerFieldsInAStoreOfTheirOwn)
+    {
+        HttpResponse response;
+        static_cast<void>(response.setHeader("x-head", "head-value"));
+        ASSERT_TRUE(response.addTrailerField("X-Checksum", "abc123"));
+        ASSERT_TRUE(response.addTrailerField("x-note", "done"));
+
+        EXPECT_TRUE(response.hasTrailerFields());
+        EXPECT_EQ(response.getTrailerField("x-checksum").value_or("<none>"), "abc123") << "取值要大小写不敏感";
+        EXPECT_FALSE(response.getTrailerField("missing").has_value());
+
+        // 头部那份视图与单值映射里都不许出现尾部字段
+        EXPECT_FALSE(response.hasHeader("x-checksum")) << "尾部字段顶着头部的身份被读走了";
+        EXPECT_FALSE(response.hasHeader("x-note"));
+        EXPECT_EQ(response.headers().count("x-note"), 0U);
+
+        std::string visited;
+        response.forEachTrailerField(
+                [&visited](const std::string_view name, const std::string_view value)
+                {
+                    visited.append(name);
+                    visited.push_back('=');
+                    visited.append(value);
+                    visited.push_back(';');
+                });
+        EXPECT_EQ(visited, "x-checksum=abc123;x-note=done;");
+    }
+
+    /// 没登记过就没有这一档存储：判据、终止块形状与声明头三处都要一致地报「无」
+    TEST(HttpResponse, ReportsNoTrailerFieldsUntilOneIsAdded)
+    {
+        HttpResponse response;
+        EXPECT_FALSE(response.hasTrailerFields());
+        EXPECT_EQ(response.chunkedTerminatorText(), "0\r\n\r\n");
+        EXPECT_TRUE(response.trailerDeclarationValue().empty());
+
+        ASSERT_TRUE(response.addTrailerField("x-checksum", "abc"));
+        EXPECT_TRUE(response.hasTrailerFields());
+
+        // reset 必须把那份存储**整份解除**：留着空壳就会对新报文白补一条 Trailer 声明，
+        // 也会让 h2/h3 那边白发一个空的尾部头块
+        response.reset();
+        EXPECT_FALSE(response.hasTrailerFields()) << "reset 之后不得残留尾部字段";
+        EXPECT_FALSE(response.getTrailerField("x-checksum").has_value());
+        EXPECT_EQ(response.chunkedTerminatorText(), "0\r\n\r\n");
+    }
+
+    /**
+     * @brief 钉住：定界字段、连接级字段与非法字符做尾部字段一律拒收，且拒收后不留存储
+     * @details 依据 RFC 9112 §7.1.1.1（这些字段不得出现在尾部）与 §7.1（终止块形状）。
+     *          这里选择「返回 false 让调用方看见」而不是静默丢弃：写错字段名的业务代码若毫无察觉，
+     *          它就会一直以为自己下发的校验和生效了。
+     */
+    TEST(HttpResponse, RejectsFramingAndConnectionFieldsAsTrailers)
+    {
+        HttpResponse response;
+        EXPECT_FALSE(response.addTrailerField("content-length", "5")) << "尾部再给一个长度就是两个边界解释";
+        EXPECT_FALSE(response.addTrailerField("Transfer-Encoding", "chunked"));
+        EXPECT_FALSE(response.addTrailerField("Connection", "keep-alive"));
+        EXPECT_FALSE(response.addTrailerField("keep-alive", "timeout=5"));
+        EXPECT_FALSE(response.addTrailerField("upgrade", "websocket"));
+        EXPECT_FALSE(response.addTrailerField("x-bad", "line\r\ninjected: yes")) << "值里的 CRLF 会提前结束字段块";
+        EXPECT_FALSE(response.addTrailerField("x-nul", std::string_view{"a\0b", 3}));
+        EXPECT_FALSE(response.addTrailerField("", "empty-name"));
+        EXPECT_FALSE(response.addTrailerField("bad name", "has-space"));
+
+        EXPECT_FALSE(response.hasTrailerFields()) << "全部被拒时那份存储压根不该存在";
+        EXPECT_EQ(response.chunkedTerminatorText(), "0\r\n\r\n");
+    }
+
+    /**
+     * @brief 钉住：`Trailer:` 声明只随分块头部出现，且自设的那一条整体让位
+     * @details 非分块响应的头部之后没有放尾部字段的位置（正文由 content-length 定界），声明了就是骗人。
+     *          分块响应里声明由已登记的字段生成：调用方自设的那一条若与它并存，对端读到的是两条互相
+     *          不一致的承诺，因此整体剥掉自设的那一条。
+     */
+    TEST(HttpResponse, DeclaresTrailersOnlyForChunkedResponsesAndReplacesTheHandWrittenOne)
+    {
+        HttpResponse plain;
+        plain.setBody("hi");
+        ASSERT_TRUE(plain.addTrailerField("x-checksum", "abc"));
+        EXPECT_EQ(plain.serializeHead().find("trailer:"), std::string::npos) << "非分块响应不补声明：" << plain.serializeHead();
+
+        HttpResponse chunked;
+        chunked.startChunkedResponse(200);
+        ASSERT_TRUE(chunked.addTrailerField("x-checksum", "abc"));
+        ASSERT_TRUE(chunked.addTrailerField("x-note", "done"));
+        static_cast<void>(chunked.setHeader("trailer", "stale-hand-written"));
+
+        const std::string head = chunked.serializeHead();
+        EXPECT_TRUE(containsText(head, "trailer: x-checksum, x-note\r\n")) << head;
+        EXPECT_EQ(head.find("stale-hand-written"), std::string::npos) << "自设的声明要整体让位";
+        const std::size_t firstDeclaration = head.find("trailer:");
+        ASSERT_NE(firstDeclaration, std::string::npos);
+        EXPECT_EQ(head.find("trailer:", firstDeclaration + 1), std::string::npos) << "一条报文只该有一条声明";
+    }
+
+    /// 终止块的字节形状：裸终止块，以及「终止块 + 尾部字段段 + 空行」（RFC 9112 §7.1.2）
+    TEST(HttpResponse, BuildsChunkedTerminatorWithTheTrailerFieldSection)
+    {
+        HttpResponse chunked;
+        chunked.startChunkedResponse(200);
+        ASSERT_TRUE(chunked.addTrailerField("x-checksum", "abc"));
+        ASSERT_TRUE(chunked.addTrailerField("x-checksum", "def")) << "同名两条各上线一次，与头部同口径";
+        EXPECT_EQ(chunked.chunkedTerminatorText(), "0\r\nx-checksum: abc\r\nx-checksum: def\r\n\r\n");
+
+        chunked.reset();
+        ASSERT_TRUE(chunked.addTrailerField("x-late", "only-after-reset"));
+        EXPECT_EQ(chunked.chunkedTerminatorText(), "0\r\nx-late: only-after-reset\r\n\r\n") << "reset 之后登记的要能正常写出来";
+    }
 } // namespace AsynGyanis::Net

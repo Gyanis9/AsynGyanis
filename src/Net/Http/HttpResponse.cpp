@@ -51,6 +51,7 @@ namespace AsynGyanis::Net
         constexpr std::string_view kContentLengthHeaderName = "content-length"; ///< 正文长度头部名（小写形态）
         constexpr std::string_view kDateHeaderName = "date";                    ///< 日期头部名（小写形态）
         constexpr std::string_view kTransferEncodingHeaderName = "transfer-encoding"; ///< 传输编码头部名（小写形态）
+        constexpr std::string_view kTrailerHeaderName = "trailer";                     ///< 尾部字段声明头名（小写形态，RFC 9110 §6.5.1）
         constexpr std::string_view kChunkedTransferEncodingValue = "chunked";   ///< 分块传输编码值：正文长度未知，边界由分块帧给出（RFC 9112 §6）
         constexpr std::string_view kAutoContentTypeHeader = "content-type: text/plain\r\n";      ///< 未设媒体类型且有正文时补出的整条头部
         constexpr std::string_view kAutoContentLengthHeaderPrefix = "content-length: ";          ///< 未设正文长度时补出的头部名前缀（含冒号与空格）
@@ -182,6 +183,82 @@ namespace AsynGyanis::Net
     const std::unordered_map<std::string, std::string> &HttpResponse::headers() const
     {
         return m_headerStore.singleValueView();
+    }
+
+    bool HttpResponse::addTrailerField(const std::string_view name, const std::string_view value)
+    {
+        // 判据与 setHeader 同一张表：字段名必须是合法 token，值里不许有 CR/LF/NUL（那会提前结束
+        // 尾部字段块，等于响应拆分）。名字已按 RFC 的 tchar 判定折过大小写，比对按小写形态做
+        if (!isValidHeaderFieldName(name) || !containsOnlyFieldValueCharacters(value))
+        {
+            return false;
+        }
+        // 定界字段与连接级字段不许进尾部（RFC 9112 §7.1.1.1）：前者会给同一条报文造出两个长度
+        // 解释，后者压根不该出现在正文之后的位置。这里拒收而不是静默丢弃，调用方才看得见自己写歪了
+        const std::string normalizedName = HttpHeaderFieldStore::toCanonicalHeaderName(name);
+        if (normalizedName.front() == ':' || normalizedName == kContentLengthHeaderName
+            || normalizedName == kTransferEncodingHeaderName || isConnectionSpecificHeaderName(normalizedName))
+        {
+            return false;
+        }
+
+        if (!m_trailerStore.has_value())
+        {
+            m_trailerStore.emplace();
+        }
+        // 同名多条各占一项，序列化时逐条上线：单值视图只留首条，与头部的可重复头部同一口径
+        m_trailerStore->append(normalizedName, value);
+        return true;
+    }
+
+    std::optional<std::string> HttpResponse::getTrailerField(const std::string_view name) const
+    {
+        return m_trailerStore.has_value() ? m_trailerStore->get(name) : std::nullopt;
+    }
+
+    std::string HttpResponse::trailerDeclarationValue() const
+    {
+        if (!m_trailerStore.has_value())
+        {
+            return {};
+        }
+        std::string declaration;
+        // 名字长度已知却不敢预留：同名多条在权威记录里各占一项，声明里却只该出现一次，
+        // 具体条数要到遍历完才知道。让串自然增长比再造一张去重表便宜
+        m_trailerStore->forEachField(
+                [&declaration](const std::string_view name, const std::string_view /*value*/)
+                {
+                    if (!declaration.empty())
+                    {
+                        declaration.append(", ");
+                    }
+                    declaration.append(name);
+                });
+        return declaration;
+    }
+
+    std::string HttpResponse::chunkedTerminatorText() const
+    {
+        // 终止块本身：零长度块加收尾空行（RFC 9112 §7.1）。这五个字节落在短字符串缓冲里，
+        // 不带尾部字段的常态因此一次分配也不付
+        std::string terminator = "0\r\n\r\n";
+        if (!m_trailerStore.has_value())
+        {
+            return terminator;
+        }
+        // 有尾部字段时，终止块与收尾空行之间夹进字段段（§7.1.2）：先把固定收尾截断，
+        // 逐条追加，再补回那一次 CRLF
+        terminator.resize(3);
+        m_trailerStore->forEachField(
+                [&terminator](const std::string_view name, const std::string_view value)
+                {
+                    terminator.append(name);
+                    terminator.append(kHeaderNameValueSeparator);
+                    terminator.append(value);
+                    terminator.append(kCrLf);
+                });
+        terminator.append(kCrLf);
+        return terminator;
     }
 
     void HttpResponse::setBody(const std::string_view body)
@@ -671,6 +748,13 @@ namespace AsynGyanis::Net
                         return;
                     }
 
+                    // 声明头由本文件按已登记的尾部字段自动生成（见下面补在缺项之后的那一段）：自己再输出
+                    // 一份就会出现两条 Trailer，对端读到的承诺与实际到货的字段可能不是同一批
+                    if (m_isChunked && m_trailerStore.has_value() && name == kTrailerHeaderName)
+                    {
+                        return;
+                    }
+
                     result.append(name);
                     result.append(kHeaderNameValueSeparator);
                     result.append(value);
@@ -698,6 +782,16 @@ namespace AsynGyanis::Net
             // Date 是 RFC 9110 §6.6.1 要求源服务器在几乎所有响应上都给出的头部
             result.append(kAutoDateHeaderPrefix);
             result.append(autoDateText());
+            result.append(kCrLf);
+        }
+        if (m_isChunked && m_trailerStore.has_value())
+        {
+            // 承诺「这条消息的正文之后还有这些字段」（RFC 9110 §6.5.1）。不声明也合法——本框架自己的
+            // 收端就不采用「未声明即可忽略」那条放宽——但严格的对端有权把没声明的字段直接丢掉，
+            // 业务写进尾部的校验和于是静默消失。声明只在头部上线前那一刻有效，见 addTrailerField
+            result.append(kTrailerHeaderName);
+            result.append(kHeaderNameValueSeparator);
+            result.append(trailerDeclarationValue());
             result.append(kCrLf);
         }
 
@@ -770,6 +864,10 @@ namespace AsynGyanis::Net
         // 清权威记录并把视图标脏：下次查询会重建出空视图（只清一处会留下
         // 「视图里查得到、序列化里没有」的鬼条目）
         m_headerStore.clear();
+
+        // 尾部字段那份存储要**整份解除**而不是清空：hasTrailerFields() 判的就是「这一份在不在」，
+        // 留着一个空壳会让下一条报文白补一条 Trailer 声明，h2/h3 也会白发一个空的尾部头块
+        m_trailerStore.reset();
 
         // 正文同样是两条存储：堆串清空之外映射也要解除，
         // 否则复用响应对象时上一轮的文件会继续当正文发出去

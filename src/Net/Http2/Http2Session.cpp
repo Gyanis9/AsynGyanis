@@ -59,6 +59,7 @@ namespace AsynGyanis::Net
         constexpr std::string_view kContentTypeHeaderName = "content-type";
         constexpr std::string_view kContentLengthHeaderName = "content-length";
         constexpr std::string_view kDateHeaderName = "date";
+        constexpr std::string_view kTrailerHeaderName = "trailer";
 
         /// 自动补出的内容类型：与 HttpResponse 的兜底选择一致（不会被浏览器当脚本执行）
         constexpr std::string_view kDefaultContentTypeValue = "text/plain";
@@ -1207,7 +1208,7 @@ namespace AsynGyanis::Net
         Http2ResponseSendStatus sendStatus = Http2ResponseSendStatus::Sent;
         if (response.isChunkedResponse())
         {
-            sendStatus = co_await finishStreamingResponse(streamId, response);
+            sendStatus = co_await finishStreamingResponse(streamId, response, handlerException == nullptr);
         } else
         {
             sendStatus = co_await sendResponse(streamId, response, isHeadRequest);
@@ -1599,6 +1600,12 @@ namespace AsynGyanis::Net
                     LOG_DEBUG_FMT("Http2Session: 流式响应的正文长度由 DATA 帧给出，已丢弃 content-length 响应头");
                     return;
                 }
+                if (response.hasTrailerFields() && headerName == kTrailerHeaderName)
+                {
+                    // 声明按已登记的尾部字段生成（见本函数末尾）：业务自设的那一条若与它并存，对端读到的
+                    // 就是两份可能不一致的承诺——与 h1 的 appendHead 同一条处置
+                    return;
+                }
                 if (headerName == kContentTypeHeaderName)
                 {
                     hasContentTypeHeader = true;
@@ -1634,7 +1641,30 @@ namespace AsynGyanis::Net
             headerFields.push_back(HpackHeaderField{.name = std::string(kDateHeaderName),
                                                     .value = std::string(currentHttpDateText())});
         }
+        if (response.hasTrailerFields())
+        {
+            // 与 h1 同一条承诺：正文之后还会有这些字段（RFC 9110 §6.5.1）。三条出站通路的声明都取自
+            // HttpResponse::trailerDeclarationValue()，拼法只有一处，不会出现某一版漏了某个字段名
+            headerFields.push_back(HpackHeaderField{.name = std::string(kTrailerHeaderName),
+                                                    .value = response.trailerDeclarationValue()});
+        }
         return headerFields;
+    }
+
+    std::vector<HpackHeaderField> Http2Session::collectResponseTrailerFields(const HttpResponse &response)
+    {
+        std::vector<HpackHeaderField> trailerFields;
+        if (!response.hasTrailerFields())
+        {
+            return trailerFields;
+        }
+        trailerFields.reserve(4U);
+        response.forEachTrailerField(
+                [&trailerFields](const std::string_view name, const std::string_view value)
+                {
+                    trailerFields.push_back(HpackHeaderField{std::string(name), std::string(value)});
+                });
+        return trailerFields;
     }
 
     Core::Task<Http2ResponseSendStatus> Http2Session::sendResponse(const std::uint32_t streamId, const HttpResponse &response,
@@ -1647,11 +1677,18 @@ namespace AsynGyanis::Net
         const std::vector<HpackHeaderField> headerFields = collectResponseHeaderFields(response);
         // HEAD 只发头：正文视图换成空，头部里的 content-length 仍按完整正文补齐
         const std::string_view responseBody = isHeadRequest ? std::string_view{} : response.body();
-        const bool isBodyEmpty = responseBody.empty();
+        const bool             isBodyEmpty  = responseBody.empty();
+        // 尾部字段随 HEAD 一并省掉：HEAD 的响应按定义没有正文，也就没有「正文之后」（RFC 9110 §9.3.2）。
+        // 头部的 trailer 声明仍保留——它描述的是同一条报文若以 GET 请求会带回什么
+        const std::vector<HpackHeaderField> trailerFields = isHeadRequest ? std::vector<HpackHeaderField>{}
+                                                                         : collectResponseTrailerFields(response);
+        const bool hasTrailers = !trailerFields.empty();
 
         std::string errorText;
+        // 有尾部头块时收尾不归这里两处：RFC 9113 §7.1 规定尾部头块必须自带 END_STREAM，那么头部与
+        // 最后一片 DATA 就都不许带它，否则这条流在尾部字段之前就已经结束了
         const Http2ResponseSendStatus headersStatus =
-                m_connection.sendResponseHeaders(streamId, wireStatusCode, headerFields, isBodyEmpty, &errorText);
+                m_connection.sendResponseHeaders(streamId, wireStatusCode, headerFields, isBodyEmpty && !hasTrailers, &errorText);
         if (headersStatus != Http2ResponseSendStatus::Sent)
         {
             // 对端取消这条流的日志由调用方按结论统一记，这里只管其余失败（连接不可用、用法错误）
@@ -1663,7 +1700,8 @@ namespace AsynGyanis::Net
         }
         if (!isBodyEmpty)
         {
-            const Http2ResponseSendStatus bodyStatus = m_connection.sendResponseData(streamId, responseBody, true, &errorText);
+            const Http2ResponseSendStatus bodyStatus =
+                    m_connection.sendResponseData(streamId, responseBody, !hasTrailers, &errorText);
             if (bodyStatus != Http2ResponseSendStatus::Sent)
             {
                 if (bodyStatus != Http2ResponseSendStatus::StreamNotWritable)
@@ -1671,6 +1709,17 @@ namespace AsynGyanis::Net
                     LOG_ERROR_FMT("Http2Session: 流 {} 的响应正文未能排入待发字节，该响应不完整。原因：{}", streamId, errorText);
                 }
                 co_return bodyStatus;
+            }
+        }
+        if (hasTrailers)
+        {
+            const Http2ResponseSendStatus trailerStatus = m_connection.sendResponseTrailers(streamId, trailerFields, &errorText);
+            if (trailerStatus != Http2ResponseSendStatus::Sent)
+            {
+                // 走到这里说明正文已经上线，这条响应因此是「发了一半就断」：连接层已经把该中止的流
+                // 按 INTERNAL_ERROR 中止掉了，这里只把原因记下来并按同一结论交回调用方
+                LOG_ERROR_FMT("Http2Session: 流 {} 的尾部头块未能排入待发字节，该响应不完整。原因：{}", streamId, errorText);
+                co_return trailerStatus;
             }
         }
         co_return Http2ResponseSendStatus::Sent;
@@ -1831,7 +1880,7 @@ namespace AsynGyanis::Net
     }
 
     Core::Task<Http2ResponseSendStatus> Http2Session::finishStreamingResponse(const std::uint32_t streamId,
-                                                                             HttpResponse &response)
+                                                                             HttpResponse &response, const bool isBodyComplete)
     {
         // 本侧已判定写不出去：不再重试，也不重复记日志（与 h1 契约一致）
         if (m_isConnectionUnusable)
@@ -1840,14 +1889,21 @@ namespace AsynGyanis::Net
         }
 
         std::string errorText;
+        // 尾部字段随正文一起收尾：HEAD（流式正文被抑制）那一路没有正文，也就没有「正文之后」，补一个
+        // 尾部头块反而会让对端多等一帧它没要的字段；业务中途抛异常时正文只发了一半，那些值本来就不
+        // 对应发出去的那段正文，补上去等于给对端一个必然对不上的承诺（h1 同一条处置）
+        const std::vector<HpackHeaderField> trailerFields =
+                isBodyComplete && !response.isStreamingBodySuppressed() ? collectResponseTrailerFields(response)
+                                                                        : std::vector<HpackHeaderField>{};
+        const bool hasTrailers = !trailerFields.empty();
         if (!response.hasSentChunkedHead())
         {
             // 一段正文都没写出来（业务只调了 startChunkedResponse()）：头部与 END_STREAM 一起发出，
             // 对端因此拿到一条没有正文的完整响应，而不是挂在一条永远收不满的消息上；
-            // 与 h1 侧「空流式响应补出头部与终止块」是同一个位置
+            // 与 h1 侧「空流式响应补出头部与终止块」是同一个位置。有尾部字段时收尾交给那个尾部头块
             const std::vector<HpackHeaderField> headerFields = collectResponseHeaderFields(response);
             const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(
-                    streamId, normalizeWireStatusCode(response.status(), streamId), headerFields, true, &errorText);
+                    streamId, normalizeWireStatusCode(response.status(), streamId), headerFields, !hasTrailers, &errorText);
             if (headersStatus != Http2ResponseSendStatus::Sent)
             {
                 // 对端取消这条流的日志由 serveOneRequest() 按服务结论统一记，这里只管其余失败
@@ -1856,6 +1912,31 @@ namespace AsynGyanis::Net
                     LOG_ERROR_FMT("Http2Session: 流 {} 的空流式响应头未能排入待发字节，该流不会再有响应。原因：{}", streamId, errorText);
                 }
                 co_return headersStatus;
+            }
+            if (hasTrailers)
+            {
+                const Http2ResponseSendStatus trailerStatus = m_connection.sendResponseTrailers(streamId, trailerFields, &errorText);
+                if (trailerStatus != Http2ResponseSendStatus::Sent)
+                {
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的尾部头块未能排入待发字节，该响应不完整。原因：{}", streamId, errorText);
+                    co_return trailerStatus;
+                }
+            }
+            co_return co_await flushOutgoingBytes() ? Http2ResponseSendStatus::Sent : Http2ResponseSendStatus::ConnectionUnavailable;
+        }
+
+        if (hasTrailers)
+        {
+            // 尾部头块自带 END_STREAM，那条流的本端方向就由它收尾：不再补零长 DATA（那会先把流关掉，
+            // 尾部字段就没有位置了）。位置与 h1 的「终止块 + 字段段 + 空行」对应
+            const Http2ResponseSendStatus trailerStatus = m_connection.sendResponseTrailers(streamId, trailerFields, &errorText);
+            if (trailerStatus != Http2ResponseSendStatus::Sent)
+            {
+                if (trailerStatus != Http2ResponseSendStatus::StreamNotWritable)
+                {
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的尾部头块未能排入待发字节，对端收不到消息结尾。原因：{}", streamId, errorText);
+                }
+                co_return trailerStatus;
             }
             co_return co_await flushOutgoingBytes() ? Http2ResponseSendStatus::Sent : Http2ResponseSendStatus::ConnectionUnavailable;
         }

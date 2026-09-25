@@ -109,6 +109,9 @@ namespace AsynGyanis::Net
                 std::map<std::string, std::string> headers;      ///< 其余头部（同名只留最后一条）
                 /// 全部响应字段按到达顺序逐条记下：可重复头（Set-Cookie）只有这里能数出条数
                 std::vector<std::pair<std::string, std::string>> headerFields;
+                /// 每个字段段（一个 HEADERS 帧）单独一份：头段与尾段的分界只有这里看得出来，
+                /// 上面那张表是拉平的——而「尾部字段确实排在正文之后、由第二个段带出来」正是要钉的东西
+                std::vector<std::vector<std::pair<std::string, std::string>>> fieldSections;
                 std::string                        body;         ///< 正文
                 bool                               isComplete{false}; ///< 是否收到了收尾
                 /// 排字节或解字节时撞到的第一句报错：判据失败时用它分清「服务端没回」与「回了但解不开」
@@ -535,6 +538,7 @@ namespace AsynGyanis::Net
                         recordDecodeError("响应头块引用了动态表，而本端通告的是容量 0");
                         return;
                     }
+                    m_response.fieldSections.emplace_back();
                     for (const auto &field: fields)
                     {
                         noteResponseField(field);
@@ -561,6 +565,7 @@ namespace AsynGyanis::Net
                     return;
                 }
                 m_response.headerFields.emplace_back(field.name, field.value);
+                m_response.fieldSections.back().emplace_back(field.name, field.value);
                 m_response.headers[field.name] = field.value;
             }
 
@@ -930,6 +935,19 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 某个字段段里是否出现了这一对字段名与取值
+     * @param section 一个字段段的字段表（DecodedResponse::fieldSections 的一项）
+     * @param name 字段名
+     * @param value 字段取值
+     * @return true 该段里有这条字段
+     */
+    [[nodiscard]] bool hasFieldIn(const std::vector<std::pair<std::string, std::string>> &section,
+                                  const std::string &name, const std::string &value)
+    {
+        return std::ranges::find(section, std::pair{name, value}) != section.end();
+    }
+
+    /**
      * @brief 走一条完整的 GET 往返，把服务端交出的字节喂回客户端
      * @details 下面几条「响应形状」用例只差业务往响应里写了什么，走完的步子完全一样，
      *          因此把提交请求、喂会话、pump、回喂客户端这四步收在这里
@@ -1057,6 +1075,47 @@ namespace AsynGyanis::Net
                                                                     {"x-trace", "abc"},
                                                                     {"set-cookie", "second=2"}}))
                 << "多条同名头的先后顺序要跟着业务的设置顺序，中间夹的头不能被归到后面";
+    }
+
+    /**
+     * @brief 钉住：h3 的尾部字段发成正文之后的第二个字段段，且收尾由它带出来
+     * @details RFC 9114 §4.3 与 h2 同源：尾段就是一个排在最后一个 DATA 之后的普通字段段，而它之后
+     *          什么都不剩（FIN 只能跟着它）。三件事一并钉：段数、字段落在哪一段、头段带着 trailer 声明。
+     *          h1/h2/h3 三条通路的这几条断言长得一样是刻意的——同一份业务代码换个协议，
+     *          不该看到不同形状的报文（尾部字段的合规判定唯一落在 HttpResponse::addTrailerField）。
+     */
+    TEST(Http3Session, SendsTrailerFieldsInAFieldSectionAfterTheBody)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/trailing",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       static_cast<void>(response.addTrailerField("x-checksum", "abc123"));
+                       static_cast<void>(response.addTrailerField("x-rows", "2"));
+                       response.setStatus(200);
+                       response.setBody("trailed-body");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+
+        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/trailing");
+        EXPECT_TRUE(response.decodeError.empty()) << "本端交出的字节连自家对端都解不开：" << response.decodeError;
+        EXPECT_EQ(response.status, 200);
+        EXPECT_EQ(response.body, "trailed-body");
+        EXPECT_TRUE(response.isComplete) << "尾部字段没带 FIN：这条流在会话看来还没收尾";
+        ASSERT_EQ(response.fieldSections.size(), 2U) << "应当恰好两个字段段：头段与尾段";
+
+        EXPECT_TRUE(hasFieldIn(response.fieldSections[0], "trailer", "x-checksum, x-rows")) << "头段没声明这些字段";
+        EXPECT_FALSE(hasFieldIn(response.fieldSections[0], "x-checksum", "abc123")) << "尾部字段混进了头段，身份就错了";
+        EXPECT_TRUE(hasFieldIn(response.fieldSections[1], "x-checksum", "abc123"));
+        EXPECT_TRUE(hasFieldIn(response.fieldSections[1], "x-rows", "2"));
+        EXPECT_TRUE(response.fieldSections[1].front().first != ":status") << "尾段不许含伪头（RFC 9114 §7.2.4）";
     }
 
     /**

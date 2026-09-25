@@ -385,6 +385,27 @@ namespace AsynGyanis::Net
                                                                   std::string *errorText = nullptr);
 
         /**
+         * @brief 在某条流上发尾部头块（trailing HEADERS），并以此收尾本端方向
+         *
+         * @details RFC 9113 §7.1 把尾部头块的形状钉死：它**必须**自带 END_STREAM，且不得含伪头与连接
+         *          特定字段。因此调用顺序是固定的——正文那一片 DATA 不许带 END_STREAM，尾部头块才是这条
+         *          流的最后一个帧；没有正文时可以只有头部块加尾部头块。本方法自己置 END_STREAM，
+         *          不提供开关参数：给一个能把协议写坏的开关不如不给。
+         * @param streamId 目标流，必须是本端仍可写的流
+         * @param trailerFields 尾部字段，按给定顺序编码（名须全小写、非伪头、非连接特定，见 HttpResponse::addTrailerField）
+         * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
+         * @return Http2ResponseSendStatus Sent 已排入待发字节并结束本端方向；StreamNotWritable 该流已终止或
+         *         本端已收尾（连接继续）；ConnectionUnavailable 连接尚未协商完成或已失败；
+         *         Rejected 字段形状非法，本层已按 INTERNAL_ERROR 中止这条流；
+         *         HeaderListTooLarge 越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE，本层已中止这条流
+         * @note 返回非 Sent 时不写任何字节（Rejected 与 HeaderListTooLarge 各排出一帧 RST_STREAM），
+         *       且本端方向**不会**被收尾：调用方要么补一个裸的零长度 DATA 收尾，要么按结论停掉这条流
+         */
+        [[nodiscard]] Http2ResponseSendStatus sendResponseTrailers(std::uint32_t streamId,
+                                                                   const std::vector<HpackHeaderField> &trailerFields,
+                                                                   std::string *errorText = nullptr);
+
+        /**
          * @brief 在某条流上发响应正文
          *
          * @details 该流队列已空、且这一段能在一帧内同时通过两个窗口时，直接从 data 成帧上线；否则先进
@@ -763,6 +784,24 @@ namespace AsynGyanis::Net
          * @brief 对账本里所有活动流各跑一次 pumpSendQueue()（窗口或分片上限变大后调用）
          */
         void pumpAllSendQueues();
+
+        /**
+         * @brief 量一份头块是否越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE
+         * @details 算式只有一处（§6.5.2：每项名长 + 值长 + 32，头部块最前面那一项伪头同样算一项），
+         *          响应头与尾部头块共用：两处各写一遍的话，改了一处忘了另一处，就会只有一类头块受这条
+         *          对端承诺的上限保护。越限时由本层只中止这一条流——多数实现把超限当成连接级错误处理，
+         *          那会把同一条连接上别人在途的请求一起带走。
+         * @param fields 头部块里的普通字段（按上线顺序）
+         * @param pseudoName 排在最前的伪头名（":status"）；传空串表示这一项不存在（尾部头块没有伪头）
+         * @param pseudoValue 该伪头的取值；pseudoName 为空时忽略
+         * @param peerLimitOut 可选输出参数：回填对端通告的上限字节数，供调用方拼中文原因；
+         *                     对端没通告这项时被置为 0
+         * @return 越限时返回整份头列表的字节数，未越限（含对端根本没通告这项）返回 std::nullopt
+         */
+        [[nodiscard]] std::optional<std::size_t> oversizeAgainstPeerHeaderListLimit(const std::vector<HpackHeaderField> &fields,
+                                                                                    std::string_view pseudoName,
+                                                                                    std::string_view pseudoValue,
+                                                                                    std::uint32_t *peerLimitOut) const;
 
         /**
          * @brief 发一个头块：按对端 MAX_FRAME_SIZE 切成 HEADERS + 若干 CONTINUATION

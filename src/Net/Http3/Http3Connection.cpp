@@ -36,6 +36,26 @@ namespace AsynGyanis::Net
         {
             return errorKind == Http3FrameErrorKind::LimitExceeded ? Http3ErrorCode::ExcessiveLoad : Http3ErrorCode::FrameError;
         }
+
+        /**
+         * @brief 这份字段行是不是 1xx 信息性响应的段
+         * @details 信息性响应是一份**独立**的消息（RFC 9114 §5.3.2），它不该占用「这条流唯一的头段」
+         *          那个位置——否则随后交最终响应时会被自己的判定器判成「同一消息里的第二个头段」。
+         *          判据只看 :status 那一位：h3 的响应字段行由会话拼，伪头恒在最前。
+         * @param fieldLines 待提交的字段行
+         * @return true 表示这是 1xx 的段
+         */
+        [[nodiscard]] bool isInformationalFieldSection(const std::vector<QpackHeaderField> &fieldLines) noexcept
+        {
+            for (const QpackHeaderField &field: fieldLines)
+            {
+                if (field.name == ":status")
+                {
+                    return !field.value.empty() && field.value.front() == '1';
+                }
+            }
+            return false;
+        }
     } // namespace
 
     Http3Connection::Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks,
@@ -695,6 +715,21 @@ namespace AsynGyanis::Net
                                                                         const std::vector<QpackHeaderField> &fieldLines,
                                                                         const bool isEndOfStream)
     {
+        return submitResponseFieldSection(streamId, fieldLines, /*isTrailers=*/false, isEndOfStream);
+    }
+
+    std::expected<void, QpackError> Http3Connection::submitResponseTrailers(const std::int64_t streamId,
+                                                                           const std::vector<QpackHeaderField> &fieldLines)
+    {
+        // 尾段之后什么都不剩，FIN 只能跟着它：END_STREAM 因此写死为真，不给调用方一个能把协议写坏的开关
+        // （RFC 9114 §4.3 与 §7.2.3——尾段是这条流的最后一个帧）
+        return submitResponseFieldSection(streamId, fieldLines, /*isTrailers=*/true, /*isEndOfStream=*/true);
+    }
+
+    std::expected<void, QpackError> Http3Connection::submitResponseFieldSection(const std::int64_t streamId,
+                                                                               const std::vector<QpackHeaderField> &fieldLines,
+                                                                               const bool isTrailers, const bool isEndOfStream)
+    {
         if (m_isBroken)
         {
             return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState, .message = "HTTP/3 协议层已作废，无法提交响应"});
@@ -707,9 +742,46 @@ namespace AsynGyanis::Net
                                               .message = "流 " + std::to_string(streamId) + " 已不存在或本端已收尾，响应作废"});
         }
 
-        // 响应侧用一次性判定器：本端是唯一写出方，不必像请求流那样跨头段与尾段累积顺序
-        Http3HeaderValidator validator(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
-        if (const auto began = validator.beginHeaderBlock(false); !began)
+        // 上限那道闸先跑：它一拒就是「半个段都不上线」，排在判定器之后就会把「这个段已经过完」留在流上，
+        // 于是同一条流下一次合规的提交会被自己的状态判成「同一消息里的第二个头段」——那是本端造的假违规。
+        // 头段大小按 RFC 9114 §4.2.2 的算式累计（每个字段行名长 + 值长 + 32），用的就是解码侧那个函数：
+        // 两侧同一口径，不会出现「本端觉得合规、对端解成超限」。对端没通告这项时不判定（0 即「不约束」）
+        if (m_peerMaximumFieldSectionSizeByteCount != 0)
+        {
+            std::size_t fieldSectionSizeByteCount = 0;
+            for (const QpackHeaderField &field: fieldLines)
+            {
+                fieldSectionSizeByteCount += QpackDynamicTable::entrySizeByteCountOf(field);
+            }
+            if (fieldSectionSizeByteCount > m_peerMaximumFieldSectionSizeByteCount)
+            {
+                const std::string_view sectionName = isTrailers ? "响应尾段" : "响应头段";
+                return std::unexpected(QpackError{
+                    .kind = QpackErrorKind::InvalidLocalState,
+                    .message = "流 " + std::to_string(streamId) + " 的" + std::string(sectionName) + " "
+                               + std::to_string(fieldSectionSizeByteCount) +
+                               " 字节越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE " +
+                               std::to_string(m_peerMaximumFieldSectionSizeByteCount) + " 字节，本端不作答这条流（RFC 9114 §4.2.2）"});
+            }
+        }
+
+        // 判定器的选择：最终头段与尾段共用按流持有的那一份，否则尾段进来时看不到「头段已经过完」，
+        // 会按 RFC 9114 §4.1 把「尾段出现在头段之前」判成非法序列——而那条尾段恰恰紧跟自己的头段。
+        // 1xx 信息性响应是一份独立的消息，对它用一次性判定器，不在流上留下跨段状态。
+        // 两个方向各一份（请求侧那份是 Request 种类）：种类与判据都不同，共用会互相污染
+        std::unique_ptr<Http3HeaderValidator> oneShotValidator;
+        if (isInformationalFieldSection(fieldLines))
+        {
+            oneShotValidator =
+                    std::make_unique<Http3HeaderValidator>(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
+        }
+        else if (entry->second.responseValidator == nullptr)
+        {
+            entry->second.responseValidator =
+                    std::make_unique<Http3HeaderValidator>(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
+        }
+        Http3HeaderValidator &validator = oneShotValidator != nullptr ? *oneShotValidator : *entry->second.responseValidator;
+        if (const auto began = validator.beginHeaderBlock(isTrailers); !began)
         {
             return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState, .message = began.error().message});
         }
@@ -723,25 +795,6 @@ namespace AsynGyanis::Net
         if (const auto ended = validator.endHeaderBlock(); !ended)
         {
             return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState, .message = ended.error().message});
-        }
-
-        // 头段大小按 RFC 9114 §4.2.2 的算式累计（每个字段行名长 + 值长 + 32），用的就是解码侧那个函数：
-        // 两侧同一口径，不会出现「本端觉得合规、对端解成超限」。对端没通告这项时不判定（0 即「不约束」）
-        if (m_peerMaximumFieldSectionSizeByteCount != 0)
-        {
-            std::size_t fieldSectionSizeByteCount = 0;
-            for (const QpackHeaderField &field: fieldLines)
-            {
-                fieldSectionSizeByteCount += QpackDynamicTable::entrySizeByteCountOf(field);
-            }
-            if (fieldSectionSizeByteCount > m_peerMaximumFieldSectionSizeByteCount)
-            {
-                return std::unexpected(QpackError{
-                    .kind = QpackErrorKind::InvalidLocalState,
-                    .message = "流 " + std::to_string(streamId) + " 的响应头段 " + std::to_string(fieldSectionSizeByteCount) +
-                               " 字节越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE " +
-                               std::to_string(m_peerMaximumFieldSectionSizeByteCount) + " 字节，本端不作答这条流（RFC 9114 §4.2.2）"});
-            }
         }
 
         std::string headerBlock;

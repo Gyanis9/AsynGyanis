@@ -187,6 +187,24 @@ namespace AsynGyanis::Net
                                                                         bool isEndOfStream);
 
         /**
+         * @brief 在某条流上提交响应尾段（正文之后的第二个字段段），并以此收尾这条流
+         *
+         * @details RFC 9114 §4.3 规定尾段就是一个普通的 HEADERS 帧，只是排在最后一个 DATA 之后，
+         *          且其中的字段受 §7.2.4 与 RFC 9110 §6.5 的额外限制：**不得含伪头，也不得含
+         *          content-length 与 host**（那两项在头段里已经定过界，尾段再来一份就是两个解释位置）。
+         *          这些判据与收侧共用同一个 Http3HeaderValidator，只是 beginHeaderBlock 传 isTrailers，
+         *          因此不会出现「本端发得出、对端解不开」的尾段。FIN 只能跟着尾段，本方法不提供开关。
+         * @param streamId 承载该响应的流
+         * @param fieldLines 尾部字段，不含任何伪头
+         * @return 成功返回空；失败返回错误（流已收尾、字段不合规、越过对端通告的尾段大小上限等），
+         *         此时一个字节也没排进待发队列，也不收尾
+         * @note 调用之前那条响应的正文必须以 `isEndStream=false` 交出：本端方向由这次收尾，
+         *       先收尾就没有放尾段的位置了（见 appendResponseBody）
+         */
+        [[nodiscard]] std::expected<void, QpackError> submitResponseTrailers(std::int64_t streamId,
+                                                                             const std::vector<QpackHeaderField> &fieldLines);
+
+        /**
          * @brief 追加一段响应正文（编成 DATA 帧排进该流的待发队列）
          * @param streamId 流号
          * @param bytes 正文字节；空字节段只在 isEndStream 为真时有意义
@@ -246,6 +264,9 @@ namespace AsynGyanis::Net
         {
             std::optional<Http3FrameReader> reader;          ///< 该流的帧读取器，上限按本端配置建
             std::unique_ptr<Http3HeaderValidator> validator; ///< 该流的消息头判定器：跨头段与尾段共用一份，才认得出「尾段必须在头段之后」
+            /// 本端写出侧的判定器：与上面那份**分开**，因为一条流上两个方向各有一套判据
+            /// （请求侧是 Request 种类、响应侧是 Response 种类），而且同样要跨头段与尾段累积状态
+            std::unique_ptr<Http3HeaderValidator> responseValidator;
             std::uint64_t fedByteCount{0};                   ///< 交给该流读取器的字节总数
             std::uint64_t creditedByteCount{0};              ///< 已归还接收窗口的字节数，不含 DATA 载荷
             std::uint64_t receivedBodyByteCount{0};          ///< 已交出的 DATA 总长，与 content-length 比对
@@ -316,6 +337,21 @@ namespace AsynGyanis::Net
 
         /// 把字节排进某条流的待发队列
         void queueOutboundBytes(std::int64_t streamId, std::string_view bytes, bool isEndStream);
+
+        /**
+         * @brief 提交一个响应侧字段段：判定、量上限、QPACK 编码、排帧，头段与尾段共用这一条路径
+         * @details 两条公开入口的差别只有 isTrailers（判定规则）与 isEndOfStream（谁收尾）。分成两份实现
+         *          的话，SETTINGS_MAX_FIELD_SECTION_SIZE 那道闸迟早只有一边有——那正是本端发得出去、
+         *          对端把整条连接收掉的那类偏差。
+         * @param streamId 目标流
+         * @param fieldLines 该段包含的字段
+         * @param isTrailers true 表示这是正文之后的尾段（禁伪头、禁 content-length 与 host）
+         * @param isEndOfStream true 表示交完这段本端在该流上收尾
+         * @return 成功返回空；失败返回错误，此时一个字节也没排进待发队列
+         */
+        [[nodiscard]] std::expected<void, QpackError> submitResponseFieldSection(std::int64_t streamId,
+                                                                                 const std::vector<QpackHeaderField> &fieldLines,
+                                                                                 bool isTrailers, bool isEndOfStream);
 
         /**
          * @brief 把一帧「帧头 + 载荷」直接排进该流的待发缓冲，不为载荷另起临时串

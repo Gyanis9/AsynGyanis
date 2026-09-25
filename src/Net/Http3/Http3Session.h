@@ -565,8 +565,11 @@ namespace AsynGyanis::Net
          * @brief 流式响应写完：补交还没交的响应头，再交出收尾的 END_STREAM
          * @param streamId 流号
          * @param response 业务填好的响应（一次都没写过时要在这里补交响应头）
+         * @param isBodyComplete 业务是否正常跑完：中途抛异常时为 false，此时**不交尾段**——那些值是业务
+         *                       对它「算完的那段正文」负责的承诺，正文只发了一半就交上去必然对不上
+         *                       （与 h1、h2 同一条处置）
          */
-        void finishStreamingResponse(std::int64_t streamId, HttpResponse &response);
+        void finishStreamingResponse(std::int64_t streamId, HttpResponse &response, bool isBodyComplete);
 
         /**
          * @brief 刷完待发字节后唤醒等缓冲排空的生产者

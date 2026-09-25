@@ -500,6 +500,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] static std::vector<HpackHeaderField> collectResponseHeaderFields(const HttpResponse &response);
 
         /**
+         * @brief 把响应登记的尾部字段取成 HTTP/2 的尾部头块载荷
+         * @details 字段形状已在 HttpResponse::addTrailerField 一处把住（小写名、非伪头、非定界与连接级
+         *          字段、值无控制字符），这里只做容器转换。没有登记时返回空表，调用方据此根本不发尾部头块。
+         * @param response 业务填好的响应
+         * @return std::vector<HpackHeaderField> 按登记顺序排列的尾部字段，可直接交给 sendResponseTrailers()
+         */
+        [[nodiscard]] static std::vector<HpackHeaderField> collectResponseTrailerFields(const HttpResponse &response);
+
+        /**
          * @brief 在一条流上发出一条响应（头 + 正文）
          * @param streamId 目标流号
          * @param response 业务填好的响应
@@ -566,11 +575,14 @@ namespace AsynGyanis::Net
          *          收尾帧立刻写出，对端因此不必等到下一轮读循环才看到消息结尾。
          * @param streamId 目标流号
          * @param response 这条流正在填写的响应（记录持有；一段都没写时头块按它补齐）
+         * @param isBodyComplete 业务是否正常跑完：中途抛异常时为 false，此时**不补尾部字段**——那些值是
+         *                       业务对它「算完的那段正文」负责的检查和行数，正文只发了一半就补上线，
+         *                       对端按字段校验必然失败（与 h1 侧同一处置，见 HttpSession 的收尾）
          * @return Http2ResponseSendStatus 收尾帧的发送结论；StreamNotWritable 表示对端已取消这条流
          *         （连接继续服务其它流），其余非 Sent 取值表示连接不可用或本响应无法应答
          */
         [[nodiscard]] Core::Task<Http2ResponseSendStatus> finishStreamingResponse(std::uint32_t streamId,
-                                                                                 HttpResponse &response);
+                                                                                 HttpResponse &response, bool isBodyComplete);
 
         /**
          * @brief 把响应状态码收口成可上线的取值

@@ -468,31 +468,22 @@ namespace AsynGyanis::Net
         // 是每条响应第二次的无谓往返，编码器读到的字节完全一样
         std::string statusCodeText = std::to_string(statusCode);
 
-        // 对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE 约束的正是本端发出去的头列表，算式同 §6.5.2
-        // （每项名长 + 值长 + 32，:status 这一项也算）。越过它由对端决定怎么处置，而多数实现的做法
-        // 是收掉整条连接——同一条连接上别人在途的请求会一起陪葬。本端因此宁可只作废这一条流。
-        // 对端没通告这项时不判定：初值是「不限」，且这项按规范只是建议值
+        // 对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE 约束的正是本端发出去的头列表；越过它由对端决定
+        // 怎么处置，而多数实现的做法是收掉整条连接——同一条连接上别人在途的请求会一起陪葬。
+        // 本端因此宁可只作废这一条流。算式与这条判定由助手统一把住，尾部头块走同一处
         std::uint32_t peerMaximumHeaderListSize = 0;
-        if (tryGetPeerSetting(Http2SettingIdentifier::MaxHeaderListSize, peerMaximumHeaderListSize)
-            && peerMaximumHeaderListSize > 0)
+        if (const std::optional<std::size_t> oversizeByteCount = oversizeAgainstPeerHeaderListLimit(
+                    headerFields, std::string_view(":status"), statusCodeText, &peerMaximumHeaderListSize);
+            oversizeByteCount.has_value())
         {
-            std::size_t headerListByteCount = std::string_view(":status").size() + statusCodeText.size()
-                                              + kHpackDynamicTableEntryOverheadBytes;
-            for (const HpackHeaderField &field: headerFields)
-            {
-                headerListByteCount += field.name.size() + field.value.size() + kHpackDynamicTableEntryOverheadBytes;
-            }
-            if (headerListByteCount > peerMaximumHeaderListSize)
-            {
-                std::string reason = std::format("流 {} 的响应头列表 {} 字节越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE {} 字节，"
-                                                 "本端按 INTERNAL_ERROR 中止这条流",
-                                                 streamId, headerListByteCount, peerMaximumHeaderListSize);
-                // 先把原因交给调用方再搬进 failStream：反过来的话 errorText 拿到的是个已移动的空串，
-                // 直接按 API 用这一层的调用方就看不见失败原因了
-                writeError(errorText, reason);
-                failStream(*stream, Http2ErrorCode::InternalError, std::move(reason));
-                return Http2ResponseSendStatus::HeaderListTooLarge;
-            }
+            std::string reason = std::format("流 {} 的响应头列表 {} 字节越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE {} 字节，"
+                                             "本端按 INTERNAL_ERROR 中止这条流",
+                                             streamId, *oversizeByteCount, peerMaximumHeaderListSize);
+            // 先把原因交给调用方再搬进 failStream：反过来的话 errorText 拿到的是个已移动的空串，
+            // 直接按 API 用这一层的调用方就看不见失败原因了
+            writeError(errorText, reason);
+            failStream(*stream, Http2ErrorCode::InternalError, std::move(reason));
+            return Http2ResponseSendStatus::HeaderListTooLarge;
         }
 
         std::vector<HpackHeaderFieldView> fields;
@@ -509,6 +500,73 @@ namespace AsynGyanis::Net
             // 响应头就带 END_STREAM：本端方向到此为止（无正文）
             noteLocalEndStream(*stream);
         }
+        return Http2ResponseSendStatus::Sent;
+    }
+
+    Http2ResponseSendStatus Http2Connection::sendResponseTrailers(const std::uint32_t streamId,
+                                                                  const std::vector<HpackHeaderField> &trailerFields,
+                                                                  std::string *const errorText)
+    {
+        clearError(errorText);
+        if (m_state != Http2ConnectionState::Open && m_state != Http2ConnectionState::Closing)
+        {
+            writeError(errorText, std::format("连接当前状态是「{}」，不接受尾部头块：必须先收齐客户端前奏与对端 SETTINGS，且连接没有失败",
+                                             http2ConnectionStateName(m_state)));
+            return Http2ResponseSendStatus::ConnectionUnavailable;
+        }
+
+        StreamRecord *const stream = findActiveStream(streamId);
+        if (stream == nullptr)
+        {
+            writeError(errorText, std::format("流 {} 不在账本里或已经终止：尾部头块只能跟着这条流自己的响应之后发", streamId));
+            return Http2ResponseSendStatus::StreamNotWritable;
+        }
+        if (stream->state == Http2StreamState::HalfClosedLocal)
+        {
+            writeError(errorText, std::format("流 {} 上本端已经发过 END_STREAM：尾部头块本身就是那次收尾，不能补第二遍", streamId));
+            return Http2ResponseSendStatus::StreamNotWritable;
+        }
+
+        // 字段形状在 HttpResponse::addTrailerField 那一处已经拒过定界字段、连接级字段与非法字符；
+        // 这一层再守一遍伪头与大写名：本方法是公开 API，测试与将来的其它调用方可以绕过响应对象
+        for (const HpackHeaderField &field: trailerFields)
+        {
+            const std::string_view name = field.name;
+            if (name.empty() || name.front() == ':' || containsUppercaseAscii(name) || !isTokenName(name)
+                || !isHeaderValueBytes(field.value))
+            {
+                const std::string reason = std::format("流 {} 的尾部头块里有非法字段「{}」：尾部头块不得含伪头，头名必须是"
+                                                       "全小写合法 token，头值不许含 CR/LF/NUL（RFC 7540 §8.1.2）",
+                                                       streamId, name);
+                failStream(*stream, Http2ErrorCode::InternalError, reason);
+                writeError(errorText, reason);
+                return Http2ResponseSendStatus::Rejected;
+            }
+        }
+
+        std::uint32_t peerMaximumHeaderListSize = 0;
+        if (const std::optional<std::size_t> oversizeByteCount =
+                    oversizeAgainstPeerHeaderListLimit(trailerFields, {}, {}, &peerMaximumHeaderListSize);
+            oversizeByteCount.has_value())
+        {
+            std::string reason = std::format("流 {} 的尾部头块 {} 字节越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE {} 字节，"
+                                             "本端按 INTERNAL_ERROR 中止这条流",
+                                             streamId, *oversizeByteCount, peerMaximumHeaderListSize);
+            writeError(errorText, reason);
+            failStream(*stream, Http2ErrorCode::InternalError, std::move(reason));
+            return Http2ResponseSendStatus::HeaderListTooLarge;
+        }
+
+        std::vector<HpackHeaderFieldView> fields;
+        fields.reserve(trailerFields.size());
+        for (const HpackHeaderField &field: trailerFields)
+        {
+            fields.push_back(HpackHeaderFieldView{.name = field.name, .value = field.value});
+        }
+
+        // END_STREAM 恒真：RFC 9113 §7.1 规定尾部头块必须带着它收尾，因此这里不给它留参数
+        emitHeaderBlock(streamId, m_encoder.encode(fields), true);
+        noteLocalEndStream(*stream);
         return Http2ResponseSendStatus::Sent;
     }
 
@@ -1587,6 +1645,40 @@ namespace AsynGyanis::Net
             return false;
         }
         return true;
+    }
+
+    std::optional<std::size_t> Http2Connection::oversizeAgainstPeerHeaderListLimit(const std::vector<HpackHeaderField> &fields,
+                                                                                  const std::string_view pseudoName,
+                                                                                  const std::string_view pseudoValue,
+                                                                                  std::uint32_t *const peerLimitOut) const
+    {
+        std::uint32_t peerMaximumHeaderListSize = 0;
+        const bool    isAdvertised            = tryGetPeerSetting(Http2SettingIdentifier::MaxHeaderListSize, peerMaximumHeaderListSize)
+                                   && peerMaximumHeaderListSize > 0;
+        if (peerLimitOut != nullptr)
+        {
+            *peerLimitOut = peerMaximumHeaderListSize;
+        }
+        // 对端没通告这项时不判定：初值是「不限」，且这项按规范只是建议值
+        if (!isAdvertised)
+        {
+            return std::nullopt;
+        }
+
+        // §6.5.2 的算式：每项「名长 + 值长 + 32」，最前面那一项伪头也算一项（尾部头块没有伪头，
+        // 传进来的名字为空串就不计这一项）
+        std::size_t headerListByteCount = pseudoName.empty()
+                                              ? 0U
+                                              : pseudoName.size() + pseudoValue.size() + kHpackDynamicTableEntryOverheadBytes;
+        for (const HpackHeaderField &field: fields)
+        {
+            headerListByteCount += field.name.size() + field.value.size() + kHpackDynamicTableEntryOverheadBytes;
+        }
+        if (headerListByteCount > peerMaximumHeaderListSize)
+        {
+            return headerListByteCount;
+        }
+        return std::nullopt;
     }
 
     bool Http2Connection::acceptTrailerHeaderFields(const std::vector<HpackHeaderField> &headerFields, std::string *const errorText)

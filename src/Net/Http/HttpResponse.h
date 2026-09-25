@@ -155,6 +155,64 @@ namespace AsynGyanis::Net
         [[nodiscard]] const std::unordered_map<std::string, std::string> &headers() const;
 
         /**
+         * @brief 登记一条要随正文一起收尾的 trailer 字段（RFC 9112 §7.1.2 的尾部头字段）
+         *
+         * @details 与 setHeader **分开存**：尾部字段并进头部就会出现「同一个字段两个解释位置」，
+         *          `content-length` 这类定界字段尤其危险（收端读哪一份都可能被对端利用）。
+         *          三条出站通路（h1 的分块终止块、h2 的尾部头块、h3 的尾段）都从这一份记录取值。
+         *          头部里那条 `Trailer:` 声明由序列化层按本方法的登记结果自动生成，调用方不必自己写；
+         *          **但声明只在头部上线前那一刻有效**：流式响应的首段之前头部就已发出，此后登记的字段
+         *          仍会上线，只是没进声明——按 RFC 9110 §6.5.1 严格的收端有权忽略未声明的尾部字段，
+         *          因此要把字段交给对端读，就得在首次 writeChunk 之前登记完。
+         * @param name 字段名，大小写不敏感（入库转小写）；必须是合法 token 且非空
+         * @param value 字段值；CR/LF/NUL 会让字段块提前结束（响应拆分），一律拒绝
+         * @return true 已写入
+         * @return false 参数非法，或这个名字不许出现在尾部：以 `:` 开头的伪头（h2/h3 的尾部头块里
+         *         它们非法，RFC 9113 §8.1）、`content-length`、`transfer-encoding`
+         *         与其余连接级字段（`Connection`/`Keep-Alive`/`Proxy-Connection`/`Upgrade`，
+         *         RFC 9112 §7.1.1.1 禁止）。拒收而不是静默丢弃——写错的业务代码需要当场知道自己没生效
+         * @see trailerDeclarationValue(), chunkedTerminatorText()
+         */
+        bool addTrailerField(std::string_view name, std::string_view value);
+
+        /**
+         * @brief 取一条已登记的 trailer 字段取值
+         * @param name 字段名，大小写不敏感
+         * @return 命中时返回该名字的取值（同名多条按 setHeader 的同一口径合并）；未命中返回空 optional
+         */
+        [[nodiscard]] std::optional<std::string> getTrailerField(std::string_view name) const;
+
+        /// 本条响应是否登记了可交付的尾部字段（决定 `Trailer:` 声明与终止块的形状，见 addTrailerField）
+        [[nodiscard]] bool hasTrailerFields() const noexcept
+        {
+            return m_trailerStore.has_value();
+        }
+
+        /**
+         * @brief 按登记顺序遍历全部尾部字段（权威记录）
+         * @details 只给遍历不给存储引用：没有尾部字段时那份存储根本不存在，而返回引用就得为
+         *          「空的那一份」造一个全局对象——遍历是这里唯一真实的用法。
+         * @tparam Visitor 可调用体，形如 `void (std::string_view name, std::string_view value)`
+         * @param visitor 每个字段访问一次；名字已折小写，视图只在本次回调内有效
+         */
+        template <typename Visitor>
+        void forEachTrailerField(const Visitor &visitor) const
+        {
+            if (m_trailerStore.has_value())
+            {
+                m_trailerStore->forEachField(visitor);
+            }
+        }
+
+        /**
+         * @brief 生成 `Trailer:` 声明的取值（登记过的字段名按顺序用「, 」连成一条）
+         * @details 三条出站通路共用这一份拼法：h1 直接把它写进头部块，h2/h3 的头部块里没有分块帧，
+         *          但同一个声明字段仍然照 RFC 9110 §6.5 的口径带上，免得对端只看得到尾部却不知道头里承诺过什么。
+         * @return 尾部字段名列表；没登记任何字段时返回空串（调用方据此不输出这条头部）
+         */
+        [[nodiscard]] std::string trailerDeclarationValue() const;
+
+        /**
          * @brief 设置响应正文，覆盖已有内容。
          * @param body 正文字符串视图（内容会被复制存储）
          * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥，
@@ -345,6 +403,17 @@ namespace AsynGyanis::Net
          * @return true 状态行与头部已经在对端手里，此后只能写正文段与终止块
          */
         [[nodiscard]] bool hasSentChunkedHead() const noexcept;
+
+        /**
+         * @brief 生成分块响应收尾要补的那段字节：终止块，或「终止块 + 尾部字段 + 空行」
+         *
+         * @details 形状是 `0\r\n\r\n`（RFC 9112 §7.1）与 `0\r\n<字段行>*\r\n`（§7.1.2 的尾部字段段）。
+         *          放在响应而不是会话里：一条流式响应的收尾只有两处出口（正常跑完、中途抛异常），
+         *          两处都得带上同一批字段，拼法分叉就会出现「一处带尾部一处不带」这种对端解不开的报文。
+         * @return 直接可写的字节串；没登记尾部字段时就是那五个字节的终止块（落在短字符串缓冲里，不碰分配器）
+         * @see addTrailerField()
+         */
+        [[nodiscard]] std::string chunkedTerminatorText() const;
 
         /**
          * @brief 登记「本次请求要把这条连接升级成 WebSocket」（RFC 6455 §4）
@@ -545,6 +614,9 @@ namespace AsynGyanis::Net
         int m_status{200};                                     ///< HTTP 状态码，默认 200
         std::string m_httpVersion{"HTTP/1.1"};                 ///< HTTP 版本，默认 1.1
         HttpHeaderFieldStore m_headerStore; ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
+        /// 尾部字段存储，按需创建：不带尾部的响应一次额外分配也不付。`reset()` 要把它**整份解除**
+        /// 而不是清空，否则 hasTrailerFields() 会因为「空的那一份也存在」而说谎
+        std::optional<HttpHeaderFieldStore> m_trailerStore;
         bool m_isStreamingBodySuppressed{false};               ///< HEAD 请求：流式响应只发头部、不发正文段
         std::string m_body; ///< 响应正文（堆存储），与 m_mappedBody 互斥
         /**

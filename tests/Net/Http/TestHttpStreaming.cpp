@@ -253,6 +253,52 @@ namespace AsynGyanis::Net
         client.closeNow();
     }
 
+    /**
+     * @brief 钉住：流式响应在线上的收尾是「终止块 + 尾部字段段 + 空行」，头部事先声明过这些字段
+     * @details 只测响应对象的拼接不够：会话有两条收尾出口（业务跑完、业务抛异常），拼法一旦分叉，
+     *          对端就要在同一种消息末尾读两种形状。这里走真实回环，逐字节认末尾那一段。
+     *          另外两条边界顺带钉住：分块响应不写 content-length（两条定界声明并存对端按哪条解都错位），
+     *          以及声明必须排在头部里——`Trailer:` 的意义就是让收端知道正文之后还有东西可读。
+     */
+    TEST(HttpStreaming, DeliversTrailerFieldsAfterTheTerminatingChunk)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/trailing", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                             {
+                                                 response.startChunkedResponse(200);
+                                                 // 声明只在头部上线前那一刻有效：字段要在写第一段之前登记完，
+                                                 // 否则对端收到字段却读不到承诺（RFC 9110 §6.5.1 允许严格收端忽略未声明的）
+                                                 static_cast<void>(response.addTrailerField("x-checksum", "abc123"));
+                                                 static_cast<void>(response.addTrailerField("x-rows", "2"));
+                                                 if (!co_await response.writeChunk("first-part"))
+                                                 {
+                                                     co_return;
+                                                 }
+                                                 static_cast<void>(co_await response.writeChunk("second"));
+                                                 co_return;
+                                             });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
+        EXPECT_FALSE(fixture.startThrew());
+
+        LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /trailing HTTP/1.1"), kWaitTimeout));
+
+        std::string responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "x-rows: 2\r\n\r\n", kWaitTimeout))
+                << "流式响应末尾没有以「终止块 + 尾部字段段」收口：上界 kWaitTimeout，已收到 " << responseText;
+
+        EXPECT_NE(responseText.find("trailer: x-checksum, x-rows\r\n"), std::string::npos) << "头部缺声明或与到货的字段对不上号：" << responseText;
+        EXPECT_EQ(responseText.find("content-length"), std::string::npos) << "流式响应不得写 content-length：" << responseText;
+        EXPECT_TRUE(responseText.ends_with("6\r\nsecond\r\n0\r\nx-checksum: abc123\r\nx-rows: 2\r\n\r\n"))
+                << "两段正文之后依次是终止块、字段段、收尾空行：" << responseText;
+
+        client.closeNow();
+    }
+
     TEST(HttpStreaming, FirstChunkReachesClientBeforeHandlerFinishes)
     {
         // 钉住「边写边到」：处理器写完第一段后卡在「等客户端读到它」上，客户端因此只能在
@@ -384,6 +430,8 @@ namespace AsynGyanis::Net
                                              router.get("/boom-stream", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                                              {
                                                  response.startChunkedResponse(200);
+                                                 // 登记一条尾部字段：异常这一路不该把它补上线（见下面那条断言）
+                                                 static_cast<void>(response.addTrailerField("x-checksum", "abc123"));
                                                  co_await response.writeChunk("half-body");
                                                  throw Base::Exception("测试用：流式响应写到一半业务抛异常");
                                                  co_return;
@@ -404,6 +452,10 @@ namespace AsynGyanis::Net
         EXPECT_EQ(responseText.find("500"), std::string::npos) << "头部已上线，不可能再改 500：" << responseText;
         EXPECT_NE(responseText.find("9\r\nhalf-body\r\n"), std::string::npos) << responseText;
         EXPECT_TRUE(responseText.ends_with("0\r\n\r\n")) << responseText;
+        // 尾部字段是业务对「它自己算完的那段正文」的承诺（校验和、行数之类）。正文只发了一半就把承诺
+        // 补上线，对端按字段一校验必然失败——而这条连接本来也不保活，报文已作废，多补几行只会把
+        // 「消息形状完整」误报成「消息内容可信」。头部的声明仍保留：RFC 9110 §6.5.1 说的是「可能有」
+        EXPECT_EQ(responseText.find("x-checksum: "), std::string::npos) << "异常路径不该带出尾部字段的取值：" << responseText;
 
         // 正文只发了一半，连接不复用：会话收口，客户端读到 EOF
         EXPECT_TRUE(client.waitForClosure(responseText, kWaitTimeout)) << "半途失败之后连接没有收口";

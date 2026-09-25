@@ -872,10 +872,18 @@ namespace AsynGyanis::Net
 
                     // 头部已在 writeChunk 里上线，这里只补终止块，不再重复发头部。
                     // HEAD：终止块同样是正文的一部分，一并不发
-                    if (!response.isStreamingBodySuppressed() && !co_await sendChunkSegment(kChunkedTerminator))
+                    if (!response.isStreamingBodySuppressed())
                     {
-                        // 终止块没发出去：本条消息对端收不全，不计状态码类与延迟
-                        co_return false;
+                        // 业务中途抛异常那一路只补裸终止块：尾部字段是业务对**它自己算完的那段正文**
+                        // 的承诺（校验和、尾随状态），正文只发了一半就把承诺补上去，对端拿到的是一个
+                        // 必然对不上的值。异常这一路连接本来也不保活，不补比补更安全
+                        std::string terminatorText = handlerException ? std::string{kChunkedTerminator}
+                                                                      : response.chunkedTerminatorText();
+                        if (!co_await sendChunkSegment(terminatorText))
+                        {
+                            // 终止块没发出去：本条消息对端收不全，不计状态码类与延迟
+                            co_return false;
+                        }
                     }
                 } else
                 {
@@ -966,10 +974,16 @@ namespace AsynGyanis::Net
                         const bool             isBodySuppressed = request.method() == HttpMethod::HEAD || response.carriesNoContent();
                         const std::string_view responseBody = isBodySuppressed ? std::string_view{} : response.body();
                         // HEAD 的正文段恒为空（上面已按方法取空），分块响应也不补终止块：那 5 个字节
-                        // 会被对端当成下一条报文的开头
-                        const std::string_view trailingSegment = response.isChunkedResponse() && !response.isStreamingBodySuppressed()
-                                                                         ? kChunkedTerminator
-                                                                         : responseBody;
+                        // 会被对端当成下一条报文的开头。带尾部字段的分块响应补的是「终止块 + 字段段 + 空行」，
+                        // 拼法只有一处（HttpResponse::chunkedTerminatorText），两条收尾出口不会分叉
+                        std::string chunkedTerminator;
+                        const bool  isChunkedWithBody = response.isChunkedResponse() && !response.isStreamingBodySuppressed();
+                        if (isChunkedWithBody)
+                        {
+                            chunkedTerminator = response.chunkedTerminatorText();
+                        }
+                        const std::string_view trailingSegment = isChunkedWithBody ? std::string_view{chunkedTerminator}
+                                                                                   : responseBody;
                         if (!co_await sendResponse(serializedHead, trailingSegment))
                         {
                             // 发送失败：响应没有真正发出，因此不计状态码类与延迟——那会让统计把
