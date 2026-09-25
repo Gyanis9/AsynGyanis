@@ -142,15 +142,17 @@ namespace AsynGyanis::Net
         [[nodiscard]] const HttpOutboundEndpointKey &endpointKey() const noexcept { return m_transport->endpointKey(); }
 
     private:
-        /// 一条在途请求的收包状态
+        /// 一条在途请求的收包状态。窗口与头块片段按流记：同一条连接上并发跑几条时，各自的账不能互相顶
         struct PendingStream
         {
             std::uint32_t streamId{0};
             Http2ClientResponse response;
+            std::int64_t sendWindowByteCount{0};   ///< 这条流的发送窗口，建流时取对端通告的初值（§6.9.2）
             std::string pendingHeaderBlock;        ///< 头块累积字节（CONTINUATION 之前先攒着）
-            bool isHeaderOpen{false};              ///< 正在收一段头块（等 CONTINUATION）
+            bool isAwaitingContinuation{false};    ///< 正在收一段头块（等 CONTINUATION）
             bool isResponseComplete{false};        ///< 收到带 END_STREAM 的帧
             bool isReset{false};                   ///< 对端 RST 掉了这条流
+            std::coroutine_handle<> waiter{};      ///< 挂在这条流上的请求协程；空表示没人等
         };
 
         /// 处理一层已解出的帧；返回 false 表示连接不可再用
@@ -164,11 +166,11 @@ namespace AsynGyanis::Net
         bool handleRstStreamFrame(const Http2Frame &frame);
         bool handlePingFrame(const Http2Frame &frame);
 
-        /// 把收完的一段头块解进对应流的响应里；解码失败时把连接判死（动态表已错位）
-        bool finishHeaderBlock(std::uint32_t streamId);
+        /// 把收完的一段头块解进这条流的响应里；解码失败时把连接判死（动态表已错位）
+        bool finishHeaderBlock(PendingStream &stream);
 
-        /// 把头块片段攒进缓冲；越过本端上限时终止连接——不肯存的片段没法交给 HPACK 解码器，两边的动态表会从此错位
-        bool appendHeaderBlockFragment(std::string_view fragment);
+        /// 把一段头块片段攒进这条流的缓冲；越过本端上限时终止连接——不肯存的片段没法交给 HPACK 解码器，两边的动态表会从此错位
+        bool appendHeaderBlockFragment(PendingStream &stream, std::string_view fragment);
 
         /// 从通路上读一段字节、处理其中完整的帧，并把攒下的回帧一次写出；返回 false 表示通路不可用
         Core::Task<bool> pumpSome();
@@ -176,8 +178,8 @@ namespace AsynGyanis::Net
         /// 把攒下的待发字节一次写出去（写完清空）；通路出错时为 false
         Core::Task<bool> flushOutgoing();
 
-        /// 按两个窗口的余量把正文发完，必要时等 WINDOW_UPDATE 续发
-        Core::Task<bool> sendBody(std::uint32_t streamId, std::string_view body);
+        /// 按连接级与这条流两层的窗口余量把正文发完，必要时等 WINDOW_UPDATE 续发
+        Core::Task<bool> sendBody(PendingStream &stream, std::string_view body);
 
         /// 本端 SETTINGS 的编码结果（通告 INITIAL_WINDOW_SIZE 与 MAX_FRAME_SIZE 两项）
         [[nodiscard]] std::string encodeLocalSettings() const;
@@ -216,7 +218,6 @@ namespace AsynGyanis::Net
         std::string m_outgoing;                    ///< 待写字节：本端把所有帧先攒在这里再一次写出
         std::uint32_t m_nextStreamId{1};           ///< 客户端流号：奇数且严格递增（RFC 7540 §5.1.1）
         std::int64_t m_connectionSendWindowByteCount{65535};  ///< 连接级发送窗口，初值是协议默认（§6.9.2）
-        std::int64_t m_streamSendWindowByteCount{65535};      ///< 当前这条流的发送窗口（每次请求换一条流）
         std::int64_t m_peerMaximumFrameByteSize{16384};       ///< 对端能收的最大帧负载
         std::uint32_t m_peerInitialStreamWindowByteCount{65535}; ///< 对端通告的流初始窗口，用于换算新流窗口
         std::map<std::uint32_t, PendingStream> m_pendingStreams;
@@ -224,9 +225,6 @@ namespace AsynGyanis::Net
         bool m_isPeerGoAway{false};                ///< 对端是否已通告收尾
         bool m_isPeerSettingsReceived{false};      ///< 是否已收到对端的 SETTINGS（能提请求的前提）
         bool m_isOwnSettingsAcknowledged{false};   ///< 对端是否已 ACK 过本端那一条 SETTINGS（只许 ACK 一次）
-        bool m_isAwaitingContinuation{false};      ///< 正在收一段头块，等 CONTINUATION
-        std::uint32_t m_continuationStreamId{0};   ///< 那段没收完的头块属于哪条流
-        std::string m_pendingHeaderBlock;          ///< 头块片段攒在这里，END_HEADERS 时一次解码
         std::string m_errorMessage;                ///< 最后一次失败的中文原因
 
         /// 客户端前奏的字节（RFC 7540 §3.4），本端在 start() 里第一个写出
