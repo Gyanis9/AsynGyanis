@@ -119,8 +119,16 @@ namespace AsynGyanis::Net
                 std::string_view url, std::string_view contentType, std::string_view body,
                 std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
 
-        /// 当前空闲、可被复用的连接条数
+        /// 当前空闲、可被复用的 HTTP/1.1 连接条数
         [[nodiscard]] std::size_t idleConnectionCount() const noexcept;
+
+        /**
+         * @brief 当前留着待命的 HTTP/2 连接条数（一台主机最多一条）
+         * @details 与上面那条分开数是对的：h1 的连接按「一次一个请求」出租，h2 的连接按流复用，
+         *          两者对同一次突发给出的答案本来就不同。
+         * @return std::size_t 池里活着的 h2 连接条数
+         */
+        [[nodiscard]] std::size_t idleHttp2ConnectionCount() const noexcept;
 
         /// 收掉所有空闲连接：在途请求用的连接不受影响
         void closeIdleConnections() noexcept;

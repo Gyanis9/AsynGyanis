@@ -3,6 +3,7 @@
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 
 #include "Core/Tls/TlsSocket.h"
+#include "Net/Http2/Http2ClientConnection.h"
 
 #include <utility>
 
@@ -243,5 +244,47 @@ namespace AsynGyanis::Net
             }
         }
         m_idleByEndpoint.clear();
+        for (auto &entry: m_http2ByEndpoint)
+        {
+            // 只 close 不 shutdown：这条入口的语义是「立刻把描述符还掉」，而发 GOAWAY 要等一次写出
+            entry.second->close();
+        }
+        m_http2ByEndpoint.clear();
+    }
+
+    HttpOutboundConnectionPool::~HttpOutboundConnectionPool() = default;
+
+    std::unique_ptr<Http2ClientConnection> HttpOutboundConnectionPool::acquireHttp2(const HttpOutboundEndpointKey &endpointKey)
+    {
+        const auto iterator = m_http2ByEndpoint.find(endpointKey);
+        if (iterator == m_http2ByEndpoint.end())
+        {
+            return nullptr;
+        }
+        std::unique_ptr<Http2ClientConnection> connection = std::move(iterator->second);
+        m_http2ByEndpoint.erase(iterator);
+        // 交出去之前先问一句还能不能用：对端在空闲期间把连接收掉时，连接层已经知道这件事了。
+        // 判死就不回头——HPACK 动态表跟着连接一起作废，再拿它发下一条只会解歪
+        if (!connection->isHealthy())
+        {
+            return nullptr;
+        }
+        return connection;
+    }
+
+    std::size_t HttpOutboundConnectionPool::idleHttp2ConnectionCount() const noexcept
+    {
+        return m_http2ByEndpoint.size();
+    }
+
+    void HttpOutboundConnectionPool::releaseHttp2(std::unique_ptr<Http2ClientConnection> connection)
+    {
+        if (connection == nullptr || !connection->isHealthy())
+        {
+            return; // 不可用的那条就地作废：函数返回即析构，通路当场关掉
+        }
+        // 一台主机只留一条：h2 的并发在流上，第二条连接换不来更多吞吐，只多占一份描述符与一张
+        // HPACK 动态表。留着的这条被新来的顶掉时，旧的那条随之析构收口
+        m_http2ByEndpoint[connection->endpointKey()] = std::move(connection);
     }
 } // namespace AsynGyanis::Net

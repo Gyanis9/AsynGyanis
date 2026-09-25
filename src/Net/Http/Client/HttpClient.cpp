@@ -504,33 +504,38 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 在协商出 h2 的通路上把一条请求走完
-         * @details ALPN 既然选了 h2，就不能再按 HTTP/1.1 说话：同一条字节流上的帧格式完全不同。这一趟
-         *          用完就关，不还池也不留第二趟：池按「一条连接一个在途请求」记账，而 h2 的复用是**流级**
-         *          的，把它塞进按连接归组的空闲表等于让两个请求往同一条流上交错写帧。
+         * @brief 一次 h2 交换的结论：响应，以及「这条流上有没有收到过对端的任何帧」
+         * @details 后一位与 HTTP/1.1 那边同名同义：只在「一个字节都没回来」时允许换一条连接重来一次
+         *          （空闲连接被对端收掉是 keep-alive 的固有竞态），收到过就算响应本身出了问题，重发
+         *          会把非幂等请求做两遍。
+         */
+        struct Http2Exchange
+        {
+            std::unique_ptr<HttpClientResponse> response;
+            bool isAnyByteReceived{false};
+        };
+
+        /**
+         * @brief 在一条已经协商好的 h2 连接上走完一次请求
+         * @details 连接的生命周期不在这里：新建那条要走前奏（start），复用这条前奏早就走完了——
+         *          把两件事分开，池才能拿同一段代码服务「刚建好的」与「留着待命的」两种连接。
          * @param loop 所属事件循环
-         * @param transport 已协商出 h2 的通路（所有权交进来，本函数负责收口）
+         * @param client 已完成前奏的 h2 连接（由调用方持有）
          * @param u 已拆开的 URL
          * @param method 方法
          * @param contentType 正文媒体类型，只随非空正文写出
          * @param body 正文
-         * @param startedAt 本次请求的开始时刻，用于把整体时限摊到前奏与收响应两段上
+         * @param startedAt 本次请求的开始时刻，用于把整体时限摊到剩下的那一段上
          * @param requestTimeout 整体时限
-         * @return std::unique_ptr<HttpClientResponse> 响应；失败返回空。reasonPhrase 恒为空——HTTP/2
-         *         没有原因短语这一项，状态语义只靠 :status
+         * @return Http2Exchange 响应；失败时 response 为空。reasonPhrase 恒为空——HTTP/2 没有原因
+         *         短语这一项，状态语义只靠 :status
          */
-        Core::Task<std::unique_ptr<HttpClientResponse>> exchangeOverHttp2(
-                Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport, const ParsedUrl &u,
+        Core::Task<Http2Exchange> exchangeOnHttp2(
+                Core::EventLoop &loop, Http2ClientConnection &client, const ParsedUrl &u,
                 const std::string_view method, const std::string_view contentType, const std::string_view body,
                 const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout)
         {
-            Http2ClientConnection client(loop, std::move(transport));
-            const std::optional<std::chrono::milliseconds> startBudget = remainingBudget(startedAt, requestTimeout);
-            if (!startBudget.has_value() || !co_await client.start(*startBudget))
-            {
-                co_return nullptr;
-            }
-
+            Http2Exchange exchange;
             std::vector<std::pair<std::string, std::string>> extraHeaders;
             if (!body.empty())
             {
@@ -542,22 +547,22 @@ namespace AsynGyanis::Net
             const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
             if (!exchangeBudget.has_value())
             {
-                co_return nullptr;
+                co_return exchange;
             }
             Http2ClientResponse response = co_await client.request(
                     scheme, authority, method, u.path, extraHeaders, body, *exchangeBudget);
-            // 先礼貌收尾再离开：通路析构只会留下一个 abrupt 的收口，对端要把它记成一次错误
-            co_await client.shutdown();
+            exchange.isAnyByteReceived = response.isAnyByteReceived;
             if (!response.isOk())
             {
-                // 状态码为 0（没收到响应头）或被对端中途 RST/GOAWAY 掉：都不算一次成功的出站
-                co_return nullptr;
+                // 状态码为 0（没收到响应头）或被对端中途 RST 掉：都不算一次成功的出站
+                co_return exchange;
             }
             auto result = std::make_unique<HttpClientResponse>();
             result->statusCode = response.statusCode;
             result->headers = std::move(response.headers);
             result->body = std::move(response.body);
-            co_return result;
+            exchange.response = std::move(result);
+            co_return exchange;
         }
 
         /**
@@ -578,17 +583,40 @@ namespace AsynGyanis::Net
         {
             const std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::now();
             const bool isKeepAlive = pool != nullptr;
-            const std::string requestText = buildRequestText(method, u, contentType, body, isKeepAlive);
+            // 请求文按要再拼：h2 那一支用不上它（帧里没有请求行），提前拼一份等于把正文整块多拷一次
+            const auto makeRequestText = [&]
+            {
+                return buildRequestText(method, u, contentType, body, isKeepAlive);
+            };
             const bool isHeadRequest = method == "HEAD";
 
             if (pool != nullptr)
             {
                 const HttpOutboundEndpointKey key{u.host, u.port, u.scheme == "https"};
+                // h2 的待命连接问在 h1 的空闲表之前：一台主机的 ALPN 结果是稳定的，两处不会同时有货
+                if (auto cachedHttp2 = pool->acquireHttp2(key); cachedHttp2 != nullptr)
+                {
+                    Http2Exchange cachedExchange = co_await exchangeOnHttp2(
+                            loop, *cachedHttp2, u, method, contentType, body, startedAt, requestTimeout);
+                    if (cachedExchange.response)
+                    {
+                        pool->releaseHttp2(std::move(cachedHttp2));
+                        co_return std::move(cachedExchange.response);
+                    }
+                    if (cachedExchange.isAnyByteReceived)
+                    {
+                        co_return nullptr;
+                    }
+                    // 一个字节都没回来：多半是对端在我们手里把这条连接收了（与 h1 的 keep-alive 同一
+                    // 条竞态）。这条就此作废——不作废也没有下一句，HPACK 动态表跟着连接一起丢——
+                    // 直接往下重开一条重来一次，对调用方仍是一次成功请求
+                }
                 if (auto reused = pool->acquire(key))
                 {
                     const std::optional<std::chrono::milliseconds> reusedBudget = remainingBudget(startedAt, requestTimeout);
                     if (reusedBudget.has_value())
                     {
+                        const std::string requestText = makeRequestText();
                         OutboundExchange exchange = co_await exchangeOnConnection(loop, *reused, requestText, isHeadRequest,
                                                                                  *reusedBudget);
                         if (exchange.response)
@@ -632,9 +660,29 @@ namespace AsynGyanis::Net
             }
             if (connection->selectedAlpnProtocol() == kHttp2AlpnProtocolName)
             {
-                // ALPN 选到了 h2：换一种说话方式，这条连接不进池（见 exchangeOverHttp2）
-                co_return co_await exchangeOverHttp2(loop, std::move(connection), u, method, contentType, body,
-                                                     startedAt, requestTimeout);
+                // ALPN 选到了 h2：换一种说话方式。前奏在这里走——从池里拿回来的那条早就走过了，
+                // 所以这一步只属于「刚建好的」这一支
+                const std::optional<std::chrono::milliseconds> startBudget = remainingBudget(startedAt, requestTimeout);
+                auto http2Connection = std::make_unique<Http2ClientConnection>(loop, std::move(connection));
+                if (!startBudget.has_value() || !co_await http2Connection->start(*startBudget))
+                {
+                    co_return nullptr;
+                }
+                Http2Exchange freshExchange = co_await exchangeOnHttp2(
+                        loop, *http2Connection, u, method, contentType, body, startedAt, requestTimeout);
+                if (pool != nullptr)
+                {
+                    if (http2Connection->isHealthy())
+                    {
+                        pool->releaseHttp2(std::move(http2Connection));
+                    }
+                }
+                else
+                {
+                    // 没有池就是一次性的：主动 shutdown 而不是任其析构，否则对端把这次收口记成 abrupt
+                    co_await http2Connection->shutdown();
+                }
+                co_return std::move(freshExchange.response);
             }
 
             const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
@@ -642,6 +690,7 @@ namespace AsynGyanis::Net
             {
                 co_return nullptr;
             }
+            const std::string requestText = makeRequestText();
             OutboundExchange exchange = co_await exchangeOnConnection(loop, *connection, requestText, isHeadRequest,
                                                                      *exchangeBudget);
             if (exchange.response && pool != nullptr && isResponseReusable(exchange.response->headers))
@@ -692,6 +741,11 @@ namespace AsynGyanis::Net
     std::size_t HttpClient::idleConnectionCount() const noexcept
     {
         return m_pool.idleConnectionCount();
+    }
+
+    std::size_t HttpClient::idleHttp2ConnectionCount() const noexcept
+    {
+        return m_pool.idleHttp2ConnectionCount();
     }
 
     void HttpClient::closeIdleConnections() noexcept

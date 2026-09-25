@@ -377,6 +377,8 @@ namespace AsynGyanis::Net
             return true;
         }
         PendingStream &pending = iterator->second;
+        // 收到这条流上的头块就证明对端已经接手了请求：连接复用时的「能不能重来一次」按这位判
+        pending.response.isAnyByteReceived = true;
         pending.response.headers.clear();
         for (const HpackHeaderField &field: headerFields)
         {
@@ -472,6 +474,7 @@ namespace AsynGyanis::Net
             creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
             return true;
         }
+        iterator->second.response.isAnyByteReceived = true;
         iterator->second.response.body.append(payload.data);
         creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
         if (payload.endStream)
@@ -552,6 +555,8 @@ namespace AsynGyanis::Net
         {
             return true;
         }
+        // 对端亲手中止这条流，说明请求已被接手：这一位为真，复用侧就不该再重来一次
+        iterator->second.response.isAnyByteReceived = true;
         iterator->second.isReset = true;
         iterator->second.response.errorMessage =
                 std::string("对端按「") + std::string(http2ErrorCodeName(payload.errorCode)) + "」中止了这条流";

@@ -27,6 +27,8 @@ namespace AsynGyanis::Core
 
 namespace AsynGyanis::Net
 {
+    class Http2ClientConnection;
+
     /**
      * @brief 一条出站连接的可复用身份：主机、端口与是否 TLS
      * @details 三者缺一都不能复用：换了主机要重做 DNS 与 TLS（SNI 与证书校验的主机名也跟着换），
@@ -189,6 +191,13 @@ namespace AsynGyanis::Net
         HttpOutboundConnectionPool &operator=(const HttpOutboundConnectionPool &) = delete;
 
         /**
+         * @brief 析构：把池里还留着的连接全部收口
+         * @details 定义在 .cpp 里——h2 连接在本头只有前置声明，持有它的 unique_ptr 要看到完整类型
+         *          才能生成销毁代码，把析构留在头里就等于让每个包含者都得包含 Http2 那层。
+         */
+        ~HttpOutboundConnectionPool();
+
+        /**
          * @brief 取一条可复用的空闲连接，并顺手收掉过期与已被对端关掉的
          * @param endpointKey 目标身份
          * @return std::unique_ptr<HttpOutboundConnection> 取到则交出所有权；没有可复用的返回空
@@ -200,6 +209,26 @@ namespace AsynGyanis::Net
          * @param connection 请求结束后的连接（交出所有权；传空是本就决定丢弃这条，同样返回）
          */
         void release(std::unique_ptr<HttpOutboundConnection> connection);
+
+        /**
+         * @brief 取回某台主机上留着的那条 HTTP/2 连接
+         * @details h2 一条连接就够：多路复用是**流级**的，同一条连接上再开第二条只是白占一个
+         *          描述符与一份 HPACK 动态表。已被对端收尾或通路已断的连接在这里当场收口并返回空，
+         *          调用方据此重开一条——「空闲期间对端把连接关了」这件事在这里只能靠取用后的第一次
+         *          读写暴露出来，所以能不能重来一次由调用方按「有没有收到过响应的第一个字节」判。
+         * @param endpointKey 目标身份
+         * @return std::unique_ptr<Http2ClientConnection> 可用则交出所有权；没有可复用的返回空
+         */
+        [[nodiscard]] std::unique_ptr<Http2ClientConnection> acquireHttp2(const HttpOutboundEndpointKey &endpointKey);
+
+        /**
+         * @brief 用完还回来；已经不可用的连接当场收口
+         * @param connection 这次请求结束后的 h2 连接（交出所有权；传空等同于本就没建起来）
+         */
+        void releaseHttp2(std::unique_ptr<Http2ClientConnection> connection);
+
+        /// 池里留着的 h2 连接条数（测试与观测用；与下面那条 h1 的空闲数各量各的）
+        [[nodiscard]] std::size_t idleHttp2ConnectionCount() const noexcept;
 
         /// 当前空闲条数（测试与观测用）
         [[nodiscard]] std::size_t idleConnectionCount() const noexcept;
@@ -219,6 +248,11 @@ namespace AsynGyanis::Net
 
         /// 按键分组的空闲连接：键的顺序不稳定问题不成问题（这里只按组取用，不对外给出次序）
         std::map<HttpOutboundEndpointKey, std::vector<IdleEntry>> m_idleByEndpoint;
+
+        /// 每台主机留一条 h2 连接：它不进上面那张表——h1 的空闲表管的是「一条连接一次一个请求」，
+        /// 而 h2 的连接在两次请求之间本来就是待命状态，套同一套空闲时限只会在对端还认它的时候
+        /// 白白重做握手
+        std::map<HttpOutboundEndpointKey, std::unique_ptr<Http2ClientConnection>> m_http2ByEndpoint;
         Config m_config;
     };
 } // namespace AsynGyanis::Net

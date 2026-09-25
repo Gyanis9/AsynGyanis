@@ -30,6 +30,9 @@ namespace AsynGyanis::Net
         std::vector<std::pair<std::string, std::string>> headers; ///< 除伪头之外的响应字段，按收到的顺序留着
         std::string body;                                       ///< 正文（DATA 帧拼接，已按本端消耗归还流控窗口）
         std::string errorMessage;                               ///< 失败时的中文原因；为空表示这条响应是正常收齐的
+        /// 这条流上有没有收到过对端的任何帧。复用连接时靠它区分「对端在我们手里把连接收了」（可以重来
+        /// 一次）与「响应本身出问题了」（重发会把非幂等请求做两遍）——与 HTTP/1.1 侧同一位判据
+        bool isAnyByteReceived{false};
 
         /// 是否成功收齐（拿到状态码且没有被对端中止）
         [[nodiscard]] bool isOk() const noexcept
@@ -131,6 +134,12 @@ namespace AsynGyanis::Net
 
         /// 通路是否还能用（没被对端收掉、也没被本端判死或关掉）
         [[nodiscard]] bool isHealthy() const noexcept;
+
+        /**
+         * @brief 这条连接的目标身份，透传自底层通路
+         * @return const HttpOutboundEndpointKey & 池按它归组复用
+         */
+        [[nodiscard]] const HttpOutboundEndpointKey &endpointKey() const noexcept { return m_transport->endpointKey(); }
 
     private:
         /// 一条在途请求的收包状态

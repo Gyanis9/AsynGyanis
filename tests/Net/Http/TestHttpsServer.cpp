@@ -526,6 +526,56 @@ namespace AsynGyanis::Net
             return result;
         }
 
+        /// 一个带池的客户端走完一串请求、中途再收一次口之后的结论
+        struct PooledHttpsRunOutcome
+        {
+            std::vector<int>         statusCodes;            ///< 每条请求的状态码；0 表示这条失败了
+            std::vector<std::string> reasonPhrases;          ///< 与 statusCodes 对齐的原因短语（h2 没有这一项）
+            std::size_t              heldConnectionCount{0}; ///< 三条请求跑完时客户端池里留着的 h2 连接条数
+            std::uint64_t            activeWhileHeld{0};     ///< 收口之前服务端在册的连接数
+            std::uint64_t            activeAfterClose{0};    ///< closeIdleConnections 之后服务端在册的连接数
+        };
+
+        /**
+         * @brief 用同一个带池的客户端依次 GET，然后「收口 → 等服务端察觉 → 再发一条」
+         * @details 客户端、循环与服务端都活在调用方栈上：客户端一析构在册数就自己归零，那时候量到的 0
+         *          证明不了是 closeIdleConnections() 的功劳。收口这一步必须在同一条循环上做——缓存的
+         *          h2 连接归属那条循环，换一条循环再用它就是跨线程驱动别人的协程帧。
+         * @param loop 客户端事件循环
+         * @param client 被测客户端（持有池）
+         * @param server 被测服务端（只读它的统计）
+         * @param urls 依次发出的地址
+         * @param settleTime 每段观测之前留给服务端的收口时间
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runPooledGets(Core::EventLoop &loop, HttpClient &client, TestHttpsServer &server,
+                                       const std::vector<std::string> &urls, const std::chrono::milliseconds settleTime,
+                                       PooledHttpsRunOutcome &outcome)
+        {
+            for (const std::string &url: urls)
+            {
+                const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
+                outcome.statusCodes.push_back(response ? response->statusCode : 0);
+                outcome.reasonPhrases.push_back(response ? response->reasonPhrase : std::string{});
+            }
+            outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
+            Core::Timer heldTimer(loop);
+            co_await heldTimer.waitFor(settleTime);
+            outcome.activeWhileHeld = server.stats().activeConnectionCount;
+
+            client.closeIdleConnections();
+            Core::Timer afterCloseTimer(loop);
+            co_await afterCloseTimer.waitFor(settleTime);
+            outcome.activeAfterClose = server.stats().activeConnectionCount;
+
+            // 收口之后再来一条：池里没了可复用的就必须重开一条，这条 200 证明作废的连接没被交出去
+            const std::unique_ptr<HttpClientResponse> reopened = co_await client.get(urls.front());
+            outcome.statusCodes.push_back(reopened ? reopened->statusCode : 0);
+            outcome.reasonPhrases.push_back(reopened ? reopened->reasonPhrase : std::string{});
+            loop.stop();
+            co_return;
+        }
+
         /**
          * @brief 临时把 SSL_CERT_FILE 指向某张证书，让出站客户端信任它
          * @details 客户端只认系统 CA 库（SSL_CTX_set_default_verify_paths），而仓库夹具是自签的；
@@ -748,6 +798,50 @@ namespace AsynGyanis::Net
         ASSERT_NE(posted, nullptr) << "带正文的 h2 出站请求失败";
         EXPECT_EQ(posted->statusCode, 200);
         EXPECT_EQ(posted->body, payload) << "方法或正文在换乘 h2 时丢了";
+    }
+
+    /**
+     * @brief 钉住：带池的客户端把 h2 连接留在池里复用，收口时真的把它关掉
+     * @details 三条请求只该付一次 TLS 握手与一次 h2 前奏。四条判据一起看，缺一条都定不了位：客户端侧
+     *          留着一根（不缓存的话这里必是 0）、服务端侧在册也是这一根、closeIdleConnections() 之后
+     *          服务端侧归零（本端若只丢指针就不会归零）、最后再发一条仍拿到 200（作废的连接没被错交出
+     *          去）。原因短语全空顺带钉住这四条走的都是 h2 而不是退回 HTTP/1.1。
+     */
+    TEST(HttpsServer, PooledClientHoldsAndReleasesItsHttp2Connection)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {},
+                                          kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        // urls 必须是具名对象：驱动协程按引用拿着它，跨过 co_await 之后还要读
+        const std::vector<std::string> urls{url, url, url};
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        PooledHttpsRunOutcome outcome;
+        auto work = runPooledGets(loop, client, fixture.server(), urls, std::chrono::milliseconds{200}, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        ASSERT_EQ(outcome.statusCodes.size(), 4U);
+        for (const int statusCode: outcome.statusCodes)
+        {
+            EXPECT_EQ(statusCode, 200);
+        }
+        for (const std::string &reasonPhrase: outcome.reasonPhrases)
+        {
+            EXPECT_TRUE(reasonPhrase.empty()) << "有原因短语＝那条其实是 HTTP/1.1 的答，ALPN 结果没被采纳";
+        }
+        EXPECT_EQ(outcome.heldConnectionCount, 1U) << "三条请求之后池里没留着 h2 连接：每条都在重做握手";
+        EXPECT_EQ(outcome.activeWhileHeld, 1U) << "服务端侧的连接数与客户端对不上：复用没成立";
+        EXPECT_EQ(outcome.activeAfterClose, 0U) << "closeIdleConnections 之后服务端还认着这条连接：本端只是丢了指针";
     }
 
     /**
