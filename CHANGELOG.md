@@ -187,6 +187,11 @@
   当成一次成功出站交出去；现在算失败，但保留已解出的状态码与正文，排查时看得出是截断而不是没收到。
   ④ `HttpOutboundConnectionPool::Config::maximumIdlePerEndpoint` 填 0 的含义定死为「不池化」
   （用完当场收口）——填 0 原先落在一条空表 erase 的未定义行为上。
+- **出站 HTTP/2 不再接受「响应收齐之后」的帧**：一条流双向 END_STREAM 之后就进入 §5.1 的「closed」态，
+  对端再发 DATA 或 HEADERS 都是违规。过去出站侧把后到的 DATA 当正文续段接上、把后到的 HEADERS 当尾部
+  头块接上——调用方拿到的正文比流上宣告过的长，头部名单里也可能多出对端塞进来的字段，而本端一处都不
+  报错。现在按连接错误 `STREAM_CLOSED` 收口并交代一条 GOAWAY，与入站侧同一条法。真正的尾部头块
+  （trailers）不受影响：它本来就带在自己那段 END_STREAM 之前。
 - **HTTP/2 客户端不再在流号见顶后继续提流**：`Http2ClientConnection::Config::maximumOpenedStreamCount`
   的合法区间是 `1..2^30`（RFC 7540 §5.1.1 给客户端流号的上界），填 0 或更大都在构造期抛
   `InvalidArgumentException`。到界之后的请求当场被拒回（一个字节都没发出，故调用方按「可以重来一次」
