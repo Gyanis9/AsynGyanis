@@ -500,7 +500,17 @@ namespace AsynGyanis::Net
 
         // 收到这条流上的头块就证明对端已经接手了请求：连接复用时的「能不能重来一次」按这位判
         stream.response.isAnyByteReceived = true;
-        stream.response.headers.clear();
+        // 只有带 :status 的那一段才是「一个新的响应头部」，清空旧的才有意义；尾部头块（trailers）不带
+        // 伪头，它是要往已有头部后面接的——一起清掉就把真正的响应头部抹没了
+        const bool isNewResponseHead = std::any_of(headerFields.begin(), headerFields.end(),
+                                                   [](const HpackHeaderField &field)
+                                                   {
+                                                       return field.name == ":status";
+                                                   });
+        if (isNewResponseHead)
+        {
+            stream.response.headers.clear();
+        }
         for (const HpackHeaderField &field: headerFields)
         {
             if (field.name.empty() || field.name.front() != ':')
@@ -813,10 +823,35 @@ namespace AsynGyanis::Net
         PendingStream &stream = m_pendingStreams.emplace(streamId, std::move(pending)).first->second;
 
         const std::string headerBlock = m_encoder.encode(fields);
-        appendOutgoing(encodeHttp2Frame(Http2FrameType::Headers,
-                                        body.empty() ? static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream)
-                                                     : kHttp2FlagEndHeaders,
-                                        streamId, headerBlock));
+        // 头块按对端能收的最大帧负载切片：一条 HEADERS 的负载越过 SETTINGS_MAX_FRAME_SIZE 是对端
+        // 会拒的帧尺寸错误（§4.2 与 §6.5.2 的取值区间），拆成 HEADERS + CONTINUATION 才是规范
+        // 给的办法（§6.10：续帧必须紧跟同一条流的头块，最后一条带 END_HEADERS）。
+        // END_STREAM 只能落在 HEADERS 上（§6.1 的 flags 位），不跟着最后一片走。
+        const std::size_t maximumFragmentByteCount = static_cast<std::size_t>(m_peerMaximumFrameByteSize);
+        for (std::size_t offset = 0U;;)
+        {
+            const std::size_t fragmentByteCount = std::min(maximumFragmentByteCount, headerBlock.size() - offset);
+            const bool isLastFragment = offset + fragmentByteCount >= headerBlock.size();
+            const std::string_view fragment(headerBlock.data() + offset, fragmentByteCount);
+            if (offset == 0U)
+            {
+                appendOutgoing(encodeHttp2Frame(Http2FrameType::Headers,
+                                                static_cast<std::uint8_t>(
+                                                        (isLastFragment ? kHttp2FlagEndHeaders : 0U)
+                                                        | (body.empty() ? kHttp2FlagEndStream : 0U)),
+                                                streamId, fragment));
+            }
+            else
+            {
+                appendOutgoing(encodeHttp2Frame(Http2FrameType::Continuation,
+                                                isLastFragment ? kHttp2FlagEndHeaders : 0U, streamId, fragment));
+            }
+            offset += fragmentByteCount;
+            if (isLastFragment)
+            {
+                break;
+            }
+        }
 
         const RequestDeadlineGuard<Http2ClientConnection> deadline(m_loop, *this, waitTimeout, "Http2ClientConnection");
         const bool isHeadWritten = co_await flushOutgoing();

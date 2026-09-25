@@ -409,7 +409,160 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        /// 一段只带单个参数的 SETTINGS 原文（对端照它通告一个越界值）
+        /// 「头块切片」与「尾部头块」两趟的结论
+        struct HeaderBlockRunOutcome
+        {
+            bool isStarted{false};
+            int statusCode{0};
+            std::string body;
+            std::vector<std::pair<std::string, std::string>> headers;      ///< 本端解出的响应头部
+            std::vector<std::pair<std::string, std::string>> peerHeaders;   ///< 对端把切片拼回去后解出的请求字段
+            std::string errorMessage;
+            std::string peerDecodeErrorText;   ///< 对端解帧的报错（越界的单帧会在这里露出来）
+            std::size_t headersFrameCount{0};  ///< 对端看到的 HEADERS 帧数
+            std::size_t continuationCount{0};  ///< CONTINUATION 帧数
+            std::size_t largestFrameByteCount{0}; ///< 对端看到的最长帧负载
+        };
+
+        /**
+         * @brief 收本端一个大头块、要求切片的对端：解到头块结束就回一句 200
+         * @details 对端用自家的帧解码器（默认就按 16384 的上界卡），所以本端不切片会直接被它判错
+         */
+        Core::Task<void> runFragmentCollectingPeer(TcpStream peer, HeaderBlockRunOutcome &outcome)
+        {
+            Http2FrameDecoder decoder;
+            std::array<char, 24> preface{};
+            static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
+            const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+            co_await peer.writeAll(greeting.data(), greeting.size());
+
+            std::string headBlock;
+            bool isHeadBlockEnded = false;
+            while (!isHeadBlockEnded)
+            {
+                const PeerFrames batch = co_await readPeerFrames(peer, decoder, 1);
+                if (!batch.errorText.empty())
+                {
+                    outcome.peerDecodeErrorText = batch.errorText;
+                    co_return;
+                }
+                for (const Http2Frame &frame: batch.frames)
+                {
+                    outcome.largestFrameByteCount = std::max(outcome.largestFrameByteCount, frame.payload.size());
+                    if (frame.header.type == Http2FrameType::Headers)
+                    {
+                        ++outcome.headersFrameCount;
+                        headBlock += frame.payload;
+                    }
+                    else if (frame.header.type == Http2FrameType::Continuation)
+                    {
+                        ++outcome.continuationCount;
+                        headBlock += frame.payload;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                    if ((frame.header.flags & kHttp2FlagEndHeaders) != 0U)
+                    {
+                        isHeadBlockEnded = true;
+                    }
+                }
+            }
+
+            HpackDecoderLimits headLimits;
+            headLimits.maximumHeaderListByteCount = 64U * 1024U; // 本条要量的就是越界头块，缺省上限会先拒掉它
+            HpackDecoder headDecoder{headLimits};
+            std::vector<HpackHeaderField> headFields;
+            std::string headErrorText;
+            if (!headDecoder.decode(headBlock, headFields, &headErrorText))
+            {
+                outcome.peerDecodeErrorText = "拼起来的头块解不开：" + headErrorText;
+            }
+            else
+            {
+                for (const HpackHeaderField &field: headFields)
+                {
+                    outcome.peerHeaders.emplace_back(field.name, field.value);
+                }
+            }
+
+            HpackEncoder peerEncoder;
+            const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
+            const std::string answer = makeFrame(Http2FrameType::Headers,
+                                                 static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream),
+                                                 1U, headerBlock);
+            co_await peer.writeAll(answer.data(), answer.size());
+            co_return;
+        }
+
+        /// 提一条带大头部字段的 GET，把「切了几片」与「解出来是什么」带回来
+        Core::Task<void> runFragmentedHeaderClient(Core::EventLoop &loop, TcpStream clientSide,
+                                                  HeaderBlockRunOutcome &outcome)
+        {
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+            // 六个 4 KiB 的字段：合起来越过 16384 的帧上限要切片，单条又都在 HPACK 的头值上限之内
+            std::vector<std::pair<std::string, std::string>> extraHeaders;
+            for (std::size_t index = 0U; index < 6U; ++index)
+            {
+                extraHeaders.emplace_back("x-big-" + std::to_string(index), std::string(4U * 1024U, 'k'));
+            }
+            const Http2ClientResponse response = co_await connection->request(
+                    "http", "peer", "GET", "/tick", extraHeaders, {}, kClientWaitTimeout);
+            outcome.statusCode = response.statusCode;
+            outcome.body = response.body;
+            outcome.headers = response.headers;
+            outcome.errorMessage = response.errorMessage;
+            loop.stop();
+            co_return;
+        }
+
+        /**
+         * @brief 回「头部 + 正文 + 尾部头块」的对端：尾部不带 :status，只把正文收尾
+         * @details 两段头块用同一个编码器实例，动态表才与对端的解码器同步（HPACK 的表是连接状态）
+         */
+        Core::Task<void> runTrailingPeer(TcpStream peer, HeaderBlockRunOutcome &outcome)
+        {
+            Http2FrameDecoder decoder;
+            std::array<char, 24> preface{};
+            static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
+            const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+            co_await peer.writeAll(greeting.data(), greeting.size());
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 HEADERS
+
+            HpackEncoder peerEncoder;
+            const std::string headBlock = peerEncoder.encode({HpackHeaderField{":status", "200"},
+                                                             HpackHeaderField{"content-type", "text/plain"}});
+            const std::string trailerBlock = peerEncoder.encode({HpackHeaderField{"x-trace", "done"}});
+            const std::string bytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headBlock)
+                                      + makeFrame(Http2FrameType::Data, 0U, 1U, "body")
+                                      + makeFrame(Http2FrameType::Headers,
+                                                  static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream),
+                                                  1U, trailerBlock);
+            co_await peer.writeAll(bytes.data(), bytes.size());
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 等本端收口，顺带收掉它的回帧
+            co_return;
+        }
+
+        /// 提一条普通 GET，把「头部与尾部头块是否都在」带回来
+        Core::Task<void> runTrailingClient(Core::EventLoop &loop, TcpStream clientSide, HeaderBlockRunOutcome &outcome)
+        {
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+            const Http2ClientResponse response = co_await connection->request(
+                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.statusCode = response.statusCode;
+            outcome.body = response.body;
+            outcome.headers = response.headers;
+            outcome.errorMessage = response.errorMessage;
+            loop.stop();
+            co_return;
+        }
         std::string singleSettingFrameBytes(const Http2SettingIdentifier identifier, const std::uint32_t value)
         {
             Http2SettingsPayload payload;
@@ -1212,6 +1365,70 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(outcome.isAnyByteReceived) << "对端一个字都没答，这一位不该为真";
         EXPECT_EQ(outcome.statusCode, 0);
         EXPECT_FALSE(outcome.isOk) << "发出过却什么也没收到，必须算失败（重发与否由调用方按这两位决定）";
+    }
+
+    /**
+     * @brief 钉住头块切片：越过对端帧上限的头块要拆成 HEADERS + CONTINUATION
+     * @details §4.2 把帧负载上界钉在 SETTINGS_MAX_FRAME_SIZE（协议默认 16384），一条 HEADERS 塞 20 KiB
+     *          是对端会拒的帧尺寸错误；规范给的办法是 §6.10 的 CONTINUATION：同一条流的头块片段，
+     *          最后一片带 END_HEADERS。判据四条：对端解帧一路无错、恰好一条 HEADERS、至少一条
+     *          CONTINUATION、没有单帧越过 16384；再把片段拼回来用 HPACK 解一次，确认切的是字节而不是
+     *          字段（拼完仍是那六条 4 KiB 的 x-big，一条不多一条不少）。
+     */
+    TEST(Http2ClientConnection, SplitsAnOverSizedHeaderBlockIntoContinuationFrames)
+    {
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        HeaderBlockRunOutcome outcome;
+        auto peerWork = runFragmentCollectingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), outcome);
+        auto clientWork = runFragmentedHeaderClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_TRUE(outcome.peerDecodeErrorText.empty()) << "对端解帧失败：" << outcome.peerDecodeErrorText;
+        EXPECT_EQ(outcome.headersFrameCount, 1U) << "一条头块只能有一个 HEADERS 帧（§6.10）";
+        EXPECT_GE(outcome.continuationCount, 1U) << "越界的头块没被切片：单帧超过了SETTINGS_MAX_FRAME_SIZE";
+        EXPECT_LE(outcome.largestFrameByteCount, 16384U) << "有一帧的负载越过了协议默认上限";
+        ASSERT_EQ(outcome.statusCode, 200) << "失败原因：" << outcome.errorMessage;
+        ASSERT_EQ(outcome.peerHeaders.size(), 10U) << "拼起来的头块解不出那六条附加字段";
+        for (std::size_t index = 0U; index < 6U; ++index)
+        {
+            EXPECT_EQ(outcome.peerHeaders[4U + index].first, "x-big-" + std::to_string(index));
+            EXPECT_EQ(outcome.peerHeaders[4U + index].second.size(), 4U * 1024U) << "切片切错了位置：字段内容不完整";
+        }
+    }
+
+    /**
+     * @brief 钉住尾部头块：它要接在响应头部之后，而不是把响应头部抹掉
+     * @details 带 :status 的那一段才算「一个新的响应头部」（含 1xx 之后真正的响应），清空旧的才有
+     *          意义；正文之后那一段 trailers 不带伪头，它是往已有头部后面接的。过去每段都先 clear，
+     *          gRPC 那类「正文 + trailers」的响应就只剩尾部字段，业务读 content-type 会读到空。
+     */
+    TEST(Http2ClientConnection, AppendsTrailerFieldsToTheResponseHeaders)
+    {
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        HeaderBlockRunOutcome outcome;
+        auto peerWork = runTrailingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), outcome);
+        auto clientWork = runTrailingClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，后面的判据无从谈起";
+        ASSERT_EQ(outcome.statusCode, 200) << "失败原因：" << outcome.errorMessage;
+        EXPECT_EQ(outcome.body, "body") << "正文（到 END_STREAM 为止）：" << outcome.body;
+        ASSERT_EQ(outcome.headers.size(), 2U) << "响应头部与尾部头块应当都在";
+        EXPECT_EQ(outcome.headers[0].first, "content-type");
+        EXPECT_EQ(outcome.headers[1].first, "x-trace") << "顺序也必须是先头部后尾部：" << outcome.headers[1].first;
     }
 
     /**
