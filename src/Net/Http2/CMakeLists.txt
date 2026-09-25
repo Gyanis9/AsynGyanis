@@ -8,4 +8,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Http2Connection.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http2Session.h
         ${CMAKE_CURRENT_LIST_DIR}/Http2Session.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Http2ClientConnection.h
+        ${CMAKE_CURRENT_LIST_DIR}/Http2ClientConnection.cpp
 )

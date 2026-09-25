@@ -1,5 +1,6 @@
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
+#include "Net/Http/Client/RequestDeadlineGuard.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
@@ -234,72 +235,6 @@ namespace AsynGyanis::Net
                    ::inet_pton(AF_INET6, host.c_str(), addressBytes.data()) == 1;
         }
 
-        /**
-         * @brief 到期就把套接字关掉，让在途的收发立刻以失败返回
-         * @details 收发协程挂在套接字的等待器上，而等待器没有取消接口；「关掉描述符」是
-         *          本框架里让它们立刻收尾的既定手段（与 stop()/close() 收尾走同一条路径）
-         * @param loop 所属事件循环（提供定时器）
-         * @param socket 被监视的套接字（非拥有；其生命周期由调用方保证长于本协程）
-         * @param requestTimeout 整体时限
-         * @param isCancelled 请求已结束的标志；为真时看门狗醒来什么都不做
-         */
-        template<typename SocketType>
-        Core::Task<void> watchDeadline(Core::EventLoop &loop, SocketType &socket,
-                                       const std::chrono::milliseconds requestTimeout, const bool &isCancelled)
-        {
-            Core::Timer timer(loop);
-            co_await timer.waitFor(requestTimeout);
-            if (isCancelled)
-            {
-                co_return;
-            }
-            // 超时是「对端不说话」这类外部状况，调用方只会拿到一个空响应，因此在这里留一条日志：
-            // 否则排查现场时只能看到「请求没结果」，看不出是被时限掐断的
-            LOG_WARN_FMT("HttpClient: 请求超过 {} 毫秒仍未完成，已关闭连接", requestTimeout.count());
-            socket.close();
-        }
-
-        /**
-         * @brief 看门狗的持有者：析构（含异常展开）时先撤销看门狗，套接字随后才销毁
-         * @details **声明顺序即安全**：把它声明在套接字之后，任何返回路径都会先销毁本对象，
-         *          绝不留下一个还在等时限、醒来却要关一个已销毁套接字的协程帧。
-         *          撤销即销毁协程帧——帧里等待中的定时器随帧析构一起注销，不留常驻等待
-         */
-        template<typename SocketType>
-        class DeadlineGuard
-        {
-        public:
-            /**
-             * @brief 启动看门狗
-             * @param loop 所属事件循环
-             * @param socket 被监视的套接字
-             * @param requestTimeout 整体时限
-             */
-            DeadlineGuard(Core::EventLoop &loop, SocketType &socket, const std::chrono::milliseconds requestTimeout) :
-                m_watchdog(watchDeadline(loop, socket, requestTimeout, m_isCancelled))
-            {
-                m_watchdog->handle().resume(); // 惰性协程：手动启动
-            }
-
-            ~DeadlineGuard()
-            {
-                m_isCancelled = true;
-                m_watchdog.reset();
-            }
-
-            DeadlineGuard(const DeadlineGuard &) = delete;
-
-            DeadlineGuard &operator=(const DeadlineGuard &) = delete;
-
-            DeadlineGuard(DeadlineGuard &&) = delete;
-
-            DeadlineGuard &operator=(DeadlineGuard &&) = delete;
-
-        private:
-            bool                        m_isCancelled{false}; ///< 请求已结束（看门狗协程按引用持有）
-            std::optional<Core::Task<>> m_watchdog;           ///< 看门狗协程帧：置空即撤销
-        };
-
         /// 一次出站交换的结论：响应，以及「有没有读到过响应的第一个字节」
         struct OutboundExchange
         {
@@ -410,7 +345,7 @@ namespace AsynGyanis::Net
                                                          const std::string &requestText, const bool isHeadRequest,
                                                          const std::chrono::milliseconds requestTimeout)
         {
-            const DeadlineGuard<HttpOutboundConnection> deadline(loop, connection, requestTimeout);
+            const RequestDeadlineGuard<HttpOutboundConnection> deadline(loop, connection, requestTimeout, "HttpClient");
             OutboundExchange exchange;
             if (isHeadRequest)
             {
@@ -536,7 +471,8 @@ namespace AsynGyanis::Net
             }
 
             auto tlsSocket = std::make_unique<Core::TlsSocket>(ssl, loop, std::move(sock), Core::TlsSocket::Role::Client);
-            const DeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, handshakeTimeout);
+            const RequestDeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, handshakeTimeout,
+                                                            "HttpClient");
             try
             {
                 co_await tlsSocket->handshake();

@@ -91,6 +91,7 @@ add_executable(TestNet
 
         Http2/TestHttp2Frame.cpp
         Http2/TestHpack.cpp
+        Http2/TestHttp2ClientConnection.cpp
         Http2/TestHttp2Connection.cpp
         Http2/TestHttp2Session.cpp
         Http2/TestHttp2CleartextSession.cpp
