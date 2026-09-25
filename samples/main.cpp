@@ -164,7 +164,9 @@ namespace
         });
 
         // WebSocket 验收用：h1 的 Upgrade 与 h3 的扩展 CONNECT（RFC 9220）都走这条路由，
-        // 收到一条就原样回一条——回显本身就把「帧进得来、也出得去」两件事一起验了
+        // 收到一条就原样回一条——回显本身就把「帧进得来、也出得去」两件事一起验了。
+        // 消息类型必须照搬：把 Binary 回成 Text 会让二进制协议的客户端解不出内容，
+        // 而 Autobahn 1.2.x / 9.2.x / 12.2.x 那几族判据（含空负载与分片）盯的就是这一条
         router.get("/ws", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
         {
             response.upgradeToWebSocket(
@@ -172,7 +174,10 @@ namespace
                     {
                         while (const auto message = co_await peer.receive())
                         {
-                            if (!co_await peer.sendText(message->payload))
+                            const bool isSent = message->opCode == Net::WebSocketOpCode::Binary
+                                        ? co_await peer.sendBinary(message->payload)
+                                        : co_await peer.sendText(message->payload);
+                            if (!isSent)
                             {
                                 co_return;
                             }

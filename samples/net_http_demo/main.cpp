@@ -377,7 +377,8 @@ namespace
             co_return;
         });
 
-        // WebSocket 回显：收到什么就原样回什么，帧进与帧出一次验完
+        // WebSocket 回显：收到什么就原样回什么，帧进与帧出一次验完。类型也照搬——把 Binary 回成
+        // Text 等于替客户端改了协议，Autobahn 1.2.x / 9.x / 12.2.x 那几族判据盯的就是这一条
         router.get("/ws", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
         {
             response.upgradeToWebSocket(
@@ -385,7 +386,10 @@ namespace
                     {
                         while (const auto message = co_await peer.receive())
                         {
-                            if (!co_await peer.sendText(message->payload))
+                            const bool isSent = message->opCode == Net::WebSocketOpCode::Binary
+                                        ? co_await peer.sendBinary(message->payload)
+                                        : co_await peer.sendText(message->payload);
+                            if (!isSent)
                             {
                                 co_return;
                             }

@@ -118,7 +118,26 @@ async def run_one(url: str, label: str, check_deflate: bool) -> None:
         if await echo_back(connection, large, f"{label}/大正文回显") is not None:
             ok(f"{label}：{LARGE_PAYLOAD_BYTES} 字节正文原样回来")
 
-        # 3. 分片重组：走 websockets 自己的成帧代码（掩码、帧头与 permessage-deflate 都由它生成），
+        # 3. 二进制回显：消息类型必须照搬。把 Binary 回成 Text 等于替客户端改了协议——载荷里的 NUL 与
+        #    非 UTF-8 字节在文本帧里是非法的（§5.6 要求 Text 必须是合法 UTF-8），Autobahn 1.2.x 与
+        #    9.2.x / 12.2.x 那几族判据盯的就是这一条。放 NUL 也顺带钉住「Binary 不做 UTF-8 校验」
+        binary_sample = bytes([0x00, 0x01, 0xFF, 0xFE]) + b"binary payload" + bytes([0x80, 0x00])
+        try:
+            await connection.send(binary_sample)
+            echoed_binary = await asyncio.wait_for(connection.recv(), timeout=STEP_TIMEOUT_SECONDS)
+        except (asyncio.TimeoutError, websockets.exceptions.WebSocketException) as error:
+            fail(f"{label}/二进制回显：{type(error).__name__}: {error}")
+            echoed_binary = None
+        if isinstance(echoed_binary, (bytes, bytearray)):
+            if bytes(echoed_binary) == binary_sample:
+                ok(f"{label}：二进制消息按 Binary 原样回来（{len(binary_sample)} 字节，含 NUL 与非 UTF-8）")
+            else:
+                fail(f"{label}/二进制回显：按 Binary 回来了，但内容不符"
+                     f"（{len(echoed_binary)} vs {len(binary_sample)} 字节）")
+        elif echoed_binary is not None:
+            fail(f"{label}/二进制回显：服务端把 Binary 回成了 Text——回显必须保留消息类型")
+
+        # 4. 分片重组：走 websockets 自己的成帧代码（掩码、帧头与 permessage-deflate 都由它生成），
         #    分片是**连续切段**，拼回去必须正好等于原消息——这条自证放在发送前，免得把探针自己的错
         #    算到服务端头上。协商了 deflate 之后每一片都是独立压缩块（client_no_context_takeover），
         #    片尾还要带 Z_SYNC_FLUSH，这是跨实现最容易各写各的一处。
@@ -153,7 +172,7 @@ async def run_one(url: str, label: str, check_deflate: bool) -> None:
                         else:
                             ok(f"{label}：{len(fragments)} 个压缩分片重组为一条完整消息")
 
-        # 4. 控制帧：ping 必须被 pong 回来（RFC 6455 §5.5.2/§5.5.3）
+        # 5. 控制帧：ping 必须被 pong 回来（RFC 6455 §5.5.2/§5.5.3）
         try:
             pong_waiter = await asyncio.wait_for(connection.ping(), timeout=STEP_TIMEOUT_SECONDS)
             await asyncio.wait_for(pong_waiter, timeout=STEP_TIMEOUT_SECONDS)
@@ -161,7 +180,7 @@ async def run_one(url: str, label: str, check_deflate: bool) -> None:
         except (asyncio.TimeoutError, websockets.exceptions.WebSocketException) as error:
             fail(f"{label}/ping-pong：{type(error).__name__}")
 
-        # 5. permessage-deflate 协商：响应里只允许出现我们确实支持的扩展
+        # 6. permessage-deflate 协商：响应里只允许出现我们确实支持的扩展
         advertised = connection.response.headers.get("Sec-WebSocket-Extensions", "")
         if check_deflate and "permessage-deflate" not in advertised and advertised:
             fail(f"{label}/扩展：服务端回了不认识的扩展「{advertised}」")
@@ -170,7 +189,7 @@ async def run_one(url: str, label: str, check_deflate: bool) -> None:
         else:
             ok(f"{label}：扩展协商 = {advertised if advertised else '（未协商，两端各自原文传输）'}")
 
-        # 6. 关闭握手：客户端发 1000，必须收到对端的 1000 作为应答（只发不答的实现在这里红）
+        # 7. 关闭握手：客户端发 1000，必须收到对端的 1000 作为应答（只发不答的实现在这里红）
         close_reason = f"{label}/关闭握手"
         try:
             await asyncio.wait_for(connection.close(code=1000, reason="验收结束"), timeout=STEP_TIMEOUT_SECONDS)
