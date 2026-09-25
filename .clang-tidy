@@ -143,69 +143,79 @@ readability-uniqueptr-delete-release,
 readability-use-anyofallof,
 readability-identifier-naming'
 
+# 取值要留意**拼写**：clang-tidy 认的是 CamelCase（首字母大写）与 camelBack（首字母小写），
+# 平时习惯写的 PascalCase / camelCase 它不认——拼错时只报一句 "invalid configuration value"
+# 并把那一项丢掉继续跑，于是整组命名检查静默空转（本仓曾经 22 项全空转）。
+# 改完要确认告警真的出得来，否则下一轮看到的还是零。
 # 命名规范与 C++20 编码规范保持一致：
 # 类/结构体/枚举/命名空间 PascalCase，函数与成员函数 camelCase，
 # 非静态私有/保护成员 m_ 前缀，静态成员与常量 k 前缀，宏 UPPER_CASE。
 CheckOptions:
   - key: readability-identifier-naming.NamespaceCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.ClassCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.StructCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.UnionCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.EnumCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.ScopedEnumConstantCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.TypeAliasCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.TypedefCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.TemplateParameterCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.FunctionCase
-    value: camelCase
+    value: camelBack
   - key: readability-identifier-naming.MethodCase
-    value: camelCase
+    value: camelBack
   - key: readability-identifier-naming.PrivateMemberPrefix
     value: m_
   - key: readability-identifier-naming.PrivateMemberCase
-    value: camelCase
+    value: camelBack
   - key: readability-identifier-naming.ProtectedMemberPrefix
     value: m_
   - key: readability-identifier-naming.ProtectedMemberCase
-    value: camelCase
+    value: camelBack
   - key: readability-identifier-naming.PublicMemberCase
-    value: camelCase
+    value: camelBack
   - key: readability-identifier-naming.StaticPrivateMemberPrefix
     value: s_
   - key: readability-identifier-naming.StaticPrivateMemberCase
-    value: camelCase
+    value: camelBack
   - key: readability-identifier-naming.StaticProtectedMemberPrefix
     value: s_
   - key: readability-identifier-naming.StaticProtectedMemberCase
-    value: camelCase
+    value: camelBack
   - key: readability-identifier-naming.StaticPublicConstantPrefix
     value: k
   - key: readability-identifier-naming.StaticPublicConstantCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.StaticConstantPrefix
     value: k
   - key: readability-identifier-naming.StaticConstantCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.ConstexprVariablePrefix
     value: k
   - key: readability-identifier-naming.ConstexprVariableCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.GlobalConstantPrefix
     value: k
   - key: readability-identifier-naming.GlobalConstantCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
   - key: readability-identifier-naming.ParameterCase
-    value: camelCase
+    value: camelBack
   - key: readability-identifier-naming.LocalVariableCase
-    value: camelCase
+    value: camelBack
+  # 兼容层的替身名必须与系统/POSIX 逐字相同，改了就编不过或语义不对：`_SSIZE_T_DEFINED` 这类
+  # 带前导下划线的宏是 MSVC 自己的包含卫哨（我们照抄它的判据），`ssize_t` 一类是 POSIX 的类型别名。
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '^_[A-Z0-9_]+$'
+  - key: readability-identifier-naming.TypeAliasIgnoredRegexp
+    value: '^(s?size_t|socklen_t|mode_t|pid_t|u_?int(8|16|32|64)_t)$'

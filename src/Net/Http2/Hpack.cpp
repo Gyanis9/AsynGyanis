@@ -26,10 +26,6 @@ namespace AsynGyanis::Net
         constexpr std::uint8_t kDynamicTableSizeUpdateMask = 0xE0;
         constexpr std::uint8_t kDynamicTableSizeUpdatePattern = 0x20;
 
-        /// 永不索引的字面量的模式：0001xxxx（RFC 7541 §6.2.3）
-        constexpr std::uint8_t kLiteralNeverIndexedMask = 0xF0;
-        constexpr std::uint8_t kLiteralNeverIndexedPattern = 0x10;
-
         /// 带索引名的字面量里名字索引的前缀位数（01 两位模式 + 6 位索引）
         constexpr std::uint8_t kIndexedNamePrefixBitCount = 6;
 
