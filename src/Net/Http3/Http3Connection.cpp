@@ -604,7 +604,7 @@ namespace AsynGyanis::Net
         {
             for (const auto &field: fields)
             {
-                m_callbacks.onHeaderField(streamId, field.name, field.value);
+                m_callbacks.onHeaderField(streamId, field.name, field.value, isTrailers);
             }
         }
 

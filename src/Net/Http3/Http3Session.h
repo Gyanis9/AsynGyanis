@@ -229,8 +229,20 @@ namespace AsynGyanis::Net
          * @param streamId 流号
          * @param name 头名（HTTP/3 里一律小写）
          * @param value 头值
+         * @param isTrailers 该字段来自尾段：另落一档（见 HttpRequest::addTrailerField），不并入头部
          */
-        void addRequestHeader(std::int64_t streamId, std::string name, std::string value);
+        void addRequestHeader(std::int64_t streamId, std::string name, std::string value, bool isTrailers);
+
+        /**
+         * @brief 落一条尾段字段到那条流还活着的请求记录上
+         * @details 两条可能的落点：非流式路径的记录还在 @c m_incomingRequests（要等 END_STREAM 才派发），
+         *          流式路径的记录已搬进 @c m_streamingRequests。两处都没有就说明这条流已经派发或已被丢掉，
+         *          原样忽略——不能用 operator[] 去补，那会给一条已经没有请求对象的流留下一条空记录。
+         * @param streamId 流号
+         * @param name 字段名（QPACK 解出来就是小写）
+         * @param value 字段值
+         */
+        void addTrailerFieldToStream(std::int64_t streamId, std::string_view name, std::string_view value);
 
         /**
          * @brief 记下一段请求正文
@@ -329,6 +341,18 @@ namespace AsynGyanis::Net
             /// 下一次「该有进展」的时刻：每收到一段请求就按 readTimeout 往后推，过点即收口这条流
             Deadline deadline{std::chrono::steady_clock::now()};
         };
+
+        /**
+         * @brief 给一条还在收的请求记一条字段的头部预算，越限就置位
+         * @details 条数、单名/单值长度、整块净字节与 h1/h2 同口径；**尾段字段同样计入**
+         *          （@c HttpParserLimits::maximumHeaderCount 的注释就是这么写的）。头段与尾段共用
+         *          这一份判定，免得两条路各自漂移。越限只置位、让请求收完，服务阶段统一回 431——
+         *          中途断开的话对端只看到「连接没了」，拿不到「头部太大」这个结论。
+         * @param incoming 该流正在收的记录，计数器与置位都落在它身上
+         * @param name 字段名
+         * @param value 字段值
+         */
+        void accountHeaderFieldBudget(IncomingRequest &incoming, std::string_view name, std::string_view value);
 
         /**
          * @brief 一条流式请求的本地状态：本流的正文来源、读取器，以及它自己的派发协程

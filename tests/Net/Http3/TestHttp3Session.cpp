@@ -208,6 +208,33 @@ namespace AsynGyanis::Net
             }
 
             /**
+             * @brief 提交一条「请求头 → 整段正文 → 尾段收尾」的请求
+             * @param method 方法原文
+             * @param path 路径（:path）
+             * @param authority 权威主机（:authority）
+             * @param body 正文
+             * @param trailerFields 尾段字段，按到达顺序
+             * @return std::vector<CapturedStreamData> 按流号分好的待发字节
+             */
+            std::vector<CapturedStreamData> submitRequestWithBodyAndTrailers(const std::string &method, const std::string &path,
+                                                                            const std::string &authority, const std::string &body,
+                                                                            const std::vector<QpackHeaderField> &trailerFields)
+            {
+                std::vector<std::pair<std::string, std::string>> extraHeaders;
+                if (!body.empty())
+                {
+                    extraHeaders.emplace_back("content-length", std::to_string(body.size()));
+                }
+                queueRequestHead(method, path, authority, {}, extraHeaders, kFirstRequestStreamId, body.empty());
+                if (!body.empty())
+                {
+                    queueDataFrame(kFirstRequestStreamId, body, false);
+                }
+                queueTrailerSection(trailerFields, kFirstRequestStreamId);
+                return drainPendingWrites();
+            }
+
+            /**
              * @brief 只取一段待发字节：把请求分步送到服务端，模拟正文随时间到达
              * @return CapturedStreamData 本次的片段；没有待发字节时 streamId 为 -1
              */
@@ -426,6 +453,28 @@ namespace AsynGyanis::Net
                     recordDecodeError("本端通告容量 0，请求头块却产生了 QPACK 编码器流指令");
                 }
                 queueFrame(requestStreamId, Http3FrameType::Headers, headerBlock, isEndStream);
+            }
+
+            /**
+             * @brief 排一条尾段（trailer section）：正文之后再来一枚 HEADERS，并以此收尾
+             * @details 尾段里没有伪头（RFC 9114 §4.3），其余编码与头段同一套：容量 0 下只用字面量。
+             * @param trailerFields 尾段字段，按到达顺序
+             * @param requestStreamId 承载这条请求的流号
+             */
+            void queueTrailerSection(const std::vector<QpackHeaderField> &trailerFields, const std::int64_t requestStreamId)
+            {
+                QpackEncoder encoder(0, 0, 0);
+                std::string  headerBlock;
+                std::string  encoderStreamBytes;
+                const auto   encoded = encoder.encodeFieldSection(static_cast<std::uint64_t>(requestStreamId),
+                                                                  std::span<const QpackHeaderField>(trailerFields), headerBlock,
+                                                                  encoderStreamBytes);
+                if (!encoded.has_value())
+                {
+                    recordDecodeError("尾段字段没能编出来：" + encoded.error().message);
+                    return;
+                }
+                queueFrame(requestStreamId, Http3FrameType::Headers, headerBlock, true);
             }
 
             /**
@@ -1436,6 +1485,102 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 跑一条「头 → 正文 → 尾段收尾」的请求，把处理器报回来的字符串交给断言
+     * @param registerRoute 往路由器上挂那条路（普通或流式由调用方决定）
+     * @param body 请求正文
+     * @return std::pair<std::string, int> 处理器写进响应体的内容与 :status
+     */
+    template <typename RouteRegistrar>
+    std::pair<std::string, int> serveRequestWithTrailers(RouteRegistrar registerRoute, const std::string &body)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                             });
+
+        Router router;
+        registerRoute(router);
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        const std::vector<QpackHeaderField> trailerFields{QpackHeaderField{"x-checksum", "abc123"}};
+        for (const CapturedStreamData &step: peer.submitRequestWithBodyAndTrailers("POST", "/echo-tail", "example.com", body, trailerFields))
+        {
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        return {peer.response().body, peer.response().status};
+    }
+
+    /**
+     * @brief 钉住：h3 尾段字段落进请求的 trailer 一档，且**不**出现在头部（非流式派发）
+     * @details 改造前尾段的字段与普通头部走同一条 addHeader：正文之后到达的字段于是有了头部的身份，
+     *          业务按头部读到的值与线上「这是尾部」的事实不符。现在两处都验：trailer 档读得到，
+     *          头部读不到。删掉会话里的分流（让它回到 addHeader）这条就红。
+     */
+    TEST(Http3Session, DeliversTrailerSectionIntoTheTrailerStore)
+    {
+        const auto [body, status] = serveRequestWithTrailers(
+                [](Router &router)
+                {
+                    router.post("/echo-tail", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.setStatus(200);
+                        response.setBody("tf=" + request.getTrailerField("x-checksum").value_or("-")
+                                         + "|h=" + (request.getHeader("x-checksum").has_value() ? "yes" : "no"));
+                        co_return;
+                    });
+                },
+                "abc");
+
+        EXPECT_EQ(status, 200);
+        EXPECT_EQ(body, "tf=abc123|h=no") << "尾段字段没有落到 trailer 一档，或同时混进了头部";
+    }
+
+    /**
+     * @brief 钉住：流式派发的请求也在正文读完之后看到尾段字段
+     * @details 这条走的是第二个落点：请求记录在头收齐时就从 m_incomingRequests 搬进
+     *          m_streamingRequests，尾段到达时只能落在搬走后的那一份上。漏了那一支，
+     *          流式路由的处理器会读到空（而字段被塞进一条无人认领的新记录里）。
+     */
+    TEST(Http3Session, DeliversTrailerSectionToStreamingRoute)
+    {
+        const auto [body, status] = serveRequestWithTrailers(
+                [](Router &router)
+                {
+                    router.postStreaming("/echo-tail", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                    {
+                        std::size_t bodyByteCount = 0;
+                        while (co_await request.bodyStream()->readNext())
+                        {
+                            bodyByteCount += request.bodyStream()->chunk().size();
+                        }
+                        response.setStatus(200);
+                        response.setBody("bytes=" + std::to_string(bodyByteCount)
+                                         + "|tf=" + request.getTrailerField("x-checksum").value_or("-"));
+                        co_return;
+                    });
+                },
+                "abcdefghijkl");
+
+        EXPECT_EQ(status, 200);
+        EXPECT_EQ(body, "bytes=12|tf=abc123") << "流式路由没读到尾段字段，或正文按批交付被改动";
+    }
+
+    /**
      * @brief 把请求正文的字节按 DATA 帧归还给 QUIC 的接收窗口
      * @details read_stream2 的消费计数不含 DATA 负载，正文那部分必须单独归还；漏了这条，
      *          正文一大就会把接收窗口用光（对端随后被流控卡住，而本端并不知道为什么）
@@ -1456,8 +1601,8 @@ namespace AsynGyanis::Net
                              [&creditedByteCount](const std::int64_t, const std::size_t consumedByteCount) { creditedByteCount += consumedByteCount; });
 
         const std::vector<std::uint8_t> payload{'a', 's', 'y', 'n'};
-        session.addRequestHeader(kFirstRequestStreamId, ":method", "POST");
-        session.addRequestHeader(kFirstRequestStreamId, ":path", "/upload");
+        session.addRequestHeader(kFirstRequestStreamId, ":method", "POST", false);
+        session.addRequestHeader(kFirstRequestStreamId, ":path", "/upload", false);
         session.addRequestBody(kFirstRequestStreamId, payload);
 
         EXPECT_EQ(creditedByteCount, payload.size()) << "请求正文的字节没有被归还给接收窗口";
@@ -2011,9 +2156,9 @@ namespace AsynGyanis::Net
                              Http3Session::StreamCrediter{}, nullptr, budget);
 
         const std::vector<std::uint8_t> partialBody(40, 'z');
-        session.addRequestHeader(kFirstRequestStreamId, ":method", "POST");
-        session.addRequestHeader(kFirstRequestStreamId, ":path", "/upload");
-        session.addRequestHeader(kFirstRequestStreamId, "content-length", "60");
+        session.addRequestHeader(kFirstRequestStreamId, ":method", "POST", false);
+        session.addRequestHeader(kFirstRequestStreamId, ":path", "/upload", false);
+        session.addRequestHeader(kFirstRequestStreamId, "content-length", "60", false);
         session.addRequestBody(kFirstRequestStreamId, partialBody);
         // 不调 finishRequest：正文只到了 40/60，这条请求还躺在待服务记录里
 
@@ -2039,9 +2184,9 @@ namespace AsynGyanis::Net
                              Http3Session::StreamCrediter{}, nullptr, budget);
 
         const std::vector<std::uint8_t> fullBody(40, 'z');
-        session.addRequestHeader(kFirstRequestStreamId, ":method", "POST");
-        session.addRequestHeader(kFirstRequestStreamId, ":path", "/upload");
-        session.addRequestHeader(kFirstRequestStreamId, "content-length", "40");
+        session.addRequestHeader(kFirstRequestStreamId, ":method", "POST", false);
+        session.addRequestHeader(kFirstRequestStreamId, ":path", "/upload", false);
+        session.addRequestHeader(kFirstRequestStreamId, "content-length", "40", false);
         session.addRequestBody(kFirstRequestStreamId, fullBody);
         session.finishRequest(kFirstRequestStreamId);
         // 不 pump：请求停在派发队列里，额度已经搬到那条记录上

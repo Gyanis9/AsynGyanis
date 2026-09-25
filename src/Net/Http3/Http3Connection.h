@@ -61,8 +61,11 @@ namespace AsynGyanis::Net
          */
         struct Callbacks
         {
-            /// 解出一个头字段（含伪头，原样给出）：参数为流号、名、值
-            std::function<void(std::int64_t streamId, std::string_view name, std::string_view value)> onHeaderField;
+            /// 解出一个头字段（含伪头，原样给出）：参数为流号、名、值，以及「它来自尾段还是头段」。
+            /// 尾段的字段由会话落进请求的 trailer 一档，不与头部混档（口径同 h1 的 HttpParser 与
+            /// h2 的尾部头块）；定界字段（content-length、host）在尾段根本到不了这里，
+            /// 判定器按 RFC 9110 §6.5 先把整个尾段判成非法
+            std::function<void(std::int64_t streamId, std::string_view name, std::string_view value, bool isTrailers)> onHeaderField;
 
             /// 一个头块解完并已通过判定：上层此刻可以按方法/路径决定要不要提前派发
             std::function<void(std::int64_t streamId, bool isTrailers)> onHeaderBlockReceived;

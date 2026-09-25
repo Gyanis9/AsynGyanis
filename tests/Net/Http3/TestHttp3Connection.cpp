@@ -121,6 +121,7 @@ namespace
             std::int64_t streamId{0};
             std::string name;
             std::string value;
+            bool isTrailers{false}; ///< 该字段来自尾段还是头段：会话据此决定落哪一档
         };
 
         std::vector<HeaderField> headerFields{};
@@ -139,9 +140,11 @@ namespace
                                                     Http3Connection::LocalSettings settings = {})
     {
         Http3Connection::Callbacks callbacks;
-        callbacks.onHeaderField = [&events](const std::int64_t streamId, const std::string_view name, const std::string_view value)
+        callbacks.onHeaderField = [&events](const std::int64_t streamId, const std::string_view name, const std::string_view value,
+                                            const bool isTrailers)
         {
-            events.headerFields.push_back(EventLog::HeaderField{.streamId = streamId, .name = std::string(name), .value = std::string(value)});
+            events.headerFields.push_back(EventLog::HeaderField{
+                    .streamId = streamId, .name = std::string(name), .value = std::string(value), .isTrailers = isTrailers});
         };
         callbacks.onHeaderBlockReceived = [&events](const std::int64_t streamId, const bool isTrailers)
         {
@@ -681,6 +684,16 @@ TEST(Http3Connection, TrailersSectionIsAcceptedAfterTheBodyAndMarkedAsTrailers)
     ASSERT_EQ(events.trailerBlocksReceived.size(), 1u);
     EXPECT_EQ(events.trailerBlocksReceived[0], kRequestStreamId);
     EXPECT_EQ(events.requestsEnded.size(), 1u) << "尾段之后的 END_STREAM 才算请求收全";
+
+    // 字段本身也要带着「这是尾段」交出去：会话据此落进 trailer 一档。
+    // 反过来头段必须报假——报成全真会让业务把头部的值当成尾部的
+    const auto isChecksumField = [](const EventLog::HeaderField &field) { return field.name == "x-checksum"; };
+    const auto checksum = std::ranges::find_if(events.headerFields, isChecksumField);
+    ASSERT_TRUE(checksum != events.headerFields.end()) << "尾段字段没被交出去";
+    EXPECT_TRUE(checksum->isTrailers) << "尾段字段必须标成尾段";
+    EXPECT_EQ(checksum->value, "abc123");
+    ASSERT_FALSE(events.headerFields.empty());
+    EXPECT_FALSE(events.headerFields.front().isTrailers) << "头段字段被标成了尾段";
 }
 
 TEST(Http3Connection, PseudoHeaderInTrailersIsRejected)

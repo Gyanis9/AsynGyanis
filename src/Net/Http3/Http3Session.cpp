@@ -152,9 +152,11 @@ namespace AsynGyanis::Net
 
         // 连接层的通知逐个接回本会话：它们都在调用方线程上同步触发，这里只是把函数对象绑回来
         Http3Connection::Callbacks callbacks;
-        // 伪头与普通头都从这一路进来：归位（:method/:path/:authority/:protocol）与限额判定都在 addRequestHeader 里
-        callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value)
-                                  { addRequestHeader(streamId, std::string(name), std::string(value)); };
+        // 伪头与普通头都从这一路进来：归位（:method/:path/:authority/:protocol）与限额判定都在
+        // addRequestHeader 里；尾段的字段由它另落一档，不并进头部
+        callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value,
+                                         const bool isTrailers)
+                                  { addRequestHeader(streamId, std::string(name), std::string(value), isTrailers); };
         // 头块收齐：方法/路径此刻可判，命中流式正文路由或扩展 CONNECT 就在这里提前派发。
         // 尾段也走同一个入口——那条流早已从 m_incomingRequests 搬走，函数自己会判出「已派发过」而什么都不做
         callbacks.onHeaderBlockReceived = [this](const std::int64_t streamId, bool)
@@ -572,8 +574,15 @@ namespace AsynGyanis::Net
         co_return;
     }
 
-    void Http3Session::addRequestHeader(const std::int64_t streamId, std::string name, std::string value)
+    void Http3Session::addRequestHeader(const std::int64_t streamId, std::string name, std::string value, const bool isTrailers)
     {
+        // 尾段的字段不在这条路上排队：它进的是请求的另一档
+        if (isTrailers)
+        {
+            addTrailerFieldToStream(streamId, name, value);
+            return;
+        }
+
         IncomingRequest &incoming = m_incomingRequests[streamId];
         if (incoming.headerFieldCount == 0)
         {
@@ -584,17 +593,8 @@ namespace AsynGyanis::Net
         }
         // 收到一段请求就是「有进展」：读时限按 readTimeout 往后推，慢客户端一直发就一直不算超时
         incoming.deadline = nextRequestDeadline();
-        // 头部限额与 h1/h2 同口径：条数、单名/单值长度、整块净字节。越限只置位、让请求收完，
-        // 服务阶段统一回 431——中途断开的话对端只看到「连接没了」，拿不到「头部太大」这个结论
-        ++incoming.headerFieldCount;
-        incoming.headerBlockByteCount += name.size() + value.size();
-        if ((m_parserLimits.maximumHeaderCount != 0 && incoming.headerFieldCount > m_parserLimits.maximumHeaderCount) ||
-            (m_parserLimits.maximumHeaderFieldNameLength != 0 && name.size() > m_parserLimits.maximumHeaderFieldNameLength) ||
-            (m_parserLimits.maximumHeaderFieldValueLength != 0 && value.size() > m_parserLimits.maximumHeaderFieldValueLength) ||
-            (m_parserLimits.maximumHeaderBlockLength != 0 && incoming.headerBlockByteCount > m_parserLimits.maximumHeaderBlockLength))
-        {
-            incoming.isHeaderLimitExceeded = true;
-        }
+        // 头部限额与 h1/h2 同口径，且尾段共用同一份判定（见 accountHeaderFieldBudget）
+        accountHeaderFieldBudget(incoming, name, value);
         if (name == ":method")
         {
             incoming.method = std::move(value);
@@ -631,6 +631,47 @@ namespace AsynGyanis::Net
         }
         // 交视图而非移动：请求的头部存储是一条字节缓冲，名与值都要拷进去，移动那两个临时串省不下什么
         incoming.request.addHeader(name, value);
+    }
+
+    void Http3Session::accountHeaderFieldBudget(IncomingRequest &incoming, const std::string_view name,
+                                                const std::string_view value)
+    {
+        ++incoming.headerFieldCount;
+        incoming.headerBlockByteCount += name.size() + value.size();
+        if ((m_parserLimits.maximumHeaderCount != 0 && incoming.headerFieldCount > m_parserLimits.maximumHeaderCount) ||
+            (m_parserLimits.maximumHeaderFieldNameLength != 0 && name.size() > m_parserLimits.maximumHeaderFieldNameLength) ||
+            (m_parserLimits.maximumHeaderFieldValueLength != 0 && value.size() > m_parserLimits.maximumHeaderFieldValueLength) ||
+            (m_parserLimits.maximumHeaderBlockLength != 0 && incoming.headerBlockByteCount > m_parserLimits.maximumHeaderBlockLength))
+        {
+            incoming.isHeaderLimitExceeded = true;
+        }
+    }
+
+    void Http3Session::addTrailerFieldToStream(const std::int64_t streamId, const std::string_view name,
+                                               const std::string_view value)
+    {
+        // 落点一：非流式路径。这条流要等 END_STREAM 才派发，记录还在 m_incomingRequests 里
+        if (const auto found = m_incomingRequests.find(streamId); found != m_incomingRequests.end())
+        {
+            IncomingRequest &incoming = found->second;
+            // 尾字段到达同样是「有进展」：读时限照旧往后推
+            incoming.deadline = nextRequestDeadline();
+            accountHeaderFieldBudget(incoming, name, value);
+            incoming.request.addTrailerField(name, value);
+            return;
+        }
+
+        // 落点二：流式路径。请求记录在头收齐那一刻就搬走了，尾字段要落到搬走后的那一份上。
+        // 这里不再记头部预算——计数器随头段一起留在了上面那份记录里，而单个字段段的体量
+        // 由 QPACK 解码侧的 maximumFieldSectionSize 兜住（超了整段判错），不会一路长下去
+        if (const auto streaming = m_streamingRequests.find(streamId); streaming != m_streamingRequests.end())
+        {
+            streaming->second->deadline = nextRequestDeadline();
+            streaming->second->request.addTrailerField(name, value);
+        }
+
+        // 两处都没有：这条流已经派发完（或已被取消丢掉），没有请求对象可落。原样忽略——
+        // 不去 operator[] 补一份，那等于给一条已经没有请求对象的流留下一条空记录
     }
 
     void Http3Session::addRequestBody(const std::int64_t streamId, const std::span<const std::uint8_t> data)
