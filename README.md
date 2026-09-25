@@ -25,6 +25,9 @@
 - **HTTP/1.1** — 手写增量解析器（含资源上限与分块编码）、Keep-Alive 持久连接
 - **HTTPS** — TLS 握手 + ALPN 协商（h2 / http/1.1）、mTLS、证书热轮换
 - **HTTP/2** — RFC 9113 帧与连接状态机、自研 HPACK（含 Huffman）、接收窗口流控、流式响应、GOAWAY；h2c 明文与 RFC 8441 扩展 CONNECT 隧道
+- **出站 HTTP 客户端** — `HttpClient` 带按主机归组的 Keep-Alive 连接池，TLS 侧 ALPN 通告 `h2,http/1.1`；
+  协商到 h2 时多条请求并发复用同一条连接（头块按最大帧负载切片、按流发送窗口、见顶前主动换连接），
+  已经写上通路而没等到答完的请求**不重发**（非幂等请求做两遍比失败更坏）
 - **HTTP/3 + QUIC** — 自研 QUIC 传输层（RFC 9000/9001：握手、流与流量控制、丢包恢复与 NewReno 拥塞控制、1-RTT 密钥更新）+ 自研 HTTP/3 会话（帧层、QPACK 含动态表、流式正文、GOAWAY 优雅排空、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3
 - **WebSocket** — RFC 6455 握手与帧编解码、UTF-8 校验、分片重组、有界收帧队列、permessage-deflate（RFC 7692）；h1 升级与 h2/h3 隧道共用协商
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型
@@ -410,8 +413,8 @@ LOG_INFO_FMT("listening on port {}", port);
 | 子目录 | 内容 |
 |--------|------|
 | `Tcp/` | `TcpAcceptor`（`SO_REUSEPORT` 监听）、`TcpStream`（`readExact` / `readUntil` / `writeAll`）、`TcpServer` |
-| `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（手写增量解析）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`HttpsSession` / `HttpsServer`、`FileSender`（静态文件）、`SseStream`、`HttpMetricsEndpoint`、`HttpMemoryBudget`、压缩协商（`Gzip` / `Compression`）、`Client/`（`HttpClient` 与响应解析器） |
-| `Http2/` | `Http2Session` / `Http2Connection`、`Http2Frame`、`Hpack`（含 Huffman） |
+| `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（手写增量解析）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`HttpsSession` / `HttpsServer`、`FileSender`（静态文件）、`SseStream`、`HttpMetricsEndpoint`、`HttpMemoryBudget`、压缩协商（`Gzip` / `Compression`）、`Client/`（`HttpClient`、`HttpOutboundConnectionPool` 与响应解析器） |
+| `Http2/` | `Http2Session` / `Http2Connection`、`Http2ClientConnection`（出站一侧的帧与 HPACK）、`Http2Frame`、`Hpack`（含 Huffman） |
 | `Http3/` | `Http3Session` + 自研帧层 / QPACK / `Http3Connection`（含 RFC 9220 隧道） |
 | `Quic/` | 自研 QUIC 传输层：`Codec/`（变长整数、报文头、帧、传输参数）、`Crypto/`（密钥调度、头/包保护、TLS 胶水）、`Recovery/`（RFC 9002 丢包恢复与 NewReno）、`Streams/`（流与流量控制）、`QuicConnectionCore`（状态机）、`QuicPacketBuilder`、`QuicServer` / `QuicConnection`（数据报路由与外壳） |
 | `WebSocket/` | `WebSocketHandshake` / `WebSocketFrame` / `WebSocketPeer`、`WebSocketUtf8`、`PerMessageDeflate` |
