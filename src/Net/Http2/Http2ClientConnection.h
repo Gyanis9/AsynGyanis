@@ -59,15 +59,29 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 用一条已建立的字节通路构造连接
+         * @brief 用缺省的本端能力建立连接
          * @param loop 所属事件循环：时限看门狗的定时器用它，本对象此后只在这条循环上用
          * @param transport 已连上（TLS 已握手且 ALPN 选到 h2）的通路，所有权交给本对象
-         * @param config 本端通告的接收能力
-         * @throws Base::InvalidArgumentException config.maximumFrameByteSize 越出合法区间：那等于通告
-         *         一个非法的 SETTINGS_MAX_FRAME_SIZE，帧解码器当场就拒
+         * @throws Base::InvalidArgumentException 帧上限越出合法区间：那等于通告一个非法的
+         *         SETTINGS_MAX_FRAME_SIZE，帧解码器当场就拒
          */
-        explicit Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport,
-                                       Config config = {});
+        Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport)
+            : Http2ClientConnection(loop, std::move(transport), Config{})
+        {
+        }
+
+        /**
+         * @brief 指定本端能力建立连接
+         * @param loop 所属事件循环
+         * @param transport 已连上（TLS 已握手且 ALPN 选到 h2）的通路，所有权交给本对象
+         * @param config 本端通告的接收能力
+         * @details 能力取不到参数默认值上：Config 是本类的嵌套聚合，它的成员初值属于本类的
+         *          complete-class context，写成默认参数在 GCC 下非法（[class.mem]）而 MSVC 放行——
+         *          与 Http3Connection 那处同型，故补一把委托构造，调用方写法一字不变。
+         * @throws Base::InvalidArgumentException 同二参那把
+         */
+        Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport,
+                              Config config);
 
         Http2ClientConnection(const Http2ClientConnection &) = delete;
         Http2ClientConnection &operator=(const Http2ClientConnection &) = delete;
