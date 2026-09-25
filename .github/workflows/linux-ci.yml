@@ -148,16 +148,20 @@ jobs:
   # 合入都跑的判据，而不是一次性手工结论。自写客户端只会重复本框架自己对协议的理解，两边一起错的
   # 地方查不出来——h2c 那条探针就是这样查出一条取消会带走整条连接的问题。
   #
-  # 跑的是 scripts/ 下那两条与手动完全相同的脚本（挂上 CI 只为不让它们烂掉）：
-  # h2_adversarial_probe.sh（curl 自带 nghttp2）与 ws_interop_probe.py（websockets）。
+  # 跑的是 scripts/ 下那几条与手动完全相同的脚本（挂上 CI 只为不让它们烂掉）：
+  # h2_adversarial_probe.sh（curl 自带 nghttp2）、ws_interop_probe.py（websockets）、
+  # websocket_autobahn.sh（Autobahn|Testsuite 的 517 条用例，官方镜像）。
   # h3 那侧已有 http3-acceptance 作业跑 aioquic，这里不重复；Windows 侧不建这个作业：
   # 本机 mingw 的 curl 编译时没带 HTTP/2，--http2-prior-knowledge 直接报「不支持」，
   # 等于跑给空气看。
   #
   # 三台服务端的分工写在下面那一步里（--h2c 会把同一端口的明文连接全部收走，不再服务 h1）。
+  #
+  # 计时余量给的是 Autobahn：517 条用例里有 4 MiB / 8 MiB 的大消息往返与 permessage-deflate 的
+  # 各形分片，而这里跑的是 Debug + ASan 那台服务端（release 侧本机实测整轮约 13 分钟）。
   protocol-conformance:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
 
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2
@@ -257,6 +261,11 @@ jobs:
             && /tmp/h2spec -h 127.0.0.1 -p 18443 --tls --insecure || status=1
           wait_ready "http://127.0.0.1:18081/json" \
             && python scripts/ws_interop_probe.py 127.0.0.1 18081 || status=1
+          # Autobahn|Testsuite：另一家独立实现的 517 条用例，判的是「期望的事件序列」。
+          # 本机这一轮由它查出「回显不分类型一律发文本帧」与「单帧上限比消息上限还小」两处。
+          # 默认排掉超本端 8 MiB 消息上限的那两条（按 §7.1.6 回 1009 属规范许可的拒绝），见脚本头
+          wait_ready "http://127.0.0.1:18081/json" \
+            && bash scripts/websocket_autobahn.sh 18081 || status=1
           wait_ready -k "https://127.0.0.1:18443/json" \
             && python scripts/ws_interop_probe.py 127.0.0.1 18443 --wss || status=1
 
