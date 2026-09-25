@@ -286,6 +286,129 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        /// 「一条连接只许开一条流」那趟的结论
+        struct StreamBudgetRunOutcome
+        {
+            bool isStarted{false};          ///< 前奏是否走完
+            int firstStatusCode{0};         ///< 第一条请求的状态码
+            std::string firstErrorMessage;  ///< 第一条失败时的中文原因
+            /// 第一条收齐之后连接是否还算健康：额度见顶且没有在途的流时，本端应当自己退场
+            bool isHealthyAfterFirst{true};
+            int secondStatusCode{0};        ///< 第二条请求的状态码（提不出流就该是 0）
+            std::string secondErrorMessage; ///< 第二条被拒时带回来的中文原因
+        };
+
+        /**
+         * @brief 用「最多开一条流」的配置走完「一条成功 → 连接自己退场 → 第二条被拒」
+         * @details 那条额度平时是 2^30（RFC 7540 §5.1.1 给客户端流号的上界：奇数、严格递增、不过
+         *          2^31-1），压到 1 才测得到见顶之后的行为。真实场景并不遥远：一条待命连接按一万请求
+         *          每秒约 30 小时就用完了流号。
+         * @param loop 客户端事件循环
+         * @param clientSide 本端一侧的通路
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runStreamBudgetClient(Core::EventLoop &loop, TcpStream clientSide, StreamBudgetRunOutcome &outcome)
+        {
+            Http2ClientConnection::Config config;
+            config.maximumOpenedStreamCount = 1U;
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)),
+                    config);
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+
+            const Http2ClientResponse first = co_await connection->request(
+                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.firstStatusCode = first.statusCode;
+            outcome.firstErrorMessage = first.errorMessage;
+            outcome.isHealthyAfterFirst = connection->isHealthy();
+
+            const Http2ClientResponse second = co_await connection->request(
+                    "http", "peer", "GET", "/tick-again", {}, {}, kClientWaitTimeout);
+            outcome.secondStatusCode = second.statusCode;
+            outcome.secondErrorMessage = second.errorMessage;
+            co_return;
+        }
+
+        /// 「一条在途、额度刚见顶」时提第二条的结论
+        struct BusyBudgetRunOutcome
+        {
+            bool isStarted{false};              ///< 前奏是否走完
+            std::size_t inFlightWhenRefused{0}; ///< 提第二条那一刻本端在途几条流
+            int secondStatusCode{0};            ///< 第二条的状态码（被拒就该是 0）
+            std::string secondErrorMessage;     ///< 第二条被拒的中文原因
+            bool isFirstStillPending{false};    ///< 第二条被拒之后，在途的第一条是否没被连坐
+        };
+
+        /**
+         * @brief 提起一条请求并把结论写回调用方给的格子
+         * @param connection 被测连接
+         * @param path 请求路径
+         * @param waitTimeout 这条请求的等待上限
+         * @param statusCode 输出：状态码
+         * @param errorMessage 输出：失败原因
+         */
+        Core::Task<void> runOneBudgetRequest(Http2ClientConnection &connection, const std::string_view path,
+                                             const std::chrono::milliseconds waitTimeout, int &statusCode,
+                                             std::string &errorMessage)
+        {
+            const Http2ClientResponse response = co_await connection.request("http", "peer", "GET", path, {}, {}, waitTimeout);
+            statusCode = response.statusCode;
+            errorMessage = response.errorMessage;
+            co_return;
+        }
+
+        /**
+         * @brief 额度只有 1 的连接上：第一条挂在半路（对端只收不答），再提第二条
+         * @details 这一条测的是**闸本身**：上面那条顺序用例里第一条已收齐，连接随即自己退场，第二条
+         *          是被「连接已不可用」挡下的，闸拆掉也照样绿——所以要制造「到界且仍有流在途」这个
+         *          中间态。在途数读的是本端自己的账，不靠睡；第二条刻意给一个短时限，让「闸没拦住」
+         *          表现为「等到超时、原因不点名额度」而不是把用例挂死。
+         * @param loop 客户端事件循环
+         * @param clientSide 本端一侧的通路
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runBusyBudgetClient(Core::EventLoop &loop, TcpStream clientSide, BusyBudgetRunOutcome &outcome)
+        {
+            Http2ClientConnection::Config config;
+            config.maximumOpenedStreamCount = 1U;
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)),
+                    config);
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+
+            int firstStatus = 0;
+            std::string firstError;
+            Core::Task<void> firstWork = runOneBudgetRequest(*connection, "/tick", kClientWaitTimeout, firstStatus, firstError);
+            if (!firstWork.isReady())
+            {
+                loop.scheduler().schedule(firstWork.handle());
+            }
+
+            const auto settleDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (connection->inFlightStreamCount() == 0U && std::chrono::steady_clock::now() < settleDeadline)
+            {
+                Core::Timer settleTimer(loop);
+                co_await settleTimer.waitFor(std::chrono::milliseconds{1});
+            }
+            outcome.inFlightWhenRefused = connection->inFlightStreamCount();
+
+            const Http2ClientResponse second = co_await connection->request(
+                    "http", "peer", "GET", "/tick-again", {}, {}, std::chrono::milliseconds{150});
+            outcome.secondStatusCode = second.statusCode;
+            outcome.secondErrorMessage = second.errorMessage;
+            outcome.isFirstStillPending = connection->inFlightStreamCount() == 1U;
+
+            // 收尾：本端关掉通路，对端的读取循环与本端那条在途的请求都随之收场
+            connection->close();
+            const auto drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (connection->inFlightStreamCount() > 0U && std::chrono::steady_clock::now() < drainDeadline)
+            {
+                Core::Timer drainTimer(loop);
+                co_await drainTimer.waitFor(std::chrono::milliseconds{1});
+            }
+            co_return;
+        }
+
         /// 一段只带单个参数的 SETTINGS 原文（对端照它通告一个越界值）
         std::string singleSettingFrameBytes(const Http2SettingIdentifier identifier, const std::uint32_t value)
         {
@@ -738,6 +861,93 @@ namespace AsynGyanis::Net
         EXPECT_EQ(goAwayPayload.lastStreamId, 1U) << "已受理的最后一条流之外，对端可以把更后面的流整个不当回事";
         EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::NoError))
                 << "正常收尾不该带错误码";
+    }
+
+    /**
+     * @brief 钉住：开流额度见顶之后，本端交代一条 NO_ERROR 的 GOAWAY 退场，并不再提出新流
+     * @details 客户端流号是「奇数、严格递增、不超过 2^31-1」（§5.1.1），一条连接最多提 2^30 条流；
+     *          不缺这条闸的话，`m_nextStreamId` 到顶会回绕成小号甚至偶数，之后每一条请求都被对端按
+     *          PROTOCOL_ERROR 判死——而一条待命连接按一万请求每秒约 30 小时就到界，不是理论问题。
+     *          判据四条一起看：第一条照常 200、它收齐之后连接已不算健康、第二条提不出来且原因点名
+     *          「额度」、对端那侧确实收到一条 last-stream-id 为 1 且不带错误码的 GOAWAY（只掐通路不
+     *          吭声，对端就只能看到一个断掉的连接）。
+     */
+    TEST(Http2ClientConnection, RetiresConnectionWhenTheStreamIdBudgetIsSpent)
+    {
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames received;
+        std::string prefaceText;
+        StreamBudgetRunOutcome outcome;
+        auto peerWork = runScriptedPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, prefaceText);
+        auto clientWork = runStreamBudgetClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(received.errorText.empty()) << "对端解帧就失败了：" << received.errorText;
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，后面的额度判定无从谈起";
+        EXPECT_EQ(outcome.firstStatusCode, 200) << "第一条本该照常走完，失败原因：" << outcome.firstErrorMessage;
+        EXPECT_FALSE(outcome.isHealthyAfterFirst) << "额度见顶且最后一条流已收齐，本端应当自己退场而不是留着待用";
+        EXPECT_EQ(outcome.secondStatusCode, 0) << "额度见顶之后还提出了第二条流：流号就要回绕了";
+        EXPECT_NE(outcome.secondErrorMessage.find("额度"), std::string::npos)
+                << "第二条被拒的原因没点名额度，排查时会以为是网络问题：「" << outcome.secondErrorMessage << "」";
+
+        const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
+        ASSERT_NE(goAway, nullptr) << "退场要按 §6.8 交代一句 GOAWAY，不能直接掐通路";
+        EXPECT_EQ(goAway->header.streamId, 0U) << "GOAWAY 是连接级帧";
+        Http2GoAwayPayload goAwayPayload;
+        std::string goAwayErrorText;
+        ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, goAwayPayload, &goAwayErrorText)) << goAwayErrorText;
+        EXPECT_EQ(goAwayPayload.lastStreamId, 1U) << "已受理的最后一条流是 1：更后面的流对端可以整个不当回事";
+        EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::NoError))
+                << "配额用完不是谁的违规，GOAWAY 不该带错误码";
+    }
+
+    /**
+     * @brief 钉住：额度见顶而最后一条流还在途时，闸要当场拒掉新请求，而不是再占一条流
+     * @details 上面那条顺序用例测的是「到点退场」，这一条测的是闸本身：那条用例里第一条已经收齐、
+     *          连接随即自己退场，第二条其实是被「连接已不可用」挡下的——把额度判断整个拆掉它照样绿。
+     *          这里让对端只收不答，第一条就一直挂在途上，于是「到界 + 有流在途」这个中间态真的被走到。
+     *          最硬的一条判据在对端那侧：只应看到一条 HEADERS。闸失效时第二条会以流号 3 上过通路，
+     *          用例这边则表现为「原因不点名额度」（它等满了自己那个 150 毫秒时限）。
+     */
+    TEST(Http2ClientConnection, RefusesANewStreamWhenTheBudgetIsSpentWhileOneIsInFlight)
+    {
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames received;
+        BusyBudgetRunOutcome outcome;
+        const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+        auto peerWork = runOpeningPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, greeting);
+        auto clientWork = runBusyBudgetClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(received.errorText.empty()) << "对端解帧就失败了：" << received.errorText;
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，后面的额度判定无从谈起";
+        EXPECT_EQ(outcome.inFlightWhenRefused, 1U) << "第一条没挂在途上：这条用例没测到「到界且有流在途」";
+        EXPECT_EQ(outcome.secondStatusCode, 0) << "额度见顶且第一条还在途，第二条不该再占一条流";
+        EXPECT_NE(outcome.secondErrorMessage.find("额度"), std::string::npos)
+                << "第二条没被额度闸挡下（它等满了自己的时限），原因：「" << outcome.secondErrorMessage << "」";
+        EXPECT_TRUE(outcome.isFirstStillPending) << "第二条被拒时把在途的第一条连坐了：拒绝新流不该动已有的流";
+
+        std::size_t peerHeadersFrameCount = 0;
+        for (const Http2Frame &frame: received.frames)
+        {
+            if (frame.header.type == Http2FrameType::Headers)
+            {
+                ++peerHeadersFrameCount;
+            }
+        }
+        EXPECT_EQ(peerHeadersFrameCount, 1U) << "对端看到了第二条 HEADERS：额度闸没拦住，流号会一路涨到回绕";
     }
 
     /**

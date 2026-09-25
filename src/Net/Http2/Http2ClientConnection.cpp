@@ -34,6 +34,36 @@ namespace AsynGyanis::Net
         , m_decoder(Http2FrameLimits{.maximumFrameSizeByteCount = config.maximumFrameByteSize})
     {
         m_connectionSendWindowByteCount = kHttp2InitialWindowSizeByteCount;
+        if (config.maximumOpenedStreamCount == 0U)
+        {
+            throw Base::InvalidArgumentException("Http2ClientConnection: 本端开流额度为 0，这条连接一条流也提不出。");
+        }
+    }
+
+    bool Http2ClientConnection::tryReserveStreamId(std::uint32_t &streamId) noexcept
+    {
+        if (openedStreamCount() >= m_config.maximumOpenedStreamCount)
+        {
+            return false;
+        }
+        streamId = m_nextStreamId;
+        m_nextStreamId += 2U;
+        return true;
+    }
+
+    Core::Task<void> Http2ClientConnection::retireIfStreamBudgetSpent()
+    {
+        if (openedStreamCount() < m_config.maximumOpenedStreamCount || !m_pendingStreams.empty() || !isHealthy())
+        {
+            co_return; // 额度没走完、还有流在途，或已经判过死：都不用本端主动收口
+        }
+        // 额度用尽且手上没有在途的流了：按 §6.8 交代一句 NO_ERROR 的 GOAWAY 再收口。刻意不带错误码——
+        // 这不是谁的违规，只是这条连接的流号配额走完了。isHealthy() 此后转假，连接池下次取用时
+        // 就把这条丢掉并另开一条，调用方那边仍然是一次成功的请求
+        failConnection(Http2ErrorCode::NoError, "本端在这条连接上的开流额度已用完，换一条连接");
+        // 尽量把那句 GOAWAY 送出去；送不出去也不改变结论（对端只会看到通路收口）
+        static_cast<void>(co_await flushOutgoing());
+        co_return;
     }
 
     bool Http2ClientConnection::isHealthy() const noexcept
@@ -721,8 +751,14 @@ namespace AsynGyanis::Net
             co_return response;
         }
 
-        const std::uint32_t streamId = m_nextStreamId;
-        m_nextStreamId += 2U;
+        std::uint32_t streamId = 0U;
+        if (!tryReserveStreamId(streamId))
+        {
+            // 一个字节都没发出去，因此调用方按「可以重来一次」那一支处理：换一条连接，对它仍是成功
+            response.errorMessage = "本端在这条连接上的开流额度已用完，换一条连接";
+            co_await retireIfStreamBudgetSpent();
+            co_return response;
+        }
 
         std::vector<HpackHeaderField> fields;
         fields.reserve(extraHeaders.size() + 4U);
@@ -762,6 +798,7 @@ namespace AsynGyanis::Net
             {
                 response.errorMessage = m_errorMessage.empty() ? "请求没能完整送出" : m_errorMessage;
             }
+            co_await retireIfStreamBudgetSpent();
             co_return response;
         }
 
@@ -794,6 +831,7 @@ namespace AsynGyanis::Net
         {
             response.errorMessage = m_errorMessage.empty() ? "没等到完整的响应" : m_errorMessage;
         }
+        co_await retireIfStreamBudgetSpent();
         co_return response;
     }
 

@@ -63,6 +63,11 @@ namespace AsynGyanis::Net
             /// 单个头块（HEADERS 与其后 CONTINUATION 片段之和）的压缩后字节上限，与服务端侧同档：
             /// CONTINUATION 可以无限续，不设闸门等于让对端用一个头块把本端内存撑掉
             std::size_t maximumHeaderBlockByteCount{16u * 1024};
+            /// 本端在这条连接上最多开几条流。缺省即 RFC 7540 §5.1.1 给客户端流号的上界：流号取奇数且
+            /// 严格递增、不过 2^31-1，故 (2^31-1 + 1) / 2 = 2^30 条到顶。见顶之后本端不再提新流，并在
+            /// 最后一条流收齐时交代一条 NO_ERROR 的 GOAWAY 主动退场，由连接池换一条新的——长命连接的
+            /// 流号会用完，这不是理论问题：一条待命连接按一万请求每秒约 30 小时就到界
+            std::uint32_t maximumOpenedStreamCount{1U << 30};
         };
 
         /**
@@ -70,7 +75,8 @@ namespace AsynGyanis::Net
          * @param loop 所属事件循环：时限看门狗的定时器用它，本对象此后只在这条循环上用
          * @param transport 已连上（TLS 已握手且 ALPN 选到 h2）的通路，所有权交给本对象
          * @throws Base::InvalidArgumentException 帧上限越出合法区间：那等于通告一个非法的
-         *         SETTINGS_MAX_FRAME_SIZE，帧解码器当场就拒
+         *         SETTINGS_MAX_FRAME_SIZE，帧解码器当场就拒；开流额度填 0 也走这条——
+         *         那条连接一条流都提不出，留着只会让每个请求都空跑一次
          */
         Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport)
             : Http2ClientConnection(loop, std::move(transport), Config{})
@@ -108,6 +114,10 @@ namespace AsynGyanis::Net
          *          就接手驱动。对端的 MAX_CONCURRENT_STREAMS 本层不代作节流：几条并发请求就占几条流，
          *          越限时由对端回 REFUSED_STREAM，本层既不排队也不重发（把它翻译成「等一等再来」是调用方
          *          的策略，本层不知道调用方愿意排队还是愿意快速失败）。
+         * @note 本端自己也有一条额度：客户端流号是奇数、严格递增且不过 2^31-1（§5.1.1），一条连接最多
+         *       提 Config::maximumOpenedStreamCount 条流。见顶之后的请求会被直接拒回（一个字节都没发出去，
+         *       故调用方按「可以重来一次」那一支处理），并且在最后一条流收齐时本端会交代一条 NO_ERROR 的
+         *       GOAWAY 主动退场——不这样下一条请求就会拿着回绕过的小号或偶数号去提流，被对端判 PROTOCOL_ERROR。
          * @param scheme 目标 URI 的协议名，写进 :scheme（只允许 "http" 与 "https"）
          * @param authority 目标主机[:端口]，写进 :authority
          * @param method 请求方法，写进 :method
@@ -242,6 +252,24 @@ namespace AsynGyanis::Net
 
         /// 从通路上读一段字节、处理其中完整的帧，并把攒下的回帧一次写出；返回 false 表示通路不可用
         Core::Task<bool> pumpSome();
+
+        /// 本端已经开过几条流：流号从 1 起按 2 递增，故「下一条 - 1」除以 2 就是已用条数
+        [[nodiscard]] std::uint32_t openedStreamCount() const noexcept { return (m_nextStreamId - 1U) / 2U; }
+
+        /**
+         * @brief 取一个客户端流号：按 §5.1.1 取奇数且严格递增的那条，且不许越过 2^31-1
+         * @param streamId 输出参数：只在返回 true 时写入
+         * @return true 拿到了号
+         * @return false 本端在这条连接上开流的额度已用完
+         */
+        [[nodiscard]] bool tryReserveStreamId(std::uint32_t &streamId) noexcept;
+
+        /**
+         * @brief 开流额度用尽且手上没有在途的流时，按 §6.8 交代一条 NO_ERROR 的 GOAWAY 让这条连接退场
+         * @details 额度没走完、还有流在途、或已经判过死时本方法什么都不做；真正退场时先把那句 GOAWAY
+         *          尽力写出去再返回，因此要在请求协程里 co_await
+         */
+        Core::Task<void> retireIfStreamBudgetSpent();
 
         /**
          * @brief 试着当这一轮的连接驱动者：已经有人在读通路时返回 false
