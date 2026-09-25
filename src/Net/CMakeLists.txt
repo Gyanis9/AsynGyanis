@@ -45,8 +45,8 @@ target_link_libraries(Net PUBLIC
 # 以 LINK_ONLY 传给最终可执行文件（消费方的可见性由上面的清单登记保证）
 target_link_libraries(Net PRIVATE ZLIB::ZLIB zstd::libzstd brotli::brotli)
 
-# QUIC 传输层已是自研实现，Net 不再链接 ngtcp2：它只剩测试里的跨实现裁判，登记在
-# tests/Net/CMakeLists.txt（与 nghttp3 同一个道理）。
+# QUIC 传输层已是自研实现，本模块不链接任何第三方 QUIC：跨实现验收换成进程外的 aioquic
+# （scripts/quic_cross_check.sh + tests/Tools/QuicProbeServer.cpp），树内不再留裁判链接。
 # OpenSSL 仍是 PUBLIC：连接与服务端的配置里直接暴露 SSL_CTX，消费方 include 这些头就要拿到
 # OpenSSL 的头路径。这里自己 find_package 一次：OpenSSL 目前是靠 Core 带进来的，显式声明过
 # 依赖关系才不会随模块顺序改变而失效

@@ -444,8 +444,7 @@ AsynGyanis/
 ├── benchmarks/             # 性能基线与门禁脚本、热路径微基准、进程外压测脚本
 ├── packaging/conan/        # Conan 库包配方与消费方冒烟测试
 ├── packaging/vcpkg/        # vcpkg 端口与版本注册表 + 消费方冒烟测试
-├── scripts/                # 发布版本一致性门禁、示例总跑、HTTP/3 真机验收脚本
-├── third_party/ngtcp2/     # vendored 的第三方 QUIC，只剩测试里的跨实现对拍裁判
+├── scripts/                # 发布版本一致性门禁、示例总跑、跨实现验收探针（QUIC/h3/WS/h2）
 ├── src/
 │   ├── Platform/           # 平台底层（OS 调用的唯一出处）：IO / FileSystem / System
 │   ├── Base/               # Config / Exception / Log
@@ -462,7 +461,6 @@ AsynGyanis/
 | [nlohmann_json](https://github.com/nlohmann/json) | 3.12.0 | JSON 值模型与解析/序列化（Base 公开接口） |
 | [yaml-cpp](https://github.com/jbeder/yaml-cpp) | 0.9.0 | YAML 解析（配置加载） |
 | [OpenSSL](https://www.openssl.org/) | 3.6.2 | TLS/HTTPS，兼作 QUIC 的加密胶水 |
-| [ngtcp2](https://github.com/ngtcp2/ngtcp2) | 1.25.0（vendored） | 仅测试：QUIC 跨实现对拍裁判（传输层已自研，`Net` 不再链接它） |
 | [nghttp3](https://github.com/ngtcp2/nghttp3) | 1.12.0 | 仅测试：HTTP/3 跨实现对拍裁判（库本体已自研，不再依赖） |
 | [zlib](https://zlib.net/) / [zstd](https://facebook.github.io/zstd/) / [brotli](https://github.com/google/brotli) | 1.3.1 / 1.5.7 / 1.1.0 | 响应正文与 WebSocket 压缩 |
 | [mimalloc](https://microsoft.github.io/mimalloc/) | 3.5.1 | 可选全局分配器（`ASYN_WITH_MIMALLOC`） |

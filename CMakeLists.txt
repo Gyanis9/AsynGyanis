@@ -176,18 +176,6 @@ add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
 enable_testing()
 
 # 第三方源码在业务模块之前进来：模块链接它的目标时目标必须已经存在（见 third_party/CMakeLists.txt）
-#
-# ngtcp2 的 CMake 用 FindOpenSSL 的时代变量做「OpenSSL 有没有 QUIC 接口」的探针
-# （读 OPENSSL_INCLUDE_DIR / OPENSSL_LIBRARIES），而 Conan 的 OpenSSL 是 config 包：只提供
-# OpenSSL::SSL / OpenSSL::Crypto 两个导入目标，那两个变量是空的 → 探针在链接期丢库，得到
-# LNK2019「无法解析的外部符号 SSL_set_quic_tls_cbs」（实测：符号就在 ssl.h 里，头文件搜得到，
-# 只是没连上库），于是 ngtcp2 误判「本机 OpenSSL 不支持 QUIC」并 FATAL_ERROR 中止配置。
-# 这里把两个变量从导入目标补齐，让探针得到真实结论——不改第三方源码，也不写死任何路径
-if(TARGET OpenSSL::SSL AND NOT OPENSSL_LIBRARIES)
-    get_target_property(ASYN_OPENSSL_INCLUDE_DIR OpenSSL::SSL INTERFACE_INCLUDE_DIRECTORIES)
-    set(OPENSSL_INCLUDE_DIR "${ASYN_OPENSSL_INCLUDE_DIR}" CACHE PATH "由 OpenSSL::SSL 导入目标补齐，供第三方探针使用" FORCE)
-    set(OPENSSL_LIBRARIES OpenSSL::SSL OpenSSL::Crypto CACHE STRING "由 OpenSSL 导入目标补齐，供第三方探针使用" FORCE)
-endif()
 add_subdirectory(third_party)
 
 add_subdirectory(src)
@@ -218,7 +206,7 @@ endif()
 # CI 的注释一直写着「构建失败与告警都会让这一步红」，但此前**没有任何告警开关**——Linux 侧只开
 # 了 GCC 默认那几条，未初始化、未使用、窄化这类常见缺陷根本不会被拦下。这里把门禁真正接上。
 #
-# 只加在**本仓库自己的目标**上：third_party/ 下的 vendored 源码（ngtcp2/nghttp3/wepoll 等）不参与，
+# 只加在**本仓库自己的目标**上：third_party/ 下若再 vendor 第三方源码，它们不参与，
 # 它们的告警不是我们要修的，也不能靠改它们的代码消掉；而全局 add_compile_options 会一并命中它们，
 # 再在第三方目录里用 /W0 覆盖又会触发 MSVC 的 D9025（/WX 下直接变成错误）——因此按目标逐个开启。
 function(asyn_enable_strict_warnings target_name)
@@ -228,8 +216,8 @@ function(asyn_enable_strict_warnings target_name)
         # 两条按「针对性豁免」关掉（不是降级告警级别），理由都写在这儿：
         # - -Wmissing-field-initializers：C++ 的指定初始化器只填当前分支用得上的字段是
         #   本仓库的既定写法（其余字段由默认成员初值兜住）；GCC 会对它报「少填字段」，
-        #   而第三方结构更不可能逐个填满——测试里那个 ngtcp2 裁判客户端要填的 `ngtcp2_callbacks`
-        #   有三十多个字段，用得上的只有几个。
+        #   而本仓库与第三方结构都不可能逐个填满——`Http2Setting{.identifier = ..., .value = ...}`
+        #   这类「只填当前分支用得上的字段」是既定写法，其余字段由默认成员初值兜住。
         # - -Wcomment：文档里写路由模式（"/static/*" 这类）难免出现 "/*" 序列；
         #   该告警想抓的是「误以为注释可嵌套」，与本仓库的实际写法不符。
         target_compile_options(${target_name} PRIVATE -Wall -Wextra -Werror
@@ -240,7 +228,7 @@ endfunction()
 set(asynStrictWarningTargets Platform Base Core Net Database)
 
 if(ASYN_BUILD_TESTS)
-    list(APPEND asynStrictWarningTargets TestPlatform TestBase TestCore TestNet TestDatabase microbench)
+    list(APPEND asynStrictWarningTargets TestPlatform TestBase TestCore TestNet TestDatabase microbench quic_probe_server)
 endif()
 
 if(ASYN_BUILD_SAMPLES)

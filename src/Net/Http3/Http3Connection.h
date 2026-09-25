@@ -7,8 +7,8 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 位置与 HTTP/2 侧的 `Http2Connection` 对应：只管协议，不管业务，也不碰 socket 与事件循环。
- *          传输层以「流号 + 字节段」喂入、以同样的形状取走待发字节，因此本类对底下是 ngtcp2 还是
- *          自研状态机一无所知。
+ *          传输层以「流号 + 字节段」喂入、以同样的形状取走待发字节，因此本类对底下是哪一套 QUIC
+ *          实现一无所知。
  */
 
 #pragma once
