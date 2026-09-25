@@ -523,8 +523,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 回「头部 + 正文 + 尾部头块」的对端：尾部不带 :status，只把正文收尾
          * @details 两段头块用同一个编码器实例，动态表才与对端的解码器同步（HPACK 的表是连接状态）
+         * @param peer 对端那一头的通路
          */
-        Core::Task<void> runTrailingPeer(TcpStream peer, HeaderBlockRunOutcome &outcome)
+        Core::Task<void> runTrailingPeer(TcpStream peer)
         {
             Http2FrameDecoder decoder;
             std::array<char, 24> preface{};
@@ -1417,7 +1418,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
         HeaderBlockRunOutcome outcome;
-        auto peerWork = runTrailingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), outcome);
+        auto peerWork = runTrailingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
         auto clientWork = runTrailingClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
