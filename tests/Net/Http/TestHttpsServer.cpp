@@ -671,6 +671,17 @@ namespace AsynGyanis::Net
 
             co_await waitUntil(loop, [&finishedRequestCount] { return finishedRequestCount >= 2U; },
                                std::chrono::seconds{4});
+            // 采样之后必须把两条在飞的请求各自收到口再退出。留着挂起的协程随本帧一起销毁，等于把
+            // 已经排进就绪队列的唤醒留在悬空帧上——下一次 runAll() 就是一次读后释放
+            // （计数没到 2 也要等：请求自带时限，它一定会以失败收口，失败由 outcome 的断言去抓）
+            if (!first.isReady())
+            {
+                co_await first;
+            }
+            if (!second.isReady())
+            {
+                co_await second;
+            }
             loop.stop();
             co_return;
         }
