@@ -577,6 +577,32 @@ jobs:
           path: /tmp/echo-h3.log
           if-no-files-found: ignore
 
+  # 协议解码器的持续模糊：四类解码器（WebSocket 帧、h2 帧与 HPACK、h3 帧、QUIC 变长整数）连同它们的
+  # 依赖闭包自成一组翻译单元，不需要 Conan、不需要配置构建——脚本自己用 clang 的 libFuzzer 编一份独立
+  # 产物。此前这一步只有本机手工跑（`scripts/fuzz-net.sh` 当初是为 Windows 侧写的，一轮 60 秒），
+  # 回归时没有任何流水线会替我们喂随机字节，而这类解码器的历史缺陷全是越界与释放后读。
+  # 违例样本落进 .fuzz/artifacts/，失败时作为工件取出，原样搬进 tests/Net/Fuzz/TestProtocolFuzz.cpp
+  # 的种子用例即可常驻。
+  protocol-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # runner 镜像自带带 compiler-rt fuzzer 运行时的 clang：这里不再 apt 装东西，
+      # 免得这条作业的红来自装包失败而不是解码器有问题
+      - name: 模糊四类协议解码器（300 秒）
+        run: bash scripts/fuzz-net.sh 300 -error_exitcode=1 -workers=2 -jobs=2
+
+      - name: 失败时取出崩溃样本
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: .fuzz/artifacts/
+          if-no-files-found: ignore
+
   # 行覆盖率：此前「覆盖率只能手工量」（本机全量含真库用例 76.2% 行覆盖），CI 里没有任何数字，
   # 也没有门禁。这里补上：跑一遍全量用例收 .gcda，用 gcovr 汇总，按行覆盖率下限把关。
   # 阈值故意取在实测下游——本作业不带 MySQL/Redis 真库分支，天然比手工基线低一截；首日就红的

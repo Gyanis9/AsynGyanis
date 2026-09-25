@@ -17,6 +17,14 @@
 
 ### 新增
 
+- **协议解码器的持续模糊接进流水线**：`linux-ci.yml` 多一条 `protocol-fuzz` 作业，每次推送用 libFuzzer
+  向四类解码器（WebSocket 帧、HTTP/2 帧与 HPACK、HTTP/3 帧、QUIC 变长整数）喂 300 秒随机字节，
+  崩溃样本作为工件取出，搬进 `tests/Net/Fuzz/TestProtocolFuzz.cpp` 的种子用例即可常驻。此前这条只能
+  本机手工跑（`scripts/fuzz-net.sh` 当初是为 Windows 侧写的，一轮 60 秒，跑不跑全看人记不记得），
+  而这批解码器的历史缺陷恰好全是越界与释放后读那一类。脚本现在两侧都能跑：Linux 走
+  `clang++ -fsanitize=fuzzer,address`，Windows 仍走 `clang-cl` 自建 /MT 闭包（理由见脚本头），
+  **两边共用同一份依赖闭包清单**——换编译器不该换覆盖面。
+
 - **日志 sink 多了一个 `formatter` 配置键**：`default` / `color` / `json`，选该 sink 的版式。此前
   `LogSink::setFormatter()` 只在代码里可换，全靠配置起服务的部署拿不到 JSON 日志（采集端最常见的形状）。
   键挂在 sink 上而不是 logger 上，所以同一条 logger 可以并排挂两种版式（控制台走文本、文件走 JSON），
