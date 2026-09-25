@@ -68,6 +68,44 @@ def find_sample_executables(build_dir: Path) -> list[Path]:
     return [unique[key] for key in sorted(unique)]
 
 
+def targets_known_to_build(build_dir: Path) -> set[str] | None:
+    """问构建系统「这一份配置到底产出哪些示例」；问不出来返回 None（退回按目录里有什么跑）。
+
+    只按目录 glob 会把**已从构建清单里删掉或按平台关掉**的示例的残留可执行文件也算一份证据——那份
+    二进制属于上一轮配置，跑它得出的红或绿都不属于当前这份代码（实测：Windows 上关掉的 core_upgrade
+    留着一份 .exe，矩阵因此白红两条）。反过来，配置里有、目录里却没有的可执行文件也不能当没看见：
+    那正是「示例根本没跑」的形态，门禁要出声。
+    """
+    cache = build_dir / "CMakeCache.txt"
+    if not cache.is_file():
+        return None
+    makeProgram = ""
+    for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("CMAKE_MAKE_PROGRAM:"):
+            makeProgram = line.split("=", 1)[-1].strip()
+            break
+    # 只认 Ninja：Makefile 生成器下 make help 的目标名口径与产物对不上，问不准还不如不问
+    ninja = Path(makeProgram.replace("\\", "/"))
+    if "ninja" not in ninja.name.lower() or not ninja.is_file():
+        return None
+    listing = subprocess.run([str(ninja), "-C", str(build_dir), "-t", "targets", "all"],
+                             capture_output=True, text=True, check=False)
+    if listing.returncode != 0:
+        return None
+    names: set[str] = set()
+    for line in listing.stdout.splitlines():
+        target, _, kind = line.partition(":")
+        target = target.replace("\\", "/")
+        # 只认「直接落在 samples/ 下、由链接步骤产出」的那几行：同一份清单里还挂着 .obj、
+        # install/edit_cache 之类的汇总目标，按名字收就会把「没产出可执行文件」报成一片假红
+        if not target.startswith("samples/") or "/" in target[len("samples/"):]:
+            continue
+        if "EXECUTABLE" not in kind.upper():
+            continue
+        names.add(Path(target).stem)
+    return names or None
+
+
 def decode(raw: bytes) -> str:
     """日志在不同平台上可能是 UTF-8 也可能是 GBK；解不开就按替换字符返回。"""
     for encoding in ("utf-8", "gbk"):
@@ -117,8 +155,19 @@ def main() -> int:
 
     build_dir = (REPO_ROOT / arguments.build) if not Path(arguments.build).is_absolute() else Path(arguments.build)
     executables = find_sample_executables(build_dir)
-    if arguments.only:
-        wanted = {name.strip() for name in arguments.only.split(",") if name.strip()}
+    wanted = {name.strip() for name in arguments.only.split(",") if name.strip()}
+    missingNames: list[str] = []
+    known = targets_known_to_build(build_dir)
+    if known:
+        for name in sorted(path.stem for path in executables if path.stem not in known):
+            print(f"  !! 跳过 {name}：这一份配置不产出它，磁盘上那份是上一轮构建留下的残留", file=sys.stderr)
+        executables = [path for path in executables if path.stem in known]
+        # 只对「本次要跑的这一批」查缺：--only 时其余目标本就没打算跑
+        scope = wanted if wanted else known
+        missingNames = sorted(scope - {path.stem for path in executables})
+        for name in missingNames:
+            print(f"  !! 配置里有示例 {name}，构建目录里却没有可执行文件——它这一次根本没跑", file=sys.stderr)
+    if wanted:
         executables = [path for path in executables if path.stem in wanted]
     if not executables:
         print(f"在 {build_dir} 下没找到示例可执行文件——先构建 samples 目标", file=sys.stderr)
@@ -140,6 +189,9 @@ def main() -> int:
                 print(f"  !! {path.stem} {verdict} 退出码 {code}", file=sys.stderr)
                 if detail:
                     print(f"     末尾输出：\n       {detail}", file=sys.stderr)
+
+    # 配置里存在、却没在磁盘上出现的示例：一条都不许默默过去（少跑一条比跑错一条更难发现）
+    failures += len(missingNames)
 
     # --repeat 之间步数与门控步数都必须一致：某一步被条件跳过（平台分支、可选依赖缺席、初始化提前
     # return）时结论行仍是 PASS，只有步数会掉；真机门控步在几次运行里忽有忽无，说明环境本身不稳。
