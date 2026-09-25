@@ -409,7 +409,7 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        /// 「头块切片」与「尾部头块」两趟的结论
+        /// 「头块切片」「尾部头块」「响应收齐之后还来一帧」几趟共用的结论
         struct HeaderBlockRunOutcome
         {
             bool isStarted{false};
@@ -549,7 +549,7 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        /// 提一条普通 GET，把「头部与尾部头块是否都在」带回来
+        /// 提一条普通 GET，把本端交回的状态码、正文与头部带回来
         Core::Task<void> runTrailingClient(Core::EventLoop &loop, TcpStream clientSide, HeaderBlockRunOutcome &outcome)
         {
             auto connection = std::make_unique<Http2ClientConnection>(
@@ -562,6 +562,29 @@ namespace AsynGyanis::Net
             outcome.headers = response.headers;
             outcome.errorMessage = response.errorMessage;
             loop.stop();
+            co_return;
+        }
+
+        /**
+         * @brief 同上，但不叫停循环：收场由「一直读到 GOAWAY」的那一侧负责
+         * @details 本端一收口就 stop()，会把还排在读 GOAWAY 的那个对端一起截掉——现场就成了「本端
+         *          没交代」，判的是用例自己的收尾顺序而不是被测行为。这类用例的对端一定要读到 GOAWAY
+         *          或通路断开才退场，所以循环也由它停。
+         * @param loop 本端一侧跑的循环（本协程不叫停它）
+         * @param clientSide 本端那一头的通路
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runLateFrameClient(Core::EventLoop &loop, TcpStream clientSide, HeaderBlockRunOutcome &outcome)
+        {
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+            const Http2ClientResponse response = co_await connection->request(
+                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.statusCode = response.statusCode;
+            outcome.body = response.body;
+            outcome.headers = response.headers;
+            outcome.errorMessage = response.errorMessage;
             co_return;
         }
         std::string singleSettingFrameBytes(const Http2SettingIdentifier identifier, const std::uint32_t value)
@@ -834,6 +857,55 @@ namespace AsynGyanis::Net
                     if (!batch.errorText.empty())
                     {
                         received.errorText = std::move(batch.errorText);
+                        break;
+                    }
+                    if (batch.frames.empty())
+                    {
+                        break; // 通路收口而没等到 GOAWAY：让用例去判这条失败
+                    }
+                }
+            } catch (const std::exception &)
+            {
+                // 本端中途关掉了通路：已攒到的帧照样交给用例
+            }
+            loop.stop();
+            co_return;
+        }
+
+        /**
+         * @brief 等本端的请求上路、再按脚本回一段响应的对端
+         * @details 与 runOpeningPeer 的分别是「先收一条 HEADERS 再回话」：本端登记在途流与读到响应帧
+         *          之间不能留空隙，否则响应落在一条本端还不认识的流上，测的就是「孤儿流」那一支而不是
+         *          这里要钉的「收齐之后还来一帧」。回完脚本就一直读到本端收场（GOAWAY 或通路断开），
+         *          把看到的帧都交给用例。
+         * @param loop 对端一侧跑的循环（收场时叫停它）
+         * @param peer 对端那一头的通路
+         * @param received 输出：本端发来的帧与解帧报错
+         * @param answerBytes 要回的脚本（不含 SETTINGS，那条在前奏里就发出去了）
+         */
+        Core::Task<void> runAnsweringPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received,
+                                          const std::string answerBytes)
+        {
+            Http2FrameDecoder decoder;
+            try
+            {
+                std::array<char, 24> preface{};
+                co_await peer.readExact(preface.data(), preface.size());
+                static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
+                const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+                co_await peer.writeAll(greeting.data(), greeting.size());
+                static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 HEADERS（请求已上路）
+                co_await peer.writeAll(answerBytes.data(), answerBytes.size());
+                while (findFrame(received.frames, Http2FrameType::GoAway, false) == nullptr)
+                {
+                    const PeerFrames batch = co_await readPeerFrames(peer, decoder, 1);
+                    for (const Http2Frame &frame: batch.frames)
+                    {
+                        received.frames.push_back(frame);
+                    }
+                    if (!batch.errorText.empty())
+                    {
+                        received.errorText = batch.errorText;
                         break;
                     }
                     if (batch.frames.empty())
@@ -1430,6 +1502,90 @@ namespace AsynGyanis::Net
         ASSERT_EQ(outcome.headers.size(), 2U) << "响应头部与尾部头块应当都在";
         EXPECT_EQ(outcome.headers[0].first, "content-type");
         EXPECT_EQ(outcome.headers[1].first, "x-trace") << "顺序也必须是先头部后尾部：" << outcome.headers[1].first;
+    }
+
+    /**
+     * @brief 钉住：响应已 END_STREAM，对端又来一帧 DATA 时按连接错误 STREAM_CLOSED 收口，且不接正文
+     * @details §5.1 的「closed」段：双向 END_STREAM 之后这条流不再有下一个字节，对端还发就是违规。
+     *          入站侧早按这一条判死（`Http2Connection` 里同文判据），出站侧过去却把它当正文的续段
+     *          append 上去——放远看就是响应体注入：服务端宣告完长度之后再塞一段，本端交回调用方的
+     *          长度比流上宣告的长，且没有任何一处会报错。判据两条：交回的正文仍是 END_STREAM 之前
+     *          那一段，本端按 §6.8 交代一条带 STREAM_CLOSED 的 GOAWAY。
+     */
+    TEST(Http2ClientConnection, RejectsDataThatArrivesAfterTheResponseEnded)
+    {
+        HpackEncoder peerEncoder;
+        const std::string headBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
+        const std::string script = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headBlock)
+                                   + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, "keep-me")
+                                   + makeFrame(Http2FrameType::Data, 0U, 1U, "injected");
+
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames received;
+        HeaderBlockRunOutcome outcome;
+        auto peerWork = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_EQ(outcome.body, "keep-me") << "收齐之后来的字节被接进了正文：" << outcome.body;
+        const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
+        ASSERT_NE(goAway, nullptr) << "本端静默关掉通路，对端不知道为什么（§6.8 要交代 GOAWAY）";
+        Http2GoAwayPayload goAwayPayload;
+        std::string errorText;
+        ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, goAwayPayload, &errorText)) << errorText;
+        EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::StreamClosed))
+                << "越界的一帧要报 STREAM_CLOSED，报成别的码会把排查带去别处";
+    }
+
+    /**
+     * @brief 钉住：响应已 END_STREAM，对端又来一段 HEADERS 时同样按 STREAM_CLOSED 收口，且不接头部
+     * @details 尾部头块（trailers）legal 的写法是「它自己带 END_STREAM、且在响应收齐之前到」；收齐之后
+     *          再来的头块不是尾部，而是往一条已关闭的流上动手脚。这一支比 DATA 那一支更隐蔽：上一条
+     *          用例钉的正是「尾部要接不要清」，若把「已收齐后的头块」也一并接上去，对端就能往响应的
+     *          头部名单里追加调用方从没打算接受的字段。判据两条：头部名单还只有响应头部那一条，
+     *          GOAWAY 里带 STREAM_CLOSED。
+     */
+    TEST(Http2ClientConnection, RejectsHeadersThatArriveAfterTheResponseEnded)
+    {
+        HpackEncoder peerEncoder;
+        const std::string headBlock = peerEncoder.encode({HpackHeaderField{":status", "200"},
+                                                          HpackHeaderField{"content-type", "text/plain"}});
+        const std::string lateBlock = peerEncoder.encode({HpackHeaderField{"x-injected", "yes"}});
+        const std::string script = makeFrame(Http2FrameType::Headers,
+                                             static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream),
+                                             1U, headBlock)
+                                   + makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, lateBlock);
+
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames received;
+        HeaderBlockRunOutcome outcome;
+        auto peerWork = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        ASSERT_EQ(outcome.headers.size(), 1U) << "收齐之后的头块被当成尾部接上了";
+        EXPECT_EQ(outcome.headers[0].first, "content-type") << "头部名单里多出来的那一条是：" << outcome.headers[0].first;
+        const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
+        ASSERT_NE(goAway, nullptr) << "本端静默关掉通路，对端不知道为什么（§6.8 要交代 GOAWAY）";
+        Http2GoAwayPayload goAwayPayload;
+        std::string errorText;
+        ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, goAwayPayload, &errorText)) << errorText;
+        EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::StreamClosed))
+                << "越界的一段头块要报 STREAM_CLOSED，报成 COMPRESSION_ERROR 会把排查带去 HPACK 那边";
     }
 
     /**

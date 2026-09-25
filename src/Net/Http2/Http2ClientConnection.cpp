@@ -554,6 +554,16 @@ namespace AsynGyanis::Net
                    && finishHeaderBlock(orphan);
         }
         PendingStream &stream = iterator->second;
+        if (stream.isResponseComplete)
+        {
+            // 与 DATA 那一支同一条法：尾部头块（trailers）必须在它自己的 END_STREAM **之前**到，
+            // 收齐之后再来的头块就不是尾部，而是对一条已关闭的流动手脚（§5.1「closed」段）
+            failConnection(Http2ErrorCode::StreamClosed,
+                           std::format("流 {} 已收到 END_STREAM 又来 HEADERS：RFC 7540 §5.1「closed」段要求按连接错误 "
+                                       "STREAM_CLOSED 处理",
+                                       frame.header.streamId));
+            return false;
+        }
         stream.isAwaitingContinuation = !payload.endHeaders;
         if (!appendHeaderBlockFragment(stream, payload.headerBlockFragment))
         {
@@ -620,12 +630,24 @@ namespace AsynGyanis::Net
             creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
             return true;
         }
-        iterator->second.response.isAnyByteReceived = true;
-        iterator->second.response.body.append(payload.data);
+        PendingStream &stream = iterator->second;
+        if (stream.isResponseComplete)
+        {
+            // 双向 END_STREAM 之后这条流就是「closed」态：再来的 DATA 按连接错误 STREAM_CLOSED 收，
+            // 与入站侧同一条法（§5.1「closed」段）。放任它 append 就是让对端往已收齐的正文尾巴上
+            // 塞字节——调用方拿到的长度比流上宣告的多出一截，且没有任何一处会报错
+            failConnection(Http2ErrorCode::StreamClosed,
+                           std::format("流 {} 已收到 END_STREAM 又来 DATA：RFC 7540 §5.1「closed」段要求按连接错误 "
+                                       "STREAM_CLOSED 处理",
+                                       streamId));
+            return false;
+        }
+        stream.response.isAnyByteReceived = true;
+        stream.response.body.append(payload.data);
         creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
         if (payload.endStream)
         {
-            iterator->second.isResponseComplete = true;
+            stream.isResponseComplete = true;
         }
         return true;
     }
