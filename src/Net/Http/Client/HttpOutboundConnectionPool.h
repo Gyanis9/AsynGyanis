@@ -117,6 +117,14 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isOpen() const noexcept;
 
         /**
+         * @brief ALPN 协商出的协议名（"h2"、"http/1.1"）
+         * @details 调用方据此决定按哪种协议说话：明文连接没有 ALPN，返回空串；TLS 连接上客户端没提
+         *          ALPN、或对端不协商时也返回空串——那都意味着「按 HTTP/1.1 来」。
+         * @return std::string 协商出的协议名；没协商出来时为空
+         */
+        [[nodiscard]] std::string selectedAlpnProtocol() const;
+
+        /**
          * @brief 收口这条连接：明文侧关描述符，TLS 侧连 SSL 对象一起释放
          * @note 幂等；之后 isOpen() 为 false，任何收发都只会被拒绝
          */

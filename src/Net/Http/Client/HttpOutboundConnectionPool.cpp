@@ -137,6 +137,12 @@ namespace AsynGyanis::Net
         return m_isOpen;
     }
 
+    std::string HttpOutboundConnection::selectedAlpnProtocol() const
+    {
+        // 明文侧没有 ALPN 这回事（h2c 要靠 prior-knowledge 或 Upgrade，都不在这一层）
+        return m_tlsSocket != nullptr ? m_tlsSocket->selectedAlpnProtocol() : std::string{};
+    }
+
     void HttpOutboundConnection::close() noexcept
     {
         m_isOpen = false;

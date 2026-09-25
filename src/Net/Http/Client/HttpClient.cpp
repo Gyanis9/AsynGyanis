@@ -1,6 +1,8 @@
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http/Client/RequestDeadlineGuard.h"
+#include "Net/Http2/Http2ClientConnection.h"
+#include "Net/Http2/Http2Session.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
@@ -191,19 +193,20 @@ namespace AsynGyanis::Net
          * @details IP 字面量在拆 URL 时按 RFC 3986 §3.2.2 去掉了方括号，这里要加回去：地址里自带冒号，
          *          不加回去「Host: ::1」会把头部与端口分隔符混成一团
          */
+        /// 拼出 Host / :authority 用的主机文本：IPv6 字面量要带方括号，否则端口分隔符会糊进地址里
+        std::string authorityText(const ParsedUrl &url)
+        {
+            if (url.host.find(':') != std::string::npos)
+            {
+                return '[' + url.host + ']';
+            }
+            return url.host;
+        }
+
         void appendHostHeader(std::string &request, const ParsedUrl &url)
         {
             request += "Host: ";
-            if (url.host.find(':') != std::string::npos)
-            {
-                request += '[';
-                request += url.host;
-                request += ']';
-            }
-            else
-            {
-                request += url.host;
-            }
+            request += authorityText(url);
             request += "\r\n";
         }
     } // namespace
@@ -470,6 +473,22 @@ namespace AsynGyanis::Net
                 SSL_set1_host(ssl, u.host.c_str());
             }
 
+            // 带 ALPN：h2 只能靠协商结果识别，不在 ClientHello 里声明就永远只会收到 HTTP/1.1 的答。
+            // 两个名字都提，本端偏好写在前面（服务端按自己的偏好在这份列表里挑）；列表的线格式是
+            // 「单字节长度 + 协议名」的串联，不是逗号分隔——填错不会报错，只会对端一条都匹配不上
+            static constexpr unsigned char kAlpnProtocolList[] = {
+                    2U, 'h', '2',
+                    8U, 'h', 't', 't', 'p', '/', '1', '.', '1',
+            };
+            // OpenSSL 这一支的返回值是反的：0 才是成功。名字用 SSL_set_alpn_protos 而不是 ...protocols：
+            // 前者从 1.0.2 起就是真身并一直保留，后者只是新版本里加的兼容写法，按旧名调两边都在
+            if (::SSL_set_alpn_protos(ssl, kAlpnProtocolList,
+                                      static_cast<unsigned int>(sizeof(kAlpnProtocolList))) != 0)
+            {
+                SSL_free(ssl);
+                co_return nullptr;
+            }
+
             auto tlsSocket = std::make_unique<Core::TlsSocket>(ssl, loop, std::move(sock), Core::TlsSocket::Role::Client);
             const RequestDeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, handshakeTimeout,
                                                             "HttpClient");
@@ -482,6 +501,62 @@ namespace AsynGyanis::Net
                 co_return nullptr;
             }
             co_return HttpOutboundConnection::forSecure(key, std::move(tlsSocket));
+        }
+
+        /**
+         * @brief 在协商出 h2 的通路上把一条请求走完
+         * @details ALPN 既然选了 h2，就不能再按 HTTP/1.1 说话：同一条字节流上的帧格式完全不同。这一趟
+         *          用完就关，不还池也不留第二趟：池按「一条连接一个在途请求」记账，而 h2 的复用是**流级**
+         *          的，把它塞进按连接归组的空闲表等于让两个请求往同一条流上交错写帧。
+         * @param loop 所属事件循环
+         * @param transport 已协商出 h2 的通路（所有权交进来，本函数负责收口）
+         * @param u 已拆开的 URL
+         * @param method 方法
+         * @param contentType 正文媒体类型，只随非空正文写出
+         * @param body 正文
+         * @param startedAt 本次请求的开始时刻，用于把整体时限摊到前奏与收响应两段上
+         * @param requestTimeout 整体时限
+         * @return std::unique_ptr<HttpClientResponse> 响应；失败返回空。reasonPhrase 恒为空——HTTP/2
+         *         没有原因短语这一项，状态语义只靠 :status
+         */
+        Core::Task<std::unique_ptr<HttpClientResponse>> exchangeOverHttp2(
+                Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport, const ParsedUrl &u,
+                const std::string_view method, const std::string_view contentType, const std::string_view body,
+                const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout)
+        {
+            Http2ClientConnection client(loop, std::move(transport));
+            const std::optional<std::chrono::milliseconds> startBudget = remainingBudget(startedAt, requestTimeout);
+            if (!startBudget.has_value() || !co_await client.start(*startBudget))
+            {
+                co_return nullptr;
+            }
+
+            std::vector<std::pair<std::string, std::string>> extraHeaders;
+            if (!body.empty())
+            {
+                extraHeaders.emplace_back("content-type", std::string(contentType));
+            }
+            // 主机文本与协议名都要先落到具名对象上：co_await 挂起期间 string_view 指着的临时串会先析构
+            const std::string authority = authorityText(u);
+            const std::string_view scheme = u.scheme == "https" ? "https" : "http";
+            const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
+            if (!exchangeBudget.has_value())
+            {
+                co_return nullptr;
+            }
+            Http2ClientResponse response = co_await client.request(
+                    scheme, authority, method, u.path, extraHeaders, body, *exchangeBudget);
+            // 先礼貌收尾再离开：通路析构只会留下一个 abrupt 的收口，对端要把它记成一次错误
+            co_await client.shutdown();
+            if (response.statusCode == 0)
+            {
+                co_return nullptr;
+            }
+            auto result = std::make_unique<HttpClientResponse>();
+            result->statusCode = response.statusCode;
+            result->headers = std::move(response.headers);
+            result->body = std::move(response.body);
+            co_return result;
         }
 
         /**
@@ -553,6 +628,12 @@ namespace AsynGyanis::Net
             if (!connection)
             {
                 co_return nullptr;
+            }
+            if (connection->selectedAlpnProtocol() == kHttp2AlpnProtocolName)
+            {
+                // ALPN 选到了 h2：换一种说话方式，这条连接不进池（见 exchangeOverHttp2）
+                co_return co_await exchangeOverHttp2(loop, std::move(connection), u, method, contentType, body,
+                                                     startedAt, requestTimeout);
             }
 
             const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);

@@ -501,6 +501,32 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 用出站客户端向 HTTPS 地址 POST 一段正文（自建循环，跑完即停）
+         * @param url 目标地址
+         * @param contentType 正文媒体类型
+         * @param body 正文
+         * @return std::unique_ptr<HttpClientResponse> 响应；失败（含证书校验不过）返回空
+         */
+        std::unique_ptr<HttpClientResponse> doHttpsPost(const std::string &url, const std::string &contentType,
+                                                        const std::string &body)
+        {
+            Core::EventLoop                     loop;
+            std::unique_ptr<HttpClientResponse> result;
+            auto requestBody = [&loop, &result, &url, &contentType, &body]() -> Core::Task<>
+            {
+                result = co_await HttpClient::post(loop, url, contentType, body);
+                loop.stop();
+            };
+            Core::Task<> request = requestBody();
+            if (!request.isReady())
+            {
+                loop.scheduler().schedule(request.handle());
+            }
+            loop.run();
+            return result;
+        }
+
+        /**
          * @brief 临时把 SSL_CERT_FILE 指向某张证书，让出站客户端信任它
          * @details 客户端只认系统 CA 库（SSL_CTX_set_default_verify_paths），而仓库夹具是自签的；
          *          OpenSSL 解析默认路径时认 SSL_CERT_FILE 这个环境变量，于是用例借此把夹具证书
@@ -681,6 +707,47 @@ namespace AsynGyanis::Net
         ASSERT_NE(response, nullptr) << "证书名字与请求的主机名一致，握手却被拒";
         EXPECT_EQ(response->statusCode, 200);
         EXPECT_NE(response->body.find("served-hello"), std::string::npos) << "正文：" << response->body;
+    }
+
+    /**
+     * @brief 钉住：ALPN 选到 h2 时，出站客户端改按 HTTP/2 说话，方法与正文都照样带过去
+     * @details 服务端的 ALPN 偏好里 h2 排在 http/1.1 之前，这条 TLS 连接协商出的结果必然是 h2。客户端
+     *          若不认这个结果、照旧写请求行，握手之后就是帧格式错乱的失败。两条判据分开看：200 与回显
+     *          一致说明这趟真走通了；**原因短语为空**说明状态是从 :status 解出来的——HTTP/1.1 的答一定
+     *          带 "OK"（本服务端的状态行照常写原因短语），所以这一条能把「走了 h2」与「退回 h1」分开。
+     */
+    TEST(HttpsServer, OutboundClientSpeaksHttp2WhenAlpnSelectsIt)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                                          [](Router &router, Core::EventLoop &)
+                                          {
+                                              router.post("/h2echo",
+                                                          [](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                                                          {
+                                                              response.setBody(request.body());
+                                                              co_return;
+                                                          });
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        const std::string host = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
+
+        const std::unique_ptr<HttpClientResponse> got = doHttpsGet(host + "/hello");
+        ASSERT_NE(got, nullptr) << "协商出 h2 之后这趟请求没走通：客户端多半仍按 HTTP/1.1 写字节";
+        EXPECT_EQ(got->statusCode, 200);
+        EXPECT_NE(got->body.find("served-hello"), std::string::npos) << "正文：" << got->body;
+        EXPECT_TRUE(got->reasonPhrase.empty())
+                << "拿到了原因短语「" << got->reasonPhrase << "」：这趟走的是 HTTP/1.1，ALPN 结果没被采纳";
+
+        const std::string payload = "hello over h2";
+        const std::unique_ptr<HttpClientResponse> posted = doHttpsPost(host + "/h2echo", "text/plain", payload);
+        ASSERT_NE(posted, nullptr) << "带正文的 h2 出站请求失败";
+        EXPECT_EQ(posted->statusCode, 200);
+        EXPECT_EQ(posted->body, payload) << "方法或正文在换乘 h2 时丢了";
     }
 
     /**
