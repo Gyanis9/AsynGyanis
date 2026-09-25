@@ -519,8 +519,7 @@ namespace AsynGyanis::Net
          * @brief 在一条已经协商好的 h2 连接上走完一次请求
          * @details 连接的生命周期不在这里：新建那条要走前奏（start），复用这条前奏早就走完了——
          *          把两件事分开，池才能拿同一段代码服务「刚建好的」与「留着待命的」两种连接。
-         * @param loop 所属事件循环
-         * @param client 已完成前奏的 h2 连接（由调用方持有）
+         * @param client 已完成前奏的 h2 连接（由调用方持有；它自己认得归属的循环）
          * @param u 已拆开的 URL
          * @param method 方法
          * @param contentType 正文媒体类型，只随非空正文写出
@@ -531,7 +530,7 @@ namespace AsynGyanis::Net
          *         短语这一项，状态语义只靠 :status
          */
         Core::Task<Http2Exchange> exchangeOnHttp2(
-                Core::EventLoop &loop, Http2ClientConnection &client, const ParsedUrl &u,
+                Http2ClientConnection &client, const ParsedUrl &u,
                 const std::string_view method, const std::string_view contentType, const std::string_view body,
                 const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout)
         {
@@ -597,7 +596,7 @@ namespace AsynGyanis::Net
                 if (auto cachedHttp2 = pool->acquireHttp2(key); cachedHttp2 != nullptr)
                 {
                     Http2Exchange cachedExchange = co_await exchangeOnHttp2(
-                            loop, *cachedHttp2, u, method, contentType, body, startedAt, requestTimeout);
+                            *cachedHttp2, u, method, contentType, body, startedAt, requestTimeout);
                     if (cachedExchange.response)
                     {
                         pool->releaseHttp2(std::move(cachedHttp2));
@@ -669,7 +668,7 @@ namespace AsynGyanis::Net
                     co_return nullptr;
                 }
                 Http2Exchange freshExchange = co_await exchangeOnHttp2(
-                        loop, *http2Connection, u, method, contentType, body, startedAt, requestTimeout);
+                        *http2Connection, u, method, contentType, body, startedAt, requestTimeout);
                 if (pool != nullptr)
                 {
                     if (http2Connection->isHealthy())
