@@ -12,7 +12,7 @@
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Platform/IO/Socket.h"
-#include "Net/Tcp/TcpClient.h"
+#include "Net/Tcp/TcpStream.h"
 
 #include <openssl/ssl.h>
 
@@ -311,34 +311,157 @@ namespace AsynGyanis::Net
             return true;
         }
 
+        /// 这三个头部由客户端按本次请求的实际情况写，调用方给了就拒收而不是覆盖或并存
+        bool isClientOwnedHeaderName(const std::string_view name)
+        {
+            return equalsIgnoreAsciiCase(name, "host") || equalsIgnoreAsciiCase(name, "content-length") ||
+                   equalsIgnoreAsciiCase(name, "connection");
+        }
+
         /**
-         * @brief 拼出请求文
-         * @param method 方法，原样写进请求行
+         * @brief 文本里是否含 CR、LF、NUL 或其它控制字符
+         * @return true 含控制字符（会结束或撕裂请求行）
+         */
+        [[nodiscard]] bool hasControlChar(const std::string_view text)
+        {
+            for (const char character: text)
+            {
+                // 按无符号取值判：头部与正文允许 UTF-8（≥0x80），只有 0x00..0x1F 与 0x7F 是控制字符
+                const auto rawByte = static_cast<unsigned int>(static_cast<unsigned char>(character));
+                if (rawByte < 0x20U || rawByte == 0x7fU)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * @brief 名字是不是 HTTP token（RFC 9110 §5.6.2）
+         * @details 方法名与头部名都受这条约束：token 之外只有空格与分隔符，把它们放进来就等于让调用方
+         *          自己拼出第二个请求行或第二个字段
+         */
+        [[nodiscard]] bool isTokenText(const std::string_view text)
+        {
+            if (text.empty())
+            {
+                return false;
+            }
+            constexpr std::string_view kTokenSeparatorsAllowed = "!#$%&'*+-.^_`|~";
+            for (const char character: text)
+            {
+                const bool isAlnum = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+                                     (character >= '0' && character <= '9');
+                if (!isAlnum && kTokenSeparatorsAllowed.find(character) == std::string_view::npos)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * @brief 校验调用方给的请求参数（方法名与附加头部）
+         * @details 必须在动套接字之前判完：拖到写出时才发现，等于白开一条连接、还把对端已经发回的响应
+         *          丢掉。三种写法一律拒绝而不是转义或静默删掉——它们都会改变请求行的结构。
+         * @param request 方法、正文与附加头部
+         * @throws Base::InvalidArgumentException 方法名或头部名不合 token、头部值含 CR/LF 等控制字符，
+         *         或占用了 Host、Content-Length、Connection 这三项由客户端负责的头部
+         */
+        void validateRequest(const HttpClientRequest &request)
+        {
+            if (!isTokenText(request.method))
+            {
+                throw Base::InvalidArgumentException(R"(HttpClient：请求方法「)" + request.method +
+                                                     R"(」不合 HTTP token（只允许字母、数字与 "!#$%&'*+-.^_`|~"）：那会撕裂请求行)");
+            }
+            for (const HttpClientHeaderField &field: request.headers)
+            {
+                if (!isTokenText(field.first))
+                {
+                    throw Base::InvalidArgumentException(R"(HttpClient：附加头部的名字「)" + field.first +
+                                                         R"(」为空或含控制字符、冒号之类分隔符：头部名必须是 HTTP token)");
+                }
+                if (hasControlChar(field.second))
+                {
+                    // 值里有 CR/LF 就能自己结束这一行并插入新字段——这是请求分裂，不转义也不删除
+                    throw Base::InvalidArgumentException(R"(HttpClient：附加头部 ")" + field.first +
+                                                         R"(" 的值里有控制字符（会撕裂请求行）：请去掉 CR/LF 后再发)");
+                }
+                if (isClientOwnedHeaderName(field.first))
+                {
+                    throw Base::InvalidArgumentException(R"(HttpClient：附加头部 ")" + field.first +
+                                                         R"(" 由客户端按这次请求自己写，不能由调用方给：请删掉这一项)");
+                }
+            }
+        }
+
+        /**
+         * @brief 拼出请求文（请求行 + 头部 + 正文）
+         * @details 两条连路（明文与 TLS）与 HTTP/1.1 这一侧的复用共用这一份，避免各支长歪。附加头部排在
+         *          Host 之后、Content-* 之前；字段顺序对语义无影响。写法不合规范的那几类由
+         *          validateRequest 在动套接字之前就把住，这里不再重复判。
+         * @param request 方法、正文与附加头部
          * @param u 已拆开的 URL
-         * @param contentType 正文媒体类型，只随非空正文写出
-         * @param body 正文
          * @param isKeepAlive 这次请求是否走复用连接：走复用就明写 keep-alive，不走则沿用 close
          * @return std::string 完整的请求文（含正文）
          */
-        std::string buildRequestText(const std::string_view method, const ParsedUrl &u, const std::string_view contentType,
-                                     const std::string_view body, const bool isKeepAlive)
+        std::string buildRequestText(const HttpClientRequest &request, const ParsedUrl &u, const bool isKeepAlive)
         {
-            std::string request;
-            request.reserve(256 + body.size());
-            request += method; request += ' ';
-            request += u.path; request += " HTTP/1.1\r\n";
-            appendHostHeader(request, u);
-            if (!body.empty())
+            std::string text;
+            text.reserve(256 + request.body.size());
+            text += request.method; text += ' ';
+            text += u.path; text += " HTTP/1.1\r\n";
+            appendHostHeader(text, u);
+            for (const HttpClientHeaderField &field: request.headers)
             {
-                request += "Content-Type: "; request += contentType; request += "\r\n";
-                request += "Content-Length: "; request += std::to_string(body.size()); request += "\r\n";
+                text += field.first; text += ": "; text += field.second; text += "\r\n";
+            }
+            if (!request.body.empty())
+            {
+                if (!request.contentType.empty())
+                {
+                    text += "Content-Type: "; text += request.contentType; text += "\r\n";
+                }
+                text += "Content-Length: "; text += std::to_string(request.body.size()); text += "\r\n";
             }
             // 明写 keep-alive：HTTP/1.1 本就是它，但对端与中间盒都可能按 1.0 的默认值办事
-            request += isKeepAlive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
-            request += "\r\n";
-            request += body;
-            return request;
+            text += isKeepAlive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+            text += "\r\n";
+            text += request.body;
+            return text;
         }
+
+        /**
+         * @brief 把解析器的结论折成响应；不成或未解完时写出分得清的原因
+         * @details 「没解完」在这一层分不清是对端提前收线还是被请求时限掐断（两者都只表现为读到 0），
+         *          所以措辞把两种可能都点出来，让调用方按现象去查时限而不是猜。
+         * @param parser 已喂完字节的响应解析器
+         * @param target 失败原因里要点出的目标（主机名）
+         * @param failureReason 输出：失败原因，成功时不动它
+         * @return std::unique_ptr<HttpClientResponse> 响应；没解完或解错即为空
+         */
+        std::unique_ptr<HttpClientResponse> takeParsedResponse(HttpResponseParser &parser, const std::string_view target,
+                                                              std::string &failureReason)
+        {
+            if (parser.hasFailed())
+            {
+                failureReason = "响应不合规范或超出本端上限（状态行、头部与正文三条里的一项）：目标 " + std::string(target);
+                return nullptr;
+            }
+            if (!parser.isComplete())
+            {
+                failureReason = "响应没读完就断了：对端提前收线，或本次请求已到时限（目标 " + std::string(target) + "）";
+                return nullptr;
+            }
+            auto response = std::make_unique<HttpClientResponse>();
+            response->statusCode   = parser.result().statusCode;
+            response->reasonPhrase = parser.result().reasonPhrase;
+            response->headers      = parser.result().headers;
+            response->body         = parser.result().body;
+            return response;
+        }
+
 
         /**
          * @brief 在一条已建立的连接上走完一次请求/响应
@@ -348,14 +471,17 @@ namespace AsynGyanis::Net
          * @param isHeadRequest 这是不是 HEAD：HEAD 的应答一律在头块之后结束（RFC 9112 §6.3 第 1 条），
          *        不标记的话「不带 Content-Length 的 HEAD 应答」会被当成读到关闭，客户端只能干等
          * @param requestTimeout 本次交换的时限（调用方已把前面几段花掉的时间扣掉）
+         * @param failureReason 输出：这次交换失败在哪一段（写出 / 读中断 / 响应不合规范）
          * @return OutboundExchange 响应与「有没有读到过字节」；响应为空即失败
          */
         Core::Task<OutboundExchange> exchangeOnConnection(Core::EventLoop &loop, HttpOutboundConnection &connection,
                                                          const std::string &requestText, const bool isHeadRequest,
-                                                         const std::chrono::milliseconds requestTimeout)
+                                                         const std::chrono::milliseconds requestTimeout,
+                                                         std::string &failureReason)
         {
             const RequestDeadlineGuard<HttpOutboundConnection> deadline(loop, connection, requestTimeout, "HttpClient");
             OutboundExchange exchange;
+            const std::string host = connection.endpointKey().host;
             if (isHeadRequest)
             {
                 connection.parser().markAsHeadResponse();
@@ -364,6 +490,7 @@ namespace AsynGyanis::Net
             {
                 if (!co_await connection.send(requestText))
                 {
+                    failureReason = "写出请求失败：对端在收完请求前收线，或本次请求已到时限（主机 " + host + "）";
                     co_return exchange;
                 }
 
@@ -373,6 +500,7 @@ namespace AsynGyanis::Net
                     const ssize_t receivedByteCount = co_await connection.receive(buffer.data(), buffer.size());
                     if (receivedByteCount < 0)
                     {
+                        failureReason = "读响应失败：通路报出不合规范的读取（主机 " + host + "）";
                         co_return exchange;
                     }
                     if (receivedByteCount == 0)
@@ -387,10 +515,12 @@ namespace AsynGyanis::Net
                     }
                 }
             }
-            catch (const std::exception &)
+            catch (const std::exception &failure)
             {
                 // 等待中套接字被关掉（超时掐断、对端收尾）时底层抛异常：本接口的契约是「失败返回空响应」，
                 // 异常不许逃给调用方。抛出点之后的字节序已经不可信，这条连接当场收口——绝不还回池里
+                LOG_WARN_FMT("HttpClient: 请求中断。底层原因：{}", failure.what());
+                failureReason = "请求中断：套接字在等待中被关掉（时限掐断或对端收线，主机 " + host + "）";
                 connection.close();
                 co_return exchange;
             }
@@ -398,72 +528,132 @@ namespace AsynGyanis::Net
             {
                 connection.parser().endOfStream();
             }
-            if (!connection.parser().isComplete() || connection.parser().hasFailed())
-            {
-                co_return exchange;
-            }
-
-            const HttpResponseInfo &parsed = connection.parser().result();
-            auto response = std::make_unique<HttpClientResponse>();
-            response->statusCode = parsed.statusCode;
-            response->reasonPhrase = parsed.reasonPhrase;
-            response->headers = parsed.headers;
-            response->body = parsed.body;
-            exchange.response = std::move(response);
+            exchange.response = takeParsedResponse(connection.parser(), host, failureReason);
             co_return exchange;
+        }
+
+        /**
+         * @brief 带时限地连一条 TCP 通路：解析 → 非阻塞 connect → 到点就把套接字关掉
+         * @details 这一段为什么必须由本层盯时限，而不是交给内核的 SYN 重试兜底：Windows 的完成端口后端
+         *          上「连不上」并没有可写事件可等——实测对刚关掉的监听端口，系统 2 秒内就把连接拒了，
+         *          而挂在可写上的协程永远等不到那一次唤醒，调用方就此无限期停在这里。Linux 那边靠可写
+         *          事件带出 SO_ERROR，能自己醒。两条平台要按同一个契约走，所以时限统一由看门狗掐。
+         * @param loop 所属事件循环
+         * @param host 目标主机名或 IP 字面量
+         * @param port 目标端口
+         * @param connectTimeout 连接一段的时限
+         * @param failureReason 输出：断在哪一段（解析地址 / 连不上或已到时限）
+         * @return std::optional<Core::AsyncSocket> 连上了交出套接字，失败为空
+         */
+        Core::Task<std::optional<Core::AsyncSocket>> connectWithDeadline(
+                Core::EventLoop &loop, const std::string &host, const std::uint16_t port,
+                const std::chrono::milliseconds connectTimeout, std::string &failureReason)
+        {
+            const std::vector<Core::InetAddress> addresses = co_await Core::AsyncResolver::resolve(loop, host, port);
+            if (addresses.empty())
+            {
+                failureReason = "解析地址失败：没能把「" + host + "」解析成可用地址";
+                co_return std::nullopt;
+            }
+            for (const Core::InetAddress &address: addresses)
+            {
+                Core::AsyncSocket socket = Core::AsyncSocket::create(loop);
+                try
+                {
+                    const RequestDeadlineGuard<Core::AsyncSocket> deadline(loop, socket, connectTimeout, "HttpClient");
+                    co_await socket.asyncConnect(address);
+                }
+                catch (const Base::Exception &failure)
+                {
+                    // 底层原文只进日志（what() 里带抛出点，不该交回调用方），交出去的那句要能指出断在哪一段
+                    LOG_WARN_FMT("HttpClient: 连接 {}:{} 失败。底层原因：{}", host, port, failure.what());
+                    continue;
+                }
+                co_return socket;
+            }
+            failureReason = "建立 TCP 连接失败：对端拒绝、不可达或还没连上就超时（目标 " + host + ":"
+                            + std::to_string(port) + "）";
+            co_return std::nullopt;
         }
 
         /**
          * @brief 建一条明文连接
          * @param loop 所属事件循环
          * @param key 目标身份（主机与端口；TLS 位由调用方按 scheme 定）
+         * @param failureReason 输出：连不上时点明断在哪一段
+         * @param startedAt 本次请求的开始时刻，用于把整体时限摊到剩下那一段
+         * @param requestTimeout 整体时限
          * @return std::unique_ptr<HttpOutboundConnection> 连上了就交出连接，连接失败返回空
          */
-        Core::Task<std::unique_ptr<HttpOutboundConnection>> establishPlainConnection(Core::EventLoop &loop,
-                                                                                    const HttpOutboundEndpointKey &key)
+        Core::Task<std::unique_ptr<HttpOutboundConnection>> establishPlainConnection(
+                Core::EventLoop &loop, const HttpOutboundEndpointKey &key,
+                const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout,
+                std::string &failureReason)
         {
-            auto stream = co_await TcpClient::connect(loop, key.host, key.port);
-            if (!stream)
+            const std::optional<std::chrono::milliseconds> connectBudget = remainingBudget(startedAt, requestTimeout);
+            if (!connectBudget.has_value())
+            {
+                failureReason = "本次请求已到时限：还没开始连接（目标 " + key.host + ":" + std::to_string(key.port) + "）";
+                co_return nullptr;
+            }
+            auto socket = co_await connectWithDeadline(loop, key.host, key.port, *connectBudget, failureReason);
+            if (!socket)
             {
                 co_return nullptr;
             }
-            co_return HttpOutboundConnection::forPlain(key, std::move(*stream));
+            co_return HttpOutboundConnection::forPlain(key, TcpStream(std::move(*socket)));
         }
 
         /**
-         * @brief 建一条 TLS 连接：解析 → 连上 → 建 SSL → 设 SNI 与主机名校验 → 握手
-         * @details 握手成功之前这条连接还不属于池：它可能停在「对端不说话」上，所以握手自己受时限
-         *          约束，超时就把 SSL 与底层描述符一起丢掉（原实现也是这一段一路管到响应收完，这里
-         *          只是把它拆成「握手」与「交换」两段，各拿剩余的预算）。
+         * @brief 建一条 TLS 连接：带时限连上 → 建 SSL → 设 SNI 与主机名校验 → 带 ALPN 握手
+         * @details 握手成功之前这条连接还不属于池：它可能停在「对端不说话」上，所以连接与握手两段各自
+         *          受剩余时限约束，超时就把 SSL 与底层描述符一起丢掉（原实现是这一段一路管到响应收完，
+         *          这里只是把它拆成「连接」「握手」「交换」三段，各拿剩余的预算）。
          * @param loop 所属事件循环
          * @param u 已拆开的 URL
-         * @param handshakeTimeout 握手一段的时限
+         * @param startedAt 本次请求的开始时刻
+         * @param requestTimeout 整体时限
+         * @param failureReason 输出：断在哪一段（解析地址 / 连接 / TLS 那几步 / 握手）
          * @return std::unique_ptr<HttpOutboundConnection> 握手成功就交出连接；任一步失败返回空
          */
         Core::Task<std::unique_ptr<HttpOutboundConnection>> establishSecureConnection(
-                Core::EventLoop &loop, const ParsedUrl &u, const std::chrono::milliseconds handshakeTimeout)
+                Core::EventLoop &loop, const ParsedUrl &u, const std::chrono::steady_clock::time_point startedAt,
+                const std::chrono::milliseconds requestTimeout, std::string &failureReason)
         {
             HttpOutboundEndpointKey key{u.host, u.port, true};
 
-            auto addrs = co_await Core::AsyncResolver::resolve(loop, u.host, u.port);
-            if (addrs.empty())
+            const std::optional<std::chrono::milliseconds> connectBudget = remainingBudget(startedAt, requestTimeout);
+            if (!connectBudget.has_value())
+            {
+                failureReason = "本次请求已到时限：还没开始连接（主机 " + u.host + "）";
+                co_return nullptr;
+            }
+            auto socket = co_await connectWithDeadline(loop, u.host, u.port, *connectBudget, failureReason);
+            if (!socket)
             {
                 co_return nullptr;
             }
-            Core::AsyncSocket sock = Core::AsyncSocket::create(loop);
-            try { co_await sock.asyncConnect(addrs[0]); }
-            catch (const Base::Exception &) { co_return nullptr; }
+            Core::AsyncSocket sock = std::move(*socket);
 
             auto *ctx = clientSslCtx();
-            if (!ctx) co_return nullptr;
+            if (!ctx)
+            {
+                failureReason = "TLS 上下文创建失败：OpenSSL 没能给出 client method，通常是库未正确初始化";
+                co_return nullptr;
+            }
             SSL *ssl = SSL_new(ctx);
-            if (!ssl) co_return nullptr;
+            if (!ssl)
+            {
+                failureReason = "TLS 会话对象创建失败：OpenSSL 内存不足";
+                co_return nullptr;
+            }
 
             // SSL 必须绑上底层描述符才有 BIO 可用：少了这一步 SSL_connect 立刻失败，
             // 而且错误队列是空的（error:00000000），现场只剩「握手失败」四个字
             if (::SSL_set_fd(ssl, sock.fileDescriptor()) == 0)
             {
                 SSL_free(ssl);
+                failureReason = "TLS 无法绑定套接字描述符：OpenSSL 的 BIO 创建失败";
                 co_return nullptr;
             }
 
@@ -492,18 +682,29 @@ namespace AsynGyanis::Net
                                       static_cast<unsigned int>(sizeof(kAlpnProtocolList))) != 0)
             {
                 SSL_free(ssl);
+                failureReason = "TLS 没能设置 ALPN 协议列表：OpenSSL 拒绝了这份写法";
                 co_return nullptr;
             }
 
             auto tlsSocket = std::make_unique<Core::TlsSocket>(ssl, loop, std::move(sock), Core::TlsSocket::Role::Client);
-            const RequestDeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, handshakeTimeout,
+            const std::optional<std::chrono::milliseconds> handshakeBudget = remainingBudget(startedAt, requestTimeout);
+            if (!handshakeBudget.has_value())
+            {
+                tlsSocket->close();
+                failureReason = "本次请求已到时限：还没做 TLS 握手（主机 " + u.host + "）";
+                co_return nullptr;
+            }
+            const RequestDeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, *handshakeBudget,
                                                             "HttpClient");
             try
             {
                 co_await tlsSocket->handshake();
             }
-            catch (const Base::Exception &)
+            catch (const Base::Exception &failure)
             {
+                LOG_WARN_FMT("HttpClient: 与 {} 的 TLS 握手失败。底层原因：{}", u.host, failure.what());
+                failureReason = "TLS 握手失败：证书没通过校验、协议或密码套件不匹配，或对端在握手中途收线（主机 "
+                                + u.host + "）";
                 co_return nullptr;
             }
             co_return HttpOutboundConnection::forSecure(key, std::move(tlsSocket));
@@ -531,31 +732,45 @@ namespace AsynGyanis::Net
          *          把两件事分开，池才能拿同一段代码服务「刚建好的」与「留着待命的」两种连接。
          * @param client 已完成前奏的 h2 连接（由调用方持有；它自己认得归属的循环）
          * @param u 已拆开的 URL
-         * @param method 方法
-         * @param contentType 正文媒体类型，只随非空正文写出
-         * @param body 正文
+         * @param request 方法、正文、媒体类型与附加头部
          * @param startedAt 本次请求的开始时刻，用于把整体时限摊到剩下的那一段上
          * @param requestTimeout 整体时限
+         * @param failureReason 输出：这次交换失败的原因（对端 RST、时限、响应本身不合规范）
          * @return Http2Exchange 响应；失败时 response 为空。reasonPhrase 恒为空——HTTP/2 没有原因
          *         短语这一项，状态语义只靠 :status
          */
         Core::Task<Http2Exchange> exchangeOnHttp2(
-                Http2ClientConnection &client, const ParsedUrl &u,
-                const std::string_view method, const std::string_view contentType, const std::string_view body,
-                const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout)
+                Http2ClientConnection &client, const ParsedUrl &u, const HttpClientRequest &request,
+                const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout,
+                std::string &failureReason)
         {
             Http2Exchange exchange;
             std::vector<std::pair<std::string, std::string>> extraHeaders;
-            if (!body.empty())
+            if (!request.body.empty() && !request.contentType.empty())
             {
-                extraHeaders.emplace_back("content-type", std::string(contentType));
+                extraHeaders.emplace_back("content-type", std::string(request.contentType));
+            }
+            for (const HttpClientHeaderField &field: request.headers)
+            {
+                // h2 的头部名必须是全小写 ASCII（RFC 7540 §8.1.2），调用方给的大写名字在这里折下去；
+                // 值原样保留，大小写对值语义有影响
+                std::string foldedName = field.first;
+                std::transform(foldedName.begin(), foldedName.end(), foldedName.begin(),
+                               [](const unsigned char byte)
+                               {
+                                   return (byte >= 'A' && byte <= 'Z') ? static_cast<char>(byte + ('a' - 'A')) : byte;
+                               });
+                extraHeaders.emplace_back(std::move(foldedName), field.second);
             }
             // 主机文本与协议名都要先落到具名对象上：co_await 挂起期间 string_view 指着的临时串会先析构
             const std::string authority = authorityText(u);
             const std::string_view scheme = u.scheme == "https" ? "https" : "http";
+            const std::string method = request.method;
+            const std::string body(request.body);
             const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
             if (!exchangeBudget.has_value())
             {
+                failureReason = "本次请求已到时限：还没把请求写上通路（主机 " + u.host + "）";
                 co_return exchange;
             }
             Http2ClientResponse response = co_await client.request(
@@ -565,6 +780,9 @@ namespace AsynGyanis::Net
             if (!response.isOk())
             {
                 // 状态码为 0（没收到响应头）或被对端中途 RST 掉：都不算一次成功的出站
+                failureReason = response.errorMessage.empty()
+                                    ? "HTTP/2 这一侧没拿到有效响应：状态码缺失或流被对端收尾（主机 " + u.host + "）"
+                                    : std::move(response.errorMessage);
                 co_return exchange;
             }
             auto result = std::make_unique<HttpClientResponse>();
@@ -578,18 +796,17 @@ namespace AsynGyanis::Net
         /**
          * @brief 走完一次出站请求：有池就先复用、用完还回去，没池就按一次一条连接的老口径
          * @param loop 所属事件循环
-         * @param method 方法
+         * @param request 方法、正文、媒体类型与附加头部（调用方给的写法已由 validateRequest 把住）
          * @param u 已拆开的 URL
-         * @param contentType 正文媒体类型
-         * @param body 正文
          * @param requestTimeout 整体时限（握手、发送、收完响应三段之和）
          * @param pool 空闲连接池；为空即一次一条连接
+         * @param failureReason 输出：失败发生在哪一段，供 send() 折成 expected 的失败值
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
          */
         Core::Task<std::unique_ptr<HttpClientResponse>> performRequest(
-                Core::EventLoop &loop, const std::string_view method, const ParsedUrl &u,
-                const std::string_view contentType, const std::string_view body,
-                const std::chrono::milliseconds requestTimeout, HttpOutboundConnectionPool *pool)
+                Core::EventLoop &loop, const HttpClientRequest &request, const ParsedUrl &u,
+                const std::chrono::milliseconds requestTimeout, HttpOutboundConnectionPool *pool,
+                std::string &failureReason)
         {
             const std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::now();
             const bool isKeepAlive = pool != nullptr;
@@ -597,9 +814,9 @@ namespace AsynGyanis::Net
             // 请求文按要再拼：h2 那一支用不上它（帧里没有请求行），提前拼一份等于把正文整块多拷一次
             const auto makeRequestText = [&]
             {
-                return buildRequestText(method, u, contentType, body, isKeepAlive);
+                return buildRequestText(request, u, isKeepAlive);
             };
-            const bool isHeadRequest = method == "HEAD";
+            const bool isHeadRequest = request.method == "HEAD";
 
             if (pool != nullptr)
             {
@@ -607,7 +824,7 @@ namespace AsynGyanis::Net
                 if (auto cachedHttp2 = pool->acquireHttp2(endpointKey); cachedHttp2 != nullptr)
                 {
                     Http2Exchange cachedExchange = co_await exchangeOnHttp2(
-                            *cachedHttp2, u, method, contentType, body, startedAt, requestTimeout);
+                            *cachedHttp2, u, request, startedAt, requestTimeout, failureReason);
                     if (cachedExchange.response)
                     {
                         co_return std::move(cachedExchange.response);
@@ -629,7 +846,7 @@ namespace AsynGyanis::Net
                     {
                         const std::string requestText = makeRequestText();
                         OutboundExchange exchange = co_await exchangeOnConnection(loop, *reused, requestText, isHeadRequest,
-                                                                                 *reusedBudget);
+                                                                                 *reusedBudget, failureReason);
                         if (exchange.response)
                         {
                             if (isResponseReusable(exchange.response->headers))
@@ -654,16 +871,12 @@ namespace AsynGyanis::Net
             std::unique_ptr<HttpOutboundConnection> connection;
             if (u.scheme == "https")
             {
-                const std::optional<std::chrono::milliseconds> handshakeBudget = remainingBudget(startedAt, requestTimeout);
-                if (!handshakeBudget.has_value())
-                {
-                    co_return nullptr;
-                }
-                connection = co_await establishSecureConnection(loop, u, *handshakeBudget);
+                connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason);
             }
             else
             {
-                connection = co_await establishPlainConnection(loop, endpointKey);
+                connection = co_await establishPlainConnection(loop, endpointKey, startedAt, requestTimeout,
+                                                               failureReason);
             }
             if (!connection)
             {
@@ -677,10 +890,11 @@ namespace AsynGyanis::Net
                 auto http2Connection = std::make_shared<Http2ClientConnection>(loop, std::move(connection));
                 if (!startBudget.has_value() || !co_await http2Connection->start(*startBudget))
                 {
+                    failureReason = "HTTP/2 前奏没走完：对端没接我们的 SETTINGS，或时限先到（主机 " + u.host + "）";
                     co_return nullptr;
                 }
                 Http2Exchange freshExchange = co_await exchangeOnHttp2(
-                        *http2Connection, u, method, contentType, body, startedAt, requestTimeout);
+                        *http2Connection, u, request, startedAt, requestTimeout, failureReason);
                 if (pool == nullptr)
                 {
                     // 没有池就是一次性的：主动 shutdown 而不是任其析构，否则对端把这次收口记成 abrupt
@@ -697,11 +911,12 @@ namespace AsynGyanis::Net
             const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
             if (!exchangeBudget.has_value())
             {
+                failureReason = "本次请求已到时限：连接建好了却没剩下写请求的预算（主机 " + u.host + "）";
                 co_return nullptr;
             }
             const std::string requestText = makeRequestText();
             OutboundExchange exchange = co_await exchangeOnConnection(loop, *connection, requestText, isHeadRequest,
-                                                                     *exchangeBudget);
+                                                                     *exchangeBudget, failureReason);
             if (exchange.response && pool != nullptr && isResponseReusable(exchange.response->headers))
             {
                 connection->prepareForNextRequest();
@@ -711,19 +926,55 @@ namespace AsynGyanis::Net
         }
     }
 
+    Core::Task<std::expected<HttpClientResponse, std::string>>
+    HttpClient::send(Core::EventLoop &loop, const std::string_view url, HttpClientRequest request,
+                     const std::chrono::milliseconds requestTimeout)
+    {
+        // 畸形 URL 与不合规范的头部都是用法错误，按 parseUrl 的既有口径抛出，不折进 expected 的失败值
+        const ParsedUrl parsed = parseUrl(url);
+        validateRequest(request);
+        std::string failureReason;
+        std::unique_ptr<HttpClientResponse> response = co_await performRequest(
+                loop, request, parsed, requestTimeout, nullptr, failureReason);
+        if (!response)
+        {
+            // 每条失败路径都会先写下原因；这里兜住的是「哪天新增了忘了写的出口」，而不是让调用方拿到空原因
+            co_return std::unexpected(failureReason.empty() ? "请求失败：没拿到响应，也没有记下原因（目标 " + std::string(url) + "）"
+                                                            : std::move(failureReason));
+        }
+        co_return std::move(*response);
+    }
+
     Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::get(Core::EventLoop &loop, std::string_view url,
                                                                    const std::chrono::milliseconds requestTimeout)
     {
-        auto u = parseUrl(url);
-        co_return co_await performRequest(loop, "GET", u, {}, {}, requestTimeout, nullptr);
+        const HttpClientRequest request;
+        auto sent = co_await send(loop, url, request, requestTimeout);
+        if (!sent.has_value())
+        {
+            LOG_ERROR_FMT("HttpClient: GET {} 失败。原因：{}", url, sent.error());
+            co_return nullptr;
+        }
+        co_return std::make_unique<HttpClientResponse>(std::move(*sent));
     }
 
     Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::post(
             Core::EventLoop &loop, std::string_view url, std::string_view contentType, std::string_view body,
             const std::chrono::milliseconds requestTimeout)
     {
-        auto u = parseUrl(url);
-        co_return co_await performRequest(loop, "POST", u, contentType, body, requestTimeout, nullptr);
+        HttpClientRequest request;
+        request.method = "POST";
+        request.body = body;
+        // 声明过「正文按表单编码」却没给类型时补上那个类型：交一个空 Content-Type 出去等于没声明，
+        // 对端只能按 application/octet-stream 猜（RFC 9110 §8.4）
+        request.contentType = contentType.empty() ? std::string_view{"application/x-www-form-urlencoded"} : contentType;
+        auto sent = co_await send(loop, url, request, requestTimeout);
+        if (!sent.has_value())
+        {
+            LOG_ERROR_FMT("HttpClient: POST {} 失败。原因：{}", url, sent.error());
+            co_return nullptr;
+        }
+        co_return std::make_unique<HttpClientResponse>(std::move(*sent));
     }
 
     HttpClient::HttpClient(Core::EventLoop &loop, const HttpOutboundConnectionPool::Config poolConfig) noexcept
@@ -735,16 +986,36 @@ namespace AsynGyanis::Net
     Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::get(std::string_view url,
                                                                    const std::chrono::milliseconds requestTimeout)
     {
-        auto u = parseUrl(url);
-        co_return co_await performRequest(*m_loop, "GET", u, {}, {}, requestTimeout, &m_pool);
+        const HttpClientRequest request;
+        co_return co_await sendPooled(url, request, requestTimeout);
     }
 
     Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::post(
             std::string_view url, std::string_view contentType, std::string_view body,
             const std::chrono::milliseconds requestTimeout)
     {
-        auto u = parseUrl(url);
-        co_return co_await performRequest(*m_loop, "POST", u, contentType, body, requestTimeout, &m_pool);
+        HttpClientRequest request;
+        request.method = "POST";
+        request.body = body;
+        // 与静态的 post() 同一口径：没给媒体类型的表单正文补上那个类型，两条连路不该有两种写法
+        request.contentType = contentType.empty() ? std::string_view{"application/x-www-form-urlencoded"} : contentType;
+        co_return co_await sendPooled(url, request, requestTimeout);
+    }
+
+    Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::sendPooled(
+            const std::string_view url, const HttpClientRequest &request, const std::chrono::milliseconds requestTimeout)
+    {
+        const ParsedUrl parsed = parseUrl(url);
+        validateRequest(request);
+        std::string failureReason;
+        std::unique_ptr<HttpClientResponse> response = co_await performRequest(
+                *m_loop, request, parsed, requestTimeout, &m_pool, failureReason);
+        if (!response)
+        {
+            LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);
+            co_return nullptr;
+        }
+        co_return response;
     }
 
     std::size_t HttpClient::idleConnectionCount() const noexcept

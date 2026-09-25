@@ -12,22 +12,39 @@
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 namespace AsynGyanis::Core { class EventLoop; }
 namespace AsynGyanis::Net
 {
+    /// 一条头部字段：名与值都按对端/调用方给出的原文留着，客户端不做大小写折叠
+    using HttpClientHeaderField = std::pair<std::string, std::string>;
+
     /// HTTP 客户端响应
     struct HttpClientResponse
     {
         int      statusCode{0};  ///< 状态码；0 表示没拿到响应（连接或 TLS 失败）
         std::string reasonPhrase; ///< 状态行里的原因短语
-        std::vector<std::pair<std::string, std::string>> headers; ///< 头部字段，按收到的顺序原样留着
+        std::vector<HttpClientHeaderField> headers; ///< 头部字段，按收到的顺序原样留着
         std::string body;        ///< 正文；chunked 已按块拼回原样
     };
-    /// URL 拆解结果
+    /**
+     * @brief 一次出站请求的参数
+     * @details body 与 contentType 是视图：请求要到协程挂起之后才写进套接字，调用方必须让这些字节活到
+     *          co_await 返回。headers 只准添附加字段——Host、Content-Length、Connection 由客户端按这次
+     *          请求的实际情况写，占用它们等于让调用方自己撕裂请求行，因此连同含 CR/LF 的名字与值一起拒绝。
+     */
+    struct HttpClientRequest
+    {
+        std::string method{"GET"};                       ///< 请求方法，原样写进请求行；HEAD 的应答按 RFC 9112 §6.3 在头块之后结束
+        std::string_view body{};                        ///< 正文；为空时不写 Content-Length，也不写 Content-Type
+        std::string_view contentType{};                 ///< 正文媒体类型，只随非空正文一起写出
+        std::vector<HttpClientHeaderField> headers{};   ///< 附加头部，按给出的顺序上线
+    };
     /**
      * @brief 拆开的请求 URL
      */
@@ -56,17 +73,35 @@ namespace AsynGyanis::Net
     class HttpClient
     {
     public:
-        /// 单次请求的默认整体时限（握手、发送、收完响应三段之和）
+        /// 单次请求的默认整体时限（连接、握手、发送、收完响应四段之和）
         static constexpr std::chrono::milliseconds kDefaultRequestTimeout{30000};
+
+        /**
+         * @brief 按给定参数发一次请求，收完整个响应
+         * @param loop 所属事件循环（提供套接字与定时器）
+         * @param url 目标地址，形如 http(s)://host[:port]/path，畸形写法与 parseUrl 同一口径拒绝
+         * @param request 方法、正文与附加头部。按值收下，但其中的视图须活到本次 co_await 完成
+         * @param requestTimeout 整体时限，语义同 get()
+         * @return std::expected<HttpClientResponse, std::string> 成功交出响应；失败交出中文原因，
+         *         写清断在哪一段（解析地址 / 建立连接 / TLS 握手 / 写出请求 / 读响应）
+         * @throws Base::InvalidArgumentException URL 畸形，或附加头部名字为空、含 CR/LF 控制字符，
+         *         或占用了 Host、Content-Length、Connection
+         */
+        [[nodiscard]] static Core::Task<std::expected<HttpClientResponse, std::string>>
+        send(Core::EventLoop &loop, std::string_view url, HttpClientRequest request,
+             std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
 
         /**
          * @brief 发起 GET 请求
          * @param loop 所属事件循环（提供套接字与定时器）
          * @param url 目标地址，形如 http(s)://host[:port]/path
          * @param requestTimeout 整体时限：到时直接掐断连接并返回空响应，避免对端只连不应答时
-         *        把调用方永远挂住。域名解析与 TCP 连接不在其中，那两步各由系统解析器与
-         *        内核的 SYN 重试定时兜底
+         *        把调用方永远挂住。TLS 握手、写出、收完响应之外，**TCP 连接**也在其中——这一段的时限
+         *        是补上的：Windows 的完成端口后端上「连不上」并没有可写事件可等（实测系统 2 秒内就把
+         *        连接拒了，挂在可写上的协程却永远等不到那一次唤醒），交给内核的 SYN 重试兜底等于让
+         *        调用方无限期停在这里。只有域名解析不在其中，那一步由系统解析器兜底
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
+         * @note 失败原因会记进 ERROR 日志；要按原因分支就走 send()。需要附加头部也用 send()
          */
         static Core::Task<std::unique_ptr<HttpClientResponse>> get(Core::EventLoop &loop, std::string_view url,
                                                                    std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
@@ -79,6 +114,7 @@ namespace AsynGyanis::Net
          * @param body 正文
          * @param requestTimeout 整体时限，语义同 get()
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
+         * @note 失败原因会记进 ERROR 日志；要附加头部或按原因分支就走 send()
          */
         static Core::Task<std::unique_ptr<HttpClientResponse>> post(Core::EventLoop &loop, std::string_view url,
                                                                      std::string_view contentType, std::string_view body,
@@ -98,7 +134,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 发一次 GET，能复用就复用空闲连接
          * @param url 目标地址，口径同静态的 get()
-         * @param requestTimeout 整体时限，语义同静态的 get()：握手、发送、收完响应三段之和
+         * @param requestTimeout 整体时限，语义同静态的 get()：连接、握手、发送、收完响应四段之和
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
          * @note 复用的那条连接如果对端已经关掉，本次请求会**自动重开一条再来一次**——这是 keep-alive
          *       的固有竞态（对端随时可以收掉空闲连接），不是失败。读到过响应字节之后的失败不重发：
@@ -141,6 +177,19 @@ namespace AsynGyanis::Net
         void closeIdleConnections() noexcept;
 
     private:
+        /**
+         * @brief 走这条实例的连接池发一次请求，失败口径同静态的 get()/post()
+         * @details 静态那一路不带池（一次一条连接、要原因就走 send()），这一路带池；两条都把失败原因
+         *          记进 ERROR 日志，调用方只看到空响应。
+         * @param url 目标地址，口径同 parseUrl
+         * @param request 方法、正文、媒体类型与附加头部
+         * @param requestTimeout 整体时限（连接、握手、发送、收完响应四段之和）
+         * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
+         */
+        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> sendPooled(
+                std::string_view url, const HttpClientRequest &request,
+                std::chrono::milliseconds requestTimeout);
+
         Core::EventLoop *m_loop{nullptr};   ///< 所属事件循环（不拥有）
         HttpOutboundConnectionPool m_pool;  ///< 本客户端的空闲连接池
     };

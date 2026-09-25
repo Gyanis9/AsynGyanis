@@ -2,6 +2,7 @@
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
 #include <gtest/gtest.h>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -34,6 +35,53 @@ namespace AsynGyanis::Net
             if (!work.isReady()) loop.scheduler().schedule(work.handle());
             loop.run();
             return result;
+        }
+
+        /**
+         * @brief 走 send() 发一次请求，把成功正文与失败原因分别落到调用方的两个串里
+         * @details 参数按值/按引用落到协程帧里，闭包对象不参与（惰性协程帧记的是闭包地址）
+         */
+        Core::Task<void> sendOnceTask(Core::EventLoop &loop,
+                                      std::string url,
+                                      HttpClientRequest request,
+                                      std::string &observedBody,
+                                      std::string &observedReason,
+                                      std::chrono::milliseconds requestTimeout)
+        {
+            try
+            {
+                const auto sent = co_await HttpClient::send(loop, url, std::move(request), requestTimeout);
+                if (sent.has_value())
+                {
+                    observedBody = sent->body;
+                }
+                else
+                {
+                    observedReason = sent.error();
+                }
+            }
+            catch (const std::exception &failure)
+            {
+                observedReason = failure.what();
+            }
+            loop.stop();
+        }
+
+        struct SendOutcome
+        {
+            std::string body;
+            std::string reason;
+        };
+
+        SendOutcome runSend(std::string_view url, const HttpClientRequest &request,
+                            std::chrono::milliseconds requestTimeout = HttpClient::kDefaultRequestTimeout)
+        {
+            Core::EventLoop loop;
+            SendOutcome outcome;
+            auto task = sendOnceTask(loop, std::string(url), request, outcome.body, outcome.reason, requestTimeout);
+            if (!task.isReady()) loop.scheduler().schedule(task.handle());
+            loop.run();
+            return outcome;
         }
     }
 
@@ -162,5 +210,123 @@ namespace AsynGyanis::Net
         // 收尾前等这条慢路由自己跑完：夹具销毁会先让循环停手，不该把一条「要等定时器才肯结束」
         // 的在途请求留到那之后（既有用例都刻意避开这个状态）
         std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 钉住：send() 把调用方给的附加头部原样上线
+     * @details 客户端此前没有自定义头部的入口（认证头与 Accept-* 一类根本发不出去）。这里让服务端把
+     *          自己收到的取值回显出来再比对——比检查客户端拼出的字符串硬，能同时盯住名字不改大小写、
+     *          值不转义这两条
+     */
+    TEST(HttpClient, SendsCallerSuppliedRequestHeaders)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/echo-token",
+                                                        [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            // 客户端没把这条头部发上来时，回显的是占位串
+                                                            response.setBody(request.getHeader("x-token").value_or("<missing>"));
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/echo-token";
+
+        HttpClientRequest request;
+        request.headers.emplace_back("x-token", "abc123");
+        const SendOutcome outcome = runSend(url, request);
+        ASSERT_TRUE(outcome.reason.empty()) << "请求失败：" << outcome.reason;
+        EXPECT_EQ(outcome.body, "abc123") << "调用方给的附加头部没能原样上线";
+    }
+
+    /**
+     * @brief 钉住：会撕裂请求行的头部写法一律拒绝，不转义也不静默丢掉
+     * @details 值里带 CR/LF 等于自己结束这一行再插一条新字段；名字带空格或冒号会拼出第二个字段；
+     *          方法名进的是请求行开头，同样只准是 token。保留头部（Host、Content-Length、Connection）
+     *          由客户端按这次请求的实际情况写，调用方给了就拒收而不是覆盖或并存
+     */
+    TEST(HttpClient, RejectsHeadersThatCouldSplitTheRequestLine)
+    {
+        // 校验排在动套接字之前，所以这里只需要一个「形如可用」的地址；万一校验漏了，请求会真发到
+        // 本机夹具并拿到响应，下面的断言就把「没拒」这件事报出来，而不是悄悄等一次网络超时
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+
+        struct BadHeader
+        {
+            std::string name;
+            std::string value;
+        };
+        const std::array<BadHeader, 2> brokenValues{
+            BadHeader{"x-token", "abc\r\nX-Injected: 1"},
+            BadHeader{"x-token", "line\nfeed"},
+        };
+        for (const BadHeader &bad: brokenValues)
+        {
+            HttpClientRequest request;
+            request.headers.emplace_back(bad.name, bad.value);
+            const SendOutcome outcome = runSend(url, request);
+            EXPECT_TRUE(outcome.body.empty()) << "这一项本该被拒（拿到响应说明校验没生效）：" << bad.value;
+            EXPECT_NE(outcome.reason.find("请求行"), std::string::npos) << "原因要点明是撕裂请求行：" << outcome.reason;
+        }
+
+        const std::array<std::string, 2> brokenNames{std::string{}, std::string{"x token"}};
+        for (const std::string &name: brokenNames)
+        {
+            HttpClientRequest request;
+            request.headers.emplace_back(name, "abc");
+            const SendOutcome outcome = runSend(url, request);
+            EXPECT_TRUE(outcome.body.empty()) << "这个名字本该被拒：" << name;
+            EXPECT_NE(outcome.reason.find("token"), std::string::npos) << "原因要点明头部名必须是 HTTP token：" << outcome.reason;
+        }
+
+        const std::array<std::string, 2> brokenMethods{std::string{}, std::string{"GET /x HTTP/1.1\r\nHost: evil"}};
+        for (const std::string &method: brokenMethods)
+        {
+            HttpClientRequest request;
+            request.method = method;
+            const SendOutcome outcome = runSend(url, request);
+            EXPECT_TRUE(outcome.body.empty()) << "这个方法名本该被拒：「" << method << "」";
+            EXPECT_NE(outcome.reason.find("token"), std::string::npos) << "原因要点明方法名必须是 HTTP token：" << outcome.reason;
+        }
+
+        const std::array<std::string, 3> reservedNames{std::string{"host"}, std::string{"Content-Length"}, std::string{"CONNECTION"}};
+        for (const std::string &reserved: reservedNames)
+        {
+            HttpClientRequest request;
+            request.headers.emplace_back(reserved, "whatever");
+            const SendOutcome outcome = runSend(url, request);
+            EXPECT_TRUE(outcome.body.empty()) << "保留头部本该拒收：" << reserved;
+            EXPECT_NE(outcome.reason.find("由客户端"), std::string::npos) << "原因要说明这三项由客户端写：" << outcome.reason;
+        }
+    }
+
+    /**
+     * @brief 钉住：拿不到响应时，原因说清断在哪一段
+     * @details 旧契约只交回一个空指针，「域名解析不出来」与「连上但 TLS 不过」在调用方眼里是同一件事，
+     *          重试策略与告警都分不开。这里挑一段能在本机确定复现又不碰 TLS 的：连一个刚关掉的端口。
+     *          刻意不走 https——客户端的 SSL_CTX 是进程级缓存，本二进制里后跑的 TLS 用例要先装好
+     *          受信文件，这里先建了上下文就会把它们的信任配置挡在后面（同一份 CA 环境只在首次
+     *          建上下文时被读到）
+     */
+    TEST(HttpClient, NamesTheStageThatFailed)
+    {
+        // 「刚关掉的监听端口」是确定没人听的写法：连它一定被立刻拒掉，比挑一个自认为空闲的端口可靠
+        std::uint16_t closedPort = 0;
+        {
+            RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100});
+            ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+            closedPort = fixture.listeningPort();
+            ASSERT_NE(closedPort, 0U);
+        }
+
+        const HttpClientRequest request;
+        const SendOutcome refused = runSend("http://127.0.0.1:" + std::to_string(closedPort) + "/", request,
+                                            std::chrono::seconds{5});
+        EXPECT_TRUE(refused.body.empty());
+        EXPECT_NE(refused.reason.find("建立 TCP 连接失败"), std::string::npos) << "要指出断在连接这一段：" << refused.reason;
     }
 } // namespace AsynGyanis::Net
