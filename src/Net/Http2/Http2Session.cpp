@@ -697,6 +697,7 @@ namespace AsynGyanis::Net
     Core::Task<Http2Session::RequestServeOutcome> Http2Session::serveOneRequest(PendingRequest &pending)
     {
         HttpRequest &request = pending.request;
+        HttpResponse &response = pending.response;
         const std::uint32_t streamId = pending.streamId;
 
         // 对端取消这条流（RFC 9113 §8.1 的 RST_STREAM CANCEL）不是故障：只记录、计入统计并停掉这一条，
@@ -860,16 +861,14 @@ namespace AsynGyanis::Net
             }
         }
 
-        // 响应对象按连接复用：容器容量跨请求保留，复用必须配一次复位
-        m_response.reset();
-
-        // 路由之前装 h2 版流式发送回调（与 h1 侧同一接线位置）：捕获本请求的流号，响应对象按连接
-        // 复用而回调随请求重建。业务调 startChunkedResponse()/writeChunk() 时不必知道底层是哪种协议，
-        // SseStream 这类建在 writeChunk 之上的工具因此零改动就能在 h2 上工作
-        m_response.setChunkSender(
-                [this, streamId](const std::string_view segment) -> Core::Task<bool>
+        // 路由之前装 h2 版流式发送回调（与 h1 侧同一接线位置）：捕获本请求的流号与这条流自己的响应对象
+        // ——记录比回调活得久（响应发完才摘记录），因此回调不会指向已销毁的响应。业务调
+        // startChunkedResponse()/writeChunk() 时不必知道底层是哪种协议，SseStream 这类建在 writeChunk
+        // 之上的工具因此零改动就能在 h2 上工作
+        response.setChunkSender(
+                [this, &response, streamId](const std::string_view segment) -> Core::Task<bool>
                 {
-                    co_return co_await sendStreamingSegment(streamId, segment);
+                    co_return co_await sendStreamingSegment(streamId, response, segment);
                 });
 
         // 流式正文：来源是本流自己的正文缓冲，业务经 request.bodyStream() 边收边读。泵每推进一步
@@ -913,8 +912,8 @@ namespace AsynGyanis::Net
                 }
                 co_return !streamBody.isBroken();
             };
-            request.setBodyStream(&m_bodyStream);
-            m_bodyStream.attach(pending.streamBody, pumpStreamingBody);
+            request.setBodyStream(&pending.bodyStream);
+            pending.bodyStream.attach(pending.streamBody, pumpStreamingBody);
         }
 
         std::exception_ptr handlerException = nullptr;
@@ -922,14 +921,14 @@ namespace AsynGyanis::Net
         // END_STREAM 一起发出（见 finishStreamingResponse 的「一段都没写」分支）
         if (request.method() == HttpMethod::HEAD)
         {
-            m_response.suppressStreamingBody();
+            response.suppressStreamingBody();
         }
         try
         {
             // 处理器相位按「响应产出预算」计时（writeTimeout）：本相位既不读套接字也不写，
             // 上一次读刷出的 readTimeout 会在这里悄悄到期，把慢处理器当成空闲连接掐掉
             refreshIdleDeadline(m_limits->writeTimeout);
-            co_await m_router.route(request, m_response);
+            co_await m_router.route(request, response);
         } catch (...)
         {
             // 业务异常：等本轮结束再改写响应（改写走下面的 500 分支，与 HTTP/1.1 侧同一处置）
@@ -938,7 +937,7 @@ namespace AsynGyanis::Net
 
         // 流式头部是否已经随首段正文上线：上线之后状态码与头部都改不了，异常路径也只能补末片收尾
         // （判据见 HttpResponse::hasSentChunkedHead() 的文档，与 h1 侧同一条）
-        const bool isStreamingStarted = m_response.isChunkedResponse() && m_response.hasSentChunkedHead();
+        const bool isStreamingStarted = response.isChunkedResponse() && response.hasSentChunkedHead();
 
         // 流式正文：业务读完（或提前返回）之后收尾这条流的接收侧。体量越界要在这里改写响应——
         // 头部还没上线才能改，已上线就只剩日志（与上面那条 413 分支同一判据）
@@ -949,10 +948,10 @@ namespace AsynGyanis::Net
             {
                 m_metrics->countBadRequest();
             }
-            m_response.reset();
-            m_response.setStatus(413);
-            m_response.setBody("Payload Too Large");
-            static_cast<void>(m_response.setHeader("content-type", "text/plain; charset=utf-8"));
+            response.reset();
+            response.setStatus(413);
+            response.setBody("Payload Too Large");
+            static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
         }
 
         if (handlerException != nullptr)
@@ -966,16 +965,16 @@ namespace AsynGyanis::Net
             } else
             {
                 // 业务可能已经写了一半头部与正文，必须整体重置再填 500，否则会发出一条半成品响应
-                m_response.reset();
-                m_response.setStatus(500);
-                m_response.setBody("Internal Server Error");
-                static_cast<void>(m_response.setHeader("content-type", "text/plain"));
+                response.reset();
+                response.setStatus(500);
+                response.setBody("Internal Server Error");
+                static_cast<void>(response.setHeader("content-type", "text/plain"));
             }
         }
 
         // WebSocket：h1 走 101 升级，h2 走 RFC 8441 的扩展 CONNECT（:protocol=websocket）——应答是 200，
         // 随后这条流变成隧道；以 101 形态登记升级的请求在 h2 上没有对应机制，仍按 501 明确拒绝
-        if (m_response.isWebSocketUpgradeRequested())
+        if (response.isWebSocketUpgradeRequested())
         {
             if (pending.isWebSocketTunnel && !isStreamingStarted)
             {
@@ -992,28 +991,28 @@ namespace AsynGyanis::Net
                 LOG_ERROR_FMT("Http2Session: 该请求不是带 :protocol=websocket 的扩展 CONNECT，HTTP/2 上没有 101 升级这一形态，"
                               "已回 501 并保持连接可用。request-id {}，路径 {}",
                               request.requestId(), request.uri());
-                m_response.reset();
-                m_response.setStatus(501);
-                m_response.setBody("WebSocket over HTTP/2 Not Implemented");
-                static_cast<void>(m_response.setHeader("content-type", "text/plain; charset=utf-8"));
+                response.reset();
+                response.setStatus(501);
+                response.setBody("WebSocket over HTTP/2 Not Implemented");
+                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
             }
         }
 
         // 响应自动带本次请求的 request-id（与 HTTP/1.1 侧同口径）：调用方显式设过就不覆盖
-        if (!request.requestId().empty() && !m_response.hasHeader(kRequestIdHeaderName))
+        if (!request.requestId().empty() && !response.hasHeader(kRequestIdHeaderName))
         {
-            static_cast<void>(m_response.setHeader(kRequestIdHeaderName, request.requestId()));
+            static_cast<void>(response.setHeader(kRequestIdHeaderName, request.requestId()));
         }
 
         // 流式响应：头部（首段时）与每个正文段都已由上面的回调当场发出，这里只补末片把消息收完整；
         // 其余响应照旧整份发出
         Http2ResponseSendStatus sendStatus = Http2ResponseSendStatus::Sent;
-        if (m_response.isChunkedResponse())
+        if (response.isChunkedResponse())
         {
-            sendStatus = co_await finishStreamingResponse(streamId);
+            sendStatus = co_await finishStreamingResponse(streamId, response);
         } else
         {
-            sendStatus = co_await sendResponse(streamId, m_response, isHeadRequest);
+            sendStatus = co_await sendResponse(streamId, response, isHeadRequest);
         }
 
         const RequestServeOutcome serveOutcome = toRequestServeOutcome(sendStatus);
@@ -1034,11 +1033,10 @@ namespace AsynGyanis::Net
             co_return serveOutcome;
         }
 
-        // 正文已拷进这条流的待发队列（Http2Connection 按帧 append 进 pendingData），映射与此后的发送无关了。
-        // 本会话的响应对象是**按连接复用**的，不在此处解除的话，这条连接转入空闲后映射会一直攥到下一条
-        // 请求开头 reset() 才放下：Windows 上就地改名/截断该文件因此被挡最长一个空闲超时，POSIX 上则是一条
-        // fd 与一段地址空间预留按空闲连接计（与 h1 侧 HttpSession 同一判据）
-        m_response.releaseMappedBody();
+        // 正文已拷进这条流的待发队列（Http2Connection 按帧 append 进 pendingData），映射与此后的发送无关了：
+        // 当场解除，不等这条记录摘掉。Windows 上就地改名/截断该文件因此不被挡在本轮的统计收尾之后，
+        // POSIX 上那条 fd 与一段地址空间预留也立刻归还（与 h1 侧 HttpSession 同一判据）
+        response.releaseMappedBody();
 
         // 流式正文的接收侧收尾必须排在响应之后：RST_STREAM 与响应排在同一条待发字节流里，
         // 先中止就会让对端先看到 RST，响应反而到不了（见 finishStreamingRequestBody 的说明）
@@ -1047,7 +1045,7 @@ namespace AsynGyanis::Net
             finishStreamingRequestBody(pending, isStreamBodyTooLarge);
         }
 
-        const int statusCode = m_response.status();
+        const int statusCode = response.status();
         const std::chrono::steady_clock::duration requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
         // 流式响应中途出异常时正文只发了一半，落账等于把半成品记成已应答（状态码也不是真实结果），
         // 因此跳过——那条路径已经由上面的错误日志交代（与 h1 侧同一判据）
@@ -1074,6 +1072,7 @@ namespace AsynGyanis::Net
                                                                                     PendingRequest &pending)
     {
         HttpRequest &request = pending.request;
+        HttpResponse &response = pending.response;
         const std::chrono::steady_clock::time_point tunnelStartTime = std::chrono::steady_clock::now();
 
         // 握手校验：h2 用扩展 CONNECT 代替 Upgrade 头，但版本与 key 两项与 h1 完全一致（同一份实现）
@@ -1083,11 +1082,11 @@ namespace AsynGyanis::Net
         {
             LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答。request-id {}，路径 {}，原因：{}",
                           request.requestId(), request.uri(), handshakeFailureReason);
-            m_response.reset();
-            m_response.setStatus(400);
-            m_response.setBody("Bad WebSocket Handshake");
-            static_cast<void>(m_response.setHeader("content-type", "text/plain; charset=utf-8"));
-            const RequestServeOutcome handshakeOutcome = toRequestServeOutcome(co_await sendResponse(streamId, m_response, false));
+            response.reset();
+            response.setStatus(400);
+            response.setBody("Bad WebSocket Handshake");
+            static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            const RequestServeOutcome handshakeOutcome = toRequestServeOutcome(co_await sendResponse(streamId, response, false));
             co_return handshakeOutcome;
         }
 
@@ -1176,7 +1175,7 @@ namespace AsynGyanis::Net
             isBusinessFinished = true;
         };
 
-        Core::Task<> businessTask = runBusiness(m_response.webSocketHandler(), peer);
+        Core::Task<> businessTask = runBusiness(response.webSocketHandler(), peer);
         businessTask.handle().resume();
 
         // 对端可能在 200 到达之前就抢先发了帧（RFC 8441 允许它一收到 200 就发，但实现常提前发）：
@@ -1575,11 +1574,12 @@ namespace AsynGyanis::Net
         return Net::chunkFramePayload(chunkFrame);
     }
 
-    Core::Task<bool> Http2Session::sendStreamingSegment(const std::uint32_t streamId, const std::string_view segment)
+    Core::Task<bool> Http2Session::sendStreamingSegment(const std::uint32_t streamId, HttpResponse &response,
+                                                        const std::string_view segment)
     {
         // HEAD：一段正文都不发（含头部）——头部与 END_STREAM 由 finishStreamingResponse 一起发出，
         // 只发头部不发正文正是 HEAD 的语义
-        if (m_response.isStreamingBodySuppressed())
+        if (response.isStreamingBodySuppressed())
         {
             co_return true;
         }
@@ -1591,15 +1591,15 @@ namespace AsynGyanis::Net
         }
 
         std::string errorText;
-        if (!m_response.hasSentChunkedHead())
+        if (!response.hasSentChunkedHead())
         {
             // 首个段落是 HttpResponse::writeChunk() 推上来的 HTTP/1.1 头部文本（状态行 + 头部块），
             // 内容是 h1 线格式而不是 h2 要发的头块：这次调用只当「头部该上线了」的信号，
             // 真正发出的字段按响应对象现取（HPACK 编码与连接特定头剥离都在下一跳完成）。
             // 不带 END_STREAM：正文段随后还要发，与 h1 侧「头部随首段正文上线」同一时机
-            const std::vector<HpackHeaderField> headerFields = collectResponseHeaderFields(m_response);
+            const std::vector<HpackHeaderField> headerFields = collectResponseHeaderFields(response);
             const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(
-                    streamId, normalizeWireStatusCode(m_response.status(), streamId), headerFields, false, &errorText);
+                    streamId, normalizeWireStatusCode(response.status(), streamId), headerFields, false, &errorText);
             if (headersStatus != Http2ResponseSendStatus::Sent)
             {
                 // 对端取消这条流的日志由 serveOneRequest() 按服务结论统一记，这里只管其余失败
@@ -1648,7 +1648,8 @@ namespace AsynGyanis::Net
                && m_connection.totalPendingResponseByteCount() <= kStreamingSendQueueConnectionLimitByteCount;
     }
 
-    Core::Task<Http2ResponseSendStatus> Http2Session::finishStreamingResponse(const std::uint32_t streamId)
+    Core::Task<Http2ResponseSendStatus> Http2Session::finishStreamingResponse(const std::uint32_t streamId,
+                                                                             HttpResponse &response)
     {
         // 本侧已判定写不出去：不再重试，也不重复记日志（与 h1 契约一致）
         if (m_isConnectionUnusable)
@@ -1657,14 +1658,14 @@ namespace AsynGyanis::Net
         }
 
         std::string errorText;
-        if (!m_response.hasSentChunkedHead())
+        if (!response.hasSentChunkedHead())
         {
             // 一段正文都没写出来（业务只调了 startChunkedResponse()）：头部与 END_STREAM 一起发出，
             // 对端因此拿到一条没有正文的完整响应，而不是挂在一条永远收不满的消息上；
             // 与 h1 侧「空流式响应补出头部与终止块」是同一个位置
-            const std::vector<HpackHeaderField> headerFields = collectResponseHeaderFields(m_response);
+            const std::vector<HpackHeaderField> headerFields = collectResponseHeaderFields(response);
             const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(
-                    streamId, normalizeWireStatusCode(m_response.status(), streamId), headerFields, true, &errorText);
+                    streamId, normalizeWireStatusCode(response.status(), streamId), headerFields, true, &errorText);
             if (headersStatus != Http2ResponseSendStatus::Sent)
             {
                 // 对端取消这条流的日志由 serveOneRequest() 按服务结论统一记，这里只管其余失败

@@ -212,6 +212,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 一条头块已收齐的请求：正文随 DATA 片段追加，收齐后（或超限后）交给路由
+         * @details 这条流的响应对象与流式正文读取器同样归记录持有（一条流一份），记录摘掉即一并释放
          */
         struct PendingRequest
         {
@@ -230,6 +231,11 @@ namespace AsynGyanis::Net
             /// 流式路由专用的正文缓冲（来源）。按流各持一份而不是全连接共用一份：同一条连接上
             /// 可以同时有多条流在收正文，共用一份会让后来者的 DATA 覆盖前者的未读正文
             HttpStreamBody streamBody;
+
+            // 下面两件与 request/streamBody 同属这条流的记录：一条流一份，填写与发送都在记录内
+            // 完成，全连接共用一份会让后来者覆盖前一条流尚未发出的内容
+            HttpResponse response;      ///< 本条流的响应对象：路由前本来就是空的，不必为「上一条报文残留」复位
+            HttpRequestBody bodyStream; ///< 本条流的流式正文读取器：交付给 request.bodyStream()，来源就是上面那份 streamBody
         };
 
         /**
@@ -377,6 +383,7 @@ namespace AsynGyanis::Net
          *          在 h2 上只当「头部该上线了」的信号：真正发出的头块按响应对象现取，不带 END_STREAM；
          *          其余段落是 h1 分块帧，剥出负载后作为 DATA 帧发出（不带 END_STREAM）。
          * @param streamId 本段落所属的流号
+         * @param response 这条流正在填写的响应（记录持有，头块按它现取）
          * @param segment writeChunk 交出的段落字节
          * @return true 本段已排入待发字节（窗口不足时留在发送队列里，等对端 WINDOW_UPDATE 续发）
          * @return false 本段未发出、业务应停止继续写：对端已取消这条流、待发队列已到
@@ -384,7 +391,8 @@ namespace AsynGyanis::Net
          *         或连接已不可用——各种原因的日志分别由本方法与 serveOneRequest() 记出
          * @throws Base::LogicException 分块帧布局与 writeChunk 的文档不符（本段未发出，绝不把帧头当正文）
          */
-        [[nodiscard]] Core::Task<bool> sendStreamingSegment(std::uint32_t streamId, std::string_view segment);
+        [[nodiscard]] Core::Task<bool> sendStreamingSegment(std::uint32_t streamId, HttpResponse &response,
+                                                            std::string_view segment);
 
         /**
          * @brief 流式响应收尾：给这条流补上 END_STREAM
@@ -393,10 +401,12 @@ namespace AsynGyanis::Net
          *          与 h1 侧补 `0\r\n\r\n` 终止块同一个位置；一段正文都没写时头部与 END_STREAM 一起发。
          *          收尾帧立刻写出，对端因此不必等到下一轮读循环才看到消息结尾。
          * @param streamId 目标流号
+         * @param response 这条流正在填写的响应（记录持有；一段都没写时头块按它补齐）
          * @return Http2ResponseSendStatus 收尾帧的发送结论；StreamNotWritable 表示对端已取消这条流
          *         （连接继续服务其它流），其余非 Sent 取值表示连接不可用或本响应无法应答
          */
-        [[nodiscard]] Core::Task<Http2ResponseSendStatus> finishStreamingResponse(std::uint32_t streamId);
+        [[nodiscard]] Core::Task<Http2ResponseSendStatus> finishStreamingResponse(std::uint32_t streamId,
+                                                                                 HttpResponse &response);
 
         /**
          * @brief 把响应状态码收口成可上线的取值
@@ -538,13 +548,9 @@ namespace AsynGyanis::Net
         /// 同一条连接，各持一份会让「谁读到什么」变得不可推理
         std::vector<char> m_http2ReceiveBuffer;
 
-        /// 流式请求正文的读取器：按连接一个（同一条连接上的请求是串行服务的，见 serveOneRequest），
-        /// 每次服务前重新装配到「那条流自己的正文缓冲」上
-        HttpRequestBody m_bodyStream;
-
         /// 头块已收齐的请求：按流号（对端流号严格递增，因此遍历顺序就是请求的到达顺序）
+        /// 响应对象与流式正文读取器都在记录里，一条流一份
         std::map<std::uint32_t, PendingRequest> m_pendingRequests;
-        HttpResponse m_response;                      ///< 响应对象按连接复用，每条请求发送前 reset()
         std::size_t m_servedRequestCount{0};          ///< 本连接已服务的请求条数（单连接上限的判据）
         bool m_isGoAwaySent{false};                   ///< 是否已因达到请求上限发过收尾 GOAWAY：同一原因只发一条
         HttpRequest *m_servingRequest{nullptr};       ///< 正在路由的请求（连接关停时对它转成协作式取消）
