@@ -204,6 +204,13 @@ namespace AsynGyanis::Net
         {
             return;
         }
+        if (m_config.maximumIdlePerEndpoint == 0U)
+        {
+            // 每键留 0 条就是「不池化」：当场收口。少了这一句，下面按条数腾位置的循环会在空表上
+            // erase(begin())——那是有未定义行为的代码，而 0 是公开 Config 允许填进来的值
+            connection->close();
+            return;
+        }
 
         std::vector<IdleEntry> &entries = m_idleByEndpoint[connection->endpointKey()];
         const Clock::time_point now = Clock::now();

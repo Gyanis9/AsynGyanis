@@ -685,8 +685,9 @@ namespace AsynGyanis::Net
          */
         void registerHoldingRoute(Router &router, Core::EventLoop &serverLoop, std::atomic<std::size_t> *const entryCount)
         {
-            router.get("/slow",
-                       [&serverLoop, entryCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
+            // 同一条法登记 GET 与 POST 两个方法：一侧的既有用例按 GET 问它，另一侧要拿 POST 测
+            // 「非幂等请求不许重发」——按方法分路由是路由器的常态，不是一件事的两种写法
+            const auto handler = [&serverLoop, entryCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
             {
                 if (entryCount != nullptr)
                 {
@@ -696,7 +697,9 @@ namespace AsynGyanis::Net
                 co_await processingTimer.waitFor(std::chrono::milliseconds{400});
                 response.setBody("served-slow");
                 co_return;
-            });
+            };
+            router.get("/slow", handler);
+            router.post("/slow", handler);
         }
 
         /// 「请求还在途就收口空闲连接」的结论
@@ -744,6 +747,66 @@ namespace AsynGyanis::Net
 
             co_await waitUntil(loop, [&finishedRequestCount] { return finishedRequestCount >= 1U; },
                                std::chrono::seconds{4});
+            loop.stop();
+            co_return;
+        }
+
+        /// 只发一条被测请求的结论（前面先走一条暖场请求把连接放进池里）
+        struct SingleRunOutcome
+        {
+            int warmupStatusCode{0};                      ///< 暖场那条的状态码
+            std::unique_ptr<HttpClientResponse> response; ///< 被测那条的响应；空表示失败
+        };
+
+        /// 「问一句 host 回显给你」那条请求的结论
+        struct HostEchoRunOutcome
+        {
+            int         statusCode{0};  ///< 状态码
+            std::string echoedHost;     ///< 服务器侧看到的 host / :authority 原文
+        };
+
+        /**
+         * @brief 发一条 GET，把服务器回显的权威主机带回来
+         * @param loop 客户端事件循环
+         * @param client 被测客户端
+         * @param url 请求地址
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runHostEcho(Core::EventLoop &loop, HttpClient &client, const std::string &url,
+                                     HostEchoRunOutcome &outcome)
+        {
+            const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
+            if (response != nullptr)
+            {
+                outcome.statusCode = response->statusCode;
+                outcome.echoedHost = response->body;
+            }
+            loop.stop();
+            co_return;
+        }
+
+        /**
+         * @brief 请求已整个发出、却没等到回音时，出站侧不许重来一次
+         * @details h2 一条连接上跑几条流，一条请求被时限掐掉会把同一条通路上的兄弟一起带走。这时
+         *          「有没有收到过字节」这一位判不出该不该重发：POST 已整个交上通路、对端只是还没答完，
+         *          重发就是把非幂等请求做两遍。判据用路由自己的进入次数——它数的就是「这个请求被交付了几次」。
+         * @param loop 客户端事件循环
+         * @param client 被测客户端（持有池）
+         * @param warmUrl 暖场地址（把连接放进池里，后面那条才走「复用」这一支）
+         * @param slowUrl 慢地址：本端会在对端答完之前放弃
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runNoReplayAfterSend(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl,
+                                              const std::string &slowUrl, SingleRunOutcome &outcome)
+        {
+            const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
+            outcome.warmupStatusCode = warmup ? warmup->statusCode : 0;
+
+            outcome.response = co_await client.post(slowUrl, "text/plain", "payload-once",
+                                                   std::chrono::milliseconds{150});
+            // 给「悄悄重发的那一遍」留足落地时间：它要重做 TLS 握手，比正常路径更慢
+            Core::Timer settleTimer(loop);
+            co_await settleTimer.waitFor(std::chrono::milliseconds{900});
             loop.stop();
             co_return;
         }
@@ -1103,6 +1166,85 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.statusCode, 200) << "在途的那条请求被收口打断了";
         EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 1U)
                 << "慢路由被进了两次：在途请求被掐断之后又悄悄重发了一遍";
+    }
+
+    /**
+     * @brief 钉住：请求已整个发出时不重来一次，哪怕一个字节都没收到
+     * @details 复用连接时「一个字节没回来」通常意味着对端在我们手里空闲期间把连接收了，那种可以重来；
+     *          但请求已经整个写上通路、只是对端答得慢（这里让处理器按住 400 毫秒，本端 150 毫秒就放弃），
+     *          同一位看着一样，重发就把非幂等请求做两遍。判据取路由的进入次数：它数的就是被交付了几次。
+     */
+    TEST(HttpsServer, PooledClientDoesNotReplayASentRequestThatTimedOut)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        std::atomic<std::size_t> slowHandlerEntryCount{0};
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                                          [&slowHandlerEntryCount](Router &router, Core::EventLoop &serverLoop)
+                                          {
+                                              registerHoldingRoute(router, serverLoop, &slowHandlerEntryCount);
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        const std::string hostPrefix = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
+        const std::string warmUrl = hostPrefix + "/hello";
+        const std::string slowUrl = hostPrefix + "/slow";
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        SingleRunOutcome outcome;
+        auto work = runNoReplayAfterSend(loop, client, warmUrl, slowUrl, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(outcome.warmupStatusCode, 200) << "暖场那条没成功：被测那条走的就不是复用这一支";
+        EXPECT_EQ(outcome.response, nullptr) << "处理器还没答完，本端按时限放弃了，这里不该有一个响应";
+        EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 1U)
+                << "请求被交付了两次：已发出的非幂等请求不该因为「没收到回音」重来一次";
+    }
+
+    /**
+     * @brief 钉住 :authority 的写法：端口不等于协议默认值时必须带在权威主机里
+     * @details 连到哪个端口由 URL 决定，但按 Host/:authority 分站点的对端只看这一串字符：漏掉端口
+     *          就等于把 8443 上的服务当成默认站点那个（RFC 9110 §7.2 与 RFC 9113 §8.3.1 同一条法）。
+     *          两条协议走的是同一个拼装函数，所以这里回显的 host 同时钉住了 h1 的 Host 与 h2 的 :authority。
+     */
+    TEST(HttpsServer, OutboundClientPutsThePortIntoAuthority)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                                          [](Router &router, Core::EventLoop &)
+                                          {
+                                              router.get("/host",
+                                                         [](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                                              {
+                                                  response.setBody(std::string(request.getHeader("host").value_or(std::string{})));
+                                                  co_return;
+                                              });
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/host";
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        HostEchoRunOutcome outcome;
+        auto work = runHostEcho(loop, client, url, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        ASSERT_EQ(outcome.statusCode, 200) << "出站请求没走通";
+        EXPECT_EQ(outcome.echoedHost, "127.0.0.1:" + std::to_string(fixture.listeningPort()))
+                << "回显的权威主机没带端口：对端按 Host 分站点时会认错";
     }
 
     /**

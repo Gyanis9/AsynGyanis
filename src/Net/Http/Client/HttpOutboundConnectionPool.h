@@ -175,6 +175,8 @@ namespace AsynGyanis::Net
         struct Config
         {
             std::chrono::milliseconds idleTimeout{kDefaultIdleTimeout};
+            /// 每台主机留几条空闲连接；0 表示不池化（用完当场收口）。填 0 是合法的关闭开关，
+            /// 不是配置错误：负面的做法是让它去把表里唯一那条挤掉，那等于留了一条
             std::size_t maximumIdlePerEndpoint{kDefaultMaximumIdlePerEndpoint};
         };
 

@@ -196,11 +196,17 @@ namespace AsynGyanis::Net
         /// 拼出 Host / :authority 用的主机文本：IPv6 字面量要带方括号，否则端口分隔符会糊进地址里
         std::string authorityText(const ParsedUrl &url)
         {
-            if (url.host.find(':') != std::string::npos)
+            std::string host = url.host.find(':') != std::string::npos ? '[' + url.host + ']' : url.host;
+            // 端口只在**不等于该协议的默认端口**时写：RFC 9110 §7.2 对 Host、RFC 9113 §8.3.1 对
+            // :authority 是同一条法。连到哪个端口由 URL 的端口决定，这里漏掉端口的代价是**站点选择**：
+            // 按 Host 分虚拟主机的对端会把 8443 上的服务认成默认那一个，严格的实现直接回 421
+            const bool isSchemeDefaultPort = (url.scheme == "https" && url.port == 443U)
+                                             || (url.scheme != "https" && url.port == 80U);
+            if (!isSchemeDefaultPort)
             {
-                return '[' + url.host + ']';
+                host += ':' + std::to_string(url.port);
             }
-            return url.host;
+            return host;
         }
 
         void appendHostHeader(std::string &request, const ParsedUrl &url)
@@ -513,6 +519,10 @@ namespace AsynGyanis::Net
         {
             std::unique_ptr<HttpClientResponse> response;
             bool isAnyByteReceived{false};
+            /// 请求有没有写上过通路。h2 一条连接上跑几条流，一条被时限掐掉会把同连接的兄弟一起带走：
+            /// 只看「有没有收到字节」会把「已整个发出、只等答复」的那条也判成可以重来一次，
+            /// 于是非幂等请求被悄悄做两遍。两个位一起看才分得开「空闲期被对端收了」与「发出去没回」
+            bool isAnyByteSent{false};
         };
 
         /**
@@ -551,6 +561,7 @@ namespace AsynGyanis::Net
             Http2ClientResponse response = co_await client.request(
                     scheme, authority, method, u.path, extraHeaders, body, *exchangeBudget);
             exchange.isAnyByteReceived = response.isAnyByteReceived;
+            exchange.isAnyByteSent = response.isAnyByteSent;
             if (!response.isOk())
             {
                 // 状态码为 0（没收到响应头）或被对端中途 RST 掉：都不算一次成功的出站
@@ -601,13 +612,15 @@ namespace AsynGyanis::Net
                     {
                         co_return std::move(cachedExchange.response);
                     }
-                    if (cachedExchange.isAnyByteReceived)
+                    if (cachedExchange.isAnyByteReceived || cachedExchange.isAnyByteSent)
                     {
+                        // 要么对端答过话（响应本身出了问题），要么我们已把请求整个交上通路（发出去的
+                        // 请求没有回音）——两种都不该重来：后一种会把非幂等请求做两遍
                         co_return nullptr;
                     }
-                    // 一个字节都没回来：多半是对端在我们手里把这条连接收了（与 h1 的 keep-alive 同一
-                    // 条竞态）。这条就此作废——不作废也没有下一句，HPACK 动态表跟着连接一起丢——
-                    // 直接往下重开一条重来一次，对调用方仍是一次成功请求
+                    // 一个字节没发出、也没收到：多半是对端在我们手里把这条连接收了（与 h1 的
+                    // keep-alive 同一条竞态）。这条就此作废——不作废也没有下一句，HPACK 动态表跟着
+                    // 连接一起丢——直接往下重开一条重来一次，对调用方仍是一次成功请求
                 }
                 if (auto reused = pool->acquire(endpointKey))
                 {
