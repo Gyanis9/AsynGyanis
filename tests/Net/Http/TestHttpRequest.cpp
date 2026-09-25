@@ -27,6 +27,18 @@ namespace AsynGyanis::Net
             request.setUri(std::string("/probe?") + std::string(queryText));
             return request;
         }
+
+        /**
+         * @brief 数一条请求实际带有几条 trailer 字段（遍历是这档存储对外的唯一形态）
+         * @param request 待观察的请求
+         * @return std::size_t 字段条数
+         */
+        std::size_t countTrailerFields(const HttpRequest &request)
+        {
+            std::size_t count = 0;
+            request.forEachTrailerField([&count](const std::string_view, const std::string_view) { ++count; });
+            return count;
+        }
     } // namespace
 
     // ============================================================================
@@ -143,6 +155,38 @@ namespace AsynGyanis::Net
 
         EXPECT_FALSE(request.getHeader("missing").has_value());
         EXPECT_TRUE(request.headerValues("missing").empty());
+    }
+
+    /**
+     * @brief 钉住：trailer 与头部是两档存储，同名也不互相覆盖、不互相可见
+     * @details 合档会让「Content-Length 出现在正文之后」变成第二种长度解释（RFC 9112 §7.1.1.1
+     *          禁止的正是这个形状）；两档各自可读，业务问哪一档就只有哪一档的答案。
+     */
+    TEST(HttpRequest, KeepsTrailerFieldsInAStoreOfTheirOwn)
+    {
+        HttpRequest request;
+        request.addHeader("X-Summary", "from-head");
+        request.addTrailerField("x-summary", "from-tail");
+        request.addTrailerField("X-Checksum", "abc");
+
+        EXPECT_EQ(request.getHeader("x-summary").value_or(""), "from-head");
+        EXPECT_EQ(request.getTrailerField("x-summary").value_or(""), "from-tail");
+        EXPECT_EQ(request.getTrailerField("X-CHECKSUM").value_or(""), "abc");
+
+        // 反方向同样不可见：trailer 不进头部视图，头部也不会被当成 trailer
+        EXPECT_EQ(request.headers().count("x-checksum"), 0U);
+        EXPECT_FALSE(request.getTrailerField("x-missing").has_value());
+        EXPECT_TRUE(request.hasTrailerFields());
+    }
+
+    TEST(HttpRequest, ReportsNoTrailerFieldsUntilOneIsAdded)
+    {
+        HttpRequest request;
+        EXPECT_FALSE(request.hasTrailerFields());
+        EXPECT_EQ(countTrailerFields(request), 0U);
+
+        request.addHeader("X-Head-Only", "1");
+        EXPECT_FALSE(request.hasTrailerFields()) << "addHeader 不得写进 trailer 那一档";
     }
 
     TEST(HttpRequest, ReplacesBodyOnSetAndAppendsChunksAfterwards)
@@ -404,6 +448,7 @@ namespace AsynGyanis::Net
         request.setUri("/old?keep=0");
         request.setHttpVersion("HTTP/1.1");
         request.addHeader("X-Old", "1");
+        request.addTrailerField("X-Old-Tail", "9");
         request.setBody("body");
         request.setParam("id", "9");
 
@@ -416,6 +461,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(request.body().empty());
         EXPECT_FALSE(request.param("id").has_value());
         EXPECT_FALSE(request.getHeader("x-old").has_value());
+        EXPECT_FALSE(request.getTrailerField("x-old-tail").has_value());
     }
 
     /**

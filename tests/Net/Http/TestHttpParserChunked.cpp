@@ -1,5 +1,6 @@
 // TestHttpParserChunked.cpp —— 手写解析器的分块请求体解码（RFC 9112 §7.1）：
-//   一. 快乐路径：单块、带块扩展、多块加 trailer 段、大写十六进制、终止块后直接收尾；
+//   一. 快乐路径：单块、带块扩展、多块加 trailer 段（尾部字段落到请求的 trailer 一档）、
+//      大写十六进制、终止块后直接收尾；跨报文不串尾部字段；
 //   二. 增量语义：逐字节喂入与一次喂入等价、任意前缀都不提前判完成；
 //   三. 拒绝面：Content-Length 与 Transfer-Encoding 并存、非 chunked 编码、块大小非法、
 //       块大小行与块数据后缺 CRLF、trailer 行畸形、单块大小与解码后总长超上限。
@@ -18,6 +19,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -74,6 +76,22 @@ namespace AsynGyanis::Net
             EXPECT_EQ(parser.isLimitExceeded(), expectedLimitExceeded) << caseLabel;
             EXPECT_FALSE(parser.errorMessage().empty()) << caseLabel;
         }
+
+        /**
+         * @brief 把一条请求收到的 trailer 字段摊平成「名=值」列表，按线上到达顺序
+         * @details 一次比对整张表，而不是逐条 has_value：多收一条（过滤器漏了某个字段、上一条串进
+         *          这一条）同样要红。
+         * @param request 已解析完的请求
+         * @return std::vector<std::string> 形如 {"x-checksum=abc"} 的列表
+         */
+        std::vector<std::string> collectTrailerFields(const HttpRequest &request)
+        {
+            std::vector<std::string> flattened;
+            request.forEachTrailerField(
+                    [&flattened](const std::string_view name, const std::string_view value)
+                    { flattened.push_back(std::string(name).append("=").append(value)); });
+            return flattened;
+        }
     } // namespace
 
     // ============================================================================
@@ -123,12 +141,13 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 多块按序拼接，trailer 段只做语法校验、不并入请求头部
+     * @brief 多块按序拼接，trailer 字段落到请求的 trailer 一档且不并入头部
      *
      * @details trailer 内容有意不落进 request.headers()：trailer 里的 content-length 之类若被上层
-     *          当成头部读到，就会与解析器实际使用的定界方式形成两种解释（请求走私面）。
+     *          当成头部读到，就会与解析器实际使用的定界方式形成两种解释（请求走私面）。落到的位置
+     *          是 HttpRequest 的 trailer 一档（getTrailerField / forEachTrailerField），业务要显式问它才拿得到。
      */
-    TEST(HttpParserChunked, ConcatenatesChunksAndValidatesTrailerSection)
+    TEST(HttpParserChunked, ConcatenatesChunksAndDeliversTrailerFields)
     {
         const std::string message = makeChunkedMessage("5\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: v\r\nX-Count: 2\r\n\r\n");
 
@@ -138,6 +157,67 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(parser.request().getHeader("transfer-encoding").has_value());
         EXPECT_FALSE(parser.request().getHeader("x-trailer").has_value());
         EXPECT_FALSE(parser.request().getHeader("x-count").has_value());
+
+        EXPECT_TRUE(parser.request().hasTrailerFields());
+        // 名字入库前折小写，查询按大小写不敏感：对端写 X-Trailer 与业务问 x-trailer 是同一个字段
+        EXPECT_EQ(parser.request().getTrailerField("x-trailer").value_or("<缺失>"), "v");
+        EXPECT_EQ(parser.request().getTrailerField("X-Count").value_or("<缺失>"), "2");
+        EXPECT_FALSE(parser.request().getTrailerField("x-missing").has_value());
+        // 到达顺序即线上顺序（业务要按序展示或校验时用得上）
+        EXPECT_EQ(collectTrailerFields(parser.request()), (std::vector<std::string>{"x-trailer=v", "x-count=2"}));
+    }
+
+    /**
+     * @brief 尾部里的定界字段与连接级字段一概不交付，其余原样上交
+     *
+     * @details RFC 9112 §7.1.1.1 禁止尾部带这几个字段，但收端仍要自己守住：交付出去的
+     *          「Content-Length: 999」会被下游当成正文长度读走。X- 前缀那条是对照组，
+     *          少了它整张过滤器可以全删而用例照绿。
+     */
+    TEST(HttpParserChunked, ExcludesFramingAndConnectionFieldsFromTrailerStore)
+    {
+        const std::string message = makeChunkedMessage(
+                "5\r\nhello\r\n0\r\nContent-Length: 999\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n"
+                "Keep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nUpgrade: websocket\r\nX-Checksum: abc\r\n\r\n");
+
+        HttpParser parser;
+        ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.request().body(), "hello");
+
+        // 头部里也没有它们：解析器没有把尾部改写成头部，请求头部仍是请求头部块里那一份
+        EXPECT_FALSE(parser.request().getHeader("content-length").has_value());
+        EXPECT_FALSE(parser.request().getHeader("connection").has_value());
+
+        EXPECT_EQ(collectTrailerFields(parser.request()), (std::vector<std::string>{"x-checksum=abc"}));
+    }
+
+    /**
+     * @brief 同一条连接上的下一条报文不会带上上一条的 trailer 字段
+     *
+     * @details 两次 reset 之间有三份状态要分别归零：解析器的 trailer 暂存、请求对象的 trailer 存储。
+     *          第二条只留自己的字段（漏清暂存会串上第一条的），第三条一个字段都不该有
+     *          （漏清请求对象会让业务把上一条的校验和当成本条的）。
+     */
+    TEST(HttpParserChunked, DoesNotLeakTrailerFieldsIntoNextMessage)
+    {
+        HttpParser parser;
+
+        const std::string first  = makeChunkedMessage("5\r\nhello\r\n0\r\nX-First: 1\r\n\r\n");
+        const std::string second = makeChunkedMessage("5\r\nworld\r\n0\r\nX-Second: 2\r\n\r\n");
+        const std::string third  = makeChunkedMessage("5\r\nagain\r\n0\r\n\r\n");
+
+        ASSERT_EQ(parser.parse(first.data(), first.size()), ParseStatus::Done);
+        EXPECT_EQ(collectTrailerFields(parser.request()), (std::vector<std::string>{"x-first=1"}));
+
+        parser.reset();
+        ASSERT_EQ(parser.parse(second.data(), second.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.request().body(), "world");
+        EXPECT_EQ(collectTrailerFields(parser.request()), (std::vector<std::string>{"x-second=2"}));
+
+        parser.reset();
+        ASSERT_EQ(parser.parse(third.data(), third.size()), ParseStatus::Done);
+        EXPECT_EQ(parser.request().body(), "again");
+        EXPECT_FALSE(parser.request().hasTrailerFields());
     }
 
     /**

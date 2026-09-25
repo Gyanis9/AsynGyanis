@@ -225,15 +225,16 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：带 trailer 段的分块请求在流式与普通两种路由上都「正文一段不少、trailer 字段不混进头部」
-     * @details 这条形状压两点：① `parseTrailerLine()` 照语法解析 trailer 字段却有意丢弃——留着就让
-     *          「Content-Length: 999」以请求头部的身份被上层读到，正是请求走私要的形状；
-     *          ② 终止块与 trailer 段的字节都不许算进正文（bytes 只数那 8 字节真实负载）。
-     *          `isHeaderBlockComplete()` 把 `Stage::Trailer` 算进「头部块已收齐」，所以流式派发的时机
-     *          本身就落在这段附近，两种派发各发一条同样的报文才两边都有证据（实测改成「trailer 字段
-     *          照样入表」时，先红的是流式那一条）。两条响应带不同前缀，免得第二条重复命中第一条。
+     * @brief 钉住：带 trailer 段的分块请求在流式与普通两种路由上都「正文一段不少、尾部字段只进 trailer 档」
+     * @details 这条形状压三点：① 终止块与 trailer 段的字节都不许算进正文（bytes 只数那 8 字节真实负载）；
+     *          ② trailer 里的「Content-Length: 999」既不进头部也不进 trailer 档——进了任何一档、
+     *          被下游读成长度，就是请求走私要的形状；③ 可交付的那条（X-Trailer-Only）两种派发都要读到，
+     *          且只能从 trailer 一档读到（getTrailerField）。流式一路的时序靠 `HttpRequestBody::readNext()`
+     *          的收口条件保证：它以解析器 `isComplete()` 为准，而 Trailer 阶段的空行正是收尾条件，
+     *          所以处理器看到流终点时尾部字段已经落进请求对象。
+     *          两条响应带不同前缀，免得第二条重复命中第一条。
      */
-    TEST(HttpStreamingBody, DiscardsTrailerFieldsOnBothDispatchModes)
+    TEST(HttpStreamingBody, DeliversTrailerFieldsWithoutPollutingHeadersOnBothDispatchModes)
     {
         const auto registerRoutes = [](Router &router, Core::EventLoop &)
         {
@@ -242,7 +243,9 @@ namespace AsynGyanis::Net
                 return "bytes=" + std::to_string(bodyBytes)
                        + "|cl=" + (request.getHeader("content-length").has_value() ? "yes" : "no")
                        + "|xt=" + (request.getHeader("x-trailer-only").has_value() ? "yes" : "no")
-                       + "|tr=" + (request.getHeader("trailer").has_value() ? "yes" : "no");
+                       + "|tr=" + (request.getHeader("trailer").has_value() ? "yes" : "no")
+                       + "|tf=" + request.getTrailerField("x-trailer-only").value_or("-")
+                       + "|tcl=" + (request.getTrailerField("content-length").has_value() ? "yes" : "no");
             };
 
             router.postStreaming("/upload-trailer", [report](HttpRequest &request, HttpResponse &response) -> Core::Task<>
@@ -286,14 +289,15 @@ namespace AsynGyanis::Net
                      "8\r\nabcdefgh\r\n0\r\nContent-Length: 999\r\nX-Trailer-Only: smuggled\r\n\r\n";
         };
 
-        // 正文恰好是那 8 字节（trailer 段一段都不算进来），且只有真头部可读
+        // 正文恰好是那 8 字节（trailer 段一段都不算进来）；头部只有真头部，尾部字段从 trailer 档读到
+        const std::string expectedReport{"bytes=8|cl=no|xt=no|tr=yes|tf=smuggled|tcl=no"};
         ASSERT_TRUE(client.sendText(makeTrailerRequest("/upload-trailer"), kWaitTimeout));
         std::string receivedText;
-        ASSERT_TRUE(client.waitForText(receivedText, "stream|bytes=8|cl=no|xt=no|tr=yes", kWaitTimeout))
+        ASSERT_TRUE(client.waitForText(receivedText, "stream|" + expectedReport, kWaitTimeout))
                 << "流式派发上的 trailer 请求读回来的是：" << receivedText;
 
         ASSERT_TRUE(client.sendText(makeTrailerRequest("/upload-trailer-plain"), kWaitTimeout));
-        ASSERT_TRUE(client.waitForText(receivedText, "plain|bytes=8|cl=no|xt=no|tr=yes", kWaitTimeout))
+        ASSERT_TRUE(client.waitForText(receivedText, "plain|" + expectedReport, kWaitTimeout))
                 << "普通派发上的 trailer 请求读回来的是：" << receivedText;
     }
 

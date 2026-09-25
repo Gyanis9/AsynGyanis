@@ -105,6 +105,25 @@ namespace AsynGyanis::Net
         m_headerStore.append(key, value);
     }
 
+    void HttpRequest::addTrailerField(const std::string_view name, const std::string_view value)
+    {
+        // 第一条 trailer 才把存储建出来：不带尾部的请求（绝大多数）一次分配也不付
+        if (!m_trailerStore.has_value())
+        {
+            m_trailerStore.emplace();
+        }
+        m_trailerStore->append(name, value);
+    }
+
+    std::optional<std::string> HttpRequest::getTrailerField(const std::string_view name) const
+    {
+        if (!m_trailerStore.has_value())
+        {
+            return std::nullopt;
+        }
+        return m_trailerStore->get(name);
+    }
+
     bool HttpRequest::setHeader(const std::string_view key, const std::string_view value)
     {
         // 判据与 HttpResponse::setHeader 同一张表、同一条口径：名与值不合法就拒写且不动任何已有状态。
@@ -367,6 +386,10 @@ namespace AsynGyanis::Net
         // request-id 必须跟着清：它是上一条报文的身份，留着会让下一条报文冒用别人的标识
         m_requestId.clear();
         m_params.clear();
+
+        // trailer 那一档整份撤走而不是清空：hasTrailerFields() 读的就是「有没有这一档」，
+        // 留一份空存储会让下一条请求谎称自己带过尾部字段
+        m_trailerStore.reset();
 
         // 取消源：只有**被触发过**才重建。触发过的源会让下一条请求一进来就是「已取消」，
         // 必须换掉；没触发过的直接沿用，省掉每请求一次停止状态的分配。

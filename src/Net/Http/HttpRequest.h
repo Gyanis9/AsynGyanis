@@ -13,6 +13,7 @@
 #include "Net/Http/HttpMethod.h"
 
 #include <cstddef>
+#include <concepts>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -114,6 +115,46 @@ namespace AsynGyanis::Net
          * @see headerValues(), headers()
          */
         void addHeader(std::string_view key, std::string_view value);
+
+        /**
+         * @brief 追加一条 trailer 字段（RFC 9112 §7.1 分块正文之后的尾部头字段）
+         * @details 与 addHeader **分开存**：把 trailer 并进头部等于给同一个字段造出两个解释位置
+         *          （`content-length` 这类定界字段尤其危险，收端读哪一份都可能被对端利用）。
+         *          解析侧只把「不定义报文边界、也不是连接级」的字段交进来，见 HttpParser 的 trailer 段
+         * @param name 字段名，大小写不敏感（入库转小写）
+         * @param value 字段值，原样保存
+         */
+        void addTrailerField(std::string_view name, std::string_view value);
+
+        /**
+         * @brief 取一条 trailer 字段的值
+         * @param name 字段名，大小写不敏感
+         * @return 命中时返回该名字的取值（同名多条按 addHeader 的同一口径合并）；未命中返回空 optional
+         */
+        [[nodiscard]] std::optional<std::string> getTrailerField(std::string_view name) const;
+
+        /// 本条请求是否带有可交付的 trailer 字段（被解析侧按规则丢弃的那些不算，见 HttpParser）
+        [[nodiscard]] bool hasTrailerFields() const noexcept
+        {
+            return m_trailerStore.has_value();
+        }
+
+        /**
+         * @brief 按线上到达顺序遍历全部 trailer 字段（权威记录）
+         * @details 只给遍历而不给存储引用：没有 trailer 时那份存储根本不存在，而返回引用就要为
+         *          「空的那一份」造一个全局对象——遍历是这里唯一真实的用法。
+         * @param visitor 形如 `void (std::string_view name, std::string_view value)` 的可调用体；
+         *                名字已折小写，视图只在本次回调内有效
+         */
+        template <typename Visitor>
+            requires std::invocable<Visitor, std::string_view, std::string_view>
+        void forEachTrailerField(const Visitor &visitor) const
+        {
+            if (m_trailerStore.has_value())
+            {
+                m_trailerStore->forEachField(visitor);
+            }
+        }
 
         /**
          * @brief 覆盖或新增一条请求头部（与 HttpResponse::setHeader 同一口径）
@@ -384,6 +425,10 @@ namespace AsynGyanis::Net
         std::string m_uri;                                         ///< 原始 URI，含查询串
         std::string m_httpVersion;                                 ///< HTTP 版本原文
         HttpHeaderFieldStore m_headerStore;                        ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
+        /// trailer 字段的存储：与头部同一套存储与查找语义，但单独一档，永不与头部互相覆盖。
+        /// 按需创建——绝大多数请求不带 trailer，而一份 HttpHeaderFieldStore 在 MSVC 上光是构造
+        /// 就要两次堆分配（内部那张单值视图的哈希表），直接当成员会把这两个字节成本摊给每条请求
+        std::optional<HttpHeaderFieldStore> m_trailerStore;
         std::string m_body;                                        ///< 消息正文
         HttpRequestBody *m_bodyStream{nullptr};                    ///< 正文流（按连接装配，见 bodyStream()；不随 reset() 清除）
         std::string m_requestId;                                   ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）

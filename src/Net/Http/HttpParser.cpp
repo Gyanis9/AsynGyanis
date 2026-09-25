@@ -803,9 +803,24 @@ namespace AsynGyanis::Net
 
         std::string_view trailerName;
         std::string_view trailerValue;
-        // 语法与各项上限照头部行判，但解析结果有意丢弃：trailer 里出现 content-length 之类会与
-        // 已解析头部形成两种解释，上层读到哪个都可能被对端利用（请求走私面）
-        return parseFieldLine(line, "trailer 头部", trailerName, trailerValue);
+        // 语法与各项上限照头部行判（条数与总长两道闸由 parseFieldLine 统一记账）
+        if (!parseFieldLine(line, "trailer 头部", trailerName, trailerValue))
+        {
+            return false;
+        }
+
+        // 只有「不定义报文边界、也不是连接级」的字段才交给上层。RFC 9112 §7.1.1.1 本就禁止尾部
+        // 带这几个字段，但禁归禁，收端仍要自己守住：trailer 里的 content-length / transfer-encoding
+        // 一旦被读成头部，同一份报文就有了两个长度解释（请求走私面）。名字先折小写再比对，
+        // 因为对端写「Content-Length」与「content-length」是同一个字段
+        std::string normalizedName = HttpHeaderFieldStore::toCanonicalHeaderName(trailerName);
+        if (normalizedName == "content-length" || isConnectionSpecificHeaderName(normalizedName))
+        {
+            return true;
+        }
+
+        m_trailerFields.emplace_back(std::move(normalizedName), std::string(trailerValue));
+        return true;
     }
 
     bool HttpParser::parseContentLength(const std::string_view value)
@@ -928,6 +943,13 @@ namespace AsynGyanis::Net
         }
         m_currentRequest.adoptStagedBody(m_body);
 
+        // trailer 字段在最后那个空行之前全部到齐，此刻一次性交给请求对象：它们进的是请求的
+        // **另一档**存储（见 HttpRequest::addTrailerField），不会与头部互相覆盖
+        for (const auto &[name, value]: m_trailerFields)
+        {
+            m_currentRequest.addTrailerField(name, value);
+        }
+
         // 暂存清回初态供下一条报文复用：clear 保留容量，因此稳态下不再为它们分配内存
         clearMessageScratch();
     }
@@ -959,6 +981,10 @@ namespace AsynGyanis::Net
         m_httpVersion.clear();
         m_headerStaging.clear();
         m_body.clear();
+
+        // trailer 与头部同为「本条报文的一次性暂存」：commitMessage 已把它们复制进请求对象，
+        // 残留会让下一条报文带上上一条的尾部字段（clear 保留容量，稳态下不额外分配）
+        m_trailerFields.clear();
 
         m_contentLength      = 0;
         m_receivedBodyLength = 0;

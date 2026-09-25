@@ -17,6 +17,19 @@
 
 ### 新增
 
+- **分块请求的 trailer 字段现在会交给业务**：`HttpRequest` 多出一档独立的 trailer 存储——
+  `getTrailerField()` 按名取值、`hasTrailerFields()` 判有无、`forEachTrailerField()` 按线上到达顺序遍历。
+  此前 `HttpParser` 把尾部字段校验完语法与上限就整份丢弃（当时的理由是「trailer 里的 `Content-Length`
+  会与已解析头部形成两种长度解释」），业务因此永远拿不到校验和、尾随状态这类只可能在正文之后出现的值。
+  现在只有真正危险的那几个字段仍然丢弃：`Content-Length`、`Transfer-Encoding` 与其余连接级字段
+  （`Connection` / `Keep-Alive` / `Proxy-Connection` / `Upgrade`，RFC 9112 §7.1.1.1 本就禁止出现在尾部），
+  其余原样上交，且**永不并入请求头部**——两档各自可读，头部视图里不会出现尾部字段。
+  条数与总长两道上限照旧管住尾部（`HttpParserLimits::maximumHeaderCount` 的口径本来就是「trailer 头部同样计入」）。
+  RFC 9110 §6.5.1 允许收端忽略「`Trailer:` 声明头未列出」的尾部字段，本实现不采用那条放宽：声明头缺失
+  在真实客户端里很常见，据此丢字段等于让业务拿不到数据，而这些字段本就进不了头部、影响不到报文边界。
+  这档存储按需创建，不带尾部的请求一次额外分配也不付（每请求分配台账的读数因此不变）。
+  HTTP/2 与 HTTP/3 的入站尾部字段目前仍按旧处置丢弃，出站响应也还不能写 trailer——那是下一步的事。
+
 - **协议解码器的持续模糊接进流水线**：`linux-ci.yml` 多一条 `protocol-fuzz` 作业，每次推送用 libFuzzer
   向四类解码器（WebSocket 帧、HTTP/2 帧与 HPACK、HTTP/3 帧、QUIC 变长整数）喂 300 秒随机字节，
   崩溃样本作为工件取出，搬进 `tests/Net/Fuzz/TestProtocolFuzz.cpp` 的种子用例即可常驻。此前这条只能

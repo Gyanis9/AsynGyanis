@@ -27,7 +27,7 @@ namespace AsynGyanis::Net
      *
      * @details 按「请求行 → 头部块 → 正文」三段推进，请求行与头部行都按 token 规则严格校验。正文由
      *          Content-Length 或 Transfer-Encoding: chunked 定界：分块按 RFC 9112 §7.1 增量解码，
-     *          trailer 段只校验语法与上限、不并入请求头部；两者都没有的报文在头部块结束时即完成。
+     *          trailer 段单独收进请求的 trailer 一档（不并入头部）；两者都没有的报文在头部块结束时即完成。
      *          任何字节边界都能切开续上，解析结果只在报文收齐那一刻整体搬进 request()。
      *
      * @warning 所有资源上限都是 DoS 防护：任何一项超限都会以 Error 结束本次解析，并用
@@ -321,9 +321,13 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool parseChunkSizeLine(std::string_view line);
 
         /**
-         * @brief 校验一条 trailer 行并按需收尾整条报文
-         * @details 语法与上限同头部行；内容有意不并入请求头部，避免 trailer 里的 content-length
-         *          之类与已解析头部形成两种解释（请求走私面），RFC 9112 §7.1.2 允许收端忽略 trailer。
+         * @brief 校验一条 trailer 行、按需收下该字段，并在尾部空行收尾整条报文
+         * @details 语法与各项上限同头部行（条数与总长两道闸一并计入 trailer）。内容不并入请求头部，
+         *          而是移交给 HttpRequest::addTrailerField：定界字段（Content-Length、
+         *          Transfer-Encoding）与连接级字段在此丢弃，其余原样上交，避免同一份报文有两个
+         *          长度解释（请求走私面）。RFC 9110 §6.5.1 允许收端忽略「Trailer 头部未声明」的尾部
+         *          字段，本实现不采用那条放宽：声明头缺失在真实客户端里很常见，据此丢字段等于让业务
+         *          拿不到数据，而这些字段本就进不了头部、影响不到报文边界。
          * @param line 去掉 CRLF 的 trailer 行；空行表示 trailer 段结束、报文收齐
          * @return true 合法
          */
@@ -384,6 +388,9 @@ namespace AsynGyanis::Net
         std::string               m_body;                        ///< 已收正文
 
         std::string m_pendingLine; ///< 尚未等到 CRLF 的半行（可能跨多次 parse()）
+        /// 本条报文收到的 trailer 字段，按线上到达顺序攒着，等尾部空行（报文收齐）一次交给请求对象。
+        /// 攒在这里而不是直接写进请求：定界类与连接级的名字要在这一步之前筛掉
+        std::vector<std::pair<std::string, std::string>> m_trailerFields;
 
         /// 半行暂存是否已作为视图交出去（交出去的视图用完之前不能清，收回之前不能拼）
         bool m_isPendingLineHandedOut{false};
