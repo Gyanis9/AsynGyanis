@@ -1,0 +1,24 @@
+AsynGyanis 导出的是带命名空间的 CMake 包配置，五个模块各是一个目标：
+
+    find_package(AsynGyanis REQUIRED)                      # 全部五个模块
+    find_package(AsynGyanis COMPONENTS Net REQUIRED)       # 只要 Net：自动带出 Core/Base/Platform
+                                                           # 以及它们的外部依赖（OpenSSL/zlib/zstd/brotli）
+
+    add_executable(main main.cpp)
+    target_link_libraries(main PRIVATE AsynGyanis::Net)
+    target_compile_features(main PRIVATE cxx_std_23)       # 头文件本身是 C++23 的
+
+链接 AsynGyanis::<模块> 即已把头文件搜索路径与外部依赖一并带出，不必再手写
+target_include_directories，也不必自己找 OpenSSL/zlib——那些是包的责任。
+
+包含路径按仓库内的相对形状写，例如：
+
+    #include "Net/Http/HttpClient.h"        // 出站客户端：连接池 + ALPN 协商 h2
+    #include "Net/Http2/Http2ClientConnection.h"
+    #include "Core/EventLoop/EventLoop.h"
+
+两点与消费方式有关的现状：
+- MySQL 驱动不在包里：vcpkg 侧没有对应的端口，链接 Database 模块后连 MySQL 的入口会返回
+  一条中文的「未编译该驱动」错误，而不是静默不可用。Redis 与 SQLite 是齐的。
+- 想要 io_uring 事件后端或 mimalloc 分配器，安装时加特征：
+  vcpkg install "asyn-gyanis[io-uring,mimalloc]:x64-linux"

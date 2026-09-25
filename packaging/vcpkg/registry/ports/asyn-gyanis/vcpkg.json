@@ -1,0 +1,35 @@
+{
+  "name": "asyn-gyanis",
+  "version": "1.1.0",
+  "description": "工业级 C++23 异步服务器框架：事件循环 + HTTP/1.1、HTTP/2、HTTP/3(QUIC)、WebSocket 与数据库/缓存客户端",
+  "homepage": "https://github.com/Gyanis9/AsynGyanis",
+  "dependencies": [
+    "brotli",
+    "hiredis",
+    "nlohmann-json",
+    "openssl",
+    "sqlite3",
+    "vcpkg-cmake",
+    "vcpkg-cmake-config",
+    "yaml-cpp",
+    "zlib",
+    "zstd"
+  ],
+  "features": {
+    "mimalloc": {
+      "description": "把 mimalloc 链成全局分配器（生产构建用；与 sanitizer 互斥）",
+      "dependencies": [
+        "mimalloc"
+      ]
+    },
+    "io-uring": {
+      "description": "Linux 事件后端改用 io_uring（需要内核 5.6+；Windows 无效）",
+      "dependencies": [
+        {
+          "name": "liburing",
+          "platform": "linux"
+        }
+      ]
+    }
+  }
+}

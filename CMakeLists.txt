@@ -24,6 +24,10 @@ endif()
 # 各模块用 CMAKE_INSTALL_INCLUDEDIR 描述安装后的头文件根目录，故在子目录之前引入
 include(GNUInstallDirs)
 
+# 本目录里的 Find*.cmake 是给依赖导出名不统一的那些库兜底的（见 cmake/Findbrotli.cmake），
+# 放在子目录之前引入：模块的 find_package 调用发生在 add_subdirectory 里
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
+
 # MSVC: 强制 UTF-8 源码编码，解决中文注释和字符串在 GBK 环境下编译失败的问题
 if(MSVC)
     add_compile_options(/utf-8)
@@ -367,6 +371,9 @@ if(ASYN_ENABLE_INSTALL)
     install(FILES
             ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfig.cmake
             ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfigVersion.cmake
+            # 依赖导出名的兜底模块要跟包配置同目录：消费方的 find_dependency(brotli) 在没有
+            # brotli 配置可找时退到它（见 cmake/Findbrotli.cmake）
+            ${CMAKE_CURRENT_LIST_DIR}/cmake/Findbrotli.cmake
             DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AsynGyanis
     )
 endif()

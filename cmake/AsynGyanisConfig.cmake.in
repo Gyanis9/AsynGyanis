@@ -2,6 +2,11 @@
 
 include(CMakeFindDependencyMacro)
 
+# 依赖导出名的兜底模块与本文件同目录装出来（cmake/Findbrotli.cmake）：少了这一行，用 vcpkg 的
+# 消费方会在 find_dependency(brotli) 上失败——vcpkg 的 brotli 端口导出的包名不是 brotli。
+# 真正的 brotli 配置在时这条模块路径根本不会被走到（配置优先）。
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
+
 # 五个模块都是静态库，接口里留着外部依赖的目标名（OpenSSL::SSL、ZLIB::ZLIB 等），
 # 这里带出**被请求组件及其传递依赖组件**真正需要的那些：只要 Base 的消费方不必去找 OpenSSL。
 # 每个组件的外部依赖清单由各模块 configure 期按组件登记（见顶层 CMakeLists 的组件依赖图），

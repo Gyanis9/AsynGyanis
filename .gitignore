@@ -11,3 +11,8 @@ __pycache__/
 # scripts/fuzz-net.sh 的产物：clang-cl 编出的目标文件、模糊可执行体与撞出来的样本
 # （样本要人工判读后搬进 gtest 用例常驻，不该以「一堆没看过的 crash 文件」的形式留在树里）
 /.fuzz/
+
+# vcpkg 清单模式在仓库根装出来的依赖树与缓存是本机产物（路径里带着本机 vcpkg 根目录），
+# 不该进仓库；消费方冒烟测试的构建目录同理
+/vcpkg_installed/
+/packaging/vcpkg/smoke/build/
