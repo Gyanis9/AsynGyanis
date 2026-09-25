@@ -433,7 +433,7 @@ namespace AsynGyanis::Net
          * @details 先读后关是关键：不读就关会把已发出去的字节连着 RST 一起丢掉，那一支应当判成
          *          「没发出去、可以重来」，就测不到「发出去了但没人答」这一位了。
          */
-        Core::Task<void> runSilentClosingPeer(Core::EventLoop &loop, TcpStream peer)
+        Core::Task<void> runSilentClosingPeer(TcpStream peer)
         {
             Http2FrameDecoder decoder;
             std::array<char, 24> preface{};
@@ -1201,7 +1201,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
         SentFlagRunOutcome outcome;
-        auto peerWork = runSilentClosingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
+        auto peerWork = runSilentClosingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
         auto clientWork = runSentFlagClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
