@@ -1,4 +1,5 @@
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/Client/HttpContentCoding.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http/Client/RequestDeadlineGuard.h"
 #include "Net/Http2/Http2ClientConnection.h"
@@ -417,6 +418,11 @@ namespace AsynGyanis::Net
             {
                 text += field.first; text += ": "; text += field.second; text += "\r\n";
             }
+            // 代为声明本端真能解回来的编码：调用方自己写过 accept-encoding 就整个不管正文（同 h2 那一支）
+            if (shouldAdvertiseAcceptEncoding(request.headers))
+            {
+                text += "Accept-Encoding: "; text += kOutboundAcceptEncodingValue; text += "\r\n";
+            }
             if (!request.body.empty())
             {
                 if (!request.contentType.empty())
@@ -762,6 +768,11 @@ namespace AsynGyanis::Net
                                });
                 extraHeaders.emplace_back(std::move(foldedName), field.second);
             }
+            // 与 h1 那一支同一条判据：代加声明才透明解压，两边问的是同一个函数（见 HttpContentCoding）
+            if (shouldAdvertiseAcceptEncoding(request.headers))
+            {
+                extraHeaders.emplace_back("accept-encoding", std::string(kOutboundAcceptEncodingValue));
+            }
             // 主机文本与协议名都要先落到具名对象上：co_await 挂起期间 string_view 指着的临时串会先析构
             const std::string authority = authorityText(u);
             const std::string_view scheme = u.scheme == "https" ? "https" : "http";
@@ -942,6 +953,11 @@ namespace AsynGyanis::Net
             co_return std::unexpected(failureReason.empty() ? "请求失败：没拿到响应，也没有记下原因（目标 " + std::string(url) + "）"
                                                             : std::move(failureReason));
         }
+        // 解压放在这里：两条承载（h1 与 h2）的响应都汇到这一处，代加声明与解回来的判据只写一遍
+        if (!applyContentEncoding(request, *response, failureReason))
+        {
+            co_return std::unexpected(std::move(failureReason));
+        }
         co_return std::move(*response);
     }
 
@@ -1011,6 +1027,11 @@ namespace AsynGyanis::Net
         std::unique_ptr<HttpClientResponse> response = co_await performRequest(
                 *m_loop, request, parsed, requestTimeout, &m_pool, failureReason);
         if (!response)
+        {
+            LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);
+            co_return nullptr;
+        }
+        if (!applyContentEncoding(request, *response, failureReason))
         {
             LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);
             co_return nullptr;

@@ -58,6 +58,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpResponseParser.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClient.h
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClient.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpContentCoding.h
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpContentCoding.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpOutboundConnectionPool.h
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpOutboundConnectionPool.cpp
 )

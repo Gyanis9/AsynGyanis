@@ -17,6 +17,21 @@
 
 ### 新增
 
+- **出站客户端会透明解压响应正文**：`HttpClient` 现在替调用方声明 `Accept-Encoding: gzip, deflate`，
+  并按响应的 `Content-Encoding` 把正文解回来，解完把 `content-encoding` 与 `content-length` 两条头部
+  一起删掉——前者已兑现，后者的长度描述的是压缩前的字节。口径对齐 Go 标准库：**调用方自己写过
+  `Accept-Encoding` 时本端完全不管正文**（既不代加声明也不解），gRPC/对象存储那类要拿原始字节做校验的
+  用法因此不受影响。`identity` 与没有编码的响应原样交回；HEAD/204/304 这类空正文也不报错。
+  解不了的一律判这次请求失败而不是交回原样字节：交回压缩字节的形状是「200、长度也对、内容是乱码」，
+  比一个错误难查一个量级——对端发来本端没请求的编码（`br`）、链式编码、被截断或解坏的流都属这一类。
+  解压有硬上界（默认 64 MiB，`inflateHttpBody` 那层还有一道按次调用可传的上界）：deflate 的压缩比
+  能上千倍，不设界等于让对端用几百字节撑爆本端内存；到界即失败，不交回前 N 字节。
+  两条承载（HTTP/1.1 与连接池里的 HTTP/2）都走这同一处收尾。
+  解码函数是本层新增的 `inflateHttpBody`（`Net/Http/Gzip.h`）：gzip 容器与 zlib 流两种头都认
+  （建流用 windowBits=15+32；只写 +16 会静默拒收 `Content-Encoding: deflate` 的规范形状）。
+  它没有进 `scripts/fuzz-net.sh` 的模糊清单——那要求 /MT 的 zlib，而本仓 Conan 侧只有 /MD 的；
+  缓冲算术由用例钉住（上界、截断、垃圾字节各一条）。
+
 - **分块请求的 trailer 字段现在会交给业务**：`HttpRequest` 多出一档独立的 trailer 存储——
   `getTrailerField()` 按名取值、`hasTrailerFields()` 判有无、`forEachTrailerField()` 按线上到达顺序遍历。
   此前 `HttpParser` 把尾部字段校验完语法与上限就整份丢弃（当时的理由是「trailer 里的 `Content-Length`

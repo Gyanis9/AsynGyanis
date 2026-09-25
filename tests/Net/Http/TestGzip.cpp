@@ -150,4 +150,92 @@ namespace AsynGyanis::Net
         EXPECT_LT(compressed->size(), repetitive.size() / 10) << "重复内容几乎没压下去，压缩链路可能没生效";
         EXPECT_EQ(*gunzip(*compressed), repetitive);
     }
+
+    // ============================================================================
+    // inflateHttpBody：出站方向解对端发来的压缩正文
+    // ============================================================================
+
+    /**
+     * @brief 自己压的自己解得回来，而且能一次调用连用多轮（流是复用的）
+     * @details 复用流最容易错的是「第二条解出第一条的尾巴」：连解三次，逐次比对原文。
+     */
+    TEST(GzipInflate, RoundTripsRepeatedlyOnTheReusedStream)
+    {
+        for (const std::string_view text: {std::string_view{"hello decompressed world"}, std::string_view{"second payload"},
+                                           std::string_view{"third"}})
+        {
+            const std::optional<std::string> compressed = gzipCompress(text);
+            ASSERT_TRUE(compressed.has_value());
+            const auto restored = inflateHttpBody(*compressed);
+            ASSERT_TRUE(restored.has_value()) << restored.error();
+            EXPECT_EQ(*restored, text);
+        }
+    }
+
+    /**
+     * @brief 认 zlib 流的头（RFC 1950）：`Content-Encoding: deflate` 的规范形状
+     * @details 建流用 windowBits=15+16 就是为了让 gzip 与 zlib 两种容器都能解——线上确实有
+     *          标 deflate 发 zlib、标 gzip 发 zlib 的对端。字面量是 `zlib.compress(b'hello
+     * decompressed world')` 的产物。
+     */
+    TEST(GzipInflate, AcceptsZlibStreamHeaderToo)
+    {
+        // Python `zlib.compress(b"hello decompressed world")` 的产物，逐字节按十进制写死：
+        // 头两字节 0x78 0x9c 就是 zlib 头（RFC 1950），不是 gzip 的 0x1f 0x8b
+        const std::string zlibStream{static_cast<char>(120), static_cast<char>(156), static_cast<char>(203),
+                                     static_cast<char>(72),  static_cast<char>(205), static_cast<char>(201),
+                                     static_cast<char>(201), static_cast<char>(87),  static_cast<char>(72),
+                                     static_cast<char>(73),  static_cast<char>(77),  static_cast<char>(206),
+                                     static_cast<char>(207), static_cast<char>(45),  static_cast<char>(40),
+                                     static_cast<char>(74),  static_cast<char>(45),  static_cast<char>(46),
+                                     static_cast<char>(78),  static_cast<char>(77),  static_cast<char>(81),
+                                     static_cast<char>(40),  static_cast<char>(207), static_cast<char>(47),
+                                     static_cast<char>(202), static_cast<char>(73),  static_cast<char>(1),
+                                     static_cast<char>(0),  static_cast<char>(117), static_cast<char>(172),
+                                     static_cast<char>(9),  static_cast<char>(123)};
+
+        const auto restored = inflateHttpBody(zlibStream);
+        ASSERT_TRUE(restored.has_value()) << restored.error();
+        EXPECT_EQ(*restored, "hello decompressed world");
+    }
+
+    /**
+     * @brief 三类坏输入必须报错而不是交回半截正文：空输入、垃圾字节、被截断的流
+     * @details 交回「已解出的那部分」看着像成功，业务却拿到一份少了尾巴的数据——这类静默少读
+     *          比抛错难查一个量级。
+     */
+    TEST(GzipInflate, RejectsBadInputInsteadOfHandingBackAPartialBody)
+    {
+        const auto empty = inflateHttpBody({});
+        ASSERT_FALSE(empty.has_value());
+        EXPECT_NE(empty.error().find("为空"), std::string::npos) << empty.error();
+
+        const auto garbage = inflateHttpBody("这不是压缩流");
+        ASSERT_FALSE(garbage.has_value());
+
+        const std::optional<std::string> compressed = gzipCompress(std::string_view{"a rather long payload to truncate"});
+        ASSERT_TRUE(compressed.has_value());
+        const auto truncated = inflateHttpBody(compressed->substr(0, compressed->size() - 3));
+        ASSERT_FALSE(truncated.has_value()) << "被截断的流必须报错，实际交回了 "
+                                            << (truncated.has_value() ? truncated->size() : 0) << " 字节";
+    }
+
+    /**
+     * @brief 解出来的长度越界时判失败：这是 zip 炸弹的唯一防线
+     */
+    TEST(GzipInflate, FailsWhenOutputExceedsTheLimit)
+    {
+        const std::string repetitive(256 * 1024, 'A');
+        const std::optional<std::string> compressed = gzipCompress(repetitive);
+        ASSERT_TRUE(compressed.has_value());
+
+        const auto overLimit = inflateHttpBody(*compressed, 4096U);
+        ASSERT_FALSE(overLimit.has_value());
+        EXPECT_NE(overLimit.error().find("4096"), std::string::npos) << overLimit.error();
+
+        // 同一份输入，上界给够就能解：证明上一条的失败来自界限而不是数据
+        const auto withinLimit = inflateHttpBody(*compressed, repetitive.size());
+        ASSERT_TRUE(withinLimit.has_value()) << withinLimit.error();
+        EXPECT_EQ(withinLimit->size(), repetitive.size());
+    }
 } // namespace AsynGyanis::Net
