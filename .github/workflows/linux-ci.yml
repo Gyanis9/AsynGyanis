@@ -559,7 +559,7 @@ jobs:
 
       - name: 构建 echo_server 与 QUIC 跨实现探针的被测端
         run: |
-          cmake --build build/release --target echo_server quic_probe_server
+          cmake --build build/release --target echo_server quic_probe_server quic_probe_client
 
       - name: HTTP/3 跨实现验收（GET/HEAD/流式/大正文/压缩/WebSocket 隧道）
         run: ASYN_H3_CROSS_LOG=/tmp/echo-h3.log bash scripts/h3_cross_check.sh build/release "$(command -v python3)"
@@ -568,6 +568,12 @@ jobs:
       # 判据由独立实现的解析器给出（同树互测暴露不出共享的误解，还会跟着被测代码一起被改松）。
       - name: QUIC 跨实现验收（握手、ALPN、流收尾、drain、限额、恢复）
         run: bash scripts/quic_cross_check.sh build/release "$(command -v python3)"
+
+      # 出站方向同一套道理，方向相反：对端换成 aioquic 起的服务端。这一条不是重复覆盖——
+      # 「客户端要把回包目的标识换成服务端自报的那个」（RFC 9000 §7.2）在自家两型互测里测不出来
+      # （自家服务端同时认得客户端自造的标识），只有独立实现会因为打错标识而不应答。
+      - name: QUIC 出站跨实现验收（握手、ALPN、双向流的回显）
+        run: bash scripts/quic_outbound_cross_check.sh build/release "$(command -v python3)"
 
       - name: 失败时上传服务端日志
         if: failure()
