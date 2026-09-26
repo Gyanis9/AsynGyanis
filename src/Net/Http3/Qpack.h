@@ -68,8 +68,8 @@ namespace AsynGyanis::Net
      */
     enum class QpackErrorKind
     {
-        DecompressionFailed, ///< 头块本身解不开：索引越界、引用的项已淘汰、Required Insert Count 不合法、Required Insert Count 超过本端阻塞上限（RFC 9204
-                             ///< §2.2.1、§2.2.3、§4.5、§7.4）
+        DecompressionFailed,  ///< 头块本身解不开：索引越界、引用的项已淘汰、Required Insert Count 不合法、Required Insert Count 超过本端阻塞上限（RFC 9204
+                              ///< §2.2.1、§2.2.3、§4.5、§7.4）
         EncoderStreamError,   ///< 编码器流指令非法：未知指令、动态表项大于容量、引用已淘汰项、容量超过对端上限（RFC 9204 §3.2.2、§3.2.3、§4.3）
         DecoderStreamError,   ///< 解码器流指令非法：重复或无据的 Section Ack、Increment 为 0 或超出本端已发计数（RFC 9204 §4.4.1、§4.4.3）
         FieldSectionTooLarge, ///< 解出的头块超过本端 SETTINGS_MAX_FIELD_SECTION_SIZE：属对端过量负载（RFC 9114 §4.2.2、§10.5.1）
