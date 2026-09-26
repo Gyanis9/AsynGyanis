@@ -249,4 +249,22 @@ namespace AsynGyanis::Net
      * @return false 取值非法（空串、含非数字字符、超出 19 位十进制）
      */
     [[nodiscard]] bool parseContentLengthValue(std::string_view text, std::size_t &length) noexcept;
+
+    /**
+     * @brief 判断内容类型头部是否指向指定的媒体类型
+     *
+     * @details 只看类型本身：`; charset=utf-8` 这类参数不参与判定，媒体类型大小写不敏感
+     *          （RFC 9110 §8.3）。空视图判否——把没标类型的正文当成某种已知格式来解是凭空造数据。
+     *          请求侧的 formFields()/jsonBody()/multipartForm() 与 `MultipartFormData::parse()` 共用，
+     *          两条路对同一份头部给出不同结论时，「服务端认的格式」和「解析器认的格式」会分家。
+     *
+     * @param contentTypeHeader 内容类型头部取值（不含头部名），可为空视图
+     * @param expectedMediaType 期望的媒体类型（小写书写）
+     * @return true 匹配
+     */
+    [[nodiscard]] inline bool contentTypeIs(const std::string_view contentTypeHeader, const std::string_view expectedMediaType) noexcept
+    {
+        const std::size_t parameterPosition = contentTypeHeader.find(';');
+        return equalsIgnoringCase(trimOptionalWhitespace(contentTypeHeader.substr(0, parameterPosition)), expectedMediaType);
+    }
 } // namespace AsynGyanis::Net

@@ -13,6 +13,7 @@
 #include "Net/Http/HttpCookie.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpMethod.h"
+#include "Net/Http/MultipartForm.h"
 
 #include <concepts>
 #include <cstddef>
@@ -400,6 +401,20 @@ namespace AsynGyanis::Net
          * @return std::optional<Base::ConfigValue> 解析结果；不适用或语法错误时为空
          */
         [[nodiscard]] std::optional<Base::ConfigValue> jsonBody() const;
+
+        /**
+         * @brief 把请求正文按 `multipart/form-data` 解析成段序列（RFC 7578）。
+         * @details 上传文件在框架里唯一的表达途径：`formFields()` 按 '&' 切正文，遇到二进制正文
+         *          只会切出一堆垃圾，所以正文类型是 multipart 时走这里。段正文是**指向本请求正文的
+         *          视图**（零拷贝），返回对象的寿命因此不得超过本请求。
+         * @note 媒体类型不是 `multipart/form-data`、缺 content-type、或正文畸形（边界缺失、段没有
+         *       name、缺结束分隔符、带无法还原的传输编码）一律交回空：调用方判空回 400 即可，
+         *       不接异常——外部输入不该靠异常否定一次调用。
+         * @note 流式正文（`bodyStream()` 那一路）不适用：这条只读已经收齐的整份正文。
+         * @return std::optional<MultipartFormData> 解析结果；不适用或格式非法时为空
+         * @see MultipartFormData, formFields()
+         */
+        [[nodiscard]] std::optional<MultipartFormData> multipartForm() const;
 
         /**
          * @brief 设置路由参数（路径中的 ":id" 之类占位符匹配到的值）。

@@ -2,6 +2,7 @@
 
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/MultipartForm.h"
 
 #include <algorithm>
 #include <string_view>
@@ -40,21 +41,16 @@ namespace AsynGyanis::Net
         constexpr std::size_t kPercentEscapeSequenceLength = 3;
 
         /**
-         * @brief 判断内容类型头部是否指向指定的媒体类型
-         * @details 只看类型本身：`; charset=utf-8` 这类参数不参与判定，媒体类型大小写不敏感
-         *          （RFC 9110 §8.3）。缺头部一律判否——把没标类型的正文当成某种已知格式来解是凭空造数据。
-         * @param contentTypeHeader 内容类型头部取值，可为空
+         * @brief 判断请求的内容类型是否是指定的媒体类型
+         * @details 缺头部一律判否（判定规则本身在 `contentTypeIs`，与 `MultipartFormData::parse()` 同源）
+         * @param request 待判请求
          * @param expectedMediaType 期望的媒体类型（小写书写）
-         * @return true 匹配
+         * @return true 带 content-type 且类型匹配
          */
-        [[nodiscard]] bool contentTypeIs(const std::optional<std::string> &contentTypeHeader, const std::string_view expectedMediaType) noexcept
+        [[nodiscard]] bool requestHasMediaType(const HttpRequest &request, const std::string_view expectedMediaType)
         {
-            if (!contentTypeHeader.has_value())
-            {
-                return false;
-            }
-            const std::size_t parameterPosition = contentTypeHeader->find(';');
-            return equalsIgnoringCase(trimOptionalWhitespace(std::string_view(*contentTypeHeader).substr(0, parameterPosition)), expectedMediaType);
+            const std::optional<std::string> contentTypeHeader = request.getHeader("content-type");
+            return contentTypeHeader.has_value() && contentTypeIs(*contentTypeHeader, expectedMediaType);
         }
     } // namespace
 
@@ -402,7 +398,7 @@ namespace AsynGyanis::Net
     {
         // 媒体类型必须真是 application/x-www-form-urlencoded：把 JSON 或二进制正文按 '&' 切开
         // 拼成「参数」是凭空造数据，宁可交回空表
-        if (!contentTypeIs(getHeader("content-type"), "application/x-www-form-urlencoded"))
+        if (!requestHasMediaType(*this, "application/x-www-form-urlencoded"))
         {
             return {};
         }
@@ -411,13 +407,24 @@ namespace AsynGyanis::Net
 
     std::optional<Base::ConfigValue> HttpRequest::jsonBody() const
     {
-        if (!contentTypeIs(getHeader("content-type"), "application/json"))
+        if (!requestHasMediaType(*this, "application/json"))
         {
             return std::nullopt;
         }
         // 正文里的注释不开：HTTP 的 JSON 按 RFC 8259 没有注释这一说，这里宽容一下就会和
         // 配置文件那条路分成两套解析器
         return Base::parseConfigValue(body());
+    }
+
+    std::optional<MultipartFormData> HttpRequest::multipartForm() const
+    {
+        const std::optional<std::string> contentTypeHeader = getHeader("content-type");
+        if (!contentTypeHeader.has_value())
+        {
+            // 没标类型的正文不猜：multipart 的边界写在类型里，缺头部就没有可解析的前提
+            return std::nullopt;
+        }
+        return MultipartFormData::parse(body(), *contentTypeHeader);
     }
 
     void HttpRequest::setParam(std::string key, std::string value)
