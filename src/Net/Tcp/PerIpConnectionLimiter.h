@@ -112,10 +112,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 为某个来源占用一个名额
-         * @param ipKey 来源标识，**只含地址、不含端口**（调用方传 InetAddress::ip()）。带上端口就等于
-         *        按连接计数——每条连接的端口都不同，限额永远碰不到。IPv4 映射写法（`::ffff:a.b.c.d`）会
+         * @param ipKey 来源标识，**只含地址、不含端口**（调用方传 `InetAddress::ip()`）。带上端口就等于
+         *        按连接计数——每条连接的端口都不同，限额永远碰不到。IPv4 映射写法（`::%ffff:a.b.c.d`）会
          *        折成点分十进制本体再记账，使同一来源不管从哪一族监听器进来都落在同一格
-         * @return std::optional<Lease> 成功时返回持有名额的凭据；该来源已达上限时返回空 optional；
+         * @return `std::optional<Lease>` 成功时返回持有名额的凭据；该来源已达上限时返回空 optional；
          *         限额为 0 时返回的是不占名额的空壳凭据
          * @note 返回的凭据必须活得与连接一样久：它一析构，名额就还回去了
          */

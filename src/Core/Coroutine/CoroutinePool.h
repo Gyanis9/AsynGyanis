@@ -99,7 +99,7 @@ namespace AsynGyanis::Core
          * @brief 构造内存池并预分配若干块
          * @warning 必须是进程内唯一实例：每线程缓存 threadCache() 只按线程分，不按池分，
          *          两个池会共用同一条空闲链表——A 池的块可能被 B 池发出，归还时 B 认不出归属
-         *          便转交 ::operator delete，那是把池内块还给通用堆的堆损坏。构造与析构因此留在私有区，
+         *          便转交 ::%operator delete，那是把池内块还给通用堆的堆损坏。构造与析构因此留在私有区，
          *          对外只有 instance()
          * @param blockSize 小档块大小（字节），大档固定取 kLargeBlockSize
          * @param initialBlocks 启动时一次性切分的块数

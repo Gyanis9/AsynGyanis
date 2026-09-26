@@ -176,18 +176,6 @@ namespace AsynGyanis::Net
         void setParserLimits(HttpParserLimits limits);
 
         /**
-         * @brief 设置本服务器的明文连接是否按 HTTP/2（h2c，先验知识）服务。
-         *
-         * @details 打开后本服务器的明文连接一律进入 HTTP/2 会话：对端必须直接发 HTTP/2 连接前奏
-         *          （RFC 9113 §3.4 的先验知识），否则连接层按前奏校验失败回 GOAWAY。**不做前奏嗅探、
-         *          不做已废弃的 HTTP/1.1 Upgrade 流程**，因此打开本开关就等于「这个端口只说 h2」，
-         *          同一端口不再服务 HTTP/1.1。默认关闭，明文连接按 HTTP/1.1 服务。
-         *
-         * @param enabled true 表示明文连接按 h2c 服务
-         * @note 必须在 start() 之前调用：它只影响此后的 createConnection()
-         * @see Http2Session, kHttp2ConnectionPreface
-         */
-        /**
          * @brief 设置 HTTP/2 连接层配置（SETTINGS 通告值与本端各项上限）。
          *
          * @details h2 的限额此前只能从服务端 SETTINGS 里**观测**、改不动：整条链上没有任何入口能把
@@ -210,6 +198,18 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] const Http2ConnectionConfiguration &http2Configuration() const noexcept;
 
+        /**
+         * @brief 设置本服务器的明文连接是否按 HTTP/2（h2c，先验知识）服务。
+         *
+         * @details 打开后本服务器的明文连接一律进入 HTTP/2 会话：对端必须直接发 HTTP/2 连接前奏
+         *          （RFC 9113 §3.4 的先验知识），否则连接层按前奏校验失败回 GOAWAY。**不做前奏嗅探、
+         *          不做已废弃的 HTTP/1.1 Upgrade 流程**，因此打开本开关就等于「这个端口只说 h2」，
+         *          同一端口不再服务 HTTP/1.1。默认关闭，明文连接按 HTTP/1.1 服务。
+         *
+         * @param enabled true 表示明文连接按 h2c 服务
+         * @note 必须在 start() 之前调用：它只影响此后的 createConnection()
+         * @see Http2Session, kHttp2ConnectionPreface
+         */
         void setHttp2CleartextEnabled(bool enabled) noexcept;
 
         /**

@@ -105,7 +105,7 @@ namespace AsynGyanis::Core
 
     private:
         /// 单次 wait() 最多交付的就绪事件数，同时是落地缓冲的固定容量。
-        /// **必须与 Epoll / Iocp 的同名常量同值**：上层（EventLoop::run）按「一批不超过这个数」
+        /// **必须与 Epoll / Iocp 的同名常量同值**：上层（EventLoop::%run）按「一批不超过这个数」
         /// 安排处理预算，三个后端只有一个是特例就等于把这条约定写死在文档里而不成立
         static constexpr int kMaximumEventCount = 1024;
 
