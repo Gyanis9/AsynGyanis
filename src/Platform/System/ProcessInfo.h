@@ -12,6 +12,8 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace AsynGyanis::Platform
 {
@@ -37,6 +39,19 @@ namespace AsynGyanis::Platform
          * @return std::optional<std::string> 变量存在时返回其值，未定义时返回 std::nullopt
          */
         static std::optional<std::string> environmentVariable(const std::string &variableName);
+
+        /**
+         * @brief 枚举名字带指定前缀的环境变量
+         * @details 部署侧要按前缀批量覆盖配置，只能整表扫——让调用方逐个键去猜变量名会把命名规则
+         *          钉死在平台层之外，且每次加键都要改代码。Windows 走 GetEnvironmentStringsW
+         *          （整块以两个连续 NUL 结尾，名字与值之间只在第一个 '=' 处切一次，值里的 '=' 属于值本身；
+         *          首字符即 '=' 的是「某驱动器当前目录」这类内部变量，没有合法名字，直接跳过），
+         *          取回的宽字符统一转成 UTF-8；POSIX 遍历 extern environ。
+         * @param prefix 名字前缀（含分隔符本身，如 "ASYN_"）；空串按「不过滤」处理，返回全部变量
+         * @return std::vector<std::pair<std::string, std::string>> 名字与值的配对；名字保持平台给出的
+         *         原始大小写（转小写这类语义是调用方的规则，不属于本层）
+         */
+        static std::vector<std::pair<std::string, std::string>> environmentVariablesWithPrefix(const std::string &prefix);
 
         /**
          * @brief 取当前进程的进程号

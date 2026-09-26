@@ -16,6 +16,7 @@
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
 #include "BaseTestSupport.h"
+#include "CommonTestSupport.h"
 #include "Platform/FileSystem/FileSystem.h"
 #include "TestHelpers.h"
 
@@ -303,6 +304,10 @@ namespace AsynGyanis::Base
             ConfigManager &configuration = ConfigManager::instance();
             configuration.disableHotReload();
             static_cast<void>(configuration.setSchema(ConfigSchema{}));
+            // 环境变量前缀是单例上的状态：不在这儿清，下一条用例就会带着上一条的前缀跑，
+            // 而它自己那批 ASYN_TESTCFG_* 变量已经被 ScopedEnvironmentVariable 还原掉了——症状是
+            // 「单独跑绿、整批跑红」里最难查的那种
+            configuration.setEnvironmentOverridePrefix(std::string{});
             configuration.clear();
 
             m_temporaryDirectory.reset();
@@ -2963,6 +2968,184 @@ port: 9090
 
         // 取走的是副本：热重载换代快照后，先前那一份仍是当时的取值
         EXPECT_EQ(beforeReload.at("maximum_connections").get<std::int64_t>(), 8);
+        EXPECT_EQ(beforeReload.at("maximum_connections").get<std::int64_t>(), 8);
         EXPECT_EQ(configuration().getSection("server").at("maximum_connections").get<std::int64_t>(), 99);
+    }
+
+    // ============================================================================
+    // 环境变量覆盖
+    // ============================================================================
+
+    /**
+     * @brief 没设前缀时这条通道关着：文件值不动，计数为零
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverridesAreOffUntilPrefixIsSet)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "9090");
+
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_EQ(configuration().getInt("server.port", 0), 8080);
+        EXPECT_EQ(configuration().environmentOverrideCount(), 0U);
+        EXPECT_TRUE(configuration().environmentOverridePrefix().empty());
+    }
+
+    /**
+     * @brief 设了前缀之后环境变量顶掉同一个键，并按文件里已有的类型解释
+     * @details 类型取自文件值：文件写的是整数 8080，env 的 "9090" 就必须落成整数而不是字符串，
+     *          否则 getInt() 那一路会因类型不符退回默认值——覆盖反而把键读没了
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideReplacesFileValueAndKeepsItsType)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n  host: 0.0.0.0\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "9090");
+
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_EQ(configuration().getInt("server.port", 0), 9090);
+        EXPECT_EQ(configuration().getString("server.host"), "0.0.0.0") << "没被覆盖的键跟着变了";
+        EXPECT_EQ(configuration().environmentOverrideCount(), 1U);
+    }
+
+    /**
+     * @brief 键名映射：'__' 是层级分隔符，段内单个下划线原样保留，字母按 ASCII 转小写
+     */
+    TEST_F(ConfigManagerTest, EnvironmentNameMapsToDottedKeyByDoubleUnderscore)
+    {
+        writeFile("cfg.yaml", "kept: true\n");
+        const TestSupport::ScopedEnvironmentVariable inFlightOverride("ASYN_TESTCFG_SERVER__MAX_IN_FLIGHT", "5");
+
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        // 该键既不在文件里也没有 schema 声明，按规则落成字符串（不猜类型）
+        EXPECT_EQ(configuration().getText("server.max_in_flight"), "5");
+        EXPECT_FALSE(configuration().getText("server.max_in_flight", "<无>").empty());
+    }
+
+    /**
+     * @brief 文件里没有该键时，类型从已注册的 schema 声明取
+     * @details schema 必须在加载之前注册，否则提交快照时看不到声明，只能按字符串交出
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideTypeFallsBackToDeclaredSchemaType)
+    {
+        writeFile("cfg.yaml", "kept: true\n");
+        const TestSupport::ScopedEnvironmentVariable ratioOverride("ASYN_TESTCFG_FEATURE__RATIO", "0.25");
+
+        ASSERT_TRUE(configuration().setSchema(ConfigSchema{ConfigSchemaEntry{"feature.ratio", ConfigValueType::number_float, false, std::nullopt, std::nullopt}}));
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_DOUBLE_EQ(configuration().getDouble("feature.ratio", 0.0), 0.25);
+    }
+
+    /**
+     * @brief 布尔项接受 1/0、true/false、yes/no、on/off 这几种常见写法（大小写不敏感）
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideAcceptsCommonBooleanSpellings)
+    {
+        writeFile("cfg.yaml", "server:\n  tls: false\n  verify: true\n");
+        const TestSupport::ScopedEnvironmentVariable tlsOverride("ASYN_TESTCFG_SERVER__TLS", "On");
+        const TestSupport::ScopedEnvironmentVariable verifyOverride("ASYN_TESTCFG_SERVER__VERIFY", "no");
+
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_TRUE(configuration().getBool("server.tls", false));
+        EXPECT_FALSE(configuration().getBool("server.verify", true));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 2U);
+    }
+
+    /**
+     * @brief 任何一条值转换失败，本次一条都不应用
+     * @details 半份覆盖会让「文件 + 部署侧」的组合只剩一半生效，比没有覆盖更难查；
+     *          好的那条留在快照里但计数归零，运维看计数就知道这轮没生效
+     */
+    TEST_F(ConfigManagerTest, MalformedEnvironmentValueSuppressesEveryOverride)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n  tls: false\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "9090");
+        const TestSupport::ScopedEnvironmentVariable tlsOverride("ASYN_TESTCFG_SERVER__TLS", "maybe");
+
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_EQ(configuration().getInt("server.port", 0), 8080) << "一条坏值不该让好值照样生效";
+        EXPECT_FALSE(configuration().getBool("server.tls", true));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 0U);
+    }
+
+    /**
+     * @brief 映射不出合法键的变量名只忽略自己，不连累合法那条
+     * @details 与「坏值整批拒绝」的分别在于：名字畸形意味着这条根本没有目标键，什么也没被推翻；
+     *          值畸形则是明确的一次覆盖失败
+     */
+    TEST_F(ConfigManagerTest, MalformedEnvironmentNameIsIgnoredWithoutTouchingOthers)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable badName("ASYN_TESTCFG___PORT", "9090");
+        const TestSupport::ScopedEnvironmentVariable goodName("ASYN_TESTCFG_SERVER__PORT", "9090");
+
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_EQ(configuration().getInt("server.port", 0), 9090);
+        EXPECT_EQ(configuration().environmentOverrideCount(), 1U);
+    }
+
+    /**
+     * @brief reload 之后覆盖仍然生效：环境变量的优先级不会被一次重载冲掉
+     * @details 覆盖只贴在 commitConfigData 这一处出口，首次加载、reload 与热重载因此共用同一份口径。
+     *          这条用例钉的是「只贴首次」那种写法：改一次文件就把部署侧的值悄悄换回去了
+     */
+    TEST_F(ConfigManagerTest, ReloadKeepsApplyingEnvironmentOverrides)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "9090");
+
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        EXPECT_EQ(configuration().getInt("server.port", 0), 9090);
+
+        writeFile("cfg.yaml", "server:\n  port: 7070\n");
+        ASSERT_TRUE(configuration().reload().success);
+
+        EXPECT_EQ(configuration().getInt("server.port", 0), 9090) << "重载把文件值换了回来，环境变量覆盖却掉了";
+        EXPECT_EQ(configuration().environmentOverrideCount(), 1U);
+    }
+
+    /**
+     * @brief 程序侧 setValue 排在环境变量之后：后写的意图赢
+     */
+    TEST_F(ConfigManagerTest, ProgrammaticSetValueStillWinsAfterEnvironmentOverride)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "9090");
+
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        ASSERT_EQ(configuration().getInt("server.port", 0), 9090);
+
+        EXPECT_TRUE(configuration().setValue("server.port", ConfigValue(7070)));
+        EXPECT_EQ(configuration().getInt("server.port", 0), 7070);
+    }
+
+    /**
+     * @brief 对象与数组项按 JSON 解析，坏 JSON 走整批拒绝
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideParsesStructuredValuesAsJson)
+    {
+        writeFile("cfg.yaml", "server:\n  hosts: [\"first\"]\n");
+        const TestSupport::ScopedEnvironmentVariable hostsOverride("ASYN_TESTCFG_SERVER__HOSTS", R"(["a","b"])");
+
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        const ConfigValue hosts = configuration().get("server.hosts");
+        ASSERT_TRUE(hosts.is_array());
+        ASSERT_EQ(hosts.size(), 2U);
+        EXPECT_EQ(hosts[0].get<std::string>(), "a");
     }
 } // namespace AsynGyanis::Base

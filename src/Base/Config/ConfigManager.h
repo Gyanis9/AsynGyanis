@@ -300,6 +300,39 @@ namespace AsynGyanis::Base
         [[nodiscard]] std::filesystem::path configDirectory() const;
 
         /**
+         * @brief 打开/关闭「环境变量覆盖配置文件」这条通道。
+         * @details 键名映射：剥掉前缀后，`__`（两个连续下划线）是层级分隔符，段内的单个下划线原样保留，
+         *          整段按 ASCII 转小写——`ASYN_SERVER__PORT` 对应配置键 `server.port`。不认识前缀的
+         *          环境变量一概不看。
+         * @details 覆盖发生在每一次快照提交时（首次加载、reload 与热重载走的是同一个出口），所以热重载
+         *          不会把覆盖冲掉；`setValue()` 在这之后写入，仍然以程序侧为准。
+         * @details 类型判定按「文件里该键现有的类型 → schema 声明的类型 → 字符串」三级取值，**不猜类型**：
+         *          既没有文件值也没有 schema 声明时按字符串交出，schema 若声明了别的类型，会由提交后的
+         *          校验出声。整数值接受 `1234`；布尔值接受 `1/0/true/false/yes/no/on/off`（大小写不敏感）；
+         *          对象与数组的值按 JSON 解析（例如 `ASYN_SERVER__HOSTS=["a","b"]`）。
+         *          任何一条转换失败都不应用本次覆盖，错误逐条记日志——不把半份覆盖当成全量提交。
+         * @param prefix 环境变量前缀（含分隔符本身，如 `ASYN_`）；传空串关闭这条通道，默认关闭
+         * @note 覆盖只贴在「提交一份来自配置文件的快照」这一个出口，因此 clear() 不叠加（它的语义是
+         *       「没有配置」），而 setValue() 写在覆盖之后、以程序侧意图为准。
+         * @note 名字畸形（映射不出合法键）的变量只忽略自己并记一条错误；值畸形则判整批不应用——
+         *       前者根本没有目标键，什么也没被推翻，后者是一次明确表达的覆盖意图失败，半份覆盖比
+         *       没有覆盖更难查。
+         */
+        void setEnvironmentOverridePrefix(std::string prefix);
+
+        /**
+         * @brief 取回当前的环境变量覆盖前缀。
+         * @return std::string 前缀；空串表示这条通道关着
+         */
+        [[nodiscard]] std::string environmentOverridePrefix() const;
+
+        /**
+         * @brief 当前快照里有几条配置值来自环境变量覆盖。
+         * @return std::size_t 条数；供运维入口与用例断言读取
+         */
+        [[nodiscard]] std::size_t environmentOverrideCount() const;
+
+        /**
          * @brief 清空所有配置数据。
          */
         void clear();
@@ -333,6 +366,8 @@ namespace AsynGyanis::Base
             std::vector<std::string> loadedFiles;                     ///< 成功加载的配置文件路径列表
             std::filesystem::path    configDirectory;                 ///< 配置目录的路径
             bool                     configDirectoryRecursive = true; ///< 该目录当初是按递归加载的；reload() 与热重载按同一口径重扫，否则键集会在无人改文件时变化
+
+            std::size_t environmentOverrideCount = 0; ///< 这份快照里有几条值来自环境变量覆盖（0 表示通道关着或没有命中）
         };
 
         /**
@@ -354,6 +389,10 @@ namespace AsynGyanis::Base
         std::mutex         m_writeMutex;  ///< 串行化 setValue 的「复制—修改—发布」事务，避免并发写者互相覆盖（读者不受影响）
         mutable std::mutex m_schemaMutex; ///< 保护 m_schema 的互斥锁（const 校验方法也需加锁）
         ConfigSchema       m_schema;      ///< 全局 schema（setSchema 注册，提交快照时自动校验）
+
+        /// 环境变量覆盖的前缀。与热重载回调同一排法：原子共享一份只读快照，读者无锁，
+        /// 因此提交路径（可能在重载线程上跑）不需要为此再加一把锁。空串表示这条通道关着
+        std::atomic<std::shared_ptr<const std::string>> m_environmentPrefix{std::make_shared<const std::string>()};
 
         // 热加载相关
         /// 启停热加载的控制面锁：m_fileWatcher 是普通 unique_ptr，只能由持锁的写者改。
@@ -459,6 +498,17 @@ namespace AsynGyanis::Base
          * @param configDirectoryRecursive 该目录此后重扫时要不要递归，与本次加载的口径一致。
          */
         void commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loadedFiles, const std::filesystem::path &configDirectory, bool configDirectoryRecursive);
+
+        /**
+         * @brief 把带前缀的环境变量叠加到一份待提交的配置字典上。
+         * @details 只在 commitConfigData 里调用：首次加载、reload 与热重载因此共用同一份覆盖口径，
+         *          不存在「哪条路忘了叠加」的分叉。键名映射、类型判定与整批拒绝的规则见
+         *          setEnvironmentOverridePrefix() 的说明。
+         * @param values 待提交的扁平配置字典，就地改写
+         * @return std::size_t 实际应用了几条。有任何一条取值转换失败时返回 0 且 values 不被改动
+         *         （失败的键与原因已逐条记入错误日志）
+         */
+        [[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values) const;
 
         /**
          * @brief 对指定配置字典执行已注册 schema 的校验并记录错误日志。

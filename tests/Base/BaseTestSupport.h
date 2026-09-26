@@ -19,6 +19,8 @@ namespace AsynGyanis::Base::TestSupport
     using AsynGyanis::TestSupport::hasResolvedStackTraceFrames;
     using AsynGyanis::TestSupport::kWaitTimeout;
     using AsynGyanis::TestSupport::makeLocalMoment;
+    using AsynGyanis::TestSupport::readEnvironmentVariable;
+    using AsynGyanis::TestSupport::ScopedEnvironmentVariable;
     using AsynGyanis::TestSupport::ScopedStreamRedirect;
     using AsynGyanis::TestSupport::TemporaryDirectory;
     using AsynGyanis::TestSupport::waitForCondition;

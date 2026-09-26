@@ -1,12 +1,17 @@
 #include "Platform/System/ProcessInfo.h"
 #include "Platform/Platform.h"
+#include "Platform/System/TextEncoding.h"
 
 #include <cstdlib>
+#include <string_view>
 #include <vector>
 
 // 非 Windows 的平台都从 unistd.h 取 getpid/readlink（不止 Linux 用得到这两个）
 #if !ASYN_PLATFORM_WIN32
 #include <unistd.h>
+// environ 在 glibc 与 BSD 上都由 unistd.h 给出声明，这里再声明一次是为了不依赖各家的特性宏组合：
+// 少了它，整表枚举会在没开 _GNU_SOURCE 的构建里编不过
+extern "C" char **environ;
 #endif
 
 namespace AsynGyanis::Platform
@@ -58,6 +63,63 @@ namespace AsynGyanis::Platform
         }
         return std::string(rawValue);
 #endif
+    }
+
+    std::vector<std::pair<std::string, std::string>> ProcessInfo::environmentVariablesWithPrefix(const std::string &prefix)
+    {
+        std::vector<std::pair<std::string, std::string>> matches;
+#if ASYN_PLATFORM_WIN32
+        // 整块的宽字符环境变量串以两个连续 NUL 收尾，逐条切；取不到块就交出一份空清单，
+        // 调用方按「没有一条覆盖」处理，不该把「拿不到环境」伪装成「环境里没有」。
+        // 指针不带 const：释放它的那条 API 要的是 LPWCH（同一块内存进出，本层不改它）
+        wchar_t *block = ::GetEnvironmentStringsW();
+        if (block == nullptr)
+        {
+            return matches;
+        }
+        std::size_t offset = 0;
+        while (true)
+        {
+            const std::wstring_view entry(block + offset);
+            if (entry.empty())
+            {
+                break;
+            }
+            offset += entry.size() + 1;
+
+            // 名字与值只在第一个 '=' 处切：值里再出现的 '=' 属于值本身。首字符就是 '=' 的那些
+            // 是「某驱动器当前目录」这类内部条目，没有可匹配的名字，跳过
+            const std::size_t separator = entry.find(L'=');
+            if (separator == std::wstring_view::npos || separator == 0)
+            {
+                continue;
+            }
+            std::string name = TextEncoding::toUtf8String(std::wstring(entry.substr(0, separator)));
+            if (!prefix.empty() && !name.starts_with(prefix))
+            {
+                continue;
+            }
+            matches.emplace_back(std::move(name), TextEncoding::toUtf8String(std::wstring(entry.substr(separator + 1))));
+        }
+        static_cast<void>(::FreeEnvironmentStringsW(block));
+#else
+        for (char **entry = ::environ; entry != nullptr && *entry != nullptr; ++entry)
+        {
+            const std::string_view text(*entry);
+            const std::size_t      separator = text.find('=');
+            if (separator == std::string_view::npos || separator == 0)
+            {
+                continue;
+            }
+            const std::string_view name = text.substr(0, separator);
+            if (!prefix.empty() && !name.starts_with(prefix))
+            {
+                continue;
+            }
+            matches.emplace_back(std::string(name), std::string(text.substr(separator + 1)));
+        }
+#endif
+        return matches;
     }
 
     long ProcessInfo::currentProcessId() noexcept

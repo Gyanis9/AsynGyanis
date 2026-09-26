@@ -5,6 +5,7 @@
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
 #include "Platform/FileSystem/FileSystem.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -1846,14 +1847,258 @@ namespace AsynGyanis::Base
         return configFiles;
     }
 
+    namespace
+    {
+        /**
+         * @brief 只按 ASCII 把大写字母转小写
+         * @details 不用 std::tolower：它受 locale 影响，土耳其语环境下 'I' 会折成无点的 ı，
+         *          同一个环境变量名在不同机器的语言设置里折出不同的配置键，是查不出来的那类错。
+         * @param character 输入字符
+         * @return char 转换结果；非 ASCII 大写字母原样返回
+         */
+        [[nodiscard]] char toAsciiLower(const char character) noexcept
+        {
+            return (character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a') : character;
+        }
+
+        /**
+         * @brief 把去掉前缀的环境变量名折成配置键
+         * @details 规则：`__`（两个连续下划线）是层级分隔符，段内的单个下划线原样保留，整段转 ASCII
+         *          小写，于是 `SERVER__PORT` 对应 `server.port`。
+         * @param body 去掉前缀之后的变量名
+         * @return std::optional<std::string> 配置键；开头/结尾是分隔符这类映射不出合法键的写法返回空
+         */
+        [[nodiscard]] std::optional<std::string> configKeyFromEnvironmentSuffix(const std::string_view body)
+        {
+            std::string key;
+            key.reserve(body.size());
+            for (std::size_t index = 0; index < body.size(); ++index)
+            {
+                const char character = body[index];
+                if (character == '_' && index + 1 < body.size() && body[index + 1] == '_')
+                {
+                    // 前导与尾随的分隔符都映射不出合法的段名，宁可不认也不造一个空段
+                    if (key.empty() || key.back() == '.')
+                    {
+                        return std::nullopt;
+                    }
+                    key.push_back('.');
+                    ++index;
+                    continue;
+                }
+                key.push_back(toAsciiLower(character));
+            }
+            if (key.empty() || key.back() == '.')
+            {
+                return std::nullopt;
+            }
+            return key;
+        }
+
+        /**
+         * @brief 按目标类型解释环境变量的文本值
+         * @details 目标类型只从「文件里该键已有的类型」或「schema 声明」两处取，本函数不猜类型——
+         *          `8080` 该存成整数还是字符串是使用方的语义，不是这一层能定的。
+         * @param text 环境变量原文
+         * @param type 目标类型（对象与数组按 JSON 解析，其余未知类型一律按字符串交出）
+         * @param[out] error 转换失败时的中文说明，含原值
+         * @return std::optional<ConfigValue> 转换结果；失败时为空
+         */
+        [[nodiscard]] std::optional<ConfigValue> coerceEnvironmentValue(const std::string_view text, const ConfigValueType type, std::string &error)
+        {
+            const auto reject = [&text, &error](const std::string &reason) -> std::optional<ConfigValue>
+            {
+                error = std::format("{}，原值 '{}' 不是合法写法", reason, text);
+                return std::nullopt;
+            };
+
+            switch (type)
+            {
+                case ConfigValueType::boolean:
+                {
+                    std::string lowered;
+                    lowered.reserve(text.size());
+                    for (const char character: text)
+                    {
+                        lowered.push_back(toAsciiLower(character));
+                    }
+                    if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on")
+                    {
+                        return ConfigValue(true);
+                    }
+                    if (lowered == "0" || lowered == "false" || lowered == "no" || lowered == "off")
+                    {
+                        return ConfigValue(false);
+                    }
+                    return reject("布尔项只认 1/0、true/false、yes/no、on/off");
+                }
+                case ConfigValueType::number_integer:
+                {
+                    long long parsed = 0;
+                    if (const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed); ec == std::errc{} && ptr == text.data() + text.size())
+                    {
+                        return ConfigValue(parsed);
+                    }
+                    return reject("取值不是合法整数");
+                }
+                case ConfigValueType::number_unsigned:
+                {
+                    unsigned long long parsed = 0;
+                    if (const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed); ec == std::errc{} && ptr == text.data() + text.size())
+                    {
+                        return ConfigValue(parsed);
+                    }
+                    return reject("取值不是合法非负整数");
+                }
+                case ConfigValueType::number_float:
+                {
+                    double parsed = 0.0;
+                    if (const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed); ec == std::errc{} && ptr == text.data() + text.size())
+                    {
+                        return ConfigValue(parsed);
+                    }
+                    return reject("取值不是合法浮点数");
+                }
+                case ConfigValueType::object:
+                case ConfigValueType::array:
+                {
+                    // 结构与列表只能按 JSON 收：`ASYN_SERVER__HOSTS=["a","b"]` 这种写法没有别的解释法
+                    try
+                    {
+                        return ConfigValue::parse(std::string(text));
+                    } catch (const std::exception &)
+                    {
+                        return reject("对象与数组项的值必须是合法 JSON");
+                    }
+                }
+                default:
+                    return ConfigValue(std::string(text));
+            }
+        }
+    } // namespace
+
+    void ConfigManager::setEnvironmentOverridePrefix(std::string prefix)
+    {
+        m_environmentPrefix.store(std::make_shared<const std::string>(std::move(prefix)), std::memory_order_release);
+    }
+
+    std::string ConfigManager::environmentOverridePrefix() const
+    {
+        const auto prefixSnapshot = m_environmentPrefix.load(std::memory_order_acquire);
+        return prefixSnapshot != nullptr ? *prefixSnapshot : std::string();
+    }
+
+    std::size_t ConfigManager::environmentOverrideCount() const
+    {
+        const auto currentData = m_data.load(std::memory_order_acquire);
+        return currentData->environmentOverrideCount;
+    }
+
+    std::size_t ConfigManager::applyEnvironmentOverrides(ConfigKeyValueMap &values) const
+    {
+        const auto prefixSnapshot = m_environmentPrefix.load(std::memory_order_acquire);
+        if (prefixSnapshot == nullptr || prefixSnapshot->empty())
+        {
+            return 0;
+        }
+        const std::string &prefix = *prefixSnapshot;
+
+        // schema 只取一份局部副本：m_schemaMutex 不归本方法持有，在它的临界区里做整表环境变量扫描
+        // 与逐条转换，等于把一次部署侧的批量读取压进所有校验路径的锁里
+        ConfigSchema schema;
+        {
+            const std::lock_guard schemaLock(m_schemaMutex);
+            schema = m_schema;
+        }
+
+        struct Candidate
+        {
+            std::string variableName; ///< 原始环境变量名，报错时要点名
+            std::string key;          ///< 折出来的配置键
+            std::string value;        ///< 环境变量原文
+        };
+
+        std::vector<Candidate> candidates;
+        for (const auto &[variableName, rawValue]: Platform::ProcessInfo::environmentVariablesWithPrefix(prefix))
+        {
+            const std::optional<std::string> key = configKeyFromEnvironmentSuffix(std::string_view(variableName).substr(prefix.size()));
+            if (!key.has_value())
+            {
+                // 名字畸形的那条直接出声：调用方以为自己在覆盖一个键，实际上什么都没发生
+                LOG_ERROR_FMT("ConfigManager：环境变量 '{}' 的名字映射不出合法配置键（'__' 是层级分隔符，不能出现在开头或结尾），本条覆盖被忽略", variableName);
+                continue;
+            }
+            candidates.push_back({variableName, *key, rawValue});
+        }
+        if (candidates.empty())
+        {
+            return 0;
+        }
+
+        struct Applied
+        {
+            std::string key;
+            ConfigValue value;
+        };
+
+        std::vector<Applied>     applied;
+        std::vector<std::string> failures;
+        applied.reserve(candidates.size());
+        for (const auto &candidate: candidates)
+        {
+            std::optional<ConfigValueType> targetType;
+            if (const auto existing = values.find(candidate.key); existing != values.end() && existing->second.type() != ConfigValueType::null)
+            {
+                // 文件里已有的类型是最可靠的依据：覆盖要顶替同一个键，换了类型读它的人会拿到意外形状
+                targetType = existing->second.type();
+            } else if (const auto entry = std::ranges::find(schema, candidate.key, &ConfigSchemaEntry::key); entry != schema.end() && entry->expectedType.has_value())
+            {
+                targetType = entry->expectedType;
+            } else
+            {
+                // 两处都拿不到类型时按字符串交出，不猜。schema 声明过别的类型的话，提交后的校验会把它报出来
+                targetType = ConfigValueType::string;
+            }
+
+            std::string                error;
+            std::optional<ConfigValue> converted = coerceEnvironmentValue(candidate.value, *targetType, error);
+            if (!converted.has_value())
+            {
+                failures.push_back(std::format("配置键 '{}'（按类型 '{}' 解释，来自环境变量 '{}'）：{}", candidate.key, typeName(*targetType), candidate.variableName, error));
+                continue;
+            }
+            applied.push_back({candidate.key, std::move(*converted)});
+        }
+
+        if (!failures.empty())
+        {
+            // 整批不应用：半份覆盖比没有覆盖更难查——文件里的值与部署侧的值会各说一半
+            for (const auto &failure: failures)
+            {
+                LOG_ERROR_FMT("ConfigManager：环境变量覆盖失败，本轮一条都不应用：{}", failure);
+            }
+            return 0;
+        }
+
+        for (const auto &override: applied)
+        {
+            values[override.key] = std::move(override.value);
+            LOG_DEBUG_FMT("ConfigManager：配置键 '{}' 被环境变量覆盖", override.key);
+        }
+        return applied.size();
+    }
+
     void ConfigManager::commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loadedFiles, const std::filesystem::path &configDirectory,
                                          const bool configDirectoryRecursive)
     {
         // 快照对象与它的字典都在锁外建好：分配与展开一份配置不该让并发写者等着
-        const auto newData       = std::make_shared<ConfigData>();
-        newData->values          = std::move(values);
-        newData->loadedFiles     = loadedFiles;
-        newData->configDirectory = configDirectory;
+        const auto newData = std::make_shared<ConfigData>();
+        // 环境变量覆盖就加在这一处：首次加载、reload 与热重载走的都是这个出口，于是覆盖不会被下一轮
+        // 热重载冲掉，也不需要每个调用点各写一遍（少写一处就是「哪条路忘了叠加」那类分叉）
+        newData->environmentOverrideCount = applyEnvironmentOverrides(values);
+        newData->values                   = std::move(values);
+        newData->loadedFiles              = loadedFiles;
+        newData->configDirectory          = configDirectory;
         // 递归与否跟着快照一起存：reload() 与热重载据此重扫，口径与这次加载一致
         newData->configDirectoryRecursive = configDirectoryRecursive;
 

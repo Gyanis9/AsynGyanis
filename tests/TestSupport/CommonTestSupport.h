@@ -340,4 +340,77 @@ namespace AsynGyanis::TestSupport
         return std::string(rawValue);
 #endif
     }
+
+    /**
+     * @brief 用例期间临时改一个环境变量，作用域结束即还原
+     * @details 进程环境是全进程共享的状态：不还原的用例会把值留给同进程里后面的用例，表现成
+     *          「单独跑绿、整批跑红」。原本没设的变量按「未设」还原而不是留一个空串——
+     *          读侧要能区分这两种情况，留空串等于替后面的用例造了一个假值。
+     * @note CRT 改环境的调用没有可靠的失败可查（内存不足才失败），这里刻意不判返回值：
+     *       用例要的是「设没设上」，由断言直接读回来验，而不是靠这里的返回码
+     */
+    class ScopedEnvironmentVariable
+    {
+    public:
+        /**
+         * @brief 设入临时值并记下原值
+         * @param variableName 环境变量名
+         * @param value 临时值
+         */
+        explicit ScopedEnvironmentVariable(const std::string_view variableName, const std::string_view value) :
+            m_variableName(variableName), m_previousValue(readEnvironmentVariable(variableName.data()))
+        {
+            assign(variableName, value);
+        }
+
+        ScopedEnvironmentVariable(const ScopedEnvironmentVariable &)            = delete;
+        ScopedEnvironmentVariable &operator=(const ScopedEnvironmentVariable &) = delete;
+        ScopedEnvironmentVariable(ScopedEnvironmentVariable &&)                 = delete;
+        ScopedEnvironmentVariable &operator=(ScopedEnvironmentVariable &&)      = delete;
+
+        /// 还原进入前的状态：有原值就写回，原本没设则撤掉这个变量
+        ~ScopedEnvironmentVariable()
+        {
+            if (m_previousValue.has_value())
+            {
+                assign(m_variableName, *m_previousValue);
+            } else
+            {
+                erase(m_variableName);
+            }
+        }
+
+    private:
+        /**
+         * @brief 写入一个环境变量
+         * @param variableName 变量名
+         * @param value 值
+         */
+        static void assign(const std::string_view variableName, const std::string_view value)
+        {
+#if defined(_MSC_VER)
+            const std::string assignment(std::string(variableName) + "=" + std::string(value));
+            static_cast<void>(_putenv(assignment.c_str()));
+#else
+            static_cast<void>(::setenv(std::string(variableName).c_str(), std::string(value).c_str(), 1));
+#endif
+        }
+
+        /**
+         * @brief 撤掉一个环境变量
+         * @param variableName 变量名
+         */
+        static void erase(const std::string_view variableName)
+        {
+#if defined(_MSC_VER)
+            const std::string assignment(std::string(variableName) + "=");
+            static_cast<void>(_putenv(assignment.c_str()));
+#else
+            static_cast<void>(::unsetenv(std::string(variableName).c_str()));
+#endif
+        }
+
+        std::string                m_variableName;  ///< 变量名（CRT 的接口只收 NUL 结尾指针，故自己留一份）
+        std::optional<std::string> m_previousValue; ///< 进入前的原值，nullopt 表示原本根本没设
+    };
 } // namespace AsynGyanis::TestSupport
