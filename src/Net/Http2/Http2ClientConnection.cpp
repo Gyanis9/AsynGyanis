@@ -646,14 +646,42 @@ namespace AsynGyanis::Net
                                        streamId));
             return false;
         }
+        if (stream.isReset)
+        {
+            // 这条流已经判死（本端正面上限、对端 RST、流控越界）：字节仍占着连接窗口，账要还，
+            // 内容丢掉。放任它 append 就是让一份永远不会交回调用方的正文继续长
+            creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
+            return true;
+        }
         stream.response.isAnyByteReceived = true;
-        stream.response.body.append(payload.data);
+        if (m_config.maximumResponseBodyBytes != 0U
+            && stream.response.body.size() + payload.data.size() > m_config.maximumResponseBodyBytes)
+        {
+            // 上限是本端的胃口，不是对端犯了协议错：只结这一条流（RST CANCEL），连接留给别的流用
+            rejectStreamForBodyLimit(stream);
+        }
+        else
+        {
+            stream.response.body.append(payload.data);
+        }
+        // 越界那一批照样把窗口还回去：收下不还让连接级窗口一路漏下去，而对端收到 RST 之后
+        // 就不该再在这条流上发字节了
         creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
         if (payload.endStream)
         {
             stream.isResponseComplete = true;
         }
         return true;
+    }
+
+    void Http2ClientConnection::rejectStreamForBodyLimit(PendingStream &stream)
+    {
+        stream.isReset = true;
+        stream.response.errorMessage = std::format("响应正文超过本端上限 {} 字节：不打算收这么大的响应就把 "
+                                                   "Config::maximumResponseBodyBytes 调高（填 0 表示不限）",
+                                                   m_config.maximumResponseBodyBytes);
+        appendOutgoing(encodeHttp2RstStreamFrame(
+                Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, stream.streamId));
     }
 
     bool Http2ClientConnection::handleWindowUpdateFrame(const Http2Frame &frame)

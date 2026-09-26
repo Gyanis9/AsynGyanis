@@ -692,6 +692,76 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        /// 「正文越过本端上限」这一趟的结论
+        struct BodyLimitRunOutcome
+        {
+            bool isStarted{false};
+            int statusCode{0};                  ///< 状态码：它确实是 200，判据不在这里
+            bool isOk{true};                    ///< isOk() 的返回值——这条用例的主判据
+            std::string body;                   ///< 本端实际留下的正文字节
+            std::string errorMessage;           ///< 失败原因
+            bool isHealthyAfterBreach{true};    ///< 越界之后连接还算不算可用
+        };
+
+        /**
+         * @brief 回一句 200、再连发若干段正文的对端（用来撞本端的正文上限）
+         * @details 分多段发且总量明显越过上限：只发一段大帧会被帧上限钳住，测不出「越过之后还收
+         *          不收」。最后一段带 END_STREAM，对端随后正常退场。
+         * @param peer 对端一侧的通路
+         * @param chunkByteCount 每段正文的字节数
+         * @param chunkCount 段数
+         */
+        Core::Task<void> runFloodedBodyPeer(TcpStream peer, const std::size_t chunkByteCount, const std::size_t chunkCount)
+        {
+            Http2FrameDecoder decoder;
+            std::array<char, 24> preface{};
+            static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
+            const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+            co_await peer.writeAll(greeting.data(), greeting.size());
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 HEADERS
+
+            HpackEncoder peerEncoder;
+            const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
+            std::string bytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock);
+            for (std::size_t index = 0; index < chunkCount; ++index)
+            {
+                const bool isLast = index + 1 == chunkCount;
+                bytes += makeFrame(Http2FrameType::Data, isLast ? kHttp2FlagEndStream : 0U, 1U,
+                                   std::string(chunkByteCount, 'x'));
+            }
+            co_await peer.writeAll(bytes.data(), bytes.size());
+            co_return;
+        }
+
+        /**
+         * @brief 用给定的正文上限走一趟「一句 200 + 一段超量的正文」
+         * @param loop 客户端事件循环
+         * @param clientSide 本端一侧的通路
+         * @param maximumBodyBytes 本端的正文上限
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runBodyLimitClient(Core::EventLoop &loop, TcpStream clientSide, const std::size_t maximumBodyBytes,
+                                           BodyLimitRunOutcome &outcome)
+        {
+            Http2ClientConnection::Config config;
+            config.maximumResponseBodyBytes = maximumBodyBytes;
+            auto connection = std::make_unique<Http2ClientConnection>(
+                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)),
+                    config);
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+            const Http2ClientResponse response = co_await connection->request(
+                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.statusCode = response.statusCode;
+            outcome.isOk = response.isOk();
+            outcome.body = response.body;
+            outcome.errorMessage = response.errorMessage;
+            outcome.isHealthyAfterBreach = connection->isHealthy();
+            co_await connection->shutdown();
+            loop.stop();
+            co_return;
+        }
+
         /// 「两条大正文同时堵在写上」的结论
         struct ContendedWriteRunOutcome
         {
@@ -1778,6 +1848,44 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, payload, &errorText)) << errorText;
         EXPECT_EQ(static_cast<std::uint16_t>(payload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::EnhanceYourCalm))
                 << "内存闸门触发的收口要报 ENHANCE_YOUR_CALM，报成协议错误会把排查带去别处";
+    }
+
+    /**
+     * @brief 钉住：响应正文越过本端上限时只结这一条流，且本端不再往里存字节
+     * @details 与上面「头块洪泛」那条的处置正好相反，理由是责任方不同：头块存不下会让两边的 HPACK
+     *          动态表错位，留着连接只会让后面每条响应都解歪，那必须收整条连接；正文越界是**本端自己的
+     *          胃口**，对端没犯任何法，收连接等于把一个 DoS 防护做成一次自我伤害——同连接上别人的
+     *          请求全跟着丢。三条判据：请求以失败收场且原因点名这是本端上限；本端留在内存里的正文
+     *          不超过上限（越过之后还继续 append，闸门就形同虚设——对端收到 RST 之前那几段照样会到）；
+     *          连接还算健康。
+     */
+    TEST(Http2ClientConnection, RejectsResponseBodyBeyondTheClientLimitWithoutClosingTheConnection)
+    {
+        constexpr std::size_t kLimitByteCount = 8192U;
+        constexpr std::size_t kChunkByteCount = 4096U;
+        constexpr std::size_t kChunkCount = 5U;   ///< 两倍的量，明显越过上限
+
+        Core::EventLoop loop;
+        int clientDescriptor = -1;
+        int peerDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        BodyLimitRunOutcome outcome;
+        auto peerWork = runFloodedBodyPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), kChunkByteCount, kChunkCount);
+        auto clientWork = runBodyLimitClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), kLimitByteCount,
+                                             outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        ASSERT_TRUE(outcome.isStarted) << "前奏没走完，后面的判据都没有前提";
+        // 状态码确实是 200：头块收齐了，越界发生在正文上。所以判据不能看状态码，得看这次收场算不算成功
+        EXPECT_EQ(outcome.statusCode, 200) << "对端的 :status 200 本该照收，越界的只是正文";
+        EXPECT_FALSE(outcome.isOk) << "越过本端上限的正文被当成功收了：" << outcome.errorMessage;
+        EXPECT_NE(outcome.errorMessage.find("上限"), std::string::npos)
+                << "原因要说清是「本端的上限」而不是对端犯规：" << outcome.errorMessage;
+        EXPECT_LE(outcome.body.size(), kLimitByteCount) << "越过之后还在往里存字节：留下了 " << outcome.body.size() << " 字节";
+        EXPECT_TRUE(outcome.isHealthyAfterBreach) << "本端的胃口问题收掉了整条连接：同连接上别的流被连坐";
     }
 
     /**

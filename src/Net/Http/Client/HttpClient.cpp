@@ -472,6 +472,16 @@ namespace AsynGyanis::Net
         {
             if (parser.hasFailed())
             {
+                if (parser.isBodyOverLimit())
+                {
+                    // 「对端发了不合规范的报文」与「本端胃口有限」是两件事：后者报成前者会让人
+                    // 去查对端，而解法其实在自己手里（把上限调高或填 0 放开）
+                    failureReason = "响应正文超过本端上限 " + std::to_string(parser.maximumBodySize())
+                                    + " 字节（HttpOutboundConnectionPool::Config::maximumResponseBodyBytes，"
+                                      "填 0 表示不限）：目标 "
+                            + std::string(target);
+                    return nullptr;
+                }
                 failureReason = "响应不合规范或超出本端上限（状态行、头部与正文三条里的一项）：目标 " + std::string(target);
                 return nullptr;
             }
@@ -934,12 +944,25 @@ namespace AsynGyanis::Net
             {
                 co_return nullptr;
             }
+            // 正文上限按池的配置落在这条新连接上：解析器是连接的成员初值（默认档）建的，而「这台
+            // 客户端允许收多大的响应」是使用方定的。从池里取回来的那条在建好时就落过同一个数
+            if (pool != nullptr)
+            {
+                connection->parser().setMaximumBodySize(pool->config().maximumResponseBodyBytes);
+            }
             if (connection->selectedAlpnProtocol() == kHttp2AlpnProtocolName)
             {
                 // ALPN 选到了 h2：换一种说话方式。前奏在这里走——从池里拿回来的那条早就走过了，
                 // 所以这一步只属于「刚建好的」这一支
                 const std::optional<std::chrono::milliseconds> startBudget = remainingBudget(startedAt, requestTimeout);
-                auto http2Connection = std::make_shared<Http2ClientConnection>(loop, std::move(connection));
+                Http2ClientConnection::Config http2Config;
+                if (pool != nullptr)
+                {
+                    // 同一条胃口换成 h2 那一侧的说法：协商出哪条协议不该改变本端愿意收多少正文
+                    http2Config.maximumResponseBodyBytes = pool->config().maximumResponseBodyBytes;
+                }
+                auto http2Connection = std::make_shared<Http2ClientConnection>(loop, std::move(connection),
+                                                                              std::move(http2Config));
                 if (!startBudget.has_value() || !co_await http2Connection->start(*startBudget))
                 {
                     failureReason = "HTTP/2 前奏没走完：对端没接我们的 SETTINGS，或时限先到（主机 " + u.host + "）";

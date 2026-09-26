@@ -83,6 +83,33 @@ namespace AsynGyanis::Net
         void endOfStream();
 
         /**
+         * @brief 当前生效的正文上限（字节）
+         * @return std::size_t 上限；0 表示不限
+         */
+        [[nodiscard]] std::size_t maximumBodySize() const noexcept { return m_maximumBodySize; }
+
+        /**
+         * @brief 这次失败是不是「正文越过本端上限」触发的
+         * @return true 失败原因是正文长度超过 maximumBodySize()，含对端声明的长度本身就超限
+         * @details 调用方据此把「对端发了不合规范的报文」与「本端胃口有限」分成两句话：前者是链路上
+         *          出的事，后者是使用方自己设的数，报成同一句会让人去查对端。判的是记下来的事实而不是
+         *          「已收字节 > 上限」——Content-Length 那条路在头部阶段就按声明值拒了，一个正文字节
+         *          都没收，按字节数判会说「没越界」
+         */
+        [[nodiscard]] bool isBodyOverLimit() const noexcept { return m_isBodyLimitHit; }
+
+        /**
+         * @brief 改正文上限（0 表示不限）
+         * @param maximumBodySize 新的正文字节上限
+         * @note 建好连接之后由池按自己的配置落这一项：解析器是连接的成员初值（默认档）建的，
+         *       而「这台客户端允许收多大的响应」是使用方定的
+         */
+        void setMaximumBodySize(const std::size_t maximumBodySize) noexcept
+        {
+            m_maximumBodySize = maximumBodySize;
+        }
+
+        /**
          * @brief 标记「接下来解析的是 HEAD 请求的应答」
          * @details RFC 9112 §6.3 第 1 条：对 HEAD 的应答一律在头块之后结束，无论带不带定界头，
          *          正文都为空。解析器本身不知道请求方法，由调用方在喂字节之前告知——不标记的话，
@@ -117,12 +144,15 @@ namespace AsynGyanis::Net
         ChunkPhase       m_chunkPhase{ChunkPhase::SizeLine}; ///< chunked 读取当前停在哪一步
         std::size_t      m_chunkSize{0};            ///< 当前块还剩多少字节没收
         std::size_t      m_maximumBodySize{kDefaultMaximumBodySize}; ///< 正文上限（0 表示不限）
+        bool             m_isBodyLimitHit{false};   ///< 这次失败是否由正文越界触发（对外的那句话靠它）
 
         /**
-         * @brief 已收正文是否越过上限
-         * @return true 越界；调用方据此把解析置为失败（越界后不再接收任何正文）
+         * @brief 已收正文的字节数是否已越过上限
+         * @return true 越界；调用方据此把解析置为失败，并把 m_isBodyLimitHit 记下来
+         * @details chunked 与「读到连接关闭」两条路只能边收边判（长度由对端一段一段给），而
+         *          Content-Length 那条在头部阶段按声明值判——三条路都记同一个位
          */
-        [[nodiscard]] bool isBodyOverLimit() const noexcept
+        [[nodiscard]] bool isAccumulatedBodyOverLimit() const noexcept
         {
             return m_maximumBodySize != 0 && m_result.body.size() > m_maximumBodySize;
         }

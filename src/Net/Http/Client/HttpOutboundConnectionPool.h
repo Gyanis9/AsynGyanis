@@ -168,9 +168,19 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kDefaultMaximumIdlePerEndpoint = 4;
 
         /**
+         * @brief 一条响应正文的默认字节上限：与 `HttpResponseParser::kDefaultMaximumBodySize` 同档
+         * @details 没有这道闸就是让对端决定本进程分配多少内存（chunked 与「读到连接关闭」两种定界
+         *          下正文长度由对端说了算）。填 0 表示不限——要收大文件的使用方按这个开关放开。
+         * @note HTTP/1.1 与 HTTP/2 两条通路共用同一个默认值，且它由一条用例盯着不许分叉
+         *       （协商出哪条协议不该改变本端的胃口）
+         */
+        static constexpr std::size_t kDefaultMaximumResponseBodyBytes = 8ull * 1024 * 1024;
+
+        /**
          * @brief 池的规模参数
          * @param idleTimeout 空闲多久就收口
          * @param maximumIdlePerEndpoint 每个键最多留几条
+         * @param maximumResponseBodyBytes 一条响应正文的字节上限，0 表示不限
          */
         struct Config
         {
@@ -178,6 +188,8 @@ namespace AsynGyanis::Net
             /// 每台主机留几条空闲连接；0 表示不池化（用完当场收口）。填 0 是合法的关闭开关，
             /// 不是配置错误：负面的做法是让它去把表里唯一那条挤掉，那等于留了一条
             std::size_t maximumIdlePerEndpoint{kDefaultMaximumIdlePerEndpoint};
+            /// 本端愿意收多大的响应正文；越过就判这次请求失败，连接不留残货。放开到不限填 0
+            std::size_t maximumResponseBodyBytes{kDefaultMaximumResponseBodyBytes};
         };
 
         /// 用默认参数建池
@@ -198,6 +210,14 @@ namespace AsynGyanis::Net
          *          才能生成销毁代码，把析构留在头里就等于让每个包含者都得包含 Http2 那层。
          */
         ~HttpOutboundConnectionPool();
+
+        /**
+         * @brief 本池生效的参数
+         * @return const Config & 建池时给定的那份（含默认值），调用方据此配置自己新建的连接
+         * @details 存在的理由是「响应正文上限」这件事由使用方定，而连接是 HttpClient 建的：池把这一
+         *          份配置交出去，两条通路（HTTP/1.1 的解析器与 HTTP/2 的按流缓冲）才吃得到同一个数
+         */
+        [[nodiscard]] const Config &config() const noexcept { return m_config; }
 
         /**
          * @brief 取一条可复用的空闲连接，并顺手收掉过期与已被对端关掉的

@@ -409,6 +409,24 @@
 
 ### 修复
 
+- **出站响应正文的上界两条通路都有了这个开关，此前 HTTP/2 一侧根本没有闸**：HTTP/1.1 走
+  `HttpResponseParser`，写死 8 MiB 且没地方改——一次 10 MiB 的下载就会失败，报的还是那句笼统的
+  「响应不合规范或超出本端上限」；HTTP/2 一侧则完全无界，`Http2ClientConnection` 对每条流的正文缓冲
+  来多少收多少，且收完立刻归还流控窗口，于是**对端可以决定本进程分配多少内存**。现在上界是池配置里的
+  一项 `HttpOutboundConnectionPool::Config::maximumResponseBodyBytes`（默认 8 MiB，与两条通路原本的
+  默认档同值；填 0 表示不限），`HttpClient` 建连接时把它同时交给 h1 的解析器与 h2 的连接配置。
+  越界的处置分两处：h1 判这次请求失败；h2 只结这一条流（RST_STREAM 带 `CANCEL`）并保持连接可用——
+  头块存不下会把两边的 HPACK 动态表错开、必须收整条连接，而正文越界是本端的胃口不是对端犯了法，
+  收连接等于把一个 DoS 防护做成自我伤害。两条通路都**不交半截正文**：越过就整个拒掉，因为
+  「200、长度也对、内容少一截」比一个错误难查一个量级。h2 一侧另补两处：已判死的流再来的 DATA
+  只还窗口不入库（对端收到 RST 之前那几段照样会到），以及窗口照常归还（收下不还会让连接级窗口
+  一路漏下去）。失败原因现在点名是哪一处：h1 由解析器记下「越的是正文字节」这一位——Content-Length
+  那条路在头部阶段就按声明值拒了，一个正文字节都没收，只看已收字节数会说「没越界」。
+  用例四处：`HttpOutboundConnectionPool.BoundsResponseBodyByConfiguredLimit`（h1 端到端，越界拒 /
+  填 0 放开）、`HttpsServer.EnforcesTheConfiguredResponseBodyLimitOverHttp2`（h2 端到端，验的是
+  **接线**而不是阈值本身）、`Http2ClientConnection.RejectsResponseBodyBeyondTheClientLimitWithoutClosingTheConnection`
+  （留在内存里的正文不超过上限、连接还算健康）、`HttpResponseParser.ResponseBodyDefaultsAgreeAcrossBothTransports`
+  （三处默认档必须相等——协商出哪条协议不该改变本端的胃口）。三处各自撤掉都实测能把自己那条判红。
 - **出站客户端与 `TcpClient` 连不上纯 IPv6 目标**：三处各自都能单独造成这件事。
   ①`Core::AsyncSocket::create` 的默认档是 AF_INET，而这两处出站连接用的都是默认档——解析器把 IPv4
   排在候选表前面，所以双栈目标上看着一切正常，只有 AAAA 记录的主机（或直接用 IPv6 字面量）永远连不上：

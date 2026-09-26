@@ -548,14 +548,16 @@ namespace AsynGyanis::Net
          * @param clientCertificateFile 客户端身份证书；空串表示本端不带身份
          * @param clientKeyFile 客户端身份私钥
          * @param requestTimeout 整条请求的时限
+         * @param poolConfig 池的参数；要验「响应正文上限」这一项就从这里传
          * @return ClientTlsAttemptOutcome 响应与身份装载结论
          */
         ClientTlsAttemptOutcome getWithClientTls(const std::string &url, const Core::TlsPolicy &policy,
                                                  const std::string &clientCertificateFile, const std::string &clientKeyFile,
-                                                 const std::chrono::milliseconds requestTimeout)
+                                                 const std::chrono::milliseconds requestTimeout,
+                                                 const HttpOutboundConnectionPool::Config &poolConfig = {})
         {
             Core::EventLoop loop;
-            HttpClient client(loop, HttpOutboundConnectionPool::Config{}, policy);
+            HttpClient client(loop, poolConfig, policy);
             ClientTlsAttemptOutcome outcome;
             if (!clientCertificateFile.empty())
             {
@@ -1622,6 +1624,47 @@ namespace AsynGyanis::Net
         const ClientTlsAttemptOutcome anonymous = getWithClientTls(url, policy, {}, {}, std::chrono::milliseconds{4000});
         EXPECT_EQ(anonymous.response, nullptr) << "服务端要求客户端证书，不带身份的客户端却连上了：mTLS 没生效";
         EXPECT_EQ(fixture.server().stats().totalRequestCount, 1U) << "服务端数到了第二条：那条其实被握手续了进去";
+    }
+
+    /**
+     * @brief 钉住：响应正文上限这一项对协商出的 HTTP/2 同样生效
+     * @details 上限只有一个入口（池的 Config），两条通路各自去取：HTTP/1.1 交给响应解析器，HTTP/2
+     *          交给连接配置。少接一处，同一个调用方在明文上拦得住的响应到 h2 上就照收——那正是这一轮
+     *          要修的不对称（h2 之前根本没有这道闸）。判据取「越界的收不到、放开上限的收满」两头：
+     *          只验前一头的话，「上限被写死成 0」这种实现也能过。
+     */
+    TEST(HttpsServer, EnforcesTheConfiguredResponseBodyLimitOverHttp2)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+
+        constexpr std::size_t kBodyByteCount = 16384U;
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                                          [](Router &router, Core::EventLoop &)
+                                          {
+                                              router.get("/big", [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                                              {
+                                                  response.setBody(std::string(kBodyByteCount, 'x'));
+                                                  co_return;
+                                              });
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        Core::TlsPolicy policy;
+        policy.certificateAuthorityFile = kLoopbackCertificatePath.string();
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/big";
+
+        HttpOutboundConnectionPool::Config tightConfig;
+        tightConfig.maximumResponseBodyBytes = 1024U;
+        const ClientTlsAttemptOutcome tight = getWithClientTls(url, policy, {}, {}, std::chrono::milliseconds{5000}, tightConfig);
+        EXPECT_EQ(tight.response, nullptr) << "越界的那条被当成功收了：h2 这一侧没接上上限";
+
+        HttpOutboundConnectionPool::Config openConfig;
+        openConfig.maximumResponseBodyBytes = 0U;   ///< 0 表示不限
+        const ClientTlsAttemptOutcome open = getWithClientTls(url, policy, {}, {}, std::chrono::milliseconds{5000}, openConfig);
+        ASSERT_NE(open.response, nullptr) << "填 0 就该放开上限：取大文件是正当用法";
+        EXPECT_EQ(open.response->statusCode, 200);
+        EXPECT_EQ(open.response->body.size(), kBodyByteCount) << "正文长度不对：" << open.response->body.size();
     }
 
     /**

@@ -247,6 +247,7 @@ namespace AsynGyanis::Net
                         // 响应白分配缓冲（chunked 与读到关闭两条路只能边收边判，见下面两处）
                         if (m_maximumBodySize != 0 && declaredLength > m_maximumBodySize)
                         {
+                            m_isBodyLimitHit = true;
                             m_stage = Stage::Failed;
                             break;
                         }
@@ -315,8 +316,9 @@ namespace AsynGyanis::Net
                             data.remove_prefix(toCopy);
                             m_chunkSize -= toCopy;
                             // 分块的长度由对端一块一块给：只有边收边判才拦得住「无限分块」
-                            if (isBodyOverLimit())
+                            if (isAccumulatedBodyOverLimit())
                             {
+                                m_isBodyLimitHit = true;
                                 m_stage = Stage::Failed;
                                 break;
                             }
@@ -389,8 +391,9 @@ namespace AsynGyanis::Net
                     // 没有上限就是让对端决定本进程分配多少内存
                     m_result.body.append(data.data(), data.size());
                     data = {};
-                    if (isBodyOverLimit())
+                    if (isAccumulatedBodyOverLimit())
                     {
+                        m_isBodyLimitHit = true;
                         m_stage = Stage::Failed;
                     }
                     break;
@@ -423,6 +426,8 @@ namespace AsynGyanis::Net
         m_headerBlockByteCount = 0;
         m_chunkPhase = ChunkPhase::SizeLine;
         m_chunkSize = 0;
+        // 越界这一位也是「按条」的状态：留着它，下一条响应什么都不做也会被告知「正文超限」
+        m_isBodyLimitHit = false;
         // HEAD 的标记也是「按请求」的状态：keep-alive 上复用同一个解析器时，漏了它会让第二条响应
         // 也在头块之后收口——正文被静默丢掉，而状态码看着完全正常
         m_isHeadResponse = false;

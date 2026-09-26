@@ -61,8 +61,16 @@ namespace AsynGyanis::Net
         /// 一条连接最多能开几条流的上界：客户端流号取 1、3、5…，且不得越过 2^31-1（RFC 7540 §5.1.1）
         static constexpr std::uint32_t kMaximumOpenedStreamCount = 1U << 30;
 
+        /**
+         * @brief 一条响应正文的默认字节上限：与 HTTP/1.1 那一侧（池与响应解析器）同档
+         * @details 不设这道闸，正文长度就由对端说了算——本端每次都把收到的 DATA 全额还窗口，
+         *          对端可以一直发，一条流上的 std::string 就一直长。两条通路共用同一个默认值，
+         *          且有用例盯着它们不许分叉（协商出哪条协议不该改变本端的胃口）。
+         */
+        static constexpr std::size_t kDefaultMaximumResponseBodyBytes = 8ull * 1024 * 1024;
+
         /// 本端的接收能力：前两项既写进 SETTINGS 通告给对端，也被本端自己守住；
-        /// 后面两项是本端内部的闸门（头块缓冲、开流配额），不对外承诺
+        /// 后面三项是本端内部的闸门（头块缓冲、正文胃口、开流配额），不对外承诺
         struct Config
         {
             std::uint32_t initialWindowByteCount{64u * 1024};  ///< 本端愿意为一条流缓冲多少未读正文字节
@@ -70,6 +78,9 @@ namespace AsynGyanis::Net
             /// 单个头块（HEADERS 与其后 CONTINUATION 片段之和）的压缩后字节上限，与服务端侧同档：
             /// CONTINUATION 可以无限续，不设闸门等于让对端用一个头块把本端内存撑掉
             std::size_t maximumHeaderBlockByteCount{16u * 1024};
+            /// 本端愿意收多大的响应正文；越过就把那条流判死并 RST 掉（连接留着给别人用）。
+            /// 填 0 表示不限——要收大文件的使用方按这个开关放开
+            std::size_t maximumResponseBodyBytes{kDefaultMaximumResponseBodyBytes};
             /// 本端在这条连接上最多开几条流。缺省即 RFC 7540 §5.1.1 给客户端流号的上界：流号取奇数且
             /// 严格递增、不过 2^31-1，故 (2^31-1 + 1) / 2 = 2^30 条到顶。见顶之后本端不再提新流，并在
             /// 最后一条流收齐时交代一条 NO_ERROR 的 GOAWAY 主动退场，由连接池换一条新的——长命连接的
@@ -359,6 +370,15 @@ namespace AsynGyanis::Net
 
         /// 归还本端已消费的接收窗口（连接级 + 流级各一条）
         void creditWindow(std::uint32_t streamId, std::uint32_t increment);
+
+        /**
+         * @brief 把这条流的正文判到本端胃口之外：流死掉并交代一条 RST(CANCEL)，连接留着
+         * @param stream 越过 maximumResponseBodyBytes 的那条流
+         * @details 上限是本端设的闸门，不是对端犯了协议错——因此只结这一条流（与自家服务端对
+         *          单条流的收法一致），连接级那笔账不动，别的流不受牵连。调用方拿到的
+         *          errorMessage 会点名那个数与放开它的开关。
+         */
+        void rejectStreamForBodyLimit(PendingStream &stream);
 
         /**
          * @brief 按 §6.5.2 与 §6.9.2 过一遍对端 SETTINGS 的取值并落进本端账本

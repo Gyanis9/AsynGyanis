@@ -1,6 +1,9 @@
 // HttpResponseParser 单元测试：正文定界（chunked / content-length / 连接关闭）、 跨馈送分段与拒绝面
 #include "Net/Http/Client/HttpResponseParser.h"
 
+#include "Net/Http/Client/HttpOutboundConnectionPool.h"
+#include "Net/Http2/Http2ClientConnection.h"
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -372,6 +375,45 @@ namespace AsynGyanis::Net
         HttpResponseParser parser(0);
         EXPECT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n01234567890123456789"));
         EXPECT_EQ(parser.result().body.size(), 20u);
+    }
+
+    /**
+     * @brief 上限可以在建好之后改：池按自己的配置落在连接上，靠的就是这一句
+     * @details 只验 setter 与两个读数是否自洽：`isBodyOverLimit()` 是失败原因的判据（「本端胃口有限」
+     *          与「对端发了不合规范的报文」得能分开说），所以它必须跟着新上限走，而不是留在构造时
+     *          那个默认值上。
+     */
+    TEST(HttpResponseParser, MaximumBodySizeIsConfigurableAfterConstruction)
+    {
+        HttpResponseParser parser;
+        EXPECT_EQ(parser.maximumBodySize(), HttpResponseParser::kDefaultMaximumBodySize);
+        EXPECT_FALSE(parser.isBodyOverLimit()) << "还没喂过字节就报越界";
+
+        parser.setMaximumBodySize(8U);
+        EXPECT_EQ(parser.maximumBodySize(), 8U);
+        // 声明的 20 字节本身就越过 8：一条永远收不完的响应不该白分配缓冲，整条按失败收口
+        EXPECT_FALSE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n01234567890123456789"));
+        EXPECT_TRUE(parser.hasFailed());
+        EXPECT_TRUE(parser.isBodyOverLimit()) << "改过的上限没生效，或越界与不合规范分不开";
+
+        parser.reset();
+        parser.setMaximumBodySize(0U);
+        EXPECT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n01234567890123456789"));
+        EXPECT_FALSE(parser.isBodyOverLimit()) << "填 0 是不限，越界判据得跟着闭嘴";
+    }
+
+    /**
+     * @brief 钉住：两条通路与池三处的「默认正文上限」是同一个数
+     * @details 默认值写在三处（HTTP/1.1 的解析器、池的配置、h2 客户端的连接），而使用方只看到
+     *          「HttpClient 愿意收多大的响应」这一件事：一旦三处分叉，同一个请求在明文 h1 上能成、
+     *          到 h2 上就莫名失败（或反过来）。这条用例就是让那种分叉当场红，而不是留给人去对代码。
+     */
+    TEST(HttpResponseParser, ResponseBodyDefaultsAgreeAcrossBothTransports)
+    {
+        EXPECT_EQ(HttpOutboundConnectionPool::kDefaultMaximumResponseBodyBytes,
+                  HttpResponseParser::kDefaultMaximumBodySize) << "池与 h1 解析器的默认档分叉了";
+        EXPECT_EQ(Http2ClientConnection::kDefaultMaximumResponseBodyBytes,
+                  HttpResponseParser::kDefaultMaximumBodySize) << "h2 与 h1 的默认档分叉了：换协议就换胃口";
     }
 
     /**
