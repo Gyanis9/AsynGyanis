@@ -17,6 +17,23 @@
 
 ### 新增
 
+- **准入闸门把自己挡掉的连接报出来**：`/metrics` 新增一族计数器
+  `admission_rejected_connections_total`，取的是按来源 IP 的并发限额器累计拒绝的条数
+  （`PerIpConnectionLimiter::rejectedConnectionCount()`，经新增的
+  `TcpServer::perIpRejectedConnectionCount()` 并进 `HttpServer::stats()` / `HttpsServer::stats()` /
+  `QuicServer::stats()` 三份快照）。存在的理由很具体：**被挡掉的连接从来不是连接**——它没进在册表、
+  没进请求计数、没进状态码分类，在对端那边只是一次重试，在服务端这边原先什么都不留。于是
+  「闸门在挡人」「这段时间没流量」「限额配置写错把谁都挡」这三种形态在抓取端看是同一幅景象，
+  而只有第一种是想要的。口径三条：只统计**因达到上限而拒**的那些（其它收口路径各自有族）；
+  归还名额不往回扣（累计量，速率由两次采样的差值算）；限额器在多条通道间共用一份时报的是
+  这道闸门的总量，不是本实例那一份——与限额本身的共用口径一致。
+  用例：`PerIpConnectionLimiter.CountsOnlyRefusalsAndKeepsThemAcrossReleases`（放行的不自增、
+  归还的不回扣、关掉保护时恒为 0）、`HttpMetricsEndpoint` 的渲染用例（各字段真值那份里加了一行）
+  与 `AdmissionRejectionsReachTheServerStatsSnapshot`（回环上真占住一个名额、真被拒一次，再读快照）。
+  后者读 `stats()` 而不抓 `/metrics`：抓取自己也要占名额，那样用例会去依赖「服务端有没有先观察到
+  第一条连接关闭」这个竞态。
+  证伪：把 `HttpServer::stats()` 里那句并进改成恒零，红的恰好是接线那条；把渲染那一行去掉，
+  红的恰好是格式那条——两处各管一段，互不掩盖。
 - **QUIC 服务端接受同一份 TLS 策略**：`QuicServer::Configuration` 新增 `tlsPolicy`（类型就是
   HTTPS 与出站客户端共用的那份 `Core::TlsPolicy`），构造期经 `applyTlsPolicy()` 落到那份 SSL_CTX 上，
   之后再把最低版本钉回 TLS 1.3。此前 QUIC 侧的上下文是自己一行行搭的：安全等级、TLS 1.3 套件、

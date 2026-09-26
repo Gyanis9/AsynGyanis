@@ -89,6 +89,18 @@ namespace AsynGyanis::Net
         /// ---- 发送路径计数：正文经内核零拷贝（sendfile）直接发出的响应条数，仅 Linux 上恒可能非零 ----
         std::uint64_t zeroCopySendCount{0}; ///< 正文走零拷贝发送的响应条数；运维据此确认静态文件的快路径是否在生效
 
+        /// ---- 准入闸门计数：由取快照的那台服务器从自己持有的限额器读进来，不经采集端 ----
+        /**
+         * @brief 按来源 IP 的并发限额累计挡掉的连接条数
+         * @details 为什么不进 `HttpMetricsCollector`：限额器是可以被多条通道（h1/h2、h3、WebSocket）
+         *          共用的一份对象，计数住在它自己身上才是「这道闸门一共挡了多少」；采集端只知道
+         *          请求与连接，不知道准入判定。取快照时由各服务器读一次（见 HttpServer::stats()）。
+         * @note 全零有两种意思：压根没设限额器，或设了但一条都没挡过。抓取端分不开这两种，
+         *       要分辨得看部署里有没有配这项限额——因此它适合作为「闸门有没有在做事」的信号，
+         *       不适合作为「闸门有没有装上」的证据
+         */
+        std::uint64_t admissionRejectedConnectionCount{0};
+
         /**
          * @brief 取延迟直方图的样本总数
          * @return std::uint64_t 各档累计值之和；与 totalRequestCount 的差即「已收齐但响应未落账」的

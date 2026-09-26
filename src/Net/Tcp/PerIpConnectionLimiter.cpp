@@ -157,6 +157,8 @@ namespace AsynGyanis::Net
         {
             if (iterator->second >= m_maximumConnectionsPerIp)
             {
+                // 拒绝要留数：这道闸门挡住人时连接根本不存在，除了这一笔计数没有任何现场可查
+                m_state->rejectedConnectionCount.fetch_add(1, std::memory_order_relaxed);
                 return std::nullopt;
             }
             ++iterator->second;
@@ -173,6 +175,12 @@ namespace AsynGyanis::Net
         std::lock_guard<std::mutex> guard(m_state->mutex);
         const auto iterator = m_state->activeCounts.find(normalizedKey);
         return iterator == m_state->activeCounts.end() ? 0 : iterator->second;
+    }
+
+    std::uint64_t PerIpConnectionLimiter::rejectedConnectionCount() const noexcept
+    {
+        // 不取计数表的锁：这是个自增计数，读它的人要的是「这段时间挡了多少」，不是与在册表的一致性
+        return m_state->rejectedConnectionCount.load(std::memory_order_relaxed);
     }
 
     void PerIpConnectionLimiter::release(State &state, const std::string &ipKey)

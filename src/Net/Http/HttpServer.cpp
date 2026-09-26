@@ -960,7 +960,10 @@ namespace AsynGyanis::Net
     {
         // 活跃连接数已经在这份快照里：它是连接管理器在增删连接的临界区内写进采集端的镜像，
         // 与在册表同时刻变化，不需要在这里再读一次本实例的连接表（那样只能报出本实例那一份）
-        return m_metrics->snapshot();
+        HttpServerStats snapshot = m_metrics->snapshot();
+        // 准入闸门的计数住在限额器自己身上（多条通道可以共用一份），采集端不知道它，故在这里并入
+        snapshot.admissionRejectedConnectionCount = perIpRejectedConnectionCount();
+        return snapshot;
     }
 
     void HttpServer::enableMetricsEndpoint(const std::string_view path, const std::string_view metricNamePrefix)

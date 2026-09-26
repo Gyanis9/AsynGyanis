@@ -188,7 +188,10 @@ namespace AsynGyanis::Net
     {
         // 与 HttpServer 同一口径：活跃连接数是采集端上的镜像量，由本服务器的连接管理器在增删
         // 连接时写入，共用一份采集端的多台合起来才是进程口径
-        return m_metrics->snapshot();
+        HttpServerStats snapshot = m_metrics->snapshot();
+        // 准入闸门的计数住在限额器自己身上（多条通道可以共用一份），采集端不知道它，故在这里并入
+        snapshot.admissionRejectedConnectionCount = perIpRejectedConnectionCount();
+        return snapshot;
     }
 
     void HttpsServer::setHttp2Configuration(Http2ConnectionConfiguration configuration)

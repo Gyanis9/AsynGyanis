@@ -119,6 +119,12 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "zerocopy_sends_total"),
                       "正文经内核零拷贝（sendfile）直接发出的响应条数（仅 Linux 会增长）", stats.zeroCopySendCount);
 
+        // 准入闸门：被按来源 IP 的并发限额挡掉的连接不会成为「连接」，因此在其它任何计数里都不留痕，
+        // 只有这一条能说明闸门有没有在做事
+        appendCounter(out, makeMetricName(metricNamePrefix, "admission_rejected_connections_total"),
+                      "被按来源 IP 的并发限额挡掉的连接条数（限额器可在多条通道间共用，报的是总量）",
+                      stats.admissionRejectedConnectionCount);
+
         return out;
     }
 

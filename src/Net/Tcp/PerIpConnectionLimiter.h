@@ -9,7 +9,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -44,6 +46,9 @@ namespace AsynGyanis::Net
         {
             std::mutex                                   mutex;        ///< 保护下面这张表
             std::unordered_map<std::string, std::size_t> activeCounts; ///< 来源地址 → 当前活跃连接数（计数为 0 的条目即时删除）
+            /// 因达到上限而被挡掉的连接条数（累计，归还名额时不减）。放在同一份本体里是为了与计数表
+            /// 共享生命周期：多台服务器共用一个限额器时，报出来的就是这道闸门总共挡掉多少
+            std::atomic<std::uint64_t> rejectedConnectionCount{0};
         };
 
     public:
@@ -128,6 +133,17 @@ namespace AsynGyanis::Net
          * @note 供观测与测试使用，不参与判定
          */
         [[nodiscard]] std::size_t activeCountFor(const std::string &ipKey) const;
+
+        /**
+         * @brief 这道闸门累计挡掉过多少条连接（因达到上限而拒的那些）
+         * @details 为什么要专门报这个数：能工作的限额器与把一切全拒了的限额器，从外部看是同一个样子
+         *          ——连接建立失败在对端那边只是一次重试，在服务端这边什么都不留。有了拒绝计数，
+         *          「没流量」「闸门在挡人」「配置写错把谁都挡」这三种形态才分得开。它经
+         *          TcpServer::perIpRejectedConnectionCount() 进 /metrics 的快照。
+         * @return std::uint64_t 累计拒绝条数；归还名额不减，限额关闭（0）时恒为 0
+         * @note 读的是原子量，不取计数表的锁：这条路径与 accept 循环并发，为读一个计数去抢锁不值当
+         */
+        [[nodiscard]] std::uint64_t rejectedConnectionCount() const noexcept;
 
     private:
         /**

@@ -563,6 +563,11 @@ namespace AsynGyanis::Net
         m_perIpConnectionLimiter = std::move(limiter);
     }
 
+    std::uint64_t TcpServer::perIpRejectedConnectionCount() const noexcept
+    {
+        return m_perIpConnectionLimiter == nullptr ? 0U : m_perIpConnectionLimiter->rejectedConnectionCount();
+    }
+
     void TcpServer::setSocketTuning(const TcpAcceptor::SocketTuning &tuning)
     {
         // 只做转发：下发时机（listen 之前、以及每条新连接）由监听器自己把握

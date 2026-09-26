@@ -181,6 +181,18 @@ namespace AsynGyanis::Net
         void setPerIpConnectionLimiter(std::shared_ptr<PerIpConnectionLimiter> limiter);
 
         /**
+         * @brief 按来源 IP 的准入闸门累计挡掉过多少条连接
+         * @details 限额对象是可以被多台服务器共用的一份，因此这个数报的是**这道闸门**的总量而不是
+         *          本实例那一份——与限额本身的口径一致。没设限额对象时返回 0。
+         *          /metrics 里的 admission_rejected_connections_total 由它来（见 HttpServer::stats()）。
+         * @return std::uint64_t 累计拒绝条数
+         * @note 读的是限额里的原子量；设置限额仍然遵守「start() 之前」那条契约（与 setter 同一份
+         *        shared_ptr，循环期间换它会撕裂）
+         * @see PerIpConnectionLimiter::rejectedConnectionCount()
+         */
+        [[nodiscard]] std::uint64_t perIpRejectedConnectionCount() const noexcept;
+
+        /**
          * @brief 要求每条新连接以一个 PROXY 协议头开头（负载均衡器交来的真实客户端身份）
          * @param required true 表示必须带头，没带头的连接当场收口；false（默认）不读任何头
          * @details 服务器坐在代理后面时，`getpeername` 只能看到代理：按来源 IP 的并发限额会把一整个

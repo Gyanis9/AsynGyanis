@@ -31,7 +31,7 @@ namespace AsynGyanis::Net
      * @param stats 统计快照
      * @param metricNamePrefix 指标名前缀，用于同一进程内区分多套服务；空串表示不带前缀
      * @return std::string 可直接作为 200 响应正文的文本，以换行结尾
-     * @note 行序固定（计数器、状态码分类、直方图、WebSocket、HTTP/2），便于人眼比对两次抓取
+     * @note 行序固定（计数器、状态码分类、直方图、WebSocket、HTTP/2、发送路径、准入闸门），便于人眼比对两次抓取
      * @warning 快照的口径由**传入的采集端**决定：HTTP/1.1 与 HTTP/2 会话直接计入本服务器的
      *          采集端；HTTP/3 由独立的 QuicServer 服务，只有把同一个采集端交给它
      *          （QuicServer::Configuration::metricsCollector）才会一并出现在这里——只跑 h3 又没接

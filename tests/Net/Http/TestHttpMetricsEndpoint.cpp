@@ -4,6 +4,7 @@
 #include "Net/Http/HttpServerStats.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -12,6 +13,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -109,6 +111,7 @@ namespace AsynGyanis::Net
             stats.streamCancelledCount             = 12;
             stats.zeroCopySendCount                = 13;
             stats.writeAbortedConnectionCount      = 14;
+            stats.admissionRejectedConnectionCount = 15;
             return stats;
         }
     } // namespace
@@ -132,6 +135,7 @@ namespace AsynGyanis::Net
         EXPECT_NE(text.find("asyn_http_websocket_server_closes_total 10\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_http2_stream_cancelled_total 12\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_zerocopy_sends_total 13\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_admission_rejected_connections_total 15\n"), std::string::npos);
 
         // 活跃连接数是瞬时量，必须是 gauge——报成 counter 采集侧会去算增长率
         EXPECT_NE(text.find("# TYPE asyn_http_active_connections gauge\nasyn_http_active_connections 2\n"), std::string::npos);
@@ -271,6 +275,43 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(client.sendText("GET /not-registered HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", kEndpointTimeout));
             ASSERT_TRUE(client.waitForText(receivedText, "404", kEndpointTimeout)) << "未知路径未被兜底路由处理";
         }
+    }
+
+    /**
+     * @brief 钉住：准入闸门挡下的连接会进本服务器的统计快照，且一次拒绝只计一次
+     * @details 限额器里的数要走两步才到得了 /metrics：TcpServer 上那个读取口，以及 stats() 里的
+     *          并入。渲染那一步由上面那条格式用例负责，这里不重复。
+     * @note 为什么读 stats() 而不是抓一次 /metrics：抓取本身也要占一个名额，而名额此刻正被占着，
+     *       用例就会依赖「服务端有没有先观察到第一条连接关闭」这个竞态，不可重复。
+     */
+    TEST(HttpMetricsEndpoint, AdmissionRejectionsReachTheServerStatsSnapshot)
+    {
+        const ServerConfigurator configureServer = [](TestHttpServer &server)
+        {
+            server.setPerIpConnectionLimiter(std::make_shared<PerIpConnectionLimiter>(1));
+        };
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {},
+                                         HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+
+        // 先把「一位都没挡」钉住：这一条把「字段根本没接线」与「接了线但恒为 0」分开的另一半是下面那条
+        EXPECT_EQ(fixture.server().stats().admissionRejectedConnectionCount, 0u);
+
+        LoopbackClient holder(fixture.listeningPort());
+        ASSERT_TRUE(holder.isValid()) << "第一条连接没建起来，限额的前提就不成立";
+
+        {
+            LoopbackClient rejected(fixture.listeningPort());
+            // 同一来源的第二条：占不到名额，服务端当场收口，因此拿不到任何应答
+            static_cast<void>(rejected.sendText("GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                                                kEndpointTimeout));
+            std::string receivedText;
+            EXPECT_FALSE(rejected.waitForText(receivedText, "served-hello", kEndpointTimeout))
+                    << "限额只给一条连接，第二条却得到了应答";
+        }
+
+        EXPECT_EQ(fixture.server().stats().admissionRejectedConnectionCount, 1u)
+                << "挡下了一条却没在快照里留痕：这道闸门在服务端侧等于看不见";
     }
 
 } // namespace AsynGyanis::Net

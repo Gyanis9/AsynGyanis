@@ -256,4 +256,48 @@ namespace AsynGyanis::Net
         EXPECT_EQ(limiter.activeCountFor("999.0.0.1"), 0u);
     }
 
+    /**
+     * @brief 钉住：只有「因达到上限而拒」被计数，且归还不把数冲掉
+     * @details 这道闸门挡掉的连接不会成为连接，因此在任何其它计数里都不留痕——没有这个数，
+     *          「限额器把谁都挡」与「这段时间没有流量」在服务端侧是同一幅景象。两条反方向也要钉：
+     *          放行的那次不自增（否则计数会被流量推着走，失去「挡了多少」的含义），归还名额不把
+     *          数往回扣（它是累计量，抓取侧靠两次采样的差值算速率）。
+     *          限额关闭（0）那条单独钉：这条路径上既不该记账也不该计数，否则「关掉保护」会被读成
+     *          「闸门在挡人」。
+     */
+    TEST(PerIpConnectionLimiter, CountsOnlyRefusalsAndKeepsThemAcrossReleases)
+    {
+        PerIpConnectionLimiter limiter(2);
+
+        std::optional<PerIpConnectionLimiter::Lease> first = limiter.tryAcquire(kFirstSource);
+        ASSERT_TRUE(first.has_value());
+        std::optional<PerIpConnectionLimiter::Lease> second = limiter.tryAcquire(kFirstSource);
+        ASSERT_TRUE(second.has_value());
+        EXPECT_EQ(limiter.rejectedConnectionCount(), 0u) << "放行的连接不该被算成挡下的";
+
+        // 第 3、4 次都超限：两条都要留数
+        EXPECT_FALSE(limiter.tryAcquire(kFirstSource).has_value());
+        EXPECT_FALSE(limiter.tryAcquire(kFirstSource).has_value());
+        EXPECT_EQ(limiter.rejectedConnectionCount(), 2u);
+
+        // 另一个来源照样放行，不牵连计数
+        const std::optional<PerIpConnectionLimiter::Lease> otherSource = limiter.tryAcquire(kSecondSource);
+        ASSERT_TRUE(otherSource.has_value());
+        EXPECT_EQ(limiter.rejectedConnectionCount(), 2u);
+
+        // 归还一个名额之后又能进，但累计的拒绝数不往回扣
+        first.reset();
+        EXPECT_EQ(limiter.rejectedConnectionCount(), 2u) << "归还名额把拒绝计数冲掉了：抓取侧就没法算差值";
+        const std::optional<PerIpConnectionLimiter::Lease> afterRelease = limiter.tryAcquire(kFirstSource);
+        ASSERT_TRUE(afterRelease.has_value()) << "归还之后应当能再占上";
+        EXPECT_EQ(limiter.rejectedConnectionCount(), 2u);
+
+        PerIpConnectionLimiter disabled(0);
+        for (int index = 0; index < 8; ++index)
+        {
+            EXPECT_TRUE(disabled.tryAcquire(kFirstSource).has_value());
+        }
+        EXPECT_EQ(disabled.rejectedConnectionCount(), 0u) << "关掉这项保护时不该报出任何拒绝";
+    }
+
 } // namespace AsynGyanis::Net
