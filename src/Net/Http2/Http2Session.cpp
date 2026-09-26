@@ -471,7 +471,9 @@ namespace AsynGyanis::Net
             pending.isHeaderListTooLarge = http2Request.isHeaderListTooLarge;
             // 流式路由：头部收齐即可派发，正文边收边交给业务，不必等 END_STREAM（与 h1 侧同一判据）。
             // 扩展 CONNECT 排除在外——它的「正文」是隧道里的帧，走隧道那条完全不同的路径
-            pending.isStreamingBody = !pending.isHeaderListTooLarge && !pending.isExtendedConnect && m_router.hasStreamingRoute(pending.request.method(), pending.request.uri());
+            pending.isStreamingBody =
+                    !pending.isHeaderListTooLarge && !pending.isExtendedConnect &&
+                    m_router.hasStreamingRoute(pending.request.method(), pending.request.uri(), pending.request.firstHeaderValueView("host").value_or(std::string_view{}));
             // 期待 100-continue 与否要在**移入容器之前**取出来：pending 随后被 std::move 走，
             // 移后对象的字段（含映射好的头部）都成了空壳，读它只会得到空串
             const bool isContinueRequested =

@@ -29,6 +29,7 @@ add_executable(TestNet
         Http/TestTraceContext.cpp
         Http/TestHttpResponse.cpp
         Http/TestMultipartForm.cpp
+        Http/TestHttpVirtualHosts.cpp
         Http/TestHttpSession.cpp
         Http/TestHttpStreaming.cpp
         Http/TestHttpStreamingBody.cpp

@@ -1080,9 +1080,9 @@ namespace AsynGyanis::Net
                     }
 
                     // 流式路由：头部收齐即派发，正文由处理函数经 request.bodyStream() 边收边读。
-                    // 判定用解析器的方法/URI 读数（此时请求对象还是空壳；提前提交只发生在命中之后，
+                    // 判定用解析器的方法/URI/Host 读数（此时请求对象还是空壳；提前提交只发生在命中之后，
                     // 普通请求的「空壳到 Done」契约因此不变）
-                    if (parser.isHeaderBlockComplete() && router.hasStreamingRoute(parser.method(), parser.uri()))
+                    if (parser.isHeaderBlockComplete() && router.hasStreamingRoute(parser.method(), parser.uri(), parser.host()))
                     {
                         if (!parser.commitHeadersForStreaming())
                         {

@@ -1618,7 +1618,7 @@ int main(int argumentCount, char **argumentValues)
             [&streamingRouter]
             {
                 // 累加进返回值：既保证这次跨库调用不被优化掉，又让自检把它认作成功路径（恒非 0）
-                return std::size_t{1} + static_cast<std::size_t>(streamingRouter.hasStreamingRoute(Net::HttpMethod::GET, "/static/css/main.css"));
+                return std::size_t{1} + static_cast<std::size_t>(streamingRouter.hasStreamingRoute(Net::HttpMethod::GET, "/static/css/main.css", {}));
             },
             results, checksum, failureCount);
     measureCase(
@@ -1626,7 +1626,7 @@ int main(int argumentCount, char **argumentValues)
             [&streamingRouter]
             {
                 // POST 命中 /upload/:id 的流式路由 → true（非 0）；量的是「匹配但不收集参数」这条
-                return streamingRouter.hasStreamingRoute(Net::HttpMethod::POST, "/upload/42") ? std::size_t{1} : std::size_t{0};
+                return streamingRouter.hasStreamingRoute(Net::HttpMethod::POST, "/upload/42", {}) ? std::size_t{1} : std::size_t{0};
             },
             results, checksum, failureCount);
 

@@ -1,6 +1,7 @@
-// Router 单元测试：两级匹配优先级、方法与 404/405 判定、HEAD 复用 GET、参数提交与响应收尾
+// Router 单元测试：两级匹配优先级、方法与 404/405 判定、HEAD 复用 GET、参数提交、响应收尾与按 Host 选站
 #include "Net/Http/Router.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
@@ -22,17 +23,22 @@ namespace AsynGyanis::Net
     namespace
     {
         /**
-         * @brief 构造一条路由测试用的请求：只填方法、URI 与版本，路由层读的就这三样
+         * @brief 构造一条路由测试用的请求：只填方法、URI、版本与可选的 Host
          * @param method 请求方法
          * @param uri    原始 URI（含查询串时由 path() 自行裁剪）
+         * @param host   Host 头部原文，可为空（空表示这条请求不带 Host，用来验默认站点回落）
          * @return HttpRequest 可直接交给 route() 的请求对象
          */
-        HttpRequest makeRequest(const HttpMethod method, std::string uri)
+        HttpRequest makeRequest(const HttpMethod method, std::string uri, std::string_view host = {})
         {
             HttpRequest request;
             request.setMethod(method);
             request.setUri(std::move(uri));
             request.setHttpVersion("HTTP/1.1");
+            if (!host.empty())
+            {
+                request.addHeader("host", host);
+            }
             return request;
         }
 
@@ -801,15 +807,255 @@ namespace AsynGyanis::Net
         router.postStreaming("/assets/*", textHandler("streaming-assets"));
         router.get("/plain", textHandler("plain")); // 非流式，作对照
 
-        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42")) << ":id 段命中的流式路由必须被探测为流式";
-        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::PUT, "/replace/42")) << "PUT 绑定的流式路由同样要探测为流式";
-        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/assets/css/main.css")) << "通配路由命中即算流式，剩余路径不收集也不影响判定";
-        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42?token=abc")) << "带查询串时要先按 route() 同口径裁出路径部分再判定";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42", {})) << ":id 段命中的流式路由必须被探测为流式";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::PUT, "/replace/42", {})) << "PUT 绑定的流式路由同样要探测为流式";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/assets/css/main.css", {})) << "通配路由命中即算流式，剩余路径不收集也不影响判定";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42?token=abc", {})) << "带查询串时要先按 route() 同口径裁出路径部分再判定";
         // 流式只绑 POST/PUT：其余方法在方法层即不可能命中，直接 false（不扫表）
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/upload/42")) << "GET 不该命中只按 POST 注册的流式路由";
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::HEAD, "/assets/x")) << "HEAD 复用 GET 是针对普通路由的，流式判定不涉及";
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/plain")) << "非流式路由不得被探测为流式";
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::POST, "/nowhere")) << "未注册路径一律非流式";
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::UNKNOWN, "/assets/any")) << "未收录方法不参与匹配，更不能被判为流式";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/upload/42", {})) << "GET 不该命中只按 POST 注册的流式路由";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::HEAD, "/assets/x", {})) << "HEAD 复用 GET 是针对普通路由的，流式判定不涉及";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/plain", {})) << "非流式路由不得被探测为流式";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::POST, "/nowhere", {})) << "未注册路径一律非流式";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::UNKNOWN, "/assets/any", {})) << "未收录方法不参与匹配，更不能被判为流式";
+    }
+    // ============================================================================
+    // 虚拟主机（按 Host 选站）
+    // ============================================================================
+
+    /**
+     * @brief 命中的主机只走自己的表，根表的路由不参与
+     * @details 「api.example.com 上有没有 /private」与「默认站上有没有 /private」是两回事：
+     *          两张表混在一起比优先级，等于让一个域名拿到另一个域名的路由
+     */
+    TEST(RouterVirtualHost, ServesHostRoutesAndKeepsRootTableAsDefaultSite)
+    {
+        Router router;
+        router.get("/site", textHandler("default-site"));
+        router.get("/only-root", textHandler("root-only"));
+        router.virtualHost("api.example.com").get("/site", textHandler("api-site"));
+
+        {
+            HttpRequest  request = makeRequest(HttpMethod::GET, "/site", "api.example.com");
+            HttpResponse response;
+            routeRequest(router, request, response);
+            EXPECT_EQ(response.body(), "api-site");
+        }
+        {
+            // 没匹配上任何主机的 Host 交回根表：单站点行为原样保留，「先起服务再配域名」的中间态不该红
+            HttpRequest  request = makeRequest(HttpMethod::GET, "/site", "other.example.org");
+            HttpResponse response;
+            routeRequest(router, request, response);
+            EXPECT_EQ(response.body(), "default-site");
+        }
+        {
+            // 主机表上没有这条路径 → 404，而不是回落去问根表
+            HttpRequest  request = makeRequest(HttpMethod::GET, "/only-root", "api.example.com");
+            HttpResponse response;
+            routeRequest(router, request, response);
+            EXPECT_EQ(response.status(), 404) << "命中的主机没这条路径却由根表应答，等于把站点隔离漏掉一半";
+        }
+    }
+
+    /**
+     * @brief 精确主机名优先于通配主机名
+     */
+    TEST(RouterVirtualHost, ExactHostNameWinsOverWildcard)
+    {
+        Router router;
+        router.virtualHost("*.example.com").get("/who", textHandler("wildcard"));
+        router.virtualHost("api.example.com").get("/who", textHandler("exact"));
+
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/who", "api.example.com");
+        HttpResponse response;
+        routeRequest(router, request, response);
+        EXPECT_EQ(response.body(), "exact") << "通配条先注册就赢，选站就变成看注册顺序而不是看具体程度";
+    }
+
+    /**
+     * @brief 通配主机之间取后缀最长者
+     */
+    TEST(RouterVirtualHost, LongestWildcardSuffixWins)
+    {
+        Router router;
+        router.virtualHost("*.example.com").get("/who", textHandler("broad"));
+        router.virtualHost("*.co.example.com").get("/who", textHandler("narrow"));
+
+        HttpRequest  broad = makeRequest(HttpMethod::GET, "/who", "x.example.com");
+        HttpResponse broadResponse;
+        routeRequest(router, broad, broadResponse);
+        EXPECT_EQ(broadResponse.body(), "broad");
+
+        HttpRequest  narrow = makeRequest(HttpMethod::GET, "/who", "x.co.example.com");
+        HttpResponse narrowResponse;
+        routeRequest(router, narrow, narrowResponse);
+        EXPECT_EQ(narrowResponse.body(), "narrow");
+    }
+
+    /**
+     * @brief 通配不收顶点域名本身
+     * @details "*.example.com" 的 '*' 要吃掉至少一个标签：example.com 自己得单独登记
+     */
+    TEST(RouterVirtualHost, WildcardDoesNotMatchTheApexItself)
+    {
+        Router router;
+        router.virtualHost("*.example.com").get("/who", textHandler("wildcard"));
+        router.get("/who", textHandler("default-site"));
+
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/who", "example.com");
+        HttpResponse response;
+        routeRequest(router, request, response);
+        EXPECT_EQ(response.body(), "default-site") << "把顶点域名也收进通配，等于凭空多出一个没人登记的站点";
+    }
+
+    /**
+     * @brief 比对键不看大小写、端口与结尾的根点
+     */
+    TEST(RouterVirtualHost, HostKeyIgnoresCasePortAndTrailingDot)
+    {
+        Router router;
+        router.virtualHost("API.Example.COM").get("/who", textHandler("api"));
+        router.virtualHost("[::1]").get("/who", textHandler("loopback-v6"));
+
+        for (const std::string_view host: {"api.example.com", "API.Example.COM:443", "api.example.com.", "Api.Example.Com."})
+        {
+            HttpRequest  request = makeRequest(HttpMethod::GET, "/who", host);
+            HttpResponse response;
+            routeRequest(router, request, response);
+            EXPECT_EQ(response.body(), "api") << "同一个站点因写法不同落到了默认站上：" << host;
+        }
+
+        // IPv6 字面量的端口写在方括号之后，剥端口不能把括号里第一个冒号当端口分隔符
+        HttpRequest  v6 = makeRequest(HttpMethod::GET, "/who", "[::1]:8443");
+        HttpResponse v6Reply;
+        routeRequest(router, v6, v6Reply);
+        EXPECT_EQ(v6Reply.body(), "loopback-v6") << "IPv6 字面量被当成带端口的名字切了一半";
+    }
+
+    /**
+     * @brief 没带 Host 的请求走默认站点
+     * @details HTTP/1.0 式请求与直连 IP 的探活都不带 Host，判 404 会让健康检查先炸
+     */
+    TEST(RouterVirtualHost, RequestWithoutHostHeaderFallsBackToDefaultSite)
+    {
+        Router router;
+        router.get("/who", textHandler("default-site"));
+        router.virtualHost("api.example.com").get("/who", textHandler("api"));
+
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/who");
+        HttpResponse response;
+        routeRequest(router, request, response);
+        EXPECT_EQ(response.body(), "default-site");
+        EXPECT_TRUE(router.hasVirtualHosts());
+    }
+
+    /**
+     * @brief 根中间件对所有主机都生效，且套在主机中间件的外层
+     * @details 鉴权、CORS、访问日志登记在根路由上，加一个主机就把它们绕过去是安全事故的形状
+     */
+    TEST(RouterVirtualHost, RootMiddlewareWrapsHostMiddleware)
+    {
+        Router                   router;
+        std::vector<std::string> executionOrder;
+        router.addMiddleware(
+                [&executionOrder](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    executionOrder.emplace_back("root-before");
+                    response.setHeader("x-root", "1");
+                    co_await next();
+                    executionOrder.emplace_back("root-after");
+                });
+        Router &apiSite = router.virtualHost("api.example.com");
+        apiSite.addMiddleware(
+                [&executionOrder](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    executionOrder.emplace_back("host-before");
+                    response.setHeader("x-host", "api");
+                    co_await next();
+                    executionOrder.emplace_back("host-after");
+                });
+        apiSite.get("/who",
+                    [&executionOrder](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                    {
+                        executionOrder.emplace_back("handler");
+                        response.setBody("api");
+                        co_return;
+                    });
+
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/who", "api.example.com");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        EXPECT_EQ(response.body(), "api");
+        EXPECT_EQ(executionOrder, (std::vector<std::string>{"root-before", "host-before", "handler", "host-after", "root-after"}));
+        EXPECT_TRUE(response.hasHeader("x-root")) << "外层中间件写的头部没出来，说明选站把根管道跳过了";
+        EXPECT_TRUE(response.hasHeader("x-host"));
+    }
+
+    /**
+     * @brief 主机表回 404 时，根中间件写下的头部必须留下
+     * @details 这是「里层不许复位响应」那条规则的落点：复位一擦，跨域请求撞到 404 就退化成
+     *          浏览器侧的 opaque 错误，日志里也看不到 CORS 头部
+     */
+    TEST(RouterVirtualHost, NotFoundOnHostSiteKeepsRootMiddlewareHeaders)
+    {
+        Router router;
+        router.addMiddleware(
+                [](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    response.setHeader("access-control-allow-origin", "*");
+                    co_await next();
+                });
+        router.virtualHost("api.example.com").get("/known", textHandler("api"));
+
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/unknown", "api.example.com");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        EXPECT_EQ(response.status(), 404);
+        EXPECT_EQ(response.getHeader("access-control-allow-origin").value_or(""), "*") << "里层表复位响应把外层中间件的 CORS 头抹了";
+    }
+
+    /**
+     * @brief 注册侧的两条拒绝：子表上不再选站、没有意义的主机名
+     */
+    TEST(RouterVirtualHost, RejectsNestedVirtualHostsAndMeaninglessNames)
+    {
+        Router  router;
+        Router &apiSite = router.virtualHost("api.example.com");
+        EXPECT_THROW(apiSite.virtualHost("inner.example.com"), Base::InvalidArgumentException) << "两层选站要扯清中间件谁套谁，那不是能推出来的答案";
+
+        for (const std::string_view meaningless: {"", "*", "*.", ":", "  "})
+        {
+            Router plain;
+            EXPECT_THROW(plain.virtualHost(std::string(meaningless)), Base::InvalidArgumentException) << "收下「" << meaningless << "」就是一条永不命中的规则";
+        }
+
+        // 重复登记交回同一张表：与 get() 的「同 (方法, 路径) 重复注册幂等」同口径
+        Router           counted;
+        std::atomic<int> callCount{0};
+        counted.virtualHost("api.example.com").get("/who", textHandler("first", &callCount));
+        counted.virtualHost("API.EXAMPLE.COM").get("/who", textHandler("second", &callCount));
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/who", "api.example.com:8080");
+        HttpResponse response;
+        routeRequest(counted, request, response);
+        EXPECT_EQ(response.body(), "second") << "同站重复登记开出两张表，前一张就成了没人走的路由";
+        EXPECT_EQ(callCount.load(), 1);
+    }
+
+    /**
+     * @brief 流式派发判定要跟着选站走
+     * @details 主机表注册的流式路由若只查根表就被判成普通路由：会话等整份正文收齐才派发，
+     *          而处理函数只读 bodyStream()，那条请求的正文就没人收了
+     */
+    TEST(RouterVirtualHost, StreamingRouteIsDetectedOnlyForItsOwnHost)
+    {
+        Router router;
+        router.post("/upload", [](HttpRequest &, HttpResponse &) -> Core::Task<void> { co_return; });
+        router.virtualHost("api.example.com").postStreaming("/upload", [](HttpRequest &, HttpResponse &) -> Core::Task<void> { co_return; });
+
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload", "api.example.com")) << "主机表上的流式路由没被探测出来，正文会被整份缓冲";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload", "api.example.com:443")) << "带端口的 Host 归一化后应是同一个站点";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::POST, "/upload", "other.example.org")) << "别的 Host 命中根表，那里注册的是普通路由";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::POST, "/upload", {})) << "没带 Host 的请求走默认站点，那里也是普通路由";
     }
 } // namespace AsynGyanis::Net

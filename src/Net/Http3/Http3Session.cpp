@@ -1185,8 +1185,10 @@ namespace AsynGyanis::Net
             return;
         }
 
-        // 流式正文路由同理：正文边收边交，业务不必等整份正文；其余路由照旧等 end_stream
-        if (!m_router->hasStreamingRoute(method, uri))
+        // 流式正文路由同理：正文边收边交，业务不必等整份正文；其余路由照旧等 end_stream。
+        // 主机来源与派发时补齐 host 头的口径一致：对端给了 host 头部就用它，否则用 :authority
+        const std::string_view hostForDispatch = incoming.request.firstHeaderValueView("host").value_or(std::string_view(authorityText));
+        if (!m_router->hasStreamingRoute(method, uri, hostForDispatch))
         {
             return;
         }

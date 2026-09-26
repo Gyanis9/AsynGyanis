@@ -145,6 +145,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] HttpMethod method() const noexcept;
 
         /**
+         * @brief 流式派发判定用的 Host 读数（解析进度读数，不触发提交）
+         * @details 按 Host 选虚拟主机要在「头部收齐、正文还在路上」这一刻做，而 request()
+         *          要到提交才成实体：判定经这里取首条 host 的取值视图，不为一次判定拷字符串。
+         * @return std::string_view Host 原文（可能带端口，归一化由 Router 负责）；
+         *         这条头部尚未解析到时为空视图
+         * @note 只在本函数被调到的那个阶段有效：commitHeadersForStreaming() 之后头部缓冲已移交
+         *       request()，要读 Host 请改读那个请求对象
+         * @see Router::virtualHost(), isHeaderBlockComplete()
+         */
+        [[nodiscard]] std::string_view host() const;
+
+        /**
          * @brief 把已解析的头部提前提交给 request()（流式派发用）
          * @details 与主流程「Done 才移交」契约的显式例外：仅当调用方判定该请求走流式路由
          *          时调用。正文仍留在解析器内部，由调用方经 bufferedBodyView()/discardBufferedBody()

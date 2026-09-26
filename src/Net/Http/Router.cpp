@@ -1,7 +1,10 @@
 #include "Net/Http/Router.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
+
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,6 +26,63 @@ namespace AsynGyanis::Net
          * @brief 拼 Allow 头时方法之间的分隔符（ASCII，遵循 RFC 9110 §10.4 的 "#rulelist" 写法）
          */
         constexpr std::string_view kAllowedMethodSeparator = ", ";
+
+        // 通配虚拟主机名的前缀："*.example.com" 收子域，不收 example.com 本身
+        constexpr std::string_view kWildcardHostPrefix = "*.";
+        // 通配前缀里参与比对的部分：去掉 '*' 留下的 ".example.com"，请求主机名必须整段落在它上面
+        constexpr std::size_t kWildcardLabelPlaceholderLength = 1;
+
+        /**
+         * @brief 在虚拟主机表里挑一条：精确名优先，通配名取后缀最长者
+         *
+         * @details 判定只写这一份，const 与非 const 两条调用路（派发、流式派发判定）各取一个迭代器类型。
+         *          两条路若各算各的，就会出现「按 A 表的流式标记提前派发、按 B 表派发处理」——
+         *          那条请求的正文没人收，看着像业务卡住，其实是选站判据分了家。
+         *
+         * @param tables 主机键 → 主机表（迭代器类型随表本身的 const 而变）
+         * @param wildcardCount 通配条目数，为 0 时不做整表扫描
+         * @param hostKey 归一化后的请求主机名
+         * @return 命中的条目；没命中时为 tables.end()
+         */
+        template<typename VirtualHostTable>
+        [[nodiscard]] auto selectVirtualHostRow(VirtualHostTable &tables, const std::size_t wildcardCount, const std::string &hostKey)
+        {
+            if (hostKey.empty())
+            {
+                return tables.end();
+            }
+            if (const auto exact = tables.find(hostKey); exact != tables.end())
+            {
+                return exact;
+            }
+            if (wildcardCount == 0)
+            {
+                return tables.end();
+            }
+
+            auto        best             = tables.end();
+            std::size_t bestSuffixLength = 0;
+            for (auto candidate = tables.begin(); candidate != tables.end(); ++candidate)
+            {
+                const std::string &pattern = candidate->first;
+                if (!pattern.starts_with(kWildcardHostPrefix) || pattern.size() <= kWildcardHostPrefix.size())
+                {
+                    continue;
+                }
+                // 通配符要吃掉至少一个标签：比对后缀必须比主机名短
+                const std::string_view suffix = std::string_view(pattern).substr(kWildcardHostPrefix.size() - kWildcardLabelPlaceholderLength);
+                if (hostKey.size() <= suffix.size() || hostKey.compare(hostKey.size() - suffix.size(), suffix.size(), suffix) != 0)
+                {
+                    continue;
+                }
+                if (suffix.size() > bestSuffixLength)
+                {
+                    bestSuffixLength = suffix.size();
+                    best             = candidate;
+                }
+            }
+            return best;
+        }
     } // namespace
 
     // ============================================================================
@@ -366,6 +426,12 @@ namespace AsynGyanis::Net
         const std::string_view requestPath   = request.path();
         const HttpMethod       requestMethod = request.method();
 
+        // 选站：没登记虚拟主机时这里就是空转，单站点一条请求都不多付主机归一化。
+        // 匹配读哪张表与中间件套几层都由它决定，但不额外开一层协程——派发是每条请求的热路径，
+        // 多一个协程帧就是每请求多一次堆分配（这条读数钉在 TestHotPathAllocations 里）
+        Router *const hostTable  = selectVirtualHostTable(request);
+        Router *const matchTable = hostTable != nullptr ? hostTable : this;
+
         // 方法是否被本框架收录：未收录（CONNECT/TRACE/M-SEARCH 等）一律不进业务匹配。
         // UNKNOWN 不参与通配匹配：放行它等于让任何畸形方法都能蹭到兜底路由上。
         const bool isRequestMethodRecognized = requestMethod != HttpMethod::UNKNOWN;
@@ -419,7 +485,7 @@ namespace AsynGyanis::Net
             const int passCount = matchMethod == HttpMethod::HEAD ? 2 : 1;
 
             // ---- 一级：字面路径索引。命中即完成本层候选收集 ----
-            if (const auto exactIterator = m_exactRoutes.find(requestPath); exactIterator != m_exactRoutes.end())
+            if (const auto exactIterator = matchTable->m_exactRoutes.find(requestPath); exactIterator != matchTable->m_exactRoutes.end())
             {
                 for (int pass = 0; pass < passCount; ++pass)
                 {
@@ -453,7 +519,7 @@ namespace AsynGyanis::Net
             PathParameters candidateParameters;
             for (int pass = 0; pass < passCount; ++pass)
             {
-                for (const PatternRoute &route: m_patternRoutes)
+                for (const PatternRoute &route: matchTable->m_patternRoutes)
                 {
                     // 失败候选攒下的 ":id" 在下一次 clear 里整体丢弃，不会串到别的路由上
                     candidateParameters.clear();
@@ -493,7 +559,16 @@ namespace AsynGyanis::Net
             const TerminalHandler terminalHandler = [&request, &response, selectedHandler]() -> Core::Task<void> { co_await (*selectedHandler)(request, response); };
 
             // 中间件与 handler 的异常一律向上传播，由会话统一重置成 500，路由器不吞也不翻译
-            co_await m_pipeline.run(request, response, terminalHandler);
+            if (hostTable == nullptr)
+            {
+                co_await m_pipeline.run(request, response, terminalHandler);
+            } else
+            {
+                // 命中的是虚拟主机：本表（根）的中间件跑在最外层，主机的中间件套在它里面，
+                // 匹配已经在上面按主机的表做完了。横切逻辑（鉴权、CORS、访问日志）登记在根路由上
+                // 时不能因为多登记了一个主机就被绕过——那是安全事故的形状
+                co_await m_pipeline.run(request, response, wrapWithHostPipeline(hostTable, request, response, terminalHandler));
+            }
             finalizeResponse(response);
             co_return;
         }
@@ -531,10 +606,15 @@ namespace AsynGyanis::Net
         // 未命中也走同一条中间件管道：CORS、访问日志、限流这类横切逻辑必须对 404/405 一视同仁，
         // 否则跨域请求撞到 404 会退化成浏览器侧的 opaque 错误，日志里也看不到任何未命中的请求。
         //
-        // 重置与写入分两步：先在这里清掉调用方可能残留的状态（本函数是公开 API，调用方可以
+        // 重置与写入分两步：先在这里清掉调用方可能残留的状态（route() 是公开 API，调用方可以
         // 复用同一个 HttpResponse），再让中间件写头部，最后由终点补状态与 Allow。
-        // 若把重置放到终点里，中间件刚写下的 CORS 头会被一起抹掉
-        response.reset();
+        // 若把重置放到终点里，中间件刚写下的 CORS 头会被一起抹掉。
+        // 命中虚拟主机时这一步整条跳过：外层根中间件此刻已经写过头部，复位会把它们抹干净，
+        // 而「会话每轮开头本来就 reset 过一次」保证了没有上一条报文的残留漏进这条 404
+        if (hostTable == nullptr)
+        {
+            response.reset();
+        }
 
         const TerminalHandler unmatchedTerminalHandler = [this, &request, &response, isMethodNotAllowed, &allowedMethods]() -> Core::Task<void>
         {
@@ -542,9 +622,132 @@ namespace AsynGyanis::Net
             co_return;
         };
 
-        co_await m_pipeline.run(request, response, unmatchedTerminalHandler);
+        if (hostTable == nullptr)
+        {
+            co_await m_pipeline.run(request, response, unmatchedTerminalHandler);
+        } else
+        {
+            // 未命中同样要跑两层中间件：CORS 与访问日志对 404 一视同仁，虚拟主机不例外
+            co_await m_pipeline.run(request, response, wrapWithHostPipeline(hostTable, request, response, unmatchedTerminalHandler));
+        }
         finalizeResponse(response);
         co_return;
+    }
+
+    TerminalHandler Router::wrapWithHostPipeline(Router *hostTable, HttpRequest &request, HttpResponse &response, const TerminalHandler &terminalHandler)
+    {
+        // 引用捕获即可：返回的回调只在调用方那一次 co_await 期间存在，请求、响应与内层终点都在它的栈上
+        return [hostTable, &request, &response, &terminalHandler]() -> Core::Task<void>
+        {
+            // 这里碰到的是主机表自己的私有管道：同类成员函数访问另一个对象的私有成员是允许的
+            co_await hostTable->m_pipeline.run(request, response, terminalHandler);
+        };
+    }
+
+    Router &Router::virtualHost(const std::string &hostName)
+    {
+        // 子表上再登记虚拟主机属于误用：多层选站要扯清「外层的中间件与内层的中间件谁套谁」，
+        // 那不是能从规则本身推出答案的问题，宁可在注册当场拒绝
+        if (m_isVirtualHostTable)
+        {
+            throw Base::InvalidArgumentException("Router: 虚拟主机只能登记在服务器根路由上，子表上再登记虚拟主机"
+                                                 "「" +
+                                                 hostName + "」会让选站变成两层——请把这些路由挂回根路由的 virtualHost()");
+        }
+
+        const std::string hostKey = normalizeVirtualHostKey(hostName);
+        // 空串、单独的 "*"、只有前缀的 "*.": 三条都不构成一个可比对的主机名，收下就等于登记一条永不命中的规则
+        if (hostKey.empty() || hostKey == "*" || hostKey == kWildcardHostPrefix)
+        {
+            throw Base::InvalidArgumentException("Router: 虚拟主机名不能是空串或「" + hostName + "」——选站比对的是请求的 Host，需要一个真实主机名（通配写法是 *.example.com）");
+        }
+
+        if (const auto registered = m_virtualHosts.find(hostKey); registered != m_virtualHosts.end())
+        {
+            // 重复登记交回同一张表：与 get() 的「同 (方法, 路径) 重复注册幂等」同一口径
+            return *registered->second;
+        }
+
+        const bool isWildcard = hostKey.starts_with(kWildcardHostPrefix);
+        if (isWildcard)
+        {
+            ++m_wildcardVirtualHostCount;
+        }
+        const auto created = m_virtualHosts.emplace(hostKey, std::make_unique<Router>());
+        // 子表知道自己是被选出来的那一张，据此拒绝再往下登记虚拟主机
+        created.first->second->m_isVirtualHostTable = true;
+        return *created.first->second;
+    }
+
+    bool Router::hasVirtualHosts() const noexcept
+    {
+        return !m_virtualHosts.empty();
+    }
+
+    std::string Router::normalizeVirtualHostKey(const std::string_view authority)
+    {
+        std::string_view hostPart = trimOptionalWhitespace(authority);
+        if (hostPart.empty())
+        {
+            return {};
+        }
+
+        if (hostPart.front() == '[')
+        {
+            // IPv6 字面量：方括号之内才是主机，']' 之后那段 ":端口" 不参与比对。
+            // 没闭合的括号按原文处理（那是畸形 Host，交给比对自然落空）
+            if (const std::size_t closingBracket = hostPart.find(']'); closingBracket != std::string_view::npos)
+            {
+                hostPart = hostPart.substr(0, closingBracket + 1);
+            }
+        } else if (const std::size_t colon = hostPart.find(':'); colon != std::string_view::npos)
+        {
+            hostPart = hostPart.substr(0, colon);
+        }
+
+        // 去掉结尾的根点："example.com." 与 "example.com" 是同一个站点（FQDN 写法）。
+        // 只留一个点的情形（Host 就是 "."）不去：它归一化后仍是 "."，比对必然落空
+        while (hostPart.size() > 1 && hostPart.back() == '.')
+        {
+            hostPart.remove_suffix(1);
+        }
+
+        std::string normalized;
+        normalized.reserve(hostPart.size());
+        for (const char character: hostPart)
+        {
+            normalized.push_back(toLowerAscii(character));
+        }
+        return normalized;
+    }
+
+    Router *Router::selectVirtualHostTable(const HttpRequest &request)
+    {
+        if (m_virtualHosts.empty())
+        {
+            return nullptr;
+        }
+        // 视图而不是副本：这条路径每请求都要读一次 Host，为它拷一份串不值当
+        const std::optional<std::string_view> hostHeader = request.firstHeaderValueView("host");
+        if (!hostHeader.has_value())
+        {
+            // 没带 Host 的请求（HTTP/1.0 式请求、直连 IP 的探活）交回默认站点：
+            // 判 404 会让「先起服务再配域名」这一步的健康检查直接红
+            return nullptr;
+        }
+        return findHostTable(normalizeVirtualHostKey(*hostHeader));
+    }
+
+    Router *Router::findHostTable(const std::string &hostKey)
+    {
+        const auto row = selectVirtualHostRow(m_virtualHosts, m_wildcardVirtualHostCount, hostKey);
+        return row == m_virtualHosts.end() ? nullptr : row->second.get();
+    }
+
+    const Router *Router::findHostTable(const std::string &hostKey) const
+    {
+        const auto row = selectVirtualHostRow(m_virtualHosts, m_wildcardVirtualHostCount, hostKey);
+        return row == m_virtualHosts.end() ? nullptr : row->second.get();
     }
 
     // ============================================================================
@@ -583,11 +786,12 @@ namespace AsynGyanis::Net
         return false;
     }
 
-    bool Router::hasStreamingRoute(const HttpMethod method, const std::string_view uri) const
+    bool Router::hasStreamingRoute(const HttpMethod method, const std::string_view uri, const std::string_view authority) const
     {
         // 流式注册只有 postStreaming()/putStreaming() 两个入口，二者都绑死 POST/PUT 且非 any 方法，
         // 故除这两个方法外任何请求都不可能被判定为流式（UNKNOWN 一并落在此处挡掉）。
-        // GET/HEAD（静态与只读流量的大头）据此直接返回 false，免去整张路由表的空转扫描
+        // GET/HEAD（静态与只读流量的大头）据此直接返回 false，免去整张路由表的空转扫描，
+        // 也免去本次要做的主机归一化
         if (method != HttpMethod::POST && method != HttpMethod::PUT)
         {
             return false;
@@ -597,9 +801,20 @@ namespace AsynGyanis::Net
         const std::size_t      queryPosition = uri.find('?');
         const std::string_view requestPath   = queryPosition == std::string_view::npos ? uri : uri.substr(0, queryPosition);
 
+        // 先选站再查表：主机表里注册的流式路由若只查根表就被判成普通路由，会话会等整份正文收齐
+        // 才派发，而处理函数按流式写法只读 bodyStream()——那条请求的正文永远没人收
+        const Router *table = this;
+        if (!m_virtualHosts.empty())
+        {
+            if (const Router *const hostTable = findHostTable(normalizeVirtualHostKey(authority)); hostTable != nullptr)
+            {
+                table = hostTable;
+            }
+        }
+
         // HEAD 复用 GET 的兜底不需要镜像：本类只提供 postStreaming()/putStreaming() 两种
         // 流式注册，HEAD 请求在方法层就与它们不相干
-        return matchedRouteIsStreaming(method, requestPath);
+        return table->matchedRouteIsStreaming(method, requestPath);
     }
 
 } // namespace AsynGyanis::Net

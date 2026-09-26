@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -42,6 +43,8 @@ namespace AsynGyanis::Net
     ///          @li 二级：参数化（"/user/:id"）与通配（"/static/*"、"*"）路由按注册顺序线性扫描。
     ///
     /// @note **优先级规则（本类唯一的仲裁口径，注册侧请按此规划）**
+    ///       @li 登记了虚拟主机时，**先按 Host 选表**，下面这些路径优先级只在选中的那一张表里成立；
+    ///           选中的主机没有这条路径就是 404，不会回落去问根表（见 virtualHost()）；
     ///       @li 精确路径永远优先于模式路径，与注册先后无关；
     ///       @li 同一层内（同一条精确路径的多个方法绑定之间、模式路由彼此之间）**先注册者优先**，
     ///           指定方法条目与 any() 条目之间也只看注册先后，不做「谁更具体谁优先」的特殊仲裁；
@@ -171,6 +174,37 @@ namespace AsynGyanis::Net
         void any(const std::string &path, Handler handler);
 
         /**
+         * @brief 取（没有则建）一个按 Host 选中的虚拟主机路由表
+         *
+         * @details 名字里带 `*.` 的是通配站点：`*.example.com` 收 `a.example.com` 与 `a.b.example.com`，
+         *          但**不收** `example.com` 本身。选站仲裁只有一条规则——精确名优先于通配名，
+         *          通配名之间取后缀最长者（`*.co.example.com` 赢过 `*.example.com`），与注册先后无关。
+         *          比对键的归一化见 `normalizeVirtualHostKey()`：去端口、折小写、去结尾的根点，
+         *          因此 `"API.Example.COM:443"`、`"api.example.com."` 与 `"api.example.com"` 是同一个站点。
+         *
+         * @param hostName 主机名，可带 `*.` 前缀；大小写与端口不参与比对
+         * @return 该主机的路由表引用，在它上面照常 get()/post()/addMiddleware()
+         * @throws Base::InvalidArgumentException 名字为空、只有 `*.`，或在**虚拟主机表上**再登记虚拟主机
+         *         （选站只做一层：多层语义要扯清「谁先套谁」，那是能被规则本身回答的问题，不该留给你猜）
+         * @note 命中的主机**只**在本表里找路由：根表上的路由（含 `staticFileDir()` 挂的那条 `any("*")`）
+         *       不参与，也不与主机表的路由比先后。要让某个主机有静态目录，就在它自己上面注册
+         * @note 根路由的中间件对所有主机都生效（它在最外层），各主机自己的中间件只对本主机生效（在内层）。
+         *       鉴权、CORS、访问日志这类横切逻辑因此不会因为加了个主机而被绕过
+         * @note 没带 Host（或 Host 归一化后为空）的请求一律走根表：h1 的 HTTP/1.0 式请求与直连 IP 的
+         *       探活请求都属此类，把它们判 404 会让健康检查先炸
+         * @see hasVirtualHosts(), route()
+         */
+        Router &virtualHost(const std::string &hostName);
+
+        /**
+         * @brief 本表是否登记过虚拟主机
+         * @return true 至少有一个虚拟主机
+         * @note 会话与路由内部用它决定「要不要为本次请求算一次主机键」：没登记虚拟主机时，
+         *       单站点服务一条请求都不多付那次字符串归一化
+         */
+        [[nodiscard]] bool hasVirtualHosts() const noexcept;
+
+        /**
          * @brief 添加全局中间件，将应用于所有路由。
          * @param middleware 中间件函数，所有权转移给路由器
          */
@@ -185,28 +219,36 @@ namespace AsynGyanis::Net
          * @details 本函数保证「一定写完响应」：要么由业务 handler 写，要么由这里写 404/405，
          *          因此调用方（会话循环）不需要再判断响应是否被填过。HEAD 请求在显式 head()、
          *          any() 与 GET 都没命中时会按 GET 再匹配一遍（RFC 9110 §9.1）。
-         * @note 写入 response 前会先 reset()：前面中间件已经落下的头部不会残留到错误响应里
+         * @details 登记过虚拟主机时，本函数先按请求的 Host 选站（见 virtualHost()）：选中主机的请求
+         *          在「根中间件 → 该主机中间件 → 该主机路由」这条链上跑，未选中的请求照旧只走根表。
+         * @note 未命中且没走虚拟主机时会先 reset()：前面中间件已经落下的头部不会残留到错误响应里。
+         *       命中虚拟主机时这一步跳过——外层根中间件此刻已经写好了 CORS/日志头部，里层无权清场；
+         *       「上一条报文的残留」由会话在每轮派发前的一次复位保证
          * @note HEAD 响应的正文不在本函数里剥：头部必须按完整正文序列化才能与 GET 逐字节一致，
          *       剥正文由会话的发送路径负责
          */
         Core::Task<> route(HttpRequest &request, HttpResponse &response);
 
         /**
-         * @brief 查询「按给定方法与 URI 命中的路由是不是流式注册的」
+         * @brief 查询「按给定方法、URI 与 Host 命中的路由是不是流式注册的」
          *
          * @details 供会话在头部收齐、正文未收完时判定派发时机：命中的路由是流式注册的，
          *          就提前派发（正文经 HttpRequestBody 边收边读）；否则等整条请求收齐再走
-         *          route()。匹配规则与 route() 完全一致（精确优先、先到先得、UNKNOWN 不放行），
+         *          route()。匹配规则与 route() 完全一致（先选站、精确优先、先到先得、UNKNOWN 不放行），
          *          只是不执行任何处理函数、也不产出 404/405。
          *
          * @param method 请求方法
          * @param uri 请求 URI 原文（本函数内部按 route() 同一口径截取路径部分）
+         * @param authority 请求的 Host 原文（h1 的 host 头部、h2/h3 的 :authority 补齐值），
+         *                  没有主机信息时传空视图
          * @return true 命中且该条路由为流式注册；路径未命中或命中的是普通路由时为 false
+         * @note 主机参数不能省：某主机注册了流式路由而根表同路径是普通路由时，只查根表会把请求
+         *       按普通路径派发——正文被整份缓冲后流就交不出字节了，那是一条看着像「业务卡住」的错
          * @note 仅 POST/PUT 可能返回 true：流式注册只经 postStreaming()/putStreaming() 两个方法绑定的
          *       入口产生，其余方法（含 GET/HEAD）在方法层即不可能命中流式路由，直接返回 false 不扫表
-         * @see postStreaming(), putStreaming()
+         * @see postStreaming(), putStreaming(), virtualHost()
          */
-        [[nodiscard]] bool hasStreamingRoute(HttpMethod method, std::string_view uri) const;
+        [[nodiscard]] bool hasStreamingRoute(HttpMethod method, std::string_view uri, std::string_view authority) const;
 
     private:
         /// 路由参数的临时收集容器：整条路由命中后才一次性提交给请求
@@ -324,6 +366,50 @@ namespace AsynGyanis::Net
          */
         static void finalizeResponse(HttpResponse &response);
 
+        /**
+         * @brief 把「已经在主机的表上完成匹配」的终点包进该主机自己的中间件管道
+         *
+         * @details 命中虚拟主机时派发要跑两层：根表的中间件在外（横切逻辑对所有站点一视同仁），
+         *          主机的中间件在内。匹配本身在 route() 里就按主机的表做完了，这里只多套一层管道，
+         *          因此这条额外的协程只在真用了虚拟主机时才有——单站点的派发形状与开销一字未改。
+         *
+         * @param hostTable 被选中的主机表
+         * @param request 本次请求
+         * @param response 本次响应
+         * @param terminalHandler 最里层的终点（命中的处理函数，或 404/405 的写入）
+         * @return TerminalHandler 交回给根管道的那个终末回调
+         */
+        [[nodiscard]] static TerminalHandler wrapWithHostPipeline(Router *hostTable, HttpRequest &request, HttpResponse &response, const TerminalHandler &terminalHandler);
+
+        /**
+         * @brief 按请求的 Host 选出该由哪张表服务
+         * @param request 待派发的请求（读它的 host 头部，零拷贝）
+         * @return 命中的主机表指针；本表没登记虚拟主机、或该请求不落在任何主机上时为空指针（交回根表）
+         */
+        Router *selectVirtualHostTable(const HttpRequest &request);
+
+        /**
+         * @brief 在已归一化的主机键里选一张表
+         * @details const 与非 const 两个版本共用同一份判定（见 Router.cpp 的 selectVirtualHostRow）：
+         *          派发与「流式派发判定」两条路必须选中同一张表，两份实现迟早会漂
+         * @param hostKey 归一化后的主机名（见 normalizeVirtualHostKey()）
+         * @return 命中的主机表指针；无匹配时为空指针
+         */
+        Router *findHostTable(const std::string &hostKey);
+
+        /// 同上，供只读路径（流式派发判定）使用
+        const Router *findHostTable(const std::string &hostKey) const;
+
+        /**
+         * @brief 把 Host/authority 文本收成虚拟主机的比对键
+         * @details 去端口（IPv6 字面量连方括号一起留，`[::1]:8443` → `[::1]`）、折成小写 ASCII、
+         *          去掉结尾的根点。空文本交回空串，调用方据此走默认站点。
+         *          只在真的登记了虚拟主机时才被调用：单站点不该为一次路由多付一次字符串拷贝。
+         * @param authority 头部原文，允许带端口
+         * @return 比对键（无主机信息时为空串）
+         */
+        [[nodiscard]] static std::string normalizeVirtualHostKey(std::string_view authority);
+
         /// 一级索引：字面路径 → 该路径上的方法绑定候选（通常 1~2 条，先到先得）
         /**
          * @brief 字符串视图的透明哈希，让「按路径查精确路由」不必先把视图变成 std::string
@@ -357,5 +443,14 @@ namespace AsynGyanis::Net
         std::vector<PatternRoute> m_patternRoutes;
 
         MiddlewarePipeline m_pipeline; ///< 全局中间件管道
+
+        /// 虚拟主机表：归一化主机名 → 该主机的路由表（键里带 `*.` 的是通配站点）
+        std::unordered_map<std::string, std::unique_ptr<Router>> m_virtualHosts;
+
+        /// 通配站点计数：为 0 时选站只查精确键，不必把整张表扫一遍
+        std::size_t m_wildcardVirtualHostCount{0};
+
+        /// 本表是不是一张虚拟主机表（由 virtualHost() 造出来的那批）：它自己不再选站
+        bool m_isVirtualHostTable{false};
     };
 } // namespace AsynGyanis::Net

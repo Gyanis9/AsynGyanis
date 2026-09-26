@@ -396,6 +396,12 @@ namespace AsynGyanis::Net
         return m_method;
     }
 
+    std::string_view HttpParser::host() const
+    {
+        // 首条 host 的取值视图：同名多条在 h1 里属于畸形报文，判定只认第一条，与请求侧读法一致
+        return m_headerStaging.firstValueView("host").value_or(std::string_view{});
+    }
+
     bool HttpParser::commitHeadersForStreaming()
     {
         if (!isHeaderBlockComplete())
