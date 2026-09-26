@@ -14,6 +14,7 @@
 #include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoContext.h"
+#include "Core/Process/GracefulShutdown.h"
 #include "Core/Process/WorkerSupervisor.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
@@ -50,11 +51,6 @@ namespace
 
     /// /big 的正文大小：与微基准 `*-response-compress-256k` 同档，两侧读数可互相印证
     constexpr std::size_t kLargeBodyBytes = 256 * 1024;
-
-    void handleSignal(int)
-    {
-        g_running.store(false);
-    }
 
     /**
      * @brief 构造一条固定内容的可压缩大正文，全进程只造一次
@@ -567,8 +563,12 @@ int main(int argc, char **argv)
         // 上限：与 IoContext/ThreadPool 的自动档同一口径，否则受限环境下这里会起满宿主核数条循环
         threads = std::max(1u, std::min(4u, static_cast<unsigned>(Platform::CpuAffinity::recommendedWorkerCount())));
 
-    std::signal(SIGINT, handleSignal);
-    std::signal(SIGTERM, handleSignal);
+    // 停机信号的接管交给库：屏蔽字必须在工作线程起来之前设好（子线程继承掩码），所以这两句
+    // 紧挨在算出线程数之后、造 IoContext 之前。动作本身只是把一个原子量置假，
+    // 与循环无关，因此用不绑事件循环的那种构造（绑了反而要求那时已经有循环在跑）
+    static_cast<void>(Core::GracefulShutdown::blockStopSignals());
+    Core::GracefulShutdown shutdown;
+    shutdown.onShutdown([] { g_running.store(false); });
 #ifndef _WIN32
     std::signal(SIGPIPE, SIG_IGN);
 #endif

@@ -118,7 +118,37 @@ namespace AsynGyanis::Core
         bool                    m_isDone{false};
     };
 
+    bool GracefulShutdown::blockStopSignals() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        // Windows 的控制台事件不经信号掩码这一套，这里没有需要提前做的事
+        return true;
+#else
+        // 被挡进屏蔽字的信号不会按缺省动作终止进程，只会被本类的等待线程取走。
+        // 屏蔽只对**之后**派生的线程生效（子线程继承掩码），所以要在起工作线程之前调
+        sigset_t watchSet;
+        fillWatchedSignalSet(watchSet);
+        const int blocked = ::pthread_sigmask(SIG_BLOCK, &watchSet, nullptr);
+        if (blocked != 0)
+        {
+            LOG_ERROR_FMT("GracefulShutdown: 屏蔽 SIGINT/SIGTERM 失败（errno={}），信号仍会按缺省动作直接终止进程", blocked);
+            return false;
+        }
+        return true;
+#endif
+    }
+
+    GracefulShutdown::GracefulShutdown()
+    {
+        install();
+    }
+
     GracefulShutdown::GracefulShutdown(EventLoop &loop) : m_loop(&loop)
+    {
+        install();
+    }
+
+    void GracefulShutdown::install() noexcept
     {
         if (g_owner != nullptr)
         {
@@ -134,20 +164,16 @@ namespace AsynGyanis::Core
             return;
         }
 #else
-        // 先把两路信号挡进屏蔽字：被挡住的信号不会按缺省动作终止进程，只会被下面那个等待线程取走。
-        // 屏蔽只对**之后**派生的线程生效（子线程继承掩码），因此本类要求尽早构造
-        sigset_t watchSet;
-        fillWatchedSignalSet(watchSet);
-        const int blocked = ::pthread_sigmask(SIG_BLOCK, &watchSet, nullptr);
-        if (blocked != 0)
+        if (!blockStopSignals())
         {
-            LOG_ERROR_FMT("GracefulShutdown: 屏蔽 SIGINT/SIGTERM 失败（errno={}），信号仍会按缺省动作直接终止进程", blocked);
             return;
         }
 #endif
 
         g_owner = this;
 #if !ASYN_PLATFORM_WIN32
+        sigset_t watchSet;
+        fillWatchedSignalSet(watchSet);
         m_waiter = std::jthread(
                 [this, watchSet](const std::stop_token &stopToken)
                 {
@@ -217,8 +243,10 @@ namespace AsynGyanis::Core
         if (isAlreadyRunning)
         {
             // 收尾已经开始了：静默丢掉这条注册等于让调用方以为「登记上了」，因此补投一次而不是拒收
-            LOG_INFO("GracefulShutdown: 收尾已经触发，这条动作按「迟到注册」单独投一次事件循环");
-            postRunnable([action = std::move(action)]() noexcept { runAction(action); }, nullptr);
+            LOG_INFO("GracefulShutdown: 收尾已经触发，这条动作按「迟到注册」单独投一次");
+            std::vector<std::function<void()>> lateActions;
+            lateActions.push_back(std::move(action));
+            releaseActions(std::move(lateActions), nullptr);
         }
         return token;
     }
@@ -295,6 +323,26 @@ namespace AsynGyanis::Core
 
         if (actions.empty())
         {
+            if (handshake != nullptr)
+            {
+                handshake->finish();
+            }
+            return;
+        }
+
+        releaseActions(std::move(actions), handshake);
+    }
+
+    void GracefulShutdown::releaseActions(std::vector<std::function<void()>> &&actions, std::shared_ptr<ShutdownHandshake> handshake) noexcept
+    {
+        if (m_loop == nullptr)
+        {
+            // 没绑循环就地执行：动作跑在这条收到信号的线程上。等它的一方正是本线程，
+            // 所以握手要在跑完后立刻放行，否则就是自己等自己
+            for (auto &action: actions)
+            {
+                runAction(action);
+            }
             if (handshake != nullptr)
             {
                 handshake->finish();

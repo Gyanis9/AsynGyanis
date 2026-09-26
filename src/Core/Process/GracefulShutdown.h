@@ -68,6 +68,14 @@ namespace AsynGyanis::Core
         explicit GracefulShutdown(EventLoop &loop);
 
         /**
+         * @brief 不绑定事件循环，接管停机信号
+         * @details 给「动作本来就与循环无关」的宿主用（例如只置一个原子标志、主循环自己轮到了再收口），
+         *          这类宿主往往在信号到达时还没起好任何循环。动作因此**在收到信号的那条线程上就地执行**，
+         *          要碰服务器与会话状态的动作请用带事件循环的那个构造。
+         */
+        GracefulShutdown();
+
+        /**
          * @brief 摘掉信号处理器并停掉等待线程
          * @note 已投出但还没执行的动作不受影响：它们在那个循环自己的队列里
          */
@@ -118,7 +126,18 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] bool isInstalled() const noexcept;
 
+        /**
+         * @brief 提前把 SIGINT/SIGTERM 挡进本线程的信号屏蔽字（POSIX；Windows 上空转返回 true）
+         * @details 屏蔽字只对被屏蔽之后**才派生**的线程生效，而构造本类往往已经晚于工作线程的创建。
+         *          需要让「所有线程都不按缺省动作终止进程」时，请在起线程之前调这一句，之后再构造本类。
+         *          构造本类时也会调它一次，因此「先构造再起线程」的常规写法不必额外做什么。
+         * @return true 屏蔽字已设好（或本平台没有这套机制）；false 系统调用失败
+         */
+        [[nodiscard]] static bool blockStopSignals() noexcept;
+
     private:
+        /// 装信号接管：登记进程级唯一观察者、设屏蔽字/处理器并起等待线程；失败时逐条出声并保持未装上
+        void install() noexcept;
         /**
          * @brief 触发收尾，并视情况等它跑完
          * @param reason 触发成因
@@ -126,6 +145,9 @@ namespace AsynGyanis::Core
          *        处理器一返回系统就终止进程，投回循环的收尾动作根本没有机会跑
          */
         void triggerShutdown(Reason reason, bool waitsForCompletion) noexcept;
+
+        /// 把动作交出去：绑了循环就投回循环线程，没绑就地执行
+        void releaseActions(std::vector<std::function<void()>> &&actions, std::shared_ptr<ShutdownHandshake> handshake) noexcept;
 
         /// 把已登记的动作投回事件循环执行（触发只发生一次，由调用方用原子量拦住）
         /// handshake 非空表示调用方要等动作跑完（Windows 的关闭事件），可为空

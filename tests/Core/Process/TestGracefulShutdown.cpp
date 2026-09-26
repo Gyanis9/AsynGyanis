@@ -248,4 +248,40 @@ namespace AsynGyanis::Core
         runner.join();
     }
 #endif
+    /**
+     * @brief 没绑事件循环时动作就地执行：给「动作本来就与循环无关」的宿主用
+     * @details 这类宿主（示例程序把一个原子量置假就是典型）在信号到达时往往还没起好任何循环，
+     *          要求它先有一条跑着的循环才能接管停机，等于把库外的活又推回使用方
+     */
+    TEST(GracefulShutdown, WithoutLoopRunsActionsInline)
+    {
+        GracefulShutdown shutdown;
+        ASSERT_TRUE(shutdown.isInstalled());
+
+        std::thread::id actionThreadId;
+        shutdown.onShutdown([&actionThreadId] { recordThreadId(actionThreadId); });
+
+        shutdown.requestShutdown();
+        EXPECT_EQ(actionThreadId, std::this_thread::get_id()) << "没绑循环却把动作投去了别处";
+        EXPECT_TRUE(shutdown.isTriggered());
+    }
+
+    /**
+     * @brief blockStopSignals() 可以早于构造调用，且重复调用不出错
+     * @details 屏蔽字只对被屏蔽之后派生的线程生效：要在起工作线程之前先挡住，否则那些线程
+     *          仍会按缺省动作把整个进程带走
+     */
+    TEST(GracefulShutdown, SignalsCanBeBlockedBeforeTheObserverIsBuilt)
+    {
+        EXPECT_TRUE(GracefulShutdown::blockStopSignals());
+        EXPECT_TRUE(GracefulShutdown::blockStopSignals()) << "重复调用不该报错";
+
+        GracefulShutdown shutdown;
+        EXPECT_TRUE(shutdown.isInstalled());
+
+        std::atomic<bool> isDone{false};
+        shutdown.onShutdown([&isDone] { isDone.store(true, std::memory_order_release); });
+        shutdown.requestShutdown();
+        EXPECT_TRUE(isDone.load(std::memory_order_acquire));
+    }
 } // namespace AsynGyanis::Core
