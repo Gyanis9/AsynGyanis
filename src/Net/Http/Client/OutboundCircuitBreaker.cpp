@@ -4,6 +4,10 @@
 
 namespace AsynGyanis::Net
 {
+    OutboundCircuitBreaker::OutboundCircuitBreaker() noexcept : OutboundCircuitBreaker(Configuration{})
+    {
+    }
+
     OutboundCircuitBreaker::OutboundCircuitBreaker(const Configuration configuration) noexcept : m_configuration(configuration)
     {
     }

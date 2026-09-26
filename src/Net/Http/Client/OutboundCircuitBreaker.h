@@ -73,10 +73,18 @@ namespace AsynGyanis::Net
         using Clock = std::chrono::steady_clock;
 
         /**
+         * @brief 按默认配置建一个空熔断器
+         * @details 与下面的带参构造分开写而不是给 `Configuration` 给缺省实参：GCC 不接受
+         *          「嵌套类带非静态数据成员初始化器」当外层类成员的默认实参（本仓在两处踩过同一条），
+         *          而 `Configuration{}` 正是这种写法
+         */
+        OutboundCircuitBreaker() noexcept;
+
+        /**
          * @brief 按给定配置建一个空熔断器
          * @param configuration 阈值与时限
          */
-        explicit OutboundCircuitBreaker(Configuration configuration = Configuration{}) noexcept;
+        explicit OutboundCircuitBreaker(Configuration configuration) noexcept;
 
         /**
          * @brief 询问某端点现在能不能发请求
