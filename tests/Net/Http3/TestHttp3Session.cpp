@@ -3024,6 +3024,267 @@ namespace AsynGyanis::Net
         EXPECT_EQ(peer.response().status, 200) << "差一个收尾的请求，补上收尾之后就该正常应答";
     }
 
+    namespace
+    {
+        /**
+         * @brief 挂起当前协程直到用例把手里的句柄 resume：用来造「处理器卡在产出预算管着的那一段里」
+         * @details 与隧道那条用例里的同形助手各写一份，是为了让每条用例自己掌握挂起点，不互相牵动
+         */
+        struct SuspendHandlerUntilResumed
+        {
+            std::coroutine_handle<> *slot; ///< 句柄落点：用例等它被外部 resume
+
+            [[nodiscard]] bool await_ready() const noexcept
+            {
+                return false;
+            }
+            void await_suspend(const std::coroutine_handle<> waiter) const noexcept
+            {
+                *slot = waiter;
+            }
+            static void await_resume() noexcept
+            {
+            }
+        };
+    } // namespace
+
+    /**
+     * @brief 处理器超过产出预算还没回来：收口这条流，且它事后产出的响应不再写上去
+     * @details 读时限管的是「请求字节还在不来」，这一段管「响应一直没产出」——h1/h2 用连接的空闲截止
+     *          同时罩着两头（派发前刷 writeTimeout），h3 没有套接字可等，此前这一段没人判：处理器卡在
+     *          外部等待上时，那条流连同它的正文额度与响应记录会一直占到连接收口。
+     *          收口之后还有一件必须钉住的事：处理器迟到的响应不能再往那条已复位的流上写字节，否则连接层
+     *          会为一条死流重新攒出待发字节，排空判定随之永远为真。
+     */
+    TEST(Http3Session, CutsStreamWhoseHandlerDoesNotReturnWithinTheProduceDeadline)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        const auto limits    = std::make_shared<HttpServerLimits>();
+        limits->writeTimeout = std::chrono::milliseconds{1};
+        session.setServerLimits(limits);
+
+        std::coroutine_handle<> handlerWaiter{};
+        Router                  router;
+        router.get("/hang",
+                   [&handlerWaiter](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("late answer");
+                       // 卡在业务自己的等待上：真业务里是等数据库、等下游服务、等一把没人放的锁
+                       co_await SuspendHandlerUntilResumed{&handlerWaiter};
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hang", "example.com");
+        ASSERT_FALSE(requestChunks.empty());
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        // 只喂一次：处理器挂在产出路径深处（不是 pump 自己的等待点上），多喂一次就是把已经交给深层
+        // 协程的控制权抢回来续跑——pump 会当作「处理器已经回来」继续写响应，用例前提随之被自己打乱
+        static_cast<void>(pumpTask.handle().resume());
+        ASSERT_TRUE(handlerWaiter != nullptr) << "用例前提：处理器要正卡在产出预算管着的那一段里";
+        ASSERT_FALSE(pumpTask.isReady()) << "用例前提：pump 要停在处理器里，而不是已经跑完";
+        EXPECT_TRUE(abortedStreams.empty()) << "时限还没到就把流收口了：判据提前生效";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::milliseconds{2});
+
+        ASSERT_EQ(abortedStreams.size(), 1U) << "处理器超过产出预算没回来，这条流不该一直占着会话";
+        EXPECT_EQ(abortedStreams.front().streamId, kFirstRequestStreamId);
+        EXPECT_EQ(abortedStreams.front().applicationErrorCode, 0x010cU) << "本端放弃一条请求该用 H3_REQUEST_CANCELLED";
+
+        // 放手让处理器回来：它产出的那份响应应当被丢掉，不再上线
+        handlerWaiter.resume();
+        EXPECT_TRUE(pumpTask.isReady()) << "处理器回来之后 pump 没有收束：迟到的响应停在了半路";
+        EXPECT_TRUE(std::ranges::none_of(sentStreamData, [requestStreamId = kFirstRequestStreamId](const CapturedStreamData &chunk) { return chunk.streamId == requestStreamId; }))
+                << "流已经复位，迟到的响应又往这条流上写字节：连接层会为死流重新攒待发数据";
+        EXPECT_FALSE(session.hasOutstandingWork()) << "被产出预算收口的流要连同记账一起摘掉，否则排空永远等不完";
+    }
+
+    /**
+     * @brief 处理器在产出预算之内回来：照常应答，时限判定不能误杀活着的响应
+     */
+    TEST(Http3Session, KeepsStreamWhoseHandlerCompletesWithinTheProduceDeadline)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        const auto limits    = std::make_shared<HttpServerLimits>();
+        limits->writeTimeout = std::chrono::seconds{60};
+        session.setServerLimits(limits);
+
+        Router router;
+        router.get("/fast",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("in time");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/fast", "example.com");
+        ASSERT_FALSE(requestChunks.empty());
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        // 本拍时刻就取「现在」：六十秒的预算不该被判定过点
+        session.expireStaleRequests(std::chrono::steady_clock::now());
+        EXPECT_TRUE(abortedStreams.empty()) << "没到产出预算的流被误杀了";
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        EXPECT_EQ(peer.response().status, 200) << "预算之内的处理器被时限判死了";
+    }
+
+    /**
+     * @brief writeTimeout 为 0 是「关掉这项保护」：过多少时间都不该收口
+     * @details 与 readTimeout 同一口径（见 HttpServerLimits），这条用例钉的是「不给保护留档位」的退化：
+     *          预算为 0 时仍然建表并按时钟判，等于把用户明确关掉的保护又打开
+     */
+    TEST(Http3Session, LeavesStreamAloneWhenTheProduceBudgetIsDisabled)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        const auto limits    = std::make_shared<HttpServerLimits>();
+        limits->writeTimeout = std::chrono::milliseconds::zero();
+        session.setServerLimits(limits);
+
+        std::coroutine_handle<> handlerWaiter{};
+        Router                  router;
+        router.get("/hang",
+                   [&handlerWaiter](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       co_await SuspendHandlerUntilResumed{&handlerWaiter};
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hang", "example.com");
+        ASSERT_FALSE(requestChunks.empty());
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        // 只喂一次：见上一条用例里同处位置的说明
+        static_cast<void>(pumpTask.handle().resume());
+        ASSERT_TRUE(handlerWaiter != nullptr) << "用例前提：处理器要还挂在里面";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::hours{1});
+        EXPECT_TRUE(abortedStreams.empty()) << "产出预算被明确关掉（0）之后，时限判定仍在收口活的流";
+
+        // 放手并补上收尾：这条流应当完整答出来。「保护关着就压根不该建时限条目」这件事，只有让响应
+        // 真的上线才算证明——只断「没被收口」在「判据根本没跑」时同样成立
+        handlerWaiter.resume();
+        ASSERT_TRUE(pumpTask.isReady()) << "用例前提：处理器回来之后 pump 应当跑完";
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        EXPECT_EQ(peer.response().status, 200) << "时限被关掉的那条流没能正常应答";
+    }
+
+    /**
+     * @brief 对端只连不读：响应字节出不了发送口时收口这条流，并把卡住的生产者叫醒
+     * @details 产出预算的另一半，而且是远端可触发的那一半：发送口一个字节都不接（对端压死流控窗口），
+     *          生产者挂在「等缓冲排空」上，挂多久由对端说了算。内存那侧早有闸门（每流约 256 KiB 的
+     *          留存量 + 传输层的待发上限），缺的是时间这侧：多条流各挂一个永不返回的正文，就能按对端的
+     *          意愿长期占着会话里的记录与在途正文额度。
+     *          叫醒这一步不能省：收口只把流复位，生产者还挂在句柄上——它醒来要看见「流已关闭」，
+     *          否则这条协程帧连同记录留到连接收口才散。
+     */
+    TEST(Http3Session, CutsStreamWhoseResponseBodyCannotLeaveTheSender)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        // 发送口一个字节都不接：本端交出去的正文全留在连接层的待发缓冲里，生产者随即挂在等空间上
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return std::size_t{0};
+                },
+                {}, nullptr, nullptr, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        const auto limits    = std::make_shared<HttpServerLimits>();
+        limits->writeTimeout = std::chrono::milliseconds{1};
+        session.setServerLimits(limits);
+
+        // 一段越过会话留存量（256 KiB）的正文：交不出去就必然挂起
+        const std::string oversizeBody(320U * 1024U, 'x');
+        bool              isProducerStoppedWriting = false;
+        Router            router;
+        router.get("/slow",
+                   [&oversizeBody, &isProducerStoppedWriting](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.startChunkedResponse(200);
+                       static_cast<void>(co_await response.writeChunk("first"));
+                       // 第二段出不去：这里挂起。被收口之后 writeChunk 回 false，处理器据此收手
+                       isProducerStoppedWriting = !co_await response.writeChunk(oversizeBody);
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/slow", "example.com");
+        ASSERT_FALSE(requestChunks.empty());
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> firstPumpTask = session.pump();
+        // 只喂一次：生产者挂在产出路径深处，多喂一次会把控制权从它手里抢回 pump
+        static_cast<void>(firstPumpTask.handle().resume());
+        ASSERT_TRUE(session.isUsable()) << "用例前提：会话应当在服务，而不是已经被别的原因作废";
+        ASSERT_FALSE(firstPumpTask.isReady()) << "用例前提：生产者要挂在等缓冲排空上，而不是已经跑完";
+        EXPECT_TRUE(abortedStreams.empty()) << "时限还没到就把流收口了：判据提前生效";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::milliseconds{2});
+
+        ASSERT_EQ(abortedStreams.size(), 1U) << "响应字节长时间出不了发送口，这条流不该一直占着会话";
+        EXPECT_EQ(abortedStreams.front().applicationErrorCode, 0x010cU) << "本端放弃一条请求该用 H3_REQUEST_CANCELLED";
+
+        // 收口只复位流并记下待叫醒的生产者；真正的叫醒在下一趟泵顶部的安全点做
+        Core::Task<> secondPumpTask = session.pump();
+        static_cast<void>(secondPumpTask.handle().resume());
+        EXPECT_TRUE(secondPumpTask.isReady()) << "第二趟泵没有跑完：叫醒与收口的位置不对";
+        EXPECT_TRUE(isProducerStoppedWriting) << "生产者没被叫醒：它还挂在等缓冲排空上，这条协程帧要留到连接收口才散";
+        EXPECT_FALSE(session.hasOutstandingWork()) << "被产出预算收口的流要连同记账一起摘掉，否则排空永远等不完";
+    }
+
     /**
      * @brief 钉住：本端没能交出响应时只复位那一条流，会话与整条连接继续服务其它请求
      * @details 这里用「响应头段越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE」造出一次本端失误。

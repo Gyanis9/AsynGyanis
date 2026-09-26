@@ -513,12 +513,22 @@ namespace AsynGyanis::Net
                 // 等处理器返回再设已经来不及（普通响应由下面那次补设兜住）
                 noteRequestIdOnResponse(request, response);
 
+                // 产出预算从把请求交出去这一刻起计：处理器执行与它等可写的那些时间都算在这一段
+                // （h1/h2 在同一个位置刷 writeTimeout 的空闲截止，口径对齐）
+                armProduceDeadline(streamId);
                 try
                 {
                     co_await m_router->route(request, response);
                 } catch (...)
                 {
                     handlerException = std::current_exception();
+                }
+                if (consumeProduceBudgetCut(streamId))
+                {
+                    // 这条流已经按产出预算收口（RESET_STREAM 都交出去了）：处理器事后才产出的响应不再
+                    // 写上来，也不落「已应答」这笔账——正文根本没出得去，记进直方图就是写脏
+                    clearProduceDeadline(streamId);
+                    continue;
                 }
                 if (handlerException != nullptr)
                 {
@@ -546,10 +556,14 @@ namespace AsynGyanis::Net
                     m_pendingTunnelStreams.erase(streamId);
                     // 扩展协商要看请求里的原文：这里按值取出去，协程随后会在处理器上挂起
                     co_await serveWebSocketTunnel(streamId, request.getHeader(kWebSocketExtensionsHeaderName).value_or(std::string{}), response);
-                    // 隧道这条请求的应答也要落账：h3 按 RFC 9220 以 2xx 应答（没有 101 这一档），
-                    // 记的就是那个真实状态码。耗时覆盖整条隧道的在途时长——与 h2 同一口径
-                    if (m_metrics != nullptr)
+                    // 隧道跑到一半被产出预算收口时（对端只连不读），这条应答跟流式半成品同一处置：
+                    // 字节没出得去，就不落「已应答」那笔账
+                    const bool isTunnelCutByProduceBudget = consumeProduceBudgetCut(streamId);
+                    clearProduceDeadline(streamId);
+                    if (m_metrics != nullptr && !isTunnelCutByProduceBudget)
                     {
+                        // 隧道这条请求的应答也要落账：h3 按 RFC 9220 以 2xx 应答（没有 101 这一档），
+                        // 记的就是那个真实状态码。耗时覆盖整条隧道的在途时长——与 h2 同一口径
                         m_metrics->recordResponse(response.status(), std::chrono::steady_clock::now() - requestReceivedTime);
                     }
                     continue;
@@ -594,6 +608,8 @@ namespace AsynGyanis::Net
             }
             // 答完一条就记一笔：单连接请求条数上限靠它触发排空
             noteRequestServed();
+            // 这条流的产出到此结束（或被拒掉根本没产出）：撤账，别让它留在时限表里被下一拍误收口
+            clearProduceDeadline(streamId);
             if (isRejectedWithoutHandler)
             {
                 // 这条请求不会被受理，正文也没必要继续往上传：响应已完整交给传输层，此刻请对端
@@ -884,6 +900,44 @@ namespace AsynGyanis::Net
         return std::chrono::steady_clock::now() + m_serverLimits->readTimeout;
     }
 
+    Http3Session::Deadline Http3Session::nextProduceDeadline() const noexcept
+    {
+        if (m_serverLimits == nullptr || m_serverLimits->writeTimeout <= std::chrono::milliseconds::zero())
+        {
+            // 同上：writeTimeout 为 0 就是关掉「响应产出预算」这项保护
+            return Deadline::max();
+        }
+        return std::chrono::steady_clock::now() + m_serverLimits->writeTimeout;
+    }
+
+    void Http3Session::armProduceDeadline(const std::int64_t streamId) noexcept
+    {
+        if (m_serverLimits == nullptr || m_serverLimits->writeTimeout <= std::chrono::milliseconds::zero())
+        {
+            // 保护关着就不建条目：这张表每拍都要被扫一遍，为一条永不过点的流留格子没有意义
+            return;
+        }
+        m_producingStreamDeadlines[streamId] = nextProduceDeadline();
+    }
+
+    void Http3Session::refreshProduceDeadline(const std::int64_t streamId) noexcept
+    {
+        if (const auto found = m_producingStreamDeadlines.find(streamId); found != m_producingStreamDeadlines.end())
+        {
+            found->second = nextProduceDeadline();
+        }
+    }
+
+    void Http3Session::clearProduceDeadline(const std::int64_t streamId) noexcept
+    {
+        static_cast<void>(m_producingStreamDeadlines.erase(streamId));
+    }
+
+    bool Http3Session::consumeProduceBudgetCut(const std::int64_t streamId) noexcept
+    {
+        return m_produceBudgetCutStreamIds.erase(streamId) != 0;
+    }
+
     void Http3Session::expireStaleRequests(const Deadline now)
     {
         if (m_connection == nullptr || m_isBroken || m_serverLimits == nullptr)
@@ -902,7 +956,7 @@ namespace AsynGyanis::Net
         }
         for (const auto &[streamId, streaming]: m_streamingRequests)
         {
-            // 正文收齐之后就不归这里管了（处理器那一头的预算本类不判），只等「还有字节要来」的流
+            // 正文收齐之后就不归这里管了：那一段是「响应产出预算」的领地，见下面第三趟
             if (!streaming->body.isComplete() && streaming->deadline <= now)
             {
                 expiredStreamIds.push_back(streamId);
@@ -920,7 +974,39 @@ namespace AsynGyanis::Net
             abortRequestStream(streamId, Http3ErrorCode::RequestCancelled);
             dropRequest(streamId);
         }
-        if (!expiredStreamIds.empty())
+
+        // 第三趟：产出相位。这一段两种停摆都归它——处理器迟迟不回来（挂在业务自己的等待上），
+        // 以及响应字节出不了发送口（对端只连不读的慢消费者，生产者可正挂在等缓冲空间上）
+        std::vector<std::int64_t> produceExpiredStreamIds;
+        for (const auto &[streamId, deadline]: m_producingStreamDeadlines)
+        {
+            if (deadline <= now)
+            {
+                produceExpiredStreamIds.push_back(streamId);
+            }
+        }
+
+        for (const std::int64_t streamId: produceExpiredStreamIds)
+        {
+            // 上面两趟里可能已经收口过这条流（dropRequest 会连同这张表一起摘账）：那就没什么可做的了
+            if (!m_producingStreamDeadlines.contains(streamId))
+            {
+                continue;
+            }
+            LOG_WARN_FMT("Http3Session: 流 {} 在 writeTimeout（{} 毫秒）内没有产出进展（处理器没回来，或响应字节出不了发送口），本端收口这条流", streamId,
+                         m_serverLimits->writeTimeout.count());
+            if (m_metrics != nullptr)
+            {
+                // 与读时限那一趟同一口径：本端按时限拒绝，不算「对端主动取消」
+                m_metrics->countBadRequest();
+            }
+            // 先记下这条流是被预算收口的：处理器随后才回来时，响应不再往这条已复位的流上写
+            m_produceBudgetCutStreamIds.insert(streamId);
+            abortRequestStream(streamId, Http3ErrorCode::RequestCancelled);
+            dropRequest(streamId);
+        }
+
+        if (!expiredStreamIds.empty() || !produceExpiredStreamIds.empty())
         {
             // 被收口的流上可能挂着等正文的处理器：当场叫醒，让它们看到终止而不是挂到连接结束
             wakeStreamingRequests();
@@ -930,6 +1016,9 @@ namespace AsynGyanis::Net
     void Http3Session::dropRequest(const std::int64_t streamId)
     {
         m_incomingRequests.erase(streamId);
+        // 这条流已经不产出了（对端重置、或本端按时限收口）：预算记账跟着摘，否则下一拍又把它当
+        // 「还在产出」判一次时限
+        static_cast<void>(m_producingStreamDeadlines.erase(streamId));
         // 还没派发的请求记录一并摘掉：对端已经重置了这条流，再派发就是给一条死流跑业务
         std::erase_if(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; });
         m_pendingTunnelStreams.erase(streamId);
@@ -1161,12 +1250,24 @@ namespace AsynGyanis::Net
         // 业务异常必须在这里收口：本协程的 Task 由会话自己驱动，异常若逃出去只会存进 promise
         // 被静默吞掉——对端既拿不到 500、也等不到 END_STREAM，只能挂到 QUIC 空闲超时
         std::exception_ptr handlerException = nullptr;
+        // 产出预算同样从交出去这一刻起计：处理器执行的时间、以及它写正文时挂在等缓冲空间上的
+        // 时间都归这一段（慢消费者那一头就是靠这里判出来的）
+        armProduceDeadline(streamId);
         try
         {
             co_await m_router->route(streamingRequest.request, response);
         } catch (...)
         {
             handlerException = std::current_exception();
+        }
+        if (consumeProduceBudgetCut(streamId))
+        {
+            // 这条流已按产出预算收口：响应不再写出（流已复位），也不落「已应答」这笔账。
+            // 收尾只做两件事——让记录可被摘掉、把这拍攒下的字节搬出去
+            clearProduceDeadline(streamId);
+            streamingRequest.isServeFinished = true;
+            flushPendingStreamData();
+            co_return;
         }
         // 头部是否已经上线要在改判之前问：response.reset() 之后 hasSentChunkedHead() 就不再反映
         // 真实发生过的事，而「半成品」这个判据要的正是它
@@ -1225,6 +1326,8 @@ namespace AsynGyanis::Net
             abortRequestStream(streamId, Http3ErrorCode::NoError);
         }
         streamingRequest.isServeFinished = true;
+        // 这条流的产出到此为止：撤下时限表，别让它被下一拍误判成停摆
+        clearProduceDeadline(streamId);
         // 把这一拍攒下的字节搬给传输层：无正文的应答（204/304、HEAD）只由 submitResponseHead 记下
         // 「本端已收尾」，关闭通知要等尾字节真的交出去才发得出（连接层 flush 里的 noteLocallyFinishedStream）。
         // 不搬这一步就永远等不到 onStreamClosed，这条流式记录连同它占着的窗口额度一起留到连接收口，
@@ -1576,6 +1679,8 @@ namespace AsynGyanis::Net
         }
 
         state.isHeadSent = true;
+        // 头部上线也是产出进展：一条只回头部就收尾的响应（HEAD、204）不会在正文那侧刷新时限
+        refreshProduceDeadline(streamId);
         return true;
     }
 
@@ -1616,6 +1721,9 @@ namespace AsynGyanis::Net
         }
         // 推完就往外送：连接层把这流的待发字节一次性交给传输层，本端不留副本也不等人来取
         flushPendingStreamData();
+        // 字节真的被连接层接走了，这就是「产出有进展」：把时限往后推一格。慢消费者堵在发送口外
+        // 时生产者可一直挂在这里，推不动的那一段才是产出预算要收口的对象
+        refreshProduceDeadline(streamId);
 
         // 与流式响应同一道闸：生产者跑得比网络快就挂起等排空；流一关闭立即收手
         while (!state->isStreamClosed && streamingResponsePendingByteCount(streamId) > kStreamingResponseBufferByteCount)

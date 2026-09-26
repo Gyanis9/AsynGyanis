@@ -282,6 +282,43 @@ namespace AsynGyanis::Net
         [[nodiscard]] Deadline nextRequestDeadline() const noexcept;
 
         /**
+         * @brief 下一次「该有产出进展」的时刻：从此刻按 writeTimeout 往后推
+         * @details 与 nextRequestDeadline() 分开是因为两段预算管的方向相反：那一段管「请求字节还在不
+         *          来」，这一段管「响应字节出不去、或处理器不回来」。h1/h2 由连接的空闲截止时间同时
+         *          罩着这两头（读刷 readTimeout、写与派发前刷 writeTimeout），h3 没有套接字可等，
+         *          只能按流各挂一份再由节拍循环落实
+         * @return Deadline 没设限额、或时限为 0（表示关闭这项保护）时给时钟上限，即永不过点
+         */
+        [[nodiscard]] Deadline nextProduceDeadline() const noexcept;
+
+        /**
+         * @brief 给一条开始产出的流挂上产出预算的截止点
+         * @param streamId 承载这条响应的流
+         */
+        void armProduceDeadline(std::int64_t streamId) noexcept;
+
+        /**
+         * @brief 产出有了进展（头上线、或正文被连接层接走）时把截止点往后推
+         * @details 只在表里已经有这条流时才推：没挂表的就是没开这项保护，不必为它建条目。慢消费者
+         *          那一头靠这一句活得久——只要字节真的在出门，就不该被当成停摆
+         * @param streamId 承载这条响应的流
+         */
+        void refreshProduceDeadline(std::int64_t streamId) noexcept;
+
+        /**
+         * @brief 撤下一条流的产出预算记账（响应交完，或这条流已经没了）
+         * @param streamId 承载这条响应的流
+         */
+        void clearProduceDeadline(std::int64_t streamId) noexcept;
+
+        /**
+         * @brief 这条流是否已被产出预算收口：取一次即清，因此每趟只判一次
+         * @param streamId 承载这条响应的流
+         * @return true 处理器回来时这条流已复位，响应不再写出
+         */
+        bool consumeProduceBudgetCut(std::int64_t streamId) noexcept;
+
+        /**
          * @brief 丢掉一条流上尚未收全的请求（流被重置或关闭）
          * @param streamId 流号
          */
@@ -774,5 +811,10 @@ namespace AsynGyanis::Net
         std::map<std::int64_t, std::unique_ptr<WebSocketTunnel>> m_webSocketTunnels;
         /// 已收全、等待派发的请求（按收全先后）
         std::deque<ReadyRequest> m_readyRequests;
+        /// 正在产出响应的流：流号 → 「下一次该有产出进展」的时刻。处理器执行与等可写都发生在这段
+        /// 窗口内（流式生产者那个 await 就在处理器的动态范围里），所以一段预算同时管住两头
+        std::map<std::int64_t, Deadline> m_producingStreamDeadlines;
+        /// 被产出预算收口的流号：处理器随后才回来时，响应不再写出（这条流已经按 RFC 9114 §8.1 复位）
+        std::set<std::int64_t> m_produceBudgetCutStreamIds;
     };
 } // namespace AsynGyanis::Net
