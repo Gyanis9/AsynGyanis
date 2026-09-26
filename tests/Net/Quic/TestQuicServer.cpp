@@ -15,6 +15,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/TimerQueue.h"
 #include "Core/Socket/InetAddress.h"
+#include "Core/Tls/TlsPolicy.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include "CoreTestSupport.h"
@@ -210,6 +211,82 @@ namespace AsynGyanis::Net
         {
             EXPECT_THROW(QuicServer server(loop, missingCertificate), Base::SystemException);
         }
+    }
+
+    /**
+     * @brief 钉住：TLS 策略真的被施加到 QUIC 这份上下文上，而不是收下就算
+     * @details 三条判据挑的是「OpenSSL 会拒绝的写法」：如果本服务端只是把策略存起来却没施加，
+     *          这三份配置都会构造成功，用例即红——这是「配置被静默忽略」唯一能在树内看到的形状。
+     *          版本那一条不同：把最高版本压到 1.2 是 QUIC 满足不了的要求，按「拒绝而不是悄悄改回」
+     *          处理，消息里要能看出是哪一项。证书夹具与 TLS 用例共用，不依赖外部服务。
+     */
+    TEST(QuicServer, RejectsTlsPolicyThatOpenSslOrQuicCannotHonorDuringConstruction)
+    {
+        Core::EventLoop loop;
+
+        QuicServer::Configuration cappedBelowTls13;
+        cappedBelowTls13.certificateFile                 = certificatePath();
+        cappedBelowTls13.privateKeyFile                  = privateKeyPath();
+        cappedBelowTls13.tlsPolicy.maximumProtocolVersion = Core::TlsPolicy::ProtocolVersion::Tls1_2;
+        try
+        {
+            QuicServer server(loop, cappedBelowTls13);
+            FAIL() << "QUIC 只跑 TLS 1.3，把最高版本限定在 1.2 的策略应当当场被拒";
+        } catch (const Base::Exception &failure)
+        {
+            const std::string message = failure.what();
+            EXPECT_TRUE(message.find("最高版本") != std::string::npos) << "异常没点出是版本这一项：" << message;
+        }
+
+        // 三份各自不合规的写法：套件串、曲线名、1.2 套件列表。哪一份都能被 OpenSSL 拒绝，
+        // 也各自对应策略里一个字段，所以三条都红或都绿才说明这一整块被接到了上下文上
+        const std::vector<std::pair<const char *, std::function<void(Core::TlsPolicy &)>>> refused{
+            {"1.3 套件串", [](Core::TlsPolicy &policy)
+             {
+                 policy.tls13CipherSuites = "TLS_NOT_A_REAL_SUITE";
+             }},
+            {"命名曲线", [](Core::TlsPolicy &policy)
+             {
+                 policy.supportedGroups = "not-a-curve";
+             }},
+            {"1.2 套件串", [](Core::TlsPolicy &policy)
+             {
+                 policy.cipherList = "!";
+             }},
+        };
+        for (const auto &[label, mutate]: refused)
+        {
+            QuicServer::Configuration configuration;
+            configuration.certificateFile = certificatePath();
+            configuration.privateKeyFile  = privateKeyPath();
+            mutate(configuration.tlsPolicy);
+            EXPECT_THROW(QuicServer server(loop, configuration), Base::Exception) << "这一项 OpenSSL 认不出来却起了服务：" << label;
+        }
+    }
+
+    /**
+     * @brief 钉住：一份写给 HTTPS 那两侧的完整策略交给 QUIC 也能起服务，不适用的项不当场报错
+     * @details 同一份 `TlsPolicy` 多半要喂给三个监听器：CA 文件、校验深度、1.2 套件串这几项在
+     *          「QUIC 不要求客户端证书」这条通路上用不上，但它们是合法配置，拒掉就等于逼使用方
+     *          为每个监听器各写一份策略。这一条与上一条配对，把边界钉在「合用但本通路用不上 → 收下」
+     *          与「本通路满足不了 → 拒绝」两侧。
+     */
+    TEST(QuicServer, AcceptsAPolicyWrittenForTheOtherTlsListeners)
+    {
+        Core::EventLoop loop;
+
+        QuicServer::Configuration configuration;
+        configuration.certificateFile            = certificatePath();
+        configuration.privateKeyFile             = privateKeyPath();
+        configuration.tlsPolicy.cipherList       = "HIGH:!aNULL:!MD5";
+        configuration.tlsPolicy.minimumProtocolVersion = Core::TlsPolicy::ProtocolVersion::Tls1_2;
+        configuration.tlsPolicy.certificateAuthorityFile = certificatePath();
+        configuration.tlsPolicy.verifyDepth      = 4;
+        configuration.tlsPolicy.supportedGroups  = "X25519:secp384r1";
+        configuration.tlsPolicy.securityLevel    = 2;
+
+        EXPECT_NO_THROW(QuicServer server(loop, configuration))
+                << "这几项在 QUIC 侧用不上，但都是合法配置，不该挡住启动";
     }
 
     namespace

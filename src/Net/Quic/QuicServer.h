@@ -14,6 +14,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncUdpSocket.h"
 #include "Core/Socket/InetAddress.h"
+#include "Core/Tls/TlsPolicy.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
@@ -60,6 +61,22 @@ namespace AsynGyanis::Net
             /// **多进程 worker 要共享恢复能力就得各进程装同一份**：QUIC 的恢复走 TLS 1.3 票据，
             /// 密钥不共享时客户端第二次连接被分到别的进程只能退回全量握手
             std::vector<std::string> sessionTicketKeyFiles;
+            /**
+             * @brief TLS 握手策略：与 HTTPS、出站客户端共用同一份 `Core::TlsPolicy`
+             *
+             * @details 存在的理由是「一份策略喂三个监听器」：安全等级、TLS 1.3 套件、命名曲线、票据
+             *          开关这些项，过去 HTTPS 侧改一处、QUIC 侧再改一处，两边迟早会漂。
+             * @note 这里有几项对**本监听器**不适用，因为 QUIC 只跑 TLS 1.3、且本服务端不要求客户端
+             *       证书：`cipherList`（1.2 及以下的套件串）、`certificateAuthorityFile/Path`、
+             *       `verifyDepth`、`revocationListFile`/`revocationCoversWholeChain`。它们被原样带上
+             *       而不报错，正是因为同一份策略多半还要交给 `HttpsServer` 或出站客户端用——
+             *       在那两侧它们是生效的。「填了字段但这一侧用不上」与「这一侧支持但没生效」是两件事，
+             *       后者才需要拒绝。
+             * @note 版本区间由本层管到底：策略的**下限**低于 1.3 时这里钉回 1.3（只会更严，不算说谎），
+             *       而把**上限**压到 1.3 以下是一条 QUIC 满足不了的配置，构造当场抛。
+             * @see Core::TlsPolicy
+             */
+            Core::TlsPolicy          tlsPolicy;
             std::size_t              maximumConnections{1024};      ///< 同时在线连接上限
             std::chrono::seconds     idleTimeout{30};               ///< 空闲超时：超过即由传输层收口
             std::string              applicationProtocol{"h3"};     ///< 必须协商出的 ALPN；不是它就拒绝握手

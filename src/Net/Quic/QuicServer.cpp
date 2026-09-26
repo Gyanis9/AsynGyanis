@@ -6,6 +6,7 @@
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/EventLoop/TimerQueue.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
+#include "Core/Tls/TlsPolicy.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
 #include "Net/Http/Router.h"
@@ -70,6 +71,33 @@ namespace AsynGyanis::Net
             }
             return SSL_TLSEXT_ERR_OK;
         }
+
+        /**
+         * @brief 把 TLS 策略落到 QUIC 服务端这份 SSL_CTX 上，并把版本钉在 TLS 1.3
+         * @details 先施加策略再钉下限，顺序反过来会得到一份「策略说了话而没人听」的配置：策略里的
+         *          安全等级、1.3 套件、命名曲线都还在，唯独版本被后面那一句覆盖掉。下限低于 1.3 时
+         *          钉回 1.3 只会更严，不算对配置说谎；把**上限**压到 1.3 以下则是 QUIC 满足不了的
+         *          要求，这里当场拒掉而不是悄悄改回去——配置说的是「我最多说到 1.2」，实际却在 1.3 上
+         *          服务，两边说法不一致，比启动失败难查得多。
+         * @param context 目标 SSL_CTX，所有权不归本函数
+         * @param policy 待施加的策略
+         * @throws Base::SystemException 策略与 QUIC 的版本要求冲突，或 OpenSSL 拒绝了其中某一项
+         */
+        void applyTlsPolicyToQuicContext(SSL_CTX *const context, const Core::TlsPolicy &policy)
+        {
+            if (policy.maximumProtocolVersion == Core::TlsPolicy::ProtocolVersion::Tls1_2)
+            {
+                throw Base::SystemException(
+                    "QUIC 服务端启动失败：TLS 策略把最高版本限定在 TLS 1.2，而 QUIC 只跑 TLS 1.3（RFC 9001）");
+            }
+            // 内置套件串传空：1.2 及以下的列表对一条只跑 1.3 的通路没有意义，
+            // 套上去只会留下一份永远不会被用到的偏好
+            Core::applyTlsPolicy(context, policy, nullptr);
+            if (SSL_CTX_set_min_proto_version(context, TLS1_3_VERSION) != 1)
+            {
+                throw Base::SystemException("QUIC 服务端启动失败：无法把 TLS 最低版本限到 1.3（" + quicOpenSslErrorText() + "）");
+            }
+        }
     } // namespace
 
     QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration) :
@@ -84,11 +112,8 @@ namespace AsynGyanis::Net
         }
         SSL_CTX *const tlsContext = ownedTlsContext.get();
 
-        // QUIC 只用 TLS 1.3：低版本没有 QUIC 需要的握手接口
-        if (SSL_CTX_set_min_proto_version(tlsContext, TLS1_3_VERSION) != 1)
-        {
-            throw Base::SystemException("QUIC 服务端启动失败：无法把 TLS 最低版本限到 1.3（" + quicOpenSslErrorText() + "）");
-        }
+        // TLS 策略与「QUIC 只用 TLS 1.3」这一条钉在一起施加：低版本没有 QUIC 需要的握手接口
+        applyTlsPolicyToQuicContext(tlsContext, m_configuration.tlsPolicy);
         if (SSL_CTX_use_certificate_chain_file(tlsContext, m_configuration.certificateFile.c_str()) != 1)
         {
             throw Base::SystemException("QUIC 服务端启动失败：证书加载失败（" + m_configuration.certificateFile + "）：" + quicOpenSslErrorText());

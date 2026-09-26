@@ -17,6 +17,21 @@
 
 ### 新增
 
+- **QUIC 服务端接受同一份 TLS 策略**：`QuicServer::Configuration` 新增 `tlsPolicy`（类型就是
+  HTTPS 与出站客户端共用的那份 `Core::TlsPolicy`），构造期经 `applyTlsPolicy()` 落到那份 SSL_CTX 上，
+  之后再把最低版本钉回 TLS 1.3。此前 QUIC 侧的上下文是自己一行行搭的：安全等级、TLS 1.3 套件、
+  命名曲线、票据开关这几项在 HTTPS 上能配、在 h3 上配不了，正是这份类型当初要收掉的那种漂移。
+  两侧边界分别钉住：**合用但本通路用不上的照收**（`cipherList` 是 1.2 及以下的套件串，
+  `certificateAuthorityFile/Path`、`verifyDepth`、`revocationListFile` 要的是「校验对端证书」这一步，
+  而本服务端不要求客户端证书——同一份策略多半还要交给 `HttpsServer` 或出站客户端用，为这几项报错
+  等于逼使用方给每个监听器各写一份）；**本通路满足不了的当场拒**（把最高版本压到 1.2 是一条 QUIC
+  做不到的要求，悄悄改回 1.3 就是对配置说谎，构造抛出并点出是版本这一项）。下限低于 1.3 仍按
+  「只会更严」处理，不算说谎。
+  用例：`QuicServer.RejectsTlsPolicyThatOpenSslOrQuicCannotHonorDuringConstruction` 拿三份各自
+  不合用的写法（1.3 套件串、命名曲线、1.2 套件列表）钉「策略真的被施加到上下文上」——只存不施时
+  这三份都能起服务；`QuicServer.AcceptsAPolicyWrittenForTheOtherTlsListeners` 钉另一侧。
+  证伪：去掉施加那一步，恰好只有前一条红。对外行为（握手仍按 1.3、仍协商 h3）由 `scripts/quic_cross_check.sh`
+  交给 aioquic 那侧裁定，不在本仓库里自测。
 - **TLS 策略加吊销检查（CRL）**：`Core::TlsPolicy` 新增 `revocationListFile` 与
   `revocationCoversWholeChain`，`applyTlsPolicy()` 把列表读进上下文自己的那份证书存储，再打开
   `X509_V_FLAG_CRL_CHECK`（整条链都查时再加 `_ALL`）。因为服务端与出站客户端共用同一份策略，
