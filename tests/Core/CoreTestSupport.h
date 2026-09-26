@@ -250,10 +250,12 @@ namespace AsynGyanis::Core::TestSupport
         /**
          * @brief 启动一个任务并等到它完成
          *
-         * @details 内层任务内联执行到它的第一个挂起点就挂起，调用线程不会被占住，后续由事件
-         *          循环线程与任务自身的完成路径协作推进。完成标记是驱动协程的**最后一次**出参
-         *          写入，之后只走 final_suspend 收尾，故按值搬出结果安全；帧本身仍留在
-         *          m_driverTasks 里活到 join 之后。
+         * @details 首次恢复也交给事件循环线程做，**不在调用线程上 resume**：驱动协程会立刻把内层
+         *          任务跑到它的第一个挂起点，而那条挂起路径上可能就地注册 IO 观察者
+         *          （`AsyncSocket::ensureWatcher()` → 后端的 `addFileDescriptor`）。循环线程此刻
+         *          正堵在 `wait()` 里，两份线程同时碰同一份后端状态就是数据竞争——Windows 上实测
+         *          表现为事件循环后端的偶发堆破坏。完成标记是驱动协程的**最后一次**出参写入，之后
+         *          只走 final_suspend 收尾，故按值搬出结果安全；帧仍留在 m_driverTasks 里活到 join 之后。
          *
          * @tparam ResultType 任务结果类型
          * @param task 待等待的异步任务
@@ -266,8 +268,7 @@ namespace AsynGyanis::Core::TestSupport
             std::atomic<bool>         finishedFlag{false};
 
             Task<void> driver = collectTask<ResultType>(std::move(task), completed.value, completed.error, finishedFlag);
-            // 内联启动：驱动协程只做入队，控制权在这里立刻回到调用线程
-            driver.handle().resume();
+            m_loop->scheduler().scheduleRemote(driver.handle());
 
             completed.finished = waitForCondition([&finishedFlag]()
             {
