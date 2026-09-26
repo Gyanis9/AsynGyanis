@@ -364,6 +364,11 @@ LOG_INFO_FMT("listening on port {}", port);
 
 ## 模块概览
 
+**支持范围与交付形态**：目前只支持 Linux 与 Windows——顶层 `CMakeLists.txt` 对其他系统（含 macOS/BSD）在
+配置阶段直接 `FATAL_ERROR`，`Core` 的事件后端只有 epoll、io_uring（编译期可选）与 IOCP，没有 kqueue。
+五个模块**都只出静态库**（`add_library(... STATIC)`）：没有 `BUILD_SHARED_LIBS` 开关，公开头也没有符号可见性
+标注，因此想以 `.so`/`.dll` 分发需要先补导出宏与逐个类的标注——本期不支持，Conan 与 vcpkg 两条路给的都是静态库。
+
 ### Platform — 平台底层（`libPlatform.a`）
 
 | 分类 | 内容 |
@@ -457,11 +462,15 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模：**Windows Debug（含 ASan）2534 个用例全绿**，同一份代码 Windows Release 2529（差的 5 条来自日志格式化器那批按构建配置编译的用例：Debug 侧 8 条 `*DebugBuild*`、Release 侧 3 条 `*ReleaseBuild*`），Linux 侧在容器 `ubuntu24` 以 GCC + ASan + LSan + UBSan 跑出 **2542 个用例全绿、零泄漏、零未定义行为**。两侧差 8 条是按用例名逐行 diff 出来的（先把参数化标签的写法差异归一化：Linux 写 `/stride1`、Windows 写 `/1`）：**Linux 独有 14 条、Windows 独有 6 条、两侧共有 2528 条**。Linux 那 14 条：epoll 描述符重注册、inotify 的「目录重建后可再监视」「改名走开后可重挂」「换掉 inode 的单文件被补挂」、`sendfile` 零拷贝三条、`Process` 的存活/请求终止/强杀三条与多进程 worker 三条真实行为、静态文件 inode 被回收后的身份识别。Windows 那 6 条：「目录数超出一个等待批次」、「多进程在本机被拒」、描述符长度回绕的拒绝、普通文件不可监视、「创建时间派生的身份认不出同名重建」、「改名走开的目录原位重建后可再挂」。其中 36 个是真机门控用例，无凭据即 SKIP；还有一条按平台能力门控（UDP 共享端口要内核有 `SO_REUSEPORT` 才断言，因此本机这轮是 37 条 SKIP、容器里 36 条）
+- 当前规模（2026-09-27 实测）：**Windows Debug（含 ASan）3298 例全绿、68 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3308 例全绿、68 例 SKIP、零告警、零泄漏、零未定义行为**。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、`Process` 与多进程 worker 的真实行为、停机信号的实投递；Windows 独有完成端口相关与「本机不支持多进程」那几条。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。68 例 SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 
 ## 性能
+
+表中读数来自**未开** `ASYN_WITH_MIMALLOC`、**未开** `ASYN_WITH_IO_URING` 的 Release 构建（epoll / 完成端口后端 +
+系统分配器）。把这一句写在这里是为了别让「Release + LTO」被读成「全部性能开关都开了」：这两档的开/关差异
+尚未实测，没测过的收益不写。
 
 单进程、同机回环，客户端与被测服务共享同一台机器。这类数字只能用于**同一台机器上的前后对比**：
 换一次会话、换个邻居负载都能差出近一倍，跨机器比没有意义，因此这里不写「比谁快」的结论。
