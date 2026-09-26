@@ -32,6 +32,8 @@ namespace AsynGyanis::Core
 
 namespace AsynGyanis::Net
 {
+    class HttpCookieJar;
+
     /// 一条头部字段：名与值都按对端/调用方给出的原文留着，客户端不做大小写折叠
     using HttpClientHeaderField = std::pair<std::string, std::string>;
 
@@ -234,6 +236,38 @@ namespace AsynGyanis::Net
         /// 收掉所有空闲连接：在途请求用的连接不受影响
         void closeIdleConnections() noexcept;
 
+        /**
+         * @brief 挂上一个 Cookie 存储罐，让这条实例自动收发放给的 Cookie。
+         * @details 装上之后：每次请求前按目标主机、连接是否加密与请求路径拼一条 Cookie 头发出去；
+         *          响应里的 Set-Cookie 全部收回罐子（作用域规则见 `HttpCookieJar`）。
+         * @details 调用方自己在 `request.headers` 里写了 cookie 头时**以调用方为准**，本方法不再补——
+         *          那等于静默改写他明确给出的头部。多个实例共用一个罐子即可共享会话（罐子本身可跨线程）。
+         * @note 只有实例这一路（`get`/`post`/带池的 `send`）会用到罐子；静态的 `send()` 不带任何状态，
+         *       因此也没有罐子可挂
+         * @param cookieJar 罐子；传空指针摘掉（默认就是空，不挂罐子时行为与之前完全一致）
+         */
+        void setCookieJar(std::shared_ptr<HttpCookieJar> cookieJar) noexcept;
+
+        /**
+         * @brief 取回当前挂着的 Cookie 存储罐。
+         * @return std::shared_ptr<HttpCookieJar> 没挂则返回空指针
+         */
+        [[nodiscard]] std::shared_ptr<HttpCookieJar> cookieJar() const noexcept;
+
+        /**
+         * @brief 走本实例的连接池（以及挂上的 Cookie 罐）发一次完整请求。
+         * @details 实例这一向原先只有 `get`/`post` 两个便利入口，带自定义头部的请求只能退回静态
+         *          `send()`——那条路不带池，也就把连接复用与 Cookie 罐一起丢了。这里补上的是同一个
+         *          形状的实例版本，失败口径与 `get`/`post` 一致（空指针 + ERROR 日志）。
+         * @param url 目标地址，口径同 parseUrl
+         * @param request 方法、正文、媒体类型与附加头部；其中视图须活到本次 co_await 完成
+         * @param requestTimeout 整体时限（连接、握手、发送、收完响应四段之和）
+         * @return std::unique_ptr<HttpClientResponse> 响应；失败返回空
+         * @throws Base::InvalidArgumentException URL 畸形或头部写法会撕裂请求行
+         */
+        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> send(std::string_view url, const HttpClientRequest &request,
+                                                                           std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
+
     private:
         /**
          * @brief 走这条实例的连接池发一次请求，失败口径同静态的 get()/post()
@@ -251,5 +285,7 @@ namespace AsynGyanis::Net
         /// 本实例自己的 TLS 上下文（客户端角色）：策略、信任库与客户端证书都装在这里。
         /// 每个实例一份而不是共用进程级那一份：共用时一个实例的策略会把别人的握手档位一起改掉
         std::unique_ptr<Core::TlsContext> m_clientTls;
+        /// 可选的 Cookie 存储罐：为空即完全不管 Cookie（不额外拷一份请求，也不改动任何头部）
+        std::shared_ptr<HttpCookieJar> m_cookieJar;
     };
 } // namespace AsynGyanis::Net

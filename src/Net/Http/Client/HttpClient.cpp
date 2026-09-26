@@ -11,6 +11,7 @@
 #include "Core/Tls/TlsContext.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/Client/HttpContentCoding.h"
+#include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http2/Http2ClientConnection.h"
 #include "Net/Http2/Http2Session.h"
@@ -1166,20 +1167,71 @@ namespace AsynGyanis::Net
                                                                            const std::chrono::milliseconds requestTimeout)
     {
         const ParsedUrl parsed = parseUrl(url);
-        validateRequest(request);
+
+        // 挂了罐子才拷一份请求出来加头部：没挂时开销与行为都和原来一样
+        std::optional<HttpClientRequest> requestWithCookie;
+        const HttpClientRequest         *effectiveRequest = &request;
+        if (m_cookieJar != nullptr)
+        {
+            // 调用方自己写了 cookie 头就以他为准：替他改成罐子里的那份，等于静默覆盖明确给出的头部
+            const bool callerHasCookieHeader =
+                    std::ranges::any_of(request.headers, [](const HttpClientHeaderField &field) { return equalsIgnoreAsciiCase(field.first, "cookie"); });
+            if (!callerHasCookieHeader)
+            {
+                if (const auto cookieHeader = m_cookieJar->buildRequestHeader(parsed.host, parsed.scheme == "https", parsed.path); cookieHeader.has_value())
+                {
+                    requestWithCookie = request;
+                    requestWithCookie->headers.emplace_back("cookie", *cookieHeader);
+                    effectiveRequest = &requestWithCookie.value();
+                }
+            }
+        }
+
+        validateRequest(*effectiveRequest);
         std::string                         failureReason;
-        std::unique_ptr<HttpClientResponse> response = co_await performRequest(*m_loop, request, parsed, requestTimeout, &m_pool, failureReason, m_clientTls.get());
+        std::unique_ptr<HttpClientResponse> response = co_await performRequest(*m_loop, *effectiveRequest, parsed, requestTimeout, &m_pool, failureReason, m_clientTls.get());
         if (!response)
         {
             LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);
             co_return nullptr;
         }
-        if (!applyContentEncoding(request, *response, failureReason))
+        if (!applyContentEncoding(*effectiveRequest, *response, failureReason))
         {
             LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);
             co_return nullptr;
         }
+
+        if (m_cookieJar != nullptr)
+        {
+            std::vector<std::string> setCookieValues;
+            for (const HttpClientHeaderField &field: response->headers)
+            {
+                if (equalsIgnoreAsciiCase(field.first, "set-cookie"))
+                {
+                    setCookieValues.push_back(field.second);
+                }
+            }
+            if (!setCookieValues.empty())
+            {
+                m_cookieJar->storeFromResponse(parsed.host, parsed.scheme == "https", parsed.path, setCookieValues);
+            }
+        }
         co_return response;
+    }
+
+    Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::send(const std::string_view url, const HttpClientRequest &request, const std::chrono::milliseconds requestTimeout)
+    {
+        co_return co_await sendPooled(url, request, requestTimeout);
+    }
+
+    void HttpClient::setCookieJar(std::shared_ptr<HttpCookieJar> cookieJar) noexcept
+    {
+        m_cookieJar = std::move(cookieJar);
+    }
+
+    std::shared_ptr<HttpCookieJar> HttpClient::cookieJar() const noexcept
+    {
+        return m_cookieJar;
     }
 
     std::size_t HttpClient::idleConnectionCount() const noexcept

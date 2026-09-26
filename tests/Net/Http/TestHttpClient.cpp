@@ -12,6 +12,7 @@
 #include <vector>
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/Gzip.h"
 namespace AsynGyanis::Net
 {
@@ -513,5 +514,80 @@ namespace AsynGyanis::Net
         const SendOutcome unsupported = runSend(url, HttpClientRequest{});
         EXPECT_TRUE(unsupported.body.empty()) << "解不了的编码被原样交回业务了：" << unsupported.body;
         EXPECT_NE(unsupported.reason.find("br"), std::string::npos) << "要说清是哪一种编码：" << unsupported.reason;
+    }
+    namespace
+    {
+        /**
+         * @brief 挂上罐子后连发三次请求，把三次的正文分别落下来
+         * @details 走的是实例这一路（带池、带 jar），静态 send() 没有状态可挂
+         */
+        Core::Task<void> jarRoundTripTask(Core::EventLoop &loop, const std::string loginUrl, const std::string whoamiUrl, const std::string callerCookieUrl, std::string &firstBody,
+                                          std::string &secondBody, std::string &thirdBody, std::size_t &observedJarCount)
+        {
+            HttpClient client(loop);
+            auto       jar = std::make_shared<HttpCookieJar>();
+            client.setCookieJar(jar);
+
+            const std::unique_ptr<HttpClientResponse> loginResponse = co_await client.get(loginUrl);
+            firstBody                                               = loginResponse != nullptr ? loginResponse->body : "<请求失败>";
+            observedJarCount                                        = jar->cookieCount();
+
+            const std::unique_ptr<HttpClientResponse> whoamiResponse = co_await client.get(whoamiUrl);
+            secondBody                                               = whoamiResponse != nullptr ? whoamiResponse->body : "<请求失败>";
+
+            HttpClientRequest explicitRequest;
+            explicitRequest.headers.emplace_back("cookie", "mine=1");
+            const std::unique_ptr<HttpClientResponse> callerResponse = co_await client.send(callerCookieUrl, explicitRequest);
+            thirdBody                                                = callerResponse != nullptr ? callerResponse->body : "<请求失败>";
+
+            loop.stop();
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：罐子会在同一台主机的一次会话里自动收发放到的 Cookie，而调用方自己写的头部优先
+     * @details 三条判据各挡一种错：收了不发（jar 只写不读）、发了但把调用方的 cookie 头改掉
+     *          （静默覆盖明确意图）、以及服务端 Set-Cookie 根本没被认出来。
+     *          夹具是真实 HTTP/1.1 服务端与真实套接字，因此这条也顺带盯住序列化侧有没有把
+     *          set-cookie 与 cookie 原样搬上线。
+     */
+    TEST(HttpClient, CarriesCookiesAcrossRequestsWhenJarIsAttached)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/login",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.setCookie(HttpCookie("sid", "42"));
+                                                            response.setBody("logged-in");
+                                                            co_return;
+                                                        });
+                                             router.get("/whoami",
+                                                        [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.setBody(request.getHeader("cookie").value_or("<none>"));
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string base = "http://127.0.0.1:" + std::to_string(fixture.listeningPort());
+
+        Core::EventLoop loop;
+        std::string     firstBody;
+        std::string     secondBody;
+        std::string     thirdBody;
+        std::size_t     observedJarCount = 0;
+        auto            task             = jarRoundTripTask(loop, base + "/login", base + "/whoami", base + "/whoami", firstBody, secondBody, thirdBody, observedJarCount);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(firstBody, "logged-in");
+        EXPECT_EQ(observedJarCount, 1U) << "服务端发的 Set-Cookie 没有收进罐子";
+        EXPECT_EQ(secondBody, "sid=42") << "收了却不发：第二次请求应当自动带上罐子里那条";
+        EXPECT_EQ(thirdBody, "mine=1") << "调用方自己写了 cookie 头，罐子不该把他那份改掉";
     }
 } // namespace AsynGyanis::Net
