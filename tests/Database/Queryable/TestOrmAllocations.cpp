@@ -5,7 +5,7 @@
 // 覆盖形状：first() 按主键取一行、toList() 取二十行、count()、update() 按主键改一行、
 // insertBatch() 的两条形状（20 行单条语句、1000 行分块）。
 // 两条自检先行：计数件要看得见一次普通堆分配，空窗口要量出零次——否则下面所有读数都不可信。
-// 稳态读数（语句缓存与分配器空闲链已预热，每次操作）：
+// 稳态读数（语句缓存与分配器空闲链已预热，每次操作；下面是 **Release/NDEBUG** 那一档）：
 //   first() 取一行     GCC 13 次，MSVC 14 次
 //   toList() 取二十行  GCC 37 次 / 23736 字节（每行不到两次），MSVC 86 次
 //   count()            两侧都是 6 次 / 451 字节
@@ -14,6 +14,10 @@
 //   批量 1000 行       两侧都是 4022 次（每次约 4 次/行），MSVC 473954 / GCC 415451 字节
 // 两侧读数不同不是代码差异，而是 STL 的 vector 扩容系数与 string 分档不同（直方图实测：
 // libstdc++ 把 21 字节的户名记在 16..31 档、MSVC 记在 32..47 档，且 MSVC 的扩容链更长）。
+// **配置也是口径**：MSVC 的 Debug 打开 _ITERATOR_DEBUG_LEVEL=2，每个 STL 容器对象多挂一份代理
+// 分配，同形状的实测读数变成 first() 75、toList 318、count 31、update 72、批量 20 行 216 次、
+// 批量 1000 行 9077 次——把钉下上面那批数字的提交单独编出来重跑，Debug 下照样是这个数，所以
+// 这不是代码涨了分配。门禁跑的是 Debug+ASan，因此 Debug 那一档必须自己钉一套数（见下面的常量）。
 // 预算一般取实测加一档；first() 这一格已收到实测值本身——它走的是「一行都不必经向量」的通道，
 // 再多一次分配就是回归，留着余量反而看不住。
 
@@ -56,16 +60,41 @@ namespace
     using AsynGyanis::TestSupport::measureOperations;
     using AsynGyanis::TestSupport::measurePerOperation;
 
-#if defined(_MSC_VER)
-    /// MSVC 的 STL 分档与扩容系数不同，同一形状的读数比 libstdc++ 高一截，各自按实测收紧
-    inline constexpr std::uint64_t kFirstRowAllocationBudget = 14U;
-    inline constexpr std::uint64_t kListAllocationBudget = 96U;
-    inline constexpr std::uint64_t kUpdateAllocationBudget = 24U;
+    // 台账钉的是「一次操作碰几次堆」，而这个数同时取决于**编译器**与**配置**：MSVC 的 Debug 会打开
+    // _ITERATOR_DEBUG_LEVEL=2，每个 STL 容器对象多挂一份代理分配，同一段代码的读数比 Release 高好几倍
+    // （实测 first() 从 14 涨到 75、20 行列表从 96 涨到 318）。这不是代码涨了分配——把钉下这批数字的
+    // 那个提交单独编出来重跑，Debug 下照样 75。所以三档各按自己的实测钉，别把某一档的数套到另一档；
+    // 换编译器、换配置、或换掉链接的 SQLite（它的 prepare/step 也走 malloc，一样计入），都要重测再钉。
+#if defined(_MSC_VER) && !defined(NDEBUG)
+    /// MSVC Debug（迭代器检查开满，门禁这一路还带 ASan）的实测读数加一档
+    inline constexpr std::uint64_t kFirstRowAllocationBudget = 80U;         ///< 实测 75
+    inline constexpr std::uint64_t kListAllocationBudget = 340U;            ///< 实测 318
+    inline constexpr std::uint64_t kCountAllocationBudget = 34U;            ///< 实测 31
+    inline constexpr std::uint64_t kUpdateAllocationBudget = 78U;           ///< 实测 72
+    inline constexpr std::uint64_t kSmallBatchAllocationBudget = 232U;      ///< 实测 216
+    inline constexpr std::uint64_t kSmallBatchBytesBudget = 14848U;        ///< 实测 13816
+    inline constexpr std::uint64_t kChunkedBatchAllocationBudget = 9600U;   ///< 实测 9077
+    inline constexpr std::uint64_t kChunkedBatchBytesBudget = 696320U;     ///< 实测 643028
+#elif defined(_MSC_VER)
+    /// MSVC Release 的实测读数加一档：STL 分档与扩容系数与 libstdc++ 不同，同一形状高一截
+    inline constexpr std::uint64_t kFirstRowAllocationBudget = 14U;         ///< 实测 14，已收到实测值本身
+    inline constexpr std::uint64_t kListAllocationBudget = 96U;             ///< 实测 86
+    inline constexpr std::uint64_t kCountAllocationBudget = 8U;             ///< 实测 6
+    inline constexpr std::uint64_t kUpdateAllocationBudget = 24U;           ///< 实测 20
+    inline constexpr std::uint64_t kSmallBatchAllocationBudget = 100U;      ///< 实测 88
+    inline constexpr std::uint64_t kSmallBatchBytesBudget = 12U * 1024U;    ///< 实测 9960
+    inline constexpr std::uint64_t kChunkedBatchAllocationBudget = 4300U;   ///< 实测 4022
+    inline constexpr std::uint64_t kChunkedBatchBytesBudget = 512U * 1024U; ///< 实测 473954
 #else
-    /// libstdc++ 侧的实测读数（容器 GCC 13）加一档
-    inline constexpr std::uint64_t kFirstRowAllocationBudget = 13U;
-    inline constexpr std::uint64_t kListAllocationBudget = 44U;
-    inline constexpr std::uint64_t kUpdateAllocationBudget = 18U;
+    /// libstdc++（容器 GCC 13，门禁那一路带 ASan）的实测读数加一档
+    inline constexpr std::uint64_t kFirstRowAllocationBudget = 13U;         ///< 实测 13，已收到实测值
+    inline constexpr std::uint64_t kListAllocationBudget = 44U;             ///< 实测 37
+    inline constexpr std::uint64_t kCountAllocationBudget = 8U;             ///< 实测 6
+    inline constexpr std::uint64_t kUpdateAllocationBudget = 18U;           ///< 实测 16
+    inline constexpr std::uint64_t kSmallBatchAllocationBudget = 100U;      ///< 实测 88，与 MSVC 同数
+    inline constexpr std::uint64_t kSmallBatchBytesBudget = 12U * 1024U;    ///< 实测 8729
+    inline constexpr std::uint64_t kChunkedBatchAllocationBudget = 4300U;   ///< 实测 4022，与 MSVC 同数
+    inline constexpr std::uint64_t kChunkedBatchBytesBudget = 512U * 1024U; ///< 实测 415451
 #endif
 
     /// 台账用的行数：二十行足够让「每行成本」与「每次调用成本」分得开，又不让单条用例跑太久
@@ -79,17 +108,6 @@ namespace
     constexpr std::uint64_t kChunkedBatchIterations = 20U;
     /// 单条格的连跑次数：文件库上每一批都是一次独立提交，容器 overlayfs 的提交成本撑不起默认的一千轮
     constexpr std::uint64_t kSmallBatchIterations = 200U;
-
-    // 批量两格的读数在两台编译器上次数完全一致（差在 STL 分档，而这里没走 vector 扩容路径），
-    // 因此预算不需要按平台分档
-    /// 单条格（20 行一批）的分配次数上界：两侧实测同为 88 次
-    constexpr std::uint64_t kSmallBatchAllocationBudget = 100U;
-    /// 单条格的申请字节上界：实测 MSVC 9960 / GCC 8729
-    constexpr std::uint64_t kSmallBatchBytesBudget = 12U * 1024U;
-    /// 分块格（1000 行一批）的分配次数上界：两侧实测同为 4022 次
-    constexpr std::uint64_t kChunkedBatchAllocationBudget = 4300U;
-    /// 分块格的申请字节上界：实测 MSVC 473954 / GCC 415451
-    constexpr std::uint64_t kChunkedBatchBytesBudget = 512U * 1024U;
 
     /**
      * @brief 台账行：五列覆盖整型、文本、浮点、可空文本与布尔，与 ORM 的全部标量映射分支对齐
@@ -313,8 +331,8 @@ namespace
                     Queryable<LedgerRow> query(*m_pool);
                     return static_cast<std::uint64_t>(query.count());
                 });
-        // count() 只要一个标量：两台编译器都实测 6 次 / 451 字节
-        EXPECT_LE(countProfile.allocationsPerOperation, 8U)
+        // count() 只要一个标量：Release 下两台编译器都实测 6 次 / 451 字节，MSVC Debug 实测 31 次
+        EXPECT_LE(countProfile.allocationsPerOperation, kCountAllocationBudget)
                 << "count() 分配次数涨了，实测=" << countProfile.allocationsPerOperation;
 
         const AllocationProfile updateProfile = measurePerOperation(
