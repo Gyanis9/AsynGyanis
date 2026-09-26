@@ -281,7 +281,7 @@ namespace AsynGyanis::Database
         }
 
         // mysql_real_query 的长度形参是 unsigned long：Windows(LLP64) 上它是 32 位，超过上限的命令
-        // 会被静默截断成半条语句，宁可报错也不执行残缺命令。Linux/macOS(LP64) 上两者等宽，
+        // 会被静默截断成半条语句，宁可报错也不执行残缺命令。LP64 数据模型（本仓目前即 Linux）上两者等宽，
         // 这条比较恒假（会招来 -Wtype-limits 告警），因此只在确实存在窄化风险的平台上判
         if constexpr (sizeof(std::string_view::size_type) > sizeof(unsigned long))
         {
@@ -373,7 +373,7 @@ namespace AsynGyanis::Database
         }
 
         // 与不带参数的 execute() 同一条窄化判定：mysql_stmt_prepare 的长度形参也是 unsigned long，
-        // 超长命令会被静默截断成半条语句。Linux/macOS(LP64) 上两者等宽，该比较恒假，因此只在有风险时判
+        // 超长命令会被静默截断成半条语句。LP64 数据模型（本仓目前即 Linux）上两者等宽，该比较恒假，因此只在有风险时判
         if constexpr (sizeof(std::string_view::size_type) > sizeof(unsigned long))
         {
             if (command.size() > kMaximumNativeLength)
