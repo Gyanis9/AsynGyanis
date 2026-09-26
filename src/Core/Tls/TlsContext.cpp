@@ -483,6 +483,20 @@ namespace AsynGyanis::Core
         m_clientCertificateRequired = true;
     }
 
+    void TlsContext::enableClientPeerVerification() const
+    {
+        std::lock_guard<std::mutex> guard(m_contextMutex);
+
+        // 策略没接管信任库时才补系统那一份：补在两处都会的情况下会把自己 CA 签的对端
+        // 也一并放行（系统库里有公网根 CA），那等于「我只信我自己的 CA」这条要求被悄悄放宽
+        if (m_policy.certificateAuthorityFile.empty() && m_policy.certificateAuthorityPath.empty())
+        {
+            SSL_CTX_set_default_verify_paths(m_context);
+        }
+        // 出站一侧恒要校验：不验对端等于任何受信 CA 给他域签的证书都能冒充目标主机
+        SSL_CTX_set_verify(m_context, SSL_VERIFY_PEER, nullptr);
+    }
+
     SSL *TlsContext::createSSL(const int fileDescriptor) const
     {
         // 与 reloadCertificate() 互斥：SSL_new 会给上下文加一次引用，加引用之后本次换代就不会

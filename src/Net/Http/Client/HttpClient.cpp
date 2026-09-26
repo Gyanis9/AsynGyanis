@@ -1,4 +1,5 @@
 #include "Net/Http/Client/HttpClient.h"
+#include "Core/Tls/TlsContext.h"
 #include "Net/Http/Client/HttpContentCoding.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http/Client/RequestDeadlineGuard.h"
@@ -624,7 +625,8 @@ namespace AsynGyanis::Net
          */
         Core::Task<std::unique_ptr<HttpOutboundConnection>> establishSecureConnection(
                 Core::EventLoop &loop, const ParsedUrl &u, const std::chrono::steady_clock::time_point startedAt,
-                const std::chrono::milliseconds requestTimeout, std::string &failureReason)
+                const std::chrono::milliseconds requestTimeout, std::string &failureReason,
+                const Core::TlsContext *clientTls)
         {
             HttpOutboundEndpointKey key{u.host, u.port, true};
 
@@ -641,7 +643,9 @@ namespace AsynGyanis::Net
             }
             Core::AsyncSocket sock = std::move(*socket);
 
-            auto *ctx = clientSslCtx();
+            // 带池那一路用本实例自己的上下文（策略、信任库、客户端证书都在那上面）；
+            // 静态那一路没有承载策略的地方，仍用进程级默认上下文
+            auto *ctx = clientTls != nullptr ? clientTls->nativeHandle() : clientSslCtx();
             if (!ctx)
             {
                 failureReason = "TLS 上下文创建失败：OpenSSL 没能给出 client method，通常是库未正确初始化";
@@ -817,7 +821,7 @@ namespace AsynGyanis::Net
         Core::Task<std::unique_ptr<HttpClientResponse>> performRequest(
                 Core::EventLoop &loop, const HttpClientRequest &request, const ParsedUrl &u,
                 const std::chrono::milliseconds requestTimeout, HttpOutboundConnectionPool *pool,
-                std::string &failureReason)
+                std::string &failureReason, const Core::TlsContext *clientTls)
         {
             const std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::now();
             const bool isKeepAlive = pool != nullptr;
@@ -882,7 +886,7 @@ namespace AsynGyanis::Net
             std::unique_ptr<HttpOutboundConnection> connection;
             if (u.scheme == "https")
             {
-                connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason);
+                connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason, clientTls);
             }
             else
             {
@@ -946,7 +950,7 @@ namespace AsynGyanis::Net
         validateRequest(request);
         std::string failureReason;
         std::unique_ptr<HttpClientResponse> response = co_await performRequest(
-                loop, request, parsed, requestTimeout, nullptr, failureReason);
+                loop, request, parsed, requestTimeout, nullptr, failureReason, nullptr);
         if (!response)
         {
             // 每条失败路径都会先写下原因；这里兜住的是「哪天新增了忘了写的出口」，而不是让调用方拿到空原因
@@ -993,10 +997,29 @@ namespace AsynGyanis::Net
         co_return std::make_unique<HttpClientResponse>(std::move(*sent));
     }
 
-    HttpClient::HttpClient(Core::EventLoop &loop, const HttpOutboundConnectionPool::Config poolConfig) noexcept
+    HttpClient::HttpClient(Core::EventLoop &loop, const HttpOutboundConnectionPool::Config poolConfig)
+        : HttpClient(loop, poolConfig, Core::TlsPolicy{})
+    {
+    }
+
+    // 唯一要做的事是放掉那份 TLS 上下文（头文件里它只是前向声明）；池由自己的成员收尾
+    HttpClient::~HttpClient() = default;
+
+    HttpClient::HttpClient(Core::EventLoop &loop, const HttpOutboundConnectionPool::Config poolConfig, const Core::TlsPolicy &tlsPolicy)
         : m_loop(&loop)
         , m_pool(poolConfig)
+        , m_clientTls(std::make_unique<Core::TlsContext>(tlsPolicy, Core::TlsContext::Role::Client))
     {
+        // 出站一侧恒要校验对端证书：不校验等于任何受信 CA 给他域签的证书都能冒充目标主机（CWE-297）。
+        // 这一句放在构造而不是每条连接里，是为了让「策略里自带 CA」与「用系统信任库」两种配置的取舍
+        // 只有一处判据（见 TlsContext::enableClientPeerVerification）
+        m_clientTls->enableClientPeerVerification();
+    }
+
+    bool HttpClient::setClientCertificate(const std::string &certificateFile, const std::string &keyFile)
+    {
+        // 装载失败保持原状态：本客户端继续以「不带身份」出站，调用方拿到 false 自己决定要不要放弃
+        return m_clientTls->loadCertificate(certificateFile, keyFile);
     }
 
     Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::get(std::string_view url,
@@ -1025,7 +1048,7 @@ namespace AsynGyanis::Net
         validateRequest(request);
         std::string failureReason;
         std::unique_ptr<HttpClientResponse> response = co_await performRequest(
-                *m_loop, request, parsed, requestTimeout, &m_pool, failureReason);
+                *m_loop, request, parsed, requestTimeout, &m_pool, failureReason, m_clientTls.get());
         if (!response)
         {
             LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);

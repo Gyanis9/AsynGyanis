@@ -35,6 +35,17 @@
   只在服务端有意义，挂到客户端上下文上不会报错，只会在对端看来莫名其妙；客户端一侧也不预设套件列表
   （原先就没设过，设了可能把本可以连上的对端拒掉）。服务端角色在未指定下限时补 TLS 1.2 这一档，
   客户端角色不强加下限。
+- **出站 HTTPS 客户端自带一份 TLS 上下文，能配策略也能带身份**：新增 `HttpClient(loop, poolConfig, tlsPolicy)`
+  与 `setClientCertificate(certificateFile, keyFile)`。此前所有出站 HTTPS 共用进程级那一份 `SSL_CTX`
+  （首次请求时惰性创建、之后再没有换的余地）：一个实例要改握手段位，就把同进程里别的客户端一起改了，
+  而「服务端要求出示客户端证书」这一类根本没有落脚的地方。现在每个实例一份上下文，策略、信任库与
+  身份都挂在实例上。**默认档不变**：不带策略的构造仍然校验对端证书与主机名，只是这档现在可以按实例覆盖。
+  信任库的取舍只有一处判据：策略里给了 CA 文件或目录就**只**认那一份，不再补系统信任库——两处都认等于
+  把「我只信自己 CA 签的对端」悄悄放宽成「公网根 CA 签的也信」；没给才退回系统信任库
+  （Linux 走 `/etc/ssl/certs`，Windows 走系统存储）。校验对端这一侧有意不开「关掉」的口子：不校验等于
+  任何受信 CA 给他域签的证书都能冒充目标主机（CWE-297）。静态入口（`HttpClient::get(loop, url)` 那一组）
+  仍走进程级默认上下文——它没有承载策略的地方，要按实例配就走带池的构造。
+  `HttpsServer.MutualTlsAcceptsClientWithCertificateAndRejectsWithout` 钉住两端各配一半都成立。
 
 - **出站客户端会透明解压响应正文**：`HttpClient` 现在替调用方声明 `Accept-Encoding: gzip, deflate`，
   并按响应的 `Content-Encoding` 把正文解回来，解完把 `content-encoding` 与 `content-length` 两条头部

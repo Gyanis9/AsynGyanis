@@ -13,6 +13,7 @@
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
+#include "Core/Tls/TlsPolicy.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpResponse.h"
@@ -525,6 +526,58 @@ namespace AsynGyanis::Net
             }
             loop.run();
             return result;
+        }
+
+        /**
+         * @brief 一次「带着自己 TLS 上下文」的出站请求的结论
+         */
+        struct ClientTlsAttemptOutcome
+        {
+            std::unique_ptr<HttpClientResponse> response; ///< 响应；握手或请求失败时为空
+            bool identityLoaded{true};                    ///< 客户端身份是否装载成功；未要求身份时恒为 true
+        };
+
+        /**
+         * @brief 用给定的出站 TLS 策略（可带客户端身份）GET 一次：自建客户端与循环，跑完即停
+         * @details 与 doHttpsGet 的差别只在客户端是哪一档：静态那一支没有承载策略的地方，用的是进程级
+         *          默认上下文；出站策略（信任库、握手段位）与客户端身份都挂在**实例**上，只有走实例入口
+         *          才看得到。循环刻意每次新建而不是让调用方复用：EventLoop 的停止请求是粘性的，第二次
+         *          run() 会立刻返回，那时候的「空响应」就成了与 TLS 无关的假证据
+         * @param url 目标地址
+         * @param policy 出站 TLS 策略与信任库
+         * @param clientCertificateFile 客户端身份证书；空串表示本端不带身份
+         * @param clientKeyFile 客户端身份私钥
+         * @param requestTimeout 整条请求的时限
+         * @return ClientTlsAttemptOutcome 响应与身份装载结论
+         */
+        ClientTlsAttemptOutcome getWithClientTls(const std::string &url, const Core::TlsPolicy &policy,
+                                                 const std::string &clientCertificateFile, const std::string &clientKeyFile,
+                                                 const std::chrono::milliseconds requestTimeout)
+        {
+            Core::EventLoop loop;
+            HttpClient client(loop, HttpOutboundConnectionPool::Config{}, policy);
+            ClientTlsAttemptOutcome outcome;
+            if (!clientCertificateFile.empty())
+            {
+                outcome.identityLoaded = client.setClientCertificate(clientCertificateFile, clientKeyFile);
+                if (!outcome.identityLoaded)
+                {
+                    return outcome;
+                }
+            }
+            // 惰性协程的帧记住的是闭包对象的地址：闭包必须先落到具名变量上再调用
+            auto requestBody = [&loop, &client, &outcome, &url, requestTimeout]() -> Core::Task<>
+            {
+                outcome.response = co_await client.get(url, requestTimeout);
+                loop.stop();
+            };
+            Core::Task<> request = requestBody();
+            if (!request.isReady())
+            {
+                loop.scheduler().schedule(request.handle());
+            }
+            loop.run();
+            return outcome;
         }
 
         /// 一个带池的客户端走完一串请求、中途再收一次口之后的结论
@@ -1380,6 +1433,52 @@ namespace AsynGyanis::Net
         // 受信证书 + 对不上的名字（IP 不在 SAN 里）：必须失败
         const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
         EXPECT_EQ(doHttpsGet(url), nullptr) << "证书与请求的主机名不匹配，握手却成功了：主机名校验没生效";
+    }
+
+    /**
+     * @brief 钉住双向 TLS：带合法客户端身份的出站请求得到 200，不带身份的连不上
+     * @details 两端各配一半都测不出这条链路——服务端只装 CA 不要求证书，或客户端只装身份而服务端不要求，
+     *          两条都会绿。三条判据合起来才把「谁能连我」钉死：
+     *          ①带身份的那条真通了（策略里的 CA 被采纳、身份真的出示，否则这里就是空）；
+     *          ②不带身份的那条拿不到响应；
+     *          ③服务端始终只数到一条请求——这条与②互补，把「本端超时导致的空」与「对端在握手里就拒了」
+     *            分开：mTLS 没生效时②会拿到 200、③会数到 2。
+     * @details 信任库这里显式走 TlsPolicy.certificateAuthorityFile，不再借 SSL_CERT_FILE 环境变量：
+     *          出站侧接管信任库的入口就是那一项，顺带钉住它真的被采纳。夹具是自签的，一张证书既是
+     *          服务端身份又是它自己的根，两端复用同一份文件。
+     */
+    TEST(HttpsServer, MutualTlsAcceptsClientWithCertificateAndRejectsWithout)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+
+        bool clientAuthorityLoaded{false};
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
+                                          [&clientAuthorityLoaded](HttpsServer &server)
+                                          {
+                                              clientAuthorityLoaded = server.loadClientCertificateAuthority(kLoopbackCertificatePath.string());
+                                              server.setClientCertificateRequired(true);
+                                          },
+                                          kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(clientAuthorityLoaded) << "服务端装不上校验客户端证书的 CA：后面两条判据都是空的";
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+
+        Core::TlsPolicy policy;
+        policy.certificateAuthorityFile = kLoopbackCertificatePath.string();
+
+        const ClientTlsAttemptOutcome granted = getWithClientTls(url, policy, kLoopbackCertificatePath.string(), kLoopbackKeyPath.string(),
+                                                                std::chrono::milliseconds{8000});
+        // 夹具默认档会协商出 h2，正文仍是同一份 served-hello：这里验的是握手能不能成，不是走哪条协议
+        ASSERT_TRUE(granted.identityLoaded) << "客户端身份装不上：正面那条没有前提";
+        ASSERT_NE(granted.response, nullptr) << "带合法客户端证书的握手没走通：身份没出示，或服务端 CA 不认这张证书";
+        EXPECT_EQ(granted.response->statusCode, 200);
+        EXPECT_NE(granted.response->body.find("served-hello"), std::string::npos) << "正文：" << granted.response->body;
+
+        const ClientTlsAttemptOutcome anonymous = getWithClientTls(url, policy, {}, {}, std::chrono::milliseconds{4000});
+        EXPECT_EQ(anonymous.response, nullptr) << "服务端要求客户端证书，不带身份的客户端却连上了：mTLS 没生效";
+        EXPECT_EQ(fixture.server().stats().totalRequestCount, 1U) << "服务端数到了第二条：那条其实被握手续了进去";
     }
 
     /**

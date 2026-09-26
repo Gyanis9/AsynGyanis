@@ -19,6 +19,12 @@
 #include <utility>
 #include <vector>
 namespace AsynGyanis::Core { class EventLoop; }
+namespace AsynGyanis::Core
+{
+    class TlsContext;
+    struct TlsPolicy;
+} // namespace AsynGyanis::Core
+
 namespace AsynGyanis::Net
 {
     /// 一条头部字段：名与值都按对端/调用方给出的原文留着，客户端不做大小写折叠
@@ -128,8 +134,48 @@ namespace AsynGyanis::Net
          * @param loop 所属事件循环。实例连同它的池只在这条循环上用——协程挂起期间被别的线程驱动会
          *        踩坏套接字状态，因此本对象不跨线程共享（与框架里每条连接归属一个循环的约定同一口径）
          * @param poolConfig 池的规模参数：空闲多久收口、每个目标最多留几条
+         * @note 这一支用默认档的出站 TLS：等价于把默认构造的 Core::TlsPolicy 交给下面那一支，
+         *       即「按系统信任库校验对端证书与主机名、OpenSSL 默认套件与曲线」
+         * @note 静态的 get()/post()/send() 那一路仍走进程级默认上下文（它们没有承载策略的地方）
+         * @note 本头文件刻意只前向声明 TlsPolicy/TlsContext：把 OpenSSL 的伞文件拉进来会让
+         *       所有包含方（Middleware.h、HttpSession.h…）里的 std::numeric_limits<T>::max()
+         *       被 windows 的宏炸开——那两个默认参数因此拆成两支构造，而不是写 "= {}"
          */
-        explicit HttpClient(Core::EventLoop &loop, HttpOutboundConnectionPool::Config poolConfig = {}) noexcept;
+        explicit HttpClient(Core::EventLoop &loop, HttpOutboundConnectionPool::Config poolConfig = {});
+
+        /**
+         * @brief 收尾本客户端的连接池
+         * @details 声明在此、定义在实现文件：成员里那份 TLS 上下文对本头文件只是前向声明，
+         *          析构若由编译器在别处合成，就要在每个持有 HttpClient 的翻译单元里删除一个
+         *          不完整类型（MSVC 直接拒）。out-of-line 一份就把它挡住，也让 OpenSSL 留在实现侧
+         */
+        ~HttpClient();
+
+        /**
+         * @brief 同上，外加一份出站 TLS 策略
+         * @param loop 所属事件循环，口径同上面那支
+         * @param poolConfig 池的规模参数
+         * @param tlsPolicy 出站 TLS 的策略与信任库（版本区间、套件、曲线、CA 文件/目录、校验深度、
+         *        票据开关）；默认构造即「按系统信任库校验对端」。本实例的 HTTPS 请求都用它，
+         *        不再与其它 HttpClient 实例共用一个进程级上下文——共用时一个实例的策略会把别人的
+         *        握手档位一起改掉
+         * @throws Core::CoreException 策略里某一项被当前 OpenSSL 拒绝（版本区间、套件列表、曲线、
+         *         CA 信任库）：构造期就抛，比每条请求都拿到一句「TLS 上下文创建失败」好查
+         */
+        explicit HttpClient(Core::EventLoop &loop, HttpOutboundConnectionPool::Config poolConfig, const Core::TlsPolicy &tlsPolicy);
+
+        /**
+         * @brief 给出站连接带上自己的客户端证书（双向 TLS 的出站侧）
+         * @details 服务端要求出示证书时（HttpsServer::setClientCertificateRequired(true)），
+         *          本端不配身份就连不上。证书与私钥装在**本实例的上下文**上，之后每条 HTTPS 连接
+         *          都会带上它（握手时按对端请求的 CA 选链，OpenSSL 负责挑）。
+         * @param certificateFile 客户端证书（PEM，可含链）
+         * @param keyFile 私钥（PEM）
+         * @return true 已装载；false 加载失败（文件缺失、格式不对、与私钥不配对），本端保持原状态
+         * @note 与信任库那几项不同，身份不是策略字段：它是「这台客户端是谁」，与「怎么握手」分开，
+         *       也便于只换证书不动其它 TLS 配置
+         */
+        bool setClientCertificate(const std::string &certificateFile, const std::string &keyFile);
 
         /**
          * @brief 发一次 GET，能复用就复用空闲连接
@@ -192,5 +238,8 @@ namespace AsynGyanis::Net
 
         Core::EventLoop *m_loop{nullptr};   ///< 所属事件循环（不拥有）
         HttpOutboundConnectionPool m_pool;  ///< 本客户端的空闲连接池
+        /// 本实例自己的 TLS 上下文（客户端角色）：策略、信任库与客户端证书都装在这里。
+        /// 每个实例一份而不是共用进程级那一份：共用时一个实例的策略会把别人的握手档位一起改掉
+        std::unique_ptr<Core::TlsContext> m_clientTls;
     };
 } // namespace AsynGyanis::Net

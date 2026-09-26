@@ -174,6 +174,17 @@ namespace AsynGyanis::Core
          */
         void loadSessionTicketKeys(const std::vector<std::string> &keyFiles) const;
 
+        /**
+         * @brief 客户端一侧的默认校验：必须验对端证书，信任库按策略给的 CA，没给就用系统信任库
+         * @details 与 `setClientCertificateRequired()` 的区别是方向：那一套说的是「服务端要不要验客户端」，
+         *          名字与判据都朝服务端。出站侧要的是另一件事——不验对端就等于任何受信 CA 签的证书都能
+         *          冒充目标主机，所以这一句必须**默认开启**，且不能因为「调用方没配 CA」而静默降级成不校验。
+         *          系统信任库那条与 `SSL_CTX_set_default_verify_paths` 一致（Linux 走 /etc/ssl/certs，
+         *          Windows 走系统存储），只在策略没接管信任库时才补。
+         * @note 主机名/SNI 的逐连接设置仍由调用方做（那是每个目标不同的事，不是上下文的事）
+         */
+        void enableClientPeerVerification() const;
+
     private:
         /**
          * @brief 新建一个 SSL_CTX 并施加全部安全加固与策略（构造与热轮换共用同一份，避免两处配置各自漂移）
