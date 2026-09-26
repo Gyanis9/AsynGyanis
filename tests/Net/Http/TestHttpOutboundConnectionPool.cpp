@@ -4,9 +4,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -74,6 +76,73 @@ namespace AsynGyanis::Net
         std::string helloUrl(const std::uint16_t port)
         {
             return "http://127.0.0.1:" + std::to_string(port) + "/hello";
+        }
+
+        /// 「进门计数、按住不放」的 POST 路由路径
+        constexpr std::string_view kSlowPostRoutePath = "/slow-post";
+
+        /**
+         * @brief 注册一条「进门就计数、按住一段时间再回正文」的 POST 路由
+         * @details 计数就是这条用例的判据：它数的是「这个请求被交付了几次」，比看响应更能认出
+         *          「客户端悄悄重发了一遍」。按住的时间要长过客户端那次请求的时限，才会出现
+         *          「请求已整个发出、还没答话」这一种本端分不清的情形。
+         * @param router 目标路由器
+         * @param loop 承载定时器的事件循环（服务端自己的）
+         * @param entryCount 进门次数，由用例持有
+         * @param holdTime 按住不放的时间
+         */
+        void registerCountedHoldingRoute(Router &router, Core::EventLoop &loop, std::atomic<std::size_t> &entryCount,
+                                         const std::chrono::milliseconds holdTime)
+        {
+            router.post(std::string{kSlowPostRoutePath},
+                        [&loop, &entryCount, holdTime](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                        {
+                            entryCount.fetch_add(1U, std::memory_order_acq_rel);
+                            Core::Timer holdTimer(loop);
+                            co_await holdTimer.waitFor(holdTime);
+                            response.setBody("served-slow-post");
+                            co_return;
+                        });
+        }
+
+        /// 一条池化 HTTP/1.1 连接被对端收掉之后再发一条 POST 的结论
+        struct SlowPostRunOutcome
+        {
+            int warmupStatusCode{0};    ///< 暖场那条 GET 的状态码；0 表示失败
+            int statusCode{0};          ///< 被测那条 POST 的状态码；0 表示失败
+            std::size_t idleBefore{0};  ///< 暖场之后池里空闲着的连接条数
+        };
+
+        /**
+         * @brief 在同一条循环、同一个客户端上跑「GET 暖场 → 宽限期等对端收掉 → 一条 POST → 再留一段落地时间」
+         * @details 暖场是前提：没有池里那条可复用的连接，POST 走的就是「新连接」那一支，而那一支本来
+         *          就不重试，测不到重发闸门。宽限期里本端不探测那条连接——留着的正是一份「看起来活着、
+         *          其实已被对端收了」的存货。最后那段等待是给「悄悄重发的那一遍」留落地时间：它要重做
+         *          DNS 与 TCP 连接，比正常路径慢。
+         * @param loop 客户端事件循环
+         * @param client 被测客户端（持有池）
+         * @param warmUrl 暖场地址
+         * @param slowUrl 那条 POST 的目标地址
+         * @param idleGrace 留给服务端收口空闲连接的宽限期
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runWarmThenPostAfterIdleGrace(Core::EventLoop &loop, HttpClient &client,
+                                                       const std::string &warmUrl, const std::string &slowUrl,
+                                                       const std::chrono::milliseconds idleGrace,
+                                                       SlowPostRunOutcome &outcome)
+        {
+            const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
+            outcome.warmupStatusCode = warmup ? warmup->statusCode : 0;
+            outcome.idleBefore = client.idleConnectionCount();
+            Core::Timer graceTimer(loop);
+            co_await graceTimer.waitFor(idleGrace);
+            const std::unique_ptr<HttpClientResponse> posted = co_await client.post(slowUrl, "text/plain", "payload-once",
+                                                                                   std::chrono::milliseconds{2000});
+            outcome.statusCode = posted ? posted->statusCode : 0;
+            Core::Timer settleTimer(loop);
+            co_await settleTimer.waitFor(std::chrono::milliseconds{800});
+            loop.stop();
+            co_return;
         }
     } // namespace
 
@@ -239,5 +308,50 @@ namespace AsynGyanis::Net
                     return fixture.server().stats().activeConnectionCount == 0U;
                 },
                 kPooledWaitTimeout)) << "服务端仍把那条连接记在册：本端只是丢了指针，没真的收口";
+    }
+
+    /**
+     * @brief 钉住 HTTP/1.1 这一侧的重发闸门：请求已整个写上通路时，非幂等方法不重来一次
+     * @details 场景取「对端在空闲期把连接收了」而不是「处理器太慢」：慢处理器那一条走的是时限放弃，
+     *          整体预算已经用尽，重开连接那一步在算预算时就被挡住——那种场景证伪不了这道闸门
+     *          （本条最初就是这么写的，撤掉闸门它照样绿）。对端收线则失败得很快、预算还剩一大截，
+     *          撤掉闸门就会真的换一条新连接把同一条 POST 再交一次。
+     * @details 判据是服务端的进入次数为 **0**：这条请求本端写过，但对端没接手过，而本端分不清这两种
+     *          情形，只能按「可能已经执行过」处置。幂等方法（GET/HEAD/OPTIONS/PUT/DELETE/TRACE）
+     *          允许重来一次，那就是上面 `RecoversWhenPooledConnectionWasClosedByPeer` 的恢复路径；
+     *          RFC 9112 §9.3.2 给的自动重试许可本就只覆盖幂等方法。
+     */
+    TEST(HttpOutboundConnectionPool, DoesNotReplayASentNonIdempotentRequestWhenThePeerTookTheConnection)
+    {
+        std::atomic<std::size_t> postEntryCount{0U};
+        HttpServerLimits limits;
+        limits.idleTimeout = std::chrono::milliseconds{150};
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{25}, SlowRouteOptions{},
+                                         [&postEntryCount](Router &router, Core::EventLoop &serverLoop)
+                                         {
+                                             registerCountedHoldingRoute(router, serverLoop, postEntryCount,
+                                                                         std::chrono::milliseconds{400});
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
+
+        const std::string warmUrl = helloUrl(fixture.listeningPort());
+        // 两个地址必须是具名对象：驱动协程按引用拿着它们，跨过 co_await 之后还要读
+        const std::string slowUrl = "http://127.0.0.1:" + std::to_string(fixture.listeningPort())
+                + std::string{kSlowPostRoutePath};
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        SlowPostRunOutcome outcome;
+        auto work = runWarmThenPostAfterIdleGrace(loop, client, warmUrl, slowUrl, std::chrono::milliseconds{600}, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(outcome.warmupStatusCode, 200) << "暖场那条没成功：池里没有可复用的连接，被测那条走的就不是复用这一支";
+        EXPECT_EQ(outcome.idleBefore, 1U) << "暖场之后池里不是一条连接：前提没成立";
+        EXPECT_EQ(outcome.statusCode, 0) << "对端收了这条连接，本端分不清请求有没有被接手，不该给出一个成功";
+        EXPECT_EQ(postEntryCount.load(std::memory_order_acquire), 0U)
+                << "服务端收到了那条 POST：已整个写出的非幂等请求被换一条连接重发了一遍";
     }
 } // namespace AsynGyanis::Net

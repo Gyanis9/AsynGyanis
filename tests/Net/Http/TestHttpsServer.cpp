@@ -930,6 +930,57 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        /// 池里那条 h2 连接被对端在空闲期收掉之后，再发一条请求的结论
+        struct IdleGraceRunOutcome
+        {
+            std::size_t heldAfterFirst{0};   ///< 第一条之后池里留着的 h2 连接条数
+            int firstStatusCode{0};          ///< 第一条的状态码；0 表示失败
+            int secondStatusCode{0};         ///< 宽限期之后再发一条的状态码；0 表示失败
+        };
+
+        /**
+         * @brief 在同一条循环、同一个客户端上跑「GET 暖场 → 等服务端收掉空闲连接 → 再一条请求」
+         * @details 宽限期里本端不探测那条连接，也不泵它——留着的正是一份「看起来健康、其实已经被对端
+         *          收了」的存货，这就是 keep-alive 的固有竞态在 h2 上的形状。两段必须在同一条协程里
+         *          跑完：换一条循环就等于换一个池。
+         * @details 第二条之后再留一段落地时间：如果本端悄悄重发了，那一遍要重做 DNS 与 TLS 握手，
+         *          比正常路径慢，不等够就会漏看服务端的进入次数。
+         * @param loop 客户端事件循环
+         * @param client 被测客户端（持有池）
+         * @param warmUrl 暖场地址：它把连接放进池里，是后面那段的前提
+         * @param secondUrl 宽限期之后再发一条的地址
+         * @param isSecondPost true 第二条走 POST（带正文），否则走 GET
+         * @param idleGrace 留给服务端收口空闲连接的宽限期
+         * @param secondTimeout 第二条请求的整体时限
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runWarmThenSecondAfterIdleGrace(Core::EventLoop &loop, HttpClient &client,
+                                                        const std::string &warmUrl, const std::string &secondUrl,
+                                                        const bool isSecondPost, const std::chrono::milliseconds idleGrace,
+                                                        const std::chrono::milliseconds secondTimeout,
+                                                        IdleGraceRunOutcome &outcome)
+        {
+            const std::unique_ptr<HttpClientResponse> first = co_await client.get(warmUrl);
+            outcome.firstStatusCode = first ? first->statusCode : 0;
+            outcome.heldAfterFirst = client.idleHttp2ConnectionCount();
+            Core::Timer graceTimer(loop);
+            co_await graceTimer.waitFor(idleGrace);
+            std::unique_ptr<HttpClientResponse> second;
+            if (isSecondPost)
+            {
+                second = co_await client.post(secondUrl, "text/plain", "payload-once", secondTimeout);
+            }
+            else
+            {
+                second = co_await client.get(secondUrl, secondTimeout);
+            }
+            outcome.secondStatusCode = second ? second->statusCode : 0;
+            Core::Timer settleTimer(loop);
+            co_await settleTimer.waitFor(std::chrono::milliseconds{400});
+            loop.stop();
+            co_return;
+        }
+
         /**
          * @brief 临时把 SSL_CERT_FILE 指向某张证书，让出站客户端信任它
          * @details 客户端只认系统 CA 库（SSL_CTX_set_default_verify_paths），而仓库夹具是自签的；
@@ -1337,10 +1388,15 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：请求已整个发出时不重来一次，哪怕一个字节都没收到
+     * @brief 钉住外部契约：处理器还没答完而本端按时限放弃时，交出失败且这条请求只被执行一次
      * @details 复用连接时「一个字节没回来」通常意味着对端在我们手里空闲期间把连接收了，那种可以重来；
      *          但请求已经整个写上通路、只是对端答得慢（这里让处理器按住 400 毫秒，本端 150 毫秒就放弃），
      *          同一位看着一样，重发就把非幂等请求做两遍。判据取路由的进入次数：它数的就是被交付了几次。
+     * @details 本条**不是**重发闸门的证伪用例：把闸门整段撤掉本条照样绿——挡住第二次执行的是整体时限
+     *          用尽之后那段预算判定（重开连接前先算剩余预算，已经没剩的了）。闸门本身要由
+     *          `DoesNotReplayASentNonIdempotentRequestWhenThePeerTookTheConnection`（h2）与
+     *          `HttpOutboundConnectionPool` 里那条同名前缀的用例（h1）来钉：那两条失败得早、预算还剩
+     *          一大截，撤掉闸门立刻就能看到第二次进入。
      */
     TEST(HttpsServer, PooledClientDoesNotReplayASentRequestThatTimedOut)
     {
@@ -1373,6 +1429,93 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.response, nullptr) << "处理器还没答完，本端按时限放弃了，这里不该有一个响应";
         EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 1U)
                 << "请求被交付了两次：已发出的非幂等请求不该因为「没收到回音」重来一次";
+    }
+
+    /**
+     * @brief 钉住：池里那条 h2 连接被服务端在空闲期收掉之后，下一条请求换一条新的重来一次
+     * @details 与 HTTP/1.1 的 `RecoversWhenPooledConnectionWasClosedByPeer` 是同一条竞态在两条通路上的
+     *          形状：客户端只能「用了才知道」那条已经死了。h2 这一侧此前不恢复——写进一条对端已收的
+     *          套接字在本地是**成功**的，于是那条请求被记成「已整个发出」，按当时那条一刀切的规则直接
+     *          交出失败。判据只有第二条拿到 200：只看「没报错」不行，得看它真的又服务了一次。
+     * @details 允许重来的依据是方法幂等（RFC 9112 §9.3.2 的自动重试许可只覆盖幂等方法）：GET 做两遍
+     *          与做一遍对服务器状态的影响相同，而 POST 不能——那一条由
+     *          `PooledClientDoesNotReplayASentRequestThatTimedOut` 钉住。
+     */
+    TEST(HttpsServer, PooledClientRecoversWhenTheHttp2ConnectionWasClosedByThePeer)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        // 空闲时限压到 150 毫秒、清扫节拍 25 毫秒：第二条请求之前那条一定已经被服务端收掉
+        HttpServerLimits limits = makeLongTimeoutLimits();
+        limits.idleTimeout = std::chrono::milliseconds{150};
+        RunningHttpsServerFixture fixture(limits, std::chrono::milliseconds{25}, {}, HttpParserLimits{}, {},
+                                          kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        IdleGraceRunOutcome outcome;
+        auto work = runWarmThenSecondAfterIdleGrace(loop, client, url, url, false, std::chrono::milliseconds{600},
+                                                    std::chrono::milliseconds{3000}, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(outcome.firstStatusCode, 200) << "第一条就没成：池里根本没有等着被用的存货";
+        EXPECT_EQ(outcome.heldAfterFirst, 1U) << "第一条之后池里不是一条 h2 连接：第二条测的就不是「复用一条已死的」";
+        EXPECT_EQ(outcome.secondStatusCode, 200) << "对端收掉空闲连接时该重开一条再来一次，而不是把这条竞态透给调用方";
+    }
+
+    /**
+     * @brief 钉住 HTTP/2 这一侧的重发闸门：请求已整个写上通路时，非幂等方法不重来一次
+     * @details 与 HTTP/1.1 那条 `DoesNotReplayASentNonIdempotentRequestWhenThePeerTookTheConnection`
+     *          是同一个场景的两条通路：连接被服务端在空闲期收掉，本端写它时本地是成功的，于是分不清
+     *          「对端没见过这条请求」与「对端已经收下」。判据取服务端的进入次数为 **0**——闸门一撤，
+     *          那条 POST 就会被换一条新连接重交一遍（拿到 200 也算泄漏了一次执行）。
+     * @details 幂等方法在同样情形下允许重来一次，那是 `PooledClientRecoversWhenTheHttp2ConnectionWas
+     *          ClosedByThePeer` 的恢复路径；两条合起来才是完整的口径（RFC 9112 §9.3.2）。
+     */
+    TEST(HttpsServer, DoesNotReplayASentNonIdempotentRequestWhenThePeerTookTheConnection)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        std::atomic<std::size_t> slowHandlerEntryCount{0};
+        HttpServerLimits limits = makeLongTimeoutLimits();
+        limits.idleTimeout = std::chrono::milliseconds{150};
+        RunningHttpsServerFixture fixture(limits, std::chrono::milliseconds{25},
+                                          [&slowHandlerEntryCount](Router &router, Core::EventLoop &serverLoop)
+                                          {
+                                              registerHoldingRoute(router, serverLoop, &slowHandlerEntryCount);
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        const std::string hostPrefix = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
+        // 两个地址必须是具名对象：驱动协程按引用拿着它们，跨过 co_await 之后还要读
+        const std::string warmUrl = hostPrefix + "/hello";
+        const std::string slowUrl = hostPrefix + "/slow";
+        Core::EventLoop loop;
+        HttpClient client(loop);
+        IdleGraceRunOutcome outcome;
+        auto work = runWarmThenSecondAfterIdleGrace(loop, client, warmUrl, slowUrl, true, std::chrono::milliseconds{600},
+                                                    std::chrono::milliseconds{3000}, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(outcome.firstStatusCode, 200) << "暖场那条没成功：池里没有可复用的连接，被测那条走的就不是复用这一支";
+        EXPECT_EQ(outcome.heldAfterFirst, 1U) << "暖场之后池里不是一条 h2 连接：前提没成立";
+        EXPECT_EQ(outcome.secondStatusCode, 0) << "对端收了这条连接，本端分不清请求有没有被接手，不该给出一个成功";
+        EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 0U)
+                << "服务端收到了那条 POST：已整个写出的非幂等请求被换一条连接重发了一遍";
     }
 
     /**

@@ -183,8 +183,10 @@ namespace AsynGyanis::Net
          * @param requestTimeout 整体时限，语义同静态的 get()：连接、握手、发送、收完响应四段之和
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
          * @note 复用的那条连接如果对端已经关掉，本次请求会**自动重开一条再来一次**——这是 keep-alive
-         *       的固有竞态（对端随时可以收掉空闲连接），不是失败。读到过响应字节之后的失败不重发：
-         *       那已经是「响应本身有问题」，重发会把非幂等请求做两遍
+         *       的固有竞态（对端随时可以收掉空闲连接），不是失败。两类情形不重发：读到过响应字节
+         *       （那已经是「响应本身有问题」，重来不换一个答案）；请求已整个写上通路而方法不在幂等
+         *       集合里（GET/HEAD/OPTIONS/PUT/DELETE/TRACE，RFC 9110 §9.2.2；RFC 9112 §9.3.2 给的自动
+         *       重试许可也只覆盖幂等方法）。HTTP/1.1 与 HTTP/2 两条通路用同一条判据
          */
         [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> get(
                 std::string_view url, std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);

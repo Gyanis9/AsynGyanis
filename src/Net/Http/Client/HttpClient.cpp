@@ -246,12 +246,31 @@ namespace AsynGyanis::Net
                    ::inet_pton(AF_INET6, host.c_str(), addressBytes.data()) == 1;
         }
 
-        /// 一次出站交换的结论：响应，以及「有没有读到过响应的第一个字节」
+        /// 一次出站交换的结论：响应，以及「有没有读到过响应的第一个字节」「请求有没有整个写上通路」
         struct OutboundExchange
         {
             std::unique_ptr<HttpClientResponse> response;
             bool isAnyByteReceived{false};
+            /// 请求文本有没有被通路完整收下。写成功才算发出：通路本来就死着时 send 返回 false，
+            /// 那一支仍是「对端在我们手里把连接收了」，重来不涉及重复执行
+            bool isAnyByteSent{false};
         };
+
+        /**
+         * @brief 这个方法原文按规范是不是幂等的（同一条请求做两遍与做一遍，对服务器状态的影响相同）
+         * @details 用来决定「请求已整个写上通路、却没等到回音」时要不要换一条连接重来一次：
+         *          RFC 9112 §9.3.2 允许在连接故障之后自动重试**幂等**方法，幂等集合由 RFC 9110 §9.2.2
+         *          给出（GET/HEAD/OPTIONS/PUT/DELETE/TRACE；PATCH 明确不算）。方法 token 大小写敏感
+         *          （RFC 9110 §9），这里就不折叠；表外原文一律按不幂等处理——猜错方向的代价是把非幂等
+         *          请求做两遍，比少恢复一次贵得多
+         * @param method 报文里的方法原文
+         * @return true 重来一次是安全的
+         */
+        bool isIdempotentRequestMethod(const std::string_view method)
+        {
+            return method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "PUT"
+                   || method == "DELETE" || method == "TRACE";
+        }
 
         /**
          * @brief 从整体时限里扣掉已经花掉的那一段
@@ -500,6 +519,7 @@ namespace AsynGyanis::Net
                     failureReason = "写出请求失败：对端在收完请求前收线，或本次请求已到时限（主机 " + host + "）";
                     co_return exchange;
                 }
+                exchange.isAnyByteSent = true;
 
                 std::array<char, 4096> buffer{};
                 while (true)
@@ -721,18 +741,18 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 一次 h2 交换的结论：响应，以及「这条流上有没有收到过对端的任何帧」
-         * @details 后一位与 HTTP/1.1 那边同名同义：只在「一个字节都没回来」时允许换一条连接重来一次
-         *          （空闲连接被对端收掉是 keep-alive 的固有竞态），收到过就算响应本身出了问题，重发
-         *          会把非幂等请求做两遍。
+         * @brief 一次 h2 交换的结论：响应，以及「有没有收到过对端字节」「请求有没有整个写上通路」
+         * @details 两位一起看才分得开三种情形：收到过字节＝响应本身出了问题，重来不换一个答案；
+         *          没收到也没写出＝通路本来就死着，重来一次不涉及重复执行；已整个写出却没回音＝
+         *          本端分不清「对端没见过它」与「对端正慢」，于是只按方法幂等性决定要不要重来
+         *          （见 isIdempotentRequestMethod）。HTTP/1.1 那一侧用的是同一条判据。
          */
         struct Http2Exchange
         {
             std::unique_ptr<HttpClientResponse> response;
             bool isAnyByteReceived{false};
-            /// 请求有没有写上过通路。h2 一条连接上跑几条流，一条被时限掐掉会把同连接的兄弟一起带走：
-            /// 只看「有没有收到字节」会把「已整个发出、只等答复」的那条也判成可以重来一次，
-            /// 于是非幂等请求被悄悄做两遍。两个位一起看才分得开「空闲期被对端收了」与「发出去没回」
+            /// 请求有没有写上过通路。h2 一条连接上跑几条流，一条被时限掐掉会把同一条通路上的兄弟一起
+            /// 带走，只看「有没有收到字节」判不出该不该重发，于是非幂等请求可能被悄悄做两遍
             bool isAnyByteSent{false};
         };
 
@@ -844,15 +864,21 @@ namespace AsynGyanis::Net
                     {
                         co_return std::move(cachedExchange.response);
                     }
-                    if (cachedExchange.isAnyByteReceived || cachedExchange.isAnyByteSent)
+                    if (cachedExchange.isAnyByteReceived)
                     {
-                        // 要么对端答过话（响应本身出了问题），要么我们已把请求整个交上通路（发出去的
-                        // 请求没有回音）——两种都不该重来：后一种会把非幂等请求做两遍
+                        // 对端答过话：响应本身出了问题，换一条连接重来不会换一个答案
                         co_return nullptr;
                     }
-                    // 一个字节没发出、也没收到：多半是对端在我们手里把这条连接收了（与 h1 的
-                    // keep-alive 同一条竞态）。这条就此作废——不作废也没有下一句，HPACK 动态表跟着
-                    // 连接一起丢——直接往下重开一条重来一次，对调用方仍是一次成功请求
+                    if (cachedExchange.isAnyByteSent && !isIdempotentRequestMethod(request.method))
+                    {
+                        // 请求已整个交上通路却没有回音：非幂等的不做第二遍
+                        failureReason = "请求已整个写上通路而对端没答话：方法 " + std::string{request.method}
+                                        + " 不在幂等集合里，本端不重发（主机 " + u.host + "）";
+                        co_return nullptr;
+                    }
+                    // 一个字节没发出、也没收到，或是幂等方法发出去没了回音：多半是对端在我们手里把这条
+                    // 连接收了（与 h1 的 keep-alive 同一条竞态）。这条就此作废——不作废也没有下一句，
+                    // HPACK 动态表跟着连接一起丢——往下重开一条重来一次，对调用方仍是一次成功请求
                 }
                 if (auto reused = pool->acquire(endpointKey))
                 {
@@ -873,9 +899,17 @@ namespace AsynGyanis::Net
                         }
                         // 复用来的连接上连一个字节都没读到：这多半是对端在我们手里空闲期间把它关掉了
                         // （keep-alive 的经典竞态）。换一条新连接重来一次，对调用方仍是一次成功请求；
-                        // 读到过字节才失败的不能重来——那已经是「响应本身有问题」，重发会把非幂等请求做两遍
+                        // 读到过字节才失败的不能重来——那已经是「响应本身有问题」，重发也不换一个答案
                         if (exchange.isAnyByteReceived)
                         {
+                            co_return nullptr;
+                        }
+                        if (exchange.isAnyByteSent && !isIdempotentRequestMethod(request.method))
+                        {
+                            // 请求已整个写上通路却没有回音：本端分不清「对端没见过它」与「对端正慢」，
+                            // 非幂等的按可能已经执行过处置（RFC 9112 §9.3.2 的重试许可只给幂等方法）
+                            failureReason = "请求已整个写上通路而对端没答话：方法 " + std::string{request.method}
+                                            + " 不在幂等集合里，本端不重发（主机 " + u.host + "）";
                             co_return nullptr;
                         }
                         reused->close();
