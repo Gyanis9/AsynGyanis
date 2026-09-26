@@ -82,6 +82,7 @@ add_executable(TestNet
         Tcp/TestSocketTuning.cpp
         Tcp/TestTcpServer.cpp
         Tcp/TestPerIpConnectionLimiter.cpp
+        Proxy/TestProxyProtocol.cpp
 
         WebSocket/TestWebSocketHandshake.cpp
         WebSocket/TestWebSocketFrame.cpp

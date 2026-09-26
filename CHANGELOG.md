@@ -17,6 +17,30 @@
 
 ### 新增
 
+- **服务器可要求 PROXY 协议头，把连接记到真实客户端头上**：新增 `Net/Proxy/ProxyProtocol.h`
+  （`frameProxyHeader()` 分帧 + `parseProxyHeader()` 解析，v1 文本行与 v2 二进制块都支持，纯函数不碰
+  套接字），`TcpServer::setProxyProtocolRequired(true)` 打开后每条新连接先读一条头，读到的来源地址
+  经新增的 `AsyncSocket::setAdvertisedPeerAddress()` 成为这条套接字的对端身份——按来源 IP 的并发限额、
+  `HttpRequest::remoteAddress()` 与日志因此都按真实客户端算，而不是「一整个负载均衡器共用一个来源」。
+  头可以分片到达（读侧按版本各自的长度上界继续读）；v2 定长段之后的 TLV 会被跳过并计入消费长度。
+  三条口径写死在用例里：命令号或地址族不可认（`UNKNOWN`/`LOCAL`/v2 未定义命令）只证明「前面有代理」、
+  不交出身份，来源仍按套接字对端记账；开头字节不是头（例如直接发来 `GET /`）当场判死并留一条 WARN，
+  既不建会话也不吊着对端；长度字段谎报越过上界（v1 108 B / v2 1 KiB）同样当场判死，不给它撑缓冲。
+  读头是一路独立协程，接受循环不会被任何一条连接牵住；**正在读头的连接计入 `setMaxConnections()` 的并发数**
+  （否则一批「只握手不发音节」的对端就能把上限整个绕过）。
+  一条限制说在前头：**头必须单独成段送到**——代理把「头 + 请求正文」挤进同一次发送时，读掉的尾巴退不回
+  内核缓冲、也塞不进会话的读缓冲，这条连接按上一条判死（日志给出多出多少字节）。主流代理都在建连时先把
+  头单独写一次，因此实际不会撞上。
+  开关默认关闭；**只该在只有代理能连进来的端口上开**——头本身没有任何鉴权。
+  用例：`ProxyProtocol.*` 18 条纯解析/分帧（含 10 条必须被拒的畸形形状，其中 `ParsesTheSpecVersionOneExample`
+  直接拿规范原文那条例子当判据，不依赖本仓库自编的字节），
+  `TcpServer.Attributes…VersionOneHeader/…VersionTwoHeader/ReadsProxyHeaderSplitAcrossSegments/
+  LimitsPerProxiedSourceNotPerProxy/DropsConnectionThatSendsNoProxyHeader/
+  DropsConnectionWithMalformedProxyHeader/DropsConnectionCarryingBytesAfterProxyHeader` 走真 TCP 端到端。
+  证伪：把限额键换回套接字自己的对端，`LimitsPerProxiedSource…` 红（另一个来源被代理地址挡住）；
+  去掉「不是头就判死」那条，`DropsConnectionThatSendsNoProxyHeader` 红；让「解析失败」与「头后有尾巴」
+  两条出口不关套接字（等价于把连接留在协程帧里等清扫），后两条各红 2.04 秒——按值参数住在协程帧的
+  参数区，只在整帧销毁时才析构，所以每条判死出口都得当场 `close()`。
 - **出站连接按候选并发试（Happy Eyeballs 口径）**：新增 `Core::connectCandidates()` 与
   `Core::orderForConnectionRace()`，`HttpClient` 的连接段改用它们。此前的做法是「按解析顺序一条条试，
   每条都用整段时限」，于是**一条黑洞地址**（SYN 发出去没人应答，实测 Windows 上拒绝型失败也不给可写

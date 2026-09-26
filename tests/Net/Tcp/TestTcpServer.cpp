@@ -18,14 +18,18 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <array>
 #include <functional>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -67,6 +71,7 @@ namespace AsynGyanis::Net
             std::shared_ptr<PerIpConnectionLimiter> perIpLimiter{};  ///< 按来源 IP 的限额；空表示不作该限制
             bool markBusy{false};                                    ///< 连接是否自报「有在途工作」（用于分辨 drain 的等待与强关）
             bool listenOnIpv6Any{false};                             ///< 绑 `::` 而非回环：双栈监听器会同时接住 IPv4 客户端
+            bool proxyProtocolRequired{false};                       ///< 要求每条连接先送一个 PROXY 协议头
         };
 
         /// start() 协程的结束原因
@@ -169,6 +174,7 @@ namespace AsynGyanis::Net
                 // 并发上限必须在 start() 之前定下，与基类的调用契约一致
                 setMaxConnections(options.maxConnections);
                 setPerIpConnectionLimiter(options.perIpLimiter);
+                setProxyProtocolRequired(options.proxyProtocolRequired);
             }
 
             /**
@@ -186,6 +192,7 @@ namespace AsynGyanis::Net
             {
                 setMaxConnections(options.maxConnections);
                 setPerIpConnectionLimiter(options.perIpLimiter);
+                setProxyProtocolRequired(options.proxyProtocolRequired);
             }
 
             /**
@@ -203,6 +210,11 @@ namespace AsynGyanis::Net
                 // Windows CI 实测读到 recordedLocalPort()==0）
                 m_recordedLocalPort.store(socket.localAddress().port(), std::memory_order_release);
                 m_recordedPeerPort.store(socket.remoteAddress().port(), std::memory_order_release);
+                {
+                    // 记下来的是「本条连接被当成谁」：PROXY 头改写过的身份要能被断言到
+                    const std::lock_guard<std::mutex> peerGuard(m_seenPeersMutex);
+                    m_seenPeers.push_back(socket.remoteAddress().ip());
+                }
                 m_createConnectionCalls.fetch_add(1, std::memory_order_release);
 
                 if (m_options.mode == CreateConnectionMode::ReturnsNullPointer)
@@ -228,6 +240,13 @@ namespace AsynGyanis::Net
             [[nodiscard]] int listenDescriptor() const
             {
                 return m_acceptor.fileDescriptor();
+            }
+
+            /// 到目前为止被钩子见过的对端 IP（按到达顺序）：PROXY 协议改造过的那个值
+            [[nodiscard]] std::vector<std::string> seenPeers() const
+            {
+                const std::lock_guard<std::mutex> guard(m_seenPeersMutex);
+                return m_seenPeers;
             }
 
             /// createConnection 被调用的次数
@@ -263,6 +282,8 @@ namespace AsynGyanis::Net
         private:
             ServerTestOptions m_options;                             ///< 钩子配置
             std::atomic<bool> *m_stopObserved{nullptr};              ///< 交给连接的观察标记
+            mutable std::mutex m_seenPeersMutex;                     ///< 保护下面的到达顺序表
+            std::vector<std::string> m_seenPeers;                    ///< 每次钩子调用对应的对端 IP
             std::atomic<std::size_t> m_createConnectionCalls{0};     ///< 钩子调用次数
             std::atomic<std::uint16_t> m_recordedLocalPort{0};       ///< 钩子收到的服务端端口
             std::atomic<std::uint16_t> m_recordedPeerPort{0};        ///< 钩子收到的对端端口
@@ -532,6 +553,43 @@ namespace AsynGyanis::Net
             [[nodiscard]] std::uint16_t localPort() const noexcept
             {
                 return m_localPort;
+            }
+
+            /**
+             * @brief 把一段字节全部写出去（阻塞套接字上 send 会自己写完）
+             * @param bytes 要发的字节
+             * @return true 全部发出
+             */
+            bool sendAll(const std::string_view bytes) const
+            {
+                std::size_t sent = 0U;
+                while (sent < bytes.size())
+                {
+                    const int written = ::send(m_descriptor, bytes.data() + sent, static_cast<int>(bytes.size() - sent), 0);
+                    if (written <= 0)
+                    {
+                        return false;
+                    }
+                    sent += static_cast<std::size_t>(written);
+                }
+                return true;
+            }
+
+            /// 本端是否已被对端收尾（读到 0 或错误都算）：用于断言「服务器把这条连接关了」
+            [[nodiscard]] bool isClosedByPeer() const
+            {
+                // 非阻塞地问一句：这条判断要放进轮询等待里，而客户端套接字是阻塞的——直接 recv
+                // 会一直睡到对端有动作，等待方就再也没有下一次轮询了（实测把用例挂死在这里）
+                fd_set readSet{};
+                FD_ZERO(&readSet);
+                FD_SET(m_descriptor, &readSet);
+                timeval timeout{0, 20 * 1000};
+                if (::select(m_descriptor + 1, &readSet, nullptr, nullptr, &timeout) <= 0)
+                {
+                    return false;
+                }
+                char probe{};
+                return ::recv(m_descriptor, &probe, 1, 0) <= 0;
             }
 
             /// 关闭本端，模拟「客户端先断开」
@@ -1127,4 +1185,273 @@ namespace AsynGyanis::Net
         loop.stop();
         loopThread.join();
     }
+
+    namespace
+    {
+        /**
+         * @brief 拼一条 v1 PROXY 头
+         */
+        std::string makeV1Header(const std::string_view source, const int sourcePort,
+                                 const std::string_view destination, const int destinationPort)
+        {
+            return "PROXY TCP4 " + std::string{source} + " " + std::string{destination} + " "
+                   + std::to_string(sourcePort) + " " + std::to_string(destinationPort) + "\r\n";
+        }
+
+        /**
+         * @brief 拼一条 v2 PROXY 头（IPv4 + PROXY 命令）
+         */
+        std::string makeV2Ipv4Header(const std::array<int, 4> &source, const std::array<int, 4> &destination,
+                                     const int sourcePort, const int destinationPort)
+        {
+            std::string header{"\r\n\r\n\0\r\nQUIT\n", 12};
+            header += static_cast<char>(0x21); // 版本 2 + 命令 PROXY
+            header += static_cast<char>(0x11); // AF_INET + STREAM
+            header += static_cast<char>(0x00); // 地址块长度 12（大端两字节）
+            header += static_cast<char>(0x0C);
+            for (const int octet: source)
+            {
+                header += static_cast<char>(octet);
+            }
+            for (const int octet: destination)
+            {
+                header += static_cast<char>(octet);
+            }
+            header += static_cast<char>((sourcePort >> 8) & 0xFF);
+            header += static_cast<char>(sourcePort & 0xFF);
+            header += static_cast<char>((destinationPort >> 8) & 0xFF);
+            header += static_cast<char>(destinationPort & 0xFF);
+            return header;
+        }
+    } // namespace
+
+    /**
+     * @brief 要求 PROXY 头时，连接要被记到头上写着的真实来源，而不是代理自己的地址
+     * @details 这正是开这个开关的全部理由：回环上所有客户端的对端地址都是 127.0.0.1，不看头就等于
+     *          一整个代理的流量共用一个身份
+     */
+    TEST(TcpServer, AttributesConnectionToTheProxiedSourceFromVersionOneHeader)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.proxyProtocolRequired = true;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendAll(makeV1Header("203.0.113.9", 44000, "198.51.100.7", 443)));
+
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().seenPeers().size() >= 1U;
+                },
+                kWaitTimeout))
+                << "读完 PROXY 头之后没有建会话：头没被认出来，或者被当场判死";
+        const std::vector<std::string> peers = fixture.server().seenPeers();
+        EXPECT_EQ(peers[0], "203.0.113.9") << "对端身份没被换成头上写着的来源";
+    }
+
+    TEST(TcpServer, AttributesConnectionToTheProxiedSourceFromVersionTwoHeader)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.proxyProtocolRequired = true;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendAll(makeV2Ipv4Header({203, 0, 113, 9}, {198, 51, 100, 7}, 44000, 443)));
+
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().seenPeers().size() >= 1U;
+                },
+                kWaitTimeout))
+                << "v2 头没被认出来：定长段的长度字段或地址块解析有一条不对";
+        EXPECT_EQ(fixture.server().seenPeers()[0], "203.0.113.9");
+    }
+
+    /**
+     * @brief 头可以分两段到达：读侧要接着读，而不是把第一段当成完整头判死
+     */
+    TEST(TcpServer, ReadsProxyHeaderSplitAcrossSegments)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.proxyProtocolRequired = true;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        const std::string header = makeV1Header("203.0.113.21", 1234, "192.0.2.1", 80);
+        const std::size_t cut = header.find(" 1234");
+        ASSERT_NE(cut, std::string::npos);
+        ASSERT_TRUE(client.sendAll(header.substr(0U, cut)));
+        ASSERT_TRUE(client.sendAll(header.substr(cut)));
+
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().seenPeers().size() >= 1U;
+                },
+                kWaitTimeout))
+                << "分段到达的头没被拼起来：读循环少了「还要再读」那一路";
+        EXPECT_EQ(fixture.server().seenPeers()[0], "203.0.113.21");
+    }
+
+    /**
+     * @brief 按来源限额要用真实来源算：同一个代理后面的不同客户端不该共用一个名额
+     * @details 这条正是「忽略 PROXY 头」的判据：不看头时三条连接的对端都是 127.0.0.1，限额 1 会把
+     *          第二条一起挡掉；看了头，第二条（另一个来源）就该建起来，而第三条（与首条同源）仍要挡
+     */
+    TEST(TcpServer, LimitsPerProxiedSourceNotPerProxy)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.proxyProtocolRequired = true;
+        options.perIpLimiter = std::make_shared<PerIpConnectionLimiter>(1);
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient firstClient(listeningPort);
+        ASSERT_TRUE(firstClient.isValid());
+        ASSERT_TRUE(firstClient.sendAll(makeV1Header("203.0.113.1", 1, "192.0.2.1", 80)));
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().createConnectionCalls() >= 1U;
+                },
+                kWaitTimeout))
+                << "首条带头的连接没建起来";
+
+        const LoopbackClient secondClient(listeningPort);
+        ASSERT_TRUE(secondClient.isValid());
+        ASSERT_TRUE(secondClient.sendAll(makeV1Header("203.0.113.2", 2, "192.0.2.1", 80)));
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().createConnectionCalls() >= 2U;
+                },
+                kWaitTimeout))
+                << "另一个来源被代理自己的地址挡住了：限额没用上 PROXY 头里的来源";
+
+        const LoopbackClient thirdClient(listeningPort);
+        ASSERT_TRUE(thirdClient.isValid());
+        ASSERT_TRUE(thirdClient.sendAll(makeV1Header("203.0.113.1", 3, "192.0.2.1", 80)));
+        EXPECT_FALSE(waitForCondition(
+                [&fixture]
+                {
+                    return fixture.server().createConnectionCalls() >= 3U;
+                },
+                kNegativeCheckTimeout))
+                << "与首条同源的第三条被放行了：同一个真实来源拿到了两个名额";
+    }
+
+    /**
+     * @brief 要求带头却不带头（直接发请求）的连接要被当场收口，且不许建会话
+     * @details 两头都要断言：会话数不涨（否则头就成了可选装饰），客户端还要看到收尾（否则是吊死）
+     */
+    TEST(TcpServer, DropsConnectionThatSendsNoProxyHeader)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.proxyProtocolRequired = true;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendAll("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+
+        ASSERT_TRUE(waitForCondition(
+                [&client]
+                {
+                    return client.isClosedByPeer();
+                },
+                kWaitTimeout))
+                << "发了不是头的字节却没被收口：判死那一路没生效";
+        EXPECT_EQ(fixture.server().createConnectionCalls(), 0U) << "没带头的连接照样建了会话，等于头是可选的";
+    }
+
+    /**
+     * @brief 开头确实像 PROXY 头、但字段不合规范的也要收口，且不许建会话
+     * @details 与上一条分开的理由：那一路在「一看就不是头」时判死，这一路要读完整条头才发现不对，
+     *          走的是解析失败那条出口（关闭动作挂在不同位置，少一处就会吊住对端）
+     */
+    TEST(TcpServer, DropsConnectionWithMalformedProxyHeader)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.proxyProtocolRequired = true;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        // 前缀与换行都合规，字段数不对：读侧要一路读到行尾才发现解析不出来
+        ASSERT_TRUE(client.sendAll("PROXY TCP4 203.0.113.9\r\n"));
+
+        ASSERT_TRUE(waitForCondition(
+                [&client]
+                {
+                    return client.isClosedByPeer();
+                },
+                kWaitTimeout))
+                << "解析失败那条出口没关套接字：对端在等一个不会来的 FIN";
+        EXPECT_EQ(fixture.server().createConnectionCalls(), 0U) << "不合规范的头被当成了合法身份";
+    }
+
+    /**
+     * @brief 头后面还跟着别的字节时宁可拒绝：本层没有地方安放多出来的那一段
+     * @details 钉住这条**取舍**而不是让它悄悄发生：代理把「头 + 请求」挤进一段时连接会被拒掉，
+     *          而按实现读掉的字节已无法退回内核缓冲，静默错位比拒绝更糟
+     */
+    TEST(TcpServer, DropsConnectionCarryingBytesAfterProxyHeader)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.proxyProtocolRequired = true;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendAll(makeV1Header("203.0.113.9", 44000, "198.51.100.7", 443) + "GET / HTTP/1.1\r\n"));
+
+        ASSERT_TRUE(waitForCondition(
+                [&client]
+                {
+                    return client.isClosedByPeer();
+                },
+                kWaitTimeout))
+                << "头后多出的字节没被处理却没收口：这条连接被晾在原地";
+        EXPECT_EQ(fixture.server().createConnectionCalls(), 0U) << "带尾巴的头被放行了：尾巴里的正文会被当成头的续段丢掉";
+    }
+
 } // namespace AsynGyanis::Net

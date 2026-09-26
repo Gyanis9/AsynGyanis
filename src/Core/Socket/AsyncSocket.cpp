@@ -107,7 +107,8 @@ namespace AsynGyanis::Core
 
     AsyncSocket::AsyncSocket(AsyncSocket &&other) noexcept :
         m_loop(other.m_loop), m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1)),
-        m_watcher(std::move(other.m_watcher)), m_isListening(other.m_isListening)
+        m_watcher(std::move(other.m_watcher)), m_isListening(other.m_isListening),
+        m_advertisedPeer(std::move(other.m_advertisedPeer))
     {
     }
 
@@ -122,6 +123,8 @@ namespace AsynGyanis::Core
             // 监听标记也要跟着搬：丢了它，一个监听套接字会在被移动过一次之后按连接的收口方式
             // 去 shutdown 端点（正是换代那条链不能做的事）
             m_isListening = other.m_isListening;
+            // 代理交来的身份也要跟着搬：丢了它，限额与日志会退回按代理记账（见 setAdvertisedPeerAddress）
+            m_advertisedPeer = std::move(other.m_advertisedPeer);
         }
         return *this;
     }
@@ -530,6 +533,13 @@ namespace AsynGyanis::Core
 
     InetAddress AsyncSocket::remoteAddress() const
     {
+        // 代理交来的身份优先：限额键、请求的 remoteAddress()、日志都读这一个值，
+        // 让它们不必各自认得 PROXY 协议（理由见 setAdvertisedPeerAddress()）
+        if (m_advertisedPeer.has_value())
+        {
+            return *m_advertisedPeer;
+        }
+
         sockaddr_storage address{};
         socklen_t        addressLength = sizeof(address);
         if (getpeername(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
@@ -538,6 +548,11 @@ namespace AsynGyanis::Core
             throw Base::SystemException("获取对端地址失败", lastSocketError());
         }
         return InetAddress(address, addressLength);
+    }
+
+    void AsyncSocket::setAdvertisedPeerAddress(const InetAddress address) noexcept
+    {
+        m_advertisedPeer = address;
     }
 
     InetAddress AsyncSocket::localAddress() const

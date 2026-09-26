@@ -1,4 +1,6 @@
 #include "Net/Tcp/TcpServer.h"
+#include "Core/Coroutine/DeadlineGuard.h"
+#include "Net/Proxy/ProxyProtocol.h"
 
 #include "Platform/IO/FileDescriptor.h"
 
@@ -8,6 +10,7 @@
 #include "Core/EventLoop/EventLoop.h"
 
 #include <algorithm>
+#include <array>
 #include <exception>
 #include <memory>
 #include <optional>
@@ -148,15 +151,152 @@ namespace AsynGyanis::Net
         m_connectionManager.waitAll();
     }
 
+    std::size_t TcpServer::inFlightConnectionCount() const noexcept
+    {
+        // 还在读 PROXY 头的连接也算并发：它们已占着一条描述符与一份接收缓冲。只按「已建成会话的
+        // 连接数」判上限的话，一批只握手不发音节的对端就能把上限整个绕过，而服务器看着还在正常接受
+        return m_connectionManager.activeCount() + m_pendingProxyHeaders;
+    }
+
+    void TcpServer::setProxyProtocolRequired(const bool required) noexcept
+    {
+        m_proxyProtocolRequired = required;
+    }
+
     bool TcpServer::takeOverConnection(Core::AsyncSocket socket)
     {
         // 过载保护：并发达到上限时直接丢弃这条连接（局部对象析构即关闭描述符）。
         // 选择立即拒绝而不是暂存等待，是为了不把已握手的连接压在服务器手里占对端资源
-        if (m_maxConnections > 0 && m_connectionManager.activeCount() >= m_maxConnections)
+        if (m_maxConnections > 0 && inFlightConnectionCount() >= m_maxConnections)
         {
             return false;
         }
 
+        if (!m_proxyProtocolRequired)
+        {
+            return admitConnection(std::move(socket));
+        }
+
+        // 要求 PROXY 头时不能在这里就地读：读头要等网络，接受循环一停就是所有来源一起被堵住
+        // （一个只握手不发数据的对端就能让整台服务器停止接受）。改成一路独立协程，名额判定也随之
+        // 挪到读完之后——那时对端身份才是真实来源，按来源限额才不是「一整个代理共享一个名额」
+        Core::Task<void> headerTask = admitAfterProxyHeader(std::move(socket));
+        m_loop.scheduler().schedule(headerTask.handle());
+        m_connectionTasks.push_back(std::move(headerTask));
+        return true;
+    }
+
+    Core::Task<void> TcpServer::admitAfterProxyHeader(Core::AsyncSocket socket)
+    {
+        // 在途的头占一个并发名额：本协程的每个出口（含异常展开）都要把它还回去
+        ++m_pendingProxyHeaders;
+        struct PendingHeaderGuard
+        {
+            std::size_t &counter;
+
+            ~PendingHeaderGuard()
+            {
+                --counter;
+            }
+        } pendingHeader{m_pendingProxyHeaders};
+
+        // 判死的出口必须**当场**关闭描述符：套接字是按值参数，住在协程帧的参数区，只在整帧销毁时才
+        // 析构——而这一帧要等 m_connectionTasks 的清扫才回收。只靠作用域退出，对端会在「已判定收口」
+        // 的连接上继续等一个不会来的 FIN（实测如此）。交给 admitConnection 后描述符已被搬空，
+        // 这里的 close() 是空操作（AsyncSocket::close() 先判 m_fileDescriptor >= 0），两条路径不冲突
+        struct CloseSocketOnExit
+        {
+            Core::AsyncSocket &socket;
+
+            ~CloseSocketOnExit()
+            {
+                socket.close();
+            }
+        } closeSocket{socket};
+
+        // 读头的时限由看门狗掐：挂在 recv 上的协程不会被「对端不说话」叫醒，到点只能靠关掉套接字
+        // 让它收口（与出站连接那一段同一处置）
+        const Core::DeadlineGuard<Core::AsyncSocket> deadlineGuard(m_loop, socket, kProxyProtocolHeaderTimeout,
+                                                                   "PROXY 协议头");
+        try
+        {
+            std::string buffered;
+            std::array<char, 256> chunk{};
+
+            while (true)
+            {
+                const ProxyHeaderFraming framing = frameProxyHeader(buffered);
+                if (!framing.isStillPlausible)
+                {
+                    LOG_WARN_FMT("TcpServer: 连接开头的字节不是合法的 PROXY 协议头，已收口这条连接，监听地址 {}",
+                                 m_acceptor.localAddress().toString());
+                    co_return;
+                }
+                if (framing.totalLength.has_value() && buffered.size() >= *framing.totalLength)
+                {
+                    std::size_t consumedBytes = 0U;
+                    const std::optional<ProxyEndpoint> endpoint = parseProxyHeader(buffered, consumedBytes);
+                    if (!endpoint.has_value())
+                    {
+                        LOG_WARN_FMT("TcpServer: PROXY 协议头不合规范，已收口这条连接，监听地址 {}",
+                                     m_acceptor.localAddress().toString());
+                        co_return;
+                    }
+                    if (consumedBytes != buffered.size())
+                    {
+                        // 头之后还留着字节：那是代理和请求一起送过来的正文前缀，本层没有地方安放它——
+                        // 会话的读缓冲在连接对象里，从这儿塞不进去。宁可拒绝也不静默错位，所以判死
+                        LOG_WARN_FMT("TcpServer: PROXY 头之后还有 {} 字节未被处理，已收口这条连接，监听地址 {}",
+                                     buffered.size() - consumedBytes, m_acceptor.localAddress().toString());
+                        co_return;
+                    }
+                    if (endpoint->hasAddresses)
+                    {
+                        // 记下真实来源：此后 remoteAddress()（限额键、请求地址、日志）都报它
+                        socket.setAdvertisedPeerAddress(endpoint->source);
+                    }
+                    // UNKNOWN / LOCAL 这类不带地址的头只证明「前面确实有个代理」：来源继续按套接字的
+                    // 对端记账（也就是代理自己的地址），不去猜一个不存在的客户端
+                    static_cast<void>(admitConnection(std::move(socket)));
+                    co_return;
+                }
+
+                ssize_t received = 0;
+                try
+                {
+                    received = co_await socket.asyncReceive(chunk.data(), chunk.size());
+                }
+                catch (const std::exception &)
+                {
+                    // 到点被看门狗关掉、或对端直接断开：两种都归「没把头说完」，收口这条连接
+                    LOG_WARN_FMT("TcpServer: 没等到完整的 PROXY 协议头，已收口这条连接，监听地址 {}",
+                                 m_acceptor.localAddress().toString());
+                    co_return;
+                }
+                if (received <= 0)
+                {
+                    LOG_WARN_FMT("TcpServer: 对端在发完 PROXY 协议头之前就收尾了，已收口这条连接，监听地址 {}",
+                                 m_acceptor.localAddress().toString());
+                    co_return;
+                }
+                buffered.append(chunk.data(), static_cast<std::size_t>(received));
+            }
+        }
+        catch (const std::exception &proxyException)
+        {
+            // 本协程由调度器独立恢复，异常逃逸等于在事件循环线程上抛异常，会把整个进程带崩；
+            // 剩下的收口由 closeSocket 负责
+            LOG_ERROR_EXCEPTION(proxyException, "TcpServer: 读取 PROXY 协议头一轮失败，已收口这条连接。原因：{}",
+                                proxyException.what());
+        }
+        catch (...)
+        {
+            LOG_ERROR_FMT("TcpServer: 读取 PROXY 协议头一轮失败，已收口这条连接。原因：非标准库异常");
+        }
+    }
+
+    bool TcpServer::admitConnection(Core::AsyncSocket socket)
+    {
         // 按来源 IP 记账：与全局上限互补——全局挡总量，这里挡「同一个来源开一堆连接」。
         // 取名额排在建连之前，超限的连接连会话对象都不必构造；同样直接丢弃。
         // 键取 ip() 而不是 toString()：后者带对端端口，每条连接的端口都不同，拿它当键等于按连接计数、

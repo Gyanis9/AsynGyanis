@@ -17,6 +17,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/IoWatcher.h"
+#include "Core/Socket/InetAddress.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
@@ -25,7 +26,6 @@
 
 namespace AsynGyanis::Core
 {
-    class InetAddress;
     class EventLoop;
 
     /**
@@ -142,6 +142,20 @@ namespace AsynGyanis::Core
          * @throws Base::SystemException 连接失败（对端拒绝、超时、地址不可达等）
          */
         Task<> asyncConnect(InetAddress address) const;
+
+        /**
+         * @brief 记下「由可信代理交来的真实客户端地址」，让 remoteAddress() 从此报它
+         * @param address PROXY 协议一类的带外通道交来的来源地址
+         * @details 服务器坐在负载均衡器后面时，`getpeername` 拿到的是代理的地址：按来源限额、审计与
+         *          封禁都会把「一整个 LB 的流量」记成一个人。PROXY 协议把真实来源随连接一起交来，
+         *          这一层就把它当作这条套接字的对端身份——所有下游消费者（限额键、请求的
+         *          `remoteAddress()`、日志）因此不必各自认得代理协议。
+         * @note **只有可信通道才准调用**：这个值一旦写上，`remoteAddress()` 就不再反映内核看到的对端，
+         *       写错了等于让对端自己挑一个身份来占限额。可信与否由调用方（哪条监听端口开了 PROXY 头、
+         *       网段边界）负责，本类不做也无法做判断
+         * @note 随套接字一起移动：把连接交给会话、再从会话交出去的那几条路上都不能丢这个身份
+         */
+        void setAdvertisedPeerAddress(InetAddress address) noexcept;
 
         /**
          * @brief 异步接收数据（协程式）
@@ -343,5 +357,9 @@ namespace AsynGyanis::Core
         /// 本描述符是否处于监听态（见 markAsListening()）：它决定收口时能不能对端点做 shutdown，
         /// 因此必须跟着对象移动。mutable 是因为标记由 const 的 listen()/markAsListening() 写入
         mutable bool m_isListening{false};
+
+        /// 由可信代理交来的真实来源（见 setAdvertisedPeerAddress()）：为空时 remoteAddress() 直接问内核。
+        /// 它必须随对象移动一起搬走——套接字会被交给会话、再从会话交出去，身份丢了限额就退回按代理记账
+        std::optional<InetAddress> m_advertisedPeer{};
     };
 } // namespace AsynGyanis::Core

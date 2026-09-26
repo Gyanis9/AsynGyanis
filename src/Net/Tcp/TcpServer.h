@@ -181,6 +181,25 @@ namespace AsynGyanis::Net
         void setPerIpConnectionLimiter(std::shared_ptr<PerIpConnectionLimiter> limiter);
 
         /**
+         * @brief 要求每条新连接以一个 PROXY 协议头开头（负载均衡器交来的真实客户端身份）
+         * @param required true 表示必须带头，没带头的连接当场收口；false（默认）不读任何头
+         * @details 服务器坐在代理后面时，`getpeername` 只能看到代理：按来源 IP 的并发限额会把一整个
+         *          LB 的流量记成一个来源，审计与封禁也就找错了人。开启后每条连接先读一条
+         *          PROXY 协议头（v1 文本行或 v2 二进制块），读到的来源地址从此就是这条套接字的
+         *          对端身份，限额键、`HttpRequest::remoteAddress()` 与日志都跟着改。
+         * @note **只该在只有代理能连进来的端口上开**：头本身没有任何鉴权，对公网敞开就等于让每个
+         *       客户端自己挑一个来源 IP 来占限额
+         * @note 没带头、带头但不合规范、或在读头时限（固定 3 秒，见 kProxyProtocolHeaderTimeout）之内
+         *       没把带头发完的连接都被收口，且各留一条 WARN：这类连接进不了会话，静默丢弃会让人排查半天
+         * @note 头必须**单独成段**送到：若代理把「头 + 请求正文」挤进同一次发送，多出来的那一段没有
+         *       地方安放（读掉的字节退不回内核缓冲，也塞不进会话的读缓冲），这条连接按上一条收口。
+         *       主流代理都在建连时先把头单独写一次，因此实际不会撞上；撞上时日志会给出多出多少字节
+         * @note 必须在 start() 之前调用：已建立的连接不会补读
+         * @see ProxyProtocol.h
+         */
+        void setProxyProtocolRequired(bool required) noexcept;
+
+        /**
          * @brief 设置监听与接受套接字的调参（缓冲区上限、Linux 的延迟接受）
          * @details 转发给内部 TcpAcceptor：缓冲区上限对监听套接字与每条接受到的连接都生效，
          *          延迟接受仅 Linux 支持（Windows 按「不支持」降级，不影响监听）。
@@ -277,6 +296,32 @@ namespace AsynGyanis::Net
          */
         bool takeOverConnection(Core::AsyncSocket socket);
 
+        /**
+         * @brief 限额判定、建会话、起服务协程、回收已完成的帧——接手一条连接的共同后半段
+         * @param socket 已建立的连接套接字（对端身份已就位：内核的 getpeername，或代理交来的真实来源）
+         * @return true 已接手并起服务协程
+         * @return false 本服务器此刻不收（该来源超限、取不到对端地址、子类钩子失败）；描述符已关闭
+         */
+        bool admitConnection(Core::AsyncSocket socket);
+
+        /**
+         * @brief 此刻算得进并发上限的连接数：已建成会话的加上正在读 PROXY 头的
+         * @return std::size_t 两者之和
+         */
+        [[nodiscard]] std::size_t inFlightConnectionCount() const noexcept;
+
+        /**
+         * @brief 要求 PROXY 头时的接手前置：先读头再交给 admitConnection
+         * @param socket 刚接受的连接
+         * @details 为什么单独一路协程：读头要等网络，而接受循环不能为一条连接停在原地——否则一个
+         *          不发头的对端就能把整台服务器的接受堵住（头队阻塞）。名额判定也随之挪到读完之后，
+         *          这样按来源限额用的是真实来源而不是代理的地址
+         */
+        Core::Task<void> admitAfterProxyHeader(Core::AsyncSocket socket);
+
+        /// 读完一条 PROXY 头的时限：对端把带头发完的合理上限，到点没发完就收掉这条连接
+        static constexpr std::chrono::milliseconds kProxyProtocolHeaderTimeout{3000};
+
         /// 空闲清扫的默认节拍（毫秒）：够密以免超时被成倍放大，又不会让空闲服务器频繁空转
         static constexpr std::chrono::milliseconds kDefaultIdleCheckInterval{250};
 
@@ -291,6 +336,9 @@ namespace AsynGyanis::Net
         std::atomic<bool>              m_running{false};    ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
         std::size_t                    m_maxConnections{0}; ///< 最大并发连接数，0 表示无限制
         std::shared_ptr<PerIpConnectionLimiter> m_perIpConnectionLimiter; ///< 按来源 IP 的并发限额；空指针表示不作该限制
+        bool                             m_proxyProtocolRequired{false};   ///< 是否要求每条新连接以 PROXY 协议头开头（见 setProxyProtocolRequired()）
+        /// 正在读 PROXY 头的连接数：还没进连接表，但已占着描述符与缓冲，并发上限要把它们算进去
+        std::size_t                      m_pendingProxyHeaders{0};
         std::chrono::milliseconds      m_idleCheckInterval{kDefaultIdleCheckInterval}; ///< 空闲清扫节拍，非正数表示关闭清扫
         Core::Timer                    m_idleTimer;         ///< 清扫协程与 drain 共用的节拍器；waitFor 每次返回独立等待器，两处并发等待互不干扰
         Core::Task<>                   m_idleSweepTask{nullptr}; ///< 清扫协程任务；空句柄表示本服务器没有清扫（见 setter 的说明）
