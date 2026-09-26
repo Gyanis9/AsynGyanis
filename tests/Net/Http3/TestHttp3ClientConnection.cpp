@@ -54,7 +54,14 @@ namespace AsynGyanis::Net
              * @param requireClientCertificates 为真时打开双向 TLS：要求并校验客户端证书，信任锚就用
              *        下面那张自签夹具（它既是服务端身份又是它自己的根，因此同一份文件两头通用）
              */
-            explicit RunningHttp3Server(const bool requireClientCertificates = false)
+            /**
+             * @brief 起一台服务端
+             * @param requireClientCertificates 为真时打开双向 TLS：要求并校验客户端证书，信任锚就用
+             *        下面那张自签夹具（它既是服务端身份又是它自己的根，因此同一份文件两头通用）
+             * @param configureServer 造好服务端、进入监听之前对它做的追加改动（换限额这类只能在这
+             *        个窗口做：限额按连接建立那一刻交给会话）
+             */
+            explicit RunningHttp3Server(const bool requireClientCertificates = false, const std::function<void(QuicServer &)> &configureServer = {})
             {
                 m_router.get("/probe",
                              [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
@@ -82,6 +89,10 @@ namespace AsynGyanis::Net
 
                 m_server = std::make_unique<QuicServer>(m_loop, configuration);
                 m_server->setRouter(m_router);
+                if (configureServer)
+                {
+                    configureServer(*m_server);
+                }
                 m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
                 m_loop.scheduler().schedule(m_listenTask->handle());
                 m_loopThread = std::thread([this] { m_loop.run(); });
@@ -387,6 +398,77 @@ namespace AsynGyanis::Net
             std::atomic<bool>           m_isFinished{false};                  ///< 结果已就位
         };
 
+
+        /**
+         * @brief 在同一条链路上连提两条请求，看服务端在单连接请求数到量之后怎么处置第二条
+         * @details 整段跑在链路所属的循环线程上（连接对象不跨线程访问），两条结论交回测试线程读
+         */
+        class TwoRequestAttempt
+        {
+        public:
+            explicit TwoRequestAttempt(const std::uint16_t port) : m_port(port)
+            {
+                m_task.emplace(run());
+                m_loop.scheduler().schedule(m_task->handle());
+                m_loopThread = std::thread([this] { m_loop.run(); });
+            }
+
+            ~TwoRequestAttempt()
+            {
+                m_loop.stop();
+                if (m_loopThread.joinable())
+                {
+                    m_loopThread.join();
+                }
+            }
+
+            TwoRequestAttempt(const TwoRequestAttempt &)            = delete;
+            TwoRequestAttempt &operator=(const TwoRequestAttempt &) = delete;
+
+            bool awaitFinished(const std::chrono::milliseconds timeout)
+            {
+                return waitForCondition([this] { return m_isFinished.load(std::memory_order_acquire); }, timeout);
+            }
+
+            [[nodiscard]] bool isLinkConnected() const noexcept
+            {
+                return m_isConnected;
+            }
+            [[nodiscard]] const Http3ClientResponse &first() const noexcept
+            {
+                return m_first;
+            }
+            [[nodiscard]] const Http3ClientResponse &second() const noexcept
+            {
+                return m_second;
+            }
+
+        private:
+            /// 在循环线程上跑完两条请求：第一条应当正常应答，第二条落在「本端已经不再受理」那一侧
+            Core::Task<> run()
+            {
+                const auto address = Core::InetAddress::resolve("127.0.0.1", m_port).value();
+                auto       link    = std::make_shared<Http3OutboundLink>(m_loop, makeLinkConfiguration(m_port));
+                m_isConnected      = co_await link->connect(address);
+                if (m_isConnected)
+                {
+                    m_first  = co_await link->http3().request("https", "127.0.0.1:" + std::to_string(m_port), "GET", "/probe", {}, {}, std::chrono::milliseconds{3000});
+                    m_second = co_await link->http3().request("https", "127.0.0.1:" + std::to_string(m_port), "GET", "/probe", {}, {}, std::chrono::milliseconds{3000});
+                }
+                m_isFinished.store(true, std::memory_order_release);
+                co_return;
+            }
+
+            Core::EventLoop             m_loop;
+            std::uint16_t               m_port{0U};
+            std::optional<Core::Task<>> m_task{};
+            std::thread                 m_loopThread{};
+            Http3ClientResponse         m_first{};
+            Http3ClientResponse         m_second{};
+            bool                        m_isConnected{false};
+            std::atomic<bool>           m_isFinished{false};
+        };
+
     } // namespace
 
     /**
@@ -504,6 +586,31 @@ namespace AsynGyanis::Net
         EXPECT_EQ(roundTrip.linkCountAfterSecondAdopt(), 1U) << "同一台主机留了两条 h3 链路：多占一个 UDP 端口与一份 QPACK 状态，换不来吞吐";
         EXPECT_TRUE(roundTrip.isAcquireAfterCloseNull()) << "链路已经关掉，池还把同一条交出去";
         EXPECT_EQ(roundTrip.linkCountAfterEvict(), 0U) << "判死的链路留在表上：下一次取用会拿到一条废链";
+    }
+
+
+    /**
+     * @brief 端到端钉住 `QuicServer::setLimits()`：新限额要真的交到此后建立的会话手上
+     * @details 光验 getter 判不出接线——本条走一条真链路：服务端在 listen() 之前把单连接请求数上限
+     *          换成 1，第一条请求正常应答，第二条就该落在「本端已经不再受理」那一侧（会话到量即
+     *          宣告排空，后来的流不再被服务）。把会话那侧的读源改回 Configuration，本条会两问全绿，
+     *          因为默认档的 1000 条上限根本到不了。
+     */
+    TEST(Http3ClientConnection, HonoursThePerConnectionRequestLimitSetBeforeListening)
+    {
+        RunningHttp3Server server{false, [](QuicServer &quicServer)
+                                  {
+                                      HttpServerLimits limits;
+                                      limits.maximumRequestsPerConnection = 1;
+                                      quicServer.setLimits(limits);
+                                  }};
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        TwoRequestAttempt attempt{server.listeningPort()};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "两条请求既没跑完也没报错，挂在那里";
+        ASSERT_TRUE(attempt.isLinkConnected()) << "链路没握上手，后面的判据都是空的";
+        EXPECT_TRUE(attempt.first().isOk()) << "第一条请求就没成：" << attempt.first().errorMessage;
+        EXPECT_FALSE(attempt.second().isOk()) << "单连接请求数到量之后第二条仍被服务：setLimits 没交到会话手上";
     }
 
 } // namespace AsynGyanis::Net

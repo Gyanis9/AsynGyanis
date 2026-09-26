@@ -17,6 +17,19 @@
 
 ### 新增
 
+- **`QuicServer` 也能在启动前换限额了（`setLimits`/`setParserLimits`，与两条 TCP 监听器同形）**：
+  此前 h3 的限额只能在构造 `QuicServer` 那一刻由 `Configuration` 定死，而 `HttpServer`/`HttpsServer`
+  都有 `setLimits(HttpServerLimits)` 与 `setParserLimits(HttpParserLimits)`——同一份配置喂三条通道时，
+  h3 就是那条改不动的。现在 setter 与两条 TCP 侧同语义：**必须 `listen()` 之前调用**，且是
+  **整体换代**而不是逐字段合并（限额按 `shared_ptr` 只读交给此后每条连接新建的会话，就地改会让在途
+  会话读到半新半旧的组合；解析上限按值存，它只在会话构造那一刻被取走一份副本）。
+  顺带把限额的读源收成一处：静态目录的映射条数上限、会话的解析上限与连接级限额此前各自去读
+  `Configuration`，现在都读同一份生效值——留着两条读源就是「setter 改了一处、另一处仍旧」的成因。
+  用例两条：getter/默认值那条钉「默认读的是 `Configuration` 给的那份」与「换代不留旧字段」；
+  端到端那条钉真正的接线——服务端 `listen()` 之前把单连接请求数上限换成 1，第一条请求正常应答、
+  第二条落在「本端已不再受理」那一侧。证伪过：把会话那侧的读源改回 `Configuration`，端到端那条
+  立刻红（第二条也被服务了），而只看 getter 的那条照绿——这也是为什么两条都要留。
+
 - **出站连接池开始管 HTTP/3 链路（`Http3OutboundLink` + `acquireHttp3`/`adoptHttp3`）**：h3 的会话
   （`Http3ClientConnection`）只**借用**它的 QUIC 连接（`QuicClientConnection`）而不拥有它，所以要把一条
   可复用的 h3 连接交给出站池与多个在途请求共同持有，就得有个把两层绑进同一生命期的东西——分开持有会

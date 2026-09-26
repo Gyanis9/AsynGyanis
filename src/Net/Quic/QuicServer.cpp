@@ -107,7 +107,11 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration) : m_eventLoop(eventLoop), m_configuration(std::move(configuration)), m_expiryTicker(eventLoop)
+    QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration) :
+        m_eventLoop(eventLoop), m_configuration(std::move(configuration)),
+        // 限额的生效份在这里定一次：没给就用默认档那份 shared_ptr，此后 setLimits() 整体换掉它
+        m_serverLimits(m_configuration.serverLimits == nullptr ? std::make_shared<const HttpServerLimits>() : m_configuration.serverLimits),
+        m_parserLimits(m_configuration.parserLimits), m_expiryTicker(eventLoop)
     {
         // 构造期任一检查不过都要抛，而抛出去之后析构函数不会跑——成员那份裸指针就此无人认领。
         // 所以先让局部守卫持有，只有全部检查过了才交接给成员（一份 SSL_CTX 连带证书与私钥约 35 KiB）
@@ -386,8 +390,7 @@ namespace AsynGyanis::Net
         }
         // 限额没配时取默认档那一个值：与 h3 其它配置项同一取舍（parserLimits 留空即取默认）。
         // Windows 上这份上限在 install() 里一律按关闭处理，POSIX 上它才是映射缓存的条数上限
-        const std::size_t maximumMappedStaticFiles =
-                m_configuration.serverLimits == nullptr ? HttpServerLimits{}.maximumMappedStaticFiles : m_configuration.serverLimits->maximumMappedStaticFiles;
+        const std::size_t maximumMappedStaticFiles = m_serverLimits->maximumMappedStaticFiles;
         m_staticFiles.install(*m_router, maximumMappedStaticFiles);
     }
 
@@ -431,9 +434,9 @@ namespace AsynGyanis::Net
         }
         // 解析上限必须显式交给会话：默认构造的上限虽然安全，但调用方在 Configuration 里
         // 调过的值（例如放宽正文上限）必须真的生效，否则「配置了却不生效」更难排查
-        session->setParserLimits(m_configuration.parserLimits);
+        session->setParserLimits(m_parserLimits);
         // 连接级限额同样要交下去：单连接请求条数到量后排空，靠的就是这一份
-        session->setServerLimits(m_configuration.serverLimits);
+        session->setServerLimits(m_serverLimits);
 
         Http3Session &createdSession = *session;
         m_http3Sessions.emplace(rawConnection, std::move(session));
@@ -486,6 +489,29 @@ namespace AsynGyanis::Net
             }
         }
         co_return;
+    }
+
+    void QuicServer::setLimits(HttpServerLimits limits)
+    {
+        // 换一份新对象而不是改写原的那份：会话按 shared_ptr 只读持有它，就地改会让在途会话读到
+        // 半新半旧的组合（与 HttpServer::setLimits() 同一条理由、同一个形状）
+        m_serverLimits = std::make_shared<const HttpServerLimits>(limits);
+    }
+
+    HttpServerLimits QuicServer::limits() const
+    {
+        return *m_serverLimits;
+    }
+
+    void QuicServer::setParserLimits(HttpParserLimits limits)
+    {
+        // 按值存：解析上限只在会话构造那一刻被取走一份副本，之后没有读者，不需要共享只读那套机制
+        m_parserLimits = limits;
+    }
+
+    HttpParserLimits QuicServer::parserLimits() const
+    {
+        return m_parserLimits;
     }
 
     std::size_t QuicServer::connectionCount() const noexcept

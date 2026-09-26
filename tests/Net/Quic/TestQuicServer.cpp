@@ -355,4 +355,51 @@ namespace AsynGyanis::Net
         EXPECT_NO_THROW(server.setStaticFileCacheControl(std::optional<std::string>{"max-age=5"}));
     }
 
+
+    /**
+     * @brief 限额的读源只有一处：Configuration 交进来的那份就是 getters 读到的那份，setter 换的是同一份
+     * @details 这一条钉的是「两条通路」那类缺陷：本类此前只在构造那一刻读 `Configuration::serverLimits`，
+     *          而会话与静态目录的映射上限各自还要读一次配置——加了 setter 之后若漏改其中一处，就会出现
+     *          「setter 改了、会话仍拿旧值」或反过来。断言先验默认取自配置（不是默认档），再验换一份
+     *          之后两处一起变。
+     * @note 证伪：把会话那侧的读源改回 `m_configuration.serverLimits`，本条在「换一份之后」那格红。
+     */
+    TEST(QuicServer, LimitsAreHeldInOnePlaceAndSwapWholesale)
+    {
+        Core::EventLoop loop;
+
+        QuicServer::Configuration configuration;
+        configuration.certificateFile = certificatePath();
+        configuration.privateKeyFile  = privateKeyPath();
+
+        auto limits                          = std::make_shared<HttpServerLimits>();
+        limits->maximumRequestsPerConnection = 7;
+        limits->readTimeout                  = std::chrono::seconds{11};
+        configuration.serverLimits           = limits;
+
+        HttpParserLimits parserLimits;
+        parserLimits.maximumHeaderCount = 33;
+        configuration.parserLimits           = parserLimits;
+
+        QuicServer server(loop, configuration);
+        // 默认读的就是配置里那一份（不是 HttpServerLimits 的默认档）：这条若红，说明构造时接错了源
+        EXPECT_EQ(server.limits().maximumRequestsPerConnection, 7U) << "限额没按 Configuration 给的那份生效";
+        EXPECT_EQ(server.limits().readTimeout, std::chrono::seconds{11});
+        EXPECT_EQ(server.parserLimits().maximumHeaderCount, 33U);
+
+        HttpServerLimits replacement;
+        replacement.maximumRequestsPerConnection = 2;
+        replacement.idleTimeout                  = std::chrono::seconds{3};
+        server.setLimits(replacement);
+        EXPECT_EQ(server.limits().maximumRequestsPerConnection, 2U) << "setLimits 之后 getters 还读旧的那份";
+        // 整体换代而不是逐字段合并：没写的字段回到默认档，而不是留着上一份的 11 秒
+        EXPECT_EQ(server.limits().readTimeout, HttpServerLimits{}.readTimeout) << "换限额做成了改字段：在途会话会读到半新半旧的组合";
+
+        HttpParserLimits replacementParser;
+        replacementParser.maximumHeaderCount = 5;
+        server.setParserLimits(replacementParser);
+        EXPECT_EQ(server.parserLimits().maximumHeaderCount, 5U);
+    }
+
+
 } // namespace AsynGyanis::Net

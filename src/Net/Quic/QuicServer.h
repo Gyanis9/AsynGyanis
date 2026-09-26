@@ -161,6 +161,34 @@ namespace AsynGyanis::Net
         void setRouter(Router &router) noexcept;
 
         /**
+         * @brief 换一份连接级限额：与两条 TCP 监听器同一个形状，取值 0 的字段表示关闭对应保护
+         *
+         * @details 存在的理由与 `HttpServer::setLimits()` 同一条：`Configuration` 里那份限额要先交给
+         *          `HttpMetricsEndpoint`/`healthCheckMiddleware` 之类共用对象，而 h3 的限额此前只能在建
+         *          服务端那一刻定死——同一份配置喂三条通道时，h3 就成了那条改不动的。
+         * @note 与两条 TCP 侧同一口径：**必须在 listen() 之前调用**。限额按 shared_ptr 只读交给此后
+         *       每条连接新建的会话，已经建立的会话继续用它构造那一刻那一份（换一份新对象而不是改写
+         *       原对象，是为了不让在途会话读到半新半旧的组合）。
+         * @see HttpServerLimits, setParserLimits(), limits()
+         */
+        void setLimits(HttpServerLimits limits);
+
+        /// 当前生效的连接级限额（构造时 `Configuration::serverLimits` 那份，或最后一次 setLimits()）
+        [[nodiscard]] HttpServerLimits limits() const;
+
+        /**
+         * @brief 换一份请求解析上限（头部条数、正文总量、请求目标长度那一组）
+         * @param limits 新的解析上限；取值 0 的字段表示关闭对应保护（见 `HttpParserLimits`）
+         * @note 同 `setLimits()`：必须在 listen() 之前调用，此后新建的会话才看得到这份新值。
+         *       按值保存而不是共享指针——解析上限只在会话构造那一刻被取走一份副本，之后没有读者
+         * @see HttpParserLimits, setLimits(), parserLimits()
+         */
+        void setParserLimits(HttpParserLimits limits);
+
+        /// 当前生效的解析上限
+        [[nodiscard]] HttpParserLimits parserLimits() const;
+
+        /**
          * @brief 设置（或关闭）静态文件目录：第三条通道也接同一份静态服务实现
          * @param directoryPath 静态文件根目录（UTF-8 文本），相对或绝对均可；空串表示关闭
          * @details 与 `HttpServer::staticFileDir()` / `HttpsServer::staticFileDir()` 共用
@@ -317,12 +345,17 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<> pumpHttp3For(QuicConnection &connection);
 
-        Core::EventLoop                      &m_eventLoop;           ///< 所属事件循环
-        Configuration                         m_configuration;       ///< 服务端配置
-        SSL_CTX                              *m_tlsContext{nullptr}; ///< QUIC 用的 SSL_CTX（含证书与 ALPN）
-        Platform::DatagramSocket              m_datagramSocket;      ///< 绑定的 UDP 套接字
-        std::unique_ptr<Core::AsyncUdpSocket> m_socket;              ///< 套接字的事件循环封装
-        Core::Timer                           m_expiryTicker;        ///< 定时驱动的节拍定时器
+        Core::EventLoop &m_eventLoop;     ///< 所属事件循环
+        Configuration    m_configuration; ///< 服务端配置
+        /// 连接级限额的生效份：构造时取 `Configuration::serverLimits`（没给就用默认档那份），
+        /// `setLimits()` 整体换掉它。会话只读这一份而不是 `m_configuration` 里那份——两处都读就会
+        /// 出现「setter 改了其中一处」的分叉，静态目录的映射条数上限与在途预算都从这一份取
+        std::shared_ptr<const HttpServerLimits> m_serverLimits;        ///< 交给此后每条连接上新建会话的那份限额
+        HttpParserLimits                        m_parserLimits{};      ///< 同上，解析上限的生效份（按值：会话构造时取走副本，之后没有读者）
+        SSL_CTX                                *m_tlsContext{nullptr}; ///< QUIC 用的 SSL_CTX（含证书与 ALPN）
+        Platform::DatagramSocket                m_datagramSocket;      ///< 绑定的 UDP 套接字
+        std::unique_ptr<Core::AsyncUdpSocket>   m_socket;              ///< 套接字的事件循环封装
+        Core::Timer                             m_expiryTicker;        ///< 定时驱动的节拍定时器
         /// 实际绑定的端口：绑定成功才写入，故非 0 即「已在监听」。原子量是为了让外部线程能读这个
         /// 启动凭据（写侧在循环线程、读侧只观察它），不是允许跨线程碰本类的其他成员
         std::atomic<std::uint16_t> m_listeningPort{0};
