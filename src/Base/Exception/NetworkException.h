@@ -45,9 +45,7 @@ namespace AsynGyanis::Base
          * @param remoteAddress 远端地址文本
          * @param sourceLocation 异常抛出位置，默认取调用点
          */
-        NetworkException(const std::string &         context,
-                         std::error_code             errorCode,
-                         const std::string &         remoteAddress,
+        NetworkException(const std::string &context, std::error_code errorCode, const std::string &remoteAddress,
                          const std::source_location &sourceLocation = std::source_location::current());
 
         /**

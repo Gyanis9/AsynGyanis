@@ -37,7 +37,7 @@ namespace AsynGyanis::Net
         /// （RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）。握手期等待与业务空闲是两件事，故单列一项；0 表示不设这项保护
         std::chrono::milliseconds settingsAcknowledgementTimeout{std::chrono::seconds(10)};
 
-        std::size_t maximumRequestsPerConnection{1000};                   ///< 单连接最多处理的请求条数，达到后回完当前响应即收口；0 表示不限
+        std::size_t maximumRequestsPerConnection{1000}; ///< 单连接最多处理的请求条数，达到后回完当前响应即收口；0 表示不限
 
         /// 静态文件的映射缓存条数上限：同时保留多少份已建好的映射。命中一次即省掉「打开文件 + 建立映射」
         /// 那约 17 µs 的固定开销。0 表示关闭缓存、退回每请求现建一次；上限只管条数，不管累计字节数。

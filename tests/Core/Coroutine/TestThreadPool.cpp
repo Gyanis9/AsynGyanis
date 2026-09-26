@@ -1,7 +1,7 @@
 // ThreadPool 单元测试：线程数量、索引访问、启停、跨线程任务执行、可选的按线程绑核与工作线程自 stop 的拒绝
 
-#include "Core/Coroutine/ThreadPool.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/Coroutine/ThreadPool.h"
 
 #include "Base/Exception/LogicException.h"
 
@@ -35,7 +35,7 @@ namespace AsynGyanis::Core
             counter.fetch_add(1);
             co_return 0;
         }
-    }
+    } // namespace
 
     /**
      * @brief 默认构造不产生空池：至少一个工作线程，任务永远有地方可跑
@@ -77,8 +77,7 @@ namespace AsynGyanis::Core
         // 许可集合读得出来时不得超出它：绑核路径也按同一个数收敛，两处口径必须一致
         if (const size_t allowedCoreCount = Platform::CpuAffinity::availableCoreCount(); allowedCoreCount > 0)
         {
-            EXPECT_LE(pool.threadCount(), allowedCoreCount)
-                << "自动档按宿主核数起线程，超出了本进程被允许的核集合";
+            EXPECT_LE(pool.threadCount(), allowedCoreCount) << "自动档按宿主核数起线程，超出了本进程被允许的核集合";
         }
     }
 
@@ -116,10 +115,7 @@ namespace AsynGyanis::Core
         // 轮询等待每个工作线程进入事件循环，替代固定 sleep
         for (size_t index = 0; index < pool.threadCount(); ++index)
         {
-            ASSERT_TRUE(waitForCondition([&pool, &index]()
-            {
-                return pool.eventLoop(index).isRunning();
-            }));
+            ASSERT_TRUE(waitForCondition([&pool, &index]() { return pool.eventLoop(index).isRunning(); }));
         }
 
         pool.stop();
@@ -136,7 +132,7 @@ namespace AsynGyanis::Core
      */
     TEST(ThreadPool, TaskScheduledBeforeStartExecutesAfterStart)
     {
-        ThreadPool pool(2);
+        ThreadPool       pool(2);
         std::atomic<int> counter{0};
 
         auto task = incrementCounter(counter);
@@ -145,10 +141,7 @@ namespace AsynGyanis::Core
         pool.start();
 
         // 轮询等待协程被执行，替代固定 sleep
-        const bool executed = waitForCondition([&]()
-        {
-            return counter.load() >= 1;
-        });
+        const bool executed = waitForCondition([&]() { return counter.load() >= 1; });
 
         pool.stop();
 
@@ -162,8 +155,8 @@ namespace AsynGyanis::Core
     TEST(ThreadPool, EventLoopsAndSchedulersAreDistinctPerThread)
     {
         ThreadPool pool(2);
-        auto &firstLoop = pool.eventLoop(0);
-        auto &secondLoop = pool.eventLoop(1);
+        auto      &firstLoop  = pool.eventLoop(0);
+        auto      &secondLoop = pool.eventLoop(1);
 
         // 每个工作线程应持有独立的 epoll 实例与调度器
         EXPECT_NE(firstLoop.epoll().fileDescriptor(), secondLoop.epoll().fileDescriptor());
@@ -194,15 +187,13 @@ namespace AsynGyanis::Core
         bool runOnPoolThread(ThreadPool &pool, const size_t index, const std::function<void()> &body)
         {
             std::atomic<bool> isFinished{false};
-            pool.scheduler(index).postRemote([&body, &isFinished]
-            {
-                body();
-                isFinished.store(true, std::memory_order_release);
-            });
-            return waitForCondition([&isFinished]
-            {
-                return isFinished.load(std::memory_order_acquire);
-            });
+            pool.scheduler(index).postRemote(
+                    [&body, &isFinished]
+                    {
+                        body();
+                        isFinished.store(true, std::memory_order_release);
+                    });
+            return waitForCondition([&isFinished] { return isFinished.load(std::memory_order_acquire); });
         }
 
         /**
@@ -214,12 +205,13 @@ namespace AsynGyanis::Core
         bool canPinAnyThread()
         {
             std::atomic<bool> isPinned{false};
-            std::thread probe([&isPinned]
-            {
-                const auto pinResult = Platform::CpuAffinity::pinCurrentThreadToCore(0);
-                const std::uint64_t maskAfter = Platform::CpuAffinity::currentThreadCoreMask();
-                isPinned.store(pinResult.has_value() && maskAfter == 1U, std::memory_order_release);
-            });
+            std::thread       probe(
+                    [&isPinned]
+                    {
+                        const auto          pinResult = Platform::CpuAffinity::pinCurrentThreadToCore(0);
+                        const std::uint64_t maskAfter = Platform::CpuAffinity::currentThreadCoreMask();
+                        isPinned.store(pinResult.has_value() && maskAfter == 1U, std::memory_order_release);
+                    });
             probe.join();
             return isPinned.load(std::memory_order_acquire);
         }
@@ -238,16 +230,18 @@ namespace AsynGyanis::Core
         pool.start();
 
         std::exception_ptr stopError;
-        ASSERT_TRUE(runOnPoolThread(pool, 0, [&pool, &stopError]
-        {
-            try
-            {
-                pool.stop();
-            } catch (...)
-            {
-                stopError = std::current_exception();
-            }
-        })) << "投递没有在工作线程上跑完，这条路径没被走到";
+        ASSERT_TRUE(runOnPoolThread(pool, 0,
+                                    [&pool, &stopError]
+                                    {
+                                        try
+                                        {
+                                            pool.stop();
+                                        } catch (...)
+                                        {
+                                            stopError = std::current_exception();
+                                        }
+                                    }))
+                << "投递没有在工作线程上跑完，这条路径没被走到";
 
         ASSERT_NE(stopError, nullptr) << "工作线程自己 stop() 没被拒：它会 join 自己并让进程 terminate";
         EXPECT_THROW(std::rethrow_exception(stopError), Base::LogicException);
@@ -279,14 +273,8 @@ namespace AsynGyanis::Core
 
         std::atomic<std::uint64_t> firstMask{0};
         std::atomic<std::uint64_t> secondMask{0};
-        const bool isFirstRead = runOnPoolThread(pool, 0, [&firstMask]
-        {
-            firstMask.store(Platform::CpuAffinity::currentThreadCoreMask(), std::memory_order_relaxed);
-        });
-        const bool isSecondRead = runOnPoolThread(pool, 1, [&secondMask]
-        {
-            secondMask.store(Platform::CpuAffinity::currentThreadCoreMask(), std::memory_order_relaxed);
-        });
+        const bool isFirstRead  = runOnPoolThread(pool, 0, [&firstMask] { firstMask.store(Platform::CpuAffinity::currentThreadCoreMask(), std::memory_order_relaxed); });
+        const bool isSecondRead = runOnPoolThread(pool, 1, [&secondMask] { secondMask.store(Platform::CpuAffinity::currentThreadCoreMask(), std::memory_order_relaxed); });
         pool.stop();
 
         ASSERT_TRUE(isFirstRead && isSecondRead) << "投递到工作线程的读数任务没跑完";
@@ -313,15 +301,11 @@ namespace AsynGyanis::Core
         pool.start();
 
         std::atomic<std::uint64_t> workerMask{0};
-        const bool isRead = runOnPoolThread(pool, 0, [&workerMask]
-        {
-            workerMask.store(Platform::CpuAffinity::currentThreadCoreMask(), std::memory_order_relaxed);
-        });
+        const bool isRead = runOnPoolThread(pool, 0, [&workerMask] { workerMask.store(Platform::CpuAffinity::currentThreadCoreMask(), std::memory_order_relaxed); });
         pool.stop();
 
         ASSERT_TRUE(isRead) << "投递到工作线程的读数任务没跑完";
-        EXPECT_NE(workerMask.load() & (workerMask.load() - 1), 0U)
-                << "默认不开绑核时，工作线程的掩码不该被收窄到一枚核：" << std::hex << workerMask.load();
+        EXPECT_NE(workerMask.load() & (workerMask.load() - 1), 0U) << "默认不开绑核时，工作线程的掩码不该被收窄到一枚核：" << std::hex << workerMask.load();
     }
 
     /**
@@ -345,8 +329,7 @@ namespace AsynGyanis::Core
         pool.start();
         static_cast<void>(runOnPoolThread(pool, 0, []() {}));
         const bool isDeliveredAfterWarmUp = runOnPoolThread(pool, 0, []() {});
-        EXPECT_TRUE(isDeliveredAfterWarmUp)
-                << "stop() 之后再 start() 没有换新循环：线程只跑一趟就退出，之后的投递永远不会被执行";
+        EXPECT_TRUE(isDeliveredAfterWarmUp) << "stop() 之后再 start() 没有换新循环：线程只跑一趟就退出，之后的投递永远不会被执行";
         pool.stop();
     }
 } // namespace AsynGyanis::Core

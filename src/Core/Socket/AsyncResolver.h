@@ -42,8 +42,8 @@ namespace AsynGyanis::Core
          */
         struct Stats
         {
-            std::uint64_t lookupCount{0};    ///< 走进名字解析流程的查询次数；字面量直接构造地址，不算查询
-            std::uint64_t cacheHitCount{0};  ///< 其中由缓存直接答出的次数
+            std::uint64_t lookupCount{0};   ///< 走进名字解析流程的查询次数；字面量直接构造地址，不算查询
+            std::uint64_t cacheHitCount{0}; ///< 其中由缓存直接答出的次数
         };
 
         AsyncResolver() = default;

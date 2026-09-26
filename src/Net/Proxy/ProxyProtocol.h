@@ -35,9 +35,9 @@ namespace AsynGyanis::Net
      */
     struct ProxyEndpoint
     {
-        Core::InetAddress source{};       ///< 真实客户端地址（协议里写的「源」）
-        Core::InetAddress destination{};  ///< 被代理的本端地址（协议里写的「目的」）
-        bool hasAddresses{false};         ///< 这条头是否带地址：v1 的 `UNKNOWN` 与 v2 的 LOCAL 都不带
+        Core::InetAddress source{};            ///< 真实客户端地址（协议里写的「源」）
+        Core::InetAddress destination{};       ///< 被代理的本端地址（协议里写的「目的」）
+        bool              hasAddresses{false}; ///< 这条头是否带地址：v1 的 `UNKNOWN` 与 v2 的 LOCAL 都不带
     };
 
     /**
@@ -45,8 +45,8 @@ namespace AsynGyanis::Net
      */
     struct ProxyHeaderFraming
     {
-        bool isStillPlausible{true};              ///< 前缀仍可能是一条头；为 false 时读侧应立刻判死，别再等
-        std::optional<std::size_t> totalLength{}; ///< 已能定出整条头的字节数；还没定出时为空
+        bool                       isStillPlausible{true}; ///< 前缀仍可能是一条头；为 false 时读侧应立刻判死，别再等
+        std::optional<std::size_t> totalLength{};          ///< 已能定出整条头的字节数；还没定出时为空
     };
 
     /**
@@ -71,6 +71,5 @@ namespace AsynGyanis::Net
      * @note v1 的 `UNKNOWN` 与 v2 的 `LOCAL` 都会交出 `hasAddresses=false`：这两类头只说明
      *       「前面确实有个代理」，没有可当作客户端的身份。把它们当地址用等于用一个不存在的来源记账
      */
-    [[nodiscard]] std::optional<ProxyEndpoint> parseProxyHeader(std::string_view header,
-                                                                std::size_t &consumedBytes) noexcept;
+    [[nodiscard]] std::optional<ProxyEndpoint> parseProxyHeader(std::string_view header, std::size_t &consumedBytes) noexcept;
 } // namespace AsynGyanis::Net

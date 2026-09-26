@@ -29,7 +29,7 @@ namespace AsynGyanis::Net
 
         /// 另一组由外部工具（python hashlib + base64）按同一公式算出的固定样本，
         /// 用来证明实现没有把黄金样本「硬编码成答案」
-        constexpr std::string_view kSecondClientKey = "x3JJHMbDL1EzLkh9GBhXDw==";
+        constexpr std::string_view kSecondClientKey   = "x3JJHMbDL1EzLkh9GBhXDw==";
         constexpr std::string_view kSecondAcceptValue = "HSmrc0sMlYUkAGmm5OPpG2HaGWk=";
 
         /// 空 key 的期望值：此时参与摘要的只有 GUID 本身（外部工具算出）
@@ -49,8 +49,7 @@ namespace AsynGyanis::Net
         std::size_t countOccurrences(const std::string &haystack, const std::string_view needle)
         {
             std::size_t occurrenceCount = 0;
-            for (std::size_t foundPosition = haystack.find(needle); foundPosition != std::string::npos;
-                 foundPosition = haystack.find(needle, foundPosition + needle.size()))
+            for (std::size_t foundPosition = haystack.find(needle); foundPosition != std::string::npos; foundPosition = haystack.find(needle, foundPosition + needle.size()))
             {
                 ++occurrenceCount;
             }
@@ -65,8 +64,8 @@ namespace AsynGyanis::Net
          * @param keyValue Sec-WebSocket-Key 头的值
          * @return HttpRequest 组装好的 GET /chat HTTP/1.1 请求
          */
-        HttpRequest makeUpgradeRequestWith(const std::string_view upgradeValue, const std::string_view connectionValue,
-                                           const std::string_view versionValue, const std::string_view keyValue)
+        HttpRequest makeUpgradeRequestWith(const std::string_view upgradeValue, const std::string_view connectionValue, const std::string_view versionValue,
+                                           const std::string_view keyValue)
         {
             HttpRequest request;
             request.setMethod(HttpMethod::GET);
@@ -175,8 +174,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketHandshake, RejectsNonGetMethodWithActionableReason)
     {
-        const std::vector<HttpMethod> nonGetMethods{HttpMethod::POST, HttpMethod::PUT, HttpMethod::DELETE, HttpMethod::HEAD,
-                                                    HttpMethod::UNKNOWN};
+        const std::vector<HttpMethod> nonGetMethods{HttpMethod::POST, HttpMethod::PUT, HttpMethod::DELETE, HttpMethod::HEAD, HttpMethod::UNKNOWN};
         for (const HttpMethod method: nonGetMethods)
         {
             HttpRequest request = makeValidUpgradeRequest();
@@ -221,8 +219,7 @@ namespace AsynGyanis::Net
     {
         for (const std::string_view upgradeValue: {"", "h2c", "websocket-x"})
         {
-            EXPECT_TRUE(containsText(rejectionReasonFor(makeUpgradeRequestWith(upgradeValue, "Upgrade", "13", kRfcExampleClientKey)),
-                                     "Upgrade"))
+            EXPECT_TRUE(containsText(rejectionReasonFor(makeUpgradeRequestWith(upgradeValue, "Upgrade", "13", kRfcExampleClientKey)), "Upgrade"))
                     << "Upgrade 取值：" << upgradeValue;
         }
     }
@@ -234,9 +231,7 @@ namespace AsynGyanis::Net
     {
         for (const std::string_view connectionValue: {"", "keep-alive", "close"})
         {
-            EXPECT_TRUE(
-                    containsText(rejectionReasonFor(makeUpgradeRequestWith("websocket", connectionValue, "13", kRfcExampleClientKey)),
-                                 "Connection"))
+            EXPECT_TRUE(containsText(rejectionReasonFor(makeUpgradeRequestWith("websocket", connectionValue, "13", kRfcExampleClientKey)), "Connection"))
                     << "Connection 取值：" << connectionValue;
         }
     }
@@ -248,8 +243,7 @@ namespace AsynGyanis::Net
     {
         for (const std::string_view versionValue: {"", "8", "12", "14"})
         {
-            const std::string reason =
-                    rejectionReasonFor(makeUpgradeRequestWith("websocket", "Upgrade", versionValue, kRfcExampleClientKey));
+            const std::string reason = rejectionReasonFor(makeUpgradeRequestWith("websocket", "Upgrade", versionValue, kRfcExampleClientKey));
 
             EXPECT_TRUE(containsText(reason, "Sec-WebSocket-Version")) << "版本取值：" << versionValue;
             EXPECT_TRUE(containsText(reason, "13")) << "原因里必须写清只支持 13，版本取值：" << versionValue;
@@ -285,11 +279,11 @@ namespace AsynGyanis::Net
     TEST(WebSocketHandshake, RejectsKeyThatIsNotCanonicalBase64)
     {
         const std::vector<std::string> invalidKeys{
-                "dGhlIHNhbXBsZSBub25jZQ=*",   // 字母表外的字符 '*' 出现在末尾
-                "dGhlIHNhbXBsZSBub25jZQ",     // 缺一个填充符，长度不是 4 的倍数
-                "dGhlIHNhbXBsZSBub25jZQ===",  // 填充符过多
-                "AAAAAAAAAAAAAAAAAAAAAP==",   // 填充位被置位，同一个字节串会有多种写法
-                "dGhlIHNhbXBsZS Bub25jZQ==",  // 值里夹了空格
+                "dGhlIHNhbXBsZSBub25jZQ=*",  // 字母表外的字符 '*' 出现在末尾
+                "dGhlIHNhbXBsZSBub25jZQ",    // 缺一个填充符，长度不是 4 的倍数
+                "dGhlIHNhbXBsZSBub25jZQ===", // 填充符过多
+                "AAAAAAAAAAAAAAAAAAAAAP==",  // 填充位被置位，同一个字节串会有多种写法
+                "dGhlIHNhbXBsZS Bub25jZQ==", // 值里夹了空格
         };
         for (const std::string &keyValue: invalidKeys)
         {
@@ -320,9 +314,8 @@ namespace AsynGyanis::Net
     {
         const std::string response = buildHandshakeResponse(kRfcExampleClientKey);
 
-        const std::string expected = std::string("HTTP/1.1 101 Switching Protocols\r\n") + "Upgrade: websocket\r\n" +
-                                     "Connection: Upgrade\r\n" + "Sec-WebSocket-Accept: " + std::string(kRfcExampleAcceptValue) + "\r\n" +
-                                     "\r\n";
+        const std::string expected = std::string("HTTP/1.1 101 Switching Protocols\r\n") + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n" +
+                                     "Sec-WebSocket-Accept: " + std::string(kRfcExampleAcceptValue) + "\r\n" + "\r\n";
         EXPECT_EQ(response, expected);
     }
 
@@ -368,11 +361,10 @@ namespace AsynGyanis::Net
     {
         constexpr std::string_view kNegotiatedValue = "permessage-deflate; server_no_context_takeover; client_no_context_takeover";
 
-        const std::string response = buildHandshakeResponse(kRfcExampleClientKey, kNegotiatedValue);
+        const std::string response     = buildHandshakeResponse(kRfcExampleClientKey, kNegotiatedValue);
         const std::string expectedLine = std::string("Sec-WebSocket-Extensions: ") + std::string(kNegotiatedValue) + "\r\n";
         ASSERT_NE(response.find(expectedLine), std::string::npos) << "协商结论必须逐字出现在 101 里，实际：" << response;
-        EXPECT_EQ(response.find("Sec-WebSocket-Extensions"), response.rfind("Sec-WebSocket-Extensions"))
-                << "扩展只能声明一次";
+        EXPECT_EQ(response.find("Sec-WebSocket-Extensions"), response.rfind("Sec-WebSocket-Extensions")) << "扩展只能声明一次";
         EXPECT_NE(response.find("Sec-WebSocket-Accept: "), std::string::npos) << "扩展头不能挤掉 Accept：" << response;
         EXPECT_TRUE(response.ends_with("\r\n\r\n")) << "结束空行不能被扩展头挤掉：" << response;
     }

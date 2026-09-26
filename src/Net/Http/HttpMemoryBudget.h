@@ -91,8 +91,7 @@ namespace AsynGyanis::Net
              * @brief 构造并绑定一份预算
              * @param budget 共享预算，空指针表示不做限制
              */
-            explicit Reservation(HttpMemoryBudget *budget) noexcept :
-                m_budget(budget)
+            explicit Reservation(HttpMemoryBudget *budget) noexcept : m_budget(budget)
             {
             }
 
@@ -111,8 +110,7 @@ namespace AsynGyanis::Net
              * @details 待服务记录随容器移动时必须能跟着走：额度属于「哪条流的正文」，
              *          移动后由新的持有者归还；被移动走的对象变成空会话，析构时无事可做
              */
-            Reservation(Reservation &&other) noexcept :
-                m_budget(other.m_budget), m_reservedBytes(other.m_reservedBytes)
+            Reservation(Reservation &&other) noexcept : m_budget(other.m_budget), m_reservedBytes(other.m_reservedBytes)
             {
                 other.m_budget        = nullptr;
                 other.m_reservedBytes = 0;

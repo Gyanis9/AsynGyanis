@@ -20,10 +20,7 @@ namespace AsynGyanis::Net
         constexpr std::size_t kReadBufferCapacity = 4096;
     } // namespace
 
-    TcpStream::TcpStream(Core::AsyncSocket socket) :
-        m_socket(std::move(socket)),
-        m_readBuffer(kReadBufferCapacity),
-        m_readPosition(kReadBufferCapacity)
+    TcpStream::TcpStream(Core::AsyncSocket socket) : m_socket(std::move(socket)), m_readBuffer(kReadBufferCapacity), m_readPosition(kReadBufferCapacity)
     {
         // 缓冲区先按上限分配好，同时把消费位置直接摆在末尾：判定「已耗尽」的条件是
         // m_readPosition >= m_readBuffer.size()，这样首次 read() 必定去底层收数据。
@@ -59,7 +56,7 @@ namespace AsynGyanis::Net
 
     Core::Task<> TcpStream::readExact(void *const buffer, const std::size_t length)
     {
-        auto *      destination     = static_cast<char *>(buffer);
+        auto       *destination     = static_cast<char *>(buffer);
         std::size_t remainingLength = length;
 
         while (remainingLength > 0)
@@ -71,7 +68,7 @@ namespace AsynGyanis::Net
             {
                 throw Base::Exception("TcpStream::readExact 在读满所需字节前连接已关闭或发生错误");
             }
-            destination     += static_cast<std::size_t>(readBytes);
+            destination += static_cast<std::size_t>(readBytes);
             remainingLength -= static_cast<std::size_t>(readBytes);
         }
 
@@ -98,8 +95,7 @@ namespace AsynGyanis::Net
                 const char *scanEnd   = m_readBuffer.data() + m_readBuffer.size();
 
                 // 按字节扫描：memchr 由运行库针对字节匹配做过向量化优化，比逐元素查找更快
-                if (const auto *delimiterPointer = static_cast<const char *>(
-                    std::memchr(scanBegin, delimiter, static_cast<std::size_t>(scanEnd - scanBegin))))
+                if (const auto *delimiterPointer = static_cast<const char *>(std::memchr(scanBegin, delimiter, static_cast<std::size_t>(scanEnd - scanBegin))))
                 {
                     const std::size_t chunkLength = static_cast<std::size_t>(delimiterPointer - scanBegin);
                     if (maximumSize > 0 && result.size() + chunkLength > maximumSize)
@@ -155,7 +151,7 @@ namespace AsynGyanis::Net
 
     Core::Task<> TcpStream::writeAll(const void *const buffer, const std::size_t length) const
     {
-        auto *      source          = static_cast<const char *>(buffer);
+        auto       *source          = static_cast<const char *>(buffer);
         std::size_t remainingLength = length;
 
         while (remainingLength > 0)
@@ -166,7 +162,7 @@ namespace AsynGyanis::Net
             {
                 throw Base::Exception("TcpStream::writeAll 发送失败或连接已关闭");
             }
-            source          += static_cast<std::size_t>(sentBytes);
+            source += static_cast<std::size_t>(sentBytes);
             remainingLength -= static_cast<std::size_t>(sentBytes);
         }
 

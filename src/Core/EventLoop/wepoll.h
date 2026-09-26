@@ -25,18 +25,18 @@
  */
 enum EPOLL_EVENTS : std::uint32_t
 {
-    EPOLLIN = 1U << 0,      ///< 可读：fd 上有数据可无阻塞读取
-    EPOLLPRI = 1U << 1,     ///< 高优先级/带外数据可读，如 TCP 紧急数据
-    EPOLLOUT = 1U << 2,     ///< 可写：fd 可无阻塞写入
-    EPOLLERR = 1U << 3,     ///< 错误条件：fd 发生错误；epoll_wait 通常会报告，无需显式注册
-    EPOLLHUP = 1U << 4,     ///< 挂断：对端关闭或 fd 被挂起；epoll_wait 通常会报告，无需显式注册
-    EPOLLRDNORM = 1U << 6,  ///< 普通数据可读；通常与 EPOLLIN 语义相关
-    EPOLLRDBAND = 1U << 7,  ///< 优先带（带外）数据可读
-    EPOLLWRNORM = 1U << 8,  ///< 普通数据可写；通常与 EPOLLOUT 语义相关
-    EPOLLWRBAND = 1U << 9,  ///< 优先带（带外）数据可写
-    EPOLLMSG = 1U << 10,    ///< 永不上报；保留取值只为与 Linux 的位序对齐
-    EPOLLRDHUP = 1U << 13,  ///< 对端关闭连接或半关闭写方向（流套接字收到 FIN）
-    EPOLLONESHOT = 1U << 31 ///< 一次性触发：报过事件即停用，需重新装配才会再报
+    EPOLLIN      = 1U << 0,  ///< 可读：fd 上有数据可无阻塞读取
+    EPOLLPRI     = 1U << 1,  ///< 高优先级/带外数据可读，如 TCP 紧急数据
+    EPOLLOUT     = 1U << 2,  ///< 可写：fd 可无阻塞写入
+    EPOLLERR     = 1U << 3,  ///< 错误条件：fd 发生错误；epoll_wait 通常会报告，无需显式注册
+    EPOLLHUP     = 1U << 4,  ///< 挂断：对端关闭或 fd 被挂起；epoll_wait 通常会报告，无需显式注册
+    EPOLLRDNORM  = 1U << 6,  ///< 普通数据可读；通常与 EPOLLIN 语义相关
+    EPOLLRDBAND  = 1U << 7,  ///< 优先带（带外）数据可读
+    EPOLLWRNORM  = 1U << 8,  ///< 普通数据可写；通常与 EPOLLOUT 语义相关
+    EPOLLWRBAND  = 1U << 9,  ///< 优先带（带外）数据可写
+    EPOLLMSG     = 1U << 10, ///< 永不上报；保留取值只为与 Linux 的位序对齐
+    EPOLLRDHUP   = 1U << 13, ///< 对端关闭连接或半关闭写方向（流套接字收到 FIN）
+    EPOLLONESHOT = 1U << 31  ///< 一次性触发：报过事件即停用，需重新装配才会再报
 };
 
 /**
@@ -66,7 +66,7 @@ using SOCKET = std::uintptr_t;
  */
 union epoll_data
 {
-    void *        ptr;  ///< 用户数据（wepoll 侧挂内部状态）
+    void         *ptr;  ///< 用户数据（wepoll 侧挂内部状态）
     int           fd;   ///< 文件描述符
     std::uint32_t u32;  ///< 32 位值
     std::uint64_t u64;  ///< 64 位值

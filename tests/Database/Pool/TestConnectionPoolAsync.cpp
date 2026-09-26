@@ -43,8 +43,8 @@ namespace AsynGyanis::Database
         /// 一次异步获取的观测结果
         struct AcquireProbe
         {
-            std::optional<PooledConnection> connection;    ///< 拿到的连接（恢复后写入）
-            std::thread::id                 resumeThreadId; ///< 恢复本协程的线程 id
+            std::optional<PooledConnection> connection;      ///< 拿到的连接（恢复后写入）
+            std::thread::id                 resumeThreadId;  ///< 恢复本协程的线程 id
             std::atomic<bool>               finished{false}; ///< 完成标记，最后写入（release 语义）
         };
 
@@ -78,12 +78,12 @@ namespace AsynGyanis::Database
     TEST(ConnectionPoolAsync, AcquireAsyncCreatesConnectionImmediatelyWhenPoolNotFull)
     {
         ConnectionCounter counter;
-        ConnectionPool   pool = makeSingleSlotPool(counter);
+        ConnectionPool    pool = makeSingleSlotPool(counter);
 
         EventLoopThread loopThread;
         ASSERT_TRUE(loopThread.waitUntilRunning());
 
-        AcquireProbe probe;
+        AcquireProbe          probe;
         const std::thread::id callerThreadId = std::this_thread::get_id();
 
         // 池是空的但未达上限：应当与同步 acquire() 同口径——立刻建连返回，不经过挂起。
@@ -108,7 +108,7 @@ namespace AsynGyanis::Database
     TEST(ConnectionPoolAsync, AcquireAsyncReusesIdleConnectionImmediately)
     {
         ConnectionCounter counter;
-        ConnectionPool   pool = makeSingleSlotPool(counter);
+        ConnectionPool    pool = makeSingleSlotPool(counter);
 
         EventLoopThread loopThread;
         ASSERT_TRUE(loopThread.waitUntilRunning());
@@ -116,7 +116,7 @@ namespace AsynGyanis::Database
         // 先取一条再归还：池里出现一条空闲连接，异步获取应当直接复用而不新建
         pool.acquire().release();
 
-        AcquireProbe probe;
+        AcquireProbe     probe;
         Core::Task<void> driver = probeAcquireAsync(pool, loopThread.loop(), probe);
         driver.handle().resume();
 
@@ -132,7 +132,7 @@ namespace AsynGyanis::Database
     TEST(ConnectionPoolAsync, AcquireAsyncResumesOnGivenEventLoop)
     {
         ConnectionCounter counter;
-        ConnectionPool   pool = makeSingleSlotPool(counter);
+        ConnectionPool    pool = makeSingleSlotPool(counter);
 
         EventLoopThread loopThread;
         ASSERT_TRUE(loopThread.waitUntilRunning());
@@ -141,7 +141,7 @@ namespace AsynGyanis::Database
         PooledConnection occupyingConnection = pool.acquire();
         ASSERT_TRUE(occupyingConnection);
 
-        AcquireProbe probe;
+        AcquireProbe          probe;
         const std::thread::id callerThreadId = std::this_thread::get_id();
 
         Core::Task<void> driver = probeAcquireAsync(pool, loopThread.loop(), probe);
@@ -153,19 +153,14 @@ namespace AsynGyanis::Database
         // 在**调用线程**上归还连接：唤醒动作由这里发起，但恢复必须发生在循环线程上
         occupyingConnection.release();
 
-        ASSERT_TRUE(waitForCondition([&probe]()
-        {
-            return probe.finished.load(std::memory_order_acquire);
-        }));
+        ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); }));
 
         ASSERT_TRUE(probe.connection.has_value());
         EXPECT_TRUE(probe.connection.value()) << "被唤醒的等待者应拿到刚归还的连接";
 
         // 核心断言：恢复落在给定的事件循环线程上，而不是发起归还的调用线程
-        EXPECT_NE(probe.resumeThreadId, callerThreadId)
-            << "协程在归还连接的线程上被就地恢复，loop 形参形同虚设";
-        EXPECT_EQ(probe.resumeThreadId, loopThread.threadId())
-            << "恢复应发生在 acquireAsync() 给定的那个事件循环线程上";
+        EXPECT_NE(probe.resumeThreadId, callerThreadId) << "协程在归还连接的线程上被就地恢复，loop 形参形同虚设";
+        EXPECT_EQ(probe.resumeThreadId, loopThread.threadId()) << "恢复应发生在 acquireAsync() 给定的那个事件循环线程上";
 
         loopThread.parkDriver(std::move(driver));
     }
@@ -183,8 +178,8 @@ namespace AsynGyanis::Database
         configuration.maximumPoolSize            = 1;
         configuration.maximumLifetimeSeconds     = 3600;
         configuration.idleTimeoutSeconds         = 3600;
-        configuration.healthCheckIntervalSeconds = 3600;   // 后台驱逐不参与本用例的时序
-        configuration.acquireTimeoutMilliseconds = 5000;   // 没被救活时，协程会等满这里才拿空连接收尾
+        configuration.healthCheckIntervalSeconds = 3600; // 后台驱逐不参与本用例的时序
+        configuration.acquireTimeoutMilliseconds = 5000; // 没被救活时，协程会等满这里才拿空连接收尾
         ConnectionPool pool(makeMockFactory(counter), configuration);
 
         EventLoopThread loopThread;
@@ -195,18 +190,15 @@ namespace AsynGyanis::Database
         // 建立时刻挪到存活期之外：归还时它必然被判过期，只能丢弃而不是交给协程
         occupying->markEstablishedAt(std::chrono::steady_clock::now() - std::chrono::hours(2));
 
-        AcquireProbe       probe;
-        Core::Task<void>   driver = probeAcquireAsync(pool, loopThread.loop(), probe);
+        AcquireProbe     probe;
+        Core::Task<void> driver = probeAcquireAsync(pool, loopThread.loop(), probe);
         driver.handle().resume(); // 池满：挂到等待列表
         ASSERT_FALSE(probe.finished.load(std::memory_order_acquire));
         ASSERT_EQ(pool.waitingCount(), 1U) << "协程没有挂起：用例前提不成立";
 
         occupying.release(); // 丢弃过期的那条，并叫醒等待者
 
-        ASSERT_TRUE(waitForCondition([&probe]()
-        {
-            return probe.finished.load(std::memory_order_acquire);
-        })) << "协程没被腾出的名额救活：它只在等交接或等超时";
+        ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); })) << "协程没被腾出的名额救活：它只在等交接或等超时";
 
         ASSERT_TRUE(probe.connection.has_value());
         EXPECT_TRUE(probe.connection.value()) << "被叫醒的协程应重挂一轮并自己补建一条";
@@ -249,10 +241,7 @@ namespace AsynGyanis::Database
         ASSERT_FALSE(probe.finished.load(std::memory_order_acquire)) << "占着唯一额度时不该立即完成";
 
         // 没有人归还：这条协程只能靠截止时刻到点收场
-        ASSERT_TRUE(waitForCondition([&probe]()
-        {
-            return probe.finished.load(std::memory_order_acquire);
-        })) << "等待者没被超时叫醒：下面的计数没有对照";
+        ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); })) << "等待者没被超时叫醒：下面的计数没有对照";
 
         ASSERT_TRUE(probe.connection.has_value());
         EXPECT_FALSE(static_cast<bool>(probe.connection.value())) << "占着唯一额度时异步借出应当空手";
@@ -277,7 +266,7 @@ namespace AsynGyanis::Database
         EventLoopThread loopThread;
         ASSERT_TRUE(loopThread.waitUntilRunning());
 
-        AcquireProbe probe;
+        AcquireProbe     probe;
         Core::Task<void> driver = probeAcquireAsync(*pool, loopThread.loop(), probe);
         driver.handle().resume();
 
@@ -289,10 +278,7 @@ namespace AsynGyanis::Database
         // 理由写在 ConnectionPool 析构的注释里，因此这里只断言「确实醒了、拿到的是空连接」
         pool.reset();
 
-        ASSERT_TRUE(waitForCondition([&probe]()
-        {
-            return probe.finished.load(std::memory_order_acquire);
-        }));
+        ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); }));
         ASSERT_TRUE(probe.connection.has_value());
         EXPECT_FALSE(probe.connection.value()) << "池停摆时被唤醒的等待者应拿到空连接";
 
@@ -331,12 +317,12 @@ namespace AsynGyanis::Database
         ConnectionCounter counter;
         PoolConfig        configuration;
         configuration.maximumPoolSize = 1;
-        auto pool = std::make_unique<ConnectionPool>(makeMockFactory(counter), configuration);
+        auto pool                     = std::make_unique<ConnectionPool>(makeMockFactory(counter), configuration);
 
         EventLoopThread loopThread;
         ASSERT_TRUE(loopThread.waitUntilRunning());
 
-        AcquireProbe probe;
+        AcquireProbe     probe;
         Core::Task<void> driver = probeHoldFirstThenWaitSecond(*pool, loopThread.loop(), probe);
         driver.handle().resume();
 
@@ -382,7 +368,7 @@ namespace AsynGyanis::Database
             ASSERT_EQ(pool.waitingCount(), 1U);
 
             occupying.release(); // 交接：恢复动作排进 loop 的队列
-        }                        // driver 在这里析构 → 协程帧连同等待器一起销毁
+        } // driver 在这里析构 → 协程帧连同等待器一起销毁
 
         // 队列里的那次恢复现在才执行：帧已经没了，它必须什么都不做
         loop.scheduler().runAll();
@@ -416,7 +402,7 @@ namespace AsynGyanis::Database
             ASSERT_EQ(pool.waitingCount(), 1U);
 
             occupying.release(); // 交接：连接转给等待者，恢复动作排进 loop 的队列
-        }                        // driver 在这里析构 → 帧连同等待器一起销毁
+        } // driver 在这里析构 → 帧连同等待器一起销毁
 
         loop.scheduler().runAll(); // 那次恢复此刻执行：空操作
 

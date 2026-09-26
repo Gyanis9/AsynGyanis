@@ -66,36 +66,36 @@ namespace AsynGyanis::Core
         const size_t availableCoreCount = m_pinsThreadsToCores ? Platform::CpuAffinity::availableCoreCount() : 0;
         if (m_pinsThreadsToCores && availableCoreCount < m_threadCount)
         {
-            LOG_WARN_FMT("ThreadPool：线程数 {} 多于可用逻辑核 {}，只有前 {} 个线程被绑核，其余保持可迁移",
-                         m_threadCount, availableCoreCount, availableCoreCount);
+            LOG_WARN_FMT("ThreadPool：线程数 {} 多于可用逻辑核 {}，只有前 {} 个线程被绑核，其余保持可迁移", m_threadCount, availableCoreCount, availableCoreCount);
         }
         for (size_t i = 0; i < m_threadCount; ++i)
         {
-            m_threads.emplace_back([this, i, availableCoreCount]()
-            {
-                // 绑核要在各自线程体内做：亲和性是线程级属性，在启动线程里调只会绑到调用方
-                if (m_pinsThreadsToCores && i < availableCoreCount)
-                {
-                    if (const auto pinResult = Platform::CpuAffinity::pinCurrentThreadToCore(i); !pinResult)
+            m_threads.emplace_back(
+                    [this, i, availableCoreCount]()
                     {
-                        LOG_WARN_FMT("ThreadPool：第 {} 个工作线程绑核失败，该线程保持可迁移：{}", i, pinResult.error());
-                    }
-                }
+                        // 绑核要在各自线程体内做：亲和性是线程级属性，在启动线程里调只会绑到调用方
+                        if (m_pinsThreadsToCores && i < availableCoreCount)
+                        {
+                            if (const auto pinResult = Platform::CpuAffinity::pinCurrentThreadToCore(i); !pinResult)
+                            {
+                                LOG_WARN_FMT("ThreadPool：第 {} 个工作线程绑核失败，该线程保持可迁移：{}", i, pinResult.error());
+                            }
+                        }
 
-                // 事件循环里的异常会一路穿到线程入口：postRemote 的投递体抛异常时，循环按契约
-                // 重抛，而线程体不接就是 std::terminate——整个进程连同在途请求一起没了，
-                // 收尾也不会跑。这里兜住并如实记一条 ERROR，让该线程体面退出
-                try
-                {
-                    m_eventLoops[i]->run();
-                } catch (const std::exception &loopError)
-                {
-                    LOG_ERROR_EXCEPTION(loopError, "ThreadPool: 工作线程 {} 的事件循环因异常退出：{}", i, loopError.what());
-                } catch (...)
-                {
-                    LOG_ERROR_FMT("ThreadPool: 工作线程 {} 的事件循环因未知异常退出", i);
-                }
-            });
+                        // 事件循环里的异常会一路穿到线程入口：postRemote 的投递体抛异常时，循环按契约
+                        // 重抛，而线程体不接就是 std::terminate——整个进程连同在途请求一起没了，
+                        // 收尾也不会跑。这里兜住并如实记一条 ERROR，让该线程体面退出
+                        try
+                        {
+                            m_eventLoops[i]->run();
+                        } catch (const std::exception &loopError)
+                        {
+                            LOG_ERROR_EXCEPTION(loopError, "ThreadPool: 工作线程 {} 的事件循环因异常退出：{}", i, loopError.what());
+                        } catch (...)
+                        {
+                            LOG_ERROR_FMT("ThreadPool: 工作线程 {} 的事件循环因未知异常退出", i);
+                        }
+                    });
             // 线程号在起出来当场记下：jthread 已被建好，get_id() 稳定，而读这张表的 stop() 持同一把锁
             m_workerThreadIds.push_back(m_threads.back().get_id());
         }
@@ -115,7 +115,7 @@ namespace AsynGyanis::Core
         if (isCurrentThreadWorker())
         {
             throw Base::LogicException("ThreadPool::stop() 不能从自己的工作线程上调用：它要 join 调用线程自身。"
-                                        "工作线程要收尾整个运行时，请把这件事交给池外的线程（例如持有本对象的那条）");
+                                       "工作线程要收尾整个运行时，请把这件事交给池外的线程（例如持有本对象的那条）");
         }
 
         const std::lock_guard lock(m_lifecycleMutex);
@@ -149,4 +149,4 @@ namespace AsynGyanis::Core
         return m_eventLoops.at(index)->scheduler();
     }
 
-}
+} // namespace AsynGyanis::Core

@@ -76,7 +76,7 @@ namespace AsynGyanis::Core
          *
          * @return std::vector<std::shared_ptr<Connection> > 取快照那一刻的活跃连接列表
          */
-        [[nodiscard]] std::vector<std::shared_ptr<Connection> > snapshot() const;
+        [[nodiscard]] std::vector<std::shared_ptr<Connection>> snapshot() const;
 
         /**
          * @brief 关闭所有连接
@@ -91,11 +91,11 @@ namespace AsynGyanis::Core
         void waitAll();
 
     private:
-        mutable std::shared_mutex                                            m_mutex;       ///< 保护 m_connections 的读写锁
-        std::unordered_map<const Connection *, std::shared_ptr<Connection> > m_connections; ///< 存储所有活跃连接的集合
-        std::condition_variable_any                                          m_condition;   ///< 用于 waitAll 的条件变量，连接移除时通知
-        std::atomic<bool>                                                    m_isShuttingDown{false}; ///< shutdown() 是否已经开始，供 add() 判断是否需要就地收尾
-        std::atomic<std::uint64_t> *                                         m_sharedActiveCountMirror{nullptr}; ///< 跨管理器合并计数的镜像目标，受 m_mutex 保护；空表示不镜像
+        mutable std::shared_mutex                                           m_mutex;                            ///< 保护 m_connections 的读写锁
+        std::unordered_map<const Connection *, std::shared_ptr<Connection>> m_connections;                      ///< 存储所有活跃连接的集合
+        std::condition_variable_any                                         m_condition;                        ///< 用于 waitAll 的条件变量，连接移除时通知
+        std::atomic<bool>                                                   m_isShuttingDown{false};            ///< shutdown() 是否已经开始，供 add() 判断是否需要就地收尾
+        std::atomic<std::uint64_t>                                         *m_sharedActiveCountMirror{nullptr}; ///< 跨管理器合并计数的镜像目标，受 m_mutex 保护；空表示不镜像
     };
 
 } // namespace AsynGyanis::Core

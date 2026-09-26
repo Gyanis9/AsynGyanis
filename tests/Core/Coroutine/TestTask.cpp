@@ -65,11 +65,19 @@ namespace AsynGyanis::Core
         class ManualGate
         {
         public:
-            [[nodiscard]] bool await_ready() const noexcept { return false; }
+            [[nodiscard]] bool await_ready() const noexcept
+            {
+                return false;
+            }
 
-            void await_suspend(const std::coroutine_handle<> handle) noexcept { m_handle = handle; }
+            void await_suspend(const std::coroutine_handle<> handle) noexcept
+            {
+                m_handle = handle;
+            }
 
-            void await_resume() const noexcept {}
+            void await_resume() const noexcept
+            {
+            }
 
             /// 放行：恢复挂在门上的协程（门未被等待时为空操作）
             void open() const noexcept
@@ -89,8 +97,8 @@ namespace AsynGyanis::Core
          */
         struct RecordedEntry
         {
-            Base::LogLevel level{};     ///< 级别
-            std::string    message;     ///< 正文
+            Base::LogLevel level{}; ///< 级别
+            std::string    message; ///< 正文
         };
 
         /// 用例与 Sink 共享的记录容器：Sink 被日志器接管后，用例仍能从这份引用读回事件
@@ -110,8 +118,7 @@ namespace AsynGyanis::Core
              * @brief 构造记录型 Sink
              * @param collector 与用例共享的记录容器
              */
-            explicit RecordingSink(std::shared_ptr<RecordCollector> collector) :
-                m_collector(std::move(collector))
+            explicit RecordingSink(std::shared_ptr<RecordCollector> collector) : m_collector(std::move(collector))
             {
             }
 
@@ -151,7 +158,7 @@ namespace AsynGyanis::Core
                 Base::LoggerRegistry::instance().getRootLogger().clearSinks();
             }
 
-            RootSinkGuard(const RootSinkGuard &) = delete;
+            RootSinkGuard(const RootSinkGuard &)            = delete;
             RootSinkGuard &operator=(const RootSinkGuard &) = delete;
         };
 
@@ -165,7 +172,7 @@ namespace AsynGyanis::Core
             const std::lock_guard lock(collector->mutex);
             return collector->entries;
         }
-    }
+    } // namespace
 
     /**
      * @brief 惰性启动：resume 之前不算完成，resume 到终结点后 result() 交出 co_return 的值
@@ -199,11 +206,9 @@ namespace AsynGyanis::Core
 
         EXPECT_EQ(task.handle().promise().result(), 42);
 
-        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), Base::InvalidArgumentException)
-                << "第二次读取结果应当被拒绝，而不是返回一个值";
+        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), Base::InvalidArgumentException) << "第二次读取结果应当被拒绝，而不是返回一个值";
         // 用法错误必须落在 std::logic_error 分支，不能被「可重试的运行期故障」那一侧的 catch 兜住
-        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), std::logic_error)
-                << "报错类型不在 logic_error 分支上，调用方会把它当成可重试的故障";
+        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), std::logic_error) << "报错类型不在 logic_error 分支上，调用方会把它当成可重试的故障";
 
         try
         {
@@ -211,8 +216,7 @@ namespace AsynGyanis::Core
         } catch (const Base::InvalidArgumentException &error)
         {
             // 文案要说清「已经被取走一次」并给出替代做法，只报「无值可读」等于没报
-            EXPECT_NE(std::string(error.what()).find("已经被取走一次"), std::string::npos)
-                    << "报错文案没说明原因：" << error.what();
+            EXPECT_NE(std::string(error.what()).find("已经被取走一次"), std::string::npos) << "报错文案没说明原因：" << error.what();
         }
     }
 
@@ -231,8 +235,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(firstPayload, nullptr) << "第一次读取本该拿到值";
         EXPECT_EQ(*firstPayload, 7);
 
-        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), Base::InvalidArgumentException)
-                << "第二次读取交出的是被搬空的指针：必须报错，不能静默给一个空值";
+        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), Base::InvalidArgumentException) << "第二次读取交出的是被搬空的指针：必须报错，不能静默给一个空值";
     }
 
     /**
@@ -271,7 +274,7 @@ namespace AsynGyanis::Core
     TEST(Task, DetachedTaskReportsUnhandledExceptionToLogger)
     {
         const std::shared_ptr<RecordCollector> collector = std::make_shared<RecordCollector>();
-        RootSinkGuard                        sinkGuard;
+        RootSinkGuard                          sinkGuard;
         Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<RecordingSink>(collector));
 
         auto task = throwingTask();
@@ -282,8 +285,7 @@ namespace AsynGyanis::Core
         const std::vector<RecordedEntry> entries = snapshotOf(collector);
         ASSERT_EQ(entries.size(), 1U) << "分离协程的异常没有被唯一地报出来";
         EXPECT_EQ(entries.front().level, Base::LogLevel::Error) << "没人接手的异常不该按低于错误的级别记";
-        EXPECT_NE(entries.front().message.find("test error"), std::string::npos)
-                << "报出来的正文里没有异常文本，运维无从定位：" << entries.front().message;
+        EXPECT_NE(entries.front().message.find("test error"), std::string::npos) << "报出来的正文里没有异常文本，运维无从定位：" << entries.front().message;
     }
 
     /**
@@ -292,7 +294,7 @@ namespace AsynGyanis::Core
     TEST(Task, AwaitedTaskRethrowsWithoutReportingToLogger)
     {
         const std::shared_ptr<RecordCollector> collector = std::make_shared<RecordCollector>();
-        RootSinkGuard                        sinkGuard;
+        RootSinkGuard                          sinkGuard;
         Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<RecordingSink>(collector));
 
         bool isCaughtByAwaiter = false;
@@ -319,7 +321,7 @@ namespace AsynGyanis::Core
      */
     TEST(Task, MoveConstructionTransfersHandle)
     {
-        auto first = simpleValueTask();
+        auto       first          = simpleValueTask();
         const auto originalHandle = first.handle();
 
         Task<int> second(std::move(first));
@@ -332,11 +334,11 @@ namespace AsynGyanis::Core
      */
     TEST(Task, MoveAssignmentTransfersHandle)
     {
-        auto first = simpleValueTask();
+        auto first  = simpleValueTask();
         auto second = simpleValueTask();
 
         const auto originalHandle = first.handle();
-        second = std::move(first);
+        second                    = std::move(first);
 
         EXPECT_EQ(second.handle(), originalHandle);
     }
@@ -392,7 +394,7 @@ namespace AsynGyanis::Core
      */
     TEST(Task, MovedFromTaskHasNullHandle)
     {
-        auto first = simpleValueTask();
+        auto      first = simpleValueTask();
         Task<int> second(std::move(first));
 
         EXPECT_EQ(first.handle(), nullptr);
@@ -425,8 +427,8 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(isChildFinished);
         ASSERT_FALSE(child.isReady());
 
-        int parentProgress = 0;
-        auto parentBody    = [&child, &parentProgress]() -> Task<>
+        int  parentProgress = 0;
+        auto parentBody     = [&child, &parentProgress]() -> Task<>
         {
             parentProgress = 1;
             co_await child;
@@ -460,11 +462,8 @@ namespace AsynGyanis::Core
         };
         auto child = childBody();
 
-        auto parentBody = [&child]() -> Task<>
-        {
-            co_await child;
-        };
-        auto parent = parentBody();
+        auto parentBody = [&child]() -> Task<> { co_await child; };
+        auto parent     = parentBody();
 
         parent.handle().resume();
         EXPECT_TRUE(isChildFinished) << "co_await 没有启动惰性任务";

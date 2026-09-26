@@ -353,14 +353,14 @@ namespace AsynGyanis::Database
         /// 缓存里的一条语句连同它的使用记号
         struct CachedStatement
         {
-            MYSQL_STMT *statement{nullptr};   ///< 已 prepare 的语句句柄，所有权在表
+            MYSQL_STMT   *statement{nullptr}; ///< 已 prepare 的语句句柄，所有权在表
             std::uint64_t lastUseStamp{0};    ///< 最近一次被读到或写入时的戳记，越小越先被逐出
         };
 
         MYSQL *m_mysqlHandle{nullptr}; ///< MySQL C API 连接句柄，本对象独占所有权，未连接时为 nullptr
         /// 语句文本 → 已预处理的语句句柄。所有权归表：预处理成功即入表，此后的失败路径一律走
         /// discardCachedStatement，本地不再持有 unique_ptr 守卫，避免与 disconnect() 的整表清理二次关闭
-        std::unordered_map<std::string, CachedStatement, StatementTextHash, std::equal_to<> > m_statementCache;
+        std::unordered_map<std::string, CachedStatement, StatementTextHash, std::equal_to<>> m_statementCache;
         /// 单调递增的使用计数器，充当「最近使用」的比较依据：只用于逐出排序，不参与任何正确性判定
         std::uint64_t m_statementCacheUseStamp{0};
         /// 缓存命中累计次数：命中一次即少一趟 COM_STMT_PREPARE 往返，供用例判定逐出策略是否留住了热语句

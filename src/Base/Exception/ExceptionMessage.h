@@ -25,13 +25,8 @@ namespace AsynGyanis::Base::Detail
      * @param sourceLocation 异常抛出位置
      * @return std::string 形如 "[异常] 消息 [文件:行 in 函数]" 的完整文本
      */
-    [[nodiscard]] inline std::string formatExceptionMessage(const std::string &message,
-                                                            const std::source_location &sourceLocation)
+    [[nodiscard]] inline std::string formatExceptionMessage(const std::string &message, const std::source_location &sourceLocation)
     {
-        return std::format("[异常] {} [{}:{} in {}]",
-                           message,
-                           sourceLocation.file_name(),
-                           sourceLocation.line(),
-                           sourceLocation.function_name());
+        return std::format("[异常] {} [{}:{} in {}]", message, sourceLocation.file_name(), sourceLocation.line(), sourceLocation.function_name());
     }
 } // namespace AsynGyanis::Base::Detail

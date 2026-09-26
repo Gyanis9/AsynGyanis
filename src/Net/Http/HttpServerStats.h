@@ -63,11 +63,11 @@ namespace AsynGyanis::Net
         /// @warning 口径止于本侧：已经被传输层收下、但对端再没读走的字节看不见（256 KiB 的响应
         ///          能整个塞进环回套接字缓冲，对端随后关掉，本侧一次失败都不会遇到）
         std::uint64_t writeAbortedConnectionCount{0};
-        std::uint64_t status1xxCount{0};        ///< 状态码为 1xx 的响应条数
-        std::uint64_t status2xxCount{0};        ///< 状态码为 2xx 的响应条数
-        std::uint64_t status3xxCount{0};        ///< 状态码为 3xx 的响应条数
-        std::uint64_t status4xxCount{0};        ///< 状态码为 4xx 的响应条数
-        std::uint64_t status5xxCount{0};        ///< 状态码为 5xx 的响应条数
+        std::uint64_t status1xxCount{0}; ///< 状态码为 1xx 的响应条数
+        std::uint64_t status2xxCount{0}; ///< 状态码为 2xx 的响应条数
+        std::uint64_t status3xxCount{0}; ///< 状态码为 3xx 的响应条数
+        std::uint64_t status4xxCount{0}; ///< 状态码为 4xx 的响应条数
+        std::uint64_t status5xxCount{0}; ///< 状态码为 5xx 的响应条数
 
         /// 延迟直方图的累计条数，下标与 kHttpLatencyUpperBoundMilliseconds 对应；末档为溢出档
         std::array<std::uint64_t, kHttpLatencyBucketCount> latencyBucketCounts{};
@@ -183,9 +183,7 @@ namespace AsynGyanis::Net
 
             // 延迟照记：即便状态码不在 1xx~5xx 内，这次请求的耗时也是真实发生过的
             m_latencyBucketCounts[latencyBucketIndex(elapsed)].fetch_add(1, std::memory_order_relaxed);
-            m_totalLatencyMicroseconds.fetch_add(
-                    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()),
-                    std::memory_order_relaxed);
+            m_totalLatencyMicroseconds.fetch_add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()), std::memory_order_relaxed);
         }
 
         /**
@@ -284,16 +282,16 @@ namespace AsynGyanis::Net
         [[nodiscard]] HttpServerStats snapshot() const noexcept
         {
             HttpServerStats stats;
-            stats.totalRequestCount  = m_totalRequestCount.load(std::memory_order_relaxed);
-            stats.activeConnectionCount = m_activeConnectionCount.load(std::memory_order_relaxed);
-            stats.badRequestCount    = m_badRequestCount.load(std::memory_order_relaxed);
-            stats.timeoutClosedCount = m_timeoutClosedCount.load(std::memory_order_relaxed);
+            stats.totalRequestCount           = m_totalRequestCount.load(std::memory_order_relaxed);
+            stats.activeConnectionCount       = m_activeConnectionCount.load(std::memory_order_relaxed);
+            stats.badRequestCount             = m_badRequestCount.load(std::memory_order_relaxed);
+            stats.timeoutClosedCount          = m_timeoutClosedCount.load(std::memory_order_relaxed);
             stats.writeAbortedConnectionCount = m_writeAbortedConnectionCount.load(std::memory_order_relaxed);
-            stats.status1xxCount     = m_status1xxCount.load(std::memory_order_relaxed);
-            stats.status2xxCount     = m_status2xxCount.load(std::memory_order_relaxed);
-            stats.status3xxCount     = m_status3xxCount.load(std::memory_order_relaxed);
-            stats.status4xxCount     = m_status4xxCount.load(std::memory_order_relaxed);
-            stats.status5xxCount     = m_status5xxCount.load(std::memory_order_relaxed);
+            stats.status1xxCount              = m_status1xxCount.load(std::memory_order_relaxed);
+            stats.status2xxCount              = m_status2xxCount.load(std::memory_order_relaxed);
+            stats.status3xxCount              = m_status3xxCount.load(std::memory_order_relaxed);
+            stats.status4xxCount              = m_status4xxCount.load(std::memory_order_relaxed);
+            stats.status5xxCount              = m_status5xxCount.load(std::memory_order_relaxed);
 
             stats.webSocketUpgradeCount            = m_webSocketUpgradeCount.load(std::memory_order_relaxed);
             stats.webSocketMessageCount            = m_webSocketMessageCount.load(std::memory_order_relaxed);
@@ -378,14 +376,14 @@ namespace AsynGyanis::Net
         // WebSocket / h2 / 零拷贝这组计数由不同子系统的线程写，与上面「每响应必写」的延迟/直方图/totalLatency
         // 若落在同一 cache line，两类写者会互相把对方的行踢出缓存（伪共享）。用行边界把它们分开：
         // 20 线程 HTTP 写 × WS 写争用实测聚合吞吐从约 74.9M 提到约 114M ops/s（约 1.52 倍）。
-        alignas(kCacheLineBytes) std::atomic<std::uint64_t> m_webSocketUpgradeCount{0};            ///< 累计升级成功的连接数
-        std::atomic<std::uint64_t> m_webSocketMessageCount{0};            ///< 累计收到的数据消息条数
-        std::atomic<std::uint64_t> m_webSocketProtocolErrorCloseCount{0}; ///< 累计因协议错误收口的连接数
-        std::atomic<std::uint64_t> m_webSocketPeerCloseCount{0};          ///< 累计由对端发起关闭握手的连接数
-        std::atomic<std::uint64_t> m_webSocketServerCloseCount{0};        ///< 累计由本侧发起关闭握手的连接数
+        alignas(kCacheLineBytes) std::atomic<std::uint64_t> m_webSocketUpgradeCount{0}; ///< 累计升级成功的连接数
+        std::atomic<std::uint64_t> m_webSocketMessageCount{0};                          ///< 累计收到的数据消息条数
+        std::atomic<std::uint64_t> m_webSocketProtocolErrorCloseCount{0};               ///< 累计因协议错误收口的连接数
+        std::atomic<std::uint64_t> m_webSocketPeerCloseCount{0};                        ///< 累计由对端发起关闭握手的连接数
+        std::atomic<std::uint64_t> m_webSocketServerCloseCount{0};                      ///< 累计由本侧发起关闭握手的连接数
 
-        std::atomic<std::uint64_t> m_streamCancelledCount{0}; ///< 累计被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数
-        std::atomic<std::uint64_t> m_zeroCopySendCount{0};    ///< 累计正文走零拷贝发送的响应条数（仅 Linux 会增长）
+        std::atomic<std::uint64_t> m_streamCancelledCount{0};        ///< 累计被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数
+        std::atomic<std::uint64_t> m_zeroCopySendCount{0};           ///< 累计正文走零拷贝发送的响应条数（仅 Linux 会增长）
         std::atomic<std::uint64_t> m_writeAbortedConnectionCount{0}; ///< 累计「响应没送完就收口」的连接条数（写出失败或收口时仍有未送出字节）
 
         // 活跃连接数按「每条连接一次加、一次减」被写，与上面「每请求都写」的那几组不同热度：

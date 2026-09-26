@@ -52,10 +52,10 @@ namespace AsynGyanis::Net
          */
         struct WebSocketHubMember
         {
-            WebSocketPeer *peer{nullptr};   ///< 空表示已除名或已收口：此后不再碰这条连接
-            std::deque<std::string> pendingTexts; ///< 已入队、尚未写出的消息，按到达顺序
-            std::size_t pendingByteCount{0};      ///< pendingTexts 的负载总字节数（入队上界据此判定）
-            bool isDraining{false};               ///< 是否已有一个发布协程正在替它写（一条连接一个写者）
+            WebSocketPeer          *peer{nullptr};       ///< 空表示已除名或已收口：此后不再碰这条连接
+            std::deque<std::string> pendingTexts;        ///< 已入队、尚未写出的消息，按到达顺序
+            std::size_t             pendingByteCount{0}; ///< pendingTexts 的负载总字节数（入队上界据此判定）
+            bool                    isDraining{false};   ///< 是否已有一个发布协程正在替它写（一条连接一个写者）
         };
     } // namespace detail
 
@@ -112,9 +112,9 @@ namespace AsynGyanis::Net
          */
         WebSocketSubscription(WebSocketHub &hub, std::shared_ptr<detail::WebSocketHubMember> member, WebSocketSubscriptionId identifier);
 
-        WebSocketHub *m_hub{nullptr};                            ///< 所属集线器；空句柄为 nullptr
-        std::shared_ptr<detail::WebSocketHubMember> m_member{};  ///< 成员（与集线器共持）
-        WebSocketSubscriptionId m_id{0};                         ///< 订阅标识，除名按它定位
+        WebSocketHub                               *m_hub{nullptr}; ///< 所属集线器；空句柄为 nullptr
+        std::shared_ptr<detail::WebSocketHubMember> m_member{};     ///< 成员（与集线器共持）
+        WebSocketSubscriptionId                     m_id{0};        ///< 订阅标识，除名按它定位
     };
 
     /**
@@ -187,9 +187,9 @@ namespace AsynGyanis::Net
         /// 一条订阅登记：成员按主题归属，除名按标识定位
         struct Registration
         {
-            std::string topic;                                          ///< 主题名
-            std::shared_ptr<detail::WebSocketHubMember> member{};       ///< 成员
-            WebSocketSubscriptionId identifier{0};                      ///< 订阅标识
+            std::string                                 topic;         ///< 主题名
+            std::shared_ptr<detail::WebSocketHubMember> member{};      ///< 成员
+            WebSocketSubscriptionId                     identifier{0}; ///< 订阅标识
         };
 
         /**
@@ -205,9 +205,9 @@ namespace AsynGyanis::Net
          */
         Core::Task<void> drainMember(std::shared_ptr<detail::WebSocketHubMember> member);
 
-        std::vector<Registration> m_registrations; ///< 全部成员，按订阅顺序
-        std::size_t m_maximumPendingByteCount;     ///< 单成员待发队列字节上界
-        std::size_t m_droppedMessageCount{0};      ///< 队满丢弃的累计条数
-        WebSocketSubscriptionId m_nextIdentifier{1U}; ///< 下一个订阅标识：从 1 起，0 留给「空句柄」
+        std::vector<Registration> m_registrations;           ///< 全部成员，按订阅顺序
+        std::size_t               m_maximumPendingByteCount; ///< 单成员待发队列字节上界
+        std::size_t               m_droppedMessageCount{0};  ///< 队满丢弃的累计条数
+        WebSocketSubscriptionId   m_nextIdentifier{1U};      ///< 下一个订阅标识：从 1 起，0 留给「空句柄」
     };
 } // namespace AsynGyanis::Net

@@ -45,14 +45,14 @@ namespace AsynGyanis::Base
      */
     TEST(ConfigHotPathAllocations, GetStringReading)
     {
-        const std::string fallback{ kFallbackText };
+        const std::string fallback{kFallbackText};
         auto             &manager = ConfigManager::instance();
         manager.clear();
         ASSERT_TRUE(manager.setValue("app.text", ConfigValue(std::string(kValueText))));
 
         // 参照形状：只把字符串本身拷一份出来，这是任何实现都省不掉的一块
-        const ConfigValue stored = ConfigValue(std::string(kValueText));
-        const auto         copyReferenceOnce = [&stored]
+        const ConfigValue stored            = ConfigValue(std::string(kValueText));
+        const auto        copyReferenceOnce = [&stored]
         {
             const std::string text = stored.get_ref<const std::string &>();
             return static_cast<std::uint64_t>(text.size());
@@ -60,11 +60,8 @@ namespace AsynGyanis::Base
         resetAllocationHistogram();
         const AllocationProfile referenceProfile = measurePerOperation(copyReferenceOnce);
 
-        const auto getStringOnce = [&manager, &fallback]
-        {
-            return static_cast<std::uint64_t>(manager.getString("app.text", fallback).size());
-        };
-        getStringOnce();                   // 先把快照里的形状热出来，测的是稳态
+        const auto getStringOnce = [&manager, &fallback] { return static_cast<std::uint64_t>(manager.getString("app.text", fallback).size()); };
+        getStringOnce(); // 先把快照里的形状热出来，测的是稳态
         resetAllocationHistogram();
         const AllocationProfile profile = measurePerOperation(getStringOnce);
 
@@ -74,13 +71,10 @@ namespace AsynGyanis::Base
 #ifdef NDEBUG
         // 上限给 1/64 的增长余量：快照原子量与哈希表在首轮可能各要长一次容量，不钉死。
         // 未修时这一千次多付两千次以上，远超本上限
-        EXPECT_LE(profile.totalAllocations, referenceProfile.totalAllocations + kMeasurementIterations / 64U)
-                << "getString 还在多层拷贝之间过堆：取用通道没有直接按视图查表";
+        EXPECT_LE(profile.totalAllocations, referenceProfile.totalAllocations + kMeasurementIterations / 64U) << "getString 还在多层拷贝之间过堆：取用通道没有直接按视图查表";
 #endif
-        std::printf("get-string per-op=%llu total=%llu bytes=%llu (ref total=%llu)\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations),
-                    static_cast<unsigned long long>(profile.totalBytes),
+        std::printf("get-string per-op=%llu total=%llu bytes=%llu (ref total=%llu)\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations), static_cast<unsigned long long>(profile.totalBytes),
                     static_cast<unsigned long long>(referenceProfile.totalAllocations));
 
         manager.clear();
@@ -109,15 +103,14 @@ namespace AsynGyanis::Base
             return static_cast<std::uint64_t>(manager.keys().size());
         };
 
-        writeOnce();                    // 先热出快照与哈希表的稳态形状
+        writeOnce(); // 先热出快照与哈希表的稳态形状
         resetAllocationHistogram();
         const AllocationProfile withoutSchema = measurePerOperation(writeOnce);
 
         ConfigSchema schema;
         for (int index = 0; index < 8; ++index)
         {
-            schema.push_back(ConfigSchemaEntry{"other.key" + std::to_string(index), ConfigValueType::number_integer, false,
-                                               std::nullopt, std::nullopt});
+            schema.push_back(ConfigSchemaEntry{"other.key" + std::to_string(index), ConfigValueType::number_integer, false, std::nullopt, std::nullopt});
         }
         static_cast<void>(manager.setSchema(std::move(schema)));
 
@@ -131,15 +124,11 @@ namespace AsynGyanis::Base
         EXPECT_EQ(withSchema.resultSum, expectedKeyCount);
 #ifdef NDEBUG
         // 注册 schema 之后每次写入都不许多取一块堆：整表复制、逐条比对都会计入这里
-        EXPECT_LE(withSchema.totalAllocations, withoutSchema.totalAllocations)
-                << "已注册 schema 给配置写入添了分配：单键校验没有走「只挑该键条目」那条快路";
+        EXPECT_LE(withSchema.totalAllocations, withoutSchema.totalAllocations) << "已注册 schema 给配置写入添了分配：单键校验没有走「只挑该键条目」那条快路";
 #endif
-        std::printf("set-value per-op=%llu total=%llu bytes=%llu (with schema total=%llu bytes=%llu)\n",
-                    static_cast<unsigned long long>(withoutSchema.allocationsPerOperation),
-                    static_cast<unsigned long long>(withoutSchema.totalAllocations),
-                    static_cast<unsigned long long>(withoutSchema.totalBytes),
-                    static_cast<unsigned long long>(withSchema.totalAllocations),
-                    static_cast<unsigned long long>(withSchema.totalBytes));
+        std::printf("set-value per-op=%llu total=%llu bytes=%llu (with schema total=%llu bytes=%llu)\n", static_cast<unsigned long long>(withoutSchema.allocationsPerOperation),
+                    static_cast<unsigned long long>(withoutSchema.totalAllocations), static_cast<unsigned long long>(withoutSchema.totalBytes),
+                    static_cast<unsigned long long>(withSchema.totalAllocations), static_cast<unsigned long long>(withSchema.totalBytes));
 
         static_cast<void>(manager.setSchema(ConfigSchema{}));
         manager.clear();
@@ -167,16 +156,10 @@ namespace AsynGyanis::Base
         ASSERT_TRUE(manager.setValue("app.map", ConfigValue(std::move(wideObject))));
 
         // 两条都是「类型不符 → 返回默认值」，差别只在被拒的那个值有多大
-        const auto readMismatchingSmall = [&manager]
-        {
-            return static_cast<std::uint64_t>(manager.getInt("app.flag", 7));
-        };
-        const auto readMismatchingWide = [&manager]
-        {
-            return static_cast<std::uint64_t>(manager.getInt("app.map", 7));
-        };
+        const auto readMismatchingSmall = [&manager] { return static_cast<std::uint64_t>(manager.getInt("app.flag", 7)); };
+        const auto readMismatchingWide  = [&manager] { return static_cast<std::uint64_t>(manager.getInt("app.map", 7)); };
 
-        readMismatchingSmall();          // 先热出快照的稳态形状
+        readMismatchingSmall(); // 先热出快照的稳态形状
         resetAllocationHistogram();
         const AllocationProfile smallProfile = measurePerOperation(readMismatchingSmall);
 
@@ -190,30 +173,21 @@ namespace AsynGyanis::Base
 
         // 正对照：同一个表改走 getOptional 就是把整棵子树拷出来。这条读数负责证明上面那条判据
         // 真的看得见「判类型之前先拷树」这类退化——看不见的话「0 vs 0」就是假绿
-        const auto copyWideSubtreeOnce = [&manager]
-        {
-            return static_cast<std::uint64_t>(manager.getOptional("app.map")->size());
-        };
+        const auto copyWideSubtreeOnce = [&manager] { return static_cast<std::uint64_t>(manager.getOptional("app.map")->size()); };
         copyWideSubtreeOnce();
         resetAllocationHistogram();
         const AllocationProfile subtreeProfile = measurePerOperation(copyWideSubtreeOnce);
         EXPECT_EQ(subtreeProfile.resultSum, kMeasurementIterations * 200U) << "那张表没被拷出来，对照不成立";
-        EXPECT_GT(subtreeProfile.totalAllocations, smallProfile.totalAllocations + kMeasurementIterations)
-                << "分配探针看不见整棵子树的拷贝，本用例的判据没有牙";
+        EXPECT_GT(subtreeProfile.totalAllocations, smallProfile.totalAllocations + kMeasurementIterations) << "分配探针看不见整棵子树的拷贝，本用例的判据没有牙";
 #ifdef NDEBUG
         // 大表那次的读数不得高过小标量那次：判定阶段多拷出来的节点全部会落在这里
-        EXPECT_LE(wideProfile.totalAllocations, smallProfile.totalAllocations + kMeasurementIterations / 64U)
-                << "类型判定之前先把配置子树拷了出来：取值通道没有按引用查快照";
-        EXPECT_LE(wideProfile.totalBytes, smallProfile.totalBytes + 64U * kMeasurementIterations)
-                << "取值通道的字节读数随被拒值的大小增长，说明整棵子树被拷过";
+        EXPECT_LE(wideProfile.totalAllocations, smallProfile.totalAllocations + kMeasurementIterations / 64U) << "类型判定之前先把配置子树拷了出来：取值通道没有按引用查快照";
+        EXPECT_LE(wideProfile.totalBytes, smallProfile.totalBytes + 64U * kMeasurementIterations) << "取值通道的字节读数随被拒值的大小增长，说明整棵子树被拷过";
 #endif
         std::printf("get-mismatch per-op small=%llu wide=%llu subtree=%llu bytes small=%llu wide=%llu subtree=%llu\n",
-                    static_cast<unsigned long long>(smallProfile.allocationsPerOperation),
-                    static_cast<unsigned long long>(wideProfile.allocationsPerOperation),
-                    static_cast<unsigned long long>(subtreeProfile.allocationsPerOperation),
-                    static_cast<unsigned long long>(smallProfile.totalBytes),
-                    static_cast<unsigned long long>(wideProfile.totalBytes),
-                    static_cast<unsigned long long>(subtreeProfile.totalBytes));
+                    static_cast<unsigned long long>(smallProfile.allocationsPerOperation), static_cast<unsigned long long>(wideProfile.allocationsPerOperation),
+                    static_cast<unsigned long long>(subtreeProfile.allocationsPerOperation), static_cast<unsigned long long>(smallProfile.totalBytes),
+                    static_cast<unsigned long long>(wideProfile.totalBytes), static_cast<unsigned long long>(subtreeProfile.totalBytes));
 
         manager.clear();
     }

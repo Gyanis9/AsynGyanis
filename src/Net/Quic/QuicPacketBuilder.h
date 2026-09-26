@@ -31,16 +31,16 @@ namespace AsynGyanis::Net
      */
     struct QuicOutboundPacket
     {
-        bool isLongHeader{true};                                                  ///< 握手期用长头，1-RTT 用短头
-        QuicLongPacketType longPacketType{QuicLongPacketType::Initial};          ///< 仅长头有意义
-        std::uint32_t version{kQuicVersion1};                                     ///< 版本；短头线上不携带，本字段被忽略
-        std::span<const std::uint8_t> destinationConnectionId{};                  ///< 目的连接标识（对端的标识）
-        std::span<const std::uint8_t> sourceConnectionId{};                       ///< 源连接标识（本端签发的）
-        std::span<const std::uint8_t> token{};                                    ///< 仅 Initial 写出；服务端回 Initial 时为空
-        std::uint64_t packetNumber{0};                                            ///< 完整包号，线格式按 packetNumberByteCount 截断
-        std::size_t packetNumberByteCount{1};                                     ///< 包号字段字节数，1 到 4
-        bool isKeyPhaseBitSet{false};                                               ///< 短头的 Key Phase 位，与 QuicPacketHeader 同名同义
-        std::span<const std::uint8_t> frames{};                                   ///< 明文帧序列，至少一帧（§12.4）
+        bool                          isLongHeader{true};                          ///< 握手期用长头，1-RTT 用短头
+        QuicLongPacketType            longPacketType{QuicLongPacketType::Initial}; ///< 仅长头有意义
+        std::uint32_t                 version{kQuicVersion1};                      ///< 版本；短头线上不携带，本字段被忽略
+        std::span<const std::uint8_t> destinationConnectionId{};                   ///< 目的连接标识（对端的标识）
+        std::span<const std::uint8_t> sourceConnectionId{};                        ///< 源连接标识（本端签发的）
+        std::span<const std::uint8_t> token{};                                     ///< 仅 Initial 写出；服务端回 Initial 时为空
+        std::uint64_t                 packetNumber{0};                             ///< 完整包号，线格式按 packetNumberByteCount 截断
+        std::size_t                   packetNumberByteCount{1};                    ///< 包号字段字节数，1 到 4
+        bool                          isKeyPhaseBitSet{false};                     ///< 短头的 Key Phase 位，与 QuicPacketHeader 同名同义
+        std::span<const std::uint8_t> frames{};                                    ///< 明文帧序列，至少一帧（§12.4）
     };
 
     /**

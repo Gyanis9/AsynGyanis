@@ -24,8 +24,8 @@
 #ifdef DATABASE_HAS_REDIS
 // 与 RedisConnection.cpp 保持一致的包含顺序：先经 Platform 层拿到 struct timeval 与网络头，
 // 再包含 hiredis；本文件只用公开的协议解析接口，不构造 timeval
-#include "Platform/Platform.h"
 #include <hiredis/hiredis.h>
+#include "Platform/Platform.h"
 #endif
 
 namespace AsynGyanis::Database
@@ -143,8 +143,8 @@ namespace AsynGyanis::Database
                 return nullptr;
             }
 
-            void *rawReply = nullptr;
-            const bool fedSuccessfully = redisReaderFeed(reader, respText.data(), respText.size()) == REDIS_OK;
+            void      *rawReply           = nullptr;
+            const bool fedSuccessfully    = redisReaderFeed(reader, respText.data(), respText.size()) == REDIS_OK;
             const bool parsedSuccessfully = fedSuccessfully && redisReaderGetReply(reader, &rawReply) == REDIS_OK;
             redisReaderFree(reader);
 

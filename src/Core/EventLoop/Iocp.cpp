@@ -36,7 +36,7 @@ namespace AsynGyanis::Core
         std::size_t hashResultSlotKey(void *const userData, const std::size_t slotMask) noexcept
         {
             constexpr std::uint64_t kGoldenRatioOddConstant = 0x9E3779B97F4A7C15ULL;
-            const auto              keyBits = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(userData)) >> 4U;
+            const auto              keyBits                 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(userData)) >> 4U;
             return static_cast<std::size_t>(keyBits * kGoldenRatioOddConstant) & slotMask;
         }
 
@@ -49,11 +49,11 @@ namespace AsynGyanis::Core
         {
             static const LPFN_ACCEPTEX function = [probeSocket]() -> LPFN_ACCEPTEX
             {
-                GUID         extensionGuid = WSAID_ACCEPTEX;
-                LPFN_ACCEPTEX pointer      = nullptr;
-                DWORD        returnedByteCount = 0;
-                if (::WSAIoctl(probeSocket, SIO_GET_EXTENSION_FUNCTION_POINTER, &extensionGuid, sizeof(extensionGuid), &pointer,
-                               sizeof(pointer), &returnedByteCount, nullptr, nullptr) != 0)
+                GUID          extensionGuid     = WSAID_ACCEPTEX;
+                LPFN_ACCEPTEX pointer           = nullptr;
+                DWORD         returnedByteCount = 0;
+                if (::WSAIoctl(probeSocket, SIO_GET_EXTENSION_FUNCTION_POINTER, &extensionGuid, sizeof(extensionGuid), &pointer, sizeof(pointer), &returnedByteCount, nullptr,
+                               nullptr) != 0)
                 {
                     return nullptr;
                 }
@@ -65,32 +65,32 @@ namespace AsynGyanis::Core
 
     struct Iocp::ProbeContext
     {
-        OVERLAPPED    overlapped{};               ///< 必须是第一个成员：完成通知给出的就是它的地址
-        SocketState  *owner{nullptr};             ///< 所属的套接字状态
-        std::uint32_t direction{0};               ///< EPOLLIN（读/AcceptEx 探针）或 EPOLLOUT（写探针）
+        OVERLAPPED    overlapped{};   ///< 必须是第一个成员：完成通知给出的就是它的地址
+        SocketState  *owner{nullptr}; ///< 所属的套接字状态
+        std::uint32_t direction{0};   ///< EPOLLIN（读/AcceptEx 探针）或 EPOLLOUT（写探针）
     };
 
     struct Iocp::SocketState
     {
-        SOCKET        socketHandle{INVALID_SOCKET};   ///< 被注册的套接字
-        void         *userData{nullptr};              ///< 上报事件时写进 epoll_event.data.ptr
-        std::uint32_t registeredEvents{0};            ///< 最近一次登记的关注位（含 EPOLLONESHOT 与否）
-        ProbeContext  readProbe{};                    ///< 读方向（监听描述符上是 AcceptEx）
-        ProbeContext  writeProbe{};                   ///< 写方向
+        SOCKET        socketHandle{INVALID_SOCKET}; ///< 被注册的套接字
+        void         *userData{nullptr};            ///< 上报事件时写进 epoll_event.data.ptr
+        std::uint32_t registeredEvents{0};          ///< 最近一次登记的关注位（含 EPOLLONESHOT 与否）
+        ProbeContext  readProbe{};                  ///< 读方向（监听描述符上是 AcceptEx）
+        ProbeContext  writeProbe{};                 ///< 写方向
 
         /// 连接操作（ConnectEx）自己的探针与结果：只在 `beginConnect()` 之后存在。
         /// 它不复用 writeProbe——两者的完成含义不同（一个问「缓冲放得下吗」，一个报「连上了吗」），
         /// 混在一起会让 armProbe 分不清该不该再投零字节探针
-        ProbeContext  connectProbe{};                 ///< 连接操作的重叠结构（完成通知按地址认它）
-        bool          isConnectPending{false};        ///< 连接操作已投递、还没等到完成
-        bool          hasConnectResult{false};        ///< 完成已到，结果等 takeConnectResult() 取走
-        int           connectErrorCode{0};            ///< 完成包里译出的 Winsock 错误码，0 为连上
-        std::unique_ptr<char[]> connectAddressBuffer; ///< ConnectEx 的地址输出区（本地/远端各一份，含 16 字节余量）
+        ProbeContext            connectProbe{};          ///< 连接操作的重叠结构（完成通知按地址认它）
+        bool                    isConnectPending{false}; ///< 连接操作已投递、还没等到完成
+        bool                    hasConnectResult{false}; ///< 完成已到，结果等 takeConnectResult() 取走
+        int                     connectErrorCode{0};     ///< 完成包里译出的 Winsock 错误码，0 为连上
+        std::unique_ptr<char[]> connectAddressBuffer;    ///< ConnectEx 的地址输出区（本地/远端各一份，含 16 字节余量）
 
-        char          readBuffer[1]{};                ///< 1 字节 MSG_PEEK 探针缓冲：只读不取，内容无用
-        bool          hasReadProbe{false};            ///< 读探针是否已在途
-        bool          hasWriteProbe{false};           ///< 写探针是否已在途
-        bool          isListening{false};             ///< 该套接字是否处于监听态（决定读探针用 AcceptEx）
+        char readBuffer[1]{};      ///< 1 字节 MSG_PEEK 探针缓冲：只读不取，内容无用
+        bool hasReadProbe{false};  ///< 读探针是否已在途
+        bool hasWriteProbe{false}; ///< 写探针是否已在途
+        bool isListening{false};   ///< 该套接字是否处于监听态（决定读探针用 AcceptEx）
 
         /// 是否数据报套接字（SOCK_DGRAM）：-1 未知、0 否、1 是。数据报无连接，read 探针的
         /// 「先确认已连上」守卫对它必然不成立，而 WSARecv 在无连接 UDP 上本就合法
@@ -107,9 +107,9 @@ namespace AsynGyanis::Core
         /// 是否已排进待合成表（与 isArmRetryQueued 同一套路，避免同一个状态重复入表）
         bool isSyntheticReadyQueued{false};
 
-        bool          isDeleted{false};               ///< 已注销但仍有完成通知在队，见 m_graveyard
-        std::uint32_t failedDirections{0};            ///< 上一次投递失败的方向位（等下一次 wait() 重试）
-        bool          isArmRetryQueued{false};        ///< 是否已排进待重试表（避免重复入表）
+        bool          isDeleted{false};                    ///< 已注销但仍有完成通知在队，见 m_graveyard
+        std::uint32_t failedDirections{0};                 ///< 上一次投递失败的方向位（等下一次 wait() 重试）
+        bool          isArmRetryQueued{false};             ///< 是否已排进待重试表（避免重复入表）
         SOCKET        pendingAcceptSocket{INVALID_SOCKET}; ///< AcceptEx 正在使用的接受套接字
         SOCKET        acceptedSocket{INVALID_SOCKET};      ///< 已接入、等 takeAcceptedSocket() 取走
         bool          hasAcceptedSocket{false};            ///< acceptedSocket 是否有效
@@ -126,13 +126,13 @@ namespace AsynGyanis::Core
         /// 初始化探针的固定字段
         void initProbes(void *const watcherData) noexcept
         {
-            readProbe.owner     = this;
-            readProbe.direction = EPOLLIN;
-            writeProbe.owner     = this;
-            writeProbe.direction = EPOLLOUT;
+            readProbe.owner        = this;
+            readProbe.direction    = EPOLLIN;
+            writeProbe.owner       = this;
+            writeProbe.direction   = EPOLLOUT;
             connectProbe.owner     = this;
             connectProbe.direction = EPOLLOUT;
-            userData            = watcherData;
+            userData               = watcherData;
         }
     };
 
@@ -144,8 +144,7 @@ namespace AsynGyanis::Core
         {
             // 必须显式传 Win32 空间的码：CreateIoCompletionPort 失败只写 GetLastError，不写 errno，
             // 走隐式 errno 通道会报出一个与本次失败无关（或干脆是 0）的描述
-            throw Base::SystemException("创建完成端口失败（CreateIoCompletionPort）",
-                                        std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
+            throw Base::SystemException("创建完成端口失败（CreateIoCompletionPort）", std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
         }
         m_entries.resize(kMaximumEventCount);
         m_results.reserve(kMaximumEventCount);
@@ -161,18 +160,10 @@ namespace AsynGyanis::Core
     }
 
     Iocp::Iocp(Iocp &&other) noexcept :
-        m_iocp(other.m_iocp),
-        m_entries(std::move(other.m_entries)),
-        m_results(std::move(other.m_results)),
-        m_resultSlotUserData(std::move(other.m_resultSlotUserData)),
-        m_resultSlotIndex(std::move(other.m_resultSlotIndex)),
-        m_usedResultSlots(std::move(other.m_usedResultSlots)),
-        m_resultSlotMask(other.m_resultSlotMask),
-        m_sockets(std::move(other.m_sockets)),
-        m_graveyard(std::move(other.m_graveyard)),
-        m_pendingRearm(std::move(other.m_pendingRearm)),
-        m_pendingArmRetry(std::move(other.m_pendingArmRetry)),
-        m_pendingSyntheticReady(std::move(other.m_pendingSyntheticReady))
+        m_iocp(other.m_iocp), m_entries(std::move(other.m_entries)), m_results(std::move(other.m_results)), m_resultSlotUserData(std::move(other.m_resultSlotUserData)),
+        m_resultSlotIndex(std::move(other.m_resultSlotIndex)), m_usedResultSlots(std::move(other.m_usedResultSlots)), m_resultSlotMask(other.m_resultSlotMask),
+        m_sockets(std::move(other.m_sockets)), m_graveyard(std::move(other.m_graveyard)), m_pendingRearm(std::move(other.m_pendingRearm)),
+        m_pendingArmRetry(std::move(other.m_pendingArmRetry)), m_pendingSyntheticReady(std::move(other.m_pendingSyntheticReady))
     {
         other.m_iocp = nullptr;
     }
@@ -182,19 +173,19 @@ namespace AsynGyanis::Core
         if (this != &other)
         {
             destroy();
-            m_iocp         = other.m_iocp;
-            m_entries      = std::move(other.m_entries);
-            m_results      = std::move(other.m_results);
-            m_resultSlotUserData = std::move(other.m_resultSlotUserData);
-            m_resultSlotIndex    = std::move(other.m_resultSlotIndex);
-            m_usedResultSlots    = std::move(other.m_usedResultSlots);
-            m_resultSlotMask     = other.m_resultSlotMask;
-            m_sockets         = std::move(other.m_sockets);
-            m_graveyard       = std::move(other.m_graveyard);
-            m_pendingRearm    = std::move(other.m_pendingRearm);
-            m_pendingArmRetry = std::move(other.m_pendingArmRetry);
+            m_iocp                  = other.m_iocp;
+            m_entries               = std::move(other.m_entries);
+            m_results               = std::move(other.m_results);
+            m_resultSlotUserData    = std::move(other.m_resultSlotUserData);
+            m_resultSlotIndex       = std::move(other.m_resultSlotIndex);
+            m_usedResultSlots       = std::move(other.m_usedResultSlots);
+            m_resultSlotMask        = other.m_resultSlotMask;
+            m_sockets               = std::move(other.m_sockets);
+            m_graveyard             = std::move(other.m_graveyard);
+            m_pendingRearm          = std::move(other.m_pendingRearm);
+            m_pendingArmRetry       = std::move(other.m_pendingArmRetry);
             m_pendingSyntheticReady = std::move(other.m_pendingSyntheticReady);
-            other.m_iocp      = nullptr;
+            other.m_iocp            = nullptr;
         }
         return *this;
     }
@@ -268,12 +259,9 @@ namespace AsynGyanis::Core
         // 指纹只进报错文本，因此用松弛序读——它与「是否拒绝」这个决定无关，决定只来自那个原子标记
         const std::uint64_t holderFingerprint = m_backend.m_inUseByHash.load(std::memory_order_relaxed);
         const std::uint64_t selfFingerprint   = threadFingerprint(std::this_thread::get_id());
-        throw Base::LogicException(
-                "IOCP 事件后端被并发使用：操作 " + std::string{operation} + " 想在线程指纹 "
-                + std::to_string(selfFingerprint) + " 上进入，而后端正被线程指纹 "
-                + std::to_string(holderFingerprint)
-                + (holderFingerprint == selfFingerprint ? "（同一条线程的重入）" : "（另一条线程）")
-                + " 占用。事件后端只该由它所属事件循环的那条线程碰，外部线程请走 EventLoop::postRemote()");
+        throw Base::LogicException("IOCP 事件后端被并发使用：操作 " + std::string{operation} + " 想在线程指纹 " + std::to_string(selfFingerprint) + " 上进入，而后端正被线程指纹 " +
+                                   std::to_string(holderFingerprint) + (holderFingerprint == selfFingerprint ? "（同一条线程的重入）" : "（另一条线程）") +
+                                   " 占用。事件后端只该由它所属事件循环的那条线程碰，外部线程请走 EventLoop::postRemote()");
     }
 
     Iocp::ExclusiveUse::~ExclusiveUse() noexcept
@@ -302,11 +290,9 @@ namespace AsynGyanis::Core
         state->initProbes(userData);
 
         // 监听态决定读探针的形态：AcceptEx 还是 MSG_PEEK 的 WSARecv
-        int  acceptConnection = 0;
-        int  optionLength     = static_cast<int>(sizeof(acceptConnection));
-        state->isListening =
-                ::getsockopt(state->socketHandle, SOL_SOCKET, SO_ACCEPTCONN, reinterpret_cast<char *>(&acceptConnection), &optionLength) == 0 &&
-                acceptConnection != 0;
+        int acceptConnection = 0;
+        int optionLength     = static_cast<int>(sizeof(acceptConnection));
+        state->isListening = ::getsockopt(state->socketHandle, SOL_SOCKET, SO_ACCEPTCONN, reinterpret_cast<char *>(&acceptConnection), &optionLength) == 0 && acceptConnection != 0;
 
         if (::CreateIoCompletionPort(toHandle(state->socketHandle), m_iocp, reinterpret_cast<ULONG_PTR>(state), 0) == nullptr)
         {
@@ -337,14 +323,14 @@ namespace AsynGyanis::Core
     bool Iocp::modFileDescriptor(const int fileDescriptor, const std::uint32_t events, void *const userData)
     {
         const ExclusiveUse exclusive(*this, "modFileDescriptor");
-        const auto iterator = m_sockets.find(fileDescriptor);
+        const auto         iterator = m_sockets.find(fileDescriptor);
         if (iterator == m_sockets.end())
         {
             return false;
         }
 
-        SocketState &state   = *iterator->second;
-        state.userData       = userData;
+        SocketState &state     = *iterator->second;
+        state.userData         = userData;
         state.registeredEvents = events;
 
         if ((events & EPOLLIN) != 0)
@@ -361,7 +347,7 @@ namespace AsynGyanis::Core
     bool Iocp::delFileDescriptor(const int fileDescriptor)
     {
         const ExclusiveUse exclusive(*this, "delFileDescriptor");
-        const auto iterator = m_sockets.find(fileDescriptor);
+        const auto         iterator = m_sockets.find(fileDescriptor);
         if (iterator == m_sockets.end())
         {
             return false;
@@ -394,7 +380,7 @@ namespace AsynGyanis::Core
     bool Iocp::takeAcceptedSocket(const int listenerFileDescriptor, int *const acceptedFileDescriptor)
     {
         const ExclusiveUse exclusive(*this, "takeAcceptedSocket");
-        const auto iterator = m_sockets.find(listenerFileDescriptor);
+        const auto         iterator = m_sockets.find(listenerFileDescriptor);
         if (iterator == m_sockets.end())
         {
             return false;
@@ -412,11 +398,10 @@ namespace AsynGyanis::Core
         return true;
     }
 
-    bool Iocp::beginConnect(const int fileDescriptor, const sockaddr *const address, const int addressLength,
-                            int *const immediateErrorCode)
+    bool Iocp::beginConnect(const int fileDescriptor, const sockaddr *const address, const int addressLength, int *const immediateErrorCode)
     {
         const ExclusiveUse exclusive(*this, "beginConnect");
-        const auto iterator = m_sockets.find(fileDescriptor);
+        const auto         iterator = m_sockets.find(fileDescriptor);
         if (iterator == m_sockets.end())
         {
             // 没注册就没有落脚的 OVERLAPPED：调用方（AsyncSocket）先经 ensureWatcher() 建好注册对象
@@ -431,11 +416,11 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        GUID connectId = WSAID_CONNECTEX;
+        GUID           connectId       = WSAID_CONNECTEX;
         LPFN_CONNECTEX connectFunction = nullptr;
         DWORD          resolvedLength  = 0;
-        if (::WSAIoctl(state.socketHandle, SIO_GET_EXTENSION_FUNCTION_POINTER, &connectId, sizeof(connectId),
-                       &connectFunction, sizeof(connectFunction), &resolvedLength, nullptr, nullptr) != 0 ||
+        if (::WSAIoctl(state.socketHandle, SIO_GET_EXTENSION_FUNCTION_POINTER, &connectId, sizeof(connectId), &connectFunction, sizeof(connectFunction), &resolvedLength, nullptr,
+                       nullptr) != 0 ||
             connectFunction == nullptr)
         {
             *immediateErrorCode = WSAGetLastError();
@@ -447,14 +432,12 @@ namespace AsynGyanis::Core
         // 已绑定的（调用方自己 bind 过）不动它
         sockaddr_storage boundName{};
         int              boundLength = static_cast<int>(sizeof(boundName));
-        const bool       isUnbound   = ::getsockname(state.socketHandle, reinterpret_cast<sockaddr *>(&boundName), &boundLength) != 0
-                                       || boundName.ss_family == AF_UNSPEC;
+        const bool       isUnbound   = ::getsockname(state.socketHandle, reinterpret_cast<sockaddr *>(&boundName), &boundLength) != 0 || boundName.ss_family == AF_UNSPEC;
         if (isUnbound)
         {
             sockaddr_storage anyAddress{};
             anyAddress.ss_family = address->sa_family;
-            const int bindLength = address->sa_family == AF_INET ? static_cast<int>(sizeof(sockaddr_in))
-                                                                 : static_cast<int>(sizeof(sockaddr_in6));
+            const int bindLength = address->sa_family == AF_INET ? static_cast<int>(sizeof(sockaddr_in)) : static_cast<int>(sizeof(sockaddr_in6));
             static_cast<void>(::bind(state.socketHandle, reinterpret_cast<const sockaddr *>(&anyAddress), bindLength));
         }
 
@@ -465,13 +448,12 @@ namespace AsynGyanis::Core
         }
 
         std::memset(&state.connectProbe.overlapped, 0, sizeof(OVERLAPPED));
-        DWORD transferred = 0;
-        const BOOL isStarted = connectFunction(state.socketHandle, address, addressLength, nullptr, 0, &transferred,
-                                              &state.connectProbe.overlapped);
+        DWORD      transferred = 0;
+        const BOOL isStarted   = connectFunction(state.socketHandle, address, addressLength, nullptr, 0, &transferred, &state.connectProbe.overlapped);
         if (isStarted == TRUE)
         {
             // 当场就连上了：完成通知仍会入队（结果码为 0），因此同样记成在途，由它把结果取回
-            *immediateErrorCode  = 0;
+            *immediateErrorCode    = 0;
             state.isConnectPending = true;
             return true;
         }
@@ -490,7 +472,7 @@ namespace AsynGyanis::Core
     bool Iocp::takeConnectResult(const int fileDescriptor, int *const errorCode)
     {
         const ExclusiveUse exclusive(*this, "takeConnectResult");
-        const auto iterator = m_sockets.find(fileDescriptor);
+        const auto         iterator = m_sockets.find(fileDescriptor);
         if (iterator == m_sockets.end())
         {
             return false;
@@ -501,9 +483,9 @@ namespace AsynGyanis::Core
         {
             return false;
         }
-        *errorCode              = state.connectErrorCode;
-        state.hasConnectResult  = false;
-        state.connectErrorCode  = 0;
+        *errorCode             = state.connectErrorCode;
+        state.hasConnectResult = false;
+        state.connectErrorCode = 0;
         return true;
     }
 
@@ -537,9 +519,8 @@ namespace AsynGyanis::Core
             {
                 int acceptConnection = 0;
                 int optionLength     = static_cast<int>(sizeof(acceptConnection));
-                state.isListening = ::getsockopt(state.socketHandle, SOL_SOCKET, SO_ACCEPTCONN,
-                                                 reinterpret_cast<char *>(&acceptConnection), &optionLength) == 0 &&
-                                    acceptConnection != 0;
+                state.isListening =
+                        ::getsockopt(state.socketHandle, SOL_SOCKET, SO_ACCEPTCONN, reinterpret_cast<char *>(&acceptConnection), &optionLength) == 0 && acceptConnection != 0;
             }
             if (state.isListening)
             {
@@ -553,10 +534,7 @@ namespace AsynGyanis::Core
                 int socketType   = 0;
                 int optionLength = static_cast<int>(sizeof(socketType));
                 state.isDatagramSocket =
-                        ::getsockopt(state.socketHandle, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&socketType), &optionLength) == 0 &&
-                                        socketType == SOCK_DGRAM
-                                ? 1
-                                : 0;
+                        ::getsockopt(state.socketHandle, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&socketType), &optionLength) == 0 && socketType == SOCK_DGRAM ? 1 : 0;
                 if (state.isDatagramSocket == 1)
                 {
                     // 数据报无连接：连接性探测（getpeername）对它没有意义，此后一并跳过
@@ -588,10 +566,10 @@ namespace AsynGyanis::Core
 
             std::memset(&state.readProbe.overlapped, 0, sizeof(OVERLAPPED));
             WSABUF readBuffer{};
-            readBuffer.buf = state.readBuffer;
-            readBuffer.len = sizeof(state.readBuffer);
-            DWORD receiveFlags = MSG_PEEK;
-            const int result   = ::WSARecv(state.socketHandle, &readBuffer, 1, nullptr, &receiveFlags, &state.readProbe.overlapped, nullptr);
+            readBuffer.buf         = state.readBuffer;
+            readBuffer.len         = sizeof(state.readBuffer);
+            DWORD     receiveFlags = MSG_PEEK;
+            const int result       = ::WSARecv(state.socketHandle, &readBuffer, 1, nullptr, &receiveFlags, &state.readProbe.overlapped, nullptr);
             if (result == 0 || (result == SOCKET_ERROR && ::WSAGetLastError() == WSA_IO_PENDING))
             {
                 state.hasReadProbe = true;
@@ -605,8 +583,7 @@ namespace AsynGyanis::Core
                 // 只记重投的话等待方永远收不到事件——合成一条错误事件让它立刻收尾，
                 // 真实错误码由等待方自己的 recv/send 去拿，这里不再重复报一遍
                 noteSyntheticReady(state, EPOLLIN);
-            }
-            else
+            } else
             {
                 // 可重试：这一方向此刻没有探针在途，之后也不会有完成通知，必须由后端自己再投一次
                 // （上层看到的是「武装成功」，不会再要求武装）。静默处理：它属于暂时状态那一类，
@@ -633,7 +610,7 @@ namespace AsynGyanis::Core
         // 零字节发送：套接字可写时立刻完成，发送缓冲占满时挂到可写为止。
         // 它不向连接里写任何字节，因此不会污染字节流
         std::memset(&state.writeProbe.overlapped, 0, sizeof(OVERLAPPED));
-        WSABUF emptyBuffer{};
+        WSABUF    emptyBuffer{};
         const int result = ::WSASend(state.socketHandle, &emptyBuffer, 1, nullptr, 0, &state.writeProbe.overlapped, nullptr);
         if (result == 0 || (result == SOCKET_ERROR && ::WSAGetLastError() == WSA_IO_PENDING))
         {
@@ -647,8 +624,7 @@ namespace AsynGyanis::Core
             // 与读侧同一处置：硬错误（对端复位后零字节 WSASend 直接返回 WSAECONNRESET，实测确认）
             // 不会再有任何完成通知，合成一条错误事件让等待方立刻去拿真实错误
             noteSyntheticReady(state, EPOLLOUT);
-        }
-        else
+        } else
         {
             // 与读侧同一处置：可重试错误没有探针在途，必须排进重投表，否则这一方向永远静默
             noteArmPending(state, EPOLLOUT);
@@ -683,9 +659,8 @@ namespace AsynGyanis::Core
 
         // 用宽字符版（WSASocketW）：窄字符版在 /W4 下按已弃用 API 报 C4996，而这里本就没有字符串参数。
         // WSA_FLAG_NO_HANDLE_INHERIT 让这条预建的接受套接字不随 spawn 传下去，且不额外付一次系统调用
-        const SOCKET acceptSocket = ::WSASocketW(
-                static_cast<int>(listenerAddress.ss_family), SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
-                WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+        const SOCKET acceptSocket =
+                ::WSASocketW(static_cast<int>(listenerAddress.ss_family), SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
         if (acceptSocket == INVALID_SOCKET)
         {
             // 句柄或非分页内存耗尽时就是这里（WSAEMFILE / ENOBUFS）：监听描述符还在、
@@ -701,11 +676,10 @@ namespace AsynGyanis::Core
         }
 
         std::memset(&state.readProbe.overlapped, 0, sizeof(OVERLAPPED));
-        DWORD      receivedByteCount = 0;
+        DWORD      receivedByteCount    = 0;
         const auto addressUnitByteCount = static_cast<DWORD>(kAcceptAddressBufferByteCount / 2);
-        const BOOL isAccepted =
-                acceptFunction(state.socketHandle, acceptSocket, state.acceptAddressBuffer.get(), 0, addressUnitByteCount, addressUnitByteCount,
-                               &receivedByteCount, &state.readProbe.overlapped);
+        const BOOL isAccepted = acceptFunction(state.socketHandle, acceptSocket, state.acceptAddressBuffer.get(), 0, addressUnitByteCount, addressUnitByteCount, &receivedByteCount,
+                                               &state.readProbe.overlapped);
         if (isAccepted == FALSE && ::WSAGetLastError() != ERROR_IO_PENDING)
         {
             const int socketError = ::WSAGetLastError();
@@ -755,8 +729,8 @@ namespace AsynGyanis::Core
         // 套接字还没连上）是常态，失败必须在下一轮补上，否则那些描述符永远不会有完成通知
         for (std::size_t index = 0; index < currentRoundCount; ++index)
         {
-            SocketState *state = m_pendingArmRetry[index];
-            state->isArmRetryQueued = false;
+            SocketState *state                   = m_pendingArmRetry[index];
+            state->isArmRetryQueued              = false;
             const std::uint32_t failedDirections = state->failedDirections;
             if ((failedDirections & EPOLLIN) != 0 && (state->registeredEvents & EPOLLIN) != 0)
             {
@@ -800,7 +774,7 @@ namespace AsynGyanis::Core
         // 按注册表整体遍历会让「没有任何硬错误」的常态轮次也付出随连接数线性放大的成本
         for (SocketState *state: m_pendingSyntheticReady)
         {
-            state->isSyntheticReadyQueued = false;
+            state->isSyntheticReadyQueued  = false;
             const std::uint32_t directions = state->readyDirections;
             state->readyDirections         = 0;
             if (state->isDeleted)
@@ -809,8 +783,8 @@ namespace AsynGyanis::Core
                 continue;
             }
             epoll_event event{};
-            event.data.ptr = state->userData;
-            event.events   = directions | EPOLLERR | EPOLLHUP;
+            event.data.ptr                        = state->userData;
+            event.events                          = directions | EPOLLERR | EPOLLHUP;
             const std::size_t existingResultIndex = findResultSlot(event.data.ptr);
             if (existingResultIndex != kEmptyResultSlot)
             {
@@ -845,7 +819,7 @@ namespace AsynGyanis::Core
             return {m_results.data(), m_results.size()};
         }
 
-        const ULONG timeout = timeoutMs < 0 ? INFINITE : static_cast<ULONG>(timeoutMs);
+        const ULONG timeout    = timeoutMs < 0 ? INFINITE : static_cast<ULONG>(timeoutMs);
         DWORD       entryCount = 0;
         if (::GetQueuedCompletionStatusEx(m_iocp, m_entries.data(), static_cast<ULONG>(m_entries.size()), &entryCount, timeout, FALSE) == FALSE)
         {
@@ -854,8 +828,7 @@ namespace AsynGyanis::Core
             {
                 return {};
             }
-            throw Base::SystemException("等待完成端口失败（GetQueuedCompletionStatusEx）",
-                                        std::error_code(static_cast<int>(errorCode), std::system_category()));
+            throw Base::SystemException("等待完成端口失败（GetQueuedCompletionStatusEx）", std::error_code(static_cast<int>(errorCode), std::system_category()));
         }
 
         m_results.clear();
@@ -875,8 +848,8 @@ namespace AsynGyanis::Core
             return;
         }
 
-        auto         *context   = reinterpret_cast<ProbeContext *>(entry.lpOverlapped);
-        SocketState  &state     = *context->owner;
+        auto               *context   = reinterpret_cast<ProbeContext *>(entry.lpOverlapped);
+        SocketState        &state     = *context->owner;
         const std::uint32_t direction = context->direction;
         // 失败的完成（对端复位、取消、AcceptEx 出错）在 OVERLAPPED::Internal 上带负的状态码
         const bool isFailed = static_cast<LONG_PTR>(context->overlapped.Internal) < 0;
@@ -884,15 +857,14 @@ namespace AsynGyanis::Core
         // 连接操作（ConnectEx）的完成：结果只存在于完成包里——实测此刻 SO_ERROR 仍是 0，
         // 而包里的 NTSTATUS 要经 WSAGetOverlappedResult 才译得回 Winsock 错误码。
         // 认下来之后照常走通用收尾：清在途标记、按关注位上报，失败时报 EPOLLERR|EPOLLHUP
-        const bool isConnectProbe = context == &state.connectProbe;
-        bool isFailedForReport = isFailed;
+        const bool isConnectProbe    = context == &state.connectProbe;
+        bool       isFailedForReport = isFailed;
         if (isConnectProbe)
         {
             state.isConnectPending = false;
-            DWORD transferred = 0;
-            DWORD flags = 0;
-            const bool succeeded =
-                    ::WSAGetOverlappedResult(state.socketHandle, &state.connectProbe.overlapped, &transferred, FALSE, &flags) == TRUE;
+            DWORD      transferred = 0;
+            DWORD      flags       = 0;
+            const bool succeeded   = ::WSAGetOverlappedResult(state.socketHandle, &state.connectProbe.overlapped, &transferred, FALSE, &flags) == TRUE;
             state.connectErrorCode = succeeded ? 0 : ::WSAGetLastError();
             if (succeeded)
             {
@@ -924,8 +896,8 @@ namespace AsynGyanis::Core
             {
                 // AcceptEx 成功：把接受套接字与监听套接字关联起来，此后它就是一条正常的已连接套接字
                 const SOCKET acceptSocket = state.pendingAcceptSocket;
-                static_cast<void>(::setsockopt(acceptSocket, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
-                                               reinterpret_cast<const char *>(&state.socketHandle), sizeof(state.socketHandle)));
+                static_cast<void>(
+                        ::setsockopt(acceptSocket, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, reinterpret_cast<const char *>(&state.socketHandle), sizeof(state.socketHandle)));
                 state.pendingAcceptSocket = INVALID_SOCKET;
                 state.acceptedSocket      = acceptSocket;
                 state.hasAcceptedSocket   = true;
@@ -1105,8 +1077,7 @@ namespace AsynGyanis::Core
 
             DWORD entryCount = 0;
             // 取消本应立即完成；真收不齐（驱动异常）也不能让析构无限等下去
-            if (::GetQueuedCompletionStatusEx(m_iocp, m_entries.data(), static_cast<ULONG>(m_entries.size()), &entryCount,
-                                              kDrainTimeoutMilliseconds, FALSE) == FALSE)
+            if (::GetQueuedCompletionStatusEx(m_iocp, m_entries.data(), static_cast<ULONG>(m_entries.size()), &entryCount, kDrainTimeoutMilliseconds, FALSE) == FALSE)
             {
                 return;
             }

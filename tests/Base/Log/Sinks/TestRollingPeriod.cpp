@@ -30,8 +30,7 @@ namespace AsynGyanis::Base
          */
         std::time_t localSeconds(const int year, const int month, const int dayOfMonth, const int hour, const int minute, const int second)
         {
-            return std::chrono::system_clock::to_time_t(
-                    TestSupport::makeLocalMoment(year, month, dayOfMonth, hour, minute, second, 0));
+            return std::chrono::system_clock::to_time_t(TestSupport::makeLocalMoment(year, month, dayOfMonth, hour, minute, second, 0));
         }
     } // namespace
 
@@ -68,7 +67,7 @@ namespace AsynGyanis::Base
      */
     TEST(RollingPeriod, BoundaryFromPeriodStartIsOneWholePeriodAhead)
     {
-        const std::time_t localMidnight = localSeconds(2026, 9, 10, 0, 0, 0);
+        const std::time_t localMidnight  = localSeconds(2026, 9, 10, 0, 0, 0);
         const std::time_t localTopOfHour = localSeconds(2026, 9, 10, 9, 0, 0);
 
         EXPECT_EQ(Detail::nextRollingPeriodBoundary(localMidnight, RollingPolicy::Daily) - localMidnight, Detail::kSecondsPerDay);
@@ -84,10 +83,10 @@ namespace AsynGyanis::Base
      */
     TEST(RollingPeriod, SuffixAdvancesExactlyWhenThePeriodAdvances)
     {
-        const std::time_t noon      = localSeconds(2026, 9, 10, 12, 0, 0);
-        const std::time_t sameHour  = localSeconds(2026, 9, 10, 12, 59, 59);
-        const std::time_t nextHour  = localSeconds(2026, 9, 10, 13, 0, 0);
-        const std::time_t nextDay   = localSeconds(2026, 9, 11, 12, 0, 0);
+        const std::time_t noon     = localSeconds(2026, 9, 10, 12, 0, 0);
+        const std::time_t sameHour = localSeconds(2026, 9, 10, 12, 59, 59);
+        const std::time_t nextHour = localSeconds(2026, 9, 10, 13, 0, 0);
+        const std::time_t nextDay  = localSeconds(2026, 9, 11, 12, 0, 0);
 
         EXPECT_EQ(Detail::rollingPeriodSuffix(noon, RollingPolicy::Hourly), Detail::rollingPeriodSuffix(sameHour, RollingPolicy::Hourly));
         EXPECT_EQ(Detail::rollingPeriodSuffix(noon, RollingPolicy::Daily), Detail::rollingPeriodSuffix(nextHour, RollingPolicy::Daily));
@@ -98,10 +97,8 @@ namespace AsynGyanis::Base
         for (const RollingPolicy policy: {RollingPolicy::Daily, RollingPolicy::Hourly})
         {
             const std::time_t boundary = Detail::nextRollingPeriodBoundary(noon, policy);
-            EXPECT_NE(Detail::rollingPeriodSuffix(boundary, policy), Detail::rollingPeriodSuffix(noon, policy))
-                    << "边界到达却仍是同一代后缀，滚动条件永远不成立";
-            EXPECT_NE(Detail::rollingPeriodSuffix(boundary, policy), Detail::rollingPeriodSuffix(boundary - 1, policy))
-                    << "边界前一秒与后一秒分属两代，这条判定不能空转";
+            EXPECT_NE(Detail::rollingPeriodSuffix(boundary, policy), Detail::rollingPeriodSuffix(noon, policy)) << "边界到达却仍是同一代后缀，滚动条件永远不成立";
+            EXPECT_NE(Detail::rollingPeriodSuffix(boundary, policy), Detail::rollingPeriodSuffix(boundary - 1, policy)) << "边界前一秒与后一秒分属两代，这条判定不能空转";
         }
     }
 

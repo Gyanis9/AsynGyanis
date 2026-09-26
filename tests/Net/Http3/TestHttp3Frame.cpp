@@ -16,8 +16,8 @@
 #include "Net/Http3/Http3Frame.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
-#include "NetTestSupport.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
+#include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -90,11 +90,10 @@ namespace AsynGyanis::Net
          * @param reader 调用方持有的解码器，单帧上限要够大
          * @return std::expected<std::optional<Http3Frame>, Http3FrameError> 与 nextFrame() 同义
          */
-        [[nodiscard]] std::expected<std::optional<Http3Frame>, Http3FrameError>
-        decodeSoleFrame(const std::string_view hexadecimalText, Http3FrameReader &reader)
+        [[nodiscard]] std::expected<std::optional<Http3Frame>, Http3FrameError> decodeSoleFrame(const std::string_view hexadecimalText, Http3FrameReader &reader)
         {
             const auto wireBytes = makeBytesFromHex(hexadecimalText);
-            const auto fed = reader.feed(std::span<const std::uint8_t>(wireBytes));
+            const auto fed       = reader.feed(std::span<const std::uint8_t>(wireBytes));
             if (!fed.has_value())
             {
                 return std::unexpected(fed.error());
@@ -112,7 +111,7 @@ namespace AsynGyanis::Net
     {
         struct Case
         {
-            Http3Frame frame;
+            Http3Frame  frame;
             const char *hexadecimalText;
         };
 
@@ -130,10 +129,8 @@ namespace AsynGyanis::Net
                 {Http3HeadersFrame{std::span<const std::uint8_t>(kEncodedFieldSection)}, "0102aabb"},
                 {Http3CancelPushFrame{31}, "03011f"},
                 {Http3CancelPushFrame{1024}, "03024400"},
-                {Http3SettingsFrame{{{Http3SettingId::QpackMaxTableCapacity, 4096},
-                                    {Http3SettingId::MaxFieldSectionSize, 16384},
-                                    {Http3SettingId::QpackBlockedStreams, 3}},
-                                   {{0x31, 7}}},
+                {Http3SettingsFrame{{{Http3SettingId::QpackMaxTableCapacity, 4096}, {Http3SettingId::MaxFieldSectionSize, 16384}, {Http3SettingId::QpackBlockedStreams, 3}},
+                                    {{0x31, 7}}},
                  "040c015000068000400007033107"},
                 {Http3SettingsFrame{{}, {}}, "0400"},
                 {Http3PushPromiseFrame{9, std::span<const std::uint8_t>(kEncodedFieldSection)}, "050309aabb"},
@@ -148,12 +145,11 @@ namespace AsynGyanis::Net
         for (const Case &testCase: cases)
         {
             const auto expectedBytes = makeBytesFromHex(testCase.hexadecimalText);
-            EXPECT_EQ(encodeOne(testCase.frame), expectedBytes)
-                    << "帧类型 0x" << std::hex << http3FrameTypeValue(testCase.frame);
+            EXPECT_EQ(encodeOne(testCase.frame), expectedBytes) << "帧类型 0x" << std::hex << http3FrameTypeValue(testCase.frame);
 
             // 解出来再编回去必须逐字节还原：这一步同时核 §7.1 的「长度自洽」
             Http3FrameReader reader(expectedBytes.size() + 8);
-            const auto decoded = decodeSoleFrame(testCase.hexadecimalText, reader);
+            const auto       decoded = decodeSoleFrame(testCase.hexadecimalText, reader);
             ASSERT_TRUE(decoded.has_value()) << decoded.error().message << " 原文 " << testCase.hexadecimalText;
             ASSERT_TRUE(decoded->has_value()) << "字节不够解出一帧：" << testCase.hexadecimalText;
             EXPECT_EQ(**decoded, testCase.frame) << "解码结果与手工构造的帧不等：" << testCase.hexadecimalText;
@@ -190,8 +186,7 @@ namespace AsynGyanis::Net
 
         // 目标缓冲已有内容时只能追加：出站时它就是这条流的待发字节，前面排着的帧不许被覆盖
         std::string outbound = "prefix";
-        appendHttp3FrameWithPayload(outbound, Http3FrameType::Data, std::span<const std::uint8_t>{smallPayload.data(),
-                                                                                                  smallPayload.size()});
+        appendHttp3FrameWithPayload(outbound, Http3FrameType::Data, std::span<const std::uint8_t>{smallPayload.data(), smallPayload.size()});
         EXPECT_EQ(outbound.compare(0, 6, "prefix"), 0);
         EXPECT_EQ(outbound.size(), 6U + smallPayload.size() + 2U) << "小载荷的 DATA 帧头是两个 1 字节变长整数";
     }
@@ -213,8 +208,7 @@ namespace AsynGyanis::Net
         {
             std::string bytes;
             appendHttp3StreamTypeHeader(bytes, streamType);
-            EXPECT_EQ(toUnsignedBytes(bytes), makeBytesFromHex(hexadecimalText))
-                    << "流类型 0x" << std::hex << static_cast<unsigned int>(static_cast<std::uint64_t>(streamType));
+            EXPECT_EQ(toUnsignedBytes(bytes), makeBytesFromHex(hexadecimalText)) << "流类型 0x" << std::hex << static_cast<unsigned int>(static_cast<std::uint64_t>(streamType));
         }
 
         // 0x40 = 64 已在单字节档之外，写成两字节；0x21 是保留族首个取值，写成单字节
@@ -247,14 +241,10 @@ namespace AsynGyanis::Net
     {
         std::string bytes;
         // 2^62 已越出变长整数 8 字节档能表示的满值（RFC 9000 §16 表 4），没有合法编码
-        EXPECT_THROW(appendHttp3Frame(bytes, Http3GoAwayFrame{kQuicMaximumIntegerValue + 1}),
-                     Base::InvalidArgumentException)
-                << "GOAWAY 的 Stream ID/Push ID 越界时必须抛用法错误";
+        EXPECT_THROW(appendHttp3Frame(bytes, Http3GoAwayFrame{kQuicMaximumIntegerValue + 1}), Base::InvalidArgumentException) << "GOAWAY 的 Stream ID/Push ID 越界时必须抛用法错误";
         EXPECT_TRUE(bytes.empty()) << "载荷还没拼完就抛错，不该先写帧头";
 
-        EXPECT_THROW(appendHttp3Frame(bytes, Http3UnknownFrame{kQuicMaximumIntegerValue + 1, {}}),
-                     Base::InvalidArgumentException)
-                << "未知帧的类型值同样受 62 位上限约束";
+        EXPECT_THROW(appendHttp3Frame(bytes, Http3UnknownFrame{kQuicMaximumIntegerValue + 1, {}}), Base::InvalidArgumentException) << "未知帧的类型值同样受 62 位上限约束";
     }
 
     /**
@@ -274,8 +264,7 @@ namespace AsynGyanis::Net
         const auto headers = decodeSoleFrame("0102aabb", reader);
         ASSERT_TRUE(headers.has_value()) << headers.error().message;
         ASSERT_TRUE(headers->has_value());
-        EXPECT_EQ(**headers, frameOf(Http3HeadersFrame{std::span<const std::uint8_t>(kEncodedFieldSection)}))
-                << "HEADERS 的头字段段";
+        EXPECT_EQ(**headers, frameOf(Http3HeadersFrame{std::span<const std::uint8_t>(kEncodedFieldSection)})) << "HEADERS 的头字段段";
 
         const auto settings = decodeSoleFrame("040c015000068000400007033107", reader);
         ASSERT_TRUE(settings.has_value()) << settings.error().message;
@@ -331,8 +320,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(headers->has_value());
         const auto *headersFrame = std::get_if<Http3HeadersFrame>(&**headers);
         ASSERT_NE(headersFrame, nullptr) << "0x4001 解出来就是类型 1 的 HEADERS";
-        EXPECT_EQ(bytesOf(headersFrame->encodedFieldSection), makeBytesFromHex("010203"))
-                << "头字段段按声明长度 3 切出";
+        EXPECT_EQ(bytesOf(headersFrame->encodedFieldSection), makeBytesFromHex("010203")) << "头字段段按声明长度 3 切出";
         EXPECT_EQ(encodeOne(**headers), makeBytesFromHex("0103010203")) << "重新编码回到最短档位";
     }
 
@@ -346,29 +334,28 @@ namespace AsynGyanis::Net
     {
         struct Case
         {
-            const char *hexadecimalText;
+            const char   *hexadecimalText;
             std::uint64_t expectedTypeValue;
-            const char *expectedPayloadHexadecimalText;
+            const char   *expectedPayloadHexadecimalText;
         };
 
         const std::vector<Case> cases{
-                {"2102ff00", 0x21, "ff00"},     // §7.2.8 保留族 N=0
-                {"404000", 0x40, ""},           // §7.2.8 保留族 N=1，类型本身走两字节档
-                {"0200", 0x02, ""},             // §7.2.8 从 HTTP/2 继承的保留类型（原 PRIORITY）
+                {"2102ff00", 0x21, "ff00"},      // §7.2.8 保留族 N=0
+                {"404000", 0x40, ""},            // §7.2.8 保留族 N=1，类型本身走两字节档
+                {"0200", 0x02, ""},              // §7.2.8 从 HTTP/2 继承的保留类型（原 PRIORITY）
                 {"40a703010203", 0xa7, "010203"} // 扩展自定义类型 167 超单字节档，故类型是 40a7
         };
 
         for (const Case &testCase: cases)
         {
             Http3FrameReader reader(64);
-            const auto decoded = decodeSoleFrame(testCase.hexadecimalText, reader);
+            const auto       decoded = decodeSoleFrame(testCase.hexadecimalText, reader);
             ASSERT_TRUE(decoded.has_value()) << decoded.error().message << " 原文 " << testCase.hexadecimalText;
             ASSERT_TRUE(decoded->has_value()) << testCase.hexadecimalText;
             const auto *unknownFrame = std::get_if<Http3UnknownFrame>(&**decoded);
             ASSERT_NE(unknownFrame, nullptr) << "未知类型要落进 Http3UnknownFrame：" << testCase.hexadecimalText;
             EXPECT_EQ(unknownFrame->frameType, testCase.expectedTypeValue) << "类型值原样交出";
-            EXPECT_EQ(bytesOf(unknownFrame->payload), makeBytesFromHex(testCase.expectedPayloadHexadecimalText))
-                    << "载荷原文一条字节都不丢：" << testCase.hexadecimalText;
+            EXPECT_EQ(bytesOf(unknownFrame->payload), makeBytesFromHex(testCase.expectedPayloadHexadecimalText)) << "载荷原文一条字节都不丢：" << testCase.hexadecimalText;
             EXPECT_EQ(encodeOne(**decoded), makeBytesFromHex(testCase.hexadecimalText)) << "忽略面也要能回编";
         }
 
@@ -397,22 +384,17 @@ namespace AsynGyanis::Net
         // 040101：SETTINGS 只剩标识、值不见
         // 04020140：值起了两字节档，声明长度里只剩 1 字节
         const std::vector<Case> cases{
-                {"03021fff", "没被任何字段占用"},
-                {"030140", "越出载荷末尾"},
-                {"0700", "越出载荷末尾"},
-                {"040101", "越出载荷末尾"},
-                {"04020140", "越出载荷末尾"},
+                {"03021fff", "没被任何字段占用"}, {"030140", "越出载荷末尾"}, {"0700", "越出载荷末尾"}, {"040101", "越出载荷末尾"}, {"04020140", "越出载荷末尾"},
         };
 
         for (const Case &testCase: cases)
         {
             Http3FrameReader reader(64);
-            const auto decoded = decodeSoleFrame(testCase.hexadecimalText, reader);
+            const auto       decoded = decodeSoleFrame(testCase.hexadecimalText, reader);
             ASSERT_FALSE(decoded.has_value()) << "坏帧必须报错：" << testCase.hexadecimalText;
             EXPECT_EQ(decoded.error().kind, Http3FrameErrorKind::Malformed) << testCase.hexadecimalText;
             EXPECT_TRUE(containsText(decoded.error().message, testCase.expectedTextInMessage))
-                    << testCase.hexadecimalText << " 的文案该含「" << testCase.expectedTextInMessage << "」，实际："
-                    << decoded.error().message;
+                    << testCase.hexadecimalText << " 的文案该含「" << testCase.expectedTextInMessage << "」，实际：" << decoded.error().message;
         }
     }
 
@@ -439,7 +421,7 @@ namespace AsynGyanis::Net
 
         // §7.2.4.1 从 HTTP/2 继承下来的保留标识（0x02～0x05）落在未知项里，本层不判错
         Http3FrameReader reservedReader(64);
-        const auto reserved = decodeSoleFrame("04020203", reservedReader);
+        const auto       reserved = decodeSoleFrame("04020203", reservedReader);
         ASSERT_TRUE(reserved.has_value()) << reserved.error().message;
         ASSERT_TRUE(reserved->has_value());
         const auto *reservedFrame = std::get_if<Http3SettingsFrame>(&**reserved);
@@ -478,7 +460,7 @@ namespace AsynGyanis::Net
         auto feedOne = [&reader](const std::string_view hexadecimalText)
         {
             const auto bytes = makeBytesFromHex(hexadecimalText);
-            const auto fed = reader.feed(std::span<const std::uint8_t>(bytes));
+            const auto fed   = reader.feed(std::span<const std::uint8_t>(bytes));
             ASSERT_TRUE(fed.has_value()) << "喂入 " << hexadecimalText << " 失败：" << fed.error().message;
         };
         auto expectNoFrame = [&reader](const char *reason)
@@ -534,8 +516,7 @@ namespace AsynGyanis::Net
      */
     TEST(Http3FrameReader, EnforcesTheFrameSizeLimitAndLatchesFailure)
     {
-        EXPECT_THROW(Http3FrameReader(0), Base::InvalidArgumentException)
-                << "上限为 0 连最小的空帧都容不下";
+        EXPECT_THROW(Http3FrameReader(0), Base::InvalidArgumentException) << "上限为 0 连最小的空帧都容不下";
 
         Http3FrameReader reader(16);
         // DATA 声明 100 字节载荷：100 超单字节档，长度域要走两字节档 0x4064（RFC 9000 §16），
@@ -565,8 +546,7 @@ namespace AsynGyanis::Net
 
         // 单次喂入 18 字节 > 上限 16：块长是调用方定的，按超限报出
         Http3FrameReader blockedReader(16);
-        const auto tooBigBlock = blockedReader.feed(
-                std::span<const std::uint8_t>(makeBytesFromHex("00000000000000000000000000000000000")));
+        const auto       tooBigBlock = blockedReader.feed(std::span<const std::uint8_t>(makeBytesFromHex("00000000000000000000000000000000000")));
         ASSERT_FALSE(tooBigBlock.has_value());
         EXPECT_EQ(tooBigBlock.error().kind, Http3FrameErrorKind::LimitExceeded);
         EXPECT_TRUE(containsText(tooBigBlock.error().message, "超过单帧上限")) << tooBigBlock.error().message;
@@ -583,23 +563,26 @@ namespace AsynGyanis::Net
     {
     protected:
         /// 五帧拼接的字节流，总长 31 字节
-        static constexpr const char *s_streamHexadecimalText =
-                "000568656c6c6f" "040c015000068000400007033107" "070104" "2102ff00" "0000";
+        static constexpr const char *s_streamHexadecimalText = "000568656c6c6f"
+                                                               "040c015000068000400007033107"
+                                                               "070104"
+                                                               "2102ff00"
+                                                               "0000";
     };
 
     TEST_P(Http3FrameChunkedFeeding, DecodesTheSameFramesRegardlessOfChunkSize)
     {
-        const std::size_t stride = GetParam();
-        const auto wireBytes = makeBytesFromHex(s_streamHexadecimalText);
-        Http3FrameReader reader(16);
+        const std::size_t stride    = GetParam();
+        const auto        wireBytes = makeBytesFromHex(s_streamHexadecimalText);
+        Http3FrameReader  reader(16);
 
         std::vector<std::uint64_t> decodedTypeValues;
-        std::string reEncodedBytes;
-        std::size_t offset = 0;
+        std::string                reEncodedBytes;
+        std::size_t                offset = 0;
         while (offset < wireBytes.size())
         {
             const std::size_t chunkLength = std::min(stride, wireBytes.size() - offset);
-            const auto fed = reader.feed(std::span<const std::uint8_t>(wireBytes.data() + offset, chunkLength));
+            const auto        fed         = reader.feed(std::span<const std::uint8_t>(wireBytes.data() + offset, chunkLength));
             ASSERT_TRUE(fed.has_value()) << "步长 " << stride << " 喂到第 " << offset << " 字节失败：" << fed.error().message;
             offset += chunkLength;
 
@@ -607,8 +590,7 @@ namespace AsynGyanis::Net
             while (true)
             {
                 const auto frame = reader.nextFrame();
-                ASSERT_TRUE(frame.has_value()) << "步长 " << stride << " 在第 " << offset << " 字节处报错："
-                                               << frame.error().message;
+                ASSERT_TRUE(frame.has_value()) << "步长 " << stride << " 在第 " << offset << " 字节处报错：" << frame.error().message;
                 if (!frame->has_value())
                 {
                     break;
@@ -626,6 +608,5 @@ namespace AsynGyanis::Net
     }
 
     INSTANTIATE_TEST_SUITE_P(ChunkStrides, Http3FrameChunkedFeeding, ::testing::Values(1, 2, 3, 5, 7, 11, 13),
-                             [](const ::testing::TestParamInfo<std::size_t> &information)
-                             { return "stride" + std::to_string(information.param); });
+                             [](const ::testing::TestParamInfo<std::size_t> &information) { return "stride" + std::to_string(information.param); });
 } // namespace AsynGyanis::Net

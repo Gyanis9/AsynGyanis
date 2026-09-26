@@ -4,7 +4,7 @@
 
 namespace AsynGyanis::Database
 {
-    MySqlStatementResult::MySqlStatementResult(std::vector<std::string> columnNames, std::vector<std::vector<DatabaseValue> > rows) :
+    MySqlStatementResult::MySqlStatementResult(std::vector<std::string> columnNames, std::vector<std::vector<DatabaseValue>> rows) :
         m_columnNames(std::move(columnNames)), m_rows(std::move(rows))
     {
         // 行数据与列名在连接预读阶段就是按同一份列元数据产出的，这里不再做对齐修正：

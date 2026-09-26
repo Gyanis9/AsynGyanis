@@ -21,10 +21,7 @@ namespace AsynGyanis::Net
             /// 造一个绑定到本记录的回调
             [[nodiscard]] HttpStreamBody::ConsumeHandler makeHandler()
             {
-                return [this](const std::size_t consumedByteCount)
-                {
-                    reports.push_back(consumedByteCount);
-                };
+                return [this](const std::size_t consumedByteCount) { reports.push_back(consumedByteCount); };
             }
         };
     } // namespace
@@ -34,8 +31,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpStreamBody, CreditsOnlyAfterDelivery)
     {
-        ConsumeRecord      record;
-        HttpStreamBody    body;
+        ConsumeRecord         record;
+        HttpStreamBody        body;
         constexpr std::size_t kChunkBytes = 1000;
         body.reset(record.makeHandler());
 
@@ -61,7 +58,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpStreamBody, CreditsFlowControlByteCountIncludingPadding)
     {
-        ConsumeRecord   record;
+        ConsumeRecord  record;
         HttpStreamBody body;
         body.reset(record.makeHandler());
 
@@ -78,7 +75,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpStreamBody, CreditsZeroLengthFrameWithPadding)
     {
-        ConsumeRecord   record;
+        ConsumeRecord  record;
         HttpStreamBody body;
         body.reset(record.makeHandler());
 
@@ -95,7 +92,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpStreamBody, DeliversAndCreditsAccumulatedBytes)
     {
-        ConsumeRecord   record;
+        ConsumeRecord  record;
         HttpStreamBody body;
         body.reset(record.makeHandler());
 
@@ -116,7 +113,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpStreamBody, ConsumePendingCreditsEverythingOutstanding)
     {
-        ConsumeRecord   record;
+        ConsumeRecord  record;
         HttpStreamBody body;
         body.reset(record.makeHandler());
 
@@ -133,7 +130,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpStreamBody, BodyTooLargeMarksBrokenAndIsReported)
     {
-        ConsumeRecord   record;
+        ConsumeRecord  record;
         HttpStreamBody body;
         body.reset(record.makeHandler());
 
@@ -163,8 +160,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpStreamBody, ResetClearsContentAndMarkers)
     {
-        ConsumeRecord   firstRecord;
-        ConsumeRecord   secondRecord;
+        ConsumeRecord  firstRecord;
+        ConsumeRecord  secondRecord;
         HttpStreamBody body;
         body.reset(firstRecord.makeHandler());
 

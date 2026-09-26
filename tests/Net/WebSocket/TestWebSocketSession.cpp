@@ -59,12 +59,7 @@ namespace AsynGyanis::Net
          */
         bool waitForResetObservation(const std::atomic<bool> &flag, const std::chrono::milliseconds timeout)
         {
-            return HttpTestSupport::waitForCondition(
-                    [&flag]
-                    {
-                        return flag.load(std::memory_order_acquire);
-                    },
-                    timeout);
+            return HttpTestSupport::waitForCondition([&flag] { return flag.load(std::memory_order_acquire); }, timeout);
         }
 
         /// 帧写出失败日志的识别片段：只有失败路径会输出它，用它数「同一次失败记了几条」
@@ -134,12 +129,10 @@ namespace AsynGyanis::Net
          *       超过 65535 字节请改用 maskedBinaryFrameWith64BitLength()。本函数有意不复用被测编码器，
          *       否则编码器出错时服务端与客户端会一起错，测试就失去判据
          */
-        std::string maskedClientFrame(const std::uint8_t opCodeValue, const std::string_view payload, const bool isFinal = true,
-                                      const bool isCompressed = false)
+        std::string maskedClientFrame(const std::uint8_t opCodeValue, const std::string_view payload, const bool isFinal = true, const bool isCompressed = false)
         {
             std::string frame;
-            frame.push_back(static_cast<char>(
-                    static_cast<std::uint8_t>(opCodeValue | (isFinal ? 0x80U : 0x00U) | (isCompressed ? 0x40U : 0x00U))));
+            frame.push_back(static_cast<char>(static_cast<std::uint8_t>(opCodeValue | (isFinal ? 0x80U : 0x00U) | (isCompressed ? 0x40U : 0x00U))));
             if (payload.size() < kExtendedLength16MinimumPayloadBytes)
             {
                 frame.push_back(static_cast<char>(static_cast<std::uint8_t>(0x80U | payload.size())));
@@ -207,8 +200,7 @@ namespace AsynGyanis::Net
          * @param timeout 等待上限
          * @return true 在时限内凑齐（对端提前关闭时按已读到的字节数判定）
          */
-        bool readUntilLength(const LoopbackClient &client, std::string &accumulated, const std::size_t expectedLength,
-                             const std::chrono::milliseconds timeout)
+        bool readUntilLength(const LoopbackClient &client, std::string &accumulated, const std::size_t expectedLength, const std::chrono::milliseconds timeout)
         {
             const auto deadline = std::chrono::steady_clock::now() + timeout;
             while (accumulated.size() < expectedLength)
@@ -233,8 +225,8 @@ namespace AsynGyanis::Net
          */
         struct MessageRecord
         {
-            std::mutex mutex;                        ///< 保护 messages
-            std::vector<WebSocketMessage> messages;  ///< 按到达顺序记录的数据消息
+            std::mutex                    mutex;    ///< 保护 messages
+            std::vector<WebSocketMessage> messages; ///< 按到达顺序记录的数据消息
 
             /**
              * @brief 记录一条消息
@@ -294,18 +286,15 @@ namespace AsynGyanis::Net
         {
             const HttpTestSupport::RouteRegistrar registrar = [record](Router &router, Core::EventLoop &)
             {
-                router.any(std::string(kHandshakePath), [record](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                {
-                    response.upgradeToWebSocket([record](WebSocketPeer &peer) -> Core::Task<>
-                    {
-                        co_await echoHandler(record, peer);
-                    });
-                    co_return;
-                });
+                router.any(std::string(kHandshakePath),
+                           [record](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.upgradeToWebSocket([record](WebSocketPeer &peer) -> Core::Task<> { co_await echoHandler(record, peer); });
+                               co_return;
+                           });
             };
 
-            return std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{},
-                                                              registrar);
+            return std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
         }
 
         /**
@@ -346,7 +335,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, CompletesHandshakeWithRfcGoldenAcceptValue)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
@@ -355,7 +344,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendText(upgradeRequestText(), kWaitTimeout));
 
         const std::string expected = expectedHandshakeResponseText();
-        std::string accumulated;
+        std::string       accumulated;
         ASSERT_TRUE(readUntilLength(client, accumulated, expected.size(), kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
 
         EXPECT_EQ(accumulated.substr(0, expected.size()), expected);
@@ -372,15 +361,15 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, EchoesMaskedTextFrameAsUnmaskedText)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
         // 先自检手写字节：黄金常量与手写编码函数必须给出同一串（两者独立算出来，任一处算错都会当场暴露）
         ASSERT_EQ(std::string(kMaskedHelloFrame), maskedClientFrame(0x1, "hello"));
 
-        const std::string request = upgradeRequestText();
-        const std::string handshake = expectedHandshakeResponseText();
+        const std::string request      = upgradeRequestText();
+        const std::string handshake    = expectedHandshakeResponseText();
         const std::string expectedEcho = serverFrameBytes(0x1, "hello");
 
         LoopbackClient client(server->listeningPort());
@@ -407,20 +396,20 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, EchoesValidMultibyteUtf8Text)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
         // 负载 = 「汉字」U+6C49 U+5B57（各 3 字节）+ U+1F600（4 字节）
-        const std::string text = std::string("\xE6\xB1\x89\xE5\xAD\x97", 6) + std::string("\xF0\x9F\x98\x80", 4);
-        const std::string handshake = expectedHandshakeResponseText();
+        const std::string text         = std::string("\xE6\xB1\x89\xE5\xAD\x97", 6) + std::string("\xF0\x9F\x98\x80", 4);
+        const std::string handshake    = expectedHandshakeResponseText();
         const std::string expectedEcho = serverFrameBytes(0x1, text);
 
         LoopbackClient client(server->listeningPort());
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x1, text), kWaitTimeout));
 
-        std::string accumulated;
+        std::string       accumulated;
         const std::size_t expectedLength = handshake.size() + expectedEcho.size();
         ASSERT_TRUE(readUntilLength(client, accumulated, expectedLength, kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
         EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake);
@@ -439,20 +428,20 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, DoesNotValidateBinaryPayloadAsUtf8)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
         // 0xFF 0xFE 0x80 里 0x80 是孤立续字节，作为文本必然非法，作为二进制负载则完全正常
-        const std::string payload = std::string("\xFF\xFE\x80", 3);
-        const std::string handshake = expectedHandshakeResponseText();
+        const std::string payload      = std::string("\xFF\xFE\x80", 3);
+        const std::string handshake    = expectedHandshakeResponseText();
         const std::string expectedEcho = serverFrameBytes(0x2, payload);
 
         LoopbackClient client(server->listeningPort());
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x2, payload), kWaitTimeout));
 
-        std::string accumulated;
+        std::string       accumulated;
         const std::size_t expectedLength = handshake.size() + expectedEcho.size();
         ASSERT_TRUE(readUntilLength(client, accumulated, expectedLength, kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
         EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake);
@@ -469,15 +458,15 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, ReassemblesFragmentedMessageIntoOneDelivery)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
         // 分片一：FIN=0 的 Text "Hel"；分片二：FIN=1 的 Continuation "lo"
-        const std::string firstFragment = maskedClientFrame(0x1, "Hel", false);
+        const std::string firstFragment  = maskedClientFrame(0x1, "Hel", false);
         const std::string secondFragment = maskedClientFrame(0x0, "lo", true);
 
-        const std::string handshake = expectedHandshakeResponseText();
+        const std::string handshake    = expectedHandshakeResponseText();
         const std::string expectedEcho = serverFrameBytes(0x1, "Hello");
 
         LoopbackClient client(server->listeningPort());
@@ -504,21 +493,21 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, AcceptsUtf8CharacterSplitAcrossFragments)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
-        const std::string firstFragment = maskedClientFrame(0x1, std::string("\xE4\xB8", 2), false);
+        const std::string firstFragment  = maskedClientFrame(0x1, std::string("\xE4\xB8", 2), false);
         const std::string secondFragment = maskedClientFrame(0x0, std::string("\x96", 1), true);
 
-        const std::string handshake = expectedHandshakeResponseText();
+        const std::string handshake    = expectedHandshakeResponseText();
         const std::string expectedEcho = serverFrameBytes(0x1, std::string("\xE4\xB8\x96", 3));
 
         LoopbackClient client(server->listeningPort());
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendText(upgradeRequestText() + firstFragment + secondFragment, kWaitTimeout));
 
-        std::string accumulated;
+        std::string       accumulated;
         const std::size_t expectedLength = handshake.size() + expectedEcho.size();
         ASSERT_TRUE(readUntilLength(client, accumulated, expectedLength, kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
         EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake) << "被切开的字符不得被判成非法负载而回 1007";
@@ -534,11 +523,11 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, AnswersPingWithPongEchoingPayload)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
-        const std::string handshake = expectedHandshakeResponseText();
+        const std::string handshake    = expectedHandshakeResponseText();
         const std::string expectedPong = serverFrameBytes(0xA, "ping");
 
         LoopbackClient client(server->listeningPort());
@@ -559,7 +548,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, EchoesCloseCodeAndClosesConnection)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
@@ -580,12 +569,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(record->count(), 0U) << "Close 是控制帧，不应交付业务";
 
         // 关闭的两侧各计各的：对端发起的这次关闭记在对端一侧，本侧那条回帧不得再记成本侧发起
-        ASSERT_TRUE(HttpTestSupport::waitForCondition(
-                [&server]
-                {
-                    return server->server().stats().webSocketPeerCloseCount >= 1;
-                },
-                kWaitTimeout)) << "对端发起的关闭握手没有计数";
+        ASSERT_TRUE(HttpTestSupport::waitForCondition([&server] { return server->server().stats().webSocketPeerCloseCount >= 1; }, kWaitTimeout)) << "对端发起的关闭握手没有计数";
         const HttpServerStats closeStats = server->server().stats();
         EXPECT_EQ(closeStats.webSocketPeerCloseCount, 1u) << "一次对端 Close 只该计一次";
         EXPECT_EQ(closeStats.webSocketServerCloseCount, 0u) << "回应对端 Close 的回帧被重复记成了本侧发起关闭";
@@ -603,12 +587,12 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, KeepsFramesArrivingInTheSameSegmentAsHandshake)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
-        const std::string handshake = expectedHandshakeResponseText();
-        const std::string expectedFirstEcho = serverFrameBytes(0x1, "one");
+        const std::string handshake          = expectedHandshakeResponseText();
+        const std::string expectedFirstEcho  = serverFrameBytes(0x1, "one");
         const std::string expectedSecondEcho = serverFrameBytes(0x1, "two");
 
         LoopbackClient client(server->listeningPort());
@@ -618,7 +602,7 @@ namespace AsynGyanis::Net
         const std::string sameSegmentBytes = upgradeRequestText() + maskedClientFrame(0x1, "one") + maskedClientFrame(0x1, "two");
         ASSERT_TRUE(client.sendText(sameSegmentBytes, kWaitTimeout));
 
-        std::string accumulated;
+        std::string       accumulated;
         const std::size_t expectedLength = handshake.size() + expectedFirstEcho.size() + expectedSecondEcho.size();
         ASSERT_TRUE(readUntilLength(client, accumulated, expectedLength, kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
         EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake);
@@ -631,11 +615,11 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, HandlesHandshakeAndFramesFedByteByByte)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
-        const std::string handshake = expectedHandshakeResponseText();
+        const std::string handshake    = expectedHandshakeResponseText();
         const std::string expectedEcho = serverFrameBytes(0x1, "drip");
         const std::string expectedPong = serverFrameBytes(0xA, "hb");
 
@@ -649,7 +633,7 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(client.sendText(std::string_view(&byte, 1), kWaitTimeout));
         }
 
-        std::string accumulated;
+        std::string       accumulated;
         const std::size_t expectedLength = handshake.size() + expectedEcho.size() + expectedPong.size();
         ASSERT_TRUE(readUntilLength(client, accumulated, expectedLength, kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
         EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake);
@@ -667,7 +651,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, RejectsInvalidUpgradeRequestsWith400)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
         const std::uint16_t port = server->listeningPort();
@@ -706,7 +690,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, ClosesWithProtocolErrorWhenClientFrameIsUnmasked)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
@@ -737,7 +721,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, ClosesWithInvalidPayloadDataWhenTextPayloadIsNotUtf8)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
@@ -776,30 +760,31 @@ namespace AsynGyanis::Net
         {
             router.any(std::string(kHandshakePath),
                        [&didBusinessObserveSendFailure, &sentFrameCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.upgradeToWebSocket([&didBusinessObserveSendFailure, &sentFrameCount](WebSocketPeer &peer) -> Core::Task<>
-                {
-                    // 一直写到对端不再可用为止：对端停读会让发送缓冲填满，业务因此停在等可写上，
-                    // RST 到达时正是这次挂起的写把失败交回来
-                    const std::string payload(64 * 1024, 'w');
-                    for (int round = 0; round < 64; ++round)
-                    {
-                        if (!co_await peer.sendText(payload))
-                        {
-                            // 传输层失败以 false 抵达：业务据此收手，并留下可核对的证据
-                            didBusinessObserveSendFailure.store(true, std::memory_order_release);
-                            co_return;
-                        }
-                        sentFrameCount.fetch_add(1, std::memory_order_relaxed);
-                    }
-                    co_return;
-                });
-                co_return;
-            });
+                       {
+                           response.upgradeToWebSocket(
+                                   [&didBusinessObserveSendFailure, &sentFrameCount](WebSocketPeer &peer) -> Core::Task<>
+                                   {
+                                       // 一直写到对端不再可用为止：对端停读会让发送缓冲填满，业务因此停在等可写上，
+                                       // RST 到达时正是这次挂起的写把失败交回来
+                                       const std::string payload(64 * 1024, 'w');
+                                       for (int round = 0; round < 64; ++round)
+                                       {
+                                           if (!co_await peer.sendText(payload))
+                                           {
+                                               // 传输层失败以 false 抵达：业务据此收手，并留下可核对的证据
+                                               didBusinessObserveSendFailure.store(true, std::memory_order_release);
+                                               co_return;
+                                           }
+                                           sentFrameCount.fetch_add(1, std::memory_order_relaxed);
+                                       }
+                                       co_return;
+                                   });
+                           co_return;
+                       });
         };
 
-        const std::unique_ptr<RunningHttpServerFixture> server = std::make_unique<RunningHttpServerFixture>(
-                HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
+        const std::unique_ptr<RunningHttpServerFixture> server =
+                std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
         LoopbackClient client(server->listeningPort(), HttpTestSupport::kSlowReaderReceiveBufferBytes);
@@ -824,8 +809,7 @@ namespace AsynGyanis::Net
         EXPECT_LT(sentFrameCount.load(std::memory_order_relaxed), 64) << "对端已经复位，写侧却宣称 64 帧全部成功";
         if (!isResetFailureDelivered)
         {
-            std::cout << "[  说明  ] 本例本次运行命中了「收口丢弃挂起协程」的已知缺陷（约 7%），已发出 "
-                      << sentFrameCount.load(std::memory_order_relaxed) << " 帧\n";
+            std::cout << "[  说明  ] 本例本次运行命中了「收口丢弃挂起协程」的已知缺陷（约 7%），已发出 " << sentFrameCount.load(std::memory_order_relaxed) << " 帧\n";
         }
         EXPECT_FALSE(server->startThrew()) << "对端复位把服务器主协程带崩了";
     }
@@ -852,57 +836,54 @@ namespace AsynGyanis::Net
         // 后者意味着一条协程被挂起后再没被唤醒，那和「返回 false」是两类完全不同的故障
         enum class BusinessStage : int
         {
-            Sending = 0,        ///< 还在写数据帧
-            FailureObserved = 1,///< 已拿到 false
-            RetryFinished = 2,  ///< 失败后的数据帧与 Close 都回来了
+            Sending         = 0, ///< 还在写数据帧
+            FailureObserved = 1, ///< 已拿到 false
+            RetryFinished   = 2, ///< 失败后的数据帧与 Close 都回来了
         };
         std::atomic<BusinessStage> businessStage{BusinessStage::Sending};
 
-        const HttpTestSupport::RouteRegistrar registrar =
-                [&logCapture, &didBusinessObserveSendFailure, &didRetryReturnFalse, &isPeerClosedAfterFailure, &logCountAtFailure,
-                 &logCountAfterRetry, &businessStage, &sentFrameCount](Router &router, Core::EventLoop &)
+        const HttpTestSupport::RouteRegistrar registrar = [&logCapture, &didBusinessObserveSendFailure, &didRetryReturnFalse, &isPeerClosedAfterFailure, &logCountAtFailure,
+                                                           &logCountAfterRetry, &businessStage, &sentFrameCount](Router &router, Core::EventLoop &)
         {
             router.any(std::string(kHandshakePath),
-                       [&logCapture, &didBusinessObserveSendFailure, &didRetryReturnFalse, &isPeerClosedAfterFailure, &logCountAtFailure,
-                        &logCountAfterRetry, &businessStage, &sentFrameCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.upgradeToWebSocket(
-                        [&logCapture, &didBusinessObserveSendFailure, &didRetryReturnFalse, &isPeerClosedAfterFailure, &logCountAtFailure,
-                         &logCountAfterRetry, &businessStage, &sentFrameCount](WebSocketPeer &peer) -> Core::Task<>
-                {
-                    // 一直写到对端不再可用为止：对端停读让发送缓冲填满，业务因此停在等可写上，
-                    // RST 到达时正是这次挂起的写把失败交回来
-                    const std::string payload(64 * 1024, 'w');
-                    for (int round = 0; round < 64; ++round)
-                    {
-                        if (!co_await peer.sendText(payload))
-                        {
-                            // 失败那一刻：同一次失败只应留下一条日志（异常一条 + 非正值一条就该是 2）
-                            logCountAtFailure.store(static_cast<int>(logCapture.countContaining(kFrameWriteFailureFragment)),
-                                                    std::memory_order_release);
-                            isPeerClosedAfterFailure.store(!peer.isOpen(), std::memory_order_release);
-                            didBusinessObserveSendFailure.store(true, std::memory_order_release);
-                            businessStage.store(BusinessStage::FailureObserved, std::memory_order_release);
+                       [&logCapture, &didBusinessObserveSendFailure, &didRetryReturnFalse, &isPeerClosedAfterFailure, &logCountAtFailure, &logCountAfterRetry, &businessStage,
+                        &sentFrameCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.upgradeToWebSocket(
+                                   [&logCapture, &didBusinessObserveSendFailure, &didRetryReturnFalse, &isPeerClosedAfterFailure, &logCountAtFailure, &logCountAfterRetry,
+                                    &businessStage, &sentFrameCount](WebSocketPeer &peer) -> Core::Task<>
+                                   {
+                                       // 一直写到对端不再可用为止：对端停读让发送缓冲填满，业务因此停在等可写上，
+                                       // RST 到达时正是这次挂起的写把失败交回来
+                                       const std::string payload(64 * 1024, 'w');
+                                       for (int round = 0; round < 64; ++round)
+                                       {
+                                           if (!co_await peer.sendText(payload))
+                                           {
+                                               // 失败那一刻：同一次失败只应留下一条日志（异常一条 + 非正值一条就该是 2）
+                                               logCountAtFailure.store(static_cast<int>(logCapture.countContaining(kFrameWriteFailureFragment)), std::memory_order_release);
+                                               isPeerClosedAfterFailure.store(!peer.isOpen(), std::memory_order_release);
+                                               didBusinessObserveSendFailure.store(true, std::memory_order_release);
+                                               businessStage.store(BusinessStage::FailureObserved, std::memory_order_release);
 
-                            // 本侧已收口：数据帧与第二条 Close 都短路返回 false，且都不新增日志
-                            const bool isRetryFrameSent = co_await peer.sendText("retry-after-failure");
-                            const bool isSecondCloseSent = co_await peer.close();
-                            logCountAfterRetry.store(static_cast<int>(logCapture.countContaining(kFrameWriteFailureFragment)),
-                                                     std::memory_order_release);
-                            didRetryReturnFalse.store(!isRetryFrameSent && !isSecondCloseSent, std::memory_order_release);
-                            businessStage.store(BusinessStage::RetryFinished, std::memory_order_release);
-                            co_return;
-                        }
-                        sentFrameCount.fetch_add(1, std::memory_order_relaxed);
-                    }
-                    co_return;
-                });
-                co_return;
-            });
+                                               // 本侧已收口：数据帧与第二条 Close 都短路返回 false，且都不新增日志
+                                               const bool isRetryFrameSent  = co_await peer.sendText("retry-after-failure");
+                                               const bool isSecondCloseSent = co_await peer.close();
+                                               logCountAfterRetry.store(static_cast<int>(logCapture.countContaining(kFrameWriteFailureFragment)), std::memory_order_release);
+                                               didRetryReturnFalse.store(!isRetryFrameSent && !isSecondCloseSent, std::memory_order_release);
+                                               businessStage.store(BusinessStage::RetryFinished, std::memory_order_release);
+                                               co_return;
+                                           }
+                                           sentFrameCount.fetch_add(1, std::memory_order_relaxed);
+                                       }
+                                       co_return;
+                                   });
+                           co_return;
+                       });
         };
 
-        const std::unique_ptr<RunningHttpServerFixture> server = std::make_unique<RunningHttpServerFixture>(
-                HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
+        const std::unique_ptr<RunningHttpServerFixture> server =
+                std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
         LoopbackClient client(server->listeningPort(), HttpTestSupport::kSlowReaderReceiveBufferBytes);
@@ -933,23 +914,18 @@ namespace AsynGyanis::Net
 
         if (!isResetFailureDelivered)
         {
-            std::cout << "[  说明  ] 本例本次运行命中了「收口丢弃挂起协程」的已知缺陷：业务停在阶段 "
-                      << static_cast<int>(businessStage.load(std::memory_order_acquire)) << "，已发出 "
-                      << sentFrameCount.load(std::memory_order_relaxed) << " 帧\n";
+            std::cout << "[  说明  ] 本例本次运行命中了「收口丢弃挂起协程」的已知缺陷：业务停在阶段 " << static_cast<int>(businessStage.load(std::memory_order_acquire))
+                      << "，已发出 " << sentFrameCount.load(std::memory_order_relaxed) << " 帧\n";
             ASSERT_TRUE(server->awaitConnectionsDrained(kResetWaitTimeout)) << "会话没有收口";
             EXPECT_FALSE(server->startThrew()) << "对端复位把服务器主协程带崩了";
             return;
         }
 
         ASSERT_TRUE(didBusinessObserveSendFailure.load(std::memory_order_acquire)) << "业务没有观察到 sendText 的 false";
-        EXPECT_TRUE(isPeerClosedAfterFailure.load(std::memory_order_acquire))
-                << "传输失败之后本侧应被标记为不可用（此后 send*() 一律短路）";
-        EXPECT_EQ(logCountAtFailure.load(std::memory_order_acquire), 1)
-                << "同一次传输失败只应记一条日志，实际条数见上：异常路径与非正返回值路径各记一条就会是 2";
-        EXPECT_TRUE(didRetryReturnFalse.load(std::memory_order_acquire))
-                << "本侧收口之后的数据帧与 Close 都应短路返回 false，而不是抛异常或宣称成功";
-        EXPECT_EQ(logCountAfterRetry.load(std::memory_order_acquire), logCountAtFailure.load(std::memory_order_acquire))
-                << "本侧收口之后的短路返回不得新增日志";
+        EXPECT_TRUE(isPeerClosedAfterFailure.load(std::memory_order_acquire)) << "传输失败之后本侧应被标记为不可用（此后 send*() 一律短路）";
+        EXPECT_EQ(logCountAtFailure.load(std::memory_order_acquire), 1) << "同一次传输失败只应记一条日志，实际条数见上：异常路径与非正返回值路径各记一条就会是 2";
+        EXPECT_TRUE(didRetryReturnFalse.load(std::memory_order_acquire)) << "本侧收口之后的数据帧与 Close 都应短路返回 false，而不是抛异常或宣称成功";
+        EXPECT_EQ(logCountAfterRetry.load(std::memory_order_acquire), logCountAtFailure.load(std::memory_order_acquire)) << "本侧收口之后的短路返回不得新增日志";
         // 会话收尾不会再补 Close（本侧已收口），因此整条断开的连接只留一条日志
         EXPECT_EQ(logCapture.countContaining(kFrameWriteFailureFragment), 1u) << "会话收尾阶段把同一件事又记了一遍";
         EXPECT_EQ(logCapture.countContaining("请停止继续发送"), 1u) << "唯一那条日志必须是可操作的中文文案";
@@ -970,12 +946,13 @@ namespace AsynGyanis::Net
     {
         const HttpTestSupport::LogCapture logCapture;
 
-        int sentFrameCount = 0;
-        WebSocketPeer peer([&sentFrameCount](const std::string_view) -> Core::Task<bool>
-        {
-            ++sentFrameCount;
-            co_return true;
-        });
+        int           sentFrameCount = 0;
+        WebSocketPeer peer(
+                [&sentFrameCount](const std::string_view) -> Core::Task<bool>
+                {
+                    ++sentFrameCount;
+                    co_return true;
+                });
 
         // 首次 close() 正常写出一条 Close 帧：本侧随即收口。这是预期路径，不是失败，不该记日志
         Core::Task<bool> closeTask = peer.close();
@@ -996,8 +973,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(secondCloseTask.await_resume());
 
         EXPECT_EQ(sentFrameCount, 1) << "本侧收口之后不得再写出任何帧";
-        EXPECT_EQ(logCapture.countContaining(kFrameWriteFailureFragment), 0u)
-                << "本侧已收口的短路返回不记日志：否则调用方会把同一件事看成两次失败";
+        EXPECT_EQ(logCapture.countContaining(kFrameWriteFailureFragment), 0u) << "本侧已收口的短路返回不记日志：否则调用方会把同一件事看成两次失败";
     }
 
     /**
@@ -1007,15 +983,16 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketPeerContract, ClearsWriteInFlightFlagWhenTheSenderThrows)
     {
-        WebSocketPeer peer([](const std::string_view frameBytes) -> Core::Task<bool>
-        {
-            // 用运行时判据抛：直接 throw 后面还留着 co_return，会被 /W4 判成不可达代码（/WX 下是错误）
-            if (!frameBytes.empty())
-            {
-                throw std::runtime_error("假发送回调：写出时抛异常");
-            }
-            co_return true;
-        });
+        WebSocketPeer peer(
+                [](const std::string_view frameBytes) -> Core::Task<bool>
+                {
+                    // 用运行时判据抛：直接 throw 后面还留着 co_return，会被 /W4 判成不可达代码（/WX 下是错误）
+                    if (!frameBytes.empty())
+                    {
+                        throw std::runtime_error("假发送回调：写出时抛异常");
+                    }
+                    co_return true;
+                });
 
         Core::Task<bool> textTask = peer.sendText("boom");
         textTask.handle().resume();
@@ -1030,12 +1007,13 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketPeerContract, RejectsUnsendableCloseCodeAndOverlongReason)
     {
-        int sentFrameCount = 0;
-        WebSocketPeer peer([&sentFrameCount](const std::string_view) -> Core::Task<bool>
-        {
-            ++sentFrameCount;
-            co_return true;
-        });
+        int           sentFrameCount = 0;
+        WebSocketPeer peer(
+                [&sentFrameCount](const std::string_view) -> Core::Task<bool>
+                {
+                    ++sentFrameCount;
+                    co_return true;
+                });
 
         // 1005/1006/1015 是保留哨兵值，1016-2999 段未经注册（RFC 6455 §7.4.1/§7.4.2）
         constexpr std::uint16_t kUnsendableCloseCodes[]{1005, 1006, 1015, 1016, 2999};
@@ -1043,15 +1021,14 @@ namespace AsynGyanis::Net
         {
             Core::Task<bool> illegalTask = peer.close(illegalCode);
             illegalTask.handle().resume();
-            EXPECT_THROW(illegalTask.await_resume(), Base::InvalidArgumentException)
-                    << "状态码 " << illegalCode << " 不允许出现在线上";
+            EXPECT_THROW(illegalTask.await_resume(), Base::InvalidArgumentException) << "状态码 " << illegalCode << " 不允许出现在线上";
             EXPECT_TRUE(peer.isOpen()) << "被拒的调用不得改变连接状态";
         }
 
         // 控制帧整体 125 字节，扣掉 2 字节状态码：原因上限 123 字节。
         // close() 是惰性协程，入参要到任务被 resume 之后才读，因此原因必须活过 resume（不能给临时对象）
         const std::string overlongReason(124, 'x');
-        Core::Task<bool> overlongTask = peer.close(kWebSocketNormalClosureCode, overlongReason);
+        Core::Task<bool>  overlongTask = peer.close(kWebSocketNormalClosureCode, overlongReason);
         overlongTask.handle().resume();
         EXPECT_THROW(overlongTask.await_resume(), Base::InvalidArgumentException);
 
@@ -1059,7 +1036,7 @@ namespace AsynGyanis::Net
 
         // 边界内：3000-4999 段可用，123 字节原因可发，两条都正常落到线上
         const std::string maximumReason(123, 'x');
-        Core::Task<bool> maxReasonTask = peer.close(3000, maximumReason);
+        Core::Task<bool>  maxReasonTask = peer.close(3000, maximumReason);
         maxReasonTask.handle().resume();
         EXPECT_TRUE(maxReasonTask.await_resume());
         EXPECT_EQ(sentFrameCount, 1);
@@ -1072,11 +1049,12 @@ namespace AsynGyanis::Net
     TEST(WebSocketPeerContract, AnswersProtocolErrorToPeerCloseWithIllegalCode)
     {
         std::vector<std::string> writtenFrames;
-        WebSocketPeer peer([&writtenFrames](const std::string_view frameBytes) -> Core::Task<bool>
-        {
-            writtenFrames.emplace_back(frameBytes);
-            co_return true;
-        });
+        WebSocketPeer            peer(
+                [&writtenFrames](const std::string_view frameBytes) -> Core::Task<bool>
+                {
+                    writtenFrames.emplace_back(frameBytes);
+                    co_return true;
+                });
 
         // 1005 = 0x03ED：这个码本身就不允许出现在线上，对端拿它收口属协议错误
         const std::string closeFrame = maskedClientFrame(0x8, std::string("\x03\xED", 2));
@@ -1091,8 +1069,7 @@ namespace AsynGyanis::Net
         ASSERT_GE(reply.size(), 4u) << "回帧至少要有帧头与 2 字节状态码";
         EXPECT_EQ(static_cast<unsigned char>(reply[0]), 0x88U) << "回帧必须是 Close（FIN + 0x8）";
         EXPECT_EQ(static_cast<unsigned char>(reply[1]), 2U) << "带状态码的 Close 负载恒为 2 字节";
-        const auto replyCode = static_cast<std::uint16_t>(static_cast<std::uint16_t>(static_cast<unsigned char>(reply[2])) << 8 |
-                                                         static_cast<unsigned char>(reply[3]));
+        const auto replyCode = static_cast<std::uint16_t>(static_cast<std::uint16_t>(static_cast<unsigned char>(reply[2])) << 8 | static_cast<unsigned char>(reply[3]));
         EXPECT_EQ(replyCode, kWebSocketProtocolErrorCode) << "非法状态码必须按 1002 回敬，不得原样送回 1005";
     }
 
@@ -1105,7 +1082,7 @@ namespace AsynGyanis::Net
     TEST(WebSocketPeerContract, ClosesWithPolicyViolationWhenDeliveryQueueExceedsBound)
     {
         constexpr std::size_t kMessageBytes = 1024 * 1024;
-        const std::string frame = maskedBinaryFrameWith64BitLength(kMessageBytes);
+        const std::string     frame         = maskedBinaryFrameWith64BitLength(kMessageBytes);
 
         WebSocketPeer peer([](const std::string_view) -> Core::Task<bool> { co_return true; });
 
@@ -1114,15 +1091,12 @@ namespace AsynGyanis::Net
         const std::size_t fullFrames = kWebSocketMaximumQueuedPayloadByteCount / kMessageBytes;
         for (std::size_t index = 0; index + 1 < fullFrames; ++index)
         {
-            ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted)
-                    << "第 " << index + 1 << " 条消息仍在积压上界之内";
+            ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted) << "第 " << index + 1 << " 条消息仍在积压上界之内";
         }
 
-        EXPECT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::DecodeError)
-                << "越过积压上界必须当场判错，不得静默丢帧";
+        EXPECT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::DecodeError) << "越过积压上界必须当场判错，不得静默丢帧";
         EXPECT_EQ(peer.decodeErrorCloseCode(), kWebSocketPolicyViolationCode);
-        EXPECT_NE(peer.decodeErrorText().find("积压"), std::string::npos)
-                << "原因要指出是积压超限，实得：" << peer.decodeErrorText();
+        EXPECT_NE(peer.decodeErrorText().find("积压"), std::string::npos) << "原因要指出是积压超限，实得：" << peer.decodeErrorText();
     }
 
 
@@ -1135,17 +1109,15 @@ namespace AsynGyanis::Net
     {
         WebSocketPeer peer([](const std::string_view) -> Core::Task<bool> { co_return true; });
 
-        const std::string frame = maskedClientFrame(0x2, "");
+        const std::string frame            = maskedClientFrame(0x2, "");
         const std::size_t framesUntilBound = kWebSocketMaximumQueuedPayloadByteCount / kWebSocketFrameOverheadByteCount;
 
         // 上界是「超过才拒」：恰好填满的那一帧仍然放行，因此这里要喂满 framesUntilBound 帧
         for (std::size_t index = 0; index < framesUntilBound; ++index)
         {
-            ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted)
-                    << "第 " << index + 1 << " 个零负载帧仍在积压上界之内";
+            ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted) << "第 " << index + 1 << " 个零负载帧仍在积压上界之内";
         }
-        EXPECT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::DecodeError)
-                << "零负载帧没有计入积压上界：对端可用它把待交付队列撑到无界";
+        EXPECT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::DecodeError) << "零负载帧没有计入积压上界：对端可用它把待交付队列撑到无界";
         EXPECT_EQ(peer.decodeErrorCloseCode(), kWebSocketPolicyViolationCode);
     }
 
@@ -1161,7 +1133,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, ReportsUpgradeMessagesAndClosuresInServerStats)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
@@ -1177,13 +1149,11 @@ namespace AsynGyanis::Net
         // 升级请求与第一条文本帧挤在同一段里发出：升级与首条消息的计数都要落账
         std::string accumulated;
         ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x1, "one"), kWaitTimeout));
-        ASSERT_TRUE(readUntilLength(client, accumulated, handshakeLength + firstEchoLength, kWaitTimeout))
-                << "握手或第一条回显没有到达，累计 " << accumulated.size() << " 字节";
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshakeLength + firstEchoLength, kWaitTimeout)) << "握手或第一条回显没有到达，累计 " << accumulated.size() << " 字节";
 
         // 第二条文本消息：消息计数应随之到 2，且两条都已交付业务
         ASSERT_TRUE(client.sendText(maskedClientFrame(0x1, "two"), kWaitTimeout));
-        ASSERT_TRUE(readUntilLength(client, accumulated, handshakeLength + firstEchoLength + serverFrameBytes(0x1, "two").size(),
-                                    kWaitTimeout))
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshakeLength + firstEchoLength + serverFrameBytes(0x1, "two").size(), kWaitTimeout))
                 << "第二条回显没有到达，累计 " << accumulated.size() << " 字节";
         ASSERT_EQ(record->count(), 2U) << "两条文本消息都应交付业务";
 
@@ -1192,12 +1162,8 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "协议错误后服务端应断开连接";
 
         // 收口计数在 101 与回显之后才落账，按条件轮询而不是立刻断言
-        ASSERT_TRUE(HttpTestSupport::waitForCondition(
-                [&server]
-                {
-                    return server->server().stats().webSocketProtocolErrorCloseCount >= 1;
-                },
-                kWaitTimeout)) << "协议错误收口未在时限内计数";
+        ASSERT_TRUE(HttpTestSupport::waitForCondition([&server] { return server->server().stats().webSocketProtocolErrorCloseCount >= 1; }, kWaitTimeout))
+                << "协议错误收口未在时限内计数";
 
         const HttpServerStats stats = server->server().stats();
         EXPECT_EQ(stats.webSocketUpgradeCount, 1u) << "101 已发出却不算升级成功";
@@ -1214,36 +1180,24 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(httpClient.sendText(HttpTestSupport::helloRequestText(), kWaitTimeout));
         std::string httpResponseText;
         ASSERT_TRUE(httpClient.waitForText(httpResponseText, "served-hello", kWaitTimeout)) << "普通请求未被正常服务";
-        ASSERT_TRUE(HttpTestSupport::waitForCondition(
-                [&server]
-                {
-                    return server->server().stats().totalRequestCount >= 2;
-                },
-                kWaitTimeout)) << "普通请求未计入请求条数";
+        ASSERT_TRUE(HttpTestSupport::waitForCondition([&server] { return server->server().stats().totalRequestCount >= 2; }, kWaitTimeout)) << "普通请求未计入请求条数";
 
         const HttpServerStats statsAfterHttpRequest = server->server().stats();
         EXPECT_EQ(statsAfterHttpRequest.totalRequestCount, 2u) << "普通请求没有计入请求条数";
-        EXPECT_EQ(statsAfterHttpRequest.webSocketUpgradeCount, stats.webSocketUpgradeCount)
-                << "普通 HTTP 请求被记成了 WebSocket 升级";
-        EXPECT_EQ(statsAfterHttpRequest.webSocketMessageCount, stats.webSocketMessageCount)
-                << "普通 HTTP 请求被记成了 WebSocket 消息";
-        EXPECT_EQ(statsAfterHttpRequest.webSocketProtocolErrorCloseCount, stats.webSocketProtocolErrorCloseCount)
-                << "普通 HTTP 请求被记成了 WebSocket 协议错误收口";
-        EXPECT_EQ(statsAfterHttpRequest.webSocketPeerCloseCount, stats.webSocketPeerCloseCount)
-                << "普通 HTTP 请求被记成了对端发起关闭";
-        EXPECT_EQ(statsAfterHttpRequest.webSocketServerCloseCount, stats.webSocketServerCloseCount)
-                << "普通 HTTP 请求被记成了本侧发起关闭";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketUpgradeCount, stats.webSocketUpgradeCount) << "普通 HTTP 请求被记成了 WebSocket 升级";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketMessageCount, stats.webSocketMessageCount) << "普通 HTTP 请求被记成了 WebSocket 消息";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketProtocolErrorCloseCount, stats.webSocketProtocolErrorCloseCount) << "普通 HTTP 请求被记成了 WebSocket 协议错误收口";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketPeerCloseCount, stats.webSocketPeerCloseCount) << "普通 HTTP 请求被记成了对端发起关闭";
+        EXPECT_EQ(statsAfterHttpRequest.webSocketServerCloseCount, stats.webSocketServerCloseCount) << "普通 HTTP 请求被记成了本侧发起关闭";
     }
     /// 客户端提供 permessage-deflate 的请求头（写法照常见客户端的提供方式，带一个本端会忽略的参数）
-    constexpr std::string_view kPerMessageDeflateOfferHeader =
-            "sec-websocket-extensions: permessage-deflate; client_max_window_bits\r\n";
+    constexpr std::string_view kPerMessageDeflateOfferHeader = "sec-websocket-extensions: permessage-deflate; client_max_window_bits\r\n";
 
     /// 由 Python zlib 独立算出的 "hello" 压缩负载（裸 deflate + Z_SYNC_FLUSH，去掉尾部 00 00 FF FF）
     constexpr std::string_view kCompressedHelloPayload = "\xCA\x48\xCD\xC9\xC9\x07\x00";
 
     /// 服务端在接受协商后必须回的扩展取值（本端选定的两条 no_context_takeover）
-    constexpr std::string_view kPerMessageDeflateResponseLine =
-            "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n";
+    constexpr std::string_view kPerMessageDeflateResponseLine = "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n";
 
     /**
      * @brief 钉住入站解压链路：对端发来独立算出的压缩 "hello"，服务端解回原文交付，回帧则按收益决定压不压
@@ -1253,7 +1207,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, DecompressesPeerMessagesAndSendsShortEchoesUncompressed)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
@@ -1271,10 +1225,9 @@ namespace AsynGyanis::Net
         std::string expectedHandshake = expectedHandshakeResponseText();
         expectedHandshake.insert(expectedHandshake.size() - 2, std::string(kPerMessageDeflateResponseLine));
 
-        std::string accumulated;
+        std::string       accumulated;
         const std::size_t frameOffset = expectedHandshake.size();
-        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U, kWaitTimeout))
-                << "101 之后没有收到回帧头，只收到 " << accumulated.size() << " 字节";
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U, kWaitTimeout)) << "101 之后没有收到回帧头，只收到 " << accumulated.size() << " 字节";
         EXPECT_EQ(accumulated.substr(0, frameOffset), expectedHandshake) << "101 与期望逐字节不符";
 
         // 业务必须收到解压后的原文：压缩负载由 Python zlib 独立算出，解错就说明解压链路是坏的
@@ -1290,8 +1243,7 @@ namespace AsynGyanis::Net
 
         // 回帧长度就写在第二个字节里（用例负载很短，必然落在 7 位档）：等到整帧到齐再断言
         const auto expectedPayloadLength = static_cast<std::size_t>(static_cast<std::uint8_t>(accumulated[frameOffset + 1U]));
-        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U + expectedPayloadLength, kWaitTimeout))
-                << "回帧正文没有到齐：只收到 " << accumulated.size() << " 字节";
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U + expectedPayloadLength, kWaitTimeout)) << "回帧正文没有到齐：只收到 " << accumulated.size() << " 字节";
         ASSERT_EQ(accumulated.size(), frameOffset + 2U + expectedPayloadLength) << "除 101 与一条回帧外不应有别的字节";
         const std::string_view frameBytes(accumulated.data() + frameOffset, accumulated.size() - frameOffset);
 
@@ -1317,7 +1269,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, CompressesLongEchoWhenDeflationActuallyShortensIt)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
@@ -1326,22 +1278,20 @@ namespace AsynGyanis::Net
 
         // 1024 个同一字符在 level 6 下压到几十字节，因此回帧长度必然落在 7 位档（帧头 2 字节）
         const std::string longPayload(1024U, 'a');
-        LoopbackClient client(server->listeningPort());
+        LoopbackClient    client(server->listeningPort());
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendText(request + maskedClientFrame(0x1, longPayload), kWaitTimeout));
 
         std::string expectedHandshake = expectedHandshakeResponseText();
         expectedHandshake.insert(expectedHandshake.size() - 2, std::string(kPerMessageDeflateResponseLine));
 
-        std::string accumulated;
+        std::string       accumulated;
         const std::size_t frameOffset = expectedHandshake.size();
-        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U, kWaitTimeout))
-                << "101 之后没有收到回帧头，只收到 " << accumulated.size() << " 字节";
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U, kWaitTimeout)) << "101 之后没有收到回帧头，只收到 " << accumulated.size() << " 字节";
         EXPECT_EQ(accumulated.substr(0, frameOffset), expectedHandshake) << "101 与期望逐字节不符";
 
         const auto expectedPayloadLength = static_cast<std::size_t>(static_cast<std::uint8_t>(accumulated[frameOffset + 1U]));
-        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U + expectedPayloadLength, kWaitTimeout))
-                << "回帧正文没有到齐：只收到 " << accumulated.size() << " 字节";
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 2U + expectedPayloadLength, kWaitTimeout)) << "回帧正文没有到齐：只收到 " << accumulated.size() << " 字节";
         ASSERT_EQ(accumulated.size(), frameOffset + 2U + expectedPayloadLength) << "除 101 与一条回帧外不该有别的字节";
 
         const auto firstByte = static_cast<std::uint8_t>(accumulated[frameOffset]);
@@ -1349,10 +1299,8 @@ namespace AsynGyanis::Net
         EXPECT_LT(expectedPayloadLength, longPayload.size()) << "线上长度不低于原文，等于没压";
 
         const std::string_view wirePayload(accumulated.data() + frameOffset + 2U, expectedPayloadLength);
-        EXPECT_FALSE(wirePayload.ends_with(std::string("\x00\x00\xFF\xFF", 4)))
-                << "四字节空块尾不该出现在线上负载里（RFC 7692 §7.2.1）";
-        const std::optional<std::string> inflated =
-                inflateWebSocketMessage(wirePayload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
+        EXPECT_FALSE(wirePayload.ends_with(std::string("\x00\x00\xFF\xFF", 4))) << "四字节空块尾不该出现在线上负载里（RFC 7692 §7.2.1）";
+        const std::optional<std::string> inflated = inflateWebSocketMessage(wirePayload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
         ASSERT_TRUE(inflated.has_value()) << "服务端的回帧解不开";
         EXPECT_EQ(*inflated, longPayload);
 
@@ -1365,7 +1313,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketSession, KeepsFramesPlainWhenClientDoesNotOfferDeflate)
     {
-        const auto record = std::make_shared<MessageRecord>();
+        const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
@@ -1373,9 +1321,9 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x1, "hello"), kWaitTimeout));
 
-        const std::string handshake = expectedHandshakeResponseText();
+        const std::string handshake    = expectedHandshakeResponseText();
         const std::string expectedEcho = serverFrameBytes(0x1, "hello");
-        std::string accumulated;
+        std::string       accumulated;
         ASSERT_TRUE(readUntilLength(client, accumulated, handshake.size() + expectedEcho.size(), kWaitTimeout));
         EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake) << "未提供扩展时 101 不得多出扩展头";
         EXPECT_EQ(accumulated.substr(handshake.size()), expectedEcho) << "未协商就不该压缩回帧";
@@ -1404,24 +1352,26 @@ namespace AsynGyanis::Net
 
         const HttpTestSupport::RouteRegistrar registrar = [&hub](Router &router, Core::EventLoop &)
         {
-            router.any(std::string(kHandshakePath), [&hub](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.upgradeToWebSocket([&hub](WebSocketPeer &peer) -> Core::Task<>
-                {
-                    const auto subscription = hub.subscribe("lobby", peer);
-                    while (const std::optional<WebSocketMessage> message = co_await peer.receive())
-                    {
-                        // 扇给全员，发起者自己也在名单里：这是集线器的语义，不是漏掉了排除自己
-                        co_await hub.publish("lobby", message->payload);
-                    }
-                    co_return;
-                });
-                co_return;
-            });
+            router.any(std::string(kHandshakePath),
+                       [&hub](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.upgradeToWebSocket(
+                                   [&hub](WebSocketPeer &peer) -> Core::Task<>
+                                   {
+                                       const auto subscription = hub.subscribe("lobby", peer);
+                                       while (const std::optional<WebSocketMessage> message = co_await peer.receive())
+                                       {
+                                           // 扇给全员，发起者自己也在名单里：这是集线器的语义，不是漏掉了排除自己
+                                           co_await hub.publish("lobby", message->payload);
+                                       }
+                                       co_return;
+                                   });
+                           co_return;
+                       });
         };
 
-        const std::unique_ptr<RunningHttpServerFixture> server = std::make_unique<RunningHttpServerFixture>(
-                HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
+        const std::unique_ptr<RunningHttpServerFixture> server =
+                std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
         ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
 
         constexpr std::string_view kBroadcastText = "broadcast hello";
@@ -1445,12 +1395,10 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(speaker.sendText(maskedClientFrame(0x1, kBroadcastText), kWaitTimeout));
 
-        ASSERT_TRUE(readUntilLength(listener, listenerBytes, handshake.size() + expectedFrame.size(), kWaitTimeout))
-                << "另一个成员没收到扇出的那条";
+        ASSERT_TRUE(readUntilLength(listener, listenerBytes, handshake.size() + expectedFrame.size(), kWaitTimeout)) << "另一个成员没收到扇出的那条";
         EXPECT_EQ(listenerBytes.substr(handshake.size()), expectedFrame);
 
-        ASSERT_TRUE(readUntilLength(speaker, speakerBytes, handshake.size() + expectedFrame.size(), kWaitTimeout))
-                << "发起者自己也是成员，不该被排除在扇出之外";
+        ASSERT_TRUE(readUntilLength(speaker, speakerBytes, handshake.size() + expectedFrame.size(), kWaitTimeout)) << "发起者自己也是成员，不该被排除在扇出之外";
         EXPECT_EQ(speakerBytes.substr(handshake.size()), expectedFrame);
 
         EXPECT_EQ(hub.memberCount("lobby"), 2U);

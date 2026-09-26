@@ -40,8 +40,7 @@ namespace AsynGyanis::Net
      * @param buffer 恰好 29 字节的输出缓冲
      * @return 指向 buffer 的定长视图，生命周期由调用方的缓冲决定
      */
-    [[nodiscard]] std::string_view formatHttpDate(std::chrono::system_clock::time_point time,
-                                                  std::span<char, kHttpDateTextLength> buffer) noexcept;
+    [[nodiscard]] std::string_view formatHttpDate(std::chrono::system_clock::time_point time, std::span<char, kHttpDateTextLength> buffer) noexcept;
 
     /**
      * @brief 取「此刻」的 HTTP 日期文本，按整秒缓存

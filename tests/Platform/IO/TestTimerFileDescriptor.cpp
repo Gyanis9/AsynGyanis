@@ -95,8 +95,7 @@ namespace AsynGyanis::Platform
         for (int roundIndex = 0; roundIndex < 3; ++roundIndex)
         {
             ASSERT_TRUE(timer.arm(std::chrono::milliseconds(10))) << "第 " << roundIndex << " 轮武装失败";
-            ASSERT_TRUE(TestSupport::waitForReadable(timer.fileDescriptor(), 1000))
-                    << "第 " << roundIndex << " 轮定时器未到期";
+            ASSERT_TRUE(TestSupport::waitForReadable(timer.fileDescriptor(), 1000)) << "第 " << roundIndex << " 轮定时器未到期";
             timer.drain();
         }
     }

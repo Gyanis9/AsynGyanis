@@ -24,8 +24,7 @@ namespace AsynGyanis::Core
     namespace
     {
         /// 仓库内预生成的自签测试证书（同时充当 CA 文件的角色：里面就是那张签发证书本身）
-        const std::filesystem::path kTestCertificatePath =
-                std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
+        const std::filesystem::path kTestCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
 
         /// 服务端不写策略时使用的那份内置套件列表（与 TlsContext 里的加固档同一形态）
         constexpr const char *kBuiltInCipherList = "HIGH:!aNULL:!eNULL:!MD5:!RC4:!3DES:!DES:!EXPORT:!PSK:!SRP";
@@ -38,8 +37,7 @@ namespace AsynGyanis::Core
         class RawContext
         {
         public:
-            explicit RawContext(const bool isServer = true) :
-                m_context(SSL_CTX_new(isServer ? TLS_server_method() : TLS_client_method()))
+            explicit RawContext(const bool isServer = true) : m_context(SSL_CTX_new(isServer ? TLS_server_method() : TLS_client_method()))
             {
             }
 
@@ -51,7 +49,7 @@ namespace AsynGyanis::Core
                 }
             }
 
-            RawContext(const RawContext &) = delete;
+            RawContext(const RawContext &)            = delete;
             RawContext &operator=(const RawContext &) = delete;
 
             [[nodiscard]] SSL_CTX *get() const noexcept
@@ -101,8 +99,7 @@ namespace AsynGyanis::Core
         EXPECT_EQ(SSL_CTX_get_min_proto_version(serverContext.nativeHandle()), TLS1_2_VERSION);
 
         const TlsContext clientContext(TlsPolicy{}, TlsContext::Role::Client);
-        EXPECT_EQ(SSL_CTX_get_min_proto_version(clientContext.nativeHandle()), 0)
-                << "客户端被强加服务端的下限，等于把本可以连上的对端拒掉";
+        EXPECT_EQ(SSL_CTX_get_min_proto_version(clientContext.nativeHandle()), 0) << "客户端被强加服务端的下限，等于把本可以连上的对端拒掉";
         // 但加固照做：等级 2 与「不协商压缩」两侧同档
         EXPECT_EQ(SSL_CTX_get_security_level(clientContext.nativeHandle()), 2);
         EXPECT_NE(SSL_CTX_get_options(clientContext.nativeHandle()) & SSL_OP_NO_COMPRESSION, 0UL);
@@ -112,7 +109,7 @@ namespace AsynGyanis::Core
     TEST(TlsPolicy, HonoursTheVersionRangeAndRejectsAReversedOne)
     {
         const RawContext context;
-        TlsPolicy policy;
+        TlsPolicy        policy;
         policy.minimumProtocolVersion = TlsPolicy::ProtocolVersion::Tls1_3;
         policy.maximumProtocolVersion = TlsPolicy::ProtocolVersion::Tls1_3;
         applyTlsPolicy(context.get(), policy, kBuiltInCipherList);
@@ -126,8 +123,7 @@ namespace AsynGyanis::Core
         {
             applyTlsPolicy(reversedContext.get(), policy, kBuiltInCipherList);
             FAIL() << "最低 1.3 高于最高 1.2 的策略不该被默默接受";
-        }
-        catch (const CoreException &error)
+        } catch (const CoreException &error)
         {
             // OpenSSL 只会回一句 "operation not supported"，看不出是自己把区间填倒了
             const std::string message = error.what();
@@ -146,19 +142,19 @@ namespace AsynGyanis::Core
     {
         {
             const RawContext context;
-            TlsPolicy policy;
+            TlsPolicy        policy;
             policy.cipherList = "NO_SUCH_CIPHER_SUITE_AT_ALL";
             EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
         }
         {
             const RawContext context;
-            TlsPolicy policy;
+            TlsPolicy        policy;
             policy.tls13CipherSuites = "TLS_13_NOT_A_THING";
             EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
         }
         {
             const RawContext context;
-            TlsPolicy policy;
+            TlsPolicy        policy;
             // 逗号不是分隔符：OpenSSL 的曲线列表用冒号，写错的人需要被告知原文
             policy.supportedGroups = "X25519,secp384r1";
             EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
@@ -166,7 +162,7 @@ namespace AsynGyanis::Core
 
         // 合法写法照旧收：X25519 在两套 OpenSSL 构建里都在
         const RawContext context;
-        TlsPolicy policy;
+        TlsPolicy        policy;
         policy.supportedGroups = "X25519:secp384r1";
         EXPECT_NO_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList));
     }
@@ -180,19 +176,19 @@ namespace AsynGyanis::Core
     {
         {
             const RawContext context;
-            TlsPolicy policy;
+            TlsPolicy        policy;
             policy.securityLevel = -1;
             EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
         }
         {
             const RawContext context;
-            TlsPolicy policy;
+            TlsPolicy        policy;
             policy.verifyDepth = 0;
             EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
         }
         // 显式给等级 1 与深度 2 都要生效（1 是「要放宽」时的合法写法，本层不替调用方决定不能放）
         const RawContext context;
-        TlsPolicy policy;
+        TlsPolicy        policy;
         policy.securityLevel = 1;
         policy.verifyDepth   = 2;
         ASSERT_NO_THROW(applyTlsPolicy(context.get(), policy, nullptr));
@@ -202,24 +198,22 @@ namespace AsynGyanis::Core
     /// 信任库：给得出的文件要真加载上，给不出的文件要抛且点名路径
     TEST(TlsPolicy, LoadsTheTrustStoreOrNamesTheFileItCouldNotRead)
     {
-        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
-                << "缺少用例夹具：" << kTestCertificatePath.string();
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少用例夹具：" << kTestCertificatePath.string();
 
         const RawContext context;
-        TlsPolicy policy;
+        TlsPolicy        policy;
         policy.certificateAuthorityFile = kTestCertificatePath.string();
         policy.verifyDepth              = 4;
         ASSERT_NO_THROW(applyTlsPolicy(context.get(), policy, nullptr));
 
         const RawContext brokenContext;
-        TlsPolicy brokenPolicy;
+        TlsPolicy        brokenPolicy;
         brokenPolicy.certificateAuthorityFile = (std::filesystem::path(TEST_FIXTURES_DIR) / "no_such_ca.pem").string();
         try
         {
             applyTlsPolicy(brokenContext.get(), brokenPolicy, nullptr);
             FAIL() << "加载不了的 CA 不该被接受";
-        }
-        catch (const CoreException &error)
+        } catch (const CoreException &error)
         {
             EXPECT_NE(std::string(error.what()).find("no_such_ca.pem"), std::string::npos) << error.what();
         }
@@ -233,7 +227,7 @@ namespace AsynGyanis::Core
     TEST(TlsPolicy, TogglesSessionTicketsBothWays)
     {
         const RawContext context;
-        TlsPolicy off;
+        TlsPolicy        off;
         off.areSessionTicketsEnabled = false;
         applyTlsPolicy(context.get(), off, nullptr);
         EXPECT_NE(SSL_CTX_get_options(context.get()) & SSL_OP_NO_TICKET, 0UL);
@@ -260,8 +254,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(untouchedCiphers, nullptr);
         ASSERT_NE(clientCiphers, nullptr);
         ASSERT_EQ(sk_SSL_CIPHER_num(untouchedCiphers), sk_SSL_CIPHER_num(clientCiphers));
-        EXPECT_STREQ(SSL_CIPHER_get_name(sk_SSL_CIPHER_value(untouchedCiphers, 0)),
-                     SSL_CIPHER_get_name(sk_SSL_CIPHER_value(clientCiphers, 0))) << "nullptr 默认却把套件列表改了";
+        EXPECT_STREQ(SSL_CIPHER_get_name(sk_SSL_CIPHER_value(untouchedCiphers, 0)), SSL_CIPHER_get_name(sk_SSL_CIPHER_value(clientCiphers, 0))) << "nullptr 默认却把套件列表改了";
     }
 
     /**
@@ -272,8 +265,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsPolicy, PolicyTrustStoreSatisfiesTheVerificationPrecondition)
     {
-        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
-                << "缺少用例夹具：" << kTestCertificatePath.string();
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少用例夹具：" << kTestCertificatePath.string();
 
         TlsPolicy policy;
         policy.certificateAuthorityFile = kTestCertificatePath.string();

@@ -57,8 +57,7 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kSourceConnectionIdLength = 18;
 
         /// 发送一条报文的出口：由服务端提供（内部就是 AsyncUdpSocket::asyncSendTo）
-        using DatagramSender = std::function<Core::Task<bool>(const Platform::SocketAddress &peerAddress, const std::uint8_t *data,
-                                                              std::size_t length)>;
+        using DatagramSender = std::function<Core::Task<bool>(const Platform::SocketAddress &peerAddress, const std::uint8_t *data, std::size_t length)>;
 
         /**
          * @brief 收到流数据时的回调
@@ -67,17 +66,16 @@ namespace AsynGyanis::Net
          * @param data 本段数据
          * @param isEndStream 对端在本段之后收尾
          */
-        using StreamDataHandler = std::function<void(QuicConnection &connection, std::int64_t streamId, std::span<const std::uint8_t> data,
-                                                     bool isEndStream)>;
+        using StreamDataHandler = std::function<void(QuicConnection &connection, std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream)>;
 
         /**
          * @brief 连接配置（服务端级共享的那几项）
          */
         struct Configuration
         {
-            SSL_CTX *tlsContext{nullptr};  ///< 已配好证书与 ALPN 的上下文，生命周期须覆盖本连接
-            DatagramSender sendDatagram;   ///< 报文出口
-            StreamDataHandler onStreamData; ///< 流数据回调（HTTP/3 层接在这里）
+            SSL_CTX          *tlsContext{nullptr}; ///< 已配好证书与 ALPN 的上下文，生命周期须覆盖本连接
+            DatagramSender    sendDatagram;        ///< 报文出口
+            StreamDataHandler onStreamData;        ///< 流数据回调（HTTP/3 层接在这里）
             /// 对端取消（RESET_STREAM / STOP_SENDING）了某条请求流时的通知：
             /// 上层的 HTTP/3 会话据此回收该流的请求与响应状态。只对**对端发起的双向流**触发
             /// （流号低两位为 0）——请求只跑在这类流上，控制流与 QPACK 流另有各自己的一套规矩
@@ -85,7 +83,7 @@ namespace AsynGyanis::Net
             /// 待发队列被编帧掏空一些时的通知：上层（HTTP/3）因队列到上界而留下的那段字节据此续交。
             /// 没有它，「对端只给窗口不发数据」的连接上生产者会一直挂在背压闸门上（丢唤醒）
             std::function<void(QuicConnection &connection)> onSendSpaceAvailable;
-            std::chrono::milliseconds idleTimeout{30000}; ///< 空闲超时，也是本端宣告的 max_idle_timeout
+            std::chrono::milliseconds                       idleTimeout{30000}; ///< 空闲超时，也是本端宣告的 max_idle_timeout
         };
 
         /**
@@ -97,10 +95,8 @@ namespace AsynGyanis::Net
          * @return std::unique_ptr<QuicConnection> 新连接；报文不可接受（非 Initial、版本不支持等）
          *         时返回 nullptr。首包本身不在这里交付，调用方随后照常调 `handleDatagram`
          */
-        [[nodiscard]] static std::unique_ptr<QuicConnection> accept(const Configuration &configuration,
-                                                                    const Platform::SocketAddress &localAddress,
-                                                                    const Platform::SocketAddress &peerAddress,
-                                                                    std::span<const std::uint8_t> clientInitial);
+        [[nodiscard]] static std::unique_ptr<QuicConnection> accept(const Configuration &configuration, const Platform::SocketAddress &localAddress,
+                                                                    const Platform::SocketAddress &peerAddress, std::span<const std::uint8_t> clientInitial);
 
         /**
          * @brief 作客户端起一条新连接
@@ -115,14 +111,12 @@ namespace AsynGyanis::Net
          * @return std::unique_ptr<QuicConnection> 起不来时返回空（配置不完整、随机数不可用、TLS 会话建不起来）；
          *         成功只表示状态机已就绪，**还没发出任何字节**——调用方随后调 `drive`/`flush` 才开始握手
          */
-        [[nodiscard]] static std::unique_ptr<QuicConnection> connect(const Configuration &configuration,
-                                                                     const Platform::SocketAddress &localAddress,
-                                                                     const Platform::SocketAddress &peerAddress,
-                                                                     const QuicClientTlsSettings &clientTlsSettings);
+        [[nodiscard]] static std::unique_ptr<QuicConnection> connect(const Configuration &configuration, const Platform::SocketAddress &localAddress,
+                                                                     const Platform::SocketAddress &peerAddress, const QuicClientTlsSettings &clientTlsSettings);
 
         ~QuicConnection();
 
-        QuicConnection(const QuicConnection &) = delete;
+        QuicConnection(const QuicConnection &)            = delete;
         QuicConnection &operator=(const QuicConnection &) = delete;
 
         /**
@@ -220,8 +214,7 @@ namespace AsynGyanis::Net
              * @brief 记账 +1
              * @param connection 被记账的连接，其寿命必须覆盖本守卫
              */
-            explicit ActivityGuard(QuicConnection &connection) noexcept :
-                m_connection(&connection)
+            explicit ActivityGuard(QuicConnection &connection) noexcept : m_connection(&connection)
             {
                 ++m_connection->m_activityCount;
             }
@@ -229,9 +222,12 @@ namespace AsynGyanis::Net
             /**
              * @brief 记账 -1
              */
-            ~ActivityGuard() { --m_connection->m_activityCount; }
+            ~ActivityGuard()
+            {
+                --m_connection->m_activityCount;
+            }
 
-            ActivityGuard(const ActivityGuard &) = delete;
+            ActivityGuard(const ActivityGuard &)            = delete;
             ActivityGuard &operator=(const ActivityGuard &) = delete;
 
         private:
@@ -321,17 +317,17 @@ namespace AsynGyanis::Net
          */
         void notifyPeerStreamClosed(std::int64_t streamId);
 
-        Configuration m_configuration;                            ///< 服务端共享的那几项
-        std::unique_ptr<QuicConnectionCore> m_core{};              ///< 协议状态机，本连接唯一一份
-        std::string m_sourceConnectionId;                          ///< 本端连接标识（路由键）
-        Platform::SocketAddress m_peerAddress{};                   ///< 对端地址
-        Platform::SocketAddress m_localAddress{};                  ///< 本端地址
-        std::chrono::steady_clock::time_point m_timeOrigin{};      ///< 时刻换算的基准，协议侧只看相对量
-        int m_activityCount{0};                                    ///< 正持有本连接的协程数，见 ActivityGuard
-        bool m_isClosed{false};                                    ///< 本地判定的收口标志（致命写失败这类路径）
-        bool m_isFlushing{false};                                  ///< 是否已有 flush 在写这条连接
-        bool m_hasFlushRequest{false};                             ///< flush 进行中又有人要求写：让在跑的那轮末再转一圈
-        bool m_needsFlush{false};                                  ///< 攒下了还没刷出去的字节
-        bool m_isHandshakeLogged{false};                           ///< 「握手完成」那条日志是否已记，见 logHandshakeCompletionOnce()
+        Configuration                         m_configuration;            ///< 服务端共享的那几项
+        std::unique_ptr<QuicConnectionCore>   m_core{};                   ///< 协议状态机，本连接唯一一份
+        std::string                           m_sourceConnectionId;       ///< 本端连接标识（路由键）
+        Platform::SocketAddress               m_peerAddress{};            ///< 对端地址
+        Platform::SocketAddress               m_localAddress{};           ///< 本端地址
+        std::chrono::steady_clock::time_point m_timeOrigin{};             ///< 时刻换算的基准，协议侧只看相对量
+        int                                   m_activityCount{0};         ///< 正持有本连接的协程数，见 ActivityGuard
+        bool                                  m_isClosed{false};          ///< 本地判定的收口标志（致命写失败这类路径）
+        bool                                  m_isFlushing{false};        ///< 是否已有 flush 在写这条连接
+        bool                                  m_hasFlushRequest{false};   ///< flush 进行中又有人要求写：让在跑的那轮末再转一圈
+        bool                                  m_needsFlush{false};        ///< 攒下了还没刷出去的字节
+        bool                                  m_isHandshakeLogged{false}; ///< 「握手完成」那条日志是否已记，见 logHandshakeCompletionOnce()
     };
 } // namespace AsynGyanis::Net

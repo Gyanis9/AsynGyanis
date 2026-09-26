@@ -28,14 +28,14 @@ namespace AsynGyanis::Base
     namespace
     {
         /// 固定文本：断言 timestamp 字段时按它比对
-        constexpr auto kFixedTimestamp  = "2026-09-13 20:00:00.123";
+        constexpr auto kFixedTimestamp = "2026-09-13 20:00:00.123";
         /// 事件携带的固定时刻：由上面那段本地挂钟折出，渲染回去即得同一文本，故断言与时区无关
         const TimestampMoment kFixedTimestampMoment = TestSupport::makeLocalMoment(2026, 9, 13, 20, 0, 0, 123);
-        constexpr auto kThreadId        = "tid-123456";
-        constexpr auto kLoggerName      = "json_formatter_logger";
-        constexpr auto kSourceFile      = "json_formatter_fixture.cpp";
-        constexpr auto kSourceFunction  = "fixtureFunction";
-        constexpr int  kSourceLine      = 4271;
+        constexpr auto        kThreadId             = "tid-123456";
+        constexpr auto        kLoggerName           = "json_formatter_logger";
+        constexpr auto        kSourceFile           = "json_formatter_fixture.cpp";
+        constexpr auto        kSourceFunction       = "fixtureFunction";
+        constexpr int         kSourceLine           = 4271;
 
         /// 源码位置固定写死：位置取自 SourceLocation::current() 会让断言随用例行号漂移
         constexpr SourceLocation kFixtureLocation{kSourceFile, kSourceLine, kSourceFunction};
@@ -168,10 +168,10 @@ namespace AsynGyanis::Base
      */
     TEST(JsonFormatterTest, AppendsLineIntoCallerBuffer)
     {
-        JsonFormatter   formatter;
-        const std::string prefix       = "缓冲里原有的内容:";
-        std::string        buffer      = prefix;
-        const std::size_t  prefixSize  = buffer.size();
+        JsonFormatter     formatter;
+        const std::string prefix     = "缓冲里原有的内容:";
+        std::string       buffer     = prefix;
+        const std::size_t prefixSize = buffer.size();
         static_cast<void>(formatter.formatInto(buffer, makeEvent("追加")));
 
         EXPECT_EQ(buffer.compare(0, prefixSize, prefix), 0);
@@ -201,8 +201,7 @@ namespace AsynGyanis::Base
     TEST(JsonFormatterTest, OutputIsFixedPointOfParseAndDump)
     {
         JsonFormatter     formatter;
-        const std::string line =
-                formatter.format(makeEvent("转义 \b\f\n\r\t\x01\x7f 与 \" \\ 以及 ÿ ✓"));
+        const std::string line = formatter.format(makeEvent("转义 \b\f\n\r\t\x01\x7f 与 \" \\ 以及 ÿ ✓"));
 
         EXPECT_EQ(line, nlohmann::json::parse(line).dump());
     }
@@ -266,7 +265,7 @@ namespace AsynGyanis::Base
         const nlohmann::json plain = nlohmann::json::parse(formatter.format(makeEvent("无栈")));
         EXPECT_FALSE(plain.contains("stackTrace")) << "不带栈的事件不应出现 stackTrace 字段";
 
-        LogEvent event = makeEvent("带栈");
+        LogEvent event   = makeEvent("带栈");
         event.stackTrace = captureStackTrace();
         if (!TestSupport::hasResolvedStackTraceFrames(formatStackTrace(event.stackTrace)))
         {
@@ -287,10 +286,10 @@ namespace AsynGyanis::Base
      */
     TEST(JsonFormatterTest, OptionalKeysDoNotLeakBetweenAlternatingLines)
     {
-        LogEvent withNameAndStack = makeEvent("有名有栈", "leak_check_logger");
+        LogEvent withNameAndStack   = makeEvent("有名有栈", "leak_check_logger");
         withNameAndStack.stackTrace = captureStackTrace();
-        LogEvent withStackNoName  = makeEvent("无名有栈", "");
-        withStackNoName.stackTrace = withNameAndStack.stackTrace;
+        LogEvent withStackNoName    = makeEvent("无名有栈", "");
+        withStackNoName.stackTrace  = withNameAndStack.stackTrace;
         if (withNameAndStack.stackTrace.empty())
         {
             GTEST_SKIP() << "本构建的栈回溯拿不到帧，stackTrace 这一半的串味判据量不到";
@@ -299,8 +298,8 @@ namespace AsynGyanis::Base
         const LogEvent withNameOnly = makeEvent("只有名字", "leak_check_logger");
         const LogEvent plainRoot    = makeEvent("根 logger 无栈", "");
 
-        JsonFormatter                        formatter;
-        const std::vector<const LogEvent *>  round = {&withNameAndStack, &withNameOnly, &withStackNoName, &plainRoot};
+        JsonFormatter                       formatter;
+        const std::vector<const LogEvent *> round = {&withNameAndStack, &withNameOnly, &withStackNoName, &plainRoot};
         for (int pass = 0; pass < 2; ++pass)
         {
             for (const LogEvent *event: round)

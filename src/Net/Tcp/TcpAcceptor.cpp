@@ -35,10 +35,8 @@ namespace AsynGyanis::Net
             // 四种语义都指向「连接本身没坏，是内核暂时给不出资源」：进程 fd 上限、
             // 系统级 fd 表、网络缓冲空间与内存。它们在 Windows 上被 Platform 层映射到
             // 对应的 WSA 错误码，故此处不再需要任何平台分支
-            return socketErrorCode == Platform::PlatformError::kTooManyOpenFiles
-                   || socketErrorCode == Platform::PlatformError::kSystemFileTableFull
-                   || socketErrorCode == Platform::PlatformError::kNoBufferSpace
-                   || socketErrorCode == Platform::PlatformError::kOutOfMemory;
+            return socketErrorCode == Platform::PlatformError::kTooManyOpenFiles || socketErrorCode == Platform::PlatformError::kSystemFileTableFull ||
+                   socketErrorCode == Platform::PlatformError::kNoBufferSpace || socketErrorCode == Platform::PlatformError::kOutOfMemory;
         }
         /**
          * @brief 校验接手用的描述符，无效即报中文可行动原因
@@ -49,19 +47,15 @@ namespace AsynGyanis::Net
         {
             if (!Platform::FileDescriptor::isValid(adoptedDescriptor))
             {
-                throw Base::InvalidArgumentException(
-                        "TcpAcceptor: 接手的监听套接字描述符无效。它必须是已经在监听中的套接字"
-                        "（由 socket activation 或父进程传递而来），请检查传给构造函数的值");
+                throw Base::InvalidArgumentException("TcpAcceptor: 接手的监听套接字描述符无效。它必须是已经在监听中的套接字"
+                                                     "（由 socket activation 或父进程传递而来），请检查传给构造函数的值");
             }
             return adoptedDescriptor;
         }
     } // namespace
 
     TcpAcceptor::TcpAcceptor(Core::EventLoop &loop, const Core::InetAddress &address) :
-        m_loop(loop),
-        m_listenSocket(Core::AsyncSocket::create(loop, address.family() == AF_INET6 ? AF_INET6 : AF_INET)),
-        m_address(address),
-        m_backoffTimer(loop)
+        m_loop(loop), m_listenSocket(Core::AsyncSocket::create(loop, address.family() == AF_INET6 ? AF_INET6 : AF_INET)), m_address(address), m_backoffTimer(loop)
     {
         // 协议族只按「是否 IPv6」二选一：其余地址族本框架暂不支持，落到 IPv4 更可预期。
         // 创建即由 Core 置好非阻塞与 close-on-exec，本层不再重复设置。
@@ -75,12 +69,10 @@ namespace AsynGyanis::Net
         // 调用抛一个看不出所以然的系统错误
         m_listenSocket(loop, requireValidAdoptedDescriptor(adoptedListeningDescriptor)),
         // 地址只能问内核：接手方并不知道上一代绑的是哪个地址，而日志与 listeningPort() 都要报真值
-        m_address(m_listenSocket.localAddress()),
-        m_backoffTimer(loop),
+        m_address(m_listenSocket.localAddress()), m_backoffTimer(loop),
         // 已经在监听就说明已经绑定：bind()/listen() 的短路口径依赖这个标记。
         // 漏了它会去重新绑定一个已经绑好的套接字，必然失败
-        m_bound(true),
-        m_isAdopted(true)
+        m_bound(true), m_isAdopted(true)
     {
         // 非阻塞由 AsyncSocket 的该构造函数设置（继承来的监听套接字通常是阻塞的）
         //
@@ -152,26 +144,22 @@ namespace AsynGyanis::Net
         // 连接可由内核继承，延迟接受则必须在 listen 之前设置；设置失败只影响性能，不中止监听
         if (m_tuning.receiveBufferBytes > 0)
         {
-            [[maybe_unused]] const bool isReceiveBufferSet =
-                    Platform::Socket::setReceiveBufferSize(listenDescriptor, m_tuning.receiveBufferBytes);
+            [[maybe_unused]] const bool isReceiveBufferSet = Platform::Socket::setReceiveBufferSize(listenDescriptor, m_tuning.receiveBufferBytes);
         }
         if (m_tuning.sendBufferBytes > 0)
         {
-            [[maybe_unused]] const bool isSendBufferSet =
-                    Platform::Socket::setSendBufferSize(listenDescriptor, m_tuning.sendBufferBytes);
+            [[maybe_unused]] const bool isSendBufferSet = Platform::Socket::setSendBufferSize(listenDescriptor, m_tuning.sendBufferBytes);
         }
         if (m_tuning.deferAcceptSeconds > 0)
         {
             // 平台不支持（Windows）时返回 false：按「不支持即降级」处理，不是监听失败
-            [[maybe_unused]] const bool isDeferAcceptSet =
-                    Platform::Socket::setDeferAccept(listenDescriptor, m_tuning.deferAcceptSeconds);
+            [[maybe_unused]] const bool isDeferAcceptSet = Platform::Socket::setDeferAccept(listenDescriptor, m_tuning.deferAcceptSeconds);
         }
         if (m_tuning.fastOpenQueueLength > 0)
         {
             // TFO 同样只对监听套接字有意义；内核与服务端开关两处都就位时才真正接受 TFO 连接，
             // 设置失败（老内核头没有该选项）按「不支持即降级」处理，不影响监听本身
-            [[maybe_unused]] const bool isFastOpenSet =
-                    Platform::Socket::setFastOpen(listenDescriptor, m_tuning.fastOpenQueueLength);
+            [[maybe_unused]] const bool isFastOpenSet = Platform::Socket::setFastOpen(listenDescriptor, m_tuning.fastOpenQueueLength);
         }
 
         // 接手的套接字已经在监听中，理由同 bind()：后置条件成立，且绝不能重新 listen
@@ -199,8 +187,7 @@ namespace AsynGyanis::Net
         // 设置失败只影响性能，不丢弃连接（与 TCP_NODELAY 同一口径）
         if (m_tuning.receiveBufferBytes > 0)
         {
-            [[maybe_unused]] const bool isReceiveBufferSet =
-                    Platform::Socket::setReceiveBufferSize(descriptor, m_tuning.receiveBufferBytes);
+            [[maybe_unused]] const bool isReceiveBufferSet = Platform::Socket::setReceiveBufferSize(descriptor, m_tuning.receiveBufferBytes);
         }
         if (m_tuning.sendBufferBytes > 0)
         {
@@ -208,7 +195,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<std::optional<Core::AsyncSocket> > TcpAcceptor::accept()
+    Core::Task<std::optional<Core::AsyncSocket>> TcpAcceptor::accept()
     {
         // 暂存队列的连接其就绪事件已在上一次抽干时被消费，不会再产生新事件，
         // 因此必须优先出队；若先去等 epoll 会把它们永久留在队列里
@@ -235,8 +222,7 @@ namespace AsynGyanis::Net
             // Windows（IOCP）：连接由后端的 AcceptEx 在完成通知里接入，::accept 看不到它，
             // 只能从后端取走。一次完成对应一条连接，因此这里没有 Linux 侧「一次抽干监听队列」
             // 那一段——队列里还有几条，后端就会再完成几次
-            if (const std::optional<int> acceptedFromCompletion = m_listenSocket.takeAcceptedConnection();
-                acceptedFromCompletion.has_value())
+            if (const std::optional<int> acceptedFromCompletion = m_listenSocket.takeAcceptedConnection(); acceptedFromCompletion.has_value())
             {
                 [[maybe_unused]] const bool isNoDelaySet = Platform::Socket::setNoDelay(*acceptedFromCompletion);
                 applyAcceptedSocketTuning(*acceptedFromCompletion);
@@ -252,9 +238,9 @@ namespace AsynGyanis::Net
             continue;
 #else
             sockaddr_storage peerAddress{};
-            socklen_t        peerAddressLength  = static_cast<socklen_t>(sizeof(peerAddress));
+            socklen_t        peerAddressLength = static_cast<socklen_t>(sizeof(peerAddress));
             // Platform 层已保证返回的描述符是非阻塞且不被子进程继承，本层无需二次设置
-            const int        acceptedDescriptor = Platform::Socket::accept(listenDescriptor, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength);
+            const int acceptedDescriptor = Platform::Socket::accept(listenDescriptor, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength);
 
             if (Platform::FileDescriptor::isValid(acceptedDescriptor))
             {

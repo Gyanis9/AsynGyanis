@@ -1,7 +1,7 @@
 #include "Core/Tls/TlsSocket.h"
-#include "Core/EventLoop/IoWatcher.h"
-#include "Core/EventLoop/EventLoop.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/IoWatcher.h"
 #include "Core/Exception/CoreException.h"
 #include "Core/Socket/InetAddress.h"
 #include "Platform/System/PlatformError.h"
@@ -28,9 +28,7 @@ namespace AsynGyanis::Core
             const unsigned long queueEntry = ERR_get_error();
 
             // 握手期被对端掐断时 OpenSSL 会留下这条 reason，它和「队列为空的 EOF」是同一件事
-            const bool isAbruptTcpBreak = sslErrorCode == SSL_ERROR_SYSCALL ||
-                                          (queueEntry != 0 &&
-                                           ERR_GET_REASON(queueEntry) == SSL_R_UNEXPECTED_EOF_WHILE_READING);
+            const bool isAbruptTcpBreak = sslErrorCode == SSL_ERROR_SYSCALL || (queueEntry != 0 && ERR_GET_REASON(queueEntry) == SSL_R_UNEXPECTED_EOF_WHILE_READING);
             if (isAbruptTcpBreak)
             {
                 // 返回 0 是读到文件尾（对端发了 FIN），返回 -1 是底层调用自己报错（重置一类）。
@@ -40,8 +38,7 @@ namespace AsynGyanis::Core
                     return "对端没有发出 TLS 关闭通知（close_notify）就断开了 TCP 连接，本端读到的是文件尾："
                            "这条会话已经失效，关闭本端连接，需要时重新握手";
                 }
-                return "对端没有发出 TLS 关闭通知就断了连接，底层套接字报「" +
-                       Platform::PlatformError::message(Platform::PlatformError::lastSocketErrorCode()) +
+                return "对端没有发出 TLS 关闭通知就断了连接，底层套接字报「" + Platform::PlatformError::message(Platform::PlatformError::lastSocketErrorCode()) +
                        "」：TLS 层没有收到任何告警，关闭本端连接，需要时重新握手";
             }
 
@@ -55,17 +52,14 @@ namespace AsynGyanis::Core
             {
                 char queueText[256]{};
                 ERR_error_string_n(queueEntry, queueText, sizeof(queueText));
-                return std::string(queueText) +
-                       "（TLS 协议层报错，常见原因：对端证书不受信、协议版本或加密套件不匹配、对端不是 TLS 服务）";
+                return std::string(queueText) + "（TLS 协议层报错，常见原因：对端证书不受信、协议版本或加密套件不匹配、对端不是 TLS 服务）";
             }
 
-            return "TLS 层报出未知错误（SSL_get_error=" + std::to_string(sslErrorCode) +
-                   "，OpenSSL 错误队列为空）：按会话已失效处理，关闭本端连接";
+            return "TLS 层报出未知错误（SSL_get_error=" + std::to_string(sslErrorCode) + "，OpenSSL 错误队列为空）：按会话已失效处理，关闭本端连接";
         }
     } // namespace
 
-    TlsSocket::TlsSocket(SSL *ssl, EventLoop &loop, AsyncSocket socket, const Role role) :
-        m_ssl(ssl), m_loop(&loop), m_socket(std::move(socket)), m_role(role)
+    TlsSocket::TlsSocket(SSL *ssl, EventLoop &loop, AsyncSocket socket, const Role role) : m_ssl(ssl), m_loop(&loop), m_socket(std::move(socket)), m_role(role)
     {
     }
 
@@ -80,11 +74,7 @@ namespace AsynGyanis::Core
     }
 
     TlsSocket::TlsSocket(TlsSocket &&other) noexcept :
-        m_ssl(std::move(other.m_ssl)),
-        m_loop(other.m_loop),
-        m_socket(std::move(other.m_socket)),
-        m_role(other.m_role),
-        m_handshakeDone(other.m_handshakeDone)
+        m_ssl(std::move(other.m_ssl)), m_loop(other.m_loop), m_socket(std::move(other.m_socket)), m_role(other.m_role), m_handshakeDone(other.m_handshakeDone)
     {
     }
 
@@ -109,9 +99,8 @@ namespace AsynGyanis::Core
         // 收口本就会在协程还挂着的时候关停本端，那是正常时序，不是调用方写错了
         if (m_ssl == nullptr)
         {
-            throw CoreException(std::string(operationName) +
-                                    "失败：本端 TLS 会话已释放（close() 之后不能再收发），"
-                                    "请先让在途的收发协程结束、再关闭连接");
+            throw CoreException(std::string(operationName) + "失败：本端 TLS 会话已释放（close() 之后不能再收发），"
+                                                             "请先让在途的收发协程结束、再关闭连接");
         }
     }
 
@@ -255,10 +244,15 @@ namespace AsynGyanis::Core
         // 成功返回也走这里——写侧把待发记录收掉之后，读侧就不再受这条规矩约束
         struct WritePendingGuard
         {
-            explicit WritePendingGuard(bool *const flag) noexcept : m_flag(flag) {}
-            ~WritePendingGuard() noexcept { *m_flag = false; }
+            explicit WritePendingGuard(bool *const flag) noexcept : m_flag(flag)
+            {
+            }
+            ~WritePendingGuard() noexcept
+            {
+                *m_flag = false;
+            }
 
-            WritePendingGuard(const WritePendingGuard &) = delete;
+            WritePendingGuard(const WritePendingGuard &)            = delete;
             WritePendingGuard &operator=(const WritePendingGuard &) = delete;
 
             bool *const m_flag; ///< 要落下的一面旗（指向所属 TlsSocket 的 m_isWritePending）
@@ -369,8 +363,8 @@ namespace AsynGyanis::Core
             return {};
         }
 
-        const unsigned char *protocolName = nullptr;
-        unsigned int protocolNameLength = 0;
+        const unsigned char *protocolName       = nullptr;
+        unsigned int         protocolNameLength = 0;
         SSL_get0_alpn_selected(m_ssl.get(), &protocolName, &protocolNameLength);
         if (protocolName == nullptr || protocolNameLength == 0)
         {
@@ -393,4 +387,4 @@ namespace AsynGyanis::Core
         return m_socket.localAddress();
     }
 
-}
+} // namespace AsynGyanis::Core

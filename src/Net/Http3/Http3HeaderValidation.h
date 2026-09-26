@@ -43,26 +43,26 @@ namespace AsynGyanis::Net
      */
     enum class Http3HeaderErrorKind
     {
-        EmptyFieldName,               ///< 字段名为空：无法构成 RFC 9110 §5.1 的 field-name
-        UppercaseFieldName,           ///< 字段名含大写：RFC 9114 §4.2 要求编码前转小写，带大写即畸形
-        IllegalFieldNameCharacter,    ///< 字段名含 tchar 之外的字符：RFC 9110 §5.1
-        IllegalFieldValueCharacter,   ///< 字段值含控制字符（含 CR/LF/NUL）：会构成响应拆分，只允许 HTAB 与可见字符
-        ConnectionFieldProhibited,    ///< 出现连接特定字段：RFC 9114 §4.2 明确禁止（TE 除外）
-        TeValueNotAllowed,            ///< TE 出现了但值不是 trailers：RFC 9114 §4.2 的例外只给 trailers
-        PseudoHeaderAfterField,       ///< 伪头出现在普通字段之后：RFC 9114 §4.3
-        PseudoHeaderInTrailers,       ///< 尾段里出现伪头：RFC 9114 §4.3
-        UndefinedPseudoHeader,        ///< 未定义的伪头：RFC 9114 §4.3
-        DuplicatePseudoHeader,        ///< 同一伪头出现两次：RFC 9114 §4.3.1 要求「恰好一个」
-        MissingPseudoHeader,          ///< 必填伪头缺失：RFC 9114 §4.3.1/§4.3.2
-        ProhibitedPseudoForMethod,    ///< CONNECT 带上了不属于它的伪头，或非 CONNECT 缺 :scheme/:path
-        EmptyPath,                    ///< :path 为空：RFC 9114 §4.3.1 对 http/https 明确禁止
-        EmptyAuthority,               ///< :authority 或 host 为空：RFC 9114 §4.3.1
-        InvalidStatusValue,           ///< :status 不是三位十进制：RFC 9114 §4.3.2
-        ContentLengthInvalid,         ///< content-length 不是非负十进制整数：RFC 9110 §8.6
-        ContentLengthConflict,        ///< 多个 content-length 取值不一致：RFC 9110 §8.6
-        AuthorityConflict,            ///< :authority 与 host 取值冲突，或 host 重复且不一致：RFC 9114 §4.3.1
-        ProhibitedFieldInTrailers,    ///< 尾段里出现 content-length/host/连接特定字段：RFC 9110 §6.5
-        InvalidMessageSequence,       ///< 头块序列非法（同一条消息里出现第二个非尾段头块）：RFC 9114 §4.1
+        EmptyFieldName,             ///< 字段名为空：无法构成 RFC 9110 §5.1 的 field-name
+        UppercaseFieldName,         ///< 字段名含大写：RFC 9114 §4.2 要求编码前转小写，带大写即畸形
+        IllegalFieldNameCharacter,  ///< 字段名含 tchar 之外的字符：RFC 9110 §5.1
+        IllegalFieldValueCharacter, ///< 字段值含控制字符（含 CR/LF/NUL）：会构成响应拆分，只允许 HTAB 与可见字符
+        ConnectionFieldProhibited,  ///< 出现连接特定字段：RFC 9114 §4.2 明确禁止（TE 除外）
+        TeValueNotAllowed,          ///< TE 出现了但值不是 trailers：RFC 9114 §4.2 的例外只给 trailers
+        PseudoHeaderAfterField,     ///< 伪头出现在普通字段之后：RFC 9114 §4.3
+        PseudoHeaderInTrailers,     ///< 尾段里出现伪头：RFC 9114 §4.3
+        UndefinedPseudoHeader,      ///< 未定义的伪头：RFC 9114 §4.3
+        DuplicatePseudoHeader,      ///< 同一伪头出现两次：RFC 9114 §4.3.1 要求「恰好一个」
+        MissingPseudoHeader,        ///< 必填伪头缺失：RFC 9114 §4.3.1/§4.3.2
+        ProhibitedPseudoForMethod,  ///< CONNECT 带上了不属于它的伪头，或非 CONNECT 缺 :scheme/:path
+        EmptyPath,                  ///< :path 为空：RFC 9114 §4.3.1 对 http/https 明确禁止
+        EmptyAuthority,             ///< :authority 或 host 为空：RFC 9114 §4.3.1
+        InvalidStatusValue,         ///< :status 不是三位十进制：RFC 9114 §4.3.2
+        ContentLengthInvalid,       ///< content-length 不是非负十进制整数：RFC 9110 §8.6
+        ContentLengthConflict,      ///< 多个 content-length 取值不一致：RFC 9110 §8.6
+        AuthorityConflict,          ///< :authority 与 host 取值冲突，或 host 重复且不一致：RFC 9114 §4.3.1
+        ProhibitedFieldInTrailers,  ///< 尾段里出现 content-length/host/连接特定字段：RFC 9110 §6.5
+        InvalidMessageSequence,     ///< 头块序列非法（同一条消息里出现第二个非尾段头块）：RFC 9114 §4.1
     };
 
     /**
@@ -71,7 +71,7 @@ namespace AsynGyanis::Net
     struct Http3HeaderError
     {
         Http3HeaderErrorKind kind{Http3HeaderErrorKind::UndefinedPseudoHeader}; ///< 失败类别：上层按 §4.1.2 一律回 H3_MESSAGE_ERROR
-        std::string message;                                                    ///< 中文原因，含字段名实际值与对应的 RFC 章节
+        std::string          message;                                           ///< 中文原因，含字段名实际值与对应的 RFC 章节
     };
 
     /**
@@ -160,19 +160,19 @@ namespace AsynGyanis::Net
         /// 归位并校验一个普通字段
         [[nodiscard]] std::expected<void, Http3HeaderError> onRegularField(std::string_view name, std::string_view value);
 
-        Http3MessageKind m_messageKind{Http3MessageKind::Request};   ///< 判定方向
-        bool m_isExtendedConnectPermitted{false};                    ///< 本会话是否允许 :protocol
-        bool m_isTrailersSection{false};                             ///< 当前头块是不是尾段
-        bool m_isHeadSectionDone{false};                             ///< 响应头块是否已收过一次（防第二个 :status 段）
-        bool m_sawRegularField{false};                               ///< 本头块内是否已出现过普通字段：伪头必须排在它之前
-        bool m_hasHostHeader{false};                                 ///< 是否收到过 host 字段
-        std::string m_hostText;                                      ///< host 字段原文：与 :authority 同时存在时要求逐字一致
-        std::string m_methodText;                                    ///< :method 原文
-        std::string m_pathText;                                      ///< :path 原文
-        std::string m_authorityText;                                 ///< :authority 原文
-        std::string m_schemeText;                                    ///< :scheme 原文
-        std::string m_protocolText;                                  ///< :protocol 原文
-        std::optional<int> m_statusCode;                             ///< :status 数值
-        std::optional<std::uint64_t> m_contentLengthByteCount;       ///< content-length 数值，多次出现要求取值一致
+        Http3MessageKind             m_messageKind{Http3MessageKind::Request}; ///< 判定方向
+        bool                         m_isExtendedConnectPermitted{false};      ///< 本会话是否允许 :protocol
+        bool                         m_isTrailersSection{false};               ///< 当前头块是不是尾段
+        bool                         m_isHeadSectionDone{false};               ///< 响应头块是否已收过一次（防第二个 :status 段）
+        bool                         m_sawRegularField{false};                 ///< 本头块内是否已出现过普通字段：伪头必须排在它之前
+        bool                         m_hasHostHeader{false};                   ///< 是否收到过 host 字段
+        std::string                  m_hostText;                               ///< host 字段原文：与 :authority 同时存在时要求逐字一致
+        std::string                  m_methodText;                             ///< :method 原文
+        std::string                  m_pathText;                               ///< :path 原文
+        std::string                  m_authorityText;                          ///< :authority 原文
+        std::string                  m_schemeText;                             ///< :scheme 原文
+        std::string                  m_protocolText;                           ///< :protocol 原文
+        std::optional<int>           m_statusCode;                             ///< :status 数值
+        std::optional<std::uint64_t> m_contentLengthByteCount;                 ///< content-length 数值，多次出现要求取值一致
     };
 } // namespace AsynGyanis::Net

@@ -76,7 +76,7 @@ namespace AsynGyanis::Base
             // 64 字节：任何 int64/uint64 的十进制都不超过 20 位，double 的最短往返形式也不到 30 位，
             // 留出一倍余量是为了让「写不下」这条分支在真实数值上根本不出现
             std::array<char, 64> buffer{};
-            const auto           [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+            const auto [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
             if (errorCode != std::errc())
             {
                 return {};
@@ -106,7 +106,7 @@ namespace AsynGyanis::Base
             ConfigObject object;
 
             // 用有序 map 归组：分组顺序本身不影响语义，但稳定的子对象键序让结果可断言、可阅读
-            std::map<std::string_view, std::vector<SectionEntry> > childGroups;
+            std::map<std::string_view, std::vector<SectionEntry>> childGroups;
             for (const SectionEntry &entry: entries)
             {
                 const std::size_t separator = entry.remainingPath.find('.');
@@ -115,23 +115,21 @@ namespace AsynGyanis::Base
                     object.insert_or_assign(std::string(entry.remainingPath), *entry.value);
                     continue;
                 }
-                childGroups[entry.remainingPath.substr(0, separator)].push_back(
-                        SectionEntry{entry.remainingPath.substr(separator + 1), entry.value});
+                childGroups[entry.remainingPath.substr(0, separator)].push_back(SectionEntry{entry.remainingPath.substr(separator + 1), entry.value});
             }
 
             for (const auto &[name, children]: childGroups)
             {
-                const std::string groupPath = pathContext.empty() ? std::string(name)
-                                                                  : pathContext + '.' + std::string(name);
+                const std::string groupPath = pathContext.empty() ? std::string(name) : pathContext + '.' + std::string(name);
                 // 同一个名字既当标量又当分组时，必须报错而不是让分组悄悄吃掉标量：这种形状真的能
                 // 由两份配置文件叠出来（一份给 a.b，另一份给 a.b.c），静默丢弃会让 getSection 与
                 // getInt("a.b") 各说一套话
                 if (object.contains(name))
                 {
-                    throw ConfigValidationException(groupPath,
-                                                    std::format("键 '{}' 既配成了标量、又是更长键的第一段（如 '{}.{}'）："
-                                                                "段落还原无法同时表达这两种形状，请把其中一条改成别的名字或换一层段落",
-                                                                groupPath, groupPath, std::string(children.front().remainingPath.substr(0, children.front().remainingPath.find('.')))));
+                    throw ConfigValidationException(groupPath, std::format("键 '{}' 既配成了标量、又是更长键的第一段（如 '{}.{}'）："
+                                                                           "段落还原无法同时表达这两种形状，请把其中一条改成别的名字或换一层段落",
+                                                                           groupPath, groupPath,
+                                                                           std::string(children.front().remainingPath.substr(0, children.front().remainingPath.find('.')))));
                 }
                 object.insert_or_assign(std::string(name), ConfigValue(buildNestedObject(children, groupPath)));
             }
@@ -184,8 +182,7 @@ namespace AsynGyanis::Base
          * @param sourceLabel 本次写入的可读来源，只用于报错文本
          * @return std::vector<std::string> 每一次取代一条中文说明，无冲突时为空
          */
-        [[nodiscard]] std::vector<std::string> mergeFileValues(ConfigKeyValueMap &values, ConfigKeyValueMap &&incomingValues,
-                                                              const std::string_view sourceLabel)
+        [[nodiscard]] std::vector<std::string> mergeFileValues(ConfigKeyValueMap &values, ConfigKeyValueMap &&incomingValues, const std::string_view sourceLabel)
         {
             std::vector<std::string> conflicts;
 
@@ -205,8 +202,8 @@ namespace AsynGyanis::Base
                     {
                         continue;
                     }
-                    conflicts.push_back(std::format("配置键冲突：键 {} 先前是一个值，{} 在它下面写了 {}；同一个键不能既是值又是表，已按后者取值，旧值丢弃",
-                                                    ancestor, sourceLabel, entry.first));
+                    conflicts.push_back(std::format("配置键冲突：键 {} 先前是一个值，{} 在它下面写了 {}；同一个键不能既是值又是表，已按后者取值，旧值丢弃", ancestor, sourceLabel,
+                                                    entry.first));
                     values.erase(staleLeaf);
                 }
             }
@@ -253,8 +250,8 @@ namespace AsynGyanis::Base
                 {
                     droppedText += droppedText.empty() ? dropped : "、" + dropped;
                 }
-                conflicts.push_back(std::format("配置键冲突：键 {} 先前摊开成 {} 个键（{}），{} 把它写成了一个值；已按后者取值，先前那 {} 个键丢弃",
-                                                leaf, droppedKeys.size(), droppedText, sourceLabel, droppedKeys.size()));
+                conflicts.push_back(std::format("配置键冲突：键 {} 先前摊开成 {} 个键（{}），{} 把它写成了一个值；已按后者取值，先前那 {} 个键丢弃", leaf, droppedKeys.size(),
+                                                droppedText, sourceLabel, droppedKeys.size()));
             }
 
             for (auto &[key, value]: incomingValues)
@@ -337,7 +334,7 @@ namespace AsynGyanis::Base
         {
             // 显式文件列表同样要留下配置目录，否则后续 reload() 与 enableHotReload() 失去依据：
             // 能推导出公共父目录时采用它，否则保留既有取值不覆盖。
-            const auto previousData = m_data.load(std::memory_order_acquire);
+            const auto            previousData      = m_data.load(std::memory_order_acquire);
             std::filesystem::path directoryToCommit = previousData->configDirectory;
             if (const std::filesystem::path derivedDirectory = commonParentDirectory(loadedPaths); !derivedDirectory.empty())
             {
@@ -347,9 +344,7 @@ namespace AsynGyanis::Base
             // 等于让同一个目录在无人改文件时换了一副面孔——先 loadFromDirectory(dir, false) 再
             // loadFiles({dir/a.yaml})，随后的 reload() 会凭空多出子目录里的键。
             // 锚点确实是新目录时才取默认值 true（旧口径属于另一棵树，跟不过来）
-            const bool recursiveToCommit = directoryToCommit == previousData->configDirectory
-                                               ? previousData->configDirectoryRecursive
-                                               : true;
+            const bool recursiveToCommit = directoryToCommit == previousData->configDirectory ? previousData->configDirectoryRecursive : true;
             commitConfigData(std::move(values), result.loadedFiles, directoryToCommit, recursiveToCommit);
         }
         result.success = result.failedFiles.empty() && !result.loadedFiles.empty();
@@ -413,10 +408,7 @@ namespace AsynGyanis::Base
 
             m_fileWatcher->setDebounceInterval(debounceMilliseconds);
 
-            m_fileWatcher->setCallback([this](const std::string_view filePath, const Platform::FileChangeType changeType)
-            {
-                handleFileChange(filePath, changeType);
-            });
+            m_fileWatcher->setCallback([this](const std::string_view filePath, const Platform::FileChangeType changeType) { handleFileChange(filePath, changeType); });
 
             // 监听范围与 reload 的重扫范围必须同一个口径：只递归挂监听却按非递归重扫，
             // 子目录里的改动会白叫醒一轮重载；反之则子目录的改动根本进不到重扫里。
@@ -471,7 +463,7 @@ namespace AsynGyanis::Base
         // 等待所有活跃的重载线程完成，防止 use-after-free。
         // 锁内只摘取句柄，join 放到锁外：join 可能等到一次完整 reload 结束，
         // 持锁 join 会让文件监听线程后续的热加载检查全部排队等待
-        std::vector<std::unique_ptr<ReloadTask> > pendingTasks;
+        std::vector<std::unique_ptr<ReloadTask>> pendingTasks;
         {
             const std::lock_guard lock(m_reloadTasksMutex);
             pendingTasks.swap(m_reloadTasks);
@@ -560,7 +552,7 @@ namespace AsynGyanis::Base
         const auto currentData = m_data.load(std::memory_order_acquire);
         // 直接以 string_view 查找：ConfigKeyValueMap 的透明哈希支持异构查找，
         // 构造临时 std::string 只会白白多一次分配
-        const auto iterator    = currentData->values.find(key);
+        const auto iterator = currentData->values.find(key);
         if (iterator == currentData->values.end())
         {
             return defaultValue;
@@ -672,11 +664,7 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] bool isBlankText(std::string_view text) noexcept
         {
-            return std::ranges::all_of(text,
-                                       [](const unsigned char character)
-                                       {
-                                           return std::isspace(character) != 0;
-                                       });
+            return std::ranges::all_of(text, [](const unsigned char character) { return std::isspace(character) != 0; });
         }
 
         /// 单个配置文件的体积上限（64 MiB）：配置文件是人工产物，超出这个规模基本可判定为误传或
@@ -899,7 +887,7 @@ namespace AsynGyanis::Base
                 numericText.remove_prefix(1);
             }
 
-            double     parsedValue               = 0.0;
+            double parsedValue                   = 0.0;
             const auto [stopPosition, errorCode] = std::from_chars(numericText.data(), numericText.data() + numericText.size(), parsedValue);
             if (errorCode == std::errc::result_out_of_range)
             {
@@ -962,8 +950,8 @@ namespace AsynGyanis::Base
             }
             if (tag != "?")
             {
-                throw DocumentConversionException(std::format("不支持的 YAML 标签 '{}'（{}）：请改用 !!str/!!int/!!float/!!bool/!!null 或去掉标签", tag,
-                                                           describeYamlMark(node.Mark())));
+                throw DocumentConversionException(
+                        std::format("不支持的 YAML 标签 '{}'（{}）：请改用 !!str/!!int/!!float/!!bool/!!null 或去掉标签", tag, describeYamlMark(node.Mark())));
             }
 
             // 普通标量：核心 schema 的类型判定，顺序为 bool → int → float → string
@@ -1107,9 +1095,8 @@ namespace AsynGyanis::Base
                     continue;
                 }
 
-                const bool startsInteger =
-                        (currentCharacter >= '0' && currentCharacter <= '9') ||
-                        (currentCharacter == '-' && index + 1 < text.size() && text[index + 1] >= '0' && text[index + 1] <= '9');
+                const bool startsInteger = (currentCharacter >= '0' && currentCharacter <= '9') ||
+                                           (currentCharacter == '-' && index + 1 < text.size() && text[index + 1] >= '0' && text[index + 1] <= '9');
                 if (!startsInteger)
                 {
                     ++index;
@@ -1154,15 +1141,13 @@ namespace AsynGyanis::Base
                     // 浮点写法不在整数判据里，但同样要判范围：nlohmann 把下溢（1e-400）悄悄折成 0.0，
                     // 而 YAML 侧走 from_chars，上下溢都会报「超出 double 表示范围」——两侧口径必须一致。
                     // 上溢 nlohmann 自己会抛 out_of_range，这里先拦下只是让文案统一
-                    double     floatingValue     = 0.0;
-                    const auto [stopPosition, errorCode] =
-                            std::from_chars(text.data() + tokenBegin, text.data() + cursor, floatingValue);
+                    double floatingValue                 = 0.0;
+                    const auto [stopPosition, errorCode] = std::from_chars(text.data() + tokenBegin, text.data() + cursor, floatingValue);
                     static_cast<void>(stopPosition);
                     if (errorCode == std::errc::result_out_of_range)
                     {
-                        throw DocumentConversionException(std::format("浮点值 '{}' 超出 double 表示范围（第 {} 字节处）",
-                                                                      text.substr(tokenBegin, cursor - tokenBegin),
-                                                                      tokenBegin + 1U));
+                        throw DocumentConversionException(
+                                std::format("浮点值 '{}' 超出 double 表示范围（第 {} 字节处）", text.substr(tokenBegin, cursor - tokenBegin), tokenBegin + 1U));
                     }
                     continue;
                 }
@@ -1182,8 +1167,7 @@ namespace AsynGyanis::Base
                     throw DocumentConversionException(std::format("整数 '{}' 超出 64 位表示范围（第 {} 字节处）："
                                                                   "JSON 会把这样的字面量折成 double 并丢掉精度，"
                                                                   "取用时会按类型不符回落默认值",
-                                                                  text.substr(tokenBegin, cursor - tokenBegin),
-                                                                  tokenBegin + 1U));
+                                                                  text.substr(tokenBegin, cursor - tokenBegin), tokenBegin + 1U));
                 }
             }
         }
@@ -1207,8 +1191,7 @@ namespace AsynGyanis::Base
             {
                 if (static_cast<std::size_t>(depth) > kMaximumDocumentDepth)
                 {
-                    throw DocumentConversionException(std::format("文档嵌套超过 {} 层：正常配置不会这么深，多半是误传或机器生成的文件",
-                                                                  kMaximumDocumentDepth));
+                    throw DocumentConversionException(std::format("文档嵌套超过 {} 层：正常配置不会这么深，多半是误传或机器生成的文件", kMaximumDocumentDepth));
                 }
                 return true;
             };
@@ -1486,8 +1469,7 @@ namespace AsynGyanis::Base
         const std::uintmax_t fileSize = std::filesystem::file_size(filePath, sizeError);
         if (!sizeError && fileSize > kMaximumConfigFileBytes)
         {
-            errors.push_back(std::format("文件 '{}' 超过配置文件的体积上限（{} MiB）：请拆分或精简该文件", pathText(filePath),
-                                         kMaximumConfigFileBytes / (1024ULL * 1024ULL)));
+            errors.push_back(std::format("文件 '{}' 超过配置文件的体积上限（{} MiB）：请拆分或精简该文件", pathText(filePath), kMaximumConfigFileBytes / (1024ULL * 1024ULL)));
             return false;
         }
 
@@ -1520,8 +1502,7 @@ namespace AsynGyanis::Base
             if (!document.is_object())
             {
                 // 沿用 YAML 习惯措辞：数组报 sequence，标量按类型名
-                const std::string_view kindName = document.is_array() ? std::string_view{"sequence"}
-                                                     : std::string_view{typeName(document.type())};
+                const std::string_view kindName = document.is_array() ? std::string_view{"sequence"} : std::string_view{typeName(document.type())};
 
                 errors.push_back("文件 '" + pathText(filePath) + "'：根节点必须是映射，实际为 " + std::string(kindName));
                 return false;
@@ -1630,7 +1611,8 @@ namespace AsynGyanis::Base
             // Moved 也要收：Windows 把「改名走开」报成 Moved（源路径），Linux 的同一条动作被映射成 Deleted。
             // 只收三种时，Windows 上「把 config.yaml 改名挪走」这个下线动作一条通知都不算数——旧名被类型
             // 判据滤掉、新名因不是配置后缀被上一条滤掉，配置停在已经消失的那份上直到下次改动
-            if (changeType != Platform::FileChangeType::Modified && changeType != Platform::FileChangeType::Created && changeType != Platform::FileChangeType::Deleted && changeType != Platform::FileChangeType::Moved)
+            if (changeType != Platform::FileChangeType::Modified && changeType != Platform::FileChangeType::Created && changeType != Platform::FileChangeType::Deleted &&
+                changeType != Platform::FileChangeType::Moved)
             {
                 return;
             }
@@ -1766,7 +1748,7 @@ namespace AsynGyanis::Base
 
     void ConfigManager::collectFinishedReloadTasks()
     {
-        std::vector<std::unique_ptr<ReloadTask> > finishedTasks;
+        std::vector<std::unique_ptr<ReloadTask>> finishedTasks;
         {
             const std::lock_guard lock(m_reloadTasksMutex);
             for (auto iterator = m_reloadTasks.begin(); iterator != m_reloadTasks.end();)
@@ -1811,7 +1793,7 @@ namespace AsynGyanis::Base
         std::error_code errorCode;
         // 单个条目的属性查询也走 error_code 那一份重载：无 ec 的 is_regular_file() 会抛
         // filesystem_error，那会从「加载配置」里逃到调用方手上，而这里要的是一轮失败的重载
-        const auto      collect = [&configFiles, &errorCode](const auto &entry)
+        const auto collect = [&configFiles, &errorCode](const auto &entry)
         {
             const bool isRegularFile = entry.is_regular_file(errorCode);
             if (!errorCode && isRegularFile && isConfigFile(pathText(entry.path())))
@@ -1855,19 +1837,17 @@ namespace AsynGyanis::Base
         if (errorCode)
         {
             return std::unexpected(std::format("扫描配置目录 '{}' 时中断（{}），本轮只扫到 {} 个配置文件："
-                                                "不把这份不完整的清单当成全量提交，配置保持原样；"
-                                                "请检查该目录及其子目录的读取权限后重试",
-                                                pathText(directory), errorCode.message(), configFiles.size()));
+                                               "不把这份不完整的清单当成全量提交，配置保持原样；"
+                                               "请检查该目录及其子目录的读取权限后重试",
+                                               pathText(directory), errorCode.message(), configFiles.size()));
         }
 
         std::ranges::sort(configFiles);
         return configFiles;
     }
 
-    void ConfigManager::commitConfigData(ConfigKeyValueMap                values,
-                                         const std::vector<std::string> & loadedFiles,
-                                         const std::filesystem::path &    configDirectory,
-                                         const bool                       configDirectoryRecursive)
+    void ConfigManager::commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loadedFiles, const std::filesystem::path &configDirectory,
+                                         const bool configDirectoryRecursive)
     {
         // 快照对象与它的字典都在锁外建好：分配与展开一份配置不该让并发写者等着
         const auto newData       = std::make_shared<ConfigData>();

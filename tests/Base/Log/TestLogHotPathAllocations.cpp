@@ -75,20 +75,15 @@ namespace AsynGyanis::Base
          */
         void printHistogramDelta(const char *const label, const AllocationHistogram &reference, const AllocationHistogram &current)
         {
-            std::printf("%s buckets (width=%llu B):\n", label,
-                        static_cast<unsigned long long>(kAllocationHistogramBucketBytes));
+            std::printf("%s buckets (width=%llu B):\n", label, static_cast<unsigned long long>(kAllocationHistogramBucketBytes));
             for (std::size_t bucketIndex = 0; bucketIndex < kAllocationHistogramBucketCount; ++bucketIndex)
             {
                 // 有符号相减：无符号的下溢会把「少了几次」印成一个巨大的正数，读数就成了假话
-                const auto difference = static_cast<long long>(current[bucketIndex])
-                                        - static_cast<long long>(reference[bucketIndex]);
+                const auto difference = static_cast<long long>(current[bucketIndex]) - static_cast<long long>(reference[bucketIndex]);
                 if (difference != 0)
                 {
-                    std::printf("  size~%4zu  ref=%6llu  cur=%6llu  delta=%+lld\n",
-                                bucketIndex * kAllocationHistogramBucketBytes,
-                                static_cast<unsigned long long>(reference[bucketIndex]),
-                                static_cast<unsigned long long>(current[bucketIndex]),
-                                difference);
+                    std::printf("  size~%4zu  ref=%6llu  cur=%6llu  delta=%+lld\n", bucketIndex * kAllocationHistogramBucketBytes,
+                                static_cast<unsigned long long>(reference[bucketIndex]), static_cast<unsigned long long>(current[bucketIndex]), difference);
                 }
             }
         }
@@ -133,17 +128,25 @@ namespace AsynGyanis::Base
              * @brief 空实现：本 Sink 没有缓冲需要刷
              * @details 重写 LogSink::flush()：不触任何 IO，读数才只反映事件构造侧。
              */
-            void flush() override {}
+            void flush() override
+            {
+            }
 
             /// 收到的事件条数，用于证明测量体确实跑满了
-            [[nodiscard]] std::uint64_t writeCount() const noexcept { return m_writeCount; }
+            [[nodiscard]] std::uint64_t writeCount() const noexcept
+            {
+                return m_writeCount;
+            }
 
             /// 最后一条事件的消息字节数，用于自检「消息长过了小串内联」
-            [[nodiscard]] std::size_t lastMessageSize() const noexcept { return m_lastMessageSize; }
+            [[nodiscard]] std::size_t lastMessageSize() const noexcept
+            {
+                return m_lastMessageSize;
+            }
 
         private:
-            std::uint64_t m_writeCount     = 0U;     ///< 已收到的事件条数
-            std::size_t   m_lastMessageSize = 0U;    ///< 最后一条事件的消息字节数
+            std::uint64_t m_writeCount      = 0U; ///< 已收到的事件条数
+            std::size_t   m_lastMessageSize = 0U; ///< 最后一条事件的消息字节数
         };
 
         /**
@@ -158,8 +161,7 @@ namespace AsynGyanis::Base
             /**
              * @param released 放行闸门，由用例在测量结束后置位
              */
-            explicit WorkerParkingSink(std::shared_ptr<std::atomic<bool>> released) :
-                m_released(std::move(released))
+            explicit WorkerParkingSink(std::shared_ptr<std::atomic<bool>> released) : m_released(std::move(released))
             {
             }
 
@@ -182,7 +184,9 @@ namespace AsynGyanis::Base
              * @brief 空实现：本 Sink 没有缓冲可刷
              * @details 重写 LogSink::flush()：不触 IO。
              */
-            void flush() override {}
+            void flush() override
+            {
+            }
 
         private:
             std::shared_ptr<std::atomic<bool>> m_released; ///< 放行闸门，抬起前 write() 不返回
@@ -196,8 +200,8 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, SingleLogLineAllocations)
     {
-        Logger logger("hot_path");
-        auto sink = std::make_unique<NonWritingSink>();
+        Logger          logger("hot_path");
+        auto            sink         = std::make_unique<NonWritingSink>();
         NonWritingSink &observedSink = *sink;
         logger.addSink(std::move(sink));
 
@@ -212,14 +216,11 @@ namespace AsynGyanis::Base
         const AllocationProfile profile = measurePerOperation(logOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "有几次没走到 Sink";
         EXPECT_EQ(observedSink.writeCount(), kMeasurementIterations + 1U);
-        std::printf("log-line 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations),
+        std::printf("log-line 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation), static_cast<unsigned long long>(profile.totalAllocations),
                     static_cast<unsigned long long>(profile.totalBytes));
 #ifdef NDEBUG
-        EXPECT_EQ(profile.totalAllocations, kLogLineTotalAllocationsPerThousand)
-                << "一条日志又开始多碰堆了：时间戳文本还是消息体？";
+        EXPECT_EQ(profile.totalAllocations, kLogLineTotalAllocationsPerThousand) << "一条日志又开始多碰堆了：时间戳文本还是消息体？";
 #endif
     }
 
@@ -232,8 +233,8 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, FilteredOutLineIsAllocationFree)
     {
-        Logger logger("hot_path_filtered");
-        auto   sink            = std::make_unique<NonWritingSink>();
+        Logger          logger("hot_path_filtered");
+        auto            sink         = std::make_unique<NonWritingSink>();
         NonWritingSink &observedSink = *sink;
         logger.addSink(std::move(sink));
         // 阈值抬到 Error：下面每次 Trace 调用都该被挡在事件构造之前
@@ -263,16 +264,12 @@ namespace AsynGyanis::Base
         const AllocationProfile acceptedProfile = measurePerOperation(logAcceptedOnce);
         EXPECT_EQ(observedSink.writeCount(), kMeasurementIterations + 1U) << "对照形状没跑满";
 
-        std::printf("filtered-line 一千次共 %llu 次 / %llu 字节；同一条放行时 %llu 次 / %llu 字节\n",
-                    static_cast<unsigned long long>(filteredProfile.totalAllocations),
-                    static_cast<unsigned long long>(filteredProfile.totalBytes),
-                    static_cast<unsigned long long>(acceptedProfile.totalAllocations),
+        std::printf("filtered-line 一千次共 %llu 次 / %llu 字节；同一条放行时 %llu 次 / %llu 字节\n", static_cast<unsigned long long>(filteredProfile.totalAllocations),
+                    static_cast<unsigned long long>(filteredProfile.totalBytes), static_cast<unsigned long long>(acceptedProfile.totalAllocations),
                     static_cast<unsigned long long>(acceptedProfile.totalBytes));
 #ifdef NDEBUG
-        EXPECT_EQ(filteredProfile.totalAllocations, kFilteredLineTotalAllocationsPerThousand)
-                << "被过滤的日志还在为消息体取堆：等级过滤排在了拷贝之后";
-        EXPECT_EQ(acceptedProfile.totalAllocations, kLogLineTotalAllocationsPerThousand)
-                << "对照形状的读数不对，上面那条零分配断言也就失去了意义";
+        EXPECT_EQ(filteredProfile.totalAllocations, kFilteredLineTotalAllocationsPerThousand) << "被过滤的日志还在为消息体取堆：等级过滤排在了拷贝之后";
+        EXPECT_EQ(acceptedProfile.totalAllocations, kLogLineTotalAllocationsPerThousand) << "对照形状的读数不对，上面那条零分配断言也就失去了意义";
 #endif
     }
 
@@ -285,17 +282,13 @@ namespace AsynGyanis::Base
     {
         std::array<char, kTimestampTextBufferSize> buffer{};
 
-        const auto renderOnce = [&buffer]
-        {
-            return formatTimestampText(buffer, std::chrono::system_clock::now()).size();
-        };
+        const auto renderOnce = [&buffer] { return formatTimestampText(buffer, std::chrono::system_clock::now()).size(); };
         ASSERT_EQ(renderOnce(), kTimestampTextCharacters) << "渲染出的文本长度变了，这条读数对应的形状就不对";
 
         const AllocationProfile profile = measurePerOperation(renderOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * kTimestampTextCharacters);
 #ifdef NDEBUG
-        EXPECT_EQ(profile.totalAllocations, kStackBufferRenderTotalAllocationsPerThousand)
-                << "时刻渲染开始碰堆了：缓存没命中，还是缓冲被换成了 owning 串？";
+        EXPECT_EQ(profile.totalAllocations, kStackBufferRenderTotalAllocationsPerThousand) << "时刻渲染开始碰堆了：缓存没命中，还是缓冲被换成了 owning 串？";
 #endif
     }
 
@@ -308,17 +301,13 @@ namespace AsynGyanis::Base
     {
         std::array<char, kTimestampTextBufferSize> buffer{};
 
-        const auto renderOwning = [&buffer]
-        {
-            return std::string{formatTimestampText(buffer, std::chrono::system_clock::now())}.size();
-        };
+        const auto renderOwning = [&buffer] { return std::string{formatTimestampText(buffer, std::chrono::system_clock::now())}.size(); };
         ASSERT_EQ(renderOwning(), kTimestampTextCharacters);
 
         const AllocationProfile profile = measurePerOperation(renderOwning);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * kTimestampTextCharacters);
 #ifdef NDEBUG
-        EXPECT_EQ(profile.totalAllocations, kOwningTimestampTextTotalAllocationsPerThousand)
-                << "owning 文本那一次分配没了，说明对照形状少做了事，这条判据也就失去意义";
+        EXPECT_EQ(profile.totalAllocations, kOwningTimestampTextTotalAllocationsPerThousand) << "owning 文本那一次分配没了，说明对照形状少做了事，这条判据也就失去意义";
 #endif
     }
 
@@ -342,13 +331,11 @@ namespace AsynGyanis::Base
             return 1U;
         };
         resetAllocationHistogram();
-        const AllocationProfile referenceProfile = measurePerOperation(logReferenceOnce);
+        const AllocationProfile   referenceProfile   = measurePerOperation(logReferenceOnce);
         const AllocationHistogram referenceHistogram = snapshotAllocationHistogram();
 
         Logger logger("async_path");
-        logger.addSink(std::make_unique<AsyncSink>(std::make_unique<WorkerParkingSink>(released),
-                                                  kMeasurementIterations * 4U,
-                                                  AsyncSink::OverflowPolicy::Block));
+        logger.addSink(std::make_unique<AsyncSink>(std::make_unique<WorkerParkingSink>(released), kMeasurementIterations * 4U, AsyncSink::OverflowPolicy::Block));
 
         const auto logOnce = [&logger]
         {
@@ -358,7 +345,7 @@ namespace AsynGyanis::Base
         // 先把工作线程钉在第一条上，测量窗口内队列只进不出
         logOnce();
         resetAllocationHistogram();
-        const AllocationProfile profile = measurePerOperation(logOnce);
+        const AllocationProfile   profile        = measurePerOperation(logOnce);
         const AllocationHistogram asyncHistogram = snapshotAllocationHistogram();
 
         released->store(true, std::memory_order_release);
@@ -367,15 +354,12 @@ namespace AsynGyanis::Base
         EXPECT_EQ(referenceProfile.totalAllocations, referenceHistogram[0U] + referenceHistogram[1U] + referenceHistogram[2U] + referenceHistogram[3U])
                 << "直方图的桶没兜住同步参照的分配形状，下面的差值就没有意义";
 #ifdef NDEBUG
-        EXPECT_LE(profile.totalAllocations, kMaximumAsyncLineTotalAllocationsPerThousand)
-                << "投递一条日志又在逐条取堆：队列容器退化成了每元素一块的分块";
+        EXPECT_LE(profile.totalAllocations, kMaximumAsyncLineTotalAllocationsPerThousand) << "投递一条日志又在逐条取堆：队列容器退化成了每元素一块的分块";
 #endif
 
         // 标签走 ASCII：控制台代码页会把中文读数弄成乱码，取不到数就白跑一轮
-        std::printf("async-line per-op=%llu total=%llu bytes=%llu\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations),
-                    static_cast<unsigned long long>(profile.totalBytes));
+        std::printf("async-line per-op=%llu total=%llu bytes=%llu\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations), static_cast<unsigned long long>(profile.totalBytes));
         printHistogramDelta("async-minus-sync", referenceHistogram, asyncHistogram);
     }
 
@@ -388,7 +372,7 @@ namespace AsynGyanis::Base
     TEST(LogHotPathAllocations, ConsoleSinkLineAllocationReading)
     {
         std::ostringstream captured;
-        auto *const originalBuffer = std::cout.rdbuf(captured.rdbuf());
+        auto *const        originalBuffer = std::cout.rdbuf(captured.rdbuf());
 
         // 参照形状：同一条日志只走到「事件构造」为止，格式化与落地都不计。两条读数相减，
         // 差出来的就是「格式化 + 写控制台」这一段付的分配
@@ -410,7 +394,7 @@ namespace AsynGyanis::Base
             logger.log(LogLevel::Info, kMessageText);
             return 1U;
         };
-        logOnce();                       // 先让行缓冲把容量长出来，测的是稳态
+        logOnce(); // 先让行缓冲把容量长出来，测的是稳态
         resetAllocationHistogram();
         const AllocationProfile profile = measurePerOperation(logOnce);
 
@@ -421,13 +405,10 @@ namespace AsynGyanis::Base
         // 上限给 1/64 的增长余量：行缓冲第一次长容量那几次要取堆，具体几次取决于实现的分因子，
         // 不钉死。真正的判据是「整段格式化 + 写出不超过事件构造那一段」——未修时这一千行多付
         // 一千次（std::format 造结果串），远超本上限
-        EXPECT_LE(profile.totalAllocations, referenceProfile.totalAllocations + kMeasurementIterations / 64U)
-                << "拼那一行还在逐条取堆：版式没有直接落进 Sink 的行缓冲";
+        EXPECT_LE(profile.totalAllocations, referenceProfile.totalAllocations + kMeasurementIterations / 64U) << "拼那一行还在逐条取堆：版式没有直接落进 Sink 的行缓冲";
 #endif
-        std::printf("console-line per-op=%llu total=%llu bytes=%llu (ref total=%llu)\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations),
-                    static_cast<unsigned long long>(profile.totalBytes),
+        std::printf("console-line per-op=%llu total=%llu bytes=%llu (ref total=%llu)\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations), static_cast<unsigned long long>(profile.totalBytes),
                     static_cast<unsigned long long>(referenceProfile.totalAllocations));
     }
 
@@ -454,7 +435,7 @@ namespace AsynGyanis::Base
             return 1U;
         };
         resetAllocationHistogram();
-        const AllocationProfile referenceProfile = measurePerOperation(logReferenceOnce);
+        const AllocationProfile   referenceProfile   = measurePerOperation(logReferenceOnce);
         const AllocationHistogram referenceHistogram = snapshotAllocationHistogram();
         EXPECT_EQ(referenceProfile.resultSum, kMeasurementIterations);
 
@@ -474,14 +455,12 @@ namespace AsynGyanis::Base
             return 1U;
         };
         resetAllocationHistogram();
-        const AllocationProfile profile = measurePerOperation(pushOnce);
+        const AllocationProfile   profile        = measurePerOperation(pushOnce);
         const AllocationHistogram queueHistogram = snapshotAllocationHistogram();
 
         EXPECT_EQ(profile.resultSum, kMeasurementIterations);
-        std::printf("queue-push per-op=%llu total=%llu bytes=%llu\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations),
-                    static_cast<unsigned long long>(profile.totalBytes));
+        std::printf("queue-push per-op=%llu total=%llu bytes=%llu\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations), static_cast<unsigned long long>(profile.totalBytes));
         printHistogramDelta("queue-minus-sync", referenceHistogram, queueHistogram);
     }
 
@@ -497,23 +476,16 @@ namespace AsynGyanis::Base
         const std::string threadIdSnapshot   = "tid-123456";
         const std::string loggerNameSnapshot = "json_path_logger";
         const std::string messageText(kMessageText);
-        const LogEvent    event{LogLevel::Info, TimestampMoment{}, threadIdSnapshot, SourceLocation{}, loggerNameSnapshot,
-                                messageText};
+        const LogEvent    event{LogLevel::Info, TimestampMoment{}, threadIdSnapshot, SourceLocation{}, loggerNameSnapshot, messageText};
 
         JsonFormatter jsonFormatter;
-        const auto    jsonOnce = [&jsonFormatter, &event]
-        {
-            return static_cast<std::uint64_t>(jsonFormatter.format(event).size());
-        };
-        jsonOnce();                        // 先跑一次把一次性构造摘出去，测的是稳态
+        const auto    jsonOnce = [&jsonFormatter, &event] { return static_cast<std::uint64_t>(jsonFormatter.format(event).size()); };
+        jsonOnce(); // 先跑一次把一次性构造摘出去，测的是稳态
         resetAllocationHistogram();
         const AllocationProfile jsonProfile = measurePerOperation(jsonOnce);
 
         DefaultFormatter textFormatter;
-        const auto       textOnce = [&textFormatter, &event]
-        {
-            return static_cast<std::uint64_t>(textFormatter.format(event).size());
-        };
+        const auto       textOnce = [&textFormatter, &event] { return static_cast<std::uint64_t>(textFormatter.format(event).size()); };
         textOnce();
         resetAllocationHistogram();
         const AllocationProfile textProfile = measurePerOperation(textOnce);
@@ -524,11 +496,8 @@ namespace AsynGyanis::Base
 
         // 拆一半：`dump()` 单独付几次堆。样本对象由真实输出解析回来，形状与实现一致，
         // 用例里不另抄一份字段表（抄一份就会漂移）。剩下那半就是「建 DOM + 五对键值」的成本。
-        const nlohmann::json sample = nlohmann::json::parse(jsonFormatter.format(event));
-        const auto           dumpOnce = [&sample]
-        {
-            return static_cast<std::uint64_t>(sample.dump().size());
-        };
+        const nlohmann::json sample   = nlohmann::json::parse(jsonFormatter.format(event));
+        const auto           dumpOnce = [&sample] { return static_cast<std::uint64_t>(sample.dump().size()); };
         dumpOnce();
         resetAllocationHistogram();
         const AllocationProfile dumpProfile = measurePerOperation(dumpOnce);
@@ -551,22 +520,16 @@ namespace AsynGyanis::Base
 #ifdef NDEBUG
         // 摊进留容量缓冲的那一段应当几乎不碰堆：实测每行 2 次（序列化器自带的缩进缓冲一块，
         // 加首行长容量那一次）。上限给到 3，退化回「每条现造一份输出串」的形状（实测 7 次）就会红
-        EXPECT_LE(intoProfile.totalAllocations, kMeasurementIterations * 3U)
-                << "摊进复用缓冲的这一段又开始每条取堆了";
+        EXPECT_LE(intoProfile.totalAllocations, kMeasurementIterations * 3U) << "摊进复用缓冲的这一段又开始每条取堆了";
         // 独立出口同理：实测每行 3 次（新建串 + 一次长容量 + 序列化器），给到 5 留余量
-        EXPECT_LE(jsonProfile.totalAllocations, kMeasurementIterations * 5U)
-                << "JSON 版式又开始每条重建字段对象或输出串";
+        EXPECT_LE(jsonProfile.totalAllocations, kMeasurementIterations * 5U) << "JSON 版式又开始每条重建字段对象或输出串";
 #endif
 
         std::printf("json-line per-op=%llu total=%llu bytes=%llu (into-reused-buffer total=%llu bytes=%llu; dump-only total=%llu bytes=%llu; text-line total=%llu bytes=%llu)\n",
-                    static_cast<unsigned long long>(jsonProfile.allocationsPerOperation),
-                    static_cast<unsigned long long>(jsonProfile.totalAllocations),
-                    static_cast<unsigned long long>(jsonProfile.totalBytes),
-                    static_cast<unsigned long long>(intoProfile.totalAllocations),
-                    static_cast<unsigned long long>(intoProfile.totalBytes),
-                    static_cast<unsigned long long>(dumpProfile.totalAllocations),
-                    static_cast<unsigned long long>(dumpProfile.totalBytes),
-                    static_cast<unsigned long long>(textProfile.totalAllocations),
+                    static_cast<unsigned long long>(jsonProfile.allocationsPerOperation), static_cast<unsigned long long>(jsonProfile.totalAllocations),
+                    static_cast<unsigned long long>(jsonProfile.totalBytes), static_cast<unsigned long long>(intoProfile.totalAllocations),
+                    static_cast<unsigned long long>(intoProfile.totalBytes), static_cast<unsigned long long>(dumpProfile.totalAllocations),
+                    static_cast<unsigned long long>(dumpProfile.totalBytes), static_cast<unsigned long long>(textProfile.totalAllocations),
                     static_cast<unsigned long long>(textProfile.totalBytes));
     }
 } // namespace AsynGyanis::Base

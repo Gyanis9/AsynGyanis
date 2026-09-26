@@ -5,8 +5,7 @@
 namespace AsynGyanis::Base
 {
     ConfigKeyNotFoundException::ConfigKeyNotFoundException(const std::string &key, const std::source_location &sourceLocation) :
-        ConfigException("配置键不存在：'" + key + "'", sourceLocation)
-        , m_key(key)
+        ConfigException("配置键不存在：'" + key + "'", sourceLocation), m_key(key)
     {
     }
 

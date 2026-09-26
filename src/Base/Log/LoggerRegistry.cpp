@@ -90,7 +90,7 @@ namespace AsynGyanis::Base
     Logger &LoggerRegistry::getRootLogger()
     {
         // 每条 LOG_* 宏都走这里：命中缓存时只有一次原子读，不加锁、也不碰 shared_ptr
-        //（atomic<shared_ptr> 的 load 在 MSVC/libstdc++ 上要走内部自旋锁）。
+        // （atomic<shared_ptr> 的 load 在 MSVC/libstdc++ 上要走内部自旋锁）。
         // 指针的生命期由本类的退休约定保证：被替换/注销/清理的日志器都移入退休表而不是销毁
         if (Logger *const cachedLogger = m_cachedRootLoggerPointer.load(std::memory_order_acquire))
         {
@@ -177,7 +177,7 @@ namespace AsynGyanis::Base
 
     void LoggerRegistry::clear()
     {
-        std::vector<std::shared_ptr<Logger> > displacedLoggers;
+        std::vector<std::shared_ptr<Logger>> displacedLoggers;
         {
             const std::unique_lock lock(m_mutex);
             clearCachedRootLogger();
@@ -204,7 +204,7 @@ namespace AsynGyanis::Base
     {
         // 换出到局部变量、在锁外析构：退休日志器自己也可能持有仍在途的快照引用，
         // 持锁期间等它们释放会把其他线程的日志调用一起卡住
-        std::vector<std::shared_ptr<Logger> > retiredLoggers;
+        std::vector<std::shared_ptr<Logger>> retiredLoggers;
         {
             const std::unique_lock lock(m_mutex);
             retiredLoggers.swap(m_retiredLoggers);
@@ -217,7 +217,7 @@ namespace AsynGyanis::Base
         // 回调必须在锁外执行——回调里再调 getLogger/registerLogger/clear 会重复获取
         // shared_mutex（不可重入）从而自死锁；同时快照持有 shared_ptr，
         // 遍历期间他人注销日志器也不会让正在回调的对象被销毁
-        std::vector<std::shared_ptr<Logger> > snapshot;
+        std::vector<std::shared_ptr<Logger>> snapshot;
         {
             std::shared_lock lock(m_mutex);
             snapshot.reserve(m_loggers.size());
@@ -254,9 +254,6 @@ namespace AsynGyanis::Base
 
     void LoggerRegistry::setGlobalLevel(const LogLevel level) const
     {
-        forEachLogger([level](Logger &logger)
-        {
-            logger.setLevel(level);
-        });
+        forEachLogger([level](Logger &logger) { logger.setLevel(level); });
     }
 } // namespace AsynGyanis::Base

@@ -101,11 +101,11 @@ namespace AsynGyanis::Net
          */
         struct LocalSettings
         {
-            std::size_t qpackMaximumTableCapacityByteCount{4096}; ///< 本端解码侧动态表容量上限（RFC 9204 §5.1）
-            std::size_t qpackMaximumBlockedStreamCount{100};      ///< 本端允许同时阻塞的头块数（RFC 9204 §5.2）
+            std::size_t qpackMaximumTableCapacityByteCount{4096};      ///< 本端解码侧动态表容量上限（RFC 9204 §5.1）
+            std::size_t qpackMaximumBlockedStreamCount{100};           ///< 本端允许同时阻塞的头块数（RFC 9204 §5.2）
             std::size_t maximumFieldSectionSizeByteCount{64U * 1024U}; ///< 本端愿收的最大头段字节数（RFC 9114 §4.2.2）
             std::size_t maximumFrameByteCount{8U * 1024U * 1024U};     ///< 单个帧能缓冲的上限，见 @warning
-            bool isExtendedConnectEnabled{true};                  ///< 是否支持 RFC 9220 的扩展 CONNECT
+            bool        isExtendedConnectEnabled{true};                ///< 是否支持 RFC 9220 的扩展 CONNECT
         };
 
         /**
@@ -116,8 +116,8 @@ namespace AsynGyanis::Net
          * @param callbacks 通知集合；缺哪一项就不发哪一项通知，不因此失败
          * @note 开流失败不抛异常：一条连接建不起 h3 不该把服务端拖垮，上层按 isUsable() 降级
          */
-        Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks)
-            : Http3Connection(std::move(opener), std::move(writer), std::move(crediter), std::move(callbacks), LocalSettings{})
+        Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks) :
+            Http3Connection(std::move(opener), std::move(writer), std::move(crediter), std::move(callbacks), LocalSettings{})
         {
         }
 
@@ -130,8 +130,7 @@ namespace AsynGyanis::Net
          * @param settings 本端能力，写进控制流的 SETTINGS 帧。默认值取不到这里来：`LocalSettings` 的
          *        成员初值属于本类的 complete-class context，写成默认参数在 GCC 下非法（[class.mem]）
          */
-        Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks,
-                        const LocalSettings settings);
+        Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks, const LocalSettings settings);
 
         /**
          * @brief 析构函数：流状态与待发缓冲都是按值的标准容器，无额外资源需要回收
@@ -141,7 +140,7 @@ namespace AsynGyanis::Net
 
         // 禁拷贝：本对象持有三条本端单向流的流号与 QPACK 两侧动态表，复制一份会让两份表各自演进，
         // 之后同一个索引在两边指向不同条目
-        Http3Connection(const Http3Connection &) = delete;
+        Http3Connection(const Http3Connection &)            = delete;
         Http3Connection &operator=(const Http3Connection &) = delete;
 
         /// 三条本端单向流是否都开出来并绑好了
@@ -182,9 +181,7 @@ namespace AsynGyanis::Net
          * @note 头段大小越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE 时按 InvalidLocalState 拒绝：
          *       本端不判就把处置权交给对端，而它常见做法是收掉整条连接（RFC 9114 §4.2.2、§7.2.4.1）
          */
-        [[nodiscard]] std::expected<void, QpackError> submitResponseHead(std::int64_t streamId,
-                                                                        const std::vector<QpackHeaderField> &fieldLines,
-                                                                        bool isEndOfStream);
+        [[nodiscard]] std::expected<void, QpackError> submitResponseHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream);
 
         /**
          * @brief 在某条流上提交响应尾段（正文之后的第二个字段段），并以此收尾这条流
@@ -201,8 +198,7 @@ namespace AsynGyanis::Net
          * @note 调用之前那条响应的正文必须以 `isEndStream=false` 交出：本端方向由这次收尾，
          *       先收尾就没有放尾段的位置了（见 appendResponseBody）
          */
-        [[nodiscard]] std::expected<void, QpackError> submitResponseTrailers(std::int64_t streamId,
-                                                                             const std::vector<QpackHeaderField> &fieldLines);
+        [[nodiscard]] std::expected<void, QpackError> submitResponseTrailers(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines);
 
         /**
          * @brief 追加一段响应正文（编成 DATA 帧排进该流的待发队列）
@@ -211,9 +207,7 @@ namespace AsynGyanis::Net
          * @param isEndStream true 表示正文到此为止
          * @return 成功返回已收下的字节数；失败返回错误
          */
-        [[nodiscard]] std::expected<std::size_t, QpackError> appendResponseBody(std::int64_t streamId,
-                                                                                std::span<const std::uint8_t> bytes,
-                                                                                bool isEndStream);
+        [[nodiscard]] std::expected<std::size_t, QpackError> appendResponseBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream);
 
         /**
          * @brief 该流上还有多少字节没交给传输层
@@ -262,30 +256,30 @@ namespace AsynGyanis::Net
         /// 一条对端流的帧交错状态（控制流与请求流共用同一形状）
         struct StreamState
         {
-            std::optional<Http3FrameReader> reader;          ///< 该流的帧读取器，上限按本端配置建
+            std::optional<Http3FrameReader>       reader;    ///< 该流的帧读取器，上限按本端配置建
             std::unique_ptr<Http3HeaderValidator> validator; ///< 该流的消息头判定器：跨头段与尾段共用一份，才认得出「尾段必须在头段之后」
             /// 本端写出侧的判定器：与上面那份**分开**，因为一条流上两个方向各有一套判据
             /// （请求侧是 Request 种类、响应侧是 Response 种类），而且同样要跨头段与尾段累积状态
             std::unique_ptr<Http3HeaderValidator> responseValidator;
-            std::uint64_t fedByteCount{0};                   ///< 交给该流读取器的字节总数
-            std::uint64_t creditedByteCount{0};              ///< 已归还接收窗口的字节数，不含 DATA 载荷
-            std::uint64_t receivedBodyByteCount{0};          ///< 已交出的 DATA 总长，与 content-length 比对
-            std::uint64_t declaredContentLengthByteCount{0}; ///< 头段声明的正文长度
-            bool hasContentLengthDeclaration{false};         ///< 头段是否声明了 content-length
-            bool isHeaderSectionSeen{false};                 ///< 是否已收到过头段（DATA 必须排在它之后）
-            bool isHeadRejected{false};                      ///< 头段已被判畸形并交回会话作答，后续字节只看不再解释
-            bool isTrailersSeen{false};                      ///< 尾段只允许一个
-            bool isBodyStarted{false};                       ///< 是否已收到 DATA：再来的头段就是尾段
-            bool isPeerFinished{false};                      ///< 对端已 END_STREAM
-            bool isLocalFinished{false};                     ///< 本端已收尾
-            bool isAbandoned{false};                         ///< 已因错误重置，不再产生任何事件
+            std::uint64_t                         fedByteCount{0};                    ///< 交给该流读取器的字节总数
+            std::uint64_t                         creditedByteCount{0};               ///< 已归还接收窗口的字节数，不含 DATA 载荷
+            std::uint64_t                         receivedBodyByteCount{0};           ///< 已交出的 DATA 总长，与 content-length 比对
+            std::uint64_t                         declaredContentLengthByteCount{0};  ///< 头段声明的正文长度
+            bool                                  hasContentLengthDeclaration{false}; ///< 头段是否声明了 content-length
+            bool                                  isHeaderSectionSeen{false};         ///< 是否已收到过头段（DATA 必须排在它之后）
+            bool                                  isHeadRejected{false};              ///< 头段已被判畸形并交回会话作答，后续字节只看不再解释
+            bool                                  isTrailersSeen{false};              ///< 尾段只允许一个
+            bool                                  isBodyStarted{false};               ///< 是否已收到 DATA：再来的头段就是尾段
+            bool                                  isPeerFinished{false};              ///< 对端已 END_STREAM
+            bool                                  isLocalFinished{false};             ///< 本端已收尾
+            bool                                  isAbandoned{false};                 ///< 已因错误重置，不再产生任何事件
         };
 
         /// 一条流的待发字节
         struct OutboundStream
         {
-            std::string bytes{};     ///< 尚未交给传输层的字节
-            bool isEndStream{false}; ///< 交完这些字节本端就在该流上收尾
+            std::string bytes{};            ///< 尚未交给传输层的字节
+            bool        isEndStream{false}; ///< 交完这些字节本端就在该流上收尾
         };
 
         /**
@@ -317,8 +311,7 @@ namespace AsynGyanis::Net
         std::expected<void, QpackError> handleControlFrame(const Http3Frame &frame);
 
         /// 把一个解完的头段先整体判定、再逐字段交给上层
-        [[nodiscard]] bool deliverFieldSection(std::int64_t streamId, StreamState &state,
-                                               const std::vector<QpackHeaderField> &fields, bool isTrailers);
+        [[nodiscard]] bool deliverFieldSection(std::int64_t streamId, StreamState &state, const std::vector<QpackHeaderField> &fields, bool isTrailers);
 
         /// 编码器流补齐了内容之后续解某个挂起流上的头段
         void deliverResumedFieldSection(std::int64_t streamId);
@@ -349,9 +342,8 @@ namespace AsynGyanis::Net
          * @param isEndOfStream true 表示交完这段本端在该流上收尾
          * @return 成功返回空；失败返回错误，此时一个字节也没排进待发队列
          */
-        [[nodiscard]] std::expected<void, QpackError> submitResponseFieldSection(std::int64_t streamId,
-                                                                                 const std::vector<QpackHeaderField> &fieldLines,
-                                                                                 bool isTrailers, bool isEndOfStream);
+        [[nodiscard]] std::expected<void, QpackError> submitResponseFieldSection(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isTrailers,
+                                                                                 bool isEndOfStream);
 
         /**
          * @brief 把一帧「帧头 + 载荷」直接排进该流的待发缓冲，不为载荷另起临时串
@@ -360,8 +352,7 @@ namespace AsynGyanis::Net
          * @param payload 帧载荷视图，只在本调用期间被读
          * @param isEndStream true 表示交完这些字节本端在该流上收尾
          */
-        void queueOutboundFrame(std::int64_t streamId, Http3FrameType frameType, std::span<const std::uint8_t> payload,
-                                bool isEndStream);
+        void queueOutboundFrame(std::int64_t streamId, Http3FrameType frameType, std::span<const std::uint8_t> payload, bool isEndStream);
 
         /**
          * @brief 取（必要时新建）某条流的待发缓冲
@@ -399,45 +390,45 @@ namespace AsynGyanis::Net
 
         static constexpr std::size_t kMaximumFlushRounds = 64; ///< 一次 flush 最多搬多少段
 
-        StreamOpener m_streamOpener;      ///< 开本端单向流的口
-        StreamWriter m_streamWriter;      ///< 一条流上待发字节的出口
-        StreamCrediter m_streamCrediter;  ///< 已消费字节归还接收窗口的口
-        Callbacks m_callbacks;            ///< 交给上层的通知集合，缺哪一项就不发哪一项
-        LocalSettings m_localSettings;    ///< 本端公布的能力，构造时写进 SETTINGS 帧
+        StreamOpener   m_streamOpener;   ///< 开本端单向流的口
+        StreamWriter   m_streamWriter;   ///< 一条流上待发字节的出口
+        StreamCrediter m_streamCrediter; ///< 已消费字节归还接收窗口的口
+        Callbacks      m_callbacks;      ///< 交给上层的通知集合，缺哪一项就不发哪一项
+        LocalSettings  m_localSettings;  ///< 本端公布的能力，构造时写进 SETTINGS 帧
 
         std::optional<QpackEncoder> m_qpackEncoder; ///< 本端编码器：写自己的动态表，受对端公布容量约束
         std::optional<QpackDecoder> m_qpackDecoder; ///< 本端解码器：受本端公布的容量约束
         // 解码的落点与待发的解码器流字节都按连接复用：请求头块的字段行是逐条 owning 串，
         // 每段新建一份就等于每条请求都付一遍「解出→交给请求存储→整份作废」。两处解码（当场解
         // 与解除挂起后续解）都在事件循环线程上串行推进，且字段行在返回前就已交给请求存储，不跨用。
-        std::vector<QpackHeaderField> m_inboundFieldLines{}; ///< 请求字段行的复用落点
-        std::string m_decoderStreamScratch{};               ///< 本次解码该发的解码器流字节的复用缓冲
+        std::vector<QpackHeaderField> m_inboundFieldLines{};    ///< 请求字段行的复用落点
+        std::string                   m_decoderStreamScratch{}; ///< 本次解码该发的解码器流字节的复用缓冲
 
-        std::int64_t m_localControlStreamId{-1};  ///< 本端控制流号
-        std::int64_t m_localEncoderStreamId{-1};  ///< 本端 QPACK 编码器流号
-        std::int64_t m_localDecoderStreamId{-1};  ///< 本端 QPACK 解码器流号
-        std::int64_t m_peerControlStreamId{-1};   ///< 对端控制流号
-        std::int64_t m_peerEncoderStreamId{-1};   ///< 对端编码器流号
-        std::int64_t m_peerDecoderStreamId{-1};   ///< 对端解码器流号
-        std::map<std::int64_t, PeerStreamKind> m_peerStreamKinds;   ///< 已归类的对端单向流
-        std::map<std::int64_t, std::string> m_peerStreamTypeBuffers; ///< 类型前缀还没收全的对端单向流的残留字节
-        std::uint64_t m_peerMaximumBlockedStreamCount{0};            ///< 对端允许阻塞的头块数，编码器据此决定
-        std::size_t m_peerMaximumFieldSectionSizeByteCount{0};       ///< 对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE，0 是「不约束」（RFC 9114 §7.2.4.1 默认不限）
+        std::int64_t                           m_localControlStreamId{-1};         ///< 本端控制流号
+        std::int64_t                           m_localEncoderStreamId{-1};         ///< 本端 QPACK 编码器流号
+        std::int64_t                           m_localDecoderStreamId{-1};         ///< 本端 QPACK 解码器流号
+        std::int64_t                           m_peerControlStreamId{-1};          ///< 对端控制流号
+        std::int64_t                           m_peerEncoderStreamId{-1};          ///< 对端编码器流号
+        std::int64_t                           m_peerDecoderStreamId{-1};          ///< 对端解码器流号
+        std::map<std::int64_t, PeerStreamKind> m_peerStreamKinds;                  ///< 已归类的对端单向流
+        std::map<std::int64_t, std::string>    m_peerStreamTypeBuffers;            ///< 类型前缀还没收全的对端单向流的残留字节
+        std::uint64_t                          m_peerMaximumBlockedStreamCount{0}; ///< 对端允许阻塞的头块数，编码器据此决定
+        std::size_t m_peerMaximumFieldSectionSizeByteCount{0};                     ///< 对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE，0 是「不约束」（RFC 9114 §7.2.4.1 默认不限）
 
-        std::map<std::int64_t, StreamState> m_streams;     ///< 对端流（请求流与控制流）的状态
-        std::map<std::int64_t, OutboundStream> m_outbound; ///< 各流的待发字节
-        std::deque<std::int64_t> m_outboundOrder;          ///< 待发字节的轮转顺序，防止单条流独占一次 flush
+        std::map<std::int64_t, StreamState>    m_streams;       ///< 对端流（请求流与控制流）的状态
+        std::map<std::int64_t, OutboundStream> m_outbound;      ///< 各流的待发字节
+        std::deque<std::int64_t>               m_outboundOrder; ///< 待发字节的轮转顺序，防止单条流独占一次 flush
 
-        bool m_isPeerSettingsReceived{false}; ///< 对端控制流上是否已出现过 SETTINGS 帧
-        std::uint64_t m_maximumPushId{0};     ///< 对端允许的最大推送标识；本服务端不推送，只记录
-        bool m_isDraining{false};             ///< 是否已发出 GOAWAY 排空通告
+        bool          m_isPeerSettingsReceived{false}; ///< 对端控制流上是否已出现过 SETTINGS 帧
+        std::uint64_t m_maximumPushId{0};              ///< 对端允许的最大推送标识；本服务端不推送，只记录
+        bool          m_isDraining{false};             ///< 是否已发出 GOAWAY 排空通告
         /// 排空通告里的标识：等于或高于它的请求流一律拒绝（RFC 9114 §5.2）。0 表示一条都没受理过
         std::int64_t m_rejectedFromStreamId{0};
         /// 已受理的最大对端请求流号；-1 表示还没受理过任何请求流，决定 GOAWAY 该报哪个标识
-        std::int64_t m_lastProcessedRequestStreamId{-1};
-        bool m_isUsable{false};                                ///< 三条本端单向流是否都开出来了
-        bool m_isBroken{false};                                ///< 是否已作废：作废后除取走待发字节与销毁外没有合法动作
+        std::int64_t   m_lastProcessedRequestStreamId{-1};
+        bool           m_isUsable{false};                              ///< 三条本端单向流是否都开出来了
+        bool           m_isBroken{false};                              ///< 是否已作废：作废后除取走待发字节与销毁外没有合法动作
         Http3ErrorCode m_connectionErrorCode{Http3ErrorCode::NoError}; ///< 作废原因对应的线上错误码
-        std::string m_connectionErrorReason;                   ///< 作废原因的中文文本，供日志与关闭帧取用
+        std::string    m_connectionErrorReason;                        ///< 作废原因的中文文本，供日志与关闭帧取用
     };
 } // namespace AsynGyanis::Net

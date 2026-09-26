@@ -37,9 +37,9 @@ namespace AsynGyanis::Net
      */
     struct HttpOutboundEndpointKey
     {
-        std::string host;              ///< 主机名或 IP 字面量，按 URL 给出的原文存（不做大小写归一）
-        std::uint16_t port{0};         ///< 端口
-        bool isTls{false};             ///< 是否为 TLS 连接
+        std::string   host;         ///< 主机名或 IP 字面量，按 URL 给出的原文存（不做大小写归一）
+        std::uint16_t port{0};      ///< 端口
+        bool          isTls{false}; ///< 是否为 TLS 连接
 
         /**
          * @brief 两个键是否指向同一条可复用的通路
@@ -74,8 +74,7 @@ namespace AsynGyanis::Net
          * @param stream 已连上的明文流
          * @return std::unique_ptr<HttpOutboundConnection> 池化连接
          */
-        [[nodiscard]] static std::unique_ptr<HttpOutboundConnection>
-                forPlain(HttpOutboundEndpointKey endpointKey, TcpStream stream);
+        [[nodiscard]] static std::unique_ptr<HttpOutboundConnection> forPlain(HttpOutboundEndpointKey endpointKey, TcpStream stream);
 
         /**
          * @brief 接管一条已完成 TLS 握手的连接
@@ -83,20 +82,25 @@ namespace AsynGyanis::Net
          * @param socket 已握手的 TLS 套接字（本对象接管其所有权）
          * @return std::unique_ptr<HttpOutboundConnection> 池化连接
          */
-        [[nodiscard]] static std::unique_ptr<HttpOutboundConnection>
-                forSecure(HttpOutboundEndpointKey endpointKey, std::unique_ptr<Core::TlsSocket> socket);
+        [[nodiscard]] static std::unique_ptr<HttpOutboundConnection> forSecure(HttpOutboundEndpointKey endpointKey, std::unique_ptr<Core::TlsSocket> socket);
 
-        HttpOutboundConnection(const HttpOutboundConnection &) = delete;
+        HttpOutboundConnection(const HttpOutboundConnection &)            = delete;
         HttpOutboundConnection &operator=(const HttpOutboundConnection &) = delete;
-        HttpOutboundConnection(HttpOutboundConnection &&) = delete;
-        HttpOutboundConnection &operator=(HttpOutboundConnection &&) = delete;
+        HttpOutboundConnection(HttpOutboundConnection &&)                 = delete;
+        HttpOutboundConnection &operator=(HttpOutboundConnection &&)      = delete;
         ~HttpOutboundConnection();
 
         /// 本连接的可复用身份
-        [[nodiscard]] const HttpOutboundEndpointKey &endpointKey() const noexcept { return m_endpointKey; }
+        [[nodiscard]] const HttpOutboundEndpointKey &endpointKey() const noexcept
+        {
+            return m_endpointKey;
+        }
 
         /// 本连接用的解析器：调用方在喂字节之前标记 HEAD 应答，收完一条后不必复位（reset 由本类做）
-        [[nodiscard]] HttpResponseParser &parser() noexcept { return m_parser; }
+        [[nodiscard]] HttpResponseParser &parser() noexcept
+        {
+            return m_parser;
+        }
 
         /**
          * @brief 读一段字节
@@ -139,14 +143,13 @@ namespace AsynGyanis::Net
         void prepareForNextRequest() noexcept;
 
     private:
-        HttpOutboundConnection(HttpOutboundEndpointKey endpointKey, std::unique_ptr<TcpStream> plainSocket,
-                               std::unique_ptr<Core::TlsSocket> tlsSocket);
+        HttpOutboundConnection(HttpOutboundEndpointKey endpointKey, std::unique_ptr<TcpStream> plainSocket, std::unique_ptr<Core::TlsSocket> tlsSocket);
 
         /// 两条通路各持其一，另一个恒为空——分发方式与 HTTP/2 会话里的传输选择一致（按 has_value 分支）
-        std::unique_ptr<TcpStream> m_plainSocket;
+        std::unique_ptr<TcpStream>       m_plainSocket;
         std::unique_ptr<Core::TlsSocket> m_tlsSocket;
-        HttpOutboundEndpointKey m_endpointKey;
-        HttpResponseParser m_parser;
+        HttpOutboundEndpointKey          m_endpointKey;
+        HttpResponseParser               m_parser;
         /// 一次收发失败或对端收口就置否：连接能不能复用只看这个字，不看描述符还在不在——
         /// 描述符健在而字节序已经乱了（读到半条响应、写到一半被拒）的连接绝不能再交给别人
         bool m_isOpen{true};
@@ -202,7 +205,7 @@ namespace AsynGyanis::Net
          */
         explicit HttpOutboundConnectionPool(Config config) noexcept;
 
-        HttpOutboundConnectionPool(const HttpOutboundConnectionPool &) = delete;
+        HttpOutboundConnectionPool(const HttpOutboundConnectionPool &)            = delete;
         HttpOutboundConnectionPool &operator=(const HttpOutboundConnectionPool &) = delete;
 
         /**
@@ -218,7 +221,10 @@ namespace AsynGyanis::Net
          * @details 存在的理由是「响应正文上限」这件事由使用方定，而连接是 HttpClient 建的：池把这一
          *          份配置交出去，两条通路（HTTP/1.1 的解析器与 HTTP/2 的按流缓冲）才吃得到同一个数
          */
-        [[nodiscard]] const Config &config() const noexcept { return m_config; }
+        [[nodiscard]] const Config &config() const noexcept
+        {
+            return m_config;
+        }
 
         /**
          * @brief 取一条可复用的空闲连接，并顺手收掉过期与已被对端关掉的
@@ -297,8 +303,7 @@ namespace AsynGyanis::Net
          * @note 等待本身不设时限：领导者那条建连被它自己的请求时限管着，它一结算这里就醒。
          *       醒来之后本端仍要自己算剩余预算——这一段等待可能已经吃掉了一部分。
          */
-        [[nodiscard]] HttpEstablishmentAwait awaitEstablishment(const HttpOutboundEndpointKey &endpointKey,
-                                                                Core::EventLoop &loop);
+        [[nodiscard]] HttpEstablishmentAwait awaitEstablishment(const HttpOutboundEndpointKey &endpointKey, Core::EventLoop &loop);
 
     private:
         /// 端点键在记账表里的文本形态（表按字符串分组，转换只在这一处）
@@ -310,7 +315,7 @@ namespace AsynGyanis::Net
         struct IdleEntry
         {
             std::unique_ptr<HttpOutboundConnection> connection;
-            Clock::time_point idleSince;
+            Clock::time_point                       idleSince;
         };
 
         /// 按键分组的空闲连接：键的顺序不稳定问题不成问题（这里只按组取用，不对外给出次序）

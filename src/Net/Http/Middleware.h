@@ -26,8 +26,8 @@
 #include "Base/Log/SourceLocation.h"
 
 #include <algorithm>
-#include <chrono>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -147,10 +147,8 @@ namespace AsynGyanis::Net
 
         // next 只按引用捕获下游状态，不进 std::function 的对象里再复制一份 handler，
         // 否则每层中间件都会拷贝一次终点 std::function（大 lambda 的捕获会退化成每请求堆分配）
-        co_await m_middlewares[index](request, response, [this, index, &request, &response, &handler]() -> Core::Task<void>
-        {
-            co_await invoke(index + 1, request, response, handler);
-        });
+        co_await m_middlewares[index](request, response,
+                                      [this, index, &request, &response, &handler]() -> Core::Task<void> { co_await invoke(index + 1, request, response, handler); });
     }
 
     // ============================================================================
@@ -174,9 +172,9 @@ namespace AsynGyanis::Net
          */
         struct TimeoutGuardState
         {
-            bool isChainFinished{false};      ///< 业务链是否已经跑完（看门狗据此提前收工）
-            bool isDeadlineReached{false};    ///< 到期标志，由看门狗在超时点位置位
-            bool isTimerUnavailable{false};   ///< 定时器创建失败，本轮不做超时约束
+            bool isChainFinished{false};    ///< 业务链是否已经跑完（看门狗据此提前收工）
+            bool isDeadlineReached{false};  ///< 到期标志，由看门狗在超时点位置位
+            bool isTimerUnavailable{false}; ///< 定时器创建失败，本轮不做超时约束
         };
 
         /**
@@ -195,7 +193,7 @@ namespace AsynGyanis::Net
             {
                 // 每请求一个定时器：Timer 内部只有一个描述符，多个并发请求共用会互相覆盖 epoll 注册
                 Core::Timer timer(loop);
-                const auto deadline = std::chrono::steady_clock::now() + timeout;
+                const auto  deadline = std::chrono::steady_clock::now() + timeout;
 
                 // 指数退避的分片长度，单位毫秒；初值与上限见调用处的常量说明
                 std::chrono::milliseconds slice{kTimeoutWatchdogInitialSliceMs};
@@ -264,8 +262,7 @@ namespace AsynGyanis::Net
 
             // 耗时用毫秒整数：日志里读数量级够用，浮点秒反而把噪声写进眼睛
             const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTimePoint).count();
-            logger->logFormat(Base::LogLevel::Info, Base::SourceLocation::current(),
-                              "HTTP 请求 {} -> {}（{}ms）", request.uri(), response.status(), elapsedMilliseconds);
+            logger->logFormat(Base::LogLevel::Info, Base::SourceLocation::current(), "HTTP 请求 {} -> {}（{}ms）", request.uri(), response.status(), elapsedMilliseconds);
         };
     }
 
@@ -274,11 +271,11 @@ namespace AsynGyanis::Net
      */
     struct CorsPolicy
     {
-        std::string allowOrigin{"*"};       ///< Access-Control-Allow-Origin 取值，默认放开任意来源
-        std::string allowMethods{"GET, POST, PUT, DELETE, PATCH, OPTIONS"}; ///< 预检应答里声明的方法集合，ASCII 逗号分隔
-        std::string allowHeaders{"Content-Type, Authorization"};            ///< 预检应答里允许的申请头集合
-        std::chrono::seconds maxAge{86400}; ///< 预检结果缓存秒数，0 表示要求每次都发预检
-        bool allowCredentials{false};       ///< 是否声明 Access-Control-Allow-Credentials
+        std::string          allowOrigin{"*"};                                       ///< Access-Control-Allow-Origin 取值，默认放开任意来源
+        std::string          allowMethods{"GET, POST, PUT, DELETE, PATCH, OPTIONS"}; ///< 预检应答里声明的方法集合，ASCII 逗号分隔
+        std::string          allowHeaders{"Content-Type, Authorization"};            ///< 预检应答里允许的申请头集合
+        std::chrono::seconds maxAge{86400};                                          ///< 预检结果缓存秒数，0 表示要求每次都发预检
+        bool                 allowCredentials{false};                                ///< 是否声明 Access-Control-Allow-Credentials
     };
 
     /**
@@ -378,8 +375,7 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("altSvcMiddleware: 通告缓存时长必须为正数；不想被缓存就不要注册本中间件");
         }
-        if (!containsOnlyFieldValueCharacters(alternativeAuthority) ||
-            alternativeAuthority.find_first_of("\";") != std::string_view::npos)
+        if (!containsOnlyFieldValueCharacters(alternativeAuthority) || alternativeAuthority.find_first_of("\";") != std::string_view::npos)
         {
             throw Base::InvalidArgumentException("altSvcMiddleware: 备选端点主机名不能含 CR/LF/NUL/双引号/分号，否则会撕裂 alt-svc 字段值");
         }
@@ -407,9 +403,9 @@ namespace AsynGyanis::Net
      */
     struct TraceContextOptions
     {
-        bool isGeneratedWhenAbsent{true}; ///< 上游没给、或给的形态不合法时，是否新起一条链路
-        bool isSampledByDefault{true};    ///< 新起链路的采样位初值；已存在的链路一律沿用上游的采样位
-        std::string vendorKey{};          ///< 非空时把自己的条目 upsert 进 tracestate，键须合 W3C §3.2.3
+        bool        isGeneratedWhenAbsent{true}; ///< 上游没给、或给的形态不合法时，是否新起一条链路
+        bool        isSampledByDefault{true};    ///< 新起链路的采样位初值；已存在的链路一律沿用上游的采样位
+        std::string vendorKey{};                 ///< 非空时把自己的条目 upsert 进 tracestate，键须合 W3C §3.2.3
     };
 
     /**
@@ -437,13 +433,12 @@ namespace AsynGyanis::Net
     {
         if (!options.vendorKey.empty() && !TraceState::isValidKey(options.vendorKey))
         {
-            throw Base::InvalidArgumentException("traceContextMiddleware: tracestate 的键「" + options.vendorKey
-                                                 + "」不合 W3C §3.2.3（小写字母/数字起头，字符集 a-z 0-9 _ - . @ / *，"
-                                                   "且不得是 congo 或 tircongo）");
+            throw Base::InvalidArgumentException("traceContextMiddleware: tracestate 的键「" + options.vendorKey +
+                                                 "」不合 W3C §3.2.3（小写字母/数字起头，字符集 a-z 0-9 _ - . @ / *，"
+                                                 "且不得是 congo 或 tircongo）");
         }
 
-        return [options = std::move(options)](HttpRequest &request, [[maybe_unused]] HttpResponse &response,
-                                              const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [options = std::move(options)](HttpRequest &request, [[maybe_unused]] HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
             std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
             if (!identifiers.has_value() && options.isGeneratedWhenAbsent)
@@ -458,9 +453,8 @@ namespace AsynGyanis::Net
 
             if (!options.vendorKey.empty() && identifiers.has_value())
             {
-                std::optional<TraceState> parsedState =
-                        TraceState::parse(request.firstHeaderValueView(kTracestateHeaderName).value_or(std::string_view{}));
-                TraceState state;
+                std::optional<TraceState> parsedState = TraceState::parse(request.firstHeaderValueView(kTracestateHeaderName).value_or(std::string_view{}));
+                TraceState                state;
                 if (parsedState.has_value())
                 {
                     state = std::move(*parsedState);
@@ -562,8 +556,7 @@ namespace AsynGyanis::Net
                 {
                     LOG_WARN_FMT("TimeoutMiddleware: 请求已超时，但流式响应的头部早已上线，无法改写成 504；"
                                  "该流将按已发出的状态码收尾（对端不会看到超时语义）");
-                }
-                else
+                } else
                 {
                     // 先重置再填：业务在半路上写的头与正文都可能带着「已经成功」的痕迹，留着会误导客户端
                     response.reset();
@@ -603,12 +596,13 @@ namespace AsynGyanis::Net
         struct WindowBucket
         {
             std::chrono::steady_clock::time_point windowStartTimePoint{std::chrono::steady_clock::now()}; ///< 本窗口起点
-            std::size_t requestCount{0};                                                                  ///< 本窗口已放行的请求数
+            std::size_t                           requestCount{0};                                        ///< 本窗口已放行的请求数
         };
 
         auto bucket = std::make_shared<WindowBucket>();
 
-        return [bucket, maximumRequestCount, windowDuration]([[maybe_unused]] HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [bucket, maximumRequestCount, windowDuration]([[maybe_unused]] HttpRequest &request, HttpResponse &response,
+                                                             const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
             // 先滑动窗口再计数：窗口刚过期的请求应该落进新窗口，而不是被旧窗口的余额拒绝
             const auto nowTimePoint = std::chrono::steady_clock::now();
@@ -659,8 +653,7 @@ namespace AsynGyanis::Net
          * @note 容量必须 ≥ 1：容量小于 1 的桶永远攒不满一个令牌，等于把所有请求都拒掉——
          *       那是配置错误，不是「严格限流」，所以直接抛而不是静默全拒
          */
-        TokenBucket(const double tokensPerSecond, const double burstCapacity) :
-            m_tokensPerSecond(tokensPerSecond), m_burstCapacity(burstCapacity), m_tokenCount(burstCapacity)
+        TokenBucket(const double tokensPerSecond, const double burstCapacity) : m_tokensPerSecond(tokensPerSecond), m_burstCapacity(burstCapacity), m_tokenCount(burstCapacity)
         {
             if (!(m_tokensPerSecond > 0.0))
             {
@@ -682,10 +675,10 @@ namespace AsynGyanis::Net
 
             // 先按经过的时间补令牌，再封顶到桶容量：不封顶的话，空闲一天攒下的令牌够放行一整天的流量，
             // 限流形同虚设。补令牌只算经过的时间，因此长期平均速率恰为配置值
-            const auto nowTimePoint = std::chrono::steady_clock::now();
+            const auto   nowTimePoint   = std::chrono::steady_clock::now();
             const double elapsedSeconds = std::chrono::duration<double>(nowTimePoint - m_lastRefillTimePoint).count();
-            m_tokenCount = std::min(m_burstCapacity, m_tokenCount + elapsedSeconds * m_tokensPerSecond);
-            m_lastRefillTimePoint = nowTimePoint;
+            m_tokenCount                = std::min(m_burstCapacity, m_tokenCount + elapsedSeconds * m_tokensPerSecond);
+            m_lastRefillTimePoint       = nowTimePoint;
 
             if (m_tokenCount < 1.0)
             {
@@ -718,18 +711,17 @@ namespace AsynGyanis::Net
                 return std::chrono::milliseconds::zero();
             }
 
-            const double secondsUntilAvailable = (1.0 - m_tokenCount) / m_tokensPerSecond;
-            const auto millisecondsUntilAvailable =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(secondsUntilAvailable));
+            const double secondsUntilAvailable      = (1.0 - m_tokenCount) / m_tokensPerSecond;
+            const auto   millisecondsUntilAvailable = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(secondsUntilAvailable));
             // 亚毫秒的等待向上取整到 1ms：返回 0 会让调用方以为「立刻就能重试」，反而制造空转
             return std::max(millisecondsUntilAvailable, std::chrono::milliseconds{1});
         }
 
     private:
-        mutable std::mutex                    m_mutex;                ///< 保护下面几项；桶可能被多个循环线程同时取
-        double                                m_tokensPerSecond;      ///< 补令牌速率（个/秒）
-        double                                m_burstCapacity;        ///< 桶容量（瞬时突发上限）
-        double                                m_tokenCount;           ///< 当前令牌数
+        mutable std::mutex                    m_mutex;                                                 ///< 保护下面几项；桶可能被多个循环线程同时取
+        double                                m_tokensPerSecond;                                       ///< 补令牌速率（个/秒）
+        double                                m_burstCapacity;                                         ///< 桶容量（瞬时突发上限）
+        double                                m_tokenCount;                                            ///< 当前令牌数
         std::chrono::steady_clock::time_point m_lastRefillTimePoint{std::chrono::steady_clock::now()}; ///< 上次补令牌的时刻
     };
 
@@ -752,8 +744,7 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("tokenBucketRateLimiterMiddleware: 令牌桶不能为空指针；不需要限流就不要注册本中间件");
         }
 
-        return [bucket = std::move(bucket)]([[maybe_unused]] HttpRequest &request, HttpResponse &response,
-                                           const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [bucket = std::move(bucket)]([[maybe_unused]] HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
             if (!bucket->tryAcquire())
             {
@@ -763,7 +754,7 @@ namespace AsynGyanis::Net
 
                 // Retry-After 的单位是秒（RFC 9110 §10.2.3 的 delta-seconds），因此把毫秒向上取整到秒、
                 // 且不低于 1：报 0 等于告诉客户端「立刻重试」，那正是限流要避免的
-                const auto waitMilliseconds = bucket->timeUntilTokenAvailable().count();
+                const auto waitMilliseconds  = bucket->timeUntilTokenAvailable().count();
                 const auto retryAfterSeconds = std::max<std::int64_t>(1, (waitMilliseconds + 999) / 1000);
                 response.setHeader("retry-after", std::to_string(retryAfterSeconds));
                 co_return;
@@ -796,8 +787,8 @@ namespace AsynGyanis::Net
                 // Content-Length 必须是纯十进制数字串（RFC 9110 §8.6）。不用 std::stoull：
                 // "-1" 会绕进 unsigned long long 变成 ULLONG_MAX，"12abc" 按前缀解析成 12，
                 // 只有越界才抛异常，三类畸形口径不一致。from_chars 判据统一：解析失败或有残留即不合法
-                unsigned long long declaredBodyLength = 0;
-                const std::from_chars_result parseResult = std::from_chars(declaredText.data(), declaredText.data() + declaredText.size(), declaredBodyLength);
+                unsigned long long           declaredBodyLength = 0;
+                const std::from_chars_result parseResult        = std::from_chars(declaredText.data(), declaredText.data() + declaredText.size(), declaredBodyLength);
 
                 if (parseResult.ec != std::errc{} || parseResult.ptr != declaredText.data() + declaredText.size())
                 {
@@ -834,7 +825,7 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] inline bool acceptsEncoding(const std::string_view acceptEncoding, const std::string_view targetEncoding)
         {
-            std::size_t offset = 0;
+            std::size_t offset           = 0;
             bool        wildcardAccepted = false;
 
             while (offset < acceptEncoding.size())
@@ -846,10 +837,9 @@ namespace AsynGyanis::Net
                 offset                 = entryEnd + 1;
 
                 // 拆出编码名与参数（形如 gzip;q=0.5）
-                const std::size_t semicolonPosition = entry.find(';');
-                std::string_view  encodingName      = entry.substr(0, semicolonPosition);
-                const std::string_view parameters   = semicolonPosition == std::string_view::npos ? std::string_view{}
-                                                                                                   : entry.substr(semicolonPosition + 1);
+                const std::size_t      semicolonPosition = entry.find(';');
+                std::string_view       encodingName      = entry.substr(0, semicolonPosition);
+                const std::string_view parameters        = semicolonPosition == std::string_view::npos ? std::string_view{} : entry.substr(semicolonPosition + 1);
 
                 // 去掉首尾空白：头部里 "gzip ; q=0" 这种写法同样合法
                 while (!encodingName.empty() && (encodingName.front() == ' ' || encodingName.front() == '\t'))
@@ -861,15 +851,14 @@ namespace AsynGyanis::Net
                     encodingName.remove_suffix(1);
                 }
 
-                bool       isRejected = false;
+                bool        isRejected      = false;
                 std::size_t parameterOffset = 0;
                 while (parameterOffset < parameters.size())
                 {
                     const std::size_t nextSeparator = parameters.find(';', parameterOffset);
-                    const std::size_t parameterEnd =
-                            nextSeparator == std::string_view::npos ? parameters.size() : nextSeparator;
-                    std::string_view parameter = parameters.substr(parameterOffset, parameterEnd - parameterOffset);
-                    parameterOffset                  = parameterEnd + 1;
+                    const std::size_t parameterEnd  = nextSeparator == std::string_view::npos ? parameters.size() : nextSeparator;
+                    std::string_view  parameter     = parameters.substr(parameterOffset, parameterEnd - parameterOffset);
+                    parameterOffset                 = parameterEnd + 1;
 
                     // 参数自身也要去空白："gzip ; q=0" 里 q 之前有空格，不裁掉就认不出这次拒绝
                     while (!parameter.empty() && (parameter.front() == ' ' || parameter.front() == '\t'))
@@ -922,9 +911,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] inline bool isIncompressibleContentType(const std::string_view contentType)
         {
             // 只比前缀，参数（;charset=...）不参与比较；媒体类型大小写不敏感
-            constexpr std::string_view kIncompressiblePrefixes[] = {"image/", "video/", "audio/", "font/",
-                                                                    "application/zip", "application/gzip", "application/x-gzip",
-                                                                    "application/x-7z-compressed", "application/x-rar-compressed"};
+            constexpr std::string_view kIncompressiblePrefixes[] = {"image/",
+                                                                    "video/",
+                                                                    "audio/",
+                                                                    "font/",
+                                                                    "application/zip",
+                                                                    "application/gzip",
+                                                                    "application/x-gzip",
+                                                                    "application/x-7z-compressed",
+                                                                    "application/x-rar-compressed"};
             for (const std::string_view prefix: kIncompressiblePrefixes)
             {
                 if (contentType.size() < prefix.size())
@@ -973,7 +968,7 @@ namespace AsynGyanis::Net
             {
                 const std::size_t commaPosition = remaining.find(',');
                 std::string_view  token         = remaining.substr(0, commaPosition);
-                remaining = commaPosition == std::string_view::npos ? std::string_view{} : remaining.substr(commaPosition + 1);
+                remaining                       = commaPosition == std::string_view::npos ? std::string_view{} : remaining.substr(commaPosition + 1);
 
                 while (!token.empty() && (token.front() == ' ' || token.front() == '\t'))
                 {
@@ -986,8 +981,8 @@ namespace AsynGyanis::Net
 
                 if (token.size() == 15)
                 {
-                    bool isAcceptEncoding = true;
-                    constexpr std::string_view kAcceptEncoding = "accept-encoding";
+                    bool                       isAcceptEncoding = true;
+                    constexpr std::string_view kAcceptEncoding  = "accept-encoding";
                     for (std::size_t index = 0; index < kAcceptEncoding.size(); ++index)
                     {
                         const char actual  = token[index];
@@ -1038,8 +1033,7 @@ namespace AsynGyanis::Net
          */
         inline void markTransformedRepresentationValidators(HttpResponse &response)
         {
-            if (const std::optional<std::string> entityTag = response.getHeader("etag");
-                entityTag.has_value() && !entityTag->starts_with("W/"))
+            if (const std::optional<std::string> entityTag = response.getHeader("etag"); entityTag.has_value() && !entityTag->starts_with("W/"))
             {
                 response.setHeader("etag", "W/" + *entityTag);
             }
@@ -1054,14 +1048,14 @@ namespace AsynGyanis::Net
      */
     struct CompressionOptions
     {
-        std::size_t minimumBodySize = 1024;                  ///< 正文达到该字节数才压缩；小正文压缩后往往更大，白烧 CPU
+        std::size_t minimumBodySize = 1024; ///< 正文达到该字节数才压缩；小正文压缩后往往更大，白烧 CPU
         /// 外置给工作线程时要达到的正文长度（字节）：小于它就就地压。一次「工作线程 → 循环」的
         /// 投递加唤醒实测约 9.7 µs（热循环下的下限，整跳按两趟算约 20 µs），而 4 KiB 正文压一次
         /// zstd 只要 8.1 µs——比那一跳还便宜，外派反而把循环和响应一起拖慢
         std::size_t offloadMinimumBodySize = 8 * 1024;
-        int         gzipLevel       = kDefaultGzipLevel;     ///< gzip 压缩级别，1..9
-        int         brotliQuality   = kDefaultBrotliQuality; ///< brotli 压缩质量，0..11
-        int         zstdLevel       = kDefaultZstdLevel;     ///< zstd 压缩级别，1..22
+        int         gzipLevel              = kDefaultGzipLevel;     ///< gzip 压缩级别，1..9
+        int         brotliQuality          = kDefaultBrotliQuality; ///< brotli 压缩质量，0..11
+        int         zstdLevel              = kDefaultZstdLevel;     ///< zstd 压缩级别，1..22
     };
 
     namespace detail
@@ -1075,20 +1069,16 @@ namespace AsynGyanis::Net
          * @param options 各算法的档位
          * @return std::optional<std::string> 压缩结果；为空表示没压成，或压了不会更短
          */
-        [[nodiscard]] inline std::optional<std::string> compressWithEncoding(const std::string_view encoding,
-                                                                            const std::string_view body,
-                                                                            const CompressionOptions options)
+        [[nodiscard]] inline std::optional<std::string> compressWithEncoding(const std::string_view encoding, const std::string_view body, const CompressionOptions options)
         {
             std::optional<std::string> compressed;
             if (encoding == "zstd")
             {
                 compressed = zstdCompress(body, options.zstdLevel);
-            }
-            else if (encoding == "br")
+            } else if (encoding == "br")
             {
                 compressed = brotliCompress(body, options.brotliQuality);
-            }
-            else
+            } else
             {
                 compressed = gzipCompress(body, options.gzipLevel);
             }
@@ -1114,12 +1104,9 @@ namespace AsynGyanis::Net
          * @param options 压缩选项（阈值与各算法档位）
          * @return MiddlewareFunc 中间件
          */
-        inline MiddlewareFunc compressionMiddlewareImplementation(Core::AsyncExecutor *offloadExecutor,
-                                                                Core::EventLoop *completionLoop,
-                                                                const CompressionOptions options)
+        inline MiddlewareFunc compressionMiddlewareImplementation(Core::AsyncExecutor *offloadExecutor, Core::EventLoop *completionLoop, const CompressionOptions options)
         {
-            return [offloadExecutor, completionLoop, options](HttpRequest &request, HttpResponse &response,
-                                                              const std::function<Core::Task<void>()> next) -> Core::Task<>
+            return [offloadExecutor, completionLoop, options](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
             {
                 co_await next();
 
@@ -1140,8 +1127,7 @@ namespace AsynGyanis::Net
                 // 一次——弱校验器不会把两个变体并成一份，强校验器却会，所以宁可往这个方向偏
                 if (response.carriesNoContent())
                 {
-                    if (response.status() == 304
-                        && !detail::selectPreferredEncoding(request.getHeader("accept-encoding").value_or(std::string{})).empty())
+                    if (response.status() == 304 && !detail::selectPreferredEncoding(request.getHeader("accept-encoding").value_or(std::string{})).empty())
                     {
                         detail::markTransformedRepresentationValidators(response);
                     }
@@ -1156,8 +1142,8 @@ namespace AsynGyanis::Net
 
                 // 协商：按偏好顺序（zstd > br > gzip）挑第一个被对端接受的编码；
                 // q=0 视为明确拒绝，`*` 视为接受（语义见 detail::acceptsEncoding）
-                const std::string acceptEncodingHeader = request.getHeader("accept-encoding").value_or(std::string{});
-                const std::string_view selectedEncoding = detail::selectPreferredEncoding(acceptEncodingHeader);
+                const std::string      acceptEncodingHeader = request.getHeader("accept-encoding").value_or(std::string{});
+                const std::string_view selectedEncoding     = detail::selectPreferredEncoding(acceptEncodingHeader);
                 if (selectedEncoding.empty())
                 {
                     co_return;
@@ -1169,8 +1155,7 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                if (const std::optional<std::string> contentType = response.getHeader("content-type");
-                    contentType.has_value() && detail::isIncompressibleContentType(*contentType))
+                if (const std::optional<std::string> contentType = response.getHeader("content-type"); contentType.has_value() && detail::isIncompressibleContentType(*contentType))
                 {
                     co_return;
                 }
@@ -1180,14 +1165,10 @@ namespace AsynGyanis::Net
                 {
                     // 交给工作线程的只有这份副本与编码名：响应对象、协程帧都属于循环线程，
                     // 跨线程碰它们就是数据竞争。恢复落在 completionLoop 上，因此下面的改写仍在原线程
-                    std::string bodyCopy{body};
+                    std::string            bodyCopy{body};
                     const std::string_view encoding = selectedEncoding;
-                    compressed = co_await offloadExecutor->submit<std::optional<std::string>>(
-                            *completionLoop,
-                            [bodyCopy, encoding, options]
-                            {
-                                return compressWithEncoding(encoding, bodyCopy, options);
-                            });
+                    compressed                      = co_await offloadExecutor->submit<std::optional<std::string>>(*completionLoop, [bodyCopy, encoding, options]
+                                                                                                                   { return compressWithEncoding(encoding, bodyCopy, options); });
                 } else
                 {
                     compressed = compressWithEncoding(selectedEncoding, body, options);
@@ -1258,8 +1239,7 @@ namespace AsynGyanis::Net
      *          （帧在会话帧里、服务器只在 isReady() 之后回收），HTTP/3 由承载层在摘掉连接之前调用
      *          Http3Session::abandonPendingStreams()，叫醒并等完在途的派发协程
      */
-    inline MiddlewareFunc compressionMiddleware(Core::EventLoop &completionLoop, Core::AsyncExecutor &offloadExecutor,
-                                              const CompressionOptions options = {})
+    inline MiddlewareFunc compressionMiddleware(Core::EventLoop &completionLoop, Core::AsyncExecutor &offloadExecutor, const CompressionOptions options = {})
     {
         return detail::compressionMiddlewareImplementation(&offloadExecutor, &completionLoop, options);
     }

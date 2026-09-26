@@ -46,7 +46,7 @@ namespace AsynGyanis::Database
          * @param columnNames 按列序排列的列名，长度即列数
          * @param rows 已按 (指针, 长度) 转换好的行数据，每行的元素个数应与列名个数一致
          */
-        MySqlStatementResult(std::vector<std::string> columnNames, std::vector<std::vector<DatabaseValue> > rows);
+        MySqlStatementResult(std::vector<std::string> columnNames, std::vector<std::vector<DatabaseValue>> rows);
 
         /**
          * @brief 析构函数，释放行缓冲
@@ -158,10 +158,10 @@ namespace AsynGyanis::Database
         [[nodiscard]] bool isEmpty() const override;
 
     private:
-        std::vector<std::string>                 m_columnNames;          ///< 按列序排列的列名，长度即列数
-        std::vector<std::vector<DatabaseValue> > m_rows;                 ///< 预读好的全部行，行内按列序排列
-        size_t                                   m_nextRowIndex{0};      ///< 下一次 next() 要交出的行下标
-        bool                                     m_hasCurrentRow{false}; ///< 游标是否停在有效行上（getValue 的前置条件）
+        std::vector<std::string>                m_columnNames;          ///< 按列序排列的列名，长度即列数
+        std::vector<std::vector<DatabaseValue>> m_rows;                 ///< 预读好的全部行，行内按列序排列
+        size_t                                  m_nextRowIndex{0};      ///< 下一次 next() 要交出的行下标
+        bool                                    m_hasCurrentRow{false}; ///< 游标是否停在有效行上（getValue 的前置条件）
     };
 
 } // namespace AsynGyanis::Database

@@ -43,7 +43,7 @@ namespace AsynGyanis::Net
     TEST(QuicReassemblyBuffer, HoldsFragmentsUntilTheExpectedOffsetArrives)
     {
         QuicReassemblyBuffer buffer;
-        insertText(buffer, 4, "56789");            // [4,9)，前四个字节还空着
+        insertText(buffer, 4, "56789"); // [4,9)，前四个字节还空着
         EXPECT_EQ(drainText(buffer), "");
         EXPECT_EQ(buffer.bufferedByteCount(), 5U);
         EXPECT_EQ(buffer.deliveredOffset(), 0U);
@@ -63,9 +63,9 @@ namespace AsynGyanis::Net
     TEST(QuicReassemblyBuffer, MergesFragmentStartingInsideACachedRange)
     {
         QuicReassemblyBuffer buffer;
-        insertText(buffer, 10, "abcdefghij");               // [10,20)
-        insertText(buffer, 15, "KLMNOPQRST");               // [15,25)，起点落在上一段中间（重发换了分片大小）
-        insertText(buffer, 0, "0123456789");                // [0,10) 补齐头部
+        insertText(buffer, 10, "abcdefghij"); // [10,20)
+        insertText(buffer, 15, "KLMNOPQRST"); // [15,25)，起点落在上一段中间（重发换了分片大小）
+        insertText(buffer, 0, "0123456789");  // [0,10) 补齐头部
 
         EXPECT_EQ(drainText(buffer), "0123456789abcdeKLMNOPQRST");
         EXPECT_EQ(buffer.deliveredOffset(), 25U);
@@ -78,13 +78,13 @@ namespace AsynGyanis::Net
     TEST(QuicReassemblyBuffer, KeepsTailBeyondNewFragmentWhenRangesOverlap)
     {
         QuicReassemblyBuffer buffer;
-        insertText(buffer, 4, "EFGH");          // [4,8)
-        insertText(buffer, 0, "ABCDxy");        // [0,6)，只盖住上一段的前两个字节
+        insertText(buffer, 4, "EFGH");   // [4,8)
+        insertText(buffer, 0, "ABCDxy"); // [0,6)，只盖住上一段的前两个字节
         EXPECT_EQ(drainText(buffer), "ABCDxyGH");
 
         QuicReassemblyBuffer whole;
-        insertText(whole, 0, "0123456789");     // [0,10)
-        insertText(whole, 2, "AB");             // 完全被盖住的一段：不缩小右边界
+        insertText(whole, 0, "0123456789"); // [0,10)
+        insertText(whole, 2, "AB");         // 完全被盖住的一段：不缩小右边界
         EXPECT_EQ(drainText(whole), "01AB456789") << "只有 AB 两个字节被覆盖，其余原样";
         EXPECT_EQ(whole.bufferedByteCount(), 0U) << "合并后只剩一段，且已经排干";
     }
@@ -98,11 +98,11 @@ namespace AsynGyanis::Net
         insertText(buffer, 0, "01234");
         EXPECT_EQ(drainText(buffer), "01234");
 
-        insertText(buffer, 1, "123");           // 整段都在已交付范围内
+        insertText(buffer, 1, "123"); // 整段都在已交付范围内
         EXPECT_EQ(drainText(buffer), "");
         EXPECT_EQ(buffer.bufferedByteCount(), 0U);
 
-        insertText(buffer, 3, "34567");         // 后两个字节是新的
+        insertText(buffer, 3, "34567"); // 后两个字节是新的
         EXPECT_EQ(drainText(buffer), "567");
         EXPECT_EQ(buffer.deliveredOffset(), 8U);
     }
@@ -113,8 +113,8 @@ namespace AsynGyanis::Net
     TEST(QuicReassemblyBuffer, KeepsRealGapsApart)
     {
         QuicReassemblyBuffer buffer;
-        insertText(buffer, 0, "abcde");         // [0,5)
-        insertText(buffer, 10, "ijklm");        // [10,15)，中间空 5 字节
+        insertText(buffer, 0, "abcde");  // [0,5)
+        insertText(buffer, 10, "ijklm"); // [10,15)，中间空 5 字节
         EXPECT_EQ(drainText(buffer), "abcde");
         EXPECT_EQ(buffer.bufferedByteCount(), 5U);
         EXPECT_EQ(buffer.deliveredOffset(), 5U);
@@ -141,11 +141,11 @@ namespace AsynGyanis::Net
     TEST(QuicReassemblyBuffer, JoinsSeveralCachedRangesAtOnce)
     {
         QuicReassemblyBuffer buffer;
-        insertText(buffer, 0, "ab");            // [0,2)
-        insertText(buffer, 6, "gh");            // [6,8)
-        insertText(buffer, 10, "jkl");          // [10,13)
+        insertText(buffer, 0, "ab");   // [0,2)
+        insertText(buffer, 6, "gh");   // [6,8)
+        insertText(buffer, 10, "jkl"); // [10,13)
         EXPECT_EQ(drainText(buffer), "ab") << "只剩 [6,13) 悬着";
-        insertText(buffer, 2, "cdefghi");       // [2,9)：把 [6,8) 与 [10,13) 之外的缺口一并填上
+        insertText(buffer, 2, "cdefghi"); // [2,9)：把 [6,8) 与 [10,13) 之外的缺口一并填上
         EXPECT_EQ(drainText(buffer), "cdefghi") << "[10,13) 与 [2,9) 之间还空着第 9 字节";
         insertText(buffer, 9, "i");
         EXPECT_EQ(drainText(buffer), "ijkl") << "补齐空洞后三段该一起排干";

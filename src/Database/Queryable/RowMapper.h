@@ -54,7 +54,7 @@ namespace AsynGyanis::Database::Queryable
          * @tparam InnerType optional 包装的元素类型
          */
         template<typename InnerType>
-        struct IsOptional<std::optional<InnerType> > : std::true_type
+        struct IsOptional<std::optional<InnerType>> : std::true_type
         {
         };
 
@@ -66,9 +66,7 @@ namespace AsynGyanis::Database::Queryable
          * @tparam MemberType 结构体成员类型
          */
         template<typename MemberType>
-        struct IsSupportedColumnType : std::bool_constant<std::is_integral_v<MemberType> ||
-                                                          std::is_floating_point_v<MemberType> ||
-                                                          std::is_same_v<MemberType, std::string> ||
+        struct IsSupportedColumnType : std::bool_constant<std::is_integral_v<MemberType> || std::is_floating_point_v<MemberType> || std::is_same_v<MemberType, std::string> ||
                                                           AsynGyanis::Database::Detail::IsBinaryBytes<MemberType>::value>
         {
         };
@@ -78,7 +76,7 @@ namespace AsynGyanis::Database::Queryable
          * @tparam InnerType optional 包装的元素类型
          */
         template<typename InnerType>
-        struct IsSupportedColumnType<std::optional<InnerType> > : IsSupportedColumnType<InnerType>
+        struct IsSupportedColumnType<std::optional<InnerType>> : IsSupportedColumnType<InnerType>
         {
         };
 
@@ -103,7 +101,7 @@ namespace AsynGyanis::Database::Queryable
             return []<std::size_t... Indices>(std::index_sequence<Indices...>)
             {
                 return (IsSupportedColumnType<typename std::tuple_element_t<Indices, ColumnTuple>::MemberType>::value && ...);
-            }(std::make_index_sequence<std::tuple_size_v<ColumnTuple> >{});
+            }(std::make_index_sequence<std::tuple_size_v<ColumnTuple>>{});
         }
 
         /**
@@ -114,10 +112,8 @@ namespace AsynGyanis::Database::Queryable
          */
         [[noreturn]] inline void throwColumnTypeError(const std::string_view columnName, const std::string_view expectedTypeName, const DatabaseValue &cellValue)
         {
-            throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 期望 " +
-                                      std::string(expectedTypeName) + "，实际为 " +
-                                      databaseValueTypeName(cellValue) +
-                                      "。若该列可能为 NULL，请把成员声明为 std::optional");
+            throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 期望 " + std::string(expectedTypeName) + "，实际为 " +
+                                      databaseValueTypeName(cellValue) + "。若该列可能为 NULL，请把成员声明为 std::optional");
         }
 
         /**
@@ -131,12 +127,10 @@ namespace AsynGyanis::Database::Queryable
             if constexpr (std::is_same_v<FloatingType, float>)
             {
                 return "float";
-            }
-            else if constexpr (std::is_same_v<FloatingType, double>)
+            } else if constexpr (std::is_same_v<FloatingType, double>)
             {
                 return "double";
-            }
-            else
+            } else
             {
                 return "long double";
             }
@@ -148,11 +142,9 @@ namespace AsynGyanis::Database::Queryable
          * @param expectedTypeName 目标浮点成员的类型名
          * @param reasonText 说明这一取值为何不能被无损收窄
          */
-        [[noreturn]] inline void throwFloatNarrowingError(const std::string_view columnName, const std::string_view expectedTypeName,
-                                                          const std::string &reasonText)
+        [[noreturn]] inline void throwFloatNarrowingError(const std::string_view columnName, const std::string_view expectedTypeName, const std::string &reasonText)
         {
-            throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 不能映射为 " +
-                                      std::string(expectedTypeName) + "：" + reasonText +
+            throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 不能映射为 " + std::string(expectedTypeName) + "：" + reasonText +
                                       "。收窄会静默改变数值，请先把成员声明成能容纳该取值的类型（整型或 double）");
         }
 
@@ -189,25 +181,21 @@ namespace AsynGyanis::Database::Queryable
             // out_of_range 单独给文案：此时文本本身是合法整数，只是超出目标位宽
             if (parseResult.ec == std::errc::result_out_of_range)
             {
-                throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue +
-                                          " 超出目标整型的取值范围");
+                throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue + " 超出目标整型的取值范围");
             }
 
             // ptr != textEnd 表示尾部仍有余文（如 "12abc"）；无符号目标遇到负号也走这里
             if (parseResult.ec != std::errc{} || parseResult.ptr != textEnd)
             {
-                throw RowMappingException(std::string("ORM 行映射失败：列 \"") + std::string(columnName) +
-                                          "\" 的文本 \"" + textValue +
-                                          (std::is_unsigned_v<FundamentalType>
-                                               ? "\" 无法映射到无符号整型（只接受十进制数字，不接受负号、小数点或空格）"
-                                               : "\" 无法映射到整型（只接受可选的负号与十进制数字）"));
+                throw RowMappingException(std::string("ORM 行映射失败：列 \"") + std::string(columnName) + "\" 的文本 \"" + textValue +
+                                          (std::is_unsigned_v<FundamentalType> ? "\" 无法映射到无符号整型（只接受十进制数字，不接受负号、小数点或空格）"
+                                                                               : "\" 无法映射到整型（只接受可选的负号与十进制数字）"));
             }
 
             // 「放得下才有意义」：无符号成员收到负号会在上一步被拒，这里再兜一次位宽
             if (!std::in_range<FundamentalType>(parsedValue))
             {
-                throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue +
-                                          " 超出目标整型的取值范围");
+                throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + textValue + " 超出目标整型的取值范围");
             }
 
             return static_cast<FundamentalType>(parsedValue);
@@ -250,8 +238,7 @@ namespace AsynGyanis::Database::Queryable
                     // 通常意味着这一列压根不是布尔列（成员声明与列声明已经不符），必须在此暴露
                     if (*integerValue != 0 && *integerValue != 1)
                     {
-                        throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的整数值 " +
-                                                  std::to_string(*integerValue) +
+                        throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的整数值 " + std::to_string(*integerValue) +
                                                   " 不是 0 或 1，无法映射为 bool。若该列确实存放多个取值，请把成员改成整型");
                     }
                     return *integerValue != 0;
@@ -265,8 +252,7 @@ namespace AsynGyanis::Database::Queryable
                     // 这类错误在业务层极难定位，宁可在映射处直接失败
                     if (!std::in_range<BareType>(*integerValue))
                     {
-                        throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " +
-                                                  std::to_string(*integerValue) + " 超出目标整型的取值范围");
+                        throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的值 " + std::to_string(*integerValue) + " 超出目标整型的取值范围");
                     }
                     return static_cast<BareType>(*integerValue);
                 }
@@ -281,11 +267,7 @@ namespace AsynGyanis::Database::Queryable
 
                 // 浮点给出整型列（如 MySQL 的 DECIMAL、或 SQLite 把超大整数降级成 REAL）
                 // 不在当前支持范围，明确报错而不是取整：取整等于静默改变数值
-                throwColumnTypeError(columnName,
-                                     std::is_unsigned_v<BareType>
-                                         ? "无符号整型（Int64 或十进制文本）"
-                                         : "整型（Int64 或十进制文本）",
-                                     cellValue);
+                throwColumnTypeError(columnName, std::is_unsigned_v<BareType> ? "无符号整型（Int64 或十进制文本）" : "整型（Int64 或十进制文本）", cellValue);
             } else if constexpr (std::is_floating_point_v<BareType>)
             {
                 if (const auto *realValue = std::get_if<double>(&cellValue))
@@ -296,8 +278,7 @@ namespace AsynGyanis::Database::Queryable
                     {
                         if (std::isfinite(*realValue) && std::abs(*realValue) > std::numeric_limits<BareType>::max())
                         {
-                            throwFloatNarrowingError(columnName, floatingTypeName<BareType>(),
-                                                     "取值 " + std::to_string(*realValue) + " 超出其上下界");
+                            throwFloatNarrowingError(columnName, floatingTypeName<BareType>(), "取值 " + std::to_string(*realValue) + " 超出其上下界");
                         }
                     }
                     return static_cast<BareType>(*realValue);
@@ -315,8 +296,7 @@ namespace AsynGyanis::Database::Queryable
                         if constexpr (std::numeric_limits<BareType>::digits >= std::numeric_limits<std::int64_t>::digits)
                         {
                             return std::numeric_limits<std::int64_t>::max();
-                        }
-                        else
+                        } else
                         {
                             return std::int64_t{1} << std::numeric_limits<BareType>::digits;
                         }
@@ -325,7 +305,7 @@ namespace AsynGyanis::Database::Queryable
                     {
                         throwFloatNarrowingError(columnName, floatingTypeName<BareType>(),
                                                  "整数值 " + std::to_string(*integerValue) + " 超出其能精确表示的整数范围 ±2^" +
-                                                 std::to_string(std::numeric_limits<BareType>::digits));
+                                                         std::to_string(std::numeric_limits<BareType>::digits));
                     }
                     return static_cast<BareType>(*integerValue);
                 }
@@ -353,10 +333,9 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 不受支持的成员类型已被 allColumnTypesSupported() 的 static_assert 拦住，
                 // 这里只是让 if constexpr 的所有分支都有返回值
-                static_assert(kAlwaysFalse<MemberType>,
-                              "RowMapper：不支持的成员类型。仅支持整型、bool、浮点、std::string、"
-                              "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
-                              "以及它们的 std::optional 包装");
+                static_assert(kAlwaysFalse<MemberType>, "RowMapper：不支持的成员类型。仅支持整型、bool、浮点、std::string、"
+                                                        "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                                                        "以及它们的 std::optional 包装");
                 return MemberType{};
             }
         }
@@ -387,15 +366,13 @@ namespace AsynGyanis::Database::Queryable
                 {
                     return std::move(*textValue);
                 }
-            }
-            else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
+            } else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
             {
                 if (auto *const byteValue = std::get_if<BinaryBytes>(&cellValue))
                 {
                     return AsynGyanis::Database::Detail::fromBinaryBytes<BareType>(std::move(*byteValue));
                 }
-            }
-            else if constexpr (IsOptional<BareType>::value)
+            } else if constexpr (IsOptional<BareType>::value)
             {
                 using InnerType = typename BareType::value_type;
                 if constexpr (std::is_same_v<InnerType, std::string>)
@@ -405,8 +382,7 @@ namespace AsynGyanis::Database::Queryable
                     {
                         return MemberType{std::move(*textValue)};
                     }
-                }
-                else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<InnerType>)
+                } else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<InnerType>)
                 {
                     if (auto *const byteValue = std::get_if<BinaryBytes>(&cellValue))
                     {
@@ -431,9 +407,7 @@ namespace AsynGyanis::Database::Queryable
      * @tparam T 表数据结构类型
      */
     template<typename T>
-    concept RowMappable = std::is_aggregate_v<T> &&
-                          std::is_default_constructible_v<T> &&
-                          (std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<T>::kColumns)> > > 0);
+    concept RowMappable = std::is_aggregate_v<T> && std::is_default_constructible_v<T> && (std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<T>::kColumns)>> > 0);
 
     // ========================================================================
     // 结果集 → 结构体
@@ -458,9 +432,8 @@ namespace AsynGyanis::Database::Queryable
             const std::optional<std::size_t> columnIndex = result.columnIndex(columnDescriptor.columnName);
             if (!columnIndex.has_value())
             {
-                throw RowMappingException("ORM 行映射失败：结果集中不存在列 \"" +
-                                          std::string(columnDescriptor.columnName) + "\"（表 " +
-                                          std::string(TableSchema<T>::kTableName) + "）");
+                throw RowMappingException("ORM 行映射失败：结果集中不存在列 \"" + std::string(columnDescriptor.columnName) + "\"（表 " + std::string(TableSchema<T>::kTableName) +
+                                          "）");
             }
             return columnIndex.value();
         }
@@ -476,14 +449,13 @@ namespace AsynGyanis::Database::Queryable
          * @throws RowMappingException 类型不匹配
          */
         template<typename T, typename ColumnDescriptorType>
-        void assignColumn(T &mappedRow, const ColumnDescriptorType &columnDescriptor, DatabaseResult &result,
-                          const std::size_t columnIndex)
+        void assignColumn(T &mappedRow, const ColumnDescriptorType &columnDescriptor, DatabaseResult &result, const std::size_t columnIndex)
         {
             // 按「交出所有权」读值：物化快照里的文本/二进制缓冲直接搬走，省掉一次整串拷贝与它的堆分配。
             // 一格只读这一次是本路径的前提，而「两格撞同一列」已在 resolveColumnIndices 处被拒绝
             DatabaseValue cellValue = result.takeValue(columnIndex);
 
-            using MemberType                            = typename ColumnDescriptorType::MemberType;
+            using MemberType = typename ColumnDescriptorType::MemberType;
             // 交出局部 cellValue 的所有权：文本列命中右值重载，把变体里的堆缓冲搬进成员，省一次整串拷贝
             mappedRow.*(columnDescriptor.memberPointer) = convertDatabaseValue<MemberType>(std::move(cellValue), columnDescriptor.columnName);
         }
@@ -499,17 +471,12 @@ namespace AsynGyanis::Database::Queryable
          * @throws RowMappingException 任一列不存在（按 kColumns 顺序报告第一个缺失列），或两列解析到同一下标
          */
         template<typename T, std::size_t... IndexPositions>
-        [[nodiscard]] std::array<std::size_t, sizeof...(IndexPositions)> resolveColumnIndices(const DatabaseResult &result,
-                                                                                              std::index_sequence<IndexPositions...>)
+        [[nodiscard]] std::array<std::size_t, sizeof...(IndexPositions)> resolveColumnIndices(const DatabaseResult &result, std::index_sequence<IndexPositions...>)
         {
-            std::array<std::size_t, sizeof...(IndexPositions)> columnIndices = {
-                resolveColumnIndex<T>(result, std::get<IndexPositions>(TableSchema<T>::kColumns))...
-            };
+            std::array<std::size_t, sizeof...(IndexPositions)> columnIndices = {resolveColumnIndex<T>(result, std::get<IndexPositions>(TableSchema<T>::kColumns))...};
 
             // 列名表按 kColumns 同序取出，用于在撞名下标时报告是哪两个成员
-            const std::array<std::string_view, sizeof...(IndexPositions)> columnNames = {
-                std::get<IndexPositions>(TableSchema<T>::kColumns).columnName...
-            };
+            const std::array<std::string_view, sizeof...(IndexPositions)> columnNames = {std::get<IndexPositions>(TableSchema<T>::kColumns).columnName...};
 
             // 下标表至多几列，逐个两两比对即可，不值得为它建一张哈希表
             for (std::size_t currentIndex = 1; currentIndex < columnIndices.size(); ++currentIndex)
@@ -520,14 +487,10 @@ namespace AsynGyanis::Database::Queryable
                     {
                         continue;
                     }
-                    throw RowMappingException("ORM 行映射失败：结构体的第 " + std::to_string(previousIndex + 1U) + " 个与第 " +
-                                              std::to_string(currentIndex + 1U) + " 个成员（列名 \"" +
-                                              std::string(columnNames[previousIndex]) + "\" 与 \"" +
-                                              std::string(columnNames[currentIndex]) + "\"，表 " +
-                                              std::string(TableSchema<T>::kTableName) + "）都解析到结果集的第 " +
-                                              std::to_string(columnIndices[currentIndex]) +
-                                              " 列，两个成员会静默拿到同一个值。请给其中一列改用不同的列名，" +
-                                              "或在 SELECT 列表里为该列起不同的别名");
+                    throw RowMappingException("ORM 行映射失败：结构体的第 " + std::to_string(previousIndex + 1U) + " 个与第 " + std::to_string(currentIndex + 1U) +
+                                              " 个成员（列名 \"" + std::string(columnNames[previousIndex]) + "\" 与 \"" + std::string(columnNames[currentIndex]) + "\"，表 " +
+                                              std::string(TableSchema<T>::kTableName) + "）都解析到结果集的第 " + std::to_string(columnIndices[currentIndex]) +
+                                              " 列，两个成员会静默拿到同一个值。请给其中一列改用不同的列名，" + "或在 SELECT 列表里为该列起不同的别名");
                 }
             }
 
@@ -544,8 +507,7 @@ namespace AsynGyanis::Database::Queryable
          * @throws RowMappingException 类型不匹配
          */
         template<typename T, std::size_t... IndexPositions>
-        void assignRowFromIndices(T &mappedRow, DatabaseResult &result,
-                                  const std::array<std::size_t, sizeof...(IndexPositions)> &columnIndices,
+        void assignRowFromIndices(T &mappedRow, DatabaseResult &result, const std::array<std::size_t, sizeof...(IndexPositions)> &columnIndices,
                                   std::index_sequence<IndexPositions...>)
         {
             // 折叠表达式逐个赋值：逗号运算符保证从左到右按 kColumns 顺序执行
@@ -569,18 +531,16 @@ namespace AsynGyanis::Database::Queryable
     [[nodiscard]] T mapResultRow(DatabaseResult &result)
     {
         // 列类型不受支持时给出中文编译错误，而不是让模板在深处爆出一长串实例化回溯
-        static_assert(Detail::allColumnTypesSupported<T>(),
-                      "RowMapper：TableSchema<T>::kColumns 中存在不支持的列类型。"
-                      "仅支持整型、bool、浮点、std::string、二进制载荷"
-                      "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
-                      "以及它们的 std::optional 包装");
+        static_assert(Detail::allColumnTypesSupported<T>(), "RowMapper：TableSchema<T>::kColumns 中存在不支持的列类型。"
+                                                            "仅支持整型、bool、浮点、std::string、二进制载荷"
+                                                            "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                                                            "以及它们的 std::optional 包装");
 
         T mappedRow{};
 
         // 列下标只解析一次，逐列赋值复用同一张表（columnIndex 在某些驱动里是线性扫列名）
-        constexpr std::size_t columnCount = std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<T>::kColumns)> >;
-        const std::array<std::size_t, columnCount> columnIndices =
-                Detail::resolveColumnIndices<T>(result, std::make_index_sequence<columnCount>{});
+        constexpr std::size_t                      columnCount   = std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<T>::kColumns)>>;
+        const std::array<std::size_t, columnCount> columnIndices = Detail::resolveColumnIndices<T>(result, std::make_index_sequence<columnCount>{});
         Detail::assignRowFromIndices<T>(mappedRow, result, columnIndices, std::make_index_sequence<columnCount>{});
 
         return mappedRow;
@@ -601,11 +561,10 @@ namespace AsynGyanis::Database::Queryable
     [[nodiscard]] std::vector<T> mapResultRows(DatabaseResult &result)
     {
         // 列类型不受支持时给出中文编译错误，而不是让模板在深处爆出一长串实例化回溯
-        static_assert(Detail::allColumnTypesSupported<T>(),
-                      "RowMapper：TableSchema<T>::kColumns 中存在不支持的列类型。"
-                      "仅支持整型、bool、浮点、std::string、二进制载荷"
-                      "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
-                      "以及它们的 std::optional 包装");
+        static_assert(Detail::allColumnTypesSupported<T>(), "RowMapper：TableSchema<T>::kColumns 中存在不支持的列类型。"
+                                                            "仅支持整型、bool、浮点、std::string、二进制载荷"
+                                                            "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                                                            "以及它们的 std::optional 包装");
 
         std::vector<T> mappedRows;
 
@@ -619,14 +578,14 @@ namespace AsynGyanis::Database::Queryable
         // 结果集的列结构对全部行固定不变，故列下标只在第一行解析一次并复用：
         // 部分驱动的 columnIndex 是线性扫列名，逐行重解会让整表映射退化成 O(行数 × 列数²)。
         // 留到第一行才解析（而非进循环前），是为了保住「空结果集即使列缺失也不抛、只返回空向量」的既有语义
-        constexpr std::size_t columnCount = std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<T>::kColumns)> >;
+        constexpr std::size_t                columnCount = std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<T>::kColumns)>>;
         std::array<std::size_t, columnCount> columnIndices{};
-        bool isColumnIndicesResolved = false;
+        bool                                 isColumnIndicesResolved = false;
         while (result.next())
         {
             if (!isColumnIndicesResolved)
             {
-                columnIndices = Detail::resolveColumnIndices<T>(result, std::make_index_sequence<columnCount>{});
+                columnIndices           = Detail::resolveColumnIndices<T>(result, std::make_index_sequence<columnCount>{});
                 isColumnIndicesResolved = true;
             }
             T mappedRow{};
@@ -677,8 +636,7 @@ namespace AsynGyanis::Database::Queryable
                     // DatabaseValue 没有无符号备选（该类型已冻结）：
                     // 放得进 int64_t 时按有符号整数绑定（保持整数比较与索引可用），
                     // 超出时降级为十进制文本，避免静默回绕成负数给出错误数值
-                    if (static_cast<std::uint64_t>(value) >
-                        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+                    if (static_cast<std::uint64_t>(value) > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
                     {
                         return DatabaseValue{std::to_string(value)};
                     }
@@ -695,15 +653,13 @@ namespace AsynGyanis::Database::Queryable
                 // 用 in_place_type 显式指定二进制备选：它必须由「类型」表达出来，
                 // 驱动据此走 sqlite3_bind_blob / MYSQL_TYPE_BLOB；std::byte 成员在这里
                 // 被规范化成 uint8_t 序列，两种拼法落库后的字节完全一致
-                return DatabaseValue{std::in_place_type<BinaryBytes>,
-                                     AsynGyanis::Database::Detail::toBinaryBytes<BareType>(value)};
+                return DatabaseValue{std::in_place_type<BinaryBytes>, AsynGyanis::Database::Detail::toBinaryBytes<BareType>(value)};
             } else
             {
-                static_assert(kAlwaysFalse<MemberType>,
-                              "RowMapper：不支持的成员类型，无法转换为绑定参数。"
-                              "仅支持整型、bool、浮点、std::string、二进制载荷"
-                              "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
-                              "以及它们的 std::optional 包装");
+                static_assert(kAlwaysFalse<MemberType>, "RowMapper：不支持的成员类型，无法转换为绑定参数。"
+                                                        "仅支持整型、bool、浮点、std::string、二进制载荷"
+                                                        "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                                                        "以及它们的 std::optional 包装");
                 return std::monostate{};
             }
         }

@@ -34,9 +34,8 @@ namespace AsynGyanis::Net
          */
         bool referenceIsTokenCharacter(const int byte) noexcept
         {
-            constexpr std::string_view kSeparators = "!#$%&'*+-.^_`|~";
-            const bool isAlphanumeric = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'z') ||
-                                        (byte >= 'A' && byte <= 'Z');
+            constexpr std::string_view kSeparators    = "!#$%&'*+-.^_`|~";
+            const bool                 isAlphanumeric = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z');
             return isAlphanumeric || kSeparators.find(static_cast<char>(byte)) != std::string_view::npos;
         }
 
@@ -68,8 +67,7 @@ namespace AsynGyanis::Net
         for (int byte = 0; byte <= 0xFF; ++byte)
         {
             // 逐字节给出取值：只报「哪个字节两侧判定不一致」的定位信息，否则失败输出无从判断
-            EXPECT_EQ(isTokenCharacter(static_cast<unsigned char>(byte)), referenceIsTokenCharacter(byte))
-                    << "字节 0x" << std::hex << byte;
+            EXPECT_EQ(isTokenCharacter(static_cast<unsigned char>(byte)), referenceIsTokenCharacter(byte)) << "字节 0x" << std::hex << byte;
         }
     }
 
@@ -77,8 +75,7 @@ namespace AsynGyanis::Net
     {
         for (int byte = 0; byte <= 0xFF; ++byte)
         {
-            EXPECT_EQ(isFieldValueCharacter(static_cast<unsigned char>(byte)), referenceIsFieldValueCharacter(byte))
-                    << "字节 0x" << std::hex << byte;
+            EXPECT_EQ(isFieldValueCharacter(static_cast<unsigned char>(byte)), referenceIsFieldValueCharacter(byte)) << "字节 0x" << std::hex << byte;
         }
     }
 
@@ -124,7 +121,7 @@ namespace AsynGyanis::Net
 
     TEST(HttpHeaderRules, ContainsOnlyTokenCharactersFindsIllegalByteAtEveryPosition)
     {
-        constexpr unsigned char kLegal = 'a';
+        constexpr unsigned char kLegal   = 'a';
         constexpr unsigned char kIllegal = ' ';
         // 非法字节放在头、中、尾三个位置各判一次：只扫前缀或提前退出的实现会漏掉后两种
         EXPECT_FALSE(containsOnlyTokenCharacters(makeByteText({kIllegal, kLegal, kLegal})));
@@ -136,8 +133,12 @@ namespace AsynGyanis::Net
     TEST(HttpHeaderRules, ContainsOnlyHelpersJudgeEmbeddedNullByLengthNotTermination)
     {
         // NUL 之后紧跟非法字节：按零终止判定的话会在这条文本上静默放行
-        const std::string_view tokenWithNull{"ab\0\x01" "cd", 6};
-        const std::string_view valueWithCrLf{"ab\0\r\n" "cd", 7};
+        const std::string_view tokenWithNull{"ab\0\x01"
+                                             "cd",
+                                             6};
+        const std::string_view valueWithCrLf{"ab\0\r\n"
+                                             "cd",
+                                             7};
         EXPECT_FALSE(containsOnlyTokenCharacters(tokenWithNull));
         EXPECT_FALSE(containsOnlyFieldValueCharacters(valueWithCrLf));
     }
@@ -162,7 +163,7 @@ namespace AsynGyanis::Net
             // headerLine 自带结尾 CRLF，再补一条空 CRLF 便是头部块的终止空行：
             // 多留一个 CRLF 会让整条报文收齐后还剩字节，正向断言会被误判成失败
             const std::string request = "GET / HTTP/1.1\r\n" + headerLine + "\r\n";
-            HttpParser parser;
+            HttpParser        parser;
             const ParseStatus status = parser.parse(request.data(), request.size());
             return status == ParseStatus::Done && parser.consumedByteCount() == request.size();
         };
@@ -173,12 +174,17 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(parseHeaderLine("X-Spaced: a\tb\r\n"));
         // 值里夹 LF/CR/NUL/DEL 一律拒绝：每一个都能自己截断头部块。
         // 含 NUL 的字面量必须按字节数构造，长度写小了会在 NUL 之前就把值截断，测出假通过
-        EXPECT_FALSE(parseHeaderLine("X-Bad: a\x01" "b\r\n"));
-        EXPECT_FALSE(parseHeaderLine("X-Bad: a\x7f" "b\r\n"));
+        EXPECT_FALSE(parseHeaderLine("X-Bad: a\x01"
+                                     "b\r\n"));
+        EXPECT_FALSE(parseHeaderLine("X-Bad: a\x7f"
+                                     "b\r\n"));
         EXPECT_FALSE(parseHeaderLine(std::string("X-Bad: a\0b", 10) + "\r\n"));
         // 名里带 DEL 或高位字节同样拒绝：tchar 只覆盖 ASCII
         EXPECT_FALSE(parseHeaderLine("X\x7f-Bad: v\r\n"));
-        EXPECT_FALSE(parseHeaderLine(std::string("X\x80" "-Bad: v", 9) + "\r\n"));
+        EXPECT_FALSE(parseHeaderLine(std::string("X\x80"
+                                                 "-Bad: v",
+                                                 9) +
+                                     "\r\n"));
     }
 
     TEST(HttpHeaderRules, ResponseRejectsHeaderNamesOutsideTheSharedTokenSet)
@@ -186,11 +192,16 @@ namespace AsynGyanis::Net
         HttpResponse response;
         response.setHeader("X-Good", "value");
         // 高位字节不是 tchar：请求侧收不进来，响应侧也不许发出去，两侧必须同一张表
-        EXPECT_FALSE(response.setHeader(std::string("X\x81" "-Bad", 6), "value"));
+        EXPECT_FALSE(response.setHeader(std::string("X\x81"
+                                                    "-Bad",
+                                                    6),
+                                        "value"));
         EXPECT_FALSE(response.setHeader("X Bad", "value"));
         // 值侧的 CR/LF 是响应拆分的最小形态
         EXPECT_FALSE(response.setHeader("X-Bad", std::string("a\r\nSet-Cookie: x=1", 18)));
-        EXPECT_TRUE(response.setHeader("X-Obs", std::string("a\x80" "b", 3)));
+        EXPECT_TRUE(response.setHeader("X-Obs", std::string("a\x80"
+                                                            "b",
+                                                            3)));
 
         const std::string serialized = response.toString();
         // 头部名入库即归一化为小写，序列化按该形态上线

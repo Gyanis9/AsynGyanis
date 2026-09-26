@@ -55,40 +55,40 @@ namespace AsynGyanis::Net
      */
     TEST(HttpStreamingBody, DispatchesBeforeBodyCompletes)
     {
-        constexpr std::size_t kTotalBytes = 64;
+        constexpr std::size_t      kTotalBytes  = 64;
         constexpr std::string_view kHeadPortion = "early";
 
-        std::atomic<bool> firstChunkObserved{false};
+        std::atomic<bool>        firstChunkObserved{false};
         std::atomic<std::size_t> firstChunkLength{0};
 
         const auto registerRoutes = [&firstChunkObserved, &firstChunkLength](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/upload", [&firstChunkObserved, &firstChunkLength](
-                                                        HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
+            router.postStreaming("/upload",
+                                 [&firstChunkObserved, &firstChunkLength](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("no-stream");
+                                         co_return;
+                                     }
 
-                std::size_t totalBytes = 0;
-                bool        isFirst    = true;
-                while (co_await stream->readNext())
-                {
-                    if (isFirst)
-                    {
-                        // 首段到达即置位：客户端据此确认「正文没发完，处理器已经跑起来了」
-                        firstChunkLength.store(stream->chunk().size(), std::memory_order_release);
-                        firstChunkObserved.store(true, std::memory_order_release);
-                        isFirst = false;
-                    }
-                    totalBytes += stream->chunk().size();
-                }
-                response.setBody("bytes=" + std::to_string(totalBytes));
-                co_return;
-            });
+                                     std::size_t totalBytes = 0;
+                                     bool        isFirst    = true;
+                                     while (co_await stream->readNext())
+                                     {
+                                         if (isFirst)
+                                         {
+                                             // 首段到达即置位：客户端据此确认「正文没发完，处理器已经跑起来了」
+                                             firstChunkLength.store(stream->chunk().size(), std::memory_order_release);
+                                             firstChunkObserved.store(true, std::memory_order_release);
+                                             isFirst = false;
+                                         }
+                                         totalBytes += stream->chunk().size();
+                                     }
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);
@@ -102,14 +102,9 @@ namespace AsynGyanis::Net
 
         // 只发请求头与前 5 个正文字节：正文没发完，服务器就应经流式派发把这段交进处理器
         ASSERT_TRUE(client.sendText(uploadHeadRequest("/upload", kTotalBytes) + std::string(kHeadPortion), kWaitTimeout));
-        EXPECT_TRUE(waitForCondition(
-                [&firstChunkObserved]
-                {
-                    return firstChunkObserved.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "正文未收完时处理器没有拿到首段：流式派发没有发生";
-        EXPECT_LE(firstChunkLength.load(std::memory_order_acquire), kHeadPortion.size())
-                << "首段里出现了客户端尚未发送的字节";
+        EXPECT_TRUE(waitForCondition([&firstChunkObserved] { return firstChunkObserved.load(std::memory_order_acquire); }, kWaitTimeout))
+                << "正文未收完时处理器没有拿到首段：流式派发没有发生";
+        EXPECT_LE(firstChunkLength.load(std::memory_order_acquire), kHeadPortion.size()) << "首段里出现了客户端尚未发送的字节";
 
         // 补发剩余正文，处理器读到 EOF 后应答
         const std::string payload = makePayload(kTotalBytes);
@@ -130,27 +125,27 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [&observedChunkCount](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/upload", [&observedChunkCount](
-                                                        HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
+            router.postStreaming("/upload",
+                                 [&observedChunkCount](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("no-stream");
+                                         co_return;
+                                     }
 
-                std::size_t totalBytes = 0;
-                std::size_t chunkCount = 0;
-                while (co_await stream->readNext())
-                {
-                    totalBytes += stream->chunk().size();
-                    ++chunkCount;
-                }
-                observedChunkCount.store(chunkCount, std::memory_order_release);
-                response.setBody("chunks=" + std::to_string(chunkCount) + ",bytes=" + std::to_string(totalBytes));
-                co_return;
-            });
+                                     std::size_t totalBytes = 0;
+                                     std::size_t chunkCount = 0;
+                                     while (co_await stream->readNext())
+                                     {
+                                         totalBytes += stream->chunk().size();
+                                         ++chunkCount;
+                                     }
+                                     observedChunkCount.store(chunkCount, std::memory_order_release);
+                                     response.setBody("chunks=" + std::to_string(chunkCount) + ",bytes=" + std::to_string(totalBytes));
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);
@@ -166,8 +161,7 @@ namespace AsynGyanis::Net
 
         std::string receivedText;
         ASSERT_TRUE(client.waitForText(receivedText, "bytes=" + std::to_string(kTotalBytes), kWaitTimeout)) << receivedText;
-        EXPECT_GE(observedChunkCount.load(std::memory_order_acquire), 2U)
-                << "128 KiB 正文只交付了一段：说明它被整块缓冲后才派发，而不是流式交付";
+        EXPECT_GE(observedChunkCount.load(std::memory_order_acquire), 2U) << "128 KiB 正文只交付了一段：说明它被整块缓冲后才派发，而不是流式交付";
     }
 
     /**
@@ -179,23 +173,24 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/upload", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
+            router.postStreaming("/upload",
+                                 [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("no-stream");
+                                         co_return;
+                                     }
 
-                std::size_t totalBytes = 0;
-                while (co_await stream->readNext())
-                {
-                    totalBytes += stream->chunk().size();
-                }
-                response.setBody("bytes=" + std::to_string(totalBytes));
-                co_return;
-            });
+                                     std::size_t totalBytes = 0;
+                                     while (co_await stream->readNext())
+                                     {
+                                         totalBytes += stream->chunk().size();
+                                     }
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);
@@ -207,7 +202,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid());
 
         // 分块编码：三次 8 KiB 数据块 + 终止块
-        std::string request = "POST /upload HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: chunked\r\n\r\n";
+        std::string       request = "POST /upload HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: chunked\r\n\r\n";
         const std::string payload = makePayload(kTotalBytes);
         for (std::size_t offset = 0; offset < payload.size(); offset += 8 * 1024)
         {
@@ -240,36 +235,35 @@ namespace AsynGyanis::Net
         {
             const auto report = [](HttpRequest &request, const std::size_t bodyBytes)
             {
-                return "bytes=" + std::to_string(bodyBytes)
-                       + "|cl=" + (request.getHeader("content-length").has_value() ? "yes" : "no")
-                       + "|xt=" + (request.getHeader("x-trailer-only").has_value() ? "yes" : "no")
-                       + "|tr=" + (request.getHeader("trailer").has_value() ? "yes" : "no")
-                       + "|tf=" + request.getTrailerField("x-trailer-only").value_or("-")
-                       + "|tcl=" + (request.getTrailerField("content-length").has_value() ? "yes" : "no");
+                return "bytes=" + std::to_string(bodyBytes) + "|cl=" + (request.getHeader("content-length").has_value() ? "yes" : "no") +
+                       "|xt=" + (request.getHeader("x-trailer-only").has_value() ? "yes" : "no") + "|tr=" + (request.getHeader("trailer").has_value() ? "yes" : "no") +
+                       "|tf=" + request.getTrailerField("x-trailer-only").value_or("-") + "|tcl=" + (request.getTrailerField("content-length").has_value() ? "yes" : "no");
             };
 
-            router.postStreaming("/upload-trailer", [report](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("stream|no-stream");
-                    co_return;
-                }
-                std::size_t totalBytes = 0;
-                while (co_await stream->readNext())
-                {
-                    totalBytes += stream->chunk().size();
-                }
-                response.setBody("stream|" + report(request, totalBytes));
-                co_return;
-            });
+            router.postStreaming("/upload-trailer",
+                                 [report](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("stream|no-stream");
+                                         co_return;
+                                     }
+                                     std::size_t totalBytes = 0;
+                                     while (co_await stream->readNext())
+                                     {
+                                         totalBytes += stream->chunk().size();
+                                     }
+                                     response.setBody("stream|" + report(request, totalBytes));
+                                     co_return;
+                                 });
 
-            router.post("/upload-trailer-plain", [report](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                response.setBody("plain|" + report(request, request.body().size()));
-                co_return;
-            });
+            router.post("/upload-trailer-plain",
+                        [report](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                        {
+                            response.setBody("plain|" + report(request, request.body().size()));
+                            co_return;
+                        });
         };
 
         RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);
@@ -283,22 +277,20 @@ namespace AsynGyanis::Net
         // 一条报文的完整线上形状：真实头部 → 一个 8 字节块 → 终止块 → 两行 trailer → 空行收口
         const auto makeTrailerRequest = [](const std::string_view path)
         {
-            return std::string("POST ") + std::string(path)
-                   + " HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: chunked\r\n"
-                     "Trailer: Content-Length, X-Trailer-Only\r\n\r\n"
-                     "8\r\nabcdefgh\r\n0\r\nContent-Length: 999\r\nX-Trailer-Only: smuggled\r\n\r\n";
+            return std::string("POST ") + std::string(path) +
+                   " HTTP/1.1\r\nHost: loopback\r\nTransfer-Encoding: chunked\r\n"
+                   "Trailer: Content-Length, X-Trailer-Only\r\n\r\n"
+                   "8\r\nabcdefgh\r\n0\r\nContent-Length: 999\r\nX-Trailer-Only: smuggled\r\n\r\n";
         };
 
         // 正文恰好是那 8 字节（trailer 段一段都不算进来）；头部只有真头部，尾部字段从 trailer 档读到
         const std::string expectedReport{"bytes=8|cl=no|xt=no|tr=yes|tf=smuggled|tcl=no"};
         ASSERT_TRUE(client.sendText(makeTrailerRequest("/upload-trailer"), kWaitTimeout));
         std::string receivedText;
-        ASSERT_TRUE(client.waitForText(receivedText, "stream|" + expectedReport, kWaitTimeout))
-                << "流式派发上的 trailer 请求读回来的是：" << receivedText;
+        ASSERT_TRUE(client.waitForText(receivedText, "stream|" + expectedReport, kWaitTimeout)) << "流式派发上的 trailer 请求读回来的是：" << receivedText;
 
         ASSERT_TRUE(client.sendText(makeTrailerRequest("/upload-trailer-plain"), kWaitTimeout));
-        ASSERT_TRUE(client.waitForText(receivedText, "plain|" + expectedReport, kWaitTimeout))
-                << "普通派发上的 trailer 请求读回来的是：" << receivedText;
+        ASSERT_TRUE(client.waitForText(receivedText, "plain|" + expectedReport, kWaitTimeout)) << "普通派发上的 trailer 请求读回来的是：" << receivedText;
     }
 
     /**
@@ -314,9 +306,9 @@ namespace AsynGyanis::Net
      */
     TEST(HttpStreamingBody, EnforcesCumulativeBodyLimitWhileConsumerDrains)
     {
-        constexpr std::size_t kChunkBytes        = 16;
-        constexpr std::size_t kChunkCount        = 4;
-        constexpr std::size_t kMaximumBodyBytes  = 16;
+        constexpr std::size_t kChunkBytes       = 16;
+        constexpr std::size_t kChunkCount       = 4;
+        constexpr std::size_t kMaximumBodyBytes = 16;
 
         HttpParserLimits limits;
         limits.maximumBodySize = kMaximumBodyBytes;
@@ -325,27 +317,28 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [&drainedByteCount](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/upload", [&drainedByteCount](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
+            router.postStreaming("/upload",
+                                 [&drainedByteCount](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("no-stream");
+                                         co_return;
+                                     }
 
-                std::size_t totalBytes = 0;
-                while (co_await stream->readNext())
-                {
-                    totalBytes += stream->chunk().size();
-                    // 每取走一段就报一次：用例据此确认「处理器确实在持续把缓冲抽干」
-                    drainedByteCount.store(totalBytes, std::memory_order_release);
-                    // 让出一次：把交付与解析交错开，判据才真的落在「累计」上
-                    co_await std::suspend_never{};
-                }
-                response.setBody("bytes=" + std::to_string(totalBytes));
-                co_return;
-            });
+                                     std::size_t totalBytes = 0;
+                                     while (co_await stream->readNext())
+                                     {
+                                         totalBytes += stream->chunk().size();
+                                         // 每取走一段就报一次：用例据此确认「处理器确实在持续把缓冲抽干」
+                                         drainedByteCount.store(totalBytes, std::memory_order_release);
+                                         // 让出一次：把交付与解析交错开，判据才真的落在「累计」上
+                                         co_await std::suspend_never{};
+                                     }
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes, limits);
@@ -366,18 +359,13 @@ namespace AsynGyanis::Net
             {
                 break; // 已被收口：后面不用再发了
             }
-            static_cast<void>(waitForCondition(
-                    [&drainedByteCount, index]
-                    {
-                        return drainedByteCount.load(std::memory_order_acquire) >= (index + 1) * kChunkBytes;
-                    },
-                    std::chrono::milliseconds{200}));
+            static_cast<void>(waitForCondition([&drainedByteCount, index] { return drainedByteCount.load(std::memory_order_acquire) >= (index + 1) * kChunkBytes; },
+                                               std::chrono::milliseconds{200}));
         }
         static_cast<void>(client.sendText("0\r\n\r\n", kWaitTimeout));
 
         std::string accumulated;
-        const bool isRejected = client.waitForText(accumulated, "413", kWaitTimeout) ||
-                                client.waitForClosure(accumulated, kWaitTimeout);
+        const bool  isRejected = client.waitForText(accumulated, "413", kWaitTimeout) || client.waitForClosure(accumulated, kWaitTimeout);
         EXPECT_TRUE(isRejected) << "累计正文超过上限却没有被判越界，累计收到 " << accumulated.size() << " 字节";
         EXPECT_EQ(accumulated.find("bytes=" + std::to_string(kChunkBytes * kChunkCount)), std::string::npos)
                 << "累计正文超过上限却把整份正文都交给了处理器（判据又退回看当前缓冲了）：" << accumulated;
@@ -389,20 +377,21 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/upload-first-chunk", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
+            router.postStreaming("/upload-first-chunk",
+                                 [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("no-stream");
+                                         co_return;
+                                     }
 
-                // 只读一段就返回：剩余正文由会话排空后复用连接
-                const bool hasChunk = co_await stream->readNext();
-                response.setBody(hasChunk ? "first-chunk" : "empty");
-                co_return;
-            });
+                                     // 只读一段就返回：剩余正文由会话排空后复用连接
+                                     const bool hasChunk = co_await stream->readNext();
+                                     response.setBody(hasChunk ? "first-chunk" : "empty");
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);
@@ -433,23 +422,24 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [](Router &router, Core::EventLoop &)
         {
-            router.post("/echo-stream", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
+            router.post("/echo-stream",
+                        [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                        {
+                            HttpRequestBody *stream = request.bodyStream();
+                            if (stream == nullptr)
+                            {
+                                response.setBody("no-stream");
+                                co_return;
+                            }
 
-                std::string assembled;
-                while (co_await stream->readNext())
-                {
-                    assembled.append(stream->chunk());
-                }
-                response.setBody("stream-bytes=" + std::to_string(assembled.size()));
-                co_return;
-            });
+                            std::string assembled;
+                            while (co_await stream->readNext())
+                            {
+                                assembled.append(stream->chunk());
+                            }
+                            response.setBody("stream-bytes=" + std::to_string(assembled.size()));
+                            co_return;
+                        });
         };
 
         RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);
@@ -476,23 +466,24 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/upload", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
+            router.postStreaming("/upload",
+                                 [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("no-stream");
+                                         co_return;
+                                     }
 
-                std::size_t totalBytes = 0;
-                while (co_await stream->readNext())
-                {
-                    totalBytes += stream->chunk().size();
-                }
-                response.setBody("bytes=" + std::to_string(totalBytes));
-                co_return;
-            });
+                                     std::size_t totalBytes = 0;
+                                     while (co_await stream->readNext())
+                                     {
+                                         totalBytes += stream->chunk().size();
+                                     }
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);

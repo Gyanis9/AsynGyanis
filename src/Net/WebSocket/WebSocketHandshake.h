@@ -64,8 +64,7 @@ namespace AsynGyanis::Net
      * @return true 两项都通过，clientKey 可用
      * @return false 原因见 failureReason
      */
-    [[nodiscard]] bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey,
-                                                      std::string *failureReason);
+    [[nodiscard]] bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *failureReason);
 
     /**
      * @brief 构建 101 Switching Protocols 的完整应答报文

@@ -36,11 +36,7 @@ namespace AsynGyanis::Base
     [[nodiscard]] inline std::string_view tryFormatSourceLocationText(const SourceLocation &location, const std::span<char> buffer) noexcept
     {
         // n 的类型是 OutputIt 的差值类型，显式转换避免 size_t 隐式收窄的告警
-        const auto [out, size] = std::format_to_n(buffer.data(),
-                                                  static_cast<std::ptrdiff_t>(buffer.size()),
-                                                  "{}:{}",
-                                                  location.shortFileName(),
-                                                  location.line);
+        const auto [out, size]    = std::format_to_n(buffer.data(), static_cast<std::ptrdiff_t>(buffer.size()), "{}:{}", location.shortFileName(), location.line);
         const auto requiredLength = static_cast<std::size_t>(size);
         if (requiredLength > buffer.size())
         {
@@ -59,9 +55,7 @@ namespace AsynGyanis::Base
      * @param overflow 装不下时承载文本的字符串；返回的视图会指向它，调用方须让它活到使用结束
      * @return std::string_view 指向 buffer 或 overflow 中的完整文本
      */
-    [[nodiscard]] inline std::string_view formatSourceLocationText(const SourceLocation &location,
-                                                                   const std::span<char>  buffer,
-                                                                   std::string           &overflow)
+    [[nodiscard]] inline std::string_view formatSourceLocationText(const SourceLocation &location, const std::span<char> buffer, std::string &overflow)
     {
         if (const std::string_view text = tryFormatSourceLocationText(location, buffer); !text.empty())
         {

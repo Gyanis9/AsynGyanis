@@ -40,9 +40,9 @@ namespace AsynGyanis::Net
     /// 交给上层的一段流数据：已经按序、也已经拷走，上层可以安心持有
     struct QuicStreamDelivery
     {
-        std::uint64_t streamId{0};         ///< 流号
-        std::vector<std::uint8_t> bytes{}; ///< 数据本体（拷贝，不指向收包缓冲）
-        bool isFinal{false};               ///< 对端在本段之后收尾；纯 FIN 时本段长度为 0
+        std::uint64_t             streamId{0};    ///< 流号
+        std::vector<std::uint8_t> bytes{};        ///< 数据本体（拷贝，不指向收包缓冲）
+        bool                      isFinal{false}; ///< 对端在本段之后收尾；纯 FIN 时本段长度为 0
     };
 
     /**
@@ -51,8 +51,8 @@ namespace AsynGyanis::Net
      */
     struct QuicStreamViolation
     {
-        std::uint64_t errorCode{0}; ///< FLOW_CONTROL_ERROR、STREAM_LIMIT_ERROR 等
-        std::string reasonPhrase{}; ///< 进 CONNECTION_CLOSE 的原因文案
+        std::uint64_t errorCode{0};   ///< FLOW_CONTROL_ERROR、STREAM_LIMIT_ERROR 等
+        std::string   reasonPhrase{}; ///< 进 CONNECTION_CLOSE 的原因文案
     };
 
     /**
@@ -92,8 +92,7 @@ namespace AsynGyanis::Net
          * @param role 本端角色，见 `QuicConnectionRole`；缺省为服务端，与 `QuicConnectionCoreConfiguration`
          *        的缺省角色同一口径
          */
-        explicit QuicStreamLayer(const QuicTransportParameters &localParameters,
-                                 QuicConnectionRole role = QuicConnectionRole::Server);
+        explicit QuicStreamLayer(const QuicTransportParameters &localParameters, QuicConnectionRole role = QuicConnectionRole::Server);
 
         /**
          * @brief 对端参数到手：把发送侧的额度从 0 换成对端宣告的值
@@ -119,8 +118,7 @@ namespace AsynGyanis::Net
          * @param announcements 排进本包的收口宣告，同样由核心登记：这两类帧要发到被确认为止（§13.3）
          * @return true 至少编进了一帧
          */
-        bool collectFrames(std::string &frames, std::size_t byteBudget, std::vector<QuicStreamRange> &sentRanges,
-                           std::vector<QuicStreamAnnouncement> &announcements);
+        bool collectFrames(std::string &frames, std::size_t byteBudget, std::vector<QuicStreamRange> &sentRanges, std::vector<QuicStreamAnnouncement> &announcements);
 
         /// @return true 还有数据、窗口更新或收口宣告等着发
         [[nodiscard]] bool hasOutgoingFrames() const noexcept;
@@ -254,9 +252,9 @@ namespace AsynGyanis::Net
         /// 一段待发或在途的流数据；判丢后重发时偏移不变，同一批字节不会被算成两遍额度
         struct QuicStreamChunk
         {
-            std::uint64_t beginOffset{0};      ///< 本段起始偏移
-            std::vector<std::uint8_t> bytes{}; ///< 本段字节
-            bool isFinal{false};               ///< 本段带着 FIN
+            std::uint64_t             beginOffset{0}; ///< 本段起始偏移
+            std::vector<std::uint8_t> bytes{};        ///< 本段字节
+            bool                      isFinal{false}; ///< 本段带着 FIN
         };
 
         /**
@@ -268,38 +266,38 @@ namespace AsynGyanis::Net
         {
             std::uint64_t applicationErrorCode{0}; ///< 线上的 application error code，定稿后不再变
             std::uint64_t finalSize{0};            ///< RESET_STREAM 的收尾长度；STOP_SENDING 用不到
-            bool isInFlight{false};                ///< 已排进某个包，还没确认也没判丢：这段时间不重复发
-            bool isAcknowledged{false};            ///< 已被确认：这辈子不再发第二遍
+            bool          isInFlight{false};       ///< 已排进某个包，还没确认也没判丢：这段时间不重复发
+            bool          isAcknowledged{false};   ///< 已被确认：这辈子不再发第二遍
         };
 
         /// 一条出站流的状态：待发队列 + 在途账 + 发送额度
         struct OutgoingStream
         {
-            std::deque<QuicStreamChunk> pendingQueue{};             ///< 待发的段，按偏移递增
-            std::map<std::uint64_t, QuicStreamChunk> inFlight{};    ///< 按起始偏移索引的在途段
-            std::uint64_t nextWriteOffset{0};                       ///< 上层下一次写入的偏移
-            std::uint64_t sentHighWater{0};                         ///< 曾经上线的最大结束偏移，额度按它算
-            std::uint64_t streamLimit{0};                           ///< 对端给的这条流的发送上限
-            std::optional<std::uint64_t> finalOffset{};             ///< 本端收尾后的总长度
-            std::optional<AbortAnnouncement> sendAbort{};           ///< 本端放弃发送：欠对端一条 RESET_STREAM
-            bool isFinalSentToPeer{false};                          ///< 带 FIN 的那段是否已经上过线（收齐了就无需再复位）
-            bool isAborted{false};                                  ///< 被对端 STOP_SENDING 叫停，队列作废
+            std::deque<QuicStreamChunk>              pendingQueue{};           ///< 待发的段，按偏移递增
+            std::map<std::uint64_t, QuicStreamChunk> inFlight{};               ///< 按起始偏移索引的在途段
+            std::uint64_t                            nextWriteOffset{0};       ///< 上层下一次写入的偏移
+            std::uint64_t                            sentHighWater{0};         ///< 曾经上线的最大结束偏移，额度按它算
+            std::uint64_t                            streamLimit{0};           ///< 对端给的这条流的发送上限
+            std::optional<std::uint64_t>             finalOffset{};            ///< 本端收尾后的总长度
+            std::optional<AbortAnnouncement>         sendAbort{};              ///< 本端放弃发送：欠对端一条 RESET_STREAM
+            bool                                     isFinalSentToPeer{false}; ///< 带 FIN 的那段是否已经上过线（收齐了就无需再复位）
+            bool                                     isAborted{false};         ///< 被对端 STOP_SENDING 叫停，队列作废
         };
 
         /// 一条入站流的状态：交付点、上层消费点、乱序缓存与接收额度
         struct IncomingStream
         {
-            QuicReassemblyBuffer reassembly{};                       ///< 未交付的段：重复与重叠的分片在这里并成覆盖区
-            std::uint64_t consumedByteCount{0};                      ///< 上层报回来的「已经消化掉」的字节数，窗口按它抬
-            std::uint64_t discardedByteCount{0};                     ///< 对端复位时作废的未交付字节，上层永远不会为它报回来
-            std::uint64_t receivedHighWaterOffset{0};                ///< 见过的最大结束偏移，连接级额度按它算
-            std::uint64_t streamLimit{0};                            ///< 本端给这条流的接收上限，也是已宣告出去的值
-            std::optional<std::uint64_t> finalOffset{};              ///< 对端收尾后的总长度
-            std::optional<AbortAnnouncement> receiveStop{};          ///< 已请对端停发：欠对端一条 STOP_SENDING
-            bool isFinished{false};                                  ///< 收齐且已交付
-            bool isFinalDelivered{false};                            ///< 带 FIN 的那段交付已经排进队列，不重复通知
-            bool isReset{false};                                     ///< 被对端 RESET_STREAM 打断
-            bool windowUpdatePending{false};                         ///< 欠这条流一条 MAX_STREAM_DATA
+            QuicReassemblyBuffer             reassembly{};               ///< 未交付的段：重复与重叠的分片在这里并成覆盖区
+            std::uint64_t                    consumedByteCount{0};       ///< 上层报回来的「已经消化掉」的字节数，窗口按它抬
+            std::uint64_t                    discardedByteCount{0};      ///< 对端复位时作废的未交付字节，上层永远不会为它报回来
+            std::uint64_t                    receivedHighWaterOffset{0}; ///< 见过的最大结束偏移，连接级额度按它算
+            std::uint64_t                    streamLimit{0};             ///< 本端给这条流的接收上限，也是已宣告出去的值
+            std::optional<std::uint64_t>     finalOffset{};              ///< 对端收尾后的总长度
+            std::optional<AbortAnnouncement> receiveStop{};              ///< 已请对端停发：欠对端一条 STOP_SENDING
+            bool                             isFinished{false};          ///< 收齐且已交付
+            bool                             isFinalDelivered{false};    ///< 带 FIN 的那段交付已经排进队列，不重复通知
+            bool                             isReset{false};             ///< 被对端 RESET_STREAM 打断
+            bool                             windowUpdatePending{false}; ///< 欠这条流一条 MAX_STREAM_DATA
         };
 
         /**
@@ -310,7 +308,7 @@ namespace AsynGyanis::Net
          *          需要 push_front 的那条（出站待发队列）仍用 std::deque，不在这里勉强
          * @tparam ItemType 队列元素类型
          */
-        template <typename ItemType>
+        template<typename ItemType>
         class PendingQueue
         {
         public:
@@ -344,16 +342,15 @@ namespace AsynGyanis::Net
                 // 攒够一半才真正回收前面那段：每取一个就 erase(begin()) 等于每回把整张表往前搬一遍
                 if (m_readPosition * 2 >= m_items.size())
                 {
-                    m_items.erase(m_items.begin(),
-                                  m_items.begin() + static_cast<std::vector<ItemType>::difference_type>(m_readPosition));
+                    m_items.erase(m_items.begin(), m_items.begin() + static_cast<std::vector<ItemType>::difference_type>(m_readPosition));
                     m_readPosition = 0;
                 }
                 return taken;
             }
 
         private:
-            std::vector<ItemType> m_items{};      ///< 元素本体，前 m_readPosition 个已被取走
-            std::size_t m_readPosition{0};        ///< 下一个待取元素的下标
+            std::vector<ItemType> m_items{};         ///< 元素本体，前 m_readPosition 个已被取走
+            std::size_t           m_readPosition{0}; ///< 下一个待取元素的下标
         };
 
         /**
@@ -417,13 +414,11 @@ namespace AsynGyanis::Net
         /// 按流的类别取本端宣告的初始接收窗口
         [[nodiscard]] std::uint64_t incomingInitialWindowOf(std::uint64_t streamId) const noexcept;
         /// 排干重组缓存里连续的字节，攒成一段交付
-        void drainContiguousBytes(IncomingStream &stream, std::uint64_t streamId);
+        void                      drainContiguousBytes(IncomingStream &stream, std::uint64_t streamId);
         [[nodiscard]] std::size_t collectWindowUpdates(std::string &frames, std::size_t byteBudget);
         /// 收口宣告排在最前：一条帧只占十几字节，却决定对端要不要继续等下去
-        [[nodiscard]] std::size_t collectAbortAnnouncements(std::string &frames, std::size_t byteBudget,
-                                                            std::vector<QuicStreamAnnouncement> &announcements);
-        [[nodiscard]] std::size_t collectStreamData(std::string &frames, std::size_t byteBudget,
-                                                    std::vector<QuicStreamRange> &sentRanges);
+        [[nodiscard]] std::size_t collectAbortAnnouncements(std::string &frames, std::size_t byteBudget, std::vector<QuicStreamAnnouncement> &announcements);
+        [[nodiscard]] std::size_t collectStreamData(std::string &frames, std::size_t byteBudget, std::vector<QuicStreamRange> &sentRanges);
         /// 对端用掉一半已宣告的流数就续上限，两处入口（新建流、消费数据）共用一段判据
         void raiseAdvertisedStreamLimits();
         /// 这条流现在还能发多少字节：流级与连接级额度取小
@@ -431,38 +426,38 @@ namespace AsynGyanis::Net
         /// 把这条流待发队列里各段的字节数加起来（队列短且只在写入时算，不值得另记一本账）
         [[nodiscard]] static std::size_t pendingQueueByteCount(const OutgoingStream &stream) noexcept;
 
-        QuicTransportParameters m_localParameters{};       ///< 本端宣告的参数，决定接收侧额度
-        QuicTransportParameters m_peerParameters{};        ///< 对端参数；没到手前所有发送额度都是 0
-        bool m_hasPeerParameters{false};                   ///< 对端参数是否已经用上
+        QuicTransportParameters m_localParameters{};        ///< 本端宣告的参数，决定接收侧额度
+        QuicTransportParameters m_peerParameters{};         ///< 对端参数；没到手前所有发送额度都是 0
+        bool                    m_hasPeerParameters{false}; ///< 对端参数是否已经用上
 
         std::map<std::uint64_t, IncomingStream> m_incoming{}; ///< 对端发起或回写的流
         std::map<std::uint64_t, OutgoingStream> m_outgoing{}; ///< 本端发起的流
         /// 对端发起的流里「已作废」的流号边界，取的是同类型的第几条。两侧必须分开——一条请求的
         /// 入站侧往往先结清，共用一条边界会把同一条流的响应也挡掉
         std::array<std::array<std::uint64_t, 2>, 2> m_retiredPeerStreamBoundaries{}; ///< [收/发][双向/单向] 各一条边界
-        PendingQueue<QuicStreamDelivery> m_deliveries{};        ///< 等着交给上层的数据
-        PendingQueue<std::uint64_t> m_abortedStreams{};         ///< 被打断、等上层回收的流号
-        std::size_t m_drainedSendByteCount{0};                ///< 自上层取数以来排进包的待发字节，上层据此续交留下的那段
+        PendingQueue<QuicStreamDelivery>            m_deliveries{};                  ///< 等着交给上层的数据
+        PendingQueue<std::uint64_t>                 m_abortedStreams{};              ///< 被打断、等上层回收的流号
+        std::size_t                                 m_drainedSendByteCount{0};       ///< 自上层取数以来排进包的待发字节，上层据此续交留下的那段
 
         std::uint64_t m_connectionReceivedBytes{0};           ///< 各入站流最大结束偏移之和，§4.1 的连接级账
         std::uint64_t m_connectionConsumedBytes{0};           ///< 上层消化掉的字节总数，连接级窗口按它抬
         std::uint64_t m_connectionAdvertisedLimit{0};         ///< 已宣告的连接级接收上限
-        bool m_connectionWindowUpdatePending{false};          ///< 欠一条 MAX_DATA
+        bool          m_connectionWindowUpdatePending{false}; ///< 欠一条 MAX_DATA
 
-        std::uint64_t m_connectionSentHighWater{0};           ///< 各出站流曾上线的最大结束偏移之和
-        std::uint64_t m_connectionSendLimit{0};               ///< 对端给的连接级发送上限，参数没到之前是 0
+        std::uint64_t m_connectionSentHighWater{0}; ///< 各出站流曾上线的最大结束偏移之和
+        std::uint64_t m_connectionSendLimit{0};     ///< 对端给的连接级发送上限，参数没到之前是 0
 
-        std::uint64_t m_incomingBidirectionalCount{0};        ///< 对端发起的双向流数（按号数算，不按存活数）
-        std::uint64_t m_incomingUnidirectionalCount{0};       ///< 对端发起的单向流数
-        std::uint64_t m_advertisedBidirectionalStreams{0};    ///< 已经给过对端的双向流数上限
-        std::uint64_t m_advertisedUnidirectionalStreams{0};   ///< 已经给过的单向流数上限
-        bool m_streamsBidirectionalUpdatePending{false};      ///< 欠一条 MAX_STREAMS（双向）
-        bool m_streamsUnidirectionalUpdatePending{false};     ///< 欠一条 MAX_STREAMS（单向）
+        std::uint64_t m_incomingBidirectionalCount{0};             ///< 对端发起的双向流数（按号数算，不按存活数）
+        std::uint64_t m_incomingUnidirectionalCount{0};            ///< 对端发起的单向流数
+        std::uint64_t m_advertisedBidirectionalStreams{0};         ///< 已经给过对端的双向流数上限
+        std::uint64_t m_advertisedUnidirectionalStreams{0};        ///< 已经给过的单向流数上限
+        bool          m_streamsBidirectionalUpdatePending{false};  ///< 欠一条 MAX_STREAMS（双向）
+        bool          m_streamsUnidirectionalUpdatePending{false}; ///< 欠一条 MAX_STREAMS（单向）
 
-        bool m_isLocalServer{true};                               ///< 本端是不是服务端：只用来定流号低位（§2.1）
-        std::uint64_t m_nextBidirectionalStreamId{0x01};    ///< 本端下一条双向流（服务端发起的双向流低位是 0x01，客户端 0x00）
-        std::uint64_t m_nextUnidirectionalStreamId{0x03};     ///< 本端下一条单向流（服务端发起的单向流低位是 0x03，客户端 0x02）
-        std::uint64_t m_outgoingBidirectionalLimit{0};        ///< 对端允许本端发起的双向流数
-        std::uint64_t m_outgoingUnidirectionalLimit{0};       ///< 对端允许本端发起的单向流数
+        bool          m_isLocalServer{true};              ///< 本端是不是服务端：只用来定流号低位（§2.1）
+        std::uint64_t m_nextBidirectionalStreamId{0x01};  ///< 本端下一条双向流（服务端发起的双向流低位是 0x01，客户端 0x00）
+        std::uint64_t m_nextUnidirectionalStreamId{0x03}; ///< 本端下一条单向流（服务端发起的单向流低位是 0x03，客户端 0x02）
+        std::uint64_t m_outgoingBidirectionalLimit{0};    ///< 对端允许本端发起的双向流数
+        std::uint64_t m_outgoingUnidirectionalLimit{0};   ///< 对端允许本端发起的单向流数
     };
 } // namespace AsynGyanis::Net

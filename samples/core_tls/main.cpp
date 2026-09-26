@@ -32,17 +32,17 @@ namespace
     /// 一次 TLS 往返收集到的结果：只在循环线程上写
     struct TlsProbe
     {
-        bool        isHardenedContextCreated{false};
-        bool        isCertificateInstalled{false};
-        bool        isClientCaLoaded{false};
-        bool        isMissingCaRejected{false};
-        bool        isMissingOcspRejected{false};
-        bool        isReloadAccepted{false};
-        bool        isBadCertificateRejected{false};
-        bool        isSecondCertificateReloaded{false};
-        bool        isHandshakeDone{false};
-        bool        isPeerVerified{false};
-        bool        isEchoCorrect{false};
+        bool isHardenedContextCreated{false};
+        bool isCertificateInstalled{false};
+        bool isClientCaLoaded{false};
+        bool isMissingCaRejected{false};
+        bool isMissingOcspRejected{false};
+        bool isReloadAccepted{false};
+        bool isBadCertificateRejected{false};
+        bool isSecondCertificateReloaded{false};
+        bool isHandshakeDone{false};
+        bool isPeerVerified{false};
+        bool isEchoCorrect{false};
     };
 
     /// 客户端一侧的裸 SSL 上下文：Core::TlsContext 是服务端形态（server method），客户端必须另起一个
@@ -131,8 +131,8 @@ namespace
         Core::TlsContext clientCaProbe;
         probe.isClientCaLoaded = clientCaProbe.loadClientCertificateAuthority(material.certificateFile);
 
-        auto listener = Core::AsyncSocket::create(loop, AF_INET, SOCK_STREAM);
-        const auto address = Core::InetAddress::resolve("127.0.0.1", port);
+        auto       listener = Core::AsyncSocket::create(loop, AF_INET, SOCK_STREAM);
+        const auto address  = Core::InetAddress::resolve("127.0.0.1", port);
         if (!address.has_value() || !listener.bind(*address) || !listener.listen(4))
         {
             co_return;
@@ -141,9 +141,8 @@ namespace
         auto client = Core::AsyncSocket::create(loop, AF_INET, SOCK_STREAM);
         static_cast<void>(co_await client.asyncConnect(*address));
         sockaddr_storage peerStorage{};
-        socklen_t        peerLength = sizeof(peerStorage);
-        const int        serverDescriptor =
-                Platform::Socket::accept(listener.fileDescriptor(), reinterpret_cast<sockaddr *>(&peerStorage), &peerLength);
+        socklen_t        peerLength       = sizeof(peerStorage);
+        const int        serverDescriptor = Platform::Socket::accept(listener.fileDescriptor(), reinterpret_cast<sockaddr *>(&peerStorage), &peerLength);
         if (serverDescriptor < 0)
         {
             co_return;
@@ -154,9 +153,9 @@ namespace
         {
             co_return;
         }
-        auto server = Core::TlsSocket(serverHandle, loop, Core::AsyncSocket(loop, serverDescriptor), Core::TlsSocket::Role::Server);
+        auto server              = Core::TlsSocket(serverHandle, loop, Core::AsyncSocket(loop, serverDescriptor), Core::TlsSocket::Role::Server);
         auto clientContextHandle = makeClientContext(material, false);
-        SSL   *clientHandle = SSL_new(clientContextHandle.get());
+        SSL *clientHandle        = SSL_new(clientContextHandle.get());
         if (clientHandle == nullptr || SSL_set_fd(clientHandle, client.fileDescriptor()) == 0)
         {
             co_return;
@@ -200,19 +199,17 @@ namespace
         Core::TlsContext context;
         // 加固上下文与 installCertificate 是本类内部的私有步骤，外部只看到「装好证书的服务端上下文」
         probe.isHardenedContextCreated = context.nativeHandle() != nullptr;
-        probe.isCertificateInstalled = context.loadCertificate(material.certificateFile, material.keyFile);
+        probe.isCertificateInstalled   = context.loadCertificate(material.certificateFile, material.keyFile);
         // 路径写错时必须如实返回 false：静默成功会让部署方以为证书已换上
-        probe.isBadCertificateRejected = !context.loadCertificate("tests/Core/fixtures/absent-cert.pem", "absent-key.pem");
-        probe.isSecondCertificateReloaded = context.loadCertificate(material.certificateFile, material.keyFile) &&
-                                           context.reloadCertificate();
-        probe.isMissingCaRejected = !context.loadClientCertificateAuthority("tests/Core/fixtures/absent-ca.pem");
-        probe.isMissingOcspRejected = !context.loadOcspResponse("tests/Core/fixtures/absent-ocsp.der");
+        probe.isBadCertificateRejected    = !context.loadCertificate("tests/Core/fixtures/absent-cert.pem", "absent-key.pem");
+        probe.isSecondCertificateReloaded = context.loadCertificate(material.certificateFile, material.keyFile) && context.reloadCertificate();
+        probe.isMissingCaRejected         = !context.loadClientCertificateAuthority("tests/Core/fixtures/absent-ca.pem");
+        probe.isMissingOcspRejected       = !context.loadOcspResponse("tests/Core/fixtures/absent-ocsp.der");
         // 上面已经成功装过一次，reload 才应当被接受
         probe.isReloadAccepted = context.reloadCertificate();
     }
 
-    Core::Task<> runAll(Core::EventLoop &loop, const std::uint16_t port, const Material &material, TlsProbe &probe,
-                        std::atomic<bool> &doneSignal)
+    Core::Task<> runAll(Core::EventLoop &loop, const std::uint16_t port, const Material &material, TlsProbe &probe, std::atomic<bool> &doneSignal)
     {
         demonstrateContextSurface(material, probe);
         // 双向认证「客户端不出证书就被拒」这条负路径留给单测：它要求服务端侧先有 CA 才能验出差异，
@@ -221,7 +218,7 @@ namespace
         doneSignal.store(true, std::memory_order_release);
         co_return;
     }
-}
+} // namespace
 
 int main(const int argc, char **argv)
 {
@@ -234,8 +231,7 @@ int main(const int argc, char **argv)
         if (std::string_view(argv[index]) == "--cert")
         {
             material.certificateFile = argv[index + 1];
-        }
-        else if (std::string_view(argv[index]) == "--key")
+        } else if (std::string_view(argv[index]) == "--key")
         {
             material.keyFile = argv[index + 1];
         }
@@ -247,15 +243,14 @@ int main(const int argc, char **argv)
     }
 
     LOG_INFO("=== Core TLS 示例开始 ===");
-    Core::EventLoop      loop;
-    std::atomic<bool>    isDone{false};
-    TlsProbe             probe;
-    Core::Task<>         probeTask = runAll(loop, port, material, probe, isDone);
+    Core::EventLoop   loop;
+    std::atomic<bool> isDone{false};
+    TlsProbe          probe;
+    Core::Task<>      probeTask = runAll(loop, port, material, probe, isDone);
     loop.scheduler().scheduleRemote(probeTask.handle());
-    std::thread          loopThread([&loop] { loop.run(); });
+    std::thread loopThread([&loop] { loop.run(); });
 
-    const bool isFinished = Samples::waitUntil([&isDone] { return isDone.load(std::memory_order_acquire); },
-                                              std::chrono::seconds{30});
+    const bool isFinished = Samples::waitUntil([&isDone] { return isDone.load(std::memory_order_acquire); }, std::chrono::seconds{30});
     loop.stop();
     loopThread.join();
 

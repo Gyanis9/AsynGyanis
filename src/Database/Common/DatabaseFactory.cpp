@@ -30,11 +30,10 @@ namespace AsynGyanis::Database
         const bool hasNetworkFeatures = !config.host.empty() || !config.userName.empty() || !config.password.empty();
 
         std::string message = "无法从配置判定数据库类型：端口 " + std::to_string(config.port) + " 推不出驱动，";
-        message += hasNetworkFeatures
-                           ? "且配置里带着网络库特征（主机/账号/口令非空），不能当嵌入式库处理："
-                             "请补上端口，或清空这些字段并按 SQLite 使用"
-                           : "且 database 为空，没有可作为嵌入式库依据的库名或路径："
-                             "连远端请补 host/port（或显式指定驱动类型），用本地库请把 database 填成 \":memory:\" 或文件路径";
+        message += hasNetworkFeatures ? "且配置里带着网络库特征（主机/账号/口令非空），不能当嵌入式库处理："
+                                        "请补上端口，或清空这些字段并按 SQLite 使用"
+                                      : "且 database 为空，没有可作为嵌入式库依据的库名或路径："
+                                        "连远端请补 host/port（或显式指定驱动类型），用本地库请把 database 填成 \":memory:\" 或文件路径";
 
         throw Base::InvalidArgumentException(message);
     }
@@ -52,8 +51,8 @@ namespace AsynGyanis::Database
         }
 
         // 枚举取值超出已知范围（反序列化出错或内存被写坏）时不给静默默认值
-        throw Base::InvalidArgumentException(std::string("不支持的数据库类型：") + databaseTypeName(type) +
-                                             "（枚举值 " + std::to_string(static_cast<int>(type)) + "）：请改用 MySql / Sqlite / Redis 三者之一，或修正反序列化来源");
+        throw Base::InvalidArgumentException(std::string("不支持的数据库类型：") + databaseTypeName(type) + "（枚举值 " + std::to_string(static_cast<int>(type)) +
+                                             "）：请改用 MySql / Sqlite / Redis 三者之一，或修正反序列化来源");
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createMySql(const ConnectionConfig &config)

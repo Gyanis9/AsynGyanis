@@ -60,9 +60,9 @@ namespace AsynGyanis::Core
         /// 两侧都按 std::system_category() 递交，因此数值可以直接对照
         constexpr int kExpectedRefusedErrorCode =
 #if ASYN_PLATFORM_WIN32
-            10061;
+                10061;
 #else
-            ECONNREFUSED;
+                ECONNREFUSED;
 #endif
 
         /// 触发「等可写」的轮数上限：跑满说明本机没有构造出写阻塞，而不是实现出错
@@ -90,10 +90,7 @@ namespace AsynGyanis::Core
 
             Task<> connecting = socket.asyncConnect(InetAddress::localhost(listener.localAddress().port()));
             connecting.handle().resume();
-            if (!advanceUntil(loop, [&connecting]()
-            {
-                return connecting.isReady();
-            }))
+            if (!advanceUntil(loop, [&connecting]() { return connecting.isReady(); }))
             {
                 return -1;
             }
@@ -127,8 +124,7 @@ namespace AsynGyanis::Core
                             return received.size() >= expectedLength;
                         }
                         // 读到真错误就提前收手：继续等只会把「对端重置」拖成超时，报出来的原因也是错的
-                        return readLength < 0 &&
-                               Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kWouldBlock;
+                        return readLength < 0 && Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kWouldBlock;
                     }));
             return received;
         }
@@ -170,7 +166,7 @@ namespace AsynGyanis::Core
                     if (sentBytes <= 0)
                     {
                         observation.completedRoundCount = round;
-                        observation.isFailureObserved  = true;
+                        observation.isFailureObserved   = true;
                         co_return;
                     }
                 } catch (const Base::SystemException &exception)
@@ -178,16 +174,15 @@ namespace AsynGyanis::Core
                     // 等待可写期间套接字被关闭：await_resume 交回「未就绪」，asyncSend 据此抛错。
                     // 原因与错误号都记下来：用例据此确认「被关闭」与「事件就绪」可区分，
                     // 且错误号取自 socket 空间（winsock 失败不写 errno，读 errno 只会拿到陈旧值）
-                    observation.completedRoundCount = round;
-                    observation.isFailureObserved  = true;
-                    observation.isClosedFailureObserved =
-                            std::string_view(exception.what()).find("等待可写期间套接字被关闭") != std::string_view::npos;
-                    observation.observedErrorCode = exception.nativeError();
+                    observation.completedRoundCount     = round;
+                    observation.isFailureObserved       = true;
+                    observation.isClosedFailureObserved = std::string_view(exception.what()).find("等待可写期间套接字被关闭") != std::string_view::npos;
+                    observation.observedErrorCode       = exception.nativeError();
                     co_return;
                 } catch (const Base::Exception &)
                 {
                     observation.completedRoundCount = round;
-                    observation.isFailureObserved  = true;
+                    observation.isFailureObserved   = true;
                     co_return;
                 }
             }
@@ -199,7 +194,7 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, CreateReturnsValidDescriptor)
     {
-        EventLoop loop;
+        EventLoop   loop;
         AsyncSocket asyncSocket = AsyncSocket::create(loop);
 
         ASSERT_GE(asyncSocket.fileDescriptor(), 0);
@@ -219,8 +214,7 @@ namespace AsynGyanis::Core
         AsyncSocket asyncSocket = AsyncSocket::create(loop);
         ASSERT_GE(asyncSocket.fileDescriptor(), 0);
 
-        EXPECT_TRUE(Platform::TestSupport::isNotInheritable(asyncSocket.fileDescriptor()))
-                << "套接字可被继承，spawn 出去的子进程会替父进程占住这个端口";
+        EXPECT_TRUE(Platform::TestSupport::isNotInheritable(asyncSocket.fileDescriptor())) << "套接字可被继承，spawn 出去的子进程会替父进程占住这个端口";
 
         asyncSocket.close();
     }
@@ -232,9 +226,9 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, MoveConstructionTransfersDescriptor)
     {
-        EventLoop loop;
-        AsyncSocket asyncSocket1 = AsyncSocket::create(loop);
-        const int fileDescriptor1 = asyncSocket1.fileDescriptor();
+        EventLoop   loop;
+        AsyncSocket asyncSocket1    = AsyncSocket::create(loop);
+        const int   fileDescriptor1 = asyncSocket1.fileDescriptor();
         ASSERT_GE(fileDescriptor1, 0);
 
         const AsyncSocket asyncSocket2(std::move(asyncSocket1));
@@ -248,10 +242,10 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, MoveAssignmentTransfersDescriptor)
     {
-        EventLoop loop;
-        AsyncSocket asyncSocket1 = AsyncSocket::create(loop);
-        AsyncSocket asyncSocket2 = AsyncSocket::create(loop);
-        const int fileDescriptor1 = asyncSocket1.fileDescriptor();
+        EventLoop   loop;
+        AsyncSocket asyncSocket1    = AsyncSocket::create(loop);
+        AsyncSocket asyncSocket2    = AsyncSocket::create(loop);
+        const int   fileDescriptor1 = asyncSocket1.fileDescriptor();
         ASSERT_GE(fileDescriptor1, 0);
 
         asyncSocket2 = std::move(asyncSocket1);
@@ -267,7 +261,7 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, CloseResetsDescriptorToInvalid)
     {
-        EventLoop loop;
+        EventLoop   loop;
         AsyncSocket asyncSocket = AsyncSocket::create(loop);
         ASSERT_GE(asyncSocket.fileDescriptor(), 0);
 
@@ -281,7 +275,7 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, DoubleCloseIsSafe)
     {
-        EventLoop loop;
+        EventLoop   loop;
         AsyncSocket asyncSocket = AsyncSocket::create(loop);
         ASSERT_GE(asyncSocket.fileDescriptor(), 0);
         asyncSocket.close();
@@ -309,8 +303,7 @@ namespace AsynGyanis::Core
         AsyncSocket client      = AsyncSocket::create(loop);
         Task<>      connectTask = client.asyncConnect(InetAddress::localhost(listener.localAddress().port()));
         connectTask.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&connectTask] { return connectTask.isReady(); }))
-                << "回环连接没能在时限内完成";
+        ASSERT_TRUE(advanceUntil(loop, [&connectTask] { return connectTask.isReady(); })) << "回环连接没能在时限内完成";
         EXPECT_NO_THROW(connectTask.handle().promise().result());
 
         // 服务端这一端要交给 AsyncSocket 包装，因此直接走平台层接受（它已经把非阻塞置好了）
@@ -324,47 +317,42 @@ namespace AsynGyanis::Core
 
         // 客户端不收，写到 EAGAIN 就说明服务端的接收队列里已经堆了没人读的字节
         std::array<char, kInboundFillChunkLength> payload{};
-        std::int64_t submittedByteCount = 0;
-        bool isQueueFilledObservably    = false;
+        std::int64_t                              submittedByteCount      = 0;
+        bool                                      isQueueFilledObservably = false;
         for (int roundCount = 0; roundCount < kInboundFillRoundLimit; ++roundCount)
         {
-            const ssize_t writtenBytes =
-                Platform::FileDescriptor::write(clientDescriptor, payload.data(), payload.size());
+            const ssize_t writtenBytes = Platform::FileDescriptor::write(clientDescriptor, payload.data(), payload.size());
             if (writtenBytes > 0)
             {
                 submittedByteCount += writtenBytes;
                 continue;
             }
-            if (writtenBytes < 0 &&
-                Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
+            if (writtenBytes < 0 && Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
             {
                 isQueueFilledObservably = true;
                 break;
             }
             break;
         }
-        ASSERT_TRUE(isQueueFilledObservably)
-                << "没能在 " << kInboundFillRoundLimit << " 轮内把服务端接收队列灌到 EAGAIN，条件没构造出来";
+        ASSERT_TRUE(isQueueFilledObservably) << "没能在 " << kInboundFillRoundLimit << " 轮内把服务端接收队列灌到 EAGAIN，条件没构造出来";
         EXPECT_GT(submittedByteCount, 0) << "一个字节都没写出去，谈不上「有未读数据」";
 
         server.close();
 
         // 收口报文到达前客户端读到的是 EWOULDBLOCK：等到出现 0（EOF）或真正的错误为止
         std::array<char, 64> probeBuffer{};
-        ssize_t readResult        = -2;
-        int     observedErrorCode = Platform::PlatformError::kWouldBlock;
-        const bool isClosureObserved = waitForCondition(
-            [&]
-            {
-                readResult = Platform::FileDescriptor::read(clientDescriptor, probeBuffer.data(), probeBuffer.size());
-                observedErrorCode =
-                    readResult < 0 ? Platform::PlatformError::lastSocketErrorCode() : 0;
-                return readResult == 0 || observedErrorCode != Platform::PlatformError::kWouldBlock;
-            });
+        ssize_t              readResult        = -2;
+        int                  observedErrorCode = Platform::PlatformError::kWouldBlock;
+        const bool           isClosureObserved = waitForCondition(
+                [&]
+                {
+                    readResult        = Platform::FileDescriptor::read(clientDescriptor, probeBuffer.data(), probeBuffer.size());
+                    observedErrorCode = readResult < 0 ? Platform::PlatformError::lastSocketErrorCode() : 0;
+                    return readResult == 0 || observedErrorCode != Platform::PlatformError::kWouldBlock;
+                });
 
         ASSERT_TRUE(isClosureObserved) << "关闭服务端后客户端既没读到 EOF 也没报错，收口报文没有到达";
-        EXPECT_EQ(readResult, 0) << "客户端读到错误码 " << observedErrorCode
-                                 << "：RST 会让它丢掉已收到但还没读的响应";
+        EXPECT_EQ(readResult, 0) << "客户端读到错误码 " << observedErrorCode << "：RST 会让它丢掉已收到但还没读的响应";
     }
 
     /**
@@ -372,9 +360,9 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, BindToLoopbackEphemeralPortSucceeds)
     {
-        EventLoop loop;
-        AsyncSocket asyncSocket = AsyncSocket::create(loop);
-        const InetAddress address = InetAddress::localhost(0);
+        EventLoop         loop;
+        AsyncSocket       asyncSocket = AsyncSocket::create(loop);
+        const InetAddress address     = InetAddress::localhost(0);
 
         ASSERT_TRUE(asyncSocket.bind(address));
 
@@ -386,9 +374,9 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, ListenAfterBindSucceeds)
     {
-        EventLoop loop;
-        AsyncSocket asyncSocket = AsyncSocket::create(loop);
-        const InetAddress address = InetAddress::localhost(0);
+        EventLoop         loop;
+        AsyncSocket       asyncSocket = AsyncSocket::create(loop);
+        const InetAddress address     = InetAddress::localhost(0);
 
         ASSERT_TRUE(asyncSocket.bind(address));
         ASSERT_TRUE(asyncSocket.listen(AsyncSocket::kDefaultListenBacklog));
@@ -408,7 +396,7 @@ namespace AsynGyanis::Core
     TEST(AsyncSocket, CloseOfListeningSocketLeavesDuplicatedDescriptorAccepting)
     {
 #if !ASYN_PLATFORM_WIN32
-        EventLoop loop;
+        EventLoop   loop;
         AsyncSocket listener = AsyncSocket::create(loop);
         ASSERT_TRUE(listener.bind(InetAddress::localhost(0)));
         ASSERT_TRUE(listener.listen(4));
@@ -425,7 +413,7 @@ namespace AsynGyanis::Core
         address.sin_family      = AF_INET;
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         address.sin_port        = htons(port);
-        const bool isConnected = ::connect(client, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0;
+        const bool isConnected  = ::connect(client, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0;
         EXPECT_TRUE(isConnected) << "关掉本端引用把端点一起停了：换代时新一代接不到连接";
         if (isConnected)
         {
@@ -449,7 +437,7 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, SetSockOptEnablesAddressReuse)
     {
-        EventLoop loop;
+        EventLoop   loop;
         AsyncSocket asyncSocket = AsyncSocket::create(loop);
 
         int optionValue = 1;
@@ -463,9 +451,9 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, BindListenCloseLifecycleReportsEphemeralPort)
     {
-        EventLoop loop;
-        AsyncSocket asyncSocket = AsyncSocket::create(loop);
-        const InetAddress address = InetAddress::localhost(0);
+        EventLoop         loop;
+        AsyncSocket       asyncSocket = AsyncSocket::create(loop);
+        const InetAddress address     = InetAddress::localhost(0);
 
         ASSERT_TRUE(asyncSocket.bind(address));
         ASSERT_TRUE(asyncSocket.listen(AsyncSocket::kDefaultListenBacklog));
@@ -482,7 +470,7 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, LocalAddressMatchesBoundLoopbackAddress)
     {
-        EventLoop loop;
+        EventLoop   loop;
         AsyncSocket asyncSocket = AsyncSocket::create(loop);
         ASSERT_TRUE(asyncSocket.bind(InetAddress::localhost(0)));
 
@@ -498,7 +486,7 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, RemoteAddressThrowsOnUnconnectedSocket)
     {
-        EventLoop loop;
+        EventLoop   loop;
         AsyncSocket asyncSocket = AsyncSocket::create(loop);
         ASSERT_GE(asyncSocket.fileDescriptor(), 0);
 
@@ -533,8 +521,7 @@ namespace AsynGyanis::Core
         connectTask.handle().resume();
 
         // 回环连接可能立即成功，也可能返回 EINPROGRESS 而挂起等待可写：后者要靠事件循环推进
-        ASSERT_TRUE(advanceUntil(loop, [&connectTask] { return connectTask.isReady(); }))
-                << "连接未在预期内完成";
+        ASSERT_TRUE(advanceUntil(loop, [&connectTask] { return connectTask.isReady(); })) << "连接未在预期内完成";
         EXPECT_NO_THROW(connectTask.handle().promise().result());
 
         // 连接确实建立在刚监听的那个端口上：对端地址可读回即为证据
@@ -572,11 +559,7 @@ namespace AsynGyanis::Core
         Task<>      connecting = client.asyncConnect(InetAddress("127.0.0.1", deadPort));
         connecting.handle().resume();
 
-        ASSERT_TRUE(advanceUntil(loop, [&connecting]
-        {
-            return connecting.isReady();
-        }, std::chrono::seconds{15}))
-                << "连接被拒却没醒：等待方只能靠看门狗收场，这正是要修掉的形态";
+        ASSERT_TRUE(advanceUntil(loop, [&connecting] { return connecting.isReady(); }, std::chrono::seconds{15})) << "连接被拒却没醒：等待方只能靠看门狗收场，这正是要修掉的形态";
 
         int  reportedCode = 0;
         bool isRefused    = false;
@@ -589,8 +572,7 @@ namespace AsynGyanis::Core
             reportedCode = failure.nativeError();
             isRefused    = reportedCode == kExpectedRefusedErrorCode;
         }
-        EXPECT_TRUE(isRefused) << "醒来是醒来了，但报的错误码不是「对端拒绝」：实测拿到 "
-                               << reportedCode << "（期望 " << kExpectedRefusedErrorCode << "）";
+        EXPECT_TRUE(isRefused) << "醒来是醒来了，但报的错误码不是「对端拒绝」：实测拿到 " << reportedCode << "（期望 " << kExpectedRefusedErrorCode << "）";
         client.close();
     }
 
@@ -610,9 +592,9 @@ namespace AsynGyanis::Core
 
         AsyncSocket sender(loop, localDescriptor);
 
-        const std::string_view first  = "GET /a HTTP/1.1\r\n";
-        const std::string_view second = "Host: localhost\r\n";
-        const std::string_view third  = "\r\nBODY";
+        const std::string_view              first      = "GET /a HTTP/1.1\r\n";
+        const std::string_view              second     = "Host: localhost\r\n";
+        const std::string_view              third      = "\r\nBODY";
         const Platform::Socket::WriteBuffer buffers[3] = {
                 {first.data(), first.size()},
                 {second.data(), second.size()},
@@ -630,8 +612,7 @@ namespace AsynGyanis::Core
         std::size_t receivedLength = 0;
         while (receivedLength < expectedLength)
         {
-            const ssize_t readLength = Platform::FileDescriptor::read(
-                    peerDescriptor, received.data() + receivedLength, expectedLength - receivedLength);
+            const ssize_t readLength = Platform::FileDescriptor::read(peerDescriptor, received.data() + receivedLength, expectedLength - receivedLength);
             ASSERT_GT(readLength, 0);
             receivedLength += static_cast<std::size_t>(readLength);
         }
@@ -658,7 +639,7 @@ namespace AsynGyanis::Core
 
         constexpr std::size_t                                          kTooManyCount = Platform::Socket::kMaximumVectorCount + 1;
         const std::array<Platform::Socket::WriteBuffer, kTooManyCount> tooManyBuffers{};
-        Task<ssize_t> tooManyTask = socket.asyncSendVectored(tooManyBuffers.data(), kTooManyCount);
+        Task<ssize_t>                                                  tooManyTask = socket.asyncSendVectored(tooManyBuffers.data(), kTooManyCount);
         tooManyTask.handle().resume();
         ASSERT_TRUE(tooManyTask.isReady());
         EXPECT_THROW(static_cast<void>(tooManyTask.handle().promise().result()), Base::InvalidArgumentException);
@@ -679,7 +660,7 @@ namespace AsynGyanis::Core
     TEST(AsyncSocket, WaitingFlagsReportOnlyTheDirectionThatHasAWaiter)
     {
         EventLoop   loop;
-        AsyncSocket socket = AsyncSocket::create(loop);
+        AsyncSocket socket         = AsyncSocket::create(loop);
         const int   peerDescriptor = connectAndAcceptPeer(loop, socket);
         ASSERT_GE(peerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
 
@@ -687,20 +668,16 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(socket.isWaitingReadable()) << "还没人读过这条连接，读方向就报在等";
         EXPECT_FALSE(socket.isWaitingWritable()) << "还没人写过这条连接，写方向就报在等";
 
-        std::string      buffer(16, '\0');
-        Task<ssize_t>    receiving = socket.asyncReceive(buffer.data(), buffer.size());
+        std::string   buffer(16, '\0');
+        Task<ssize_t> receiving = socket.asyncReceive(buffer.data(), buffer.size());
         receiving.handle().resume();
         ASSERT_FALSE(receiving.isReady()) << "对端没写，读却没挂到「等可读」上";
         EXPECT_TRUE(socket.isWaitingReadable()) << "读方向已挂上等待者却没被认出来";
         EXPECT_FALSE(socket.isWaitingWritable()) << "只有读方向有人在等，写方向却报了「在等」：TLS 会因此让出不必要的等待";
 
         ASSERT_EQ(Platform::FileDescriptor::write(peerDescriptor, "ping", 4), 4);
-        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
-        {
-            return receiving.isReady();
-        })) << "对端已写入，读协程却没被叫醒";
-        EXPECT_FALSE(socket.isWaitingReadable())
-                << "等待者已被取走，标记却还留着：后续判断会以为这个槽位仍被占着";
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]() { return receiving.isReady(); })) << "对端已写入，读协程却没被叫醒";
+        EXPECT_FALSE(socket.isWaitingReadable()) << "等待者已被取走，标记却还留着：后续判断会以为这个槽位仍被占着";
 
         socket.close();
         Platform::FileDescriptor::close(peerDescriptor);
@@ -732,8 +709,7 @@ namespace AsynGyanis::Core
             // 出作用域：client 与 loop 依次析构。此刻交出去的描述符没有任何主人
         }
 
-        ASSERT_EQ(Platform::FileDescriptor::write(releasedDescriptor, "x", 1), 1)
-                << "持有者析构把已交出的描述符一起关掉了：那个号可能已被下一条连接复用";
+        ASSERT_EQ(Platform::FileDescriptor::write(releasedDescriptor, "x", 1), 1) << "持有者析构把已交出的描述符一起关掉了：那个号可能已被下一条连接复用";
         EXPECT_EQ(drainBytes(peerDescriptor, 1), "x") << "交出去的描述符写不进去，等于移交了一条坏连接";
 
         Platform::FileDescriptor::close(releasedDescriptor);
@@ -759,9 +735,8 @@ namespace AsynGyanis::Core
 
         AsyncSocket sender(loop, localDescriptor);
         // 想方设法把发送缓冲压到最小，让填满所需的字节数不要太大（内核会自行上调到一个下限）
-        int sendBufferLength = 4096;
-        [[maybe_unused]] const bool isSendBufferSet =
-                sender.setSockOpt(SOL_SOCKET, SO_SNDBUF, &sendBufferLength, sizeof(sendBufferLength));
+        int                         sendBufferLength = 4096;
+        [[maybe_unused]] const bool isSendBufferSet  = sender.setSockOpt(SOL_SOCKET, SO_SNDBUF, &sendBufferLength, sizeof(sendBufferLength));
 
         // 对端全程不读：payload 与观测结果都必须活到协程恢复之后
         const std::string payload(kBlockingSendChunkLength, 'x');
@@ -778,16 +753,12 @@ namespace AsynGyanis::Core
         loop.scheduler().runAll();
 
         EXPECT_TRUE(sending.isReady()) << "关闭套接字之后，卡在等可写上的协程仍未被唤醒";
-        EXPECT_TRUE(observation.isFailureObserved)
-                << "协程虽然被唤醒，却把「套接字已关闭」当成了一次就绪：await_resume 没有交回失败";
-        EXPECT_TRUE(observation.isClosedFailureObserved)
-                << "被唤醒后拿到的是「发送失败」而不是「等待可写期间套接字被关闭」："
-                   "等待结果无法区分「被关闭」与「事件就绪」";
+        EXPECT_TRUE(observation.isFailureObserved) << "协程虽然被唤醒，却把「套接字已关闭」当成了一次就绪：await_resume 没有交回失败";
+        EXPECT_TRUE(observation.isClosedFailureObserved) << "被唤醒后拿到的是「发送失败」而不是「等待可写期间套接字被关闭」："
+                                                            "等待结果无法区分「被关闭」与「事件就绪」";
         // 错误号必须来自 socket 空间：按 errno 构造只会带上一个与本次失败无关的陈旧值
-        EXPECT_EQ(observation.observedErrorCode, Platform::PlatformError::kConnectionAborted)
-                << "异常携带的错误号不是 socket 空间的「本端中止连接」：多半又去读了 errno";
-        EXPECT_LT(observation.completedRoundCount, kBlockingSendRoundLimit)
-                << "对端从未读过，写侧却宣称把负载全部提交成功了";
+        EXPECT_EQ(observation.observedErrorCode, Platform::PlatformError::kConnectionAborted) << "异常携带的错误号不是 socket 空间的「本端中止连接」：多半又去读了 errno";
+        EXPECT_LT(observation.completedRoundCount, kBlockingSendRoundLimit) << "对端从未读过，写侧却宣称把负载全部提交成功了";
 
         Platform::FileDescriptor::close(peerDescriptor);
     }
@@ -803,8 +774,7 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, ParameterValueRejectionsUseTheLogicErrorBranch)
     {
-        static_assert(!std::is_base_of_v<Base::Exception, Base::InvalidArgumentException>,
-                      "用法错误一旦被并入运行期故障链，本用例的判据就失效了");
+        static_assert(!std::is_base_of_v<Base::Exception, Base::InvalidArgumentException>, "用法错误一旦被并入运行期故障链，本用例的判据就失效了");
 
         EventLoop           loop;
         AsyncSocket         socket(loop, -1); // 描述符无效不影响本用例：这些判定都早于任何 I/O
@@ -847,26 +817,21 @@ namespace AsynGyanis::Core
     TEST(AsyncSocket, AsyncReceiveReturnsWhatThePeerWrote)
     {
         EventLoop   loop;
-        AsyncSocket reader = AsyncSocket::create(loop);
+        AsyncSocket reader         = AsyncSocket::create(loop);
         const int   peerDescriptor = connectAndAcceptPeer(loop, reader);
         ASSERT_GE(peerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
 
         const std::string payload = "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        ASSERT_EQ(Platform::FileDescriptor::write(peerDescriptor, payload.data(), payload.size()),
-                  static_cast<ssize_t>(payload.size())) << "对端没能把请求写进来";
+        ASSERT_EQ(Platform::FileDescriptor::write(peerDescriptor, payload.data(), payload.size()), static_cast<ssize_t>(payload.size())) << "对端没能把请求写进来";
 
-        std::string buffer(256, '\0');
+        std::string   buffer(256, '\0');
         Task<ssize_t> receiving = reader.asyncReceive(buffer.data(), buffer.size());
         receiving.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
-        {
-            return receiving.isReady();
-        })) << "已到期的数据没能读完";
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]() { return receiving.isReady(); })) << "已到期的数据没能读完";
 
         const ssize_t receivedLength = receiving.handle().promise().result();
         ASSERT_GT(receivedLength, 0) << "对端明明写了数据，接收却报「没有」";
-        EXPECT_EQ(std::string_view(buffer.data(), static_cast<std::size_t>(receivedLength)),
-                  payload.substr(0, static_cast<std::size_t>(receivedLength)));
+        EXPECT_EQ(std::string_view(buffer.data(), static_cast<std::size_t>(receivedLength)), payload.substr(0, static_cast<std::size_t>(receivedLength)));
 
         reader.close();
         Platform::FileDescriptor::close(peerDescriptor);
@@ -881,23 +846,19 @@ namespace AsynGyanis::Core
     TEST(AsyncSocket, AsyncReceiveWaitsUntilThePeerWrites)
     {
         EventLoop   loop;
-        AsyncSocket reader = AsyncSocket::create(loop);
+        AsyncSocket reader         = AsyncSocket::create(loop);
         const int   peerDescriptor = connectAndAcceptPeer(loop, reader);
         ASSERT_GE(peerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
 
-        std::string buffer(64, '\0');
+        std::string   buffer(64, '\0');
         Task<ssize_t> receiving = reader.asyncReceive(buffer.data(), buffer.size());
         receiving.handle().resume();
         ASSERT_FALSE(receiving.isReady()) << "对端一个字都没写，接收却已经返回：没有真的挂到「等可读」上";
 
         const std::string payload = "PING\r\n";
-        ASSERT_EQ(Platform::FileDescriptor::write(peerDescriptor, payload.data(), payload.size()),
-                  static_cast<ssize_t>(payload.size()));
+        ASSERT_EQ(Platform::FileDescriptor::write(peerDescriptor, payload.data(), payload.size()), static_cast<ssize_t>(payload.size()));
 
-        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
-        {
-            return receiving.isReady();
-        })) << "对端已经写入，挂在等可读上的接收却没被叫醒";
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]() { return receiving.isReady(); })) << "对端已经写入，挂在等可读上的接收却没被叫醒";
         const ssize_t receivedLength = receiving.handle().promise().result();
         ASSERT_EQ(receivedLength, static_cast<ssize_t>(payload.size()));
         EXPECT_EQ(std::string_view(buffer.data(), static_cast<std::size_t>(receivedLength)), payload);
@@ -914,20 +875,17 @@ namespace AsynGyanis::Core
     TEST(AsyncSocket, AsyncReceiveReportsPeerClosureAsZero)
     {
         EventLoop   loop;
-        AsyncSocket reader = AsyncSocket::create(loop);
+        AsyncSocket reader         = AsyncSocket::create(loop);
         const int   peerDescriptor = connectAndAcceptPeer(loop, reader);
         ASSERT_GE(peerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
 
         // 先关掉对端：FIN 已在路上，随后的接收只会读到 EOF
         Platform::FileDescriptor::close(peerDescriptor);
 
-        std::string buffer(64, '\0');
+        std::string   buffer(64, '\0');
         Task<ssize_t> receiving = reader.asyncReceive(buffer.data(), buffer.size());
         receiving.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
-        {
-            return receiving.isReady();
-        })) << "对端已经关闭，读侧却还在等一个永远不会来的可读";
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]() { return receiving.isReady(); })) << "对端已经关闭，读侧却还在等一个永远不会来的可读";
         EXPECT_EQ(receiving.handle().promise().result(), 0) << "对端正常关闭必须读成 0";
 
         reader.close();
@@ -941,8 +899,8 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, AsyncReceiveWithZeroLengthShortCircuitsBeforeAnyIo)
     {
-        EventLoop   loop;
-        AsyncSocket socket(loop, -1); // 描述符无效：若真去 recv，只会拿到 EBADF 异常
+        EventLoop           loop;
+        AsyncSocket         socket(loop, -1); // 描述符无效：若真去 recv，只会拿到 EBADF 异常
         std::array<char, 8> buffer{};
 
         Task<ssize_t> receiving = socket.asyncReceive(buffer.data(), 0);
@@ -958,8 +916,8 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, AsyncReceiveRejectsLengthBeyondSingleCallCeiling)
     {
-        EventLoop   loop;
-        AsyncSocket socket(loop, -1);
+        EventLoop           loop;
+        AsyncSocket         socket(loop, -1);
         std::array<char, 8> buffer{};
 
         const std::size_t oversizedLength = static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1;
@@ -996,10 +954,7 @@ namespace AsynGyanis::Core
         std::array<char, 16> buffer{};
         Task<ssize_t>        receiving = socket.asyncReceive(buffer.data(), buffer.size());
         receiving.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&receiving]()
-        {
-            return receiving.isReady();
-        })) << "本端已关闭，接收却挂住了";
+        ASSERT_TRUE(advanceUntil(loop, [&receiving]() { return receiving.isReady(); })) << "本端已关闭，接收却挂住了";
 
         bool isReportedAsFailure = false;
         try
@@ -1047,35 +1002,28 @@ namespace AsynGyanis::Core
         const std::uint16_t listeningPort = listener.localAddress().port();
         ASSERT_GT(listeningPort, 0U);
 
-        EXPECT_FALSE(listener.takeAcceptedConnection().has_value())
-                << "一条连接都没到，后端却报「取到一个」：交出去的会是垃圾句柄";
+        EXPECT_FALSE(listener.takeAcceptedConnection().has_value()) << "一条连接都没到，后端却报「取到一个」：交出去的会是垃圾句柄";
 
         // 先武装接受探针，再让客户端连上来：顺序反过来就可能永远等不到完成通知
         Task<bool> arming = waitReadableOnce(listener);
         arming.handle().resume();
         ASSERT_FALSE(arming.isReady()) << "刚武装就拿到事件：本用例没测到「等一条连接到达」";
 
-        AsyncSocket client      = AsyncSocket::create(loop);
-        Task<>      connecting  = client.asyncConnect(InetAddress::localhost(listeningPort));
+        AsyncSocket client     = AsyncSocket::create(loop);
+        Task<>      connecting = client.asyncConnect(InetAddress::localhost(listeningPort));
         connecting.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&connecting, &arming]()
-        {
-            return connecting.isReady() && arming.isReady();
-        })) << "客户端连上之后，监听描述符上的接受探针没被叫醒";
+        ASSERT_TRUE(advanceUntil(loop, [&connecting, &arming]() { return connecting.isReady() && arming.isReady(); })) << "客户端连上之后，监听描述符上的接受探针没被叫醒";
         EXPECT_NO_THROW(connecting.handle().promise().result()) << "回环上的连接没能建立成功";
 
         ASSERT_TRUE(arming.handle().promise().result()) << "接受探针交回的是「未就绪」";
         const std::optional<int> acceptedDescriptor = listener.takeAcceptedConnection();
         ASSERT_TRUE(acceptedDescriptor.has_value()) << "AcceptEx 完成之后必须能取到已接入的连接";
 
-        EXPECT_FALSE(listener.takeAcceptedConnection().has_value())
-                << "同一条连接被交出去两次：两条会话会共用同一个 socket";
+        EXPECT_FALSE(listener.takeAcceptedConnection().has_value()) << "同一条连接被交出去两次：两条会话会共用同一个 socket";
 
         const std::string payload = "hi";
-        ASSERT_EQ(Platform::FileDescriptor::write(client.fileDescriptor(), payload.data(), payload.size()),
-                  static_cast<ssize_t>(payload.size()));
-        EXPECT_EQ(drainBytes(*acceptedDescriptor, payload.size()), payload)
-                << "取到的句柄读不到客户端写的字节：交出的不是那条连接";
+        ASSERT_EQ(Platform::FileDescriptor::write(client.fileDescriptor(), payload.data(), payload.size()), static_cast<ssize_t>(payload.size()));
+        EXPECT_EQ(drainBytes(*acceptedDescriptor, payload.size()), payload) << "取到的句柄读不到客户端写的字节：交出的不是那条连接";
 
         client.close();
         listener.close();
@@ -1130,9 +1078,9 @@ namespace AsynGyanis::Core
          */
         std::size_t readWithinWindow(const int descriptor, const std::chrono::milliseconds observationWindow)
         {
-            std::size_t              receivedLength = 0;
-            std::array<char, 1024>   buffer{};
-            const auto               deadline = std::chrono::steady_clock::now() + observationWindow;
+            std::size_t            receivedLength = 0;
+            std::array<char, 1024> buffer{};
+            const auto             deadline = std::chrono::steady_clock::now() + observationWindow;
             while (std::chrono::steady_clock::now() < deadline)
             {
                 const ssize_t readLength = Platform::FileDescriptor::read(descriptor, buffer.data(), buffer.size());
@@ -1142,8 +1090,7 @@ namespace AsynGyanis::Core
                     continue;
                 }
                 // 读到真错误就此收手：它同样说明没有正文字节上线，继续轮询只会把结论拖得更模糊
-                if (readLength < 0 &&
-                    Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kWouldBlock)
+                if (readLength < 0 && Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kWouldBlock)
                 {
                     break;
                 }
@@ -1161,10 +1108,7 @@ namespace AsynGyanis::Core
         std::optional<std::string> driveToExceptionText(EventLoop &loop, Task<ssize_t> &sending)
         {
             sending.handle().resume();
-            const bool isTaskSettled = advanceUntil(loop, [&sending]()
-            {
-                return sending.isReady();
-            });
+            const bool isTaskSettled = advanceUntil(loop, [&sending]() { return sending.isReady(); });
             EXPECT_TRUE(isTaskSettled) << "零拷贝任务既没成功也没报错，一直挂在那里";
 
             try
@@ -1187,9 +1131,9 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, AsyncSendFileRejectsInvalidSourceDescriptorAndEmptyLength)
     {
-        EventLoop                loop;
-        AsyncSocket              socket(loop, -1); // 描述符无效不影响本用例：参数校验早于任何 I/O
-        TemporaryDirectory          directory("AsyncSendFile");
+        EventLoop          loop;
+        AsyncSocket        socket(loop, -1); // 描述符无效不影响本用例：参数校验早于任何 I/O
+        TemporaryDirectory directory("AsyncSendFile");
         ASSERT_TRUE(directory.writeFile("sample.bin", makeSampleContent(1024)));
         const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
         ASSERT_TRUE(mappedFile.isValid());
@@ -1200,11 +1144,10 @@ namespace AsynGyanis::Core
         EXPECT_THROW(static_cast<void>(invalidDescriptor.handle().promise().result()), Base::InvalidArgumentException)
                 << "源描述符非法是传进来的取值不对，必须落在用法错误那条分支上";
 
-        Task<ssize_t> emptyLength = socket.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 0);
+        Task<ssize_t>                    emptyLength  = socket.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 0);
         const std::optional<std::string> emptyFailure = driveToExceptionText(loop, emptyLength);
         ASSERT_TRUE(emptyFailure.has_value()) << "待发字节数为 0 时被静默当成「已经发完」了";
-        EXPECT_NE(emptyFailure->find("待发字节数为 0"), std::string::npos)
-                << "报错没有点明是长度为 0：文案为 " << *emptyFailure;
+        EXPECT_NE(emptyFailure->find("待发字节数为 0"), std::string::npos) << "报错没有点明是长度为 0：文案为 " << *emptyFailure;
 
         socket.close();
     }
@@ -1217,17 +1160,17 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, AsyncSendFileDeliversRequestedRangeWithoutMovingFileOffset)
     {
-        EventLoop                loop;
-        AsyncSocket              sender = AsyncSocket::create(loop);
-        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        EventLoop   loop;
+        AsyncSocket sender           = AsyncSocket::create(loop);
+        const int   readerDescriptor = connectAndAcceptPeer(loop, sender);
         ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
 
-        constexpr std::uint64_t sliceOffset        = 4096;
-        constexpr std::size_t   sliceLength        = 8192;
-        constexpr std::size_t   followUpLength     = 1024;
+        constexpr std::uint64_t sliceOffset    = 4096;
+        constexpr std::size_t   sliceLength    = 8192;
+        constexpr std::size_t   followUpLength = 1024;
 
-        TemporaryDirectory          directory("AsyncSendFileRange");
-        const std::string               sampleContent = makeSampleContent(kSampleFileLength);
+        TemporaryDirectory directory("AsyncSendFileRange");
+        const std::string  sampleContent = makeSampleContent(kSampleFileLength);
         ASSERT_TRUE(directory.writeFile("sample.bin", sampleContent));
         const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
         ASSERT_TRUE(mappedFile.isValid());
@@ -1235,25 +1178,16 @@ namespace AsynGyanis::Core
         // 先中段、再开头：顺序本身就是判据，第二次的起点若被第一次推进过，收到的就不是 content[0..]
         Task<ssize_t> firstSlice = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), sliceOffset, sliceLength);
         firstSlice.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&firstSlice]()
-        {
-            return firstSlice.isReady();
-        })) << "中段切片没能跑完";
+        ASSERT_TRUE(advanceUntil(loop, [&firstSlice]() { return firstSlice.isReady(); })) << "中段切片没能跑完";
         EXPECT_EQ(firstSlice.handle().promise().result(), static_cast<ssize_t>(sliceLength));
 
         Task<ssize_t> headSlice = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, followUpLength);
         headSlice.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&headSlice]()
-        {
-            return headSlice.isReady();
-        })) << "文件头切片没能跑完";
+        ASSERT_TRUE(advanceUntil(loop, [&headSlice]() { return headSlice.isReady(); })) << "文件头切片没能跑完";
         EXPECT_EQ(headSlice.handle().promise().result(), static_cast<ssize_t>(followUpLength));
 
-        const std::string expected =
-                sampleContent.substr(static_cast<std::size_t>(sliceOffset), sliceLength) +
-                sampleContent.substr(0, followUpLength);
-        EXPECT_EQ(drainBytes(readerDescriptor, expected.size()), expected)
-                << "收到的正文与「按位置取的切片」不一致：偏移要么被动过，要么发错了段";
+        const std::string expected = sampleContent.substr(static_cast<std::size_t>(sliceOffset), sliceLength) + sampleContent.substr(0, followUpLength);
+        EXPECT_EQ(drainBytes(readerDescriptor, expected.size()), expected) << "收到的正文与「按位置取的切片」不一致：偏移要么被动过，要么发错了段";
 
         sender.close();
         Platform::FileDescriptor::close(readerDescriptor);
@@ -1268,9 +1202,9 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, AsyncSendFileResumesAndCompletesAfterTheSendWindowFillsUp)
     {
-        EventLoop                loop;
-        AsyncSocket              sender = AsyncSocket::create(loop);
-        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        EventLoop   loop;
+        AsyncSocket sender           = AsyncSocket::create(loop);
+        const int   readerDescriptor = connectAndAcceptPeer(loop, sender);
         ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
 
         // 发送队列压到内核下限、接收侧留 64 KiB：总容量远小于正文，写到 EAGAIN 必然发生。
@@ -1281,8 +1215,8 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(sender.setSockOpt(SOL_SOCKET, SO_SNDBUF, &sendBufferLength, sizeof(sendBufferLength)));
         ASSERT_TRUE(Platform::Socket::setReceiveBufferSize(readerDescriptor, kReaderReceiveBufferBytes));
 
-        TemporaryDirectory          directory("AsyncSendFileBackpressure");
-        const std::string               sampleContent = makeSampleContent(kBackpressureFileLength);
+        TemporaryDirectory directory("AsyncSendFileBackpressure");
+        const std::string  sampleContent = makeSampleContent(kBackpressureFileLength);
         ASSERT_TRUE(directory.writeFile("sample.bin", sampleContent));
         const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
         ASSERT_TRUE(mappedFile.isValid());
@@ -1293,13 +1227,12 @@ namespace AsynGyanis::Core
         {
             stepLoopOnce(loop, 0);
         }
-        ASSERT_FALSE(sending.isReady())
-                << "对端一次都没读，512 KB 正文却已经报称发完：本机构造不出写阻塞，断言失去意义";
+        ASSERT_FALSE(sending.isReady()) << "对端一次都没读，512 KB 正文却已经报称发完：本机构造不出写阻塞，断言失去意义";
 
-        std::string               received;
+        std::string received;
         received.reserve(kBackpressureFileLength);
         std::array<char, kDrainChunkLength> readBuffer{};
-        const auto drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto                          drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (received.size() < kBackpressureFileLength && std::chrono::steady_clock::now() < drainDeadline)
         {
             // 先推进循环再读：内核刚腾出的窗口要在这一轮就用掉，反序会让每轮都白等一拍
@@ -1311,12 +1244,8 @@ namespace AsynGyanis::Core
             }
         }
 
-        ASSERT_TRUE(advanceUntil(loop, [&sending]()
-        {
-            return sending.isReady();
-        })) << "对端持续在读，零拷贝发送却始终没有收尾";
-        EXPECT_EQ(sending.handle().promise().result(), static_cast<ssize_t>(kBackpressureFileLength))
-                << "挂起续发之后把返回值算错了：部分写没有被累计";
+        ASSERT_TRUE(advanceUntil(loop, [&sending]() { return sending.isReady(); })) << "对端持续在读，零拷贝发送却始终没有收尾";
+        EXPECT_EQ(sending.handle().promise().result(), static_cast<ssize_t>(kBackpressureFileLength)) << "挂起续发之后把返回值算错了：部分写没有被累计";
         EXPECT_EQ(received.size(), kBackpressureFileLength) << "读取侧没有收满：正文在窗口恢复时被丢了一段";
         EXPECT_EQ(received, sampleContent);
 
@@ -1332,23 +1261,21 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, AsyncSendFileReportsOffsetPastEndOfFileAsStartOutOfRange)
     {
-        EventLoop                loop;
-        AsyncSocket              sender = AsyncSocket::create(loop);
-        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        EventLoop   loop;
+        AsyncSocket sender           = AsyncSocket::create(loop);
+        const int   readerDescriptor = connectAndAcceptPeer(loop, sender);
         ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
 
-        TemporaryDirectory          directory("AsyncSendFilePastEnd");
+        TemporaryDirectory directory("AsyncSendFilePastEnd");
         ASSERT_TRUE(directory.writeFile("sample.bin", makeSampleContent(4096)));
         const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
         ASSERT_TRUE(mappedFile.isValid());
 
-        Task<ssize_t> sending = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 4096, 1024);
+        Task<ssize_t>                    sending     = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 4096, 1024);
         const std::optional<std::string> failureText = driveToExceptionText(loop, sending);
         ASSERT_TRUE(failureText.has_value()) << "起点已经在文件末尾之后，却被当成发成功了";
-        EXPECT_NE(failureText->find("起点已在源文件末尾之后"), std::string::npos)
-                << "偏移越界没有被如实报出来：文案为 " << *failureText;
-        EXPECT_EQ(readWithinWindow(readerDescriptor, std::chrono::milliseconds(200)), 0u)
-                << "既然一次都没发出去，读取侧不该收到任何字节";
+        EXPECT_NE(failureText->find("起点已在源文件末尾之后"), std::string::npos) << "偏移越界没有被如实报出来：文案为 " << *failureText;
+        EXPECT_EQ(readWithinWindow(readerDescriptor, std::chrono::milliseconds(200)), 0u) << "既然一次都没发出去，读取侧不该收到任何字节";
 
         sender.close();
         Platform::FileDescriptor::close(readerDescriptor);
@@ -1361,26 +1288,24 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, AsyncSendFileThrowsWhenLengthRunsPastEndOfFileKeepingThePrefixOnTheWire)
     {
-        EventLoop                loop;
-        AsyncSocket              sender = AsyncSocket::create(loop);
-        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        EventLoop   loop;
+        AsyncSocket sender           = AsyncSocket::create(loop);
+        const int   readerDescriptor = connectAndAcceptPeer(loop, sender);
         ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
 
-        TemporaryDirectory          directory("AsyncSendFileOverLength");
-        const std::string               sampleContent = makeSampleContent(8192);
+        TemporaryDirectory directory("AsyncSendFileOverLength");
+        const std::string  sampleContent = makeSampleContent(8192);
         ASSERT_TRUE(directory.writeFile("sample.bin", sampleContent));
         const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
         ASSERT_TRUE(mappedFile.isValid());
 
-        Task<ssize_t> sending = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 8192 + 4096);
+        Task<ssize_t>                    sending     = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 8192 + 4096);
         const std::optional<std::string> failureText = driveToExceptionText(loop, sending);
         ASSERT_TRUE(failureText.has_value()) << "长度超出文件末尾时被当成发送成功，缺的那一截不会有人知道";
-        EXPECT_NE(failureText->find("到达文件末尾"), std::string::npos)
-                << "报的不是「文件比请求的短」：文案为 " << *failureText;
+        EXPECT_NE(failureText->find("到达文件末尾"), std::string::npos) << "报的不是「文件比请求的短」：文案为 " << *failureText;
 
         // 前缀必须已经在线：这条断言是「调用方不得整块重发」这条契约唯一的实证
-        EXPECT_EQ(drainBytes(readerDescriptor, sampleContent.size()), sampleContent)
-                << "抛错之前发出去的前缀没有出现在读取侧：部分写的后果无法被判定了";
+        EXPECT_EQ(drainBytes(readerDescriptor, sampleContent.size()), sampleContent) << "抛错之前发出去的前缀没有出现在读取侧：部分写的后果无法被判定了";
 
         sender.close();
         Platform::FileDescriptor::close(readerDescriptor);
@@ -1394,16 +1319,16 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncSocket, AsyncSendFileReportsClosureWhileWaitingForWritable)
     {
-        EventLoop                loop;
-        AsyncSocket              sender = AsyncSocket::create(loop);
-        const int                readerDescriptor = connectAndAcceptPeer(loop, sender);
+        EventLoop   loop;
+        AsyncSocket sender           = AsyncSocket::create(loop);
+        const int   readerDescriptor = connectAndAcceptPeer(loop, sender);
         ASSERT_GE(readerDescriptor, 0) << "回环连接没有建起来，本用例的前置条件不成立";
 
         int sendBufferLength = kTinySocketBufferBytes;
         ASSERT_TRUE(sender.setSockOpt(SOL_SOCKET, SO_SNDBUF, &sendBufferLength, sizeof(sendBufferLength)));
         ASSERT_TRUE(Platform::Socket::setReceiveBufferSize(readerDescriptor, kTinySocketBufferBytes));
 
-        TemporaryDirectory          directory("AsyncSendFileClosed");
+        TemporaryDirectory directory("AsyncSendFileClosed");
         ASSERT_TRUE(directory.writeFile("sample.bin", makeSampleContent(kBackpressureFileLength)));
         const Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(directory.path() / "sample.bin");
         ASSERT_TRUE(mappedFile.isValid());
@@ -1430,8 +1355,7 @@ namespace AsynGyanis::Core
             failureText = std::string(exception.what());
         }
         ASSERT_TRUE(failureText.has_value()) << "被唤醒之后当成「写好了」继续跑，等于向已关闭的连接发数据";
-        EXPECT_NE(failureText->find("等待可写期间套接字被关闭"), std::string::npos)
-                << "报的不是关闭而是别的失败：文案为 " << *failureText;
+        EXPECT_NE(failureText->find("等待可写期间套接字被关闭"), std::string::npos) << "报的不是关闭而是别的失败：文案为 " << *failureText;
 
         Platform::FileDescriptor::close(readerDescriptor);
     }

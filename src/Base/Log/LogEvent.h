@@ -46,8 +46,7 @@ namespace AsynGyanis::Base
         thread_local const std::shared_ptr<const std::string> kcachedThreadId = []
         {
             std::array<char, 24> buffer{};
-            const auto           [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(),
-                                                        std::hash<std::thread::id>{}(std::this_thread::get_id()));
+            const auto [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), std::hash<std::thread::id>{}(std::this_thread::get_id()));
             return std::make_shared<const std::string>(buffer.data(), static_cast<std::string::size_type>(out - buffer.data()));
         }();
         return kcachedThreadId;
@@ -67,13 +66,13 @@ namespace AsynGyanis::Base
      */
     struct LogEvent
     {
-        LogLevel                             level{};             ///< 日志等级
-        TimestampMoment                      timestamp{};         ///< 事件发生的时刻；文本由格式化器就地渲染，见 TimestampText.h
-        std::shared_ptr<const std::string>   threadId{};          ///< 线程 ID 快照（按线程共享，事件只存指针）
-        SourceLocation                       location{};          ///< 源码位置（两个指针加一个行号，本身不持有所有权）
-        std::shared_ptr<const std::string>   loggerName{};        ///< 日志器名称（与 Logger 共享同一份常量名字）
-        std::string                          message{};           ///< 日志消息内容
-        CapturedStackTrace                   stackTrace{};        ///< 调用栈原始帧；空表示本条日志不带栈
+        LogLevel                           level{};      ///< 日志等级
+        TimestampMoment                    timestamp{};  ///< 事件发生的时刻；文本由格式化器就地渲染，见 TimestampText.h
+        std::shared_ptr<const std::string> threadId{};   ///< 线程 ID 快照（按线程共享，事件只存指针）
+        SourceLocation                     location{};   ///< 源码位置（两个指针加一个行号，本身不持有所有权）
+        std::shared_ptr<const std::string> loggerName{}; ///< 日志器名称（与 Logger 共享同一份常量名字）
+        std::string                        message{};    ///< 日志消息内容
+        CapturedStackTrace                 stackTrace{}; ///< 调用栈原始帧；空表示本条日志不带栈
 
         LogEvent() = default;
 
@@ -88,10 +87,9 @@ namespace AsynGyanis::Base
          * @param loggerNameValue 日志器名称
          * @param message 日志消息
          */
-        LogEvent(const LogLevel logLevel, const TimestampMoment timestampMoment, std::string threadIdValue,
-                 const SourceLocation &sourceLocation, std::string loggerNameValue, std::string message) :
-            level(logLevel), timestamp(timestampMoment),
-            threadId(std::make_shared<const std::string>(std::move(threadIdValue))), location(sourceLocation),
+        LogEvent(const LogLevel logLevel, const TimestampMoment timestampMoment, std::string threadIdValue, const SourceLocation &sourceLocation, std::string loggerNameValue,
+                 std::string message) :
+            level(logLevel), timestamp(timestampMoment), threadId(std::make_shared<const std::string>(std::move(threadIdValue))), location(sourceLocation),
             loggerName(std::make_shared<const std::string>(std::move(loggerNameValue))), message(std::move(message))
         {
         }
@@ -105,8 +103,8 @@ namespace AsynGyanis::Base
          * @param loggerNameSnapshot 已共享的日志器名称，可为空表示无名字
          * @param message 日志消息
          */
-        LogEvent(const LogLevel logLevel, const TimestampMoment timestampMoment, std::shared_ptr<const std::string> threadIdSnapshot,
-                 const SourceLocation &sourceLocation, std::shared_ptr<const std::string> loggerNameSnapshot, std::string message) :
+        LogEvent(const LogLevel logLevel, const TimestampMoment timestampMoment, std::shared_ptr<const std::string> threadIdSnapshot, const SourceLocation &sourceLocation,
+                 std::shared_ptr<const std::string> loggerNameSnapshot, std::string message) :
             level(logLevel), timestamp(timestampMoment), threadId(std::move(threadIdSnapshot)), location(sourceLocation), loggerName(std::move(loggerNameSnapshot)),
             message(std::move(message))
         {

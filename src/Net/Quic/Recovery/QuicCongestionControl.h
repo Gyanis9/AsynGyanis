@@ -27,9 +27,9 @@ namespace AsynGyanis::Net
     /// NewReno 的三个状态，判据按 §7.3 的图 1：是否已过恢复期、窗口与慢启动阈值谁大
     enum class QuicCongestionPhase
     {
-        SlowStart,          ///< 窗口低于慢启动阈值：每个确认按确认到的字节数增长
-        Recovery,           ///< 刚判丢：窗口不动，直到一个恢复期之后发出的包被确认
-        CongestionAvoidance,///< 窗口到顶：按每个窗口最多涨一个数据报的加法增长
+        SlowStart,           ///< 窗口低于慢启动阈值：每个确认按确认到的字节数增长
+        Recovery,            ///< 刚判丢：窗口不动，直到一个恢复期之后发出的包被确认
+        CongestionAvoidance, ///< 窗口到顶：按每个窗口最多涨一个数据报的加法增长
     };
 
     /**
@@ -61,9 +61,7 @@ namespace AsynGyanis::Net
          * @param lost 因此次确认（或定时器）判丢的包，可为空
          * @param eventTime 触发本次更新的时刻：收到确认或定时器到期，进入恢复期时记的就是它
          */
-        void onCongestionUpdate(const std::vector<QuicSentPacketInfo> &acknowledged,
-                                const std::vector<QuicSentPacketInfo> &lost,
-                                QuicTime eventTime);
+        void onCongestionUpdate(const std::vector<QuicSentPacketInfo> &acknowledged, const std::vector<QuicSentPacketInfo> &lost, QuicTime eventTime);
 
         /**
          * @brief 某个包号空间的密钥退休了：把其中的在途字节销账，但不动窗口
@@ -88,18 +86,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool maySend(std::size_t byteCount) const noexcept;
 
         [[nodiscard]] QuicCongestionPhase phase() const noexcept;
-        [[nodiscard]] std::size_t congestionWindowByteLength() const noexcept;
-        [[nodiscard]] std::size_t slowStartThresholdByteLength() const noexcept;
-        [[nodiscard]] std::size_t bytesInFlight() const noexcept;
+        [[nodiscard]] std::size_t         congestionWindowByteLength() const noexcept;
+        [[nodiscard]] std::size_t         slowStartThresholdByteLength() const noexcept;
+        [[nodiscard]] std::size_t         bytesInFlight() const noexcept;
 
     private:
         /// 恢复期什么时候算结束：一个在 recoveryStartTime 之后发出的包被确认（§7.3.2）
         [[nodiscard]] bool isInRecovery() const noexcept;
 
-        std::size_t m_maximumDatagramByteLength{0};   ///< §B.2 的 max_datagram_size，窗口增减都以它为单位
-        std::size_t m_congestionWindowByteLength{0};  ///< 拥塞窗口
-        std::size_t m_slowStartThresholdByteLength{0};///< 慢启动阈值；初始为「无穷大」
-        std::size_t m_bytesInFlight{0};               ///< 在途字节数
-        std::optional<QuicTime> m_recoveryStartTime{}; ///< 有值即在本轮恢复期内
+        std::size_t             m_maximumDatagramByteLength{0};    ///< §B.2 的 max_datagram_size，窗口增减都以它为单位
+        std::size_t             m_congestionWindowByteLength{0};   ///< 拥塞窗口
+        std::size_t             m_slowStartThresholdByteLength{0}; ///< 慢启动阈值；初始为「无穷大」
+        std::size_t             m_bytesInFlight{0};                ///< 在途字节数
+        std::optional<QuicTime> m_recoveryStartTime{};             ///< 有值即在本轮恢复期内
     };
 } // namespace AsynGyanis::Net

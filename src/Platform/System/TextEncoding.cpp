@@ -113,8 +113,8 @@ namespace AsynGyanis::Platform
                 break;
             }
 
-            bool        isSequenceValid   = true;
-            std::size_t validPrefixSize   = 1;
+            bool        isSequenceValid = true;
+            std::size_t validPrefixSize = 1;
             for (; validPrefixSize < sequenceSize; ++validPrefixSize)
             {
                 const auto continuationByte = static_cast<std::uint8_t>(utf8Text[index + validPrefixSize]);

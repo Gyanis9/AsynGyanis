@@ -138,8 +138,8 @@ namespace AsynGyanis::Core
         /// 等可写；co_await 结果为 false 表示注册已失效（描述符已关闭），调用方应停止重试
         [[nodiscard]] IoWatcher::Awaiter waitWritable() const;
 
-        EventLoop                *m_loop{nullptr}; ///< 所属事件循环（非拥有）
-        Platform::DatagramSocket  m_socket;        ///< 平台套接字（拥有描述符）
-        mutable std::unique_ptr<IoWatcher> m_watcher; ///< 常驻注册对象；首次等待时建立
+        EventLoop                         *m_loop{nullptr}; ///< 所属事件循环（非拥有）
+        Platform::DatagramSocket           m_socket;        ///< 平台套接字（拥有描述符）
+        mutable std::unique_ptr<IoWatcher> m_watcher;       ///< 常驻注册对象；首次等待时建立
     };
 } // namespace AsynGyanis::Core

@@ -77,7 +77,7 @@ namespace AsynGyanis::Database
          * @param command 命令文本，例如 SET "my key" "a b"
          * @return std::optional<std::vector<std::string> > 参数数组；没有有效参数或引号未闭合时返回空值
          */
-        std::optional<std::vector<std::string> > splitCommandLine(const std::string_view command)
+        std::optional<std::vector<std::string>> splitCommandLine(const std::string_view command)
         {
             std::vector<std::string> arguments;
             std::string              currentArgument;
@@ -210,8 +210,7 @@ namespace AsynGyanis::Database
              * @brief 从参数列表建表：先定容量去向，再一次性填入两个平行数组
              * @param argumentValues 参数值列表，必须比本对象活得久（表里只有指向它们的指针）
              */
-            explicit ArgumentViewTable(const ArgumentRange &argumentValues) :
-                m_argumentCount(argumentValues.size())
+            explicit ArgumentViewTable(const ArgumentRange &argumentValues) : m_argumentCount(argumentValues.size())
             {
                 if (m_argumentCount <= kInlineArgumentCapacity)
                 {
@@ -276,11 +275,11 @@ namespace AsynGyanis::Database
                 }
             }
 
-            std::size_t                                       m_argumentCount;                 ///< 参数个数，决定走栈还是走堆
-            std::array<const char *, kInlineArgumentCapacity> m_inlinePointers{};               ///< 栈上指针数组
-            std::array<size_t, kInlineArgumentCapacity>       m_inlineLengths{};                ///< 栈上长度数组
-            std::vector<const char *>                         m_heapPointers{};                 ///< 宽命令的指针数组，窄命令下不分配
-            std::vector<size_t>                               m_heapLengths{};                  ///< 宽命令的长度数组，窄命令下不分配
+            std::size_t                                       m_argumentCount;    ///< 参数个数，决定走栈还是走堆
+            std::array<const char *, kInlineArgumentCapacity> m_inlinePointers{}; ///< 栈上指针数组
+            std::array<size_t, kInlineArgumentCapacity>       m_inlineLengths{};  ///< 栈上长度数组
+            std::vector<const char *>                         m_heapPointers{};   ///< 宽命令的指针数组，窄命令下不分配
+            std::vector<size_t>                               m_heapLengths{};    ///< 宽命令的长度数组，窄命令下不分配
         };
     } // namespace
 
@@ -315,9 +314,7 @@ namespace AsynGyanis::Database
         // 两条失败路径都必须先摘错误文本再释放上下文——顺序反了就是在读已释放内存
         const int connectionTimeoutMilliseconds = connectTimeout();
         m_redisContext = connectionTimeoutMilliseconds > 0
-                                 ? redisConnectWithTimeout(m_configuration.host.c_str(),
-                                                           static_cast<int>(m_configuration.port),
-                                                           makeTimeval(connectionTimeoutMilliseconds))
+                                 ? redisConnectWithTimeout(m_configuration.host.c_str(), static_cast<int>(m_configuration.port), makeTimeval(connectionTimeoutMilliseconds))
                                  // 非正值是「不设连接超时」（与 setQueryTimeout、MySQL 驱动同一口径）：
                                  // 折算成 {0, -1000} 交给 select() 只会得到一次无效或零窗口的等待，
                                  // 对着活着的服务器也报连接失败。redisConnect 这条路径不带等待窗口
@@ -326,8 +323,7 @@ namespace AsynGyanis::Database
         {
             // redisConnectWithTimeout 只在内存分配失败时返回空（网络类失败会给出带 err 的上下文），
             // 文案据此给出唯一可行动作，不要罗列与实现不符的「无法访问」
-            m_lastError = "创建 Redis 连接上下文失败：客户端库内存分配失败（" + m_configuration.host + ":" +
-                          std::to_string(m_configuration.port) + "）——请检查进程内存后重试";
+            m_lastError = "创建 Redis 连接上下文失败：客户端库内存分配失败（" + m_configuration.host + ":" + std::to_string(m_configuration.port) + "）——请检查进程内存后重试";
             return false;
         }
 
@@ -365,9 +361,7 @@ namespace AsynGyanis::Database
                 rawAuthenticationReply = redisCommand(m_redisContext, "AUTH %b", password.data(), password.size());
             } else
             {
-                rawAuthenticationReply = redisCommand(m_redisContext, "AUTH %b %b",
-                                                      userName.data(), userName.size(),
-                                                      password.data(), password.size());
+                rawAuthenticationReply = redisCommand(m_redisContext, "AUTH %b %b", userName.data(), userName.size(), password.data(), password.size());
             }
 
             auto *authenticationReply = static_cast<redisReply *>(rawAuthenticationReply);
@@ -400,8 +394,8 @@ namespace AsynGyanis::Database
             // 十进制解析：解析失败、留有余文（如 "3abc"）或负值都不猜测、不回退到 0 号库，
             // 静默回退会把命令写进错误的键空间，那比直接失败危险得多
             int                          keySpaceIndex = 0;
-            const char *                 parseBegin    = m_configuration.database.data();
-            const char *                 parseEnd      = parseBegin + m_configuration.database.size();
+            const char                  *parseBegin    = m_configuration.database.data();
+            const char                  *parseEnd      = parseBegin + m_configuration.database.size();
             const std::from_chars_result parseResult   = std::from_chars(parseBegin, parseEnd, keySpaceIndex);
             if (parseResult.ec != std::errc() || parseResult.ptr != parseEnd || keySpaceIndex < 0)
             {
@@ -490,7 +484,7 @@ namespace AsynGyanis::Database
 
         // 整行命令必须先切词再交给 argv 接口：直接交给格式化接口会连参数一起压成一个元素
         // （hiredis 的 %s 不认宽度说明符），服务端收到的是 "GET mykey" 这样一条非法命令
-        const std::optional<std::vector<std::string> > argumentValues = splitCommandLine(command);
+        const std::optional<std::vector<std::string>> argumentValues = splitCommandLine(command);
         if (!argumentValues.has_value())
         {
             m_lastError = "Redis 命令不合法（内容为空或引号未闭合）：" + std::string(command);
@@ -529,7 +523,7 @@ namespace AsynGyanis::Database
 
         // 切词提前到登记阶段：命令文本非法（引号未闭合、整行没有有效参数）当场反馈，
         // 不必等到 flush 时才发现「N 条里有一条是坏的」
-        const std::optional<std::vector<std::string> > argumentValues = splitCommandLine(command);
+        const std::optional<std::vector<std::string>> argumentValues = splitCommandLine(command);
         if (!argumentValues.has_value())
         {
             m_lastError = "Redis 管道命令不合法（内容为空或引号未闭合）：" + std::string(command);
@@ -541,11 +535,11 @@ namespace AsynGyanis::Database
         return true;
     }
 
-    std::vector<std::unique_ptr<DatabaseResult> > RedisConnection::flushPipeline()
+    std::vector<std::unique_ptr<DatabaseResult>> RedisConnection::flushPipeline()
     {
         m_lastError.clear();
 
-        std::vector<std::unique_ptr<DatabaseResult> > results;
+        std::vector<std::unique_ptr<DatabaseResult>> results;
         if (m_pipelineCommands.empty())
         {
             // 空管道不是错误，也不触碰连接状态：直接交出空列表
@@ -557,7 +551,7 @@ namespace AsynGyanis::Database
 
         // 整批登记先搬到局部：会话记账要按回复来更新（见下面的读回复循环），而那里只能按同一条
         // 顺序回看命令名。搬到局部也让「已交给协议流的命令一律不重放」在异常路径上自动成立
-        std::vector<std::vector<std::string> > registeredCommands;
+        std::vector<std::vector<std::string>> registeredCommands;
         registeredCommands.swap(m_pipelineCommands);
 
         if (!isConnected())
@@ -572,13 +566,12 @@ namespace AsynGyanis::Database
         // 一条长管道不再为每条命令各取两个堆块（管线的全部收益来自批量，这里的常数按条数放大）
         std::vector<const char *> argumentPointers;
         std::vector<size_t>       argumentLengths;
-        size_t appendedCommandCount = 0;
+        size_t                    appendedCommandCount = 0;
         for (const std::vector<std::string> &commandArguments: registeredCommands)
         {
             buildArgumentViews(commandArguments, argumentPointers, argumentLengths);
 
-            if (redisAppendCommandArgv(m_redisContext, static_cast<int>(argumentPointers.size()),
-                                       argumentPointers.data(), argumentLengths.data()) != REDIS_OK)
+            if (redisAppendCommandArgv(m_redisContext, static_cast<int>(argumentPointers.size()), argumentPointers.data(), argumentLengths.data()) != REDIS_OK)
             {
                 // 先摘 errstr 再断开：redisFree 之后那就是已释放内存
                 captureError("发送 Redis 管道命令失败");
@@ -737,9 +730,8 @@ namespace AsynGyanis::Database
 
         // 走 argv 接口而非格式化接口：参数内容里的 '%' 永远不会被解释成格式说明符，
         // '\0' 也按长度完整传递——这是 hiredis 唯一的二进制安全发送路径
-        void *rawReplyPointer = redisCommandArgv(m_redisContext, static_cast<int>(argumentViews.count()),
-                                                 argumentViews.pointers(), argumentViews.lengths());
-        auto *serverReply = static_cast<redisReply *>(rawReplyPointer);
+        void *rawReplyPointer = redisCommandArgv(m_redisContext, static_cast<int>(argumentViews.count()), argumentViews.pointers(), argumentViews.lengths());
+        auto *serverReply     = static_cast<redisReply *>(rawReplyPointer);
         if (serverReply == nullptr)
         {
             // 传输层失败：上下文已被标记为错误，回复流位置不可知，这条连接不能再用于发命令。
@@ -826,7 +818,7 @@ namespace AsynGyanis::Database
         return false;
     }
 
-    std::vector<std::unique_ptr<DatabaseResult> > RedisConnection::flushPipeline()
+    std::vector<std::unique_ptr<DatabaseResult>> RedisConnection::flushPipeline()
     {
         m_lastError = kMissingDriverError;
         return {};
@@ -900,8 +892,7 @@ namespace AsynGyanis::Database
                 if (isAccepted && commandNameMatches(commandName, "monitor"))
                 {
                     m_isSessionModeChanged = true;
-                }
-                else if (isAccepted && commandNameMatches(commandName, "multi"))
+                } else if (isAccepted && commandNameMatches(commandName, "multi"))
                 {
                     m_isInTransaction = true;
                 }
@@ -912,8 +903,7 @@ namespace AsynGyanis::Database
             case 'r':
                 // EXEC / DISCARD / RESET 都会把事务与监视一并了结。被服务端退回时（EXEC/DISCARD
                 // without MULTI）这条命令等于没执行，记账必须原样留着——留着才会在归还时补上 UNWATCH
-                if (isAccepted && (commandNameMatches(commandName, "exec") || commandNameMatches(commandName, "discard")
-                                   || commandNameMatches(commandName, "reset")))
+                if (isAccepted && (commandNameMatches(commandName, "exec") || commandNameMatches(commandName, "discard") || commandNameMatches(commandName, "reset")))
                 {
                     m_isInTransaction = false;
                     m_isWatchingKeys  = false;
@@ -940,9 +930,8 @@ namespace AsynGyanis::Database
             case 's':
                 // HELLO 换掉回复的形态，订阅三个把连接切到推送模式：本类按
                 // 「一条命令一条回复」读，退不回去也就无法再替下一个借用者保证读到的就是它那条命令的回复
-                if (isAccepted && (commandNameMatches(commandName, "hello") || commandNameMatches(commandName, "subscribe")
-                                   || commandNameMatches(commandName, "psubscribe")
-                                   || commandNameMatches(commandName, "ssubscribe")))
+                if (isAccepted && (commandNameMatches(commandName, "hello") || commandNameMatches(commandName, "subscribe") || commandNameMatches(commandName, "psubscribe") ||
+                                   commandNameMatches(commandName, "ssubscribe")))
                 {
                     m_isSessionModeChanged = true;
                 }
@@ -965,10 +954,10 @@ namespace AsynGyanis::Database
         const bool wasWatchingKeys           = m_isWatchingKeys;
         const bool needsFreshSession         = m_isSessionModeChanged;
         const int  keySpaceIndexBeforeReturn = m_currentKeySpaceIndex;
-        m_isInTransaction     = false;
-        m_isWatchingKeys      = false;
-        m_isSessionModeChanged = false;
-        m_currentKeySpaceIndex = m_configuredKeySpaceIndex;
+        m_isInTransaction                    = false;
+        m_isWatchingKeys                     = false;
+        m_isSessionModeChanged               = false;
+        m_currentKeySpaceIndex               = m_configuredKeySpaceIndex;
 
         // 桩构建与未连接都在这里止步：没有会话可复位，也就不必为一条发不出去的命令报错
         if (!isConnected())
@@ -990,8 +979,7 @@ namespace AsynGyanis::Database
             {
                 // DISCARD 同时撤掉监视，因此事务还在时不必再补一条 UNWATCH
                 [[maybe_unused]] const std::unique_ptr<DatabaseResult> discarded = executeCommand({std::string_view("DISCARD")});
-            }
-            else if (wasWatchingKeys)
+            } else if (wasWatchingKeys)
             {
                 // 只 WATCH 过、没进 MULTI 时 DISCARD 会被服务端判成错误（DISCARD without MULTI），
                 // 而那句错误回复并不撤监视，因此这里必须发 UNWATCH
@@ -1033,8 +1021,7 @@ namespace AsynGyanis::Database
     // 因此按驱动在不在分成两份实现。
     // ==========================================================================
 
-    std::optional<RedisKeyspaceNotification> RedisConnection::parseKeyspaceNotification(const std::string_view channel,
-                                                                                        const std::string_view payload)
+    std::optional<RedisKeyspaceNotification> RedisConnection::parseKeyspaceNotification(const std::string_view channel, const std::string_view payload)
     {
         static constexpr std::string_view kKeyspacePrefix = "__keyspace@";
         static constexpr std::string_view KeyEventPrefix  = "__keyevent@";
@@ -1049,8 +1036,7 @@ namespace AsynGyanis::Database
         // 按固定宽度：键本身带 ':'（user:42 这种写法极常见），从后面切会把键名截掉
         const std::size_t bodyStart = (isKeyEvent ? KeyEventPrefix : kKeyspacePrefix).size();
         const std::size_t separator = channel.find(':', bodyStart);
-        if (separator == std::string_view::npos || separator < bodyStart + 2 || channel[separator - 2] != '_'
-            || channel[separator - 1] != '_' || separator + 1 >= channel.size())
+        if (separator == std::string_view::npos || separator < bodyStart + 2 || channel[separator - 2] != '_' || channel[separator - 1] != '_' || separator + 1 >= channel.size())
         {
             // 缺这一对下划线就不是本机制发出的频道（__keyspace@3:user:42 看着像，但它不是）
             return std::nullopt;
@@ -1060,11 +1046,10 @@ namespace AsynGyanis::Database
         notification.isKeyEvent = isKeyEvent;
 
         // 库号必须是纯十进制整数：__keyspace@abc__:k 这种频道不猜
-        const std::string_view databaseText = channel.substr(bodyStart, separator - bodyStart - 2);
-        const auto *const databaseBegin     = databaseText.data();
-        const auto *const databaseEnd       = databaseBegin + databaseText.size();
-        if (std::from_chars(databaseBegin, databaseEnd, notification.database) != std::from_chars_result{databaseEnd, std::errc{}}
-            || notification.database < 0)
+        const std::string_view databaseText  = channel.substr(bodyStart, separator - bodyStart - 2);
+        const auto *const      databaseBegin = databaseText.data();
+        const auto *const      databaseEnd   = databaseBegin + databaseText.size();
+        if (std::from_chars(databaseBegin, databaseEnd, notification.database) != std::from_chars_result{databaseEnd, std::errc{}} || notification.database < 0)
         {
             return std::nullopt;
         }
@@ -1075,8 +1060,7 @@ namespace AsynGyanis::Database
             // __keyevent@0__:set 的正文是被改动的键；__keyspace@3__:user:42 的正文是事件名
             notification.event = std::string(nameOnChannel);
             notification.key   = std::string(payload);
-        }
-        else
+        } else
         {
             notification.key   = std::string(nameOnChannel);
             notification.event = std::string(payload);
@@ -1205,9 +1189,8 @@ namespace AsynGyanis::Database
 
         // 两类订阅各自退，各按自己记下的条数收确认。带错一条就会把另一类的确认吃掉，
         // 因此先退干净的先清零，不让两类共用一个计数
-        for (const std::pair<std::string_view, std::size_t *> &command : {
-                     std::pair{std::string_view{"UNSUBSCRIBE"}, &m_channelSubscriptionCount},
-                     std::pair{std::string_view{"PUNSUBSCRIBE"}, &m_patternSubscriptionCount}})
+        for (const std::pair<std::string_view, std::size_t *> &command:
+             {std::pair{std::string_view{"UNSUBSCRIBE"}, &m_channelSubscriptionCount}, std::pair{std::string_view{"PUNSUBSCRIBE"}, &m_patternSubscriptionCount}})
         {
             const std::size_t outstanding = *command.second;
             if (outstanding == 0)
@@ -1267,16 +1250,15 @@ namespace AsynGyanis::Database
             }
         }
 
-        void      *rawReplyPointer = nullptr;
-        const int  readStatus      = redisGetReply(m_redisContext, &rawReplyPointer);
-        const int  nativeErrno     = errno; // 紧接着就取：后面任何一次调用都会把它冲掉
+        void     *rawReplyPointer = nullptr;
+        const int readStatus      = redisGetReply(m_redisContext, &rawReplyPointer);
+        const int nativeErrno     = errno; // 紧接着就取：后面任何一次调用都会把它冲掉
 
         // 「这次没等到消息」的判据。hiredis 1.1 起读超时是 REDIS_ERR_TIMEOUT（本机 hiredis 1.3.0
         // 实测 err==6、errstr=="recv timeout"）；更早的版本走 REDIS_ERR_IO + errno，一并认下。
         // 认不出的一律按真失败处理：宁可多断开一次，也不要把一条已经坏了的上下文当成「只是没消息」继续等
-        const bool timedOut = m_redisContext->err == REDIS_ERR_TIMEOUT
-                              || (m_redisContext->err == REDIS_ERR_IO
-                                  && (nativeErrno == EAGAIN || nativeErrno == EWOULDBLOCK || nativeErrno == ETIMEDOUT));
+        const bool timedOut = m_redisContext->err == REDIS_ERR_TIMEOUT ||
+                              (m_redisContext->err == REDIS_ERR_IO && (nativeErrno == EAGAIN || nativeErrno == EWOULDBLOCK || nativeErrno == ETIMEDOUT));
 
         if (usesOwnWait)
         {
@@ -1289,8 +1271,8 @@ namespace AsynGyanis::Database
             {
                 // 等不到消息是持续消费的正常节奏，不是失败：hiredis 把超时报成上下文错误，
                 // 但套接字与读缓冲都没坏，清掉错误标记就能接着读下一条
-                m_redisContext->err         = 0;
-                m_redisContext->errstr[0]   = '\0';
+                m_redisContext->err       = 0;
+                m_redisContext->errstr[0] = '\0';
                 return std::nullopt;
             }
             captureError("读取 Redis 推送失败");
@@ -1306,22 +1288,20 @@ namespace AsynGyanis::Database
         push.kind = kind;
         if (kind == "pmessage")
         {
-            push.pattern  = pushReplyField(*reply, 1);
-            push.channel  = pushReplyField(*reply, 2);
-            push.payload  = pushReplyField(*reply, 3);
-        }
-        else if (kind == "message" || kind == "smessage")
+            push.pattern = pushReplyField(*reply, 1);
+            push.channel = pushReplyField(*reply, 2);
+            push.payload = pushReplyField(*reply, 3);
+        } else if (kind == "message" || kind == "smessage")
         {
             push.channel = pushReplyField(*reply, 1);
             push.payload = pushReplyField(*reply, 2);
-        }
-        else
+        } else
         {
             // subscribe / unsubscribe / psubscribe / punsubscribe，以及本机制还不认识的 kind：
             // 一律按「第 2 段是目标、第 3 段是计数」的形状读，认不出的字段留空而不报错——
             // 服务端将来加新形态时调用方仍然看得见它，比在这里静默丢掉好查
-            push.channel            = pushReplyField(*reply, 1);
-            push.subscriptionCount  = pushReplyCount(*reply, 2);
+            push.channel           = pushReplyField(*reply, 1);
+            push.subscriptionCount = pushReplyCount(*reply, 2);
         }
 
         freeReplyObject(reply);

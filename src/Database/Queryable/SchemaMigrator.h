@@ -91,11 +91,10 @@ namespace AsynGyanis::Database::Queryable
         {
             // 列类型不受支持时给出中文编译错误，而不是让模板在深处爆出一长串实例化回溯；
             // 判定与 RowMapper 共用同一份 trait，因此「能建表」与「能读写」永远等价
-            static_assert(Detail::allColumnTypesSupported<T>(),
-                          "SchemaMigrator：TableSchema<T>::kColumns 中存在不支持的列类型。"
-                          "仅支持整型、bool、浮点、std::string、二进制载荷"
-                          "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
-                          "以及它们的 std::optional 包装");
+            static_assert(Detail::allColumnTypesSupported<T>(), "SchemaMigrator：TableSchema<T>::kColumns 中存在不支持的列类型。"
+                                                                "仅支持整型、bool、浮点、std::string、二进制载荷"
+                                                                "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                                                                "以及它们的 std::optional 包装");
 
             const std::string_view tableName = TableSchema<T>::kTableName;
             requireMigratableTableName(tableName);
@@ -104,12 +103,12 @@ namespace AsynGyanis::Database::Queryable
             std::string columnDefinitions;
 
             std::apply(
-                    [&](const auto &... columnDescriptors)
+                    [&](const auto &...columnDescriptors)
                     {
                         // 折叠表达式从左到右执行（逗号运算符），列序与 kColumns 声明顺序严格一致
-                        (appendColumnDefinition(columnDefinitions, primaryKeyDeclared, dialect,
-                                                columnDescriptors, TableSchema<T>::kPrimaryKey,
-                                                Detail::declaresAutoIncrementPrimaryKey<T>(), tableName), ...);
+                        (appendColumnDefinition(columnDefinitions, primaryKeyDeclared, dialect, columnDescriptors, TableSchema<T>::kPrimaryKey,
+                                                Detail::declaresAutoIncrementPrimaryKey<T>(), tableName),
+                         ...);
                     },
                     TableSchema<T>::kColumns);
 
@@ -117,8 +116,7 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 主键列名与任何列名都不同：多半是 kPrimaryKey 与 kColumns 里的列名拼写不一致。
                 // 静默建出无主键表会让「按主键更新/删除」这类操作在运行期才暴露问题，因此当场失败
-                throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) + " 的主键列 \"" +
-                                           std::string(TableSchema<T>::kPrimaryKey) +
+                throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) + " 的主键列 \"" + std::string(TableSchema<T>::kPrimaryKey) +
                                            "\" 未在 kColumns 中声明，无法生成建表语句");
             }
 
@@ -260,8 +258,7 @@ namespace AsynGyanis::Database::Queryable
                 return false;
             }
 
-            std::unique_ptr<DatabaseResult> result =
-                    connection->execute(std::string_view{statement.sql}, statement.parameters);
+            std::unique_ptr<DatabaseResult> result = connection->execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
                 writeError(errorText, "SchemaMigrator: 查询表是否存在失败：" + connection->lastError());
@@ -282,8 +279,7 @@ namespace AsynGyanis::Database::Queryable
             }
 
             // 计数列不是整数说明方言语句与解读方式不匹配：如实报错，不静默当成「表不存在」
-            writeError(errorText, "SchemaMigrator: 表存在性查询返回了非整数计数列（实际类型 " +
-                                      std::string(databaseValueTypeName(countValue)) + "），请检查方言的表存在性语句");
+            writeError(errorText, "SchemaMigrator: 表存在性查询返回了非整数计数列（实际类型 " + std::string(databaseValueTypeName(countValue)) + "），请检查方言的表存在性语句");
             return false;
         }
 
@@ -326,10 +322,9 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 不受支持的类型已被 createTableStatement() 的 static_assert 拦住，
                 // 这里只是让 if constexpr 的所有分支都有返回值
-                static_assert(Detail::kAlwaysFalse<ValueType>,
-                              "SchemaMigrator：不支持的列类型。仅支持整型、bool、浮点、std::string、"
-                              "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
-                              "以及它们的 std::optional 包装");
+                static_assert(Detail::kAlwaysFalse<ValueType>, "SchemaMigrator：不支持的列类型。仅支持整型、bool、浮点、std::string、"
+                                                               "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                                                               "以及它们的 std::optional 包装");
                 return ColumnType::Text;
             }
         }
@@ -350,14 +345,14 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 表名为空（主模板的默认值，或完全特化里被显式留空）时生成 "CREATE TABLE """ 毫无意义
                 throw Base::LogicException("SchemaMigrator: TableSchema<T>::kTableName 为空，"
-                        "请先特化 TableSchema 并填写表名");
+                                           "请先特化 TableSchema 并填写表名");
             }
 
             if (tableName.find('.') != std::string_view::npos)
             {
                 throw Base::LogicException("SchemaMigrator: 表名 \"" + std::string(tableName) +
-                        "\" 含点号，迁移器不支持带库/模式前缀的表名：存在性检查只看本连接的默认库。"
-                        "要换库请改 ConnectionConfig.database，或直接用原生 execute() 发这条 DDL");
+                                           "\" 含点号，迁移器不支持带库/模式前缀的表名：存在性检查只看本连接的默认库。"
+                                           "要换库请改 ConnectionConfig.database，或直接用原生 execute() 发这条 DDL");
             }
         }
 
@@ -374,13 +369,8 @@ namespace AsynGyanis::Database::Queryable
          * @param tableName 表名，只用于拒绝自增写法时把原因指到具体的表
          */
         template<typename ColumnDescriptorType>
-        static void appendColumnDefinition(std::string &               columnDefinitions,
-                                           bool &                      primaryKeyDeclared,
-                                           const SqlDialect &          dialect,
-                                           const ColumnDescriptorType &columnDescriptor,
-                                           const std::string_view      primaryKeyName,
-                                           const bool                  isAutoIncrementPrimaryKey,
-                                           const std::string_view      tableName)
+        static void appendColumnDefinition(std::string &columnDefinitions, bool &primaryKeyDeclared, const SqlDialect &dialect, const ColumnDescriptorType &columnDescriptor,
+                                           const std::string_view primaryKeyName, const bool isAutoIncrementPrimaryKey, const std::string_view tableName)
         {
             using MemberType = typename ColumnDescriptorType::MemberType;
             using BareType   = std::remove_cv_t<MemberType>;
@@ -390,9 +380,8 @@ namespace AsynGyanis::Database::Queryable
             // where()/orderBy()，不该出现在 kColumns 里
             if (columnDescriptor.columnName.find('.') != std::string_view::npos)
             {
-                throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) + " 的列名 \""
-                        + std::string(columnDescriptor.columnName)
-                        + "\" 含点号，列名请填裸名；要按「表.列」限定名查询，请写在 where()/orderBy() 里");
+                throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) + " 的列名 \"" + std::string(columnDescriptor.columnName) +
+                                           "\" 含点号，列名请填裸名；要按「表.列」限定名查询，请写在 where()/orderBy() 里");
             }
 
             // 可空规则：std::optional<X> 允许 NULL，其余一律 NOT NULL。
@@ -413,16 +402,15 @@ namespace AsynGyanis::Database::Queryable
                 // 自增写法的位置与关键字两个引擎都不同，整串交给方言；给不出文本就是这套引擎
                 // 不支持把该列建成自增列——在建表前失败，而不是建出一张主键不会自增的表让
                 // 省略主键的 INSERT 之后以引擎错误收场
-                const std::string autoIncrementDefinition = dialect.autoIncrementPrimaryKeyDefinition(
-                        dialect.quoteIdentifier(columnDescriptor.columnName), columnTypeOf<ValueType>());
+                const std::string autoIncrementDefinition =
+                        dialect.autoIncrementPrimaryKeyDefinition(dialect.quoteIdentifier(columnDescriptor.columnName), columnTypeOf<ValueType>());
                 if (autoIncrementDefinition.empty())
                 {
-                    throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) +
-                                               " 的主键列 \"" + std::string(columnDescriptor.columnName) +
+                    throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) + " 的主键列 \"" + std::string(columnDescriptor.columnName) +
                                                "\" 声明为自增，但当前方言不能把它建成自增列（自增列要求整数类型的主键）");
                 }
 
-                columnDefinitions  += autoIncrementDefinition;
+                columnDefinitions += autoIncrementDefinition;
                 primaryKeyDeclared = true;
                 return;
             }
@@ -432,8 +420,7 @@ namespace AsynGyanis::Database::Queryable
             columnDefinitions += ' ';
             // 主键列走可作键的类型映射：MySQL 的 TEXT/LONGBLOB 进不了索引，
             // 直接用 columnTypeName() 的表征会让建表语句以 1170 号错误被整个拒掉
-            columnDefinitions += isKeyColumn ? dialect.keyColumnTypeName(columnTypeOf<ValueType>())
-                                             : dialect.columnTypeName(columnTypeOf<ValueType>());
+            columnDefinitions += isKeyColumn ? dialect.keyColumnTypeName(columnTypeOf<ValueType>()) : dialect.columnTypeName(columnTypeOf<ValueType>());
 
             if constexpr (!kIsNullable)
             {
@@ -444,7 +431,7 @@ namespace AsynGyanis::Database::Queryable
             {
                 // PRIMARY KEY 写在约束的最后：类型与可空性在前，读起来与结构体声明顺序一致。
                 // 命中主键的列同时记入出参，供调用方判断 kPrimaryKey 是否落在 kColumns 里
-                columnDefinitions  += " PRIMARY KEY";
+                columnDefinitions += " PRIMARY KEY";
                 primaryKeyDeclared = true;
             }
         }
@@ -465,7 +452,7 @@ namespace AsynGyanis::Database::Queryable
             if (!probeConnection)
             {
                 writeError(errorText, "SchemaMigrator: 从连接池获取连接失败，无法推导数据库类型"
-                           "（池已达上限或连接创建失败）");
+                                      "（池已达上限或连接创建失败）");
                 return nullptr;
             }
 

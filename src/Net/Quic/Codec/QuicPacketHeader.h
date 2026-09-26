@@ -76,20 +76,20 @@ namespace AsynGyanis::Net
      */
     struct QuicPacketHeader
     {
-        std::uint8_t firstByte{0};                                          ///< 首字节原文；去保护后由 refresh 换成掩回来的值
-        bool isLongHeader{false};                                           ///< 长头为 true，短头（1-RTT）为 false
-        QuicLongPacketType longPacketType{QuicLongPacketType::Initial};      ///< 仅长头有意义
-        std::uint32_t version{0};                                           ///< 版本；短头线上不携带，解码后保持 0，本端要用的是建连接时谈定的那个
-        std::span<const std::uint8_t> destinationConnectionId{};            ///< 目的连接标识（本端签发的，路由键）
-        std::span<const std::uint8_t> sourceConnectionId{};                 ///< 源连接标识（对端签发的）
-        std::span<const std::uint8_t> token{};                              ///< Initial 的 Token；其余形态为空
-        std::size_t packetNumberOffset{0};                                  ///< 包号字段的起始偏移
-        std::size_t packetByteCount{0};                                     ///< 本包在数据报里占的总字节数
-        std::size_t packetNumberAndPayloadByteCount{0};                     ///< Length 域的值：包号 + 受保护载荷
-        std::size_t packetNumberByteCount{0};                               ///< 去头部保护前为 0（那两位不可信）
-        std::uint64_t packetNumber{0};                                      ///< 截断包号，去保护并 refresh 后有效
-        bool isSpinBitSet{false};                                           ///< 短头自旋位，refresh 后才有意义
-        bool isKeyPhaseBitSet{false};                                       ///< 短头密钥相位位，refresh 后才有意义
+        std::uint8_t                  firstByte{0};                                ///< 首字节原文；去保护后由 refresh 换成掩回来的值
+        bool                          isLongHeader{false};                         ///< 长头为 true，短头（1-RTT）为 false
+        QuicLongPacketType            longPacketType{QuicLongPacketType::Initial}; ///< 仅长头有意义
+        std::uint32_t                 version{0};                                  ///< 版本；短头线上不携带，解码后保持 0，本端要用的是建连接时谈定的那个
+        std::span<const std::uint8_t> destinationConnectionId{};                   ///< 目的连接标识（本端签发的，路由键）
+        std::span<const std::uint8_t> sourceConnectionId{};                        ///< 源连接标识（对端签发的）
+        std::span<const std::uint8_t> token{};                                     ///< Initial 的 Token；其余形态为空
+        std::size_t                   packetNumberOffset{0};                       ///< 包号字段的起始偏移
+        std::size_t                   packetByteCount{0};                          ///< 本包在数据报里占的总字节数
+        std::size_t                   packetNumberAndPayloadByteCount{0};          ///< Length 域的值：包号 + 受保护载荷
+        std::size_t                   packetNumberByteCount{0};                    ///< 去头部保护前为 0（那两位不可信）
+        std::uint64_t                 packetNumber{0};                             ///< 截断包号，去保护并 refresh 后有效
+        bool                          isSpinBitSet{false};                         ///< 短头自旋位，refresh 后才有意义
+        bool                          isKeyPhaseBitSet{false};                     ///< 短头密钥相位位，refresh 后才有意义
 
         /// 长头保留位掩码：Initial/0-RTT/Handshake 的 0x0C（RFC 9000 §17.2）
         static constexpr std::uint8_t kLongHeaderReservedBitMask = 0x0C;
@@ -120,9 +120,8 @@ namespace AsynGyanis::Net
      * @return 成功返回只填了明文部分的 `QuicPacketHeader`，包号相关字段要等 refresh
      * @return 失败返回 `QuicDecodeError`：字节不足为 `Truncated`，字段违反 v1 规则为 `Malformed`
      */
-    [[nodiscard]] std::expected<QuicPacketHeader, QuicDecodeError>
-    decodeQuicPacketHeader(std::span<const std::uint8_t> datagram,
-                           std::size_t shortHeaderDestinationConnectionIdLength);
+    [[nodiscard]] std::expected<QuicPacketHeader, QuicDecodeError> decodeQuicPacketHeader(std::span<const std::uint8_t> datagram,
+                                                                                          std::size_t                   shortHeaderDestinationConnectionIdLength);
 
     /**
      * @brief 去掉头部保护后把首字节换回真值，并补齐包号长度、包号与短头标志位
@@ -134,8 +133,7 @@ namespace AsynGyanis::Net
      * @return 成功返回 void
      * @return 失败返回 `QuicDecodeError`：包号字段越出数据报末尾，或 Length 域容不下真实包号长度
      */
-    [[nodiscard]] std::expected<void, QuicDecodeError>
-    refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte, std::span<const std::uint8_t> datagram);
+    [[nodiscard]] std::expected<void, QuicDecodeError> refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte, std::span<const std::uint8_t> datagram);
 
     /**
      * @brief 按线格式写出截断包号（RFC 9000 §17.1）
@@ -159,6 +157,5 @@ namespace AsynGyanis::Net
      * @return std::uint64_t 还原后的完整包号
      * @throws Base::InvalidArgumentException 用法错误：packetNumberByteCount 不在 1..4 内
      */
-    [[nodiscard]] std::uint64_t restoreQuicPacketNumber(std::uint64_t largestReceivedPacketNumber, std::uint64_t truncatedPacketNumber,
-                                                        std::size_t packetNumberByteCount);
+    [[nodiscard]] std::uint64_t restoreQuicPacketNumber(std::uint64_t largestReceivedPacketNumber, std::uint64_t truncatedPacketNumber, std::size_t packetNumberByteCount);
 } // namespace AsynGyanis::Net

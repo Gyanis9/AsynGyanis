@@ -108,7 +108,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(tracked.insert(0ULL));
 
         std::uint64_t nextPacketNumber = 1ULL;
-        const auto insertNext = [&tracked, &nextPacketNumber]() -> std::size_t
+        const auto    insertNext       = [&tracked, &nextPacketNumber]() -> std::size_t
         {
             const bool isNew = tracked.insert(nextPacketNumber);
             nextPacketNumber = nextPacketNumber + 1U < 1000ULL ? nextPacketNumber + 1U : 1ULL;
@@ -116,8 +116,7 @@ namespace AsynGyanis::Net
         };
 
         const auto profile = measurePerOperation(insertNext);
-        std::printf("quic 记一个连号包号：每次 %llu 次分配 / %llu 字节\n",
-                    static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
+        std::printf("quic 记一个连号包号：每次 %llu 次分配 / %llu 字节\n", static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
                     static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations));
         EXPECT_EQ(profile.totalAllocations, 0ULL) << "续接区间时又去申请节点了：每包还是要碰堆";
         // 999 次是新号（1..999 续进同一段）、最后那次绕回 1 是重复号：读数不满一千说明窗口跑的是这条路

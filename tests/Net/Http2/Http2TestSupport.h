@@ -55,8 +55,7 @@ namespace AsynGyanis::Net::TestSupport
      * @param payload 负载字节
      * @return std::string 完整帧字节
      */
-    [[nodiscard]] inline std::string makeFrame(const Http2FrameType type, const unsigned char flags, const std::uint32_t streamId,
-                                               const std::string_view payload)
+    [[nodiscard]] inline std::string makeFrame(const Http2FrameType type, const unsigned char flags, const std::uint32_t streamId, const std::string_view payload)
     {
         return encodeHttp2Frame(type, flags, streamId, payload);
     }

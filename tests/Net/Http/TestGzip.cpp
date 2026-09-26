@@ -83,9 +83,9 @@ namespace AsynGyanis::Net
      */
     TEST(GzipTest, ReusesStreamAcrossCallsWithoutLeakingContext)
     {
-        const std::string repeated = "复用的 deflate 流不得把上一条响应的字典带进这一条：中文 + ASCII 混排正文。";
-        const std::optional<std::string> first = gzipCompress(repeated);
-        const std::optional<std::string> second = gzipCompress(repeated);
+        const std::string                repeated = "复用的 deflate 流不得把上一条响应的字典带进这一条：中文 + ASCII 混排正文。";
+        const std::optional<std::string> first    = gzipCompress(repeated);
+        const std::optional<std::string> second   = gzipCompress(repeated);
         ASSERT_TRUE(first.has_value());
         ASSERT_TRUE(second.has_value());
         EXPECT_EQ(*first, *second) << "同一输入连压两次必须逐字节一致（证明按调用复位、无跨调用字典残留）";
@@ -161,8 +161,7 @@ namespace AsynGyanis::Net
      */
     TEST(GzipInflate, RoundTripsRepeatedlyOnTheReusedStream)
     {
-        for (const std::string_view text: {std::string_view{"hello decompressed world"}, std::string_view{"second payload"},
-                                           std::string_view{"third"}})
+        for (const std::string_view text: {std::string_view{"hello decompressed world"}, std::string_view{"second payload"}, std::string_view{"third"}})
         {
             const std::optional<std::string> compressed = gzipCompress(text);
             ASSERT_TRUE(compressed.has_value());
@@ -182,17 +181,12 @@ namespace AsynGyanis::Net
     {
         // Python `zlib.compress(b"hello decompressed world")` 的产物，逐字节按十进制写死：
         // 头两字节 0x78 0x9c 就是 zlib 头（RFC 1950），不是 gzip 的 0x1f 0x8b
-        const std::string zlibStream{static_cast<char>(120), static_cast<char>(156), static_cast<char>(203),
-                                     static_cast<char>(72),  static_cast<char>(205), static_cast<char>(201),
-                                     static_cast<char>(201), static_cast<char>(87),  static_cast<char>(72),
-                                     static_cast<char>(73),  static_cast<char>(77),  static_cast<char>(206),
-                                     static_cast<char>(207), static_cast<char>(45),  static_cast<char>(40),
-                                     static_cast<char>(74),  static_cast<char>(45),  static_cast<char>(46),
-                                     static_cast<char>(78),  static_cast<char>(77),  static_cast<char>(81),
-                                     static_cast<char>(40),  static_cast<char>(207), static_cast<char>(47),
-                                     static_cast<char>(202), static_cast<char>(73),  static_cast<char>(1),
-                                     static_cast<char>(0),  static_cast<char>(117), static_cast<char>(172),
-                                     static_cast<char>(9),  static_cast<char>(123)};
+        const std::string zlibStream{static_cast<char>(120), static_cast<char>(156), static_cast<char>(203), static_cast<char>(72), static_cast<char>(205), static_cast<char>(201),
+                                     static_cast<char>(201), static_cast<char>(87),  static_cast<char>(72),  static_cast<char>(73), static_cast<char>(77),  static_cast<char>(206),
+                                     static_cast<char>(207), static_cast<char>(45),  static_cast<char>(40),  static_cast<char>(74), static_cast<char>(45),  static_cast<char>(46),
+                                     static_cast<char>(78),  static_cast<char>(77),  static_cast<char>(81),  static_cast<char>(40), static_cast<char>(207), static_cast<char>(47),
+                                     static_cast<char>(202), static_cast<char>(73),  static_cast<char>(1),   static_cast<char>(0),  static_cast<char>(117), static_cast<char>(172),
+                                     static_cast<char>(9),   static_cast<char>(123)};
 
         const auto restored = inflateHttpBody(zlibStream);
         ASSERT_TRUE(restored.has_value()) << restored.error();
@@ -216,8 +210,7 @@ namespace AsynGyanis::Net
         const std::optional<std::string> compressed = gzipCompress(std::string_view{"a rather long payload to truncate"});
         ASSERT_TRUE(compressed.has_value());
         const auto truncated = inflateHttpBody(compressed->substr(0, compressed->size() - 3));
-        ASSERT_FALSE(truncated.has_value()) << "被截断的流必须报错，实际交回了 "
-                                            << (truncated.has_value() ? truncated->size() : 0) << " 字节";
+        ASSERT_FALSE(truncated.has_value()) << "被截断的流必须报错，实际交回了 " << (truncated.has_value() ? truncated->size() : 0) << " 字节";
     }
 
     /**
@@ -225,7 +218,7 @@ namespace AsynGyanis::Net
      */
     TEST(GzipInflate, FailsWhenOutputExceedsTheLimit)
     {
-        const std::string repetitive(256 * 1024, 'A');
+        const std::string                repetitive(256 * 1024, 'A');
         const std::optional<std::string> compressed = gzipCompress(repetitive);
         ASSERT_TRUE(compressed.has_value());
 

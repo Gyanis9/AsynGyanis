@@ -102,4 +102,4 @@ namespace AsynGyanis::Core
      * @note 失败即抛，不做「这项没生效但其它照旧」的降级：半生效的 TLS 策略比启动失败危险得多
      */
     void applyTlsPolicy(SSL_CTX *context, const TlsPolicy &policy, const char *builtInCipherList);
-}
+} // namespace AsynGyanis::Core

@@ -32,8 +32,8 @@ namespace AsynGyanis::Net
          */
         struct ReusableDeflateStream
         {
-            z_stream stream{};    ///< 复用的 deflate 流
-            bool isOpen{false};   ///< 是否已 init 且可复用（false 表示下次调用需重新 init）
+            z_stream stream{};      ///< 复用的 deflate 流
+            bool     isOpen{false}; ///< 是否已 init 且可复用（false 表示下次调用需重新 init）
 
             ~ReusableDeflateStream()
             {
@@ -50,9 +50,9 @@ namespace AsynGyanis::Net
          */
         struct ReusableInflateStream
         {
-            z_stream stream{};       ///< 复用的 inflate 流
-            std::string chunk;       ///< 逐块解压用的暂存缓冲，容量跨消息保留
-            bool isOpen{false};      ///< 是否已 init 且可复用
+            z_stream    stream{};      ///< 复用的 inflate 流
+            std::string chunk;         ///< 逐块解压用的暂存缓冲，容量跨消息保留
+            bool        isOpen{false}; ///< 是否已 init 且可复用
 
             ~ReusableInflateStream()
             {
@@ -101,7 +101,7 @@ namespace AsynGyanis::Net
             }
             for (std::size_t index = 0; index < kExpectedName.size(); ++index)
             {
-                const char actual = extensionName[index];
+                const char actual  = extensionName[index];
                 const char lowered = (actual >= 'A' && actual <= 'Z') ? static_cast<char>(actual - 'A' + 'a') : actual;
                 if (lowered != kExpectedName[index])
                 {
@@ -126,8 +126,8 @@ namespace AsynGyanis::Net
                 continue;
             }
 
-            const std::size_t semicolonPosition = item.find(';');
-            const std::string_view extensionName = item.substr(0, semicolonPosition);
+            const std::size_t      semicolonPosition = item.find(';');
+            const std::string_view extensionName     = item.substr(0, semicolonPosition);
             if (!isPerMessageDeflateName(extensionName))
             {
                 continue;
@@ -150,8 +150,7 @@ namespace AsynGyanis::Net
         thread_local ReusableDeflateStream context;
         if (!context.isOpen)
         {
-            if (::deflateInit2(&context.stream, kWebSocketDeflateLevel, Z_DEFLATED, kRawDeflateWindowBits, 8,
-                               Z_DEFAULT_STRATEGY) != Z_OK)
+            if (::deflateInit2(&context.stream, kWebSocketDeflateLevel, Z_DEFLATED, kRawDeflateWindowBits, 8, Z_DEFAULT_STRATEGY) != Z_OK)
             {
                 return std::nullopt;
             }
@@ -213,8 +212,7 @@ namespace AsynGyanis::Net
 
         // 输出必须真的以那四字节收尾：不是的话说明 zlib 行为与预期不符，宁可放弃压缩也不要发出
         // 一段对端解不开的负载；此刻流状态存疑，关掉让下次重新 init
-        if (producedBytes < kDeflateTail.size() ||
-            std::memcmp(output.data() + producedBytes - kDeflateTail.size(), kDeflateTail.data(), kDeflateTail.size()) != 0)
+        if (producedBytes < kDeflateTail.size() || std::memcmp(output.data() + producedBytes - kDeflateTail.size(), kDeflateTail.data(), kDeflateTail.size()) != 0)
         {
             ::deflateEnd(&stream);
             context.isOpen = false;

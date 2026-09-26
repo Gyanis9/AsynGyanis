@@ -71,8 +71,7 @@ namespace AsynGyanis::Database
         }
     }
 
-    std::string SqliteDialect::autoIncrementPrimaryKeyDefinition(const std::string_view quotedColumnName,
-                                                                const ColumnType type) const
+    std::string SqliteDialect::autoIncrementPrimaryKeyDefinition(const std::string_view quotedColumnName, const ColumnType type) const
     {
         // 只有整数主键能当自增列：其它类型 SQLite 会直接拒建，这里给空串让迁移工具在建表前就报明
         if (type != ColumnType::Int64 && type != ColumnType::UInt64)

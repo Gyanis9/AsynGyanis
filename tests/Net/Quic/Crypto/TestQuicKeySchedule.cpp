@@ -86,14 +86,12 @@ namespace AsynGyanis::Net
     {
         const auto secret = makeBytesFromHex("9ac312a7f877468ebe69422748ad00a1"
                                              "5443f18203a07d6060f688f30f21632b");
-        const auto keys = deriveQuicPacketKeys(QuicCipherSuite::ChaCha20Poly1305, secret);
-        EXPECT_EQ(asVector(keys.encryptionKeyBytes()),
-                  makeBytesFromHex("c6d98ff3441c3fe1b2182094f69caa2e"
-                                   "d4b716b65488960a7a984979fb23e1c8"));
+        const auto keys   = deriveQuicPacketKeys(QuicCipherSuite::ChaCha20Poly1305, secret);
+        EXPECT_EQ(asVector(keys.encryptionKeyBytes()), makeBytesFromHex("c6d98ff3441c3fe1b2182094f69caa2e"
+                                                                        "d4b716b65488960a7a984979fb23e1c8"));
         EXPECT_EQ(asVector(keys.initializationVectorBytes()), makeBytesFromHex("e0459b3474bdd0e44a41c144"));
-        EXPECT_EQ(asVector(keys.headerProtectionKeyBytes()),
-                  makeBytesFromHex("25a282b9e82f06f21f488917a4fc8f1b"
-                                   "73573685608597d0efcb076b0ab7a7a4"));
+        EXPECT_EQ(asVector(keys.headerProtectionKeyBytes()), makeBytesFromHex("25a282b9e82f06f21f488917a4fc8f1b"
+                                                                              "73573685608597d0efcb076b0ab7a7a4"));
     }
 
     /**
@@ -104,15 +102,14 @@ namespace AsynGyanis::Net
      */
     TEST(QuicKeySchedule, AdvancesApplicationSecretPerAppendixA5)
     {
-        const auto secret = makeBytesFromHex("9ac312a7f877468ebe69422748ad00a1"
-                                             "5443f18203a07d6060f688f30f21632b");
+        const auto secret  = makeBytesFromHex("9ac312a7f877468ebe69422748ad00a1"
+                                              "5443f18203a07d6060f688f30f21632b");
         const auto current = deriveQuicPacketKeys(QuicCipherSuite::ChaCha20Poly1305, secret);
         const auto updated = deriveQuicUpdatedPacketKeys(current);
 
-        const auto expectedNextSecret = makeBytesFromHex("1223504755036d556342ee9361d25342"
-                                                         "1a826c9ecdf3c7148684b36b714881f9");
-        const std::vector<std::uint8_t> actualNextSecret(updated.generationSecretBytes().begin(),
-                                                        updated.generationSecretBytes().end());
+        const auto                      expectedNextSecret = makeBytesFromHex("1223504755036d556342ee9361d25342"
+                                                                              "1a826c9ecdf3c7148684b36b714881f9");
+        const std::vector<std::uint8_t> actualNextSecret(updated.generationSecretBytes().begin(), updated.generationSecretBytes().end());
         EXPECT_EQ(actualNextSecret, expectedNextSecret) << "下一代流量秘密与 RFC 9001 附录 A.5 的 ku 不符";
         // §6.1：只有 AEAD 密钥与 IV 换，头部保护密钥原样带走
         EXPECT_EQ(updated.headerProtectionKey, current.headerProtectionKey);
@@ -143,11 +140,9 @@ namespace AsynGyanis::Net
     {
         const auto sha256SizedSecret = makeBytesFromHex("9ac312a7f877468ebe69422748ad00a1"
                                                         "5443f18203a07d6060f688f30f21632b");
-        EXPECT_THROW(static_cast<void>(deriveQuicPacketKeys(QuicCipherSuite::Aes256Gcm, sha256SizedSecret)),
-                     Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(deriveQuicPacketKeys(QuicCipherSuite::Aes256Gcm, sha256SizedSecret)), Base::InvalidArgumentException);
 
         const auto shortSecret = makeBytesFromHex("00112233");
-        EXPECT_THROW(static_cast<void>(deriveQuicPacketKeys(QuicCipherSuite::Aes128Gcm, shortSecret)),
-                     Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(deriveQuicPacketKeys(QuicCipherSuite::Aes128Gcm, shortSecret)), Base::InvalidArgumentException);
     }
 } // namespace AsynGyanis::Net

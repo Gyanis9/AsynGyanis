@@ -20,12 +20,12 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <array>
-#include <functional>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -68,22 +68,22 @@ namespace AsynGyanis::Net
         /// 服务器夹具的构造参数
         struct ServerTestOptions
         {
-            CreateConnectionMode mode{CreateConnectionMode::Normal}; ///< 钩子行为
-            ConnectionKind kind{ConnectionKind::FinishImmediately};  ///< 连接类型
-            std::size_t maxConnections{0};                           ///< 并发上限，0 表示不限制
-            std::shared_ptr<PerIpConnectionLimiter> perIpLimiter{};  ///< 按来源 IP 的限额；空表示不作该限制
-            bool markBusy{false};                                    ///< 连接是否自报「有在途工作」（用于分辨 drain 的等待与强关）
-            bool listenOnIpv6Any{false};                             ///< 绑 `::` 而非回环：双栈监听器会同时接住 IPv4 客户端
-            bool proxyProtocolRequired{false};                       ///< 要求每条连接先送一个 PROXY 协议头
+            CreateConnectionMode                    mode{CreateConnectionMode::Normal};      ///< 钩子行为
+            ConnectionKind                          kind{ConnectionKind::FinishImmediately}; ///< 连接类型
+            std::size_t                             maxConnections{0};                       ///< 并发上限，0 表示不限制
+            std::shared_ptr<PerIpConnectionLimiter> perIpLimiter{};                          ///< 按来源 IP 的限额；空表示不作该限制
+            bool                                    markBusy{false};                         ///< 连接是否自报「有在途工作」（用于分辨 drain 的等待与强关）
+            bool                                    listenOnIpv6Any{false};                  ///< 绑 `::` 而非回环：双栈监听器会同时接住 IPv4 客户端
+            bool                                    proxyProtocolRequired{false};            ///< 要求每条连接先送一个 PROXY 协议头
         };
 
         /// start() 协程的结束原因
         enum class FailureKind
         {
-            None,             ///< 正常退出接受循环
-            SystemException,  ///< 抛出 Base::SystemException
-            BaseException,    ///< 抛出其它 Base::Exception
-            UnknownException  ///< 抛出框架外的异常
+            None,            ///< 正常退出接受循环
+            SystemException, ///< 抛出 Base::SystemException
+            BaseException,   ///< 抛出其它 Base::Exception
+            UnknownException ///< 抛出框架外的异常
         };
 
         /**
@@ -92,8 +92,8 @@ namespace AsynGyanis::Net
          */
         struct ServerOutcome
         {
-            std::atomic<bool> stopped{false};  ///< start() 协程是否已结束
-            FailureKind failure{FailureKind::None}; ///< 退出方式
+            std::atomic<bool> stopped{false};             ///< start() 协程是否已结束
+            FailureKind       failure{FailureKind::None}; ///< 退出方式
         };
 
         /**
@@ -125,8 +125,7 @@ namespace AsynGyanis::Net
              * @param stopObserved 观察到停止请求后置位的标记
              * @param markBusy 是否自报「有在途工作」：置位后 drain 必须为它让路，只有强关路径能收掉它
              */
-            ObservingStopConnection(Core::EventLoop &loop, Core::AsyncSocket socket, std::atomic<bool> &stopObserved,
-                                    const bool markBusy) :
+            ObservingStopConnection(Core::EventLoop &loop, Core::AsyncSocket socket, std::atomic<bool> &stopObserved, const bool markBusy) :
                 Core::Connection(std::move(socket)), m_stopObserved(&stopObserved), m_timer(loop)
             {
                 // 协议层才会维护这个标记，测试连接直接置位，用来把「等」与「强关」两条路径区分开
@@ -151,7 +150,7 @@ namespace AsynGyanis::Net
 
         private:
             std::atomic<bool> *m_stopObserved{nullptr}; ///< 观察到的停止请求写回这里
-            Core::Timer       m_timer;                  ///< 轮询节拍器
+            Core::Timer        m_timer;                 ///< 轮询节拍器
         };
 
         /**
@@ -170,8 +169,7 @@ namespace AsynGyanis::Net
              * @param options 钩子行为、连接类型与并发上限
              * @param stopObserved 交给连接对象的停止观察标记
              */
-            TestTcpServer(Core::EventLoop &loop, const Core::InetAddress &address, const ServerTestOptions &options,
-                          std::atomic<bool> &stopObserved) :
+            TestTcpServer(Core::EventLoop &loop, const Core::InetAddress &address, const ServerTestOptions &options, std::atomic<bool> &stopObserved) :
                 TcpServer(loop, address), m_options(options), m_stopObserved(&stopObserved)
             {
                 // 并发上限必须在 start() 之前定下，与基类的调用契约一致
@@ -189,8 +187,7 @@ namespace AsynGyanis::Net
              * @param options 钩子行为、连接类型与并发上限
              * @param stopObserved 交给连接对象的停止观察标记
              */
-            TestTcpServer(Core::EventLoop &loop, const int adoptedListeningDescriptor, const ServerTestOptions &options,
-                          std::atomic<bool> &stopObserved) :
+            TestTcpServer(Core::EventLoop &loop, const int adoptedListeningDescriptor, const ServerTestOptions &options, std::atomic<bool> &stopObserved) :
                 TcpServer(loop, adoptedListeningDescriptor), m_options(options), m_stopObserved(&stopObserved)
             {
                 setMaxConnections(options.maxConnections);
@@ -283,14 +280,14 @@ namespace AsynGyanis::Net
             }
 
         private:
-            ServerTestOptions m_options;                             ///< 钩子配置
-            std::atomic<bool> *m_stopObserved{nullptr};              ///< 交给连接的观察标记
-            mutable std::mutex m_seenPeersMutex;                     ///< 保护下面的到达顺序表
-            std::vector<std::string> m_seenPeers;                    ///< 每次钩子调用对应的对端 IP
-            std::atomic<std::size_t> m_createConnectionCalls{0};     ///< 钩子调用次数
-            std::atomic<std::uint16_t> m_recordedLocalPort{0};       ///< 钩子收到的服务端端口
-            std::atomic<std::uint16_t> m_recordedPeerPort{0};        ///< 钩子收到的对端端口
-            std::atomic<int> m_throwRemaining{0};                    ///< 剩余需要抛异常的次数
+            ServerTestOptions          m_options;                  ///< 钩子配置
+            std::atomic<bool>         *m_stopObserved{nullptr};    ///< 交给连接的观察标记
+            mutable std::mutex         m_seenPeersMutex;           ///< 保护下面的到达顺序表
+            std::vector<std::string>   m_seenPeers;                ///< 每次钩子调用对应的对端 IP
+            std::atomic<std::size_t>   m_createConnectionCalls{0}; ///< 钩子调用次数
+            std::atomic<std::uint16_t> m_recordedLocalPort{0};     ///< 钩子收到的服务端端口
+            std::atomic<std::uint16_t> m_recordedPeerPort{0};      ///< 钩子收到的对端端口
+            std::atomic<int>           m_throwRemaining{0};        ///< 剩余需要抛异常的次数
         };
 
         /**
@@ -304,10 +301,7 @@ namespace AsynGyanis::Net
         {
         public:
             explicit RunningServerFixture(const ServerTestOptions &options = {}) :
-                m_loop(),
-                m_server(m_loop, makeListenAddress(options), options, m_stopObserved),
-                m_serverTask(driveStart(m_server, m_outcome)),
-                m_loopThread(m_loop)
+                m_loop(), m_server(m_loop, makeListenAddress(options), options, m_stopObserved), m_serverTask(driveStart(m_server, m_outcome)), m_loopThread(m_loop)
             {
                 m_loopThread.schedule(m_serverTask);
             }
@@ -321,40 +315,25 @@ namespace AsynGyanis::Net
                 m_server.close();
             }
 
-            RunningServerFixture(const RunningServerFixture &) = delete;
+            RunningServerFixture(const RunningServerFixture &)            = delete;
             RunningServerFixture &operator=(const RunningServerFixture &) = delete;
 
             /// 主协程是否已按预期结束
             [[nodiscard]] bool awaitServerStopped(const std::chrono::milliseconds timeout)
             {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_outcome.stopped.load(std::memory_order_acquire);
-                        },
-                        timeout);
+                return waitForCondition([this] { return m_outcome.stopped.load(std::memory_order_acquire); }, timeout);
             }
 
             /// 服务器是否已进入接受循环
             [[nodiscard]] bool awaitRunning(const std::chrono::milliseconds timeout)
             {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_server.isRunning();
-                        },
-                        timeout);
+                return waitForCondition([this] { return m_server.isRunning(); }, timeout);
             }
 
             /// 连接是否已观察到停止请求
             [[nodiscard]] bool awaitStopObserved(const std::chrono::milliseconds timeout)
             {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_stopObserved.load(std::memory_order_acquire);
-                        },
-                        timeout);
+                return waitForCondition([this] { return m_stopObserved.load(std::memory_order_acquire); }, timeout);
             }
 
             /**
@@ -370,15 +349,13 @@ namespace AsynGyanis::Net
                 m_drainFinished.store(false, std::memory_order_release);
                 m_drainTask = driveDrain(m_server, m_drainFinished, drainTimeout);
                 m_loopThread.schedule(m_drainTask);
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_drainFinished.load(std::memory_order_acquire);
-                        },
-                        waitTimeout);
+                return waitForCondition([this] { return m_drainFinished.load(std::memory_order_acquire); }, waitTimeout);
             }
 
-            [[nodiscard]] TestTcpServer &server() noexcept { return m_server; }
+            [[nodiscard]] TestTcpServer &server() noexcept
+            {
+                return m_server;
+            }
 
             /**
              * @brief 在循环线程上执行一段动作，并等它做完
@@ -397,11 +374,16 @@ namespace AsynGyanis::Net
                             action();
                             isFinished.store(true, std::memory_order_release);
                         });
-                EXPECT_TRUE(waitForCondition([&isFinished] { return isFinished.load(std::memory_order_acquire); }, kWaitTimeout))
-                        << "投递到循环线程的动作没有在时限内完成";
+                EXPECT_TRUE(waitForCondition([&isFinished] { return isFinished.load(std::memory_order_acquire); }, kWaitTimeout)) << "投递到循环线程的动作没有在时限内完成";
             }
-            [[nodiscard]] ServerOutcome &outcome() noexcept { return m_outcome; }
-            [[nodiscard]] int listenDescriptor() const { return m_server.listenDescriptor(); }
+            [[nodiscard]] ServerOutcome &outcome() noexcept
+            {
+                return m_outcome;
+            }
+            [[nodiscard]] int listenDescriptor() const
+            {
+                return m_server.listenDescriptor();
+            }
 
         private:
             /**
@@ -464,14 +446,14 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            Core::EventLoop m_loop;        ///< 事件循环本体
-            std::atomic<bool> m_stopObserved{false}; ///< 连接观察到停止请求的标记，必须先于服务器构造
-            ServerOutcome   m_outcome;     ///< 主协程结果槽，必须先于任务构造
-            TestTcpServer   m_server;      ///< 被测服务器
-            Core::Task<>    m_serverTask;  ///< 由 driveStart 产生的主协程任务
+            Core::EventLoop   m_loop;                 ///< 事件循环本体
+            std::atomic<bool> m_stopObserved{false};  ///< 连接观察到停止请求的标记，必须先于服务器构造
+            ServerOutcome     m_outcome;              ///< 主协程结果槽，必须先于任务构造
+            TestTcpServer     m_server;               ///< 被测服务器
+            Core::Task<>      m_serverTask;           ///< 由 driveStart 产生的主协程任务
             std::atomic<bool> m_drainFinished{false}; ///< drain 是否已返回，必须先于 drain 任务构造
-            Core::Task<>    m_drainTask{nullptr};   ///< 由 driveDrain 产生的 drain 协程任务
-            EventLoopThread m_loopThread;  ///< 承载 run() 的线程，最后构造、最先析构
+            Core::Task<>      m_drainTask{nullptr};   ///< 由 driveDrain 产生的 drain 协程任务
+            EventLoopThread   m_loopThread;           ///< 承载 run() 的线程，最后构造、最先析构
         };
 
         /**
@@ -531,8 +513,8 @@ namespace AsynGyanis::Net
                     return;
                 }
 
-                sockaddr_in  localAddress{};
-                socklen_t    localLength = static_cast<socklen_t>(sizeof(localAddress));
+                sockaddr_in localAddress{};
+                socklen_t   localLength = static_cast<socklen_t>(sizeof(localAddress));
                 if (::getsockname(m_descriptor, reinterpret_cast<sockaddr *>(&localAddress), &localLength) == 0)
                 {
                     m_localPort = ntohs(localAddress.sin_port);
@@ -544,7 +526,7 @@ namespace AsynGyanis::Net
                 Platform::FileDescriptor::close(m_descriptor);
             }
 
-            LoopbackClient(const LoopbackClient &) = delete;
+            LoopbackClient(const LoopbackClient &)            = delete;
             LoopbackClient &operator=(const LoopbackClient &) = delete;
 
             [[nodiscard]] bool isValid() const noexcept
@@ -603,9 +585,9 @@ namespace AsynGyanis::Net
             }
 
         private:
-            Platform::Socket::Initialization m_socketInitialization; ///< 保证 Winsock 在本对象存活期间保持初始化
-            int                             m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 客户端描述符
-            std::uint16_t                   m_localPort{0};                                   ///< 本端源端口
+            Platform::Socket::Initialization m_socketInitialization;                           ///< 保证 Winsock 在本对象存活期间保持初始化
+            int                              m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 客户端描述符
+            std::uint16_t                    m_localPort{0};                                   ///< 本端源端口
         };
     } // namespace
 
@@ -614,8 +596,7 @@ namespace AsynGyanis::Net
         // createConnection 现在是纯虚钩子：基类既不能被构造、也不能被复制搬移
         static_assert(std::is_abstract_v<TcpServer>, "TcpServer 必须是抽象基类，靠 createConnection 装载协议");
         static_assert(!std::is_default_constructible_v<TcpServer>, "TcpServer 需要事件循环与监听地址，不能默认构造");
-        static_assert(!std::is_constructible_v<TcpServer, Core::EventLoop &, const Core::InetAddress &>,
-                      "仅重写别的钩子不足以实例化 TcpServer：createConnection 仍是纯虚");
+        static_assert(!std::is_constructible_v<TcpServer, Core::EventLoop &, const Core::InetAddress &>, "仅重写别的钩子不足以实例化 TcpServer：createConnection 仍是纯虚");
         static_assert(!std::is_copy_constructible_v<TcpServer>, "TcpServer 禁止拷贝");
         static_assert(!std::is_move_constructible_v<TcpServer>, "TcpServer 禁止移动");
         static_assert(std::is_abstract_v<TestTcpServer> == false, "重写 createConnection 后即可实例化");
@@ -624,7 +605,7 @@ namespace AsynGyanis::Net
 
     TEST(TcpServer, ServerReportsNotRunningBeforeStart)
     {
-        Core::EventLoop loop;
+        Core::EventLoop   loop;
         std::atomic<bool> stopObserved{false};
         TestTcpServer     server(loop, Core::InetAddress::localhost(0), ServerTestOptions{}, stopObserved);
 
@@ -661,12 +642,8 @@ namespace AsynGyanis::Net
         const LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid()) << "回环客户端连接失败，钩子无从被触发";
 
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 1u;
-                },
-                kWaitTimeout)) << "新连接未在时限内到达 createConnection：上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 1u; }, kWaitTimeout))
+                << "新连接未在时限内到达 createConnection：上界 kWaitTimeout";
         // 钩子拿到的必须就是这条连接：两端端口都对得上
         EXPECT_EQ(fixture.server().recordedLocalPort(), listeningPort);
         EXPECT_EQ(fixture.server().recordedPeerPort(), client.localPort());
@@ -686,21 +663,11 @@ namespace AsynGyanis::Net
         // 但绝不让空连接进连接管理器，也不终止接受循环
         const LoopbackClient firstClient(listeningPort);
         ASSERT_TRUE(firstClient.isValid());
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 1u;
-                },
-                kWaitTimeout));
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 1u; }, kWaitTimeout));
 
         const LoopbackClient secondClient(listeningPort);
         ASSERT_TRUE(secondClient.isValid());
-        EXPECT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 2u;
-                },
-                kWaitTimeout)) << "空连接把接受循环带停了：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 2u; }, kWaitTimeout)) << "空连接把接受循环带停了：上界 kWaitTimeout";
         EXPECT_EQ(fixture.server().activeConnectionCount(), 0u);
         EXPECT_TRUE(fixture.server().isRunning());
     }
@@ -719,28 +686,18 @@ namespace AsynGyanis::Net
         // 子类钩子抛异常只是这一条连接建会话失败：基类记录中文错误后继续接受下一条
         const LoopbackClient failingClient(listeningPort);
         ASSERT_TRUE(failingClient.isValid());
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 1u;
-                },
-                kWaitTimeout));
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 1u; }, kWaitTimeout));
 
         const LoopbackClient secondClient(listeningPort);
         ASSERT_TRUE(secondClient.isValid());
-        EXPECT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 2u;
-                },
-                kWaitTimeout)) << "一次钩子异常就让接受循环停摆：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 2u; }, kWaitTimeout)) << "一次钩子异常就让接受循环停摆：上界 kWaitTimeout";
         EXPECT_TRUE(fixture.server().isRunning());
     }
 
     TEST(TcpServer, MaxConnectionsDropsExtraConnectionBeforeCallingHook)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind           = ConnectionKind::ObservesStopRequest;
         options.maxConnections = 1;
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -750,12 +707,7 @@ namespace AsynGyanis::Net
 
         const LoopbackClient firstClient(listeningPort);
         ASSERT_TRUE(firstClient.isValid());
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().activeConnectionCount() >= 1u;
-                },
-                kWaitTimeout)) << "首条连接未在时限内挂上管理器：上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() >= 1u; }, kWaitTimeout)) << "首条连接未在时限内挂上管理器：上界 kWaitTimeout";
 
         // 第二条连接在达到上限后到达：过载保护在钩子之前生效，直接丢弃新连接，
         // 连 createConnection 都不必调用。
@@ -763,29 +715,19 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(secondClient.isValid());
         // 时序说明：这里用 kNegativeCheckTimeout（200ms）的观察窗口证明「第二次钩子没被调用」，
         // 上界之内没发生就当作不发生，不会把用例挂住。
-        EXPECT_FALSE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 2u;
-                },
-                kNegativeCheckTimeout));
+        EXPECT_FALSE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 2u; }, kNegativeCheckTimeout));
         EXPECT_EQ(fixture.server().createConnectionCalls(), 1u);
         EXPECT_EQ(fixture.server().activeConnectionCount(), 1u);
 
         fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout));
-        EXPECT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().activeConnectionCount() == 0u;
-                },
-                kWaitTimeout)) << "连接协程结束后未从管理器摘除：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() == 0u; }, kWaitTimeout)) << "连接协程结束后未从管理器摘除：上界 kWaitTimeout";
     }
 
     TEST(TcpServer, PerIpLimitDropsExtraConnectionFromSameSource)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind         = ConnectionKind::ObservesStopRequest;
         options.perIpLimiter = std::make_shared<PerIpConnectionLimiter>(1);
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -796,34 +738,20 @@ namespace AsynGyanis::Net
         // 两条连接都来自回环：对端地址相同、端口不同。限额的键取地址本身，所以它们算同一个来源
         const LoopbackClient firstClient(listeningPort);
         ASSERT_TRUE(firstClient.isValid());
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().activeConnectionCount() >= 1u;
-                },
-                kWaitTimeout)) << "首条连接未在时限内挂上管理器：上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() >= 1u; }, kWaitTimeout)) << "首条连接未在时限内挂上管理器：上界 kWaitTimeout";
 
         const LoopbackClient secondClient(listeningPort);
         ASSERT_TRUE(secondClient.isValid());
         // 同源的第二条：名额已满，应当连 createConnection 都不调用（上界之内没发生就当作不发生）
-        EXPECT_FALSE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 2u;
-                },
-                kNegativeCheckTimeout));
+        EXPECT_FALSE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 2u; }, kNegativeCheckTimeout));
         EXPECT_EQ(fixture.server().createConnectionCalls(), 1u);
         EXPECT_EQ(options.perIpLimiter->activeCountFor("127.0.0.1"), 1u);
 
         fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout));
         // 连接结束后名额必须还回去：否则这个来源被永久锁在限额上，它再也连不进来
-        EXPECT_TRUE(waitForCondition(
-                [&options]
-                {
-                    return options.perIpLimiter->activeCountFor("127.0.0.1") == 0u;
-                },
-                kWaitTimeout)) << "连接结束后按 IP 的名额未归还：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition([&options] { return options.perIpLimiter->activeCountFor("127.0.0.1") == 0u; }, kWaitTimeout))
+                << "连接结束后按 IP 的名额未归还：上界 kWaitTimeout";
     }
 
     /**
@@ -849,12 +777,7 @@ namespace AsynGyanis::Net
 
         const LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid()) << "IPv4 客户端连不上双栈监听器：这条监听器没接住另一族";
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 1u;
-                },
-                kWaitTimeout)) << "双栈监听器上的 IPv4 连接没有走到建连钩子";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 1u; }, kWaitTimeout)) << "双栈监听器上的 IPv4 连接没有走到建连钩子";
 
         // 不带前缀的写法要能看到这一条：记账格与观测读数是同一格
         EXPECT_EQ(options.perIpLimiter->activeCountFor("127.0.0.1"), 1u) << "映射地址没折成点分本体，按 IP 的上限可被写法绕过";
@@ -863,20 +786,10 @@ namespace AsynGyanis::Net
         // 同源第二条：名额已被这一族的那个写法占满
         const LoopbackClient secondClient(listeningPort);
         ASSERT_TRUE(secondClient.isValid());
-        EXPECT_FALSE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 2u;
-                },
-                kNegativeCheckTimeout)) << "换一种地址写法就能再占一个名额";
+        EXPECT_FALSE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 2u; }, kNegativeCheckTimeout)) << "换一种地址写法就能再占一个名额";
 
         fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
-        EXPECT_TRUE(waitForCondition(
-                [&options]
-                {
-                    return options.perIpLimiter->activeCountFor("127.0.0.1") == 0u;
-                },
-                kWaitTimeout)) << "收尾后点分那一格的名额未归还";
+        EXPECT_TRUE(waitForCondition([&options] { return options.perIpLimiter->activeCountFor("127.0.0.1") == 0u; }, kWaitTimeout)) << "收尾后点分那一格的名额未归还";
     }
 
     /**
@@ -895,8 +808,8 @@ namespace AsynGyanis::Net
         RunningServerFixture v4OnlyFixture(v4OnlyOptions);
 
         ServerTestOptions dualStackOptions;
-        dualStackOptions.kind          = ConnectionKind::ObservesStopRequest;
-        dualStackOptions.perIpLimiter  = limiter;
+        dualStackOptions.kind            = ConnectionKind::ObservesStopRequest;
+        dualStackOptions.perIpLimiter    = limiter;
         dualStackOptions.listenOnIpv6Any = true;
         RunningServerFixture dualStackFixture(dualStackOptions);
 
@@ -906,38 +819,23 @@ namespace AsynGyanis::Net
             GTEST_SKIP() << "本机不能在 :: 上建立双栈监听器（IPv6 不可用），两台共享一份限额这一形态无从构造";
         }
 
-        const std::uint16_t v4OnlyPort = queryBoundPort(v4OnlyFixture.listenDescriptor());
+        const std::uint16_t v4OnlyPort    = queryBoundPort(v4OnlyFixture.listenDescriptor());
         const std::uint16_t dualStackPort = queryBoundPort(dualStackFixture.listenDescriptor());
         ASSERT_NE(v4OnlyPort, 0);
         ASSERT_NE(dualStackPort, 0);
 
         const LoopbackClient firstClient(v4OnlyPort);
         ASSERT_TRUE(firstClient.isValid()) << "回环连接失败";
-        ASSERT_TRUE(waitForCondition(
-                [&v4OnlyFixture]
-                {
-                    return v4OnlyFixture.server().createConnectionCalls() >= 1u;
-                },
-                kWaitTimeout)) << "第一条连接没挂上 IPv4 监听器";
+        ASSERT_TRUE(waitForCondition([&v4OnlyFixture] { return v4OnlyFixture.server().createConnectionCalls() >= 1u; }, kWaitTimeout)) << "第一条连接没挂上 IPv4 监听器";
 
         // 换一台监听器再连：对端写法不同，但来源是同一个，名额已被占满
         const LoopbackClient secondClient(dualStackPort);
-        EXPECT_FALSE(waitForCondition(
-                [&dualStackFixture]
-                {
-                    return dualStackFixture.server().createConnectionCalls() >= 1u;
-                },
-                kNegativeCheckTimeout))
+        EXPECT_FALSE(waitForCondition([&dualStackFixture] { return dualStackFixture.server().createConnectionCalls() >= 1u; }, kNegativeCheckTimeout))
                 << "同一来源换一台监听器就又拿到一个名额：按来源的上限被地址写法稀释";
         EXPECT_EQ(limiter->activeCountFor("127.0.0.1"), 1u) << "两台监听器各记了一格";
 
         v4OnlyFixture.runOnLoopAndWait([&v4OnlyFixture] { v4OnlyFixture.server().close(); });
-        EXPECT_TRUE(waitForCondition(
-                [&limiter]
-                {
-                    return limiter->activeCountFor("127.0.0.1") == 0u;
-                },
-                kWaitTimeout)) << "第一条连接收尾后共享限额未归还";
+        EXPECT_TRUE(waitForCondition([&limiter] { return limiter->activeCountFor("127.0.0.1") == 0u; }, kWaitTimeout)) << "第一条连接收尾后共享限额未归还";
     }
 
     /**
@@ -949,7 +847,7 @@ namespace AsynGyanis::Net
     TEST(TcpServer, AdoptionWithUnusablePeerAddressReturnsFalseWithoutThrowing)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind         = ConnectionKind::ObservesStopRequest;
         options.perIpLimiter = std::make_shared<PerIpConnectionLimiter>(1);
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -981,12 +879,7 @@ namespace AsynGyanis::Net
         // 接受路径还活着：真连一条进来，钩子就该被调用到
         const LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid());
-        EXPECT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 1u;
-                },
-                kWaitTimeout)) << "一次失败的接手之后，服务器不再接受新连接";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 1u; }, kWaitTimeout)) << "一次失败的接手之后，服务器不再接受新连接";
 
         fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout));
@@ -1004,22 +897,12 @@ namespace AsynGyanis::Net
 
         const LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid());
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().activeConnectionCount() >= 1u;
-                },
-                kWaitTimeout)) << "连接未在时限内挂上管理器：上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() >= 1u; }, kWaitTimeout)) << "连接未在时限内挂上管理器：上界 kWaitTimeout";
 
         // close() = stop() + ConnectionManager::shutdown()：正在存活的连接会被请求停止并关掉描述符
         fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout)) << "shutdown 没通知到活跃连接：上界 kWaitTimeout";
-        EXPECT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().activeConnectionCount() == 0u;
-                },
-                kWaitTimeout)) << "连接协程收尾后没被摘除：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() == 0u; }, kWaitTimeout)) << "连接协程收尾后没被摘除：上界 kWaitTimeout";
     }
 
     TEST(TcpServer, StopLetsAcceptLoopFinishWithoutEscapingException)
@@ -1051,28 +934,17 @@ namespace AsynGyanis::Net
 
         const LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid()) << "回环客户端连接失败";
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().activeConnectionCount() >= 1u;
-                },
-                kWaitTimeout)) << "连接未在时限内挂上管理器：上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() >= 1u; }, kWaitTimeout)) << "连接未在时限内挂上管理器：上界 kWaitTimeout";
 
         // 期限给得远大于用例的等待上界：一旦 drain 真的按期限等，下面两条断言必然失败
         constexpr std::chrono::milliseconds drainTimeout{8000};
-        const auto                               drainStartTime = std::chrono::steady_clock::now();
+        const auto                          drainStartTime = std::chrono::steady_clock::now();
         ASSERT_TRUE(fixture.drainServer(drainTimeout, kWaitTimeout)) << "drain 未在时限内完成：上界 kWaitTimeout";
-        const std::chrono::milliseconds drainElapsed =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartTime);
+        const std::chrono::milliseconds drainElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartTime);
 
         // 空闲连接被请求停止并关闭（而不是被留在那里等自己结束）
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout)) << "drain 没有通知到空闲连接：上界 kWaitTimeout";
-        EXPECT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().activeConnectionCount() == 0u;
-                },
-                kWaitTimeout)) << "空闲连接收尾后未从管理器摘除：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() == 0u; }, kWaitTimeout)) << "空闲连接收尾后未从管理器摘除：上界 kWaitTimeout";
         EXPECT_LT(drainElapsed, drainTimeout) << "drain 等满了期限：空闲连接没有被立刻收掉，耗时 " << drainElapsed.count() << "ms";
         EXPECT_FALSE(fixture.server().isRunning());
     }
@@ -1092,21 +964,12 @@ namespace AsynGyanis::Net
 
         const LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid()) << "回环客户端连接失败";
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().activeConnectionCount() >= 1u;
-                },
-                kWaitTimeout)) << "连接未在时限内挂上管理器：上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() >= 1u; }, kWaitTimeout)) << "连接未在时限内挂上管理器：上界 kWaitTimeout";
 
         // 期限为 0：不等待，直接强关。上界取 kImmediateCompletionTimeout，超出即说明 drain 在等
         ASSERT_TRUE(fixture.drainServer(std::chrono::milliseconds::zero(), kWaitTimeout)) << "drain 未在时限内完成：上界 kWaitTimeout";
-        EXPECT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().activeConnectionCount() == 0u;
-                },
-                kImmediateCompletionTimeout)) << "非正期限下忙碌连接没有被立刻强关：上界 kImmediateCompletionTimeout";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() == 0u; }, kImmediateCompletionTimeout))
+                << "非正期限下忙碌连接没有被立刻强关：上界 kImmediateCompletionTimeout";
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout)) << "强关没有通知到连接：上界 kWaitTimeout";
         EXPECT_FALSE(fixture.server().isRunning());
     }
@@ -1138,15 +1001,12 @@ namespace AsynGyanis::Net
         const std::uint16_t listeningPort = ntohs(address.sin_port);
         ASSERT_GT(listeningPort, 0U);
 
-        Core::EventLoop      loop;
-        std::atomic<bool>    stopObserved{false};
-        std::thread          loopThread([&loop]
-        {
-            loop.run();
-        });
+        Core::EventLoop   loop;
+        std::atomic<bool> stopObserved{false};
+        std::thread       loopThread([&loop] { loop.run(); });
 
         ServerTestOptions options; ///< 默认 FinishImmediately：连接建好就收口，够证明「确实接受到了」
-        TestTcpServer       server(loop, descriptor, options, stopObserved);
+        TestTcpServer     server(loop, descriptor, options, stopObserved);
         // 描述符的所有权已交给服务器：从这里起不再用 ASSERT，失败也要走完收口路径
         AsynGyanis::Core::Task<void> startTask = server.start();
         loop.scheduler().scheduleRemote(startTask.handle());
@@ -1180,10 +1040,7 @@ namespace AsynGyanis::Net
 
         // 收口顺序要按线程契约来：close() 只能在跑这条循环的线程上调，所以投递过去，
         // 等接受循环真的退出之后再停循环——否则 startTask 的帧会在协程还挂着时被析构
-        loop.scheduler().postRemote([&server]
-        {
-            server.close();
-        });
+        loop.scheduler().postRemote([&server] { server.close(); });
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
         loop.stop();
         loopThread.join();
@@ -1197,18 +1054,15 @@ namespace AsynGyanis::Net
         /**
          * @brief 拼一条 v1 PROXY 头
          */
-        std::string makeV1Header(const std::string_view source, const int sourcePort,
-                                 const std::string_view destination, const int destinationPort)
+        std::string makeV1Header(const std::string_view source, const int sourcePort, const std::string_view destination, const int destinationPort)
         {
-            return "PROXY TCP4 " + std::string{source} + " " + std::string{destination} + " "
-                   + std::to_string(sourcePort) + " " + std::to_string(destinationPort) + "\r\n";
+            return "PROXY TCP4 " + std::string{source} + " " + std::string{destination} + " " + std::to_string(sourcePort) + " " + std::to_string(destinationPort) + "\r\n";
         }
 
         /**
          * @brief 拼一条 v2 PROXY 头（IPv4 + PROXY 命令）
          */
-        std::string makeV2Ipv4Header(const std::array<int, 4> &source, const std::array<int, 4> &destination,
-                                     const int sourcePort, const int destinationPort)
+        std::string makeV2Ipv4Header(const std::array<int, 4> &source, const std::array<int, 4> &destination, const int sourcePort, const int destinationPort)
         {
             std::string header{"\r\n\r\n\0\r\nQUIT\n", 12};
             header += static_cast<char>(0x21); // 版本 2 + 命令 PROXY
@@ -1239,7 +1093,7 @@ namespace AsynGyanis::Net
     TEST(TcpServer, AttributesConnectionToTheProxiedSourceFromVersionOneHeader)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind                  = ConnectionKind::ObservesStopRequest;
         options.proxyProtocolRequired = true;
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -1251,12 +1105,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendAll(makeV1Header("203.0.113.9", 44000, "198.51.100.7", 443)));
 
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().seenPeers().size() >= 1U;
-                },
-                kWaitTimeout))
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().seenPeers().size() >= 1U; }, kWaitTimeout))
                 << "读完 PROXY 头之后没有建会话：头没被认出来，或者被当场判死";
         const std::vector<std::string> peers = fixture.server().seenPeers();
         EXPECT_EQ(peers[0], "203.0.113.9") << "对端身份没被换成头上写着的来源";
@@ -1265,7 +1114,7 @@ namespace AsynGyanis::Net
     TEST(TcpServer, AttributesConnectionToTheProxiedSourceFromVersionTwoHeader)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind                  = ConnectionKind::ObservesStopRequest;
         options.proxyProtocolRequired = true;
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -1277,13 +1126,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendAll(makeV2Ipv4Header({203, 0, 113, 9}, {198, 51, 100, 7}, 44000, 443)));
 
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().seenPeers().size() >= 1U;
-                },
-                kWaitTimeout))
-                << "v2 头没被认出来：定长段的长度字段或地址块解析有一条不对";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().seenPeers().size() >= 1U; }, kWaitTimeout)) << "v2 头没被认出来：定长段的长度字段或地址块解析有一条不对";
         EXPECT_EQ(fixture.server().seenPeers()[0], "203.0.113.9");
     }
 
@@ -1293,7 +1136,7 @@ namespace AsynGyanis::Net
     TEST(TcpServer, ReadsProxyHeaderSplitAcrossSegments)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind                  = ConnectionKind::ObservesStopRequest;
         options.proxyProtocolRequired = true;
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -1304,18 +1147,12 @@ namespace AsynGyanis::Net
         const LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid());
         const std::string header = makeV1Header("203.0.113.21", 1234, "192.0.2.1", 80);
-        const std::size_t cut = header.find(" 1234");
+        const std::size_t cut    = header.find(" 1234");
         ASSERT_NE(cut, std::string::npos);
         ASSERT_TRUE(client.sendAll(header.substr(0U, cut)));
         ASSERT_TRUE(client.sendAll(header.substr(cut)));
 
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().seenPeers().size() >= 1U;
-                },
-                kWaitTimeout))
-                << "分段到达的头没被拼起来：读循环少了「还要再读」那一路";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().seenPeers().size() >= 1U; }, kWaitTimeout)) << "分段到达的头没被拼起来：读循环少了「还要再读」那一路";
         EXPECT_EQ(fixture.server().seenPeers()[0], "203.0.113.21");
     }
 
@@ -1327,9 +1164,9 @@ namespace AsynGyanis::Net
     TEST(TcpServer, LimitsPerProxiedSourceNotPerProxy)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind                  = ConnectionKind::ObservesStopRequest;
         options.proxyProtocolRequired = true;
-        options.perIpLimiter = std::make_shared<PerIpConnectionLimiter>(1);
+        options.perIpLimiter          = std::make_shared<PerIpConnectionLimiter>(1);
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
 
@@ -1339,34 +1176,18 @@ namespace AsynGyanis::Net
         const LoopbackClient firstClient(listeningPort);
         ASSERT_TRUE(firstClient.isValid());
         ASSERT_TRUE(firstClient.sendAll(makeV1Header("203.0.113.1", 1, "192.0.2.1", 80)));
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 1U;
-                },
-                kWaitTimeout))
-                << "首条带头的连接没建起来";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 1U; }, kWaitTimeout)) << "首条带头的连接没建起来";
 
         const LoopbackClient secondClient(listeningPort);
         ASSERT_TRUE(secondClient.isValid());
         ASSERT_TRUE(secondClient.sendAll(makeV1Header("203.0.113.2", 2, "192.0.2.1", 80)));
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 2U;
-                },
-                kWaitTimeout))
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 2U; }, kWaitTimeout))
                 << "另一个来源被代理自己的地址挡住了：限额没用上 PROXY 头里的来源";
 
         const LoopbackClient thirdClient(listeningPort);
         ASSERT_TRUE(thirdClient.isValid());
         ASSERT_TRUE(thirdClient.sendAll(makeV1Header("203.0.113.1", 3, "192.0.2.1", 80)));
-        EXPECT_FALSE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().createConnectionCalls() >= 3U;
-                },
-                kNegativeCheckTimeout))
+        EXPECT_FALSE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 3U; }, kNegativeCheckTimeout))
                 << "与首条同源的第三条被放行了：同一个真实来源拿到了两个名额";
     }
 
@@ -1385,7 +1206,7 @@ namespace AsynGyanis::Net
         const HttpTestSupport::LogCapture logCapture;
 
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind                  = ConnectionKind::ObservesStopRequest;
         options.proxyProtocolRequired = true;
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -1393,7 +1214,7 @@ namespace AsynGyanis::Net
         const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
         ASSERT_NE(listeningPort, 0);
 
-        const std::size_t warningCountBefore = logCapture.countContaining(kInvalidProxyHeaderWarning);
+        const std::size_t     warningCountBefore   = logCapture.countContaining(kInvalidProxyHeaderWarning);
         constexpr std::size_t kJunkConnectionCount = 5U;
         for (std::size_t connectionIndex = 0; connectionIndex < kJunkConnectionCount; ++connectionIndex)
         {
@@ -1401,20 +1222,12 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(client.isValid());
             // 首字节就不是 "PROXY "：这一批五条全部命中同一个调用点
             ASSERT_TRUE(client.sendAll("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"));
-            ASSERT_TRUE(waitForCondition(
-                    [&client]
-                    {
-                        return client.isClosedByPeer();
-                    },
-                    kWaitTimeout))
-                    << "第 " << connectionIndex << " 条不合格的连接没被收口";
+            ASSERT_TRUE(waitForCondition([&client] { return client.isClosedByPeer(); }, kWaitTimeout)) << "第 " << connectionIndex << " 条不合格的连接没被收口";
         }
 
         const std::size_t warningCountAfter = logCapture.countContaining(kInvalidProxyHeaderWarning);
-        EXPECT_LE(warningCountAfter - warningCountBefore, 1U)
-                << "一批 " << kJunkConnectionCount << " 条同类连接写出了多条告警：这个调用点没接闸门";
-        EXPECT_GE(warningCountAfter, 1U)
-                << "整个进程里一条 PROXY 告警都没有：闸门把这条信号整个吞掉了";
+        EXPECT_LE(warningCountAfter - warningCountBefore, 1U) << "一批 " << kJunkConnectionCount << " 条同类连接写出了多条告警：这个调用点没接闸门";
+        EXPECT_GE(warningCountAfter, 1U) << "整个进程里一条 PROXY 告警都没有：闸门把这条信号整个吞掉了";
         EXPECT_EQ(fixture.server().createConnectionCalls(), 0U) << "被告警挡下的连接里有的还是建了会话";
     }
 
@@ -1425,7 +1238,7 @@ namespace AsynGyanis::Net
     TEST(TcpServer, DropsConnectionThatSendsNoProxyHeader)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind                  = ConnectionKind::ObservesStopRequest;
         options.proxyProtocolRequired = true;
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -1437,13 +1250,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendAll("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"));
 
-        ASSERT_TRUE(waitForCondition(
-                [&client]
-                {
-                    return client.isClosedByPeer();
-                },
-                kWaitTimeout))
-                << "发了不是头的字节却没被收口：判死那一路没生效";
+        ASSERT_TRUE(waitForCondition([&client] { return client.isClosedByPeer(); }, kWaitTimeout)) << "发了不是头的字节却没被收口：判死那一路没生效";
         EXPECT_EQ(fixture.server().createConnectionCalls(), 0U) << "没带头的连接照样建了会话，等于头是可选的";
     }
 
@@ -1455,7 +1262,7 @@ namespace AsynGyanis::Net
     TEST(TcpServer, DropsConnectionWithMalformedProxyHeader)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind                  = ConnectionKind::ObservesStopRequest;
         options.proxyProtocolRequired = true;
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -1468,13 +1275,7 @@ namespace AsynGyanis::Net
         // 前缀与换行都合规，字段数不对：读侧要一路读到行尾才发现解析不出来
         ASSERT_TRUE(client.sendAll("PROXY TCP4 203.0.113.9\r\n"));
 
-        ASSERT_TRUE(waitForCondition(
-                [&client]
-                {
-                    return client.isClosedByPeer();
-                },
-                kWaitTimeout))
-                << "解析失败那条出口没关套接字：对端在等一个不会来的 FIN";
+        ASSERT_TRUE(waitForCondition([&client] { return client.isClosedByPeer(); }, kWaitTimeout)) << "解析失败那条出口没关套接字：对端在等一个不会来的 FIN";
         EXPECT_EQ(fixture.server().createConnectionCalls(), 0U) << "不合规范的头被当成了合法身份";
     }
 
@@ -1486,7 +1287,7 @@ namespace AsynGyanis::Net
     TEST(TcpServer, DropsConnectionCarryingBytesAfterProxyHeader)
     {
         ServerTestOptions options;
-        options.kind = ConnectionKind::ObservesStopRequest;
+        options.kind                  = ConnectionKind::ObservesStopRequest;
         options.proxyProtocolRequired = true;
         RunningServerFixture fixture(options);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -1498,13 +1299,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid());
         ASSERT_TRUE(client.sendAll(makeV1Header("203.0.113.9", 44000, "198.51.100.7", 443) + "GET / HTTP/1.1\r\n"));
 
-        ASSERT_TRUE(waitForCondition(
-                [&client]
-                {
-                    return client.isClosedByPeer();
-                },
-                kWaitTimeout))
-                << "头后多出的字节没被处理却没收口：这条连接被晾在原地";
+        ASSERT_TRUE(waitForCondition([&client] { return client.isClosedByPeer(); }, kWaitTimeout)) << "头后多出的字节没被处理却没收口：这条连接被晾在原地";
         EXPECT_EQ(fixture.server().createConnectionCalls(), 0U) << "带尾巴的头被放行了：尾巴里的正文会被当成头的续段丢掉";
     }
 

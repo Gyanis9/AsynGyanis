@@ -21,28 +21,24 @@ namespace AsynGyanis::Core
         fromIpPort(ip, port);
     }
 
-    InetAddress::InetAddress(const sockaddr_in &address) :
-        m_addressLength(sizeof(sockaddr_in))
+    InetAddress::InetAddress(const sockaddr_in &address) : m_addressLength(sizeof(sockaddr_in))
     {
         std::memcpy(&m_address, &address, sizeof(address));
     }
 
-    InetAddress::InetAddress(const sockaddr_in6 &address) :
-        m_addressLength(sizeof(sockaddr_in6))
+    InetAddress::InetAddress(const sockaddr_in6 &address) : m_addressLength(sizeof(sockaddr_in6))
     {
         std::memcpy(&m_address, &address, sizeof(address));
     }
 
-    InetAddress::InetAddress(const sockaddr_storage &address, const socklen_t length) :
-        m_addressLength(length)
+    InetAddress::InetAddress(const sockaddr_storage &address, const socklen_t length) : m_addressLength(length)
     {
         // 长度由调用方给出，直接按它 memcpy 会越界写（成员只有 sizeof(sockaddr_storage) 字节）：
         // 超出容量的取值当场拒绝，绝不静默截断或照抄
         if (length == 0 || static_cast<std::size_t>(length) > sizeof(sockaddr_storage))
         {
-            throw Base::InvalidArgumentException(
-                    "InetAddress: 地址长度 " + std::to_string(length) + " 非法（必须在 1.." +
-                    std::to_string(sizeof(sockaddr_storage)) + " 之间）：请传入内核回填的 socklen_t 长度");
+            throw Base::InvalidArgumentException("InetAddress: 地址长度 " + std::to_string(length) + " 非法（必须在 1.." + std::to_string(sizeof(sockaddr_storage)) +
+                                                 " 之间）：请传入内核回填的 socklen_t 长度");
         }
         std::memcpy(&m_address, &address, length);
     }
@@ -200,11 +196,11 @@ namespace AsynGyanis::Core
     {
         // inet_pton 只接受零终止 C 字符串，因此必须先落一份 std::string 副本；
         // 但内嵌 NUL 会让它只解析到第一个 '\0' 为止、静默忽略后面的内容
-        //（例如 "1.2.3.4\0evil" 会被当成 1.2.3.4 接受），所以先显式拦下这类输入
+        // （例如 "1.2.3.4\0evil" 会被当成 1.2.3.4 接受），所以先显式拦下这类输入
         const std::string ipText(ip);
         if (ipText.find('\0') != std::string::npos)
         {
-            throw Base::InvalidArgumentException("IP 地址文本含 NUL 字节：" 
+            throw Base::InvalidArgumentException("IP 地址文本含 NUL 字节："
                                                  "底层 inet_pton 按零终止语义解析，内嵌 NUL 会让地址被静默截断成前半段。"
                                                  "请在调用方清理掉 NUL，或改用其它方式构造地址");
         }
@@ -238,4 +234,4 @@ namespace AsynGyanis::Core
                                              "或 IPv6 冒号十六进制如 ::1；主机名请改用 resolve()）");
     }
 
-}
+} // namespace AsynGyanis::Core

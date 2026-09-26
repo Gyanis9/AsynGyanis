@@ -19,11 +19,11 @@ namespace AsynGyanis::Net
         constexpr std::uint8_t kIndexedRepresentationPattern = 0x80;
 
         /// 带增量索引的字面量的模式：01xxxxxx（RFC 7541 §6.2.1）
-        constexpr std::uint8_t kLiteralIncrementalIndexingMask = 0xC0;
+        constexpr std::uint8_t kLiteralIncrementalIndexingMask    = 0xC0;
         constexpr std::uint8_t kLiteralIncrementalIndexingPattern = 0x40;
 
         /// 动态表大小更新的模式：001xxxxx（RFC 7541 §6.3）
-        constexpr std::uint8_t kDynamicTableSizeUpdateMask = 0xE0;
+        constexpr std::uint8_t kDynamicTableSizeUpdateMask    = 0xE0;
         constexpr std::uint8_t kDynamicTableSizeUpdatePattern = 0x20;
 
         /// 带索引名的字面量里名字索引的前缀位数（01 两位模式 + 6 位索引）
@@ -69,7 +69,7 @@ namespace AsynGyanis::Net
         {
             std::uint16_t childZeroIndex{0}; ///< 读到 0 位时走到的节点下标
             std::uint16_t childOneIndex{0};  ///< 读到 1 位时走到的节点下标
-            std::int16_t symbol{-1};         ///< 叶子的符号值（0..255）；-1 表示内部节点
+            std::int16_t  symbol{-1};        ///< 叶子的符号值（0..255）；-1 表示内部节点
         };
 
         /// 前缀树节点容量：257 个码字构成的满二叉树最多 2*257-1 = 513 个节点，留出余量
@@ -81,7 +81,7 @@ namespace AsynGyanis::Net
         struct HpackHuffmanDecodingTable
         {
             std::array<HpackHuffmanDecodeNode, kHpackHuffmanDecodeNodeCapacity> nodes{};
-            std::size_t nodeCount{0};
+            std::size_t                                                         nodeCount{0};
         };
 
         /**
@@ -96,17 +96,17 @@ namespace AsynGyanis::Net
             table.nodeCount = 1;
             for (std::size_t symbol = 0; symbol < kHpackHuffmanCodeTable.size(); ++symbol)
             {
-                const HpackHuffmanCode &code = kHpackHuffmanCodeTable[symbol];
-                std::size_t nodeIndex = 0;
+                const HpackHuffmanCode &code      = kHpackHuffmanCodeTable[symbol];
+                std::size_t             nodeIndex = 0;
                 // 码字按 MSB 到 LSB 写出，构造与解码必须同向，否则同一份字节会有两种解释
                 for (int bitIndex = static_cast<int>(code.bitCount) - 1; bitIndex >= 0; --bitIndex)
                 {
-                    const bool isOneBit = ((code.code >> bitIndex) & 1U) != 0;
+                    const bool     isOneBit   = ((code.code >> bitIndex) & 1U) != 0;
                     std::uint16_t &childIndex = isOneBit ? table.nodes[nodeIndex].childOneIndex : table.nodes[nodeIndex].childZeroIndex;
                     if (childIndex == 0)
                     {
                         // 用 at() 而不是 []：容量不够时在编译期就报错，不用等到运行期越界
-                        childIndex = static_cast<std::uint16_t>(table.nodeCount);
+                        childIndex                             = static_cast<std::uint16_t>(table.nodeCount);
                         table.nodes.at(table.nodeCount).symbol = -1;
                         ++table.nodeCount;
                     }
@@ -137,8 +137,7 @@ namespace AsynGyanis::Net
          * @param value 头值
          * @return std::size_t 绝对索引（62 起）；0 表示没有精确匹配
          */
-        std::size_t findHpackDynamicTableIndex(const HpackDynamicTable &dynamicTable, const std::string_view name,
-                                              const std::string_view value) noexcept
+        std::size_t findHpackDynamicTableIndex(const HpackDynamicTable &dynamicTable, const std::string_view name, const std::string_view value) noexcept
         {
             const std::deque<HpackHeaderField> &entries = dynamicTable.entries();
             for (std::size_t entryIndex = 0; entryIndex < entries.size(); ++entryIndex)
@@ -216,24 +215,22 @@ namespace AsynGyanis::Net
         return Http2ErrorCode::InternalError;
     }
 
-    void appendHpackInteger(std::string &out, const std::uint64_t value, const std::uint8_t prefixBitCount,
-                            const std::uint8_t firstByteHighBits)
+    void appendHpackInteger(std::string &out, const std::uint64_t value, const std::uint8_t prefixBitCount, const std::uint8_t firstByteHighBits)
     {
         if (prefixBitCount < 1 || prefixBitCount > 8)
         {
             throw Base::InvalidArgumentException(std::format("HPACK 整数表示的前缀位数 {} 不在 1..8 内（RFC 7541 §5.1）："
-                                                            "请按表示的位数传 5（大小更新）、6/4（字面量的名字索引）或 7（索引与字符串长度）",
-                                                            prefixBitCount));
+                                                             "请按表示的位数传 5（大小更新）、6/4（字面量的名字索引）或 7（索引与字符串长度）",
+                                                             prefixBitCount));
         }
 
-        const auto prefixMaximumValue = static_cast<std::uint64_t>((1ULL << prefixBitCount) - 1ULL);
-        const std::uint8_t prefixMask = static_cast<std::uint8_t>(prefixMaximumValue);
+        const auto         prefixMaximumValue = static_cast<std::uint64_t>((1ULL << prefixBitCount) - 1ULL);
+        const std::uint8_t prefixMask         = static_cast<std::uint8_t>(prefixMaximumValue);
         if ((firstByteHighBits & prefixMask) != 0)
         {
             // 模式位与整数前缀共用首字节：互相覆盖会让对端把表示识别成另一种类型
-            throw Base::InvalidArgumentException(
-                    std::format("HPACK 整数表示的首字节模式位 0x{:02X} 占用了低 {} 位前缀（RFC 7541 §5.1）：请让模式位只出现在高 {} 位",
-                                firstByteHighBits, prefixBitCount, 8 - prefixBitCount));
+            throw Base::InvalidArgumentException(std::format("HPACK 整数表示的首字节模式位 0x{:02X} 占用了低 {} 位前缀（RFC 7541 §5.1）：请让模式位只出现在高 {} 位",
+                                                             firstByteHighBits, prefixBitCount, 8 - prefixBitCount));
         }
 
         if (value < prefixMaximumValue)
@@ -260,11 +257,10 @@ namespace AsynGyanis::Net
         return encoded;
     }
 
-    bool decodeHpackInteger(const std::string_view bytes, const std::uint8_t prefixBitCount, std::uint64_t &value,
-                            std::size_t &consumedByteCount, std::string *const errorText)
+    bool decodeHpackInteger(const std::string_view bytes, const std::uint8_t prefixBitCount, std::uint64_t &value, std::size_t &consumedByteCount, std::string *const errorText)
     {
         clearError(errorText);
-        value = 0;
+        value             = 0;
         consumedByteCount = 0;
         if (prefixBitCount < 1 || prefixBitCount > 8)
         {
@@ -278,9 +274,9 @@ namespace AsynGyanis::Net
         }
 
         const std::uint64_t prefixMaximumValue = (1ULL << prefixBitCount) - 1ULL;
-        const auto prefixMask = static_cast<std::uint8_t>(prefixMaximumValue);
-        value = static_cast<std::uint64_t>(static_cast<std::uint8_t>(bytes[0]) & prefixMask);
-        consumedByteCount = 1;
+        const auto          prefixMask         = static_cast<std::uint8_t>(prefixMaximumValue);
+        value                                  = static_cast<std::uint64_t>(static_cast<std::uint8_t>(bytes[0]) & prefixMask);
+        consumedByteCount                      = 1;
         if (value < prefixMaximumValue)
         {
             return true;
@@ -323,8 +319,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    bool decodeHpackString(const std::string_view bytes, std::string &value, std::size_t &consumedByteCount,
-                           std::string *const errorText)
+    bool decodeHpackString(const std::string_view bytes, std::string &value, std::size_t &consumedByteCount, std::string *const errorText)
     {
         clearError(errorText);
         value.clear();
@@ -336,17 +331,16 @@ namespace AsynGyanis::Net
         }
 
         // 首字节最高位是 H 位，其余 7 位是长度前缀（RFC 7541 §5.2）
-        const bool isHuffmanEncoded = (static_cast<std::uint8_t>(bytes[0]) & kHuffmanFlag) != 0;
-        std::uint64_t encodedLength = 0;
-        std::size_t lengthByteCount = 0;
+        const bool    isHuffmanEncoded = (static_cast<std::uint8_t>(bytes[0]) & kHuffmanFlag) != 0;
+        std::uint64_t encodedLength    = 0;
+        std::size_t   lengthByteCount  = 0;
         if (!decodeHpackInteger(bytes, 7, encodedLength, lengthByteCount, errorText))
         {
             return false;
         }
         if (encodedLength > static_cast<std::uint64_t>(bytes.size() - lengthByteCount))
         {
-            writeError(errorText, std::format("HPACK 字符串声明的长度 {} 字节超过头块剩余 {} 字节：请检查对端是否截断了头块",
-                                              encodedLength, bytes.size() - lengthByteCount));
+            writeError(errorText, std::format("HPACK 字符串声明的长度 {} 字节超过头块剩余 {} 字节：请检查对端是否截断了头块", encodedLength, bytes.size() - lengthByteCount));
             return false;
         }
 
@@ -357,8 +351,7 @@ namespace AsynGyanis::Net
             {
                 return false;
             }
-        }
-        else
+        } else
         {
             // 二进制安全：按「指针 + 长度」构造，值里可以有 NUL
             value.assign(encodedBytes.data(), encodedBytes.size());
@@ -373,9 +366,9 @@ namespace AsynGyanis::Net
         value.clear();
 
         // 这三个量都是「自上一个完整符号起」的计数：收口一个符号就清零，结尾剩下的就是填充
-        std::size_t pendingBitCount = 0;
-        bool arePendingBitsAllOnes = true;
-        std::size_t nodeIndex = 0;
+        std::size_t pendingBitCount       = 0;
+        bool        arePendingBitsAllOnes = true;
+        std::size_t nodeIndex             = 0;
         for (const char byteValue: encodedBytes)
         {
             const auto byte = static_cast<std::uint8_t>(byteValue);
@@ -383,8 +376,7 @@ namespace AsynGyanis::Net
             for (int bitIndex = 7; bitIndex >= 0; --bitIndex)
             {
                 const bool isOneBit = ((byte >> bitIndex) & 1U) != 0;
-                nodeIndex = isOneBit ? kHpackHuffmanDecodingTable.nodes[nodeIndex].childOneIndex
-                                     : kHpackHuffmanDecodingTable.nodes[nodeIndex].childZeroIndex;
+                nodeIndex           = isOneBit ? kHpackHuffmanDecodingTable.nodes[nodeIndex].childOneIndex : kHpackHuffmanDecodingTable.nodes[nodeIndex].childZeroIndex;
                 ++pendingBitCount;
                 if (!isOneBit)
                 {
@@ -405,8 +397,8 @@ namespace AsynGyanis::Net
 
                 value.push_back(static_cast<char>(static_cast<unsigned char>(symbol)));
                 // 一个符号收口，剩下的位属于下一个符号或结尾填充
-                nodeIndex = 0;
-                pendingBitCount = 0;
+                nodeIndex             = 0;
+                pendingBitCount       = 0;
                 arePendingBitsAllOnes = true;
             }
         }
@@ -515,8 +507,7 @@ namespace AsynGyanis::Net
         // 此后只能由头块开头的「动态表大小更新」在限度内调整
     }
 
-    bool HpackDecoder::decode(const std::string_view headerBlock, std::vector<HpackHeaderField> &headerFields,
-                              std::string *const errorText)
+    bool HpackDecoder::decode(const std::string_view headerBlock, std::vector<HpackHeaderField> &headerFields, std::string *const errorText)
     {
         clearError(errorText);
         headerFields.clear();
@@ -530,11 +521,11 @@ namespace AsynGyanis::Net
         // 本轮的结论要在入口处归零：上一轮可能因越限留下 errorKind 与文案，而越限不置粘滞标记，
         // 不清的话这一轮即使解好了，errorKind() 仍会报上一次的结论
         m_isBeyondHeaderLimits = false;
-        m_errorKind = HpackErrorKind::None;
+        m_errorKind            = HpackErrorKind::None;
         m_errorMessage.clear();
-        m_headerListByteCount = 0;
+        m_headerListByteCount         = 0;
         m_hasSeenHeaderRepresentation = false;
-        std::size_t consumed = 0;
+        std::size_t consumed          = 0;
         // 表示是自定界的：逐个解到末尾，中途任何失败都由 decodeRepresentation() 记下原因
         while (consumed < headerBlock.size())
         {
@@ -559,12 +550,12 @@ namespace AsynGyanis::Net
 
     void HpackDecoder::reset()
     {
-        m_dynamicTable = HpackDynamicTable(m_limits.maximumDynamicTableSizeByteCount);
-        m_headerListByteCount = 0;
+        m_dynamicTable                = HpackDynamicTable(m_limits.maximumDynamicTableSizeByteCount);
+        m_headerListByteCount         = 0;
         m_hasSeenHeaderRepresentation = false;
-        m_isBeyondHeaderLimits = false;
-        m_hasError = false;
-        m_errorKind = HpackErrorKind::None;
+        m_isBeyondHeaderLimits        = false;
+        m_hasError                    = false;
+        m_errorKind                   = HpackErrorKind::None;
         m_errorMessage.clear();
     }
 
@@ -603,15 +594,14 @@ namespace AsynGyanis::Net
         return m_dynamicTable.maximumSizeByteCount();
     }
 
-    bool HpackDecoder::decodeRepresentation(const std::string_view headerBlock, std::size_t &consumed,
-                                            std::vector<HpackHeaderField> &headerFields)
+    bool HpackDecoder::decodeRepresentation(const std::string_view headerBlock, std::size_t &consumed, std::vector<HpackHeaderField> &headerFields)
     {
         const auto firstByte = static_cast<std::uint8_t>(headerBlock[consumed]);
         if ((firstByte & kIndexedRepresentationPattern) != 0)
         {
             // 1xxxxxxx：索引表示（RFC 7541 §6.1）
-            std::uint64_t index = 0;
-            std::size_t indexByteCount = 0;
+            std::uint64_t index          = 0;
+            std::size_t   indexByteCount = 0;
             if (!decodeHpackInteger(headerBlock.substr(consumed), 7, index, indexByteCount, nullptr))
             {
                 recordFailure(HpackErrorKind::CompressionError, "索引表示的整数解不开（RFC 7541 §5.1）：头块中该表示被截断或溢出，请检查对端");
@@ -627,10 +617,9 @@ namespace AsynGyanis::Net
             HpackHeaderField field;
             if (!resolveIndexedField(static_cast<std::size_t>(index), field))
             {
-                recordFailure(HpackErrorKind::CompressionError,
-                              std::format("索引 {} 既不在静态表（1..{}）也不在动态表（当前 {} 项）里（RFC 7541 §2.3.3）："
-                                          "两端的动态表已经不同步，请检查对端是否漏插或错插了条目",
-                                          index, kHpackStaticTableEntryCount, m_dynamicTable.entryCount()));
+                recordFailure(HpackErrorKind::CompressionError, std::format("索引 {} 既不在静态表（1..{}）也不在动态表（当前 {} 项）里（RFC 7541 §2.3.3）："
+                                                                            "两端的动态表已经不同步，请检查对端是否漏插或错插了条目",
+                                                                            index, kHpackStaticTableEntryCount, m_dynamicTable.entryCount()));
                 return false;
             }
             m_hasSeenHeaderRepresentation = true;
@@ -649,14 +638,13 @@ namespace AsynGyanis::Net
             // 001xxxxx：动态表大小更新（RFC 7541 §6.3）
             if (m_hasSeenHeaderRepresentation)
             {
-                recordFailure(HpackErrorKind::CompressionError,
-                              "动态表大小更新出现在头部之后（RFC 7541 §4.2 要求它出现在头块开头）："
-                              "在中间改表会让前后两段的索引指向不同的表状态，请检查对端构造");
+                recordFailure(HpackErrorKind::CompressionError, "动态表大小更新出现在头部之后（RFC 7541 §4.2 要求它出现在头块开头）："
+                                                                "在中间改表会让前后两段的索引指向不同的表状态，请检查对端构造");
                 return false;
             }
 
             std::uint64_t maximumSizeByteCount = 0;
-            std::size_t sizeByteCount = 0;
+            std::size_t   sizeByteCount        = 0;
             if (!decodeHpackInteger(headerBlock.substr(consumed), 5, maximumSizeByteCount, sizeByteCount, nullptr))
             {
                 recordFailure(HpackErrorKind::CompressionError, "动态表大小更新的整数解不开（RFC 7541 §5.1）：请检查对端");
@@ -665,11 +653,10 @@ namespace AsynGyanis::Net
             consumed += sizeByteCount;
             if (maximumSizeByteCount > m_limits.maximumDynamicTableSizeByteCount)
             {
-                recordFailure(HpackErrorKind::CompressionError,
-                              std::format("动态表大小更新要求 {} 字节，超过本端通告的 SETTINGS_HEADER_TABLE_SIZE {} 字节"
-                                          "（RFC 7541 §6.3 要求超出限度即判为解码错误）：请调高 "
-                                          "HpackDecoderLimits::maximumDynamicTableSizeByteCount，或让对端改用不大于该值的上限",
-                                          maximumSizeByteCount, m_limits.maximumDynamicTableSizeByteCount));
+                recordFailure(HpackErrorKind::CompressionError, std::format("动态表大小更新要求 {} 字节，超过本端通告的 SETTINGS_HEADER_TABLE_SIZE {} 字节"
+                                                                            "（RFC 7541 §6.3 要求超出限度即判为解码错误）：请调高 "
+                                                                            "HpackDecoderLimits::maximumDynamicTableSizeByteCount，或让对端改用不大于该值的上限",
+                                                                            maximumSizeByteCount, m_limits.maximumDynamicTableSizeByteCount));
                 return false;
             }
             m_dynamicTable.setMaximumSizeByteCount(static_cast<std::size_t>(maximumSizeByteCount));
@@ -681,12 +668,11 @@ namespace AsynGyanis::Net
         return decodeLiteralRepresentation(kLiteralNamePrefixBitCount, false, headerBlock, consumed, headerFields);
     }
 
-    bool HpackDecoder::decodeLiteralRepresentation(const std::uint8_t nameIndexPrefixBitCount, const bool isIncrementalIndexing,
-                                                   const std::string_view headerBlock, std::size_t &consumed,
-                                                   std::vector<HpackHeaderField> &headerFields)
+    bool HpackDecoder::decodeLiteralRepresentation(const std::uint8_t nameIndexPrefixBitCount, const bool isIncrementalIndexing, const std::string_view headerBlock,
+                                                   std::size_t &consumed, std::vector<HpackHeaderField> &headerFields)
     {
-        std::uint64_t nameIndex = 0;
-        std::size_t nameIndexByteCount = 0;
+        std::uint64_t nameIndex          = 0;
+        std::size_t   nameIndexByteCount = 0;
         if (!decodeHpackInteger(headerBlock.substr(consumed), nameIndexPrefixBitCount, nameIndex, nameIndexByteCount, nullptr))
         {
             recordFailure(HpackErrorKind::CompressionError, "字面量表示的名字索引解不开（RFC 7541 §5.1）：请检查对端是否截断了头块");
@@ -701,21 +687,18 @@ namespace AsynGyanis::Net
             std::size_t nameByteCount = 0;
             if (!decodeHpackString(headerBlock.substr(consumed), field.name, nameByteCount, nullptr))
             {
-                recordFailure(HpackErrorKind::CompressionError,
-                              std::format("字面量表示的头名解不开（已消费 {} 字节，头块共 {} 字节）："
-                                          "请检查对端是否截断了头块或用了本端不支持的 Huffman 码",
-                                          consumed, headerBlock.size()));
+                recordFailure(HpackErrorKind::CompressionError, std::format("字面量表示的头名解不开（已消费 {} 字节，头块共 {} 字节）："
+                                                                            "请检查对端是否截断了头块或用了本端不支持的 Huffman 码",
+                                                                            consumed, headerBlock.size()));
                 return false;
             }
             consumed += nameByteCount;
-        }
-        else
+        } else
         {
             if (!resolveIndexedField(static_cast<std::size_t>(nameIndex), field))
             {
                 recordFailure(HpackErrorKind::CompressionError,
-                              std::format("字面量表示引用的名字索引 {} 不存在（RFC 7541 §2.3.3）：两端的动态表已经不同步，请检查对端",
-                                          nameIndex));
+                              std::format("字面量表示引用的名字索引 {} 不存在（RFC 7541 §2.3.3）：两端的动态表已经不同步，请检查对端", nameIndex));
                 return false;
             }
         }
@@ -723,10 +706,9 @@ namespace AsynGyanis::Net
         std::size_t valueByteCount = 0;
         if (!decodeHpackString(headerBlock.substr(consumed), field.value, valueByteCount, nullptr))
         {
-            recordFailure(HpackErrorKind::CompressionError,
-                          std::format("字面量表示的头值解不开（已消费 {} 字节，头块共 {} 字节）："
-                                      "请检查对端是否截断了头块或用了本端不支持的 Huffman 码",
-                                      consumed, headerBlock.size()));
+            recordFailure(HpackErrorKind::CompressionError, std::format("字面量表示的头值解不开（已消费 {} 字节，头块共 {} 字节）："
+                                                                        "请检查对端是否截断了头块或用了本端不支持的 Huffman 码",
+                                                                        consumed, headerBlock.size()));
             return false;
         }
         consumed += valueByteCount;
@@ -795,13 +777,13 @@ namespace AsynGyanis::Net
         // 刻意不置 m_hasError：越限的头块已经整块解完，两端动态表仍然同步，
         // 粘滞会让下一条无关的请求把整条连接带走（RFC 9113 §10.5.1 只要求按 431 应答这一条）
         m_isBeyondHeaderLimits = true;
-        m_errorKind = HpackErrorKind::LimitExceeded;
-        m_errorMessage = "HPACK 头块超出本端上限：" + std::move(reason);
+        m_errorKind            = HpackErrorKind::LimitExceeded;
+        m_errorMessage         = "HPACK 头块超出本端上限：" + std::move(reason);
     }
 
     void HpackDecoder::recordFailure(const HpackErrorKind errorKind, std::string reason)
     {
-        m_hasError = true;
+        m_hasError  = true;
         m_errorKind = errorKind;
         // 前缀统一在这里补：调用点只写原因，文案风格不会因为某个分支漏写而不一致
         m_errorMessage = "HPACK 头块解码失败：" + std::move(reason);
@@ -853,8 +835,8 @@ namespace AsynGyanis::Net
         for (const HpackHeaderFieldView &field: headerFieldViews)
         {
             // 一个头只做一次静态表定位：同名段内既查「名 + 值」精确匹配，也顺带给出「仅名」匹配
-            const HpackStaticNameRun *const staticNameRun = findHpackStaticNameRun(field.name);
-            const std::size_t staticExactIndex = findHpackStaticExactIndex(staticNameRun, field.value);
+            const HpackStaticNameRun *const staticNameRun    = findHpackStaticNameRun(field.name);
+            const std::size_t               staticExactIndex = findHpackStaticExactIndex(staticNameRun, field.value);
             if (staticExactIndex != 0)
             {
                 appendHpackInteger(headerBlock, staticExactIndex, 7, kIndexedRepresentationPattern);
@@ -874,8 +856,7 @@ namespace AsynGyanis::Net
             {
                 appendHpackInteger(headerBlock, staticNameIndex, kIndexedNamePrefixBitCount, kLiteralIncrementalIndexingPattern);
                 appendHpackString(headerBlock, field.value);
-            }
-            else
+            } else
             {
                 // 名字索引 0 表示名字也是字面量（RFC 7541 §6.2.1）
                 appendHpackInteger(headerBlock, 0, kIndexedNamePrefixBitCount, kLiteralIncrementalIndexingPattern);

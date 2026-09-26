@@ -80,8 +80,8 @@ namespace AsynGyanis::Platform
          */
         void flushDescriptor() const noexcept;
 
-        int                      m_readDescriptor{-1};  ///< 读端描述符（注册到事件循环）
-        int                      m_writeDescriptor{-1}; ///< 写端描述符（用于跨线程唤醒）
+        int                       m_readDescriptor{-1};   ///< 读端描述符（注册到事件循环）
+        int                       m_writeDescriptor{-1};  ///< 写端描述符（用于跨线程唤醒）
         mutable std::atomic<bool> m_wakeupPending{false}; ///< 是否已有一次待处理的唤醒（合并多次 notify 的依据）
     };
 } // namespace AsynGyanis::Platform

@@ -61,7 +61,7 @@ namespace AsynGyanis::Database::Detail
      */
     TEST(MySqlValueConversionInteger, AcceptsTheWholeSignedSixtyFourBitRange)
     {
-        for (const std::string_view text : {"0", "-1", "42", "9223372036854775807", "-9223372036854775808"})
+        for (const std::string_view text: {"0", "-1", "42", "9223372036854775807", "-9223372036854775808"})
         {
             const std::optional<std::int64_t> parsed = withRawText(text, parseIntegerText);
             ASSERT_TRUE(parsed.has_value()) << text;
@@ -77,9 +77,8 @@ namespace AsynGyanis::Database::Detail
      */
     TEST(MySqlValueConversionInteger, RejectsAnythingThatIsNotAPureDecimalInteger)
     {
-        for (const std::string_view text : {"", " ", " 12", "12 ", "1.5", "1e3", "0x10", "12abc",
-                                            "+", "-", "+42", "9223372036854775808", "-9223372036854775809",
-                                            "99999999999999999999999999"})
+        for (const std::string_view text:
+             {"", " ", " 12", "12 ", "1.5", "1e3", "0x10", "12abc", "+", "-", "+42", "9223372036854775808", "-9223372036854775809", "99999999999999999999999999"})
         {
             EXPECT_FALSE(withRawText(text, parseIntegerText).has_value()) << "\"" << text << "\" 不该被当成整数";
         }
@@ -92,14 +91,14 @@ namespace AsynGyanis::Database::Detail
      */
     TEST(MySqlValueConversionDouble, AcceptsFiniteFormsAndRejectsOverflow)
     {
-        for (const std::string_view text : {"0", "-0", "3.5", "1e3", "-2.5E-3", "1.7976931348623157e308"})
+        for (const std::string_view text: {"0", "-0", "3.5", "1e3", "-2.5E-3", "1.7976931348623157e308"})
         {
             const std::optional<double> parsed = withRawText(text, parseDoubleText);
             ASSERT_TRUE(parsed.has_value()) << text;
             EXPECT_DOUBLE_EQ(*parsed, std::stod(std::string(text))) << text;
         }
 
-        for (const std::string_view text : {"", "1e400", "-1e400", "abc", "1.5 ", " 1.5", "1.5x", "--1", "1.2.3", "+7"})
+        for (const std::string_view text: {"", "1e400", "-1e400", "abc", "1.5 ", " 1.5", "1.5x", "--1", "1.2.3", "+7"})
         {
             EXPECT_FALSE(withRawText(text, parseDoubleText).has_value()) << "\"" << text << "\" 不该被当成有限浮点";
         }
@@ -114,7 +113,7 @@ namespace AsynGyanis::Database::Detail
      */
     TEST(MySqlValueConversionDouble, RecoversTheServersNonFiniteSpellings)
     {
-        for (const std::string_view text : {"inf", "INF", "Inf", "-inf", "infinity"})
+        for (const std::string_view text: {"inf", "INF", "Inf", "-inf", "infinity"})
         {
             const std::optional<double> parsed = withRawText(text, parseDoubleText);
             ASSERT_TRUE(parsed.has_value()) << text;
@@ -123,7 +122,7 @@ namespace AsynGyanis::Database::Detail
             EXPECT_TRUE(std::isinf(*parsed) && (*parsed > 0.0) == positive) << text;
         }
 
-        for (const std::string_view text : {"nan", "NAN", "NaN", "-nan"})
+        for (const std::string_view text: {"nan", "NAN", "NaN", "-nan"})
         {
             const std::optional<double> parsed = withRawText(text, parseDoubleText);
             ASSERT_TRUE(parsed.has_value()) << text;
@@ -138,7 +137,7 @@ namespace AsynGyanis::Database::Detail
      */
     TEST(MySqlValueConversionDouble, DoesNotGuessFromNearMissNonFiniteSpellings)
     {
-        for (const std::string_view text : {"in", "infi", "info", "nanx", "infinityx", " inf", "inf ", "nan\t", "+inf", "+-inf", "n a n"})
+        for (const std::string_view text: {"in", "infi", "info", "nanx", "infinityx", " inf", "inf ", "nan\t", "+inf", "+-inf", "n a n"})
         {
             EXPECT_FALSE(withRawText(text, parseDoubleText).has_value()) << "\"" << text << "\" 不是可接受的浮点文本";
         }
@@ -169,32 +168,27 @@ namespace AsynGyanis::Database::Detail
     TEST(MySqlValueConversionColumn, MapsDeclaredTypeAndKeepsBlobBytesDistinctFromNull)
     {
         const std::string_view nine{"-9223372036854775808"};
-        const DatabaseValue integerValue =
-                convertColumnText(MYSQL_TYPE_LONGLONG, kTextCharacterSetNumber, nine.data(), nine.size());
+        const DatabaseValue    integerValue = convertColumnText(MYSQL_TYPE_LONGLONG, kTextCharacterSetNumber, nine.data(), nine.size());
         EXPECT_EQ(std::get<std::int64_t>(integerValue), std::numeric_limits<std::int64_t>::min());
 
         const std::string_view positiveInfinity{"inf"};
-        const DatabaseValue realValue =
-                convertColumnText(MYSQL_TYPE_DOUBLE, kTextCharacterSetNumber, positiveInfinity.data(), positiveInfinity.size());
+        const DatabaseValue    realValue = convertColumnText(MYSQL_TYPE_DOUBLE, kTextCharacterSetNumber, positiveInfinity.data(), positiveInfinity.size());
         ASSERT_TRUE(std::holds_alternative<double>(realValue)) << databaseValueTypeName(realValue);
         EXPECT_TRUE(std::isinf(std::get<double>(realValue)) && std::get<double>(realValue) > 0.0);
 
         // DECIMAL 是精确小数的常规载体：转 double 会在末位丢精度且不可逆，因此交原文
         const std::string_view decimal{"12345678901234567.89"};
-        const DatabaseValue decimalValue =
-                convertColumnText(MYSQL_TYPE_NEWDECIMAL, kTextCharacterSetNumber, decimal.data(), decimal.size());
+        const DatabaseValue    decimalValue = convertColumnText(MYSQL_TYPE_NEWDECIMAL, kTextCharacterSetNumber, decimal.data(), decimal.size());
         EXPECT_EQ(std::get<std::string>(decimalValue), "12345678901234567.89");
 
         // 内嵌 '\0' 的字节序列原样保留；零长 BLOB 是「有值且为空」，不是 SQL NULL
-        const std::string blob("ab\0cd", 5);
-        const DatabaseValue binaryValue =
-                convertColumnText(MYSQL_TYPE_BLOB, kBinaryCharacterSetNumber, blob.data(), blob.size());
+        const std::string   blob("ab\0cd", 5);
+        const DatabaseValue binaryValue = convertColumnText(MYSQL_TYPE_BLOB, kBinaryCharacterSetNumber, blob.data(), blob.size());
         ASSERT_TRUE(std::holds_alternative<BinaryBytes>(binaryValue)) << databaseValueTypeName(binaryValue);
         ASSERT_EQ(std::get<BinaryBytes>(binaryValue).size(), 5U);
         EXPECT_EQ(std::get<BinaryBytes>(binaryValue)[2], std::uint8_t{0});
 
-        const DatabaseValue emptyBlob =
-                convertColumnText(MYSQL_TYPE_BLOB, kBinaryCharacterSetNumber, blob.data(), 0U);
+        const DatabaseValue emptyBlob = convertColumnText(MYSQL_TYPE_BLOB, kBinaryCharacterSetNumber, blob.data(), 0U);
         ASSERT_TRUE(std::holds_alternative<BinaryBytes>(emptyBlob)) << databaseValueTypeName(emptyBlob);
         EXPECT_TRUE(std::get<BinaryBytes>(emptyBlob).empty());
     }
@@ -206,8 +200,8 @@ namespace AsynGyanis::Database::Detail
      */
     TEST(MySqlValueConversion, BitColumnsBecomeIntegers)
     {
-        const std::string bit8Value = std::string("\xC8", 1);
-        const DatabaseValue bit8    = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, bit8Value.data(), bit8Value.size());
+        const std::string   bit8Value = std::string("\xC8", 1);
+        const DatabaseValue bit8      = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, bit8Value.data(), bit8Value.size());
         ASSERT_TRUE(std::holds_alternative<std::int64_t>(bit8)) << databaseValueTypeName(bit8);
         EXPECT_EQ(std::get<std::int64_t>(bit8), 200) << "字节被符号扩展或字节序读反都会得到别的数";
 
@@ -228,7 +222,7 @@ namespace AsynGyanis::Database::Detail
      */
     TEST(MySqlValueConversion, Bit64BeyondInt64RangeBecomesDecimalText)
     {
-        const std::string allOnes       = std::string("\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF", 8);
+        const std::string   allOnes       = std::string("\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF", 8);
         const DatabaseValue overflowValue = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, allOnes.data(), allOnes.size());
         ASSERT_TRUE(std::holds_alternative<std::string>(overflowValue)) << databaseValueTypeName(overflowValue);
         EXPECT_EQ(std::get<std::string>(overflowValue), "18446744073709551615");
@@ -246,12 +240,12 @@ namespace AsynGyanis::Database::Detail
      */
     TEST(MySqlValueConversion, UnexpectedBitPayloadWidthsStayVerbatim)
     {
-        const std::string emptyPayload = std::string();
-        const DatabaseValue emptyValue = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, emptyPayload.data(), emptyPayload.size());
+        const std::string   emptyPayload = std::string();
+        const DatabaseValue emptyValue   = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, emptyPayload.data(), emptyPayload.size());
         ASSERT_TRUE(std::holds_alternative<std::string>(emptyValue)) << "空载荷应退回空文本，而不是 monostate（那等于说它是 NULL）";
         EXPECT_TRUE(std::get<std::string>(emptyValue).empty());
 
-        const std::string nineBytes    = std::string("123456789", 9);
+        const std::string   nineBytes    = std::string("123456789", 9);
         const DatabaseValue tooWideValue = convertColumnText(MYSQL_TYPE_BIT, kBinaryCharacterSetNumber, nineBytes.data(), nineBytes.size());
         ASSERT_TRUE(std::holds_alternative<std::string>(tooWideValue)) << databaseValueTypeName(tooWideValue);
         EXPECT_EQ(std::get<std::string>(tooWideValue), nineBytes);

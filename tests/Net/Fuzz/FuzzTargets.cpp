@@ -15,8 +15,8 @@
 #include "Fuzz/ProtocolFuzzKernel.h"
 
 #include <cstddef>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 namespace
@@ -39,8 +39,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     // 违例就主动 abort：模糊器只对崩溃/异常做最小化与存证，把它当「返回了但没通过」是看不见的。
     // abort 之后 libFuzzer 会把这份输入写成 crash 用例，回填进 gtest 侧的种子即可常驻
-    if (const std::string violation = AsynGyanis::Net::Fuzz::checkInvariants(
-                static_cast<AsynGyanis::Net::Fuzz::Target>(targetIndex), input); !violation.empty())
+    if (const std::string violation = AsynGyanis::Net::Fuzz::checkInvariants(static_cast<AsynGyanis::Net::Fuzz::Target>(targetIndex), input); !violation.empty())
     {
         std::abort();
     }

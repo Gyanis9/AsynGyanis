@@ -5,8 +5,7 @@
 
 namespace AsynGyanis::Core
 {
-    CoroutinePool::CoroutinePool(const size_t blockSize, const size_t initialBlocks) :
-        m_blockSize(blockSize)
+    CoroutinePool::CoroutinePool(const size_t blockSize, const size_t initialBlocks) : m_blockSize(blockSize)
     {
         // 启动时先备一批块：把「首次分配就扩容」这条冷路径提前到构造期
         const std::lock_guard lock(m_mutex);
@@ -42,7 +41,7 @@ namespace AsynGyanis::Core
         // 归还到全局池：不这么做的话这些块会滞留在已经结束的线程上再也拿不回来。
         // 此处仍可安全调用 instance()：单例是「函数内静态指针 + 堆对象」，它本身从不析构。
         // 按档分别归还——两档的块互不通用，混着还回去就是把大块的指针留给小档发放
-        CoroutinePool &pool = instance();
+        CoroutinePool        &pool = instance();
         const std::lock_guard lock(pool.m_mutex);
         for (size_t tier = 0; tier < kTierCount; ++tier)
         {
@@ -204,8 +203,8 @@ namespace AsynGyanis::Core
         // 一次性搬一批：把取锁频率摊薄到 1/kLocalCacheCapacity，而不是每次分配都取锁
         while (cache.freeCounts[tier] < kLocalCacheCapacity && m_globalFreeHeads[tier] != nullptr)
         {
-            void *const block           = m_globalFreeHeads[tier];
-            m_globalFreeHeads[tier]     = *static_cast<void **>(block);
+            void *const block       = m_globalFreeHeads[tier];
+            m_globalFreeHeads[tier] = *static_cast<void **>(block);
 
             *static_cast<void **>(block) = cache.freeHeads[tier];
             cache.freeHeads[tier]        = block;

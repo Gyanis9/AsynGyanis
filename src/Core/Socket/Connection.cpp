@@ -3,16 +3,12 @@
 
 namespace AsynGyanis::Core
 {
-    Connection::Connection(AsyncSocket socket) :
-        m_socket(std::move(socket))
+    Connection::Connection(AsyncSocket socket) : m_socket(std::move(socket))
     {
     }
 
     Connection::Connection(Connection &&other) noexcept :
-        m_socket(std::move(other.m_socket)),
-        m_cancelable(std::move(other.m_cancelable)),
-        m_alive(other.m_alive.load(std::memory_order_acquire)),
-        m_busy(other.m_busy),
+        m_socket(std::move(other.m_socket)), m_cancelable(std::move(other.m_cancelable)), m_alive(other.m_alive.load(std::memory_order_acquire)), m_busy(other.m_busy),
         m_idleDeadline(std::move(other.m_idleDeadline))
     {
     }
@@ -109,4 +105,4 @@ namespace AsynGyanis::Core
         return m_busy;
     }
 
-}
+} // namespace AsynGyanis::Core

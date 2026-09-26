@@ -91,12 +91,8 @@ namespace AsynGyanis::Platform
                 {
                     continue;
                 }
-                const unsigned char leftFolded  = leftByte >= 'A' && leftByte <= 'Z'
-                                                      ? static_cast<unsigned char>(leftByte + ('a' - 'A'))
-                                                      : leftByte;
-                const unsigned char rightFolded = rightByte >= 'A' && rightByte <= 'Z'
-                                                      ? static_cast<unsigned char>(rightByte + ('a' - 'A'))
-                                                      : rightByte;
+                const unsigned char leftFolded  = leftByte >= 'A' && leftByte <= 'Z' ? static_cast<unsigned char>(leftByte + ('a' - 'A')) : leftByte;
+                const unsigned char rightFolded = rightByte >= 'A' && rightByte <= 'Z' ? static_cast<unsigned char>(rightByte + ('a' - 'A')) : rightByte;
                 if (leftFolded != rightFolded)
                 {
                     return false;
@@ -140,10 +136,7 @@ namespace AsynGyanis::Platform
         try
         {
             // jthread 直接作为成员启动，无需堆分配；循环靠 m_shouldStop 与停止事件退出
-            m_watchThread = std::jthread([this]
-            {
-                watchLoop();
-            });
+            m_watchThread = std::jthread([this] { watchLoop(); });
         } catch (const std::system_error &)
         {
             return false;
@@ -231,8 +224,8 @@ namespace AsynGyanis::Platform
                 entry->path = directoryPath;
                 entry->buffer.resize(kBufferSize);
                 // 路径对象的原生刻度已经在手，不必把 UTF-8 键再折算回宽字符
-                entry->directoryHandle = ::CreateFileW(absolutePathObject.native().c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                                       nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+                entry->directoryHandle = ::CreateFileW(absolutePathObject.native().c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                                       OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
 
                 if (entry->directoryHandle == INVALID_HANDLE_VALUE)
                 {
@@ -304,8 +297,8 @@ namespace AsynGyanis::Platform
     {
         std::lock_guard lock(m_watchMutex);
 
-        const std::string            normalizedPath = normalizeDirectoryPath(std::string(path));
-        const auto                   iterator       = m_watches.find(normalizedPath);
+        const std::string normalizedPath = normalizeDirectoryPath(std::string(path));
+        const auto        iterator       = m_watches.find(normalizedPath);
         if (iterator == m_watches.end())
         {
             if (keepRecursiveWatchPath)
@@ -316,8 +309,7 @@ namespace AsynGyanis::Platform
             // 一份待挂登记，目录之后出现时自愈节拍会把它挂上并开始派发事件。显式撤销要把这份意图一起
             // 清掉，否则调用方以为撤干净了，事件却在之后的某个时刻开始流过来（登记清单的写入在原生
             // 注册之前，失败时不会自己回退）
-            const std::size_t revokedPendingEntries
-                    = m_selfHealPaths.erase(normalizedPath) + m_recursiveWatchPaths.erase(normalizedPath);
+            const std::size_t revokedPendingEntries = m_selfHealPaths.erase(normalizedPath) + m_recursiveWatchPaths.erase(normalizedPath);
             return revokedPendingEntries > 0;
         }
 
@@ -343,15 +335,14 @@ namespace AsynGyanis::Platform
             // 只摘被点名的那一条，剩下的仍照旧派发回调（调用方以为撤销完成了，事件却一直在来），
             // 而且目录句柄不关就删不掉、也改不了那棵子树。先收集再关，免得在遍历里擦除
             std::vector<std::string> coveredWatchPaths;
-            for (const auto &[watchedPath, watchEntry] : m_watches)
+            for (const auto &[watchedPath, watchEntry]: m_watches)
             {
-                if (watchedPath.size() > normalizedPath.size()
-                    && isSameDirectoryPath(std::string_view(watchedPath).substr(0, normalizedPath.size()), normalizedPath))
+                if (watchedPath.size() > normalizedPath.size() && isSameDirectoryPath(std::string_view(watchedPath).substr(0, normalizedPath.size()), normalizedPath))
                 {
                     coveredWatchPaths.push_back(watchedPath);
                 }
             }
-            for (const auto &coveredPath : coveredWatchPaths)
+            for (const auto &coveredPath: coveredWatchPaths)
             {
                 if (const auto covered = m_watches.find(coveredPath); covered != m_watches.end())
                 {
@@ -431,11 +422,8 @@ namespace AsynGyanis::Platform
             // 目录时同量级；5 ms 的下限防止目录极多时把这条循环变成纯自旋（每轮的快照成本随目录数线性涨）
             constexpr DWORD kFullSweepBudgetMilliseconds = 100;
             constexpr DWORD kMinimumWaitMilliseconds     = 5;
-            const DWORD windowCount = static_cast<DWORD>(
-                    (allEventHandles.size() + kMaximumWatchedDirectoryCount - 1) / kMaximumWatchedDirectoryCount);
-            const DWORD waitTimeoutMilliseconds = std::max(kMinimumWaitMilliseconds,
-                                                           windowCount == 0 ? kFullSweepBudgetMilliseconds
-                                                                            : kFullSweepBudgetMilliseconds / windowCount);
+            const DWORD     windowCount                  = static_cast<DWORD>((allEventHandles.size() + kMaximumWatchedDirectoryCount - 1) / kMaximumWatchedDirectoryCount);
+            const DWORD waitTimeoutMilliseconds = std::max(kMinimumWaitMilliseconds, windowCount == 0 ? kFullSweepBudgetMilliseconds : kFullSweepBudgetMilliseconds / windowCount);
             if (allEventHandles.size() <= kMaximumWatchedDirectoryCount)
             {
                 rotationOffset = 0;
@@ -480,12 +468,12 @@ namespace AsynGyanis::Platform
                 continue;
             }
 
-            const std::string                                    targetPath = pendingPaths[index - 1];
-            std::vector<std::pair<std::string, FileChangeType> > pendingCallbacks;
-            FileChangeCallback                                   callbackSnapshot;
-            std::string                                          deadWatchPath; // 本轮读失败的目录：锁外摘掉
+            const std::string                                   targetPath = pendingPaths[index - 1];
+            std::vector<std::pair<std::string, FileChangeType>> pendingCallbacks;
+            FileChangeCallback                                  callbackSnapshot;
+            std::string                                         deadWatchPath; // 本轮读失败的目录：锁外摘掉
             // 本批通知里成对出现的「目录改名」：旧名用来找到该目录自己的监视条目，新名给它的新键
-            std::vector<std::pair<std::string, std::string> >  renamedPairs;
+            std::vector<std::pair<std::string, std::string>> renamedPairs;
             {
                 std::shared_lock lock(m_watchMutex);
 
@@ -551,7 +539,7 @@ namespace AsynGyanis::Platform
         }
     }
 
-    void Win32FileWatcher::watchNewSubdirectories(const std::vector<std::pair<std::string, FileChangeType> > &events)
+    void Win32FileWatcher::watchNewSubdirectories(const std::vector<std::pair<std::string, FileChangeType>> &events)
     {
         for (const auto &[changedPath, changeType]: events)
         {
@@ -578,9 +566,9 @@ namespace AsynGyanis::Platform
          */
         struct MissingWatch
         {
-            std::string path;                   ///< 待补挂的目录（带尾分隔符的绝对路径）
-            bool isRecursive{false};            ///< 按递归注册还是按一层注册
-            bool isPartOfRecursiveTree{false};  ///< 这一项是否属于某条递归监视覆盖的范围
+            std::string path;                         ///< 待补挂的目录（带尾分隔符的绝对路径）
+            bool        isRecursive{false};           ///< 按递归注册还是按一层注册
+            bool        isPartOfRecursiveTree{false}; ///< 这一项是否属于某条递归监视覆盖的范围
         };
 
         std::vector<MissingWatch> missingWatches;
@@ -619,14 +607,10 @@ namespace AsynGyanis::Platform
     {
         // 监视表的键一律带尾分隔符、通知里的路径不带，因此找旧键比的是「同一个目录」；新键按同一
         // 形式规范化，之后拼出来的派发路径才和兄弟条目一致
-        const std::string relocatedPath = normalizeDirectoryPath(newPath);
+        const std::string     relocatedPath = normalizeDirectoryPath(newPath);
         const std::lock_guard lock(m_watchMutex);
 
-        const auto iterator = std::find_if(m_watches.begin(), m_watches.end(),
-                                           [&oldPath](const auto &item)
-                                           {
-                                               return isSameDirectoryPath(item.first, oldPath);
-                                           });
+        const auto iterator = std::find_if(m_watches.begin(), m_watches.end(), [&oldPath](const auto &item) { return isSameDirectoryPath(item.first, oldPath); });
         if (iterator == m_watches.end())
         {
             return false; // 改名的不是被监视的目录（普通文件的改名也走这两条记录）
@@ -637,18 +621,14 @@ namespace AsynGyanis::Platform
             return false; // 新位置上已经有一条监视，不覆盖它
         }
 
-        auto node = m_watches.extract(iterator);
+        auto node           = m_watches.extract(iterator);
         node.key()          = relocatedPath;
         node.mapped()->path = relocatedPath;
         m_watches.insert(std::move(node));
         // 新位置同样纳入自愈范围；旧键**故意留着**——原地重建出同名目录时靠自愈复查补挂第二条监视
         m_recursiveWatchPaths.insert(relocatedPath);
         // 调用方点过名的那条监视搬到哪，自愈就该在新位置复查它；旧键同样留着，理由与上面一致
-        if (std::ranges::any_of(m_selfHealPaths,
-                               [&oldPath](const std::string &requestedPath)
-                               {
-                                   return isSameDirectoryPath(requestedPath, oldPath);
-                               }))
+        if (std::ranges::any_of(m_selfHealPaths, [&oldPath](const std::string &requestedPath) { return isSameDirectoryPath(requestedPath, oldPath); }))
         {
             m_selfHealPaths.insert(relocatedPath);
         }
@@ -667,13 +647,13 @@ namespace AsynGyanis::Platform
                                        }
                                        // 完全相同，或下一个字符就是分隔符，或清单里的路径本身带尾分隔符
                                        // （registerWatch 规范化后总是带），才算「落在这条递归监视之内」
-                                       return path.size() == coveredPath.size() || path[coveredPath.size()] == '\\' ||
-                                              path[coveredPath.size()] == '/' || coveredPath.back() == '\\' || coveredPath.back() == '/';
+                                       return path.size() == coveredPath.size() || path[coveredPath.size()] == '\\' || path[coveredPath.size()] == '/' ||
+                                              coveredPath.back() == '\\' || coveredPath.back() == '/';
                                    });
     }
 
-    void Win32FileWatcher::processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType> > &events,
-                                        std::vector<std::pair<std::string, std::string> > &renamedPairs)
+    void Win32FileWatcher::processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType>> &events,
+                                        std::vector<std::pair<std::string, std::string>> &renamedPairs)
     {
         DWORD bytesTransferred = 0;
         if (!::GetOverlappedResult(entry.directoryHandle, &entry.overlapped, &bytesTransferred, FALSE))
@@ -753,7 +733,7 @@ namespace AsynGyanis::Platform
 
         DWORD      bytesReturned = 0;
         const BOOL success       = ::ReadDirectoryChangesW(entry.directoryHandle, entry.buffer.data(), static_cast<DWORD>(entry.buffer.size()), FALSE, kWatchFilter, &bytesReturned,
-                                                     &entry.overlapped, nullptr);
+                                                           &entry.overlapped, nullptr);
 
         if (!success)
         {

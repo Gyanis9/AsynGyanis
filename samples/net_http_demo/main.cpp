@@ -78,20 +78,16 @@ namespace
      */
     struct SessionRead
     {
-        std::string bytes;             ///< 收到的全部字节
+        std::string bytes;                 ///< 收到的全部字节
         bool        isClosedByPeer{false}; ///< 是否等到对端收口（与「只是超时」区分开）
-        std::string stopReason;        ///< 读循环为何停下：eof / timeout / reset / error-N，见 describeReadStopReason
+        std::string stopReason;            ///< 读循环为何停下：eof / timeout / reset / error-N，见 describeReadStopReason
     };
 
     /// 大小写不敏感比较（HTTP 头名按规范不区分大小写）
     bool equalsIgnoringCase(const std::string_view left, const std::string_view right)
     {
-        return left.size() == right.size() &&
-               std::equal(left.begin(), left.end(), right.begin(),
-                          [](const char leftChar, const char rightChar)
-                          {
-                              return std::tolower(static_cast<unsigned char>(leftChar)) == std::tolower(static_cast<unsigned char>(rightChar));
-                          });
+        return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](const char leftChar, const char rightChar)
+                                                         { return std::tolower(static_cast<unsigned char>(leftChar)) == std::tolower(static_cast<unsigned char>(rightChar)); });
     }
 
     /**
@@ -126,7 +122,7 @@ namespace
         }
 
         ResponseView response;
-        response.consumedLength = headerEnd + 4;
+        response.consumedLength     = headerEnd + 4;
         const std::string_view head = stream.substr(0, headerEnd);
 
         const std::size_t statusSpace = head.find(' ');
@@ -134,16 +130,16 @@ namespace
         {
             return std::nullopt;
         }
-        response.status = std::atoi(std::string{head.substr(statusSpace + 1, 3)}.c_str());
+        response.status             = std::atoi(std::string{head.substr(statusSpace + 1, 3)}.c_str());
         const std::size_t reasonEnd = head.find("\r\n");
-        response.reason = head.substr(statusSpace + 4, reasonEnd == std::string_view::npos ? std::string_view::npos : reasonEnd - statusSpace - 4);
+        response.reason             = head.substr(statusSpace + 4, reasonEnd == std::string_view::npos ? std::string_view::npos : reasonEnd - statusSpace - 4);
 
         std::size_t lineStart = head.find("\r\n");
         while (lineStart != std::string_view::npos && lineStart + 2 < head.size())
         {
-            const std::size_t lineEnd = head.find("\r\n", lineStart + 2);
-            const std::string_view line = head.substr(lineStart + 2, (lineEnd == std::string_view::npos ? head.size() : lineEnd) - lineStart - 2);
-            const std::size_t      colon = line.find(':');
+            const std::size_t      lineEnd = head.find("\r\n", lineStart + 2);
+            const std::string_view line    = head.substr(lineStart + 2, (lineEnd == std::string_view::npos ? head.size() : lineEnd) - lineStart - 2);
+            const std::size_t      colon   = line.find(':');
             if (colon != std::string_view::npos)
             {
                 std::string name{line.substr(0, colon)};
@@ -219,8 +215,7 @@ namespace
      * @param body 正文
      * @return std::string 可直接写进套接字的报文
      */
-    std::string makeRequest(const std::string_view method, const std::string_view target, const std::vector<std::string> &extraHeaders,
-                            const std::string_view body = {})
+    std::string makeRequest(const std::string_view method, const std::string_view target, const std::vector<std::string> &extraHeaders, const std::string_view body = {})
     {
         std::string request{method};
         request += ' ';
@@ -244,8 +239,7 @@ namespace
      */
     std::vector<std::string> plainHeaders(const bool isKeepAlive = false, const std::string_view extraHeader = {})
     {
-        std::vector<std::string> headers{std::string("Host: 127.0.0.1"),
-                                         isKeepAlive ? "Connection: keep-alive" : "Connection: close"};
+        std::vector<std::string> headers{std::string("Host: 127.0.0.1"), isKeepAlive ? "Connection: keep-alive" : "Connection: close"};
         if (!extraHeader.empty())
         {
             headers.emplace_back(extraHeader);
@@ -254,8 +248,8 @@ namespace
     }
 
     /// 一次请求的完整报文（默认带 Connection: close）
-    std::string plainRequest(const std::string_view method, const std::string_view target, const bool isKeepAlive = false,
-                             const std::string_view extraHeader = {}, const std::string_view body = {})
+    std::string plainRequest(const std::string_view method, const std::string_view target, const bool isKeepAlive = false, const std::string_view extraHeader = {},
+                             const std::string_view body = {})
     {
         return makeRequest(method, target, plainHeaders(isKeepAlive, extraHeader), body);
     }
@@ -274,8 +268,7 @@ namespace
         if (length < 126)
         {
             frame.push_back(static_cast<char>(0x80 | length));
-        }
-        else
+        } else
         {
             frame.push_back(static_cast<char>(0x80 | 126));
             frame.push_back(static_cast<char>((length >> 8) & 0xFF));
@@ -293,8 +286,8 @@ namespace
     /// WebSocket 握手请求：升级三件套加上一个合法的 Sec-WebSocket-Key
     std::string webSocketHandshake(const std::string_view extraHeader = {})
     {
-        std::vector<std::string> headers{std::string("Host: 127.0.0.1"), "Connection: Upgrade", "Upgrade: websocket",
-                                         "Sec-WebSocket-Version: 13", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="};
+        std::vector<std::string> headers{std::string("Host: 127.0.0.1"), "Connection: Upgrade", "Upgrade: websocket", "Sec-WebSocket-Version: 13",
+                                         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="};
         if (!extraHeader.empty())
         {
             headers.emplace_back(extraHeader);
@@ -308,138 +301,145 @@ namespace
      */
     void setupRoutes(Net::Router &router)
     {
-        router.get("/", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "text/plain");
-            response.setBody("Hello World");
-            co_return;
-        });
+        router.get("/",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "text/plain");
+                       response.setBody("Hello World");
+                       co_return;
+                   });
 
         // 大正文：压缩中间件对太小的响应不值得动手，这一条才是压缩的正题
-        router.get("/big", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "text/plain");
-            std::string payload;
-            for (int repeat = 0; repeat < 300; ++repeat)
-            {
-                payload += "compressible text payload. ";
-            }
-            response.setBody(std::move(payload));
-            co_return;
-        });
+        router.get("/big",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "text/plain");
+                       std::string payload;
+                       for (int repeat = 0; repeat < 300; ++repeat)
+                       {
+                           payload += "compressible text payload. ";
+                       }
+                       response.setBody(std::move(payload));
+                       co_return;
+                   });
 
-        router.get("/json", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "application/json");
-            response.setBody(R"({"status":"ok"})");
-            co_return;
-        });
+        router.get("/json",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "application/json");
+                       response.setBody(R"({"status":"ok"})");
+                       co_return;
+                   });
 
         // 回显正文：把「解析出请求 → 交给处理器 → 响应写回」这条链一整段钉住
-        router.post("/echo", [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "text/plain");
-            response.setBody(std::string{request.body()});
-            co_return;
-        });
+        router.post("/echo",
+                    [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<void>
+                    {
+                        response.setStatus(200);
+                        response.setHeader("Content-Type", "text/plain");
+                        response.setBody(std::string{request.body()});
+                        co_return;
+                    });
 
         // 路径与查询串：确认解析器把请求目标拆开了
-        router.get("/inspect", [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "text/plain");
-            const auto parameters = request.queryParams();
-            const auto found      = parameters.find("needle");
-            response.setBody(std::string{request.path()} + "#" + (found == parameters.end() ? "missing" : found->second));
-            co_return;
-        });
+        router.get("/inspect",
+                   [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "text/plain");
+                       const auto parameters = request.queryParams();
+                       const auto found      = parameters.find("needle");
+                       response.setBody(std::string{request.path()} + "#" + (found == parameters.end() ? "missing" : found->second));
+                       co_return;
+                   });
 
         // 处理器抛异常：框架该把它折成 500，而不是让连接无声断掉
-        router.get("/boom", [](Net::HttpRequest &, Net::HttpResponse &) -> Core::Task<void>
-        {
-            throw std::runtime_error("示例：处理器故意抛出");
-            co_return;
-        });
+        router.get("/boom",
+                   [](Net::HttpRequest &, Net::HttpResponse &) -> Core::Task<void>
+                   {
+                       throw std::runtime_error("示例：处理器故意抛出");
+                       co_return;
+                   });
 
-        router.get("/sse", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.startChunkedResponse(200);
-            response.setHeader("Content-Type", "text/event-stream");
-            if (!co_await response.writeChunk("data: one\n\n"))
-            {
-                co_return;
-            }
-            static_cast<void>(co_await response.writeChunk("data: two\n\n"));
-            co_return;
-        });
+        router.get("/sse",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.startChunkedResponse(200);
+                       response.setHeader("Content-Type", "text/event-stream");
+                       if (!co_await response.writeChunk("data: one\n\n"))
+                       {
+                           co_return;
+                       }
+                       static_cast<void>(co_await response.writeChunk("data: two\n\n"));
+                       co_return;
+                   });
 
         // WebSocket 回显：收到什么就原样回什么，帧进与帧出一次验完。类型也照搬——把 Binary 回成
         // Text 等于替客户端改了协议，Autobahn 1.2.x / 9.x / 12.2.x 那几族判据盯的就是这一条
-        router.get("/ws", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.upgradeToWebSocket(
-                    [](Net::WebSocketPeer &peer) -> Core::Task<>
-                    {
-                        while (const auto message = co_await peer.receive())
-                        {
-                            const bool isSent = message->opCode == Net::WebSocketOpCode::Binary
-                                        ? co_await peer.sendBinary(message->payload)
-                                        : co_await peer.sendText(message->payload);
-                            if (!isSent)
-                            {
-                                co_return;
-                            }
-                        }
-                        co_return;
-                    });
-            co_return;
-        });
+        router.get("/ws",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.upgradeToWebSocket(
+                               [](Net::WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       const bool isSent = message->opCode == Net::WebSocketOpCode::Binary ? co_await peer.sendBinary(message->payload)
+                                                                                                           : co_await peer.sendText(message->payload);
+                                       if (!isSent)
+                                       {
+                                           co_return;
+                                       }
+                                   }
+                                   co_return;
+                               });
+                       co_return;
+                   });
     }
 
     /// 自检结论：全部在主线程写、主线程读，不涉及跨线程可见性
     struct Observations
     {
-        SessionRead root;               ///< GET /
-        SessionRead big;                ///< 不带 Accept-Encoding 的大正文
-        SessionRead bigGzip;            ///< 带 Accept-Encoding: gzip 的大正文
-        SessionRead head;               ///< HEAD /
-        SessionRead json;               ///< GET /json
-        SessionRead missing;            ///< 未知路由
-        SessionRead wrongMethod;        ///< POST /json
-        SessionRead echo;               ///< 定长正文回显
-        SessionRead chunkedUpload;      ///< 分块上传
-        SessionRead expectContinue;     ///< Expect: 100-continue
-        SessionRead oversizeBody;       ///< 越过正文上限
-        SessionRead longUri;            ///< 越过请求目标上限
-        SessionRead manyHeaders;        ///< 越过头字段条数上限
-        SessionRead malformed;          ///< 不是 HTTP 的请求行
-        SessionRead thrown;             ///< 处理器抛异常
-        SessionRead inspect;            ///< 路径与查询串
-        SessionRead echoedRequestId;    ///< 带 X-Request-Id 的一次
-        SessionRead generatedRequestId; ///< 不带 X-Request-Id 的一次
-        SessionRead sse;                ///< 分块流式响应
-        SessionRead webSocket;          ///< 握手 + 回显 + 关闭
-        SessionRead extension;          ///< 带 permessage-deflate 提议的握手
-        SessionRead metricsFirst;       ///< 第一次 /metrics
-        SessionRead metricsSecond;      ///< 第二次 /metrics
-        SessionRead health;             ///< /healthz
-        SessionRead pipelined;          ///< 一条连接上连发三条（限额服务器）
-        SessionRead idleClosed;         ///< 空闲超时收口的连接（受护服务器）
-        SessionRead rateFirst;          ///< 令牌桶第一条
-        SessionRead rateSecond;         ///< 令牌桶第二条
-        SessionRead rateThird;          ///< 令牌桶第三条
-        SessionRead perIpProbe;         ///< 单来源额度被占满后的那一条
-        SessionRead maxConnectionProbe; ///< 超过全局并发上限的那一条
-        SessionRead afterStop;          ///< stop() 之后再连一条
-        SessionRead staticPage;         ///< GET /page.html（静态文件目录）
-        SessionRead staticMissing;      ///< 静态目录里没有的文件
-        SessionRead staticUppercase;    ///< 大写扩展名的静态文件
-        SessionRead dispatchedFirst;    ///< 接受分发链路第一条请求
-        SessionRead dispatchedSecond;   ///< 接受分发链路第二条请求
+        SessionRead root;                    ///< GET /
+        SessionRead big;                     ///< 不带 Accept-Encoding 的大正文
+        SessionRead bigGzip;                 ///< 带 Accept-Encoding: gzip 的大正文
+        SessionRead head;                    ///< HEAD /
+        SessionRead json;                    ///< GET /json
+        SessionRead missing;                 ///< 未知路由
+        SessionRead wrongMethod;             ///< POST /json
+        SessionRead echo;                    ///< 定长正文回显
+        SessionRead chunkedUpload;           ///< 分块上传
+        SessionRead expectContinue;          ///< Expect: 100-continue
+        SessionRead oversizeBody;            ///< 越过正文上限
+        SessionRead longUri;                 ///< 越过请求目标上限
+        SessionRead manyHeaders;             ///< 越过头字段条数上限
+        SessionRead malformed;               ///< 不是 HTTP 的请求行
+        SessionRead thrown;                  ///< 处理器抛异常
+        SessionRead inspect;                 ///< 路径与查询串
+        SessionRead echoedRequestId;         ///< 带 X-Request-Id 的一次
+        SessionRead generatedRequestId;      ///< 不带 X-Request-Id 的一次
+        SessionRead sse;                     ///< 分块流式响应
+        SessionRead webSocket;               ///< 握手 + 回显 + 关闭
+        SessionRead extension;               ///< 带 permessage-deflate 提议的握手
+        SessionRead metricsFirst;            ///< 第一次 /metrics
+        SessionRead metricsSecond;           ///< 第二次 /metrics
+        SessionRead health;                  ///< /healthz
+        SessionRead pipelined;               ///< 一条连接上连发三条（限额服务器）
+        SessionRead idleClosed;              ///< 空闲超时收口的连接（受护服务器）
+        SessionRead rateFirst;               ///< 令牌桶第一条
+        SessionRead rateSecond;              ///< 令牌桶第二条
+        SessionRead rateThird;               ///< 令牌桶第三条
+        SessionRead perIpProbe;              ///< 单来源额度被占满后的那一条
+        SessionRead maxConnectionProbe;      ///< 超过全局并发上限的那一条
+        SessionRead afterStop;               ///< stop() 之后再连一条
+        SessionRead staticPage;              ///< GET /page.html（静态文件目录）
+        SessionRead staticMissing;           ///< 静态目录里没有的文件
+        SessionRead staticUppercase;         ///< 大写扩展名的静态文件
+        SessionRead dispatchedFirst;         ///< 接受分发链路第一条请求
+        SessionRead dispatchedSecond;        ///< 接受分发链路第二条请求
         std::size_t statsTotalRequests{0};   ///< 服务器统计：累计请求数
         std::size_t statsBadRequests{0};     ///< 服务器统计：坏请求数
         bool        isHttpClientOkay{false}; ///< 走 Net::HttpClient 的一条真请求
@@ -459,8 +459,7 @@ namespace
      */
     std::filesystem::path prepareStaticDirectory()
     {
-        const auto directory = std::filesystem::temp_directory_path() /
-                               ("asyn-sample-net_http-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
+        const auto      directory = std::filesystem::temp_directory_path() / ("asyn-sample-net_http-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
         std::error_code makeError;
         std::filesystem::create_directories(directory, makeError);
         if (makeError)
@@ -481,7 +480,7 @@ namespace
     }
 
 #if ASYN_PLATFORM_WIN32
-    using socket_handle_t = SOCKET;
+    using socket_handle_t                          = SOCKET;
     constexpr socket_handle_t kInvalidSocketHandle = INVALID_SOCKET;
 
     /// 让后续 recv 最多等这些毫秒
@@ -495,7 +494,7 @@ namespace
         ::closesocket(socketHandle);
     }
 #else
-    using socket_handle_t = int;
+    using socket_handle_t                          = int;
     constexpr socket_handle_t kInvalidSocketHandle = -1;
 
     /// 让后续 recv 最多等这些毫秒
@@ -585,8 +584,7 @@ namespace
          * @param port 目标端口
          * @param receiveTimeoutMilliseconds 每次 recv 的最长等待
          */
-        explicit Session(const std::uint16_t port, const int receiveTimeoutMilliseconds = 600) :
-            m_socketHandle(connectToLocalhost(port))
+        explicit Session(const std::uint16_t port, const int receiveTimeoutMilliseconds = 600) : m_socketHandle(connectToLocalhost(port))
         {
             if (m_socketHandle != kInvalidSocketHandle)
             {
@@ -594,7 +592,7 @@ namespace
             }
         }
 
-        Session(const Session &) = delete;
+        Session(const Session &)            = delete;
         Session &operator=(const Session &) = delete;
 
         ~Session()
@@ -647,7 +645,7 @@ namespace
                     continue;
                 }
                 reading.isClosedByPeer = byteCount == 0;
-                reading.stopReason = describeReadStopReason(byteCount);
+                reading.stopReason     = describeReadStopReason(byteCount);
                 break;
             }
             return reading;
@@ -747,7 +745,7 @@ namespace
      */
     Core::Task<> probeWithHttpClient(Core::EventLoop &loop, const std::string url)
     {
-        const auto response = co_await Net::HttpClient::get(loop, url);
+        const auto response             = co_await Net::HttpClient::get(loop, url);
         g_observations.isHttpClientOkay = response != nullptr && response->statusCode == 200 && response->body == "Hello World";
         g_isClientProbeFinished.store(true, std::memory_order_release);
         co_return;
@@ -776,7 +774,7 @@ int main(const int argc, char **argv)
     Samples::setupConsoleLogging();
     LOG_INFO("=== Net HTTP/1.1 服务端示例开始 ===");
 
-    const std::uint16_t mainPort    = Samples::readPortArgument(argc, argv, 0);
+    const std::uint16_t mainPort = Samples::readPortArgument(argc, argv, 0);
     // 这条示例最多用到基准端口往后第 5 个（下面逐个列出）：余量在起跑前一次判掉
     Samples::requirePortHeadroom(mainPort, 5);
     const std::uint16_t strictPort  = static_cast<std::uint16_t>(mainPort + 1);
@@ -787,10 +785,10 @@ int main(const int argc, char **argv)
     // 全局并发上限单独一台：受护那台的空闲时限被压到 300 毫秒去验空闲收口，挂住的静默连接
     // 会被清扫掉，名额随之空出来——探针就可能被正常服务，这条负向用例就成了赌调度
     const std::uint16_t cappedPort = static_cast<std::uint16_t>(mainPort + 5);
-    auto &samples = Samples::checklist();
+    auto               &samples    = Samples::checklist();
 
     Core::IoContext context(2);
-    auto &          pool = context.threadPool();
+    auto           &pool = context.threadPool();
     // 三条服务器都在第一条循环上；第二条只给 HttpClient 探针用——探针协程不与被测服务同循环，
     // 否则它挂在等响应上时分不清是服务端没处理还是这条循环没空去 accept
     Core::EventLoop &serverLoop = pool.eventLoop(0);
@@ -832,7 +830,7 @@ int main(const int argc, char **argv)
     auto cappedServer  = buildServer(serverLoop, cappedPort, defaultLimits, false);
 
     // 静态文件目录：只挂在与业务路由同一台服务器上，配置必须在 start() 之前完成
-    const std::filesystem::path staticDirectory = prepareStaticDirectory();
+    const std::filesystem::path staticDirectory    = prepareStaticDirectory();
     const bool                  hasStaticDirectory = !staticDirectory.empty();
     if (hasStaticDirectory)
     {
@@ -840,18 +838,15 @@ int main(const int argc, char **argv)
     }
 
     // 接受分发：acceptor 只接受与派发，连接对象与协议工作全落在另一条循环上的 worker 实例
-    auto distributor     = std::make_shared<Core::ConnectionDistributor>();
+    auto distributor = std::make_shared<Core::ConnectionDistributor>();
     // worker 侧的服务器必须挂在 worker 自己那条循环上：addWorker 的回调是在 probeLoop 的线程上
     // 执行的，而 adoptConnection 会改这台服务器的连接表、并把会话协程排进它所属循环的本地队列——
     // 两处都不加锁。挂在 serverLoop 上就等于从 probeLoop 去动别人的循环内结构（与 echo_server 里
     // 「第 i 个 worker 用 eventLoop(i)」的写法同一纪律）
-    auto dispatchServer  = buildServer(probeLoop, dispatchWorkerPort, defaultLimits, false);
-    auto acceptorServer  = buildServer(serverLoop, dispatchPort, defaultLimits, false);
+    auto             dispatchServer    = buildServer(probeLoop, dispatchWorkerPort, defaultLimits, false);
+    auto             acceptorServer    = buildServer(serverLoop, dispatchPort, defaultLimits, false);
     Net::HttpServer *rawDispatchServer = dispatchServer.get();
-    distributor->addWorker(probeLoop, [rawDispatchServer](const int fileDescriptor)
-    {
-        rawDispatchServer->adoptConnection(fileDescriptor);
-    });
+    distributor->addWorker(probeLoop, [rawDispatchServer](const int fileDescriptor) { rawDispatchServer->adoptConnection(fileDescriptor); });
 
     // 单来源上限 1：额度被占满时，再来一条连接不该拿到服务
     strictServer->setPerIpConnectionLimiter(std::make_shared<Net::PerIpConnectionLimiter>(1));
@@ -859,8 +854,7 @@ int main(const int argc, char **argv)
     // 挂住的静默连接才不会被清扫走、名额才确实占满
     cappedServer->setMaxConnections(2);
     // 令牌桶：容量 3、每秒补 1 个——空闲超时那条先占一枚，随后连发三条在第三条耗尽
-    guardedServer->router().addMiddleware(
-            Net::tokenBucketRateLimiterMiddleware(std::make_shared<Net::TokenBucket>(1.0, 3.0)));
+    guardedServer->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(std::make_shared<Net::TokenBucket>(1.0, 3.0)));
 
     // 协程帧必须活到它跑完：本向量一路持有到 main 结束
     std::vector<Core::Task<>> tasks;
@@ -875,26 +869,21 @@ int main(const int argc, char **argv)
     }
     pool.start();
 
-    samples.check(awaitListening(mainPort) && awaitListening(strictPort) && awaitListening(guardedPort) && awaitListening(cappedPort) &&
-                          awaitListening(dispatchPort),
+    samples.check(awaitListening(mainPort) && awaitListening(strictPort) && awaitListening(guardedPort) && awaitListening(cappedPort) && awaitListening(dispatchPort),
                   "五条监听器都已在收连接（就绪等待有界，不靠睡一觉碰运气）");
 
     // —— 正向用例：一次请求一条连接，读循环以「对端收口」结束 ——
-    g_observations.root        = requestOnce(mainPort, plainRequest("GET", "/"));
-    g_observations.big         = requestOnce(mainPort, plainRequest("GET", "/big"));
-    g_observations.bigGzip     = requestOnce(mainPort, plainRequest("GET", "/big", false, "Accept-Encoding: gzip"));
-    g_observations.head        = requestOnce(mainPort, plainRequest("HEAD", "/"));
-    g_observations.json        = requestOnce(mainPort, plainRequest("GET", "/json"));
-    g_observations.missing     = requestOnce(mainPort, plainRequest("GET", "/nope"));
-    g_observations.wrongMethod = requestOnce(mainPort, plainRequest("POST", "/json", false, "Content-Length: 0"));
-    g_observations.echo        = requestOnce(mainPort, plainRequest("POST", "/echo", false, "Content-Length: 11", "hello echo?"));
-    g_observations.chunkedUpload =
-            requestOnce(mainPort, plainRequest("POST", "/echo", false, "Transfer-Encoding: chunked", "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"));
-    g_observations.expectContinue = requestOnce(mainPort,
-                                                makeRequest("POST", "/echo",
-                                                            {"Host: 127.0.0.1", "Connection: close", "Expect: 100-continue",
-                                                             "Content-Length: 4"},
-                                                            "ping"));
+    g_observations.root          = requestOnce(mainPort, plainRequest("GET", "/"));
+    g_observations.big           = requestOnce(mainPort, plainRequest("GET", "/big"));
+    g_observations.bigGzip       = requestOnce(mainPort, plainRequest("GET", "/big", false, "Accept-Encoding: gzip"));
+    g_observations.head          = requestOnce(mainPort, plainRequest("HEAD", "/"));
+    g_observations.json          = requestOnce(mainPort, plainRequest("GET", "/json"));
+    g_observations.missing       = requestOnce(mainPort, plainRequest("GET", "/nope"));
+    g_observations.wrongMethod   = requestOnce(mainPort, plainRequest("POST", "/json", false, "Content-Length: 0"));
+    g_observations.echo          = requestOnce(mainPort, plainRequest("POST", "/echo", false, "Content-Length: 11", "hello echo?"));
+    g_observations.chunkedUpload = requestOnce(mainPort, plainRequest("POST", "/echo", false, "Transfer-Encoding: chunked", "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"));
+    g_observations.expectContinue =
+            requestOnce(mainPort, makeRequest("POST", "/echo", {"Host: 127.0.0.1", "Connection: close", "Expect: 100-continue", "Content-Length: 4"}, "ping"));
     g_observations.oversizeBody = requestOnce(mainPort, plainRequest("POST", "/echo", false, "Content-Length: 4096", "short"));
     g_observations.longUri      = requestOnce(mainPort, plainRequest("GET", "/" + std::string(3000, 'a')));
 
@@ -913,10 +902,9 @@ int main(const int argc, char **argv)
     g_observations.echoedRequestId    = requestOnce(mainPort, plainRequest("GET", "/", false, "X-Request-Id: probe-fixed-id"));
     g_observations.generatedRequestId = requestOnce(mainPort, plainRequest("GET", "/"));
 
-    g_observations.sse       = requestOnce(mainPort, plainRequest("GET", "/sse"));
-    g_observations.webSocket = requestChain(mainPort, {webSocketHandshake(), makeClientFrame(0x1, "ping-frame"), makeClientFrame(0x8, "")});
-    g_observations.extension = requestChain(mainPort,
-                                            {webSocketHandshake("Sec-WebSocket-Extensions: permessage-deflate"), makeClientFrame(0x8, "")});
+    g_observations.sse           = requestOnce(mainPort, plainRequest("GET", "/sse"));
+    g_observations.webSocket     = requestChain(mainPort, {webSocketHandshake(), makeClientFrame(0x1, "ping-frame"), makeClientFrame(0x8, "")});
+    g_observations.extension     = requestChain(mainPort, {webSocketHandshake("Sec-WebSocket-Extensions: permessage-deflate"), makeClientFrame(0x8, "")});
     g_observations.metricsFirst  = requestOnce(mainPort, plainRequest("GET", "/metrics"));
     g_observations.health        = requestOnce(mainPort, plainRequest("GET", "/healthz"));
     g_observations.metricsSecond = requestOnce(mainPort, plainRequest("GET", "/metrics"));
@@ -931,8 +919,7 @@ int main(const int argc, char **argv)
     g_observations.dispatchedSecond = requestOnce(dispatchPort, plainRequest("GET", "/json"));
 
     // —— 限额服务器：一条连接上按序管线化三条，第三条起连接该被收口（单连接请求数上限 2）——
-    g_observations.pipelined = requestChain(strictPort,
-                                           {plainRequest("GET", "/", true), plainRequest("GET", "/", true), plainRequest("GET", "/", true)});
+    g_observations.pipelined = requestChain(strictPort, {plainRequest("GET", "/", true), plainRequest("GET", "/", true), plainRequest("GET", "/", true)});
 
     // —— 受护服务器：空闲超时那条先跑（它会吃掉桶里一枚令牌），随后三条限流探针正好在第三条耗尽 ——
     g_observations.idleClosed = requestOnce(guardedPort, plainRequest("GET", "/", true));
@@ -943,12 +930,12 @@ int main(const int argc, char **argv)
     // —— 负向用例：期望「拿不到响应」，每次都带硬时限 ——
     {
         std::vector<socket_handle_t> held = openHeldConnections(strictPort, 1);
-        g_observations.perIpProbe               = requestOnce(strictPort, plainRequest("GET", "/"));
+        g_observations.perIpProbe         = requestOnce(strictPort, plainRequest("GET", "/"));
         closeHeldConnections(held);
     }
     {
         std::vector<socket_handle_t> held = openHeldConnections(cappedPort, 2);
-        g_observations.maxConnectionProbe       = requestOnce(cappedPort, plainRequest("GET", "/"));
+        g_observations.maxConnectionProbe = requestOnce(cappedPort, plainRequest("GET", "/"));
         closeHeldConnections(held);
     }
 
@@ -956,20 +943,13 @@ int main(const int argc, char **argv)
     const std::string clientUrl = "http://127.0.0.1:" + std::to_string(mainPort) + "/";
     tasks.push_back(probeWithHttpClient(probeLoop, clientUrl));
     probeLoop.scheduler().scheduleRemote(tasks.back().handle());
-    const bool isClientProbeDone = Samples::waitUntil([]
-                                                      {
-                                                          return g_isClientProbeFinished.load(std::memory_order_acquire);
-                                                      },
-                                                      std::chrono::seconds{20}, std::chrono::milliseconds{20});
+    const bool isClientProbeDone =
+            Samples::waitUntil([] { return g_isClientProbeFinished.load(std::memory_order_acquire); }, std::chrono::seconds{20}, std::chrono::milliseconds{20});
 
     // —— 优雅收口：统计与 stop()/drain() 都投回服务器的循环 ——
     tasks.push_back(collectStatsAndStop(*mainServer));
     serverLoop.scheduler().scheduleRemote(tasks.back().handle());
-    const bool isChoreDone = Samples::waitUntil([]
-                                                {
-                                                    return g_isChoreFinished.load(std::memory_order_acquire);
-                                                },
-                                                std::chrono::seconds{20}, std::chrono::milliseconds{20});
+    const bool isChoreDone = Samples::waitUntil([] { return g_isChoreFinished.load(std::memory_order_acquire); }, std::chrono::seconds{20}, std::chrono::milliseconds{20});
 
     g_observations.afterStop = requestOnce(mainPort, plainRequest("GET", "/"));
 
@@ -978,19 +958,16 @@ int main(const int argc, char **argv)
     const auto &observations = g_observations;
 
     const auto rootResponses = splitResponses(observations.root.bytes);
-    samples.check(!rootResponses.empty() && rootResponses.front().status == 200 && rootResponses.front().body == "Hello World",
-                  "GET / 回 200 与固定正文（路由分发与响应组装）");
-    samples.check(!rootResponses.empty() && !headerOf(rootResponses.front(), "Content-Type").empty() &&
-                          !headerOf(rootResponses.front(), "Content-Length").empty() && !headerOf(rootResponses.front(), "Date").empty(),
+    samples.check(!rootResponses.empty() && rootResponses.front().status == 200 && rootResponses.front().body == "Hello World", "GET / 回 200 与固定正文（路由分发与响应组装）");
+    samples.check(!rootResponses.empty() && !headerOf(rootResponses.front(), "Content-Type").empty() && !headerOf(rootResponses.front(), "Content-Length").empty() &&
+                          !headerOf(rootResponses.front(), "Date").empty(),
                   "响应带上 Content-Length 与 Date");
     samples.check(observations.root.isClosedByPeer, "带 Connection: close 的请求答完后由服务端收口连接");
-    samples.check(firstStatusOf(observations.json) == 200 && observations.json.bytes.find("application/json") != std::string::npos,
-                  "GET /json 走同一条链并给出 JSON 媒体类型");
+    samples.check(firstStatusOf(observations.json) == 200 && observations.json.bytes.find("application/json") != std::string::npos, "GET /json 走同一条链并给出 JSON 媒体类型");
 
     // HEAD 本就没有正文，按 Content-Length 等正文会永远等不到，因此这里直接看原始字节。
     // 响应头由服务端统一以小写名写出（升级响应除外），比对也跟着用小写
-    samples.check(observations.head.bytes.find("HTTP/1.1 200") != std::string::npos &&
-                          observations.head.bytes.find("Hello World") == std::string::npos &&
+    samples.check(observations.head.bytes.find("HTTP/1.1 200") != std::string::npos && observations.head.bytes.find("Hello World") == std::string::npos &&
                           observations.head.bytes.find("content-length:") != std::string::npos,
                   "HEAD 只有头部没有正文，但 Content-Length 照给（RFC 9110 §9.3.2）");
 
@@ -1000,8 +977,7 @@ int main(const int argc, char **argv)
     const auto echoResponses = splitResponses(observations.echo.bytes);
     samples.check(!echoResponses.empty() && echoResponses.front().body == "hello echo?", "定长正文按 Content-Length 收齐并交给处理器");
     const auto chunkedResponses = splitResponses(observations.chunkedUpload.bytes);
-    samples.check(!chunkedResponses.empty() && chunkedResponses.front().body == "hello world",
-                  "分块请求体逐块拼回后再交出去（Transfer-Encoding: chunked）");
+    samples.check(!chunkedResponses.empty() && chunkedResponses.front().body == "hello world", "分块请求体逐块拼回后再交出去（Transfer-Encoding: chunked）");
     if (observations.expectContinue.bytes.find("HTTP/1.1 100") == std::string::npos)
     {
         LOG_WARN("h1 没有给出 100 Continue interim 响应（h2 与 h3 有）：协议侧缺口，不钉成契约");
@@ -1021,15 +997,14 @@ int main(const int argc, char **argv)
     samples.check(!inspectResponses.empty() && inspectResponses.front().body == "/inspect#42", "请求目标被拆成路径与查询串");
 
     samples.check(observations.big.bytes.find("content-encoding") == std::string::npos, "不声明编码时响应保持原样");
-    samples.check(observations.bigGzip.bytes.find("content-encoding: gzip") != std::string::npos &&
-                          observations.bigGzip.bytes.find("\x1f\x8b") != std::string::npos &&
+    samples.check(observations.bigGzip.bytes.find("content-encoding: gzip") != std::string::npos && observations.bigGzip.bytes.find("\x1f\x8b") != std::string::npos &&
                           observations.bigGzip.bytes.size() < observations.big.bytes.size(),
                   "Accept-Encoding: gzip 命中压缩中间件，给出的确是 gzip 字节且更小");
 
-    const auto echoedIdResponses = splitResponses(observations.echoedRequestId.bytes);
-    const auto generatedResponses = splitResponses(observations.generatedRequestId.bytes);
-    const std::string supplied  = echoedIdResponses.empty() ? std::string{} : headerOf(echoedIdResponses.front(), "X-Request-Id");
-    const std::string generated = generatedResponses.empty() ? std::string{} : headerOf(generatedResponses.front(), "X-Request-Id");
+    const auto        echoedIdResponses  = splitResponses(observations.echoedRequestId.bytes);
+    const auto        generatedResponses = splitResponses(observations.generatedRequestId.bytes);
+    const std::string supplied           = echoedIdResponses.empty() ? std::string{} : headerOf(echoedIdResponses.front(), "X-Request-Id");
+    const std::string generated          = generatedResponses.empty() ? std::string{} : headerOf(generatedResponses.front(), "X-Request-Id");
     samples.check(supplied == "probe-fixed-id", "客户端给的 X-Request-Id 被原样回显");
     samples.check(!generated.empty() && generated != "probe-fixed-id", "没给 X-Request-Id 时服务端自己生成一个");
 
@@ -1044,36 +1019,31 @@ int main(const int argc, char **argv)
     samples.check(observations.webSocket.bytes.find('\x88') != std::string::npos, "客户端关闭帧得到对端的关闭帧（关闭握手）");
     samples.check(observations.extension.bytes.find("permessage-deflate") != std::string::npos, "握手带上 permessage-deflate 提议时被协商进响应头");
 
-    const auto metricsResponses = splitResponses(observations.metricsFirst.bytes);
+    const auto metricsResponses      = splitResponses(observations.metricsFirst.bytes);
     const auto laterMetricsResponses = splitResponses(observations.metricsSecond.bytes);
-    samples.check(!metricsResponses.empty() && metricsResponses.front().status == 200 && !metricsResponses.front().body.empty(),
-                  "/metrics 有内容且是 200");
+    samples.check(!metricsResponses.empty() && metricsResponses.front().status == 200 && !metricsResponses.front().body.empty(), "/metrics 有内容且是 200");
     // 比**正文**而不是比原始字节：每条 h1 响应都带自己的 x-request-id 与 Date 头，
     // 比原始字节永远不等——那样连「指标正文是冻结常量」也会被判成「数值随请求推进而变化」
-    samples.check(!metricsResponses.empty() && !laterMetricsResponses.empty() &&
-                          metricsResponses.front().body != laterMetricsResponses.front().body,
+    samples.check(!metricsResponses.empty() && !laterMetricsResponses.empty() && metricsResponses.front().body != laterMetricsResponses.front().body,
                   "两次抓取的指标正文不同（计数确实随请求推进）");
     samples.check(firstStatusOf(observations.health) == 200, "/healthz 回 200");
 
     const auto pipelinedResponses = splitResponses(observations.pipelined.bytes);
     // 留一行现场：收口形态是本步最不容易读出来的信息，光看「1 步没过」分不出探针没等够还是连接被复位
-    LOG_INFO_FMT("管线化探针：解出 {} 条响应，读循环停止原因 {}，被对端收口 {}",
-                 pipelinedResponses.size(), observations.pipelined.stopReason, observations.pipelined.isClosedByPeer);
+    LOG_INFO_FMT("管线化探针：解出 {} 条响应，读循环停止原因 {}，被对端收口 {}", pipelinedResponses.size(), observations.pipelined.stopReason,
+                 observations.pipelined.isClosedByPeer);
     // 收口方式按 FIN 与 RST 两种接受：服务端关闭前会先丢干净自己接收队列里没人读的字节，正常落点是 FIN；
     // 只有第三条请求恰好在那次清理之后才到达时，内核才会改发 RST，而「何时到达」不在探针的控制范围内。
     // 本步要钉的契约是前两条按序答完、第三条起不再服务：size()==2 表达后者，停止原因表达「被服务端收口
     // 而不是探针没等够」。对端一律收到 FIN 这条更强的保证由直测套接字的用例钉住
     const bool isClosedByServer = observations.pipelined.stopReason == "eof" || observations.pipelined.stopReason == "reset";
-    samples.check(pipelinedResponses.size() == 2 && pipelinedResponses.front().status == 200 && pipelinedResponses.back().status == 200 &&
-                          isClosedByServer,
+    samples.check(pipelinedResponses.size() == 2 && pipelinedResponses.front().status == 200 && pipelinedResponses.back().status == 200 && isClosedByServer,
                   "单连接请求数上限 2：前两条按序答完，第三条起连接被收口");
 
     const auto idleResponses = splitResponses(observations.idleClosed.bytes);
-    samples.check(!idleResponses.empty() && idleResponses.front().status == 200 && observations.idleClosed.isClosedByPeer,
-                  "空闲超时到点后连接被服务端收口，此前的响应已完整送达");
+    samples.check(!idleResponses.empty() && idleResponses.front().status == 200 && observations.idleClosed.isClosedByPeer, "空闲超时到点后连接被服务端收口，此前的响应已完整送达");
 
-    samples.check(firstStatusOf(observations.rateFirst) == 200 && firstStatusOf(observations.rateSecond) == 200 &&
-                          firstStatusOf(observations.rateThird) == 429,
+    samples.check(firstStatusOf(observations.rateFirst) == 200 && firstStatusOf(observations.rateSecond) == 200 && firstStatusOf(observations.rateThird) == 429,
                   "令牌桶耗尽后第三条回 429（桶容量 3、每秒补 1）");
 
     samples.check(observations.isHttpClientOkay, "框架自带的 Net::HttpClient 也能把这条服务打穿");
@@ -1092,8 +1062,7 @@ int main(const int argc, char **argv)
 
     samples.check(hasStaticDirectory, "临时静态目录建起来了（后面三条的前提）");
     const auto staticResponses = splitResponses(observations.staticPage.bytes);
-    samples.check(!staticResponses.empty() && staticResponses.front().status == 200 &&
-                          staticResponses.front().body == "<p>static payload from disk</p>" &&
+    samples.check(!staticResponses.empty() && staticResponses.front().status == 200 && staticResponses.front().body == "<p>static payload from disk</p>" &&
                           headerOf(staticResponses.front(), "Content-Type") == "text/html",
                   "静态文件按磁盘内容返回，并给出 text/html");
     samples.check(firstStatusOf(observations.staticUppercase) == 200 && observations.staticUppercase.bytes.find("text/html") != std::string::npos,
@@ -1113,7 +1082,6 @@ int main(const int argc, char **argv)
     std::error_code removeError;
     std::filesystem::remove_all(staticDirectory, removeError);
     std::error_code existsError;
-    samples.check(!removeError && !std::filesystem::exists(staticDirectory, existsError),
-                  "临时静态目录在服务收口后被清理干净");
+    samples.check(!removeError && !std::filesystem::exists(staticDirectory, existsError), "临时静态目录在服务收口后被清理干净");
     return Samples::finishSample("net_http_demo");
 }

@@ -10,14 +10,14 @@
 #pragma once
 
 #include "Core/Coroutine/Task.h"
-#include "Net/Http/HttpParserLimits.h"
-#include "Net/Http/HttpServerLimits.h"
-#include "Net/Http/HttpRequestId.h"
-#include "Net/Http/HttpServerStats.h"
 #include "Net/Http/HttpMemoryBudget.h"
-#include "Net/Http/HttpRequestBody.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpRequestBody.h"
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpResponse.h"
+#include "Net/Http/HttpServerLimits.h"
+#include "Net/Http/HttpServerStats.h"
 #include "Net/Http/HttpStreamBody.h"
 #include "Net/Http3/Http3Error.h"
 #include "Net/WebSocket/WebSocketPeer.h"
@@ -108,11 +108,8 @@ namespace AsynGyanis::Net
          *        普通路径在收齐并交付业务时取戳，流式路径在头部收齐、派发协程建立时取戳——
          *        与 h2 的 `requestReceivedTime` 同一相对位置，不含传输层的排队与重传
          */
-        Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {},
-                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
-                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr,
-                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
-                     StreamAborter aborter = {});
+        Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {}, std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
+                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr, StreamAborter aborter = {});
 
         /**
          * @brief 析构会话：连接层与它持有的 QPACK 两侧动态表随本类一并释放
@@ -316,12 +313,12 @@ namespace AsynGyanis::Net
         /// 正在接收的一条请求
         struct IncomingRequest
         {
-            HttpRequest request;    ///< 逐步填好的请求（头部在收头时写入）
-            std::string method;     ///< :method 原文
-            std::string path;       ///< :path 原文
-            std::string authority;  ///< :authority 原文
-            std::string protocol;   ///< :protocol 原文（RFC 9220 扩展 CONNECT 用；普通请求为空）
-            std::string body;       ///< 正文（非流式路径：整段收齐后才派发；流式路径不从这里走）
+            HttpRequest request;              ///< 逐步填好的请求（头部在收头时写入）
+            std::string method;               ///< :method 原文
+            std::string path;                 ///< :path 原文
+            std::string authority;            ///< :authority 原文
+            std::string protocol;             ///< :protocol 原文（RFC 9220 扩展 CONNECT 用；普通请求为空）
+            std::string body;                 ///< 正文（非流式路径：整段收齐后才派发；流式路径不从这里走）
             bool        hasHostHeader{false}; ///< 对端是否显式给了 host 头
 
             /// 正文总量越过 HttpParserLimits::maximumBodySize：此后到达的 DATA 一律丢弃，
@@ -362,15 +359,15 @@ namespace AsynGyanis::Net
          */
         struct StreamingRequest
         {
-            HttpStreamBody          body;         ///< 本流正文（HttpBodySource，兼「消费才还窗口」）
-            HttpRequestBody         reader;       ///< 交付给 request.bodyStream()
-            HttpRequest             request;      ///< 头部收齐时填好的请求
-            std::optional<Core::Task<>> serveTask; ///< 本流自己的派发协程（等正文时挂起）
-            std::coroutine_handle<> bodyWaiter{}; ///< 正在等正文的协程（本流最多一个）
-            bool isServeStarted{false};           ///< 派发协程是否已经起过
-            bool isServeFinished{false};          ///< 派发协程已跑完（记录可随流关闭一起摘掉）
-            bool isStreamClosed{false};           ///< 承载侧的流已关闭（此后不会再有 DATA 到达）
-            bool hasPendingWake{false};           ///< 有新正文/收尾/断开，等回到安全点再唤醒
+            HttpStreamBody              body;                   ///< 本流正文（HttpBodySource，兼「消费才还窗口」）
+            HttpRequestBody             reader;                 ///< 交付给 request.bodyStream()
+            HttpRequest                 request;                ///< 头部收齐时填好的请求
+            std::optional<Core::Task<>> serveTask;              ///< 本流自己的派发协程（等正文时挂起）
+            std::coroutine_handle<>     bodyWaiter{};           ///< 正在等正文的协程（本流最多一个）
+            bool                        isServeStarted{false};  ///< 派发协程是否已经起过
+            bool                        isServeFinished{false}; ///< 派发协程已跑完（记录可随流关闭一起摘掉）
+            bool                        isStreamClosed{false};  ///< 承载侧的流已关闭（此后不会再有 DATA 到达）
+            bool                        hasPendingWake{false};  ///< 有新正文/收尾/断开，等回到安全点再唤醒
             /// 正文还没收完时「下一次该有进展」的时刻，随每段到达按 readTimeout 往后推；收完之后不再判
             Deadline deadline{std::chrono::steady_clock::now()};
             /// 本流「收下这条请求」的时刻（头部收齐、派发协程建立那一刻），用于耗时直方图的起点。
@@ -391,7 +388,9 @@ namespace AsynGyanis::Net
              * @brief 绑定要等的那条流
              * @param streamingRequest 目标流；为空时视为无进展（调用方回头自己判断）
              */
-            explicit BodyWaitAwaiter(StreamingRequest *streamingRequest) noexcept : m_streamingRequest(streamingRequest) {}
+            explicit BodyWaitAwaiter(StreamingRequest *streamingRequest) noexcept : m_streamingRequest(streamingRequest)
+            {
+            }
 
             /// 已收尾或已断开时不必挂起：调用方回头就能得到结论
             [[nodiscard]] bool await_ready() const noexcept
@@ -405,7 +404,9 @@ namespace AsynGyanis::Net
                 m_streamingRequest->bodyWaiter = waiter;
             }
 
-            static void await_resume() noexcept {}
+            static void await_resume() noexcept
+            {
+            }
 
         private:
             StreamingRequest *m_streamingRequest{nullptr}; ///< 目标流（非拥有；活在 m_streamingRequests 里）
@@ -482,8 +483,7 @@ namespace AsynGyanis::Net
              * @param streamingResponse 目标流的状态（共享所有权：流被 dropRequest 摘掉后
              *        生产者手里的这份仍然有效，醒来时能看到 isStreamClosed 而不是踩空）
              */
-            explicit ResponseSpaceAwaiter(Http3Session &session, const std::int64_t streamId,
-                                          std::shared_ptr<StreamingResponse> streamingResponse) noexcept :
+            explicit ResponseSpaceAwaiter(Http3Session &session, const std::int64_t streamId, std::shared_ptr<StreamingResponse> streamingResponse) noexcept :
                 m_session(&session), m_streamId(streamId), m_streamingResponse(std::move(streamingResponse))
             {
             }
@@ -501,12 +501,14 @@ namespace AsynGyanis::Net
                 m_streamingResponse->spaceWaiter = waiter;
             }
 
-            static void await_resume() noexcept {}
+            static void await_resume() noexcept
+            {
+            }
 
         private:
-            Http3Session *m_session{nullptr};                        ///< 所属会话（问它要该流的待发字节数）
-            std::int64_t m_streamId{0};                              ///< 目标流号
-            std::shared_ptr<StreamingResponse> m_streamingResponse;  ///< 目标流的状态（与 map 共享所有权）
+            Http3Session                      *m_session{nullptr};  ///< 所属会话（问它要该流的待发字节数）
+            std::int64_t                       m_streamId{0};       ///< 目标流号
+            std::shared_ptr<StreamingResponse> m_streamingResponse; ///< 目标流的状态（与 map 共享所有权）
         };
 
         /**
@@ -553,8 +555,7 @@ namespace AsynGyanis::Net
          * @param chunk 本段字节
          * @return Core::Task<bool> 本段是否已收下（缓冲满时挂起等排空）
          */
-        [[nodiscard]] Core::Task<bool> sendStreamingChunk(std::int64_t streamId, std::shared_ptr<StreamingResponse> state,
-                                                          HttpResponse &response, std::string_view chunk);
+        [[nodiscard]] Core::Task<bool> sendStreamingChunk(std::int64_t streamId, std::shared_ptr<StreamingResponse> state, HttpResponse &response, std::string_view chunk);
 
         /**
          * @brief 把一段出向正文推给连接层并立刻往外送：缓冲超上界时挂起等排空
@@ -564,9 +565,7 @@ namespace AsynGyanis::Net
          * @return Core::Task<bool> 本段是否已收下
          * @details 流式响应与隧道出向帧共用这一段：推一段、刷一次、超过闸门就等一跳
          */
-        [[nodiscard]] Core::Task<bool> pushStreamingResponseBody(std::int64_t streamId,
-                                                                 const std::shared_ptr<StreamingResponse> &state,
-                                                                 std::string_view bytes);
+        [[nodiscard]] Core::Task<bool> pushStreamingResponseBody(std::int64_t streamId, const std::shared_ptr<StreamingResponse> &state, std::string_view bytes);
 
         /**
          * @brief 流式响应写完：补交还没交的响应头，再交出收尾的 END_STREAM
@@ -595,13 +594,13 @@ namespace AsynGyanis::Net
          */
         struct WebSocketTunnel
         {
-            WebSocketHandler                handler;              ///< 业务处理器
-            std::unique_ptr<WebSocketPeer>  peer;                 ///< 对端对象（帧的收发都经它）
-            std::optional<Core::Task<>>     businessTask;         ///< 业务处理器所在的协程
-            std::string                     pendingIncomingBytes; ///< 已收下、等安全点再交给对端对象的入向字节
-            bool                            hasPendingFeed{false};     ///< 有待喂给对端对象的字节
-            bool                            isBusinessFinished{false}; ///< 业务已返回
-            bool                            isStreamClosed{false};     ///< 承载侧的流已关闭
+            WebSocketHandler               handler;                   ///< 业务处理器
+            std::unique_ptr<WebSocketPeer> peer;                      ///< 对端对象（帧的收发都经它）
+            std::optional<Core::Task<>>    businessTask;              ///< 业务处理器所在的协程
+            std::string                    pendingIncomingBytes;      ///< 已收下、等安全点再交给对端对象的入向字节
+            bool                           hasPendingFeed{false};     ///< 有待喂给对端对象的字节
+            bool                           isBusinessFinished{false}; ///< 业务已返回
+            bool                           isStreamClosed{false};     ///< 承载侧的流已关闭
         };
 
         /**
@@ -705,8 +704,7 @@ namespace AsynGyanis::Net
          * @param reason 连接层给出的中文原因
          * @param errorCode 失败类别对应的线上错误码
          */
-        void handleResponseSubmissionFailure(std::int64_t streamId, const char *what, std::string_view reason,
-                                             Http3ErrorCode errorCode);
+        void handleResponseSubmissionFailure(std::int64_t streamId, const char *what, std::string_view reason, Http3ErrorCode errorCode);
 
         /**
          * @brief 记日志并把会话作废
@@ -719,32 +717,32 @@ namespace AsynGyanis::Net
         /// 标记要跟着请求走到服务阶段，413 才发得出来（与 h2 的 PendingRequest::isBodyTooLarge 同形）
         struct ReadyRequest
         {
-            std::int64_t streamId{0};                 ///< 流号
-            HttpRequest  request;                     ///< 已收齐的请求
+            std::int64_t streamId{0}; ///< 流号
+            HttpRequest  request;     ///< 已收齐的请求
             /// 本条请求正文占用的全局在途额度：随待派发记录一起活着，直到服务完这一条才归还。
             /// 早一步还掉（在排队时就还）会让「排队的正文」脱离预算，多条流能把实际占用推过上限
             HttpMemoryBudget::Reservation bodyBudget;
-            bool         isBodyTooLarge{false};       ///< 正文越界：服务阶段回 413 而不是派发
-            bool         isBudgetExceeded{false};     ///< 正文超出全局在途预算：服务阶段回 503 而不是派发
-            bool         isHeaderLimitExceeded{false}; ///< 头部越限：服务阶段回 431 而不是派发
-            bool         isUriTooLong{false};         ///< 请求目标越限：服务阶段回 414 而不是派发
+            bool                          isBodyTooLarge{false};        ///< 正文越界：服务阶段回 413 而不是派发
+            bool                          isBudgetExceeded{false};      ///< 正文超出全局在途预算：服务阶段回 503 而不是派发
+            bool                          isHeaderLimitExceeded{false}; ///< 头部越限：服务阶段回 431 而不是派发
+            bool                          isUriTooLong{false};          ///< 请求目标越限：服务阶段回 414 而不是派发
         };
 
-        std::unique_ptr<Http3Connection> m_connection;   ///< HTTP/3 连接层：帧的编解码与 QPACK 都在它那里；开不出本端单向流时为空
-        StreamWriter              m_writer;              ///< 流数据出口
-        StreamCrediter            m_crediter;            ///< 接收窗口归还口
-        StreamAborter             m_aborter;             ///< 单条流的收口出口（可空：空则只丢本端记账，对端收不到信号）
-        Router                   *m_router{nullptr};     ///< 路由器（不持有；由服务端保证其寿命）
-        std::shared_ptr<HttpMetricsCollector> m_metrics; ///< 统计采集端（可空：空表示本会话不采集）
+        std::unique_ptr<Http3Connection>      m_connection;      ///< HTTP/3 连接层：帧的编解码与 QPACK 都在它那里；开不出本端单向流时为空
+        StreamWriter                          m_writer;          ///< 流数据出口
+        StreamCrediter                        m_crediter;        ///< 接收窗口归还口
+        StreamAborter                         m_aborter;         ///< 单条流的收口出口（可空：空则只丢本端记账，对端收不到信号）
+        Router                               *m_router{nullptr}; ///< 路由器（不持有；由服务端保证其寿命）
+        std::shared_ptr<HttpMetricsCollector> m_metrics;         ///< 统计采集端（可空：空表示本会话不采集）
         /// request-id 生成器（可空）：与服务器共享一份，前缀标识服务器实例
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator;
-        HttpParserLimits          m_parserLimits{};      ///< 请求解析上限（正文总量上限等）
+        HttpParserLimits                        m_parserLimits{}; ///< 请求解析上限（正文总量上限等）
         /// 连接级限额（可空）：目前用到的是「单连接最多处理多少条请求」
         std::shared_ptr<const HttpServerLimits> m_serverLimits;
-        std::size_t               m_servedRequestCount{0};   ///< 本会话已答完的请求条数，达到上限即排空
-        bool                      m_isUsable{false};     ///< 三条本端单向流是否都开出来了
-        bool                      m_isBroken{false};     ///< 是否已作废
-        bool m_hasAbandonedPendingStreams{false}; ///< 承载连接的收口信号是否已交过：唤醒只做一次，之后每拍只收敛
+        std::size_t                             m_servedRequestCount{0};             ///< 本会话已答完的请求条数，达到上限即排空
+        bool                                    m_isUsable{false};                   ///< 三条本端单向流是否都开出来了
+        bool                                    m_isBroken{false};                   ///< 是否已作废
+        bool                                    m_hasAbandonedPendingStreams{false}; ///< 承载连接的收口信号是否已交过：唤醒只做一次，之后每拍只收敛
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;
         /// 承载层报来的「对端取消」流号：它们到的时候正在传输层的回调里，只能先记下来，

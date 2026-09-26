@@ -56,16 +56,16 @@ namespace AsynGyanis::Platform
         constexpr std::optional<std::tuple<int, int, int>> civilFromDays(const std::int64_t days) noexcept
         {
             // 把纪元起点挪到 0000-03-01：这样闰日落在周期末尾，周期内的算法才是规则的
-            const std::int64_t shiftedDays = days + 719468;
-            const std::int64_t era         = floorDivide(shiftedDays, kDaysPerGregorianEra);
-            const std::int64_t dayOfEra    = shiftedDays - era * kDaysPerGregorianEra;   // [0, 146096]
-            const std::int64_t yearOfEra   = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365;   // [0, 399]
-            const std::int64_t year        = yearOfEra + era * 400;
-            const std::int64_t dayOfYear   = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100);   // [0, 365]
-            const std::int64_t monthProbe  = (5 * dayOfYear + 2) / 153;   // [0, 11]，3 月起算
-            const std::int64_t day         = dayOfYear - (153 * monthProbe + 2) / 5 + 1;   // [1, 31]
-            const std::int64_t month       = monthProbe + (monthProbe < 10 ? 3 : -9);   // 换回 1 月起的编号
-            const std::int64_t calendarYear = year + (month <= 2 ? 1 : 0);   // 1、2 月属于上一个公历年
+            const std::int64_t shiftedDays  = days + 719468;
+            const std::int64_t era          = floorDivide(shiftedDays, kDaysPerGregorianEra);
+            const std::int64_t dayOfEra     = shiftedDays - era * kDaysPerGregorianEra;                                  // [0, 146096]
+            const std::int64_t yearOfEra    = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365; // [0, 399]
+            const std::int64_t year         = yearOfEra + era * 400;
+            const std::int64_t dayOfYear    = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100); // [0, 365]
+            const std::int64_t monthProbe   = (5 * dayOfYear + 2) / 153;                                      // [0, 11]，3 月起算
+            const std::int64_t day          = dayOfYear - (153 * monthProbe + 2) / 5 + 1;                     // [1, 31]
+            const std::int64_t month        = monthProbe + (monthProbe < 10 ? 3 : -9);                        // 换回 1 月起的编号
+            const std::int64_t calendarYear = year + (month <= 2 ? 1 : 0);                                    // 1、2 月属于上一个公历年
 
             if (calendarYear < std::numeric_limits<int>::min() || calendarYear > std::numeric_limits<int>::max())
             {
@@ -82,8 +82,8 @@ namespace AsynGyanis::Platform
         // 「同输入同输出」的缓存：线程局域因此不需要任何同步，也不会把别的线程的结果搬到本线程的栈上
         thread_local struct
         {
-            std::time_t second{};      ///< 上次换算的 UTC 秒
-            std::tm     fields{};      ///< 那次换算出的本地日历（失败时是零值结构，同样是确定答案）
+            std::time_t second{};              ///< 上次换算的 UTC 秒
+            std::tm     fields{};              ///< 那次换算出的本地日历（失败时是零值结构，同样是确定答案）
             bool        hasCachedValue{false}; ///< 缓存格里是否已有结果：不能拿纪元零点当哨兵，它是合法输入
         } cache;
 
@@ -106,8 +106,8 @@ namespace AsynGyanis::Platform
             converted = std::tm{};
         }
 #endif
-        cache.second        = calendarTime;
-        cache.fields        = converted;
+        cache.second         = calendarTime;
+        cache.fields         = converted;
         cache.hasCachedValue = true;
         return converted;
     }
@@ -118,15 +118,15 @@ namespace AsynGyanis::Platform
         // 交给 gmtime_s 会让 MSVC 把 1970 年之前整个拒掉（POSIX 却能正常折），同一份文件在两个
         // 平台上得到不同的 Last-Modified； Date 头这类输出要求对任意可表示的 time_t 都给出正确日历
         const std::int64_t seconds      = static_cast<std::int64_t>(calendarTime);
-        std::int64_t days         = seconds / kSecondsPerDay;
-        std::int64_t secondsOfDay = seconds % kSecondsPerDay;
+        std::int64_t       days         = seconds / kSecondsPerDay;
+        std::int64_t       secondsOfDay = seconds % kSecondsPerDay;
         if (secondsOfDay < 0)
         {
             // 一次除法配一对余数，商与余数同时校正到 floor 口径：换成「整除后乘回去再减」会在 time_t
             // 取到最小值那一档让 days * 86400 越出 int64（容器 UBSan 实测报出），而纯除与纯取模对最负
             // 的输入都有定义——除数是正数，永远碰不到 INT64_MIN / -1 那种溢出
-            secondsOfDay += kSecondsPerDay;   // 校正后日内秒落在 [0, 86400)
-            --days;                           // 向零截断的商跟着降到向下取整
+            secondsOfDay += kSecondsPerDay; // 校正后日内秒落在 [0, 86400)
+            --days;                         // 向零截断的商跟着降到向下取整
         }
 
         const auto civilDate = civilFromDays(days);
@@ -138,12 +138,12 @@ namespace AsynGyanis::Platform
         }
 
         UtcTimeFields fields{};
-        fields.year    = std::get<0>(*civilDate);
-        fields.month   = std::get<1>(*civilDate);
-        fields.day     = std::get<2>(*civilDate);
-        fields.hour    = static_cast<int>(secondsOfDay / 3600);
-        fields.minute  = static_cast<int>(secondsOfDay % 3600 / 60);
-        fields.second  = static_cast<int>(secondsOfDay % 60);
+        fields.year   = std::get<0>(*civilDate);
+        fields.month  = std::get<1>(*civilDate);
+        fields.day    = std::get<2>(*civilDate);
+        fields.hour   = static_cast<int>(secondsOfDay / 3600);
+        fields.minute = static_cast<int>(secondsOfDay % 3600 / 60);
+        fields.second = static_cast<int>(secondsOfDay % 60);
         // 星期由天数本身算，不必再从年月日推一遍：1970-01-01 是周四，负数纪元靠取模修正
         fields.weekday = static_cast<int>(weekdayIndexModuloSeven(days + kWeekdayOffsetOfEpoch));
         return fields;

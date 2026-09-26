@@ -17,7 +17,7 @@ namespace AsynGyanis::Net
     namespace
     {
         /// 两个来源标识：用例只关心「是不是同一个来源」，不关心地址格式
-        constexpr const char *kFirstSource = "10.0.0.1:40000";
+        constexpr const char *kFirstSource  = "10.0.0.1:40000";
         constexpr const char *kSecondSource = "10.0.0.2:40000";
     } // namespace
 
@@ -139,15 +139,15 @@ namespace AsynGyanis::Net
      */
     TEST(PerIpConnectionLimiter, ConcurrentAcquireNeverExceedsLimit)
     {
-        constexpr std::size_t kLimit = 4;
-        constexpr int kThreadCount = 8;
-        constexpr int kRoundsPerThread = 50;
+        constexpr std::size_t kLimit           = 4;
+        constexpr int         kThreadCount     = 8;
+        constexpr int         kRoundsPerThread = 50;
 
         PerIpConnectionLimiter limiter(kLimit);
 
         std::atomic<std::size_t> currentlyHeld{0};
         std::atomic<std::size_t> peakHeld{0};
-        std::atomic<int> rejectedCount{0};
+        std::atomic<int>         rejectedCount{0};
 
         // 每轮两道栅栏：第一道保证「抢到的人一直握着、所有人都已尝试过」，
         // 第二道保证「上一轮全部归还完，下一轮才开抢」——两道合起来，每轮都是干净的 8 抢 4
@@ -161,8 +161,8 @@ namespace AsynGyanis::Net
                 if (lease.has_value())
                 {
                     // 占用数在「取到之后、归还之前」这段窗口里递增：峰值就是上限不变式的观测点
-                    const std::size_t heldNow = currentlyHeld.fetch_add(1, std::memory_order_acq_rel) + 1;
-                    std::size_t observedPeak = peakHeld.load(std::memory_order_relaxed);
+                    const std::size_t heldNow      = currentlyHeld.fetch_add(1, std::memory_order_acq_rel) + 1;
+                    std::size_t       observedPeak = peakHeld.load(std::memory_order_relaxed);
                     while (observedPeak < heldNow && !peakHeld.compare_exchange_weak(observedPeak, heldNow, std::memory_order_relaxed))
                     {
                         // compare_exchange 失败时 observedPeak 已被刷新，循环继续比较即可
@@ -192,7 +192,7 @@ namespace AsynGyanis::Net
         {
             workers.emplace_back(worker);
         }
-        for (std::thread &thread : workers)
+        for (std::thread &thread: workers)
         {
             thread.join();
         }
@@ -200,8 +200,7 @@ namespace AsynGyanis::Net
         EXPECT_LE(peakHeld.load(), kLimit) << "同时占用的名额数越过了上限：计数表在并发下被破坏";
         EXPECT_EQ(peakHeld.load(), kLimit) << "8 个线程同时在场抢 4 个名额，峰值必然触到上限（没触到说明重叠没构造出来）";
         EXPECT_EQ(limiter.activeCountFor(kFirstSource), 0u) << "所有凭据析构后计数必须归零";
-        EXPECT_EQ(rejectedCount.load(), (kThreadCount - static_cast<int>(kLimit)) * kRoundsPerThread)
-                << "每轮 8 抢 4，必然恰好 4 个线程被拒";
+        EXPECT_EQ(rejectedCount.load(), (kThreadCount - static_cast<int>(kLimit)) * kRoundsPerThread) << "每轮 8 抢 4，必然恰好 4 个线程被拒";
     }
 
     /**

@@ -40,9 +40,8 @@ namespace AsynGyanis::Net
          * @return std::vector<std::uint8_t> 输出
          * @throws Base::Exception 运行期故障：取不到实现、建不了上下文或推导本身失败
          */
-        std::vector<std::uint8_t> runHkdf(const int mode, const std::span<const std::uint8_t> secret,
-                                         const std::span<const std::uint8_t> salt, const std::span<const std::uint8_t> info,
-                                         const std::size_t outputLength, const char *hashName, const std::string_view operation)
+        std::vector<std::uint8_t> runHkdf(const int mode, const std::span<const std::uint8_t> secret, const std::span<const std::uint8_t> salt,
+                                          const std::span<const std::uint8_t> info, const std::size_t outputLength, const char *hashName, const std::string_view operation)
         {
             EVP_KDF *const kdf = EVP_KDF_fetch(nullptr, "HKDF", nullptr);
             if (kdf == nullptr)
@@ -87,18 +86,16 @@ namespace AsynGyanis::Net
             parameters.push_back(OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &modeValue));
             parameters.push_back(OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, digestName, 0));
             parameters.push_back(OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, secretBuffer.data(), secret.size()));
-            parameters.push_back(mode == EVP_KDF_HKDF_MODE_EXTRACT_ONLY
-                                         ? OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, saltBuffer.data(), salt.size())
-                                         : OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, infoBuffer.data(), info.size()));
+            parameters.push_back(mode == EVP_KDF_HKDF_MODE_EXTRACT_ONLY ? OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, saltBuffer.data(), salt.size())
+                                                                        : OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, infoBuffer.data(), info.size()));
             parameters.push_back(OSSL_PARAM_construct_end());
 
             std::vector<std::uint8_t> output(outputLength);
-            const int deriveResult = EVP_KDF_derive(context, output.data(), output.size(), parameters.data());
+            const int                 deriveResult = EVP_KDF_derive(context, output.data(), output.size(), parameters.data());
             EVP_KDF_CTX_free(context);
             if (deriveResult != 1)
             {
-                throw Base::Exception(std::format("QUIC {} 失败：HKDF 未能算出 {} 字节输出（OpenSSL 拒绝了参数或该哈希不可用）",
-                                                  operation, outputLength));
+                throw Base::Exception(std::format("QUIC {} 失败：HKDF 未能算出 {} 字节输出（OpenSSL 拒绝了参数或该哈希不可用）", operation, outputLength));
             }
             return output;
         }
@@ -115,8 +112,8 @@ namespace AsynGyanis::Net
          * @return std::vector<std::uint8_t> 输出
          * @throws Base::InvalidArgumentException 用法错误：标签或上下文长到 uint8 表达不下
          */
-        std::vector<std::uint8_t> expandLabel(const std::span<const std::uint8_t> secret, const std::string_view label,
-                                             const std::size_t outputLength, const char *hashName, const std::string_view operation)
+        std::vector<std::uint8_t> expandLabel(const std::span<const std::uint8_t> secret, const std::string_view label, const std::size_t outputLength, const char *hashName,
+                                              const std::string_view operation)
         {
             const std::size_t labelledLength = kHkdfLabelPrefix.size() + label.size();
             if (labelledLength > 0xFF)
@@ -156,8 +153,7 @@ namespace AsynGyanis::Net
         {
             if (source.size() != destination.size())
             {
-                throw Base::Exception(std::format("QUIC 密钥导出异常：{} 需要 {} 字节却拿到 {} 字节：请核对哈希与套件的搭配",
-                                                  what, destination.size(), source.size()));
+                throw Base::Exception(std::format("QUIC 密钥导出异常：{} 需要 {} 字节却拿到 {} 字节：请核对哈希与套件的搭配", what, destination.size(), source.size()));
             }
             std::copy(source.begin(), source.end(), destination.begin());
         }
@@ -169,8 +165,7 @@ namespace AsynGyanis::Net
          * @param operation 面向文案的操作名
          * @return QuicPacketKeys 密钥组
          */
-        QuicPacketKeys deriveKeyTriple(const QuicCipherSuite cipherSuite, const std::span<const std::uint8_t> trafficSecret,
-                                       const std::string_view operation)
+        QuicPacketKeys deriveKeyTriple(const QuicCipherSuite cipherSuite, const std::span<const std::uint8_t> trafficSecret, const std::string_view operation)
         {
             const char *const hashName = cipherSuite == QuicCipherSuite::Aes256Gcm ? kShaTwo384Name : kShaTwo256Name;
 
@@ -181,35 +176,27 @@ namespace AsynGyanis::Net
             // 三个标签逐字取自 RFC 9001 §5.1；IV 长度取 AEAD nonce 的最小长度 12（§5.1 末段）。
             // 目标区间要先按套件的实际长度截好：数组是 32 字节的公共容器，拿整个数组比长度会把
             // AES-128 这类短密钥一律判成长度不符
-            const auto encryptionKey = expandLabel(trafficSecret, "quic key", quicCipherSuiteKeyByteLength(cipherSuite), hashName,
-                                                   std::format("{}：AEAD 密钥", operation));
+            const auto encryptionKey = expandLabel(trafficSecret, "quic key", quicCipherSuiteKeyByteLength(cipherSuite), hashName, std::format("{}：AEAD 密钥", operation));
             copyInto(std::span(keys.encryptionKey).first(quicCipherSuiteKeyByteLength(cipherSuite)), encryptionKey, "AEAD 密钥");
 
-            const auto initializationVector = expandLabel(trafficSecret, "quic iv", kQuicInitializationVectorByteLength, hashName,
-                                                          std::format("{}：初始化向量", operation));
+            const auto initializationVector = expandLabel(trafficSecret, "quic iv", kQuicInitializationVectorByteLength, hashName, std::format("{}：初始化向量", operation));
             copyInto(keys.initializationVector, initializationVector, "初始化向量");
 
-            const auto headerProtectionKey = expandLabel(trafficSecret, "quic hp",
-                                                         quicCipherSuiteHeaderProtectionKeyByteLength(cipherSuite), hashName,
-                                                         std::format("{}：头部保护密钥", operation));
-            copyInto(std::span(keys.headerProtectionKey).first(quicCipherSuiteHeaderProtectionKeyByteLength(cipherSuite)),
-                     headerProtectionKey, "头部保护密钥");
+            const auto headerProtectionKey =
+                    expandLabel(trafficSecret, "quic hp", quicCipherSuiteHeaderProtectionKeyByteLength(cipherSuite), hashName, std::format("{}：头部保护密钥", operation));
+            copyInto(std::span(keys.headerProtectionKey).first(quicCipherSuiteHeaderProtectionKeyByteLength(cipherSuite)), headerProtectionKey, "头部保护密钥");
             return keys;
         }
     } // namespace
 
-    QuicPacketKeys deriveQuicInitialPacketKeys(const std::span<const std::uint8_t> destinationConnectionId,
-                                               const QuicPacketDirection direction)
+    QuicPacketKeys deriveQuicInitialPacketKeys(const std::span<const std::uint8_t> destinationConnectionId, const QuicPacketDirection direction)
     {
         // 抽取段的 IKM 是**客户端报文里的目的连接标识**，方向只决定扩展段用哪个标签（RFC 9001 §5.2）
         const std::span<const std::uint8_t> salt{kQuicInitialSalt};
-        const auto initialSecret = runHkdf(EVP_KDF_HKDF_MODE_EXTRACT_ONLY, destinationConnectionId, salt, {},
-                                           kQuicInitialSecretByteLength, kShaTwo256Name, "Initial 秘密抽取");
+        const auto initialSecret = runHkdf(EVP_KDF_HKDF_MODE_EXTRACT_ONLY, destinationConnectionId, salt, {}, kQuicInitialSecretByteLength, kShaTwo256Name, "Initial 秘密抽取");
 
-        const std::string_view directionLabel =
-                direction == QuicPacketDirection::ClientToServer ? "client in" : "server in";
-        const auto trafficSecret = expandLabel(initialSecret, directionLabel, kQuicInitialSecretByteLength, kShaTwo256Name,
-                                              std::format("Initial 方向密钥（{}）", directionLabel));
+        const std::string_view directionLabel = direction == QuicPacketDirection::ClientToServer ? "client in" : "server in";
+        const auto trafficSecret = expandLabel(initialSecret, directionLabel, kQuicInitialSecretByteLength, kShaTwo256Name, std::format("Initial 方向密钥（{}）", directionLabel));
         // Initial 的 AEAD 固定是 AES_128_GCM，与后面协商出的套件无关
         return deriveKeyTriple(QuicCipherSuite::Aes128Gcm, trafficSecret, "Initial");
     }
@@ -217,11 +204,10 @@ namespace AsynGyanis::Net
     QuicPacketKeys deriveQuicUpdatedPacketKeys(const QuicPacketKeys &current)
     {
         const std::size_t secretLength = quicCipherSuiteSecretByteLength(current.cipherSuite);
-        const char *const hashName =
-                current.cipherSuite == QuicCipherSuite::Aes256Gcm ? kShaTwo384Name : kShaTwo256Name;
+        const char *const hashName     = current.cipherSuite == QuicCipherSuite::Aes256Gcm ? kShaTwo384Name : kShaTwo256Name;
         // secret_<n+1> = HKDF-Expand-Label(secret_<n>, "quic ku", "", Hash.length)（RFC 9001 §6.1）
-        const auto nextSecret = expandLabel(current.generationSecretBytes(), "quic ku", secretLength, hashName, "密钥更新");
-        QuicPacketKeys updated = deriveKeyTriple(current.cipherSuite, nextSecret, "密钥更新");
+        const auto     nextSecret = expandLabel(current.generationSecretBytes(), "quic ku", secretLength, hashName, "密钥更新");
+        QuicPacketKeys updated    = deriveKeyTriple(current.cipherSuite, nextSecret, "密钥更新");
         // §6.1 明写头部保护密钥不跟着换：换了会对端解不开包头，而相位位正是要写在包头里递过去的
         updated.headerProtectionKey = current.headerProtectionKey;
         return updated;
@@ -234,8 +220,7 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException(std::format("{} 的流量秘密必须是 {} 字节（RFC 9001 §5.1：长度等于套件哈希的输出），"
                                                              "本次是 {} 字节：请确认交过来的是 TLS 该方向的当前写入秘密",
-                                                             quicCipherSuiteName(cipherSuite), expectedSecretLength,
-                                                             trafficSecret.size()));
+                                                             quicCipherSuiteName(cipherSuite), expectedSecretLength, trafficSecret.size()));
         }
         return deriveKeyTriple(cipherSuite, trafficSecret, quicCipherSuiteName(cipherSuite));
     }

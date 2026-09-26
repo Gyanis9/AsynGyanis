@@ -20,34 +20,34 @@ namespace AsynGyanis::Net
         };
 
         // 编码器流指令的首字节模式（RFC 9204 §4.3.1~§4.3.4）
-        constexpr std::uint8_t kThreeBitPatternBitMask = 0xE0;        ///< '001'/'000' 这类 3 位模式共用的掩码
-        constexpr std::uint8_t kSetCapacityPatternBits = 0x20;        ///< Set Dynamic Table Capacity：'001'
-        constexpr std::uint8_t kDuplicatePatternBits = 0x00;          ///< Duplicate：'000'
-        constexpr std::uint8_t kTwoBitPatternBitMask = 0xC0;          ///< 2 位模式共用的掩码
-        constexpr std::uint8_t kInsertLiteralNamePatternBits = 0x40;  ///< Insert With Literal Name：'01'
-        constexpr std::uint8_t kInsertNameReferencePatternBits = 0x80;///< Insert With Name Reference：'1'
+        constexpr std::uint8_t kThreeBitPatternBitMask         = 0xE0; ///< '001'/'000' 这类 3 位模式共用的掩码
+        constexpr std::uint8_t kSetCapacityPatternBits         = 0x20; ///< Set Dynamic Table Capacity：'001'
+        constexpr std::uint8_t kDuplicatePatternBits           = 0x00; ///< Duplicate：'000'
+        constexpr std::uint8_t kTwoBitPatternBitMask           = 0xC0; ///< 2 位模式共用的掩码
+        constexpr std::uint8_t kInsertLiteralNamePatternBits   = 0x40; ///< Insert With Literal Name：'01'
+        constexpr std::uint8_t kInsertNameReferencePatternBits = 0x80; ///< Insert With Name Reference：'1'
 
         // 解码器流指令的首字节模式（RFC 9204 §4.4.1~§4.4.3）
-        constexpr std::uint8_t kSectionAckPatternBits = 0x80;         ///< Section Acknowledgment：'1'
-        constexpr std::uint8_t kStreamCancellationPatternBits = 0x40; ///< Stream Cancellation：'01'
-        constexpr std::uint8_t kInsertCountIncrementPatternBits = 0x00;///< Insert Count Increment：'00'
+        constexpr std::uint8_t kSectionAckPatternBits           = 0x80; ///< Section Acknowledgment：'1'
+        constexpr std::uint8_t kStreamCancellationPatternBits   = 0x40; ///< Stream Cancellation：'01'
+        constexpr std::uint8_t kInsertCountIncrementPatternBits = 0x00; ///< Insert Count Increment：'00'
 
         // 字段行表示的首字节模式（RFC 9204 §4.5.2~§4.5.6）
-        constexpr std::uint8_t kOneBitPatternBitMask = 0x80;             ///< '1' 与 '0' 的分界
-        constexpr std::uint8_t kIndexedPatternBits = 0x80;               ///< Indexed Field Line：'1'，T=0
-        constexpr std::uint8_t kIndexedStaticPatternBits = 0xC0;         ///< 同上且 T=1（引用静态表）
-        constexpr std::uint8_t kLiteralNameReferencePatternBits = 0x40;  ///< Literal With Name Reference：'01'，N=0、T=0
-        constexpr std::uint8_t kLiteralStaticNamePatternBits = 0x50;     ///< 同上且 T=1
-        constexpr std::uint8_t kLiteralNamePatternBits = 0x20;           ///< Literal With Literal Name：'001'，N=0
-        constexpr std::uint8_t kFourBitPatternBitMask = 0xF0;            ///< '0000'/'0001' 共用的掩码
-        constexpr std::uint8_t kPostBaseIndexedPatternBits = 0x10;       ///< Indexed With Post-Base Index：'0001'
+        constexpr std::uint8_t kOneBitPatternBitMask             = 0x80; ///< '1' 与 '0' 的分界
+        constexpr std::uint8_t kIndexedPatternBits               = 0x80; ///< Indexed Field Line：'1'，T=0
+        constexpr std::uint8_t kIndexedStaticPatternBits         = 0xC0; ///< 同上且 T=1（引用静态表）
+        constexpr std::uint8_t kLiteralNameReferencePatternBits  = 0x40; ///< Literal With Name Reference：'01'，N=0、T=0
+        constexpr std::uint8_t kLiteralStaticNamePatternBits     = 0x50; ///< 同上且 T=1
+        constexpr std::uint8_t kLiteralNamePatternBits           = 0x20; ///< Literal With Literal Name：'001'，N=0
+        constexpr std::uint8_t kFourBitPatternBitMask            = 0xF0; ///< '0000'/'0001' 共用的掩码
+        constexpr std::uint8_t kPostBaseIndexedPatternBits       = 0x10; ///< Indexed With Post-Base Index：'0001'
         constexpr std::uint8_t kPostBaseNameReferencePatternBits = 0x00; ///< Literal With Post-Base Name Reference：'0000'
 
         // 各表示里 T 位与 N 位的位置：它们跟着模式位一起挪动，不能共用一个掩码
-        constexpr std::uint8_t kTableBitInOneBitPatternMask = 0x40;      ///< '1'/'01'-类：'1' + T（§4.3.2、§4.5.2）
-        constexpr std::uint8_t kTableBitInLiteralNameReferenceMask = 0x10;///< '01' + N + T（§4.5.4）
-        constexpr std::uint8_t kContinuationBitMask = 0x80;              ///< 前缀整数续字节的最高位标记
-        constexpr std::uint8_t kSignBitMask = 0x80;                      ///< 头块前缀里 Delta Base 的符号位
+        constexpr std::uint8_t kTableBitInOneBitPatternMask        = 0x40; ///< '1'/'01'-类：'1' + T（§4.3.2、§4.5.2）
+        constexpr std::uint8_t kTableBitInLiteralNameReferenceMask = 0x10; ///< '01' + N + T（§4.5.4）
+        constexpr std::uint8_t kContinuationBitMask                = 0x80; ///< 前缀整数续字节的最高位标记
+        constexpr std::uint8_t kSignBitMask                        = 0x80; ///< 头块前缀里 Delta Base 的符号位
 
         /**
          * @brief 造一个失败对象
@@ -68,8 +68,8 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string toHexText(std::string_view bytes)
         {
             static constexpr char hexDigits[] = "0123456789ABCDEF";
-            std::string text;
-            for (const char item : bytes)
+            std::string           text;
+            for (const char item: bytes)
             {
                 const auto byteValue = static_cast<unsigned char>(item);
                 if (!text.empty())
@@ -97,10 +97,8 @@ namespace AsynGyanis::Net
          * @param error 输出参数：失败详情
          * @return QpackParseStatus 三态结果
          */
-        [[nodiscard]] QpackParseStatus decodePrefixedInteger(std::string_view bytes, std::uint8_t prefixBitCount,
-                                                             QpackErrorKind errorKind, std::string_view what,
-                                                             std::uint64_t &value, std::size_t &consumedByteCount,
-                                                             QpackError *error)
+        [[nodiscard]] QpackParseStatus decodePrefixedInteger(std::string_view bytes, std::uint8_t prefixBitCount, QpackErrorKind errorKind, std::string_view what,
+                                                             std::uint64_t &value, std::size_t &consumedByteCount, QpackError *error)
         {
             if (bytes.empty())
             {
@@ -108,8 +106,8 @@ namespace AsynGyanis::Net
             }
 
             // 只有前缀位全为 1 才需要续字节；先确认续字节链条在现有数据里闭合，否则算「还没到齐」
-            const std::uint8_t prefixValueMask = static_cast<std::uint8_t>((std::uint8_t{1} << prefixBitCount) - 1);
-            std::size_t expectedByteCount = 1;
+            const std::uint8_t prefixValueMask   = static_cast<std::uint8_t>((std::uint8_t{1} << prefixBitCount) - 1);
+            std::size_t        expectedByteCount = 1;
             if ((static_cast<std::uint8_t>(bytes[0]) & prefixValueMask) == prefixValueMask)
             {
                 while (true)
@@ -118,8 +116,7 @@ namespace AsynGyanis::Net
                     {
                         return QpackParseStatus::Incomplete;
                     }
-                    const bool hasMoreContinuationBytes =
-                        (static_cast<std::uint8_t>(bytes[expectedByteCount]) & kContinuationBitMask) != 0;
+                    const bool hasMoreContinuationBytes = (static_cast<std::uint8_t>(bytes[expectedByteCount]) & kContinuationBitMask) != 0;
                     ++expectedByteCount;
                     if (!hasMoreContinuationBytes)
                     {
@@ -138,9 +135,8 @@ namespace AsynGyanis::Net
             // 62 位上限：更大取值不取整也不回绕，否则索引换算会得到另一个「看起来合法」的表项
             if (value > kQpackMaximumIntegerValue)
             {
-                *error = makeQpackError(errorKind, std::string(what) + "取值 " + std::to_string(value) +
-                                                       " 超过 62 位上限 " + std::to_string(kQpackMaximumIntegerValue) +
-                                                       "（RFC 9204 §4.1.1、§7.4）");
+                *error = makeQpackError(errorKind, std::string(what) + "取值 " + std::to_string(value) + " 超过 62 位上限 " + std::to_string(kQpackMaximumIntegerValue) +
+                                                           "（RFC 9204 §4.1.1、§7.4）");
                 return QpackParseStatus::Invalid;
             }
             return QpackParseStatus::Complete;
@@ -162,10 +158,8 @@ namespace AsynGyanis::Net
          * @param error 输出参数：失败详情
          * @return QpackParseStatus 三态结果
          */
-        [[nodiscard]] QpackParseStatus decodePrefixedStringLiteral(std::string_view bytes, std::uint8_t prefixBitCount,
-                                                                    QpackErrorKind errorKind, std::string_view what,
-                                                                    std::size_t lineIndex, std::string &value,
-                                                                    std::size_t &consumedByteCount, QpackError *error)
+        [[nodiscard]] QpackParseStatus decodePrefixedStringLiteral(std::string_view bytes, std::uint8_t prefixBitCount, QpackErrorKind errorKind, std::string_view what,
+                                                                   std::size_t lineIndex, std::string &value, std::size_t &consumedByteCount, QpackError *error)
         {
             if (bytes.empty())
             {
@@ -173,21 +167,19 @@ namespace AsynGyanis::Net
             }
 
             // H 位紧贴长度前缀之上：N 位前缀的字面量，H 位在 bit(N-1)
-            const bool isHuffmanEncoded = (static_cast<std::uint8_t>(bytes[0]) & static_cast<std::uint8_t>(std::uint8_t{1} << (prefixBitCount - 1))) != 0;
-            std::uint64_t declaredLength = 0;
-            std::size_t headerByteCount = 0;
-            const QpackParseStatus headerStatus = decodePrefixedInteger(bytes, static_cast<std::uint8_t>(prefixBitCount - 1),
-                                                                        errorKind, what, declaredLength, headerByteCount, error);
+            const bool             isHuffmanEncoded = (static_cast<std::uint8_t>(bytes[0]) & static_cast<std::uint8_t>(std::uint8_t{1} << (prefixBitCount - 1))) != 0;
+            std::uint64_t          declaredLength   = 0;
+            std::size_t            headerByteCount  = 0;
+            const QpackParseStatus headerStatus =
+                    decodePrefixedInteger(bytes, static_cast<std::uint8_t>(prefixBitCount - 1), errorKind, what, declaredLength, headerByteCount, error);
             if (headerStatus != QpackParseStatus::Complete)
             {
                 return headerStatus;
             }
             if (declaredLength > kQpackMaximumStringLengthByteCount)
             {
-                *error = makeQpackError(errorKind, "第 " + std::to_string(lineIndex) + " 个字段行的" + std::string(what) +
-                                                        "声明长度 " + std::to_string(declaredLength) + " 超过本端上限 " +
-                                                        std::to_string(kQpackMaximumStringLengthByteCount) +
-                                                        " 字节（RFC 9204 §4.1.2、§7.4）");
+                *error = makeQpackError(errorKind, "第 " + std::to_string(lineIndex) + " 个字段行的" + std::string(what) + "声明长度 " + std::to_string(declaredLength) +
+                                                           " 超过本端上限 " + std::to_string(kQpackMaximumStringLengthByteCount) + " 字节（RFC 9204 §4.1.2、§7.4）");
                 return QpackParseStatus::Invalid;
             }
 
@@ -204,12 +196,11 @@ namespace AsynGyanis::Net
                 std::string huffmanErrorText;
                 if (!decodeHpackHuffmanString(literalBytes, value, &huffmanErrorText))
                 {
-                    *error = makeQpackError(errorKind, "第 " + std::to_string(lineIndex) + " 个字段行的" + std::string(what) +
-                                                            " Huffman 解码失败：" + huffmanErrorText + "（RFC 9204 §4.1.2）");
+                    *error = makeQpackError(errorKind, "第 " + std::to_string(lineIndex) + " 个字段行的" + std::string(what) + " Huffman 解码失败：" + huffmanErrorText +
+                                                               "（RFC 9204 §4.1.2）");
                     return QpackParseStatus::Invalid;
                 }
-            }
-            else
+            } else
             {
                 // 长度即原始字节数，原样按字节收下（可含 NUL 与任意二进制）
                 value.assign(literalBytes.data(), literalBytes.size());
@@ -228,14 +219,12 @@ namespace AsynGyanis::Net
          * @param what 中文称呼
          * @return QpackError DecompressionFailed 类别的失败对象（RFC 9204 §7.4：请求流上的超限按此码）
          */
-        [[nodiscard]] QpackError makeFieldSectionError(QpackParseStatus status, const QpackError &error, std::uint64_t streamId,
-                                                       std::size_t lineIndex, std::string_view what)
+        [[nodiscard]] QpackError makeFieldSectionError(QpackParseStatus status, const QpackError &error, std::uint64_t streamId, std::size_t lineIndex, std::string_view what)
         {
             if (status == QpackParseStatus::Incomplete)
             {
-                return makeQpackError(QpackErrorKind::DecompressionFailed,
-                                      "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) + " 个字段行（" +
-                                          std::string(what) + "）字节不够，头块被截断（RFC 9204 §4.5）");
+                return makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) + " 个字段行（" +
+                                                                                   std::string(what) + "）字节不够，头块被截断（RFC 9204 §4.5）");
             }
             return error;
         }
@@ -249,9 +238,9 @@ namespace AsynGyanis::Net
          */
         struct EncoderScratch
         {
-            std::string fieldLineBytes;                           ///< 本段字段行的表示
-            std::string prefixBytes;                              ///< 本段的两字节前缀，最后垫在字段行之前
-            std::string instructionBytes;                         ///< 本段产生的编码器流指令
+            std::string                fieldLineBytes;            ///< 本段字段行的表示
+            std::string                prefixBytes;               ///< 本段的两字节前缀，最后垫在字段行之前
+            std::string                instructionBytes;          ///< 本段产生的编码器流指令
             std::vector<std::uint64_t> referencedAbsoluteIndices; ///< 本段引用到的绝对索引
         };
 
@@ -317,16 +306,16 @@ namespace AsynGyanis::Net
     {
         switch (errorKind)
         {
-        case QpackErrorKind::DecompressionFailed:
-            return Http3ErrorCode::DecompressionFailed;
-        case QpackErrorKind::EncoderStreamError:
-            return Http3ErrorCode::EncoderStreamError;
-        case QpackErrorKind::DecoderStreamError:
-            return Http3ErrorCode::DecoderStreamError;
-        case QpackErrorKind::FieldSectionTooLarge:
-            return Http3ErrorCode::ExcessiveLoad;
-        case QpackErrorKind::InvalidLocalState:
-            return Http3ErrorCode::InternalError;
+            case QpackErrorKind::DecompressionFailed:
+                return Http3ErrorCode::DecompressionFailed;
+            case QpackErrorKind::EncoderStreamError:
+                return Http3ErrorCode::EncoderStreamError;
+            case QpackErrorKind::DecoderStreamError:
+                return Http3ErrorCode::DecoderStreamError;
+            case QpackErrorKind::FieldSectionTooLarge:
+                return Http3ErrorCode::ExcessiveLoad;
+            case QpackErrorKind::InvalidLocalState:
+                return Http3ErrorCode::InternalError;
         }
         // 类别取值越界时按最保守的「本端内部故障」收场，绝不回落成 NoError
         return Http3ErrorCode::InternalError;
@@ -336,8 +325,7 @@ namespace AsynGyanis::Net
     // 动态表（RFC 9204 §3.2）
     // ============================================================================
 
-    QpackDynamicTable::QpackDynamicTable(std::size_t capacityByteCount) noexcept
-        : m_capacityByteCount(capacityByteCount)
+    QpackDynamicTable::QpackDynamicTable(std::size_t capacityByteCount) noexcept : m_capacityByteCount(capacityByteCount)
     {
     }
 
@@ -346,7 +334,7 @@ namespace AsynGyanis::Net
         const std::size_t entryCountToKeep = [&]() -> std::size_t
         {
             std::size_t projectedSizeByteCount = m_sizeByteCount;
-            std::size_t remainingEntryCount = m_entries.size();
+            std::size_t remainingEntryCount    = m_entries.size();
             while (projectedSizeByteCount > capacityByteCount && remainingEntryCount > 0)
             {
                 const std::uint64_t oldestAbsoluteIndex = m_insertCount - remainingEntryCount;
@@ -416,7 +404,7 @@ namespace AsynGyanis::Net
         }
         // 绝对索引越大越新：表内下标 = 项数 - 1 - (该索引 − 最旧项的索引)
         const std::size_t entryIndex = m_entries.size() - 1 - static_cast<std::size_t>(absoluteIndex - oldestAbsoluteIndex);
-        field = m_entries[entryIndex];
+        field                        = m_entries[entryIndex];
         return true;
     }
 
@@ -506,13 +494,9 @@ namespace AsynGyanis::Net
     // 编码器（RFC 9204 §2.1、附录 C）
     // ============================================================================
 
-    QpackEncoder::QpackEncoder(std::size_t peerMaximumTableCapacityByteCount, std::size_t peerMaximumBlockedStreamCount,
-                               std::size_t localTableCapacityByteCount)
-        : m_peerMaximumTableCapacityByteCount(peerMaximumTableCapacityByteCount)
-        , m_peerMaximumBlockedStreamCount(peerMaximumBlockedStreamCount)
-        , m_tableCapacityByteCount(localTableCapacityByteCount)
-        , m_hasPendingCapacityInstruction(localTableCapacityByteCount != 0)
-        , m_dynamicTable(localTableCapacityByteCount)
+    QpackEncoder::QpackEncoder(std::size_t peerMaximumTableCapacityByteCount, std::size_t peerMaximumBlockedStreamCount, std::size_t localTableCapacityByteCount) :
+        m_peerMaximumTableCapacityByteCount(peerMaximumTableCapacityByteCount), m_peerMaximumBlockedStreamCount(peerMaximumBlockedStreamCount),
+        m_tableCapacityByteCount(localTableCapacityByteCount), m_hasPendingCapacityInstruction(localTableCapacityByteCount != 0), m_dynamicTable(localTableCapacityByteCount)
     {
     }
 
@@ -532,8 +516,8 @@ namespace AsynGyanis::Net
     {
         // §2.1.1.1 的固定余量启发式：只保留最近 capacity/2 字节的项可被直接引用，更旧的留给淘汰
         const std::size_t referenceableByteCount = m_tableCapacityByteCount / kQpackDrainingFreeSpaceDivisor;
-        std::size_t accumulatedByteCount = 0;
-        std::uint64_t projectedDrainingIndex = m_dynamicTable.insertCount();
+        std::size_t       accumulatedByteCount   = 0;
+        std::uint64_t     projectedDrainingIndex = m_dynamicTable.insertCount();
         for (std::size_t entryIndex = 0; entryIndex < m_dynamicTable.entries().size(); ++entryIndex)
         {
             const QpackHeaderField &candidate = m_dynamicTable.entries()[entryIndex];
@@ -550,8 +534,7 @@ namespace AsynGyanis::Net
         m_drainingAbsoluteIndex = std::max(m_drainingAbsoluteIndex, projectedDrainingIndex);
     }
 
-    std::map<std::uint64_t, std::deque<QpackEncoder::PendingFieldSection>>::iterator
-    QpackEncoder::findEarliestAwaitingAcknowledgement(std::uint64_t streamId) noexcept
+    std::map<std::uint64_t, std::deque<QpackEncoder::PendingFieldSection>>::iterator QpackEncoder::findEarliestAwaitingAcknowledgement(std::uint64_t streamId) noexcept
     {
         // §2.2.2.1：一次 Ack 只对应「该流上最早一段含动态表引用的头块」，队列里存的就只有这种段
         const auto streamIterator = m_pendingSectionsByStreamId.find(streamId);
@@ -564,7 +547,7 @@ namespace AsynGyanis::Net
 
     void QpackEncoder::releasePendingSectionReferences(const PendingFieldSection &pendingSection) noexcept
     {
-        for (const std::uint64_t absoluteIndex : pendingSection.referencedAbsoluteIndices)
+        for (const std::uint64_t absoluteIndex: pendingSection.referencedAbsoluteIndices)
         {
             const auto referenceIterator = m_entryReferenceCount.find(absoluteIndex);
             if (referenceIterator != m_entryReferenceCount.end())
@@ -572,8 +555,7 @@ namespace AsynGyanis::Net
                 if (referenceIterator->second <= 1)
                 {
                     m_entryReferenceCount.erase(referenceIterator);
-                }
-                else
+                } else
                 {
                     --referenceIterator->second;
                 }
@@ -591,8 +573,7 @@ namespace AsynGyanis::Net
         if (streamIterator->second <= 1)
         {
             m_blockingSectionCountByStreamId.erase(streamIterator);
-        }
-        else
+        } else
         {
             --streamIterator->second;
         }
@@ -605,7 +586,7 @@ namespace AsynGyanis::Net
         {
             return;
         }
-        for (const PendingFieldSection &pendingSection : streamIterator->second)
+        for (const PendingFieldSection &pendingSection: streamIterator->second)
         {
             releasePendingSectionReferences(pendingSection);
             if (pendingSection.risksBlocking)
@@ -620,9 +601,9 @@ namespace AsynGyanis::Net
     void QpackEncoder::refreshBlockingState() noexcept
     {
         // §2.1.2：已知接收计数追上某段的 Required Insert Count 后，该段不再可能让对端阻塞，名额归还
-        for (auto &[streamId, sections] : m_pendingSectionsByStreamId)
+        for (auto &[streamId, sections]: m_pendingSectionsByStreamId)
         {
-            for (PendingFieldSection &section : sections)
+            for (PendingFieldSection &section: sections)
             {
                 if (section.risksBlocking && section.requiredInsertCount <= m_knownReceivedInsertCount)
                 {
@@ -633,30 +614,25 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<void, QpackError> QpackEncoder::setMaximumTableCapacityByteCount(std::size_t capacityByteCount,
-                                                                                    std::string &encoderStreamBytes)
+    std::expected<void, QpackError> QpackEncoder::setMaximumTableCapacityByteCount(std::size_t capacityByteCount, std::string &encoderStreamBytes)
     {
         encoderStreamBytes.clear();
         if (capacityByteCount > m_peerMaximumTableCapacityByteCount)
         {
             // §3.2.3：不得超过对端 SETTINGS_QPACK_MAX_TABLE_CAPACITY；本端既不静默收窄，也不发出去让对端判错
-            return std::unexpected(makeQpackError(
-                QpackErrorKind::InvalidLocalState, "要求的动态表容量 " + std::to_string(capacityByteCount) +
-                                                       " 超过对端上限 " + std::to_string(m_peerMaximumTableCapacityByteCount) +
-                                                       " 字节（RFC 9204 §3.2.3）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::InvalidLocalState, "要求的动态表容量 " + std::to_string(capacityByteCount) + " 超过对端上限 " +
+                                                                                             std::to_string(m_peerMaximumTableCapacityByteCount) + " 字节（RFC 9204 §3.2.3）"));
         }
 
-        const QpackDynamicTable::EvictionPredicate evictionPermitted =
-            [this](std::uint64_t absoluteIndex) { return isEntryEvictable(absoluteIndex); };
+        const QpackDynamicTable::EvictionPredicate evictionPermitted = [this](std::uint64_t absoluteIndex) { return isEntryEvictable(absoluteIndex); };
         if (!m_dynamicTable.setCapacityByteCount(capacityByteCount, evictionPermitted))
         {
             // §4.3.1：缩容不得淘汰仍被未确认头块引用的项，宁可拒绝这次变更也不让对端解不开后续头块
-            return std::unexpected(makeQpackError(
-                QpackErrorKind::InvalidLocalState, "把动态表容量降到 " + std::to_string(capacityByteCount) +
-                                                       " 字节会淘汰尚未确认的表项（RFC 9204 §4.3.1、§2.1.1）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::InvalidLocalState,
+                                                  "把动态表容量降到 " + std::to_string(capacityByteCount) + " 字节会淘汰尚未确认的表项（RFC 9204 §4.3.1、§2.1.1）"));
         }
 
-        m_tableCapacityByteCount = capacityByteCount;
+        m_tableCapacityByteCount        = capacityByteCount;
         m_hasPendingCapacityInstruction = false;
         if (capacityByteCount == 0 && m_peerMaximumTableCapacityByteCount == 0)
         {
@@ -667,9 +643,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, QpackError> QpackEncoder::encodeFieldSection(std::uint64_t streamId,
-                                                                     std::span<const QpackHeaderField> fieldLines,
-                                                                     std::string &headerBlock,
+    std::expected<void, QpackError> QpackEncoder::encodeFieldSection(std::uint64_t streamId, std::span<const QpackHeaderField> fieldLines, std::string &headerBlock,
                                                                      std::string &encoderStreamBytes)
     {
         headerBlock.clear();
@@ -677,10 +651,9 @@ namespace AsynGyanis::Net
 
         if (m_tableCapacityByteCount > m_peerMaximumTableCapacityByteCount)
         {
-            return std::unexpected(makeQpackError(
-                QpackErrorKind::InvalidLocalState, "动态表容量 " + std::to_string(m_tableCapacityByteCount) +
-                                                       " 超过对端上限 " + std::to_string(m_peerMaximumTableCapacityByteCount) +
-                                                       " 字节，无法编码（RFC 9204 §3.2.3）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::InvalidLocalState, "动态表容量 " + std::to_string(m_tableCapacityByteCount) + " 超过对端上限 " +
+                                                                                             std::to_string(m_peerMaximumTableCapacityByteCount) +
+                                                                                             " 字节，无法编码（RFC 9204 §3.2.3）"));
         }
 
         // 三段中间结果共用一份按线程复用的缓冲：清空即可续用，不必每段重新长容
@@ -689,8 +662,8 @@ namespace AsynGyanis::Net
         scratch.prefixBytes.clear();
         scratch.instructionBytes.clear();
         scratch.referencedAbsoluteIndices.clear();
-        std::string &fieldLineBytes = scratch.fieldLineBytes;
-        std::string &prefixBytes = scratch.prefixBytes;
+        std::string &fieldLineBytes   = scratch.fieldLineBytes;
+        std::string &prefixBytes      = scratch.prefixBytes;
         std::string &instructionBytes = scratch.instructionBytes;
         if (m_hasPendingCapacityInstruction)
         {
@@ -700,21 +673,19 @@ namespace AsynGyanis::Net
         }
 
         // §4.5.1.2 与附录 C：Base 取本段开始时的插入计数快照，段内新插入的项靠表后索引引用
-        const std::uint64_t baseValue = m_dynamicTable.insertCount();
-        std::uint64_t requiredInsertCount = 0;
+        const std::uint64_t         baseValue                 = m_dynamicTable.insertCount();
+        std::uint64_t               requiredInsertCount       = 0;
         std::vector<std::uint64_t> &referencedAbsoluteIndices = scratch.referencedAbsoluteIndices;
 
         const bool thisStreamAlreadyRisksBlocking = m_blockingSectionCountByStreamId.contains(streamId);
         // §2.1.2：可能阻塞的流数恒不得超过对端 SETTINGS_QPACK_BLOCKED_STREAMS；同一条流再阻塞不占新名额
-        const bool mayReferenceUnacknowledgedEntries =
-            m_blockingSectionCountByStreamId.size() < m_peerMaximumBlockedStreamCount || thisStreamAlreadyRisksBlocking;
-        const QpackDynamicTable::EvictionPredicate evictionPermitted =
-            [this](std::uint64_t absoluteIndex) { return isEntryEvictable(absoluteIndex); };
+        const bool mayReferenceUnacknowledgedEntries                 = m_blockingSectionCountByStreamId.size() < m_peerMaximumBlockedStreamCount || thisStreamAlreadyRisksBlocking;
+        const QpackDynamicTable::EvictionPredicate evictionPermitted = [this](std::uint64_t absoluteIndex) { return isEntryEvictable(absoluteIndex); };
 
         for (std::size_t lineIndex = 0; lineIndex < fieldLines.size(); ++lineIndex)
         {
-            const QpackHeaderField &fieldLine = fieldLines[lineIndex];
-            const std::size_t staticFullIndex = findQpackStaticTableIndex(fieldLine.name, fieldLine.value);
+            const QpackHeaderField &fieldLine       = fieldLines[lineIndex];
+            const std::size_t       staticFullIndex = findQpackStaticTableIndex(fieldLine.name, fieldLine.value);
             if (staticFullIndex != kQpackStaticTableNoIndex)
             {
                 // 静态表整项命中最省字节且不引入任何动态状态，故优先级最高（附录 C 的第一步）
@@ -723,16 +694,15 @@ namespace AsynGyanis::Net
             }
 
             std::uint64_t matchedAbsoluteIndex = m_dynamicTable.findMatchingEntry(fieldLine.name, fieldLine.value);
-            if (matchedAbsoluteIndex != kQpackNoAbsoluteIndex && matchedAbsoluteIndex < m_drainingAbsoluteIndex &&
-                matchedAbsoluteIndex + 1 < m_dynamicTable.insertCount() && mayReferenceUnacknowledgedEntries)
+            if (matchedAbsoluteIndex != kQpackNoAbsoluteIndex && matchedAbsoluteIndex < m_drainingAbsoluteIndex && matchedAbsoluteIndex + 1 < m_dynamicTable.insertCount() &&
+                mayReferenceUnacknowledgedEntries)
             {
                 // §2.1.1.1：命中项已进入 draining 区间时改发 Duplicate 并引用表首的新副本，免得这条旧引用
                 // 继续拖住淘汰；表首项本身不必复制（复制出来的索引引用起来等价）
-                QpackHeaderField sourceEntry;
-                const bool sourceFound = m_dynamicTable.tryGetEntryByAbsoluteIndex(matchedAbsoluteIndex, sourceEntry);
-                const std::uint64_t relativeIndexToSource = m_dynamicTable.insertCount() - 1 - matchedAbsoluteIndex;
-                const std::optional<std::uint64_t> duplicatedAbsoluteIndex =
-                    sourceFound ? m_dynamicTable.insert(std::move(sourceEntry), evictionPermitted) : std::nullopt;
+                QpackHeaderField                   sourceEntry;
+                const bool                         sourceFound             = m_dynamicTable.tryGetEntryByAbsoluteIndex(matchedAbsoluteIndex, sourceEntry);
+                const std::uint64_t                relativeIndexToSource   = m_dynamicTable.insertCount() - 1 - matchedAbsoluteIndex;
+                const std::optional<std::uint64_t> duplicatedAbsoluteIndex = sourceFound ? m_dynamicTable.insert(std::move(sourceEntry), evictionPermitted) : std::nullopt;
                 if (duplicatedAbsoluteIndex.has_value())
                 {
                     appendHpackInteger(instructionBytes, relativeIndexToSource, 5, kDuplicatePatternBits);
@@ -750,8 +720,7 @@ namespace AsynGyanis::Net
                     if (matchedAbsoluteIndex < baseValue)
                     {
                         appendHpackInteger(fieldLineBytes, baseValue - 1 - matchedAbsoluteIndex, 6, kIndexedPatternBits);
-                    }
-                    else
+                    } else
                     {
                         appendHpackInteger(fieldLineBytes, matchedAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
                     }
@@ -764,27 +733,21 @@ namespace AsynGyanis::Net
             if (matchedAbsoluteIndex == kQpackNoAbsoluteIndex && m_tableCapacityByteCount != 0 && mayReferenceUnacknowledgedEntries)
             {
                 // 附录 C 的「插入并引用」：先定名的来源（静态同名 → 插入时引用静态名；否则动态同名；再否则字面量名）
-                const std::size_t staticNameIndex = findQpackStaticTableNameIndex(fieldLine.name);
-                const std::uint64_t dynamicNameIndex =
-                    staticNameIndex == kQpackStaticTableNoIndex ? m_dynamicTable.findNameEntry(fieldLine.name) : kQpackNoAbsoluteIndex;
-                const std::uint64_t dynamicNameRelativeIndex =
-                    dynamicNameIndex == kQpackNoAbsoluteIndex ? 0 : m_dynamicTable.insertCount() - 1 - dynamicNameIndex;
-                const std::optional<std::uint64_t> insertedAbsoluteIndex =
-                    m_dynamicTable.insert(QpackHeaderField{fieldLine.name, fieldLine.value}, evictionPermitted);
+                const std::size_t   staticNameIndex          = findQpackStaticTableNameIndex(fieldLine.name);
+                const std::uint64_t dynamicNameIndex         = staticNameIndex == kQpackStaticTableNoIndex ? m_dynamicTable.findNameEntry(fieldLine.name) : kQpackNoAbsoluteIndex;
+                const std::uint64_t dynamicNameRelativeIndex = dynamicNameIndex == kQpackNoAbsoluteIndex ? 0 : m_dynamicTable.insertCount() - 1 - dynamicNameIndex;
+                const std::optional<std::uint64_t> insertedAbsoluteIndex = m_dynamicTable.insert(QpackHeaderField{fieldLine.name, fieldLine.value}, evictionPermitted);
                 if (insertedAbsoluteIndex.has_value())
                 {
                     if (staticNameIndex != kQpackStaticTableNoIndex)
                     {
-                        appendHpackInteger(instructionBytes, staticNameIndex, 6,
-                                              kInsertNameReferencePatternBits | kTableBitInOneBitPatternMask);
+                        appendHpackInteger(instructionBytes, staticNameIndex, 6, kInsertNameReferencePatternBits | kTableBitInOneBitPatternMask);
                         appendHpackString(instructionBytes, fieldLine.value);
-                    }
-                    else if (dynamicNameIndex != kQpackNoAbsoluteIndex)
+                    } else if (dynamicNameIndex != kQpackNoAbsoluteIndex)
                     {
                         appendHpackInteger(instructionBytes, dynamicNameRelativeIndex, 6, kInsertNameReferencePatternBits);
                         appendHpackString(instructionBytes, fieldLine.value);
-                    }
-                    else
+                    } else
                     {
                         // 6 位前缀字符串字面量：H 位在 bit5、长度前缀 5 位，本端不启用 Huffman
                         appendHpackInteger(instructionBytes, fieldLine.name.size(), 5, kInsertLiteralNamePatternBits);
@@ -797,8 +760,7 @@ namespace AsynGyanis::Net
                     if (newAbsoluteIndex < baseValue)
                     {
                         appendHpackInteger(fieldLineBytes, baseValue - 1 - newAbsoluteIndex, 6, kIndexedPatternBits);
-                    }
-                    else
+                    } else
                     {
                         appendHpackInteger(fieldLineBytes, newAbsoluteIndex - baseValue, 4, kPostBaseIndexedPatternBits);
                     }
@@ -809,23 +771,20 @@ namespace AsynGyanis::Net
             }
 
             // 既不引用也不插入：退化成字面量表示（名仍可引用，值一律字面量）
-            const std::size_t staticNameIndex = findQpackStaticTableNameIndex(fieldLine.name);
-            const std::uint64_t dynamicNameIndex =
-                staticNameIndex == kQpackStaticTableNoIndex ? m_dynamicTable.findNameEntry(fieldLine.name) : kQpackNoAbsoluteIndex;
+            const std::size_t   staticNameIndex  = findQpackStaticTableNameIndex(fieldLine.name);
+            const std::uint64_t dynamicNameIndex = staticNameIndex == kQpackStaticTableNoIndex ? m_dynamicTable.findNameEntry(fieldLine.name) : kQpackNoAbsoluteIndex;
             if (staticNameIndex != kQpackStaticTableNoIndex)
             {
                 appendHpackInteger(fieldLineBytes, staticNameIndex, 4, kLiteralStaticNamePatternBits);
                 appendHpackString(fieldLineBytes, fieldLine.value);
                 continue;
             }
-            if (dynamicNameIndex != kQpackNoAbsoluteIndex &&
-                (dynamicNameIndex < m_knownReceivedInsertCount || mayReferenceUnacknowledgedEntries))
+            if (dynamicNameIndex != kQpackNoAbsoluteIndex && (dynamicNameIndex < m_knownReceivedInsertCount || mayReferenceUnacknowledgedEntries))
             {
                 if (dynamicNameIndex < baseValue)
                 {
                     appendHpackInteger(fieldLineBytes, baseValue - 1 - dynamicNameIndex, 4, kLiteralNameReferencePatternBits);
-                }
-                else
+                } else
                 {
                     appendHpackInteger(fieldLineBytes, dynamicNameIndex - baseValue, 3, kPostBaseNameReferencePatternBits);
                 }
@@ -847,17 +806,15 @@ namespace AsynGyanis::Net
         {
             appendHpackInteger(prefixBytes, 0, 8, 0x00);
             appendHpackInteger(prefixBytes, 0, 7, 0x00);
-        }
-        else
+        } else
         {
             const std::uint64_t maximumEntryCount = QpackDynamicTable::maximumEntryCount(m_peerMaximumTableCapacityByteCount);
             if (maximumEntryCount == 0)
             {
                 // 容不下任何表项的容量不可能产生引用：走到这里说明状态自相矛盾，宁可报错也不做除零回绕
-                return std::unexpected(makeQpackError(QpackErrorKind::InvalidLocalState,
-                                                      "对端容量上限 " + std::to_string(m_peerMaximumTableCapacityByteCount) +
-                                                          " 字节容不下一项，却产生了 Required Insert Count " +
-                                                          std::to_string(requiredInsertCount) + "（RFC 9204 §4.5.1.1）"));
+                return std::unexpected(makeQpackError(QpackErrorKind::InvalidLocalState, "对端容量上限 " + std::to_string(m_peerMaximumTableCapacityByteCount) +
+                                                                                                 " 字节容不下一项，却产生了 Required Insert Count " +
+                                                                                                 std::to_string(requiredInsertCount) + "（RFC 9204 §4.5.1.1）"));
             }
             // §4.5.1.1：Required Insert Count 按 2×MaxEntries 取模再加一编码，MaxEntries 取自对端公布的容量上限
             const std::uint64_t fullRange = 2 * maximumEntryCount;
@@ -865,15 +822,14 @@ namespace AsynGyanis::Net
             if (baseValue >= requiredInsertCount)
             {
                 appendHpackInteger(prefixBytes, baseValue - requiredInsertCount, 7, 0x00);
-            }
-            else
+            } else
             {
                 // 符号位为 1 表示段内插过项：Base = Required Insert Count - Delta Base - 1（§4.5.1.2）
                 appendHpackInteger(prefixBytes, requiredInsertCount - baseValue - 1, 7, kSignBitMask);
             }
         }
 
-        for (const std::uint64_t absoluteIndex : referencedAbsoluteIndices)
+        for (const std::uint64_t absoluteIndex: referencedAbsoluteIndices)
         {
             // 每条引用都记到该段被确认或取消为止，否则淘汰判据会把还被引用的项当成可淘汰（§2.1.1）
             ++m_entryReferenceCount[absoluteIndex];
@@ -915,27 +871,25 @@ namespace AsynGyanis::Net
         while (parsedByteCount < m_decoderStreamBuffer.size())
         {
             const std::string_view remaining = std::string_view(m_decoderStreamBuffer).substr(parsedByteCount);
-            const std::uint8_t firstByte = static_cast<std::uint8_t>(remaining[0]);
+            const std::uint8_t     firstByte = static_cast<std::uint8_t>(remaining[0]);
 
             // §4.4 的三种指令按首字节模式区分：'1' 是 Section Ack，'01' 是 Stream Cancellation，'00' 是 ICI
-            InstructionKind kind = InstructionKind::InsertCountIncrement;
-            std::uint8_t prefixBitCount = 6;
+            InstructionKind kind           = InstructionKind::InsertCountIncrement;
+            std::uint8_t    prefixBitCount = 6;
             if (testBit(firstByte, kSectionAckPatternBits))
             {
-                kind = InstructionKind::SectionAcknowledgment;
+                kind           = InstructionKind::SectionAcknowledgment;
                 prefixBitCount = 7;
-            }
-            else if ((firstByte & kTwoBitPatternBitMask) == kStreamCancellationPatternBits)
+            } else if ((firstByte & kTwoBitPatternBitMask) == kStreamCancellationPatternBits)
             {
                 kind = InstructionKind::StreamCancellation;
             }
 
-            std::uint64_t parameterValue = 0;
-            std::size_t consumedByteCount = 0;
-            QpackError error;
+            std::uint64_t          parameterValue    = 0;
+            std::size_t            consumedByteCount = 0;
+            QpackError             error;
             const QpackParseStatus status =
-                decodePrefixedInteger(remaining, prefixBitCount, QpackErrorKind::DecoderStreamError, "解码器流指令", parameterValue,
-                                      consumedByteCount, &error);
+                    decodePrefixedInteger(remaining, prefixBitCount, QpackErrorKind::DecoderStreamError, "解码器流指令", parameterValue, consumedByteCount, &error);
             if (status == QpackParseStatus::Incomplete)
             {
                 // 指令边界不保证落在包边界上：半截留在缓冲里，下趟接着解（§4.2 的流是无框架的字节流）
@@ -977,29 +931,23 @@ namespace AsynGyanis::Net
                     m_pendingSectionsByStreamId.erase(sectionIterator);
                 }
                 refreshBlockingState();
-            }
-            else if (kind == InstructionKind::StreamCancellation)
+            } else if (kind == InstructionKind::StreamCancellation)
             {
                 cancelStreamReferences(parameterValue);
-            }
-            else
+            } else
             {
                 if (parameterValue == 0)
                 {
                     m_decoderStreamBuffer.erase(0, parsedByteCount);
-                    return std::unexpected(makeQpackError(QpackErrorKind::DecoderStreamError,
-                                                          "Insert Count Increment 的增量为 0（RFC 9204 §4.4.3）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::DecoderStreamError, "Insert Count Increment 的增量为 0（RFC 9204 §4.4.3）"));
                 }
-                if (m_knownReceivedInsertCount > m_dynamicTable.insertCount() ||
-                    parameterValue > m_dynamicTable.insertCount() - m_knownReceivedInsertCount)
+                if (m_knownReceivedInsertCount > m_dynamicTable.insertCount() || parameterValue > m_dynamicTable.insertCount() - m_knownReceivedInsertCount)
                 {
                     m_decoderStreamBuffer.erase(0, parsedByteCount);
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::DecoderStreamError, "Insert Count Increment 增量 " + std::to_string(parameterValue) +
-                                                                " 会把已知接收计数推到 " +
-                                                                std::to_string(m_knownReceivedInsertCount + parameterValue) +
-                                                                "，超过本端已发出的插入数 " + std::to_string(m_dynamicTable.insertCount()) +
-                                                                "（RFC 9204 §4.4.3）"));
+                    return std::unexpected(
+                            makeQpackError(QpackErrorKind::DecoderStreamError, "Insert Count Increment 增量 " + std::to_string(parameterValue) + " 会把已知接收计数推到 " +
+                                                                                       std::to_string(m_knownReceivedInsertCount + parameterValue) + "，超过本端已发出的插入数 " +
+                                                                                       std::to_string(m_dynamicTable.insertCount()) + "（RFC 9204 §4.4.3）"));
                 }
                 m_knownReceivedInsertCount += parameterValue;
                 refreshBlockingState();
@@ -1060,9 +1008,7 @@ namespace AsynGyanis::Net
     // 解码器（RFC 9204 §2.2、§4.3、§4.4、§4.5）
     // ============================================================================
 
-    QpackDecoder::QpackDecoder(QpackDecoderSettings settings)
-        : m_settings(settings)
-        , m_dynamicTable(0)
+    QpackDecoder::QpackDecoder(QpackDecoderSettings settings) : m_settings(settings), m_dynamicTable(0)
     {
     }
 
@@ -1076,39 +1022,35 @@ namespace AsynGyanis::Net
         const std::uint64_t maximumEntryCount = QpackDynamicTable::maximumEntryCount(m_settings.maximumTableCapacityByteCount);
         if (maximumEntryCount == 0)
         {
-            return std::unexpected(makeQpackError(
-                QpackErrorKind::DecompressionFailed, "对端容量上限 " + std::to_string(m_settings.maximumTableCapacityByteCount) +
-                                                         " 字节容不下任何表项，Encoded Insert Count 只能是 0，实际为 " +
-                                                         std::to_string(encodedInsertCount) + "（RFC 9204 §4.5.1.1）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "对端容量上限 " + std::to_string(m_settings.maximumTableCapacityByteCount) +
+                                                                                               " 字节容不下任何表项，Encoded Insert Count 只能是 0，实际为 " +
+                                                                                               std::to_string(encodedInsertCount) + "（RFC 9204 §4.5.1.1）"));
         }
 
         const std::uint64_t fullRange = 2 * maximumEntryCount;
         if (encodedInsertCount > fullRange)
         {
-            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed,
-                                                  "Encoded Insert Count " + std::to_string(encodedInsertCount) +
-                                                      " 超过可表示范围 " + std::to_string(fullRange) + "（RFC 9204 §4.5.1.1）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "Encoded Insert Count " + std::to_string(encodedInsertCount) + " 超过可表示范围 " +
+                                                                                               std::to_string(fullRange) + "（RFC 9204 §4.5.1.1）"));
         }
 
         // §4.5.1.1 的还原算法：把模 2×MaxEntries 的取值放回离本端当前插入数最近的那一圈
-        const std::uint64_t totalInsertCount = m_dynamicTable.insertCount();
-        const std::uint64_t maximumValue = totalInsertCount + maximumEntryCount;
-        const std::uint64_t wrappedBaseValue = (maximumValue / fullRange) * fullRange;
-        std::uint64_t requiredInsertCount = wrappedBaseValue + encodedInsertCount - 1;
+        const std::uint64_t totalInsertCount    = m_dynamicTable.insertCount();
+        const std::uint64_t maximumValue        = totalInsertCount + maximumEntryCount;
+        const std::uint64_t wrappedBaseValue    = (maximumValue / fullRange) * fullRange;
+        std::uint64_t       requiredInsertCount = wrappedBaseValue + encodedInsertCount - 1;
         if (requiredInsertCount > maximumValue)
         {
             if (requiredInsertCount <= fullRange)
             {
                 return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed,
-                                                      "Required Insert Count 还原为 " + std::to_string(requiredInsertCount) +
-                                                          "，无法回退到合法区间（RFC 9204 §4.5.1.1）"));
+                                                      "Required Insert Count 还原为 " + std::to_string(requiredInsertCount) + "，无法回退到合法区间（RFC 9204 §4.5.1.1）"));
             }
             requiredInsertCount -= fullRange;
         }
         if (requiredInsertCount == 0)
         {
-            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed,
-                                                  "还原出的 Required Insert Count 为 0，但取值 0 必须编码成 0（RFC 9204 §4.5.1.1）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "还原出的 Required Insert Count 为 0，但取值 0 必须编码成 0（RFC 9204 §4.5.1.1）"));
         }
         return requiredInsertCount;
     }
@@ -1139,21 +1081,18 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<void, QpackError> QpackDecoder::blockStream(std::uint64_t streamId, std::span<const std::uint8_t> section,
-                                                             std::uint64_t requiredInsertCount)
+    std::expected<void, QpackError> QpackDecoder::blockStream(std::uint64_t streamId, std::span<const std::uint8_t> section, std::uint64_t requiredInsertCount)
     {
         const bool streamAlreadyBlocked = m_blockedSectionsByStreamId.contains(streamId);
         if (!streamAlreadyBlocked && m_blockedSectionsByStreamId.size() >= m_settings.maximumBlockedStreamCount)
         {
             // §2.1.2：超出本端承诺的阻塞流数即对端违规，判 DECOMPRESSION_FAILED
-            return std::unexpected(makeQpackError(
-                QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 需要阻塞，但本端最多只支持 " +
-                                                         std::to_string(m_settings.maximumBlockedStreamCount) +
-                                                         " 条阻塞流（RFC 9204 §2.1.2）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 需要阻塞，但本端最多只支持 " +
+                                                                                               std::to_string(m_settings.maximumBlockedStreamCount) +
+                                                                                               " 条阻塞流（RFC 9204 §2.1.2）"));
         }
 
-        m_blockedSectionsByStreamId[streamId].push_back(
-            BlockedFieldSection{requiredInsertCount, std::string(toByteView(section))});
+        m_blockedSectionsByStreamId[streamId].push_back(BlockedFieldSection{requiredInsertCount, std::string(toByteView(section))});
         return {};
     }
 
@@ -1183,45 +1122,41 @@ namespace AsynGyanis::Net
         fields.resize(m_fieldLineCount);
         for (std::size_t fieldIndex = 0; fieldIndex < m_fieldLineCount; ++fieldIndex)
         {
-            fields[fieldIndex].name = m_fieldLineScratch[fieldIndex].name;
+            fields[fieldIndex].name  = m_fieldLineScratch[fieldIndex].name;
             fields[fieldIndex].value = m_fieldLineScratch[fieldIndex].value;
         }
     }
 
-    std::expected<QpackFieldSectionDecodeStatus, QpackError>
-    QpackDecoder::decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
-                                     std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
+    std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                              std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
     {
         const auto decoded = decodeFieldSectionIntoScratch(streamId, encodedFieldSection, decoderStreamBytes);
         // 只有整段解成才交付：失败或仍被挂起时调用方看到的仍是空表，与旧写法「先清空、末尾才填满」同形
         if (decoded.has_value() && *decoded == QpackFieldSectionDecodeStatus::Decoded)
         {
             deliverDecodedFieldLines(fields);
-        }
-        else
+        } else
         {
             fields.clear();
         }
         return decoded;
     }
 
-    std::expected<QpackFieldSectionDecodeStatus, QpackError>
-    QpackDecoder::decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
-                                               std::string &decoderStreamBytes)
+    std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                                         std::string &decoderStreamBytes)
     {
         restartFieldLineScratch();
         decoderStreamBytes.clear();
 
         const std::string_view section = toByteView(encodedFieldSection);
-        std::size_t cursor = 0;
-        QpackError error;
-        std::uint64_t encodedInsertCount = 0;
-        std::size_t consumedByteCount = 0;
+        std::size_t            cursor  = 0;
+        QpackError             error;
+        std::uint64_t          encodedInsertCount = 0;
+        std::size_t            consumedByteCount  = 0;
 
         // §4.5.1 的前缀：Required Insert Count 是 8 位前缀整数，随后是符号位加 7 位前缀的 Delta Base
-        const QpackParseStatus insertCountStatus = decodePrefixedInteger(section, 8, QpackErrorKind::DecompressionFailed,
-                                                                        "Required Insert Count", encodedInsertCount,
-                                                                        consumedByteCount, &error);
+        const QpackParseStatus insertCountStatus =
+                decodePrefixedInteger(section, 8, QpackErrorKind::DecompressionFailed, "Required Insert Count", encodedInsertCount, consumedByteCount, &error);
         if (insertCountStatus != QpackParseStatus::Complete)
         {
             return std::unexpected(makeFieldSectionError(insertCountStatus, error, streamId, 0, "Required Insert Count"));
@@ -1237,13 +1172,12 @@ namespace AsynGyanis::Net
 
         if (cursor >= section.size())
         {
-            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed,
-                                                  "流 " + std::to_string(streamId) + " 的头块缺少 Base 那一字节（RFC 9204 §4.5.1）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的头块缺少 Base 那一字节（RFC 9204 §4.5.1）"));
         }
-        const bool baseIsBelowRequiredInsertCount = testBit(static_cast<std::uint8_t>(section[cursor]), kSignBitMask);
-        std::uint64_t deltaBaseValue = 0;
-        const QpackParseStatus baseStatus = decodePrefixedInteger(section.substr(cursor), 7, QpackErrorKind::DecompressionFailed,
-                                                                 "Delta Base", deltaBaseValue, consumedByteCount, &error);
+        const bool             baseIsBelowRequiredInsertCount = testBit(static_cast<std::uint8_t>(section[cursor]), kSignBitMask);
+        std::uint64_t          deltaBaseValue                 = 0;
+        const QpackParseStatus baseStatus =
+                decodePrefixedInteger(section.substr(cursor), 7, QpackErrorKind::DecompressionFailed, "Delta Base", deltaBaseValue, consumedByteCount, &error);
         if (baseStatus != QpackParseStatus::Complete)
         {
             return std::unexpected(makeFieldSectionError(baseStatus, error, streamId, 0, "Delta Base"));
@@ -1253,13 +1187,11 @@ namespace AsynGyanis::Net
         if (baseIsBelowRequiredInsertCount && requiredInsertCount <= deltaBaseValue)
         {
             // §4.5.1.2：Base 不得为负，符号位为 1 时要求 Required Insert Count 大于 Delta Base
-            return std::unexpected(makeQpackError(
-                QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的符号位为 1，但 Required Insert Count " +
-                                                         std::to_string(requiredInsertCount) + " 不大于 Delta Base " +
-                                                         std::to_string(deltaBaseValue) + "，Base 会为负（RFC 9204 §4.5.1.2）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的符号位为 1，但 Required Insert Count " +
+                                                                                               std::to_string(requiredInsertCount) + " 不大于 Delta Base " +
+                                                                                               std::to_string(deltaBaseValue) + "，Base 会为负（RFC 9204 §4.5.1.2）"));
         }
-        const std::uint64_t baseValue = baseIsBelowRequiredInsertCount ? requiredInsertCount - deltaBaseValue - 1
-                                                                      : requiredInsertCount + deltaBaseValue;
+        const std::uint64_t baseValue = baseIsBelowRequiredInsertCount ? requiredInsertCount - deltaBaseValue - 1 : requiredInsertCount + deltaBaseValue;
 
         if (requiredInsertCount > m_dynamicTable.insertCount())
         {
@@ -1271,12 +1203,11 @@ namespace AsynGyanis::Net
             return QpackFieldSectionDecodeStatus::Blocked;
         }
 
-        std::size_t decodedSizeByteCount = 0;
+        std::size_t   decodedSizeByteCount           = 0;
         std::uint64_t maximumReferencedAbsoluteIndex = 0;
         while (cursor < section.size())
         {
-            if (auto lineResult = decodeFieldLineRepresentation(streamId, encodedFieldSection, cursor, baseValue, requiredInsertCount,
-                                                               maximumReferencedAbsoluteIndex);
+            if (auto lineResult = decodeFieldLineRepresentation(streamId, encodedFieldSection, cursor, baseValue, requiredInsertCount, maximumReferencedAbsoluteIndex);
                 !lineResult.has_value())
             {
                 return std::unexpected(lineResult.error());
@@ -1286,13 +1217,10 @@ namespace AsynGyanis::Net
             decodedSizeByteCount += QpackDynamicTable::entrySizeByteCountOf(appended);
             if (m_settings.maximumFieldSectionSizeByteCount != 0 && decodedSizeByteCount > m_settings.maximumFieldSectionSizeByteCount)
             {
-                return std::unexpected(makeQpackError(
-                    QpackErrorKind::FieldSectionTooLarge, "流 " + std::to_string(streamId) + " 解到第 " +
-                                                              std::to_string(m_fieldLineCount) + " 个字段行时头段大小已达 " +
-                                                              std::to_string(decodedSizeByteCount) +
-                                                              " 字节，超过本端 SETTINGS_MAX_FIELD_SECTION_SIZE " +
-                                                              std::to_string(m_settings.maximumFieldSectionSizeByteCount) +
-                                                              " 字节（RFC 9114 §4.2.2、§10.5.1）"));
+                return std::unexpected(makeQpackError(QpackErrorKind::FieldSectionTooLarge,
+                                                      "流 " + std::to_string(streamId) + " 解到第 " + std::to_string(m_fieldLineCount) + " 个字段行时头段大小已达 " +
+                                                              std::to_string(decodedSizeByteCount) + " 字节，超过本端 SETTINGS_MAX_FIELD_SECTION_SIZE " +
+                                                              std::to_string(m_settings.maximumFieldSectionSizeByteCount) + " 字节（RFC 9114 §4.2.2、§10.5.1）"));
             }
         }
 
@@ -1305,15 +1233,13 @@ namespace AsynGyanis::Net
         return QpackFieldSectionDecodeStatus::Decoded;
     }
 
-    std::expected<QpackFieldSectionDecodeStatus, QpackError>
-    QpackDecoder::resumeBlockedFieldSection(std::uint64_t streamId, std::vector<QpackHeaderField> &fields,
-                                           std::string &decoderStreamBytes)
+    std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::resumeBlockedFieldSection(std::uint64_t streamId, std::vector<QpackHeaderField> &fields,
+                                                                                                     std::string &decoderStreamBytes)
     {
         const auto streamIterator = m_blockedSectionsByStreamId.find(streamId);
         if (streamIterator == m_blockedSectionsByStreamId.end() || streamIterator->second.empty())
         {
-            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed,
-                                                  "流 " + std::to_string(streamId) + " 没有挂起的头块可续解（RFC 9204 §2.2.1）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 没有挂起的头块可续解（RFC 9204 §2.2.1）"));
         }
 
         // 队首即该流上最早的一段：前一段没解开就不许解后面的（§2.2.1 要求「已开始读的每段」都够）
@@ -1324,9 +1250,9 @@ namespace AsynGyanis::Net
             return QpackFieldSectionDecodeStatus::Blocked;
         }
 
-        const std::string encodedSection = streamIterator->second.front().encodedFieldSection;
+        const std::string             encodedSection = streamIterator->second.front().encodedFieldSection;
         std::span<const std::uint8_t> retained(reinterpret_cast<const std::uint8_t *>(encodedSection.data()), encodedSection.size());
-        auto decodeResult = decodeFieldSection(streamId, retained, fields, decoderStreamBytes);
+        auto                          decodeResult = decodeFieldSection(streamId, retained, fields, decoderStreamBytes);
         if (decodeResult.has_value() && *decodeResult == QpackFieldSectionDecodeStatus::Decoded)
         {
             eraseBlockedSection(streamId);
@@ -1340,9 +1266,8 @@ namespace AsynGyanis::Net
         const auto streamIterator = m_unacknowledgedRequiredInsertCountsByStreamId.find(streamId);
         if (streamIterator == m_unacknowledgedRequiredInsertCountsByStreamId.end() || streamIterator->second.empty())
         {
-            return std::unexpected(makeQpackError(
-                QpackErrorKind::DecoderStreamError, "流 " + std::to_string(streamId) +
-                                                        " 上没有待确认的头块，不该发 Section Ack（RFC 9204 §4.4.1）"));
+            return std::unexpected(
+                    makeQpackError(QpackErrorKind::DecoderStreamError, "流 " + std::to_string(streamId) + " 上没有待确认的头块，不该发 Section Ack（RFC 9204 §4.4.1）"));
         }
 
         const std::uint64_t requiredInsertCount = streamIterator->second.front();
@@ -1378,8 +1303,7 @@ namespace AsynGyanis::Net
         m_unacknowledgedRequiredInsertCountsByStreamId.erase(streamId);
     }
 
-    std::expected<std::size_t, QpackError> QpackDecoder::feedEncoderStream(std::span<const std::uint8_t> bytes,
-                                                                           std::vector<std::uint64_t> &unblockedStreamIds,
+    std::expected<std::size_t, QpackError> QpackDecoder::feedEncoderStream(std::span<const std::uint8_t> bytes, std::vector<std::uint64_t> &unblockedStreamIds,
                                                                            std::string &decoderStreamBytes)
     {
         unblockedStreamIds.clear();
@@ -1392,16 +1316,15 @@ namespace AsynGyanis::Net
         while (parsedByteCount < m_encoderStreamBuffer.size())
         {
             const std::string_view remaining = std::string_view(m_encoderStreamBuffer).substr(parsedByteCount);
-            const std::uint8_t firstByte = static_cast<std::uint8_t>(remaining[0]);
-            QpackError error;
-            std::size_t consumedByteCount = 0;
+            const std::uint8_t     firstByte = static_cast<std::uint8_t>(remaining[0]);
+            QpackError             error;
+            std::size_t            consumedByteCount = 0;
 
             if ((firstByte & kThreeBitPatternBitMask) == kSetCapacityPatternBits)
             {
-                std::uint64_t capacityValue = 0;
-                const QpackParseStatus status = decodePrefixedInteger(remaining, 5, QpackErrorKind::EncoderStreamError,
-                                                                     "Set Dynamic Table Capacity", capacityValue, consumedByteCount,
-                                                                     &error);
+                std::uint64_t          capacityValue = 0;
+                const QpackParseStatus status =
+                        decodePrefixedInteger(remaining, 5, QpackErrorKind::EncoderStreamError, "Set Dynamic Table Capacity", capacityValue, consumedByteCount, &error);
                 if (status == QpackParseStatus::Incomplete)
                 {
                     break;
@@ -1415,30 +1338,25 @@ namespace AsynGyanis::Net
                 {
                     m_encoderStreamBuffer.erase(0, parsedByteCount);
                     // §3.2.3：容量不得超过本端公布的 SETTINGS_QPACK_MAX_TABLE_CAPACITY
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::EncoderStreamError, "对端把动态表容量设为 " + std::to_string(capacityValue) +
-                                                                " 字节，超过本端公布的 " +
-                                                                std::to_string(m_settings.maximumTableCapacityByteCount) +
-                                                                " 字节（RFC 9204 §3.2.3、§4.3.1）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::EncoderStreamError, "对端把动态表容量设为 " + std::to_string(capacityValue) + " 字节，超过本端公布的 " +
+                                                                                                      std::to_string(m_settings.maximumTableCapacityByteCount) +
+                                                                                                      " 字节（RFC 9204 §3.2.3、§4.3.1）"));
                 }
                 // RFC 9204 §4.3.1 允许容量在编码器流的任意位置出现，只核对取值不超过上限，不要求它打头。
                 // 解码侧的淘汰判据恒真（对端要淘汰什么就淘汰什么），失败即本层表状态自相矛盾
                 if (!m_dynamicTable.setCapacityByteCount(static_cast<std::size_t>(capacityValue), nullptr))
                 {
                     m_encoderStreamBuffer.erase(0, parsedByteCount);
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::EncoderStreamError, "把动态表容量设为 " + std::to_string(capacityValue) +
-                                                                " 字节后本端表状态无法自洽（RFC 9204 §3.2.2）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::EncoderStreamError,
+                                                          "把动态表容量设为 " + std::to_string(capacityValue) + " 字节后本端表状态无法自洽（RFC 9204 §3.2.2）"));
                 }
-            }
-            else if ((firstByte & kInsertNameReferencePatternBits) == kInsertNameReferencePatternBits)
+            } else if ((firstByte & kInsertNameReferencePatternBits) == kInsertNameReferencePatternBits)
             {
                 // §4.3.2：'1' + T + 名字索引（6 位前缀），随后是 8 位前缀的字段值字面量
-                const bool isStaticNameReference = testBit(firstByte, kTableBitInOneBitPatternMask);
-                std::uint64_t nameIndexValue = 0;
-                QpackParseStatus status = decodePrefixedInteger(remaining, 6, QpackErrorKind::EncoderStreamError,
-                                                               "Insert With Name Reference 的名字索引", nameIndexValue,
-                                                               consumedByteCount, &error);
+                const bool       isStaticNameReference = testBit(firstByte, kTableBitInOneBitPatternMask);
+                std::uint64_t    nameIndexValue        = 0;
+                QpackParseStatus status =
+                        decodePrefixedInteger(remaining, 6, QpackErrorKind::EncoderStreamError, "Insert With Name Reference 的名字索引", nameIndexValue, consumedByteCount, &error);
                 if (status == QpackParseStatus::Incomplete)
                 {
                     break;
@@ -1455,30 +1373,26 @@ namespace AsynGyanis::Net
                     if (nameIndexValue >= kQpackStaticTable.size())
                     {
                         m_encoderStreamBuffer.erase(0, parsedByteCount);
-                        return std::unexpected(makeQpackError(
-                            QpackErrorKind::EncoderStreamError, "插入指令引用静态表索引 " + std::to_string(nameIndexValue) +
-                                                                    "，超出 " + std::to_string(kQpackStaticTable.size()) +
-                                                                    " 项（RFC 9204 §3.1）"));
+                        return std::unexpected(makeQpackError(QpackErrorKind::EncoderStreamError, "插入指令引用静态表索引 " + std::to_string(nameIndexValue) + "，超出 " +
+                                                                                                          std::to_string(kQpackStaticTable.size()) + " 项（RFC 9204 §3.1）"));
                     }
                     entry.name = kQpackStaticTable[nameIndexValue].name;
-                }
-                else
+                } else
                 {
                     QpackHeaderField referenced;
                     if (!m_dynamicTable.tryGetEntryByRelativeIndexFromInsertionPoint(nameIndexValue, referenced))
                     {
                         m_encoderStreamBuffer.erase(0, parsedByteCount);
-                        return std::unexpected(makeQpackError(
-                            QpackErrorKind::EncoderStreamError, "插入指令引用的动态表相对索引 " + std::to_string(nameIndexValue) +
-                                                                    " 已被淘汰或从未插入（RFC 9204 §2.2.3、§3.2.5）"));
+                        return std::unexpected(makeQpackError(QpackErrorKind::EncoderStreamError,
+                                                              "插入指令引用的动态表相对索引 " + std::to_string(nameIndexValue) + " 已被淘汰或从未插入（RFC 9204 §2.2.3、§3.2.5）"));
                     }
                     entry.name = std::move(referenced.name);
                 }
 
                 std::string valueText;
                 std::size_t valueConsumedByteCount = 0;
-                status = decodePrefixedStringLiteral(remaining.substr(consumedByteCount), 8, QpackErrorKind::EncoderStreamError,
-                                                    "字段值", 0, valueText, valueConsumedByteCount, &error);
+                status = decodePrefixedStringLiteral(remaining.substr(consumedByteCount), 8, QpackErrorKind::EncoderStreamError, "字段值", 0, valueText, valueConsumedByteCount,
+                                                     &error);
                 if (status == QpackParseStatus::Incomplete)
                 {
                     break;
@@ -1493,21 +1407,16 @@ namespace AsynGyanis::Net
                 if (!m_dynamicTable.insert(std::move(entry), nullptr).has_value())
                 {
                     m_encoderStreamBuffer.erase(0, parsedByteCount);
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::EncoderStreamError, "插入的表项大于当前动态表容量 " +
-                                                                std::to_string(m_dynamicTable.capacityByteCount()) +
-                                                                " 字节（RFC 9204 §3.2.2）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::EncoderStreamError,
+                                                          "插入的表项大于当前动态表容量 " + std::to_string(m_dynamicTable.capacityByteCount()) + " 字节（RFC 9204 §3.2.2）"));
                 }
                 consumedByteCount += valueConsumedByteCount;
-            }
-            else if ((firstByte & kTwoBitPatternBitMask) == kInsertLiteralNamePatternBits)
+            } else if ((firstByte & kTwoBitPatternBitMask) == kInsertLiteralNamePatternBits)
             {
                 // §4.3.3：'01' + 6 位前缀的字段名字面量 + 8 位前缀的字段值字面量
-                std::string nameText;
-                std::size_t nameConsumedByteCount = 0;
-                QpackParseStatus status =
-                    decodePrefixedStringLiteral(remaining, 6, QpackErrorKind::EncoderStreamError, "字段名", 0, nameText,
-                                                nameConsumedByteCount, &error);
+                std::string      nameText;
+                std::size_t      nameConsumedByteCount = 0;
+                QpackParseStatus status = decodePrefixedStringLiteral(remaining, 6, QpackErrorKind::EncoderStreamError, "字段名", 0, nameText, nameConsumedByteCount, &error);
                 if (status == QpackParseStatus::Incomplete)
                 {
                     break;
@@ -1520,8 +1429,8 @@ namespace AsynGyanis::Net
 
                 std::string valueText;
                 std::size_t valueConsumedByteCount = 0;
-                status = decodePrefixedStringLiteral(remaining.substr(nameConsumedByteCount), 8, QpackErrorKind::EncoderStreamError,
-                                                    "字段值", 0, valueText, valueConsumedByteCount, &error);
+                status = decodePrefixedStringLiteral(remaining.substr(nameConsumedByteCount), 8, QpackErrorKind::EncoderStreamError, "字段值", 0, valueText, valueConsumedByteCount,
+                                                     &error);
                 if (status == QpackParseStatus::Incomplete)
                 {
                     break;
@@ -1535,20 +1444,16 @@ namespace AsynGyanis::Net
                 if (!m_dynamicTable.insert(QpackHeaderField{std::move(nameText), std::move(valueText)}, nullptr).has_value())
                 {
                     m_encoderStreamBuffer.erase(0, parsedByteCount);
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::EncoderStreamError, "插入的表项大于当前动态表容量 " +
-                                                                std::to_string(m_dynamicTable.capacityByteCount()) +
-                                                                " 字节（RFC 9204 §3.2.2）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::EncoderStreamError,
+                                                          "插入的表项大于当前动态表容量 " + std::to_string(m_dynamicTable.capacityByteCount()) + " 字节（RFC 9204 §3.2.2）"));
                 }
                 consumedByteCount = nameConsumedByteCount + valueConsumedByteCount;
-            }
-            else if ((firstByte & kThreeBitPatternBitMask) == kDuplicatePatternBits)
+            } else if ((firstByte & kThreeBitPatternBitMask) == kDuplicatePatternBits)
             {
                 // §4.3.4：'000' + 相对索引（5 位前缀）；名与值都不重发，直接复制表项
-                std::uint64_t relativeIndexValue = 0;
-                const QpackParseStatus status = decodePrefixedInteger(remaining, 5, QpackErrorKind::EncoderStreamError,
-                                                                     "Duplicate 的相对索引", relativeIndexValue, consumedByteCount,
-                                                                     &error);
+                std::uint64_t          relativeIndexValue = 0;
+                const QpackParseStatus status =
+                        decodePrefixedInteger(remaining, 5, QpackErrorKind::EncoderStreamError, "Duplicate 的相对索引", relativeIndexValue, consumedByteCount, &error);
                 if (status == QpackParseStatus::Incomplete)
                 {
                     break;
@@ -1563,26 +1468,22 @@ namespace AsynGyanis::Net
                 if (!m_dynamicTable.tryGetEntryByRelativeIndexFromInsertionPoint(relativeIndexValue, sourceEntry))
                 {
                     m_encoderStreamBuffer.erase(0, parsedByteCount);
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::EncoderStreamError, "Duplicate 引用的动态表相对索引 " + std::to_string(relativeIndexValue) +
-                                                                " 已被淘汰或从未插入（RFC 9204 §2.2.3、§4.3.4）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::EncoderStreamError, "Duplicate 引用的动态表相对索引 " + std::to_string(relativeIndexValue) +
+                                                                                                      " 已被淘汰或从未插入（RFC 9204 §2.2.3、§4.3.4）"));
                 }
                 if (!m_dynamicTable.insert(std::move(sourceEntry), nullptr).has_value())
                 {
                     m_encoderStreamBuffer.erase(0, parsedByteCount);
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::EncoderStreamError, "Duplicate 复制出的表项大于当前动态表容量 " +
-                                                                std::to_string(m_dynamicTable.capacityByteCount()) +
-                                                                " 字节（RFC 9204 §3.2.2）"));
+                    return std::unexpected(
+                            makeQpackError(QpackErrorKind::EncoderStreamError,
+                                           "Duplicate 复制出的表项大于当前动态表容量 " + std::to_string(m_dynamicTable.capacityByteCount()) + " 字节（RFC 9204 §3.2.2）"));
                 }
-            }
-            else
+            } else
             {
                 m_encoderStreamBuffer.erase(0, parsedByteCount);
-                return std::unexpected(makeQpackError(
-                    QpackErrorKind::EncoderStreamError, "编码器流出现无法识别的指令，首字节 " +
-                                                            toHexText(std::string_view(reinterpret_cast<const char *>(&firstByte), 1)) +
-                                                            "（RFC 9204 §4.3）"));
+                return std::unexpected(
+                        makeQpackError(QpackErrorKind::EncoderStreamError,
+                                       "编码器流出现无法识别的指令，首字节 " + toHexText(std::string_view(reinterpret_cast<const char *>(&firstByte), 1)) + "（RFC 9204 §4.3）"));
             }
 
             parsedByteCount += consumedByteCount;
@@ -1591,7 +1492,7 @@ namespace AsynGyanis::Net
         m_encoderStreamBuffer.erase(0, parsedByteCount);
 
         // §2.2.1：插入数追上某段挂起头块的 Required Insert Count，该流即可续解
-        for (const auto &[streamId, sections] : m_blockedSectionsByStreamId)
+        for (const auto &[streamId, sections]: m_blockedSectionsByStreamId)
         {
             if (!sections.empty() && sections.front().requiredInsertCount <= m_dynamicTable.insertCount())
             {
@@ -1604,44 +1505,39 @@ namespace AsynGyanis::Net
         return parsedByteCount > bufferedByteCount ? parsedByteCount - bufferedByteCount : 0;
     }
 
-    std::expected<void, QpackError> QpackDecoder::resolveDynamicReference(std::uint64_t absoluteIndex, std::uint64_t requiredInsertCount,
-                                                                          QpackHeaderField &field) const
+    std::expected<void, QpackError> QpackDecoder::resolveDynamicReference(std::uint64_t absoluteIndex, std::uint64_t requiredInsertCount, QpackHeaderField &field) const
     {
         if (absoluteIndex >= requiredInsertCount)
         {
             // §2.2.3：引用的绝对索引不小于本段声明的 Required Insert Count，即声明的表状态不足以解这段
-            return std::unexpected(makeQpackError(
-                QpackErrorKind::DecompressionFailed, "字段行引用了绝对索引 " + std::to_string(absoluteIndex) +
-                                                          "，不小于本段的 Required Insert Count " +
-                                                          std::to_string(requiredInsertCount) + "（RFC 9204 §2.2.3）"));
+            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "字段行引用了绝对索引 " + std::to_string(absoluteIndex) +
+                                                                                               "，不小于本段的 Required Insert Count " + std::to_string(requiredInsertCount) +
+                                                                                               "（RFC 9204 §2.2.3）"));
         }
         if (!m_dynamicTable.tryGetEntryByAbsoluteIndex(absoluteIndex, field))
         {
-            return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed,
-                                                  "字段行引用的绝对索引 " + std::to_string(absoluteIndex) +
-                                                      " 对应的动态表项已被淘汰（RFC 9204 §2.2.3）"));
+            return std::unexpected(
+                    makeQpackError(QpackErrorKind::DecompressionFailed, "字段行引用的绝对索引 " + std::to_string(absoluteIndex) + " 对应的动态表项已被淘汰（RFC 9204 §2.2.3）"));
         }
         return {};
     }
 
-    std::expected<void, QpackError>
-    QpackDecoder::decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
-                                               std::size_t &cursor, std::uint64_t baseValue, std::uint64_t requiredInsertCount,
-                                               std::uint64_t &maximumReferencedAbsoluteIndex)
+    std::expected<void, QpackError> QpackDecoder::decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::size_t &cursor,
+                                                                                std::uint64_t baseValue, std::uint64_t requiredInsertCount,
+                                                                                std::uint64_t &maximumReferencedAbsoluteIndex)
     {
-        const std::string_view section = toByteView(encodedFieldSection);
-        const std::size_t lineIndex = m_fieldLineCount + 1;
-        const std::uint8_t firstByte = static_cast<std::uint8_t>(section[cursor]);
-        std::string_view remaining = section.substr(cursor);
-        QpackError error;
-        std::uint64_t indexValue = 0;
-        std::size_t consumedByteCount = 0;
+        const std::string_view section   = toByteView(encodedFieldSection);
+        const std::size_t      lineIndex = m_fieldLineCount + 1;
+        const std::uint8_t     firstByte = static_cast<std::uint8_t>(section[cursor]);
+        std::string_view       remaining = section.substr(cursor);
+        QpackError             error;
+        std::uint64_t          indexValue        = 0;
+        std::size_t            consumedByteCount = 0;
         // 本条字段行写进复用的槽位：名与值先清空，上一段留下的容量原地接着用
         QpackHeaderField &field = beginDecodedFieldLine();
 
         // 动态表引用统一走这里：先核对是否落在本段声明的表状态内，再取项（§2.2.3）
-        const auto referenceDynamicEntry = [this, requiredInsertCount, &field, &maximumReferencedAbsoluteIndex](
-                                               std::uint64_t absoluteIndex) -> std::expected<void, QpackError>
+        const auto referenceDynamicEntry = [this, requiredInsertCount, &field, &maximumReferencedAbsoluteIndex](std::uint64_t absoluteIndex) -> std::expected<void, QpackError>
         {
             if (auto resolveResult = resolveDynamicReference(absoluteIndex, requiredInsertCount, field); !resolveResult.has_value())
             {
@@ -1652,15 +1548,14 @@ namespace AsynGyanis::Net
         };
 
         // 只取名字不取值的场景（带名引用的字面量）：名来自表项，值另解字面量
-        const auto referenceDynamicName = [this, requiredInsertCount, &field, &maximumReferencedAbsoluteIndex](
-                                              std::uint64_t absoluteIndex) -> std::expected<void, QpackError>
+        const auto referenceDynamicName = [this, requiredInsertCount, &field, &maximumReferencedAbsoluteIndex](std::uint64_t absoluteIndex) -> std::expected<void, QpackError>
         {
             QpackHeaderField referenced;
             if (auto resolveResult = resolveDynamicReference(absoluteIndex, requiredInsertCount, referenced); !resolveResult.has_value())
             {
                 return resolveResult;
             }
-            field.name = std::move(referenced.name);
+            field.name                     = std::move(referenced.name);
             maximumReferencedAbsoluteIndex = std::max(maximumReferencedAbsoluteIndex, absoluteIndex);
             return {};
         };
@@ -1668,8 +1563,7 @@ namespace AsynGyanis::Net
         if ((firstByte & kOneBitPatternBitMask) == kIndexedPatternBits)
         {
             // §4.5.2：'1' + T + 索引（6 位前缀）
-            const QpackParseStatus status = decodePrefixedInteger(remaining, 6, QpackErrorKind::DecompressionFailed, "索引字段行的索引",
-                                                                 indexValue, consumedByteCount, &error);
+            const QpackParseStatus status = decodePrefixedInteger(remaining, 6, QpackErrorKind::DecompressionFailed, "索引字段行的索引", indexValue, consumedByteCount, &error);
             if (status != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(status, error, streamId, lineIndex, "索引字段行"));
@@ -1678,22 +1572,19 @@ namespace AsynGyanis::Net
             {
                 if (indexValue >= kQpackStaticTable.size())
                 {
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) +
-                                                                  " 个字段行引用静态表索引 " + std::to_string(indexValue) + "，超出 " +
-                                                                  std::to_string(kQpackStaticTable.size()) + " 项（RFC 9204 §3.1）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) +
+                                                                                                       " 个字段行引用静态表索引 " + std::to_string(indexValue) + "，超出 " +
+                                                                                                       std::to_string(kQpackStaticTable.size()) + " 项（RFC 9204 §3.1）"));
                 }
-                field.name = kQpackStaticTable[indexValue].name;
+                field.name  = kQpackStaticTable[indexValue].name;
                 field.value = kQpackStaticTable[indexValue].value;
-            }
-            else
+            } else
             {
                 if (indexValue >= baseValue)
                 {
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) +
-                                                                  " 个字段行的相对索引 " + std::to_string(indexValue) + " 不小于 Base " +
-                                                                  std::to_string(baseValue) + "，换算出的绝对索引会为负（RFC 9204 §3.2.5）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) +
+                                                                                                       " 个字段行的相对索引 " + std::to_string(indexValue) + " 不小于 Base " +
+                                                                                                       std::to_string(baseValue) + "，换算出的绝对索引会为负（RFC 9204 §3.2.5）"));
                 }
                 if (auto referenceResult = referenceDynamicEntry(baseValue - 1 - indexValue); !referenceResult.has_value())
                 {
@@ -1708,8 +1599,7 @@ namespace AsynGyanis::Net
         {
             // §4.5.4：'01' + N + T + 名字索引（4 位前缀），值是另一个 8 位前缀字面量
             const QpackParseStatus status =
-                decodePrefixedInteger(remaining, 4, QpackErrorKind::DecompressionFailed, "带名引用字段行的名字索引", indexValue,
-                                      consumedByteCount, &error);
+                    decodePrefixedInteger(remaining, 4, QpackErrorKind::DecompressionFailed, "带名引用字段行的名字索引", indexValue, consumedByteCount, &error);
             if (status != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(status, error, streamId, lineIndex, "带名引用的字段行"));
@@ -1718,21 +1608,18 @@ namespace AsynGyanis::Net
             {
                 if (indexValue >= kQpackStaticTable.size())
                 {
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) +
-                                                                  " 个字段行引用静态表索引 " + std::to_string(indexValue) + "，超出 " +
-                                                                  std::to_string(kQpackStaticTable.size()) + " 项（RFC 9204 §3.1）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) +
+                                                                                                       " 个字段行引用静态表索引 " + std::to_string(indexValue) + "，超出 " +
+                                                                                                       std::to_string(kQpackStaticTable.size()) + " 项（RFC 9204 §3.1）"));
                 }
                 field.name = kQpackStaticTable[indexValue].name;
-            }
-            else
+            } else
             {
                 if (indexValue >= baseValue)
                 {
-                    return std::unexpected(makeQpackError(
-                        QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) +
-                                                                  " 个字段行的名字相对索引 " + std::to_string(indexValue) +
-                                                                  " 不小于 Base " + std::to_string(baseValue) + "（RFC 9204 §4.5.4）"));
+                    return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) +
+                                                                                                       " 个字段行的名字相对索引 " + std::to_string(indexValue) + " 不小于 Base " +
+                                                                                                       std::to_string(baseValue) + "（RFC 9204 §4.5.4）"));
                 }
                 if (auto referenceResult = referenceDynamicName(baseValue - 1 - indexValue); !referenceResult.has_value())
                 {
@@ -1742,9 +1629,8 @@ namespace AsynGyanis::Net
 
             std::size_t valueConsumedByteCount = 0;
             // 直接解进槽位的值串：那里的容量是上一段留下的，移动临时串反而会把它丢掉
-            const QpackParseStatus valueStatus =
-                decodePrefixedStringLiteral(remaining.substr(consumedByteCount), 8, QpackErrorKind::DecompressionFailed, "字段值",
-                                            lineIndex, field.value, valueConsumedByteCount, &error);
+            const QpackParseStatus valueStatus = decodePrefixedStringLiteral(remaining.substr(consumedByteCount), 8, QpackErrorKind::DecompressionFailed, "字段值", lineIndex,
+                                                                             field.value, valueConsumedByteCount, &error);
             if (valueStatus != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(valueStatus, error, streamId, lineIndex, "带名引用的字段行"));
@@ -1756,17 +1642,17 @@ namespace AsynGyanis::Net
         if ((firstByte & kThreeBitPatternBitMask) == kLiteralNamePatternBits)
         {
             // §4.5.6：'001' + N + 4 位前缀的字段名字面量 + 8 位前缀的字段值字面量
-            std::size_t nameConsumedByteCount = 0;
-            QpackParseStatus status = decodePrefixedStringLiteral(remaining, 4, QpackErrorKind::DecompressionFailed, "字段名",
-                                                                 lineIndex, field.name, nameConsumedByteCount, &error);
+            std::size_t      nameConsumedByteCount = 0;
+            QpackParseStatus status =
+                    decodePrefixedStringLiteral(remaining, 4, QpackErrorKind::DecompressionFailed, "字段名", lineIndex, field.name, nameConsumedByteCount, &error);
             if (status != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(status, error, streamId, lineIndex, "双字面量字段行"));
             }
 
             std::size_t valueConsumedByteCount = 0;
-            status = decodePrefixedStringLiteral(remaining.substr(nameConsumedByteCount), 8, QpackErrorKind::DecompressionFailed,
-                                                "字段值", lineIndex, field.value, valueConsumedByteCount, &error);
+            status = decodePrefixedStringLiteral(remaining.substr(nameConsumedByteCount), 8, QpackErrorKind::DecompressionFailed, "字段值", lineIndex, field.value,
+                                                 valueConsumedByteCount, &error);
             if (status != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(status, error, streamId, lineIndex, "双字面量字段行"));
@@ -1778,8 +1664,7 @@ namespace AsynGyanis::Net
         if ((firstByte & kFourBitPatternBitMask) == kPostBaseIndexedPatternBits)
         {
             // §4.5.3：'0001' + 表后索引（4 位前缀），绝对索引 = Base + 索引
-            const QpackParseStatus status = decodePrefixedInteger(remaining, 4, QpackErrorKind::DecompressionFailed, "表后索引",
-                                                                 indexValue, consumedByteCount, &error);
+            const QpackParseStatus status = decodePrefixedInteger(remaining, 4, QpackErrorKind::DecompressionFailed, "表后索引", indexValue, consumedByteCount, &error);
             if (status != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(status, error, streamId, lineIndex, "表后索引的字段行"));
@@ -1796,8 +1681,7 @@ namespace AsynGyanis::Net
         {
             // §4.5.5：'0000' + N + 表后名字索引（3 位前缀）。第五位 N（0x08）是给重编码中间方的提示
             // （§7.1.3），本层只按字面量解回，不参与判定，也已被 3 位前缀的掩码挡在索引之外
-            const QpackParseStatus status = decodePrefixedInteger(remaining, 3, QpackErrorKind::DecompressionFailed, "表后名字索引",
-                                                                 indexValue, consumedByteCount, &error);
+            const QpackParseStatus status = decodePrefixedInteger(remaining, 3, QpackErrorKind::DecompressionFailed, "表后名字索引", indexValue, consumedByteCount, &error);
             if (status != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(status, error, streamId, lineIndex, "表后名引用的字段行"));
@@ -1809,9 +1693,8 @@ namespace AsynGyanis::Net
 
             std::size_t valueConsumedByteCount = 0;
             // 同上：解进槽位的值串，不让临时串把复用容量顶掉
-            const QpackParseStatus valueStatus =
-                decodePrefixedStringLiteral(remaining.substr(consumedByteCount), 8, QpackErrorKind::DecompressionFailed, "字段值",
-                                           lineIndex, field.value, valueConsumedByteCount, &error);
+            const QpackParseStatus valueStatus = decodePrefixedStringLiteral(remaining.substr(consumedByteCount), 8, QpackErrorKind::DecompressionFailed, "字段值", lineIndex,
+                                                                             field.value, valueConsumedByteCount, &error);
             if (valueStatus != QpackParseStatus::Complete)
             {
                 return std::unexpected(makeFieldSectionError(valueStatus, error, streamId, lineIndex, "表后名引用的字段行"));
@@ -1820,11 +1703,9 @@ namespace AsynGyanis::Net
             return {};
         }
 
-        return std::unexpected(makeQpackError(
-            QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) +
-                                                      " 个字段行首字节 " +
-                                                      toHexText(std::string_view(reinterpret_cast<const char *>(&firstByte), 1)) +
-                                                      " 不属于任何已定义表示（RFC 9204 §4.5）"));
+        return std::unexpected(makeQpackError(QpackErrorKind::DecompressionFailed, "流 " + std::to_string(streamId) + " 的第 " + std::to_string(lineIndex) + " 个字段行首字节 " +
+                                                                                           toHexText(std::string_view(reinterpret_cast<const char *>(&firstByte), 1)) +
+                                                                                           " 不属于任何已定义表示（RFC 9204 §4.5）"));
     }
 
     std::size_t QpackDecoder::blockedStreamCount() const noexcept

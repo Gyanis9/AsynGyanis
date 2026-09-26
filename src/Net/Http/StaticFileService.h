@@ -30,9 +30,9 @@ namespace AsynGyanis::Net
      */
     struct StaticFileSettings
     {
-        bool isEnabled{false};                ///< 是否启用静态文件服务；根目录规范化失败即为 false
-        std::filesystem::path rootDirectory;  ///< 规范化（weakly_canonical）之后的静态根目录，绝对路径
-        std::optional<std::string> cacheControl; ///< 静态文件响应的 Cache-Control 值；空表示不发这条头
+        bool                       isEnabled{false}; ///< 是否启用静态文件服务；根目录规范化失败即为 false
+        std::filesystem::path      rootDirectory;    ///< 规范化（weakly_canonical）之后的静态根目录，绝对路径
+        std::optional<std::string> cacheControl;     ///< 静态文件响应的 Cache-Control 值；空表示不发这条头
         /**
          * @brief 映射缓存，由 StaticFileService::install() 按当时的限额建立，之后只读
          * @note 条目上限取自登记那一刻的 HttpServerLimits::maximumMappedStaticFiles，

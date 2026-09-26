@@ -26,8 +26,8 @@ namespace AsynGyanis::Core
      */
     struct ConnectedCandidate
     {
-        AsyncSocket socket;    ///< 连上的那条套接字（已建立，可直接交给上层）
-        InetAddress address;   ///< 连上的是哪个候选地址：调用方要按它的协议族后续处理，日志也靠它定位
+        AsyncSocket socket;  ///< 连上的那条套接字（已建立，可直接交给上层）
+        InetAddress address; ///< 连上的是哪个候选地址：调用方要按它的协议族后续处理，日志也靠它定位
     };
 
     /**
@@ -72,7 +72,5 @@ namespace AsynGyanis::Core
      * @note 时限到点时**不会**留下半开的套接字：每条候选自己的看门狗到点就把它关掉，协程收口才计入
      *       全场结束，因此本函数返回时所有已发起的描述符都已归还
      */
-    Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop,
-                                                             std::vector<InetAddress> candidates,
-                                                             std::chrono::milliseconds deadline);
+    Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, std::chrono::milliseconds deadline);
 } // namespace AsynGyanis::Core

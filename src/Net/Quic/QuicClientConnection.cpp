@@ -30,9 +30,7 @@ namespace AsynGyanis::Net
         {
             Platform::SocketAddress bindAddress{};
             bindAddress.storage.ss_family = serverAddress.storage.ss_family;
-            bindAddress.length = serverAddress.storage.ss_family == AF_INET
-                                     ? static_cast<socklen_t>(sizeof(sockaddr_in))
-                                     : static_cast<socklen_t>(sizeof(sockaddr_in6));
+            bindAddress.length            = serverAddress.storage.ss_family == AF_INET ? static_cast<socklen_t>(sizeof(sockaddr_in)) : static_cast<socklen_t>(sizeof(sockaddr_in6));
             return bindAddress;
         }
 
@@ -50,8 +48,7 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    QuicClientConnection::QuicClientConnection(Core::EventLoop &loop, Configuration configuration) :
-        m_loop(loop), m_configuration(std::move(configuration))
+    QuicClientConnection::QuicClientConnection(Core::EventLoop &loop, Configuration configuration) : m_loop(loop), m_configuration(std::move(configuration))
     {
         // 空主机名意味着「出去之后不校验对端身份」：SNI 与证书里的校验目标都取自它。这种配置不该
         // 被放到碰网络之后才发现，更不该有一个「可以关掉校验」的档位（见 Configuration 的说明）
@@ -74,14 +71,12 @@ namespace AsynGyanis::Net
     Core::Task<bool> QuicClientConnection::connect(const Core::InetAddress &serverAddress)
     {
         const Platform::SocketAddress destination = toPlatformAddress(serverAddress);
-        m_serverAddress = destination;
+        m_serverAddress                           = destination;
 
-        Platform::DatagramSocket datagramSocket =
-                Platform::DatagramSocket::bindTo(makeEphemeralBindAddress(destination));
+        Platform::DatagramSocket datagramSocket = Platform::DatagramSocket::bindTo(makeEphemeralBindAddress(destination));
         if (!datagramSocket.isValid())
         {
-            throw Base::SystemException("QUIC 出站连接失败：UDP 套接字建不起来（套接字错误码 "
-                                        + std::to_string(Platform::PlatformError::lastSocketErrorCode()) + "）");
+            throw Base::SystemException("QUIC 出站连接失败：UDP 套接字建不起来（套接字错误码 " + std::to_string(Platform::PlatformError::lastSocketErrorCode()) + "）");
         }
         m_socket = std::make_unique<Core::AsyncUdpSocket>(m_loop, std::move(datagramSocket));
         m_receiveBuffer.assign(kReceiveBufferByteLength, 0U);
@@ -94,25 +89,20 @@ namespace AsynGyanis::Net
         m_tlsContext->enableClientPeerVerification();
 
         QuicConnection::Configuration connectionConfiguration;
-        connectionConfiguration.tlsContext = m_tlsContext->nativeHandle();
-        connectionConfiguration.idleTimeout = m_configuration.idleTimeout;
-        connectionConfiguration.sendDatagram = [this](const Platform::SocketAddress &peerAddress, const std::uint8_t *data,
-                                                      const std::size_t length) -> Core::Task<bool>
+        connectionConfiguration.tlsContext   = m_tlsContext->nativeHandle();
+        connectionConfiguration.idleTimeout  = m_configuration.idleTimeout;
+        connectionConfiguration.sendDatagram = [this](const Platform::SocketAddress &peerAddress, const std::uint8_t *data, const std::size_t length) -> Core::Task<bool>
         {
             const ssize_t sentByteCount = co_await m_socket->asyncSendTo(peerAddress, data, length);
             co_return sentByteCount >= 0 && static_cast<std::size_t>(sentByteCount) == length;
         };
-        connectionConfiguration.onStreamData = [this](QuicConnection &, const std::int64_t streamId,
-                                                      const std::span<const std::uint8_t> data, const bool isEndStream)
-        {
-            noteStreamData(streamId, data, isEndStream);
-        };
+        connectionConfiguration.onStreamData = [this](QuicConnection &, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+        { noteStreamData(streamId, data, isEndStream); };
 
         QuicClientTlsSettings clientTlsSettings;
-        clientTlsSettings.hostName = m_configuration.hostName;
+        clientTlsSettings.hostName                       = m_configuration.hostName;
         clientTlsSettings.applicationProtocolIdentifiers = m_configuration.applicationProtocolIdentifiers;
-        m_connection = QuicConnection::connect(connectionConfiguration, m_socket->localAddress(), destination,
-                                              clientTlsSettings);
+        m_connection                                     = QuicConnection::connect(connectionConfiguration, m_socket->localAddress(), destination, clientTlsSettings);
         if (m_connection == nullptr)
         {
             // 具体原因（TLS 会话建不起来、随机数不可用）由 QuicConnection::connect 那条错误日志给出，
@@ -125,15 +115,12 @@ namespace AsynGyanis::Net
         // 这种极难复现的形态——块结尾即撤销，之后不再有掐套接字的协程
         bool isHandshakeDone = false;
         {
-            const Core::DeadlineGuard<Core::AsyncUdpSocket> handshakeWatchdog(m_loop, *m_socket,
-                                                                             m_configuration.handshakeTimeout,
-                                                                             "QUIC 出站握手");
+            const Core::DeadlineGuard<Core::AsyncUdpSocket> handshakeWatchdog(m_loop, *m_socket, m_configuration.handshakeTimeout, "QUIC 出站握手");
             // 第一个 Initial 由 flush 里的 drive 产出：本端先出声，与「收到报文才推进」的服务端侧相反
             co_await m_connection->flush();
             while (!m_connection->isHandshakeComplete() && !m_connection->isClosed())
             {
-                const Core::AsyncUdpSocket::DatagramReceiveResult received =
-                        co_await m_socket->asyncReceiveFrom(m_receiveBuffer.data(), m_receiveBuffer.size());
+                const Core::AsyncUdpSocket::DatagramReceiveResult received = co_await m_socket->asyncReceiveFrom(m_receiveBuffer.data(), m_receiveBuffer.size());
                 if (received.receivedByteCount <= 0)
                 {
                     // -1 且带错误码＝对端不可达那一类 ICMP 回声：套接字还能用，QUIC 自己的丢包与
@@ -145,10 +132,8 @@ namespace AsynGyanis::Net
                     }
                     break;
                 }
-                co_await m_connection->handleDatagram(
-                        received.peerAddress,
-                        std::span<const std::uint8_t>(m_receiveBuffer.data(),
-                                                      static_cast<std::size_t>(received.receivedByteCount)));
+                co_await m_connection->handleDatagram(received.peerAddress,
+                                                      std::span<const std::uint8_t>(m_receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)));
             }
             isHandshakeDone = m_connection->isHandshakeComplete();
         }
@@ -167,8 +152,7 @@ namespace AsynGyanis::Net
         {
             co_return;
         }
-        const Core::AsyncUdpSocket::DatagramReceiveResult received =
-                co_await m_socket->asyncReceiveFrom(m_receiveBuffer.data(), m_receiveBuffer.size());
+        const Core::AsyncUdpSocket::DatagramReceiveResult received = co_await m_socket->asyncReceiveFrom(m_receiveBuffer.data(), m_receiveBuffer.size());
         // 本方法一轮只读一条，两种「没有报文」（-1 与 0 长）都是直接收手：留着这条连接等下一轮。
         // 带错误码的 -1 尤其不能当成对端已死——那是 ICMP 捎来的回声，判死这条连接的是它自己的
         // 丢包与空闲计时器（理由见 connect() 里同一段）
@@ -176,9 +160,7 @@ namespace AsynGyanis::Net
         {
             co_return;
         }
-        co_await m_connection->handleDatagram(
-                received.peerAddress,
-                std::span<const std::uint8_t>(m_receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)));
+        co_await m_connection->handleDatagram(received.peerAddress, std::span<const std::uint8_t>(m_receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)));
         co_return;
     }
 
@@ -210,8 +192,7 @@ namespace AsynGyanis::Net
         return m_connection->openBidirectionalStream();
     }
 
-    std::size_t QuicClientConnection::writeStream(const std::int64_t streamId, const std::span<const std::uint8_t> data,
-                                                  const bool isEndStream)
+    std::size_t QuicClientConnection::writeStream(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
     {
         if (m_connection == nullptr || streamId < 0)
         {
@@ -260,8 +241,7 @@ namespace AsynGyanis::Net
         return m_socket != nullptr ? m_socket->localAddress() : Platform::SocketAddress{};
     }
 
-    void QuicClientConnection::noteStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data,
-                                              const bool isEndStream)
+    void QuicClientConnection::noteStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
     {
         IncomingStreamState &state = m_incoming[streamId];
         state.receivedBytes.insert(state.receivedBytes.end(), data.begin(), data.end());

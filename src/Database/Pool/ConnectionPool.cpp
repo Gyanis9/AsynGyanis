@@ -13,12 +13,7 @@ namespace AsynGyanis::Database
     // ========================================================================
 
     ConnectionPool::ConnectionPool(std::function<std::unique_ptr<DatabaseConnection>()> factory, const PoolConfig &config) :
-        m_factory(std::move(factory))
-        , m_config(config)
-        , m_healthThread([this](std::stop_token stopToken)
-        {
-            healthCheckLoop(std::move(stopToken));
-        })
+        m_factory(std::move(factory)), m_config(config), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
     }
 
@@ -132,8 +127,7 @@ namespace AsynGyanis::Database
         // acquireTimeoutMilliseconds 再拿一个空连接回去，而它完全可以自己补一条。
         // 取连接统一走 tryAcquireOrCreateInternal：名额判定、过期判定与失联判定因此和另外三条取出路径
         // 同一口径（本函数此前只判了失联，睡在栈里过了存活期的那条会直接被交给刚被唤醒的借用者）
-        const auto deadline = std::chrono::steady_clock::now()
-                              + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
 
         std::unique_ptr<DatabaseConnection> connection;
         {
@@ -171,8 +165,7 @@ namespace AsynGyanis::Database
             if (connection)
             {
                 m_activeCount.fetch_add(1);
-            }
-            else if (!m_isShuttingDown.load(std::memory_order_acquire))
+            } else if (!m_isShuttingDown.load(std::memory_order_acquire))
             {
                 // 只记「等到截止时刻仍空手」：停摆期空手是正常收尾，混进来会让这道容量指标在每次
                 // 优雅停机时虚涨
@@ -201,8 +194,7 @@ namespace AsynGyanis::Database
     Core::Task<PooledConnection> ConnectionPool::acquireAsync(Core::EventLoop &loop)
     {
         // 截止时刻在这里定一次，重挂的每一轮共用它：被叫醒却没拿到连接不会把等待上限往后推
-        const auto deadline = std::chrono::steady_clock::now()
-                              + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
 
         while (true)
         {
@@ -435,7 +427,7 @@ namespace AsynGyanis::Database
         // → 连接入栈」这条交错会让连接躺在栈里、等待者睡到超时，而两侧各自的复检都拦不住它。
         // 锁序沿用既定方向（m_asyncMutex → m_mutex，反向嵌套就是 AB-BA）；恢复动作照纪律挪到锁外投递。
         std::shared_ptr<AcquireAwaiter::ResumeTicket> resumeTicket;
-        Core::EventLoop *                             completionLoop = nullptr;
+        Core::EventLoop                              *completionLoop = nullptr;
         {
             const std::lock_guard asyncLock(m_asyncMutex);
 
@@ -449,8 +441,7 @@ namespace AsynGyanis::Database
                 waiter->m_inList = false;
                 resumeTicket     = waiter->m_resumeTicket;
                 completionLoop   = waiter->m_completionLoop;
-            }
-            else
+            } else
             {
                 const std::lock_guard lock(m_mutex);
 
@@ -469,11 +460,7 @@ namespace AsynGyanis::Database
         // 握着 m_asyncMutex 等它就等于把归还路径排在一个陌生锁后面
         if (resumeTicket != nullptr)
         {
-            completionLoop->scheduler().postRemote(
-                    [resumeTicket]()
-                    {
-                        resumeTicket->resumeOnce();
-                    });
+            completionLoop->scheduler().postRemote([resumeTicket]() { resumeTicket->resumeOnce(); });
         }
     }
 
@@ -482,26 +469,22 @@ namespace AsynGyanis::Database
         // 异步侧先叫醒一位：取走票据要持 m_asyncMutex，而恢复动作必须在锁外投
         // （就地恢复等于让协程的后续代码跑到本次归还的线程上，与「回调在事件循环线程」的约定相悖）
         std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket;
-        Core::EventLoop *                             completionLoop = nullptr;
+        Core::EventLoop                              *completionLoop = nullptr;
         {
             const std::lock_guard asyncLock(m_asyncMutex);
             if (!m_asyncWaiters.empty())
             {
                 AcquireAwaiter *const waiter = m_asyncWaiters.front();
                 m_asyncWaiters.pop_front();
-                waiter->m_inList = false;   // 结果留空：这次叫醒只说「有名额了」，拿到拿不到由它自己再试
-                ticket         = waiter->m_resumeTicket;
-                completionLoop = waiter->m_completionLoop;
+                waiter->m_inList = false; // 结果留空：这次叫醒只说「有名额了」，拿到拿不到由它自己再试
+                ticket           = waiter->m_resumeTicket;
+                completionLoop   = waiter->m_completionLoop;
             }
         }
         // 两把锁只顺序取、不嵌套：await_suspend 里是「m_asyncMutex → m_mutex」，反过来嵌套就是 AB-BA
         if (ticket != nullptr)
         {
-            completionLoop->scheduler().postRemote(
-                    [ticket]()
-                    {
-                        ticket->resumeOnce();
-                    });
+            completionLoop->scheduler().postRemote([ticket]() { ticket->resumeOnce(); });
         }
 
         // 同步侧：条件变量的通知取在 m_mutex 之内，理由与归还入栈那一处相同
@@ -618,8 +601,7 @@ namespace AsynGyanis::Database
         }
     }
 
-    bool ConnectionPool::isPastMaximumLifetime(const DatabaseConnection &connection,
-                                               const std::chrono::steady_clock::time_point now) const noexcept
+    bool ConnectionPool::isPastMaximumLifetime(const DatabaseConnection &connection, const std::chrono::steady_clock::time_point now) const noexcept
     {
         // 0 视为「立即过期」：连接一归还就被丢弃，永不进空闲栈
         if (m_config.maximumLifetimeSeconds == 0)
@@ -627,8 +609,7 @@ namespace AsynGyanis::Database
             return true;
         }
 
-        const auto lifetimeSeconds =
-                std::chrono::duration_cast<std::chrono::seconds>(now - connection.establishedAt()).count();
+        const auto lifetimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(now - connection.establishedAt()).count();
         return static_cast<std::size_t>(lifetimeSeconds) >= m_config.maximumLifetimeSeconds;
     }
 
@@ -644,8 +625,7 @@ namespace AsynGyanis::Database
         // 空闲超时检查：0 表示不设空闲超时限制
         if (m_config.idleTimeoutSeconds > 0)
         {
-            const auto idleSeconds =
-                    std::chrono::duration_cast<std::chrono::seconds>(now - entry.returnedTime).count();
+            const auto idleSeconds = std::chrono::duration_cast<std::chrono::seconds>(now - entry.returnedTime).count();
             if (static_cast<std::size_t>(idleSeconds) >= m_config.idleTimeoutSeconds)
             {
                 return true;
@@ -679,10 +659,7 @@ namespace AsynGyanis::Database
 
         // 停止请求直接把本线程从等待里叫醒：jthread 的 join 因此不必等满当前那个 1 秒分片。
         // 回调随本函数返回而解除，所以它引用的 this 一直在有效期内
-        const std::stop_callback wakeupOnStop(stopToken, [this]
-        {
-            m_healthWakeCondition.notify_all();
-        });
+        const std::stop_callback wakeupOnStop(stopToken, [this] { m_healthWakeCondition.notify_all(); });
 
         while (!stopToken.stop_requested())
         {
@@ -697,11 +674,7 @@ namespace AsynGyanis::Database
                 {
                     std::unique_lock lock(m_healthWakeMutex);
                     // 谓词判定与 notify 共用这把锁，因此停止请求落在「刚要进 wait_for 之前」也不会漏唤醒
-                    m_healthWakeCondition.wait_for(lock, std::chrono::milliseconds(chunk),
-                                                   [&stopToken]
-                                                   {
-                                                       return stopToken.stop_requested();
-                                                   });
+                    m_healthWakeCondition.wait_for(lock, std::chrono::milliseconds(chunk), [&stopToken] { return stopToken.stop_requested(); });
                 }
 
                 if (stopToken.stop_requested())
@@ -737,7 +710,8 @@ namespace AsynGyanis::Database
                                                                   return true;
                                                               }
                                                               return false;
-                                                          }).begin();
+                                                          })
+                                           .begin();
 
                 if (removeBegin != m_idleStack.end())
                 {
@@ -775,8 +749,7 @@ namespace AsynGyanis::Database
         m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    bool ConnectionPool::returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness,
-                                                 const bool countAsActive) noexcept
+    bool ConnectionPool::returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness, const bool countAsActive) noexcept
     {
         if (liveness == nullptr)
         {
@@ -801,11 +774,11 @@ namespace AsynGyanis::Database
 
     void ConnectionPool::expireTimedOutWaiters() noexcept
     {
-        const auto                                 now = std::chrono::steady_clock::now();
+        const auto                                                 now = std::chrono::steady_clock::now();
         std::vector<std::shared_ptr<AcquireAwaiter::ResumeTicket>> timedOutTickets;
-        std::vector<Core::EventLoop *>             completionLoops;
+        std::vector<Core::EventLoop *>                             completionLoops;
         {
-            std::lock_guard lock(m_asyncMutex);
+            std::lock_guard               lock(m_asyncMutex);
             std::vector<AcquireAwaiter *> timedOutWaiters;
             std::erase_if(m_asyncWaiters,
                           [&timedOutWaiters, now](AcquireAwaiter *const waiter)
@@ -835,11 +808,7 @@ namespace AsynGyanis::Database
         for (std::size_t index = 0; index < timedOutTickets.size(); ++index)
         {
             const std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket = timedOutTickets[index];
-            completionLoops[index]->scheduler().postRemote(
-                    [ticket]()
-                    {
-                        ticket->resumeOnce();
-                    });
+            completionLoops[index]->scheduler().postRemote([ticket]() { ticket->resumeOnce(); });
         }
     }
 

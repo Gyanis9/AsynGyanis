@@ -13,22 +13,22 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Tls/TlsSocket.h"
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
-#include "Net/Http/HttpMemoryBudget.h"
-#include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpSession.h"
-#include "Net/Http/Router.h"
 #include "Net/Http/HttpStreamBody.h"
+#include "Net/Http/Router.h"
 #include "Net/Http2/Http2Connection.h"
 
+#include <coroutine>
 #include <cstddef>
 #include <cstdint>
-#include <coroutine>
 #include <map>
 #include <memory>
 #include <optional>
@@ -92,13 +92,9 @@ namespace AsynGyanis::Net
          *        留默认值即按 Http2ConnectionConfiguration 的缺省跑
          * @note 构造函数不做握手：握手是协程动作，放在 start() 的第一步
          */
-        Http2Session(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
-                     std::shared_ptr<const HttpServerLimits> limits = nullptr,
-                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
-                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
-                     HttpParserLimits parserLimits = {},
-                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr,
-                     Http2ConnectionConfiguration http2Configuration = {});
+        Http2Session(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr,
+                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
+                     HttpParserLimits parserLimits = {}, std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr, Http2ConnectionConfiguration http2Configuration = {});
 
         /**
          * @brief 构造明文连接上的 HTTP/2 会话（h2c 先验知识）。
@@ -116,13 +112,9 @@ namespace AsynGyanis::Net
          * @param memoryBudget 在途正文字节的全局预算，与服务器共享；传空指针表示不受该预算约束
          * @param http2Configuration HTTP/2 连接层配置，含义与上一个构造函数同名参数一致
          */
-        Http2Session(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router,
-                     std::shared_ptr<const HttpServerLimits> limits = nullptr,
-                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
-                     std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
-                     HttpParserLimits parserLimits = {},
-                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr,
-                     Http2ConnectionConfiguration http2Configuration = {});
+        Http2Session(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr,
+                     std::shared_ptr<HttpMetricsCollector> metrics = nullptr, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
+                     HttpParserLimits parserLimits = {}, std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr, Http2ConnectionConfiguration http2Configuration = {});
 
         /**
          * @brief 启动会话主协程：TLS 会话先握手并按 ALPN 选协议，明文会话直接进 HTTP/2 循环。
@@ -206,10 +198,10 @@ namespace AsynGyanis::Net
          */
         enum class RequestServeOutcome
         {
-            Served,            ///< 响应已排入待发字节
-            StreamCancelled,   ///< 对端已取消这条流：本条不再有响应，连接继续服务其它流
-            ConnectionUnusable,///< 连接不可再用（连接层失败或响应字节写不出去）：调用方应停止循环
-            StreamFailed       ///< 本端把这条流按错误中止了（响应不合规或越过对端上限，错在本端）：连接层已写出 RST_STREAM，连接继续服务其它流
+            Served,             ///< 响应已排入待发字节
+            StreamCancelled,    ///< 对端已取消这条流：本条不再有响应，连接继续服务其它流
+            ConnectionUnusable, ///< 连接不可再用（连接层失败或响应字节写不出去）：调用方应停止循环
+            StreamFailed        ///< 本端把这条流按错误中止了（响应不合规或越过对端上限，错在本端）：连接层已写出 RST_STREAM，连接继续服务其它流
         };
 
         /**
@@ -218,15 +210,15 @@ namespace AsynGyanis::Net
          */
         struct PendingRequest
         {
-            HttpRequest request;           ///< 已按 HTTP/1.1 语义映射的请求对象
-            std::uint32_t streamId{0};     ///< 请求所属的流号，回响应时按它定位
-            bool isRemoteEndStream{false}; ///< 对端是否已 END_STREAM：正文收齐，可以路由
-            bool isBodyTooLarge{false};    ///< 正文超过 maximumBodySize：不再缓冲，回 413
-            bool isHeaderListTooLarge{false}; ///< 头块超出本端上限：字段全为空，不派发也不缓冲正文，回 431
-            bool isBudgetExceeded{false};  ///< 正文超出全局在途预算：不再缓冲，回 503；额度由 bodyBudget 在记录销毁时归还
-            bool isExtendedConnect{false}; ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
-            bool isWebSocketTunnel{false}; ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501
-            bool isStreamingBody{false};   ///< 命中流式路由：头部收齐即派发，正文经 request.bodyStream() 边收边读，不必等 END_STREAM
+            HttpRequest   request;                     ///< 已按 HTTP/1.1 语义映射的请求对象
+            std::uint32_t streamId{0};                 ///< 请求所属的流号，回响应时按它定位
+            bool          isRemoteEndStream{false};    ///< 对端是否已 END_STREAM：正文收齐，可以路由
+            bool          isBodyTooLarge{false};       ///< 正文超过 maximumBodySize：不再缓冲，回 413
+            bool          isHeaderListTooLarge{false}; ///< 头块超出本端上限：字段全为空，不派发也不缓冲正文，回 431
+            bool          isBudgetExceeded{false};     ///< 正文超出全局在途预算：不再缓冲，回 503；额度由 bodyBudget 在记录销毁时归还
+            bool          isExtendedConnect{false};    ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
+            bool          isWebSocketTunnel{false};    ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501
+            bool          isStreamingBody{false};      ///< 命中流式路由：头部收齐即派发，正文经 request.bodyStream() 边收边读，不必等 END_STREAM
             /// 本条流的全局正文额度：随记录一起析构，流被摘掉（服务完/被取消/连接关闭）即归还
             HttpMemoryBudget::Reservation bodyBudget;
 
@@ -236,17 +228,17 @@ namespace AsynGyanis::Net
 
             // 下面两件与 request/streamBody 同属这条流的记录：一条流一份，填写与发送都在记录内
             // 完成，全连接共用一份会让后来者覆盖前一条流尚未发出的内容
-            HttpResponse response;      ///< 本条流的响应对象：路由前本来就是空的，不必为「上一条报文残留」复位
+            HttpResponse    response;   ///< 本条流的响应对象：路由前本来就是空的，不必为「上一条报文残留」复位
             HttpRequestBody bodyStream; ///< 本条流的流式正文读取器：交付给 request.bodyStream()，来源就是上面那份 streamBody
 
             /// 等正文的协程（本条流的处理器只有一条，因此至多一个等待者）。由会话在收到这段流的新
             /// 正文、收尾或断开时唤醒——读套接字只有会话循环这一个驱动者，处理器不许自己去读
             std::coroutine_handle<> bodyWaiter{};
-            bool isServeClaimed{false};  ///< 已进入服务：处理器协程已创建，或隧道已就地接手
-            bool isTaskStarted{false};   ///< 协程已 resume 过第一次（惰性协程创建时停在初始挂起点）
-            bool isServeFinished{false}; ///< 处理器协程已跑完，结论在 serveOutcome 里，等会话摘记录
-            bool hasPendingWake{false};  ///< 本流有新正文/收尾/断开，等回到安全点唤醒挂着的处理器
-            RequestServeOutcome serveOutcome{RequestServeOutcome::Served}; ///< 跑完的结论，由会话摘记录时处置
+            bool                    isServeClaimed{false};                     ///< 已进入服务：处理器协程已创建，或隧道已就地接手
+            bool                    isTaskStarted{false};                      ///< 协程已 resume 过第一次（惰性协程创建时停在初始挂起点）
+            bool                    isServeFinished{false};                    ///< 处理器协程已跑完，结论在 serveOutcome 里，等会话摘记录
+            bool                    hasPendingWake{false};                     ///< 本流有新正文/收尾/断开，等回到安全点唤醒挂着的处理器
+            RequestServeOutcome     serveOutcome{RequestServeOutcome::Served}; ///< 跑完的结论，由会话摘记录时处置
 
             /// 本条流的处理器协程。**必须排在记录的最后**：成员按声明逆序销毁，帧要在这条流的
             /// 请求/响应/正文还在时先拆掉（帧里的局部对象按引用使它们）
@@ -266,13 +258,14 @@ namespace AsynGyanis::Net
              * @brief 绑定要等的那条流
              * @param pending 目标流的记录（活在 m_pendingRequests 里，非拥有）；为空时视为无进展
              */
-            explicit BodyWaitAwaiter(PendingRequest *pending) noexcept : m_pending(pending) {}
+            explicit BodyWaitAwaiter(PendingRequest *pending) noexcept : m_pending(pending)
+            {
+            }
 
             /// 已收尾、已断开、或缓冲里还有没交付的字节时不必挂起：调用方回头就能拿到结论
             [[nodiscard]] bool await_ready() const noexcept
             {
-                return m_pending == nullptr || m_pending->streamBody.isComplete() || m_pending->streamBody.isBroken()
-                       || m_pending->streamBody.pendingByteCount() != 0;
+                return m_pending == nullptr || m_pending->streamBody.isComplete() || m_pending->streamBody.isBroken() || m_pending->streamBody.pendingByteCount() != 0;
             }
 
             /// 记下等待者（本条流的处理器只有一条协程，因此至多一个）
@@ -281,7 +274,9 @@ namespace AsynGyanis::Net
                 m_pending->bodyWaiter = waiter;
             }
 
-            static void await_resume() noexcept {}
+            static void await_resume() noexcept
+            {
+            }
 
         private:
             PendingRequest *m_pending{nullptr}; ///< 目标流的记录（非拥有）
@@ -297,16 +292,23 @@ namespace AsynGyanis::Net
         {
         public:
             /// @param session 所属会话（生命周期由本次等待覆盖）
-            explicit FlushTurnAwaiter(Http2Session &session) noexcept : m_session(&session) {}
+            explicit FlushTurnAwaiter(Http2Session &session) noexcept : m_session(&session)
+            {
+            }
 
             /// 写权空着就不用挂：调用方会自己去抢这一轮
-            [[nodiscard]] bool await_ready() const noexcept { return !m_session->m_isFlushInProgress; }
+            [[nodiscard]] bool await_ready() const noexcept
+            {
+                return !m_session->m_isFlushInProgress;
+            }
 
             /// 把本协程排进写队
             void await_suspend(const std::coroutine_handle<> waiter) const noexcept;
 
             /// 醒来即完成：接下来由调用方自己再看一眼写权与待发缓冲
-            void await_resume() const noexcept {}
+            void await_resume() const noexcept
+            {
+            }
 
         private:
             Http2Session *m_session; ///< 所属会话（非拥有）
@@ -319,9 +321,11 @@ namespace AsynGyanis::Net
         {
         public:
             /// @param session 拿走写权的会话
-            explicit FlushTurnGuard(Http2Session &session) noexcept : m_session(&session) {}
+            explicit FlushTurnGuard(Http2Session &session) noexcept : m_session(&session)
+            {
+            }
 
-            FlushTurnGuard(const FlushTurnGuard &) = delete;
+            FlushTurnGuard(const FlushTurnGuard &)            = delete;
             FlushTurnGuard &operator=(const FlushTurnGuard &) = delete;
 
             /// 放开写权并叫醒排队的写者
@@ -469,10 +473,7 @@ namespace AsynGyanis::Net
          * @return RequestServeOutcome 发完之后的结论：已排入待发字节 / 对端已取消这条流 / 连接不可再用。
          *         「对端已取消」的统计与日志留在调用方，与其它几处出口共用同一处记账
          */
-        [[nodiscard]] Core::Task<RequestServeOutcome> rejectMalformedBodyLength(std::uint32_t streamId,
-                                                                                std::size_t declaredLength,
-                                                                                std::size_t receivedLength,
-                                                                                bool isHeadRequest);
+        [[nodiscard]] Core::Task<RequestServeOutcome> rejectMalformedBodyLength(std::uint32_t streamId, std::size_t declaredLength, std::size_t receivedLength, bool isHeadRequest);
 
         /**
          * @brief 记下一条已服务的请求，达到单连接上限时发 GOAWAY 收尾通告
@@ -516,8 +517,7 @@ namespace AsynGyanis::Net
          * @return Http2ResponseSendStatus 响应头与正文的发送结论：Sent 已排入待发字节（可能还在等窗口），
          *         StreamNotWritable 对端已取消或收尾了这条流，其余取值表示连接不可用或本响应无法应答
          */
-        [[nodiscard]] Core::Task<Http2ResponseSendStatus> sendResponse(std::uint32_t streamId, const HttpResponse &response,
-                                                                      bool isHeadRequest);
+        [[nodiscard]] Core::Task<Http2ResponseSendStatus> sendResponse(std::uint32_t streamId, const HttpResponse &response, bool isHeadRequest);
 
         /**
          * @brief 在一条流上跑 WebSocket 隧道（RFC 8441 的扩展 CONNECT）
@@ -564,8 +564,7 @@ namespace AsynGyanis::Net
          *         或连接已不可用——各种原因的日志分别由本方法与 serveOneRequest() 记出
          * @throws Base::LogicException 分块帧布局与 writeChunk 的文档不符（本段未发出，绝不把帧头当正文）
          */
-        [[nodiscard]] Core::Task<bool> sendStreamingSegment(std::uint32_t streamId, HttpResponse &response,
-                                                            std::string_view segment);
+        [[nodiscard]] Core::Task<bool> sendStreamingSegment(std::uint32_t streamId, HttpResponse &response, std::string_view segment);
 
         /**
          * @brief 流式响应收尾：给这条流补上 END_STREAM
@@ -581,8 +580,7 @@ namespace AsynGyanis::Net
          * @return Http2ResponseSendStatus 收尾帧的发送结论；StreamNotWritable 表示对端已取消这条流
          *         （连接继续服务其它流），其余非 Sent 取值表示连接不可用或本响应无法应答
          */
-        [[nodiscard]] Core::Task<Http2ResponseSendStatus> finishStreamingResponse(std::uint32_t streamId,
-                                                                                 HttpResponse &response, bool isBodyComplete);
+        [[nodiscard]] Core::Task<Http2ResponseSendStatus> finishStreamingResponse(std::uint32_t streamId, HttpResponse &response, bool isBodyComplete);
 
         /**
          * @brief 把响应状态码收口成可上线的取值
@@ -708,18 +706,18 @@ namespace AsynGyanis::Net
 
         /// HTTP/1.1 回退路径（TLS 上 ALPN 未协商出 h2 时）的解析器与接收窗口。
         /// 基类的同名成员是私有的，因此回退路径各持一份，两条路径不共用状态
-        HttpParser m_parser;                  ///< HTTP/1.1 回退路径的解析器
-        std::vector<char> m_receiveBuffer;    ///< 回退路径自己的接收窗口
+        HttpParser        m_parser;        ///< HTTP/1.1 回退路径的解析器
+        std::vector<char> m_receiveBuffer; ///< 回退路径自己的接收窗口
 
-        Http2Connection m_connection;                 ///< HTTP/2 连接层状态机（协议状态、帧与窗口全在它里面）
-        Core::EventLoop &m_loop;                      ///< 本会话所在的事件循环：收口时要在它上面拍一小段（见 drainInFlightServes）
-        Core::Scheduler &m_scheduler;                     ///< 本会话所在事件循环的调度器
-        Router &m_router;                             ///< 路由器引用（与基类指向同一对象）
-        HttpParserLimits m_parserLimits{};            ///< HTTP/2 路径只用 maximumBodySize，其余字段不适用
-        std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
-        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端；空指针表示不采集
+        Http2Connection                         m_connection;         ///< HTTP/2 连接层状态机（协议状态、帧与窗口全在它里面）
+        Core::EventLoop                        &m_loop;               ///< 本会话所在的事件循环：收口时要在它上面拍一小段（见 drainInFlightServes）
+        Core::Scheduler                        &m_scheduler;          ///< 本会话所在事件循环的调度器
+        Router                                 &m_router;             ///< 路由器引用（与基类指向同一对象）
+        HttpParserLimits                        m_parserLimits{};     ///< HTTP/2 路径只用 maximumBodySize，其余字段不适用
+        std::shared_ptr<const HttpServerLimits> m_limits;             ///< 连接级限额，与服务器共享、只读（构造时保证非空）
+        std::shared_ptr<HttpMetricsCollector>   m_metrics;            ///< 统计采集端；空指针表示不采集
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器；空指针表示不落定
-        std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，与服务器共享；空指针表示不受该预算约束
+        std::shared_ptr<HttpMemoryBudget>       m_memoryBudget;       ///< 在途正文字节的全局预算，与服务器共享；空指针表示不受该预算约束
 
         /// h2 主循环的接收缓冲：提到成员上是因为流式正文的泵也要用它——泵与主循环交替驱动
         /// 同一条连接，各持一份会让「谁读到什么」变得不可推理
@@ -728,15 +726,15 @@ namespace AsynGyanis::Net
         /// 头块已收齐的请求：按流号（对端流号严格递增，因此遍历顺序就是请求的到达顺序）
         /// 响应对象与流式正文读取器都在记录里，一条流一份
         std::map<std::uint32_t, PendingRequest> m_pendingRequests;
-        std::size_t m_servedRequestCount{0};          ///< 本连接已服务的请求条数（单连接上限的判据）
-        bool m_isGoAwaySent{false};                   ///< 是否已因达到请求上限发过收尾 GOAWAY：同一原因只发一条
+        std::size_t                             m_servedRequestCount{0}; ///< 本连接已服务的请求条数（单连接上限的判据）
+        bool                                    m_isGoAwaySent{false};   ///< 是否已因达到请求上限发过收尾 GOAWAY：同一原因只发一条
         /// 在飞的处理器协程条数：一条连接可以同时有多条流在服务，「忙」因此要计数而不是布尔量——
         /// 第一条起时置忙、最后一条收尾才置闲，否则先跑完的那条会把还在等业务的本连接交回空闲清扫
         std::size_t m_activeServeCount{0};
         /// 写权是否已被某个协程拿走：一条通路同一时刻只许一个协程在 send（两个协程各写一半会把帧撕开，
         /// 而且传输层一个方向只许一个等待者，抢槽会当场把连接判死）
-        bool m_isFlushInProgress{false};
-        std::vector<std::coroutine_handle<>> m_flushWaiters; ///< 排队等写权的协程（放开时一次性叫醒）
-        bool m_isConnectionUnusable{false};           ///< 本侧是否已判定写不出去：置位后所有写出短路，同一次故障只留一条日志
+        bool                                 m_isFlushInProgress{false};
+        std::vector<std::coroutine_handle<>> m_flushWaiters;                ///< 排队等写权的协程（放开时一次性叫醒）
+        bool                                 m_isConnectionUnusable{false}; ///< 本侧是否已判定写不出去：置位后所有写出短路，同一次故障只留一条日志
     };
 } // namespace AsynGyanis::Net

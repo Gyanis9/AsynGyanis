@@ -47,14 +47,14 @@ namespace AsynGyanis::Core
             flag.store(true, std::memory_order_release);
             co_return;
         }
-    }
+    } // namespace
 
     /**
      * @brief 本地投递的任务构成待办：runOne() 能取出并执行一次，副作用落到实处
      */
     TEST(Scheduler, ScheduleAndRunOneExecutesTask)
     {
-        Scheduler scheduler;
+        Scheduler        scheduler;
         std::atomic<int> counter{0};
 
         auto task = incrementTask(counter);
@@ -70,8 +70,8 @@ namespace AsynGyanis::Core
      */
     TEST(Scheduler, RunAllProcessesAllScheduledTasks)
     {
-        Scheduler scheduler;
-        std::atomic<int> counter{0};
+        Scheduler              scheduler;
+        std::atomic<int>       counter{0};
         std::vector<Task<int>> tasks;
 
         for (int round = 0; round < 10; ++round)
@@ -92,15 +92,16 @@ namespace AsynGyanis::Core
      */
     TEST(Scheduler, ScheduleRemoteFromAnotherThreadExecutesTask)
     {
-        Scheduler scheduler;
+        Scheduler        scheduler;
         std::atomic<int> counter{0};
 
-        auto task = incrementTask(counter);
-        std::thread remote([&]()
-        {
-            // scheduleRemote 线程安全，可在任意线程投递到全局队列
-            scheduler.scheduleRemote(task.handle());
-        });
+        auto        task = incrementTask(counter);
+        std::thread remote(
+                [&]()
+                {
+                    // scheduleRemote 线程安全，可在任意线程投递到全局队列
+                    scheduler.scheduleRemote(task.handle());
+                });
         remote.join();
 
         ASSERT_TRUE(scheduler.runOne());
@@ -122,7 +123,7 @@ namespace AsynGyanis::Core
      */
     TEST(Scheduler, LocalQueueSizeReflectsPendingTasks)
     {
-        Scheduler scheduler;
+        Scheduler        scheduler;
         std::atomic<int> counter{0};
 
         EXPECT_EQ(scheduler.localQueueSize(), 0u);
@@ -174,8 +175,8 @@ namespace AsynGyanis::Core
      */
     TEST(Scheduler, MultipleScheduleRemoteCallsAreProcessed)
     {
-        Scheduler scheduler;
-        std::atomic<int> counter{0};
+        Scheduler              scheduler;
+        std::atomic<int>       counter{0};
         std::vector<Task<int>> tasks;
 
         // 投递 5 个任务进入全局队列，逐个执行
@@ -202,14 +203,12 @@ namespace AsynGyanis::Core
         std::thread::id executedOn;
         std::thread::id posterThreadId;
 
-        std::thread remote([&scheduler, &executedOn, &posterThreadId]()
-        {
-            posterThreadId = std::this_thread::get_id();
-            scheduler.postRemote([&executedOn]()
-            {
-                executedOn = std::this_thread::get_id();
-            });
-        });
+        std::thread remote(
+                [&scheduler, &executedOn, &posterThreadId]()
+                {
+                    posterThreadId = std::this_thread::get_id();
+                    scheduler.postRemote([&executedOn]() { executedOn = std::this_thread::get_id(); });
+                });
         remote.join();
 
         ASSERT_TRUE(scheduler.runOne());
@@ -223,15 +222,12 @@ namespace AsynGyanis::Core
      */
     TEST(Scheduler, PostRemoteKeepsFifoOrder)
     {
-        Scheduler       scheduler;
+        Scheduler        scheduler;
         std::vector<int> executedOrder;
 
         for (int index = 0; index < 3; ++index)
         {
-            scheduler.postRemote([&executedOrder, index]()
-            {
-                executedOrder.push_back(index);
-            });
+            scheduler.postRemote([&executedOrder, index]() { executedOrder.push_back(index); });
         }
 
         for (int round = 0; round < 3; ++round)
@@ -259,13 +255,8 @@ namespace AsynGyanis::Core
      */
     TEST(Scheduler, HasWorkSeesPendingRemoteCallables)
     {
-        Scheduler scheduler;
-        std::thread remote([&scheduler]()
-        {
-            scheduler.postRemote([]()
-            {
-            });
-        });
+        Scheduler   scheduler;
+        std::thread remote([&scheduler]() { scheduler.postRemote([]() {}); });
         remote.join();
 
         EXPECT_TRUE(scheduler.hasWork());
@@ -283,10 +274,7 @@ namespace AsynGyanis::Core
 
         for (int index = 0; index < 4; ++index)
         {
-            scheduler.postRemote([&counter]()
-            {
-                counter.fetch_add(1, std::memory_order_relaxed);
-            });
+            scheduler.postRemote([&counter]() { counter.fetch_add(1, std::memory_order_relaxed); });
         }
 
         scheduler.runAll();
@@ -308,16 +296,12 @@ namespace AsynGyanis::Core
         constexpr int kPostCount = static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass) * 3;
         for (int index = 0; index < kPostCount; ++index)
         {
-            scheduler.postRemote([&executed]
-            {
-                executed.fetch_add(1, std::memory_order_relaxed);
-            });
+            scheduler.postRemote([&executed] { executed.fetch_add(1, std::memory_order_relaxed); });
         }
 
         scheduler.runAll();
 
-        EXPECT_LE(executed.load(), static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass))
-            << "一趟 runAll() 吃掉了超过上限的跨线程投递：调用方拿不回控制权，IO 事件会被饿死";
+        EXPECT_LE(executed.load(), static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass)) << "一趟 runAll() 吃掉了超过上限的跨线程投递：调用方拿不回控制权，IO 事件会被饿死";
         EXPECT_TRUE(scheduler.hasWork()) << "剩下的投递没被算成待办：循环会带着积压睡在 epoll 上";
 
         // 分趟取用必须最终把所有投递做完：上界不能变成丢任务或取不完
@@ -360,20 +344,18 @@ namespace AsynGyanis::Core
         TestSupport::EventLoopThread runner;
         settleLoopIntoBlockingWait(runner);
 
-        std::thread::id  executedOn{};
+        std::thread::id   executedOn{};
         std::atomic<bool> isExecuted{false};
-        runner.loop().scheduler().postRemote([&executedOn, &isExecuted]()
-        {
-            // 载荷先写、标记最后以 release 发布：读侧用 acquire 配对才看得到线程 id
-            executedOn = std::this_thread::get_id();
-            isExecuted.store(true, std::memory_order_release);
-        });
+        runner.loop().scheduler().postRemote(
+                [&executedOn, &isExecuted]()
+                {
+                    // 载荷先写、标记最后以 release 发布：读侧用 acquire 配对才看得到线程 id
+                    executedOn = std::this_thread::get_id();
+                    isExecuted.store(true, std::memory_order_release);
+                });
 
-        EXPECT_TRUE(TestSupport::waitForCondition([&isExecuted]
-                                                  {
-                                                      return isExecuted.load(std::memory_order_acquire);
-                                                  }))
-            << "睡在阻塞等待里的循环没有被 postRemote 唤醒：回调永远不会执行";
+        EXPECT_TRUE(TestSupport::waitForCondition([&isExecuted] { return isExecuted.load(std::memory_order_acquire); }))
+                << "睡在阻塞等待里的循环没有被 postRemote 唤醒：回调永远不会执行";
         EXPECT_EQ(executedOn, runner.threadId()) << "回调没有跑在目标循环线程上";
     }
 
@@ -394,11 +376,8 @@ namespace AsynGyanis::Core
         // 窗口里被销毁，读栈时看到的就是断言失败而不是又叠一个悬垂帧
         runner.parkDriver(std::move(task));
 
-        EXPECT_TRUE(TestSupport::waitForCondition([&isResumed]
-                                                  {
-                                                      return isResumed.load(std::memory_order_acquire);
-                                                  }))
-            << "睡在阻塞等待里的循环没有被 scheduleRemote 唤醒：协程永远得不到恢复";
+        EXPECT_TRUE(TestSupport::waitForCondition([&isResumed] { return isResumed.load(std::memory_order_acquire); }))
+                << "睡在阻塞等待里的循环没有被 scheduleRemote 唤醒：协程永远得不到恢复";
     }
 
     /**
@@ -420,11 +399,7 @@ namespace AsynGyanis::Core
         const auto single = measurePerOperation(
                 [&]
                 {
-                    scheduler.postRemote(
-                            [&executed]
-                            {
-                                executed.fetch_add(1, std::memory_order_relaxed);
-                            });
+                    scheduler.postRemote([&executed] { executed.fetch_add(1, std::memory_order_relaxed); });
                     return scheduler.runOne() ? 1U : 0U;
                 });
 
@@ -435,11 +410,7 @@ namespace AsynGyanis::Core
                 {
                     for (std::uint64_t index = 0; index < kBatchSize; ++index)
                     {
-                        scheduler.postRemote(
-                                [&executed]
-                                {
-                                    executed.fetch_add(1, std::memory_order_relaxed);
-                                });
+                        scheduler.postRemote([&executed] { executed.fetch_add(1, std::memory_order_relaxed); });
                     }
                     std::uint64_t drainedCount = 0;
                     while (scheduler.runOne())
@@ -449,11 +420,8 @@ namespace AsynGyanis::Core
                     return drainedCount;
                 });
 
-        std::printf("scheduler-remote-post single total=%llu bytes=%llu | batch total=%llu bytes=%llu\n",
-                    static_cast<unsigned long long>(single.totalAllocations),
-                    static_cast<unsigned long long>(single.totalBytes),
-                    static_cast<unsigned long long>(batch.totalAllocations),
-                    static_cast<unsigned long long>(batch.totalBytes));
+        std::printf("scheduler-remote-post single total=%llu bytes=%llu | batch total=%llu bytes=%llu\n", static_cast<unsigned long long>(single.totalAllocations),
+                    static_cast<unsigned long long>(single.totalBytes), static_cast<unsigned long long>(batch.totalAllocations), static_cast<unsigned long long>(batch.totalBytes));
 
         // 两条与配置无关的结构判据：被测体确实跑满了，且取用一条不丢
         EXPECT_EQ(single.resultSum, kMeasurementIterations) << "单次投递根本没被执行，读数没有意义";
@@ -465,10 +433,8 @@ namespace AsynGyanis::Core
         // MSVC 是每 512 条左右要一块（一千次 2 / 六万四千条 67），两家差两个量级但都远不到「每条一块」。
         // 取「每 8 条至多一块」当上界：既容得下换 STL 与改块大小，又能在真退化成每投一条一块时立刻报红
         constexpr std::uint64_t kMaximumBlocksPerThousandPosts = kMeasurementIterations / 8U;
-        EXPECT_LE(single.totalAllocations, kMaximumBlocksPerThousandPosts)
-                << "孤立投递的堆块数越界：队列快退化成每投一条各要一块了";
-        EXPECT_LE(batch.totalAllocations, kMaximumBlocksPerThousandPosts * kBatchSize)
-                << "成批投递的堆块数越界：同上，这条量的是六万四千条投递摊到多少块上";
+        EXPECT_LE(single.totalAllocations, kMaximumBlocksPerThousandPosts) << "孤立投递的堆块数越界：队列快退化成每投一条各要一块了";
+        EXPECT_LE(batch.totalAllocations, kMaximumBlocksPerThousandPosts * kBatchSize) << "成批投递的堆块数越界：同上，这条量的是六万四千条投递摊到多少块上";
 #endif
     }
 

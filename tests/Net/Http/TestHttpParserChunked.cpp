@@ -29,8 +29,7 @@ namespace AsynGyanis::Net
         constexpr std::size_t kBodyLimitInBytes = 8 * 1024 * 1024;
 
         /// 分块请求的头部块（不含正文），固定声明 Transfer-Encoding: chunked
-        constexpr std::string_view kChunkedHeaderBlock =
-                "POST /chunked HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n";
+        constexpr std::string_view kChunkedHeaderBlock = "POST /chunked HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n";
 
         /**
          * @brief 拼出一条分块报文
@@ -67,8 +66,7 @@ namespace AsynGyanis::Net
          * @param expectedLimitExceeded 期望 isLimitExceeded() 的取值
          * @param caseLabel 失败信息里的用例标识
          */
-        void expectRejected(const std::string &message, const HttpParseErrorKind expectedKind, const bool expectedLimitExceeded,
-                            const std::string &caseLabel)
+        void expectRejected(const std::string &message, const HttpParseErrorKind expectedKind, const bool expectedLimitExceeded, const std::string &caseLabel)
         {
             HttpParser parser;
             ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error) << caseLabel;
@@ -87,9 +85,8 @@ namespace AsynGyanis::Net
         std::vector<std::string> collectTrailerFields(const HttpRequest &request)
         {
             std::vector<std::string> flattened;
-            request.forEachTrailerField(
-                    [&flattened](const std::string_view name, const std::string_view value)
-                    { flattened.push_back(std::string(name).append("=").append(value)); });
+            request.forEachTrailerField([&flattened](const std::string_view name, const std::string_view value)
+                                        { flattened.push_back(std::string(name).append("=").append(value)); });
             return flattened;
         }
     } // namespace
@@ -129,7 +126,7 @@ namespace AsynGyanis::Net
     TEST(HttpParserChunked, RejectsMalformedChunkExtensions)
     {
         static constexpr std::array<std::string_view, 3> kPayloads{
-                "5;=bar\r\nhello\r\n0\r\n\r\n",   ///< 扩展名为空
+                "5;=bar\r\nhello\r\n0\r\n\r\n",    ///< 扩展名为空
                 "5;foo=\r\nhello\r\n0\r\n\r\n",    ///< 等号之后没有值
                 "5;foo bar\r\nhello\r\n0\r\n\r\n", ///< 段之间缺少分号
         };
@@ -176,9 +173,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpParserChunked, ExcludesFramingAndConnectionFieldsFromTrailerStore)
     {
-        const std::string message = makeChunkedMessage(
-                "5\r\nhello\r\n0\r\nContent-Length: 999\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n"
-                "Keep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nUpgrade: websocket\r\nX-Checksum: abc\r\n\r\n");
+        const std::string message = makeChunkedMessage("5\r\nhello\r\n0\r\nContent-Length: 999\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n"
+                                                       "Keep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nUpgrade: websocket\r\nX-Checksum: abc\r\n\r\n");
 
         HttpParser parser;
         ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done);
@@ -305,7 +301,7 @@ namespace AsynGyanis::Net
 
         for (std::size_t prefixLength = 0; prefixLength < message.size(); ++prefixLength)
         {
-            HttpParser parser;
+            HttpParser        parser;
             const ParseStatus status = parser.parse(message.data(), prefixLength);
             EXPECT_NE(status, ParseStatus::Done) << "前缀长度 " << prefixLength << " 被当成完整报文";
             EXPECT_LE(parser.consumedByteCount(), prefixLength) << "前缀长度 " << prefixLength << " 消费了超出喂入的字节";
@@ -359,14 +355,12 @@ namespace AsynGyanis::Net
 
         for (const std::string_view encodingValue: kEncodingValues)
         {
-            const std::string message =
-                    "POST /enc HTTP/1.1\r\nTransfer-Encoding: " + std::string(encodingValue) + "\r\n\r\n0\r\n\r\n";
+            const std::string message = "POST /enc HTTP/1.1\r\nTransfer-Encoding: " + std::string(encodingValue) + "\r\n\r\n0\r\n\r\n";
             expectRejected(message, HttpParseErrorKind::Malformed, false, "Transfer-Encoding: " + std::string(encodingValue));
         }
 
         // 同一个头名出现两次同样要看见全部取值后一起判，而不是只认第一条
-        const std::string duplicated =
-                "POST /enc HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n0\r\n\r\n";
+        const std::string duplicated = "POST /enc HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n0\r\n\r\n";
         expectRejected(duplicated, HttpParseErrorKind::Malformed, false, "Transfer-Encoding 出现两次");
     }
 
@@ -392,9 +386,9 @@ namespace AsynGyanis::Net
     TEST(HttpParserChunked, RejectsMissingCrlfAroundChunkData)
     {
         static constexpr std::array<std::string_view, 3> kPayloads{
-                "5\nhello\r\n0\r\n\r\n",      ///< 块大小行以裸 LF 结尾
-                "5\r\nhelloXX\r\n0\r\n\r\n",  ///< 块数据之后不是 CRLF
-                "5\r\nhello\n0\r\n\r\n",      ///< 块数据之后只有裸 LF
+                "5\nhello\r\n0\r\n\r\n",     ///< 块大小行以裸 LF 结尾
+                "5\r\nhelloXX\r\n0\r\n\r\n", ///< 块数据之后不是 CRLF
+                "5\r\nhello\n0\r\n\r\n",     ///< 块数据之后只有裸 LF
         };
 
         for (const std::string_view payload: kPayloads)
@@ -409,8 +403,8 @@ namespace AsynGyanis::Net
     TEST(HttpParserChunked, RejectsMalformedTrailerLine)
     {
         static constexpr std::array<std::string_view, 3> kPayloads{
-                "0\r\nBad-Trailer\r\n\r\n",            ///< 缺冒号
-                "0\r\n: v\r\n\r\n",                    ///< 名为空
+                "0\r\nBad-Trailer\r\n\r\n",                 ///< 缺冒号
+                "0\r\n: v\r\n\r\n",                         ///< 名为空
                 "0\r\nX-Trailer: 1\r\nBad Line: 2\r\n\r\n", ///< 名字里含空格（非 token）
         };
 

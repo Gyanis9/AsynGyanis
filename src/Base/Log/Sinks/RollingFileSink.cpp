@@ -101,15 +101,14 @@ namespace AsynGyanis::Base
          * @param maximumBackupFiles 允许保留的备份数量上限
          * @note 必须从最大序号倒序移动，正序会把后一个备份直接覆盖
          */
-        void rotateSizeBackups(const std::filesystem::path &directory, const PathText &namePart, const PathText &extensionPart,
-                               const std::size_t maximumBackupFiles)
+        void rotateSizeBackups(const std::filesystem::path &directory, const PathText &namePart, const PathText &extensionPart, const std::size_t maximumBackupFiles)
         {
             // 序号一路用 std::size_t 走到底：转成 int 会在上限以上回绕成负数，于是整个顺移循环
             // 一步不跑，后面的 rename 直接把 1 号备份盖掉——保留 N 份配置实际只剩 1 份
             const std::size_t highestIndex = maximumBackupFiles == 0 ? 1U : maximumBackupFiles;
             for (std::size_t index = highestIndex; index >= 1U; --index)
             {
-                std::error_code errorCode;
+                std::error_code             errorCode;
                 const std::filesystem::path sourcePath = directory / joinDottedName(namePart, std::to_string(index), extensionPart);
                 if (!std::filesystem::exists(sourcePath, errorCode) || errorCode)
                 {
@@ -122,11 +121,8 @@ namespace AsynGyanis::Base
         }
     } // namespace
 
-    RollingFileSink::RollingFileSink(std::filesystem::path baseFilename,
-                                     std::filesystem::path directory,
-                                     const RollingPolicy   policy,
-                                     const size_t          maximumSizeBytes,
-                                     const size_t          maximumBackupFiles) :
+    RollingFileSink::RollingFileSink(std::filesystem::path baseFilename, std::filesystem::path directory, const RollingPolicy policy, const size_t maximumSizeBytes,
+                                     const size_t maximumBackupFiles) :
         // 备份数上限自行钳制：它同时决定每次滚动要探测多少个序号，配置侧虽已夹过一道，
         // 但本类是公开可构造的，不能把「不会被卡死」的责任推给调用方
         // 只取文件名段（构造参数的注释对此已有承诺）：带目录段的 base_filename 会把活动文件写到
@@ -217,7 +213,7 @@ namespace AsynGyanis::Base
             if (std::error_code existsError; std::filesystem::exists(currentPath, existsError) && !existsError)
             {
                 const auto [namePart, extensionPart] = splitBaseFilename(m_baseFilename);
-                PathText   backupName;
+                PathText backupName;
                 if (m_policy == RollingPolicy::Size)
                 {
                     // 已有备份整体向后顺移一位，空出 .1，避免序号耗尽后覆盖最旧备份
@@ -231,14 +227,12 @@ namespace AsynGyanis::Base
                     // 重载——这条路径跑在 Sink 的写线程上，抛出来只会让本轮滚动半途而废（活动文件已
                     // 关、重开被跳过），而探测失败真要变成改名失败时，下面那条 rename 的诊断会接手
                     std::error_code probeError;
-                    bool          isTargetFree = false;
+                    bool            isTargetFree = false;
                     for (int candidateIndex = 1; candidateIndex <= kMaximumSuffixCollisions; ++candidateIndex)
                     {
                         // 第 1 个候选是不带序号的名字，其后依次追加 .2、.3 ……与旧的取名口径逐字相同
-                        backupName = candidateIndex == 1
-                                         ? joinDottedName(namePart, m_currentSuffix, extensionPart)
-                                         : joinDottedName(namePart, m_currentSuffix + "." + std::to_string(candidateIndex),
-                                                         extensionPart);
+                        backupName         = candidateIndex == 1 ? joinDottedName(namePart, m_currentSuffix, extensionPart)
+                                                                 : joinDottedName(namePart, m_currentSuffix + "." + std::to_string(candidateIndex), extensionPart);
                         const bool isTaken = std::filesystem::exists(m_directory / backupName, probeError);
                         if (probeError)
                         {
@@ -254,9 +248,8 @@ namespace AsynGyanis::Base
                     if (!isTargetFree && !probeError)
                     {
                         // 全被占：这是崩溃循环里同一周期反复滚动的现场，覆盖掉的那一段历史不会再有第二份
-                        std::cerr << "RollingFileSink：同一周期的备份名已用满 " << kMaximumSuffixCollisions
-                                << " 个，本次滚动覆盖 " << Platform::FileSystem::utf8FromPath(m_directory / backupName)
-                                << "，那一段日志丢失" << '\n';
+                        std::cerr << "RollingFileSink：同一周期的备份名已用满 " << kMaximumSuffixCollisions << " 个，本次滚动覆盖 "
+                                  << Platform::FileSystem::utf8FromPath(m_directory / backupName) << "，那一段日志丢失" << '\n';
                     }
                 }
 
@@ -269,15 +262,14 @@ namespace AsynGyanis::Base
                     // 活动日志会在原地无限增长；但「日志被清掉了」这件事必须出声，否则现场只看得到
                     // 文件在反复变空
                     std::cerr << "RollingFileSink：滚动失败（" << Platform::FileSystem::utf8FromPath(currentPath) << " 改名为 "
-                            << Platform::FileSystem::utf8FromPath(m_directory / backupName) << "）：" << renameError.message()
-                            << "；已清空当前文件以免滚动条件恒成立，这一段日志随之丢弃" << '\n';
+                              << Platform::FileSystem::utf8FromPath(m_directory / backupName) << "）：" << renameError.message()
+                              << "；已清空当前文件以免滚动条件恒成立，这一段日志随之丢弃" << '\n';
                     std::error_code truncateError;
                     std::filesystem::resize_file(currentPath, 0, truncateError);
                     if (truncateError)
                     {
                         // 连清空也没做到：滚动条件会一直成立，每条日志都要再付一次失败滚动的代价
-                        std::cerr << "RollingFileSink：清空当前文件也失败：" << truncateError.message()
-                                << "；滚动条件持续成立，每条日志都会重试一次失败的滚动" << '\n';
+                        std::cerr << "RollingFileSink：清空当前文件也失败：" << truncateError.message() << "；滚动条件持续成立，每条日志都会重试一次失败的滚动" << '\n';
                     }
                 }
             }
@@ -325,11 +317,11 @@ namespace AsynGyanis::Base
     {
         // m_maximumBackupFiles == 0 表示不保留任何备份，备份列表仍需要构建并全部清理
         std::vector<BackupEntry> backupFiles;
-        const auto               [namePart, extensionPart] = splitBaseFilename(m_baseFilename);
-        const PathText           activeName                = getCurrentFilename().filename().native();
+        const auto [namePart, extensionPart] = splitBaseFilename(m_baseFilename);
+        const PathText activeName            = getCurrentFilename().filename().native();
 
         // 前缀只构造一次，比较用 view：逐目录项拼临时串会把整目录扫描变成分配热点
-        const PathText backupPrefix     = namePart + pathTextFromAscii(".");
+        const PathText backupPrefix = namePart + pathTextFromAscii(".");
         const PathView backupPrefixView{backupPrefix};
         const PathView extensionView{extensionPart};
 
@@ -339,15 +331,14 @@ namespace AsynGyanis::Base
             {
                 break;
             }
-            const PathText filename     = entry.path().filename().native();
+            const PathText filename = entry.path().filename().native();
             const PathView filenameView{filename};
             // 备份名只有两种形态：`name.N.ext`（大小策略的序号备份）与 `name.<时间戳>[.N].ext`
             // （周期策略，时间戳形如 2026-09-16 或 2026-09-16_07，本身带连字符与下划线）。
             // 因此中间那段只允许数字、点、连字符与下划线：只按前缀匹配会把 app.audit.log 这类
             // 同前缀的无关文件也扫进删除区间，那是数据丢失；而不认 `-`/`_` 会让周期备份
             // 永远清不掉——max_backup 形同虚设，日志目录无界增长
-            const bool hasBackupPrefix = filename != activeName && filenameView.starts_with(backupPrefixView) &&
-                                         filenameView.ends_with(extensionView);
+            const bool hasBackupPrefix = filename != activeName && filenameView.starts_with(backupPrefixView) && filenameView.ends_with(extensionView);
             if (!hasBackupPrefix)
             {
                 continue;
@@ -359,8 +350,7 @@ namespace AsynGyanis::Base
             {
                 continue;
             }
-            const PathView middlePart{filename.data() + backupPrefixView.size(),
-                                      filename.size() - backupPrefixView.size() - extensionView.size()};
+            const PathView middlePart{filename.data() + backupPrefixView.size(), filename.size() - backupPrefixView.size() - extensionView.size()};
             const bool     isBackupName = !middlePart.empty() && std::ranges::all_of(middlePart, isBackupMiddleCharacter);
             if (isBackupName)
             {
@@ -374,11 +364,7 @@ namespace AsynGyanis::Base
         if (backupFiles.size() > m_maximumBackupFiles)
         {
             // 取不到时间戳的条目标记为 file_time_type::min()，排序时视为最旧、优先被清理
-            std::ranges::sort(backupFiles,
-                              [](const BackupEntry &left, const BackupEntry &right)
-                              {
-                                  return left.writeTime > right.writeTime;
-                              });
+            std::ranges::sort(backupFiles, [](const BackupEntry &left, const BackupEntry &right) { return left.writeTime > right.writeTime; });
             for (size_t index = m_maximumBackupFiles; index < backupFiles.size(); ++index)
             {
                 std::error_code removeErrorCode;

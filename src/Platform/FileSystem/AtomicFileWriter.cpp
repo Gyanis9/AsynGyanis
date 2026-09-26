@@ -27,8 +27,7 @@ namespace AsynGyanis::Platform
         bool flushFileToDisk(const std::filesystem::path &filePath) noexcept
         {
 #if ASYN_PLATFORM_WIN32
-            const HANDLE fileHandle = ::CreateFileW(filePath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+            const HANDLE fileHandle = ::CreateFileW(filePath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (fileHandle == INVALID_HANDLE_VALUE)
             {
                 return false;
@@ -106,10 +105,8 @@ namespace AsynGyanis::Platform
         // 拼临时名要在 UTF-8 刻度上做：把 targetPath.string()（Windows 上是本地代码页的字节）再交给
         // path 构造，等于让代码页过一遍文件名——名字落在代码页之外时它当场抛出，而本层的失败通道是
         // error 出参，不是异常
-        const std::filesystem::path temporaryPath = FileSystem::pathFromUtf8(
-                FileSystem::utf8FromPath(targetPath) + ".tmp." +
-                std::to_string(ProcessInfo::currentProcessId()) + "." +
-                std::to_string(temporaryFileCounter.fetch_add(1, std::memory_order_relaxed)));
+        const std::filesystem::path temporaryPath = FileSystem::pathFromUtf8(FileSystem::utf8FromPath(targetPath) + ".tmp." + std::to_string(ProcessInfo::currentProcessId()) +
+                                                                             "." + std::to_string(temporaryFileCounter.fetch_add(1, std::memory_order_relaxed)));
 
         bool isTemporaryFileWritten = false;
         {

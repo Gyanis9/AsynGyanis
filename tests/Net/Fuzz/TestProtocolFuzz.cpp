@@ -12,8 +12,8 @@
 // 两处口径要记下：① 只把 h3 的早退条件改成「几乎不成立」并不会转红，因为同样的坏字节会被重新判成
 // 同一个错——这条钉的是「不再报错」这个可观测面，不是内部那个标记位；② HPACK 的 I5 与其它三条同形状，
 // 没有单独再突变一次。
-#include "Fuzz/ProtocolFuzzKernel.h"
 #include "CommonTestSupport.h"
+#include "Fuzz/ProtocolFuzzKernel.h"
 
 #include <gtest/gtest.h>
 
@@ -70,8 +70,7 @@ namespace AsynGyanis::Net::Fuzz
                     return kDefaultRandomRoundCount;
                 }
                 // 饱和累加：再大的数字也只是「跑到上限」，不会被回绕成一个小值而悄悄少跑
-                accumulated = std::min<std::uint64_t>(accumulated * 10U + static_cast<std::uint64_t>(digit - '0'),
-                                                      static_cast<std::uint64_t>(kMaximumRandomRoundCount));
+                accumulated = std::min<std::uint64_t>(accumulated * 10U + static_cast<std::uint64_t>(digit - '0'), static_cast<std::uint64_t>(kMaximumRandomRoundCount));
             }
             return accumulated == 0U ? kDefaultRandomRoundCount : static_cast<int>(accumulated);
         }
@@ -95,19 +94,19 @@ namespace AsynGyanis::Net::Fuzz
         void runRandomRounds(const Target target, const std::uint64_t seed)
         {
             DeterministicRandom random(seed);
-            std::size_t producedFrameCount = 0;
-            std::size_t rejectedRoundCount = 0;
-            const int   roundCount         = randomRoundCount();
+            std::size_t         producedFrameCount = 0;
+            std::size_t         rejectedRoundCount = 0;
+            const int           roundCount         = randomRoundCount();
 
             for (int round = 0; round < roundCount; ++round)
             {
                 const std::string input = makeInput(target, random, kMaximumInputLength);
-                RunStats stats;
+                RunStats          stats;
                 const std::string violation = checkInvariants(target, input, &stats);
                 if (!violation.empty())
                 {
-                    FAIL() << targetName(target) << " 第 " << round << " 轮违例：" << violation
-                           << "，输入（转义）=" << toEscapedText(input) << "，种子=" << seed << "，轮数=" << roundCount;
+                    FAIL() << targetName(target) << " 第 " << round << " 轮违例：" << violation << "，输入（转义）=" << toEscapedText(input) << "，种子=" << seed
+                           << "，轮数=" << roundCount;
                 }
                 producedFrameCount += stats.producedFrameCount;
                 rejectedRoundCount += stats.isErrorEnd ? 1U : 0U;
@@ -137,8 +136,7 @@ namespace AsynGyanis::Net::Fuzz
             {
                 const std::string truncated = valid.substr(0, length);
                 const std::string violation = checkInvariants(target, truncated);
-                EXPECT_TRUE(violation.empty()) << targetName(target) << " 截断到 " << length << " 字节时违例：" << violation
-                                              << "，输入（转义）=" << toEscapedText(truncated);
+                EXPECT_TRUE(violation.empty()) << targetName(target) << " 截断到 " << length << " 字节时违例：" << violation << "，输入（转义）=" << toEscapedText(truncated);
             }
         }
     } // namespace

@@ -58,7 +58,7 @@ namespace AsynGyanis::Database
          * @brief std::vector<std::byte> 的特化
          */
         template<>
-        struct IsBinaryBytes<std::vector<std::byte> > : std::true_type
+        struct IsBinaryBytes<std::vector<std::byte>> : std::true_type
         {
         };
 
@@ -138,8 +138,7 @@ namespace AsynGyanis::Database
             if constexpr (std::is_same_v<MemberType, BinaryBytes>)
             {
                 return std::move(bytes);
-            }
-            else
+            } else
             {
                 return fromBinaryBytes<MemberType>(static_cast<const BinaryBytes &>(bytes));
             }

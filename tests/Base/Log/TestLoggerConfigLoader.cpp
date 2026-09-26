@@ -50,9 +50,7 @@ namespace AsynGyanis::Base
              * @brief 把标准输出与标准错误重定向到内部字符串流
              */
             ConsoleCapture() :
-                m_standardOutput(),
-                m_standardError(),
-                m_originalOutputBuffer(std::cout.rdbuf(m_standardOutput.rdbuf())),
+                m_standardOutput(), m_standardError(), m_originalOutputBuffer(std::cout.rdbuf(m_standardOutput.rdbuf())),
                 m_originalErrorBuffer(std::cerr.rdbuf(m_standardError.rdbuf()))
             {
             }
@@ -79,8 +77,8 @@ namespace AsynGyanis::Base
         private:
             std::ostringstream m_standardOutput;       ///< 承接 std::cout 的字符串流
             std::ostringstream m_standardError;        ///< 承接 std::cerr 的字符串流
-            std::streambuf *   m_originalOutputBuffer; ///< std::cout 的原始 streambuf
-            std::streambuf *   m_originalErrorBuffer;  ///< std::cerr 的原始 streambuf
+            std::streambuf    *m_originalOutputBuffer; ///< std::cout 的原始 streambuf
+            std::streambuf    *m_originalErrorBuffer;  ///< std::cerr 的原始 streambuf
         };
 
         /**
@@ -107,21 +105,13 @@ namespace AsynGyanis::Base
         /** @brief 统计文件名列表中匹配正则的名称个数 */
         size_t countMatchingNames(const std::vector<std::string> &names, const std::regex &pattern)
         {
-            return static_cast<size_t>(std::ranges::count_if(names,
-                                                             [&pattern](const std::string &name)
-                                                             {
-                                                                 return std::regex_match(name, pattern);
-                                                             }));
+            return static_cast<size_t>(std::ranges::count_if(names, [&pattern](const std::string &name) { return std::regex_match(name, pattern); }));
         }
 
         /** @brief 判断文件名列表中是否有任意名称匹配正则 */
         bool anyNameMatches(const std::vector<std::string> &names, const std::regex &pattern)
         {
-            return std::ranges::any_of(names,
-                                       [&pattern](const std::string &name)
-                                       {
-                                           return std::regex_match(name, pattern);
-                                       });
+            return std::ranges::any_of(names, [&pattern](const std::string &name) { return std::regex_match(name, pattern); });
         }
     } // namespace
 
@@ -144,9 +134,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 构造夹具：先取得配置单例互斥锁，再创建临时目录
          */
-        LoggerConfigLoaderTest() :
-            m_configLock(configTestMutex()),
-            m_temporaryDirectory("LoggerConfigLoader")
+        LoggerConfigLoaderTest() : m_configLock(configTestMutex()), m_temporaryDirectory("LoggerConfigLoader")
         {
         }
 
@@ -187,9 +175,11 @@ namespace AsynGyanis::Base
       level: INFO
       sinks:
         - type: rolling_file
-          base_filename: )" + baseFilename + R"(
+          base_filename: )" + baseFilename +
+                              R"(
           directory: rolling
-          policy: )" + policyName + R"(
+          policy: )" + policyName +
+                              R"(
           max_size_mb: 2
           max_backup: 4
 )");
@@ -348,8 +338,7 @@ namespace AsynGyanis::Base
             root.log(LogLevel::Info, "root still emits");
             captured = capture.text();
         }
-        EXPECT_TRUE(contains(captured, "root still emits"))
-                << "root 停在默认状态上：框架自身那些走 root 的日志被静默丢掉了";
+        EXPECT_TRUE(contains(captured, "root still emits")) << "root 停在默认状态上：框架自身那些走 root 的日志被静默丢掉了";
     }
 
     /**
@@ -383,8 +372,7 @@ namespace AsynGyanis::Base
 
         // 钳到 0 之后仍应正常写出：非法取值不该让整个 sink 失效
         logAndFlush("root", LogLevel::Info, "clamped_backup_line");
-        EXPECT_TRUE(contains(readTemporaryFile("rolling/clamped_backup.log"), "clamped_backup_line"))
-                << readTemporaryFile("rolling/clamped_backup.log");
+        EXPECT_TRUE(contains(readTemporaryFile("rolling/clamped_backup.log"), "clamped_backup_line")) << readTemporaryFile("rolling/clamped_backup.log");
     }
 
     /**
@@ -417,13 +405,11 @@ namespace AsynGyanis::Base
         }
 
         EXPECT_TRUE(contains(diagnostic, "max_backup=999999999999")) << diagnostic;
-        EXPECT_TRUE(contains(diagnostic, "已钳制为 " + std::to_string(RollingFileSink::kMaximumBackupFileCount)))
-                << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "已钳制为 " + std::to_string(RollingFileSink::kMaximumBackupFileCount))) << diagnostic;
 
         // 钳到上限之后仍应正常写出：非法取值不该让整个 sink 失效
         logAndFlush("root", LogLevel::Info, "capped_backup_line");
-        EXPECT_TRUE(contains(readTemporaryFile("rolling/capped_backup.log"), "capped_backup_line"))
-                << readTemporaryFile("rolling/capped_backup.log");
+        EXPECT_TRUE(contains(readTemporaryFile("rolling/capped_backup.log"), "capped_backup_line")) << readTemporaryFile("rolling/capped_backup.log");
     }
 
     /**
@@ -462,8 +448,7 @@ namespace AsynGyanis::Base
         const std::string activeContent = readTemporaryFile("rolling/capped_size.log");
         EXPECT_TRUE(contains(activeContent, "capped_size_line_one")) << activeContent;
         EXPECT_TRUE(contains(activeContent, "capped_size_line_three")) << activeContent;
-        EXPECT_EQ(countMatchingNames(listFilesIn(temporaryPath("rolling")), std::regex(R"(capped_size\.\d+\.log)")), 0u)
-                << "阈值被换算回绕成了 0：每写一行就滚动一次";
+        EXPECT_EQ(countMatchingNames(listFilesIn(temporaryPath("rolling")), std::regex(R"(capped_size\.\d+\.log)")), 0u) << "阈值被换算回绕成了 0：每写一行就滚动一次";
     }
 
     TEST_F(LoggerConfigLoaderTest, EmptyConfigurationCreatesRootLoggerAtInfoLevel)
@@ -865,13 +850,12 @@ namespace AsynGyanis::Base
                                       "      level: INFO\n"
                                       "      sinks:\n"
                                       "        - type: file\n"
-                                      "          path: "}
-                          + std::string{kPathTextUtf8} + "\n");
+                                      "          path: "} +
+                          std::string{kPathTextUtf8} + "\n");
 
         applyLogging();
 
-        const std::filesystem::path expectedPath =
-                m_temporaryDirectory.path() / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{kPathTextUtf8});
+        const std::filesystem::path expectedPath = m_temporaryDirectory.path() / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{kPathTextUtf8});
         ASSERT_TRUE(std::filesystem::exists(expectedPath));
 
         logAndFlush("root", LogLevel::Info, "file sink code page line");
@@ -890,8 +874,8 @@ namespace AsynGyanis::Base
                                       "      level: INFO\n"
                                       "      sinks:\n"
                                       "        - type: rolling_file\n"
-                                      "          base_filename: "}
-                          + std::string{kBaseFilenameUtf8} + R"(
+                                      "          base_filename: "} +
+                          std::string{kBaseFilenameUtf8} + R"(
           directory: rolling
           policy: size
           max_size_mb: 2
@@ -901,8 +885,7 @@ namespace AsynGyanis::Base
         applyLogging();
 
         // 目录侧已经是 path 刻度（这一半早就修好了），落空的只会是文件名那一段
-        const std::filesystem::path expectedPath =
-                temporaryPath("rolling") / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{kBaseFilenameUtf8});
+        const std::filesystem::path expectedPath = temporaryPath("rolling") / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{kBaseFilenameUtf8});
         ASSERT_TRUE(std::filesystem::exists(expectedPath));
 
         logAndFlush("root", LogLevel::Info, "rolling sink code page line");
@@ -1086,12 +1069,7 @@ namespace AsynGyanis::Base
         applyLogging();
         logAndFlush("root", LogLevel::Info, "async wrapped json line");
 
-        const bool delivered = TestSupport::waitForCondition(
-                [this]
-                {
-                    return contains(readTemporaryFile("formatter_async.log"), "async wrapped json line");
-                },
-                10000);
+        const bool delivered = TestSupport::waitForCondition([this] { return contains(readTemporaryFile("formatter_async.log"), "async wrapped json line"); }, 10000);
         ASSERT_TRUE(delivered) << readTemporaryFile("formatter_async.log");
 
         const std::string content = readTemporaryFile("formatter_async.log");
@@ -1263,12 +1241,7 @@ namespace AsynGyanis::Base
 
         logAndFlush("root", LogLevel::Info, "async wrapped line");
 
-        const bool delivered = TestSupport::waitForCondition(
-                [this]
-                {
-                    return contains(readTemporaryFile("async_wrapped.log"), "async wrapped line");
-                },
-                10000);
+        const bool delivered = TestSupport::waitForCondition([this] { return contains(readTemporaryFile("async_wrapped.log"), "async wrapped line"); }, 10000);
         EXPECT_TRUE(delivered) << readTemporaryFile("async_wrapped.log");
     }
 
@@ -1292,10 +1265,12 @@ namespace AsynGyanis::Base
       sinks:
         - type: async
           queue_size: 4
-          overflow_policy: )" + std::string(policyName) + R"(
+          overflow_policy: )" +
+                              std::string(policyName) + R"(
           wrapped:
             type: file
-            path: )" + logName + R"(
+            path: )" + logName +
+                              R"(
 )");
 
             LoggerRegistry::instance().clear();
@@ -1347,12 +1322,7 @@ namespace AsynGyanis::Base
             logAndFlush("root", LogLevel::Info, "clamped_" + std::to_string(index));
         }
 
-        const bool delivered = TestSupport::waitForCondition(
-                [this]
-                {
-                    return contains(readTemporaryFile("clamped_queue.log"), "clamped_7");
-                },
-                10000);
+        const bool delivered = TestSupport::waitForCondition([this] { return contains(readTemporaryFile("clamped_queue.log"), "clamped_7"); }, 10000);
         EXPECT_TRUE(delivered) << readTemporaryFile("clamped_queue.log");
     }
 
@@ -1395,12 +1365,7 @@ namespace AsynGyanis::Base
             logAndFlush("root", LogLevel::Info, "oversized_" + std::to_string(index));
         }
 
-        const bool delivered = TestSupport::waitForCondition(
-                [this]
-                {
-                    return contains(readTemporaryFile("oversized_queue.log"), "oversized_7");
-                },
-                10000);
+        const bool delivered = TestSupport::waitForCondition([this] { return contains(readTemporaryFile("oversized_queue.log"), "oversized_7"); }, 10000);
         EXPECT_TRUE(delivered) << readTemporaryFile("oversized_queue.log");
     }
 
@@ -1426,12 +1391,7 @@ namespace AsynGyanis::Base
         logAndFlush("root", LogLevel::Info, "nested async line");
 
         // flush() 返回即代表事件已穿过两层异步队列并交给文件 Sink 刷新，首次轮询就应读到
-        const bool delivered = TestSupport::waitForCondition(
-                [this]
-                {
-                    return contains(readTemporaryFile("doubly_async.log"), "nested async line");
-                },
-                10000);
+        const bool delivered = TestSupport::waitForCondition([this] { return contains(readTemporaryFile("doubly_async.log"), "nested async line"); }, 10000);
 
         EXPECT_TRUE(delivered) << readTemporaryFile("doubly_async.log");
     }
@@ -1687,8 +1647,7 @@ namespace AsynGyanis::Base
             captured = capture.text();
         }
 
-        EXPECT_TRUE(contains(captured, "still has its sink"))
-                << "sinks 类型不符时说好「已忽略该字段」，实际却把原有 sink 清空了：" << captured;
+        EXPECT_TRUE(contains(captured, "still has its sink")) << "sinks 类型不符时说好「已忽略该字段」，实际却把原有 sink 清空了：" << captured;
     }
 
     /**
@@ -1741,7 +1700,8 @@ namespace AsynGyanis::Base
         // 只往磁盘写、不加载：让「新值进快照」这一步只能由 loadFromDirectory/reload 完成，
         // 否则夹具的 loadConfiguration 会顺手把它读进来，reload() 就成了走过场
         const auto writeYaml = [this](const std::string &logFileName)
-        { return m_temporaryDirectory.writeFile(kconfigurationFileName, R"(logging:
+        {
+            return m_temporaryDirectory.writeFile(kconfigurationFileName, R"(logging:
   global_level: INFO
   loggers:
     root:
@@ -1765,15 +1725,13 @@ namespace AsynGyanis::Base
         // 中间那道检查别省：先确认「新值确实进了快照」，末端红时才分得清是配置没到还是装配没接
         const auto sinksSnapshot = ConfigManager::instance().getOptional("logging.loggers.root.sinks");
         ASSERT_TRUE(sinksSnapshot.has_value()) << "reload() 之后快照里连 sinks 键都没有";
-        EXPECT_NE(sinksSnapshot->dump().find("chain_stage_two.log"), std::string::npos)
-                << "reload() 之后快照里还是旧 sink 配置";
+        EXPECT_NE(sinksSnapshot->dump().find("chain_stage_two.log"), std::string::npos) << "reload() 之后快照里还是旧 sink 配置";
 
         applyLogging();
         logAndFlush("root", LogLevel::Info, "line after the change");
 
         EXPECT_TRUE(contains(readTemporaryFile("chain_stage_two.log"), "line after the change"));
-        EXPECT_FALSE(contains(readTemporaryFile("chain_stage_one.log"), "line after the change"))
-                << "旧 sink 没被换掉：装配没有按新快照清过 sink";
+        EXPECT_FALSE(contains(readTemporaryFile("chain_stage_one.log"), "line after the change")) << "旧 sink 没被换掉：装配没有按新快照清过 sink";
     }
 
     /**
@@ -1856,8 +1814,7 @@ namespace AsynGyanis::Base
         logAndFlush("app", LogLevel::Error, "kept after the bad entry");
         EXPECT_TRUE(contains(readTemporaryFile("kept_when_entry_bad.log"), "kept after the bad entry"));
         logAndFlush("app", LogLevel::Info, "info must stay filtered");
-        EXPECT_FALSE(contains(readTemporaryFile("kept_when_entry_bad.log"), "info must stay filtered"))
-                << "级别被 global_level 改写了：一份读不出字段的配置不该动这个日志器";
+        EXPECT_FALSE(contains(readTemporaryFile("kept_when_entry_bad.log"), "info must stay filtered")) << "级别被 global_level 改写了：一份读不出字段的配置不该动这个日志器";
     }
 
     /**
@@ -1959,8 +1916,7 @@ namespace AsynGyanis::Base
 
         // 类型不符只影响这一项取值，不能顺手把整条 sink 判废
         logAndFlush("root", LogLevel::Info, "typed_queue_line");
-        EXPECT_TRUE(contains(readTemporaryFile("typed_queue.log"), "typed_queue_line"))
-                << readTemporaryFile("typed_queue.log");
+        EXPECT_TRUE(contains(readTemporaryFile("typed_queue.log"), "typed_queue_line")) << readTemporaryFile("typed_queue.log");
     }
 
     /**
@@ -1996,8 +1952,7 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(contains(diagnostic, "size / daily / hourly")) << diagnostic;
 
         logAndFlush("root", LogLevel::Info, "typed_policy_line");
-        EXPECT_TRUE(contains(readTemporaryFile("rolling/typed_policy.log"), "typed_policy_line"))
-                << readTemporaryFile("rolling/typed_policy.log");
+        EXPECT_TRUE(contains(readTemporaryFile("rolling/typed_policy.log"), "typed_policy_line")) << readTemporaryFile("rolling/typed_policy.log");
     }
 
     /**
@@ -2025,8 +1980,7 @@ namespace AsynGyanis::Base
         }
 
         EXPECT_TRUE(contains(diagnostic, "'type' 类型是 uint")) << diagnostic;
-        EXPECT_FALSE(contains(diagnostic, "缺少 'type'"))
-                << "键在而类型不符，报成缺少会把人引向错误的修法：" << diagnostic;
+        EXPECT_FALSE(contains(diagnostic, "缺少 'type'")) << "键在而类型不符，报成缺少会把人引向错误的修法：" << diagnostic;
     }
 
     /**

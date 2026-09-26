@@ -39,9 +39,9 @@ namespace AsynGyanis::Net
      */
     enum class QuicCipherSuite
     {
-        Aes128Gcm,         ///< TLS_AES_128_GCM_SHA256：主线 OpenSSL 的默认档，Initial 一律用它
-        Aes256Gcm,         ///< TLS_AES_256_GCM_SHA384
-        ChaCha20Poly1305,  ///< TLS_CHACHA20_POLY1305_SHA256
+        Aes128Gcm,        ///< TLS_AES_128_GCM_SHA256：主线 OpenSSL 的默认档，Initial 一律用它
+        Aes256Gcm,        ///< TLS_AES_256_GCM_SHA384
+        ChaCha20Poly1305, ///< TLS_CHACHA20_POLY1305_SHA256
     };
 
     /**
@@ -80,11 +80,11 @@ namespace AsynGyanis::Net
      */
     struct QuicPacketKeys
     {
-        QuicCipherSuite cipherSuite{QuicCipherSuite::Aes128Gcm};                                    ///< 决定下面几段的实际长度
-        std::array<std::uint8_t, kQuicMaximumKeyByteLength> encryptionKey{};                        ///< AEAD 密钥（"quic key"）
-        std::array<std::uint8_t, kQuicInitializationVectorByteLength> initializationVector{};        ///< AEAD 的 IV（"quic iv"）
-        std::array<std::uint8_t, kQuicMaximumKeyByteLength> headerProtectionKey{};                  ///< 头部保护密钥（"quic hp"）
-        std::array<std::uint8_t, kQuicMaximumSecretByteLength> generationSecret{};                   ///< 导出上面两段的流量秘密，密钥更新靠它递推（§6.1）
+        QuicCipherSuite                                               cipherSuite{QuicCipherSuite::Aes128Gcm}; ///< 决定下面几段的实际长度
+        std::array<std::uint8_t, kQuicMaximumKeyByteLength>           encryptionKey{};                         ///< AEAD 密钥（"quic key"）
+        std::array<std::uint8_t, kQuicInitializationVectorByteLength> initializationVector{};                  ///< AEAD 的 IV（"quic iv"）
+        std::array<std::uint8_t, kQuicMaximumKeyByteLength>           headerProtectionKey{};                   ///< 头部保护密钥（"quic hp"）
+        std::array<std::uint8_t, kQuicMaximumSecretByteLength>        generationSecret{};                      ///< 导出上面两段的流量秘密，密钥更新靠它递推（§6.1）
 
         /**
          * @brief 按套件取 AEAD 密钥的有效字节

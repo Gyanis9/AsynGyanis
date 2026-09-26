@@ -72,7 +72,7 @@ namespace AsynGyanis::Net
             for (std::size_t index = 0; index + 1 < hexDigits.size(); index += 2)
             {
                 const int highValue = hexDigitValue(hexDigits[index]);
-                const int lowValue = hexDigitValue(hexDigits[index + 1]);
+                const int lowValue  = hexDigitValue(hexDigits[index + 1]);
                 EXPECT_GE(highValue, 0) << "非法十六进制字符：" << hexDigits[index];
                 EXPECT_GE(lowValue, 0) << "非法十六进制字符：" << hexDigits[index + 1];
                 if (highValue < 0 || lowValue < 0)
@@ -125,8 +125,7 @@ namespace AsynGyanis::Net
          * @param actual 实际解出的头列表
          * @param expected 规范给出的头列表
          */
-        void expectHeaderListEquals(const std::vector<HpackHeaderField> &actual,
-                                    const std::initializer_list<HeaderListEntry> &expected)
+        void expectHeaderListEquals(const std::vector<HpackHeaderField> &actual, const std::initializer_list<HeaderListEntry> &expected)
         {
             const std::vector<HpackHeaderField> expectedFields = makeHeaderList(expected);
             ASSERT_EQ(actual.size(), expectedFields.size()) << "头列表条数不符";
@@ -144,8 +143,7 @@ namespace AsynGyanis::Net
          * @param expectedEntries 规范给出的条目顺序
          * @param expectedSizeByteCount 规范给出的表大小
          */
-        void expectDynamicTableEquals(const std::deque<HpackHeaderField> &entries, const std::size_t sizeByteCount,
-                                      const std::initializer_list<HeaderListEntry> &expectedEntries,
+        void expectDynamicTableEquals(const std::deque<HpackHeaderField> &entries, const std::size_t sizeByteCount, const std::initializer_list<HeaderListEntry> &expectedEntries,
                                       const std::size_t expectedSizeByteCount)
         {
             const std::vector<HpackHeaderField> expectedFields = makeHeaderList(expectedEntries);
@@ -167,8 +165,7 @@ namespace AsynGyanis::Net
          * @param sizeByteCount 实际表大小
          * @param expectedFields 期望条目顺序
          */
-        void expectDynamicTableFieldsMatch(const std::deque<HpackHeaderField> &entries, const std::size_t sizeByteCount,
-                                          const std::vector<HpackHeaderField> &expectedFields)
+        void expectDynamicTableFieldsMatch(const std::deque<HpackHeaderField> &entries, const std::size_t sizeByteCount, const std::vector<HpackHeaderField> &expectedFields)
         {
             std::size_t expectedSizeByteCount = 0;
             for (const HpackHeaderField &field: expectedFields)
@@ -192,11 +189,10 @@ namespace AsynGyanis::Net
          * @param expectedKind 期望的失败类别
          * @return std::string 错误文案，已断言非空
          */
-        std::string expectDecodeFailure(HpackDecoder &decoder, const std::string_view headerBlock,
-                                        const HpackErrorKind expectedKind)
+        std::string expectDecodeFailure(HpackDecoder &decoder, const std::string_view headerBlock, const HpackErrorKind expectedKind)
         {
             std::vector<HpackHeaderField> headerFields;
-            std::string reason;
+            std::string                   reason;
             EXPECT_FALSE(decoder.decode(headerBlock, headerFields, &reason)) << "这个头块本应解不开";
             EXPECT_EQ(decoder.errorKind(), expectedKind);
             // 只有压缩上下文出错才粘滞：越限的头块整块解完，两端的表仍然同步，下一个头块照常能解
@@ -216,9 +212,9 @@ namespace AsynGyanis::Net
          */
         std::string encodeHuffmanWithCodeTable(const std::string_view text)
         {
-            std::string encoded;
-            std::uint64_t bitBuffer = 0;
-            int bufferedBitCount = 0;
+            std::string   encoded;
+            std::uint64_t bitBuffer        = 0;
+            int           bufferedBitCount = 0;
             for (const char character: text)
             {
                 const HpackHuffmanCode &code = kHpackHuffmanCodeTable[static_cast<unsigned char>(character)];
@@ -229,7 +225,7 @@ namespace AsynGyanis::Net
                     if (bufferedBitCount == 8)
                     {
                         encoded.push_back(static_cast<char>(bitBuffer & 0xFFU));
-                        bitBuffer = 0;
+                        bitBuffer        = 0;
                         bufferedBitCount = 0;
                     }
                 }
@@ -238,58 +234,42 @@ namespace AsynGyanis::Net
             {
                 // 填充取自 EOS 码字的高位，也就是若干个 1
                 const int paddingBitCount = 8 - bufferedBitCount;
-                bitBuffer = (bitBuffer << paddingBitCount) | ((1U << paddingBitCount) - 1U);
+                bitBuffer                 = (bitBuffer << paddingBitCount) | ((1U << paddingBitCount) - 1U);
                 encoded.push_back(static_cast<char>(bitBuffer & 0xFFU));
             }
             return encoded;
         }
 
         /// RFC 7541 C.3.1/C.4.1 第一个请求的头列表（两个示例共用）
-        const std::initializer_list<HeaderListEntry> kFirstRequestHeaders{{":method", "GET"},
-                                                                          {":scheme", "http"},
-                                                                          {":path", "/"},
-                                                                          {":authority", "www.example.com"}};
+        const std::initializer_list<HeaderListEntry> kFirstRequestHeaders{{":method", "GET"}, {":scheme", "http"}, {":path", "/"}, {":authority", "www.example.com"}};
 
         /// RFC 7541 C.3.2/C.4.2 第二个请求的头列表
-        const std::initializer_list<HeaderListEntry> kSecondRequestHeaders{{":method", "GET"},
-                                                                           {":scheme", "http"},
-                                                                           {":path", "/"},
-                                                                           {":authority", "www.example.com"},
-                                                                           {"cache-control", "no-cache"}};
+        const std::initializer_list<HeaderListEntry> kSecondRequestHeaders{
+                {":method", "GET"}, {":scheme", "http"}, {":path", "/"}, {":authority", "www.example.com"}, {"cache-control", "no-cache"}};
 
         /// RFC 7541 C.3.3/C.4.3 第三个请求的头列表
-        const std::initializer_list<HeaderListEntry> kThirdRequestHeaders{{":method", "GET"},
-                                                                          {":scheme", "https"},
-                                                                          {":path", "/index.html"},
-                                                                          {":authority", "www.example.com"},
-                                                                          {"custom-key", "custom-value"}};
+        const std::initializer_list<HeaderListEntry> kThirdRequestHeaders{
+                {":method", "GET"}, {":scheme", "https"}, {":path", "/index.html"}, {":authority", "www.example.com"}, {"custom-key", "custom-value"}};
 
         /// RFC 7541 C.5.1/C.6.1 第一个响应的头列表
-        const std::initializer_list<HeaderListEntry> kFirstResponseHeaders{{":status", "302"},
-                                                                           {"cache-control", "private"},
-                                                                           {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
-                                                                           {"location", "https://www.example.com"}};
+        const std::initializer_list<HeaderListEntry> kFirstResponseHeaders{
+                {":status", "302"}, {"cache-control", "private"}, {"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, {"location", "https://www.example.com"}};
 
         /// RFC 7541 C.5.2/C.6.2 第二个响应的头列表（:status 换成 307）
-        const std::initializer_list<HeaderListEntry> kSecondResponseHeaders{{":status", "307"},
-                                                                            {"cache-control", "private"},
-                                                                            {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
-                                                                            {"location", "https://www.example.com"}};
+        const std::initializer_list<HeaderListEntry> kSecondResponseHeaders{
+                {":status", "307"}, {"cache-control", "private"}, {"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, {"location", "https://www.example.com"}};
 
         /// RFC 7541 C.5.3/C.6.3 第三个响应的头列表
-        const std::initializer_list<HeaderListEntry> kThirdResponseHeaders{
-                {":status", "200"},
-                {"cache-control", "private"},
-                {"date", "Mon, 21 Oct 2013 20:13:22 GMT"},
-                {"location", "https://www.example.com"},
-                {"content-encoding", "gzip"},
-                {"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1"}};
+        const std::initializer_list<HeaderListEntry> kThirdResponseHeaders{{":status", "200"},
+                                                                           {"cache-control", "private"},
+                                                                           {"date", "Mon, 21 Oct 2013 20:13:22 GMT"},
+                                                                           {"location", "https://www.example.com"},
+                                                                           {"content-encoding", "gzip"},
+                                                                           {"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1"}};
 
         /// RFC 7541 C.5.3/C.6.3 结束时的动态表（表大小 215）
         const std::initializer_list<HeaderListEntry> kThirdResponseDynamicTable{
-                {"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1"},
-                {"content-encoding", "gzip"},
-                {"date", "Mon, 21 Oct 2013 20:13:22 GMT"}};
+                {"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1"}, {"content-encoding", "gzip"}, {"date", "Mon, 21 Oct 2013 20:13:22 GMT"}};
     } // namespace
 
     // ============================================================================
@@ -310,9 +290,9 @@ namespace AsynGyanis::Net
         // C.1.3：I = 42，8 位前缀
         EXPECT_EQ(encodeHpackInteger(42, 8, 0), makeBytesFromHex("2a"));
 
-        std::uint64_t value = 0;
-        std::size_t consumed = 0;
-        std::string reason;
+        std::uint64_t value    = 0;
+        std::size_t   consumed = 0;
+        std::string   reason;
         ASSERT_TRUE(decodeHpackInteger(makeBytesFromHex("0a"), 5, value, consumed, &reason)) << reason;
         EXPECT_EQ(value, 10U);
         EXPECT_EQ(consumed, 1U);
@@ -350,9 +330,9 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, RejectsMalformedIntegerRepresentation)
     {
-        std::uint64_t value = 0;
-        std::size_t consumed = 0;
-        std::string reason;
+        std::uint64_t value    = 0;
+        std::size_t   consumed = 0;
+        std::string   reason;
 
         // 前缀满值之后没有续字节：表示被截断
         EXPECT_FALSE(decodeHpackInteger(makeBytesFromHex("1f"), 5, value, consumed, &reason));
@@ -389,19 +369,26 @@ namespace AsynGyanis::Net
 
         struct EntryProbe
         {
-            std::size_t index;           ///< 索引（1 起）
-            const char *expectedName;    ///< 期望头名
-            const char *expectedValue;   ///< 期望头值
+            std::size_t index;         ///< 索引（1 起）
+            const char *expectedName;  ///< 期望头名
+            const char *expectedValue; ///< 期望头值
         };
 
-        const std::vector<EntryProbe> probes{{1, ":authority", ""},         {2, ":method", "GET"},
-                                             {3, ":method", "POST"},        {4, ":path", "/"},
-                                             {5, ":path", "/index.html"},   {6, ":scheme", "http"},
-                                             {7, ":scheme", "https"},       {8, ":status", "200"},
-                                             {14, ":status", "500"},        {15, "accept-charset", ""},
+        const std::vector<EntryProbe> probes{{1, ":authority", ""},
+                                             {2, ":method", "GET"},
+                                             {3, ":method", "POST"},
+                                             {4, ":path", "/"},
+                                             {5, ":path", "/index.html"},
+                                             {6, ":scheme", "http"},
+                                             {7, ":scheme", "https"},
+                                             {8, ":status", "200"},
+                                             {14, ":status", "500"},
+                                             {15, "accept-charset", ""},
                                              {16, "accept-encoding", "gzip, deflate"},
-                                             {24, "cache-control", ""},     {33, "date", ""},
-                                             {55, "set-cookie", ""},        {61, "www-authenticate", ""}};
+                                             {24, "cache-control", ""},
+                                             {33, "date", ""},
+                                             {55, "set-cookie", ""},
+                                             {61, "www-authenticate", ""}};
 
         for (const EntryProbe &probe: probes)
         {
@@ -452,27 +439,16 @@ namespace AsynGyanis::Net
         for (std::size_t entryIndex = 0; entryIndex < kHpackStaticTable.size(); ++entryIndex)
         {
             const HpackStaticTableEntry &entry = kHpackStaticTable[entryIndex];
-            EXPECT_EQ(findHpackStaticTableIndex(entry.name, entry.value), linearExactIndex(entry.name, entry.value))
-                    << "第 " << entryIndex + 1 << " 项 " << entry.name;
-            EXPECT_EQ(findHpackStaticTableNameIndex(entry.name), linearNameIndex(entry.name))
-                    << "第 " << entryIndex + 1 << " 项 " << entry.name;
+            EXPECT_EQ(findHpackStaticTableIndex(entry.name, entry.value), linearExactIndex(entry.name, entry.value)) << "第 " << entryIndex + 1 << " 项 " << entry.name;
+            EXPECT_EQ(findHpackStaticTableNameIndex(entry.name), linearNameIndex(entry.name)) << "第 " << entryIndex + 1 << " 项 " << entry.name;
             // 名对得上而值对不上时必须落空：这是「只发索引名的字面量」这条路的前提
             EXPECT_EQ(findHpackStaticTableIndex(entry.name, "必然不在表里的值"), linearExactIndex(entry.name, "必然不在表里的值"))
                     << "第 " << entryIndex + 1 << " 项 " << entry.name;
         }
 
-        for (const std::string_view name: {std::string_view{":stat"},
-                                           std::string_view{":statuss"},
-                                           std::string_view{"accept"},
-                                           std::string_view{"accept-"},
-                                           std::string_view{"accept-encodin"},
-                                           std::string_view{"acceptance"},
-                                           std::string_view{"content-type "},
-                                           std::string_view{"Content-Type"},
-                                           std::string_view{"www-authenticat"},
-                                           std::string_view{"x-custom"},
-                                           std::string_view{},
-                                           std::string_view{"ZZZ"}})
+        for (const std::string_view name: {std::string_view{":stat"}, std::string_view{":statuss"}, std::string_view{"accept"}, std::string_view{"accept-"},
+                                           std::string_view{"accept-encodin"}, std::string_view{"acceptance"}, std::string_view{"content-type "}, std::string_view{"Content-Type"},
+                                           std::string_view{"www-authenticat"}, std::string_view{"x-custom"}, std::string_view{}, std::string_view{"ZZZ"}})
         {
             EXPECT_EQ(findHpackStaticTableNameIndex(name), linearNameIndex(name)) << "名字 [" << name << ']';
             EXPECT_EQ(findHpackStaticTableIndex(name, "200"), linearExactIndex(name, "200")) << "名字 [" << name << ']';
@@ -489,15 +465,14 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, DecodesRfc7541C21LiteralWithIncrementalIndexing)
     {
-        HpackDecoder decoder;
+        HpackDecoder                  decoder;
         std::vector<HpackHeaderField> headerFields;
-        std::string reason;
-        const std::string block = makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572");
+        std::string                   reason;
+        const std::string             block = makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572");
 
         ASSERT_TRUE(decoder.decode(block, headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, {{"custom-key", "custom-header"}});
-        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
-                                 {{"custom-key", "custom-header"}}, 55);
+        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(), {{"custom-key", "custom-header"}}, 55);
     }
 
     /**
@@ -505,10 +480,10 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, DecodesRfc7541C22LiteralWithoutIndexing)
     {
-        HpackDecoder decoder;
+        HpackDecoder                  decoder;
         std::vector<HpackHeaderField> headerFields;
-        std::string reason;
-        const std::string block = makeBytesFromHex("040c2f73616d706c652f70617468");
+        std::string                   reason;
+        const std::string             block = makeBytesFromHex("040c2f73616d706c652f70617468");
 
         ASSERT_TRUE(decoder.decode(block, headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, {{":path", "/sample/path"}});
@@ -522,10 +497,10 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, DecodesRfc7541C23LiteralNeverIndexed)
     {
-        HpackDecoder decoder;
+        HpackDecoder                  decoder;
         std::vector<HpackHeaderField> headerFields;
-        std::string reason;
-        const std::string block = makeBytesFromHex("100870617373776f726406736563726574");
+        std::string                   reason;
+        const std::string             block = makeBytesFromHex("100870617373776f726406736563726574");
 
         ASSERT_TRUE(decoder.decode(block, headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, {{"password", "secret"}});
@@ -538,9 +513,9 @@ namespace AsynGyanis::Net
     TEST(Hpack, DecodesRfc7541C24IndexedHeaderFieldAndRejectsBadIndexes)
     {
         {
-            HpackDecoder decoder;
+            HpackDecoder                  decoder;
             std::vector<HpackHeaderField> headerFields;
-            std::string reason;
+            std::string                   reason;
             ASSERT_TRUE(decoder.decode(makeBytesFromHex("82"), headerFields, &reason)) << reason;
             expectHeaderListEquals(headerFields, {{":method", "GET"}});
             EXPECT_TRUE(decoder.dynamicTableEntries().empty());
@@ -552,7 +527,7 @@ namespace AsynGyanis::Net
         }
         {
             // 静态表只有 61 项、动态表还是空的：索引 62 没有落点
-            HpackDecoder decoder;
+            HpackDecoder      decoder;
             const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("be"), HpackErrorKind::CompressionError);
             EXPECT_TRUE(containsText(reason, "不同步")) << reason;
         }
@@ -569,22 +544,19 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, DecodesRfc7541C31ToC33RequestSequenceWithoutHuffman)
     {
-        HpackDecoder decoder;
+        HpackDecoder                  decoder;
         std::vector<HpackHeaderField> headerFields;
-        std::string reason;
+        std::string                   reason;
 
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("828684410f7777772e6578616d706c652e636f6d"), headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, kFirstRequestHeaders);
-        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
-                                 {{":authority", "www.example.com"}}, 57);
+        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(), {{":authority", "www.example.com"}}, 57);
 
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("828684be58086e6f2d6361636865"), headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, kSecondRequestHeaders);
-        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
-                                 {{"cache-control", "no-cache"}, {":authority", "www.example.com"}}, 110);
+        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(), {{"cache-control", "no-cache"}, {":authority", "www.example.com"}}, 110);
 
-        ASSERT_TRUE(decoder.decode(makeBytesFromHex("828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565"), headerFields, &reason))
-                << reason;
+        ASSERT_TRUE(decoder.decode(makeBytesFromHex("828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565"), headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, kThirdRequestHeaders);
         expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
                                  {{"custom-key", "custom-value"}, {"cache-control", "no-cache"}, {":authority", "www.example.com"}}, 164);
@@ -596,21 +568,19 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, DecodesRfc7541C41ToC43RequestSequenceWithHuffman)
     {
-        HpackDecoder decoder;
+        HpackDecoder                  decoder;
         std::vector<HpackHeaderField> headerFields;
-        std::string reason;
+        std::string                   reason;
 
         // C.4.1：f1e3 c2e5 f23a 6ba0 ab90 f4ff = "www.example.com"
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("828684418cf1e3c2e5f23a6ba0ab90f4ff"), headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, kFirstRequestHeaders);
-        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
-                                 {{":authority", "www.example.com"}}, 57);
+        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(), {{":authority", "www.example.com"}}, 57);
 
         // C.4.2：a8eb 1064 9cbf = "no-cache"
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("828684be5886a8eb10649cbf"), headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, kSecondRequestHeaders);
-        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
-                                 {{"cache-control", "no-cache"}, {":authority", "www.example.com"}}, 110);
+        expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(), {{"cache-control", "no-cache"}, {":authority", "www.example.com"}}, 110);
 
         // C.4.3：25a8 49e9 5ba9 7d7f = "custom-key"，25a8 49e9 5bb8 e8b4 bf = "custom-value"
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("828785bf408825a849e95ba97d7f8925a849e95bb8e8b4bf"), headerFields, &reason)) << reason;
@@ -630,35 +600,26 @@ namespace AsynGyanis::Net
     TEST(Hpack, DecodesRfc7541C51ToC53ResponseSequenceWithoutHuffman)
     {
         // 上限 256 = 规范示例里 SETTINGS_HEADER_TABLE_SIZE 的取值，本端的解码器按它建表
-        HpackDecoder decoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = 256});
+        HpackDecoder                  decoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = 256});
         std::vector<HpackHeaderField> headerFields;
-        std::string reason;
+        std::string                   reason;
 
-        ASSERT_TRUE(decoder.decode(makeBytesFromHex(
-                            "4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d"),
-                    headerFields, &reason))
+        ASSERT_TRUE(decoder.decode(
+                makeBytesFromHex("4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d"),
+                headerFields, &reason))
                 << reason;
         expectHeaderListEquals(headerFields, kFirstResponseHeaders);
         expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
-                                 {{"location", "https://www.example.com"},
-                                  {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
-                                  {"cache-control", "private"},
-                                  {":status", "302"}},
-                                 222);
+                                 {{"location", "https://www.example.com"}, {"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, {"cache-control", "private"}, {":status", "302"}}, 222);
 
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("4803333037c1c0bf"), headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, kSecondResponseHeaders);
         expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
-                                 {{":status", "307"},
-                                  {"location", "https://www.example.com"},
-                                  {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
-                                  {"cache-control", "private"}},
-                                 222);
+                                 {{":status", "307"}, {"location", "https://www.example.com"}, {"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, {"cache-control", "private"}}, 222);
 
-        ASSERT_TRUE(decoder.decode(
-                            makeBytesFromHex("88c1611d4d6f6e2c203231204f637420323031332032303a31333a323220474d54c05a04677a69707738666f6f3d4153444a4b48514b"
-                                             "425a584f5157454f50495541585157454f49553b206d61782d6167653d333630303b2076657273696f6e3d31"),
-                            headerFields, &reason))
+        ASSERT_TRUE(decoder.decode(makeBytesFromHex("88c1611d4d6f6e2c203231204f637420323031332032303a31333a323220474d54c05a04677a69707738666f6f3d4153444a4b48514b"
+                                                    "425a584f5157454f50495541585157454f49553b206d61782d6167653d333630303b2076657273696f6e3d31"),
+                                   headerFields, &reason))
                 << reason;
         expectHeaderListEquals(headerFields, kThirdResponseHeaders);
         expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(), kThirdResponseDynamicTable, 215);
@@ -670,9 +631,9 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, DecodesRfc7541C61ToC63ResponseSequenceWithHuffman)
     {
-        HpackDecoder decoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = 256});
+        HpackDecoder                  decoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = 256});
         std::vector<HpackHeaderField> headerFields;
-        std::string reason;
+        std::string                   reason;
 
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("488264025885aec3771a4b6196d07abe941054d444a8200595040b8166e082a62d1bff6e919d29ad171863c78f0b9"
                                                     "7c8e9ae82ae43d3"),
@@ -680,20 +641,12 @@ namespace AsynGyanis::Net
                 << reason;
         expectHeaderListEquals(headerFields, kFirstResponseHeaders);
         expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
-                                 {{"location", "https://www.example.com"},
-                                  {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
-                                  {"cache-control", "private"},
-                                  {":status", "302"}},
-                                 222);
+                                 {{"location", "https://www.example.com"}, {"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, {"cache-control", "private"}, {":status", "302"}}, 222);
 
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("4883640effc1c0bf"), headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, kSecondResponseHeaders);
         expectDynamicTableEquals(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(),
-                                 {{":status", "307"},
-                                  {"location", "https://www.example.com"},
-                                  {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
-                                  {"cache-control", "private"}},
-                                 222);
+                                 {{":status", "307"}, {"location", "https://www.example.com"}, {"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, {"cache-control", "private"}}, 222);
 
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("88c16196d07abe941054d444a8200595040b8166e084a62d1bffc05a839bd9ab77ad94e7821dd7f2e6c7b335dfdfc"
                                                     "d5b3960d5af27087f3672c1ab270fb5291f9587316065c003ed4ee5b1063d5007"),
@@ -718,8 +671,7 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(encoder.encode(makeHeaderList(kFirstRequestHeaders)), makeBytesFromHex("828684410f7777772e6578616d706c652e636f6d"));
         EXPECT_EQ(encoder.encode(makeHeaderList(kSecondRequestHeaders)), makeBytesFromHex("828684be58086e6f2d6361636865"));
-        EXPECT_EQ(encoder.encode(makeHeaderList(kThirdRequestHeaders)),
-                  makeBytesFromHex("828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565"));
+        EXPECT_EQ(encoder.encode(makeHeaderList(kThirdRequestHeaders)), makeBytesFromHex("828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565"));
 
         // 编码器的动态表必须与规范给出的状态一致（否则下一个头块的索引就对不上了）
         expectDynamicTableEquals(encoder.dynamicTableEntries(), encoder.dynamicTableSizeByteCount(),
@@ -737,24 +689,15 @@ namespace AsynGyanis::Net
         HpackEncoder encoder(256);
 
         const std::string firstResponse = encoder.encode(makeHeaderList(kFirstResponseHeaders));
-        EXPECT_EQ(firstResponse,
-                  makeBytesFromHex("4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f"
-                                   "7777772e6578616d706c652e636f6d"));
+        EXPECT_EQ(firstResponse, makeBytesFromHex("4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f"
+                                                  "7777772e6578616d706c652e636f6d"));
         expectDynamicTableEquals(encoder.dynamicTableEntries(), encoder.dynamicTableSizeByteCount(),
-                                 {{"location", "https://www.example.com"},
-                                  {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
-                                  {"cache-control", "private"},
-                                  {":status", "302"}},
-                                 222);
+                                 {{"location", "https://www.example.com"}, {"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, {"cache-control", "private"}, {":status", "302"}}, 222);
 
         const std::string secondResponse = encoder.encode(makeHeaderList(kSecondResponseHeaders));
         EXPECT_EQ(secondResponse, makeBytesFromHex("4803333037c1c0bf"));
         expectDynamicTableEquals(encoder.dynamicTableEntries(), encoder.dynamicTableSizeByteCount(),
-                                 {{":status", "307"},
-                                  {"location", "https://www.example.com"},
-                                  {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
-                                  {"cache-control", "private"}},
-                                 222);
+                                 {{":status", "307"}, {"location", "https://www.example.com"}, {"date", "Mon, 21 Oct 2013 20:13:21 GMT"}, {"cache-control", "private"}}, 222);
 
         const std::string thirdResponse = encoder.encode(makeHeaderList(kThirdResponseHeaders));
         EXPECT_EQ(thirdResponse, makeBytesFromHex("88c1611d4d6f6e2c203231204f637420323031332032303a31333a323220474d54c05a04677a69707738666f6f3d4153444a4b48514b425a"
@@ -768,7 +711,7 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, EncoderRoundTripsThroughDecoder)
     {
-        const std::string binaryValue = std::string("\x00\x01\x80\xff", 4);
+        const std::string                   binaryValue = std::string("\x00\x01\x80\xff", 4);
         const std::vector<HpackHeaderField> expectedFields{
                 {":status", "200"},
                 {"content-type", "application/json; charset=utf-8"},
@@ -788,7 +731,7 @@ namespace AsynGyanis::Net
             const std::string headerBlock = encoder.encode(expectedFields);
 
             std::vector<HpackHeaderField> decodedFields;
-            std::string reason;
+            std::string                   reason;
             ASSERT_TRUE(decoder.decode(headerBlock, decodedFields, &reason)) << "第 " << round + 1 << " 轮：" << reason;
             ASSERT_EQ(decodedFields.size(), expectedFields.size());
             for (std::size_t index = 0; index < expectedFields.size(); ++index)
@@ -800,12 +743,12 @@ namespace AsynGyanis::Net
             // 两端的动态表必须逐项一致：任何一侧多插、漏插或错驱逐，后续头块的索引都会指错
             // （:status: 200 命中静态表，因此不会进动态表）
             const std::vector<HpackHeaderField> expectedTableEntries{{"x-custom-header", "second"},
-                                                                    {"x-custom-header", "first"},
-                                                                    {"set-cookie", "b=2; Path=/"},
-                                                                    {"set-cookie", "a=1; Path=/"},
-                                                                    {"x-binary", binaryValue},
-                                                                    {"content-length", "1234"},
-                                                                    {"content-type", "application/json; charset=utf-8"}};
+                                                                     {"x-custom-header", "first"},
+                                                                     {"set-cookie", "b=2; Path=/"},
+                                                                     {"set-cookie", "a=1; Path=/"},
+                                                                     {"x-binary", binaryValue},
+                                                                     {"content-length", "1234"},
+                                                                     {"content-type", "application/json; charset=utf-8"}};
             expectDynamicTableFieldsMatch(decoder.dynamicTableEntries(), decoder.dynamicTableSizeByteCount(), expectedTableEntries);
             EXPECT_EQ(decoder.dynamicTableSizeByteCount(), encoder.dynamicTableSizeByteCount());
             EXPECT_EQ(decoder.dynamicTableEntries().size(), encoder.dynamicTableEntries().size());
@@ -822,15 +765,15 @@ namespace AsynGyanis::Net
                 {"x-request-id", "0f8fad5b-d9cb-469f-a165-70867728950e"},
         };
 
-        HpackEncoder encoder;
-        HpackDecoder decoder;
-        const std::string firstBlock = encoder.encode(headerFields);
+        HpackEncoder      encoder;
+        HpackDecoder      decoder;
+        const std::string firstBlock  = encoder.encode(headerFields);
         const std::string secondBlock = encoder.encode(headerFields);
 
         EXPECT_LT(secondBlock.size(), firstBlock.size()) << "第二次应当用动态表索引，而不是再把字面量发一遍";
 
         std::vector<HpackHeaderField> decodedFields;
-        std::string reason;
+        std::string                   reason;
         ASSERT_TRUE(decoder.decode(firstBlock, decodedFields, &reason)) << reason;
         ASSERT_TRUE(decoder.decode(secondBlock, decodedFields, &reason)) << reason;
         ASSERT_EQ(decodedFields.size(), 2U);
@@ -868,15 +811,14 @@ namespace AsynGyanis::Net
         {
             for (std::size_t rightIndex = 0; rightIndex < kHpackHuffmanCodeTable.size(); ++rightIndex)
             {
-                const HpackHuffmanCode &left = kHpackHuffmanCodeTable[leftIndex];
+                const HpackHuffmanCode &left  = kHpackHuffmanCodeTable[leftIndex];
                 const HpackHuffmanCode &right = kHpackHuffmanCodeTable[rightIndex];
                 if (left.bitCount >= right.bitCount || leftIndex == rightIndex)
                 {
                     continue;
                 }
                 // 短码字不得成为长码字的前缀，否则同一段位流有两种读法
-                EXPECT_NE(right.code >> (right.bitCount - left.bitCount), left.code)
-                        << "符号 " << leftIndex << " 的码字成了符号 " << rightIndex << " 的前缀";
+                EXPECT_NE(right.code >> (right.bitCount - left.bitCount), left.code) << "符号 " << leftIndex << " 的码字成了符号 " << rightIndex << " 的前缀";
             }
         }
     }
@@ -901,7 +843,8 @@ namespace AsynGyanis::Net
                 "www.example.com",
                 "Mon, 21 Oct 2013 20:13:21 GMT",
                 "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
-                "\x00""nul-in-the-middle\x00",
+                "\x00"
+                "nul-in-the-middle\x00",
         };
 
         for (const std::string &probe: probes)
@@ -919,8 +862,8 @@ namespace AsynGyanis::Net
         // 长文本的往返：编码后应显著变短（Huffman 的收益就在这里）
         const std::string longText(1024, 'e');
         const std::string encodedLongText = encodeHuffmanWithCodeTable(longText);
-        std::string decodedLongText;
-        std::string reason;
+        std::string       decodedLongText;
+        std::string       reason;
         ASSERT_TRUE(decodeHpackHuffmanString(encodedLongText, decodedLongText, &reason)) << reason;
         EXPECT_EQ(decodedLongText, longText);
         EXPECT_LT(encodedLongText.size(), longText.size());
@@ -997,50 +940,48 @@ namespace AsynGyanis::Net
     {
         {
             // 0x20 = 大小更新到 0（5 位前缀里直接写下 0），随后是一个普通索引表示
-            HpackDecoder decoder;
+            HpackDecoder                  decoder;
             std::vector<HpackHeaderField> headerFields;
-            std::string reason;
+            std::string                   reason;
             ASSERT_TRUE(decoder.decode(makeBytesFromHex("2082"), headerFields, &reason)) << reason;
             expectHeaderListEquals(headerFields, {{":method", "GET"}});
             EXPECT_EQ(decoder.dynamicTableMaximumSizeByteCount(), 0U);
         }
         {
             // 3f e1 01 = 大小更新到 256（前缀满值后按 7 位一组续写）
-            HpackDecoder decoder;
+            HpackDecoder                  decoder;
             std::vector<HpackHeaderField> headerFields;
-            std::string reason;
+            std::string                   reason;
             ASSERT_TRUE(decoder.decode(makeBytesFromHex("3fe10182"), headerFields, &reason)) << reason;
             expectHeaderListEquals(headerFields, {{":method", "GET"}});
             EXPECT_EQ(decoder.dynamicTableMaximumSizeByteCount(), 256U);
         }
         {
             // 同一个头块开头可以连着两个更新，取最后生效的那个
-            HpackDecoder decoder;
+            HpackDecoder                  decoder;
             std::vector<HpackHeaderField> headerFields;
-            std::string reason;
+            std::string                   reason;
             ASSERT_TRUE(decoder.decode(makeBytesFromHex("203fe10182"), headerFields, &reason)) << reason;
             EXPECT_EQ(decoder.dynamicTableMaximumSizeByteCount(), 256U);
         }
         {
             // 放在头部之后就是解码错误（前后两段的索引会指向不同的表状态）
-            HpackDecoder decoder;
-            const std::string reason =
-                    expectDecodeFailure(decoder, makeBytesFromHex("8220"), HpackErrorKind::CompressionError);
+            HpackDecoder      decoder;
+            const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("8220"), HpackErrorKind::CompressionError);
             EXPECT_TRUE(containsText(reason, "开头")) << reason;
         }
         {
             // 新上限超过本端通告的 SETTINGS_HEADER_TABLE_SIZE（本端通告 128，对端却要 256）
-            HpackDecoder decoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = 128});
-            const std::string reason =
-                    expectDecodeFailure(decoder, makeBytesFromHex("3fe10182"), HpackErrorKind::CompressionError);
+            HpackDecoder      decoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = 128});
+            const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("3fe10182"), HpackErrorKind::CompressionError);
             EXPECT_TRUE(containsText(reason, "128")) << "原因里要给本端通告的上限：" << reason;
             EXPECT_EQ(toHttp2ErrorCode(decoder.errorKind()), Http2ErrorCode::CompressionError);
         }
         {
             // 收小上限会立刻驱逐放不下的旧项（RFC 7541 §4.3）：先插入一项 57 字节，再把上限收到 8
-            HpackDecoder decoder;
+            HpackDecoder                  decoder;
             std::vector<HpackHeaderField> headerFields;
-            std::string reason;
+            std::string                   reason;
             ASSERT_TRUE(decoder.decode(makeBytesFromHex("410f7777772e6578616d706c652e636f6d"), headerFields, &reason)) << reason;
             EXPECT_EQ(decoder.dynamicTableSizeByteCount(), 57U);
 
@@ -1106,8 +1047,8 @@ namespace AsynGyanis::Net
         HpackDecoder decoder;
 
         const std::vector<HpackHeaderField> headerFields{{":status", "204"}};
-        std::vector<HpackHeaderField> decodedFields;
-        std::string reason;
+        std::vector<HpackHeaderField>       decodedFields;
+        std::string                         reason;
         ASSERT_TRUE(decoder.decode(encoder.encode(headerFields), decodedFields, &reason)) << reason;
 
         encoder.setMaximumDynamicTableSizeByteCount(128);
@@ -1115,8 +1056,7 @@ namespace AsynGyanis::Net
 
         const std::string blockAfterLimitChange = encoder.encode(headerFields);
         ASSERT_FALSE(blockAfterLimitChange.empty());
-        EXPECT_EQ(static_cast<unsigned char>(blockAfterLimitChange[0]) & 0xE0U, 0x20U)
-                << "头块开头必须是 001 模式的「动态表大小更新」";
+        EXPECT_EQ(static_cast<unsigned char>(blockAfterLimitChange[0]) & 0xE0U, 0x20U) << "头块开头必须是 001 模式的「动态表大小更新」";
 
         ASSERT_TRUE(decoder.decode(blockAfterLimitChange, decodedFields, &reason)) << reason;
         EXPECT_EQ(decoder.dynamicTableMaximumSizeByteCount(), 128U) << "对端的表上限要跟着变";
@@ -1140,31 +1080,27 @@ namespace AsynGyanis::Net
     {
         {
             // C.3.1 的头列表净大小是 57 + 42 + 32 + 35... 这里把上限压到 100 字节
-            HpackDecoder decoder(HpackDecoderLimits{.maximumHeaderListByteCount = 100});
-            const std::string reason =
-                    expectDecodeFailure(decoder, makeBytesFromHex("828684410f7777772e6578616d706c652e636f6d"), HpackErrorKind::LimitExceeded);
+            HpackDecoder      decoder(HpackDecoderLimits{.maximumHeaderListByteCount = 100});
+            const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("828684410f7777772e6578616d706c652e636f6d"), HpackErrorKind::LimitExceeded);
             EXPECT_TRUE(containsText(reason, "100")) << "原因里要给上限数值：" << reason;
             EXPECT_EQ(toHttp2ErrorCode(decoder.errorKind()), Http2ErrorCode::EnhanceYourCalm);
         }
         {
-            HpackDecoder decoder(HpackDecoderLimits{.maximumHeaderFieldNameLength = 4});
-            const std::string reason = expectDecodeFailure(
-                    decoder, makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572"), HpackErrorKind::LimitExceeded);
+            HpackDecoder      decoder(HpackDecoderLimits{.maximumHeaderFieldNameLength = 4});
+            const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572"), HpackErrorKind::LimitExceeded);
             EXPECT_TRUE(containsText(reason, "头名")) << reason;
         }
         {
-            HpackDecoder decoder(HpackDecoderLimits{.maximumHeaderFieldValueLength = 4});
-            const std::string reason = expectDecodeFailure(
-                    decoder, makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572"), HpackErrorKind::LimitExceeded);
+            HpackDecoder      decoder(HpackDecoderLimits{.maximumHeaderFieldValueLength = 4});
+            const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572"), HpackErrorKind::LimitExceeded);
             EXPECT_TRUE(containsText(reason, "头值")) << reason;
         }
         {
             // 关闭动态表（上限 0）后，对端还发「带增量索引」也不算错：这一项进不了表，但头列表照常交出来
-            HpackDecoder decoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = 0});
+            HpackDecoder                  decoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = 0});
             std::vector<HpackHeaderField> headerFields;
-            std::string reason;
-            ASSERT_TRUE(decoder.decode(makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572"), headerFields, &reason))
-                    << reason;
+            std::string                   reason;
+            ASSERT_TRUE(decoder.decode(makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572"), headerFields, &reason)) << reason;
             expectHeaderListEquals(headerFields, {{"custom-key", "custom-header"}});
             EXPECT_TRUE(decoder.dynamicTableEntries().empty()) << "上限为 0 时任何项都进不了动态表";
         }
@@ -1180,12 +1116,12 @@ namespace AsynGyanis::Net
     {
         // 名长 + 值长 + 32：第一项 63 字节过得去，第二项累计 136 字节撑爆 100 的上限
         constexpr std::size_t kHeaderListLimit = 100;
-        const std::string firstField = makeIncrementalLiteralField("a", std::string(30, 'u'));
-        const std::string secondField = makeIncrementalLiteralField("b", std::string(40, 'v'));
+        const std::string     firstField       = makeIncrementalLiteralField("a", std::string(30, 'u'));
+        const std::string     secondField      = makeIncrementalLiteralField("b", std::string(40, 'v'));
 
-        HpackDecoder decoder(HpackDecoderLimits{.maximumHeaderListByteCount = kHeaderListLimit});
+        HpackDecoder                  decoder(HpackDecoderLimits{.maximumHeaderListByteCount = kHeaderListLimit});
         std::vector<HpackHeaderField> headerFields;
-        std::string reason;
+        std::string                   reason;
         ASSERT_FALSE(decoder.decode(firstField + secondField, headerFields, &reason)) << "累计 136 字节应当被 100 的上限挡下";
         EXPECT_TRUE(headerFields.empty()) << "越限的头块不交出任何字段";
         EXPECT_TRUE(decoder.isLimitExceeded()) << "越限要能与压缩错误区分开";
@@ -1212,7 +1148,7 @@ namespace AsynGyanis::Net
         }
         {
             // 名字索引满值之后没有续字节
-            HpackDecoder decoder;
+            HpackDecoder      decoder;
             const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("7f"), HpackErrorKind::CompressionError);
             EXPECT_TRUE(containsText(reason, "索引")) << reason;
         }
@@ -1232,16 +1168,11 @@ namespace AsynGyanis::Net
         HpackDecoder decoder;
 
         const std::vector<HpackHeaderField> headerFields{
-                {"set-cookie", "a=1"},
-                {":status", "200"},
-                {"set-cookie", "b=2"},
-                {"x-empty", ""},
-                {"accept-encoding", "gzip, deflate"},
-                {"set-cookie", "a=1"},
+                {"set-cookie", "a=1"}, {":status", "200"}, {"set-cookie", "b=2"}, {"x-empty", ""}, {"accept-encoding", "gzip, deflate"}, {"set-cookie", "a=1"},
         };
 
         std::vector<HpackHeaderField> decodedFields;
-        std::string reason;
+        std::string                   reason;
         ASSERT_TRUE(decoder.decode(encoder.encode(headerFields), decodedFields, &reason)) << reason;
         ASSERT_EQ(decodedFields.size(), headerFields.size());
         for (std::size_t index = 0; index < headerFields.size(); ++index)
@@ -1257,9 +1188,9 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, ErrorStateIsStickyUntilReset)
     {
-        HpackDecoder decoder;
+        HpackDecoder                  decoder;
         std::vector<HpackHeaderField> headerFields;
-        std::string reason;
+        std::string                   reason;
 
         // 先解一个正常的头块，把动态表建立起来
         ASSERT_TRUE(decoder.decode(makeBytesFromHex("828684410f7777772e6578616d706c652e636f6d"), headerFields, &reason)) << reason;

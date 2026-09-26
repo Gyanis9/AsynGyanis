@@ -37,7 +37,7 @@ namespace AsynGyanis::Platform
                 return argument;
             }
 
-            std::string quoted = "\"";
+            std::string quoted         = "\"";
             std::size_t backslashCount = 0;
             for (const char character: argument)
             {
@@ -66,13 +66,11 @@ namespace AsynGyanis::Platform
     } // namespace
 
 #if ASYN_PLATFORM_WIN32
-    Process::Handle::Handle(void *const processHandle, const unsigned long processId) noexcept :
-        m_processHandle(processHandle), m_processId(processId)
+    Process::Handle::Handle(void *const processHandle, const unsigned long processId) noexcept : m_processHandle(processHandle), m_processId(processId)
     {
     }
 #else
-    Process::Handle::Handle(const int processId) noexcept :
-        m_processId(processId)
+    Process::Handle::Handle(const int processId) noexcept : m_processId(processId)
     {
     }
 #endif
@@ -84,8 +82,7 @@ namespace AsynGyanis::Platform
 
     Process::Handle::Handle(Handle &&other) noexcept
 #if ASYN_PLATFORM_WIN32
-        : m_processHandle(std::exchange(other.m_processHandle, nullptr)), m_processId(std::exchange(other.m_processId, 0)),
-          m_exitCode(other.m_exitCode)
+        : m_processHandle(std::exchange(other.m_processHandle, nullptr)), m_processId(std::exchange(other.m_processId, 0)), m_exitCode(other.m_exitCode)
 #else
         : m_processId(std::exchange(other.m_processId, -1)), m_exitCode(other.m_exitCode)
 #endif
@@ -192,9 +189,9 @@ namespace AsynGyanis::Platform
 
         STARTUPINFOEXW               startupInfo{};
         std::vector<std::uint64_t>   attributeListStorage;
-        LPPROC_THREAD_ATTRIBUTE_LIST attributeList = nullptr;
+        LPPROC_THREAD_ATTRIBUTE_LIST attributeList  = nullptr;
         BOOL                         inheritHandles = FALSE;
-        DWORD                        creationFlags = 0;
+        DWORD                        creationFlags  = 0;
 
         if (!inheritableStandardHandles.empty())
         {
@@ -225,8 +222,7 @@ namespace AsynGyanis::Platform
             startupInfo.lpAttributeList = attributeList;
             creationFlags               = EXTENDED_STARTUPINFO_PRESENT;
             inheritHandles              = TRUE;
-        }
-        else
+        } else
         {
             // 一个标准句柄都没有（无控制台的宿主）：不建清单，也干脆不开继承——此时没有值得传下去的
             // 句柄，而「开继承却不带清单」会把父进程全部可继承句柄整个交出去，那正是清单要防的事
@@ -242,9 +238,9 @@ namespace AsynGyanis::Platform
         // 含空格的完整路径因此不会被拆成两段。
         // 只传命令行串（不带独占的所有权保证）不影响子进程按路径映射映像；lpCommandLine 需要可写缓冲，
         // 这里给一份自己的副本
-        const BOOL isCreated = ::CreateProcessW(nullptr, wideCommandLine.data(), nullptr, nullptr, inheritHandles, creationFlags,
-                                                nullptr, nullptr, &startupInfo.StartupInfo, &processInformation);
-        const int  creationErrorCode = isCreated != 0 ? 0 : static_cast<int>(::GetLastError());
+        const BOOL isCreated =
+                ::CreateProcessW(nullptr, wideCommandLine.data(), nullptr, nullptr, inheritHandles, creationFlags, nullptr, nullptr, &startupInfo.StartupInfo, &processInformation);
+        const int creationErrorCode = isCreated != 0 ? 0 : static_cast<int>(::GetLastError());
         // 属性清单只在 CreateProcessW 调用期间被读取，调用返回即可释放；没建清单时不释放空指针
         if (attributeList != nullptr)
         {
@@ -349,8 +345,8 @@ namespace AsynGyanis::Platform
         handle.m_exitCode = static_cast<int>(exitCode);
         return handle.m_exitCode;
 #else
-        int  waitStatus  = 0;
-        const pid_t reaped = ::waitpid(handle.m_processId, &waitStatus, WNOHANG);
+        int         waitStatus = 0;
+        const pid_t reaped     = ::waitpid(handle.m_processId, &waitStatus, WNOHANG);
         if (reaped == 0)
         {
             return std::nullopt;

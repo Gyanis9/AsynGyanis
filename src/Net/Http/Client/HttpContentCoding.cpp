@@ -81,25 +81,16 @@ namespace AsynGyanis::Net
          */
         void eraseHeaderFields(std::vector<HttpClientHeaderField> &headers, const std::string_view name)
         {
-            std::erase_if(headers,
-                          [name](const HttpClientHeaderField &field)
-                          {
-                              return equalsFoldedAscii(field.first, name);
-                          });
+            std::erase_if(headers, [name](const HttpClientHeaderField &field) { return equalsFoldedAscii(field.first, name); });
         }
     } // namespace
 
     bool shouldAdvertiseAcceptEncoding(const std::vector<HttpClientHeaderField> &headers) noexcept
     {
-        return !std::any_of(headers.begin(), headers.end(),
-                            [](const HttpClientHeaderField &field)
-                            {
-                                return equalsFoldedAscii(field.first, "accept-encoding");
-                            });
+        return !std::any_of(headers.begin(), headers.end(), [](const HttpClientHeaderField &field) { return equalsFoldedAscii(field.first, "accept-encoding"); });
     }
 
-    std::expected<bool, std::string> decodeResponseBodyInPlace(HttpClientResponse &response,
-                                                                const std::size_t maxOutputByteCount)
+    std::expected<bool, std::string> decodeResponseBodyInPlace(HttpClientResponse &response, const std::size_t maxOutputByteCount)
     {
         const std::string_view encoding = findHeaderValue(response.headers, "content-encoding");
         if (encoding.empty() || equalsFoldedAscii(encoding, "identity"))
@@ -120,13 +111,11 @@ namespace AsynGyanis::Net
             return std::unexpected("不支持链式 Content-Encoding（\"" + std::string(encoding) + "\"）：本端只处理单层编码");
         }
 
-        if (!equalsFoldedAscii(encoding, "gzip") && !equalsFoldedAscii(encoding, "deflate")
-            && !equalsFoldedAscii(encoding, "x-gzip"))
+        if (!equalsFoldedAscii(encoding, "gzip") && !equalsFoldedAscii(encoding, "deflate") && !equalsFoldedAscii(encoding, "x-gzip"))
         {
             // 本端只在没被调用方接管时才对编码有主张：收到没声明过的编码说明对端不按回答办事，
             // 原样交回等于把「业务以为拿到文本、其实是压缩字节」这一坑埋到更深处
-            return std::unexpected("对端返回了本端没请求的 Content-Encoding（\"" + std::string(encoding)
-                                   + "\"），且本端没有对应的解码器");
+            return std::unexpected("对端返回了本端没请求的 Content-Encoding（\"" + std::string(encoding) + "\"），且本端没有对应的解码器");
         }
 
         auto decompressed = inflateHttpBody(response.body, maxOutputByteCount);

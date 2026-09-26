@@ -3,8 +3,7 @@
 
 namespace AsynGyanis::Core
 {
-    Timer::Timer(EventLoop &loop) noexcept :
-        m_queue(loop.timerQueue())
+    Timer::Timer(EventLoop &loop) noexcept : m_queue(loop.timerQueue())
     {
     }
 
@@ -15,4 +14,4 @@ namespace AsynGyanis::Core
         return m_queue.waitFor(duration);
     }
 
-}
+} // namespace AsynGyanis::Core

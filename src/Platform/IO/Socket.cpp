@@ -26,8 +26,8 @@ namespace AsynGyanis::Platform
          */
         struct WinsockReferenceCount
         {
-            std::mutex mutex;                    ///< 保护 initializeCount，跨线程启停时串行化
-            int        initializeCount = 0;      ///< 当前生效的 WSAStartup 引用数
+            std::mutex mutex;               ///< 保护 initializeCount，跨线程启停时串行化
+            int        initializeCount = 0; ///< 当前生效的 WSAStartup 引用数
         };
 
         /**
@@ -56,12 +56,12 @@ namespace AsynGyanis::Platform
             // 统一转成 const char* 对两边都成立，业务层因此不必再写平台分支
             return ::setsockopt(descriptor, optionLevel, optionName, reinterpret_cast<const char *>(&optionValue), static_cast<socklen_t>(sizeof(optionValue))) == 0;
         }
-    }
+    } // namespace
 
     bool Socket::initialize() noexcept
     {
 #if ASYN_PLATFORM_WIN32
-        auto                            &state = winsockReferenceCount();
+        auto                             &state = winsockReferenceCount();
         const std::lock_guard<std::mutex> lock(state.mutex);
         // 仅首个引用真正启动 Winsock，后续调用累加计数即可
         if (state.initializeCount == 0)
@@ -88,7 +88,7 @@ namespace AsynGyanis::Platform
     void Socket::finalize() noexcept
     {
 #if ASYN_PLATFORM_WIN32
-        auto                            &state = winsockReferenceCount();
+        auto                             &state = winsockReferenceCount();
         const std::lock_guard<std::mutex> lock(state.mutex);
         // 计数归零才清理；多余的 finalize 调用直接忽略，避免把计数减成负数
         if (state.initializeCount > 0 && --state.initializeCount == 0)
@@ -366,7 +366,7 @@ namespace AsynGyanis::Platform
          */
         bool fillHandoffHeaderIdentity(int descriptor, HandoffHeader &header)
         {
-            int type             = 0;
+            int type = 0;
             // 长度参数的类型两家不同（Winsock 是 int*，POSIX 是 socklen_t*）：一律用 socklen_t，
             // 它在 Windows 上就是 winsock2 给的 int 别名
             socklen_t valueLength = static_cast<socklen_t>(sizeof(type));
@@ -377,7 +377,7 @@ namespace AsynGyanis::Platform
             header.socketType = static_cast<std::uint16_t>(type);
 
 #ifdef SO_DOMAIN
-            int family = 0;
+            int family  = 0;
             valueLength = static_cast<socklen_t>(sizeof(family));
             if (::getsockopt(descriptor, SOL_SOCKET, SO_DOMAIN, reinterpret_cast<char *>(&family), &valueLength) != 0)
             {
@@ -416,7 +416,7 @@ namespace AsynGyanis::Platform
         // Winsock 的复制接口按**进程号**认目标，不需要先把对方 OpenProcess 成句柄；
         // 交给本进程（自测与「同进程内换一份描述符」的用法）也是同一条路
         WSAPROTOCOL_INFOW protocolInfo{};
-        const int duplicationResult = ::WSADuplicateSocketW(static_cast<SOCKET>(listenDescriptor), static_cast<DWORD>(targetProcessId), &protocolInfo);
+        const int         duplicationResult = ::WSADuplicateSocketW(static_cast<SOCKET>(listenDescriptor), static_cast<DWORD>(targetProcessId), &protocolInfo);
         if (duplicationResult != 0)
         {
             PlatformError::setLastErrorCode(::WSAGetLastError());
@@ -439,16 +439,16 @@ namespace AsynGyanis::Platform
         // POSIX 的载荷走控制消息而不是字节流：头里 blobByteCount 恒为 0，描述符随 SCM_RIGHTS 一起过，
         // 因此本平台上「交给哪个进程」由内核在传递时决定，参数不需要用
         (void) targetProcessId;
-        header.blobByteCount = 0U;
-        char controlBuffer[CMSG_SPACE(sizeof(int))] = {};
-        iovec dataVector{reinterpret_cast<void *>(&header), sizeof(header)};
+        header.blobByteCount                          = 0U;
+        char   controlBuffer[CMSG_SPACE(sizeof(int))] = {};
+        iovec  dataVector{reinterpret_cast<void *>(&header), sizeof(header)};
         msghdr message{};
         message.msg_iov        = &dataVector;
         message.msg_iovlen     = 1;
         message.msg_control    = controlBuffer;
         message.msg_controllen = sizeof(controlBuffer);
 
-        cmsghdr *controlHeader = CMSG_FIRSTHDR(&message);
+        cmsghdr *controlHeader    = CMSG_FIRSTHDR(&message);
         controlHeader->cmsg_level = SOL_SOCKET;
         controlHeader->cmsg_type  = SCM_RIGHTS;
         controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
@@ -519,8 +519,7 @@ namespace AsynGyanis::Platform
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
             return -1;
         }
-        if (static_cast<std::size_t>(receivedLength) < sizeof(header) || (message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 ||
-            header.blobByteCount != 0U)
+        if (static_cast<std::size_t>(receivedLength) < sizeof(header) || (message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || header.blobByteCount != 0U)
         {
             // 头没收全、或控制消息被截断，都等于「这份移交不可信」：整体作废，
             // 不要拿半个描述符去 accept——那比失败更难查
@@ -529,11 +528,9 @@ namespace AsynGyanis::Platform
         }
 
         int receivedDescriptor = -1;
-        for (const cmsghdr *controlHeader = CMSG_FIRSTHDR(&message); controlHeader != nullptr;
-             controlHeader                = CMSG_NXTHDR(&message, const_cast<cmsghdr *>(controlHeader)))
+        for (const cmsghdr *controlHeader = CMSG_FIRSTHDR(&message); controlHeader != nullptr; controlHeader = CMSG_NXTHDR(&message, const_cast<cmsghdr *>(controlHeader)))
         {
-            if (controlHeader->cmsg_level == SOL_SOCKET && controlHeader->cmsg_type == SCM_RIGHTS &&
-                controlHeader->cmsg_len >= CMSG_LEN(sizeof(int)))
+            if (controlHeader->cmsg_level == SOL_SOCKET && controlHeader->cmsg_type == SCM_RIGHTS && controlHeader->cmsg_len >= CMSG_LEN(sizeof(int)))
             {
                 std::memcpy(&receivedDescriptor, CMSG_DATA(controlHeader), sizeof(receivedDescriptor));
                 break;

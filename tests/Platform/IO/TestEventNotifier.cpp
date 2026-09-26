@@ -146,8 +146,7 @@ namespace AsynGyanis::Platform
         notifier.drain();
 
         notifier.notify();
-        EXPECT_TRUE(TestSupport::waitForReadable(notifier.readDescriptor(), 1000))
-            << "排空后再通知仍然必须唤醒：标记未被清除会导致之后所有通知都不再写描述符";
+        EXPECT_TRUE(TestSupport::waitForReadable(notifier.readDescriptor(), 1000)) << "排空后再通知仍然必须唤醒：标记未被清除会导致之后所有通知都不再写描述符";
         notifier.drain();
 
         // 重复一轮，确认标记不会在某一轮之后停在「待处理」

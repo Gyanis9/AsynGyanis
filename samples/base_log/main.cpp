@@ -1,6 +1,6 @@
 // Base 日志子系统示例：控制台/文件/滚动/异步 Sink、四种格式化器、级别与注册表、异常带栈、配置驱动装配
-#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Config/ConfigManager.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/Formatters/ColorFormatter.h"
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/Formatters/JsonFormatter.h"
@@ -82,8 +82,7 @@ namespace
      * @param truncate true 表示每次运行都从头覆盖（示例反复跑，不覆盖会一直累加）
      * @return Base::Logger & 注册表里的记录器引用
      */
-    Base::Logger &makeFileLogger(const std::string &name, const std::filesystem::path &path, const bool truncate,
-                                const std::string &formatterName = {})
+    Base::Logger &makeFileLogger(const std::string &name, const std::filesystem::path &path, const bool truncate, const std::string &formatterName = {})
     {
         auto &logger = Base::LoggerRegistry::instance().getLogger(name);
         logger.clearSinks();
@@ -104,31 +103,28 @@ namespace
         networkLogger.setLevel(Base::LogLevel::Warn);
 
         // 级别判定要在真正写之前就能问出来：调用方靠它跳过昂贵的格式化
-        Samples::checklist().check(networkLogger.shouldLog(Base::LogLevel::Error) && !networkLogger.shouldLog(Base::LogLevel::Info),
-                                   "具名 logger 按级别过滤（Warn 以上才写）");
-        Samples::checklist().check(Base::LoggerRegistry::instance().loggerLevel("sample.net").has_value(),
-                                   "注册表能问回某个 logger 的级别");
+        Samples::checklist().check(networkLogger.shouldLog(Base::LogLevel::Error) && !networkLogger.shouldLog(Base::LogLevel::Info), "具名 logger 按级别过滤（Warn 以上才写）");
+        Samples::checklist().check(Base::LoggerRegistry::instance().loggerLevel("sample.net").has_value(), "注册表能问回某个 logger 的级别");
 
         LOG_LOGGER_WARN_FMT(networkLogger, "网络子系统示例：{} 次重试", 3);
 
         // 遍历与名单：运维界面靠这两样把全部 logger 列出来调级别
         std::size_t visitedCount = 0;
         Base::LoggerRegistry::instance().forEachLogger([&visitedCount](Base::Logger &) { ++visitedCount; });
-        Samples::checklist().check(visitedCount >= 2 && !Base::LoggerRegistry::instance().getLoggerNames().empty(),
-                                   "forEachLogger 与 getLoggerNames 能看到已登记的 logger");
+        Samples::checklist().check(visitedCount >= 2 && !Base::LoggerRegistry::instance().getLoggerNames().empty(), "forEachLogger 与 getLoggerNames 能看到已登记的 logger");
 
         Base::LoggerRegistry::instance().setGlobalLevel(Base::LogLevel::Info);
         // 只问根 logger 证不出「扇出到全部 logger」：根本来就是 setupConsoleLogging 给的 Info，
         // 把 setGlobalLevel 换成空函数也照样过。sample.net 在开头被显式设成 Warn，
         // 它被改回 Info 才是这条 API 的说法本身
         Samples::checklist().check(Base::LoggerRegistry::instance().getRootLogger().getLevel() == Base::LogLevel::Info &&
-                                       Base::LoggerRegistry::instance().loggerLevel("sample.net") == Base::LogLevel::Info,
+                                           Base::LoggerRegistry::instance().loggerLevel("sample.net") == Base::LogLevel::Info,
                                    "setGlobalLevel 扇出到全部 logger（含显式设过级别的具名 logger）");
     }
 
     void demonstrateFileSink(const std::filesystem::path &directory)
     {
-        const auto path = directory / "plain.log";
+        const auto path   = directory / "plain.log";
         auto      &logger = makeFileLogger("sample.file", path, true);
         LOG_LOGGER_INFO_FMT(logger, "第一条落盘记录");
         static_cast<void>(logger.flush());
@@ -146,15 +142,13 @@ namespace
         static_cast<void>(sink->writeLine("换文件后的一行"));
         sink->flush();
         sink.reset();
-        Samples::checklist().check(countLines(reopenedPath) == 1 && countLines(path) == 2,
-                                   "FileSink::reopen 之后写到新路径，旧文件不再增长");
+        Samples::checklist().check(countLines(reopenedPath) == 1 && countLines(path) == 2, "FileSink::reopen 之后写到新路径，旧文件不再增长");
 
         // Fatal 这一条不靠调用方记得 flush：打完就 abort 的路径上，留在流缓冲里的最后一条等于没打。
         // 判据是直接重开文件读它——既不 flush 也不销毁 logger，读得到才算真落到了磁盘上。
         // 放在最后一步：它会让 plain.log 多出一行，夹在上面的「旧文件不再增长」中间就把那条判据改了
         LOG_LOGGER_FATAL_FMT(logger, "崩溃前的最后一条记录");
-        Samples::checklist().check(readWholeFile(path).find("崩溃前的最后一条记录") != std::string::npos,
-                                   "LOG_FATAL 无需显式 flush 就已落盘（崩溃前最后一条不会留在缓冲里）");
+        Samples::checklist().check(readWholeFile(path).find("崩溃前的最后一条记录") != std::string::npos, "LOG_FATAL 无需显式 flush 就已落盘（崩溃前最后一条不会留在缓冲里）");
     }
 
     void demonstrateRollingSink(const std::filesystem::path &directory)
@@ -187,8 +181,7 @@ namespace
         // 按天与按小时只走构造与写入路径：时间策略要跨到次日/次时才切，示例不等那个时刻。
         // 两种策略各用一份自己的文件，证据才分得清是谁写出来的（同名共用一份文件时，
         // 第二种策略即使整块没写也照样能看见前一种留下的文件）
-        const auto writesUnderTimePolicy = [&](const Base::RollingPolicy policy, const std::string &fileBase,
-                                               const std::string &nameStem)
+        const auto writesUnderTimePolicy = [&](const Base::RollingPolicy policy, const std::string &fileBase, const std::string &nameStem)
         {
             auto timeLogger = std::make_unique<Base::Logger>("sample.time-rolling");
             timeLogger->addSink(std::make_unique<Base::RollingFileSink>(fileBase, rollingDirectory, policy, 1024, 1));
@@ -204,8 +197,7 @@ namespace
                 {
                     continue;
                 }
-                if (const std::uintmax_t writtenBytes = std::filesystem::file_size(entry, sizeError);
-                    !sizeError && writtenBytes > 0)
+                if (const std::uintmax_t writtenBytes = std::filesystem::file_size(entry, sizeError); !sizeError && writtenBytes > 0)
                 {
                     return true;
                 }
@@ -213,10 +205,8 @@ namespace
             return false;
         };
 
-        Samples::checklist().check(writesUnderTimePolicy(Base::RollingPolicy::Daily, "timed-daily.log", "timed-daily"),
-                                   "按天滚动的 sink 把一条日志真的写到了磁盘上");
-        Samples::checklist().check(writesUnderTimePolicy(Base::RollingPolicy::Hourly, "timed-hourly.log", "timed-hourly"),
-                                   "按小时滚动的 sink 把一条日志真的写到了磁盘上");
+        Samples::checklist().check(writesUnderTimePolicy(Base::RollingPolicy::Daily, "timed-daily.log", "timed-daily"), "按天滚动的 sink 把一条日志真的写到了磁盘上");
+        Samples::checklist().check(writesUnderTimePolicy(Base::RollingPolicy::Hourly, "timed-hourly.log", "timed-hourly"), "按小时滚动的 sink 把一条日志真的写到了磁盘上");
     }
 
     /// @return Base::LogEvent 一条 Info 级、只带正文的事件（直接喂 Sink 时用）
@@ -232,7 +222,7 @@ namespace
     {
         const auto blockingPath = directory / "async-block.log";
         {
-            auto innerSink = std::make_unique<Base::FileSink>(blockingPath, true);
+            auto            innerSink = std::make_unique<Base::FileSink>(blockingPath, true);
             Base::AsyncSink async(std::move(innerSink), 8, Base::AsyncSink::OverflowPolicy::Block);
             for (int index = 0; index < 50; ++index)
             {
@@ -245,8 +235,7 @@ namespace
 
         const auto droppingPath = directory / "async-drop.log";
         {
-            Base::AsyncSink async(std::make_unique<Base::FileSink>(droppingPath, true), 2,
-                                  Base::AsyncSink::OverflowPolicy::DropOldest);
+            Base::AsyncSink async(std::make_unique<Base::FileSink>(droppingPath, true), 2, Base::AsyncSink::OverflowPolicy::DropOldest);
             for (int index = 0; index < 50; ++index)
             {
                 async.write(makeInfoEvent("异步丢旧策略下的第 " + std::to_string(index) + " 条记录"));
@@ -261,8 +250,7 @@ namespace
             const std::int64_t landedLineCount = countLines(droppingPath);
             const std::int64_t droppedCount    = static_cast<std::int64_t>(async.droppedEventCount());
             const std::string  landedText      = readWholeFile(droppingPath);
-            Samples::checklist().check(landedLineCount + droppedCount == 50 &&
-                                           landedText.find("第 49 条记录") != std::string::npos,
+            Samples::checklist().check(landedLineCount + droppedCount == 50 && landedText.find("第 49 条记录") != std::string::npos,
                                        "AsyncSink(DropOldest) 的丢弃计数与落盘条数对得上账，留下的是最新那条");
         }
     }
@@ -281,14 +269,13 @@ namespace
         };
         for (const auto &[formatterName, expectedFragment]: cases)
         {
-            const auto path = directory / (formatterName + ".log");
+            const auto path   = directory / (formatterName + ".log");
             auto      &logger = makeFileLogger("sample." + formatterName, path, true, formatterName);
             LOG_LOGGER_INFO_FMT(logger, "格式化器示例：{}", 42);
             static_cast<void>(logger.flush());
 
             const std::string text = readWholeFile(path);
-            Samples::checklist().check(!text.empty() && text.find(expectedFragment) != std::string::npos,
-                                       formatterName + " 产出的行里带着预期字段");
+            Samples::checklist().check(!text.empty() && text.find(expectedFragment) != std::string::npos, formatterName + " 产出的行里带着预期字段");
         }
 
         // 非法 UTF-8 的处置是「整条不写」而不是写出一串看着合法、内容已被改写的字节——采集端拿到
@@ -296,9 +283,9 @@ namespace
         // 照样落得下去，且这条失败不抛给调用方（日志写不出去不该带走业务流程）
         // 文件与 logger 名单独一套：复用上面那一步的 JsonFormatter.log 会把它的正文截掉，
         // 事后翻日志的人就分不清哪个文件是哪一步留下的
-        const auto  invalidUtf8Path = directory / "JsonFormatterInvalidUtf8.log";
+        const auto    invalidUtf8Path   = directory / "JsonFormatterInvalidUtf8.log";
         Base::Logger &invalidUtf8Logger = makeFileLogger("sample.JsonFormatterInvalidUtf8", invalidUtf8Path, true, "JsonFormatter");
-        std::string  brokenMessage      = "带非法字节的正文 ";
+        std::string   brokenMessage     = "带非法字节的正文 ";
         brokenMessage.push_back('\xFF');
         bool threwIntoCaller = false;
         try
@@ -312,15 +299,14 @@ namespace
         static_cast<void>(invalidUtf8Logger.flush());
 
         const std::string invalidUtf8Text = readWholeFile(invalidUtf8Path);
-        Samples::checklist().check(!threwIntoCaller &&
-                                       invalidUtf8Text.find("带非法字节的正文") == std::string::npos &&
-                                       invalidUtf8Text.find("坏消息之后的正常一行") != std::string::npos,
+        Samples::checklist().check(!threwIntoCaller && invalidUtf8Text.find("带非法字节的正文") == std::string::npos &&
+                                           invalidUtf8Text.find("坏消息之后的正常一行") != std::string::npos,
                                    "含非法 UTF-8 的那条整条不写也不抛给调用方，后面的正常行照常落盘");
     }
 
     void demonstrateExceptionLogging(const std::filesystem::path &directory)
     {
-        const auto path = directory / "exception.log";
+        const auto path   = directory / "exception.log";
         auto      &logger = makeFileLogger("sample.exception", path, true);
         try
         {
@@ -334,10 +320,8 @@ namespace
         static_cast<void>(logger.flush());
 
         const std::string text = readWholeFile(path);
-        Samples::checklist().check(text.find("端口号超出可用范围") != std::string::npos,
-                                   "LOG_ERROR_EXCEPTION 把异常原文写进了日志");
-        Samples::checklist().check(text.find("demonstrateExceptionLogging") != std::string::npos ||
-                                           text.find("stack") != std::string::npos || text.find('#') != std::string::npos,
+        Samples::checklist().check(text.find("端口号超出可用范围") != std::string::npos, "LOG_ERROR_EXCEPTION 把异常原文写进了日志");
+        Samples::checklist().check(text.find("demonstrateExceptionLogging") != std::string::npos || text.find("stack") != std::string::npos || text.find('#') != std::string::npos,
                                    "带栈的记录里能看到调用栈的帧（或栈标记）");
     }
 
@@ -375,7 +359,7 @@ namespace
         auto &root = Base::LoggerRegistry::instance().getRootLogger();
         // 此刻 root 已经是「文件 sink + WARN 起」：示例自己的后续输出都会落进文件里。先把结论取成
         // 局部量，恢复控制台之后再断言，否则这几步在终端上凭空消失
-        const bool    isLevelApplied = root.getLevel() == Base::LogLevel::Warn;
+        const bool isLevelApplied = root.getLevel() == Base::LogLevel::Warn;
         LOG_ERROR("配置驱动装配之后的一条错误日志");
         static_cast<void>(root.flush());
         const bool isFileSinkApplied = countLines(directory / "configured.log") == 1;
@@ -398,8 +382,7 @@ namespace
             LOG_LOGGER_INFO_FMT(*scoped, "登记前的一条记录");
             Base::LoggerRegistry::instance().registerLogger(std::move(scoped));
         }
-        Samples::checklist().check(Base::LoggerRegistry::instance().loggerLevel("sample.retired").has_value(),
-                                   "registerLogger 之后能从注册表取到它");
+        Samples::checklist().check(Base::LoggerRegistry::instance().loggerLevel("sample.retired").has_value(), "registerLogger 之后能从注册表取到它");
 
         // 先把裸引用留住：注册表给出的是引用，退休表护住的正是「注销时调用方还攥着它」这一刻
         Base::Logger &retained = Base::LoggerRegistry::instance().getLogger("sample.retired");
@@ -411,22 +394,20 @@ namespace
         // 只断言「删得掉」在 POSIX 上等于没有断言——那里文件开着也能删，必须再看落盘结果
         LOG_LOGGER_INFO_FMT(retained, "注销后的一条记录");
         static_cast<void>(retained.flush());
-        Samples::checklist().check(countLines(path) == lineCountBeforeRemoval,
-                                   "注销后攥着的引用仍可用，但 Sink 已随注销交还、不再落盘");
+        Samples::checklist().check(countLines(path) == lineCountBeforeRemoval, "注销后攥着的引用仍可用，但 Sink 已随注销交还、不再落盘");
 
         std::error_code removalError;
         std::filesystem::remove(path, removalError);
         Samples::checklist().check(!removalError, "unregisterLogger 当场释放了文件句柄（Windows 上否则删不掉）");
         Base::LoggerRegistry::instance().purgeRetiredLoggers();
     }
-}
+} // namespace
 
 int main()
 {
     Samples::setupConsoleLogging();
 
-    const auto directory = std::filesystem::temp_directory_path() /
-                           ("asyn-sample-base-log-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
+    const auto directory = std::filesystem::temp_directory_path() / ("asyn-sample-base-log-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
     std::filesystem::remove_all(directory);
     std::filesystem::create_directories(directory);
 

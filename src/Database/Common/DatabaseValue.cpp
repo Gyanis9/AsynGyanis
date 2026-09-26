@@ -28,10 +28,10 @@ namespace AsynGyanis::Database
                     } else if constexpr (std::is_same_v<ValueType, std::string>)
                     {
                         return "String";
-                    } else if constexpr (std::is_same_v<ValueType, std::vector<std::string> >)
+                    } else if constexpr (std::is_same_v<ValueType, std::vector<std::string>>)
                     {
                         return "List";
-                    } else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t> >)
+                    } else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t>>)
                     {
                         return "Bytes";
                     } else

@@ -35,9 +35,7 @@ namespace AsynGyanis::Net
          */
         std::size_t minimumPlaintextByteCount(const std::size_t packetNumberByteCount) noexcept
         {
-            return packetNumberByteCount >= kQuicMaximumPacketNumberByteCount
-                    ? 0
-                    : kQuicMaximumPacketNumberByteCount - packetNumberByteCount;
+            return packetNumberByteCount >= kQuicMaximumPacketNumberByteCount ? 0 : kQuicMaximumPacketNumberByteCount - packetNumberByteCount;
         }
 
         /**
@@ -51,16 +49,14 @@ namespace AsynGyanis::Net
         std::size_t outboundPacketByteCount(const QuicOutboundPacket &packet, const std::size_t plaintextByteCount) noexcept
         {
             // Length 域覆盖的正是「包号 + 密文 + 标签」这三项，与下面要写的字节数同源
-            const std::size_t protectedPayloadByteCount =
-                    packet.packetNumberByteCount + plaintextByteCount + kQuicAuthenticationTagByteLength;
+            const std::size_t protectedPayloadByteCount = packet.packetNumberByteCount + plaintextByteCount + kQuicAuthenticationTagByteLength;
             // 首字节与目的标识两种头部都要写；目的标识的长度字节只有长头才有
             std::size_t byteCount = 1U + packet.destinationConnectionId.size();
             if (!packet.isLongHeader)
             {
                 return byteCount + protectedPayloadByteCount;
             }
-            byteCount += 4U + 1U + 1U + packet.sourceConnectionId.size()
-                    + quicVariableLengthIntegerByteCount(protectedPayloadByteCount);
+            byteCount += 4U + 1U + 1U + packet.sourceConnectionId.size() + quicVariableLengthIntegerByteCount(protectedPayloadByteCount);
             if (packet.longPacketType == QuicLongPacketType::Initial)
             {
                 byteCount += quicVariableLengthIntegerByteCount(packet.token.size()) + packet.token.size();
@@ -79,11 +75,9 @@ namespace AsynGyanis::Net
             const std::uint8_t packetNumberLengthBits = static_cast<std::uint8_t>(packetNumberByteCount - 1);
             if (!packet.isLongHeader)
             {
-                return static_cast<std::uint8_t>(kQuicShortHeaderFirstByteBase |
-                                                  (packet.isKeyPhaseBitSet ? kQuicKeyPhaseBitMask : 0) | packetNumberLengthBits);
+                return static_cast<std::uint8_t>(kQuicShortHeaderFirstByteBase | (packet.isKeyPhaseBitSet ? kQuicKeyPhaseBitMask : 0) | packetNumberLengthBits);
             }
-            return static_cast<std::uint8_t>(kQuicLongHeaderFirstByteBase |
-                                             (static_cast<std::uint8_t>(packet.longPacketType) << kQuicLongPacketTypeShift) |
+            return static_cast<std::uint8_t>(kQuicLongHeaderFirstByteBase | (static_cast<std::uint8_t>(packet.longPacketType) << kQuicLongPacketTypeShift) |
                                              packetNumberLengthBits);
         }
 
@@ -108,16 +102,15 @@ namespace AsynGyanis::Net
             }
             if (packet.packetNumberByteCount < 1 || packet.packetNumberByteCount > kQuicMaximumPacketNumberByteCount)
             {
-                throw Base::InvalidArgumentException(std::format("QUIC 组包失败：包号字段字节数 {} 不在 1..{} 内（RFC 9000 §17.1）",
-                                                                 packet.packetNumberByteCount, kQuicMaximumPacketNumberByteCount));
+                throw Base::InvalidArgumentException(
+                        std::format("QUIC 组包失败：包号字段字节数 {} 不在 1..{} 内（RFC 9000 §17.1）", packet.packetNumberByteCount, kQuicMaximumPacketNumberByteCount));
             }
             if (packet.destinationConnectionId.size() > kQuicMaximumConnectionIdLength ||
                 (packet.isLongHeader && packet.sourceConnectionId.size() > kQuicMaximumConnectionIdLength))
             {
                 throw Base::InvalidArgumentException(std::format("QUIC 组包失败：连接标识长度（目的 {} 字节、源 {} 字节）超过版本 1 的上限 {} 字节"
                                                                  "（RFC 9000 §5.1.1、§17.2）",
-                                                                 packet.destinationConnectionId.size(),
-                                                                 packet.sourceConnectionId.size(), kQuicMaximumConnectionIdLength));
+                                                                 packet.destinationConnectionId.size(), packet.sourceConnectionId.size(), kQuicMaximumConnectionIdLength));
             }
             // 只有 Initial 有线上的 Token 字段；给 Handshake/0-RTT 带 Token 会把后面的字段整体错位
             if (!packet.token.empty() && (!packet.isLongHeader || packet.longPacketType != QuicLongPacketType::Initial))
@@ -133,13 +126,13 @@ namespace AsynGyanis::Net
     {
         validateOutboundPacket(packet);
 
-        const std::size_t packetNumberByteCount = packet.packetNumberByteCount;
-        const std::uint8_t firstByte = makeFirstByte(packet, packetNumberByteCount);
+        const std::size_t  packetNumberByteCount = packet.packetNumberByteCount;
+        const std::uint8_t firstByte             = makeFirstByte(packet, packetNumberByteCount);
 
         // 明文不够取样本时补 PADDING 帧；补多少要先定下来，Length 域才有确定的值可写
-        std::vector<std::uint8_t> paddedPlaintext;
-        std::span<const std::uint8_t> plaintext = packet.frames;
-        const std::size_t requiredPlaintextByteCount = minimumPlaintextByteCount(packetNumberByteCount);
+        std::vector<std::uint8_t>     paddedPlaintext;
+        std::span<const std::uint8_t> plaintext                  = packet.frames;
+        const std::size_t             requiredPlaintextByteCount = minimumPlaintextByteCount(packetNumberByteCount);
         if (plaintext.size() < requiredPlaintextByteCount)
         {
             paddedPlaintext.assign(plaintext.begin(), plaintext.end());
@@ -172,8 +165,7 @@ namespace AsynGyanis::Net
                 appendQuicRawBytes(datagram, packet.token);
             }
             // Length 覆盖「包号 + 密文 + 标签」，此刻三项长度都已知，因此不需要先占位再回填
-            appendQuicVariableLengthInteger(datagram,
-                                            packetNumberByteCount + plaintext.size() + kQuicAuthenticationTagByteLength);
+            appendQuicVariableLengthInteger(datagram, packetNumberByteCount + plaintext.size() + kQuicAuthenticationTagByteLength);
         }
 
         const std::size_t packetNumberOffset = datagram.size() - packetStartOffset;
@@ -182,24 +174,20 @@ namespace AsynGyanis::Net
         // 加密会让 datagram 扩容，所以 AAD 交一份副本而不是指向它的 span（头部不超过几十字节）
         const std::string additionalData = datagram.substr(packetStartOffset);
         appendQuicProtectedPayload(datagram, keys, packet.packetNumber,
-                                   std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(additionalData.data()),
-                                                                 additionalData.size()),
-                                   plaintext);
+                                   std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(additionalData.data()), additionalData.size()), plaintext);
 
         // 加密之后才能取样本：此刻本包的全部字节都在缓冲尾部
-        std::span<std::uint8_t> builtPacket(reinterpret_cast<std::uint8_t *>(datagram.data()) + packetStartOffset,
-                                            datagram.size() - packetStartOffset);
-        QuicPacketHeader header;
-        header.isLongHeader = packet.isLongHeader;
-        header.firstByte = firstByte;
+        std::span<std::uint8_t> builtPacket(reinterpret_cast<std::uint8_t *>(datagram.data()) + packetStartOffset, datagram.size() - packetStartOffset);
+        QuicPacketHeader        header;
+        header.isLongHeader       = packet.isLongHeader;
+        header.firstByte          = firstByte;
         header.packetNumberOffset = packetNumberOffset;
 
         const auto sample = extractQuicHeaderProtectionSample(builtPacket, header);
         if (!sample.has_value())
         {
             // 上面已经按 §5.4.2 补过 PADDING，走不到这里；真走到说明长度算错了，不能悄悄发一个解不开的包
-            throw Base::Exception(std::format("QUIC 组包失败：补齐 PADDING 之后仍取不满头部保护样本（{}）：请核对包号与载荷长度的算法",
-                                              sample.error().message));
+            throw Base::Exception(std::format("QUIC 组包失败：补齐 PADDING 之后仍取不满头部保护样本（{}）：请核对包号与载荷长度的算法", sample.error().message));
         }
         const QuicHeaderProtectionMask mask = generateQuicHeaderProtectionMask(keys, *sample);
         if (!applyQuicHeaderProtection(builtPacket, header, mask).has_value())

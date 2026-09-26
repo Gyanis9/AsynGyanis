@@ -12,8 +12,8 @@
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpMethod.h"
 
-#include <cstddef>
 #include <concepts>
+#include <cstddef>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -146,7 +146,7 @@ namespace AsynGyanis::Net
          * @param visitor 形如 `void (std::string_view name, std::string_view value)` 的可调用体；
          *                名字已折小写，视图只在本次回调内有效
          */
-        template <typename Visitor>
+        template<typename Visitor>
             requires std::invocable<Visitor, std::string_view, std::string_view>
         void forEachTrailerField(const Visitor &visitor) const
         {
@@ -268,7 +268,7 @@ namespace AsynGyanis::Net
          * @tparam Visitor 可调用对象，接受 (头名视图, 头值视图)
          * @param visitor 每个头部访问一次
          */
-        template <typename Visitor>
+        template<typename Visitor>
         void forEachHeaderField(const Visitor &visitor) const
         {
             m_headerStore.forEachField(visitor);
@@ -421,18 +421,18 @@ namespace AsynGyanis::Net
          */
         static std::string percentDecode(std::string_view source);
 
-        HttpMethod m_method{HttpMethod::UNKNOWN};                  ///< HTTP 方法
-        std::string m_uri;                                         ///< 原始 URI，含查询串
-        std::string m_httpVersion;                                 ///< HTTP 版本原文
-        HttpHeaderFieldStore m_headerStore;                        ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
+        HttpMethod           m_method{HttpMethod::UNKNOWN}; ///< HTTP 方法
+        std::string          m_uri;                         ///< 原始 URI，含查询串
+        std::string          m_httpVersion;                 ///< HTTP 版本原文
+        HttpHeaderFieldStore m_headerStore;                 ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
         /// trailer 字段的存储：与头部同一套存储与查找语义，但单独一档，永不与头部互相覆盖。
         /// 按需创建——绝大多数请求不带 trailer，而一份 HttpHeaderFieldStore 在 MSVC 上光是构造
         /// 就要两次堆分配（内部那张单值视图的哈希表），直接当成员会把这两个字节成本摊给每条请求
-        std::optional<HttpHeaderFieldStore> m_trailerStore;
-        std::string m_body;                                        ///< 消息正文
-        HttpRequestBody *m_bodyStream{nullptr};                    ///< 正文流（按连接装配，见 bodyStream()；不随 reset() 清除）
-        std::string m_requestId;                                   ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）
-        std::unordered_map<std::string, std::string> m_params;     ///< 路由参数
-        mutable std::stop_source m_cancelSource;                   ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
+        std::optional<HttpHeaderFieldStore>          m_trailerStore;
+        std::string                                  m_body;                ///< 消息正文
+        HttpRequestBody                             *m_bodyStream{nullptr}; ///< 正文流（按连接装配，见 bodyStream()；不随 reset() 清除）
+        std::string                                  m_requestId;           ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）
+        std::unordered_map<std::string, std::string> m_params;              ///< 路由参数
+        mutable std::stop_source                     m_cancelSource;        ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
     };
 } // namespace AsynGyanis::Net

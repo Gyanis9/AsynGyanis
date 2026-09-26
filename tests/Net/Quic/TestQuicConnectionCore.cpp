@@ -89,8 +89,8 @@ namespace AsynGyanis::Net
         class FixtureContext
         {
         public:
-            FixtureContext() = default;
-            FixtureContext(const FixtureContext &) = delete;
+            FixtureContext()                                  = default;
+            FixtureContext(const FixtureContext &)            = delete;
             FixtureContext &operator=(const FixtureContext &) = delete;
             FixtureContext(FixtureContext &&other) noexcept : m_context(other.m_context)
             {
@@ -121,7 +121,7 @@ namespace AsynGyanis::Net
                 holder.m_context = SSL_CTX_new(TLS_server_method());
                 SSL_CTX_set_min_proto_version(holder.m_context, TLS1_3_VERSION);
                 const std::string certificatePath = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem").string();
-                const std::string keyPath = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem").string();
+                const std::string keyPath         = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem").string();
                 if (SSL_CTX_use_certificate_chain_file(holder.m_context, certificatePath.c_str()) != 1 ||
                     SSL_CTX_use_PrivateKey_file(holder.m_context, keyPath.c_str(), SSL_FILETYPE_PEM) != 1)
                 {
@@ -143,27 +143,26 @@ namespace AsynGyanis::Net
         /// @return std::span<const std::uint8_t> 把字符串按二进制字节看；空串给空视图而不是空指针
         std::span<const std::uint8_t> asBytes(const std::string &text)
         {
-            return text.empty() ? std::span<const std::uint8_t>{}
-                                : std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
+            return text.empty() ? std::span<const std::uint8_t>{} : std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
         }
 
         /// 客户端一侧的包号空间：包保护密钥、发包号，以及已收包号与握手字节的偏移
         struct ClientSpace
         {
-            std::optional<QuicPacketKeys> readKeys{};
-            std::optional<QuicPacketKeys> writeKeys{};
-            std::uint64_t nextPacketNumber{0};
-            std::optional<std::uint64_t> largestReceived{};   ///< 已解密通过的最大包号，还原截断包号要靠它
-            std::set<std::uint64_t> receivedPacketNumbers{};  ///< 已解密通过的包号，回 ACK 的原料
-            std::size_t receivedCryptoByteCount{0};           ///< 已交给 TLS 的握手字节数，也就是下一个期望偏移
-            std::map<std::uint64_t, std::vector<std::uint8_t>> laterCryptoFragments{}; ///< 早到的乱序段，按偏移存
-            bool isAcknowledgementPending{false};             ///< 收过触发确认的包还没回 ACK
-            bool suppressesAcknowledgements{false};          ///< 本空间从此不再回 ACK，用来制造永久在途
-            std::optional<QuicPacketKeys> nextReadKeys{};     ///< 服务端更新之后本端要用的读密钥（RFC 9001 §6.3）
-            std::optional<QuicPacketKeys> previousReadKeys{}; ///< 本端换代之前的读密钥，晚到的旧包还要解（§6.5）
-            std::optional<QuicPacketKeys> nextWriteKeys{};    ///< 本端发起更新时要改用的写密钥
-            bool isSendKeyPhaseSet{false};                   ///< 本端出 1-RTT 包时带的相位位
-            bool isReadKeyPhaseSet{false};                   ///< 本端当前读密钥属于哪个相位，与发的是两套账（§6.5）
+            std::optional<QuicPacketKeys>                      readKeys{};
+            std::optional<QuicPacketKeys>                      writeKeys{};
+            std::uint64_t                                      nextPacketNumber{0};
+            std::optional<std::uint64_t>                       largestReceived{};                 ///< 已解密通过的最大包号，还原截断包号要靠它
+            std::set<std::uint64_t>                            receivedPacketNumbers{};           ///< 已解密通过的包号，回 ACK 的原料
+            std::size_t                                        receivedCryptoByteCount{0};        ///< 已交给 TLS 的握手字节数，也就是下一个期望偏移
+            std::map<std::uint64_t, std::vector<std::uint8_t>> laterCryptoFragments{};            ///< 早到的乱序段，按偏移存
+            bool                                               isAcknowledgementPending{false};   ///< 收过触发确认的包还没回 ACK
+            bool                                               suppressesAcknowledgements{false}; ///< 本空间从此不再回 ACK，用来制造永久在途
+            std::optional<QuicPacketKeys>                      nextReadKeys{};                    ///< 服务端更新之后本端要用的读密钥（RFC 9001 §6.3）
+            std::optional<QuicPacketKeys>                      previousReadKeys{};                ///< 本端换代之前的读密钥，晚到的旧包还要解（§6.5）
+            std::optional<QuicPacketKeys>                      nextWriteKeys{};                   ///< 本端发起更新时要改用的写密钥
+            bool                                               isSendKeyPhaseSet{false};          ///< 本端出 1-RTT 包时带的相位位
+            bool                                               isReadKeyPhaseSet{false};          ///< 本端当前读密钥属于哪个相位，与发的是两套账（§6.5）
         };
 
         /// @return std::optional<QuicEncryptionLevel> 报文头对应的加密级别；本端不收的形态返回空
@@ -175,10 +174,13 @@ namespace AsynGyanis::Net
             }
             switch (header.longPacketType)
             {
-            case QuicLongPacketType::Initial:
-            case QuicLongPacketType::ZeroRtt: return QuicEncryptionLevel::Initial;
-            case QuicLongPacketType::Handshake: return QuicEncryptionLevel::Handshake;
-            case QuicLongPacketType::Retry: return std::nullopt;
+                case QuicLongPacketType::Initial:
+                case QuicLongPacketType::ZeroRtt:
+                    return QuicEncryptionLevel::Initial;
+                case QuicLongPacketType::Handshake:
+                    return QuicEncryptionLevel::Handshake;
+                case QuicLongPacketType::Retry:
+                    return std::nullopt;
             }
             return std::nullopt;
         }
@@ -201,27 +203,25 @@ namespace AsynGyanis::Net
              * @param advertisedStreamWindowByteCount 本端在**自己发起的那条双向流**上宣告的流级额度，默认
              *        给够；用例要验「正文比额度大」时把它调小，好让流量控制而不是拥塞窗口先卡住
              */
-            InMemoryQuicClient(SSL_CTX &context, std::vector<std::uint8_t> sourceConnectionId,
-                               const bool mismatchedSourceConnectionId = false,
-                               const std::uint64_t maximumIdleTimeoutMilliseconds = 0,
-                               const std::uint64_t advertisedStreamWindowByteCount = 65536)
-                : m_sourceConnectionId(std::move(sourceConnectionId))
+            InMemoryQuicClient(SSL_CTX &context, std::vector<std::uint8_t> sourceConnectionId, const bool mismatchedSourceConnectionId = false,
+                               const std::uint64_t maximumIdleTimeoutMilliseconds = 0, const std::uint64_t advertisedStreamWindowByteCount = 65536) :
+                m_sourceConnectionId(std::move(sourceConnectionId))
             {
                 ClientSpace &initial = spaceOf(QuicEncryptionLevel::Initial);
-                initial.readKeys = deriveQuicInitialPacketKeys(kOriginalDestinationConnectionId, QuicPacketDirection::ServerToClient);
-                initial.writeKeys = deriveQuicInitialPacketKeys(kOriginalDestinationConnectionId, QuicPacketDirection::ClientToServer);
+                initial.readKeys     = deriveQuicInitialPacketKeys(kOriginalDestinationConnectionId, QuicPacketDirection::ServerToClient);
+                initial.writeKeys    = deriveQuicInitialPacketKeys(kOriginalDestinationConnectionId, QuicPacketDirection::ClientToServer);
 
                 QuicTransportParameters parameters;
                 parameters.initialMaximumData = 65536;
                 // 三档流级额度默认都给够。§18.2 的视角是「各自发起」：0x05 管本端（客户端）发起的 0x00，
                 // 0x06 管服务端发起的 0x01——所以服务端往 0x00 上写数据时受的是这一档的 bidi_local 管
-                parameters.initialMaximumStreamDataBidirectionalLocal = advertisedStreamWindowByteCount;
+                parameters.initialMaximumStreamDataBidirectionalLocal  = advertisedStreamWindowByteCount;
                 parameters.initialMaximumStreamDataBidirectionalRemote = 65536;
-                parameters.initialMaximumStreamDataUnidirectional = 65536;
-                parameters.initialMaximumBidirectionalStreams = 128;
-                parameters.initialMaximumUnidirectionalStreams = 16;
-                parameters.maximumIdleTimeoutMilliseconds = maximumIdleTimeoutMilliseconds;
-                parameters.initialSourceConnectionId = mismatchedSourceConnectionId ? kUnknownConnectionId : m_sourceConnectionId;
+                parameters.initialMaximumStreamDataUnidirectional      = 65536;
+                parameters.initialMaximumBidirectionalStreams          = 128;
+                parameters.initialMaximumUnidirectionalStreams         = 16;
+                parameters.maximumIdleTimeoutMilliseconds              = maximumIdleTimeoutMilliseconds;
+                parameters.initialSourceConnectionId                   = mismatchedSourceConnectionId ? kUnknownConnectionId : m_sourceConnectionId;
                 std::string encoded;
                 appendQuicTransportParameters(encoded, parameters);
                 m_tls = std::make_unique<QuicTlsContext>(context, false, asBytes(encoded));
@@ -230,23 +230,21 @@ namespace AsynGyanis::Net
             /// 把 TLS 交出的 Handshake 与 Application 级密钥补进本端对应空间（读密钥即服务端的写密钥）
             void adoptKeys()
             {
-                for (const QuicEncryptionLevel level : {QuicEncryptionLevel::Handshake, QuicEncryptionLevel::Application})
+                for (const QuicEncryptionLevel level: {QuicEncryptionLevel::Handshake, QuicEncryptionLevel::Application})
                 {
                     ClientSpace &space = spaceOf(level);
-                    if (const QuicPacketKeys *reading = m_tls->keys(level, QuicKeyDirection::Reading);
-                        reading != nullptr && !space.readKeys.has_value())
+                    if (const QuicPacketKeys *reading = m_tls->keys(level, QuicKeyDirection::Reading); reading != nullptr && !space.readKeys.has_value())
                     {
                         space.readKeys = *reading;
                     }
-                    if (const QuicPacketKeys *writing = m_tls->keys(level, QuicKeyDirection::Writing);
-                        writing != nullptr && !space.writeKeys.has_value())
+                    if (const QuicPacketKeys *writing = m_tls->keys(level, QuicKeyDirection::Writing); writing != nullptr && !space.writeKeys.has_value())
                     {
                         space.writeKeys = *writing;
                         if (level == QuicEncryptionLevel::Application && space.readKeys.has_value())
                         {
                             // 本端既可能要发起更新，也要能回应更新：两代密钥先备好，替身才像真对端
                             space.nextWriteKeys = deriveQuicUpdatedPacketKeys(*writing);
-                            space.nextReadKeys = deriveQuicUpdatedPacketKeys(*space.readKeys);
+                            space.nextReadKeys  = deriveQuicUpdatedPacketKeys(*space.readKeys);
                         }
                     }
                 }
@@ -263,8 +261,8 @@ namespace AsynGyanis::Net
                 {
                     return;
                 }
-                space.writeKeys = std::move(space.nextWriteKeys);
-                space.nextWriteKeys = deriveQuicUpdatedPacketKeys(*space.writeKeys);
+                space.writeKeys         = std::move(space.nextWriteKeys);
+                space.nextWriteKeys     = deriveQuicUpdatedPacketKeys(*space.writeKeys);
                 space.isSendKeyPhaseSet = !space.isSendKeyPhaseSet;
             }
 
@@ -275,23 +273,22 @@ namespace AsynGyanis::Net
              * @param packetNumberOverride 把包号压回这个值，用来模拟「比当前相位最老的包还老」的迟到包
              * @return std::vector<std::uint8_t> 一条数据报
              */
-            [[nodiscard]] std::vector<std::uint8_t> buildPingWithFlippedKeyPhase(const QuicEncryptionLevel level,
-                                                                                 const std::optional<std::uint64_t> packetNumberOverride =
-                                                                                         std::nullopt)
+            [[nodiscard]] std::vector<std::uint8_t> buildPingWithFlippedKeyPhase(const QuicEncryptionLevel          level,
+                                                                                 const std::optional<std::uint64_t> packetNumberOverride = std::nullopt)
             {
                 std::string frames;
                 appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
-                ClientSpace &space = spaceOf(level);
-                const bool savedPhase = space.isSendKeyPhaseSet;
+                ClientSpace        &space             = spaceOf(level);
+                const bool          savedPhase        = space.isSendKeyPhaseSet;
                 const std::uint64_t savedPacketNumber = space.nextPacketNumber;
-                space.isSendKeyPhaseSet = !savedPhase;
+                space.isSendKeyPhaseSet               = !savedPhase;
                 if (packetNumberOverride.has_value())
                 {
                     space.nextPacketNumber = *packetNumberOverride;
                 }
                 std::vector<std::uint8_t> datagram = buildDatagram(level, frames);
-                space.isSendKeyPhaseSet = savedPhase;
-                space.nextPacketNumber = savedPacketNumber;
+                space.isSendKeyPhaseSet            = savedPhase;
+                space.nextPacketNumber             = savedPacketNumber;
                 return datagram;
             }
 
@@ -332,7 +329,7 @@ namespace AsynGyanis::Net
              */
             void skipPacketNumber(const QuicEncryptionLevel level, const std::optional<std::uint64_t> packetNumber) noexcept
             {
-                m_skippedPacketLevel = level;
+                m_skippedPacketLevel  = level;
                 m_skippedPacketNumber = packetNumber;
             }
 
@@ -371,19 +368,16 @@ namespace AsynGyanis::Net
             [[nodiscard]] std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>> buildReversedCryptoFragments()
             {
                 const std::vector<std::uint8_t> handshakeBytes = takeHandshakeBytes();
-                const std::size_t splitPoint = handshakeBytes.size() / 2;
+                const std::size_t               splitPoint     = handshakeBytes.size() / 2;
                 if (splitPoint == 0)
                 {
                     // 客户端连一条握手字节都没产出，用例后续的断言自然会红，这里只保证不越界
                     return {};
                 }
 
-                std::vector<std::uint8_t> firstFragment(handshakeBytes.begin() + static_cast<std::ptrdiff_t>(splitPoint),
-                                                        handshakeBytes.end());
-                std::vector<std::uint8_t> secondFragment(handshakeBytes.begin(),
-                                                         handshakeBytes.begin() + static_cast<std::ptrdiff_t>(splitPoint));
-                return {makeCryptoDatagram(QuicEncryptionLevel::Initial, splitPoint, firstFragment),
-                        makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, secondFragment)};
+                std::vector<std::uint8_t> firstFragment(handshakeBytes.begin() + static_cast<std::ptrdiff_t>(splitPoint), handshakeBytes.end());
+                std::vector<std::uint8_t> secondFragment(handshakeBytes.begin(), handshakeBytes.begin() + static_cast<std::ptrdiff_t>(splitPoint));
+                return {makeCryptoDatagram(QuicEncryptionLevel::Initial, splitPoint, firstFragment), makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, secondFragment)};
             }
 
             /**
@@ -395,18 +389,15 @@ namespace AsynGyanis::Net
             [[nodiscard]] std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>> buildOverlappingCryptoFragments()
             {
                 const std::vector<std::uint8_t> handshakeBytes = takeHandshakeBytes();
-                const std::size_t halfPoint = handshakeBytes.size() / 2;
-                const std::size_t quarterPoint = handshakeBytes.size() / 4;
+                const std::size_t               halfPoint      = handshakeBytes.size() / 2;
+                const std::size_t               quarterPoint   = handshakeBytes.size() / 4;
                 if (halfPoint == 0 || quarterPoint == 0)
                 {
                     return {};
                 }
-                const std::vector<std::uint8_t> head(handshakeBytes.begin(),
-                                                     handshakeBytes.begin() + static_cast<std::ptrdiff_t>(halfPoint));
-                const std::vector<std::uint8_t> overlappingTail(handshakeBytes.begin() + static_cast<std::ptrdiff_t>(quarterPoint),
-                                                                handshakeBytes.end());
-                return {makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, head),
-                        makeCryptoDatagram(QuicEncryptionLevel::Initial, quarterPoint, overlappingTail)};
+                const std::vector<std::uint8_t> head(handshakeBytes.begin(), handshakeBytes.begin() + static_cast<std::ptrdiff_t>(halfPoint));
+                const std::vector<std::uint8_t> overlappingTail(handshakeBytes.begin() + static_cast<std::ptrdiff_t>(quarterPoint), handshakeBytes.end());
+                return {makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, head), makeCryptoDatagram(QuicEncryptionLevel::Initial, quarterPoint, overlappingTail)};
             }
 
             /**
@@ -417,19 +408,16 @@ namespace AsynGyanis::Net
              */
             [[nodiscard]] std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>> buildStraddlingCryptoFragments()
             {
-                const std::vector<std::uint8_t> handshakeBytes = takeHandshakeBytes();
-                const std::size_t halfPoint = handshakeBytes.size() / 2;
-                const std::size_t straddlingPoint = handshakeBytes.size() * 3 / 4;
+                const std::vector<std::uint8_t> handshakeBytes  = takeHandshakeBytes();
+                const std::size_t               halfPoint       = handshakeBytes.size() / 2;
+                const std::size_t               straddlingPoint = handshakeBytes.size() * 3 / 4;
                 if (halfPoint == 0 || straddlingPoint <= halfPoint)
                 {
                     return {};
                 }
-                const std::vector<std::uint8_t> tail(handshakeBytes.begin() + static_cast<std::ptrdiff_t>(halfPoint),
-                                                     handshakeBytes.end());
-                const std::vector<std::uint8_t> straddling(handshakeBytes.begin(),
-                                                           handshakeBytes.begin() + static_cast<std::ptrdiff_t>(straddlingPoint));
-                return {makeCryptoDatagram(QuicEncryptionLevel::Initial, halfPoint, tail),
-                        makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, straddling)};
+                const std::vector<std::uint8_t> tail(handshakeBytes.begin() + static_cast<std::ptrdiff_t>(halfPoint), handshakeBytes.end());
+                const std::vector<std::uint8_t> straddling(handshakeBytes.begin(), handshakeBytes.begin() + static_cast<std::ptrdiff_t>(straddlingPoint));
+                return {makeCryptoDatagram(QuicEncryptionLevel::Initial, halfPoint, tail), makeCryptoDatagram(QuicEncryptionLevel::Initial, 0, straddling)};
             }
 
             /**
@@ -452,21 +440,18 @@ namespace AsynGyanis::Net
              * @param leaveLargestUnacknowledged 这个级别不确认它收到的最新一包，用来制造「就差一包没被确认」
              * @return 至多三条数据报，按 Initial、Handshake、Application 的顺序
              */
-            [[nodiscard]] std::vector<std::vector<std::uint8_t>> buildAcknowledgements(
-                    const std::optional<QuicEncryptionLevel> leaveLargestUnacknowledged = std::nullopt)
+            [[nodiscard]] std::vector<std::vector<std::uint8_t>> buildAcknowledgements(const std::optional<QuicEncryptionLevel> leaveLargestUnacknowledged = std::nullopt)
             {
                 std::vector<std::vector<std::uint8_t>> acknowledgements;
-                for (const QuicEncryptionLevel level : {QuicEncryptionLevel::Initial, QuicEncryptionLevel::Handshake,
-                                                        QuicEncryptionLevel::Application})
+                for (const QuicEncryptionLevel level: {QuicEncryptionLevel::Initial, QuicEncryptionLevel::Handshake, QuicEncryptionLevel::Application})
                 {
                     ClientSpace &space = spaceOf(level);
-                    if (space.suppressesAcknowledgements || !space.isAcknowledgementPending ||
-                        !space.writeKeys.has_value() || !space.largestReceived.has_value())
+                    if (space.suppressesAcknowledgements || !space.isAcknowledgementPending || !space.writeKeys.has_value() || !space.largestReceived.has_value())
                     {
                         continue;
                     }
                     std::set<std::uint64_t> acknowledged = space.receivedPacketNumbers;
-                    std::uint64_t largest = *space.largestReceived;
+                    std::uint64_t           largest      = *space.largestReceived;
                     if (level == leaveLargestUnacknowledged && acknowledged.size() > 1)
                     {
                         acknowledged.erase(std::prev(acknowledged.end()));
@@ -524,14 +509,12 @@ namespace AsynGyanis::Net
              * @param acknowledgedPacketNumber 要确认的最大包号
              * @param acknowledgeEverythingBeforeToo 是否把 0 到该包号之间的全部包一并确认
              */
-            void acknowledgeServerPacket(const QuicEncryptionLevel level, const std::uint64_t acknowledgedPacketNumber,
-                                         const bool acknowledgeEverythingBeforeToo = false)
+            void acknowledgeServerPacket(const QuicEncryptionLevel level, const std::uint64_t acknowledgedPacketNumber, const bool acknowledgeEverythingBeforeToo = false)
             {
                 QuicAcknowledgementFrame acknowledgement;
                 acknowledgement.largestAcknowledgedPacketNumber = acknowledgedPacketNumber;
-                acknowledgement.ranges = {acknowledgeEverythingBeforeToo
-                                              ? QuicAcknowledgementRange{0, acknowledgedPacketNumber}
-                                              : QuicAcknowledgementRange{acknowledgedPacketNumber, acknowledgedPacketNumber}};
+                acknowledgement.ranges                          = {acknowledgeEverythingBeforeToo ? QuicAcknowledgementRange{0, acknowledgedPacketNumber}
+                                                                                                  : QuicAcknowledgementRange{acknowledgedPacketNumber, acknowledgedPacketNumber}};
                 std::string frames;
                 appendQuicFrame(frames, QuicFrame{acknowledgement});
                 m_lastSentAcknowledgement = buildDatagram(level, frames);
@@ -598,14 +581,13 @@ namespace AsynGyanis::Net
             void consume(const std::vector<std::uint8_t> &datagram)
             {
                 const std::span<const std::uint8_t> bytes(datagram);
-                std::size_t offset = 0;
+                std::size_t                         offset = 0;
                 while (offset < bytes.size())
                 {
                     const auto remainder = bytes.subspan(offset);
                     // 短头没有长度字段：服务端发来的 1-RTT 包里目的标识是**本端自报**的那一条
                     const auto decodedHeader = decodeQuicPacketHeader(remainder, m_sourceConnectionId.size());
-                    if (!decodedHeader.has_value() || decodedHeader->packetByteCount == 0 ||
-                        offset + decodedHeader->packetByteCount > bytes.size())
+                    if (!decodedHeader.has_value() || decodedHeader->packetByteCount == 0 || offset + decodedHeader->packetByteCount > bytes.size())
                     {
                         return;
                     }
@@ -676,10 +658,13 @@ namespace AsynGyanis::Net
             {
                 switch (level)
                 {
-                case QuicEncryptionLevel::Initial:
-                case QuicEncryptionLevel::ZeroRtt: return 0;
-                case QuicEncryptionLevel::Handshake: return 1;
-                case QuicEncryptionLevel::Application: return 2;
+                    case QuicEncryptionLevel::Initial:
+                    case QuicEncryptionLevel::ZeroRtt:
+                        return 0;
+                    case QuicEncryptionLevel::Handshake:
+                        return 1;
+                    case QuicEncryptionLevel::Application:
+                        return 2;
                 }
                 return 0;
             }
@@ -701,8 +686,7 @@ namespace AsynGyanis::Net
                 {
                     return true;
                 }
-                return m_skippedPacketNumber.has_value() && level == m_skippedPacketLevel &&
-                       packetNumber == *m_skippedPacketNumber;
+                return m_skippedPacketNumber.has_value() && level == m_skippedPacketLevel && packetNumber == *m_skippedPacketNumber;
             }
 
             void consumePacket(const std::span<const std::uint8_t> remainder, const QuicPacketHeader &header)
@@ -719,19 +703,17 @@ namespace AsynGyanis::Net
                 }
                 if (header.isLongHeader && !header.sourceConnectionId.empty())
                 {
-                    m_serverConnectionId = std::vector<std::uint8_t>(header.sourceConnectionId.begin(),
-                                                                     header.sourceConnectionId.end());
+                    m_serverConnectionId = std::vector<std::uint8_t>(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
                 }
-                std::vector<std::uint8_t> working(remainder.begin(),
-                                                  remainder.begin() + static_cast<std::ptrdiff_t>(header.packetByteCount));
+                std::vector<std::uint8_t>     working(remainder.begin(), remainder.begin() + static_cast<std::ptrdiff_t>(header.packetByteCount));
                 const std::span<std::uint8_t> packet(working);
-                const auto sample = extractQuicHeaderProtectionSample(packet, header);
+                const auto                    sample = extractQuicHeaderProtectionSample(packet, header);
                 if (!sample.has_value())
                 {
                     return;
                 }
-                const QuicHeaderProtectionMask mask = generateQuicHeaderProtectionMask(*space.readKeys, *sample);
-                const auto unmasked = removeQuicHeaderProtection(packet, header, mask);
+                const QuicHeaderProtectionMask mask     = generateQuicHeaderProtectionMask(*space.readKeys, *sample);
+                const auto                     unmasked = removeQuicHeaderProtection(packet, header, mask);
                 if (!unmasked.has_value())
                 {
                     return;
@@ -748,34 +730,30 @@ namespace AsynGyanis::Net
                 }
                 std::vector<std::uint8_t> plaintext(packet.size() - headerByteCount - kQuicAuthenticationTagByteLength);
                 // 包号在线上是截断的，而且中间可能有整包被丢弃，必须按 §A.3 还原而不是自己数序号
-                const std::uint64_t packetNumber = restoreQuicPacketNumber(space.largestReceived.value_or(0),
-                                                                          refreshed.packetNumber, refreshed.packetNumberByteCount);
+                const std::uint64_t packetNumber = restoreQuicPacketNumber(space.largestReceived.value_or(0), refreshed.packetNumber, refreshed.packetNumberByteCount);
                 if (isPacketToSkip(*level, packetNumber))
                 {
                     return;
                 }
-                const QuicPacketKeys *reading = &*space.readKeys;
-                bool opensWithNextKeys = false;
+                const QuicPacketKeys *reading           = &*space.readKeys;
+                bool                  opensWithNextKeys = false;
                 if (*level == QuicEncryptionLevel::Application && refreshed.isKeyPhaseBitSet != space.isReadKeyPhaseSet)
                 {
                     // 同一个相位位被前后两代密钥共用，只有包号能分「对端刚更新」与「晚到的旧包」（§6.5）
                     const bool looksNewer = !space.largestReceived.has_value() || packetNumber > *space.largestReceived;
                     if (looksNewer && space.nextReadKeys.has_value())
                     {
-                        reading = &*space.nextReadKeys;
+                        reading           = &*space.nextReadKeys;
                         opensWithNextKeys = true;
-                    }
-                    else if (!looksNewer && space.previousReadKeys.has_value())
+                    } else if (!looksNewer && space.previousReadKeys.has_value())
                     {
                         reading = &*space.previousReadKeys;
-                    }
-                    else
+                    } else
                     {
                         return;
                     }
                 }
-                const auto opened = openQuicProtectedPayload(plaintext, *reading, packetNumber,
-                                                             packet.subspan(0, headerByteCount), packet.subspan(headerByteCount));
+                const auto opened = openQuicProtectedPayload(plaintext, *reading, packetNumber, packet.subspan(0, headerByteCount), packet.subspan(headerByteCount));
                 if (!opened.has_value())
                 {
                     return;
@@ -783,15 +761,15 @@ namespace AsynGyanis::Net
                 if (opensWithNextKeys)
                 {
                     // 解开了就认这次更新：读侧换代，发侧若还没跟上就一并推进（§6.2）
-                    space.previousReadKeys = std::move(space.readKeys);
-                    space.readKeys = std::move(space.nextReadKeys);
-                    space.nextReadKeys = deriveQuicUpdatedPacketKeys(*space.readKeys);
+                    space.previousReadKeys  = std::move(space.readKeys);
+                    space.readKeys          = std::move(space.nextReadKeys);
+                    space.nextReadKeys      = deriveQuicUpdatedPacketKeys(*space.readKeys);
                     space.isReadKeyPhaseSet = !space.isReadKeyPhaseSet;
-                    m_sawServerKeyUpdate = true;
+                    m_sawServerKeyUpdate    = true;
                     if (space.isSendKeyPhaseSet != space.isReadKeyPhaseSet && space.nextWriteKeys.has_value())
                     {
-                        space.writeKeys = std::move(space.nextWriteKeys);
-                        space.nextWriteKeys = deriveQuicUpdatedPacketKeys(*space.writeKeys);
+                        space.writeKeys         = std::move(space.nextWriteKeys);
+                        space.nextWriteKeys     = deriveQuicUpdatedPacketKeys(*space.writeKeys);
                         space.isSendKeyPhaseSet = space.isReadKeyPhaseSet;
                     }
                 }
@@ -810,11 +788,10 @@ namespace AsynGyanis::Net
                     space.isAcknowledgementPending = true;
                     return;
                 }
-                for (const QuicFrame &frame : *frames)
+                for (const QuicFrame &frame: *frames)
                 {
                     observeFrame(frame, *level);
-                    if (!std::holds_alternative<QuicAcknowledgementFrame>(frame) &&
-                        !std::holds_alternative<QuicPaddingFrame>(frame))
+                    if (!std::holds_alternative<QuicAcknowledgementFrame>(frame) && !std::holds_alternative<QuicPaddingFrame>(frame))
                     {
                         space.isAcknowledgementPending = true;
                     }
@@ -822,8 +799,7 @@ namespace AsynGyanis::Net
             }
 
             /// 按偏移把握手字节续上：重叠的重传剪掉、早到的先缓存，接上了才交给 TLS（真实对端都这么做）
-            void acceptCryptoBytes(ClientSpace &space, const QuicEncryptionLevel level, std::uint64_t offset,
-                                   std::span<const std::uint8_t> bytes)
+            void acceptCryptoBytes(ClientSpace &space, const QuicEncryptionLevel level, std::uint64_t offset, std::span<const std::uint8_t> bytes)
             {
                 if (offset < space.receivedCryptoByteCount)
                 {
@@ -846,9 +822,8 @@ namespace AsynGyanis::Net
                 }
                 m_tls->feedHandshakeData(level, bytes);
                 space.receivedCryptoByteCount += bytes.size();
-                for (auto fragment = space.laterCryptoFragments.find(space.receivedCryptoByteCount);
-                     fragment != space.laterCryptoFragments.end();
-                     fragment = space.laterCryptoFragments.find(space.receivedCryptoByteCount))
+                for (auto fragment = space.laterCryptoFragments.find(space.receivedCryptoByteCount); fragment != space.laterCryptoFragments.end();
+                     fragment      = space.laterCryptoFragments.find(space.receivedCryptoByteCount))
                 {
                     m_tls->feedHandshakeData(level, fragment->second);
                     space.receivedCryptoByteCount += fragment->second.size();
@@ -860,55 +835,45 @@ namespace AsynGyanis::Net
             {
                 // §19 表 3 的 Protection 列：这些帧只许出现在 1-RTT 包里。放错空间的帧，真实对端
                 // （aioquic 实测）会直接判 PROTOCOL_VIOLATION，因此本端一律当失败处理
-                const std::uint64_t frameType = quicFrameTypeValue(frame);
-                const bool isOneRttOnlyFrame  = frameType == 0x04U || frameType == 0x05U || frameType == 0x1eU ||
-                                                (frameType >= 0x08U && frameType <= 0x17U);
+                const std::uint64_t frameType         = quicFrameTypeValue(frame);
+                const bool          isOneRttOnlyFrame = frameType == 0x04U || frameType == 0x05U || frameType == 0x1eU || (frameType >= 0x08U && frameType <= 0x17U);
                 if (isOneRttOnlyFrame && level != QuicEncryptionLevel::Application)
                 {
-                    ADD_FAILURE() << "帧类型 " << frameType << " 出现在级别序号 " << static_cast<int>(level)
-                                  << " 的包里：这类帧只许在 1-RTT 包里出现（RFC 9000 §19 表 3）";
+                    ADD_FAILURE() << "帧类型 " << frameType << " 出现在级别序号 " << static_cast<int>(level) << " 的包里：这类帧只许在 1-RTT 包里出现（RFC 9000 §19 表 3）";
                 }
                 if (const auto *crypto = std::get_if<QuicCryptoFrame>(&frame); crypto != nullptr)
                 {
                     acceptCryptoBytes(spaceOf(level), level, crypto->offset, crypto->data);
-                }
-                else if (const auto *acknowledgement = std::get_if<QuicAcknowledgementFrame>(&frame); acknowledgement != nullptr)
+                } else if (const auto *acknowledgement = std::get_if<QuicAcknowledgementFrame>(&frame); acknowledgement != nullptr)
                 {
-                    m_largestServerAcknowledged = acknowledgement->largestAcknowledgedPacketNumber;
+                    m_largestServerAcknowledged  = acknowledgement->largestAcknowledgedPacketNumber;
                     m_serverAcknowledgementDelay = acknowledgement->acknowledgementDelay;
-                }
-                else if (std::holds_alternative<QuicHandshakeDoneFrame>(frame))
+                } else if (std::holds_alternative<QuicHandshakeDoneFrame>(frame))
                 {
                     ++m_handshakeDoneFrameCount;
                     if (!m_handshakeDoneLevel.has_value())
                     {
                         m_handshakeDoneLevel = level;
                     }
-                }
-                else if (const auto *close = std::get_if<QuicConnectionCloseFrame>(&frame); close != nullptr)
+                } else if (const auto *close = std::get_if<QuicConnectionCloseFrame>(&frame); close != nullptr)
                 {
-                    m_sawConnectionClose = true;
+                    m_sawConnectionClose   = true;
                     m_serverCloseErrorCode = close->errorCode;
-                }
-                else if (std::holds_alternative<QuicPingFrame>(frame))
+                } else if (std::holds_alternative<QuicPingFrame>(frame))
                 {
                     ++m_pingFrameCount;
-                }
-                else if (const auto *stream = std::get_if<QuicStreamFrame>(&frame); stream != nullptr)
+                } else if (const auto *stream = std::get_if<QuicStreamFrame>(&frame); stream != nullptr)
                 {
                     m_serverStreamText.append(stream->data.begin(), stream->data.end());
-                    m_serverStreamRanges.push_back(
-                            QuicStreamRange{stream->streamId, stream->offset, stream->offset + stream->data.size(), stream->isFinal});
+                    m_serverStreamRanges.push_back(QuicStreamRange{stream->streamId, stream->offset, stream->offset + stream->data.size(), stream->isFinal});
                     if (stream->isFinal)
                     {
                         ++m_serverStreamFinalCount;
                     }
-                }
-                else if (const auto *maxData = std::get_if<QuicMaxDataFrame>(&frame); maxData != nullptr)
+                } else if (const auto *maxData = std::get_if<QuicMaxDataFrame>(&frame); maxData != nullptr)
                 {
                     m_serverMaxData = maxData->maximumData;
-                }
-                else if (const auto *maxStreamData = std::get_if<QuicMaxStreamDataFrame>(&frame); maxStreamData != nullptr)
+                } else if (const auto *maxStreamData = std::get_if<QuicMaxStreamDataFrame>(&frame); maxStreamData != nullptr)
                 {
                     m_serverMaxStreamData = maxStreamData->maximumStreamData;
                 }
@@ -926,13 +891,11 @@ namespace AsynGyanis::Net
                 return handshakeBytes;
             }
 
-            [[nodiscard]] std::vector<std::uint8_t> makeCryptoDatagram(const QuicEncryptionLevel level,
-                                                                      const std::uint64_t offset,
-                                                                      const std::vector<std::uint8_t> &data)
+            [[nodiscard]] std::vector<std::uint8_t> makeCryptoDatagram(const QuicEncryptionLevel level, const std::uint64_t offset, const std::vector<std::uint8_t> &data)
             {
                 QuicCryptoFrame crypto;
                 crypto.offset = offset;
-                crypto.data = data;
+                crypto.data   = data;
                 std::string frames;
                 appendQuicFrame(frames, QuicFrame{crypto});
                 return buildDatagram(level, frames);
@@ -945,15 +908,14 @@ namespace AsynGyanis::Net
              * @param largest 帧里的最大确认值
              * @return std::vector<std::uint8_t> 一条完整的 UDP 净字节
              */
-            [[nodiscard]] std::vector<std::uint8_t> makeAcknowledgementDatagram(const QuicEncryptionLevel level,
-                                                                                const std::set<std::uint64_t> &acknowledged,
+            [[nodiscard]] std::vector<std::uint8_t> makeAcknowledgementDatagram(const QuicEncryptionLevel level, const std::set<std::uint64_t> &acknowledged,
                                                                                 const std::uint64_t largest)
             {
                 QuicAcknowledgementFrame acknowledgement;
                 acknowledgement.largestAcknowledgedPacketNumber = largest;
                 // 包号交给本端的区间集合去折：与真实实现走同一个函数，替身不必另写一套折叠
                 QuicReceivedPacketNumbers tracked;
-                for (const std::uint64_t packetNumber : acknowledged)
+                for (const std::uint64_t packetNumber: acknowledged)
                 {
                     static_cast<void>(tracked.insert(packetNumber));
                 }
@@ -971,51 +933,48 @@ namespace AsynGyanis::Net
              */
             [[nodiscard]] std::vector<std::uint8_t> buildDatagram(const QuicEncryptionLevel level, const std::string &frames)
             {
-                ClientSpace &space = spaceOf(level);
+                ClientSpace                     &space = spaceOf(level);
                 const std::vector<std::uint8_t> &destination =
-                        !m_destinationOverride.empty() ? m_destinationOverride
-                                                       : (m_serverConnectionId.empty() ? kOriginalDestinationConnectionId
-                                                                                       : m_serverConnectionId);
+                        !m_destinationOverride.empty() ? m_destinationOverride : (m_serverConnectionId.empty() ? kOriginalDestinationConnectionId : m_serverConnectionId);
                 QuicOutboundPacket packet;
-                packet.isLongHeader = level != QuicEncryptionLevel::Application;
-                packet.isKeyPhaseBitSet = space.isSendKeyPhaseSet;
-                packet.longPacketType = level == QuicEncryptionLevel::Initial ? QuicLongPacketType::Initial
-                                                                             : QuicLongPacketType::Handshake;
+                packet.isLongHeader            = level != QuicEncryptionLevel::Application;
+                packet.isKeyPhaseBitSet        = space.isSendKeyPhaseSet;
+                packet.longPacketType          = level == QuicEncryptionLevel::Initial ? QuicLongPacketType::Initial : QuicLongPacketType::Handshake;
                 packet.destinationConnectionId = destination;
-                packet.sourceConnectionId = m_sourceConnectionId;
-                packet.packetNumber = space.nextPacketNumber++;
-                packet.packetNumberByteCount = 1;
-                packet.frames = asBytes(frames);
+                packet.sourceConnectionId      = m_sourceConnectionId;
+                packet.packetNumber            = space.nextPacketNumber++;
+                packet.packetNumberByteCount   = 1;
+                packet.frames                  = asBytes(frames);
 
                 std::string datagram;
                 appendQuicPacket(datagram, packet, *space.writeKeys);
                 return std::vector<std::uint8_t>(datagram.begin(), datagram.end());
             }
 
-            std::vector<std::uint8_t> m_sourceConnectionId;          ///< 本端签发的连接标识
-            std::vector<std::uint8_t> m_serverConnectionId{};         ///< 从服务端 Initial 的源标识学到的目的标识
-            std::vector<std::uint8_t> m_lastSentAcknowledgement{};    ///< 最近手工发出的那条只含 ACK 的包
-            std::array<ClientSpace, 3> m_spaces{};                     ///< Initial、Handshake、Application 三个包号空间
-            std::unique_ptr<QuicTlsContext> m_tls;                    ///< 客户端 TLS 上下文
-            std::optional<std::uint64_t> m_largestServerAcknowledged{}; ///< 服务端 ACK 到的最大包号
-            std::optional<std::uint64_t> m_serverAcknowledgementDelay{};///< 服务端 ACK 的延迟字段
-            std::size_t m_handshakeDoneFrameCount{0};                 ///< 收到过的 HANDSHAKE_DONE 帧数
+            std::vector<std::uint8_t>       m_sourceConnectionId;           ///< 本端签发的连接标识
+            std::vector<std::uint8_t>       m_serverConnectionId{};         ///< 从服务端 Initial 的源标识学到的目的标识
+            std::vector<std::uint8_t>       m_lastSentAcknowledgement{};    ///< 最近手工发出的那条只含 ACK 的包
+            std::array<ClientSpace, 3>      m_spaces{};                     ///< Initial、Handshake、Application 三个包号空间
+            std::unique_ptr<QuicTlsContext> m_tls;                          ///< 客户端 TLS 上下文
+            std::optional<std::uint64_t>    m_largestServerAcknowledged{};  ///< 服务端 ACK 到的最大包号
+            std::optional<std::uint64_t>    m_serverAcknowledgementDelay{}; ///< 服务端 ACK 的延迟字段
+            std::size_t                     m_handshakeDoneFrameCount{0};   ///< 收到过的 HANDSHAKE_DONE 帧数
             /// 首次见到 HANDSHAKE_DONE 的加密级别（1-RTT 才算对，§19 帧表的 Protection 列只有 1）
             std::optional<QuicEncryptionLevel> m_handshakeDoneLevel{};
-            std::vector<std::uint8_t> m_destinationOverride{};         ///< 非空时覆盖发出包的目的标识
-            bool m_sawConnectionClose{false};                         ///< 是否收到过 CONNECTION_CLOSE
-            bool m_dropsAllHandshakePackets{false};                 ///< 是否把 Handshake 级报文一律不看
-            std::optional<std::uint64_t> m_skippedPacketNumber{};       ///< 要跳过的那个包号，空表示不挑
-            QuicEncryptionLevel m_skippedPacketLevel{QuicEncryptionLevel::Initial}; ///< 上面那个包号属于哪个级别
-            std::size_t m_pingFrameCount{0};                          ///< 收到过的 PING 帧数
-            bool m_sawServerKeyUpdate{false};                         ///< 本端是否被迫提升过读密钥代际
-            bool m_sawServerKeyPhase{false};                          ///< 服务端最近一包带的相位位
-            std::string m_serverStreamText{};                         ///< 服务端发来的流数据，按到达顺序拼起来
-            std::vector<QuicStreamRange> m_serverStreamRanges{};      ///< 服务端每个 STREAM 帧带的区间
-            std::size_t m_serverStreamFinalCount{0};                  ///< 服务端发过带 FIN 的 STREAM 帧条数
-            std::optional<std::uint64_t> m_serverMaxData{};           ///< 服务端最近一条 MAX_DATA 的上限
-            std::optional<std::uint64_t> m_serverMaxStreamData{};     ///< 服务端最近一条 MAX_STREAM_DATA 的上限
-            std::optional<std::uint64_t> m_serverCloseErrorCode{};    ///< 服务端 CONNECTION_CLOSE 的错误码
+            std::vector<std::uint8_t>          m_destinationOverride{};                            ///< 非空时覆盖发出包的目的标识
+            bool                               m_sawConnectionClose{false};                        ///< 是否收到过 CONNECTION_CLOSE
+            bool                               m_dropsAllHandshakePackets{false};                  ///< 是否把 Handshake 级报文一律不看
+            std::optional<std::uint64_t>       m_skippedPacketNumber{};                            ///< 要跳过的那个包号，空表示不挑
+            QuicEncryptionLevel                m_skippedPacketLevel{QuicEncryptionLevel::Initial}; ///< 上面那个包号属于哪个级别
+            std::size_t                        m_pingFrameCount{0};                                ///< 收到过的 PING 帧数
+            bool                               m_sawServerKeyUpdate{false};                        ///< 本端是否被迫提升过读密钥代际
+            bool                               m_sawServerKeyPhase{false};                         ///< 服务端最近一包带的相位位
+            std::string                        m_serverStreamText{};                               ///< 服务端发来的流数据，按到达顺序拼起来
+            std::vector<QuicStreamRange>       m_serverStreamRanges{};                             ///< 服务端每个 STREAM 帧带的区间
+            std::size_t                        m_serverStreamFinalCount{0};                        ///< 服务端发过带 FIN 的 STREAM 帧条数
+            std::optional<std::uint64_t>       m_serverMaxData{};                                  ///< 服务端最近一条 MAX_DATA 的上限
+            std::optional<std::uint64_t>       m_serverMaxStreamData{};                            ///< 服务端最近一条 MAX_STREAM_DATA 的上限
+            std::optional<std::uint64_t>       m_serverCloseErrorCode{};                           ///< 服务端 CONNECTION_CLOSE 的错误码
         };
 
         /**
@@ -1026,22 +985,21 @@ namespace AsynGyanis::Net
          *        免得空闲超时定时器混进那些只盯着丢包与拥塞的用例（§18.2）
          * @return QuicConnectionCoreConfiguration 填好的配置
          */
-        QuicConnectionCoreConfiguration makeServerConfiguration(SSL_CTX &tlsContext,
-                                                                std::vector<std::uint8_t> peerConnectionId = kClientConnectionId,
+        QuicConnectionCoreConfiguration makeServerConfiguration(SSL_CTX &tlsContext, std::vector<std::uint8_t> peerConnectionId = kClientConnectionId,
                                                                 const std::uint64_t maximumIdleTimeoutMilliseconds = 0)
         {
             QuicConnectionCoreConfiguration configuration;
-            configuration.tlsContext = &tlsContext;
-            configuration.localConnectionId = kServerConnectionId;
-            configuration.peerConnectionId = std::move(peerConnectionId);
-            configuration.originalDestinationConnectionId = kOriginalDestinationConnectionId;
-            configuration.transportParameters.initialMaximumData = 1048576;
+            configuration.tlsContext                                             = &tlsContext;
+            configuration.localConnectionId                                      = kServerConnectionId;
+            configuration.peerConnectionId                                       = std::move(peerConnectionId);
+            configuration.originalDestinationConnectionId                        = kOriginalDestinationConnectionId;
+            configuration.transportParameters.initialMaximumData                 = 1048576;
             configuration.transportParameters.initialMaximumBidirectionalStreams = 1024;
             // 对端发起的流按这两档收：给够才让「越界」用例是越界而不是连额度都不知道
             configuration.transportParameters.initialMaximumStreamDataBidirectionalRemote = 4096;
-            configuration.transportParameters.initialMaximumStreamDataUnidirectional = 4096;
-            configuration.transportParameters.initialMaximumUnidirectionalStreams = 16;
-            configuration.transportParameters.maximumIdleTimeoutMilliseconds = maximumIdleTimeoutMilliseconds;
+            configuration.transportParameters.initialMaximumStreamDataUnidirectional      = 4096;
+            configuration.transportParameters.initialMaximumUnidirectionalStreams         = 16;
+            configuration.transportParameters.maximumIdleTimeoutMilliseconds              = maximumIdleTimeoutMilliseconds;
             return configuration;
         }
 
@@ -1071,15 +1029,15 @@ namespace AsynGyanis::Net
         void exchange(QuicConnectionCore &core, InMemoryQuicClient &client, const Timestamp arrivalTime,
                       const std::optional<QuicEncryptionLevel> leaveLargestUnacknowledged = std::nullopt)
         {
-            std::vector<std::vector<std::uint8_t>> toServer = client.buildFlight();
+            std::vector<std::vector<std::uint8_t>>       toServer         = client.buildFlight();
             const std::vector<std::vector<std::uint8_t>> acknowledgements = client.buildAcknowledgements(leaveLargestUnacknowledged);
             toServer.insert(toServer.end(), acknowledgements.begin(), acknowledgements.end());
-            for (const auto &datagram : toServer)
+            for (const auto &datagram: toServer)
             {
                 ASSERT_TRUE(core.onDatagramReceived(datagram, arrivalTime).has_value());
             }
             core.drive(arrivalTime + kServerSendLatency);
-            for (const auto &datagram : drain(core))
+            for (const auto &datagram: drain(core))
             {
                 client.consume(datagram);
             }
@@ -1094,7 +1052,7 @@ namespace AsynGyanis::Net
         std::uint64_t coveredStreamByteCount(const std::vector<QuicStreamRange> &ranges)
         {
             std::uint64_t total = 0;
-            for (const QuicStreamRange &range : ranges)
+            for (const QuicStreamRange &range: ranges)
             {
                 total += range.endOffset - range.beginOffset;
             }
@@ -1109,7 +1067,7 @@ namespace AsynGyanis::Net
         std::size_t headRangeCount(const std::vector<QuicStreamRange> &ranges)
         {
             std::size_t count = 0;
-            for (const QuicStreamRange &range : ranges)
+            for (const QuicStreamRange &range: ranges)
             {
                 if (range.beginOffset == 0)
                 {
@@ -1127,8 +1085,7 @@ namespace AsynGyanis::Net
         void finishHandshake(QuicConnectionCore &core, InMemoryQuicClient &client)
         {
             exchange(core, client, Timestamp{0});
-            for (int round = 1; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established);
-                 ++round)
+            for (int round = 1; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established); ++round)
             {
                 exchange(core, client, Timestamp{10000 * round});
             }
@@ -1167,15 +1124,14 @@ namespace AsynGyanis::Net
          * @param isFinal 是否带 FIN
          * @return std::vector<std::uint8_t> 一条完整的 UDP 净字节
          */
-        std::vector<std::uint8_t> makeStreamDatagram(InMemoryQuicClient &client, const QuicEncryptionLevel level,
-                                                    const std::uint64_t streamId, const std::uint64_t offset,
-                                                    const std::vector<std::uint8_t> &data, const bool isFinal)
+        std::vector<std::uint8_t> makeStreamDatagram(InMemoryQuicClient &client, const QuicEncryptionLevel level, const std::uint64_t streamId, const std::uint64_t offset,
+                                                     const std::vector<std::uint8_t> &data, const bool isFinal)
         {
             QuicStreamFrame stream;
             stream.streamId = streamId;
-            stream.offset = offset;
-            stream.data = std::span<const std::uint8_t>(data);
-            stream.isFinal = isFinal;
+            stream.offset   = offset;
+            stream.data     = std::span<const std::uint8_t>(data);
+            stream.isFinal  = isFinal;
             std::string frames;
             appendQuicFrame(frames, QuicFrame{stream});
             return client.buildDatagramWith(level, frames);
@@ -1216,7 +1172,7 @@ namespace AsynGyanis::Net
         // 所以循环条件两侧都看：只有双方都到位才算跑完
         for (int round = 0; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established); ++round)
         {
-            for (const auto &datagram : client.buildFlight())
+            for (const auto &datagram: client.buildFlight())
             {
                 ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{100 * round}).has_value());
                 core.drive(Timestamp{100 * round + 5});
@@ -1224,7 +1180,7 @@ namespace AsynGyanis::Net
                 serverDatagrams.insert(serverDatagrams.end(), produced.begin(), produced.end());
             }
             client.adoptKeys();
-            for (const auto &datagram : serverDatagrams)
+            for (const auto &datagram: serverDatagrams)
             {
                 client.consume(datagram);
             }
@@ -1261,13 +1217,13 @@ namespace AsynGyanis::Net
         // 所以循环条件两侧都看：只有双方都到位才算跑完
         for (int round = 0; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established); ++round)
         {
-            for (const auto &datagram : client.buildFlight())
+            for (const auto &datagram: client.buildFlight())
             {
                 ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{0}).has_value());
                 core.drive(Timestamp{5});
             }
             client.adoptKeys();
-            for (const auto &datagram : drain(core))
+            for (const auto &datagram: drain(core))
             {
                 // 证书那条飞行远超 1200，必须被切成多个报文而不是一条大数据报
                 EXPECT_LE(datagram.size(), 1200U) << "第 " << round << " 轮产出了超长数据报";
@@ -1292,8 +1248,8 @@ namespace AsynGyanis::Net
 
         // 与服务端配置只差角色与两条连接标识：这里要的就是「同一个客户端挑的目的标识」这一份输入
         QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*clientContext.get());
-        configuration.role = QuicConnectionRole::Client;
-        configuration.peerConnectionId = kOriginalDestinationConnectionId;
+        configuration.role                            = QuicConnectionRole::Client;
+        configuration.peerConnectionId                = kOriginalDestinationConnectionId;
         configuration.originalDestinationConnectionId = kOriginalDestinationConnectionId;
 
         QuicConnectionCore core(configuration);
@@ -1302,8 +1258,7 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(produced.empty()) << "一条字节都没收到就被反放大上限挡住了：客户端永远起不了握手";
         for (const std::vector<std::uint8_t> &datagram: produced)
         {
-            EXPECT_EQ(datagram.size(), kQuicMaximumDatagramPayloadByteLength)
-                    << "握手期的 Initial 数据报没补足到最小尺寸（§14.1），服务端可以整条丢掉";
+            EXPECT_EQ(datagram.size(), kQuicMaximumDatagramPayloadByteLength) << "握手期的 Initial 数据报没补足到最小尺寸（§14.1），服务端可以整条丢掉";
         }
     }
 
@@ -1318,8 +1273,8 @@ namespace AsynGyanis::Net
         ASSERT_NE(serverContext.get(), nullptr);
         ASSERT_NE(clientContext.get(), nullptr);
 
-        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
-        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        QuicConnectionCore                           core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient                           client(*clientContext.get(), kClientConnectionId);
         const std::vector<std::vector<std::uint8_t>> clientFlight = client.buildFlight();
         ASSERT_FALSE(clientFlight.empty());
 
@@ -1344,14 +1299,14 @@ namespace AsynGyanis::Net
         ASSERT_NE(serverContext.get(), nullptr);
         ASSERT_NE(clientContext.get(), nullptr);
 
-        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
-        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        QuicConnectionCore                           core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient                           client(*clientContext.get(), kClientConnectionId);
         const std::vector<std::vector<std::uint8_t>> clientFlight = client.buildFlight();
         ASSERT_FALSE(clientFlight.empty());
 
         ASSERT_TRUE(core.onDatagramReceived(clientFlight.front(), Timestamp{5000}).has_value());
         core.drive(Timestamp{10000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -1378,7 +1333,7 @@ namespace AsynGyanis::Net
         QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
         client.overrideDestinationConnectionId(kUnknownConnectionId);
-        for (const auto &datagram : client.buildFlight())
+        for (const auto &datagram: client.buildFlight())
         {
             EXPECT_TRUE(core.onDatagramReceived(datagram, Timestamp{0}).has_value());
         }
@@ -1397,8 +1352,7 @@ namespace AsynGyanis::Net
         QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
 
         // 一个看起来像长头的开头（版本 1、目的标识 8 字节）后面全接垃圾
-        const std::vector<std::uint8_t> garbage = makeBytesFromHex(
-                "c40000000108112233445566778804" + std::string(64, 'f'));
+        const std::vector<std::uint8_t> garbage = makeBytesFromHex("c40000000108112233445566778804" + std::string(64, 'f'));
         EXPECT_TRUE(core.onDatagramReceived(garbage, Timestamp{0}).has_value());
         EXPECT_TRUE(drain(core).empty());
 
@@ -1426,7 +1380,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(core.onDatagramReceived(lateFragment, Timestamp{0}).has_value());
         core.drive(Timestamp{10});
         const std::vector<std::vector<std::uint8_t>> afterTail = drain(core);
-        for (const auto &datagram : afterTail)
+        for (const auto &datagram: afterTail)
         {
             client.consume(datagram);
         }
@@ -1438,7 +1392,7 @@ namespace AsynGyanis::Net
         core.drive(Timestamp{1010});
         const std::vector<std::vector<std::uint8_t>> serverDatagrams = drain(core);
         ASSERT_FALSE(serverDatagrams.empty()) << "两段补齐后服务端该产出首批飞行";
-        for (const auto &datagram : serverDatagrams)
+        for (const auto &datagram: serverDatagrams)
         {
             client.consume(datagram);
         }
@@ -1462,14 +1416,14 @@ namespace AsynGyanis::Net
         std::vector<std::vector<std::uint8_t>> serverDatagrams;
         for (int round = 0; round < 6 && core.phase() == QuicConnectionPhase::Handshaking; ++round)
         {
-            for (const auto &datagram : client.buildFlight())
+            for (const auto &datagram: client.buildFlight())
             {
                 ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{0}).has_value());
                 core.drive(Timestamp{5});
                 serverDatagrams = drain(core);
             }
             client.adoptKeys();
-            for (const auto &datagram : serverDatagrams)
+            for (const auto &datagram: serverDatagrams)
             {
                 client.consume(datagram);
             }
@@ -1499,14 +1453,14 @@ namespace AsynGyanis::Net
         // 所以循环条件两侧都看：只有双方都到位才算跑完
         for (int round = 0; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established); ++round)
         {
-            for (const auto &datagram : client.buildFlight())
+            for (const auto &datagram: client.buildFlight())
             {
                 ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{0}).has_value());
                 core.drive(Timestamp{5});
                 serverDatagrams = drain(core);
             }
             client.adoptKeys();
-            for (const auto &datagram : serverDatagrams)
+            for (const auto &datagram: serverDatagrams)
             {
                 client.consume(datagram);
             }
@@ -1516,7 +1470,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
 
         // 到这一步服务端还没收到任何对本空间的确认，HANDSHAKE_DONE 不该出现
-        for (const auto &datagram : serverDatagrams)
+        for (const auto &datagram: serverDatagrams)
         {
             client.consume(datagram);
         }
@@ -1527,7 +1481,7 @@ namespace AsynGyanis::Net
         core.drive(Timestamp{8000});
         const std::vector<std::vector<std::uint8_t>> afterAcknowledgement = drain(core);
         ASSERT_FALSE(afterAcknowledgement.empty()) << "确认之后该有产出（HANDSHAKE_DONE）";
-        for (const auto &datagram : afterAcknowledgement)
+        for (const auto &datagram: afterAcknowledgement)
         {
             client.consume(datagram);
         }
@@ -1535,13 +1489,12 @@ namespace AsynGyanis::Net
         // 级别必须是 1-RTT：HANDSHAKE_DONE 在 §19 帧表里 Protection 列只有 1，Figure 5 也把它画在
         // 1-RTT 包里。发到 Handshake 空间里，对端（aioquic 实测）会按 PROTOCOL_VIOLATION 收口
         ASSERT_TRUE(client.handshakeDoneLevel().has_value());
-        EXPECT_EQ(*client.handshakeDoneLevel(), QuicEncryptionLevel::Application)
-                << "HANDSHAKE_DONE 是 1-RTT 帧，出现在别的级别会被判 PROTOCOL_VIOLATION";
+        EXPECT_EQ(*client.handshakeDoneLevel(), QuicEncryptionLevel::Application) << "HANDSHAKE_DONE 是 1-RTT 帧，出现在别的级别会被判 PROTOCOL_VIOLATION";
 
         // 再推几轮也不该重发：计数器不重置，重发会直接变成 2
         core.drive(Timestamp{9000});
         core.drive(Timestamp{10000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -1580,7 +1533,7 @@ namespace AsynGyanis::Net
         core.onTimeout(*deadline);
         const std::vector<std::vector<std::uint8_t>> retransmitted = drain(core);
         ASSERT_FALSE(retransmitted.empty()) << "探测超时期该重发仍未确认的握手字节（RFC 9002 §6.2.2）";
-        for (const auto &datagram : retransmitted)
+        for (const auto &datagram: retransmitted)
         {
             client.consume(datagram);
         }
@@ -1623,12 +1576,11 @@ namespace AsynGyanis::Net
         core.onTimeout(*deadline);
         const std::vector<std::vector<std::uint8_t>> retransmitted = drain(core);
         ASSERT_FALSE(retransmitted.empty()) << "判丢之后该按原偏移补发那一段字节";
-        for (const auto &datagram : retransmitted)
+        for (const auto &datagram: retransmitted)
         {
             client.consume(datagram);
         }
-        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Handshake), handshakeBytesBefore)
-                << "补发的字节没有续上 Handshake 流的空洞";
+        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Handshake), handshakeBytesBefore) << "补发的字节没有续上 Handshake 流的空洞";
         finishAfterHandshakeGap(core, client);
     }
 
@@ -1652,17 +1604,15 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(client.isHandshakeCompleted());
 
         const std::size_t handshakeBytesBefore = client.serverCryptoByteCount(QuicEncryptionLevel::Handshake);
-        ASSERT_TRUE(core.onDatagramReceived(client.buildRepeatedAcknowledgement(QuicEncryptionLevel::Handshake),
-                                            Timestamp{30000}).has_value());
+        ASSERT_TRUE(core.onDatagramReceived(client.buildRepeatedAcknowledgement(QuicEncryptionLevel::Handshake), Timestamp{30000}).has_value());
         core.drive(Timestamp{30000});
         const std::vector<std::vector<std::uint8_t>> retransmitted = drain(core);
         ASSERT_FALSE(retransmitted.empty()) << "重复的确认里也该判丢并补发，而不是干等定时器";
-        for (const auto &datagram : retransmitted)
+        for (const auto &datagram: retransmitted)
         {
             client.consume(datagram);
         }
-        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Handshake), handshakeBytesBefore)
-                << "补发的字节没有续上 Handshake 流的空洞";
+        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Handshake), handshakeBytesBefore) << "补发的字节没有续上 Handshake 流的空洞";
         finishAfterHandshakeGap(core, client);
     }
 
@@ -1685,13 +1635,13 @@ namespace AsynGyanis::Net
         for (int round = 0; round < 6 && !(client.isHandshakeCompleted() && core.phase() == QuicConnectionPhase::Established); ++round)
         {
             const Timestamp now{1000 * round};
-            for (const auto &datagram : client.buildFlight())
+            for (const auto &datagram: client.buildFlight())
             {
                 ASSERT_TRUE(core.onDatagramReceived(datagram, now).has_value());
             }
             core.drive(now + Timestamp{5});
             client.adoptKeys();
-            for (const auto &datagram : drain(core))
+            for (const auto &datagram: drain(core))
             {
                 client.consume(datagram);
             }
@@ -1705,7 +1655,7 @@ namespace AsynGyanis::Net
         client.acknowledgeServerPacket(QuicEncryptionLevel::Handshake, 0);
         ASSERT_TRUE(core.onDatagramReceived(client.lastSentAcknowledgement(), Timestamp{20000}).has_value());
         core.drive(Timestamp{20005});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -1713,12 +1663,12 @@ namespace AsynGyanis::Net
 
         // 把 Initial 与 Handshake 两个空间确认干净，只留带 DONE 的这一包在途：否则先到期的定时器属于
         // Handshake 空间，那一趟探针补的是握手字节，与 DONE 无关
-        for (const auto &datagram : client.buildAcknowledgements(QuicEncryptionLevel::Application))
+        for (const auto &datagram: client.buildAcknowledgements(QuicEncryptionLevel::Application))
         {
             ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{30000}).has_value());
         }
         core.drive(Timestamp{30005});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -1729,7 +1679,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(client.pingFrameCount(), 0U) << "还在等待窗口里就不该发探针";
 
         core.onTimeout(*firstDeadline);
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -1737,17 +1687,17 @@ namespace AsynGyanis::Net
         EXPECT_EQ(client.pingFrameCount(), 0U) << "还有可重发的东西时轮不到单发 PING（RFC 9002 §6.2.2）";
 
         // 全部确认之后就收手：既不再发第三份，也不必为它继续亮着定时器
-        for (const auto &datagram : client.buildAcknowledgements())
+        for (const auto &datagram: client.buildAcknowledgements())
         {
             ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{40000}).has_value());
         }
         core.drive(Timestamp{40005});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
         core.drive(Timestamp{41000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -1802,7 +1752,7 @@ namespace AsynGyanis::Net
         const std::vector<std::vector<std::uint8_t>> flight = drain(core);
         EXPECT_NE(core.phase(), QuicConnectionPhase::Closing) << "重叠的那一段没剪掉，TLS 收到了重复字节";
         ASSERT_FALSE(flight.empty()) << "两段合起来才是完整的 ClientHello，服务端该交出它的飞行";
-        for (const auto &datagram : flight)
+        for (const auto &datagram: flight)
         {
             client.consume(datagram);
         }
@@ -1828,15 +1778,15 @@ namespace AsynGyanis::Net
 
         QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
-        std::size_t receivedByteCount = 0;
-        for (const auto &datagram : client.buildFlight())
+        std::size_t        receivedByteCount = 0;
+        for (const auto &datagram: client.buildFlight())
         {
             receivedByteCount += datagram.size();
             ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{0}).has_value());
         }
         core.drive(Timestamp{1000});
         std::size_t sentByteCount = 0;
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             sentByteCount += datagram.size();
             client.consume(datagram);
@@ -1850,7 +1800,7 @@ namespace AsynGyanis::Net
             const std::optional<Timestamp> deadline = core.nextTimeout();
             ASSERT_TRUE(deadline.has_value());
             core.onTimeout(*deadline);
-            for (const auto &datagram : drain(core))
+            for (const auto &datagram: drain(core))
             {
                 sentByteCount += datagram.size();
             }
@@ -1901,30 +1851,28 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(deadline.has_value());
         probeTime = *deadline;
         core.onTimeout(probeTime);
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
         ASSERT_TRUE(client.isHandshakeCompleted()) << "补发的字节该让客户端把握手走完";
 
         // 只交飞行、不交确认：服务端这时已经在满窗里，新数据该被压住
-        for (const auto &datagram : client.buildFlight())
+        for (const auto &datagram: client.buildFlight())
         {
             ASSERT_TRUE(core.onDatagramReceived(datagram, probeTime + Timestamp{1000}).has_value());
         }
         core.drive(probeTime + Timestamp{2000});
         ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
-        EXPECT_EQ(client.serverCryptoByteCount(QuicEncryptionLevel::Application), 0U)
-                << "在途已经压满窗口，票据这种新数据不该再往上叠";
+        EXPECT_EQ(client.serverCryptoByteCount(QuicEncryptionLevel::Application), 0U) << "在途已经压满窗口，票据这种新数据不该再往上叠";
 
         // 把在途确认干净，窗口腾出来，同一批字节就该放行
         exchange(core, client, probeTime + Timestamp{20000});
-        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Application), 0U)
-                << "窗口腾出来后，被压住的新数据该跟着下一轮产出";
+        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Application), 0U) << "窗口腾出来后，被压住的新数据该跟着下一轮产出";
     }
 
     /**
@@ -1967,13 +1915,12 @@ namespace AsynGyanis::Net
                 break;
             }
             core.onTimeout(*deadline);
-            for (const auto &datagram : drain(core))
+            for (const auto &datagram: drain(core))
             {
                 client.consume(datagram);
             }
         }
-        EXPECT_EQ(client.serverReceivedPacketCount(QuicEncryptionLevel::Initial), initialPackets)
-                << "Initial 空间退休后不该再补发它的握手字节";
+        EXPECT_EQ(client.serverReceivedPacketCount(QuicEncryptionLevel::Initial), initialPackets) << "Initial 空间退休后不该再补发它的握手字节";
     }
 
     /**
@@ -2000,7 +1947,7 @@ namespace AsynGyanis::Net
         const Timestamp lastActivity{50000};
         ASSERT_TRUE(core.onDatagramReceived(client.buildPing(QuicEncryptionLevel::Application), lastActivity).has_value());
         core.drive(lastActivity + Timestamp{1000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2107,11 +2054,11 @@ namespace AsynGyanis::Net
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
         finishHandshake(core, client);
 
-        const std::string_view payload = "hello over quic";
+        const std::string_view          payload = "hello over quic";
         const std::vector<std::uint8_t> written = payloadBytes(payload);
         EXPECT_EQ(core.streamLayer().writeStreamData(0x00, written, true), written.size());
         core.drive(Timestamp{110000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2148,7 +2095,7 @@ namespace AsynGyanis::Net
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId, false, 0, 4096);
         finishHandshake(core, client);
 
-        constexpr std::size_t kBodyByteCount = 128U * 1024U;
+        constexpr std::size_t     kBodyByteCount = 128U * 1024U;
         std::vector<std::uint8_t> body(kBodyByteCount);
         for (std::size_t index = 0; index < body.size(); ++index)
         {
@@ -2157,7 +2104,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(core.streamLayer().writeStreamData(0x00, body, true), body.size());
 
         core.drive(Timestamp{110000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2171,12 +2118,12 @@ namespace AsynGyanis::Net
         for (int round = 0; round < 40 && client.serverStreamText().size() < body.size(); ++round)
         {
             const Timestamp now{120000 + 10000 * static_cast<std::int64_t>(round)};
-            std::string frames;
+            std::string     frames;
             appendQuicFrame(frames, QuicFrame{QuicMaxDataFrame{.maximumData = raisedTo}});
             appendQuicFrame(frames, QuicFrame{QuicMaxStreamDataFrame{.streamId = 0x00, .maximumStreamData = raisedTo}});
             feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), now);
             raisedTo += 65536U;
-            for (const auto &datagram : drain(core))
+            for (const auto &datagram: drain(core))
             {
                 client.consume(datagram);
             }
@@ -2211,7 +2158,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(core.streamLayer().writeStreamData(0x00, body, true), body.size());
         core.drive(Timestamp{110000});
         // 只收不答：那批 STREAM 包永久留在在途账里，定时器正是为它亮起来的
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2223,7 +2170,7 @@ namespace AsynGyanis::Net
         const std::optional<Timestamp> firstDeadline = core.nextTimeout();
         ASSERT_TRUE(firstDeadline.has_value()) << "有包没被确认，探测超时应武装起来";
         core.onTimeout(*firstDeadline);
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2235,7 +2182,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(secondDeadline.has_value()) << "探针发出去就没下文了，等于自己把连接晾着";
         EXPECT_GT(*secondDeadline, *firstDeadline) << "这一趟该按退避往后推";
         core.onTimeout(*secondDeadline);
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2246,7 +2193,7 @@ namespace AsynGyanis::Net
         for (int round = 0; round < 40 && client.serverStreamText().size() < body.size(); ++round)
         {
             const Timestamp now{200000 + 10000 * static_cast<std::int64_t>(round)};
-            std::string frames;
+            std::string     frames;
             appendQuicFrame(frames, QuicFrame{QuicMaxDataFrame{.maximumData = raisedTo}});
             appendQuicFrame(frames, QuicFrame{QuicMaxStreamDataFrame{.streamId = 0x00, .maximumStreamData = raisedTo}});
             feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), now);
@@ -2284,7 +2231,7 @@ namespace AsynGyanis::Net
 
         core.streamLayer().releaseReceiveWindow(0x00, payload.size());
         core.drive(Timestamp{111000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2314,7 +2261,7 @@ namespace AsynGyanis::Net
         const std::vector<std::uint8_t> payload(3000, 'q');
         EXPECT_EQ(core.streamLayer().writeStreamData(0x00, payload, true), payload.size());
         core.drive(Timestamp{110000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2325,7 +2272,7 @@ namespace AsynGyanis::Net
         const std::optional<Timestamp> deadline = core.nextTimeout();
         ASSERT_TRUE(deadline.has_value()) << "带数据的包在途，恢复层该亮一个判丢时刻";
         core.onTimeout(*deadline);
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2353,7 +2300,7 @@ namespace AsynGyanis::Net
         const std::vector<std::uint8_t> payload(8, 'x');
         // 本端给这条流的接收上限是 4096，偏移打到 5000 已经越界
         feed(core, makeStreamDatagram(client, QuicEncryptionLevel::Application, 0x00, 5000, payload, false), Timestamp{110000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2380,7 +2327,7 @@ namespace AsynGyanis::Net
         // 抢在 ClientHello 之前发：再晚一步 Initial 空间就退休了，这条报文连解都解不开
         const std::vector<std::uint8_t> payload = payloadBytes("too early");
         feed(core, makeStreamDatagram(client, QuicEncryptionLevel::Initial, 0x00, 0, payload, false), Timestamp{0});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2405,9 +2352,8 @@ namespace AsynGyanis::Net
         finishHandshake(core, client);
 
         // 帧体就一个变长整数 0x1e：这一帧只有服务端会发，客户端发过来即违规，与本端是否已建立无关
-        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, std::string(1, static_cast<char>(0x1e))),
-             Timestamp{120000});
-        for (const auto &datagram : drain(core))
+        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, std::string(1, static_cast<char>(0x1e))), Timestamp{120000});
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2436,19 +2382,18 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(lateFragment.empty()) << "ClientHello 太短，分不出跨界的两段";
 
         feed(core, lateFragment, Timestamp{0});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
         EXPECT_EQ(client.serverCryptoByteCount(QuicEncryptionLevel::Initial), 0U) << "只到后半段的字节拼不出 ClientHello";
 
         feed(core, straddlingFragment, Timestamp{2000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
-        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Initial), 0U)
-                << "跨过缓存段起点的那一段没并进来，握手永远接不上";
+        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Initial), 0U) << "跨过缓存段起点的那一段没并进来，握手永远接不上";
     }
 
 
@@ -2467,7 +2412,7 @@ namespace AsynGyanis::Net
         finishHandshake(core, client);
 
         feed(core, client.buildPing(QuicEncryptionLevel::Application), Timestamp{110000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2477,7 +2422,7 @@ namespace AsynGyanis::Net
         feed(core, client.buildPing(QuicEncryptionLevel::Application), Timestamp{120000});
         const std::vector<std::vector<std::uint8_t>> response = drain(core);
         ASSERT_FALSE(response.empty()) << "带新相位的第一包解不开，§6.2 要求的回应就无从谈起";
-        for (const auto &datagram : response)
+        for (const auto &datagram: response)
         {
             client.consume(datagram);
         }
@@ -2508,7 +2453,7 @@ namespace AsynGyanis::Net
         // 更新是靠「下一包用新密钥」 signaled 的，没东西可发时先给点数据它才上得了线
         EXPECT_EQ(core.streamLayer().writeStreamData(0x00, payloadBytes("phase one"), false), 9U);
         core.drive(Timestamp{201000});
-        for (const auto &datagram : drain(core))
+        for (const auto &datagram: drain(core))
         {
             client.consume(datagram);
         }
@@ -2545,9 +2490,7 @@ namespace AsynGyanis::Net
         // 本端此刻既没有下一代读密钥、也没有上一代，唯一正确的反应是丢掉且什么都不做（§6.5）
         core.drive(Timestamp{109000});
         drain(core);
-        ASSERT_TRUE(core.onDatagramReceived(
-                            client.buildPingWithFlippedKeyPhase(QuicEncryptionLevel::Application, std::uint64_t{0}),
-                            Timestamp{110000}).has_value());
+        ASSERT_TRUE(core.onDatagramReceived(client.buildPingWithFlippedKeyPhase(QuicEncryptionLevel::Application, std::uint64_t{0}), Timestamp{110000}).has_value());
         core.drive(Timestamp{111000});
         EXPECT_TRUE(drain(core).empty()) << "解不开的包不该惊动任何一侧状态";
         EXPECT_EQ(core.phase(), QuicConnectionPhase::Established) << "相位不合不是对端违规，不能收口";
@@ -2572,9 +2515,9 @@ namespace AsynGyanis::Net
         finishHandshake(core, client);
 
         // 正文取满一条 typical MTU：进门那两份缓冲都是按包长分配的，小包会把收益藏起来
-        const std::string bodyText(1100U, 'p');
-        const std::vector<std::uint8_t> body      = payloadBytes(bodyText);
-        const std::vector<std::uint8_t> datagram  = makeStreamDatagram(client, QuicEncryptionLevel::Application, 4ULL, 0ULL, body, false);
+        const std::string               bodyText(1100U, 'p');
+        const std::vector<std::uint8_t> body     = payloadBytes(bodyText);
+        const std::vector<std::uint8_t> datagram = makeStreamDatagram(client, QuicEncryptionLevel::Application, 4ULL, 0ULL, body, false);
         ASSERT_GT(datagram.size(), body.size()) << "这条报文没带上整包开销，读数量的不是被测形状";
         ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{70000}).has_value()) << "第一条就没被收下，稳态无从谈起";
 
@@ -2590,9 +2533,8 @@ namespace AsynGyanis::Net
                     static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
                     static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations));
         // 进门那两份缓冲按线程复用之后，这一档不该再有任何一次分配
-        EXPECT_EQ(profile.totalAllocations, 0ULL)
-                << "收包路径上又出现了逐包分配：读数为每次 "
-                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+        EXPECT_EQ(profile.totalAllocations, 0ULL) << "收包路径上又出现了逐包分配：读数为每次 " << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations)
+                                                  << " 次";
     }
 
     /**
@@ -2630,21 +2572,18 @@ namespace AsynGyanis::Net
         const std::size_t windowByteCount = poolByteCount - pool.front().size();
 
         std::size_t poolIndex = 1U;
-        const auto feedFresh = [&core, &pool, &poolIndex, &windowByteCount]() -> std::size_t
+        const auto  feedFresh = [&core, &pool, &poolIndex, &windowByteCount]() -> std::size_t
         {
             const std::vector<std::uint8_t> &datagram = pool[poolIndex];
-            poolIndex = poolIndex + 1U < pool.size() ? poolIndex + 1U : 1U;
+            poolIndex                                 = poolIndex + 1U < pool.size() ? poolIndex + 1U : 1U;
             // 只有解密成功才算数：包号重复或密钥不合都会返回空，读数就会对不上而不是假绿
-            return core.onDatagramReceived(datagram, Timestamp{200000 + poolIndex * 10}).has_value()
-                       ? datagram.size()
-                       : 0U;
+            return core.onDatagramReceived(datagram, Timestamp{200000 + poolIndex * 10}).has_value() ? datagram.size() : 0U;
         };
 
         AsynGyanis::TestSupport::resetAllocationHistogram();
         const AllocationProfile profile = measurePerOperation(feedFresh);
         EXPECT_EQ(profile.resultSum, windowByteCount) << "有一千包没被真正解开并收下，读数不可信";
-        std::printf("quic 收一条新包号的 PING 报文：每次 %llu 次分配 / %llu 字节\n",
-                    static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
+        std::printf("quic 收一条新包号的 PING 报文：每次 %llu 次分配 / %llu 字节\n", static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
                     static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations));
         const AsynGyanis::TestSupport::AllocationHistogram histogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
         for (std::size_t bucket = 0; bucket < histogram.size(); ++bucket)
@@ -2652,12 +2591,10 @@ namespace AsynGyanis::Net
             if (histogram[bucket] != 0)
             {
                 // 打原值而不是摊平值：窗口里混进的首次长容是一笔，摊到一千次就成了「0 次」这种误导读数
-                std::printf("  桶 %zu-%zu 字节：一千包合计 %llu 次\n", bucket * 16U, bucket * 16U + 15U,
-                            static_cast<unsigned long long>(histogram[bucket]));
+                std::printf("  桶 %zu-%zu 字节：一千包合计 %llu 次\n", bucket * 16U, bucket * 16U + 15U, static_cast<unsigned long long>(histogram[bucket]));
             }
         }
-        EXPECT_EQ(profile.totalAllocations, 0ULL)
-                << "新包号那一支的逐包分配超过阈值：读数为每次 "
-                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+        EXPECT_EQ(profile.totalAllocations, 0ULL) << "新包号那一支的逐包分配超过阈值：读数为每次 "
+                                                  << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
 } // namespace AsynGyanis::Net

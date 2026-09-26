@@ -115,7 +115,7 @@ namespace AsynGyanis::Database
          * @return SqlStatement 多行 INSERT 文本与按序排列的绑定参数
          * @throws Base::InvalidArgumentException 列数为空、rows 为空，或某行的取值个数与列数不一致
          */
-        [[nodiscard]] virtual SqlStatement translateInsertBatch(const Queryable::QueryNode &query, std::span<const std::vector<DatabaseValue> > rows) const = 0;
+        [[nodiscard]] virtual SqlStatement translateInsertBatch(const Queryable::QueryNode &query, std::span<const std::vector<DatabaseValue>> rows) const = 0;
 
         /**
          * @brief 获取开启事务的语句文本
@@ -186,8 +186,7 @@ namespace AsynGyanis::Database
          * @param type 主键成员的逻辑列类型；只有整数类型能当自增列，其余取值本钩子给空串
          * @return std::string 该列的完整定义（含约束），给不出这种写法时为空串
          */
-        [[nodiscard]] virtual std::string autoIncrementPrimaryKeyDefinition(const std::string_view quotedColumnName,
-                                                                            const ColumnType type) const
+        [[nodiscard]] virtual std::string autoIncrementPrimaryKeyDefinition(const std::string_view quotedColumnName, const ColumnType type) const
         {
             // 默认实现刻意不使用两个参数：标准 SQL 没有自增列关键字，这里没有可给的文本
             static_cast<void>(quotedColumnName);

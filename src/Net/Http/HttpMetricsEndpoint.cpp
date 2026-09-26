@@ -32,8 +32,7 @@ namespace AsynGyanis::Net
          * @param help 中文说明（该格式是 UTF-8，无需转义）
          * @param value 计数值
          */
-        void appendCounter(std::string &out, const std::string &metricName, const std::string_view help,
-                           const std::uint64_t value)
+        void appendCounter(std::string &out, const std::string &metricName, const std::string_view help, const std::uint64_t value)
         {
             out += std::format("# HELP {} {}\n# TYPE {} counter\n{} {}\n", metricName, help, metricName, metricName, value);
         }
@@ -47,18 +46,15 @@ namespace AsynGyanis::Net
         out.reserve(2048);
 
         appendCounter(out, makeMetricName(metricNamePrefix, "requests_total"), "已收齐的请求条数", stats.totalRequestCount);
-        appendCounter(out, makeMetricName(metricNamePrefix, "bad_requests_total"), "解析失败或协议错误收口的请求条数",
-                      stats.badRequestCount);
-        appendCounter(out, makeMetricName(metricNamePrefix, "timeout_closed_connections_total"),
-                      "被空闲清扫按超时关闭的连接数", stats.timeoutClosedCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "bad_requests_total"), "解析失败或协议错误收口的请求条数", stats.badRequestCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "timeout_closed_connections_total"), "被空闲清扫按超时关闭的连接数", stats.timeoutClosedCount);
         appendCounter(out, makeMetricName(metricNamePrefix, "write_aborted_connections_total"),
-                      "本侧没能把响应完整交给传输层就收口的连接数（写出失败，或仍有字节留在待发缓冲与流控队列；仅 TCP 侧）",
-                      stats.writeAbortedConnectionCount);
+                      "本侧没能把响应完整交给传输层就收口的连接数（写出失败，或仍有字节留在待发缓冲与流控队列；仅 TCP 侧）", stats.writeAbortedConnectionCount);
 
         // 活跃连接数是瞬时量，用 gauge；取值来自连接管理器，见 HttpServer::stats()
         const std::string activeConnectionsName = makeMetricName(metricNamePrefix, "active_connections");
-        out += std::format("# HELP {} 取快照那一刻的活跃连接数\n# TYPE {} gauge\n{} {}\n", activeConnectionsName,
-                           activeConnectionsName, activeConnectionsName, stats.activeConnectionCount);
+        out += std::format("# HELP {} 取快照那一刻的活跃连接数\n# TYPE {} gauge\n{} {}\n", activeConnectionsName, activeConnectionsName, activeConnectionsName,
+                           stats.activeConnectionCount);
 
         // 状态码分类：一族带 status_class 标签的计数器，采集侧可直接按类聚合
         const std::string responsesName = makeMetricName(metricNamePrefix, "responses_total");
@@ -88,10 +84,8 @@ namespace AsynGyanis::Net
             cumulativeBucketCount += stats.latencyBucketCounts[index];
 
             // 末档没有上界，按约定记作 +Inf；其余档把毫秒上界换算成秒
-            const bool isOverflowBucket = index + 1 == kHttpLatencyBucketCount;
-            const std::string upperBound = isOverflowBucket
-                                                   ? std::string("+Inf")
-                                                   : std::format("{}", static_cast<double>(kHttpLatencyUpperBoundMilliseconds[index]) / 1000.0);
+            const bool        isOverflowBucket = index + 1 == kHttpLatencyBucketCount;
+            const std::string upperBound = isOverflowBucket ? std::string("+Inf") : std::format("{}", static_cast<double>(kHttpLatencyUpperBoundMilliseconds[index]) / 1000.0);
             out += std::format("{}_bucket{{le=\"{}\"}} {}\n", durationName, upperBound, cumulativeBucketCount);
         }
         // _sum 用累计微秒换算成秒。定点六位小数而不是默认的 {}：默认格式对小于 1e-3 的值会切到
@@ -101,28 +95,20 @@ namespace AsynGyanis::Net
         out += std::format("{}_count {}\n", durationName, stats.latencySampleCount());
 
         // WebSocket 与 HTTP/2 各一族：名字里带协议前缀，避免与 HTTP 侧的计数混在一张图里
-        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_upgrades_total"), "升级成功的 WebSocket 连接数",
-                      stats.webSocketUpgradeCount);
-        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_messages_total"), "收到的 WebSocket 数据消息条数",
-                      stats.webSocketMessageCount);
-        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_protocol_error_closes_total"),
-                      "因对端违反 RFC 6455 而收口的连接数", stats.webSocketProtocolErrorCloseCount);
-        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_peer_closes_total"), "由对端发起关闭握手的连接数",
-                      stats.webSocketPeerCloseCount);
-        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_server_closes_total"), "由本侧发起关闭握手的连接数",
-                      stats.webSocketServerCloseCount);
-        appendCounter(out, makeMetricName(metricNamePrefix, "http2_stream_cancelled_total"),
-                      "被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数", stats.streamCancelledCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_upgrades_total"), "升级成功的 WebSocket 连接数", stats.webSocketUpgradeCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_messages_total"), "收到的 WebSocket 数据消息条数", stats.webSocketMessageCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_protocol_error_closes_total"), "因对端违反 RFC 6455 而收口的连接数", stats.webSocketProtocolErrorCloseCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_peer_closes_total"), "由对端发起关闭握手的连接数", stats.webSocketPeerCloseCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "websocket_server_closes_total"), "由本侧发起关闭握手的连接数", stats.webSocketServerCloseCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "http2_stream_cancelled_total"), "被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数", stats.streamCancelledCount);
 
         // 发送路径：零拷贝发送只在 Linux 的明文 HTTP/1.1 上发生，其余平台恒为 0，
         // 因此它同时是「静态文件快路径是否在生效」的探针
-        appendCounter(out, makeMetricName(metricNamePrefix, "zerocopy_sends_total"),
-                      "正文经内核零拷贝（sendfile）直接发出的响应条数（仅 Linux 会增长）", stats.zeroCopySendCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "zerocopy_sends_total"), "正文经内核零拷贝（sendfile）直接发出的响应条数（仅 Linux 会增长）", stats.zeroCopySendCount);
 
         // 准入闸门：被按来源 IP 的并发限额挡掉的连接不会成为「连接」，因此在其它任何计数里都不留痕，
         // 只有这一条能说明闸门有没有在做事
-        appendCounter(out, makeMetricName(metricNamePrefix, "admission_rejected_connections_total"),
-                      "被按来源 IP 的并发限额挡掉的连接条数（限额器可在多条通道间共用，报的是总量）",
+        appendCounter(out, makeMetricName(metricNamePrefix, "admission_rejected_connections_total"), "被按来源 IP 的并发限额挡掉的连接条数（限额器可在多条通道间共用，报的是总量）",
                       stats.admissionRejectedConnectionCount);
 
         return out;

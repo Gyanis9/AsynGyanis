@@ -75,7 +75,7 @@ namespace AsynGyanis::Core
     TEST(Cancelable, StopSourceReturnsModifiableReference)
     {
         Cancelable cancelable;
-        auto &source = cancelable.stopSource();
+        auto      &source = cancelable.stopSource();
 
         EXPECT_FALSE(source.stop_requested());
 

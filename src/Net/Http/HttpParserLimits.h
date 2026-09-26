@@ -14,8 +14,8 @@
 namespace AsynGyanis::Net
 {
     /// 请求行（方法 SP 目标 SP 版本 CRLF）里除 URI 之外的固定余量，单位字节：方法名上限 32 B
-    ///（HttpParser::kMaximumMethodLength，与 llhttp 同档的协议语法约束）+ 版本串与分隔符 16 B
-    ///（"HTTP/1.1" 8 B + 两个分隔空格 2 B + 行尾 CRLF 2 B，另余 4 B 给版本号位数）。整行上限由它
+    /// （HttpParser::kMaximumMethodLength，与 llhttp 同档的协议语法约束）+ 版本串与分隔符 16 B
+    /// （"HTTP/1.1" 8 B + 两个分隔空格 2 B + 行尾 CRLF 2 B，另余 4 B 给版本号位数）。整行上限由它
     /// 加上 maximumUriLength 推出，故本结构没有请求行长度的独立字段。
     inline constexpr std::size_t kRequestLineFixedOverheadBytes = 32 + 16;
 
@@ -36,13 +36,13 @@ namespace AsynGyanis::Net
      */
     struct HttpParserLimits
     {
-        std::size_t maximumUriLength{8ull * 1024};                   ///< 请求目标（URI）上限，单位字节；请求行整行上限也由它推出（见 requestLineLengthLimit()）。0 表示不限
-        std::size_t maximumHeaderFieldNameLength{256};               ///< 单个头部名上限，单位字节；标准头名最长不过数十字节，留足 x-amz- 一类私有前缀。0 表示不限
-        std::size_t maximumHeaderFieldValueLength{8ull * 1024};      ///< 单个头部值上限，单位字节；与 URI 同档，覆盖超长 Cookie 的现实用量。0 表示不限
-        std::size_t maximumHeaderCount{100};                         ///< 头部条数上限，单位条；trailer 头部同样计入。0 表示不限条数
-        std::size_t maximumHeaderBlockLength{64ull * 1024};          ///< 头部块总长上限，单位字节，只算名与值的净字节（不含 ": " 与 CRLF）。0 表示不限
-        std::size_t maximumBodySize{8ull * 1024 * 1024};             ///< 正文上限，单位字节；分块按解码后的字节数累计。0 表示不限
-        std::size_t maximumChunkSizeLineLength{1024};                ///< 分块块大小行上限，单位字节（含块扩展，不含 CRLF）。0 表示不限
+        std::size_t maximumUriLength{8ull * 1024};              ///< 请求目标（URI）上限，单位字节；请求行整行上限也由它推出（见 requestLineLengthLimit()）。0 表示不限
+        std::size_t maximumHeaderFieldNameLength{256};          ///< 单个头部名上限，单位字节；标准头名最长不过数十字节，留足 x-amz- 一类私有前缀。0 表示不限
+        std::size_t maximumHeaderFieldValueLength{8ull * 1024}; ///< 单个头部值上限，单位字节；与 URI 同档，覆盖超长 Cookie 的现实用量。0 表示不限
+        std::size_t maximumHeaderCount{100};                    ///< 头部条数上限，单位条；trailer 头部同样计入。0 表示不限条数
+        std::size_t maximumHeaderBlockLength{64ull * 1024};     ///< 头部块总长上限，单位字节，只算名与值的净字节（不含 ": " 与 CRLF）。0 表示不限
+        std::size_t maximumBodySize{8ull * 1024 * 1024};        ///< 正文上限，单位字节；分块按解码后的字节数累计。0 表示不限
+        std::size_t maximumChunkSizeLineLength{1024};           ///< 分块块大小行上限，单位字节（含块扩展，不含 CRLF）。0 表示不限
 
         /**
          * @brief 推导请求行整行的长度上限

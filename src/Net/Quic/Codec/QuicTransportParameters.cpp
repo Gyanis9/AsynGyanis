@@ -16,23 +16,23 @@ namespace AsynGyanis::Net
     {
         // 参数标识（RFC 9000 §18.2 与 RFC 9001 §7.3）。0x0d 的 preferred_address 只出现在
         // 「服务端专属」名单里：本实现不做迁移，它的字节按 §7.4.2 当不支持的参数忽略。
-        constexpr std::uint64_t kIdOriginalDestinationConnectionId = 0x00;
-        constexpr std::uint64_t kIdMaximumIdleTimeout = 0x01;
-        constexpr std::uint64_t kIdStatelessResetToken = 0x02;
-        constexpr std::uint64_t kIdMaximumUdpPayloadSize = 0x03;
-        constexpr std::uint64_t kIdInitialMaximumData = 0x04;
-        constexpr std::uint64_t kIdInitialMaximumStreamDataBidirectionalLocal = 0x05;
+        constexpr std::uint64_t kIdOriginalDestinationConnectionId             = 0x00;
+        constexpr std::uint64_t kIdMaximumIdleTimeout                          = 0x01;
+        constexpr std::uint64_t kIdStatelessResetToken                         = 0x02;
+        constexpr std::uint64_t kIdMaximumUdpPayloadSize                       = 0x03;
+        constexpr std::uint64_t kIdInitialMaximumData                          = 0x04;
+        constexpr std::uint64_t kIdInitialMaximumStreamDataBidirectionalLocal  = 0x05;
         constexpr std::uint64_t kIdInitialMaximumStreamDataBidirectionalRemote = 0x06;
-        constexpr std::uint64_t kIdInitialMaximumStreamDataUnidirectional = 0x07;
-        constexpr std::uint64_t kIdInitialMaximumBidirectionalStreams = 0x08;
-        constexpr std::uint64_t kIdInitialMaximumUnidirectionalStreams = 0x09;
-        constexpr std::uint64_t kIdAcknowledgmentDelayExponent = 0x0a;
-        constexpr std::uint64_t kIdMaximumAcknowledgmentDelay = 0x0b;
-        constexpr std::uint64_t kIdDisableActiveMigration = 0x0c;
-        constexpr std::uint64_t kIdPreferredAddress = 0x0d;
-        constexpr std::uint64_t kIdActiveConnectionIdLimit = 0x0e;
-        constexpr std::uint64_t kIdInitialSourceConnectionId = 0x0f;
-        constexpr std::uint64_t kIdRetrySourceConnectionId = 0x10;
+        constexpr std::uint64_t kIdInitialMaximumStreamDataUnidirectional      = 0x07;
+        constexpr std::uint64_t kIdInitialMaximumBidirectionalStreams          = 0x08;
+        constexpr std::uint64_t kIdInitialMaximumUnidirectionalStreams         = 0x09;
+        constexpr std::uint64_t kIdAcknowledgmentDelayExponent                 = 0x0a;
+        constexpr std::uint64_t kIdMaximumAcknowledgmentDelay                  = 0x0b;
+        constexpr std::uint64_t kIdDisableActiveMigration                      = 0x0c;
+        constexpr std::uint64_t kIdPreferredAddress                            = 0x0d;
+        constexpr std::uint64_t kIdActiveConnectionIdLimit                     = 0x0e;
+        constexpr std::uint64_t kIdInitialSourceConnectionId                   = 0x0f;
+        constexpr std::uint64_t kIdRetrySourceConnectionId                     = 0x10;
 
         /// `max_ack_delay` 的上限：2^14 及以上非法（RFC 9000 §18.2）
         constexpr std::uint64_t kQuicMaximumAcknowledgmentDelayBound = 1ULL << 14;
@@ -44,60 +44,49 @@ namespace AsynGyanis::Net
          */
         bool isServerOnlyIdentifier(const std::uint64_t identifier) noexcept
         {
-            return identifier == kIdOriginalDestinationConnectionId || identifier == kIdStatelessResetToken
-                   || identifier == kIdPreferredAddress || identifier == kIdRetrySourceConnectionId;
+            return identifier == kIdOriginalDestinationConnectionId || identifier == kIdStatelessResetToken || identifier == kIdPreferredAddress ||
+                   identifier == kIdRetrySourceConnectionId;
         }
 
         /// 整型参数的「标识 + 名字 + 成员 + 合法区间」一张表：11 项各写一遍 switch 分支是 100 行重复
         struct IntegerParameterBinding
         {
-            std::uint64_t identifier;
+            std::uint64_t    identifier;
             std::string_view name;
             std::uint64_t QuicTransportParameters::*member;
-            std::uint64_t minimumValue;
-            std::uint64_t maximumValue;
+            std::uint64_t                           minimumValue;
+            std::uint64_t                           maximumValue;
         };
 
         constexpr IntegerParameterBinding kIntegerParameters[] = {
-                {kIdMaximumIdleTimeout, "max_idle_timeout", &QuicTransportParameters::maximumIdleTimeoutMilliseconds,
-                 0, kQuicMaximumIntegerValue},
-                {kIdMaximumUdpPayloadSize, "max_udp_payload_size", &QuicTransportParameters::maximumUdpPayloadSize,
-                 1200, kQuicMaximumIntegerValue},
-                {kIdInitialMaximumData, "initial_max_data", &QuicTransportParameters::initialMaximumData,
-                 0, kQuicMaximumIntegerValue},
-                {kIdInitialMaximumStreamDataBidirectionalLocal, "initial_max_stream_data_bidi_local",
-                 &QuicTransportParameters::initialMaximumStreamDataBidirectionalLocal, 0, kQuicMaximumIntegerValue},
-                {kIdInitialMaximumStreamDataBidirectionalRemote, "initial_max_stream_data_bidi_remote",
-                 &QuicTransportParameters::initialMaximumStreamDataBidirectionalRemote, 0, kQuicMaximumIntegerValue},
-                {kIdInitialMaximumStreamDataUnidirectional, "initial_max_stream_data_uni",
-                 &QuicTransportParameters::initialMaximumStreamDataUnidirectional, 0, kQuicMaximumIntegerValue},
-                {kIdInitialMaximumBidirectionalStreams, "initial_max_streams_bidi",
-                 &QuicTransportParameters::initialMaximumBidirectionalStreams, 0, kQuicMaximumStreamLimitValue},
-                {kIdInitialMaximumUnidirectionalStreams, "initial_max_streams_uni",
-                 &QuicTransportParameters::initialMaximumUnidirectionalStreams, 0, kQuicMaximumStreamLimitValue},
-                {kIdAcknowledgmentDelayExponent, "ack_delay_exponent", &QuicTransportParameters::acknowledgmentDelayExponent,
-                 0, 20},
-                {kIdMaximumAcknowledgmentDelay, "max_ack_delay", &QuicTransportParameters::maximumAcknowledgmentDelayMilliseconds,
-                 0, kQuicMaximumAcknowledgmentDelayBound - 1},
-                {kIdActiveConnectionIdLimit, "active_connection_id_limit", &QuicTransportParameters::activeConnectionIdLimit,
-                 2, kQuicMaximumIntegerValue},
+                {kIdMaximumIdleTimeout, "max_idle_timeout", &QuicTransportParameters::maximumIdleTimeoutMilliseconds, 0, kQuicMaximumIntegerValue},
+                {kIdMaximumUdpPayloadSize, "max_udp_payload_size", &QuicTransportParameters::maximumUdpPayloadSize, 1200, kQuicMaximumIntegerValue},
+                {kIdInitialMaximumData, "initial_max_data", &QuicTransportParameters::initialMaximumData, 0, kQuicMaximumIntegerValue},
+                {kIdInitialMaximumStreamDataBidirectionalLocal, "initial_max_stream_data_bidi_local", &QuicTransportParameters::initialMaximumStreamDataBidirectionalLocal, 0,
+                 kQuicMaximumIntegerValue},
+                {kIdInitialMaximumStreamDataBidirectionalRemote, "initial_max_stream_data_bidi_remote", &QuicTransportParameters::initialMaximumStreamDataBidirectionalRemote, 0,
+                 kQuicMaximumIntegerValue},
+                {kIdInitialMaximumStreamDataUnidirectional, "initial_max_stream_data_uni", &QuicTransportParameters::initialMaximumStreamDataUnidirectional, 0,
+                 kQuicMaximumIntegerValue},
+                {kIdInitialMaximumBidirectionalStreams, "initial_max_streams_bidi", &QuicTransportParameters::initialMaximumBidirectionalStreams, 0, kQuicMaximumStreamLimitValue},
+                {kIdInitialMaximumUnidirectionalStreams, "initial_max_streams_uni", &QuicTransportParameters::initialMaximumUnidirectionalStreams, 0, kQuicMaximumStreamLimitValue},
+                {kIdAcknowledgmentDelayExponent, "ack_delay_exponent", &QuicTransportParameters::acknowledgmentDelayExponent, 0, 20},
+                {kIdMaximumAcknowledgmentDelay, "max_ack_delay", &QuicTransportParameters::maximumAcknowledgmentDelayMilliseconds, 0, kQuicMaximumAcknowledgmentDelayBound - 1},
+                {kIdActiveConnectionIdLimit, "active_connection_id_limit", &QuicTransportParameters::activeConnectionIdLimit, 2, kQuicMaximumIntegerValue},
         };
 
         /// 三个连接标识参数同型（标识 + 名字 + 成员），一并列表
         struct ConnectionIdParameterBinding
         {
-            std::uint64_t identifier;
-            std::string_view name;
+            std::uint64_t                            identifier;
+            std::string_view                         name;
             std::optional<std::vector<std::uint8_t>> QuicTransportParameters::*member;
         };
 
         constexpr ConnectionIdParameterBinding kConnectionIdParameters[] = {
-                {kIdOriginalDestinationConnectionId, "original_destination_connection_id",
-                 &QuicTransportParameters::originalDestinationConnectionId},
-                {kIdInitialSourceConnectionId, "initial_source_connection_id",
-                 &QuicTransportParameters::initialSourceConnectionId},
-                {kIdRetrySourceConnectionId, "retry_source_connection_id",
-                 &QuicTransportParameters::retrySourceConnectionId},
+                {kIdOriginalDestinationConnectionId, "original_destination_connection_id", &QuicTransportParameters::originalDestinationConnectionId},
+                {kIdInitialSourceConnectionId, "initial_source_connection_id", &QuicTransportParameters::initialSourceConnectionId},
+                {kIdRetrySourceConnectionId, "retry_source_connection_id", &QuicTransportParameters::retrySourceConnectionId},
         };
 
         /**
@@ -170,8 +159,7 @@ namespace AsynGyanis::Net
                 const auto decoded = decodeQuicVariableLengthInteger(m_bytes.subspan(m_offset));
                 if (!decoded.has_value())
                 {
-                    return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Truncated,
-                                                           std::format("传输参数的{}读不完一个变长整数：{}", fieldName, decoded.error().message)});
+                    return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Truncated, std::format("传输参数的{}读不完一个变长整数：{}", fieldName, decoded.error().message)});
                 }
                 m_offset += decoded->byteCount;
                 return decoded->value;
@@ -183,14 +171,12 @@ namespace AsynGyanis::Net
              * @param fieldName 进入失败文案的字段名
              * @return 成功返回指向原文的视图，失败返回截断错误
              */
-            [[nodiscard]] std::expected<std::span<const std::uint8_t>, QuicDecodeError> readBytes(const std::size_t length,
-                                                                                                  const std::string_view fieldName)
+            [[nodiscard]] std::expected<std::span<const std::uint8_t>, QuicDecodeError> readBytes(const std::size_t length, const std::string_view fieldName)
             {
                 if (length > m_bytes.size() - m_offset)
                 {
-                    return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Truncated,
-                                                           std::format("传输参数{}声明 {} 字节取值，只剩 {} 字节",
-                                                                       fieldName, length, m_bytes.size() - m_offset)});
+                    return std::unexpected(
+                            QuicDecodeError{QuicDecodeErrorKind::Truncated, std::format("传输参数{}声明 {} 字节取值，只剩 {} 字节", fieldName, length, m_bytes.size() - m_offset)});
                 }
                 const std::span<const std::uint8_t> bytes = m_bytes.subspan(m_offset, length);
                 m_offset += length;
@@ -198,8 +184,8 @@ namespace AsynGyanis::Net
             }
 
         private:
-            std::span<const std::uint8_t> m_bytes; ///< 参数原文
-            std::size_t m_offset{0};               ///< 读位置
+            std::span<const std::uint8_t> m_bytes;     ///< 参数原文
+            std::size_t                   m_offset{0}; ///< 读位置
         };
 
         /**
@@ -210,20 +196,18 @@ namespace AsynGyanis::Net
          * @param name 参数名，进入失败文案
          * @return 成功返回数值，失败返回截断或格式错误
          */
-        std::expected<std::uint64_t, QuicDecodeError> readIntegerValue(const std::span<const std::uint8_t> value,
-                                                                       const std::string_view name)
+        std::expected<std::uint64_t, QuicDecodeError> readIntegerValue(const std::span<const std::uint8_t> value, const std::string_view name)
         {
             const auto decoded = decodeQuicVariableLengthInteger(value);
             if (!decoded.has_value())
             {
-                return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Truncated,
-                                                       std::format("传输参数 {} 的取值读不出一个完整整数：{}", name, decoded.error().message)});
+                return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Truncated, std::format("传输参数 {} 的取值读不出一个完整整数：{}", name, decoded.error().message)});
             }
             if (decoded->byteCount != value.size())
             {
                 return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed,
-                                                       std::format("传输参数 {} 的长度域是 {} 字节，整数值只占 {} 字节（RFC 9000 §18.2 里整数项的取值就是一个变长整数）",
-                                                                   name, value.size(), decoded->byteCount)});
+                                                       std::format("传输参数 {} 的长度域是 {} 字节，整数值只占 {} 字节（RFC 9000 §18.2 里整数项的取值就是一个变长整数）", name,
+                                                                   value.size(), decoded->byteCount)});
             }
             return decoded->value;
         }
@@ -234,14 +218,12 @@ namespace AsynGyanis::Net
          * @param name 参数名
          * @return 通过返回它自己（零长合法，见 §7.3 末段），超上限返回格式错误
          */
-        std::expected<std::vector<std::uint8_t>, QuicDecodeError> readConnectionIdValue(const std::span<const std::uint8_t> value,
-                                                                                        const std::string_view name)
+        std::expected<std::vector<std::uint8_t>, QuicDecodeError> readConnectionIdValue(const std::span<const std::uint8_t> value, const std::string_view name)
         {
             if (value.size() > kQuicMaximumConnectionIdLength)
             {
-                return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed,
-                                                       std::format("传输参数 {} 的连接标识有 {} 字节，超过 v1 上限 {} 字节（RFC 9000 §5.1）",
-                                                                   name, value.size(), kQuicMaximumConnectionIdLength)});
+                return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed, std::format("传输参数 {} 的连接标识有 {} 字节，超过 v1 上限 {} 字节（RFC 9000 §5.1）", name,
+                                                                                                   value.size(), kQuicMaximumConnectionIdLength)});
             }
             return std::vector<std::uint8_t>(value.begin(), value.end());
         }
@@ -254,13 +236,12 @@ namespace AsynGyanis::Net
          * @param name 参数名
          * @return 通过返回空，第二次出现返回格式错误
          */
-        std::expected<void, QuicDecodeError> markSeen(std::uint64_t &seenMask, const std::uint64_t identifier,
-                                                      const std::string_view name)
+        std::expected<void, QuicDecodeError> markSeen(std::uint64_t &seenMask, const std::uint64_t identifier, const std::string_view name)
         {
             if ((seenMask & (1ULL << identifier)) != 0)
             {
-                return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed,
-                                                       std::format("传输参数 {} 出现第二次：RFC 9000 §7.4 要求一个参数在一次握手里只出现一次", name)});
+                return std::unexpected(
+                        QuicDecodeError{QuicDecodeErrorKind::Malformed, std::format("传输参数 {} 出现第二次：RFC 9000 §7.4 要求一个参数在一次握手里只出现一次", name)});
             }
             seenMask |= 1ULL << identifier;
             return {};
@@ -271,14 +252,14 @@ namespace AsynGyanis::Net
     {
         // 写出顺序规范没作要求（§18 只是「一串三元组」），这里取固定顺序以便同一份参数编出的字节确定：
         // 带存在语义的三个连接标识一次、整型项一次、最后是令牌与零长的迁移禁止项
-        for (const ConnectionIdParameterBinding &binding : kConnectionIdParameters)
+        for (const ConnectionIdParameterBinding &binding: kConnectionIdParameters)
         {
             if (const std::optional<std::vector<std::uint8_t>> &value = parameters.*(binding.member); value.has_value())
             {
                 appendParameter(bytes, binding.identifier, *value);
             }
         }
-        for (const IntegerParameterBinding &binding : kIntegerParameters)
+        for (const IntegerParameterBinding &binding: kIntegerParameters)
         {
             appendIntegerParameter(bytes, binding.identifier, parameters.*(binding.member));
         }
@@ -293,12 +274,12 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<QuicTransportParameters, QuicDecodeError>
-    decodeQuicTransportParameters(const std::span<const std::uint8_t> bytes, const QuicTransportParameterSenderRole senderRole)
+    std::expected<QuicTransportParameters, QuicDecodeError> decodeQuicTransportParameters(const std::span<const std::uint8_t>    bytes,
+                                                                                          const QuicTransportParameterSenderRole senderRole)
     {
         QuicTransportParameters parameters;
-        ParameterReader reader(bytes);
-        std::uint64_t seenMask = 0;
+        ParameterReader         reader(bytes);
+        std::uint64_t           seenMask = 0;
 
         while (!reader.atEnd())
         {
@@ -324,9 +305,8 @@ namespace AsynGyanis::Net
                                                        std::format("客户端交来了标识 {:#04x} 的服务端专属传输参数（RFC 9000 §18.2 末段列为禁止项）", *identifier)});
             }
 
-            if (const auto *const binding = std::ranges::find_if(kIntegerParameters,
-                                                                 [id = *identifier](const IntegerParameterBinding &candidate)
-                                                                 { return candidate.identifier == id; });
+            if (const auto *const binding =
+                        std::ranges::find_if(kIntegerParameters, [id = *identifier](const IntegerParameterBinding &candidate) { return candidate.identifier == id; });
                 binding != std::ranges::end(kIntegerParameters))
             {
                 if (const auto marked = markSeen(seenMask, *identifier, binding->name); !marked.has_value())
@@ -340,17 +320,15 @@ namespace AsynGyanis::Net
                 }
                 if (*parsed < binding->minimumValue || *parsed > binding->maximumValue)
                 {
-                    return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed,
-                                                           std::format("传输参数 {} 的取值 {} 不在允许区间 [{}, {}]（RFC 9000 §18.2）",
-                                                                       binding->name, *parsed, binding->minimumValue, binding->maximumValue)});
+                    return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed, std::format("传输参数 {} 的取值 {} 不在允许区间 [{}, {}]（RFC 9000 §18.2）",
+                                                                                                       binding->name, *parsed, binding->minimumValue, binding->maximumValue)});
                 }
                 parameters.*(binding->member) = *parsed;
                 continue;
             }
 
-            if (const auto *const binding = std::ranges::find_if(kConnectionIdParameters,
-                                                                 [id = *identifier](const ConnectionIdParameterBinding &candidate)
-                                                                 { return candidate.identifier == id; });
+            if (const auto *const binding =
+                        std::ranges::find_if(kConnectionIdParameters, [id = *identifier](const ConnectionIdParameterBinding &candidate) { return candidate.identifier == id; });
                 binding != std::ranges::end(kConnectionIdParameters))
             {
                 if (const auto marked = markSeen(seenMask, *identifier, binding->name); !marked.has_value())
@@ -368,54 +346,52 @@ namespace AsynGyanis::Net
 
             switch (*identifier)
             {
-            case kIdStatelessResetToken:
-            {
-                if (const auto marked = markSeen(seenMask, *identifier, "stateless_reset_token"); !marked.has_value())
+                case kIdStatelessResetToken:
                 {
-                    return std::unexpected(marked.error());
+                    if (const auto marked = markSeen(seenMask, *identifier, "stateless_reset_token"); !marked.has_value())
+                    {
+                        return std::unexpected(marked.error());
+                    }
+                    if (value->size() != kQuicStatelessResetTokenLength)
+                    {
+                        return std::unexpected(
+                                QuicDecodeError{QuicDecodeErrorKind::Malformed, std::format("传输参数 stateless_reset_token 有 {} 字节，规范要求恒为 {} 字节（RFC 9000 §18.2）",
+                                                                                            value->size(), kQuicStatelessResetTokenLength)});
+                    }
+                    std::array<std::uint8_t, kQuicStatelessResetTokenLength> token{};
+                    std::ranges::copy(*value, token.begin());
+                    parameters.statelessResetToken = token;
+                    break;
                 }
-                if (value->size() != kQuicStatelessResetTokenLength)
+                case kIdDisableActiveMigration:
                 {
-                    return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed,
-                                                           std::format("传输参数 stateless_reset_token 有 {} 字节，规范要求恒为 {} 字节（RFC 9000 §18.2）",
-                                                                       value->size(), kQuicStatelessResetTokenLength)});
+                    if (const auto marked = markSeen(seenMask, *identifier, "disable_active_migration"); !marked.has_value())
+                    {
+                        return std::unexpected(marked.error());
+                    }
+                    if (!value->empty())
+                    {
+                        return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed,
+                                                               std::format("传输参数 disable_active_migration 带了 {} 字节取值，规范要求是零长（RFC 9000 §18.2）", value->size())});
+                    }
+                    parameters.disableActiveMigration = true;
+                    break;
                 }
-                std::array<std::uint8_t, kQuicStatelessResetTokenLength> token{};
-                std::ranges::copy(*value, token.begin());
-                parameters.statelessResetToken = token;
-                break;
-            }
-            case kIdDisableActiveMigration:
-            {
-                if (const auto marked = markSeen(seenMask, *identifier, "disable_active_migration"); !marked.has_value())
-                {
-                    return std::unexpected(marked.error());
-                }
-                if (!value->empty())
-                {
-                    return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed,
-                                                           std::format("传输参数 disable_active_migration 带了 {} 字节取值，规范要求是零长（RFC 9000 §18.2）",
-                                                                       value->size())});
-                }
-                parameters.disableActiveMigration = true;
-                break;
-            }
-            default:
-                // §7.4.2 的硬要求：不支持的参数一律忽略，包括 §18.1 里那些 31*N+27 的保留项
-                // （它们存在的唯一目的就是不让人把未知标识当错误）。0x0d 也走这条路：本实现不做迁移。
-                break;
+                default:
+                    // §7.4.2 的硬要求：不支持的参数一律忽略，包括 §18.1 里那些 31*N+27 的保留项
+                    // （它们存在的唯一目的就是不让人把未知标识当错误）。0x0d 也走这条路：本实现不做迁移。
+                    break;
             }
         }
 
         if (!parameters.initialSourceConnectionId.has_value())
         {
-            return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed,
-                                                   "缺少 initial_source_connection_id：RFC 9000 §7.3 要求两端都必须带"});
+            return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed, "缺少 initial_source_connection_id：RFC 9000 §7.3 要求两端都必须带"});
         }
         if (senderRole == QuicTransportParameterSenderRole::Server && !parameters.originalDestinationConnectionId.has_value())
         {
-            return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Malformed,
-                                                   "服务端参数缺少 original_destination_connection_id：RFC 9000 §7.3 规定只有服务端发它，且必须发"});
+            return std::unexpected(
+                    QuicDecodeError{QuicDecodeErrorKind::Malformed, "服务端参数缺少 original_destination_connection_id：RFC 9000 §7.3 规定只有服务端发它，且必须发"});
         }
         return parameters;
     }

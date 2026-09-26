@@ -66,14 +66,13 @@ namespace AsynGyanis::Net
              * @param perIpConnectionLimiter 单来源并发上限的限额器；空表示不按来源限制
              * @param sessionTicketKeyFiles 会话票据密钥文件列表；空表示按 OpenSSL 默认
              */
-            explicit RunningQuicServer(const std::chrono::seconds idleTimeout = std::chrono::seconds{30},
-                                       std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter = nullptr,
+            explicit RunningQuicServer(const std::chrono::seconds idleTimeout = std::chrono::seconds{30}, std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter = nullptr,
                                        std::vector<std::string> sessionTicketKeyFiles = {})
             {
                 QuicServer::Configuration configuration;
-                configuration.certificateFile       = certificatePath();
-                configuration.privateKeyFile        = privateKeyPath();
-                configuration.idleTimeout           = idleTimeout;
+                configuration.certificateFile        = certificatePath();
+                configuration.privateKeyFile         = privateKeyPath();
+                configuration.idleTimeout            = idleTimeout;
                 configuration.perIpConnectionLimiter = std::move(perIpConnectionLimiter);
                 configuration.sessionTicketKeyFiles  = std::move(sessionTicketKeyFiles);
 
@@ -83,10 +82,7 @@ namespace AsynGyanis::Net
                 // 这里还在创建者线程上，于是这一次排入是「归属线程内」的合法调用
                 m_loop.scheduler().schedule(m_listenTask->handle());
 
-                m_loopThread = std::thread([this]
-                {
-                    m_loop.run();
-                });
+                m_loopThread = std::thread([this] { m_loop.run(); });
 
                 const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
                 while (refreshListeningPort() == 0 && std::chrono::steady_clock::now() < deadline)
@@ -141,11 +137,11 @@ namespace AsynGyanis::Net
                 return port;
             }
 
-            Core::EventLoop                 m_loop;             ///< 服务端所属事件循环
-            std::unique_ptr<QuicServer>     m_server;           ///< 被测服务端
-            std::optional<Core::Task<>>     m_listenTask;       ///< 监听协程（Task 没有默认构造，用 optional 托管）
-            std::thread                     m_loopThread;       ///< 跑循环的线程
-            std::atomic<std::uint16_t>      m_listeningPort{0}; ///< 循环线程写下的本端端口快照
+            Core::EventLoop             m_loop;             ///< 服务端所属事件循环
+            std::unique_ptr<QuicServer> m_server;           ///< 被测服务端
+            std::optional<Core::Task<>> m_listenTask;       ///< 监听协程（Task 没有默认构造，用 optional 托管）
+            std::thread                 m_loopThread;       ///< 跑循环的线程
+            std::atomic<std::uint16_t>  m_listeningPort{0}; ///< 循环线程写下的本端端口快照
         };
     } // namespace
 
@@ -174,9 +170,9 @@ namespace AsynGyanis::Net
 
         // 文件根本不存在同样要抛，且不能留下半构造的对象：上面那台已经抛在构造期，
         // 这里的断言只判「会不会抛」，端口与握手都不参与
-        EXPECT_THROW(static_cast<void>(std::make_unique<RunningQuicServer>(
-                             std::chrono::seconds{30}, nullptr, std::vector<std::string>{(directory.path() / "missing.key").string()})),
-                     Base::Exception);
+        EXPECT_THROW(
+                static_cast<void>(std::make_unique<RunningQuicServer>(std::chrono::seconds{30}, nullptr, std::vector<std::string>{(directory.path() / "missing.key").string()})),
+                Base::Exception);
     }
 
     /**
@@ -226,8 +222,8 @@ namespace AsynGyanis::Net
         Core::EventLoop loop;
 
         QuicServer::Configuration cappedBelowTls13;
-        cappedBelowTls13.certificateFile                 = certificatePath();
-        cappedBelowTls13.privateKeyFile                  = privateKeyPath();
+        cappedBelowTls13.certificateFile                  = certificatePath();
+        cappedBelowTls13.privateKeyFile                   = privateKeyPath();
         cappedBelowTls13.tlsPolicy.maximumProtocolVersion = Core::TlsPolicy::ProtocolVersion::Tls1_2;
         try
         {
@@ -242,18 +238,9 @@ namespace AsynGyanis::Net
         // 三份各自不合规的写法：套件串、曲线名、1.2 套件列表。哪一份都能被 OpenSSL 拒绝，
         // 也各自对应策略里一个字段，所以三条都红或都绿才说明这一整块被接到了上下文上
         const std::vector<std::pair<const char *, std::function<void(Core::TlsPolicy &)>>> refused{
-            {"1.3 套件串", [](Core::TlsPolicy &policy)
-             {
-                 policy.tls13CipherSuites = "TLS_NOT_A_REAL_SUITE";
-             }},
-            {"命名曲线", [](Core::TlsPolicy &policy)
-             {
-                 policy.supportedGroups = "not-a-curve";
-             }},
-            {"1.2 套件串", [](Core::TlsPolicy &policy)
-             {
-                 policy.cipherList = "!";
-             }},
+                {"1.3 套件串", [](Core::TlsPolicy &policy) { policy.tls13CipherSuites = "TLS_NOT_A_REAL_SUITE"; }},
+                {"命名曲线", [](Core::TlsPolicy &policy) { policy.supportedGroups = "not-a-curve"; }},
+                {"1.2 套件串", [](Core::TlsPolicy &policy) { policy.cipherList = "!"; }},
         };
         for (const auto &[label, mutate]: refused)
         {
@@ -277,17 +264,16 @@ namespace AsynGyanis::Net
         Core::EventLoop loop;
 
         QuicServer::Configuration configuration;
-        configuration.certificateFile            = certificatePath();
-        configuration.privateKeyFile             = privateKeyPath();
-        configuration.tlsPolicy.cipherList       = "HIGH:!aNULL:!MD5";
-        configuration.tlsPolicy.minimumProtocolVersion = Core::TlsPolicy::ProtocolVersion::Tls1_2;
+        configuration.certificateFile                    = certificatePath();
+        configuration.privateKeyFile                     = privateKeyPath();
+        configuration.tlsPolicy.cipherList               = "HIGH:!aNULL:!MD5";
+        configuration.tlsPolicy.minimumProtocolVersion   = Core::TlsPolicy::ProtocolVersion::Tls1_2;
         configuration.tlsPolicy.certificateAuthorityFile = certificatePath();
-        configuration.tlsPolicy.verifyDepth      = 4;
-        configuration.tlsPolicy.supportedGroups  = "X25519:secp384r1";
-        configuration.tlsPolicy.securityLevel    = 2;
+        configuration.tlsPolicy.verifyDepth              = 4;
+        configuration.tlsPolicy.supportedGroups          = "X25519:secp384r1";
+        configuration.tlsPolicy.securityLevel            = 2;
 
-        EXPECT_NO_THROW(QuicServer server(loop, configuration))
-                << "这几项在 QUIC 侧用不上，但都是合法配置，不该挡住启动";
+        EXPECT_NO_THROW(QuicServer server(loop, configuration)) << "这几项在 QUIC 侧用不上，但都是合法配置，不该挡住启动";
     }
 
     namespace
@@ -317,26 +303,23 @@ namespace AsynGyanis::Net
     {
         using Clock = std::chrono::steady_clock;
         const Clock::time_point now{std::chrono::milliseconds{1'000'000}};
-        constexpr auto tick = std::chrono::milliseconds{10};
+        constexpr auto          tick = std::chrono::milliseconds{10};
 
         // 零连接：不管传进来的截止是什么，都按空闲上界睡
-        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(false, Clock::time_point::max(), now, tick),
-                  now + TickerWakePointProbe::kIdleTickerSleep);
-        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(false, now + std::chrono::milliseconds{1}, now, tick),
-                  now + TickerWakePointProbe::kIdleTickerSleep) << "没有连接时，任何截止时刻都不该把节拍叫醒";
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(false, Clock::time_point::max(), now, tick), now + TickerWakePointProbe::kIdleTickerSleep);
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(false, now + std::chrono::milliseconds{1}, now, tick), now + TickerWakePointProbe::kIdleTickerSleep)
+                << "没有连接时，任何截止时刻都不该把节拍叫醒";
 
         // 有连接：早于节拍的截止按时到
         const Clock::time_point soonDeadline = now + std::chrono::milliseconds{3};
         EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, soonDeadline, now, tick), soonDeadline);
         // 晚于节拍的按节拍到（补刀那一档靠轮询兜）
         EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, now + std::chrono::seconds{5}, now, tick), now + tick);
-        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, Clock::time_point::max(), now, tick), now + tick)
-                << "查不到截止时不能睡过头";
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, Clock::time_point::max(), now, tick), now + tick) << "查不到截止时不能睡过头";
         // 已经到期：不早于 now（睡过头就等于把这条截止丢到下下拍）
         EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, now - std::chrono::milliseconds{1}, now, tick), now);
         // 换算成立：0 会被定时器当成解除武装，因此已到期的那一拍必须折成最近的一次唤醒
-        EXPECT_EQ(Core::detail::armedDurationFor(
-                          TickerWakePointProbe::nextTickerWakePoint(true, now - std::chrono::milliseconds{1}, now, tick), now),
+        EXPECT_EQ(Core::detail::armedDurationFor(TickerWakePointProbe::nextTickerWakePoint(true, now - std::chrono::milliseconds{1}, now, tick), now),
                   std::chrono::milliseconds{1});
 
         // 节拍配成非正数＝不设上限，只按各连接自己的截止时刻睡

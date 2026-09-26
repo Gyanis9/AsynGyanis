@@ -1,7 +1,7 @@
 // IoContext 单元测试：线程池配置、主调度器、启停阻塞、运行前投递任务，以及与另一线程 stop() 撞车的收尾
 
-#include "Core/EventLoop/IoContext.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/IoContext.h"
 
 #include "CoreTestSupport.h"
 #include "Platform/System/CpuAffinity.h"
@@ -30,7 +30,7 @@ namespace AsynGyanis::Core
             value.store(99);
             co_return 0;
         }
-    }
+    } // namespace
 
     /**
      * @brief 构造按参数建好线程池但不启动线程：线程数原样可查
@@ -81,20 +81,18 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, RunBlocksUntilStopIsRequested)
     {
-        IoContext context(1);
+        IoContext         context(1);
         std::atomic<bool> workerStarted{false};
 
-        std::thread worker([&]()
-        {
-            workerStarted.store(true);
-            context.run();
-        });
+        std::thread worker(
+                [&]()
+                {
+                    workerStarted.store(true);
+                    context.run();
+                });
 
         // 轮询等待工作线程启动，stop() 应能解除 run() 的阻塞
-        ASSERT_TRUE(waitForCondition([&]()
-        {
-            return workerStarted.load();
-        }));
+        ASSERT_TRUE(waitForCondition([&]() { return workerStarted.load(); }));
 
         context.stop();
         worker.join();
@@ -105,22 +103,16 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, TaskScheduledBeforeRunExecutesAfterRun)
     {
-        IoContext context(1);
+        IoContext        context(1);
         std::atomic<int> value{0};
 
         auto task = setIoValue(value);
         context.mainScheduler().schedule(task.handle());
 
-        std::thread worker([&]()
-        {
-            context.run();
-        });
+        std::thread worker([&]() { context.run(); });
 
         // 轮询等待协程被执行，替代固定 sleep
-        const bool executed = waitForCondition([&]()
-        {
-            return value.load() == 99;
-        });
+        const bool executed = waitForCondition([&]() { return value.load() == 99; });
 
         context.stop();
         worker.join();
@@ -139,8 +131,7 @@ namespace AsynGyanis::Core
     {
         IoContext context;
 
-        EXPECT_EQ(context.threadPool().threadCount(), Platform::CpuAffinity::recommendedWorkerCount())
-            << "自动档没有走进程可用核数的统一口径";
+        EXPECT_EQ(context.threadPool().threadCount(), Platform::CpuAffinity::recommendedWorkerCount()) << "自动档没有走进程可用核数的统一口径";
         EXPECT_GE(context.threadPool().threadCount(), 1U) << "0 条循环的运行时没有人推进事件";
     }
     /**
@@ -155,21 +146,23 @@ namespace AsynGyanis::Core
         constexpr int kRoundCount = 200;
         for (int round = 0; round < kRoundCount; ++round)
         {
-            IoContext      context(2);
-            std::barrier   releasePoint(2);
+            IoContext         context(2);
+            std::barrier      releasePoint(2);
             std::atomic<bool> isRunReturned{false};
 
-            std::thread runner([&context, &releasePoint, &isRunReturned]
-            {
-                releasePoint.arrive_and_wait();
-                context.run();
-                isRunReturned.store(true, std::memory_order_release);
-            });
-            std::thread stopper([&context, &releasePoint]
-            {
-                releasePoint.arrive_and_wait();
-                context.stop();
-            });
+            std::thread runner(
+                    [&context, &releasePoint, &isRunReturned]
+                    {
+                        releasePoint.arrive_and_wait();
+                        context.run();
+                        isRunReturned.store(true, std::memory_order_release);
+                    });
+            std::thread stopper(
+                    [&context, &releasePoint]
+                    {
+                        releasePoint.arrive_and_wait();
+                        context.stop();
+                    });
 
             runner.join();
             stopper.join();
@@ -177,8 +170,7 @@ namespace AsynGyanis::Core
 
             for (size_t index = 0; index < context.threadPool().threadCount(); ++index)
             {
-                EXPECT_FALSE(context.threadPool().eventLoop(index).isRunning())
-                        << "第 " << round << " 轮收尾后第 " << index << " 条循环仍在运行";
+                EXPECT_FALSE(context.threadPool().eventLoop(index).isRunning()) << "第 " << round << " 轮收尾后第 " << index << " 条循环仍在运行";
             }
         }
     }

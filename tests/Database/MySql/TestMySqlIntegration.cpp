@@ -87,10 +87,10 @@ namespace AsynGyanis::Database
         constexpr const char *kPasswordVariableName = "ASYN_MYSQL_TEST_PASSWORD";
         constexpr const char *kDatabaseVariableName = "ASYN_MYSQL_TEST_DATABASE";
 
-        constexpr const char *kDefaultHost         = "127.0.0.1";
-        constexpr std::uint16_t kDefaultPort       = 3306U;
-        constexpr const char *kDefaultUserName     = "root";
-        constexpr const char *kDefaultDatabaseName = "asyngyanis_test";
+        constexpr const char   *kDefaultHost         = "127.0.0.1";
+        constexpr std::uint16_t kDefaultPort         = 3306U;
+        constexpr const char   *kDefaultUserName     = "root";
+        constexpr const char   *kDefaultDatabaseName = "asyngyanis_test";
 
         // ------------------------------------------------------------------------
         // 测试用表：每个用例一张独立表，互不共用
@@ -98,61 +98,53 @@ namespace AsynGyanis::Database
 
         /// 参数化插入用例的表
         constexpr std::string_view kParameterInsertTableName = "Asyn_Mysql_ParamInsert";
-        constexpr std::string_view kParameterInsertColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
+        constexpr std::string_view kParameterInsertColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
 
         /// 参数化取值往返用例的表（含 NULL 列、空串列与 TEXT 列）
         constexpr std::string_view kParameterSelectTableName = "Asyn_Mysql_ParamSelect";
-        constexpr std::string_view kParameterSelectColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL, "
-            "`note` VARCHAR(191) NULL, `payload` TEXT NULL";
+        constexpr std::string_view kParameterSelectColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL, "
+                                                               "`note` VARCHAR(191) NULL, `payload` TEXT NULL";
 
         /// 语句复用用例的表：同一文本要连跑多次，列故意少到能一眼看出读到的是哪一版
         constexpr std::string_view kReusedStatementTableName = "Asyn_Mysql_ReuseStmt";
-        constexpr std::string_view kReusedStatementColumns = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(64) NOT NULL";
+        constexpr std::string_view kReusedStatementColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(64) NOT NULL";
 
         /// 注入证明用例的表
         constexpr std::string_view kInjectionTableName = "Asyn_Mysql_Injection";
-        constexpr std::string_view kInjectionColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+        constexpr std::string_view kInjectionColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
 
         /// ORM CRUD 用例的表
         constexpr std::string_view kAccountTableName = "Asyn_Mysql_Account";
-        constexpr std::string_view kAccountColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `balance` DOUBLE NOT NULL, "
-            "`note` VARCHAR(191) NULL, `active` TINYINT(1) NOT NULL";
+        constexpr std::string_view kAccountColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `balance` DOUBLE NOT NULL, "
+                                                       "`note` VARCHAR(191) NULL, `active` TINYINT(1) NOT NULL";
 
         /// ORM 批量插入分块用例的表（列数与分块换算直接相关，勿随意增减）
         constexpr std::string_view kBatchTableName = "Asyn_Mysql_Batch";
-        constexpr std::string_view kBatchColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `score` DOUBLE NOT NULL, "
-            "`note` VARCHAR(191) NULL, `active` TINYINT(1) NOT NULL";
+        constexpr std::string_view kBatchColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `score` DOUBLE NOT NULL, "
+                                                     "`note` VARCHAR(191) NULL, `active` TINYINT(1) NOT NULL";
 
         /// ORM 特殊标识符用例的表（表名含连字符，列名含保留字、空格与反引号）
         constexpr std::string_view kQuotedTableName = "Asyn_Mysql_Quote-Table";
-        constexpr std::string_view kQuotedColumns =
-            "`id` BIGINT PRIMARY KEY, "
-            "`order` VARCHAR(191) NOT NULL, "
-            "`group` VARCHAR(191) NOT NULL, "
-            "`weird name` VARCHAR(191) NULL, "
-            "`tick``column` VARCHAR(191) NULL";
+        constexpr std::string_view kQuotedColumns   = "`id` BIGINT PRIMARY KEY, "
+                                                      "`order` VARCHAR(191) NOT NULL, "
+                                                      "`group` VARCHAR(191) NOT NULL, "
+                                                      "`weird name` VARCHAR(191) NULL, "
+                                                      "`tick``column` VARCHAR(191) NULL";
 
         /// ORM 空结果集用例的表
         constexpr std::string_view kProbeTableName = "Asyn_Mysql_Empty";
-        constexpr std::string_view kProbeColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+        constexpr std::string_view kProbeColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
 
         /// 事务用例的四张表（提交可见 / 回滚不可见 / 析构自动回滚 / 异常穿越）
-        constexpr std::string_view kTransactionCommitTableName    = "Asyn_Mysql_Tx_Commit";
-        constexpr std::string_view kTransactionRollbackTableName  = "Asyn_Mysql_Tx_Rollback";
+        constexpr std::string_view kTransactionCommitTableName   = "Asyn_Mysql_Tx_Commit";
+        constexpr std::string_view kTransactionRollbackTableName = "Asyn_Mysql_Tx_Rollback";
 
         // 会话复位用例刻意不与回滚用例共用表：ctest 每个用例是独立进程且并行执行，
         // 共用同一张表时两个用例会互相 DROP/撞主键（并行偶发、串行必过）
-        constexpr std::string_view kTransactionResetTableName     = "Asyn_Mysql_Tx_Reset";
+        constexpr std::string_view kTransactionResetTableName      = "Asyn_Mysql_Tx_Reset";
         constexpr std::string_view kTransactionDestructorTableName = "Asyn_Mysql_Tx_Destructor";
         constexpr std::string_view kTransactionExceptionTableName  = "Asyn_Mysql_Tx_Exception";
-        constexpr std::string_view kTransactionColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
+        constexpr std::string_view kTransactionColumns             = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
 
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
         constexpr std::string_view kMigratedTableName = "Asyn_Mysql_Migrated";
@@ -165,8 +157,7 @@ namespace AsynGyanis::Database
 
         /// 取值缓冲区定量用例的表：一列 LONGBLOB，先后各放一条大载荷与小载荷
         constexpr std::string_view kBlobSizingTableName = "Asyn_Mysql_BlobSizing";
-        constexpr std::string_view kBlobSizingColumns =
-            "`id` BIGINT PRIMARY KEY, `payload` LONGBLOB NOT NULL";
+        constexpr std::string_view kBlobSizingColumns   = "`id` BIGINT PRIMARY KEY, `payload` LONGBLOB NOT NULL";
 
         /// 大载荷的字节数：够大到让缓冲区明显跟着涨，又不至于把一次真机往返拉到秒级
         constexpr std::size_t kBlobSizingLargePayloadBytes = 1024U * 1024U;
@@ -189,34 +180,29 @@ namespace AsynGyanis::Database
 
         /// 异步读写链路用例的表（异步路径与同步路径在同一张表上对照）
         constexpr std::string_view kAsyncChainTableName = "Asyn_Mysql_AsyncChain";
-        constexpr std::string_view kAsyncChainColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `note` VARCHAR(191) NULL";
+        constexpr std::string_view kAsyncChainColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `note` VARCHAR(191) NULL";
 
         /// 异步批量插入用例的表
         constexpr std::string_view kAsyncBatchTableName = "Asyn_Mysql_AsyncBatch";
-        constexpr std::string_view kAsyncBatchColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `note` VARCHAR(191) NULL";
+        constexpr std::string_view kAsyncBatchColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `note` VARCHAR(191) NULL";
 
         /// 异步错误路径用例的表名：本表刻意不创建，用于制造「表不存在」这条异常路径
         constexpr std::string_view kAsyncMissingTableName = "Asyn_Mysql_AsyncMissing";
 
         /// 自增标识用例的表：AUTO_INCREMENT 主键，验证写回执带出生成本条语句的标识
         constexpr std::string_view kAutoIncrementTableName = "Asyn_Mysql_AutoIncrement";
-        constexpr std::string_view kAutoIncrementColumns =
-            "`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+        constexpr std::string_view kAutoIncrementColumns   = "`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
 
         /// 空改动 UPDATE 用例的表：借用自增表的列定义，表名独立以免与其它用例并行时撞车
         constexpr std::string_view kNoOpUpdateTableName = "Asyn_Mysql_NoOpUpdate";
 
         /// 无自增列的对照表：插入之后自增标识必须是 0，不能凭空给出一个值
         constexpr std::string_view kPlainKeyTableName = "Asyn_Mysql_PlainKey";
-        constexpr std::string_view kPlainKeyColumns =
-            "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+        constexpr std::string_view kPlainKeyColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
 
         /// 超宽自增标识用例的表：BIGINT UNSIGNED 的自增列可以播种到 int64 上界之外
         constexpr std::string_view kWideAutoIncrementTableName = "Asyn_Mysql_WideAutoIncrement";
-        constexpr std::string_view kWideAutoIncrementColumns =
-            "`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+        constexpr std::string_view kWideAutoIncrementColumns   = "`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
 
         /// 播种起点 2^63：恰在有符号 64 位能表达的最大值之外一格
         /// 自增主键 ORM 用例的表：由 SchemaMigrator 用方言生成的 DDL 建出来
@@ -353,19 +339,9 @@ namespace AsynGyanis::Database
          * @param active 是否启用
          * @return IntegrationAccountRow 结构体
          */
-        [[nodiscard]] IntegrationAccountRow makeAccountRow(const std::int64_t id,
-                                                           std::string name,
-                                                           const double balance,
-                                                           std::optional<std::string> note,
-                                                           const bool active)
+        [[nodiscard]] IntegrationAccountRow makeAccountRow(const std::int64_t id, std::string name, const double balance, std::optional<std::string> note, const bool active)
         {
-            return IntegrationAccountRow{
-                .id      = id,
-                .name    = std::move(name),
-                .balance = balance,
-                .note    = std::move(note),
-                .active  = active
-            };
+            return IntegrationAccountRow{.id = id, .name = std::move(name), .balance = balance, .note = std::move(note), .active = active};
         }
 
         /**
@@ -408,12 +384,9 @@ namespace AsynGyanis::Database
     struct Queryable::TableSchema<IntegrationAccountRow>
     {
         static constexpr std::string_view kTableName = kAccountTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationAccountRow::id, "id"),
-            Column(&IntegrationAccountRow::name, "name"),
-            Column(&IntegrationAccountRow::balance, "balance"),
-            Column(&IntegrationAccountRow::note, "note"),
-            Column(&IntegrationAccountRow::active, "active"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationAccountRow::id, "id"),     Column(&IntegrationAccountRow::name, "name"),     Column(&IntegrationAccountRow::balance, "balance"),
+                Column(&IntegrationAccountRow::note, "note"), Column(&IntegrationAccountRow::active, "active"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -422,12 +395,9 @@ namespace AsynGyanis::Database
     struct Queryable::TableSchema<IntegrationBatchRow>
     {
         static constexpr std::string_view kTableName = kBatchTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationBatchRow::id, "id"),
-            Column(&IntegrationBatchRow::name, "name"),
-            Column(&IntegrationBatchRow::score, "score"),
-            Column(&IntegrationBatchRow::note, "note"),
-            Column(&IntegrationBatchRow::active, "active"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationBatchRow::id, "id"),     Column(&IntegrationBatchRow::name, "name"),     Column(&IntegrationBatchRow::score, "score"),
+                Column(&IntegrationBatchRow::note, "note"), Column(&IntegrationBatchRow::active, "active"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -436,12 +406,12 @@ namespace AsynGyanis::Database
     struct Queryable::TableSchema<IntegrationQuotedRow>
     {
         static constexpr std::string_view kTableName = kQuotedTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationQuotedRow::id, "id"),
-            Column(&IntegrationQuotedRow::order, "order"),
-            Column(&IntegrationQuotedRow::group, "group"),
-            Column(&IntegrationQuotedRow::spacedColumn, "weird name"),
-            Column(&IntegrationQuotedRow::tickColumn, "tick`column"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationQuotedRow::id, "id"),
+                Column(&IntegrationQuotedRow::order, "order"),
+                Column(&IntegrationQuotedRow::group, "group"),
+                Column(&IntegrationQuotedRow::spacedColumn, "weird name"),
+                Column(&IntegrationQuotedRow::tickColumn, "tick`column"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -450,9 +420,9 @@ namespace AsynGyanis::Database
     struct Queryable::TableSchema<IntegrationProbeRow>
     {
         static constexpr std::string_view kTableName = kProbeTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationProbeRow::id, "id"),
-            Column(&IntegrationProbeRow::name, "name"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationProbeRow::id, "id"),
+                Column(&IntegrationProbeRow::name, "name"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -463,10 +433,10 @@ namespace AsynGyanis::Database
         // 表名只能是编译期常量，因此本结构体固定绑定到「提交可见」用例的表：
         // 其余事务用例外加的表名各不相同，一律走 insertTransactionRow() 的原始参数化语句写入
         static constexpr std::string_view kTableName = kTransactionCommitTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationTransactionRow::id, "id"),
-            Column(&IntegrationTransactionRow::name, "name"),
-            Column(&IntegrationTransactionRow::amount, "amount"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationTransactionRow::id, "id"),
+                Column(&IntegrationTransactionRow::name, "name"),
+                Column(&IntegrationTransactionRow::amount, "amount"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -478,12 +448,8 @@ namespace AsynGyanis::Database
         static constexpr std::string_view kTableName = kMigratedTableName;
         // 列名与成员一一对应，覆盖 SchemaMigrator 需要处理的全部类型映射分支
         static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationMigratedRow::id,       "id"),
-            Column(&IntegrationMigratedRow::name,     "name"),
-            Column(&IntegrationMigratedRow::note,     "note"),
-            Column(&IntegrationMigratedRow::balance,  "balance"),
-            Column(&IntegrationMigratedRow::active,   "active"),
-            Column(&IntegrationMigratedRow::sequence, "sequence"),
+                Column(&IntegrationMigratedRow::id, "id"),           Column(&IntegrationMigratedRow::name, "name"),     Column(&IntegrationMigratedRow::note, "note"),
+                Column(&IntegrationMigratedRow::balance, "balance"), Column(&IntegrationMigratedRow::active, "active"), Column(&IntegrationMigratedRow::sequence, "sequence"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -493,13 +459,9 @@ namespace AsynGyanis::Database
     {
         // 表名固定为 kUnsignedTableName：与建表迁移用例的表分开，并行执行时互不干扰
         static constexpr std::string_view kTableName = kUnsignedTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationUnsignedRow::id,       "id"),
-            Column(&IntegrationUnsignedRow::name,     "name"),
-            Column(&IntegrationUnsignedRow::note,     "note"),
-            Column(&IntegrationUnsignedRow::balance,  "balance"),
-            Column(&IntegrationUnsignedRow::active,   "active"),
-            Column(&IntegrationUnsignedRow::sequence, "sequence"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationUnsignedRow::id, "id"),           Column(&IntegrationUnsignedRow::name, "name"),     Column(&IntegrationUnsignedRow::note, "note"),
+                Column(&IntegrationUnsignedRow::balance, "balance"), Column(&IntegrationUnsignedRow::active, "active"), Column(&IntegrationUnsignedRow::sequence, "sequence"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -508,10 +470,10 @@ namespace AsynGyanis::Database
     struct Queryable::TableSchema<IntegrationBinaryRow>
     {
         static constexpr std::string_view kTableName = kBinaryTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationBinaryRow::id,      "id"),
-            Column(&IntegrationBinaryRow::payload, "payload"),
-            Column(&IntegrationBinaryRow::label,   "label"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationBinaryRow::id, "id"),
+                Column(&IntegrationBinaryRow::payload, "payload"),
+                Column(&IntegrationBinaryRow::label, "label"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -520,10 +482,10 @@ namespace AsynGyanis::Database
     struct Queryable::TableSchema<IntegrationAsyncRow>
     {
         static constexpr std::string_view kTableName = kAsyncChainTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationAsyncRow::id,   "id"),
-            Column(&IntegrationAsyncRow::name, "name"),
-            Column(&IntegrationAsyncRow::note, "note"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationAsyncRow::id, "id"),
+                Column(&IntegrationAsyncRow::name, "name"),
+                Column(&IntegrationAsyncRow::note, "note"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -532,10 +494,10 @@ namespace AsynGyanis::Database
     struct Queryable::TableSchema<IntegrationAsyncBatchRow>
     {
         static constexpr std::string_view kTableName = kAsyncBatchTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationAsyncBatchRow::id,   "id"),
-            Column(&IntegrationAsyncBatchRow::name, "name"),
-            Column(&IntegrationAsyncBatchRow::note, "note"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationAsyncBatchRow::id, "id"),
+                Column(&IntegrationAsyncBatchRow::name, "name"),
+                Column(&IntegrationAsyncBatchRow::note, "note"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -545,8 +507,8 @@ namespace AsynGyanis::Database
     {
         // 表名指向一张本文件从不创建的表：异步写失败这条链路靠它制造
         static constexpr std::string_view kTableName = kAsyncMissingTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationAsyncMissingRow::id, "id"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationAsyncMissingRow::id, "id"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -596,8 +558,7 @@ namespace AsynGyanis::Database
                 {
                     // 口令是唯一的必需项：没有它就无法建立任何会话，本组用例整体跳过而不是失败，
                     // 因此无服务端的 CI 与本地日常构建同样保持全绿
-                    GTEST_SKIP() << "未设置环境变量 " << kPasswordVariableName
-                                 << "，跳过真实 MySQL 集成测试（连接参数与环境变量名见文件头说明）";
+                    GTEST_SKIP() << "未设置环境变量 " << kPasswordVariableName << "，跳过真实 MySQL 集成测试（连接参数与环境变量名见文件头说明）";
                 }
 
                 m_configuration.host     = readEnvironmentTextOrDefault(kHostVariableName, kDefaultHost);
@@ -662,15 +623,14 @@ namespace AsynGyanis::Database
                 poolConfiguration.maximumPoolSize = maximumPoolSize;
 
                 return std::make_unique<ConnectionPool>(
-                    [databaseConfiguration = m_configuration]() -> std::unique_ptr<DatabaseConnection>
-                    {
-                        std::unique_ptr<DatabaseConnection> connection =
-                            DatabaseFactory::createMySql(databaseConfiguration);
-                        // 连接池的工厂契约要求交出已经 connect() 完成的连接
-                        connection->connect();
-                        return connection;
-                    },
-                    poolConfiguration);
+                        [databaseConfiguration = m_configuration]() -> std::unique_ptr<DatabaseConnection>
+                        {
+                            std::unique_ptr<DatabaseConnection> connection = DatabaseFactory::createMySql(databaseConfiguration);
+                            // 连接池的工厂契约要求交出已经 connect() 完成的连接
+                            connection->connect();
+                            return connection;
+                        },
+                        poolConfiguration);
             }
 
             /**
@@ -721,8 +681,7 @@ namespace AsynGyanis::Database
                     return false;
                 }
 
-                const std::string createStatement =
-                    "CREATE TABLE " + quotedTableName + " (" + std::string(columnsDdl) + ") CHARACTER SET utf8mb4";
+                const std::string createStatement = "CREATE TABLE " + quotedTableName + " (" + std::string(columnsDdl) + ") CHARACTER SET utf8mb4";
                 if (connection.execute(createStatement) == nullptr)
                 {
                     m_lastSetupError = connection.lastError();
@@ -748,8 +707,8 @@ namespace AsynGyanis::Database
                     return -1;
                 }
 
-                const DatabaseValue countValue = result->getValue(0);
-                const auto        *countedRows = std::get_if<std::int64_t>(&countValue);
+                const DatabaseValue countValue  = result->getValue(0);
+                const auto         *countedRows = std::get_if<std::int64_t>(&countValue);
                 return countedRows != nullptr ? *countedRows : -1;
             }
 
@@ -762,15 +721,11 @@ namespace AsynGyanis::Database
              * @param amount 金额
              * @return true 语句执行成功且恰好改动一行
              */
-            [[nodiscard]] static bool insertTransactionRow(DatabaseConnection &connection,
-                                                           const std::string_view tableName,
-                                                           const std::int64_t id,
-                                                           std::string name,
+            [[nodiscard]] static bool insertTransactionRow(DatabaseConnection &connection, const std::string_view tableName, const std::int64_t id, std::string name,
                                                            const double amount)
             {
-                const std::vector<DatabaseValue> parameters{id, std::move(name), amount};
-                const std::unique_ptr<DatabaseResult> result = connection.execute(
-                    "INSERT INTO " + quote(tableName) + " (`id`, `name`, `amount`) VALUES (?, ?, ?)", parameters);
+                const std::vector<DatabaseValue>      parameters{id, std::move(name), amount};
+                const std::unique_ptr<DatabaseResult> result = connection.execute("INSERT INTO " + quote(tableName) + " (`id`, `name`, `amount`) VALUES (?, ?, ?)", parameters);
 
                 return result != nullptr && result->affectedRowCount() == 1;
             }
@@ -782,20 +737,17 @@ namespace AsynGyanis::Database
              * @param id 主键
              * @return std::optional<std::string> 命中行的 name；无该行或执行失败时为空
              */
-            [[nodiscard]] static std::optional<std::string> readTransactionRowName(DatabaseConnection &connection,
-                                                                                  const std::string_view tableName,
-                                                                                  const std::int64_t id)
+            [[nodiscard]] static std::optional<std::string> readTransactionRowName(DatabaseConnection &connection, const std::string_view tableName, const std::int64_t id)
             {
-                const std::vector<DatabaseValue> parameters{id};
-                const std::unique_ptr<DatabaseResult> result = connection.execute(
-                    "SELECT `name` FROM " + quote(tableName) + " WHERE `id` = ?", parameters);
+                const std::vector<DatabaseValue>      parameters{id};
+                const std::unique_ptr<DatabaseResult> result = connection.execute("SELECT `name` FROM " + quote(tableName) + " WHERE `id` = ?", parameters);
                 if (result == nullptr || !result->next())
                 {
                     return std::nullopt;
                 }
 
                 const DatabaseValue nameValue = result->getValue(0);
-                const auto        *nameText  = std::get_if<std::string>(&nameValue);
+                const auto         *nameText  = std::get_if<std::string>(&nameValue);
                 return nameText != nullptr ? std::optional<std::string>(*nameText) : std::nullopt;
             }
 
@@ -829,8 +781,7 @@ namespace AsynGyanis::Database
                     return false;
                 }
 
-                const std::string createStatement = "CREATE DATABASE IF NOT EXISTS " + quote(m_configuration.database) +
-                                                    " CHARACTER SET utf8mb4";
+                const std::string createStatement = "CREATE DATABASE IF NOT EXISTS " + quote(m_configuration.database) + " CHARACTER SET utf8mb4";
                 if (connection.execute(createStatement) == nullptr)
                 {
                     m_lastSetupError = connection.lastError();
@@ -902,9 +853,8 @@ namespace AsynGyanis::Database
         // 因此错误只可能从 mysql_store_result 这条路上回来——正是上面说的第 ① 种来路
         ASSERT_NE(connection.execute("SET SESSION cte_max_recursion_depth = 10"), nullptr) << connection.lastError();
 
-        const std::unique_ptr<DatabaseResult> abortedScan = connection.execute(
-                "WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100000)"
-                " SELECT n FROM seq");
+        const std::unique_ptr<DatabaseResult> abortedScan = connection.execute("WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100000)"
+                                                                               " SELECT n FROM seq");
 
         ASSERT_EQ(abortedScan, nullptr) << "递归深度超限本该报错";
         EXPECT_TRUE(connection.isConnected()) << "服务端报错不该把链路完好的连接一起废掉：" << connection.lastError();
@@ -935,12 +885,11 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.statementCacheHitCount(), 0U) << "命中计数初值不为 0";
 
         const std::array<DatabaseValue, 1> echoed{std::string{"x"}};
-        const auto runStatement = [&connection, &echoed](const std::size_t probeNumber)
+        const auto                         runStatement = [&connection, &echoed](const std::size_t probeNumber)
         {
             // 每条文本只差一个字面量，因此它们是互不相同的预处理语句；回显值仍走占位符
-            const std::string sqlText = "SELECT " + std::to_string(probeNumber) + " AS probe, ? AS echoed";
-            const std::unique_ptr<DatabaseResult> result =
-                    connection.execute(sqlText, std::span<const DatabaseValue>{echoed});
+            const std::string                     sqlText = "SELECT " + std::to_string(probeNumber) + " AS probe, ? AS echoed";
+            const std::unique_ptr<DatabaseResult> result  = connection.execute(sqlText, std::span<const DatabaseValue>{echoed});
             EXPECT_NE(result, nullptr) << probeNumber << ": " << connection.lastError();
             if (result == nullptr)
             {
@@ -966,8 +915,7 @@ namespace AsynGyanis::Database
 
         // 第二步：再塞一条一次性语句。LRU 逐出的应当只有最久没被读到的那条（热集合的第 0 条）
         runStatement(kHotStatementCount + 1000U);
-        EXPECT_EQ(connection.cachedStatementCount(), kHotStatementCount)
-                << "越界的一条语句把整表关掉了：条数没有停在上界";
+        EXPECT_EQ(connection.cachedStatementCount(), kHotStatementCount) << "越界的一条语句把整表关掉了：条数没有停在上界";
 
         // 第三步：热集合剩下那 63 条重跑一遍，应当逐条命中——整表清空那一版一条也命中不了
         const std::uint64_t hitsBeforeSecondPass = connection.statementCacheHitCount();
@@ -975,8 +923,7 @@ namespace AsynGyanis::Database
         {
             runStatement(index);
         }
-        EXPECT_EQ(connection.statementCacheHitCount() - hitsBeforeSecondPass, kHotStatementCount - 1U)
-                << "热语句被一次性语句挤掉了：逐出的不是最久没被读到的那一条";
+        EXPECT_EQ(connection.statementCacheHitCount() - hitsBeforeSecondPass, kHotStatementCount - 1U) << "热语句被一次性语句挤掉了：逐出的不是最久没被读到的那一条";
 
         connection.disconnect();
         EXPECT_EQ(connection.cachedStatementCount(), 0U) << "断开时表里的语句必须全部关掉";
@@ -1004,19 +951,15 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.execute(script), nullptr) << "多语句文本没被拒绝（CLIENT_MULTI_STATEMENTS 被谁打开了？）";
         EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
 
-        EXPECT_EQ(connection.execute("SELECT * FROM " + quote(kNeverCreatedTable)), nullptr)
-                << "第二条被拒了但第一条已经执行：留下半执行状态";
+        EXPECT_EQ(connection.execute("SELECT * FROM " + quote(kNeverCreatedTable)), nullptr) << "第二条被拒了但第一条已经执行：留下半执行状态";
         EXPECT_TRUE(connection.isConnected()) << "服务端拒绝一条语句不该把链路判断：" << connection.lastError();
 
         // 预处理路径同形，且首条换成写语句：这一格的半执行就是脏数据
         ASSERT_TRUE(prepareTable(kNoOpUpdateTableName, kAutoIncrementColumns)) << m_lastSetupError;
         const std::vector<DatabaseValue> noParameters;
-        EXPECT_EQ(connection.execute("INSERT INTO " + quote(kNoOpUpdateTableName) + " (`name`) VALUES ('脏数据'); SELECT 2",
-                                     noParameters),
-                  nullptr) << "预处理路径没拒绝多语句";
+        EXPECT_EQ(connection.execute("INSERT INTO " + quote(kNoOpUpdateTableName) + " (`name`) VALUES ('脏数据'); SELECT 2", noParameters), nullptr) << "预处理路径没拒绝多语句";
 
-        const std::unique_ptr<DatabaseResult> probe =
-                connection.execute("SELECT COUNT(*) FROM " + quote(kNoOpUpdateTableName), noParameters);
+        const std::unique_ptr<DatabaseResult> probe = connection.execute("SELECT COUNT(*) FROM " + quote(kNoOpUpdateTableName), noParameters);
         ASSERT_NE(probe, nullptr) << connection.lastError();
         ASSERT_TRUE(probe->next());
         EXPECT_EQ(std::get<std::int64_t>(probe->getValue(0)), 0) << "首条 INSERT 落库了：半执行状态";
@@ -1043,12 +986,10 @@ namespace AsynGyanis::Database
 
         // 刻意不用 SELECT SLEEP(n)：那条被时限掐断时 SLEEP 会返回「被打断」而语句本身算成功，
         // 报不出超时。递归 CTE 计数是真要在服务端跑完的只读语句，只能以报错收场。
-        const auto startedAt = std::chrono::steady_clock::now();
-        const std::unique_ptr<DatabaseResult> longScan = connection.execute(
-                "WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100000000)"
-                " SELECT COUNT(*) FROM seq");
-        const auto elapsedMilliseconds =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
+        const auto                            startedAt           = std::chrono::steady_clock::now();
+        const std::unique_ptr<DatabaseResult> longScan            = connection.execute("WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100000000)"
+                                                                                       " SELECT COUNT(*) FROM seq");
+        const auto                            elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
 
         ASSERT_EQ(longScan, nullptr) << "这条递归统计没被只读语句时限打断";
         EXPECT_LT(elapsedMilliseconds, 3000) << "耗时 " << elapsedMilliseconds << " 毫秒，不像 500 毫秒的会话时限";
@@ -1099,8 +1040,7 @@ namespace AsynGyanis::Database
         MySqlConnection connection(configuration());
         ASSERT_TRUE(connection.connect()) << connection.lastError();
 
-        const std::string insertStatement = "INSERT INTO " + quote(kParameterInsertTableName) +
-                                            " (`id`, `name`, `amount`) VALUES (?, ?, ?)";
+        const std::string                insertStatement = "INSERT INTO " + quote(kParameterInsertTableName) + " (`id`, `name`, `amount`) VALUES (?, ?, ?)";
         const std::vector<DatabaseValue> parameters{std::int64_t{1}, std::string("张三"), 1234.5};
 
         const std::unique_ptr<DatabaseResult> insertResult = connection.execute(insertStatement, parameters);
@@ -1111,8 +1051,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(insertResult->isEmpty());
 
         // 用不带参数的路径独立复核：参数确实按顺序绑到了对应的列上
-        const std::unique_ptr<DatabaseResult> selectResult = connection.execute(
-            "SELECT `name`, `amount` FROM " + quote(kParameterInsertTableName) + " WHERE `id` = 1");
+        const std::unique_ptr<DatabaseResult> selectResult = connection.execute("SELECT `name`, `amount` FROM " + quote(kParameterInsertTableName) + " WHERE `id` = 1");
         ASSERT_NE(selectResult, nullptr) << connection.lastError();
         ASSERT_TRUE(selectResult->next());
         EXPECT_EQ(std::get<std::string>(selectResult->getValue("name")), "张三");
@@ -1144,17 +1083,14 @@ namespace AsynGyanis::Database
         // 因此 NUL 应当逐字节保留，与「空串」「NULL」三者互不相同
         const std::string embeddedNulText("前\0后", 7);
 
-        const std::string insertStatement = "INSERT INTO " + quote(kParameterSelectTableName) +
-                                            " (`id`, `name`, `amount`, `note`, `payload`) VALUES (?, ?, ?, ?, ?)";
+        const std::string insertStatement = "INSERT INTO " + quote(kParameterSelectTableName) + " (`id`, `name`, `amount`, `note`, `payload`) VALUES (?, ?, ?, ?, ?)";
 
-        const std::vector<std::vector<DatabaseValue>> sampleRows{
-            // 第 1 行：note 是 SQL NULL，payload 是空串——两者必须可区分
-            {std::int64_t{1}, std::string("张三"), 1234.5, std::monostate{}, std::string("")},
-            // 第 2 行：负数、中文备注、内嵌 '\0'
-            {std::int64_t{2}, std::string("O'Brien"), -99.5, std::string("普通备注"), embeddedNulText},
-            // 第 3 行：零值、空串备注、长文本
-            {std::int64_t{3}, std::string("李四"), 0.0, std::string(""), longText}
-        };
+        const std::vector<std::vector<DatabaseValue>> sampleRows{// 第 1 行：note 是 SQL NULL，payload 是空串——两者必须可区分
+                                                                 {std::int64_t{1}, std::string("张三"), 1234.5, std::monostate{}, std::string("")},
+                                                                 // 第 2 行：负数、中文备注、内嵌 '\0'
+                                                                 {std::int64_t{2}, std::string("O'Brien"), -99.5, std::string("普通备注"), embeddedNulText},
+                                                                 // 第 3 行：零值、空串备注、长文本
+                                                                 {std::int64_t{3}, std::string("李四"), 0.0, std::string(""), longText}};
 
         for (const std::vector<DatabaseValue> &sampleRow: sampleRows)
         {
@@ -1163,12 +1099,9 @@ namespace AsynGyanis::Database
             EXPECT_EQ(insertResult->affectedRowCount(), 1);
         }
 
-        const std::string selectStatement = "SELECT `id`, `name`, `amount`, `note`, `payload` FROM " +
-                                            quote(kParameterSelectTableName) + " WHERE `id` = ?";
-        const auto selectRowById = [&connection, &selectStatement](const std::int64_t identifier) -> std::unique_ptr<DatabaseResult>
-        {
-            return connection.execute(selectStatement, std::vector<DatabaseValue>{identifier});
-        };
+        const std::string selectStatement = "SELECT `id`, `name`, `amount`, `note`, `payload` FROM " + quote(kParameterSelectTableName) + " WHERE `id` = ?";
+        const auto        selectRowById   = [&connection, &selectStatement](const std::int64_t identifier) -> std::unique_ptr<DatabaseResult>
+        { return connection.execute(selectStatement, std::vector<DatabaseValue>{identifier}); };
 
         // ---- 第 1 行：列名、中文、正常浮点、NULL 与空串的区分 ----
         const std::unique_ptr<DatabaseResult> firstRow = selectRowById(1);
@@ -1230,8 +1163,7 @@ namespace AsynGyanis::Database
         const std::string selectStatement = "SELECT `name` FROM " + quote(kReusedStatementTableName) + " WHERE `id` = ?";
         const std::string updateStatement = "UPDATE " + quote(kReusedStatementTableName) + " SET `name` = ? WHERE `id` = ?";
 
-        ASSERT_NE(connection.execute(insertStatement, std::vector<DatabaseValue>{std::int64_t{1}, std::string{"第一版"}}), nullptr)
-            << connection.lastError();
+        ASSERT_NE(connection.execute(insertStatement, std::vector<DatabaseValue>{std::int64_t{1}, std::string{"第一版"}}), nullptr) << connection.lastError();
 
         // 同一条文本被反复执行：第二次起走的就是缓存里那条已预编译的语句
         const auto readNameById = [&connection, &selectStatement](const std::int64_t identifier) -> std::string
@@ -1247,8 +1179,7 @@ namespace AsynGyanis::Database
 
         EXPECT_EQ(readNameById(1), "第一版");
 
-        ASSERT_NE(connection.execute(updateStatement, std::vector<DatabaseValue>{std::string{"第二版"}, std::int64_t{1}}), nullptr)
-            << connection.lastError();
+        ASSERT_NE(connection.execute(updateStatement, std::vector<DatabaseValue>{std::string{"第二版"}, std::int64_t{1}}), nullptr) << connection.lastError();
         // 复用的语句若把上一轮的结果留在客户端缓冲里交出来，这里就会读到「第一版」
         EXPECT_EQ(readNameById(1), "第二版");
         EXPECT_EQ(readNameById(1), "第二版");
@@ -1260,8 +1191,7 @@ namespace AsynGyanis::Database
 
         // 服务端拒绝的一次（主键冲突）：这条语句被弃掉，同一条插入文本下一次换参数仍要成功
         EXPECT_EQ(connection.execute(insertStatement, std::vector<DatabaseValue>{std::int64_t{1}, std::string{"重复"}}), nullptr);
-        EXPECT_NE(connection.execute(insertStatement, std::vector<DatabaseValue>{std::int64_t{2}, std::string{"新增"}}), nullptr)
-            << connection.lastError();
+        EXPECT_NE(connection.execute(insertStatement, std::vector<DatabaseValue>{std::int64_t{2}, std::string{"新增"}}), nullptr) << connection.lastError();
         EXPECT_EQ(readNameById(2), "新增");
     }
 
@@ -1286,16 +1216,14 @@ namespace AsynGyanis::Database
         EXPECT_NE(hostileText.find("--"), std::string::npos);
         EXPECT_NE(hostileText.find("DROP TABLE"), std::string::npos);
 
-        const std::vector<DatabaseValue> insertParameters{std::int64_t{1}, hostileText};
-        const std::unique_ptr<DatabaseResult> insertResult = connection.execute(
-            "INSERT INTO " + quote(kInjectionTableName) + " (`id`, `name`) VALUES (?, ?)", insertParameters);
+        const std::vector<DatabaseValue>      insertParameters{std::int64_t{1}, hostileText};
+        const std::unique_ptr<DatabaseResult> insertResult = connection.execute("INSERT INTO " + quote(kInjectionTableName) + " (`id`, `name`) VALUES (?, ?)", insertParameters);
         ASSERT_NE(insertResult, nullptr) << connection.lastError();
         ASSERT_EQ(insertResult->affectedRowCount(), 1);
 
         // 按值查询：WHERE 的取值同样走绑定，能精确命中说明存进去的就是原文
-        const std::vector<DatabaseValue> selectParameters{hostileText};
-        const std::unique_ptr<DatabaseResult> selectResult = connection.execute(
-            "SELECT `name` FROM " + quote(kInjectionTableName) + " WHERE `name` = ?", selectParameters);
+        const std::vector<DatabaseValue>      selectParameters{hostileText};
+        const std::unique_ptr<DatabaseResult> selectResult = connection.execute("SELECT `name` FROM " + quote(kInjectionTableName) + " WHERE `name` = ?", selectParameters);
         ASSERT_NE(selectResult, nullptr) << connection.lastError();
         ASSERT_TRUE(selectResult->next());
         EXPECT_EQ(std::get<std::string>(selectResult->getValue("name")), hostileText);
@@ -1315,8 +1243,7 @@ namespace AsynGyanis::Database
 
         // "SELECT ?" 恰好一个占位符且不需要任何表，把「个数不匹配」这一条单独隔离出来：
         // 语句本身能 prepare 成功，失败必然来自参数个数校验
-        const std::unique_ptr<DatabaseResult> tooFewResult =
-            connection.execute("SELECT ?", std::span<const DatabaseValue>{});
+        const std::unique_ptr<DatabaseResult> tooFewResult = connection.execute("SELECT ?", std::span<const DatabaseValue>{});
         EXPECT_EQ(tooFewResult, nullptr);
         const std::string tooFewReason = connection.lastError();
         EXPECT_TRUE(containsLocalizedText(tooFewReason)) << tooFewReason;
@@ -1325,7 +1252,7 @@ namespace AsynGyanis::Database
         EXPECT_NE(tooFewReason.find("需要 1"), std::string::npos) << tooFewReason;
         EXPECT_NE(tooFewReason.find("实际提供 0"), std::string::npos) << tooFewReason;
 
-        const std::vector<DatabaseValue> extraParameters{std::int64_t{1}, std::int64_t{2}};
+        const std::vector<DatabaseValue>      extraParameters{std::int64_t{1}, std::int64_t{2}};
         const std::unique_ptr<DatabaseResult> tooManyResult = connection.execute("SELECT ?", extraParameters);
         EXPECT_EQ(tooManyResult, nullptr);
         const std::string tooManyReason = connection.lastError();
@@ -1347,7 +1274,7 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(connection.connect()) << connection.lastError();
 
         // 列表：对应 Redis List 形态
-        const std::vector<DatabaseValue> listParameters{std::vector<std::string>{"甲", "乙"}};
+        const std::vector<DatabaseValue>      listParameters{std::vector<std::string>{"甲", "乙"}};
         const std::unique_ptr<DatabaseResult> listResult = connection.execute("SELECT ?", listParameters);
         EXPECT_EQ(listResult, nullptr);
         const std::string listReason = connection.lastError();
@@ -1356,8 +1283,7 @@ namespace AsynGyanis::Database
         EXPECT_NE(listReason.find("List"), std::string::npos) << listReason;
 
         // 哈希：对应 Redis Hash 形态
-        const std::vector<DatabaseValue> hashParameters{
-            std::unordered_map<std::string, std::string>{{"键", "值"}}};
+        const std::vector<DatabaseValue>      hashParameters{std::unordered_map<std::string, std::string>{{"键", "值"}}};
         const std::unique_ptr<DatabaseResult> hashResult = connection.execute("SELECT ?", hashParameters);
         EXPECT_EQ(hashResult, nullptr);
         const std::string hashReason = connection.lastError();
@@ -1391,9 +1317,8 @@ namespace AsynGyanis::Database
 
         // ---- toList：WHERE + ORDER BY + LIMIT + OFFSET（分页走 MySQL 的 "LIMIT ? OFFSET ?"）----
         {
-            OrmQuery<IntegrationAccountRow> query(*pool);
-            const std::vector<IntegrationAccountRow> rows =
-                query.orderBy(asc("id")).limit(2).offset(1).toList();
+            OrmQuery<IntegrationAccountRow>          query(*pool);
+            const std::vector<IntegrationAccountRow> rows = query.orderBy(asc("id")).limit(2).offset(1).toList();
 
             ASSERT_EQ(rows.size(), 2U);
             EXPECT_EQ(rows[0].id, 2);
@@ -1409,11 +1334,8 @@ namespace AsynGyanis::Database
 
         // ---- WHERE 取子集 ----
         {
-            OrmQuery<IntegrationAccountRow> query(*pool);
-            const std::vector<IntegrationAccountRow> rows =
-                query.where(Column(&IntegrationAccountRow::id, "id") >= std::int64_t{2})
-                     .orderBy(asc("id"))
-                     .toList();
+            OrmQuery<IntegrationAccountRow>          query(*pool);
+            const std::vector<IntegrationAccountRow> rows = query.where(Column(&IntegrationAccountRow::id, "id") >= std::int64_t{2}).orderBy(asc("id")).toList();
 
             ASSERT_EQ(rows.size(), 2U);
             EXPECT_EQ(rows[0].id, 2);
@@ -1422,9 +1344,8 @@ namespace AsynGyanis::Database
 
         // ---- first：命中与不命中 ----
         {
-            OrmQuery<IntegrationAccountRow> hitQuery(*pool);
-            const std::optional<IntegrationAccountRow> hit =
-                hitQuery.where(Column(&IntegrationAccountRow::id, "id") == std::int64_t{1}).first();
+            OrmQuery<IntegrationAccountRow>            hitQuery(*pool);
+            const std::optional<IntegrationAccountRow> hit = hitQuery.where(Column(&IntegrationAccountRow::id, "id") == std::int64_t{1}).first();
 
             ASSERT_TRUE(hit.has_value());
             EXPECT_EQ(hit->name, "张三");
@@ -1451,7 +1372,7 @@ namespace AsynGyanis::Database
             OrmQuery<IntegrationAccountRow> updateQuery(*pool);
             EXPECT_EQ(updateQuery.update(makeAccountRow(2, "王五", 888.25, std::string("已更新"), true)), 1);
 
-            OrmQuery<IntegrationAccountRow> readQuery(*pool);
+            OrmQuery<IntegrationAccountRow>          readQuery(*pool);
             const std::vector<IntegrationAccountRow> rows = readQuery.orderBy(asc("id")).toList();
             ASSERT_EQ(rows.size(), 3U);
             EXPECT_EQ(rows[1].id, 2);
@@ -1473,7 +1394,7 @@ namespace AsynGyanis::Database
             OrmQuery<IntegrationAccountRow> remainingQuery(*pool);
             EXPECT_EQ(remainingQuery.count(), 1);
 
-            OrmQuery<IntegrationAccountRow> lastRowQuery(*pool);
+            OrmQuery<IntegrationAccountRow>          lastRowQuery(*pool);
             const std::vector<IntegrationAccountRow> remainingRows = lastRowQuery.orderBy(asc("id")).toList();
             ASSERT_EQ(remainingRows.size(), 1U);
             EXPECT_EQ(remainingRows[0].id, 1);
@@ -1493,12 +1414,11 @@ namespace AsynGyanis::Database
 
         // 每行的绑定参数个数就是列数，由 TableSchema 的列数在编译期给出；
         // 该常量必须写在此处（特化声明之后），否则会先实例化空列的主模板而算出 0
-        constexpr std::size_t kBatchColumnCount =
-            std::tuple_size_v<std::remove_cvref_t<decltype(Queryable::TableSchema<IntegrationBatchRow>::kColumns)>>;
+        constexpr std::size_t kBatchColumnCount = std::tuple_size_v<std::remove_cvref_t<decltype(Queryable::TableSchema<IntegrationBatchRow>::kColumns)>>;
 
         const MySqlDialect dialect;
-        const std::size_t rowsPerStatement = dialect.maximumStatementParameters() / kBatchColumnCount;
-        const std::size_t totalRowCount    = rowsPerStatement + 1U;
+        const std::size_t  rowsPerStatement = dialect.maximumStatementParameters() / kBatchColumnCount;
+        const std::size_t  totalRowCount    = rowsPerStatement + 1U;
         ASSERT_GE(rowsPerStatement, 2U);
 
         std::vector<IntegrationBatchRow> rows;
@@ -1506,14 +1426,12 @@ namespace AsynGyanis::Database
         for (std::size_t rowIndex = 0; rowIndex < totalRowCount; ++rowIndex)
         {
             const std::int64_t identifier = static_cast<std::int64_t>(rowIndex) + 1;
-            rows.push_back(IntegrationBatchRow{
-                .id   = identifier,
-                .name = "批量行" + std::to_string(identifier),
-                .score = static_cast<double>(identifier),
-                // 偶数行不给备注（NULL）、奇数行给备注：让分块边界两侧的取值形态也不同
-                .note   = (identifier % 2 == 0) ? std::optional<std::string>{} : std::optional<std::string>{"奇数行备注"},
-                .active = identifier % 2 != 0
-            });
+            rows.push_back(IntegrationBatchRow{.id    = identifier,
+                                               .name  = "批量行" + std::to_string(identifier),
+                                               .score = static_cast<double>(identifier),
+                                               // 偶数行不给备注（NULL）、奇数行给备注：让分块边界两侧的取值形态也不同
+                                               .note   = (identifier % 2 == 0) ? std::optional<std::string>{} : std::optional<std::string>{"奇数行备注"},
+                                               .active = identifier % 2 != 0});
         }
 
         std::unique_ptr<ConnectionPool> pool = makePool(3);
@@ -1569,32 +1487,20 @@ namespace AsynGyanis::Database
 
         // ---- 单行插入：走 "INSERT INTO `表` (`列`…) VALUES (?, …)" ----
         OrmQuery<IntegrationQuotedRow> insertQuery(*pool);
-        EXPECT_EQ(1, insertQuery.insert(IntegrationQuotedRow{
-                          .id           = 1,
-                          .order        = "保留字order",
-                          .group        = "保留字group",
-                          .spacedColumn = "空格列值",
-                          .tickColumn   = "反引号列值"
-                      }));
+        EXPECT_EQ(1, insertQuery.insert(IntegrationQuotedRow{.id = 1, .order = "保留字order", .group = "保留字group", .spacedColumn = "空格列值", .tickColumn = "反引号列值"}));
 
         // ---- 多行 VALUES：走方言的 translateInsertBatch ----
         const std::vector<IntegrationQuotedRow> batchRows{
-            IntegrationQuotedRow{.id = 2, .order = "第二行order", .group = "第二行group",
-                                 .spacedColumn = std::string("第二行空格"), .tickColumn = std::string("第二行反引号")},
-            IntegrationQuotedRow{.id = 3, .order = "第三行order", .group = "第三行group",
-                                 .spacedColumn = std::string("第三行空格"), .tickColumn = std::string("第三行反引号")}
-        };
+                IntegrationQuotedRow{.id = 2, .order = "第二行order", .group = "第二行group", .spacedColumn = std::string("第二行空格"), .tickColumn = std::string("第二行反引号")},
+                IntegrationQuotedRow{
+                        .id = 3, .order = "第三行order", .group = "第三行group", .spacedColumn = std::string("第三行空格"), .tickColumn = std::string("第三行反引号")}};
         EXPECT_EQ(2, insertQuery.insertBatch(batchRows));
 
         // ---- WHERE 命中保留字列 + LIMIT ? OFFSET ? ----
         {
-            OrmQuery<IntegrationQuotedRow> query(*pool);
+            OrmQuery<IntegrationQuotedRow>          query(*pool);
             const std::vector<IntegrationQuotedRow> rows =
-                query.where(Column(&IntegrationQuotedRow::order, "order") == "保留字order")
-                     .orderBy(asc("id"))
-                     .limit(1)
-                     .offset(0)
-                     .toList();
+                    query.where(Column(&IntegrationQuotedRow::order, "order") == "保留字order").orderBy(asc("id")).limit(1).offset(0).toList();
 
             ASSERT_EQ(rows.size(), 1U);
             EXPECT_EQ(rows[0].id, 1);
@@ -1606,7 +1512,7 @@ namespace AsynGyanis::Database
 
         // ---- 分页在同一批数据上取第二行：OFFSET 以绑定参数送出 ----
         {
-            OrmQuery<IntegrationQuotedRow> query(*pool);
+            OrmQuery<IntegrationQuotedRow>          query(*pool);
             const std::vector<IntegrationQuotedRow> rows = query.orderBy(asc("id")).limit(1).offset(1).toList();
 
             ASSERT_EQ(rows.size(), 1U);
@@ -1620,14 +1526,12 @@ namespace AsynGyanis::Database
             EXPECT_EQ(countQuery.count(), 3);
 
             OrmQuery<IntegrationQuotedRow> updateQuery(*pool);
-            EXPECT_EQ(updateQuery.update(IntegrationQuotedRow{.id = 3, .order = "改后order", .group = "改后group",
-                                                             .spacedColumn = std::string("改后空格"),
-                                                             .tickColumn = std::string("改后反引号")}),
+            EXPECT_EQ(updateQuery.update(IntegrationQuotedRow{
+                              .id = 3, .order = "改后order", .group = "改后group", .spacedColumn = std::string("改后空格"), .tickColumn = std::string("改后反引号")}),
                       1);
 
-            OrmQuery<IntegrationQuotedRow> updatedQuery(*pool);
-            const std::optional<IntegrationQuotedRow> updated =
-                updatedQuery.where(Column(&IntegrationQuotedRow::id, "id") == std::int64_t{3}).first();
+            OrmQuery<IntegrationQuotedRow>            updatedQuery(*pool);
+            const std::optional<IntegrationQuotedRow> updated = updatedQuery.where(Column(&IntegrationQuotedRow::id, "id") == std::int64_t{3}).first();
             ASSERT_TRUE(updated.has_value());
             EXPECT_EQ(updated->order, "改后order");
             EXPECT_EQ(updated->tickColumn, "改后反引号");
@@ -1670,15 +1574,13 @@ namespace AsynGyanis::Database
         // ---- 写入两行：第一行有备注，第二行备注为 NULL（TEXT 列可空） ----
         {
             OrmQuery<IntegrationMigratedRow> insertQuery(*pool);
-            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 1, .name = "张三", .note = std::string("首条"),
-                                                                   .balance = 1234.5, .active = true, .sequence = 7U}));
-            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 2, .name = "Li Si", .note = std::nullopt,
-                                                                   .balance = -0.25, .active = false, .sequence = 8U}));
+            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 1, .name = "张三", .note = std::string("首条"), .balance = 1234.5, .active = true, .sequence = 7U}));
+            EXPECT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 2, .name = "Li Si", .note = std::nullopt, .balance = -0.25, .active = false, .sequence = 8U}));
         }
 
         // ---- 读回：六列逐一核对，证明 DDL 的类型与可空性恰好匹配 ORM 的映射规则 ----
         {
-            OrmQuery<IntegrationMigratedRow> query(*pool);
+            OrmQuery<IntegrationMigratedRow>          query(*pool);
             const std::vector<IntegrationMigratedRow> rows = query.orderBy(asc("id")).toList();
 
             ASSERT_EQ(rows.size(), 2U);
@@ -1734,31 +1636,26 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(SchemaMigrator::createTable<IntegrationUnsignedRow>(*pool, true, &errorText)) << errorText;
 
         /// 2^63：int64 表示不了、BIGINT UNSIGNED 表示得了的第一个取值
-        constexpr std::uint64_t kTwoToTheSixtyThird   = 9223372036854775808ULL;
+        constexpr std::uint64_t kTwoToTheSixtyThird = 9223372036854775808ULL;
         /// 2^64-1：BIGINT UNSIGNED 的上界，也是 uint64 的上界
         constexpr std::uint64_t kMaximumUnsignedValue = std::numeric_limits<std::uint64_t>::max();
-        const auto              maximumSignedValue =
-            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+        const auto              maximumSignedValue    = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
         // ---- 写入四个代表性取值 ----
         {
             OrmQuery<IntegrationUnsignedRow> insertQuery(*pool);
-            EXPECT_EQ(1, insertQuery.insert(IntegrationUnsignedRow{.id = 1, .name = "零", .note = std::nullopt,
-                                                                   .balance = 0.0, .active = true, .sequence = 0U}));
-            EXPECT_EQ(1, insertQuery.insert(IntegrationUnsignedRow{.id = 2, .name = "int64上界", .note = std::nullopt,
-                                                                   .balance = 0.0, .active = true,
-                                                                   .sequence = maximumSignedValue}));
-            EXPECT_EQ(1, insertQuery.insert(IntegrationUnsignedRow{.id = 3, .name = "2的63次方", .note = std::nullopt,
-                                                                   .balance = 0.0, .active = true,
-                                                                   .sequence = kTwoToTheSixtyThird}));
-            EXPECT_EQ(1, insertQuery.insert(IntegrationUnsignedRow{.id = 4, .name = "uint64上界", .note = std::nullopt,
-                                                                   .balance = 0.0, .active = true,
-                                                                   .sequence = kMaximumUnsignedValue}));
+            EXPECT_EQ(1, insertQuery.insert(IntegrationUnsignedRow{.id = 1, .name = "零", .note = std::nullopt, .balance = 0.0, .active = true, .sequence = 0U}));
+            EXPECT_EQ(1, insertQuery.insert(
+                                 IntegrationUnsignedRow{.id = 2, .name = "int64上界", .note = std::nullopt, .balance = 0.0, .active = true, .sequence = maximumSignedValue}));
+            EXPECT_EQ(1, insertQuery.insert(
+                                 IntegrationUnsignedRow{.id = 3, .name = "2的63次方", .note = std::nullopt, .balance = 0.0, .active = true, .sequence = kTwoToTheSixtyThird}));
+            EXPECT_EQ(1, insertQuery.insert(
+                                 IntegrationUnsignedRow{.id = 4, .name = "uint64上界", .note = std::nullopt, .balance = 0.0, .active = true, .sequence = kMaximumUnsignedValue}));
         }
 
         // ---- 读回：四个取值必须逐位相等，任何一个被降级成 double 都会在这里暴露 ----
         {
-            OrmQuery<IntegrationUnsignedRow> query(*pool);
+            OrmQuery<IntegrationUnsignedRow>          query(*pool);
             const std::vector<IntegrationUnsignedRow> rows = query.orderBy(asc("id")).toList();
 
             ASSERT_EQ(rows.size(), 4U);
@@ -1773,10 +1670,8 @@ namespace AsynGyanis::Database
         // 若取值被存成文本（例如列类型被误建为 TEXT），SQLite 那种字典序比较会给出不同结果
         {
             OrmQuery<IntegrationUnsignedRow> query(*pool);
-            const std::int64_t aboveBoundaryCount =
-                query.where(Column(&IntegrationUnsignedRow::sequence, "sequence") >
-                            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
-                     .count();
+            const std::int64_t               aboveBoundaryCount =
+                    query.where(Column(&IntegrationUnsignedRow::sequence, "sequence") > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())).count();
             EXPECT_EQ(aboveBoundaryCount, 2);
         }
 
@@ -1810,7 +1705,7 @@ namespace AsynGyanis::Database
         }
 
         {
-            OrmQuery<IntegrationBinaryRow> query(*pool);
+            OrmQuery<IntegrationBinaryRow>          query(*pool);
             const std::vector<IntegrationBinaryRow> rows = query.orderBy(asc("id")).toList();
 
             ASSERT_EQ(rows.size(), 2U);
@@ -1824,9 +1719,8 @@ namespace AsynGyanis::Database
 
         // 按二进制列做条件查询：真机上验证 ParameterValue 的二进制支路（与写入路径是两套变体）
         {
-            OrmQuery<IntegrationBinaryRow> query(*pool);
-            const std::vector<IntegrationBinaryRow> matched =
-                query.where(Column(&IntegrationBinaryRow::payload, "payload") == payload).toList();
+            OrmQuery<IntegrationBinaryRow>          query(*pool);
+            const std::vector<IntegrationBinaryRow> matched = query.where(Column(&IntegrationBinaryRow::payload, "payload") == payload).toList();
             ASSERT_EQ(matched.size(), 1U);
             EXPECT_EQ(matched[0].id, 1);
             EXPECT_EQ(matched[0].payload, payload);
@@ -1849,19 +1743,16 @@ namespace AsynGyanis::Database
         std::unique_ptr<MySqlConnection> connection = makeConnection();
         ASSERT_TRUE(connection->connect()) << connection->lastError();
 
-        const std::string insertText =
-            "INSERT INTO " + std::string(kBlobSizingTableName) + " (id, payload) VALUES (?, ?)";
+        const std::string insertText = "INSERT INTO " + std::string(kBlobSizingTableName) + " (id, payload) VALUES (?, ?)";
         // 1 号行放大载荷、2 号行放小载荷：两格读的是同一条语句文本，因此第二格命中的是同一份缓存元数据
-        for (const std::pair<std::int64_t, std::size_t> entry :
-             {std::pair{1LL, kBlobSizingLargePayloadBytes}, {2LL, kBlobSizingSmallPayloadBytes}})
+        for (const std::pair<std::int64_t, std::size_t> entry: {std::pair{1LL, kBlobSizingLargePayloadBytes}, {2LL, kBlobSizingSmallPayloadBytes}})
         {
-            const BinaryBytes   payload(entry.second, 0x41);
+            const BinaryBytes                payload(entry.second, 0x41);
             const std::vector<DatabaseValue> values{entry.first, payload};
             ASSERT_NE(connection->execute(insertText, values), nullptr) << connection->lastError();
         }
 
-        const std::string selectText =
-            "SELECT payload FROM " + std::string(kBlobSizingTableName) + " WHERE id = ?";
+        const std::string selectText = "SELECT payload FROM " + std::string(kBlobSizingTableName) + " WHERE id = ?";
 
         // 预热：首次执行要编译语句并登记进缓存，那份一次性开销不该记进稳态读数
         const std::vector<DatabaseValue> largeRowValues{static_cast<std::int64_t>(1)};
@@ -1869,41 +1760,36 @@ namespace AsynGyanis::Database
         ASSERT_NE(connection->execute(selectText, largeRowValues), nullptr) << connection->lastError();
         ASSERT_NE(connection->execute(selectText, smallRowValues), nullptr) << connection->lastError();
 
-        const auto measureRead = [&connection, &selectText](const std::vector<DatabaseValue> &rowValues,
-                                                           const std::size_t expectedBytes,
-                                                           const std::uint64_t repetitions) -> AllocationProfile
+        const auto measureRead = [&connection, &selectText](const std::vector<DatabaseValue> &rowValues, const std::size_t expectedBytes,
+                                                            const std::uint64_t repetitions) -> AllocationProfile
         {
             return measureOperations(repetitions,
-                [&connection, &selectText, &rowValues, expectedBytes]() -> std::uint64_t
-                {
-                    const std::unique_ptr<DatabaseResult> result = connection->execute(selectText, rowValues);
-                    if (result == nullptr || !result->next())
-                    {
-                        return 0U;
-                    }
+                                     [&connection, &selectText, &rowValues, expectedBytes]() -> std::uint64_t
+                                     {
+                                         const std::unique_ptr<DatabaseResult> result = connection->execute(selectText, rowValues);
+                                         if (result == nullptr || !result->next())
+                                         {
+                                             return 0U;
+                                         }
 
-                    // 标记只认「整条载荷原样读回」：少读一个字节都不算命中，空转更算不出来
-                    const DatabaseValue value = result->getValue(0);
-                    const BinaryBytes  *bytes = std::get_if<BinaryBytes>(&value);
-                    return (bytes != nullptr && bytes->size() == expectedBytes) ? 1U : 0U;
-                });
+                                         // 标记只认「整条载荷原样读回」：少读一个字节都不算命中，空转更算不出来
+                                         const DatabaseValue value = result->getValue(0);
+                                         const BinaryBytes  *bytes = std::get_if<BinaryBytes>(&value);
+                                         return (bytes != nullptr && bytes->size() == expectedBytes) ? 1U : 0U;
+                                     });
         };
 
-        const AllocationProfile largeProfile =
-            measureRead(largeRowValues, kBlobSizingLargePayloadBytes, kBlobSizingLargeRepetitions);
-        const AllocationProfile smallProfile =
-            measureRead(smallRowValues, kBlobSizingSmallPayloadBytes, kBlobSizingSmallRepetitions);
+        const AllocationProfile largeProfile = measureRead(largeRowValues, kBlobSizingLargePayloadBytes, kBlobSizingLargeRepetitions);
+        const AllocationProfile smallProfile = measureRead(smallRowValues, kBlobSizingSmallPayloadBytes, kBlobSizingSmallRepetitions);
 
         EXPECT_EQ(largeProfile.resultSum, kBlobSizingLargeRepetitions) << "大载荷格没能每次都读回完整载荷";
         EXPECT_EQ(smallProfile.resultSum, kBlobSizingSmallRepetitions) << "小载荷格没能每次都读回完整载荷";
 
         // 对照格：MiB 级载荷至少要被搬两遍（驱动缓冲一份、交出去的 BinaryBytes 一份），读数必然远超小载荷格
         EXPECT_GE(largeProfile.bytesPerOperation, kBlobSizingLargeBytesFloor)
-            << "大载荷格每次只申请了 " << largeProfile.bytesPerOperation
-            << " 字节：读数看不见缓冲区大小，下面的上限断言就只是运气";
-        EXPECT_LE(smallProfile.bytesPerOperation, kBlobSizingBytesBudget)
-            << "同一条缓存语句改读 " << kBlobSizingSmallPayloadBytes << " 字节后仍申请 "
-            << smallProfile.bytesPerOperation << " 字节：缓冲区没有跟着本次结果收缩，而是停在了历史最大值上";
+                << "大载荷格每次只申请了 " << largeProfile.bytesPerOperation << " 字节：读数看不见缓冲区大小，下面的上限断言就只是运气";
+        EXPECT_LE(smallProfile.bytesPerOperation, kBlobSizingBytesBudget) << "同一条缓存语句改读 " << kBlobSizingSmallPayloadBytes << " 字节后仍申请 "
+                                                                          << smallProfile.bytesPerOperation << " 字节：缓冲区没有跟着本次结果收缩，而是停在了历史最大值上";
     }
 
     /**
@@ -1930,9 +1816,8 @@ namespace AsynGyanis::Database
         }
 
         {
-            OrmQuery<IntegrationProbeRow> query(*pool);
-            const std::vector<IntegrationProbeRow> rows =
-                query.where(Column(&IntegrationProbeRow::id, "id") == std::int64_t{404}).toList();
+            OrmQuery<IntegrationProbeRow>          query(*pool);
+            const std::vector<IntegrationProbeRow> rows = query.where(Column(&IntegrationProbeRow::id, "id") == std::int64_t{404}).toList();
             EXPECT_TRUE(rows.empty());
 
             OrmQuery<IntegrationProbeRow> firstQuery(*pool);
@@ -1962,15 +1847,14 @@ namespace AsynGyanis::Database
     {
         ASSERT_TRUE(prepareTable(kAsyncChainTableName, kAsyncChainColumns)) << m_lastSetupError;
 
-        std::unique_ptr<ConnectionPool> pool        = makePool(3);
-        TestSupport::EventLoopThread   &loopRunner  = asyncLoop();
+        std::unique_ptr<ConnectionPool> pool       = makePool(3);
+        TestSupport::EventLoopThread   &loopRunner = asyncLoop();
 
         // ---- insertAsync：异步写一行，随后同步写一行作对照 ----
         {
-            OrmQuery<IntegrationAsyncRow> asyncInsertQuery(*pool);
-            const TestSupport::CompletedTask<std::int64_t> inserted = loopRunner.runToCompletion(
-                asyncInsertQuery.insertAsync(IntegrationAsyncRow{.id = 1, .name = "异步写入", .note = std::string("首条")},
-                                             loopRunner.loop()));
+            OrmQuery<IntegrationAsyncRow>                  asyncInsertQuery(*pool);
+            const TestSupport::CompletedTask<std::int64_t> inserted =
+                    loopRunner.runToCompletion(asyncInsertQuery.insertAsync(IntegrationAsyncRow{.id = 1, .name = "异步写入", .note = std::string("首条")}, loopRunner.loop()));
 
             ASSERT_TRUE(inserted.finished) << "异步写入未在时限内完成";
             ASSERT_EQ(inserted.error, nullptr);
@@ -1978,20 +1862,18 @@ namespace AsynGyanis::Database
             EXPECT_EQ(inserted.value.value(), 1);
 
             OrmQuery<IntegrationAsyncRow> syncInsertQuery(*pool);
-            const std::int64_t syncAffectedRows =
-                syncInsertQuery.insert(IntegrationAsyncRow{.id = 2, .name = "同步写入", .note = std::nullopt});
+            const std::int64_t            syncAffectedRows = syncInsertQuery.insert(IntegrationAsyncRow{.id = 2, .name = "同步写入", .note = std::nullopt});
             EXPECT_EQ(inserted.value.value(), syncAffectedRows);
         }
 
         // ---- toListAsync：与同步 toList 逐行逐列比对 ----
         {
-            OrmQuery<IntegrationAsyncRow> syncQuery(*pool);
+            OrmQuery<IntegrationAsyncRow>          syncQuery(*pool);
             const std::vector<IntegrationAsyncRow> syncRows = syncQuery.orderBy(asc("id")).toList();
 
             OrmQuery<IntegrationAsyncRow> asyncQuery(*pool);
             asyncQuery.orderBy(asc("id"));
-            const TestSupport::CompletedTask<std::vector<IntegrationAsyncRow>> listed =
-                loopRunner.runToCompletion(asyncQuery.toListAsync(loopRunner.loop()));
+            const TestSupport::CompletedTask<std::vector<IntegrationAsyncRow>> listed = loopRunner.runToCompletion(asyncQuery.toListAsync(loopRunner.loop()));
 
             ASSERT_TRUE(listed.finished) << "异步查询未在时限内完成";
             ASSERT_EQ(listed.error, nullptr);
@@ -2016,11 +1898,10 @@ namespace AsynGyanis::Database
         // ---- countAsync：与同步 count 相等 ----
         {
             OrmQuery<IntegrationAsyncRow> syncCountQuery(*pool);
-            const std::int64_t syncCount = syncCountQuery.count();
+            const std::int64_t            syncCount = syncCountQuery.count();
 
-            OrmQuery<IntegrationAsyncRow> asyncCountQuery(*pool);
-            const TestSupport::CompletedTask<std::int64_t> counted =
-                loopRunner.runToCompletion(asyncCountQuery.countAsync(loopRunner.loop()));
+            OrmQuery<IntegrationAsyncRow>                  asyncCountQuery(*pool);
+            const TestSupport::CompletedTask<std::int64_t> counted = loopRunner.runToCompletion(asyncCountQuery.countAsync(loopRunner.loop()));
 
             ASSERT_TRUE(counted.finished);
             ASSERT_EQ(counted.error, nullptr);
@@ -2031,22 +1912,20 @@ namespace AsynGyanis::Database
 
         // ---- updateAsync：异步改第 1 行（备注置为 NULL），同步改第 2 行作对照 ----
         {
-            OrmQuery<IntegrationAsyncRow> asyncUpdateQuery(*pool);
-            const TestSupport::CompletedTask<std::int64_t> updated = loopRunner.runToCompletion(
-                asyncUpdateQuery.updateAsync(IntegrationAsyncRow{.id = 1, .name = "异步改后", .note = std::nullopt},
-                                             loopRunner.loop()));
+            OrmQuery<IntegrationAsyncRow>                  asyncUpdateQuery(*pool);
+            const TestSupport::CompletedTask<std::int64_t> updated =
+                    loopRunner.runToCompletion(asyncUpdateQuery.updateAsync(IntegrationAsyncRow{.id = 1, .name = "异步改后", .note = std::nullopt}, loopRunner.loop()));
             ASSERT_TRUE(updated.finished);
             ASSERT_EQ(updated.error, nullptr);
             ASSERT_TRUE(updated.value.has_value());
             EXPECT_EQ(updated.value.value(), 1);
 
             OrmQuery<IntegrationAsyncRow> syncUpdateQuery(*pool);
-            const std::int64_t syncAffectedRows = syncUpdateQuery.update(
-                IntegrationAsyncRow{.id = 2, .name = "同步改后", .note = std::string("同步备注")});
+            const std::int64_t            syncAffectedRows = syncUpdateQuery.update(IntegrationAsyncRow{.id = 2, .name = "同步改后", .note = std::string("同步备注")});
             EXPECT_EQ(updated.value.value(), syncAffectedRows);
 
             // 同步读回：逐字段核对，并且第 1 行的备注从「有值」变成了 NULL
-            OrmQuery<IntegrationAsyncRow> readQuery(*pool);
+            OrmQuery<IntegrationAsyncRow>          readQuery(*pool);
             const std::vector<IntegrationAsyncRow> rows = readQuery.orderBy(asc("id")).toList();
             ASSERT_EQ(rows.size(), 2U);
             EXPECT_EQ(rows[0].id, 1);
@@ -2059,18 +1938,16 @@ namespace AsynGyanis::Database
 
         // ---- executeNonQueryAsync 与 executeNonQuery：同一张表上按条件删除，行数对照 ----
         {
-            OrmQuery<IntegrationAsyncRow> asyncDeleteQuery(*pool);
-            const TestSupport::CompletedTask<std::int64_t> deleted = loopRunner.runToCompletion(
-                asyncDeleteQuery.where(Column(&IntegrationAsyncRow::id, "id") == std::int64_t{1})
-                                .executeNonQueryAsync(loopRunner.loop()));
+            OrmQuery<IntegrationAsyncRow>                  asyncDeleteQuery(*pool);
+            const TestSupport::CompletedTask<std::int64_t> deleted =
+                    loopRunner.runToCompletion(asyncDeleteQuery.where(Column(&IntegrationAsyncRow::id, "id") == std::int64_t{1}).executeNonQueryAsync(loopRunner.loop()));
             ASSERT_TRUE(deleted.finished);
             ASSERT_EQ(deleted.error, nullptr);
             ASSERT_TRUE(deleted.value.has_value());
             EXPECT_EQ(deleted.value.value(), 1);
 
             OrmQuery<IntegrationAsyncRow> syncDeleteQuery(*pool);
-            const std::int64_t syncDeletedRows =
-                syncDeleteQuery.where(Column(&IntegrationAsyncRow::id, "id") == std::int64_t{2}).executeNonQuery();
+            const std::int64_t            syncDeletedRows = syncDeleteQuery.where(Column(&IntegrationAsyncRow::id, "id") == std::int64_t{2}).executeNonQuery();
             EXPECT_EQ(deleted.value.value(), syncDeletedRows);
 
             // 两条删除各命中一行，表最终被清空（异步写路径同样真的落到了服务端）
@@ -2093,23 +1970,20 @@ namespace AsynGyanis::Database
         std::unique_ptr<ConnectionPool> pool       = makePool(3);
         TestSupport::EventLoopThread   &loopRunner = asyncLoop();
 
-        const std::vector<IntegrationAsyncBatchRow> batchRows{
-            IntegrationAsyncBatchRow{.id = 1, .name = "异步批量甲", .note = std::string("有备注")},
-            IntegrationAsyncBatchRow{.id = 2, .name = "异步批量乙", .note = std::nullopt},
-            // 空串与 NULL 必须能被区分开：两者在服务端上是不同的取值
-            IntegrationAsyncBatchRow{.id = 3, .name = "异步批量丙", .note = std::string("")}
-        };
+        const std::vector<IntegrationAsyncBatchRow> batchRows{IntegrationAsyncBatchRow{.id = 1, .name = "异步批量甲", .note = std::string("有备注")},
+                                                              IntegrationAsyncBatchRow{.id = 2, .name = "异步批量乙", .note = std::nullopt},
+                                                              // 空串与 NULL 必须能被区分开：两者在服务端上是不同的取值
+                                                              IntegrationAsyncBatchRow{.id = 3, .name = "异步批量丙", .note = std::string("")}};
 
-        OrmQuery<IntegrationAsyncBatchRow> asyncBatchQuery(*pool);
-        const TestSupport::CompletedTask<std::int64_t> inserted =
-            loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(batchRows, loopRunner.loop()));
+        OrmQuery<IntegrationAsyncBatchRow>             asyncBatchQuery(*pool);
+        const TestSupport::CompletedTask<std::int64_t> inserted = loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(batchRows, loopRunner.loop()));
 
         ASSERT_TRUE(inserted.finished) << "异步批量插入未在时限内完成";
         ASSERT_EQ(inserted.error, nullptr);
         ASSERT_TRUE(inserted.value.has_value());
         EXPECT_EQ(inserted.value.value(), 3);
 
-        OrmQuery<IntegrationAsyncBatchRow> asyncReadQuery(*pool);
+        OrmQuery<IntegrationAsyncBatchRow>          asyncReadQuery(*pool);
         const std::vector<IntegrationAsyncBatchRow> asyncRows = asyncReadQuery.orderBy(asc("id")).toList();
         ASSERT_EQ(asyncRows.size(), batchRows.size());
         for (std::size_t index = 0; index < batchRows.size(); ++index)
@@ -2126,7 +2000,7 @@ namespace AsynGyanis::Database
         OrmQuery<IntegrationAsyncBatchRow> syncBatchQuery(*pool);
         EXPECT_EQ(syncBatchQuery.insertBatch(batchRows), inserted.value.value());
 
-        OrmQuery<IntegrationAsyncBatchRow> syncReadQuery(*pool);
+        OrmQuery<IntegrationAsyncBatchRow>          syncReadQuery(*pool);
         const std::vector<IntegrationAsyncBatchRow> syncRows = syncReadQuery.orderBy(asc("id")).toList();
         ASSERT_EQ(syncRows.size(), asyncRows.size());
         for (std::size_t index = 0; index < syncRows.size(); ++index)
@@ -2152,22 +2026,20 @@ namespace AsynGyanis::Database
 
         // 同步版先把失败原因固定下来
         OrmQuery<IntegrationAsyncMissingRow> syncQuery(*pool);
-        std::string syncMessage;
+        std::string                          syncMessage;
         try
         {
             static_cast<void>(syncQuery.insert(IntegrationAsyncMissingRow{.id = 1}));
             FAIL() << "表不存在时同步插入应当抛出 std::runtime_error";
-        }
-        catch (const std::runtime_error &exception)
+        } catch (const std::runtime_error &exception)
         {
             syncMessage = exception.what();
         }
         EXPECT_NE(syncMessage.find("语句执行失败"), std::string::npos) << syncMessage;
         EXPECT_TRUE(containsLocalizedText(syncMessage)) << syncMessage;
 
-        OrmQuery<IntegrationAsyncMissingRow> asyncQuery(*pool);
-        const TestSupport::CompletedTask<std::int64_t> inserted = loopRunner.runToCompletion(
-            asyncQuery.insertAsync(IntegrationAsyncMissingRow{.id = 1}, loopRunner.loop()));
+        OrmQuery<IntegrationAsyncMissingRow>           asyncQuery(*pool);
+        const TestSupport::CompletedTask<std::int64_t> inserted = loopRunner.runToCompletion(asyncQuery.insertAsync(IntegrationAsyncMissingRow{.id = 1}, loopRunner.loop()));
 
         ASSERT_TRUE(inserted.finished) << "写失败也必须完成（否则协程会被永久挂起）";
         ASSERT_NE(inserted.error, nullptr);
@@ -2178,8 +2050,7 @@ namespace AsynGyanis::Database
             // rethrow_exception 是 [[noreturn]]：后面写 FAIL() 只会被判成不可达代码（/W4 C4702）。
             // 若抛出的类型与下面的 catch 不符，异常会继续外传，gtest 同样把这条测试判失败
             std::rethrow_exception(inserted.error);
-        }
-        catch (const std::runtime_error &exception)
+        } catch (const std::runtime_error &exception)
         {
             // 类型与消息都与同步版相同：异常原样穿过工作线程与调度投递，没有被包装或降级
             EXPECT_EQ(std::string(exception.what()), syncMessage);
@@ -2214,8 +2085,7 @@ namespace AsynGyanis::Database
             EXPECT_EQ(1, transactionalQuery.insert(IntegrationTransactionRow{.id = 1, .name = "事务提交", .amount = 12.5}));
 
             // 提交之前：写者自己的连接能读到，另一条连接读不到
-            const std::optional<IntegrationTransactionRow> uncommittedRow =
-                transactionalQuery.where(Column(&IntegrationTransactionRow::id, "id") == std::int64_t{1}).first();
+            const std::optional<IntegrationTransactionRow> uncommittedRow = transactionalQuery.where(Column(&IntegrationTransactionRow::id, "id") == std::int64_t{1}).first();
             ASSERT_TRUE(uncommittedRow.has_value());
             EXPECT_EQ(uncommittedRow->name, "事务提交");
             EXPECT_EQ(countRows(*observer, kTransactionCommitTableName), 0);
@@ -2226,8 +2096,7 @@ namespace AsynGyanis::Database
 
         // 提交之后：另一条连接立刻可见，且字段值完整
         EXPECT_EQ(countRows(*observer, kTransactionCommitTableName), 1);
-        const std::optional<std::string> committedName =
-            readTransactionRowName(*observer, kTransactionCommitTableName, 1);
+        const std::optional<std::string> committedName = readTransactionRowName(*observer, kTransactionCommitTableName, 1);
         ASSERT_TRUE(committedName.has_value());
         EXPECT_EQ(committedName.value(), "事务提交");
     }
@@ -2243,8 +2112,7 @@ namespace AsynGyanis::Database
         {
             Transaction transaction(*pool);
 
-            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionRollbackTableName, 1, "事务回滚", 3.5))
-                << transaction.connection().lastError();
+            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionRollbackTableName, 1, "事务回滚", 3.5)) << transaction.connection().lastError();
             // 事务内可见：证明这一行确实被写进去过，回滚要撤销的是真实存在的数据
             EXPECT_EQ(countRows(transaction.connection(), kTransactionRollbackTableName), 1);
 
@@ -2274,8 +2142,7 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(connection->connect()) << connection->lastError();
 
         ASSERT_TRUE(connection->beginTransaction()) << connection->lastError();
-        ASSERT_TRUE(insertTransactionRow(*connection, kTransactionResetTableName, 1, "会话复位", 1.5))
-                << connection->lastError();
+        ASSERT_TRUE(insertTransactionRow(*connection, kTransactionResetTableName, 1, "会话复位", 1.5)) << connection->lastError();
         // 事务内可见：证明这一行确实被写进去过，复位要撤销的是真实存在的数据
         ASSERT_EQ(countRows(*connection, kTransactionResetTableName), 1);
 
@@ -2297,8 +2164,7 @@ namespace AsynGyanis::Database
         std::unique_ptr<ConnectionPool> pool = makePool(3);
         {
             Transaction transaction(*pool);
-            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionDestructorTableName, 1, "析构未提交", 1.0))
-                << transaction.connection().lastError();
+            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionDestructorTableName, 1, "析构未提交", 1.0)) << transaction.connection().lastError();
             // 事务内可见，说明行已写入、只是没提交
             EXPECT_EQ(countRows(transaction.connection(), kTransactionDestructorTableName), 1);
             EXPECT_TRUE(transaction.isActive());
@@ -2323,9 +2189,7 @@ namespace AsynGyanis::Database
         // 第一步：先提交一行，作为「事务之前已落库」的既有数据
         {
             Transaction committedTransaction(*pool);
-            ASSERT_TRUE(insertTransactionRow(committedTransaction.connection(), kTransactionExceptionTableName, 1,
-                                             "已提交", 1.0))
-                << committedTransaction.connection().lastError();
+            ASSERT_TRUE(insertTransactionRow(committedTransaction.connection(), kTransactionExceptionTableName, 1, "已提交", 1.0)) << committedTransaction.connection().lastError();
             ASSERT_TRUE(committedTransaction.commit()) << committedTransaction.lastError();
         }
 
@@ -2333,13 +2197,10 @@ namespace AsynGyanis::Database
         try
         {
             Transaction failingTransaction(*pool);
-            ASSERT_TRUE(insertTransactionRow(failingTransaction.connection(), kTransactionExceptionTableName, 2,
-                                             "异常未提交", 2.0))
-                << failingTransaction.connection().lastError();
+            ASSERT_TRUE(insertTransactionRow(failingTransaction.connection(), kTransactionExceptionTableName, 2, "异常未提交", 2.0)) << failingTransaction.connection().lastError();
 
             throw std::runtime_error("模拟业务异常：事务应当被析构函数回滚");
-        }
-        catch (const std::runtime_error &)
+        } catch (const std::runtime_error &)
         {
             // 异常已被事务对象在栈展开时处理（析构补一次 ROLLBACK），此处只负责继续断言
         }
@@ -2360,7 +2221,7 @@ namespace AsynGyanis::Database
      */
     TEST_F(MySqlIntegrationTest, TableExistsIgnoresViewsAndStillSeesBaseTables)
     {
-        const std::string objectName = "asyngyanis_itg_view_" + std::to_string(std::random_device{}());
+        const std::string  objectName = "asyngyanis_itg_view_" + std::to_string(std::random_device{}());
         const MySqlDialect dialect;
 
         std::unique_ptr<ConnectionPool> pool       = makePool(1);
@@ -2370,9 +2231,8 @@ namespace AsynGyanis::Database
         // 计数只读元数据，不碰任何业务表：走方言自己给的语句与参数，判据与 SchemaMigrator 一致
         const auto countMetadataMatches = [&connection, &dialect](const std::string &name) -> std::int64_t
         {
-            const SqlStatement            probeStatement = dialect.tableExistsStatement(name);
-            const std::unique_ptr<DatabaseResult> result =
-                connection->execute(std::string_view{probeStatement.sql}, probeStatement.parameters);
+            const SqlStatement                    probeStatement = dialect.tableExistsStatement(name);
+            const std::unique_ptr<DatabaseResult> result         = connection->execute(std::string_view{probeStatement.sql}, probeStatement.parameters);
             EXPECT_NE(result, nullptr) << connection->lastError();
             if (result == nullptr || !result->next())
             {
@@ -2381,14 +2241,12 @@ namespace AsynGyanis::Database
             return std::get<std::int64_t>(result->getValue(0));
         };
 
-        ASSERT_TRUE(connection->execute("CREATE VIEW " + objectName + " AS SELECT 1 AS one") != nullptr)
-            << connection->lastError();
+        ASSERT_TRUE(connection->execute("CREATE VIEW " + objectName + " AS SELECT 1 AS one") != nullptr) << connection->lastError();
         EXPECT_EQ(countMetadataMatches(objectName), 0) << "视图被算成了基表：建表会被跳过，写入却落在视图上";
 
         // 换名前的视图必须先撤掉才能建同名基表（名字空间共用），建好之后计数必须是 1
         ASSERT_TRUE(connection->execute("DROP VIEW " + objectName) != nullptr) << connection->lastError();
-        ASSERT_TRUE(connection->execute("CREATE TABLE " + objectName + " (id INT PRIMARY KEY)") != nullptr)
-            << connection->lastError();
+        ASSERT_TRUE(connection->execute("CREATE TABLE " + objectName + " (id INT PRIMARY KEY)") != nullptr) << connection->lastError();
         EXPECT_EQ(countMetadataMatches(objectName), 1) << "table_type 过滤把基表也一起排除了";
 
         EXPECT_TRUE(connection->execute("DROP TABLE " + objectName) != nullptr) << connection->lastError();
@@ -2409,14 +2267,10 @@ namespace AsynGyanis::Database
         PooledConnection                connection = pool->acquire();
         ASSERT_TRUE(connection);
 
-        ASSERT_TRUE(connection->execute("CREATE TABLE " + tableName
-                                        + " (id INT PRIMARY KEY, flags BIT(8), one BIT(1), wide BIT(64))")
-                    != nullptr)
-            << connection->lastError();
-        ASSERT_TRUE(connection->execute("INSERT INTO " + tableName
-                                        + " VALUES (1, b'11001000', b'0', b'1111111111111111111111111111111111111111111111111111111111111111')")
-                    != nullptr)
-            << connection->lastError();
+        ASSERT_TRUE(connection->execute("CREATE TABLE " + tableName + " (id INT PRIMARY KEY, flags BIT(8), one BIT(1), wide BIT(64))") != nullptr) << connection->lastError();
+        ASSERT_TRUE(connection->execute("INSERT INTO " + tableName + " VALUES (1, b'11001000', b'0', b'1111111111111111111111111111111111111111111111111111111111111111')") !=
+                    nullptr)
+                << connection->lastError();
 
         // ---- 文本协议（mysql_store_result）----
         const std::unique_ptr<DatabaseResult> textResult = connection->execute("SELECT flags, one, wide FROM " + tableName);
@@ -2429,8 +2283,7 @@ namespace AsynGyanis::Database
 
         // ---- 二进制协议（mysql_stmt_* 预处理语句）----
         const std::unique_ptr<DatabaseResult> preparedResult =
-            connection->execute("SELECT flags, one, wide FROM " + tableName + " WHERE id = ?",
-                                std::vector<DatabaseValue>{std::int64_t{1}});
+                connection->execute("SELECT flags, one, wide FROM " + tableName + " WHERE id = ?", std::vector<DatabaseValue>{std::int64_t{1}});
         ASSERT_TRUE(preparedResult != nullptr) << connection->lastError();
         ASSERT_TRUE(preparedResult->next());
         EXPECT_EQ(std::get<std::int64_t>(preparedResult->getValue(0)), 200);
@@ -2453,7 +2306,7 @@ namespace AsynGyanis::Database
         const std::string insertPrefix = "INSERT INTO " + quote(kAutoIncrementTableName) + " (`name`) VALUES (";
 
         // ---- 预处理协议：只给 name，id 由服务端生成 ----
-        const std::vector<DatabaseValue> parameters{std::string("甲")};
+        const std::vector<DatabaseValue>      parameters{std::string("甲")};
         const std::unique_ptr<DatabaseResult> firstReceipt = connection.execute(insertPrefix + "?)", parameters);
         ASSERT_NE(firstReceipt, nullptr) << connection.lastError();
         EXPECT_EQ(firstReceipt->affectedRowCount(), 1);
@@ -2467,16 +2320,14 @@ namespace AsynGyanis::Database
         EXPECT_EQ(secondReceipt->lastInsertRowId(), 2) << "两条协议路径的自增标识口径不一致";
 
         // 标识要指向真那一行：只比计数器查不出「计数器对、行没写进去」
-        const std::unique_ptr<DatabaseResult> readBack = connection.execute(
-            "SELECT `name` FROM " + quote(kAutoIncrementTableName) + " WHERE `id` = 2");
+        const std::unique_ptr<DatabaseResult> readBack = connection.execute("SELECT `name` FROM " + quote(kAutoIncrementTableName) + " WHERE `id` = 2");
         ASSERT_NE(readBack, nullptr) << connection.lastError();
         ASSERT_TRUE(readBack->next());
         EXPECT_EQ(std::get<std::string>(readBack->getValue(std::size_t{0})), "乙");
 
         // 非插入的写语句要回 0：服务端每条 OK 包都带这个字段，未生成时给的是 0，
         // 而不是上一条 INSERT 的值——把残值交给调用方是最容易被当成主键用的那类错
-        const std::unique_ptr<DatabaseResult> updateReceipt = connection.execute(
-            "UPDATE " + quote(kAutoIncrementTableName) + " SET `name` = '丙' WHERE `id` = 1");
+        const std::unique_ptr<DatabaseResult> updateReceipt = connection.execute("UPDATE " + quote(kAutoIncrementTableName) + " SET `name` = '丙' WHERE `id` = 1");
         ASSERT_NE(updateReceipt, nullptr) << connection.lastError();
         EXPECT_EQ(updateReceipt->affectedRowCount(), 1);
         EXPECT_EQ(updateReceipt->lastInsertRowId(), 0) << "写回执把上一条插入的自增标识冒充成了本条的结果";
@@ -2500,7 +2351,7 @@ namespace AsynGyanis::Database
         const std::string insertStatement = "INSERT INTO " + quote(kPlainKeyTableName) + " (`id`, `name`) VALUES (?, ?)";
         for (const std::int64_t id: {std::int64_t{11}, std::int64_t{12}})
         {
-            const std::vector<DatabaseValue> parameters{id, std::string("手填主键")};
+            const std::vector<DatabaseValue>      parameters{id, std::string("手填主键")};
             const std::unique_ptr<DatabaseResult> receipt = connection.execute(insertStatement, parameters);
             ASSERT_NE(receipt, nullptr) << connection.lastError();
             // 主键由调用方给定，服务端没有「生成」任何东西；显式给的值不该被当成生成结果
@@ -2520,13 +2371,11 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(connection.connect()) << connection.lastError();
 
         // 把自增起点播种到 2^63：下一条 INSERT 生成的值就落在 int64 能表达的最大值之外一格
-        const std::string seedStatement = "ALTER TABLE " + quote(kWideAutoIncrementTableName) + " AUTO_INCREMENT = " +
-                                          std::to_string(kWideAutoIncrementSeed);
+        const std::string seedStatement = "ALTER TABLE " + quote(kWideAutoIncrementTableName) + " AUTO_INCREMENT = " + std::to_string(kWideAutoIncrementSeed);
         ASSERT_NE(connection.execute(seedStatement), nullptr) << connection.lastError();
 
-        const std::vector<DatabaseValue> parameters{std::string("超宽")};
-        const std::unique_ptr<DatabaseResult> receipt = connection.execute(
-            "INSERT INTO " + quote(kWideAutoIncrementTableName) + " (`name`) VALUES (?)", parameters);
+        const std::vector<DatabaseValue>      parameters{std::string("超宽")};
+        const std::unique_ptr<DatabaseResult> receipt = connection.execute("INSERT INTO " + quote(kWideAutoIncrementTableName) + " (`name`) VALUES (?)", parameters);
         ASSERT_NE(receipt, nullptr) << connection.lastError();
 
         // 行确实写进去了（起点被服务端接受），否则「报 0」可能只是插入没成功的假证据
@@ -2552,21 +2401,19 @@ namespace AsynGyanis::Database
         MySqlConnection connection(configuration());
         ASSERT_TRUE(connection.connect()) << connection.lastError();
 
-        const std::vector<DatabaseValue> insertParameters{std::string("原值")};
-        const std::unique_ptr<DatabaseResult> insertReceipt = connection.execute(
-            "INSERT INTO " + quote(kNoOpUpdateTableName) + " (`name`) VALUES (?)", insertParameters);
+        const std::vector<DatabaseValue>      insertParameters{std::string("原值")};
+        const std::unique_ptr<DatabaseResult> insertReceipt = connection.execute("INSERT INTO " + quote(kNoOpUpdateTableName) + " (`name`) VALUES (?)", insertParameters);
         ASSERT_NE(insertReceipt, nullptr) << connection.lastError();
         const std::int64_t targetId = insertReceipt->lastInsertRowId();
         ASSERT_GT(targetId, 0);
 
         // 同样的值再写一次：行被匹配到了，但没有一格的值发生变化
-        const std::vector<DatabaseValue> sameValueParameters{std::string("原值"), targetId};
-        const std::unique_ptr<DatabaseResult> noOpPrepared = connection.execute(
-            "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", sameValueParameters);
+        const std::vector<DatabaseValue>      sameValueParameters{std::string("原值"), targetId};
+        const std::unique_ptr<DatabaseResult> noOpPrepared = connection.execute("UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", sameValueParameters);
         ASSERT_NE(noOpPrepared, nullptr) << connection.lastError();
 
-        const std::unique_ptr<DatabaseResult> noOpText = connection.execute(
-            "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = '原值' WHERE `id` = " + std::to_string(targetId));
+        const std::unique_ptr<DatabaseResult> noOpText =
+                connection.execute("UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = '原值' WHERE `id` = " + std::to_string(targetId));
         ASSERT_NE(noOpText, nullptr) << connection.lastError();
 
         // 两条协议路径必须同口径，否则调用方换个入口就会拿到不同的数
@@ -2574,16 +2421,14 @@ namespace AsynGyanis::Database
         EXPECT_EQ(noOpText->affectedRowCount(), 1) << "文本路径与预处理路径口径不一致";
 
         // 真改了值同样算一行：排除「本驱动把所有 UPDATE 都记成 1」这种误读
-        const std::vector<DatabaseValue> changedParameters{std::string("新值"), targetId};
-        const std::unique_ptr<DatabaseResult> changedReceipt = connection.execute(
-            "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", changedParameters);
+        const std::vector<DatabaseValue>      changedParameters{std::string("新值"), targetId};
+        const std::unique_ptr<DatabaseResult> changedReceipt = connection.execute("UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", changedParameters);
         ASSERT_NE(changedReceipt, nullptr) << connection.lastError();
         EXPECT_EQ(changedReceipt->affectedRowCount(), 1);
 
         // 行不存在是 0：与上面那一格分得开，这正是「0 就是没找到」这个分支能成立的前提
-        const std::vector<DatabaseValue> missingParameters{std::string("新值"), targetId + 1000};
-        const std::unique_ptr<DatabaseResult> missingReceipt = connection.execute(
-            "UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", missingParameters);
+        const std::vector<DatabaseValue>      missingParameters{std::string("新值"), targetId + 1000};
+        const std::unique_ptr<DatabaseResult> missingReceipt = connection.execute("UPDATE " + quote(kNoOpUpdateTableName) + " SET `name` = ? WHERE `id` = ?", missingParameters);
         ASSERT_NE(missingReceipt, nullptr) << connection.lastError();
         EXPECT_EQ(missingReceipt->affectedRowCount(), 0);
     }
@@ -2601,9 +2446,9 @@ namespace AsynGyanis::Database
     struct Queryable::TableSchema<IntegrationTicketRow>
     {
         static constexpr std::string_view kTableName = kOrmAutoIncrementTableName;
-        static constexpr auto kColumns = std::tuple{
-            Column(&IntegrationTicketRow::id, "id"),
-            Column(&IntegrationTicketRow::name, "name"),
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationTicketRow::id, "id"),
+                Column(&IntegrationTicketRow::name, "name"),
         };
         static constexpr std::string_view kPrimaryKey                = "id";
         static constexpr bool             kIsAutoIncrementPrimaryKey = true;
@@ -2629,13 +2474,11 @@ namespace AsynGyanis::Database
 
         OrmQuery<IntegrationTicketRow> query(*pool);
         // 结构体里刻意填了主键值：声明为自增之后它必须被忽略
-        EXPECT_EQ(query.insertAndGetGeneratedId(IntegrationTicketRow{999, "第一张"}), 1)
-                << "自增主键仍被写进 INSERT：显式值占了号段";
+        EXPECT_EQ(query.insertAndGetGeneratedId(IntegrationTicketRow{999, "第一张"}), 1) << "自增主键仍被写进 INSERT：显式值占了号段";
         EXPECT_EQ(query.insertAndGetGeneratedId(IntegrationTicketRow{0, "第二张"}), 2);
 
         // 批量路径同样省略主键：三行的标识必须接着往下走
-        const std::vector<IntegrationTicketRow> batchRows{
-            IntegrationTicketRow{0, "第三张"}, IntegrationTicketRow{0, "第四张"}, IntegrationTicketRow{0, "第五张"}};
+        const std::vector<IntegrationTicketRow> batchRows{IntegrationTicketRow{0, "第三张"}, IntegrationTicketRow{0, "第四张"}, IntegrationTicketRow{0, "第五张"}};
         ASSERT_EQ(query.insertBatch(batchRows), 3);
 
         const std::vector<IntegrationTicketRow> rows = query.orderBy(asc("id")).toList();

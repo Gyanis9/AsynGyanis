@@ -52,16 +52,16 @@ namespace AsynGyanis::Net
                 return false;
             }
 
-            const std::string_view remainder = version.substr(kVersionPrefix.size());
-            const std::size_t dotPosition = remainder.find('.');
+            const std::string_view remainder   = version.substr(kVersionPrefix.size());
+            const std::size_t      dotPosition = remainder.find('.');
             // "HTTP/1"（缺小数点）与 "HTTP/1."（次版本为空）都读不懂，一律拒绝而不是猜一个默认值
             if (dotPosition == std::string_view::npos || dotPosition == 0 || dotPosition + 1 >= remainder.size())
             {
                 return false;
             }
 
-            const std::string_view majorText = remainder.substr(0, dotPosition);
-            const std::string_view minorText = remainder.substr(dotPosition + 1);
+            const std::string_view majorText         = remainder.substr(0, dotPosition);
+            const std::string_view minorText         = remainder.substr(dotPosition + 1);
             const auto [majorEndPointer, majorError] = std::from_chars(majorText.data(), majorText.data() + majorText.size(), majorVersion);
             const auto [minorEndPointer, minorError] = std::from_chars(minorText.data(), minorText.data() + minorText.size(), minorVersion);
 
@@ -83,13 +83,11 @@ namespace AsynGyanis::Net
             // 每 3 字节编成 4 个字符：24 位正好切成四段 6 位
             for (std::size_t index = 0; index < bytes.size(); index += 3)
             {
-                const std::size_t remainingLength = bytes.size() - index;
-                const std::uint32_t firstByte = static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index]));
-                const std::uint32_t secondByte =
-                        remainingLength > 1 ? static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 1])) : 0U;
-                const std::uint32_t thirdByte =
-                        remainingLength > 2 ? static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 2])) : 0U;
-                const std::uint32_t groupValue = (firstByte << 16) | (secondByte << 8) | thirdByte;
+                const std::size_t   remainingLength = bytes.size() - index;
+                const std::uint32_t firstByte       = static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index]));
+                const std::uint32_t secondByte      = remainingLength > 1 ? static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 1])) : 0U;
+                const std::uint32_t thirdByte       = remainingLength > 2 ? static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 2])) : 0U;
+                const std::uint32_t groupValue      = (firstByte << 16) | (secondByte << 8) | thirdByte;
 
                 encoded.push_back(kBase64Alphabet[(groupValue >> 18) & 0x3FU]);
                 encoded.push_back(kBase64Alphabet[(groupValue >> 12) & 0x3FU]);
@@ -126,8 +124,8 @@ namespace AsynGyanis::Net
             decoded.clear();
             decoded.reserve(dataLength / 4 * 3 + 3);
 
-            std::uint32_t accumulator = 0;
-            std::size_t accumulatorBitCount = 0;
+            std::uint32_t accumulator         = 0;
+            std::size_t   accumulatorBitCount = 0;
             for (std::size_t index = 0; index < dataLength; ++index)
             {
                 const std::size_t encodedValue = kBase64Alphabet.find(text[index]);
@@ -170,9 +168,8 @@ namespace AsynGyanis::Net
             }
 
             unsigned int digestLength = 0;
-            const bool isSucceeded = EVP_DigestInit_ex(context, EVP_sha1(), nullptr) == 1 &&
-                                     EVP_DigestUpdate(context, data.data(), data.size()) == 1 &&
-                                     EVP_DigestFinal_ex(context, digest.data(), &digestLength) == 1;
+            const bool   isSucceeded  = EVP_DigestInit_ex(context, EVP_sha1(), nullptr) == 1 && EVP_DigestUpdate(context, data.data(), data.size()) == 1 &&
+                                        EVP_DigestFinal_ex(context, digest.data(), &digestLength) == 1;
             // 无论成败都先释放上下文：这条路径可能因抛出而退出，漏掉就是每连接一次的句柄泄漏
             EVP_MD_CTX_free(context);
 

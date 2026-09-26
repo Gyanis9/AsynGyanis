@@ -1,5 +1,5 @@
-#include "Net/Quic/Codec/QuicRawBytes.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
+#include "Net/Quic/Codec/QuicRawBytes.h"
 
 #include <array>
 #include <format>
@@ -19,8 +19,8 @@ namespace AsynGyanis::Net
         }
 
         // 首字节高 2 位是「字节数以 2 为底的对数」：1→00、2→01、4→10、8→11（RFC 9000 §16 表 4）
-        std::size_t remainingWidth = byteWidth;
-        std::uint8_t lengthPrefix = 0;
+        std::size_t  remainingWidth = byteWidth;
+        std::uint8_t lengthPrefix   = 0;
         while (remainingWidth > 1)
         {
             remainingWidth >>= 1;
@@ -32,7 +32,7 @@ namespace AsynGyanis::Net
         for (std::size_t byteIndex = 0; byteIndex < byteWidth; ++byteIndex)
         {
             const std::size_t shiftBitCount = (byteWidth - 1 - byteIndex) * 8;
-            encoded[byteIndex] = static_cast<std::uint8_t>((value >> shiftBitCount) & 0xFFULL);
+            encoded[byteIndex]              = static_cast<std::uint8_t>((value >> shiftBitCount) & 0xFFULL);
         }
         // 档位选择保证了值只用到低 (8*宽度-2) 位，首字节的高 2 位仍是空的，可以直接并上前缀
         encoded[0] = static_cast<std::uint8_t>(encoded[0] | lengthPrefix);
@@ -43,19 +43,16 @@ namespace AsynGyanis::Net
     {
         if (bytes.empty())
         {
-            return std::unexpected(QuicDecodeError{
-                    QuicDecodeErrorKind::Truncated,
-                    "变长整数至少需要 1 个字节，当前一个字节都没有：请确认确实还有数据要解"});
+            return std::unexpected(QuicDecodeError{QuicDecodeErrorKind::Truncated, "变长整数至少需要 1 个字节，当前一个字节都没有：请确认确实还有数据要解"});
         }
 
         // 首字节高 2 位是「字节数以 2 为底的对数」，左移即得本数宽度（RFC 9000 §16 与附录 A.1 的样例算法）
         const std::size_t byteWidth = std::size_t{1} << (static_cast<std::size_t>(bytes[0]) >> 6);
         if (bytes.size() < byteWidth)
         {
-            return std::unexpected(QuicDecodeError{
-                    QuicDecodeErrorKind::Truncated,
-                    std::format("变长整数的首字节 0x{:02X} 声明本数占 {} 字节，但只剩 {} 字节：报文在此处断了，本包只能整包丢弃",
-                                static_cast<unsigned int>(bytes[0]), byteWidth, bytes.size())});
+            return std::unexpected(
+                    QuicDecodeError{QuicDecodeErrorKind::Truncated, std::format("变长整数的首字节 0x{:02X} 声明本数占 {} 字节，但只剩 {} 字节：报文在此处断了，本包只能整包丢弃",
+                                                                                static_cast<unsigned int>(bytes[0]), byteWidth, bytes.size())});
         }
 
         // 先抹掉高 2 位的前缀，再把其余字节按网络序并进低位（附录 A.1：v = v & 0x3f 后逐字节左移相加）

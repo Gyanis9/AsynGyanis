@@ -9,10 +9,10 @@
 #include "Core/EventLoop/TimerQueue.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
 #include "Core/Tls/TlsPolicy.h"
-#include "Platform/IO/DatagramSocket.h"
-#include "Platform/System/PlatformError.h"
 #include "Net/Http/Router.h"
 #include "Net/Quic/Codec/QuicPacketHeader.h"
+#include "Platform/IO/DatagramSocket.h"
+#include "Platform/System/PlatformError.h"
 
 #include <algorithm>
 #include <cstring>
@@ -68,13 +68,12 @@ namespace AsynGyanis::Net
          * @note 递给 SSL_select_next_proto 的服务端列表必须是**线格式**（首字节是长度、后面是协议名），
          *       只给裸 "h3" 一个字节串它永远匹配不上——握手会停在 ALPN 这一步
          */
-        int selectApplicationProtocol(SSL *, const unsigned char **out, unsigned char *outLength, const unsigned char *clientList,
-                                      const unsigned int clientListLength, void *)
+        int selectApplicationProtocol(SSL *, const unsigned char **out, unsigned char *outLength, const unsigned char *clientList, const unsigned int clientListLength, void *)
         {
             // 线格式的服务端列表：{2, 'h', '3'}
             static constexpr unsigned char kServerProtocols[] = {2, 'h', '3'};
-            if (SSL_select_next_proto(const_cast<unsigned char **>(out), outLength, kServerProtocols, sizeof(kServerProtocols), clientList,
-                                      clientListLength) != OPENSSL_NPN_NEGOTIATED)
+            if (SSL_select_next_proto(const_cast<unsigned char **>(out), outLength, kServerProtocols, sizeof(kServerProtocols), clientList, clientListLength) !=
+                OPENSSL_NPN_NEGOTIATED)
             {
                 return SSL_TLSEXT_ERR_ALERT_FATAL;
             }
@@ -96,8 +95,7 @@ namespace AsynGyanis::Net
         {
             if (policy.maximumProtocolVersion == Core::TlsPolicy::ProtocolVersion::Tls1_2)
             {
-                throw Base::SystemException(
-                    "QUIC 服务端启动失败：TLS 策略把最高版本限定在 TLS 1.2，而 QUIC 只跑 TLS 1.3（RFC 9001）");
+                throw Base::SystemException("QUIC 服务端启动失败：TLS 策略把最高版本限定在 TLS 1.2，而 QUIC 只跑 TLS 1.3（RFC 9001）");
             }
             // 内置套件串传空：1.2 及以下的列表对一条只跑 1.3 的通路没有意义，
             // 套上去只会留下一份永远不会被用到的偏好
@@ -109,8 +107,7 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration) :
-        m_eventLoop(eventLoop), m_configuration(std::move(configuration)), m_expiryTicker(eventLoop)
+    QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration) : m_eventLoop(eventLoop), m_configuration(std::move(configuration)), m_expiryTicker(eventLoop)
     {
         // 构造期任一检查不过都要抛，而抛出去之后析构函数不会跑——成员那份裸指针就此无人认领。
         // 所以先让局部守卫持有，只有全部检查过了才交接给成员（一份 SSL_CTX 连带证书与私钥约 35 KiB）
@@ -172,8 +169,7 @@ namespace AsynGyanis::Net
         m_datagramSocket = Platform::DatagramSocket::bindTo(localSocketAddress);
         if (!m_datagramSocket.isValid())
         {
-            throw Base::SystemException("QUIC 服务端启动失败：UDP 端口绑定失败（套接字错误码 " +
-                                        std::to_string(Platform::PlatformError::lastSocketErrorCode()) + "）");
+            throw Base::SystemException("QUIC 服务端启动失败：UDP 端口绑定失败（套接字错误码 " + std::to_string(Platform::PlatformError::lastSocketErrorCode()) + "）");
         }
 
         const Platform::SocketAddress boundAddress = m_datagramSocket.localAddress();
@@ -201,18 +197,16 @@ namespace AsynGyanis::Net
         while (!m_isStopped.load(std::memory_order_acquire))
         {
             // 结果按值回来（惰性协程不往调用方的引用里写：实参可能比 await 先亡）
-            const Core::AsyncUdpSocket::DatagramReceiveResult received =
-                    co_await m_socket->asyncReceiveFrom(receiveBuffer.data(), receiveBuffer.size());
-            const ssize_t                  receivedLength = received.receivedByteCount;
-            const Platform::SocketAddress &peerAddress    = received.peerAddress;
+            const Core::AsyncUdpSocket::DatagramReceiveResult received       = co_await m_socket->asyncReceiveFrom(receiveBuffer.data(), receiveBuffer.size());
+            const ssize_t                                     receivedLength = received.receivedByteCount;
+            const Platform::SocketAddress                    &peerAddress    = received.peerAddress;
             if (receivedLength < 0)
             {
                 // 「对端已经不在了」那一类 socket 错误（Windows 的 WSAECONNRESET、Linux 的
                 // EHOSTUNREACH/ECONNREFUSED）是 ICMP 替某个已消失的对端捎来的回声：报文层面没改变本端
                 // 任何状态，套接字还能用。这里必须**继续读**而不是退出——退出等于让一个消失的对端把整台
                 // 服务器变成不再接受任何来源（端口还在、进程还在、只是没人再读报文）
-                if (received.socketErrorCode != 0 && m_socket->isValid() &&
-                    !m_isStopped.load(std::memory_order_acquire))
+                if (received.socketErrorCode != 0 && m_socket->isValid() && !m_isStopped.load(std::memory_order_acquire))
                 {
                     if (auto &throttle = ASYN_LOG_THROTTLED(kReceiveErrorLogWindow); throttle.acquire())
                     {
@@ -325,8 +319,7 @@ namespace AsynGyanis::Net
                     {
                         continue; // 已经收口摘掉了
                     }
-                    if (const Http3Session *session = findHttp3Session(connectionEntry->second.get());
-                        session != nullptr && session->hasOutstandingWork())
+                    if (const Http3Session *session = findHttp3Session(connectionEntry->second.get()); session != nullptr && session->hasOutstandingWork())
                     {
                         ++busyConnectionCount;
                     }
@@ -338,8 +331,7 @@ namespace AsynGyanis::Net
                 }
                 if (std::chrono::steady_clock::now() >= deadline)
                 {
-                    LOG_INFO_FMT("QuicServer: 优雅收口等待超时，剩余 {} 条仍有在途工作的连接被强制关闭。等待时长 {}ms",
-                                 busyConnectionCount, drainTimeout.count());
+                    LOG_INFO_FMT("QuicServer: 优雅收口等待超时，剩余 {} 条仍有在途工作的连接被强制关闭。等待时长 {}ms", busyConnectionCount, drainTimeout.count());
                     break;
                 }
                 // 等待期间的驱动不用本协程操心：定时循环只看 m_isStopped，它会继续刷包、
@@ -376,15 +368,13 @@ namespace AsynGyanis::Net
         // 目录是唯一说得清的顺序，这里当场拒而不是「配了但没人服务它」
         if (m_router == nullptr)
         {
-            throw Base::InvalidArgumentException(
-                "QUIC 服务端配置失败：设置静态目录之前必须先 setRouter()——兜底路由要登记在那台路由器上，"
-                "而本服务端不持有路由器");
+            throw Base::InvalidArgumentException("QUIC 服务端配置失败：设置静态目录之前必须先 setRouter()——兜底路由要登记在那台路由器上，"
+                                                 "而本服务端不持有路由器");
         }
         // 限额没配时取默认档那一个值：与 h3 其它配置项同一取舍（parserLimits 留空即取默认）。
         // Windows 上这份上限在 install() 里一律按关闭处理，POSIX 上它才是映射缓存的条数上限
         const std::size_t maximumMappedStaticFiles =
-            m_configuration.serverLimits == nullptr ? HttpServerLimits{}.maximumMappedStaticFiles
-                                                    : m_configuration.serverLimits->maximumMappedStaticFiles;
+                m_configuration.serverLimits == nullptr ? HttpServerLimits{}.maximumMappedStaticFiles : m_configuration.serverLimits->maximumMappedStaticFiles;
         m_staticFiles.install(*m_router, maximumMappedStaticFiles);
     }
 
@@ -419,11 +409,9 @@ namespace AsynGyanis::Net
                 [rawConnection] { return rawConnection->openUnidirectionalStream(); },
                 [rawConnection](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                 { return rawConnection->queueStreamData(streamId, data, isEndStream); },
-                [rawConnection](const std::int64_t streamId, const std::size_t consumedByteCount)
-                { rawConnection->extendReceiveWindow(streamId, consumedByteCount); },
+                [rawConnection](const std::int64_t streamId, const std::size_t consumedByteCount) { rawConnection->extendReceiveWindow(streamId, consumedByteCount); },
                 m_configuration.metricsCollector, m_configuration.memoryBudget, m_configuration.requestIdGenerator,
-                [rawConnection](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
-                { rawConnection->abortStream(streamId, applicationErrorCode); });
+                [rawConnection](const std::int64_t streamId, const std::uint64_t applicationErrorCode) { rawConnection->abortStream(streamId, applicationErrorCode); });
         if (m_router != nullptr)
         {
             session->attachRouter(*m_router);
@@ -450,10 +438,7 @@ namespace AsynGyanis::Net
         snapshot.activeConnectionCount = static_cast<std::uint64_t>(connectionCount());
         // 准入闸门：限额器可以与两条 TCP 通道共用同一份，因此这里报的同样是那道闸门的总量，
         // 而不是「h3 这一侧挡了多少」——采集端合并出来的数与 h1/h2 侧同源，不会重复计数
-        snapshot.admissionRejectedConnectionCount =
-            m_configuration.perIpConnectionLimiter == nullptr
-                ? 0U
-                : m_configuration.perIpConnectionLimiter->rejectedConnectionCount();
+        snapshot.admissionRejectedConnectionCount = m_configuration.perIpConnectionLimiter == nullptr ? 0U : m_configuration.perIpConnectionLimiter->rejectedConnectionCount();
         return snapshot;
     }
 
@@ -511,8 +496,7 @@ namespace AsynGyanis::Net
         // 路由键是报文里的目的连接标识；解不出来（太短、版本协商报文等）就丢掉。最后一个参数是
         // **短头报文的 DCID 长度**：短头不带这个长度字段，必须告诉解码器本端自己的连接标识有多长，
         // 否则它会把包号的头几字节也算进标识，从 1-RTT 起每条报文都命不中路由表
-        const std::expected<QuicPacketHeader, QuicDecodeError> decodedHeader =
-                decodeQuicPacketHeader(datagram, QuicConnection::kSourceConnectionIdLength);
+        const std::expected<QuicPacketHeader, QuicDecodeError> decodedHeader = decodeQuicPacketHeader(datagram, QuicConnection::kSourceConnectionIdLength);
         if (!decodedHeader.has_value())
         {
             co_return;
@@ -534,8 +518,7 @@ namespace AsynGyanis::Net
         // 别名索引：客户端重传 Initial 时，报文里的 DCID 仍是它最初选的那个（RFC 9000 §7.2 规定
         // 首包的目的标识固定到服务端回话为止），而按本端标识建的键这时对不上——少了这一路，每条
         // 重传都会被当成新连接（实测：一个客户端握手却建出 8 条连接，握手因此永远收不了口）
-        if (const auto byAliasConnectionId = m_connectionsByAliasConnectionId.find(destinationConnectionId);
-            byAliasConnectionId != m_connectionsByAliasConnectionId.end())
+        if (const auto byAliasConnectionId = m_connectionsByAliasConnectionId.find(destinationConnectionId); byAliasConnectionId != m_connectionsByAliasConnectionId.end())
         {
             QuicConnection *const matchedConnection = byAliasConnectionId->second;
             // 与上面同一条记账：别名表里存的是裸指针，摘除会把这条一起抹掉
@@ -575,11 +558,10 @@ namespace AsynGyanis::Net
         }
 
         QuicConnection::Configuration connectionConfiguration;
-        connectionConfiguration.tlsContext           = m_tlsContext;
-        connectionConfiguration.idleTimeout          = std::chrono::duration_cast<std::chrono::milliseconds>(m_configuration.idleTimeout);
+        connectionConfiguration.tlsContext  = m_tlsContext;
+        connectionConfiguration.idleTimeout = std::chrono::duration_cast<std::chrono::milliseconds>(m_configuration.idleTimeout);
         // 接上路由器就让 HTTP/3 接管：这时流里的字节是 h3 的帧，直通出口拿到的只会是看不懂的裸字节
-        connectionConfiguration.onStreamData         = [this](QuicConnection &connection, const std::int64_t streamId,
-                                                     const std::span<const std::uint8_t> data, const bool isEndStream)
+        connectionConfiguration.onStreamData = [this](QuicConnection &connection, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
         {
             if (m_router != nullptr)
             {
@@ -593,7 +575,7 @@ namespace AsynGyanis::Net
         };
         // 对端取消了一条请求流（RESET_STREAM / STOP_SENDING）或传输层把它收尾了：h3 会话据此回收
         // 该流的状态。没有这一路的话，被取消的请求正文、流式等待者与隧道记录会一直留着
-        connectionConfiguration.onPeerStreamClosed   = [this](QuicConnection &connection, const std::int64_t streamId)
+        connectionConfiguration.onPeerStreamClosed = [this](QuicConnection &connection, const std::int64_t streamId)
         {
             // 只查表不现建会话：连 h3 一个字节都没跑过的连接没有请求状态可回收，此刻新建会话
             // 反而会替一条正在收尾的连接开出三条单向流
@@ -611,23 +593,21 @@ namespace AsynGyanis::Net
                 session->flushPendingStreamData();
             }
         };
-        connectionConfiguration.sendDatagram         = [this](const Platform::SocketAddress &targetAddress, const std::uint8_t *data,
-                                                          const std::size_t length) -> Core::Task<bool>
+        connectionConfiguration.sendDatagram = [this](const Platform::SocketAddress &targetAddress, const std::uint8_t *data, const std::size_t length) -> Core::Task<bool>
         {
             // 出口只认「发出去多少字节」：整条发出为 true，出错（对端不可达、套接字已关）为 false
             const ssize_t sentLength = co_await m_socket->asyncSendTo(targetAddress, data, length);
             co_return sentLength == static_cast<ssize_t>(length);
         };
 
-        std::unique_ptr<QuicConnection> connection =
-                QuicConnection::accept(connectionConfiguration, m_localSocketAddress, peerAddress, datagram);
+        std::unique_ptr<QuicConnection> connection = QuicConnection::accept(connectionConfiguration, m_localSocketAddress, peerAddress, datagram);
         if (connection == nullptr)
         {
             co_return;
         }
 
         const std::string sourceConnectionId = connection->sourceConnectionId();
-        QuicConnection  *rawConnection       = connection.get();
+        QuicConnection   *rawConnection      = connection.get();
         m_connections.emplace(sourceConnectionId, std::move(connection));
         // 名额凭据与连接同寿命：摘连接时必须一起摘，否则那个来源的计数只增不减（等价于把
         // 限额变成了一次性配额）
@@ -680,8 +660,7 @@ namespace AsynGyanis::Net
                 m_http3Sessions.erase(closedConnection);
                 // 第四张表：单来源名额随连接一起归还（凭据析构即释放计数）
                 m_perIpConnectionLeases.erase(iterator->first);
-                std::erase_if(m_connectionsByAliasConnectionId,
-                              [closedConnection](const auto &entry) { return entry.second == closedConnection; });
+                std::erase_if(m_connectionsByAliasConnectionId, [closedConnection](const auto &entry) { return entry.second == closedConnection; });
                 iterator = m_connections.erase(iterator);
                 continue;
             }
@@ -689,10 +668,8 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::chrono::steady_clock::time_point QuicServer::nextTickerWakePoint(const bool hasConnections,
-                                                                         const std::chrono::steady_clock::time_point earliestExpiry,
-                                                                         const std::chrono::steady_clock::time_point now,
-                                                                         const std::chrono::milliseconds tickInterval)
+    std::chrono::steady_clock::time_point QuicServer::nextTickerWakePoint(const bool hasConnections, const std::chrono::steady_clock::time_point earliestExpiry,
+                                                                          const std::chrono::steady_clock::time_point now, const std::chrono::milliseconds tickInterval)
     {
         // 一台没有在线连接的监听器没有任何到期要落实：这时按节拍轮询是纯白烧（实测空闲每秒 100 次唤醒，
         // 每次约两趟 epoll_wait）。退到空闲上界，新连接的头一拍最多延后这一档
@@ -735,11 +712,9 @@ namespace AsynGyanis::Net
         {
             // 先按当前状态算出这一觉睡到什么时候，再挂上去：唤醒点要么是所有连接里最早的交易截止，
             // 要么是配置的节拍（先到为准），零连接时退到空闲上界
-            const std::chrono::steady_clock::time_point planningNow = std::chrono::steady_clock::now();
-            const std::chrono::milliseconds sleepDuration = Core::detail::armedDurationFor(
-                    nextTickerWakePoint(!m_connections.empty(), earliestConnectionExpiry(), planningNow,
-                                        m_configuration.expiryTickInterval),
-                    planningNow);
+            const std::chrono::steady_clock::time_point planningNow   = std::chrono::steady_clock::now();
+            const std::chrono::milliseconds             sleepDuration = Core::detail::armedDurationFor(
+                    nextTickerWakePoint(!m_connections.empty(), earliestConnectionExpiry(), planningNow, m_configuration.expiryTickInterval), planningNow);
             co_await m_expiryTicker.waitFor(sleepDuration);
             if (m_isStopped.load(std::memory_order_acquire))
             {

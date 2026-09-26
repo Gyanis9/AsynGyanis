@@ -163,8 +163,7 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    HttpParser::HttpParser(HttpParserLimits limits) :
-        m_limits(limits)
+    HttpParser::HttpParser(HttpParserLimits limits) : m_limits(limits)
     {
         // 上限只在构造时落定：解析按字节增量推进，若中途换一份更紧的配置，
         // 同一条报文的前后两段就会按不同尺子判定，出错位置不可预期
@@ -319,8 +318,8 @@ namespace AsynGyanis::Net
         m_pendingLine.clear();
         m_isPendingLineHandedOut = false;
 
-        m_stage    = Stage::RequestLine;
-        m_hasError = false;
+        m_stage     = Stage::RequestLine;
+        m_hasError  = false;
         m_errorKind = HttpParseErrorKind::None;
         m_errorMessage.clear();
         m_consumedByteCount = 0;
@@ -384,8 +383,7 @@ namespace AsynGyanis::Net
     {
         // 与 takeContinueRequest() 的「正文待收」同一组阶段，另加 trailer：
         // 头部块收齐之后、整条报文收齐之前的所有中间态
-        return m_stage == Stage::Body || m_stage == Stage::ChunkSize || m_stage == Stage::ChunkData
-               || m_stage == Stage::ChunkDataTerminator || m_stage == Stage::Trailer;
+        return m_stage == Stage::Body || m_stage == Stage::ChunkSize || m_stage == Stage::ChunkData || m_stage == Stage::ChunkDataTerminator || m_stage == Stage::Trailer;
     }
 
     std::string_view HttpParser::uri() const noexcept
@@ -480,8 +478,7 @@ namespace AsynGyanis::Net
         }
 
         // 慢路径：行体跨在上一次的暂存与本次输入之间，先把本次输入里直到 LF 的部分并进来
-        const std::size_t appendLength =
-                newline == nullptr ? available : static_cast<std::size_t>(static_cast<const char *>(newline) - begin) + 1;
+        const std::size_t appendLength = newline == nullptr ? available : static_cast<std::size_t>(static_cast<const char *>(newline) - begin) + 1;
         if (!checkLineLength(m_pendingLine.size() + appendLength))
         {
             return false;
@@ -602,10 +599,9 @@ namespace AsynGyanis::Net
         // 版本：HTTP/主.次，主版本只认 0 与 1、次版本一位十进制数字。这条不是保守取值而是
         // 协议事实：HTTP/2 及以上走完全不同的帧格式（二进制、不同握手），把它当 1.x 继续按
         // 文本解析等于用错误的语法去猜边界，因此这里当场判错，而不是收下版本号再装作能处理
-        constexpr std::string_view kVersionPrefix = "HTTP/";
-        const bool                 isVersionWellFormed =
-                versionText.size() == kVersionPrefix.size() + 3 && versionText.starts_with(kVersionPrefix) &&
-                (versionText[5] == '0' || versionText[5] == '1') && versionText[6] == '.' && isDigit(versionText[7]);
+        constexpr std::string_view kVersionPrefix      = "HTTP/";
+        const bool                 isVersionWellFormed = versionText.size() == kVersionPrefix.size() + 3 && versionText.starts_with(kVersionPrefix) &&
+                                                         (versionText[5] == '0' || versionText[5] == '1') && versionText[6] == '.' && isDigit(versionText[7]);
         if (!isVersionWellFormed)
         {
             failMalformed("HTTP 报文解析失败：版本必须是 HTTP/1.x 或 HTTP/0.x 的形式");
@@ -620,8 +616,7 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    bool HttpParser::parseFieldLine(const std::string_view line, const std::string_view fieldContextLabel,
-                                    std::string_view &name, std::string_view &value)
+    bool HttpParser::parseFieldLine(const std::string_view line, const std::string_view fieldContextLabel, std::string_view &name, std::string_view &value)
     {
         // 折行（obs-fold）：RFC 9112 已把以空白开头的续行判为过时，这里明确拒绝而不是静默拼接，
         // 否则同一个头部名可能被两个来源写出不同含义（请求走私的经典入口）
@@ -831,10 +826,10 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        std::size_t          parsedLength = 0;
-        const char *const    begin        = value.data();
-        const char *const    end          = value.data() + value.size();
-        const std::from_chars_result parseResult = std::from_chars(begin, end, parsedLength);
+        std::size_t                  parsedLength = 0;
+        const char *const            begin        = value.data();
+        const char *const            end          = value.data() + value.size();
+        const std::from_chars_result parseResult  = std::from_chars(begin, end, parsedLength);
 
         // 只接受纯十进制数字：前导 '+'/'-'、空白、十六进制与任何非数字字符都会让 ptr 停在中间，
         // 溢出则返回 result_out_of_range
@@ -929,7 +924,7 @@ namespace AsynGyanis::Net
         // 再按解析结果逐项落进去。URI、头部与正文都按整块交换交付：两条缓冲各留各的容量，
         // 稳态下一条报文不再为它们取还堆块；版本号短到进小串内联，按值移动即可。
         // 移交之前对外请求对象一直是空壳，因此半成品阶段的 request() 读不出任何东西
-        //（比「可读但不许放行」更强）
+        // （比「可读但不许放行」更强）
         //
         // 流式派发已用 commitHeadersForStreaming() 提前提交过头部时不再重复搬运：
         // 头部已在 request() 里就位，这里只补尚未被取走的正文（已流式交付的部分不在其中）
@@ -963,8 +958,7 @@ namespace AsynGyanis::Net
 
         // 「正文还没收完」的四种阶段：定长正文、分块的大小行/块数据/块尾 CRLF。
         // Trailer 阶段正文已经收完（对端不再等本端表态），Complete/Failed 同理
-        const bool isRequestBodyPending = m_stage == Stage::Body || m_stage == Stage::ChunkSize || m_stage == Stage::ChunkData
-                                          || m_stage == Stage::ChunkDataTerminator;
+        const bool isRequestBodyPending = m_stage == Stage::Body || m_stage == Stage::ChunkSize || m_stage == Stage::ChunkData || m_stage == Stage::ChunkDataTerminator;
         if (!isRequestBodyPending)
         {
             return false;
@@ -999,7 +993,7 @@ namespace AsynGyanis::Net
 
         // 分块解码的进度必须与正文一起清空：跨报文复用同一个解析器对象时，残留的
         // 「当前块剩余字节」会把下一条报文的正文按上一条的块边界切开
-        m_hasTransferEncoding      = false;
+        m_hasTransferEncoding = false;
         m_transferEncodingValue.clear();
         m_chunkRemainingBytes      = 0;
         m_chunkTerminatorBytesSeen = 0;

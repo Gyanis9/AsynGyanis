@@ -2,9 +2,9 @@
 #include "Net/Http/Router.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
-#include "Net/Http/HttpMethod.h"
 
 #include <gtest/gtest.h>
 
@@ -72,9 +72,8 @@ namespace AsynGyanis::Net
         }
 
         /// 全部被框架收录的方法，用于验证 any() 的放行集合
-        constexpr std::array<HttpMethod, 7> kAllRecognizedMethods{
-                HttpMethod::GET, HttpMethod::HEAD, HttpMethod::POST,
-                HttpMethod::PUT, HttpMethod::DELETE, HttpMethod::PATCH, HttpMethod::OPTIONS};
+        constexpr std::array<HttpMethod, 7> kAllRecognizedMethods{HttpMethod::GET,    HttpMethod::HEAD,  HttpMethod::POST,   HttpMethod::PUT,
+                                                                  HttpMethod::DELETE, HttpMethod::PATCH, HttpMethod::OPTIONS};
 
         /// any() 路由命中失败时，405 的 Allow 头应有的固定顺序文本
         constexpr std::string_view kAllRecognizedMethodNames = "GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS";
@@ -86,11 +85,11 @@ namespace AsynGyanis::Net
 
     TEST(Router, DeliversRequestToHandlerRegisteredForExactPath)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.get("/hello", textHandler("world", &callCount));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/hello");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/hello");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -101,11 +100,11 @@ namespace AsynGyanis::Net
 
     TEST(Router, CutsRoutingPathOffBeforeQueryDelimiter)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.get("/search", textHandler("found", &callCount));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/search?q=router&page=2");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/search?q=router&page=2");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -118,7 +117,7 @@ namespace AsynGyanis::Net
         Router router;
         router.get("", textHandler("root"));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -130,7 +129,7 @@ namespace AsynGyanis::Net
         Router router;
         router.get("/registered", textHandler("never"));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/missing");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/missing");
         HttpResponse response;
         response.setStatus(201);
         response.setBody("上一轮残留的正文");
@@ -148,7 +147,7 @@ namespace AsynGyanis::Net
 
     TEST(Router, CarriesRequestProtocolVersionIntoErrorResponse)
     {
-        Router router;
+        Router      router;
         HttpRequest request = makeRequest(HttpMethod::GET, "/missing");
         request.setHttpVersion("HTTP/1.0");
 
@@ -160,13 +159,13 @@ namespace AsynGyanis::Net
 
     TEST(Router, WritesMethodNotAllowedWithDeterministicAllowHeader)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         // 故意先注册 POST：Allow 的顺序由固定表决定，与注册先后无关
         router.post("/item", textHandler("created", &callCount));
         router.get("/item", textHandler("listed", &callCount));
 
-        HttpRequest request = makeRequest(HttpMethod::DELETE, "/item");
+        HttpRequest  request = makeRequest(HttpMethod::DELETE, "/item");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -180,11 +179,11 @@ namespace AsynGyanis::Net
 
     TEST(Router, ReusesGetRouteForHeadRequestOnExactPath)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.get("/only-get", textHandler("body", &callCount));
 
-        HttpRequest request = makeRequest(HttpMethod::HEAD, "/only-get");
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/only-get");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -199,16 +198,17 @@ namespace AsynGyanis::Net
 
     TEST(Router, ReusesGetPatternRouteAndCommitsItsParameterForHeadRequest)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
-        router.get("/user/:id", [&callCount](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
-        {
-            callCount.fetch_add(1);
-            response.setBody("user-" + request.param("id").value_or(""));
-            co_return;
-        });
+        router.get("/user/:id",
+                   [&callCount](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                   {
+                       callCount.fetch_add(1);
+                       response.setBody("user-" + request.param("id").value_or(""));
+                       co_return;
+                   });
 
-        HttpRequest request = makeRequest(HttpMethod::HEAD, "/user/42");
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/user/42");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -219,14 +219,14 @@ namespace AsynGyanis::Net
 
     TEST(Router, PrefersExplicitHeadRouteOverGetRouteOnSamePath)
     {
-        Router router;
+        Router           router;
         std::atomic<int> getCalls{0};
         std::atomic<int> headCalls{0};
         // 故意先注册 GET：显式 head() 优先是「方法命中」而非「注册先后」的结果
         router.get("/probe", textHandler("from-get", &getCalls));
         router.head("/probe", textHandler("from-head", &headCalls));
 
-        HttpRequest request = makeRequest(HttpMethod::HEAD, "/probe");
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/probe");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -237,14 +237,14 @@ namespace AsynGyanis::Net
 
     TEST(Router, KeepsExactGetRouteAheadOfPatternGetRouteForHeadRequest)
     {
-        Router router;
+        Router           router;
         std::atomic<int> patternCalls{0};
         std::atomic<int> exactCalls{0};
         // 模式路由先注册：按 GET 复用 HEAD 时也必须遵守「精确路径永远优先于模式路径」
         router.get("/a/*", textHandler("pattern", &patternCalls));
         router.get("/a/b", textHandler("exact", &exactCalls));
 
-        HttpRequest request = makeRequest(HttpMethod::HEAD, "/a/b");
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/a/b");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -255,7 +255,7 @@ namespace AsynGyanis::Net
 
     TEST(Router, KeepsExactGetRouteAheadOfAnyMethodCatchAllForHeadRequest)
     {
-        Router router;
+        Router           router;
         std::atomic<int> catchAllCalls{0};
         std::atomic<int> exactCalls{0};
         // 静态目录就是这么挂的（HttpServer::staticFileDir 注册 any("*")）。HEAD 必须与 GET 走同一套
@@ -264,7 +264,7 @@ namespace AsynGyanis::Net
         router.any("*", textHandler("catch-all", &catchAllCalls));
         router.get("/page", textHandler("business", &exactCalls));
 
-        HttpRequest request = makeRequest(HttpMethod::HEAD, "/page");
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/page");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -275,11 +275,11 @@ namespace AsynGyanis::Net
 
     TEST(Router, Reports405ForHeadRequestOnPostOnlyPath)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.post("/submit", textHandler("created", &callCount));
 
-        HttpRequest request = makeRequest(HttpMethod::HEAD, "/submit");
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/submit");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -292,16 +292,17 @@ namespace AsynGyanis::Net
 
     TEST(Router, RunsMiddlewarePipelineForUnmatchedRoute)
     {
-        Router router;
+        Router           router;
         std::atomic<int> middlewareCalls{0};
-        router.addMiddleware([&middlewareCalls](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
-        {
-            middlewareCalls.fetch_add(1);
-            response.setHeader("x-middleware", "1");
-            co_await next();
-        });
+        router.addMiddleware(
+                [&middlewareCalls](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    middlewareCalls.fetch_add(1);
+                    response.setHeader("x-middleware", "1");
+                    co_await next();
+                });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/missing");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/missing");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -318,12 +319,12 @@ namespace AsynGyanis::Net
 
     TEST(Router, RefusesUnrecognizedMethodEvenOnAnyMethodRoute)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.any("/probe", textHandler("wildcard", &callCount));
 
         // CONNECT / TRACE / M-SEARCH 经解析器都会落到 UNKNOWN
-        HttpRequest request = makeRequest(HttpMethod::UNKNOWN, "/probe");
+        HttpRequest  request = makeRequest(HttpMethod::UNKNOWN, "/probe");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -334,13 +335,13 @@ namespace AsynGyanis::Net
 
     TEST(Router, RunsAnyMethodRouteForEveryRecognizedMethod)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.any("/any", textHandler("answered", &callCount));
 
         for (const HttpMethod method: kAllRecognizedMethods)
         {
-            HttpRequest request = makeRequest(method, "/any");
+            HttpRequest  request = makeRequest(method, "/any");
             HttpResponse response;
             routeRequest(router, request, response);
 
@@ -351,19 +352,19 @@ namespace AsynGyanis::Net
 
     TEST(Router, MatchesExplicitlyRegisteredMethodOnly)
     {
-        Router router;
+        Router           router;
         std::atomic<int> putCalls{0};
         std::atomic<int> optionsCalls{0};
         router.put("/resource", textHandler("replaced", &putCalls));
         router.options("/resource", textHandler("allowed", &optionsCalls));
 
-        HttpRequest putRequest = makeRequest(HttpMethod::PUT, "/resource");
+        HttpRequest  putRequest = makeRequest(HttpMethod::PUT, "/resource");
         HttpResponse putResponse;
         routeRequest(router, putRequest, putResponse);
         EXPECT_EQ(putCalls.load(), 1);
         EXPECT_EQ(optionsCalls.load(), 0);
 
-        HttpRequest optionsRequest = makeRequest(HttpMethod::OPTIONS, "/resource");
+        HttpRequest  optionsRequest = makeRequest(HttpMethod::OPTIONS, "/resource");
         HttpResponse optionsResponse;
         routeRequest(router, optionsRequest, optionsResponse);
         EXPECT_EQ(optionsCalls.load(), 1);
@@ -378,13 +379,13 @@ namespace AsynGyanis::Net
      */
     TEST(Router, RegistersDeleteAndPatchThroughTheirAliases)
     {
-        Router router;
+        Router           router;
         std::atomic<int> deleteCalls{0};
         std::atomic<int> patchCalls{0};
         router.del("/item", textHandler("removed", &deleteCalls));
         router.patch("/item", textHandler("merged", &patchCalls));
 
-        HttpRequest deleteRequest = makeRequest(HttpMethod::DELETE, "/item");
+        HttpRequest  deleteRequest = makeRequest(HttpMethod::DELETE, "/item");
         HttpResponse deleteResponse;
         routeRequest(router, deleteRequest, deleteResponse);
         EXPECT_EQ(deleteResponse.status(), 200) << "del() 没有把路由登记到 DELETE 上";
@@ -392,7 +393,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(deleteCalls.load(), 1);
         EXPECT_EQ(patchCalls.load(), 0);
 
-        HttpRequest patchRequest = makeRequest(HttpMethod::PATCH, "/item");
+        HttpRequest  patchRequest = makeRequest(HttpMethod::PATCH, "/item");
         HttpResponse patchResponse;
         routeRequest(router, patchRequest, patchResponse);
         EXPECT_EQ(patchResponse.status(), 200) << "patch() 没有把路由登记到 PATCH 上";
@@ -401,7 +402,7 @@ namespace AsynGyanis::Net
 
         // 对照：同一路径上没注册的方法必须 405，Allow 只列这两个方法。少了这条，
         // 「两个别名都注册成了 any()」这种错也会被前面的命中判成通过
-        HttpRequest getRequest = makeRequest(HttpMethod::GET, "/item");
+        HttpRequest  getRequest = makeRequest(HttpMethod::GET, "/item");
         HttpResponse getResponse;
         routeRequest(router, getRequest, getResponse);
         EXPECT_EQ(getResponse.status(), 405) << "别名把路由放到了别的方法上，或注册成了任意方法";
@@ -415,16 +416,17 @@ namespace AsynGyanis::Net
 
     TEST(Router, ExtractsNamedSegmentIntoRequestParameter)
     {
-        Router router;
+        Router      router;
         std::string capturedIdentifier;
-        router.get("/user/:id", [&capturedIdentifier](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
-        {
-            capturedIdentifier = request.param("id").value_or("");
-            response.setBody("profile");
-            co_return;
-        });
+        router.get("/user/:id",
+                   [&capturedIdentifier](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                   {
+                       capturedIdentifier = request.param("id").value_or("");
+                       response.setBody("profile");
+                       co_return;
+                   });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/user/42");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/user/42");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -434,11 +436,11 @@ namespace AsynGyanis::Net
 
     TEST(Router, RejectsNamedSegmentWhenPathSegmentIsEmpty)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.get("/user/:id", textHandler("profile", &callCount));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/user/");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/user/");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -449,11 +451,11 @@ namespace AsynGyanis::Net
 
     TEST(Router, RejectsPatternShorterThanRequestPath)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.get("/files/:name", textHandler("download", &callCount));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/files/a/b");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/files/a/b");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -464,19 +466,20 @@ namespace AsynGyanis::Net
 
     TEST(Router, DoesNotLeakParametersFromFailedCandidateRoute)
     {
-        Router router;
+        Router           router;
         std::atomic<int> failingCalls{0};
-        std::string capturedGamma;
+        std::string      capturedGamma;
         // 第一条候选会先收下 :alpha=7 再在下一段失配；它攒的参数绝不能留在请求上
         router.get("/p/:alpha/:beta", textHandler("never", &failingCalls));
-        router.get("/p/:gamma", [&capturedGamma](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
-        {
-            capturedGamma = request.param("gamma").value_or("");
-            response.setBody("matched");
-            co_return;
-        });
+        router.get("/p/:gamma",
+                   [&capturedGamma](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                   {
+                       capturedGamma = request.param("gamma").value_or("");
+                       response.setBody("matched");
+                       co_return;
+                   });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/p/7");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/p/7");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -506,16 +509,17 @@ namespace AsynGyanis::Net
 
     TEST(Router, CapturesWildcardRemainderUnderWildcardParameterName)
     {
-        Router router;
+        Router      router;
         std::string capturedRemainder;
-        router.get("/static/*", [&capturedRemainder](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
-        {
-            capturedRemainder = request.param(std::string(kWildcardParameterName)).value_or("");
-            response.setBody("asset");
-            co_return;
-        });
+        router.get("/static/*",
+                   [&capturedRemainder](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                   {
+                       capturedRemainder = request.param(std::string(kWildcardParameterName)).value_or("");
+                       response.setBody("asset");
+                       co_return;
+                   });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/static/css/main.css");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/static/css/main.css");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -525,12 +529,12 @@ namespace AsynGyanis::Net
 
     TEST(Router, RefusesWildcardRouteWhenSlashBoundaryMissing)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.get("/static/*", textHandler("asset", &callCount));
 
         // 前缀匹配必须停在段边界，否则 "/static" 会命中 "/staticevil"：目录穿越的入口
-        HttpRequest request = makeRequest(HttpMethod::GET, "/staticevil/secret");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/staticevil/secret");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -540,18 +544,18 @@ namespace AsynGyanis::Net
 
     TEST(Router, TreatsWildcardWithoutSlashBoundaryAsLiteralSegment)
     {
-        Router router;
+        Router           router;
         std::atomic<int> callCount{0};
         router.get("/static*", textHandler("asset", &callCount));
 
-        HttpRequest evilRequest = makeRequest(HttpMethod::GET, "/staticevil");
+        HttpRequest  evilRequest = makeRequest(HttpMethod::GET, "/staticevil");
         HttpResponse evilResponse;
         routeRequest(router, evilRequest, evilResponse);
         EXPECT_EQ(callCount.load(), 0);
         EXPECT_EQ(evilResponse.status(), 404);
 
         // 不肯把「前缀贴着 *」解释成通配，宁可整条按字面处理
-        HttpRequest literalRequest = makeRequest(HttpMethod::GET, "/static*");
+        HttpRequest  literalRequest = makeRequest(HttpMethod::GET, "/static*");
         HttpResponse literalResponse;
         routeRequest(router, literalRequest, literalResponse);
         EXPECT_EQ(callCount.load(), 1);
@@ -560,16 +564,17 @@ namespace AsynGyanis::Net
 
     TEST(Router, MatchesBareWildcardRouteAgainstAnyPath)
     {
-        Router router;
+        Router      router;
         std::string capturedRemainder;
-        router.get("*", [&capturedRemainder](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
-        {
-            capturedRemainder = request.param(std::string(kWildcardParameterName)).value_or("");
-            response.setBody("fallback");
-            co_return;
-        });
+        router.get("*",
+                   [&capturedRemainder](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                   {
+                       capturedRemainder = request.param(std::string(kWildcardParameterName)).value_or("");
+                       response.setBody("fallback");
+                       co_return;
+                   });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/anything/at/all");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/anything/at/all");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -583,13 +588,13 @@ namespace AsynGyanis::Net
 
     TEST(Router, PrefersLiteralRouteOverPatternRegisteredEarlier)
     {
-        Router router;
+        Router           router;
         std::atomic<int> patternCalls{0};
         std::atomic<int> literalCalls{0};
         router.get("/user/:id", textHandler("pattern", &patternCalls));
         router.get("/user/me", textHandler("literal", &literalCalls));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/user/me");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/user/me");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -600,13 +605,13 @@ namespace AsynGyanis::Net
 
     TEST(Router, UsesFirstRegisteredPatternWhenBothCandidatesMatch)
     {
-        Router router;
+        Router           router;
         std::atomic<int> genericCalls{0};
         std::atomic<int> specificCalls{0};
         router.get("/:first/:second", textHandler("generic", &genericCalls));
         router.get("/x/:second", textHandler("specific", &specificCalls));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/x/1");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/x/1");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -619,13 +624,13 @@ namespace AsynGyanis::Net
 
     TEST(Router, ReplacesHandlerForSameMethodAndPathInPlace)
     {
-        Router router;
+        Router           router;
         std::atomic<int> firstCalls{0};
         std::atomic<int> secondCalls{0};
         router.get("/dup", textHandler("first", &firstCalls));
         router.get("/dup", textHandler("second", &secondCalls));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/dup");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/dup");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -636,7 +641,7 @@ namespace AsynGyanis::Net
 
     TEST(Router, KeepsRegistrationPositionWhenPatternRouteIsReplaced)
     {
-        Router router;
+        Router           router;
         std::atomic<int> replacedCalls{0};
         std::atomic<int> laterCalls{0};
         router.get("/a/:shared", textHandler("first", &replacedCalls));
@@ -645,7 +650,7 @@ namespace AsynGyanis::Net
         // 就地替换第一条：它仍在第二条之前，先到先得关系不变
         router.get("/a/:shared", textHandler("replaced", &replacedCalls));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/a/1");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/a/1");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -663,7 +668,7 @@ namespace AsynGyanis::Net
         Router router;
         router.head("/document", textHandler("1234567"));
 
-        HttpRequest request = makeRequest(HttpMethod::HEAD, "/document");
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/document");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -676,14 +681,15 @@ namespace AsynGyanis::Net
     TEST(Router, KeepsContentLengthDeclaredByHeadHandler)
     {
         Router router;
-        router.head("/document", [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
-        {
-            response.setHeader("content-length", "999");
-            response.setBody("ignored");
-            co_return;
-        });
+        router.head("/document",
+                    [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                    {
+                        response.setHeader("content-length", "999");
+                        response.setBody("ignored");
+                        co_return;
+                    });
 
-        HttpRequest request = makeRequest(HttpMethod::HEAD, "/document");
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/document");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -695,14 +701,15 @@ namespace AsynGyanis::Net
     TEST(Router, ClearsBodyForNoContentResponse)
     {
         Router router;
-        router.get("/no-content", [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(204);
-            response.setBody("leftover");
-            co_return;
-        });
+        router.get("/no-content",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(204);
+                       response.setBody("leftover");
+                       co_return;
+                   });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/no-content");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/no-content");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -713,14 +720,15 @@ namespace AsynGyanis::Net
     TEST(Router, ClearsBodyForNotModifiedResponse)
     {
         Router router;
-        router.get("/cached", [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(304);
-            response.setBody("leftover");
-            co_return;
-        });
+        router.get("/cached",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(304);
+                       response.setBody("leftover");
+                       co_return;
+                   });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/cached");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/cached");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -734,23 +742,25 @@ namespace AsynGyanis::Net
 
     TEST(Router, WrapsMatchedHandlerWithGlobalMiddleware)
     {
-        Router router;
+        Router                   router;
         std::vector<std::string> executionOrder;
-        router.addMiddleware([&executionOrder](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
-        {
-            executionOrder.emplace_back("before");
-            response.setHeader("x-trace", "set-by-middleware");
-            co_await next();
-            executionOrder.emplace_back("after");
-        });
-        router.get("/traced", [&executionOrder](HttpRequest &, HttpResponse &response) -> Core::Task<void>
-        {
-            executionOrder.emplace_back("handler");
-            response.setBody("traced");
-            co_return;
-        });
+        router.addMiddleware(
+                [&executionOrder](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    executionOrder.emplace_back("before");
+                    response.setHeader("x-trace", "set-by-middleware");
+                    co_await next();
+                    executionOrder.emplace_back("after");
+                });
+        router.get("/traced",
+                   [&executionOrder](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                   {
+                       executionOrder.emplace_back("handler");
+                       response.setBody("traced");
+                       co_return;
+                   });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/traced");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/traced");
         HttpResponse response;
         routeRequest(router, request, response);
 
@@ -763,13 +773,14 @@ namespace AsynGyanis::Net
     TEST(Router, PropagatesHandlerExceptionToCaller)
     {
         Router router;
-        router.get("/throws", [](HttpRequest &, HttpResponse &) -> Core::Task<void>
-        {
-            throw std::runtime_error("handler failed");
-            co_return;
-        });
+        router.get("/throws",
+                   [](HttpRequest &, HttpResponse &) -> Core::Task<void>
+                   {
+                       throw std::runtime_error("handler failed");
+                       co_return;
+                   });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/throws");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/throws");
         HttpResponse response;
 
         // 路由器不吞也不翻译异常，由会话统一转成 500
@@ -790,24 +801,15 @@ namespace AsynGyanis::Net
         router.postStreaming("/assets/*", textHandler("streaming-assets"));
         router.get("/plain", textHandler("plain")); // 非流式，作对照
 
-        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42"))
-            << ":id 段命中的流式路由必须被探测为流式";
-        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::PUT, "/replace/42"))
-            << "PUT 绑定的流式路由同样要探测为流式";
-        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/assets/css/main.css"))
-            << "通配路由命中即算流式，剩余路径不收集也不影响判定";
-        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42?token=abc"))
-            << "带查询串时要先按 route() 同口径裁出路径部分再判定";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42")) << ":id 段命中的流式路由必须被探测为流式";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::PUT, "/replace/42")) << "PUT 绑定的流式路由同样要探测为流式";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/assets/css/main.css")) << "通配路由命中即算流式，剩余路径不收集也不影响判定";
+        EXPECT_TRUE(router.hasStreamingRoute(HttpMethod::POST, "/upload/42?token=abc")) << "带查询串时要先按 route() 同口径裁出路径部分再判定";
         // 流式只绑 POST/PUT：其余方法在方法层即不可能命中，直接 false（不扫表）
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/upload/42"))
-            << "GET 不该命中只按 POST 注册的流式路由";
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::HEAD, "/assets/x"))
-            << "HEAD 复用 GET 是针对普通路由的，流式判定不涉及";
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/plain"))
-            << "非流式路由不得被探测为流式";
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::POST, "/nowhere"))
-            << "未注册路径一律非流式";
-        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::UNKNOWN, "/assets/any"))
-            << "未收录方法不参与匹配，更不能被判为流式";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/upload/42")) << "GET 不该命中只按 POST 注册的流式路由";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::HEAD, "/assets/x")) << "HEAD 复用 GET 是针对普通路由的，流式判定不涉及";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::GET, "/plain")) << "非流式路由不得被探测为流式";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::POST, "/nowhere")) << "未注册路径一律非流式";
+        EXPECT_FALSE(router.hasStreamingRoute(HttpMethod::UNKNOWN, "/assets/any")) << "未收录方法不参与匹配，更不能被判为流式";
     }
 } // namespace AsynGyanis::Net

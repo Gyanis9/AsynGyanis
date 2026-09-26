@@ -81,8 +81,7 @@ namespace AsynGyanis::Base
         }
     } // namespace
 
-    FileSink::FileSink(std::filesystem::path filePath, const bool truncate) :
-        m_filePath(std::move(filePath))
+    FileSink::FileSink(std::filesystem::path filePath, const bool truncate) : m_filePath(std::move(filePath))
     {
         const std::string directoryError = createParentDirectory(m_filePath.parent_path());
 
@@ -171,9 +170,8 @@ namespace AsynGyanis::Base
         }
         // 日志系统自身出了故障，没有别的去处可报——拿根日志器报自己等于让 write() 递归
         m_hasReportedWriteFailure = true;
-        std::cerr << "FileSink：写日志失败（磁盘写满或配额耗尽）："
-                << AsynGyanis::Platform::FileSystem::utf8FromPath(m_filePath)
-                << "；流已失效，后续日志不会再落盘，重新打开该文件（reopen）后恢复" << '\n';
+        std::cerr << "FileSink：写日志失败（磁盘写满或配额耗尽）：" << AsynGyanis::Platform::FileSystem::utf8FromPath(m_filePath)
+                  << "；流已失效，后续日志不会再落盘，重新打开该文件（reopen）后恢复" << '\n';
     }
 
     void FileSink::flush()

@@ -44,11 +44,7 @@ namespace AsynGyanis::Core
 
         // 工作线程取到的必须是同一个池：协程帧会跨线程换手，池按线程拆分即无法回收
         CoroutinePool *fromWorker = nullptr;
-        std::thread    worker(
-                [&fromWorker]
-                {
-                    fromWorker = &CoroutinePool::instance();
-                });
+        std::thread    worker([&fromWorker] { fromWorker = &CoroutinePool::instance(); });
         worker.join();
         EXPECT_EQ(fromWorker, &first);
     }
@@ -130,7 +126,7 @@ namespace AsynGyanis::Core
      */
     TEST(CoroutinePool, MultipleAllocationsAndDeallocationsSucceed)
     {
-        auto &pool = CoroutinePool::instance();
+        auto               &pool = CoroutinePool::instance();
         std::vector<void *> pointers;
 
         for (int round = 0; round < 100; ++round)
@@ -174,11 +170,7 @@ namespace AsynGyanis::Core
 
         // 在另一个线程回收：块必须回到池里，而不是被交给全局 ::operator delete。
         // 该线程只归还这一块、随即退出，退出时把缓存整体交还全局池
-        std::thread worker(
-                [&pool, pointer]
-                {
-                    pool.deallocate(pointer, 96);
-                });
+        std::thread worker([&pool, pointer] { pool.deallocate(pointer, 96); });
         worker.join();
 
         // 换一条**新线程**来重新分配：它的本地缓存是空的，因此必然从全局池取块。
@@ -199,8 +191,8 @@ namespace AsynGyanis::Core
         verifier.join();
 
         EXPECT_NE(std::find(probedPointers.begin(), probedPointers.end(), pointer), probedPointers.end())
-            << "跨线程归还的池内块没有回到池里：可能被当成外来指针交给了全局 ::operator delete，"
-               "或者在退出线程的缓存里被永久滞留";
+                << "跨线程归还的池内块没有回到池里：可能被当成外来指针交给了全局 ::operator delete，"
+                   "或者在退出线程的缓存里被永久滞留";
         EXPECT_TRUE(pool.owns(pointer));
 
         // 归还探针取走的块：其中包含最初那一块
@@ -217,13 +209,13 @@ namespace AsynGyanis::Core
     {
         auto &pool = CoroutinePool::instance();
 
-        constexpr int    threadCount          = 4;
-        constexpr int    allocationsPerThread = 200;
+        constexpr int threadCount          = 4;
+        constexpr int allocationsPerThread = 200;
 
         std::vector<void *> collected;
         collected.reserve(threadCount * allocationsPerThread);
-        std::mutex           collectedMutex;
-        std::latch           allAllocated(threadCount);
+        std::mutex               collectedMutex;
+        std::latch               allAllocated(threadCount);
         std::vector<std::thread> workers;
 
         for (int workerIndex = 0; workerIndex < threadCount; ++workerIndex)
@@ -275,7 +267,7 @@ namespace AsynGyanis::Core
     {
         auto &pool = CoroutinePool::instance();
 
-        constexpr size_t kBlockCount = 300;
+        constexpr size_t    kBlockCount = 300;
         std::vector<void *> pointers;
         pointers.reserve(kBlockCount);
 
@@ -297,8 +289,7 @@ namespace AsynGyanis::Core
         {
             pointers.push_back(pool.allocate(128));
         }
-        EXPECT_EQ(pool.allocatedCount(), allocatedAfterFirstRound)
-            << "第二轮分配触发了扩容：说明有块在归还路径上丢失了";
+        EXPECT_EQ(pool.allocatedCount(), allocatedAfterFirstRound) << "第二轮分配触发了扩容：说明有块在归还路径上丢失了";
 
         for (void *pointer: pointers)
         {
@@ -350,11 +341,11 @@ namespace AsynGyanis::Core
         auto &pool = CoroutinePool::instance();
 
         // 大档按自己的需求长到这一步：步长参照值从这里取
-        constexpr size_t kLargeWarmupBlockCount        = 200;
+        constexpr size_t kLargeWarmupBlockCount = 200;
         // 小档的高水位：合计口径的步长会被它带大，因此要明显大于大档的历史
-        constexpr size_t kSmallHighWaterBlockCount     = 4000;
+        constexpr size_t kSmallHighWaterBlockCount = 4000;
         // 逼出大档下一次扩容的尝试上限：留出足够次数，不让用例因为「没等到扩容」而空转
-        constexpr size_t kLargeDemandAfterSmallGrowth  = 2000;
+        constexpr size_t kLargeDemandAfterSmallGrowth = 2000;
 
         const size_t smallRequestBytes = 48;                   // 落在小档
         const size_t largeRequestBytes = pool.blockSize() * 2; // 超过小档规格，因此必定落在大档
@@ -392,15 +383,13 @@ namespace AsynGyanis::Core
             heldSmall.push_back(memory);
         }
         const size_t smallGrownBlocks = pool.allocatedCount() - previousCount;
-        ASSERT_GE(smallGrownBlocks, kSmallHighWaterBlockCount / 2)
-            << "小档没能长起来：块数上限已被同进程的其它用例顶满，后面的比值断言会是空转";
+        ASSERT_GE(smallGrownBlocks, kSmallHighWaterBlockCount / 2) << "小档没能长起来：块数上限已被同进程的其它用例顶满，后面的比值断言会是空转";
 
         // 第三段：继续向大档要块，取小档长高之后的第一次扩容步长。
         // 只看第一次：翻倍是本档的既定行为，第二次起本来就比第一次大
         size_t firstStepAfterSmallGrowth = 0;
         previousCount                    = pool.allocatedCount();
-        for (size_t blockIndex = 0; blockIndex < kLargeDemandAfterSmallGrowth && firstStepAfterSmallGrowth == 0;
-             ++blockIndex)
+        for (size_t blockIndex = 0; blockIndex < kLargeDemandAfterSmallGrowth && firstStepAfterSmallGrowth == 0; ++blockIndex)
         {
             void *const memory = pool.allocate(largeRequestBytes);
             ASSERT_NE(memory, nullptr);
@@ -417,17 +406,14 @@ namespace AsynGyanis::Core
 
         // 本档翻倍最多让下一步等于上一步的两倍（实测比值 2），取 3 留出实现余量；
         // 按「两档合计」算时这一步会跳到小档的高水位（实测比值 4~32）
-        EXPECT_LE(firstStepAfterSmallGrowth, previousLargeStep * 3)
-            << "大档的扩容步长被小档的高水位带大了：这一步切了 " << firstStepAfterSmallGrowth
-            << " 块大块，而大档上一步只有 " << previousLargeStep << " 块、小档本轮长到 "
-            << smallGrownBlocks << " 块";
+        EXPECT_LE(firstStepAfterSmallGrowth, previousLargeStep * 3) << "大档的扩容步长被小档的高水位带大了：这一步切了 " << firstStepAfterSmallGrowth
+                                                                    << " 块大块，而大档上一步只有 " << previousLargeStep << " 块、小档本轮长到 " << smallGrownBlocks << " 块";
 
         // 单次扩容不该一口吃下池内块数的四分之一：这是「提前吃满共享预算」的直接判据，
         // 与两档各自的规模无关
         const size_t blocksBeforeLastExpansion = previousCount - firstStepAfterSmallGrowth;
         EXPECT_LE(firstStepAfterSmallGrowth, blocksBeforeLastExpansion / 4)
-            << "大档一次扩容要了 " << firstStepAfterSmallGrowth << " 块，而当时池内总共只有 "
-            << blocksBeforeLastExpansion << " 块";
+                << "大档一次扩容要了 " << firstStepAfterSmallGrowth << " 块，而当时池内总共只有 " << blocksBeforeLastExpansion << " 块";
 
         for (void *const memory: heldSmall)
         {
@@ -453,8 +439,8 @@ namespace AsynGyanis::Core
 
         // 池的块数上限是私有常量，这里不硬编码它：一路分配到出现「不属于本池」的块为止
         std::vector<void *> blocks;
-        void              *firstForeignBlock = nullptr;
-        constexpr size_t   kAllocationAttemptCeiling = 100000;
+        void               *firstForeignBlock         = nullptr;
+        constexpr size_t    kAllocationAttemptCeiling = 100000;
 
         for (size_t attempt = 0; attempt < kAllocationAttemptCeiling && firstForeignBlock == nullptr; ++attempt)
         {
@@ -468,8 +454,7 @@ namespace AsynGyanis::Core
             }
         }
 
-        ASSERT_NE(firstForeignBlock, nullptr)
-            << "在 " << kAllocationAttemptCeiling << " 次分配内没有观察到池上限：上限常量是否被调大了？";
+        ASSERT_NE(firstForeignBlock, nullptr) << "在 " << kAllocationAttemptCeiling << " 次分配内没有观察到池上限：上限常量是否被调大了？";
 
         // 走到这里池已顶满且退不回来（块只增不减）：把「后续用例的前提没了」记下来
         poolBlockCeilingReached() = true;
@@ -510,13 +495,12 @@ namespace AsynGyanis::Core
      */
     TEST(CoroutinePool, CoroutineFrameRoutingFollowsTheSanitizerBuild)
     {
-        CoroutinePool &pool = CoroutinePool::instance();
-        const Task<int> task = trivialFrame();
-        const bool       isFrameFromPool = pool.owns(task.handle().address());
+        CoroutinePool  &pool            = CoroutinePool::instance();
+        const Task<int> task            = trivialFrame();
+        const bool      isFrameFromPool = pool.owns(task.handle().address());
 
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-        EXPECT_FALSE(isFrameFromPool)
-                << "检测构建里协程帧仍从帧池取内存：ASan 看不见 slab 内的帧被回收后再恢复这类 use-after-free";
+        EXPECT_FALSE(isFrameFromPool) << "检测构建里协程帧仍从帧池取内存：ASan 看不见 slab 内的帧被回收后再恢复这类 use-after-free";
 #else
         EXPECT_TRUE(isFrameFromPool) << "常规构建里协程帧没走帧池，帧内存的复用被悄悄关掉了";
 #endif

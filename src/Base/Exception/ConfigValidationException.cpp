@@ -5,8 +5,7 @@
 namespace AsynGyanis::Base
 {
     ConfigValidationException::ConfigValidationException(const std::string &key, const std::string &reason, const std::source_location &sourceLocation) :
-        ConfigException("配置键 '" + key + "' 校验失败：" + reason, sourceLocation)
-        , m_key(key)
+        ConfigException("配置键 '" + key + "' 校验失败：" + reason, sourceLocation), m_key(key)
     {
     }
 

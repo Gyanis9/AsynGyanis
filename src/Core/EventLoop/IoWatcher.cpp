@@ -10,8 +10,7 @@
 
 namespace AsynGyanis::Core
 {
-    IoWatcher::Awaiter::Awaiter(IoWatcher &watcher, const std::uint32_t event) noexcept :
-        m_watcher(&watcher), m_event(event)
+    IoWatcher::Awaiter::Awaiter(IoWatcher &watcher, const std::uint32_t event) noexcept : m_watcher(&watcher), m_event(event)
     {
     }
 
@@ -63,8 +62,7 @@ namespace AsynGyanis::Core
         m_isAttached = false;
     }
 
-    IoWatcher::IoWatcher(EventLoop &loop, const int fileDescriptor) :
-        m_loop(&loop), m_fileDescriptor(fileDescriptor)
+    IoWatcher::IoWatcher(EventLoop &loop, const int fileDescriptor) : m_loop(&loop), m_fileDescriptor(fileDescriptor)
     {
         // 描述符无效时保持「未注册」状态：持有空描述符的对象（占位、已关闭）因此可以统一处理，
         // 其等待会立刻以「未就绪」结束，而不是抛异常或永久挂起
@@ -79,15 +77,13 @@ namespace AsynGyanis::Core
         // 水平触发下这次关注会一直有效，直到本类显式改掩码（见 armEvents）
         if (!m_loop->epoll().addFileDescriptor(m_fileDescriptor, EPOLLIN, this))
         {
-            const std::string_view reason =
-                    "把文件描述符注册到事件后端失败（该描述符可能已被另一个 IoWatcher 注册、"
-                    "不是有效的描述符，或已关联到别的完成端口）";
+            const std::string_view reason = "把文件描述符注册到事件后端失败（该描述符可能已被另一个 IoWatcher 注册、"
+                                            "不是有效的描述符，或已关联到别的完成端口）";
 #if ASYN_PLATFORM_WIN32
             // Windows 上这一句拒绝来自 kernel32（CreateIoCompletionPort），码在 GetLastError 空间里，
             // 必须按该空间显式给出：走默认的 errno 重载会报成「[0] success」，读日志的人据此以为没失败过。
             // 跨进程移交来的监听套接字撞的正是这条——句柄只能关联一个完成端口，而关联不可解除
-            throw Base::SystemException(std::string(reason),
-                                        std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
+            throw Base::SystemException(std::string(reason), std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
 #else
             throw Base::SystemException(std::string(reason));
 #endif
@@ -126,7 +122,7 @@ namespace AsynGyanis::Core
         }
 
         // 唤醒仍挂在等待器上的协程：不能让它永远等一个再也不会到来的事件
-        //（关闭描述符不会让 epoll 唤醒挂在它上面的等待者，这类等待只能由本类自己收尾）。
+        // （关闭描述符不会让 epoll 唤醒挂在它上面的等待者，这类等待只能由本类自己收尾）。
         // 只登记、不就地恢复：本对象还在析构中，就地恢复会让协程在析构完成前回来访问成员。
         // 选 scheduleRemote 而不是 schedule，是因为它自带唤醒——能把正睡在等待里的那个循环叫起来；
         // 线程契约仍要求析构发生在所属循环线程上（见类注释），这里挑的只是两条路都成立的那个入口
@@ -180,12 +176,10 @@ namespace AsynGyanis::Core
         // 就绪要么当场交给等待者、要么留给下一次等待，二者只能其一：
         // 两边都给会让「交出去的那次等待」之后还残留一个标记，后续等待遂空转重试。
         // 先记下「本次上报时谁在等」：掩码收敛要用它区分「刚被唤醒」与「本来就没人等」
-        const bool hadReadWaiter  = m_readWaiter.handle != nullptr;
-        const bool hadWriteWaiter = m_writeWaiter.handle != nullptr;
-        std::coroutine_handle<> resumableRead =
-            isReadable ? takeWaiter(EPOLLIN, true) : std::coroutine_handle<>();
-        std::coroutine_handle<> resumableWrite =
-            isWritable ? takeWaiter(EPOLLOUT, true) : std::coroutine_handle<>();
+        const bool              hadReadWaiter  = m_readWaiter.handle != nullptr;
+        const bool              hadWriteWaiter = m_writeWaiter.handle != nullptr;
+        std::coroutine_handle<> resumableRead  = isReadable ? takeWaiter(EPOLLIN, true) : std::coroutine_handle<>();
+        std::coroutine_handle<> resumableWrite = isWritable ? takeWaiter(EPOLLOUT, true) : std::coroutine_handle<>();
 
         if (isReadable && !resumableRead)
         {
@@ -197,12 +191,11 @@ namespace AsynGyanis::Core
         }
 
         // 掩码收敛到「谁在等」的形状，但刚被唤醒的方向保持武装：它多半马上会再次等待
-        //（keep-alive 的读写循环），保持武装就省下了「先收掉、再武装」两次 epoll_ctl。
+        // （keep-alive 的读写循环），保持武装就省下了「先收掉、再武装」两次 epoll_ctl。
         // 而「本次上报时本来就没有等待者」的方向必须收掉——它没有任何人会领走后续上报，
         // 尤其可写几乎长期为真，留着就是 epoll_wait 全速空转。
         // 必须在恢复协程之前做：恢复之后本对象可能已被销毁
-        std::uint32_t wanted =
-                (m_readWaiter.handle ? EPOLLIN : 0U) | (m_writeWaiter.handle ? EPOLLOUT : 0U);
+        std::uint32_t wanted = (m_readWaiter.handle ? EPOLLIN : 0U) | (m_writeWaiter.handle ? EPOLLOUT : 0U);
         if (hadReadWaiter && isReadable)
         {
             wanted |= EPOLLIN;
@@ -272,12 +265,12 @@ namespace AsynGyanis::Core
 
     std::coroutine_handle<> IoWatcher::takeWaiter(const std::uint32_t event, const bool isReady) noexcept
     {
-        WaiterSlot &                 slot   = slotFor(event);
+        WaiterSlot                   &slot   = slotFor(event);
         const std::coroutine_handle<> handle = std::exchange(slot.handle, nullptr);
         if (handle && slot.awaiter != nullptr)
         {
             // 先写回结果与「已摘除」，再恢复协程；此后再不访问等待器指针
-            //（它随协程帧，可能已被销毁）。摘除标记是必需的：否则等待器析构时会回来调本对象
+            // （它随协程帧，可能已被销毁）。摘除标记是必需的：否则等待器析构时会回来调本对象
             if (isReady)
             {
                 slot.awaiter->markReady();

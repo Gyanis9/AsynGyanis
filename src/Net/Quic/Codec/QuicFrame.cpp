@@ -29,8 +29,7 @@ namespace AsynGyanis::Net
              * @param bytes 一个报文的净载荷
              * @param ownerOffset 本帧在净载荷里的起始偏移，出错时格式化成帧名
              */
-            FrameReader(std::span<const std::uint8_t> bytes, std::size_t ownerOffset)
-                : m_bytes(bytes), m_ownerOffset(ownerOffset)
+            FrameReader(std::span<const std::uint8_t> bytes, std::size_t ownerOffset) : m_bytes(bytes), m_ownerOffset(ownerOffset)
             {
             }
 
@@ -63,11 +62,10 @@ namespace AsynGyanis::Net
                 m_offset += decoded->byteCount;
                 if (decoded->byteCount != quicVariableLengthIntegerByteCount(decoded->value))
                 {
-                    return std::unexpected(makeError(QuicDecodeErrorKind::Malformed,
-                                                     std::format("{}的帧类型用了 {} 字节而非最短的 {} 字节编码（RFC 9000 §16 里帧类型是唯一要求最短编码的字段）："
-                                                                 "按 FRAME_ENCODING_ERROR 处理",
-                                                                 ownerDescription(), decoded->byteCount,
-                                                                 quicVariableLengthIntegerByteCount(decoded->value))));
+                    return std::unexpected(
+                            makeError(QuicDecodeErrorKind::Malformed, std::format("{}的帧类型用了 {} 字节而非最短的 {} 字节编码（RFC 9000 §16 里帧类型是唯一要求最短编码的字段）："
+                                                                                  "按 FRAME_ENCODING_ERROR 处理",
+                                                                                  ownerDescription(), decoded->byteCount, quicVariableLengthIntegerByteCount(decoded->value))));
                 }
                 return decoded->value;
             }
@@ -95,8 +93,7 @@ namespace AsynGyanis::Net
             {
                 if (remainingByteCount() < count)
                 {
-                    return std::unexpected(makeError(QuicDecodeErrorKind::Truncated,
-                                                     std::format("需要 {} 字节，载荷只剩 {} 字节", count, remainingByteCount())));
+                    return std::unexpected(makeError(QuicDecodeErrorKind::Truncated, std::format("需要 {} 字节，载荷只剩 {} 字节", count, remainingByteCount())));
                 }
                 const std::span<const std::uint8_t> view = m_bytes.subspan(m_offset, count);
                 m_offset += count;
@@ -114,8 +111,7 @@ namespace AsynGyanis::Net
                 {
                     return std::unexpected(bytes.error());
                 }
-                return static_cast<std::uint16_t>((static_cast<std::uint16_t>((*bytes)[0]) << 8) |
-                                                  static_cast<std::uint16_t>((*bytes)[1]));
+                return static_cast<std::uint16_t>((static_cast<std::uint16_t>((*bytes)[0]) << 8) | static_cast<std::uint16_t>((*bytes)[1]));
             }
 
             /**
@@ -125,7 +121,7 @@ namespace AsynGyanis::Net
             [[nodiscard]] std::span<const std::uint8_t> takeRemaining()
             {
                 const std::span<const std::uint8_t> view = m_bytes.subspan(m_offset);
-                m_offset = m_bytes.size();
+                m_offset                                 = m_bytes.size();
                 return view;
             }
 
@@ -159,9 +155,9 @@ namespace AsynGyanis::Net
                 return std::format("载荷偏移 {} 处的帧", m_ownerOffset);
             }
 
-            std::span<const std::uint8_t> m_bytes; ///< 整个净载荷，视图都指向它
-            std::size_t m_offset{0};               ///< 当前读位置
-            std::size_t m_ownerOffset{0};          ///< 本帧在净载荷里的起始偏移，出错时才格式化成帧名
+            std::span<const std::uint8_t> m_bytes;          ///< 整个净载荷，视图都指向它
+            std::size_t                   m_offset{0};      ///< 当前读位置
+            std::size_t                   m_ownerOffset{0}; ///< 本帧在净载荷里的起始偏移，出错时才格式化成帧名
         };
 
         /**
@@ -184,8 +180,7 @@ namespace AsynGyanis::Net
         std::uint64_t streamFrameTypeValue(const std::uint64_t offset, const bool isFinal) noexcept
         {
             const std::uint64_t offsetBit = offset != 0 ? kQuicStreamFrameOffsetBit : 0;
-            return static_cast<std::uint64_t>(QuicFrameType::Stream) | kQuicStreamFrameLengthBit | offsetBit |
-                   (isFinal ? kQuicStreamFrameFinalBit : 0);
+            return static_cast<std::uint64_t>(QuicFrameType::Stream) | kQuicStreamFrameLengthBit | offsetBit | (isFinal ? kQuicStreamFrameFinalBit : 0);
         }
 
         /**
@@ -198,15 +193,13 @@ namespace AsynGyanis::Net
          * @param rangeCount 后续区间个数
          * @return std::expected<std::vector<QuicAcknowledgementRange>, QuicDecodeError> 成功返回绝对包号区间
          */
-        std::expected<std::vector<QuicAcknowledgementRange>, QuicDecodeError> decodeAcknowledgementRanges(
-                FrameReader &reader, const std::uint64_t largestAcknowledged, const std::uint64_t firstAcknowledgedRange,
-                const std::uint64_t rangeCount)
+        std::expected<std::vector<QuicAcknowledgementRange>, QuicDecodeError>
+        decodeAcknowledgementRanges(FrameReader &reader, const std::uint64_t largestAcknowledged, const std::uint64_t firstAcknowledgedRange, const std::uint64_t rangeCount)
         {
             if (largestAcknowledged < firstAcknowledgedRange)
             {
                 return std::unexpected(reader.makeError(QuicDecodeErrorKind::Malformed,
-                                                        std::format("最大确认包号 {} 小于首区间长度 {}，首区间最小包号为负",
-                                                                    largestAcknowledged, firstAcknowledgedRange)));
+                                                        std::format("最大确认包号 {} 小于首区间长度 {}，首区间最小包号为负", largestAcknowledged, firstAcknowledgedRange)));
             }
 
             std::vector<QuicAcknowledgementRange> ranges;
@@ -216,8 +209,7 @@ namespace AsynGyanis::Net
             if (rangeCount > reader.remainingByteCount() / 2)
             {
                 return std::unexpected(reader.makeError(QuicDecodeErrorKind::Malformed,
-                                                        std::format("区间计数 {} 超过载荷剩余 {} 字节所能容纳的上限",
-                                                                    rangeCount, reader.remainingByteCount() / 2)));
+                                                        std::format("区间计数 {} 超过载荷剩余 {} 字节所能容纳的上限", rangeCount, reader.remainingByteCount() / 2)));
             }
 
             for (std::uint64_t rangeIndex = 0; rangeIndex < rangeCount; ++rangeIndex)
@@ -236,10 +228,9 @@ namespace AsynGyanis::Net
                 // gap + 2 可能溢出：先分别判，避免回绕后把非法区间当成合法
                 if (previousSmallest < *gap + 2 || (previousSmallest - *gap - 2) < *rangeLength)
                 {
-                    return std::unexpected(reader.makeError(QuicDecodeErrorKind::Malformed,
-                                                            std::format("第 {} 个区间的 gap {} 与长度 {} 使包号算成负数（RFC 9000 §19.3.1 要求按 "
-                                                                        "FRAME_ENCODING_ERROR 处理）",
-                                                                        rangeIndex + 1, *gap, *rangeLength)));
+                    return std::unexpected(reader.makeError(QuicDecodeErrorKind::Malformed, std::format("第 {} 个区间的 gap {} 与长度 {} 使包号算成负数（RFC 9000 §19.3.1 要求按 "
+                                                                                                        "FRAME_ENCODING_ERROR 处理）",
+                                                                                                        rangeIndex + 1, *gap, *rangeLength)));
                 }
                 const std::uint64_t rangeLargest = previousSmallest - *gap - 2;
                 ranges.push_back(QuicAcknowledgementRange{rangeLargest - *rangeLength, rangeLargest});
@@ -266,21 +257,18 @@ namespace AsynGyanis::Net
             {
                 throw Base::InvalidArgumentException(std::format("ACK 帧首个区间的最大包号 {} 与声明的最大确认包号 {} 不一致（RFC 9000 §19.3.1）："
                                                                  "请让区间覆盖最大确认包号",
-                                                                 frame.ranges.front().largestAcknowledged,
-                                                                 frame.largestAcknowledgedPacketNumber));
+                                                                 frame.ranges.front().largestAcknowledged, frame.largestAcknowledgedPacketNumber));
             }
             for (std::size_t rangeIndex = 1; rangeIndex < frame.ranges.size(); ++rangeIndex)
             {
                 const QuicAcknowledgementRange &previous = frame.ranges[rangeIndex - 1];
-                const QuicAcknowledgementRange &current = frame.ranges[rangeIndex];
-                if (current.smallestAcknowledged > current.largestAcknowledged ||
-                    previous.smallestAcknowledged < current.largestAcknowledged + 2)
+                const QuicAcknowledgementRange &current  = frame.ranges[rangeIndex];
+                if (current.smallestAcknowledged > current.largestAcknowledged || previous.smallestAcknowledged < current.largestAcknowledged + 2)
                 {
                     throw Base::InvalidArgumentException(std::format("ACK 帧第 {} 个区间 [{}, {}] 与上一区间的最小值 {} 之间留不出 gap 所要求的"
                                                                      "至少一个未确认包（RFC 9000 §19.3.1 的 largest = previous_smallest - gap - 2 "
                                                                      "会算出负包号）：请合并区间或修正区间",
-                                                                     rangeIndex + 1, current.largestAcknowledged, current.smallestAcknowledged,
-                                                                     previous.smallestAcknowledged));
+                                                                     rangeIndex + 1, current.largestAcknowledged, current.smallestAcknowledged, previous.smallestAcknowledged));
                 }
             }
         }
@@ -313,9 +301,7 @@ namespace AsynGyanis::Net
             void operator()(const QuicAcknowledgementFrame &frame) const
             {
                 requireEncodableAcknowledgementRanges(frame);
-                appendQuicVariableLengthInteger(bytes,
-                                                static_cast<std::uint64_t>(frame.hasEcnCounts ? QuicFrameType::AcknowledgementEcn
-                                                                                              : QuicFrameType::Acknowledgement));
+                appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(frame.hasEcnCounts ? QuicFrameType::AcknowledgementEcn : QuicFrameType::Acknowledgement));
                 appendQuicVariableLengthInteger(bytes, frame.largestAcknowledgedPacketNumber);
                 appendQuicVariableLengthInteger(bytes, frame.acknowledgementDelay);
                 // ACK Range Count 就是「首区间之外还有几段」，不必先物化区间对才知道
@@ -325,7 +311,7 @@ namespace AsynGyanis::Net
                 for (std::size_t rangeIndex = 1; rangeIndex < frame.ranges.size(); ++rangeIndex)
                 {
                     const QuicAcknowledgementRange &previous = frame.ranges[rangeIndex - 1];
-                    const QuicAcknowledgementRange &current = frame.ranges[rangeIndex];
+                    const QuicAcknowledgementRange &current  = frame.ranges[rangeIndex];
                     appendQuicVariableLengthInteger(bytes, previous.smallestAcknowledged - current.largestAcknowledged - 2);
                     appendQuicVariableLengthInteger(bytes, current.largestAcknowledged - current.smallestAcknowledged);
                 }
@@ -396,9 +382,7 @@ namespace AsynGyanis::Net
 
             void operator()(const QuicMaxStreamsFrame &frame) const
             {
-                appendQuicVariableLengthInteger(bytes,
-                                                static_cast<std::uint64_t>(frame.isUnidirectional ? QuicFrameType::MaxStreamsUni
-                                                                                                  : QuicFrameType::MaxStreamsBidi));
+                appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(frame.isUnidirectional ? QuicFrameType::MaxStreamsUni : QuicFrameType::MaxStreamsBidi));
                 appendQuicVariableLengthInteger(bytes, frame.maximumStreams);
             }
 
@@ -417,22 +401,18 @@ namespace AsynGyanis::Net
 
             void operator()(const QuicStreamsBlockedFrame &frame) const
             {
-                appendQuicVariableLengthInteger(bytes,
-                                                static_cast<std::uint64_t>(frame.isUnidirectional ? QuicFrameType::StreamsBlockedUni
-                                                                                                  : QuicFrameType::StreamsBlockedBidi));
+                appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(frame.isUnidirectional ? QuicFrameType::StreamsBlockedUni : QuicFrameType::StreamsBlockedBidi));
                 appendQuicVariableLengthInteger(bytes, frame.streamLimit);
             }
 
             void operator()(const QuicNewConnectionIdFrame &frame) const
             {
                 // §19.15：长度小于 1 或大于 20 都是 FRAME_ENCODING_ERROR，本端自己也不能发出去
-                if (frame.connectionId.size() < kQuicMinimumIssuedConnectionIdLength ||
-                    frame.connectionId.size() > kQuicMaximumConnectionIdLength)
+                if (frame.connectionId.size() < kQuicMinimumIssuedConnectionIdLength || frame.connectionId.size() > kQuicMaximumConnectionIdLength)
                 {
                     throw Base::InvalidArgumentException(std::format("NEW_CONNECTION_ID 里连接标识长度 {} 不在 {}..{} 字节内（RFC 9000 §19.15）："
                                                                      "0 长度或超长标识都不允许签发",
-                                                                     frame.connectionId.size(), kQuicMinimumIssuedConnectionIdLength,
-                                                                     kQuicMaximumConnectionIdLength));
+                                                                     frame.connectionId.size(), kQuicMinimumIssuedConnectionIdLength, kQuicMaximumConnectionIdLength));
                 }
                 if (frame.statelessResetToken.size() != kQuicStatelessResetTokenByteLength)
                 {
@@ -468,8 +448,8 @@ namespace AsynGyanis::Net
 
             void operator()(const QuicConnectionCloseFrame &frame) const
             {
-                appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(
-                        frame.triggeredFrameType.has_value() ? QuicFrameType::ConnectionClose : QuicFrameType::ApplicationClose));
+                appendQuicVariableLengthInteger(
+                        bytes, static_cast<std::uint64_t>(frame.triggeredFrameType.has_value() ? QuicFrameType::ConnectionClose : QuicFrameType::ApplicationClose));
                 appendQuicVariableLengthInteger(bytes, frame.errorCode);
                 if (frame.triggeredFrameType.has_value())
                 {
@@ -491,93 +471,69 @@ namespace AsynGyanis::Net
                     if constexpr (std::is_same_v<Frame, QuicPaddingFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::Padding);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicPingFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicPingFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::Ping);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicHandshakeDoneFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicHandshakeDoneFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::HandshakeDone);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicAcknowledgementFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicAcknowledgementFrame>)
                     {
-                        return static_cast<std::uint64_t>(concreteFrame.hasEcnCounts ? QuicFrameType::AcknowledgementEcn
-                                                                                     : QuicFrameType::Acknowledgement);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicResetStreamFrame>)
+                        return static_cast<std::uint64_t>(concreteFrame.hasEcnCounts ? QuicFrameType::AcknowledgementEcn : QuicFrameType::Acknowledgement);
+                    } else if constexpr (std::is_same_v<Frame, QuicResetStreamFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::ResetStream);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicStopSendingFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicStopSendingFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::StopSending);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicCryptoFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicCryptoFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::Crypto);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicNewTokenFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicNewTokenFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::NewToken);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicStreamFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicStreamFrame>)
                     {
                         return streamFrameTypeValue(concreteFrame.offset, concreteFrame.isFinal);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicMaxDataFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicMaxDataFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::MaxData);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicMaxStreamDataFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicMaxStreamDataFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::MaxStreamData);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicMaxStreamsFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicMaxStreamsFrame>)
                     {
-                        return static_cast<std::uint64_t>(concreteFrame.isUnidirectional ? QuicFrameType::MaxStreamsUni
-                                                                                         : QuicFrameType::MaxStreamsBidi);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicDataBlockedFrame>)
+                        return static_cast<std::uint64_t>(concreteFrame.isUnidirectional ? QuicFrameType::MaxStreamsUni : QuicFrameType::MaxStreamsBidi);
+                    } else if constexpr (std::is_same_v<Frame, QuicDataBlockedFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::DataBlocked);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicStreamDataBlockedFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicStreamDataBlockedFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::StreamDataBlocked);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicStreamsBlockedFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicStreamsBlockedFrame>)
                     {
-                        return static_cast<std::uint64_t>(concreteFrame.isUnidirectional ? QuicFrameType::StreamsBlockedUni
-                                                                                         : QuicFrameType::StreamsBlockedBidi);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicNewConnectionIdFrame>)
+                        return static_cast<std::uint64_t>(concreteFrame.isUnidirectional ? QuicFrameType::StreamsBlockedUni : QuicFrameType::StreamsBlockedBidi);
+                    } else if constexpr (std::is_same_v<Frame, QuicNewConnectionIdFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::NewConnectionId);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicRetireConnectionIdFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicRetireConnectionIdFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::RetireConnectionId);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicPathChallengeFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicPathChallengeFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::PathChallenge);
-                    }
-                    else if constexpr (std::is_same_v<Frame, QuicPathResponseFrame>)
+                    } else if constexpr (std::is_same_v<Frame, QuicPathResponseFrame>)
                     {
                         return static_cast<std::uint64_t>(QuicFrameType::PathResponse);
-                    }
-                    else
+                    } else
                     {
-                        return static_cast<std::uint64_t>(concreteFrame.triggeredFrameType.has_value() ? QuicFrameType::ConnectionClose
-                                                                                                       : QuicFrameType::ApplicationClose);
+                        return static_cast<std::uint64_t>(concreteFrame.triggeredFrameType.has_value() ? QuicFrameType::ConnectionClose : QuicFrameType::ApplicationClose);
                     }
                 },
                 frame);
     }
 
-    std::expected<void, QuicDecodeError> decodeQuicFrames(const std::span<const std::uint8_t> payload,
-                                                           std::vector<QuicFrame> &frames)
+    std::expected<void, QuicDecodeError> decodeQuicFrames(const std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames)
     {
         // 进出自明：容量留下、内容清空，调用方才敢把同一块缓冲一包接一包地交回来
         frames.clear();
@@ -586,7 +542,7 @@ namespace AsynGyanis::Net
         {
             // 游标逐帧新建：失败文案要指出错在哪一帧，一轮用到底会把第 5 帧的错安到第一帧头上
             FrameReader reader(payload.subspan(readOffset), readOffset);
-            const auto typeValue = reader.readFrameType();
+            const auto  typeValue = reader.readFrameType();
             if (!typeValue.has_value())
             {
                 return std::unexpected(typeValue.error());
@@ -595,163 +551,107 @@ namespace AsynGyanis::Net
             QuicFrame frame;
             switch (*typeValue)
             {
-            case static_cast<std::uint64_t>(QuicFrameType::Padding):
-                // 连续 PADDING 合成一帧交出去没有意义，逐帧保留让上层按字节数记账（它决定拥塞窗口的用量）
-                frame = QuicPaddingFrame{};
-                break;
-            case static_cast<std::uint64_t>(QuicFrameType::Ping):
-                frame = QuicPingFrame{};
-                break;
-            case static_cast<std::uint64_t>(QuicFrameType::HandshakeDone):
-                frame = QuicHandshakeDoneFrame{};
-                break;
-            case static_cast<std::uint64_t>(QuicFrameType::Acknowledgement):
-            case static_cast<std::uint64_t>(QuicFrameType::AcknowledgementEcn):
-            {
-                QuicAcknowledgementFrame acknowledgement;
-                const auto largestAcknowledged = reader.readInteger();
-                if (!largestAcknowledged.has_value())
+                case static_cast<std::uint64_t>(QuicFrameType::Padding):
+                    // 连续 PADDING 合成一帧交出去没有意义，逐帧保留让上层按字节数记账（它决定拥塞窗口的用量）
+                    frame = QuicPaddingFrame{};
+                    break;
+                case static_cast<std::uint64_t>(QuicFrameType::Ping):
+                    frame = QuicPingFrame{};
+                    break;
+                case static_cast<std::uint64_t>(QuicFrameType::HandshakeDone):
+                    frame = QuicHandshakeDoneFrame{};
+                    break;
+                case static_cast<std::uint64_t>(QuicFrameType::Acknowledgement):
+                case static_cast<std::uint64_t>(QuicFrameType::AcknowledgementEcn):
                 {
-                    return std::unexpected(largestAcknowledged.error());
-                }
-                const auto acknowledgementDelay = reader.readInteger();
-                if (!acknowledgementDelay.has_value())
-                {
-                    return std::unexpected(acknowledgementDelay.error());
-                }
-                const auto rangeCount = reader.readInteger();
-                if (!rangeCount.has_value())
-                {
-                    return std::unexpected(rangeCount.error());
-                }
-                const auto firstAcknowledgedRange = reader.readInteger();
-                if (!firstAcknowledgedRange.has_value())
-                {
-                    return std::unexpected(firstAcknowledgedRange.error());
-                }
-                auto ranges = decodeAcknowledgementRanges(reader, *largestAcknowledged, *firstAcknowledgedRange, *rangeCount);
-                if (!ranges.has_value())
-                {
-                    return std::unexpected(ranges.error());
-                }
-                acknowledgement.largestAcknowledgedPacketNumber = *largestAcknowledged;
-                acknowledgement.acknowledgementDelay = *acknowledgementDelay;
-                acknowledgement.ranges = std::move(*ranges);
-                if (*typeValue == static_cast<std::uint64_t>(QuicFrameType::AcknowledgementEcn))
-                {
-                    // 三个计数缺一即截断：漏读会让 ECN 拥塞标记的统计整体错位
-                    for (std::uint64_t &ecnCount: acknowledgement.ecnCounts)
+                    QuicAcknowledgementFrame acknowledgement;
+                    const auto               largestAcknowledged = reader.readInteger();
+                    if (!largestAcknowledged.has_value())
                     {
-                        const auto count = reader.readInteger();
-                        if (!count.has_value())
-                        {
-                            return std::unexpected(count.error());
-                        }
-                        ecnCount = *count;
+                        return std::unexpected(largestAcknowledged.error());
                     }
-                    acknowledgement.hasEcnCounts = true;
+                    const auto acknowledgementDelay = reader.readInteger();
+                    if (!acknowledgementDelay.has_value())
+                    {
+                        return std::unexpected(acknowledgementDelay.error());
+                    }
+                    const auto rangeCount = reader.readInteger();
+                    if (!rangeCount.has_value())
+                    {
+                        return std::unexpected(rangeCount.error());
+                    }
+                    const auto firstAcknowledgedRange = reader.readInteger();
+                    if (!firstAcknowledgedRange.has_value())
+                    {
+                        return std::unexpected(firstAcknowledgedRange.error());
+                    }
+                    auto ranges = decodeAcknowledgementRanges(reader, *largestAcknowledged, *firstAcknowledgedRange, *rangeCount);
+                    if (!ranges.has_value())
+                    {
+                        return std::unexpected(ranges.error());
+                    }
+                    acknowledgement.largestAcknowledgedPacketNumber = *largestAcknowledged;
+                    acknowledgement.acknowledgementDelay            = *acknowledgementDelay;
+                    acknowledgement.ranges                          = std::move(*ranges);
+                    if (*typeValue == static_cast<std::uint64_t>(QuicFrameType::AcknowledgementEcn))
+                    {
+                        // 三个计数缺一即截断：漏读会让 ECN 拥塞标记的统计整体错位
+                        for (std::uint64_t &ecnCount: acknowledgement.ecnCounts)
+                        {
+                            const auto count = reader.readInteger();
+                            if (!count.has_value())
+                            {
+                                return std::unexpected(count.error());
+                            }
+                            ecnCount = *count;
+                        }
+                        acknowledgement.hasEcnCounts = true;
+                    }
+                    frame = acknowledgement;
+                    break;
                 }
-                frame = acknowledgement;
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::ResetStream):
-            {
-                const auto streamId = reader.readInteger();
-                if (!streamId.has_value())
+                case static_cast<std::uint64_t>(QuicFrameType::ResetStream):
                 {
-                    return std::unexpected(streamId.error());
+                    const auto streamId = reader.readInteger();
+                    if (!streamId.has_value())
+                    {
+                        return std::unexpected(streamId.error());
+                    }
+                    const auto errorCode = reader.readInteger();
+                    if (!errorCode.has_value())
+                    {
+                        return std::unexpected(errorCode.error());
+                    }
+                    const auto finalSize = reader.readInteger();
+                    if (!finalSize.has_value())
+                    {
+                        return std::unexpected(finalSize.error());
+                    }
+                    frame = QuicResetStreamFrame{*streamId, *errorCode, *finalSize};
+                    break;
                 }
-                const auto errorCode = reader.readInteger();
-                if (!errorCode.has_value())
+                case static_cast<std::uint64_t>(QuicFrameType::StopSending):
                 {
-                    return std::unexpected(errorCode.error());
+                    const auto streamId = reader.readInteger();
+                    if (!streamId.has_value())
+                    {
+                        return std::unexpected(streamId.error());
+                    }
+                    const auto errorCode = reader.readInteger();
+                    if (!errorCode.has_value())
+                    {
+                        return std::unexpected(errorCode.error());
+                    }
+                    frame = QuicStopSendingFrame{*streamId, *errorCode};
+                    break;
                 }
-                const auto finalSize = reader.readInteger();
-                if (!finalSize.has_value())
-                {
-                    return std::unexpected(finalSize.error());
-                }
-                frame = QuicResetStreamFrame{*streamId, *errorCode, *finalSize};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::StopSending):
-            {
-                const auto streamId = reader.readInteger();
-                if (!streamId.has_value())
-                {
-                    return std::unexpected(streamId.error());
-                }
-                const auto errorCode = reader.readInteger();
-                if (!errorCode.has_value())
-                {
-                    return std::unexpected(errorCode.error());
-                }
-                frame = QuicStopSendingFrame{*streamId, *errorCode};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::Crypto):
-            {
-                const auto offset = reader.readInteger();
-                if (!offset.has_value())
-                {
-                    return std::unexpected(offset.error());
-                }
-                const auto length = reader.readInteger();
-                if (!length.has_value())
-                {
-                    return std::unexpected(length.error());
-                }
-                const auto data = reader.readBytes(static_cast<std::size_t>(*length));
-                if (!data.has_value())
-                {
-                    return std::unexpected(data.error());
-                }
-                frame = QuicCryptoFrame{*offset, *data};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::NewToken):
-            {
-                const auto length = reader.readInteger();
-                if (!length.has_value())
-                {
-                    return std::unexpected(length.error());
-                }
-                const auto token = reader.readBytes(static_cast<std::size_t>(*length));
-                if (!token.has_value())
-                {
-                    return std::unexpected(token.error());
-                }
-                frame = QuicNewTokenFrame{*token};
-                break;
-            }
-            case 0x08:
-            case 0x09:
-            case 0x0a:
-            case 0x0b:
-            case 0x0c:
-            case 0x0d:
-            case 0x0e:
-            case 0x0f:
-            {
-                QuicStreamFrame stream;
-                const auto streamId = reader.readInteger();
-                if (!streamId.has_value())
-                {
-                    return std::unexpected(streamId.error());
-                }
-                stream.streamId = *streamId;
-                if ((*typeValue & kQuicStreamFrameOffsetBit) != 0)
+                case static_cast<std::uint64_t>(QuicFrameType::Crypto):
                 {
                     const auto offset = reader.readInteger();
                     if (!offset.has_value())
                     {
                         return std::unexpected(offset.error());
                     }
-                    stream.offset = *offset;
-                }
-                if ((*typeValue & kQuicStreamFrameLengthBit) != 0)
-                {
-                    // LEN 位决定数据是否自带长度；不带长度的写法数据延伸到载荷末尾（§19.8）
                     const auto length = reader.readInteger();
                     if (!length.has_value())
                     {
@@ -762,174 +662,223 @@ namespace AsynGyanis::Net
                     {
                         return std::unexpected(data.error());
                     }
-                    stream.data = *data;
+                    frame = QuicCryptoFrame{*offset, *data};
+                    break;
                 }
-                else
+                case static_cast<std::uint64_t>(QuicFrameType::NewToken):
                 {
-                    stream.data = reader.takeRemaining();
-                }
-                stream.isFinal = (*typeValue & kQuicStreamFrameFinalBit) != 0;
-                frame = stream;
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::MaxData):
-            case static_cast<std::uint64_t>(QuicFrameType::DataBlocked):
-            {
-                const auto maximumData = reader.readInteger();
-                if (!maximumData.has_value())
-                {
-                    return std::unexpected(maximumData.error());
-                }
-                frame = *typeValue == static_cast<std::uint64_t>(QuicFrameType::MaxData)
-                        ? QuicFrame{QuicMaxDataFrame{*maximumData}}
-                        : QuicFrame{QuicDataBlockedFrame{*maximumData}};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::MaxStreamData):
-            case static_cast<std::uint64_t>(QuicFrameType::StreamDataBlocked):
-            {
-                const auto streamId = reader.readInteger();
-                if (!streamId.has_value())
-                {
-                    return std::unexpected(streamId.error());
-                }
-                const auto limit = reader.readInteger();
-                if (!limit.has_value())
-                {
-                    return std::unexpected(limit.error());
-                }
-                frame = *typeValue == static_cast<std::uint64_t>(QuicFrameType::MaxStreamData)
-                        ? QuicFrame{QuicMaxStreamDataFrame{*streamId, *limit}}
-                        : QuicFrame{QuicStreamDataBlockedFrame{*streamId, *limit}};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::MaxStreamsBidi):
-            case static_cast<std::uint64_t>(QuicFrameType::MaxStreamsUni):
-            {
-                const auto maximumStreams = reader.readInteger();
-                if (!maximumStreams.has_value())
-                {
-                    return std::unexpected(maximumStreams.error());
-                }
-                frame = QuicMaxStreamsFrame{*maximumStreams, *typeValue == static_cast<std::uint64_t>(QuicFrameType::MaxStreamsUni)};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::StreamsBlockedBidi):
-            case static_cast<std::uint64_t>(QuicFrameType::StreamsBlockedUni):
-            {
-                const auto streamLimit = reader.readInteger();
-                if (!streamLimit.has_value())
-                {
-                    return std::unexpected(streamLimit.error());
-                }
-                frame = QuicStreamsBlockedFrame{*streamLimit, *typeValue == static_cast<std::uint64_t>(QuicFrameType::StreamsBlockedUni)};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::RetireConnectionId):
-            {
-                const auto sequenceNumber = reader.readInteger();
-                if (!sequenceNumber.has_value())
-                {
-                    return std::unexpected(sequenceNumber.error());
-                }
-                frame = QuicRetireConnectionIdFrame{*sequenceNumber};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::NewConnectionId):
-            {
-                const auto sequenceNumber = reader.readInteger();
-                if (!sequenceNumber.has_value())
-                {
-                    return std::unexpected(sequenceNumber.error());
-                }
-                const auto retirePriorTo = reader.readInteger();
-                if (!retirePriorTo.has_value())
-                {
-                    return std::unexpected(retirePriorTo.error());
-                }
-                const auto lengthByte = reader.readByte();
-                if (!lengthByte.has_value())
-                {
-                    return std::unexpected(lengthByte.error());
-                }
-                // §19.15：长度小于 1 或大于 20 直接是 FRAME_ENCODING_ERROR，不当成普通截断
-                if (*lengthByte < kQuicMinimumIssuedConnectionIdLength || *lengthByte > kQuicMaximumConnectionIdLength)
-                {
-                    return std::unexpected(reader.makeError(QuicDecodeErrorKind::Malformed,
-                                                            std::format("连接标识长度 {} 不在 {}..{} 字节内（RFC 9000 §19.15 要求按 "
-                                                                        "FRAME_ENCODING_ERROR 处理）",
-                                                                        static_cast<unsigned int>(*lengthByte),
-                                                                        kQuicMinimumIssuedConnectionIdLength, kQuicMaximumConnectionIdLength)));
-                }
-                const auto connectionId = reader.readBytes(*lengthByte);
-                if (!connectionId.has_value())
-                {
-                    return std::unexpected(connectionId.error());
-                }
-                const auto resetToken = reader.readBytes(kQuicStatelessResetTokenByteLength);
-                if (!resetToken.has_value())
-                {
-                    return std::unexpected(reader.makeError(QuicDecodeErrorKind::Truncated,
-                                                            std::format("缺 {} 字节无状态重置令牌（RFC 9000 §19.15 图 39）",
-                                                                        kQuicStatelessResetTokenByteLength)));
-                }
-                frame = QuicNewConnectionIdFrame{*sequenceNumber, *retirePriorTo, *connectionId, *resetToken};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::PathChallenge):
-            case static_cast<std::uint64_t>(QuicFrameType::PathResponse):
-            {
-                const auto data = reader.readBytes(kQuicPathValidationDataByteLength);
-                if (!data.has_value())
-                {
-                    return std::unexpected(data.error());
-                }
-                std::array<std::uint8_t, kQuicPathValidationDataByteLength> validationData{};
-                std::copy(data->begin(), data->end(), validationData.begin());
-                frame = *typeValue == static_cast<std::uint64_t>(QuicFrameType::PathChallenge)
-                        ? QuicFrame{QuicPathChallengeFrame{validationData}}
-                        : QuicFrame{QuicPathResponseFrame{validationData}};
-                break;
-            }
-            case static_cast<std::uint64_t>(QuicFrameType::ConnectionClose):
-            case static_cast<std::uint64_t>(QuicFrameType::ApplicationClose):
-            {
-                QuicConnectionCloseFrame close;
-                const auto errorCode = reader.readInteger();
-                if (!errorCode.has_value())
-                {
-                    return std::unexpected(errorCode.error());
-                }
-                close.errorCode = *errorCode;
-                if (*typeValue == static_cast<std::uint64_t>(QuicFrameType::ConnectionClose))
-                {
-                    // 0x1c 形态的 Frame Type 字段恒在，取 0 表示触发帧未知（§19.19）
-                    const auto triggeredFrameType = reader.readInteger();
-                    if (!triggeredFrameType.has_value())
+                    const auto length = reader.readInteger();
+                    if (!length.has_value())
                     {
-                        return std::unexpected(triggeredFrameType.error());
+                        return std::unexpected(length.error());
                     }
-                    close.triggeredFrameType = *triggeredFrameType;
+                    const auto token = reader.readBytes(static_cast<std::size_t>(*length));
+                    if (!token.has_value())
+                    {
+                        return std::unexpected(token.error());
+                    }
+                    frame = QuicNewTokenFrame{*token};
+                    break;
                 }
-                const auto reasonLength = reader.readInteger();
-                if (!reasonLength.has_value())
+                case 0x08:
+                case 0x09:
+                case 0x0a:
+                case 0x0b:
+                case 0x0c:
+                case 0x0d:
+                case 0x0e:
+                case 0x0f:
                 {
-                    return std::unexpected(reasonLength.error());
+                    QuicStreamFrame stream;
+                    const auto      streamId = reader.readInteger();
+                    if (!streamId.has_value())
+                    {
+                        return std::unexpected(streamId.error());
+                    }
+                    stream.streamId = *streamId;
+                    if ((*typeValue & kQuicStreamFrameOffsetBit) != 0)
+                    {
+                        const auto offset = reader.readInteger();
+                        if (!offset.has_value())
+                        {
+                            return std::unexpected(offset.error());
+                        }
+                        stream.offset = *offset;
+                    }
+                    if ((*typeValue & kQuicStreamFrameLengthBit) != 0)
+                    {
+                        // LEN 位决定数据是否自带长度；不带长度的写法数据延伸到载荷末尾（§19.8）
+                        const auto length = reader.readInteger();
+                        if (!length.has_value())
+                        {
+                            return std::unexpected(length.error());
+                        }
+                        const auto data = reader.readBytes(static_cast<std::size_t>(*length));
+                        if (!data.has_value())
+                        {
+                            return std::unexpected(data.error());
+                        }
+                        stream.data = *data;
+                    } else
+                    {
+                        stream.data = reader.takeRemaining();
+                    }
+                    stream.isFinal = (*typeValue & kQuicStreamFrameFinalBit) != 0;
+                    frame          = stream;
+                    break;
                 }
-                const auto reason = reader.readBytes(static_cast<std::size_t>(*reasonLength));
-                if (!reason.has_value())
+                case static_cast<std::uint64_t>(QuicFrameType::MaxData):
+                case static_cast<std::uint64_t>(QuicFrameType::DataBlocked):
                 {
-                    return std::unexpected(reason.error());
+                    const auto maximumData = reader.readInteger();
+                    if (!maximumData.has_value())
+                    {
+                        return std::unexpected(maximumData.error());
+                    }
+                    frame = *typeValue == static_cast<std::uint64_t>(QuicFrameType::MaxData) ? QuicFrame{QuicMaxDataFrame{*maximumData}}
+                                                                                             : QuicFrame{QuicDataBlockedFrame{*maximumData}};
+                    break;
                 }
-                close.reasonPhrase = *reason;
-                frame = close;
-                break;
-            }
-            default:
-                return std::unexpected(makeFrameError(
-                        QuicDecodeErrorKind::Malformed,
-                        std::format("未定义的帧类型 0x{:X}（RFC 9000 §12.4 表 3 未列，且未协商任何扩展帧）：按 PROTOCOL_VIOLATION 处理",
-                                    static_cast<unsigned long long>(*typeValue))));
+                case static_cast<std::uint64_t>(QuicFrameType::MaxStreamData):
+                case static_cast<std::uint64_t>(QuicFrameType::StreamDataBlocked):
+                {
+                    const auto streamId = reader.readInteger();
+                    if (!streamId.has_value())
+                    {
+                        return std::unexpected(streamId.error());
+                    }
+                    const auto limit = reader.readInteger();
+                    if (!limit.has_value())
+                    {
+                        return std::unexpected(limit.error());
+                    }
+                    frame = *typeValue == static_cast<std::uint64_t>(QuicFrameType::MaxStreamData) ? QuicFrame{QuicMaxStreamDataFrame{*streamId, *limit}}
+                                                                                                   : QuicFrame{QuicStreamDataBlockedFrame{*streamId, *limit}};
+                    break;
+                }
+                case static_cast<std::uint64_t>(QuicFrameType::MaxStreamsBidi):
+                case static_cast<std::uint64_t>(QuicFrameType::MaxStreamsUni):
+                {
+                    const auto maximumStreams = reader.readInteger();
+                    if (!maximumStreams.has_value())
+                    {
+                        return std::unexpected(maximumStreams.error());
+                    }
+                    frame = QuicMaxStreamsFrame{*maximumStreams, *typeValue == static_cast<std::uint64_t>(QuicFrameType::MaxStreamsUni)};
+                    break;
+                }
+                case static_cast<std::uint64_t>(QuicFrameType::StreamsBlockedBidi):
+                case static_cast<std::uint64_t>(QuicFrameType::StreamsBlockedUni):
+                {
+                    const auto streamLimit = reader.readInteger();
+                    if (!streamLimit.has_value())
+                    {
+                        return std::unexpected(streamLimit.error());
+                    }
+                    frame = QuicStreamsBlockedFrame{*streamLimit, *typeValue == static_cast<std::uint64_t>(QuicFrameType::StreamsBlockedUni)};
+                    break;
+                }
+                case static_cast<std::uint64_t>(QuicFrameType::RetireConnectionId):
+                {
+                    const auto sequenceNumber = reader.readInteger();
+                    if (!sequenceNumber.has_value())
+                    {
+                        return std::unexpected(sequenceNumber.error());
+                    }
+                    frame = QuicRetireConnectionIdFrame{*sequenceNumber};
+                    break;
+                }
+                case static_cast<std::uint64_t>(QuicFrameType::NewConnectionId):
+                {
+                    const auto sequenceNumber = reader.readInteger();
+                    if (!sequenceNumber.has_value())
+                    {
+                        return std::unexpected(sequenceNumber.error());
+                    }
+                    const auto retirePriorTo = reader.readInteger();
+                    if (!retirePriorTo.has_value())
+                    {
+                        return std::unexpected(retirePriorTo.error());
+                    }
+                    const auto lengthByte = reader.readByte();
+                    if (!lengthByte.has_value())
+                    {
+                        return std::unexpected(lengthByte.error());
+                    }
+                    // §19.15：长度小于 1 或大于 20 直接是 FRAME_ENCODING_ERROR，不当成普通截断
+                    if (*lengthByte < kQuicMinimumIssuedConnectionIdLength || *lengthByte > kQuicMaximumConnectionIdLength)
+                    {
+                        return std::unexpected(reader.makeError(QuicDecodeErrorKind::Malformed, std::format("连接标识长度 {} 不在 {}..{} 字节内（RFC 9000 §19.15 要求按 "
+                                                                                                            "FRAME_ENCODING_ERROR 处理）",
+                                                                                                            static_cast<unsigned int>(*lengthByte),
+                                                                                                            kQuicMinimumIssuedConnectionIdLength, kQuicMaximumConnectionIdLength)));
+                    }
+                    const auto connectionId = reader.readBytes(*lengthByte);
+                    if (!connectionId.has_value())
+                    {
+                        return std::unexpected(connectionId.error());
+                    }
+                    const auto resetToken = reader.readBytes(kQuicStatelessResetTokenByteLength);
+                    if (!resetToken.has_value())
+                    {
+                        return std::unexpected(reader.makeError(QuicDecodeErrorKind::Truncated,
+                                                                std::format("缺 {} 字节无状态重置令牌（RFC 9000 §19.15 图 39）", kQuicStatelessResetTokenByteLength)));
+                    }
+                    frame = QuicNewConnectionIdFrame{*sequenceNumber, *retirePriorTo, *connectionId, *resetToken};
+                    break;
+                }
+                case static_cast<std::uint64_t>(QuicFrameType::PathChallenge):
+                case static_cast<std::uint64_t>(QuicFrameType::PathResponse):
+                {
+                    const auto data = reader.readBytes(kQuicPathValidationDataByteLength);
+                    if (!data.has_value())
+                    {
+                        return std::unexpected(data.error());
+                    }
+                    std::array<std::uint8_t, kQuicPathValidationDataByteLength> validationData{};
+                    std::copy(data->begin(), data->end(), validationData.begin());
+                    frame = *typeValue == static_cast<std::uint64_t>(QuicFrameType::PathChallenge) ? QuicFrame{QuicPathChallengeFrame{validationData}}
+                                                                                                   : QuicFrame{QuicPathResponseFrame{validationData}};
+                    break;
+                }
+                case static_cast<std::uint64_t>(QuicFrameType::ConnectionClose):
+                case static_cast<std::uint64_t>(QuicFrameType::ApplicationClose):
+                {
+                    QuicConnectionCloseFrame close;
+                    const auto               errorCode = reader.readInteger();
+                    if (!errorCode.has_value())
+                    {
+                        return std::unexpected(errorCode.error());
+                    }
+                    close.errorCode = *errorCode;
+                    if (*typeValue == static_cast<std::uint64_t>(QuicFrameType::ConnectionClose))
+                    {
+                        // 0x1c 形态的 Frame Type 字段恒在，取 0 表示触发帧未知（§19.19）
+                        const auto triggeredFrameType = reader.readInteger();
+                        if (!triggeredFrameType.has_value())
+                        {
+                            return std::unexpected(triggeredFrameType.error());
+                        }
+                        close.triggeredFrameType = *triggeredFrameType;
+                    }
+                    const auto reasonLength = reader.readInteger();
+                    if (!reasonLength.has_value())
+                    {
+                        return std::unexpected(reasonLength.error());
+                    }
+                    const auto reason = reader.readBytes(static_cast<std::size_t>(*reasonLength));
+                    if (!reason.has_value())
+                    {
+                        return std::unexpected(reason.error());
+                    }
+                    close.reasonPhrase = *reason;
+                    frame              = close;
+                    break;
+                }
+                default:
+                    return std::unexpected(makeFrameError(QuicDecodeErrorKind::Malformed,
+                                                          std::format("未定义的帧类型 0x{:X}（RFC 9000 §12.4 表 3 未列，且未协商任何扩展帧）：按 PROTOCOL_VIOLATION 处理",
+                                                                      static_cast<unsigned long long>(*typeValue))));
             }
 
             frames.push_back(std::move(frame));
@@ -953,10 +902,9 @@ namespace AsynGyanis::Net
         std::visit(FrameAppender{bytes}, frame);
     }
 
-    std::vector<QuicAcknowledgementRange> buildQuicAcknowledgementRanges(const QuicReceivedPacketNumbers &receivedPacketNumbers,
-                                                                        const std::uint64_t acknowledgedUpTo)
+    std::vector<QuicAcknowledgementRange> buildQuicAcknowledgementRanges(const QuicReceivedPacketNumbers &receivedPacketNumbers, const std::uint64_t acknowledgedUpTo)
     {
-        std::vector<QuicAcknowledgementRange> ranges;
+        std::vector<QuicAcknowledgementRange>         ranges;
         const std::map<std::uint64_t, std::uint64_t> &spans = receivedPacketNumbers.ranges();
         // 从最高的一段往下走：§19.3.1 要的是递减区间，而集合里相邻的号早已并成一段，不必再合并
         for (auto cursor = spans.rbegin(); cursor != spans.rend(); ++cursor)

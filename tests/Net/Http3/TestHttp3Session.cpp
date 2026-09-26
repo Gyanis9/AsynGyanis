@@ -1,4 +1,8 @@
-// HTTP/3 会话层的用例：本端单向流的绑定、SETTINGS 的产出、请求到 Router 的映射，以及隧道与限额这套状态机。前几条只驱动会话本身——单向流的开流口与流数据出口都是测试给的假实现，因此不涉及 QUIC 与真实 UDP。后面的真字节用例由测试自带的字节级对端（Http3ClientPeer）驱动：请求按 RFC 9114/9204 排成帧、响应按帧解回来，中间同样不经 UDP。为什么对端是自己写的：链接进来的第三方实现与被测代码同属一次构建、可以一起改软，那种「跨实现裁判」迟早只剩名字。字节合不合规范的判定因此在进程外做（scripts/h3_acceptance.py 与 scripts/quic_cross_check.sh 用 aioquic 真握手真编解），本文件留的是状态机与业务映射的回归判据。
+// HTTP/3 会话层的用例：本端单向流的绑定、SETTINGS 的产出、请求到 Router
+// 的映射，以及隧道与限额这套状态机。前几条只驱动会话本身——单向流的开流口与流数据出口都是测试给的假实现，因此不涉及 QUIC 与真实
+// UDP。后面的真字节用例由测试自带的字节级对端（Http3ClientPeer）驱动：请求按 RFC 9114/9204 排成帧、响应按帧解回来，中间同样不经
+// UDP。为什么对端是自己写的：链接进来的第三方实现与被测代码同属一次构建、可以一起改软，那种「跨实现裁判」迟早只剩名字。字节合不合规范的判定因此在进程外做（scripts/h3_acceptance.py
+// 与 scripts/quic_cross_check.sh 用 aioquic 真握手真编解），本文件留的是状态机与业务映射的回归判据。
 #include "Net/Http3/Http3Session.h"
 
 #include "Platform/FileSystem/FileSystem.h"
@@ -6,19 +10,19 @@
 #include "CoreTestSupport.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/Router.h"
 #include "Net/Http/StaticFileService.h"
-#include "Net/Http/HttpRequestId.h"
-#include "Net/Http3/Qpack.h"
 #include "Net/Http3/Http3Frame.h"
+#include "Net/Http3/Qpack.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cstdint>
 #include <coroutine>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -39,7 +43,7 @@ namespace AsynGyanis::Net
     {
         /// 本端（服务端）发起的单向流号序列：RFC 9000 §2.1 规定服务端发起的单向流号 ≡ 3 (mod 4)
         constexpr std::int64_t kFirstServerUnidirectionalStreamId = 3;
-        constexpr std::int64_t kUnidirectionalStreamIdStep       = 4;
+        constexpr std::int64_t kUnidirectionalStreamIdStep        = 4;
 
         /// 对端（客户端）发起的单向流号序列：≡ 2 (mod 4)，依次是控制流 2、QPACK 编码流 6、解码流 10
         constexpr std::int64_t kClientControlStreamId      = 2;
@@ -91,7 +95,7 @@ namespace AsynGyanis::Net
 
         private:
             std::int64_t              m_nextStreamId{kFirstServerUnidirectionalStreamId}; ///< 下一条流号
-            std::vector<std::int64_t> m_openedStreamIds;                                 ///< 已开出的流号
+            std::vector<std::int64_t> m_openedStreamIds;                                  ///< 已开出的流号
         };
 
         /**
@@ -110,19 +114,19 @@ namespace AsynGyanis::Net
             /// 解出来的响应
             struct DecodedResponse
             {
-                int                                status{0};     ///< :status（最后一条，即最终响应）
+                int status{0}; ///< :status（最后一条，即最终响应）
                 /// 按到达顺序记下的全部 :status：信息性响应（100/103）会排在最终响应之前
                 std::vector<int>                   statuses;
-                std::map<std::string, std::string> headers;      ///< 其余头部（同名只留最后一条）
+                std::map<std::string, std::string> headers; ///< 其余头部（同名只留最后一条）
                 /// 全部响应字段按到达顺序逐条记下：可重复头（Set-Cookie）只有这里能数出条数
                 std::vector<std::pair<std::string, std::string>> headerFields;
                 /// 每个字段段（一个 HEADERS 帧）单独一份：头段与尾段的分界只有这里看得出来，
                 /// 上面那张表是拉平的——而「尾部字段确实排在正文之后、由第二个段带出来」正是要钉的东西
                 std::vector<std::vector<std::pair<std::string, std::string>>> fieldSections;
-                std::string                        body;         ///< 正文
-                bool                               isComplete{false}; ///< 是否收到了收尾
+                std::string                                                   body;              ///< 正文
+                bool                                                          isComplete{false}; ///< 是否收到了收尾
                 /// 排字节或解字节时撞到的第一句报错：判据失败时用它分清「服务端没回」与「回了但解不开」
-                std::string                        decodeError;
+                std::string decodeError;
 
                 /// 数某个头名出现了几次
                 [[nodiscard]] std::size_t countOf(const std::string &name) const
@@ -137,10 +141,9 @@ namespace AsynGyanis::Net
              *        0 表示不报这项（对端因此不受约束）；用例用它通告一个很小的上限，看服务端怎么处置
              * @details 这三段字节随第一次取写一同交给会话，与真实客户端「连上就先报自我约束」同一趟
              */
-            explicit Http3ClientPeer(const std::uint64_t maximumFieldSectionSizeByteCount = 0)
-                    : m_answerDecoder(QpackDecoderSettings{.maximumTableCapacityByteCount = 0,
-                                                           .maximumBlockedStreamCount = 0,
-                                                           .maximumFieldSectionSizeByteCount = maximumFieldSectionSizeByteCount})
+            explicit Http3ClientPeer(const std::uint64_t maximumFieldSectionSizeByteCount = 0) :
+                m_answerDecoder(QpackDecoderSettings{
+                        .maximumTableCapacityByteCount = 0, .maximumBlockedStreamCount = 0, .maximumFieldSectionSizeByteCount = maximumFieldSectionSizeByteCount})
             {
                 // 本端 SETTINGS 报两项自我约束：动态表容量 0、阻塞流 0（RFC 9204 §5）。容量 0 让服务端
                 // 只能用静态表与字面量，响应头块因此不依赖任何编码器流指令，也就没有「先等表补齐」这条路
@@ -180,8 +183,8 @@ namespace AsynGyanis::Net
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节（含控制流与请求流）
              */
             std::vector<CapturedStreamData> submitRequest(const std::string &method, const std::string &path, const std::string &authority,
-                                                          const std::int64_t requestStreamId = kFirstRequestStreamId,
-                                                          const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
+                                                          const std::int64_t                                      requestStreamId = kFirstRequestStreamId,
+                                                          const std::vector<std::pair<std::string, std::string>> &extraHeaders    = {})
             {
                 queueRequestHead(method, path, authority, {}, extraHeaders, requestStreamId, true);
                 return drainPendingWrites();
@@ -200,8 +203,7 @@ namespace AsynGyanis::Net
              * @note 只排队不取字节：要靠 takeNextWriteStep() 一段一段送到服务端，才能测「正文收齐之前
              *       处理器已经进去」这类边收边读的路径
              */
-            bool submitRequestWithBody(const std::string &method, const std::string &path, const std::string &authority, std::string body,
-                                       const std::size_t chunkByteCount,
+            bool submitRequestWithBody(const std::string &method, const std::string &path, const std::string &authority, std::string body, const std::size_t chunkByteCount,
                                        const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
             {
                 const std::size_t stepByteCount = chunkByteCount == 0 ? body.size() : chunkByteCount;
@@ -211,8 +213,7 @@ namespace AsynGyanis::Net
                 {
                     const std::size_t remainingByteCount = body.size() - offset;
                     const std::size_t thisStepByteCount  = (stepByteCount < remainingByteCount) ? stepByteCount : remainingByteCount;
-                    queueDataFrame(kFirstRequestStreamId, body.substr(offset, thisStepByteCount),
-                                   offset + thisStepByteCount >= body.size());
+                    queueDataFrame(kFirstRequestStreamId, body.substr(offset, thisStepByteCount), offset + thisStepByteCount >= body.size());
                 }
                 return m_response.decodeError.empty();
             }
@@ -226,9 +227,8 @@ namespace AsynGyanis::Net
              * @param trailerFields 尾段字段，按到达顺序
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节
              */
-            std::vector<CapturedStreamData> submitRequestWithBodyAndTrailers(const std::string &method, const std::string &path,
-                                                                            const std::string &authority, const std::string &body,
-                                                                            const std::vector<QpackHeaderField> &trailerFields)
+            std::vector<CapturedStreamData> submitRequestWithBodyAndTrailers(const std::string &method, const std::string &path, const std::string &authority,
+                                                                             const std::string &body, const std::vector<QpackHeaderField> &trailerFields)
             {
                 std::vector<std::pair<std::string, std::string>> extraHeaders;
                 if (!body.empty())
@@ -286,8 +286,7 @@ namespace AsynGyanis::Net
              * @note 头那一趟**不能**收尾：对端之后还要在同一条流上发 WebSocket 帧，
              *       服务端会把收尾之后的 DATA 判成 H3_FRAME_UNEXPECTED
              */
-            std::vector<CapturedStreamData> submitWebSocketTunnel(const std::string &path, const std::string &authority,
-                                                                  const std::string &firstWebSocketFrame)
+            std::vector<CapturedStreamData> submitWebSocketTunnel(const std::string &path, const std::string &authority, const std::string &firstWebSocketFrame)
             {
                 queueRequestHead("CONNECT", path, authority, "websocket", {}, kFirstRequestStreamId, false);
                 queueDataFrame(kFirstRequestStreamId, firstWebSocketFrame, false);
@@ -321,11 +320,10 @@ namespace AsynGyanis::Net
                     return;
                 }
 
-                const auto existingReader = m_frameReaders.find(streamId);
-                Http3FrameReader &reader =
-                        existingReader != m_frameReaders.end()
-                                ? *existingReader->second
-                                : *m_frameReaders.emplace(streamId, std::make_unique<Http3FrameReader>(kPeerFrameByteLimit)).first->second;
+                const auto        existingReader = m_frameReaders.find(streamId);
+                Http3FrameReader &reader         = existingReader != m_frameReaders.end()
+                                                           ? *existingReader->second
+                                                           : *m_frameReaders.emplace(streamId, std::make_unique<Http3FrameReader>(kPeerFrameByteLimit)).first->second;
 
                 if (const auto fed = reader.feed(data); !fed.has_value())
                 {
@@ -369,8 +367,8 @@ namespace AsynGyanis::Net
             /// 一段待交给会话的流数据：一次「写」一段
             struct PendingWrite
             {
-                std::int64_t              streamId{0}; ///< 流号
-                std::vector<std::uint8_t> bytes;       ///< 该趟的字节
+                std::int64_t              streamId{0};        ///< 流号
+                std::vector<std::uint8_t> bytes;              ///< 该趟的字节
                 bool                      isEndStream{false}; ///< 这一趟是否把流收尾
             };
 
@@ -397,8 +395,7 @@ namespace AsynGyanis::Net
             void queueFrame(const std::int64_t streamId, const Http3FrameType frameType, const std::string &payload, const bool isEndStream)
             {
                 std::string frameBytes;
-                appendHttp3FrameWithPayload(frameBytes, frameType,
-                                            std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size()));
+                appendHttp3FrameWithPayload(frameBytes, frameType, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size()));
                 m_pendingWrites.push_back(PendingWrite{streamId, toStreamBytes(frameBytes), isEndStream});
             }
 
@@ -410,13 +407,11 @@ namespace AsynGyanis::Net
              * @param protocol :protocol 取值，空串表示不带（普通请求都不带）
              * @return std::vector<QpackHeaderField> 按伪头应在前的顺序给出
              */
-            [[nodiscard]] static std::vector<QpackHeaderField> makePseudoFields(const std::string &method, const std::string &path,
-                                                                                const std::string &authority, const std::string &protocol)
+            [[nodiscard]] static std::vector<QpackHeaderField> makePseudoFields(const std::string &method, const std::string &path, const std::string &authority,
+                                                                                const std::string &protocol)
             {
-                std::vector<QpackHeaderField> headerFields{QpackHeaderField{":method", method},
-                                                           QpackHeaderField{":scheme", kRequestScheme},
-                                                           QpackHeaderField{":authority", authority},
-                                                           QpackHeaderField{":path", path}};
+                std::vector<QpackHeaderField> headerFields{QpackHeaderField{":method", method}, QpackHeaderField{":scheme", kRequestScheme},
+                                                           QpackHeaderField{":authority", authority}, QpackHeaderField{":path", path}};
                 if (!protocol.empty())
                 {
                     // 扩展 CONNECT 用（RFC 9220）：伪头必须排在普通头之前，追加在末尾即可
@@ -435,9 +430,8 @@ namespace AsynGyanis::Net
              * @param requestStreamId 承载该请求的双向流号
              * @param isEndStream 头这一趟是否顺带收尾
              */
-            void queueRequestHead(const std::string &method, const std::string &path, const std::string &authority,
-                                  const std::string &protocol, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-                                  const std::int64_t requestStreamId, const bool isEndStream)
+            void queueRequestHead(const std::string &method, const std::string &path, const std::string &authority, const std::string &protocol,
+                                  const std::vector<std::pair<std::string, std::string>> &extraHeaders, const std::int64_t requestStreamId, const bool isEndStream)
             {
                 std::vector<QpackHeaderField> headerFields = makePseudoFields(method, path, authority, protocol);
                 for (const auto &[name, value]: extraHeaders)
@@ -446,12 +440,11 @@ namespace AsynGyanis::Net
                 }
 
                 // 每个头块单独一个编码器：容量 0 下没有跨头块的表状态要继承
-                QpackEncoder            encoder(0, 0, 0);
-                std::string             headerBlock;
-                std::string             encoderStreamBytes;
-                const auto              encoded = encoder.encodeFieldSection(static_cast<std::uint64_t>(requestStreamId),
-                                                                             std::span<const QpackHeaderField>(headerFields), headerBlock,
-                                                                             encoderStreamBytes);
+                QpackEncoder encoder(0, 0, 0);
+                std::string  headerBlock;
+                std::string  encoderStreamBytes;
+                const auto   encoded =
+                        encoder.encodeFieldSection(static_cast<std::uint64_t>(requestStreamId), std::span<const QpackHeaderField>(headerFields), headerBlock, encoderStreamBytes);
                 if (!encoded.has_value())
                 {
                     recordDecodeError("请求头块没能编出来：" + encoded.error().message);
@@ -476,9 +469,8 @@ namespace AsynGyanis::Net
                 QpackEncoder encoder(0, 0, 0);
                 std::string  headerBlock;
                 std::string  encoderStreamBytes;
-                const auto   encoded = encoder.encodeFieldSection(static_cast<std::uint64_t>(requestStreamId),
-                                                                  std::span<const QpackHeaderField>(trailerFields), headerBlock,
-                                                                  encoderStreamBytes);
+                const auto   encoded =
+                        encoder.encodeFieldSection(static_cast<std::uint64_t>(requestStreamId), std::span<const QpackHeaderField>(trailerFields), headerBlock, encoderStreamBytes);
                 if (!encoded.has_value())
                 {
                     recordDecodeError("尾段字段没能编出来：" + encoded.error().message);
@@ -501,7 +493,7 @@ namespace AsynGyanis::Net
             /// 反复取待发字节直到没有，同一条流的几趟合并成一条
             std::vector<CapturedStreamData> drainPendingWrites()
             {
-                std::vector<CapturedStreamData> chunks;
+                std::vector<CapturedStreamData>     chunks;
                 std::map<std::int64_t, std::size_t> chunkIndexByStreamId;
                 while (!m_pendingWrites.empty())
                 {
@@ -533,8 +525,7 @@ namespace AsynGyanis::Net
                 {
                     std::vector<QpackHeaderField> fields;
                     std::string                   decoderStreamBytes;
-                    const auto decoded = m_answerDecoder.decodeFieldSection(static_cast<std::uint64_t>(streamId), headers->encodedFieldSection,
-                                                                            fields, decoderStreamBytes);
+                    const auto decoded = m_answerDecoder.decodeFieldSection(static_cast<std::uint64_t>(streamId), headers->encodedFieldSection, fields, decoderStreamBytes);
                     if (!decoded.has_value())
                     {
                         recordDecodeError("响应头块解不开：" + decoded.error().message);
@@ -593,7 +584,7 @@ namespace AsynGyanis::Net
             /// 每条请求流一个帧读取器：响应的头与正文可能分好几趟到齐
             std::map<std::int64_t, std::unique_ptr<Http3FrameReader>> m_frameReaders;
             /// 解响应头块用的解码器：按本端通告的自我约束建表（容量 0，即只认静态表与字面量）
-            QpackDecoder m_answerDecoder;
+            QpackDecoder    m_answerDecoder;
             DecodedResponse m_response;
         };
 
@@ -624,21 +615,18 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
         ASSERT_TRUE(session.isUsable()) << "三条本端单向流都开得出来，会话却不是可用状态";
-        ASSERT_EQ(opener.openedStreamIds().size(), 3U)
-                << "会话应当正好开三条本端单向流（控制流 + QPACK 编码流 + QPACK 解码流）";
+        ASSERT_EQ(opener.openedStreamIds().size(), 3U) << "会话应当正好开三条本端单向流（控制流 + QPACK 编码流 + QPACK 解码流）";
 
         session.flushPendingStreamData();
 
         ASSERT_FALSE(sentStreamData.empty()) << "会话建好后一段字节都没产出：SETTINGS 没有发出去";
         const CapturedStreamData &settingsFrame = sentStreamData.front();
-        EXPECT_EQ(settingsFrame.streamId, opener.openedStreamIds().front())
-                << "SETTINGS 应当产在控制流上（也就是第一条开出来的单向流）";
+        EXPECT_EQ(settingsFrame.streamId, opener.openedStreamIds().front()) << "SETTINGS 应当产在控制流上（也就是第一条开出来的单向流）";
         ASSERT_GE(settingsFrame.bytes.size(), 2U) << "控制流上第一段字节太短，装不下流类型与帧类型";
         EXPECT_EQ(settingsFrame.bytes[0], kControlStreamType) << "单向流的第一字节应当是流类型，控制流为 0";
         EXPECT_EQ(settingsFrame.bytes[1], kSettingsFrameType) << "控制流上的第一个帧应当是 SETTINGS";
@@ -656,8 +644,7 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
         ASSERT_TRUE(session.isUsable());
@@ -681,8 +668,7 @@ namespace AsynGyanis::Net
         Http3Session session([] { return std::int64_t{-1}; },
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
@@ -704,8 +690,7 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
@@ -771,20 +756,19 @@ namespace AsynGyanis::Net
      */
     TEST(Http3Session, AnswersMalformedRequestHeadWithFourHundredAndKeepsConnection)
     {
-        FakeStreamOpener opener;
+        FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
 
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
         ASSERT_TRUE(session.isUsable());
         session.flushPendingStreamData();
 
-        bool isHandlerReached = false;
+        bool   isHandlerReached = false;
         Router router;
         router.get("/hello",
                    [&isHandlerReached](HttpRequest &, HttpResponse &response) -> Core::Task<>
@@ -796,27 +780,21 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         std::vector<QpackHeaderField> fieldLines = {
-                QpackHeaderField{":method", "GET"},
-                QpackHeaderField{":scheme", "https"},
-                QpackHeaderField{":authority", "example.com"},
-                QpackHeaderField{":path", "/hello"},
-                QpackHeaderField{"connection", "keep-alive"}, ///< 连接特定字段：RFC 9114 §4.2 明确禁止
+                QpackHeaderField{":method", "GET"},  QpackHeaderField{":scheme", "https"},         QpackHeaderField{":authority", "example.com"},
+                QpackHeaderField{":path", "/hello"}, QpackHeaderField{"connection", "keep-alive"}, ///< 连接特定字段：RFC 9114 §4.2 明确禁止
         };
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        std::string  headerBlock;
+        std::string  encoderStreamBytes;
         QpackEncoder encoder(0, 0, 0);
         ASSERT_TRUE(encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes).has_value());
         ASSERT_TRUE(encoderStreamBytes.empty()) << "只用静态表就不该产生编码器流指令，否则这条用例的前提变了";
 
         // 帧由帧层自己编：长度域是变长整数，手写字节会在载荷超过单字节档时写出自相矛盾的帧
         Http3HeadersFrame headersFrame;
-        headersFrame.encodedFieldSection =
-                std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(headerBlock.data()), headerBlock.size());
+        headersFrame.encodedFieldSection = std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(headerBlock.data()), headerBlock.size());
         std::string requestBytes;
         appendHttp3Frame(requestBytes, headersFrame);
-        session.onStreamData(0,
-                             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(requestBytes.data()), requestBytes.size()),
-                             true);
+        session.onStreamData(0, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(requestBytes.data()), requestBytes.size()), true);
 
         Core::Task<> pumpTask = session.pump();
         resumeUntilReady(pumpTask);
@@ -824,15 +802,14 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(session.isBroken()) << "一个畸形请求不该把整条连接判死";
         EXPECT_FALSE(isHandlerReached) << "畸形的请求不能交到业务手里";
         ASSERT_FALSE(sentStreamData.empty()) << "没有作答：对端只能挂到空闲超时";
-        const bool isAnswerOnRequestStream =
-                std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == 0; });
+        const bool isAnswerOnRequestStream = std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == 0; });
         EXPECT_TRUE(isAnswerOnRequestStream) << "作答没出现在流 0 上：一共只回了 " << sentStreamData.size() << " 段，全是别的流";
 
         // 作答由本层的帧读取器与 QPACK 解码器解回来：这条要钉的是「会话真的回了一份能解开、
         // 且收尾完整的 400」。这条用例没走对端（畸形字节要绕过它的提交入口），因此这里的解回
         // 只作观察用；跨实现的字节对齐归 scripts/h3_acceptance.py 那套进程外探针判
         std::string answerBytes;
-        bool isAnswerEnded = false;
+        bool        isAnswerEnded = false;
         for (const CapturedStreamData &chunk: sentStreamData)
         {
             if (chunk.streamId != 0)
@@ -845,15 +822,11 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(answerBytes.empty());
 
         Http3FrameReader frameReader(64U * 1024U);
-        ASSERT_TRUE(frameReader.feed(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(answerBytes.data()),
-                                                                    answerBytes.size()))
-                            .has_value());
-        QpackDecoder answerDecoder(QpackDecoderSettings{.maximumTableCapacityByteCount = 4096,
-                                                        .maximumBlockedStreamCount = 100,
-                                                        .maximumFieldSectionSizeByteCount = 64U * 1024U});
-        std::string statusValue;
-        std::string answerBody;
-        std::string decoderStreamBytes;
+        ASSERT_TRUE(frameReader.feed(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(answerBytes.data()), answerBytes.size())).has_value());
+        QpackDecoder answerDecoder(QpackDecoderSettings{.maximumTableCapacityByteCount = 4096, .maximumBlockedStreamCount = 100, .maximumFieldSectionSizeByteCount = 64U * 1024U});
+        std::string  statusValue;
+        std::string  answerBody;
+        std::string  decoderStreamBytes;
         while (true)
         {
             const auto nextFrame = frameReader.nextFrame();
@@ -865,7 +838,7 @@ namespace AsynGyanis::Net
             if (const auto *headers = std::get_if<Http3HeadersFrame>(&**nextFrame); headers != nullptr)
             {
                 std::vector<QpackHeaderField> answerFields;
-                const auto decoded = answerDecoder.decodeFieldSection(0, headers->encodedFieldSection, answerFields, decoderStreamBytes);
+                const auto                    decoded = answerDecoder.decodeFieldSection(0, headers->encodedFieldSection, answerFields, decoderStreamBytes);
                 ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
                 EXPECT_TRUE(*decoded == QpackFieldSectionDecodeStatus::Decoded) << "作答不该依赖动态表";
                 for (const auto &field: answerFields)
@@ -899,8 +872,7 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
@@ -948,8 +920,7 @@ namespace AsynGyanis::Net
      * @param value 字段取值
      * @return true 该段里有这条字段
      */
-    [[nodiscard]] bool hasFieldIn(const std::vector<std::pair<std::string, std::string>> &section,
-                                  const std::string &name, const std::string &value)
+    [[nodiscard]] bool hasFieldIn(const std::vector<std::pair<std::string, std::string>> &section, const std::string &name, const std::string &value)
     {
         return std::ranges::find(section, std::pair{name, value}) != section.end();
     }
@@ -964,8 +935,7 @@ namespace AsynGyanis::Net
      * @param path 请求路径
      * @return 客户端解出来的响应
      */
-    Http3ClientPeer::DecodedResponse answerOneGet(Http3Session &session, Http3ClientPeer &peer,
-                                                 std::vector<CapturedStreamData> &sentStreamData, const std::string &path)
+    Http3ClientPeer::DecodedResponse answerOneGet(Http3Session &session, Http3ClientPeer &peer, std::vector<CapturedStreamData> &sentStreamData, const std::string &path)
     {
         const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", path, "example.com");
         EXPECT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
@@ -1001,19 +971,18 @@ namespace AsynGyanis::Net
      * @return Http3Session 可按值搬走的会话
      */
     Http3Session makeSession(FakeStreamOpener &opener, std::vector<CapturedStreamData> &sentStreamData,
-                             std::shared_ptr<AsynGyanis::Net::HttpRequestIdGenerator> requestIdGenerator = nullptr,
-                             Http3Session::StreamAborter aborter = {})
+                             std::shared_ptr<AsynGyanis::Net::HttpRequestIdGenerator> requestIdGenerator = nullptr, Http3Session::StreamAborter aborter = {})
     {
-        return Http3Session(std::ref(opener),
-                            [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                            {
-                                sentStreamData.push_back(
-                                        CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                // 假出口一律全收：传输层的待发上界归 QuicStreamLayer 的用例测，
-                                // 这里只关心「协议层交了什么字节」
-                                return data.size();
-                            },
-                            {}, nullptr, nullptr, std::move(requestIdGenerator), std::move(aborter));
+        return Http3Session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    // 假出口一律全收：传输层的待发上界归 QuicStreamLayer 的用例测，
+                    // 这里只关心「协议层交了什么字节」
+                    return data.size();
+                },
+                {}, nullptr, nullptr, std::move(requestIdGenerator), std::move(aborter));
     }
 
     /**
@@ -1077,10 +1046,7 @@ namespace AsynGyanis::Net
             return values;
         }();
         // 逐条比对而不是只数条数：三条的相对次序正是「按设置顺序上线」这条契约
-        EXPECT_EQ(trackedFields,
-                  (std::vector<std::pair<std::string, std::string>>{{"set-cookie", "first=1"},
-                                                                    {"x-trace", "abc"},
-                                                                    {"set-cookie", "second=2"}}))
+        EXPECT_EQ(trackedFields, (std::vector<std::pair<std::string, std::string>>{{"set-cookie", "first=1"}, {"x-trace", "abc"}, {"set-cookie", "second=2"}}))
                 << "多条同名头的先后顺序要跟着业务的设置顺序，中间夹的头不能被归到后面";
     }
 
@@ -1147,7 +1113,7 @@ namespace AsynGyanis::Net
 
         Http3ClientPeer peer;
 
-        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/dated");
+        const Http3ClientPeer::DecodedResponse response   = answerOneGet(session, peer, sentStreamData, "/dated");
         const auto                             dateHeader = response.headers.find("date");
         ASSERT_NE(dateHeader, response.headers.end()) << "h1/h2 都会自动补 date，h3 漏给会让客户端自己做缓存判定";
         EXPECT_TRUE(dateHeader->second.ends_with("GMT")) << "date 必须是 IMF-fixdate 形态：" << dateHeader->second;
@@ -1174,8 +1140,8 @@ namespace AsynGyanis::Net
 
         Http3ClientPeer peer;
 
-        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/plain");
-        const auto contentTypeHeader = response.headers.find("content-type");
+        const Http3ClientPeer::DecodedResponse response          = answerOneGet(session, peer, sentStreamData, "/plain");
+        const auto                             contentTypeHeader = response.headers.find("content-type");
         ASSERT_NE(contentTypeHeader, response.headers.end()) << "有正文却没设类型，h1/h2 会补 text/plain";
         EXPECT_EQ(contentTypeHeader->second, "text/plain");
     }
@@ -1232,8 +1198,7 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4,
-                                               {{"expect", "100-continue"}, {"content-length", "4"}}))
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4, {{"expect", "100-continue"}, {"content-length", "4"}}))
                 << "客户端没能提交这条带正文的请求";
         for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
         {
@@ -1281,8 +1246,7 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4, {{"content-length", "4"}}))
-                << "客户端没能提交这条带正文的请求";
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4, {{"content-length", "4"}})) << "客户端没能提交这条带正文的请求";
         for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
         {
             const CapturedStreamData step = peer.takeNextWriteStep();
@@ -1318,17 +1282,12 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
         Router router;
-        router.get("/boom",
-                   [](HttpRequest &, HttpResponse &) -> Core::Task<>
-                   {
-                       throw std::runtime_error("intentional handler failure");
-                   });
+        router.get("/boom", [](HttpRequest &, HttpResponse &) -> Core::Task<> { throw std::runtime_error("intentional handler failure"); });
         router.get("/hello",
                    [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                    {
@@ -1390,14 +1349,14 @@ namespace AsynGyanis::Net
         std::vector<CapturedStreamData> sentStreamData;
         const auto                      metrics = std::make_shared<HttpMetricsCollector>();
 
-        Http3Session session(std::ref(opener),
-                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                             {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                 return data.size();
-                             },
-                             Http3Session::StreamCrediter{}, metrics);
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
 
         Router router;
         router.get("/hello",
@@ -1433,8 +1392,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(snapshot.badRequestCount, 0U);
         // 耗时是真量出来的：落了一个样本，且不小于处理器里那 2 毫秒
         EXPECT_EQ(snapshot.latencySampleCount(), 1U) << "h3 的响应没有落进耗时直方图";
-        EXPECT_GE(snapshot.totalLatencyMicroseconds, 2000U)
-                << "耗时不像从「收下请求」量起的：" << snapshot.totalLatencyMicroseconds << " 微秒";
+        EXPECT_GE(snapshot.totalLatencyMicroseconds, 2000U) << "耗时不像从「收下请求」量起的：" << snapshot.totalLatencyMicroseconds << " 微秒";
     }
 
     /**
@@ -1446,14 +1404,14 @@ namespace AsynGyanis::Net
         std::vector<CapturedStreamData> sentStreamData;
         const auto                      metrics = std::make_shared<HttpMetricsCollector>();
 
-        Http3Session session(std::ref(opener),
-                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                             {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                 return data.size();
-                             },
-                             Http3Session::StreamCrediter{}, metrics);
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
 
         HttpParserLimits limits;
         limits.maximumBodySize = 8;
@@ -1469,7 +1427,7 @@ namespace AsynGyanis::Net
                     });
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
+        Http3ClientPeer   peer;
         const std::string oversizeBody = "0123456789abcdef"; // 16 字节，超过上限 8
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, oversizeBody.size()));
         for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
@@ -1508,8 +1466,7 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
@@ -1562,7 +1519,7 @@ namespace AsynGyanis::Net
      * @param body 请求正文
      * @return std::pair<std::string, int> 处理器写进响应体的内容与 :status
      */
-    template <typename RouteRegistrar>
+    template<typename RouteRegistrar>
     std::pair<std::string, int> serveRequestWithTrailers(RouteRegistrar registerRoute, const std::string &body)
     {
         FakeStreamOpener                opener;
@@ -1571,8 +1528,7 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
@@ -1580,7 +1536,7 @@ namespace AsynGyanis::Net
         registerRoute(router);
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
+        Http3ClientPeer                     peer;
         const std::vector<QpackHeaderField> trailerFields{QpackHeaderField{"x-checksum", "abc123"}};
         for (const CapturedStreamData &step: peer.submitRequestWithBodyAndTrailers("POST", "/echo-tail", "example.com", body, trailerFields))
         {
@@ -1608,13 +1564,14 @@ namespace AsynGyanis::Net
         const auto [body, status] = serveRequestWithTrailers(
                 [](Router &router)
                 {
-                    router.post("/echo-tail", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-                    {
-                        response.setStatus(200);
-                        response.setBody("tf=" + request.getTrailerField("x-checksum").value_or("-")
-                                         + "|h=" + (request.getHeader("x-checksum").has_value() ? "yes" : "no"));
-                        co_return;
-                    });
+                    router.post("/echo-tail",
+                                [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                {
+                                    response.setStatus(200);
+                                    response.setBody("tf=" + request.getTrailerField("x-checksum").value_or("-") +
+                                                     "|h=" + (request.getHeader("x-checksum").has_value() ? "yes" : "no"));
+                                    co_return;
+                                });
                 },
                 "abc");
 
@@ -1633,18 +1590,18 @@ namespace AsynGyanis::Net
         const auto [body, status] = serveRequestWithTrailers(
                 [](Router &router)
                 {
-                    router.postStreaming("/echo-tail", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-                    {
-                        std::size_t bodyByteCount = 0;
-                        while (co_await request.bodyStream()->readNext())
-                        {
-                            bodyByteCount += request.bodyStream()->chunk().size();
-                        }
-                        response.setStatus(200);
-                        response.setBody("bytes=" + std::to_string(bodyByteCount)
-                                         + "|tf=" + request.getTrailerField("x-checksum").value_or("-"));
-                        co_return;
-                    });
+                    router.postStreaming("/echo-tail",
+                                         [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                         {
+                                             std::size_t bodyByteCount = 0;
+                                             while (co_await request.bodyStream()->readNext())
+                                             {
+                                                 bodyByteCount += request.bodyStream()->chunk().size();
+                                             }
+                                             response.setStatus(200);
+                                             response.setBody("bytes=" + std::to_string(bodyByteCount) + "|tf=" + request.getTrailerField("x-checksum").value_or("-"));
+                                             co_return;
+                                         });
                 },
                 "abcdefghijkl");
 
@@ -1663,14 +1620,14 @@ namespace AsynGyanis::Net
         std::vector<CapturedStreamData> sentStreamData;
         std::size_t                     creditedByteCount{0};
 
-        Http3Session session(std::ref(opener),
-                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                             {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                 return data.size();
-                             },
-                             [&creditedByteCount](const std::int64_t, const std::size_t consumedByteCount) { creditedByteCount += consumedByteCount; });
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                [&creditedByteCount](const std::int64_t, const std::size_t consumedByteCount) { creditedByteCount += consumedByteCount; });
 
         const std::vector<std::uint8_t> payload{'a', 's', 'y', 'n'};
         session.addRequestHeader(kFirstRequestStreamId, ":method", "POST", false);
@@ -1693,8 +1650,7 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
@@ -1713,7 +1669,7 @@ namespace AsynGyanis::Net
                    });
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
+        Http3ClientPeer                       peer;
         const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/stream", "example.com");
         ASSERT_FALSE(requestChunks.empty());
         for (const CapturedStreamData &chunk: requestChunks)
@@ -1751,8 +1707,7 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
@@ -1835,14 +1790,14 @@ namespace AsynGyanis::Net
         std::vector<CapturedStreamData> sentStreamData;
         const auto                      metrics = std::make_shared<HttpMetricsCollector>();
 
-        Http3Session session(std::ref(opener),
-                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                             {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                 return data.size();
-                             },
-                             Http3Session::StreamCrediter{}, metrics);
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
 
         Router router;
         router.postStreaming("/upload",
@@ -1892,14 +1847,14 @@ namespace AsynGyanis::Net
         std::vector<CapturedStreamData> sentStreamData;
         const auto                      metrics = std::make_shared<HttpMetricsCollector>();
 
-        Http3Session session(std::ref(opener),
-                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                             {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                 return data.size();
-                             },
-                             Http3Session::StreamCrediter{}, metrics);
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
 
         constexpr std::size_t    kChunkByteCount = 4;
         const std::string        body            = "abcdefghijkl"; // 共 3 批
@@ -1909,8 +1864,7 @@ namespace AsynGyanis::Net
 
         Router router;
         router.postStreaming("/upload",
-                             [&observedChunkByteCounts, &isHandlerEntered, &isHandlerFinished](HttpRequest &request,
-                                                                                              HttpResponse &) -> Core::Task<>
+                             [&observedChunkByteCounts, &isHandlerEntered, &isHandlerFinished](HttpRequest &request, HttpResponse &) -> Core::Task<>
                              {
                                  isHandlerEntered = true;
                                  while (co_await request.bodyStream()->readNext())
@@ -1946,8 +1900,7 @@ namespace AsynGyanis::Net
         resumeUntilReady(pumpTask);
 
         EXPECT_TRUE(isHandlerFinished) << "流被取消后等正文的处理器没有醒过来：等待者被留在了已摘掉的记录上";
-        const bool hasRequestStreamBytes =
-                std::ranges::any_of(sentStreamData, [](const CapturedStreamData &sent) { return sent.streamId == kFirstRequestStreamId; });
+        const bool hasRequestStreamBytes = std::ranges::any_of(sentStreamData, [](const CapturedStreamData &sent) { return sent.streamId == kFirstRequestStreamId; });
         EXPECT_FALSE(hasRequestStreamBytes) << "被取消的流不该再发出任何响应字节";
         const HttpServerStats snapshot = metrics->snapshot();
         EXPECT_EQ(snapshot.streamCancelledCount, 1U) << "被对端取消的流没有计入单流取消";
@@ -1969,17 +1922,17 @@ namespace AsynGyanis::Net
         std::vector<CapturedStreamData> sentStreamData;
         const auto                      metrics = std::make_shared<HttpMetricsCollector>();
 
-        Http3Session session(std::ref(opener),
-                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                             {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                 return data.size();
-                             },
-                             Http3Session::StreamCrediter{}, metrics);
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
 
-        bool             isBusinessFinished = false;
-        Router           router;
+        bool   isBusinessFinished = false;
+        Router router;
         router.get("/chat",
                    [&isBusinessFinished](HttpRequest &, HttpResponse &response) -> Core::Task<>
                    {
@@ -2017,8 +1970,7 @@ namespace AsynGyanis::Net
         }
 
         EXPECT_EQ(peer.response().status, 200) << "隧道没有以 2xx 应答";
-        EXPECT_TRUE(peer.response().isComplete)
-                << "对端已收尾的隧道没有跟着收口：响应永远收不完（业务也醒不过来）";
+        EXPECT_TRUE(peer.response().isComplete) << "对端已收尾的隧道没有跟着收口：响应永远收不完（业务也醒不过来）";
         EXPECT_TRUE(isBusinessFinished) << "隧道收口后业务没有醒来收尾";
         EXPECT_FALSE(session.hasOutstandingWork()) << "同趟收尾的隧道收口后仍留在账上：承载层会一直认为这条连接有在途工作";
 
@@ -2061,10 +2013,9 @@ namespace AsynGyanis::Net
 
         Http3ClientPeer peer;
         // 带一条帧而不带 END_STREAM：隧道建起来、业务读完这一条，然后挂在 receive() 上等下一条
-        const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
-        const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame("hello", mask);
-        const std::vector<CapturedStreamData> requestChunks =
-                peer.submitWebSocketTunnel("/chat", "example.com", std::string(firstFrameBytes.begin(), firstFrameBytes.end()));
+        const std::array<std::uint8_t, 4>     mask{0x11U, 0x22U, 0x33U, 0x44U};
+        const std::vector<std::uint8_t>       firstFrameBytes = makeMaskedTextFrame("hello", mask);
+        const std::vector<CapturedStreamData> requestChunks   = peer.submitWebSocketTunnel("/chat", "example.com", std::string(firstFrameBytes.begin(), firstFrameBytes.end()));
         ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
         for (const CapturedStreamData &chunk: requestChunks)
         {
@@ -2114,11 +2065,10 @@ namespace AsynGyanis::Net
 
         Http3ClientPeer peer;
         // 只带一条帧、不带 END_STREAM：隧道建起来，业务读完这一条后挂在 receive() 上等下一条
-        const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
-        const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame("hello", mask);
-        const std::size_t                 sentCountAfterConnect = sentStreamData.size();
-        const std::vector<CapturedStreamData> requestChunks =
-                peer.submitWebSocketTunnel("/chat", "example.com", std::string(firstFrameBytes.begin(), firstFrameBytes.end()));
+        const std::array<std::uint8_t, 4>     mask{0x11U, 0x22U, 0x33U, 0x44U};
+        const std::vector<std::uint8_t>       firstFrameBytes       = makeMaskedTextFrame("hello", mask);
+        const std::size_t                     sentCountAfterConnect = sentStreamData.size();
+        const std::vector<CapturedStreamData> requestChunks = peer.submitWebSocketTunnel("/chat", "example.com", std::string(firstFrameBytes.begin(), firstFrameBytes.end()));
         ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
         for (const CapturedStreamData &chunk: requestChunks)
         {
@@ -2159,11 +2109,19 @@ namespace AsynGyanis::Net
     {
         struct SuspendUntilResumed
         {
-            std::coroutine_handle<> *slot;   ///< 用例手里那只句柄的落点：等它被外部 resume
+            std::coroutine_handle<> *slot; ///< 用例手里那只句柄的落点：等它被外部 resume
 
-            [[nodiscard]] bool await_ready() const noexcept { return false; }
-            void await_suspend(const std::coroutine_handle<> waiter) const noexcept { *slot = waiter; }
-            static void await_resume() noexcept {}
+            [[nodiscard]] bool await_ready() const noexcept
+            {
+                return false;
+            }
+            void await_suspend(const std::coroutine_handle<> waiter) const noexcept
+            {
+                *slot = waiter;
+            }
+            static void await_resume() noexcept
+            {
+            }
         };
 
         FakeStreamOpener                opener;
@@ -2193,11 +2151,10 @@ namespace AsynGyanis::Net
                    });
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
-        const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
-        const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame("hello", mask);
-        const std::vector<CapturedStreamData> requestChunks =
-                peer.submitWebSocketTunnel("/chat", "example.com", std::string(firstFrameBytes.begin(), firstFrameBytes.end()));
+        Http3ClientPeer                       peer;
+        const std::array<std::uint8_t, 4>     mask{0x11U, 0x22U, 0x33U, 0x44U};
+        const std::vector<std::uint8_t>       firstFrameBytes = makeMaskedTextFrame("hello", mask);
+        const std::vector<CapturedStreamData> requestChunks   = peer.submitWebSocketTunnel("/chat", "example.com", std::string(firstFrameBytes.begin(), firstFrameBytes.end()));
         ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
         for (const CapturedStreamData &chunk: requestChunks)
         {
@@ -2212,8 +2169,7 @@ namespace AsynGyanis::Net
         resumeUntilReady(secondPumpTask);
         ASSERT_FALSE(isBusinessFinished) << "用例前提：业务要在「唤醒之后又挂起一次」的位置上";
         ASSERT_TRUE(handlerWaiter != nullptr) << "业务没挂起来，这条用例就没东西可保命";
-        EXPECT_TRUE(session.hasOutstandingWork())
-                << "流关闭就把记录摘走了：还挂在处理器协程里的帧被连帧销毁，下一次 resume 用的是已释放内存";
+        EXPECT_TRUE(session.hasOutstandingWork()) << "流关闭就把记录摘走了：还挂在处理器协程里的帧被连帧销毁，下一次 resume 用的是已释放内存";
 
         handlerWaiter.resume();
         EXPECT_TRUE(isBusinessFinished) << "恢复之后业务没跑完";
@@ -2232,14 +2188,14 @@ namespace AsynGyanis::Net
         std::vector<CapturedStreamData> sentStreamData;
         const auto                      budget = std::make_shared<HttpMemoryBudget>(8); // 只够 8 字节正文
 
-        Http3Session session(std::ref(opener),
-                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                             {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                 return data.size();
-                             },
-                             Http3Session::StreamCrediter{}, nullptr, budget);
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, nullptr, budget);
 
         bool   isHandlerEntered = false;
         Router router;
@@ -2292,9 +2248,9 @@ namespace AsynGyanis::Net
         FakeStreamOpener opener;
         const auto       budget = std::make_shared<HttpMemoryBudget>(100);
 
-        Http3Session session(std::ref(opener),
-                             [](const std::int64_t, const std::span<const std::uint8_t> data, const bool) { return data.size(); },
-                             Http3Session::StreamCrediter{}, nullptr, budget);
+        Http3Session session(
+                std::ref(opener), [](const std::int64_t, const std::span<const std::uint8_t> data, const bool) { return data.size(); }, Http3Session::StreamCrediter{}, nullptr,
+                budget);
 
         const std::vector<std::uint8_t> partialBody(40, 'z');
         session.addRequestHeader(kFirstRequestStreamId, ":method", "POST", false);
@@ -2306,8 +2262,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(budget->reservedByteCount(), partialBody.size()) << "已缓冲的正文没占着额度，这条用例也就测不到归还";
 
         session.dropRequest(kFirstRequestStreamId);
-        EXPECT_EQ(budget->reservedByteCount(), 0U)
-                << "被摘掉的流仍占着全局额度：半截正文加一次取消就能把限额占死，当前占用 " << budget->reservedByteCount();
+        EXPECT_EQ(budget->reservedByteCount(), 0U) << "被摘掉的流仍占着全局额度：半截正文加一次取消就能把限额占死，当前占用 " << budget->reservedByteCount();
     }
 
     /**
@@ -2320,9 +2275,9 @@ namespace AsynGyanis::Net
         FakeStreamOpener opener;
         const auto       budget = std::make_shared<HttpMemoryBudget>(100);
 
-        Http3Session session(std::ref(opener),
-                             [](const std::int64_t, const std::span<const std::uint8_t> data, const bool) { return data.size(); },
-                             Http3Session::StreamCrediter{}, nullptr, budget);
+        Http3Session session(
+                std::ref(opener), [](const std::int64_t, const std::span<const std::uint8_t> data, const bool) { return data.size(); }, Http3Session::StreamCrediter{}, nullptr,
+                budget);
 
         const std::vector<std::uint8_t> fullBody(40, 'z');
         session.addRequestHeader(kFirstRequestStreamId, ":method", "POST", false);
@@ -2336,8 +2291,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(budget->reservedByteCount(), fullBody.size()) << "排队中的正文没占着额度，用例也就测不到归还";
 
         session.dropRequest(kFirstRequestStreamId);
-        EXPECT_EQ(budget->reservedByteCount(), 0U)
-                << "排队记录被摘掉后仍占着 " << budget->reservedByteCount() << " 字节全局额度";
+        EXPECT_EQ(budget->reservedByteCount(), 0U) << "排队记录被摘掉后仍占着 " << budget->reservedByteCount() << " 字节全局额度";
     }
 
     /**
@@ -2357,17 +2311,12 @@ namespace AsynGyanis::Net
                 std::ref(opener),
                 [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                 {
-                    sentStreamData.push_back(
-                            CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                     return data.size();
                 },
-                [&creditedChunks](const std::int64_t streamId, const std::size_t consumedByteCount)
-                {
-                    creditedChunks.emplace_back(streamId, consumedByteCount);
-                },
-                nullptr);
+                [&creditedChunks](const std::int64_t streamId, const std::size_t consumedByteCount) { creditedChunks.emplace_back(streamId, consumedByteCount); }, nullptr);
 
-        bool isHandlerEntered = false;
+        bool   isHandlerEntered = false;
         Router router;
         router.postStreaming("/streaming-upload",
                              [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
@@ -2408,8 +2357,7 @@ namespace AsynGyanis::Net
             static_cast<void>(streamId);
             creditedByteCount += consumedByteCount;
         }
-        EXPECT_GE(creditedByteCount, body.size())
-                << "摘掉流式记录时没把正文占掉的接收窗口还回去（还回的只会是帧开销）";
+        EXPECT_GE(creditedByteCount, body.size()) << "摘掉流式记录时没把正文占掉的接收窗口还回去（还回的只会是帧开销）";
     }
 
     /**
@@ -2423,15 +2371,10 @@ namespace AsynGyanis::Net
     {
         FakeStreamOpener opener;
         Http3Session     session(
-                std::ref(opener),
-                [](const std::int64_t, const std::span<const std::uint8_t> data, const bool)
-                {
-                    return data.size();
-                },
-                [](const std::int64_t, const std::size_t) {},
-                nullptr);
+                std::ref(opener), [](const std::int64_t, const std::span<const std::uint8_t> data, const bool) { return data.size(); },
+                [](const std::int64_t, const std::size_t) {}, nullptr);
 
-        bool isHandlerEntered = false;
+        bool   isHandlerEntered = false;
         Router router;
         router.postStreaming("/streaming-no-content",
                              [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
@@ -2478,14 +2421,14 @@ namespace AsynGyanis::Net
         std::vector<CapturedStreamData> sentStreamData;
         const auto                      budget = std::make_shared<HttpMemoryBudget>(16); // 够一条 10 字节正文，再只剩 6
 
-        Http3Session session(std::ref(opener),
-                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                             {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                 return data.size();
-                             },
-                             Http3Session::StreamCrediter{}, nullptr, budget);
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, nullptr, budget);
 
         std::size_t reservedAtHandlerEntry = 0;
         Router      router;
@@ -2544,8 +2487,7 @@ namespace AsynGyanis::Net
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
                              {
-                                 sentStreamData.push_back(
-                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
                              });
 
@@ -2574,8 +2516,8 @@ namespace AsynGyanis::Net
         // 隧道建立后要发的帧：带掩码的文本帧（构造器见 makeMaskedTextFrame）
         const std::string                 payload = "hello";
         const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
-        const std::vector<std::uint8_t> firstFrameBytes = makeMaskedTextFrame(payload, mask);
-        const std::string               webSocketFrameText(firstFrameBytes.begin(), firstFrameBytes.end());
+        const std::vector<std::uint8_t>   firstFrameBytes = makeMaskedTextFrame(payload, mask);
+        const std::string                 webSocketFrameText(firstFrameBytes.begin(), firstFrameBytes.end());
 
         const std::vector<CapturedStreamData> requestChunks = peer.submitWebSocketTunnel("/chat", "example.com", webSocketFrameText);
         ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
@@ -2615,9 +2557,9 @@ namespace AsynGyanis::Net
 
         // 第二条帧：首条交付完时出向队列已空、库正等着新数据，这一条能不能出去取决于新数据到达时
         // 有没有把库叫回来（读回调报过「暂时没有」之后，只有 resume_stream 才会再叫它来取）
-        const std::string               secondPayload = "world!";
+        const std::string               secondPayload         = "world!";
         const std::size_t               sentCountBeforeSecond = sentStreamData.size();
-        const std::vector<std::uint8_t> secondFrameBytes = makeMaskedTextFrame(secondPayload, mask);
+        const std::vector<std::uint8_t> secondFrameBytes      = makeMaskedTextFrame(secondPayload, mask);
         for (const CapturedStreamData &chunk: peer.sendWebSocketFrame(std::string(secondFrameBytes.begin(), secondFrameBytes.end())))
         {
             session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
@@ -2632,10 +2574,8 @@ namespace AsynGyanis::Net
         }
 
         const std::string_view bothEchoes = peer.response().body;
-        ASSERT_EQ(bothEchoes.size(), (2U + payload.size()) + (2U + secondPayload.size()))
-                << "第二条帧没有回显：首条交付完之后的出向帧没发出去";
-        EXPECT_EQ(bothEchoes.substr(2U + payload.size() + 2U, secondPayload.size()), secondPayload)
-                << "第二帧的回显负载与发出去的不一致";
+        ASSERT_EQ(bothEchoes.size(), (2U + payload.size()) + (2U + secondPayload.size())) << "第二条帧没有回显：首条交付完之后的出向帧没发出去";
+        EXPECT_EQ(bothEchoes.substr(2U + payload.size() + 2U, secondPayload.size()), secondPayload) << "第二帧的回显负载与发出去的不一致";
     }
 
     /**
@@ -2658,7 +2598,7 @@ namespace AsynGyanis::Net
                    });
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
+        Http3ClientPeer                       peer;
         const std::vector<CapturedStreamData> requestChunks =
                 peer.submitEndedWebSocketTunnel("/chat", "example.com", {{"sec-websocket-extensions", "permessage-deflate; client_max_window_bits"}});
         for (const CapturedStreamData &chunk: requestChunks)
@@ -2723,10 +2663,10 @@ namespace AsynGyanis::Net
     {
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
-        Http3Session session = makeSession(opener, sentStreamData, std::make_shared<HttpRequestIdGenerator>());
+        Http3Session                    session = makeSession(opener, sentStreamData, std::make_shared<HttpRequestIdGenerator>());
 
         std::string observedRequestId;
-        Router router;
+        Router      router;
         router.get("/stream",
                    [&observedRequestId](HttpRequest &request, HttpResponse &response) -> Core::Task<>
                    {
@@ -2737,7 +2677,7 @@ namespace AsynGyanis::Net
                    });
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
+        Http3ClientPeer                        peer;
         const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/stream");
 
         EXPECT_FALSE(observedRequestId.empty()) << "生成器在场时业务必须读到落定好的 request-id";
@@ -2753,7 +2693,7 @@ namespace AsynGyanis::Net
     {
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
-        Http3Session session = makeSession(opener, sentStreamData, std::make_shared<HttpRequestIdGenerator>());
+        Http3Session                    session = makeSession(opener, sentStreamData, std::make_shared<HttpRequestIdGenerator>());
 
         Router router;
         router.get("/whoami",
@@ -2765,9 +2705,8 @@ namespace AsynGyanis::Net
                    });
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
-        const std::vector<CapturedStreamData> requestChunks =
-                peer.submitRequest("GET", "/whoami", "example.com", kFirstRequestStreamId, {{"x-request-id", "trace-me"}});
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/whoami", "example.com", kFirstRequestStreamId, {{"x-request-id", "trace-me"}});
         for (const CapturedStreamData &chunk: requestChunks)
         {
             session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
@@ -2821,7 +2760,7 @@ namespace AsynGyanis::Net
         std::vector<CapturedStreamData> sentStreamData;
         Http3Session                    session = makeSession(opener, sentStreamData);
 
-        const auto limits = std::make_shared<HttpServerLimits>();
+        const auto limits                    = std::make_shared<HttpServerLimits>();
         limits->maximumRequestsPerConnection = 2;
         session.setServerLimits(limits);
 
@@ -2864,8 +2803,7 @@ namespace AsynGyanis::Net
 
         // 第三条走新流号：排空之后不该再有它的任何字节
         serveOne(8);
-        EXPECT_FALSE(std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == 8; }))
-                << "GOAWAY 之后的新流不该被处理，更不该往回写东西";
+        EXPECT_FALSE(std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == 8; })) << "GOAWAY 之后的新流不该被处理，更不该往回写东西";
     }
 
     /**
@@ -2878,12 +2816,10 @@ namespace AsynGyanis::Net
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
         std::vector<AbortedStream>      abortedStreams;
-        Http3Session                    session = makeSession(
-                opener, sentStreamData, nullptr,
-                [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
-                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
 
-        const auto limits = std::make_shared<HttpServerLimits>();
+        const auto limits                    = std::make_shared<HttpServerLimits>();
         limits->maximumRequestsPerConnection = 1;
         session.setServerLimits(limits);
 
@@ -2936,16 +2872,14 @@ namespace AsynGyanis::Net
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
         std::vector<AbortedStream>      abortedStreams;
-        Http3Session                    session = makeSession(
-                opener, sentStreamData, nullptr,
-                [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
-                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
 
         HttpParserLimits parserLimits;
         parserLimits.maximumBodySize = 8;
         session.setParserLimits(parserLimits);
 
-        bool isHandlerEntered = false;
+        bool   isHandlerEntered = false;
         Router router;
         router.post("/upload",
                     [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
@@ -2957,7 +2891,7 @@ namespace AsynGyanis::Net
                     });
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
+        Http3ClientPeer   peer;
         const std::string oversizeBody(32, 'x');
         ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", oversizeBody, 4));
 
@@ -2997,16 +2931,14 @@ namespace AsynGyanis::Net
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
         std::vector<AbortedStream>      abortedStreams;
-        Http3Session                    session = makeSession(
-                opener, sentStreamData, nullptr,
-                [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
-                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
 
-        const auto limits = std::make_shared<HttpServerLimits>();
+        const auto limits   = std::make_shared<HttpServerLimits>();
         limits->readTimeout = std::chrono::milliseconds{1};
         session.setServerLimits(limits);
 
-        bool isHandlerEntered = false;
+        bool   isHandlerEntered = false;
         Router router;
         router.get("/hello",
                    [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
@@ -3018,7 +2950,7 @@ namespace AsynGyanis::Net
                    });
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
+        Http3ClientPeer                       peer;
         const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hello", "example.com");
         ASSERT_FALSE(requestChunks.empty());
         // 请求流号取常量：peer 交出的第一段往往是本端单向流（控制流 2、编码器流 6）的字节
@@ -3034,8 +2966,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(abortedStreams.size(), 1U) << "过点的请求没有被收口：它会一直占着这条流";
         EXPECT_EQ(abortedStreams.front().streamId, requestStreamId);
         EXPECT_EQ(abortedStreams.front().applicationErrorCode, 0x010cU) << "本端放弃一条请求该用 H3_REQUEST_CANCELLED";
-        EXPECT_TRUE(std::ranges::none_of(sentStreamData, [requestStreamId](const CapturedStreamData &chunk)
-                                         { return chunk.streamId == requestStreamId; }))
+        EXPECT_TRUE(std::ranges::none_of(sentStreamData, [requestStreamId](const CapturedStreamData &chunk) { return chunk.streamId == requestStreamId; }))
                 << "没收齐的请求不该回任何字节（没有 :method/:path 可派发的半成品响应）";
         EXPECT_FALSE(isHandlerEntered) << "过点的请求不该交给业务";
         EXPECT_FALSE(session.hasOutstandingWork()) << "过点的流要连同记账一起摘掉，否则排空永远等不完";
@@ -3049,12 +2980,10 @@ namespace AsynGyanis::Net
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
         std::vector<AbortedStream>      abortedStreams;
-        Http3Session                    session = makeSession(
-                opener, sentStreamData, nullptr,
-                [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
-                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
 
-        const auto limits = std::make_shared<HttpServerLimits>();
+        const auto limits   = std::make_shared<HttpServerLimits>();
         limits->readTimeout = std::chrono::seconds{60};
         session.setServerLimits(limits);
 
@@ -3068,7 +2997,7 @@ namespace AsynGyanis::Net
                    });
         session.attachRouter(router);
 
-        Http3ClientPeer peer;
+        Http3ClientPeer                       peer;
         const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hello", "example.com");
         ASSERT_FALSE(requestChunks.empty());
         // 请求流号取常量：peer 交出的第一段往往是本端单向流（控制流 2、编码器流 6）的字节
@@ -3106,8 +3035,7 @@ namespace AsynGyanis::Net
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
         std::vector<AbortedStream>      abortedStreams;
-        Http3Session session = makeSession(opener, sentStreamData, nullptr,
-                                           [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
                                            { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
 
         Router router;
@@ -3145,14 +3073,12 @@ namespace AsynGyanis::Net
 
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
-        Http3Session                    session(
-            std::ref(opener),
-            [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-            {
-                sentStreamData.push_back(
-                        CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                return data.size();
-            });
+        Http3Session                    session(std::ref(opener),
+                                                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                                                {
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                                                });
 
         Router            router;
         StaticFileService staticFiles;

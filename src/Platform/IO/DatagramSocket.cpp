@@ -7,7 +7,7 @@
 #include <utility>
 
 #if ASYN_PLATFORM_WIN32
-    #include <windows.h>
+#include <windows.h>
 #endif
 
 namespace AsynGyanis::Platform
@@ -26,8 +26,7 @@ namespace AsynGyanis::Platform
         close();
     }
 
-    DatagramSocket::DatagramSocket(DatagramSocket &&other) noexcept :
-        m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1))
+    DatagramSocket::DatagramSocket(DatagramSocket &&other) noexcept : m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1))
     {
     }
 
@@ -60,7 +59,7 @@ namespace AsynGyanis::Platform
 #if !ASYN_PLATFORM_WIN32
                                | SOCK_CLOEXEC
 #endif
-            ;
+                ;
         socket.m_fileDescriptor = static_cast<int>(::socket(localAddress.storage.ss_family, socketType, IPPROTO_UDP));
 #if ASYN_PLATFORM_WIN32
         // Winsock 的句柄默认可继承，而带 WSA_FLAG_NO_HANDLE_INHERIT 的 WSASocketW 要求老系统上
@@ -145,10 +144,9 @@ namespace AsynGyanis::Platform
         // 缓冲区比单条报文上限还大也不会收到更多：把交给系统调用的长度钳进 int 范围，
         // 免得把大 size_t 静默窄化（UDP 语义下超长缓冲既没有额外好处，也没有额外代价）
         const std::size_t receiveCapacity = capacity > kMaximumDatagramBytes ? kMaximumDatagramBytes : capacity;
-        peerAddress.length = sizeof(peerAddress.storage);
-        const ssize_t receivedByteCount = static_cast<ssize_t>(
-                ::recvfrom(m_fileDescriptor, static_cast<char *>(buffer), static_cast<int>(receiveCapacity), 0,
-                           reinterpret_cast<sockaddr *>(&peerAddress.storage), &peerAddress.length));
+        peerAddress.length                = sizeof(peerAddress.storage);
+        const ssize_t receivedByteCount   = static_cast<ssize_t>(::recvfrom(m_fileDescriptor, static_cast<char *>(buffer), static_cast<int>(receiveCapacity), 0,
+                                                                            reinterpret_cast<sockaddr *>(&peerAddress.storage), &peerAddress.length));
         if (receivedByteCount < 0)
         {
 #if ASYN_PLATFORM_WIN32
@@ -193,9 +191,8 @@ namespace AsynGyanis::Platform
         // 零长 + NULL 这一组合交给提供者怎么处理，两侧并不一样（有的直接给 WSAEFAULT），而这一层
         // 不想去赌它：长度为 0 时给一个永远读不到的有效指针，让「空报文」在两端都是同一次调用
         const char *const payloadPointer = buffer != nullptr ? static_cast<const char *>(buffer) : "";
-        const ssize_t sentByteCount = static_cast<ssize_t>(
-                ::sendto(m_fileDescriptor, payloadPointer, static_cast<int>(length), 0,
-                         reinterpret_cast<const sockaddr *>(&peerAddress.storage), peerAddress.length));
+        const ssize_t     sentByteCount  = static_cast<ssize_t>(
+                ::sendto(m_fileDescriptor, payloadPointer, static_cast<int>(length), 0, reinterpret_cast<const sockaddr *>(&peerAddress.storage), peerAddress.length));
         if (sentByteCount < 0)
         {
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());

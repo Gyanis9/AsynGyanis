@@ -28,8 +28,7 @@ namespace AsynGyanis::Net
     {
         std::array<bool, 256> characterSet{};
         // 按 string_view 遍历而不是遍历字符数组：后者会把结尾的 '\0' 也算进集合
-        for (const std::string_view tokenCharacters: {"0123456789", "abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-                                                      "!#$%&'*+-.^_`|~"})
+        for (const std::string_view tokenCharacters: {"0123456789", "abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "!#$%&'*+-.^_`|~"})
         {
             for (const char character: tokenCharacters)
             {

@@ -234,7 +234,7 @@ namespace AsynGyanis::Database
         void prefetchRows();
 
         sqlite3_stmt *m_statement{nullptr};   ///< 预编译语句句柄，非空时由本对象负责 finalize
-        sqlite3 *     m_database{nullptr};    ///< 所属连接的句柄，只读引用，不接管生命周期
+        sqlite3      *m_database{nullptr};    ///< 所属连接的句柄，只读引用，不接管生命周期
         size_t        m_columnCount{0};       ///< 列数快照，0 表示这是没有游标的写回执
         size_t        m_rowCount{0};          ///< 预扫描得到的行数快照，未预扫描时为 0
         int           m_affectedRowCount{0};  ///< 构造时快照的连接级 sqlite3_changes（int 是 SQLite API 的原生类型）
@@ -251,9 +251,9 @@ namespace AsynGyanis::Database
         size_t m_materializedRowCount{0};
         /// 快照模式下的列名表：游标交还语句缓存后列名不能再从它身上问，故与行值同时存下
         std::vector<std::string> m_columnNames;
-        bool m_isMaterializedRowsValid{false}; ///< 快照是否可用（未预扫描或行数超限则为假，退回游标遍历）
-        bool m_isCurrentRowMaterialized{false}; ///< 游标当前停的这一行是否来自快照（决定 getValue 走哪条路）
-        size_t m_materializedRowCursor{0};      ///< 快照模式下的下一次读取下标
+        bool                     m_isMaterializedRowsValid{false};  ///< 快照是否可用（未预扫描或行数超限则为假，退回游标遍历）
+        bool                     m_isCurrentRowMaterialized{false}; ///< 游标当前停的这一行是否来自快照（决定 getValue 走哪条路）
+        size_t                   m_materializedRowCursor{0};        ///< 快照模式下的下一次读取下标
     };
 
 } // namespace AsynGyanis::Database

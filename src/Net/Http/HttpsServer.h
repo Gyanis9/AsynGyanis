@@ -13,12 +13,12 @@
 #include "Core/Tls/TlsContext.h"
 
 #include "Net/Http/HttpMemoryBudget.h"
-#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
-#include "Net/Http/StaticFileService.h"
 #include "Net/Http/Router.h"
+#include "Net/Http/StaticFileService.h"
 #include "Net/Http2/Http2Connection.h"
 #include "Net/Tcp/TcpServer.h"
 
@@ -57,8 +57,7 @@ namespace AsynGyanis::Net
          * @throws Core::CoreException 策略里某一项被当前 OpenSSL 拒绝（版本区间、套件列表、曲线、
          *         CA 信任库）：与证书失败一样属于启动期配置错误，当场抛而不是带着半生效的策略上线
          */
-        HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile,
-                    const Core::TlsPolicy &policy = {});
+        HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile, const Core::TlsPolicy &policy = {});
 
         /**
          * @brief 用「已经在监听中的套接字」构造 HTTPS 服务器：零停机重启的接手侧
@@ -71,8 +70,7 @@ namespace AsynGyanis::Net
          * @throws Base::Exception 证书或私钥加载失败
          * @see TcpServer::TcpServer(Core::EventLoop &, int)
          */
-        HttpsServer(Core::EventLoop &loop, int adoptedListeningDescriptor, const std::string &certificateFile,
-                    const std::string &keyFile, const Core::TlsPolicy &policy = {});
+        HttpsServer(Core::EventLoop &loop, int adoptedListeningDescriptor, const std::string &certificateFile, const std::string &keyFile, const Core::TlsPolicy &policy = {});
 
         /**
          * @brief 加载用于校验客户端证书的 CA，开启双向 TLS 的第一步
@@ -336,14 +334,14 @@ namespace AsynGyanis::Net
          */
         void attachActiveConnectionMirror() noexcept;
 
-        Router m_router;          ///< 路由器，存储 HTTP 路由表与处理函数
-        StaticFileService m_staticFiles; ///< 静态目录配置本体；四个静态方法都转发到它（与明文侧同一份实现）
-        Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
-        std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
-        HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
-        Http2ConnectionConfiguration m_http2Configuration{}; ///< h2 连接层配置，按值交给每个新会话
-        std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，交给会话共享；空指针表示不受该预算约束
-        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
-        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
+        Router                                  m_router;               ///< 路由器，存储 HTTP 路由表与处理函数
+        StaticFileService                       m_staticFiles;          ///< 静态目录配置本体；四个静态方法都转发到它（与明文侧同一份实现）
+        Core::TlsContext                        m_tlsContext;           ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
+        std::shared_ptr<const HttpServerLimits> m_limits;               ///< 连接级限额，按只读配置交给会话共享
+        HttpParserLimits                        m_parserLimits{};       ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
+        Http2ConnectionConfiguration            m_http2Configuration{}; ///< h2 连接层配置，按值交给每个新会话
+        std::shared_ptr<HttpMemoryBudget>       m_memoryBudget;         ///< 在途正文字节的全局预算，交给会话共享；空指针表示不受该预算约束
+        std::shared_ptr<HttpMetricsCollector>   m_metrics;              ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数
+        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator;   ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
     };
 } // namespace AsynGyanis::Net

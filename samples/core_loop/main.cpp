@@ -50,10 +50,10 @@ namespace
     {
         Platform::SocketAddress address{};
         auto                   &ipv4 = reinterpret_cast<sockaddr_in &>(address.storage);
-        ipv4.sin_family = AF_INET;
-        ipv4.sin_port = htons(port);
-        ipv4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        address.length = static_cast<socklen_t>(sizeof(sockaddr_in));
+        ipv4.sin_family              = AF_INET;
+        ipv4.sin_port                = htons(port);
+        ipv4.sin_addr.s_addr         = htonl(INADDR_LOOPBACK);
+        address.length               = static_cast<socklen_t>(sizeof(sockaddr_in));
         return address;
     }
 
@@ -83,11 +83,10 @@ namespace
         {
             co_return false;
         }
-        std::uint8_t             buffer[32]{};
-        const auto               received = co_await udp.asyncReceiveFrom(buffer, sizeof(buffer));
-        co_return received.receivedByteCount == static_cast<ssize_t>(text.size()) &&
-                  std::memcmp(buffer, text.data(), static_cast<std::size_t>(received.receivedByteCount)) == 0 &&
-                  portOf(received.peerAddress) == portOf(self);
+        std::uint8_t buffer[32]{};
+        const auto   received = co_await udp.asyncReceiveFrom(buffer, sizeof(buffer));
+        co_return received.receivedByteCount == static_cast<ssize_t>(text.size()) && std::memcmp(buffer, text.data(), static_cast<std::size_t>(received.receivedByteCount)) == 0 &&
+                portOf(received.peerAddress) == portOf(self);
     }
 
     /**
@@ -99,10 +98,9 @@ namespace
      * @param isVectored true 时服务端用聚合写回两段缓冲
      * @return Core::Task<bool> 请求与应答都对得上才算通过
      */
-    Core::Task<bool> probeTcpOnPort(Core::EventLoop &loop, const std::uint16_t port, const std::string &requestText,
-                                    const bool isVectored)
+    Core::Task<bool> probeTcpOnPort(Core::EventLoop &loop, const std::uint16_t port, const std::string &requestText, const bool isVectored)
     {
-        auto listener = Core::AsyncSocket::create(loop, AF_INET, SOCK_STREAM);
+        auto       listener        = Core::AsyncSocket::create(loop, AF_INET, SOCK_STREAM);
         const auto listenerAddress = Core::InetAddress::resolve("127.0.0.1", port);
         if (!listenerAddress.has_value() || !listener.bind(*listenerAddress) || !listener.listen(8))
         {
@@ -113,9 +111,8 @@ namespace
         static_cast<void>(co_await client.asyncConnect(*listenerAddress));
 
         sockaddr_storage peerStorage{};
-        socklen_t        peerLength = sizeof(peerStorage);
-        const int        acceptedDescriptor =
-                Platform::Socket::accept(listener.fileDescriptor(), reinterpret_cast<sockaddr *>(&peerStorage), &peerLength);
+        socklen_t        peerLength         = sizeof(peerStorage);
+        const int        acceptedDescriptor = Platform::Socket::accept(listener.fileDescriptor(), reinterpret_cast<sockaddr *>(&peerStorage), &peerLength);
         if (acceptedDescriptor < 0)
         {
             co_return false;
@@ -123,31 +120,28 @@ namespace
         auto server = Core::AsyncSocket(loop, acceptedDescriptor);
 
         static_cast<void>(co_await client.asyncSend(requestText.data(), requestText.size()));
-        std::uint8_t requestBuffer[16]{};
+        std::uint8_t  requestBuffer[16]{};
         const ssize_t receivedRequestByteCount = co_await server.asyncReceive(requestBuffer, sizeof(requestBuffer));
-        if (receivedRequestByteCount != static_cast<ssize_t>(requestText.size()) ||
-            std::memcmp(requestBuffer, requestText.data(), requestText.size()) != 0)
+        if (receivedRequestByteCount != static_cast<ssize_t>(requestText.size()) || std::memcmp(requestBuffer, requestText.data(), requestText.size()) != 0)
         {
             co_return false;
         }
 
         // 回程按 isVectored 分两条路：一条普通 asyncSend，一条把两段缓冲一次交出去
-        std::string firstHalf = "AB";
-        std::string secondHalf = "CD";
-        const Platform::Socket::WriteBuffer buffers[] = {{firstHalf.data(), firstHalf.size()}, {secondHalf.data(), secondHalf.size()}};
+        std::string                         firstHalf  = "AB";
+        std::string                         secondHalf = "CD";
+        const Platform::Socket::WriteBuffer buffers[]  = {{firstHalf.data(), firstHalf.size()}, {secondHalf.data(), secondHalf.size()}};
         if (isVectored)
         {
             static_cast<void>(co_await server.asyncSendVectored(buffers, 2));
-        }
-        else
+        } else
         {
             static_cast<void>(co_await server.asyncSend(secondHalf.data(), secondHalf.size()));
         }
-        std::uint8_t responseBuffer[8]{};
-        const ssize_t receivedResponseByteCount = co_await client.asyncReceive(responseBuffer, sizeof(responseBuffer));
-        const std::string expectedResponse = isVectored ? "ABCD" : "CD";
-        co_return receivedResponseByteCount == static_cast<ssize_t>(expectedResponse.size()) &&
-                  std::memcmp(responseBuffer, expectedResponse.data(), expectedResponse.size()) == 0;
+        std::uint8_t      responseBuffer[8]{};
+        const ssize_t     receivedResponseByteCount = co_await client.asyncReceive(responseBuffer, sizeof(responseBuffer));
+        const std::string expectedResponse          = isVectored ? "ABCD" : "CD";
+        co_return receivedResponseByteCount == static_cast<ssize_t>(expectedResponse.size()) && std::memcmp(responseBuffer, expectedResponse.data(), expectedResponse.size()) == 0;
     }
 
     /**
@@ -183,21 +177,21 @@ namespace
         probe.isSecondWaitAwoken = co_await watcher.waitReadable();
         notifier.drain();
 
-        const auto resolved = co_await Core::AsyncResolver::resolve(loop, "localhost", port);
+        const auto resolved       = co_await Core::AsyncResolver::resolve(loop, "localhost", port);
         probe.isResolverSucceeded = !resolved.empty();
 
         probe.isUdpRoundTripSucceeded = co_await probeUdp(loop);
         probe.isTcpRoundTripSucceeded = co_await probeTcpOnPort(loop, port + 2, "request", false);
         probe.isVectoredSendSucceeded = co_await probeTcpOnPort(loop, port + 4, "AB", true);
 
-        auto  &pool = Core::CoroutinePool::instance();
-        void  *block = pool.allocate(64);
+        auto &pool                  = Core::CoroutinePool::instance();
+        void *block                 = pool.allocate(64);
         probe.isCoroutinePoolOwning = pool.owns(block);
         pool.deallocate(block, 64);
 
         Core::Cancelable cancellation;
         static_cast<void>(cancellation.requestStop());
-        probe.isCancelRequested = cancellation.isStopRequested() && cancellation.stopToken().stop_requested();
+        probe.isCancelRequested      = cancellation.isStopRequested() && cancellation.stopToken().stop_requested();
         probe.isSecondCancelRejected = !cancellation.requestStop();
 
         probe.isSchedulerIdleAtEnd = loop.scheduler().localQueueSize() == 0 && !loop.scheduler().hasWork();
@@ -205,7 +199,7 @@ namespace
         doneSignal.store(true, std::memory_order_release);
         co_return;
     }
-}
+} // namespace
 
 int main(const int argc, char **argv)
 {
@@ -216,7 +210,7 @@ int main(const int argc, char **argv)
 
     LOG_INFO("=== Core 运行时示例开始 ===");
 
-    Core::IoContext  context(2);
+    Core::IoContext   context(2);
     Core::ThreadPool &pool = context.threadPool();
     pool.start();
     Core::EventLoop &loop = pool.eventLoop(0);
@@ -234,14 +228,9 @@ int main(const int argc, char **argv)
     std::atomic<bool> isRemotePosted{false};
     Core::EventLoop  &otherLoop = pool.eventLoop(1 % pool.threadCount());
     otherLoop.scheduler().postRemote([&isRemotePosted] { isRemotePosted.store(true, std::memory_order_release); });
-    const bool isRemotePostedByTargetLoop = Samples::waitUntil([&isRemotePosted]
-                                                               {
-                                                                   return isRemotePosted.load(std::memory_order_acquire);
-                                                               },
-                                                               std::chrono::seconds{10});
+    const bool isRemotePostedByTargetLoop = Samples::waitUntil([&isRemotePosted] { return isRemotePosted.load(std::memory_order_acquire); }, std::chrono::seconds{10});
 
-    const bool isFinished = Samples::waitUntil([&isDone] { return isDone.load(std::memory_order_acquire); },
-                                              std::chrono::seconds{30});
+    const bool isFinished = Samples::waitUntil([&isDone] { return isDone.load(std::memory_order_acquire); }, std::chrono::seconds{30});
 
     auto &samples = Samples::checklist();
     samples.check(pool.threadCount() == 2, "IoContext 起了两条各自持有事件循环的线程");

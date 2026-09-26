@@ -27,7 +27,7 @@ namespace AsynGyanis::Platform
 
     bool FileWatcher::shouldDispatchChange(const std::string &filePath)
     {
-        const auto currentTime = std::chrono::steady_clock::now();
+        const auto currentTime      = std::chrono::steady_clock::now();
         const auto debounceInterval = std::chrono::milliseconds(m_debounceIntervalMilliseconds.load(std::memory_order_relaxed));
 
         if (const auto indexIterator = m_lastEventTime.find(filePath); indexIterator != m_lastEventTime.end())
@@ -48,8 +48,7 @@ namespace AsynGyanis::Platform
         // 表满、且连表尾那条都还在窗口里：这条不记账，照常派发但本窗口内不受抑制。硬挤是白挤——
         // 被挤掉的那条转过眼就当「新路径」再插回来，每次插入都付一趟分配与摘除，实测这种抖动能把
         // 单次判定从约 0.7 µs 顶到 37 µs；监听线程被自己的记账拖停，就是通知缓冲被憋爆那一族丢事件
-        if (m_lastEventTime.size() >= kMaximumDebouncedPaths &&
-            currentTime - m_recentDebouncedPaths.back().lastTime < debounceInterval)
+        if (m_lastEventTime.size() >= kMaximumDebouncedPaths && currentTime - m_recentDebouncedPaths.back().lastTime < debounceInterval)
         {
             return true;
         }

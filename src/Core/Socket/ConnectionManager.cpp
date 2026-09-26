@@ -68,13 +68,13 @@ namespace AsynGyanis::Core
         return m_connections.size();
     }
 
-    std::vector<std::shared_ptr<Connection> > ConnectionManager::snapshot() const
+    std::vector<std::shared_ptr<Connection>> ConnectionManager::snapshot() const
     {
         std::shared_lock lock(m_mutex);
 
         // 只做指针拷贝：让调用方拿到一份不会被后续增删改动的列表，遍历期间也由 shared_ptr
         // 保证连接对象存活。锁在同一函数末尾释放，调用方遍历时本类不持锁
-        std::vector<std::shared_ptr<Connection> > connections;
+        std::vector<std::shared_ptr<Connection>> connections;
         connections.reserve(m_connections.size());
         for (const auto &connection: m_connections | std::views::values)
         {
@@ -90,7 +90,7 @@ namespace AsynGyanis::Core
         m_isShuttingDown.store(true, std::memory_order_release);
 
         // 快照的取法与遍历语义都在 snapshot() 里，本函数只负责在锁外逐条收尾
-        const std::vector<std::shared_ptr<Connection> > connections = snapshot();
+        const std::vector<std::shared_ptr<Connection>> connections = snapshot();
 
         // 锁外调用 close()，防止回调中的 remove() 死锁
         for (const auto &connection: connections)
@@ -123,4 +123,4 @@ namespace AsynGyanis::Core
         }
     }
 
-}
+} // namespace AsynGyanis::Core

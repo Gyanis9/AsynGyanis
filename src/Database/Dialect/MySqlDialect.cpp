@@ -76,8 +76,7 @@ namespace AsynGyanis::Database
         }
     }
 
-    std::string MySqlDialect::autoIncrementPrimaryKeyDefinition(const std::string_view quotedColumnName,
-                                                               const ColumnType type) const
+    std::string MySqlDialect::autoIncrementPrimaryKeyDefinition(const std::string_view quotedColumnName, const ColumnType type) const
     {
         // InnoDB 只接受整数列做自增键；文本/浮点等给空串，由迁移工具在建表前报「不支持」
         if (type != ColumnType::Int64 && type != ColumnType::UInt64)
@@ -97,7 +96,7 @@ namespace AsynGyanis::Database
         // 只用 table_name 过滤会把别的库里的同名表也算进来，导致「表不存在却报告存在」。
         // DATABASE() 取当前会话的默认库，正是本条连接操作的那个库
         statement.sql = "SELECT COUNT(*) FROM information_schema.tables "
-                "WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' AND table_name = ";
+                        "WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' AND table_name = ";
         statement.sql += placeholder();
         statement.parameters.emplace_back(std::string(tableName));
 

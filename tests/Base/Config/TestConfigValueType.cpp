@@ -16,30 +16,17 @@ namespace AsynGyanis::Base
     {
         /// 全部合法的配置值类型枚举（nlohmann value_t 的全部取值）
         const std::vector<ConfigValueType> kAllTypes = {
-                ConfigValueType::null,
-                ConfigValueType::object,
-                ConfigValueType::array,
-                ConfigValueType::string,
-                ConfigValueType::boolean,
-                ConfigValueType::number_integer,
-                ConfigValueType::number_unsigned,
-                ConfigValueType::number_float,
-                ConfigValueType::binary,
-                ConfigValueType::discarded,
+                ConfigValueType::null,           ConfigValueType::object,          ConfigValueType::array,        ConfigValueType::string, ConfigValueType::boolean,
+                ConfigValueType::number_integer, ConfigValueType::number_unsigned, ConfigValueType::number_float, ConfigValueType::binary, ConfigValueType::discarded,
         };
 
         /// 合法枚举值与类型名的完整映射表
-        const std::vector<std::pair<ConfigValueType, const char *> > kTypeNameTable = {
-                {ConfigValueType::null, "null"},
-                {ConfigValueType::boolean, "bool"},
-                {ConfigValueType::number_integer, "int"},
-                {ConfigValueType::number_unsigned, "uint"},
-                {ConfigValueType::number_float, "double"},
-                {ConfigValueType::string, "string"},
-                {ConfigValueType::array, "array"},
-                {ConfigValueType::object, "object"},
-                {ConfigValueType::binary, "binary"},
-                {ConfigValueType::discarded, "discarded"},
+        const std::vector<std::pair<ConfigValueType, const char *>> kTypeNameTable = {
+                {ConfigValueType::null, "null"},           {ConfigValueType::boolean, "bool"},
+                {ConfigValueType::number_integer, "int"},  {ConfigValueType::number_unsigned, "uint"},
+                {ConfigValueType::number_float, "double"}, {ConfigValueType::string, "string"},
+                {ConfigValueType::array, "array"},         {ConfigValueType::object, "object"},
+                {ConfigValueType::binary, "binary"},       {ConfigValueType::discarded, "discarded"},
         };
 
         /// 超出枚举定义范围的值，用于驱动 typeName 的 default 分支
@@ -48,86 +35,31 @@ namespace AsynGyanis::Base
 
         /// 带 YAML 后缀（含大小写混合）的路径样本
         const std::vector<std::string> kYamlPaths = {
-                "config.yaml",
-                "config.yml",
-                "/path/to/config.yaml",
-                "./relative/path/app.yml",
-                ".yaml",
-                ".yml",
-                ".hidden.yaml",
-                "a.yml",
-                "my.config.v2.yaml",
-                "Config.YaMl",
-                "APP.YML",
-                "settings.YmL",
+                "config.yaml", "config.yml", "/path/to/config.yaml", "./relative/path/app.yml", ".yaml", ".yml", ".hidden.yaml", "a.yml", "my.config.v2.yaml",
+                "Config.YaMl", "APP.YML",    "settings.YmL",
         };
 
         /// 不应被判定为 YAML 的路径样本
         const std::vector<std::string> kNonYamlPaths = {
-                "",
-                "a",
-                "config",
-                ".y",
-                ".ym",
-                "yaml",
-                "yml",
-                "config.json",
-                "config.xml",
-                "config.toml",
-                "config.ini",
-                "yaml.txt",
-                "yml.txt",
-                "my.yaml.bak",
-                "archive.tar.gz",
-                "config.yamlx",
+                "",        "a",           "config",         ".y",           ".ym", "yaml", "yml", "config.json", "config.xml", "config.toml", "config.ini", "yaml.txt",
+                "yml.txt", "my.yaml.bak", "archive.tar.gz", "config.yamlx",
         };
 
         /// 带 JSON 后缀的路径样本
         const std::vector<std::string> kJsonPaths = {
-                "config.json",
-                "/path/to/config.json",
-                ".json",
-                "a.b.c.json",
-                "manifest.JSON",
-                "settings.Json",
+                "config.json", "/path/to/config.json", ".json", "a.b.c.json", "manifest.JSON", "settings.Json",
         };
 
         /// 不应被判定为 JSON 的路径样本
         const std::vector<std::string> kNonJsonPaths = {
-                "",
-                "json",
-                ".js",
-                ".jsonx",
-                "config.yaml",
-                "config.yml",
-                "data.jsonl",
-                "notes.txt",
+                "", "json", ".js", ".jsonx", "config.yaml", "config.yml", "data.jsonl", "notes.txt",
         };
 
         /// 既非 YAML 也非 JSON 的路径样本：isConfigFile（两者取并集）应全部拒绝
         const std::vector<std::string> kNonConfigPaths = {
-                "",
-                "a",
-                "config",
-                ".y",
-                ".ym",
-                ".js",
-                ".jsonx",
-                "yaml",
-                "yml",
-                "json",
-                "config.xml",
-                "config.toml",
-                "config.ini",
-                "yaml.txt",
-                "yml.txt",
-                "data.jsonl",
-                "notes.txt",
-                "my.yaml.bak",
-                "archive.tar.gz",
-                "config.yamlx",
-                "Makefile",
-                "README.MD",
+                "",          "a",           "config",         ".y",           ".ym",        ".js",       ".jsonx",  "yaml",
+                "yml",       "json",        "config.xml",     "config.toml",  "config.ini", "yaml.txt",  "yml.txt", "data.jsonl",
+                "notes.txt", "my.yaml.bak", "archive.tar.gz", "config.yamlx", "Makefile",   "README.MD",
         };
     } // namespace
 

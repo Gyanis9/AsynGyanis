@@ -113,9 +113,7 @@ namespace AsynGyanis::Base
             // 源码位置只在 Debug 出现，与文本格式化器同一口径
             assignField(fields, "file", event.location.shortFileName());
             fields["line"] = static_cast<std::int64_t>(event.location.line);
-            assignField(fields,
-                        "function",
-                        event.location.functionName != nullptr ? std::string_view(event.location.functionName) : std::string_view());
+            assignField(fields, "function", event.location.functionName != nullptr ? std::string_view(event.location.functionName) : std::string_view());
 #else
             // Release 里没有这三个键；复用的对象也不会有（同一进程内 #ifdef 的形态是常量）
 #endif
@@ -134,16 +132,14 @@ namespace AsynGyanis::Base
         {
             // 取库的 detail 命名空间是因为 `dump()` 没有「追加到既有缓冲」的公开出口；
             // 版本由 Conan 锁住，接口真漂移时是编译不过，不会静默改变日志内容
-            nlohmann::detail::serializer<nlohmann::json> emitter{nlohmann::detail::output_adapter<char, std::string>(out),
-                                                                ' ',
-                                                                nlohmann::json::error_handler_t::strict};
+            nlohmann::detail::serializer<nlohmann::json> emitter{nlohmann::detail::output_adapter<char, std::string>(out), ' ', nlohmann::json::error_handler_t::strict};
             emitter.dump(fields, false, false, 0);
         }
     } // namespace
 
     void JsonFormatter::formatInto(std::string &out, const LogEvent &event)
     {
-        nlohmann::json &fields      = fillFields(event);
+        nlohmann::json   &fields      = fillFields(event);
         const std::size_t enteredSize = out.size();
         // 先按消息长度留一次容量：Sink 的行缓冲跨行留着不缩，稳态下这一段不碰堆；
         // 全新缓冲也只走这一次分配，而不是逐字符几何增长重分配七八次

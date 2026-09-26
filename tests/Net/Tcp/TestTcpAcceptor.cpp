@@ -42,10 +42,10 @@ namespace AsynGyanis::Net
         /// 一次 accept 驱动的结果类别
         enum class FailureKind
         {
-            None,             ///< 正常跑完
-            SystemException,  ///< 抛出 Base::SystemException（终止性错误）
-            BaseException,    ///< 抛出其它 Base::Exception
-            UnknownException  ///< 抛出框架外的异常
+            None,            ///< 正常跑完
+            SystemException, ///< 抛出 Base::SystemException（终止性错误）
+            BaseException,   ///< 抛出其它 Base::Exception
+            UnknownException ///< 抛出框架外的异常
         };
 
         /**
@@ -56,10 +56,10 @@ namespace AsynGyanis::Net
          */
         struct AcceptOutcome
         {
-            std::atomic<bool> completed{false};                ///< 驱动协程是否已结束
-            FailureKind failure{FailureKind::None};            ///< 结束原因
-            bool sawNullOpt{false};                            ///< accept() 是否返回了 nullopt（表示应结束接受循环）
-            std::vector<Core::AsyncSocket> acceptedSockets;    ///< 已接受的连接，按返回顺序保存
+            std::atomic<bool>              completed{false};           ///< 驱动协程是否已结束
+            FailureKind                    failure{FailureKind::None}; ///< 结束原因
+            bool                           sawNullOpt{false};          ///< accept() 是否返回了 nullopt（表示应结束接受循环）
+            std::vector<Core::AsyncSocket> acceptedSockets;            ///< 已接受的连接，按返回顺序保存
 
             /// 结果槽是否已在时限内完成且没有抛异常
             [[nodiscard]] bool isCompletedCleanly() const
@@ -219,7 +219,7 @@ namespace AsynGyanis::Net
                 Platform::FileDescriptor::close(m_descriptor);
             }
 
-            LoopbackClient(const LoopbackClient &) = delete;
+            LoopbackClient(const LoopbackClient &)            = delete;
             LoopbackClient &operator=(const LoopbackClient &) = delete;
 
             [[nodiscard]] bool isValid() const noexcept
@@ -246,9 +246,9 @@ namespace AsynGyanis::Net
                 return ntohs(address.sin_port);
             }
 
-            Platform::Socket::Initialization m_socketInitialization; ///< 保证 Winsock 在本对象存活期间保持初始化
-            int                             m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 客户端描述符
-            std::uint16_t                   m_localPort{0};                                   ///< 本端源端口
+            Platform::Socket::Initialization m_socketInitialization;                           ///< 保证 Winsock 在本对象存活期间保持初始化
+            int                              m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 客户端描述符
+            std::uint16_t                    m_localPort{0};                                   ///< 本端源端口
         };
 
         /**
@@ -266,17 +266,15 @@ namespace AsynGyanis::Net
                 return Platform::FileDescriptor::kInvalid;
             }
 
-            const int reuseAddressOption = 1;
+            const int                  reuseAddressOption = 1;
             [[maybe_unused]] const int reuseResult =
-                    ::setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&reuseAddressOption),
-                                 static_cast<socklen_t>(sizeof(reuseAddressOption)));
+                    ::setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&reuseAddressOption), static_cast<socklen_t>(sizeof(reuseAddressOption)));
 
             sockaddr_in address{};
             address.sin_family      = AF_INET;
             address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
             address.sin_port        = 0;
-            if (::bind(descriptor, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0
-                || ::listen(descriptor, kDefaultListenBacklog) != 0)
+            if (::bind(descriptor, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 || ::listen(descriptor, kDefaultListenBacklog) != 0)
             {
                 Platform::FileDescriptor::close(descriptor);
                 return Platform::FileDescriptor::kInvalid;
@@ -335,7 +333,7 @@ namespace AsynGyanis::Net
      */
     TEST(TcpAcceptor, LocalAddressReflectsKernelAssignedPortAfterBind)
     {
-        Core::EventLoop loop;
+        Core::EventLoop         loop;
         const Core::InetAddress requestedAddress = Core::InetAddress::localhost(0);
         TcpAcceptor             acceptor(loop, requestedAddress);
 
@@ -433,12 +431,7 @@ namespace AsynGyanis::Net
         EventLoopThread loopThread(loop);
         loopThread.schedule(driverTask);
 
-        ASSERT_TRUE(waitForCondition(
-                [&outcome]
-                {
-                    return outcome.completed.load(std::memory_order_acquire);
-                },
-                kWaitTimeout));
+        ASSERT_TRUE(waitForCondition([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kWaitTimeout));
         EXPECT_TRUE(outcome.isCompletedCleanly());
         EXPECT_TRUE(outcome.sawNullOpt);
         EXPECT_TRUE(outcome.acceptedSockets.empty());
@@ -463,12 +456,8 @@ namespace AsynGyanis::Net
         EventLoopThread loopThread(loop);
         loopThread.schedule(driverTask);
 
-        ASSERT_TRUE(waitForCondition(
-                [&outcome]
-                {
-                    return outcome.completed.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "accept 未在时限内返回已排队连接：等待上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kWaitTimeout))
+                << "accept 未在时限内返回已排队连接：等待上界 kWaitTimeout";
         ASSERT_TRUE(outcome.isCompletedCleanly());
         ASSERT_EQ(outcome.acceptedSockets.size(), 1u);
         EXPECT_FALSE(outcome.sawNullOpt);
@@ -491,7 +480,7 @@ namespace AsynGyanis::Net
         const std::uint16_t listeningPort = queryBoundAddress(acceptor.fileDescriptor()).port();
         ASSERT_NE(listeningPort, 0);
 
-        constexpr std::size_t kClientCount = 3;
+        constexpr std::size_t                                     kClientCount = 3;
         std::array<std::unique_ptr<LoopbackClient>, kClientCount> clients;
         std::vector<std::uint16_t>                                clientPorts;
         for (std::size_t clientIndex = 0; clientIndex < kClientCount; ++clientIndex)
@@ -515,12 +504,8 @@ namespace AsynGyanis::Net
         EventLoopThread loopThread(loop);
         loopThread.schedule(driverTask);
 
-        ASSERT_TRUE(waitForCondition(
-                [&outcome]
-                {
-                    return outcome.completed.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "批量 accept 未在时限内收干三条连接：等待上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kWaitTimeout))
+                << "批量 accept 未在时限内收干三条连接：等待上界 kWaitTimeout";
         ASSERT_TRUE(outcome.isCompletedCleanly());
         ASSERT_EQ(outcome.acceptedSockets.size(), kClientCount);
 
@@ -551,24 +536,15 @@ namespace AsynGyanis::Net
         EventLoopThread loopThread(loop);
         loopThread.schedule(driverTask);
 
-        const bool completedTooEarly = waitForCondition(
-                [&outcome]
-                {
-                    return outcome.completed.load(std::memory_order_acquire);
-                },
-                kNegativeCheckTimeout);
+        const bool completedTooEarly = waitForCondition([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kNegativeCheckTimeout);
         EXPECT_FALSE(completedTooEarly) << "无连接可接受时 accept 立刻返回：说明它没有挂起等待";
 
         if (!completedTooEarly)
         {
             const LoopbackClient client(listeningPort);
             ASSERT_TRUE(client.isValid());
-            EXPECT_TRUE(waitForCondition(
-                    [&outcome]
-                    {
-                        return outcome.completed.load(std::memory_order_acquire);
-                    },
-                    kWaitTimeout)) << "连接到达后 accept 未被唤醒：等待上界 kWaitTimeout";
+            EXPECT_TRUE(waitForCondition([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kWaitTimeout))
+                    << "连接到达后 accept 未被唤醒：等待上界 kWaitTimeout";
             EXPECT_TRUE(outcome.isCompletedCleanly()) << "可恢复错误被当成终止性错误抛出";
             EXPECT_EQ(outcome.acceptedSockets.size(), 1u);
         }
@@ -584,7 +560,7 @@ namespace AsynGyanis::Net
         // 本用例自己按平台调用造套接字，因此先保证 Winsock 已初始化（LoopbackClient 也是这样做的）
         Platform::Socket::Initialization socketInitialization;
 
-        std::uint16_t externalPort = 0;
+        std::uint16_t externalPort       = 0;
         const int     externalDescriptor = createExternalListeningSocket(externalPort);
         ASSERT_TRUE(Platform::FileDescriptor::isValid(externalDescriptor));
         ASSERT_NE(externalPort, 0);
@@ -599,15 +575,14 @@ namespace AsynGyanis::Net
         EXPECT_EQ(acceptor.localAddress().port(), externalPort) << "接手后必须报出内核真正绑定的端口";
         EXPECT_EQ(acceptor.fileDescriptor(), externalDescriptor) << "接手应当接管同一个套接字，而不是另开一个";
 
-        AcceptOutcome outcome;
-        Core::Task<> driverTask = driveAccept(acceptor, outcome, 1);
+        AcceptOutcome   outcome;
+        Core::Task<>    driverTask = driveAccept(acceptor, outcome, 1);
         EventLoopThread loopThread(loop);
         loopThread.schedule(driverTask);
 
         const LoopbackClient client(externalPort);
         ASSERT_TRUE(client.isValid());
-        EXPECT_TRUE(waitForCondition([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kWaitTimeout))
-                << "接手之后 accept 未被唤醒：等待上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kWaitTimeout)) << "接手之后 accept 未被唤醒：等待上界 kWaitTimeout";
         EXPECT_TRUE(outcome.isCompletedCleanly()) << "接手路径上的 accept 抛了异常";
         EXPECT_EQ(outcome.acceptedSockets.size(), 1u);
     }

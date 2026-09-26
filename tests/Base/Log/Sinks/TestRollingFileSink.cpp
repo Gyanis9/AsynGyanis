@@ -35,11 +35,12 @@ namespace AsynGyanis::Base
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "rolling message")
         {
-            return {
-                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-223344",
+            return {level,
+                    TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789),
+                    "tid-223344",
                     SourceLocation("rolling_fixture.cpp", 9137, "rollingTestFunction"),
-                    "rolling_logger", std::move(message)
-            };
+                    "rolling_logger",
+                    std::move(message)};
         }
 
         /**
@@ -57,8 +58,7 @@ namespace AsynGyanis::Base
             }
             std::string content{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>{}};
 
-            for (std::string::size_type position = content.find("\r\n"); position != std::string::npos;
-                 position                        = content.find("\r\n", position))
+            for (std::string::size_type position = content.find("\r\n"); position != std::string::npos; position = content.find("\r\n", position))
             {
                 content.erase(position, 1);
             }
@@ -184,13 +184,13 @@ namespace AsynGyanis::Base
         const fs::path                        configuredDirectory = temporaryDirectory.path() / "logs";
 
         const std::vector<fs::path> misshapenBaseFilenames = {
-                fs::path("outside") / "rel.log",                    // 相对形式：原先会写进 logs/outside/
-                temporaryDirectory.path() / "outside" / "abs.log",  // 绝对形式：原先整体替换掉 directory
+                fs::path("outside") / "rel.log",                   // 相对形式：原先会写进 logs/outside/
+                temporaryDirectory.path() / "outside" / "abs.log", // 绝对形式：原先整体替换掉 directory
         };
 
         for (const fs::path &baseFilename: misshapenBaseFilenames)
         {
-            const fs::path expectedName = baseFilename.filename();
+            const fs::path  expectedName = baseFilename.filename();
             RollingFileSink sink(baseFilename, configuredDirectory, RollingPolicy::Size, 1024, 20);
             writeEvents(sink, 40, "nested_base_payload");
 
@@ -365,8 +365,7 @@ namespace AsynGyanis::Base
         EXPECT_NO_THROW(sink.write(makeEvent(LogLevel::Info, "daily_check")));
         sink.flush();
 
-        const std::vector<fs::path> activeFiles = collectFilesMatching(temporaryDirectory.path(),
-                                                                       R"(daily\.\d{4}-\d{2}-\d{2}\.log)");
+        const std::vector<fs::path> activeFiles = collectFilesMatching(temporaryDirectory.path(), R"(daily\.\d{4}-\d{2}-\d{2}\.log)");
         ASSERT_EQ(activeFiles.size(), 1u);
         EXPECT_NE(readWholeFile(activeFiles.front()).find("daily_check"), std::string::npos);
         // 时间后缀不应出现在基础文件名上
@@ -381,8 +380,7 @@ namespace AsynGyanis::Base
         EXPECT_NO_THROW(sink.write(makeEvent(LogLevel::Info, "hourly_check")));
         sink.flush();
 
-        const std::vector<fs::path> activeFiles = collectFilesMatching(temporaryDirectory.path(),
-                                                                       R"(hourly\.\d{4}-\d{2}-\d{2}_\d{2}\.log)");
+        const std::vector<fs::path> activeFiles = collectFilesMatching(temporaryDirectory.path(), R"(hourly\.\d{4}-\d{2}-\d{2}_\d{2}\.log)");
         ASSERT_EQ(activeFiles.size(), 1u);
         EXPECT_NE(readWholeFile(activeFiles.front()).find("hourly_check"), std::string::npos);
     }
@@ -394,8 +392,7 @@ namespace AsynGyanis::Base
         RollingFileSink sink("stable.log", temporaryDirectory.path(), RollingPolicy::Daily, 10 * 1024 * 1024, 5);
         writeEvents(sink, 6, "stable_payload");
 
-        const std::vector<fs::path> activeFiles = collectFilesMatching(temporaryDirectory.path(),
-                                                                       R"(stable\.\d{4}-\d{2}-\d{2}\.log)");
+        const std::vector<fs::path> activeFiles = collectFilesMatching(temporaryDirectory.path(), R"(stable\.\d{4}-\d{2}-\d{2}\.log)");
         ASSERT_EQ(activeFiles.size(), 1u);
         EXPECT_EQ(countLines(activeFiles.front()), 6u);
     }
@@ -440,11 +437,10 @@ namespace AsynGyanis::Base
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("Rolling_Destroy");
 
-        EXPECT_NO_THROW(
-                {
-                RollingFileSink sink("destroy.log", temporaryDirectory.path(), RollingPolicy::Size, 512, 3);
-                writeEvents(sink, 30, "destroy_payload");
-                });
+        EXPECT_NO_THROW({
+            RollingFileSink sink("destroy.log", temporaryDirectory.path(), RollingPolicy::Size, 512, 3);
+            writeEvents(sink, 30, "destroy_payload");
+        });
 
         EXPECT_TRUE(fs::exists(temporaryDirectory.path() / "destroy.log"));
     }
@@ -461,14 +457,14 @@ namespace AsynGyanis::Base
         threads.reserve(kthreadCount);
         for (int index = 0; index < kthreadCount; ++index)
         {
-            threads.emplace_back([&sink, index]
-            {
-                for (int inner = 0; inner < kwritesPerThread; ++inner)
-                {
-                    sink.write(makeEvent(LogLevel::Info,
-                                         "shared" + std::to_string(index) + "_" + std::to_string(inner)));
-                }
-            });
+            threads.emplace_back(
+                    [&sink, index]
+                    {
+                        for (int inner = 0; inner < kwritesPerThread; ++inner)
+                        {
+                            sink.write(makeEvent(LogLevel::Info, "shared" + std::to_string(index) + "_" + std::to_string(inner)));
+                        }
+                    });
         }
         for (std::thread &thread: threads)
         {
@@ -506,17 +502,14 @@ namespace AsynGyanis::Base
         RollingFileSink       sink("back.log", logDirectory, RollingPolicy::Size, 1, kzeroBackupCount);
         sink.write(makeEvent(LogLevel::Info, "before_outage_payload"));
         sink.flush();
-        ASSERT_NE(readWholeFile(activePath).find("before_outage_payload"), std::string::npos)
-                << "基线：第一行就要落进活动文件";
+        ASSERT_NE(readWholeFile(activePath).find("before_outage_payload"), std::string::npos) << "基线：第一行就要落进活动文件";
 
         for (const std::string blockerName: {"back.1.log", "back.2.log"})
         {
             ASSERT_NO_THROW(fs::create_directory(logDirectory / blockerName));
             ASSERT_NO_THROW(fs::create_directory(logDirectory / blockerName / "inner"));
         }
-        ASSERT_NO_THROW(fs::permissions(activePath,
-                                        fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read,
-                                        fs::perm_options::replace));
+        ASSERT_NO_THROW(fs::permissions(activePath, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read, fs::perm_options::replace));
         {
             // 探针：只读位挡不住写打开的平台（容器里以 root 跑）没有可用的故障源，如实跳过
             const std::ofstream probe(activePath, std::ios::out | std::ios::app);
@@ -534,8 +527,7 @@ namespace AsynGyanis::Base
         EXPECT_NO_THROW(sink.write(makeEvent(LogLevel::Info, "after_outage_payload")));
         sink.flush();
 
-        EXPECT_NE(readWholeFile(activePath).find("after_outage_payload"), std::string::npos)
-                << "重开失败一次之后本 Sink 永久停产：故障撤掉后的日志再也没落过盘";
+        EXPECT_NE(readWholeFile(activePath).find("after_outage_payload"), std::string::npos) << "重开失败一次之后本 Sink 永久停产：故障撤掉后的日志再也没落过盘";
     }
 
     /**
@@ -561,8 +553,7 @@ namespace AsynGyanis::Base
         const fs::path secondBackup = logDirectory / "wrap.2.log";
         const fs::path firstBackup  = logDirectory / "wrap.1.log";
         ASSERT_TRUE(fs::exists(secondBackup)) << "顺移一步没跑：2 号备份根本没被生成";
-        EXPECT_NE(readWholeFile(secondBackup).find("first_generation_payload"), std::string::npos)
-                << "最旧的备份被就地覆盖：备份顺移没有跑到";
+        EXPECT_NE(readWholeFile(secondBackup).find("first_generation_payload"), std::string::npos) << "最旧的备份被就地覆盖：备份顺移没有跑到";
         EXPECT_NE(readWholeFile(firstBackup).find("second_generation_payload"), std::string::npos);
         EXPECT_NE(readWholeFile(logDirectory / "wrap.log").find("third_generation_payload"), std::string::npos);
     }

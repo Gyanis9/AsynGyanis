@@ -28,8 +28,7 @@ namespace
      * @details 返回第一个失败（含 endHeaderBlock 的判定），全通过则返回空。用例只关心「有没有被拒」时用
      *          它，关心「被哪条规则拒」时用 feedExpectingError。
      */
-    std::expected<void, Http3HeaderError> feedRequest(Http3HeaderValidator &validator,
-                                                      const std::vector<std::pair<std::string_view, std::string_view>> &fields)
+    std::expected<void, Http3HeaderError> feedRequest(Http3HeaderValidator &validator, const std::vector<std::pair<std::string_view, std::string_view>> &fields)
     {
         if (auto result = validator.beginHeaderBlock(false); !result)
         {
@@ -46,11 +45,9 @@ namespace
     }
 
     /// 把最小合法请求的第 index 个字段换掉，其余照旧
-    std::vector<std::pair<std::string_view, std::string_view>> requestWithFieldReplaced(const std::size_t index,
-                                                                                        const std::string_view name,
-                                                                                        const std::string_view value)
+    std::vector<std::pair<std::string_view, std::string_view>> requestWithFieldReplaced(const std::size_t index, const std::string_view name, const std::string_view value)
     {
-        auto fields = minimalRequestFields();
+        auto fields   = minimalRequestFields();
         fields[index] = {name, value};
         return fields;
     }
@@ -75,7 +72,7 @@ namespace
 TEST(Http3HeaderValidation, MinimalRequestHeadPasses)
 {
     Http3HeaderValidator validator(Http3MessageKind::Request);
-    const auto result = feedRequest(validator, minimalRequestFields());
+    const auto           result = feedRequest(validator, minimalRequestFields());
     ASSERT_TRUE(result.has_value()) << result.error().message;
 
     // 伪头要原样交给上层：路由按 :path、host 补齐按 :authority，判定器不做任何加工
@@ -100,16 +97,13 @@ TEST(Http3HeaderValidation, MissingRequiredPseudoHeaderIsRejected)
 {
     // 逐个删掉一个必填伪头：三条都得被拒，缺哪个报哪个
     Http3HeaderValidator validator(Http3MessageKind::Request);
-    expectRejected(feedRequest(validator, {{":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}}),
-                   Http3HeaderErrorKind::MissingPseudoHeader, "缺 :method");
+    expectRejected(feedRequest(validator, {{":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}}), Http3HeaderErrorKind::MissingPseudoHeader, "缺 :method");
 
     Http3HeaderValidator schemeMissing(Http3MessageKind::Request);
-    expectRejected(feedRequest(schemeMissing, {{":method", "GET"}, {":authority", "example.com"}, {":path", "/"}}),
-                   Http3HeaderErrorKind::MissingPseudoHeader, "缺 :scheme");
+    expectRejected(feedRequest(schemeMissing, {{":method", "GET"}, {":authority", "example.com"}, {":path", "/"}}), Http3HeaderErrorKind::MissingPseudoHeader, "缺 :scheme");
 
     Http3HeaderValidator pathMissing(Http3MessageKind::Request);
-    expectRejected(feedRequest(pathMissing, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}}),
-                   Http3HeaderErrorKind::MissingPseudoHeader, "缺 :path");
+    expectRejected(feedRequest(pathMissing, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}}), Http3HeaderErrorKind::MissingPseudoHeader, "缺 :path");
 }
 
 TEST(Http3HeaderValidation, DuplicatePseudoHeaderIsRejected)
@@ -117,23 +111,19 @@ TEST(Http3HeaderValidation, DuplicatePseudoHeaderIsRejected)
     // 重复的伪头必须紧跟在同类伪头之后出现才测得准：把它放到 accept 之后，先撞上的是
     // 「伪头不得排在普通字段之后」那条规则（§4.3），测不到重复判定本身
     Http3HeaderValidator validator(Http3MessageKind::Request);
-    expectRejected(feedRequest(validator, {{":method", "GET"}, {":method", "POST"}, {":scheme", "https"}, {":authority", "example.com"},
-                                          {":path", "/"}}),
+    expectRejected(feedRequest(validator, {{":method", "GET"}, {":method", "POST"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}}),
                    Http3HeaderErrorKind::DuplicatePseudoHeader, "两个 :method");
 
     Http3HeaderValidator schemeDuplicated(Http3MessageKind::Request);
-    expectRejected(feedRequest(schemeDuplicated, {{":method", "GET"}, {":scheme", "https"}, {":scheme", "http"},
-                                                 {":authority", "example.com"}, {":path", "/"}}),
+    expectRejected(feedRequest(schemeDuplicated, {{":method", "GET"}, {":scheme", "https"}, {":scheme", "http"}, {":authority", "example.com"}, {":path", "/"}}),
                    Http3HeaderErrorKind::DuplicatePseudoHeader, "两个 :scheme");
 
     Http3HeaderValidator pathDuplicated(Http3MessageKind::Request);
-    expectRejected(feedRequest(pathDuplicated, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"},
-                                               {":path", "/a"}, {":path", "/b"}}),
+    expectRejected(feedRequest(pathDuplicated, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/a"}, {":path", "/b"}}),
                    Http3HeaderErrorKind::DuplicatePseudoHeader, "两个 :path");
 
     Http3HeaderValidator authorityDuplicated(Http3MessageKind::Request);
-    expectRejected(feedRequest(authorityDuplicated, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"},
-                                                    {":authority", "other.example"}, {":path", "/"}}),
+    expectRejected(feedRequest(authorityDuplicated, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":authority", "other.example"}, {":path", "/"}}),
                    Http3HeaderErrorKind::DuplicatePseudoHeader, "两个 :authority");
 }
 
@@ -142,29 +132,26 @@ TEST(Http3HeaderValidation, UndefinedPseudoHeaderIsRejected)
     // 三个用例都把待测伪头排在普通字段之前：放到末尾会先撞上「伪头不得排在普通字段之后」
     Http3HeaderValidator validator(Http3MessageKind::Request);
     // :protocol 未经对端许可即未定义
-    expectRejected(feedRequest(validator, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"},
-                                          {":protocol", "websocket"}}),
+    expectRejected(feedRequest(validator, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {":protocol", "websocket"}}),
                    Http3HeaderErrorKind::UndefinedPseudoHeader, "未开扩展 CONNECT 却带 :protocol");
 
     Http3HeaderValidator statusInRequest(Http3MessageKind::Request);
-    expectRejected(feedRequest(statusInRequest, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"},
-                                                {":status", "200"}}),
+    expectRejected(feedRequest(statusInRequest, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {":status", "200"}}),
                    Http3HeaderErrorKind::UndefinedPseudoHeader, "请求里出现 :status");
 
     Http3HeaderValidator colonOnly(Http3MessageKind::Request);
-    expectRejected(feedRequest(colonOnly, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {":" , "x"}}),
+    expectRejected(feedRequest(colonOnly, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {":", "x"}}),
                    Http3HeaderErrorKind::UndefinedPseudoHeader, "伪头名只剩一个冒号");
 
     Http3HeaderValidator uppercasePseudo(Http3MessageKind::Request);
-    expectRejected(feedRequest(uppercasePseudo, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"},
-                                                 {":Method", "POST"}}),
+    expectRejected(feedRequest(uppercasePseudo, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {":Method", "POST"}}),
                    Http3HeaderErrorKind::UndefinedPseudoHeader, "大小写不同的伪头名不得被当成 :method 的第二次出现");
 }
 
 TEST(Http3HeaderValidation, PseudoHeaderAfterRegularFieldIsRejected)
 {
     // §4.3：伪头必须全部排在普通字段之前。这里 accept 已经在前，再来的 :scheme 必须被打死
-    Http3HeaderValidator validator(Http3MessageKind::Request);
+    Http3HeaderValidator                                             validator(Http3MessageKind::Request);
     const std::vector<std::pair<std::string_view, std::string_view>> fields = {
             {":method", "GET"}, {"accept", "*/*"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"},
     };
@@ -174,19 +161,16 @@ TEST(Http3HeaderValidation, PseudoHeaderAfterRegularFieldIsRejected)
 TEST(Http3HeaderValidation, IllegalFieldNamesAreRejected)
 {
     Http3HeaderValidator uppercase(Http3MessageKind::Request);
-    expectRejected(feedRequest(uppercase, requestWithFieldReplaced(4, "Accept", "*/*")), Http3HeaderErrorKind::UppercaseFieldName,
-                   "含大写的字段名（§4.2 要求编码前转小写）");
+    expectRejected(feedRequest(uppercase, requestWithFieldReplaced(4, "Accept", "*/*")), Http3HeaderErrorKind::UppercaseFieldName, "含大写的字段名（§4.2 要求编码前转小写）");
 
     Http3HeaderValidator spaceInName(Http3MessageKind::Request);
-    expectRejected(feedRequest(spaceInName, requestWithFieldReplaced(4, "acce pt", "*/*")), Http3HeaderErrorKind::IllegalFieldNameCharacter,
-                   "含空格的字段名");
+    expectRejected(feedRequest(spaceInName, requestWithFieldReplaced(4, "acce pt", "*/*")), Http3HeaderErrorKind::IllegalFieldNameCharacter, "含空格的字段名");
 
     Http3HeaderValidator emptyName(Http3MessageKind::Request);
     expectRejected(feedRequest(emptyName, requestWithFieldReplaced(4, "", "v")), Http3HeaderErrorKind::EmptyFieldName, "空字段名");
 
     Http3HeaderValidator nulInName(Http3MessageKind::Request);
-    expectRejected(feedRequest(nulInName, requestWithFieldReplaced(4, std::string_view("acc\0ept", 6), "*/*")),
-                   Http3HeaderErrorKind::IllegalFieldNameCharacter, "含 NUL 的字段名");
+    expectRejected(feedRequest(nulInName, requestWithFieldReplaced(4, std::string_view("acc\0ept", 6), "*/*")), Http3HeaderErrorKind::IllegalFieldNameCharacter, "含 NUL 的字段名");
 }
 
 TEST(Http3HeaderValidation, ControlCharactersInFieldValuesAreRejected)
@@ -195,8 +179,8 @@ TEST(Http3HeaderValidation, ControlCharactersInFieldValuesAreRejected)
     for (const char forbidden: {static_cast<char>(0x0D), static_cast<char>(0x0A), static_cast<char>(0x00), static_cast<char>(0x7F)})
     {
         Http3HeaderValidator validator(Http3MessageKind::Request);
-        const std::string valueWithForbidden = std::string("*/*") + forbidden + "x";
-        const auto result = feedRequest(validator, requestWithFieldReplaced(4, "accept", valueWithForbidden));
+        const std::string    valueWithForbidden = std::string("*/*") + forbidden + "x";
+        const auto           result             = feedRequest(validator, requestWithFieldReplaced(4, "accept", valueWithForbidden));
         expectRejected(result, Http3HeaderErrorKind::IllegalFieldValueCharacter, "字段值含控制字符");
     }
 }
@@ -208,8 +192,7 @@ TEST(Http3HeaderValidation, HorizontalTabAndObsTextInValuesAreAccepted)
     EXPECT_TRUE(feedRequest(withTab, requestWithFieldReplaced(4, "accept", "a\tb")).has_value());
 
     Http3HeaderValidator withObsText(Http3MessageKind::Request);
-    EXPECT_TRUE(feedRequest(withObsText, requestWithFieldReplaced(4, "x-note", std::string("\xE4\xB8\xAD\xE6\x96\x87", 6))).has_value())
-            << "UTF-8 头值应原样收下";
+    EXPECT_TRUE(feedRequest(withObsText, requestWithFieldReplaced(4, "x-note", std::string("\xE4\xB8\xAD\xE6\x96\x87", 6))).has_value()) << "UTF-8 头值应原样收下";
 }
 
 TEST(Http3HeaderValidation, ConnectionSpecificFieldsAreRejectedButTeTrailersIsAllowed)
@@ -236,22 +219,20 @@ TEST(Http3HeaderValidation, ContentLengthMustBeASingleConsistentNumber)
     for (const std::string_view invalid: {"abc", "3, 3", "-1", "1e3", "0x10", " 12x"})
     {
         Http3HeaderValidator validator(Http3MessageKind::Request);
-        expectRejected(feedRequest(validator, requestWithFieldReplaced(4, "content-length", invalid)),
-                       Http3HeaderErrorKind::ContentLengthInvalid, invalid);
+        expectRejected(feedRequest(validator, requestWithFieldReplaced(4, "content-length", invalid)), Http3HeaderErrorKind::ContentLengthInvalid, invalid);
     }
 
     Http3HeaderValidator sameTwice(Http3MessageKind::Request);
-    const auto sameResult = feedRequest(sameTwice,
-                                        {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"},
-                                         {"content-length", "4"}, {"content-length", "4"}});
+    const auto           sameResult =
+            feedRequest(sameTwice, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {"content-length", "4"}, {"content-length", "4"}});
     EXPECT_TRUE(sameResult.has_value()) << sameResult.error().message << "；重复但取值一致的 content-length 应接受";
     ASSERT_TRUE(sameTwice.contentLengthByteCount().has_value());
     EXPECT_EQ(*sameTwice.contentLengthByteCount(), 4ULL);
 
     Http3HeaderValidator conflict(Http3MessageKind::Request);
-    expectRejected(feedRequest(conflict, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"},
-                                          {"content-length", "4"}, {"content-length", "5"}}),
-                   Http3HeaderErrorKind::ContentLengthConflict, "取值不一致的第二个 content-length");
+    expectRejected(
+            feedRequest(conflict, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {"content-length", "4"}, {"content-length", "5"}}),
+            Http3HeaderErrorKind::ContentLengthConflict, "取值不一致的第二个 content-length");
 }
 
 TEST(Http3HeaderValidation, TrailersSectionHasItsOwnRules)
@@ -283,13 +264,13 @@ TEST(Http3HeaderValidation, ClassicConnectOmitsSchemeAndPath)
 {
     // §4.4：CONNECT 必须省掉 :scheme 与 :path，且必须给 :authority
     Http3HeaderValidator plainConnect(Http3MessageKind::Request);
-    const auto okResult = feedRequest(plainConnect, {{":method", "CONNECT"}, {":authority", "example.com:443"}});
+    const auto           okResult = feedRequest(plainConnect, {{":method", "CONNECT"}, {":authority", "example.com:443"}});
     EXPECT_TRUE(okResult.has_value()) << okResult.error().message;
     EXPECT_EQ(plainConnect.authorityText(), "example.com:443");
 
     Http3HeaderValidator withScheme(Http3MessageKind::Request);
-    expectRejected(feedRequest(withScheme, {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}}),
-                   Http3HeaderErrorKind::ProhibitedPseudoForMethod, "经典 CONNECT 带了 :scheme");
+    expectRejected(feedRequest(withScheme, {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}}), Http3HeaderErrorKind::ProhibitedPseudoForMethod,
+                   "经典 CONNECT 带了 :scheme");
 
     Http3HeaderValidator withoutAuthority(Http3MessageKind::Request);
     expectRejected(feedRequest(withoutAuthority, {{":method", "CONNECT"}}), Http3HeaderErrorKind::MissingPseudoHeader, "CONNECT 缺 :authority");
@@ -299,9 +280,7 @@ TEST(Http3HeaderValidation, ExtendedConnectNeedsPermissionAndKeepsSchemeAndPath)
 {
     // RFC 9220 的扩展 CONNECT：开了权限才认 :protocol，且 :scheme/:path 照普通请求要求（隧道之上还要按路径路由）
     Http3HeaderValidator permitted(Http3MessageKind::Request, true);
-    const auto okResult = feedRequest(permitted,
-                                      {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/ws"},
-                                       {":protocol", "websocket"}});
+    const auto okResult = feedRequest(permitted, {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/ws"}, {":protocol", "websocket"}});
     EXPECT_TRUE(okResult.has_value()) << okResult.error().message;
     EXPECT_EQ(permitted.protocolText(), "websocket");
 
@@ -310,10 +289,10 @@ TEST(Http3HeaderValidation, ExtendedConnectNeedsPermissionAndKeepsSchemeAndPath)
                    Http3HeaderErrorKind::MissingPseudoHeader, "扩展 CONNECT 缺 :path");
 
     Http3HeaderValidator protocolDuplicated(Http3MessageKind::Request, true);
-    expectRejected(feedRequest(protocolDuplicated,
-                               {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/ws"},
-                                {":protocol", "websocket"}, {":protocol", "subprotocol"}}),
-                   Http3HeaderErrorKind::DuplicatePseudoHeader, "两个 :protocol");
+    expectRejected(
+            feedRequest(protocolDuplicated,
+                        {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/ws"}, {":protocol", "websocket"}, {":protocol", "subprotocol"}}),
+            Http3HeaderErrorKind::DuplicatePseudoHeader, "两个 :protocol");
 }
 
 TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
@@ -321,7 +300,7 @@ TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
     for (const std::string_view invalidPath: {"", "json", "https://example.com/json", "/json#fragment", "/json space"})
     {
         Http3HeaderValidator validator(Http3MessageKind::Request);
-        const auto result = feedRequest(validator, requestWithFieldReplaced(3, ":path", invalidPath));
+        const auto           result = feedRequest(validator, requestWithFieldReplaced(3, ":path", invalidPath));
         expectRejected(result, Http3HeaderErrorKind::EmptyPath, invalidPath.empty() ? "空 :path" : invalidPath);
     }
 
@@ -329,8 +308,7 @@ TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
     EXPECT_TRUE(feedRequest(root, requestWithFieldReplaced(3, ":path", "/")).has_value()) << "只带斜杠的路径是合法的";
 
     Http3HeaderValidator optionsStar(Http3MessageKind::Request);
-    const auto starResult = feedRequest(optionsStar,
-                                        {{":method", "OPTIONS"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "*"}});
+    const auto           starResult = feedRequest(optionsStar, {{":method", "OPTIONS"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "*"}});
     EXPECT_TRUE(starResult.has_value()) << starResult.error().message << "；OPTIONS 的星号形式合法（RFC 9110 §7.1）";
 }
 
@@ -339,7 +317,7 @@ TEST(Http3HeaderValidation, AuthorityCannotCarryUserInfoOrPath)
     for (const std::string_view invalidAuthority: {"user@example.com", "example.com/path", "example.com?x", "example.com#f", "exa mple"})
     {
         Http3HeaderValidator validator(Http3MessageKind::Request);
-        const auto result = feedRequest(validator, requestWithFieldReplaced(2, ":authority", invalidAuthority));
+        const auto           result = feedRequest(validator, requestWithFieldReplaced(2, ":authority", invalidAuthority));
         expectRejected(result, Http3HeaderErrorKind::EmptyAuthority, invalidAuthority);
     }
 
@@ -354,11 +332,10 @@ TEST(Http3HeaderValidation, SchemeDecidesWhetherAuthorityIsRequired)
 {
     // §4.3.1：http/https 必须给权威；没有权威组件的方案则不得给
     Http3HeaderValidator httpWithoutAuthority(Http3MessageKind::Request);
-    expectRejected(feedRequest(httpWithoutAuthority, {{":method", "GET"}, {":scheme", "http"}, {":path", "/"}}),
-                   Http3HeaderErrorKind::MissingPseudoHeader, "http 方案缺权威");
+    expectRejected(feedRequest(httpWithoutAuthority, {{":method", "GET"}, {":scheme", "http"}, {":path", "/"}}), Http3HeaderErrorKind::MissingPseudoHeader, "http 方案缺权威");
 
     Http3HeaderValidator hostOnly(Http3MessageKind::Request);
-    const auto hostResult = feedRequest(hostOnly, {{":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"host", "example.com"}});
+    const auto           hostResult = feedRequest(hostOnly, {{":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"host", "example.com"}});
     EXPECT_TRUE(hostResult.has_value()) << hostResult.error().message << "；只有 host 也满足要求";
     EXPECT_TRUE(hostOnly.hasHostHeader());
     EXPECT_TRUE(hostOnly.authorityText().empty()) << "没有 :authority 时不该凭空造一个";
@@ -372,8 +349,7 @@ TEST(Http3HeaderValidation, ConflictingAuthorityAndHostIsRejected)
 {
     // :authority 与 host 同时存在时取值必须一致；不一致是请求走私的入口
     Http3HeaderValidator conflict(Http3MessageKind::Request);
-    expectRejected(feedRequest(conflict, requestWithExtraField("host", "other.example")), Http3HeaderErrorKind::AuthorityConflict,
-                   ":authority 与 host 不一致");
+    expectRejected(feedRequest(conflict, requestWithExtraField("host", "other.example")), Http3HeaderErrorKind::AuthorityConflict, ":authority 与 host 不一致");
 
     Http3HeaderValidator agreement(Http3MessageKind::Request);
     EXPECT_TRUE(feedRequest(agreement, requestWithExtraField("host", "example.com")).has_value()) << "两份取值一致时应当接受";
@@ -395,8 +371,7 @@ TEST(Http3HeaderValidation, RepeatedIdenticalHostFieldIsAcceptedButConflictingIs
 TEST(Http3HeaderValidation, EmptyHostValueIsRejected)
 {
     Http3HeaderValidator validator(Http3MessageKind::Request);
-    expectRejected(feedRequest(validator, {{":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"host", ""}}),
-                   Http3HeaderErrorKind::EmptyAuthority, "取值为空的 host");
+    expectRejected(feedRequest(validator, {{":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"host", ""}}), Http3HeaderErrorKind::EmptyAuthority, "取值为空的 host");
 }
 
 TEST(Http3HeaderValidation, ResponseHeadRequiresASingleValidStatus)
@@ -440,8 +415,7 @@ TEST(Http3HeaderValidation, RejectedSectionsStillLeaveNoPartialPseudoHeaders)
     // 钉住「拒绝之后不留脏状态」：第一条字段就非法时，伪头不该被归位一半
     Http3HeaderValidator validator(Http3MessageKind::Request);
     ASSERT_TRUE(validator.beginHeaderBlock(false).has_value());
-    expectRejected(validator.onHeaderField(":method", std::string_view("GET\nPOST", 8)), Http3HeaderErrorKind::IllegalFieldValueCharacter,
-                   "含 LF 的 :method");
+    expectRejected(validator.onHeaderField(":method", std::string_view("GET\nPOST", 8)), Http3HeaderErrorKind::IllegalFieldValueCharacter, "含 LF 的 :method");
     EXPECT_TRUE(validator.methodText().empty()) << "取值非法的伪头不得写进归位结果";
     EXPECT_FALSE(validator.endHeaderBlock().has_value()) << "被拒的伪头没归位，收尾时必然缺必填项";
 }

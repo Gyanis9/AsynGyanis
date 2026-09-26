@@ -53,9 +53,9 @@ namespace AsynGyanis::Net
     struct WebSocketFrame
     {
         WebSocketOpCode opCode{WebSocketOpCode::Text}; ///< 操作码；解码器只交出数据消息与完整控制帧，不会是 Continuation
-        bool isFinal{true};                            ///< 是否消息末帧；解码器重组后才交付，因此恒为 true
-        bool isCompressed{false};                      ///< 负载是否按 permessage-deflate 压缩过（RFC 7692）；控制帧恒为 false
-        std::string payload;                           ///< 负载：Text 为文本，Binary 为任意字节，控制帧不超过 125 字节
+        bool            isFinal{true};                 ///< 是否消息末帧；解码器重组后才交付，因此恒为 true
+        bool            isCompressed{false};           ///< 负载是否按 permessage-deflate 压缩过（RFC 7692）；控制帧恒为 false
+        std::string     payload;                       ///< 负载：Text 为文本，Binary 为任意字节，控制帧不超过 125 字节
     };
 
     /// 控制帧负载上限 125 字节（RFC 6455 §5.5）：控制帧要能塞进一个 IP 分片，故不随消息体积增长
@@ -76,8 +76,7 @@ namespace AsynGyanis::Net
      *         （isFinal 为 false）、opCode 不是 RFC 6455 定义过的取值，或要求压缩的不是数据消息首帧
      * @note 文本帧负载的 UTF-8 合法性不在本层校验：编码器只保证帧格式，内容语义由上层负责
      */
-    [[nodiscard]] std::string encodeWebSocketFrame(WebSocketOpCode opCode, std::string_view payload, bool isFinal = true,
-                                                   bool isCompressed = false);
+    [[nodiscard]] std::string encodeWebSocketFrame(WebSocketOpCode opCode, std::string_view payload, bool isFinal = true, bool isCompressed = false);
 
     /**
      * @brief 一次 WebSocketFrameDecoder::parse() 调用的结论状态
@@ -217,12 +216,12 @@ namespace AsynGyanis::Net
          */
         enum class Stage
         {
-            FirstByte,      ///< 正在收帧首字节（FIN、RSV 与操作码）
-            LengthFirstByte,///< 正在收第二个字节（掩码位与 7 位长度）
-            ExtendedLength, ///< 正在收 16 位或 64 位扩展长度（大端）
-            MaskKey,        ///< 正在收 4 字节掩码键
-            Payload,        ///< 正在收负载
-            Failed          ///< 已失败：错误粘滞到 reset()
+            FirstByte,       ///< 正在收帧首字节（FIN、RSV 与操作码）
+            LengthFirstByte, ///< 正在收第二个字节（掩码位与 7 位长度）
+            ExtendedLength,  ///< 正在收 16 位或 64 位扩展长度（大端）
+            MaskKey,         ///< 正在收 4 字节掩码键
+            Payload,         ///< 正在收负载
+            Failed           ///< 已失败：错误粘滞到 reset()
         };
 
         /**
@@ -264,32 +263,32 @@ namespace AsynGyanis::Net
          */
         void clearFrameScratch() noexcept;
 
-        Stage m_stage{Stage::FirstByte};              ///< 当前阶段
-        std::uint8_t m_opCodeValue{0};                ///< 本帧操作码的原始取值（长度校验要靠它区分控制帧）
-        bool m_isFinal{true};                         ///< 本帧的 FIN 位
-        std::uint64_t m_payloadLength{0};             ///< 本帧声明的负载长度，单位字节
-        std::size_t m_extendedLengthByteCount{0};     ///< 扩展长度还需读的字节数（16 位档 2、64 位档 8）
-        std::size_t m_extendedLengthBytesSeen{0};     ///< 扩展长度已读字节数
-        std::array<std::uint8_t, 4> m_maskKey{};      ///< 本帧的 4 字节掩码键
-        std::size_t m_maskKeyBytesSeen{0};            ///< 掩码键已读字节数
-        std::size_t m_framePayloadBytesSeen{0};       ///< 本帧已收负载字节数（掩码按它循环取值）
+        Stage                       m_stage{Stage::FirstByte};    ///< 当前阶段
+        std::uint8_t                m_opCodeValue{0};             ///< 本帧操作码的原始取值（长度校验要靠它区分控制帧）
+        bool                        m_isFinal{true};              ///< 本帧的 FIN 位
+        std::uint64_t               m_payloadLength{0};           ///< 本帧声明的负载长度，单位字节
+        std::size_t                 m_extendedLengthByteCount{0}; ///< 扩展长度还需读的字节数（16 位档 2、64 位档 8）
+        std::size_t                 m_extendedLengthBytesSeen{0}; ///< 扩展长度已读字节数
+        std::array<std::uint8_t, 4> m_maskKey{};                  ///< 本帧的 4 字节掩码键
+        std::size_t                 m_maskKeyBytesSeen{0};        ///< 掩码键已读字节数
+        std::size_t                 m_framePayloadBytesSeen{0};   ///< 本帧已收负载字节数（掩码按它循环取值）
 
         /// 负载落点：未分片时是本帧负载，分片消息进行中时是「已重组的部分」，
         /// 因此重组不需要第二份缓冲，也不会多一次拷贝
         std::string m_payloadBuffer;
         /// 控制帧的负载落点：与 m_payloadBuffer 分开，因为控制帧可以插在分片消息中间（RFC 6455 §5.4），
         /// 共用一块缓冲会把已经重组了一半的消息冲掉
-        std::string m_controlPayloadBuffer;
-        bool m_isFragmentedMessageInProgress{false};   ///< 是否正处在一条分片消息中间
-        bool m_isPerMessageDeflateEnabled{false};      ///< 是否已协商 permessage-deflate（决定 RSV1 是否合法）
-        bool m_isCurrentMessageCompressed{false};      ///< 当前这条消息的首帧是否置了 RSV1；消息交付时随帧交出并复位
-        std::uint8_t m_fragmentedMessageOpCodeValue{0};///< 分片消息首帧的操作码，重组后作为整条消息的操作码
-        WebSocketFrame m_pendingFrame;                 ///< 已产出待取走的帧
-        bool m_hasPendingFrame{false};                 ///< 是否已有产出待取走
+        std::string    m_controlPayloadBuffer;
+        bool           m_isFragmentedMessageInProgress{false}; ///< 是否正处在一条分片消息中间
+        bool           m_isPerMessageDeflateEnabled{false};    ///< 是否已协商 permessage-deflate（决定 RSV1 是否合法）
+        bool           m_isCurrentMessageCompressed{false};    ///< 当前这条消息的首帧是否置了 RSV1；消息交付时随帧交出并复位
+        std::uint8_t   m_fragmentedMessageOpCodeValue{0};      ///< 分片消息首帧的操作码，重组后作为整条消息的操作码
+        WebSocketFrame m_pendingFrame;                         ///< 已产出待取走的帧
+        bool           m_hasPendingFrame{false};               ///< 是否已有产出待取走
 
-        bool m_hasError{false};                        ///< 是否已发生解码错误
-        bool m_isLimitExceeded{false};                 ///< 本次失败是否由资源上限触发
-        std::string m_errorMessage;                    ///< 面向使用者的中文错误描述
-        std::size_t m_consumedByteCount{0};            ///< 最近一次 parse() 实际消费的字节数
+        bool        m_hasError{false};        ///< 是否已发生解码错误
+        bool        m_isLimitExceeded{false}; ///< 本次失败是否由资源上限触发
+        std::string m_errorMessage;           ///< 面向使用者的中文错误描述
+        std::size_t m_consumedByteCount{0};   ///< 最近一次 parse() 实际消费的字节数
     };
 } // namespace AsynGyanis::Net

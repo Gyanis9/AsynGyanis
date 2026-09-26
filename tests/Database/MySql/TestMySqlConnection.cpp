@@ -184,7 +184,7 @@ namespace AsynGyanis::Database
     TEST(MySqlConnection, ConnectWithEmptyHostFailsWithoutServerContact)
     {
         ConnectionConfig configuration = ConnectionConfig::mySqlDefault();
-        configuration.host = "";
+        configuration.host             = "";
 
         MySqlConnection connection(configuration);
 
@@ -222,7 +222,7 @@ namespace AsynGyanis::Database
      */
     TEST(MySqlConnection, ParameterizedExecuteWithoutConnectionReturnsNullResult)
     {
-        MySqlConnection connection(ConnectionConfig::mySqlDefault());
+        MySqlConnection                  connection(ConnectionConfig::mySqlDefault());
         const std::vector<DatabaseValue> parameters{std::int64_t{1}};
 
         const std::unique_ptr<DatabaseResult> result = connection.execute("SELECT ?", parameters);
@@ -255,7 +255,7 @@ namespace AsynGyanis::Database
     TEST(MySqlConnection, DisconnectKeepsLastFailureReason)
     {
         ConnectionConfig configuration = ConnectionConfig::mySqlDefault();
-        configuration.host = "";
+        configuration.host             = "";
 
         MySqlConnection connection(configuration);
         ASSERT_FALSE(connection.connect());
@@ -344,8 +344,7 @@ namespace AsynGyanis::Database
         if (!kMySqlDriverCompiled)
         {
             EXPECT_NE(failureReason.find("驱动"), std::string::npos) << failureReason;
-        }
-        else
+        } else
         {
             EXPECT_NE(failureReason.find("错误码"), std::string::npos) << failureReason;
         }
@@ -382,7 +381,7 @@ namespace AsynGyanis::Database
      */
     TEST(MySqlConnection, EveryExecuteOverloadKeepsFailingWhileDisconnected)
     {
-        MySqlConnection connection(ConnectionConfig::mySqlDefault());
+        MySqlConnection                  connection(ConnectionConfig::mySqlDefault());
         const std::vector<DatabaseValue> parameters{std::int64_t{7}};
 
         // 空命令、正常命令与参数化命令在未连接时都必须明确失败，每次调用都给出原因而非静默 no-op

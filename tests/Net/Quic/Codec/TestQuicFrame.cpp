@@ -68,7 +68,7 @@ namespace AsynGyanis::Net
          */
         std::optional<QuicFrame> decodeSingle(std::string_view hexadecimalText, std::vector<std::uint8_t> &storage)
         {
-            storage = makeBytesFromHex(hexadecimalText);
+            storage           = makeBytesFromHex(hexadecimalText);
             const auto frames = decodeQuicFrames(std::span<const std::uint8_t>(storage));
             if (!frames.has_value() || frames->size() != 1)
             {
@@ -96,7 +96,7 @@ namespace AsynGyanis::Net
     {
         struct Case
         {
-            QuicFrame frame;
+            QuicFrame   frame;
             const char *hexadecimalText;
         };
 
@@ -119,8 +119,7 @@ namespace AsynGyanis::Net
 
         for (const Case &testCase: cases)
         {
-            EXPECT_EQ(encodeOne(testCase.frame), makeBytesFromHex(testCase.hexadecimalText))
-                    << "帧类型 0x" << std::hex << quicFrameTypeValue(testCase.frame);
+            EXPECT_EQ(encodeOne(testCase.frame), makeBytesFromHex(testCase.hexadecimalText)) << "帧类型 0x" << std::hex << quicFrameTypeValue(testCase.frame);
         }
     }
 
@@ -147,10 +146,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(encodeOne(response), makeBytesFromHex("1b0102030405060708"));
 
         const auto bye = bytesOf("627965");
-        EXPECT_EQ(encodeOne(QuicConnectionCloseFrame{1, std::uint64_t{6}, std::span<const std::uint8_t>(bye)}),
-                  makeBytesFromHex("1c010603627965"));
-        EXPECT_EQ(encodeOne(QuicConnectionCloseFrame{10, std::nullopt, std::span<const std::uint8_t>{}}),
-                  makeBytesFromHex("1d0a00"));
+        EXPECT_EQ(encodeOne(QuicConnectionCloseFrame{1, std::uint64_t{6}, std::span<const std::uint8_t>(bye)}), makeBytesFromHex("1c010603627965"));
+        EXPECT_EQ(encodeOne(QuicConnectionCloseFrame{10, std::nullopt, std::span<const std::uint8_t>{}}), makeBytesFromHex("1d0a00"));
     }
 
     /**
@@ -160,21 +157,21 @@ namespace AsynGyanis::Net
     {
         QuicAcknowledgementFrame single;
         single.largestAcknowledgedPacketNumber = 5;
-        single.ranges = {{0, 5}};
+        single.ranges                          = {{0, 5}};
         EXPECT_EQ(encodeOne(single), makeBytesFromHex("0205000005"));
 
         // ACK Delay 是**线上值**而不是微秒：300 原样落到第三个字段，乘除 2^指数都不在本层
         single.acknowledgementDelay = 300;
         EXPECT_EQ(encodeOne(single), makeBytesFromHex("0205412c0005"));
 
-        single.hasEcnCounts = true;
+        single.hasEcnCounts         = true;
         single.acknowledgementDelay = 0;
         EXPECT_EQ(encodeOne(single), makeBytesFromHex("0305000005000000"));
 
         // 区间 [8,10] 与 [4,4]：First ACK Range=2，下一段 gap = 8-4-2 = 2、长度 0
         QuicAcknowledgementFrame twoRanges;
         twoRanges.largestAcknowledgedPacketNumber = 10;
-        twoRanges.ranges = {{8, 10}, {4, 4}};
+        twoRanges.ranges                          = {{8, 10}, {4, 4}};
         EXPECT_EQ(encodeOne(twoRanges), makeBytesFromHex("020a0001020200"));
     }
 
@@ -185,7 +182,7 @@ namespace AsynGyanis::Net
     {
         // 每条帧各自的载荷都要与解出的帧同域存活：视图字段指向的就是这些字节
         std::vector<std::uint8_t> streamStorage;
-        const auto stream = decodeSingle("0f0408020102", streamStorage);
+        const auto                stream = decodeSingle("0f0408020102", streamStorage);
         ASSERT_TRUE(stream.has_value());
         const auto &decodedStream = std::get<QuicStreamFrame>(*stream);
         EXPECT_EQ(decodedStream.streamId, 4U);
@@ -194,7 +191,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(std::vector<std::uint8_t>(decodedStream.data.begin(), decodedStream.data.end()), bytesOf("0102"));
 
         std::vector<std::uint8_t> acknowledgementStorage;
-        const auto acknowledgement = decodeSingle("020a0001020200", acknowledgementStorage);
+        const auto                acknowledgement = decodeSingle("020a0001020200", acknowledgementStorage);
         ASSERT_TRUE(acknowledgement.has_value());
         const auto &decodedAcknowledgement = std::get<QuicAcknowledgementFrame>(*acknowledgement);
         EXPECT_EQ(decodedAcknowledgement.largestAcknowledgedPacketNumber, 10U);
@@ -203,32 +200,30 @@ namespace AsynGyanis::Net
         EXPECT_EQ(decodedAcknowledgement.ranges, (std::vector<QuicAcknowledgementRange>{{8, 10}, {4, 4}}));
 
         std::vector<std::uint8_t> delayStorage;
-        const auto withDelay = decodeSingle("0205412c0005", delayStorage);
+        const auto                withDelay = decodeSingle("0205412c0005", delayStorage);
         ASSERT_TRUE(withDelay.has_value());
         // 同一个 300 解回来还是 300：本层不拿指数去乘（那需要知道对端的 ack_delay_exponent）
         EXPECT_EQ(std::get<QuicAcknowledgementFrame>(*withDelay).acknowledgementDelay, 300U);
 
         std::vector<std::uint8_t> ecnStorage;
-        const auto withEcn = decodeSingle("0305000005010203", ecnStorage);
+        const auto                withEcn = decodeSingle("0305000005010203", ecnStorage);
         ASSERT_TRUE(withEcn.has_value());
         const auto &decodedEcn = std::get<QuicAcknowledgementFrame>(*withEcn);
         EXPECT_TRUE(decodedEcn.hasEcnCounts);
         EXPECT_EQ(decodedEcn.ecnCounts, (std::array<std::uint64_t, 3>{1, 2, 3}));
 
         std::vector<std::uint8_t> identifierStorage;
-        const auto newConnectionId = decodeSingle("180100088394c8f03e515708a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", identifierStorage);
+        const auto                newConnectionId = decodeSingle("180100088394c8f03e515708a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", identifierStorage);
         ASSERT_TRUE(newConnectionId.has_value());
         const auto &decodedIdentifier = std::get<QuicNewConnectionIdFrame>(*newConnectionId);
         EXPECT_EQ(decodedIdentifier.sequenceNumber, 1U);
         EXPECT_EQ(decodedIdentifier.retirePriorTo, 0U);
-        EXPECT_EQ(std::vector<std::uint8_t>(decodedIdentifier.connectionId.begin(), decodedIdentifier.connectionId.end()),
-                  bytesOf("8394c8f03e515708"));
-        EXPECT_EQ(std::vector<std::uint8_t>(decodedIdentifier.statelessResetToken.begin(),
-                                            decodedIdentifier.statelessResetToken.end()),
+        EXPECT_EQ(std::vector<std::uint8_t>(decodedIdentifier.connectionId.begin(), decodedIdentifier.connectionId.end()), bytesOf("8394c8f03e515708"));
+        EXPECT_EQ(std::vector<std::uint8_t>(decodedIdentifier.statelessResetToken.begin(), decodedIdentifier.statelessResetToken.end()),
                   bytesOf("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"));
 
         std::vector<std::uint8_t> closeStorage;
-        const auto close = decodeSingle("1c010603627965", closeStorage);
+        const auto                close = decodeSingle("1c010603627965", closeStorage);
         ASSERT_TRUE(close.has_value());
         const auto &decodedClose = std::get<QuicConnectionCloseFrame>(*close);
         EXPECT_EQ(decodedClose.errorCode, 1U);
@@ -237,12 +232,12 @@ namespace AsynGyanis::Net
 
         // 0x1d 形态线上不带 Frame Type：解出来必须是 nullopt，而不是「触发帧是 PADDING」
         std::vector<std::uint8_t> applicationCloseStorage;
-        const auto applicationClose = decodeSingle("1d0a00", applicationCloseStorage);
+        const auto                applicationClose = decodeSingle("1d0a00", applicationCloseStorage);
         ASSERT_TRUE(applicationClose.has_value());
         EXPECT_FALSE(std::get<QuicConnectionCloseFrame>(*applicationClose).triggeredFrameType.has_value());
 
         std::vector<std::uint8_t> blockedStorage;
-        const auto blocked = decodeSingle("1707", blockedStorage);
+        const auto                blocked = decodeSingle("1707", blockedStorage);
         ASSERT_TRUE(blocked.has_value());
         EXPECT_TRUE(std::get<QuicStreamsBlockedFrame>(*blocked).isUnidirectional);
     }
@@ -253,7 +248,7 @@ namespace AsynGyanis::Net
     TEST(QuicFrame, DecodesMultipleFramesInOrder)
     {
         const auto payload = bytesOf("011043e80006000141");
-        const auto frames = decodeQuicFrames(payload);
+        const auto frames  = decodeQuicFrames(payload);
         ASSERT_TRUE(frames.has_value()) << frames.error().message;
         ASSERT_EQ(frames->size(), 4U);
         EXPECT_TRUE(std::holds_alternative<QuicPingFrame>(frames->at(0)));
@@ -270,7 +265,7 @@ namespace AsynGyanis::Net
     TEST(QuicFrame, DecodesStreamWithoutLengthBitToPayloadEnd)
     {
         std::vector<std::uint8_t> streamStorage;
-        const auto stream = decodeSingle("0804abcd", streamStorage);
+        const auto                stream = decodeSingle("0804abcd", streamStorage);
         ASSERT_TRUE(stream.has_value());
         const auto &decodedStream = std::get<QuicStreamFrame>(*stream);
         EXPECT_EQ(decodedStream.streamId, 4U);
@@ -320,7 +315,7 @@ namespace AsynGyanis::Net
         {
             // 存储与帧同域，且声明在帧之前：帧里的视图指向这些字节
             std::vector<std::uint8_t> storage;
-            const auto frame = decodeSingle(hexadecimalText, storage);
+            const auto                frame = decodeSingle(hexadecimalText, storage);
             ASSERT_TRUE(frame.has_value()) << "规范形态解不回：" << hexadecimalText;
             EXPECT_EQ(encodeOne(*frame), makeBytesFromHex(hexadecimalText)) << "round-trip 变了字节：" << hexadecimalText;
         }
@@ -339,7 +334,7 @@ namespace AsynGyanis::Net
 
         // 对照：同一非最短写法用在**取值**字段上必须照收，否则就把 §16 的「除帧类型外都合法」反着实现了
         std::vector<std::uint8_t> paddedStorage;
-        const auto paddedValue = decodeSingle("1080000003", paddedStorage);
+        const auto                paddedValue = decodeSingle("1080000003", paddedStorage);
         ASSERT_TRUE(paddedValue.has_value());
         EXPECT_EQ(std::get<QuicMaxDataFrame>(*paddedValue).maximumData, 3U);
     }
@@ -445,13 +440,13 @@ namespace AsynGyanis::Net
         // 首区间的最大值不等于声明的最大确认包号
         QuicAcknowledgementFrame mismatched;
         mismatched.largestAcknowledgedPacketNumber = 10;
-        mismatched.ranges = {{8, 9}};
+        mismatched.ranges                          = {{8, 9}};
         EXPECT_THROW(static_cast<void>(encodeOne(mismatched)), Base::InvalidArgumentException);
 
         // 第二段与第一段之间留不出 gap 要求的至少一个未确认包
         QuicAcknowledgementFrame overlapping;
         overlapping.largestAcknowledgedPacketNumber = 10;
-        overlapping.ranges = {{8, 10}, {6, 7}};
+        overlapping.ranges                          = {{8, 10}, {6, 7}};
         EXPECT_THROW(static_cast<void>(encodeOne(overlapping)), Base::InvalidArgumentException);
     }
 
@@ -462,13 +457,11 @@ namespace AsynGyanis::Net
     {
         const auto identifier = bytesOf("8394c8f03e515708");
         const auto shortToken = bytesOf("a0a1a2");
-        const auto fullToken = bytesOf("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf");
+        const auto fullToken  = bytesOf("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf");
 
-        EXPECT_THROW(static_cast<void>(encodeOne(QuicNewConnectionIdFrame{
-                             1, 0, std::span<const std::uint8_t>{}, std::span<const std::uint8_t>(fullToken)})),
+        EXPECT_THROW(static_cast<void>(encodeOne(QuicNewConnectionIdFrame{1, 0, std::span<const std::uint8_t>{}, std::span<const std::uint8_t>(fullToken)})),
                      Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(encodeOne(QuicNewConnectionIdFrame{
-                             1, 0, std::span<const std::uint8_t>(identifier), std::span<const std::uint8_t>(shortToken)})),
+        EXPECT_THROW(static_cast<void>(encodeOne(QuicNewConnectionIdFrame{1, 0, std::span<const std::uint8_t>(identifier), std::span<const std::uint8_t>(shortToken)})),
                      Base::InvalidArgumentException);
     }
 
@@ -498,16 +491,12 @@ namespace AsynGyanis::Net
      */
     TEST(QuicFrame, BuildsAcknowledgementRangesByMergingAndCapping)
     {
-        EXPECT_EQ(buildQuicAcknowledgementRanges({0, 1, 2, 3, 4}, 4),
-                  (std::vector<QuicAcknowledgementRange>{{0, 4}}));
-        EXPECT_EQ(buildQuicAcknowledgementRanges({0, 1, 3, 4}, 4),
-                  (std::vector<QuicAcknowledgementRange>{{3, 4}, {0, 1}}));
+        EXPECT_EQ(buildQuicAcknowledgementRanges({0, 1, 2, 3, 4}, 4), (std::vector<QuicAcknowledgementRange>{{0, 4}}));
+        EXPECT_EQ(buildQuicAcknowledgementRanges({0, 1, 3, 4}, 4), (std::vector<QuicAcknowledgementRange>{{3, 4}, {0, 1}}));
         // 确认值之外的包号不属于本帧：2 收到过但这次不认
-        EXPECT_EQ(buildQuicAcknowledgementRanges({0, 1, 2}, 1),
-                  (std::vector<QuicAcknowledgementRange>{{0, 1}}));
+        EXPECT_EQ(buildQuicAcknowledgementRanges({0, 1, 2}, 1), (std::vector<QuicAcknowledgementRange>{{0, 1}}));
         // 空集合也要守住「区间非空且首段含最大确认值」的不变式，否则会编出一个自相矛盾的帧
-        EXPECT_EQ(buildQuicAcknowledgementRanges({}, 7),
-                  (std::vector<QuicAcknowledgementRange>{{7, 7}}));
+        EXPECT_EQ(buildQuicAcknowledgementRanges({}, 7), (std::vector<QuicAcknowledgementRange>{{7, 7}}));
 
         QuicReceivedPacketNumbers isolated;
         for (std::uint64_t packetNumber = 1; packetNumber <= 79; packetNumber += 2)
@@ -517,8 +506,7 @@ namespace AsynGyanis::Net
         const std::vector<QuicAcknowledgementRange> capped = buildQuicAcknowledgementRanges(isolated, 79);
         ASSERT_EQ(capped.size(), kQuicMaximumAcknowledgementRanges);
         EXPECT_EQ(capped.front(), (QuicAcknowledgementRange{79, 79}));
-        EXPECT_EQ(capped.back(), (QuicAcknowledgementRange{79 - 2 * (kQuicMaximumAcknowledgementRanges - 1),
-                                                          79 - 2 * (kQuicMaximumAcknowledgementRanges - 1)}));
+        EXPECT_EQ(capped.back(), (QuicAcknowledgementRange{79 - 2 * (kQuicMaximumAcknowledgementRanges - 1), 79 - 2 * (kQuicMaximumAcknowledgementRanges - 1)}));
         // 砍掉的是最老的那些：1 号包不再被覆盖，而首段仍含最大确认值
         EXPECT_GT(capped.back().smallestAcknowledged, 1U);
     }
@@ -532,7 +520,7 @@ namespace AsynGyanis::Net
     TEST(QuicFrameAllocations, FrameAssemblyIntoReusedBufferDoesNotAllocate)
     {
         const std::vector<std::uint8_t> body(1100U, 's');
-        QuicStreamFrame stream;
+        QuicStreamFrame                 stream;
         stream.streamId = 4ULL;
         stream.offset   = 0ULL;
         stream.data     = std::span<const std::uint8_t>(body);
@@ -540,11 +528,10 @@ namespace AsynGyanis::Net
 
         QuicAcknowledgementFrame acknowledgement;
         acknowledgement.largestAcknowledgedPacketNumber = 41ULL;
-        acknowledgement.ranges                          = {QuicAcknowledgementRange{38ULL, 41ULL},
-                                                           QuicAcknowledgementRange{30ULL, 34ULL}};
+        acknowledgement.ranges                          = {QuicAcknowledgementRange{38ULL, 41ULL}, QuicAcknowledgementRange{30ULL, 34ULL}};
 
         const std::vector<QuicFrame> packetFrames{QuicFrame{acknowledgement}, QuicFrame{stream}};
-        const auto appendAll = [&packetFrames](std::string &frames)
+        const auto                   appendAll = [&packetFrames](std::string &frames)
         {
             for (const QuicFrame &frame: packetFrames)
             {
@@ -565,8 +552,7 @@ namespace AsynGyanis::Net
         };
         const AllocationProfile reused = measurePerOperation(reuseOnce);
         EXPECT_EQ(reused.resultSum, kMeasurementIterations * frameByteCount) << "有一千次没编完整，读数不可信";
-        EXPECT_EQ(reused.totalAllocations, 0ULL)
-                << "复用缓冲那一侧仍有分配：帧编码里藏了中间容器，每包还是会碰堆";
+        EXPECT_EQ(reused.totalAllocations, 0ULL) << "复用缓冲那一侧仍有分配：帧编码里藏了中间容器，每包还是会碰堆";
 
         const auto freshOnce = [&appendAll]() -> std::size_t
         {
@@ -591,7 +577,7 @@ namespace AsynGyanis::Net
     TEST(QuicFrameAllocations, FrameDecodingIntoReusedBufferDoesNotAllocate)
     {
         const std::vector<std::uint8_t> body(1100U, 's');
-        QuicStreamFrame stream;
+        QuicStreamFrame                 stream;
         stream.streamId = 4ULL;
         stream.offset   = 0ULL;
         stream.data     = std::span<const std::uint8_t>(body);
@@ -604,21 +590,17 @@ namespace AsynGyanis::Net
             appendQuicFrame(bytes, QuicFrame{QuicPingFrame{}});
         }
         const std::span<const std::uint8_t> payload(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
-        constexpr std::size_t kDecodedFrameCount = 5U;
+        constexpr std::size_t               kDecodedFrameCount = 5U;
 
         std::vector<QuicFrame> reusedFrames;
         // 先跑一遍把容量长到位：否则测到的第一次扩容会被当成逐包成本（实测这一趟就是 5 次）
         ASSERT_TRUE(decodeQuicFrames(payload, reusedFrames).has_value());
         ASSERT_EQ(reusedFrames.size(), kDecodedFrameCount) << "这条载荷不是五条帧，读数量的不是被测形状";
 
-        const auto decodeReused = [&payload, &reusedFrames]() -> std::size_t
-        {
-            return decodeQuicFrames(payload, reusedFrames).has_value() ? reusedFrames.size() : 0U;
-        };
+        const auto decodeReused        = [&payload, &reusedFrames]() -> std::size_t { return decodeQuicFrames(payload, reusedFrames).has_value() ? reusedFrames.size() : 0U; };
         const AllocationProfile reused = measurePerOperation(decodeReused);
         EXPECT_EQ(reused.resultSum, kMeasurementIterations * kDecodedFrameCount) << "有一千次没把五帧解全，读数不可信";
-        EXPECT_EQ(reused.totalAllocations, 0ULL)
-                << "复用缓冲那一侧仍有分配：解码自己还藏着中间容器，每包都会碰堆";
+        EXPECT_EQ(reused.totalAllocations, 0ULL) << "复用缓冲那一侧仍有分配：解码自己还藏着中间容器，每包都会碰堆";
 
         const auto decodeFresh = [&payload]() -> std::size_t
         {

@@ -77,10 +77,10 @@ namespace AsynGyanis::Base
          */
         static void reportStreamFailureOnceLocked(std::ostream &stream, bool &hasReported, const char *streamLabel);
 
-        bool       m_colorEnabled; ///< 是否启用彩色输出（唯一真相源：构造与运行期切换都写它，applyFormatter 读它）
+        bool       m_colorEnabled;                     ///< 是否启用彩色输出（唯一真相源：构造与运行期切换都写它，applyFormatter 读它）
         bool       m_hasReportedStdoutFailure = false; ///< std::cout 本次故障是否已报（由 m_mutex 保护）
         bool       m_hasReportedStderrFailure = false; ///< std::cerr 本次故障是否已报（由 m_mutex 保护）
-        std::mutex m_mutex;        ///< 保护控制台输出与 formatter 切换的互斥锁
+        std::mutex m_mutex;                            ///< 保护控制台输出与 formatter 切换的互斥锁
 
         /// 复用的行缓冲：格式化结果容量恰等于长度，直接给它追加换行必然再取一块堆并整行搬一次。
         /// 与 FileSink 的 m_lineBuffer 同一套路——留容量，稳态下拼行不碰堆。由 m_mutex 保护

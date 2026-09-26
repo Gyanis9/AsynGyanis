@@ -21,8 +21,8 @@
 #include "Core/Tls/TlsContext.h"
 #include "Platform/IO/FileDescriptor.h"
 
-#include "CoreTestSupport.h"
 #include "AllocationProbe.h"
+#include "CoreTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -41,25 +41,23 @@ namespace AsynGyanis::Core
         using TestSupport::advanceUntil;
 
         /// 仓库内预生成的自签测试证书（CN=asyngyanis-test，有效期至 2036）
-        const std::filesystem::path kTestCertificatePath =
-            std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
+        const std::filesystem::path kTestCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
 
         /// 仓库内预生成的配套私钥
-        const std::filesystem::path kTestKeyPath =
-            std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
-    }
+        const std::filesystem::path kTestKeyPath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
+    } // namespace
 
     /**
      * @brief 构造后 fileDescriptor() 就是被包装的那个描述符，close() 由本对象负责收尾
      */
     TEST(TlsSocket, ConstructionWrapsDescriptor)
     {
-        EventLoop loop;
+        EventLoop  loop;
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
         int localDescriptor = -1;
-        int peerDescriptor = -1;
+        int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
         SSL *ssl = tlsContext.createSSL(localDescriptor);
@@ -77,12 +75,12 @@ namespace AsynGyanis::Core
      */
     TEST(TlsSocket, MoveConstructionTransfersDescriptor)
     {
-        EventLoop loop;
+        EventLoop  loop;
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
         int localDescriptor = -1;
-        int peerDescriptor = -1;
+        int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
         SSL *ssl = tlsContext.createSSL(localDescriptor);
@@ -103,18 +101,18 @@ namespace AsynGyanis::Core
      */
     TEST(TlsSocket, MoveAssignmentTransfersDescriptor)
     {
-        EventLoop loop;
+        EventLoop  loop;
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
-        int firstDescriptor = -1;
+        int firstDescriptor     = -1;
         int firstPeerDescriptor = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(firstDescriptor, firstPeerDescriptor));
-        int secondDescriptor = -1;
+        int secondDescriptor     = -1;
         int secondPeerDescriptor = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(secondDescriptor, secondPeerDescriptor));
 
-        SSL *firstSsl = tlsContext.createSSL(firstDescriptor);
+        SSL *firstSsl  = tlsContext.createSSL(firstDescriptor);
         SSL *secondSsl = tlsContext.createSSL(secondDescriptor);
         ASSERT_NE(firstSsl, nullptr);
         ASSERT_NE(secondSsl, nullptr);
@@ -123,7 +121,7 @@ namespace AsynGyanis::Core
         TlsSocket tlsSocket2(secondSsl, loop, AsyncSocket(loop, secondDescriptor));
 
         const int transferredDescriptor = tlsSocket1.fileDescriptor();
-        tlsSocket2 = std::move(tlsSocket1);
+        tlsSocket2                      = std::move(tlsSocket1);
 
         EXPECT_EQ(tlsSocket2.fileDescriptor(), transferredDescriptor);
 
@@ -137,12 +135,12 @@ namespace AsynGyanis::Core
      */
     TEST(TlsSocket, DoubleCloseIsSafe)
     {
-        EventLoop loop;
+        EventLoop  loop;
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
         int localDescriptor = -1;
-        int peerDescriptor = -1;
+        int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
         SSL *ssl = tlsContext.createSSL(localDescriptor);
@@ -163,12 +161,12 @@ namespace AsynGyanis::Core
      */
     TEST(TlsSocket, SelectedAlpnProtocolIsEmptyBeforeHandshake)
     {
-        EventLoop loop;
+        EventLoop  loop;
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
         int localDescriptor = -1;
-        int peerDescriptor = -1;
+        int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
         SSL *ssl = tlsContext.createSSL(localDescriptor);
@@ -187,12 +185,12 @@ namespace AsynGyanis::Core
      */
     TEST(TlsSocket, WrapsContextCreatedSslOverSocketPair)
     {
-        EventLoop loop;
+        EventLoop  loop;
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
         int localDescriptor = -1;
-        int peerDescriptor = -1;
+        int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
         SSL *ssl = tlsContext.createSSL(localDescriptor);
@@ -243,7 +241,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsSocket, DestructorSendsCloseNotifyBeforeClosingTheDescriptor)
     {
-        EventLoop loop;
+        EventLoop  loop;
         TlsContext serverContext;
         ASSERT_TRUE(serverContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -255,9 +253,9 @@ namespace AsynGyanis::Core
         ASSERT_NE(serverHandle, nullptr);
         TlsSocket serverSocket(serverHandle, loop, AsyncSocket(loop, serverDescriptor));
 
-        auto  clientContext = makeClientContext(kTestCertificatePath);
+        auto clientContext = makeClientContext(kTestCertificatePath);
         ASSERT_NE(clientContext, nullptr);
-        SSL  *clientHandle  = SSL_new(clientContext.get());
+        SSL *clientHandle = SSL_new(clientContext.get());
         ASSERT_NE(clientHandle, nullptr);
         ASSERT_NE(SSL_set_fd(clientHandle, clientDescriptor), 0);
 
@@ -268,21 +266,14 @@ namespace AsynGyanis::Core
             Task<> clientHandshake = clientSocket.handshake();
             serverHandshake.handle().resume();
             clientHandshake.handle().resume();
-            ASSERT_TRUE(TestSupport::advanceUntil(loop, [&serverHandshake, &clientHandshake]
-                                                  {
-                                                      return serverHandshake.isReady() && clientHandshake.isReady();
-                                                  }))
-                << "两侧握手没有在时限内跑完，后面的读数说明不了任何问题";
-        }   // ← 客户端在这里析构：必须已经在描述符还开着时发出过 close_notify
+            ASSERT_TRUE(TestSupport::advanceUntil(loop, [&serverHandshake, &clientHandshake] { return serverHandshake.isReady() && clientHandshake.isReady(); }))
+                    << "两侧握手没有在时限内跑完，后面的读数说明不了任何问题";
+        } // ← 客户端在这里析构：必须已经在描述符还开着时发出过 close_notify
 
-        std::uint8_t readBuffer[8]{};
+        std::uint8_t  readBuffer[8]{};
         Task<ssize_t> readTask = serverSocket.asyncReceive(readBuffer, sizeof(readBuffer));
         readTask.handle().resume();
-        ASSERT_TRUE(TestSupport::advanceUntil(loop, [&readTask]
-                                             {
-                                                 return readTask.isReady();
-                                             }))
-            << "服务端连结束都没读到：它挂在了一个不会再有事件的等待上";
+        ASSERT_TRUE(TestSupport::advanceUntil(loop, [&readTask] { return readTask.isReady(); })) << "服务端连结束都没读到：它挂在了一个不会再有事件的等待上";
 
         ssize_t     receivedByteCount = -1;
         std::string failureText;
@@ -296,8 +287,7 @@ namespace AsynGyanis::Core
             // 顺序写反时这里收到的是「对端非正常关闭」那一类协议错误，而不是干净的结束
             failureText = readFailure.what();
         }
-        EXPECT_TRUE(isReadSucceeded) << "对端析构后服务端报的是协议错误而不是干净结束，说明 close_notify 没能在描述符关闭前发出："
-                                     << failureText;
+        EXPECT_TRUE(isReadSucceeded) << "对端析构后服务端报的是协议错误而不是干净结束，说明 close_notify 没能在描述符关闭前发出：" << failureText;
         EXPECT_EQ(receivedByteCount, 0) << "干净结束时的应用数据读数应为 0";
 
         serverSocket.close();
@@ -330,8 +320,7 @@ namespace AsynGyanis::Core
         connectTask.handle().resume();
 
         // 回环连接可能立即成功，也可能返回 EINPROGRESS 而挂起等待可写：后者要靠事件循环推进
-        ASSERT_TRUE(advanceUntil(loop, [&connectTask] { return connectTask.isReady(); }))
-                << "连接未在预期内完成";
+        ASSERT_TRUE(advanceUntil(loop, [&connectTask] { return connectTask.isReady(); })) << "连接未在预期内完成";
         EXPECT_NO_THROW(connectTask.handle().promise().result());
 
         SSL *ssl = tlsContext.createSSL(client.fileDescriptor());
@@ -364,7 +353,7 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
         int localDescriptor = -1;
-        int peerDescriptor = -1;
+        int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
         SSL *ssl = tlsContext.createSSL(localDescriptor);
@@ -395,15 +384,15 @@ namespace AsynGyanis::Core
          */
         struct FailureObservation
         {
-            bool isCoreException{false}; ///< 是否落在 CoreException 这一支（调用方可用框架基类统一捕获）
-            std::string text{};          ///< 异常文案，用于核对「哪条操作失败」的前缀
+            bool        isCoreException{false}; ///< 是否落在 CoreException 这一支（调用方可用框架基类统一捕获）
+            std::string text{};                 ///< 异常文案，用于核对「哪条操作失败」的前缀
         };
 
         /**
          * @brief 取出已终结协程里的异常，一次观测同时给出类型归属与文案
          * @details 这三条路径都在单次 resume 内就走到抛出点，因此不需要轮询也不需要等 I/O
          */
-        template <typename TaskType>
+        template<typename TaskType>
         FailureObservation observeFailure(TaskType &task)
         {
             try
@@ -418,7 +407,7 @@ namespace AsynGyanis::Core
             }
             return FailureObservation{};
         }
-    }
+    } // namespace
 
     /**
      * @brief 会话已释放之后三条入口都报出「本端」原因，而不是 OpenSSL 的空错误加对端猜测
@@ -434,7 +423,7 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
         int localDescriptor = -1;
-        int peerDescriptor = -1;
+        int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
         SSL *ssl = tlsContext.createSSL(localDescriptor);
@@ -519,7 +508,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsSocket, ReceiveAfterPeerBreaksConnectionWithoutCloseNotifyNamesTheBreak)
     {
-        EventLoop loop;
+        EventLoop  loop;
         TlsContext serverContext;
         ASSERT_TRUE(serverContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -546,23 +535,16 @@ namespace AsynGyanis::Core
             Task<> clientHandshake = clientSocket.handshake();
             serverHandshake.handle().resume();
             clientHandshake.handle().resume();
-            ASSERT_TRUE(TestSupport::advanceUntil(loop, [&serverHandshake, &clientHandshake]
-                                                  {
-                                                      return serverHandshake.isReady() && clientHandshake.isReady();
-                                                  }))
-                << "两侧握手没有在时限内跑完，后面的读数说明不了任何问题";
+            ASSERT_TRUE(TestSupport::advanceUntil(loop, [&serverHandshake, &clientHandshake] { return serverHandshake.isReady() && clientHandshake.isReady(); }))
+                    << "两侧握手没有在时限内跑完，后面的读数说明不了任何问题";
 
             // 客户端在这里关闭：会话先释放（不发告警），随后描述符关闭 —— 服务端只看到断线
         }
 
-        std::uint8_t readBuffer[8]{};
+        std::uint8_t  readBuffer[8]{};
         Task<ssize_t> readTask = serverSocket.asyncReceive(readBuffer, sizeof(readBuffer));
         readTask.handle().resume();
-        ASSERT_TRUE(TestSupport::advanceUntil(loop, [&readTask]
-                                             {
-                                                 return readTask.isReady();
-                                             }))
-            << "服务端连断线都没读到：它挂在了一个不会再有事件的等待上";
+        ASSERT_TRUE(TestSupport::advanceUntil(loop, [&readTask] { return readTask.isReady(); })) << "服务端连断线都没读到：它挂在了一个不会再有事件的等待上";
 
         const FailureObservation failure = observeFailure(readTask);
         EXPECT_TRUE(failure.isCoreException) << "非正常关闭必须报错，而不是被当成干净结束：" << failure.text;
@@ -573,11 +555,7 @@ namespace AsynGyanis::Core
         // 同一条断线再写一次：写侧走的是另一个 SSL 入口，文案也要给出同一水准的原因
         Task<ssize_t> writeTask = serverSocket.asyncSend(readBuffer, sizeof(readBuffer));
         writeTask.handle().resume();
-        ASSERT_TRUE(TestSupport::advanceUntil(loop, [&writeTask]
-                                             {
-                                                 return writeTask.isReady();
-                                             }))
-            << "写侧既没成功也没失败：它挂在了一个不会再有事件的等待上";
+        ASSERT_TRUE(TestSupport::advanceUntil(loop, [&writeTask] { return writeTask.isReady(); })) << "写侧既没成功也没失败：它挂在了一个不会再有事件的等待上";
         std::string writeFailureText;
         try
         {
@@ -625,7 +603,7 @@ namespace AsynGyanis::Core
          */
         bool runOnePlaintextIoWait(EventLoop &loop)
         {
-            int readDescriptor = -1;
+            int readDescriptor  = -1;
             int writeDescriptor = -1;
             if (!Platform::FileDescriptor::createPair(readDescriptor, writeDescriptor))
             {
@@ -643,10 +621,7 @@ namespace AsynGyanis::Core
 
             Task<bool> waitTask = waitOnceReadable(reader);
             static_cast<void>(waitTask.handle().resume());
-            if (!advanceUntil(loop, [&waitTask]
-                              {
-                                  return waitTask.isReady();
-                              }))
+            if (!advanceUntil(loop, [&waitTask] { return waitTask.isReady(); }))
             {
                 return false;
             }
@@ -699,10 +674,7 @@ namespace AsynGyanis::Core
                 Task<> clientHandshake = clientSocket.handshake();
                 static_cast<void>(serverHandshake.handle().resume());
                 static_cast<void>(clientHandshake.handle().resume());
-                if (!advanceUntil(loop, [&serverHandshake, &clientHandshake]
-                                  {
-                                      return serverHandshake.isReady() && clientHandshake.isReady();
-                                  }))
+                if (!advanceUntil(loop, [&serverHandshake, &clientHandshake] { return serverHandshake.isReady() && clientHandshake.isReady(); }))
                 {
                     return false;
                 }
@@ -715,7 +687,7 @@ namespace AsynGyanis::Core
                 {
                     return false;
                 }
-            }   // 两条协程帧先退，再退两个 TlsSocket：反过来就是对已释放帧的收尾
+            } // 两条协程帧先退，再退两个 TlsSocket：反过来就是对已释放帧的收尾
             return true;
         }
 
@@ -756,7 +728,7 @@ namespace AsynGyanis::Core
                 TlsSocket serverSocket(serverHandle, loop, AsyncSocket(loop, serverDescriptor));
                 TlsSocket clientSocket(clientHandle, loop, AsyncSocket(loop, clientDescriptor), TlsSocket::Role::Client);
                 static_cast<void>(serverSocket.fileDescriptor());
-            }   // 两侧都在这里析构：close_notify 的写入属于接线成本，不属于握手
+            } // 两侧都在这里析构：close_notify 的写入属于接线成本，不属于握手
             return true;
         }
     } // namespace
@@ -786,27 +758,17 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(runOneTlsHandshake(loop, serverContext, *clientContext)) << "本机跑不成 TLS 握手，量不了";
 
         AsynGyanis::TestSupport::resetAllocationHistogram();
-        const auto profile = measureOperations(
-                kMeasurementRounds,
-                [&]
-                {
-                    return runOneTlsHandshake(loop, serverContext, *clientContext) ? 1U : 0U;
-                });
+        const auto profile            = measureOperations(kMeasurementRounds, [&] { return runOneTlsHandshake(loop, serverContext, *clientContext) ? 1U : 0U; });
         const auto handshakeHistogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
 
         AsynGyanis::TestSupport::resetAllocationHistogram();
-        const auto baseline = measureOperations(
-                kMeasurementRounds,
-                [&]
-                {
-                    return runOneTlsSessionSetup(loop, serverContext, *clientContext) ? 1U : 0U;
-                });
+        const auto baseline       = measureOperations(kMeasurementRounds, [&] { return runOneTlsSessionSetup(loop, serverContext, *clientContext) ? 1U : 0U; });
         const auto setupHistogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
 
         // 第三条对照：只起两条会立刻跑完的协程。它量的是「握手用的那两只帧」本身——帧走帧池时
         // 这里应为 0，握手读数里的 12~16 次就都不在帧上
         AsynGyanis::TestSupport::resetAllocationHistogram();
-        int marker = 0;
+        int        marker    = 0;
         const auto frameBody = [&marker]
         {
             Task<int> first  = trivialHandshakeShape(marker);
@@ -822,28 +784,19 @@ namespace AsynGyanis::Core
         const auto secondFramePass = measureOperations(kMeasurementRounds, frameBody);
 
         AsynGyanis::TestSupport::resetAllocationHistogram();
-        const auto ioWait = measureOperations(kMeasurementRounds, [&loop]
-        {
-            return runOnePlaintextIoWait(loop) ? 1U : 0U;
-        });
+        const auto ioWait = measureOperations(kMeasurementRounds, [&loop] { return runOnePlaintextIoWait(loop) ? 1U : 0U; });
 
-        std::printf("tls-handshake total=%llu bytes=%llu\n", static_cast<unsigned long long>(profile.totalAllocations),
-                    static_cast<unsigned long long>(profile.totalBytes));
-        std::printf("tls-session-setup total=%llu bytes=%llu\n", static_cast<unsigned long long>(baseline.totalAllocations),
-                    static_cast<unsigned long long>(baseline.totalBytes));
-        std::printf("tls-two-frames total=%llu bytes=%llu\n", static_cast<unsigned long long>(frames.totalAllocations),
-                    static_cast<unsigned long long>(frames.totalBytes));
-        std::printf("tls-two-frames-second-pass total=%llu bytes=%llu\n",
-                    static_cast<unsigned long long>(secondFramePass.totalAllocations),
+        std::printf("tls-handshake total=%llu bytes=%llu\n", static_cast<unsigned long long>(profile.totalAllocations), static_cast<unsigned long long>(profile.totalBytes));
+        std::printf("tls-session-setup total=%llu bytes=%llu\n", static_cast<unsigned long long>(baseline.totalAllocations), static_cast<unsigned long long>(baseline.totalBytes));
+        std::printf("tls-two-frames total=%llu bytes=%llu\n", static_cast<unsigned long long>(frames.totalAllocations), static_cast<unsigned long long>(frames.totalBytes));
+        std::printf("tls-two-frames-second-pass total=%llu bytes=%llu\n", static_cast<unsigned long long>(secondFramePass.totalAllocations),
                     static_cast<unsigned long long>(secondFramePass.totalBytes));
-        std::printf("tls-plaintext-iowait total=%llu bytes=%llu\n", static_cast<unsigned long long>(ioWait.totalAllocations),
-                    static_cast<unsigned long long>(ioWait.totalBytes));
+        std::printf("tls-plaintext-iowait total=%llu bytes=%llu\n", static_cast<unsigned long long>(ioWait.totalAllocations), static_cast<unsigned long long>(ioWait.totalBytes));
         for (std::size_t bucket = 0; bucket < handshakeHistogram.size(); ++bucket)
         {
             if (handshakeHistogram[bucket] != 0)
             {
-                std::printf("   handshake bucket=%zu bytes=%zu count=%llu\n", bucket,
-                            bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
+                std::printf("   handshake bucket=%zu bytes=%zu count=%llu\n", bucket, bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
                             static_cast<unsigned long long>(handshakeHistogram[bucket]));
             }
         }
@@ -851,8 +804,7 @@ namespace AsynGyanis::Core
         {
             if (setupHistogram[bucket] != 0)
             {
-                std::printf("   setup bucket=%zu bytes=%zu count=%llu\n", bucket,
-                            bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
+                std::printf("   setup bucket=%zu bytes=%zu count=%llu\n", bucket, bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
                             static_cast<unsigned long long>(setupHistogram[bucket]));
             }
         }
@@ -860,20 +812,17 @@ namespace AsynGyanis::Core
         EXPECT_EQ(profile.resultSum, kMeasurementRounds) << "握手没有全部做成，读数没有意义";
         EXPECT_EQ(baseline.resultSum, kMeasurementRounds) << "对照组在空转，减不出归属";
         EXPECT_EQ(frames.resultSum, kMeasurementRounds) << "帧对照组没跑起来，它那份读数不作数";
-        EXPECT_GT(profile.totalAllocations, baseline.totalAllocations)
-                << "握手比「只接线不握手」还省？说明被测形状没有真的跑握手";
+        EXPECT_GT(profile.totalAllocations, baseline.totalAllocations) << "握手比「只接线不握手」还省？说明被测形状没有真的跑握手";
         // 带 sanitizer 的构建里帧池按 CoroutinePool.h 的既定口径被绕开（要让 ASan 能报出帧上的
         // use-after-free），所以这里的读数含「每帧一次全局 new」，比生产形态高。这一侧只拦量级
-        EXPECT_LE(profile.totalAllocations, kMeasurementRounds * 40ULL)
-                << "每次握手的分配数越过量级上界，检查握手路径上新增的缓冲与闭包";
+        EXPECT_LE(profile.totalAllocations, kMeasurementRounds * 40ULL) << "每次握手的分配数越过量级上界，检查握手路径上新增的缓冲与闭包";
         EXPECT_EQ(ioWait.resultSum, kMeasurementRounds) << "明文等待没有每次都被叫醒，那份对照读数不作数";
 #ifdef NDEBUG
         // 生产形态（Release、帧池生效）实测：两侧接线 0 块、两只协程帧 0 块，一次双向 TLS1.3
         // 握手 11 块 / 640 B；而「一条套接字注册 + 等一次可读」的明文形状就要 5 块 / 312 B，
         // 握手两侧各摊一次 ≈ 10 块——**TLS 自己这一层几乎不再花分配**，剩下的都在后端的每连接注册记账上
         EXPECT_EQ(frames.totalAllocations, 0U) << "协程帧没有从帧池拿到：池的接线被改坏了";
-        EXPECT_LE(profile.totalAllocations, kMeasurementRounds * 16ULL)
-                << "每次握手的堆块数越界：TLS 这条路上多半又多了一次分配";
+        EXPECT_LE(profile.totalAllocations, kMeasurementRounds * 16ULL) << "每次握手的堆块数越界：TLS 这条路上多半又多了一次分配";
 #endif
     }
 

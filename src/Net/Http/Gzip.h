@@ -60,6 +60,5 @@ namespace AsynGyanis::Net
      * @return std::expected<std::string, std::string> 成功为解出的正文；失败为可直接进日志的中文原因
      * @see HttpContentCoding.h 的按 Content-Encoding 分派
      */
-    [[nodiscard]] std::expected<std::string, std::string> inflateHttpBody(std::string_view input,
-                                                                         std::size_t maxOutputByteCount = kDefaultInflateOutputLimitBytes);
+    [[nodiscard]] std::expected<std::string, std::string> inflateHttpBody(std::string_view input, std::size_t maxOutputByteCount = kDefaultInflateOutputLimitBytes);
 } // namespace AsynGyanis::Net

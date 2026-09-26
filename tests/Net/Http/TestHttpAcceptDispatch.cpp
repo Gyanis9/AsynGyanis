@@ -31,12 +31,7 @@ namespace AsynGyanis::Net
         class WorkerLoop
         {
         public:
-            WorkerLoop() :
-                m_thread(
-                        [this]()
-                        {
-                            m_loop.run();
-                        })
+            WorkerLoop() : m_thread([this]() { m_loop.run(); })
             {
             }
 
@@ -102,8 +97,7 @@ namespace AsynGyanis::Net
          * @param timeout 等待上限
          * @return true 时限内读到了标记
          */
-        bool waitForTextOccurrence(const LoopbackClient &client, std::string &accumulated, const std::string_view expectedText,
-                                   const std::chrono::milliseconds timeout)
+        bool waitForTextOccurrence(const LoopbackClient &client, std::string &accumulated, const std::string_view expectedText, const std::chrono::milliseconds timeout)
         {
             const auto deadline = std::chrono::steady_clock::now() + timeout;
             while (accumulated.find(expectedText) == std::string::npos)
@@ -174,33 +168,17 @@ namespace AsynGyanis::Net
         workerLoopB.runOnLoopAndWait([&workerLoopB, &serverB] { serverB = makeWorkerServer(workerLoopB.loop(), "served-by-B"); });
 
         auto distributor = std::make_shared<Core::ConnectionDistributor>();
-        distributor->addWorker(workerLoopA.loop(),
-                               [server = serverA.get()](const int fileDescriptor)
-                               {
-                                   server->adoptConnection(fileDescriptor);
-                               });
-        distributor->addWorker(workerLoopB.loop(),
-                               [server = serverB.get()](const int fileDescriptor)
-                               {
-                                   server->adoptConnection(fileDescriptor);
-                               });
+        distributor->addWorker(workerLoopA.loop(), [server = serverA.get()](const int fileDescriptor) { server->adoptConnection(fileDescriptor); });
+        distributor->addWorker(workerLoopB.loop(), [server = serverB.get()](const int fileDescriptor) { server->adoptConnection(fileDescriptor); });
 
         // 接受侧：一台只接受与派发的服务器，自己不建连接（它同样是 HttpServer，只是没人给它派连接）。
         // 它归循环 A，因此同样在 A 的线程上构造、在 A 的线程上收尾
         std::unique_ptr<PortObservableHttpServer> acceptor;
-        workerLoopA.runOnLoopAndWait(
-                [&workerLoopA, &acceptor]
-                {
-                    acceptor = std::make_unique<PortObservableHttpServer>(workerLoopA.loop(), Core::InetAddress::localhost(0));
-                });
+        workerLoopA.runOnLoopAndWait([&workerLoopA, &acceptor] { acceptor = std::make_unique<PortObservableHttpServer>(workerLoopA.loop(), Core::InetAddress::localhost(0)); });
         Core::Task<> acceptTask = acceptor->startAccepting(distributor);
 
         // 启动必须在服务器所属循环上：投过去之后由本用例持有任务帧直到结束
-        workerLoopA.loop().scheduler().postRemote(
-                [&workerLoopA, &acceptTask]()
-                {
-                    workerLoopA.loop().scheduler().schedule(acceptTask.handle());
-                });
+        workerLoopA.loop().scheduler().postRemote([&workerLoopA, &acceptTask]() { workerLoopA.loop().scheduler().schedule(acceptTask.handle()); });
 
         // 等到接受循环真正跑起来（isRunning 为 true 说明 bind/listen 已成功）
         const auto readyDeadline = std::chrono::steady_clock::now() + kRequestTimeout;
@@ -223,10 +201,8 @@ namespace AsynGyanis::Net
 
             std::string responseText;
             ASSERT_TRUE(client.sendText(makeRequestText("GET /whoami HTTP/1.1"), kRequestTimeout)) << "第 " << index << " 条请求没发出去";
-            ASSERT_TRUE(waitForTextOccurrence(client, responseText, "\r\n\r\n", kRequestTimeout))
-                    << "第 " << index << " 条请求没拿到响应头";
-            ASSERT_TRUE(waitForTextOccurrence(client, responseText, "served-by-", kRequestTimeout))
-                    << "第 " << index << " 条请求的响应里没有自报家门，实际收到：" << responseText;
+            ASSERT_TRUE(waitForTextOccurrence(client, responseText, "\r\n\r\n", kRequestTimeout)) << "第 " << index << " 条请求没拿到响应头";
+            ASSERT_TRUE(waitForTextOccurrence(client, responseText, "served-by-", kRequestTimeout)) << "第 " << index << " 条请求的响应里没有自报家门，实际收到：" << responseText;
 
             if (responseText.find("served-by-A") != std::string::npos)
             {

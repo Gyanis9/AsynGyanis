@@ -89,7 +89,7 @@ namespace AsynGyanis::Database::Queryable
         // std::vector<std::byte> → 二进制备选（等价拼法，经共享转换规范化成 BinaryBytes）
         inline ParameterValue toParameterValue(const std::vector<std::byte> &value)
         {
-            return AsynGyanis::Database::Detail::toBinaryBytes<std::vector<std::byte> >(value);
+            return AsynGyanis::Database::Detail::toBinaryBytes<std::vector<std::byte>>(value);
         }
 
         /**
@@ -99,10 +99,8 @@ namespace AsynGyanis::Database::Queryable
          *          避免 MSVC 上两个模板默认参数 SFINAE 的歧义问题。
          */
         template<typename T>
-        auto toParameterValue(T value) noexcept -> std::enable_if_t<std::is_integral_v<T> &&
-                                                                    !std::is_same_v<T, bool> &&
-                                                                    !std::is_same_v<T, int64_t> &&
-                                                                    !std::is_same_v<T, uint64_t>, ParameterValue>
+        auto toParameterValue(T value) noexcept
+                -> std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool> && !std::is_same_v<T, int64_t> && !std::is_same_v<T, uint64_t>, ParameterValue>
         {
             if constexpr (std::is_signed_v<T>)
             {
@@ -144,7 +142,7 @@ namespace AsynGyanis::Database::Queryable
         {
             return FieldReference{.name = std::string(name)};
         }
-    }
+    } // namespace Detail
 
     // ========================================================================
     // 比较运算符
@@ -160,18 +158,10 @@ namespace AsynGyanis::Database::Queryable
     {
         if constexpr (std::is_same_v<ValueType, std::nullptr_t>)
         {
-            return WhereCondition{
-                    .left = Detail::makeFieldRef(column.columnName),
-                    .op = SqlOperator::IsNull,
-                    .right = ParameterValue{nullptr}
-            };
+            return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::IsNull, .right = ParameterValue{nullptr}};
         } else
         {
-            return WhereCondition{
-                    .left = Detail::makeFieldRef(column.columnName),
-                    .op = SqlOperator::Eq,
-                    .right = Detail::toParameterValue(value)
-            };
+            return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Eq, .right = Detail::toParameterValue(value)};
         }
     }
 
@@ -181,11 +171,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T>
     WhereCondition operator==(const ColumnDescriptor<T, std::string> &column, const char *value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Eq,
-                .right = ParameterValue{std::string(value)}
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Eq, .right = ParameterValue{std::string(value)}};
     }
 
     /**
@@ -198,18 +184,10 @@ namespace AsynGyanis::Database::Queryable
     {
         if constexpr (std::is_same_v<ValueType, std::nullptr_t>)
         {
-            return WhereCondition{
-                    .left = Detail::makeFieldRef(column.columnName),
-                    .op = SqlOperator::IsNotNull,
-                    .right = ParameterValue{nullptr}
-            };
+            return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::IsNotNull, .right = ParameterValue{nullptr}};
         } else
         {
-            return WhereCondition{
-                    .left = Detail::makeFieldRef(column.columnName),
-                    .op = SqlOperator::Neq,
-                    .right = Detail::toParameterValue(value)
-            };
+            return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Neq, .right = Detail::toParameterValue(value)};
         }
     }
 
@@ -219,11 +197,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T>
     WhereCondition operator!=(const ColumnDescriptor<T, std::string> &column, const char *value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Neq,
-                .right = ParameterValue{std::string(value)}
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Neq, .right = ParameterValue{std::string(value)}};
     }
 
     /**
@@ -232,11 +206,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T, typename MemberType, typename ValueType>
     WhereCondition operator<(const ColumnDescriptor<T, MemberType> &column, const ValueType &value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Lt,
-                .right = Detail::toParameterValue(value)
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Lt, .right = Detail::toParameterValue(value)};
     }
 
     /**
@@ -245,11 +215,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T>
     WhereCondition operator<(const ColumnDescriptor<T, std::string> &column, const char *value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Lt,
-                .right = ParameterValue{std::string(value)}
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Lt, .right = ParameterValue{std::string(value)}};
     }
 
     /**
@@ -258,11 +224,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T, typename MemberType, typename ValueType>
     WhereCondition operator<=(const ColumnDescriptor<T, MemberType> &column, const ValueType &value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Le,
-                .right = Detail::toParameterValue(value)
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Le, .right = Detail::toParameterValue(value)};
     }
 
     /**
@@ -271,11 +233,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T>
     WhereCondition operator<=(const ColumnDescriptor<T, std::string> &column, const char *value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Le,
-                .right = ParameterValue{std::string(value)}
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Le, .right = ParameterValue{std::string(value)}};
     }
 
     /**
@@ -284,11 +242,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T, typename MemberType, typename ValueType>
     WhereCondition operator>(const ColumnDescriptor<T, MemberType> &column, const ValueType &value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Gt,
-                .right = Detail::toParameterValue(value)
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Gt, .right = Detail::toParameterValue(value)};
     }
 
     /**
@@ -297,11 +251,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T>
     WhereCondition operator>(const ColumnDescriptor<T, std::string> &column, const char *value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Gt,
-                .right = ParameterValue{std::string(value)}
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Gt, .right = ParameterValue{std::string(value)}};
     }
 
     /**
@@ -310,11 +260,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T, typename MemberType, typename ValueType>
     WhereCondition operator>=(const ColumnDescriptor<T, MemberType> &column, const ValueType &value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Ge,
-                .right = Detail::toParameterValue(value)
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Ge, .right = Detail::toParameterValue(value)};
     }
 
     /**
@@ -323,11 +269,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T>
     WhereCondition operator>=(const ColumnDescriptor<T, std::string> &column, const char *value)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Ge,
-                .right = ParameterValue{std::string(value)}
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Ge, .right = ParameterValue{std::string(value)}};
     }
 
     // ========================================================================
@@ -435,11 +377,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T, typename MemberType>
     WhereCondition like(const ColumnDescriptor<T, MemberType> &column, const std::string &pattern)
     {
-        return WhereCondition{
-                .left = Detail::makeFieldRef(column.columnName),
-                .op = SqlOperator::Like,
-                .right = ParameterValue{pattern}
-        };
+        return WhereCondition{.left = Detail::makeFieldRef(column.columnName), .op = SqlOperator::Like, .right = ParameterValue{pattern}};
     }
 
     namespace Detail
@@ -480,11 +418,7 @@ namespace AsynGyanis::Database::Queryable
          */
         [[nodiscard]] inline WhereCondition makeLikeLiteralCondition(const std::string_view columnName, std::string pattern)
         {
-            return WhereCondition{
-                    .left = makeFieldRef(columnName),
-                    .op = SqlOperator::LikeLiteral,
-                    .right = ParameterValue{std::move(pattern)}
-            };
+            return WhereCondition{.left = makeFieldRef(columnName), .op = SqlOperator::LikeLiteral, .right = ParameterValue{std::move(pattern)}};
         }
     } // namespace Detail
 
@@ -577,10 +511,7 @@ namespace AsynGyanis::Database::Queryable
      */
     inline OrderByClause asc(const std::string_view columnName)
     {
-        return OrderByClause{
-                .field = FieldReference{.name = std::string(columnName)},
-                .descending = false
-        };
+        return OrderByClause{.field = FieldReference{.name = std::string(columnName)}, .descending = false};
     }
 
     /**
@@ -591,10 +522,7 @@ namespace AsynGyanis::Database::Queryable
      */
     inline OrderByClause desc(const std::string_view columnName)
     {
-        return OrderByClause{
-                .field = FieldReference{.name = std::string(columnName)},
-                .descending = true
-        };
+        return OrderByClause{.field = FieldReference{.name = std::string(columnName)}, .descending = true};
     }
 
 } // namespace AsynGyanis::Database::Queryable

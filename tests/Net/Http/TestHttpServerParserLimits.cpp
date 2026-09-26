@@ -55,8 +55,7 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(client.sendText(request, kWaitTimeout)) << "越界请求未能写入";
 
             std::string responseText;
-            ASSERT_TRUE(client.waitForText(responseText, "Request Header Fields Too Large", kWaitTimeout))
-                    << "越界头部未在时限内被判 431：上界 kWaitTimeout";
+            ASSERT_TRUE(client.waitForText(responseText, "Request Header Fields Too Large", kWaitTimeout)) << "越界头部未在时限内被判 431：上界 kWaitTimeout";
             EXPECT_NE(responseText.find("HTTP/1.1 431"), std::string::npos) << responseText;
             EXPECT_EQ(responseText.find("HTTP/1.1 400"), std::string::npos) << "越界被当成了协议级非法：" << responseText;
             EXPECT_NE(responseText.find("connection: close"), std::string::npos) << responseText;
@@ -70,8 +69,7 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(normalClient.sendText(helloRequestText(), kWaitTimeout)) << "正常请求未能写入";
 
             std::string responseText;
-            EXPECT_TRUE(normalClient.waitForText(responseText, "served-hello", kWaitTimeout))
-                    << "同一台服务器上未超限的请求未被正常服务：" << responseText;
+            EXPECT_TRUE(normalClient.waitForText(responseText, "served-hello", kWaitTimeout)) << "同一台服务器上未超限的请求未被正常服务：" << responseText;
             EXPECT_NE(responseText.find("HTTP/1.1 200"), std::string::npos) << responseText;
         }
     }
@@ -95,13 +93,11 @@ namespace AsynGyanis::Net
         {
             LoopbackClient client(listeningPort);
             ASSERT_TRUE(client.isValid()) << "回环连接失败";
-            const std::string request =
-                    makeRequestText("POST /hello HTTP/1.1", {"content-length: 64", "content-type: text/plain"});
+            const std::string request = makeRequestText("POST /hello HTTP/1.1", {"content-length: 64", "content-type: text/plain"});
             ASSERT_TRUE(client.sendText(request, kWaitTimeout)) << "越界请求未能写入";
 
             std::string responseText;
-            ASSERT_TRUE(client.waitForText(responseText, "Payload Too Large", kWaitTimeout))
-                    << "超限声明未在时限内被判 413：上界 kWaitTimeout";
+            ASSERT_TRUE(client.waitForText(responseText, "Payload Too Large", kWaitTimeout)) << "超限声明未在时限内被判 413：上界 kWaitTimeout";
             EXPECT_NE(responseText.find("HTTP/1.1 413"), std::string::npos) << responseText;
             EXPECT_EQ(responseText.find("HTTP/1.1 400"), std::string::npos) << "越界被当成了协议级非法：" << responseText;
             EXPECT_TRUE(client.waitForClosure(responseText, kWaitTimeout)) << "回完 413 没有收口";
@@ -114,8 +110,7 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(normalClient.sendText(helloRequestText(), kWaitTimeout)) << "正常请求未能写入";
 
             std::string responseText;
-            EXPECT_TRUE(normalClient.waitForText(responseText, "served-hello", kWaitTimeout))
-                    << "同一台服务器上未超限的请求未被正常服务：" << responseText;
+            EXPECT_TRUE(normalClient.waitForText(responseText, "served-hello", kWaitTimeout)) << "同一台服务器上未超限的请求未被正常服务：" << responseText;
         }
     }
 
@@ -150,8 +145,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendText(request, kWaitTimeout)) << "头部较多的请求未能写入";
 
         std::string responseText;
-        EXPECT_TRUE(client.waitForText(responseText, "served-hello", kWaitTimeout))
-                << "条数上限为 0 时 121 条头部仍被拒：" << responseText;
+        EXPECT_TRUE(client.waitForText(responseText, "served-hello", kWaitTimeout)) << "条数上限为 0 时 121 条头部仍被拒：" << responseText;
         EXPECT_NE(responseText.find("HTTP/1.1 200"), std::string::npos) << responseText;
     }
 } // namespace AsynGyanis::Net

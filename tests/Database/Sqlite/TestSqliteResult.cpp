@@ -37,21 +37,19 @@ namespace AsynGyanis::Database
     namespace
     {
         /// 建表样板：覆盖整数、文本、浮点、整型布尔位与二进制五种列，另留两列给 NULL 与空值场景
-        constexpr const char *kCreateUsersTableSql =
-                "CREATE TABLE users ("
-                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                " name TEXT NOT NULL,"
-                " age INTEGER,"
-                " score REAL,"
-                " active INTEGER NOT NULL DEFAULT 1,"
-                " payload BLOB)";
+        constexpr const char *kCreateUsersTableSql = "CREATE TABLE users ("
+                                                     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                                                     " name TEXT NOT NULL,"
+                                                     " age INTEGER,"
+                                                     " score REAL,"
+                                                     " active INTEGER NOT NULL DEFAULT 1,"
+                                                     " payload BLOB)";
 
         /// 第二张表：用声明类型（DATE / NUMERIC）而非存储类，验证「落不到四种存储类时按文本返回」
-        constexpr const char *kCreateTypedTableSql =
-                "CREATE TABLE typedValues ("
-                " id INTEGER PRIMARY KEY,"
-                " asDate DATE,"
-                " asNumeric NUMERIC)";
+        constexpr const char *kCreateTypedTableSql = "CREATE TABLE typedValues ("
+                                                     " id INTEGER PRIMARY KEY,"
+                                                     " asDate DATE,"
+                                                     " asNumeric NUMERIC)";
 
         /// 样本数据：四行的 rowid 依次为 1..4，第 4 行刻意给出空串文本与零长二进制
         constexpr std::array<const char *, 4> kSeedUsersSql = {
@@ -146,8 +144,7 @@ namespace AsynGyanis::Database
 
             ASSERT_NE(executeRequired(*m_connection, kCreateUsersTableSql), nullptr);
             ASSERT_NE(executeRequired(*m_connection, kCreateTypedTableSql), nullptr);
-            ASSERT_NE(executeRequired(*m_connection, "INSERT INTO typedValues (asDate, asNumeric) VALUES ('2026-09-12', 'n/a')"),
-                      nullptr);
+            ASSERT_NE(executeRequired(*m_connection, "INSERT INTO typedValues (asDate, asNumeric) VALUES ('2026-09-12', 'n/a')"), nullptr);
 
             for (const char *seedCommand: kSeedUsersSql)
             {
@@ -207,8 +204,8 @@ namespace AsynGyanis::Database
         {
             ASSERT_NE(executeRequired(connection(), "CREATE TABLE bulkRows (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
 
-            const std::string seedStatement = "WITH RECURSIVE counter(rowId) AS (SELECT 1 UNION ALL SELECT rowId + 1 FROM counter WHERE rowId < " +
-                                              std::to_string(rowCount) + ") INSERT INTO bulkRows (id, name) SELECT rowId, 'row-' || rowId FROM counter";
+            const std::string seedStatement = "WITH RECURSIVE counter(rowId) AS (SELECT 1 UNION ALL SELECT rowId + 1 FROM counter WHERE rowId < " + std::to_string(rowCount) +
+                                              ") INSERT INTO bulkRows (id, name) SELECT rowId, 'row-' || rowId FROM counter";
             ASSERT_NE(executeRequired(connection(), seedStatement), nullptr) << "批量样本写入失败：" << seedStatement;
         }
 
@@ -433,8 +430,7 @@ namespace AsynGyanis::Database
 
         const std::unique_ptr<DatabaseResult> result = query("SELECT id, name FROM bulkRows ORDER BY id");
         ASSERT_NE(result, nullptr);
-        EXPECT_EQ(collectNamesByTakeValue(*result), expectedBulkNames(SqliteResult::kMaximumMaterializedRowCount))
-                << "物化快照路径搬错了格子（行距或列距）";
+        EXPECT_EQ(collectNamesByTakeValue(*result), expectedBulkNames(SqliteResult::kMaximumMaterializedRowCount)) << "物化快照路径搬错了格子（行距或列距）";
     }
 
     /**
@@ -449,8 +445,7 @@ namespace AsynGyanis::Database
 
         const std::unique_ptr<DatabaseResult> result = query("SELECT id, name FROM bulkRows ORDER BY id");
         ASSERT_NE(result, nullptr);
-        EXPECT_EQ(collectNamesByTakeValue(*result), expectedBulkNames(cursorRowCount))
-                << "退回游标遍历的那一侧必须与快照路径逐字一致";
+        EXPECT_EQ(collectNamesByTakeValue(*result), expectedBulkNames(cursorRowCount)) << "退回游标遍历的那一侧必须与快照路径逐字一致";
     }
 
     /**
@@ -758,7 +753,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(result, nullptr);
         ASSERT_TRUE(result->next());
 
-        const DatabaseValue emptyName   = result->getValue(std::size_t{0});
+        const DatabaseValue emptyName    = result->getValue(std::size_t{0});
         const DatabaseValue emptyPayload = result->getValue(std::size_t{1});
 
         ASSERT_TRUE(std::holds_alternative<std::string>(emptyName)) << databaseValueTypeName(emptyName);
@@ -844,8 +839,7 @@ namespace AsynGyanis::Database
         {
             const DatabaseValue byIndex = result->getValue(columnIndex);
             const DatabaseValue byName  = result->getValue(names[columnIndex]);
-            EXPECT_EQ(std::holds_alternative<std::monostate>(byIndex), std::holds_alternative<std::monostate>(byName))
-                    << "第 " << columnIndex << " 列 " << names[columnIndex];
+            EXPECT_EQ(std::holds_alternative<std::monostate>(byIndex), std::holds_alternative<std::monostate>(byName)) << "第 " << columnIndex << " 列 " << names[columnIndex];
             EXPECT_EQ(asText(byIndex), asText(byName)) << names[columnIndex];
             EXPECT_EQ(asInteger(byIndex), asInteger(byName)) << names[columnIndex];
             EXPECT_EQ(asReal(byIndex), asReal(byName)) << names[columnIndex];
@@ -961,8 +955,7 @@ namespace AsynGyanis::Database
     /** @brief 钉住影响行数经基类虚接口即可取得，不必按驱动向下转型 */
     TEST_F(SqliteUserQuery, AffectedRowCountIsReachableThroughTheBaseInterface)
     {
-        const std::unique_ptr<DatabaseResult> receipt =
-            executeRequired(connection(), "UPDATE users SET age = age + 1");
+        const std::unique_ptr<DatabaseResult> receipt = executeRequired(connection(), "UPDATE users SET age = age + 1");
         ASSERT_NE(receipt, nullptr);
 
         // 影响行数现在由 DatabaseResult 基类提供虚接口，这里刻意通过基类引用取值：
@@ -975,9 +968,7 @@ namespace AsynGyanis::Database
     /** @brief 钉住自增标识经基类虚接口即可取得，且交出的就是本条语句那一行的标识 */
     TEST_F(SqliteUserQuery, GeneratedRowIdIsReachableThroughTheBaseInterface)
     {
-        ASSERT_NE(executeRequired(connection(),
-                                  "CREATE TABLE autoIds (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL)"),
-                  nullptr);
+        ASSERT_NE(executeRequired(connection(), "CREATE TABLE autoIds (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL)"), nullptr);
 
         const std::unique_ptr<DatabaseResult> insertReceipt = executeRequired(connection(), "INSERT INTO autoIds (label) VALUES ('only')");
         ASSERT_NE(insertReceipt, nullptr);
@@ -1001,7 +992,7 @@ namespace AsynGyanis::Database
         // 它无从查询，只能如实给 0——把上一条的残值冒充成本条的结果是这里唯一可能的错法
         ASSERT_NE(executeRequired(connection(), "INSERT INTO users (name) VALUES ('Zoe')"), nullptr);
 
-        const SqliteResult   handlelessReceipt(nullptr, nullptr);
+        const SqliteResult    handlelessReceipt(nullptr, nullptr);
         const DatabaseResult &baseResult = handlelessReceipt;
         EXPECT_EQ(baseResult.lastInsertRowId(), 0);
         EXPECT_EQ(baseResult.affectedRowCount(), 0);

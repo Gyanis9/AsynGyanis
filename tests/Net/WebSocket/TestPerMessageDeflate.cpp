@@ -1,4 +1,5 @@
-// permessage-deflate 用例：扩展协商、消息往返、不可压内容与解压上限 往返一律逐字节比较；解压上限那条单独钉住 zip bomb——压缩比可以做到几百倍， 不设上限时一条小消息就能把服务端内存撑爆。
+// permessage-deflate 用例：扩展协商、消息往返、不可压内容与解压上限 往返一律逐字节比较；解压上限那条单独钉住 zip bomb——压缩比可以做到几百倍，
+// 不设上限时一条小消息就能把服务端内存撑爆。
 #include "Net/WebSocket/PerMessageDeflate.h"
 
 #include <gtest/gtest.h>
@@ -103,7 +104,7 @@ namespace AsynGyanis::Net
     {
         const std::string repeated = "复用的 deflate 流不得把上一条的字典带进这一条：A/B/C 混排 + 空字节前的普通文本。";
 
-        const std::optional<std::string> first = deflateWebSocketMessage(repeated);
+        const std::optional<std::string> first  = deflateWebSocketMessage(repeated);
         const std::optional<std::string> second = deflateWebSocketMessage(repeated);
         ASSERT_TRUE(first.has_value());
         ASSERT_TRUE(second.has_value());
@@ -169,8 +170,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(compressed.has_value());
 
         // 上限比原消息小一个字节：必须判超限而不是把内容全部解出来再截断
-        EXPECT_FALSE(inflateWebSocketMessage(*compressed, kRepetitivePayload.size() - 1).has_value())
-                << "解压输出超过上限却仍然返回了内容";
+        EXPECT_FALSE(inflateWebSocketMessage(*compressed, kRepetitivePayload.size() - 1).has_value()) << "解压输出超过上限却仍然返回了内容";
         // 给足上限就正常
         EXPECT_TRUE(inflateWebSocketMessage(*compressed, kRepetitivePayload.size()).has_value());
     }

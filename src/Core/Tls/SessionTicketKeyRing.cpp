@@ -82,12 +82,8 @@ namespace AsynGyanis::Core
          */
         int keyRingExDataIndex()
         {
-            static const int index = SSL_CTX_get_ex_new_index(
-                    0, nullptr, nullptr, nullptr,
-                    [](void *, void *pointer, CRYPTO_EX_DATA *, int, long, void *)
-                    {
-                        delete static_cast<StoredKeyRing *>(pointer);
-                    });
+            static const int index = SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr,
+                                                              [](void *, void *pointer, CRYPTO_EX_DATA *, int, long, void *) { delete static_cast<StoredKeyRing *>(pointer); });
             return index;
         }
 
@@ -110,8 +106,7 @@ namespace AsynGyanis::Core
          *          「密钥明明装了、恢复永远不命中」，而且一个错都不报）。环里一份密钥都没有时同样回 0，
          *          而不是让 OpenSSL 退回它自己那份随机密钥——回调一旦装上，内部密钥那条路就不再生效
          */
-        int selectSessionTicketKey(SSL *ssl, unsigned char *keyName, unsigned char *iv, EVP_CIPHER_CTX *cipherContext,
-                                   EVP_MAC_CTX *macContext, int isEncrypting)
+        int selectSessionTicketKey(SSL *ssl, unsigned char *keyName, unsigned char *iv, EVP_CIPHER_CTX *cipherContext, EVP_MAC_CTX *macContext, int isEncrypting)
         {
             SSL_CTX *context = SSL_get_SSL_CTX(ssl);
             if (context == nullptr)
@@ -132,10 +127,8 @@ namespace AsynGyanis::Core
             }
 
             // 校验码算法与 OpenSSL 内部一致取 SHA256；参数数组要的是可写的名字缓冲，不能直接给字面量
-            char macDigestName[] = "SHA256";
-            const OSSL_PARAM macParameters[] = {
-                OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, macDigestName, 0),
-                OSSL_PARAM_construct_end()};
+            char             macDigestName[] = "SHA256";
+            const OSSL_PARAM macParameters[] = {OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, macDigestName, 0), OSSL_PARAM_construct_end()};
 
             // 签发只用首份——轮换的语义就是「新的签、旧的解」；解开则按名字在环里逐份比对
             std::size_t chosenIndex = 0;

@@ -92,7 +92,7 @@ namespace AsynGyanis::Base::Detail
         }
 
     private:
-        std::atomic<std::uint64_t> m_generation{0}; ///< 「配置又要重读」的累计次数，只增不减
-        std::atomic<bool>          m_running{false};///< 是否已有一轮占住执行权
+        std::atomic<std::uint64_t> m_generation{0};  ///< 「配置又要重读」的累计次数，只增不减
+        std::atomic<bool>          m_running{false}; ///< 是否已有一轮占住执行权
     };
 } // namespace AsynGyanis::Base::Detail

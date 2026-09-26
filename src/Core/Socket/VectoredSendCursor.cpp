@@ -25,8 +25,7 @@ namespace AsynGyanis::Core
                 const Platform::Socket::WriteBuffer &pending = m_buffers[m_pendingIndex];
                 if (m_offsetInPending < pending.length)
                 {
-                    outBuffers[pendingCount].data =
-                            static_cast<const char *>(pending.data) + m_offsetInPending;
+                    outBuffers[pendingCount].data   = static_cast<const char *>(pending.data) + m_offsetInPending;
                     outBuffers[pendingCount].length = pending.length - m_offsetInPending;
                     ++pendingCount;
                 }

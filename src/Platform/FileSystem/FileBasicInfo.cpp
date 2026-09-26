@@ -32,8 +32,7 @@ namespace AsynGyanis::Platform
             // -1，而 tv_nsec 恒非负），C++ 的整除却向零截断——同一份被显式设成早于 1970 的文件会在两
             // 平台上差出一秒，而 ETag 与 Last-Modified 都取自这个数
             const std::int64_t hundredNanosecondsSinceEpoch = hundredNanosecondTicks - kFileTimeEpochOffsetHundredNanoseconds;
-            return std::chrono::floor<std::chrono::seconds>(HundredNanosecondTicks{hundredNanosecondsSinceEpoch})
-                    .count();
+            return std::chrono::floor<std::chrono::seconds>(HundredNanosecondTicks{hundredNanosecondsSinceEpoch}).count();
         }
 
         /**
@@ -65,8 +64,7 @@ namespace AsynGyanis::Platform
         // GetFileAttributesExW 跟随后按目标的属性报告，故这里刻意不再排除 REPARSE_POINT——
         // 加上那一条会让「链接指向的静态文件」从可服务变成 404
         info.isRegularFile    = (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
-        info.sizeBytes        = (static_cast<std::uintmax_t>(attributes.nFileSizeHigh) << 32) |
-                                static_cast<std::uintmax_t>(attributes.nFileSizeLow);
+        info.sizeBytes        = (static_cast<std::uintmax_t>(attributes.nFileSizeHigh) << 32) | static_cast<std::uintmax_t>(attributes.nFileSizeLow);
         info.lastWriteSeconds = fileTimeToUnixSeconds(attributes.ftLastWriteTime);
         {
             ULARGE_INTEGER creation{};
@@ -94,15 +92,13 @@ namespace AsynGyanis::Platform
         // 而它多给的文件索引本层用不上——按路径查的那条拿不到索引，两条必须同算法
         FILE_BASIC_INFO basicInformation{};
         // 枚举成员要带类名限定：本命名空间里有个同名结构体，裸写 FileBasicInfo 找到的它是类型不是值
-        if (::GetFileInformationByHandleEx(static_cast<HANDLE>(handle), FILE_INFO_BY_HANDLE_CLASS::FileBasicInfo,
-                                           &basicInformation, sizeof(basicInformation)) == 0)
+        if (::GetFileInformationByHandleEx(static_cast<HANDLE>(handle), FILE_INFO_BY_HANDLE_CLASS::FileBasicInfo, &basicInformation, sizeof(basicInformation)) == 0)
         {
             return std::nullopt;
         }
 
         FILE_STANDARD_INFO standardInformation{};
-        if (::GetFileInformationByHandleEx(static_cast<HANDLE>(handle), FILE_INFO_BY_HANDLE_CLASS::FileStandardInfo,
-                                           &standardInformation, sizeof(standardInformation)) == 0)
+        if (::GetFileInformationByHandleEx(static_cast<HANDLE>(handle), FILE_INFO_BY_HANDLE_CLASS::FileStandardInfo, &standardInformation, sizeof(standardInformation)) == 0)
         {
             return std::nullopt;
         }
@@ -129,8 +125,8 @@ namespace AsynGyanis::Platform
         }
 
         FileBasicInfo info;
-        info.isRegularFile    = S_ISREG(status.st_mode) != 0;
-        info.sizeBytes        = static_cast<std::uintmax_t>(status.st_size);
+        info.isRegularFile = S_ISREG(status.st_mode) != 0;
+        info.sizeBytes     = static_cast<std::uintmax_t>(status.st_size);
         // st_mtime 只到秒，而底层的 tv_nsec 恒非负，因此这个数天生就是向下取整的结果；Windows 侧按
         // 同一口径折算。ETag 与 Last-Modified 用的都是这一个整秒值，两处必须看到同一个数
         info.lastWriteSeconds = static_cast<std::int64_t>(status.st_mtime);
@@ -140,9 +136,8 @@ namespace AsynGyanis::Platform
         // 设不了（只能由内核在 inode 变更时刷新），回收来的 inode 必然带一个新的
         const std::uint64_t inodeTag  = static_cast<std::uint64_t>(status.st_ino);
         const std::uint64_t deviceTag = static_cast<std::uint64_t>(status.st_dev);
-        const std::uint64_t changeTag = static_cast<std::uint64_t>(status.st_ctim.tv_sec) * 1000000000ULL +
-                                        static_cast<std::uint64_t>(status.st_ctim.tv_nsec);
-        info.identityTag = (inodeTag * 0x9E3779B97F4A7C15ULL) ^ (deviceTag * 0xC2B2AE3D27D4EB4FULL) ^ changeTag;
+        const std::uint64_t changeTag = static_cast<std::uint64_t>(status.st_ctim.tv_sec) * 1000000000ULL + static_cast<std::uint64_t>(status.st_ctim.tv_nsec);
+        info.identityTag              = (inodeTag * 0x9E3779B97F4A7C15ULL) ^ (deviceTag * 0xC2B2AE3D27D4EB4FULL) ^ changeTag;
         return info;
     }
 
@@ -168,10 +163,9 @@ namespace AsynGyanis::Platform
         // 调用方比「是不是同一个版本」就永远得到「不是」
         const std::uint64_t inodeTag  = static_cast<std::uint64_t>(status.st_ino);
         const std::uint64_t deviceTag = static_cast<std::uint64_t>(status.st_dev);
-        const std::uint64_t changeTag = static_cast<std::uint64_t>(status.st_ctim.tv_sec) * 1000000000ULL +
-                                        static_cast<std::uint64_t>(status.st_ctim.tv_nsec);
-        info.identityTag = (inodeTag * 0x9E3779B97F4A7C15ULL) ^ (deviceTag * 0xC2B2AE3D27D4EB4FULL) ^ changeTag;
+        const std::uint64_t changeTag = static_cast<std::uint64_t>(status.st_ctim.tv_sec) * 1000000000ULL + static_cast<std::uint64_t>(status.st_ctim.tv_nsec);
+        info.identityTag              = (inodeTag * 0x9E3779B97F4A7C15ULL) ^ (deviceTag * 0xC2B2AE3D27D4EB4FULL) ^ changeTag;
         return info;
     }
 #endif
-}
+} // namespace AsynGyanis::Platform

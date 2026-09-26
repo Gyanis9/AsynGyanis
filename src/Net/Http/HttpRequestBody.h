@@ -66,11 +66,11 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string_view chunk() const noexcept;
 
     private:
-        HttpBodySource  *m_source{nullptr}; ///< 正文来源（非拥有；h1 上是解析器，h2 上是那条流的正文缓冲）
-        Pump             m_pump;            ///< 向连接要字节的泵
-        std::string_view m_chunk;           ///< 当前段视图（来源缓冲或请求对象的内部视图）
-        bool m_isChunkOutstanding{false};     ///< 上一段是否已交付（交付过的字节在下一次拉取时丢弃）
-        bool m_isCompleteBodyConsumed{false}; ///< 收齐后移交到请求对象的那段正文是否已交付过
-        bool m_isFinished{false};             ///< 流已终止（读完/断开/解析失败），readNext() 恒 false
+        HttpBodySource  *m_source{nullptr};               ///< 正文来源（非拥有；h1 上是解析器，h2 上是那条流的正文缓冲）
+        Pump             m_pump;                          ///< 向连接要字节的泵
+        std::string_view m_chunk;                         ///< 当前段视图（来源缓冲或请求对象的内部视图）
+        bool             m_isChunkOutstanding{false};     ///< 上一段是否已交付（交付过的字节在下一次拉取时丢弃）
+        bool             m_isCompleteBodyConsumed{false}; ///< 收齐后移交到请求对象的那段正文是否已交付过
+        bool             m_isFinished{false};             ///< 流已终止（读完/断开/解析失败），readNext() 恒 false
     };
 } // namespace AsynGyanis::Net

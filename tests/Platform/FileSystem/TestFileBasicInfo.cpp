@@ -42,10 +42,9 @@ namespace AsynGyanis::Platform
          */
         std::int64_t unixSecondsOf(const std::filesystem::file_time_type fileTime)
         {
-            const std::filesystem::file_time_type    fileNow = std::filesystem::file_time_type::clock::now();
+            const std::filesystem::file_time_type       fileNow   = std::filesystem::file_time_type::clock::now();
             const std::chrono::system_clock::time_point systemNow = std::chrono::system_clock::now();
-            const std::chrono::system_clock::time_point converted =
-                    std::chrono::time_point_cast<std::chrono::system_clock::duration>(systemNow + (fileTime - fileNow));
+            const std::chrono::system_clock::time_point converted = std::chrono::time_point_cast<std::chrono::system_clock::duration>(systemNow + (fileTime - fileNow));
             return std::chrono::floor<std::chrono::seconds>(converted.time_since_epoch()).count();
         }
     } // namespace
@@ -71,8 +70,7 @@ namespace AsynGyanis::Platform
         writeTemporaryFile(targetPath, "x");
 
         // 设成一个带半秒余数的过去时刻：距整秒边界够远，复现「舍向哪一边」而不被 now() 的抖动干扰
-        const std::filesystem::file_time_type subSecondTime =
-                std::filesystem::file_time_type::clock::now() - std::chrono::hours(1) + std::chrono::milliseconds(500);
+        const std::filesystem::file_time_type subSecondTime = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1) + std::chrono::milliseconds(500);
         std::filesystem::last_write_time(targetPath, subSecondTime);
         const std::int64_t expectedSeconds = unixSecondsOf(std::filesystem::last_write_time(targetPath));
 
@@ -98,26 +96,22 @@ namespace AsynGyanis::Platform
         writeTemporaryFile(targetPath, "x");
 
         // 「Unix 纪元之前半秒」，换算的理由见本用例的 @note
-        const std::filesystem::file_time_type beforeEpoch = std::chrono::clock_cast<
-                std::filesystem::file_time_type::clock>(
-                std::chrono::time_point<std::chrono::system_clock, std::chrono::milliseconds>{
-                        std::chrono::milliseconds{-500}});
+        const std::filesystem::file_time_type beforeEpoch = std::chrono::clock_cast<std::filesystem::file_time_type::clock>(
+                std::chrono::time_point<std::chrono::system_clock, std::chrono::milliseconds>{std::chrono::milliseconds{-500}});
 
         std::error_code setWriteTimeError;
         std::filesystem::last_write_time(targetPath, beforeEpoch, setWriteTimeError);
         if (static_cast<bool>(setWriteTimeError) || std::filesystem::last_write_time(targetPath) != beforeEpoch)
         {
             // 文件系统认不下这个时刻（报错或把它截成 0）时这条就没测到分岔形状，如实跳过而不是假绿
-            GTEST_SKIP() << "本机文件系统没能原样存下早于 1970 的时间戳（"
-                         << setWriteTimeError.message() << "），这条用例无从判定";
+            GTEST_SKIP() << "本机文件系统没能原样存下早于 1970 的时间戳（" << setWriteTimeError.message() << "），这条用例无从判定";
         }
         const std::int64_t expectedSeconds = unixSecondsOf(std::filesystem::last_write_time(targetPath));
 
         const std::optional<FileBasicInfo> info = queryFileBasicInfo(targetPath);
         ASSERT_TRUE(info.has_value());
         EXPECT_EQ(expectedSeconds, -1) << "折算法自身没落在预期档位，用例的判据无从成立";
-        EXPECT_EQ(info->lastWriteSeconds, expectedSeconds)
-                << "早于纪元的半秒被向零截断，同一文件在两平台上的验证器会差出一秒";
+        EXPECT_EQ(info->lastWriteSeconds, expectedSeconds) << "早于纪元的半秒被向零截断，同一文件在两平台上的验证器会差出一秒";
     }
 
     TEST(FileBasicInfo, ReportsDirectoryAsNotRegularFile)
@@ -173,7 +167,7 @@ namespace AsynGyanis::Platform
         const std::filesystem::path nullDevice = "/dev/null";
 #endif
 
-        const std::vector<std::pair<std::string, std::filesystem::path> > shapes = {
+        const std::vector<std::pair<std::string, std::filesystem::path>> shapes = {
                 {"普通文件", regularFile},
                 {"目录", temporaryDirectory.path()},
                 {"不存在的路径", temporaryDirectory.path() / "missing.yaml"},
@@ -181,13 +175,12 @@ namespace AsynGyanis::Platform
         };
         for (const auto &[label, path]: shapes)
         {
-            std::error_code regularError;
-            const bool      stdSaysRegular = std::filesystem::is_regular_file(path, regularError);
-            const std::optional<FileBasicInfo> info = queryFileBasicInfo(path);
+            std::error_code                    regularError;
+            const bool                         stdSaysRegular = std::filesystem::is_regular_file(path, regularError);
+            const std::optional<FileBasicInfo> info           = queryFileBasicInfo(path);
             if (!info.has_value())
             {
-                EXPECT_TRUE(static_cast<bool>(regularError) || !stdSaysRegular)
-                        << label << "：本层查不到，std::filesystem 却把它当成可服务的普通文件";
+                EXPECT_TRUE(static_cast<bool>(regularError) || !stdSaysRegular) << label << "：本层查不到，std::filesystem 却把它当成可服务的普通文件";
                 continue;
             }
             EXPECT_EQ(info->isRegularFile, stdSaysRegular) << label << "：两处对「是不是普通文件」判定不一致";
@@ -214,11 +207,10 @@ namespace AsynGyanis::Platform
         if (!createError && std::filesystem::is_directory(deepDirectory))
         {
             writeTemporaryFile(deepFile, "deep: true\n");
-            std::error_code deepRegularError;
-            const bool stdSaysDeepIsRegular = std::filesystem::is_regular_file(deepFile, deepRegularError);
-            const std::optional<FileBasicInfo> deepInfo = queryFileBasicInfo(deepFile);
-            EXPECT_EQ(deepInfo.has_value(), stdSaysDeepIsRegular)
-                    << "深路径（" << deepFile.string().size() << " 字符）在一处可服务、在另一处不存在";
+            std::error_code                    deepRegularError;
+            const bool                         stdSaysDeepIsRegular = std::filesystem::is_regular_file(deepFile, deepRegularError);
+            const std::optional<FileBasicInfo> deepInfo             = queryFileBasicInfo(deepFile);
+            EXPECT_EQ(deepInfo.has_value(), stdSaysDeepIsRegular) << "深路径（" << deepFile.string().size() << " 字符）在一处可服务、在另一处不存在";
             if (deepInfo.has_value() && !deepRegularError)
             {
                 EXPECT_TRUE(deepInfo->isRegularFile) << "建出来的深路径文件必须判成普通文件";
@@ -226,7 +218,7 @@ namespace AsynGyanis::Platform
         } else
         {
             std::error_code deepRegularError;
-            const bool stdSaysDeepIsRegular = std::filesystem::is_regular_file(deepFile, deepRegularError);
+            const bool      stdSaysDeepIsRegular = std::filesystem::is_regular_file(deepFile, deepRegularError);
             EXPECT_FALSE(queryFileBasicInfo(deepFile).has_value()) << "连建都建不出的长路径，本层不该反过来报「查到了」";
             EXPECT_FALSE(stdSaysDeepIsRegular) << "同一条长路径 std::filesystem 却认得出可服务的文件";
         }
@@ -260,10 +252,8 @@ namespace AsynGyanis::Platform
         const std::optional<FileBasicInfo> afterReplacement = queryFileBasicInfo(targetPath);
         ASSERT_TRUE(afterReplacement.has_value());
         EXPECT_EQ(afterReplacement->sizeBytes, beforeReplacement->sizeBytes);
-        EXPECT_EQ(afterReplacement->lastWriteSeconds, beforeReplacement->lastWriteSeconds)
-                << "修改时间没搬过去，后面的身份判据就成了空转";
-        EXPECT_NE(afterReplacement->identityTag, beforeReplacement->identityTag)
-                << "另一个文件对象被当成了同一个文件，缓存会一直端出旧内容";
+        EXPECT_EQ(afterReplacement->lastWriteSeconds, beforeReplacement->lastWriteSeconds) << "修改时间没搬过去，后面的身份判据就成了空转";
+        EXPECT_NE(afterReplacement->identityTag, beforeReplacement->identityTag) << "另一个文件对象被当成了同一个文件，缓存会一直端出旧内容";
     }
 #endif
 
@@ -278,7 +268,7 @@ namespace AsynGyanis::Platform
         const std::filesystem::path           targetPath = temporaryDirectory.path() / "stable.txt";
         writeTemporaryFile(targetPath, "unchanged");
 
-        const std::optional<FileBasicInfo> firstQuery = queryFileBasicInfo(targetPath);
+        const std::optional<FileBasicInfo> firstQuery  = queryFileBasicInfo(targetPath);
         const std::optional<FileBasicInfo> secondQuery = queryFileBasicInfo(targetPath);
         ASSERT_TRUE(firstQuery.has_value());
         ASSERT_TRUE(secondQuery.has_value());
@@ -311,8 +301,7 @@ namespace AsynGyanis::Platform
         const std::optional<FileBasicInfo> afterReplacement = queryFileBasicInfo(targetPath);
         ASSERT_TRUE(afterReplacement.has_value());
         EXPECT_EQ(afterReplacement->sizeBytes, beforeReplacement->sizeBytes);
-        EXPECT_EQ(afterReplacement->identityTag, beforeReplacement->identityTag)
-                << "身份已不再由创建时间派生，Windows 侧的映射缓存可以打开了，见本用例的 @note";
+        EXPECT_EQ(afterReplacement->identityTag, beforeReplacement->identityTag) << "身份已不再由创建时间派生，Windows 侧的映射缓存可以打开了，见本用例的 @note";
     }
 #endif
-}
+} // namespace AsynGyanis::Platform

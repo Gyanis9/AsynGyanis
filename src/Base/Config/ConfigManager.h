@@ -149,9 +149,7 @@ namespace AsynGyanis::Base
             {
                 return std::move(*converted);
             }
-            throw ConfigValidationException(std::string(key),
-                                            std::string("配置值取用类型不匹配：期望 ") + configTypeNameOf<ValueType>() +
-                                            "，实际 " + typeName(value.type()));
+            throw ConfigValidationException(std::string(key), std::string("配置值取用类型不匹配：期望 ") + configTypeNameOf<ValueType>() + "，实际 " + typeName(value.type()));
         }
 
         /**
@@ -332,9 +330,9 @@ namespace AsynGyanis::Base
         {
             ConfigKeyValueMap values; ///< 配置键值对映射表（支持 string_view 异质查找）
 
-            std::vector<std::string> loadedFiles;     ///< 成功加载的配置文件路径列表
-            std::filesystem::path    configDirectory; ///< 配置目录的路径
-            bool configDirectoryRecursive = true;     ///< 该目录当初是按递归加载的；reload() 与热重载按同一口径重扫，否则键集会在无人改文件时变化
+            std::vector<std::string> loadedFiles;                     ///< 成功加载的配置文件路径列表
+            std::filesystem::path    configDirectory;                 ///< 配置目录的路径
+            bool                     configDirectoryRecursive = true; ///< 该目录当初是按递归加载的；reload() 与热重载按同一口径重扫，否则键集会在无人改文件时变化
         };
 
         /**
@@ -349,27 +347,27 @@ namespace AsynGyanis::Base
             std::jthread      thread;          ///< 后台重载线程（析构时自动 join）
         };
 
-        std::atomic<std::shared_ptr<ConfigData> > m_data{std::make_shared<ConfigData>()}; ///< 当前有效的配置数据原子指针，支持无锁热替换
+        std::atomic<std::shared_ptr<ConfigData>> m_data{std::make_shared<ConfigData>()}; ///< 当前有效的配置数据原子指针，支持无锁热替换
 
         mutable std::shared_mutex m_reloadMutex; ///< 用于配置数据构建过程的读写锁，仅在修改时加写锁
 
-        std::mutex         m_writeMutex;       ///< 串行化 setValue 的「复制—修改—发布」事务，避免并发写者互相覆盖（读者不受影响）
-        mutable std::mutex m_schemaMutex;      ///< 保护 m_schema 的互斥锁（const 校验方法也需加锁）
-        ConfigSchema       m_schema;           ///< 全局 schema（setSchema 注册，提交快照时自动校验）
+        std::mutex         m_writeMutex;  ///< 串行化 setValue 的「复制—修改—发布」事务，避免并发写者互相覆盖（读者不受影响）
+        mutable std::mutex m_schemaMutex; ///< 保护 m_schema 的互斥锁（const 校验方法也需加锁）
+        ConfigSchema       m_schema;      ///< 全局 schema（setSchema 注册，提交快照时自动校验）
 
         // 热加载相关
         /// 启停热加载的控制面锁：m_fileWatcher 是普通 unique_ptr，只能由持锁的写者改。
         /// 它总是最外层的一把（其内才取 m_reloadTasksMutex），因此与监听线程回调之间不构成环
-        std::mutex                                              m_hotReloadControlMutex;
-        std::unique_ptr<Platform::FileWatcher>                 m_fileWatcher;                ///< 文件监控器（用于热加载）
-        std::atomic<std::shared_ptr<const HotReloadCallback> > m_hotReloadCallback{nullptr}; ///< 热加载回调快照（enableHotReload 写、重载线程读）
-        std::atomic<bool>                                      m_hotReloadEnabled{false};    ///< 热加载功能是否启用（true 启用，false 关闭）
+        std::mutex                                            m_hotReloadControlMutex;
+        std::unique_ptr<Platform::FileWatcher>                m_fileWatcher;                ///< 文件监控器（用于热加载）
+        std::atomic<std::shared_ptr<const HotReloadCallback>> m_hotReloadCallback{nullptr}; ///< 热加载回调快照（enableHotReload 写、重载线程读）
+        std::atomic<bool>                                     m_hotReloadEnabled{false};    ///< 热加载功能是否启用（true 启用，false 关闭）
         /// 重载轮次的节流闸门：一轮在跑时来的变更不丢，由世代号差别保证之后必有一轮重读到它。
         /// 不用「pending + dirty 两面旗」——并发收尾时停在中途的那轮会把别人的欠账吃掉，
         /// 配置就永久停在旧值直到用户下一次改动（详见 ReloadRoundGate 的 @details）
-        Detail::ReloadRoundGate                                m_reloadGate;
-        std::mutex                                             m_reloadTasksMutex;           ///< 保护 m_reloadTasks 的互斥锁（仅登记/摘取句柄，join 不在锁内做）
-        std::vector<std::unique_ptr<ReloadTask> >              m_reloadTasks;                ///< 活跃的重载任务（用于析构前 join）
+        Detail::ReloadRoundGate                  m_reloadGate;
+        std::mutex                               m_reloadTasksMutex; ///< 保护 m_reloadTasks 的互斥锁（仅登记/摘取句柄，join 不在锁内做）
+        std::vector<std::unique_ptr<ReloadTask>> m_reloadTasks;      ///< 活跃的重载任务（用于析构前 join）
 
         /**
          * @brief 取出并回收已结束的重载任务
@@ -451,8 +449,7 @@ namespace AsynGyanis::Base
          * @return std::expected<std::vector<std::filesystem::path>, std::string> 成功时是清单
          *         （空清单表示目录里确实没有配置文件）；失败时是中文原因，调用方据此保留旧快照
          */
-        [[nodiscard]] static std::expected<std::vector<std::filesystem::path>, std::string> scanConfigFiles(
-                const std::filesystem::path &directory, bool recursive);
+        [[nodiscard]] static std::expected<std::vector<std::filesystem::path>, std::string> scanConfigFiles(const std::filesystem::path &directory, bool recursive);
 
         /**
          * @brief 原子提交新的配置快照。
@@ -461,10 +458,7 @@ namespace AsynGyanis::Base
          * @param configDirectory 配置目录（每个调用点都给出真实目录，不存在「留空表示不改」这条）。
          * @param configDirectoryRecursive 该目录此后重扫时要不要递归，与本次加载的口径一致。
          */
-        void commitConfigData(ConfigKeyValueMap                values,
-                              const std::vector<std::string> & loadedFiles,
-                              const std::filesystem::path &    configDirectory,
-                              bool                             configDirectoryRecursive);
+        void commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loadedFiles, const std::filesystem::path &configDirectory, bool configDirectoryRecursive);
 
         /**
          * @brief 对指定配置字典执行已注册 schema 的校验并记录错误日志。

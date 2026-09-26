@@ -54,12 +54,12 @@ namespace AsynGyanis::Net
      */
     struct QuicSentPacketInfo
     {
-        std::uint64_t packetNumber{0};      ///< 完整包号，不是线上截断的那个
-        QuicTime timeSent{};                ///< 发出时刻，RTT 样本与时间阈值判定都靠它
-        std::size_t byteCount{0};           ///< 计入在途的字节数；交 0 表示本包不计入（例如服务端在地址验证前的包）
-        bool isAckEliciting{false};         ///< 是否触发确认：只有这种包才武装探测超时
-        std::optional<QuicCryptoRange> cryptoRange{}; ///< 本包带的握手字节区间；没带就为空
-        std::vector<QuicStreamRange> streamRanges{};  ///< 本包带的流数据区间；确认与判丢都按它回收额度
+        std::uint64_t                  packetNumber{0};       ///< 完整包号，不是线上截断的那个
+        QuicTime                       timeSent{};            ///< 发出时刻，RTT 样本与时间阈值判定都靠它
+        std::size_t                    byteCount{0};          ///< 计入在途的字节数；交 0 表示本包不计入（例如服务端在地址验证前的包）
+        bool                           isAckEliciting{false}; ///< 是否触发确认：只有这种包才武装探测超时
+        std::optional<QuicCryptoRange> cryptoRange{};         ///< 本包带的握手字节区间；没带就为空
+        std::vector<QuicStreamRange>   streamRanges{};        ///< 本包带的流数据区间；确认与判丢都按它回收额度
         /// 本包带出的流收口宣告（RESET_STREAM / STOP_SENDING）：这两类帧要发到被确认为止（RFC 9000 §13.3），
         /// 所以和流数据一样得由发包方标出来，让上层按确认落定、按判丢补发
         std::vector<QuicStreamAnnouncement> streamAnnouncements{};
@@ -71,28 +71,28 @@ namespace AsynGyanis::Net
     /// 一次确认处理的结果
     struct QuicAcknowledgementUpdate
     {
-        std::vector<QuicSentPacketInfo> acknowledged{}; ///< 本次新确认的包，按包号递增
-        std::vector<QuicSentPacketInfo> lost{};         ///< 因此次确认而判丢的包
-        bool isRoundTripSampled{false};                 ///< 是否按 §5.1 的条件更新过 RTT 估算
+        std::vector<QuicSentPacketInfo> acknowledged{};            ///< 本次新确认的包，按包号递增
+        std::vector<QuicSentPacketInfo> lost{};                    ///< 因此次确认而判丢的包
+        bool                            isRoundTripSampled{false}; ///< 是否按 §5.1 的条件更新过 RTT 估算
     };
 
     /// 定时器到期的处理结果
     struct QuicRecoveryTimeoutAction
     {
-        std::vector<QuicSentPacketInfo> lost{};         ///< 按时间阈值新判丢的包
-        QuicRecoverySpace lostSpace{QuicRecoverySpace::Initial}; ///< 这些丢包属于哪个空间
-        bool isProbeTimeout{false};                     ///< 是否需要发探测包
-        QuicRecoverySpace probeSpace{QuicRecoverySpace::Initial}; ///< 探测包该用哪个空间
+        std::vector<QuicSentPacketInfo> lost{};                                 ///< 按时间阈值新判丢的包
+        QuicRecoverySpace               lostSpace{QuicRecoverySpace::Initial};  ///< 这些丢包属于哪个空间
+        bool                            isProbeTimeout{false};                  ///< 是否需要发探测包
+        QuicRecoverySpace               probeSpace{QuicRecoverySpace::Initial}; ///< 探测包该用哪个空间
     };
 
     /// RTT 估算的当前值，供用例断言与日志取用
     struct QuicRoundTripTimeEstimate
     {
-        QuicTime minimum{};            ///< min_rtt，不含对端报告的延迟
-        QuicTime smoothed{};           ///< smoothed_rtt
-        QuicTime variation{};          ///< rttvar
-        QuicTime latest{};             ///< 最近一个样本
-        QuicTime probeTimeout{};       ///< 当前退避倍数下的 PTO 周期
+        QuicTime minimum{};      ///< min_rtt，不含对端报告的延迟
+        QuicTime smoothed{};     ///< smoothed_rtt
+        QuicTime variation{};    ///< rttvar
+        QuicTime latest{};       ///< 最近一个样本
+        QuicTime probeTimeout{}; ///< 当前退避倍数下的 PTO 周期
     };
 
     /**
@@ -123,9 +123,7 @@ namespace AsynGyanis::Net
          * @param acknowledgementDelay 对端报告的 ACK 延迟，已由调用方按对端指数换算成时间（§19.3）
          * @return QuicAcknowledgementUpdate 确认与判丢的清单，以及是否采了 RTT 样本
          */
-        [[nodiscard]] QuicAcknowledgementUpdate onAcknowledgementReceived(QuicRecoverySpace space,
-                                                                          const QuicAcknowledgementFrame &acknowledgement,
-                                                                          QuicTime acknowledgementTime,
+        [[nodiscard]] QuicAcknowledgementUpdate onAcknowledgementReceived(QuicRecoverySpace space, const QuicAcknowledgementFrame &acknowledgement, QuicTime acknowledgementTime,
                                                                           QuicTime acknowledgementDelay);
 
         /**
@@ -182,26 +180,26 @@ namespace AsynGyanis::Net
         /// 一个空间的记账
         struct SpaceState
         {
-            std::map<std::uint64_t, QuicSentPacketInfo> unacknowledged{}; ///< 未确认的已发包，按包号有序
-            std::optional<QuicTime> lossTime{};                           ///< 最早可以按时间阈值判丢的时刻
-            std::optional<std::uint64_t> largestAcknowledged{};            ///< 本空间见过的最大确认值
+            std::map<std::uint64_t, QuicSentPacketInfo> unacknowledged{};      ///< 未确认的已发包，按包号有序
+            std::optional<QuicTime>                     lossTime{};            ///< 最早可以按时间阈值判丢的时刻
+            std::optional<std::uint64_t>                largestAcknowledged{}; ///< 本空间见过的最大确认值
         };
 
         [[nodiscard]] static std::size_t spaceIndex(QuicRecoverySpace space) noexcept;
-        void updateRoundTripTime(QuicTime latestRoundTripTime, QuicTime acknowledgementDelay);
+        void                             updateRoundTripTime(QuicTime latestRoundTripTime, QuicTime acknowledgementDelay);
         /// 按 §6.1 的判据扫描一个空间：包号阈值或时间阈值命中即判丢，否则记下待判的时刻
-        [[nodiscard]] std::vector<QuicSentPacketInfo> detectLostPackets(QuicRecoverySpace space, QuicTime now);
+        [[nodiscard]] std::vector<QuicSentPacketInfo>                       detectLostPackets(QuicRecoverySpace space, QuicTime now);
         [[nodiscard]] std::pair<std::optional<QuicTime>, QuicRecoverySpace> earliestLossTime() const noexcept;
         /// 该空间里还在途的、最后一个触发确认的包的发出时刻；没有就表示无需武装 PTO
-        [[nodiscard]] std::optional<QuicTime> lastAckElicitingSentTime(const SpaceState &state) const noexcept;
+        [[nodiscard]] std::optional<QuicTime>                               lastAckElicitingSentTime(const SpaceState &state) const noexcept;
         [[nodiscard]] std::pair<std::optional<QuicTime>, QuicRecoverySpace> probeTimeoutDeadline() const noexcept;
 
-        std::array<SpaceState, kSpaceCount> m_spaces{};      ///< 三个包号空间
-        QuicRoundTripTimeEstimate m_estimate{};    ///< RTT 统计量
-        bool m_hasRoundTripSample{false};          ///< 第一个样本走重置路径，之后才走加权
-        std::size_t m_probeBackoffExponent{0};     ///< 退避倍数是 2 的几次方
-        std::size_t m_inFlightByteCount{0};        ///< 在途字节总数，拥塞层与用例都要看
-        bool m_isHandshakeConfirmed{false};        ///< §4.1.2 意义上的握手确认，决定延迟夹取与 PTO 空间
-        QuicTime m_peerMaximumAcknowledgmentDelay{}; ///< 对端声明的 max_ack_delay
+        std::array<SpaceState, kSpaceCount> m_spaces{};                         ///< 三个包号空间
+        QuicRoundTripTimeEstimate           m_estimate{};                       ///< RTT 统计量
+        bool                                m_hasRoundTripSample{false};        ///< 第一个样本走重置路径，之后才走加权
+        std::size_t                         m_probeBackoffExponent{0};          ///< 退避倍数是 2 的几次方
+        std::size_t                         m_inFlightByteCount{0};             ///< 在途字节总数，拥塞层与用例都要看
+        bool                                m_isHandshakeConfirmed{false};      ///< §4.1.2 意义上的握手确认，决定延迟夹取与 PTO 空间
+        QuicTime                            m_peerMaximumAcknowledgmentDelay{}; ///< 对端声明的 max_ack_delay
     };
 } // namespace AsynGyanis::Net

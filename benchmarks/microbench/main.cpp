@@ -16,6 +16,13 @@
 //   · 数据形态尽量贴近稳态：HPACK 同一份头部反复编码/解码（同一连接复用编解码器）、
 //     h1 请求带 10 个头与 64 字节正文、h2 解一帧 200 字节头块的 HEADERS。
 //     换数据形态会改变结果，比较不同机器的数字前先确认两边用的是同一份输入。
+#include "Base/Config/ConfigManager.h"
+#include "Base/Log/Formatters/DefaultFormatter.h"
+#include "Base/Log/Formatters/JsonFormatter.h"
+#include "Base/Log/LogEvent.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/Sinks/AsyncSink.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/ThreadPool.h"
 #include "Core/EventLoop/EventLoop.h"
@@ -31,13 +38,6 @@
 #include "Database/Queryable/Expression.h"
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/TableSchema.h"
-#include "Base/Config/ConfigManager.h"
-#include "Base/Log/Formatters/DefaultFormatter.h"
-#include "Base/Log/Formatters/JsonFormatter.h"
-#include "Base/Log/LogEvent.h"
-#include "Base/Log/Logger.h"
-#include "Base/Log/Sinks/AsyncSink.h"
-#include "Base/Log/Sinks/LogSink.h"
 #include "Database/Sqlite/SqliteConnection.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/FileSender.h"
@@ -51,8 +51,8 @@
 #include "Net/Http/Router.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
-#include "Net/Http3/Qpack.h"
 #include "Net/Http3/Http3Frame.h"
+#include "Net/Http3/Qpack.h"
 #include "Net/Quic/Streams/QuicStreamLayer.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
@@ -100,9 +100,9 @@ namespace
     /// 一个用例的测量结果
     struct CaseResult
     {
-        std::string name;
-        double nanosecondsPerOperation{0.0};
-        double operationsPerSecond{0.0};
+        std::string   name;
+        double        nanosecondsPerOperation{0.0};
+        double        operationsPerSecond{0.0};
         std::uint64_t operationsPerRound{0};
     };
 
@@ -114,9 +114,8 @@ namespace
      * @param checksumSink 校验和累加处，见下
      * @param failureCount 自检失败计数
      */
-    template <typename Body>
-    void measureCase(std::string name, Body body, std::vector<CaseResult> &results, std::uint64_t &checksumSink,
-                     int &failureCount)
+    template<typename Body>
+    void measureCase(std::string name, Body body, std::vector<CaseResult> &results, std::uint64_t &checksumSink, int &failureCount)
     {
         // 先确认一次走的是成功路径：这些入口在失败时返回 0（解析失败、解码失败、字段为空）。
         // 少了这一步，哪天输入写错成非法报文，量到的是失败这条冷路径，而输出只是一串更快的数字
@@ -127,8 +126,8 @@ namespace
             return;
         }
 
-        const auto calibrationBegin = SteadyClock::now();
-        auto calibrationNow = calibrationBegin;
+        const auto    calibrationBegin      = SteadyClock::now();
+        auto          calibrationNow        = calibrationBegin;
         std::uint64_t calibrationOperations = 0;
         do
         {
@@ -137,17 +136,15 @@ namespace
             calibrationNow = SteadyClock::now();
         } while (calibrationNow - calibrationBegin < kCalibrationDuration);
 
-        const double calibrationNanoseconds =
-                std::chrono::duration<double, std::nano>(calibrationNow - calibrationBegin).count();
+        const double calibrationNanoseconds           = std::chrono::duration<double, std::nano>(calibrationNow - calibrationBegin).count();
         const double estimatedNanosecondsPerOperation = calibrationNanoseconds / static_cast<double>(calibrationOperations);
-        const double roundNanoseconds = std::chrono::duration<double, std::nano>(kRoundDuration).count();
+        const double roundNanoseconds                 = std::chrono::duration<double, std::nano>(kRoundDuration).count();
 
         // 至少跑一次：校准期间若碰上一次长时间调度延迟，除出来的单次耗时可能大到让这里算出 0
-        const std::uint64_t operationsPerRound =
-                std::max<std::uint64_t>(1, static_cast<std::uint64_t>(roundNanoseconds / estimatedNanosecondsPerOperation));
+        const std::uint64_t operationsPerRound = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(roundNanoseconds / estimatedNanosecondsPerOperation));
 
         CaseResult result;
-        result.name = std::move(name);
+        result.name               = std::move(name);
         result.operationsPerRound = operationsPerRound;
         for (int round = 0; round < kRoundCount; ++round)
         {
@@ -158,8 +155,7 @@ namespace
             }
             const auto end = SteadyClock::now();
 
-            const double nanosecondsPerOperation =
-                    std::chrono::duration<double, std::nano>(end - begin).count() / static_cast<double>(operationsPerRound);
+            const double nanosecondsPerOperation = std::chrono::duration<double, std::nano>(end - begin).count() / static_cast<double>(operationsPerRound);
             if (result.nanosecondsPerOperation == 0.0 || nanosecondsPerOperation < result.nanosecondsPerOperation)
             {
                 result.nanosecondsPerOperation = nanosecondsPerOperation;
@@ -173,18 +169,18 @@ namespace
     std::vector<Net::HpackHeaderField> makeRequestHeaderFields()
     {
         return {
-            {":method", "GET"},
-            {":scheme", "https"},
-            {":authority", "www.example.com"},
-            {":path", "/assets/app.bundle.js"},
-            {"user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0"},
-            {"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"},
-            {"accept-encoding", "gzip, deflate, br, zstd"},
-            {"accept-language", "zh-CN,zh;q=0.9,en;q=0.8"},
-            {"cache-control", "no-cache"},
-            {"cookie", "session=8f14e45fceea167a5a36dedd4bea2543; theme=dark; locale=zh-CN"},
-            {"referer", "https://www.example.com/index.html"},
-            {"if-none-match", "\"6f1a-0-18f2c4b7d80\""},
+                {":method", "GET"},
+                {":scheme", "https"},
+                {":authority", "www.example.com"},
+                {":path", "/assets/app.bundle.js"},
+                {"user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0"},
+                {"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"},
+                {"accept-encoding", "gzip, deflate, br, zstd"},
+                {"accept-language", "zh-CN,zh;q=0.9,en;q=0.8"},
+                {"cache-control", "no-cache"},
+                {"cookie", "session=8f14e45fceea167a5a36dedd4bea2543; theme=dark; locale=zh-CN"},
+                {"referer", "https://www.example.com/index.html"},
+                {"if-none-match", "\"6f1a-0-18f2c4b7d80\""},
         };
     }
 
@@ -218,7 +214,7 @@ namespace
         }
 
         Net::Http2HeadersPayload payload;
-        payload.endHeaders = true;
+        payload.endHeaders          = true;
         payload.headerBlockFragment = std::move(headerBlock);
         return Net::encodeHttp2HeadersFrame(payload, 1);
     }
@@ -227,15 +223,13 @@ namespace
     void printTable(const std::vector<CaseResult> &results, int failureCount, std::uint64_t checksum)
     {
         std::printf("\n== 微基准结果（每用例 %d 轮取最快一轮）==\n", kRoundCount);
-        for (const CaseResult &result : results)
+        for (const CaseResult &result: results)
         {
-            std::printf("  %-24s %10.1f ns/op %14.0f op/s（每轮 %llu 次）\n", result.name.c_str(),
-                        result.nanosecondsPerOperation, result.operationsPerSecond,
+            std::printf("  %-24s %10.1f ns/op %14.0f op/s（每轮 %llu 次）\n", result.name.c_str(), result.nanosecondsPerOperation, result.operationsPerSecond,
                         static_cast<unsigned long long>(result.operationsPerRound));
         }
         // 校验和在这里露一次面：它在上面参与了累加，整段被测循环才不会被编译器整个丢掉
-        std::printf("  自检失败 %d 例；校验和 %llu（仅用于阻止循环被优化掉，无业务含义）\n", failureCount,
-                    static_cast<unsigned long long>(checksum));
+        std::printf("  自检失败 %d 例；校验和 %llu（仅用于阻止循环被优化掉，无业务含义）\n", failureCount, static_cast<unsigned long long>(checksum));
     }
 
     /// 结果写成 JSON：键名与 benchmarks/microbench-baseline.json 对齐，好让同一个门禁脚本直接吃
@@ -249,9 +243,8 @@ namespace
         for (std::size_t index = 0; index < results.size(); ++index)
         {
             const CaseResult &result = results[index];
-            document += std::format(
-                    "    \"{}\": {{\"throughputPerSecond\": {:.0f}, \"nanosecondsPerOperation\": {:.1f}}}",
-                    result.name, result.operationsPerSecond, result.nanosecondsPerOperation);
+            document += std::format("    \"{}\": {{\"throughputPerSecond\": {:.0f}, \"nanosecondsPerOperation\": {:.1f}}}", result.name, result.operationsPerSecond,
+                                    result.nanosecondsPerOperation);
             document += index + 1 == results.size() ? "\n" : ",\n";
         }
         document += "  }\n}\n";
@@ -276,12 +269,11 @@ namespace
      */
     [[nodiscard]] std::string makeResponseLikeBody(const std::size_t minimumSize)
     {
-        static constexpr std::string_view kWords[] = {
-                "request", "connection", "timeout", "payload", "etag", "server", "client", "window",
-                "congestion", "stream", "header", "packet", "latency", "throughput", "backpressure", "route"};
-        constexpr std::size_t kWordCount = sizeof(kWords) / sizeof(kWords[0]);
+        static constexpr std::string_view kWords[]   = {"request",    "connection", "timeout", "payload", "etag",    "server",     "client",       "window",
+                                                        "congestion", "stream",     "header",  "packet",  "latency", "throughput", "backpressure", "route"};
+        constexpr std::size_t             kWordCount = sizeof(kWords) / sizeof(kWords[0]);
 
-        std::string body;
+        std::string   body;
         std::uint32_t state = 0x2545F491U;
         while (body.size() < minimumSize)
         {
@@ -329,7 +321,10 @@ namespace
          * @brief 纯状态查询：与真实驱动一样不发任何网络往返
          * @return 当前是否处于已连接状态
          */
-        [[nodiscard]] bool isConnected() const override { return m_isConnected; }
+        [[nodiscard]] bool isConnected() const override
+        {
+            return m_isConnected;
+        }
 
         /**
          * @brief 占位执行：本文件不量查询通路
@@ -346,7 +341,10 @@ namespace
          * @brief 方言归属
          * @return 恒为 Sqlite（连接池不据此分支，仅为满足接口）
          */
-        [[nodiscard]] Database::DatabaseType databaseType() const override { return Database::DatabaseType::Sqlite; }
+        [[nodiscard]] Database::DatabaseType databaseType() const override
+        {
+            return Database::DatabaseType::Sqlite;
+        }
     };
 
     /// 驱动侧用例的表行数：读写两侧都按主键命中，因此行数不随轮次增长
@@ -420,8 +418,7 @@ namespace
         auto pool = std::make_unique<Database::ConnectionPool>(
                 []() -> std::unique_ptr<Database::DatabaseConnection>
                 {
-                    auto connection = std::make_unique<Database::SqliteConnection>(
-                            Database::ConnectionConfig::sqliteDefault(":memory:"));
+                    auto connection = std::make_unique<Database::SqliteConnection>(Database::ConnectionConfig::sqliteDefault(":memory:"));
                     // 池的工厂契约要求交出「已经 connect() 完成」的连接，池不会替调用方连接
                     connection->connect();
                     return connection;
@@ -456,8 +453,7 @@ namespace
         {
             parameters[0] = static_cast<std::int64_t>(rowIndex);
             parameters[4] = static_cast<std::int64_t>(rowIndex);
-            if (connection->execute("INSERT INTO bench_accounts VALUES (?, ?, ?, ?, ?, ?)",
-                                    std::span<const Database::DatabaseValue>(parameters)) == nullptr)
+            if (connection->execute("INSERT INTO bench_accounts VALUES (?, ?, ?, ?, ?, ?)", std::span<const Database::DatabaseValue>(parameters)) == nullptr)
             {
                 return nullptr;
             }
@@ -478,17 +474,17 @@ namespace
     {
         Net::QuicTransportParameters parameters;
         // 额度与流数上限都给足：这里关心的是扫描成本，不该被流量控制或流数上限挡住
-        parameters.initialMaximumData = 1ULL << 40;
-        parameters.initialMaximumStreamDataBidirectionalLocal = 1ULL << 30;
+        parameters.initialMaximumData                          = 1ULL << 40;
+        parameters.initialMaximumStreamDataBidirectionalLocal  = 1ULL << 30;
         parameters.initialMaximumStreamDataBidirectionalRemote = 1ULL << 30;
-        parameters.initialMaximumStreamDataUnidirectional = 1ULL << 30;
-        parameters.initialMaximumBidirectionalStreams = 100000;
-        parameters.initialMaximumUnidirectionalStreams = 100000;
+        parameters.initialMaximumStreamDataUnidirectional      = 1ULL << 30;
+        parameters.initialMaximumBidirectionalStreams          = 100000;
+        parameters.initialMaximumUnidirectionalStreams         = 100000;
 
         auto layer = std::make_unique<Net::QuicStreamLayer>(parameters);
         layer->adoptPeerParameters(parameters);
 
-        static const std::vector<std::uint8_t> requestBody = {'G', 'E', 'T', ' ', '/'};
+        static const std::vector<std::uint8_t> requestBody  = {'G', 'E', 'T', ' ', '/'};
         static const std::vector<std::uint8_t> responseBody = {'2', '0', '0'};
         for (std::uint64_t index = 0; index < completedRequestCount; ++index)
         {
@@ -496,9 +492,9 @@ namespace
 
             Net::QuicStreamFrame incoming;
             incoming.streamId = streamId;
-            incoming.offset = 0;
-            incoming.data = std::span<const std::uint8_t>(requestBody);
-            incoming.isFinal = true;
+            incoming.offset   = 0;
+            incoming.data     = std::span<const std::uint8_t>(requestBody);
+            incoming.isFinal  = true;
             static_cast<void>(layer->onStreamFrame(incoming));
             while (layer->hasDeliveries())
             {
@@ -515,10 +511,10 @@ namespace
             // 把响应编出去并逐轮确认，直到这条流两侧都收口（下一轮 collectFrames 时会摘掉记录）
             for (int round = 0; round < 4; ++round)
             {
-                std::string frames;
-                std::vector<Net::QuicStreamRange> sentRanges;
+                std::string                              frames;
+                std::vector<Net::QuicStreamRange>        sentRanges;
                 std::vector<Net::QuicStreamAnnouncement> announcements;
-                const bool hasFrames = layer->collectFrames(frames, 1200U, sentRanges, announcements);
+                const bool                               hasFrames = layer->collectFrames(frames, 1200U, sentRanges, announcements);
                 layer->onSendRangesAcknowledged(sentRanges);
                 if (!announcements.empty())
                 {
@@ -546,13 +542,9 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<BenchAccountRow>
 {
     static constexpr std::string_view kTableName = "bench_accounts";
-    static constexpr auto kColumns = std::tuple{
-        Column(&BenchAccountRow::id, "id"),
-        Column(&BenchAccountRow::label, "label"),
-        Column(&BenchAccountRow::note, "note"),
-        Column(&BenchAccountRow::payload, "payload"),
-        Column(&BenchAccountRow::quantity, "quantity"),
-        Column(&BenchAccountRow::price, "price"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&BenchAccountRow::id, "id"),           Column(&BenchAccountRow::label, "label"),       Column(&BenchAccountRow::note, "note"),
+            Column(&BenchAccountRow::payload, "payload"), Column(&BenchAccountRow::quantity, "quantity"), Column(&BenchAccountRow::price, "price"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -574,22 +566,22 @@ int main(int argumentCount, char **argumentValues)
 
     std::vector<CaseResult> results;
     results.reserve(8);
-    std::uint64_t checksum = 0;
-    int failureCount = 0;
+    std::uint64_t checksum     = 0;
+    int           failureCount = 0;
 
     // 请求头块的编/解码器在用例外建好并复用：被测的是稳态（同一连接反复用同一个编解码器），
     // 每次迭代都新建的话量到的是构造开销，不是热路径
     const std::vector<Net::HpackHeaderField> headerFields = makeRequestHeaderFields();
-    Net::HpackEncoder encoder;
-    Net::HpackDecoder decoder;
-    std::vector<Net::HpackHeaderField> decodedHeaderFields;
+    Net::HpackEncoder                        encoder;
+    Net::HpackDecoder                        decoder;
+    std::vector<Net::HpackHeaderField>       decodedHeaderFields;
 
     // HPACK 的动态表是收发两侧同步的：编码器把命名对插进自己的表之后，后续只发索引，
     // 解码器必须见过同一批插入才能解出同样的字段。这里先让两侧各走一轮同样的插入把表对齐——
     // 这正是真实连接上的样子（双方都从空表开始）——否则解码器拿到的是指向它自己空表的索引，
     // 必然判错，量的就成了失败路径（首次写这份基准时正是自检把这种情况挡了下来）
-    const std::string hpackPrimingBlock = encoder.encode(headerFields);
-    const bool isHpackTablePrimed = decoder.decode(hpackPrimingBlock, decodedHeaderFields, nullptr);
+    const std::string hpackPrimingBlock  = encoder.encode(headerFields);
+    const bool        isHpackTablePrimed = decoder.decode(hpackPrimingBlock, decodedHeaderFields, nullptr);
     if (!isHpackTablePrimed)
     {
         std::printf("  警告：HPACK 动态表对齐失败，解码用例的结果不可信\n");
@@ -676,7 +668,7 @@ int main(int argumentCount, char **argumentValues)
 
     {
         // 先自检两种走法的产出等价，再开始计时（不等价说明用例本身写错了，数字没有意义）
-        Net::HttpResponse selfCheckResponse = makeH3ResponseFixture();
+        Net::HttpResponse                  selfCheckResponse = makeH3ResponseFixture();
         std::vector<Net::QpackHeaderField> legacyFields;
         legacyFields.reserve(selfCheckResponse.headers().size() + 3U);
         for (const auto &headerEntry: selfCheckResponse.headers())
@@ -687,9 +679,8 @@ int main(int argumentCount, char **argumentValues)
             }
         }
         std::vector<Net::QpackHeaderField> orderedFields;
-        selfCheckResponse.forEachHeaderField(
-                [&orderedFields](const std::string_view headerName, const std::string_view headerValue)
-                { orderedFields.push_back(Net::QpackHeaderField{std::string(headerName), std::string(headerValue)}); });
+        selfCheckResponse.forEachHeaderField([&orderedFields](const std::string_view headerName, const std::string_view headerValue)
+                                             { orderedFields.push_back(Net::QpackHeaderField{std::string(headerName), std::string(headerValue)}); });
         if (fieldLineFingerprint(legacyFields) != fieldLineFingerprint(orderedFields))
         {
             std::printf("  警告：h3 采集器两例的产出不等价，其结果不可信\n");
@@ -746,39 +737,35 @@ int main(int argumentCount, char **argumentValues)
     // 这里刻意用「整段都命中静态表」的字段行（三项都是 RFC 9204 附录 A 的整项）：一次插入都不产生，
     // 也就没有未确认段与引用的累积，量出来的才是稳态而不是越跑越慢的记账
     const std::vector<Net::QpackHeaderField> qpackStaticHitFields = {
-        Net::QpackHeaderField{.name = ":status", .value = "200"},
-        Net::QpackHeaderField{.name = "content-type", .value = "application/json"},
-        Net::QpackHeaderField{.name = "content-length", .value = "0"},
+            Net::QpackHeaderField{.name = ":status", .value = "200"},
+            Net::QpackHeaderField{.name = "content-type", .value = "application/json"},
+            Net::QpackHeaderField{.name = "content-length", .value = "0"},
     };
     Net::QpackEncoder qpackEncoder(4096, 100, 4096);
     std::string       qpackHeaderBlock;
     std::string       qpackEncoderStreamBytes;
-    static_cast<void>(qpackEncoder.encodeFieldSection(0, std::span<const Net::QpackHeaderField>{qpackStaticHitFields},
-                                                      qpackHeaderBlock, qpackEncoderStreamBytes));
+    static_cast<void>(qpackEncoder.encodeFieldSection(0, std::span<const Net::QpackHeaderField>{qpackStaticHitFields}, qpackHeaderBlock, qpackEncoderStreamBytes));
     measureCase(
             "qpack-encode",
             [&qpackEncoder, &qpackStaticHitFields, &qpackHeaderBlock, &qpackEncoderStreamBytes]
             {
-                static_cast<void>(qpackEncoder.encodeFieldSection(0, std::span<const Net::QpackHeaderField>{qpackStaticHitFields},
-                                                                  qpackHeaderBlock, qpackEncoderStreamBytes));
+                static_cast<void>(qpackEncoder.encodeFieldSection(0, std::span<const Net::QpackHeaderField>{qpackStaticHitFields}, qpackHeaderBlock, qpackEncoderStreamBytes));
                 return qpackHeaderBlock.size();
             },
             results, checksum, failureCount);
 
     // 解码侧要按 h3 的口径把 Section Ack 还回去才算收口：这里每轮都调 noteFieldSectionDelivered，
     // 与真实连接上「解完一段就交付」一致，不至于让挂起记录越积越多
-    const Net::QpackDecoderSettings qpackDecoderSettings{
-        .maximumTableCapacityByteCount = 4096, .maximumBlockedStreamCount = 100, .maximumFieldSectionSizeByteCount = 16384};
-    Net::QpackDecoder       qpackDecoder(qpackDecoderSettings);
+    const Net::QpackDecoderSettings    qpackDecoderSettings{.maximumTableCapacityByteCount = 4096, .maximumBlockedStreamCount = 100, .maximumFieldSectionSizeByteCount = 16384};
+    Net::QpackDecoder                  qpackDecoder(qpackDecoderSettings);
     std::vector<Net::QpackHeaderField> qpackDecodedFields;
     std::string                        qpackDecoderStreamBytes;
     measureCase(
             "qpack-decode",
             [&qpackDecoder, &qpackHeaderBlock, &qpackDecodedFields, &qpackDecoderStreamBytes]
             {
-                const std::span<const std::uint8_t> sectionBytes(reinterpret_cast<const std::uint8_t *>(qpackHeaderBlock.data()),
-                                                                 qpackHeaderBlock.size());
-                const auto decoded = qpackDecoder.decodeFieldSection(0, sectionBytes, qpackDecodedFields, qpackDecoderStreamBytes);
+                const std::span<const std::uint8_t> sectionBytes(reinterpret_cast<const std::uint8_t *>(qpackHeaderBlock.data()), qpackHeaderBlock.size());
+                const auto                          decoded = qpackDecoder.decodeFieldSection(0, sectionBytes, qpackDecodedFields, qpackDecoderStreamBytes);
                 if (!decoded || *decoded != Net::QpackFieldSectionDecodeStatus::Decoded)
                 {
                     return std::size_t{0};
@@ -792,9 +779,9 @@ int main(int argumentCount, char **argumentValues)
     // h3 出站 DATA 帧的两种排法（生产改动的正是这一处）：旧写法先把载荷拼进一份临时 string
     // 再整段搬进该流的待发缓冲，新写法直接拼进待发缓冲。两例都从「缓冲已清空」起步，
     // 差的只在那一趟载荷往返
-    const std::vector<std::uint8_t> dataFramePayload(16 * 1024, 0x5a);
+    const std::vector<std::uint8_t>     dataFramePayload(16 * 1024, 0x5a);
     const std::span<const std::uint8_t> dataFramePayloadView{dataFramePayload.data(), dataFramePayload.size()};
-    std::string outboundBuffer;
+    std::string                         outboundBuffer;
     measureCase(
             "h3-data-frame-via-temporary",
             [&outboundBuffer, &dataFramePayloadView]
@@ -906,13 +893,8 @@ int main(int argumentCount, char **argumentValues)
     // 短串内联，两例都一次分配也不碰，量的就不是生产形状）。旧写法是「substr 成片段 → 拼进 body
     // → 拼进临时帧串 → 搬进待发缓冲」，新写法直接拼进待发缓冲；两例产出必须逐字相同，否则量的就是两回事
     const std::vector<Net::HpackHeaderField> responseHeaderFields = {
-            {":status", "200"},
-            {"content-type", "application/json; charset=utf-8"},
-            {"content-length", "1024"},
-            {"date", "Sun, 20 Sep 2026 12:34:56 GMT"},
-            {"server", "AsynGyanis/1.2"},
-            {"x-request-id", "9f14e45fceea167a5a36dedd4bea2543"},
-            {"cache-control", "no-store"},
+            {":status", "200"},           {"content-type", "application/json; charset=utf-8"},  {"content-length", "1024"},    {"date", "Sun, 20 Sep 2026 12:34:56 GMT"},
+            {"server", "AsynGyanis/1.2"}, {"x-request-id", "9f14e45fceea167a5a36dedd4bea2543"}, {"cache-control", "no-store"},
     };
     Net::HpackEncoder firstResponseEncoder;
     const std::string responseHeaderBlock = firstResponseEncoder.encode(responseHeaderFields);
@@ -922,8 +904,8 @@ int main(int argumentCount, char **argumentValues)
     }
     {
         Net::Http2HeadersPayload selfCheckPayload;
-        selfCheckPayload.endStream = true;
-        selfCheckPayload.endHeaders = true;
+        selfCheckPayload.endStream           = true;
+        selfCheckPayload.endHeaders          = true;
         selfCheckPayload.headerBlockFragment = responseHeaderBlock;
         std::string legacyRoute;
         legacyRoute.append(Net::encodeHttp2HeadersFrame(selfCheckPayload, 1U));
@@ -931,8 +913,7 @@ int main(int argumentCount, char **argumentValues)
         Net::appendHttp2HeadersFrame(directRoute, responseHeaderBlock, true, true, 1U);
         if (legacyRoute != directRoute)
         {
-            std::printf("  警告：h2 HEADERS 两种排法产出不一致，消融对照失去意义（旧 %zu 字节 / 新 %zu 字节）\n",
-                        legacyRoute.size(), directRoute.size());
+            std::printf("  警告：h2 HEADERS 两种排法产出不一致，消融对照失去意义（旧 %zu 字节 / 新 %zu 字节）\n", legacyRoute.size(), directRoute.size());
         }
         std::printf("  h2-head-frame-block-bytes = %zu\n", responseHeaderBlock.size());
     }
@@ -973,7 +954,7 @@ int main(int argumentCount, char **argumentValues)
             [&metadataProbePath]
             {
                 std::error_code errorCode;
-                std::size_t fingerprint = std::filesystem::is_regular_file(metadataProbePath, errorCode) ? 1U : 0U;
+                std::size_t     fingerprint = std::filesystem::is_regular_file(metadataProbePath, errorCode) ? 1U : 0U;
                 fingerprint += static_cast<std::size_t>(std::filesystem::file_size(metadataProbePath, errorCode));
                 const std::filesystem::file_time_type lastWriteTime = std::filesystem::last_write_time(metadataProbePath, errorCode);
                 fingerprint += static_cast<std::size_t>(lastWriteTime.time_since_epoch().count() >> 7);
@@ -997,7 +978,7 @@ int main(int argumentCount, char **argumentValues)
     // 静态路径剩下的另一块每请求系统调用：把文件映射进来再解除。量它才知道「映射缓存」这项
     // 有意未做的事值不值——它与上面那次元数据查询相加，才是每请求在文件系统上的全部开销
     const std::filesystem::path mappingProbePath = std::filesystem::temp_directory_path() / "asyngyanis-microbench-mmap.txt";
-    std::string mappingProbeBytes;
+    std::string                 mappingProbeBytes;
     {
         mappingProbeBytes.assign(64 * 1024, 'x');
         std::ofstream mappingFile(mappingProbePath, std::ios::binary | std::ios::trunc);
@@ -1009,9 +990,9 @@ int main(int argumentCount, char **argumentValues)
             {
                 // 每轮真的打开再解除映射：这正是一条静态响应在文件系统上的收尾开销，
                 // 缓存命中时要省的也就是这一段
-                Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(mappingProbePath);
-                const std::size_t mappedLength = mappedFile.bytes().size();
-                mappedFile = Platform::MemoryMappedFile{};
+                Platform::MemoryMappedFile mappedFile   = Platform::MemoryMappedFile::open(mappingProbePath);
+                const std::size_t          mappedLength = mappedFile.bytes().size();
+                mappedFile                              = Platform::MemoryMappedFile{};
                 return mappedLength;
             },
             results, checksum, failureCount);
@@ -1021,8 +1002,8 @@ int main(int argumentCount, char **argumentValues)
             {
                 Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(mappingProbePath);
                 // 首触缺页：映射成功后按页读一遍，等价于发送路径真的把这些字节交出去
-                std::size_t touched = 0;
-                const std::span<const std::byte> bytes = mappedFile.bytes();
+                std::size_t                      touched = 0;
+                const std::span<const std::byte> bytes   = mappedFile.bytes();
                 for (std::size_t offset = 0; offset < bytes.size(); offset += 4096)
                 {
                     touched += std::to_integer<std::size_t>(bytes[offset]);
@@ -1044,7 +1025,7 @@ int main(int argumentCount, char **argumentValues)
             "static-small-file-read",
             [&smallFilePath]
             {
-                std::string body(4096, '\0');
+                std::string   body(4096, '\0');
                 std::ifstream file(smallFilePath, std::ios::in | std::ios::binary);
                 if (!file.is_open())
                 {
@@ -1058,9 +1039,9 @@ int main(int argumentCount, char **argumentValues)
             "static-small-file-mmap",
             [&smallFilePath]
             {
-                Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(smallFilePath);
-                const std::size_t mappedLength = mappedFile.bytes().size();
-                mappedFile = Platform::MemoryMappedFile{};
+                Platform::MemoryMappedFile mappedFile   = Platform::MemoryMappedFile::open(smallFilePath);
+                const std::size_t          mappedLength = mappedFile.bytes().size();
+                mappedFile                              = Platform::MemoryMappedFile{};
                 return mappedLength;
             },
             results, checksum, failureCount);
@@ -1070,9 +1051,9 @@ int main(int argumentCount, char **argumentValues)
     // readFileContentsInto），两档大小各测「复用缓冲」与「每次新建缓冲」两条——后者才是
     // 把正文缓冲改成随响应复用之前真正的样子，两档相减就是那次改动省掉的分配量。
     // 上面那对 static-small-file-* 用的是 std::ifstream，不代表现在的服务端走法
-    const std::filesystem::path bodyProbePath = std::filesystem::temp_directory_path() / "asyngyanis-microbench-body.bin";
-    constexpr std::size_t kSmallBodyBytes = 4 * 1024;
-    constexpr std::size_t kLargeBodyBytes = 256 * 1024;
+    const std::filesystem::path bodyProbePath   = std::filesystem::temp_directory_path() / "asyngyanis-microbench-body.bin";
+    constexpr std::size_t       kSmallBodyBytes = 4 * 1024;
+    constexpr std::size_t       kLargeBodyBytes = 256 * 1024;
     {
         std::ofstream bodyFile(bodyProbePath, std::ios::binary | std::ios::trunc);
         bodyFile << std::string(kLargeBodyBytes, 'b');
@@ -1082,8 +1063,7 @@ int main(int argumentCount, char **argumentValues)
             "static-body-read-4k-reused",
             [&bodyProbePath, &reusedBodyBuffer]
             {
-                const std::expected<std::size_t, std::error_code> readResult =
-                        Platform::readFileContentsInto(bodyProbePath, 0, kSmallBodyBytes, reusedBodyBuffer);
+                const std::expected<std::size_t, std::error_code> readResult = Platform::readFileContentsInto(bodyProbePath, 0, kSmallBodyBytes, reusedBodyBuffer);
                 return readResult.has_value() ? *readResult : std::size_t{0};
             },
             results, checksum, failureCount);
@@ -1091,9 +1071,8 @@ int main(int argumentCount, char **argumentValues)
             "static-body-read-4k-fresh-buffer",
             [&bodyProbePath]
             {
-                std::string freshBuffer;
-                const std::expected<std::size_t, std::error_code> readResult =
-                        Platform::readFileContentsInto(bodyProbePath, 0, kSmallBodyBytes, freshBuffer);
+                std::string                                       freshBuffer;
+                const std::expected<std::size_t, std::error_code> readResult = Platform::readFileContentsInto(bodyProbePath, 0, kSmallBodyBytes, freshBuffer);
                 return readResult.has_value() ? *readResult : std::size_t{0};
             },
             results, checksum, failureCount);
@@ -1101,8 +1080,7 @@ int main(int argumentCount, char **argumentValues)
             "static-body-read-256k-reused",
             [&bodyProbePath, &reusedBodyBuffer]
             {
-                const std::expected<std::size_t, std::error_code> readResult =
-                        Platform::readFileContentsInto(bodyProbePath, 0, kLargeBodyBytes, reusedBodyBuffer);
+                const std::expected<std::size_t, std::error_code> readResult = Platform::readFileContentsInto(bodyProbePath, 0, kLargeBodyBytes, reusedBodyBuffer);
                 return readResult.has_value() ? *readResult : std::size_t{0};
             },
             results, checksum, failureCount);
@@ -1110,9 +1088,8 @@ int main(int argumentCount, char **argumentValues)
             "static-body-read-256k-fresh-buffer",
             [&bodyProbePath]
             {
-                std::string freshBuffer;
-                const std::expected<std::size_t, std::error_code> readResult =
-                        Platform::readFileContentsInto(bodyProbePath, 0, kLargeBodyBytes, freshBuffer);
+                std::string                                       freshBuffer;
+                const std::expected<std::size_t, std::error_code> readResult = Platform::readFileContentsInto(bodyProbePath, 0, kLargeBodyBytes, freshBuffer);
                 return readResult.has_value() ? *readResult : std::size_t{0};
             },
             results, checksum, failureCount);
@@ -1122,7 +1099,7 @@ int main(int argumentCount, char **argumentValues)
     // 以及只查 MIME、路径已经是窄字符串的情形。两行之差就是「给 contentTypeForFile 加一个
     // string_view 入口」理论上能省下的全部
     const std::filesystem::path mimeProbePath = bodyProbePath.parent_path() / "asyngyanis-microbench-index.html";
-    const std::string mimeProbeText = mimeProbePath.string();
+    const std::string           mimeProbeText = mimeProbePath.string();
     measureCase(
             "mime-lookup-from-path",
             [&mimeProbePath]
@@ -1156,33 +1133,33 @@ int main(int argumentCount, char **argumentValues)
             results, checksum, failureCount);
 
     const std::string http1RequestText = makeHttp1RequestText();
-    Net::HttpParser parser;
+    Net::HttpParser   parser;
     measureCase(
             "http1-parse-request",
             [&parser, &http1RequestText]
             {
                 // 解析器一条报文一份状态：拿到 Done 之后必须 reset() 才能接着解析下一条，
                 // 不复位的话第二次喂入一个字节都不吃，量出来的是空转
-                const Net::ParseStatus status = parser.parse(http1RequestText.data(), http1RequestText.size());
-                const std::size_t consumed = status == Net::ParseStatus::Done ? parser.consumedByteCount() : 0;
+                const Net::ParseStatus status   = parser.parse(http1RequestText.data(), http1RequestText.size());
+                const std::size_t      consumed = status == Net::ParseStatus::Done ? parser.consumedByteCount() : 0;
                 parser.reset();
                 return consumed;
             },
             results, checksum, failureCount);
 
-    const std::string http2HeadersFrameText = makeHttp2HeadersFrameText();
+    const std::string      http2HeadersFrameText = makeHttp2HeadersFrameText();
     Net::Http2FrameDecoder frameDecoder;
     measureCase(
             "http2-frame-decode",
             [&frameDecoder, &http2HeadersFrameText]
             {
                 // 与解析器同理：产出帧必须取走、错误态必须复位，否则后续喂入一律不消费
-                const Net::Http2FrameDecodeStatus status = frameDecoder.parse(http2HeadersFrameText.data(), http2HeadersFrameText.size());
-                std::size_t payloadLength = 0;
+                const Net::Http2FrameDecodeStatus status        = frameDecoder.parse(http2HeadersFrameText.data(), http2HeadersFrameText.size());
+                std::size_t                       payloadLength = 0;
                 if (status == Net::Http2FrameDecodeStatus::Frame)
                 {
                     const Net::Http2Frame frame = frameDecoder.takeFrame();
-                    payloadLength = frame.payload.size();
+                    payloadLength               = frame.payload.size();
                 }
                 frameDecoder.reset();
                 return payloadLength;
@@ -1262,10 +1239,7 @@ int main(int argumentCount, char **argumentValues)
     steadyPoolConfiguration.idleTimeoutSeconds         = 3600;
     steadyPoolConfiguration.maximumLifetimeSeconds     = 3600;
     steadyPoolConfiguration.healthCheckIntervalSeconds = 3600; // 后台驱逐不参与这两例的时序
-    const auto makeStubConnection = []() -> std::unique_ptr<Database::DatabaseConnection>
-    {
-        return std::make_unique<StubConnection>();
-    };
+    const auto makeStubConnection                      = []() -> std::unique_ptr<Database::DatabaseConnection> { return std::make_unique<StubConnection>(); };
 
     Database::ConnectionPool steadyPool(makeStubConnection, steadyPoolConfiguration);
     measureCase(
@@ -1278,7 +1252,7 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
 
-    Database::PoolConfig churnPoolConfiguration = steadyPoolConfiguration;
+    Database::PoolConfig churnPoolConfiguration   = steadyPoolConfiguration;
     churnPoolConfiguration.maximumLifetimeSeconds = 0;
     Database::ConnectionPool churnPool(makeStubConnection, churnPoolConfiguration);
     measureCase(
@@ -1298,8 +1272,7 @@ int main(int argumentCount, char **argumentValues)
     if (benchDatabase == nullptr)
     {
         std::printf("  跳过 SQLite 两例：内存库没建起来\n");
-    }
-    else
+    } else
     {
         std::array<Database::DatabaseValue, 1> keyParameters{std::int64_t{0}};
         // 占位符顺序就是绑定顺序：这条 SQL 里第一个 ? 是 label、第二个才是 id，摆反了会一行都不命中
@@ -1311,8 +1284,8 @@ int main(int argumentCount, char **argumentValues)
                 [&benchDatabase, &keyParameters, &benchCursor]() -> std::uint64_t
                 {
                     keyParameters[0] = static_cast<std::int64_t>(benchCursor = (benchCursor + 1) % kBenchRowCount);
-                    const std::unique_ptr<Database::DatabaseResult> result = benchDatabase->execute(
-                            "SELECT label FROM bench WHERE id = ?", std::span<const Database::DatabaseValue>(keyParameters));
+                    const std::unique_ptr<Database::DatabaseResult> result =
+                            benchDatabase->execute("SELECT label FROM bench WHERE id = ?", std::span<const Database::DatabaseValue>(keyParameters));
                     if (result == nullptr || !result->next())
                     {
                         return 0U;
@@ -1327,8 +1300,8 @@ int main(int argumentCount, char **argumentValues)
                 [&benchDatabase, &updateParameters, &benchCursor]() -> std::uint64_t
                 {
                     updateParameters[1] = static_cast<std::int64_t>(benchCursor = (benchCursor + 1) % kBenchRowCount);
-                    const std::unique_ptr<Database::DatabaseResult> result = benchDatabase->execute(
-                            "UPDATE bench SET label = ? WHERE id = ?", std::span<const Database::DatabaseValue>(updateParameters));
+                    const std::unique_ptr<Database::DatabaseResult> result =
+                            benchDatabase->execute("UPDATE bench SET label = ? WHERE id = ?", std::span<const Database::DatabaseValue>(updateParameters));
                     if (result == nullptr)
                     {
                         return 0U;
@@ -1345,8 +1318,7 @@ int main(int argumentCount, char **argumentValues)
     if (ormPool == nullptr)
     {
         std::printf("  跳过 ORM 三例：内存库没建起来\n");
-    }
-    else
+    } else
     {
         int ormCursor = 0;
         measureCase(
@@ -1356,13 +1328,11 @@ int main(int argumentCount, char **argumentValues)
                     try
                     {
                         Database::Queryable::Queryable<BenchAccountRow> query(*ormPool);
-                        query.where(Database::Queryable::Column(&BenchAccountRow::id, "id")
-                                    == static_cast<std::int64_t>(ormCursor = (ormCursor + 1) % kOrmBenchRowCount));
+                        query.where(Database::Queryable::Column(&BenchAccountRow::id, "id") == static_cast<std::int64_t>(ormCursor = (ormCursor + 1) % kOrmBenchRowCount));
                         const std::optional<BenchAccountRow> row = query.first();
                         // 真把文本列取出来：只判有没有命中的话，逐列取值与类型转换都不在计时里
                         return row.has_value() ? row->label.size() + row->payload.size() : 0U;
-                    }
-                    catch (const std::exception &)
+                    } catch (const std::exception &)
                     {
                         return 0U;
                     }
@@ -1370,8 +1340,8 @@ int main(int argumentCount, char **argumentValues)
                 results, checksum, failureCount);
 
         // 20 行与 50 行成对：两档的差值就是「每多一行」的边际成本，也是判断映射路径是否仍在按行分配的依据
-        const auto measureOrmList = [&ormPool](const std::string_view caseName, const std::size_t rowLimit,
-                                               std::vector<CaseResult> &results, std::uint64_t &checksum, int &failureCount)
+        const auto measureOrmList =
+                [&ormPool](const std::string_view caseName, const std::size_t rowLimit, std::vector<CaseResult> &results, std::uint64_t &checksum, int &failureCount)
         {
             measureCase(
                     std::string(caseName),
@@ -1382,15 +1352,14 @@ int main(int argumentCount, char **argumentValues)
                             Database::Queryable::Queryable<BenchAccountRow> query(*ormPool);
                             query.orderBy(Database::Queryable::asc("id"));
                             query.limit(rowLimit);
-                            std::vector<BenchAccountRow> rows = query.toList();
-                            std::uint64_t payloadBytes = 0U;
+                            std::vector<BenchAccountRow> rows         = query.toList();
+                            std::uint64_t                payloadBytes = 0U;
                             for (const BenchAccountRow &row: rows)
                             {
                                 payloadBytes += row.label.size() + row.note.size() + row.payload.size();
                             }
                             return payloadBytes;
-                        }
-                        catch (const std::exception &)
+                        } catch (const std::exception &)
                         {
                             return 0U;
                         }
@@ -1403,28 +1372,23 @@ int main(int argumentCount, char **argumentValues)
 
     // 方言纯文本合成本：一次多行 INSERT 的组帧。这一例不碰驱动也不碰结果集，量到的全是「每占位符」的成本，
     // 因此占位符渲染方式（每格一个临时串还是一次 push_back）在这里能直接读出来
-    const std::shared_ptr<Database::SqlDialect> batchDialect =
-            Database::DialectRegistry::dialectFor(Database::DatabaseType::Sqlite);
-    Database::Queryable::QueryNode batchNode;
+    const std::shared_ptr<Database::SqlDialect> batchDialect = Database::DialectRegistry::dialectFor(Database::DatabaseType::Sqlite);
+    Database::Queryable::QueryNode              batchNode;
     batchNode.tableName     = "bench_accounts";
     batchNode.selectColumns = {"id", "label", "note", "payload", "quantity", "price"};
-    std::vector<std::vector<Database::DatabaseValue> > batchRows;
+    std::vector<std::vector<Database::DatabaseValue>> batchRows;
     batchRows.reserve(static_cast<std::size_t>(kDialectBatchRowCount));
     for (int rowIndex = 0; rowIndex < kDialectBatchRowCount; ++rowIndex)
     {
-        batchRows.emplace_back(std::vector<Database::DatabaseValue>{static_cast<std::int64_t>(rowIndex),
-                                                                   std::string("bench-account-label-value"),
-                                                                   std::string("bench-account-note-value"),
-                                                                   std::string("bench-account-payload-value"),
-                                                                   static_cast<std::int64_t>(rowIndex),
-                                                                   1.5});
+        batchRows.emplace_back(std::vector<Database::DatabaseValue>{static_cast<std::int64_t>(rowIndex), std::string("bench-account-label-value"),
+                                                                    std::string("bench-account-note-value"), std::string("bench-account-payload-value"),
+                                                                    static_cast<std::int64_t>(rowIndex), 1.5});
     }
     measureCase(
             "dialect-insert-batch-150-rows",
             [&batchDialect, &batchNode, &batchRows]() -> std::uint64_t
             {
-                const Database::SqlStatement statement =
-                        batchDialect->translateInsertBatch(batchNode, std::span<const std::vector<Database::DatabaseValue> >(batchRows));
+                const Database::SqlStatement statement = batchDialect->translateInsertBatch(batchNode, std::span<const std::vector<Database::DatabaseValue>>(batchRows));
                 // 参数个数当自检证据：少一个就说明渲染与收集不同源，量到的只是半条语句
                 return statement.parameters.size() == batchRows.size() * 6U ? static_cast<std::uint64_t>(statement.sql.size()) : 0U;
             },
@@ -1435,16 +1399,16 @@ int main(int argumentCount, char **argumentValues)
     // 这里按「装好 10 条头部 → 查 1 次」与「查 5 次」两种形态各测一例，
     // 装头部是两侧共同的本底开销，只用于把视图标脏，不参与差异
     const std::vector<std::pair<std::string, std::string>> headerFixtures = {
-        {"host", "api.example.com"},
-        {"user-agent", "curl/8.7.1"},
-        {"accept", "*/*"},
-        {"content-type", "application/json"},
-        {"content-length", "64"},
-        {"accept-encoding", "gzip, deflate, br"},
-        {"authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"},
-        {"x-request-id", "0001-0000000000000abc"},
-        {"connection", "keep-alive, Upgrade"},
-        {"cookie", "session=8f14e45fceea167a5a36dedd4bea2543; theme=dark"},
+            {"host", "api.example.com"},
+            {"user-agent", "curl/8.7.1"},
+            {"accept", "*/*"},
+            {"content-type", "application/json"},
+            {"content-length", "64"},
+            {"accept-encoding", "gzip, deflate, br"},
+            {"authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"},
+            {"x-request-id", "0001-0000000000000abc"},
+            {"connection", "keep-alive, Upgrade"},
+            {"cookie", "session=8f14e45fceea167a5a36dedd4bea2543; theme=dark"},
     };
     const auto refillHeaderStore = [&headerFixtures](Net::HttpHeaderFieldStore &store)
     {
@@ -1464,7 +1428,7 @@ int main(int argumentCount, char **argumentValues)
                 // 对照例：只装 10 条头部不查，用来把下面两例的共同本底开销扣掉
                 refillHeaderStore(singleLookupStore);
                 // 存储交出的是「字节缓冲 + 偏移」，不再交出 owning 容器；这里只要求常数级的自检
-                //（非空即说明装进去过），逐条点数会把一趟遍历算进本底读数里
+                // （非空即说明装进去过），逐条点数会把一趟遍历算进本底读数里
                 return singleLookupStore.empty() ? 0U : 1U;
             },
             results, checksum, failureCount);
@@ -1507,9 +1471,7 @@ int main(int argumentCount, char **argumentValues)
             {
                 refillHeaderStore(tokenStore);
                 // 改后形态：在存储内部逐段比对，不构造取值列表
-                return tokenStore.containsListToken("connection", "keep-alive")
-                               ? std::size_t{1}
-                               : std::size_t{0};
+                return tokenStore.containsListToken("connection", "keep-alive") ? std::size_t{1} : std::size_t{0};
             },
             results, checksum, failureCount);
 
@@ -1636,8 +1598,7 @@ int main(int argumentCount, char **argumentValues)
             [&corsResponse]
             {
                 // setHeader 返回 false 表示被拒（自检据此判定用例没走成功路径）
-                return corsResponse.setHeader("Access-Control-Allow-Origin", "https://example.com") ? std::size_t{1}
-                                                                                                    : std::size_t{0};
+                return corsResponse.setHeader("Access-Control-Allow-Origin", "https://example.com") ? std::size_t{1} : std::size_t{0};
             },
             results, checksum, failureCount);
 
@@ -1647,9 +1608,7 @@ int main(int argumentCount, char **argumentValues)
     //  · get：GET 撞方法闸直接返回，不再跑整表扫描、也不再让通配路由把整段路径拷成 std::string；
     //  · post-param：POST 命中 ":id" 流式路由仍走匹配，但参数收集被关掉（免去键值各一次字符串构造）。
     Net::Router streamingRouter;
-    const auto noOpHandler = []([[maybe_unused]] Net::HttpRequest &request,
-                                [[maybe_unused]] Net::HttpResponse &response) -> Core::Task<void>
-    { co_return; };
+    const auto  noOpHandler = []([[maybe_unused]] Net::HttpRequest &request, [[maybe_unused]] Net::HttpResponse &response) -> Core::Task<void> { co_return; };
     streamingRouter.postStreaming("/upload/:id", noOpHandler);
     streamingRouter.get("/api/users/:id", noOpHandler);
     streamingRouter.post("/api/orders/:id", noOpHandler);
@@ -1659,8 +1618,7 @@ int main(int argumentCount, char **argumentValues)
             [&streamingRouter]
             {
                 // 累加进返回值：既保证这次跨库调用不被优化掉，又让自检把它认作成功路径（恒非 0）
-                return std::size_t{1} + static_cast<std::size_t>(
-                        streamingRouter.hasStreamingRoute(Net::HttpMethod::GET, "/static/css/main.css"));
+                return std::size_t{1} + static_cast<std::size_t>(streamingRouter.hasStreamingRoute(Net::HttpMethod::GET, "/static/css/main.css"));
             },
             results, checksum, failureCount);
     measureCase(
@@ -1668,8 +1626,7 @@ int main(int argumentCount, char **argumentValues)
             [&streamingRouter]
             {
                 // POST 命中 /upload/:id 的流式路由 → true（非 0）；量的是「匹配但不收集参数」这条
-                return streamingRouter.hasStreamingRoute(Net::HttpMethod::POST, "/upload/42") ? std::size_t{1}
-                                                                                              : std::size_t{0};
+                return streamingRouter.hasStreamingRoute(Net::HttpMethod::POST, "/upload/42") ? std::size_t{1} : std::size_t{0};
             },
             results, checksum, failureCount);
 
@@ -1677,8 +1634,7 @@ int main(int argumentCount, char **argumentValues)
     // 「命中精确路由」与「扫过模式候选并收下 :id」——参数收集表按候选新建还是跨候选复用，
     // 显形的正是后一例：候选每多扫一条，旧写法就多一张空哈希表（MSVC 上每张两次堆块取还）
     Net::Router dispatchRouter;
-    const auto createdHandler = []([[maybe_unused]] Net::HttpRequest &request,
-                                   Net::HttpResponse &response) -> Core::Task<void>
+    const auto  createdHandler = []([[maybe_unused]] Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<void>
     {
         response.setStatus(201);
         co_return;
@@ -1686,9 +1642,9 @@ int main(int argumentCount, char **argumentValues)
     dispatchRouter.get("/health", createdHandler);
     dispatchRouter.get("/i/:id", createdHandler);
     dispatchRouter.get("/o/:id/status", createdHandler);
-    Net::HttpRequest dispatchRequest;
+    Net::HttpRequest  dispatchRequest;
     Net::HttpResponse dispatchResponse;
-    const auto routeOnce = [&dispatchRouter, &dispatchRequest, &dispatchResponse](const std::string_view uri)
+    const auto        routeOnce = [&dispatchRouter, &dispatchRequest, &dispatchResponse](const std::string_view uri)
     {
         // 对象按连接复用：每轮 reset 后按新报文填回，URI 短到进小串内联，不额外造堆块
         dispatchRequest.reset();
@@ -1701,20 +1657,8 @@ int main(int argumentCount, char **argumentValues)
         // 状态码由处理函数写下：没跑完或没命中都会留成别的值，自检据此判失败
         return routeTask.isReady() && dispatchResponse.status() == 201 ? std::size_t{1} : std::size_t{0};
     };
-    measureCase(
-            "router-route-exact",
-            [&routeOnce]
-            {
-                return routeOnce("/health");
-            },
-            results, checksum, failureCount);
-    measureCase(
-            "router-route-pattern",
-            [&routeOnce]
-            {
-                return routeOnce("/o/42/status");
-            },
-            results, checksum, failureCount);
+    measureCase("router-route-exact", [&routeOnce] { return routeOnce("/health"); }, results, checksum, failureCount);
+    measureCase("router-route-pattern", [&routeOnce] { return routeOnce("/o/42/status"); }, results, checksum, failureCount);
 
     // WebSocket permessage-deflate 单条消息压缩：会话每发一条压缩消息都要走一次。改前每条都
     // deflateInit2/End（重建约 240KB 内部状态，短消息上比压缩本身还贵），改后复用 thread_local 流、
@@ -1732,9 +1676,9 @@ int main(int argumentCount, char **argumentValues)
     // 入站帧解掩码：服务端每收到一条客户端帧都要按 4 字节循环异或解除掩码（RFC 6455 §5.3），
     // 逐字节 + 表取值挡住向量化。预拼一条 4KiB 掩码帧，计时里只跑 decoder.parse（头部仅 8 字节，
     // 解掩码占满），reset 复用同一解码器落在稳态。这是本会话量「字级解掩码值不值」的对照例
-    const std::string wsUnmaskPlain(4096, 'q');
+    const std::string                 wsUnmaskPlain(4096, 'q');
     const std::array<std::uint8_t, 4> wsUnmaskKey{0xDE, 0xAD, 0xBE, 0xEF};
-    std::string wsMaskedFrame;
+    std::string                       wsMaskedFrame;
     wsMaskedFrame.push_back(static_cast<char>(0x81)); // FIN + text
     wsMaskedFrame.push_back(static_cast<char>(0xFE)); // MASK=1 + 126（16 位扩展长度）
     wsMaskedFrame.push_back(static_cast<char>((4096 >> 8) & 0xFF));
@@ -1745,8 +1689,7 @@ int main(int argumentCount, char **argumentValues)
     }
     for (std::size_t index = 0; index < wsUnmaskPlain.size(); ++index)
     {
-        wsMaskedFrame.push_back(
-                static_cast<char>(static_cast<std::uint8_t>(wsUnmaskPlain[index]) ^ wsUnmaskKey[index % 4]));
+        wsMaskedFrame.push_back(static_cast<char>(static_cast<std::uint8_t>(wsUnmaskPlain[index]) ^ wsUnmaskKey[index % 4]));
     }
     Net::WebSocketFrameDecoder unmaskDecoder;
     measureCase(
@@ -1803,13 +1746,11 @@ int main(int argumentCount, char **argumentValues)
             {
                 // 有界等待：这一跳没落地就返回 0 让自检报红，而不是让整轮基准挂在下一次 wait 上。
                 // 回调按 shared_ptr 持有 promise——超时后本线程先走，迟到的回调写的仍是活着的对象
-                auto arrived = std::make_shared<std::promise<void>>();
+                auto              arrived       = std::make_shared<std::promise<void>>();
                 std::future<void> arrivedFuture = arrived->get_future();
-                wakeupLoop.scheduler().postRemote([arrived]
-                                                  { arrived->set_value(); });
+                wakeupLoop.scheduler().postRemote([arrived] { arrived->set_value(); });
                 constexpr auto kWakeupHopDeadline = std::chrono::seconds{2};
-                return arrivedFuture.wait_for(kWakeupHopDeadline) == std::future_status::ready ? std::size_t{1}
-                                                                                               : std::size_t{0};
+                return arrivedFuture.wait_for(kWakeupHopDeadline) == std::future_status::ready ? std::size_t{1} : std::size_t{0};
             },
             results, checksum, failureCount);
     wakeupThreadPool.stop();
@@ -1818,7 +1759,7 @@ int main(int argumentCount, char **argumentValues)
     // 事件循环线程上——一条响应压多久，同一条循环上别的连接就等多久。按真实响应大小量出「每字节要占
     // 多少纳秒」才知道这个同步成本该不该被搬到工作线程上
     const std::string largeResponseCompressBody = makeResponseLikeBody(256 * 1024);
-    const std::size_t largeResponseBodySize = largeResponseCompressBody.size();
+    const std::size_t largeResponseBodySize     = largeResponseCompressBody.size();
     // 返回 0 即自检失败：压缩不可用、或压完不降反升（级别映射接错、把 0 当成「不压」都会走这条）
     const auto compressedOrZero = [largeResponseBodySize](std::optional<std::string> compressed)
     {
@@ -1829,33 +1770,17 @@ int main(int argumentCount, char **argumentValues)
         return compressed->size();
     };
     measureCase(
-            "gzip-response-compress-256k",
-            [&largeResponseCompressBody, &compressedOrZero]
-            {
-                return compressedOrZero(Net::gzipCompress(largeResponseCompressBody));
-            },
+            "gzip-response-compress-256k", [&largeResponseCompressBody, &compressedOrZero] { return compressedOrZero(Net::gzipCompress(largeResponseCompressBody)); }, results,
+            checksum, failureCount);
+    measureCase(
+            "gzip-response-compress-256k-level1", [&largeResponseCompressBody, &compressedOrZero] { return compressedOrZero(Net::gzipCompress(largeResponseCompressBody, 1)); },
             results, checksum, failureCount);
     measureCase(
-            "gzip-response-compress-256k-level1",
-            [&largeResponseCompressBody, &compressedOrZero]
-            {
-                return compressedOrZero(Net::gzipCompress(largeResponseCompressBody, 1));
-            },
-            results, checksum, failureCount);
+            "zstd-response-compress-256k", [&largeResponseCompressBody, &compressedOrZero] { return compressedOrZero(Net::zstdCompress(largeResponseCompressBody)); }, results,
+            checksum, failureCount);
     measureCase(
-            "zstd-response-compress-256k",
-            [&largeResponseCompressBody, &compressedOrZero]
-            {
-                return compressedOrZero(Net::zstdCompress(largeResponseCompressBody));
-            },
-            results, checksum, failureCount);
-    measureCase(
-            "brotli-response-compress-256k",
-            [&largeResponseCompressBody, &compressedOrZero]
-            {
-                return compressedOrZero(Net::brotliCompress(largeResponseCompressBody));
-            },
-            results, checksum, failureCount);
+            "brotli-response-compress-256k", [&largeResponseCompressBody, &compressedOrZero] { return compressedOrZero(Net::brotliCompress(largeResponseCompressBody)); }, results,
+            checksum, failureCount);
 
     // 时间与压缩比要一起看才做得出「要不要为 gzip-only 的对端降档」这个判断，所以在这里各调一次
     // 把长度打出来（不计入任何用例的计时，也不影响校验和）
@@ -1865,30 +1790,23 @@ int main(int argumentCount, char **argumentValues)
     const std::optional<std::string> brotliRatio        = Net::brotliCompress(largeResponseCompressBody);
     if (gzipRatioReference && gzipRatioLevel1 && zstdRatio && brotliRatio)
     {
-        std::printf("  256 KiB 正文压缩后长度：gzip6=%zu gzip1=%zu zstd3=%zu brotli6=%zu\n",
-                    gzipRatioReference->size(), gzipRatioLevel1->size(), zstdRatio->size(), brotliRatio->size());
+        std::printf("  256 KiB 正文压缩后长度：gzip6=%zu gzip1=%zu zstd3=%zu brotli6=%zu\n", gzipRatioReference->size(), gzipRatioLevel1->size(), zstdRatio->size(),
+                    brotliRatio->size());
     }
 
     // ------------------------------------------------------------------
     // 日志热路径：一条日志从「调用 log()」到「渲成一行人读文本」的成本。
     // 事件循环线程上每请求至少一条，这条路的钱要和 h1 解析同量级才不打扰业务。
     // ------------------------------------------------------------------
-    const Base::LogEvent logEvent{Base::LogLevel::Info, std::chrono::system_clock::now(), "tid-bench",
-                                  Base::SourceLocation("microbench.cpp", 4711, "benchLogFunction"),
-                                  "bench.logger", std::string{kLogMessage}};
+    const Base::LogEvent logEvent{Base::LogLevel::Info, std::chrono::system_clock::now(), "tid-bench", Base::SourceLocation("microbench.cpp", 4711, "benchLogFunction"),
+                                  "bench.logger",       std::string{kLogMessage}};
 
     Base::DefaultFormatter defaultFormatter;
     // 格式化器的两个出口：copy 那条造一个结果串（也是任何自定义格式化器走的路），
     // into 那条直接续写调用方留了容量的缓冲。两者产出逐字相同，只比取堆的次数
     std::string formatterLineBuffer;
     formatterLineBuffer.reserve(256U);
-    measureCase(
-            "log-format-default-copy",
-            [&defaultFormatter, &logEvent]
-            {
-                return defaultFormatter.format(logEvent).size();
-            },
-            results, checksum, failureCount);
+    measureCase("log-format-default-copy", [&defaultFormatter, &logEvent] { return defaultFormatter.format(logEvent).size(); }, results, checksum, failureCount);
     measureCase(
             "log-format-default-into",
             [&defaultFormatter, &logEvent, &formatterLineBuffer]
@@ -1900,13 +1818,7 @@ int main(int argumentCount, char **argumentValues)
             results, checksum, failureCount);
     // JSON 版式仍走 nlohmann DOM（建对象 + 逐字段插入 + dump），留在这里当下一步的对照基数
     Base::JsonFormatter jsonFormatter;
-    measureCase(
-            "log-format-json",
-            [&jsonFormatter, &logEvent]
-            {
-                return jsonFormatter.format(logEvent).size();
-            },
-            results, checksum, failureCount);
+    measureCase("log-format-json", [&jsonFormatter, &logEvent] { return jsonFormatter.format(logEvent).size(); }, results, checksum, failureCount);
 
     /**
      * @brief 收下事件就丢的下游：让异步队列的读数只含「投递 + 消费循环」，不含真实 IO
@@ -1937,8 +1849,7 @@ int main(int argumentCount, char **argumentValues)
     // 刻意不进基线：机器上另有负载时这条会摆到 2 倍（实测空载 549 ns、并发构建下中位数 935 ns），
     // 拿它当门禁只会产出假红
     Base::Logger benchLogger("bench.async");
-    benchLogger.addSink(std::make_unique<Base::AsyncSink>(std::make_unique<DiscardingSink>(), 4096U,
-                                                         Base::AsyncSink::OverflowPolicy::Block));
+    benchLogger.addSink(std::make_unique<Base::AsyncSink>(std::make_unique<DiscardingSink>(), 4096U, Base::AsyncSink::OverflowPolicy::Block));
     measureCase(
             "log-async-enqueue",
             [&benchLogger]
@@ -1974,9 +1885,9 @@ int main(int argumentCount, char **argumentValues)
         std::uint64_t receivedCount{0U}; ///< 收到的事件条数，用于自检「这条确实被挡下了」
     };
 
-    Base::Logger filteredLogger("bench.filtered");
-    auto         countingSink           = std::make_unique<CountingSink>();
-    CountingSink &observedCountingSink  = *countingSink;
+    Base::Logger  filteredLogger("bench.filtered");
+    auto          countingSink         = std::make_unique<CountingSink>();
+    CountingSink &observedCountingSink = *countingSink;
     filteredLogger.addSink(std::move(countingSink));
     filteredLogger.setLevel(Base::LogLevel::Error);
     measureCase(
@@ -1992,8 +1903,8 @@ int main(int argumentCount, char **argumentValues)
     // 这条量「一行日志被收下」的生产者全成本：等级判定 + 一次原子快照读 + 事件构造 + 单 Sink 交出本体。
     // 与 log-async-enqueue 的差别只在没有消费者线程，因此它不被调度负载摆布，可以进基线；有了它，
     // 「Sink 快照怎么发布」这类改动才有能落地的门禁（log-async-enqueue 那条按设计只出读数不当门禁）
-    Base::Logger syncDispatchLogger("bench.sync-dispatch");
-    auto         dispatchSink          = std::make_unique<CountingSink>();
+    Base::Logger  syncDispatchLogger("bench.sync-dispatch");
+    auto          dispatchSink         = std::make_unique<CountingSink>();
     CountingSink &observedDispatchSink = *dispatchSink;
     syncDispatchLogger.addSink(std::move(dispatchSink));
     syncDispatchLogger.setLevel(Base::LogLevel::Info);
@@ -2016,19 +1927,18 @@ int main(int argumentCount, char **argumentValues)
     //   去掉回收：同样年龄是 9.5 / 917 / 12556 / 71290 / 823700 ns（记录数 0 / 200 / 2000 / 10000 / 40000）。
     // 超线性是因为两张 std::map 的节点随连接时长铺开后再也放不进缓存。
     // 刻意不进基线：这条要在 Windows 上重算整套基线才有意义，先把读数记在这里
-    constexpr std::uint64_t kAgedConnectionRequestCount = 5000;
-    auto agedLayer = makeAgedQuicStreamLayer(kAgedConnectionRequestCount);
-    const std::uint64_t liveStreamId = kAgedConnectionRequestCount * 4U;
-    static const std::vector<std::uint8_t> kTinyResponseBody = {'x'};
+    constexpr std::uint64_t                kAgedConnectionRequestCount = 5000;
+    auto                                   agedLayer                   = makeAgedQuicStreamLayer(kAgedConnectionRequestCount);
+    const std::uint64_t                    liveStreamId                = kAgedConnectionRequestCount * 4U;
+    static const std::vector<std::uint8_t> kTinyResponseBody           = {'x'};
     measureCase(
             "quic-frame-scan-aged",
             [&agedLayer, liveStreamId]
             {
-                std::string frames;
-                std::vector<Net::QuicStreamRange> sentRanges;
+                std::string                              frames;
+                std::vector<Net::QuicStreamRange>        sentRanges;
                 std::vector<Net::QuicStreamAnnouncement> announcements;
-                static_cast<void>(
-                        agedLayer->writeStreamData(liveStreamId, std::span<const std::uint8_t>(kTinyResponseBody), false));
+                static_cast<void>(agedLayer->writeStreamData(liveStreamId, std::span<const std::uint8_t>(kTinyResponseBody), false));
                 return agedLayer->collectFrames(frames, 1200U, sentRanges, announcements) ? 1U : 0U;
             },
             results, checksum, failureCount);
@@ -2044,7 +1954,7 @@ int main(int argumentCount, char **argumentValues)
     // 定死了 setValue 的用法：它按启动期/偶发覆盖定价，不该进逐请求路径（要按请求读的键应在启动
     // 时读进自己的字段）
     constexpr std::uint64_t kConfigFixtureKeyCount = 256;
-    auto &configManager = Base::ConfigManager::instance();
+    auto                   &configManager          = Base::ConfigManager::instance();
     configManager.clear();
     for (std::uint64_t keyIndex = 0; keyIndex < kConfigFixtureKeyCount; ++keyIndex)
     {
@@ -2060,12 +1970,7 @@ int main(int argumentCount, char **argumentValues)
             },
             results, checksum, failureCount);
     measureCase(
-            "config-set-value",
-            [&configManager]
-            {
-                return configManager.setValue("hot.override", Base::ConfigValue(std::int64_t{7})) ? 1U : 0U;
-            },
-            results, checksum, failureCount);
+            "config-set-value", [&configManager] { return configManager.setValue("hot.override", Base::ConfigValue(std::int64_t{7})) ? 1U : 0U; }, results, checksum, failureCount);
 
     // ---- Platform 层：每条请求都会摸到的几个底座 ----
     // 这几条的存在是为了让「Platform 侧的性能结论」有地方落脚：日历分解在每条响应的 Date 头与每行

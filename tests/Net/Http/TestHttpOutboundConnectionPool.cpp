@@ -1,6 +1,6 @@
 // 出站 keep-alive 连接池的端到端用例
-#include "HttpTestSupport.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpRequestBody.h"
 
@@ -29,9 +29,9 @@ namespace AsynGyanis::Net
         /// 同一个 HttpClient 走完一串请求之后的结论
         struct PooledRunOutcome
         {
-            std::vector<int> statusCodes;             ///< 每条请求的状态码；0 表示这条失败了
-            std::vector<std::string> bodies;          ///< 每条请求的正文，用来认出「响应其实没回来」
-            std::size_t idleConnectionCount{0};       ///< 跑完时池里空闲着的连接条数
+            std::vector<int>         statusCodes;            ///< 每条请求的状态码；0 表示这条失败了
+            std::vector<std::string> bodies;                 ///< 每条请求的正文，用来认出「响应其实没回来」
+            std::size_t              idleConnectionCount{0}; ///< 跑完时池里空闲着的连接条数
         };
 
         /**
@@ -43,8 +43,7 @@ namespace AsynGyanis::Net
          * @param urls 依次发出的地址
          * @param outcome 就地收集结论
          */
-        Core::Task<void> runPooledTask(Core::EventLoop &loop, HttpClient &client, const std::vector<std::string> &urls,
-                                       PooledRunOutcome &outcome)
+        Core::Task<void> runPooledTask(Core::EventLoop &loop, HttpClient &client, const std::vector<std::string> &urls, PooledRunOutcome &outcome)
         {
             for (const std::string &url: urls)
             {
@@ -63,13 +62,12 @@ namespace AsynGyanis::Net
          * @param poolConfig 池参数；默认即产线口径
          * @return PooledRunOutcome 状态码与收尾时的空闲条数
          */
-        PooledRunOutcome runPooledRequests(const std::vector<std::string> &urls,
-                                           const HttpOutboundConnectionPool::Config poolConfig = {})
+        PooledRunOutcome runPooledRequests(const std::vector<std::string> &urls, const HttpOutboundConnectionPool::Config poolConfig = {})
         {
-            Core::EventLoop loop;
-            HttpClient client(loop, poolConfig);
+            Core::EventLoop  loop;
+            HttpClient       client(loop, poolConfig);
             PooledRunOutcome outcome;
-            auto work = runPooledTask(loop, client, urls, outcome);
+            auto             work = runPooledTask(loop, client, urls, outcome);
             if (!work.isReady())
             {
                 loop.scheduler().schedule(work.handle());
@@ -96,8 +94,7 @@ namespace AsynGyanis::Net
          * @param entryCount 进门次数，由用例持有
          * @param holdTime 按住不放的时间
          */
-        void registerCountedHoldingRoute(Router &router, Core::EventLoop &loop, std::atomic<std::size_t> &entryCount,
-                                         const std::chrono::milliseconds holdTime)
+        void registerCountedHoldingRoute(Router &router, Core::EventLoop &loop, std::atomic<std::size_t> &entryCount, const std::chrono::milliseconds holdTime)
         {
             router.post(std::string{kSlowPostRoutePath},
                         [&loop, &entryCount, holdTime](HttpRequest &, HttpResponse &response) -> Core::Task<void>
@@ -113,9 +110,9 @@ namespace AsynGyanis::Net
         /// 一条池化 HTTP/1.1 连接被对端收掉之后再发一条 POST 的结论
         struct SlowPostRunOutcome
         {
-            int warmupStatusCode{0};    ///< 暖场那条 GET 的状态码；0 表示失败
-            int statusCode{0};          ///< 被测那条 POST 的状态码；0 表示失败
-            std::size_t idleBefore{0};  ///< 暖场之后池里空闲着的连接条数
+            int         warmupStatusCode{0}; ///< 暖场那条 GET 的状态码；0 表示失败
+            int         statusCode{0};       ///< 被测那条 POST 的状态码；0 表示失败
+            std::size_t idleBefore{0};       ///< 暖场之后池里空闲着的连接条数
         };
 
         /**
@@ -131,19 +128,16 @@ namespace AsynGyanis::Net
          * @param idleGrace 留给服务端收口空闲连接的宽限期
          * @param outcome 就地收集结论
          */
-        Core::Task<void> runWarmThenPostAfterIdleGrace(Core::EventLoop &loop, HttpClient &client,
-                                                       const std::string &warmUrl, const std::string &slowUrl,
-                                                       const std::chrono::milliseconds idleGrace,
-                                                       SlowPostRunOutcome &outcome)
+        Core::Task<void> runWarmThenPostAfterIdleGrace(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl, const std::string &slowUrl,
+                                                       const std::chrono::milliseconds idleGrace, SlowPostRunOutcome &outcome)
         {
             const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
-            outcome.warmupStatusCode = warmup ? warmup->statusCode : 0;
-            outcome.idleBefore = client.idleConnectionCount();
+            outcome.warmupStatusCode                         = warmup ? warmup->statusCode : 0;
+            outcome.idleBefore                               = client.idleConnectionCount();
             Core::Timer graceTimer(loop);
             co_await graceTimer.waitFor(idleGrace);
-            const std::unique_ptr<HttpClientResponse> posted = co_await client.post(slowUrl, "text/plain", "payload-once",
-                                                                                   std::chrono::milliseconds{2000});
-            outcome.statusCode = posted ? posted->statusCode : 0;
+            const std::unique_ptr<HttpClientResponse> posted = co_await client.post(slowUrl, "text/plain", "payload-once", std::chrono::milliseconds{2000});
+            outcome.statusCode                               = posted ? posted->statusCode : 0;
             Core::Timer settleTimer(loop);
             co_await settleTimer.waitFor(std::chrono::milliseconds{800});
             loop.stop();
@@ -164,14 +158,14 @@ namespace AsynGyanis::Net
 
         // 这一条不走 runPooledRequests 那个助手：客户端（连同它的池）必须在读服务端统计之前还活着
         // ——客户端析构会把空闲连接关掉，那时候服务端在册连接数已经归零，量到的就不是「复用了几条」
-        Core::EventLoop loop;
-        HttpClient client(loop);
-        PooledRunOutcome outcome;
+        Core::EventLoop   loop;
+        HttpClient        client(loop);
+        PooledRunOutcome  outcome;
         const std::string url = helloUrl(fixture.listeningPort());
         // urls 必须是个**具名**对象：驱动协程按引用拿着它，跨过 co_await 之后还要读它，
         // 直接传 {url, url, url} 的话这个临时 vector 在初始化语句结束时就没了
         const std::vector<std::string> urls{url, url, url};
-        auto work = runPooledTask(loop, client, urls, outcome);
+        auto                           work = runPooledTask(loop, client, urls, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -196,7 +190,8 @@ namespace AsynGyanis::Net
                     const HttpServerStats stats = fixture.server().stats();
                     return stats.totalRequestCount >= 3U && stats.activeConnectionCount == 1U;
                 },
-                kPooledWaitTimeout)) << "服务端侧的计数未在时限内落到「三条请求、一条连接」";
+                kPooledWaitTimeout))
+                << "服务端侧的计数未在时限内落到「三条请求、一条连接」";
         EXPECT_EQ(fixture.server().stats().totalRequestCount, 3U) << "累计请求条数不符";
         EXPECT_EQ(fixture.server().stats().activeConnectionCount, 1U) << "在册连接数不对：说明每次都重开了连接";
     }
@@ -218,9 +213,9 @@ namespace AsynGyanis::Net
         }
         ASSERT_TRUE(fixture->awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
 
-        const std::string url = "http://[::1]:" + std::to_string(fixture->listeningPort()) + "/hello";
+        const std::string              url = "http://[::1]:" + std::to_string(fixture->listeningPort()) + "/hello";
         const std::vector<std::string> urls{url, url};
-        const PooledRunOutcome outcome = runPooledRequests(urls);
+        const PooledRunOutcome         outcome = runPooledRequests(urls);
 
         ASSERT_EQ(outcome.statusCodes.size(), 2U);
         EXPECT_EQ(outcome.statusCodes[0], 200) << "连不上只监听 ::1 的服务器：IPv6 候选被拿去用 IPv4 的套接字连了";
@@ -241,15 +236,16 @@ namespace AsynGyanis::Net
      */
     TEST(HttpOutboundConnectionPool, BoundsResponseBodyByConfiguredLimit)
     {
-        constexpr std::size_t kBodyByteCount = 4096U;
+        constexpr std::size_t    kBodyByteCount = 4096U;
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
                                          [](Router &router, Core::EventLoop &)
                                          {
-                                             router.get("/big", [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
-                                             {
-                                                 response.setBody(std::string(kBodyByteCount, 'x'));
-                                                 co_return;
-                                             });
+                                             router.get("/big",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                                                        {
+                                                            response.setBody(std::string(kBodyByteCount, 'x'));
+                                                            co_return;
+                                                        });
                                          });
         ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
 
@@ -257,13 +253,13 @@ namespace AsynGyanis::Net
 
         HttpOutboundConnectionPool::Config tightConfig;
         tightConfig.maximumResponseBodyBytes = 1024U;
-        const PooledRunOutcome tight = runPooledRequests({url}, tightConfig);
+        const PooledRunOutcome tight         = runPooledRequests({url}, tightConfig);
         ASSERT_EQ(tight.statusCodes.size(), 1U);
         EXPECT_EQ(tight.statusCodes[0], 0) << "越过本端上限的正文被收了：要么整个拒下来，要么别设闸";
 
         HttpOutboundConnectionPool::Config openConfig;
-        openConfig.maximumResponseBodyBytes = 0U;   ///< 0 表示不限
-        const PooledRunOutcome open = runPooledRequests({url}, openConfig);
+        openConfig.maximumResponseBodyBytes = 0U; ///< 0 表示不限
+        const PooledRunOutcome open         = runPooledRequests({url}, openConfig);
         ASSERT_EQ(open.statusCodes.size(), 1U);
         EXPECT_EQ(open.statusCodes[0], 200) << "填 0 就该把上限放开：取大文件是正当用法";
         ASSERT_EQ(open.bodies.size(), 1U);
@@ -278,20 +274,20 @@ namespace AsynGyanis::Net
      */
     TEST(HttpOutboundConnectionPool, DoesNotPoolConnectionThatPeerDeclaresClosed)
     {
-        RunningHttpServerFixture fixture(
-                HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                [](Router &router, Core::EventLoop &)
-                {
-                    router.get("/closing", [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
-                    {
-                        static_cast<void>(response.setHeader("connection", "close"));
-                        response.setBody("served-closing");
-                        co_return;
-                    });
-                });
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/closing",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                                                        {
+                                                            static_cast<void>(response.setHeader("connection", "close"));
+                                                            response.setBody("served-closing");
+                                                            co_return;
+                                                        });
+                                         });
         ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
 
-        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/closing";
+        const std::string      url     = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/closing";
         const PooledRunOutcome outcome = runPooledRequests({url, url});
         ASSERT_EQ(outcome.statusCodes.size(), 2U);
         EXPECT_EQ(outcome.statusCodes[0], 200);
@@ -312,7 +308,7 @@ namespace AsynGyanis::Net
         RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{25});
         ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
 
-        const std::string url = helloUrl(fixture.listeningPort());
+        const std::string      url      = helloUrl(fixture.listeningPort());
         const PooledRunOutcome firstRun = runPooledRequests({url});
         ASSERT_EQ(firstRun.statusCodes.size(), 1U);
         EXPECT_EQ(firstRun.statusCodes[0], 200);
@@ -339,8 +335,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(firstFixture.awaitRunning(kPooledWaitTimeout));
         ASSERT_TRUE(secondFixture.awaitRunning(kPooledWaitTimeout));
 
-        const PooledRunOutcome outcome = runPooledRequests({helloUrl(firstFixture.listeningPort()),
-                                                            helloUrl(secondFixture.listeningPort())});
+        const PooledRunOutcome outcome = runPooledRequests({helloUrl(firstFixture.listeningPort()), helloUrl(secondFixture.listeningPort())});
         ASSERT_EQ(outcome.statusCodes.size(), 2U);
         EXPECT_EQ(outcome.statusCodes[0], 200);
         EXPECT_EQ(outcome.statusCodes[1], 200);
@@ -360,11 +355,11 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
 
         // 客户端必须活到读完服务端统计之后（同复用那条用例的理由）：它一析构，在册连接数就自己归零了
-        Core::EventLoop loop;
-        HttpClient client(loop);
-        PooledRunOutcome outcome;
+        Core::EventLoop                loop;
+        HttpClient                     client(loop);
+        PooledRunOutcome               outcome;
         const std::vector<std::string> urls{helloUrl(fixture.listeningPort())};
-        auto work = runPooledTask(loop, client, urls, outcome);
+        auto                           work = runPooledTask(loop, client, urls, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -376,12 +371,8 @@ namespace AsynGyanis::Net
         client.closeIdleConnections();
 
         EXPECT_EQ(client.idleConnectionCount(), 0U) << "调用之后池里还有存货";
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().stats().activeConnectionCount == 0U;
-                },
-                kPooledWaitTimeout)) << "服务端仍把那条连接记在册：本端只是丢了指针，没真的收口";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().stats().activeConnectionCount == 0U; }, kPooledWaitTimeout))
+                << "服务端仍把那条连接记在册：本端只是丢了指针，没真的收口";
     }
 
     /**
@@ -398,24 +389,19 @@ namespace AsynGyanis::Net
     TEST(HttpOutboundConnectionPool, DoesNotReplayASentNonIdempotentRequestWhenThePeerTookTheConnection)
     {
         std::atomic<std::size_t> postEntryCount{0U};
-        HttpServerLimits limits;
+        HttpServerLimits         limits;
         limits.idleTimeout = std::chrono::milliseconds{150};
-        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{25}, SlowRouteOptions{},
-                                         [&postEntryCount](Router &router, Core::EventLoop &serverLoop)
-                                         {
-                                             registerCountedHoldingRoute(router, serverLoop, postEntryCount,
-                                                                         std::chrono::milliseconds{400});
-                                         });
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{25}, SlowRouteOptions{}, [&postEntryCount](Router &router, Core::EventLoop &serverLoop)
+                                         { registerCountedHoldingRoute(router, serverLoop, postEntryCount, std::chrono::milliseconds{400}); });
         ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
 
         const std::string warmUrl = helloUrl(fixture.listeningPort());
         // 两个地址必须是具名对象：驱动协程按引用拿着它们，跨过 co_await 之后还要读
-        const std::string slowUrl = "http://127.0.0.1:" + std::to_string(fixture.listeningPort())
-                + std::string{kSlowPostRoutePath};
-        Core::EventLoop loop;
-        HttpClient client(loop);
+        const std::string  slowUrl = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + std::string{kSlowPostRoutePath};
+        Core::EventLoop    loop;
+        HttpClient         client(loop);
         SlowPostRunOutcome outcome;
-        auto work = runWarmThenPostAfterIdleGrace(loop, client, warmUrl, slowUrl, std::chrono::milliseconds{600}, outcome);
+        auto               work = runWarmThenPostAfterIdleGrace(loop, client, warmUrl, slowUrl, std::chrono::milliseconds{600}, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -425,8 +411,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.warmupStatusCode, 200) << "暖场那条没成功：池里没有可复用的连接，被测那条走的就不是复用这一支";
         EXPECT_EQ(outcome.idleBefore, 1U) << "暖场之后池里不是一条连接：前提没成立";
         EXPECT_EQ(outcome.statusCode, 0) << "对端收了这条连接，本端分不清请求有没有被接手，不该给出一个成功";
-        EXPECT_EQ(postEntryCount.load(std::memory_order_acquire), 0U)
-                << "服务端收到了那条 POST：已整个写出的非幂等请求被换一条连接重发了一遍";
+        EXPECT_EQ(postEntryCount.load(std::memory_order_acquire), 0U) << "服务端收到了那条 POST：已整个写出的非幂等请求被换一条连接重发了一遍";
     }
 
     /**
@@ -441,26 +426,23 @@ namespace AsynGyanis::Net
     TEST(HttpOutboundConnectionPool, UploadsStreamedBodyAsChunkedRequest)
     {
         std::atomic<std::size_t> serverBatchCount{0};
-        std::mutex receivedGuard;
-        std::string receivedText;
+        std::mutex               receivedGuard;
+        std::string              receivedText;
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
                                          [&serverBatchCount, &receivedGuard, &receivedText](Router &router, Core::EventLoop &)
-                                         {
-                                             registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText);
-                                         });
+                                         { registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText); });
         ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
 
-        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort())
-                + std::string{kStreamEchoRoutePath};
-        Core::EventLoop loop;
+        const std::string                              url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + std::string{kStreamEchoRoutePath};
+        Core::EventLoop                                loop;
         std::expected<HttpClientResponse, std::string> outcome{std::unexpect, "还没跑"};
-        auto drive = [&loop, &url, &outcome, &serverBatchCount]() -> Core::Task<>
+        auto                                           drive = [&loop, &url, &outcome, &serverBatchCount]() -> Core::Task<>
         {
             HttpClientRequest request;
-            request.method = "POST";
+            request.method      = "POST";
             request.contentType = "text/plain";
-            request.bodySource = makeStreamEchoChunkSource(loop, serverBatchCount);
-            outcome = co_await HttpClient::send(loop, url, request);
+            request.bodySource  = makeStreamEchoChunkSource(loop, serverBatchCount);
+            outcome             = co_await HttpClient::send(loop, url, request);
             loop.stop();
         };
         // 闭包先落到具名对象上再调用：协程帧记的是闭包地址，临时量在语句结束就析构，
@@ -490,22 +472,18 @@ namespace AsynGyanis::Net
     TEST(HttpOutboundConnectionPool, RejectsRequestWithBothBufferedAndStreamedBody)
     {
         HttpClientRequest request;
-        request.method = "POST";
-        request.body = "whole-body";
-        request.bodySource = []() -> Core::Task<std::optional<std::string>>
-        {
-            co_return std::nullopt;
-        };
+        request.method     = "POST";
+        request.body       = "whole-body";
+        request.bodySource = []() -> Core::Task<std::optional<std::string>> { co_return std::nullopt; };
         Core::EventLoop loop;
-        bool isRejected{false};
-        auto drive = [&loop, &request, &isRejected]() -> Core::Task<>
+        bool            isRejected{false};
+        auto            drive = [&loop, &request, &isRejected]() -> Core::Task<>
         {
             try
             {
                 const auto outcome = co_await HttpClient::send(loop, "http://127.0.0.1:1/stream-echo", request);
                 static_cast<void>(outcome);
-            }
-            catch (const Base::InvalidArgumentException &)
+            } catch (const Base::InvalidArgumentException &)
             {
                 isRejected = true;
             }

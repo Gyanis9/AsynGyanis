@@ -90,29 +90,26 @@ namespace AsynGyanis::Net
         serverMembers.emplace("maximum_connections", integer(2048));
         serverMembers.emplace("maximum_connections_per_ip", integer(16));
         serverMembers.emplace("expose_metrics", boolean(true));
-        serverMembers.emplace("limits",
-                              object(Base::ConfigObject{
-                                      {"idle_timeout_ms", integer(30000)},
-                                      {"read_timeout_ms", integer(15000)},
-                                      {"write_timeout_ms", integer(20000)},
-                                      {"settings_acknowledgement_timeout_ms", integer(5000)},
-                                      {"maximum_requests_per_connection", integer(100)},
-                              }));
-        serverMembers.emplace("parser_limits",
-                              object(Base::ConfigObject{
-                                      {"maximum_uri_length", integer(4096)},
-                                      {"maximum_header_field_name_length", integer(128)},
-                                      {"maximum_header_field_value_length", integer(2048)},
-                                      {"maximum_header_count", integer(64)},
-                                      {"maximum_header_block_length", integer(32768)},
-                                      {"maximum_body_size", integer(1048576)},
-                                      {"maximum_chunk_size_line_length", integer(256)},
-                              }));
-        serverMembers.emplace("rate_limit",
-                              object(Base::ConfigObject{
-                                      {"requests_per_second", floating(250.0)},
-                                      {"burst_capacity", floating(500.0)},
-                              }));
+        serverMembers.emplace("limits", object(Base::ConfigObject{
+                                                {"idle_timeout_ms", integer(30000)},
+                                                {"read_timeout_ms", integer(15000)},
+                                                {"write_timeout_ms", integer(20000)},
+                                                {"settings_acknowledgement_timeout_ms", integer(5000)},
+                                                {"maximum_requests_per_connection", integer(100)},
+                                        }));
+        serverMembers.emplace("parser_limits", object(Base::ConfigObject{
+                                                       {"maximum_uri_length", integer(4096)},
+                                                       {"maximum_header_field_name_length", integer(128)},
+                                                       {"maximum_header_field_value_length", integer(2048)},
+                                                       {"maximum_header_count", integer(64)},
+                                                       {"maximum_header_block_length", integer(32768)},
+                                                       {"maximum_body_size", integer(1048576)},
+                                                       {"maximum_chunk_size_line_length", integer(256)},
+                                               }));
+        serverMembers.emplace("rate_limit", object(Base::ConfigObject{
+                                                    {"requests_per_second", floating(250.0)},
+                                                    {"burst_capacity", floating(500.0)},
+                                            }));
 
         const HttpServerConfiguration configuration = readHttpServerConfiguration(makeRootDocument(std::move(serverMembers)));
 
@@ -182,8 +179,7 @@ namespace AsynGyanis::Net
         } catch (const Base::ConfigValidationException &exception)
         {
             EXPECT_EQ(exception.key(), "server.limits.idle_timeout");
-            EXPECT_NE(std::string(exception.what()).find("idle_timeout_ms"), std::string::npos)
-                    << "错误信息应把可用的键列出来，否则调用方只能靠猜：「" << exception.what() << "」";
+            EXPECT_NE(std::string(exception.what()).find("idle_timeout_ms"), std::string::npos) << "错误信息应把可用的键列出来，否则调用方只能靠猜：「" << exception.what() << "」";
         }
     }
 

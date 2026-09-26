@@ -36,10 +36,7 @@ namespace AsynGyanis::Base
      */
     inline void appendPaddedField(std::string &out, const std::string_view text, const std::size_t minimumWidth)
     {
-        const bool isPlainAscii = std::ranges::all_of(text, [](const char character)
-        {
-            return static_cast<unsigned char>(character) < 0x80U;
-        });
+        const bool isPlainAscii = std::ranges::all_of(text, [](const char character) { return static_cast<unsigned char>(character) < 0x80U; });
         if (!isPlainAscii)
         {
             static_cast<void>(std::format_to(std::back_inserter(out), "{:<{}}", text, minimumWidth));

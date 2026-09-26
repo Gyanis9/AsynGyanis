@@ -50,11 +50,9 @@ namespace
         std::size_t write(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
         {
             const std::size_t writtenSoFarByteCount = writtenByteCounts[streamId];
-            const std::size_t roomByteCount = pendingQueueByteLimit > writtenSoFarByteCount
-                                                  ? pendingQueueByteLimit - writtenSoFarByteCount
-                                                  : 0;
-            const std::size_t acceptedByteCount = std::min(data.size(), roomByteCount);
-            writtenByteCounts[streamId] = writtenSoFarByteCount + acceptedByteCount;
+            const std::size_t roomByteCount         = pendingQueueByteLimit > writtenSoFarByteCount ? pendingQueueByteLimit - writtenSoFarByteCount : 0;
+            const std::size_t acceptedByteCount     = std::min(data.size(), roomByteCount);
+            writtenByteCounts[streamId]             = writtenSoFarByteCount + acceptedByteCount;
             outboundBytes[streamId].append(reinterpret_cast<const char *>(data.data()), acceptedByteCount);
             // 收尾只随整段收下一起落定（真实流层就是这么判的：半段就 FIN 等于截断正文还骗对端发完了）
             if (endStream && acceptedByteCount == data.size())
@@ -99,13 +97,13 @@ namespace
             return total;
         }
 
-        std::vector<std::int64_t> openedUnidirectionalStreamIds{};
-        std::vector<std::int64_t> endedStreams{};
+        std::vector<std::int64_t>           openedUnidirectionalStreamIds{};
+        std::vector<std::int64_t>           endedStreams{};
         std::map<std::int64_t, std::string> outboundBytes{};
         std::map<std::int64_t, std::size_t> writtenByteCounts{};
         std::map<std::int64_t, std::size_t> creditedByteCounts{};
-        int writeCallCount{0};
-        bool isCrediterProvided{true};
+        int                                 writeCallCount{0};
+        bool                                isCrediterProvided{true};
         /// 这条流在假传输层的待发队列里最多压多少字节：默认无限（全收），调到已交出的量即「队列已满」
         std::size_t pendingQueueByteLimit{std::numeric_limits<std::size_t>::max()};
 
@@ -119,40 +117,34 @@ namespace
         struct HeaderField
         {
             std::int64_t streamId{0};
-            std::string name;
-            std::string value;
-            bool isTrailers{false}; ///< 该字段来自尾段还是头段：会话据此决定落哪一档
+            std::string  name;
+            std::string  value;
+            bool         isTrailers{false}; ///< 该字段来自尾段还是头段：会话据此决定落哪一档
         };
 
-        std::vector<HeaderField> headerFields{};
-        std::vector<std::int64_t> headerBlocksReceived{};
-        std::vector<std::int64_t> trailerBlocksReceived{};
-        std::string bodyBytes{};
-        std::vector<std::int64_t> requestsEnded{};
-        std::vector<std::int64_t> streamsClosed{};
+        std::vector<HeaderField>                             headerFields{};
+        std::vector<std::int64_t>                            headerBlocksReceived{};
+        std::vector<std::int64_t>                            trailerBlocksReceived{};
+        std::string                                          bodyBytes{};
+        std::vector<std::int64_t>                            requestsEnded{};
+        std::vector<std::int64_t>                            streamsClosed{};
         std::vector<std::pair<std::int64_t, Http3ErrorCode>> streamsReset{};
-        std::vector<std::pair<std::int64_t, std::string>> malformedRequests{};
-        std::vector<std::pair<Http3ErrorCode, std::string>> connectionClosures{};
+        std::vector<std::pair<std::int64_t, std::string>>    malformedRequests{};
+        std::vector<std::pair<Http3ErrorCode, std::string>>  connectionClosures{};
     };
 
     /// 建一个接好假传输层的协议层：三条本端单向流在构造里就开出来
-    std::unique_ptr<Http3Connection> makeConnection(FakeTransport &transport, EventLog &events,
-                                                    Http3Connection::LocalSettings settings = {})
+    std::unique_ptr<Http3Connection> makeConnection(FakeTransport &transport, EventLog &events, Http3Connection::LocalSettings settings = {})
     {
         Http3Connection::Callbacks callbacks;
-        callbacks.onHeaderField = [&events](const std::int64_t streamId, const std::string_view name, const std::string_view value,
-                                            const bool isTrailers)
-        {
-            events.headerFields.push_back(EventLog::HeaderField{
-                    .streamId = streamId, .name = std::string(name), .value = std::string(value), .isTrailers = isTrailers});
-        };
+        callbacks.onHeaderField = [&events](const std::int64_t streamId, const std::string_view name, const std::string_view value, const bool isTrailers)
+        { events.headerFields.push_back(EventLog::HeaderField{.streamId = streamId, .name = std::string(name), .value = std::string(value), .isTrailers = isTrailers}); };
         callbacks.onHeaderBlockReceived = [&events](const std::int64_t streamId, const bool isTrailers)
         {
             if (isTrailers)
             {
                 events.trailerBlocksReceived.push_back(streamId);
-            }
-            else
+            } else
             {
                 events.headerBlocksReceived.push_back(streamId);
             }
@@ -162,27 +154,18 @@ namespace
             static_cast<void>(streamId);
             events.bodyBytes.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         };
-        callbacks.onRequestEnded = [&events](const std::int64_t streamId) { events.requestsEnded.push_back(streamId); };
-        callbacks.onStreamClosed = [&events](const std::int64_t streamId) { events.streamsClosed.push_back(streamId); };
-        callbacks.onStreamReset = [&events](const std::int64_t streamId, const Http3ErrorCode errorCode)
-        {
-            events.streamsReset.emplace_back(streamId, errorCode);
-        };
+        callbacks.onRequestEnded     = [&events](const std::int64_t streamId) { events.requestsEnded.push_back(streamId); };
+        callbacks.onStreamClosed     = [&events](const std::int64_t streamId) { events.streamsClosed.push_back(streamId); };
+        callbacks.onStreamReset      = [&events](const std::int64_t streamId, const Http3ErrorCode errorCode) { events.streamsReset.emplace_back(streamId, errorCode); };
         callbacks.onMalformedRequest = [&events](const std::int64_t streamId, const std::string_view reason)
-        {
-            events.malformedRequests.emplace_back(streamId, std::string(reason));
-        };
+        { events.malformedRequests.emplace_back(streamId, std::string(reason)); };
         callbacks.onConnectionClosed = [&events](const Http3ErrorCode errorCode, const std::string_view reason)
-        {
-            events.connectionClosures.emplace_back(errorCode, std::string(reason));
-        };
+        { events.connectionClosures.emplace_back(errorCode, std::string(reason)); };
 
-        return std::make_unique<Http3Connection>(
-                [&transport]() { return transport.openUnidirectionalStream(); },
-                [&transport](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
-                { return transport.write(streamId, data, endStream); },
-                [&transport](const std::int64_t streamId, const std::size_t byteCount) { transport.credit(streamId, byteCount); },
-                std::move(callbacks), settings);
+        return std::make_unique<Http3Connection>([&transport]() { return transport.openUnidirectionalStream(); },
+                                                 [&transport](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
+                                                 { return transport.write(streamId, data, endStream); }, [&transport](const std::int64_t streamId, const std::size_t byteCount)
+                                                 { transport.credit(streamId, byteCount); }, std::move(callbacks), settings);
     }
 
     /// 把字符串按字节交给状态机（它只认「指针 + 长度」）
@@ -202,7 +185,7 @@ namespace
     constexpr std::int64_t kPeerControlStreamId = 2;
     constexpr std::int64_t kPeerEncoderStreamId = 6;
     constexpr std::int64_t kPeerDecoderStreamId = 10;
-    constexpr std::int64_t kRequestStreamId = 0;
+    constexpr std::int64_t kRequestStreamId     = 0;
 
     /**
      * @brief 用一个独立的编码器产出头段字节
@@ -215,9 +198,8 @@ namespace
         // 不需要编码器流指令就能直接解，于是本文件能把「交付路径」单独测清楚。
         // 动态表引用与阻塞-续解那条路径由 BlockedFieldSectionIsDeliveredOnceTheEncoderStreamCatchesUp 覆盖
         QpackEncoder encoder(0, 0, 0);
-        std::string headerBlock;
-        const auto encoded = encoder.encodeFieldSection(static_cast<std::uint64_t>(kRequestStreamId), std::span<const QpackHeaderField>(fields),
-                                                        headerBlock, encoderStreamBytes);
+        std::string  headerBlock;
+        const auto   encoded = encoder.encodeFieldSection(static_cast<std::uint64_t>(kRequestStreamId), std::span<const QpackHeaderField>(fields), headerBlock, encoderStreamBytes);
         EXPECT_TRUE(encoded.has_value()) << encoded.error().message;
         return headerBlock;
     }
@@ -226,11 +208,8 @@ namespace
     [[nodiscard]] std::vector<QpackHeaderField> minimalRequestFields()
     {
         return {
-                QpackHeaderField{":method", "GET"},
-                QpackHeaderField{":scheme", "https"},
-                QpackHeaderField{":authority", "example.com"},
-                QpackHeaderField{":path", "/json"},
-                QpackHeaderField{"accept", "*/*"},
+                QpackHeaderField{":method", "GET"}, QpackHeaderField{":scheme", "https"}, QpackHeaderField{":authority", "example.com"},
+                QpackHeaderField{":path", "/json"}, QpackHeaderField{"accept", "*/*"},
         };
     }
 
@@ -248,8 +227,8 @@ namespace
 TEST(Http3Connection, OpensThreeUnidirectionalStreamsAndStartsControlWithSettings)
 {
     FakeTransport transport;
-    EventLog events;
-    const auto connection = makeConnection(transport, events);
+    EventLog      events;
+    const auto    connection = makeConnection(transport, events);
 
     ASSERT_TRUE(connection->isUsable());
     // 控制流、编码器流、解码器流：顺序按 RFC 9114 §6.2.1 与 RFC 9204 §4.2
@@ -277,8 +256,7 @@ TEST(Http3Connection, OpensThreeUnidirectionalStreamsAndStartsControlWithSetting
 TEST(Http3Connection, MissingOpenerOrWriterMakesTheSessionUnusableInsteadOfThrowing)
 {
     // 开流口为空属装配错误：只让协议层不可用，不抛异常把整条连接拖垮
-    Http3Connection connectionWithoutStreams(nullptr, [](std::int64_t, std::span<const std::uint8_t>, bool) -> std::size_t
-                                             { return 0; }, nullptr, {});
+    Http3Connection connectionWithoutStreams(nullptr, [](std::int64_t, std::span<const std::uint8_t>, bool) -> std::size_t { return 0; }, nullptr, {});
     EXPECT_FALSE(connectionWithoutStreams.isUsable());
     EXPECT_FALSE(connectionWithoutStreams.isBroken()) << "建不起来不等于协议错，不该上报连接错误码";
 }
@@ -286,8 +264,8 @@ TEST(Http3Connection, MissingOpenerOrWriterMakesTheSessionUnusableInsteadOfThrow
 TEST(Http3Connection, PeerSettingsEnableTheDynamicTableWithinTheLocalCeiling)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
     // 对端公布动态表容量 4096（两字节档 0x5000）：本端编码器生效容量取 min(4096, 自家 4096)
     const std::string settingsPayload = makeFrame(0x04, std::string("\x01\x50\x00", 3));
@@ -299,10 +277,10 @@ TEST(Http3Connection, PeerSettingsEnableTheDynamicTableWithinTheLocalCeiling)
 
 TEST(Http3Connection, RequestHeadIsDeliveredFieldByFieldAndReportedAsOneBlock)
 {
-    FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    std::string encoderBytes;
+    FakeTransport     transport;
+    EventLog          events;
+    auto              connection = makeConnection(transport, events);
+    std::string       encoderBytes;
     const std::string headerBlock = encodeSection(minimalRequestFields(), encoderBytes);
 
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), true);
@@ -321,11 +299,11 @@ TEST(Http3Connection, RequestHeadIsDeliveredFieldByFieldAndReportedAsOneBlock)
 TEST(Http3Connection, UppercaseFieldNameMakesTheRequestHeadRejected)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    auto fields = minimalRequestFields();
-    fields.back().name = "Accept"; // 大写：RFC 9114 §4.2 判畸形
-    std::string encoderBytes;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+    auto          fields     = minimalRequestFields();
+    fields.back().name       = "Accept"; // 大写：RFC 9114 §4.2 判畸形
+    std::string       encoderBytes;
     const std::string headerBlock = encodeSection(fields, encoderBytes);
 
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), false);
@@ -341,8 +319,8 @@ TEST(Http3Connection, UppercaseFieldNameMakesTheRequestHeadRejected)
 TEST(Http3Connection, BodyBeforeHeadersIsRejectedAsUnexpectedFrameOnThatStreamOnly)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "abc")), false);
 
@@ -354,11 +332,11 @@ TEST(Http3Connection, BodyBeforeHeadersIsRejectedAsUnexpectedFrameOnThatStreamOn
 TEST(Http3Connection, ContentLengthDisagreeingWithBodyEndsTheStreamAsMessageError)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    auto fields = minimalRequestFields();
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+    auto          fields     = minimalRequestFields();
     fields.emplace_back("content-length", "5");
-    std::string encoderBytes;
+    std::string       encoderBytes;
     const std::string headerBlock = encodeSection(fields, encoderBytes);
 
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), false);
@@ -371,10 +349,10 @@ TEST(Http3Connection, ContentLengthDisagreeingWithBodyEndsTheStreamAsMessageErro
 
 TEST(Http3Connection, BodyBytesAreCreditedByTheReceiverNotTheProtocolLayer)
 {
-    FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    std::string encoderBytes;
+    FakeTransport     transport;
+    EventLog          events;
+    auto              connection = makeConnection(transport, events);
+    std::string       encoderBytes;
     const std::string headerBlock = encodeSection(minimalRequestFields(), encoderBytes);
 
     // 头段：帧头 2 字节可立刻还，载荷已被解码器消费也一并还（它不再回到流上）
@@ -391,10 +369,10 @@ TEST(Http3Connection, BodyBytesAreCreditedByTheReceiverNotTheProtocolLayer)
 
 TEST(Http3Connection, ResponseHeadAndBodyBecomeOneHeadersFrameThenOneDataFrame)
 {
-    FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    std::string encoderBytes;
+    FakeTransport     transport;
+    EventLog          events;
+    auto              connection = makeConnection(transport, events);
+    std::string       encoderBytes;
     const std::string headerBlock = encodeSection(minimalRequestFields(), encoderBytes);
     // GET 没有正文：头段这一趟就带上 END_STREAM，于是本端收尾之后两侧都完成，该发流关闭通知
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), true);
@@ -420,9 +398,9 @@ TEST(Http3Connection, ResponseHeadAndBodyBecomeOneHeadersFrameThenOneDataFrame)
 TEST(Http3Connection, SubmittingToACancelledStreamOnlyVoidansThatResponse)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    std::string encoderBytes;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+    std::string   encoderBytes;
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
 
     connection->noteStreamCancelledByPeer(kRequestStreamId);
@@ -444,11 +422,10 @@ TEST(Http3Connection, SubmittingToACancelledStreamOnlyVoidansThatResponse)
 TEST(Http3Connection, PartiallyAcceptedBodyIsRetainedAndResentInOrder)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    std::string encoderBytes;
-    connection->consumeStreamData(kRequestStreamId,
-                                  bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+    std::string   encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
     ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}}, false).has_value());
     ASSERT_TRUE(connection->appendResponseBody(kRequestStreamId, bytesOfText("0123456789abcdef"), false).has_value());
 
@@ -484,8 +461,8 @@ TEST(Http3Connection, PartiallyAcceptedBodyIsRetainedAndResentInOrder)
 TEST(Http3Connection, UnknownUnidirectionalStreamTypeIsDiscardedButStillCredited)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
     // 类型 0x41：本端不认识（RFC 9114 §6.2.1 要求忽略而不是报错）
     connection->consumeStreamData(14, bytesOfText(std::string("\x41", 1) + std::string(20, 'x')), false);
@@ -498,8 +475,8 @@ TEST(Http3Connection, UnknownUnidirectionalStreamTypeIsDiscardedButStillCredited
 TEST(Http3Connection, DuplicateControlStreamBreaksTheConnection)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
     connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "")), false);
     // 第二条控制流：关键流重复（RFC 9114 §6.2.1）
@@ -515,8 +492,8 @@ TEST(Http3Connection, DuplicateControlStreamBreaksTheConnection)
 TEST(Http3Connection, ControlStreamClosedEarlyBreaksTheConnection)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
     connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "")), true);
 
@@ -527,8 +504,8 @@ TEST(Http3Connection, ControlStreamClosedEarlyBreaksTheConnection)
 TEST(Http3Connection, SettingsOnRequestStreamFailsOnlyThatStream)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x04, "")), false);
 
@@ -539,11 +516,11 @@ TEST(Http3Connection, SettingsOnRequestStreamFailsOnlyThatStream)
 
 TEST(Http3Connection, BlockedFieldSectionIsDeliveredOnceTheEncoderStreamCatchesUp)
 {
-    FakeTransport transport;
-    EventLog events;
+    FakeTransport                  transport;
+    EventLog                       events;
     Http3Connection::LocalSettings settings;
     settings.qpackMaximumTableCapacityByteCount = 4096;
-    auto connection = makeConnection(transport, events, settings);
+    auto connection                             = makeConnection(transport, events, settings);
 
     // 对端先把 SETTINGS 与「动态表插入」分两趟送：头段先到、指令后到，就构成 §2.2.1 的阻塞
     std::string encoderBytes;
@@ -551,8 +528,7 @@ TEST(Http3Connection, BlockedFieldSectionIsDeliveredOnceTheEncoderStreamCatchesU
     {
         QpackEncoder peerEncoder(4096, 100, 4096);
         // 第一次编码即插入：产出引用动态表的头段与对应指令
-        const auto first = peerEncoder.encodeFieldSection(0, std::span<const QpackHeaderField>(minimalRequestFields()), headerBlock,
-                                                         encoderBytes);
+        const auto first = peerEncoder.encodeFieldSection(0, std::span<const QpackHeaderField>(minimalRequestFields()), headerBlock, encoderBytes);
         ASSERT_TRUE(first.has_value()) << first.error().message;
     }
     ASSERT_FALSE(encoderBytes.empty()) << "对端确实插了动态表，这条用例的前提才成立";
@@ -572,9 +548,9 @@ TEST(Http3Connection, BlockedFieldSectionIsDeliveredOnceTheEncoderStreamCatchesU
 TEST(Http3Connection, FlushHandsEveryStreamItsOwnWriteAndDrainsTheQueue)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    std::string encoderBytes;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+    std::string   encoderBytes;
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
 
     const int writesBefore = transport.writeCallCount;
@@ -588,22 +564,21 @@ TEST(Http3Connection, FlushHandsEveryStreamItsOwnWriteAndDrainsTheQueue)
 
 TEST(Http3Connection, ExtendedConnectHeadIsAcceptedOnlyWhenWeAdvertiseSupport)
 {
-    FakeTransport transport;
-    EventLog events;
+    FakeTransport                  transport;
+    EventLog                       events;
     Http3Connection::LocalSettings withoutExtended;
     withoutExtended.isExtendedConnectEnabled = false;
-    auto strictConnection = makeConnection(transport, events, withoutExtended);
+    auto strictConnection                    = makeConnection(transport, events, withoutExtended);
 
-    std::string encoderBytes;
-    const std::vector<QpackHeaderField> tunnelFields{QpackHeaderField{":method", "CONNECT"}, QpackHeaderField{":scheme", "https"},
-                                                     QpackHeaderField{":authority", "example.com"}, QpackHeaderField{":path", "/ws"},
-                                                     QpackHeaderField{":protocol", "websocket"}};
+    std::string                         encoderBytes;
+    const std::vector<QpackHeaderField> tunnelFields{QpackHeaderField{":method", "CONNECT"}, QpackHeaderField{":scheme", "https"}, QpackHeaderField{":authority", "example.com"},
+                                                     QpackHeaderField{":path", "/ws"}, QpackHeaderField{":protocol", "websocket"}};
     strictConnection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(tunnelFields, encoderBytes))), false);
     EXPECT_EQ(events.malformedRequests.size(), 1u) << "没声明 ENABLE_CONNECT_PROTOCOL 就不该收下 :protocol";
 
     FakeTransport permittingTransport;
-    EventLog permittingEvents;
-    auto permittingConnection = makeConnection(permittingTransport, permittingEvents);
+    EventLog      permittingEvents;
+    auto          permittingConnection = makeConnection(permittingTransport, permittingEvents);
     permittingConnection->consumeStreamData(4, bytesOfText(makeFrame(0x01, encodeSection(tunnelFields, encoderBytes))), false);
     EXPECT_TRUE(permittingEvents.malformedRequests.empty());
     EXPECT_EQ(permittingEvents.headerBlocksReceived.size(), 1u);
@@ -618,19 +593,19 @@ TEST(Http3Connection, ExtendedConnectHeadIsAcceptedOnlyWhenWeAdvertiseSupport)
 TEST(Http3Connection, HostileByteStreamsStaySafeAndSelfConsistent)
 {
     static constexpr std::uint64_t kSeed = 20260919;
-    std::mt19937 generator(static_cast<std::uint32_t>(kSeed));
+    std::mt19937                   generator(static_cast<std::uint32_t>(kSeed));
 
     for (int round = 0; round < 400; ++round)
     {
         FakeTransport transport;
-        EventLog events;
-        auto connection = makeConnection(transport, events);
+        EventLog      events;
+        auto          connection = makeConnection(transport, events);
         ASSERT_TRUE(connection->isUsable());
 
         // 五类流号都要扫到：请求流、对端控制流与两条 QPACK 流、以及未知类型的单向流
-        const std::int64_t streamIds[] = {0, 2, 6, 10, 14};
-        const std::size_t payloadByteCount = generator() % 48;
-        std::string payload(payloadByteCount, '\0');
+        const std::int64_t streamIds[]      = {0, 2, 6, 10, 14};
+        const std::size_t  payloadByteCount = generator() % 48;
+        std::string        payload(payloadByteCount, '\0');
         for (auto &byte: payload)
         {
             byte = static_cast<char>(generator() % 256);
@@ -660,10 +635,8 @@ TEST(Http3Connection, HostileByteStreamsStaySafeAndSelfConsistent)
 void feedHeadAndBody(Http3Connection &connection)
 {
     std::string encoderBytes;
-    connection.consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))),
-                                 false);
-    connection.consumeStreamData(kRequestStreamId,
-                                 bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
+    connection.consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+    connection.consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
     connection.consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "abc")), false);
 }
 
@@ -672,11 +645,11 @@ TEST(Http3Connection, TrailersSectionIsAcceptedAfterTheBodyAndMarkedAsTrailers)
     // 钉住 §4.1 的头段/尾段顺序：正文之后再来的 HEADERS 是尾段，不得有伪头，且要带上
     // 「这是尾段」的通知让会话按既有口径处理
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
     feedHeadAndBody(*connection);
 
-    std::string encoderBytes;
+    std::string                         encoderBytes;
     const std::vector<QpackHeaderField> trailerFields{QpackHeaderField{"x-checksum", "abc123"}};
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(trailerFields, encoderBytes))), true);
 
@@ -688,7 +661,7 @@ TEST(Http3Connection, TrailersSectionIsAcceptedAfterTheBodyAndMarkedAsTrailers)
     // 字段本身也要带着「这是尾段」交出去：会话据此落进 trailer 一档。
     // 反过来头段必须报假——报成全真会让业务把头部的值当成尾部的
     const auto isChecksumField = [](const EventLog::HeaderField &field) { return field.name == "x-checksum"; };
-    const auto checksum = std::ranges::find_if(events.headerFields, isChecksumField);
+    const auto checksum        = std::ranges::find_if(events.headerFields, isChecksumField);
     ASSERT_TRUE(checksum != events.headerFields.end()) << "尾段字段没被交出去";
     EXPECT_TRUE(checksum->isTrailers) << "尾段字段必须标成尾段";
     EXPECT_EQ(checksum->value, "abc123");
@@ -701,11 +674,11 @@ TEST(Http3Connection, PseudoHeaderInTrailersIsRejected)
     // 同一个判定器跨头段持有：尾段里再来一个伪头必须被打死（§4.3），
     // 这条同时证明「第二个头段被认成尾段」而不是「又一个头段」
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
     feedHeadAndBody(*connection);
 
-    std::string encoderBytes;
+    std::string                         encoderBytes;
     const std::vector<QpackHeaderField> badTrailers{QpackHeaderField{":method", "GET"}};
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(badTrailers, encoderBytes))), false);
 
@@ -716,12 +689,11 @@ TEST(Http3Connection, PseudoHeaderInTrailersIsRejected)
 TEST(Http3Connection, BodyAfterTrailersFailsTheStream)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
     feedHeadAndBody(*connection);
     std::string encoderBytes;
-    connection->consumeStreamData(kRequestStreamId,
-                                  bytesOfText(makeFrame(0x01, encodeSection({QpackHeaderField{"x-checksum", "z"}}, encoderBytes))), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection({QpackHeaderField{"x-checksum", "z"}}, encoderBytes))), false);
     ASSERT_EQ(events.trailerBlocksReceived.size(), 1u);
 
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "more")), false);
@@ -733,8 +705,8 @@ TEST(Http3Connection, PeerGoAwayMaxPushIdAndUnknownSettingsAreTolerated)
     // 对端 GOAWAY / MAX_PUSH_ID / 本端不认识设置项都属于「收下但不作为」：
     // 把它们判成错误会让 Chrome/curl 这类客户端直接连不上
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
     std::string controlBytes = streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x33\x01", 2));
     controlBytes += makeFrame(0x07, std::string("\x04", 1));
@@ -749,8 +721,8 @@ TEST(Http3Connection, PeerGoAwayMaxPushIdAndUnknownSettingsAreTolerated)
 TEST(Http3Connection, FirstControlFrameMustBeSettings)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
     connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x07, std::string("\x04", 1))), false);
 
@@ -761,15 +733,14 @@ TEST(Http3Connection, FirstControlFrameMustBeSettings)
 TEST(Http3Connection, SecondSettingsOrBodyOnControlStreamBreaksConnection)
 {
     FakeTransport transport;
-    EventLog events;
-    auto first = makeConnection(transport, events);
-    first->consumeStreamData(kPeerControlStreamId,
-                             bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "") + makeFrame(0x04, "")), false);
+    EventLog      events;
+    auto          first = makeConnection(transport, events);
+    first->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "") + makeFrame(0x04, "")), false);
     EXPECT_EQ(first->connectionErrorCode(), Http3ErrorCode::FrameUnexpected) << "第二个 SETTINGS 属重复（§7.2.4.1）";
 
     FakeTransport secondTransport;
-    EventLog secondEvents;
-    auto second = makeConnection(secondTransport, secondEvents);
+    EventLog      secondEvents;
+    auto          second = makeConnection(secondTransport, secondEvents);
     second->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "") + makeFrame(0x00, "x")), false);
     EXPECT_TRUE(second->isBroken()) << "控制流上不承载正文";
 }
@@ -778,8 +749,8 @@ TEST(Http3Connection, CancellingAnUnknownStreamChangesNothing)
 {
     // 承载层的取消通知可能晚于本端的回收：这里必须安静地什么都不做，而不是造出一份状态来
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
     connection->noteStreamCancelledByPeer(999);
 
@@ -791,11 +762,10 @@ TEST(Http3Connection, CancellingAnUnknownStreamChangesNothing)
 TEST(Http3Connection, AppendingBodyAfterTheStreamFinishedVoidansThatWrite)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    std::string encoderBytes;
-    connection->consumeStreamData(kRequestStreamId,
-                                  bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+    std::string   encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
 
     ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "204"}}, true).has_value());
     connection->flush();
@@ -804,111 +774,109 @@ TEST(Http3Connection, AppendingBodyAfterTheStreamFinishedVoidansThatWrite)
     EXPECT_FALSE(connection->isBroken()) << "这只作废该响应，不牵连连接";
 }
 
-    /// 数控制流字节里有几个 GOAWAY，并给出第一个报出的标识（前缀那一字节是流类型，要跳过）
-    [[nodiscard]] std::pair<std::size_t, std::uint64_t> inspectGoAwayFrames(const std::string &controlBytes)
-    {
-        AsynGyanis::Net::Http3FrameReader reader(4096);
-        static_cast<void>(reader.feed(bytesOfText(controlBytes.substr(1))));
+/// 数控制流字节里有几个 GOAWAY，并给出第一个报出的标识（前缀那一字节是流类型，要跳过）
+[[nodiscard]] std::pair<std::size_t, std::uint64_t> inspectGoAwayFrames(const std::string &controlBytes)
+{
+    AsynGyanis::Net::Http3FrameReader reader(4096);
+    static_cast<void>(reader.feed(bytesOfText(controlBytes.substr(1))));
 
-        std::size_t goAwayCount = 0;
-        std::uint64_t firstAnnouncedId = 0;
-        while (true)
+    std::size_t   goAwayCount      = 0;
+    std::uint64_t firstAnnouncedId = 0;
+    while (true)
+    {
+        const auto frame = reader.nextFrame();
+        if (!frame.has_value() || !frame->has_value())
         {
-            const auto frame = reader.nextFrame();
-            if (!frame.has_value() || !frame->has_value())
-            {
-                break; // 没有完整帧（或已进入错误态）就收手：本助手只数已经解得出来的 GOAWAY
-            }
-            if (const auto *goAway = std::get_if<AsynGyanis::Net::Http3GoAwayFrame>(&frame->value()); goAway != nullptr)
-            {
-                if (goAwayCount == 0)
-                {
-                    firstAnnouncedId = goAway->streamIdOrPushId;
-                }
-                ++goAwayCount;
-            }
+            break; // 没有完整帧（或已进入错误态）就收手：本助手只数已经解得出来的 GOAWAY
         }
-        return {goAwayCount, firstAnnouncedId};
+        if (const auto *goAway = std::get_if<AsynGyanis::Net::Http3GoAwayFrame>(&frame->value()); goAway != nullptr)
+        {
+            if (goAwayCount == 0)
+            {
+                firstAnnouncedId = goAway->streamIdOrPushId;
+            }
+            ++goAwayCount;
+        }
     }
+    return {goAwayCount, firstAnnouncedId};
+}
 
-    /**
-     * @brief 排空通告报的是「最后一条已受理流之后的下一条流号」，且只发一次
-     * @details RFC 9114 §5.2 的语义是「等于或高于该标识都被拒绝」，把已受理的那条流本身报进去
-     *          就等于告诉对端「它不会被处理」，正好与「照常处理完」矛盾
-     */
-    TEST(Http3Connection, DrainAnnouncementCoversStreamsAfterTheLastAcceptedOne)
-    {
-        FakeTransport transport;
-        EventLog events;
-        auto connection = makeConnection(transport, events);
+/**
+ * @brief 排空通告报的是「最后一条已受理流之后的下一条流号」，且只发一次
+ * @details RFC 9114 §5.2 的语义是「等于或高于该标识都被拒绝」，把已受理的那条流本身报进去
+ *          就等于告诉对端「它不会被处理」，正好与「照常处理完」矛盾
+ */
+TEST(Http3Connection, DrainAnnouncementCoversStreamsAfterTheLastAcceptedOne)
+{
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
-        std::string encoderBytes;
-        connection->consumeStreamData(kRequestStreamId,
-                                      bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
+    std::string encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
 
-        ASSERT_TRUE(connection->beginGracefulDrain().has_value());
-        EXPECT_TRUE(connection->isDraining());
-        connection->flush();
+    ASSERT_TRUE(connection->beginGracefulDrain().has_value());
+    EXPECT_TRUE(connection->isDraining());
+    connection->flush();
 
-        const auto [goAwayCount, announcedId] = inspectGoAwayFrames(transport.bytesOf(3));
-        EXPECT_EQ(goAwayCount, 1U) << "控制流上应当只有一条 GOAWAY";
-        EXPECT_EQ(announcedId, 4U) << "已受理流 0，通告要报下一条客户端双向流号 4";
+    const auto [goAwayCount, announcedId] = inspectGoAwayFrames(transport.bytesOf(3));
+    EXPECT_EQ(goAwayCount, 1U) << "控制流上应当只有一条 GOAWAY";
+    EXPECT_EQ(announcedId, 4U) << "已受理流 0，通告要报下一条客户端双向流号 4";
 
-        // 幂等：第二次调用不再补发（后发的标识不得比先发的大，重复发也没有新信息）
-        ASSERT_TRUE(connection->beginGracefulDrain().has_value());
-        connection->flush();
-        EXPECT_EQ(inspectGoAwayFrames(transport.bytesOf(3)).first, 1U) << "重复排空不该再发一条 GOAWAY";
-    }
+    // 幂等：第二次调用不再补发（后发的标识不得比先发的大，重复发也没有新信息）
+    ASSERT_TRUE(connection->beginGracefulDrain().has_value());
+    connection->flush();
+    EXPECT_EQ(inspectGoAwayFrames(transport.bytesOf(3)).first, 1U) << "重复排空不该再发一条 GOAWAY";
+}
 
-    /// 一条请求都没收过时，通告标识按 §5.2 取 0
-    TEST(Http3Connection, DrainAnnouncementIsZeroBeforeAnyRequest)
-    {
-        FakeTransport transport;
-        EventLog events;
-        auto connection = makeConnection(transport, events);
+/// 一条请求都没收过时，通告标识按 §5.2 取 0
+TEST(Http3Connection, DrainAnnouncementIsZeroBeforeAnyRequest)
+{
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
-        ASSERT_TRUE(connection->beginGracefulDrain().has_value());
-        connection->flush();
+    ASSERT_TRUE(connection->beginGracefulDrain().has_value());
+    connection->flush();
 
-        const auto [goAwayCount, announcedId] = inspectGoAwayFrames(transport.bytesOf(3));
-        EXPECT_EQ(goAwayCount, 1U);
-        EXPECT_EQ(announcedId, 0U) << "还没受理任何请求时，第一条流号（0）就该被拒绝";
-    }
+    const auto [goAwayCount, announcedId] = inspectGoAwayFrames(transport.bytesOf(3));
+    EXPECT_EQ(goAwayCount, 1U);
+    EXPECT_EQ(announcedId, 0U) << "还没受理任何请求时，第一条流号（0）就该被拒绝";
+}
 
-    /**
-     * @brief 通告之后的新流不处理也不回应，但要显式取消，且额度照还、连接不受牵连
-     * @details 不还会让对端卡在自己耗尽的流控窗口上；判成连接错误则会把同连接上已受理的请求一起废掉
-     */
-    TEST(Http3Connection, RequestsAfterTheDrainAnnouncementAreIgnoredButCredited)
-    {
-        FakeTransport transport;
-        EventLog events;
-        auto connection = makeConnection(transport, events);
+/**
+ * @brief 通告之后的新流不处理也不回应，但要显式取消，且额度照还、连接不受牵连
+ * @details 不还会让对端卡在自己耗尽的流控窗口上；判成连接错误则会把同连接上已受理的请求一起废掉
+ */
+TEST(Http3Connection, RequestsAfterTheDrainAnnouncementAreIgnoredButCredited)
+{
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
 
-        std::string encoderBytes;
-        connection->consumeStreamData(kRequestStreamId,
-                                      bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
-        ASSERT_TRUE(connection->beginGracefulDrain().has_value());
+    std::string encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
+    ASSERT_TRUE(connection->beginGracefulDrain().has_value());
 
-        const std::string lateRequestBytes = makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes));
-        events.headerFields.clear();
-        events.requestsEnded.clear();
-        connection->consumeStreamData(8, bytesOfText(lateRequestBytes), true);
+    const std::string lateRequestBytes = makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes));
+    events.headerFields.clear();
+    events.requestsEnded.clear();
+    connection->consumeStreamData(8, bytesOfText(lateRequestBytes), true);
 
-        EXPECT_TRUE(events.headerFields.empty()) << "通告之后的新流不该再交出任何头字段";
-        EXPECT_TRUE(events.requestsEnded.empty()) << "这条流也不该被当作「请求收齐」交给上层";
-        EXPECT_EQ(transport.creditedOf(8), lateRequestBytes.size()) << "拒绝不等于不还额度：不还会把对端卡在窗口上";
-        EXPECT_FALSE(connection->isBroken()) << "拒收一条新流是排空的正常结局，不该作废连接";
-        // §5.2 的 SHOULD：不处理之外还要显式取消这条流，对端才不必等到连接收尾才知道结果
-        ASSERT_EQ(events.streamsReset.size(), 1U) << "通告之后的新流没有被交代一次取消";
-        EXPECT_EQ(events.streamsReset.front().first, 8);
-        EXPECT_EQ(events.streamsReset.front().second, Http3ErrorCode::RequestRejected);
+    EXPECT_TRUE(events.headerFields.empty()) << "通告之后的新流不该再交出任何头字段";
+    EXPECT_TRUE(events.requestsEnded.empty()) << "这条流也不该被当作「请求收齐」交给上层";
+    EXPECT_EQ(transport.creditedOf(8), lateRequestBytes.size()) << "拒绝不等于不还额度：不还会把对端卡在窗口上";
+    EXPECT_FALSE(connection->isBroken()) << "拒收一条新流是排空的正常结局，不该作废连接";
+    // §5.2 的 SHOULD：不处理之外还要显式取消这条流，对端才不必等到连接收尾才知道结果
+    ASSERT_EQ(events.streamsReset.size(), 1U) << "通告之后的新流没有被交代一次取消";
+    EXPECT_EQ(events.streamsReset.front().first, 8);
+    EXPECT_EQ(events.streamsReset.front().second, Http3ErrorCode::RequestRejected);
 
-        // 通告之前已受理的流照常能答：这是「已受理的处理完」这条承诺的实质
-        ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}}, true).has_value());
-        connection->flush();
-        EXPECT_GT(transport.writtenOf(kRequestStreamId), 0U) << "已受理的响应发不出去，排空就失去了意义";
-    }
+    // 通告之前已受理的流照常能答：这是「已受理的处理完」这条承诺的实质
+    ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}}, true).has_value());
+    connection->flush();
+    EXPECT_GT(transport.writtenOf(kRequestStreamId), 0U) << "已受理的响应发不出去，排空就失去了意义";
+}
 
 /**
  * @brief 钉住：响应头段越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE 时只作废那一条流
@@ -919,18 +887,16 @@ TEST(Http3Connection, AppendingBodyAfterTheStreamFinishedVoidansThatWrite)
 TEST(Http3Connection, RefusesResponseFieldSectionBeyondThePeerAdvertisedLimit)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    std::string encoderBytes;
-    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))),
-                                  false);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+    std::string   encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
     // 对端只肯收 60 字节的头段：:status 200 这一项就是名长 7 + 值长 3 + 32 = 42 字节
-    connection->consumeStreamData(kPeerControlStreamId,
-                                  bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x06\x3C", 2))), false);
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x06\x3C", 2))), false);
     ASSERT_FALSE(connection->isBroken());
 
     const std::vector<QpackHeaderField> oversizedFields{QpackHeaderField{":status", "200"}, QpackHeaderField{"x-big", std::string(40U, 'v')}};
-    const auto refused = connection->submitResponseHead(kRequestStreamId, oversizedFields, true);
+    const auto                          refused = connection->submitResponseHead(kRequestStreamId, oversizedFields, true);
     ASSERT_FALSE(refused.has_value()) << "越过对端通告上限的头段不该照样发出去";
     EXPECT_EQ(refused.error().kind, QpackErrorKind::InvalidLocalState) << refused.error().message;
     EXPECT_NE(refused.error().message.find("SETTINGS_MAX_FIELD_SECTION_SIZE"), std::string::npos) << refused.error().message;
@@ -950,16 +916,14 @@ TEST(Http3Connection, RefusesResponseFieldSectionBeyondThePeerAdvertisedLimit)
 TEST(Http3Connection, StillSubmitsLargeFieldSectionsWhenThePeerAdvertisesNoLimit)
 {
     FakeTransport transport;
-    EventLog events;
-    auto connection = makeConnection(transport, events);
-    std::string encoderBytes;
-    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))),
-                                  false);
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+    std::string   encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
 
     // 没收到 SETTINGS_MAX_FIELD_SECTION_SIZE 就必须按「不约束」处理（§7.2.4.1 的默认值），
     // 否则等于替对端编一个它没说过的上限
-    const std::vector<QpackHeaderField> largeFields{QpackHeaderField{":status", "200"},
-                                                    QpackHeaderField{"x-big", std::string(3000U, 'v')}};
+    const std::vector<QpackHeaderField> largeFields{QpackHeaderField{":status", "200"}, QpackHeaderField{"x-big", std::string(3000U, 'v')}};
     EXPECT_TRUE(connection->submitResponseHead(kRequestStreamId, largeFields, true).has_value());
     EXPECT_FALSE(connection->isBroken());
 }

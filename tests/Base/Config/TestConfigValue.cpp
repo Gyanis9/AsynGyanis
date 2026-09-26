@@ -56,8 +56,7 @@ namespace AsynGyanis::Base
     {
         EXPECT_EQ(configValueAs<std::uint8_t>(ConfigValue(std::uint64_t{255})), std::optional<std::uint8_t>(255));
         EXPECT_FALSE(configValueAs<std::uint8_t>(ConfigValue(std::uint64_t{256})).has_value());
-        EXPECT_EQ(configValueAs<std::int32_t>(ConfigValue(std::int64_t{-2147483648LL})),
-                  std::optional<std::int32_t>(std::numeric_limits<std::int32_t>::min()));
+        EXPECT_EQ(configValueAs<std::int32_t>(ConfigValue(std::int64_t{-2147483648LL})), std::optional<std::int32_t>(std::numeric_limits<std::int32_t>::min()));
         EXPECT_FALSE(configValueAs<std::int32_t>(ConfigValue(std::uint64_t{2147483648ULL})).has_value());
     }
 

@@ -8,8 +8,8 @@
 #include "Core/EventLoop/EventLoop.h"
 
 #include <chrono>
-#include <cstddef>
 #include <coroutine>
+#include <cstddef>
 #include <exception>
 #include <memory>
 #include <optional>
@@ -46,11 +46,9 @@ namespace AsynGyanis::Core
              * @param candidates 候选地址（搬进本账本）
              * @param deadline 整场时限
              */
-            CandidateRace(EventLoop &loop, std::vector<InetAddress> candidates,
-                          const std::chrono::milliseconds deadline)
-                : m_loop(loop), m_candidates(std::move(candidates)), m_deadline(deadline),
-                  m_startedAt(std::chrono::steady_clock::now()), m_sockets(m_candidates.size()),
-                  m_attempts(m_candidates.size())
+            CandidateRace(EventLoop &loop, std::vector<InetAddress> candidates, const std::chrono::milliseconds deadline) :
+                m_loop(loop), m_candidates(std::move(candidates)), m_deadline(deadline), m_startedAt(std::chrono::steady_clock::now()), m_sockets(m_candidates.size()),
+                m_attempts(m_candidates.size())
             {
             }
 
@@ -60,9 +58,7 @@ namespace AsynGyanis::Core
              */
             [[nodiscard]] std::chrono::milliseconds remainingBudget() const
             {
-                const auto elapsed =
-                        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-                                                                              m_startedAt);
+                const auto elapsed   = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_startedAt);
                 const auto remaining = m_deadline - elapsed;
                 return remaining.count() > 0 ? remaining : std::chrono::milliseconds{0};
             }
@@ -83,11 +79,10 @@ namespace AsynGyanis::Core
             {
                 const std::chrono::milliseconds remaining = remainingBudget();
                 // 本条属于第几波（发起时 m_launchedCount 已含本条，故减一再除）
-                const std::size_t wave = (m_launchedCount - 1U) / kMaximumConcurrentCandidates;
-                const std::size_t totalWaves =
-                        (m_candidates.size() + kMaximumConcurrentCandidates - 1U) / kMaximumConcurrentCandidates;
-                const std::size_t rounds = totalWaves - wave;
-                const std::chrono::milliseconds slice = remaining / static_cast<long long>(rounds);
+                const std::size_t               wave       = (m_launchedCount - 1U) / kMaximumConcurrentCandidates;
+                const std::size_t               totalWaves = (m_candidates.size() + kMaximumConcurrentCandidates - 1U) / kMaximumConcurrentCandidates;
+                const std::size_t               rounds     = totalWaves - wave;
+                const std::chrono::milliseconds slice      = remaining / static_cast<long long>(rounds);
                 return slice.count() > 0 ? slice : std::chrono::milliseconds{1};
             }
 
@@ -101,8 +96,7 @@ namespace AsynGyanis::Core
              */
             void launchPending()
             {
-                while (!m_winner.has_value() && !m_isBudgetExhausted && m_inFlightCount < kMaximumConcurrentCandidates
-                       && m_launchedCount < m_candidates.size())
+                while (!m_winner.has_value() && !m_isBudgetExhausted && m_inFlightCount < kMaximumConcurrentCandidates && m_launchedCount < m_candidates.size())
                 {
                     if (remainingBudget().count() <= 0)
                     {
@@ -163,8 +157,7 @@ namespace AsynGyanis::Core
              */
             [[nodiscard]] bool isSettled() const noexcept
             {
-                return m_inFlightCount == 0U
-                       && (m_winner.has_value() || m_isBudgetExhausted || m_launchedCount == m_candidates.size());
+                return m_inFlightCount == 0U && (m_winner.has_value() || m_isBudgetExhausted || m_launchedCount == m_candidates.size());
             }
 
             /// 登记等待方协程：定局时由最后一路收口的候选把它排回循环
@@ -208,18 +201,18 @@ namespace AsynGyanis::Core
                 }
             }
 
-            EventLoop &m_loop;                                ///< 所属事件循环
-            std::vector<InetAddress> m_candidates;            ///< 候选地址（按调用方给的顺序）
-            const std::chrono::milliseconds m_deadline;       ///< 整场时限
-            const std::chrono::steady_clock::time_point m_startedAt; ///< 整场开始时刻，用于算剩余预算
-            std::vector<std::optional<AsyncSocket>> m_sockets; ///< 每候选一条套接字（未发起时为空）
-            std::vector<std::optional<Task<void>>> m_attempts; ///< 每候选一路协程帧，随账本一起销毁
-            std::optional<ConnectedCandidate> m_winner;       ///< 胜者：连上的套接字与它连到的地址
-            std::size_t m_winnerIndex{0};                     ///< 胜者的候选下标
-            std::size_t m_inFlightCount{0};                   ///< 在途（已发起未收口）的候选数
-            std::size_t m_launchedCount{0};                   ///< 已发起过的候选条数（发到哪里为止）
-            bool m_isBudgetExhausted{false};                  ///< 预算用尽，剩下的候选不再发起
-            std::coroutine_handle<> m_waiter{};               ///< 等待整场收口的协程
+            EventLoop                                  &m_loop;                     ///< 所属事件循环
+            std::vector<InetAddress>                    m_candidates;               ///< 候选地址（按调用方给的顺序）
+            const std::chrono::milliseconds             m_deadline;                 ///< 整场时限
+            const std::chrono::steady_clock::time_point m_startedAt;                ///< 整场开始时刻，用于算剩余预算
+            std::vector<std::optional<AsyncSocket>>     m_sockets;                  ///< 每候选一条套接字（未发起时为空）
+            std::vector<std::optional<Task<void>>>      m_attempts;                 ///< 每候选一路协程帧，随账本一起销毁
+            std::optional<ConnectedCandidate>           m_winner;                   ///< 胜者：连上的套接字与它连到的地址
+            std::size_t                                 m_winnerIndex{0};           ///< 胜者的候选下标
+            std::size_t                                 m_inFlightCount{0};         ///< 在途（已发起未收口）的候选数
+            std::size_t                                 m_launchedCount{0};         ///< 已发起过的候选条数（发到哪里为止）
+            bool                                        m_isBudgetExhausted{false}; ///< 预算用尽，剩下的候选不再发起
+            std::coroutine_handle<>                     m_waiter{};                 ///< 等待整场收口的协程
         };
 
         /**
@@ -280,10 +273,10 @@ namespace AsynGyanis::Core
                 }
             } conclusion{race};
 
-            const InetAddress &candidate = race.candidates()[index];
-            std::optional<AsyncSocket> &slot = race.socketSlot(index);
-            slot = AsyncSocket::create(race.loop(), candidate.family());
-            AsyncSocket &socket = *slot;
+            const InetAddress          &candidate = race.candidates()[index];
+            std::optional<AsyncSocket> &slot      = race.socketSlot(index);
+            slot                                  = AsyncSocket::create(race.loop(), candidate.family());
+            AsyncSocket &socket                   = *slot;
 
             // 本条的时限由账本按「后面还排着几条」切给它的（见 CandidateRace::attemptSlice）
             const DeadlineGuard<AsyncSocket> guard(race.loop(), socket, race.attemptSlice(), "候选连接");
@@ -293,16 +286,13 @@ namespace AsynGyanis::Core
             {
                 co_await socket.asyncConnect(candidate);
                 isConnected = true;
-            }
-            catch (const Base::Exception &failure)
+            } catch (const Base::Exception &failure)
             {
                 // 底层原文只进日志（what() 里带抛出点，不外传）：这一路的失败不该决定整场的说法
                 LOG_WARN_FMT("ConnectionRace: 候选 {} 没连上。底层原因：{}", candidate.toString(), failure.what());
-            }
-            catch (...)
+            } catch (...)
             {
-                LOG_WARN_FMT("ConnectionRace: 候选 {} 没连上，且底层抛出的是框架之外的抛出物",
-                             candidate.toString());
+                LOG_WARN_FMT("ConnectionRace: 候选 {} 没连上，且底层抛出的是框架之外的抛出物", candidate.toString());
             }
 
             if (isConnected && !race.claimWin(index))
@@ -316,8 +306,8 @@ namespace AsynGyanis::Core
 
     std::vector<InetAddress> orderForConnectionRace(const std::vector<InetAddress> &resolved)
     {
-        std::vector<InetAddress> preferred;  ///< 首选族（排序结果第一条所属的那一族）
-        std::vector<InetAddress> other;      ///< 另一族
+        std::vector<InetAddress> preferred; ///< 首选族（排序结果第一条所属的那一族）
+        std::vector<InetAddress> other;     ///< 另一族
         preferred.reserve(resolved.size());
         other.reserve(resolved.size());
 
@@ -327,8 +317,7 @@ namespace AsynGyanis::Core
             if ((address.family() == AF_INET6) == preferIpv6)
             {
                 preferred.push_back(address);
-            }
-            else
+            } else
             {
                 other.push_back(address);
             }
@@ -350,9 +339,7 @@ namespace AsynGyanis::Core
         return ordered;
     }
 
-    Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop,
-                                                             std::vector<InetAddress> candidates,
-                                                             const std::chrono::milliseconds deadline)
+    Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, const std::chrono::milliseconds deadline)
     {
         CandidateRace race(loop, std::move(candidates), deadline);
         race.launchPending();

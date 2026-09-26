@@ -44,13 +44,13 @@ namespace AsynGyanis::Core
         /// 一条缓存：解析出来的地址与它的到期时刻
         struct CacheEntry
         {
-            std::vector<InetAddress>            addresses;  ///< 解析结果（IPv4 在前、IPv6 在后）
+            std::vector<InetAddress>              addresses; ///< 解析结果（IPv4 在前、IPv6 在后）
             std::chrono::steady_clock::time_point expiresAt; ///< 到点即视为未命中
         };
 
         /// 缓存表与其锁：后台解析线程不碰它，只有等待方所在线程读写；但不同事件循环的线程会问同一份表，
         /// 所以必须互斥。锁里只做查与放，不碰任何系统调用
-        std::mutex g_cacheMutex;
+        std::mutex                                  g_cacheMutex;
         std::unordered_map<std::string, CacheEntry> g_addressCache;
 
         /// 总查询次数与其中命中缓存的次数（进程级）。这是「缓存到底有没有在起作用」的唯一出口，
@@ -85,7 +85,7 @@ namespace AsynGyanis::Core
         std::optional<std::vector<InetAddress>> readCache(const std::string &key)
         {
             const std::lock_guard<std::mutex> guard(g_cacheMutex);
-            const auto iterator = g_addressCache.find(key);
+            const auto                        iterator = g_addressCache.find(key);
             if (iterator == g_addressCache.end())
             {
                 return std::nullopt;
@@ -111,7 +111,7 @@ namespace AsynGyanis::Core
             {
                 return;
             }
-            const auto now = std::chrono::steady_clock::now();
+            const auto                        now = std::chrono::steady_clock::now();
             const std::lock_guard<std::mutex> guard(g_cacheMutex);
             if (g_addressCache.size() >= kMaximumCacheEntryCount)
             {
@@ -210,8 +210,7 @@ namespace AsynGyanis::Core
          * @brief 在后台线程执行阻塞的 getaddrinfo，完成后通过 postRemote 唤醒调用方协程
          * @details 本次解析占住的名额挂在 state->slot 上，由这份状态负责归还，本函数不另设计数
          */
-        void blockingResolve(const std::string host, const uint16_t port, EventLoop *targetLoop,
-                             std::shared_ptr<ResolveState> state)
+        void blockingResolve(const std::string host, const uint16_t port, EventLoop *targetLoop, std::shared_ptr<ResolveState> state)
         {
             // Windows 上 getaddrinfo 需要 Winsock 已初始化
             const Platform::Socket::Initialization winsock;
@@ -324,7 +323,10 @@ namespace AsynGyanis::Core
             uint16_t                      port;
             std::shared_ptr<ResolveState> state;
 
-            bool await_ready() const noexcept { return false; }
+            bool await_ready() const noexcept
+            {
+                return false;
+            }
 
             bool await_suspend(const std::coroutine_handle<> handle) noexcept
             {
@@ -362,7 +364,9 @@ namespace AsynGyanis::Core
                 return true;
             }
 
-            void await_resume() const noexcept {}
+            void await_resume() const noexcept
+            {
+            }
 
             ~ResolveAwaiter()
             {
@@ -379,7 +383,6 @@ namespace AsynGyanis::Core
 
     AsyncResolver::Stats AsyncResolver::stats() noexcept
     {
-        return Stats{g_lookupCount.load(std::memory_order_relaxed),
-                     g_cacheHitCount.load(std::memory_order_relaxed)};
+        return Stats{g_lookupCount.load(std::memory_order_relaxed), g_cacheHitCount.load(std::memory_order_relaxed)};
     }
 } // namespace AsynGyanis::Core

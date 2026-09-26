@@ -31,11 +31,10 @@ namespace AsynGyanis::Net
          * @param declaredOverride 不为空时用它当长度字段，用来构造「谎报长度」的畸形头
          * @return std::string 完整的头字节
          */
-        std::string makeV2Header(const int command, const int family, const std::string &addressBlock,
-                                const std::size_t declaredOverride = 0U)
+        std::string makeV2Header(const int command, const int family, const std::string &addressBlock, const std::size_t declaredOverride = 0U)
         {
             const std::size_t declared = declaredOverride != 0U ? declaredOverride : addressBlock.size();
-            std::string header = kSignature;
+            std::string       header   = kSignature;
             header += static_cast<char>(0x20 | (command & 0x0F));
             header += static_cast<char>((family << 4) | 0x01); // 传输协议一律按 STREAM 填
             header += static_cast<char>((declared >> 8) & 0xFF);
@@ -47,8 +46,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 拼 v2 的 IPv4 地址块：源、目的各 4 字节，再加两个端口
          */
-        std::string makeV2Ipv4Block(const std::vector<int> &source, const std::vector<int> &destination,
-                                    const int sourcePort, const int destinationPort)
+        std::string makeV2Ipv4Block(const std::vector<int> &source, const std::vector<int> &destination, const int sourcePort, const int destinationPort)
         {
             std::string block;
             for (const int octet: source)
@@ -71,15 +69,14 @@ namespace AsynGyanis::Net
          * @param sourceTail 源地址的最后一字节（前缀固定 2001:db8::），够区分两条不同地址
          * @param destinationTail 目的地址的最后一字节
          */
-        std::string makeV2Ipv6Block(const int sourceTail, const int destinationTail, const int sourcePort,
-                                    const int destinationPort)
+        std::string makeV2Ipv6Block(const int sourceTail, const int destinationTail, const int sourcePort, const int destinationPort)
         {
             std::string block(36U, '\0');
             // 2001:db8::/32 是文档前缀：前 4 字节固定填上，末尾再带一个可辨认的尾号
-            block[0U] = static_cast<char>(0x20);
-            block[1U] = static_cast<char>(0x01);
-            block[2U] = static_cast<char>(0x0D);
-            block[3U] = static_cast<char>(0xB8);
+            block[0U]  = static_cast<char>(0x20);
+            block[1U]  = static_cast<char>(0x01);
+            block[2U]  = static_cast<char>(0x0D);
+            block[3U]  = static_cast<char>(0xB8);
             block[16U] = static_cast<char>(0x20);
             block[17U] = static_cast<char>(0x01);
             block[18U] = static_cast<char>(0x0D);
@@ -106,9 +103,9 @@ namespace AsynGyanis::Net
 
     TEST(ProxyProtocol, ParsesV1Tcp4Line)
     {
-        const std::string header = "PROXY TCP4 203.0.113.9 198.51.100.7 65535 80\r\n";
-        std::size_t consumed = 0U;
-        const auto endpoint = parse(header, consumed);
+        const std::string header   = "PROXY TCP4 203.0.113.9 198.51.100.7 65535 80\r\n";
+        std::size_t       consumed = 0U;
+        const auto        endpoint = parse(header, consumed);
         ASSERT_TRUE(endpoint.has_value());
         EXPECT_TRUE(endpoint->hasAddresses);
         EXPECT_EQ(endpoint->source.ip(), "203.0.113.9");
@@ -126,9 +123,9 @@ namespace AsynGyanis::Net
      */
     TEST(ProxyProtocol, ParsesTheSpecVersionOneExample)
     {
-        const std::string header = "PROXY TCP4 192.168.0.1 192.168.0.11 56324 443\r\n";
-        std::size_t consumed = 0U;
-        const auto endpoint = parse(header, consumed);
+        const std::string header   = "PROXY TCP4 192.168.0.1 192.168.0.11 56324 443\r\n";
+        std::size_t       consumed = 0U;
+        const auto        endpoint = parse(header, consumed);
         ASSERT_TRUE(endpoint.has_value());
         EXPECT_TRUE(endpoint->hasAddresses);
         EXPECT_EQ(endpoint->source.ip(), "192.168.0.1") << "第一个地址是来源，不是目的";
@@ -140,9 +137,9 @@ namespace AsynGyanis::Net
 
     TEST(ProxyProtocol, ParsesV1Tcp6Line)
     {
-        const std::string header = "PROXY TCP6 2001:db8::1 2001:db8::2 12345 443\r\n";
-        std::size_t consumed = 0U;
-        const auto endpoint = parse(header, consumed);
+        const std::string header   = "PROXY TCP6 2001:db8::1 2001:db8::2 12345 443\r\n";
+        std::size_t       consumed = 0U;
+        const auto        endpoint = parse(header, consumed);
         ASSERT_TRUE(endpoint.has_value());
         EXPECT_EQ(endpoint->source.ip(), "2001:db8::1");
         EXPECT_EQ(endpoint->destination.port(), 443);
@@ -155,9 +152,9 @@ namespace AsynGyanis::Net
      */
     TEST(ProxyProtocol, TreatsV1UnknownAsNoAddresses)
     {
-        const std::string header = "PROXY UNKNOWN\r\n";
-        std::size_t consumed = 0U;
-        const auto endpoint = parse(header, consumed);
+        const std::string header   = "PROXY UNKNOWN\r\n";
+        std::size_t       consumed = 0U;
+        const auto        endpoint = parse(header, consumed);
         ASSERT_TRUE(endpoint.has_value());
         EXPECT_FALSE(endpoint->hasAddresses);
         EXPECT_EQ(consumed, header.size());
@@ -166,9 +163,9 @@ namespace AsynGyanis::Net
     TEST(ProxyProtocol, StopsV1AtLineEndAndLeavesTheRest)
     {
         // 代理把头和请求写在同一次发送里：解析只能吃到 CRLF，剩下的要原样留给协议解析
-        const std::string header = "PROXY TCP4 192.0.2.1 192.0.2.2 1 2\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n";
-        std::size_t consumed = 0U;
-        const auto endpoint = parse(header, consumed);
+        const std::string header   = "PROXY TCP4 192.0.2.1 192.0.2.2 1 2\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n";
+        std::size_t       consumed = 0U;
+        const auto        endpoint = parse(header, consumed);
         ASSERT_TRUE(endpoint.has_value());
         EXPECT_EQ(consumed, header.find("\r\n") + 2U) << "消费数应正好到第一个 CRLF 末尾";
         EXPECT_EQ(header.substr(consumed), "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
@@ -191,7 +188,7 @@ namespace AsynGyanis::Net
         for (const std::string &header: bad)
         {
             std::size_t consumed = 12345U;
-            const auto endpoint = parse(header, consumed);
+            const auto  endpoint = parse(header, consumed);
             EXPECT_FALSE(endpoint.has_value()) << "不该被接受的 v1 头：" << header;
             EXPECT_EQ(consumed, 0U) << "解析失败必须归零消费数，不能让调用方误吃掉字节：" << header;
         }
@@ -203,9 +200,9 @@ namespace AsynGyanis::Net
 
     TEST(ProxyProtocol, ParsesV2Ipv4ProxyCommand)
     {
-        const std::string header = makeV2Header(1, 1, makeV2Ipv4Block({203, 0, 113, 9}, {198, 51, 100, 7}, 44000, 443));
-        std::size_t consumed = 0U;
-        const auto endpoint = parse(header, consumed);
+        const std::string header   = makeV2Header(1, 1, makeV2Ipv4Block({203, 0, 113, 9}, {198, 51, 100, 7}, 44000, 443));
+        std::size_t       consumed = 0U;
+        const auto        endpoint = parse(header, consumed);
         ASSERT_TRUE(endpoint.has_value());
         EXPECT_TRUE(endpoint->hasAddresses);
         EXPECT_EQ(endpoint->source.ip(), "203.0.113.9");
@@ -217,9 +214,9 @@ namespace AsynGyanis::Net
 
     TEST(ProxyProtocol, ParsesV2Ipv6ProxyCommand)
     {
-        const std::string header = makeV2Header(1, 2, makeV2Ipv6Block(0x01, 0x02, 1234, 80));
-        std::size_t consumed = 0U;
-        const auto endpoint = parse(header, consumed);
+        const std::string header   = makeV2Header(1, 2, makeV2Ipv6Block(0x01, 0x02, 1234, 80));
+        std::size_t       consumed = 0U;
+        const auto        endpoint = parse(header, consumed);
         ASSERT_TRUE(endpoint.has_value());
         EXPECT_TRUE(endpoint->hasAddresses);
         EXPECT_EQ(endpoint->source.ip(), "2001:db8::1");
@@ -241,7 +238,7 @@ namespace AsynGyanis::Net
         const std::string header = makeV2Header(1, 1, block);
 
         std::size_t consumed = 0U;
-        const auto endpoint = parse(header, consumed);
+        const auto  endpoint = parse(header, consumed);
         ASSERT_TRUE(endpoint.has_value());
         EXPECT_EQ(endpoint->source.ip(), "192.0.2.1");
         EXPECT_EQ(consumed, header.size()) << "带 TLV 时消费数要含 TLV";
@@ -256,10 +253,9 @@ namespace AsynGyanis::Net
     {
         for (const int command: {0, 2})
         {
-            const std::string header =
-                    makeV2Header(command, 1, makeV2Ipv4Block({127, 0, 0, 1}, {127, 0, 0, 1}, 1, 1));
-            std::size_t consumed = 0U;
-            const auto endpoint = parse(header, consumed);
+            const std::string header   = makeV2Header(command, 1, makeV2Ipv4Block({127, 0, 0, 1}, {127, 0, 0, 1}, 1, 1));
+            std::size_t       consumed = 0U;
+            const auto        endpoint = parse(header, consumed);
             ASSERT_TRUE(endpoint.has_value()) << "命令 " << command << " 是合法的，只是不带可信地址";
             EXPECT_FALSE(endpoint->hasAddresses) << "命令 " << command << " 不许交出身份";
             EXPECT_EQ(consumed, header.size());
@@ -270,9 +266,9 @@ namespace AsynGyanis::Net
     {
         for (const int family: {0, 3})
         {
-            const std::string header = makeV2Header(1, family, std::string{});
-            std::size_t consumed = 0U;
-            const auto endpoint = parse(header, consumed);
+            const std::string header   = makeV2Header(1, family, std::string{});
+            std::size_t       consumed = 0U;
+            const auto        endpoint = parse(header, consumed);
             ASSERT_TRUE(endpoint.has_value()) << "地址族 " << family << " 应当被认出，只是没有 IP 身份";
             EXPECT_FALSE(endpoint->hasAddresses) << "地址族 " << family << " 不该交出 IP";
         }
@@ -282,8 +278,7 @@ namespace AsynGyanis::Net
     {
         const std::vector<std::string> bad = {
                 // 版本号写成 1：v2 的正文形状不该被 1 号版本套用
-                kSignature + std::string("\x11\x11\x00\x0c", 4)
-                        + makeV2Ipv4Block({1, 1, 1, 1}, {2, 2, 2, 2}, 1, 2),
+                kSignature + std::string("\x11\x11\x00\x0c", 4) + makeV2Ipv4Block({1, 1, 1, 1}, {2, 2, 2, 2}, 1, 2),
                 // 长度字段短于该地址族必需的地址块
                 makeV2Header(1, 1, makeV2Ipv4Block({1, 1, 1, 1}, {2, 2, 2, 2}, 1, 2), 8U),
                 // 正文没有长度字段所说的那么多字节：头不完整，不该被当成一条已读到的头
@@ -303,9 +298,9 @@ namespace AsynGyanis::Net
      */
     TEST(ProxyProtocol, TreatsUndefinedV2CommandAsNoAddresses)
     {
-        const std::string header = makeV2Header(3, 1, makeV2Ipv4Block({1, 1, 1, 1}, {2, 2, 2, 2}, 1, 2));
-        std::size_t consumed = 0U;
-        const auto endpoint = parse(header, consumed);
+        const std::string header   = makeV2Header(3, 1, makeV2Ipv4Block({1, 1, 1, 1}, {2, 2, 2, 2}, 1, 2));
+        std::size_t       consumed = 0U;
+        const auto        endpoint = parse(header, consumed);
         ASSERT_TRUE(endpoint.has_value());
         EXPECT_FALSE(endpoint->hasAddresses);
         EXPECT_EQ(consumed, header.size());
@@ -348,8 +343,8 @@ namespace AsynGyanis::Net
     {
         EXPECT_FALSE(frameProxyHeader(kSignature).totalLength.has_value()) << "签名读满但定长段还没齐";
 
-        const std::string header = makeV2Header(1, 1, makeV2Ipv4Block({1, 2, 3, 4}, {5, 6, 7, 8}, 9, 10));
-        const auto framing = frameProxyHeader(header);
+        const std::string header  = makeV2Header(1, 1, makeV2Ipv4Block({1, 2, 3, 4}, {5, 6, 7, 8}, 9, 10));
+        const auto        framing = frameProxyHeader(header);
         EXPECT_TRUE(framing.isStillPlausible);
         ASSERT_TRUE(framing.totalLength.has_value());
         EXPECT_EQ(*framing.totalLength, header.size());

@@ -28,28 +28,20 @@ namespace AsynGyanis::Net
         return host < other.host;
     }
 
-    HttpOutboundConnection::HttpOutboundConnection(const HttpOutboundEndpointKey endpointKey,
-                                                   std::unique_ptr<TcpStream> plainSocket,
-                                                   std::unique_ptr<Core::TlsSocket> tlsSocket)
-        : m_plainSocket(std::move(plainSocket))
-        , m_tlsSocket(std::move(tlsSocket))
-        , m_endpointKey(endpointKey)
+    HttpOutboundConnection::HttpOutboundConnection(const HttpOutboundEndpointKey endpointKey, std::unique_ptr<TcpStream> plainSocket, std::unique_ptr<Core::TlsSocket> tlsSocket) :
+        m_plainSocket(std::move(plainSocket)), m_tlsSocket(std::move(tlsSocket)), m_endpointKey(endpointKey)
     {
     }
 
-    std::unique_ptr<HttpOutboundConnection> HttpOutboundConnection::forPlain(const HttpOutboundEndpointKey endpointKey,
-                                                                            TcpStream stream)
+    std::unique_ptr<HttpOutboundConnection> HttpOutboundConnection::forPlain(const HttpOutboundEndpointKey endpointKey, TcpStream stream)
     {
         // 堆上是必需的而不是习惯：连接要进池、要被取出，地址得稳定（挂起的收发协程持有它的引用）
-        return std::unique_ptr<HttpOutboundConnection>(
-                new HttpOutboundConnection(endpointKey, std::make_unique<TcpStream>(std::move(stream)), nullptr));
+        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, std::make_unique<TcpStream>(std::move(stream)), nullptr));
     }
 
-    std::unique_ptr<HttpOutboundConnection> HttpOutboundConnection::forSecure(const HttpOutboundEndpointKey endpointKey,
-                                                                              std::unique_ptr<Core::TlsSocket> socket)
+    std::unique_ptr<HttpOutboundConnection> HttpOutboundConnection::forSecure(const HttpOutboundEndpointKey endpointKey, std::unique_ptr<Core::TlsSocket> socket)
     {
-        return std::unique_ptr<HttpOutboundConnection>(
-                new HttpOutboundConnection(endpointKey, nullptr, std::move(socket)));
+        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, nullptr, std::move(socket)));
     }
 
     HttpOutboundConnection::~HttpOutboundConnection()
@@ -102,7 +94,7 @@ namespace AsynGyanis::Net
         while (writtenByteCount < data.size())
         {
             const std::size_t remainingByteCount = data.size() - writtenByteCount;
-            const char *const segmentBegin = data.data() + writtenByteCount;
+            const char *const segmentBegin       = data.data() + writtenByteCount;
             if (m_tlsSocket != nullptr)
             {
                 // asyncSend 可能只写出一部分（也可能抛异常）：按返回值推进，别假设一次就写完
@@ -163,8 +155,7 @@ namespace AsynGyanis::Net
         m_parser.reset();
     }
 
-    HttpOutboundConnectionPool::HttpOutboundConnectionPool(const Config config) noexcept
-        : m_config(config)
+    HttpOutboundConnectionPool::HttpOutboundConnectionPool(const Config config) noexcept : m_config(config)
     {
     }
 
@@ -176,7 +167,7 @@ namespace AsynGyanis::Net
             return nullptr;
         }
 
-        const Clock::time_point now = Clock::now();
+        const Clock::time_point now     = Clock::now();
         std::vector<IdleEntry> &entries = groupIterator->second;
         // 从队尾取：队尾是最近用完的那条，还热着（对端的空闲计时也还没走完）。留在队头的先过期，
         // 由下面的可用性判据顺手收掉
@@ -213,7 +204,7 @@ namespace AsynGyanis::Net
         }
 
         std::vector<IdleEntry> &entries = m_idleByEndpoint[connection->endpointKey()];
-        const Clock::time_point now = Clock::now();
+        const Clock::time_point now     = Clock::now();
 
         // 先把过期的清掉再腾位置：越界时收的是队头（最旧的那条），新用完的这条留在队尾。
         // 这里只判时间——空闲表里的连接不可能已被关掉（关连接的那几条路径都不会把它交回池），
@@ -325,14 +316,12 @@ namespace AsynGyanis::Net
         m_establishments->settle(establishmentKeyOf(endpointKey));
     }
 
-    HttpEstablishmentAwait HttpOutboundConnectionPool::awaitEstablishment(const HttpOutboundEndpointKey &endpointKey,
-                                                                          Core::EventLoop &loop)
+    HttpEstablishmentAwait HttpOutboundConnectionPool::awaitEstablishment(const HttpOutboundEndpointKey &endpointKey, Core::EventLoop &loop)
     {
         return HttpEstablishmentAwait(m_establishments, establishmentKeyOf(endpointKey), loop);
     }
 
-    void HttpOutboundConnectionPool::adoptHttp2(const HttpOutboundEndpointKey &endpointKey,
-                                                std::shared_ptr<Http2ClientConnection> connection)
+    void HttpOutboundConnectionPool::adoptHttp2(const HttpOutboundEndpointKey &endpointKey, std::shared_ptr<Http2ClientConnection> connection)
     {
         if (connection == nullptr || !connection->isHealthy())
         {

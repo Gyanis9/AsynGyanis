@@ -71,8 +71,7 @@ namespace AsynGyanis::Platform
             /**
              * @brief 申请一次网络子系统初始化引用
              */
-            Initialization() noexcept :
-                m_valid(initialize())
+            Initialization() noexcept : m_valid(initialize())
             {
             }
 
@@ -318,6 +317,5 @@ namespace AsynGyanis::Platform
          *       因此新进程接手期间监听端口不曾关闭，也就没有 ECONNREFUSED 的空窗
          */
         static int readListeningSocketHandoff(int channelDescriptor) noexcept;
-
     };
 } // namespace AsynGyanis::Platform

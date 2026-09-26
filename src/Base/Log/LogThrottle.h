@@ -67,7 +67,7 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] static std::uint64_t nowMilliseconds() noexcept;
 
-        std::chrono::milliseconds m_interval;                   ///< 放行间隔；0 表示不压
+        std::chrono::milliseconds  m_interval;                  ///< 放行间隔；0 表示不压
         std::atomic<std::uint64_t> m_nextPassAtMilliseconds{0}; ///< 下一个可放行的时刻（毫秒）
         std::atomic<std::uint64_t> m_droppedSincePass{0};       ///< 自上次放行以来被压掉的条数
         std::atomic<std::uint64_t> m_droppedReported{0};        ///< 上次放行时交出的条数，供调用方读
@@ -89,11 +89,11 @@ namespace AsynGyanis::Base
      * @note 状态是 lambda 里的函数局部 static：C++11 起局部静态的初始化线程安全，而每个使用处的
      *       lambda 类型各不相同，因此各用各的窗口，互不干扰
      */
-#define ASYN_LOG_THROTTLED(interval)                                                            \
-    []() -> ::AsynGyanis::Base::LogThrottle &                                                   \
-    {                                                                                           \
-        static ::AsynGyanis::Base::LogThrottle throttle((interval));                            \
-        return throttle;                                                                        \
+#define ASYN_LOG_THROTTLED(interval)                                                                                                                                               \
+    []() -> ::AsynGyanis::Base::LogThrottle &                                                                                                                                      \
+    {                                                                                                                                                                              \
+        static ::AsynGyanis::Base::LogThrottle throttle((interval));                                                                                                               \
+        return throttle;                                                                                                                                                           \
     }()
 
 } // namespace AsynGyanis::Base

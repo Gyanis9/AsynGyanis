@@ -13,8 +13,7 @@ namespace AsynGyanis::Base
     }
 
     NetworkException::NetworkException(const std::string &context, std::error_code errorCode, const std::string &remoteAddress, const std::source_location &sourceLocation) :
-        SystemException(context + " (remote: " + remoteAddress + ")", errorCode, sourceLocation)
-        , m_remoteAddress(remoteAddress)
+        SystemException(context + " (remote: " + remoteAddress + ")", errorCode, sourceLocation), m_remoteAddress(remoteAddress)
     {
     }
 

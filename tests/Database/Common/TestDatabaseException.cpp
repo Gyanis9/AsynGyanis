@@ -124,7 +124,7 @@ namespace AsynGyanis::Database
     {
         // 消息不额外加领域前缀（调用点的文本本身已带上下文标签），
         // 但位置捕获与文本格式与 Base::Exception 完全一致——两者共用同一份格式化实现
-        const std::source_location throwSite = std::source_location::current();
+        const std::source_location    throwSite = std::source_location::current();
         const QueryExecutionException exception("语句执行失败：no such table", throwSite);
 
         const std::string message = exception.what();

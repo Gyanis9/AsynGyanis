@@ -116,13 +116,13 @@ namespace AsynGyanis::Core
         {
             int           fileDescriptor{0};
             void         *userData{nullptr};
-            std::uint32_t events{0};           ///< 关注的事件位（不含 EPOLLONESHOT / EPOLLET）
-            std::uint32_t inFlightEvents{0};   ///< 在途轮询提交时用的掩码
-            bool          isOneShot{false};    ///< 一次上报后不自动重投，由上层重新武装
-            std::uint64_t inFlightTicket{0};   ///< 在途 POLL_ADD 的票据；0 表示没有
-            bool          pendingRearm{false}; ///< 取消在途轮询后要按新掩码重投
-            bool          pendingDelete{false};///< 等取消完成通知到齐后销毁记录
-            bool          pendingRemove{false};///< 取消请求已提交、等待其完成通知
+            std::uint32_t events{0};            ///< 关注的事件位（不含 EPOLLONESHOT / EPOLLET）
+            std::uint32_t inFlightEvents{0};    ///< 在途轮询提交时用的掩码
+            bool          isOneShot{false};     ///< 一次上报后不自动重投，由上层重新武装
+            std::uint64_t inFlightTicket{0};    ///< 在途 POLL_ADD 的票据；0 表示没有
+            bool          pendingRearm{false};  ///< 取消在途轮询后要按新掩码重投
+            bool          pendingDelete{false}; ///< 等取消完成通知到齐后销毁记录
+            bool          pendingRemove{false}; ///< 取消请求已提交、等待其完成通知
         };
 
         /**
@@ -226,29 +226,29 @@ namespace AsynGyanis::Core
         void zombifyRegistration(Registration *registration);
 
         // ---- 环形映射（内核共享内存；跨线程可见性由 __atomic 内建保证） ----
-        unsigned      *m_submissionHead{nullptr};   ///< SQ 头
-        unsigned      *m_submissionTail{nullptr};   ///< SQ 尾
-        unsigned      *m_submissionRingMask{nullptr}; ///< SQ 下标掩码
-        unsigned      *m_submissionEntriesCount{nullptr}; ///< SQ 条目数（只读）
-        unsigned      *m_submissionArray{nullptr};  ///< SQ 下标数组
-        unsigned      *m_completionHead{nullptr};   ///< CQ 头
-        unsigned      *m_completionTail{nullptr};   ///< CQ 尾
-        unsigned      *m_completionRingMask{nullptr}; ///< CQ 下标掩码
-        io_uring_sqe  *m_submissionEntries{nullptr};  ///< 提交项数组
-        io_uring_cqe  *m_completionEntries{nullptr};  ///< 完成项数组
-        void          *m_submissionRingMapping{nullptr}; ///< SQ 环那段映射的基址（munmap 与算偏移都用它）
-        std::size_t    m_submissionRingMappingSize{0};   ///< 上面那段映射的长度
-        void          *m_completionRingMapping{nullptr}; ///< CQ 环映射基址；内核把两段并成一份时与 SQ 相同
-        std::size_t    m_completionRingMappingSize{0};   ///< 上面那段映射的长度
-        void          *m_submissionEntriesMapping{nullptr};   ///< SQ 条目数组的映射基址（内核侧那块）
-        std::size_t    m_submissionEntriesMappingSize{0};     ///< 上面那段映射的长度
-        unsigned       m_submissionCapacity{0};      ///< SQ 条目数（本地副本）
+        unsigned     *m_submissionHead{nullptr};           ///< SQ 头
+        unsigned     *m_submissionTail{nullptr};           ///< SQ 尾
+        unsigned     *m_submissionRingMask{nullptr};       ///< SQ 下标掩码
+        unsigned     *m_submissionEntriesCount{nullptr};   ///< SQ 条目数（只读）
+        unsigned     *m_submissionArray{nullptr};          ///< SQ 下标数组
+        unsigned     *m_completionHead{nullptr};           ///< CQ 头
+        unsigned     *m_completionTail{nullptr};           ///< CQ 尾
+        unsigned     *m_completionRingMask{nullptr};       ///< CQ 下标掩码
+        io_uring_sqe *m_submissionEntries{nullptr};        ///< 提交项数组
+        io_uring_cqe *m_completionEntries{nullptr};        ///< 完成项数组
+        void         *m_submissionRingMapping{nullptr};    ///< SQ 环那段映射的基址（munmap 与算偏移都用它）
+        std::size_t   m_submissionRingMappingSize{0};      ///< 上面那段映射的长度
+        void         *m_completionRingMapping{nullptr};    ///< CQ 环映射基址；内核把两段并成一份时与 SQ 相同
+        std::size_t   m_completionRingMappingSize{0};      ///< 上面那段映射的长度
+        void         *m_submissionEntriesMapping{nullptr}; ///< SQ 条目数组的映射基址（内核侧那块）
+        std::size_t   m_submissionEntriesMappingSize{0};   ///< 上面那段映射的长度
+        unsigned      m_submissionCapacity{0};             ///< SQ 条目数（本地副本）
         /// 已取走、尚未发布给内核的槽位数：取槽只推进它，尾指针等 flush 时才发布——
         /// 内核因此不会读到半写的 SQE（「先填内容、再发布尾指针」这条顺序由它保证）
-        unsigned       m_reservedSubmissionCount{0};
+        unsigned m_reservedSubmissionCount{0};
 
-        int  m_ringFileDescriptor{-1};  ///< ring 描述符
-        bool m_isValid{false};          ///< 是否已完成初始化
+        int  m_ringFileDescriptor{-1}; ///< ring 描述符
+        bool m_isValid{false};         ///< 是否已完成初始化
 
         /// 超时操作的时值：内核持有它的地址直到完成，因此必须是成员、不能是局部
         __kernel_timespec *m_timeoutValue{nullptr};
@@ -265,16 +265,16 @@ namespace AsynGyanis::Core
         };
 
         /// 在途轮询的槽位数组：容量长到「同时在途的条数」后保持不变，摘除只把下标还给空闲栈
-        std::vector<InFlightSlot>                   m_inFlightSlots;     ///< 槽位本体
-        std::vector<std::uint32_t>                  m_freeInFlightSlots; ///< 空闲槽位下标栈（后进先出）
+        std::vector<InFlightSlot>  m_inFlightSlots;     ///< 槽位本体
+        std::vector<std::uint32_t> m_freeInFlightSlots; ///< 空闲槽位下标栈（后进先出）
 
         /// 需要维护动作的描述符（按号存，不存指针：记录可能在这之前就被销毁）
         /// 投递一次电平事件、或某次提交没成功时登记，维护只走这几条。
         /// 残留的号被新连接复用也无害：那条登记最多让新注册提前补投一次它本来就要补的轮询，
         /// 而不会把动作错派给别的对象——维护读的是注册记录此刻的状态，不是登记时的状态
-        std::vector<int>                             m_attentionDescriptors;
-        std::uint64_t                                m_nextTicket{1};  ///< 超时票据的计数（带高位标记，与轮询槽位编码不重叠）
-        std::uint64_t                                m_timeoutTicket{0}; ///< 在途超时操作的票据
+        std::vector<int> m_attentionDescriptors;
+        std::uint64_t    m_nextTicket{1};    ///< 超时票据的计数（带高位标记，与轮询槽位编码不重叠）
+        std::uint64_t    m_timeoutTicket{0}; ///< 在途超时操作的票据
 
         std::vector<epoll_event> m_readyEvents; ///< wait() 的落地缓冲：构造时一次定容，改容量会让已交出去的视图悬垂
     };

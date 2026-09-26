@@ -26,10 +26,10 @@
 #include "Net/Quic/Codec/QuicTransportParameters.h"
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 #include "Net/Quic/Crypto/QuicTlsContext.h"
-#include "Net/Quic/Recovery/QuicCongestionControl.h"
 #include "Net/Quic/QuicConnectionRole.h"
 #include "Net/Quic/QuicReassemblyBuffer.h"
 #include "Net/Quic/QuicReceivedPacketNumbers.h"
+#include "Net/Quic/Recovery/QuicCongestionControl.h"
 #include "Net/Quic/Recovery/QuicRecovery.h"
 #include "Net/Quic/Streams/QuicStreamLayer.h"
 
@@ -66,13 +66,13 @@ namespace AsynGyanis::Net
      */
     struct QuicConnectionCoreConfiguration
     {
-        QuicConnectionRole role{QuicConnectionRole::Server};                  ///< 本端角色；缺省值与既有服务端调用点一致
-        SSL_CTX *tlsContext{nullptr};                                      ///< 已配好证书与 ALPN 的 TLS 上下文，生命周期须覆盖本对象
-        std::vector<std::uint8_t> localConnectionId{};                     ///< 本端签发的源连接标识：短头按它定长度，路由表也认它
-        std::vector<std::uint8_t> peerConnectionId{};                      ///< 回包的目的连接标识：对端自报的源标识（§7.2）
-        std::vector<std::uint8_t> originalDestinationConnectionId{};       ///< 客户端第一个 Initial 的目的标识，Initial 密钥由它推导
-        QuicTransportParameters transportParameters{};                     ///< 本端要声明的传输参数；两个必填的连接标识项由本类按上面三个值补齐
-        std::optional<QuicClientTlsSettings> clientTlsSettings{};          ///< 作客户端时按连接生效的身份（SNI、校验名、ALPN）；服务端一侧留空
+        QuicConnectionRole                   role{QuicConnectionRole::Server};  ///< 本端角色；缺省值与既有服务端调用点一致
+        SSL_CTX                             *tlsContext{nullptr};               ///< 已配好证书与 ALPN 的 TLS 上下文，生命周期须覆盖本对象
+        std::vector<std::uint8_t>            localConnectionId{};               ///< 本端签发的源连接标识：短头按它定长度，路由表也认它
+        std::vector<std::uint8_t>            peerConnectionId{};                ///< 回包的目的连接标识：对端自报的源标识（§7.2）
+        std::vector<std::uint8_t>            originalDestinationConnectionId{}; ///< 客户端第一个 Initial 的目的标识，Initial 密钥由它推导
+        QuicTransportParameters              transportParameters{};             ///< 本端要声明的传输参数；两个必填的连接标识项由本类按上面三个值补齐
+        std::optional<QuicClientTlsSettings> clientTlsSettings{};               ///< 作客户端时按连接生效的身份（SNI、校验名、ALPN）；服务端一侧留空
     };
 
     /**
@@ -100,10 +100,10 @@ namespace AsynGyanis::Net
          */
         explicit QuicConnectionCore(QuicConnectionCoreConfiguration configuration);
 
-        QuicConnectionCore(const QuicConnectionCore &) = delete;
+        QuicConnectionCore(const QuicConnectionCore &)            = delete;
         QuicConnectionCore &operator=(const QuicConnectionCore &) = delete;
-        QuicConnectionCore(QuicConnectionCore &&) = delete;
-        QuicConnectionCore &operator=(QuicConnectionCore &&) = delete;
+        QuicConnectionCore(QuicConnectionCore &&)                 = delete;
+        QuicConnectionCore &operator=(QuicConnectionCore &&)      = delete;
 
         /**
          * @brief 处理一个收到的 UDP 数据报净载荷：只收不发
@@ -116,8 +116,7 @@ namespace AsynGyanis::Net
          * @return 失败返回 `QuicDecodeError`：报文违反 v1 的硬性规则（保留位非 0 等）。本类会同时自行
          *         发出 CONNECTION_CLOSE（§10.2 要求连接错误必须通知对端），错误值供调用方记日志
          */
-        [[nodiscard]] std::expected<void, QuicDecodeError> onDatagramReceived(std::span<const std::uint8_t> datagram,
-                                                                              Timestamp arrivalTime);
+        [[nodiscard]] std::expected<void, QuicDecodeError> onDatagramReceived(std::span<const std::uint8_t> datagram, Timestamp arrivalTime);
 
         /**
          * @brief 取走一条待发数据报
@@ -249,28 +248,28 @@ namespace AsynGyanis::Net
          */
         struct SpaceState
         {
-            std::optional<QuicPacketKeys> readKeys{};    ///< 解对端报文用；未就绪时相关报文只能丢弃
-            std::optional<QuicPacketKeys> writeKeys{};   ///< 给本端报文加密用
-            std::optional<QuicPacketKeys> nextReadKeys{};     ///< 入站：下一代读密钥，只对 1-RTT 有意义（RFC 9001 §6.3）
-            std::optional<QuicPacketKeys> previousReadKeys{}; ///< 入站：上一代读密钥，晚到的旧包还要解，最多留 3×PTO（§6.5）
-            std::uint64_t nextPacketNumber{0};           ///< 下一个要发出的完整包号
+            std::optional<QuicPacketKeys> readKeys{};          ///< 解对端报文用；未就绪时相关报文只能丢弃
+            std::optional<QuicPacketKeys> writeKeys{};         ///< 给本端报文加密用
+            std::optional<QuicPacketKeys> nextReadKeys{};      ///< 入站：下一代读密钥，只对 1-RTT 有意义（RFC 9001 §6.3）
+            std::optional<QuicPacketKeys> previousReadKeys{};  ///< 入站：上一代读密钥，晚到的旧包还要解，最多留 3×PTO（§6.5）
+            std::uint64_t                 nextPacketNumber{0}; ///< 下一个要发出的完整包号
 
-            std::optional<std::uint64_t> largestReceivedPacketNumber{}; ///< 本空间已认证的最大包号，包号还原要靠它
-            QuicReceivedPacketNumbers receivedPacketNumbers{};                  ///< 已解密成功的包号，出 ACK 的原料
-            std::optional<std::uint64_t> largestAckElicitingReceived{}; ///< 最新的触发确认的包号，即 ACK 帧的最大确认值
-            std::optional<Timestamp> largestAckElicitingArrival{};      ///< 它的到达时刻，算 ack_delay
-            bool isAcknowledgementPending{false};        ///< 有触发确认的包尚未被确认：下一次出包要带 ACK
+            std::optional<std::uint64_t> largestReceivedPacketNumber{};   ///< 本空间已认证的最大包号，包号还原要靠它
+            QuicReceivedPacketNumbers    receivedPacketNumbers{};         ///< 已解密成功的包号，出 ACK 的原料
+            std::optional<std::uint64_t> largestAckElicitingReceived{};   ///< 最新的触发确认的包号，即 ACK 帧的最大确认值
+            std::optional<Timestamp>     largestAckElicitingArrival{};    ///< 它的到达时刻，算 ack_delay
+            bool                         isAcknowledgementPending{false}; ///< 有触发确认的包尚未被确认：下一次出包要带 ACK
 
-            std::vector<std::uint8_t> cryptoStream{};    ///< 出站：本空间已经交给 TLS 产出、可作为重发依据的全部握手字节
-            std::uint64_t cryptoWriteOffset{0};          ///< 出站：下一个待新发字节的偏移，即 cryptoStream 里已排过队的长度
+            std::vector<std::uint8_t>    cryptoStream{};           ///< 出站：本空间已经交给 TLS 产出、可作为重发依据的全部握手字节
+            std::uint64_t                cryptoWriteOffset{0};     ///< 出站：下一个待新发字节的偏移，即 cryptoStream 里已排过队的长度
             std::vector<QuicCryptoRange> pendingRetransmissions{}; ///< 出站：判丢或探针后要重发的区间，按偏移递增
 
-            QuicReassemblyBuffer reassembly{};              ///< 入站：按覆盖区合并的 CRYPTO 分片，交付点就是已喂给 TLS 的字节数
+            QuicReassemblyBuffer reassembly{}; ///< 入站：按覆盖区合并的 CRYPTO 分片，交付点就是已喂给 TLS 的字节数
         };
 
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicEncryptionLevel level) noexcept;
-        [[nodiscard]] static std::size_t spaceIndex(QuicEncryptionLevel level) noexcept;
-        [[nodiscard]] static std::size_t spaceIndex(PacketNumberSpace space) noexcept;
+        [[nodiscard]] static std::size_t       spaceIndex(QuicEncryptionLevel level) noexcept;
+        [[nodiscard]] static std::size_t       spaceIndex(PacketNumberSpace space) noexcept;
 
         /// 本端是不是服务端：那几条只约束服务端的规则（反放大、HANDSHAKE_DONE 的方向、参数绑定）都问它
         [[nodiscard]] bool isLocalServer() const noexcept;
@@ -295,15 +294,15 @@ namespace AsynGyanis::Net
          *          客户端看自己解开了第一条 1-RTT 报文（那之前拿不到应用密钥，也就解不开）或收到
          *          HANDSHAKE_DONE。重复调用无副作用
          */
-        void confirmHandshake();
+        void                                   confirmHandshake();
         [[nodiscard]] static QuicRecoverySpace recoverySpaceOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicRecoverySpace space) noexcept;
 
         std::expected<void, QuicDecodeError> handlePacket(std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, Timestamp arrivalTime);
-        void handleFrame(const QuicFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
-        void handleAcknowledgement(const QuicAcknowledgementFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
-        void handleCryptoBytes(PacketNumberSpace space, std::uint64_t offset, std::span<const std::uint8_t> bytes, Timestamp arrivalTime);
-        void adoptTlsKeys();
+        void                                 handleFrame(const QuicFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
+        void                                 handleAcknowledgement(const QuicAcknowledgementFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
+        void                                 handleCryptoBytes(PacketNumberSpace space, std::uint64_t offset, std::span<const std::uint8_t> bytes, Timestamp arrivalTime);
+        void                                 adoptTlsKeys();
         /**
          * @brief 清掉一个空间的密钥、握手流与在途账
          * @details 密钥没了就等于这个空间不再存在：后续报文按 §5.1 丢弃，出包按「没有写密钥」跳过，
@@ -328,8 +327,8 @@ namespace AsynGyanis::Net
          * @return true 还需要（再）发一次
          */
         [[nodiscard]] bool isHandshakeDonePending() const noexcept;
-        void queueConnectionClosePacket(Timestamp now);
-        void beginClose(std::uint64_t errorCode, std::string_view reasonPhrase, Timestamp now);
+        void               queueConnectionClosePacket(Timestamp now);
+        void               beginClose(std::uint64_t errorCode, std::string_view reasonPhrase, Timestamp now);
         /**
          * @brief 流层交回的违规：按它的错误码收口，没违规时什么都不做
          * @param result 入站帧的处理结果
@@ -347,9 +346,8 @@ namespace AsynGyanis::Net
          * @param carriesHandshakeDone 本包是否带了 HANDSHAKE_DONE：它要在被确认之前一直重发（§19.20）
          * @param streamAnnouncements 本包带出的流收口宣告，确认与判丢同样按它回收（§13.3）
          */
-        void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting,
-                        std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges = {},
-                        bool carriesHandshakeDone = false, std::vector<QuicStreamAnnouncement> streamAnnouncements = {});
+        void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting, std::optional<QuicCryptoRange> cryptoRange,
+                        std::vector<QuicStreamRange> streamRanges = {}, bool carriesHandshakeDone = false, std::vector<QuicStreamAnnouncement> streamAnnouncements = {});
         /**
          * @brief 这一轮还能往网络上压多少净字节
          * @details 三层取最小：数据报上限（§14.1）、拥塞窗口的余量（§7）、以及地址验证之前的
@@ -368,7 +366,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isBlockedByAmplificationLimit(std::size_t reservedByteLength) const noexcept;
         /// @return std::size_t 3 倍已收字节减去已发字节；已验证地址时这条额度不存在
         [[nodiscard]] std::size_t amplificationRemainingByteCount() const noexcept;
-        void adoptPeerTransportParameters(Timestamp now);
+        void                      adoptPeerTransportParameters(Timestamp now);
         /**
          * @brief 空闲超时的有效值
          * @details 两端都宣告就是两者取小，只有一端宣告非 0 就用那一个，都是 0 则不启用（§10.1）；
@@ -389,40 +387,40 @@ namespace AsynGyanis::Net
         /// §6.2/§6.3：把下一代读密钥提成当前，并按对端的相位同步推进本端写密钥
         void applyPeerKeyUpdate(SpaceState &state, Timestamp now);
         /// §6.5：过了 3×PTO 就把上一代读密钥丢掉，只留当前与下一代两套
-        void retireStaleKeyPhase(Timestamp now);
+        void                                                    retireStaleKeyPhase(Timestamp now);
         [[nodiscard]] static std::optional<QuicEncryptionLevel> levelOf(const QuicPacketHeader &header) noexcept;
-        [[nodiscard]] static QuicEncryptionLevel levelOf(PacketNumberSpace space) noexcept;
-        [[nodiscard]] PacketNumberSpace highestSpaceWithWriteKeys() const noexcept;
+        [[nodiscard]] static QuicEncryptionLevel                levelOf(PacketNumberSpace space) noexcept;
+        [[nodiscard]] PacketNumberSpace                         highestSpaceWithWriteKeys() const noexcept;
 
-        QuicConnectionCoreConfiguration m_configuration;             ///< 建连接时给的那些值，发包要反复用
-        std::unique_ptr<QuicTlsContext> m_tls;                       ///< 每连接的 TLS 上下文
-        QuicRecovery m_recovery{};                                   ///< 发包记账、RTT、判丢与探测超时
-        QuicCongestionControl m_congestion{kQuicMaximumDatagramPayloadByteLength}; ///< NewReno 拥塞窗口
-        QuicStreamLayer m_streams;                                   ///< 流与流量控制；额度取自本端参数，出站要等对端参数
-        std::size_t m_receivedByteCount{0};                          ///< 已收字节，反放大上限按它算（§8.1）
-        std::size_t m_sentByteCount{0};                              ///< 已发字节，与上面那项一起决定还剩多少额度
-        std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};  ///< 三个包号空间
+        QuicConnectionCoreConfiguration                 m_configuration;                                     ///< 建连接时给的那些值，发包要反复用
+        std::unique_ptr<QuicTlsContext>                 m_tls;                                               ///< 每连接的 TLS 上下文
+        QuicRecovery                                    m_recovery{};                                        ///< 发包记账、RTT、判丢与探测超时
+        QuicCongestionControl                           m_congestion{kQuicMaximumDatagramPayloadByteLength}; ///< NewReno 拥塞窗口
+        QuicStreamLayer                                 m_streams;                                           ///< 流与流量控制；额度取自本端参数，出站要等对端参数
+        std::size_t                                     m_receivedByteCount{0};                              ///< 已收字节，反放大上限按它算（§8.1）
+        std::size_t                                     m_sentByteCount{0};                                  ///< 已发字节，与上面那项一起决定还剩多少额度
+        std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};                                          ///< 三个包号空间
         /// 待发数据报队列：元素就是报文本体（std::string 在本仓里当字节缓冲用，与帧序列同一个口径），
         /// 组包器直接往里写，取出时按所有权移交
-        std::deque<std::string> m_outboundDatagrams{};               ///< 待发数据报队列
-        QuicConnectionPhase m_phase{QuicConnectionPhase::Handshaking}; ///< 当前阶段
-        std::optional<std::uint64_t> m_localCloseErrorCode{};        ///< 待发的 CONNECTION_CLOSE 错误码
-        std::string m_localCloseReasonPhrase{};                      ///< 随错误码一起发出的原因文案
-        bool m_isHandshakeDoneAcknowledged{false}; ///< 带 HANDSHAKE_DONE 的包被确认过，之后不再重发（§19.20）
-        bool m_isHandshakeDoneInFlight{false};     ///< 有一份 HANDSHAKE_DONE 还在途：确认或判丢之前不重复发
-        bool m_isHandshakeConfirmed{false};                          ///< 对端确认过 Handshake 空间的包，§4.1.2 的「握手已确认」
-        bool m_isAddressValidated{false};                            ///< 收到过能解开的 Handshake 及以上级别的包，§8.1 的反放大上限到此为止
-        bool m_hasAdoptedPeerConnectionId{false};              ///< 客户端已把回包目的标识换成服务端自报的那个（§7.2），此后不再跟
-        std::optional<PacketNumberSpace> m_probeSpace{};             ///< 探测超时到期后欠一条触发确认的包，出包时补上
-        std::optional<Timestamp> m_idleDeadline{};                    ///< 空闲超时的截止时刻，只在「活动」发生时重算
-        std::optional<Timestamp> m_idlePeriod{};                      ///< 本期空闲额度，收包那一刻定下；主动发包的续期沿用它
-        bool m_hasSentAckElicitingSinceReceipt{false};       ///< 上次收包之后是否已发过触发确认的包（§10.1 只让第一包续期）
-        bool m_isSendKeyPhaseSet{false};                       ///< 本端出包的 Key Phase 位，随写密钥一起翻（RFC 9001 §6.1）
-        bool m_isReadKeyPhaseSet{false};                       ///< 本端当前读密钥对应的相位位；收发两套各自记账（§6.5）
-        std::optional<Timestamp> m_keyPhaseChangedAt{};        ///< 最近一次换相位的时刻，3×PTO 静置期与旧密钥回收都从它起算
-        std::optional<std::uint64_t> m_lowestPacketNumberSentInKeyPhase{}; ///< 本相位发过的最小包号（§6.1 的下一次更新门禁）
-        bool m_isKeyPhaseAcknowledged{false};                  ///< 对端确认了本相位里的某个包，才允许再来一次更新
-        std::optional<QuicTransportParameters> m_peerParameters{};   ///< 验过的对端参数
-        std::optional<std::vector<std::uint8_t>> m_peerFirstInitialSourceConnectionId{}; ///< 对端第一个 Initial 里的源标识，§7.3 的绑定校验靠它
+        std::deque<std::string>                  m_outboundDatagrams{};                     ///< 待发数据报队列
+        QuicConnectionPhase                      m_phase{QuicConnectionPhase::Handshaking}; ///< 当前阶段
+        std::optional<std::uint64_t>             m_localCloseErrorCode{};                   ///< 待发的 CONNECTION_CLOSE 错误码
+        std::string                              m_localCloseReasonPhrase{};                ///< 随错误码一起发出的原因文案
+        bool                                     m_isHandshakeDoneAcknowledged{false};      ///< 带 HANDSHAKE_DONE 的包被确认过，之后不再重发（§19.20）
+        bool                                     m_isHandshakeDoneInFlight{false};          ///< 有一份 HANDSHAKE_DONE 还在途：确认或判丢之前不重复发
+        bool                                     m_isHandshakeConfirmed{false};             ///< 对端确认过 Handshake 空间的包，§4.1.2 的「握手已确认」
+        bool                                     m_isAddressValidated{false};               ///< 收到过能解开的 Handshake 及以上级别的包，§8.1 的反放大上限到此为止
+        bool                                     m_hasAdoptedPeerConnectionId{false};       ///< 客户端已把回包目的标识换成服务端自报的那个（§7.2），此后不再跟
+        std::optional<PacketNumberSpace>         m_probeSpace{};                            ///< 探测超时到期后欠一条触发确认的包，出包时补上
+        std::optional<Timestamp>                 m_idleDeadline{};                          ///< 空闲超时的截止时刻，只在「活动」发生时重算
+        std::optional<Timestamp>                 m_idlePeriod{};                            ///< 本期空闲额度，收包那一刻定下；主动发包的续期沿用它
+        bool                                     m_hasSentAckElicitingSinceReceipt{false};  ///< 上次收包之后是否已发过触发确认的包（§10.1 只让第一包续期）
+        bool                                     m_isSendKeyPhaseSet{false};                ///< 本端出包的 Key Phase 位，随写密钥一起翻（RFC 9001 §6.1）
+        bool                                     m_isReadKeyPhaseSet{false};                ///< 本端当前读密钥对应的相位位；收发两套各自记账（§6.5）
+        std::optional<Timestamp>                 m_keyPhaseChangedAt{};                     ///< 最近一次换相位的时刻，3×PTO 静置期与旧密钥回收都从它起算
+        std::optional<std::uint64_t>             m_lowestPacketNumberSentInKeyPhase{};      ///< 本相位发过的最小包号（§6.1 的下一次更新门禁）
+        bool                                     m_isKeyPhaseAcknowledged{false};           ///< 对端确认了本相位里的某个包，才允许再来一次更新
+        std::optional<QuicTransportParameters>   m_peerParameters{};                        ///< 验过的对端参数
+        std::optional<std::vector<std::uint8_t>> m_peerFirstInitialSourceConnectionId{};    ///< 对端第一个 Initial 里的源标识，§7.3 的绑定校验靠它
     };
 } // namespace AsynGyanis::Net

@@ -13,13 +13,13 @@
 #include <utility>
 #include <vector>
 
+#include "Base/Log/Formatters/SourceLocationText.h"
+#include "Base/Log/Formatters/StackTraceText.h"
+#include "Base/Log/Formatters/TimestampText.h"
 #include "Base/Log/LogColor.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
-#include "Base/Log/Formatters/SourceLocationText.h"
-#include "Base/Log/Formatters/StackTraceText.h"
-#include "Base/Log/Formatters/TimestampText.h"
 
 namespace AsynGyanis::Base
 {
@@ -29,23 +29,19 @@ namespace AsynGyanis::Base
         constexpr auto kFixedTimestamp = "2026-09-10 12:34:56.789";
         /// 事件携带的固定时刻：由上面那段本地挂钟折出，渲染回去即得同一文本，故断言与时区无关
         const TimestampMoment kFixedTimestampMoment = TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789);
-        constexpr auto kThreadId       = "tid-665544";
-        constexpr auto kLoggerName     = "color_logger";
-        constexpr auto kSourceFile     = "color_fixture.cpp";
-        constexpr auto kSourceFunction = "colorTestFunction";
-        constexpr int  kSourceLine     = 5312;
-        constexpr auto kAnsiPrefix     = "\033[";
+        constexpr auto        kThreadId             = "tid-665544";
+        constexpr auto        kLoggerName           = "color_logger";
+        constexpr auto        kSourceFile           = "color_fixture.cpp";
+        constexpr auto        kSourceFunction       = "colorTestFunction";
+        constexpr int         kSourceLine           = 5312;
+        constexpr auto        kAnsiPrefix           = "\033[";
 
         /**
          * @brief 构造字段齐备、各字段取值固定的日志事件
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "color message")
         {
-            return {
-                    level, kFixedTimestampMoment, kThreadId,
-                    SourceLocation(kSourceFile, kSourceLine, kSourceFunction),
-                    kLoggerName, std::move(message)
-            };
+            return {level, kFixedTimestampMoment, kThreadId, SourceLocation(kSourceFile, kSourceLine, kSourceFunction), kLoggerName, std::move(message)};
         }
 
         /**
@@ -103,16 +99,12 @@ namespace AsynGyanis::Base
     TEST(ColorFormatter, EverySeverityUsesItsMappedColorAndResetCode)
     {
         ColorFormatter              formatter;
-        const std::vector<LogLevel> levels = {
-                LogLevel::Trace, LogLevel::Debug, LogLevel::Info,
-                LogLevel::Warn, LogLevel::Error, LogLevel::Fatal
-        };
+        const std::vector<LogLevel> levels = {LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal};
 
         for (const LogLevel level: levels)
         {
             const std::string output = formatter.format(makeEvent(level, "sweep"));
-            EXPECT_TRUE(contains(output, LogColor::colorForLevel(level))) << "color missing for level "
-                                                                          << static_cast<int>(level) << ": " << output;
+            EXPECT_TRUE(contains(output, LogColor::colorForLevel(level))) << "color missing for level " << static_cast<int>(level) << ": " << output;
             EXPECT_TRUE(contains(output, LogColor::kReset)) << output;
         }
     }
@@ -197,9 +189,8 @@ namespace AsynGyanis::Base
         std::string paddedLocation = "a.cpp:1";
         paddedLocation.resize(13, ' ');
 
-        const std::string output = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
-                         SourceLocation("a.cpp", 1, kSourceFunction), kLoggerName, "padding short"));
+        const std::string output =
+                formatter.format(LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId, SourceLocation("a.cpp", 1, kSourceFunction), kLoggerName, "padding short"));
 
         EXPECT_TRUE(contains(output, paddedLocation)) << output;
     }
@@ -212,9 +203,7 @@ namespace AsynGyanis::Base
         const std::string longFileName(80, 'c');
 
         const std::string output = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
-                         SourceLocation(longFileName.c_str(), 1234567, kSourceFunction), kLoggerName,
-                         "padding long name"));
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId, SourceLocation(longFileName.c_str(), 1234567, kSourceFunction), kLoggerName, "padding long name"));
 
         EXPECT_TRUE(contains(output, longFileName + ":1234567")) << output;
         EXPECT_TRUE(contains(output, longFileName + ":1234567 padding long name")) << output;
@@ -226,17 +215,11 @@ namespace AsynGyanis::Base
         ColorFormatter    formatter;
         const std::string shortFileName = "hit_fixture.cpp";
 
-        const std::string expected = std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
-                                                 kFixedTimestamp, kThreadId,
-                                                 LogColor::colorForLevel(LogLevel::Info),
-                                                 logLevelToString(LogLevel::Info), LogColor::kReset,
-                                                 kLoggerName,
-                                                 std::format("{}:{}", shortFileName, 42),
-                                                 "hit path");
+        const std::string expected = std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}", kFixedTimestamp, kThreadId, LogColor::colorForLevel(LogLevel::Info),
+                                                 logLevelToString(LogLevel::Info), LogColor::kReset, kLoggerName, std::format("{}:{}", shortFileName, 42), "hit path");
 
-        const std::string output = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
-                         SourceLocation(shortFileName.c_str(), 42, kSourceFunction), kLoggerName, "hit path"));
+        const std::string output =
+                formatter.format(LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId, SourceLocation(shortFileName.c_str(), 42, kSourceFunction), kLoggerName, "hit path"));
 
         EXPECT_EQ(output, expected) << output;
     }
@@ -265,7 +248,7 @@ namespace AsynGyanis::Base
      */
     TEST(ColorFormatter, AppendsResolvedStackTraceWhenEventCarriesOne)
     {
-        LogEvent event = makeEvent(LogLevel::Error, "boom");
+        LogEvent event   = makeEvent(LogLevel::Error, "boom");
         event.stackTrace = captureStackTrace();
         if (!TestSupport::hasResolvedStackTraceFrames(formatStackTrace(event.stackTrace)))
         {
@@ -309,11 +292,10 @@ namespace AsynGyanis::Base
         ColorFormatter formatter;
         for (const auto &shape: shapes)
         {
-            const LogEvent event{shape.level, kFixedTimestampMoment, kThreadId,
-                                 SourceLocation{shape.file, kSourceLine, shape.function}, shape.logger, shape.message};
+            const LogEvent event{shape.level, kFixedTimestampMoment, kThreadId, SourceLocation{shape.file, kSourceLine, shape.function}, shape.logger, shape.message};
 
             std::array<char, kTimestampTextBufferSize> timestampBuffer{};
-            const std::string_view timestampText = formatTimestampText(timestampBuffer, event.timestamp);
+            const std::string_view                     timestampText = formatTimestampText(timestampBuffer, event.timestamp);
 
 #ifdef ASYN_DEBUG
             // 源码位置只在 Debug 版式里出现，取它的这三行因此也只能在 Debug 分支里跑：
@@ -321,25 +303,12 @@ namespace AsynGyanis::Base
             // 于是 Release 侧的 Base 用例全都构建不出来（表现是 ctest 少一整套，而不是某条红）
             std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
             std::string                                     locationOverflow;
-            const std::string_view                          location = formatSourceLocationText(event.location, locationBuffer,
-                                                                                                locationOverflow);
-            const std::string expected = std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}",
-                                                     timestampText,
-                                                     event.threadIdView(),
-                                                     LogColor::colorForLevel(shape.level),
-                                                     logLevelToString(shape.level),
-                                                     LogColor::kReset,
-                                                     event.loggerNameView(),
-                                                     location,
-                                                     event.message);
+            const std::string_view                          location = formatSourceLocationText(event.location, locationBuffer, locationOverflow);
+            const std::string expected = std::format("{} {} [{}{:<5}{}] [{}] {:<13} {}", timestampText, event.threadIdView(), LogColor::colorForLevel(shape.level),
+                                                     logLevelToString(shape.level), LogColor::kReset, event.loggerNameView(), location, event.message);
 #else
-            const std::string expected = std::format("{} [{}{:<5}{}] [{}] {}",
-                                                     timestampText,
-                                                     LogColor::colorForLevel(shape.level),
-                                                     logLevelToString(shape.level),
-                                                     LogColor::kReset,
-                                                     event.loggerNameView(),
-                                                     event.message);
+            const std::string expected = std::format("{} [{}{:<5}{}] [{}] {}", timestampText, LogColor::colorForLevel(shape.level), logLevelToString(shape.level), LogColor::kReset,
+                                                     event.loggerNameView(), event.message);
 #endif
             EXPECT_EQ(formatter.format(event), expected) << "形状：文件 " << shape.file;
         }

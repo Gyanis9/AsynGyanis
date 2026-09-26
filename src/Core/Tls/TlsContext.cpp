@@ -18,7 +18,7 @@ namespace AsynGyanis::Core
     namespace
     {
         /// 服务端对外提供的 ALPN 协议名（注意：选择回调要的是裸协议名，不带长度前缀）
-        constexpr unsigned char kHttp2ProtocolName[] = {'h', '2'};
+        constexpr unsigned char kHttp2ProtocolName[]  = {'h', '2'};
         constexpr unsigned char kHttp11ProtocolName[] = {'h', 't', 't', 'p', '/', '1', '.', '1'};
 
         /**
@@ -26,14 +26,14 @@ namespace AsynGyanis::Core
          */
         struct AlpnPreference
         {
-            const unsigned char *protocolName;     ///< 协议名（裸名称，不带长度前缀）
-            unsigned int protocolNameLength;       ///< 协议名字节数
+            const unsigned char *protocolName;       ///< 协议名（裸名称，不带长度前缀）
+            unsigned int         protocolNameLength; ///< 协议名字节数
         };
 
         /// 本端偏好顺序：h2 在前、http/1.1 在后（选择策略的唯一出处，新增协议按偏好插进这个表即可）
         constexpr AlpnPreference kAlpnPreferences[] = {
-            {kHttp2ProtocolName, static_cast<unsigned int>(sizeof(kHttp2ProtocolName))},
-            {kHttp11ProtocolName, static_cast<unsigned int>(sizeof(kHttp11ProtocolName))},
+                {kHttp2ProtocolName, static_cast<unsigned int>(sizeof(kHttp2ProtocolName))},
+                {kHttp11ProtocolName, static_cast<unsigned int>(sizeof(kHttp11ProtocolName))},
         };
 
         /// 显式排除弱算法：MD5/RC4/3DES/DES/导出级/匿名/PSK/SRP 一律不进服务端候选套件，
@@ -51,8 +51,8 @@ namespace AsynGyanis::Core
          * @note 只能选客户端**提供过**的名字（RFC 7301 §3.2）：替对端选一个它没提过的名字会被
          *       严格的客户端直接拒绝；偏好顺序见 kAlpnPreferences（h2 优先）
          */
-        int selectAlpnProtocol(SSL *, const unsigned char **outputProtocol, unsigned char *outputLength,
-                               const unsigned char *clientProtocols, const unsigned int clientProtocolsLength, void *)
+        int selectAlpnProtocol(SSL *, const unsigned char **outputProtocol, unsigned char *outputLength, const unsigned char *clientProtocols,
+                               const unsigned int clientProtocolsLength, void *)
         {
             // 对端没提 ALPN：握手照常进行，双方都不使用 ALPN 协商结果
             if (clientProtocols == nullptr || clientProtocolsLength == 0)
@@ -76,11 +76,10 @@ namespace AsynGyanis::Core
                         break;
                     }
 
-                    if (protocolLength == preference.protocolNameLength &&
-                        std::memcmp(clientProtocols + offset, preference.protocolName, protocolLength) == 0)
+                    if (protocolLength == preference.protocolNameLength && std::memcmp(clientProtocols + offset, preference.protocolName, protocolLength) == 0)
                     {
                         *outputProtocol = preference.protocolName;
-                        *outputLength = static_cast<unsigned char>(protocolLength);
+                        *outputLength   = static_cast<unsigned char>(protocolLength);
                         return SSL_TLSEXT_ERR_OK;
                     }
                     offset += protocolLength;
@@ -109,12 +108,8 @@ namespace AsynGyanis::Core
          */
         int stapledResponseExDataIndex()
         {
-            static const int index = SSL_CTX_get_ex_new_index(
-                    0, nullptr, nullptr, nullptr,
-                    [](void *, void *pointer, CRYPTO_EX_DATA *, int, long, void *)
-                    {
-                        delete static_cast<StapledOcspResponse *>(pointer);
-                    });
+            static const int index = SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, [](void *, void *pointer, CRYPTO_EX_DATA *, int, long, void *)
+                                                              { delete static_cast<StapledOcspResponse *>(pointer); });
             return index;
         }
 
@@ -177,8 +172,7 @@ namespace AsynGyanis::Core
                 return SSL_TLSEXT_ERR_NOACK;
             }
 
-            const auto *holder = static_cast<const StapledOcspResponse *>(
-                    SSL_CTX_get_ex_data(context, stapledResponseExDataIndex()));
+            const auto *holder = static_cast<const StapledOcspResponse *>(SSL_CTX_get_ex_data(context, stapledResponseExDataIndex()));
             if (holder == nullptr)
             {
                 return SSL_TLSEXT_ERR_NOACK;
@@ -564,4 +558,4 @@ namespace AsynGyanis::Core
         return m_context;
     }
 
-}
+} // namespace AsynGyanis::Core

@@ -12,14 +12,14 @@
 #include "Core/EventLoop/EventLoop.h"
 
 #include "Net/Http/HttpMemoryBudget.h"
-#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
-#include "Net/Http2/Http2Connection.h"
 #include "Net/Http/StaticFileMappingCache.h"
 #include "Net/Http/StaticFileService.h"
+#include "Net/Http2/Http2Connection.h"
 #include "Net/Tcp/TcpServer.h"
 
 #include <cstdint>
@@ -207,7 +207,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 取本服务器的统计快照
          *
-          * @details 各字段分别原子读取，因此快照不是严格同一瞬间的一致切面（跨字段求和可能与某次
+         * @details 各字段分别原子读取，因此快照不是严格同一瞬间的一致切面（跨字段求和可能与某次
          *          采样略有偏差）；活跃连接数是采集端上的镜像量，由连接管理器在增删连接时同步写入，
          *          与本实例在册的连接同时刻变化。
          *
@@ -315,14 +315,14 @@ namespace AsynGyanis::Net
          */
         void attachActiveConnectionMirror() noexcept;
 
-        Router m_router;                                ///< 路由器，存储路由表与处理函数
-        StaticFileService m_staticFiles;                  ///< 静态目录配置本体；三个静态方法都转发到它
-        std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
-        HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
-        Http2ConnectionConfiguration m_http2Configuration{}; ///< h2 连接层配置，按值交给每个新会话（两条通道共用这一份）
-        bool m_isHttp2CleartextEnabled{false}; ///< 明文连接是否按 h2c 服务（先验知识，见 setHttp2CleartextEnabled()）
-        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数，默认是自己的那一份
-        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
-        std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，交给会话共享；空指针表示不受该预算约束
+        Router                                  m_router;                         ///< 路由器，存储路由表与处理函数
+        StaticFileService                       m_staticFiles;                    ///< 静态目录配置本体；三个静态方法都转发到它
+        std::shared_ptr<const HttpServerLimits> m_limits;                         ///< 连接级限额，按只读配置交给会话共享
+        HttpParserLimits                        m_parserLimits{};                 ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
+        Http2ConnectionConfiguration            m_http2Configuration{};           ///< h2 连接层配置，按值交给每个新会话（两条通道共用这一份）
+        bool                                    m_isHttp2CleartextEnabled{false}; ///< 明文连接是否按 h2c 服务（先验知识，见 setHttp2CleartextEnabled()）
+        std::shared_ptr<HttpMetricsCollector>   m_metrics;                        ///< 统计采集端，交给会话共享；本服务器所有会话向它累加计数，默认是自己的那一份
+        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator;             ///< request-id 生成器，交给会话共享；前缀标识本服务器实例
+        std::shared_ptr<HttpMemoryBudget>       m_memoryBudget;                   ///< 在途正文字节的全局预算，交给会话共享；空指针表示不受该预算约束
     };
 } // namespace AsynGyanis::Net

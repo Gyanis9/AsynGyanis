@@ -67,21 +67,13 @@ namespace AsynGyanis::Net
                 configuration.certificateFile = std::move(certificateFile).string();
                 configuration.privateKeyFile  = std::move(privateKeyFile).string();
                 configuration.idleTimeout     = std::chrono::seconds{30};
-                m_server = std::make_unique<QuicServer>(m_loop, configuration);
+                m_server                      = std::make_unique<QuicServer>(m_loop, configuration);
                 m_server->setRouter(m_router);
                 m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
                 m_loop.scheduler().schedule(m_listenTask->handle());
-                m_loopThread = std::thread([this]
-                {
-                    m_loop.run();
-                });
+                m_loopThread = std::thread([this] { m_loop.run(); });
                 // 端口由循环线程在内核分配后发布，跨线程只读那一个原子量（listeningPort 的约定）
-                static_cast<void>(waitForCondition(
-                        [this]
-                        {
-                            return m_server->listeningPort() != 0U;
-                        },
-                        kWaitTimeout));
+                static_cast<void>(waitForCondition([this] { return m_server->listeningPort() != 0U; }, kWaitTimeout));
             }
 
             ~RunningServerPeer()
@@ -105,11 +97,11 @@ namespace AsynGyanis::Net
             }
 
         private:
-            Core::EventLoop             m_loop;          ///< 服务端所属循环
-            Router                      m_router;        ///< 空路由器，只为让会话建得起来
-            std::unique_ptr<QuicServer> m_server{};      ///< 对面那一方
-            std::optional<Core::Task<>> m_listenTask{};  ///< 监听协程
-            std::thread                 m_loopThread{};  ///< 跑循环的线程
+            Core::EventLoop             m_loop;         ///< 服务端所属循环
+            Router                      m_router;       ///< 空路由器，只为让会话建得起来
+            std::unique_ptr<QuicServer> m_server{};     ///< 对面那一方
+            std::optional<Core::Task<>> m_listenTask{}; ///< 监听协程
+            std::thread                 m_loopThread{}; ///< 跑循环的线程
         };
 
         /**
@@ -130,10 +122,7 @@ namespace AsynGyanis::Net
             {
                 m_task.emplace(run());
                 m_loop.scheduler().schedule(m_task->handle());
-                m_loopThread = std::thread([this]
-                {
-                    m_loop.run();
-                });
+                m_loopThread = std::thread([this] { m_loop.run(); });
             }
 
             ~ConnectAttempt()
@@ -152,12 +141,7 @@ namespace AsynGyanis::Net
             /// 等这次尝试出结果
             bool awaitFinished(const std::chrono::milliseconds timeout)
             {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_isFinished.load(std::memory_order_acquire);
-                        },
-                        timeout);
+                return waitForCondition([this] { return m_isFinished.load(std::memory_order_acquire); }, timeout);
             }
 
             [[nodiscard]] bool isSuccessful() const noexcept
@@ -179,31 +163,30 @@ namespace AsynGyanis::Net
             /// 在循环线程上跑完整次尝试
             Core::Task<> run()
             {
-                const auto startedAt = std::chrono::steady_clock::now();
-                auto client = std::make_unique<QuicClientConnection>(m_loop, m_configuration);
+                const auto startedAt    = std::chrono::steady_clock::now();
+                auto       client       = std::make_unique<QuicClientConnection>(m_loop, m_configuration);
                 const bool isSuccessful = co_await client->connect(m_serverAddress);
                 m_isSuccessful.store(isSuccessful, std::memory_order_release);
                 if (isSuccessful)
                 {
                     m_negotiatedApplicationProtocol = client->negotiatedApplicationProtocol();
                 }
-                m_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - startedAt);
+                m_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
                 // 套接字要在循环线程上关：交给测试线程的帧销毁时再做就跨线程了
                 client.reset();
                 m_isFinished.store(true, std::memory_order_release);
                 co_return;
             }
 
-            Core::EventLoop                       m_loop;                            ///< 客户端所属循环
-            QuicClientConnection::Configuration   m_configuration;                   ///< 本次尝试用的配置
-            Core::InetAddress                     m_serverAddress;                   ///< 目标地址
-            std::optional<Core::Task<>>           m_task{};                          ///< 尝试协程
-            std::thread                           m_loopThread{};                    ///< 跑循环的线程
-            std::atomic<bool>                     m_isFinished{false};               ///< 结果已就位
-            std::atomic<bool>                     m_isSuccessful{false};             ///< 握手是否完成
-            std::string                           m_negotiatedApplicationProtocol{}; ///< 协商到的 ALPN
-            std::chrono::milliseconds             m_elapsed{0};                      ///< 整次尝试耗时
+            Core::EventLoop                     m_loop;                            ///< 客户端所属循环
+            QuicClientConnection::Configuration m_configuration;                   ///< 本次尝试用的配置
+            Core::InetAddress                   m_serverAddress;                   ///< 目标地址
+            std::optional<Core::Task<>>         m_task{};                          ///< 尝试协程
+            std::thread                         m_loopThread{};                    ///< 跑循环的线程
+            std::atomic<bool>                   m_isFinished{false};               ///< 结果已就位
+            std::atomic<bool>                   m_isSuccessful{false};             ///< 握手是否完成
+            std::string                         m_negotiatedApplicationProtocol{}; ///< 协商到的 ALPN
+            std::chrono::milliseconds           m_elapsed{0};                      ///< 整次尝试耗时
         };
 
         /**
@@ -213,15 +196,14 @@ namespace AsynGyanis::Net
          * @param handshakeTimeout 握手时限
          * @return QuicClientConnection::Configuration 配好的配置
          */
-        QuicClientConnection::Configuration makeConfiguration(const std::string &hostName,
-                                                              const std::filesystem::path &certificateAuthorityFile,
+        QuicClientConnection::Configuration makeConfiguration(const std::string &hostName, const std::filesystem::path &certificateAuthorityFile,
                                                               const std::chrono::milliseconds handshakeTimeout)
         {
             QuicClientConnection::Configuration configuration;
-            configuration.hostName                  = hostName;
-            configuration.applicationProtocolIdentifiers = {std::string{"h3"}};
+            configuration.hostName                           = hostName;
+            configuration.applicationProtocolIdentifiers     = {std::string{"h3"}};
             configuration.tlsPolicy.certificateAuthorityFile = certificateAuthorityFile.string();
-            configuration.handshakeTimeout          = handshakeTimeout;
+            configuration.handshakeTimeout                   = handshakeTimeout;
             return configuration;
         }
     } // namespace
@@ -238,8 +220,7 @@ namespace AsynGyanis::Net
         RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath};
         ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
 
-        ConnectAttempt attempt{makeConfiguration("127.0.0.1", kIpCertificatePath, 4s),
-                               Core::InetAddress::resolve("127.0.0.1", server.listeningPort()).value()};
+        ConnectAttempt attempt{makeConfiguration("127.0.0.1", kIpCertificatePath, 4s), Core::InetAddress::resolve("127.0.0.1", server.listeningPort()).value()};
         ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "出站握手既没成也没失败，挂在那里";
         EXPECT_TRUE(attempt.isSuccessful()) << "握手没完成：" << attempt.elapsed().count() << " 毫秒后收场";
         EXPECT_EQ(attempt.negotiatedApplicationProtocol(), "h3") << "握手成了但 ALPN 没谈定，出站侧不知道该按哪套协议说话";
@@ -256,8 +237,7 @@ namespace AsynGyanis::Net
         RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath};
         ASSERT_NE(server.listeningPort(), 0U);
 
-        ConnectAttempt attempt{makeConfiguration("localhost", kIpCertificatePath, 4s),
-                               Core::InetAddress::resolve("127.0.0.1", server.listeningPort()).value()};
+        ConnectAttempt attempt{makeConfiguration("localhost", kIpCertificatePath, 4s), Core::InetAddress::resolve("127.0.0.1", server.listeningPort()).value()};
         ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "名字不符的握手既没被拒也没收场";
         EXPECT_FALSE(attempt.isSuccessful()) << "对端证书的名字与目标不符却完成了握手：身份校验形同虚设";
     }
@@ -272,8 +252,7 @@ namespace AsynGyanis::Net
     {
         constexpr std::chrono::milliseconds kHandshakeTimeout{800};
 
-        ConnectAttempt attempt{makeConfiguration("127.0.0.1", kIpCertificatePath, kHandshakeTimeout),
-                               Core::InetAddress::resolve("192.0.2.1", 443).value()};
+        ConnectAttempt attempt{makeConfiguration("127.0.0.1", kIpCertificatePath, kHandshakeTimeout), Core::InetAddress::resolve("192.0.2.1", 443).value()};
         ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "没有看门狗掐断：这条尝试挂住了";
         EXPECT_FALSE(attempt.isSuccessful());
         EXPECT_GE(attempt.elapsed(), kHandshakeTimeout) << "比时限还早就收场：不是被握手时限掐断的，看门狗没生效";
@@ -287,12 +266,11 @@ namespace AsynGyanis::Net
      */
     TEST(QuicClientConnection, RejectsAnEmptyHostNameDuringConstruction)
     {
-        Core::EventLoop loop;
+        Core::EventLoop                     loop;
         QuicClientConnection::Configuration configuration;
         configuration.applicationProtocolIdentifiers = {std::string{"h3"}};
 
-        EXPECT_THROW(static_cast<void>(QuicClientConnection{loop, configuration}), Base::InvalidArgumentException)
-                << "空主机名被放过了：这条连接出去不会校验对端身份";
+        EXPECT_THROW(static_cast<void>(QuicClientConnection{loop, configuration}), Base::InvalidArgumentException) << "空主机名被放过了：这条连接出去不会校验对端身份";
     }
 
 } // namespace AsynGyanis::Net

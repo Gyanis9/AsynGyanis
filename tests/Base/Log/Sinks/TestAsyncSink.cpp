@@ -19,8 +19,8 @@
 #include <vector>
 
 #include "Base/Log/LogEvent.h"
-#include "Base/Log/Sinks/LogSink.h"
 #include "Base/Log/LogLevel.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Base/Log/SourceLocation.h"
 
 #include "BaseTestSupport.h"
@@ -102,9 +102,7 @@ namespace AsynGyanis::Base
              * @param events 共享记录对象，缺省时自行创建
              */
             explicit RecordingSink(std::shared_ptr<RecordedEvents> events       = std::make_shared<RecordedEvents>(),
-                                   const std::chrono::microseconds perEventCost = std::chrono::microseconds::zero()) :
-                m_events(std::move(events))
-                , m_perEventCost(perEventCost)
+                                   const std::chrono::microseconds perEventCost = std::chrono::microseconds::zero()) : m_events(std::move(events)), m_perEventCost(perEventCost)
             {
             }
 
@@ -178,8 +176,7 @@ namespace AsynGyanis::Base
             /**
              * @brief 使用共享记录构造阻塞桩 Sink
              */
-            explicit BlockingRecordingSink(std::shared_ptr<RecordedEvents> events) :
-                m_events(std::move(events))
+            explicit BlockingRecordingSink(std::shared_ptr<RecordedEvents> events) : m_events(std::move(events))
             {
             }
 
@@ -193,10 +190,7 @@ namespace AsynGyanis::Base
                 {
                     std::unique_lock lock(m_gateMutex);
                     m_events->enteredCount.fetch_add(1, std::memory_order_relaxed);
-                    m_gateCondition.wait(lock, [this]
-                    {
-                        return m_released;
-                    });
+                    m_gateCondition.wait(lock, [this] { return m_released; });
                 }
                 m_events->append(event);
             }
@@ -242,10 +236,8 @@ namespace AsynGyanis::Base
              * @param events 共享记录
              * @param flushHold 每次 flush 占住的时长
              */
-            explicit SlowFlushSink(std::shared_ptr<RecordedEvents> events,
-                                   const std::chrono::milliseconds flushHold = std::chrono::milliseconds(500)) :
-                m_events(std::move(events))
-                , m_flushHold(flushHold)
+            explicit SlowFlushSink(std::shared_ptr<RecordedEvents> events, const std::chrono::milliseconds flushHold = std::chrono::milliseconds(500)) :
+                m_events(std::move(events)), m_flushHold(flushHold)
             {
             }
 
@@ -268,10 +260,7 @@ namespace AsynGyanis::Base
                 m_entered.store(true, std::memory_order_release);
                 {
                     std::unique_lock lock(m_gateMutex);
-                    m_gateCondition.wait_for(lock, m_flushHold, [this]
-                    {
-                        return m_released;
-                    });
+                    m_gateCondition.wait_for(lock, m_flushHold, [this] { return m_released; });
                 }
                 m_events->flushCount.fetch_add(1, std::memory_order_relaxed);
             }
@@ -308,10 +297,10 @@ namespace AsynGyanis::Base
             }
 
         private:
-            std::shared_ptr<RecordedEvents> m_events;         ///< 共享记录
-            std::chrono::milliseconds       m_flushHold;      ///< 单次刷新的占位时长
-            std::mutex                      m_gateMutex;      ///< 放行条件互斥锁
-            std::condition_variable         m_gateCondition;  ///< 放行条件变量（只挂「已放行」一个谓词）
+            std::shared_ptr<RecordedEvents> m_events;           ///< 共享记录
+            std::chrono::milliseconds       m_flushHold;        ///< 单次刷新的占位时长
+            std::mutex                      m_gateMutex;        ///< 放行条件互斥锁
+            std::condition_variable         m_gateCondition;    ///< 放行条件变量（只挂「已放行」一个谓词）
             bool                            m_released = false; ///< 是否已放行
             std::atomic<bool>               m_entered{false};   ///< 是否已进入刷新占位窗口
         };
@@ -321,11 +310,9 @@ namespace AsynGyanis::Base
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "async message")
         {
-            return {
-                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-556677",
-                    SourceLocation("async_fixture.cpp", 3456, "asyncTestFunction"),
-                    "async_logger", std::move(message)
-            };
+            return {level,          TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789),
+                    "tid-556677",   SourceLocation("async_fixture.cpp", 3456, "asyncTestFunction"),
+                    "async_logger", std::move(message)};
         }
 
         /**
@@ -370,7 +357,7 @@ namespace AsynGyanis::Base
 
             std::shared_ptr<RecordedEvents> m_events;               ///< 共享记录
             std::unique_ptr<AsyncSink>      m_async;                ///< 被测异步 Sink
-            BlockingRecordingSink *         m_downstream = nullptr; ///< 下游桩裸指针（所有权在 AsyncSink）
+            BlockingRecordingSink          *m_downstream = nullptr; ///< 下游桩裸指针（所有权在 AsyncSink）
         };
     } // namespace
 
@@ -380,11 +367,10 @@ namespace AsynGyanis::Base
 
     TEST(AsyncSink, ConstructionAndDestructionDoNotThrow)
     {
-        EXPECT_NO_THROW(
-                {
-                auto downstream = std::make_unique<RecordingSink>();
-                AsyncSink sink(std::move(downstream));
-                });
+        EXPECT_NO_THROW({
+            auto      downstream = std::make_unique<RecordingSink>();
+            AsyncSink sink(std::move(downstream));
+        });
     }
 
     TEST(AsyncSink, OverflowPolicyKeepsStableUnderlyingValues)
@@ -410,10 +396,10 @@ namespace AsynGyanis::Base
      */
     TEST(AsyncSink, RvalueEventViaBaseReferenceKeepsItsContent)
     {
-        auto          events     = std::make_shared<RecordedEvents>();
-        auto          downstream = std::make_unique<RecordingSink>(events);
-        AsyncSink     sink(std::move(downstream), 16);
-        LogSink      &asBaseSink = sink;
+        auto      events     = std::make_shared<RecordedEvents>();
+        auto      downstream = std::make_unique<RecordingSink>(events);
+        AsyncSink sink(std::move(downstream), 16);
+        LogSink  &asBaseSink = sink;
 
         asBaseSink.write(makeEvent(LogLevel::Error, "handed over by rvalue"));
         sink.flush();
@@ -430,9 +416,9 @@ namespace AsynGyanis::Base
      */
     TEST(AsyncSink, LvalueEventIsCopiedIntoTheQueueWithoutLosingContent)
     {
-        auto          events     = std::make_shared<RecordedEvents>();
-        auto          downstream = std::make_unique<RecordingSink>(events);
-        AsyncSink     sink(std::move(downstream), 16);
+        auto           events     = std::make_shared<RecordedEvents>();
+        auto           downstream = std::make_unique<RecordingSink>(events);
+        AsyncSink      sink(std::move(downstream), 16);
         const LogEvent event = makeEvent(LogLevel::Warn, "kept as lvalue");
 
         sink.write(event);
@@ -490,8 +476,7 @@ namespace AsynGyanis::Base
             }
             sink.flush();
 
-            EXPECT_EQ(events->size() + sink.droppedEventCount(), static_cast<std::size_t>(keventCount))
-                    << "policy " << static_cast<int>(policy);
+            EXPECT_EQ(events->size() + sink.droppedEventCount(), static_cast<std::size_t>(keventCount)) << "policy " << static_cast<int>(policy);
         }
     }
 
@@ -611,8 +596,7 @@ namespace AsynGyanis::Base
         // 且待落地账要照清——否则 flush() 会等一条永远不会被核销的账
         sink.flush();
 
-        EXPECT_EQ(sink.droppedEventCount(), 2u)
-                << "落地失败没计入丢弃数：异步路径上这条丢失连一行诊断都没有，计数是它唯一的出口";
+        EXPECT_EQ(sink.droppedEventCount(), 2u) << "落地失败没计入丢弃数：异步路径上这条丢失连一行诊断都没有，计数是它唯一的出口";
     }
 
     TEST(AsyncSink, FlushBlocksUntilQueueDrainedAndDownstreamFlushed)
@@ -663,14 +647,14 @@ namespace AsynGyanis::Base
         threads.reserve(kthreadCount);
         for (int index = 0; index < kthreadCount; ++index)
         {
-            threads.emplace_back([&sink, index]
-            {
-                for (int inner = 0; inner < kwritesPerThread; ++inner)
-                {
-                    sink.write(makeEvent(LogLevel::Info,
-                                         "async_worker" + std::to_string(index) + "_" + std::to_string(inner)));
-                }
-            });
+            threads.emplace_back(
+                    [&sink, index]
+                    {
+                        for (int inner = 0; inner < kwritesPerThread; ++inner)
+                        {
+                            sink.write(makeEvent(LogLevel::Info, "async_worker" + std::to_string(index) + "_" + std::to_string(inner)));
+                        }
+                    });
         }
         for (std::thread &thread: threads)
         {
@@ -717,8 +701,7 @@ namespace AsynGyanis::Base
             sink.write(makeEvent(LogLevel::Info, "slow_" + std::to_string(index)));
         }
         sink.flush();
-        const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - startTime).count();
+        const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
 
         // 队列容量 2 远小于 20 条事件，未丢事件即说明写入线程被阻塞等待空间
         EXPECT_EQ(sink.droppedEventCount(), 0u);
@@ -765,12 +748,7 @@ namespace AsynGyanis::Base
         // 需要一点时间，若不等就写入，先到的几条会被正常转发，丢弃数达不到「容量 + 1」的预期，
         // 高负载下就成了偶发失败（等待有明确上界，不会让用例挂住）
         m_async->write(makeEvent(LogLevel::Info, std::format("oldest_{:03d}", 0)));
-        ASSERT_TRUE(TestSupport::waitForCondition(
-                [this]
-                {
-                    return m_events->enteredCount.load(std::memory_order_acquire) >= 1U;
-                },
-                kWaitTimeoutMilliseconds));
+        ASSERT_TRUE(TestSupport::waitForCondition([this] { return m_events->enteredCount.load(std::memory_order_acquire) >= 1U; }, kWaitTimeoutMilliseconds));
 
         for (int index = 1; index < keventCount; ++index)
         {
@@ -794,21 +772,17 @@ namespace AsynGyanis::Base
         startAsyncSink(1, AsyncSink::OverflowPolicy::Block);
 
         m_async->write(makeEvent(LogLevel::Info, "in_flight"));
-        ASSERT_TRUE(TestSupport::waitForCondition(
-                [this]
-                {
-                    return m_events->enteredCount.load(std::memory_order_acquire) >= 1U;
-                },
-                kWaitTimeoutMilliseconds));
+        ASSERT_TRUE(TestSupport::waitForCondition([this] { return m_events->enteredCount.load(std::memory_order_acquire) >= 1U; }, kWaitTimeoutMilliseconds));
 
         m_async->write(makeEvent(LogLevel::Info, "queued"));
 
         std::atomic<bool> producerReturned{false};
-        std::thread blockedProducer([this, &producerReturned]
-        {
-            m_async->write(makeEvent(LogLevel::Info, "waits_for_space"));
-            producerReturned.store(true, std::memory_order_release);
-        });
+        std::thread       blockedProducer(
+                [this, &producerReturned]
+                {
+                    m_async->write(makeEvent(LogLevel::Info, "waits_for_space"));
+                    producerReturned.store(true, std::memory_order_release);
+                });
 
         // worker 卡在下游时队列不会腾出空间，生产者不可能返回；
         // 这段等待只是让「生产者已进入等待」成为常态，即便未进入，后续断言同样成立
@@ -816,18 +790,9 @@ namespace AsynGyanis::Base
         EXPECT_FALSE(producerReturned.load(std::memory_order_acquire));
 
         // 停止会阻塞到 worker 退出，而 worker 正卡在下游，因此由独立线程发起停止
-        std::thread stopper([this]
-        {
-            m_async->stop();
-        });
+        std::thread stopper([this] { m_async->stop(); });
 
-        EXPECT_TRUE(TestSupport::waitForCondition(
-                [this]
-                {
-                    return m_async->droppedEventCount() >= 1u;
-                },
-                kWaitTimeoutMilliseconds))
-                << "停止时被唤醒的生产者事件未被计入丢弃数";
+        EXPECT_TRUE(TestSupport::waitForCondition([this] { return m_async->droppedEventCount() >= 1u; }, kWaitTimeoutMilliseconds)) << "停止时被唤醒的生产者事件未被计入丢弃数";
 
         m_downstream->release();
         stopper.join();
@@ -850,23 +815,19 @@ namespace AsynGyanis::Base
         }
 
         std::atomic<bool> flushReturned{false};
-        std::thread       flusher([this, &flushReturned]
-        {
-            m_async->flush();
-            flushReturned.store(true);
-        });
+        std::thread       flusher(
+                [this, &flushReturned]
+                {
+                    m_async->flush();
+                    flushReturned.store(true);
+                });
 
         // 下游仍被卡住，flush() 不应返回
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         EXPECT_FALSE(flushReturned.load());
 
         m_downstream->release();
-        const bool completed = TestSupport::waitForCondition(
-                [&flushReturned]
-                {
-                    return flushReturned.load();
-                },
-                kWaitTimeoutMilliseconds);
+        const bool completed = TestSupport::waitForCondition([&flushReturned] { return flushReturned.load(); }, kWaitTimeoutMilliseconds);
         flusher.join();
 
         EXPECT_TRUE(completed) << "放行后 flush() 未在超时内返回";
@@ -889,19 +850,17 @@ namespace AsynGyanis::Base
         constexpr int     kCompletionMilliseconds = 30000;
         std::atomic<bool> finished{false};
 
-        std::thread cycle([&finished]
-        {
-            for (int index = 0; index < kIterationCount; ++index)
-            {
-                const AsyncSink sink(std::make_unique<RecordingSink>());
-            }
-            finished.store(true, std::memory_order_release);
-        });
+        std::thread cycle(
+                [&finished]
+                {
+                    for (int index = 0; index < kIterationCount; ++index)
+                    {
+                        const AsyncSink sink(std::make_unique<RecordingSink>());
+                    }
+                    finished.store(true, std::memory_order_release);
+                });
 
-        const bool completed = TestSupport::waitForCondition([&finished]
-        {
-            return finished.load(std::memory_order_acquire);
-        }, kCompletionMilliseconds);
+        const bool completed = TestSupport::waitForCondition([&finished] { return finished.load(std::memory_order_acquire); }, kCompletionMilliseconds);
 
         if (completed)
         {
@@ -923,20 +882,16 @@ namespace AsynGyanis::Base
      */
     TEST(AsyncSink, ProducerIsNotQueuedBehindTheDownstreamFlush)
     {
-        auto events    = std::make_shared<RecordedEvents>();
-        auto downstream = std::make_unique<SlowFlushSink>(events);
-        auto *gate      = downstream.get();
+        auto      events     = std::make_shared<RecordedEvents>();
+        auto      downstream = std::make_unique<SlowFlushSink>(events);
+        auto     *gate       = downstream.get();
         AsyncSink sink(std::move(downstream), 16U);
 
         // 先投一行并等它落地，让 flush 的等待谓词从一开始就成立、直奔下游那一句
         sink.write(makeEvent(LogLevel::Info, "drained_before_flush"));
 
-        std::thread flusher([&sink]
-        {
-            sink.flush();
-        });
-        ASSERT_TRUE(gate->waitUntilEntered(std::chrono::seconds(5)))
-                << "下游刷新从未开始，本用例没测到刷新那一段";
+        std::thread flusher([&sink] { sink.flush(); });
+        ASSERT_TRUE(gate->waitUntilEntered(std::chrono::seconds(5))) << "下游刷新从未开始，本用例没测到刷新那一段";
 
         const auto startedAt = std::chrono::steady_clock::now();
         sink.write(makeEvent(LogLevel::Info, "written_during_downstream_flush"));
@@ -945,9 +900,9 @@ namespace AsynGyanis::Base
         gate->release();
         flusher.join();
 
-        EXPECT_LT(producerWait, std::chrono::milliseconds(100))
-                << "实测等了 " << producerWait.count() << " ms：flush() 握着队列锁做下游刷新，"
-                   "生产者被排在一次慢刷新后面";
+        EXPECT_LT(producerWait, std::chrono::milliseconds(100)) << "实测等了 " << producerWait.count()
+                                                                << " ms：flush() 握着队列锁做下游刷新，"
+                                                                   "生产者被排在一次慢刷新后面";
     }
     namespace
     {
@@ -964,7 +919,9 @@ namespace AsynGyanis::Base
                 static_cast<void>(event);
                 std::this_thread::sleep_for(std::chrono::microseconds{200});
             }
-            void flush() override {}
+            void flush() override
+            {
+            }
         };
     } // namespace
 
@@ -978,31 +935,32 @@ namespace AsynGyanis::Base
     TEST(AsyncSinkFlush, WaitsOnlyForEventsAcceptedBeforeTheCall)
     {
         constexpr std::size_t kQueueCapacity = 64U;
-        AsyncSink sink(std::make_unique<DelayedDownstream>(), kQueueCapacity, AsyncSink::OverflowPolicy::Drop);
+        AsyncSink             sink(std::make_unique<DelayedDownstream>(), kQueueCapacity, AsyncSink::OverflowPolicy::Drop);
 
         // 生产者每分钟约 1 万条、下游每条约 200 微秒（5 千条/秒）：队列保持饱和，
         // 「待落地数清零」因此永远不成立。写入之间刻意留一拍，免得把结论下在锁的公平性上
         std::atomic<bool> producing{true};
-        std::thread producer([&sink, &producing]
-        {
-            while (producing.load(std::memory_order_acquire))
-            {
-                sink.write(makeEvent(LogLevel::Info, "busy producer"));
-                std::this_thread::sleep_for(std::chrono::microseconds{100});
-            }
-        });
+        std::thread       producer(
+                [&sink, &producing]
+                {
+                    while (producing.load(std::memory_order_acquire))
+                    {
+                        sink.write(makeEvent(LogLevel::Info, "busy producer"));
+                        std::this_thread::sleep_for(std::chrono::microseconds{100});
+                    }
+                });
         std::this_thread::sleep_for(std::chrono::milliseconds{20});
 
-        std::atomic<bool>         flushReturned{false};
-        std::atomic<long long>    waitedMs{-1};
-        std::thread               flusher([&]
-        {
-            const auto began = std::chrono::steady_clock::now();
-            sink.flush();
-            waitedMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count(),
-                           std::memory_order_relaxed);
-            flushReturned.store(true, std::memory_order_release);
-        });
+        std::atomic<bool>      flushReturned{false};
+        std::atomic<long long> waitedMs{-1};
+        std::thread            flusher(
+                [&]
+                {
+                    const auto began = std::chrono::steady_clock::now();
+                    sink.flush();
+                    waitedMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count(), std::memory_order_relaxed);
+                    flushReturned.store(true, std::memory_order_release);
+                });
         // 观察窗口 600 毫秒，远大于「容量 64 × 200 微秒 ≈ 13 毫秒」这个应有上限
         for (int tick = 0; tick < 60 && !flushReturned.load(std::memory_order_acquire); ++tick)
         {
@@ -1013,8 +971,7 @@ namespace AsynGyanis::Base
         producer.join();
         flusher.join();
 
-        EXPECT_FALSE(blockedWhileProducerRan)
-                << "flush() 在持续生产者面前一直不返回：等的是「清零」，不是「进场时那批已落地」";
+        EXPECT_FALSE(blockedWhileProducerRan) << "flush() 在持续生产者面前一直不返回：等的是「清零」，不是「进场时那批已落地」";
         EXPECT_GE(waitedMs.load(), 0);
         EXPECT_LT(waitedMs.load(), 100) << "实测等了 " << waitedMs.load() << " ms，而该等的只有容量 " << kQueueCapacity << " 条";
     }

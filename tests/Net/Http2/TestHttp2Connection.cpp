@@ -58,8 +58,7 @@ namespace AsynGyanis::Net
          * @param streamId 流号字段
          * @return std::string 9 字节帧头
          */
-        std::string makeFrameHeaderBytes(const std::uint32_t payloadLength, const unsigned char typeValue,
-                                         const unsigned char flags, const std::uint32_t streamId)
+        std::string makeFrameHeaderBytes(const std::uint32_t payloadLength, const unsigned char typeValue, const unsigned char flags, const std::uint32_t streamId)
         {
             std::string header;
             header.push_back(static_cast<char>((payloadLength >> 16) & 0xFFU));
@@ -169,8 +168,7 @@ namespace AsynGyanis::Net
          */
         std::string makeRfc7541FirstRequestBlock()
         {
-            return makeBytes({0x82, 0x86, 0x84, 0x41, 0x0f, 0x77, 0x77, 0x77, 0x2e, 0x65, 0x78,
-                              0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d});
+            return makeBytes({0x82, 0x86, 0x84, 0x41, 0x0f, 0x77, 0x77, 0x77, 0x2e, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d});
         }
 
         /**
@@ -219,9 +217,9 @@ namespace AsynGyanis::Net
          */
         std::vector<Http2Frame> parseFrames(const std::string_view bytes)
         {
-            Http2FrameDecoder decoder;
+            Http2FrameDecoder       decoder;
             std::vector<Http2Frame> frames;
-            std::size_t offsetByteCount = 0;
+            std::size_t             offsetByteCount = 0;
             while (offsetByteCount < bytes.size())
             {
                 const Http2FrameDecodeStatus status = decoder.parse(bytes.data() + offsetByteCount, bytes.size() - offsetByteCount);
@@ -244,7 +242,7 @@ namespace AsynGyanis::Net
          */
         std::vector<HpackHeaderField> decodeResponseHeaderBlock(const std::string_view headerBlock)
         {
-            HpackDecoder decoder;
+            HpackDecoder                  decoder;
             std::vector<HpackHeaderField> headerFields;
             EXPECT_TRUE(decoder.decode(headerBlock, headerFields)) << "响应头块解不开：" << decoder.errorMessage();
             return headerFields;
@@ -288,7 +286,7 @@ namespace AsynGyanis::Net
             }
             EXPECT_EQ(frames.back().header.type, Http2FrameType::GoAway) << "最后一个控制帧应当是 GOAWAY";
             Http2GoAwayPayload payload;
-            std::string errorText;
+            std::string        errorText;
             EXPECT_TRUE(parseHttp2GoAwayPayload(frames.back(), payload, &errorText)) << errorText;
             return payload.errorCode;
         }
@@ -309,7 +307,7 @@ namespace AsynGyanis::Net
             {
                 EXPECT_EQ(resetFrames.front().header.streamId, streamId);
                 Http2RstStreamPayload payload;
-                std::string errorText;
+                std::string           errorText;
                 EXPECT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText)) << errorText;
                 EXPECT_EQ(payload.errorCode, Http2ErrorCode::ProtocolError);
             }
@@ -327,8 +325,7 @@ namespace AsynGyanis::Net
          * @param frameDescription 这帧叫什么，只用来把失败信息指到具体那一帧
          * @return true 连接收下这帧并按流错误回了那一枚
          */
-        bool feedsAndAnswersStreamClosed(Http2Connection &connection, const std::string &frameBytes,
-                                         const std::string_view frameDescription)
+        bool feedsAndAnswersStreamClosed(Http2Connection &connection, const std::string &frameBytes, const std::string_view frameDescription)
         {
             if (feed(connection, frameBytes) != Http2ConnectionFeedStatus::NeedMore)
             {
@@ -338,12 +335,11 @@ namespace AsynGyanis::Net
             const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
             if (resetFrames.size() != 1U || resetFrames.front().header.streamId != 1U)
             {
-                ADD_FAILURE() << frameDescription << " 之后本端应当只回敬一枚落在流 1 上的 RST_STREAM，实收 "
-                              << resetFrames.size() << " 枚";
+                ADD_FAILURE() << frameDescription << " 之后本端应当只回敬一枚落在流 1 上的 RST_STREAM，实收 " << resetFrames.size() << " 枚";
                 return false;
             }
             Http2RstStreamPayload payload;
-            std::string errorText;
+            std::string           errorText;
             if (!parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText))
             {
                 ADD_FAILURE() << frameDescription << " 的回帧不是合法的 RST_STREAM：" << errorText;
@@ -359,9 +355,8 @@ namespace AsynGyanis::Net
      */
     TEST(Http2Connection, EmitsInitialSettingsAndAcknowledgementAfterThePreface)
     {
-        Http2Connection connection;
-        const std::string inputBytes = std::string(kHttp2ConnectionPreface) +
-                                       makeSettingsFrame({namedSetting(Http2SettingIdentifier::HeaderTableSize, 8192)});
+        Http2Connection   connection;
+        const std::string inputBytes = std::string(kHttp2ConnectionPreface) + makeSettingsFrame({namedSetting(Http2SettingIdentifier::HeaderTableSize, 8192)});
         EXPECT_EQ(feed(connection, inputBytes), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
         EXPECT_EQ(connection.state(), Http2ConnectionState::Open);
@@ -374,24 +369,22 @@ namespace AsynGyanis::Net
         EXPECT_EQ(frames[0].header.streamId, 0U);
 
         Http2SettingsPayload initialSettings;
-        std::string errorText;
+        std::string          errorText;
         ASSERT_TRUE(parseHttp2SettingsPayload(frames[0], initialSettings, &errorText)) << errorText;
         // 七项本端参数按 §6.5.2 的参数标识顺序逐项对照，取值来源是 Http2ConnectionConfiguration 的默认值
         const std::vector<std::pair<Http2SettingIdentifier, std::uint32_t>> expectedParameters = {
-            {Http2SettingIdentifier::HeaderTableSize, static_cast<std::uint32_t>(kHpackDefaultDynamicTableSizeByteCount)},
-            {Http2SettingIdentifier::EnablePush, 0U},
-            {Http2SettingIdentifier::MaxConcurrentStreams, 100U},
-            {Http2SettingIdentifier::InitialWindowSize, kHttp2InitialWindowSizeByteCount},
-            {Http2SettingIdentifier::MaxFrameSize, kHttp2DefaultMaximumFrameSize},
-            {Http2SettingIdentifier::MaxHeaderListSize, 16U * 1024U},
-            {Http2SettingIdentifier::EnableConnectProtocol, 1U}};
+                {Http2SettingIdentifier::HeaderTableSize, static_cast<std::uint32_t>(kHpackDefaultDynamicTableSizeByteCount)},
+                {Http2SettingIdentifier::EnablePush, 0U},
+                {Http2SettingIdentifier::MaxConcurrentStreams, 100U},
+                {Http2SettingIdentifier::InitialWindowSize, kHttp2InitialWindowSizeByteCount},
+                {Http2SettingIdentifier::MaxFrameSize, kHttp2DefaultMaximumFrameSize},
+                {Http2SettingIdentifier::MaxHeaderListSize, 16U * 1024U},
+                {Http2SettingIdentifier::EnableConnectProtocol, 1U}};
         ASSERT_EQ(initialSettings.parameters.size(), expectedParameters.size());
         for (std::size_t index = 0; index < expectedParameters.size(); ++index)
         {
-            EXPECT_EQ(initialSettings.parameters[index].identifier, static_cast<std::uint16_t>(expectedParameters[index].first))
-                << "初始 SETTINGS 第 " << index << " 项的标识不符";
-            EXPECT_EQ(initialSettings.parameters[index].value, expectedParameters[index].second)
-                << "初始 SETTINGS 第 " << index << " 项的取值不符";
+            EXPECT_EQ(initialSettings.parameters[index].identifier, static_cast<std::uint16_t>(expectedParameters[index].first)) << "初始 SETTINGS 第 " << index << " 项的标识不符";
+            EXPECT_EQ(initialSettings.parameters[index].value, expectedParameters[index].second) << "初始 SETTINGS 第 " << index << " 项的取值不符";
         }
 
         // 对端 SETTINGS 的应答：ACK 置位、负载为空、流号为 0（§6.5.3）
@@ -412,7 +405,7 @@ namespace AsynGyanis::Net
      */
     TEST(Http2Connection, WaitsForTheCompletePrefaceBeforeReplying)
     {
-        Http2Connection connection;
+        Http2Connection   connection;
         const std::string preface(kHttp2ConnectionPreface);
         EXPECT_EQ(feed(connection, preface.substr(0, 23)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(connection.state(), Http2ConnectionState::AwaitingPreface);
@@ -448,9 +441,8 @@ namespace AsynGyanis::Net
      */
     TEST(Http2Connection, RejectsFirstFrameThatIsNotSettings)
     {
-        Http2Connection connection;
-        const std::string inputBytes = std::string(kHttp2ConnectionPreface) +
-                                       makeFrame(Http2FrameType::Ping, 0, 0, std::string(8, 'P'));
+        Http2Connection   connection;
+        const std::string inputBytes = std::string(kHttp2ConnectionPreface) + makeFrame(Http2FrameType::Ping, 0, 0, std::string(8, 'P'));
         EXPECT_EQ(feed(connection, inputBytes), Http2ConnectionFeedStatus::Failed);
         EXPECT_EQ(connection.errorCode(), Http2ErrorCode::ProtocolError);
         EXPECT_NE(connection.errorMessage().find("第一个帧"), std::string::npos) << connection.errorMessage();
@@ -489,28 +481,26 @@ namespace AsynGyanis::Net
     {
         struct IllegalSettingSample
         {
-            Http2Setting setting;              ///< 对端发来的非法参数
-            Http2ErrorCode expectedErrorCode;  ///< 期望的连接错误码
-            std::string_view expectedText;     ///< 错误文案里必须出现的关键词
+            Http2Setting     setting;           ///< 对端发来的非法参数
+            Http2ErrorCode   expectedErrorCode; ///< 期望的连接错误码
+            std::string_view expectedText;      ///< 错误文案里必须出现的关键词
         };
 
         const std::vector<IllegalSettingSample> samples = {
-            {namedSetting(Http2SettingIdentifier::EnablePush, 2U), Http2ErrorCode::ProtocolError, "ENABLE_PUSH"},
-            {namedSetting(Http2SettingIdentifier::EnablePush, 0xFFFFFFFFU), Http2ErrorCode::ProtocolError, "ENABLE_PUSH"},
-            {namedSetting(Http2SettingIdentifier::InitialWindowSize, 0x80000000U), Http2ErrorCode::FlowControlError, "INITIAL_WINDOW_SIZE"},
-            {namedSetting(Http2SettingIdentifier::MaxFrameSize, 16383U), Http2ErrorCode::ProtocolError, "MAX_FRAME_SIZE"},
-            {namedSetting(Http2SettingIdentifier::MaxFrameSize, 16777216U), Http2ErrorCode::ProtocolError, "MAX_FRAME_SIZE"}};
+                {namedSetting(Http2SettingIdentifier::EnablePush, 2U), Http2ErrorCode::ProtocolError, "ENABLE_PUSH"},
+                {namedSetting(Http2SettingIdentifier::EnablePush, 0xFFFFFFFFU), Http2ErrorCode::ProtocolError, "ENABLE_PUSH"},
+                {namedSetting(Http2SettingIdentifier::InitialWindowSize, 0x80000000U), Http2ErrorCode::FlowControlError, "INITIAL_WINDOW_SIZE"},
+                {namedSetting(Http2SettingIdentifier::MaxFrameSize, 16383U), Http2ErrorCode::ProtocolError, "MAX_FRAME_SIZE"},
+                {namedSetting(Http2SettingIdentifier::MaxFrameSize, 16777216U), Http2ErrorCode::ProtocolError, "MAX_FRAME_SIZE"}};
 
         for (std::size_t index = 0; index < samples.size(); ++index)
         {
-            Http2Connection connection;
+            Http2Connection   connection;
             const std::string inputBytes = std::string(kHttp2ConnectionPreface) + makeSettingsFrame({samples[index].setting});
             EXPECT_EQ(feed(connection, inputBytes), Http2ConnectionFeedStatus::Failed) << "第 " << index << " 个样本本应判错";
             EXPECT_EQ(connection.errorCode(), samples[index].expectedErrorCode) << "第 " << index << " 个样本的错误码不符";
-            EXPECT_NE(connection.errorMessage().find(samples[index].expectedText), std::string::npos)
-                << "第 " << index << " 个样本的文案：" << connection.errorMessage();
-            EXPECT_EQ(takeGoAwayErrorCode(connection.takeOutgoingBytes()), samples[index].expectedErrorCode)
-                << "第 " << index << " 个样本的 GOAWAY 错误码与 errorCode() 不一致";
+            EXPECT_NE(connection.errorMessage().find(samples[index].expectedText), std::string::npos) << "第 " << index << " 个样本的文案：" << connection.errorMessage();
+            EXPECT_EQ(takeGoAwayErrorCode(connection.takeOutgoingBytes()), samples[index].expectedErrorCode) << "第 " << index << " 个样本的 GOAWAY 错误码与 errorCode() 不一致";
         }
     }
 
@@ -519,10 +509,9 @@ namespace AsynGyanis::Net
      */
     TEST(Http2Connection, IgnoresUnknownSettingIdentifiers)
     {
-        Http2Connection connection;
+        Http2Connection   connection;
         const std::string inputBytes = std::string(kHttp2ConnectionPreface) +
-                                       makeSettingsFrame({Http2Setting{.identifier = 0x99U, .value = 7U},
-                                                          namedSetting(Http2SettingIdentifier::MaxFrameSize, 32768U)});
+                                       makeSettingsFrame({Http2Setting{.identifier = 0x99U, .value = 7U}, namedSetting(Http2SettingIdentifier::MaxFrameSize, 32768U)});
         EXPECT_EQ(feed(connection, inputBytes), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
 
@@ -546,8 +535,7 @@ namespace AsynGyanis::Net
         Http2Connection connection;
         completeHandshake(connection);
 
-        const std::string headersFrame = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                                   makeRfc7541FirstRequestBlock());
+        const std::string headersFrame = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeRfc7541FirstRequestBlock());
         EXPECT_EQ(feed(connection, headersFrame), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
 
@@ -595,9 +583,7 @@ namespace AsynGyanis::Net
         // 整表的顺序是接线层序列化与业务遍历的读法，单独核对成一条串：换错方向或漏一条都会立刻显形
         std::string orderedPairs;
         headerFields.forEachField([&orderedPairs](const std::string_view name, const std::string_view value)
-                                  {
-                                      orderedPairs += std::string(name) + "=" + std::string(value) + ";";
-                                  });
+                                  { orderedPairs += std::string(name) + "=" + std::string(value) + ";"; });
         EXPECT_EQ(orderedPairs, "x-multi=a=1;cookie=sid=7;x-multi=b=2;");
     }
 
@@ -611,10 +597,7 @@ namespace AsynGyanis::Net
         Http2Connection connection;
         completeHandshake(connection);
         const auto feedRequest = [&connection](const std::uint32_t streamId)
-        {
-            return feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId,
-                                              makeMinimalGetRequestBlock()));
-        };
+        { return feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId, makeMinimalGetRequestBlock())); };
 
         // 正常路径：取空、还空，本端只留那份容量
         ASSERT_EQ(feedRequest(1U), Http2ConnectionFeedStatus::NeedMore);
@@ -645,8 +628,7 @@ namespace AsynGyanis::Net
         Http2Connection connection;
         completeHandshake(connection);
 
-        const std::string headersFrame = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                                   makeRfc7541HuffmanFirstRequestBlock());
+        const std::string headersFrame = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeRfc7541HuffmanFirstRequestBlock());
         EXPECT_EQ(feed(connection, headersFrame), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
 
@@ -667,11 +649,11 @@ namespace AsynGyanis::Net
 
         const std::string headerBlock = makeMinimalGetRequestBlock();
         ASSERT_GT(headerBlock.size(), 4U);
-        const std::size_t firstLength = headerBlock.size() / 3U;
+        const std::size_t firstLength  = headerBlock.size() / 3U;
         const std::size_t secondLength = headerBlock.size() / 3U;
-        const std::string firstPart = headerBlock.substr(0, firstLength);
-        const std::string secondPart = headerBlock.substr(firstLength, secondLength);
-        const std::string thirdPart = headerBlock.substr(firstLength + secondLength);
+        const std::string firstPart    = headerBlock.substr(0, firstLength);
+        const std::string secondPart   = headerBlock.substr(firstLength, secondLength);
+        const std::string thirdPart    = headerBlock.substr(firstLength + secondLength);
 
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream, 1U, firstPart)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeRequests().empty()) << "END_HEADERS 之前不得交出请求";
@@ -717,12 +699,12 @@ namespace AsynGyanis::Net
     {
         struct MalformedRequestSample
         {
-            std::string description;       ///< 样本说明（诊断输出用）
-            std::string headerBlock;       ///< 请求头块字节
+            std::string      description;  ///< 样本说明（诊断输出用）
+            std::string      headerBlock;  ///< 请求头块字节
             std::string_view expectedText; ///< 错误文案里必须出现的关键词
         };
 
-        const std::string validPseudoFields = hpackIndexedField(2) + hpackIndexedField(6) + hpackIndexedField(4);
+        const std::string                   validPseudoFields = hpackIndexedField(2) + hpackIndexedField(6) + hpackIndexedField(4);
         std::vector<MalformedRequestSample> samples;
         samples.push_back({"缺少 :path", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(1, "example.com"), "缺少 :path"});
         samples.push_back({"缺少 :scheme", hpackIndexedField(2) + hpackIndexedField(4) + hpackLiteralField(1, "example.com"), "缺少 :scheme"});
@@ -745,17 +727,14 @@ namespace AsynGyanis::Net
         {
             Http2Connection connection;
             completeHandshake(connection);
-            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, sample.headerBlock)),
-                      Http2ConnectionFeedStatus::NeedMore)
-                << "样本「" << sample.description << "」不该判连接错误";
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, sample.headerBlock)), Http2ConnectionFeedStatus::NeedMore)
+                    << "样本「" << sample.description << "」不该判连接错误";
             EXPECT_TRUE(connection.takeRequests().empty()) << "样本「" << sample.description << "」不该交出请求";
             const std::string streamErrorMessage = expectStreamRejected(connection, 1U);
-            EXPECT_NE(streamErrorMessage.find(sample.expectedText), std::string::npos)
-                << "样本「" << sample.description << "」的流级原因：" << streamErrorMessage;
+            EXPECT_NE(streamErrorMessage.find(sample.expectedText), std::string::npos) << "样本「" << sample.description << "」的流级原因：" << streamErrorMessage;
 
             // 连接必须还能服务其它流：换一个流号再发一个合法请求
-            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
-                                                makeMinimalGetRequestBlock())),
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock())),
                       Http2ConnectionFeedStatus::NeedMore);
             const std::vector<Http2Request> requests = connection.takeRequests();
             ASSERT_EQ(requests.size(), 1U) << "样本「" << sample.description << "」之后其它流仍应当被服务";
@@ -773,8 +752,7 @@ namespace AsynGyanis::Net
 
         // 合法的 CONNECT：只有 :method 与 :authority
         std::string connectBlock = hpackLiteralField(2, "CONNECT") + hpackLiteralField(1, "example.com:443");
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, connectBlock)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, connectBlock)), Http2ConnectionFeedStatus::NeedMore);
         const std::vector<Http2Request> requests = connection.takeRequests();
         ASSERT_EQ(requests.size(), 1U);
         EXPECT_EQ(requests[0].method, "CONNECT");
@@ -784,14 +762,12 @@ namespace AsynGyanis::Net
 
         // 带了 :path 的 CONNECT 不合规
         std::string illegalConnectBlock = hpackLiteralField(2, "CONNECT") + hpackLiteralField(1, "example.com:443") + hpackIndexedField(4);
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, illegalConnectBlock)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, illegalConnectBlock)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeRequests().empty());
         EXPECT_NE(expectStreamRejected(connection, 3U).find("CONNECT"), std::string::npos);
 
         // 缺 :authority 的 CONNECT 同样不合规
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 5U,
-                                            hpackLiteralField(2, "CONNECT"))),
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 5U, hpackLiteralField(2, "CONNECT"))),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeRequests().empty());
         EXPECT_NE(expectStreamRejected(connection, 5U).find("CONNECT"), std::string::npos);
@@ -812,12 +788,10 @@ namespace AsynGyanis::Net
         Http2Connection connection(configuration);
         completeHandshake(connection);
 
-        const std::string normalHeaderBlock = makeMinimalGetRequestBlock();
+        const std::string normalHeaderBlock    = makeMinimalGetRequestBlock();
         const std::string oversizedHeaderBlock = normalHeaderBlock + hpackLiteralField("x-big", std::string(400, 'a'));
 
-        EXPECT_EQ(feed(connection,
-                       makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, oversizedHeaderBlock)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, oversizedHeaderBlock)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
 
         const std::vector<Http2Request> rejectedRequests = connection.takeRequests();
@@ -828,9 +802,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(rejectedRequests.front().headerFields.empty());
 
         // 同一连接上随后那条正常请求必须照常交出来：这是旧实现跑不到的一步（连接已经死了）
-        EXPECT_EQ(feed(connection,
-                       makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, normalHeaderBlock)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, normalHeaderBlock)), Http2ConnectionFeedStatus::NeedMore);
         const std::vector<Http2Request> followingRequests = connection.takeRequests();
         ASSERT_EQ(followingRequests.size(), 1U);
         EXPECT_FALSE(followingRequests.front().isHeaderListTooLarge);
@@ -846,8 +818,7 @@ namespace AsynGyanis::Net
         // 上限是配置项：同一个请求块在默认配置下必须通过
         Http2Connection defaults;
         completeHandshake(defaults);
-        EXPECT_EQ(feed(defaults, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, oversizedHeaderBlock)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(defaults, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, oversizedHeaderBlock)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(defaults.hasFailed()) << defaults.errorMessage();
         EXPECT_EQ(defaults.takeRequests().size(), 1U);
     }
@@ -864,10 +835,8 @@ namespace AsynGyanis::Net
 
         const std::string headerBlock = makeMinimalGetRequestBlock();
         ASSERT_GT(headerBlock.size(), 8U);
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream, 1U, headerBlock.substr(0, 8U))),
-                  Http2ConnectionFeedStatus::NeedMore);
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Continuation, kHttp2FlagEndHeaders, 1U, headerBlock.substr(8U))),
-                  Http2ConnectionFeedStatus::Failed);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream, 1U, headerBlock.substr(0, 8U))), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Continuation, kHttp2FlagEndHeaders, 1U, headerBlock.substr(8U))), Http2ConnectionFeedStatus::Failed);
         EXPECT_EQ(connection.errorCode(), Http2ErrorCode::EnhanceYourCalm);
         EXPECT_NE(connection.errorMessage().find("头块压缩后"), std::string::npos) << connection.errorMessage();
     }
@@ -884,14 +853,13 @@ namespace AsynGyanis::Net
         {
             Http2Connection connection;
             completeHandshake(connection);
-            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)),
-                      Http2ConnectionFeedStatus::NeedMore);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore);
             EXPECT_TRUE(connection.takeRequests().empty()) << "长度有歧义的请求不得交给业务";
 
             const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
             ASSERT_EQ(resetFrames.size(), 1U) << "应当中止这条流";
             Http2RstStreamPayload payload;
-            std::string errorText;
+            std::string           errorText;
             ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText)) << errorText;
             EXPECT_EQ(payload.errorCode, Http2ErrorCode::ProtocolError);
             EXPECT_FALSE(connection.hasFailed()) << "流错误不该终止连接：" << connection.errorMessage();
@@ -901,8 +869,7 @@ namespace AsynGyanis::Net
         expectStreamRejected(makeMinimalGetRequestBlock() + hpackLiteralField("content-length", "5x"));
 
         // 重复出现且前后冲突（5 与 6）
-        expectStreamRejected(makeMinimalGetRequestBlock() + hpackLiteralField("content-length", "5") +
-                             hpackLiteralField("content-length", "6"));
+        expectStreamRejected(makeMinimalGetRequestBlock() + hpackLiteralField("content-length", "5") + hpackLiteralField("content-length", "6"));
     }
 
     /**
@@ -913,8 +880,7 @@ namespace AsynGyanis::Net
         Http2Connection connection;
         completeHandshake(connection);
 
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         const std::vector<Http2Request> requests = connection.takeRequests();
         ASSERT_EQ(requests.size(), 1U);
         EXPECT_EQ(requests[0].method, "POST");
@@ -940,7 +906,7 @@ namespace AsynGyanis::Net
         const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
         EXPECT_EQ(resetFrames.size(), 1U) << "对端已经在流 1 上 END_STREAM，再发 DATA 是流错误 STREAM_CLOSED";
         Http2RstStreamPayload payload;
-        std::string errorText;
+        std::string           errorText;
         ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText)) << errorText;
         EXPECT_EQ(payload.errorCode, Http2ErrorCode::StreamClosed);
         EXPECT_FALSE(connection.hasFailed()) << "流错误不该终止连接：" << connection.errorMessage();
@@ -953,14 +919,12 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            makeRfc7541FirstRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeRfc7541FirstRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         ASSERT_EQ(connection.takeRequests().size(), 1U);
 
         std::string errorText;
-        ASSERT_EQ(connection.sendResponseHeaders(1U, 200U, {{"content-type", "text/plain"}}, false, &errorText),
-                  Http2ResponseSendStatus::Sent) << errorText;
+        ASSERT_EQ(connection.sendResponseHeaders(1U, 200U, {{"content-type", "text/plain"}}, false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         ASSERT_EQ(connection.sendResponseData(1U, "Hello, ", false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         ASSERT_EQ(connection.sendResponseData(1U, "world!", true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
 
@@ -999,14 +963,13 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection, {namedSetting(Http2SettingIdentifier::MaxFrameSize, kHttp2DefaultMaximumFrameSize)});
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         // 24000 字节 > 16384：必须切成两帧，末片带 END_STREAM
         const std::string body(24000U, 'x');
-        std::string errorText;
+        std::string       errorText;
         ASSERT_EQ(connection.sendResponseData(1U, body, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         const std::vector<Http2Frame> frames = parseFrames(connection.takeOutgoingBytes());
         ASSERT_EQ(frames.size(), 2U);
@@ -1023,16 +986,14 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         // 一条 20000 字节的响应头值：编码后必然超过 16384 的单帧上限
         const std::string bigValue(20000U, 'v');
-        std::string errorText;
-        ASSERT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", bigValue}}, false, &errorText), Http2ResponseSendStatus::Sent)
-                << errorText;
+        std::string       errorText;
+        ASSERT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", bigValue}}, false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         const std::vector<Http2Frame> frames = parseFrames(connection.takeOutgoingBytes());
         ASSERT_EQ(frames.size(), 2U) << "头块放不进一帧时必须续 CONTINUATION";
         EXPECT_EQ(frames[0].header.type, Http2FrameType::Headers);
@@ -1045,12 +1006,12 @@ namespace AsynGyanis::Net
 
         // 拼接回来的头块必须原样解出 :status 与那条大头部。对端的解码器按它自己的字段长度上限建：
         // 本用例要验的是「头块跨帧拼接」，因此把上限放大到装得下这 20000 字节的值。
-        HpackDecoder peerDecoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = kHpackDefaultDynamicTableSizeByteCount,
-                                                    .maximumHeaderListByteCount = 64U * 1024U,
-                                                    .maximumHeaderFieldNameLength = 256U,
-                                                    .maximumHeaderFieldValueLength = 64U * 1024U});
+        HpackDecoder                  peerDecoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = kHpackDefaultDynamicTableSizeByteCount,
+                                                                     .maximumHeaderListByteCount       = 64U * 1024U,
+                                                                     .maximumHeaderFieldNameLength     = 256U,
+                                                                     .maximumHeaderFieldValueLength    = 64U * 1024U});
         std::vector<HpackHeaderField> responseFields;
-        std::string decodeErrorText;
+        std::string                   decodeErrorText;
         ASSERT_TRUE(peerDecoder.decode(frames[0].payload + frames[1].payload, responseFields, &decodeErrorText)) << decodeErrorText;
         EXPECT_EQ(findHeaderValue(responseFields, ":status"), "200");
         EXPECT_EQ(findHeaderValue(responseFields, "x-big"), bigValue);
@@ -1067,8 +1028,7 @@ namespace AsynGyanis::Net
         completeHandshake(connection, {namedSetting(Http2SettingIdentifier::InitialWindowSize, 5U)});
         for (const std::uint32_t streamId: {1U, 3U})
         {
-            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId,
-                                                 makeMinimalGetRequestBlock())),
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId, makeMinimalGetRequestBlock())),
                       Http2ConnectionFeedStatus::NeedMore);
         }
         static_cast<void>(connection.takeRequests());
@@ -1085,8 +1045,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(connection.totalPendingResponseByteCount(), 80U) << "连接级闸门看的是合计，逐流各卡一点也要算进来";
 
         // 一条流的窗口放开、排空，合计跟着回落；另一条不受影响
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(35U))),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(35U))), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(connection.pendingResponseByteCount(1U), 0U);
         EXPECT_EQ(connection.totalPendingResponseByteCount(), 40U);
     }
@@ -1103,17 +1062,15 @@ namespace AsynGyanis::Net
         Http2Connection connection;
         // 流级窗口 10 字节（§6.9.2：peer 的 SETTINGS_INITIAL_WINDOW_SIZE 只改流级窗口，连接级仍是 65535）
         completeHandshake(connection, {namedSetting(Http2SettingIdentifier::InitialWindowSize, 10U)});
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                             makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
         static_cast<void>(connection.takeOutgoingBytes());
 
-        std::string errorText;
+        std::string       errorText;
         const std::string fittingSegment(10U, 'a');
         ASSERT_EQ(connection.sendResponseData(1U, fittingSegment, false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
-        EXPECT_EQ(connection.takeOutgoingBytes(), encodeHttp2DataFrame(fittingSegment, false, 1U))
-                << "直接成帧的字节与队列路不一致";
+        EXPECT_EQ(connection.takeOutgoingBytes(), encodeHttp2DataFrame(fittingSegment, false, 1U)) << "直接成帧的字节与队列路不一致";
         EXPECT_EQ(connection.pendingResponseByteCount(1U), 0U) << "这一段已整帧排出，却仍有正文挂在该流队列上";
 
         // 窗口已被上一段用满：这一字节只能排队，且收尾标记不能提前落到流上
@@ -1121,10 +1078,8 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "流级窗口已耗尽，却仍然出了帧";
         EXPECT_EQ(connection.pendingResponseByteCount(1U), 1U) << "排队的那一字节没留在该流队列里";
 
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(1U))),
-                  Http2ConnectionFeedStatus::NeedMore);
-        EXPECT_EQ(connection.takeOutgoingBytes(), encodeHttp2DataFrame("z", true, 1U))
-                << "窗口还回来后续发的末片字节不对（END_STREAM 应落在它上面）";
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(1U))), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(connection.takeOutgoingBytes(), encodeHttp2DataFrame("z", true, 1U)) << "窗口还回来后续发的末片字节不对（END_STREAM 应落在它上面）";
         Http2StreamState streamState{};
         ASSERT_TRUE(connection.tryGetStreamState(1U, streamState));
         EXPECT_EQ(streamState, Http2StreamState::Closed) << "两端都交出了 END_STREAM，这条流该终止（§5.1）";
@@ -1139,8 +1094,7 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                             makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
         static_cast<void>(connection.takeOutgoingBytes());
@@ -1157,8 +1111,7 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection, {namedSetting(Http2SettingIdentifier::InitialWindowSize, 10U)});
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
@@ -1171,8 +1124,7 @@ namespace AsynGyanis::Net
         static_cast<void>(connection.takeReceivedData());
 
         // 对端把 SETTINGS_INITIAL_WINDOW_SIZE 调到 15（增量 +5）：ACK 之后续发 5 字节
-        EXPECT_EQ(feed(connection, makeSettingsFrame({namedSetting(Http2SettingIdentifier::InitialWindowSize, 15U)})),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeSettingsFrame({namedSetting(Http2SettingIdentifier::InitialWindowSize, 15U)})), Http2ConnectionFeedStatus::NeedMore);
         frames = parseFrames(connection.takeOutgoingBytes());
         ASSERT_EQ(frames.size(), 2U) << "先回 SETTINGS ACK，再续发正文";
         EXPECT_EQ(frames[0].header.type, Http2FrameType::Settings);
@@ -1209,14 +1161,13 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         // 70000 字节 > 连接级窗口的 65535：先发满窗口，剩下的排队
         const std::string body(70000U, 'b');
-        std::string errorText;
+        std::string       errorText;
         ASSERT_EQ(connection.sendResponseData(1U, body, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         std::size_t sentByteCount = 0;
         for (const Http2Frame &frame: parseFrames(connection.takeOutgoingBytes()))
@@ -1252,8 +1203,7 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         // 三片共 32868 字节：单帧不超过 16384，总量超过半个窗口（32767）但不越接收窗口，不该判错
@@ -1262,8 +1212,7 @@ namespace AsynGyanis::Net
         const std::string thirdChunk(100U, 'c');
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, firstChunk)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, secondChunk)), Http2ConnectionFeedStatus::NeedMore);
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, thirdChunk)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, thirdChunk)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
 
         const std::vector<Http2ReceivedData> receivedData = connection.takeReceivedData();
@@ -1287,7 +1236,7 @@ namespace AsynGyanis::Net
         {
             EXPECT_EQ(frame.header.type, Http2FrameType::WindowUpdate);
             Http2WindowUpdatePayload payload;
-            std::string parseErrorText;
+            std::string              parseErrorText;
             ASSERT_TRUE(parseHttp2WindowUpdatePayload(frame, payload, &parseErrorText)) << parseErrorText;
             EXPECT_EQ(payload.windowSizeIncrement, firstChunk.size() + secondChunk.size()) << "增量应当等于这一段累计消费量";
         }
@@ -1299,8 +1248,7 @@ namespace AsynGyanis::Net
         // 契约面：连接失败之后不再受理消费回报
         Http2Connection failedConnection;
         completeHandshake(failedConnection);
-        ASSERT_EQ(feed(failedConnection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 2U,
-                                                  makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(failedConnection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 2U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::Failed);
         static_cast<void>(failedConnection.takeOutgoingBytes());
         EXPECT_FALSE(failedConnection.creditReceivedData(2U, 16U, &errorText));
@@ -1315,8 +1263,7 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         // 帧层单帧上限是 16384，因此用 4 片凑出 65536 > 65535：最后一片必然把窗口扣成负数
@@ -1341,8 +1288,7 @@ namespace AsynGyanis::Net
         completeHandshake(connection);
 
         // 本端因为请求头不合规 RST 掉流 1：其后到达的 DATA 属于对端的在途数据，按 §5.1 忽略
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            hpackIndexedField(2) + hpackIndexedField(6))),
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, hpackIndexedField(2) + hpackIndexedField(6))),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(takeRstStreamFrames(connection).size(), 1U);
 
@@ -1384,8 +1330,7 @@ namespace AsynGyanis::Net
         // 流级窗口溢出：流窗口初值 65535，同样加上 2^31-1 就越界——但只该结这条流
         Http2Connection streamLevel;
         completeHandshake(streamLevel);
-        ASSERT_EQ(feed(streamLevel, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(streamLevel, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         const Http2ConnectionFeedStatus overflowStatus = feed(streamLevel, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, maximumIncrement));
         EXPECT_EQ(overflowStatus, Http2ConnectionFeedStatus::NeedMore) << "流级溢出不该让连接进入失败态（失败只结这条流）";
         EXPECT_NE(streamLevel.errorCode(), Http2ErrorCode::FlowControlError);
@@ -1394,7 +1339,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(resetFrames.size(), 1U) << "流级窗口溢出应当只回一条 RST_STREAM";
         EXPECT_EQ(resetFrames.front().header.streamId, 1U);
         Http2RstStreamPayload reset;
-        std::string resetErrorText;
+        std::string           resetErrorText;
         ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), reset, &resetErrorText)) << resetErrorText;
         EXPECT_EQ(reset.errorCode, Http2ErrorCode::FlowControlError);
     }
@@ -1406,8 +1351,7 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection, {namedSetting(Http2SettingIdentifier::InitialWindowSize, kHttp2MaximumWindowSizeByteCount)});
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << "2^31-1 是合法窗口：" << connection.errorMessage();
 
         // 再加 1 字节就越界：§6.9.1 对**流级**要求 RST_STREAM(FLOW_CONTROL_ERROR)，连接继续服务其它流
@@ -1417,7 +1361,7 @@ namespace AsynGyanis::Net
         const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
         ASSERT_EQ(resetFrames.size(), 1U);
         Http2RstStreamPayload reset;
-        std::string resetErrorText;
+        std::string           resetErrorText;
         ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), reset, &resetErrorText)) << resetErrorText;
         EXPECT_EQ(reset.errorCode, Http2ErrorCode::FlowControlError);
     }
@@ -1435,22 +1379,20 @@ namespace AsynGyanis::Net
         // 两条流都不带 END_STREAM：它们会一直占着并发名额
         for (const std::uint32_t streamId: {1U, 3U})
         {
-            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, streamId, makePostRequestBlock())),
-                      Http2ConnectionFeedStatus::NeedMore);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, streamId, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         }
         EXPECT_EQ(connection.openStreamCount(), 2U);
         EXPECT_EQ(connection.takeRequests().size(), 2U);
 
         // 第三条流被拒：REFUSED_STREAM，且不交出请求
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 5U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 5U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << "并发超限是流错误，连接继续：" << connection.errorMessage();
         EXPECT_TRUE(connection.takeRequests().empty());
         const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
         ASSERT_EQ(resetFrames.size(), 1U);
         EXPECT_EQ(resetFrames.front().header.streamId, 5U);
         Http2RstStreamPayload payload;
-        std::string errorText;
+        std::string           errorText;
         ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText)) << errorText;
         EXPECT_EQ(payload.errorCode, Http2ErrorCode::RefusedStream);
         EXPECT_NE(connection.lastStreamErrorMessage().find("并发流数"), std::string::npos) << connection.lastStreamErrorMessage();
@@ -1461,8 +1403,7 @@ namespace AsynGyanis::Net
         // 对端 RST 掉流 1 之后，流 7 又能被服务
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(8U))), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(connection.openStreamCount(), 1U);
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 7U,
-                                            makeMinimalGetRequestBlock())),
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 7U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         const std::vector<Http2Request> requests = connection.takeRequests();
         ASSERT_EQ(requests.size(), 1U);
@@ -1478,8 +1419,7 @@ namespace AsynGyanis::Net
         completeHandshake(connection);
 
         // 本端因为请求头不合规 RST 掉流 1
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            hpackIndexedField(2) + hpackIndexedField(6))),
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, hpackIndexedField(2) + hpackIndexedField(6))),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(takeRstStreamFrames(connection).size(), 1U);
 
@@ -1488,8 +1428,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(16U))), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(8U))), Http2ConnectionFeedStatus::NeedMore);
         // 头块同样被丢弃，但字节必须解码：带增量索引的表示已经改动了本端解码器的动态表
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            makeMinimalGetRequestBlock())),
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
 
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
@@ -1510,18 +1449,15 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
         static_cast<void>(connection.takeOutgoingBytes());
 
         // 对端取消这条流：此刻本端不该回敬任何东西（§5.4.2 明令不得因 RST_STREAM 回敬 RST_STREAM）
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(8U))),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(8U))), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeOutgoingBytes().empty());
 
-        ASSERT_TRUE(feedsAndAnswersStreamClosed(connection, makeFrame(Http2FrameType::Data, 0, 1U, "late"),
-                                                "取消之后补发的 DATA"));
+        ASSERT_TRUE(feedsAndAnswersStreamClosed(connection, makeFrame(Http2FrameType::Data, 0, 1U, "late"), "取消之后补发的 DATA"));
         EXPECT_FALSE(connection.hasFailed()) << "这是流错误，连接应当继续：" << connection.errorMessage();
 
         // 第二条同类帧不再回敬：同一件事说一遍就够
@@ -1532,17 +1468,12 @@ namespace AsynGyanis::Net
         // 头块走同一条判据：换一个连接重做一遍，取消之后补发的 HEADERS 同样回敬一枚
         Http2Connection headerCase;
         completeHandshake(headerCase);
-        ASSERT_EQ(feed(headerCase, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(headerCase, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(headerCase.takeRequests());
         static_cast<void>(headerCase.takeOutgoingBytes());
-        ASSERT_EQ(feed(headerCase, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(8U))),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(headerCase, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(8U))), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(headerCase.takeOutgoingBytes());
-        ASSERT_TRUE(feedsAndAnswersStreamClosed(headerCase,
-                                                makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U,
-                                                          makeMinimalGetRequestBlock()),
-                                                "取消之后补发的 HEADERS"));
+        ASSERT_TRUE(feedsAndAnswersStreamClosed(headerCase, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock()), "取消之后补发的 HEADERS"));
         // 那一块照样被解码丢弃：动态表是连接级状态，跳过解码会把错位留给后面所有流的头块
         EXPECT_FALSE(headerCase.hasFailed()) << headerCase.errorMessage();
     }
@@ -1554,8 +1485,7 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
         std::string errorText;
@@ -1582,8 +1512,7 @@ namespace AsynGyanis::Net
         // 偶数流号属于服务端方向：本端不推送，收到即意外流号
         Http2Connection evenStream;
         completeHandshake(evenStream);
-        EXPECT_EQ(feed(evenStream, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 2U,
-                                             makeMinimalGetRequestBlock())),
+        EXPECT_EQ(feed(evenStream, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 2U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::Failed);
         EXPECT_EQ(evenStream.errorCode(), Http2ErrorCode::ProtocolError);
         EXPECT_NE(evenStream.errorMessage().find("偶数"), std::string::npos) << evenStream.errorMessage();
@@ -1591,12 +1520,10 @@ namespace AsynGyanis::Net
         // 新流号必须严格大于所有已用过的流号：先开 3，再想开 1 就是倒退
         Http2Connection backwardStream;
         completeHandshake(backwardStream);
-        EXPECT_EQ(feed(backwardStream, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
-                                                 makeMinimalGetRequestBlock())),
+        EXPECT_EQ(feed(backwardStream, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(backwardStream.takeRequests().size(), 1U);
-        EXPECT_EQ(feed(backwardStream, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                                 makeMinimalGetRequestBlock())),
+        EXPECT_EQ(feed(backwardStream, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::Failed);
         EXPECT_EQ(backwardStream.errorCode(), Http2ErrorCode::ProtocolError);
         EXPECT_NE(backwardStream.errorMessage().find("严格递增"), std::string::npos) << backwardStream.errorMessage();
@@ -1639,8 +1566,7 @@ namespace AsynGyanis::Net
         {
             completeHandshake(connection);
             // 对端只用过流 7：流 1/3/5 从未出现，却都小于「本端已用过的最大对端流号」
-            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 7U,
-                                                 makeMinimalGetRequestBlock())),
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 7U, makeMinimalGetRequestBlock())),
                       Http2ConnectionFeedStatus::NeedMore);
             static_cast<void>(connection.takeRequests());
         };
@@ -1653,14 +1579,12 @@ namespace AsynGyanis::Net
 
         Http2Connection windowUpdateConnection;
         openOnlySeventhStream(windowUpdateConnection);
-        EXPECT_EQ(feed(windowUpdateConnection, makeFrame(Http2FrameType::WindowUpdate, 0, 5U, makeBigEndian32(16U))),
-                  Http2ConnectionFeedStatus::Failed);
+        EXPECT_EQ(feed(windowUpdateConnection, makeFrame(Http2FrameType::WindowUpdate, 0, 5U, makeBigEndian32(16U))), Http2ConnectionFeedStatus::Failed);
         EXPECT_EQ(windowUpdateConnection.errorCode(), Http2ErrorCode::ProtocolError);
 
         Http2Connection resetConnection;
         openOnlySeventhStream(resetConnection);
-        EXPECT_EQ(feed(resetConnection, makeFrame(Http2FrameType::RstStream, 0, 5U, makeBigEndian32(8U))),
-                  Http2ConnectionFeedStatus::Failed);
+        EXPECT_EQ(feed(resetConnection, makeFrame(Http2FrameType::RstStream, 0, 5U, makeBigEndian32(8U))), Http2ConnectionFeedStatus::Failed);
         EXPECT_EQ(resetConnection.errorCode(), Http2ErrorCode::ProtocolError);
     }
 
@@ -1678,13 +1602,12 @@ namespace AsynGyanis::Net
         completeHandshake(connection);
         for (std::uint32_t streamId = 1U; streamId <= kTerminatedRecordStreamCount * 2U + 1U; streamId += 2U)
         {
-            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId,
-                                                 makeMinimalGetRequestBlock())),
-                      Http2ConnectionFeedStatus::NeedMore) << "流 " << streamId;
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId, makeMinimalGetRequestBlock())),
+                      Http2ConnectionFeedStatus::NeedMore)
+                    << "流 " << streamId;
             static_cast<void>(connection.takeRequests());
             // 由对端 RST 关闭：本端不再持有该流的活状态，记录进终止窗口
-            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, streamId, makeBigEndian32(8U))),
-                      Http2ConnectionFeedStatus::NeedMore) << "流 " << streamId;
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, streamId, makeBigEndian32(8U))), Http2ConnectionFeedStatus::NeedMore) << "流 " << streamId;
             static_cast<void>(connection.takeOutgoingBytes());
         }
 
@@ -1713,7 +1636,7 @@ namespace AsynGyanis::Net
 
         Http2Priority priority;
         priority.streamDependency = 0U;
-        priority.weight = 10U;
+        priority.weight           = 10U;
         EXPECT_EQ(feed(connection, encodeHttp2PriorityFrame(priority, 5U)), Http2ConnectionFeedStatus::NeedMore);
         Http2StreamState streamState{};
         EXPECT_FALSE(connection.tryGetStreamState(5U, streamState)) << "PRIORITY 不得开启流（§5.3）";
@@ -1734,8 +1657,7 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::PushPromise, kHttp2FlagEndHeaders, 1U, std::string(4, '\0'))),
-                  Http2ConnectionFeedStatus::Failed);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::PushPromise, kHttp2FlagEndHeaders, 1U, std::string(4, '\0'))), Http2ConnectionFeedStatus::Failed);
         EXPECT_EQ(connection.errorCode(), Http2ErrorCode::ProtocolError);
         EXPECT_NE(connection.errorMessage().find("PUSH_PROMISE"), std::string::npos) << connection.errorMessage();
     }
@@ -1756,7 +1678,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(frames[0].header.flags, kHttp2FlagAcknowledge);
         EXPECT_EQ(frames[0].header.streamId, 0U);
         Http2PingPayload echo;
-        std::string errorText;
+        std::string      errorText;
         ASSERT_TRUE(parseHttp2PingPayload(frames[0], echo, &errorText)) << errorText;
         EXPECT_TRUE(echo.isAcknowledgement);
         EXPECT_EQ(std::string(echo.opaqueData.begin(), echo.opaqueData.end()), opaqueData) << "8 字节必须原样回声（§6.7）";
@@ -1774,14 +1696,13 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         Http2GoAwayPayload goAwayPayload;
         goAwayPayload.lastStreamId = 1U;
-        goAwayPayload.errorCode = Http2ErrorCode::NoError;
-        goAwayPayload.debugData = "bye";
+        goAwayPayload.errorCode    = Http2ErrorCode::NoError;
+        goAwayPayload.debugData    = "bye";
         EXPECT_EQ(feed(connection, encodeHttp2GoAwayFrame(goAwayPayload)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(connection.state(), Http2ConnectionState::Closing);
         Http2GoAwayPayload receivedGoAway;
@@ -1790,15 +1711,14 @@ namespace AsynGyanis::Net
         EXPECT_EQ(receivedGoAway.errorCode, Http2ErrorCode::NoError);
 
         // 新流一律拒绝：REFUSED_STREAM 让对端知道这条流没被处理
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
-                                            makeMinimalGetRequestBlock())),
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeRequests().empty());
         const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
         ASSERT_EQ(resetFrames.size(), 1U);
         EXPECT_EQ(resetFrames.front().header.streamId, 3U);
         Http2RstStreamPayload payload;
-        std::string errorText;
+        std::string           errorText;
         ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText)) << errorText;
         EXPECT_EQ(payload.errorCode, Http2ErrorCode::RefusedStream);
 
@@ -1821,13 +1741,12 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         // 合法的尾部头块：字段落到收口信号上，流按 END_STREAM 半关
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            hpackLiteralField("x-checksum", "42") + hpackLiteralField("content-length", "999"))),
+                                             hpackLiteralField("x-checksum", "42") + hpackLiteralField("content-length", "999"))),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
         EXPECT_TRUE(connection.takeRequests().empty()) << "尾部头块不是新请求";
@@ -1849,12 +1768,9 @@ namespace AsynGyanis::Net
         // 尾部头块里出现伪头：流错误（§8.1.2.1 要求尾部头块不得含伪头）
         Http2Connection withPseudo;
         completeHandshake(withPseudo);
-        ASSERT_EQ(feed(withPseudo, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(withPseudo, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(withPseudo.takeRequests());
-        EXPECT_EQ(feed(withPseudo, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                             hpackIndexedField(8))),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(withPseudo, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, hpackIndexedField(8))), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_NE(expectStreamRejected(withPseudo, 1U).find("伪头"), std::string::npos);
     }
 
@@ -1868,22 +1784,18 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
         static_cast<void>(connection.takeOutgoingBytes());
 
         // 第二个 HEADERS 只带 END_HEADERS：畸形 → 这条流被 RST，且没有任何一帧被当成正文收尾交出去
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U,
-                                            hpackLiteralField("x-checksum", "42"))),
-                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, hpackLiteralField("x-checksum", "42"))), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_NE(expectStreamRejected(connection, 1U).find("END_STREAM"), std::string::npos);
         EXPECT_TRUE(connection.takeReceivedData().empty()) << "畸形的尾部头块不该被当成正文收尾的信号";
         EXPECT_TRUE(connection.takeRequests().empty()) << "尾部头块不是新请求";
 
         // 连接还要能服务别的流：这正是「流错误」与「连接错误」的分别
-        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
-                                            makeMinimalGetRequestBlock())),
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         const std::vector<Http2Request> followUpRequests = connection.takeRequests();
         ASSERT_EQ(followUpRequests.size(), 1U) << "一条流上的畸形报文不该挡住其它流";
@@ -1915,19 +1827,16 @@ namespace AsynGyanis::Net
 
         struct IllegalCase
         {
-            std::uint32_t statusCode;                    ///< 交给响应入口的状态码
-            std::string headerName;                      ///< 唯一那条响应头的名字
-            std::string headerValue;                     ///< 唯一那条响应头的取值
-            std::string_view reasonFragment;             ///< 原因文案里必须出现的定位片段
+            std::uint32_t    statusCode;     ///< 交给响应入口的状态码
+            std::string      headerName;     ///< 唯一那条响应头的名字
+            std::string      headerValue;    ///< 唯一那条响应头的取值
+            std::string_view reasonFragment; ///< 原因文案里必须出现的定位片段
         };
         // 状态码越界（两侧）、头名大写、连接特定头、头值含控制字符、调用方自己塞伪头
         const IllegalCase illegalCases[] = {
-            IllegalCase{42U, "x-test", "1", "状态码"},
-            IllegalCase{1000U, "x-test", "1", "状态码"},
-            IllegalCase{200U, "X-Test", "1", "X-Test"},
-            IllegalCase{200U, "connection", "keep-alive", "connection"},
-            IllegalCase{200U, "x-test", "a\rb", "x-test"},
-            IllegalCase{200U, ":status", "200", ":status"},
+                IllegalCase{42U, "x-test", "1", "状态码"},     IllegalCase{1000U, "x-test", "1", "状态码"},
+                IllegalCase{200U, "X-Test", "1", "X-Test"},    IllegalCase{200U, "connection", "keep-alive", "connection"},
+                IllegalCase{200U, "x-test", "a\rb", "x-test"}, IllegalCase{200U, ":status", "200", ":status"},
         };
         constexpr std::uint32_t streamIds[] = {3U, 5U, 7U, 9U, 11U, 13U};
 
@@ -1936,23 +1845,21 @@ namespace AsynGyanis::Net
         {
             const std::uint32_t streamId = streamIds[caseIndex];
             ++caseIndex;
-            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId,
-                                                 makeMinimalGetRequestBlock())),
-                      Http2ConnectionFeedStatus::NeedMore) << "流 " << streamId;
+            ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId, makeMinimalGetRequestBlock())),
+                      Http2ConnectionFeedStatus::NeedMore)
+                    << "流 " << streamId;
             static_cast<void>(connection.takeRequests());
 
             errorText = "脏数据";
-            const std::vector<HpackHeaderField> headerFields{
-                HpackHeaderField{testCase.headerName, testCase.headerValue}};
-            EXPECT_EQ(connection.sendResponseHeaders(streamId, testCase.statusCode, headerFields, true, &errorText),
-                      Http2ResponseSendStatus::Rejected) << "流 " << streamId;
+            const std::vector<HpackHeaderField> headerFields{HpackHeaderField{testCase.headerName, testCase.headerValue}};
+            EXPECT_EQ(connection.sendResponseHeaders(streamId, testCase.statusCode, headerFields, true, &errorText), Http2ResponseSendStatus::Rejected) << "流 " << streamId;
             EXPECT_FALSE(errorText.empty()) << "调用方必须自己拿到原因，不能只留在连接层的最后一行流错误里";
             EXPECT_NE(errorText.find(testCase.reasonFragment), std::string::npos) << errorText;
 
             const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
             ASSERT_EQ(resetFrames.size(), 1U) << "每条非法响应只该中止自己那一条流";
             Http2RstStreamPayload resetPayload;
-            std::string resetErrorText;
+            std::string           resetErrorText;
             ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), resetPayload, &resetErrorText)) << resetErrorText;
             EXPECT_EQ(resetPayload.errorCode, Http2ErrorCode::InternalError);
             EXPECT_EQ(resetFrames.front().header.streamId, streamId);
@@ -1960,12 +1867,10 @@ namespace AsynGyanis::Net
 
         EXPECT_FALSE(connection.hasFailed()) << "错在本端也只该作废一条流：" << connection.errorMessage();
         // 同一条连接上新的流照常应答：六条非法响应没有把连接判死，也没有提前通告收口
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 15U,
-                                             makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 15U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
-        EXPECT_EQ(connection.sendResponseHeaders(15U, 200U, {{"content-type", "text/plain"}}, true, &errorText),
-                  Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_EQ(connection.sendResponseHeaders(15U, 200U, {{"content-type", "text/plain"}}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         for (const Http2Frame &frame: parseFrames(connection.takeOutgoingBytes()))
         {
             EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "一条非法响应不该通告整条连接收口";
@@ -1981,8 +1886,7 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                             makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
@@ -2008,10 +1912,8 @@ namespace AsynGyanis::Net
         completeHandshake(connection);
 
         // 两条并发流：流 1 请求头不带 END_STREAM（还在等正文），流 3 是完整请求
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
-                                            makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(connection.takeRequests().size(), 2U);
 
@@ -2051,14 +1953,13 @@ namespace AsynGyanis::Net
         // 对端把流级初值调到 100000（大于连接级窗口 65535）：先被连接窗口卡住，队列里还剩正文，
         // 而该流的发送窗口仍为正——「连接窗口后来变大」因此能把残留数据放出来，正好用来钉住丢弃
         completeHandshake(connection, {namedSetting(Http2SettingIdentifier::InitialWindowSize, 100000U)});
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         // 70000 字节 > 连接级窗口的 65535：先发满窗口，剩下的 4465 字节排队
         const std::string body(70000U, 'q');
-        std::string errorText;
+        std::string       errorText;
         ASSERT_EQ(connection.sendResponseData(1U, body, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         std::size_t sentByteCount = 0;
         for (const Http2Frame &frame: parseFrames(connection.takeOutgoingBytes()))
@@ -2069,8 +1970,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(sentByteCount, static_cast<std::size_t>(kHttp2InitialWindowSizeByteCount)) << "一次最多只能送出连接级窗口的大小";
 
         // 对端取消这条流：队列里剩下的 4465 字节（以及待发的 END_STREAM）随终止一并丢弃
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, 1U,
-                                             makeBigEndian32(static_cast<std::uint32_t>(Http2ErrorCode::Cancel)))),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::RstStream, 0, 1U, makeBigEndian32(static_cast<std::uint32_t>(Http2ErrorCode::Cancel)))),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "被取消的流的待发数据不得再上线";
         Http2StreamState resetStreamState{};
@@ -2078,8 +1978,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(resetStreamState, Http2StreamState::Closed);
 
         // 连接级窗口变大：账本里那条已终止的流不该把丢弃的字节放出来（它的流级窗口当时仍为正）
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 0, makeBigEndian32(4096U))),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 0, makeBigEndian32(4096U))), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "连接窗口变大之后，被取消流上的残留数据不得被放出来";
 
         // 该流本身也再不可写，连接照旧可用
@@ -2153,8 +2052,7 @@ namespace AsynGyanis::Net
         completeHandshake(connection);
 
         // POST 头块不带 END_STREAM：这条流还在等正文
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         ASSERT_EQ(connection.takeRequests().size(), 1U);
         EXPECT_TRUE(connection.takeReceivedData().empty()) << "还没收到正文";
 
@@ -2167,8 +2065,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(receivedData[0].endStream) << "本片没有 END_STREAM：正文还没收齐";
 
         // 尾部头块带 END_STREAM（§8.1）：正文到此为止，必须让上层看到收尾
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                             hpackLiteralField("x-trailer", "done"))),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, hpackLiteralField("x-trailer", "done"))),
                   Http2ConnectionFeedStatus::NeedMore);
         receivedData = connection.takeReceivedData();
         ASSERT_EQ(receivedData.size(), 1U) << "尾部头块必须带出一条收尾片段，否则上层永远等不到正文收齐";
@@ -2194,8 +2091,7 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         // 先发出完整响应（413）：正文超限时就是这样「先应答、再请对端别传了」
@@ -2212,7 +2108,7 @@ namespace AsynGyanis::Net
 
         // 错误码必须是 NO_ERROR：RFC 9113 §8.1 的「请对端无错地中止发送」，不是把这条流判成出错
         Http2RstStreamPayload payload;
-        std::string parseErrorText;
+        std::string           parseErrorText;
         ASSERT_TRUE(parseHttp2RstStreamPayload(abortFrames[0], payload, &parseErrorText)) << parseErrorText;
         EXPECT_EQ(payload.errorCode, Http2ErrorCode::NoError);
 
@@ -2234,8 +2130,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(connection.takeOutgoingBytes().empty()) << "被拒的调用不得写入任何字节";
 
         // 连接照旧可用：另一条流的信息性请求能正常应答
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
-                                             makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(connection.takeRequests().size(), 1U);
         ASSERT_EQ(connection.sendResponseHeaders(3U, 200U, {}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
@@ -2251,8 +2146,8 @@ namespace AsynGyanis::Net
         Http2Connection connection;
         ASSERT_EQ(feed(connection, std::string(kHttp2ConnectionPreface)), Http2ConnectionFeedStatus::NeedMore);
 
-        const std::vector<Http2Frame> frames = parseFrames(connection.takeOutgoingBytes());
-        const Http2Frame *settingsFrame = nullptr;
+        const std::vector<Http2Frame> frames        = parseFrames(connection.takeOutgoingBytes());
+        const Http2Frame             *settingsFrame = nullptr;
         for (const Http2Frame &frame: frames)
         {
             if (frame.header.type == Http2FrameType::Settings)
@@ -2268,14 +2163,11 @@ namespace AsynGyanis::Net
         ASSERT_EQ(settingsFrame->payload.size() % 6U, 0U);
         for (std::size_t offset = 0; offset + 6U <= settingsFrame->payload.size(); offset += 6U)
         {
-            const auto identifier = static_cast<std::uint16_t>(
-                    (static_cast<std::uint8_t>(settingsFrame->payload[offset]) << 8) |
-                    static_cast<std::uint8_t>(settingsFrame->payload[offset + 1]));
+            const auto identifier =
+                    static_cast<std::uint16_t>((static_cast<std::uint8_t>(settingsFrame->payload[offset]) << 8) | static_cast<std::uint8_t>(settingsFrame->payload[offset + 1]));
             const auto value = static_cast<std::uint32_t>(
-                    (static_cast<std::uint8_t>(settingsFrame->payload[offset + 2]) << 24) |
-                    (static_cast<std::uint8_t>(settingsFrame->payload[offset + 3]) << 16) |
-                    (static_cast<std::uint8_t>(settingsFrame->payload[offset + 4]) << 8) |
-                    static_cast<std::uint8_t>(settingsFrame->payload[offset + 5]));
+                    (static_cast<std::uint8_t>(settingsFrame->payload[offset + 2]) << 24) | (static_cast<std::uint8_t>(settingsFrame->payload[offset + 3]) << 16) |
+                    (static_cast<std::uint8_t>(settingsFrame->payload[offset + 4]) << 8) | static_cast<std::uint8_t>(settingsFrame->payload[offset + 5]));
             if (identifier == static_cast<std::uint16_t>(Http2SettingIdentifier::EnableConnectProtocol))
             {
                 hasExtendedConnectSetting = true;
@@ -2302,8 +2194,7 @@ namespace AsynGyanis::Net
         headerBlock += hpackLiteralField(1, "localhost");
         headerBlock += hpackLiteralField(":protocol", "websocket");
         headerBlock += hpackLiteralField("sec-websocket-version", "13");
-        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore);
 
         const std::vector<Http2Request> requests = connection.takeRequests();
         ASSERT_EQ(requests.size(), 1U) << "扩展 CONNECT 必须作为一条请求交出，而不是被当成畸形报文拒掉";
@@ -2324,8 +2215,7 @@ namespace AsynGyanis::Net
         Http2Connection withGet;
         completeHandshake(withGet);
         std::string getBlock = makeMinimalGetRequestBlock() + hpackLiteralField(":protocol", "websocket");
-        ASSERT_EQ(feed(withGet, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, getBlock)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(withGet, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, getBlock)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(withGet.takeRequests().empty()) << "非 CONNECT 的 :protocol 不该交出请求";
         EXPECT_NE(expectStreamRejected(withGet, 1U).find(":protocol"), std::string::npos);
 
@@ -2337,8 +2227,7 @@ namespace AsynGyanis::Net
         noPathBlock += hpackIndexedField(6);
         noPathBlock += hpackLiteralField(1, "localhost");
         noPathBlock += hpackLiteralField(":protocol", "websocket");
-        ASSERT_EQ(feed(withoutPath, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, noPathBlock)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(withoutPath, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, noPathBlock)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(withoutPath.takeRequests().empty());
         EXPECT_NE(expectStreamRejected(withoutPath, 1U).find(":path"), std::string::npos);
 
@@ -2351,8 +2240,7 @@ namespace AsynGyanis::Net
         badValueBlock += hpackLiteralField(4, "/chat");
         badValueBlock += hpackLiteralField(1, "localhost");
         badValueBlock += hpackLiteralField(":protocol", "web socket");
-        ASSERT_EQ(feed(withBadValue, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, badValueBlock)),
-                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(feed(withBadValue, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, badValueBlock)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(withBadValue.takeRequests().empty());
         EXPECT_NE(expectStreamRejected(withBadValue, 1U).find(":protocol"), std::string::npos);
     }
@@ -2365,8 +2253,7 @@ namespace AsynGyanis::Net
         Http2Connection connection;
         ASSERT_EQ(feed(connection, std::string(kHttp2ConnectionPreface)), Http2ConnectionFeedStatus::NeedMore);
         const std::string clientSettings =
-                encodeHttp2SettingsFrame(Http2SettingsPayload{
-                        .parameters = {{static_cast<std::uint16_t>(Http2SettingIdentifier::EnableConnectProtocol), 2U}}});
+                encodeHttp2SettingsFrame(Http2SettingsPayload{.parameters = {{static_cast<std::uint16_t>(Http2SettingIdentifier::EnableConnectProtocol), 2U}}});
         EXPECT_EQ(feed(connection, clientSettings), Http2ConnectionFeedStatus::Failed);
         EXPECT_TRUE(connection.hasFailed());
         EXPECT_EQ(connection.errorCode(), Http2ErrorCode::ProtocolError);
@@ -2380,7 +2267,7 @@ namespace AsynGyanis::Net
     {
         const std::string headerBlock = makeMinimalGetRequestBlock();
         const std::size_t firstLength = headerBlock.size() / 2U;
-        std::string script(kHttp2ConnectionPreface);
+        std::string       script(kHttp2ConnectionPreface);
         script += makeSettingsFrame({namedSetting(Http2SettingIdentifier::MaxFrameSize, 32768U)});
         script += makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeRfc7541FirstRequestBlock());
         script += makeFrame(Http2FrameType::Headers, 0, 3U, headerBlock.substr(0, firstLength));
@@ -2398,7 +2285,7 @@ namespace AsynGyanis::Net
         }
         EXPECT_EQ(feed(singleShot, script), Http2ConnectionFeedStatus::NeedMore);
 
-        const std::vector<Http2Request> byteWiseRequests = byteWise.takeRequests();
+        const std::vector<Http2Request> byteWiseRequests   = byteWise.takeRequests();
         const std::vector<Http2Request> singleShotRequests = singleShot.takeRequests();
         ASSERT_EQ(byteWiseRequests.size(), 2U);
         ASSERT_EQ(singleShotRequests.size(), byteWiseRequests.size());
@@ -2411,7 +2298,7 @@ namespace AsynGyanis::Net
             EXPECT_EQ(byteWiseRequests[index].hasBody, singleShotRequests[index].hasBody);
         }
 
-        const std::vector<Http2ReceivedData> byteWiseBody = byteWise.takeReceivedData();
+        const std::vector<Http2ReceivedData> byteWiseBody   = byteWise.takeReceivedData();
         const std::vector<Http2ReceivedData> singleShotBody = singleShot.takeReceivedData();
         ASSERT_EQ(byteWiseBody.size(), 2U);
         ASSERT_EQ(singleShotBody.size(), byteWiseBody.size());
@@ -2440,35 +2327,30 @@ namespace AsynGyanis::Net
         // 对端只肯收 200 字节的头列表（:status 这项也算，算式是名长 + 值长 + 32）
         completeHandshake(connection, {Http2Setting{static_cast<std::uint16_t>(Http2SettingIdentifier::MaxHeaderListSize), 200U}});
 
-        const auto requestBytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                            makeMinimalGetRequestBlock());
-        const auto secondRequestBytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U,
-                                                  makeMinimalGetRequestBlock());
+        const auto requestBytes       = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock());
+        const auto secondRequestBytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock());
         ASSERT_EQ(feed(connection, requestBytes), Http2ConnectionFeedStatus::NeedMore);
         ASSERT_EQ(feed(connection, secondRequestBytes), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_EQ(connection.takeRequests().size(), 2U);
 
         // 越限的那条：:status 42 + x-big 的 5+300+32 = 379 字节 > 200
         std::string errorText;
-        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", std::string(300U, 'v')}}, true, &errorText),
-                  Http2ResponseSendStatus::HeaderListTooLarge) << errorText;
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", std::string(300U, 'v')}}, true, &errorText), Http2ResponseSendStatus::HeaderListTooLarge) << errorText;
         // 原因必须同时交给调用方与连接层：只留一份的话，直接按 API 用这一层的调用方会拿到空串
         EXPECT_NE(errorText.find("SETTINGS_MAX_HEADER_LIST_SIZE"), std::string::npos) << errorText;
         EXPECT_FALSE(connection.hasFailed()) << "只该作废一条流，不该把连接判死：" << connection.errorMessage();
-        EXPECT_NE(connection.lastStreamErrorMessage().find("SETTINGS_MAX_HEADER_LIST_SIZE"), std::string::npos)
-                << connection.lastStreamErrorMessage();
+        EXPECT_NE(connection.lastStreamErrorMessage().find("SETTINGS_MAX_HEADER_LIST_SIZE"), std::string::npos) << connection.lastStreamErrorMessage();
 
         const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
         ASSERT_EQ(resetFrames.size(), 1U) << "越限的响应应当只中止这一条流";
         Http2RstStreamPayload resetPayload;
-        std::string resetErrorText;
+        std::string           resetErrorText;
         ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), resetPayload, &resetErrorText)) << resetErrorText;
         EXPECT_EQ(resetPayload.errorCode, Http2ErrorCode::InternalError);
         EXPECT_EQ(resetFrames.front().header.streamId, 1U);
 
         // 同一条连接上另一条响应照发，且刚才那条流确实已经不可写
-        EXPECT_EQ(connection.sendResponseHeaders(3U, 200U, {{"content-type", "text/plain"}}, true, &errorText),
-                  Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_EQ(connection.sendResponseHeaders(3U, 200U, {{"content-type", "text/plain"}}, true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {}, true, &errorText), Http2ResponseSendStatus::StreamNotWritable);
 
         // 全程没有 GOAWAY：连接留着服务其它流
@@ -2487,15 +2369,12 @@ namespace AsynGyanis::Net
     {
         Http2Connection connection;
         completeHandshake(connection);
-        ASSERT_EQ(feed(connection,
-                       makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U,
-                                 makeMinimalGetRequestBlock())),
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
                   Http2ConnectionFeedStatus::NeedMore);
         static_cast<void>(connection.takeRequests());
 
         std::string errorText;
-        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", std::string(20000U, 'v')}}, false, &errorText),
-                  Http2ResponseSendStatus::Sent) << errorText;
+        EXPECT_EQ(connection.sendResponseHeaders(1U, 200U, {{"x-big", std::string(20000U, 'v')}}, false, &errorText), Http2ResponseSendStatus::Sent) << errorText;
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
     }
 

@@ -197,8 +197,7 @@ namespace AsynGyanis::Core
     {
         for (const char *ipText: {"0177.0.0.1", "1.2.3.04", "1.2.3.4 ", "256.1.1.1"})
         {
-            EXPECT_THROW(static_cast<void>(InetAddress(80, ipText)), Base::InvalidArgumentException)
-                << "该文本不该被当成合法 IPv4：" << ipText;
+            EXPECT_THROW(static_cast<void>(InetAddress(80, ipText)), Base::InvalidArgumentException) << "该文本不该被当成合法 IPv4：" << ipText;
         }
     }
 
@@ -236,7 +235,7 @@ namespace AsynGyanis::Core
         EXPECT_EQ(withScope.toString(), "[fe80::1]:1234");
 
         // 只有作用域号不同的两个对端（两块网卡上的同名链路本地地址）必须仍可区分
-        sockaddr_in6 otherRawAddress = rawAddress;
+        sockaddr_in6 otherRawAddress  = rawAddress;
         otherRawAddress.sin6_scope_id = 7;
         EXPECT_NE(withScope, InetAddress(otherRawAddress));
 
@@ -255,8 +254,7 @@ namespace AsynGyanis::Core
         storage.ss_family = AF_INET;
 
         EXPECT_THROW(static_cast<void>(InetAddress(storage, 0)), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(InetAddress(storage, static_cast<socklen_t>(sizeof(sockaddr_storage) + 1))),
-                     Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(InetAddress(storage, static_cast<socklen_t>(sizeof(sockaddr_storage) + 1))), Base::InvalidArgumentException);
         // 恰好放得下的两种真实长度都应当被接受：IPv4 与 IPv6 的地址长度不同，不能只认一种
         EXPECT_NO_THROW(static_cast<void>(InetAddress(storage, sizeof(sockaddr_in))));
         EXPECT_NO_THROW(static_cast<void>(InetAddress(storage, sizeof(sockaddr_storage))));

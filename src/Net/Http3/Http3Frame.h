@@ -48,8 +48,7 @@ namespace AsynGyanis::Net
     [[nodiscard]] inline constexpr bool isHttp3ReservedExtensionIdentifier(const std::uint64_t value) noexcept
     {
         // 式子等价于「减掉起始值后是步长的整数倍」，先挡掉小于起始值的取值避免无符号回绕
-        return value >= kHttp3ReservedExtensionIdentifierBase &&
-               (value - kHttp3ReservedExtensionIdentifierBase) % kHttp3ReservedExtensionIdentifierStride == 0;
+        return value >= kHttp3ReservedExtensionIdentifierBase && (value - kHttp3ReservedExtensionIdentifierBase) % kHttp3ReservedExtensionIdentifierStride == 0;
     }
 
     /**
@@ -80,10 +79,10 @@ namespace AsynGyanis::Net
      */
     enum class Http3StreamType : std::uint64_t
     {
-        Control       = 0x00, ///< 控制流：承载 SETTINGS 等控制帧，每端恰好一条（§6.2.1）
-        Push          = 0x01, ///< 推送流：类型后紧跟一个 Push ID 变长整数，再跟帧（§6.2.2 图 2）
-        QpackEncoder  = 0x02, ///< QPACK 编码器流：无帧结构，直接是指令序列（RFC 9204 §4.2）
-        QpackDecoder  = 0x03, ///< QPACK 解码器流：无帧结构，直接是指令序列（RFC 9204 §4.2）
+        Control      = 0x00, ///< 控制流：承载 SETTINGS 等控制帧，每端恰好一条（§6.2.1）
+        Push         = 0x01, ///< 推送流：类型后紧跟一个 Push ID 变长整数，再跟帧（§6.2.2 图 2）
+        QpackEncoder = 0x02, ///< QPACK 编码器流：无帧结构，直接是指令序列（RFC 9204 §4.2）
+        QpackDecoder = 0x03, ///< QPACK 解码器流：无帧结构，直接是指令序列（RFC 9204 §4.2）
     };
 
     /**
@@ -120,7 +119,7 @@ namespace AsynGyanis::Net
      */
     enum class Http3FrameErrorKind
     {
-        Malformed,    ///< 载荷与 §7.2 的字段布局不合（字段越出声明长度、声明长度盖不住必填字段、SETTINGS 参数残缺）：连接层按 §7.1 回 H3_FRAME_ERROR
+        Malformed,     ///< 载荷与 §7.2 的字段布局不合（字段越出声明长度、声明长度盖不住必填字段、SETTINGS 参数残缺）：连接层按 §7.1 回 H3_FRAME_ERROR
         LimitExceeded, ///< 声明长度或已缓冲字节数突破本端上限：本端资源策略而非对端违规，连接层可选 H3_EXCESSIVE_LOAD 或直接关流
     };
 
@@ -130,7 +129,7 @@ namespace AsynGyanis::Net
     struct Http3FrameError
     {
         Http3FrameErrorKind kind{Http3FrameErrorKind::Malformed}; ///< 失败类别：上层据此选上线错误码，不去匹配文案
-        std::string message;                                     ///< 中文可操作文案，含帧类型、声明长度与实收字节数和对应 RFC 章节
+        std::string         message;                              ///< 中文可操作文案，含帧类型、声明长度与实收字节数和对应 RFC 章节
     };
 
     // ============================================================================
@@ -145,8 +144,7 @@ namespace AsynGyanis::Net
      * @param right 右段载荷，可为空
      * @return true 表示长度相等且逐字节相同；两个空视图相等
      */
-    [[nodiscard]] inline constexpr bool http3PayloadBytesEqual(const std::span<const std::uint8_t> left,
-                                                              const std::span<const std::uint8_t> right) noexcept
+    [[nodiscard]] inline constexpr bool http3PayloadBytesEqual(const std::span<const std::uint8_t> left, const std::span<const std::uint8_t> right) noexcept
     {
         return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin());
     }
@@ -192,8 +190,8 @@ namespace AsynGyanis::Net
      */
     struct Http3SettingsFrame
     {
-        std::vector<std::pair<Http3SettingId, std::uint64_t>> settings{}; ///< 本层认识 settings 表里的项，按线上出现顺序
-        std::vector<Http3UnknownSetting> unknownSettings{};               ///< 其余项，一条都不丢，可原样再编出去
+        std::vector<std::pair<Http3SettingId, std::uint64_t>> settings{};        ///< 本层认识 settings 表里的项，按线上出现顺序
+        std::vector<Http3UnknownSetting>                      unknownSettings{}; ///< 其余项，一条都不丢，可原样再编出去
 
         [[nodiscard]] bool operator==(const Http3SettingsFrame &) const = default;
     };
@@ -209,8 +207,8 @@ namespace AsynGyanis::Net
     /// PUSH_PROMISE 帧（§7.2.5 图 8）：Type + Length + Push ID + Encoded Field Section
     struct Http3PushPromiseFrame
     {
-        std::uint64_t pushId{};                                        ///< 承诺的推送标识
-        std::span<const std::uint8_t> encodedFieldSection{};           ///< 被承诺请求的 QPACK 头字段段
+        std::uint64_t                 pushId{};              ///< 承诺的推送标识
+        std::span<const std::uint8_t> encodedFieldSection{}; ///< 被承诺请求的 QPACK 头字段段
 
         [[nodiscard]] bool operator==(const Http3PushPromiseFrame &other) const noexcept
         {
@@ -252,8 +250,8 @@ namespace AsynGyanis::Net
      */
     struct Http3UnknownFrame
     {
-        std::uint64_t frameType{};              ///< 线上帧类型原值，本层不认识
-        std::span<const std::uint8_t> payload{}; ///< 载荷原文，本层不解释
+        std::uint64_t                 frameType{}; ///< 线上帧类型原值，本层不认识
+        std::span<const std::uint8_t> payload{};   ///< 载荷原文，本层不解释
 
         [[nodiscard]] bool operator==(const Http3UnknownFrame &other) const noexcept
         {
@@ -268,8 +266,8 @@ namespace AsynGyanis::Net
      * @warning 载荷类字段（DATA/HEADERS/PUSH_PROMISE/未知帧）是**指向解码时那段缓冲的视图**，
      *          不是拷贝。一次性解码入口要求缓冲活到帧用完；增量解码器见 Http3FrameReader 的说明。
      */
-    using Http3Frame = std::variant<Http3DataFrame, Http3HeadersFrame, Http3CancelPushFrame, Http3SettingsFrame,
-                                    Http3PushPromiseFrame, Http3GoAwayFrame, Http3MaxPushIdFrame, Http3UnknownFrame>;
+    using Http3Frame = std::variant<Http3DataFrame, Http3HeadersFrame, Http3CancelPushFrame, Http3SettingsFrame, Http3PushPromiseFrame, Http3GoAwayFrame, Http3MaxPushIdFrame,
+                                    Http3UnknownFrame>;
 
     /**
      * @brief 取帧的线上类型值

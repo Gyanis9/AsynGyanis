@@ -189,7 +189,7 @@ namespace AsynGyanis::Database
     TEST(RedisConnection, ConnectWithEmptyHostFailsWithoutServerContact)
     {
         ConnectionConfig configuration = makeOfflineConfiguration();
-        configuration.host = "";
+        configuration.host             = "";
 
         RedisConnection connection(configuration);
         connection.setConnectTimeout(kShortConnectTimeoutMilliseconds);
@@ -217,7 +217,7 @@ namespace AsynGyanis::Database
         // 回环上没有监听端口即刻收到 RST；200 毫秒只是环境异常时的上界保险
         const auto startedAt = std::chrono::steady_clock::now();
         const bool connected = connection.connect();
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+        const auto elapsed   = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
 
         EXPECT_FALSE(connected);
         EXPECT_LT(elapsed.count(), kMaximumOfflineCallMilliseconds);
@@ -301,7 +301,7 @@ namespace AsynGyanis::Database
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
 
-        const std::vector<std::string_view> arguments{std::string_view("GET"), std::string_view("mykey")};
+        const std::vector<std::string_view>   arguments{std::string_view("GET"), std::string_view("mykey")};
         const std::unique_ptr<DatabaseResult> result = connection.executeCommand(arguments);
 
         EXPECT_EQ(result, nullptr);
@@ -316,7 +316,7 @@ namespace AsynGyanis::Database
     {
         RedisConnection connection(ConnectionConfig::redisDefault());
 
-        const std::vector<std::string_view> emptyArguments;
+        const std::vector<std::string_view>   emptyArguments;
         const std::unique_ptr<DatabaseResult> result = connection.executeCommand(emptyArguments);
 
         // 参数为空的检查排在连接检查之前，两条路径都不发送任何字节
@@ -477,11 +477,10 @@ namespace AsynGyanis::Database
     {
         // 析构无条件调用 disconnect()：从未连接过的对象安静离场即可，不应抛任何异常。
         // 缓冲区里还留着一条已登记的命令，一并验证「丢弃未发送命令」不触发 IO
-        EXPECT_NO_THROW(
-                {
-                    RedisConnection connection(ConnectionConfig::redisDefault());
-                    static_cast<void>(connection.pipelineCommand("GET mykey"));
-                });
+        EXPECT_NO_THROW({
+            RedisConnection connection(ConnectionConfig::redisDefault());
+            static_cast<void>(connection.pipelineCommand("GET mykey"));
+        });
     }
 
 } // namespace AsynGyanis::Database

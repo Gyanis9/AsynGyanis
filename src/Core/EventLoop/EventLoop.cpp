@@ -6,11 +6,10 @@
 
 namespace AsynGyanis::Core
 {
-    EventLoop::EventLoop() :
-        m_timerQueue(*this)
+    EventLoop::EventLoop() : m_timerQueue(*this)
     {
         // 唤醒描述符挂载一个固定哨兵指针：run() 靠 data.ptr 是否等于它来区分
-        //「唤醒通知」与「IoWatcher 的 I/O 事件」，因此两者不能共用同一个用户数据槽
+        // 「唤醒通知」与「IoWatcher 的 I/O 事件」，因此两者不能共用同一个用户数据槽
         m_scheduler.setWakeupNotifier(&m_wakeup);
 
         // 唤醒描述符建不起来（fd 耗尽等）：stop() 再也唤不醒阻塞在 epoll_wait 上的线程，
@@ -77,14 +76,14 @@ namespace AsynGyanis::Core
                     {
                         // 挂载在 data.ptr 上的只可能是唤醒哨兵或某个 IoWatcher 的地址：
                         // 常驻注册写进去的是注册对象自己的地址，因此这里把事件交给它分发
-                        //（它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）。
+                        // （它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）。
                         // **派发前先确认对象还活着**：这一批是批量取回来的，先前处理的那条事件
                         // 可能已经把它所属的连接关掉（会话收口就是这么做的），此时再派发就是
                         // 往已释放对象里写成员。登记表正是为这一种情形而设。
                         // 查表与派发之间**不持锁**：handleEvents() 里的业务会关连接、销毁
                         // IoWatcher，而注销登记要拿同一把非递归锁——持锁派发就是自死锁。
                         // 因此这道检查只覆盖「同一批内已被销毁」；跨线程的销毁不在线程契约内
-                        //（循环对象只在所属循环上构造/销毁，见 EventLoop 的类说明）
+                        // （循环对象只在所属循环上构造/销毁，见 EventLoop 的类说明）
                         auto *const watcher = static_cast<IoWatcher *>(ev.data.ptr);
                         if (isWatcherAlive(watcher))
                         {
@@ -163,4 +162,4 @@ namespace AsynGyanis::Core
         return m_running.load(std::memory_order_acquire);
     }
 
-}
+} // namespace AsynGyanis::Core

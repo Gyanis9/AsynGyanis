@@ -10,13 +10,11 @@
 
 namespace AsynGyanis::Core
 {
-    AsyncUdpSocket::AsyncUdpSocket(EventLoop &loop, Platform::DatagramSocket socket) :
-        m_loop(&loop), m_socket(std::move(socket))
+    AsyncUdpSocket::AsyncUdpSocket(EventLoop &loop, Platform::DatagramSocket socket) : m_loop(&loop), m_socket(std::move(socket))
     {
     }
 
-    AsyncUdpSocket::AsyncUdpSocket(AsyncUdpSocket &&other) noexcept :
-        m_loop(other.m_loop), m_socket(std::move(other.m_socket)), m_watcher(std::move(other.m_watcher))
+    AsyncUdpSocket::AsyncUdpSocket(AsyncUdpSocket &&other) noexcept : m_loop(other.m_loop), m_socket(std::move(other.m_socket)), m_watcher(std::move(other.m_watcher))
     {
     }
 
@@ -119,13 +117,11 @@ namespace AsynGyanis::Core
             }
             // 见头文件里的 @note：这里抛出去等于把调用方的循环静默干掉，故按「-1 + 错误码」交出，
             // 由调用方决定是继续读还是收手（它才知道自己是不是已经关了套接字）
-            co_return DatagramReceiveResult{.receivedByteCount = -1, .peerAddress = Platform::SocketAddress{},
-                                             .socketErrorCode = errorCode};
+            co_return DatagramReceiveResult{.receivedByteCount = -1, .peerAddress = Platform::SocketAddress{}, .socketErrorCode = errorCode};
         }
     }
 
-    Task<ssize_t> AsyncUdpSocket::asyncSendTo(const Platform::SocketAddress peerAddress, const void *const buffer,
-                                              const std::size_t length)
+    Task<ssize_t> AsyncUdpSocket::asyncSendTo(const Platform::SocketAddress peerAddress, const void *const buffer, const std::size_t length)
     {
         // 同 asyncReceiveFrom：超限与空缓冲在这一层就报出可操作的原文，不等底层回 EINVAL
         if (!m_socket.isValid())
@@ -138,10 +134,9 @@ namespace AsynGyanis::Core
         }
         if (length > Platform::DatagramSocket::kMaximumDatagramBytes)
         {
-            throw Base::InvalidArgumentException(
-                    "数据报发送失败：单条报文 " + std::to_string(length) + " 字节超过上限 "
-                    + std::to_string(Platform::DatagramSocket::kMaximumDatagramBytes)
-                    + " 字节：数据报按整条交付、不会被内核切开，请自行分片或改用流式套接字");
+            throw Base::InvalidArgumentException("数据报发送失败：单条报文 " + std::to_string(length) + " 字节超过上限 " +
+                                                 std::to_string(Platform::DatagramSocket::kMaximumDatagramBytes) +
+                                                 " 字节：数据报按整条交付、不会被内核切开，请自行分片或改用流式套接字");
         }
 
         while (true)
@@ -153,8 +148,8 @@ namespace AsynGyanis::Core
                 // 当场报出来比让上层以为「发出去了」安全
                 if (static_cast<std::size_t>(sentByteCount) != length)
                 {
-                    throw Base::SystemException("数据报发送失败：内核只接下了 " + std::to_string(sentByteCount) + " / " +
-                                        std::to_string(length) + " 字节，数据报不该部分写出（请检查底层实现）");
+                    throw Base::SystemException("数据报发送失败：内核只接下了 " + std::to_string(sentByteCount) + " / " + std::to_string(length) +
+                                                " 字节，数据报不该部分写出（请检查底层实现）");
                 }
                 co_return sentByteCount;
             }

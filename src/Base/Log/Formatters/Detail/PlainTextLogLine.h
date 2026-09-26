@@ -36,10 +36,7 @@ namespace AsynGyanis::Base::Detail
      * @param levelPrefix 等级字段之前的修饰（如 ANSI 颜色码），可为空
      * @param levelSuffix 等级字段**补齐之后**的收尾（如颜色复位），可为空
      */
-    inline void appendPlainTextLogLine(std::string       &out,
-                                       const LogEvent    &event,
-                                       const std::string_view levelPrefix,
-                                       const std::string_view levelSuffix)
+    inline void appendPlainTextLogLine(std::string &out, const LogEvent &event, const std::string_view levelPrefix, const std::string_view levelSuffix)
     {
         // 时刻在本线程就地渲染成文本：一块栈缓冲，不取堆。两条版式分支只走其中一条，
         // 因此一次渲染一份缓冲就够
@@ -56,8 +53,8 @@ namespace AsynGyanis::Base::Detail
         // 逐字段追加而不是 std::format_to + back_insert_iterator：后者要一个字符一个字符地喂给
         // 输出迭代器并当场解析格式串，整行下来比按字段 memcpy 慢数倍。
         // 字段顺序与分隔符就是格式串 "{} {} [{}{:<5}{}] [{}] {:<13} {}"（无色时前后缀为空）
-        out.reserve(out.size() + kPlainTextLineFrameOverheadBytes + levelPrefix.size() + levelSuffix.size() +
-                    event.threadIdView().size() + event.loggerNameView().size() + location.size() + event.message.size());
+        out.reserve(out.size() + kPlainTextLineFrameOverheadBytes + levelPrefix.size() + levelSuffix.size() + event.threadIdView().size() + event.loggerNameView().size() +
+                    location.size() + event.message.size());
         out.append(timestampText);
         out.push_back(' ');
         out.append(event.threadIdView());
@@ -73,8 +70,7 @@ namespace AsynGyanis::Base::Detail
         out.append(event.message);
 #else
         // Release：不输出线程号与源码位置，只保留定位问题必需的字段
-        out.reserve(out.size() + kPlainTextLineFrameOverheadBytes + levelPrefix.size() + levelSuffix.size() +
-                    event.loggerNameView().size() + event.message.size());
+        out.reserve(out.size() + kPlainTextLineFrameOverheadBytes + levelPrefix.size() + levelSuffix.size() + event.loggerNameView().size() + event.message.size());
         out.append(timestampText);
         out.append(" [");
         out.append(levelPrefix);

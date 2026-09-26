@@ -12,7 +12,7 @@
 #include <format>
 
 #if ASYN_PLATFORM_LINUX
-    #include <sched.h>
+#include <sched.h>
 #endif
 
 namespace AsynGyanis::Platform
@@ -41,9 +41,8 @@ namespace AsynGyanis::Platform
 #endif
 
         /// 许可集合读不出来时的文案：此时既数不到核也判不了目标核是否放行
-        constexpr std::string_view kCoreSetReadFailureText =
-                "绑核失败：读取本线程可用的 CPU 集合就失败了，无法判定目标核是否可用。"
-                "请确认运行环境允许查询亲和性（部分沙箱会拦下这类调用），或放弃绑核";
+        constexpr std::string_view kCoreSetReadFailureText = "绑核失败：读取本线程可用的 CPU 集合就失败了，无法判定目标核是否可用。"
+                                                             "请确认运行环境允许查询亲和性（部分沙箱会拦下这类调用），或放弃绑核";
 
         /**
          * @brief 组装「目标核不在许可集合内」的文案
@@ -90,8 +89,8 @@ namespace AsynGyanis::Platform
             {
                 ++begin;
             }
-            std::int64_t value = 0;
-            const auto result = std::from_chars(begin, end, value);
+            std::int64_t value  = 0;
+            const auto   result = std::from_chars(begin, end, value);
             if (result.ec != std::errc{})
             {
                 return {false, 0};
@@ -132,14 +131,13 @@ namespace AsynGyanis::Platform
          */
         std::size_t currentCgroupQuotaCoreCount() noexcept
         {
-            const std::string relativePath =
-                    CpuAffinity::cgroupPathFromProcRecord(readCgroupTextFile("/proc/self/cgroup"));
+            const std::string relativePath = CpuAffinity::cgroupPathFromProcRecord(readCgroupTextFile("/proc/self/cgroup"));
 
             // cgroup v2：一行两列「<quota|max> <period>」，各分组有自己的 cpu.max
             const std::string v2Path = std::format("/sys/fs/cgroup{}/cpu.max", relativePath);
             if (const std::string cpuMax = readCgroupTextFile(v2Path.c_str()); !cpuMax.empty())
             {
-                const auto [hasQuota, quotaMicroseconds] = parseLeadingInteger(cpuMax);
+                const auto [hasQuota, quotaMicroseconds]   = parseLeadingInteger(cpuMax);
                 const auto [hasPeriod, periodMicroseconds] = parseTrailingInteger(cpuMax);
                 if (hasQuota && hasPeriod)
                 {
@@ -150,8 +148,8 @@ namespace AsynGyanis::Platform
             }
 
             // cgroup v1：配额与周期分在两个文件，未限时配额写 -1
-            const std::string quotaPath = std::format("/sys/fs/cgroup/cpu{}/cpu.cfs_quota_us", relativePath);
-            const std::string periodPath = std::format("/sys/fs/cgroup/cpu{}/cpu.cfs_period_us", relativePath);
+            const std::string quotaPath                = std::format("/sys/fs/cgroup/cpu{}/cpu.cfs_quota_us", relativePath);
+            const std::string periodPath               = std::format("/sys/fs/cgroup/cpu{}/cpu.cfs_period_us", relativePath);
             const auto [hasQuota, quotaMicroseconds]   = parseLeadingInteger(readCgroupTextFile(quotaPath.c_str()));
             const auto [hasPeriod, periodMicroseconds] = parseLeadingInteger(readCgroupTextFile(periodPath.c_str()));
             if (!hasQuota || !hasPeriod)
@@ -231,8 +229,7 @@ namespace AsynGyanis::Platform
             return std::unexpected(std::format("绑核失败：逻辑核编号 {} 不在本工具支持的 0-{} 范围内"
                                                "（本平台的 CPU 集合只有 {} 位）。请改用操作系统的绑核工具（如 taskset、numactl），"
                                                "或只把线程绑到编号更小的核上",
-                                               coreIndex, kMaximumExpressibleCoreIndex - 1,
-                                               kMaximumExpressibleCoreIndex));
+                                               coreIndex, kMaximumExpressibleCoreIndex - 1, kMaximumExpressibleCoreIndex));
         }
 
 #if ASYN_PLATFORM_LINUX
@@ -278,8 +275,7 @@ namespace AsynGyanis::Platform
         return {};
     }
 
-    std::size_t CpuAffinity::coresFromCgroupQuota(const std::int64_t quotaMicroseconds,
-                                                 const std::int64_t periodMicroseconds) noexcept
+    std::size_t CpuAffinity::coresFromCgroupQuota(const std::int64_t quotaMicroseconds, const std::int64_t periodMicroseconds) noexcept
     {
         // 配额非正数即「不设限」（v2 的 max 解析失败按不设限处理、v1 写 -1）；周期为 0 是残缺数据，
         // 两者都返回 0 让调用方按「没有这条约束」继续，而不是静默算出 1 核把并行度压死
@@ -294,9 +290,8 @@ namespace AsynGyanis::Platform
     {
         for (std::size_t lineStart = 0; lineStart < procContents.size();)
         {
-            const std::size_t lineEnd = procContents.find('\n', lineStart);
-            const std::string_view line = procContents.substr(
-                    lineStart, (lineEnd == std::string_view::npos ? procContents.size() : lineEnd) - lineStart);
+            const std::size_t      lineEnd = procContents.find('\n', lineStart);
+            const std::string_view line    = procContents.substr(lineStart, (lineEnd == std::string_view::npos ? procContents.size() : lineEnd) - lineStart);
 
             // 每行形如 "<层级>:<控制器列表>:<路径>"；v2 恒为 "0::<路径>"，v1 每个控制器一行、
             // 路径同样取最后一个冒号之后

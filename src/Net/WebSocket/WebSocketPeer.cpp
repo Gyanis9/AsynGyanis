@@ -40,7 +40,7 @@ namespace AsynGyanis::Net
             }
 
         private:
-            bool &m_flag;   ///< 被守护的标记本体，属于 peer 对象，活到会话收尾
+            bool &m_flag; ///< 被守护的标记本体，属于 peer 对象，活到会话收尾
         };
 
         /**
@@ -51,24 +51,25 @@ namespace AsynGyanis::Net
          */
         bool isValidReceivedCloseCode(const std::uint16_t closeCode) noexcept
         {
-            if (closeCode >= 3000 && closeCode <= 4999) return true;
+            if (closeCode >= 3000 && closeCode <= 4999)
+                return true;
             switch (closeCode)
             {
-            case 1000:
-            case 1001:
-            case 1002:
-            case 1003:
-            case 1007:
-            case 1008:
-            case 1009:
-            case 1010:
-            case 1011:
-            case 1012:
-            case 1013:
-            case 1014:
-                return true;
-            default:
-                return false;
+                case 1000:
+                case 1001:
+                case 1002:
+                case 1003:
+                case 1007:
+                case 1008:
+                case 1009:
+                case 1010:
+                case 1011:
+                case 1012:
+                case 1013:
+                case 1014:
+                    return true;
+                default:
+                    return false;
             }
         }
 
@@ -84,9 +85,7 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    WebSocketPeer::WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *const metrics) :
-        m_frameSender(std::move(frameSender)),
-        m_metrics(metrics)
+    WebSocketPeer::WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *const metrics) : m_frameSender(std::move(frameSender)), m_metrics(metrics)
     {
         // 发送路径在构造时注入：本对象没有「未装配」状态，省掉每次 send*() 里的判空分支。
         // 采集端可空：空表示只跑协议不上报统计，因此每个上报点都判一次空
@@ -128,8 +127,7 @@ namespace AsynGyanis::Net
         return m_payloadErrorMessage.empty() ? m_decoder.errorMessage() : m_payloadErrorMessage;
     }
 
-    WebSocketPeer::DeliveryAwaiter::DeliveryAwaiter(WebSocketPeer &peer) noexcept :
-        m_peer(&peer)
+    WebSocketPeer::DeliveryAwaiter::DeliveryAwaiter(WebSocketPeer &peer) noexcept : m_peer(&peer)
     {
     }
 
@@ -187,7 +185,7 @@ namespace AsynGyanis::Net
             if (frame->opCode == WebSocketOpCode::Close)
             {
                 // 对端发起关闭握手（RFC 6455 §5.5.1）：计入对端一侧，回一条同状态码的 Close 后终止交付
-                //（那条回帧不再计入本侧发起，否则一次对端关闭会被算成两笔）
+                // （那条回帧不再计入本侧发起，否则一次对端关闭会被算成两笔）
                 if (m_metrics != nullptr)
                 {
                     m_metrics->countWebSocketPeerClose();
@@ -241,20 +239,18 @@ namespace AsynGyanis::Net
         {
             // 超长有意抛异常而不是截断：截断会悄悄改掉业务给出的原因，而这条帧正是对端判断
             // 「为什么被关」的唯一依据
-            throw Base::InvalidArgumentException(
-                    std::format("WebSocketPeer::close：关闭原因 {} 字节超过上限 {} 字节（控制帧整体不得超过 {} 字节，"
-                                "其中状态码占 {} 字节，RFC 6455 §5.5）：请缩短原因，或把长说明改用 sendText() 作为消息发出",
-                                reason.size(), kMaximumReasonLength, kWebSocketMaximumControlPayloadLength, kCloseCodeByteLength));
+            throw Base::InvalidArgumentException(std::format("WebSocketPeer::close：关闭原因 {} 字节超过上限 {} 字节（控制帧整体不得超过 {} 字节，"
+                                                             "其中状态码占 {} 字节，RFC 6455 §5.5）：请缩短原因，或把长说明改用 sendText() 作为消息发出",
+                                                             reason.size(), kMaximumReasonLength, kWebSocketMaximumControlPayloadLength, kCloseCodeByteLength));
         }
 
         // 状态码同样按用法错误当场拒绝：1005/1006/1015 是「不得上线」的哨兵值，1016-2999 段
         // 未经注册不可发。发出去对端只能按协议错误收口，改掉正是调用方该做的事
         if (!isValidCloseCodeToSend(code))
         {
-            throw Base::InvalidArgumentException(
-                    std::format("WebSocketPeer::close：状态码 {} 不允许出现在线上（RFC 6455 §7.4.1/§7.4.2：1005/1006/1015 为保留哨兵值，"
-                                "1016-2999 段未经注册）：请改用 1000-1003、1007-1014 或 3000-4999 段的值",
-                                code));
+            throw Base::InvalidArgumentException(std::format("WebSocketPeer::close：状态码 {} 不允许出现在线上（RFC 6455 §7.4.1/§7.4.2：1005/1006/1015 为保留哨兵值，"
+                                                             "1016-2999 段未经注册）：请改用 1000-1003、1007-1014 或 3000-4999 段的值",
+                                                             code));
         }
 
         // 本侧已经发过 Close、或连接已不可用：不再补第二条（§5.5.1 只要求一次关闭握手），
@@ -289,7 +285,7 @@ namespace AsynGyanis::Net
     {
         // 压缩只对数据消息生效（控制帧从不压缩，RFC 7692 §6.1）；压不动就原样发——
         // 压缩是带宽优化，而发一条对端解不开的帧比不压严重得多
-        const bool isDataMessage = opCode == WebSocketOpCode::Text || opCode == WebSocketOpCode::Binary;
+        const bool                 isDataMessage = opCode == WebSocketOpCode::Text || opCode == WebSocketOpCode::Binary;
         std::optional<std::string> compressedPayload;
         if (m_isPerMessageDeflateEnabled && isDataMessage)
         {
@@ -309,7 +305,7 @@ namespace AsynGyanis::Net
 
         // 置位「有一帧在写」：会话收尾据此避免把自己的 Close 插进这次写里（两条写路径的字节会互相穿插）
         const WriteInFlightScope writeGuard(m_isWriteInFlight);
-        const bool isSucceeded = co_await m_frameSender(frameBytes);
+        const bool               isSucceeded = co_await m_frameSender(frameBytes);
 
         if (!isSucceeded)
         {
@@ -332,10 +328,9 @@ namespace AsynGyanis::Net
         } else if (payload.size() >= kCloseCodeByteLength)
         {
             // 线上是大端：第一个字节是高位
-            const std::uint16_t receivedCode =
-                    static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(payload[0])) << 8) |
-                                               static_cast<std::uint16_t>(static_cast<unsigned char>(payload[1])));
-            const std::string_view reason = payload.substr(kCloseCodeByteLength);
+            const std::uint16_t    receivedCode = static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(payload[0])) << 8) |
+                                                                             static_cast<std::uint16_t>(static_cast<unsigned char>(payload[1])));
+            const std::string_view reason       = payload.substr(kCloseCodeByteLength);
             if (!isValidReceivedCloseCode(receivedCode))
             {
                 closeCode = kWebSocketProtocolErrorCode;
@@ -351,7 +346,7 @@ namespace AsynGyanis::Net
 
         // 回帧即收口。结果不看：对端往往已经断开，这条回帧写不出去也不影响收尾
         // 先立标记再回帧：本次关闭来自对端，计数归它那一侧，close() 据此不再记一次本侧发起
-        m_isEchoingPeerClose = true;
+        m_isEchoingPeerClose                    = true;
         [[maybe_unused]] const bool isCloseSent = co_await close(closeCode);
         co_return;
     }
@@ -411,13 +406,12 @@ namespace AsynGyanis::Net
                 // 字节流本端解不了，留在连接上只会越走越偏
                 if (frame.isCompressed)
                 {
-                    std::optional<std::string> inflatedPayload =
-                            inflateWebSocketMessage(frame.payload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
+                    std::optional<std::string> inflatedPayload = inflateWebSocketMessage(frame.payload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
                     if (!inflatedPayload.has_value())
                     {
-                        m_payloadErrorMessage = std::format("压缩消息解压失败，或解压结果超过上限 {} 字节（RFC 7692 §7.2.2）："
-                                                            "请检查对端的压缩实现，或改用未压缩帧发送",
-                                                            WebSocketFrameDecoder::kMaximumMessagePayloadLength);
+                        m_payloadErrorMessage   = std::format("压缩消息解压失败，或解压结果超过上限 {} 字节（RFC 7692 §7.2.2）："
+                                                              "请检查对端的压缩实现，或改用未压缩帧发送",
+                                                              WebSocketFrameDecoder::kMaximumMessagePayloadLength);
                         m_payloadErrorCloseCode = kWebSocketProtocolErrorCode;
                         return WebSocketFeedStatus::DecodeError;
                     }
@@ -432,11 +426,10 @@ namespace AsynGyanis::Net
                     const std::size_t invalidByteOffset = findInvalidWebSocketUtf8ByteOffset(frame.payload);
                     if (invalidByteOffset != std::string_view::npos)
                     {
-                        m_payloadErrorMessage =
-                                std::format("文本帧负载不是合法 UTF-8（RFC 6455 §5.6 要求文本负载为 UTF-8，编码规则见 RFC 3629）："
-                                            "第 {} 个字节起违规，常见原因有过长编码、代理区码点（U+D800~U+DFFF）与截断的多字节序列；"
-                                            "请按 UTF-8 重新编码这段文本后重发",
-                                            invalidByteOffset);
+                        m_payloadErrorMessage   = std::format("文本帧负载不是合法 UTF-8（RFC 6455 §5.6 要求文本负载为 UTF-8，编码规则见 RFC 3629）："
+                                                              "第 {} 个字节起违规，常见原因有过长编码、代理区码点（U+D800~U+DFFF）与截断的多字节序列；"
+                                                              "请按 UTF-8 重新编码这段文本后重发",
+                                                              invalidByteOffset);
                         m_payloadErrorCloseCode = kWebSocketInvalidPayloadDataCode;
                         // 非法负载不交付业务：返回 DecodeError 让会话发 1007 并收口
                         return WebSocketFeedStatus::DecodeError;
@@ -445,20 +438,18 @@ namespace AsynGyanis::Net
 
                 // 一条完整的数据消息算一次：解码层已完成分片重组，故这里既是「重组后的那条」。
                 // 控制帧（Ping/Pong/Close）同样走到这一步排队，因此按操作码过滤，不计入消息数
-                if (m_metrics != nullptr &&
-                    (frame.opCode == WebSocketOpCode::Text || frame.opCode == WebSocketOpCode::Binary))
+                if (m_metrics != nullptr && (frame.opCode == WebSocketOpCode::Text || frame.opCode == WebSocketOpCode::Binary))
                 {
                     m_metrics->countWebSocketMessage();
                 }
 
                 // 收帧积压上界：业务消费慢于对端发送时内存不能无界增长。超限按策略违规收口，
                 // 不静默丢帧——丢了会让业务看到一条缺帧的流，比直接断开更难排查
-                if (m_queuedPayloadByteCount + frame.payload.size() + kWebSocketFrameOverheadByteCount >
-                    kWebSocketMaximumQueuedPayloadByteCount)
+                if (m_queuedPayloadByteCount + frame.payload.size() + kWebSocketFrameOverheadByteCount > kWebSocketMaximumQueuedPayloadByteCount)
                 {
-                    m_payloadErrorMessage = std::format("待交付的 WebSocket 帧积压超过上限 {} 字节（业务消费速度跟不上对端发送）："
-                                                        "请提高消费速度，或在对端侧放慢发送速率",
-                                                        kWebSocketMaximumQueuedPayloadByteCount);
+                    m_payloadErrorMessage   = std::format("待交付的 WebSocket 帧积压超过上限 {} 字节（业务消费速度跟不上对端发送）："
+                                                          "请提高消费速度，或在对端侧放慢发送速率",
+                                                          kWebSocketMaximumQueuedPayloadByteCount);
                     m_payloadErrorCloseCode = kWebSocketPolicyViolationCode;
                     return WebSocketFeedStatus::DecodeError;
                 }

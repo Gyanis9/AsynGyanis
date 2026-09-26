@@ -4,8 +4,7 @@
 
 namespace AsynGyanis::Net
 {
-    HttpMemoryBudget::HttpMemoryBudget(const std::size_t maximumTotalBytes) noexcept :
-        m_maximumTotalBytes(maximumTotalBytes)
+    HttpMemoryBudget::HttpMemoryBudget(const std::size_t maximumTotalBytes) noexcept : m_maximumTotalBytes(maximumTotalBytes)
     {
     }
 

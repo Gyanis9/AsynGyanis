@@ -118,12 +118,8 @@ namespace AsynGyanis::Base
         // 按**帧身份**判，而不是「栈里有个测试体帧就算对」：任何深于两帧的栈里都有 TestBody，
         // 旧断言在「少跳一格」（框架自己的构造帧顶在最前）与「多跳一格」（抛出点被跳掉）两种
         // 错法下都不会红。这里两条分别钉住：抛出点所在文件必须在栈里，框架构造帧必须不在
-        EXPECT_NE(text.find("TestException.cpp"), std::string::npos)
-                << "解析结果里没有抛出点所在文件，说明采到的不是抛出点的栈：\n"
-                << text;
-        EXPECT_EQ(text.find("Exception::Exception"), std::string::npos)
-                << "栈里露出了框架自己的构造帧，说明 captureStackTrace 少跳了一格：\n"
-                << text;
+        EXPECT_NE(text.find("TestException.cpp"), std::string::npos) << "解析结果里没有抛出点所在文件，说明采到的不是抛出点的栈：\n" << text;
+        EXPECT_EQ(text.find("Exception::Exception"), std::string::npos) << "栈里露出了框架自己的构造帧，说明 captureStackTrace 少跳了一格：\n" << text;
     }
 
     TEST(LogicException, CapturesThrowSiteStackTrace)
@@ -143,9 +139,9 @@ namespace AsynGyanis::Base
 
     TEST(ExceptionStackTraceAccess, ResolvesEveryFrameworkChainToItsOwnStackTrace)
     {
-        const Exception                 runtimeFailure("运行期故障");
-        const LogicException            usageFailure("用法错误");
-        const InvalidArgumentException  invalidValue("取值非法");
+        const Exception                runtimeFailure("运行期故障");
+        const LogicException           usageFailure("用法错误");
+        const InvalidArgumentException invalidValue("取值非法");
         // 派生类也要认得：ConfigValidationException 只是借基类带上栈，识别依据是运行期类型
         const ConfigValidationException validationFailure("server.port", "取值超出范围");
 
@@ -322,11 +318,7 @@ namespace AsynGyanis::Base
     TEST(ConfigKeyNotFoundException, HandlesVariousKeyShapes)
     {
         const std::vector<std::string> candidateKeys = {
-                "a",
-                "a.b.c.d.e.f.g.h.i.j",
-                "very_long_key_name_that_exceeds_typical_lengths_for_configuration_keys",
-                "key.with.numbers.123",
-                "key-with-special_chars@test",
+                "a", "a.b.c.d.e.f.g.h.i.j", "very_long_key_name_that_exceeds_typical_lengths_for_configuration_keys", "key.with.numbers.123", "key-with-special_chars@test",
         };
 
         for (const std::string &key: candidateKeys)
@@ -441,10 +433,8 @@ namespace AsynGyanis::Base
         errno = 0;
 
         const std::error_code errnoSemantics(EACCES, std::generic_category());
-        EXPECT_EQ(exception.errorCode().category(), errnoSemantics.category())
-                << "类别与取值不配对，报出来的描述就不是这次失败";
-        EXPECT_TRUE(contains(message, errnoSemantics.message()))
-                << "消息里的描述与 errno 语义不符（多半是按 Win32 码查的表）：" << message;
+        EXPECT_EQ(exception.errorCode().category(), errnoSemantics.category()) << "类别与取值不配对，报出来的描述就不是这次失败";
+        EXPECT_TRUE(contains(message, errnoSemantics.message())) << "消息里的描述与 errno 语义不符（多半是按 Win32 码查的表）：" << message;
     }
 
     /**
@@ -459,8 +449,7 @@ namespace AsynGyanis::Base
         const std::string      message(withoutCode.what());
         errno = 0;
 
-        EXPECT_TRUE(contains(message, "192.168.1.2:7001"))
-                << "不显式传码的那条重载把对端丢了：" << message;
+        EXPECT_TRUE(contains(message, "192.168.1.2:7001")) << "不显式传码的那条重载把对端丢了：" << message;
         EXPECT_EQ(withoutCode.remoteAddress(), "192.168.1.2:7001");
     }
 
@@ -471,27 +460,12 @@ namespace AsynGyanis::Base
     TEST(ExceptionHierarchy, EveryConfigExceptionIsCatchableAsStdException)
     {
         // unique_ptr 不可拷贝，故保存工厂而不是实例列表
-        const std::vector<std::function<std::unique_ptr<std::exception>()> > factories = {
-                []
-                {
-                    return std::unique_ptr<std::exception>(std::make_unique<ConfigException>("test"));
-                },
-                []
-                {
-                    return std::unique_ptr<std::exception>(std::make_unique<ConfigFileException>("f", "r"));
-                },
-                []
-                {
-                    return std::unique_ptr<std::exception>(std::make_unique<ConfigParseException>("f", "r"));
-                },
-                []
-                {
-                    return std::unique_ptr<std::exception>(std::make_unique<ConfigKeyNotFoundException>("k"));
-                },
-                []
-                {
-                    return std::unique_ptr<std::exception>(std::make_unique<ConfigValidationException>("k", "r"));
-                },
+        const std::vector<std::function<std::unique_ptr<std::exception>()>> factories = {
+                [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigException>("test")); },
+                [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigFileException>("f", "r")); },
+                [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigParseException>("f", "r")); },
+                [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigKeyNotFoundException>("k")); },
+                [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigValidationException>("k", "r")); },
         };
 
         for (const auto &factory: factories)
@@ -515,7 +489,7 @@ namespace AsynGyanis::Base
     TEST(ExceptionHierarchy, SlicedCatchStillReportsMessage)
     {
         const ConfigKeyNotFoundException original("slice.key");
-        const Exception &                sliced(original);
+        const Exception                 &sliced(original);
 
         EXPECT_TRUE(contains(std::string(sliced.what()), "slice.key"));
     }

@@ -96,10 +96,10 @@ namespace AsynGyanis::Core
              */
             void markDetached() noexcept;
 
-            IoWatcher   *m_watcher;        ///< 目标注册对象（非拥有）
-            std::uint32_t m_event;         ///< 本次关注的事件位
-            bool         m_isAttached{false}; ///< 是否已登记到注册对象上
-            bool         m_isReady{false};    ///< 结果：事件是否就绪
+            IoWatcher    *m_watcher;           ///< 目标注册对象（非拥有）
+            std::uint32_t m_event;             ///< 本次关注的事件位
+            bool          m_isAttached{false}; ///< 是否已登记到注册对象上
+            bool          m_isReady{false};    ///< 结果：事件是否就绪
         };
 
         /**
@@ -178,7 +178,7 @@ namespace AsynGyanis::Core
          */
         struct WaiterSlot
         {
-            std::coroutine_handle<> handle{};      ///< 等待中的协程，空表示当前无人等待
+            std::coroutine_handle<> handle{};         ///< 等待中的协程，空表示当前无人等待
             Awaiter                *awaiter{nullptr}; ///< 对应的等待器，用于把结果写回它
         };
 
@@ -233,13 +233,13 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] WaiterSlot &slotFor(std::uint32_t event) noexcept;
 
-        EventLoop    *m_loop;            ///< 所属事件循环（非拥有）
-        int           m_fileDescriptor;  ///< 被注册的文件描述符
+        EventLoop    *m_loop;                ///< 所属事件循环（非拥有）
+        int           m_fileDescriptor;      ///< 被注册的文件描述符
         bool          m_isRegistered{false}; ///< 是否已成功注册到 epoll
-        std::uint32_t m_armedEvents{0};  ///< 当前在核心里武装着的事件位（EPOLLIN / EPOLLOUT）
-        std::uint32_t m_readyEvents{0};  ///< 已上报但尚未被取走的就绪位（EPOLLIN / EPOLLOUT）
-        WaiterSlot    m_readWaiter;      ///< 读方向等待者
-        WaiterSlot    m_writeWaiter;     ///< 写方向等待者
+        std::uint32_t m_armedEvents{0};      ///< 当前在核心里武装着的事件位（EPOLLIN / EPOLLOUT）
+        std::uint32_t m_readyEvents{0};      ///< 已上报但尚未被取走的就绪位（EPOLLIN / EPOLLOUT）
+        WaiterSlot    m_readWaiter;          ///< 读方向等待者
+        WaiterSlot    m_writeWaiter;         ///< 写方向等待者
     };
 
 } // namespace AsynGyanis::Core

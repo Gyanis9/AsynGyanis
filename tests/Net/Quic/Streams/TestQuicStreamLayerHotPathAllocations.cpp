@@ -33,12 +33,12 @@ namespace AsynGyanis::Net
         QuicTransportParameters makeStreamLayerParameters()
         {
             QuicTransportParameters parameters;
-            parameters.initialMaximumData                           = 4096;
-            parameters.initialMaximumStreamDataBidirectionalLocal   = 1024;
-            parameters.initialMaximumStreamDataBidirectionalRemote  = 1024;
-            parameters.initialMaximumStreamDataUnidirectional       = 1024;
-            parameters.initialMaximumBidirectionalStreams           = 4;
-            parameters.initialMaximumUnidirectionalStreams          = 2;
+            parameters.initialMaximumData                          = 4096;
+            parameters.initialMaximumStreamDataBidirectionalLocal  = 1024;
+            parameters.initialMaximumStreamDataBidirectionalRemote = 1024;
+            parameters.initialMaximumStreamDataUnidirectional      = 1024;
+            parameters.initialMaximumBidirectionalStreams          = 4;
+            parameters.initialMaximumUnidirectionalStreams         = 2;
             return parameters;
         }
     } // namespace
@@ -56,8 +56,7 @@ namespace AsynGyanis::Net
         static_cast<void>(constructOnce());
 
         const AllocationProfile profile = measurePerOperation(constructOnce);
-        std::printf("quic 流层每条连接的构造成本 %llu 次分配 / %llu 字节\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+        std::printf("quic 流层每条连接的构造成本 %llu 次分配 / %llu 字节\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
                     static_cast<unsigned long long>(profile.bytesPerOperation));
     }
 
@@ -69,7 +68,7 @@ namespace AsynGyanis::Net
     TEST(QuicStreamLayerAllocations, ReceiveDeliverAndReleaseAllocations)
     {
         const std::vector<std::uint8_t> body(16, 'r');
-        const auto runOnce = [&body]() -> std::size_t
+        const auto                      runOnce = [&body]() -> std::size_t
         {
             QuicStreamLayer layer(makeStreamLayerParameters());
 
@@ -95,8 +94,7 @@ namespace AsynGyanis::Net
 
         const AllocationProfile profile = measurePerOperation(runOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * body.size()) << "有几次没交付完，读数不可信";
-        std::printf("quic 流层每条连接「建起来 + 收一条请求」成本 %llu 次分配 / %llu 字节\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+        std::printf("quic 流层每条连接「建起来 + 收一条请求」成本 %llu 次分配 / %llu 字节\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
                     static_cast<unsigned long long>(profile.bytesPerOperation));
     }
 } // namespace AsynGyanis::Net

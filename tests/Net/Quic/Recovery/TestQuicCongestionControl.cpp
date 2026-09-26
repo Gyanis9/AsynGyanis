@@ -35,13 +35,12 @@ namespace AsynGyanis::Net
          * @param isAckEliciting 是否触发确认（只带 ACK 的包不计在途）
          * @return QuicSentPacketInfo 交给拥塞控制器的凭据
          */
-        QuicSentPacketInfo makePacket(const std::uint64_t packetNumber, const std::int64_t timeSent, const std::size_t byteCount,
-                                      const bool isAckEliciting = true)
+        QuicSentPacketInfo makePacket(const std::uint64_t packetNumber, const std::int64_t timeSent, const std::size_t byteCount, const bool isAckEliciting = true)
         {
             QuicSentPacketInfo packet;
-            packet.packetNumber = packetNumber;
-            packet.timeSent = QuicTime{timeSent};
-            packet.byteCount = byteCount;
+            packet.packetNumber   = packetNumber;
+            packet.timeSent       = QuicTime{timeSent};
+            packet.byteCount      = byteCount;
             packet.isAckEliciting = isAckEliciting;
             return packet;
         }
@@ -84,8 +83,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(congestion.bytesInFlight(), 12 * kDatagramSize);
         EXPECT_FALSE(congestion.maySend(1U)) << "已经压了 12 个数据报，一个都不该再许可";
 
-        const auto drained = std::vector<QuicSentPacketInfo>{
-                makePacket(3, 3000, kDatagramSize), makePacket(4, 3000, kDatagramSize)};
+        const auto drained = std::vector<QuicSentPacketInfo>{makePacket(3, 3000, kDatagramSize), makePacket(4, 3000, kDatagramSize)};
         congestion.onCongestionUpdate(drained, {}, QuicTime{9000});
         EXPECT_EQ(congestion.bytesInFlight(), 10 * kDatagramSize) << "确认掉的包该从在途里销账";
     }
@@ -173,8 +171,8 @@ namespace AsynGyanis::Net
     TEST(QuicCongestionControl, KeepsTheMinimumWindowWhenReducing)
     {
         QuicCongestionControl congestion{kDatagramSize};
-        std::uint64_t nextPacketNumber = 0;
-        std::int64_t now = 0;
+        std::uint64_t         nextPacketNumber = 0;
+        std::int64_t          now              = 0;
         // 一轮「丢包 → 恢复期之后发出的包被确认」：降半、出圈、AIMD 再涨一格，下一轮才继续降
         const auto endureOneRound = [&congestion, &nextPacketNumber, &now]
         {
@@ -194,8 +192,7 @@ namespace AsynGyanis::Net
         endureOneRound();
         EXPECT_EQ(congestion.congestionWindowByteLength(), 3581) << "6240 降半到 3120，再涨 1200×1200/3120 = 461";
         endureOneRound();
-        EXPECT_EQ(congestion.slowStartThresholdByteLength(), 2 * kDatagramSize)
-                << "3581 的一半只有 1790，被最小窗口 2400 抬住（§7.2）";
+        EXPECT_EQ(congestion.slowStartThresholdByteLength(), 2 * kDatagramSize) << "3581 的一半只有 1790，被最小窗口 2400 抬住（§7.2）";
         EXPECT_EQ(congestion.congestionWindowByteLength(), 2 * kDatagramSize + 600);
         EXPECT_EQ(congestion.bytesInFlight(), 0U) << "每轮的包都在同一轮里销了账";
     }

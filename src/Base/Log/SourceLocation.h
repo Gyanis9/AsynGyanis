@@ -34,10 +34,7 @@ namespace AsynGyanis::Base
          * @param lineNumber 行号
          * @param function 函数名
          */
-        constexpr SourceLocation(const char *file, const int lineNumber, const char *function) :
-            fileName(file)
-            , line(lineNumber)
-            , functionName(function)
+        constexpr SourceLocation(const char *file, const int lineNumber, const char *function) : fileName(file), line(lineNumber), functionName(function)
         {
         }
 
@@ -46,9 +43,7 @@ namespace AsynGyanis::Base
          * @param location 标准源码位置对象
          */
         constexpr explicit SourceLocation(const std::source_location &location) :
-            fileName(location.file_name())
-            , line(static_cast<int>(location.line()))
-            , functionName(location.function_name())
+            fileName(location.file_name()), line(static_cast<int>(location.line())), functionName(location.function_name())
         {
         }
 
@@ -57,8 +52,7 @@ namespace AsynGyanis::Base
          * @param location 由编译器填充的标准源码位置
          * @return SourceLocation 当前源码位置
          */
-        [[nodiscard]] static constexpr SourceLocation current(
-                const std::source_location &location = std::source_location::current())
+        [[nodiscard]] static constexpr SourceLocation current(const std::source_location &location = std::source_location::current())
         {
             return SourceLocation(location);
         }

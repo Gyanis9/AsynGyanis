@@ -10,22 +10,16 @@
 
 namespace AsynGyanis::Net
 {
-    HttpSession::HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits,
-                             std::shared_ptr<HttpMetricsCollector> metrics,
-                             std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
-                             HttpParserLimits parserLimits,
-                             std::shared_ptr<HttpMemoryBudget> memoryBudget) :
-        Core::Connection(std::move(socket)),
-        m_router(router),
+    HttpSession::HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits, std::shared_ptr<HttpMetricsCollector> metrics,
+                             std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, HttpParserLimits parserLimits, std::shared_ptr<HttpMemoryBudget> memoryBudget) :
+        Core::Connection(std::move(socket)), m_router(router),
         // 解析器上限按值交给解析器并在构造时固定：本连接此后每条报文都按同一份尺子定界
         m_parser(parserLimits),
         // 空配置按默认限额执行：让只关心协议的调用方不必显式传一份配置，会话内也不必到处判空
         m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
         // 统计对象与生成器允许为空：这两种空值都表示「本会话不采集」，是明确的关闭语义，
         // 而不是待填补的缺省——因此不在构造里补一份新的，否则统计会散进没人读的对象里
-        m_metrics(std::move(metrics)),
-        m_requestIdGenerator(std::move(requestIdGenerator)),
-        m_memoryBudget(std::move(memoryBudget))
+        m_metrics(std::move(metrics)), m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget))
     {
         // 接收窗口不在这里分配：真正开始读之前它一直是空的，第一次读时按固定大小一次性分配
     }
@@ -55,15 +49,12 @@ namespace AsynGyanis::Net
         // 谓词提成命名局部：它要以 const std::function 引用的形式活过整个 co_await，
         // 直接传临时量就把正确性押在「挂起中的全表达式结束时才析构临时量」这条规则上，
         // 读代码的人不易一眼确认；放在本协程帧里则一目了然
-        const std::function<bool()> alivePredicate = [this]()
-        {
-            return isAlive();
-        };
+        const std::function<bool()> alivePredicate = [this]() { return isAlive(); };
 
         // 事务循环与 HTTPS 共用同一份模板实现，差别只在传输层对象、「连接是否存活」的谓词、
         // 限额配置与可选的采集端；把 *this 传进去是为了让循环按相位刷新本连接的空闲截止时间
-        co_await detail::httpKeepAliveLoop(socket(), cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate,
-                                          *this, *m_limits, m_metrics.get(), m_requestIdGenerator.get(), m_memoryBudget.get());
+        co_await detail::httpKeepAliveLoop(socket(), cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate, *this, *m_limits, m_metrics.get(),
+                                           m_requestIdGenerator.get(), m_memoryBudget.get());
 
         // 不再在此处 close()：统一交给上面的守卫，正常路径与异常路径只有一处收口
         co_return;
@@ -103,8 +94,8 @@ namespace AsynGyanis::Net
         }
 
         // ---- 第 4 优先级：按协议版本的默认值。1.0/0.9 逐请求断连，1.1 起默认持久连接 ----
-        const std::string_view version = request.httpVersion();
-        const bool isHttp10OrOlder = version.starts_with("HTTP/1.0") || version.starts_with("HTTP/0.9") || version.empty();
+        const std::string_view version         = request.httpVersion();
+        const bool             isHttp10OrOlder = version.starts_with("HTTP/1.0") || version.starts_with("HTTP/0.9") || version.empty();
         return !isHttp10OrOlder;
     }
 

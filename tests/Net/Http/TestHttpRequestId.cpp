@@ -38,18 +38,11 @@ namespace AsynGyanis::Net
         // 参照实现就是要替换掉的那句 std::format：逐字节相同才说明改写没有改变对外形态
         for (const std::string_view prefix: {"", "0", "0001", "deadbeef"})
         {
-            for (const std::uint64_t sequenceNumber: {std::uint64_t{0},
-                                                      std::uint64_t{1},
-                                                      std::uint64_t{0xF},
-                                                      std::uint64_t{0x10},
-                                                      std::uint64_t{0xFF},
-                                                      std::uint64_t{0xFFFF'FFFF},
-                                                      std::uint64_t{0x1'0000'0000},
-                                                      std::numeric_limits<std::uint64_t>::max()})
+            for (const std::uint64_t sequenceNumber: {std::uint64_t{0}, std::uint64_t{1}, std::uint64_t{0xF}, std::uint64_t{0x10}, std::uint64_t{0xFF}, std::uint64_t{0xFFFF'FFFF},
+                                                      std::uint64_t{0x1'0000'0000}, std::numeric_limits<std::uint64_t>::max()})
             {
                 const std::string expected = std::format("{}-{:016x}", prefix, sequenceNumber);
-                EXPECT_EQ(detail::formatRequestIdText(prefix, sequenceNumber), expected)
-                        << "前缀 " << prefix << " 序号 " << sequenceNumber;
+                EXPECT_EQ(detail::formatRequestIdText(prefix, sequenceNumber), expected) << "前缀 " << prefix << " 序号 " << sequenceNumber;
             }
         }
     }
@@ -57,7 +50,7 @@ namespace AsynGyanis::Net
     TEST(HttpRequestId, GeneratedIdentifiersKeepTheDocumentedShapeAndLength)
     {
         const HttpRequestIdGenerator generator;
-        const std::string firstIdentifier = generator.next();
+        const std::string            firstIdentifier = generator.next();
 
         // 形如 0001-0000000000000000：4 位十六进制前缀 + 连字符 + 16 位十六进制序号
         EXPECT_EQ(firstIdentifier.size(), 21U) << firstIdentifier;
@@ -65,18 +58,17 @@ namespace AsynGyanis::Net
         EXPECT_EQ(firstIdentifier.substr(5), "0000000000000000");
         for (const char character: firstIdentifier.substr(0, 4) + firstIdentifier.substr(5))
         {
-            EXPECT_TRUE((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'))
-                    << "前缀里出现了非小写十六进制字符：" << firstIdentifier;
+            EXPECT_TRUE((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) << "前缀里出现了非小写十六进制字符：" << firstIdentifier;
         }
     }
 
     TEST(HttpRequestId, SequenceAdvancesWithoutRepeatingWithinOneGenerator)
     {
-        const HttpRequestIdGenerator generator;
+        const HttpRequestIdGenerator    generator;
         std::unordered_set<std::string> seenIdentifiers;
 
-        constexpr std::size_t kIdentifierCount = 2000;
-        std::string previousIdentifier = generator.next();
+        constexpr std::size_t kIdentifierCount   = 2000;
+        std::string           previousIdentifier = generator.next();
         seenIdentifiers.insert(previousIdentifier);
         for (std::size_t index = 1; index < kIdentifierCount; ++index)
         {
@@ -116,7 +108,9 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(HttpRequestIdGenerator::isAcceptableRequestId("ab\tcd"));
         EXPECT_FALSE(HttpRequestIdGenerator::isAcceptableRequestId("ab\r\ncd"));
         EXPECT_FALSE(HttpRequestIdGenerator::isAcceptableRequestId(std::string("ab\0cd", 5)));
-        EXPECT_FALSE(HttpRequestIdGenerator::isAcceptableRequestId(std::string("ab\x80" "cd", 5)));
+        EXPECT_FALSE(HttpRequestIdGenerator::isAcceptableRequestId(std::string("ab\x80"
+                                                                               "cd",
+                                                                               5)));
     }
 
     TEST(HttpRequestId, ResolveKeepsTrustworthyClientValuesAndReplacesTheRest)
@@ -150,8 +144,7 @@ namespace AsynGyanis::Net
         // 同名两条各表达一个上游，取首条即可；若走 getHeader() 的 ", " 合并口径，
         // 回显出去的响应头里就会出现一个两个上游都不是的拼接值
         EXPECT_EQ(generator.resolve(request), "trace-from-edge");
-        EXPECT_EQ(request.getHeader(std::string(kRequestIdHeaderName)).value_or("<缺失>"),
-                  "trace-from-edge, trace-from-origin")
+        EXPECT_EQ(request.getHeader(std::string(kRequestIdHeaderName)).value_or("<缺失>"), "trace-from-edge, trace-from-origin")
                 << "合并口径本身仍要成立，本用例钉的是 resolve 没用它";
 
         // 首条非法时不改取第二条：非法取值一律按「客户端没给」处理，重新生成
@@ -172,8 +165,7 @@ namespace AsynGyanis::Net
         std::string scratch;
         for (const std::string_view prefix: {"deadbeef", "0001", "0", ""})
         {
-            for (const std::uint64_t sequenceNumber: {std::uint64_t{0}, std::uint64_t{0x10},
-                                                      std::uint64_t{0xFFFF'FFFF'FFFF'FFFE}})
+            for (const std::uint64_t sequenceNumber: {std::uint64_t{0}, std::uint64_t{0x10}, std::uint64_t{0xFFFF'FFFF'FFFF'FFFE}})
             {
                 const std::string expected = std::format("{}-{:016x}", prefix, sequenceNumber);
                 detail::formatRequestIdTextInto(scratch, prefix, sequenceNumber);
@@ -206,8 +198,7 @@ namespace AsynGyanis::Net
         untrustedRequest.addHeader(std::string(kRequestIdHeaderName), "bad\tvalue");
         generator.resolveInto(untrustedRequest);
         EXPECT_EQ(untrustedRequest.requestId().size(), 21U) << untrustedRequest.requestId();
-        EXPECT_EQ(untrustedRequest.requestId().find("bad"), std::string_view::npos)
-                << "非法取值不得留在请求的 id 字段里";
+        EXPECT_EQ(untrustedRequest.requestId().find("bad"), std::string_view::npos) << "非法取值不得留在请求的 id 字段里";
     }
 
 } // namespace AsynGyanis::Net

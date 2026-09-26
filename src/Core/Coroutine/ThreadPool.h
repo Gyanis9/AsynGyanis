@@ -8,8 +8,8 @@
  */
 #pragma once
 
-#include "Core/EventLoop/EventLoop.h"
 #include "Core/Coroutine/Scheduler.h"
+#include "Core/EventLoop/EventLoop.h"
 
 #include <memory>
 #include <mutex>
@@ -104,13 +104,13 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] bool isCurrentThreadWorker() const;
 
-        size_t                                   m_threadCount; ///< 实际线程数量（启动后不变）
-        std::vector<std::unique_ptr<EventLoop> > m_eventLoops;  ///< 每个线程独立的 EventLoop
-        std::vector<std::jthread>                m_threads;     ///< 工作线程，使用 jthread 自动管理生命周期
-        std::vector<std::thread::id>             m_workerThreadIds; ///< 与 m_threads 同序的工作线程号，供自 join 判定
-        mutable std::mutex m_lifecycleMutex;                    ///< 串行化 start()/stop()：两者都会改上面两只表
-        bool m_pinsThreadsToCores{false};                       ///< 是否在 start() 时把工作线程逐个绑到逻辑核
-        bool m_hasBeenStopped{false};                           ///< 是否已 stop() 过一轮（下次 start() 要换新循环）
+        size_t                                  m_threadCount;               ///< 实际线程数量（启动后不变）
+        std::vector<std::unique_ptr<EventLoop>> m_eventLoops;                ///< 每个线程独立的 EventLoop
+        std::vector<std::jthread>               m_threads;                   ///< 工作线程，使用 jthread 自动管理生命周期
+        std::vector<std::thread::id>            m_workerThreadIds;           ///< 与 m_threads 同序的工作线程号，供自 join 判定
+        mutable std::mutex                      m_lifecycleMutex;            ///< 串行化 start()/stop()：两者都会改上面两只表
+        bool                                    m_pinsThreadsToCores{false}; ///< 是否在 start() 时把工作线程逐个绑到逻辑核
+        bool                                    m_hasBeenStopped{false};     ///< 是否已 stop() 过一轮（下次 start() 要换新循环）
     };
 
-}
+} // namespace AsynGyanis::Core

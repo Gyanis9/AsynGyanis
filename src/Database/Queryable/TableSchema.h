@@ -61,8 +61,7 @@ namespace AsynGyanis::Database::Queryable
             if constexpr (requires { TableSchema<T>::kIsAutoIncrementPrimaryKey; })
             {
                 return TableSchema<T>::kIsAutoIncrementPrimaryKey;
-            }
-            else
+            } else
             {
                 return false;
             }

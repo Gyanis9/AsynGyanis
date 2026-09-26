@@ -18,7 +18,7 @@ namespace AsynGyanis::Net
     namespace
     {
         // RFC 9110 §5.6.7 固定使用英文三字母缩写，与 locale 无关
-        constexpr std::array<std::string_view, 7> kWeekdayNames{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+        constexpr std::array<std::string_view, 7>  kWeekdayNames{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
         constexpr std::array<std::string_view, 12> kMonthNames{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
         /// 一天的秒数，用于把「距纪元的天数」折成秒
@@ -75,11 +75,11 @@ namespace AsynGyanis::Net
          */
         constexpr std::int64_t daysFromCivil(const int year, const unsigned month, const unsigned day)
         {
-            const int adjustedYear = year - (month <= 2 ? 1 : 0);
-            const std::int64_t era = (adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400;
-            const unsigned yearOfEra = static_cast<unsigned>(adjustedYear - era * 400);
-            const unsigned dayOfYear = (153u * (month > 2 ? month - 3 : month + 9) + 2u) / 5u + day - 1u;
-            const unsigned dayOfEra = yearOfEra * 365u + yearOfEra / 4u - yearOfEra / 100u + dayOfYear;
+            const int          adjustedYear = year - (month <= 2 ? 1 : 0);
+            const std::int64_t era          = (adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400;
+            const unsigned     yearOfEra    = static_cast<unsigned>(adjustedYear - era * 400);
+            const unsigned     dayOfYear    = (153u * (month > 2 ? month - 3 : month + 9) + 2u) / 5u + day - 1u;
+            const unsigned     dayOfEra     = yearOfEra * 365u + yearOfEra / 4u - yearOfEra / 100u + dayOfYear;
             return era * 146097 + static_cast<std::int64_t>(dayOfEra) - 719468;
         }
 
@@ -97,7 +97,7 @@ namespace AsynGyanis::Net
                 return false;
             }
 
-            unsigned parsedValue = 0;
+            unsigned parsedValue               = 0;
             const auto [endPointer, errorCode] = std::from_chars(text.data(), text.data() + text.size(), parsedValue);
             if (errorCode != std::errc() || endPointer != text.data() + text.size())
             {
@@ -134,10 +134,10 @@ namespace AsynGyanis::Net
         {
             // 索引先夹到合法区间：utcTime 失败时返回的是零值结构，直接用来查表会越界
             const std::size_t weekdayIndex = (fields.weekday >= 0 && fields.weekday < 7) ? static_cast<std::size_t>(fields.weekday) : 0U;
-            const std::size_t monthIndex = (fields.month >= 1 && fields.month <= 12) ? static_cast<std::size_t>(fields.month - 1) : 0U;
+            const std::size_t monthIndex   = (fields.month >= 1 && fields.month <= 12) ? static_cast<std::size_t>(fields.month - 1) : 0U;
 
             std::array<char, kHttpDateTextLength> text{};
-            std::size_t cursor = 0;
+            std::size_t                           cursor = 0;
             putThreeLetters(text, cursor, kWeekdayNames[weekdayIndex]);
             text[cursor++] = ',';
             text[cursor++] = ' ';
@@ -164,12 +164,11 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    std::string_view formatHttpDate(const std::chrono::system_clock::time_point time,
-                                    const std::span<char, kHttpDateTextLength> buffer) noexcept
+    std::string_view formatHttpDate(const std::chrono::system_clock::time_point time, const std::span<char, kHttpDateTextLength> buffer) noexcept
     {
-        const std::time_t calendarTime = std::chrono::system_clock::to_time_t(time);
-        const Platform::UtcTimeFields fields = Platform::PlatformTime::utcTime(calendarTime);
-        const std::array<char, kHttpDateTextLength> text = buildHttpDateText(fields);
+        const std::time_t                           calendarTime = std::chrono::system_clock::to_time_t(time);
+        const Platform::UtcTimeFields               fields       = Platform::PlatformTime::utcTime(calendarTime);
+        const std::array<char, kHttpDateTextLength> text         = buildHttpDateText(fields);
         for (std::size_t index = 0; index < kHttpDateTextLength; ++index)
         {
             buffer[index] = text[index];
@@ -181,23 +180,22 @@ namespace AsynGyanis::Net
     {
         // 拼装只有一份：按值交出的那条先落在栈上，再拷成调用方的 string
         std::array<char, kHttpDateTextLength> text{};
-        const std::string_view formatted = formatHttpDate(time, text);
+        const std::string_view                formatted = formatHttpDate(time, text);
         return std::string(formatted.begin(), formatted.end());
     }
 
     std::string_view currentHttpDateText()
     {
-        thread_local std::int64_t cachedSecondOfEpoch = -1;
+        thread_local std::int64_t                          cachedSecondOfEpoch = -1;
         thread_local std::array<char, kHttpDateTextLength> cachedText{};
 
         // Date 头每条响应都要写一份，而文本精度只到秒：同一秒内重复折算是纯浪费。
         // 判据用「不相等」而不是「更晚」，时钟被 NTP 往回调时也会照常重算，不会继续发未来的那一秒。
         // 缓存是 thread_local：各事件循环线程自己刷，不需要锁，也不会跨线程伪共享。
-        const std::int64_t currentSecondOfEpoch = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+        const std::int64_t currentSecondOfEpoch = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         if (cachedSecondOfEpoch != currentSecondOfEpoch)
         {
-            cachedText = buildHttpDateText(Platform::PlatformTime::utcTime(static_cast<std::time_t>(currentSecondOfEpoch)));
+            cachedText          = buildHttpDateText(Platform::PlatformTime::utcTime(static_cast<std::time_t>(currentSecondOfEpoch)));
             cachedSecondOfEpoch = currentSecondOfEpoch;
         }
         return std::string_view(cachedText.data(), cachedText.size());
@@ -233,8 +231,8 @@ namespace AsynGyanis::Net
             return std::nullopt;
         }
 
-        const std::string_view monthText = text.substr(8, 3);
-        const auto monthIterator = std::ranges::find(kMonthNames, monthText);
+        const std::string_view monthText     = text.substr(8, 3);
+        const auto             monthIterator = std::ranges::find(kMonthNames, monthText);
         if (monthIterator == kMonthNames.end())
         {
             return std::nullopt;
@@ -251,7 +249,7 @@ namespace AsynGyanis::Net
             return std::nullopt;
         }
 
-        unsigned hour = 0;
+        unsigned hour   = 0;
         unsigned minute = 0;
         unsigned second = 0;
         if (!parseDigits(text.substr(17, 2), hour) || text[19] != ':')
@@ -281,9 +279,8 @@ namespace AsynGyanis::Net
             return std::nullopt;
         }
 
-        const std::int64_t days = daysFromCivil(static_cast<int>(year), month, day);
-        const std::int64_t seconds = days * kSecondsPerDay + static_cast<std::int64_t>(hour) * 3600 + static_cast<std::int64_t>(minute) * 60 +
-                                     static_cast<std::int64_t>(second);
+        const std::int64_t days    = daysFromCivil(static_cast<int>(year), month, day);
+        const std::int64_t seconds = days * kSecondsPerDay + static_cast<std::int64_t>(hour) * 3600 + static_cast<std::int64_t>(minute) * 60 + static_cast<std::int64_t>(second);
         return std::chrono::system_clock::time_point(std::chrono::seconds(seconds));
     }
 } // namespace AsynGyanis::Net

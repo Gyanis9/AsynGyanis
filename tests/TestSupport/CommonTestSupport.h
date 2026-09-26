@@ -15,10 +15,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
-#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -47,8 +47,7 @@ namespace AsynGyanis::TestSupport
          * @param stream 被改挂的标准流（std::cerr 等）
          * @param buffer 临时缓冲，须活过本对象
          */
-        ScopedStreamRedirect(std::ostream &stream, std::streambuf *buffer) :
-            m_stream(stream), m_original(stream.rdbuf(buffer))
+        ScopedStreamRedirect(std::ostream &stream, std::streambuf *buffer) : m_stream(stream), m_original(stream.rdbuf(buffer))
         {
         }
 
@@ -93,10 +92,8 @@ namespace AsynGyanis::TestSupport
             std::error_code error;
             while (true)
             {
-                const std::string salt = std::to_string(
-                                                 std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
-                                         std::to_string(sequenceCounter.fetch_add(1));
-                m_path = std::filesystem::temp_directory_path() / ("AsynGyanis_Test_" + namePrefix + "_" + salt);
+                const std::string salt = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" + std::to_string(sequenceCounter.fetch_add(1));
+                m_path                 = std::filesystem::temp_directory_path() / ("AsynGyanis_Test_" + namePrefix + "_" + salt);
                 if (std::filesystem::create_directories(m_path, error))
                 {
                     break;
@@ -120,8 +117,7 @@ namespace AsynGyanis::TestSupport
             // 悄悄堆积的形式潜伏（曾有 2000+ 个目录累积数天无人察觉）
             if (error)
             {
-                std::fprintf(stderr, "[测试支持] 临时目录删除失败（可能仍被打开的文件占用）：%s — %s\n",
-                             m_path.string().c_str(), error.message().c_str());
+                std::fprintf(stderr, "[测试支持] 临时目录删除失败（可能仍被打开的文件占用）：%s — %s\n", m_path.string().c_str(), error.message().c_str());
             }
         }
 
@@ -292,17 +288,16 @@ namespace AsynGyanis::TestSupport
      * @param millisecond 毫秒（0-999）
      * @return std::chrono::system_clock::time_point 对应的时刻；折算失败时给出明显不匹配的时刻，由断言报出来
      */
-    [[nodiscard]] inline std::chrono::system_clock::time_point makeLocalMoment(const int year, const int month, const int dayOfMonth,
-                                                                              const int hour, const int minute, const int second,
-                                                                              const int millisecond)
+    [[nodiscard]] inline std::chrono::system_clock::time_point makeLocalMoment(const int year, const int month, const int dayOfMonth, const int hour, const int minute,
+                                                                               const int second, const int millisecond)
     {
         std::tm calendarTime{};
-        calendarTime.tm_year  = year - 1900;
-        calendarTime.tm_mon   = month - 1;
-        calendarTime.tm_mday  = dayOfMonth;
-        calendarTime.tm_hour  = hour;
-        calendarTime.tm_min   = minute;
-        calendarTime.tm_sec   = second;
+        calendarTime.tm_year = year - 1900;
+        calendarTime.tm_mon  = month - 1;
+        calendarTime.tm_mday = dayOfMonth;
+        calendarTime.tm_hour = hour;
+        calendarTime.tm_min  = minute;
+        calendarTime.tm_sec  = second;
         // 交还给 libc 判定夏令时：写死 0/1 会在有夏令时的时区折出偏移一小时的另一刻
         calendarTime.tm_isdst = -1;
 
@@ -310,11 +305,10 @@ namespace AsynGyanis::TestSupport
         // 表现为 libc 内部一次 free 与写竞争，TSan 报在 libc 帧上）。POSIX 不承诺 tzset 线程安全，
         // 所以这条只能由调用侧回避；生产代码不在这条路径上（PlatformTime 自己折日历并缓存），
         // 故只在测试助手里串起来：一把进程级锁把各用例的折算排开，换来「TSan 零告警」这个判据可用
-        static std::mutex calendarFoldMutex;
+        static std::mutex                 calendarFoldMutex;
         const std::lock_guard<std::mutex> foldLock(calendarFoldMutex);
 
-        return std::chrono::system_clock::from_time_t(std::mktime(&calendarTime))
-               + std::chrono::milliseconds(millisecond);
+        return std::chrono::system_clock::from_time_t(std::mktime(&calendarTime)) + std::chrono::milliseconds(millisecond);
     }
 
     /**

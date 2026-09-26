@@ -72,4 +72,4 @@ namespace AsynGyanis::Core
         std::stop_source m_stopSource; ///< 内部的停止源，管理取消状态
     };
 
-}
+} // namespace AsynGyanis::Core

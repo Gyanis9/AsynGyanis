@@ -27,16 +27,13 @@ namespace AsynGyanis::Base
         // 上界：一条事件在队列里要占 sizeof(LogEvent) 字节，容量乘以它就是下游卡住时最多占住的
         // 内存；配置里 queue_size 多打几个 0，本该「按策略丢弃或阻塞」的背压就变成了 OOM。
         // 配置边界已有一次钳制，这里再做一次是为了让 AsyncSink 自身不依赖「调用方传了合法容量」
-        , m_maximumQueueSize(std::clamp(queueSize, kMinimumQueueSize, kMaximumQueueSize))
-        , m_overflowPolicy(policy)
+        ,
+        m_maximumQueueSize(std::clamp(queueSize, kMinimumQueueSize, kMaximumQueueSize)), m_overflowPolicy(policy)
     {
         // jthread 在析构时会 request_stop 并 join；本类的 stop() 已负责唤醒条件变量后再 join，
         // 因此把停止状态统一收敛到 stop_token 上，不再另设 m_running 布尔量
-        m_workerThread = std::jthread([this](const std::stop_token &stopToken)
-        {
-            workerLoop(stopToken);
-        });
-        m_stopToken = m_workerThread.get_stop_token();
+        m_workerThread = std::jthread([this](const std::stop_token &stopToken) { workerLoop(stopToken); });
+        m_stopToken    = m_workerThread.get_stop_token();
     }
 
     AsyncSink::~AsyncSink()
@@ -93,10 +90,8 @@ namespace AsynGyanis::Base
             // Block：等队列腾出空间。**等待有上界**——下游 sink 卡住（慢盘、网络盘失联）时
             // 队列再也不会腾位，而调用方可能就是事件循环线程本身，无限期等它等于把整个循环停摆。
             // 超时与「因停止而结束」同一条处置：计入丢弃数，让运维能从 droppedEventCount() 看到代价
-            const bool hasSpace = m_spaceCondition.wait_for(lock, kMaximumBlockWaitMilliseconds, [this]
-            {
-                return queuedEventCount() < m_maximumQueueSize || m_stopToken.stop_requested();
-            });
+            const bool hasSpace =
+                    m_spaceCondition.wait_for(lock, kMaximumBlockWaitMilliseconds, [this] { return queuedEventCount() < m_maximumQueueSize || m_stopToken.stop_requested(); });
             if (!hasSpace || m_stopToken.stop_requested())
             {
                 // 事件不会入队，与其它策略一样计入丢弃数
@@ -127,9 +122,7 @@ namespace AsynGyanis::Base
         {
             // 倍增至配置容量为止：入队因此只在扩容那一次取堆，且峰值内存不超过调用方要的队列规模。
             // 保底留出一格是因为 size() 里可能还压着一段待回收的前缀，它比在队事件数更大
-            const std::size_t doubledCapacity = m_slots.capacity() * 2U < kInitialSlotCapacity
-                                                    ? kInitialSlotCapacity
-                                                    : m_slots.capacity() * 2U;
+            const std::size_t doubledCapacity = m_slots.capacity() * 2U < kInitialSlotCapacity ? kInitialSlotCapacity : m_slots.capacity() * 2U;
             m_slots.reserve(std::max(std::min(doubledCapacity, m_maximumQueueSize), m_slots.size() + 1U));
         }
         m_slots.push_back(std::move(event));
@@ -183,10 +176,7 @@ namespace AsynGyanis::Base
             // 后来者的账不是本次要等的账
             const std::size_t targetAcceptedCount = m_acceptedCount;
             ++m_flushWaiterCount;
-            m_flushCondition.wait(lock, [this, targetAcceptedCount]
-            {
-                return m_settledCount >= targetAcceptedCount || m_stopToken.stop_requested();
-            });
+            m_flushCondition.wait(lock, [this, targetAcceptedCount] { return m_settledCount >= targetAcceptedCount || m_stopToken.stop_requested(); });
             --m_flushWaiterCount;
         }
         // 转发刷新必须在锁外：这一句可能是 FlushFileBuffers 或一次标准输出刷新，握着队列锁
@@ -203,24 +193,25 @@ namespace AsynGyanis::Base
         // std::call_once：首次调用执行 request_stop + notify + join，重复调用直接返回；
         // 并发的多个调用者都会等到 join 完成才返回，避免「停止未完成就被调用方当作已完成」。
         // 这里不额外设「已停止」标志位：停止状态由 stop_token 单一表达，worker 循环也读同一来源
-        std::call_once(m_stopOnce, [this]
-        {
-            {
-                // 停止标记必须与等待谓词在**同一把锁**下发布：谓词在锁内读 stop_requested()，
-                // 若在锁外通知，唤醒可能落在「等待方已判定谓词为假、尚未入睡」的窗口里被丢弃，
-                // worker 会永远睡在条件变量上、随后的 join() 永久阻塞
-                const std::lock_guard lock(m_queueMutex);
-                m_workerThread.request_stop();
-                // 两类等待者各有各的条件变量，两条都要叫：只叫一条会把另一类留在睡梦里
-                m_workCondition.notify_all();
-                m_spaceCondition.notify_all();
-            }
-            m_workerThread.join();
-            if (m_wrappedSink)
-            {
-                m_wrappedSink->flush();
-            }
-        });
+        std::call_once(m_stopOnce,
+                       [this]
+                       {
+                           {
+                               // 停止标记必须与等待谓词在**同一把锁**下发布：谓词在锁内读 stop_requested()，
+                               // 若在锁外通知，唤醒可能落在「等待方已判定谓词为假、尚未入睡」的窗口里被丢弃，
+                               // worker 会永远睡在条件变量上、随后的 join() 永久阻塞
+                               const std::lock_guard lock(m_queueMutex);
+                               m_workerThread.request_stop();
+                               // 两类等待者各有各的条件变量，两条都要叫：只叫一条会把另一类留在睡梦里
+                               m_workCondition.notify_all();
+                               m_spaceCondition.notify_all();
+                           }
+                           m_workerThread.join();
+                           if (m_wrappedSink)
+                           {
+                               m_wrappedSink->flush();
+                           }
+                       });
     }
 
     void AsyncSink::workerLoop(const std::stop_token &stopToken)
@@ -263,10 +254,7 @@ namespace AsynGyanis::Base
         while (!stopToken.stop_requested())
         {
             std::unique_lock lock(m_queueMutex);
-            m_workCondition.wait(lock, [this, &stopToken]
-            {
-                return queuedEventCount() > 0 || stopToken.stop_requested();
-            });
+            m_workCondition.wait(lock, [this, &stopToken] { return queuedEventCount() > 0 || stopToken.stop_requested(); });
             while (queuedEventCount() > 0)
             {
                 drainOneEvent(lock);

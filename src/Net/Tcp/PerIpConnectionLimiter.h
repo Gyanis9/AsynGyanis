@@ -153,8 +153,8 @@ namespace AsynGyanis::Net
          */
         static void release(State &state, const std::string &ipKey);
 
-        std::shared_ptr<State> m_state;                    ///< 计数表，与租约共享
-        std::size_t            m_maximumConnectionsPerIp;  ///< 单个来源的上限，0 表示关闭该项保护
+        std::shared_ptr<State> m_state;                   ///< 计数表，与租约共享
+        std::size_t            m_maximumConnectionsPerIp; ///< 单个来源的上限，0 表示关闭该项保护
     };
 
 } // namespace AsynGyanis::Net

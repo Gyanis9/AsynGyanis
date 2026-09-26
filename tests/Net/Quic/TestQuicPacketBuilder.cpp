@@ -70,13 +70,13 @@ namespace AsynGyanis::Net
          * @param headerProtectionKeyHex 头部保护密钥
          * @return QuicPacketKeys 密钥组
          */
-        QuicPacketKeys makeFullKeys(const QuicCipherSuite cipherSuite, const std::string_view keyHex,
-                                    const std::string_view initializationVectorHex, const std::string_view headerProtectionKeyHex)
+        QuicPacketKeys makeFullKeys(const QuicCipherSuite cipherSuite, const std::string_view keyHex, const std::string_view initializationVectorHex,
+                                    const std::string_view headerProtectionKeyHex)
         {
             QuicPacketKeys keys;
-            keys.cipherSuite = cipherSuite;
-            const auto keyBytes = makeBytesFromHex(keyHex);
-            const auto vectorBytes = makeBytesFromHex(initializationVectorHex);
+            keys.cipherSuite              = cipherSuite;
+            const auto keyBytes           = makeBytesFromHex(keyHex);
+            const auto vectorBytes        = makeBytesFromHex(initializationVectorHex);
             const auto protectionKeyBytes = makeBytesFromHex(headerProtectionKeyHex);
             std::copy(keyBytes.begin(), keyBytes.end(), keys.encryptionKey.begin());
             std::copy(vectorBytes.begin(), vectorBytes.end(), keys.initializationVector.begin());
@@ -87,8 +87,7 @@ namespace AsynGyanis::Net
         /// 附录 A.5 那组 ChaCha20 密钥（密钥、IV、头部保护密钥都取自 RFC 原文）
         QuicPacketKeys chacha20Keys()
         {
-            return makeFullKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5KeyHex, kAppendixA5InitializationVectorHex,
-                                kAppendixA5HeaderProtectionKeyHex);
+            return makeFullKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5KeyHex, kAppendixA5InitializationVectorHex, kAppendixA5HeaderProtectionKeyHex);
         }
 
         /**
@@ -101,11 +100,11 @@ namespace AsynGyanis::Net
          * @param packetOffset 本包在数据报里的起始偏移
          * @return std::vector<std::uint8_t> 解出的明文帧；任何一步失败都返回空
          */
-        std::vector<std::uint8_t> openPacketAt(const std::vector<std::uint8_t> &datagram, const QuicPacketKeys &keys,
-                                               const std::size_t localConnectionIdLength, const std::size_t packetOffset)
+        std::vector<std::uint8_t> openPacketAt(const std::vector<std::uint8_t> &datagram, const QuicPacketKeys &keys, const std::size_t localConnectionIdLength,
+                                               const std::size_t packetOffset)
         {
             const std::span<const std::uint8_t> packetSpan(datagram.data() + packetOffset, datagram.size() - packetOffset);
-            const auto decoded = decodeQuicPacketHeader(packetSpan, localConnectionIdLength);
+            const auto                          decoded = decodeQuicPacketHeader(packetSpan, localConnectionIdLength);
             if (!decoded.has_value())
             {
                 return {};
@@ -115,22 +114,19 @@ namespace AsynGyanis::Net
             {
                 return {};
             }
-            std::vector<std::uint8_t> mutablePacket(packetSpan.begin(), packetSpan.end());
-            const QuicHeaderProtectionMask mask = generateQuicHeaderProtectionMask(keys, *sample);
-            QuicPacketHeader header = *decoded;
-            const auto unmaskedFirstByte = removeQuicHeaderProtection(mutablePacket, header, mask);
-            if (!unmaskedFirstByte.has_value() ||
-                !refreshQuicPacketHeader(header, *unmaskedFirstByte, mutablePacket).has_value())
+            std::vector<std::uint8_t>      mutablePacket(packetSpan.begin(), packetSpan.end());
+            const QuicHeaderProtectionMask mask              = generateQuicHeaderProtectionMask(keys, *sample);
+            QuicPacketHeader               header            = *decoded;
+            const auto                     unmaskedFirstByte = removeQuicHeaderProtection(mutablePacket, header, mask);
+            if (!unmaskedFirstByte.has_value() || !refreshQuicPacketHeader(header, *unmaskedFirstByte, mutablePacket).has_value())
             {
                 return {};
             }
             // 附加认证数据 = 未保护头部到包号末尾，取去保护之后的字节才对得上
-            const std::span<const std::uint8_t> additionalData(mutablePacket.data(),
-                                                               header.packetNumberOffset + header.packetNumberByteCount);
-            const std::span<const std::uint8_t> protectedPayload(mutablePacket.data() + header.packetNumberOffset +
-                                                                         header.packetNumberByteCount,
+            const std::span<const std::uint8_t> additionalData(mutablePacket.data(), header.packetNumberOffset + header.packetNumberByteCount);
+            const std::span<const std::uint8_t> protectedPayload(mutablePacket.data() + header.packetNumberOffset + header.packetNumberByteCount,
                                                                  header.packetNumberAndPayloadByteCount - header.packetNumberByteCount);
-            std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
+            std::vector<std::uint8_t>           plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
             if (!openQuicProtectedPayload(plaintext, keys, header.packetNumber, additionalData, protectedPayload).has_value())
             {
                 return {};
@@ -145,20 +141,19 @@ namespace AsynGyanis::Net
     TEST(QuicPacketBuilder, BuildsAppendixA2ClientInitialByteForByte)
     {
         const auto destinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
-        const auto keys = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ClientToServer);
-        const auto plaintext = buildAppendixA2Plaintext();
+        const auto keys                    = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ClientToServer);
+        const auto plaintext               = buildAppendixA2Plaintext();
 
         QuicOutboundPacket packet;
         packet.destinationConnectionId = destinationConnectionId;
-        packet.packetNumber = kAppendixA2PacketNumber;
-        packet.packetNumberByteCount = 4;
-        packet.frames = plaintext;
+        packet.packetNumber            = kAppendixA2PacketNumber;
+        packet.packetNumberByteCount   = 4;
+        packet.frames                  = plaintext;
 
         std::string datagram;
         appendQuicPacket(datagram, packet, keys);
 
-        EXPECT_EQ(toUnsignedBytes(datagram), makeBytesFromHex(kAppendixA2ProtectedPacketHex))
-                << "头部编码、Length 域、AEAD 与头部保护四层里任一处错位，整包都对不上";
+        EXPECT_EQ(toUnsignedBytes(datagram), makeBytesFromHex(kAppendixA2ProtectedPacketHex)) << "头部编码、Length 域、AEAD 与头部保护四层里任一处错位，整包都对不上";
     }
 
     /**
@@ -166,12 +161,12 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketBuilder, BuildsAppendixA5ShortPacketByteForByte)
     {
-        const auto plaintext = makeBytesFromHex(kAppendixA5PlaintextHex);
+        const auto         plaintext = makeBytesFromHex(kAppendixA5PlaintextHex);
         QuicOutboundPacket packet;
-        packet.isLongHeader = false;
-        packet.packetNumber = kAppendixA5PacketNumber;
+        packet.isLongHeader          = false;
+        packet.packetNumber          = kAppendixA5PacketNumber;
         packet.packetNumberByteCount = 3;
-        packet.frames = plaintext;
+        packet.frames                = plaintext;
 
         std::string datagram;
         appendQuicPacket(datagram, packet, chacha20Keys());
@@ -187,15 +182,15 @@ namespace AsynGyanis::Net
     TEST(QuicPacketBuilder, PadsShortPacketsInsideTheEncryptedPayload)
     {
         const auto destinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
-        const auto keys = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ServerToClient);
-        const auto pingFrame = makeBytesFromHex("01");
+        const auto keys                    = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ServerToClient);
+        const auto pingFrame               = makeBytesFromHex("01");
 
         QuicOutboundPacket packet;
-        packet.isLongHeader = false;
+        packet.isLongHeader            = false;
         packet.destinationConnectionId = destinationConnectionId;
-        packet.packetNumber = 1;
-        packet.packetNumberByteCount = 1;
-        packet.frames = pingFrame;
+        packet.packetNumber            = 1;
+        packet.packetNumberByteCount   = 1;
+        packet.frames                  = pingFrame;
 
         std::string datagram;
         appendQuicPacket(datagram, packet, keys);
@@ -214,34 +209,33 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketBuilder, CoalescesLongHeaderPacketsIntoOneDatagram)
     {
-        const auto keys = deriveQuicInitialPacketKeys(makeBytesFromHex(kVectorDestinationConnectionIdHex),
-                                                      QuicPacketDirection::ServerToClient);
+        const auto keys        = deriveQuicInitialPacketKeys(makeBytesFromHex(kVectorDestinationConnectionIdHex), QuicPacketDirection::ServerToClient);
         const auto cryptoFrame = makeBytesFromHex("06000141");
         // 目的/源标识要先存进具名容器：QuicOutboundPacket 存的是视图，直接从临时量赋值会在
         // 语句结束时悬空（ASan 实测 heap-use-after-free）
-        const auto peerConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
+        const auto peerConnectionId  = makeBytesFromHex(kVectorDestinationConnectionIdHex);
         const auto localConnectionId = makeBytesFromHex("f0eec687a7eb7f48");
 
         QuicOutboundPacket initial;
-        initial.longPacketType = QuicLongPacketType::Initial;
+        initial.longPacketType          = QuicLongPacketType::Initial;
         initial.destinationConnectionId = peerConnectionId;
-        initial.sourceConnectionId = localConnectionId;
-        initial.packetNumber = 0;
-        initial.frames = cryptoFrame;
+        initial.sourceConnectionId      = localConnectionId;
+        initial.packetNumber            = 0;
+        initial.frames                  = cryptoFrame;
 
         QuicOutboundPacket handshake;
-        handshake.longPacketType = QuicLongPacketType::Handshake;
+        handshake.longPacketType          = QuicLongPacketType::Handshake;
         handshake.destinationConnectionId = peerConnectionId;
-        handshake.sourceConnectionId = localConnectionId;
-        handshake.packetNumber = 1;
-        handshake.frames = cryptoFrame;
+        handshake.sourceConnectionId      = localConnectionId;
+        handshake.packetNumber            = 1;
+        handshake.frames                  = cryptoFrame;
 
         std::string datagram;
         appendQuicPacket(datagram, initial, keys);
         const std::size_t initialByteCount = datagram.size();
         appendQuicPacket(datagram, handshake, keys);
 
-        const auto bytes = toUnsignedBytes(datagram);
+        const auto bytes          = toUnsignedBytes(datagram);
         const auto firstPlaintext = openPacketAt(bytes, keys, 0, 0);
         ASSERT_FALSE(firstPlaintext.empty()) << "第一个包解不开";
         EXPECT_EQ(firstPlaintext, cryptoFrame);
@@ -263,14 +257,14 @@ namespace AsynGyanis::Net
     TEST(QuicPacketBuilder, RejectsInvalidOutboundPackets)
     {
         const auto destinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
-        const auto keys = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ServerToClient);
-        const auto frame = makeBytesFromHex("01");
-        const auto oversizedConnectionId = makeBytesFromHex("00112233445566778899aabbccddeeff0011223344");
-        const auto token = makeBytesFromHex("aabb");
+        const auto keys                    = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ServerToClient);
+        const auto frame                   = makeBytesFromHex("01");
+        const auto oversizedConnectionId   = makeBytesFromHex("00112233445566778899aabbccddeeff0011223344");
+        const auto token                   = makeBytesFromHex("aabb");
 
         QuicOutboundPacket packet;
         packet.destinationConnectionId = destinationConnectionId;
-        packet.frames = frame;
+        packet.frames                  = frame;
 
         std::string datagram;
         packet.frames = {};
@@ -287,10 +281,10 @@ namespace AsynGyanis::Net
 
         // 只有 Initial 的长头里有 Token 字段
         packet.longPacketType = QuicLongPacketType::Handshake;
-        packet.token = token;
+        packet.token          = token;
         EXPECT_THROW(appendQuicPacket(datagram, packet, keys), Base::InvalidArgumentException);
         packet.longPacketType = QuicLongPacketType::Initial;
-        packet.token = {};
+        packet.token          = {};
 
         packet.packetNumber = kQuicMaximumIntegerValue + 1ULL;
         EXPECT_THROW(appendQuicPacket(datagram, packet, keys), Base::InvalidArgumentException);
@@ -305,14 +299,14 @@ namespace AsynGyanis::Net
     TEST(QuicPacketBuilderAllocations, FullSizeInitialPacketAllocationLedger)
     {
         const auto destinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
-        const auto keys = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ClientToServer);
-        const auto plaintext = buildAppendixA2Plaintext();
+        const auto keys                    = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ClientToServer);
+        const auto plaintext               = buildAppendixA2Plaintext();
 
         QuicOutboundPacket packet;
-        packet.destinationConnectionId  = destinationConnectionId;
-        packet.packetNumber             = kAppendixA2PacketNumber;
-        packet.packetNumberByteCount    = 4;
-        packet.frames                   = plaintext;
+        packet.destinationConnectionId = destinationConnectionId;
+        packet.packetNumber            = kAppendixA2PacketNumber;
+        packet.packetNumberByteCount   = 4;
+        packet.frames                  = plaintext;
 
         std::string probe;
         appendQuicPacket(probe, packet, keys);
@@ -327,26 +321,23 @@ namespace AsynGyanis::Net
         };
 
         AsynGyanis::TestSupport::resetAllocationHistogram();
-        const auto beganAt = std::chrono::steady_clock::now();
+        const auto              beganAt = std::chrono::steady_clock::now();
         const AllocationProfile profile = measurePerOperation(buildOnce);
-        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - beganAt).count();
+        const auto              elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - beganAt).count();
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * packetByteCount) << "有几次没组出完整长度，读数不可信";
         std::printf("quic 组一条 %zu 字节的 Initial：%llu 次分配 / %llu 字节 / 每次 %.1f 微秒\n", packetByteCount,
                     static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
-                    static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations),
-                    static_cast<double>(elapsed) / static_cast<double>(kMeasurementIterations));
+                    static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations), static_cast<double>(elapsed) / static_cast<double>(kMeasurementIterations));
         const AsynGyanis::TestSupport::AllocationHistogram histogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
         for (std::size_t bucket = 0; bucket < histogram.size(); ++bucket)
         {
             if (histogram[bucket] != 0)
             {
-                std::printf("  桶 %zu-%zu 字节：%llu 次\n", bucket * 16U, bucket * 16U + 15U,
-                            static_cast<unsigned long long>(histogram[bucket] / kMeasurementIterations));
+                std::printf("  桶 %zu-%zu 字节：%llu 次\n", bucket * 16U, bucket * 16U + 15U, static_cast<unsigned long long>(histogram[bucket] / kMeasurementIterations));
             }
         }
         EXPECT_LE(profile.totalAllocations, kMeasurementIterations * kQuicMaximumPacketBuildAllocations)
-                << "组一条包的分配次数超过阈值：读数为每次 "
-                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+                << "组一条包的分配次数超过阈值：读数为每次 " << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
 
     /**
@@ -357,14 +348,14 @@ namespace AsynGyanis::Net
     TEST(QuicPacketBuilderAllocations, SmallAcknowledgementPacketAllocationLedger)
     {
         const auto destinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
-        const auto keys = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ServerToClient);
+        const auto keys                    = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ServerToClient);
 
         // 一条 ACK 帧的真实长度量不出来也不要紧：被测的是「载荷短到需要补 PADDING」这一档
         const std::vector<std::uint8_t> frames(6U, 0x00U);
-        QuicOutboundPacket packet;
-        packet.isLongHeader           = true;
-        packet.longPacketType         = QuicLongPacketType::Initial;
-        packet.version                = kQuicVersion1;
+        QuicOutboundPacket              packet;
+        packet.isLongHeader            = true;
+        packet.longPacketType          = QuicLongPacketType::Initial;
+        packet.version                 = kQuicVersion1;
         packet.destinationConnectionId = destinationConnectionId;
         packet.packetNumber            = 1ULL;
         packet.packetNumberByteCount   = 1;
@@ -384,11 +375,9 @@ namespace AsynGyanis::Net
 
         const AllocationProfile profile = measurePerOperation(buildOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * packetByteCount) << "有几次没组出完整长度，读数不可信";
-        std::printf("quic 组一条 %zu 字节的 ACK 包：%llu 次分配 / %llu 字节\n", packetByteCount,
-                    static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
+        std::printf("quic 组一条 %zu 字节的 ACK 包：%llu 次分配 / %llu 字节\n", packetByteCount, static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations),
                     static_cast<unsigned long long>(profile.totalBytes / kMeasurementIterations));
         EXPECT_LE(profile.totalAllocations, kMeasurementIterations * kQuicMaximumPacketBuildAllocations)
-                << "组一条包的分配次数超过阈值：读数为每次 "
-                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+                << "组一条包的分配次数超过阈值：读数为每次 " << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
 } // namespace AsynGyanis::Net

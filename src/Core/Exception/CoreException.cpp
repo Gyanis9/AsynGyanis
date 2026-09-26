@@ -2,8 +2,7 @@
 
 namespace AsynGyanis::Core
 {
-    CoreException::CoreException(const std::string &message, const std::source_location &sourceLocation) :
-        Base::Exception(message, sourceLocation)
+    CoreException::CoreException(const std::string &message, const std::source_location &sourceLocation) : Base::Exception(message, sourceLocation)
     {
     }
 

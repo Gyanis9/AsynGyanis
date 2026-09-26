@@ -15,9 +15,9 @@
 
 #include "Base/Log/LogEvent.h"
 
-#include "BaseTestSupport.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
+#include "BaseTestSupport.h"
 #include "Platform/IO/Console.h"
 
 namespace AsynGyanis::Base
@@ -196,11 +196,12 @@ namespace AsynGyanis::Base
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "console message")
         {
-            return {
-                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-334455",
+            return {level,
+                    TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789),
+                    "tid-334455",
                     SourceLocation("console_fixture.cpp", 6421, "consoleTestFunction"),
-                    "console_logger", std::move(message)
-            };
+                    "console_logger",
+                    std::move(message)};
         }
 
         /**
@@ -218,13 +219,13 @@ namespace AsynGyanis::Base
 
     TEST(ConsoleSink, ReportsOnceWhenStandardOutputRejectsTheLine)
     {
-        ConsoleSink sink(false);
+        ConsoleSink           sink(false);
         RejectingStreamBuffer rejectingStdout;
 
         std::string capturedError;
         {
             const ScopedConsoleCapture capture;
-            auto *const savedStdoutBuffer = std::cout.rdbuf(&rejectingStdout);
+            auto *const                savedStdoutBuffer = std::cout.rdbuf(&rejectingStdout);
 
             sink.write(makeEvent(LogLevel::Info, "stdout-broken-one"));
             sink.write(makeEvent(LogLevel::Info, "stdout-broken-two"));
@@ -240,8 +241,7 @@ namespace AsynGyanis::Base
 
         // 三次写出（两行 + 一次 flush）只报第一条：流已经废了，每行再报一条会把现场淹没
         std::size_t reportCount = 0;
-        for (std::size_t position = capturedError.find("ConsoleSink"); position != std::string::npos;
-             position = capturedError.find("ConsoleSink", position + 1))
+        for (std::size_t position = capturedError.find("ConsoleSink"); position != std::string::npos; position = capturedError.find("ConsoleSink", position + 1))
         {
             ++reportCount;
         }
@@ -349,9 +349,9 @@ namespace AsynGyanis::Base
     {
         // 钉住：低于 Warn 的等级写 std::cout，且 write() 返回时这一行已经刷出。重定向到文件或
         // 管道时 std::cout 是全缓冲，不刷就 tail 不到实时内容，进程异常退出还会把尾部丢掉
-        SyncCountingBuffer   buffer;
+        SyncCountingBuffer                buffer;
         TestSupport::ScopedStreamRedirect redirect(std::cout, &buffer);
-        ConsoleSink          sink(false);
+        ConsoleSink                       sink(false);
 
         sink.write(makeEvent(LogLevel::Info, "flush_on_write"));
 
@@ -362,9 +362,9 @@ namespace AsynGyanis::Base
     {
         // Warn 及以上走 std::cerr，它恒为 unitbuf、整行写出即落地；与上一条合起来构成
         // 「write() 返回时该行已落地」这条契约的两条实现路径
-        SyncCountingBuffer   buffer;
+        SyncCountingBuffer                buffer;
         TestSupport::ScopedStreamRedirect redirect(std::cerr, &buffer);
-        ConsoleSink          sink(false);
+        ConsoleSink                       sink(false);
 
         sink.write(makeEvent(LogLevel::Error, "flush_on_write"));
 
@@ -475,14 +475,14 @@ namespace AsynGyanis::Base
             const ScopedConsoleCapture capture;
             for (int index = 0; index < kthreadCount; ++index)
             {
-                threads.emplace_back([&sink, index]
-                {
-                    for (int inner = 0; inner < kwritesPerThread; ++inner)
-                    {
-                        sink.write(makeEvent(LogLevel::Info,
-                                             "thread" + std::to_string(index) + "_msg" + std::to_string(inner)));
-                    }
-                });
+                threads.emplace_back(
+                        [&sink, index]
+                        {
+                            for (int inner = 0; inner < kwritesPerThread; ++inner)
+                            {
+                                sink.write(makeEvent(LogLevel::Info, "thread" + std::to_string(index) + "_msg" + std::to_string(inner)));
+                            }
+                        });
             }
             for (std::thread &thread: threads)
             {
@@ -516,25 +516,27 @@ namespace AsynGyanis::Base
         togglers.reserve(2);
         for (int index = 0; index < 2; ++index)
         {
-            togglers.emplace_back([&sink, &stopToggling]
-            {
-                while (!stopToggling.load(std::memory_order_relaxed))
-                {
-                    sink.setColorEnabled(true);
-                    sink.setColorEnabled(false);
-                }
-            });
+            togglers.emplace_back(
+                    [&sink, &stopToggling]
+                    {
+                        while (!stopToggling.load(std::memory_order_relaxed))
+                        {
+                            sink.setColorEnabled(true);
+                            sink.setColorEnabled(false);
+                        }
+                    });
         }
         writers.reserve(kwriterCount);
         for (int index = 0; index < kwriterCount; ++index)
         {
-            writers.emplace_back([&sink]
-            {
-                for (int inner = 0; inner < kwritesPerWriter; ++inner)
-                {
-                    sink.write(makeEvent(LogLevel::Info, "racy_" + std::to_string(inner)));
-                }
-            });
+            writers.emplace_back(
+                    [&sink]
+                    {
+                        for (int inner = 0; inner < kwritesPerWriter; ++inner)
+                        {
+                            sink.write(makeEvent(LogLevel::Info, "racy_" + std::to_string(inner)));
+                        }
+                    });
         }
 
         for (std::thread &writer: writers)
@@ -556,10 +558,9 @@ namespace AsynGyanis::Base
     {
         ScopedConsoleCapture capture;
 
-        EXPECT_NO_THROW(
-                {
-                ConsoleSink sink(true);
-                sink.write(makeEvent(LogLevel::Error, "before destroy"));
-                });
+        EXPECT_NO_THROW({
+            ConsoleSink sink(true);
+            sink.write(makeEvent(LogLevel::Error, "before destroy"));
+        });
     }
 } // namespace AsynGyanis::Base

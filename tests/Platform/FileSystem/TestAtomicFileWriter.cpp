@@ -115,7 +115,7 @@ namespace AsynGyanis::Platform
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("AtomicWriter_OutsideCodePage");
         const std::string                     targetNameUtf8 = std::string("\xE0\xB8\x81\xE0\xB8\x82") + ".json";
-        const std::filesystem::path           targetPath = temporaryDirectory.path() / FileSystem::pathFromUtf8(targetNameUtf8);
+        const std::filesystem::path           targetPath     = temporaryDirectory.path() / FileSystem::pathFromUtf8(targetNameUtf8);
 
         std::string error;
         bool        succeeded = false;
@@ -170,7 +170,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(AtomicFileWriter::writeText(blockingFile, "x", {}));
 
         // 不传错误输出参数时失败也不应崩溃
-        EXPECT_NO_THROW((void)AtomicFileWriter::writeText(blockingFile / "child.txt", "y", {}));
+        EXPECT_NO_THROW((void) AtomicFileWriter::writeText(blockingFile / "child.txt", "y", {}));
         EXPECT_FALSE(AtomicFileWriter::writeText(blockingFile / "child.txt", "y", {}));
     }
 
@@ -194,8 +194,7 @@ namespace AsynGyanis::Platform
         error.clear();
         EXPECT_FALSE(AtomicFileWriter::writeText(blockingFile / "child.txt", "y", {}, &error));
         const std::string expectedMarker = ".tmp." + std::to_string(ProcessInfo::currentProcessId());
-        EXPECT_NE(error.find(expectedMarker), std::string::npos)
-                << "临时名里没有进程号，跨进程并发写会共用同一个 .tmp：" << error;
+        EXPECT_NE(error.find(expectedMarker), std::string::npos) << "临时名里没有进程号，跨进程并发写会共用同一个 .tmp：" << error;
     }
     /**
      * @brief 钉住：替换失败时交出的是替换那一步的原因，而不是清理临时文件的结果
@@ -207,7 +206,7 @@ namespace AsynGyanis::Platform
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("AtomicWriter_RenameReason");
 
-        std::string error;
+        std::string                 error;
         const std::filesystem::path blockedDirectory = temporaryDirectory.path() / "blocked-dir";
         std::filesystem::create_directories(blockedDirectory);
         // 非空目录才让「文件改名成目录」稳定失败：空目录在个别平台上会被直接换过来
@@ -224,12 +223,11 @@ namespace AsynGyanis::Platform
         error.clear();
         EXPECT_FALSE(AtomicFileWriter::writeText(blockedDirectory, "should not be published", {}, &error));
         EXPECT_NE(error.find("替换"), std::string::npos) << "失败没有落在替换那一步：" << error;
-        EXPECT_NE(error.find(probeError.message()), std::string::npos)
-                << "报错应当带上替换那一步的原因「" << probeError.message() << "」，实际：" << error;
+        EXPECT_NE(error.find(probeError.message()), std::string::npos) << "报错应当带上替换那一步的原因「" << probeError.message() << "」，实际：" << error;
 
         // 清理照旧要发生：残留的 .tmp 会让下一次发布的判据被污染
         std::size_t temporaryResidueCount = 0;
-        for (const auto &entry : std::filesystem::directory_iterator(temporaryDirectory.path()))
+        for (const auto &entry: std::filesystem::directory_iterator(temporaryDirectory.path()))
         {
             if (entry.path().filename().string().find(".tmp.") != std::string::npos)
             {

@@ -126,19 +126,9 @@ namespace
      * @param active 是否启用
      * @return AccountRow 结构体
      */
-    [[nodiscard]] AccountRow makeRow(const std::int64_t id,
-                                     std::string name,
-                                     const double balance,
-                                     std::optional<std::string> note,
-                                     const bool active)
+    [[nodiscard]] AccountRow makeRow(const std::int64_t id, std::string name, const double balance, std::optional<std::string> note, const bool active)
     {
-        return AccountRow{
-            .id      = id,
-            .name    = std::move(name),
-            .balance = balance,
-            .note    = std::move(note),
-            .active  = active
-        };
+        return AccountRow{.id = id, .name = std::move(name), .balance = balance, .note = std::move(note), .active = active};
     }
 
     /**
@@ -163,12 +153,9 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<AccountRow>
 {
     static constexpr std::string_view kTableName = "accounts";
-    static constexpr auto kColumns = std::tuple{
-        Column(&AccountRow::id,   "id"),
-        Column(&AccountRow::name, "name"),
-        Column(&AccountRow::balance, "balance"),
-        Column(&AccountRow::note, "note"),
-        Column(&AccountRow::active, "active"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&AccountRow::id, "id"),     Column(&AccountRow::name, "name"),     Column(&AccountRow::balance, "balance"),
+            Column(&AccountRow::note, "note"), Column(&AccountRow::active, "active"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -178,9 +165,9 @@ struct AsynGyanis::Database::Queryable::TableSchema<NameCountRow>
 {
     // 分组结果仍然来自 accounts 表，只是投影换成了「户名 + 该户名的行数」
     static constexpr std::string_view kTableName = "accounts";
-    static constexpr auto kColumns = std::tuple{
-        Column(&NameCountRow::name,     "name"),
-        Column(&NameCountRow::rowCount, "cnt"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&NameCountRow::name, "name"),
+            Column(&NameCountRow::rowCount, "cnt"),
     };
     static constexpr std::string_view kPrimaryKey = "name";
 };
@@ -190,9 +177,9 @@ struct AsynGyanis::Database::Queryable::TableSchema<BrokenColumnRow>
 {
     // 故意复用 accounts 表：表存在、但结构体声明了一个表里没有的列
     static constexpr std::string_view kTableName = "accounts";
-    static constexpr auto kColumns = std::tuple{
-        Column(&BrokenColumnRow::id,            "id"),
-        Column(&BrokenColumnRow::missingColumn, "missing_column"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&BrokenColumnRow::id, "id"),
+            Column(&BrokenColumnRow::missingColumn, "missing_column"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -201,8 +188,8 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<TypeMismatchRow>
 {
     static constexpr std::string_view kTableName = "accounts";
-    static constexpr auto kColumns = std::tuple{
-        Column(&TypeMismatchRow::id, "id"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&TypeMismatchRow::id, "id"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -212,10 +199,10 @@ struct AsynGyanis::Database::Queryable::TableSchema<DuplicatedColumnNameRow>
 {
     // 两个成员写同一个列名：结果集里若有两个同名列，按名解析会让二者落到同一列
     static constexpr std::string_view kTableName = "accounts";
-    static constexpr auto kColumns = std::tuple{
-        Column(&DuplicatedColumnNameRow::id,         "id"),
-        Column(&DuplicatedColumnNameRow::firstName,  "name"),
-        Column(&DuplicatedColumnNameRow::secondName, "name"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&DuplicatedColumnNameRow::id, "id"),
+            Column(&DuplicatedColumnNameRow::firstName, "name"),
+            Column(&DuplicatedColumnNameRow::secondName, "name"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -225,10 +212,10 @@ struct AsynGyanis::Database::Queryable::TableSchema<SpacedIdentifierRow>
 {
     // 表名与列名一律含空格：只有把标识符整段引用起来，SQLite 才会把它们当成名字而不是语法
     static constexpr std::string_view kTableName = "spaced accounts";
-    static constexpr auto kColumns = std::tuple{
-        Column(&SpacedIdentifierRow::id,          "id"),
-        Column(&SpacedIdentifierRow::fullName,    "full name"),
-        Column(&SpacedIdentifierRow::homeAddress, "home address"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&SpacedIdentifierRow::id, "id"),
+            Column(&SpacedIdentifierRow::fullName, "full name"),
+            Column(&SpacedIdentifierRow::homeAddress, "home address"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -237,9 +224,9 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<UnsignedCounterRow>
 {
     static constexpr std::string_view kTableName = "unsigned counters";
-    static constexpr auto kColumns = std::tuple{
-        Column(&UnsignedCounterRow::id,       "id"),
-        Column(&UnsignedCounterRow::sequence, "sequence"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&UnsignedCounterRow::id, "id"),
+            Column(&UnsignedCounterRow::sequence, "sequence"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -290,25 +277,24 @@ namespace
             poolConfiguration.maximumPoolSize = 1;
 
             m_pool = std::make_unique<ConnectionPool>(
-                []()
-                {
-                    auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(":memory:"));
-                    // 连接池的工厂契约要求交出「已经 connect() 完成」的连接，池不会替调用方连接
-                    connection->connect();
-                    return connection;
-                },
-                poolConfiguration);
+                    []()
+                    {
+                        auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(":memory:"));
+                        // 连接池的工厂契约要求交出「已经 connect() 完成」的连接，池不会替调用方连接
+                        connection->connect();
+                        return connection;
+                    },
+                    poolConfiguration);
 
             // 建表走原生 SQL：DDL 不由 ORM 生成，这一步只负责准备好被 ORM 操作的表
             PooledConnection connection = m_pool->acquire();
             ASSERT_TRUE(connection);
-            const auto createResult = connection->execute(
-                "CREATE TABLE accounts ("
-                "id INTEGER PRIMARY KEY, "
-                "name TEXT NOT NULL, "
-                "balance REAL, "
-                "note TEXT, "
-                "active INTEGER NOT NULL)");
+            const auto createResult = connection->execute("CREATE TABLE accounts ("
+                                                          "id INTEGER PRIMARY KEY, "
+                                                          "name TEXT NOT NULL, "
+                                                          "balance REAL, "
+                                                          "note TEXT, "
+                                                          "active INTEGER NOT NULL)");
             ASSERT_TRUE(createResult != nullptr) << connection->lastError();
         }
 
@@ -379,8 +365,8 @@ TEST_F(QueryableExecutionTest, OrmInsertThenQueryWithWhereOrderAndLimit)
 
     // 升序全量查询：验证三种字段类型、中文与负数都能正确往返
     {
-        Queryable<AccountRow> query = newQuery();
-        const std::vector<AccountRow> rows = query.orderBy(asc("id")).toList();
+        Queryable<AccountRow>         query = newQuery();
+        const std::vector<AccountRow> rows  = query.orderBy(asc("id")).toList();
 
         ASSERT_EQ(rows.size(), 3U);
 
@@ -405,12 +391,8 @@ TEST_F(QueryableExecutionTest, OrmInsertThenQueryWithWhereOrderAndLimit)
 
     // 条件 + 降序 + 分页：id >= 1 共三行，降序取第一行应当是 id = 3
     {
-        Queryable<AccountRow> query = newQuery();
-        const std::vector<AccountRow> rows =
-            query.where(Column(&AccountRow::id, "id") >= std::int64_t{1})
-                 .orderBy(desc("id"))
-                 .limit(1)
-                 .toList();
+        Queryable<AccountRow>         query = newQuery();
+        const std::vector<AccountRow> rows  = query.where(Column(&AccountRow::id, "id") >= std::int64_t{1}).orderBy(desc("id")).limit(1).toList();
 
         ASSERT_EQ(rows.size(), 1U);
         EXPECT_EQ(rows[0].id, 3);
@@ -419,11 +401,8 @@ TEST_F(QueryableExecutionTest, OrmInsertThenQueryWithWhereOrderAndLimit)
 
     // 复合逻辑条件 + IN + LIKE：验证递归条件与集合参数都能正确绑定
     {
-        Queryable<AccountRow> query = newQuery();
-        const std::vector<AccountRow> rows =
-            query.where(in(Column(&AccountRow::id, "id"), std::vector<int>{1, 3})
-                        && like(Column(&AccountRow::name, "name"), "%张%"))
-                 .toList();
+        Queryable<AccountRow>         query = newQuery();
+        const std::vector<AccountRow> rows  = query.where(in(Column(&AccountRow::id, "id"), std::vector<int>{1, 3}) && like(Column(&AccountRow::name, "name"), "%张%")).toList();
 
         ASSERT_EQ(rows.size(), 1U);
         EXPECT_EQ(rows[0].id, 1);
@@ -445,7 +424,7 @@ TEST_F(QueryableExecutionTest, HostileTextRoundTripsThroughParameterBinding)
 
     // 按名精确查询：WHERE 的取值同样走绑定
     {
-        Queryable<AccountRow> query = newQuery();
+        Queryable<AccountRow>           query = newQuery();
         const std::optional<AccountRow> found = query.where(Column(&AccountRow::name, "name") == hostileName).first();
 
         ASSERT_TRUE(found.has_value());
@@ -460,12 +439,12 @@ TEST_F(QueryableExecutionTest, HostileTextRoundTripsThroughParameterBinding)
 
         // 备注里同样写入恶意文本，验证可空列上的绑定与回读
         Queryable<AccountRow> updateQuery = newQuery();
-        const AccountRow updated = makeRow(2, hostileName, -99.5, std::string("x'); DROP TABLE accounts; --"), false);
+        const AccountRow      updated     = makeRow(2, hostileName, -99.5, std::string("x'); DROP TABLE accounts; --"), false);
         EXPECT_EQ(updateQuery.update(updated), 1);
     }
 
     {
-        Queryable<AccountRow> query = newQuery();
+        Queryable<AccountRow>           query = newQuery();
         const std::optional<AccountRow> found = query.where(Column(&AccountRow::id, "id") == std::int64_t{2}).first();
 
         ASSERT_TRUE(found.has_value());
@@ -488,8 +467,8 @@ TEST_F(QueryableExecutionTest, EmptyStringStaysDistinctFromNull)
     ASSERT_EQ(1, insertQuery.insert(makeRow(1, "空串备注", 1.0, std::string(""), true)));
     ASSERT_EQ(1, insertQuery.insert(makeRow(2, "空备注", 2.0, std::nullopt, true)));
 
-    Queryable<AccountRow> query = newQuery();
-    const std::vector<AccountRow> rows = query.orderBy(asc("id")).toList();
+    Queryable<AccountRow>         query = newQuery();
+    const std::vector<AccountRow> rows  = query.orderBy(asc("id")).toList();
 
     ASSERT_EQ(rows.size(), 2U);
     // 空串是「有值且为空」，NULL 是「没有值」，二者不能混为一谈
@@ -505,7 +484,7 @@ TEST_F(QueryableExecutionTest, FirstReturnsEmptyWhenNoRowMatches)
 {
     insertSampleRows();
 
-    Queryable<AccountRow> query = newQuery();
+    Queryable<AccountRow>           query   = newQuery();
     const std::optional<AccountRow> missing = query.where(Column(&AccountRow::id, "id") == std::int64_t{999}).first();
 
     EXPECT_FALSE(missing.has_value());
@@ -545,8 +524,8 @@ TEST_F(QueryableExecutionTest, UpdateByPrimaryKeyChangesOnlyTargetRow)
     // 主键 2 的备注是 NULL，这里更新为有值；其余字段一并改写
     EXPECT_EQ(updateQuery.update(makeRow(2, "王五", 888.25, std::string("已更新"), true)), 1);
 
-    Queryable<AccountRow> query = newQuery();
-    const std::vector<AccountRow> rows = query.orderBy(asc("id")).toList();
+    Queryable<AccountRow>         query = newQuery();
+    const std::vector<AccountRow> rows  = query.orderBy(asc("id")).toList();
 
     ASSERT_EQ(rows.size(), 3U);
     EXPECT_EQ(rows[1].id, 2);
@@ -575,7 +554,7 @@ TEST_F(QueryableExecutionTest, ExecuteNonQueryDeletesMatchingRows)
         EXPECT_EQ(deletedRows, 2);
     }
 
-    Queryable<AccountRow> query = newQuery();
+    Queryable<AccountRow>         query         = newQuery();
     const std::vector<AccountRow> remainingRows = query.toList();
 
     ASSERT_EQ(remainingRows.size(), 1U);
@@ -641,8 +620,7 @@ TEST_F(QueryableExecutionTest, UnregisteredTypeNamesTheMissingSchemaSpecializati
     }
 
     EXPECT_NE(message.find("TableSchema"), std::string::npos) << message;
-    EXPECT_EQ(message.find("自增主键"), std::string::npos)
-        << "把「没特化 TableSchema」报成「声明了自增主键」，调用方会去改一个自己没写过的声明：" << message;
+    EXPECT_EQ(message.find("自增主键"), std::string::npos) << "把「没特化 TableSchema」报成「声明了自增主键」，调用方会去改一个自己没写过的声明：" << message;
 }
 
 /**
@@ -660,11 +638,10 @@ TEST_F(QueryableExecutionTest, SpacedIdentifiersSurviveCreateInsertAndQuery)
     {
         PooledConnection connection = m_pool->acquire();
         ASSERT_TRUE(connection);
-        const auto createResult = connection->execute(
-            "CREATE TABLE \"spaced accounts\" ("
-            "\"id\" INTEGER PRIMARY KEY, "
-            "\"full name\" TEXT NOT NULL, "
-            "\"home address\" TEXT)");
+        const auto createResult = connection->execute("CREATE TABLE \"spaced accounts\" ("
+                                                      "\"id\" INTEGER PRIMARY KEY, "
+                                                      "\"full name\" TEXT NOT NULL, "
+                                                      "\"home address\" TEXT)");
         ASSERT_TRUE(createResult != nullptr) << connection->lastError();
     }
 
@@ -678,7 +655,7 @@ TEST_F(QueryableExecutionTest, SpacedIdentifiersSurviveCreateInsertAndQuery)
 
     // ORM 读：SELECT 列名逐个引用，映射回结构体时按列名查找下标
     {
-        Queryable<SpacedIdentifierRow> query(*m_pool);
+        Queryable<SpacedIdentifierRow>         query(*m_pool);
         const std::vector<SpacedIdentifierRow> rows = query.orderBy(asc("id")).toList();
 
         ASSERT_EQ(rows.size(), 2U);
@@ -693,9 +670,8 @@ TEST_F(QueryableExecutionTest, SpacedIdentifiersSurviveCreateInsertAndQuery)
 
     // 含空格的列名用于 WHERE：条件渲染与 SELECT 列表共用同一套引用规则
     {
-        Queryable<SpacedIdentifierRow> filteredQuery(*m_pool);
-        const std::optional<SpacedIdentifierRow> found =
-            filteredQuery.where(Column(&SpacedIdentifierRow::fullName, "full name") == std::string("Li Si")).first();
+        Queryable<SpacedIdentifierRow>           filteredQuery(*m_pool);
+        const std::optional<SpacedIdentifierRow> found = filteredQuery.where(Column(&SpacedIdentifierRow::fullName, "full name") == std::string("Li Si")).first();
 
         ASSERT_TRUE(found.has_value());
         EXPECT_EQ(found->id, 2);
@@ -707,9 +683,8 @@ TEST_F(QueryableExecutionTest, SpacedIdentifiersSurviveCreateInsertAndQuery)
         Queryable<SpacedIdentifierRow> updateQuery(*m_pool);
         EXPECT_EQ(1, updateQuery.update(SpacedIdentifierRow{1, "张三", std::nullopt}));
 
-        Queryable<SpacedIdentifierRow> verifyQuery(*m_pool);
-        const std::optional<SpacedIdentifierRow> updated =
-            verifyQuery.where(Column(&SpacedIdentifierRow::id, "id") == std::int64_t{1}).first();
+        Queryable<SpacedIdentifierRow>           verifyQuery(*m_pool);
+        const std::optional<SpacedIdentifierRow> updated = verifyQuery.where(Column(&SpacedIdentifierRow::id, "id") == std::int64_t{1}).first();
         ASSERT_TRUE(updated.has_value());
         EXPECT_FALSE(updated->homeAddress.has_value());
     }
@@ -733,7 +708,7 @@ TEST_F(QueryableExecutionTest, UnsignedColumnRoundTripsWithinInt64Range)
     ASSERT_EQ(1, insertQuery.insert(UnsignedCounterRow{.id = 1, .sequence = 0U}));
     ASSERT_EQ(1, insertQuery.insert(UnsignedCounterRow{.id = 2, .sequence = maximumSignedValue}));
 
-    Queryable<UnsignedCounterRow> query(*m_pool);
+    Queryable<UnsignedCounterRow>         query(*m_pool);
     const std::vector<UnsignedCounterRow> rows = query.orderBy(asc("id")).toList();
 
     ASSERT_EQ(rows.size(), 2U);
@@ -754,8 +729,7 @@ TEST_F(QueryableExecutionTest, UnsignedValueBeyondInt64FailsLoudlyOnSqlite)
 
     Queryable<UnsignedCounterRow> insertQuery(*m_pool);
     // 写入本身会成功：绑定的是十进制文本，SQLite 接受它并按列亲和性转成 REAL
-    ASSERT_EQ(1, insertQuery.insert(
-                     UnsignedCounterRow{.id = 1, .sequence = std::numeric_limits<std::uint64_t>::max()}));
+    ASSERT_EQ(1, insertQuery.insert(UnsignedCounterRow{.id = 1, .sequence = std::numeric_limits<std::uint64_t>::max()}));
 
     // 读回时列值已是浮点，与无符号整型成员类型不符：必须抛错，且原因指向该列
     Queryable<UnsignedCounterRow> query(*m_pool);
@@ -790,8 +764,7 @@ TEST_F(QueryableExecutionTest, MissingColumnThrowsReadableError)
     {
         static_cast<void>(query.toList());
         FAIL() << "结构体声明了结果集中不存在的列，应当抛出异常";
-    }
-    catch (const std::runtime_error &exception)
+    } catch (const std::runtime_error &exception)
     {
         const std::string message = exception.what();
         EXPECT_NE(message.find("missing_column"), std::string::npos);
@@ -811,16 +784,14 @@ TEST_F(QueryableExecutionTest, DuplicateColumnNamesDoNotAliasTwoMembersOntoOneCo
     ASSERT_TRUE(connection);
     // 同一列选两次：驱动按名解析时两个 "name" 都落到第一个的下标（该契约见 TestSqliteResult 的
     // DuplicateColumnNamesResolveToFirstIndex），因此结构体里第二个 std::string 成员会拿到前一列的数据
-    const std::unique_ptr<AsynGyanis::Database::DatabaseResult> result =
-            connection->execute("SELECT id, name, name FROM accounts ORDER BY id");
+    const std::unique_ptr<AsynGyanis::Database::DatabaseResult> result = connection->execute("SELECT id, name, name FROM accounts ORDER BY id");
     ASSERT_NE(result, nullptr) << connection->lastError();
 
     try
     {
         static_cast<void>(mapResultRows<DuplicatedColumnNameRow>(*result));
         FAIL() << "两个成员解析到了同一列，应当抛出异常而不是给出两份相同的值";
-    }
-    catch (const std::runtime_error &exception)
+    } catch (const std::runtime_error &exception)
     {
         const std::string message = exception.what();
         EXPECT_NE(message.find("都解析到结果集的第"), std::string::npos) << message;
@@ -841,7 +812,7 @@ TEST_F(QueryableExecutionTest, DuplicateColumnNamesDoNotAliasTwoMembersOntoOneCo
 TEST_F(QueryableExecutionTest, LiteralMatchHelpersTreatWildcardsAsLiteralText)
 {
     const std::vector<std::string> sampleNames{"100%", "100percent", "a_b", "axb", "50!"};
-    std::int64_t rowId = 1;
+    std::int64_t                   rowId = 1;
     for (const std::string &name: sampleNames)
     {
         Queryable<AccountRow> insertQuery = newQuery();
@@ -891,8 +862,7 @@ TEST_F(QueryableExecutionTest, TypeMismatchThrowsReadableError)
     {
         static_cast<void>(query.toList());
         FAIL() << "INTEGER 列映射到 std::string 应当抛出异常";
-    }
-    catch (const std::runtime_error &exception)
+    } catch (const std::runtime_error &exception)
     {
         const std::string message = exception.what();
         EXPECT_NE(message.find("id"), std::string::npos);
@@ -921,25 +891,18 @@ TEST_F(QueryableExecutionTest, JoinThroughBuilderNarrowsRowsByTheJoinedTable)
     {
         const PooledConnection connection = m_pool->acquire();
         ASSERT_TRUE(connection);
-        ASSERT_TRUE(connection->execute(
-                        "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, amount REAL NOT NULL)") != nullptr)
-            << connection->lastError();
+        ASSERT_TRUE(connection->execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, amount REAL NOT NULL)") != nullptr)
+                << connection->lastError();
         // 账户 1 两单、账户 3 一单，账户 2 一笔都没下
-        ASSERT_TRUE(connection->execute(
-                        "INSERT INTO orders (order_id, account_id, amount) VALUES (1, 1, 10.0), (2, 1, 20.0), (3, 3, 30.0)") != nullptr)
-            << connection->lastError();
+        ASSERT_TRUE(connection->execute("INSERT INTO orders (order_id, account_id, amount) VALUES (1, 1, 10.0), (2, 1, 20.0), (3, 3, 30.0)") != nullptr) << connection->lastError();
     }
 
     Queryable<AccountRow> query = newQuery();
     query.select({"accounts.id", "accounts.name", "accounts.balance", "accounts.note", "accounts.active"});
-    query.join(JoinClause{
-        .type       = JoinType::Inner,
-        .tableName  = "orders",
-        .tableAlias = {},
-        .conditions = {WhereCondition{
-            .left  = FieldReference{"orders.account_id"},
-            .op    = SqlOperator::Eq,
-            .right = FieldReference{"accounts.id"}}}});
+    query.join(JoinClause{.type       = JoinType::Inner,
+                          .tableName  = "orders",
+                          .tableAlias = {},
+                          .conditions = {WhereCondition{.left = FieldReference{"orders.account_id"}, .op = SqlOperator::Eq, .right = FieldReference{"accounts.id"}}}});
     query.orderBy(asc("accounts.id"));
 
     const std::vector<AccountRow> rows = query.toList();

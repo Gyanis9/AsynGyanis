@@ -19,7 +19,7 @@
 #include <string>
 
 #if defined(ASYN_HAS_STACKTRACE)
-    #include <stacktrace>
+#include <stacktrace>
 #endif
 
 namespace AsynGyanis::Base
@@ -56,8 +56,7 @@ namespace AsynGyanis::Base
      * @param maximumDepth 最多保留的帧数
      * @return CapturedStackTrace 原始帧集合
      */
-    [[nodiscard]] CapturedStackTrace captureStackTrace(std::size_t framesToSkip = 0,
-                                                       std::size_t maximumDepth = kMaximumStackTraceDepth);
+    [[nodiscard]] CapturedStackTrace captureStackTrace(std::size_t framesToSkip = 0, std::size_t maximumDepth = kMaximumStackTraceDepth);
 
     /**
      * @brief 把原始帧解析成多行文本
@@ -68,8 +67,7 @@ namespace AsynGyanis::Base
     [[nodiscard]] std::string formatStackTrace(const CapturedStackTrace &stackTrace);
 #else
     /// 降级：不捕获任何帧
-    [[nodiscard]] inline CapturedStackTrace captureStackTrace(const std::size_t = 0,
-                                                              const std::size_t = kMaximumStackTraceDepth) noexcept
+    [[nodiscard]] inline CapturedStackTrace captureStackTrace(const std::size_t = 0, const std::size_t = kMaximumStackTraceDepth) noexcept
     {
         return {};
     }

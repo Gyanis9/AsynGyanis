@@ -46,8 +46,8 @@ namespace AsynGyanis::Platform
     {
         const std::string original = "C:\\Users\\Gyanis\\config.yaml";
 
-        const std::wstring wideText   = TextEncoding::toWideString(original);
-        const std::string  roundTrip  = TextEncoding::toUtf8String(wideText);
+        const std::wstring wideText  = TextEncoding::toWideString(original);
+        const std::string  roundTrip = TextEncoding::toUtf8String(wideText);
 
         EXPECT_EQ(wideText.size(), original.size());
         EXPECT_EQ(roundTrip, original);
@@ -133,7 +133,9 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(dropReplacementCharacters(TextEncoding::toWideString(leadFollowedByAscii)), L"--b");
 
         // 前一个续字节合法、'x' 不合法：'x' 要当成新字符的首字节重新解，而不是当成本序列的尾巴吃掉
-        const std::string partiallyValidSequence("\xE4\xB8" "x", 3);
+        const std::string partiallyValidSequence("\xE4\xB8"
+                                                 "x",
+                                                 3);
         EXPECT_EQ(dropReplacementCharacters(TextEncoding::toWideString(partiallyValidSequence)), L"x");
     }
 
@@ -144,7 +146,9 @@ namespace AsynGyanis::Platform
      */
     TEST(TextEncoding, BadLeadByteDoesNotSwallowTheFollowingWholeCharacter)
     {
-        const std::string badThenWholeCharacter("\xE4" "\xE5\xA3\xAB", 4);
+        const std::string badThenWholeCharacter("\xE4"
+                                                "\xE5\xA3\xAB",
+                                                4);
 
         const std::wstring wideText = TextEncoding::toWideString(badThenWholeCharacter);
 

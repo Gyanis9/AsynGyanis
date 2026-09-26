@@ -59,8 +59,8 @@ namespace AsynGyanis::Core
          */
         void makeReadable(const int fileDescriptor)
         {
-            const char payload = 'x';
-            [[maybe_unused]] auto _ = Platform::FileDescriptor::write(fileDescriptor, &payload, 1);
+            const char            payload = 'x';
+            [[maybe_unused]] auto _       = Platform::FileDescriptor::write(fileDescriptor, &payload, 1);
         }
 
         /**
@@ -69,8 +69,8 @@ namespace AsynGyanis::Core
          */
         void consumeReadable(const int fileDescriptor)
         {
-            char     payload = 0;
-            ssize_t  readCount = 0;
+            char    payload   = 0;
+            ssize_t readCount = 0;
             do
             {
                 readCount = Platform::FileDescriptor::read(fileDescriptor, &payload, 1);
@@ -106,25 +106,23 @@ namespace AsynGyanis::Core
     {
         EventLoop loop;
 
-        int firstLocal = -1;
-        int firstPeer  = -1;
+        int firstLocal  = -1;
+        int firstPeer   = -1;
         int victimLocal = -1;
         int victimPeer  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(firstLocal, firstPeer));
         ASSERT_TRUE(Platform::FileDescriptor::createPair(victimLocal, victimPeer));
 
-        const IoWatcher firstWatcher(loop, firstLocal);
-        auto            victimWatcher = std::make_unique<IoWatcher>(loop, victimLocal);
+        const IoWatcher  firstWatcher(loop, firstLocal);
+        auto             victimWatcher = std::make_unique<IoWatcher>(loop, victimLocal);
         const IoWatcher *victimAddress = victimWatcher.get();
         ASSERT_TRUE(loop.isWatcherAlive(&firstWatcher)) << "构造时没登记，闸门会把所有事件都当成 stale";
         ASSERT_TRUE(loop.isWatcherAlive(victimAddress));
 
         victimWatcher.reset();
 
-        EXPECT_FALSE(loop.isWatcherAlive(victimAddress))
-                << "注册对象析构后还留在存活表里：同批事件会被派发到已释放对象上";
-        EXPECT_TRUE(loop.isWatcherAlive(&firstWatcher))
-                << "注销一个却带走了整张表：剩下的连接再也收不到事件";
+        EXPECT_FALSE(loop.isWatcherAlive(victimAddress)) << "注册对象析构后还留在存活表里：同批事件会被派发到已释放对象上";
+        EXPECT_TRUE(loop.isWatcherAlive(&firstWatcher)) << "注销一个却带走了整张表：剩下的连接再也收不到事件";
 
         Platform::FileDescriptor::close(firstLocal);
         Platform::FileDescriptor::close(firstPeer);
@@ -148,8 +146,8 @@ namespace AsynGyanis::Core
     {
         EventLoop loop;
 
-        int leftLocal = -1;
-        int leftPeer  = -1;
+        int leftLocal  = -1;
+        int leftPeer   = -1;
         int rightLocal = -1;
         int rightPeer  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(leftLocal, leftPeer));
@@ -180,10 +178,9 @@ namespace AsynGyanis::Core
 
         ASSERT_TRUE(left.isReady()) << "run() 返回了，左边的等待却没收尾";
         ASSERT_TRUE(right.isReady()) << "run() 返回了，右边的等待却没收尾";
-        const bool leftWokenByEvent   = left.handle().promise().result();
-        const bool rightWokenByEvent  = right.handle().promise().result();
-        EXPECT_NE(leftWokenByEvent, rightWokenByEvent)
-                << "两条都拿到事件或都没拿到：说明两次销毁没落在同一次派发里，闸门那条路径没被走到";
+        const bool leftWokenByEvent  = left.handle().promise().result();
+        const bool rightWokenByEvent = right.handle().promise().result();
+        EXPECT_NE(leftWokenByEvent, rightWokenByEvent) << "两条都拿到事件或都没拿到：说明两次销毁没落在同一次派发里，闸门那条路径没被走到";
 
         EXPECT_FALSE(loop.isWatcherAlive(leftAddress)) << "注册对象销毁后仍留在存活表里";
         EXPECT_FALSE(loop.isWatcherAlive(rightAddress)) << "注册对象销毁后仍留在存活表里";
@@ -218,8 +215,7 @@ namespace AsynGyanis::Core
             try
             {
                 const IoWatcher secondWatcher(secondLoop, local);
-            }
-            catch (const Base::SystemException &error)
+            } catch (const Base::SystemException &error)
             {
                 isThrown = true;
                 captured = error.errorCode();
@@ -230,8 +226,7 @@ namespace AsynGyanis::Core
 
         EXPECT_TRUE(isThrown) << "换一条循环居然注册上了：完成端口的关联不是句柄级的，示例与文档的结论都要改";
         EXPECT_NE(captured.value(), 0) << "注册被拒却没有带出原因码";
-        EXPECT_TRUE(captured.category() == std::system_category())
-                << "码取自 GetLastError 却按 errno 空间解释：报出来的描述与本次失败无关";
+        EXPECT_TRUE(captured.category() == std::system_category()) << "码取自 GetLastError 却按 errno 空间解释：报出来的描述与本次失败无关";
     }
 #endif
 
@@ -468,8 +463,7 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(secondWait.isReady()) << "描述符已空时第二轮应当挂起";
 
         makeReadable(peerDescriptor);
-        EXPECT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U)
-            << "第二轮等待没被新事件唤醒：常驻注册的关注位没有重新武装，「注册一次即可反复等待」不成立";
+        EXPECT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "第二轮等待没被新事件唤醒：常驻注册的关注位没有重新武装，「注册一次即可反复等待」不成立";
         EXPECT_TRUE(secondWait.isReady()) << "第二轮等待没被新事件唤醒";
 
         Platform::FileDescriptor::close(localDescriptor);

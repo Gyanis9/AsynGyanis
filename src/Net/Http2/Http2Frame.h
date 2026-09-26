@@ -154,10 +154,10 @@ namespace AsynGyanis::Net
      */
     struct Http2FrameHeader
     {
-        std::uint32_t payloadLength{0};                 ///< 24 位负载长度，不含 9 字节帧头
-        Http2FrameType type{Http2FrameType::Data};      ///< 帧类型
-        std::uint8_t flags{0};                          ///< 8 位标志，含义随类型变化，未定义位置位时按 §4.1 忽略
-        std::uint32_t streamId{0};                      ///< 31 位流号；0 表示连接级帧
+        std::uint32_t  payloadLength{0};           ///< 24 位负载长度，不含 9 字节帧头
+        Http2FrameType type{Http2FrameType::Data}; ///< 帧类型
+        std::uint8_t   flags{0};                   ///< 8 位标志，含义随类型变化，未定义位置位时按 §4.1 忽略
+        std::uint32_t  streamId{0};                ///< 31 位流号；0 表示连接级帧
     };
 
     /**
@@ -165,9 +165,9 @@ namespace AsynGyanis::Net
      */
     struct Http2Priority
     {
-        bool isExclusive{false};         ///< E 位：独占标记（§5.3.1）
+        bool          isExclusive{false};  ///< E 位：独占标记（§5.3.1）
         std::uint32_t streamDependency{0}; ///< 31 位依赖的父流号；等于本帧流号即违反 §5.3.1
-        std::uint8_t weight{0};          ///< 线上权重取值 0..255，**实际权重是它加一**（§5.3.2，区间 1..256）
+        std::uint8_t  weight{0};           ///< 线上权重取值 0..255，**实际权重是它加一**（§5.3.2，区间 1..256）
     };
 
     /**
@@ -181,10 +181,10 @@ namespace AsynGyanis::Net
      */
     struct Http2Frame
     {
-        Http2FrameHeader header;         ///< 帧头原文（payloadLength 是线上声明的长度，含 padding）
-        std::string payload;             ///< 净负载，见结构体说明
-        bool hasPriority{false};         ///< 本帧是否带优先级字段（HEADERS 置 PRIORITY 位、或 PRIORITY 帧）
-        Http2Priority priority{};        ///< 优先级字段，hasPriority 为 true 时有效
+        Http2FrameHeader header;             ///< 帧头原文（payloadLength 是线上声明的长度，含 padding）
+        std::string      payload;            ///< 净负载，见结构体说明
+        bool             hasPriority{false}; ///< 本帧是否带优先级字段（HEADERS 置 PRIORITY 位、或 PRIORITY 帧）
+        Http2Priority    priority{};         ///< 优先级字段，hasPriority 为 true 时有效
     };
 
     // ============================================================================
@@ -236,8 +236,7 @@ namespace AsynGyanis::Net
      * @param payload 负载字节，本函数同步拷完才返回，不留视图
      * @throws Base::InvalidArgumentException 用法错误：负载超过 24 位长度域、流号超出 31 位，或类型未定义
      */
-    void appendHttp2Frame(std::string &bytes, Http2FrameType type, std::uint8_t flags, std::uint32_t streamId,
-                          std::string_view payload);
+    void appendHttp2Frame(std::string &bytes, Http2FrameType type, std::uint8_t flags, std::uint32_t streamId, std::string_view payload);
 
     /**
      * @brief 把一帧 HEADERS 直接拼进给定缓冲末尾（头块片段已在手时用它）
@@ -251,8 +250,7 @@ namespace AsynGyanis::Net
      * @param streamId 目标流号，必须非 0
      * @throws Base::InvalidArgumentException 用法错误：流号为 0，或片段长度超出 24 位长度域
      */
-    void appendHttp2HeadersFrame(std::string &bytes, std::string_view headerBlockFragment, bool endStream, bool endHeaders,
-                                 std::uint32_t streamId);
+    void appendHttp2HeadersFrame(std::string &bytes, std::string_view headerBlockFragment, bool endStream, bool endHeaders, std::uint32_t streamId);
 
     // ============================================================================
     // 具名负载结构体（RFC 7540 §6.x）
@@ -274,13 +272,13 @@ namespace AsynGyanis::Net
      */
     enum class Http2SettingIdentifier : std::uint16_t
     {
-        HeaderTableSize      = 0x1, ///< 本端解码头块所用的动态表上限，初值 4096 字节
-        EnablePush           = 0x2, ///< 是否允许服务端推送，初值 1；取值只能是 0 或 1
-        MaxConcurrentStreams = 0x3, ///< 本端允许的对端并发流上限，初值不限
-        InitialWindowSize    = 0x4, ///< 流的初始流控窗口，初值 65535 字节
-        MaxFrameSize         = 0x5, ///< 本端愿意接收的最大帧负载，初值 16384 字节
-        MaxHeaderListSize    = 0x6, ///< 本端愿意接收的头列表大小（§6.5.2 的算式），初值不限
-        EnableConnectProtocol = 0x8 ///< 是否接受带 :protocol 的扩展 CONNECT（RFC 8441）：1 表示接受；取值只能是 0 或 1
+        HeaderTableSize       = 0x1, ///< 本端解码头块所用的动态表上限，初值 4096 字节
+        EnablePush            = 0x2, ///< 是否允许服务端推送，初值 1；取值只能是 0 或 1
+        MaxConcurrentStreams  = 0x3, ///< 本端允许的对端并发流上限，初值不限
+        InitialWindowSize     = 0x4, ///< 流的初始流控窗口，初值 65535 字节
+        MaxFrameSize          = 0x5, ///< 本端愿意接收的最大帧负载，初值 16384 字节
+        MaxHeaderListSize     = 0x6, ///< 本端愿意接收的头列表大小（§6.5.2 的算式），初值不限
+        EnableConnectProtocol = 0x8  ///< 是否接受带 :protocol 的扩展 CONNECT（RFC 8441）：1 表示接受；取值只能是 0 或 1
     };
 
     /**
@@ -288,8 +286,8 @@ namespace AsynGyanis::Net
      */
     struct Http2SettingsPayload
     {
-        bool isAcknowledgement{false};          ///< ACK 标志：置位时负载必须为空（§6.5）
-        std::vector<Http2Setting> parameters;   ///< 参数按到达顺序排列，含未知标识（§6.5.2 要求忽略而非判错）
+        bool                      isAcknowledgement{false}; ///< ACK 标志：置位时负载必须为空（§6.5）
+        std::vector<Http2Setting> parameters;               ///< 参数按到达顺序排列，含未知标识（§6.5.2 要求忽略而非判错）
     };
 
     /**
@@ -297,8 +295,8 @@ namespace AsynGyanis::Net
      */
     struct Http2PingPayload
     {
-        bool isAcknowledgement{false};          ///< ACK 标志：置位表示这是对端 PING 的回声
-        std::array<std::uint8_t, 8> opaqueData{}; ///< 8 字节不透明数据，收到后必须原样回送（§6.7）
+        bool                        isAcknowledgement{false}; ///< ACK 标志：置位表示这是对端 PING 的回声
+        std::array<std::uint8_t, 8> opaqueData{};             ///< 8 字节不透明数据，收到后必须原样回送（§6.7）
     };
 
     /**
@@ -306,9 +304,9 @@ namespace AsynGyanis::Net
      */
     struct Http2GoAwayPayload
     {
-        std::uint32_t lastStreamId{0};                      ///< 31 位「最后处理的流号」，0 表示一条都没处理
-        Http2ErrorCode errorCode{Http2ErrorCode::NoError};  ///< 关闭原因
-        std::string debugData;                              ///< 额外调试数据（可为空，不参与协议判定）
+        std::uint32_t  lastStreamId{0};                    ///< 31 位「最后处理的流号」，0 表示一条都没处理
+        Http2ErrorCode errorCode{Http2ErrorCode::NoError}; ///< 关闭原因
+        std::string    debugData;                          ///< 额外调试数据（可为空，不参与协议判定）
     };
 
     /**
@@ -332,8 +330,8 @@ namespace AsynGyanis::Net
      */
     struct Http2DataPayload
     {
-        bool endStream{false}; ///< END_STREAM 标志：这是本流最后一个数据帧
-        std::string data;      ///< 应用数据（padding 已由帧层剥掉）
+        bool        endStream{false}; ///< END_STREAM 标志：这是本流最后一个数据帧
+        std::string data;             ///< 应用数据（padding 已由帧层剥掉）
     };
 
     /**
@@ -341,11 +339,11 @@ namespace AsynGyanis::Net
      */
     struct Http2HeadersPayload
     {
-        bool endStream{false};            ///< END_STREAM 标志：头块之后的正文到此为止
-        bool endHeaders{false};           ///< END_HEADERS 标志：头块在本帧内结束，后面没有 CONTINUATION
-        bool hasPriority{false};          ///< 是否带优先级字段
-        Http2Priority priority{};         ///< 优先级字段，hasPriority 为 true 时有效
-        std::string headerBlockFragment;  ///< 头块片段（padding 与优先级字段已剥掉），交给 HPACK 解码
+        bool          endStream{false};    ///< END_STREAM 标志：头块之后的正文到此为止
+        bool          endHeaders{false};   ///< END_HEADERS 标志：头块在本帧内结束，后面没有 CONTINUATION
+        bool          hasPriority{false};  ///< 是否带优先级字段
+        Http2Priority priority{};          ///< 优先级字段，hasPriority 为 true 时有效
+        std::string   headerBlockFragment; ///< 头块片段（padding 与优先级字段已剥掉），交给 HPACK 解码
     };
 
     /**
@@ -353,8 +351,8 @@ namespace AsynGyanis::Net
      */
     struct Http2ContinuationPayload
     {
-        bool endHeaders{false};           ///< END_HEADERS 标志：头块在本帧内结束
-        std::string headerBlockFragment;  ///< 头块片段，必须紧接在同一条头块的前一片段之后
+        bool        endHeaders{false};   ///< END_HEADERS 标志：头块在本帧内结束
+        std::string headerBlockFragment; ///< 头块片段，必须紧接在同一条头块的前一片段之后
     };
 
     // ============================================================================
@@ -515,8 +513,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 WINDOW_UPDATE，或负载不是 4 字节
      */
-    [[nodiscard]] bool parseHttp2WindowUpdatePayload(const Http2Frame &frame, Http2WindowUpdatePayload &payload,
-                                                     std::string *errorText = nullptr);
+    [[nodiscard]] bool parseHttp2WindowUpdatePayload(const Http2Frame &frame, Http2WindowUpdatePayload &payload, std::string *errorText = nullptr);
 
     /**
      * @brief 解析 DATA 帧
@@ -546,8 +543,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 CONTINUATION
      */
-    [[nodiscard]] bool parseHttp2ContinuationPayload(const Http2Frame &frame, Http2ContinuationPayload &payload,
-                                                     std::string *errorText = nullptr);
+    [[nodiscard]] bool parseHttp2ContinuationPayload(const Http2Frame &frame, Http2ContinuationPayload &payload, std::string *errorText = nullptr);
 
     // ============================================================================
     // 增量帧解码器
@@ -737,25 +733,25 @@ namespace AsynGyanis::Net
          */
         void clearFrameScratch() noexcept;
 
-        Http2FrameLimits m_limits{}; ///< 构造时按值落定的接收上限，没有中途更换的入口
-        Stage m_stage{Stage::FrameHeader}; ///< 当前阶段
+        Http2FrameLimits m_limits{};                  ///< 构造时按值落定的接收上限，没有中途更换的入口
+        Stage            m_stage{Stage::FrameHeader}; ///< 当前阶段
 
-        std::array<std::uint8_t, kHttp2FrameHeaderByteCount> m_headerBytes{}; ///< 帧头字节暂存
-        std::size_t m_headerBytesSeen{0};                                      ///< 已收帧头字节数
+        std::array<std::uint8_t, kHttp2FrameHeaderByteCount> m_headerBytes{};      ///< 帧头字节暂存
+        std::size_t                                          m_headerBytesSeen{0}; ///< 已收帧头字节数
 
-        Http2FrameHeader m_currentHeader{}; ///< 当前帧的帧头
-        std::string m_payloadBuffer;        ///< 当前帧的负载暂存（收齐后按需就地剥离）
-        std::size_t m_payloadBytesSeen{0};  ///< 当前帧已收负载字节数
-        bool m_isCurrentFramePriority{false}; ///< 当前帧是否带优先级字段（HEADERS 置位或 PRIORITY 帧）
-        Http2Priority m_currentPriority{};    ///< 当前帧的优先级字段
+        Http2FrameHeader m_currentHeader{};               ///< 当前帧的帧头
+        std::string      m_payloadBuffer;                 ///< 当前帧的负载暂存（收齐后按需就地剥离）
+        std::size_t      m_payloadBytesSeen{0};           ///< 当前帧已收负载字节数
+        bool             m_isCurrentFramePriority{false}; ///< 当前帧是否带优先级字段（HEADERS 置位或 PRIORITY 帧）
+        Http2Priority    m_currentPriority{};             ///< 当前帧的优先级字段
 
-        Http2Frame m_pendingFrame;  ///< 已产出待取走的帧
-        bool m_hasPendingFrame{false}; ///< 是否已有产出待取走
+        Http2Frame m_pendingFrame;           ///< 已产出待取走的帧
+        bool       m_hasPendingFrame{false}; ///< 是否已有产出待取走
 
-        bool m_hasError{false};                        ///< 是否已发生解码错误
+        bool                m_hasError{false};                      ///< 是否已发生解码错误
         Http2FrameErrorKind m_errorKind{Http2FrameErrorKind::None}; ///< 失败类别（决定上层回哪个错误码）
-        std::string m_errorMessage;                    ///< 面向使用者的中文错误描述
-        std::size_t m_consumedByteCount{0};            ///< 最近一次 parse() 实际消费的字节数
-        std::size_t m_totalConsumedByteCount{0};       ///< 自构造或 reset() 以来的累计消费字节数
+        std::string         m_errorMessage;                         ///< 面向使用者的中文错误描述
+        std::size_t         m_consumedByteCount{0};                 ///< 最近一次 parse() 实际消费的字节数
+        std::size_t         m_totalConsumedByteCount{0};            ///< 自构造或 reset() 以来的累计消费字节数
     };
 } // namespace AsynGyanis::Net

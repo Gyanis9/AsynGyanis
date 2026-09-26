@@ -55,7 +55,7 @@ namespace AsynGyanis::Platform
                 m_isAttached = true;
             }
 
-            StandardOutputOnPseudoTerminal(const StandardOutputOnPseudoTerminal &) = delete;
+            StandardOutputOnPseudoTerminal(const StandardOutputOnPseudoTerminal &)            = delete;
             StandardOutputOnPseudoTerminal &operator=(const StandardOutputOnPseudoTerminal &) = delete;
 
             /**
@@ -97,10 +97,10 @@ namespace AsynGyanis::Platform
             }
 
         private:
-            int  m_master{-1};               ///< 伪终端主端，全程不读
-            int  m_slave{-1};                ///< 伪终端从端，被 dup2 到标准输出上
-            int  m_savedStandardOutput{-1};  ///< 接管之前标准输出的副本
-            bool m_isAttached{false};        ///< 是否已完成接管
+            int  m_master{-1};              ///< 伪终端主端，全程不读
+            int  m_slave{-1};               ///< 伪终端从端，被 dup2 到标准输出上
+            int  m_savedStandardOutput{-1}; ///< 接管之前标准输出的副本
+            bool m_isAttached{false};       ///< 是否已完成接管
         };
 #endif
     } // namespace
@@ -123,7 +123,7 @@ namespace AsynGyanis::Platform
     TEST(Console, SupportsAnsiEscapeCodesDoesNotThrowWhenOutputIsCaptured)
     {
         // 测试运行时标准输出通常被 ctest 捕获为管道：必须安全返回 false 而不是崩溃
-        EXPECT_NO_THROW((void)Console::supportsAnsiEscapeCodes());
+        EXPECT_NO_THROW((void) Console::supportsAnsiEscapeCodes());
     }
 
 #if !ASYN_PLATFORM_WIN32
@@ -146,12 +146,12 @@ namespace AsynGyanis::Platform
 
         const std::optional<std::string> previousTerminalName = ProcessInfo::environmentVariable("TERM");
         // 三档判定都先把结果取进变量，等标准输出接回去之后再断言（原因见本用例的 @note）
-        const bool usableTerminalSet  = ::setenv("TERM", "xterm-256color", 1) == 0;
-        const bool onUsableTerminal   = Console::supportsAnsiEscapeCodes();
-        const bool dumbTerminalSet    = ::setenv("TERM", "dumb", 1) == 0;
-        const bool onDumbTerminal     = Console::supportsAnsiEscapeCodes();
+        const bool usableTerminalSet   = ::setenv("TERM", "xterm-256color", 1) == 0;
+        const bool onUsableTerminal    = Console::supportsAnsiEscapeCodes();
+        const bool dumbTerminalSet     = ::setenv("TERM", "dumb", 1) == 0;
+        const bool onDumbTerminal      = Console::supportsAnsiEscapeCodes();
         const bool termVariableRemoved = ::unsetenv("TERM") == 0;
-        const bool onMissingTerm      = Console::supportsAnsiEscapeCodes();
+        const bool onMissingTerm       = Console::supportsAnsiEscapeCodes();
         // 把环境恢复原样：同一进程里后续跑到的判定不该看到被本用例改掉的 TERM
         if (previousTerminalName.has_value())
         {
@@ -159,12 +159,10 @@ namespace AsynGyanis::Platform
         }
 
         terminal.restore();
-        ASSERT_TRUE(usableTerminalSet && dumbTerminalSet && termVariableRemoved)
-                << "改环境变量就失败了，下面三档判定的条件没造出来";
+        ASSERT_TRUE(usableTerminalSet && dumbTerminalSet && termVariableRemoved) << "改环境变量就失败了，下面三档判定的条件没造出来";
         EXPECT_TRUE(onUsableTerminal) << "接在终端上且 TERM 是可用终端名，还报「不支持」就等于永远不出彩色";
         EXPECT_FALSE(onDumbTerminal) << "TERM=dumb 必须退回纯文本，否则转义序列会以原字符打进只认字面的终端";
         EXPECT_FALSE(onMissingTerm) << "TERM 缺失时无从断定终端能力，按不支持处理才不会污染输出";
     }
 #endif
 } // namespace AsynGyanis::Platform
-

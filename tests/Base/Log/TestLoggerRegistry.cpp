@@ -253,29 +253,31 @@ namespace AsynGyanis::Base
 
         // 变更线程只增删「非 root」日志器：root 缓存持有强引用且不因其它名字的增删失效，
         // 读取线程因此始终命中缓存，既不会取到被销毁的对象，也不会被写锁串行化
-        churners.emplace_back([&stopChurning]
-        {
-            int sequence = 0;
-            while (!stopChurning.load(std::memory_order_relaxed))
-            {
-                const std::string name = "churn_" + std::to_string(sequence++);
-                LoggerRegistry::instance().registerLogger(std::make_unique<Logger>(name));
-                LoggerRegistry::instance().unregisterLogger(name);
-            }
-        });
+        churners.emplace_back(
+                [&stopChurning]
+                {
+                    int sequence = 0;
+                    while (!stopChurning.load(std::memory_order_relaxed))
+                    {
+                        const std::string name = "churn_" + std::to_string(sequence++);
+                        LoggerRegistry::instance().registerLogger(std::make_unique<Logger>(name));
+                        LoggerRegistry::instance().unregisterLogger(name);
+                    }
+                });
         for (int index = 0; index < 3; ++index)
         {
-            readers.emplace_back([&mismatches, &stopChurning]
-            {
-                while (!stopChurning.load(std::memory_order_relaxed))
-                {
-                    const Logger &root = LoggerRegistry::instance().getRootLogger();
-                    if (root.name() != "root" || root.getLevel() != LogLevel::Warn)
+            readers.emplace_back(
+                    [&mismatches, &stopChurning]
                     {
-                        mismatches.fetch_add(1, std::memory_order_relaxed);
-                    }
-                }
-            });
+                        while (!stopChurning.load(std::memory_order_relaxed))
+                        {
+                            const Logger &root = LoggerRegistry::instance().getRootLogger();
+                            if (root.name() != "root" || root.getLevel() != LogLevel::Warn)
+                            {
+                                mismatches.fetch_add(1, std::memory_order_relaxed);
+                            }
+                        }
+                    });
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -429,18 +431,15 @@ namespace AsynGyanis::Base
      */
     TEST_F(LoggerRegistryTest, ReplacingLoggerKeepsTheSinkAliveUntilInFlightWriteReturns)
     {
-        auto    blockingSink     = std::make_unique<BlockingSink>();
+        auto        blockingSink       = std::make_unique<BlockingSink>();
         auto *const blockingSinkHandle = blockingSink.get();
 
         auto logger = std::make_unique<Logger>("in_flight");
         logger->addSink(std::move(blockingSink));
         LoggerRegistry::instance().registerLogger(std::move(logger));
 
-        Logger &firstLogger = LoggerRegistry::instance().getLogger("in_flight");
-        std::thread writer([&firstLogger]
-        {
-            firstLogger.log(LogLevel::Info, "slow write in progress");
-        });
+        Logger     &firstLogger = LoggerRegistry::instance().getLogger("in_flight");
+        std::thread writer([&firstLogger] { firstLogger.log(LogLevel::Info, "slow write in progress"); });
 
         if (!blockingSinkHandle->waitForEnter())
         {
@@ -469,10 +468,7 @@ namespace AsynGyanis::Base
         LoggerRegistry::instance().getRootLogger();
 
         std::vector<std::string> visited;
-        LoggerRegistry::instance().forEachLogger([&visited](Logger &logger)
-        {
-            visited.push_back(logger.name());
-        });
+        LoggerRegistry::instance().forEachLogger([&visited](Logger &logger) { visited.push_back(logger.name()); });
 
         const std::vector<std::string> expected{"iter_a", "iter_b", "root"};
         EXPECT_EQ(sortedNames(visited), expected);
@@ -482,10 +478,7 @@ namespace AsynGyanis::Base
     {
         size_t visitCount = 0;
 
-        LoggerRegistry::instance().forEachLogger([&visitCount](Logger &)
-        {
-            ++visitCount;
-        });
+        LoggerRegistry::instance().forEachLogger([&visitCount](Logger &) { ++visitCount; });
 
         EXPECT_EQ(visitCount, 0u);
     }
@@ -495,10 +488,7 @@ namespace AsynGyanis::Base
         LoggerRegistry::instance().getLogger("mutate_a");
         LoggerRegistry::instance().getLogger("mutate_b");
 
-        LoggerRegistry::instance().forEachLogger([](Logger &logger)
-        {
-            logger.setLevel(LogLevel::Warn);
-        });
+        LoggerRegistry::instance().forEachLogger([](Logger &logger) { logger.setLevel(LogLevel::Warn); });
 
         EXPECT_EQ(LoggerRegistry::instance().loggerLevel("mutate_a"), LogLevel::Warn);
         EXPECT_EQ(LoggerRegistry::instance().loggerLevel("mutate_b"), LogLevel::Warn);
@@ -511,13 +501,14 @@ namespace AsynGyanis::Base
 
         int visitedCount = 0;
         // 回调内再次访问注册表：遍历若持共享锁回调，shared_mutex 不可重入会自死锁
-        EXPECT_NO_THROW(LoggerRegistry::instance().forEachLogger([&visitedCount](Logger &logger)
-        {
-            ++visitedCount;
-            Logger &createdInCallback = LoggerRegistry::instance().getLogger("created_in_callback");
-            createdInCallback.setLevel(LogLevel::Warn);
-            logger.setLevel(LogLevel::Error);
-        }));
+        EXPECT_NO_THROW(LoggerRegistry::instance().forEachLogger(
+                [&visitedCount](Logger &logger)
+                {
+                    ++visitedCount;
+                    Logger &createdInCallback = LoggerRegistry::instance().getLogger("created_in_callback");
+                    createdInCallback.setLevel(LogLevel::Warn);
+                    logger.setLevel(LogLevel::Error);
+                }));
 
         EXPECT_EQ(visitedCount, 2);
         EXPECT_EQ(LoggerRegistry::instance().loggerLevel("reentrant_a"), LogLevel::Error);
@@ -532,12 +523,13 @@ namespace AsynGyanis::Base
 
         // 最极端的重入：回调内清空注册表。快照持有强引用，因此遍历中的对象不会被销毁
         int visitedCount = 0;
-        EXPECT_NO_THROW(LoggerRegistry::instance().forEachLogger([&visitedCount](Logger &logger)
-        {
-            ++visitedCount;
-            logger.setLevel(LogLevel::Fatal);
-            LoggerRegistry::instance().clear();
-        }));
+        EXPECT_NO_THROW(LoggerRegistry::instance().forEachLogger(
+                [&visitedCount](Logger &logger)
+                {
+                    ++visitedCount;
+                    logger.setLevel(LogLevel::Fatal);
+                    LoggerRegistry::instance().clear();
+                }));
 
         EXPECT_EQ(visitedCount, 2);
         EXPECT_TRUE(LoggerRegistry::instance().getLoggerNames().empty());
@@ -647,13 +639,14 @@ namespace AsynGyanis::Base
 
         for (int threadIndex = 0; threadIndex < kthreadCount; ++threadIndex)
         {
-            workers.emplace_back([kiterations]
-            {
-                for (int iteration = 0; iteration < kiterations; ++iteration)
-                {
-                    LoggerRegistry::instance().getLogger("shared_name").log(LogLevel::Debug, "concurrent probe");
-                }
-            });
+            workers.emplace_back(
+                    [kiterations]
+                    {
+                        for (int iteration = 0; iteration < kiterations; ++iteration)
+                        {
+                            LoggerRegistry::instance().getLogger("shared_name").log(LogLevel::Debug, "concurrent probe");
+                        }
+                    });
         }
         for (std::thread &worker: workers)
         {

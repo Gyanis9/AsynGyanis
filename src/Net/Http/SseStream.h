@@ -87,9 +87,7 @@ namespace AsynGyanis::Net
          * @throws Base::InvalidArgumentException retry 为负数（用法错误，重试无用）
          * @note data/eventName/eventId 指向的字节必须活到本次 co_await 结束：协程到首次 resume 才读入参
          */
-        Core::Task<bool> sendEvent(std::string_view data,
-                                   std::string_view eventName = {},
-                                   std::string_view eventId = {},
+        Core::Task<bool> sendEvent(std::string_view data, std::string_view eventName = {}, std::string_view eventId = {},
                                    std::optional<std::chrono::milliseconds> retry = std::nullopt);
 
     private:
@@ -101,7 +99,7 @@ namespace AsynGyanis::Net
          */
         static void appendTextLines(std::string &target, std::string_view linePrefix, std::string_view value);
 
-        HttpResponse &m_response; ///< 被写入的响应对象（非拥有），必须比本对象活得久
-        bool m_isOpen{true};      ///< 是否仍可发送；写出失败后粘滞为 false
+        HttpResponse &m_response;     ///< 被写入的响应对象（非拥有），必须比本对象活得久
+        bool          m_isOpen{true}; ///< 是否仍可发送；写出失败后粘滞为 false
     };
 } // namespace AsynGyanis::Net

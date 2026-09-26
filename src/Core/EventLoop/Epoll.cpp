@@ -23,8 +23,7 @@ namespace AsynGyanis::Core
         destroy();
     }
 
-    Epoll::Epoll(Epoll &&other) noexcept :
-        m_fileDescriptor(other.m_fileDescriptor), m_events(std::move(other.m_events))
+    Epoll::Epoll(Epoll &&other) noexcept : m_fileDescriptor(other.m_fileDescriptor), m_events(std::move(other.m_events))
     {
         other.m_fileDescriptor = Platform::kInvalidEpollHandle;
     }
@@ -117,4 +116,4 @@ namespace AsynGyanis::Core
         }
     }
 
-}
+} // namespace AsynGyanis::Core

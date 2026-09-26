@@ -148,7 +148,7 @@ namespace AsynGyanis::Net
             std::size_t                statusLineCount  = 0;
 
             for (std::size_t foundPosition = responseText.find(statusLinePrefix); foundPosition != std::string::npos;
-                 foundPosition = responseText.find(statusLinePrefix, foundPosition + statusLinePrefix.size()))
+                 foundPosition             = responseText.find(statusLinePrefix, foundPosition + statusLinePrefix.size()))
             {
                 ++statusLineCount;
             }
@@ -170,8 +170,7 @@ namespace AsynGyanis::Net
             /**
              * @brief 挂上记录型 Sink，此后根日志器的输出都进入本对象
              */
-            LogCapture() :
-                m_records(std::make_shared<Records>())
+            LogCapture() : m_records(std::make_shared<Records>())
             {
                 // Sink 交给根日志器接管所有权；记录容器按 shared_ptr 共享，因此日志器稍后仍在写也安全
                 Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<RecordingSink>(m_records));
@@ -229,8 +228,7 @@ namespace AsynGyanis::Net
                  * @brief 构造记录型 Sink
                  * @param records 与用例共享的记录容器
                  */
-                explicit RecordingSink(std::shared_ptr<Records> records) :
-                    m_records(std::move(records))
+                explicit RecordingSink(std::shared_ptr<Records> records) : m_records(std::move(records))
                 {
                 }
 
@@ -297,9 +295,8 @@ namespace AsynGyanis::Net
                 // 而「对端读得慢」正是写超时用例要构造的前提
                 if (receiveBufferLength > 0)
                 {
-                    [[maybe_unused]] const int setResult = ::setsockopt(
-                            m_descriptor, SOL_SOCKET, SO_RCVBUF,
-                            reinterpret_cast<const char *>(&receiveBufferLength), static_cast<socklen_t>(sizeof(receiveBufferLength)));
+                    [[maybe_unused]] const int setResult = ::setsockopt(m_descriptor, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char *>(&receiveBufferLength),
+                                                                        static_cast<socklen_t>(sizeof(receiveBufferLength)));
                 }
 
                 sockaddr_in address{};
@@ -346,8 +343,7 @@ namespace AsynGyanis::Net
 
                 while (writtenLength < payload.size())
                 {
-                    const int sendLength = ::send(m_descriptor, payload.data() + writtenLength,
-                                                  static_cast<int>(payload.size() - writtenLength), MSG_NOSIGNAL);
+                    const int sendLength = ::send(m_descriptor, payload.data() + writtenLength, static_cast<int>(payload.size() - writtenLength), MSG_NOSIGNAL);
                     if (sendLength > 0)
                     {
                         writtenLength += static_cast<std::size_t>(sendLength);
@@ -370,7 +366,7 @@ namespace AsynGyanis::Net
             ReadOutcome readOnce(std::string &accumulated) const
             {
                 std::array<char, kClientChunkLength> chunkStorage{};
-                const ssize_t readLength = Platform::FileDescriptor::read(m_descriptor, chunkStorage.data(), chunkStorage.size());
+                const ssize_t                        readLength = Platform::FileDescriptor::read(m_descriptor, chunkStorage.data(), chunkStorage.size());
                 if (readLength > 0)
                 {
                     accumulated.append(chunkStorage.data(), static_cast<std::size_t>(readLength));
@@ -427,8 +423,7 @@ namespace AsynGyanis::Net
              * @param timeout 等待上限
              * @return true 在时限内凑齐
              */
-            bool waitForStatusLines(std::string &accumulated, const std::size_t expectedStatusLineCount,
-                                    const std::chrono::milliseconds timeout) const
+            bool waitForStatusLines(std::string &accumulated, const std::size_t expectedStatusLineCount, const std::chrono::milliseconds timeout) const
             {
                 const auto deadline = std::chrono::steady_clock::now() + timeout;
                 while (countStatusLines(accumulated) < expectedStatusLineCount)
@@ -457,8 +452,7 @@ namespace AsynGyanis::Net
              * @param timeout 等待上限
              * @return true 在时限内出现
              */
-            bool waitForText(std::string &accumulated, const std::string_view expectedText,
-                             const std::chrono::milliseconds timeout) const
+            bool waitForText(std::string &accumulated, const std::string_view expectedText, const std::chrono::milliseconds timeout) const
             {
                 const auto deadline = std::chrono::steady_clock::now() + timeout;
                 while (accumulated.find(expectedText) == std::string::npos)
@@ -485,7 +479,7 @@ namespace AsynGyanis::Net
             }
 
         private:
-            Platform::Socket::Initialization m_socketInitialization; ///< 保证 Winsock 在本对象存活期间保持初始化
+            Platform::Socket::Initialization m_socketInitialization;                           ///< 保证 Winsock 在本对象存活期间保持初始化
             int                              m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 客户端描述符
         };
 
@@ -543,8 +537,7 @@ namespace AsynGyanis::Net
          * @param timeout 建连、发送与读取共用的等待上限
          * @return std::optional<ParsedResponse> 解析结果；读不全时为空
          */
-        inline std::optional<ParsedResponse> sendAndReadResponse(const std::uint16_t port, const std::string &requestText,
-                                                                 const std::chrono::milliseconds timeout = kWaitTimeout)
+        inline std::optional<ParsedResponse> sendAndReadResponse(const std::uint16_t port, const std::string &requestText, const std::chrono::milliseconds timeout = kWaitTimeout)
         {
             LoopbackClient client(port);
             if (!client.isValid())
@@ -622,8 +615,8 @@ namespace AsynGyanis::Net
          */
         struct SlowRouteOptions
         {
-            std::chrono::milliseconds processingTime{0};      ///< 该路由的处理耗时；非正数表示不注册这条路由
-            std::atomic<bool>      *handlerStarted{nullptr};  ///< 处理函数进入时置位的标记，可空
+            std::chrono::milliseconds processingTime{0};       ///< 该路由的处理耗时；非正数表示不注册这条路由
+            std::atomic<bool>        *handlerStarted{nullptr}; ///< 处理函数进入时置位的标记，可空
         };
 
         /**
@@ -635,7 +628,7 @@ namespace AsynGyanis::Net
         using RouteRegistrar = std::function<void(Router &, Core::EventLoop &)>;
 
         /// 「按住不放」的正文路由：路径与响应正文标记，预算类用例按这两个值发请求与认响应
-        inline constexpr std::string_view kBodyHoldingRoutePath = "/hold";
+        inline constexpr std::string_view kBodyHoldingRoutePath    = "/hold";
         inline constexpr std::string_view kBodyHoldingResponseBody = "held";
 
         /**
@@ -648,8 +641,7 @@ namespace AsynGyanis::Net
          * @param handlerStarted 处理器进门时置位的标记，可空
          * @param holdTime 按住不放的时间
          */
-        inline void registerBodyHoldingRoute(Router &router, Core::EventLoop &loop, std::atomic<bool> *handlerStarted,
-                                           const std::chrono::milliseconds holdTime)
+        inline void registerBodyHoldingRoute(Router &router, Core::EventLoop &loop, std::atomic<bool> *handlerStarted, const std::chrono::milliseconds holdTime)
         {
             router.post(std::string{kBodyHoldingRoutePath},
                         [&loop, handlerStarted, holdTime](HttpRequest &, HttpResponse &response) -> Core::Task<>
@@ -666,8 +658,8 @@ namespace AsynGyanis::Net
         }
 
         /// 流式上传用例共用的路由路径与段数：两条承载（HTTP/1.1 与 HTTP/2）用同一份形状，才好比形状之外的事
-        inline constexpr std::string_view kStreamEchoRoutePath = "/stream-echo";
-        inline constexpr std::size_t kStreamEchoChunkCount = 3U;
+        inline constexpr std::string_view kStreamEchoRoutePath  = "/stream-echo";
+        inline constexpr std::size_t      kStreamEchoChunkCount = 3U;
 
         /**
          * @brief 注册一条「收流式正文、每交付一批就推进计数」的 POST 路由（路径 /stream-echo）
@@ -679,8 +671,7 @@ namespace AsynGyanis::Net
          * @param receivedGuard 保护 receivedText 的锁
          * @param receivedText 拼回的正文（处理器里拷出来，交用例读）
          */
-        inline void registerStreamingEchoRoute(Router &router, std::atomic<std::size_t> *batchCount,
-                                              std::mutex *receivedGuard, std::string *receivedText)
+        inline void registerStreamingEchoRoute(Router &router, std::atomic<std::size_t> *batchCount, std::mutex *receivedGuard, std::string *receivedText)
         {
             router.postStreaming(std::string{kStreamEchoRoutePath},
                                  [batchCount, receivedGuard, receivedText](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
@@ -712,10 +703,10 @@ namespace AsynGyanis::Net
          * @param waitBudget 这一段的等待预算
          * @return true 等到了；false 预算用完——调用方照常交正文，让判据落在批次数上而不是把用例挂住
          */
-        inline Core::Task<bool> waitForBatchCount(Core::EventLoop &loop, const std::atomic<std::size_t> &batchCount,
-                                                 const std::size_t target, const std::chrono::milliseconds waitBudget)
+        inline Core::Task<bool> waitForBatchCount(Core::EventLoop &loop, const std::atomic<std::size_t> &batchCount, const std::size_t target,
+                                                  const std::chrono::milliseconds waitBudget)
         {
-            const auto startedAt = std::chrono::steady_clock::now();
+            const auto  startedAt = std::chrono::steady_clock::now();
             Core::Timer pollTimer(loop);
             while (batchCount.load(std::memory_order_acquire) < target)
             {
@@ -737,8 +728,7 @@ namespace AsynGyanis::Net
          * @param batchCount 服务端已交付的批次数
          * @return HttpBodyChunkSource 可直接赋给 HttpClientRequest::bodySource 的来源
          */
-        inline HttpBodyChunkSource makeStreamEchoChunkSource(Core::EventLoop &loop,
-                                                             const std::atomic<std::size_t> &batchCount)
+        inline HttpBodyChunkSource makeStreamEchoChunkSource(Core::EventLoop &loop, const std::atomic<std::size_t> &batchCount)
         {
             auto cursor = std::make_shared<std::size_t>(0);
             return [&loop, &batchCount, cursor]() -> Core::Task<std::optional<std::string>>
@@ -798,34 +788,19 @@ namespace AsynGyanis::Net
             /// 服务器是否已进入接受循环
             [[nodiscard]] bool awaitRunning(const std::chrono::milliseconds timeout) const
             {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_server.isRunning();
-                        },
-                        timeout);
+                return waitForCondition([this] { return m_server.isRunning(); }, timeout);
             }
 
             /// 活跃连接是否已全部退场
             [[nodiscard]] bool awaitConnectionsDrained(const std::chrono::milliseconds timeout) const
             {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_server.activeConnectionCount() == 0;
-                        },
-                        timeout);
+                return waitForCondition([this] { return m_server.activeConnectionCount() == 0; }, timeout);
             }
 
             /// 是否已有连接被挂上连接管理器（先确认它被接受，再断言它退场才有意义）
             [[nodiscard]] bool awaitConnectionAccepted(const std::chrono::milliseconds timeout) const
             {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_server.activeConnectionCount() >= 1;
-                        },
-                        timeout);
+                return waitForCondition([this] { return m_server.activeConnectionCount() >= 1; }, timeout);
             }
 
             /// 内核实际分配的监听端口
@@ -856,8 +831,7 @@ namespace AsynGyanis::Net
                             action();
                             isFinished.store(true, std::memory_order_release);
                         });
-                EXPECT_TRUE(waitForCondition([&isFinished] { return isFinished.load(std::memory_order_acquire); }, kWaitTimeout))
-                        << "投递到循环线程的动作没有在时限内完成";
+                EXPECT_TRUE(waitForCondition([&isFinished] { return isFinished.load(std::memory_order_acquire); }, kWaitTimeout)) << "投递到循环线程的动作没有在时限内完成";
             }
 
         protected:
@@ -882,8 +856,7 @@ namespace AsynGyanis::Net
              * @param serverFactory 服务器工厂，形如 (Core::EventLoop &) -> ServerType
              */
             template<typename ServerFactory>
-            RunningServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
-                                 const HttpParserLimits &parserLimits, ServerFactory serverFactory) :
+            RunningServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval, const HttpParserLimits &parserLimits, ServerFactory serverFactory) :
                 m_loop(), m_server(serverFactory(m_loop)), m_serverTask(driveStart(m_server, m_startThrew)), m_loopThread(m_loop)
             {
                 // 限额、清扫节拍与路由都必须在投递 start() 之前落定：清扫协程按 start() 那一刻的
@@ -891,11 +864,12 @@ namespace AsynGyanis::Net
                 m_server.setLimits(limits);
                 m_server.setParserLimits(parserLimits);
                 m_server.setIdleCheckInterval(sweepInterval);
-                m_server.router().get("/hello", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                {
-                    response.setBody("served-hello");
-                    co_return;
-                });
+                m_server.router().get("/hello",
+                                      [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                      {
+                                          response.setBody("served-hello");
+                                          co_return;
+                                      });
             }
 
             /// 投递主协程：子类做完全部启动前配置后调用，且只调用一次
@@ -959,17 +933,11 @@ namespace AsynGyanis::Net
              * @param configureServer 可选的启动前配置动作（例如打开 h2c），同样在投递 start() 之前执行
              * @param listenAddress 监听地址，默认回环 IPv4 由内核分配端口；IPv6 用例传 ::1
              */
-            RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
-                                     const SlowRouteOptions &slowRoute = {}, const RouteRegistrar &registerRoutes = {},
-                                     const HttpParserLimits &parserLimits = HttpParserLimits{},
-                                     const ServerConfigurator &configureServer = {},
-                                     const Core::InetAddress &listenAddress = Core::InetAddress::localhost(0)) :
-                RunningServerFixture<TestHttpServer>(
-                        limits, sweepInterval, parserLimits,
-                        [&listenAddress](Core::EventLoop &serverLoop)
-                        {
-                            return TestHttpServer(serverLoop, listenAddress);
-                        })
+            RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval, const SlowRouteOptions &slowRoute = {},
+                                     const RouteRegistrar &registerRoutes = {}, const HttpParserLimits &parserLimits = HttpParserLimits{},
+                                     const ServerConfigurator &configureServer = {}, const Core::InetAddress &listenAddress = Core::InetAddress::localhost(0)) :
+                RunningServerFixture<TestHttpServer>(limits, sweepInterval, parserLimits,
+                                                     [&listenAddress](Core::EventLoop &serverLoop) { return TestHttpServer(serverLoop, listenAddress); })
             {
                 // 慢路由用定时等待模拟「处理中」：定时等待挂在事件循环上，因此 drain 与本请求都能照常推进，
                 // 处理耗时越长，越能分辨「等完在途请求」与「等满死期限」
@@ -977,19 +945,19 @@ namespace AsynGyanis::Net
                 {
                     Core::EventLoop &serverLoop = loop();
                     server().router().get("/slow",
-                                          [&serverLoop, processingTime = slowRoute.processingTime, handlerStarted = slowRoute.handlerStarted](
-                                                  HttpRequest &, HttpResponse &response) -> Core::Task<>
-                    {
-                        // 先置位再等待：用例据此确认此刻连接已被标记为「有在途工作」
-                        if (handlerStarted != nullptr)
-                        {
-                            handlerStarted->store(true, std::memory_order_release);
-                        }
-                        Core::Timer processingTimer(serverLoop);
-                        co_await processingTimer.waitFor(processingTime);
-                        response.setBody("served-slow");
-                        co_return;
-                    });
+                                          [&serverLoop, processingTime = slowRoute.processingTime,
+                                           handlerStarted = slowRoute.handlerStarted](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                          {
+                                              // 先置位再等待：用例据此确认此刻连接已被标记为「有在途工作」
+                                              if (handlerStarted != nullptr)
+                                              {
+                                                  handlerStarted->store(true, std::memory_order_release);
+                                              }
+                                              Core::Timer processingTimer(serverLoop);
+                                              co_await processingTimer.waitFor(processingTime);
+                                              response.setBody("served-slow");
+                                              co_return;
+                                          });
                 }
 
                 // 附加路由：与内置路由同批落定，仍然在 start() 之前
@@ -1027,12 +995,7 @@ namespace AsynGyanis::Net
                 m_drainFinished.store(false, std::memory_order_release);
                 m_drainTask = driveDrain(server(), m_drainFinished, drainTimeout);
                 scheduleOnLoopThread(m_drainTask);
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_drainFinished.load(std::memory_order_acquire);
-                        },
-                        waitTimeout);
+                return waitForCondition([this] { return m_drainFinished.load(std::memory_order_acquire); }, waitTimeout);
             }
 
         private:
@@ -1064,17 +1027,14 @@ namespace AsynGyanis::Net
          * @param sweepInterval 空闲清扫节拍
          * @return std::unique_ptr<RunningHttpServerFixture> 起好了交出夹具，起不来交空
          */
-        inline std::unique_ptr<RunningHttpServerFixture> tryStartHttpServerOn(
-                const Core::InetAddress &listenAddress, const HttpServerLimits &limits = HttpServerLimits{},
-                const std::chrono::milliseconds sweepInterval = std::chrono::milliseconds{100})
+        inline std::unique_ptr<RunningHttpServerFixture> tryStartHttpServerOn(const Core::InetAddress &listenAddress, const HttpServerLimits &limits = HttpServerLimits{},
+                                                                              const std::chrono::milliseconds sweepInterval = std::chrono::milliseconds{100})
         {
             try
             {
-                return std::make_unique<RunningHttpServerFixture>(limits, sweepInterval, SlowRouteOptions{},
-                                                                  RouteRegistrar{}, HttpParserLimits{},
-                                                                  ServerConfigurator{}, listenAddress);
-            }
-            catch (const Base::Exception &)
+                return std::make_unique<RunningHttpServerFixture>(limits, sweepInterval, SlowRouteOptions{}, RouteRegistrar{}, HttpParserLimits{}, ServerConfigurator{},
+                                                                  listenAddress);
+            } catch (const Base::Exception &)
             {
                 return nullptr;
             }

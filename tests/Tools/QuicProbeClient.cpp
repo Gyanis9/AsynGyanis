@@ -45,14 +45,14 @@ namespace
      */
     struct Options
     {
-        std::uint16_t port{0U};              ///< 对端端口，必填
-        std::string   hostName{};            ///< SNI 与证书校验目标，必填
-        std::string   certificateAuthority{};///< 信任锚 PEM，必填
-        std::string   applicationProtocol{"h3"}; ///< 要提供的 ALPN
+        std::uint16_t port{0U};                       ///< 对端端口，必填
+        std::string   hostName{};                     ///< SNI 与证书校验目标，必填
+        std::string   certificateAuthority{};         ///< 信任锚 PEM，必填
+        std::string   applicationProtocol{"h3"};      ///< 要提供的 ALPN
         std::string   message{"quic-outbound-probe"}; ///< 送出去并期待原样回显的正文
-        long          handshakeTimeoutMs{3000};      ///< 握手时限
-        long          waitTimeoutMs{4000};           ///< 等回显的上限
-        std::string   address{"127.0.0.1"};          ///< 对端地址
+        long          handshakeTimeoutMs{3000};       ///< 握手时限
+        long          waitTimeoutMs{4000};            ///< 等回显的上限
+        std::string   address{"127.0.0.1"};           ///< 对端地址
     };
 
     /**
@@ -73,8 +73,8 @@ namespace
      */
     long parseNumber(const std::string &text, const char *fieldName)
     {
-        errno = 0;
-        char *end = nullptr;
+        errno            = 0;
+        char      *end   = nullptr;
         const long value = std::strtol(text.c_str(), &end, 10);
         if (errno != 0 || end == nullptr || *end != '\0' || text.empty())
         {
@@ -96,7 +96,7 @@ namespace
         for (int argumentIndex = 1; argumentIndex < argumentCount; ++argumentIndex)
         {
             const std::string flag{argumentValues[argumentIndex]};
-            const auto nextValue = [&]
+            const auto        nextValue = [&]
             {
                 if (argumentIndex + 1 >= argumentCount)
                 {
@@ -108,36 +108,28 @@ namespace
             if (flag == "--port")
             {
                 options.port = static_cast<std::uint16_t>(parseNumber(nextValue(), "port"));
-            }
-            else if (flag == "--host")
+            } else if (flag == "--host")
             {
                 options.hostName = nextValue();
-            }
-            else if (flag == "--ca")
+            } else if (flag == "--ca")
             {
                 options.certificateAuthority = nextValue();
-            }
-            else if (flag == "--alpn")
+            } else if (flag == "--alpn")
             {
                 options.applicationProtocol = nextValue();
-            }
-            else if (flag == "--message")
+            } else if (flag == "--message")
             {
                 options.message = nextValue();
-            }
-            else if (flag == "--address")
+            } else if (flag == "--address")
             {
                 options.address = nextValue();
-            }
-            else if (flag == "--handshake-timeout")
+            } else if (flag == "--handshake-timeout")
             {
                 options.handshakeTimeoutMs = parseNumber(nextValue(), "handshake-timeout");
-            }
-            else if (flag == "--wait-timeout")
+            } else if (flag == "--wait-timeout")
             {
                 options.waitTimeoutMs = parseNumber(nextValue(), "wait-timeout");
-            }
-            else
+            } else
             {
                 std::fprintf(stderr, "不认识的参数：%s\n", flag.c_str());
                 std::exit(2);
@@ -158,16 +150,15 @@ namespace
      * @param isFinished 结果已就位的标志（测试脚本线程等它）
      * @param isSuccess 整趟是否走通
      */
-    Task<> runProbe(EventLoop &loop, const Options &options, std::atomic<bool> &isFinished,
-                          std::atomic<bool> &isSuccess)
+    Task<> runProbe(EventLoop &loop, const Options &options, std::atomic<bool> &isFinished, std::atomic<bool> &isSuccess)
     {
         QuicClientConnection::Configuration configuration;
-        configuration.hostName                         = options.hostName;
-        configuration.applicationProtocolIdentifiers   = {options.applicationProtocol};
+        configuration.hostName                           = options.hostName;
+        configuration.applicationProtocolIdentifiers     = {options.applicationProtocol};
         configuration.tlsPolicy.certificateAuthorityFile = options.certificateAuthority;
-        configuration.handshakeTimeout                 = std::chrono::milliseconds{options.handshakeTimeoutMs};
+        configuration.handshakeTimeout                   = std::chrono::milliseconds{options.handshakeTimeoutMs};
 
-        auto client = std::make_unique<QuicClientConnection>(loop, configuration);
+        auto       client        = std::make_unique<QuicClientConnection>(loop, configuration);
         const auto serverAddress = InetAddress::resolve(options.address, options.port);
         if (!serverAddress.has_value())
         {
@@ -197,14 +188,13 @@ namespace
             isFinished.store(true);
             co_return;
         }
-        const std::span<const std::uint8_t> outbound{reinterpret_cast<const std::uint8_t *>(options.message.data()),
-                                                     options.message.size()};
-        const std::size_t acceptedByteCount = client->writeStream(streamId, outbound, true);
+        const std::span<const std::uint8_t> outbound{reinterpret_cast<const std::uint8_t *>(options.message.data()), options.message.size()};
+        const std::size_t                   acceptedByteCount = client->writeStream(streamId, outbound, true);
         emitLine("STREAM " + std::to_string(streamId) + " SENT " + std::to_string(acceptedByteCount));
 
         // 等回显：一条条收，最多收到上限为止。没有后台协程，正是 pumpOnce 的用法本意
         std::vector<std::uint8_t> echoed{};
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{options.waitTimeoutMs};
+        const auto                deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{options.waitTimeoutMs};
         while (echoed.size() < options.message.size() && std::chrono::steady_clock::now() < deadline)
         {
             co_await client->pumpOnce();
@@ -218,8 +208,7 @@ namespace
             }
         }
 
-        if (echoed.size() != options.message.size()
-            || std::memcmp(echoed.data(), options.message.data(), echoed.size()) != 0)
+        if (echoed.size() != options.message.size() || std::memcmp(echoed.data(), options.message.data(), echoed.size()) != 0)
         {
             emitLine("FAILED 回显不符（收到 " + std::to_string(echoed.size()) + " 字节）");
             client.reset();
@@ -244,18 +233,14 @@ int main(const int argumentCount, char *argumentValues[])
     const Options options = parseOptions(argumentCount, argumentValues);
 
     AsynGyanis::Core::EventLoop loop;
-    std::atomic<bool> isFinished{false};
-    std::atomic<bool> isSuccess{false};
-    auto task = runProbe(loop, options, isFinished, isSuccess);
+    std::atomic<bool>           isFinished{false};
+    std::atomic<bool>           isSuccess{false};
+    auto                        task = runProbe(loop, options, isFinished, isSuccess);
     // 协程要由循环线程首启：这里只排进就绪队列，与用例里那套夹具同一接法
     loop.scheduler().schedule(task.handle());
-    std::thread loopThread{[&loop]
-    {
-        loop.run();
-    }};
+    std::thread loopThread{[&loop] { loop.run(); }};
 
-    const auto deadline = std::chrono::steady_clock::now()
-                          + std::chrono::milliseconds{options.handshakeTimeoutMs + options.waitTimeoutMs + 4000};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{options.handshakeTimeoutMs + options.waitTimeoutMs + 4000};
     while (!isFinished.load() && std::chrono::steady_clock::now() < deadline)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});

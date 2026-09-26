@@ -44,10 +44,10 @@ namespace AsynGyanis::Net
          */
         explicit StaticFileMappingCache(std::size_t maximumEntryCount) noexcept;
 
-        StaticFileMappingCache(const StaticFileMappingCache &) = delete;
+        StaticFileMappingCache(const StaticFileMappingCache &)            = delete;
         StaticFileMappingCache &operator=(const StaticFileMappingCache &) = delete;
-        StaticFileMappingCache(StaticFileMappingCache &&) = delete;
-        StaticFileMappingCache &operator=(StaticFileMappingCache &&) = delete;
+        StaticFileMappingCache(StaticFileMappingCache &&)                 = delete;
+        StaticFileMappingCache &operator=(StaticFileMappingCache &&)      = delete;
 
         /**
          * @brief 取与本次元数据一致的映射，并把该条目提升为最近使用
@@ -56,8 +56,7 @@ namespace AsynGyanis::Net
          * @param fileBasicInfo 本次为该请求查到的文件基本信息（大小、修改秒、身份标记）
          * @return 命中时返回共享映射；未命中或与条目不一致时返回空
          */
-        [[nodiscard]] std::shared_ptr<const Platform::MemoryMappedFile> find(const std::filesystem::path &filePath,
-                                                                             const Platform::FileBasicInfo &fileBasicInfo);
+        [[nodiscard]] std::shared_ptr<const Platform::MemoryMappedFile> find(const std::filesystem::path &filePath, const Platform::FileBasicInfo &fileBasicInfo);
 
         /**
          * @brief 把一份映射登记进缓存，超出上限时淘汰最久未用的一条
@@ -66,9 +65,7 @@ namespace AsynGyanis::Net
          * @param fileBasicInfo 建立这份映射时查到的文件基本信息；其中「大小」按映射自身的长度登记，
          *        修改秒与身份标记原样采用
          */
-        void store(const std::filesystem::path &filePath,
-                   std::shared_ptr<const Platform::MemoryMappedFile> mappedFile,
-                   const Platform::FileBasicInfo &fileBasicInfo);
+        void store(const std::filesystem::path &filePath, std::shared_ptr<const Platform::MemoryMappedFile> mappedFile, const Platform::FileBasicInfo &fileBasicInfo);
 
         /**
          * @brief 当前条目数（缓存关闭时恒为 0），用于用例断言与运行期观察
@@ -84,17 +81,17 @@ namespace AsynGyanis::Net
         /// 一条缓存项：映射本体 + 建立它时所见的元数据，元数据用于判定下次请求是否仍命中
         struct Entry
         {
-            std::filesystem::path filePath;                                ///< 键，冗余存一份供淘汰时反查哈希表
-            std::shared_ptr<const Platform::MemoryMappedFile> mappedFile;   ///< 共享的映射
-            Platform::FileBasicInfo fileBasicInfo{};                        ///< 命中判据：大小取自映射自身长度，修改秒与身份标记取自建立时的查询
+            std::filesystem::path                             filePath;        ///< 键，冗余存一份供淘汰时反查哈希表
+            std::shared_ptr<const Platform::MemoryMappedFile> mappedFile;      ///< 共享的映射
+            Platform::FileBasicInfo                           fileBasicInfo{}; ///< 命中判据：大小取自映射自身长度，修改秒与身份标记取自建立时的查询
         };
 
-        using EntryList = std::list<Entry>;   ///< 按最近使用排序（表头最新）
+        using EntryList = std::list<Entry>; ///< 按最近使用排序（表头最新）
         using IndexMap  = std::unordered_map<std::filesystem::path, EntryList::iterator>;
 
-        mutable std::mutex m_mutex;               ///< 保护 m_entries 与 m_index；持锁期间不做任何系统调用
-        EntryList m_entries;                      ///< 最近使用序的条目表
-        IndexMap m_index;                         ///< 路径到 m_entries 迭代器的索引
-        std::size_t m_maximumEntryCount{0};       ///< 条数上限；0 表示缓存关闭
+        mutable std::mutex m_mutex;                ///< 保护 m_entries 与 m_index；持锁期间不做任何系统调用
+        EntryList          m_entries;              ///< 最近使用序的条目表
+        IndexMap           m_index;                ///< 路径到 m_entries 迭代器的索引
+        std::size_t        m_maximumEntryCount{0}; ///< 条数上限；0 表示缓存关闭
     };
 } // namespace AsynGyanis::Net

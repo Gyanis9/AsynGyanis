@@ -14,21 +14,19 @@ namespace AsynGyanis::Net
     {
         // 长度行到第一个 CRLF 为止，位数不会超过一个 size_t 的十六进制位数
         const std::size_t lengthLineEndIndex = chunkFrame.find(kChunkFrameCrLf);
-        if (lengthLineEndIndex == std::string_view::npos || lengthLineEndIndex == 0 ||
-            lengthLineEndIndex > kChunkLengthLineMaximumLength)
+        if (lengthLineEndIndex == std::string_view::npos || lengthLineEndIndex == 0 || lengthLineEndIndex > kChunkLengthLineMaximumLength)
         {
             throw Base::LogicException("Net: writeChunk 交出的分块帧没有合法的长度行（应为「<十六进制字节数>\\r\\n」），"
                                        "本段未发出；请检查 HttpResponse::writeChunk() 的实现与其文档是否一致");
         }
 
         // 长度前缀是负载长度的唯一权威来源：正文里出现 CRLF 也不影响边界判定
-        std::size_t payloadLength = 0;
-        const auto [parseEnd, parseError] =
-                std::from_chars(chunkFrame.data(), chunkFrame.data() + lengthLineEndIndex, payloadLength, 16);
+        std::size_t payloadLength         = 0;
+        const auto [parseEnd, parseError] = std::from_chars(chunkFrame.data(), chunkFrame.data() + lengthLineEndIndex, payloadLength, 16);
         if (parseError != std::errc() || parseEnd != chunkFrame.data() + lengthLineEndIndex)
         {
-            throw Base::LogicException("Net: 分块帧的长度行不是合法的十六进制字节数（「" +
-                                       std::string(chunkFrame.substr(0, lengthLineEndIndex)) + "」），本段未发出；"
+            throw Base::LogicException("Net: 分块帧的长度行不是合法的十六进制字节数（「" + std::string(chunkFrame.substr(0, lengthLineEndIndex)) +
+                                       "」），本段未发出；"
                                        "请检查 HttpResponse::writeChunk() 的实现与其文档是否一致");
         }
 
@@ -47,8 +45,7 @@ namespace AsynGyanis::Net
     {
         // 长度行先算完再动缓冲：写不成十六进制时抛错，调用方的缓冲保持原样（不留半个帧）
         std::array<char, kChunkLengthLineMaximumLength> lengthText{};
-        const auto [lengthEnd, lengthError] =
-                std::to_chars(lengthText.data(), lengthText.data() + lengthText.size(), data.size(), 16);
+        const auto [lengthEnd, lengthError] = std::to_chars(lengthText.data(), lengthText.data() + lengthText.size(), data.size(), 16);
         if (lengthError != std::errc())
         {
             throw Base::LogicException("Net: 分块长度无法写成十六进制文本，本段未写出；"

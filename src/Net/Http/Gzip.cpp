@@ -17,9 +17,9 @@ namespace AsynGyanis::Net
         // 故仅在级别变化时重建流（罕见）；出错路径就地 End 并标记关闭，下次重新 init，绝不在可疑状态续用。
         struct ReusableGzipDeflater
         {
-            z_stream stream{};         ///< 复用的 deflate 流
-            bool isOpen{false};        ///< 是否已 init 且可复用
-            int level{0};              ///< 建流时用的压缩级别，与入参不符则重建
+            z_stream stream{};      ///< 复用的 deflate 流
+            bool     isOpen{false}; ///< 是否已 init 且可复用
+            int      level{0};      ///< 建流时用的压缩级别，与入参不符则重建
 
             ~ReusableGzipDeflater()
             {
@@ -41,8 +41,7 @@ namespace AsynGyanis::Net
                     ::deflateEnd(&context.stream);
                     context.isOpen = false;
                 }
-            }
-            else
+            } else
             {
                 ::deflateEnd(&context.stream);
                 context.isOpen = false;
@@ -81,7 +80,7 @@ namespace AsynGyanis::Net
         }
 
         output.resize(static_cast<std::size_t>(stream.total_out));
-        return output;   // 成功路径不 End：留给下一条响应 deflateReset 复用（线程退出时由析构释放）
+        return output; // 成功路径不 End：留给下一条响应 deflateReset 复用（线程退出时由析构释放）
     }
 
     std::expected<std::string, std::string> inflateHttpBody(const std::string_view input, const std::size_t maxOutputByteCount)
@@ -91,7 +90,7 @@ namespace AsynGyanis::Net
         struct ReusableInflater
         {
             z_stream stream{};      ///< 复用的 inflate 流
-            bool isOpen{false};     ///< 是否已 init 且可复用
+            bool     isOpen{false}; ///< 是否已 init 且可复用
 
             ~ReusableInflater()
             {
@@ -127,13 +126,13 @@ namespace AsynGyanis::Net
         }
 
         z_stream &stream = context.stream;
-        stream.next_in  = reinterpret_cast<Bytef *>(const_cast<char *>(input.data()));
-        stream.avail_in = static_cast<uInt>(input.size());
+        stream.next_in   = reinterpret_cast<Bytef *>(const_cast<char *>(input.data()));
+        stream.avail_in  = static_cast<uInt>(input.size());
 
         // 输出侧只能边解边长：压缩比在几十到上千倍之间，事前按 input × 系数一次要够要么浪费、
         // 要么仍不够。翻倍扩到上界为止，上界是必需项（见头文件的 zip 炸弹说明）
         const std::size_t initialChunkByteCount = std::max<std::size_t>(input.size() * 4U, 4096U);
-        std::string output;
+        std::string       output;
         output.resize(std::min(initialChunkByteCount, maxOutputByteCount));
         std::size_t writtenByteCount = 0;
 
@@ -151,9 +150,8 @@ namespace AsynGyanis::Net
             }
             if (result != Z_OK)
             {
-                return std::unexpected(result == Z_DATA_ERROR
-                                           ? std::string("压缩正文损坏：deflate 流校验失败（数据不全、被截断，或对端发的不是 deflate）")
-                                           : std::string("zlib 解压失败，错误码 ") + std::to_string(result));
+                return std::unexpected(result == Z_DATA_ERROR ? std::string("压缩正文损坏：deflate 流校验失败（数据不全、被截断，或对端发的不是 deflate）")
+                                                              : std::string("zlib 解压失败，错误码 ") + std::to_string(result));
             }
 
             if (stream.avail_out != 0U)
@@ -164,11 +162,11 @@ namespace AsynGyanis::Net
             }
             if (output.size() >= maxOutputByteCount)
             {
-                return std::unexpected("解出的正文超过上限 " + std::to_string(maxOutputByteCount)
-                                       + " 字节：压缩比过高属于异常，按失败处理而不是交回半截正文");
+                return std::unexpected("解出的正文超过上限 " + std::to_string(maxOutputByteCount) + " 字节：压缩比过高属于异常，按失败处理而不是交回半截正文");
             }
 
             // 写满且还在正常出字节：扩一段继续解。翻倍一次到位，避免每 4 KiB 一次 realloc
             output.resize(std::min(maxOutputByteCount, output.size() * 2U));
-        }    }
+        }
+    }
 } // namespace AsynGyanis::Net

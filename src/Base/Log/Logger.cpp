@@ -10,8 +10,7 @@
 
 namespace AsynGyanis::Base
 {
-    Logger::Logger(std::string name) :
-        m_name(std::make_shared<const std::string>(std::move(name)))
+    Logger::Logger(std::string name) : m_name(std::make_shared<const std::string>(std::move(name)))
     {
     }
 
@@ -67,14 +66,7 @@ namespace AsynGyanis::Base
         // 名字与线程号都是共享/缓存值，事件构造只搬指针；消息体按值移入避免二次拷贝。
         // 时刻只取一个 time_point：本地时间的折算与文本化留给各 Sink 的格式化器，
         // 于是事件循环线程上一行日志不为时间戳取堆块
-        LogEvent event{
-                level,
-                std::chrono::system_clock::now(),
-                threadIdString(),
-                location,
-                m_name,
-                std::move(message)
-        };
+        LogEvent event{level, std::chrono::system_clock::now(), threadIdString(), location, m_name, std::move(message)};
         event.stackTrace = std::move(stackTrace);
 
         writeToSinks(event);
@@ -182,8 +174,7 @@ namespace AsynGyanis::Base
             {
                 // 单个 Sink 异常不应阻止其他 Sink 收日志，但绝不能静默：日志系统自己出了故障
                 // 没有别处可报。会抛的写路径本就罕见（如滚动时无法重开文件），无需限流
-                std::cerr << "Logger(" << name() << ")：某个 Sink 写入失败，该 Sink 的后续日志可能丢失："
-                        << sinkError.what() << '\n';
+                std::cerr << "Logger(" << name() << ")：某个 Sink 写入失败，该 Sink 的后续日志可能丢失：" << sinkError.what() << '\n';
             } catch (...)
             {
                 std::cerr << "Logger(" << name() << ")：某个 Sink 写入时抛出未知异常，该 Sink 的后续日志可能丢失" << '\n';

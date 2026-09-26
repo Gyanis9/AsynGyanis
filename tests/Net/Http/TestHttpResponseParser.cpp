@@ -42,7 +42,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponseParser, DecodesContentLengthBody)
     {
-        const std::string message = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloEXTRA";
+        const std::string  message = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloEXTRA";
         HttpResponseParser parser;
         EXPECT_EQ(parser.feed(message), message.size() - 5);
         EXPECT_TRUE(parser.isComplete());
@@ -65,7 +65,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponseParser, DecodesChunkedOneByteAtATime)
     {
-        const std::string message = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;ext=1\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+        const std::string  message = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;ext=1\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
         HttpResponseParser parser;
         EXPECT_TRUE(feedOneByteAtATime(parser, message));
         EXPECT_EQ(parser.result().body, "hello world");
@@ -201,8 +201,8 @@ namespace AsynGyanis::Net
     TEST(HttpResponseParser, InterimResponseFramingHeadersDoNotLeakIntoFinalResponse)
     {
         HttpResponseParser parser;
-        const std::string message = "HTTP/1.1 103 Early Hints\r\nTransfer-Encoding: chunked\r\n\r\n"
-                                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        const std::string  message = "HTTP/1.1 103 Early Hints\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                     "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
         EXPECT_TRUE(feedAll(parser, message));
         EXPECT_EQ(parser.result().statusCode, 200);
         EXPECT_EQ(parser.result().body, "ok");
@@ -246,8 +246,7 @@ namespace AsynGyanis::Net
 
         // 头块净字节：单条头就把块长顶爆（值给到上限 + 1 字节）
         HttpResponseParser blockParser;
-        std::string       bigHeader = "HTTP/1.1 200 OK\r\nx-big: " +
-                                std::string(HttpResponseParser::kDefaultMaximumHeaderBlockByteCount, 'v') + "\r\n\r\n";
+        std::string        bigHeader = "HTTP/1.1 200 OK\r\nx-big: " + std::string(HttpResponseParser::kDefaultMaximumHeaderBlockByteCount, 'v') + "\r\n\r\n";
         blockParser.feed(bigHeader);
         EXPECT_TRUE(blockParser.hasFailed()) << "头部块总长超过上限没有被拦下";
     }
@@ -288,8 +287,8 @@ namespace AsynGyanis::Net
     TEST(HttpResponseParser, SkipsInterimResponseAndDeliversFinalOne)
     {
         HttpResponseParser parser;
-        const std::string message = "HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n"
-                                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        const std::string  message = "HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\n"
+                                     "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
         EXPECT_TRUE(feedAll(parser, message));
         EXPECT_EQ(parser.result().statusCode, 200);
         EXPECT_EQ(parser.result().body, "ok");
@@ -410,10 +409,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponseParser, ResponseBodyDefaultsAgreeAcrossBothTransports)
     {
-        EXPECT_EQ(HttpOutboundConnectionPool::kDefaultMaximumResponseBodyBytes,
-                  HttpResponseParser::kDefaultMaximumBodySize) << "池与 h1 解析器的默认档分叉了";
-        EXPECT_EQ(Http2ClientConnection::kDefaultMaximumResponseBodyBytes,
-                  HttpResponseParser::kDefaultMaximumBodySize) << "h2 与 h1 的默认档分叉了：换协议就换胃口";
+        EXPECT_EQ(HttpOutboundConnectionPool::kDefaultMaximumResponseBodyBytes, HttpResponseParser::kDefaultMaximumBodySize) << "池与 h1 解析器的默认档分叉了";
+        EXPECT_EQ(Http2ClientConnection::kDefaultMaximumResponseBodyBytes, HttpResponseParser::kDefaultMaximumBodySize) << "h2 与 h1 的默认档分叉了：换协议就换胃口";
     }
 
     /**

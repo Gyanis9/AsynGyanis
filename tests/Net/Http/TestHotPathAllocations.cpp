@@ -72,29 +72,29 @@ namespace AsynGyanis::Net
         // Debug 的 STL 迭代器调试代理会给每个容器对象多挂一块代理，读数被实现细节放大一个量级，
         // 钉它等于钉噪声。Debug 侧仍跑同样的形状，把读数打出来供对照，并保留两条与配置无关的结构判据。
         // 名字里带 Total 的钉的是「一千次一共多少次」（原值），其余是摊平到每次操作的读数
-        constexpr std::uint64_t kHttp1ParseTotalAllocationsPerThousand = 0U; ///< URI、头部、正文都整块交接，暂存容量跨报文留着
-        constexpr std::uint64_t kHeaderRefillTotalAllocationsPerThousand = 0U; ///< clear 只清内容、留着容量，整块头部写进同一条字节缓冲
+        constexpr std::uint64_t kHttp1ParseTotalAllocationsPerThousand    = 0U; ///< URI、头部、正文都整块交接，暂存容量跨报文留着
+        constexpr std::uint64_t kHeaderRefillTotalAllocationsPerThousand  = 0U; ///< clear 只清内容、留着容量，整块头部写进同一条字节缓冲
         constexpr std::uint64_t kDispatchExactTotalAllocationsPerThousand = 0U; ///< 命中精确路由不建参数表，派发本身不再碰堆
-        constexpr std::uint64_t kDispatchPatternAllocationsPerRequest = 4U; ///< 复用的候选表 2 + 候选里那一条 ":id" 1 + 提交给请求 1
-        constexpr std::uint64_t kRequestIdTotalAllocationsPerThousand = 0U; ///< id 就地写进请求自己的缓冲，两侧容量都留着
-        constexpr std::uint64_t kHeadSerializeAllocationsFresh = 1U;
-        constexpr std::uint64_t kHeadSerializeTotalAllocationsReused = 0U;
-        constexpr std::uint64_t kFrameDecodeAllocationsPerFrame = 1U;
-        constexpr std::uint64_t kChunkFrameAllocationsFresh = 1U;      ///< 每次新建一个帧串：一次分配
-        constexpr std::uint64_t kChunkFrameTotalAllocationsReused = 0U; ///< 复用帧缓冲：容量长够之后一次都不碰堆
+        constexpr std::uint64_t kDispatchPatternAllocationsPerRequest     = 4U; ///< 复用的候选表 2 + 候选里那一条 ":id" 1 + 提交给请求 1
+        constexpr std::uint64_t kRequestIdTotalAllocationsPerThousand     = 0U; ///< id 就地写进请求自己的缓冲，两侧容量都留着
+        constexpr std::uint64_t kHeadSerializeAllocationsFresh            = 1U;
+        constexpr std::uint64_t kHeadSerializeTotalAllocationsReused      = 0U;
+        constexpr std::uint64_t kFrameDecodeAllocationsPerFrame           = 1U;
+        constexpr std::uint64_t kChunkFrameAllocationsFresh               = 1U; ///< 每次新建一个帧串：一次分配
+        constexpr std::uint64_t kChunkFrameTotalAllocationsReused         = 0U; ///< 复用帧缓冲：容量长够之后一次都不碰堆
         // 收一条 h2 请求（7 条头部）：解出来的字段串、整块头部的两份缓冲、流记录。交出请求的那份向量
         // 按会话的节奏还回来复用容量，因此不再计一次容器重建。
         // 同一条语料在 h1 那条形状上是 0 次——差值里剩的是「每条请求各要一套存储」这一条结构性成本
         constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand = 14000U;
-        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand = 1325000U;
+        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand       = 1325000U;
         // 一条请求新建一个 HttpRequest 装 10 条头部：记录表与字节缓冲都从 0 按倍长上去的代价。
         // 预留那一档只留 4 条 / 128 字节（HTTP/3 收头实际用的猜测值），超出部分照常扩容
-        constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand = 24000U;
+        constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand   = 24000U;
         constexpr std::uint64_t kAssemblyWithSmallReserveTotalAllocationsPerThousand = 12000U;
         // 答一条 h2 响应分两段：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 1 次 / 163 字节。
         // 连接侧按一千次的原值钉：HPACK 动态表的插入与逐出不是每轮一次，摊平会把这点抖动抹平
         constexpr std::uint64_t kResponseCollectTotalAllocationsPerThousand = 3000U;
-        constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand = 1014U;
+        constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand    = 1014U;
         // 每条额外头部应当不额外向堆要一次：HPACK 解出的字段直接落进请求的头部存储，
         // 名字与值都短到进小串内联，所以这里钉 0——哪天逐字段暂存容器回来了，这条先红
         constexpr std::uint64_t kMarginalAllocationsPerHeaderField = 0U;
@@ -135,7 +135,7 @@ namespace AsynGyanis::Net
             }
 
             Http2HeadersPayload payload;
-            payload.endHeaders = true;
+            payload.endHeaders          = true;
             payload.headerBlockFragment = std::move(headerBlock);
             return encodeHttp2HeadersFrame(payload, 1);
         }
@@ -227,10 +227,7 @@ namespace AsynGyanis::Net
             for (const Http2Request &request: requests)
             {
                 mark += request.method.size() + request.path.size() + request.authority.size();
-                request.headerFields.forEachField([&mark](const std::string_view name, const std::string_view value)
-                                                   {
-                                                       mark += name.size() + value.size();
-                                                   });
+                request.headerFields.forEachField([&mark](const std::string_view name, const std::string_view value) { mark += name.size() + value.size(); });
             }
             return mark;
         }
@@ -247,9 +244,9 @@ namespace AsynGyanis::Net
             frame.push_back(static_cast<char>((headerBlock.size() >> 16) & 0xFFU));
             frame.push_back(static_cast<char>((headerBlock.size() >> 8) & 0xFFU));
             frame.push_back(static_cast<char>(headerBlock.size() & 0xFFU));
-            frame.push_back(0x01);                                          // HEADERS
-            frame.push_back(static_cast<char>(0x01U | 0x04U));              // END_STREAM | END_HEADERS
-            frame.push_back(static_cast<char>((streamId >> 24) & 0xFFU));   // 流号最高位是保留位，必须为 0
+            frame.push_back(0x01);                                        // HEADERS
+            frame.push_back(static_cast<char>(0x01U | 0x04U));            // END_STREAM | END_HEADERS
+            frame.push_back(static_cast<char>((streamId >> 24) & 0xFFU)); // 流号最高位是保留位，必须为 0
             frame.push_back(static_cast<char>((streamId >> 16) & 0xFFU));
             frame.push_back(static_cast<char>((streamId >> 8) & 0xFFU));
             frame.push_back(static_cast<char>(streamId & 0xFFU));
@@ -279,7 +276,7 @@ namespace AsynGyanis::Net
             }
 
             std::string settingsFrame;
-            settingsFrame.append(3, '\0');      // 帧长度 0：一个空 SETTINGS，只为把连接推进到能用
+            settingsFrame.append(3, '\0'); // 帧长度 0：一个空 SETTINGS，只为把连接推进到能用
             settingsFrame.push_back(0x04);
             settingsFrame.push_back(0x00);
             settingsFrame.append(4, '\0');
@@ -293,14 +290,14 @@ namespace AsynGyanis::Net
             static_cast<void>(connection.takeOutgoingBytes());
 
             std::size_t frameCursor = 0;
-            const auto ingestOnce = [&connection, &requestFrames, &frameCursor]() -> std::size_t
+            const auto  ingestOnce  = [&connection, &requestFrames, &frameCursor]() -> std::size_t
             {
                 const std::string &frame = requestFrames[frameCursor % requestFrames.size()];
                 ++frameCursor;
                 static_cast<void>(connection.feedBytes(frame.data(), frame.size()));
                 // 判据只取长度之和：这里既不能构造临时串也不能建容器，否则量进来的是用例自己的分配
                 std::vector<Http2Request> requests = connection.takeRequests();
-                const std::size_t mark = decodedRequestMark(requests);
+                const std::size_t         mark     = decodedRequestMark(requests);
                 // 会话侧是「遍历完把向量还回去复用容量」的（absorbPendingRequests），这里跟同一条节奏：
                 // 不还的话每轮都要为这份向量另要一块堆，量的就不是稳态成本
                 connection.recycleRequests(std::move(requests));
@@ -339,7 +336,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, MeasurementWindowHasNoBackgroundAllocations)
     {
-        std::uint64_t sink = 0;
+        std::uint64_t           sink    = 0;
         const AllocationProfile profile = measurePerOperation(
                 [&sink]
                 {
@@ -362,11 +359,11 @@ namespace AsynGyanis::Net
         // 解析器按声明的 Content-Length 收正文（这份语料的正文比声明的长一字节，多出的那字节
         // 属于下一条报文），所以判据取「头部之后 64 字节」而不是整段文本长度
         const std::size_t expectedConsumed = requestText.find("\r\n\r\n") + 4U + 64U;
-        HttpParser parser;
-        const auto parseOnce = [&parser, &requestText]
+        HttpParser        parser;
+        const auto        parseOnce = [&parser, &requestText]
         {
             // 返回「本次吃掉的字节数」：没解析完就是 0，最后核对总和能看出来
-            const ParseStatus status = parser.parse(requestText.data(), requestText.size());
+            const ParseStatus status   = parser.parse(requestText.data(), requestText.size());
             const std::size_t consumed = status == ParseStatus::Done ? parser.consumedByteCount() : 0U;
             parser.reset();
             return consumed;
@@ -381,15 +378,12 @@ namespace AsynGyanis::Net
 
         const AllocationProfile profile = measurePerOperation(parseOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * expectedConsumed) << "有几次解析没走到 Done";
-        std::printf("http1-parse-request 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations),
+        std::printf("http1-parse-request 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation), static_cast<unsigned long long>(profile.totalAllocations),
                     static_cast<unsigned long long>(profile.totalBytes));
 #ifdef NDEBUG
         // 判据取原值而不是摊平读数：摊平是整除，「每次 0 次」允许一千次里藏住 999 次分配
-        EXPECT_EQ(profile.totalAllocations, kHttp1ParseTotalAllocationsPerThousand)
-                << "每条入站请求的分配数变了：要么多了一次每请求堆块，要么这份读数需要按实测重录";
+        EXPECT_EQ(profile.totalAllocations, kHttp1ParseTotalAllocationsPerThousand) << "每条入站请求的分配数变了：要么多了一次每请求堆块，要么这份读数需要按实测重录";
 #endif
     }
 
@@ -400,8 +394,8 @@ namespace AsynGyanis::Net
     TEST(HotPathAllocations, HeaderStoreRefillAllocations)
     {
         const std::vector<std::pair<std::string, std::string>> fixtures = makeHeaderFixtures();
-        HttpHeaderFieldStore store;
-        const auto refill = [&store, &fixtures]
+        HttpHeaderFieldStore                                   store;
+        const auto                                             refill = [&store, &fixtures]
         {
             store.clear();
             for (const auto &[name, value]: fixtures)
@@ -411,23 +405,17 @@ namespace AsynGyanis::Net
             // 数权威记录只能走遍历出口：存储交出的是字节缓冲加偏移，不再交出 owning 容器。
             // 这里的 lambda 不捕堆、也不让存储建单值视图，因此不污染读数
             std::size_t fieldCount = 0;
-            store.forEachField([&fieldCount](const std::string_view, const std::string_view)
-                               {
-                                   ++fieldCount;
-                               });
+            store.forEachField([&fieldCount](const std::string_view, const std::string_view) { ++fieldCount; });
             return fieldCount;
         };
         refill();
 
         const AllocationProfile profile = measurePerOperation(refill);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * fixtures.size());
-        std::printf("header-store-refill 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations));
+        std::printf("header-store-refill 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation), static_cast<unsigned long long>(profile.totalAllocations));
 #ifdef NDEBUG
-        EXPECT_EQ(profile.totalAllocations, kHeaderRefillTotalAllocationsPerThousand)
-                << "装 10 条头部的分配数变了：稳态下这张表只该按需扩容，不该每条头各要一块";
+        EXPECT_EQ(profile.totalAllocations, kHeaderRefillTotalAllocationsPerThousand) << "装 10 条头部的分配数变了：稳态下这张表只该按需扩容，不该每条头各要一块";
 #endif
     }
 
@@ -440,11 +428,11 @@ namespace AsynGyanis::Net
     TEST(HotPathAllocations, HttpRequestHeaderAssemblyAllocations)
     {
         const std::vector<std::pair<std::string, std::string>> fixtures = makeHeaderFixtures();
-        const auto markOf = [](const HttpRequest &request)
+        const auto                                             markOf   = [](const HttpRequest &request)
         {
             // 只走视图出口：取值返回 optional<string> 的那条每次都要造临时串，会把读数弄脏
-            return request.firstHeaderValueView("content-length").value_or(std::string_view{}).size()
-                 + request.firstHeaderValueView("authorization").value_or(std::string_view{}).size();
+            return request.firstHeaderValueView("content-length").value_or(std::string_view{}).size() +
+                   request.firstHeaderValueView("authorization").value_or(std::string_view{}).size();
         };
         const auto assembleWithoutReserve = [&fixtures, &markOf]
         {
@@ -471,20 +459,15 @@ namespace AsynGyanis::Net
         ASSERT_EQ(assembleWithoutReserve(), expectedMark) << "这条形状没把头部装上，读数没意义";
         ASSERT_EQ(assembleWithSmallReserve(), expectedMark) << "预留过的那份与不预留的那份读到的值不一致";
 
-        const AllocationProfile fresh = measurePerOperation(assembleWithoutReserve);
+        const AllocationProfile fresh    = measurePerOperation(assembleWithoutReserve);
         const AllocationProfile reserved = measurePerOperation(assembleWithSmallReserve);
-        EXPECT_LT(reserved.totalAllocations, fresh.totalAllocations)
-                << "一次留够反而不比逐条扩容省：reserveHeaders 没接到存储侧，或两侧容器已不再按倍长";
+        EXPECT_LT(reserved.totalAllocations, fresh.totalAllocations) << "一次留够反而不比逐条扩容省：reserveHeaders 没接到存储侧，或两侧容器已不再按倍长";
         std::printf("request-header-assembly 每次分配 不预留 %llu 次 / %llu 字节；预留 4 条 128 字节 %llu 次 / %llu 字节\n",
-                    static_cast<unsigned long long>(fresh.allocationsPerOperation),
-                    static_cast<unsigned long long>(fresh.bytesPerOperation),
-                    static_cast<unsigned long long>(reserved.allocationsPerOperation),
-                    static_cast<unsigned long long>(reserved.bytesPerOperation));
+                    static_cast<unsigned long long>(fresh.allocationsPerOperation), static_cast<unsigned long long>(fresh.bytesPerOperation),
+                    static_cast<unsigned long long>(reserved.allocationsPerOperation), static_cast<unsigned long long>(reserved.bytesPerOperation));
 #ifdef NDEBUG
-        EXPECT_EQ(fresh.totalAllocations, kAssemblyWithoutReserveTotalAllocationsPerThousand)
-                << "逐条装 10 条头部的分配数变了：记录表或字节缓冲的扩容节奏改了";
-        EXPECT_EQ(reserved.totalAllocations, kAssemblyWithSmallReserveTotalAllocationsPerThousand)
-                << "预留过的那条读数变了：留的量或扩容节奏改了，HTTP/3 收头那条路径要按这条重估";
+        EXPECT_EQ(fresh.totalAllocations, kAssemblyWithoutReserveTotalAllocationsPerThousand) << "逐条装 10 条头部的分配数变了：记录表或字节缓冲的扩容节奏改了";
+        EXPECT_EQ(reserved.totalAllocations, kAssemblyWithSmallReserveTotalAllocationsPerThousand) << "预留过的那条读数变了：留的量或扩容节奏改了，HTTP/3 收头那条路径要按这条重估";
 #endif
     }
 
@@ -495,14 +478,14 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, ResponseHeadSerializeAllocations)
     {
-        const HttpResponse response = makeResponseFixture();
-        const auto serializeFresh = [&response]
+        const HttpResponse response       = makeResponseFixture();
+        const auto         serializeFresh = [&response]
         {
             const std::string serialized = response.serializeHead();
             return serialized.size();
         };
         std::string reusedHead;
-        const auto serializeReused = [&response, &reusedHead]
+        const auto  serializeReused = [&response, &reusedHead]
         {
             response.serializeHeadInto(reusedHead);
             return reusedHead.size();
@@ -510,24 +493,20 @@ namespace AsynGyanis::Net
         serializeFresh();
         serializeReused();
 
-        const AllocationProfile fresh = measurePerOperation(serializeFresh);
+        const AllocationProfile fresh  = measurePerOperation(serializeFresh);
         const AllocationProfile reused = measurePerOperation(serializeReused);
         EXPECT_GT(fresh.resultSum, 0U) << "序列化没产出任何字节，读的是空转";
         EXPECT_EQ(fresh.resultSum, reused.resultSum) << "两条出口产出的头部文本长度不一致";
         // 与构建配置无关的结构判据：复用缓冲那条不该比新建串那条花更多分配，破了就说明有人
         // 把序列化的产物又放回了每次新建的串里
-        EXPECT_LE(reused.allocationsPerOperation, fresh.allocationsPerOperation)
-                << "复用缓冲的出口反而比每次新建串更费分配";
+        EXPECT_LE(reused.allocationsPerOperation, fresh.allocationsPerOperation) << "复用缓冲的出口反而比每次新建串更费分配";
         std::printf("response-head-serialize 每次分配 %llu 次 / %llu 字节；复用缓冲 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
-                    static_cast<unsigned long long>(fresh.allocationsPerOperation),
-                    static_cast<unsigned long long>(fresh.bytesPerOperation),
-                    static_cast<unsigned long long>(reused.allocationsPerOperation),
-                    static_cast<unsigned long long>(reused.bytesPerOperation),
+                    static_cast<unsigned long long>(fresh.allocationsPerOperation), static_cast<unsigned long long>(fresh.bytesPerOperation),
+                    static_cast<unsigned long long>(reused.allocationsPerOperation), static_cast<unsigned long long>(reused.bytesPerOperation),
                     static_cast<unsigned long long>(reused.totalAllocations));
 #ifdef NDEBUG
         EXPECT_EQ(fresh.allocationsPerOperation, kHeadSerializeAllocationsFresh) << "每响应一份新头部串的读数变了";
-        EXPECT_EQ(reused.totalAllocations, kHeadSerializeTotalAllocationsReused)
-                << "复用缓冲这条路应当一次堆块都不碰";
+        EXPECT_EQ(reused.totalAllocations, kHeadSerializeTotalAllocationsReused) << "复用缓冲这条路应当一次堆块都不碰";
 #endif
     }
 
@@ -539,10 +518,10 @@ namespace AsynGyanis::Net
     {
         const std::string frameText = makeHeadersFrameText();
         Http2FrameDecoder decoder;
-        const auto decodeOnce = [&decoder, &frameText]
+        const auto        decodeOnce = [&decoder, &frameText]
         {
-            std::size_t payloadLength = 0;
-            const Http2FrameDecodeStatus status = decoder.parse(frameText.data(), frameText.size());
+            std::size_t                  payloadLength = 0;
+            const Http2FrameDecodeStatus status        = decoder.parse(frameText.data(), frameText.size());
             if (status == Http2FrameDecodeStatus::Frame)
             {
                 payloadLength = decoder.takeFrame().payload.size();
@@ -554,12 +533,10 @@ namespace AsynGyanis::Net
 
         const AllocationProfile profile = measurePerOperation(decodeOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * 200U) << "有几次没解出帧或负载长度不对";
-        std::printf("http2-frame-decode 每次分配 %llu 次 / %llu 字节\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+        std::printf("http2-frame-decode 每次分配 %llu 次 / %llu 字节\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
                     static_cast<unsigned long long>(profile.bytesPerOperation));
 #ifdef NDEBUG
-        EXPECT_EQ(profile.allocationsPerOperation, kFrameDecodeAllocationsPerFrame)
-                << "解一帧的分配数变了：稳态下只有取走的负载那份串要堆块";
+        EXPECT_EQ(profile.allocationsPerOperation, kFrameDecodeAllocationsPerFrame) << "解一帧的分配数变了：稳态下只有取走的负载那份串要堆块";
 #endif
     }
 
@@ -578,8 +555,7 @@ namespace AsynGyanis::Net
         static_cast<void>(constructOnce());
 
         const AllocationProfile profile = measurePerOperation(constructOnce);
-        std::printf("h2 每条连接的构造成本 %llu 次分配 / %llu 字节\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+        std::printf("h2 每条连接的构造成本 %llu 次分配 / %llu 字节\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
                     static_cast<unsigned long long>(profile.bytesPerOperation));
     }
 
@@ -592,10 +568,10 @@ namespace AsynGyanis::Net
     TEST(HotPathAllocations, Http2ConnectionHandshakeAllocations)
     {
         std::string settingsFrame;
-        settingsFrame.append(3, '\0');      // 帧长度 0
-        settingsFrame.push_back(0x04);      // SETTINGS
-        settingsFrame.push_back(0x00);      // 标志位：非 ACK
-        settingsFrame.append(4, '\0');      // 流标识 0
+        settingsFrame.append(3, '\0'); // 帧长度 0
+        settingsFrame.push_back(0x04); // SETTINGS
+        settingsFrame.push_back(0x00); // 标志位：非 ACK
+        settingsFrame.append(4, '\0'); // 流标识 0
         const std::string handshakeBytes = std::string(kHttp2ConnectionPreface) + settingsFrame;
 
         const auto handshakeOnce = [&handshakeBytes]() -> std::size_t
@@ -608,10 +584,8 @@ namespace AsynGyanis::Net
         EXPECT_GT(firstOutgoingByteCount, 0U) << "握手一个字节都没发，这条用例没测到东西";
 
         const AllocationProfile profile = measurePerOperation(handshakeOnce);
-        EXPECT_EQ(profile.resultSum, kMeasurementIterations * firstOutgoingByteCount)
-                << "有几次握手的产物长度不一致，读数不可信";
-        std::printf("h2 每条连接的握手成本 %llu 次分配 / %llu 字节\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations * firstOutgoingByteCount) << "有几次握手的产物长度不一致，读数不可信";
+        std::printf("h2 每条连接的握手成本 %llu 次分配 / %llu 字节\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
                     static_cast<unsigned long long>(profile.bytesPerOperation));
     }
 
@@ -624,28 +598,24 @@ namespace AsynGyanis::Net
     TEST(HotPathAllocations, Http2RequestIngestAllocations)
     {
         std::string headerBlock;
-        headerBlock += hpackUnindexedNamedField(2U, "GET");                     // :method
-        headerBlock += hpackUnindexedNamedField(6U, "http");                    // :scheme
-        headerBlock += hpackUnindexedNamedField(4U, "/api/v1/orders?trace=1");  // :path
-        headerBlock += hpackUnindexedNamedField(1U, "api.example.com");         // :authority
+        headerBlock += hpackUnindexedNamedField(2U, "GET");                    // :method
+        headerBlock += hpackUnindexedNamedField(6U, "http");                   // :scheme
+        headerBlock += hpackUnindexedNamedField(4U, "/api/v1/orders?trace=1"); // :path
+        headerBlock += hpackUnindexedNamedField(1U, "api.example.com");        // :authority
         headerBlock += hpackUnindexedNamedField("user-agent", "curl/8.7.1");
         headerBlock += hpackUnindexedNamedField("accept", "*/*");
         headerBlock += hpackUnindexedNamedField("accept-encoding", "gzip, deflate, br");
 
-        std::size_t firstMark = 0;
-        const AllocationProfile profile = measureH2RequestIngest(headerBlock, firstMark);
+        std::size_t             firstMark = 0;
+        const AllocationProfile profile   = measureH2RequestIngest(headerBlock, firstMark);
         EXPECT_GT(firstMark, 60U) << "请求没解出来或伪头没落地，这条用例没测到东西";
         std::printf("h2 每收一条请求（HPACK 解头块到交出 Http2Request）%llu 次分配 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations),
-                    static_cast<unsigned long long>(profile.totalBytes));
+                    static_cast<unsigned long long>(profile.allocationsPerOperation), static_cast<unsigned long long>(profile.bytesPerOperation),
+                    static_cast<unsigned long long>(profile.totalAllocations), static_cast<unsigned long long>(profile.totalBytes));
 #ifdef NDEBUG
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * firstMark) << "有几次请求解得不一样，读数不可信";
-        EXPECT_EQ(profile.totalAllocations, kRequestIngestTotalAllocationsPerThousand)
-                << "收一条 h2 请求的分配数变了：头部逐字段落串、流记录与交出向量这三处都会计进来";
-        EXPECT_EQ(profile.totalBytes, kRequestIngestTotalBytesPerThousand)
-                << "读数按一千次原值钉：条数不变但每块更大，同样是实现变了";
+        EXPECT_EQ(profile.totalAllocations, kRequestIngestTotalAllocationsPerThousand) << "收一条 h2 请求的分配数变了：头部逐字段落串、流记录与交出向量这三处都会计进来";
+        EXPECT_EQ(profile.totalBytes, kRequestIngestTotalBytesPerThousand) << "读数按一千次原值钉：条数不变但每块更大，同样是实现变了";
 #endif
     }
 
@@ -674,30 +644,23 @@ namespace AsynGyanis::Net
             wideBlock += hpackUnindexedNamedField(fieldName, "ab");
         }
 
-        std::size_t baseMark = 0;
-        std::size_t wideMark = 0;
-        const AllocationProfile base = measureH2RequestIngest(baseBlock, baseMark);
-        const AllocationProfile wide = measureH2RequestIngest(wideBlock, wideMark);
+        std::size_t             baseMark = 0;
+        std::size_t             wideMark = 0;
+        const AllocationProfile base     = measureH2RequestIngest(baseBlock, baseMark);
+        const AllocationProfile wide     = measureH2RequestIngest(wideBlock, wideMark);
         EXPECT_GT(wideMark, baseMark) << "宽形状没多解出头部，差值不是每条头部的成本";
 
-        const std::uint64_t marginalAllocations = base.totalAllocations > wide.totalAllocations
-                                                       ? 0U
-                                                       : (wide.totalAllocations - base.totalAllocations) / kMarginalHeaderFieldCount;
-        const std::uint64_t marginalBytes = (wide.totalBytes - base.totalBytes) / kMarginalHeaderFieldCount;
-        std::printf("h2 每条额外头部的边际成本：%llu 次分配 / %llu 字节（一千次里，七条头部共 %llu 次，十七条共 %llu 次）\n",
-                    static_cast<unsigned long long>(marginalAllocations),
-                    static_cast<unsigned long long>(marginalBytes),
-                    static_cast<unsigned long long>(base.totalAllocations),
-                    static_cast<unsigned long long>(wide.totalAllocations));
+        const std::uint64_t marginalAllocations = base.totalAllocations > wide.totalAllocations ? 0U : (wide.totalAllocations - base.totalAllocations) / kMarginalHeaderFieldCount;
+        const std::uint64_t marginalBytes       = (wide.totalBytes - base.totalBytes) / kMarginalHeaderFieldCount;
+        std::printf("h2 每条额外头部的边际成本：%llu 次分配 / %llu 字节（一千次里，七条头部共 %llu 次，十七条共 %llu 次）\n", static_cast<unsigned long long>(marginalAllocations),
+                    static_cast<unsigned long long>(marginalBytes), static_cast<unsigned long long>(base.totalAllocations), static_cast<unsigned long long>(wide.totalAllocations));
 #ifdef NDEBUG
         EXPECT_EQ(base.resultSum, kMeasurementIterations * baseMark) << "基准形状有几次请求解得不一样";
         EXPECT_EQ(wide.resultSum, kMeasurementIterations * wideMark) << "宽形状有几次请求解得不一样";
-        EXPECT_EQ(marginalAllocations, kMarginalAllocationsPerHeaderField)
-                << "每条头部多付了一次分配：HPACK 解出的字段又落进暂存容器，而不是直接进请求的头部存储";
+        EXPECT_EQ(marginalAllocations, kMarginalAllocationsPerHeaderField) << "每条头部多付了一次分配：HPACK 解出的字段又落进暂存容器，而不是直接进请求的头部存储";
         // 字节只卡上界：一条头部占下的应当只是「名字加值加一位记录」这一档，两块缓冲都按倍长
         // 留位，摊到一位头部是几十量级；钉成等号就是把实现细节当判据，换分配器即假红
-        EXPECT_LE(marginalBytes, kMarginalBytesPerHeaderFieldUpperPerThousand)
-                << "每位头部的字节成本越过上界（读数是「一千次里每条头部占下的字节」）：头部存储开始为一位留胖位置";
+        EXPECT_LE(marginalBytes, kMarginalBytesPerHeaderFieldUpperPerThousand) << "每位头部的字节成本越过上界（读数是「一千次里每条头部占下的字节」）：头部存储开始为一位留胖位置";
 
         // 对照形状：同样多十条头部，但每条的值长到 64 字节，装不进小串内联。这条必须量出
         // 「每条头部至少一次分配」——否则上面那个 0 只能说明探针看不见逐字段分配，而不是没有
@@ -707,13 +670,11 @@ namespace AsynGyanis::Net
             const std::string fieldName = std::string("x-t") + letter;
             longValueBlock += hpackUnindexedNamedField(fieldName, std::string(64U, 'v'));
         }
-        std::size_t longValueMark = 0;
-        const AllocationProfile longValue = measureH2RequestIngest(longValueBlock, longValueMark);
+        std::size_t             longValueMark = 0;
+        const AllocationProfile longValue     = measureH2RequestIngest(longValueBlock, longValueMark);
         EXPECT_GT(longValueMark, wideMark) << "对照形状没比宽形状多解出内容，这条对照无效";
-        const std::uint64_t longValueMarginalAllocations =
-                (longValue.totalAllocations - base.totalAllocations) / kMarginalHeaderFieldCount;
-        EXPECT_GE(longValueMarginalAllocations, 1000U)
-                << "探针看不见逐字段的堆分配：十条 64 字节值的头部一次都没多要，那个 0 读数就不能作数";
+        const std::uint64_t longValueMarginalAllocations = (longValue.totalAllocations - base.totalAllocations) / kMarginalHeaderFieldCount;
+        EXPECT_GE(longValueMarginalAllocations, 1000U) << "探针看不见逐字段的堆分配：十条 64 字节值的头部一次都没多要，那个 0 读数就不能作数";
 #endif
     }
 
@@ -725,31 +686,31 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, Http2ResponseSendAllocations)
     {
-        const HttpResponse response = makeResponseFixture();
-        const auto collectOnce = [&response]
+        const HttpResponse response    = makeResponseFixture();
+        const auto         collectOnce = [&response]
         {
             std::vector<HpackHeaderField> fieldLines;
             fieldLines.reserve(8U);
             std::size_t mark = 0;
-            response.forEachHeaderField([&fieldLines, &mark](const std::string_view name, const std::string_view value)
-                                        {
-                                            mark += name.size() + value.size();
-                                            fieldLines.push_back(HpackHeaderField{std::string(name), std::string(value)});
-                                        });
+            response.forEachHeaderField(
+                    [&fieldLines, &mark](const std::string_view name, const std::string_view value)
+                    {
+                        mark += name.size() + value.size();
+                        fieldLines.push_back(HpackHeaderField{std::string(name), std::string(value)});
+                    });
             return mark + fieldLines.size();
         };
         ASSERT_GT(collectOnce(), 40U) << "这条形状没把响应头部摊出来，读数没意义";
 
         const AllocationProfile collected = measurePerOperation(collectOnce);
-        std::printf("h2 每条响应：会话侧摊字段行 %llu 次分配 / %llu 字节\n",
-                    static_cast<unsigned long long>(collected.allocationsPerOperation),
+        std::printf("h2 每条响应：会话侧摊字段行 %llu 次分配 / %llu 字节\n", static_cast<unsigned long long>(collected.allocationsPerOperation),
                     static_cast<unsigned long long>(collected.bytesPerOperation));
 
         // 组帧要有活着的流：先把整窗口的请求喂在窗外，测量窗口里只剩「发响应」这一段
         Http2ConnectionConfiguration configuration;
         configuration.maximumConcurrentStreams = static_cast<std::uint32_t>(kMeasurementIterations + 2U);
         Http2Connection connection{configuration};
-        std::string settingsFrame;
+        std::string     settingsFrame;
         settingsFrame.append(3, '\0');
         settingsFrame.push_back(0x04);
         settingsFrame.push_back(0x00);
@@ -766,10 +727,10 @@ namespace AsynGyanis::Net
         for (std::uint64_t iteration = 0; iteration <= kMeasurementIterations; ++iteration)
         {
             Http2HeadersPayload headPayload;
-            headPayload.endStream = true;
-            headPayload.endHeaders = true; // 不落 END_HEADERS 就变成「等 CONTINUATION」，下一帧的 HEADERS 会被 §6.10 判成连接错误
+            headPayload.endStream           = true;
+            headPayload.endHeaders          = true; // 不落 END_HEADERS 就变成「等 CONTINUATION」，下一帧的 HEADERS 会被 §6.10 判成连接错误
             headPayload.headerBlockFragment = requestBlock;
-            const std::string frame = encodeHttp2HeadersFrame(headPayload, static_cast<std::uint32_t>(2U * iteration + 1U));
+            const std::string frame         = encodeHttp2HeadersFrame(headPayload, static_cast<std::uint32_t>(2U * iteration + 1U));
             static_cast<void>(connection.feedBytes(frame.data(), frame.size()));
             static_cast<void>(connection.takeRequests());
             static_cast<void>(connection.takeOutgoingBytes());
@@ -779,34 +740,29 @@ namespace AsynGyanis::Net
         {
             std::vector<HpackHeaderField> lines;
             response.forEachHeaderField([&lines](const std::string_view name, const std::string_view value)
-                                        {
-                                            lines.push_back(HpackHeaderField{std::string(name), std::string(value)});
-                                        });
+                                        { lines.push_back(HpackHeaderField{std::string(name), std::string(value)}); });
             return lines;
         }();
         const std::string_view body = response.body();
 
-        std::uint64_t sendCursor = 0;
-        std::size_t lastResponseBytes = 0;
-        std::string lastErrorText;
-        const auto sendOnce = [&connection, &fieldLines, &body, &sendCursor, &lastResponseBytes, &lastErrorText]() -> std::size_t
+        std::uint64_t sendCursor        = 0;
+        std::size_t   lastResponseBytes = 0;
+        std::string   lastErrorText;
+        const auto    sendOnce = [&connection, &fieldLines, &body, &sendCursor, &lastResponseBytes, &lastErrorText]() -> std::size_t
         {
             const std::uint32_t streamId = static_cast<std::uint32_t>(2U * sendCursor + 1U);
             ++sendCursor;
-            std::string errorText;
-            const Http2ResponseSendStatus headerStatus =
-                    connection.sendResponseHeaders(streamId, 200U, fieldLines, false, &errorText);
-            const Http2ResponseSendStatus bodyStatus = connection.sendResponseData(streamId, body, true, &errorText);
-            std::string outgoingBytes = connection.takeOutgoingBytes();
-            lastResponseBytes = outgoingBytes.size();
-            lastErrorText = errorText;
+            std::string                   errorText;
+            const Http2ResponseSendStatus headerStatus  = connection.sendResponseHeaders(streamId, 200U, fieldLines, false, &errorText);
+            const Http2ResponseSendStatus bodyStatus    = connection.sendResponseData(streamId, body, true, &errorText);
+            std::string                   outgoingBytes = connection.takeOutgoingBytes();
+            lastResponseBytes                           = outgoingBytes.size();
+            lastErrorText                               = errorText;
             // 会话发完就把这块还回去复用容量，这里跟着同一个节奏走，免得把「每响应一整块待发串」算成实现的成本
             connection.recycleOutgoingBytes(std::move(outgoingBytes));
             // 判据取「这一轮确实把响应发出去了」而不是产物长度：HPACK 动态表会把同一条响应越编越短，
             // 长度逐轮变小是设计行为，拿它当一致性判据会把正确的实现读成「有几次没发全」
-            return headerStatus == Http2ResponseSendStatus::Sent && bodyStatus == Http2ResponseSendStatus::Sent
-                           ? std::size_t{1}
-                           : std::size_t{0};
+            return headerStatus == Http2ResponseSendStatus::Sent && bodyStatus == Http2ResponseSendStatus::Sent ? std::size_t{1} : std::size_t{0};
         };
         // 先把「响应真的发出去了」钉住再谈读数：Rejected 与 StreamNotWritable 也会产出几十字节的 RST，
         // 只按字节数判绿会把一条根本没发的响应读成「每响应只付 2 次分配」
@@ -815,14 +771,11 @@ namespace AsynGyanis::Net
 
         const AllocationProfile sent = measurePerOperation(sendOnce);
         EXPECT_EQ(sent.resultSum, kMeasurementIterations) << "有几次响应没发出去，这条读数测的不是「发一条响应」";
-        std::printf("h2 每条响应：连接组帧发出 %llu 次分配 / %llu 字节\n",
-                    static_cast<unsigned long long>(sent.allocationsPerOperation),
+        std::printf("h2 每条响应：连接组帧发出 %llu 次分配 / %llu 字节\n", static_cast<unsigned long long>(sent.allocationsPerOperation),
                     static_cast<unsigned long long>(sent.bytesPerOperation));
 #ifdef NDEBUG
-        EXPECT_EQ(collected.totalAllocations, kResponseCollectTotalAllocationsPerThousand)
-                << "会话侧摊一次响应头部的分配数变了：字段行的形状或预留方式改了";
-        EXPECT_EQ(sent.totalAllocations, kResponseSendTotalAllocationsPerThousand)
-                << "连接侧发一条响应的分配数变了：HPACK 组帧、DATA 帧或待发缓冲的复用改了";
+        EXPECT_EQ(collected.totalAllocations, kResponseCollectTotalAllocationsPerThousand) << "会话侧摊一次响应头部的分配数变了：字段行的形状或预留方式改了";
+        EXPECT_EQ(sent.totalAllocations, kResponseSendTotalAllocationsPerThousand) << "连接侧发一条响应的分配数变了：HPACK 组帧、DATA 帧或待发缓冲的复用改了";
 #endif
     }
 
@@ -842,7 +795,7 @@ namespace AsynGyanis::Net
             return frame.size();
         };
         std::string reusedFrame;
-        const auto buildReused = [&payload, &reusedFrame]
+        const auto  buildReused = [&payload, &reusedFrame]
         {
             appendChunkFrame(reusedFrame, payload);
             return reusedFrame.size();
@@ -856,22 +809,18 @@ namespace AsynGyanis::Net
         appendChunkFrame(probeFrame, payload);
         EXPECT_EQ(chunkFramePayload(std::string_view{probeFrame}), payload) << "写出的帧解析侧认不回来";
 
-        const AllocationProfile fresh = measurePerOperation(buildFresh);
+        const AllocationProfile fresh  = measurePerOperation(buildFresh);
         const AllocationProfile reused = measurePerOperation(buildReused);
         EXPECT_GT(fresh.resultSum, 0U) << "组帧没写出任何字节，读的是空转";
         EXPECT_EQ(fresh.resultSum, reused.resultSum) << "两条出口产出的帧长度不一致";
-        EXPECT_LE(reused.allocationsPerOperation, fresh.allocationsPerOperation)
-                << "复用缓冲的出口反而比每次新建串更费分配";
+        EXPECT_LE(reused.allocationsPerOperation, fresh.allocationsPerOperation) << "复用缓冲的出口反而比每次新建串更费分配";
         std::printf("chunk-frame 每次分配 新建串 %llu 次 / %llu 字节；复用缓冲 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
-                    static_cast<unsigned long long>(fresh.allocationsPerOperation),
-                    static_cast<unsigned long long>(fresh.bytesPerOperation),
-                    static_cast<unsigned long long>(reused.allocationsPerOperation),
-                    static_cast<unsigned long long>(reused.bytesPerOperation),
+                    static_cast<unsigned long long>(fresh.allocationsPerOperation), static_cast<unsigned long long>(fresh.bytesPerOperation),
+                    static_cast<unsigned long long>(reused.allocationsPerOperation), static_cast<unsigned long long>(reused.bytesPerOperation),
                     static_cast<unsigned long long>(reused.totalAllocations));
 #ifdef NDEBUG
         EXPECT_EQ(fresh.allocationsPerOperation, kChunkFrameAllocationsFresh) << "每次新建帧串的分配数变了";
-        EXPECT_EQ(reused.totalAllocations, kChunkFrameTotalAllocationsReused)
-                << "复用帧缓冲这条路应当一次堆块都不碰";
+        EXPECT_EQ(reused.totalAllocations, kChunkFrameTotalAllocationsReused) << "复用帧缓冲这条路应当一次堆块都不碰";
 #endif
     }
 
@@ -881,13 +830,13 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, RouterDispatchExactPathAllocations)
     {
-        int handlerCallCount = 0;
+        int    handlerCallCount = 0;
         Router router;
         router.get("/health", makeCountingOkHandler(handlerCallCount));
 
-        HttpRequest request;
+        HttpRequest  request;
         HttpResponse response;
-        const auto dispatchOnce = [&router, &request, &response]
+        const auto   dispatchOnce = [&router, &request, &response]
         {
             // 每轮先 reset 再按新报文填回：对象按连接复用，容量留在原地
             request.reset();
@@ -902,13 +851,10 @@ namespace AsynGyanis::Net
         const AllocationProfile profile = measurePerOperation(dispatchOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "有几次派发没跑完（handler 里偷偷挂起了）";
         EXPECT_EQ(handlerCallCount, static_cast<int>(kMeasurementIterations) + 1) << "有几次派发没走到处理函数";
-        std::printf("router-dispatch-exact 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations));
+        std::printf("router-dispatch-exact 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation), static_cast<unsigned long long>(profile.totalAllocations));
 #ifdef NDEBUG
-        EXPECT_EQ(profile.totalAllocations, kDispatchExactTotalAllocationsPerThousand)
-                << "命中精确路由的派发多碰了堆：参数收集表又被无条件建出来了？";
+        EXPECT_EQ(profile.totalAllocations, kDispatchExactTotalAllocationsPerThousand) << "命中精确路由的派发多碰了堆：参数收集表又被无条件建出来了？";
 #endif
     }
 
@@ -919,16 +865,16 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, RouterDispatchPatternScanAllocations)
     {
-        int handlerCallCount = 0;
+        int    handlerCallCount = 0;
         Router router;
         router.get("/i/:id", makeCountingOkHandler(handlerCallCount));
         router.get("/o/:id/status", makeCountingOkHandler(handlerCallCount));
         router.get("/f/*", makeCountingOkHandler(handlerCallCount));
         router.get("/r/:y/:m", makeCountingOkHandler(handlerCallCount));
 
-        HttpRequest request;
+        HttpRequest  request;
         HttpResponse response;
-        const auto dispatchOnce = [&router, &request, &response]
+        const auto   dispatchOnce = [&router, &request, &response]
         {
             request.reset();
             fillDispatchRequest(request, "/o/42/status");
@@ -944,14 +890,11 @@ namespace AsynGyanis::Net
         const AllocationProfile profile = measurePerOperation(dispatchOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "有几次派发没跑完（handler 里偷偷挂起了）";
         EXPECT_EQ(handlerCallCount, static_cast<int>(kMeasurementIterations) + 1) << "有几次派发没命中那条模式路由";
-        std::printf("router-dispatch-pattern 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations));
+        std::printf("router-dispatch-pattern 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation), static_cast<unsigned long long>(profile.totalAllocations));
 #ifdef NDEBUG
         // 这条读数与「扫过几条候选」无关：候选表跨候选复用，多扫一条不该多要堆块
-        EXPECT_EQ(profile.allocationsPerOperation, kDispatchPatternAllocationsPerRequest)
-                << "模式层派发的分配数变了：候选表回到逐候选新建，或参数提交多了一次拷贝";
+        EXPECT_EQ(profile.allocationsPerOperation, kDispatchPatternAllocationsPerRequest) << "模式层派发的分配数变了：候选表回到逐候选新建，或参数提交多了一次拷贝";
 #endif
     }
 
@@ -963,8 +906,8 @@ namespace AsynGyanis::Net
     TEST(HotPathAllocations, RequestIdResolveAllocations)
     {
         const HttpRequestIdGenerator generator;
-        HttpRequest request;
-        const auto resolveOnce = [&generator, &request]
+        HttpRequest                  request;
+        const auto                   resolveOnce = [&generator, &request]
         {
             request.reset();
             generator.resolveInto(request);
@@ -974,14 +917,11 @@ namespace AsynGyanis::Net
 
         const AllocationProfile profile = measurePerOperation(resolveOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * 21U) << "有几次没落定 id";
-        std::printf("request-id-resolve 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations),
+        std::printf("request-id-resolve 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次 / %llu 字节）\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation), static_cast<unsigned long long>(profile.totalAllocations),
                     static_cast<unsigned long long>(profile.totalBytes));
 #ifdef NDEBUG
-        EXPECT_EQ(profile.totalAllocations, kRequestIdTotalAllocationsPerThousand)
-                << "落定 request-id 又开始碰堆了：生成或写入那条路上有人现造串？";
+        EXPECT_EQ(profile.totalAllocations, kRequestIdTotalAllocationsPerThousand) << "落定 request-id 又开始碰堆了：生成或写入那条路上有人现造串？";
 #endif
     }
 } // namespace AsynGyanis::Net

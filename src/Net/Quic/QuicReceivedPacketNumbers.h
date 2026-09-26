@@ -69,7 +69,7 @@ namespace AsynGyanis::Net
         }
 
     private:
-        std::map<std::uint64_t, std::uint64_t> m_ranges{};   ///< 首包号 → 尾包号，两端都含
-        std::size_t m_trackedPacketNumberCount{0};           ///< 覆盖的包号总数，与区间表同步增减
+        std::map<std::uint64_t, std::uint64_t> m_ranges{};                    ///< 首包号 → 尾包号，两端都含
+        std::size_t                            m_trackedPacketNumberCount{0}; ///< 覆盖的包号总数，与区间表同步增减
     };
 } // namespace AsynGyanis::Net

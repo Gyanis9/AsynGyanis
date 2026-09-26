@@ -83,8 +83,7 @@ namespace AsynGyanis::Base
          * @param stackTrace 调用栈原始帧（如 `exception.stackTrace()`）
          * @param location 源码位置信息
          */
-        void logWithStackTrace(LogLevel level, std::string_view message, CapturedStackTrace stackTrace,
-                               const SourceLocation &location = SourceLocation::current()) const;
+        void logWithStackTrace(LogLevel level, std::string_view message, CapturedStackTrace stackTrace, const SourceLocation &location = SourceLocation::current()) const;
 
         /**
          * @brief 使用 std::format 格式化日志消息并记录
@@ -97,7 +96,7 @@ namespace AsynGyanis::Base
          * @param arguments 格式化参数
          */
         template<typename... Args>
-        void logFormat(const LogLevel level, const SourceLocation &location, std::string_view formatString, Args &&... arguments) const
+        void logFormat(const LogLevel level, const SourceLocation &location, std::string_view formatString, Args &&...arguments) const
         {
             if (!shouldLog(level))
             {
@@ -119,8 +118,7 @@ namespace AsynGyanis::Base
          * @param arguments 格式化参数
          */
         template<typename... Args>
-        void logExceptionFormat(const LogLevel level, const std::exception &exception, const SourceLocation &location,
-                                std::string_view formatString, Args &&... arguments) const
+        void logExceptionFormat(const LogLevel level, const std::exception &exception, const SourceLocation &location, std::string_view formatString, Args &&...arguments) const
         {
             if (!shouldLog(level))
             {
@@ -186,7 +184,7 @@ namespace AsynGyanis::Base
          */
         struct SinkSnapshot
         {
-            std::vector<std::shared_ptr<LogSink> > sinks; ///< 该代快照持有的 Sink 列表
+            std::vector<std::shared_ptr<LogSink>> sinks; ///< 该代快照持有的 Sink 列表
         };
 
         /**
@@ -217,8 +215,8 @@ namespace AsynGyanis::Base
          * @param arguments 格式化参数
          */
         template<typename... Args>
-        void writeFormattedEvent(const LogLevel level, const SourceLocation &location, CapturedStackTrace stackTrace,
-                                 const std::string_view formatString, Args &&... arguments) const
+        void writeFormattedEvent(const LogLevel level, const SourceLocation &location, CapturedStackTrace stackTrace, const std::string_view formatString,
+                                 Args &&...arguments) const
         {
             try
             {
@@ -228,9 +226,7 @@ namespace AsynGyanis::Base
                 // 调用方已经通过了 shouldLog（否则不会走到格式化），因此降级记录只要不低于本次等级就
                 // 一定能落地；再取下界 Error 是为了让 Trace/Debug/Info 的失败在常规阈值下也看得见
                 const LogLevel diagnosticLevel = level >= LogLevel::Error ? level : LogLevel::Error;
-                writeEvent(diagnosticLevel,
-                           std::format("日志格式化错误：{} [format='{}']", formatError.what(), formatString),
-                           location, std::move(stackTrace));
+                writeEvent(diagnosticLevel, std::format("日志格式化错误：{} [format='{}']", formatError.what(), formatString), location, std::move(stackTrace));
             }
         }
 
@@ -246,9 +242,9 @@ namespace AsynGyanis::Base
         void writeEvent(LogLevel level, std::string message, const SourceLocation &location, CapturedStackTrace stackTrace = {}) const;
 
         /// 日志器名称：以共享常量字符串持有，事件构造时只复制指针不再拷贝文本
-        std::shared_ptr<const std::string>                m_name;
-        std::atomic<LogLevel>                             m_level{LogLevel::Trace};         ///< 当前日志级别
-        std::atomic<std::shared_ptr<const SinkSnapshot> > m_sinksSnapshot{emptySnapshot()}; ///< 读路径无锁的 Sink 快照
-        std::mutex                                        m_sinksWriteMutex;                ///< 仅用于串行化替换快照的写者，读者不会触碰
+        std::shared_ptr<const std::string>               m_name;
+        std::atomic<LogLevel>                            m_level{LogLevel::Trace};         ///< 当前日志级别
+        std::atomic<std::shared_ptr<const SinkSnapshot>> m_sinksSnapshot{emptySnapshot()}; ///< 读路径无锁的 Sink 快照
+        std::mutex                                       m_sinksWriteMutex;                ///< 仅用于串行化替换快照的写者，读者不会触碰
     };
 } // namespace AsynGyanis::Base

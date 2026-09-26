@@ -19,7 +19,7 @@ namespace AsynGyanis::Net
         /// 一条「文件路径 → 期望 MIME」的查表样例
         struct MimeMappingCase
         {
-            const char *filePath;       ///< 传给 contentTypeForFile 的路径或文件名
+            const char *filePath;         ///< 传给 contentTypeForFile 的路径或文件名
             const char *expectedMimeType; ///< 期望返回的媒体类型
         };
 
@@ -49,8 +49,7 @@ namespace AsynGyanis::Net
         static_assert(!std::is_copy_assignable_v<FileSender>, "FileSender 禁止拷贝赋值");
         static_assert(!std::is_move_assignable_v<FileSender>, "FileSender 禁止移动赋值");
         static_assert(!HasSendFile<FileSender>::value, "零拷贝 sendFile 已删除，不该在没有平台封装时回来");
-        static_assert(std::is_same_v<decltype(&FileSender::contentTypeForFile), const char *(*)(const std::string &)>,
-                      "对外只应剩 contentTypeForFile 这一个静态查询接口");
+        static_assert(std::is_same_v<decltype(&FileSender::contentTypeForFile), const char *(*)(const std::string &)>, "对外只应剩 contentTypeForFile 这一个静态查询接口");
         SUCCEED() << "以上均为编译期断言";
     }
 
@@ -125,11 +124,11 @@ namespace AsynGyanis::Net
     {
         // 返回值指向静态存储：调用方可长期持有、无需释放，也不该每次拿到不同地址。
         // 这里刻意转成 const void* 比较：gtest 对两个 const char* 的 EXPECT_EQ 比的是内容而非地址。
-        const char *firstCall = FileSender::contentTypeForFile("page.html");
+        const char *firstCall  = FileSender::contentTypeForFile("page.html");
         const char *secondCall = FileSender::contentTypeForFile("other.html");
         EXPECT_EQ(static_cast<const void *>(firstCall), static_cast<const void *>(secondCall));
 
-        const char *firstFallback = FileSender::contentTypeForFile("unknown.xyz");
+        const char *firstFallback  = FileSender::contentTypeForFile("unknown.xyz");
         const char *secondFallback = FileSender::contentTypeForFile("another.xyz");
         EXPECT_EQ(static_cast<const void *>(firstFallback), static_cast<const void *>(secondFallback));
         EXPECT_STREQ(firstFallback, kFallbackMimeType);

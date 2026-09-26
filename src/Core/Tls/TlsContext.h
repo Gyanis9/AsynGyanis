@@ -1,5 +1,5 @@
 /**
-* @file TlsContext.h
+ * @file TlsContext.h
  * @brief SSL_CTX RAII 包装器 — 管理 TLS 服务端上下文及每个连接的 SSL 对象创建
  * @author Gyanis
  * @date 2026-09-13
@@ -202,22 +202,21 @@ namespace AsynGyanis::Core
          * @param keyFile 私钥文件路径（PEM）
          * @return true 装好且配对；false 任一环节失败（原因留在 OpenSSL 错误栈里）
          */
-        [[nodiscard]] static bool installCertificate(SSL_CTX *context, const std::string &certificateFile,
-                                                    const std::string &keyFile);
+        [[nodiscard]] static bool installCertificate(SSL_CTX *context, const std::string &certificateFile, const std::string &keyFile);
 
         SSL_CTX *m_context{nullptr}; ///< OpenSSL SSL_CTX 句柄，RAII 管理
         /// 构造时给定的 TLS 策略：热轮换要在新上下文上原样复现，否则一次续期就把策略悄悄换回默认档。
         /// 与下面几项同理由为 mutable——加载类接口改的是 SSL_CTX 的内容而不是本对象的身份，
         /// 而 CA 文件这类配置既可能从构造函数进来、也可能事后 loadClientCertificateAuthority() 补
-        mutable TlsPolicy m_policy;
-        Role      m_role{Role::Server}; ///< 本上下文的角色，同样要在换代时复现（构造之后不再变）
-        mutable std::mutex m_contextMutex; ///< 保护 m_context 的读取与整台换代（createSSL/reload 互斥）
+        mutable TlsPolicy  m_policy;
+        Role               m_role{Role::Server}; ///< 本上下文的角色，同样要在换代时复现（构造之后不再变）
+        mutable std::mutex m_contextMutex;       ///< 保护 m_context 的读取与整台换代（createSSL/reload 互斥）
 
         // 下面五项记录「当前生效的配置」，供 reloadCertificate() 在新上下文上原样复现。
         // 加载类接口都是 const（它们改的是 SSL_CTX 内容而不是本对象的身份），因此这几项为 mutable
-        mutable std::string m_certificateFile; ///< 上次成功加载的证书路径；空表示还没加载过，reloadCertificate() 据此判断
-        mutable std::string m_keyFile;         ///< 上次成功加载的私钥路径
-        mutable std::string m_ocspResponseFile; ///< 已加载的 OCSP 响应路径；换代时按此重读，空表示没加载过
+        mutable std::string              m_certificateFile;       ///< 上次成功加载的证书路径；空表示还没加载过，reloadCertificate() 据此判断
+        mutable std::string              m_keyFile;               ///< 上次成功加载的私钥路径
+        mutable std::string              m_ocspResponseFile;      ///< 已加载的 OCSP 响应路径；换代时按此重读，空表示没加载过
         mutable std::vector<std::string> m_sessionTicketKeyFiles; ///< 已装载的票据密钥文件路径，首份用于签发、其余只用于解开旧票据；换代时按此重读，空表示没装载过
 
         mutable bool m_clientCertificateRequired{false};        ///< 是否要求并校验对端证书（换代时同样要复现）

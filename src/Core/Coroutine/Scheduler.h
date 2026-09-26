@@ -11,8 +11,8 @@
 #include <atomic>
 #include <coroutine>
 #include <cstddef>
-#include <functional>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <vector>
 
@@ -116,13 +116,13 @@ namespace AsynGyanis::Core
         [[nodiscard]] size_t localQueueSize() const;
 
     private:
-        std::vector<std::coroutine_handle<> > m_localQueue;      ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
-        std::deque<std::function<void()> >    m_localCallables;  ///< 本地待执行代码（同上无锁，先进先出）
-        std::deque<std::coroutine_handle<> >  m_globalQueue;     ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
-        std::deque<std::function<void()> >    m_remoteCallables; ///< 跨线程投递的普通代码（同上受 m_globalMutex 保护，FIFO）
-        std::mutex                            m_globalMutex;     ///< 保护全局队列与跨线程回调队列的互斥锁
-        std::atomic<size_t>                   m_globalCount{0};  ///< 全局队列长度（原子变量，用于快速判空）
-        std::atomic<size_t>                   m_remoteCallableCount{0}; ///< 跨线程回调条数（同上，用于快速判空）
-        Platform::EventNotifier *             m_wakeup{nullptr}; ///< 唤醒器指针，nullptr 表示未启用唤醒
+        std::vector<std::coroutine_handle<>> m_localQueue;             ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
+        std::deque<std::function<void()>>    m_localCallables;         ///< 本地待执行代码（同上无锁，先进先出）
+        std::deque<std::coroutine_handle<>>  m_globalQueue;            ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
+        std::deque<std::function<void()>>    m_remoteCallables;        ///< 跨线程投递的普通代码（同上受 m_globalMutex 保护，FIFO）
+        std::mutex                           m_globalMutex;            ///< 保护全局队列与跨线程回调队列的互斥锁
+        std::atomic<size_t>                  m_globalCount{0};         ///< 全局队列长度（原子变量，用于快速判空）
+        std::atomic<size_t>                  m_remoteCallableCount{0}; ///< 跨线程回调条数（同上，用于快速判空）
+        Platform::EventNotifier             *m_wakeup{nullptr};        ///< 唤醒器指针，nullptr 表示未启用唤醒
     };
-}
+} // namespace AsynGyanis::Core

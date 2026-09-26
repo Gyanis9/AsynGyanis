@@ -259,11 +259,11 @@ namespace AsynGyanis::Net
         [[nodiscard]] virtual std::shared_ptr<Core::Connection> createConnection(Core::AsyncSocket socket) = 0;
 
     protected:
-        Core::EventLoop &       m_loop;              ///< 事件循环引用，用于调度连接协程
-        TcpAcceptor             m_acceptor;          ///< 监听器，接受新连接并吸收可恢复错误
+        Core::EventLoop &m_loop;     ///< 事件循环引用，用于调度连接协程
+        TcpAcceptor      m_acceptor; ///< 监听器，接受新连接并吸收可恢复错误
         /// 实际在听的端口，绑定成功后由所属循环写入；测试与运维会从别的线程读，所以是原子量
         std::atomic<std::uint16_t> m_listeningPort{0};
-        Core::ConnectionManager m_connectionManager; ///< 连接管理器，跟踪并负责关闭所有活跃连接
+        Core::ConnectionManager    m_connectionManager; ///< 连接管理器，跟踪并负责关闭所有活跃连接
 
     private:
         /**
@@ -285,8 +285,7 @@ namespace AsynGyanis::Net
          * @param lease 该连接占用的按 IP 名额；未配置限额时是空壳凭据
          * @return Core::Task<> 协程，与 handleConnection() 同时完成
          */
-        Core::Task<> handleConnectionWithLease(std::shared_ptr<Core::Connection> connection,
-                                               PerIpConnectionLimiter::Lease lease);
+        Core::Task<> handleConnectionWithLease(std::shared_ptr<Core::Connection> connection, PerIpConnectionLimiter::Lease lease);
 
         /**
          * @brief 空闲清扫协程：按固定节拍关闭超过空闲截止时间的连接
@@ -349,16 +348,16 @@ namespace AsynGyanis::Net
         /// 代价是等待期间在事件循环上多几次空转唤醒
         static constexpr std::chrono::milliseconds kDrainPollInterval{50};
 
-        std::atomic<bool>              m_running{false};    ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
-        std::size_t                    m_maxConnections{0}; ///< 最大并发连接数，0 表示无限制
-        std::shared_ptr<PerIpConnectionLimiter> m_perIpConnectionLimiter; ///< 按来源 IP 的并发限额；空指针表示不作该限制
-        bool                             m_proxyProtocolRequired{false};   ///< 是否要求每条新连接以 PROXY 协议头开头（见 setProxyProtocolRequired()）
+        std::atomic<bool>                       m_running{false};               ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
+        std::size_t                             m_maxConnections{0};            ///< 最大并发连接数，0 表示无限制
+        std::shared_ptr<PerIpConnectionLimiter> m_perIpConnectionLimiter;       ///< 按来源 IP 的并发限额；空指针表示不作该限制
+        bool                                    m_proxyProtocolRequired{false}; ///< 是否要求每条新连接以 PROXY 协议头开头（见 setProxyProtocolRequired()）
         /// 正在读 PROXY 头的连接数：还没进连接表，但已占着描述符与缓冲，并发上限要把它们算进去
-        std::size_t                      m_pendingProxyHeaders{0};
-        std::chrono::milliseconds      m_idleCheckInterval{kDefaultIdleCheckInterval}; ///< 空闲清扫节拍，非正数表示关闭清扫
-        Core::Timer                    m_idleTimer;         ///< 清扫协程与 drain 共用的节拍器；waitFor 每次返回独立等待器，两处并发等待互不干扰
-        Core::Task<>                   m_idleSweepTask{nullptr}; ///< 清扫协程任务；空句柄表示本服务器没有清扫（见 setter 的说明）
-        std::vector<Core::Task<void> > m_connectionTasks;   ///< 已启动的连接协程，持有其生命周期防止提前销毁
+        std::size_t                   m_pendingProxyHeaders{0};
+        std::chrono::milliseconds     m_idleCheckInterval{kDefaultIdleCheckInterval}; ///< 空闲清扫节拍，非正数表示关闭清扫
+        Core::Timer                   m_idleTimer;                                    ///< 清扫协程与 drain 共用的节拍器；waitFor 每次返回独立等待器，两处并发等待互不干扰
+        Core::Task<>                  m_idleSweepTask{nullptr};                       ///< 清扫协程任务；空句柄表示本服务器没有清扫（见 setter 的说明）
+        std::vector<Core::Task<void>> m_connectionTasks;                              ///< 已启动的连接协程，持有其生命周期防止提前销毁
         /// 下一次回收已完成连接协程的触发条数：接受循环与接手路径共用，故提升为成员
         std::size_t m_nextTaskCleanupThreshold{kFinishedTaskCleanupStride};
     };

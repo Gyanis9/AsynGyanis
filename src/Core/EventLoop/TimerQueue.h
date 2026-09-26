@@ -46,17 +46,14 @@ namespace AsynGyanis::Core
          * @param now 换算时刻（由调用方给出，使这条换算能被确定性地测出来）
          * @return std::chrono::milliseconds 要武装的时长；已到期时返回 1 毫秒（0 会被描述符当成解除武装）
          */
-        inline std::chrono::milliseconds armedDurationFor(const std::chrono::steady_clock::time_point &deadline,
-                                                         const std::chrono::steady_clock::time_point &now) noexcept
+        inline std::chrono::milliseconds armedDurationFor(const std::chrono::steady_clock::time_point &deadline, const std::chrono::steady_clock::time_point &now) noexcept
         {
             const auto remaining = deadline - now;
             const auto floored   = std::chrono::duration_cast<std::chrono::milliseconds>(remaining);
             // 只比「被截掉的那一段」的正负，不构造 now + floored：截止时间允许饱和到
             // time_point::max()，加一个毫秒会把它加溢出
             const auto truncated = remaining - floored;
-            const auto roundedUp = floored + (truncated > decltype(truncated)::zero()
-                                                  ? std::chrono::milliseconds(1)
-                                                  : std::chrono::milliseconds(0));
+            const auto roundedUp = floored + (truncated > decltype(truncated)::zero() ? std::chrono::milliseconds(1) : std::chrono::milliseconds(0));
             return roundedUp > std::chrono::milliseconds(0) ? roundedUp : std::chrono::milliseconds(1);
         }
     } // namespace detail
@@ -131,13 +128,13 @@ namespace AsynGyanis::Core
              */
             void computeDeadline() noexcept;
 
-            TimerQueue *                            m_queue;    ///< 所属队列（非拥有）
-            std::chrono::milliseconds               m_duration{}; ///< 等待时长（挂起时才折算成截止时间）
-            std::chrono::steady_clock::time_point   m_deadline{}; ///< 截止时间（await_suspend 时算出）
-            std::coroutine_handle<>                 m_handle{}; ///< 等待中的协程，空表示无人在等
-            bool                                    m_isQueued{false}; ///< 是否仍在队列的堆里
-            bool                                    m_isPendingResume{false}; ///< 已到期、尚待恢复（在队列的待恢复表里）
-            std::size_t                             m_heapIndex{0}; ///< 在堆数组里的下标，仅 m_isQueued 为真时有效
+            TimerQueue                           *m_queue;                  ///< 所属队列（非拥有）
+            std::chrono::milliseconds             m_duration{};             ///< 等待时长（挂起时才折算成截止时间）
+            std::chrono::steady_clock::time_point m_deadline{};             ///< 截止时间（await_suspend 时算出）
+            std::coroutine_handle<>               m_handle{};               ///< 等待中的协程，空表示无人在等
+            bool                                  m_isQueued{false};        ///< 是否仍在队列的堆里
+            bool                                  m_isPendingResume{false}; ///< 已到期、尚待恢复（在队列的待恢复表里）
+            std::size_t                           m_heapIndex{0};           ///< 在堆数组里的下标，仅 m_isQueued 为真时有效
         };
 
         /**
@@ -276,14 +273,14 @@ namespace AsynGyanis::Core
          */
         void abandonPendingTimers() noexcept;
 
-        EventLoop                    &m_loop;         ///< 所属事件循环
-        Platform::TimerFileDescriptor m_timer;        ///< 循环唯一的定时器描述符
-        IoWatcher                     m_watcher;      ///< 它的常驻注册（等待时武装可读）
-        std::vector<Awaiter *>        m_heap;         ///< 最小堆：按截止时间，早的在前
-        std::deque<Awaiter *>         m_expiredAwaiters; ///< 已到期待恢复：按截止时间升序，恢复在下一拍做
-        std::optional<std::chrono::steady_clock::time_point> m_armedDeadline; ///< 已武装的截止时间
-        DriverState                   m_driverState{DriverState::Idle}; ///< 驱动协程状态（首次登记时启动）
-        Task<>                        m_driverTask;   ///< 驱动协程（最后声明，最先销毁）
+        EventLoop                                           &m_loop;                           ///< 所属事件循环
+        Platform::TimerFileDescriptor                        m_timer;                          ///< 循环唯一的定时器描述符
+        IoWatcher                                            m_watcher;                        ///< 它的常驻注册（等待时武装可读）
+        std::vector<Awaiter *>                               m_heap;                           ///< 最小堆：按截止时间，早的在前
+        std::deque<Awaiter *>                                m_expiredAwaiters;                ///< 已到期待恢复：按截止时间升序，恢复在下一拍做
+        std::optional<std::chrono::steady_clock::time_point> m_armedDeadline;                  ///< 已武装的截止时间
+        DriverState                                          m_driverState{DriverState::Idle}; ///< 驱动协程状态（首次登记时启动）
+        Task<>                                               m_driverTask;                     ///< 驱动协程（最后声明，最先销毁）
     };
 
 } // namespace AsynGyanis::Core

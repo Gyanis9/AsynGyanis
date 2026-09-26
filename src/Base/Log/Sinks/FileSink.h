@@ -95,10 +95,10 @@ namespace AsynGyanis::Base
          */
         void reportStreamFailureOnceLocked();
 
-        std::filesystem::path m_filePath;   ///< 当前日志文件路径
-        std::ofstream         m_file;       ///< 日志文件输出流
-        std::string           m_lineBuffer; ///< 写入用的行缓冲：拼接换行后整行一次写出，仅 write/writeLine 在互斥锁内复用
-        std::mutex            m_mutex;      ///< 保护文件写入的互斥锁
+        std::filesystem::path m_filePath;                       ///< 当前日志文件路径
+        std::ofstream         m_file;                           ///< 日志文件输出流
+        std::string           m_lineBuffer;                     ///< 写入用的行缓冲：拼接换行后整行一次写出，仅 write/writeLine 在互斥锁内复用
+        std::mutex            m_mutex;                          ///< 保护文件写入的互斥锁
         bool                  m_hasReportedWriteFailure{false}; ///< 本轮连续写失败是否已上报（避免每条日志都写一次标准错误）
     };
 } // namespace AsynGyanis::Base

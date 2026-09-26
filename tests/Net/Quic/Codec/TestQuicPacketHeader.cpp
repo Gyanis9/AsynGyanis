@@ -187,8 +187,7 @@ namespace AsynGyanis::Net
 
         const auto tooLong = decodeQuicPacketHeader(packet, 20);
         ASSERT_TRUE(tooLong.has_value()) << "按 20 字节读只是内容错，不会当场失败——正因如此必须靠断言钉住";
-        EXPECT_NE(copyOf(tooLong->destinationConnectionId), copyOf(correct->destinationConnectionId))
-                << "多吃的 2 字节把包号并进了目的连接标识";
+        EXPECT_NE(copyOf(tooLong->destinationConnectionId), copyOf(correct->destinationConnectionId)) << "多吃的 2 字节把包号并进了目的连接标识";
         EXPECT_NE(tooLong->packetNumberOffset, correct->packetNumberOffset);
     }
 
@@ -281,8 +280,7 @@ namespace AsynGyanis::Net
             const auto header = decodeQuicPacketHeader(makeBytesFromHex(testCase.hex), 8);
             ASSERT_FALSE(header.has_value()) << "以下报文必须被拒：" << testCase.hex;
             EXPECT_EQ(header.error().kind, QuicDecodeErrorKind::Malformed);
-            EXPECT_TRUE(containsText(header.error().message, testCase.expectedFragment))
-                    << "文案要能指到违规处：" << header.error().message;
+            EXPECT_TRUE(containsText(header.error().message, testCase.expectedFragment)) << "文案要能指到违规处：" << header.error().message;
         }
     }
 
@@ -292,13 +290,13 @@ namespace AsynGyanis::Net
     TEST(QuicPacketHeader, RejectsTruncatedLongHeaders)
     {
         const std::vector<const char *> cases{
-                "",                                                   // 空数据报：连首字节都没有
-                "c000",                                               // 版本读不满 4 字节
-                "c0000000010883",                                     // 目的标识声明 8 字节只剩 1
-                "c000000001088394c8f03e515708",                       // 源标识的长度字节缺失
-                "c000000001088394c8f03e51570800c2",                   // Token 长度声明 8 字节却没给够
-                "e000000001088394c8f03e515708 00",                    // Handshake 无 Token，Length 字段一个字节都没有
-                "c000000001088394c8f03e5157080040ff449e00000002",     // Token 声明 255 字节越出数据报末尾
+                "",                                               // 空数据报：连首字节都没有
+                "c000",                                           // 版本读不满 4 字节
+                "c0000000010883",                                 // 目的标识声明 8 字节只剩 1
+                "c000000001088394c8f03e515708",                   // 源标识的长度字节缺失
+                "c000000001088394c8f03e51570800c2",               // Token 长度声明 8 字节却没给够
+                "e000000001088394c8f03e515708 00",                // Handshake 无 Token，Length 字段一个字节都没有
+                "c000000001088394c8f03e5157080040ff449e00000002", // Token 声明 255 字节越出数据报末尾
         };
 
         for (const char *hex: cases)
@@ -315,8 +313,7 @@ namespace AsynGyanis::Net
     TEST(QuicPacketHeader, RejectsLocalConnectionIdLengthAboveRange)
     {
         const auto packet = makeBytesFromHex("4000112233");
-        EXPECT_THROW(static_cast<void>(decodeQuicPacketHeader(packet, kQuicMaximumConnectionIdLength + 1)),
-                     Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(decodeQuicPacketHeader(packet, kQuicMaximumConnectionIdLength + 1)), Base::InvalidArgumentException);
     }
 
     /**
@@ -325,11 +322,11 @@ namespace AsynGyanis::Net
     TEST(QuicPacketHeader, RefreshRejectsInconsistentLengthField)
     {
         // 头部 Length=1（只够 1 字节），但首字节低 2 位掩出来是 3 → 需要 4 字节包号
-        auto packet = makeBytesFromHex("c300000001088394c8f03e515708000001ff");
+        auto       packet  = makeBytesFromHex("c300000001088394c8f03e515708000001ff");
         const auto decoded = decodeQuicPacketHeader(packet, 8);
         ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
-        QuicPacketHeader header = *decoded;
-        const auto refreshed = refreshQuicPacketHeader(header, 0xc3, packet);
+        QuicPacketHeader header    = *decoded;
+        const auto       refreshed = refreshQuicPacketHeader(header, 0xc3, packet);
         ASSERT_FALSE(refreshed.has_value());
         EXPECT_EQ(refreshed.error().kind, QuicDecodeErrorKind::Malformed);
         EXPECT_TRUE(containsText(refreshed.error().message, "不自洽")) << refreshed.error().message;

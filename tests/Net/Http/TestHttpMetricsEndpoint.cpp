@@ -4,13 +4,13 @@
 #include "Net/Http/HttpServerStats.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
-#include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "HttpTestSupport.h"
+#include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -36,8 +36,7 @@ namespace AsynGyanis::Net
          * @note 端到端用例只断言「至少打过的那条已计入」，不去钉具体数字：抓 /metrics 的这一次
          *       自身也会被计入（请求在进处理函数之前就已记数），钉死数字等于把实现细节写进断言
          */
-        [[nodiscard]] std::optional<std::uint64_t> findMetricValue(const std::string &text,
-                                                                  const std::string_view metricNameWithTrailingSpace)
+        [[nodiscard]] std::optional<std::uint64_t> findMetricValue(const std::string &text, const std::string_view metricNameWithTrailingSpace)
         {
             // 只在**行首**出现的指标名才算样本行：# HELP/# TYPE 两行里也有同样的名字，
             // 从它们后面取数会取到中文说明，解析必然失败
@@ -57,7 +56,7 @@ namespace AsynGyanis::Net
                 }
 
                 const std::size_t valueBegin = namePosition + metricNameWithTrailingSpace.size();
-                std::size_t valueEnd         = text.find('\n', valueBegin);
+                std::size_t       valueEnd   = text.find('\n', valueBegin);
                 if (valueEnd == std::string::npos)
                 {
                     return std::nullopt;
@@ -74,7 +73,7 @@ namespace AsynGyanis::Net
                     return std::nullopt;
                 }
 
-                std::uint64_t value = 0;
+                std::uint64_t value               = 0;
                 const auto [parsedEnd, errorCode] = std::from_chars(text.data() + valueBegin, text.data() + valueEnd, value);
                 if (errorCode == std::errc{} && parsedEnd == text.data() + valueEnd)
                 {
@@ -90,19 +89,19 @@ namespace AsynGyanis::Net
         [[nodiscard]] HttpServerStats makeFullyPopulatedStats()
         {
             HttpServerStats stats;
-            stats.totalRequestCount  = 11;
+            stats.totalRequestCount     = 11;
             stats.activeConnectionCount = 2;
-            stats.badRequestCount    = 3;
-            stats.timeoutClosedCount = 4;
-            stats.status1xxCount     = 1;
-            stats.status2xxCount     = 5;
-            stats.status3xxCount     = 0;
-            stats.status4xxCount     = 2;
-            stats.status5xxCount     = 1;
+            stats.badRequestCount       = 3;
+            stats.timeoutClosedCount    = 4;
+            stats.status1xxCount        = 1;
+            stats.status2xxCount        = 5;
+            stats.status3xxCount        = 0;
+            stats.status4xxCount        = 2;
+            stats.status5xxCount        = 1;
             // 直方图与 sum 对得上：两档各 1 条，合计 2 条样本
-            stats.latencyBucketCounts[0]     = 1;
-            stats.latencyBucketCounts[1]     = 1;
-            stats.totalLatencyMicroseconds   = 500;
+            stats.latencyBucketCounts[0]           = 1;
+            stats.latencyBucketCounts[1]           = 1;
+            stats.totalLatencyMicroseconds         = 500;
             stats.webSocketUpgradeCount            = 6;
             stats.webSocketMessageCount            = 7;
             stats.webSocketProtocolErrorCloseCount = 8;
@@ -201,7 +200,7 @@ namespace AsynGyanis::Net
     TEST(HttpMetricsEndpoint, RejectsPathWithoutLeadingSlash)
     {
         Core::EventLoop loop;
-        HttpServer server(loop, Core::InetAddress::localhost(0));
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
 
         EXPECT_THROW(server.enableMetricsEndpoint("metrics"), Base::InvalidArgumentException);
         EXPECT_THROW(server.enableMetricsEndpoint(""), Base::InvalidArgumentException);
@@ -219,8 +218,7 @@ namespace AsynGyanis::Net
             server.enableHealthEndpoint();
         };
         // 只调本用例关心的配置，其余取默认：路由注册与端口绑定都在 start() 之前落定
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {},
-                                         HttpParserLimits{}, configureServer);
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
 
         const std::uint16_t listeningPort = fixture.listeningPort();
@@ -252,17 +250,14 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(client.isValid());
             std::string receivedText;
             ASSERT_TRUE(client.sendText("GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", kEndpointTimeout));
-            ASSERT_TRUE(client.waitForText(receivedText, "asyn_http_request_duration_seconds_count", kEndpointTimeout))
-                    << "指标端点未返回直方图计数";
+            ASSERT_TRUE(client.waitForText(receivedText, "asyn_http_request_duration_seconds_count", kEndpointTimeout)) << "指标端点未返回直方图计数";
             EXPECT_NE(receivedText.find("HTTP/1.1 200"), std::string::npos) << receivedText;
             EXPECT_NE(receivedText.find("text/plain; version=0.0.4"), std::string::npos) << receivedText;
             // 刚打过的 /hello 必须已计入：抓 /metrics 这一次自身也会被计入，故只断言「至少 1 条」
-            const std::optional<std::uint64_t> servedRequestCount =
-                    findMetricValue(receivedText, "asyn_http_requests_total ");
+            const std::optional<std::uint64_t> servedRequestCount = findMetricValue(receivedText, "asyn_http_requests_total ");
             ASSERT_TRUE(servedRequestCount.has_value()) << "缺少请求总数指标：「" << receivedText << "」";
             EXPECT_GE(*servedRequestCount, 1u) << "刚打过的请求没有计入请求总数";
-            const std::optional<std::uint64_t> latencySampleCount =
-                    findMetricValue(receivedText, "asyn_http_request_duration_seconds_count ");
+            const std::optional<std::uint64_t> latencySampleCount = findMetricValue(receivedText, "asyn_http_request_duration_seconds_count ");
             ASSERT_TRUE(latencySampleCount.has_value()) << "缺少直方图样本数";
             EXPECT_GE(*latencySampleCount, 1u) << "已应答请求没有落进直方图";
         }
@@ -286,12 +281,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpMetricsEndpoint, AdmissionRejectionsReachTheServerStatsSnapshot)
     {
-        const ServerConfigurator configureServer = [](TestHttpServer &server)
-        {
-            server.setPerIpConnectionLimiter(std::make_shared<PerIpConnectionLimiter>(1));
-        };
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {},
-                                         HttpParserLimits{}, configureServer);
+        const ServerConfigurator configureServer = [](TestHttpServer &server) { server.setPerIpConnectionLimiter(std::make_shared<PerIpConnectionLimiter>(1)); };
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
 
         // 先把「一位都没挡」钉住：这一条把「字段根本没接线」与「接了线但恒为 0」分开的另一半是下面那条
@@ -303,15 +294,12 @@ namespace AsynGyanis::Net
         {
             LoopbackClient rejected(fixture.listeningPort());
             // 同一来源的第二条：占不到名额，服务端当场收口，因此拿不到任何应答
-            static_cast<void>(rejected.sendText("GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-                                                kEndpointTimeout));
+            static_cast<void>(rejected.sendText("GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", kEndpointTimeout));
             std::string receivedText;
-            EXPECT_FALSE(rejected.waitForText(receivedText, "served-hello", kEndpointTimeout))
-                    << "限额只给一条连接，第二条却得到了应答";
+            EXPECT_FALSE(rejected.waitForText(receivedText, "served-hello", kEndpointTimeout)) << "限额只给一条连接，第二条却得到了应答";
         }
 
-        EXPECT_EQ(fixture.server().stats().admissionRejectedConnectionCount, 1u)
-                << "挡下了一条却没在快照里留痕：这道闸门在服务端侧等于看不见";
+        EXPECT_EQ(fixture.server().stats().admissionRejectedConnectionCount, 1u) << "挡下了一条却没在快照里留痕：这道闸门在服务端侧等于看不见";
     }
 
 } // namespace AsynGyanis::Net

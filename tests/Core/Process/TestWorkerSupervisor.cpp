@@ -42,8 +42,7 @@ namespace AsynGyanis::Core
         class WorkerLaunchLog
         {
         public:
-            WorkerLaunchLog() :
-                m_directory("WorkerSupervisor")
+            WorkerLaunchLog() : m_directory("WorkerSupervisor")
             {
                 m_path = m_directory.path() / "worker-launches.log";
             }
@@ -76,7 +75,7 @@ namespace AsynGyanis::Core
 
         private:
             AsynGyanis::TestSupport::TemporaryDirectory m_directory; ///< 本用例独占的临时目录（析构时递归删除）
-            std::filesystem::path                 m_path;      ///< 记录文件
+            std::filesystem::path                       m_path;      ///< 记录文件
         };
 
         /**
@@ -88,8 +87,7 @@ namespace AsynGyanis::Core
          * @param behaviour 假 worker 的行为
          * @return WorkerSupervisor::Configuration 编排参数
          */
-        WorkerSupervisor::Configuration makeConfiguration(const WorkerLaunchLog &launchLog, const std::size_t workerCount,
-                                                         const WorkerBehaviour behaviour)
+        WorkerSupervisor::Configuration makeConfiguration(const WorkerLaunchLog &launchLog, const std::size_t workerCount, const WorkerBehaviour behaviour)
         {
             std::string script = "echo worker >> \"" + launchLog.path().string() + "\"; ";
             switch (behaviour)
@@ -179,22 +177,22 @@ namespace AsynGyanis::Core
         configuration.workerCount    = 2;
         configuration.crashLoopLimit = 3;
 
-        for (const long long windowMilliseconds : {0LL, -1LL})
+        for (const long long windowMilliseconds: {0LL, -1LL})
         {
-            configuration.crashLoopWindow = std::chrono::milliseconds{windowMilliseconds};
+            configuration.crashLoopWindow   = std::chrono::milliseconds{windowMilliseconds};
             const std::string rejectionText = rejectionTextOf(configuration);
             EXPECT_FALSE(rejectionText.empty()) << "窗口 " << windowMilliseconds << " 毫秒该被拒绝";
             EXPECT_NE(rejectionText.find("crashLoopWindow"), std::string::npos) << rejectionText;
         }
 
-        configuration.crashLoopWindow = std::chrono::milliseconds{3000};
-        configuration.crashLoopLimit  = 0;
+        configuration.crashLoopWindow        = std::chrono::milliseconds{3000};
+        configuration.crashLoopLimit         = 0;
         const std::string limitRejectionText = rejectionTextOf(configuration);
         EXPECT_FALSE(limitRejectionText.empty()) << "上限 0 意味着崩一次就放弃整池，该被拒绝";
         EXPECT_NE(limitRejectionText.find("crashLoopLimit"), std::string::npos) << limitRejectionText;
 
         // 对照：合法判据不许被这条校验挡掉，否则上面的断言就成了「什么都拒」
-        configuration.crashLoopLimit = 3;
+        configuration.crashLoopLimit            = 3;
         const std::string acceptedRejectionText = rejectionTextOf(configuration);
         EXPECT_EQ(acceptedRejectionText.find("崩溃判据"), std::string::npos) << acceptedRejectionText;
     }
@@ -216,8 +214,7 @@ namespace AsynGyanis::Core
             FAIL() << "Windows 上构造多进程编排应当被拒绝";
         } catch (const Base::LogicException &exception)
         {
-            EXPECT_NE(std::string(exception.what()).find("SO_REUSEPORT"), std::string::npos)
-                    << "拒绝原因应当说清缺的是端口共享能力：" << exception.what();
+            EXPECT_NE(std::string(exception.what()).find("SO_REUSEPORT"), std::string::npos) << "拒绝原因应当说清缺的是端口共享能力：" << exception.what();
         }
     }
 #else
@@ -251,16 +248,12 @@ namespace AsynGyanis::Core
 
         // run() 阻塞，因此编排跑在另一个线程上；停止请求从本线程发起。返回值交给收尾断言
         std::atomic<bool> isOrchestrationSettled{false};
-        std::thread       supervisorThread(
-                [&supervisor, &isOrchestrationSettled]
-                {
-                    isOrchestrationSettled.store(supervisor.run(), std::memory_order_release);
-                });
+        std::thread       supervisorThread([&supervisor, &isOrchestrationSettled] { isOrchestrationSettled.store(supervisor.run(), std::memory_order_release); });
 
         // 观察者线程：只读计数，读到编排线程收口为止（不额外探测句柄，也不改任何状态）
-        std::atomic<bool>     isObserving{true};
+        std::atomic<bool>        isObserving{true};
         std::atomic<std::size_t> maximumObservedCount{0};
-        std::thread           observerThread(
+        std::thread              observerThread(
                 [&supervisor, &isObserving, &maximumObservedCount]
                 {
                     while (isObserving.load(std::memory_order_acquire))
@@ -268,26 +261,15 @@ namespace AsynGyanis::Core
                         const std::size_t observed = supervisor.runningWorkerCount();
                         // 只单调往上报最大值：收尾时读到 0 也不该把已观察到的 2 冲掉
                         std::size_t previous = maximumObservedCount.load(std::memory_order_relaxed);
-                        while (observed > previous &&
-                               !maximumObservedCount.compare_exchange_weak(previous, observed, std::memory_order_relaxed))
+                        while (observed > previous && !maximumObservedCount.compare_exchange_weak(previous, observed, std::memory_order_relaxed))
                         {
                         }
                     }
                 });
 
-        ASSERT_TRUE(waitForCondition(
-                [&launchLog]
-                {
-                    return launchLog.launchCount() >= 2;
-                },
-                kWaitTimeout)) << "两个 worker 没有都起来";
+        ASSERT_TRUE(waitForCondition([&launchLog] { return launchLog.launchCount() >= 2; }, kWaitTimeout)) << "两个 worker 没有都起来";
         // 计数是编排线程每轮扫描末尾发布的快照（最长滞后一个 pollInterval），因此等它到位再断言
-        EXPECT_TRUE(waitForCondition(
-                [&supervisor]
-                {
-                    return supervisor.runningWorkerCount() >= 2U;
-                },
-                kWaitTimeout)) << "两个 worker 都起来之后，快照里的在运行个数应当到位";
+        EXPECT_TRUE(waitForCondition([&supervisor] { return supervisor.runningWorkerCount() >= 2U; }, kWaitTimeout)) << "两个 worker 都起来之后，快照里的在运行个数应当到位";
 
         // 稳定运行之后再等一小会儿：不该出现「明明活着却被重复补位」的情况
         std::this_thread::sleep_for(std::chrono::milliseconds{300});
@@ -313,31 +295,21 @@ namespace AsynGyanis::Core
      */
     TEST(WorkerSupervisor, FirstLaunchesDoNotWaitOutTheRestartBackoff)
     {
-        const WorkerLaunchLog launchLog;
+        const WorkerLaunchLog           launchLog;
         WorkerSupervisor::Configuration configuration = makeConfiguration(launchLog, 3, WorkerBehaviour::SleepUntilTerminated);
-        configuration.restartBackoff = std::chrono::milliseconds{1500};
+        configuration.restartBackoff                  = std::chrono::milliseconds{1500};
 
         WorkerSupervisor supervisor(configuration);
         const auto       startedAt = std::chrono::steady_clock::now();
-        std::thread      supervisorThread(
-                [&supervisor]
-                {
-                    static_cast<void>(supervisor.run());
-                });
+        std::thread      supervisorThread([&supervisor] { static_cast<void>(supervisor.run()); });
 
-        const bool areAllThreeUp = waitForCondition(
-                [&launchLog]
-                {
-                    return launchLog.launchCount() >= 3;
-                },
-                std::chrono::milliseconds{1000});
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+        const bool areAllThreeUp = waitForCondition([&launchLog] { return launchLog.launchCount() >= 3; }, std::chrono::milliseconds{1000});
+        const auto elapsed       = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
 
         supervisor.requestStop();
         supervisorThread.join();
 
-        EXPECT_TRUE(areAllThreeUp) << "三个 worker 没在 1000 毫秒内都起来（实测等了 " << elapsed.count()
-                                   << " 毫秒）：冷启动被补位退避串成了 N × restartBackoff";
+        EXPECT_TRUE(areAllThreeUp) << "三个 worker 没在 1000 毫秒内都起来（实测等了 " << elapsed.count() << " 毫秒）：冷启动被补位退避串成了 N × restartBackoff";
     }
 
     /**
@@ -345,25 +317,16 @@ namespace AsynGyanis::Core
      */
     TEST(WorkerSupervisor, ShutdownTimeoutForcesTermination)
     {
-        const WorkerLaunchLog launchLog;
+        const WorkerLaunchLog           launchLog;
         WorkerSupervisor::Configuration configuration = makeConfiguration(launchLog, 2, WorkerBehaviour::SleepIgnoringTerminate);
-        configuration.shutdownTimeout = std::chrono::milliseconds{300};
+        configuration.shutdownTimeout                 = std::chrono::milliseconds{300};
 
         WorkerSupervisor supervisor(configuration);
         // 强杀兜住之后编排应当报「收口成功」：worker 是被本层送走的，不是整池起不来
         std::atomic<bool> isOrchestrationSettled{false};
-        std::thread       supervisorThread(
-                [&supervisor, &isOrchestrationSettled]
-                {
-                    isOrchestrationSettled.store(supervisor.run(), std::memory_order_release);
-                });
+        std::thread       supervisorThread([&supervisor, &isOrchestrationSettled] { isOrchestrationSettled.store(supervisor.run(), std::memory_order_release); });
 
-        ASSERT_TRUE(waitForCondition(
-                [&launchLog]
-                {
-                    return launchLog.launchCount() >= 2;
-                },
-                kWaitTimeout)) << "两个 worker 没有都起来";
+        ASSERT_TRUE(waitForCondition([&launchLog] { return launchLog.launchCount() >= 2; }, kWaitTimeout)) << "两个 worker 没有都起来";
 
         const auto stopStartTime = std::chrono::steady_clock::now();
         supervisor.requestStop();

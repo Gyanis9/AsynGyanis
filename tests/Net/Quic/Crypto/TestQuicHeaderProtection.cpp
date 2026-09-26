@@ -37,7 +37,7 @@ namespace AsynGyanis::Net
         QuicPacketKeys keysWithHeaderProtectionKey(const QuicCipherSuite cipherSuite, const std::string_view headerProtectionKeyHex)
         {
             QuicPacketKeys keys;
-            keys.cipherSuite = cipherSuite;
+            keys.cipherSuite    = cipherSuite;
             const auto keyBytes = makeBytesFromHex(headerProtectionKeyHex);
             std::copy(keyBytes.begin(), keyBytes.end(), keys.headerProtectionKey.begin());
             return keys;
@@ -67,12 +67,11 @@ namespace AsynGyanis::Net
      */
     TEST(QuicHeaderProtection, GeneratesAesMaskPerAppendixA2)
     {
-        const auto keys = keysWithHeaderProtectionKey(QuicCipherSuite::Aes128Gcm, kClientInitialHeaderProtectionKey);
+        const auto keys   = keysWithHeaderProtectionKey(QuicCipherSuite::Aes128Gcm, kClientInitialHeaderProtectionKey);
         const auto sample = makeBytesFromHex("d1b1c98dd7689fb8ec11d242b123dc9b");
 
         const auto mask = generateQuicHeaderProtectionMask(keys, sample);
-        EXPECT_EQ(std::vector<std::uint8_t>(mask.first(5).begin(), mask.first(5).end()),
-                  makeBytesFromHex("437b9aec36"));
+        EXPECT_EQ(std::vector<std::uint8_t>(mask.first(5).begin(), mask.first(5).end()), makeBytesFromHex("437b9aec36"));
     }
 
     /**
@@ -80,7 +79,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicHeaderProtection, GeneratesChaCha20MaskPerAppendixA5)
     {
-        const auto keys = keysWithHeaderProtectionKey(QuicCipherSuite::ChaCha20Poly1305, kChaCha20HeaderProtectionKey);
+        const auto keys   = keysWithHeaderProtectionKey(QuicCipherSuite::ChaCha20Poly1305, kChaCha20HeaderProtectionKey);
         const auto sample = makeBytesFromHex("5e5cd55c41f69080575d7999c25a5bfb");
 
         const auto mask = generateQuicHeaderProtectionMask(keys, sample);
@@ -92,7 +91,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicHeaderProtection, RemovesProtectionFromAppendixA2ClientInitial)
     {
-        auto packet = buildAppendixA2ProtectedPacket();
+        auto       packet  = buildAppendixA2ProtectedPacket();
         const auto decoded = decodeQuicPacketHeader(packet, 8);
         ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
         QuicPacketHeader header = *decoded;
@@ -100,18 +99,16 @@ namespace AsynGyanis::Net
         const auto sample = extractQuicHeaderProtectionSample(packet, header);
         ASSERT_TRUE(sample.has_value()) << sample.error().message;
         // 期望值直接取 RFC 自己给的样本，而不是复述实现的偏移
-        EXPECT_EQ(std::vector<std::uint8_t>(sample->begin(), sample->end()),
-                  makeBytesFromHex("d1b1c98dd7689fb8ec11d242b123dc9b")) << "样本起点应是包号偏移 18 + 4";
+        EXPECT_EQ(std::vector<std::uint8_t>(sample->begin(), sample->end()), makeBytesFromHex("d1b1c98dd7689fb8ec11d242b123dc9b")) << "样本起点应是包号偏移 18 + 4";
 
-        const auto keys = keysWithHeaderProtectionKey(QuicCipherSuite::Aes128Gcm, kClientInitialHeaderProtectionKey);
-        const auto mask = generateQuicHeaderProtectionMask(keys, *sample);
+        const auto keys              = keysWithHeaderProtectionKey(QuicCipherSuite::Aes128Gcm, kClientInitialHeaderProtectionKey);
+        const auto mask              = generateQuicHeaderProtectionMask(keys, *sample);
         const auto unmaskedFirstByte = removeQuicHeaderProtection(packet, header, mask);
         ASSERT_TRUE(unmaskedFirstByte.has_value()) << unmaskedFirstByte.error().message;
         EXPECT_EQ(*unmaskedFirstByte, 0xc3);
 
         const std::vector<std::uint8_t> headerBytes(packet.begin(), packet.begin() + 22);
-        EXPECT_EQ(headerBytes, makeBytesFromHex("c300000001088394c8f03e5157080000449e00000002"))
-                << "去保护后的头部必须逐字节等于 RFC 的未保护头部";
+        EXPECT_EQ(headerBytes, makeBytesFromHex("c300000001088394c8f03e5157080000449e00000002")) << "去保护后的头部必须逐字节等于 RFC 的未保护头部";
 
         // 还原出的首字节交给 Codec 层，包号才能读成 2
         ASSERT_TRUE(refreshQuicPacketHeader(header, *unmaskedFirstByte, packet).has_value());
@@ -125,18 +122,18 @@ namespace AsynGyanis::Net
      */
     TEST(QuicHeaderProtection, RemovesProtectionFromAppendixA5ShortPacket)
     {
-        auto packet = makeBytesFromHex("4cfe4189655e5cd55c41f69080575d7999c25a5bfb");
+        auto       packet  = makeBytesFromHex("4cfe4189655e5cd55c41f69080575d7999c25a5bfb");
         const auto decoded = decodeQuicPacketHeader(packet, 0);
         ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
         QuicPacketHeader header = *decoded;
 
         const auto sample = extractQuicHeaderProtectionSample(packet, header);
         ASSERT_TRUE(sample.has_value()) << sample.error().message;
-        EXPECT_EQ(std::vector<std::uint8_t>(sample->begin(), sample->end()),
-                  makeBytesFromHex("5e5cd55c41f69080575d7999c25a5bfb")) << "样本跳过 1 字节，从包号起点 + 4 处取（§5.4.2）";
+        EXPECT_EQ(std::vector<std::uint8_t>(sample->begin(), sample->end()), makeBytesFromHex("5e5cd55c41f69080575d7999c25a5bfb"))
+                << "样本跳过 1 字节，从包号起点 + 4 处取（§5.4.2）";
 
-        const auto keys = keysWithHeaderProtectionKey(QuicCipherSuite::ChaCha20Poly1305, kChaCha20HeaderProtectionKey);
-        const auto mask = generateQuicHeaderProtectionMask(keys, *sample);
+        const auto keys              = keysWithHeaderProtectionKey(QuicCipherSuite::ChaCha20Poly1305, kChaCha20HeaderProtectionKey);
+        const auto mask              = generateQuicHeaderProtectionMask(keys, *sample);
         const auto unmaskedFirstByte = removeQuicHeaderProtection(packet, header, mask);
         ASSERT_TRUE(unmaskedFirstByte.has_value()) << unmaskedFirstByte.error().message;
 
@@ -153,18 +150,18 @@ namespace AsynGyanis::Net
      */
     TEST(QuicHeaderProtection, ApplyIsTheInverseOfRemove)
     {
-        const auto protectedBytes = makeBytesFromHex("4cfe4189655e5cd55c41f69080575d7999c25a5bfb");
-        auto unprotectedPacket = makeBytesFromHex("4200bff4655e5cd55c41f69080575d7999c25a5bfb");
+        const auto protectedBytes    = makeBytesFromHex("4cfe4189655e5cd55c41f69080575d7999c25a5bfb");
+        auto       unprotectedPacket = makeBytesFromHex("4200bff4655e5cd55c41f69080575d7999c25a5bfb");
 
         // 明文态：首字节与包号都按未保护的样子写好
         QuicPacketHeader plainHeader;
-        plainHeader.isLongHeader = false;
-        plainHeader.firstByte = 0x42;
+        plainHeader.isLongHeader       = false;
+        plainHeader.firstByte          = 0x42;
         plainHeader.packetNumberOffset = 1;
 
-        const auto keys = keysWithHeaderProtectionKey(QuicCipherSuite::ChaCha20Poly1305, kChaCha20HeaderProtectionKey);
-        const auto sample = std::span<const std::uint8_t>(unprotectedPacket).subspan(5, 16);
-        const auto mask = generateQuicHeaderProtectionMask(keys, sample);
+        const auto keys               = keysWithHeaderProtectionKey(QuicCipherSuite::ChaCha20Poly1305, kChaCha20HeaderProtectionKey);
+        const auto sample             = std::span<const std::uint8_t>(unprotectedPacket).subspan(5, 16);
+        const auto mask               = generateQuicHeaderProtectionMask(keys, sample);
         const auto protectedFirstByte = applyQuicHeaderProtection(unprotectedPacket, plainHeader, mask);
         ASSERT_TRUE(protectedFirstByte.has_value()) << protectedFirstByte.error().message;
         EXPECT_EQ(*protectedFirstByte, 0x4c);
@@ -181,7 +178,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicHeaderProtection, RejectsPacketTooShortForSample)
     {
-        auto packet = makeBytesFromHex("4cfe4189655e5cd55c");
+        auto       packet  = makeBytesFromHex("4cfe4189655e5cd55c");
         const auto decoded = decodeQuicPacketHeader(packet, 0);
         ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
 
@@ -196,7 +193,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicHeaderProtection, RejectsSampleWithWrongLength)
     {
-        const auto keys = keysWithHeaderProtectionKey(QuicCipherSuite::Aes128Gcm, kClientInitialHeaderProtectionKey);
+        const auto keys        = keysWithHeaderProtectionKey(QuicCipherSuite::Aes128Gcm, kClientInitialHeaderProtectionKey);
         const auto shortSample = makeBytesFromHex("d1b1c98dd7689fb8ec11d242b123dc");
         EXPECT_THROW(static_cast<void>(generateQuicHeaderProtectionMask(keys, shortSample)), Base::InvalidArgumentException);
     }

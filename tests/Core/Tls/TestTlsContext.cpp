@@ -17,8 +17,8 @@
 #include <openssl/tls1.h>
 #include <openssl/x509v3.h>
 
-#include <ctime>
 #include <cstddef>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -37,12 +37,10 @@ namespace AsynGyanis::Core
     namespace
     {
         /// 仓库内预生成的自签测试证书（CN=asyngyanis-test，有效期至 2036）
-        const std::filesystem::path kTestCertificatePath =
-            std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
+        const std::filesystem::path kTestCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
 
         /// 仓库内预生成的配套私钥
-        const std::filesystem::path kTestKeyPath =
-            std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
+        const std::filesystem::path kTestKeyPath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
 
         /// 客户端提供 ALPN 时的线上格式：长度字节 + "http/1.1"
         constexpr unsigned char kHttp11AlpnWireFormat[] = {8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
@@ -53,23 +51,23 @@ namespace AsynGyanis::Core
         /// 握手结果快照：只保留断言需要的信息，不持有任何 OpenSSL 对象
         struct HandshakeOutcome
         {
-            bool        serverCompleted{false};             ///< 服务端是否完成握手
-            bool        clientCompleted{false};             ///< 客户端是否完成握手
-            bool        setupFailed{false};                 ///< 内存 BIO 对或 SSL 对象创建失败（环境问题，非被测语义）
-            bool        alpnListAccepted{false};            ///< 客户端是否成功登记了 ALPN 列表
-            bool        clientCertificateInstalled{false};  ///< 客户端是否成功装载了证书与私钥
-            std::string serverErrorText;                    ///< 服务端失败时的 OpenSSL 错误串
-            std::string clientErrorText;                    ///< 客户端失败时的 OpenSSL 错误串
-            long        clientVerifyResult{0};              ///< 客户端对服务端证书的校验结果（X509_V_OK 为 0）
-            int         clientErrorReason{0};               ///< 客户端失败原因码（ERR_GET_REASON）
-            std::string protocolVersion;                    ///< 服务端视角协商出的协议版本
-            std::string serverAlpn;                         ///< 服务端视角的 ALPN 协商结果
-            std::string clientAlpn;                         ///< 客户端视角的 ALPN 协商结果
-            long        serverVerifyResult{0};              ///< 服务端对客户端证书的校验结果（X509_V_OK 为 0）
-            std::string stapledOcspResponse;                ///< 客户端请求并收到的 OCSP 装订响应（未装订时为空串）
-            bool        sessionApplied{false};              ///< SSL_set_session 登记成功（仅带会话重连时有意义）
-            bool        clientReused{false};                ///< 客户端视角本次握手命中了会话恢复
-            bool        serverReused{false};                ///< 服务端视角本次握手命中了会话恢复
+            bool        serverCompleted{false};            ///< 服务端是否完成握手
+            bool        clientCompleted{false};            ///< 客户端是否完成握手
+            bool        setupFailed{false};                ///< 内存 BIO 对或 SSL 对象创建失败（环境问题，非被测语义）
+            bool        alpnListAccepted{false};           ///< 客户端是否成功登记了 ALPN 列表
+            bool        clientCertificateInstalled{false}; ///< 客户端是否成功装载了证书与私钥
+            std::string serverErrorText;                   ///< 服务端失败时的 OpenSSL 错误串
+            std::string clientErrorText;                   ///< 客户端失败时的 OpenSSL 错误串
+            long        clientVerifyResult{0};             ///< 客户端对服务端证书的校验结果（X509_V_OK 为 0）
+            int         clientErrorReason{0};              ///< 客户端失败原因码（ERR_GET_REASON）
+            std::string protocolVersion;                   ///< 服务端视角协商出的协议版本
+            std::string serverAlpn;                        ///< 服务端视角的 ALPN 协商结果
+            std::string clientAlpn;                        ///< 客户端视角的 ALPN 协商结果
+            long        serverVerifyResult{0};             ///< 服务端对客户端证书的校验结果（X509_V_OK 为 0）
+            std::string stapledOcspResponse;               ///< 客户端请求并收到的 OCSP 装订响应（未装订时为空串）
+            bool        sessionApplied{false};             ///< SSL_set_session 登记成功（仅带会话重连时有意义）
+            bool        clientReused{false};               ///< 客户端视角本次握手命中了会话恢复
+            bool        serverReused{false};               ///< 服务端视角本次握手命中了会话恢复
         };
 
         /// SSL 对象释放器，供 unique_ptr 在断言提前返回时也不泄漏
@@ -117,9 +115,7 @@ namespace AsynGyanis::Core
                     {
                         outcome.serverCompleted = true;
                         serverTerminal          = true;
-                    }
-                    else if (const int error = SSL_get_error(serverSsl, result);
-                             error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
+                    } else if (const int error = SSL_get_error(serverSsl, result); error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
                     {
                         // 非「等对端数据」的错误即为终态失败：记下原因，清栈以免污染后续断言
                         outcome.serverErrorText = lastOpenSslErrorText();
@@ -135,9 +131,7 @@ namespace AsynGyanis::Core
                     {
                         outcome.clientCompleted = true;
                         clientTerminal          = true;
-                    }
-                    else if (const int error = SSL_get_error(clientSsl, result);
-                             error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
+                    } else if (const int error = SSL_get_error(clientSsl, result); error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
                     {
                         outcome.clientErrorText   = lastOpenSslErrorText();
                         outcome.clientErrorReason = ERR_GET_REASON(ERR_peek_last_error());
@@ -159,11 +153,9 @@ namespace AsynGyanis::Core
          * @param clientRequestsOcspStatus true 时客户端在 ClientHello 里请求 OCSP 状态（status_request）
          * @return HandshakeOutcome 两端的完成情况、错误文本与协商结果
          */
-        HandshakeOutcome runInProcessHandshake(SSL_CTX *serverContext, SSL_CTX *clientContext,
-                                              const bool clientOffersAlpn, const bool clientPresentsCertificate,
-                                              const unsigned char *clientAlpnWireFormat = kHttp11AlpnWireFormat,
-                                              const unsigned int clientAlpnWireFormatLength = sizeof(kHttp11AlpnWireFormat),
-                                              const bool clientRequestsOcspStatus = false)
+        HandshakeOutcome runInProcessHandshake(SSL_CTX *serverContext, SSL_CTX *clientContext, const bool clientOffersAlpn, const bool clientPresentsCertificate,
+                                               const unsigned char *clientAlpnWireFormat     = kHttp11AlpnWireFormat,
+                                               const unsigned int clientAlpnWireFormatLength = sizeof(kHttp11AlpnWireFormat), const bool clientRequestsOcspStatus = false)
         {
             HandshakeOutcome outcome;
 
@@ -199,10 +191,8 @@ namespace AsynGyanis::Core
             if (clientPresentsCertificate)
             {
                 // 客户端证书安装在 SSL 对象上：夹具证书自签且已在服务端信任库中，可被验通
-                const int certificateResult =
-                    SSL_use_certificate_file(clientSsl.get(), kTestCertificatePath.string().c_str(), SSL_FILETYPE_PEM);
-                const int keyResult =
-                    SSL_use_PrivateKey_file(clientSsl.get(), kTestKeyPath.string().c_str(), SSL_FILETYPE_PEM);
+                const int certificateResult = SSL_use_certificate_file(clientSsl.get(), kTestCertificatePath.string().c_str(), SSL_FILETYPE_PEM);
+                const int keyResult         = SSL_use_PrivateKey_file(clientSsl.get(), kTestKeyPath.string().c_str(), SSL_FILETYPE_PEM);
                 // 记下装载结果：夹具缺失时让用例以「客户端根本没证书」失败，而不是伪装成服务端拒绝
                 outcome.clientCertificateInstalled = certificateResult == 1 && keyResult == 1;
             }
@@ -221,8 +211,7 @@ namespace AsynGyanis::Core
                 const long     stapledLength   = SSL_get_tlsext_status_ocsp_resp(clientSsl.get(), &stapledResponse);
                 if (stapledLength > 0 && stapledResponse != nullptr)
                 {
-                    outcome.stapledOcspResponse.assign(reinterpret_cast<const char *>(stapledResponse),
-                                                       static_cast<std::size_t>(stapledLength));
+                    outcome.stapledOcspResponse.assign(reinterpret_cast<const char *>(stapledResponse), static_cast<std::size_t>(stapledLength));
                 }
             }
 
@@ -268,7 +257,7 @@ namespace AsynGyanis::Core
         {
             return SslContextPointer(SSL_CTX_new(TLS_client_method()));
         }
-    }
+    } // namespace
 
     /**
      * @brief 构造即创建好 SSL_CTX：nativeHandle() 非空，后续才能加载证书
@@ -284,10 +273,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, ConstructionDoesNotThrow)
     {
-        EXPECT_NO_THROW([]()
-        {
-            TlsContext tlsContext;
-        }());
+        EXPECT_NO_THROW([]() { TlsContext tlsContext; }());
     }
 
     /**
@@ -321,7 +307,7 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
         int localDescriptor = -1;
-        int peerDescriptor = -1;
+        int peerDescriptor  = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
 
         SSL *ssl = tlsContext.createSSL(localDescriptor);
@@ -338,8 +324,8 @@ namespace AsynGyanis::Core
     TEST(TlsContext, NativeHandleReturnsSamePointerAcrossCalls)
     {
         const TlsContext tlsContext;
-        SSL_CTX *first = tlsContext.nativeHandle();
-        SSL_CTX *second = tlsContext.nativeHandle();
+        SSL_CTX         *first  = tlsContext.nativeHandle();
+        SSL_CTX         *second = tlsContext.nativeHandle();
         ASSERT_NE(first, nullptr);
         EXPECT_EQ(first, second);
     }
@@ -387,7 +373,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, ContextCipherListExcludesWeakSuites)
     {
-        const TlsContext      tlsContext;
+        const TlsContext tlsContext;
         STACK_OF(SSL_CIPHER) *ciphers = SSL_CTX_get_ciphers(tlsContext.nativeHandle());
         ASSERT_NE(ciphers, nullptr);
         ASSERT_GT(sk_SSL_CIPHER_num(ciphers), 0);
@@ -421,8 +407,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(clientContext, nullptr);
         ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
 
-        const HandshakeOutcome outcome =
-            runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
 
         ASSERT_FALSE(outcome.setupFailed);
         EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
@@ -447,8 +432,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(SSL_CTX_set_min_proto_version(clientContext.get(), TLS1_VERSION), 0);
         ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_VERSION), 0);
 
-        const HandshakeOutcome outcome =
-            runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
 
         ASSERT_FALSE(outcome.setupFailed);
         EXPECT_FALSE(outcome.serverCompleted) << "服务端不应接受只支持 TLS 1.0 的客户端";
@@ -470,8 +454,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(SSL_CTX_set_min_proto_version(clientContext.get(), TLS1_3_VERSION), 0);
         ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_3_VERSION), 0);
 
-        const HandshakeOutcome outcome =
-            runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
 
         ASSERT_FALSE(outcome.setupFailed);
         EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
@@ -491,8 +474,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(clientContext, nullptr);
         ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
 
-        const HandshakeOutcome outcome =
-            runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false);
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false);
 
         ASSERT_FALSE(outcome.setupFailed);
         // 前提校验：客户端确实登记了 ALPN 列表，否则协商结果无从谈起
@@ -516,8 +498,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(clientContext, nullptr);
         ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
 
-        const HandshakeOutcome outcome =
-            runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
 
         ASSERT_FALSE(outcome.setupFailed);
         EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
@@ -545,8 +526,7 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(tlsContext.loadClientCertificateAuthority(kTestCertificatePath.string()));
 
         EXPECT_NO_THROW(tlsContext.setClientCertificateRequired(true));
-        EXPECT_EQ(SSL_CTX_get_verify_mode(tlsContext.nativeHandle()),
-                  SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT);
+        EXPECT_EQ(SSL_CTX_get_verify_mode(tlsContext.nativeHandle()), SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT);
     }
 
     /**
@@ -562,8 +542,7 @@ namespace AsynGyanis::Core
         {
             tlsContext.setClientCertificateRequired(true);
             FAIL() << "未加载 CA 时要求客户端证书应当抛出 CoreException";
-        }
-        catch (const CoreException &exception)
+        } catch (const CoreException &exception)
         {
             // 文案要能指导修复：先加载 CA，或改传 false 关闭校验
             const std::string message = exception.what();
@@ -596,8 +575,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(clientContext, nullptr);
         ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
 
-        const HandshakeOutcome outcome =
-            runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
 
         ASSERT_FALSE(outcome.setupFailed);
         EXPECT_FALSE(outcome.serverCompleted) << "要求客户端证书时不得放过未出示证书的连接";
@@ -621,8 +599,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(clientContext, nullptr);
         ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
 
-        const HandshakeOutcome outcome =
-            runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, true);
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, true);
 
         ASSERT_FALSE(outcome.setupFailed);
         // 前提校验：客户端确实装了证书与私钥，否则下面的校验结果无从谈起
@@ -648,8 +625,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(clientContext, nullptr);
         ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
 
-        const HandshakeOutcome outcome =
-            runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
+        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, false);
 
         ASSERT_FALSE(outcome.setupFailed);
         EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
@@ -670,9 +646,9 @@ namespace AsynGyanis::Core
         ASSERT_NE(clientContext, nullptr);
 
         // 线格式是「长度前缀 + 协议名」：这里只提供 h2
-        const unsigned char h2OnlyAlpn[] = {2, 'h', '2'};
-        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false,
-                                                              h2OnlyAlpn, static_cast<unsigned int>(sizeof(h2OnlyAlpn)));
+        const unsigned char    h2OnlyAlpn[] = {2, 'h', '2'};
+        const HandshakeOutcome outcome =
+                runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false, h2OnlyAlpn, static_cast<unsigned int>(sizeof(h2OnlyAlpn)));
 
         ASSERT_FALSE(outcome.setupFailed);
         ASSERT_TRUE(outcome.alpnListAccepted) << "客户端未能登记 ALPN 列表";
@@ -693,16 +669,16 @@ namespace AsynGyanis::Core
 
         // 两种排列各跑一次：h2 在前与 http/1.1 在前都必须选出 h2
         const std::vector<std::vector<unsigned char>> alpnLists = {
-            {2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'},
-            {8, 'h', 't', 't', 'p', '/', '1', '.', '1', 2, 'h', '2'},
+                {2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'},
+                {8, 'h', 't', 't', 'p', '/', '1', '.', '1', 2, 'h', '2'},
         };
         for (const std::vector<unsigned char> &alpnList: alpnLists)
         {
             SslContextPointer clientContext = createClientContext();
             ASSERT_NE(clientContext, nullptr);
 
-            const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false,
-                                                                  alpnList.data(), static_cast<unsigned int>(alpnList.size()));
+            const HandshakeOutcome outcome =
+                    runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false, alpnList.data(), static_cast<unsigned int>(alpnList.size()));
 
             ASSERT_FALSE(outcome.setupFailed);
             ASSERT_TRUE(outcome.alpnListAccepted) << "客户端未能登记 ALPN 列表";
@@ -728,9 +704,9 @@ namespace AsynGyanis::Core
         ASSERT_NE(clientContext, nullptr);
 
         // 线格式是「长度前缀 + 协议名」：这里只提供 http/1.0，本端不支持
-        const unsigned char http10OnlyAlpn[] = {8, 'h', 't', 't', 'p', '/', '1', '.', '0'};
-        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false,
-                                                              http10OnlyAlpn, static_cast<unsigned int>(sizeof(http10OnlyAlpn)));
+        const unsigned char    http10OnlyAlpn[] = {8, 'h', 't', 't', 'p', '/', '1', '.', '0'};
+        const HandshakeOutcome outcome =
+                runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), true, false, http10OnlyAlpn, static_cast<unsigned int>(sizeof(http10OnlyAlpn)));
 
         ASSERT_FALSE(outcome.setupFailed);
         EXPECT_FALSE(outcome.serverCompleted) << "服务端替客户端选了一个它没提供过的协议名";
@@ -755,12 +731,11 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] std::filesystem::path makeUniqueTemporaryPath(const std::string_view tag)
         {
-            const auto ticks        = std::chrono::steady_clock::now().time_since_epoch().count();
-            const auto threadHash   = std::hash<std::thread::id>{}(std::this_thread::get_id());
-            const unsigned sequence = g_temporaryFileSequence.fetch_add(1);
+            const auto     ticks      = std::chrono::steady_clock::now().time_since_epoch().count();
+            const auto     threadHash = std::hash<std::thread::id>{}(std::this_thread::get_id());
+            const unsigned sequence   = g_temporaryFileSequence.fetch_add(1);
             return std::filesystem::temp_directory_path() /
-                   ("asyngyanis_" + std::string(tag) + "_" + std::to_string(ticks) + "_" + std::to_string(threadHash) + "_" +
-                    std::to_string(sequence) + ".pem");
+                   ("asyngyanis_" + std::string(tag) + "_" + std::to_string(ticks) + "_" + std::to_string(threadHash) + "_" + std::to_string(sequence) + ".pem");
         }
 
         /**
@@ -778,14 +753,13 @@ namespace AsynGyanis::Core
                 return {};
             }
 
-            const std::unique_ptr<BIGNUM, decltype(&BN_free)> serialNumber(
-                ASN1_INTEGER_to_BN(X509_get_serialNumber(certificate), nullptr), &BN_free);
+            const std::unique_ptr<BIGNUM, decltype(&BN_free)> serialNumber(ASN1_INTEGER_to_BN(X509_get_serialNumber(certificate), nullptr), &BN_free);
             if (!serialNumber)
             {
                 return {};
             }
 
-            char *hexText = BN_bn2hex(serialNumber.get());
+            char       *hexText = BN_bn2hex(serialNumber.get());
             std::string result(hexText != nullptr ? hexText : "");
             OPENSSL_free(hexText);
             return result;
@@ -826,8 +800,7 @@ namespace AsynGyanis::Core
          * @param serialNumber 序列号，用来与夹具证书区分
          * @return bool 写成功
          */
-        bool writeSelfSignedCertificate(const std::filesystem::path &keyFile, const std::filesystem::path &outputFile,
-                                        const long serialNumber)
+        bool writeSelfSignedCertificate(const std::filesystem::path &keyFile, const std::filesystem::path &outputFile, const long serialNumber)
         {
             const std::unique_ptr<FILE, FileCloser> keyStream(openFileStream(keyFile.string().c_str(), "rb"), &std::fclose);
             if (!keyStream)
@@ -835,8 +808,7 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            const std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> privateKey(
-                PEM_read_PrivateKey(keyStream.get(), nullptr, nullptr, nullptr), &EVP_PKEY_free);
+            const std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> privateKey(PEM_read_PrivateKey(keyStream.get(), nullptr, nullptr, nullptr), &EVP_PKEY_free);
             if (!privateKey)
             {
                 return false;
@@ -859,7 +831,7 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            X509_NAME *subjectName           = X509_get_subject_name(certificate.get());
+            X509_NAME          *subjectName  = X509_get_subject_name(certificate.get());
             const unsigned char commonName[] = "asyngyanis-reload";
             if (X509_NAME_add_entry_by_txt(subjectName, "CN", MBSTRING_ASC, commonName, -1, -1, 0) != 1)
             {
@@ -873,8 +845,7 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            const std::unique_ptr<FILE, FileCloser> certificateStream(openFileStream(outputFile.string().c_str(), "wb"),
-                                                                                  &std::fclose);
+            const std::unique_ptr<FILE, FileCloser> certificateStream(openFileStream(outputFile.string().c_str(), "wb"), &std::fclose);
             if (!certificateStream)
             {
                 return false;
@@ -897,8 +868,7 @@ namespace AsynGyanis::Core
          * @param destination 拼接结果路径
          * @return bool 两份都读到且结果写出
          */
-        bool concatenateTextFiles(const std::filesystem::path &first, const std::filesystem::path &second,
-                                  const std::filesystem::path &destination)
+        bool concatenateTextFiles(const std::filesystem::path &first, const std::filesystem::path &second, const std::filesystem::path &destination)
         {
             std::ofstream stream(destination, std::ios::binary);
             if (!stream)
@@ -906,7 +876,7 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            for (const std::filesystem::path &source : {first, second})
+            for (const std::filesystem::path &source: {first, second})
             {
                 std::ifstream input(source, std::ios::binary);
                 if (!input)
@@ -946,9 +916,9 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, LoadsIntermediateCertificatesFromCertificateChainFile)
     {
-        const std::filesystem::path leafOnlyPath   = makeUniqueTemporaryPath("chain_leaf");
-        const std::filesystem::path extraCertPath  = makeUniqueTemporaryPath("chain_extra");
-        const std::filesystem::path chainFilePath  = makeUniqueTemporaryPath("chain_full");
+        const std::filesystem::path leafOnlyPath  = makeUniqueTemporaryPath("chain_leaf");
+        const std::filesystem::path extraCertPath = makeUniqueTemporaryPath("chain_extra");
+        const std::filesystem::path chainFilePath = makeUniqueTemporaryPath("chain_full");
         ASSERT_TRUE(copyFixtureCertificate(leafOnlyPath));
         ASSERT_TRUE(writeSelfSignedCertificate(kTestKeyPath, extraCertPath, 0x1234L));
         ASSERT_TRUE(concatenateTextFiles(leafOnlyPath, extraCertPath, chainFilePath));
@@ -957,31 +927,25 @@ namespace AsynGyanis::Core
         const std::size_t leafOnlyChainCount = [&leafOnlyPath]
         {
             const TlsContext context;
-            EXPECT_TRUE(context.loadCertificate(leafOnlyPath.string(), kTestKeyPath.string()))
-                << "单张证书文件必须继续可用；OpenSSL 错误：" << lastOpenSslErrorText();
+            EXPECT_TRUE(context.loadCertificate(leafOnlyPath.string(), kTestKeyPath.string())) << "单张证书文件必须继续可用；OpenSSL 错误：" << lastOpenSslErrorText();
             return chainCertificateCount(context.nativeHandle());
         }();
         EXPECT_EQ(leafOnlyChainCount, 0U) << "只有一张证书时不该凭空多出链证书";
 
         const TlsContext context;
-        ASSERT_TRUE(context.loadCertificate(chainFilePath.string(), kTestKeyPath.string()))
-            << "全链文件应当被接受；OpenSSL 错误：" << lastOpenSslErrorText();
+        ASSERT_TRUE(context.loadCertificate(chainFilePath.string(), kTestKeyPath.string())) << "全链文件应当被接受；OpenSSL 错误：" << lastOpenSslErrorText();
 
         // 顺序契约：第一张才是本机证书，中间证书不许顶替它
         const std::string fixtureSerialNumber = [&leafOnlyPath]
         {
             const TlsContext reference;
-            return reference.loadCertificate(leafOnlyPath.string(), kTestKeyPath.string())
-                       ? presentedCertificateSerialNumber(reference.nativeHandle())
-                       : std::string{};
+            return reference.loadCertificate(leafOnlyPath.string(), kTestKeyPath.string()) ? presentedCertificateSerialNumber(reference.nativeHandle()) : std::string{};
         }();
         ASSERT_FALSE(fixtureSerialNumber.empty());
-        EXPECT_EQ(presentedCertificateSerialNumber(context.nativeHandle()), fixtureSerialNumber)
-            << "出示的本机证书应当仍是文件里的第一张";
+        EXPECT_EQ(presentedCertificateSerialNumber(context.nativeHandle()), fixtureSerialNumber) << "出示的本机证书应当仍是文件里的第一张";
 
         // 这一条是本次契约的核心：链上那张中间证书必须被登记，之后才会随握手一并出示
-        EXPECT_EQ(chainCertificateCount(context.nativeHandle()), 1U)
-            << "全链文件里除本机证书之外的证书必须进链，否则对端只信任根 CA 时建不出可信路径";
+        EXPECT_EQ(chainCertificateCount(context.nativeHandle()), 1U) << "全链文件里除本机证书之外的证书必须进链，否则对端只信任根 CA 时建不出可信路径";
     }
 
     /**
@@ -1039,8 +1003,7 @@ namespace AsynGyanis::Core
 
         // 换代而不是就地改：上下文必须换人，否则并发创建 SSL 时等于边改边用同一个 SSL_CTX
         EXPECT_NE(context.nativeHandle(), previousContext);
-        EXPECT_NE(presentedCertificateSerialNumber(context.nativeHandle()), previousSerialNumber)
-            << "换过之后出示的证书序列号应当变化";
+        EXPECT_NE(presentedCertificateSerialNumber(context.nativeHandle()), previousSerialNumber) << "换过之后出示的证书序列号应当变化";
 
         // 在途连接仍绑在旧上下文上（它的 SSL 持有旧上下文的引用），因此握手中与已通连的连接不受影响。
         // 紧接着的 SSL_free 会走到旧上下文上：若实现把旧上下文提前释放了，ASan 会在这里直接报出来
@@ -1064,7 +1027,7 @@ namespace AsynGyanis::Core
         TlsContext context;
         ASSERT_TRUE(context.loadCertificate(certificatePath.string(), kTestKeyPath.string()));
 
-        SSL_CTX *const previousContext         = context.nativeHandle();
+        SSL_CTX *const    previousContext      = context.nativeHandle();
         const std::string previousSerialNumber = presentedCertificateSerialNumber(previousContext);
 
         // 往证书路径写垃圾：模拟「续期只写了一半」「文件传坏」
@@ -1073,8 +1036,7 @@ namespace AsynGyanis::Core
             ASSERT_TRUE(stream != nullptr);
             // 判据用 fwrite 的返回值：fputs 只承诺「非负」，MSVC 下成功也返回 0
             const char brokenCertificateText[] = "-----BEGIN CERTIFICATE-----\nnot a certificate\n";
-            ASSERT_EQ(std::fwrite(brokenCertificateText, 1, sizeof(brokenCertificateText) - 1, stream.get()),
-                      sizeof(brokenCertificateText) - 1);
+            ASSERT_EQ(std::fwrite(brokenCertificateText, 1, sizeof(brokenCertificateText) - 1, stream.get()), sizeof(brokenCertificateText) - 1);
         }
 
         EXPECT_FALSE(context.reloadCertificate()) << "加载不了的新证书必须让本次轮换整体失败";
@@ -1145,9 +1107,9 @@ namespace AsynGyanis::Core
         /// 一次握手的结果：快照 + 可选的客户端会话（新引用，析构自动释放）
         struct HandshakeWithSession
         {
-            HandshakeOutcome outcome;                 ///< 握手快照
-            bool             setupFailed{false};      ///< BIO 对或 SSL 对象创建失败
-            bool             sessionResumable{false}; ///< 客户端取到了可恢复会话
+            HandshakeOutcome                                          outcome;                             ///< 握手快照
+            bool                                                      setupFailed{false};                  ///< BIO 对或 SSL 对象创建失败
+            bool                                                      sessionResumable{false};             ///< 客户端取到了可恢复会话
             std::unique_ptr<SSL_SESSION, decltype(&SSL_SESSION_free)> session{nullptr, &SSL_SESSION_free}; ///< 客户端会话
         };
 
@@ -1162,8 +1124,7 @@ namespace AsynGyanis::Core
          * @param sessionToResume 第二次握手时携带的会话；nullptr 表示全量握手
          * @return HandshakeWithSession 快照与会话；会话只在可恢复时非空
          */
-        HandshakeWithSession completeHandshakeWithSession(SSL_CTX *serverContext, SSL_CTX *clientContext,
-                                                          const bool clientPresentsCertificate,
+        HandshakeWithSession completeHandshakeWithSession(SSL_CTX *serverContext, SSL_CTX *clientContext, const bool clientPresentsCertificate,
                                                           SSL_SESSION *sessionToResume = nullptr)
         {
             HandshakeWithSession result;
@@ -1203,15 +1164,15 @@ namespace AsynGyanis::Core
             driveBothToTerminal(serverSsl.get(), clientSsl.get(), result.outcome);
 
             // 恢复判定两端各看一次：只信一侧可能把「服务端发了票据但客户端没用上」误判成恢复
-            result.outcome.clientReused = SSL_session_reused(clientSsl.get()) == 1;
-            result.outcome.serverReused = SSL_session_reused(serverSsl.get()) == 1;
+            result.outcome.clientReused    = SSL_session_reused(clientSsl.get()) == 1;
+            result.outcome.serverReused    = SSL_session_reused(serverSsl.get()) == 1;
             result.outcome.protocolVersion = SSL_get_version(serverSsl.get());
 
             if (result.outcome.clientCompleted)
             {
                 // 读一轮处理握手后的 NewSessionTicket；非应用数据被 SSL_read 就地消费，最后以 WANT_READ 收尾
-                char      ignoredByte = 0;
-                [[maybe_unused]] const int readResult = SSL_read(clientSsl.get(), &ignoredByte, 1);
+                char                       ignoredByte = 0;
+                [[maybe_unused]] const int readResult  = SSL_read(clientSsl.get(), &ignoredByte, 1);
                 ERR_clear_error();
 
                 // 礼仪式关闭：SSL_free 会把「未发过 close_notify」的连接当坏会话，顺手把其当前
@@ -1220,7 +1181,7 @@ namespace AsynGyanis::Core
                 SSL_shutdown(clientSsl.get());
                 ERR_clear_error();
 
-                SSL_SESSION *session = SSL_get1_session(clientSsl.get());
+                SSL_SESSION *session    = SSL_get1_session(clientSsl.get());
                 result.sessionResumable = session != nullptr && SSL_SESSION_is_resumable(session) == 1;
                 if (!result.sessionResumable && session != nullptr)
                 {
@@ -1239,24 +1200,22 @@ namespace AsynGyanis::Core
          * @param clientPresentsCertificate 客户端是否出示证书（mTLS 场景）
          * @return ResumptionOutcome 两次握手的快照与恢复命中情况
          */
-        ResumptionOutcome runResumptionHandshake(SSL_CTX *serverContext, SSL_CTX *clientContext,
-                                                 const bool clientPresentsCertificate)
+        ResumptionOutcome runResumptionHandshake(SSL_CTX *serverContext, SSL_CTX *clientContext, const bool clientPresentsCertificate)
         {
             ResumptionOutcome result;
 
-            HandshakeWithSession first = completeHandshakeWithSession(serverContext, clientContext, clientPresentsCertificate);
-            result.first                = first.outcome;
-            result.firstSetupFailed     = first.setupFailed;
+            HandshakeWithSession first   = completeHandshakeWithSession(serverContext, clientContext, clientPresentsCertificate);
+            result.first                 = first.outcome;
+            result.firstSetupFailed      = first.setupFailed;
             result.firstSessionResumable = first.sessionResumable;
             if (first.setupFailed || !first.sessionResumable)
             {
                 return result; // 第二次无从进行：调用方先按第一次的断言定位
             }
 
-            HandshakeWithSession second = completeHandshakeWithSession(serverContext, clientContext, clientPresentsCertificate,
-                                                                       first.session.get());
-            result.second            = second.outcome;
-            result.secondSetupFailed = second.setupFailed;
+            HandshakeWithSession second = completeHandshakeWithSession(serverContext, clientContext, clientPresentsCertificate, first.session.get());
+            result.second               = second.outcome;
+            result.secondSetupFailed    = second.setupFailed;
             return result;
         }
     } // namespace
@@ -1374,11 +1333,10 @@ namespace AsynGyanis::Core
          *          而错的长度正是本组用例要拒的东西。不用随机数是为了可复现：随机内容下
          *          「两个上下文恰好生成了同一份密钥」这种极端情形会让对照组偶发假绿
          */
-        std::string writeTicketKeyFile(const AsynGyanis::TestSupport::TemporaryDirectory &directory, const std::string &fileName,
-                                       const unsigned int seed, const std::size_t length = kAes128TicketKeyBytes)
+        std::string writeTicketKeyFile(const AsynGyanis::TestSupport::TemporaryDirectory &directory, const std::string &fileName, const unsigned int seed,
+                                       const std::size_t length = kAes128TicketKeyBytes)
         {
-            EXPECT_TRUE(directory.writeBinaryFile(fileName, AsynGyanis::TestSupport::makeBytePattern(seed, length)))
-                    << "密钥文件写不出来：" << fileName;
+            EXPECT_TRUE(directory.writeBinaryFile(fileName, AsynGyanis::TestSupport::makeBytePattern(seed, length))) << "密钥文件写不出来：" << fileName;
             return (directory.path() / fileName).string();
         }
 
@@ -1421,8 +1379,7 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(first.outcome.clientCompleted) << first.outcome.clientErrorText;
         ASSERT_TRUE(first.sessionResumable) << "第一次握手后客户端没有取到可恢复的票据";
 
-        const HandshakeWithSession second =
-                completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        const HandshakeWithSession second = completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
         ASSERT_FALSE(second.setupFailed);
         ASSERT_TRUE(second.outcome.serverCompleted) << second.outcome.serverErrorText;
         ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
@@ -1449,8 +1406,7 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(first.setupFailed);
         ASSERT_TRUE(first.sessionResumable) << "第一次握手后客户端没有取到可恢复的票据";
 
-        const HandshakeWithSession second =
-                completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        const HandshakeWithSession second = completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
         ASSERT_FALSE(second.setupFailed);
         ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
 
@@ -1484,8 +1440,7 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(first.setupFailed);
         ASSERT_TRUE(first.sessionResumable) << "第一次握手后客户端没有取到可恢复的票据";
 
-        const HandshakeWithSession second =
-                completeHandshakeWithSession(rotatedContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        const HandshakeWithSession second = completeHandshakeWithSession(rotatedContext.nativeHandle(), clientContext.get(), false, first.session.get());
         ASSERT_FALSE(second.setupFailed);
         ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
         EXPECT_TRUE(second.outcome.clientReused) << "轮换把旧票据一起废掉了：环里的旧密钥没被用来解密";
@@ -1517,8 +1472,7 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(first.setupFailed);
         ASSERT_TRUE(first.sessionResumable);
 
-        const HandshakeWithSession second =
-                completeHandshakeWithSession(unrelatedContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        const HandshakeWithSession second = completeHandshakeWithSession(unrelatedContext.nativeHandle(), clientContext.get(), false, first.session.get());
         ASSERT_FALSE(second.setupFailed);
         ASSERT_TRUE(second.outcome.serverCompleted) << second.outcome.serverErrorText;
         ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
@@ -1551,8 +1505,7 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(first.setupFailed);
         ASSERT_TRUE(first.sessionResumable) << "换代后的上下文没有签发票据";
 
-        const HandshakeWithSession second =
-                completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        const HandshakeWithSession second = completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
         ASSERT_FALSE(second.setupFailed);
         ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
         EXPECT_TRUE(second.outcome.clientReused) << "证书换代把票据密钥丢了：新上下文退回内部随机密钥";
@@ -1566,7 +1519,7 @@ namespace AsynGyanis::Core
     TEST(TlsContext, ResumesWithAes256TicketKey)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyAes256");
-        const std::string keyFile = writeTicketKeyFile(directory, "ticket256.key", 7, kAes256TicketKeyBytes);
+        const std::string                           keyFile = writeTicketKeyFile(directory, "ticket256.key", 7, kAes256TicketKeyBytes);
 
         TlsContext issuingContext;
         installFixtureCertificate(issuingContext);
@@ -1583,8 +1536,7 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(first.setupFailed);
         ASSERT_TRUE(first.sessionResumable) << "第一次握手后客户端没有取到可恢复的票据";
 
-        const HandshakeWithSession second =
-                completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
+        const HandshakeWithSession second = completeHandshakeWithSession(resumingContext.nativeHandle(), clientContext.get(), false, first.session.get());
         ASSERT_FALSE(second.setupFailed);
         ASSERT_TRUE(second.outcome.clientCompleted) << second.outcome.clientErrorText;
         EXPECT_TRUE(second.outcome.clientReused) << "80 字节密钥签的票据解不开";
@@ -1598,8 +1550,8 @@ namespace AsynGyanis::Core
     TEST(TlsContext, RejectsTicketKeyFileWithWrongLength)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("TicketKeyWrongLength");
-        const std::string tooShort = writeTicketKeyFile(directory, "short.key", 8, kAes128TicketKeyBytes - 1);
-        const std::string tooLong  = writeTicketKeyFile(directory, "long.key", 9, kAes256TicketKeyBytes + 1);
+        const std::string                           tooShort = writeTicketKeyFile(directory, "short.key", 8, kAes128TicketKeyBytes - 1);
+        const std::string                           tooLong  = writeTicketKeyFile(directory, "long.key", 9, kAes256TicketKeyBytes + 1);
         // 64 字节夹在两种合法布局中间，最容易被当成「差不多就行」放过
         const std::string inBetween = writeTicketKeyFile(directory, "middle.key", 10, 64);
 
@@ -1730,7 +1682,7 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            X509_NAME *subjectName           = X509_get_subject_name(leaf.get());
+            X509_NAME          *subjectName  = X509_get_subject_name(leaf.get());
             const unsigned char commonName[] = "asyngyanis-leaf";
             if (X509_NAME_add_entry_by_txt(subjectName, "CN", MBSTRING_ASC, commonName, -1, -1, 0) != 1)
             {
@@ -1766,8 +1718,7 @@ namespace AsynGyanis::Core
          * @param issuerCertificatePath 签发者证书；默认是仓库夹具那张自签根，传中间证书就得到三级链
          * @return bool 写成功
          */
-        bool writeCertificateSignedByFixture(const std::filesystem::path &outputFile, const long serialNumber,
-                                             const std::string &commonName, const bool isCertificateAuthority,
+        bool writeCertificateSignedByFixture(const std::filesystem::path &outputFile, const long serialNumber, const std::string &commonName, const bool isCertificateAuthority,
                                              const std::filesystem::path &issuerCertificatePath = kTestCertificatePath)
         {
             const auto issuerCertificate = loadCertificateFrom(issuerCertificatePath);
@@ -1793,8 +1744,7 @@ namespace AsynGyanis::Core
             }
 
             X509_NAME *subjectName = X509_get_subject_name(certificate.get());
-            if (X509_NAME_add_entry_by_txt(subjectName, "CN", MBSTRING_ASC,
-                                           reinterpret_cast<const unsigned char *>(commonName.c_str()), -1, -1, 0) != 1)
+            if (X509_NAME_add_entry_by_txt(subjectName, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char *>(commonName.c_str()), -1, -1, 0) != 1)
             {
                 return false;
             }
@@ -1806,8 +1756,7 @@ namespace AsynGyanis::Core
             if (isCertificateAuthority)
             {
                 const std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)> basicConstraints(
-                    X509V3_EXT_nconf_nid(nullptr, nullptr, NID_basic_constraints, "critical,CA:TRUE"),
-                    &X509_EXTENSION_free);
+                        X509V3_EXT_nconf_nid(nullptr, nullptr, NID_basic_constraints, "critical,CA:TRUE"), &X509_EXTENSION_free);
                 if (!basicConstraints || X509_add_ext(certificate.get(), basicConstraints.get(), -1) != 1)
                 {
                     return false;
@@ -1837,9 +1786,7 @@ namespace AsynGyanis::Core
          * @param revokedSerialNumbers 要列进去的序列号
          * @return bool 写成功
          */
-        bool writeRevocationList(const std::filesystem::path &outputFile,
-                                 const std::filesystem::path &issuerCertificatePath,
-                                 const std::vector<long> &revokedSerialNumbers)
+        bool writeRevocationList(const std::filesystem::path &outputFile, const std::filesystem::path &issuerCertificatePath, const std::vector<long> &revokedSerialNumbers)
         {
             const auto issuerCertificate = loadCertificateFrom(issuerCertificatePath);
             // 签名密钥统一是夹具私钥：本文件造出的每一张证书用的都是它
@@ -1861,16 +1808,13 @@ namespace AsynGyanis::Core
                 return false;
             }
 
-            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> thisUpdate(X509_gmtime_adj(nullptr, 0),
-                                                                                  &ASN1_TIME_free);
-            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> nextUpdate(
-                X509_gmtime_adj(nullptr, 60L * 60L * 24L), &ASN1_TIME_free);
+            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> thisUpdate(X509_gmtime_adj(nullptr, 0), &ASN1_TIME_free);
+            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> nextUpdate(X509_gmtime_adj(nullptr, 60L * 60L * 24L), &ASN1_TIME_free);
             if (!thisUpdate || !nextUpdate)
             {
                 return false;
             }
-            if (X509_CRL_set1_lastUpdate(crl.get(), thisUpdate.get()) != 1
-                || X509_CRL_set1_nextUpdate(crl.get(), nextUpdate.get()) != 1)
+            if (X509_CRL_set1_lastUpdate(crl.get(), thisUpdate.get()) != 1 || X509_CRL_set1_nextUpdate(crl.get(), nextUpdate.get()) != 1)
             {
                 return false;
             }
@@ -1879,17 +1823,14 @@ namespace AsynGyanis::Core
             {
                 // 不写成 const：add0 之后条目归 CRL 所有，唯一指针要 release() 放手，
                 // 否则离开作用域时二次释放
-                std::unique_ptr<X509_REVOKED, decltype(&X509_REVOKED_free)> revoked(X509_REVOKED_new(),
-                                                                                   &X509_REVOKED_free);
-                const std::unique_ptr<ASN1_INTEGER, decltype(&ASN1_INTEGER_free)> serial(ASN1_INTEGER_new(),
-                                                                                        &ASN1_INTEGER_free);
+                std::unique_ptr<X509_REVOKED, decltype(&X509_REVOKED_free)>       revoked(X509_REVOKED_new(), &X509_REVOKED_free);
+                const std::unique_ptr<ASN1_INTEGER, decltype(&ASN1_INTEGER_free)> serial(ASN1_INTEGER_new(), &ASN1_INTEGER_free);
                 if (!revoked || !serial)
                 {
                     return false;
                 }
                 ASN1_INTEGER_set(serial.get(), serialNumber);
-                if (X509_REVOKED_set_serialNumber(revoked.get(), serial.get()) != 1
-                    || X509_REVOKED_set_revocationDate(revoked.get(), thisUpdate.get()) != 1)
+                if (X509_REVOKED_set_serialNumber(revoked.get(), serial.get()) != 1 || X509_REVOKED_set_revocationDate(revoked.get(), thisUpdate.get()) != 1)
                 {
                     return false;
                 }
@@ -1943,12 +1884,11 @@ namespace AsynGyanis::Core
          * @param policy 客户端侧策略（信任库与吊销列表都在里面）
          * @return HandshakeOutcome 客户端是否完成握手、以及它对服务端证书的校验码
          */
-        HandshakeOutcome runHandshakeAgainstPolicy(const std::filesystem::path &serverCertificateChainPath,
-                                                   const TlsPolicy &policy)
+        HandshakeOutcome runHandshakeAgainstPolicy(const std::filesystem::path &serverCertificateChainPath, const TlsPolicy &policy)
         {
             const TlsContext serverContext;
             EXPECT_TRUE(serverContext.loadCertificate(serverCertificateChainPath.string(), kTestKeyPath.string()))
-                << "服务端证书材料没装上去；OpenSSL 错误：" << lastOpenSslErrorText();
+                    << "服务端证书材料没装上去；OpenSSL 错误：" << lastOpenSslErrorText();
             const SslContextPointer clientContext = createVerifyingClientContext(policy);
             return runInProcessHandshake(serverContext.nativeHandle(), clientContext.get(), false, false);
         }
@@ -1964,21 +1904,16 @@ namespace AsynGyanis::Core
          */
         std::string makeMatchingOcspResponseDer(X509 *leafCertificate, X509 *issuerCertificate, EVP_PKEY *issuerKey)
         {
-            const std::unique_ptr<OCSP_BASICRESP, decltype(&OCSP_BASICRESP_free)> basic(
-                    OCSP_BASICRESP_new(), &OCSP_BASICRESP_free);
-            const std::unique_ptr<OCSP_CERTID, decltype(&OCSP_CERTID_free)> certificateId(
-                    OCSP_cert_to_id(EVP_sha1(), leafCertificate, issuerCertificate), &OCSP_CERTID_free);
-            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> thisUpdate(
-                    ASN1_TIME_set(nullptr, std::time(nullptr)), &ASN1_TIME_free);
-            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> nextUpdate(
-                    ASN1_TIME_adj(nullptr, std::time(nullptr), 0, 3600), &ASN1_TIME_free);
+            const std::unique_ptr<OCSP_BASICRESP, decltype(&OCSP_BASICRESP_free)> basic(OCSP_BASICRESP_new(), &OCSP_BASICRESP_free);
+            const std::unique_ptr<OCSP_CERTID, decltype(&OCSP_CERTID_free)>       certificateId(OCSP_cert_to_id(EVP_sha1(), leafCertificate, issuerCertificate), &OCSP_CERTID_free);
+            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)>           thisUpdate(ASN1_TIME_set(nullptr, std::time(nullptr)), &ASN1_TIME_free);
+            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)>           nextUpdate(ASN1_TIME_adj(nullptr, std::time(nullptr), 0, 3600), &ASN1_TIME_free);
             if (!basic || !certificateId || !thisUpdate || !nextUpdate)
             {
                 return {};
             }
 
-            if (OCSP_basic_add1_status(basic.get(), certificateId.get(), V_OCSP_CERTSTATUS_GOOD, 0, nullptr,
-                                       thisUpdate.get(), nextUpdate.get()) == nullptr)
+            if (OCSP_basic_add1_status(basic.get(), certificateId.get(), V_OCSP_CERTSTATUS_GOOD, 0, nullptr, thisUpdate.get(), nextUpdate.get()) == nullptr)
             {
                 return {};
             }
@@ -1988,14 +1923,13 @@ namespace AsynGyanis::Core
             }
 
             // OCSP_response_create 会把 basic 打包复制进响应，basic 的所有权仍在调用方
-            const std::unique_ptr<OCSP_RESPONSE, decltype(&OCSP_RESPONSE_free)> response(
-                    OCSP_response_create(OCSP_RESPONSE_STATUS_SUCCESSFUL, basic.get()), &OCSP_RESPONSE_free);
+            const std::unique_ptr<OCSP_RESPONSE, decltype(&OCSP_RESPONSE_free)> response(OCSP_response_create(OCSP_RESPONSE_STATUS_SUCCESSFUL, basic.get()), &OCSP_RESPONSE_free);
             if (!response)
             {
                 return {};
             }
 
-            unsigned char *der = nullptr;
+            unsigned char *der       = nullptr;
             const int      derLength = i2d_OCSP_RESPONSE(response.get(), &der);
             if (derLength <= 0 || der == nullptr)
             {
@@ -2085,8 +2019,7 @@ namespace AsynGyanis::Core
                 return failed;
             }
             SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION);
-            return runInProcessHandshake(serverContext, clientContext.get(), false, false,
-                                         kHttp11AlpnWireFormat, sizeof(kHttp11AlpnWireFormat), true);
+            return runInProcessHandshake(serverContext, clientContext.get(), false, false, kHttp11AlpnWireFormat, sizeof(kHttp11AlpnWireFormat), true);
         }
     } // namespace
 
@@ -2241,7 +2174,7 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(context.loadCertificate(certificatePath.string(), kTestKeyPath.string()));
         ASSERT_TRUE(context.loadOcspResponse(responsePath.string()));
 
-        SSL_CTX *const    previousContext = context.nativeHandle();
+        SSL_CTX *const    previousContext      = context.nativeHandle();
         const std::string previousSerialNumber = presentedCertificateSerialNumber(previousContext);
 
         // 证书换新、但响应文件被清掉：重读失败必须让整次轮换失败，而不是悄悄装订一份过期响应
@@ -2270,10 +2203,10 @@ namespace AsynGyanis::Core
     TEST(TlsContext, RevocationListRejectsTheCertificateItLists)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("RevocationLeaf");
-        constexpr long kLeafSerial = 0xBEEFL;
-        const std::filesystem::path leafPath          = directory.path() / "leaf.pem";
-        const std::filesystem::path revokedListPath   = directory.path() / "revoked.crl.pem";
-        const std::filesystem::path emptyListPath     = directory.path() / "empty.crl.pem";
+        constexpr long                              kLeafSerial     = 0xBEEFL;
+        const std::filesystem::path                 leafPath        = directory.path() / "leaf.pem";
+        const std::filesystem::path                 revokedListPath = directory.path() / "revoked.crl.pem";
+        const std::filesystem::path                 emptyListPath   = directory.path() / "empty.crl.pem";
         ASSERT_TRUE(writeCertificateSignedByFixture(leafPath, kLeafSerial, "asyngyanis-crl-leaf", false));
         ASSERT_TRUE(writeRevocationList(revokedListPath, kTestCertificatePath, {kLeafSerial}));
         ASSERT_TRUE(writeRevocationList(emptyListPath, kTestCertificatePath, {}));
@@ -2284,10 +2217,9 @@ namespace AsynGyanis::Core
 
         const HandshakeOutcome revoked = runHandshakeAgainstPolicy(leafPath, policy);
         EXPECT_FALSE(revoked.clientCompleted) << "这张证书就在列表里被吊销了，握手却成了";
-        EXPECT_EQ(revoked.clientVerifyResult, static_cast<long>(X509_V_ERR_CERT_REVOKED))
-                << "拒绝的理由应当是「证书已被吊销」，而不是别的校验失败：" << revoked.clientErrorText;
+        EXPECT_EQ(revoked.clientVerifyResult, static_cast<long>(X509_V_ERR_CERT_REVOKED)) << "拒绝的理由应当是「证书已被吊销」，而不是别的校验失败：" << revoked.clientErrorText;
 
-        policy.revocationListFile = emptyListPath.string();
+        policy.revocationListFile         = emptyListPath.string();
         const HandshakeOutcome notRevoked = runHandshakeAgainstPolicy(leafPath, policy);
         EXPECT_TRUE(notRevoked.clientCompleted) << "同一张证书、换成空列表就该放行：" << notRevoked.clientErrorText;
         EXPECT_EQ(notRevoked.clientVerifyResult, static_cast<long>(X509_V_OK));
@@ -2295,7 +2227,7 @@ namespace AsynGyanis::Core
         // 对照组二：整份策略不给列表时同样放行——说明上面那次拒绝来自列表内容，与「开了什么怪配置」无关
         TlsPolicy withoutRevocation;
         withoutRevocation.certificateAuthorityFile = kTestCertificatePath.string();
-        const HandshakeOutcome noList = runHandshakeAgainstPolicy(leafPath, withoutRevocation);
+        const HandshakeOutcome noList              = runHandshakeAgainstPolicy(leafPath, withoutRevocation);
         EXPECT_TRUE(noList.clientCompleted) << "不查吊销时就是一次普通的验通：" << noList.clientErrorText;
     }
 
@@ -2309,16 +2241,14 @@ namespace AsynGyanis::Core
     TEST(TlsContext, RevocationCheckingFailsClosedWhenTheIssuingAuthorityHasNoList)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("RevocationFailClosed");
-        constexpr long          kIntermediateSerial = 0x1001L;
-        constexpr long          kLeafSerial         = 0x2002L;
-        const std::filesystem::path intermediatePath = directory.path() / "intermediate.pem";
-        const std::filesystem::path leafPath         = directory.path() / "leaf.pem";
-        const std::filesystem::path chainPath        = directory.path() / "chain.pem";
-        const std::filesystem::path rootListPath     = directory.path() / "root.crl.pem";
-        ASSERT_TRUE(writeCertificateSignedByFixture(intermediatePath, kIntermediateSerial,
-                                                    "asyngyanis-crl-intermediate", true));
-        ASSERT_TRUE(writeCertificateSignedByFixture(leafPath, kLeafSerial, "asyngyanis-crl-leaf", false,
-                                                    intermediatePath));
+        constexpr long                              kIntermediateSerial = 0x1001L;
+        constexpr long                              kLeafSerial         = 0x2002L;
+        const std::filesystem::path                 intermediatePath    = directory.path() / "intermediate.pem";
+        const std::filesystem::path                 leafPath            = directory.path() / "leaf.pem";
+        const std::filesystem::path                 chainPath           = directory.path() / "chain.pem";
+        const std::filesystem::path                 rootListPath        = directory.path() / "root.crl.pem";
+        ASSERT_TRUE(writeCertificateSignedByFixture(intermediatePath, kIntermediateSerial, "asyngyanis-crl-intermediate", true));
+        ASSERT_TRUE(writeCertificateSignedByFixture(leafPath, kLeafSerial, "asyngyanis-crl-leaf", false, intermediatePath));
         ASSERT_TRUE(concatenateTextFiles(leafPath, intermediatePath, chainPath));
         ASSERT_TRUE(writeRevocationList(rootListPath, kTestCertificatePath, {}));
 
@@ -2333,8 +2263,7 @@ namespace AsynGyanis::Core
 
         policy.revocationListFile.clear();
         const HandshakeOutcome withoutChecking = runHandshakeAgainstPolicy(chainPath, policy);
-        EXPECT_TRUE(withoutChecking.clientCompleted)
-                << "同一套三级链不查吊销时应当验通，否则上一条测的就不是吊销：" << withoutChecking.clientErrorText;
+        EXPECT_TRUE(withoutChecking.clientCompleted) << "同一套三级链不查吊销时应当验通，否则上一条测的就不是吊销：" << withoutChecking.clientErrorText;
     }
 
     /**
@@ -2347,18 +2276,16 @@ namespace AsynGyanis::Core
     TEST(TlsContext, WholeChainRevocationCheckingAlsoRejectsARevokedIntermediateAuthority)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("RevocationWholeChain");
-        constexpr long          kIntermediateSerial = 0x3003L;
-        constexpr long          kLeafSerial         = 0x4004L;
-        const std::filesystem::path intermediatePath = directory.path() / "intermediate.pem";
-        const std::filesystem::path leafPath         = directory.path() / "leaf.pem";
-        const std::filesystem::path chainPath        = directory.path() / "chain.pem";
-        const std::filesystem::path rootListPath     = directory.path() / "root.crl.pem";
-        const std::filesystem::path intermediateListPath = directory.path() / "intermediate.crl.pem";
-        const std::filesystem::path bothListsPath        = directory.path() / "both.crl.pem";
-        ASSERT_TRUE(writeCertificateSignedByFixture(intermediatePath, kIntermediateSerial,
-                                                    "asyngyanis-chain-intermediate", true));
-        ASSERT_TRUE(writeCertificateSignedByFixture(leafPath, kLeafSerial, "asyngyanis-chain-leaf", false,
-                                                    intermediatePath));
+        constexpr long                              kIntermediateSerial  = 0x3003L;
+        constexpr long                              kLeafSerial          = 0x4004L;
+        const std::filesystem::path                 intermediatePath     = directory.path() / "intermediate.pem";
+        const std::filesystem::path                 leafPath             = directory.path() / "leaf.pem";
+        const std::filesystem::path                 chainPath            = directory.path() / "chain.pem";
+        const std::filesystem::path                 rootListPath         = directory.path() / "root.crl.pem";
+        const std::filesystem::path                 intermediateListPath = directory.path() / "intermediate.crl.pem";
+        const std::filesystem::path                 bothListsPath        = directory.path() / "both.crl.pem";
+        ASSERT_TRUE(writeCertificateSignedByFixture(intermediatePath, kIntermediateSerial, "asyngyanis-chain-intermediate", true));
+        ASSERT_TRUE(writeCertificateSignedByFixture(leafPath, kLeafSerial, "asyngyanis-chain-leaf", false, intermediatePath));
         ASSERT_TRUE(concatenateTextFiles(leafPath, intermediatePath, chainPath));
         ASSERT_TRUE(writeRevocationList(rootListPath, kTestCertificatePath, {kIntermediateSerial}));
         ASSERT_TRUE(writeRevocationList(intermediateListPath, intermediatePath, {}));
@@ -2369,14 +2296,12 @@ namespace AsynGyanis::Core
         policy.revocationListFile       = bothListsPath.string();
 
         const HandshakeOutcome leafOnly = runHandshakeAgainstPolicy(chainPath, policy);
-        EXPECT_TRUE(leafOnly.clientCompleted)
-                << "只查对端那一张时，叶证书的列表是空的，中间证书被吊销不该牵连它：" << leafOnly.clientErrorText;
+        EXPECT_TRUE(leafOnly.clientCompleted) << "只查对端那一张时，叶证书的列表是空的，中间证书被吊销不该牵连它：" << leafOnly.clientErrorText;
 
         policy.revocationCoversWholeChain = true;
         const HandshakeOutcome wholeChain = runHandshakeAgainstPolicy(chainPath, policy);
         EXPECT_FALSE(wholeChain.clientCompleted) << "整条链都查的时候，被吊销的中间证书必须拦下来";
-        EXPECT_EQ(wholeChain.clientVerifyResult, static_cast<long>(X509_V_ERR_CERT_REVOKED))
-                << "拒绝的理由应当是「证书已被吊销」：" << wholeChain.clientErrorText;
+        EXPECT_EQ(wholeChain.clientVerifyResult, static_cast<long>(X509_V_ERR_CERT_REVOKED)) << "拒绝的理由应当是「证书已被吊销」：" << wholeChain.clientErrorText;
     }
 
     /**
@@ -2388,7 +2313,7 @@ namespace AsynGyanis::Core
     TEST(TlsContext, UnreadableRevocationListIsRejectedAtPolicyApplyTime)
     {
         AsynGyanis::TestSupport::TemporaryDirectory directory("RevocationBadList");
-        const std::filesystem::path garbageListPath = directory.path() / "garbage.crl.pem";
+        const std::filesystem::path                 garbageListPath = directory.path() / "garbage.crl.pem";
         ASSERT_TRUE(overwriteBytes(garbageListPath, "this is not a CRL at all"));
 
         for (const std::filesystem::path &candidate: {directory.path() / "missing.crl.pem", garbageListPath})
@@ -2399,13 +2324,12 @@ namespace AsynGyanis::Core
 
             const SslContextPointer context = createClientContext();
             ASSERT_NE(context, nullptr);
-            EXPECT_THROW(applyTlsPolicy(context.get(), policy, nullptr), CoreException)
-                    << "这份列表读不出来却准备静默放过：" << candidate.string();
+            EXPECT_THROW(applyTlsPolicy(context.get(), policy, nullptr), CoreException) << "这份列表读不出来却准备静默放过：" << candidate.string();
         }
 
         // 消息要点名是哪一份文件（同一个循环里两份文件时，光说「加载不了」分不出是哪一步）
         TlsPolicy policy;
-        policy.revocationListFile = garbageListPath.string();
+        policy.revocationListFile       = garbageListPath.string();
         const SslContextPointer context = createClientContext();
         ASSERT_NE(context, nullptr);
         try
@@ -2414,8 +2338,7 @@ namespace AsynGyanis::Core
             FAIL() << "读不出来的列表本该抛出";
         } catch (const CoreException &failure)
         {
-            EXPECT_NE(std::string{failure.what()}.find("garbage.crl.pem"), std::string::npos)
-                    << "消息没点名是哪一份文件：" << failure.what();
+            EXPECT_NE(std::string{failure.what()}.find("garbage.crl.pem"), std::string::npos) << "消息没点名是哪一份文件：" << failure.what();
         }
     }
-}
+} // namespace AsynGyanis::Core

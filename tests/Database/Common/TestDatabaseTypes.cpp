@@ -194,8 +194,7 @@ namespace AsynGyanis::Database
         {
             for (std::size_t rightIndex = leftIndex + 1; rightIndex < typeNameTable.size(); ++rightIndex)
             {
-                EXPECT_STRNE(databaseValueTypeName(typeNameTable[leftIndex].first),
-                             databaseValueTypeName(typeNameTable[rightIndex].first));
+                EXPECT_STRNE(databaseValueTypeName(typeNameTable[leftIndex].first), databaseValueTypeName(typeNameTable[rightIndex].first));
             }
         }
     }

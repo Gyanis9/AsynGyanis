@@ -8,9 +8,9 @@
  */
 #pragma once
 
+#include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncSocket.h"
-#include "Core/Coroutine/Task.h"
 
 #include <openssl/ssl.h>
 
@@ -180,7 +180,7 @@ namespace AsynGyanis::Core
             }
         };
 
-        std::unique_ptr<SSL, SslDeleter> m_ssl;                  ///< OpenSSL SSL 对象，RAII 管理
+        std::unique_ptr<SSL, SslDeleter> m_ssl; ///< OpenSSL SSL 对象，RAII 管理
         /// 是否有一次 SSL_write 停在「WANT_WRITE，记录还在 SSL 内部待发」的中间状态上。
         /// OpenSSL 规定这种重试之前不许插入 SSL_read——插进去的话 SSL_read 会替写侧把待发记录
         /// 冲出去，写侧随后又按同一份数据重试，同一段明文在线上有两份，对端按记录解析当场错位。
@@ -202,10 +202,10 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] Task<bool> yieldForPeerProgress() const;
 
-        EventLoop *                      m_loop{nullptr};        ///< 关联的事件循环，用于等待 socket 事件
-        AsyncSocket                      m_socket;               ///< 底层异步 socket
-        Role                             m_role{Role::Server};   ///< 本端角色：决定握手入口
-        bool                             m_handshakeDone{false}; ///< 握手是否已完成
+        EventLoop  *m_loop{nullptr};        ///< 关联的事件循环，用于等待 socket 事件
+        AsyncSocket m_socket;               ///< 底层异步 socket
+        Role        m_role{Role::Server};   ///< 本端角色：决定握手入口
+        bool        m_handshakeDone{false}; ///< 握手是否已完成
     };
 
 } // namespace AsynGyanis::Core

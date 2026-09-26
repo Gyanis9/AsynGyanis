@@ -156,8 +156,7 @@ namespace AsynGyanis::Platform
             // 「没有活监视」不等于「这条路径没被登记过」：注册失败（路径当时不存在）也保留清单里的那一条，
             // 目录之后出现时由自愈节拍补挂。显式撤销连这份意图一起清掉，否则调用方以为撤干净了，事件
             // 却在之后的某个时刻开始流过来。与 Windows 侧 dropWatch 同一口径
-            const std::size_t revokedPendingEntries
-                    = m_selfHealPaths.erase(absolutePath) + m_recursiveRoots.erase(absolutePath);
+            const std::size_t revokedPendingEntries = m_selfHealPaths.erase(absolutePath) + m_recursiveRoots.erase(absolutePath);
             return revokedPendingEntries > 0;
         }
 
@@ -176,20 +175,18 @@ namespace AsynGyanis::Platform
         // 被点名的那一条，剩下的照旧派发回调（调用方以为撤销完成了），而且每只 watch 都钉住
         // 一枚 inode：整棵树删不掉、卷卸不掉，反复 add/remove 还会把 max_user_watches 耗尽，
         // 到那之后本实例的 addWatch() 会全部失败。与 Windows 侧 dropWatch 同一口径
-        const std::string subtreePrefix = absolutePath.ends_with('/') ? absolutePath : absolutePath + '/';
+        const std::string                        subtreePrefix = absolutePath.ends_with('/') ? absolutePath : absolutePath + '/';
         std::vector<std::pair<int, std::string>> coveredWatches;
-        for (const auto &[watchDescriptor, watchedPath] : m_watchDescriptors)
+        for (const auto &[watchDescriptor, watchedPath]: m_watchDescriptors)
         {
-            if (watchedPath.size() > subtreePrefix.size()
-                && watchedPath.compare(0, subtreePrefix.size(), subtreePrefix) == 0)
+            if (watchedPath.size() > subtreePrefix.size() && watchedPath.compare(0, subtreePrefix.size(), subtreePrefix) == 0)
             {
                 coveredWatches.emplace_back(watchDescriptor, watchedPath);
             }
         }
-        for (const auto &[watchDescriptor, watchedPath] : coveredWatches)
+        for (const auto &[watchDescriptor, watchedPath]: coveredWatches)
         {
-            [[maybe_unused]] const int removedDescriptor =
-                    ::inotify_rm_watch(m_inotifyFileDescriptor, watchDescriptor);
+            [[maybe_unused]] const int removedDescriptor = ::inotify_rm_watch(m_inotifyFileDescriptor, watchDescriptor);
             m_watchDescriptors.erase(watchDescriptor);
             m_pathToWatchDescriptor.erase(watchedPath);
             m_recursiveRoots.erase(watchedPath);
@@ -307,7 +304,7 @@ namespace AsynGyanis::Platform
             // 锁内取出回调快照与目标路径，锁外触发，避免回调中操作监听器造成死锁
             FileChangeCallback callbackSnapshot;
             std::string        changedPath;
-            FileChangeType     changeType = FileChangeType::Modified;
+            FileChangeType     changeType              = FileChangeType::Modified;
             bool               shouldWatchNewDirectory = false;
 
             {
@@ -361,19 +358,17 @@ namespace AsynGyanis::Platform
                 // 前缀比较必须落在路径分隔符边界上——纯前缀匹配会把「/data」当成「/database」的根，
                 // 给监视范围外的目录补挂监视（并把它们记进递归根集合，范围越滚越大）
                 shouldWatchNewDirectory =
-                        changeType == FileChangeType::Created &&
-                        std::ranges::any_of(m_recursiveRoots,
-                                            [&watchedPath](const std::string &root)
-                                            {
-                                                if (watchedPath.size() < root.size() || watchedPath.compare(0, root.size(), root) != 0)
-                                                {
-                                                    return false;
-                                                }
-                                                // 完全相同，或下一个字符就是分隔符，才算「在根之下」
-                                                return watchedPath.size() == root.size() ||
-                                                       watchedPath[root.size()] == '/' ||
-                                                       (!root.empty() && root.back() == '/');
-                                            });
+                        changeType == FileChangeType::Created && std::ranges::any_of(m_recursiveRoots,
+                                                                                     [&watchedPath](const std::string &root)
+                                                                                     {
+                                                                                         if (watchedPath.size() < root.size() || watchedPath.compare(0, root.size(), root) != 0)
+                                                                                         {
+                                                                                             return false;
+                                                                                         }
+                                                                                         // 完全相同，或下一个字符就是分隔符，才算「在根之下」
+                                                                                         return watchedPath.size() == root.size() || watchedPath[root.size()] == '/' ||
+                                                                                                (!root.empty() && root.back() == '/');
+                                                                                     });
             }
 
             if (shouldWatchNewDirectory)
@@ -404,7 +399,7 @@ namespace AsynGyanis::Platform
         }
         m_rearmDeadline = now + kRearmInterval;
 
-        std::vector<std::pair<std::string, bool> > missingWatches;
+        std::vector<std::pair<std::string, bool>> missingWatches;
         {
             const std::shared_lock lock(m_watchMutex);
             for (const std::string &path: m_selfHealPaths)
@@ -427,7 +422,7 @@ namespace AsynGyanis::Platform
     void InotifyFileWatcher::dispatchOverflowRescan()
     {
         // 快照照抄一份回调与路径再派发：回调里增删监听路径是常见写法，持锁派发会自死锁
-        std::vector<std::pair<FileChangeCallback, std::string> > notifications;
+        std::vector<std::pair<FileChangeCallback, std::string>> notifications;
         {
             std::shared_lock lock(m_watchMutex);
             notifications.reserve(m_watchDescriptors.size());

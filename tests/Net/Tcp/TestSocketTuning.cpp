@@ -121,7 +121,7 @@ namespace AsynGyanis::Net
         /// 一次接受尝试的结果槽
         struct AcceptOutcome
         {
-            std::vector<Core::AsyncSocket> acceptedSockets; ///< 已接受的连接
+            std::vector<Core::AsyncSocket> acceptedSockets;  ///< 已接受的连接
             std::atomic<bool>              completed{false}; ///< 驱动协程是否已结束
         };
 
@@ -223,9 +223,9 @@ namespace AsynGyanis::Net
      */
     TEST(SocketTuning, DeferAcceptFollowsPlatformSupport)
     {
-        Core::EventLoop     loop;
-        Core::AsyncSocket   probeSocket = Core::AsyncSocket::create(loop);
-        const int           probeDescriptor = probeSocket.fileDescriptor();
+        Core::EventLoop   loop;
+        Core::AsyncSocket probeSocket     = Core::AsyncSocket::create(loop);
+        const int         probeDescriptor = probeSocket.fileDescriptor();
         ASSERT_GE(probeDescriptor, 0) << "TCP 探针套接字没有创建成功";
 
 #if ASYN_PLATFORM_WIN32
@@ -241,8 +241,8 @@ namespace AsynGyanis::Net
      */
     TEST(SocketTuning, AcceptorAppliesBufferSizesToListeningAndAcceptedSockets)
     {
-        Core::EventLoop    loop;
-        TcpAcceptor        acceptor(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop           loop;
+        TcpAcceptor               acceptor(loop, Core::InetAddress::localhost(0));
         TcpAcceptor::SocketTuning tuning;
         tuning.receiveBufferBytes = kBufferSizeBytes;
         tuning.sendBufferBytes    = kBufferSizeBytes;
@@ -264,17 +264,12 @@ namespace AsynGyanis::Net
         LoopbackClient client(boundAddress.port());
         ASSERT_TRUE(client.isValid());
 
-        AcceptOutcome  outcome;
-        Core::Task<>   acceptTask   = driveAcceptOnce(acceptor, outcome);
+        AcceptOutcome   outcome;
+        Core::Task<>    acceptTask = driveAcceptOnce(acceptor, outcome);
         EventLoopThread loopThread(loop);
         loopThread.schedule(acceptTask);
 
-        ASSERT_TRUE(waitUntil(
-                [&outcome]
-                {
-                    return outcome.completed.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "accept() 未在时限内完成";
+        ASSERT_TRUE(waitUntil([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kWaitTimeout)) << "accept() 未在时限内完成";
         ASSERT_EQ(outcome.acceptedSockets.size(), 1U);
 
         // 接受到的连接：显式下发过同一组取值（不依赖「监听套接字继承」这一平台差异）
@@ -291,7 +286,7 @@ namespace AsynGyanis::Net
     TEST(SocketTuning, FastOpenIsAcceptedOnListeningSocket)
     {
         Core::EventLoop   loop;
-        Core::AsyncSocket probeSocket = Core::AsyncSocket::create(loop);
+        Core::AsyncSocket probeSocket     = Core::AsyncSocket::create(loop);
         const int         probeDescriptor = probeSocket.fileDescriptor();
         ASSERT_GE(probeDescriptor, 0) << "TCP 探针套接字没有创建成功";
 
@@ -322,7 +317,6 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(acceptor.bind());
         ASSERT_TRUE(acceptor.listen(kDefaultListenBacklog));
 
-        EXPECT_GT(queryFastOpenValue(acceptor.fileDescriptor()), 0)
-                << "TFO 队列长度没有下发到监听套接字";
+        EXPECT_GT(queryFastOpenValue(acceptor.fileDescriptor()), 0) << "TFO 队列长度没有下发到监听套接字";
     }
 } // namespace AsynGyanis::Net

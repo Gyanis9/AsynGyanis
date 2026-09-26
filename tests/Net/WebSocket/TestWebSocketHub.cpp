@@ -39,7 +39,7 @@ namespace AsynGyanis::Net
          */
         struct GatedSendPath
         {
-            std::vector<std::string> sentFrames; ///< 已交出的帧字节，按完成顺序
+            std::vector<std::string> sentFrames;     ///< 已交出的帧字节，按完成顺序
             std::coroutine_handle<>  parkedWriter{}; ///< 停在闸门上的写协程句柄；空表示没人停着
             bool                     isGated{false}; ///< 是否让写出停在闸门
 
@@ -92,7 +92,9 @@ namespace AsynGyanis::Net
                     path.parkedWriter = handle;
                 }
 
-                void await_resume() const noexcept {}
+                void await_resume() const noexcept
+                {
+                }
             };
 
             [[nodiscard]] ParkHere parkHere()
@@ -117,10 +119,7 @@ namespace AsynGyanis::Net
          */
         WebSocketPeer::FrameSender makeFrameSender(GatedSendPath &path)
         {
-            return [&path](const std::string_view bytes)
-            {
-                return path(bytes);
-            };
+            return [&path](const std::string_view bytes) { return path(bytes); };
         }
     } // namespace
 
@@ -134,9 +133,9 @@ namespace AsynGyanis::Net
         WebSocketPeer otherPeer{makeFrameSender(otherRoom)};
 
         WebSocketHub hub;
-        auto lobbyFirstSub  = hub.subscribe("lobby", firstPeer);
-        auto lobbySecondSub = hub.subscribe("lobby", secondPeer);
-        auto otherSub       = hub.subscribe("news", otherPeer);
+        auto         lobbyFirstSub  = hub.subscribe("lobby", firstPeer);
+        auto         lobbySecondSub = hub.subscribe("lobby", secondPeer);
+        auto         otherSub       = hub.subscribe("news", otherPeer);
 
         EXPECT_EQ(hub.memberCount("lobby"), 2U);
         EXPECT_EQ(hub.memberCount("news"), 1U);
@@ -156,7 +155,7 @@ namespace AsynGyanis::Net
     {
         GatedSendPath path;
         WebSocketPeer peer{makeFrameSender(path)};
-        WebSocketHub hub;
+        WebSocketHub  hub;
 
         {
             auto subscription = hub.subscribe("lobby", peer);
@@ -174,7 +173,7 @@ namespace AsynGyanis::Net
     {
         GatedSendPath path;
         WebSocketPeer peer{makeFrameSender(path)};
-        WebSocketHub hub;
+        WebSocketHub  hub;
 
         auto original = hub.subscribe("lobby", peer);
         auto moved    = std::move(original);
@@ -194,8 +193,8 @@ namespace AsynGyanis::Net
         GatedSendPath path;
         path.isGated = true; // 第一帧停在闸门上，制造「这一帧正在写」
         WebSocketPeer peer{makeFrameSender(path)};
-        WebSocketHub hub;
-        auto subscription = hub.subscribe("lobby", peer);
+        WebSocketHub  hub;
+        auto          subscription = hub.subscribe("lobby", peer);
 
         // 第一路 publish 会替成员写，并且正停在闸门上
         Core::Task<void> firstPublish = hub.publish("lobby", "alpha");
@@ -219,11 +218,11 @@ namespace AsynGyanis::Net
     TEST(WebSocketHub, QueueBoundDropsTheNewestMessageAndCountsIt)
     {
         constexpr std::size_t kPendingByteBound = 16U;
-        GatedSendPath path;
+        GatedSendPath         path;
         path.isGated = true;
         WebSocketPeer peer{makeFrameSender(path)};
-        WebSocketHub hub(kPendingByteBound);
-        auto subscription = hub.subscribe("lobby", peer);
+        WebSocketHub  hub(kPendingByteBound);
+        auto          subscription = hub.subscribe("lobby", peer);
 
         Core::Task<void> firstPublish = hub.publish("lobby", "0123456789abcdefghij"); // 20 字节，比整个上界还大
         firstPublish.handle().resume();
@@ -260,7 +259,7 @@ namespace AsynGyanis::Net
         peer.markClosed(); // 会话侧收口：此后 send* 一律不该再被调用
 
         WebSocketHub hub;
-        auto subscription = hub.subscribe("lobby", peer);
+        auto         subscription = hub.subscribe("lobby", peer);
 
         drivePublish(hub.publish("lobby", "after-close"));
         EXPECT_TRUE(path.sentFrames.empty()) << "对端已收口还去写它：单写者假设之外的字节没人负责";

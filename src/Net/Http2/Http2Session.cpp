@@ -1,6 +1,6 @@
+#include "Net/Http2/Http2Session.h"
 #include "Net/Http/HttpChunkFrame.h"
 #include "Net/Http/HttpHeaderRules.h"
-#include "Net/Http2/Http2Session.h"
 
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/LogicException.h"
@@ -52,21 +52,21 @@ namespace AsynGyanis::Net
         constexpr std::string_view kWebSocketProtocolName = "websocket";
 
         /// 扩展 CONNECT 的升级应答：状态码与应答头名（RFC 8441 §5 用 2xx 而不是 101）
-        constexpr std::uint32_t kWebSocketAcceptedStatusCode = 200U;
-        constexpr std::string_view kWebSocketAcceptHeaderName = "sec-websocket-accept";
+        constexpr std::uint32_t    kWebSocketAcceptedStatusCode = 200U;
+        constexpr std::string_view kWebSocketAcceptHeaderName   = "sec-websocket-accept";
 
         /// 响应头自动补齐规则要认出的三个头名（与 HttpResponse::appendHead() 同一套）
-        constexpr std::string_view kContentTypeHeaderName = "content-type";
+        constexpr std::string_view kContentTypeHeaderName   = "content-type";
         constexpr std::string_view kContentLengthHeaderName = "content-length";
-        constexpr std::string_view kDateHeaderName = "date";
-        constexpr std::string_view kTrailerHeaderName = "trailer";
+        constexpr std::string_view kDateHeaderName          = "date";
+        constexpr std::string_view kTrailerHeaderName       = "trailer";
 
         /// 自动补出的内容类型：与 HttpResponse 的兜底选择一致（不会被浏览器当脚本执行）
         constexpr std::string_view kDefaultContentTypeValue = "text/plain";
 
         /// 报文行的分隔符：HttpResponse::writeChunk() 交出的段落一律以它定行（RFC 9112 §2.2）
-        constexpr std::string_view kCrLf = "\r\n";
-        constexpr std::size_t kCrLfLength = 2;
+        constexpr std::string_view kCrLf       = "\r\n";
+        constexpr std::size_t      kCrLfLength = 2;
 
         /// 分块帧长度行的位数上限：帧长按每字节两位十六进制写出，与 HttpResponse 侧同一算法
         constexpr std::size_t kChunkLengthLineMaximumLength = sizeof(std::size_t) * 2;
@@ -113,13 +113,9 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    Http2Session::Http2Session(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router,
-                               std::shared_ptr<const HttpServerLimits> limits,
-                               std::shared_ptr<HttpMetricsCollector> metrics,
-                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
-                               HttpParserLimits parserLimits,
-                               std::shared_ptr<HttpMemoryBudget> memoryBudget,
-                               Http2ConnectionConfiguration http2Configuration) :
+    Http2Session::Http2Session(Core::EventLoop &loop, Core::TlsSocket tlsSocket, Router &router, std::shared_ptr<const HttpServerLimits> limits,
+                               std::shared_ptr<HttpMetricsCollector> metrics, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, HttpParserLimits parserLimits,
+                               std::shared_ptr<HttpMemoryBudget> memoryBudget, Http2ConnectionConfiguration http2Configuration) :
         // TLS 模式下基类只能拿到一条不持有描述符的占位套接字：真实描述符的所有权必须独一份，
         // 归 TlsSocket 管（它负责先 SSL_shutdown 再关描述符）
         HttpSession(Core::AsyncSocket(loop, kInvalidSocketDescriptor), router, limits, metrics, requestIdGenerator, parserLimits, memoryBudget),
@@ -127,41 +123,24 @@ namespace AsynGyanis::Net
         // 头部/正文上限会退回默认值，该回的 431/413 就不出现了
         m_parser(parserLimits),
         // 连接层配置按值交给本连接的状态机：SETTINGS 通告与各项上限都在它里面生效
-        m_connection(std::move(http2Configuration)),
-        m_loop(loop),
-        m_scheduler(loop.scheduler()),
-        m_router(router),
-        m_parserLimits(parserLimits),
+        m_connection(std::move(http2Configuration)), m_loop(loop), m_scheduler(loop.scheduler()), m_router(router), m_parserLimits(parserLimits),
         // 基类那条套接字是占位，本类要用到的装配各持一份引用/共享指针；共享指针按值传两份
         // 而不是移走：两边指向的是同一批对象，不存在两份配置或两个采集端
-        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
-        m_metrics(std::move(metrics)),
-        m_requestIdGenerator(std::move(requestIdGenerator)),
-        m_memoryBudget(std::move(memoryBudget))
+        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()), m_metrics(std::move(metrics)),
+        m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget))
     {
         m_tlsSocket.emplace(std::move(tlsSocket));
     }
 
-    Http2Session::Http2Session(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router,
-                               std::shared_ptr<const HttpServerLimits> limits,
-                               std::shared_ptr<HttpMetricsCollector> metrics,
-                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator,
-                               HttpParserLimits parserLimits,
-                               std::shared_ptr<HttpMemoryBudget> memoryBudget,
-                               Http2ConnectionConfiguration http2Configuration) :
+    Http2Session::Http2Session(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits,
+                               std::shared_ptr<HttpMetricsCollector> metrics, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, HttpParserLimits parserLimits,
+                               std::shared_ptr<HttpMemoryBudget> memoryBudget, Http2ConnectionConfiguration http2Configuration) :
         // 明文模式：没有第二条通道，套接字直接交给基类持有，本类不留 TLS 通道（m_tlsSocket 保持空）
-        HttpSession(std::move(socket), router, limits, metrics, requestIdGenerator, parserLimits, memoryBudget),
-        m_parser(parserLimits),
+        HttpSession(std::move(socket), router, limits, metrics, requestIdGenerator, parserLimits, memoryBudget), m_parser(parserLimits),
         // 连接层配置按值交给本连接的状态机：SETTINGS 通告与各项上限都在它里面生效
-        m_connection(std::move(http2Configuration)),
-        m_loop(loop),
-        m_scheduler(loop.scheduler()),
-        m_router(router),
-        m_parserLimits(parserLimits),
-        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
-        m_metrics(std::move(metrics)),
-        m_requestIdGenerator(std::move(requestIdGenerator)),
-        m_memoryBudget(std::move(memoryBudget))
+        m_connection(std::move(http2Configuration)), m_loop(loop), m_scheduler(loop.scheduler()), m_router(router), m_parserLimits(parserLimits),
+        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()), m_metrics(std::move(metrics)),
+        m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget))
     {
     }
 
@@ -199,8 +178,7 @@ namespace AsynGyanis::Net
         } catch (const std::exception &handshakeException)
         {
             // 握手失败没有可信的明文可回：记日志后直接结束会话，收口交给上面的 RAII 守卫
-            LOG_ERROR_EXCEPTION(handshakeException, "Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}", transportFileDescriptor(),
-                                handshakeException.what());
+            LOG_ERROR_EXCEPTION(handshakeException, "Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}", transportFileDescriptor(), handshakeException.what());
             co_return;
         }
 
@@ -209,16 +187,12 @@ namespace AsynGyanis::Net
         const std::string selectedProtocol = m_tlsSocket->selectedAlpnProtocol();
         if (selectedProtocol != kHttp2AlpnProtocolName)
         {
-            LOG_DEBUG_FMT("Http2Session: ALPN 协商结果是「{}」，按 HTTP/1.1 会话继续（描述符={}）", selectedProtocol,
-                          transportFileDescriptor());
-            const std::function<bool()> alivePredicate = [this]()
-            {
-                return isAlive();
-            };
+            LOG_DEBUG_FMT("Http2Session: ALPN 协商结果是「{}」，按 HTTP/1.1 会话继续（描述符={}）", selectedProtocol, transportFileDescriptor());
+            const std::function<bool()> alivePredicate = [this]() { return isAlive(); };
             // 正文预算必须一并传下去：漏传时 setMemoryBudget() 在 TLS 的 h1 回落下静默失效，
             // 而同样的请求走明文端会被 503 收口
-            co_await detail::httpKeepAliveLoop(*m_tlsSocket, cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate,
-                                              *this, *m_limits, m_metrics.get(), m_requestIdGenerator.get(), m_memoryBudget.get());
+            co_await detail::httpKeepAliveLoop(*m_tlsSocket, cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate, *this, *m_limits, m_metrics.get(),
+                                               m_requestIdGenerator.get(), m_memoryBudget.get());
             co_return;
         }
 
@@ -283,8 +257,7 @@ namespace AsynGyanis::Net
 
     bool Http2Session::isTransportOpen() const noexcept
     {
-        return m_tlsSocket.has_value() ? m_tlsSocket->fileDescriptor() != kInvalidSocketDescriptor
-                                       : socket().fileDescriptor() != kInvalidSocketDescriptor;
+        return m_tlsSocket.has_value() ? m_tlsSocket->fileDescriptor() != kInvalidSocketDescriptor : socket().fileDescriptor() != kInvalidSocketDescriptor;
     }
 
     int Http2Session::transportFileDescriptor() const noexcept
@@ -340,8 +313,7 @@ namespace AsynGyanis::Net
             if (settingsIdleBudget > std::chrono::milliseconds::zero())
             {
                 refreshIdleDeadline(settingsIdleBudget);
-            }
-            else
+            } else
             {
                 const bool isRequestInProgress = !m_pendingRequests.empty();
                 refreshIdleDeadline(isRequestInProgress ? m_limits->readTimeout : m_limits->idleTimeout);
@@ -419,8 +391,7 @@ namespace AsynGyanis::Net
             // 0 是对端正常关闭，负值是连接不可用，两者都只剩收尾
             co_return false;
         }
-        if (receivedLength == static_cast<ssize_t>(m_http2ReceiveBuffer.size())
-            && m_http2ReceiveBuffer.size() < kHttp2ReceiveWindowByteCount)
+        if (receivedLength == static_cast<ssize_t>(m_http2ReceiveBuffer.size()) && m_http2ReceiveBuffer.size() < kHttp2ReceiveWindowByteCount)
         {
             // 读满整窗意味着传输层里还有字节没取走：翻倍到既有那一档封顶。空闲连接一次也读不满，
             // 因此只占起步档；持续送正文的连接最多两趟就回到 8 KiB，整条连接上摊不出几次多余的读
@@ -428,8 +399,7 @@ namespace AsynGyanis::Net
         }
         refreshIdleDeadline(m_limits->readTimeout);
 
-        const Http2ConnectionFeedStatus feedStatus =
-                m_connection.feedBytes(m_http2ReceiveBuffer.data(), static_cast<std::size_t>(receivedLength));
+        const Http2ConnectionFeedStatus feedStatus = m_connection.feedBytes(m_http2ReceiveBuffer.data(), static_cast<std::size_t>(receivedLength));
         if (!co_await flushOutgoingBytes())
         {
             co_return false;
@@ -445,8 +415,7 @@ namespace AsynGyanis::Net
             {
                 m_metrics->countBadRequest();
             }
-            LOG_ERROR_FMT("Http2Session: HTTP/2 连接层失败，已按错误码 {} 发 GOAWAY 并收口。原因：{}",
-                          http2ErrorCodeName(m_connection.errorCode()), m_connection.errorMessage());
+            LOG_ERROR_FMT("Http2Session: HTTP/2 连接层失败，已按错误码 {} 发 GOAWAY 并收口。原因：{}", http2ErrorCodeName(m_connection.errorCode()), m_connection.errorMessage());
             co_return false;
         }
         co_return true;
@@ -469,9 +438,7 @@ namespace AsynGyanis::Net
         // 对端可能还在发剩下的正文，而本端已经不需要了：按 RFC 9113 §8.1 请它停下（NO_ERROR 不是
         // 「出错」，而是「这条流不再需要了」）。不收下再丢掉，省的是对端可能还有几百 MB 的带宽
         std::string abortErrorText;
-        if (!m_connection.abortStream(pending.streamId,
-                                      isBodyTooLarge ? "请求正文超过上限，响应已发出，本端不再需要剩余正文"
-                                                     : "业务未读完请求正文，本端不再需要剩余字节",
+        if (!m_connection.abortStream(pending.streamId, isBodyTooLarge ? "请求正文超过上限，响应已发出，本端不再需要剩余正文" : "业务未读完请求正文，本端不再需要剩余字节",
                                       &abortErrorText))
         {
             LOG_DEBUG_FMT("Http2Session: 流 {} 的流式正文收尾时未能请求对端中止发送。原因：{}", pending.streamId, abortErrorText);
@@ -504,27 +471,22 @@ namespace AsynGyanis::Net
             pending.isHeaderListTooLarge = http2Request.isHeaderListTooLarge;
             // 流式路由：头部收齐即可派发，正文边收边交给业务，不必等 END_STREAM（与 h1 侧同一判据）。
             // 扩展 CONNECT 排除在外——它的「正文」是隧道里的帧，走隧道那条完全不同的路径
-            pending.isStreamingBody = !pending.isHeaderListTooLarge
-                                      && !pending.isExtendedConnect
-                                      && m_router.hasStreamingRoute(pending.request.method(), pending.request.uri());
+            pending.isStreamingBody = !pending.isHeaderListTooLarge && !pending.isExtendedConnect && m_router.hasStreamingRoute(pending.request.method(), pending.request.uri());
             // 期待 100-continue 与否要在**移入容器之前**取出来：pending 随后被 std::move 走，
             // 移后对象的字段（含映射好的头部）都成了空壳，读它只会得到空串
-            const bool isContinueRequested = !pending.isHeaderListTooLarge
-                                             && http2Request.hasBody
-                                             && isContinueExpected(pending.request.getHeader("expect").value_or(std::string{}));
+            const bool isContinueRequested =
+                    !pending.isHeaderListTooLarge && http2Request.hasBody && isContinueExpected(pending.request.getHeader("expect").value_or(std::string{}));
             m_pendingRequests.insert_or_assign(http2Request.streamId, std::move(pending));
 
             // RFC 9110 §10.1.1 在 h2 上的等价物：对端声明了 Expect: 100-continue 且还有正文要发时，
             // 先回一个 100 的 HEADERS（不带 END_STREAM），免得对端等到自己的超时才发正文
             if (isContinueRequested)
             {
-                std::string continueErrorText;
-                const Http2ResponseSendStatus continueStatus =
-                        m_connection.sendResponseHeaders(http2Request.streamId, 100U, {}, false, &continueErrorText);
+                std::string                   continueErrorText;
+                const Http2ResponseSendStatus continueStatus = m_connection.sendResponseHeaders(http2Request.streamId, 100U, {}, false, &continueErrorText);
                 if (continueStatus != Http2ResponseSendStatus::Sent)
                 {
-                    LOG_ERROR_FMT("Http2Session: 流 {} 的 100 Continue 未能排入待发字节。原因：{}", http2Request.streamId,
-                                  continueErrorText);
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的 100 Continue 未能排入待发字节。原因：{}", http2Request.streamId, continueErrorText);
                 }
             }
         }
@@ -569,19 +531,16 @@ namespace AsynGyanis::Net
             if (pending.isStreamingBody)
             {
                 HttpStreamBody &streamBody = pending.streamBody;
-                if (m_parserLimits.maximumBodySize != 0
-                    && streamBody.totalReceivedByteCount() + receivedData.data.size() > m_parserLimits.maximumBodySize)
+                if (m_parserLimits.maximumBodySize != 0 && streamBody.totalReceivedByteCount() + receivedData.data.size() > m_parserLimits.maximumBodySize)
                 {
                     // 与 h1 侧同一口径：体量越界就不再收，响应在服务阶段按 413 发出。
                     // 此后到达的 DATA 一律丢弃，但窗口照还——不还的话对端会卡在自己耗尽的窗口上
                     if (!streamBody.isBodyTooLarge())
                     {
-                        LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超过上限 {} 字节，已停止流式接收并按 413 应答",
-                                      receivedData.streamId, m_parserLimits.maximumBodySize);
+                        LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超过上限 {} 字节，已停止流式接收并按 413 应答", receivedData.streamId, m_parserLimits.maximumBodySize);
                         streamBody.markBodyTooLarge();
                     }
-                }
-                else
+                } else
                 {
                     streamBody.append(receivedData.data, receivedData.flowControlByteCount, receivedData.endStream);
                 }
@@ -592,8 +551,7 @@ namespace AsynGyanis::Net
                     std::string discardErrorText;
                     if (!m_connection.creditReceivedData(receivedData.streamId, receivedData.flowControlByteCount, &discardErrorText))
                     {
-                        LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId,
-                                      receivedData.flowControlByteCount, discardErrorText);
+                        LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId, receivedData.flowControlByteCount, discardErrorText);
                     }
                 }
                 if (receivedData.endStream)
@@ -610,18 +568,16 @@ namespace AsynGyanis::Net
                 // 响应在服务阶段统一发出；此后到达的 DATA 一律丢弃（但仍要还窗口）
                 if (!pending.isBodyTooLarge)
                 {
-                    LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答",
-                                  receivedData.streamId, m_parserLimits.maximumBodySize);
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答", receivedData.streamId, m_parserLimits.maximumBodySize);
                     pending.isBodyTooLarge = true;
                 }
             }
             // 全局在途正文预算：与 HTTP/1.1 侧同一口径，只是记账挂在每条流上。
             // 同样必须在收的过程中判——等 END_STREAM 再判，内存已经占住了
-            if (!pending.isHeaderListTooLarge && !pending.isBodyTooLarge && !pending.isBudgetExceeded &&
-                !pending.bodyBudget.growTo(bodyByteCount))
+            if (!pending.isHeaderListTooLarge && !pending.isBodyTooLarge && !pending.isBudgetExceeded && !pending.bodyBudget.growTo(bodyByteCount))
             {
-                LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超出全局在途预算（已占 {} 字节），已停止缓冲并按 503 应答",
-                              receivedData.streamId, m_memoryBudget->reservedByteCount());
+                LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超出全局在途预算（已占 {} 字节），已停止缓冲并按 503 应答", receivedData.streamId,
+                              m_memoryBudget->reservedByteCount());
                 pending.isBudgetExceeded = true;
             }
             if (!pending.isHeaderListTooLarge && !pending.isBodyTooLarge && !pending.isBudgetExceeded)
@@ -639,8 +595,7 @@ namespace AsynGyanis::Net
         std::string errorText;
         if (!m_connection.creditReceivedData(receivedData.streamId, receivedData.flowControlByteCount, &errorText))
         {
-            LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId,
-                          receivedData.flowControlByteCount, errorText);
+            LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId, receivedData.flowControlByteCount, errorText);
         }
     }
 
@@ -682,8 +637,7 @@ namespace AsynGyanis::Net
             }
             // 流式正文的请求在头部收齐那一刻就可以服务：正文由业务边收边读，不等 END_STREAM。
             // 其余请求要等正文收齐（或已判超限/超预算）
-            const bool isReadyToServe = pending.isStreamingBody || pending.isRemoteEndStream || pending.isBodyTooLarge
-                                        || pending.isHeaderListTooLarge || pending.isBudgetExceeded;
+            const bool isReadyToServe = pending.isStreamingBody || pending.isRemoteEndStream || pending.isBodyTooLarge || pending.isHeaderListTooLarge || pending.isBudgetExceeded;
             if (!isReadyToServe)
             {
                 // 对端可能已经 RST 掉了这条流（头收齐、正文没收完就取消）：那样的请求再也不会
@@ -801,7 +755,7 @@ namespace AsynGyanis::Net
             // 摘记录必须在会话循环里做：协程跑完最后一段代码时，它的帧正站在自己那条记录的成员之上
             pending.serveTask.reset();
             const RequestServeOutcome outcome = pending.serveOutcome;
-            it = m_pendingRequests.erase(it);
+            it                                = m_pendingRequests.erase(it);
             if (outcome == RequestServeOutcome::ConnectionUnusable)
             {
                 isConnectionUsable = false;
@@ -891,16 +845,15 @@ namespace AsynGyanis::Net
             co_await drainTick.waitFor(kServeDrainTickInterval);
             if (++drainRound == kServeDrainRoundLimit)
             {
-                LOG_ERROR_FMT("Http2Session: 连接收口已等待 {} 轮仍有 {} 条处理器没跑完，继续等（业务不返回则这条连接不收口）",
-                              drainRound, m_activeServeCount);
+                LOG_ERROR_FMT("Http2Session: 连接收口已等待 {} 轮仍有 {} 条处理器没跑完，继续等（业务不返回则这条连接不收口）", drainRound, m_activeServeCount);
             }
         }
     }
 
     Core::Task<Http2Session::RequestServeOutcome> Http2Session::serveOneRequest(PendingRequest &pending)
     {
-        HttpRequest &request = pending.request;
-        HttpResponse &response = pending.response;
+        HttpRequest        &request  = pending.request;
+        HttpResponse       &response = pending.response;
         const std::uint32_t streamId = pending.streamId;
 
         // 对端取消这条流（RFC 9113 §8.1 的 RST_STREAM CANCEL）不是故障：只记录、计入统计并停掉这一条，
@@ -942,8 +895,7 @@ namespace AsynGyanis::Net
             unsupportedResponse.setStatus(501);
             unsupportedResponse.setBody("CONNECT Protocol Not Implemented");
             static_cast<void>(unsupportedResponse.setHeader("content-type", "text/plain; charset=utf-8"));
-            const RequestServeOutcome unsupportedOutcome =
-                    toRequestServeOutcome(co_await sendResponse(streamId, unsupportedResponse, isHeadRequest));
+            const RequestServeOutcome unsupportedOutcome = toRequestServeOutcome(co_await sendResponse(streamId, unsupportedResponse, isHeadRequest));
             if (unsupportedOutcome == RequestServeOutcome::StreamCancelled)
             {
                 noteStreamCancelled();
@@ -960,14 +912,12 @@ namespace AsynGyanis::Net
             {
                 m_metrics->countBadRequest();
             }
-            LOG_ERROR_FMT("Http2Session: 流 {} 的请求头超出本端上限，已按 431 应答并保持连接可用。request-id {}，路径 {}",
-                          streamId, request.requestId(), request.uri());
+            LOG_ERROR_FMT("Http2Session: 流 {} 的请求头超出本端上限，已按 431 应答并保持连接可用。request-id {}，路径 {}", streamId, request.requestId(), request.uri());
             HttpResponse headerTooLargeResponse;
             headerTooLargeResponse.setStatus(431);
             headerTooLargeResponse.setBody("Request Header Fields Too Large");
             static_cast<void>(headerTooLargeResponse.setHeader("content-type", "text/plain; charset=utf-8"));
-            const RequestServeOutcome headerTooLargeOutcome =
-                    toRequestServeOutcome(co_await sendResponse(streamId, headerTooLargeResponse, isHeadRequest));
+            const RequestServeOutcome headerTooLargeOutcome = toRequestServeOutcome(co_await sendResponse(streamId, headerTooLargeResponse, isHeadRequest));
             if (headerTooLargeOutcome == RequestServeOutcome::StreamCancelled)
             {
                 noteStreamCancelled();
@@ -997,7 +947,7 @@ namespace AsynGyanis::Net
             tooLargeResponse.setBody("Payload Too Large");
             static_cast<void>(tooLargeResponse.setHeader("content-type", "text/plain; charset=utf-8"));
             const Http2ResponseSendStatus tooLargeSendStatus = co_await sendResponse(streamId, tooLargeResponse, isHeadRequest);
-            const RequestServeOutcome tooLargeOutcome = toRequestServeOutcome(tooLargeSendStatus);
+            const RequestServeOutcome     tooLargeOutcome    = toRequestServeOutcome(tooLargeSendStatus);
             if (tooLargeOutcome == RequestServeOutcome::StreamCancelled)
             {
                 noteStreamCancelled();
@@ -1026,7 +976,7 @@ namespace AsynGyanis::Net
             static_cast<void>(overloadedResponse.setHeader("content-type", "text/plain; charset=utf-8"));
             static_cast<void>(overloadedResponse.setHeader("retry-after", "1"));
             const Http2ResponseSendStatus overloadedSendStatus = co_await sendResponse(streamId, overloadedResponse, isHeadRequest);
-            const RequestServeOutcome overloadedOutcome = toRequestServeOutcome(overloadedSendStatus);
+            const RequestServeOutcome     overloadedOutcome    = toRequestServeOutcome(overloadedSendStatus);
             if (overloadedOutcome == RequestServeOutcome::StreamCancelled)
             {
                 noteStreamCancelled();
@@ -1057,11 +1007,9 @@ namespace AsynGyanis::Net
             // 只看首条：这里要的就是那一个声明值，为它构造整列 string 是每条请求一次的多余分配
             const std::optional<std::string> declaredLengthText = request.firstHeaderValue("content-length");
             std::size_t                      declaredLength     = 0;
-            if (declaredLengthText.has_value() && parseContentLengthValue(*declaredLengthText, declaredLength) &&
-                request.body().size() != declaredLength)
+            if (declaredLengthText.has_value() && parseContentLengthValue(*declaredLengthText, declaredLength) && request.body().size() != declaredLength)
             {
-                const RequestServeOutcome mismatchOutcome =
-                        co_await rejectMalformedBodyLength(streamId, declaredLength, request.body().size(), isHeadRequest);
+                const RequestServeOutcome mismatchOutcome = co_await rejectMalformedBodyLength(streamId, declaredLength, request.body().size(), isHeadRequest);
                 if (mismatchOutcome == RequestServeOutcome::StreamCancelled)
                 {
                     noteStreamCancelled();
@@ -1074,11 +1022,8 @@ namespace AsynGyanis::Net
         // ——记录比回调活得久（响应发完才摘记录），因此回调不会指向已销毁的响应。业务调
         // startChunkedResponse()/writeChunk() 时不必知道底层是哪种协议，SseStream 这类建在 writeChunk
         // 之上的工具因此零改动就能在 h2 上工作
-        response.setChunkSender(
-                [this, &response, streamId](const std::string_view segment) -> Core::Task<bool>
-                {
-                    co_return co_await sendStreamingSegment(streamId, response, segment);
-                });
+        response.setChunkSender([this, &response, streamId](const std::string_view segment) -> Core::Task<bool>
+                                { co_return co_await sendStreamingSegment(streamId, response, segment); });
 
         // 流式正文：来源是本流自己的正文缓冲，业务经 request.bodyStream() 边收边读。泵每推进一步
         // 就驱动一次连接（与主循环同一条路径），业务不拉就不驱动——背压的落点，也是「处理器拉一次、
@@ -1092,13 +1037,12 @@ namespace AsynGyanis::Net
                         std::string creditErrorText;
                         if (!m_connection.creditReceivedData(streamId, consumedFlowControlByteCount, &creditErrorText))
                         {
-                            LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", streamId,
-                                          consumedFlowControlByteCount, creditErrorText);
+                            LOG_ERROR_FMT("Http2Session: 归还接收窗口失败（流 {}，{} 字节）：{}", streamId, consumedFlowControlByteCount, creditErrorText);
                         }
                     });
 
-            HttpStreamBody &streamBody       = pending.streamBody;
-            const auto       pumpStreamingBody = [this, &pending, &streamBody]() -> Core::Task<bool>
+            HttpStreamBody &streamBody        = pending.streamBody;
+            const auto      pumpStreamingBody = [this, &pending, &streamBody]() -> Core::Task<bool>
             {
                 // 读通路只有会话循环一个驱动者：本协程不许自己去读一批，只能挂起等它把新字节攒进
                 // streamBody 再叫醒。以前这里是 driveConnectionOnce()——那等于两条协程抢同一条读通路
@@ -1222,12 +1166,11 @@ namespace AsynGyanis::Net
             if (serveOutcome == RequestServeOutcome::StreamCancelled)
             {
                 noteStreamCancelled();
-            }
-            else if (serveOutcome == RequestServeOutcome::StreamFailed)
+            } else if (serveOutcome == RequestServeOutcome::StreamFailed)
             {
                 // 本端的错：不记成对端取消，也不许牵动整条连接，但必须留下一行能定位到路由的日志
-                LOG_ERROR_FMT("Http2Session: 流 {} 的响应未能发出，本端已按 INTERNAL_ERROR 中止这条流。request-id {}，路径 {}。原因：{}",
-                              streamId, request.requestId(), request.uri(), m_connection.lastStreamErrorMessage());
+                LOG_ERROR_FMT("Http2Session: 流 {} 的响应未能发出，本端已按 INTERNAL_ERROR 中止这条流。request-id {}，路径 {}。原因：{}", streamId, request.requestId(),
+                              request.uri(), m_connection.lastStreamErrorMessage());
             }
             co_return serveOutcome;
         }
@@ -1244,7 +1187,7 @@ namespace AsynGyanis::Net
             finishStreamingRequestBody(pending, isStreamBodyTooLarge);
         }
 
-        const int statusCode = response.status();
+        const int                                 statusCode     = response.status();
         const std::chrono::steady_clock::duration requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
         // 流式响应中途出异常时正文只发了一半，落账等于把半成品记成已应答（状态码也不是真实结果），
         // 因此跳过——那条路径已经由上面的错误日志交代（与 h1 侧同一判据）
@@ -1258,8 +1201,8 @@ namespace AsynGyanis::Net
         // 因此能按同一个键对齐。与 HTTP/1.1 侧同口径，同样定为 Debug：它也在每请求热路径上
         if (!request.requestId().empty() && !isTruncatedStreamingResponse)
         {
-            LOG_DEBUG_FMT("Http2Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us", request.requestId(),
-                          request.uri(), statusCode, std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
+            LOG_DEBUG_FMT("Http2Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us", request.requestId(), request.uri(), statusCode,
+                          std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
         }
 
         // 单连接请求上限的判定放在最后：本条响应已经排入待发字节，收尾通告排在它之后
@@ -1267,11 +1210,10 @@ namespace AsynGyanis::Net
         co_return RequestServeOutcome::Served;
     }
 
-    Core::Task<Http2Session::RequestServeOutcome> Http2Session::serveWebSocketTunnel(const std::uint32_t streamId,
-                                                                                    PendingRequest &pending)
+    Core::Task<Http2Session::RequestServeOutcome> Http2Session::serveWebSocketTunnel(const std::uint32_t streamId, PendingRequest &pending)
     {
-        HttpRequest &request = pending.request;
-        HttpResponse &response = pending.response;
+        HttpRequest                                &request         = pending.request;
+        HttpResponse                               &response        = pending.response;
         const std::chrono::steady_clock::time_point tunnelStartTime = std::chrono::steady_clock::now();
 
         // 握手校验：h2 用扩展 CONNECT 代替 Upgrade 头，但版本与 key 两项与 h1 完全一致（同一份实现）
@@ -1279,8 +1221,8 @@ namespace AsynGyanis::Net
         std::string handshakeFailureReason;
         if (!validateWebSocketKeyAndVersion(request, clientKey, &handshakeFailureReason))
         {
-            LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答。request-id {}，路径 {}，原因：{}",
-                          request.requestId(), request.uri(), handshakeFailureReason);
+            LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答。request-id {}，路径 {}，原因：{}", request.requestId(), request.uri(),
+                          handshakeFailureReason);
             response.reset();
             response.setStatus(400);
             response.setBody("Bad WebSocket Handshake");
@@ -1296,27 +1238,23 @@ namespace AsynGyanis::Net
 
         // 扩展协商（RFC 7692 §7.1）：与 h1 侧同一份协商实现，接受时把结论一并写进应答头，
         // 本端随后按同一结论收发压缩帧——回给对端的那一行与本端的收发口径必须是同一个来源
-        const std::optional<std::string> extensionsHeader = request.getHeader(kWebSocketExtensionsHeaderName);
-        const PerMessageDeflateNegotiation deflateNegotiation =
-                negotiatePerMessageDeflate(extensionsHeader.has_value() ? *extensionsHeader : std::string_view{});
+        const std::optional<std::string>   extensionsHeader   = request.getHeader(kWebSocketExtensionsHeaderName);
+        const PerMessageDeflateNegotiation deflateNegotiation = negotiatePerMessageDeflate(extensionsHeader.has_value() ? *extensionsHeader : std::string_view{});
         if (!deflateNegotiation.responseValue.empty())
         {
-            acceptFields.push_back(
-                    {.name = std::string(kWebSocketExtensionsHeaderName), .value = deflateNegotiation.responseValue});
+            acceptFields.push_back({.name = std::string(kWebSocketExtensionsHeaderName), .value = deflateNegotiation.responseValue});
         }
         if (!request.requestId().empty())
         {
             acceptFields.push_back({.name = std::string(kRequestIdHeaderName), .value = std::string(request.requestId())});
         }
-        std::string headersErrorText;
-        const Http2ResponseSendStatus headersStatus =
-                m_connection.sendResponseHeaders(streamId, kWebSocketAcceptedStatusCode, acceptFields, false, &headersErrorText);
+        std::string                   headersErrorText;
+        const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(streamId, kWebSocketAcceptedStatusCode, acceptFields, false, &headersErrorText);
         if (headersStatus != Http2ResponseSendStatus::Sent)
         {
             if (headersStatus != Http2ResponseSendStatus::StreamNotWritable)
             {
-                LOG_ERROR_FMT("Http2Session: 流 {} 的 WebSocket 升级应答未能排入待发字节，该流不会再有响应。原因：{}", streamId,
-                              headersErrorText);
+                LOG_ERROR_FMT("Http2Session: 流 {} 的 WebSocket 升级应答未能排入待发字节，该流不会再有响应。原因：{}", streamId, headersErrorText);
             }
             co_return toRequestServeOutcome(headersStatus);
         }
@@ -1329,8 +1267,7 @@ namespace AsynGyanis::Net
             m_metrics->recordResponse(static_cast<int>(kWebSocketAcceptedStatusCode), std::chrono::steady_clock::now() - tunnelStartTime);
             m_metrics->countWebSocketUpgrade();
         }
-        LOG_DEBUG_FMT("Http2Session: 流 {} 已升级为 WebSocket 隧道（RFC 8441 扩展 CONNECT）。request-id {}，路径 {}", streamId,
-                      request.requestId(), request.uri());
+        LOG_DEBUG_FMT("Http2Session: 流 {} 已升级为 WebSocket 隧道（RFC 8441 扩展 CONNECT）。request-id {}，路径 {}", streamId, request.requestId(), request.uri());
         noteServedRequest();
 
         // 业务写出的帧发成这条流上的 DATA 帧；写失败（流被对端取消、队列到上界或连接不可用）即 false，
@@ -1357,8 +1294,8 @@ namespace AsynGyanis::Net
         WebSocketPeer peer(sendFrameBytes, m_metrics.get());
         peer.setPerMessageDeflateEnabled(deflateNegotiation.accepted);
 
-        bool isBusinessFinished = false;
-        const auto runBusiness = [&isBusinessFinished](WebSocketHandler businessHandler, WebSocketPeer &businessPeer) -> Core::Task<>
+        bool       isBusinessFinished = false;
+        const auto runBusiness        = [&isBusinessFinished](WebSocketHandler businessHandler, WebSocketPeer &businessPeer) -> Core::Task<>
         {
             try
             {
@@ -1386,9 +1323,8 @@ namespace AsynGyanis::Net
         }
 
         std::vector<char> receiveBuffer(kHttp2ReceiveWindowByteCount);
-        bool isRemoteEndStream = false;
-        while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer.isOpen() && isAlive() && isTransportOpen()
-               && !isRemoteEndStream)
+        bool              isRemoteEndStream = false;
+        while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer.isOpen() && isAlive() && isTransportOpen() && !isRemoteEndStream)
         {
             // 隧道阶段没有「半条报文」这一相位：帧与帧之间的间隔就是这条连接的空闲，与 h1 阶段同口径
             refreshIdleDeadline(m_limits->idleTimeout);
@@ -1405,8 +1341,7 @@ namespace AsynGyanis::Net
             {
                 break;
             }
-            if (m_connection.feedBytes(receiveBuffer.data(), static_cast<std::size_t>(receivedLength)) == Http2ConnectionFeedStatus::Failed
-                || m_connection.hasFailed())
+            if (m_connection.feedBytes(receiveBuffer.data(), static_cast<std::size_t>(receivedLength)) == Http2ConnectionFeedStatus::Failed || m_connection.hasFailed())
             {
                 LOG_ERROR_FMT("Http2Session: WebSocket 隧道期间连接层失败，已收口。原因：{}", m_connection.errorMessage());
                 break;
@@ -1434,8 +1369,8 @@ namespace AsynGyanis::Net
                     std::string creditErrorText;
                     if (!m_connection.creditReceivedData(receivedData.streamId, receivedData.flowControlByteCount, &creditErrorText))
                     {
-                        LOG_ERROR_FMT("Http2Session: WebSocket 隧道期间归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId,
-                                      receivedData.flowControlByteCount, creditErrorText);
+                        LOG_ERROR_FMT("Http2Session: WebSocket 隧道期间归还接收窗口失败（流 {}，{} 字节）：{}", receivedData.streamId, receivedData.flowControlByteCount,
+                                      creditErrorText);
                     }
                     continue;
                 }
@@ -1483,7 +1418,7 @@ namespace AsynGyanis::Net
         co_await businessTask;
 
         // 本侧方向到此结束：零长 DATA 带 END_STREAM（对端据此知道隧道的这一半关完了）
-        std::string endStreamErrorText;
+        std::string                   endStreamErrorText;
         const Http2ResponseSendStatus endStatus = m_connection.sendResponseData(streamId, std::string_view{}, true, &endStreamErrorText);
         if (endStatus != Http2ResponseSendStatus::Sent && endStatus != Http2ResponseSendStatus::StreamNotWritable)
         {
@@ -1494,8 +1429,7 @@ namespace AsynGyanis::Net
             co_return RequestServeOutcome::ConnectionUnusable;
         }
         LOG_INFO_FMT("Http2Session: WebSocket 隧道已收尾（流 {}，存活 {}ms）。request-id {}，路径 {}", streamId,
-                     std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tunnelStartTime).count(),
-                     request.requestId(), request.uri());
+                     std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tunnelStartTime).count(), request.requestId(), request.uri());
         co_return RequestServeOutcome::Served;
     }
 
@@ -1514,7 +1448,7 @@ namespace AsynGyanis::Net
             // 明确回 503 而不是把它晾着
             if (pending.isWebSocketTunnel)
             {
-                std::string errorText;
+                std::string                   errorText;
                 const Http2ResponseSendStatus sendStatus = m_connection.sendResponseHeaders(pending.streamId, 503U, {}, true, &errorText);
                 LOG_INFO_FMT("Http2Session: WebSocket 隧道（流 {}）期间收到流 {} 的扩展 CONNECT，已回 503：一条连接上"
                              "同时跑两条隧道需要嵌套驱动循环，本片不做，请对端另开连接",
@@ -1573,9 +1507,9 @@ namespace AsynGyanis::Net
         // 常见情形是「响应自己的头 + 后面补齐的三条」；这里给一个够用的起点，宁可留一点余量，
         // 也不为了算准数量先去把单值视图建出来（那是每次查询都要重建的哈希表）
         headerFields.reserve(8U);
-        bool hasContentTypeHeader = false;
+        bool hasContentTypeHeader   = false;
         bool hasContentLengthHeader = false;
-        bool hasDateHeader = false;
+        bool hasDateHeader          = false;
 
         // 流式响应的正文由各 DATA 帧给出，长度在收尾前未知：content-length 与 DATA 负载总长必须一致
         // （RFC 9113 §8.1.2.6），此刻算不出正确值，因此这条路径一律不写它（h1 的分块模式同样不写）
@@ -1584,69 +1518,63 @@ namespace AsynGyanis::Net
         // 按权威记录的设置顺序逐条取，与 h1 的 appendHead 同一条路径：
         // 先建单值视图再按名回查，既多付一张哈希表，又会因遍历顺序不稳而让同一份响应两次编码给出不同次序
         response.forEachHeaderField(
-            [&](const std::string_view headerName, const std::string_view headerValue)
-            {
-                if (isConnectionSpecificHeaderName(headerName))
+                [&](const std::string_view headerName, const std::string_view headerValue)
                 {
-                    // 业务常按 HTTP/1.1 的习惯设 connection: close；HTTP/2 里它一律非法（§8.2.2），
-                    // 丢掉它而不是让整条响应被连接层拒绝
-                    LOG_DEBUG_FMT("Http2Session: 已丢弃 HTTP/2 禁止的连接特定响应头「{}」", headerName);
-                    return;
-                }
-                if (isStreamingResponse && headerName == kContentLengthHeaderName)
-                {
-                    // 流式模式按 h1 契约本就不该有这条头（startChunkedResponse 已删过一遍）：业务后补的
-                    // 一样丢掉，否则一个恰好等于某段长度的数字会让对端按它定界、把后续 DATA 当多余字节
-                    LOG_DEBUG_FMT("Http2Session: 流式响应的正文长度由 DATA 帧给出，已丢弃 content-length 响应头");
-                    return;
-                }
-                if (response.hasTrailerFields() && headerName == kTrailerHeaderName)
-                {
-                    // 声明按已登记的尾部字段生成（见本函数末尾）：业务自设的那一条若与它并存，对端读到的
-                    // 就是两份可能不一致的承诺——与 h1 的 appendHead 同一条处置
-                    return;
-                }
-                if (headerName == kContentTypeHeaderName)
-                {
-                    hasContentTypeHeader = true;
-                }
-                else if (headerName == kContentLengthHeaderName)
-                {
-                    hasContentLengthHeader = true;
-                }
-                else if (headerName == kDateHeaderName)
-                {
-                    hasDateHeader = true;
-                }
+                    if (isConnectionSpecificHeaderName(headerName))
+                    {
+                        // 业务常按 HTTP/1.1 的习惯设 connection: close；HTTP/2 里它一律非法（§8.2.2），
+                        // 丢掉它而不是让整条响应被连接层拒绝
+                        LOG_DEBUG_FMT("Http2Session: 已丢弃 HTTP/2 禁止的连接特定响应头「{}」", headerName);
+                        return;
+                    }
+                    if (isStreamingResponse && headerName == kContentLengthHeaderName)
+                    {
+                        // 流式模式按 h1 契约本就不该有这条头（startChunkedResponse 已删过一遍）：业务后补的
+                        // 一样丢掉，否则一个恰好等于某段长度的数字会让对端按它定界、把后续 DATA 当多余字节
+                        LOG_DEBUG_FMT("Http2Session: 流式响应的正文长度由 DATA 帧给出，已丢弃 content-length 响应头");
+                        return;
+                    }
+                    if (response.hasTrailerFields() && headerName == kTrailerHeaderName)
+                    {
+                        // 声明按已登记的尾部字段生成（见本函数末尾）：业务自设的那一条若与它并存，对端读到的
+                        // 就是两份可能不一致的承诺——与 h1 的 appendHead 同一条处置
+                        return;
+                    }
+                    if (headerName == kContentTypeHeaderName)
+                    {
+                        hasContentTypeHeader = true;
+                    } else if (headerName == kContentLengthHeaderName)
+                    {
+                        hasContentLengthHeader = true;
+                    } else if (headerName == kDateHeaderName)
+                    {
+                        hasDateHeader = true;
+                    }
 
-                headerFields.push_back(HpackHeaderField{std::string(headerName), std::string(headerValue)});
-            });
+                    headerFields.push_back(HpackHeaderField{std::string(headerName), std::string(headerValue)});
+                });
 
         // 自动补齐与 HttpResponse::appendHead() 同口径：有正文却漏设媒体类型按纯文本下发，
         // 长度按正文实际字节数补，日期缺省补当前时刻
         const std::string_view responseBody = response.body();
         if (!hasContentTypeHeader && !responseBody.empty())
         {
-            headerFields.push_back(HpackHeaderField{.name = std::string(kContentTypeHeaderName),
-                                                    .value = std::string(kDefaultContentTypeValue)});
+            headerFields.push_back(HpackHeaderField{.name = std::string(kContentTypeHeaderName), .value = std::string(kDefaultContentTypeValue)});
         }
         if (!hasContentLengthHeader && !isStreamingResponse && !mustNotDeclareContentLength(response.status()))
         {
-            headerFields.push_back(HpackHeaderField{.name = std::string(kContentLengthHeaderName),
-                                                    .value = std::to_string(responseBody.size())});
+            headerFields.push_back(HpackHeaderField{.name = std::string(kContentLengthHeaderName), .value = std::to_string(responseBody.size())});
         }
         if (!hasDateHeader)
         {
             // 定长文本按秒缓存在线程局部，这里显式构造拥有者（头字段要持有值）
-            headerFields.push_back(HpackHeaderField{.name = std::string(kDateHeaderName),
-                                                    .value = std::string(currentHttpDateText())});
+            headerFields.push_back(HpackHeaderField{.name = std::string(kDateHeaderName), .value = std::string(currentHttpDateText())});
         }
         if (response.hasTrailerFields())
         {
             // 与 h1 同一条承诺：正文之后还会有这些字段（RFC 9110 §6.5.1）。三条出站通路的声明都取自
             // HttpResponse::trailerDeclarationValue()，拼法只有一处，不会出现某一版漏了某个字段名
-            headerFields.push_back(HpackHeaderField{.name = std::string(kTrailerHeaderName),
-                                                    .value = response.trailerDeclarationValue()});
+            headerFields.push_back(HpackHeaderField{.name = std::string(kTrailerHeaderName), .value = response.trailerDeclarationValue()});
         }
         return headerFields;
     }
@@ -1659,16 +1587,12 @@ namespace AsynGyanis::Net
             return trailerFields;
         }
         trailerFields.reserve(4U);
-        response.forEachTrailerField(
-                [&trailerFields](const std::string_view name, const std::string_view value)
-                {
-                    trailerFields.push_back(HpackHeaderField{std::string(name), std::string(value)});
-                });
+        response.forEachTrailerField([&trailerFields](const std::string_view name, const std::string_view value)
+                                     { trailerFields.push_back(HpackHeaderField{std::string(name), std::string(value)}); });
         return trailerFields;
     }
 
-    Core::Task<Http2ResponseSendStatus> Http2Session::sendResponse(const std::uint32_t streamId, const HttpResponse &response,
-                                                                  const bool isHeadRequest)
+    Core::Task<Http2ResponseSendStatus> Http2Session::sendResponse(const std::uint32_t streamId, const HttpResponse &response, const bool isHeadRequest)
     {
         // 状态码越界（HttpResponse::setStatus 不校验取值范围）时由助手改回 500：连接层只接受 100..999，
         // 把越界值原样交出去会让这条流一个字节都发不出去，对端只能等到超时
@@ -1680,15 +1604,13 @@ namespace AsynGyanis::Net
         const bool             isBodyEmpty  = responseBody.empty();
         // 尾部字段随 HEAD 一并省掉：HEAD 的响应按定义没有正文，也就没有「正文之后」（RFC 9110 §9.3.2）。
         // 头部的 trailer 声明仍保留——它描述的是同一条报文若以 GET 请求会带回什么
-        const std::vector<HpackHeaderField> trailerFields = isHeadRequest ? std::vector<HpackHeaderField>{}
-                                                                         : collectResponseTrailerFields(response);
-        const bool hasTrailers = !trailerFields.empty();
+        const std::vector<HpackHeaderField> trailerFields = isHeadRequest ? std::vector<HpackHeaderField>{} : collectResponseTrailerFields(response);
+        const bool                          hasTrailers   = !trailerFields.empty();
 
         std::string errorText;
         // 有尾部头块时收尾不归这里两处：RFC 9113 §7.1 规定尾部头块必须自带 END_STREAM，那么头部与
         // 最后一片 DATA 就都不许带它，否则这条流在尾部字段之前就已经结束了
-        const Http2ResponseSendStatus headersStatus =
-                m_connection.sendResponseHeaders(streamId, wireStatusCode, headerFields, isBodyEmpty && !hasTrailers, &errorText);
+        const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(streamId, wireStatusCode, headerFields, isBodyEmpty && !hasTrailers, &errorText);
         if (headersStatus != Http2ResponseSendStatus::Sent)
         {
             // 对端取消这条流的日志由调用方按结论统一记，这里只管其余失败（连接不可用、用法错误）
@@ -1700,8 +1622,7 @@ namespace AsynGyanis::Net
         }
         if (!isBodyEmpty)
         {
-            const Http2ResponseSendStatus bodyStatus =
-                    m_connection.sendResponseData(streamId, responseBody, !hasTrailers, &errorText);
+            const Http2ResponseSendStatus bodyStatus = m_connection.sendResponseData(streamId, responseBody, !hasTrailers, &errorText);
             if (bodyStatus != Http2ResponseSendStatus::Sent)
             {
                 if (bodyStatus != Http2ResponseSendStatus::StreamNotWritable)
@@ -1725,16 +1646,14 @@ namespace AsynGyanis::Net
         co_return Http2ResponseSendStatus::Sent;
     }
 
-    Core::Task<Http2Session::RequestServeOutcome> Http2Session::rejectMalformedBodyLength(
-            const std::uint32_t streamId, const std::size_t declaredLength, const std::size_t receivedLength,
-            const bool isHeadRequest)
+    Core::Task<Http2Session::RequestServeOutcome> Http2Session::rejectMalformedBodyLength(const std::uint32_t streamId, const std::size_t declaredLength,
+                                                                                          const std::size_t receivedLength, const bool isHeadRequest)
     {
         if (m_metrics != nullptr)
         {
             m_metrics->countBadRequest();
         }
-        LOG_ERROR_FMT("Http2Session: 流 {} 的 content-length 声明 {} 字节、实收 {} 字节，已按 400 + 流错误收口",
-                      streamId, declaredLength, receivedLength);
+        LOG_ERROR_FMT("Http2Session: 流 {} 的 content-length 声明 {} 字节、实收 {} 字节，已按 400 + 流错误收口", streamId, declaredLength, receivedLength);
 
         HttpResponse mismatchResponse;
         mismatchResponse.setStatus(400);
@@ -1743,10 +1662,10 @@ namespace AsynGyanis::Net
 
         // HEAD 的响应不许带正文：头部带 END_STREAM 即收尾，此后流是 closed，那句 MUST 的 RST 发不出去
         // （§5.1）。对端此刻没在等正文，少一个 RST 不影响它判收齐，也不影响它看见这条 400
-        const std::string_view responseBody = isHeadRequest ? std::string_view{} : mismatchResponse.body();
-        std::string            errorText;
-        const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(
-                streamId, 400U, collectResponseHeaderFields(mismatchResponse), responseBody.empty(), &errorText);
+        const std::string_view        responseBody = isHeadRequest ? std::string_view{} : mismatchResponse.body();
+        std::string                   errorText;
+        const Http2ResponseSendStatus headersStatus =
+                m_connection.sendResponseHeaders(streamId, 400U, collectResponseHeaderFields(mismatchResponse), responseBody.empty(), &errorText);
         if (headersStatus != Http2ResponseSendStatus::Sent)
         {
             if (headersStatus != Http2ResponseSendStatus::StreamNotWritable)
@@ -1757,14 +1676,12 @@ namespace AsynGyanis::Net
         }
         if (!responseBody.empty())
         {
-            const Http2ResponseSendStatus bodyStatus =
-                    m_connection.sendResponseData(streamId, responseBody, false, &errorText);
+            const Http2ResponseSendStatus bodyStatus = m_connection.sendResponseData(streamId, responseBody, false, &errorText);
             if (bodyStatus != Http2ResponseSendStatus::Sent)
             {
                 if (bodyStatus != Http2ResponseSendStatus::StreamNotWritable)
                 {
-                    LOG_ERROR_FMT("Http2Session: 流 {} 的 400 响应正文未能排入待发字节，该响应不完整。原因：{}",
-                                  streamId, errorText);
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的 400 响应正文未能排入待发字节，该响应不完整。原因：{}", streamId, errorText);
                 }
                 co_return toRequestServeOutcome(bodyStatus);
             }
@@ -1776,9 +1693,7 @@ namespace AsynGyanis::Net
         }
         // 响应先行、随后重置这条流：RST 是本条 MUST 的落点，400 只是那句 MAY
         std::string abortErrorText;
-        if (!m_connection.abortStream(streamId,
-                                      std::format("请求正文实收 {} 字节，与 content-length 声明的 {} 字节不符（RFC 7540 §8.1.2.6）",
-                                                  receivedLength, declaredLength),
+        if (!m_connection.abortStream(streamId, std::format("请求正文实收 {} 字节，与 content-length 声明的 {} 字节不符（RFC 7540 §8.1.2.6）", receivedLength, declaredLength),
                                       &abortErrorText, Http2ErrorCode::ProtocolError))
         {
             // 发不出去也要把已经排好的 400 交出去：对端至少看得见原因，这条流也不会被当成已受理
@@ -1805,8 +1720,7 @@ namespace AsynGyanis::Net
         return Net::chunkFramePayload(chunkFrame);
     }
 
-    Core::Task<bool> Http2Session::sendStreamingSegment(const std::uint32_t streamId, HttpResponse &response,
-                                                        const std::string_view segment)
+    Core::Task<bool> Http2Session::sendStreamingSegment(const std::uint32_t streamId, HttpResponse &response, const std::string_view segment)
     {
         // HEAD：一段正文都不发（含头部）——头部与 END_STREAM 由 finishStreamingResponse 一起发出，
         // 只发头部不发正文正是 HEAD 的语义
@@ -1829,8 +1743,8 @@ namespace AsynGyanis::Net
             // 真正发出的字段按响应对象现取（HPACK 编码与连接特定头剥离都在下一跳完成）。
             // 不带 END_STREAM：正文段随后还要发，与 h1 侧「头部随首段正文上线」同一时机
             const std::vector<HpackHeaderField> headerFields = collectResponseHeaderFields(response);
-            const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(
-                    streamId, normalizeWireStatusCode(response.status(), streamId), headerFields, false, &errorText);
+            const Http2ResponseSendStatus       headersStatus =
+                    m_connection.sendResponseHeaders(streamId, normalizeWireStatusCode(response.status(), streamId), headerFields, false, &errorText);
             if (headersStatus != Http2ResponseSendStatus::Sent)
             {
                 // 对端取消这条流的日志由 serveOneRequest() 按服务结论统一记，这里只管其余失败
@@ -1854,7 +1768,7 @@ namespace AsynGyanis::Net
 
             // 其余段落是 HttpResponse::writeChunk() 按 h1 分块帧成帧的正文（RFC 9112 §7.1）：HTTP/2 里
             // 没有分块帧这一层（transfer-encoding 属禁止头，RFC 9113 §8.2.2），只把帧里的负载发成 DATA 帧
-            const std::string_view payload = chunkFramePayload(segment);
+            const std::string_view        payload    = chunkFramePayload(segment);
             const Http2ResponseSendStatus bodyStatus = m_connection.sendResponseData(streamId, payload, false, &errorText);
             if (bodyStatus != Http2ResponseSendStatus::Sent)
             {
@@ -1875,12 +1789,11 @@ namespace AsynGyanis::Net
     bool Http2Session::hasSendQueueRoom(const std::uint32_t streamId) const noexcept
     {
         // 两道闸一起判：单流那道挡「一条流卡死」，连接那道挡「每条流各卡一点」——后者是并发流数的乘法
-        return m_connection.pendingResponseByteCount(streamId) <= kStreamingSendQueueLimitByteCount
-               && m_connection.totalPendingResponseByteCount() <= kStreamingSendQueueConnectionLimitByteCount;
+        return m_connection.pendingResponseByteCount(streamId) <= kStreamingSendQueueLimitByteCount &&
+               m_connection.totalPendingResponseByteCount() <= kStreamingSendQueueConnectionLimitByteCount;
     }
 
-    Core::Task<Http2ResponseSendStatus> Http2Session::finishStreamingResponse(const std::uint32_t streamId,
-                                                                             HttpResponse &response, const bool isBodyComplete)
+    Core::Task<Http2ResponseSendStatus> Http2Session::finishStreamingResponse(const std::uint32_t streamId, HttpResponse &response, const bool isBodyComplete)
     {
         // 本侧已判定写不出去：不再重试，也不重复记日志（与 h1 契约一致）
         if (m_isConnectionUnusable)
@@ -1893,8 +1806,7 @@ namespace AsynGyanis::Net
         // 尾部头块反而会让对端多等一帧它没要的字段；业务中途抛异常时正文只发了一半，那些值本来就不
         // 对应发出去的那段正文，补上去等于给对端一个必然对不上的承诺（h1 同一条处置）
         const std::vector<HpackHeaderField> trailerFields =
-                isBodyComplete && !response.isStreamingBodySuppressed() ? collectResponseTrailerFields(response)
-                                                                        : std::vector<HpackHeaderField>{};
+                isBodyComplete && !response.isStreamingBodySuppressed() ? collectResponseTrailerFields(response) : std::vector<HpackHeaderField>{};
         const bool hasTrailers = !trailerFields.empty();
         if (!response.hasSentChunkedHead())
         {
@@ -1902,8 +1814,8 @@ namespace AsynGyanis::Net
             // 对端因此拿到一条没有正文的完整响应，而不是挂在一条永远收不满的消息上；
             // 与 h1 侧「空流式响应补出头部与终止块」是同一个位置。有尾部字段时收尾交给那个尾部头块
             const std::vector<HpackHeaderField> headerFields = collectResponseHeaderFields(response);
-            const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(
-                    streamId, normalizeWireStatusCode(response.status(), streamId), headerFields, !hasTrailers, &errorText);
+            const Http2ResponseSendStatus       headersStatus =
+                    m_connection.sendResponseHeaders(streamId, normalizeWireStatusCode(response.status(), streamId), headerFields, !hasTrailers, &errorText);
             if (headersStatus != Http2ResponseSendStatus::Sent)
             {
                 // 对端取消这条流的日志由 serveOneRequest() 按服务结论统一记，这里只管其余失败
@@ -1960,8 +1872,7 @@ namespace AsynGyanis::Net
         ++m_servedRequestCount;
 
         // 上限为 0 表示不限；已经发过收尾通告就不再重复触发（同一原因只通告一次）
-        if (m_isGoAwaySent || m_limits->maximumRequestsPerConnection == 0 ||
-            m_servedRequestCount < m_limits->maximumRequestsPerConnection)
+        if (m_isGoAwaySent || m_limits->maximumRequestsPerConnection == 0 || m_servedRequestCount < m_limits->maximumRequestsPerConnection)
         {
             return;
         }
@@ -1978,8 +1889,7 @@ namespace AsynGyanis::Net
             LOG_ERROR_FMT("Http2Session: 达到单连接请求上限后未能发出 GOAWAY 收尾通告，连接将按对端关闭或读超时收口。原因：{}", errorText);
             return;
         }
-        LOG_INFO_FMT("Http2Session: 已达到单连接请求上限 {} 条，已发 GOAWAY 收尾通告并不再受理新流",
-                     m_limits->maximumRequestsPerConnection);
+        LOG_INFO_FMT("Http2Session: 已达到单连接请求上限 {} 条，已发 GOAWAY 收尾通告并不再受理新流", m_limits->maximumRequestsPerConnection);
     }
 
     Core::Task<bool> Http2Session::flushOutgoingBytes()
@@ -2015,15 +1925,14 @@ namespace AsynGyanis::Net
         refreshIdleDeadline(m_limits->writeTimeout);
 
         std::string failureReason;
-        bool isSucceeded = false;
+        bool        isSucceeded = false;
         try
         {
             // 一直写到整段出门：TLS 记录层的 asyncSend 允许部分写，截断的帧对端再也找不回边界
             std::size_t writtenByteCount = 0;
             while (writtenByteCount < outgoingBytes.size())
             {
-                const ssize_t writeLength =
-                        co_await transportSend(outgoingBytes.data() + writtenByteCount, outgoingBytes.size() - writtenByteCount);
+                const ssize_t writeLength = co_await transportSend(outgoingBytes.data() + writtenByteCount, outgoingBytes.size() - writtenByteCount);
                 if (writeLength <= 0)
                 {
                     // 对端已在底层关闭（非正值而不是异常）：同样属于传输失败，原因在收尾处补一句
@@ -2045,8 +1954,7 @@ namespace AsynGyanis::Net
             {
                 failureReason = "对端已关闭连接或连接不可用";
             }
-            LOG_ERROR_FMT("Http2Session: 待发字节写出失败，连接已不可用，本条数据未完整发出，请停止继续写并收口连接。原因：{}",
-                          failureReason);
+            LOG_ERROR_FMT("Http2Session: 待发字节写出失败，连接已不可用，本条数据未完整发出，请停止继续写并收口连接。原因：{}", failureReason);
             // 计数挂在翻转上：一条连接至多记一次，之后 flushOutgoingBytes 在入口处短路，不会再进这里
             if (!m_isConnectionUnusable)
             {
@@ -2067,32 +1975,27 @@ namespace AsynGyanis::Net
     bool Http2Session::isSettingsAcknowledgementExpired() const noexcept
     {
         // 限额为 0 表示不设这项保护：既不按 SETTINGS 超时切空闲截止时间，也不按 SETTINGS_TIMEOUT 收口
-        if (m_limits->settingsAcknowledgementTimeout <= std::chrono::milliseconds::zero() ||
-            !m_connection.hasSettingsAwaitingAcknowledgement())
+        if (m_limits->settingsAcknowledgementTimeout <= std::chrono::milliseconds::zero() || !m_connection.hasSettingsAwaitingAcknowledgement())
         {
             return false;
         }
         // 期限从「本端发出 SETTINGS 的时刻」起算：不 ACK 却持续发帧的对端不能把截止时间一轮轮往后推
-        return std::chrono::steady_clock::now() >=
-               m_connection.lastSettingsSentTime() + m_limits->settingsAcknowledgementTimeout;
+        return std::chrono::steady_clock::now() >= m_connection.lastSettingsSentTime() + m_limits->settingsAcknowledgementTimeout;
     }
 
     std::chrono::milliseconds Http2Session::settingsAcknowledgementIdleBudget() const noexcept
     {
         // 该项保护关掉或 SETTINGS 已经被 ACK：交回「不适用」，调用方按常规相位时限刷新
-        if (m_limits->settingsAcknowledgementTimeout <= std::chrono::milliseconds::zero() ||
-            !m_connection.hasSettingsAwaitingAcknowledgement())
+        if (m_limits->settingsAcknowledgementTimeout <= std::chrono::milliseconds::zero() || !m_connection.hasSettingsAwaitingAcknowledgement())
         {
             return std::chrono::milliseconds::zero();
         }
 
-        const std::chrono::steady_clock::time_point deadline =
-                m_connection.lastSettingsSentTime() + m_limits->settingsAcknowledgementTimeout;
+        const std::chrono::steady_clock::time_point deadline = m_connection.lastSettingsSentTime() + m_limits->settingsAcknowledgementTimeout;
         // 剩余时长向上取整到毫秒：向零截断会让清扫协程看到的截止时间比上式的到期时刻早最多 1 毫秒，
         // 落在那一毫秒里的清扫会先关掉连接（它判的是「已到期」），close() 再判 isSettingsAcknowledgementExpired()
         // 就还是「没到期」，SETTINGS_TIMEOUT 的 GOAWAY 因此漏发。向上取整保证清扫只会在到期之后动手
-        const std::chrono::milliseconds remainingTime =
-                std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        const std::chrono::milliseconds remainingTime = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
         // 下限取 1 毫秒：已经过期时也得给出正数，让清扫协程在下一拍收口；0 是「清除截止时间」
         constexpr std::chrono::milliseconds kMinimumIdleBudget{1};
         return std::max(remainingTime, kMinimumIdleBudget);
@@ -2100,18 +2003,16 @@ namespace AsynGyanis::Net
 
     bool Http2Session::queueSettingsTimeoutGoAway()
     {
-        const std::string reason =
-                std::format("对端在 {} 毫秒内没有 ACK 本端 SETTINGS（RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）：本端按该错误码收口连接，"
-                            "请对端在收到 SETTINGS 后回一个 ACK 帧",
-                            m_limits->settingsAcknowledgementTimeout.count());
-        std::string errorText;
+        const std::string reason = std::format("对端在 {} 毫秒内没有 ACK 本端 SETTINGS（RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）：本端按该错误码收口连接，"
+                                               "请对端在收到 SETTINGS 后回一个 ACK 帧",
+                                               m_limits->settingsAcknowledgementTimeout.count());
+        std::string       errorText;
         if (!m_connection.failConnection(Http2ErrorCode::SettingsTimeout, reason, &errorText))
         {
             LOG_ERROR_FMT("Http2Session: 未能按 SETTINGS_TIMEOUT 收口（没有写入任何字节）。原因：{}", errorText);
             return false;
         }
-        LOG_ERROR_FMT("Http2Session: 对端在 {} 毫秒内没有 ACK 本端 SETTINGS，已按 SETTINGS_TIMEOUT 发 GOAWAY 并收口连接",
-                      m_limits->settingsAcknowledgementTimeout.count());
+        LOG_ERROR_FMT("Http2Session: 对端在 {} 毫秒内没有 ACK 本端 SETTINGS，已按 SETTINGS_TIMEOUT 发 GOAWAY 并收口连接", m_limits->settingsAcknowledgementTimeout.count());
         return true;
     }
 

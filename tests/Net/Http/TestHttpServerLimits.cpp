@@ -65,11 +65,9 @@ namespace AsynGyanis::Net
 
         // 反向对照：空闲容忍度之内不该被提前收口（否则下面的断言可能只是「连上就被关」）
         std::string receivedText;
-        EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{200}))
-                << "连接在空闲容忍度之内就被关闭：说明截止时间被设成了立即到期";
+        EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{200})) << "连接在空闲容忍度之内就被关闭：说明截止时间被设成了立即到期";
 
-        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout))
-                << "空闲连接未被清扫协程收口：上界 kWaitTimeout（idleTimeout 400ms + 清扫节拍 50ms）";
+        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout)) << "空闲连接未被清扫协程收口：上界 kWaitTimeout（idleTimeout 400ms + 清扫节拍 50ms）";
         EXPECT_TRUE(receivedText.empty()) << "服务端在空闲连接上发了不该发的字节";
 
         // 会话随之退出：关闭动作确实回到了连接管理器，而不是只关了描述符
@@ -97,11 +95,9 @@ namespace AsynGyanis::Net
 
         // 反向对照：读超时之内不该被提前收口
         std::string receivedText;
-        EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{100}))
-                << "半条请求在读超时之内就被关闭";
+        EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{100})) << "半条请求在读超时之内就被关闭";
 
-        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout))
-                << "半条请求未被读超时收口：上界 kWaitTimeout（readTimeout 300ms + 清扫节拍 30ms）";
+        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout)) << "半条请求未被读超时收口：上界 kWaitTimeout（readTimeout 300ms + 清扫节拍 30ms）";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
 
@@ -133,16 +129,10 @@ namespace AsynGyanis::Net
         LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid()) << "回环连接失败";
         ASSERT_TRUE(client.sendText(makeRequestText("GET /slow HTTP/1.1"), kWaitTimeout)) << "慢请求未能写入";
-        ASSERT_TRUE(waitForCondition(
-                [&handlerStarted]
-                {
-                    return handlerStarted.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "慢路由未在时限内开始处理";
+        ASSERT_TRUE(waitForCondition([&handlerStarted] { return handlerStarted.load(std::memory_order_acquire); }, kWaitTimeout)) << "慢路由未在时限内开始处理";
 
         std::string receivedText;
-        EXPECT_TRUE(client.waitForText(receivedText, "served-slow", kWaitTimeout))
-                << "处理器运行期间连接被清扫掐掉：响应没到达（处理耗时 700ms，readTimeout 只有 200ms）";
+        EXPECT_TRUE(client.waitForText(receivedText, "served-slow", kWaitTimeout)) << "处理器运行期间连接被清扫掐掉：响应没到达（处理耗时 700ms，readTimeout 只有 200ms）";
     }
 
     /**
@@ -170,16 +160,10 @@ namespace AsynGyanis::Net
         LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid()) << "回环连接失败";
         ASSERT_TRUE(client.sendText(makeRequestText("GET /slow HTTP/1.1"), kWaitTimeout)) << "慢请求未能写入";
-        ASSERT_TRUE(waitForCondition(
-                [&handlerStarted]
-                {
-                    return handlerStarted.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "慢路由未在时限内开始处理";
+        ASSERT_TRUE(waitForCondition([&handlerStarted] { return handlerStarted.load(std::memory_order_acquire); }, kWaitTimeout)) << "慢路由未在时限内开始处理";
 
         std::string receivedText;
-        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout))
-                << "处理器超出 writeTimeout 却没收口：上界 kWaitTimeout（writeTimeout 300ms + 清扫节拍 30ms）";
+        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout)) << "处理器超出 writeTimeout 却没收口：上界 kWaitTimeout（writeTimeout 300ms + 清扫节拍 30ms）";
         EXPECT_EQ(receivedText.find("served-slow"), std::string::npos) << "超预算的处理器仍然把响应写了出来";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
     }
@@ -209,13 +193,11 @@ namespace AsynGyanis::Net
         std::string receivedText;
         // 等到正文出现才断言头部：只数状态行会读到半截头部，那时「没有 connection 头」并不成立
         ASSERT_TRUE(client.waitForText(receivedText, "served-hello", kWaitTimeout)) << "第 1 条请求未得到完整响应";
-        EXPECT_EQ(receivedText.find("connection:"), std::string::npos)
-                << "还没到上限就把连接收口了：响应里出现了 connection 头";
+        EXPECT_EQ(receivedText.find("connection:"), std::string::npos) << "还没到上限就把连接收口了：响应里出现了 connection 头";
 
         // 第 2 条：这是达到上限的那一条，响应必须显式声明 close
         ASSERT_TRUE(client.sendText(makeRequestText("GET /hello HTTP/1.1"), kWaitTimeout));
-        EXPECT_TRUE(client.waitForText(receivedText, "connection: close", kWaitTimeout))
-                << "达到请求上限的响应没有带 Connection: close";
+        EXPECT_TRUE(client.waitForText(receivedText, "connection: close", kWaitTimeout)) << "达到请求上限的响应没有带 Connection: close";
         EXPECT_EQ(countStatusLines(receivedText), 2u) << "第 2 条请求没有得到响应";
 
         // 连接随后关闭：客户端读到 EOF 或 reset
@@ -223,8 +205,7 @@ namespace AsynGyanis::Net
 
         // 第 3 条：连接已经在收口，写进去也不会再得到响应（写本身允许失败：对端已关闭）
         client.sendText(makeRequestText("GET /hello HTTP/1.1"), kWaitTimeout);
-        EXPECT_FALSE(client.waitForStatusLines(receivedText, 3, std::chrono::milliseconds{300}))
-                << "上限之后仍然服务了新请求";
+        EXPECT_FALSE(client.waitForStatusLines(receivedText, 3, std::chrono::milliseconds{300})) << "上限之后仍然服务了新请求";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
 
@@ -247,8 +228,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid()) << "回环连接失败";
 
         std::string receivedText;
-        EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{1000}))
-                << "清扫已按节拍 0 关闭，空闲连接却仍被收口";
+        EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{1000})) << "清扫已按节拍 0 关闭，空闲连接却仍被收口";
         EXPECT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器在接受循环期间意外退出";
     }
 
@@ -278,18 +258,12 @@ namespace AsynGyanis::Net
 
         // 与 drain 对齐：必须等处理函数真的进入在途状态再发起优雅关闭，否则 drain 可能在请求被读入
         // 之前就把这条还空闲的连接收掉，用例就不再是「等在途请求」了
-        ASSERT_TRUE(waitForCondition(
-                [&handlerStarted]
-                {
-                    return handlerStarted.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "慢路由未在时限内开始处理：上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&handlerStarted] { return handlerStarted.load(std::memory_order_acquire); }, kWaitTimeout)) << "慢路由未在时限内开始处理：上界 kWaitTimeout";
 
         constexpr std::chrono::milliseconds drainTimeout{4000};
-        const auto                               drainStartTime = std::chrono::steady_clock::now();
+        const auto                          drainStartTime = std::chrono::steady_clock::now();
         ASSERT_TRUE(fixture.drainServer(drainTimeout, kWaitTimeout)) << "drain 未在时限内完成：上界 kWaitTimeout";
-        const std::chrono::milliseconds drainElapsed =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartTime);
+        const std::chrono::milliseconds drainElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartTime);
 
         // 在途请求被等完：完整响应到达客户端，连接随后才关闭
         std::string receivedText;
@@ -298,8 +272,7 @@ namespace AsynGyanis::Net
 
         // 耗时应覆盖处理时间（下界 100ms 留出对齐全过程的开销）且远小于期限：
         // 前者证明它确实等在了在途请求上，后者证明它没有按死期限空等到期
-        EXPECT_GE(drainElapsed, std::chrono::milliseconds{100})
-                << "drain 没有等在在途请求上，耗时仅 " << drainElapsed.count() << "ms（处理耗时 150ms）";
+        EXPECT_GE(drainElapsed, std::chrono::milliseconds{100}) << "drain 没有等在在途请求上，耗时仅 " << drainElapsed.count() << "ms（处理耗时 150ms）";
         EXPECT_LT(drainElapsed, drainTimeout) << "drain 等满了期限：在途请求没被识别为在途工作，耗时 " << drainElapsed.count() << "ms";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
@@ -327,23 +300,16 @@ namespace AsynGyanis::Net
         LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid()) << "回环连接失败";
         ASSERT_TRUE(client.sendText(makeRequestText("GET /slow HTTP/1.1"), kWaitTimeout)) << "慢请求未能写入";
-        ASSERT_TRUE(waitForCondition(
-                [&handlerStarted]
-                {
-                    return handlerStarted.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "慢路由未在时限内开始处理：上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&handlerStarted] { return handlerStarted.load(std::memory_order_acquire); }, kWaitTimeout)) << "慢路由未在时限内开始处理：上界 kWaitTimeout";
 
         constexpr std::chrono::milliseconds drainTimeout{300};
-        const auto                               drainStartTime = std::chrono::steady_clock::now();
+        const auto                          drainStartTime = std::chrono::steady_clock::now();
         ASSERT_TRUE(fixture.drainServer(drainTimeout, kWaitTimeout)) << "drain 未在时限内完成：上界 kWaitTimeout";
-        const std::chrono::milliseconds drainElapsed =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartTime);
+        const std::chrono::milliseconds drainElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartTime);
 
         // 期限附近返回：下界是 drainTimeout（期限从协程自己开始跑起算，只会更晚），上界留一个节拍加唤醒误差
         EXPECT_GE(drainElapsed, drainTimeout) << "drain 在期限之前就返回了，耗时 " << drainElapsed.count() << "ms";
-        EXPECT_LT(drainElapsed, drainTimeout + kDrainReturnSlack)
-                << "drain 远超期限才返回，耗时 " << drainElapsed.count() << "ms（期限 " << drainTimeout.count() << "ms）";
+        EXPECT_LT(drainElapsed, drainTimeout + kDrainReturnSlack) << "drain 远超期限才返回，耗时 " << drainElapsed.count() << "ms（期限 " << drainTimeout.count() << "ms）";
 
         // 连接被强关，且未完成的响应不会被发出去
         std::string receivedText;

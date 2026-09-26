@@ -190,13 +190,13 @@ namespace AsynGyanis::Core
             /// 归还独占标记（抛出去的那一路不持有，因此不需要归还）
             ~ExclusiveUse() noexcept;
 
-            ExclusiveUse(const ExclusiveUse &) = delete;
+            ExclusiveUse(const ExclusiveUse &)            = delete;
             ExclusiveUse &operator=(const ExclusiveUse &) = delete;
-            ExclusiveUse(ExclusiveUse &&) = delete;
-            ExclusiveUse &operator=(ExclusiveUse &&) = delete;
+            ExclusiveUse(ExclusiveUse &&)                 = delete;
+            ExclusiveUse &operator=(ExclusiveUse &&)      = delete;
 
         private:
-            Iocp &m_backend;      ///< 被守护的后端
+            Iocp &m_backend;           ///< 被守护的后端
             bool  m_isAcquired{false}; ///< 本次是否真的拿到了标记（拿到过才要还）
         };
 
@@ -329,28 +329,28 @@ namespace AsynGyanis::Core
         /// 空槽标记（下标表里的哨兵值）。删除只发生在整表重置时，因此探测到空槽即可判定「没有」
         static constexpr std::size_t kEmptyResultSlot = static_cast<std::size_t>(-1);
 
-        Platform::EpollHandle          m_iocp{nullptr};     ///< 完成端口句柄
-        std::vector<OVERLAPPED_ENTRY>  m_entries;           ///< 单次取出的完成通知
-        std::vector<epoll_event>       m_results;           ///< 翻译结果（wait() 的返回值指向它）
+        Platform::EpollHandle         m_iocp{nullptr}; ///< 完成端口句柄
+        std::vector<OVERLAPPED_ENTRY> m_entries;       ///< 单次取出的完成通知
+        std::vector<epoll_event>      m_results;       ///< 翻译结果（wait() 的返回值指向它）
         /// 同一批完成通知的合并索引：data.ptr → m_results 下标，与 m_results 同生命周期。
         /// 用开放寻址的扁平表而不是 unordered_map：后者每插一个键分配一个节点，
         /// 而合并是**每条完成通知**都要走的一步（把同一注册对象两个方向的完成并入一条 epoll_event）
-        std::vector<void *>            m_resultSlotUserData; ///< 槽位的键（内容仅在下标有效时有意义）
-        std::vector<std::size_t>       m_resultSlotIndex;    ///< 槽位的值：m_results 下标，kEmptyResultSlot 为空槽
+        std::vector<void *>      m_resultSlotUserData; ///< 槽位的键（内容仅在下标有效时有意义）
+        std::vector<std::size_t> m_resultSlotIndex;    ///< 槽位的值：m_results 下标，kEmptyResultSlot 为空槽
         /// 本轮真正用过的槽位：一轮通常只有几条完成通知，重置时按这张表逐个清即可——
         /// 整表填充是 16 KB 级别的工作量，比清几条还贵
-        std::vector<std::size_t>       m_usedResultSlots;
-        std::size_t                    m_resultSlotMask{0};  ///< 槽位数 - 1（槽位数恒为 2 的幂）
-        std::unordered_map<int, SocketState *> m_sockets;      ///< 活动注册表：描述符 → 状态
-        std::vector<SocketState *>     m_graveyard;         ///< 已注销但仍有完成通知在队的状态
-        std::vector<SocketState *>     m_pendingRearm;      ///< 需要重新武装的水平触发状态
-        std::vector<SocketState *>     m_pendingArmRetry;   ///< 上一次投递失败、需要重试的状态
-        std::vector<SocketState *>     m_pendingSyntheticReady; ///< 探针投递时撞上硬错误、等下一轮合成成事件的状态
+        std::vector<std::size_t>               m_usedResultSlots;
+        std::size_t                            m_resultSlotMask{0};     ///< 槽位数 - 1（槽位数恒为 2 的幂）
+        std::unordered_map<int, SocketState *> m_sockets;               ///< 活动注册表：描述符 → 状态
+        std::vector<SocketState *>             m_graveyard;             ///< 已注销但仍有完成通知在队的状态
+        std::vector<SocketState *>             m_pendingRearm;          ///< 需要重新武装的水平触发状态
+        std::vector<SocketState *>             m_pendingArmRetry;       ///< 上一次投递失败、需要重试的状态
+        std::vector<SocketState *>             m_pendingSyntheticReady; ///< 探针投递时撞上硬错误、等下一轮合成成事件的状态
         /// 独占标记的持有状态（见 ExclusiveUse）：移动后从「没人持有」重新开始——移动本身就要求
         /// 没有操作在进行，把标记原样搬过去只会让新对象永久卡死
-        std::atomic_flag               m_inUse = ATOMIC_FLAG_INIT;
+        std::atomic_flag m_inUse = ATOMIC_FLAG_INIT;
         /// 此刻正在用后端的线程指纹（线程 id 的哈希 + 1，0 表示没人）：只进报错文本，
         /// 因此存原子量而不是 thread::id——后者读写没有同步就是一次数据竞争，而这里只想要个名字
-        std::atomic<std::uint64_t>     m_inUseByHash{0};
+        std::atomic<std::uint64_t> m_inUseByHash{0};
     };
 } // namespace AsynGyanis::Core

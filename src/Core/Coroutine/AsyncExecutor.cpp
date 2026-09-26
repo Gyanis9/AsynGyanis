@@ -12,19 +12,14 @@ namespace AsynGyanis::Core
         // 调用方会看到一个永远不完成的协程，这种错误几乎无法从现象上定位。
         // 这里更要收紧：工作线程干的是压缩这类纯 CPU 活，按宿主核数起会在配额内直接抢走
         // 事件循环本就不多的 CPU 时间——正是外派压缩想要保护的那一方
-        const std::size_t resolvedWorkerCount =
-                workerCount == 0 ? Platform::CpuAffinity::recommendedWorkerCount() : workerCount;
+        const std::size_t resolvedWorkerCount = workerCount == 0 ? Platform::CpuAffinity::recommendedWorkerCount() : workerCount;
 
         m_workers.reserve(resolvedWorkerCount);
         for (std::size_t index = 0; index < resolvedWorkerCount; ++index)
         {
             // 交给 jthread 一个带停止令牌的入口：停止请求由 jthread 在析构时发出，
             // 线程函数无需自己管理「何时退出」以外的任何同步
-            m_workers.emplace_back(
-                    [this](const std::stop_token &stopToken)
-                    {
-                        workerLoop(stopToken);
-                    });
+            m_workers.emplace_back([this](const std::stop_token &stopToken) { workerLoop(stopToken); });
         }
     }
 
@@ -129,8 +124,7 @@ namespace AsynGyanis::Core
                 task();
             } catch (const std::exception &taskError)
             {
-                LOG_ERROR_EXCEPTION(taskError, "AsyncExecutor: 工作线程的任务闭包抛出，本次提交的协程不会被恢复：{}",
-                                    taskError.what());
+                LOG_ERROR_EXCEPTION(taskError, "AsyncExecutor: 工作线程的任务闭包抛出，本次提交的协程不会被恢复：{}", taskError.what());
             } catch (...)
             {
                 LOG_ERROR_FMT("AsyncExecutor: 工作线程的任务闭包抛出非标准异常，本次提交的协程不会被恢复");

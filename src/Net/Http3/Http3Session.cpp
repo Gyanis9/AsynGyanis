@@ -5,9 +5,9 @@
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/Router.h"
-#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Qpack.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 
 namespace AsynGyanis::Net
 {
@@ -16,11 +16,11 @@ namespace AsynGyanis::Net
         /// HTTP/3 响应里唯一必须由本端补上的头：状态伪头（RFC 9114 §4.3.2）
         constexpr const char *kStatusHeaderName = ":status";
 
-        constexpr const char *kContentTypeHeaderName = "content-type"; ///< 正文媒体类型
+        constexpr const char *kContentTypeHeaderName   = "content-type";   ///< 正文媒体类型
         constexpr const char *kContentLengthHeaderName = "content-length"; ///< 正文长度
-        constexpr const char *kDateHeaderName = "date";                ///< 响应生成时刻
-        constexpr const char *kTrailerHeaderName = "trailer";            ///< 尾部字段声明头（RFC 9110 §6.5.1）
-        constexpr const char *kDefaultContentTypeValue = "text/plain"; ///< 有正文却没设类型时的缺省值
+        constexpr const char *kDateHeaderName          = "date";           ///< 响应生成时刻
+        constexpr const char *kTrailerHeaderName       = "trailer";        ///< 尾部字段声明头（RFC 9110 §6.5.1）
+        constexpr const char *kDefaultContentTypeValue = "text/plain";     ///< 有正文却没设类型时的缺省值
 
         /// 把字符串按字节交给只认「指针 + 长度」的接口，不留零终止的假设
         [[nodiscard]] std::span<const std::uint8_t> asBytes(const std::string_view text) noexcept
@@ -31,7 +31,7 @@ namespace AsynGyanis::Net
         /// 收请求头时给这条流的请求对象预留的头部容量：4 条 / 128 字节够一条典型的 GET，
         /// 比这多就照常按倍扩容。取小值是刻意的——留多了每一份在途请求都要多养一段空缓冲
         constexpr std::size_t kIncomingRequestHeaderFieldGuess = 4U;
-        constexpr std::size_t kIncomingRequestHeaderByteGuess = 128U;
+        constexpr std::size_t kIncomingRequestHeaderByteGuess  = 128U;
 
         /// 100..999 之外（RFC 9110 §15）的状态码不得上线：连接层会拒收这个 :status，
         /// 整条流就此发不出东西，改回 500 至少让对端拿到一份能读的响应
@@ -54,21 +54,19 @@ namespace AsynGyanis::Net
          * @param isStreamingResponse true 表示正文由后续 DATA 逐段给出，此刻算不出长度
          * @return 以 :status 开头的字段行
          */
-        [[nodiscard]] std::vector<QpackHeaderField> collectResponseFieldLines(const std::int64_t streamId,
-                                                                             const HttpResponse &response,
-                                                                             const bool isStreamingResponse)
+        [[nodiscard]] std::vector<QpackHeaderField> collectResponseFieldLines(const std::int64_t streamId, const HttpResponse &response, const bool isStreamingResponse)
         {
             std::vector<QpackHeaderField> fieldLines;
             // 常见情形是「响应自己的头 + 后面补齐的三条」；给一个够用的起点，宁可留一点余量，
             // 也不为了算准数量先去把单值视图建出来（那是每次查询都要重建的哈希表）
             fieldLines.reserve(8U);
 
-            const int              wireStatusCode = normalizeWireStatusCode(response.status(), streamId);
-            const bool             isBodylessStatus = HttpResponse::isBodylessStatusCode(wireStatusCode);
-            const std::string_view responseBody = response.body();
-            bool                   hasContentTypeHeader = false;
+            const int              wireStatusCode         = normalizeWireStatusCode(response.status(), streamId);
+            const bool             isBodylessStatus       = HttpResponse::isBodylessStatusCode(wireStatusCode);
+            const std::string_view responseBody           = response.body();
+            bool                   hasContentTypeHeader   = false;
             bool                   hasContentLengthHeader = false;
-            bool                   hasDateHeader = false;
+            bool                   hasDateHeader          = false;
 
             fieldLines.push_back(QpackHeaderField{.name = std::string(kStatusHeaderName), .value = std::to_string(wireStatusCode)});
 
@@ -76,67 +74,61 @@ namespace AsynGyanis::Net
             // 先建单值视图再按名回查，既多付一张哈希表和每头一个临时 vector，
             // 也让同名多条被按名归组、次序取决于哈希表
             response.forEachHeaderField(
-                [&](const std::string_view headerName, const std::string_view headerValue)
-                {
-                    if (isConnectionSpecificHeaderName(headerName))
+                    [&](const std::string_view headerName, const std::string_view headerValue)
                     {
-                        // h3 禁止连接特定字段（RFC 9114 §4.2）：HttpResponse 按 h1 口径可能带上它们，
-                        // 带上会被对端判成报文格式错误，整条响应作废
-                        LOG_DEBUG_FMT("Http3Session: 流 {} 的响应已丢弃 HTTP/3 禁止的连接特定头「{}」", streamId, headerName);
-                        return;
-                    }
-                    if (isStreamingResponse && headerName == kContentLengthHeaderName)
-                    {
-                        // 流式响应的长度由 DATA 帧的总长给出：这个数字与随后陆续发出的正文对不上，
-                        // 留着反而让对端按它定界、把后面的段当多余字节
-                        LOG_DEBUG_FMT("Http3Session: 流 {} 的流式响应正文长度由 DATA 给出，已丢弃 content-length 响应头", streamId);
-                        return;
-                    }
-                    if (response.hasTrailerFields() && headerName == kTrailerHeaderName)
-                    {
-                        // 声明按已登记的尾部字段生成（见本函数末尾）：两条并存对端读到的就是两份可能
-                        // 不一致的承诺——与 h1 的 appendHead、h2 的采集器同一条处置
-                        return;
-                    }
-                    if (headerName == kContentTypeHeaderName)
-                    {
-                        hasContentTypeHeader = true;
-                    }
-                    else if (headerName == kContentLengthHeaderName)
-                    {
-                        hasContentLengthHeader = true;
-                    }
-                    else if (headerName == kDateHeaderName)
-                    {
-                        hasDateHeader = true;
-                    }
+                        if (isConnectionSpecificHeaderName(headerName))
+                        {
+                            // h3 禁止连接特定字段（RFC 9114 §4.2）：HttpResponse 按 h1 口径可能带上它们，
+                            // 带上会被对端判成报文格式错误，整条响应作废
+                            LOG_DEBUG_FMT("Http3Session: 流 {} 的响应已丢弃 HTTP/3 禁止的连接特定头「{}」", streamId, headerName);
+                            return;
+                        }
+                        if (isStreamingResponse && headerName == kContentLengthHeaderName)
+                        {
+                            // 流式响应的长度由 DATA 帧的总长给出：这个数字与随后陆续发出的正文对不上，
+                            // 留着反而让对端按它定界、把后面的段当多余字节
+                            LOG_DEBUG_FMT("Http3Session: 流 {} 的流式响应正文长度由 DATA 给出，已丢弃 content-length 响应头", streamId);
+                            return;
+                        }
+                        if (response.hasTrailerFields() && headerName == kTrailerHeaderName)
+                        {
+                            // 声明按已登记的尾部字段生成（见本函数末尾）：两条并存对端读到的就是两份可能
+                            // 不一致的承诺——与 h1 的 appendHead、h2 的采集器同一条处置
+                            return;
+                        }
+                        if (headerName == kContentTypeHeaderName)
+                        {
+                            hasContentTypeHeader = true;
+                        } else if (headerName == kContentLengthHeaderName)
+                        {
+                            hasContentLengthHeader = true;
+                        } else if (headerName == kDateHeaderName)
+                        {
+                            hasDateHeader = true;
+                        }
 
-                    fieldLines.push_back(QpackHeaderField{std::string(headerName), std::string(headerValue)});
-                });
+                        fieldLines.push_back(QpackHeaderField{std::string(headerName), std::string(headerValue)});
+                    });
 
             if (!hasContentTypeHeader && !responseBody.empty())
             {
-                fieldLines.push_back(QpackHeaderField{.name = std::string(kContentTypeHeaderName),
-                                                      .value = std::string(kDefaultContentTypeValue)});
+                fieldLines.push_back(QpackHeaderField{.name = std::string(kContentTypeHeaderName), .value = std::string(kDefaultContentTypeValue)});
             }
             // 没有长度对端就只能靠 END_STREAM 定界；1xx/204/304 补出去是让它白等一段正文
             if (!hasContentLengthHeader && !isStreamingResponse && !isBodylessStatus)
             {
-                fieldLines.push_back(QpackHeaderField{.name = std::string(kContentLengthHeaderName),
-                                                      .value = std::to_string(responseBody.size())});
+                fieldLines.push_back(QpackHeaderField{.name = std::string(kContentLengthHeaderName), .value = std::to_string(responseBody.size())});
             }
             if (!hasDateHeader)
             {
                 // 日期视图指向线程内的缓存，下一轮就可能被覆盖：这里必须落一份自己的拷贝
-                fieldLines.push_back(QpackHeaderField{.name = std::string(kDateHeaderName),
-                                                      .value = std::string(currentHttpDateText())});
+                fieldLines.push_back(QpackHeaderField{.name = std::string(kDateHeaderName), .value = std::string(currentHttpDateText())});
             }
             if (response.hasTrailerFields())
             {
                 // 与 h1/h2 同一条承诺：正文之后还有这些字段（RFC 9110 §6.5.1）。三条通路的声明都取自
                 // HttpResponse::trailerDeclarationValue()，拼法只有一处
-                fieldLines.push_back(QpackHeaderField{.name = std::string(kTrailerHeaderName),
-                                                      .value = response.trailerDeclarationValue()});
+                fieldLines.push_back(QpackHeaderField{.name = std::string(kTrailerHeaderName), .value = response.trailerDeclarationValue()});
             }
             return fieldLines;
         }
@@ -156,11 +148,8 @@ namespace AsynGyanis::Net
                 return fieldLines;
             }
             fieldLines.reserve(4U);
-            response.forEachTrailerField(
-                    [&fieldLines](const std::string_view name, const std::string_view value)
-                    {
-                        fieldLines.push_back(QpackHeaderField{std::string(name), std::string(value)});
-                    });
+            response.forEachTrailerField([&fieldLines](const std::string_view name, const std::string_view value)
+                                         { fieldLines.push_back(QpackHeaderField{std::string(name), std::string(value)}); });
             return fieldLines;
         }
 
@@ -174,12 +163,10 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    Http3Session::Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter,
-                               std::shared_ptr<HttpMetricsCollector> metrics, std::shared_ptr<HttpMemoryBudget> memoryBudget,
-                               std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, StreamAborter aborter) :
-        m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_aborter(std::move(aborter)),
-        m_metrics(std::move(metrics)), m_requestIdGenerator(std::move(requestIdGenerator)),
-        m_memoryBudget(std::move(memoryBudget))
+    Http3Session::Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, std::shared_ptr<HttpMetricsCollector> metrics,
+                               std::shared_ptr<HttpMemoryBudget> memoryBudget, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, StreamAborter aborter) :
+        m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_aborter(std::move(aborter)), m_metrics(std::move(metrics)),
+        m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget))
     {
         if (!opener || !m_writer)
         {
@@ -191,32 +178,27 @@ namespace AsynGyanis::Net
         Http3Connection::Callbacks callbacks;
         // 伪头与普通头都从这一路进来：归位（:method/:path/:authority/:protocol）与限额判定都在
         // addRequestHeader 里；尾段的字段由它另落一档，不并进头部
-        callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value,
-                                         const bool isTrailers)
-                                  { addRequestHeader(streamId, std::string(name), std::string(value), isTrailers); };
+        callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value, const bool isTrailers)
+        { addRequestHeader(streamId, std::string(name), std::string(value), isTrailers); };
         // 头块收齐：方法/路径此刻可判，命中流式正文路由或扩展 CONNECT 就在这里提前派发。
         // 尾段也走同一个入口——那条流早已从 m_incomingRequests 搬走，函数自己会判出「已派发过」而什么都不做
-        callbacks.onHeaderBlockReceived = [this](const std::int64_t streamId, bool)
-                                          { beginStreamingRequestIfMatched(streamId); };
+        callbacks.onHeaderBlockReceived = [this](const std::int64_t streamId, bool) { beginStreamingRequestIfMatched(streamId); };
         // 正文段：DATA 载荷的额度何时归还由 addRequestBody 决定（非流式到达即还、流式消费才还）
-        callbacks.onBodyBytes = [this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes)
-                                { addRequestBody(streamId, bytes); };
+        callbacks.onBodyBytes    = [this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes) { addRequestBody(streamId, bytes); };
         callbacks.onRequestEnded = [this](const std::int64_t streamId) { finishRequest(streamId); };
         callbacks.onStreamClosed = [this](const std::int64_t streamId) { dropRequest(streamId); };
         // 该流已被放弃（对端重置、或本端按协议判错）：先把收口信号落到传输层——对端因此立刻知道
         // 这条流不会再有响应，而不是等连接收尾；再按「还没答完」计数、丢掉本会话的状态
         callbacks.onStreamReset = [this](const std::int64_t streamId, const Http3ErrorCode errorCode)
-                                  {
-                                      abortRequestStream(streamId, errorCode);
-                                      noteStreamResetByPeer(streamId);
-                                      dropRequest(streamId);
-                                  };
+        {
+            abortRequestStream(streamId, errorCode);
+            noteStreamResetByPeer(streamId);
+            dropRequest(streamId);
+        };
         // RFC 9114 §4.1.2 允许服务端在重置之前先答一个错误响应，回哪个状态码只有业务层知道
-        callbacks.onMalformedRequest = [this](const std::int64_t streamId, const std::string_view reason)
-                                       { answerMalformedRequest(streamId, reason); };
+        callbacks.onMalformedRequest = [this](const std::int64_t streamId, const std::string_view reason) { answerMalformedRequest(streamId, reason); };
         // 连接级收口（对端 GOAWAY、关键流被关、协议错误）：此后唯一合法的动作是销毁
-        callbacks.onConnectionClosed = [this](const Http3ErrorCode errorCode, const std::string_view reason)
-                                       { markBroken(errorCode, reason); };
+        callbacks.onConnectionClosed = [this](const Http3ErrorCode errorCode, const std::string_view reason) { markBroken(errorCode, reason); };
 
         // 三条本端单向流由连接层自己开（流号来自传输层）、SETTINGS 由它写进控制流、QPACK 两侧由它接上；
         // 接收额度的归还口一并交给它——非 DATA 字节的额度现在在那里还
@@ -290,9 +272,8 @@ namespace AsynGyanis::Net
     {
         // 任一处非空都算「还有事」：正在收的请求、收齐待派发、流式正文的处理器、流式写出的响应、
         // 已建隧道，以及「扩展 CONNECT 已到但隧道还没建」的那两批
-        return !m_incomingRequests.empty() || !m_readyRequests.empty() || !m_streamingRequests.empty() ||
-               !m_streamingResponses.empty() || !m_webSocketTunnels.empty() || !m_pendingTunnelStreams.empty() ||
-               !m_pendingTunnelStreamsEnded.empty();
+        return !m_incomingRequests.empty() || !m_readyRequests.empty() || !m_streamingRequests.empty() || !m_streamingResponses.empty() || !m_webSocketTunnels.empty() ||
+               !m_pendingTunnelStreams.empty() || !m_pendingTunnelStreamsEnded.empty();
     }
 
     void Http3Session::abandonPendingStreams()
@@ -458,8 +439,8 @@ namespace AsynGyanis::Net
             const bool         isHeaderLimitExceeded = m_readyRequests.front().isHeaderLimitExceeded;
             const bool         isUriTooLong          = m_readyRequests.front().isUriTooLong;
             // 四个标记里任何一个为真，这条请求都不交给业务：它按 4xx/503 直接回掉
-            const bool         isRejectedWithoutHandler = isHeaderLimitExceeded || isUriTooLong || isBudgetExceeded || isBodyTooLarge;
-            HttpRequest        request        = std::move(m_readyRequests.front().request);
+            const bool  isRejectedWithoutHandler = isHeaderLimitExceeded || isUriTooLong || isBudgetExceeded || isBodyTooLarge;
+            HttpRequest request                  = std::move(m_readyRequests.front().request);
             // 额度接进本次服务的作用域（而不是留在待派发记录里）：处理器 co_await 期间正文还在内存里，
             // 与 h1「应答写完后归还」、h2「记录摘掉时归还」同口径。记录被 pop 掉时才不会提前还账
             HttpMemoryBudget::Reservation bodyBudget = std::move(m_readyRequests.front().bodyBudget);
@@ -564,9 +545,7 @@ namespace AsynGyanis::Net
                 {
                     m_pendingTunnelStreams.erase(streamId);
                     // 扩展协商要看请求里的原文：这里按值取出去，协程随后会在处理器上挂起
-                    co_await serveWebSocketTunnel(streamId,
-                                                  request.getHeader(kWebSocketExtensionsHeaderName).value_or(std::string{}),
-                                                  response);
+                    co_await serveWebSocketTunnel(streamId, request.getHeader(kWebSocketExtensionsHeaderName).value_or(std::string{}), response);
                     // 隧道这条请求的应答也要落账：h3 按 RFC 9220 以 2xx 应答（没有 101 这一档），
                     // 记的就是那个真实状态码。耗时覆盖整条隧道的在途时长——与 h2 同一口径
                     if (m_metrics != nullptr)
@@ -585,7 +564,7 @@ namespace AsynGyanis::Net
             // 耗时在响应真的排进待发字节之后才取：与 h2 同一相对位置，也免得把收尾这几个调用的
             // 开销漏在账外。两条分支各算一次，日志复用同一个量，不在热路径上多戳时钟
             std::chrono::steady_clock::duration requestElapsed{0};
-            const bool isTruncatedStreamingResponse = response.isChunkedResponse() && handlerException != nullptr;
+            const bool                          isTruncatedStreamingResponse = response.isChunkedResponse() && handlerException != nullptr;
             if (response.isChunkedResponse())
             {
                 // 流式响应：响应头与各块在处理器写的过程中已经出去了，这里只做收尾
@@ -610,8 +589,8 @@ namespace AsynGyanis::Net
             // 因此能按同一个键对齐。与 h1/h2 同口径，同样定为 Debug（每请求热路径）
             if (!request.requestId().empty() && !isTruncatedStreamingResponse)
             {
-                LOG_DEBUG_FMT("Http3Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us", request.requestId(),
-                              request.uri(), response.status(), std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
+                LOG_DEBUG_FMT("Http3Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us", request.requestId(), request.uri(), response.status(),
+                              std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
             }
             // 答完一条就记一笔：单连接请求条数上限靠它触发排空
             noteRequestServed();
@@ -692,8 +671,7 @@ namespace AsynGyanis::Net
         incoming.request.addHeader(name, value);
     }
 
-    void Http3Session::accountHeaderFieldBudget(IncomingRequest &incoming, const std::string_view name,
-                                                const std::string_view value)
+    void Http3Session::accountHeaderFieldBudget(IncomingRequest &incoming, const std::string_view name, const std::string_view value)
     {
         ++incoming.headerFieldCount;
         incoming.headerBlockByteCount += name.size() + value.size();
@@ -706,8 +684,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Http3Session::addTrailerFieldToStream(const std::int64_t streamId, const std::string_view name,
-                                               const std::string_view value)
+    void Http3Session::addTrailerFieldToStream(const std::int64_t streamId, const std::string_view name, const std::string_view value)
     {
         // 落点一：非流式路径。这条流要等 END_STREAM 才派发，记录还在 m_incomingRequests 里
         if (const auto found = m_incomingRequests.find(streamId); found != m_incomingRequests.end())
@@ -761,13 +738,11 @@ namespace AsynGyanis::Net
 
             // 体量越界（与 h1/h2 同口径）：此后到达的字节一律丢弃，响应在服务阶段按 413 发出。
             // 判在收的过程中而不是收齐之后——等 END_STREAM 再判，内存已经占住了
-            if (m_parserLimits.maximumBodySize != 0
-                && streamBody.totalReceivedByteCount() + data.size() > m_parserLimits.maximumBodySize)
+            if (m_parserLimits.maximumBodySize != 0 && streamBody.totalReceivedByteCount() + data.size() > m_parserLimits.maximumBodySize)
             {
                 if (!streamBody.isBodyTooLarge())
                 {
-                    LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限 {} 字节，已停止流式接收并按 413 应答",
-                                  streamId, m_parserLimits.maximumBodySize);
+                    LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限 {} 字节，已停止流式接收并按 413 应答", streamId, m_parserLimits.maximumBodySize);
                     streamBody.markBodyTooLarge();
                 }
             } else
@@ -798,7 +773,7 @@ namespace AsynGyanis::Net
             return;
         }
         IncomingRequest &incoming = incomingEntry->second;
-        incoming.deadline = nextRequestDeadline();
+        incoming.deadline         = nextRequestDeadline();
         if (!incoming.bodyBudget.hasBudget() && m_memoryBudget != nullptr)
         {
             // 头段建记录时还没绑上预算（那时不知道正文多大）：第一口正文到达时把这份共享预算绑上
@@ -808,11 +783,9 @@ namespace AsynGyanis::Net
 
         // 体量越界：只标记与记日志，不再缓冲；此后到达的 DATA 一律丢弃，但窗口照还。
         // 响应在服务阶段统一按 413 发出（与 h1/h2 同一口径）
-        if (!incoming.isBodyTooLarge && m_parserLimits.maximumBodySize != 0
-            && incoming.body.size() + data.size() > m_parserLimits.maximumBodySize)
+        if (!incoming.isBodyTooLarge && m_parserLimits.maximumBodySize != 0 && incoming.body.size() + data.size() > m_parserLimits.maximumBodySize)
         {
-            LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答",
-                          streamId, m_parserLimits.maximumBodySize);
+            LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答", streamId, m_parserLimits.maximumBodySize);
             incoming.isBodyTooLarge = true;
         }
         if (!incoming.isBodyTooLarge && !incoming.isBudgetExceeded)
@@ -882,11 +855,9 @@ namespace AsynGyanis::Net
 
         // 「还没答完」的几种形态：请求已收齐但还没派发、正在收或正在跑（流式正文的处理器挂在
         // m_streamingRequests 上，不在这里面就会漏掉）、流式响应还在写、隧道（含还没建起来的）
-        const bool isStillPending =
-                std::ranges::any_of(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; }) ||
-                m_incomingRequests.contains(streamId) || m_streamingRequests.contains(streamId) ||
-                m_streamingResponses.contains(streamId) || m_webSocketTunnels.contains(streamId) ||
-                m_pendingTunnelStreams.contains(streamId);
+        const bool isStillPending = std::ranges::any_of(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; }) ||
+                                    m_incomingRequests.contains(streamId) || m_streamingRequests.contains(streamId) || m_streamingResponses.contains(streamId) ||
+                                    m_webSocketTunnels.contains(streamId) || m_pendingTunnelStreams.contains(streamId);
         if (isStillPending)
         {
             m_metrics->countStreamCancelled();
@@ -940,8 +911,7 @@ namespace AsynGyanis::Net
 
         for (const std::int64_t streamId: expiredStreamIds)
         {
-            LOG_WARN_FMT("Http3Session: 流 {} 在 readTimeout（{} 毫秒）内没有新的请求字节，本端收口这条流",
-                         streamId, m_serverLimits->readTimeout.count());
+            LOG_WARN_FMT("Http3Session: 流 {} 在 readTimeout（{} 毫秒）内没有新的请求字节，本端收口这条流", streamId, m_serverLimits->readTimeout.count());
             if (m_metrics != nullptr)
             {
                 // 与 413/431 同一类：本端按限额拒绝，不算「对端主动取消」
@@ -973,7 +943,7 @@ namespace AsynGyanis::Net
             // **唤醒本身推到安全点**：被唤醒的业务会接着写响应（那要推正文给连接层），
             // 而本函数是经连接层回调进来的，回调期间重入连接层是未定义行为
             const std::shared_ptr<StreamingResponse> state = streaming->second;
-            state->isStreamClosed = true;
+            state->isStreamClosed                          = true;
             if (const std::coroutine_handle<> waiter = std::exchange(state->spaceWaiter, {}); waiter != nullptr)
             {
                 m_deferredWaiterResumes.push_back(waiter);
@@ -1042,8 +1012,7 @@ namespace AsynGyanis::Net
             return;
         }
         // 同一条流只派发一次：头收齐时已经派发过的，end_stream 再来一次就什么都不做
-        if (m_pendingTunnelStreams.contains(streamId) || m_webSocketTunnels.contains(streamId) ||
-            m_streamingRequests.contains(streamId))
+        if (m_pendingTunnelStreams.contains(streamId) || m_webSocketTunnels.contains(streamId) || m_streamingRequests.contains(streamId))
         {
             return;
         }
@@ -1064,8 +1033,7 @@ namespace AsynGyanis::Net
         {
             // CONNECT 一类可以不带 :path：按根路径交给路由，与 h1/h2 侧「uri 至少是 /」的口径一致
             request.setUri(std::string("/"));
-        }
-        else
+        } else
         {
             // 换缓冲而不是再抄一条：这条 :path 除了当 uri 之外没有第二个读点，抄一遍只是白要一块堆
             request.adoptStagedUri(incoming.path);
@@ -1079,13 +1047,14 @@ namespace AsynGyanis::Net
         }
         noteRequestId(request);
 
-        m_readyRequests.push_back(ReadyRequest{.streamId = streamId, .request = std::move(request),
+        m_readyRequests.push_back(ReadyRequest{.streamId = streamId,
+                                               .request  = std::move(request),
                                                // 额度跟着正文走：这份 body 直到派发完处理器、写出响应才离开内存
-                                               .bodyBudget = std::move(incoming.bodyBudget),
-                                               .isBodyTooLarge = incoming.isBodyTooLarge,
-                                               .isBudgetExceeded = incoming.isBudgetExceeded,
+                                               .bodyBudget            = std::move(incoming.bodyBudget),
+                                               .isBodyTooLarge        = incoming.isBodyTooLarge,
+                                               .isBudgetExceeded      = incoming.isBudgetExceeded,
                                                .isHeaderLimitExceeded = incoming.isHeaderLimitExceeded,
-                                               .isUriTooLong = incoming.isUriTooLong});
+                                               .isUriTooLong          = incoming.isUriTooLong});
         if (isWebSocketTunnelRequest)
         {
             m_pendingTunnelStreams.insert(streamId);
@@ -1102,14 +1071,14 @@ namespace AsynGyanis::Net
         }
 
         // 判定要用的东西先取出来：判定通过后这份记录就要从 m_incomingRequests 里搬走
-        IncomingRequest   &incoming        = found->second;
-        const std::string  methodText      = incoming.method;
-        const std::string  pathText        = incoming.path;
-        const std::string  authorityText   = incoming.authority;
-        const std::string  protocolText    = incoming.protocol;
-        const bool         hasHostHeader   = incoming.hasHostHeader;
-        const HttpMethod   method          = HttpRequest::methodFromString(methodText);
-        const std::string  uri             = pathText.empty() ? std::string("/") : pathText;
+        IncomingRequest  &incoming      = found->second;
+        const std::string methodText    = incoming.method;
+        const std::string pathText      = incoming.path;
+        const std::string authorityText = incoming.authority;
+        const std::string protocolText  = incoming.protocol;
+        const bool        hasHostHeader = incoming.hasHostHeader;
+        const HttpMethod  method        = HttpRequest::methodFromString(methodText);
+        const std::string uri           = pathText.empty() ? std::string("/") : pathText;
 
         // 头收齐、正文还在路上的这一刻回 100（与 h2 同一时机）。扩展 CONNECT 排除在外：
         // 隧道里没有「请求正文」这回事，对端随后发来的是 WebSocket 帧
@@ -1151,13 +1120,14 @@ namespace AsynGyanis::Net
         m_streamingRequests.emplace(streamId, std::move(streamingRequest));
 
         // 消费即还窗口：由 HttpStreamBody 在字节被处理器取走之后回调进来（到达时还就等于没有背压）
-        created.body.reset([this, streamId](const std::size_t consumedFlowControlByteCount)
-                           {
-                               if (m_crediter && consumedFlowControlByteCount != 0)
-                               {
-                                   m_crediter(streamId, consumedFlowControlByteCount);
-                               }
-                           });
+        created.body.reset(
+                [this, streamId](const std::size_t consumedFlowControlByteCount)
+                {
+                    if (m_crediter && consumedFlowControlByteCount != 0)
+                    {
+                        m_crediter(streamId, consumedFlowControlByteCount);
+                    }
+                });
         created.body.setBodyArrivedHandler([this, streamId] { noteBodyProgress(streamId); });
         created.reader.attach(created.body, makeBodyPump(streamId));
         created.request.setBodyStream(&created.reader);
@@ -1241,14 +1211,12 @@ namespace AsynGyanis::Net
         // 结果，记成已应答会把直方图与状态码类一起写脏
         if (m_metrics != nullptr && !(isStreamingHeadSent && handlerException != nullptr))
         {
-            const std::chrono::steady_clock::duration requestElapsed =
-                std::chrono::steady_clock::now() - streamingRequest.requestReceivedAt;
+            const std::chrono::steady_clock::duration requestElapsed = std::chrono::steady_clock::now() - streamingRequest.requestReceivedAt;
             m_metrics->recordResponse(response.status(), requestElapsed);
             if (!streamingRequest.request.requestId().empty())
             {
-                LOG_DEBUG_FMT("Http3Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us（流式正文路由）",
-                              streamingRequest.request.requestId(), streamingRequest.request.uri(), response.status(),
-                              std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
+                LOG_DEBUG_FMT("Http3Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us（流式正文路由）", streamingRequest.request.requestId(),
+                              streamingRequest.request.uri(), response.status(), std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
             }
         }
         if (isRejectedByBodyOverflow)
@@ -1336,8 +1304,7 @@ namespace AsynGyanis::Net
     void Http3Session::reapFinishedTunnels()
     {
         // 业务跑完且流已关闭才摘：业务协程还挂着时销毁记录会连它的协程帧一起毁掉
-        std::erase_if(m_webSocketTunnels,
-                      [](const auto &entry) { return entry.second->isBusinessFinished && entry.second->isStreamClosed; });
+        std::erase_if(m_webSocketTunnels, [](const auto &entry) { return entry.second->isBusinessFinished && entry.second->isStreamClosed; });
     }
 
     void Http3Session::wakeWebSocketTunnels()
@@ -1360,8 +1327,8 @@ namespace AsynGyanis::Net
                 continue;
             }
 
-            WebSocketTunnel &tunnel = *found->second;
-            tunnel.hasPendingFeed    = false;
+            WebSocketTunnel &tunnel   = *found->second;
+            tunnel.hasPendingFeed     = false;
             std::string incomingBytes = std::move(tunnel.pendingIncomingBytes);
             tunnel.pendingIncomingBytes.clear();
             if (incomingBytes.empty())
@@ -1378,8 +1345,7 @@ namespace AsynGyanis::Net
             }
             if (feedStatus == WebSocketFeedStatus::DecodeError)
             {
-                LOG_WARN_FMT("Http3Session: 流 {} 上的 WebSocket 帧解不开（{}），按 {} 收口隧道", streamId, tunnel.peer->decodeErrorText(),
-                             tunnel.peer->decodeErrorCloseCode());
+                LOG_WARN_FMT("Http3Session: 流 {} 上的 WebSocket 帧解不开（{}），按 {} 收口隧道", streamId, tunnel.peer->decodeErrorText(), tunnel.peer->decodeErrorCloseCode());
                 closeTunnel(streamId);
             }
         }
@@ -1423,10 +1389,8 @@ namespace AsynGyanis::Net
 
         auto tunnel     = std::make_unique<WebSocketTunnel>();
         tunnel->handler = response.webSocketHandler();
-        tunnel->peer    = std::make_unique<WebSocketPeer>(
-                [this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
-                { co_return co_await sendTunnelBytes(streamId, frameBytes); },
-                m_metrics.get());
+        tunnel->peer    = std::make_unique<WebSocketPeer>([this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
+                                                          { co_return co_await sendTunnelBytes(streamId, frameBytes); }, m_metrics.get());
         // 协商结论交给对端对象：决定收发两侧是否用 RSV1 压缩帧
         tunnel->peer->setPerMessageDeflateEnabled(deflateNegotiation.accepted);
 
@@ -1437,7 +1401,7 @@ namespace AsynGyanis::Net
         if (const auto pending = m_pendingTunnelBytes.find(streamId); pending != m_pendingTunnelBytes.end())
         {
             created.pendingIncomingBytes = std::move(pending->second);
-            created.hasPendingFeed      = !created.pendingIncomingBytes.empty();
+            created.hasPendingFeed       = !created.pendingIncomingBytes.empty();
             m_pendingTunnelBytes.erase(pending);
         }
 
@@ -1553,8 +1517,7 @@ namespace AsynGyanis::Net
         // 登记升级会产出一条既不是 101 也不是隧道的响应，对端无从处理，因此明确回 500 并留下日志
         if (response.isWebSocketUpgradeRequested())
         {
-            LOG_ERROR_FMT("Http3Session: 流 {} 上的处理器要求 WebSocket 升级，但这条流不是扩展 CONNECT（RFC 9220），已改回 500",
-                          streamId);
+            LOG_ERROR_FMT("Http3Session: 流 {} 上的处理器要求 WebSocket 升级，但这条流不是扩展 CONNECT（RFC 9220），已改回 500", streamId);
             response.reset();
             response.setStatus(500);
             response.setBody("HTTP/3 上的 WebSocket 升级需要扩展 CONNECT 请求（RFC 9220）");
@@ -1564,18 +1527,19 @@ namespace AsynGyanis::Net
     void Http3Session::attachChunkSender(const std::int64_t streamId, HttpResponse &response)
     {
         // 捕获 &response：发送口只在处理器运行期间被调用，而处理器就活在这次路由的栈帧里
-        response.setChunkSender([this, streamId, &response](const std::string_view chunk) -> Core::Task<bool>
-                                {
-                                    // HEAD：响应只有头部，正文段一字节都不发（头部由收尾路径与 END_STREAM
-                                    // 一起发出）。发出去会被对端当成下一条报文的开头
-                                    if (response.isStreamingBodySuppressed())
-                                    {
-                                        co_return true;
-                                    }
-                                    // 这块路径保持「按需建表」：首个写入块发生在状态建立之前，
-                                    // 只查不建会让第一块直接失败（另一条路径——隧道帧——才必须只查不建）
-                                    co_return co_await sendStreamingChunk(streamId, streamingResponseFor(streamId), response, chunk);
-                                });
+        response.setChunkSender(
+                [this, streamId, &response](const std::string_view chunk) -> Core::Task<bool>
+                {
+                    // HEAD：响应只有头部，正文段一字节都不发（头部由收尾路径与 END_STREAM
+                    // 一起发出）。发出去会被对端当成下一条报文的开头
+                    if (response.isStreamingBodySuppressed())
+                    {
+                        co_return true;
+                    }
+                    // 这块路径保持「按需建表」：首个写入块发生在状态建立之前，
+                    // 只查不建会让第一块直接失败（另一条路径——隧道帧——才必须只查不建）
+                    co_return co_await sendStreamingChunk(streamId, streamingResponseFor(streamId), response, chunk);
+                });
     }
 
     std::shared_ptr<Http3Session::StreamingResponse> Http3Session::findStreamingResponse(const std::int64_t streamId) const noexcept
@@ -1615,8 +1579,7 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    Core::Task<bool> Http3Session::sendStreamingChunk(const std::int64_t streamId, std::shared_ptr<StreamingResponse> state,
-                                                     HttpResponse &response, const std::string_view chunk)
+    Core::Task<bool> Http3Session::sendStreamingChunk(const std::int64_t streamId, std::shared_ptr<StreamingResponse> state, HttpResponse &response, const std::string_view chunk)
     {
         // 承载侧的流已经关闭：这一段写不出去，按失败收手
         if (state->isStreamClosed)
@@ -1635,8 +1598,7 @@ namespace AsynGyanis::Net
         co_return co_await pushStreamingResponseBody(streamId, state, chunkFramePayload(chunk));
     }
 
-    Core::Task<bool> Http3Session::pushStreamingResponseBody(const std::int64_t streamId, const std::shared_ptr<StreamingResponse> &state,
-                                                            const std::string_view bytes)
+    Core::Task<bool> Http3Session::pushStreamingResponseBody(const std::int64_t streamId, const std::shared_ptr<StreamingResponse> &state, const std::string_view bytes)
     {
         // 状态不在（流已被重置）或承载侧的流已经关闭：写多少都出不去，直接按失败收手
         if (state == nullptr || state->isStreamClosed || m_connection == nullptr || m_isBroken)
@@ -1683,14 +1645,12 @@ namespace AsynGyanis::Net
         // 「终止块 + 字段段 + 空行」、h2 的尾部头块一一对应
         state->isFinished = true;
         const std::vector<QpackHeaderField> trailerFieldLines =
-                isBodyComplete && !response.isStreamingBodySuppressed() ? collectResponseTrailerFieldLines(response)
-                                                                        : std::vector<QpackHeaderField>{};
+                isBodyComplete && !response.isStreamingBodySuppressed() ? collectResponseTrailerFieldLines(response) : std::vector<QpackHeaderField>{};
         if (!trailerFieldLines.empty())
         {
             if (const auto submitted = m_connection->submitResponseTrailers(streamId, trailerFieldLines); !submitted)
             {
-                handleResponseSubmissionFailure(streamId, "提交响应尾段", submitted.error().message,
-                                                toHttp3ErrorCode(submitted.error().kind));
+                handleResponseSubmissionFailure(streamId, "提交响应尾段", submitted.error().message, toHttp3ErrorCode(submitted.error().kind));
                 return;
             }
             flushPendingStreamData();
@@ -1723,9 +1683,8 @@ namespace AsynGyanis::Net
 
         // 没有正文时交完头就收尾；有正文则头先走（不结束流），紧接一次把整段正文推过去并收尾。
         // 带尾部字段时收尾交给尾段那个帧（RFC 9114 §4.3 里尾段之后什么都不剩），头与正文都不许带 FIN
-        const std::vector<QpackHeaderField> trailerFieldLines =
-                isHeadRequest ? std::vector<QpackHeaderField>{} : collectResponseTrailerFieldLines(response);
-        const bool hasTrailers = !trailerFieldLines.empty();
+        const std::vector<QpackHeaderField> trailerFieldLines = isHeadRequest ? std::vector<QpackHeaderField>{} : collectResponseTrailerFieldLines(response);
+        const bool                          hasTrailers       = !trailerFieldLines.empty();
 
         // 没有正文时交完头就收尾；有正文则头先走（不结束流），紧接一次把整段正文推过去并收尾
         if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, !hasBody && !hasTrailers); !submitted)
@@ -1803,8 +1762,7 @@ namespace AsynGyanis::Net
         // 免得给「带 Expect 却没有正文」的请求凭空塞一个 100。真没声明长度又确实要发正文的对端，
         // 按 RFC 9110 §10.1.1 的兜底走「等自己的 expect 超时后照发」，不会卡死
         std::size_t declaredBodyByteCount = 0;
-        if (!parseContentLengthValue(incoming.request.getHeader("content-length").value_or(std::string{}), declaredBodyByteCount) ||
-            declaredBodyByteCount == 0)
+        if (!parseContentLengthValue(incoming.request.getHeader("content-length").value_or(std::string{}), declaredBodyByteCount) || declaredBodyByteCount == 0)
         {
             LOG_DEBUG_FMT("Http3Session: 流 {} 带 Expect: 100-continue 却没声明正的正文长度，不回 100", streamId);
             return;
@@ -1822,10 +1780,9 @@ namespace AsynGyanis::Net
     void Http3Session::answerMalformedRequest(const std::int64_t streamId, const std::string_view reason)
     {
         // 这条流已经派发过或已经答过就只记日志：一条流只能有一份响应，业务此刻可能正在往里写正文
-        const bool isAlreadyDispatched =
-                m_streamingResponses.contains(streamId) || m_streamingRequests.contains(streamId) ||
-                m_pendingTunnelStreams.contains(streamId) || m_webSocketTunnels.contains(streamId) ||
-                std::ranges::any_of(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; });
+        const bool isAlreadyDispatched = m_streamingResponses.contains(streamId) || m_streamingRequests.contains(streamId) || m_pendingTunnelStreams.contains(streamId) ||
+                                         m_webSocketTunnels.contains(streamId) ||
+                                         std::ranges::any_of(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; });
         if (isAlreadyDispatched || (m_connection != nullptr && m_connection->isLocalStreamFinished(streamId)))
         {
             LOG_WARN_FMT("Http3Session: 流 {} 的请求头部被连接层判为畸形（{}），但该流已派发或已作答，只记日志不再应答", streamId, reason);
@@ -1842,8 +1799,7 @@ namespace AsynGyanis::Net
         dropRequest(streamId);
     }
 
-    void Http3Session::handleResponseSubmissionFailure(const std::int64_t streamId, const char *const what, const std::string_view reason,
-                                                       const Http3ErrorCode errorCode)
+    void Http3Session::handleResponseSubmissionFailure(const std::int64_t streamId, const char *const what, const std::string_view reason, const Http3ErrorCode errorCode)
     {
         if (m_connection == nullptr || m_isBroken)
         {
@@ -1864,8 +1820,7 @@ namespace AsynGyanis::Net
             // 通告的上限、编码器状态不允许）。按本仓既有的本地中止口径收这一条流——RESET_STREAM 加
             // STOP_SENDING，再丢掉本会话记账。原先这里是 markBroken，承载层随之 closeNow 整条 QUIC
             // 连接：一处本端失误把同连接上别人在途的请求一起带走（h2 同一处已收到流级）
-            LOG_ERROR_FMT("Http3Session: 流 {} 的{}未能交出，本端已复位这条流；连接与其它流不受影响。原因：{}",
-                          streamId, what, reason);
+            LOG_ERROR_FMT("Http3Session: 流 {} 的{}未能交出，本端已复位这条流；连接与其它流不受影响。原因：{}", streamId, what, reason);
             abortRequestStream(streamId, errorCode);
             dropRequest(streamId);
             return;

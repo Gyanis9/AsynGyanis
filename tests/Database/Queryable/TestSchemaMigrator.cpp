@@ -103,8 +103,8 @@ namespace
      */
     struct DottedColumnNameRow
     {
-        std::int64_t    id;   ///< 主键列
-        std::string     name; ///< 列名写成 "user.name"，用于验证建表前就被拒
+        std::int64_t id;   ///< 主键列
+        std::string  name; ///< 列名写成 "user.name"，用于验证建表前就被拒
     };
 
 } // namespace
@@ -114,15 +114,15 @@ struct AsynGyanis::Database::Queryable::TableSchema<MigratedAccountRow>
 {
     // 表名与列名都含空格：DDL 与 DML 的引用规则必须一致，否则建出来的表根本查不动
     static constexpr std::string_view kTableName = "migrated accounts";
-    static constexpr auto kColumns = std::tuple{
-        Column(&MigratedAccountRow::id,         "id"),
-        Column(&MigratedAccountRow::name,       "full name"),
-        Column(&MigratedAccountRow::note,       "note text"),
-        Column(&MigratedAccountRow::balance,    "balance"),
-        Column(&MigratedAccountRow::active,     "active"),
-        Column(&MigratedAccountRow::sequence,   "sequence"),
-        Column(&MigratedAccountRow::payload,    "payload bytes"),
-        Column(&MigratedAccountRow::rawPayload, "raw payload"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&MigratedAccountRow::id, "id"),
+            Column(&MigratedAccountRow::name, "full name"),
+            Column(&MigratedAccountRow::note, "note text"),
+            Column(&MigratedAccountRow::balance, "balance"),
+            Column(&MigratedAccountRow::active, "active"),
+            Column(&MigratedAccountRow::sequence, "sequence"),
+            Column(&MigratedAccountRow::payload, "payload bytes"),
+            Column(&MigratedAccountRow::rawPayload, "raw payload"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -131,10 +131,10 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<MigratedUserRow>
 {
     static constexpr std::string_view kTableName = "migrated users";
-    static constexpr auto kColumns = std::tuple{
-        Column(&MigratedUserRow::id,   "id"),
-        Column(&MigratedUserRow::name, "name"),
-        Column(&MigratedUserRow::note, "note"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&MigratedUserRow::id, "id"),
+            Column(&MigratedUserRow::name, "name"),
+            Column(&MigratedUserRow::note, "note"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -143,11 +143,11 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<MigratedBinaryRow>
 {
     static constexpr std::string_view kTableName = "migrated binary";
-    static constexpr auto kColumns = std::tuple{
-        Column(&MigratedBinaryRow::id,         "id"),
-        Column(&MigratedBinaryRow::payload,    "payload"),
-        Column(&MigratedBinaryRow::rawPayload, "raw_payload"),
-        Column(&MigratedBinaryRow::note,       "note"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&MigratedBinaryRow::id, "id"),
+            Column(&MigratedBinaryRow::payload, "payload"),
+            Column(&MigratedBinaryRow::rawPayload, "raw_payload"),
+            Column(&MigratedBinaryRow::note, "note"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -156,8 +156,8 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<BrokenPrimaryKeyRow>
 {
     static constexpr std::string_view kTableName = "broken primary key";
-    static constexpr auto kColumns = std::tuple{
-        Column(&BrokenPrimaryKeyRow::id, "id"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&BrokenPrimaryKeyRow::id, "id"),
     };
     // 大小写不一致：kColumns 里是 "id"，这里写成 "Id"
     static constexpr std::string_view kPrimaryKey = "Id";
@@ -168,8 +168,8 @@ struct AsynGyanis::Database::Queryable::TableSchema<MissingTableNameRow>
 {
     // 显式留空：完全特化不会继承主模板的默认值，忘填表名时建表必须失败而不是生成 "CREATE TABLE """
     static constexpr std::string_view kTableName = "";
-    static constexpr auto kColumns = std::tuple{
-        Column(&MissingTableNameRow::id, "id"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&MissingTableNameRow::id, "id"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -179,8 +179,8 @@ struct AsynGyanis::Database::Queryable::TableSchema<QualifiedTableNameRow>
 {
     // 带库/模式前缀：查询侧会逐段引用成 "shop"."migrated"，而存在性检查只看默认库
     static constexpr std::string_view kTableName = "shop.migrated";
-    static constexpr auto kColumns = std::tuple{
-        Column(&QualifiedTableNameRow::id, "id"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&QualifiedTableNameRow::id, "id"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -189,9 +189,9 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<DottedColumnNameRow>
 {
     static constexpr std::string_view kTableName = "dotted column";
-    static constexpr auto kColumns = std::tuple{
-        Column(&DottedColumnNameRow::id,   "id"),
-        Column(&DottedColumnNameRow::name, "user.name"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&DottedColumnNameRow::id, "id"),
+            Column(&DottedColumnNameRow::name, "user.name"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -221,11 +221,11 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<AutoIncrementTicketRow>
 {
     static constexpr std::string_view kTableName = "generated tickets";
-    static constexpr auto kColumns = std::tuple{
-        Column(&AutoIncrementTicketRow::id,    "id"),
-        Column(&AutoIncrementTicketRow::title, "title"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&AutoIncrementTicketRow::id, "id"),
+            Column(&AutoIncrementTicketRow::title, "title"),
     };
-    static constexpr std::string_view kPrimaryKey               = "id";
+    static constexpr std::string_view kPrimaryKey                = "id";
     static constexpr bool             kIsAutoIncrementPrimaryKey = true;
 };
 
@@ -233,11 +233,11 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<TextKeyAutoIncrementRow>
 {
     static constexpr std::string_view kTableName = "text keyed";
-    static constexpr auto kColumns = std::tuple{
-        Column(&TextKeyAutoIncrementRow::code, "code"),
-        Column(&TextKeyAutoIncrementRow::note, "note"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&TextKeyAutoIncrementRow::code, "code"),
+            Column(&TextKeyAutoIncrementRow::note, "note"),
     };
-    static constexpr std::string_view kPrimaryKey               = "code";
+    static constexpr std::string_view kPrimaryKey                = "code";
     static constexpr bool             kIsAutoIncrementPrimaryKey = true;
 };
 
@@ -254,8 +254,8 @@ namespace
     using AsynGyanis::Database::MySqlDialect;
     using AsynGyanis::Database::PoolConfig;
     using AsynGyanis::Database::PooledConnection;
-    using AsynGyanis::Database::SqlStatement;
     using AsynGyanis::Database::SqliteDialect;
+    using AsynGyanis::Database::SqlStatement;
     using AsynGyanis::Database::Queryable::asc;
     using AsynGyanis::Database::Queryable::Column;
     using AsynGyanis::Database::Queryable::Queryable;
@@ -268,21 +268,20 @@ namespace
 TEST(SchemaMigratorOffline, SqliteCreateTableStatementMapsTypesAndConstraints)
 {
     const SqliteDialect dialect;
-    const SqlStatement   statement = SchemaMigrator::createTableStatement<MigratedAccountRow>(dialect);
+    const SqlStatement  statement = SchemaMigrator::createTableStatement<MigratedAccountRow>(dialect);
 
     // 逐项对照：optional 列不加 NOT NULL，其余列 NOT NULL；主键列加 PRIMARY KEY；
     // 布尔与无符号整数在 SQLite 上都落在 INTEGER（没有对应的独立存储类）；
     // 两种二进制成员拼法（vector<uint8_t> / vector<byte>）都落到 BLOB
-    EXPECT_EQ(statement.sql,
-              "CREATE TABLE IF NOT EXISTS \"migrated accounts\" ("
-              "\"id\" INTEGER NOT NULL PRIMARY KEY, "
-              "\"full name\" TEXT NOT NULL, "
-              "\"note text\" TEXT, "
-              "\"balance\" REAL NOT NULL, "
-              "\"active\" INTEGER NOT NULL, "
-              "\"sequence\" INTEGER NOT NULL, "
-              "\"payload bytes\" BLOB NOT NULL, "
-              "\"raw payload\" BLOB NOT NULL)");
+    EXPECT_EQ(statement.sql, "CREATE TABLE IF NOT EXISTS \"migrated accounts\" ("
+                             "\"id\" INTEGER NOT NULL PRIMARY KEY, "
+                             "\"full name\" TEXT NOT NULL, "
+                             "\"note text\" TEXT, "
+                             "\"balance\" REAL NOT NULL, "
+                             "\"active\" INTEGER NOT NULL, "
+                             "\"sequence\" INTEGER NOT NULL, "
+                             "\"payload bytes\" BLOB NOT NULL, "
+                             "\"raw payload\" BLOB NOT NULL)");
 
     // DDL 不含任何字段值，参数列表必须为空（列定义全是标识符与类型名，没有外部数据）
     EXPECT_TRUE(statement.parameters.empty());
@@ -294,20 +293,19 @@ TEST(SchemaMigratorOffline, SqliteCreateTableStatementMapsTypesAndConstraints)
 TEST(SchemaMigratorOffline, MySqlCreateTableStatementMapsTypesAndConstraints)
 {
     const MySqlDialect dialect;
-    const SqlStatement  statement = SchemaMigrator::createTableStatement<MigratedAccountRow>(dialect);
+    const SqlStatement statement = SchemaMigrator::createTableStatement<MigratedAccountRow>(dialect);
 
     // 与 SQLite 的三处关键差异：反引号引用、整数按位宽分家、无符号整数用 BIGINT UNSIGNED、
     // 布尔用官方惯例的 TINYINT(1)；二进制用 LONGBLOB（上限 4 GiB）
-    EXPECT_EQ(statement.sql,
-              "CREATE TABLE IF NOT EXISTS `migrated accounts` ("
-              "`id` BIGINT NOT NULL PRIMARY KEY, "
-              "`full name` TEXT NOT NULL, "
-              "`note text` TEXT, "
-              "`balance` DOUBLE NOT NULL, "
-              "`active` TINYINT(1) NOT NULL, "
-              "`sequence` BIGINT UNSIGNED NOT NULL, "
-              "`payload bytes` LONGBLOB NOT NULL, "
-              "`raw payload` LONGBLOB NOT NULL)");
+    EXPECT_EQ(statement.sql, "CREATE TABLE IF NOT EXISTS `migrated accounts` ("
+                             "`id` BIGINT NOT NULL PRIMARY KEY, "
+                             "`full name` TEXT NOT NULL, "
+                             "`note text` TEXT, "
+                             "`balance` DOUBLE NOT NULL, "
+                             "`active` TINYINT(1) NOT NULL, "
+                             "`sequence` BIGINT UNSIGNED NOT NULL, "
+                             "`payload bytes` LONGBLOB NOT NULL, "
+                             "`raw payload` LONGBLOB NOT NULL)");
     EXPECT_TRUE(statement.parameters.empty());
 }
 
@@ -318,11 +316,9 @@ TEST(SchemaMigratorOffline, OptionalClausesRespectTheirFlags)
 {
     const SqliteDialect dialect;
 
-    const SqlStatement plainCreate =
-        SchemaMigrator::createTableStatement<MigratedUserRow>(dialect, false);
-    EXPECT_EQ(plainCreate.sql,
-              "CREATE TABLE \"migrated users\" (\"id\" INTEGER NOT NULL PRIMARY KEY, "
-              "\"name\" TEXT NOT NULL, \"note\" TEXT)");
+    const SqlStatement plainCreate = SchemaMigrator::createTableStatement<MigratedUserRow>(dialect, false);
+    EXPECT_EQ(plainCreate.sql, "CREATE TABLE \"migrated users\" (\"id\" INTEGER NOT NULL PRIMARY KEY, "
+                               "\"name\" TEXT NOT NULL, \"note\" TEXT)");
 
     const SqlStatement guardedDrop = SchemaMigrator::dropTableStatement<MigratedUserRow>(dialect);
     EXPECT_EQ(guardedDrop.sql, "DROP TABLE IF EXISTS \"migrated users\"");
@@ -333,8 +329,7 @@ TEST(SchemaMigratorOffline, OptionalClausesRespectTheirFlags)
 
     // MySQL 侧的删表语句同样只差引用符
     const MySqlDialect mySqlDialect;
-    EXPECT_EQ(SchemaMigrator::dropTableStatement<MigratedUserRow>(mySqlDialect).sql,
-              "DROP TABLE IF EXISTS `migrated users`");
+    EXPECT_EQ(SchemaMigrator::dropTableStatement<MigratedUserRow>(mySqlDialect).sql, "DROP TABLE IF EXISTS `migrated users`");
 }
 
 /**
@@ -349,8 +344,7 @@ TEST(SchemaMigratorOffline, InvalidSchemaIsRejectedWithLocalizedReason)
     {
         static_cast<void>(SchemaMigrator::createTableStatement<BrokenPrimaryKeyRow>(dialect));
         FAIL() << "主键列名与任何列名都不一致，应当抛出 std::logic_error";
-    }
-    catch (const std::logic_error &error)
+    } catch (const std::logic_error &error)
     {
         const std::string message = error.what();
         EXPECT_NE(message.find("Id"), std::string::npos) << message;
@@ -358,10 +352,8 @@ TEST(SchemaMigratorOffline, InvalidSchemaIsRejectedWithLocalizedReason)
     }
 
     // 未特化 kTableName：生成 "CREATE TABLE """ 毫无意义，必须在生成之前就失败
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::createTableStatement<MissingTableNameRow>(dialect)),
-                 std::logic_error);
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::dropTableStatement<MissingTableNameRow>(dialect)),
-                 std::logic_error);
+    EXPECT_THROW(static_cast<void>(SchemaMigrator::createTableStatement<MissingTableNameRow>(dialect)), std::logic_error);
+    EXPECT_THROW(static_cast<void>(SchemaMigrator::dropTableStatement<MissingTableNameRow>(dialect)), std::logic_error);
 }
 
 /**
@@ -379,8 +371,7 @@ TEST(SchemaMigratorOffline, SchemaPrefixedTableNameIsRejected)
     {
         static_cast<void>(SchemaMigrator::createTableStatement<QualifiedTableNameRow>(dialect));
         FAIL() << "带前缀的表名应当在生成 DDL 之前就被拒绝";
-    }
-    catch (const std::logic_error &error)
+    } catch (const std::logic_error &error)
     {
         const std::string message = error.what();
         EXPECT_NE(message.find("点号"), std::string::npos) << message;
@@ -388,8 +379,7 @@ TEST(SchemaMigratorOffline, SchemaPrefixedTableNameIsRejected)
     }
 
     // 删表同一判据：只拒建表会留下「建不出来也删不掉」的名字
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::dropTableStatement<QualifiedTableNameRow>(dialect)),
-                 std::logic_error);
+    EXPECT_THROW(static_cast<void>(SchemaMigrator::dropTableStatement<QualifiedTableNameRow>(dialect)), std::logic_error);
 }
 
 /**
@@ -406,8 +396,7 @@ TEST(SchemaMigratorOffline, DottedColumnNameIsRejectedBeforeDdl)
     {
         static_cast<void>(SchemaMigrator::createTableStatement<DottedColumnNameRow>(dialect));
         FAIL() << "列名含点号应当在生成 DDL 之前就被拒绝";
-    }
-    catch (const std::logic_error &error)
+    } catch (const std::logic_error &error)
     {
         const std::string message = error.what();
         EXPECT_NE(message.find("user.name"), std::string::npos) << message;
@@ -436,14 +425,14 @@ namespace
             poolConfiguration.maximumPoolSize = 1;
 
             m_pool = std::make_unique<ConnectionPool>(
-                []()
-                {
-                    auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(":memory:"));
-                    // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
-                    connection->connect();
-                    return connection;
-                },
-                poolConfiguration);
+                    []()
+                    {
+                        auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(":memory:"));
+                        // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
+                        connection->connect();
+                        return connection;
+                    },
+                    poolConfiguration);
         }
 
         std::unique_ptr<ConnectionPool> m_pool; ///< 用例独占的连接池
@@ -470,7 +459,7 @@ TEST_F(SchemaMigratorSqliteTest, CreateTableThenOrmRoundTripThenDrop)
     }
 
     {
-        Queryable<MigratedUserRow> query(*m_pool);
+        Queryable<MigratedUserRow>         query(*m_pool);
         const std::vector<MigratedUserRow> rows = query.orderBy(asc("id")).toList();
 
         ASSERT_EQ(rows.size(), 2U);
@@ -526,15 +515,14 @@ TEST_F(SchemaMigratorSqliteTest, BinaryColumnsRoundTripAndAreStoredAsRealBlob)
     // 顺带验证零长载荷没有被绑成 SQL NULL——列是 NOT NULL，绑成 NULL 会直接插入失败
     {
         PooledConnection                      connection  = m_pool->acquire();
-        const std::unique_ptr<DatabaseResult> storedTypes = connection->execute(
-                "SELECT typeof(payload), typeof(raw_payload) FROM \"migrated binary\" WHERE id = 2");
+        const std::unique_ptr<DatabaseResult> storedTypes = connection->execute("SELECT typeof(payload), typeof(raw_payload) FROM \"migrated binary\" WHERE id = 2");
         ASSERT_NE(storedTypes, nullptr) << connection->lastError();
         ASSERT_TRUE(storedTypes->next());
 
-        const auto payloadTypeValue = storedTypes->getValue(std::size_t{0});
-        const auto rawTypeValue     = storedTypes->getValue(std::size_t{1});
-        const auto *payloadType = std::get_if<std::string>(&payloadTypeValue);
-        const auto *rawType     = std::get_if<std::string>(&rawTypeValue);
+        const auto  payloadTypeValue = storedTypes->getValue(std::size_t{0});
+        const auto  rawTypeValue     = storedTypes->getValue(std::size_t{1});
+        const auto *payloadType      = std::get_if<std::string>(&payloadTypeValue);
+        const auto *rawType          = std::get_if<std::string>(&rawTypeValue);
         ASSERT_NE(payloadType, nullptr) << "typeof(payload) 不是文本类型";
         ASSERT_NE(rawType, nullptr) << "typeof(raw_payload) 不是文本类型";
         EXPECT_EQ(*payloadType, "blob");
@@ -558,8 +546,7 @@ TEST_F(SchemaMigratorSqliteTest, BinaryColumnsRoundTripAndAreStoredAsRealBlob)
 
     // 按二进制列做条件查询：这条路径走的是 QueryNode::ParameterValue → convertParameter，
     // 与写入路径是两套变体，只接通其中一条不会让这里通过
-    const std::vector<MigratedBinaryRow> matched =
-        query.where(Column(&MigratedBinaryRow::payload, "payload") == payload).toList();
+    const std::vector<MigratedBinaryRow> matched = query.where(Column(&MigratedBinaryRow::payload, "payload") == payload).toList();
     ASSERT_EQ(matched.size(), 1U);
     EXPECT_EQ(matched[0].id, 1);
     EXPECT_EQ(matched[0].payload, payload);
@@ -658,8 +645,7 @@ TEST(SchemaMigratorOffline, NonIntegerAutoIncrementPrimaryKeyIsRejectedBeforeDdl
     try
     {
         static_cast<void>(SchemaMigrator::createTableStatement<TextKeyAutoIncrementRow>(sqlite));
-    }
-    catch (const std::logic_error &caught)
+    } catch (const std::logic_error &caught)
     {
         reasonText = caught.what();
     }
@@ -678,8 +664,8 @@ TEST_F(SchemaMigratorSqliteTest, AutoIncrementPrimaryKeyIsGeneratedAndReadBack)
     ASSERT_TRUE((SchemaMigrator::createTable<AutoIncrementTicketRow>(*m_pool, true, &errorText))) << errorText;
 
     Queryable<AutoIncrementTicketRow> query(*m_pool);
-    const std::int64_t firstId = query.insertAndGetGeneratedId(AutoIncrementTicketRow{0, "第一张"});
-    const std::int64_t secondId = query.insertAndGetGeneratedId(AutoIncrementTicketRow{7, "第二张"});
+    const std::int64_t                firstId  = query.insertAndGetGeneratedId(AutoIncrementTicketRow{0, "第一张"});
+    const std::int64_t                secondId = query.insertAndGetGeneratedId(AutoIncrementTicketRow{7, "第二张"});
 
     // 主键字段被忽略：第二条虽然填了 7，生成的仍是紧接着的下一个标识
     EXPECT_EQ(firstId, 1);

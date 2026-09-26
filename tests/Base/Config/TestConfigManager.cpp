@@ -6,8 +6,6 @@
 
 #include "Base/Config/ConfigManager.h"
 
-#include "TestHelpers.h"
-#include "BaseTestSupport.h"
 #include "Base/Config/ConfigLoadResult.h"
 #include "Base/Config/ConfigSchema.h"
 #include "Base/Config/ConfigValue.h"
@@ -17,7 +15,9 @@
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
+#include "BaseTestSupport.h"
 #include "Platform/FileSystem/FileSystem.h"
+#include "TestHelpers.h"
 
 #include <gtest/gtest.h>
 
@@ -85,11 +85,7 @@ namespace AsynGyanis::Base
          */
         bool anyEntryContains(const std::vector<std::string> &entries, const std::string &needle)
         {
-            return std::any_of(entries.begin(), entries.end(),
-                               [&needle](const std::string &entry)
-                               {
-                                   return textContains(entry, needle);
-                               });
+            return std::any_of(entries.begin(), entries.end(), [&needle](const std::string &entry) { return textContains(entry, needle); });
         }
 
         /**
@@ -131,10 +127,10 @@ namespace AsynGyanis::Base
             }
 
         private:
-            std::mutex              m_mutex;            ///< 保护下面两个标记
-            std::condition_variable m_condition;        ///< 报到与放行的唤醒通道
-            bool                    m_isEntered{false}; ///< 是否已有写入停在闸口里
-            bool                    m_isReleased{false};///< 是否已放行
+            std::mutex              m_mutex;             ///< 保护下面两个标记
+            std::condition_variable m_condition;         ///< 报到与放行的唤醒通道
+            bool                    m_isEntered{false};  ///< 是否已有写入停在闸口里
+            bool                    m_isReleased{false}; ///< 是否已放行
         };
 
         /**
@@ -183,8 +179,7 @@ namespace AsynGyanis::Base
              * @param loaderThread 跑加载的线程（可以尚未启动）
              * @param setterThread 跑 setValue 的线程（可以尚未启动）
              */
-            GateCleanup(LogWriteGate &gate, std::thread &loaderThread, std::thread &setterThread) :
-                m_gate(gate), m_loaderThread(loaderThread), m_setterThread(setterThread)
+            GateCleanup(LogWriteGate &gate, std::thread &loaderThread, std::thread &setterThread) : m_gate(gate), m_loaderThread(loaderThread), m_setterThread(setterThread)
             {
             }
 
@@ -208,9 +203,9 @@ namespace AsynGyanis::Base
             GateCleanup &operator=(const GateCleanup &) = delete;
 
         private:
-            LogWriteGate &m_gate;          ///< 要放行的闸口
-            std::thread  &m_loaderThread;  ///< 要接回的加载线程
-            std::thread  &m_setterThread;  ///< 要接回的写入线程
+            LogWriteGate &m_gate;         ///< 要放行的闸口
+            std::thread  &m_loaderThread; ///< 要接回的加载线程
+            std::thread  &m_setterThread; ///< 要接回的写入线程
         };
 
         /**
@@ -274,8 +269,8 @@ namespace AsynGyanis::Base
         class RootSinkScope
         {
         public:
-            RootSinkScope()                        = default;
-            RootSinkScope(const RootSinkScope &)   = delete;
+            RootSinkScope()                                 = default;
+            RootSinkScope(const RootSinkScope &)            = delete;
             RootSinkScope &operator=(const RootSinkScope &) = delete;
 
             ~RootSinkScope()
@@ -354,9 +349,9 @@ namespace AsynGyanis::Base
          *          「新增了文件」与「改写了已有文件」两种情况。
          * @return std::vector<std::pair<std::string, std::string> > 相对路径与文件文本
          */
-        [[nodiscard]] std::vector<std::pair<std::string, std::string> > directoryFileSnapshot() const
+        [[nodiscard]] std::vector<std::pair<std::string, std::string>> directoryFileSnapshot() const
         {
-            std::vector<std::pair<std::string, std::string> > snapshot;
+            std::vector<std::pair<std::string, std::string>> snapshot;
 
             std::error_code errorCode;
             for (const auto &entry: std::filesystem::recursive_directory_iterator(directory(), errorCode))
@@ -516,8 +511,7 @@ port: 9090
         EXPECT_FALSE(result.success) << "带点号的键必须让这次加载失败";
         EXPECT_EQ(result.failedFiles.size(), 1U);
         EXPECT_TRUE(configuration().getBool("kept", false)) << "没问题的那份文件应当照常提交";
-        EXPECT_EQ(configuration().getInt("alpha", -1), -1)
-                << "失败文件里「已经展开」的那半份键跟着提交了：契约说失败的键要从快照中消失";
+        EXPECT_EQ(configuration().getInt("alpha", -1), -1) << "失败文件里「已经展开」的那半份键跟着提交了：契约说失败的键要从快照中消失";
     }
 
     /**
@@ -528,7 +522,7 @@ port: 9090
      */
     TEST_F(ConfigManagerTest, LoadFilesDoesNotCommitHalfFlattenedFailedFile)
     {
-        const std::filesystem::path goodFile   = writeFile("good.yaml", "kept: true\n");
+        const std::filesystem::path goodFile = writeFile("good.yaml", "kept: true\n");
         // 对象按键名排序展开：alpha 先落进临时表，随后 "bad.key" 才让这份文件判失败
         const std::filesystem::path brokenFile = writeFile("broken.json", R"({"alpha": 1, "bad.key": 2})");
 
@@ -538,8 +532,7 @@ port: 9090
         EXPECT_EQ(result.failedFiles.size(), 1U);
         EXPECT_EQ(result.loadedFiles.size(), 1U);
         EXPECT_TRUE(configuration().getBool("kept", false)) << "没问题的那份文件应当照常提交";
-        EXPECT_EQ(configuration().getInt("alpha", -1), -1)
-                << "loadFiles 把失败文件已展开的那半份键跟着提交了";
+        EXPECT_EQ(configuration().getInt("alpha", -1), -1) << "loadFiles 把失败文件已展开的那半份键跟着提交了";
     }
 
     /**
@@ -615,15 +608,13 @@ port: 9090
         static constexpr std::string_view missingNameUtf8 = "没这个文件-🐳.yaml";
 
         // 绕开夹具的 writeFile：它按窄串拼路径，创建与断言会同过一次代码页而互相掩护
-        const std::filesystem::path brokenPath =
-                directory() / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{brokenNameUtf8});
+        const std::filesystem::path brokenPath = directory() / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{brokenNameUtf8});
         {
             std::ofstream output(brokenPath);
             ASSERT_TRUE(output.is_open());
             output << "server:\n  port: 1\n   bad-indent: [unclosed\n";
         }
-        const std::filesystem::path missingPath =
-                directory() / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{missingNameUtf8});
+        const std::filesystem::path missingPath = directory() / AsynGyanis::Platform::FileSystem::pathFromUtf8(std::string{missingNameUtf8});
 
         ConfigLoadResult broken;
         ASSERT_NO_THROW(broken = configuration().loadFiles({brokenPath}));
@@ -705,8 +696,7 @@ port: 9090
 
         EXPECT_TRUE(reloaded.success);
         EXPECT_TRUE(configuration().has("root")) << "顶层的键不该丢";
-        EXPECT_FALSE(configuration().has("group.depth"))
-                << "reload() 把非递归的加载改成了递归：凭空多出子目录里的键";
+        EXPECT_FALSE(configuration().has("group.depth")) << "reload() 把非递归的加载改成了递归：凭空多出子目录里的键";
     }
 
     /**
@@ -730,8 +720,7 @@ port: 9090
 
         EXPECT_TRUE(reloaded.success);
         EXPECT_TRUE(configuration().has("root")) << "顶层的键不该丢";
-        EXPECT_FALSE(configuration().has("group.depth"))
-                << "loadFiles() 复用了同一个锚点目录，却把它的递归口径改成了 true";
+        EXPECT_FALSE(configuration().has("group.depth")) << "loadFiles() 复用了同一个锚点目录，却把它的递归口径改成了 true";
     }
 
     /**
@@ -754,8 +743,7 @@ port: 9090
 
         EXPECT_TRUE(reloaded.success);
         EXPECT_TRUE(configuration().has("other.name")) << "新锚点目录自己的文件要读得到";
-        EXPECT_TRUE(configuration().has("deep.value"))
-                << "新锚点没有历史口径可沿用，应当按默认的递归重扫，把子目录一起收进来";
+        EXPECT_TRUE(configuration().has("deep.value")) << "新锚点没有历史口径可沿用，应当按默认的递归重扫，把子目录一起收进来";
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryIgnoresFilesWithUnsupportedSuffix)
@@ -848,19 +836,12 @@ port: 9090
         EXPECT_FALSE(result.success);
         EXPECT_FALSE(result.failedFiles.empty()) << "深嵌套的 JSON 没被当成一次失败的加载";
         // failedFiles 里给的是路径，按名字片段核对即可（报错点名要准：坏的只有 abyss.json 那一份）
-        const bool onlyTheAbyssFileFailed = std::ranges::any_of(result.failedFiles,
-                                                                [](const std::string &failedFile)
-                                                                {
-                                                                    return failedFile.find("abyss.json") != std::string::npos;
-                                                                })
-                                            && result.failedFiles.size() == 1U;
+        const bool onlyTheAbyssFileFailed =
+                std::ranges::any_of(result.failedFiles, [](const std::string &failedFile) { return failedFile.find("abyss.json") != std::string::npos; }) &&
+                result.failedFiles.size() == 1U;
         EXPECT_TRUE(onlyTheAbyssFileFailed);
         // 失败原因里要能看出是哪份文件，调用方才知道去哪儿修
-        const bool mentionsTheOffendingFile = std::ranges::any_of(result.errors,
-                                                                  [](const std::string &error)
-                                                                  {
-                                                                      return error.find("abyss.json") != std::string::npos;
-                                                                  });
+        const bool mentionsTheOffendingFile = std::ranges::any_of(result.errors, [](const std::string &error) { return error.find("abyss.json") != std::string::npos; });
         EXPECT_TRUE(mentionsTheOffendingFile) << "错误文案没点名那份文件，全中文也白搭";
 
         // 拒绝而不是一起带走：同目录那份正常文件的关键照常可读
@@ -887,28 +868,22 @@ port: 9090
         EXPECT_FALSE(result.failedFiles.empty()) << "深嵌套的 YAML 被当成了成功";
         EXPECT_TRUE(configuration().has("k.k.k")) << "同目录那份正常文件没读进来，说明失败的原因不是嵌套深度";
         EXPECT_EQ(configuration().getInt("k.k.k", 0), 1);
-        const bool mentionsTheOffendingFile = std::ranges::any_of(result.errors,
-                                                                  [](const std::string &error)
-                                                                  {
-                                                                      return error.find("abyss.yaml") != std::string::npos;
-                                                                  });
+        const bool mentionsTheOffendingFile = std::ranges::any_of(result.errors, [](const std::string &error) { return error.find("abyss.yaml") != std::string::npos; });
         EXPECT_TRUE(mentionsTheOffendingFile) << "错误文案没点名那份文件";
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryFlattensNestedMapsIntoDottedKeys)
     {
-        writeFile("deep.yaml",
-                  "database:\n"
-                  "  mysql:\n"
-                  "    host: db.local\n"
-                  "    port: 3306\n"
-                  "  redis:\n"
-                  "    port: 6379\n");
+        writeFile("deep.yaml", "database:\n"
+                               "  mysql:\n"
+                               "    host: db.local\n"
+                               "    port: 3306\n"
+                               "  redis:\n"
+                               "    port: 6379\n");
 
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        EXPECT_EQ(configuration().keys(),
-                  (std::vector<std::string>{"database.mysql.host", "database.mysql.port", "database.redis.port"}));
+        EXPECT_EQ(configuration().keys(), (std::vector<std::string>{"database.mysql.host", "database.mysql.port", "database.redis.port"}));
         EXPECT_EQ(configuration().get<std::string>("database.mysql.host", "missing"), "db.local");
         EXPECT_EQ(configuration().getInt("database.redis.port", 0), 6379);
         // 中间层节点被展开后不再以单独键存在
@@ -1028,14 +1003,13 @@ port: 9090
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryReadsNestedKeysFromJsonFile)
     {
-        writeFile("app.json",
-                  "{\n"
-                  "  \"server\": {\"host\": \"localhost\", \"port\": 8080},\n"
-                  "  \"debug\": true,\n"
-                  "  \"ratio\": 1.25,\n"
-                  "  \"missing\": null,\n"
-                  "  \"list\": [\"a\", \"b\"]\n"
-                  "}\n");
+        writeFile("app.json", "{\n"
+                              "  \"server\": {\"host\": \"localhost\", \"port\": 8080},\n"
+                              "  \"debug\": true,\n"
+                              "  \"ratio\": 1.25,\n"
+                              "  \"missing\": null,\n"
+                              "  \"list\": [\"a\", \"b\"]\n"
+                              "}\n");
 
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
 
@@ -1111,30 +1085,29 @@ port: 9090
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryInfersYamlScalarTypes)
     {
-        writeFile("types.yaml",
-                  "boolTrue: true\n"
-                  "boolFalse: false\n"
-                  "textYes: yes\n"
-                  "textNo: no\n"
-                  "textOn: on\n"
-                  "textOff: off\n"
-                  "intPositive: 12345\n"
-                  "intNegative: -9876\n"
-                  "intZero: 0\n"
-                  "doublePlain: 3.5\n"
-                  "textPlain: hello_world\n"
-                  "textQuotedNumber: \"12345\"\n"
-                  "textDottedVersion: 1.2.3\n"
-                  "textEmptyQuoted: \"\"\n"
-                  "nullExplicit: null\n"
-                  "nullTilde: ~\n"
-                  "nullOmitted:\n");
+        writeFile("types.yaml", "boolTrue: true\n"
+                                "boolFalse: false\n"
+                                "textYes: yes\n"
+                                "textNo: no\n"
+                                "textOn: on\n"
+                                "textOff: off\n"
+                                "intPositive: 12345\n"
+                                "intNegative: -9876\n"
+                                "intZero: 0\n"
+                                "doublePlain: 3.5\n"
+                                "textPlain: hello_world\n"
+                                "textQuotedNumber: \"12345\"\n"
+                                "textDottedVersion: 1.2.3\n"
+                                "textEmptyQuoted: \"\"\n"
+                                "nullExplicit: null\n"
+                                "nullTilde: ~\n"
+                                "nullOmitted:\n");
 
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
         ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
 
         // 以显式表驱动逐条断言类型；非负整数与 JSON 侧口径一致地落无符号数
-        const std::vector<std::pair<std::string, ConfigValueType> > expectedTypes = {
+        const std::vector<std::pair<std::string, ConfigValueType>> expectedTypes = {
                 {"boolTrue", ConfigValueType::boolean},
                 {"boolFalse", ConfigValueType::boolean},
                 // YAML 1.2 核心 schema 只认 true/false，yes/no/on/off 一律是字符串
@@ -1356,8 +1329,7 @@ port: 9090
      */
     TEST_F(ConfigManagerTest, JsonDigitsInsideStringsAreNotTreatedAsNumbers)
     {
-        writeFile("strings.json",
-                  R"({"token": "id-123456789012345678901234567890", "quote": "escaped\"then 123456789012345678901234567890", "port": 8080})");
+        writeFile("strings.json", R"({"token": "id-123456789012345678901234567890", "quote": "escaped\"then 123456789012345678901234567890", "port": 8080})");
 
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
 
@@ -1373,8 +1345,7 @@ port: 9090
      */
     TEST_F(ConfigManagerTest, JsonFloatLiteralsAboveInt64RangeStayFloats)
     {
-        writeFile("floats.json",
-                  R"({"ratio": 1.7976931348623157e308, "count": 1e25, "plain": 3.25, "subnormal": 5e-324, "tiny": 1e-309})");
+        writeFile("floats.json", R"({"ratio": 1.7976931348623157e308, "count": 1e25, "plain": 3.25, "subnormal": 5e-324, "tiny": 1e-309})");
 
         const ConfigLoadResult result = configuration().loadFromDirectory(directory());
 
@@ -1561,8 +1532,8 @@ port: 9090
         writeFile("app.yaml", "app:\n  name: demo\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        constexpr int kThreadCount = 3;
-        constexpr int kRoundCount  = 6;
+        constexpr int                       kThreadCount = 3;
+        constexpr int                       kRoundCount  = 6;
         constexpr std::chrono::milliseconds kDebounceMilliseconds{1};
         // 整例的硬上界：启停一对正常是亚毫秒级。这一例曾在并行负载下把套件拖到几百秒——失败要被
         // 报出来，而不是把排在后面的用例一起挂死，所以等待本身必须是有界的
@@ -1576,15 +1547,16 @@ port: 9090
         for (int workerIndex = 0; workerIndex < kThreadCount; ++workerIndex)
         {
             // 每个线程各起各的监视器再各关各的：两条控制路径会在同一时刻撞 m_fileWatcher
-            workers.emplace_back([&stopRequested, &returnedWorkerCount, this]
-            {
-                for (int round = 0; round < kRoundCount && !stopRequested.load(std::memory_order_acquire); ++round)
-                {
-                    static_cast<void>(configuration().enableHotReload(nullptr, kDebounceMilliseconds));
-                    configuration().disableHotReload();
-                }
-                returnedWorkerCount.fetch_add(1, std::memory_order_release);
-            });
+            workers.emplace_back(
+                    [&stopRequested, &returnedWorkerCount, this]
+                    {
+                        for (int round = 0; round < kRoundCount && !stopRequested.load(std::memory_order_acquire); ++round)
+                        {
+                            static_cast<void>(configuration().enableHotReload(nullptr, kDebounceMilliseconds));
+                            configuration().disableHotReload();
+                        }
+                        returnedWorkerCount.fetch_add(1, std::memory_order_release);
+                    });
         }
 
         const auto beganAt  = std::chrono::steady_clock::now();
@@ -1603,8 +1575,7 @@ port: 9090
 
         const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - beganAt).count();
         // 标签走 ASCII：控制台代码页会把中文读数弄成乱码，取不到数就白跑一轮
-        std::printf("hot-reload churn threads=%d rounds=%d elapsed=%lldms\n",
-                    kThreadCount, kRoundCount, static_cast<long long>(elapsedMilliseconds));
+        std::printf("hot-reload churn threads=%d rounds=%d elapsed=%lldms\n", kThreadCount, kRoundCount, static_cast<long long>(elapsedMilliseconds));
 
         stopRequested.store(true, std::memory_order_release);
         if (allWorkersReturned)
@@ -2027,7 +1998,7 @@ port: 9090
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         // 先固化目录内文件清单与内容，setValue 之后再整体比对：库负责读配置，写配置是应用层的事
-        const std::vector<std::pair<std::string, std::string> > before = directoryFileSnapshot();
+        const std::vector<std::pair<std::string, std::string>> before = directoryFileSnapshot();
         ASSERT_EQ(before.size(), 1U);
 
         EXPECT_TRUE(configuration().setValue("app.theme", ConfigValue(std::string("dark"))));
@@ -2117,8 +2088,7 @@ port: 9090
 
         ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
         EXPECT_EQ(configuration().getInt("port", 0), 9090) << "文件本身要照常加载";
-        EXPECT_TRUE(configuration().configDirectory().empty())
-                << "相对路径被当成了锚点：换工作目录之后 reload() 读的就是别处";
+        EXPECT_TRUE(configuration().configDirectory().empty()) << "相对路径被当成了锚点：换工作目录之后 reload() 读的就是别处";
         EXPECT_FALSE(configuration().reload().success) << "没有锚点时 reload 要如实失败，而不是悄悄换个目录";
     }
 
@@ -2135,8 +2105,7 @@ port: 9090
         const ConfigLoadResult result = configuration().reload();
 
         ASSERT_FALSE(result.success);
-        EXPECT_EQ(result.timestamp.time_since_epoch().count(), 0)
-                << "这条出口没给 timestamp 赋值，交回的是不确定的栈内容";
+        EXPECT_EQ(result.timestamp.time_since_epoch().count(), 0) << "这条出口没给 timestamp 赋值，交回的是不确定的栈内容";
     }
 
     TEST_F(ConfigManagerTest, LoadFilesAppliesLaterFileFromTheGivenList)
@@ -2249,30 +2218,28 @@ port: 9090
                 ConfigSchemaEntry{"must.exist", ConfigValueType::string, true, std::nullopt, std::nullopt},
         }));
 
-        LogWriteGate gate;
-        std::thread  loader;
-        std::thread  setter;
-        const GateCleanup cleanup(gate, loader, setter);
-        bool              isLoadSucceeded = false;
+        LogWriteGate       gate;
+        std::thread        loader;
+        std::thread        setter;
+        const GateCleanup  cleanup(gate, loader, setter);
+        bool               isLoadSucceeded = false;
         std::promise<void> setterFinished;
-        auto              setterDone = setterFinished.get_future();
+        auto               setterDone = setterFinished.get_future();
 
         LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<GatedSink>(gate));
 
-        loader = std::thread([this, &isLoadSucceeded]
-        {
-            isLoadSucceeded = configuration().loadFromDirectory(directory()).success;
-        });
+        loader = std::thread([this, &isLoadSucceeded] { isLoadSucceeded = configuration().loadFromDirectory(directory()).success; });
 
         // 先确认提交线程确实停在「写那条校验错误日志」上，否则下面的绿只是没撞上有锁的那段
         ASSERT_TRUE(gate.waitUntilEntered(std::chrono::seconds{5})) << "闸口没等到日志写入，用例没有构造出重叠";
 
         // 闸口进去之后再放竞争者：先跑完的 setValue 会让这条判据假绿
-        setter = std::thread([this, &setterFinished]
-        {
-            static_cast<void>(configuration().setValue("runtime.flag", ConfigValue(std::string("on"))));
-            setterFinished.set_value();
-        });
+        setter = std::thread(
+                [this, &setterFinished]
+                {
+                    static_cast<void>(configuration().setValue("runtime.flag", ConfigValue(std::string("on"))));
+                    setterFinished.set_value();
+                });
         const bool didSetWhileGated = setterDone.wait_for(std::chrono::milliseconds{500}) == std::future_status::ready;
 
         gate.release();
@@ -2294,16 +2261,13 @@ port: 9090
 
         bool isLoadSucceeded = false;
         {
-            LogWriteGate gate;
-            std::thread  loader;
-            std::thread  idleSetter;
+            LogWriteGate      gate;
+            std::thread       loader;
+            std::thread       idleSetter;
             const GateCleanup cleanup(gate, loader, idleSetter);
 
             LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<GatedSink>(gate));
-            loader = std::thread([this, &isLoadSucceeded]
-            {
-                isLoadSucceeded = configuration().loadFromDirectory(directory()).success;
-            });
+            loader = std::thread([this, &isLoadSucceeded] { isLoadSucceeded = configuration().loadFromDirectory(directory()).success; });
 
             // 目录里一份配置文件也没有：这条提交路径同样要过已注册 schema（它以前自己换快照，绕开了这道暴露）
             EXPECT_TRUE(gate.waitUntilEntered(std::chrono::seconds{5})) << "空目录提交没有执行已注册 schema 的校验";
@@ -2408,11 +2372,7 @@ port: 9090
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
         ASSERT_FALSE(configuration().isHotReloadEnabled());
 
-        const bool enabled = configuration().enableHotReload(
-                [](const ConfigLoadResult &)
-                {
-                },
-                std::chrono::milliseconds(500));
+        const bool enabled = configuration().enableHotReload([](const ConfigLoadResult &) {}, std::chrono::milliseconds(500));
 
         // 平台监听器不可用时允许启用失败，但状态必须与返回值一致
         EXPECT_EQ(configuration().isHotReloadEnabled(), enabled);
@@ -2444,12 +2404,7 @@ port: 9090
         std::atomic<int> firstCallbackCount{0};
         std::atomic<int> secondCallbackCount{0};
 
-        const bool enabled = configuration().enableHotReload(
-                [&firstCallbackCount](const ConfigLoadResult &)
-                {
-                    firstCallbackCount.fetch_add(1);
-                },
-                std::chrono::milliseconds(50));
+        const bool enabled = configuration().enableHotReload([&firstCallbackCount](const ConfigLoadResult &) { firstCallbackCount.fetch_add(1); }, std::chrono::milliseconds(50));
         if (!enabled)
         {
             GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
@@ -2458,27 +2413,14 @@ port: 9090
         // 监听线程要先把读请求投出去，紧跟着 enableHotReload 就写文件会落在武装之前
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         writeFile("cfg.yaml", "value: second\n");
-        ASSERT_TRUE(TestSupport::waitForCondition([&firstCallbackCount]
-                                                  {
-                                                      return firstCallbackCount.load() >= 1;
-                                                  },
-                                                  std::chrono::seconds(8)))
+        ASSERT_TRUE(TestSupport::waitForCondition([&firstCallbackCount] { return firstCallbackCount.load() >= 1; }, std::chrono::seconds(8)))
                 << "第一次接线就没出声，换回调的判据无从谈起";
 
-        EXPECT_TRUE(configuration().enableHotReload(
-                [&secondCallbackCount](const ConfigLoadResult &)
-                {
-                    secondCallbackCount.fetch_add(1);
-                },
-                std::chrono::milliseconds(50)));
+        EXPECT_TRUE(configuration().enableHotReload([&secondCallbackCount](const ConfigLoadResult &) { secondCallbackCount.fetch_add(1); }, std::chrono::milliseconds(50)));
 
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         writeFile("cfg.yaml", "value: third\n");
-        EXPECT_TRUE(TestSupport::waitForCondition([&secondCallbackCount]
-                                                  {
-                                                      return secondCallbackCount.load() >= 1;
-                                                  },
-                                                  std::chrono::seconds(8)))
+        EXPECT_TRUE(TestSupport::waitForCondition([&secondCallbackCount] { return secondCallbackCount.load() >= 1; }, std::chrono::seconds(8)))
                 << "重复 enableHotReload 把新回调丢了：返回 true 却没人接线";
 
         configuration().disableHotReload();
@@ -2513,11 +2455,7 @@ port: 9090
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         writeFile("cfg.yaml", "value: second\n");
 
-        ASSERT_TRUE(TestSupport::waitForCondition([&isDisableReturned]
-                                                  {
-                                                      return isDisableReturned.load(std::memory_order_acquire);
-                                                  },
-                                                  std::chrono::seconds(10)))
+        ASSERT_TRUE(TestSupport::waitForCondition([&isDisableReturned] { return isDisableReturned.load(std::memory_order_acquire); }, std::chrono::seconds(10)))
                 << "回调里的 disableHotReload() 没有返回：它在 join 自己那条重载线程";
         EXPECT_FALSE(configuration().isHotReloadEnabled());
     }
@@ -2544,11 +2482,11 @@ port: 9090
         writeFile("cfg.yaml", "value: first\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        std::mutex              callbackMutex;
-        std::condition_variable callbackCondition;
-        int                     callbackCount          = 0;
-        bool                    isFirstCallbackEntered = false;
-        bool                    shouldReleaseCallback  = false;
+        std::mutex               callbackMutex;
+        std::condition_variable  callbackCondition;
+        int                      callbackCount          = 0;
+        bool                     isFirstCallbackEntered = false;
+        bool                     shouldReleaseCallback  = false;
         std::vector<std::string> observedValuesInCallbacks;
 
         const bool enabled = configuration().enableHotReload(
@@ -2580,9 +2518,7 @@ port: 9090
 
         {
             std::unique_lock lock(callbackMutex);
-            ASSERT_TRUE(callbackCondition.wait_for(lock, std::chrono::seconds(8),
-                                                   [&isFirstCallbackEntered] { return isFirstCallbackEntered; }))
-                    << "第一次变更没有触发重载回调";
+            ASSERT_TRUE(callbackCondition.wait_for(lock, std::chrono::seconds(8), [&isFirstCallbackEntered] { return isFirstCallbackEntered; })) << "第一次变更没有触发重载回调";
         }
 
         // 重载正卡在回调里：此刻再写一次，事件只能被记成「之后还要再来一轮」。
@@ -2595,8 +2531,7 @@ port: 9090
             std::unique_lock lock(callbackMutex);
             shouldReleaseCallback = true;
             callbackCondition.notify_all();
-            EXPECT_TRUE(callbackCondition.wait_for(lock, std::chrono::seconds(5), [&callbackCount] { return callbackCount >= 2; }))
-                    << "重载期间到达的变更被丢掉了：没有接力第二轮";
+            EXPECT_TRUE(callbackCondition.wait_for(lock, std::chrono::seconds(5), [&callbackCount] { return callbackCount >= 2; })) << "重载期间到达的变更被丢掉了：没有接力第二轮";
             const std::string joinedValues = [&observedValuesInCallbacks]
             {
                 std::string joined;
@@ -2606,8 +2541,7 @@ port: 9090
                 }
                 return joined;
             }();
-            EXPECT_EQ(observedValuesInCallbacks.back(), "second")
-                    << "接力那一轮读到的仍是旧值；每轮回调读到的值依次为：" << joinedValues;
+            EXPECT_EQ(observedValuesInCallbacks.back(), "second") << "接力那一轮读到的仍是旧值；每轮回调读到的值依次为：" << joinedValues;
             EXPECT_EQ(configuration().getString("value"), "second") << "最终生效的配置不是最新那一份";
         }
 
@@ -2695,12 +2629,8 @@ port: 9090
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         std::atomic<int> callbackCount{0};
-        const bool       enabled = configuration().enableHotReload(
-                [&callbackCount](const ConfigLoadResult &)
-                {
-                    callbackCount.fetch_add(1, std::memory_order_release);
-                },
-                std::chrono::milliseconds(50));
+        const bool       enabled = configuration().enableHotReload([&callbackCount](const ConfigLoadResult &) { callbackCount.fetch_add(1, std::memory_order_release); },
+                                                                   std::chrono::milliseconds(50));
         if (!enabled)
         {
             GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
@@ -2732,7 +2662,7 @@ port: 9090
             return;
         }
 
-        const int countBeforeRename = callbackCount.load(std::memory_order_acquire);
+        const int       countBeforeRename = callbackCount.load(std::memory_order_acquire);
         std::error_code renameError;
         std::filesystem::rename(directory() / "cfg.yaml", directory() / "cfg.retired", renameError);
         ASSERT_FALSE(static_cast<bool>(renameError)) << "改名移走配置文件失败：" << renameError.message();
@@ -2756,7 +2686,7 @@ port: 9090
         writeFile("other.yaml", "other: 1\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        auto recorder = std::make_unique<RecordingSink>();
+        auto                 recorder        = std::make_unique<RecordingSink>();
         RecordingSink *const recorderPointer = recorder.get();
         LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
         const RootSinkScope detachSink;
@@ -2783,10 +2713,7 @@ port: 9090
         };
 
         writeFile("cfg.yaml", "value: second\n");
-        const bool watcherAlive = waitsFor([]
-        {
-            return ConfigManager::instance().getString("value") == "second";
-        });
+        const bool watcherAlive = waitsFor([] { return ConfigManager::instance().getString("value") == "second"; });
         EXPECT_TRUE(watcherAlive) << "普通改写没触发热重载：监视通道没建立，后面的判据无从谈起";
 
         bool sawFailureLogged = false;
@@ -2794,11 +2721,12 @@ port: 9090
         {
             // 保留字符 @ 不能作为标量开头：这条改动会让那一轮重载整轮失败
             writeFile("other.yaml", "other: 1\nbroken: @invalid\n");
-            sawFailureLogged = waitsFor([recorderPointer]
-            {
-                const std::vector<std::string> recorded = recorderPointer->snapshot();
-                return anyEntryContains(recorded, "热重载本轮失败") && anyEntryContains(recorded, "YAML 语法错误");
-            });
+            sawFailureLogged = waitsFor(
+                    [recorderPointer]
+                    {
+                        const std::vector<std::string> recorded = recorderPointer->snapshot();
+                        return anyEntryContains(recorded, "热重载本轮失败") && anyEntryContains(recorded, "YAML 语法错误");
+                    });
             EXPECT_TRUE(sawFailureLogged) << "热重载失败且没有回调时，一条诊断都没落到日志上";
         }
 
@@ -2814,8 +2742,8 @@ port: 9090
         writeFile("cfg.yaml", "counter: 0\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        constexpr int            kwriterCount    = 4;
-        constexpr int            kkeysPerWriter  = 25;
+        constexpr int            kwriterCount   = 4;
+        constexpr int            kkeysPerWriter = 25;
         std::vector<std::thread> writers;
         writers.reserve(kwriterCount);
 
@@ -2823,14 +2751,15 @@ port: 9090
         // 若写者之间不串行化，后发布者会把前一个写者刚写入的键整体覆盖掉
         for (int writerIndex = 0; writerIndex < kwriterCount; ++writerIndex)
         {
-            writers.emplace_back([writerIndex]
-            {
-                for (int inner = 0; inner < kkeysPerWriter; ++inner)
-                {
-                    const std::string key = "writer" + std::to_string(writerIndex) + ".key" + std::to_string(inner);
-                    ConfigManager::instance().setValue(key, ConfigValue(static_cast<std::int64_t>(inner)));
-                }
-            });
+            writers.emplace_back(
+                    [writerIndex]
+                    {
+                        for (int inner = 0; inner < kkeysPerWriter; ++inner)
+                        {
+                            const std::string key = "writer" + std::to_string(writerIndex) + ".key" + std::to_string(inner);
+                            ConfigManager::instance().setValue(key, ConfigValue(static_cast<std::int64_t>(inner)));
+                        }
+                    });
         }
         for (std::thread &writer: writers)
         {
@@ -2940,7 +2869,7 @@ port: 9090
      */
     TEST_F(ConfigManagerTest, SetValueWritingBelowAScalarRebuildsTheSectionInsteadOfThrowing)
     {
-        auto recorder = std::make_unique<RecordingSink>();
+        auto                 recorder        = std::make_unique<RecordingSink>();
         RecordingSink *const recorderPointer = recorder.get();
         LoggerRegistry::instance().getRootLogger().addSink(std::move(recorder));
         const RootSinkScope detachSink;
@@ -2967,13 +2896,12 @@ port: 9090
 
     TEST_F(ConfigManagerTest, GetSectionRebuildsNestedObjectFromFlatKeys)
     {
-        writeFile("server.yaml",
-                  "server:\n"
-                  "  maximum_connections: 8\n"
-                  "  expose_metrics: true\n"
-                  "  limits:\n"
-                  "    idle_timeout_ms: 1500\n"
-                  "    read_timeout_ms: 2000\n");
+        writeFile("server.yaml", "server:\n"
+                                 "  maximum_connections: 8\n"
+                                 "  expose_metrics: true\n"
+                                 "  limits:\n"
+                                 "    idle_timeout_ms: 1500\n"
+                                 "    read_timeout_ms: 2000\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         const ConfigValue section = configuration().getSection("server");
@@ -3008,13 +2936,12 @@ port: 9090
 
     TEST_F(ConfigManagerTest, GetSectionIgnoresKeysThatMerelyShareTheNamePrefix)
     {
-        writeFile("app.yaml",
-                  "server_side:\n"
-                  "  port: 1\n"
-                  "serverSide:\n"
-                  "  port: 2\n"
-                  "server:\n"
-                  "  port: 3\n");
+        writeFile("app.yaml", "server_side:\n"
+                              "  port: 1\n"
+                              "serverSide:\n"
+                              "  port: 2\n"
+                              "server:\n"
+                              "  port: 3\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         // 只有 server.port 属于这一段：前缀比较必须带上分隔符，否则同名前缀的段会被误捞

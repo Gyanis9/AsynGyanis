@@ -146,14 +146,14 @@ namespace AsynGyanis::Base
         /// 成对失效根日志器缓存（实现见 .cpp）
         void clearCachedRootLogger() noexcept;
 
-        mutable std::shared_mutex                                    m_mutex{};    ///< 保护 m_loggers 的读写锁
-        std::unordered_map<std::string, std::shared_ptr<Logger> >    m_loggers{};  ///< 日志器名称到 Logger 实例的映射表（共享所有权，便于快照延长生命周期）
+        mutable std::shared_mutex                                m_mutex{};   ///< 保护 m_loggers 的读写锁
+        std::unordered_map<std::string, std::shared_ptr<Logger>> m_loggers{}; ///< 日志器名称到 Logger 实例的映射表（共享所有权，便于快照延长生命周期）
 
         /// 已注销/被替换日志器的退休表：注销不销毁对象，只是移到这里，同时把它们的 Sink 当场交还。
         /// getLogger() 返回的是裸引用，使用它的调用方（LOG_* 宏）可能正跨过注销点继续用；
         /// 就地销毁会让那些引用悬垂。留下来的外壳只有名字、等级与一份空快照，而日志器数量少、
         /// 注册/注销罕见，保留到进程退出是可接受的代价（对象仍可达，LeakSanitizer 不会报告）
-        std::vector<std::shared_ptr<Logger> > m_retiredLoggers{};
+        std::vector<std::shared_ptr<Logger>> m_retiredLoggers{};
 
         /// 根日志器的热路径缓存（裸指针）：每条 LOG_* 宏都先读它，命中时只需一次原子读。
         /// 用裸指针而不是 shared_ptr 的原子量，是因为后者的 load 在 MSVC/libstdc++ 上要走内部

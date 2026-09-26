@@ -76,15 +76,15 @@ namespace AsynGyanis::Base
         /// 一次调用点读到的两样东西：是否放行，以及放行时交出的被压条数
         struct CallSiteOutcome
         {
-            bool passed{false};       ///< 本次是否放行
+            bool          passed{false};    ///< 本次是否放行
             std::uint64_t droppedCount{0U}; ///< 上一段被压掉的条数
         };
 
         /// 第四个调用点：带间隔，专测宏这一侧能不能读出计数
         CallSiteOutcome pressFourthCallSite()
         {
-            auto &throttle = ASYN_LOG_THROTTLED(kShortInterval);
-            const bool passed = throttle.acquire();
+            auto      &throttle = ASYN_LOG_THROTTLED(kShortInterval);
+            const bool passed   = throttle.acquire();
             return CallSiteOutcome{passed, passed ? throttle.droppedCount() : 0U};
         }
     } // namespace
@@ -174,10 +174,10 @@ namespace AsynGyanis::Base
         constexpr std::size_t kRoundCount = 20U;
         for (std::size_t roundIndex = 0; roundIndex < kRoundCount; ++roundIndex)
         {
-            LogThrottle                 throttle(kHugeInterval);
-            std::atomic<std::size_t>    passedCount{0U};
-            std::barrier                goLine{static_cast<int>(kRacingThreadCount)};
-            std::vector<std::thread>    threads;
+            LogThrottle              throttle(kHugeInterval);
+            std::atomic<std::size_t> passedCount{0U};
+            std::barrier             goLine{static_cast<int>(kRacingThreadCount)};
+            std::vector<std::thread> threads;
             threads.reserve(kRacingThreadCount);
             for (std::size_t threadIndex = 0; threadIndex < kRacingThreadCount; ++threadIndex)
             {
@@ -199,18 +199,14 @@ namespace AsynGyanis::Base
 
         // 再压一遍多线程高频调用：这一段的目的是让窗口推进与计数在并发下不丢、不死锁
         // （也是这份实现在 Linux TSan 作业上会被看着跑的一段）
-        LogThrottle                 hammeredThrottle(kHugeInterval);
-        std::atomic<std::size_t>    hammeredPassedCount{0U};
-        std::vector<std::thread>    hammerThreads;
+        LogThrottle              hammeredThrottle(kHugeInterval);
+        std::atomic<std::size_t> hammeredPassedCount{0U};
+        std::vector<std::thread> hammerThreads;
         hammerThreads.reserve(kRacingThreadCount);
         for (std::size_t threadIndex = 0; threadIndex < kRacingThreadCount; ++threadIndex)
         {
-            hammerThreads.emplace_back(
-                    [&hammeredThrottle, &hammeredPassedCount]
-                    {
-                         hammeredPassedCount.fetch_add(pressTimes(hammeredThrottle, kHammerAttemptsPerThread),
-                                                       std::memory_order_relaxed);
-                    });
+            hammerThreads.emplace_back([&hammeredThrottle, &hammeredPassedCount]
+                                       { hammeredPassedCount.fetch_add(pressTimes(hammeredThrottle, kHammerAttemptsPerThread), std::memory_order_relaxed); });
         }
         for (std::thread &thread: hammerThreads)
         {

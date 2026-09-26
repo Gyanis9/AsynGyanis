@@ -12,9 +12,9 @@
 #include "Net/Http2/Http2Frame.h"
 
 #include <array>
-#include <deque>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <span>
 #include <string>
 #include <string_view>
@@ -62,7 +62,7 @@ namespace AsynGyanis::Net
      */
     struct HpackHeaderFieldView
     {
-        std::string_view name; ///< 头名
+        std::string_view name;  ///< 头名
         std::string_view value; ///< 头值
     };
 
@@ -80,8 +80,8 @@ namespace AsynGyanis::Net
      */
     struct HpackHuffmanCode
     {
-        std::uint32_t code;    ///< 码字，按低位对齐存放（即 Appendix B 的「code as hex」一列）
-        std::uint8_t bitCount; ///< 码字位长；写位流时从高位到低位依次写出
+        std::uint32_t code;     ///< 码字，按低位对齐存放（即 Appendix B 的「code as hex」一列）
+        std::uint8_t  bitCount; ///< 码字位长；写位流时从高位到低位依次写出
     };
 
     /**
@@ -90,67 +90,67 @@ namespace AsynGyanis::Net
      *          值为空的项表示「只给名字」，用作「带索引名的字面量」的取值。
      */
     inline constexpr std::array<HpackStaticTableEntry, kHpackStaticTableEntryCount> kHpackStaticTable{{
-        {":authority", ""},  ///< 1
-        {":method", "GET"},  ///< 2
-        {":method", "POST"},  ///< 3
-        {":path", "/"},  ///< 4
-        {":path", "/index.html"},  ///< 5
-        {":scheme", "http"},  ///< 6
-        {":scheme", "https"},  ///< 7
-        {":status", "200"},  ///< 8
-        {":status", "204"},  ///< 9
-        {":status", "206"},  ///< 10
-        {":status", "304"},  ///< 11
-        {":status", "400"},  ///< 12
-        {":status", "404"},  ///< 13
-        {":status", "500"},  ///< 14
-        {"accept-charset", ""},  ///< 15
-        {"accept-encoding", "gzip, deflate"},  ///< 16
-        {"accept-language", ""},  ///< 17
-        {"accept-ranges", ""},  ///< 18
-        {"accept", ""},  ///< 19
-        {"access-control-allow-origin", ""},  ///< 20
-        {"age", ""},  ///< 21
-        {"allow", ""},  ///< 22
-        {"authorization", ""},  ///< 23
-        {"cache-control", ""},  ///< 24
-        {"content-disposition", ""},  ///< 25
-        {"content-encoding", ""},  ///< 26
-        {"content-language", ""},  ///< 27
-        {"content-length", ""},  ///< 28
-        {"content-location", ""},  ///< 29
-        {"content-range", ""},  ///< 30
-        {"content-type", ""},  ///< 31
-        {"cookie", ""},  ///< 32
-        {"date", ""},  ///< 33
-        {"etag", ""},  ///< 34
-        {"expect", ""},  ///< 35
-        {"expires", ""},  ///< 36
-        {"from", ""},  ///< 37
-        {"host", ""},  ///< 38
-        {"if-match", ""},  ///< 39
-        {"if-modified-since", ""},  ///< 40
-        {"if-none-match", ""},  ///< 41
-        {"if-range", ""},  ///< 42
-        {"if-unmodified-since", ""},  ///< 43
-        {"last-modified", ""},  ///< 44
-        {"link", ""},  ///< 45
-        {"location", ""},  ///< 46
-        {"max-forwards", ""},  ///< 47
-        {"proxy-authenticate", ""},  ///< 48
-        {"proxy-authorization", ""},  ///< 49
-        {"range", ""},  ///< 50
-        {"referer", ""},  ///< 51
-        {"refresh", ""},  ///< 52
-        {"retry-after", ""},  ///< 53
-        {"server", ""},  ///< 54
-        {"set-cookie", ""},  ///< 55
-        {"strict-transport-security", ""},  ///< 56
-        {"transfer-encoding", ""},  ///< 57
-        {"user-agent", ""},  ///< 58
-        {"vary", ""},  ///< 59
-        {"via", ""},  ///< 60
-        {"www-authenticate", ""}  ///< 61
+            {":authority", ""},                   ///< 1
+            {":method", "GET"},                   ///< 2
+            {":method", "POST"},                  ///< 3
+            {":path", "/"},                       ///< 4
+            {":path", "/index.html"},             ///< 5
+            {":scheme", "http"},                  ///< 6
+            {":scheme", "https"},                 ///< 7
+            {":status", "200"},                   ///< 8
+            {":status", "204"},                   ///< 9
+            {":status", "206"},                   ///< 10
+            {":status", "304"},                   ///< 11
+            {":status", "400"},                   ///< 12
+            {":status", "404"},                   ///< 13
+            {":status", "500"},                   ///< 14
+            {"accept-charset", ""},               ///< 15
+            {"accept-encoding", "gzip, deflate"}, ///< 16
+            {"accept-language", ""},              ///< 17
+            {"accept-ranges", ""},                ///< 18
+            {"accept", ""},                       ///< 19
+            {"access-control-allow-origin", ""},  ///< 20
+            {"age", ""},                          ///< 21
+            {"allow", ""},                        ///< 22
+            {"authorization", ""},                ///< 23
+            {"cache-control", ""},                ///< 24
+            {"content-disposition", ""},          ///< 25
+            {"content-encoding", ""},             ///< 26
+            {"content-language", ""},             ///< 27
+            {"content-length", ""},               ///< 28
+            {"content-location", ""},             ///< 29
+            {"content-range", ""},                ///< 30
+            {"content-type", ""},                 ///< 31
+            {"cookie", ""},                       ///< 32
+            {"date", ""},                         ///< 33
+            {"etag", ""},                         ///< 34
+            {"expect", ""},                       ///< 35
+            {"expires", ""},                      ///< 36
+            {"from", ""},                         ///< 37
+            {"host", ""},                         ///< 38
+            {"if-match", ""},                     ///< 39
+            {"if-modified-since", ""},            ///< 40
+            {"if-none-match", ""},                ///< 41
+            {"if-range", ""},                     ///< 42
+            {"if-unmodified-since", ""},          ///< 43
+            {"last-modified", ""},                ///< 44
+            {"link", ""},                         ///< 45
+            {"location", ""},                     ///< 46
+            {"max-forwards", ""},                 ///< 47
+            {"proxy-authenticate", ""},           ///< 48
+            {"proxy-authorization", ""},          ///< 49
+            {"range", ""},                        ///< 50
+            {"referer", ""},                      ///< 51
+            {"refresh", ""},                      ///< 52
+            {"retry-after", ""},                  ///< 53
+            {"server", ""},                       ///< 54
+            {"set-cookie", ""},                   ///< 55
+            {"strict-transport-security", ""},    ///< 56
+            {"transfer-encoding", ""},            ///< 57
+            {"user-agent", ""},                   ///< 58
+            {"vary", ""},                         ///< 59
+            {"via", ""},                          ///< 60
+            {"www-authenticate", ""}              ///< 61
     }};
 
     /**
@@ -160,9 +160,9 @@ namespace AsynGyanis::Net
      */
     struct HpackStaticNameRun
     {
-        std::string_view name;           ///< 头名
-        std::size_t firstEntryIndex = 0; ///< 首个同名条目的 0 基下标
-        std::size_t entryCount      = 0; ///< 同名条目数
+        std::string_view name;                ///< 头名
+        std::size_t      firstEntryIndex = 0; ///< 首个同名条目的 0 基下标
+        std::size_t      entryCount      = 0; ///< 同名条目数
     };
 
     /// 静态表里同名段的段数：每遇到一次「与上一项不同名」就开一段
@@ -203,15 +203,14 @@ namespace AsynGyanis::Net
     }
 
     // 段数等于不同名数，当且仅当每个名字只出现一次且连成一片：区间表的前提，抄错表就编译不过
-    static_assert(countHpackStaticNameRuns() == countHpackStaticDistinctNames(),
-                  "HPACK 静态表里同名条目必须相邻（RFC 7541 Appendix A 的排列即满足）");
+    static_assert(countHpackStaticNameRuns() == countHpackStaticDistinctNames(), "HPACK 静态表里同名条目必须相邻（RFC 7541 Appendix A 的排列即满足）");
 
     /// 编译期算好的同名段索引表，按头名升序排列以便二分查找（静态表本身不是字典序）
     [[nodiscard]] consteval std::array<HpackStaticNameRun, countHpackStaticNameRuns()> buildHpackStaticNameRuns() noexcept
     {
         std::array<HpackStaticNameRun, countHpackStaticNameRuns()> runs{};
 
-        std::size_t runIndex  = 0;
+        std::size_t runIndex   = 0;
         std::size_t entryIndex = 0;
         while (entryIndex < kHpackStaticTable.size())
         {
@@ -221,9 +220,9 @@ namespace AsynGyanis::Net
                 ++entryIndex;
             }
             runs[runIndex] = HpackStaticNameRun{
-                .name            = kHpackStaticTable[firstEntryIndex].name,
-                .firstEntryIndex = firstEntryIndex,
-                .entryCount      = entryIndex - firstEntryIndex + 1,
+                    .name            = kHpackStaticTable[firstEntryIndex].name,
+                    .firstEntryIndex = firstEntryIndex,
+                    .entryCount      = entryIndex - firstEntryIndex + 1,
             };
             ++runIndex;
             ++entryIndex;
@@ -232,8 +231,8 @@ namespace AsynGyanis::Net
         // 插入排序：规模只有五十来项，编译期成本可忽略，换来运行期的二分查找
         for (std::size_t insertIndex = 1; insertIndex < runs.size(); ++insertIndex)
         {
-            const HpackStaticNameRun moving = runs[insertIndex];
-            std::size_t shiftIndex          = insertIndex;
+            const HpackStaticNameRun moving     = runs[insertIndex];
+            std::size_t              shiftIndex = insertIndex;
             while (shiftIndex > 0 && runs[shiftIndex - 1].name > moving.name)
             {
                 runs[shiftIndex] = runs[shiftIndex - 1];
@@ -253,263 +252,263 @@ namespace AsynGyanis::Net
      *          2 的负幂之和恰为 1），因此树里每个内部节点都必然有两个孩子。
      */
     inline constexpr std::array<HpackHuffmanCode, kHpackHuffmanEndOfStringSymbol + 1> kHpackHuffmanCodeTable{{
-        {0x00001FF8U, 13},  ///< 符号 0
-        {0x007FFFD8U, 23},  ///< 符号 1
-        {0x0FFFFFE2U, 28},  ///< 符号 2
-        {0x0FFFFFE3U, 28},  ///< 符号 3
-        {0x0FFFFFE4U, 28},  ///< 符号 4
-        {0x0FFFFFE5U, 28},  ///< 符号 5
-        {0x0FFFFFE6U, 28},  ///< 符号 6
-        {0x0FFFFFE7U, 28},  ///< 符号 7
-        {0x0FFFFFE8U, 28},  ///< 符号 8
-        {0x00FFFFEAU, 24},  ///< 符号 9
-        {0x3FFFFFFCU, 30},  ///< 符号 10
-        {0x0FFFFFE9U, 28},  ///< 符号 11
-        {0x0FFFFFEAU, 28},  ///< 符号 12
-        {0x3FFFFFFDU, 30},  ///< 符号 13
-        {0x0FFFFFEBU, 28},  ///< 符号 14
-        {0x0FFFFFECU, 28},  ///< 符号 15
-        {0x0FFFFFEDU, 28},  ///< 符号 16
-        {0x0FFFFFEEU, 28},  ///< 符号 17
-        {0x0FFFFFEFU, 28},  ///< 符号 18
-        {0x0FFFFFF0U, 28},  ///< 符号 19
-        {0x0FFFFFF1U, 28},  ///< 符号 20
-        {0x0FFFFFF2U, 28},  ///< 符号 21
-        {0x3FFFFFFEU, 30},  ///< 符号 22
-        {0x0FFFFFF3U, 28},  ///< 符号 23
-        {0x0FFFFFF4U, 28},  ///< 符号 24
-        {0x0FFFFFF5U, 28},  ///< 符号 25
-        {0x0FFFFFF6U, 28},  ///< 符号 26
-        {0x0FFFFFF7U, 28},  ///< 符号 27
-        {0x0FFFFFF8U, 28},  ///< 符号 28
-        {0x0FFFFFF9U, 28},  ///< 符号 29
-        {0x0FFFFFFAU, 28},  ///< 符号 30
-        {0x0FFFFFFBU, 28},  ///< 符号 31
-        {0x00000014U,  6},  ///< 符号 ' ' (32)
-        {0x000003F8U, 10},  ///< 符号 '!' (33)
-        {0x000003F9U, 10},  ///< 符号 '"' (34)
-        {0x00000FFAU, 12},  ///< 符号 '#' (35)
-        {0x00001FF9U, 13},  ///< 符号 '$' (36)
-        {0x00000015U,  6},  ///< 符号 '%' (37)
-        {0x000000F8U,  8},  ///< 符号 '&' (38)
-        {0x000007FAU, 11},  ///< 符号 ''' (39)
-        {0x000003FAU, 10},  ///< 符号 '(' (40)
-        {0x000003FBU, 10},  ///< 符号 ')' (41)
-        {0x000000F9U,  8},  ///< 符号 '*' (42)
-        {0x000007FBU, 11},  ///< 符号 '+' (43)
-        {0x000000FAU,  8},  ///< 符号 ',' (44)
-        {0x00000016U,  6},  ///< 符号 '-' (45)
-        {0x00000017U,  6},  ///< 符号 '.' (46)
-        {0x00000018U,  6},  ///< 符号 '/' (47)
-        {0x00000000U,  5},  ///< 符号 '0' (48)
-        {0x00000001U,  5},  ///< 符号 '1' (49)
-        {0x00000002U,  5},  ///< 符号 '2' (50)
-        {0x00000019U,  6},  ///< 符号 '3' (51)
-        {0x0000001AU,  6},  ///< 符号 '4' (52)
-        {0x0000001BU,  6},  ///< 符号 '5' (53)
-        {0x0000001CU,  6},  ///< 符号 '6' (54)
-        {0x0000001DU,  6},  ///< 符号 '7' (55)
-        {0x0000001EU,  6},  ///< 符号 '8' (56)
-        {0x0000001FU,  6},  ///< 符号 '9' (57)
-        {0x0000005CU,  7},  ///< 符号 ':' (58)
-        {0x000000FBU,  8},  ///< 符号 ';' (59)
-        {0x00007FFCU, 15},  ///< 符号 '<' (60)
-        {0x00000020U,  6},  ///< 符号 '=' (61)
-        {0x00000FFBU, 12},  ///< 符号 '>' (62)
-        {0x000003FCU, 10},  ///< 符号 '?' (63)
-        {0x00001FFAU, 13},  ///< 符号 '@' (64)
-        {0x00000021U,  6},  ///< 符号 'A' (65)
-        {0x0000005DU,  7},  ///< 符号 'B' (66)
-        {0x0000005EU,  7},  ///< 符号 'C' (67)
-        {0x0000005FU,  7},  ///< 符号 'D' (68)
-        {0x00000060U,  7},  ///< 符号 'E' (69)
-        {0x00000061U,  7},  ///< 符号 'F' (70)
-        {0x00000062U,  7},  ///< 符号 'G' (71)
-        {0x00000063U,  7},  ///< 符号 'H' (72)
-        {0x00000064U,  7},  ///< 符号 'I' (73)
-        {0x00000065U,  7},  ///< 符号 'J' (74)
-        {0x00000066U,  7},  ///< 符号 'K' (75)
-        {0x00000067U,  7},  ///< 符号 'L' (76)
-        {0x00000068U,  7},  ///< 符号 'M' (77)
-        {0x00000069U,  7},  ///< 符号 'N' (78)
-        {0x0000006AU,  7},  ///< 符号 'O' (79)
-        {0x0000006BU,  7},  ///< 符号 'P' (80)
-        {0x0000006CU,  7},  ///< 符号 'Q' (81)
-        {0x0000006DU,  7},  ///< 符号 'R' (82)
-        {0x0000006EU,  7},  ///< 符号 'S' (83)
-        {0x0000006FU,  7},  ///< 符号 'T' (84)
-        {0x00000070U,  7},  ///< 符号 'U' (85)
-        {0x00000071U,  7},  ///< 符号 'V' (86)
-        {0x00000072U,  7},  ///< 符号 'W' (87)
-        {0x000000FCU,  8},  ///< 符号 'X' (88)
-        {0x00000073U,  7},  ///< 符号 'Y' (89)
-        {0x000000FDU,  8},  ///< 符号 'Z' (90)
-        {0x00001FFBU, 13},  ///< 符号 '[' (91)
-        {0x0007FFF0U, 19},  ///< 符号 '\' (92)
-        {0x00001FFCU, 13},  ///< 符号 ']' (93)
-        {0x00003FFCU, 14},  ///< 符号 '^' (94)
-        {0x00000022U,  6},  ///< 符号 '_' (95)
-        {0x00007FFDU, 15},  ///< 符号 '`' (96)
-        {0x00000003U,  5},  ///< 符号 'a' (97)
-        {0x00000023U,  6},  ///< 符号 'b' (98)
-        {0x00000004U,  5},  ///< 符号 'c' (99)
-        {0x00000024U,  6},  ///< 符号 'd' (100)
-        {0x00000005U,  5},  ///< 符号 'e' (101)
-        {0x00000025U,  6},  ///< 符号 'f' (102)
-        {0x00000026U,  6},  ///< 符号 'g' (103)
-        {0x00000027U,  6},  ///< 符号 'h' (104)
-        {0x00000006U,  5},  ///< 符号 'i' (105)
-        {0x00000074U,  7},  ///< 符号 'j' (106)
-        {0x00000075U,  7},  ///< 符号 'k' (107)
-        {0x00000028U,  6},  ///< 符号 'l' (108)
-        {0x00000029U,  6},  ///< 符号 'm' (109)
-        {0x0000002AU,  6},  ///< 符号 'n' (110)
-        {0x00000007U,  5},  ///< 符号 'o' (111)
-        {0x0000002BU,  6},  ///< 符号 'p' (112)
-        {0x00000076U,  7},  ///< 符号 'q' (113)
-        {0x0000002CU,  6},  ///< 符号 'r' (114)
-        {0x00000008U,  5},  ///< 符号 's' (115)
-        {0x00000009U,  5},  ///< 符号 't' (116)
-        {0x0000002DU,  6},  ///< 符号 'u' (117)
-        {0x00000077U,  7},  ///< 符号 'v' (118)
-        {0x00000078U,  7},  ///< 符号 'w' (119)
-        {0x00000079U,  7},  ///< 符号 'x' (120)
-        {0x0000007AU,  7},  ///< 符号 'y' (121)
-        {0x0000007BU,  7},  ///< 符号 'z' (122)
-        {0x00007FFEU, 15},  ///< 符号 '{' (123)
-        {0x000007FCU, 11},  ///< 符号 '|' (124)
-        {0x00003FFDU, 14},  ///< 符号 '}' (125)
-        {0x00001FFDU, 13},  ///< 符号 '~' (126)
-        {0x0FFFFFFCU, 28},  ///< 符号 127
-        {0x000FFFE6U, 20},  ///< 符号 128
-        {0x003FFFD2U, 22},  ///< 符号 129
-        {0x000FFFE7U, 20},  ///< 符号 130
-        {0x000FFFE8U, 20},  ///< 符号 131
-        {0x003FFFD3U, 22},  ///< 符号 132
-        {0x003FFFD4U, 22},  ///< 符号 133
-        {0x003FFFD5U, 22},  ///< 符号 134
-        {0x007FFFD9U, 23},  ///< 符号 135
-        {0x003FFFD6U, 22},  ///< 符号 136
-        {0x007FFFDAU, 23},  ///< 符号 137
-        {0x007FFFDBU, 23},  ///< 符号 138
-        {0x007FFFDCU, 23},  ///< 符号 139
-        {0x007FFFDDU, 23},  ///< 符号 140
-        {0x007FFFDEU, 23},  ///< 符号 141
-        {0x00FFFFEBU, 24},  ///< 符号 142
-        {0x007FFFDFU, 23},  ///< 符号 143
-        {0x00FFFFECU, 24},  ///< 符号 144
-        {0x00FFFFEDU, 24},  ///< 符号 145
-        {0x003FFFD7U, 22},  ///< 符号 146
-        {0x007FFFE0U, 23},  ///< 符号 147
-        {0x00FFFFEEU, 24},  ///< 符号 148
-        {0x007FFFE1U, 23},  ///< 符号 149
-        {0x007FFFE2U, 23},  ///< 符号 150
-        {0x007FFFE3U, 23},  ///< 符号 151
-        {0x007FFFE4U, 23},  ///< 符号 152
-        {0x001FFFDCU, 21},  ///< 符号 153
-        {0x003FFFD8U, 22},  ///< 符号 154
-        {0x007FFFE5U, 23},  ///< 符号 155
-        {0x003FFFD9U, 22},  ///< 符号 156
-        {0x007FFFE6U, 23},  ///< 符号 157
-        {0x007FFFE7U, 23},  ///< 符号 158
-        {0x00FFFFEFU, 24},  ///< 符号 159
-        {0x003FFFDAU, 22},  ///< 符号 160
-        {0x001FFFDDU, 21},  ///< 符号 161
-        {0x000FFFE9U, 20},  ///< 符号 162
-        {0x003FFFDBU, 22},  ///< 符号 163
-        {0x003FFFDCU, 22},  ///< 符号 164
-        {0x007FFFE8U, 23},  ///< 符号 165
-        {0x007FFFE9U, 23},  ///< 符号 166
-        {0x001FFFDEU, 21},  ///< 符号 167
-        {0x007FFFEAU, 23},  ///< 符号 168
-        {0x003FFFDDU, 22},  ///< 符号 169
-        {0x003FFFDEU, 22},  ///< 符号 170
-        {0x00FFFFF0U, 24},  ///< 符号 171
-        {0x001FFFDFU, 21},  ///< 符号 172
-        {0x003FFFDFU, 22},  ///< 符号 173
-        {0x007FFFEBU, 23},  ///< 符号 174
-        {0x007FFFECU, 23},  ///< 符号 175
-        {0x001FFFE0U, 21},  ///< 符号 176
-        {0x001FFFE1U, 21},  ///< 符号 177
-        {0x003FFFE0U, 22},  ///< 符号 178
-        {0x001FFFE2U, 21},  ///< 符号 179
-        {0x007FFFEDU, 23},  ///< 符号 180
-        {0x003FFFE1U, 22},  ///< 符号 181
-        {0x007FFFEEU, 23},  ///< 符号 182
-        {0x007FFFEFU, 23},  ///< 符号 183
-        {0x000FFFEAU, 20},  ///< 符号 184
-        {0x003FFFE2U, 22},  ///< 符号 185
-        {0x003FFFE3U, 22},  ///< 符号 186
-        {0x003FFFE4U, 22},  ///< 符号 187
-        {0x007FFFF0U, 23},  ///< 符号 188
-        {0x003FFFE5U, 22},  ///< 符号 189
-        {0x003FFFE6U, 22},  ///< 符号 190
-        {0x007FFFF1U, 23},  ///< 符号 191
-        {0x03FFFFE0U, 26},  ///< 符号 192
-        {0x03FFFFE1U, 26},  ///< 符号 193
-        {0x000FFFEBU, 20},  ///< 符号 194
-        {0x0007FFF1U, 19},  ///< 符号 195
-        {0x003FFFE7U, 22},  ///< 符号 196
-        {0x007FFFF2U, 23},  ///< 符号 197
-        {0x003FFFE8U, 22},  ///< 符号 198
-        {0x01FFFFECU, 25},  ///< 符号 199
-        {0x03FFFFE2U, 26},  ///< 符号 200
-        {0x03FFFFE3U, 26},  ///< 符号 201
-        {0x03FFFFE4U, 26},  ///< 符号 202
-        {0x07FFFFDEU, 27},  ///< 符号 203
-        {0x07FFFFDFU, 27},  ///< 符号 204
-        {0x03FFFFE5U, 26},  ///< 符号 205
-        {0x00FFFFF1U, 24},  ///< 符号 206
-        {0x01FFFFEDU, 25},  ///< 符号 207
-        {0x0007FFF2U, 19},  ///< 符号 208
-        {0x001FFFE3U, 21},  ///< 符号 209
-        {0x03FFFFE6U, 26},  ///< 符号 210
-        {0x07FFFFE0U, 27},  ///< 符号 211
-        {0x07FFFFE1U, 27},  ///< 符号 212
-        {0x03FFFFE7U, 26},  ///< 符号 213
-        {0x07FFFFE2U, 27},  ///< 符号 214
-        {0x00FFFFF2U, 24},  ///< 符号 215
-        {0x001FFFE4U, 21},  ///< 符号 216
-        {0x001FFFE5U, 21},  ///< 符号 217
-        {0x03FFFFE8U, 26},  ///< 符号 218
-        {0x03FFFFE9U, 26},  ///< 符号 219
-        {0x0FFFFFFDU, 28},  ///< 符号 220
-        {0x07FFFFE3U, 27},  ///< 符号 221
-        {0x07FFFFE4U, 27},  ///< 符号 222
-        {0x07FFFFE5U, 27},  ///< 符号 223
-        {0x000FFFECU, 20},  ///< 符号 224
-        {0x00FFFFF3U, 24},  ///< 符号 225
-        {0x000FFFEDU, 20},  ///< 符号 226
-        {0x001FFFE6U, 21},  ///< 符号 227
-        {0x003FFFE9U, 22},  ///< 符号 228
-        {0x001FFFE7U, 21},  ///< 符号 229
-        {0x001FFFE8U, 21},  ///< 符号 230
-        {0x007FFFF3U, 23},  ///< 符号 231
-        {0x003FFFEAU, 22},  ///< 符号 232
-        {0x003FFFEBU, 22},  ///< 符号 233
-        {0x01FFFFEEU, 25},  ///< 符号 234
-        {0x01FFFFEFU, 25},  ///< 符号 235
-        {0x00FFFFF4U, 24},  ///< 符号 236
-        {0x00FFFFF5U, 24},  ///< 符号 237
-        {0x03FFFFEAU, 26},  ///< 符号 238
-        {0x007FFFF4U, 23},  ///< 符号 239
-        {0x03FFFFEBU, 26},  ///< 符号 240
-        {0x07FFFFE6U, 27},  ///< 符号 241
-        {0x03FFFFECU, 26},  ///< 符号 242
-        {0x03FFFFEDU, 26},  ///< 符号 243
-        {0x07FFFFE7U, 27},  ///< 符号 244
-        {0x07FFFFE8U, 27},  ///< 符号 245
-        {0x07FFFFE9U, 27},  ///< 符号 246
-        {0x07FFFFEAU, 27},  ///< 符号 247
-        {0x07FFFFEBU, 27},  ///< 符号 248
-        {0x0FFFFFFEU, 28},  ///< 符号 249
-        {0x07FFFFECU, 27},  ///< 符号 250
-        {0x07FFFFEDU, 27},  ///< 符号 251
-        {0x07FFFFEEU, 27},  ///< 符号 252
-        {0x07FFFFEFU, 27},  ///< 符号 253
-        {0x07FFFFF0U, 27},  ///< 符号 254
-        {0x03FFFFEEU, 26},  ///< 符号 255
-        {0x3FFFFFFFU, 30}  ///< 符号 EOS
+            {0x00001FF8U, 13}, ///< 符号 0
+            {0x007FFFD8U, 23}, ///< 符号 1
+            {0x0FFFFFE2U, 28}, ///< 符号 2
+            {0x0FFFFFE3U, 28}, ///< 符号 3
+            {0x0FFFFFE4U, 28}, ///< 符号 4
+            {0x0FFFFFE5U, 28}, ///< 符号 5
+            {0x0FFFFFE6U, 28}, ///< 符号 6
+            {0x0FFFFFE7U, 28}, ///< 符号 7
+            {0x0FFFFFE8U, 28}, ///< 符号 8
+            {0x00FFFFEAU, 24}, ///< 符号 9
+            {0x3FFFFFFCU, 30}, ///< 符号 10
+            {0x0FFFFFE9U, 28}, ///< 符号 11
+            {0x0FFFFFEAU, 28}, ///< 符号 12
+            {0x3FFFFFFDU, 30}, ///< 符号 13
+            {0x0FFFFFEBU, 28}, ///< 符号 14
+            {0x0FFFFFECU, 28}, ///< 符号 15
+            {0x0FFFFFEDU, 28}, ///< 符号 16
+            {0x0FFFFFEEU, 28}, ///< 符号 17
+            {0x0FFFFFEFU, 28}, ///< 符号 18
+            {0x0FFFFFF0U, 28}, ///< 符号 19
+            {0x0FFFFFF1U, 28}, ///< 符号 20
+            {0x0FFFFFF2U, 28}, ///< 符号 21
+            {0x3FFFFFFEU, 30}, ///< 符号 22
+            {0x0FFFFFF3U, 28}, ///< 符号 23
+            {0x0FFFFFF4U, 28}, ///< 符号 24
+            {0x0FFFFFF5U, 28}, ///< 符号 25
+            {0x0FFFFFF6U, 28}, ///< 符号 26
+            {0x0FFFFFF7U, 28}, ///< 符号 27
+            {0x0FFFFFF8U, 28}, ///< 符号 28
+            {0x0FFFFFF9U, 28}, ///< 符号 29
+            {0x0FFFFFFAU, 28}, ///< 符号 30
+            {0x0FFFFFFBU, 28}, ///< 符号 31
+            {0x00000014U, 6},  ///< 符号 ' ' (32)
+            {0x000003F8U, 10}, ///< 符号 '!' (33)
+            {0x000003F9U, 10}, ///< 符号 '"' (34)
+            {0x00000FFAU, 12}, ///< 符号 '#' (35)
+            {0x00001FF9U, 13}, ///< 符号 '$' (36)
+            {0x00000015U, 6},  ///< 符号 '%' (37)
+            {0x000000F8U, 8},  ///< 符号 '&' (38)
+            {0x000007FAU, 11}, ///< 符号 ''' (39)
+            {0x000003FAU, 10}, ///< 符号 '(' (40)
+            {0x000003FBU, 10}, ///< 符号 ')' (41)
+            {0x000000F9U, 8},  ///< 符号 '*' (42)
+            {0x000007FBU, 11}, ///< 符号 '+' (43)
+            {0x000000FAU, 8},  ///< 符号 ',' (44)
+            {0x00000016U, 6},  ///< 符号 '-' (45)
+            {0x00000017U, 6},  ///< 符号 '.' (46)
+            {0x00000018U, 6},  ///< 符号 '/' (47)
+            {0x00000000U, 5},  ///< 符号 '0' (48)
+            {0x00000001U, 5},  ///< 符号 '1' (49)
+            {0x00000002U, 5},  ///< 符号 '2' (50)
+            {0x00000019U, 6},  ///< 符号 '3' (51)
+            {0x0000001AU, 6},  ///< 符号 '4' (52)
+            {0x0000001BU, 6},  ///< 符号 '5' (53)
+            {0x0000001CU, 6},  ///< 符号 '6' (54)
+            {0x0000001DU, 6},  ///< 符号 '7' (55)
+            {0x0000001EU, 6},  ///< 符号 '8' (56)
+            {0x0000001FU, 6},  ///< 符号 '9' (57)
+            {0x0000005CU, 7},  ///< 符号 ':' (58)
+            {0x000000FBU, 8},  ///< 符号 ';' (59)
+            {0x00007FFCU, 15}, ///< 符号 '<' (60)
+            {0x00000020U, 6},  ///< 符号 '=' (61)
+            {0x00000FFBU, 12}, ///< 符号 '>' (62)
+            {0x000003FCU, 10}, ///< 符号 '?' (63)
+            {0x00001FFAU, 13}, ///< 符号 '@' (64)
+            {0x00000021U, 6},  ///< 符号 'A' (65)
+            {0x0000005DU, 7},  ///< 符号 'B' (66)
+            {0x0000005EU, 7},  ///< 符号 'C' (67)
+            {0x0000005FU, 7},  ///< 符号 'D' (68)
+            {0x00000060U, 7},  ///< 符号 'E' (69)
+            {0x00000061U, 7},  ///< 符号 'F' (70)
+            {0x00000062U, 7},  ///< 符号 'G' (71)
+            {0x00000063U, 7},  ///< 符号 'H' (72)
+            {0x00000064U, 7},  ///< 符号 'I' (73)
+            {0x00000065U, 7},  ///< 符号 'J' (74)
+            {0x00000066U, 7},  ///< 符号 'K' (75)
+            {0x00000067U, 7},  ///< 符号 'L' (76)
+            {0x00000068U, 7},  ///< 符号 'M' (77)
+            {0x00000069U, 7},  ///< 符号 'N' (78)
+            {0x0000006AU, 7},  ///< 符号 'O' (79)
+            {0x0000006BU, 7},  ///< 符号 'P' (80)
+            {0x0000006CU, 7},  ///< 符号 'Q' (81)
+            {0x0000006DU, 7},  ///< 符号 'R' (82)
+            {0x0000006EU, 7},  ///< 符号 'S' (83)
+            {0x0000006FU, 7},  ///< 符号 'T' (84)
+            {0x00000070U, 7},  ///< 符号 'U' (85)
+            {0x00000071U, 7},  ///< 符号 'V' (86)
+            {0x00000072U, 7},  ///< 符号 'W' (87)
+            {0x000000FCU, 8},  ///< 符号 'X' (88)
+            {0x00000073U, 7},  ///< 符号 'Y' (89)
+            {0x000000FDU, 8},  ///< 符号 'Z' (90)
+            {0x00001FFBU, 13}, ///< 符号 '[' (91)
+            {0x0007FFF0U, 19}, ///< 符号 '\' (92)
+            {0x00001FFCU, 13}, ///< 符号 ']' (93)
+            {0x00003FFCU, 14}, ///< 符号 '^' (94)
+            {0x00000022U, 6},  ///< 符号 '_' (95)
+            {0x00007FFDU, 15}, ///< 符号 '`' (96)
+            {0x00000003U, 5},  ///< 符号 'a' (97)
+            {0x00000023U, 6},  ///< 符号 'b' (98)
+            {0x00000004U, 5},  ///< 符号 'c' (99)
+            {0x00000024U, 6},  ///< 符号 'd' (100)
+            {0x00000005U, 5},  ///< 符号 'e' (101)
+            {0x00000025U, 6},  ///< 符号 'f' (102)
+            {0x00000026U, 6},  ///< 符号 'g' (103)
+            {0x00000027U, 6},  ///< 符号 'h' (104)
+            {0x00000006U, 5},  ///< 符号 'i' (105)
+            {0x00000074U, 7},  ///< 符号 'j' (106)
+            {0x00000075U, 7},  ///< 符号 'k' (107)
+            {0x00000028U, 6},  ///< 符号 'l' (108)
+            {0x00000029U, 6},  ///< 符号 'm' (109)
+            {0x0000002AU, 6},  ///< 符号 'n' (110)
+            {0x00000007U, 5},  ///< 符号 'o' (111)
+            {0x0000002BU, 6},  ///< 符号 'p' (112)
+            {0x00000076U, 7},  ///< 符号 'q' (113)
+            {0x0000002CU, 6},  ///< 符号 'r' (114)
+            {0x00000008U, 5},  ///< 符号 's' (115)
+            {0x00000009U, 5},  ///< 符号 't' (116)
+            {0x0000002DU, 6},  ///< 符号 'u' (117)
+            {0x00000077U, 7},  ///< 符号 'v' (118)
+            {0x00000078U, 7},  ///< 符号 'w' (119)
+            {0x00000079U, 7},  ///< 符号 'x' (120)
+            {0x0000007AU, 7},  ///< 符号 'y' (121)
+            {0x0000007BU, 7},  ///< 符号 'z' (122)
+            {0x00007FFEU, 15}, ///< 符号 '{' (123)
+            {0x000007FCU, 11}, ///< 符号 '|' (124)
+            {0x00003FFDU, 14}, ///< 符号 '}' (125)
+            {0x00001FFDU, 13}, ///< 符号 '~' (126)
+            {0x0FFFFFFCU, 28}, ///< 符号 127
+            {0x000FFFE6U, 20}, ///< 符号 128
+            {0x003FFFD2U, 22}, ///< 符号 129
+            {0x000FFFE7U, 20}, ///< 符号 130
+            {0x000FFFE8U, 20}, ///< 符号 131
+            {0x003FFFD3U, 22}, ///< 符号 132
+            {0x003FFFD4U, 22}, ///< 符号 133
+            {0x003FFFD5U, 22}, ///< 符号 134
+            {0x007FFFD9U, 23}, ///< 符号 135
+            {0x003FFFD6U, 22}, ///< 符号 136
+            {0x007FFFDAU, 23}, ///< 符号 137
+            {0x007FFFDBU, 23}, ///< 符号 138
+            {0x007FFFDCU, 23}, ///< 符号 139
+            {0x007FFFDDU, 23}, ///< 符号 140
+            {0x007FFFDEU, 23}, ///< 符号 141
+            {0x00FFFFEBU, 24}, ///< 符号 142
+            {0x007FFFDFU, 23}, ///< 符号 143
+            {0x00FFFFECU, 24}, ///< 符号 144
+            {0x00FFFFEDU, 24}, ///< 符号 145
+            {0x003FFFD7U, 22}, ///< 符号 146
+            {0x007FFFE0U, 23}, ///< 符号 147
+            {0x00FFFFEEU, 24}, ///< 符号 148
+            {0x007FFFE1U, 23}, ///< 符号 149
+            {0x007FFFE2U, 23}, ///< 符号 150
+            {0x007FFFE3U, 23}, ///< 符号 151
+            {0x007FFFE4U, 23}, ///< 符号 152
+            {0x001FFFDCU, 21}, ///< 符号 153
+            {0x003FFFD8U, 22}, ///< 符号 154
+            {0x007FFFE5U, 23}, ///< 符号 155
+            {0x003FFFD9U, 22}, ///< 符号 156
+            {0x007FFFE6U, 23}, ///< 符号 157
+            {0x007FFFE7U, 23}, ///< 符号 158
+            {0x00FFFFEFU, 24}, ///< 符号 159
+            {0x003FFFDAU, 22}, ///< 符号 160
+            {0x001FFFDDU, 21}, ///< 符号 161
+            {0x000FFFE9U, 20}, ///< 符号 162
+            {0x003FFFDBU, 22}, ///< 符号 163
+            {0x003FFFDCU, 22}, ///< 符号 164
+            {0x007FFFE8U, 23}, ///< 符号 165
+            {0x007FFFE9U, 23}, ///< 符号 166
+            {0x001FFFDEU, 21}, ///< 符号 167
+            {0x007FFFEAU, 23}, ///< 符号 168
+            {0x003FFFDDU, 22}, ///< 符号 169
+            {0x003FFFDEU, 22}, ///< 符号 170
+            {0x00FFFFF0U, 24}, ///< 符号 171
+            {0x001FFFDFU, 21}, ///< 符号 172
+            {0x003FFFDFU, 22}, ///< 符号 173
+            {0x007FFFEBU, 23}, ///< 符号 174
+            {0x007FFFECU, 23}, ///< 符号 175
+            {0x001FFFE0U, 21}, ///< 符号 176
+            {0x001FFFE1U, 21}, ///< 符号 177
+            {0x003FFFE0U, 22}, ///< 符号 178
+            {0x001FFFE2U, 21}, ///< 符号 179
+            {0x007FFFEDU, 23}, ///< 符号 180
+            {0x003FFFE1U, 22}, ///< 符号 181
+            {0x007FFFEEU, 23}, ///< 符号 182
+            {0x007FFFEFU, 23}, ///< 符号 183
+            {0x000FFFEAU, 20}, ///< 符号 184
+            {0x003FFFE2U, 22}, ///< 符号 185
+            {0x003FFFE3U, 22}, ///< 符号 186
+            {0x003FFFE4U, 22}, ///< 符号 187
+            {0x007FFFF0U, 23}, ///< 符号 188
+            {0x003FFFE5U, 22}, ///< 符号 189
+            {0x003FFFE6U, 22}, ///< 符号 190
+            {0x007FFFF1U, 23}, ///< 符号 191
+            {0x03FFFFE0U, 26}, ///< 符号 192
+            {0x03FFFFE1U, 26}, ///< 符号 193
+            {0x000FFFEBU, 20}, ///< 符号 194
+            {0x0007FFF1U, 19}, ///< 符号 195
+            {0x003FFFE7U, 22}, ///< 符号 196
+            {0x007FFFF2U, 23}, ///< 符号 197
+            {0x003FFFE8U, 22}, ///< 符号 198
+            {0x01FFFFECU, 25}, ///< 符号 199
+            {0x03FFFFE2U, 26}, ///< 符号 200
+            {0x03FFFFE3U, 26}, ///< 符号 201
+            {0x03FFFFE4U, 26}, ///< 符号 202
+            {0x07FFFFDEU, 27}, ///< 符号 203
+            {0x07FFFFDFU, 27}, ///< 符号 204
+            {0x03FFFFE5U, 26}, ///< 符号 205
+            {0x00FFFFF1U, 24}, ///< 符号 206
+            {0x01FFFFEDU, 25}, ///< 符号 207
+            {0x0007FFF2U, 19}, ///< 符号 208
+            {0x001FFFE3U, 21}, ///< 符号 209
+            {0x03FFFFE6U, 26}, ///< 符号 210
+            {0x07FFFFE0U, 27}, ///< 符号 211
+            {0x07FFFFE1U, 27}, ///< 符号 212
+            {0x03FFFFE7U, 26}, ///< 符号 213
+            {0x07FFFFE2U, 27}, ///< 符号 214
+            {0x00FFFFF2U, 24}, ///< 符号 215
+            {0x001FFFE4U, 21}, ///< 符号 216
+            {0x001FFFE5U, 21}, ///< 符号 217
+            {0x03FFFFE8U, 26}, ///< 符号 218
+            {0x03FFFFE9U, 26}, ///< 符号 219
+            {0x0FFFFFFDU, 28}, ///< 符号 220
+            {0x07FFFFE3U, 27}, ///< 符号 221
+            {0x07FFFFE4U, 27}, ///< 符号 222
+            {0x07FFFFE5U, 27}, ///< 符号 223
+            {0x000FFFECU, 20}, ///< 符号 224
+            {0x00FFFFF3U, 24}, ///< 符号 225
+            {0x000FFFEDU, 20}, ///< 符号 226
+            {0x001FFFE6U, 21}, ///< 符号 227
+            {0x003FFFE9U, 22}, ///< 符号 228
+            {0x001FFFE7U, 21}, ///< 符号 229
+            {0x001FFFE8U, 21}, ///< 符号 230
+            {0x007FFFF3U, 23}, ///< 符号 231
+            {0x003FFFEAU, 22}, ///< 符号 232
+            {0x003FFFEBU, 22}, ///< 符号 233
+            {0x01FFFFEEU, 25}, ///< 符号 234
+            {0x01FFFFEFU, 25}, ///< 符号 235
+            {0x00FFFFF4U, 24}, ///< 符号 236
+            {0x00FFFFF5U, 24}, ///< 符号 237
+            {0x03FFFFEAU, 26}, ///< 符号 238
+            {0x007FFFF4U, 23}, ///< 符号 239
+            {0x03FFFFEBU, 26}, ///< 符号 240
+            {0x07FFFFE6U, 27}, ///< 符号 241
+            {0x03FFFFECU, 26}, ///< 符号 242
+            {0x03FFFFEDU, 26}, ///< 符号 243
+            {0x07FFFFE7U, 27}, ///< 符号 244
+            {0x07FFFFE8U, 27}, ///< 符号 245
+            {0x07FFFFE9U, 27}, ///< 符号 246
+            {0x07FFFFEAU, 27}, ///< 符号 247
+            {0x07FFFFEBU, 27}, ///< 符号 248
+            {0x0FFFFFFEU, 28}, ///< 符号 249
+            {0x07FFFFECU, 27}, ///< 符号 250
+            {0x07FFFFEDU, 27}, ///< 符号 251
+            {0x07FFFFEEU, 27}, ///< 符号 252
+            {0x07FFFFEFU, 27}, ///< 符号 253
+            {0x07FFFFF0U, 27}, ///< 符号 254
+            {0x03FFFFEEU, 26}, ///< 符号 255
+            {0x3FFFFFFFU, 30}  ///< 符号 EOS
     }};
 
     /**
@@ -596,8 +595,8 @@ namespace AsynGyanis::Net
      * @note 多字节溢出必须判错而不是回绕：回绕后会得到一个「看起来合法」的值，索引随即指向
      *       另一个条目，同一段字节在不同实现上解出不同结果
      */
-    [[nodiscard]] bool decodeHpackInteger(std::string_view bytes, std::uint8_t prefixBitCount, std::uint64_t &value,
-                                          std::size_t &consumedByteCount, std::string *errorText = nullptr);
+    [[nodiscard]] bool decodeHpackInteger(std::string_view bytes, std::uint8_t prefixBitCount, std::uint64_t &value, std::size_t &consumedByteCount,
+                                          std::string *errorText = nullptr);
 
     /**
      * @brief 解码一个字符串字面量表示（RFC 7541 §5.2）
@@ -610,8 +609,7 @@ namespace AsynGyanis::Net
      * @return true 解码成功
      * @return false 长度或 H 位非法、字节数不足，或 Huffman 变体解不开
      */
-    [[nodiscard]] bool decodeHpackString(std::string_view bytes, std::string &value, std::size_t &consumedByteCount,
-                                         std::string *errorText = nullptr);
+    [[nodiscard]] bool decodeHpackString(std::string_view bytes, std::string &value, std::size_t &consumedByteCount, std::string *errorText = nullptr);
 
     /**
      * @brief 解码一段 Huffman 编码的字节（RFC 7541 Appendix B 的码表）
@@ -709,11 +707,11 @@ namespace AsynGyanis::Net
     private:
         /// 条目列表：下标 0 对应索引空间里的 62（最新插入），驱逐总是从末尾开始。
         /// 用 std::deque 而不是 std::vector：插入走的是头插，vector 每次都要把已有条目整体后移
-        ///（一条连接的动态表通常几十项，而每个请求的头部块都可能带增量索引的字段）
+        /// （一条连接的动态表通常几十项，而每个请求的头部块都可能带增量索引的字段）
         std::deque<HpackHeaderField> m_entries;
 
-        std::size_t m_sizeByteCount{0};              ///< 当前表大小，单位字节
-        std::size_t m_maximumSizeByteCount{0};       ///< 当前表上限，单位字节
+        std::size_t m_sizeByteCount{0};        ///< 当前表大小，单位字节
+        std::size_t m_maximumSizeByteCount{0}; ///< 当前表上限，单位字节
     };
 
     // ============================================================================
@@ -798,8 +796,7 @@ namespace AsynGyanis::Net
          *         压缩错误则已粘滞，调用方必须按 errorKind() 终止连接
          * @see errorKind(), isLimitExceeded(), toHttp2ErrorCode()
          */
-        [[nodiscard]] bool decode(std::string_view headerBlock, std::vector<HpackHeaderField> &headerFields,
-                                  std::string *errorText = nullptr);
+        [[nodiscard]] bool decode(std::string_view headerBlock, std::vector<HpackHeaderField> &headerFields, std::string *errorText = nullptr);
 
         /**
          * @brief 重置解码器：清空动态表、粘滞错误与内部计数，回到「新连接」的初态
@@ -861,8 +858,7 @@ namespace AsynGyanis::Net
          * @param headerFields 输出参数：解出的头部按序追加
          * @return true 本表示解完
          */
-        [[nodiscard]] bool decodeRepresentation(std::string_view headerBlock, std::size_t &consumed,
-                                                std::vector<HpackHeaderField> &headerFields);
+        [[nodiscard]] bool decodeRepresentation(std::string_view headerBlock, std::size_t &consumed, std::vector<HpackHeaderField> &headerFields);
 
         /**
          * @brief 解码一个「字面量」表示（带索引名或不带索引名）
@@ -873,8 +869,7 @@ namespace AsynGyanis::Net
          * @param headerFields 输出参数：解出的头部按序追加
          * @return true 本表示解完
          */
-        [[nodiscard]] bool decodeLiteralRepresentation(std::uint8_t nameIndexPrefixBitCount, bool isIncrementalIndexing,
-                                                       std::string_view headerBlock, std::size_t &consumed,
+        [[nodiscard]] bool decodeLiteralRepresentation(std::uint8_t nameIndexPrefixBitCount, bool isIncrementalIndexing, std::string_view headerBlock, std::size_t &consumed,
                                                        std::vector<HpackHeaderField> &headerFields);
 
         /**
@@ -907,16 +902,16 @@ namespace AsynGyanis::Net
          */
         void noteHeaderLimitExceeded(std::string reason);
 
-        HpackDecoderLimits m_limits{};   ///< 构造时按值落定的资源上限，没有中途更换的入口
-        HpackDynamicTable m_dynamicTable;///< 动态表，与对端的编码器同步演进
+        HpackDecoderLimits m_limits{};     ///< 构造时按值落定的资源上限，没有中途更换的入口
+        HpackDynamicTable  m_dynamicTable; ///< 动态表，与对端的编码器同步演进
 
-        std::size_t m_headerListByteCount{0};      ///< 当前头块已解出的头列表大小（§6.5.2 算式）
-        bool m_hasSeenHeaderRepresentation{false}; ///< 本头块是否已解出过一个头部：大小更新只许出现在它之前
-        bool m_isBeyondHeaderLimits{false};        ///< 本头块是否已越过头部上限：越过后剩余表示只解不收
+        std::size_t m_headerListByteCount{0};             ///< 当前头块已解出的头列表大小（§6.5.2 算式）
+        bool        m_hasSeenHeaderRepresentation{false}; ///< 本头块是否已解出过一个头部：大小更新只许出现在它之前
+        bool        m_isBeyondHeaderLimits{false};        ///< 本头块是否已越过头部上限：越过后剩余表示只解不收
 
-        bool m_hasError{false};                    ///< 是否已发生解码错误
+        bool           m_hasError{false};                 ///< 是否已发生解码错误
         HpackErrorKind m_errorKind{HpackErrorKind::None}; ///< 失败类别（决定上层回哪个错误码）
-        std::string m_errorMessage;                ///< 面向使用者的中文错误描述
+        std::string    m_errorMessage;                    ///< 面向使用者的中文错误描述
     };
 
     // ============================================================================
@@ -1005,7 +1000,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t dynamicTableSizeByteCount() const noexcept;
 
     private:
-        HpackDynamicTable m_dynamicTable;              ///< 动态表，与对端的解码器同步演进
-        bool m_hasPendingTableSizeUpdate{false};       ///< 是否需要在下一个头块开头补「动态表大小更新」
+        HpackDynamicTable m_dynamicTable;                     ///< 动态表，与对端的解码器同步演进
+        bool              m_hasPendingTableSizeUpdate{false}; ///< 是否需要在下一个头块开头补「动态表大小更新」
     };
 } // namespace AsynGyanis::Net

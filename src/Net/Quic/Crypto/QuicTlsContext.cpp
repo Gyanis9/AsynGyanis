@@ -52,15 +52,13 @@ namespace AsynGyanis::Net
             {
                 if (identifier.empty() || identifier.size() > 255U)
                 {
-                    throw Base::InvalidArgumentException("QUIC 出站连接建立失败：ALPN 协议标识 \"" + identifier
-                                                         + "\" 长度不合法（须在 1..255 字节之间）");
+                    throw Base::InvalidArgumentException("QUIC 出站连接建立失败：ALPN 协议标识 \"" + identifier + "\" 长度不合法（须在 1..255 字节之间）");
                 }
                 encodedIdentifiers.push_back(static_cast<unsigned char>(identifier.size()));
                 encodedIdentifiers.insert(encodedIdentifiers.end(), identifier.begin(), identifier.end());
             }
             // 注意这条的返回值是**反的**：0 才是成功（与 SSL_CTX_set_alpn_protos 同一口径）
-            if (SSL_set_alpn_protos(&session, encodedIdentifiers.data(),
-                                    static_cast<unsigned int>(encodedIdentifiers.size())) != 0)
+            if (SSL_set_alpn_protos(&session, encodedIdentifiers.data(), static_cast<unsigned int>(encodedIdentifiers.size())) != 0)
             {
                 throw Base::Exception("QUIC 出站连接建立失败：ALPN 列表落不上去（" + quicOpenSslErrorText() + "）");
             }
@@ -74,11 +72,16 @@ namespace AsynGyanis::Net
         {
             switch (protectionLevel)
             {
-            case OSSL_RECORD_PROTECTION_LEVEL_NONE: return QuicEncryptionLevel::Initial;
-            case OSSL_RECORD_PROTECTION_LEVEL_EARLY: return QuicEncryptionLevel::ZeroRtt;
-            case OSSL_RECORD_PROTECTION_LEVEL_HANDSHAKE: return QuicEncryptionLevel::Handshake;
-            case OSSL_RECORD_PROTECTION_LEVEL_APPLICATION: return QuicEncryptionLevel::Application;
-            default: return std::nullopt;
+                case OSSL_RECORD_PROTECTION_LEVEL_NONE:
+                    return QuicEncryptionLevel::Initial;
+                case OSSL_RECORD_PROTECTION_LEVEL_EARLY:
+                    return QuicEncryptionLevel::ZeroRtt;
+                case OSSL_RECORD_PROTECTION_LEVEL_HANDSHAKE:
+                    return QuicEncryptionLevel::Handshake;
+                case OSSL_RECORD_PROTECTION_LEVEL_APPLICATION:
+                    return QuicEncryptionLevel::Application;
+                default:
+                    return std::nullopt;
             }
         }
 
@@ -96,10 +99,14 @@ namespace AsynGyanis::Net
             }
             switch (SSL_CIPHER_get_cipher_nid(cipher))
             {
-            case NID_aes_128_gcm: return QuicCipherSuite::Aes128Gcm;
-            case NID_aes_256_gcm: return QuicCipherSuite::Aes256Gcm;
-            case NID_chacha20_poly1305: return QuicCipherSuite::ChaCha20Poly1305;
-            default: return std::nullopt;
+                case NID_aes_128_gcm:
+                    return QuicCipherSuite::Aes128Gcm;
+                case NID_aes_256_gcm:
+                    return QuicCipherSuite::Aes256Gcm;
+                case NID_chacha20_poly1305:
+                    return QuicCipherSuite::ChaCha20Poly1305;
+                default:
+                    return std::nullopt;
             }
         }
 
@@ -111,11 +118,9 @@ namespace AsynGyanis::Net
         static const OSSL_DISPATCH table[] = {
                 {OSSL_FUNC_SSL_QUIC_TLS_CRYPTO_SEND, reinterpret_cast<void (*)(void)>(&QuicTlsContext::onSendCryptoData)},
                 {OSSL_FUNC_SSL_QUIC_TLS_CRYPTO_RECV_RCD, reinterpret_cast<void (*)(void)>(&QuicTlsContext::onReadCryptoData)},
-                {OSSL_FUNC_SSL_QUIC_TLS_CRYPTO_RELEASE_RCD,
-                 reinterpret_cast<void (*)(void)>(&QuicTlsContext::onReleaseCryptoData)},
+                {OSSL_FUNC_SSL_QUIC_TLS_CRYPTO_RELEASE_RCD, reinterpret_cast<void (*)(void)>(&QuicTlsContext::onReleaseCryptoData)},
                 {OSSL_FUNC_SSL_QUIC_TLS_YIELD_SECRET, reinterpret_cast<void (*)(void)>(&QuicTlsContext::onYieldSecret)},
-                {OSSL_FUNC_SSL_QUIC_TLS_GOT_TRANSPORT_PARAMS,
-                 reinterpret_cast<void (*)(void)>(&QuicTlsContext::onGotTransportParameters)},
+                {OSSL_FUNC_SSL_QUIC_TLS_GOT_TRANSPORT_PARAMS, reinterpret_cast<void (*)(void)>(&QuicTlsContext::onGotTransportParameters)},
                 {OSSL_FUNC_SSL_QUIC_TLS_ALERT, reinterpret_cast<void (*)(void)>(&QuicTlsContext::onAlert)},
                 OSSL_DISPATCH_END,
         };
@@ -127,8 +132,7 @@ namespace AsynGyanis::Net
         return static_cast<std::size_t>(level) * 2 + static_cast<std::size_t>(direction);
     }
 
-    QuicTlsContext::QuicTlsContext(SSL_CTX &tlsContext, const bool isServerSide,
-                                   const std::span<const std::uint8_t> localTransportParameters,
+    QuicTlsContext::QuicTlsContext(SSL_CTX &tlsContext, const bool isServerSide, const std::span<const std::uint8_t> localTransportParameters,
                                    const QuicClientTlsSettings *clientSettings)
     {
         // 全程用局部指针，成功到底才交给成员：任何一步抛出去都不存在「构造失败但析构又来放一次」的会话
@@ -140,8 +144,7 @@ namespace AsynGyanis::Net
         if (isServerSide)
         {
             SSL_set_accept_state(session);
-        }
-        else
+        } else
         {
             SSL_set_connect_state(session);
         }
@@ -151,8 +154,7 @@ namespace AsynGyanis::Net
             try
             {
                 applyClientTlsSettings(*session, *clientSettings);
-            }
-            catch (...)
+            } catch (...)
             {
                 SSL_free(session);
                 throw;
@@ -162,8 +164,7 @@ namespace AsynGyanis::Net
         if (SSL_set_quic_tls_cbs(session, dispatchTable(), this) != 1)
         {
             SSL_free(session);
-            throw Base::Exception("QUIC 连接建立失败：挂 QUIC TLS 回调被拒（" + quicOpenSslErrorText()
-                                  + "）：请确认依赖里的 OpenSSL 是 3.5 以上的主线版本");
+            throw Base::Exception("QUIC 连接建立失败：挂 QUIC TLS 回调被拒（" + quicOpenSslErrorText() + "）：请确认依赖里的 OpenSSL 是 3.5 以上的主线版本");
         }
 
         if (!localTransportParameters.empty())
@@ -174,7 +175,8 @@ namespace AsynGyanis::Net
             if (SSL_set_quic_tls_transport_params(session, m_localTransportParameters.data(), m_localTransportParameters.size()) != 1)
             {
                 SSL_free(session);
-                throw Base::Exception("QUIC 连接建立失败：本端 transport parameters 被拒（" + quicOpenSslErrorText() + "）："
+                throw Base::Exception("QUIC 连接建立失败：本端 transport parameters 被拒（" + quicOpenSslErrorText() +
+                                      "）："
                                       "请核对是否按 RFC 9000 §18 编码、必填项是否齐全");
             }
         }
@@ -212,15 +214,16 @@ namespace AsynGyanis::Net
             {
                 // 走到这里六个回调都已跑完，各级别各方向的密钥槽必然就位，标记可以放心地最后置上
                 m_handshakeCompleted = true;
-            }
-            else
+            } else
             {
                 // 把真实返回值交给 SSL_get_error：0 与负值在它那里分属「对端关线」与「还要数据」两条路
                 switch (SSL_get_error(m_session, handshakeResult))
                 {
-                case SSL_ERROR_WANT_READ:
-                case SSL_ERROR_WANT_WRITE: return QuicTlsProgress::NeedData;
-                default: return QuicTlsProgress::Failed;
+                    case SSL_ERROR_WANT_READ:
+                    case SSL_ERROR_WANT_WRITE:
+                        return QuicTlsProgress::NeedData;
+                    default:
+                        return QuicTlsProgress::Failed;
                 }
             }
         }
@@ -263,8 +266,8 @@ namespace AsynGyanis::Net
 
     std::string_view QuicTlsContext::selectedApplicationProtocol() const noexcept
     {
-        const unsigned char *protocol = nullptr;
-        unsigned int protocolLength = 0;
+        const unsigned char *protocol       = nullptr;
+        unsigned int         protocolLength = 0;
         SSL_get0_alpn_selected(m_session, &protocol, &protocolLength);
         // 没协商上时 OpenSSL 会把指针置空、长度归零，此时给空视图而不是拿空指针构造 string_view
         return protocol == nullptr ? std::string_view{} : std::string_view(reinterpret_cast<const char *>(protocol), protocolLength);
@@ -298,8 +301,7 @@ namespace AsynGyanis::Net
         return static_cast<QuicTlsContext *>(argument);
     }
 
-    int QuicTlsContext::onSendCryptoData(SSL *, const unsigned char *data, const std::size_t length, std::size_t *consumed,
-                                         void *const argument)
+    int QuicTlsContext::onSendCryptoData(SSL *, const unsigned char *data, const std::size_t length, std::size_t *consumed, void *const argument)
     {
         QuicTlsContext *const context = self(argument);
         if (context == nullptr)
@@ -322,8 +324,8 @@ namespace AsynGyanis::Net
         // 只交当前读级别的那一条缓冲：整条缓冲会被 TLS 当作「一条记录」，跨级别的字节混在一起
         // 会让 ServerHello 结束时不在记录边界上，状态机当场判错
         std::vector<std::uint8_t> &buffer = context->m_inboundData[static_cast<std::size_t>(context->m_inboundLevel)];
-        *data = buffer.data();
-        *length = buffer.size();
+        *data                             = buffer.data();
+        *length                           = buffer.size();
         return 1;
     }
 
@@ -345,8 +347,8 @@ namespace AsynGyanis::Net
         return 1;
     }
 
-    int QuicTlsContext::onYieldSecret(SSL *session, const std::uint32_t protectionLevel, const int direction,
-                                      const unsigned char *secret, const std::size_t length, void *const argument)
+    int QuicTlsContext::onYieldSecret(SSL *session, const std::uint32_t protectionLevel, const int direction, const unsigned char *secret, const std::size_t length,
+                                      void *const argument)
     {
         QuicTlsContext *const context = self(argument);
         if (context == nullptr)
@@ -375,15 +377,14 @@ namespace AsynGyanis::Net
             // 长度不合就导出会静默按短secret算，产出的密钥看着有效却全解不开，宁可当场拒
             return 0;
         }
-        const auto keyMaterial = deriveQuicPacketKeys(*suite, {secret, length});
-        const QuicKeyDirection keyDirection = direction == 0 ? QuicKeyDirection::Reading : QuicKeyDirection::Writing;
+        const auto             keyMaterial             = deriveQuicPacketKeys(*suite, {secret, length});
+        const QuicKeyDirection keyDirection            = direction == 0 ? QuicKeyDirection::Reading : QuicKeyDirection::Writing;
         context->m_keys[keySlot(*level, keyDirection)] = keyMaterial;
         if (direction == 0)
         {
             // 读密钥一换，对端接下来的字节就改用新级别保护了：入站缓冲要跟着换一条
             context->m_inboundLevel = *level;
-        }
-        else
+        } else
         {
             // crypto_send 不带级别参数，本端「正在产出哪个级别」只能跟着写方向的密钥切换
             context->m_transmissionLevel = *level;

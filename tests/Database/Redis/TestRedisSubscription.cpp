@@ -53,8 +53,7 @@ namespace AsynGyanis::Database
      */
     TEST(RedisKeyspaceNotificationParsing, KeyspaceChannelCarriesTheKeyAndThePayloadCarriesTheEvent)
     {
-        const std::optional<RedisKeyspaceNotification> notification =
-                RedisConnection::parseKeyspaceNotification("__keyspace@3__:user:42", "set");
+        const std::optional<RedisKeyspaceNotification> notification = RedisConnection::parseKeyspaceNotification("__keyspace@3__:user:42", "set");
         ASSERT_TRUE(notification.has_value());
         EXPECT_FALSE(notification->isKeyEvent);
         EXPECT_EQ(notification->database, 3);
@@ -67,8 +66,7 @@ namespace AsynGyanis::Database
      */
     TEST(RedisKeyspaceNotificationParsing, KeyEventChannelSwapsKeyAndEvent)
     {
-        const std::optional<RedisKeyspaceNotification> notification =
-                RedisConnection::parseKeyspaceNotification("__keyevent@0__:expired", "session:7");
+        const std::optional<RedisKeyspaceNotification> notification = RedisConnection::parseKeyspaceNotification("__keyevent@0__:expired", "session:7");
         ASSERT_TRUE(notification.has_value());
         EXPECT_TRUE(notification->isKeyEvent);
         EXPECT_EQ(notification->database, 0);
@@ -85,19 +83,12 @@ namespace AsynGyanis::Database
      */
     TEST(RedisKeyspaceNotificationParsing, LookalikeChannelsAreRejected)
     {
-        for (const std::string_view channel : {std::string_view{""},
-                                               std::string_view{"__keyspace@__:k"},
-                                               std::string_view{"__keyspace@abc__:k"},
-                                               std::string_view{"__keyspace@-1__:k"},
-                                               std::string_view{"__keyspace@3:user:42"},
-                                               std::string_view{"__keyspace@3_:user:42"},
-                                               std::string_view{"__keyspace@3__user:42"},
-                                               std::string_view{"__keyspace@0__:"},
-                                               std::string_view{"keyspace@0__:k"},
-                                               std::string_view{"__keyevent@0__"}})
+        for (const std::string_view channel:
+             {std::string_view{""}, std::string_view{"__keyspace@__:k"}, std::string_view{"__keyspace@abc__:k"}, std::string_view{"__keyspace@-1__:k"},
+              std::string_view{"__keyspace@3:user:42"}, std::string_view{"__keyspace@3_:user:42"}, std::string_view{"__keyspace@3__user:42"}, std::string_view{"__keyspace@0__:"},
+              std::string_view{"keyspace@0__:k"}, std::string_view{"__keyevent@0__"}})
         {
-            EXPECT_FALSE(RedisConnection::parseKeyspaceNotification(channel, "set").has_value())
-                    << "这个频道名不该被解释成键空间通知：" << channel;
+            EXPECT_FALSE(RedisConnection::parseKeyspaceNotification(channel, "set").has_value()) << "这个频道名不该被解释成键空间通知：" << channel;
         }
     }
 
@@ -157,12 +148,12 @@ namespace AsynGyanis::Database
                     GTEST_SKIP() << "未设置 ASYN_REDIS_TEST_PASSWORD，跳过 Redis 真机用例";
                 }
 
-                m_configuration            = ConnectionConfig::redisDefault();
-                m_configuration.host       = TestSupport::readEnvironmentTextOrDefault("ASYN_REDIS_TEST_HOST", "127.0.0.1");
-                m_configuration.port       = TestSupport::readEnvironmentPortOrDefault("ASYN_REDIS_TEST_PORT", 6379);
-                m_configuration.userName   = TestSupport::readEnvironmentTextOrDefault("ASYN_REDIS_TEST_USER", "");
-                m_configuration.password   = password;
-                m_configuration.database   = TestSupport::readEnvironmentTextOrDefault("ASYN_REDIS_TEST_DATABASE", "15");
+                m_configuration          = ConnectionConfig::redisDefault();
+                m_configuration.host     = TestSupport::readEnvironmentTextOrDefault("ASYN_REDIS_TEST_HOST", "127.0.0.1");
+                m_configuration.port     = TestSupport::readEnvironmentPortOrDefault("ASYN_REDIS_TEST_PORT", 6379);
+                m_configuration.userName = TestSupport::readEnvironmentTextOrDefault("ASYN_REDIS_TEST_USER", "");
+                m_configuration.password = password;
+                m_configuration.database = TestSupport::readEnvironmentTextOrDefault("ASYN_REDIS_TEST_DATABASE", "15");
 
                 // 写入侧用另一条连接：订阅中的连接不能再发普通命令——推送会插在回复前面，
                 // 「一条命令一条回复」的配对当场错位（这正是要分开的原因，也是调用方要守的规矩）
@@ -175,8 +166,7 @@ namespace AsynGyanis::Database
                 // notify-keyspace-events 是服务端全局配置：先读回原值，TearDown 原样还回去，
                 // 免得把并行使用同一个服务端的别处（或下一次运行）留在打开状态
                 // CONFIG GET 回的是「参数名、参数值」两元素数组：值在下标 1，取 0 会读回参数名本身
-                const std::unique_ptr<DatabaseResult> current =
-                        TestSupport::executeRequired(*m_writer, "CONFIG GET notify-keyspace-events");
+                const std::unique_ptr<DatabaseResult> current = TestSupport::executeRequired(*m_writer, "CONFIG GET notify-keyspace-events");
                 ASSERT_NE(current, nullptr);
                 m_previousNotifyEvents = TestSupport::asText(current->getValue(1)).value_or("");
 
@@ -191,8 +181,7 @@ namespace AsynGyanis::Database
                     return;
                 }
                 // 还原失败不报：用例已经把该看的看过了，这里再断言只会把环境问题放大成红
-                static_cast<void>(m_writer->execute("CONFIG SET notify-keyspace-events "
-                                                    + (m_previousNotifyEvents.empty() ? "\"\"" : m_previousNotifyEvents)));
+                static_cast<void>(m_writer->execute("CONFIG SET notify-keyspace-events " + (m_previousNotifyEvents.empty() ? "\"\"" : m_previousNotifyEvents)));
             }
 
             /**
@@ -231,9 +220,9 @@ namespace AsynGyanis::Database
                 return std::nullopt;
             }
 
-            ConnectionConfig                            m_configuration;
-            std::unique_ptr<RedisConnection>            m_writer;
-            std::string                                 m_previousNotifyEvents;
+            ConnectionConfig                 m_configuration;
+            std::unique_ptr<RedisConnection> m_writer;
+            std::string                      m_previousNotifyEvents;
         };
     } // namespace
 
@@ -247,10 +236,10 @@ namespace AsynGyanis::Database
         RedisConnection subscriber(m_configuration);
         ASSERT_TRUE(subscriber.connect()) << subscriber.lastError();
 
-        const std::string key = makeKey();
+        const std::string key     = makeKey();
         const std::string channel = "__keyspace@" + std::to_string(keySpaceIndex()) + "__:" + key;
 
-        const std::vector<std::string> channelList{channel};
+        const std::vector<std::string>      channelList{channel};
         const std::vector<std::string_view> channelViews(channelList.begin(), channelList.end());
         ASSERT_TRUE(subscriber.subscribe(channelViews)) << subscriber.lastError();
         EXPECT_TRUE(subscriber.isSubscribing());
@@ -267,8 +256,7 @@ namespace AsynGyanis::Database
         const std::optional<RedisPushReply> delNotification = readWithin(subscriber, 2000);
         ASSERT_TRUE(delNotification.has_value()) << subscriber.lastError();
 
-        const std::optional<RedisKeyspaceNotification> notification =
-                RedisConnection::parseKeyspaceNotification(delNotification->channel, delNotification->payload);
+        const std::optional<RedisKeyspaceNotification> notification = RedisConnection::parseKeyspaceNotification(delNotification->channel, delNotification->payload);
         ASSERT_TRUE(notification.has_value());
         EXPECT_EQ(notification->key, key);
         EXPECT_EQ(notification->event, "del");
@@ -284,9 +272,9 @@ namespace AsynGyanis::Database
         RedisConnection subscriber(m_configuration);
         ASSERT_TRUE(subscriber.connect()) << subscriber.lastError();
 
-        const std::string key = makeKey();
-        const std::string channel = "__keyspace@" + std::to_string(keySpaceIndex()) + "__:" + key;
-        const std::vector<std::string> channelList{channel};
+        const std::string                   key     = makeKey();
+        const std::string                   channel = "__keyspace@" + std::to_string(keySpaceIndex()) + "__:" + key;
+        const std::vector<std::string>      channelList{channel};
         const std::vector<std::string_view> channelViews(channelList.begin(), channelList.end());
         ASSERT_TRUE(subscriber.subscribe(channelViews)) << subscriber.lastError();
 
@@ -311,9 +299,9 @@ namespace AsynGyanis::Database
         RedisConnection subscriber(m_configuration);
         ASSERT_TRUE(subscriber.connect()) << subscriber.lastError();
 
-        const std::string key = makeKey();
-        const std::string pattern = "__keyevent@" + std::to_string(keySpaceIndex()) + "__:*";
-        const std::vector<std::string> patternList{pattern};
+        const std::string                   key     = makeKey();
+        const std::string                   pattern = "__keyevent@" + std::to_string(keySpaceIndex()) + "__:*";
+        const std::vector<std::string>      patternList{pattern};
         const std::vector<std::string_view> patternViews(patternList.begin(), patternList.end());
         ASSERT_TRUE(subscriber.psubscribe(patternViews)) << subscriber.lastError();
 
@@ -337,8 +325,8 @@ namespace AsynGyanis::Database
         RedisConnection subscriber(m_configuration);
         ASSERT_TRUE(subscriber.connect()) << subscriber.lastError();
 
-        const std::string key = makeKey();
-        const std::vector<std::string> channelList{"__keyspace@" + std::to_string(keySpaceIndex()) + "__:" + key};
+        const std::string                   key = makeKey();
+        const std::vector<std::string>      channelList{"__keyspace@" + std::to_string(keySpaceIndex()) + "__:" + key};
         const std::vector<std::string_view> channelViews(channelList.begin(), channelList.end());
         ASSERT_TRUE(subscriber.subscribe(channelViews)) << subscriber.lastError();
 

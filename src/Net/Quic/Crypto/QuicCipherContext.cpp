@@ -14,7 +14,7 @@ namespace AsynGyanis::Net
         public:
             ThreadCipherContext() = default;
 
-            ThreadCipherContext(const ThreadCipherContext &) = delete;
+            ThreadCipherContext(const ThreadCipherContext &)            = delete;
             ThreadCipherContext &operator=(const ThreadCipherContext &) = delete;
 
             ~ThreadCipherContext()
@@ -48,7 +48,7 @@ namespace AsynGyanis::Net
     EVP_CIPHER_CTX *acquireQuicCipherContext() noexcept
     {
         thread_local ThreadCipherContext threadContext;
-        EVP_CIPHER_CTX *const context = threadContext.get();
+        EVP_CIPHER_CTX *const            context = threadContext.get();
         if (context == nullptr)
         {
             return nullptr;

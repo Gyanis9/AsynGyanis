@@ -133,8 +133,8 @@ namespace AsynGyanis::Platform
      */
     TEST(Process, ExitCodeSurvivesRepeatedPolling)
     {
-        const ExitCommand command = makeExitCommand(3);
-        const Process::Handle handle = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
+        const ExitCommand     command = makeExitCommand(3);
+        const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
         ASSERT_TRUE(handle.isValid());
 
         const std::optional<int> firstExitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
@@ -164,8 +164,8 @@ namespace AsynGyanis::Platform
      */
     TEST(Process, TerminationOnReapedChildIsRejected)
     {
-        const ExitCommand command = makeExitCommand(3);
-        const Process::Handle handle = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
+        const ExitCommand     command = makeExitCommand(3);
+        const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
         ASSERT_TRUE(handle.isValid());
 
         // 先回收：退出码被记下，pid 从此不再属于本进程
@@ -237,8 +237,8 @@ namespace AsynGyanis::Platform
      */
     TEST(Process, SpawnsChildWhenHostHasNoConsole)
     {
-        wchar_t executablePathText[kExecutablePathBufferLength] = {};
-        const DWORD pathLength = ::GetModuleFileNameW(nullptr, executablePathText, kExecutablePathBufferLength);
+        wchar_t     executablePathText[kExecutablePathBufferLength] = {};
+        const DWORD pathLength                                      = ::GetModuleFileNameW(nullptr, executablePathText, kExecutablePathBufferLength);
         ASSERT_GT(pathLength, 0U) << "取不到自身路径，错误码 " << ::GetLastError();
         ASSERT_LT(pathLength, kExecutablePathBufferLength) << "自身路径被截断，本用例失去前提";
 
@@ -250,24 +250,22 @@ namespace AsynGyanis::Platform
         commandLine += L"\" --gtest_filter=";
         commandLine += kDetachedProbeFilter;
 
-        STARTUPINFOW    startupInfo{};
+        STARTUPINFOW startupInfo{};
         startupInfo.cb = sizeof(startupInfo);
         PROCESS_INFORMATION processInformation{};
-        const BOOL isCreated = ::CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS,
-                                                nullptr, nullptr, &startupInfo, &processInformation);
+        const BOOL isCreated = ::CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS, nullptr, nullptr, &startupInfo, &processInformation);
         static_cast<void>(::SetEnvironmentVariableA(kDetachedProbeEnvironmentVariable, nullptr));
         ASSERT_TRUE(isCreated != 0) << "探针子进程没起来，错误码 " << ::GetLastError();
 
         // 句柄在断言之后统一释放：中途一律用 EXPECT 而不是 ASSERT，免得提前返回把句柄漏在那里
-        const DWORD waitResult = ::WaitForSingleObject(processInformation.hProcess, 60000);
-        DWORD      childExitCode = 0;
+        const DWORD waitResult    = ::WaitForSingleObject(processInformation.hProcess, 60000);
+        DWORD       childExitCode = 0;
         static_cast<void>(::GetExitCodeProcess(processInformation.hProcess, &childExitCode));
         ::CloseHandle(processInformation.hProcess);
         ::CloseHandle(processInformation.hThread);
 
         EXPECT_EQ(waitResult, WAIT_OBJECT_0) << "无控制台的探针子进程没在时限内退出";
-        EXPECT_EQ(static_cast<int>(childExitCode), 0)
-                << "探针子进程非零退出，说明无控制台宿主里 Process::spawn 仍然失败（详见该用例输出）";
+        EXPECT_EQ(static_cast<int>(childExitCode), 0) << "探针子进程非零退出，说明无控制台宿主里 Process::spawn 仍然失败（详见该用例输出）";
     }
 
     /**
@@ -288,8 +286,7 @@ namespace AsynGyanis::Platform
 
         const ExitCommand     command = makeExitCommand(3);
         const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
-        ASSERT_TRUE(handle.isValid()) << "无控制台宿主里 spawn 失败，错误码 " << PlatformError::lastErrorCode()
-                                      << "（87 即 ERROR_INVALID_PARAMETER，指向句柄清单里的空句柄）";
+        ASSERT_TRUE(handle.isValid()) << "无控制台宿主里 spawn 失败，错误码 " << PlatformError::lastErrorCode() << "（87 即 ERROR_INVALID_PARAMETER，指向句柄清单里的空句柄）";
 
         const std::optional<int> exitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
         ASSERT_TRUE(exitCode.has_value()) << "子进程没在时限内退出";
@@ -305,8 +302,8 @@ namespace AsynGyanis::Platform
      */
     TEST(Process, ReportsRunningChildAsRunning)
     {
-        const ExitCommand command = makeSleepCommand();
-        const Process::Handle handle = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
+        const ExitCommand     command = makeSleepCommand();
+        const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
         ASSERT_TRUE(handle.isValid());
 
         EXPECT_TRUE(Process::isRunning(handle)) << "还在睡的子进程被报成已退出";
@@ -348,8 +345,8 @@ namespace AsynGyanis::Platform
      */
     TEST(Process, RequestTerminationStopsChild)
     {
-        const ExitCommand command = makeSleepCommand();
-        const Process::Handle handle = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
+        const ExitCommand     command = makeSleepCommand();
+        const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
         ASSERT_TRUE(handle.isValid());
 
         ASSERT_TRUE(Process::requestTermination(handle)) << "SIGTERM 没有发出去";
@@ -364,8 +361,8 @@ namespace AsynGyanis::Platform
      */
     TEST(Process, ForceTerminationStopsChild)
     {
-        const ExitCommand command = makeSleepCommand();
-        const Process::Handle handle = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
+        const ExitCommand     command = makeSleepCommand();
+        const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
         ASSERT_TRUE(handle.isValid());
 
         ASSERT_TRUE(Process::forceTermination(handle)) << "SIGKILL 没有发出去";

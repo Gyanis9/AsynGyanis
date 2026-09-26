@@ -8,9 +8,9 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
-#include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/Router.h"
 
@@ -22,8 +22,8 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -89,10 +89,7 @@ namespace AsynGyanis::Net
          */
         TerminalHandler emptyTerminal()
         {
-            return []() -> Core::Task<void>
-            {
-                co_return;
-            };
+            return []() -> Core::Task<void> { co_return; };
         }
 
         /**
@@ -135,9 +132,9 @@ namespace AsynGyanis::Net
          */
         struct LogRecords
         {
-            std::mutex mutex;                   ///< 保护下面两个向量
-            std::vector<std::string> messages;  ///< 已记录的日志正文
-            std::vector<Base::LogLevel> levels; ///< 已记录的日志等级
+            std::mutex                  mutex;    ///< 保护下面两个向量
+            std::vector<std::string>    messages; ///< 已记录的日志正文
+            std::vector<Base::LogLevel> levels;   ///< 已记录的日志等级
         };
 
         /**
@@ -150,8 +147,7 @@ namespace AsynGyanis::Net
              * @brief 构造记录型 Sink
              * @param records 与测试共享的记录容器
              */
-            explicit RecordingSink(std::shared_ptr<LogRecords> records) :
-                m_records(std::move(records))
+            explicit RecordingSink(std::shared_ptr<LogRecords> records) : m_records(std::move(records))
             {
             }
 
@@ -202,7 +198,7 @@ namespace AsynGyanis::Net
         Core::Task<void> cooperativeHandler(Core::EventLoop &loop, HttpRequest &request, HttpResponse &response, std::atomic<bool> &observedCancel)
         {
             Core::Timer timer(loop);
-            const auto hardStop = std::chrono::steady_clock::now() + kHandlerHardStop;
+            const auto  hardStop = std::chrono::steady_clock::now() + kHandlerHardStop;
 
             while (!request.cancelToken().stop_requested())
             {
@@ -254,14 +250,8 @@ namespace AsynGyanis::Net
          */
         void SetUp() override
         {
-            m_worker = std::thread([this]()
-            {
-                m_loop.run();
-            });
-            if (!waitForCondition([this]()
-                {
-                    return m_loop.isRunning();
-                }, kConditionTimeout))
+            m_worker = std::thread([this]() { m_loop.run(); });
+            if (!waitForCondition([this]() { return m_loop.isRunning(); }, kConditionTimeout))
             {
                 stopLoop();
                 GTEST_SKIP() << "事件循环未能启动，超时相关用例无法驱动";
@@ -291,10 +281,7 @@ namespace AsynGyanis::Net
         {
             m_loop.scheduler().scheduleRemote(task.handle());
 
-            const bool isCompleted = waitForCondition([&finishedFlag]()
-            {
-                return finishedFlag.load();
-            }, kConditionTimeout);
+            const bool isCompleted = waitForCondition([&finishedFlag]() { return finishedFlag.load(); }, kConditionTimeout);
 
             // 跑完与超时都停循环：前者是为了让调用方安全销毁任务帧，后者是为了别让后台线程
             // 继续碰测试栈上的对象。stopLoop() 幂等，TearDown 再调一次无副作用
@@ -327,9 +314,9 @@ namespace AsynGyanis::Net
     TEST(MiddlewarePipeline, RunsTerminalHandlerWhenEmpty)
     {
         MiddlewarePipeline pipeline;
-        HttpRequest request = makeRequest(HttpMethod::GET, "/bare");
-        HttpResponse response;
-        std::atomic<int> handlerCalls{0};
+        HttpRequest        request = makeRequest(HttpMethod::GET, "/bare");
+        HttpResponse       response;
+        std::atomic<int>   handlerCalls{0};
 
         EXPECT_EQ(pipeline.middlewareCount(), 0U);
         runPipeline(pipeline, request, response, terminalWriting(response, "bare", &handlerCalls));
@@ -341,10 +328,7 @@ namespace AsynGyanis::Net
     TEST(MiddlewarePipeline, CountsRegisteredMiddlewares)
     {
         MiddlewarePipeline pipeline;
-        const auto passthrough = [](HttpRequest &, HttpResponse &, const std::function<Core::Task<void>()> next) -> Core::Task<>
-        {
-            co_await next();
-        };
+        const auto         passthrough = [](HttpRequest &, HttpResponse &, const std::function<Core::Task<void>()> next) -> Core::Task<> { co_await next(); };
 
         pipeline.use(passthrough);
         pipeline.use(passthrough);
@@ -354,7 +338,7 @@ namespace AsynGyanis::Net
 
     TEST(MiddlewarePipeline, EntersInRegistrationOrderAndExitsInReverse)
     {
-        MiddlewarePipeline pipeline;
+        MiddlewarePipeline       pipeline;
         std::vector<std::string> executionOrder;
 
         const auto recordingMiddleware = [](const std::string &name, std::vector<std::string> &order) -> MiddlewareFunc
@@ -369,8 +353,8 @@ namespace AsynGyanis::Net
         pipeline.use(recordingMiddleware("outer", executionOrder));
         pipeline.use(recordingMiddleware("inner", executionOrder));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/onion");
-        HttpResponse response;
+        HttpRequest           request = makeRequest(HttpMethod::GET, "/onion");
+        HttpResponse          response;
         const TerminalHandler handler = [&executionOrder, &response]() -> Core::Task<void>
         {
             executionOrder.push_back("handler");
@@ -385,25 +369,27 @@ namespace AsynGyanis::Net
 
     TEST(MiddlewarePipeline, StopsWhenMiddlewareSkipsNext)
     {
-        MiddlewarePipeline pipeline;
-        std::atomic<int> innerCalls{0};
-        std::atomic<int> handlerCalls{0};
+        MiddlewarePipeline       pipeline;
+        std::atomic<int>         innerCalls{0};
+        std::atomic<int>         handlerCalls{0};
         std::vector<std::string> executionOrder;
 
-        pipeline.use([&executionOrder](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()>) -> Core::Task<>
-        {
-            executionOrder.push_back("outer:短路");
-            response.setStatus(503);
-            response.setBody("service unavailable");
-            co_return;
-        });
-        pipeline.use([&innerCalls](HttpRequest &, HttpResponse &, const std::function<Core::Task<void>()> next) -> Core::Task<>
-        {
-            innerCalls.fetch_add(1);
-            co_await next();
-        });
+        pipeline.use(
+                [&executionOrder](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()>) -> Core::Task<>
+                {
+                    executionOrder.push_back("outer:短路");
+                    response.setStatus(503);
+                    response.setBody("service unavailable");
+                    co_return;
+                });
+        pipeline.use(
+                [&innerCalls](HttpRequest &, HttpResponse &, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    innerCalls.fetch_add(1);
+                    co_await next();
+                });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/short");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/short");
         HttpResponse response;
         runPipeline(pipeline, request, response, terminalWriting(response, "unreachable", &handlerCalls));
 
@@ -418,15 +404,16 @@ namespace AsynGyanis::Net
     TEST(MiddlewarePipeline, LetsMiddlewareRewriteResponseAfterDownstream)
     {
         MiddlewarePipeline pipeline;
-        pipeline.use([](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
-        {
-            co_await next();
-            // 后置改写落在业务之后：正文最终由它说了算
-            response.setHeader("x-powered-by", "middleware");
-            response.setBody("rewritten");
-        });
+        pipeline.use(
+                [](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    co_await next();
+                    // 后置改写落在业务之后：正文最终由它说了算
+                    response.setHeader("x-powered-by", "middleware");
+                    response.setBody("rewritten");
+                });
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/rewrite");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/rewrite");
         HttpResponse response;
         runPipeline(pipeline, request, response, terminalWriting(response, "original"));
 
@@ -436,9 +423,9 @@ namespace AsynGyanis::Net
 
     TEST(MiddlewarePipeline, PropagatesHandlerExceptionToCaller)
     {
-        MiddlewarePipeline pipeline;
-        HttpRequest request = makeRequest(HttpMethod::GET, "/throws");
-        HttpResponse response;
+        MiddlewarePipeline    pipeline;
+        HttpRequest           request = makeRequest(HttpMethod::GET, "/throws");
+        HttpResponse          response;
         const TerminalHandler handler = []() -> Core::Task<void>
         {
             throw std::runtime_error("handler failed");
@@ -461,8 +448,8 @@ namespace AsynGyanis::Net
         // 空指针即「不记录」：上层无需为「日志可选」再包一层条件判断
         pipeline.use(loggingMiddleware(nullptr));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/quiet");
-        HttpResponse response;
+        HttpRequest      request = makeRequest(HttpMethod::GET, "/quiet");
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "quiet", &handlerCalls));
 
@@ -472,11 +459,11 @@ namespace AsynGyanis::Net
 
     TEST(LoggingMiddleware, RecordsUriAndStatusCodeAfterDownstreamCompletes)
     {
-        auto records = std::make_shared<LogRecords>();
+        auto               records = std::make_shared<LogRecords>();
         MiddlewarePipeline pipeline;
         pipeline.use(loggingMiddleware(makeRecordingLogger(records)));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/logged?detail=1");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/logged?detail=1");
         HttpResponse response;
         response.setStatus(201);
         runPipeline(pipeline, request, response, terminalWriting(response, "logged"));
@@ -490,14 +477,14 @@ namespace AsynGyanis::Net
 
     TEST(LoggingMiddleware, RecordsShortCircuitedResponseStatus)
     {
-        auto records = std::make_shared<LogRecords>();
+        auto               records = std::make_shared<LogRecords>();
         MiddlewarePipeline pipeline;
         // 日志中间件在最外层，业务被限流短路也要留下痕迹
         pipeline.use(loggingMiddleware(makeRecordingLogger(records)));
         pipeline.use(rateLimiterMiddleware(0, std::chrono::seconds(60)));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/burst");
-        HttpResponse response;
+        HttpRequest      request = makeRequest(HttpMethod::GET, "/burst");
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "unreachable", &handlerCalls));
 
@@ -519,7 +506,7 @@ namespace AsynGyanis::Net
         HttpRequest request = makeRequest(HttpMethod::OPTIONS, "/api/data");
         request.addHeader("Origin", "https://client.test");
         request.addHeader("Access-Control-Request-Method", "POST");
-        HttpResponse response;
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "business", &handlerCalls));
 
@@ -554,7 +541,7 @@ namespace AsynGyanis::Net
         CorsPolicy policy;
         policy.allowMethods = "GET, POST";
         policy.allowHeaders = "X-Custom";
-        policy.maxAge = std::chrono::seconds(0);
+        policy.maxAge       = std::chrono::seconds(0);
         MiddlewarePipeline pipeline;
         pipeline.use(corsMiddleware(policy));
 
@@ -575,7 +562,7 @@ namespace AsynGyanis::Net
     {
         CorsPolicy policy;
         policy.allowCredentials = true;
-        policy.allowOrigin = "*";
+        policy.allowOrigin      = "*";
         MiddlewarePipeline pipeline;
         pipeline.use(corsMiddleware(policy));
 
@@ -587,7 +574,7 @@ namespace AsynGyanis::Net
         // 通配来源与凭据不能共存：一起发出去浏览器一定判失败
         EXPECT_FALSE(preflightResponse.getHeader("access-control-allow-credentials").has_value());
 
-        HttpRequest actual = makeRequest(HttpMethod::GET, "/api/data");
+        HttpRequest  actual = makeRequest(HttpMethod::GET, "/api/data");
         HttpResponse actualResponse;
         runPipeline(pipeline, actual, actualResponse, emptyTerminal());
         EXPECT_FALSE(actualResponse.getHeader("access-control-allow-credentials").has_value());
@@ -596,13 +583,13 @@ namespace AsynGyanis::Net
     TEST(CorsMiddleware, DeclaresCredentialsForSpecificOrigin)
     {
         CorsPolicy policy;
-        policy.allowOrigin = "https://app.example";
+        policy.allowOrigin      = "https://app.example";
         policy.allowCredentials = true;
         MiddlewarePipeline pipeline;
         pipeline.use(corsMiddleware(policy));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/api/data");
-        HttpResponse response;
+        HttpRequest      request = makeRequest(HttpMethod::GET, "/api/data");
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "data", &handlerCalls));
 
@@ -617,8 +604,8 @@ namespace AsynGyanis::Net
         pipeline.use(corsMiddleware(CorsPolicy{}));
 
         // 没有 Access-Control-Request-Method 的 OPTIONS 不是预检，应当交给业务路由
-        HttpRequest request = makeRequest(HttpMethod::OPTIONS, "/api/data");
-        HttpResponse response;
+        HttpRequest      request = makeRequest(HttpMethod::OPTIONS, "/api/data");
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "options-answer", &handlerCalls));
 
@@ -632,9 +619,9 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(corsMiddleware(CorsPolicy{}));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/api/data");
-        HttpResponse response;
-        std::string originSeenByHandler;
+        HttpRequest           request = makeRequest(HttpMethod::GET, "/api/data");
+        HttpResponse          response;
+        std::string           originSeenByHandler;
         const TerminalHandler handler = [&response, &originSeenByHandler]() -> Core::Task<void>
         {
             originSeenByHandler = response.getHeader("access-control-allow-origin").value_or("");
@@ -657,7 +644,7 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(altSvcMiddleware(8443));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/index.html");
         HttpResponse response;
         runPipeline(pipeline, request, response, terminalWriting(response, "index"));
 
@@ -697,7 +684,7 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(altSvcMiddleware(443, std::chrono::seconds{3600}, "edge.example.com"));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/index.html");
         HttpResponse response;
         runPipeline(pipeline, request, response, terminalWriting(response, "index"));
 
@@ -709,9 +696,9 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(altSvcMiddleware(8443));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
-        HttpResponse response;
-        std::string advertisementSeenByHandler;
+        HttpRequest           request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpResponse          response;
+        std::string           advertisementSeenByHandler;
         const TerminalHandler handler = [&response, &advertisementSeenByHandler]() -> Core::Task<void>
         {
             advertisementSeenByHandler = response.getHeader("alt-svc").value_or("");
@@ -755,11 +742,7 @@ namespace AsynGyanis::Net
     std::vector<std::string> collectHeaderNames(const HttpRequest &request)
     {
         std::vector<std::string> names;
-        request.forEachHeaderField(
-                [&names](const std::string_view name, const std::string_view)
-                {
-                    names.push_back(std::string(name));
-                });
+        request.forEachHeaderField([&names](const std::string_view name, const std::string_view) { names.push_back(std::string(name)); });
         return names;
     }
 
@@ -768,7 +751,7 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(traceContextMiddleware());
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/index.html");
         HttpResponse response;
         runPipeline(pipeline, request, response, terminalWriting(response, "index"));
 
@@ -790,7 +773,7 @@ namespace AsynGyanis::Net
         HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
         static_cast<void>(request.setHeader(kTraceparentHeaderName, kSpecExampleTraceparent));
         const std::size_t fieldCountBefore = collectHeaderNames(request).size();
-        HttpResponse response;
+        HttpResponse      response;
         runPipeline(pipeline, request, response, terminalWriting(response, "index"));
 
         // 合法就一个字都不写：值原样、条目数原样（改写会白白把头部缓冲再长一截）
@@ -814,7 +797,7 @@ namespace AsynGyanis::Net
         // 版本 01 并多带一个附加字段：本实现认得前 55 字节，但绝不自作主张「升级到 00」或删掉看不懂的字段。
         // 这条比上一条更尖：如果实现是「无论如何都重渲染一遍」，尾字段就会在这里消失
         constexpr std::string_view kFutureVersionValue = "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-future";
-        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpRequest                request             = makeRequest(HttpMethod::GET, "/index.html");
         static_cast<void>(request.setHeader(kTraceparentHeaderName, kFutureVersionValue));
         HttpResponse response;
         runPipeline(pipeline, request, response, terminalWriting(response, "index"));
@@ -867,7 +850,7 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(traceContextMiddleware(std::move(options)));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/index.html");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/index.html");
         HttpResponse response;
         runPipeline(pipeline, request, response, terminalWriting(response, "index"));
 
@@ -905,8 +888,7 @@ namespace AsynGyanis::Net
         HttpResponse response;
         runPipeline(pipeline, request, response, terminalWriting(response, "index"));
 
-        EXPECT_EQ(request.getHeader(kTracestateHeaderName).value_or(""), "asyn=00f067aa0ba902b7")
-                << "无效 tracestate 应按缺席处理：不该把上游的坏字段继续往下传";
+        EXPECT_EQ(request.getHeader(kTracestateHeaderName).value_or(""), "asyn=00f067aa0ba902b7") << "无效 tracestate 应按缺席处理：不该把上游的坏字段继续往下传";
     }
 
     TEST(TraceContextMiddleware, RejectsInvalidVendorKeyAtRegistration)
@@ -933,25 +915,24 @@ namespace AsynGyanis::Net
 
         const HttpTestSupport::RouteRegistrar registerRoutes = [](Router &router, Core::EventLoop &)
         {
-            router.get("/hello", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.setBody("hello");
-                co_return;
-            });
+            router.get("/hello",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setBody("hello");
+                           co_return;
+                       });
             router.addMiddleware(altSvcMiddleware(8443));
         };
 
-        auto fixture = std::make_unique<HttpTestSupport::RunningHttpServerFixture>(
-                HttpServerLimits{}, std::chrono::milliseconds{100}, HttpTestSupport::SlowRouteOptions{}, registerRoutes,
-                HttpParserLimits{}, [](HttpTestSupport::TestHttpServer &) {});
+        auto fixture = std::make_unique<HttpTestSupport::RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, HttpTestSupport::SlowRouteOptions{},
+                                                                                   registerRoutes, HttpParserLimits{}, [](HttpTestSupport::TestHttpServer &) {});
         ASSERT_TRUE(fixture->awaitRunning(kWireProbeTimeout));
 
-        const std::optional<HttpTestSupport::ParsedResponse> response = HttpTestSupport::sendAndReadResponse(
-                fixture->listeningPort(), HttpTestSupport::makeRequestText("GET /hello HTTP/1.1"), kWireProbeTimeout);
+        const std::optional<HttpTestSupport::ParsedResponse> response =
+                HttpTestSupport::sendAndReadResponse(fixture->listeningPort(), HttpTestSupport::makeRequestText("GET /hello HTTP/1.1"), kWireProbeTimeout);
         ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
 
-        EXPECT_TRUE(HttpTestSupport::hasHeaderLine(response->headers, "alt-svc: h3=\":8443\"; ma=86400"))
-                << "线上响应没有带上通告：\n" << response->headers;
+        EXPECT_TRUE(HttpTestSupport::hasHeaderLine(response->headers, "alt-svc: h3=\":8443\"; ma=86400")) << "线上响应没有带上通告：\n" << response->headers;
     }
 
     // ============================================================================
@@ -963,11 +944,11 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(timeoutMiddleware(m_loop, kGenerousTimeout));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/fast");
-        HttpResponse response;
-        std::atomic<int> handlerCalls{0};
-        std::atomic<bool> exceptionCaught{false};
-        std::atomic<bool> isFinished{false};
+        HttpRequest           request = makeRequest(HttpMethod::GET, "/fast");
+        HttpResponse          response;
+        std::atomic<int>      handlerCalls{0};
+        std::atomic<bool>     exceptionCaught{false};
+        std::atomic<bool>     isFinished{false};
         const TerminalHandler handler = terminalWriting(response, "fast", &handlerCalls);
 
         Core::Task<void> chainTask = runChainOnLoop(pipeline, request, response, handler, exceptionCaught, isFinished);
@@ -985,16 +966,14 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(timeoutMiddleware(m_loop, kShortTimeout));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/slow");
-        HttpResponse response;
+        HttpRequest       request = makeRequest(HttpMethod::GET, "/slow");
+        HttpResponse      response;
         std::atomic<bool> observedCancel{false};
         std::atomic<bool> exceptionCaught{false};
         std::atomic<bool> isFinished{false};
 
         const TerminalHandler handler = [this, &request, &response, &observedCancel]() -> Core::Task<void>
-        {
-            co_await cooperativeHandler(m_loop, request, response, observedCancel);
-        };
+        { co_await cooperativeHandler(m_loop, request, response, observedCancel); };
         Core::Task<void> chainTask = runChainOnLoop(pipeline, request, response, handler, exceptionCaught, isFinished);
         ASSERT_TRUE(runOnLoop(chainTask, isFinished));
 
@@ -1018,18 +997,19 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(timeoutMiddleware(m_loop, kShortTimeout));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/sse");
-        HttpResponse response;
+        HttpRequest              request = makeRequest(HttpMethod::GET, "/sse");
+        HttpResponse             response;
         std::vector<std::string> sentSegments;
-        response.setChunkSender([&sentSegments](const std::string_view segment) -> Core::Task<bool>
-        {
-            sentSegments.emplace_back(segment);
-            co_return true;
-        });
+        response.setChunkSender(
+                [&sentSegments](const std::string_view segment) -> Core::Task<bool>
+                {
+                    sentSegments.emplace_back(segment);
+                    co_return true;
+                });
 
-        std::atomic<bool> observedCancel{false};
-        std::atomic<bool> exceptionCaught{false};
-        std::atomic<bool> isFinished{false};
+        std::atomic<bool>     observedCancel{false};
+        std::atomic<bool>     exceptionCaught{false};
+        std::atomic<bool>     isFinished{false};
         const TerminalHandler handler = [this, &request, &response, &observedCancel]() -> Core::Task<>
         {
             response.startChunkedResponse(200);
@@ -1054,11 +1034,11 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(timeoutMiddleware(m_loop, std::chrono::milliseconds(0)));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/no-deadline");
-        HttpResponse response;
-        std::atomic<int> handlerCalls{0};
-        std::atomic<bool> exceptionCaught{false};
-        std::atomic<bool> isFinished{false};
+        HttpRequest           request = makeRequest(HttpMethod::GET, "/no-deadline");
+        HttpResponse          response;
+        std::atomic<int>      handlerCalls{0};
+        std::atomic<bool>     exceptionCaught{false};
+        std::atomic<bool>     isFinished{false};
         const TerminalHandler handler = terminalWriting(response, "no-deadline", &handlerCalls);
 
         Core::Task<void> chainTask = runChainOnLoop(pipeline, request, response, handler, exceptionCaught, isFinished);
@@ -1075,10 +1055,10 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(timeoutMiddleware(m_loop, kGenerousTimeout));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/throws");
-        HttpResponse response;
-        std::atomic<bool> exceptionCaught{false};
-        std::atomic<bool> isFinished{false};
+        HttpRequest           request = makeRequest(HttpMethod::GET, "/throws");
+        HttpResponse          response;
+        std::atomic<bool>     exceptionCaught{false};
+        std::atomic<bool>     isFinished{false};
         const TerminalHandler handler = []() -> Core::Task<void>
         {
             throw std::runtime_error("business failed");
@@ -1102,8 +1082,8 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(bodySizeLimitMiddleware(10));
 
-        HttpRequest request = makeRequest(HttpMethod::POST, "/upload");
-        HttpResponse response;
+        HttpRequest      request = makeRequest(HttpMethod::POST, "/upload");
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "stored", &handlerCalls));
 
@@ -1118,7 +1098,7 @@ namespace AsynGyanis::Net
 
         HttpRequest request = makeRequest(HttpMethod::POST, "/upload");
         request.addHeader("Content-Length", "10");
-        HttpResponse response;
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "stored", &handlerCalls));
 
@@ -1134,7 +1114,7 @@ namespace AsynGyanis::Net
 
         HttpRequest request = makeRequest(HttpMethod::POST, "/upload");
         request.addHeader("Content-Length", "11");
-        HttpResponse response;
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "stored", &handlerCalls));
 
@@ -1151,7 +1131,7 @@ namespace AsynGyanis::Net
 
         HttpRequest request = makeRequest(HttpMethod::POST, "/upload");
         request.addHeader("Content-Length", "many");
-        HttpResponse response;
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "stored", &handlerCalls));
 
@@ -1167,7 +1147,7 @@ namespace AsynGyanis::Net
 
         HttpRequest request = makeRequest(HttpMethod::POST, "/upload");
         request.addHeader("Content-Length", "99999999999999999999999999");
-        HttpResponse response;
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "stored", &handlerCalls));
 
@@ -1187,17 +1167,17 @@ namespace AsynGyanis::Net
         pipeline.use(rateLimiterMiddleware(2, std::chrono::seconds(60)));
 
         std::atomic<int> handlerCalls{0};
-        HttpRequest firstRequest = makeRequest(HttpMethod::GET, "/limited");
-        HttpResponse firstResponse;
+        HttpRequest      firstRequest = makeRequest(HttpMethod::GET, "/limited");
+        HttpResponse     firstResponse;
         runPipeline(pipeline, firstRequest, firstResponse, terminalWriting(firstResponse, "ok", &handlerCalls));
         EXPECT_EQ(firstResponse.status(), 200);
 
-        HttpRequest secondRequest = makeRequest(HttpMethod::GET, "/limited");
+        HttpRequest  secondRequest = makeRequest(HttpMethod::GET, "/limited");
         HttpResponse secondResponse;
         runPipeline(pipeline, secondRequest, secondResponse, terminalWriting(secondResponse, "ok", &handlerCalls));
         EXPECT_EQ(secondResponse.status(), 200);
 
-        HttpRequest thirdRequest = makeRequest(HttpMethod::GET, "/limited");
+        HttpRequest  thirdRequest = makeRequest(HttpMethod::GET, "/limited");
         HttpResponse thirdResponse;
         runPipeline(pipeline, thirdRequest, thirdResponse, terminalWriting(thirdResponse, "ok", &handlerCalls));
         EXPECT_EQ(handlerCalls.load(), 2);
@@ -1211,8 +1191,8 @@ namespace AsynGyanis::Net
         MiddlewarePipeline pipeline;
         pipeline.use(rateLimiterMiddleware(0, std::chrono::seconds(60)));
 
-        HttpRequest request = makeRequest(HttpMethod::GET, "/closed");
-        HttpResponse response;
+        HttpRequest      request = makeRequest(HttpMethod::GET, "/closed");
+        HttpResponse     response;
         std::atomic<int> handlerCalls{0};
         runPipeline(pipeline, request, response, terminalWriting(response, "ok", &handlerCalls));
 
@@ -1228,23 +1208,20 @@ namespace AsynGyanis::Net
         pipeline.use(rateLimiterMiddleware(1, kRateLimitWindow));
 
         std::atomic<int> handlerCalls{0};
-        HttpRequest firstRequest = makeRequest(HttpMethod::GET, "/windowed");
-        HttpResponse firstResponse;
+        HttpRequest      firstRequest = makeRequest(HttpMethod::GET, "/windowed");
+        HttpResponse     firstResponse;
         runPipeline(pipeline, firstRequest, firstResponse, terminalWriting(firstResponse, "ok", &handlerCalls));
         EXPECT_EQ(firstResponse.status(), 200);
 
-        HttpRequest exhaustedRequest = makeRequest(HttpMethod::GET, "/windowed");
+        HttpRequest  exhaustedRequest = makeRequest(HttpMethod::GET, "/windowed");
         HttpResponse exhaustedResponse;
         runPipeline(pipeline, exhaustedRequest, exhaustedResponse, terminalWriting(exhaustedResponse, "ok", &handlerCalls));
         EXPECT_EQ(exhaustedResponse.status(), 429);
 
         // 轮询等窗口真正过期，不做固定 sleep；上界由 waitForCondition 兜住
-        ASSERT_TRUE(waitForCondition([&windowStarted]()
-        {
-            return std::chrono::steady_clock::now() - windowStarted > kRateLimitWindow;
-        }, kConditionTimeout));
+        ASSERT_TRUE(waitForCondition([&windowStarted]() { return std::chrono::steady_clock::now() - windowStarted > kRateLimitWindow; }, kConditionTimeout));
 
-        HttpRequest nextWindowRequest = makeRequest(HttpMethod::GET, "/windowed");
+        HttpRequest  nextWindowRequest = makeRequest(HttpMethod::GET, "/windowed");
         HttpResponse nextWindowResponse;
         runPipeline(pipeline, nextWindowRequest, nextWindowResponse, terminalWriting(nextWindowResponse, "ok", &handlerCalls));
         EXPECT_EQ(nextWindowResponse.status(), 200);
@@ -1254,7 +1231,7 @@ namespace AsynGyanis::Net
     TEST(RateLimiterMiddleware, SharesWindowBucketBetweenCopiesOfSameMiddleware)
     {
         // 计数器随 shared_ptr 一起被复制：同一个中间件实例塞进多条管道仍是同一份额度
-        MiddlewareFunc limiter = rateLimiterMiddleware(1, std::chrono::seconds(60));
+        MiddlewareFunc       limiter       = rateLimiterMiddleware(1, std::chrono::seconds(60));
         const MiddlewareFunc copiedLimiter = limiter;
 
         MiddlewarePipeline firstPipeline;
@@ -1263,12 +1240,12 @@ namespace AsynGyanis::Net
         secondPipeline.use(copiedLimiter);
 
         std::atomic<int> handlerCalls{0};
-        HttpRequest firstRequest = makeRequest(HttpMethod::GET, "/shared");
-        HttpResponse firstResponse;
+        HttpRequest      firstRequest = makeRequest(HttpMethod::GET, "/shared");
+        HttpResponse     firstResponse;
         runPipeline(firstPipeline, firstRequest, firstResponse, terminalWriting(firstResponse, "ok", &handlerCalls));
         EXPECT_EQ(firstResponse.status(), 200);
 
-        HttpRequest secondRequest = makeRequest(HttpMethod::GET, "/shared");
+        HttpRequest  secondRequest = makeRequest(HttpMethod::GET, "/shared");
         HttpResponse secondResponse;
         runPipeline(secondPipeline, secondRequest, secondResponse, terminalWriting(secondResponse, "ok", &handlerCalls));
         EXPECT_EQ(secondResponse.status(), 429);
@@ -1335,7 +1312,7 @@ namespace AsynGyanis::Net
     {
         // 两条管道共享同一个桶：这正是「进程级全局 RPS 上限」的用法——各持一份的话上限会翻倍。
         // 速率为 1/s：两条紧接着的请求之间补不满一个令牌，因此第二次必然被拒
-        auto bucket = std::make_shared<TokenBucket>(1.0, 1.0);
+        auto               bucket = std::make_shared<TokenBucket>(1.0, 1.0);
         MiddlewarePipeline firstPipeline;
         firstPipeline.use(tokenBucketRateLimiterMiddleware(bucket));
         MiddlewarePipeline secondPipeline;
@@ -1343,12 +1320,12 @@ namespace AsynGyanis::Net
 
         std::atomic<int> handlerCalls{0};
 
-        HttpRequest firstRequest = makeRequest(HttpMethod::GET, "/limited");
+        HttpRequest  firstRequest = makeRequest(HttpMethod::GET, "/limited");
         HttpResponse firstResponse;
         runPipeline(firstPipeline, firstRequest, firstResponse, terminalWriting(firstResponse, "ok", &handlerCalls));
         EXPECT_EQ(firstResponse.status(), 200);
 
-        HttpRequest secondRequest = makeRequest(HttpMethod::GET, "/limited");
+        HttpRequest  secondRequest = makeRequest(HttpMethod::GET, "/limited");
         HttpResponse secondResponse;
         runPipeline(secondPipeline, secondRequest, secondResponse, terminalWriting(secondResponse, "ok", &handlerCalls));
         EXPECT_EQ(secondResponse.status(), 429);
@@ -1369,27 +1346,28 @@ namespace AsynGyanis::Net
     {
         // 速率取到几乎不补（0.001/s），让「成功次数」有一个可断言的确定值：
         // 任何超出容量的成功都意味着桶状态在并发下被破坏
-        constexpr int kCapacity = 8;
-        constexpr int kThreadCount = 8;
+        constexpr int kCapacity          = 8;
+        constexpr int kThreadCount       = 8;
         constexpr int kAttemptsPerThread = 200;
 
         TokenBucket bucket(0.001, static_cast<double>(kCapacity));
 
-        std::atomic<int> successCount{0};
+        std::atomic<int>         successCount{0};
         std::vector<std::thread> workers;
         workers.reserve(kThreadCount);
         for (int index = 0; index < kThreadCount; ++index)
         {
-            workers.emplace_back([&bucket, &successCount]
-                                 {
-                                     for (int attempt = 0; attempt < kAttemptsPerThread; ++attempt)
-                                     {
-                                         if (bucket.tryAcquire())
-                                         {
-                                             successCount.fetch_add(1, std::memory_order_relaxed);
-                                         }
-                                     }
-                                 });
+            workers.emplace_back(
+                    [&bucket, &successCount]
+                    {
+                        for (int attempt = 0; attempt < kAttemptsPerThread; ++attempt)
+                        {
+                            if (bucket.tryAcquire())
+                            {
+                                successCount.fetch_add(1, std::memory_order_relaxed);
+                            }
+                        }
+                    });
         }
         for (std::thread &worker: workers)
         {

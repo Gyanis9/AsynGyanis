@@ -99,8 +99,7 @@ namespace AsynGyanis::Database
          * @param type 主键成员的逻辑列类型
          * @return std::string 该列的完整定义；主键不是整数类型时为空串
          */
-        [[nodiscard]] std::string autoIncrementPrimaryKeyDefinition(std::string_view quotedColumnName,
-                                                                   ColumnType type) const override;
+        [[nodiscard]] std::string autoIncrementPrimaryKeyDefinition(std::string_view quotedColumnName, ColumnType type) const override;
 
         /**
          * @brief 生成 MySQL 的「表是否存在」查询
@@ -128,7 +127,8 @@ namespace AsynGyanis::Database
 
         static constexpr std::size_t kMaximumStatementParameters = 65535; ///< MySQL 单条预处理语句的参数个数上限（= COM_STMT_PREPARE 报文中 2 字节的 num_params 字段上界）
 
-        static constexpr std::string_view kUnboundedRowLimitLiteral = "18446744073709551615"; ///< MySQL 表达「不限行数」的常量：无符号 64 位整数的上界（官方文档给出的 LIMIT 上界写法）
+        static constexpr std::string_view kUnboundedRowLimitLiteral =
+                "18446744073709551615"; ///< MySQL 表达「不限行数」的常量：无符号 64 位整数的上界（官方文档给出的 LIMIT 上界写法）
 
     protected:
         /**

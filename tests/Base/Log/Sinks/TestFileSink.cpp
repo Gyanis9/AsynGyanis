@@ -18,8 +18,8 @@
 #include <vector>
 
 #include "Base/Log/Formatters/DefaultFormatter.h"
-#include "Base/Log/LogEvent.h"
 #include "Base/Log/Formatters/LogFormatter.h"
+#include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
 
@@ -41,8 +41,7 @@ namespace AsynGyanis::Base
             /**
              * @brief 使用给定前缀构造格式化器
              */
-            explicit MarkerFormatter(std::string prefix) :
-                m_prefix(std::move(prefix))
+            explicit MarkerFormatter(std::string prefix) : m_prefix(std::move(prefix))
             {
             }
 
@@ -64,11 +63,9 @@ namespace AsynGyanis::Base
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "file message")
         {
-            return {
-                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-990011",
-                    SourceLocation("file_sink_fixture.cpp", 7301, "fileSinkTestFunction"),
-                    "file_logger", std::move(message)
-            };
+            return {level,         TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789),
+                    "tid-990011",  SourceLocation("file_sink_fixture.cpp", 7301, "fileSinkTestFunction"),
+                    "file_logger", std::move(message)};
         }
 
         /**
@@ -86,8 +83,7 @@ namespace AsynGyanis::Base
             }
             std::string content{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>{}};
 
-            for (std::string::size_type position = content.find("\r\n"); position != std::string::npos;
-                 position                        = content.find("\r\n", position))
+            for (std::string::size_type position = content.find("\r\n"); position != std::string::npos; position = content.find("\r\n", position))
             {
                 content.erase(position, 1);
             }
@@ -412,14 +408,14 @@ namespace AsynGyanis::Base
         threads.reserve(kthreadCount);
         for (int index = 0; index < kthreadCount; ++index)
         {
-            threads.emplace_back([&sink, index]
-            {
-                for (int inner = 0; inner < kwritesPerThread; ++inner)
-                {
-                    sink.write(makeEvent(LogLevel::Info,
-                                         "worker" + std::to_string(index) + "_entry" + std::to_string(inner)));
-                }
-            });
+            threads.emplace_back(
+                    [&sink, index]
+                    {
+                        for (int inner = 0; inner < kwritesPerThread; ++inner)
+                        {
+                            sink.write(makeEvent(LogLevel::Info, "worker" + std::to_string(index) + "_entry" + std::to_string(inner)));
+                        }
+                    });
         }
         for (std::thread &thread: threads)
         {
@@ -452,14 +448,13 @@ namespace AsynGyanis::Base
         const TestSupport::TemporaryDirectory temporaryDirectory("FileSink_ByteAccounting");
         const fs::path                        logPath = temporaryDirectory.path() / "accounting.log";
 
-        FileSink sink(logPath);
+        FileSink          sink(logPath);
         const std::size_t singleLineBytes = sink.writeLine("x");
         const std::size_t multiLineBytes  = sink.writeLine("a\nb\nc");
         sink.flush();
 
-        EXPECT_EQ(fs::file_size(logPath), singleLineBytes + multiLineBytes)
-                << "报回的字节数与磁盘增长不一致：滚动阈值会被低估，"
-                << "实测报 " << singleLineBytes + multiLineBytes << " 而文件有 " << fs::file_size(logPath) << " 字节";
+        EXPECT_EQ(fs::file_size(logPath), singleLineBytes + multiLineBytes) << "报回的字节数与磁盘增长不一致：滚动阈值会被低估，"
+                                                                            << "实测报 " << singleLineBytes + multiLineBytes << " 而文件有 " << fs::file_size(logPath) << " 字节";
     }
 
     /**
@@ -528,11 +523,9 @@ namespace AsynGyanis::Base
         std::ostringstream captured;
         const auto         countReports = [&captured]
         {
-            const std::string text = captured.str();
+            const std::string text  = captured.str();
             std::size_t       count = 0U;
-            for (std::string::size_type position = text.find("写日志失败");
-                 position != std::string::npos;
-                 position        = text.find("写日志失败", position + 1U))
+            for (std::string::size_type position = text.find("写日志失败"); position != std::string::npos; position = text.find("写日志失败", position + 1U))
             {
                 ++count;
             }

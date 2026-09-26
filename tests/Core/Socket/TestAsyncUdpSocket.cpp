@@ -65,12 +65,12 @@ namespace AsynGyanis::Core
          */
         struct TransferObservation
         {
-            std::optional<ssize_t>  sentByteCount;     ///< 发送返回的字节数
-            std::optional<ssize_t>  receivedByteCount; ///< 接收返回的字节数；空表示还没收到
-            int receiveErrorCode{0};                  ///< 没收到字节时的平台错误码；0 表示无码收场
-            std::string             receivedPayload;   ///< 收到的内容
-            Platform::SocketAddress peerAddress;       ///< 收到报文的来源地址
-            std::string             failureMessage;    ///< 协程内捕获到的异常文本；空表示没出异常
+            std::optional<ssize_t>  sentByteCount;       ///< 发送返回的字节数
+            std::optional<ssize_t>  receivedByteCount;   ///< 接收返回的字节数；空表示还没收到
+            int                     receiveErrorCode{0}; ///< 没收到字节时的平台错误码；0 表示无码收场
+            std::string             receivedPayload;     ///< 收到的内容
+            Platform::SocketAddress peerAddress;         ///< 收到报文的来源地址
+            std::string             failureMessage;      ///< 协程内捕获到的异常文本；空表示没出异常
         };
 
         /**
@@ -80,8 +80,7 @@ namespace AsynGyanis::Core
          * @param payload 报文内容
          * @param observation 观测结果
          */
-        Task<void> sendThenReceiveTask(AsyncUdpSocket &sender, AsyncUdpSocket &receiver, std::string payload,
-                                       TransferObservation &observation)
+        Task<void> sendThenReceiveTask(AsyncUdpSocket &sender, AsyncUdpSocket &receiver, std::string payload, TransferObservation &observation)
         {
             try
             {
@@ -89,11 +88,10 @@ namespace AsynGyanis::Core
 
                 std::array<char, 256> buffer{};
                 // 结果按值回来：字节数与来源地址一起拿到（惰性协程不往调用方的引用里写）
-                const AsyncUdpSocket::DatagramReceiveResult received =
-                        co_await receiver.asyncReceiveFrom(buffer.data(), buffer.size());
-                const ssize_t receivedByteCount = received.receivedByteCount;
-                observation.peerAddress         = received.peerAddress;
-                observation.receivedByteCount   = receivedByteCount;
+                const AsyncUdpSocket::DatagramReceiveResult received          = co_await receiver.asyncReceiveFrom(buffer.data(), buffer.size());
+                const ssize_t                               receivedByteCount = received.receivedByteCount;
+                observation.peerAddress                                       = received.peerAddress;
+                observation.receivedByteCount                                 = receivedByteCount;
                 if (receivedByteCount > 0)
                 {
                     observation.receivedPayload.assign(buffer.data(), static_cast<std::size_t>(receivedByteCount));
@@ -116,12 +114,11 @@ namespace AsynGyanis::Core
             {
                 std::array<char, 256> buffer{};
                 // 结果按值回来：字节数与来源地址一起拿到（惰性协程不往调用方的引用里写）
-                const AsyncUdpSocket::DatagramReceiveResult received =
-                        co_await receiver.asyncReceiveFrom(buffer.data(), buffer.size());
-                const ssize_t receivedByteCount = received.receivedByteCount;
-                observation.peerAddress         = received.peerAddress;
-                observation.receivedByteCount   = receivedByteCount;
-                observation.receiveErrorCode    = received.socketErrorCode;
+                const AsyncUdpSocket::DatagramReceiveResult received          = co_await receiver.asyncReceiveFrom(buffer.data(), buffer.size());
+                const ssize_t                               receivedByteCount = received.receivedByteCount;
+                observation.peerAddress                                       = received.peerAddress;
+                observation.receivedByteCount                                 = receivedByteCount;
+                observation.receiveErrorCode                                  = received.socketErrorCode;
                 if (receivedByteCount > 0)
                 {
                     observation.receivedPayload.assign(buffer.data(), static_cast<std::size_t>(receivedByteCount));
@@ -153,8 +150,7 @@ namespace AsynGyanis::Core
         // Task 只能在协程里推进：整段场景做成一个协程，由测试按步推到收完
         Task<void> scenario = sendThenReceiveTask(sender, receiver, std::string(kPayload), observation);
         loop.scheduler().schedule(scenario.handle());
-        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
-                << "没有在时限内收到报文";
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); })) << "没有在时限内收到报文";
 
         ASSERT_TRUE(observation.failureMessage.empty()) << "场景里抛了异常：" << observation.failureMessage;
         ASSERT_TRUE(observation.sentByteCount.has_value()) << "发送没有走到";
@@ -167,8 +163,7 @@ namespace AsynGyanis::Core
         const Platform::SocketAddress senderAddress = sender.localAddress();
         EXPECT_GT(observation.peerAddress.length, 0U) << "没有交回来源地址";
         EXPECT_EQ(observation.peerAddress.length, senderAddress.length);
-        EXPECT_EQ(std::memcmp(&observation.peerAddress.storage, &senderAddress.storage, observation.peerAddress.length), 0)
-                << "来源地址不是发送端的地址";
+        EXPECT_EQ(std::memcmp(&observation.peerAddress.storage, &senderAddress.storage, observation.peerAddress.length), 0) << "来源地址不是发送端的地址";
     }
 
     /**
@@ -189,8 +184,7 @@ namespace AsynGyanis::Core
         TransferObservation observation;
         Task<void>          scenario = sendThenReceiveTask(sender, receiver, std::string{}, observation);
         loop.scheduler().schedule(scenario.handle());
-        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
-                << "空报文没有被交付";
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); })) << "空报文没有被交付";
 
         ASSERT_TRUE(observation.failureMessage.empty()) << "场景里抛了异常：" << observation.failureMessage;
         ASSERT_TRUE(observation.sentByteCount.has_value()) << "发送没有走到";
@@ -231,8 +225,7 @@ namespace AsynGyanis::Core
         ASSERT_EQ(sender.send(receiver.localAddress(), kPayload.data(), kPayload.size()), static_cast<ssize_t>(kPayload.size()))
                 << "发送失败，套接字错误码 " << Platform::PlatformError::lastSocketErrorCode();
 
-        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); }))
-                << "报文到达后等待没有被唤醒";
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); })) << "报文到达后等待没有被唤醒";
         ASSERT_TRUE(observation.failureMessage.empty()) << "场景里抛了异常：" << observation.failureMessage;
         EXPECT_EQ(*observation.receivedByteCount, static_cast<ssize_t>(kPayload.size()));
         EXPECT_EQ(observation.receivedPayload, kPayload) << "等就绪醒来后拿到的内容不对";
@@ -274,15 +267,12 @@ namespace AsynGyanis::Core
         TransferObservation observation;
         Task<void>          scenario = receiveOnlyTask(source, observation);
         loop.scheduler().schedule(scenario.handle());
-        ASSERT_TRUE(advanceUntil(loop, [&observation] { return !observation.failureMessage.empty(); }))
-                << "无效套接字上收报文既没抛异常也没完成：调用方会被挂住";
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return !observation.failureMessage.empty(); })) << "无效套接字上收报文既没抛异常也没完成：调用方会被挂住";
 
         // 异常文本形如「[异常] 数据报接收失败：...」，因此只判「里面说了是哪一步」
-        EXPECT_NE(observation.failureMessage.find("数据报接收失败"), std::string::npos)
-                << "异常文本应当说明是哪一步失败的：" << observation.failureMessage;
+        EXPECT_NE(observation.failureMessage.find("数据报接收失败"), std::string::npos) << "异常文本应当说明是哪一步失败的：" << observation.failureMessage;
         // 本端拿不到描述符是「对象已被移动走」，与底层的 EINVAL 相比这才是可操作的原因
-        EXPECT_NE(observation.failureMessage.find("套接字无效"), std::string::npos)
-                << "无效套接字要把本端原因说清，而不是只把底层错误码翻译一遍：" << observation.failureMessage;
+        EXPECT_NE(observation.failureMessage.find("套接字无效"), std::string::npos) << "无效套接字要把本端原因说清，而不是只把底层错误码翻译一遍：" << observation.failureMessage;
         EXPECT_FALSE(observation.receivedByteCount.has_value()) << "失败时不该给出接收结果";
     }
 
@@ -300,7 +290,7 @@ namespace AsynGyanis::Core
         AsyncUdpSocket socket = bindLoopbackSocket(loop);
         ASSERT_TRUE(socket.isValid());
 
-        std::array<char, 8> buffer{};
+        std::array<char, 8>                         buffer{};
         Task<AsyncUdpSocket::DatagramReceiveResult> receiveTask = socket.asyncReceiveFrom(buffer.data(), 0);
         receiveTask.handle().resume();
         ASSERT_TRUE(receiveTask.isReady()) << "参数在交给系统调用之前就该被拒掉，不该挂起等报文";
@@ -320,8 +310,7 @@ namespace AsynGyanis::Core
         }
         EXPECT_TRUE(isInvalidArgument) << "零容量是调用方写错了，要落在 InvalidArgument 这一支：" << failureText;
         EXPECT_NE(failureText.find("缓冲"), std::string::npos) << "原因要指到缓冲上：" << failureText;
-        EXPECT_EQ(failureText.find("对端不可达"), std::string::npos)
-                << "参数错误不该带上「对端不可达」这类无关提示：" << failureText;
+        EXPECT_EQ(failureText.find("对端不可达"), std::string::npos) << "参数错误不该带上「对端不可达」这类无关提示：" << failureText;
     }
 
     /**
@@ -377,11 +366,7 @@ namespace AsynGyanis::Core
         const std::string payload(maximumByteCount, 'x');
         Task<ssize_t>     sendTask = socket.asyncSendTo(socket.localAddress(), payload.data(), payload.size());
         sendTask.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&sendTask]
-                                 {
-                                     return sendTask.isReady();
-                                 }))
-                << "上限长度的发送没有收尾：既没交出去也没报错";
+        ASSERT_TRUE(advanceUntil(loop, [&sendTask] { return sendTask.isReady(); })) << "上限长度的发送没有收尾：既没交出去也没报错";
 
         ssize_t sentByteCount = -1;
         EXPECT_NO_THROW(sentByteCount = sendTask.handle().promise().result());
@@ -405,30 +390,21 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(sender.isValid());
         ASSERT_TRUE(receiver.isValid());
 
-        const std::string payload = "lifetime";
+        const std::string payload  = "lifetime";
         Task<ssize_t>     sendTask = sender.asyncSendTo(receiver.localAddress(), payload.data(), payload.size());
         // 这一行之前，asyncSendTo 的实参临时量已经亡故：协程还一行没跑
         sendTask.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&sendTask]
-                                 {
-                                     return sendTask.isReady();
-                                 }))
-                << "发送既没交出去也没报错：调用方拿不到结论";
+        ASSERT_TRUE(advanceUntil(loop, [&sendTask] { return sendTask.isReady(); })) << "发送既没交出去也没报错：调用方拿不到结论";
 
         ssize_t sentByteCount = -1;
         EXPECT_NO_THROW(sentByteCount = sendTask.handle().promise().result());
         EXPECT_EQ(sentByteCount, static_cast<ssize_t>(payload.size())) << "按值收的地址应当与原临时量等价";
 
         // 等价性不只看返回码：报文要真能落到那个地址上
-        std::array<char, 32> receiveBuffer{};
-        Task<AsyncUdpSocket::DatagramReceiveResult> receiveTask =
-                receiver.asyncReceiveFrom(receiveBuffer.data(), receiveBuffer.size());
+        std::array<char, 32>                        receiveBuffer{};
+        Task<AsyncUdpSocket::DatagramReceiveResult> receiveTask = receiver.asyncReceiveFrom(receiveBuffer.data(), receiveBuffer.size());
         receiveTask.handle().resume();
-        ASSERT_TRUE(advanceUntil(loop, [&receiveTask]
-                                 {
-                                     return receiveTask.isReady();
-                                 }))
-                << "发送成功而接收没等到报文：地址在传递途中被改写了";
+        ASSERT_TRUE(advanceUntil(loop, [&receiveTask] { return receiveTask.isReady(); })) << "发送成功而接收没等到报文：地址在传递途中被改写了";
         const AsyncUdpSocket::DatagramReceiveResult received = receiveTask.handle().promise().result();
         EXPECT_EQ(received.receivedByteCount, static_cast<ssize_t>(payload.size()));
         EXPECT_EQ(std::string(receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)), payload);
@@ -452,7 +428,7 @@ namespace AsynGyanis::Core
             const Platform::DatagramSocket occupied = Platform::DatagramSocket::bindTo(makeLoopbackAddress(0));
             ASSERT_TRUE(occupied.isValid());
             const Platform::SocketAddress occupiedAddress = occupied.localAddress();
-            deadPort = ntohs(reinterpret_cast<const sockaddr_in *>(&occupiedAddress.storage)->sin_port);
+            deadPort                                      = ntohs(reinterpret_cast<const sockaddr_in *>(&occupiedAddress.storage)->sin_port);
         } // 作用域结束即关闭，这个端口此后没人监听
 
         EventLoop      loop;
@@ -463,9 +439,7 @@ namespace AsynGyanis::Core
         // 的 10054、Linux 与 macOS 的 ECONNREFUSED）。真实服务端并不 connect（一条套接字对所有来源），
         // Windows 上同样会递 10054——那正是它整个监听循环死掉的现场
         const Platform::SocketAddress deadAddress = makeLoopbackAddress(deadPort);
-        ASSERT_EQ(::connect(socket.fileDescriptor(), reinterpret_cast<const sockaddr *>(&deadAddress.storage),
-                            deadAddress.length),
-                  0)
+        ASSERT_EQ(::connect(socket.fileDescriptor(), reinterpret_cast<const sockaddr *>(&deadAddress.storage), deadAddress.length), 0)
                 << "connect 没成：这条用例需要一个会收 ICMP 的已连接套接字";
         ASSERT_GT(::send(socket.fileDescriptor(), "x", 1, 0), 0) << "发往死端口这一步本身就该成功";
 
@@ -477,24 +451,18 @@ namespace AsynGyanis::Core
         FD_ZERO(&readSet);
         FD_SET(fileDescriptor, &readSet);
         timeval waitTime{2, 0};
-        ASSERT_GT(::select(fileDescriptor + 1, &readSet, nullptr, nullptr, &waitTime), 0)
-                << "对端不可达的错误两秒内没递到本端：平台行为与预期不符，下面的判据无从建立";
+        ASSERT_GT(::select(fileDescriptor + 1, &readSet, nullptr, nullptr, &waitTime), 0) << "对端不可达的错误两秒内没递到本端：平台行为与预期不符，下面的判据无从建立";
 
         TransferObservation observation;
         Task<void>          scenario = receiveOnlyTask(socket, observation);
         loop.scheduler().schedule(scenario.handle());
-        ASSERT_TRUE(advanceUntil(loop, [&observation]
-                                 {
-                                     return observation.receivedByteCount.has_value() || !observation.failureMessage.empty();
-                                 }))
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value() || !observation.failureMessage.empty(); }))
                 << "一次读数既不返回也不抛：调用方会被永久挂住";
 
-        EXPECT_TRUE(observation.failureMessage.empty())
-                << "对端不可达这类错误不该抛出（它会让正在 await 的循环静默消失）：" << observation.failureMessage;
+        EXPECT_TRUE(observation.failureMessage.empty()) << "对端不可达这类错误不该抛出（它会让正在 await 的循环静默消失）：" << observation.failureMessage;
         ASSERT_TRUE(observation.receivedByteCount.has_value());
         EXPECT_LT(*observation.receivedByteCount, 0) << "错误已经到位，读数却没报出失败：那递给调用方的是什么";
-        EXPECT_NE(observation.receiveErrorCode, 0)
-                << "报「没收到」却不给错误码：调用方分不开「套接字已不可用」与「对端不在了」";
+        EXPECT_NE(observation.receiveErrorCode, 0) << "报「没收到」却不给错误码：调用方分不开「套接字已不可用」与「对端不在了」";
         EXPECT_TRUE(socket.isValid()) << "递回一个对端错误不该把本端套接字一起判死";
     }
 

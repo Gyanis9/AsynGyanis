@@ -33,40 +33,38 @@ namespace AsynGyanis::Net
         using AsynGyanis::Net::TestSupport::toUnsignedBytes;
 
         /// 一组服务端参数的字节写法（101 字节）：本端编码器要逐字节复刻它
-        constexpr std::string_view kServerParametersHex =
-                "000808aded6e71ba8d5f"
-                "0f088394c8f03e515708"
-                "1008f0eec687a7eb7f48"
-                "01026710"
-                "03048000fff7"
-                "040480010000"
-                "050480010000"
-                "060480004000"
-                "070480004000"
-                "08024080"
-                "09024400"
-                "0a0103"
-                "0b0119"
-                "0e0104"
-                "0210c5004f2c3d9b3a17b6c8d2e4f0123456"
-                "0c00";
+        constexpr std::string_view kServerParametersHex = "000808aded6e71ba8d5f"
+                                                          "0f088394c8f03e515708"
+                                                          "1008f0eec687a7eb7f48"
+                                                          "01026710"
+                                                          "03048000fff7"
+                                                          "040480010000"
+                                                          "050480010000"
+                                                          "060480004000"
+                                                          "070480004000"
+                                                          "08024080"
+                                                          "09024400"
+                                                          "0a0103"
+                                                          "0b0119"
+                                                          "0e0104"
+                                                          "0210c5004f2c3d9b3a17b6c8d2e4f0123456"
+                                                          "0c00";
 
         /// 那份独立实现编出的一组客户端参数（72 字节），末尾两项是本实现不认识的标识
-        constexpr std::string_view kInteropClientParametersHex =
-                "010480007530"
-                "03048000fff7"
-                "040480010000"
-                "050480010000"
-                "060480010000"
-                "070480010000"
-                "08024400"
-                "09024400"
-                "0a0103"
-                "0b0119"
-                "0e0104"
-                "0f088394c8f03e515708"
-                "200480010000"
-                "1b0107";
+        constexpr std::string_view kInteropClientParametersHex = "010480007530"
+                                                                 "03048000fff7"
+                                                                 "040480010000"
+                                                                 "050480010000"
+                                                                 "060480010000"
+                                                                 "070480010000"
+                                                                 "08024400"
+                                                                 "09024400"
+                                                                 "0a0103"
+                                                                 "0b0119"
+                                                                 "0e0104"
+                                                                 "0f088394c8f03e515708"
+                                                                 "200480010000"
+                                                                 "1b0107";
 
         /// 只带必填项的最小合法参数：负向用例在它前面接坏项，免得失败原因落到「缺 ISCID」上
         constexpr std::string_view kMinimalClientParametersHex = "0f088394c8f03e515708";
@@ -88,25 +86,25 @@ namespace AsynGyanis::Net
         QuicTransportParameters makeServerParameters()
         {
             QuicTransportParameters parameters;
-            parameters.originalDestinationConnectionId = makeBytesFromHex("08aded6e71ba8d5f");
-            parameters.maximumIdleTimeoutMilliseconds = 10000;
-            parameters.maximumUdpPayloadSize = 65527;
-            parameters.initialMaximumData = 65536;
-            parameters.initialMaximumStreamDataBidirectionalLocal = 65536;
-            parameters.initialMaximumStreamDataBidirectionalRemote = 16384;
-            parameters.initialMaximumStreamDataUnidirectional = 16384;
-            parameters.initialMaximumBidirectionalStreams = 128;
-            parameters.initialMaximumUnidirectionalStreams = 1024;
-            parameters.acknowledgmentDelayExponent = 3;
-            parameters.maximumAcknowledgmentDelayMilliseconds = 25;
-            parameters.activeConnectionIdLimit = 4;
-            const auto tokenBytes = makeBytesFromHex("c5004f2c3d9b3a17b6c8d2e4f0123456");
+            parameters.originalDestinationConnectionId                          = makeBytesFromHex("08aded6e71ba8d5f");
+            parameters.maximumIdleTimeoutMilliseconds                           = 10000;
+            parameters.maximumUdpPayloadSize                                    = 65527;
+            parameters.initialMaximumData                                       = 65536;
+            parameters.initialMaximumStreamDataBidirectionalLocal               = 65536;
+            parameters.initialMaximumStreamDataBidirectionalRemote              = 16384;
+            parameters.initialMaximumStreamDataUnidirectional                   = 16384;
+            parameters.initialMaximumBidirectionalStreams                       = 128;
+            parameters.initialMaximumUnidirectionalStreams                      = 1024;
+            parameters.acknowledgmentDelayExponent                              = 3;
+            parameters.maximumAcknowledgmentDelayMilliseconds                   = 25;
+            parameters.activeConnectionIdLimit                                  = 4;
+            const auto                                               tokenBytes = makeBytesFromHex("c5004f2c3d9b3a17b6c8d2e4f0123456");
             std::array<std::uint8_t, kQuicStatelessResetTokenLength> token{};
             std::ranges::copy(tokenBytes, token.begin());
-            parameters.statelessResetToken = token;
-            parameters.disableActiveMigration = true;
+            parameters.statelessResetToken       = token;
+            parameters.disableActiveMigration    = true;
             parameters.initialSourceConnectionId = makeBytesFromHex("8394c8f03e515708");
-            parameters.retrySourceConnectionId = makeBytesFromHex("f0eec687a7eb7f48");
+            parameters.retrySourceConnectionId   = makeBytesFromHex("f0eec687a7eb7f48");
             return parameters;
         }
 
@@ -116,8 +114,7 @@ namespace AsynGyanis::Net
          * @param senderRole 对端角色
          * @return 解出来的参数或解码错误
          */
-        std::expected<QuicTransportParameters, QuicDecodeError>
-        decodeHex(const std::string_view hexadecimalText, const QuicTransportParameterSenderRole senderRole)
+        std::expected<QuicTransportParameters, QuicDecodeError> decodeHex(const std::string_view hexadecimalText, const QuicTransportParameterSenderRole senderRole)
         {
             return decodeQuicTransportParameters(makeBytesFromHex(hexadecimalText), senderRole);
         }
@@ -129,9 +126,7 @@ namespace AsynGyanis::Net
          * @param senderRole 对端角色
          * @param expectedKind 预期的失败类别
          */
-        void expectRejected(const std::string_view hexadecimalText,
-                            const QuicTransportParameterSenderRole senderRole,
-                            const QuicDecodeErrorKind expectedKind)
+        void expectRejected(const std::string_view hexadecimalText, const QuicTransportParameterSenderRole senderRole, const QuicDecodeErrorKind expectedKind)
         {
             const auto decoded = decodeHex(hexadecimalText, senderRole);
             ASSERT_FALSE(decoded.has_value()) << "这段字节本该被拒：" << hexadecimalText;
@@ -177,15 +172,12 @@ namespace AsynGyanis::Net
     TEST(QuicTransportParameters, AcceptsWideIntegerEncodingButRejectsTrailingBytes)
     {
         // 0x01 的长度域是 8，整数本身写成 8 字节档（前缀 11）的 10000：§16 只把「必须最短」留给帧类型
-        const auto wide = decodeHex(withMinimalParameters("0108c000000000002710"),
-                                    QuicTransportParameterSenderRole::Client);
+        const auto wide = decodeHex(withMinimalParameters("0108c000000000002710"), QuicTransportParameterSenderRole::Client);
         ASSERT_TRUE(wide.has_value()) << wide.error().message;
         EXPECT_EQ(wide->maximumIdleTimeoutMilliseconds, 10000);
 
         // 同样声明 3 字节，可整数只占 2 字节，多出来的 1 字节没有任何定义能解释
-        expectRejected(withMinimalParameters("0103671000"),
-                       QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0103671000"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
     }
 
     /**
@@ -194,31 +186,24 @@ namespace AsynGyanis::Net
     TEST(QuicTransportParameters, RejectsOutOfRangeIntegerValues)
     {
         // max_udp_payload_size 小于 1200 非法，正好 1200 合法
-        expectRejected(withMinimalParameters("030244af"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("030244af"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         const auto atUdpFloor = decodeHex(withMinimalParameters("030244b0"), QuicTransportParameterSenderRole::Client);
         ASSERT_TRUE(atUdpFloor.has_value()) << atUdpFloor.error().message;
         EXPECT_EQ(atUdpFloor->maximumUdpPayloadSize, 1200);
 
         // ack_delay_exponent 大于 20 非法
-        expectRejected(withMinimalParameters("0a0115"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0a0115"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         // max_ack_delay 达到 2^14 非法（这个值超出 2 字节档，只能写成 4 字节档）
-        expectRejected(withMinimalParameters("0b0480004000"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0b0480004000"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         // active_connection_id_limit 小于 2 非法
-        expectRejected(withMinimalParameters("0e0101"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0e0101"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         // 流数上限大于 2^60 非法（§4.6：再按「上限 * 4 + 首号」算流号就超出变长整数的表达能力）。
         // 0x08 是 initial_max_streams_bidi、0x09 是 unidirectional，两档各钉一条，防止只给一档设界。
         // 取值写成 8 字节档：0xD0 是「前缀 11 + 高位 0x10」，故 d0...01 即 2^60 + 1
-        expectRejected(withMinimalParameters("0808d000000000000001"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
-        expectRejected(withMinimalParameters("0908d000000000000001"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0808d000000000000001"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0908d000000000000001"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         // 恰好 2^60 是允许的上界
-        const auto atStreamLimitCeiling = decodeHex(withMinimalParameters("0808d000000000000000"),
-                                                    QuicTransportParameterSenderRole::Client);
+        const auto atStreamLimitCeiling = decodeHex(withMinimalParameters("0808d000000000000000"), QuicTransportParameterSenderRole::Client);
         ASSERT_TRUE(atStreamLimitCeiling.has_value()) << atStreamLimitCeiling.error().message;
         EXPECT_EQ(atStreamLimitCeiling->initialMaximumBidirectionalStreams, std::uint64_t{1} << 60);
     }
@@ -228,9 +213,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicTransportParameters, RejectsDuplicatedKnownParameter)
     {
-        expectRejected(withMinimalParameters("0102671001026710"),
-                       QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0102671001026710"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
     }
 
     /**
@@ -239,15 +222,11 @@ namespace AsynGyanis::Net
     TEST(QuicTransportParameters, RejectsWrongLengthValues)
     {
         // stateless_reset_token 必须恰好 16 字节
-        expectRejected(withMinimalParameters("0204aabbccdd"), QuicTransportParameterSenderRole::Server,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0204aabbccdd"), QuicTransportParameterSenderRole::Server, QuicDecodeErrorKind::Malformed);
         // disable_active_migration 是零长项
-        expectRejected(withMinimalParameters("0c01ff"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0c01ff"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         // 连接标识超过 v1 的 20 字节上限：长度域 0x15 就是 21 字节
-        expectRejected(withMinimalParameters("0015" + std::string(42, 'a')),
-                       QuicTransportParameterSenderRole::Server,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0015" + std::string(42, 'a')), QuicTransportParameterSenderRole::Server, QuicDecodeErrorKind::Malformed);
     }
 
     /**
@@ -255,15 +234,11 @@ namespace AsynGyanis::Net
      */
     TEST(QuicTransportParameters, RejectsServerOnlyParametersFromClient)
     {
-        expectRejected(withMinimalParameters("000808aded6e71ba8d5f"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
-        expectRejected(withMinimalParameters("0210c5004f2c3d9b3a17b6c8d2e4f0123456"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("000808aded6e71ba8d5f"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0210c5004f2c3d9b3a17b6c8d2e4f0123456"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         // preferred_address 本实现不建模，但它仍在禁止名单里，不会被漏成「未知即忽略」
-        expectRejected(withMinimalParameters("0d00"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
-        expectRejected(withMinimalParameters("1008f0eec687a7eb7f48"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("0d00"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
+        expectRejected(withMinimalParameters("1008f0eec687a7eb7f48"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
     }
 
     /**
@@ -279,8 +254,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(zeroLength->initialSourceConnectionId.has_value());
         EXPECT_TRUE(zeroLength->initialSourceConnectionId->empty());
         // 服务端还须带 original_destination_connection_id，只带 ISCID 的字节换成服务端交来就要判错
-        expectRejected(kMinimalClientParametersHex, QuicTransportParameterSenderRole::Server,
-                       QuicDecodeErrorKind::Malformed);
+        expectRejected(kMinimalClientParametersHex, QuicTransportParameterSenderRole::Server, QuicDecodeErrorKind::Malformed);
     }
 
     /**
@@ -291,7 +265,6 @@ namespace AsynGyanis::Net
         // 长度域声明 8 字节，只剩 4 字节
         expectRejected("000808aded", QuicTransportParameterSenderRole::Server, QuicDecodeErrorKind::Truncated);
         // 末尾多出一个 8 字节档整数的开头，标识域读不完
-        expectRejected(withMinimalParameters("c0"), QuicTransportParameterSenderRole::Client,
-                       QuicDecodeErrorKind::Truncated);
+        expectRejected(withMinimalParameters("c0"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Truncated);
     }
 } // namespace AsynGyanis::Net

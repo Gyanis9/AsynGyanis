@@ -29,9 +29,7 @@ namespace AsynGyanis::Database
      * @param errorCode 底层库的错误码，附在末尾便于对照其文档排查
      * @return std::string 形如「动作说明：原因（错误码 N）」
      */
-    [[nodiscard]] inline std::string composeNativeErrorText(const std::string_view description,
-                                                            const std::string_view rawReason,
-                                                            const std::string_view reasonFallback,
+    [[nodiscard]] inline std::string composeNativeErrorText(const std::string_view description, const std::string_view rawReason, const std::string_view reasonFallback,
                                                             const long long errorCode)
     {
         // 原因文本为空是底层库的已知退化情形（如某些选项被拒），兜底文案保证调用方不会只看到前缀与错误码
@@ -48,8 +46,7 @@ namespace AsynGyanis::Database
     [[nodiscard]] inline std::string parameterCountMismatchText(const std::size_t expectedCount, const std::size_t actualCount)
     {
         // 引擎对未绑定的占位符按 NULL 参与运算，少一个参数会让条件静默变成永假，文案必须能一眼看出差在哪
-        return "参数数量不匹配：SQL 需要 " + std::to_string(expectedCount) + " 个参数，实际提供 " + std::to_string(actualCount) +
-               " 个";
+        return "参数数量不匹配：SQL 需要 " + std::to_string(expectedCount) + " 个参数，实际提供 " + std::to_string(actualCount) + " 个";
     }
 
     /**
@@ -60,12 +57,11 @@ namespace AsynGyanis::Database
      * @param engineName 引擎名，如 "SQLite"，用来说明是哪一侧的上限
      * @return std::string 形如「第 N 个文本参数过长：X 字节，超出 SQLite 单参数上限」
      */
-    [[nodiscard]] inline std::string parameterTooLongText(const std::size_t index, const bool isBinary, const std::size_t length,
-                                                          const std::string_view engineName)
+    [[nodiscard]] inline std::string parameterTooLongText(const std::size_t index, const bool isBinary, const std::size_t length, const std::string_view engineName)
     {
         // C API 的长度形参是 32 位整数，超长参数会被静默截断成半段数据，必须在绑定前就拦下
-        return "第 " + std::to_string(index) + " 个" + (isBinary ? "二进制" : "文本") + "参数过长：" + std::to_string(length) +
-               " 字节，超出 " + std::string(engineName) + " 单参数上限";
+        return "第 " + std::to_string(index) + " 个" + (isBinary ? "二进制" : "文本") + "参数过长：" + std::to_string(length) + " 字节，超出 " + std::string(engineName) +
+               " 单参数上限";
     }
 
     /**
@@ -77,7 +73,7 @@ namespace AsynGyanis::Database
     [[nodiscard]] inline std::string containerParameterRejectedText(const std::size_t index, const DatabaseValue &parameterValue)
     {
         // 容器的正确用法是展开成多个标量参数（如 IN 列表），方言层已把 IN 集合展开，走到这里说明调用方传了非标量值
-        return "参数化查询不支持容器类型的参数（第 " + std::to_string(index) + " 个参数，类型 " +
-               std::string(databaseValueTypeName(parameterValue)) + "）：请把容器展开成多个标量参数后重试";
+        return "参数化查询不支持容器类型的参数（第 " + std::to_string(index) + " 个参数，类型 " + std::string(databaseValueTypeName(parameterValue)) +
+               "）：请把容器展开成多个标量参数后重试";
     }
 } // namespace AsynGyanis::Database

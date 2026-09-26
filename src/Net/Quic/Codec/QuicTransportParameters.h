@@ -70,18 +70,18 @@ namespace AsynGyanis::Net
         /// 客户端第一个 Initial 的目的连接标识（0x00，仅服务端发）；与实际收到的值的比对归连接核心
         std::optional<std::vector<std::uint8_t>> originalDestinationConnectionId{};
 
-        std::uint64_t maximumIdleTimeoutMilliseconds{0};                 ///< max_idle_timeout（0x01），0 表示不启用
-        std::optional<std::array<std::uint8_t, kQuicStatelessResetTokenLength>> statelessResetToken{}; ///< 0x02，仅服务端发
-        std::uint64_t maximumUdpPayloadSize{kQuicDefaultMaximumUdpPayloadSize}; ///< 0x03，小于 1200 非法
-        std::uint64_t initialMaximumData{0};                             ///< initial_max_data（0x04）
-        std::uint64_t initialMaximumStreamDataBidirectionalLocal{0};      ///< 0x05，本端发起的双向流
-        std::uint64_t initialMaximumStreamDataBidirectionalRemote{0};     ///< 0x06，对端发起的双向流
-        std::uint64_t initialMaximumStreamDataUnidirectional{0};          ///< 0x07，对端发起的单向流
-        std::uint64_t initialMaximumBidirectionalStreams{0};              ///< 0x08
-        std::uint64_t initialMaximumUnidirectionalStreams{0};             ///< 0x09
-        std::uint64_t acknowledgmentDelayExponent{kQuicDefaultAcknowledgmentDelayExponent}; ///< 0x0a，大于 20 非法
-        std::uint64_t maximumAcknowledgmentDelayMilliseconds{kQuicDefaultMaximumAcknowledgmentDelayMilliseconds}; ///< 0x0b
-        bool disableActiveMigration{false};                              ///< 0x0c，零长取值，出现即为真
+        std::uint64_t                                                           maximumIdleTimeoutMilliseconds{0}; ///< max_idle_timeout（0x01），0 表示不启用
+        std::optional<std::array<std::uint8_t, kQuicStatelessResetTokenLength>> statelessResetToken{};             ///< 0x02，仅服务端发
+        std::uint64_t                                                           maximumUdpPayloadSize{kQuicDefaultMaximumUdpPayloadSize};             ///< 0x03，小于 1200 非法
+        std::uint64_t                                                           initialMaximumData{0};                                                ///< initial_max_data（0x04）
+        std::uint64_t                                                           initialMaximumStreamDataBidirectionalLocal{0};                        ///< 0x05，本端发起的双向流
+        std::uint64_t                                                           initialMaximumStreamDataBidirectionalRemote{0};                       ///< 0x06，对端发起的双向流
+        std::uint64_t                                                           initialMaximumStreamDataUnidirectional{0};                            ///< 0x07，对端发起的单向流
+        std::uint64_t                                                           initialMaximumBidirectionalStreams{0};                                ///< 0x08
+        std::uint64_t                                                           initialMaximumUnidirectionalStreams{0};                               ///< 0x09
+        std::uint64_t                                                           acknowledgmentDelayExponent{kQuicDefaultAcknowledgmentDelayExponent}; ///< 0x0a，大于 20 非法
+        std::uint64_t maximumAcknowledgmentDelayMilliseconds{kQuicDefaultMaximumAcknowledgmentDelayMilliseconds};                                     ///< 0x0b
+        bool          disableActiveMigration{false};                                ///< 0x0c，零长取值，出现即为真
         std::uint64_t activeConnectionIdLimit{kQuicDefaultActiveConnectionIdLimit}; ///< 0x0e，小于 2 非法
 
         /// 本端第一个 Initial 的源连接标识（0x0f，两端都必须发）；缺失即 TRANSPORT_PARAMETER_ERROR
@@ -113,6 +113,6 @@ namespace AsynGyanis::Net
      * @return 成功返回参数；`initial_source_connection_id` 缺失、重复、取值长度或范围不合、
      *         末尾余字节等一律返回 `QuicDecodeError`
      */
-    [[nodiscard]] std::expected<QuicTransportParameters, QuicDecodeError>
-    decodeQuicTransportParameters(std::span<const std::uint8_t> bytes, QuicTransportParameterSenderRole senderRole);
+    [[nodiscard]] std::expected<QuicTransportParameters, QuicDecodeError> decodeQuicTransportParameters(std::span<const std::uint8_t>    bytes,
+                                                                                                        QuicTransportParameterSenderRole senderRole);
 } // namespace AsynGyanis::Net

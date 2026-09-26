@@ -14,12 +14,12 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
-#include "Platform/FileSystem/FileSystem.h"
-#include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/Router.h"
+#include "Platform/FileSystem/FileSystem.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/Platform.h"
 
@@ -33,11 +33,11 @@
 #include <openssl/ssl.h>
 
 #include <array>
-#include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -241,8 +241,7 @@ namespace AsynGyanis::Net
 
                 while (writtenLength < payload.size())
                 {
-                    const int writeLength = SSL_write(m_ssl.get(), payload.data() + writtenLength,
-                                                      static_cast<int>(payload.size() - writtenLength));
+                    const int writeLength = SSL_write(m_ssl.get(), payload.data() + writtenLength, static_cast<int>(payload.size() - writtenLength));
                     if (writeLength > 0)
                     {
                         writtenLength += static_cast<std::size_t>(writeLength);
@@ -275,7 +274,7 @@ namespace AsynGyanis::Net
                 }
 
                 std::array<char, kClientChunkLength> chunkStorage{};
-                const int readLength = SSL_read(m_ssl.get(), chunkStorage.data(), static_cast<int>(chunkStorage.size()));
+                const int                            readLength = SSL_read(m_ssl.get(), chunkStorage.data(), static_cast<int>(chunkStorage.size()));
                 if (readLength > 0)
                 {
                     accumulated.append(chunkStorage.data(), static_cast<std::size_t>(readLength));
@@ -307,8 +306,8 @@ namespace AsynGyanis::Net
              * @param timeout 等待上限
              * @return true 在时限内凑齐
              */
-            bool waitForTextOccurrences(std::string &accumulated, const std::string_view expectedText,
-                                        const std::size_t expectedCount, const std::chrono::milliseconds timeout) const
+            bool waitForTextOccurrences(std::string &accumulated, const std::string_view expectedText, const std::size_t expectedCount,
+                                        const std::chrono::milliseconds timeout) const
             {
                 const auto deadline = std::chrono::steady_clock::now() + timeout;
                 while (countTextOccurrences(accumulated, expectedText) < expectedCount)
@@ -397,11 +396,11 @@ namespace AsynGyanis::Net
                 }
             }
 
-            std::unique_ptr<SSL_CTX, SslContextDeleter> m_context; ///< 客户端 TLS 上下文
-            std::unique_ptr<SSL, SslDeleter>           m_ssl;     ///< 客户端 SSL 对象（关联 m_descriptor）
-            int                                        m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 底层 TCP 描述符
-            bool                                       m_handshakeDone{false}; ///< TLS 握手是否已完成
-            Platform::Socket::Initialization           m_socketInitialization; ///< 保证 Winsock 在本对象存活期间保持初始化
+            std::unique_ptr<SSL_CTX, SslContextDeleter> m_context;                                        ///< 客户端 TLS 上下文
+            std::unique_ptr<SSL, SslDeleter>            m_ssl;                                            ///< 客户端 SSL 对象（关联 m_descriptor）
+            int                                         m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 底层 TCP 描述符
+            bool                                        m_handshakeDone{false};                           ///< TLS 握手是否已完成
+            Platform::Socket::Initialization            m_socketInitialization;                           ///< 保证 Winsock 在本对象存活期间保持初始化
         };
 
         /**
@@ -426,7 +425,7 @@ namespace AsynGyanis::Net
             }
 
             /// 当前挂在连接管理器上的活跃连接（取快照，供用例按基类接口观察会话）
-            [[nodiscard]] std::vector<std::shared_ptr<Core::Connection> > activeConnections() const
+            [[nodiscard]] std::vector<std::shared_ptr<Core::Connection>> activeConnections() const
             {
                 return m_connectionManager.snapshot();
             }
@@ -448,18 +447,11 @@ namespace AsynGyanis::Net
              * @param certificatePath 服务器证书路径，默认用仓库自签夹具 test_cert.pem
              * @param privateKeyPath 服务器私钥路径，默认用仓库自签夹具 test_key.pem
              */
-            RunningHttpsServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
-                                      const RouteRegistrar &registerRoutes = {},
-                                      const HttpParserLimits &parserLimits = HttpParserLimits{},
-                                      const std::function<void(HttpsServer &)> &configureServer = {},
-                                      const std::filesystem::path &certificatePath = kTestCertificatePath,
-                                      const std::filesystem::path &privateKeyPath = kTestKeyPath) :
-                RunningServerFixture<TestHttpsServer>(
-                        limits, sweepInterval, parserLimits,
-                        [&certificatePath, &privateKeyPath](Core::EventLoop &serverLoop)
-                        {
-                            return TestHttpsServer(serverLoop, Core::InetAddress::localhost(0), certificatePath.string(), privateKeyPath.string());
-                        })
+            RunningHttpsServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval, const RouteRegistrar &registerRoutes = {},
+                                      const HttpParserLimits &parserLimits = HttpParserLimits{}, const std::function<void(HttpsServer &)> &configureServer = {},
+                                      const std::filesystem::path &certificatePath = kTestCertificatePath, const std::filesystem::path &privateKeyPath = kTestKeyPath) :
+                RunningServerFixture<TestHttpsServer>(limits, sweepInterval, parserLimits, [&certificatePath, &privateKeyPath](Core::EventLoop &serverLoop)
+                                                      { return TestHttpsServer(serverLoop, Core::InetAddress::localhost(0), certificatePath.string(), privateKeyPath.string()); })
             {
                 if (registerRoutes)
                 {
@@ -481,677 +473,650 @@ namespace AsynGyanis::Net
      * @brief 钉住：一条 HTTPS 请求得到 200 与正确正文，统计里的请求条数与状态码类计数各 +1
      */
 
-        /**
-         * @brief 用出站客户端请求一次 HTTPS 地址（自建循环，跑完即停）
-         * @param url 目标地址
-         * @return std::unique_ptr<HttpClientResponse> 响应；失败（含证书校验不过）返回空
-         */
-        std::unique_ptr<HttpClientResponse> doHttpsGet(const std::string &url)
+    /**
+     * @brief 用出站客户端请求一次 HTTPS 地址（自建循环，跑完即停）
+     * @param url 目标地址
+     * @return std::unique_ptr<HttpClientResponse> 响应；失败（含证书校验不过）返回空
+     */
+    std::unique_ptr<HttpClientResponse> doHttpsGet(const std::string &url)
+    {
+        Core::EventLoop                     loop;
+        std::unique_ptr<HttpClientResponse> result;
+        // 惰性协程的帧记住的是闭包对象的地址：闭包必须先落到具名变量上再调用
+        auto requestBody = [&loop, &result, &url]() -> Core::Task<>
         {
-            Core::EventLoop                     loop;
-            std::unique_ptr<HttpClientResponse> result;
-            // 惰性协程的帧记住的是闭包对象的地址：闭包必须先落到具名变量上再调用
-            auto requestBody = [&loop, &result, &url]() -> Core::Task<>
-            {
-                result = co_await HttpClient::get(loop, url);
-                loop.stop();
-            };
-            Core::Task<> request = requestBody();
-            if (!request.isReady())
-            {
-                loop.scheduler().schedule(request.handle());
-            }
-            loop.run();
-            return result;
-        }
-
-        /**
-         * @brief 用出站客户端向 HTTPS 地址 POST 一段正文（自建循环，跑完即停）
-         * @param url 目标地址
-         * @param contentType 正文媒体类型
-         * @param body 正文
-         * @return std::unique_ptr<HttpClientResponse> 响应；失败（含证书校验不过）返回空
-         */
-        std::unique_ptr<HttpClientResponse> doHttpsPost(const std::string &url, const std::string &contentType,
-                                                        const std::string &body)
-        {
-            Core::EventLoop                     loop;
-            std::unique_ptr<HttpClientResponse> result;
-            auto requestBody = [&loop, &result, &url, &contentType, &body]() -> Core::Task<>
-            {
-                result = co_await HttpClient::post(loop, url, contentType, body);
-                loop.stop();
-            };
-            Core::Task<> request = requestBody();
-            if (!request.isReady())
-            {
-                loop.scheduler().schedule(request.handle());
-            }
-            loop.run();
-            return result;
-        }
-
-        /**
-         * @brief 一次「带着自己 TLS 上下文」的出站请求的结论
-         */
-        struct ClientTlsAttemptOutcome
-        {
-            std::unique_ptr<HttpClientResponse> response; ///< 响应；握手或请求失败时为空
-            bool identityLoaded{true};                    ///< 客户端身份是否装载成功；未要求身份时恒为 true
-        };
-
-        /**
-         * @brief 用给定的出站 TLS 策略（可带客户端身份）GET 一次：自建客户端与循环，跑完即停
-         * @details 与 doHttpsGet 的差别只在客户端是哪一档：静态那一支没有承载策略的地方，用的是进程级
-         *          默认上下文；出站策略（信任库、握手段位）与客户端身份都挂在**实例**上，只有走实例入口
-         *          才看得到。循环刻意每次新建而不是让调用方复用：EventLoop 的停止请求是粘性的，第二次
-         *          run() 会立刻返回，那时候的「空响应」就成了与 TLS 无关的假证据
-         * @param url 目标地址
-         * @param policy 出站 TLS 策略与信任库
-         * @param clientCertificateFile 客户端身份证书；空串表示本端不带身份
-         * @param clientKeyFile 客户端身份私钥
-         * @param requestTimeout 整条请求的时限
-         * @param poolConfig 池的参数；要验「响应正文上限」这一项就从这里传
-         * @return ClientTlsAttemptOutcome 响应与身份装载结论
-         */
-        ClientTlsAttemptOutcome getWithClientTls(const std::string &url, const Core::TlsPolicy &policy,
-                                                 const std::string &clientCertificateFile, const std::string &clientKeyFile,
-                                                 const std::chrono::milliseconds requestTimeout,
-                                                 const HttpOutboundConnectionPool::Config &poolConfig = {})
-        {
-            Core::EventLoop loop;
-            HttpClient client(loop, poolConfig, policy);
-            ClientTlsAttemptOutcome outcome;
-            if (!clientCertificateFile.empty())
-            {
-                outcome.identityLoaded = client.setClientCertificate(clientCertificateFile, clientKeyFile);
-                if (!outcome.identityLoaded)
-                {
-                    return outcome;
-                }
-            }
-            // 惰性协程的帧记住的是闭包对象的地址：闭包必须先落到具名变量上再调用
-            auto requestBody = [&loop, &client, &outcome, &url, requestTimeout]() -> Core::Task<>
-            {
-                outcome.response = co_await client.get(url, requestTimeout);
-                loop.stop();
-            };
-            Core::Task<> request = requestBody();
-            if (!request.isReady())
-            {
-                loop.scheduler().schedule(request.handle());
-            }
-            loop.run();
-            return outcome;
-        }
-
-        /// 一个带池的客户端走完一串请求、中途再收一次口之后的结论
-        struct PooledHttpsRunOutcome
-        {
-            std::vector<int>         statusCodes;            ///< 每条请求的状态码；0 表示这条失败了
-            std::vector<std::string> reasonPhrases;          ///< 与 statusCodes 对齐的原因短语（h2 没有这一项）
-            std::size_t              heldConnectionCount{0}; ///< 三条请求跑完时客户端池里留着的 h2 连接条数
-            std::uint64_t            activeWhileHeld{0};     ///< 收口之前服务端在册的连接数
-            std::uint64_t            activeAfterClose{0};    ///< closeIdleConnections 之后服务端在册的连接数
-        };
-
-        /**
-         * @brief 用同一个带池的客户端依次 GET，然后「收口 → 等服务端察觉 → 再发一条」
-         * @details 客户端、循环与服务端都活在调用方栈上：客户端一析构在册数就自己归零，那时候量到的 0
-         *          证明不了是 closeIdleConnections() 的功劳。收口这一步必须在同一条循环上做——缓存的
-         *          h2 连接归属那条循环，换一条循环再用它就是跨线程驱动别人的协程帧。
-         * @param loop 客户端事件循环
-         * @param client 被测客户端（持有池）
-         * @param server 被测服务端（只读它的统计）
-         * @param urls 依次发出的地址
-         * @param settleTime 每段观测之前留给服务端的收口时间
-         * @param outcome 就地收集结论
-         */
-        Core::Task<void> runPooledGets(Core::EventLoop &loop, HttpClient &client, TestHttpsServer &server,
-                                       const std::vector<std::string> &urls, const std::chrono::milliseconds settleTime,
-                                       PooledHttpsRunOutcome &outcome)
-        {
-            for (const std::string &url: urls)
-            {
-                const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
-                outcome.statusCodes.push_back(response ? response->statusCode : 0);
-                outcome.reasonPhrases.push_back(response ? response->reasonPhrase : std::string{});
-            }
-            outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
-            Core::Timer heldTimer(loop);
-            co_await heldTimer.waitFor(settleTime);
-            outcome.activeWhileHeld = server.stats().activeConnectionCount;
-
-            client.closeIdleConnections();
-            Core::Timer afterCloseTimer(loop);
-            co_await afterCloseTimer.waitFor(settleTime);
-            outcome.activeAfterClose = server.stats().activeConnectionCount;
-
-            // 收口之后再来一条：池里没了可复用的就必须重开一条，这条 200 证明作废的连接没被交出去
-            const std::unique_ptr<HttpClientResponse> reopened = co_await client.get(urls.front());
-            outcome.statusCodes.push_back(reopened ? reopened->statusCode : 0);
-            outcome.reasonPhrases.push_back(reopened ? reopened->reasonPhrase : std::string{});
+            result = co_await HttpClient::get(loop, url);
             loop.stop();
-            co_return;
-        }
-
-        /// 一条池化连接同时供两条并发请求时的结论
-        struct SharedConnectionRunOutcome
-        {
-            int         warmupStatusCode{0};               ///< 暖场那条（当时池里还没东西可复用）的状态码
-            std::string warmupReasonPhrase;                ///< 暖场那条的原因短语，h2 没有这一项
-            int         firstStatusCode{0};                ///< 第一条并发请求的状态码；0 表示这条失败了
-            int         secondStatusCode{0};               ///< 第二条并发请求的状态码；0 表示这条失败了
-            std::string firstReasonPhrase;                 ///< 第一条的原因短语
-            std::string secondReasonPhrase;                ///< 第二条的原因短语
-            std::size_t heldConnectionCount{0};            ///< 采样那一刻池里留着的 h2 连接条数
-            std::size_t multiplexedStreamCount{0};         ///< 采样那一刻最忙一条连接上同时在途的流数
         };
+        Core::Task<> request = requestBody();
+        if (!request.isReady())
+        {
+            loop.scheduler().schedule(request.handle());
+        }
+        loop.run();
+        return result;
+    }
 
-        /**
-         * @brief 发一条 GET，把状态码与原因短语写回调用方给的格子
-         * @details 输出走引用而不是返回值：这条协程要和兄弟协程并发跑在同一个循环上，驱动协程不能
-         *          直接 co_await 它（一个 Task 只能被读一次），只能事后读这些格子。
-         * @param client 被测客户端（持有池）
-         * @param url 请求地址
-         * @param statusCode 输出：状态码；失败为 0
-         * @param reasonPhrase 输出：原因短语，h2 没有这一项
-         * @param finishedRequestCount 输出：已收口的条数，驱动协程据此判断何时可以停
-         */
-        Core::Task<void> runOnePooledGet(HttpClient &client, const std::string &url, int &statusCode,
-                                        std::string &reasonPhrase, std::size_t &finishedRequestCount)
+    /**
+     * @brief 用出站客户端向 HTTPS 地址 POST 一段正文（自建循环，跑完即停）
+     * @param url 目标地址
+     * @param contentType 正文媒体类型
+     * @param body 正文
+     * @return std::unique_ptr<HttpClientResponse> 响应；失败（含证书校验不过）返回空
+     */
+    std::unique_ptr<HttpClientResponse> doHttpsPost(const std::string &url, const std::string &contentType, const std::string &body)
+    {
+        Core::EventLoop                     loop;
+        std::unique_ptr<HttpClientResponse> result;
+        auto                                requestBody = [&loop, &result, &url, &contentType, &body]() -> Core::Task<>
+        {
+            result = co_await HttpClient::post(loop, url, contentType, body);
+            loop.stop();
+        };
+        Core::Task<> request = requestBody();
+        if (!request.isReady())
+        {
+            loop.scheduler().schedule(request.handle());
+        }
+        loop.run();
+        return result;
+    }
+
+    /**
+     * @brief 一次「带着自己 TLS 上下文」的出站请求的结论
+     */
+    struct ClientTlsAttemptOutcome
+    {
+        std::unique_ptr<HttpClientResponse> response;             ///< 响应；握手或请求失败时为空
+        bool                                identityLoaded{true}; ///< 客户端身份是否装载成功；未要求身份时恒为 true
+    };
+
+    /**
+     * @brief 用给定的出站 TLS 策略（可带客户端身份）GET 一次：自建客户端与循环，跑完即停
+     * @details 与 doHttpsGet 的差别只在客户端是哪一档：静态那一支没有承载策略的地方，用的是进程级
+     *          默认上下文；出站策略（信任库、握手段位）与客户端身份都挂在**实例**上，只有走实例入口
+     *          才看得到。循环刻意每次新建而不是让调用方复用：EventLoop 的停止请求是粘性的，第二次
+     *          run() 会立刻返回，那时候的「空响应」就成了与 TLS 无关的假证据
+     * @param url 目标地址
+     * @param policy 出站 TLS 策略与信任库
+     * @param clientCertificateFile 客户端身份证书；空串表示本端不带身份
+     * @param clientKeyFile 客户端身份私钥
+     * @param requestTimeout 整条请求的时限
+     * @param poolConfig 池的参数；要验「响应正文上限」这一项就从这里传
+     * @return ClientTlsAttemptOutcome 响应与身份装载结论
+     */
+    ClientTlsAttemptOutcome getWithClientTls(const std::string &url, const Core::TlsPolicy &policy, const std::string &clientCertificateFile, const std::string &clientKeyFile,
+                                             const std::chrono::milliseconds requestTimeout, const HttpOutboundConnectionPool::Config &poolConfig = {})
+    {
+        Core::EventLoop         loop;
+        HttpClient              client(loop, poolConfig, policy);
+        ClientTlsAttemptOutcome outcome;
+        if (!clientCertificateFile.empty())
+        {
+            outcome.identityLoaded = client.setClientCertificate(clientCertificateFile, clientKeyFile);
+            if (!outcome.identityLoaded)
+            {
+                return outcome;
+            }
+        }
+        // 惰性协程的帧记住的是闭包对象的地址：闭包必须先落到具名变量上再调用
+        auto requestBody = [&loop, &client, &outcome, &url, requestTimeout]() -> Core::Task<>
+        {
+            outcome.response = co_await client.get(url, requestTimeout);
+            loop.stop();
+        };
+        Core::Task<> request = requestBody();
+        if (!request.isReady())
+        {
+            loop.scheduler().schedule(request.handle());
+        }
+        loop.run();
+        return outcome;
+    }
+
+    /// 一个带池的客户端走完一串请求、中途再收一次口之后的结论
+    struct PooledHttpsRunOutcome
+    {
+        std::vector<int>         statusCodes;            ///< 每条请求的状态码；0 表示这条失败了
+        std::vector<std::string> reasonPhrases;          ///< 与 statusCodes 对齐的原因短语（h2 没有这一项）
+        std::size_t              heldConnectionCount{0}; ///< 三条请求跑完时客户端池里留着的 h2 连接条数
+        std::uint64_t            activeWhileHeld{0};     ///< 收口之前服务端在册的连接数
+        std::uint64_t            activeAfterClose{0};    ///< closeIdleConnections 之后服务端在册的连接数
+    };
+
+    /**
+     * @brief 用同一个带池的客户端依次 GET，然后「收口 → 等服务端察觉 → 再发一条」
+     * @details 客户端、循环与服务端都活在调用方栈上：客户端一析构在册数就自己归零，那时候量到的 0
+     *          证明不了是 closeIdleConnections() 的功劳。收口这一步必须在同一条循环上做——缓存的
+     *          h2 连接归属那条循环，换一条循环再用它就是跨线程驱动别人的协程帧。
+     * @param loop 客户端事件循环
+     * @param client 被测客户端（持有池）
+     * @param server 被测服务端（只读它的统计）
+     * @param urls 依次发出的地址
+     * @param settleTime 每段观测之前留给服务端的收口时间
+     * @param outcome 就地收集结论
+     */
+    Core::Task<void> runPooledGets(Core::EventLoop &loop, HttpClient &client, TestHttpsServer &server, const std::vector<std::string> &urls,
+                                   const std::chrono::milliseconds settleTime, PooledHttpsRunOutcome &outcome)
+    {
+        for (const std::string &url: urls)
         {
             const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
-            statusCode = response ? response->statusCode : 0;
-            reasonPhrase = response ? response->reasonPhrase : std::string{};
-            ++finishedRequestCount;
-            co_return;
+            outcome.statusCodes.push_back(response ? response->statusCode : 0);
+            outcome.reasonPhrases.push_back(response ? response->reasonPhrase : std::string{});
+        }
+        outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
+        Core::Timer heldTimer(loop);
+        co_await heldTimer.waitFor(settleTime);
+        outcome.activeWhileHeld = server.stats().activeConnectionCount;
+
+        client.closeIdleConnections();
+        Core::Timer afterCloseTimer(loop);
+        co_await afterCloseTimer.waitFor(settleTime);
+        outcome.activeAfterClose = server.stats().activeConnectionCount;
+
+        // 收口之后再来一条：池里没了可复用的就必须重开一条，这条 200 证明作废的连接没被交出去
+        const std::unique_ptr<HttpClientResponse> reopened = co_await client.get(urls.front());
+        outcome.statusCodes.push_back(reopened ? reopened->statusCode : 0);
+        outcome.reasonPhrases.push_back(reopened ? reopened->reasonPhrase : std::string{});
+        loop.stop();
+        co_return;
+    }
+
+    /// 一条池化连接同时供两条并发请求时的结论
+    struct SharedConnectionRunOutcome
+    {
+        int         warmupStatusCode{0};       ///< 暖场那条（当时池里还没东西可复用）的状态码
+        std::string warmupReasonPhrase;        ///< 暖场那条的原因短语，h2 没有这一项
+        int         firstStatusCode{0};        ///< 第一条并发请求的状态码；0 表示这条失败了
+        int         secondStatusCode{0};       ///< 第二条并发请求的状态码；0 表示这条失败了
+        std::string firstReasonPhrase;         ///< 第一条的原因短语
+        std::string secondReasonPhrase;        ///< 第二条的原因短语
+        std::size_t heldConnectionCount{0};    ///< 采样那一刻池里留着的 h2 连接条数
+        std::size_t multiplexedStreamCount{0}; ///< 采样那一刻最忙一条连接上同时在途的流数
+    };
+
+    /**
+     * @brief 发一条 GET，把状态码与原因短语写回调用方给的格子
+     * @details 输出走引用而不是返回值：这条协程要和兄弟协程并发跑在同一个循环上，驱动协程不能
+     *          直接 co_await 它（一个 Task 只能被读一次），只能事后读这些格子。
+     * @param client 被测客户端（持有池）
+     * @param url 请求地址
+     * @param statusCode 输出：状态码；失败为 0
+     * @param reasonPhrase 输出：原因短语，h2 没有这一项
+     * @param finishedRequestCount 输出：已收口的条数，驱动协程据此判断何时可以停
+     */
+    Core::Task<void> runOnePooledGet(HttpClient &client, const std::string &url, int &statusCode, std::string &reasonPhrase, std::size_t &finishedRequestCount)
+    {
+        const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
+        statusCode                                         = response ? response->statusCode : 0;
+        reasonPhrase                                       = response ? response->reasonPhrase : std::string{};
+        ++finishedRequestCount;
+        co_return;
+    }
+
+    /**
+     * @brief 每 1 毫秒让出一次循环，直到谓词为真或时限用完
+     * @details 有界：上限用完既不抛也不挂，让调用方把「没等到」报成断言失败。用在客户端循环里，
+     *          是因为这几处的时机只能由循环自己推进（测试线程一等就会把协程卡死）。
+     * @param loop 承载等待的事件循环
+     * @param isSatisfied 每轮询问一次的谓词
+     * @param timeout 等待上限
+     */
+    Core::Task<void> waitUntil(Core::EventLoop &loop, const std::function<bool()> &isSatisfied, const std::chrono::milliseconds timeout)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (!isSatisfied() && std::chrono::steady_clock::now() < deadline)
+        {
+            Core::Timer pollTimer(loop);
+            co_await pollTimer.waitFor(std::chrono::milliseconds{1});
+        }
+        co_return;
+    }
+
+    /**
+     * @brief 先暖场一条让池里留下连接，再并发发两条，并在两条都还在途时采样复用度
+     * @details 采样点读的是客户端自己的计数（池里的连接条数与最忙一条上的在途流数），因此不需要
+     *          「睡一段时间再看」——慢路由把那两条请求按在途中，采样协程每 1 毫秒让出一次循环，
+     *          时机由计数本身决定。暖场那一条是必需的：冷池里两条并发请求各要开一条连接，
+     *          那时候复用度为 1 才是对的行为。
+     * @param loop 客户端事件循环
+     * @param client 被测客户端（持有池）
+     * @param warmUrl 暖场地址（快路由）
+     * @param slowUrl 并发地址（慢路由）
+     * @param outcome 就地收集结论
+     */
+    Core::Task<void> runSharedConnectionGets(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl, const std::string &slowUrl, SharedConnectionRunOutcome &outcome)
+    {
+        const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
+        outcome.warmupStatusCode                         = warmup ? warmup->statusCode : 0;
+        outcome.warmupReasonPhrase                       = warmup ? warmup->reasonPhrase : std::string{};
+
+        std::size_t      finishedRequestCount = 0;
+        Core::Task<void> first                = runOnePooledGet(client, slowUrl, outcome.firstStatusCode, outcome.firstReasonPhrase, finishedRequestCount);
+        Core::Task<void> second               = runOnePooledGet(client, slowUrl, outcome.secondStatusCode, outcome.secondReasonPhrase, finishedRequestCount);
+        if (!first.isReady())
+        {
+            loop.scheduler().schedule(first.handle());
+        }
+        if (!second.isReady())
+        {
+            loop.scheduler().schedule(second.handle());
         }
 
-        /**
-         * @brief 每 1 毫秒让出一次循环，直到谓词为真或时限用完
-         * @details 有界：上限用完既不抛也不挂，让调用方把「没等到」报成断言失败。用在客户端循环里，
-         *          是因为这几处的时机只能由循环自己推进（测试线程一等就会把协程卡死）。
-         * @param loop 承载等待的事件循环
-         * @param isSatisfied 每轮询问一次的谓词
-         * @param timeout 等待上限
-         */
-        Core::Task<void> waitUntil(Core::EventLoop &loop, const std::function<bool()> &isSatisfied,
-                                   const std::chrono::milliseconds timeout)
+        // 两次有界的轮询：时机由计数本身决定，不靠睡
+        co_await waitUntil(loop, [&client] { return client.http2MaximumInFlightStreamCount() >= 2U; }, std::chrono::seconds{2});
+        outcome.heldConnectionCount    = client.idleHttp2ConnectionCount();
+        outcome.multiplexedStreamCount = client.http2MaximumInFlightStreamCount();
+
+        co_await waitUntil(loop, [&finishedRequestCount] { return finishedRequestCount >= 2U; }, std::chrono::seconds{4});
+        // 采样之后必须把两条在飞的请求各自收到口再退出。留着挂起的协程随本帧一起销毁，等于把
+        // 已经排进就绪队列的唤醒留在悬空帧上——下一次 runAll() 就是一次读后释放
+        // （计数没到 2 也要等：请求自带时限，它一定会以失败收口，失败由 outcome 的断言去抓）
+        if (!first.isReady())
         {
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (!isSatisfied() && std::chrono::steady_clock::now() < deadline)
-            {
-                Core::Timer pollTimer(loop);
-                co_await pollTimer.waitFor(std::chrono::milliseconds{1});
-            }
-            co_return;
+            co_await first;
         }
-
-        /**
-         * @brief 先暖场一条让池里留下连接，再并发发两条，并在两条都还在途时采样复用度
-         * @details 采样点读的是客户端自己的计数（池里的连接条数与最忙一条上的在途流数），因此不需要
-         *          「睡一段时间再看」——慢路由把那两条请求按在途中，采样协程每 1 毫秒让出一次循环，
-         *          时机由计数本身决定。暖场那一条是必需的：冷池里两条并发请求各要开一条连接，
-         *          那时候复用度为 1 才是对的行为。
-         * @param loop 客户端事件循环
-         * @param client 被测客户端（持有池）
-         * @param warmUrl 暖场地址（快路由）
-         * @param slowUrl 并发地址（慢路由）
-         * @param outcome 就地收集结论
-         */
-        Core::Task<void> runSharedConnectionGets(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl,
-                                                 const std::string &slowUrl, SharedConnectionRunOutcome &outcome)
+        if (!second.isReady())
         {
-            const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
-            outcome.warmupStatusCode = warmup ? warmup->statusCode : 0;
-            outcome.warmupReasonPhrase = warmup ? warmup->reasonPhrase : std::string{};
-
-            std::size_t finishedRequestCount = 0;
-            Core::Task<void> first = runOnePooledGet(client, slowUrl, outcome.firstStatusCode,
-                                                    outcome.firstReasonPhrase, finishedRequestCount);
-            Core::Task<void> second = runOnePooledGet(client, slowUrl, outcome.secondStatusCode,
-                                                     outcome.secondReasonPhrase, finishedRequestCount);
-            if (!first.isReady())
-            {
-                loop.scheduler().schedule(first.handle());
-            }
-            if (!second.isReady())
-            {
-                loop.scheduler().schedule(second.handle());
-            }
-
-            // 两次有界的轮询：时机由计数本身决定，不靠睡
-            co_await waitUntil(loop, [&client] { return client.http2MaximumInFlightStreamCount() >= 2U; },
-                               std::chrono::seconds{2});
-            outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
-            outcome.multiplexedStreamCount = client.http2MaximumInFlightStreamCount();
-
-            co_await waitUntil(loop, [&finishedRequestCount] { return finishedRequestCount >= 2U; },
-                               std::chrono::seconds{4});
-            // 采样之后必须把两条在飞的请求各自收到口再退出。留着挂起的协程随本帧一起销毁，等于把
-            // 已经排进就绪队列的唤醒留在悬空帧上——下一次 runAll() 就是一次读后释放
-            // （计数没到 2 也要等：请求自带时限，它一定会以失败收口，失败由 outcome 的断言去抓）
-            if (!first.isReady())
-            {
-                co_await first;
-            }
-            if (!second.isReady())
-            {
-                co_await second;
-            }
-            loop.stop();
-            co_return;
+            co_await second;
         }
+        loop.stop();
+        co_return;
+    }
 
-        /// 「同一条池化 h2 连接上顺序跑一批请求」的结论
-        struct SustainedRunOutcome
-        {
-            std::size_t successCount{0};        ///< 状态码与正文都对上的条数
-            std::size_t mismatchCount{0};       ///< 正文与本轮序号对不上的条数（串流时会跳起来）
-            std::size_t heldConnectionCount{0}; ///< 跑完之后池里留着的 h2 连接条数
-            std::size_t inFlightAfterRun{0};    ///< 跑完之后最忙一条连接上还在途的流数
-            std::string firstError;             ///< 第一条不合的说明
-        };
+    /// 「同一条池化 h2 连接上顺序跑一批请求」的结论
+    struct SustainedRunOutcome
+    {
+        std::size_t successCount{0};        ///< 状态码与正文都对上的条数
+        std::size_t mismatchCount{0};       ///< 正文与本轮序号对不上的条数（串流时会跳起来）
+        std::size_t heldConnectionCount{0}; ///< 跑完之后池里留着的 h2 连接条数
+        std::size_t inFlightAfterRun{0};    ///< 跑完之后最忙一条连接上还在途的流数
+        std::string firstError;             ///< 第一条不合的说明
+    };
 
-        /**
-         * @brief 在同一条池化 h2 连接上顺序发 requestCount 条 GET，每条的正文都得是它自己那个序号
-         * @details 一条一条问是要把「复用」这一支跑长：头块的 HPACK 动态表、按流的发送窗口、在途流表
-         *          这些连接级状态，两条请求时可能恰好错不开，跑两百条就会错开。序号是服务端递增出来的，
-         *          因此「答串了」与「少了/多了字节」都能从正文本身看出来，而不是只看状态码 200。
-         *          跑完再读池里的连接条数与在途流数：前者钉住「这一批确实走在复用上」，后者钉住
-         *          「收口的流都从在途表里摘走了」——留在表里的话，容器的 LSan 会连着这份表一起报。
-         * @param loop 承载这批请求的事件循环（跑完由本协程叫停）
-         * @param client 被测客户端（持有池）
-         * @param url 请求地址
-         * @param requestCount 发几条
-         * @param outcome 就地收集结论
-         */
-        Core::Task<void> runSustainedPooledGets(Core::EventLoop &loop, HttpClient &client, const std::string &url,
-                                                const std::size_t requestCount, SustainedRunOutcome &outcome)
-        {
-            for (std::size_t index = 0U; index < requestCount; ++index)
-            {
-                const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
-                const std::string expected = "tick-" + std::to_string(index);
-                if (!response || response->statusCode != 200)
-                {
-                    if (outcome.firstError.empty())
-                    {
-                        outcome.firstError = "第 " + std::to_string(index) + " 条没拿到 200";
-                    }
-                    continue;
-                }
-                if (response->body != expected)
-                {
-                    ++outcome.mismatchCount;
-                    if (outcome.firstError.empty())
-                    {
-                        outcome.firstError = "第 " + std::to_string(index) + " 条的正文是 " + response->body;
-                    }
-                    continue;
-                }
-                ++outcome.successCount;
-            }
-            outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
-            outcome.inFlightAfterRun = client.http2MaximumInFlightStreamCount();
-            loop.stop();
-            co_return;
-        }
-
-        /// 冷池并发一把的观测量
-        struct ColdBurstOutcome
-        {
-            std::atomic<std::size_t> finishedCount{0}; ///< 已经收口的条数
-            std::atomic<std::size_t> successCount{0};  ///< 拿到 200 的条数
-            std::size_t              heldConnectionCount{0}; ///< 最后一条收口时池里留着的 h2 连接条数
-            std::size_t              activeWhileHeld{0};     ///< 请求都还在途时服务器侧在册的连接数
-        };
-
-        /**
-         * @brief 在请求都还挂在服务器里的时候，从服务器一侧读「同时有多少条连接」
-         * @details 判据必须在请求还没答完的时候取：跑完之后池按端点只留一格，五条握手会被折叠成
-         *          一格，那时再数就分不出「一条连接服务五条请求」与「五条连接各服务一条然后剩一条」。
-         *          服务器侧的在册连接数没有这个问题——会话是谁建的它就数谁。
-         * @note 读数的回调**按值收**：协程的参数住在帧里，首次恢复之后才读，收引用的话
-         *       调用点那个临时 `std::function` 早就出了作用域（ASan 报 stack-use-after-scope 抓到过）。
-         */
-        Core::Task<void> sampleActiveConnections(Core::EventLoop &loop, const std::function<std::size_t()> reader,
-                                                  std::size_t *const destination)
-        {
-            Core::Timer timer(loop);
-            co_await timer.waitFor(std::chrono::milliseconds{150});
-            *destination = reader();
-            co_return;
-        }
-
-        /**
-         * @brief 冷池上并发发出的一条 GET；最后一条收口时记下池里的连接条数并叫停循环
-         * @details 「池里剩几条连接」只有在全都跑完之后才有意义，因此把读数放在最后一条的收尾里做。
-         *          收口计数用原子量：这几路协程各自在自己的挂起/恢复上来写同一个 outcome。
-         */
-        Core::Task<void> fetchOneOnColdPool(Core::EventLoop &loop, HttpClient &client, const std::string &url,
-                                            const std::size_t expectedCount, ColdBurstOutcome &outcome)
+    /**
+     * @brief 在同一条池化 h2 连接上顺序发 requestCount 条 GET，每条的正文都得是它自己那个序号
+     * @details 一条一条问是要把「复用」这一支跑长：头块的 HPACK 动态表、按流的发送窗口、在途流表
+     *          这些连接级状态，两条请求时可能恰好错不开，跑两百条就会错开。序号是服务端递增出来的，
+     *          因此「答串了」与「少了/多了字节」都能从正文本身看出来，而不是只看状态码 200。
+     *          跑完再读池里的连接条数与在途流数：前者钉住「这一批确实走在复用上」，后者钉住
+     *          「收口的流都从在途表里摘走了」——留在表里的话，容器的 LSan 会连着这份表一起报。
+     * @param loop 承载这批请求的事件循环（跑完由本协程叫停）
+     * @param client 被测客户端（持有池）
+     * @param url 请求地址
+     * @param requestCount 发几条
+     * @param outcome 就地收集结论
+     */
+    Core::Task<void> runSustainedPooledGets(Core::EventLoop &loop, HttpClient &client, const std::string &url, const std::size_t requestCount, SustainedRunOutcome &outcome)
+    {
+        for (std::size_t index = 0U; index < requestCount; ++index)
         {
             const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
-            if (response != nullptr && response->statusCode == 200)
+            const std::string                         expected = "tick-" + std::to_string(index);
+            if (!response || response->statusCode != 200)
             {
-                outcome.successCount.fetch_add(1U, std::memory_order_relaxed);
-            }
-            if (outcome.finishedCount.fetch_add(1U, std::memory_order_acq_rel) + 1U == expectedCount)
-            {
-                outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
-                loop.stop();
-            }
-            co_return;
-        }
-
-        /// 建连必败那一路的观测量：几条并发有没有各自收场
-        struct RefusalBurstOutcome
-        {
-            std::atomic<std::size_t> finishedCount{0}; ///< 已经回来的条数（有人挂住就数不满）
-            std::atomic<std::size_t> refusedCount{0};  ///< 拿回空响应的条数
-        };
-
-        /**
-         * @brief 冷池上并发发出的一条 GET，预期拿回空响应；最后一条收口时叫停循环
-         * @param loop 客户端的事件循环
-         * @param client 被测客户端（用它的池）
-         * @param url 必败的目标（连一个刚关掉的监听端口）
-         * @param timeout 本次请求的时限
-         * @param expectedCount 一共几条，用于认出「最后一条」
-         * @param outcome 输出：收口与拒绝的条数
-         */
-        Core::Task<void> fetchOneUntilRefused(Core::EventLoop &loop, HttpClient &client, const std::string &url,
-                                              const std::chrono::milliseconds timeout,
-                                              const std::size_t expectedCount, RefusalBurstOutcome &outcome)
-        {
-            const std::unique_ptr<HttpClientResponse> response = co_await client.get(url, timeout);
-            if (response == nullptr)
-            {
-                outcome.refusedCount.fetch_add(1U, std::memory_order_relaxed);
-            }
-            if (outcome.finishedCount.fetch_add(1U, std::memory_order_acq_rel) + 1U == expectedCount)
-            {
-                loop.stop();
-            }
-            co_return;
-        }
-
-        /**
-         * @brief 到点就叫停循环的看门狗：把「有人永远回不来」从挂死的用例变成一条红断言
-         * @details 没有它时，一次漏掉的结算会让 loop.run() 转到天荒地老（等建连的那一步本身不设时限，
-         *          靠领导者结算唤醒）。这里给一个远超正常收场耗时的宽限窗，到点直接 stop。
-         * @param loop 要叫停的循环
-         * @param grace 宽限时长
-         */
-        Core::Task<void> stopLoopAfterGrace(Core::EventLoop &loop, const std::chrono::milliseconds grace)
-        {
-            Core::Timer timer(loop);
-            co_await timer.waitFor(grace);
-            loop.stop();
-            co_return;
-        }
-
-        /**
-         * @brief 注册一条「进门即计数、按住 400 毫秒再回正文」的 GET 路由（路径 /slow）
-         * @details 400 毫秒是给客户端侧留的观察窗口：慢到够在客户端循环里采样到「请求仍在途」，
-         *          又远不到默认的请求时限。等待挂在服务器的循环上，不占线程。
-         * @param router 被测服务器的路由器
-         * @param serverLoop 服务器的事件循环（定时器挂在它上面）
-         * @param entryCount 可选的输出：处理器每被进一次加一，空指针表示不计数
-         */
-        void registerHoldingRoute(Router &router, Core::EventLoop &serverLoop, std::atomic<std::size_t> *const entryCount)
-        {
-            // 同一条法登记 GET 与 POST 两个方法：一侧的既有用例按 GET 问它，另一侧要拿 POST 测
-            // 「非幂等请求不许重发」——按方法分路由是路由器的常态，不是一件事的两种写法
-            const auto handler = [&serverLoop, entryCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                if (entryCount != nullptr)
+                if (outcome.firstError.empty())
                 {
-                    ++(*entryCount);
+                    outcome.firstError = "第 " + std::to_string(index) + " 条没拿到 200";
                 }
-                Core::Timer processingTimer(serverLoop);
-                co_await processingTimer.waitFor(std::chrono::milliseconds{400});
-                response.setBody("served-slow");
-                co_return;
-            };
-            router.get("/slow", handler);
-            router.post("/slow", handler);
-        }
-
-        /// 「请求还在途就收口空闲连接」的结论
-        struct CloseWhileBusyRunOutcome
-        {
-            int         warmupStatusCode{0};       ///< 暖场那条的状态码：它把连接放进池里，是后面的前提
-            int         statusCode{0};             ///< 在途那条请求最终的状态码
-            std::string reasonPhrase;              ///< 在途那条的原因短语，h2 没有这一项
-            std::size_t inFlightWhenClosed{0};     ///< 收口那一刻最忙一条连接上的在途流数
-            std::size_t heldBeforeClose{0};        ///< 收口之前池里留着的 h2 连接条数
-            std::size_t heldAfterClose{0};         ///< 收口之后池里留着的 h2 连接条数
-        };
-
-        /**
-         * @brief 暖场一条、再起一条慢请求，等它上了线就调用 closeIdleConnections()
-         * @details 收口点刻意落在「请求在途」这段时间里：这条入口的契约是只收空闲的，正被人用的那条
-         *          不能掐。判据用「慢路由被进了几次」而不是「请求是否 200」——把在途请求掐断之后，
-         *          调用方仍可能走一遍重连重来，状态码照样是 200，只有重复进入会露出那次重发。
-         * @param loop 客户端事件循环
-         * @param client 被测客户端（持有池）
-         * @param warmUrl 暖场地址（快路由）
-         * @param slowUrl 在途地址（慢路由）
-         * @param outcome 就地收集结论
-         */
-        Core::Task<void> runCloseWhileBusy(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl,
-                                          const std::string &slowUrl, CloseWhileBusyRunOutcome &outcome)
-        {
-            const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
-            outcome.warmupStatusCode = warmup ? warmup->statusCode : 0;
-
-            std::size_t finishedRequestCount = 0;
-            Core::Task<void> busy = runOnePooledGet(client, slowUrl, outcome.statusCode, outcome.reasonPhrase,
-                                                    finishedRequestCount);
-            if (!busy.isReady())
-            {
-                loop.scheduler().schedule(busy.handle());
+                continue;
             }
-
-            co_await waitUntil(loop, [&client] { return client.http2MaximumInFlightStreamCount() >= 1U; },
-                               std::chrono::seconds{2});
-            outcome.inFlightWhenClosed = client.http2MaximumInFlightStreamCount();
-            outcome.heldBeforeClose = client.idleHttp2ConnectionCount();
-            client.closeIdleConnections();
-            outcome.heldAfterClose = client.idleHttp2ConnectionCount();
-
-            co_await waitUntil(loop, [&finishedRequestCount] { return finishedRequestCount >= 1U; },
-                               std::chrono::seconds{4});
-            loop.stop();
-            co_return;
-        }
-
-        /// 只发一条被测请求的结论（前面先走一条暖场请求把连接放进池里）
-        struct SingleRunOutcome
-        {
-            int warmupStatusCode{0};                      ///< 暖场那条的状态码
-            std::unique_ptr<HttpClientResponse> response; ///< 被测那条的响应；空表示失败
-        };
-
-        /// 「问一句 host 回显给你」那条请求的结论
-        struct HostEchoRunOutcome
-        {
-            int         statusCode{0};  ///< 状态码
-            std::string echoedHost;     ///< 服务器侧看到的 host / :authority 原文
-        };
-
-        /**
-         * @brief 发一条 GET，把服务器回显的权威主机带回来
-         * @param loop 客户端事件循环
-         * @param client 被测客户端
-         * @param url 请求地址
-         * @param outcome 就地收集结论
-         */
-        Core::Task<void> runHostEcho(Core::EventLoop &loop, HttpClient &client, const std::string &url,
-                                     HostEchoRunOutcome &outcome)
-        {
-            const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
-            if (response != nullptr)
+            if (response->body != expected)
             {
-                outcome.statusCode = response->statusCode;
-                outcome.echoedHost = response->body;
-            }
-            loop.stop();
-            co_return;
-        }
-
-        /**
-         * @brief 请求已整个发出、却没等到回音时，出站侧不许重来一次
-         * @details h2 一条连接上跑几条流，一条请求被时限掐掉会把同一条通路上的兄弟一起带走。这时
-         *          「有没有收到过字节」这一位判不出该不该重发：POST 已整个交上通路、对端只是还没答完，
-         *          重发就是把非幂等请求做两遍。判据用路由自己的进入次数——它数的就是「这个请求被交付了几次」。
-         * @param loop 客户端事件循环
-         * @param client 被测客户端（持有池）
-         * @param warmUrl 暖场地址（把连接放进池里，后面那条才走「复用」这一支）
-         * @param slowUrl 慢地址：本端会在对端答完之前放弃
-         * @param outcome 就地收集结论
-         */
-        Core::Task<void> runNoReplayAfterSend(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl,
-                                              const std::string &slowUrl, SingleRunOutcome &outcome)
-        {
-            const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
-            outcome.warmupStatusCode = warmup ? warmup->statusCode : 0;
-
-            outcome.response = co_await client.post(slowUrl, "text/plain", "payload-once",
-                                                   std::chrono::milliseconds{150});
-            // 给「悄悄重发的那一遍」留足落地时间：它要重做 TLS 握手，比正常路径更慢
-            Core::Timer settleTimer(loop);
-            co_await settleTimer.waitFor(std::chrono::milliseconds{900});
-            loop.stop();
-            co_return;
-        }
-
-        /// 池里那条 h2 连接被对端在空闲期收掉之后，再发一条请求的结论
-        struct IdleGraceRunOutcome
-        {
-            std::size_t heldAfterFirst{0};   ///< 第一条之后池里留着的 h2 连接条数
-            int firstStatusCode{0};          ///< 第一条的状态码；0 表示失败
-            int secondStatusCode{0};         ///< 宽限期之后再发一条的状态码；0 表示失败
-        };
-
-        /**
-         * @brief 在同一条循环、同一个客户端上跑「GET 暖场 → 等服务端收掉空闲连接 → 再一条请求」
-         * @details 宽限期里本端不探测那条连接，也不泵它——留着的正是一份「看起来健康、其实已经被对端
-         *          收了」的存货，这就是 keep-alive 的固有竞态在 h2 上的形状。两段必须在同一条协程里
-         *          跑完：换一条循环就等于换一个池。
-         * @details 第二条之后再留一段落地时间：如果本端悄悄重发了，那一遍要重做 DNS 与 TLS 握手，
-         *          比正常路径慢，不等够就会漏看服务端的进入次数。
-         * @param loop 客户端事件循环
-         * @param client 被测客户端（持有池）
-         * @param warmUrl 暖场地址：它把连接放进池里，是后面那段的前提
-         * @param secondUrl 宽限期之后再发一条的地址
-         * @param isSecondPost true 第二条走 POST（带正文），否则走 GET
-         * @param idleGrace 留给服务端收口空闲连接的宽限期
-         * @param secondTimeout 第二条请求的整体时限
-         * @param outcome 就地收集结论
-         */
-        Core::Task<void> runWarmThenSecondAfterIdleGrace(Core::EventLoop &loop, HttpClient &client,
-                                                        const std::string &warmUrl, const std::string &secondUrl,
-                                                        const bool isSecondPost, const std::chrono::milliseconds idleGrace,
-                                                        const std::chrono::milliseconds secondTimeout,
-                                                        IdleGraceRunOutcome &outcome)
-        {
-            const std::unique_ptr<HttpClientResponse> first = co_await client.get(warmUrl);
-            outcome.firstStatusCode = first ? first->statusCode : 0;
-            outcome.heldAfterFirst = client.idleHttp2ConnectionCount();
-            Core::Timer graceTimer(loop);
-            co_await graceTimer.waitFor(idleGrace);
-            std::unique_ptr<HttpClientResponse> second;
-            if (isSecondPost)
-            {
-                second = co_await client.post(secondUrl, "text/plain", "payload-once", secondTimeout);
-            }
-            else
-            {
-                second = co_await client.get(secondUrl, secondTimeout);
-            }
-            outcome.secondStatusCode = second ? second->statusCode : 0;
-            Core::Timer settleTimer(loop);
-            co_await settleTimer.waitFor(std::chrono::milliseconds{400});
-            loop.stop();
-            co_return;
-        }
-
-        /**
-         * @brief 临时把 SSL_CERT_FILE 指向某张证书，让出站客户端信任它
-         * @details 客户端只认系统 CA 库（SSL_CTX_set_default_verify_paths），而仓库夹具是自签的；
-         *          OpenSSL 解析默认路径时认 SSL_CERT_FILE 这个环境变量，于是用例借此把夹具证书
-         *          当成受信根。**必须在进程内第一次 HTTPS 客户端请求之前设好**——SSL_CTX 是那时
-         *          惰性创建并缓存的。析构还原原值（没设过就清掉）
-         */
-        class ScopedTrustedCertificateFile
-        {
-        public:
-            explicit ScopedTrustedCertificateFile(const std::filesystem::path &certificatePath)
-            {
-                m_previousValue = readEnvironment("SSL_CERT_FILE");
-#if ASYN_PLATFORM_WIN32
-                static_cast<void>(::_putenv_s("SSL_CERT_FILE", certificatePath.string().c_str()));
-#else
-                static_cast<void>(::setenv("SSL_CERT_FILE", certificatePath.string().c_str(), 1));
-#endif
-            }
-
-            ~ScopedTrustedCertificateFile()
-            {
-#if ASYN_PLATFORM_WIN32
-                static_cast<void>(::_putenv_s("SSL_CERT_FILE", m_previousValue.c_str()));
-#else
-                if (m_previousValue.empty())
+                ++outcome.mismatchCount;
+                if (outcome.firstError.empty())
                 {
-                    static_cast<void>(::unsetenv("SSL_CERT_FILE"));
-                } else
-                {
-                    static_cast<void>(::setenv("SSL_CERT_FILE", m_previousValue.c_str(), 1));
+                    outcome.firstError = "第 " + std::to_string(index) + " 条的正文是 " + response->body;
                 }
-#endif
+                continue;
             }
+            ++outcome.successCount;
+        }
+        outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
+        outcome.inFlightAfterRun    = client.http2MaximumInFlightStreamCount();
+        loop.stop();
+        co_return;
+    }
 
-            ScopedTrustedCertificateFile(const ScopedTrustedCertificateFile &) = delete;
+    /// 冷池并发一把的观测量
+    struct ColdBurstOutcome
+    {
+        std::atomic<std::size_t> finishedCount{0};       ///< 已经收口的条数
+        std::atomic<std::size_t> successCount{0};        ///< 拿到 200 的条数
+        std::size_t              heldConnectionCount{0}; ///< 最后一条收口时池里留着的 h2 连接条数
+        std::size_t              activeWhileHeld{0};     ///< 请求都还在途时服务器侧在册的连接数
+    };
 
-            ScopedTrustedCertificateFile &operator=(const ScopedTrustedCertificateFile &) = delete;
+    /**
+     * @brief 在请求都还挂在服务器里的时候，从服务器一侧读「同时有多少条连接」
+     * @details 判据必须在请求还没答完的时候取：跑完之后池按端点只留一格，五条握手会被折叠成
+     *          一格，那时再数就分不出「一条连接服务五条请求」与「五条连接各服务一条然后剩一条」。
+     *          服务器侧的在册连接数没有这个问题——会话是谁建的它就数谁。
+     * @note 读数的回调**按值收**：协程的参数住在帧里，首次恢复之后才读，收引用的话
+     *       调用点那个临时 `std::function` 早就出了作用域（ASan 报 stack-use-after-scope 抓到过）。
+     */
+    Core::Task<void> sampleActiveConnections(Core::EventLoop &loop, const std::function<std::size_t()> reader, std::size_t *const destination)
+    {
+        Core::Timer timer(loop);
+        co_await timer.waitFor(std::chrono::milliseconds{150});
+        *destination = reader();
+        co_return;
+    }
 
-        private:
-            /**
-             * @brief 读一个环境变量并拷贝成 std::string
-             * @details MSVC 在 /W4 下把 std::getenv 判为弃用（C4996），Windows 侧改用 _dupenv_s；
-             *          两种实现都立即拷贝，调用方不保留指向环境块的指针
-             * @param variableName 环境变量名
-             * @return std::string 取值；未设置时为空串
-             */
-            [[nodiscard]] static std::string readEnvironment(const char *variableName)
+    /**
+     * @brief 冷池上并发发出的一条 GET；最后一条收口时记下池里的连接条数并叫停循环
+     * @details 「池里剩几条连接」只有在全都跑完之后才有意义，因此把读数放在最后一条的收尾里做。
+     *          收口计数用原子量：这几路协程各自在自己的挂起/恢复上来写同一个 outcome。
+     */
+    Core::Task<void> fetchOneOnColdPool(Core::EventLoop &loop, HttpClient &client, const std::string &url, const std::size_t expectedCount, ColdBurstOutcome &outcome)
+    {
+        const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
+        if (response != nullptr && response->statusCode == 200)
+        {
+            outcome.successCount.fetch_add(1U, std::memory_order_relaxed);
+        }
+        if (outcome.finishedCount.fetch_add(1U, std::memory_order_acq_rel) + 1U == expectedCount)
+        {
+            outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
+            loop.stop();
+        }
+        co_return;
+    }
+
+    /// 建连必败那一路的观测量：几条并发有没有各自收场
+    struct RefusalBurstOutcome
+    {
+        std::atomic<std::size_t> finishedCount{0}; ///< 已经回来的条数（有人挂住就数不满）
+        std::atomic<std::size_t> refusedCount{0};  ///< 拿回空响应的条数
+    };
+
+    /**
+     * @brief 冷池上并发发出的一条 GET，预期拿回空响应；最后一条收口时叫停循环
+     * @param loop 客户端的事件循环
+     * @param client 被测客户端（用它的池）
+     * @param url 必败的目标（连一个刚关掉的监听端口）
+     * @param timeout 本次请求的时限
+     * @param expectedCount 一共几条，用于认出「最后一条」
+     * @param outcome 输出：收口与拒绝的条数
+     */
+    Core::Task<void> fetchOneUntilRefused(Core::EventLoop &loop, HttpClient &client, const std::string &url, const std::chrono::milliseconds timeout,
+                                          const std::size_t expectedCount, RefusalBurstOutcome &outcome)
+    {
+        const std::unique_ptr<HttpClientResponse> response = co_await client.get(url, timeout);
+        if (response == nullptr)
+        {
+            outcome.refusedCount.fetch_add(1U, std::memory_order_relaxed);
+        }
+        if (outcome.finishedCount.fetch_add(1U, std::memory_order_acq_rel) + 1U == expectedCount)
+        {
+            loop.stop();
+        }
+        co_return;
+    }
+
+    /**
+     * @brief 到点就叫停循环的看门狗：把「有人永远回不来」从挂死的用例变成一条红断言
+     * @details 没有它时，一次漏掉的结算会让 loop.run() 转到天荒地老（等建连的那一步本身不设时限，
+     *          靠领导者结算唤醒）。这里给一个远超正常收场耗时的宽限窗，到点直接 stop。
+     * @param loop 要叫停的循环
+     * @param grace 宽限时长
+     */
+    Core::Task<void> stopLoopAfterGrace(Core::EventLoop &loop, const std::chrono::milliseconds grace)
+    {
+        Core::Timer timer(loop);
+        co_await timer.waitFor(grace);
+        loop.stop();
+        co_return;
+    }
+
+    /**
+     * @brief 注册一条「进门即计数、按住 400 毫秒再回正文」的 GET 路由（路径 /slow）
+     * @details 400 毫秒是给客户端侧留的观察窗口：慢到够在客户端循环里采样到「请求仍在途」，
+     *          又远不到默认的请求时限。等待挂在服务器的循环上，不占线程。
+     * @param router 被测服务器的路由器
+     * @param serverLoop 服务器的事件循环（定时器挂在它上面）
+     * @param entryCount 可选的输出：处理器每被进一次加一，空指针表示不计数
+     */
+    void registerHoldingRoute(Router &router, Core::EventLoop &serverLoop, std::atomic<std::size_t> *const entryCount)
+    {
+        // 同一条法登记 GET 与 POST 两个方法：一侧的既有用例按 GET 问它，另一侧要拿 POST 测
+        // 「非幂等请求不许重发」——按方法分路由是路由器的常态，不是一件事的两种写法
+        const auto handler = [&serverLoop, entryCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
+        {
+            if (entryCount != nullptr)
             {
-#if ASYN_PLATFORM_WIN32
-                char  *rawValue      = nullptr;
-                size_t valueCapacity = 0;
-                if (::_dupenv_s(&rawValue, &valueCapacity, variableName) != 0 || rawValue == nullptr)
-                {
-                    return {};
-                }
-                std::string variableValue(rawValue);
-                std::free(rawValue);
-                return variableValue;
-#else
-                const char *rawValue = std::getenv(variableName);
-                return rawValue != nullptr ? std::string(rawValue) : std::string{};
-#endif
+                ++(*entryCount);
             }
-
-            std::string m_previousValue; ///< 之前的值；原本没设过时为空串
+            Core::Timer processingTimer(serverLoop);
+            co_await processingTimer.waitFor(std::chrono::milliseconds{400});
+            response.setBody("served-slow");
+            co_return;
         };
+        router.get("/slow", handler);
+        router.post("/slow", handler);
+    }
+
+    /// 「请求还在途就收口空闲连接」的结论
+    struct CloseWhileBusyRunOutcome
+    {
+        int         warmupStatusCode{0};   ///< 暖场那条的状态码：它把连接放进池里，是后面的前提
+        int         statusCode{0};         ///< 在途那条请求最终的状态码
+        std::string reasonPhrase;          ///< 在途那条的原因短语，h2 没有这一项
+        std::size_t inFlightWhenClosed{0}; ///< 收口那一刻最忙一条连接上的在途流数
+        std::size_t heldBeforeClose{0};    ///< 收口之前池里留着的 h2 连接条数
+        std::size_t heldAfterClose{0};     ///< 收口之后池里留着的 h2 连接条数
+    };
+
+    /**
+     * @brief 暖场一条、再起一条慢请求，等它上了线就调用 closeIdleConnections()
+     * @details 收口点刻意落在「请求在途」这段时间里：这条入口的契约是只收空闲的，正被人用的那条
+     *          不能掐。判据用「慢路由被进了几次」而不是「请求是否 200」——把在途请求掐断之后，
+     *          调用方仍可能走一遍重连重来，状态码照样是 200，只有重复进入会露出那次重发。
+     * @param loop 客户端事件循环
+     * @param client 被测客户端（持有池）
+     * @param warmUrl 暖场地址（快路由）
+     * @param slowUrl 在途地址（慢路由）
+     * @param outcome 就地收集结论
+     */
+    Core::Task<void> runCloseWhileBusy(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl, const std::string &slowUrl, CloseWhileBusyRunOutcome &outcome)
+    {
+        const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
+        outcome.warmupStatusCode                         = warmup ? warmup->statusCode : 0;
+
+        std::size_t      finishedRequestCount = 0;
+        Core::Task<void> busy                 = runOnePooledGet(client, slowUrl, outcome.statusCode, outcome.reasonPhrase, finishedRequestCount);
+        if (!busy.isReady())
+        {
+            loop.scheduler().schedule(busy.handle());
+        }
+
+        co_await waitUntil(loop, [&client] { return client.http2MaximumInFlightStreamCount() >= 1U; }, std::chrono::seconds{2});
+        outcome.inFlightWhenClosed = client.http2MaximumInFlightStreamCount();
+        outcome.heldBeforeClose    = client.idleHttp2ConnectionCount();
+        client.closeIdleConnections();
+        outcome.heldAfterClose = client.idleHttp2ConnectionCount();
+
+        co_await waitUntil(loop, [&finishedRequestCount] { return finishedRequestCount >= 1U; }, std::chrono::seconds{4});
+        loop.stop();
+        co_return;
+    }
+
+    /// 只发一条被测请求的结论（前面先走一条暖场请求把连接放进池里）
+    struct SingleRunOutcome
+    {
+        int                                 warmupStatusCode{0}; ///< 暖场那条的状态码
+        std::unique_ptr<HttpClientResponse> response;            ///< 被测那条的响应；空表示失败
+    };
+
+    /// 「问一句 host 回显给你」那条请求的结论
+    struct HostEchoRunOutcome
+    {
+        int         statusCode{0}; ///< 状态码
+        std::string echoedHost;    ///< 服务器侧看到的 host / :authority 原文
+    };
+
+    /**
+     * @brief 发一条 GET，把服务器回显的权威主机带回来
+     * @param loop 客户端事件循环
+     * @param client 被测客户端
+     * @param url 请求地址
+     * @param outcome 就地收集结论
+     */
+    Core::Task<void> runHostEcho(Core::EventLoop &loop, HttpClient &client, const std::string &url, HostEchoRunOutcome &outcome)
+    {
+        const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
+        if (response != nullptr)
+        {
+            outcome.statusCode = response->statusCode;
+            outcome.echoedHost = response->body;
+        }
+        loop.stop();
+        co_return;
+    }
+
+    /**
+     * @brief 请求已整个发出、却没等到回音时，出站侧不许重来一次
+     * @details h2 一条连接上跑几条流，一条请求被时限掐掉会把同一条通路上的兄弟一起带走。这时
+     *          「有没有收到过字节」这一位判不出该不该重发：POST 已整个交上通路、对端只是还没答完，
+     *          重发就是把非幂等请求做两遍。判据用路由自己的进入次数——它数的就是「这个请求被交付了几次」。
+     * @param loop 客户端事件循环
+     * @param client 被测客户端（持有池）
+     * @param warmUrl 暖场地址（把连接放进池里，后面那条才走「复用」这一支）
+     * @param slowUrl 慢地址：本端会在对端答完之前放弃
+     * @param outcome 就地收集结论
+     */
+    Core::Task<void> runNoReplayAfterSend(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl, const std::string &slowUrl, SingleRunOutcome &outcome)
+    {
+        const std::unique_ptr<HttpClientResponse> warmup = co_await client.get(warmUrl);
+        outcome.warmupStatusCode                         = warmup ? warmup->statusCode : 0;
+
+        outcome.response = co_await client.post(slowUrl, "text/plain", "payload-once", std::chrono::milliseconds{150});
+        // 给「悄悄重发的那一遍」留足落地时间：它要重做 TLS 握手，比正常路径更慢
+        Core::Timer settleTimer(loop);
+        co_await settleTimer.waitFor(std::chrono::milliseconds{900});
+        loop.stop();
+        co_return;
+    }
+
+    /// 池里那条 h2 连接被对端在空闲期收掉之后，再发一条请求的结论
+    struct IdleGraceRunOutcome
+    {
+        std::size_t heldAfterFirst{0};   ///< 第一条之后池里留着的 h2 连接条数
+        int         firstStatusCode{0};  ///< 第一条的状态码；0 表示失败
+        int         secondStatusCode{0}; ///< 宽限期之后再发一条的状态码；0 表示失败
+    };
+
+    /**
+     * @brief 在同一条循环、同一个客户端上跑「GET 暖场 → 等服务端收掉空闲连接 → 再一条请求」
+     * @details 宽限期里本端不探测那条连接，也不泵它——留着的正是一份「看起来健康、其实已经被对端
+     *          收了」的存货，这就是 keep-alive 的固有竞态在 h2 上的形状。两段必须在同一条协程里
+     *          跑完：换一条循环就等于换一个池。
+     * @details 第二条之后再留一段落地时间：如果本端悄悄重发了，那一遍要重做 DNS 与 TLS 握手，
+     *          比正常路径慢，不等够就会漏看服务端的进入次数。
+     * @param loop 客户端事件循环
+     * @param client 被测客户端（持有池）
+     * @param warmUrl 暖场地址：它把连接放进池里，是后面那段的前提
+     * @param secondUrl 宽限期之后再发一条的地址
+     * @param isSecondPost true 第二条走 POST（带正文），否则走 GET
+     * @param idleGrace 留给服务端收口空闲连接的宽限期
+     * @param secondTimeout 第二条请求的整体时限
+     * @param outcome 就地收集结论
+     */
+    Core::Task<void> runWarmThenSecondAfterIdleGrace(Core::EventLoop &loop, HttpClient &client, const std::string &warmUrl, const std::string &secondUrl, const bool isSecondPost,
+                                                     const std::chrono::milliseconds idleGrace, const std::chrono::milliseconds secondTimeout, IdleGraceRunOutcome &outcome)
+    {
+        const std::unique_ptr<HttpClientResponse> first = co_await client.get(warmUrl);
+        outcome.firstStatusCode                         = first ? first->statusCode : 0;
+        outcome.heldAfterFirst                          = client.idleHttp2ConnectionCount();
+        Core::Timer graceTimer(loop);
+        co_await graceTimer.waitFor(idleGrace);
+        std::unique_ptr<HttpClientResponse> second;
+        if (isSecondPost)
+        {
+            second = co_await client.post(secondUrl, "text/plain", "payload-once", secondTimeout);
+        } else
+        {
+            second = co_await client.get(secondUrl, secondTimeout);
+        }
+        outcome.secondStatusCode = second ? second->statusCode : 0;
+        Core::Timer settleTimer(loop);
+        co_await settleTimer.waitFor(std::chrono::milliseconds{400});
+        loop.stop();
+        co_return;
+    }
+
+    /**
+     * @brief 临时把 SSL_CERT_FILE 指向某张证书，让出站客户端信任它
+     * @details 客户端只认系统 CA 库（SSL_CTX_set_default_verify_paths），而仓库夹具是自签的；
+     *          OpenSSL 解析默认路径时认 SSL_CERT_FILE 这个环境变量，于是用例借此把夹具证书
+     *          当成受信根。**必须在进程内第一次 HTTPS 客户端请求之前设好**——SSL_CTX 是那时
+     *          惰性创建并缓存的。析构还原原值（没设过就清掉）
+     */
+    class ScopedTrustedCertificateFile
+    {
+    public:
+        explicit ScopedTrustedCertificateFile(const std::filesystem::path &certificatePath)
+        {
+            m_previousValue = readEnvironment("SSL_CERT_FILE");
+#if ASYN_PLATFORM_WIN32
+            static_cast<void>(::_putenv_s("SSL_CERT_FILE", certificatePath.string().c_str()));
+#else
+            static_cast<void>(::setenv("SSL_CERT_FILE", certificatePath.string().c_str(), 1));
+#endif
+        }
+
+        ~ScopedTrustedCertificateFile()
+        {
+#if ASYN_PLATFORM_WIN32
+            static_cast<void>(::_putenv_s("SSL_CERT_FILE", m_previousValue.c_str()));
+#else
+            if (m_previousValue.empty())
+            {
+                static_cast<void>(::unsetenv("SSL_CERT_FILE"));
+            } else
+            {
+                static_cast<void>(::setenv("SSL_CERT_FILE", m_previousValue.c_str(), 1));
+            }
+#endif
+        }
+
+        ScopedTrustedCertificateFile(const ScopedTrustedCertificateFile &) = delete;
+
+        ScopedTrustedCertificateFile &operator=(const ScopedTrustedCertificateFile &) = delete;
+
+    private:
+        /**
+         * @brief 读一个环境变量并拷贝成 std::string
+         * @details MSVC 在 /W4 下把 std::getenv 判为弃用（C4996），Windows 侧改用 _dupenv_s；
+         *          两种实现都立即拷贝，调用方不保留指向环境块的指针
+         * @param variableName 环境变量名
+         * @return std::string 取值；未设置时为空串
+         */
+        [[nodiscard]] static std::string readEnvironment(const char *variableName)
+        {
+#if ASYN_PLATFORM_WIN32
+            char  *rawValue      = nullptr;
+            size_t valueCapacity = 0;
+            if (::_dupenv_s(&rawValue, &valueCapacity, variableName) != 0 || rawValue == nullptr)
+            {
+                return {};
+            }
+            std::string variableValue(rawValue);
+            std::free(rawValue);
+            return variableValue;
+#else
+            const char *rawValue = std::getenv(variableName);
+            return rawValue != nullptr ? std::string(rawValue) : std::string{};
+#endif
+        }
+
+        std::string m_previousValue; ///< 之前的值；原本没设过时为空串
+    };
 
     TEST(HttpsServer, ServesRequestAndCountsStats)
     {
-        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
-                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
 
         RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100});
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环：上界 kWaitTimeout";
@@ -1165,18 +1130,12 @@ namespace AsynGyanis::Net
 
         std::string receivedText;
         ASSERT_TRUE(client.sendText(helloRequestText(), kWaitTimeout)) << "HTTPS 请求未能写入";
-        ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "served-hello", 1, kWaitTimeout))
-                << "HTTPS 请求未得到完整响应";
+        ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "served-hello", 1, kWaitTimeout)) << "HTTPS 请求未得到完整响应";
 
         EXPECT_NE(receivedText.find("HTTP/1.1 200"), std::string::npos) << "响应状态行不是 200：「" << receivedText << "」";
 
         // 响应发出与计数落账之间隔着一次协程恢复，因此按条件轮询而不是立刻断言
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().stats().totalRequestCount >= 1;
-                },
-                kWaitTimeout)) << "统计未在时限内记下这条 HTTPS 请求";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().stats().totalRequestCount >= 1; }, kWaitTimeout)) << "统计未在时限内记下这条 HTTPS 请求";
 
         const HttpServerStats stats = fixture.server().stats();
         EXPECT_EQ(stats.totalRequestCount, 1u) << "累计请求条数不符（不含解析失败）";
@@ -1200,8 +1159,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpsServer, ExposesMetricsAndHealthEndpoints)
     {
-        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
-                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
 
         RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
                                           [](HttpsServer &server)
@@ -1222,11 +1180,10 @@ namespace AsynGyanis::Net
         // 健康检查端点：固定正文
         std::string healthText;
         ASSERT_TRUE(client.sendText(makeRequestText("GET /healthz HTTP/1.1"), kWaitTimeout)) << "健康检查请求未能写入";
-        ASSERT_TRUE(client.waitForTextOccurrences(healthText, kHealthCheckResponseBody, 1, kWaitTimeout))
-                << "健康检查端点没有回固定正文：「" << healthText << "」";
+        ASSERT_TRUE(client.waitForTextOccurrences(healthText, kHealthCheckResponseBody, 1, kWaitTimeout)) << "健康检查端点没有回固定正文：「" << healthText << "」";
 
         // 指标端点：值行里应当有**三条**请求——先前那条 /hello、/healthz，以及本条 /metrics 自己
-        //（计数发生在派发业务之前，因此它自己也算在内）。等的是值行而不是指标名：
+        // （计数发生在派发业务之前，因此它自己也算在内）。等的是值行而不是指标名：
         // HELP/TYPE 行先到，只等名字会在取到值之前就返回
         std::string metricsText;
         ASSERT_TRUE(client.sendText(makeRequestText("GET /metrics HTTP/1.1"), kWaitTimeout)) << "指标请求未能写入";
@@ -1251,12 +1208,11 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {},
-                                          kLoopbackCertificatePath, kLoopbackKeyPath);
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
         ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
 
-        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        const std::string                         url      = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
         const std::unique_ptr<HttpClientResponse> response = doHttpsGet(url);
         ASSERT_NE(response, nullptr) << "证书名字与请求的主机名一致，握手却被拒";
         EXPECT_EQ(response->statusCode, 200);
@@ -1275,17 +1231,18 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
-                                          [](Router &router, Core::EventLoop &)
-                                          {
-                                              router.post("/h2echo",
-                                                          [](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
-                                                          {
-                                                              response.setBody(request.body());
-                                                              co_return;
-                                                          });
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.post("/h2echo",
+                                [](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                                {
+                                    response.setBody(request.body());
+                                    co_return;
+                                });
+                },
+                HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
 
         const std::string host = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
@@ -1294,11 +1251,10 @@ namespace AsynGyanis::Net
         ASSERT_NE(got, nullptr) << "协商出 h2 之后这趟请求没走通：客户端多半仍按 HTTP/1.1 写字节";
         EXPECT_EQ(got->statusCode, 200);
         EXPECT_NE(got->body.find("served-hello"), std::string::npos) << "正文：" << got->body;
-        EXPECT_TRUE(got->reasonPhrase.empty())
-                << "拿到了原因短语「" << got->reasonPhrase << "」：这趟走的是 HTTP/1.1，ALPN 结果没被采纳";
+        EXPECT_TRUE(got->reasonPhrase.empty()) << "拿到了原因短语「" << got->reasonPhrase << "」：这趟走的是 HTTP/1.1，ALPN 结果没被采纳";
 
-        const std::string payload = "hello over h2";
-        const std::unique_ptr<HttpClientResponse> posted = doHttpsPost(host + "/h2echo", "text/plain", payload);
+        const std::string                         payload = "hello over h2";
+        const std::unique_ptr<HttpClientResponse> posted  = doHttpsPost(host + "/h2echo", "text/plain", payload);
         ASSERT_NE(posted, nullptr) << "带正文的 h2 出站请求失败";
         EXPECT_EQ(posted->statusCode, 200);
         EXPECT_EQ(posted->body, payload) << "方法或正文在换乘 h2 时丢了";
@@ -1316,18 +1272,17 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {},
-                                          kLoopbackCertificatePath, kLoopbackKeyPath);
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
         ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
 
         const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
         // urls 必须是具名对象：驱动协程按引用拿着它，跨过 co_await 之后还要读
         const std::vector<std::string> urls{url, url, url};
-        Core::EventLoop loop;
-        HttpClient client(loop);
-        PooledHttpsRunOutcome outcome;
-        auto work = runPooledGets(loop, client, fixture.server(), urls, std::chrono::milliseconds{200}, outcome);
+        Core::EventLoop                loop;
+        HttpClient                     client(loop);
+        PooledHttpsRunOutcome          outcome;
+        auto                           work = runPooledGets(loop, client, fixture.server(), urls, std::chrono::milliseconds{200}, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -1361,23 +1316,20 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
-                                          [](Router &router, Core::EventLoop &serverLoop)
-                                          {
-                                              registerHoldingRoute(router, serverLoop, nullptr);
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, [](Router &router, Core::EventLoop &serverLoop) { registerHoldingRoute(router, serverLoop, nullptr); },
+                HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
         ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
 
         const std::string hostPrefix = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
         // 两个地址必须是具名对象：驱动协程按引用拿着它们，跨过 co_await 之后还要读
-        const std::string warmUrl = hostPrefix + "/hello";
-        const std::string slowUrl = hostPrefix + "/slow";
-        Core::EventLoop loop;
-        HttpClient client(loop);
+        const std::string          warmUrl = hostPrefix + "/hello";
+        const std::string          slowUrl = hostPrefix + "/slow";
+        Core::EventLoop            loop;
+        HttpClient                 client(loop);
         SharedConnectionRunOutcome outcome;
-        auto work = runSharedConnectionGets(loop, client, warmUrl, slowUrl, outcome);
+        auto                       work = runSharedConnectionGets(loop, client, warmUrl, slowUrl, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -1406,29 +1358,30 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
-        std::atomic<std::size_t> tickCounter{0U};
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
-                                          [&tickCounter](Router &router, Core::EventLoop &)
-                                          {
-                                              const auto handler = [&tickCounter](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                              {
-                                                  const std::size_t ordinal = tickCounter.fetch_add(1U);
-                                                  response.setBody("tick-" + std::to_string(ordinal));
-                                                  co_return;
-                                              };
-                                              router.get("/tick", handler);
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        std::atomic<std::size_t>  tickCounter{0U};
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                [&tickCounter](Router &router, Core::EventLoop &)
+                {
+                    const auto handler = [&tickCounter](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        const std::size_t ordinal = tickCounter.fetch_add(1U);
+                        response.setBody("tick-" + std::to_string(ordinal));
+                        co_return;
+                    };
+                    router.get("/tick", handler);
+                },
+                HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
         ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
 
         // 地址必须是具名对象：驱动协程按引用拿着它，跨过每一次 co_await 之后还要读
-        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/tick";
+        const std::string     url           = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/tick";
         constexpr std::size_t kRequestCount = 200U;
-        Core::EventLoop loop;
-        HttpClient client(loop);
-        SustainedRunOutcome outcome;
-        auto work = runSustainedPooledGets(loop, client, url, kRequestCount, outcome);
+        Core::EventLoop       loop;
+        HttpClient            client(loop);
+        SustainedRunOutcome   outcome;
+        auto                  work = runSustainedPooledGets(loop, client, url, kRequestCount, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -1454,27 +1407,21 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
-                                          [](Router &router, Core::EventLoop &serverLoop)
-                                          {
-                                              registerHoldingRoute(router, serverLoop, nullptr);
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, [](Router &router, Core::EventLoop &serverLoop) { registerHoldingRoute(router, serverLoop, nullptr); },
+                HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
         ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
 
-        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+        const std::string     url                 = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
         constexpr std::size_t kConcurrentRequests = 5U;
 
-        Core::EventLoop loop;
-        HttpClient      client(loop);
-        ColdBurstOutcome outcome;
-        std::vector<Core::Task<void> > workers;
+        Core::EventLoop               loop;
+        HttpClient                    client(loop);
+        ColdBurstOutcome              outcome;
+        std::vector<Core::Task<void>> workers;
         workers.reserve(kConcurrentRequests + 1U);
-        workers.push_back(sampleActiveConnections(loop, [&fixture]
-        {
-            return fixture.server().activeConnectionCount();
-        }, &outcome.activeWhileHeld));
+        workers.push_back(sampleActiveConnections(loop, [&fixture] { return fixture.server().activeConnectionCount(); }, &outcome.activeWhileHeld));
         for (std::size_t index = 0U; index < kConcurrentRequests; ++index)
         {
             workers.push_back(fetchOneOnColdPool(loop, client, url, kConcurrentRequests, outcome));
@@ -1489,9 +1436,8 @@ namespace AsynGyanis::Net
         loop.run();
 
         EXPECT_EQ(outcome.successCount.load(std::memory_order_acquire), kConcurrentRequests) << "有请求没拿到 200";
-        EXPECT_EQ(outcome.activeWhileHeld, 1U)
-                << "冷池上 " << kConcurrentRequests << " 条并发在服务器上开了 " << outcome.activeWhileHeld
-                << " 条连接：握手没被合并，重复付了这么多遍 TCP+TLS+前奏";
+        EXPECT_EQ(outcome.activeWhileHeld, 1U) << "冷池上 " << kConcurrentRequests << " 条并发在服务器上开了 " << outcome.activeWhileHeld
+                                               << " 条连接：握手没被合并，重复付了这么多遍 TCP+TLS+前奏";
         EXPECT_EQ(outcome.heldConnectionCount, 1U) << "跑完之后池里不止一条：这一项单独看没有鉴别力，见采样点的说明";
     }
 
@@ -1515,19 +1461,18 @@ namespace AsynGyanis::Net
 
         // 刻意走明文：客户端的 SSL_CTX 是进程级缓存，在这里建一次会把后跑的 TLS 用例的受信配置
         // 挡在外面（NamesTheStageThatFailed 同一条顾虑）
-        const std::string url = "http://127.0.0.1:" + std::to_string(closedPort) + "/";
+        const std::string     url                 = "http://127.0.0.1:" + std::to_string(closedPort) + "/";
         constexpr std::size_t kConcurrentRequests = 3U;
 
-        Core::EventLoop     loop;
-        HttpClient          client(loop);
-        RefusalBurstOutcome outcome;
-        std::vector<Core::Task<void> > workers;
+        Core::EventLoop               loop;
+        HttpClient                    client(loop);
+        RefusalBurstOutcome           outcome;
+        std::vector<Core::Task<void>> workers;
         workers.reserve(kConcurrentRequests + 1U);
         workers.push_back(stopLoopAfterGrace(loop, std::chrono::milliseconds{6000}));
         for (std::size_t index = 0U; index < kConcurrentRequests; ++index)
         {
-            workers.push_back(fetchOneUntilRefused(loop, client, url, std::chrono::milliseconds{1000},
-                                                   kConcurrentRequests, outcome));
+            workers.push_back(fetchOneUntilRefused(loop, client, url, std::chrono::milliseconds{1000}, kConcurrentRequests, outcome));
         }
         for (Core::Task<void> &worker: workers)
         {
@@ -1539,11 +1484,9 @@ namespace AsynGyanis::Net
         loop.run();
 
         const std::size_t finished = outcome.finishedCount.load(std::memory_order_acquire);
-        EXPECT_EQ(finished, kConcurrentRequests)
-                << "只有 " << finished << " 条收场，其余的挂在「等同一端点的建连」里没回来：建连失败那一条出口"
-                << "没归还建连资格，这个端点往后的出站请求会一直等下去";
-        EXPECT_EQ(outcome.refusedCount.load(std::memory_order_acquire), kConcurrentRequests)
-                << "连的是个没人听的端口，却有请求拿回了响应";
+        EXPECT_EQ(finished, kConcurrentRequests) << "只有 " << finished << " 条收场，其余的挂在「等同一端点的建连」里没回来：建连失败那一条出口"
+                                                 << "没归还建连资格，这个端点往后的出站请求会一直等下去";
+        EXPECT_EQ(outcome.refusedCount.load(std::memory_order_acquire), kConcurrentRequests) << "连的是个没人听的端口，却有请求拿回了响应";
     }
 
     /**
@@ -1557,21 +1500,22 @@ namespace AsynGyanis::Net
         RunningHttpServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, SlowRouteOptions{},
                                          [](Router &router, Core::EventLoop &)
                                          {
-                                             router.get("/tick", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                             {
-                                                 response.setBody("ok");
-                                                 co_return;
-                                             });
+                                             router.get("/tick",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.setBody("ok");
+                                                            co_return;
+                                                        });
                                          });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
 
-        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/tick";
+        const std::string     url                 = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/tick";
         constexpr std::size_t kConcurrentRequests = 3U;
 
-        Core::EventLoop   loop;
-        HttpClient        client(loop);
-        ColdBurstOutcome  outcome;
-        std::vector<Core::Task<void> > workers;
+        Core::EventLoop               loop;
+        HttpClient                    client(loop);
+        ColdBurstOutcome              outcome;
+        std::vector<Core::Task<void>> workers;
         workers.reserve(kConcurrentRequests + 1U);
         workers.push_back(stopLoopAfterGrace(loop, std::chrono::milliseconds{6000}));
         for (std::size_t index = 0U; index < kConcurrentRequests; ++index)
@@ -1588,8 +1532,7 @@ namespace AsynGyanis::Net
         loop.run();
 
         EXPECT_EQ(outcome.successCount.load(std::memory_order_acquire), kConcurrentRequests)
-                << "并发 " << kConcurrentRequests << " 条明文请求只成了 "
-                << outcome.successCount.load(std::memory_order_acquire)
+                << "并发 " << kConcurrentRequests << " 条明文请求只成了 " << outcome.successCount.load(std::memory_order_acquire)
                 << " 条：h1 这一侧的建连资格没在走交换之前归还，等它的人醒不过来";
     }
 
@@ -1605,23 +1548,20 @@ namespace AsynGyanis::Net
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
         // 计数器先声明、夹具后声明：处理器在服务器的循环线程上摸它，夹具销毁时那条线程已经 join 完
-        std::atomic<std::size_t> slowHandlerEntryCount{0};
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
-                                          [&slowHandlerEntryCount](Router &router, Core::EventLoop &serverLoop)
-                                          {
-                                              registerHoldingRoute(router, serverLoop, &slowHandlerEntryCount);
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        std::atomic<std::size_t>  slowHandlerEntryCount{0};
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, [&slowHandlerEntryCount](Router &router, Core::EventLoop &serverLoop)
+                { registerHoldingRoute(router, serverLoop, &slowHandlerEntryCount); }, HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
         ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
 
-        const std::string hostPrefix = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
-        const std::string warmUrl = hostPrefix + "/hello";
-        const std::string slowUrl = hostPrefix + "/slow";
-        Core::EventLoop loop;
-        HttpClient client(loop);
+        const std::string        hostPrefix = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
+        const std::string        warmUrl    = hostPrefix + "/hello";
+        const std::string        slowUrl    = hostPrefix + "/slow";
+        Core::EventLoop          loop;
+        HttpClient               client(loop);
         CloseWhileBusyRunOutcome outcome;
-        auto work = runCloseWhileBusy(loop, client, warmUrl, slowUrl, outcome);
+        auto                     work = runCloseWhileBusy(loop, client, warmUrl, slowUrl, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -1633,8 +1573,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.heldBeforeClose, 1U) << "收口之前池里不是一条连接：前提没成立";
         EXPECT_EQ(outcome.heldAfterClose, 0U) << "closeIdleConnections 之后池里还留着那条：本端没放手";
         EXPECT_EQ(outcome.statusCode, 200) << "在途的那条请求被收口打断了";
-        EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 1U)
-                << "慢路由被进了两次：在途请求被掐断之后又悄悄重发了一遍";
+        EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 1U) << "慢路由被进了两次：在途请求被掐断之后又悄悄重发了一遍";
     }
 
     /**
@@ -1653,22 +1592,19 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
-        std::atomic<std::size_t> slowHandlerEntryCount{0};
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
-                                          [&slowHandlerEntryCount](Router &router, Core::EventLoop &serverLoop)
-                                          {
-                                              registerHoldingRoute(router, serverLoop, &slowHandlerEntryCount);
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        std::atomic<std::size_t>  slowHandlerEntryCount{0};
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, [&slowHandlerEntryCount](Router &router, Core::EventLoop &serverLoop)
+                { registerHoldingRoute(router, serverLoop, &slowHandlerEntryCount); }, HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
 
         const std::string hostPrefix = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
-        const std::string warmUrl = hostPrefix + "/hello";
-        const std::string slowUrl = hostPrefix + "/slow";
-        Core::EventLoop loop;
-        HttpClient client(loop);
-        SingleRunOutcome outcome;
-        auto work = runNoReplayAfterSend(loop, client, warmUrl, slowUrl, outcome);
+        const std::string warmUrl    = hostPrefix + "/hello";
+        const std::string slowUrl    = hostPrefix + "/slow";
+        Core::EventLoop   loop;
+        HttpClient        client(loop);
+        SingleRunOutcome  outcome;
+        auto              work = runNoReplayAfterSend(loop, client, warmUrl, slowUrl, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -1677,8 +1613,7 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(outcome.warmupStatusCode, 200) << "暖场那条没成功：被测那条走的就不是复用这一支";
         EXPECT_EQ(outcome.response, nullptr) << "处理器还没答完，本端按时限放弃了，这里不该有一个响应";
-        EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 1U)
-                << "请求被交付了两次：已发出的非幂等请求不该因为「没收到回音」重来一次";
+        EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 1U) << "请求被交付了两次：已发出的非幂等请求不该因为「没收到回音」重来一次";
     }
 
     /**
@@ -1698,18 +1633,16 @@ namespace AsynGyanis::Net
 
         // 空闲时限压到 150 毫秒、清扫节拍 25 毫秒：第二条请求之前那条一定已经被服务端收掉
         HttpServerLimits limits = makeLongTimeoutLimits();
-        limits.idleTimeout = std::chrono::milliseconds{150};
-        RunningHttpsServerFixture fixture(limits, std::chrono::milliseconds{25}, {}, HttpParserLimits{}, {},
-                                          kLoopbackCertificatePath, kLoopbackKeyPath);
+        limits.idleTimeout      = std::chrono::milliseconds{150};
+        RunningHttpsServerFixture fixture(limits, std::chrono::milliseconds{25}, {}, HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
         ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
 
-        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
-        Core::EventLoop loop;
-        HttpClient client(loop);
+        const std::string   url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        Core::EventLoop     loop;
+        HttpClient          client(loop);
         IdleGraceRunOutcome outcome;
-        auto work = runWarmThenSecondAfterIdleGrace(loop, client, url, url, false, std::chrono::milliseconds{600},
-                                                    std::chrono::milliseconds{3000}, outcome);
+        auto                work = runWarmThenSecondAfterIdleGrace(loop, client, url, url, false, std::chrono::milliseconds{600}, std::chrono::milliseconds{3000}, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -1736,25 +1669,21 @@ namespace AsynGyanis::Net
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
         std::atomic<std::size_t> slowHandlerEntryCount{0};
-        HttpServerLimits limits = makeLongTimeoutLimits();
-        limits.idleTimeout = std::chrono::milliseconds{150};
-        RunningHttpsServerFixture fixture(limits, std::chrono::milliseconds{25},
-                                          [&slowHandlerEntryCount](Router &router, Core::EventLoop &serverLoop)
-                                          {
-                                              registerHoldingRoute(router, serverLoop, &slowHandlerEntryCount);
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        HttpServerLimits         limits = makeLongTimeoutLimits();
+        limits.idleTimeout              = std::chrono::milliseconds{150};
+        RunningHttpsServerFixture fixture(
+                limits, std::chrono::milliseconds{25}, [&slowHandlerEntryCount](Router &router, Core::EventLoop &serverLoop)
+                { registerHoldingRoute(router, serverLoop, &slowHandlerEntryCount); }, HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
 
         const std::string hostPrefix = "https://127.0.0.1:" + std::to_string(fixture.listeningPort());
         // 两个地址必须是具名对象：驱动协程按引用拿着它们，跨过 co_await 之后还要读
-        const std::string warmUrl = hostPrefix + "/hello";
-        const std::string slowUrl = hostPrefix + "/slow";
-        Core::EventLoop loop;
-        HttpClient client(loop);
+        const std::string   warmUrl = hostPrefix + "/hello";
+        const std::string   slowUrl = hostPrefix + "/slow";
+        Core::EventLoop     loop;
+        HttpClient          client(loop);
         IdleGraceRunOutcome outcome;
-        auto work = runWarmThenSecondAfterIdleGrace(loop, client, warmUrl, slowUrl, true, std::chrono::milliseconds{600},
-                                                    std::chrono::milliseconds{3000}, outcome);
+        auto                work = runWarmThenSecondAfterIdleGrace(loop, client, warmUrl, slowUrl, true, std::chrono::milliseconds{600}, std::chrono::milliseconds{3000}, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -1764,8 +1693,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.firstStatusCode, 200) << "暖场那条没成功：池里没有可复用的连接，被测那条走的就不是复用这一支";
         EXPECT_EQ(outcome.heldAfterFirst, 1U) << "暖场之后池里不是一条 h2 连接：前提没成立";
         EXPECT_EQ(outcome.secondStatusCode, 0) << "对端收了这条连接，本端分不清请求有没有被接手，不该给出一个成功";
-        EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 0U)
-                << "服务端收到了那条 POST：已整个写出的非幂等请求被换一条连接重发了一遍";
+        EXPECT_EQ(slowHandlerEntryCount.load(std::memory_order_acquire), 0U) << "服务端收到了那条 POST：已整个写出的非幂等请求被换一条连接重发了一遍";
     }
 
     /**
@@ -1779,24 +1707,25 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
-                                          [](Router &router, Core::EventLoop &)
-                                          {
-                                              router.get("/host",
-                                                         [](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
-                                              {
-                                                  response.setBody(std::string(request.getHeader("host").value_or(std::string{})));
-                                                  co_return;
-                                              });
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/host",
+                               [](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                               {
+                                   response.setBody(std::string(request.getHeader("host").value_or(std::string{})));
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
 
-        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/host";
-        Core::EventLoop loop;
-        HttpClient client(loop);
+        const std::string  url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/host";
+        Core::EventLoop    loop;
+        HttpClient         client(loop);
         HostEchoRunOutcome outcome;
-        auto work = runHostEcho(loop, client, url, outcome);
+        auto               work = runHostEcho(loop, client, url, outcome);
         if (!work.isReady())
         {
             loop.scheduler().schedule(work.handle());
@@ -1804,8 +1733,7 @@ namespace AsynGyanis::Net
         loop.run();
 
         ASSERT_EQ(outcome.statusCode, 200) << "出站请求没走通";
-        EXPECT_EQ(outcome.echoedHost, "127.0.0.1:" + std::to_string(fixture.listeningPort()))
-                << "回显的权威主机没带端口：对端按 Host 分站点时会认错";
+        EXPECT_EQ(outcome.echoedHost, "127.0.0.1:" + std::to_string(fixture.listeningPort())) << "回显的权威主机没带端口：对端按 Host 分站点时会认错";
     }
 
     /**
@@ -1819,8 +1747,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLocalhostCertificatePath)) << "缺少客户端用例的证书夹具：" << kLocalhostCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLocalhostCertificatePath);
 
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {},
-                                          kLocalhostCertificatePath, kLocalhostKeyPath);
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {}, kLocalhostCertificatePath, kLocalhostKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
 
         // 受信证书 + 对不上的名字（IP 不在 SAN 里）：必须失败
@@ -1844,14 +1771,15 @@ namespace AsynGyanis::Net
     {
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
 
-        bool clientAuthorityLoaded{false};
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
-                                          [&clientAuthorityLoaded](HttpsServer &server)
-                                          {
-                                              clientAuthorityLoaded = server.loadClientCertificateAuthority(kLoopbackCertificatePath.string());
-                                              server.setClientCertificateRequired(true);
-                                          },
-                                          kLoopbackCertificatePath, kLoopbackKeyPath);
+        bool                      clientAuthorityLoaded{false};
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
+                [&clientAuthorityLoaded](HttpsServer &server)
+                {
+                    clientAuthorityLoaded = server.loadClientCertificateAuthority(kLoopbackCertificatePath.string());
+                    server.setClientCertificateRequired(true);
+                },
+                kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(clientAuthorityLoaded) << "服务端装不上校验客户端证书的 CA：后面两条判据都是空的";
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
         ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
@@ -1861,8 +1789,7 @@ namespace AsynGyanis::Net
         Core::TlsPolicy policy;
         policy.certificateAuthorityFile = kLoopbackCertificatePath.string();
 
-        const ClientTlsAttemptOutcome granted = getWithClientTls(url, policy, kLoopbackCertificatePath.string(), kLoopbackKeyPath.string(),
-                                                                std::chrono::milliseconds{8000});
+        const ClientTlsAttemptOutcome granted = getWithClientTls(url, policy, kLoopbackCertificatePath.string(), kLoopbackKeyPath.string(), std::chrono::milliseconds{8000});
         // 夹具默认档会协商出 h2，正文仍是同一份 served-hello：这里验的是握手能不能成，不是走哪条协议
         ASSERT_TRUE(granted.identityLoaded) << "客户端身份装不上：正面那条没有前提";
         ASSERT_NE(granted.response, nullptr) << "带合法客户端证书的握手没走通：身份没出示，或服务端 CA 不认这张证书";
@@ -1885,31 +1812,33 @@ namespace AsynGyanis::Net
     {
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
 
-        constexpr std::size_t kBodyByteCount = 16384U;
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
-                                          [](Router &router, Core::EventLoop &)
-                                          {
-                                              router.get("/big", [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
-                                              {
-                                                  response.setBody(std::string(kBodyByteCount, 'x'));
-                                                  co_return;
-                                              });
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        constexpr std::size_t     kBodyByteCount = 16384U;
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/big",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                               {
+                                   response.setBody(std::string(kBodyByteCount, 'x'));
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
 
         Core::TlsPolicy policy;
         policy.certificateAuthorityFile = kLoopbackCertificatePath.string();
-        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/big";
+        const std::string url           = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/big";
 
         HttpOutboundConnectionPool::Config tightConfig;
         tightConfig.maximumResponseBodyBytes = 1024U;
-        const ClientTlsAttemptOutcome tight = getWithClientTls(url, policy, {}, {}, std::chrono::milliseconds{5000}, tightConfig);
+        const ClientTlsAttemptOutcome tight  = getWithClientTls(url, policy, {}, {}, std::chrono::milliseconds{5000}, tightConfig);
         EXPECT_EQ(tight.response, nullptr) << "越界的那条被当成功收了：h2 这一侧没接上上限";
 
         HttpOutboundConnectionPool::Config openConfig;
-        openConfig.maximumResponseBodyBytes = 0U;   ///< 0 表示不限
-        const ClientTlsAttemptOutcome open = getWithClientTls(url, policy, {}, {}, std::chrono::milliseconds{5000}, openConfig);
+        openConfig.maximumResponseBodyBytes = 0U; ///< 0 表示不限
+        const ClientTlsAttemptOutcome open  = getWithClientTls(url, policy, {}, {}, std::chrono::milliseconds{5000}, openConfig);
         ASSERT_NE(open.response, nullptr) << "填 0 就该放开上限：取大文件是正当用法";
         EXPECT_EQ(open.response->statusCode, 200);
         EXPECT_EQ(open.response->body.size(), kBodyByteCount) << "正文长度不对：" << open.response->body.size();
@@ -1928,28 +1857,24 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
         const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
 
-        std::atomic<std::size_t> serverBatchCount{0};
-        std::mutex receivedGuard;
-        std::string receivedText;
-        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
-                                          [&serverBatchCount, &receivedGuard, &receivedText](Router &router, Core::EventLoop &)
-                                          {
-                                              registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText);
-                                          },
-                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        std::atomic<std::size_t>  serverBatchCount{0};
+        std::mutex                receivedGuard;
+        std::string               receivedText;
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, [&serverBatchCount, &receivedGuard, &receivedText](Router &router, Core::EventLoop &)
+                { registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText); }, HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
 
-        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort())
-                + std::string{kStreamEchoRoutePath};
-        Core::EventLoop loop;
+        const std::string                              url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + std::string{kStreamEchoRoutePath};
+        Core::EventLoop                                loop;
         std::expected<HttpClientResponse, std::string> outcome{std::unexpect, "还没跑"};
-        auto drive = [&loop, &url, &outcome, &serverBatchCount]() -> Core::Task<>
+        auto                                           drive = [&loop, &url, &outcome, &serverBatchCount]() -> Core::Task<>
         {
             HttpClientRequest request;
-            request.method = "POST";
+            request.method      = "POST";
             request.contentType = "text/plain";
-            request.bodySource = makeStreamEchoChunkSource(loop, serverBatchCount);
-            outcome = co_await HttpClient::send(loop, url, request, std::chrono::milliseconds{8000});
+            request.bodySource  = makeStreamEchoChunkSource(loop, serverBatchCount);
+            outcome             = co_await HttpClient::send(loop, url, request, std::chrono::milliseconds{8000});
             loop.stop();
         };
         // 闭包先落到具名对象上再调用：协程帧记住的是闭包地址，临时量在语句结束就析构，
@@ -1976,8 +1901,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpsServer, GeneratesAndEchoesRequestId)
     {
-        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
-                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
 
         RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100});
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环：上界 kWaitTimeout";
@@ -1991,20 +1915,16 @@ namespace AsynGyanis::Net
         // 第一条：不带 x-request-id，服务器应当生成一个形态合法的标识
         std::string receivedText;
         ASSERT_TRUE(client.sendText(helloRequestText(), kWaitTimeout)) << "第 1 条 HTTPS 请求未能写入";
-        ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "served-hello", 1, kWaitTimeout))
-                << "第 1 条 HTTPS 请求未得到完整响应";
+        ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "served-hello", 1, kWaitTimeout)) << "第 1 条 HTTPS 请求未得到完整响应";
 
         const std::string generatedRequestId = requestIdHeaderAt(receivedText, 0);
         EXPECT_TRUE(looksLikeGeneratedRequestId(generatedRequestId))
-                << "HTTPS 响应的 request-id 形态不符合约定（应为 4 位十六进制前缀 + '-' + 16 位十六进制序号）：「"
-                << generatedRequestId << "」";
+                << "HTTPS 响应的 request-id 形态不符合约定（应为 4 位十六进制前缀 + '-' + 16 位十六进制序号）：「" << generatedRequestId << "」";
 
         // 第二条：带一个合法取值，服务器应当原样回显
         const std::string clientRequestId = "trace-id-from-client-42";
-        ASSERT_TRUE(client.sendText(makeRequestText("GET /hello HTTP/1.1", {"x-request-id: " + clientRequestId}), kWaitTimeout))
-                << "第 2 条 HTTPS 请求未能写入";
-        ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "served-hello", 2, kWaitTimeout))
-                << "第 2 条 HTTPS 请求未得到完整响应";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /hello HTTP/1.1", {"x-request-id: " + clientRequestId}), kWaitTimeout)) << "第 2 条 HTTPS 请求未能写入";
+        ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "served-hello", 2, kWaitTimeout)) << "第 2 条 HTTPS 请求未得到完整响应";
 
         EXPECT_EQ(requestIdHeaderAt(receivedText, 1), clientRequestId) << "客户端自带的合法 request-id 没有被原样回显";
     }
@@ -2018,8 +1938,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpsServer, ClosesIdleConnectionAndCountsTimeout)
     {
-        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
-                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
 
         HttpServerLimits limits;
         limits.idleTimeout  = std::chrono::milliseconds{300};
@@ -2045,35 +1964,27 @@ namespace AsynGyanis::Net
         fixture.runOnLoopAndWait(
                 [&fixture, &activeConnectionCount, &reportedRemoteAddress]
                 {
-                    const std::vector<std::shared_ptr<Core::Connection> > activeConnections = fixture.server().activeConnections();
-                    activeConnectionCount = activeConnections.size();
+                    const std::vector<std::shared_ptr<Core::Connection>> activeConnections = fixture.server().activeConnections();
+                    activeConnectionCount                                                  = activeConnections.size();
                     if (!activeConnections.empty())
                     {
                         reportedRemoteAddress = activeConnections.front()->remoteAddress();
                     }
                 });
         ASSERT_EQ(activeConnectionCount, 1u) << "握手已完成，连接却不在连接管理器里";
-        EXPECT_EQ(reportedRemoteAddress, "127.0.0.1:" + std::to_string(client.localPort()))
-                << "HTTPS 会话没有报出真实对端地址：它去问了那条不持有描述符的占位套接字";
+        EXPECT_EQ(reportedRemoteAddress, "127.0.0.1:" + std::to_string(client.localPort())) << "HTTPS 会话没有报出真实对端地址：它去问了那条不持有描述符的占位套接字";
 
         // 反向对照：空闲容忍度之内不该被提前收口（否则下面的断言可能只是「连上就被关」）
         std::string receivedText;
-        EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{100}))
-                << "TLS 连接在空闲容忍度之内就被关闭：说明截止时间被设成了立即到期";
+        EXPECT_FALSE(client.waitForClosure(receivedText, std::chrono::milliseconds{100})) << "TLS 连接在空闲容忍度之内就被关闭：说明截止时间被设成了立即到期";
 
-        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout))
-                << "空闲 TLS 连接未被清扫协程收口：上界 kWaitTimeout（idleTimeout 300ms + 清扫节拍 30ms）。"
-                   "此刻仍挂在连接管理器上的连接数 "
-                << fixture.server().activeConnectionCount();
+        EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout)) << "空闲 TLS 连接未被清扫协程收口：上界 kWaitTimeout（idleTimeout 300ms + 清扫节拍 30ms）。"
+                                                                          "此刻仍挂在连接管理器上的连接数 "
+                                                                       << fixture.server().activeConnectionCount();
         EXPECT_TRUE(receivedText.empty()) << "服务端在空闲连接上发了不该发的字节";
 
         // 上报与关闭必须同时发生：只关掉描述符而没有计入超时计数，说明清扫协程在收口链路上中途退出
-        EXPECT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().stats().timeoutClosedCount >= 1;
-                },
-                kWaitTimeout)) << "被超时收口的连接没有计入 timeoutClosedCount";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().stats().timeoutClosedCount >= 1; }, kWaitTimeout)) << "被超时收口的连接没有计入 timeoutClosedCount";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
 
@@ -2083,8 +1994,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpsServer, RequestIdPrefixDiffersFromHttpServer)
     {
-        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
-                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
 
         // ---- HTTP 侧 ----
         RunningHttpServerFixture httpFixture(makeLongTimeoutLimits(), std::chrono::milliseconds{50});
@@ -2113,8 +2023,7 @@ namespace AsynGyanis::Net
 
         std::string httpsReceivedText;
         ASSERT_TRUE(httpsClient.sendText(helloRequestText(), kWaitTimeout)) << "HTTPS 请求未能写入";
-        ASSERT_TRUE(httpsClient.waitForTextOccurrences(httpsReceivedText, "served-hello", 1, kWaitTimeout))
-                << "HTTPS 请求未得到完整响应";
+        ASSERT_TRUE(httpsClient.waitForTextOccurrences(httpsReceivedText, "served-hello", 1, kWaitTimeout)) << "HTTPS 请求未得到完整响应";
 
         const std::string httpsRequestId = requestIdHeaderAt(httpsReceivedText, 0);
         ASSERT_TRUE(looksLikeGeneratedRequestId(httpsRequestId)) << "HTTPS 侧 request-id 形态不符：「" << httpsRequestId << "」";
@@ -2128,8 +2037,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpsServer, Answers431WhenParserHeaderLimitIsSmall)
     {
-        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
-                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
 
         HttpParserLimits parserLimits;
         parserLimits.maximumHeaderFieldValueLength = 32;
@@ -2150,8 +2058,7 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(client.sendText(request, kWaitTimeout)) << "越界 HTTPS 请求未能写入";
 
             std::string receivedText;
-            ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "Request Header Fields Too Large", 1, kWaitTimeout))
-                    << "越界头部未在时限内被判 431：上界 kWaitTimeout";
+            ASSERT_TRUE(client.waitForTextOccurrences(receivedText, "Request Header Fields Too Large", 1, kWaitTimeout)) << "越界头部未在时限内被判 431：上界 kWaitTimeout";
             EXPECT_NE(receivedText.find("HTTP/1.1 431"), std::string::npos) << receivedText;
             EXPECT_EQ(receivedText.find("HTTP/1.1 400"), std::string::npos) << "越界被当成了协议级非法：" << receivedText;
             EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout)) << "回完 431 没有收口";
@@ -2164,8 +2071,7 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(normalClient.sendText(helloRequestText(), kWaitTimeout)) << "正常 HTTPS 请求未能写入";
 
             std::string receivedText;
-            ASSERT_TRUE(normalClient.waitForTextOccurrences(receivedText, "served-hello", 1, kWaitTimeout))
-                    << "同一台服务器上未超限的请求未被正常服务：" << receivedText;
+            ASSERT_TRUE(normalClient.waitForTextOccurrences(receivedText, "served-hello", 1, kWaitTimeout)) << "同一台服务器上未超限的请求未被正常服务：" << receivedText;
             EXPECT_NE(receivedText.find("HTTP/1.1 200"), std::string::npos) << receivedText;
         }
     }
@@ -2181,8 +2087,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpsServer, ServesStaticFilesFromAConfiguredDirectory)
     {
-        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
-                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
 
         AsynGyanis::TestSupport::TemporaryDirectory site("HttpsStaticSite");
         const std::string                           fileContent = "static-over-tls";
@@ -2201,16 +2106,14 @@ namespace AsynGyanis::Net
 
         // 读回来的是规范化后的绝对路径：两边做同一道规范化再逐字比，比出来的相等才是「配置落在本服务器上」
         // 这条断言，而不是分隔符/大小写差异下的侥幸
-        EXPECT_EQ(Platform::FileSystem::utf8FromPath(std::filesystem::weakly_canonical(site.path())),
-                  fixture.server().staticFileDir());
+        EXPECT_EQ(Platform::FileSystem::utf8FromPath(std::filesystem::weakly_canonical(site.path())), fixture.server().staticFileDir());
 
         TlsLoopbackClient client(fixture.listeningPort());
         ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
 
         std::string staticText;
         ASSERT_TRUE(client.sendText(makeRequestText("GET /hello.txt HTTP/1.1"), kWaitTimeout)) << "静态文件请求未能写入";
-        ASSERT_TRUE(client.waitForTextOccurrences(staticText, fileContent, 1, kWaitTimeout))
-                << "HTTPS 上的静态文件没有回正文：「" << staticText << "」";
+        ASSERT_TRUE(client.waitForTextOccurrences(staticText, fileContent, 1, kWaitTimeout)) << "HTTPS 上的静态文件没有回正文：「" << staticText << "」";
         EXPECT_NE(staticText.find("HTTP/1.1 200"), std::string::npos) << staticText;
         EXPECT_NE(staticText.find("content-type: text/plain"), std::string::npos) << staticText;
         EXPECT_NE(staticText.find("cache-control: max-age=7"), std::string::npos) << "Cache-Control 没跟着静态响应出去：" << staticText;
@@ -2218,7 +2121,6 @@ namespace AsynGyanis::Net
         // 兜底路由之外、也确实不存在的文件：静态服务自己回 404（不是「路由没登记所以走了别的分支」）
         std::string missingText;
         ASSERT_TRUE(client.sendText(makeRequestText("GET /no-such-file.txt HTTP/1.1"), kWaitTimeout)) << "缺失文件的请求未能写入";
-        ASSERT_TRUE(client.waitForTextOccurrences(missingText, "404", 1, kWaitTimeout))
-                << "不存在的静态文件应当回 404：「" << missingText << "」";
+        ASSERT_TRUE(client.waitForTextOccurrences(missingText, "404", 1, kWaitTimeout)) << "不存在的静态文件应当回 404：「" << missingText << "」";
     }
 } // namespace AsynGyanis::Net

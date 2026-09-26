@@ -49,7 +49,7 @@ namespace AsynGyanis::Base
         [[nodiscard]] const CapturedStackTrace &stackTrace() const noexcept;
 
     private:
-        std::source_location m_location;     ///< 异常抛出时的源码位置快照
-        CapturedStackTrace   m_stackTrace;   ///< 异常抛出时的调用栈（原始帧，解析推迟到输出时）
+        std::source_location m_location;   ///< 异常抛出时的源码位置快照
+        CapturedStackTrace   m_stackTrace; ///< 异常抛出时的调用栈（原始帧，解析推迟到输出时）
     };
 } // namespace AsynGyanis::Base

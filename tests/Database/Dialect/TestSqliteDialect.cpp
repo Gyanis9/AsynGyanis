@@ -225,26 +225,22 @@ TEST(SqliteDialectSelect, EmptyFieldNameAndEmptyTableNameAreRejected)
 
     // SELECT 列表里的空项
     {
-        QueryNode node        = makeNode("users");
-        node.selectColumns    = {"id", ""};
+        QueryNode node     = makeNode("users");
+        node.selectColumns = {"id", ""};
         EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
     }
 
     // GROUP BY 里的空字段
     {
-        QueryNode node    = makeNode("users");
-        node.groupBy      = {FieldReference{""}};
+        QueryNode node = makeNode("users");
+        node.groupBy   = {FieldReference{""}};
         EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
     }
 
     // 条件左值是空字段
     {
-        QueryNode node            = makeNode("users");
-        node.whereConditions.push_back(WhereCondition{
-                .left  = FieldReference{""},
-                .op    = SqlOperator::Eq,
-                .right = ParameterValue{static_cast<std::int64_t>(1)}
-        });
+        QueryNode node = makeNode("users");
+        node.whereConditions.push_back(WhereCondition{.left = FieldReference{""}, .op = SqlOperator::Eq, .right = ParameterValue{static_cast<std::int64_t>(1)}});
         EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
     }
 
@@ -256,8 +252,8 @@ TEST(SqliteDialectSelect, EmptyFieldNameAndEmptyTableNameAreRejected)
 
     // 反向对照：通配符与表达式列照常通过
     {
-        QueryNode node        = makeNode("users");
-        node.selectColumns    = {"*", "COUNT(*)"};
+        QueryNode node     = makeNode("users");
+        node.selectColumns = {"*", "COUNT(*)"};
         node.groupBy.push_back(FieldReference{"users.name"});
         const SqlStatement statement = dialect.translate(node);
         EXPECT_NE(statement.sql.find("SELECT *, COUNT(*)"), std::string::npos) << statement.sql;
@@ -328,8 +324,7 @@ TEST(SqliteDialectWhere, SingleComparisonBindsParameter)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}));
+    node.whereConditions.push_back(makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -348,8 +343,7 @@ TEST(SqliteDialectWhere, StringParameterIsBoundWithoutQuoting)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("name", SqlOperator::Eq, ParameterValue{std::string("O'Brien -- DROP")}));
+    node.whereConditions.push_back(makeComparison("name", SqlOperator::Eq, ParameterValue{std::string("O'Brien -- DROP")}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -394,8 +388,7 @@ TEST(SqliteDialectWhere, LikeCondition)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("name", SqlOperator::Like, ParameterValue{std::string("%张%")}));
+    node.whereConditions.push_back(makeComparison("name", SqlOperator::Like, ParameterValue{std::string("%张%")}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -417,8 +410,7 @@ TEST(SqliteDialectWhere, LikeLiteralConditionCarriesEscapeClause)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("name", SqlOperator::LikeLiteral, ParameterValue{std::string("100!%")}));
+    node.whereConditions.push_back(makeComparison("name", SqlOperator::LikeLiteral, ParameterValue{std::string("100!%")}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -441,27 +433,21 @@ TEST(SqliteDialectWhere, NotWithMultipleChildrenIsRejectedInsteadOfSilentlyDropp
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(WhereCondition{
-            .left     = FieldReference{"placeholder"},
-            .op       = SqlOperator::Not,
-            .right    = ParameterValue{nullptr},
-            .children = {
-                    makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
-                    makeComparison("score", SqlOperator::Lt, ParameterValue{static_cast<std::int64_t>(60)})
-            }
-    });
+    node.whereConditions.push_back(WhereCondition{.left     = FieldReference{"placeholder"},
+                                                  .op       = SqlOperator::Not,
+                                                  .right    = ParameterValue{nullptr},
+                                                  .children = {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
+                                                               makeComparison("score", SqlOperator::Lt, ParameterValue{static_cast<std::int64_t>(60)})}});
 
     EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
 
     // 对照组：单个子条件的 NOT 是合法形态，必须仍按 "NOT (...)" 渲染
     QueryNode singleNode;
     singleNode.tableName = "users";
-    singleNode.whereConditions.push_back(WhereCondition{
-            .left     = FieldReference{"placeholder"},
-            .op       = SqlOperator::Not,
-            .right    = ParameterValue{nullptr},
-            .children = {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)})}
-    });
+    singleNode.whereConditions.push_back(WhereCondition{.left     = FieldReference{"placeholder"},
+                                                        .op       = SqlOperator::Not,
+                                                        .right    = ParameterValue{nullptr},
+                                                        .children = {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)})}});
 
     const SqlStatement statement = dialect.translate(singleNode);
     EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE NOT (\"age\" >= ?)");
@@ -490,12 +476,8 @@ TEST(SqliteDialectWhere, InListBeyondTheEngineParameterBudgetIsRejectedWithReada
 
         QueryNode node;
         node.tableName = "users";
-        node.whereConditions.push_back(WhereCondition{
-                .left     = FieldReference{"id"},
-                .op       = SqlOperator::In,
-                .right    = ParameterValue{static_cast<std::int64_t>(0)},
-                .inValues = std::move(values)
-        });
+        node.whereConditions.push_back(
+                WhereCondition{.left = FieldReference{"id"}, .op = SqlOperator::In, .right = ParameterValue{static_cast<std::int64_t>(0)}, .inValues = std::move(values)});
         return node;
     };
 
@@ -506,8 +488,7 @@ TEST(SqliteDialectWhere, InListBeyondTheEngineParameterBudgetIsRejectedWithReada
     {
         static_cast<void>(dialect.translate(makeInNode(budget + 1U)));
         FAIL() << "超过引擎单条语句参数上限的 IN 列表应当被拒绝";
-    }
-    catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    } catch (const AsynGyanis::Base::InvalidArgumentException &failure)
     {
         const std::string message = failure.what();
         EXPECT_NE(message.find(std::to_string(budget)), std::string::npos) << message;
@@ -540,12 +521,8 @@ TEST(SqliteDialectWhere, InlinedPaginationDoesNotConsumeTheParameterBudget)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(WhereCondition{
-            .left     = FieldReference{"id"},
-            .op       = SqlOperator::In,
-            .right    = ParameterValue{static_cast<std::int64_t>(0)},
-            .inValues = std::move(inValues)
-    });
+    node.whereConditions.push_back(
+            WhereCondition{.left = FieldReference{"id"}, .op = SqlOperator::In, .right = ParameterValue{static_cast<std::int64_t>(0)}, .inValues = std::move(inValues)});
     node.limit  = 10U;
     node.offset = 5U;
 
@@ -579,28 +556,26 @@ TEST(SqliteDialectWrite, InsertAndBatchBeyondTheParameterBudgetAreRejected)
 
     // 单行 INSERT：列数越界一格即拒绝
     {
-        const QueryNode      overNode = makeWideNode(budget + 1U);
+        const QueryNode                  overNode = makeWideNode(budget + 1U);
         const std::vector<DatabaseValue> values(budget + 1U, static_cast<std::int64_t>(1));
-        EXPECT_THROW(static_cast<void>(dialect.translateInsert(overNode, values)),
-                     AsynGyanis::Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(dialect.translateInsert(overNode, values)), AsynGyanis::Base::InvalidArgumentException);
 
-        const QueryNode      atNode = makeWideNode(budget);
+        const QueryNode                  atNode = makeWideNode(budget);
         const std::vector<DatabaseValue> atValues(budget, static_cast<std::int64_t>(1));
         EXPECT_EQ(dialect.translateInsert(atNode, atValues).parameters.size(), budget);
     }
 
     // 批量 INSERT：每行不越界，但列数 × 行数越界——一次 VALUES 多行就是本条语句的参数总数
     {
-        const std::size_t columnsPerRow = budget / 2U + 1U;
-        const QueryNode   batchNode       = makeWideNode(columnsPerRow);
-        const std::vector<std::vector<DatabaseValue> > rows(2U, std::vector<DatabaseValue>(columnsPerRow, static_cast<std::int64_t>(7)));
+        const std::size_t                             columnsPerRow = budget / 2U + 1U;
+        const QueryNode                               batchNode     = makeWideNode(columnsPerRow);
+        const std::vector<std::vector<DatabaseValue>> rows(2U, std::vector<DatabaseValue>(columnsPerRow, static_cast<std::int64_t>(7)));
 
         try
         {
             static_cast<void>(dialect.translateInsertBatch(batchNode, rows));
             FAIL() << "列数 × 行数超过引擎单条语句上限的批量插入应当被拒绝";
-        }
-        catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+        } catch (const AsynGyanis::Base::InvalidArgumentException &failure)
         {
             const std::string message = failure.what();
             EXPECT_NE(message.find(std::to_string(budget)), std::string::npos) << message;
@@ -618,15 +593,12 @@ TEST(SqliteDialectWhere, NullChecksProduceNoParameter)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr}));
-    node.whereConditions.push_back(
-        makeComparison("created_at", SqlOperator::IsNotNull, ParameterValue{nullptr}));
+    node.whereConditions.push_back(makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr}));
+    node.whereConditions.push_back(makeComparison("created_at", SqlOperator::IsNotNull, ParameterValue{nullptr}));
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT * FROM \"users\" WHERE \"deleted_at\" IS NULL AND \"created_at\" IS NOT NULL");
+    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE \"deleted_at\" IS NULL AND \"created_at\" IS NOT NULL");
     // NULL 判断用 IS 而不是 "= NULL"，也不占用任何绑定参数
     EXPECT_TRUE(statement.parameters.empty());
 }
@@ -662,11 +634,8 @@ TEST(SqliteDialectWhere, InConditionExpandsPlaceholdersInOrder)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(makeInCondition("id",
-                                                   SqlOperator::In,
-                                                   {ParameterValue{static_cast<std::int64_t>(1)},
-                                                    ParameterValue{static_cast<std::int64_t>(2)},
-                                                    ParameterValue{static_cast<std::int64_t>(3)}}));
+    node.whereConditions.push_back(makeInCondition(
+            "id", SqlOperator::In, {ParameterValue{static_cast<std::int64_t>(1)}, ParameterValue{static_cast<std::int64_t>(2)}, ParameterValue{static_cast<std::int64_t>(3)}}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -686,10 +655,7 @@ TEST(SqliteDialectWhere, NotInConditionWithStrings)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(makeInCondition("name",
-                                                   SqlOperator::NotIn,
-                                                   {ParameterValue{std::string("张三")},
-                                                    ParameterValue{std::string("李四")}}));
+    node.whereConditions.push_back(makeInCondition("name", SqlOperator::NotIn, {ParameterValue{std::string("张三")}, ParameterValue{std::string("李四")}}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -727,10 +693,8 @@ TEST(SqliteDialectWhere, AndRecursionAddsParentheses)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(makeComposite(
-        SqlOperator::And,
-        {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
-         makeComparison("age", SqlOperator::Le, ParameterValue{static_cast<std::int64_t>(60)})}));
+    node.whereConditions.push_back(makeComposite(SqlOperator::And, {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
+                                                                    makeComparison("age", SqlOperator::Le, ParameterValue{static_cast<std::int64_t>(60)})}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -748,14 +712,10 @@ TEST(SqliteDialectWhere, NestedLogicCollectsParametersInSqlOrder)
 {
     const SqliteDialect dialect;
 
-    WhereCondition innerAnd = makeComposite(
-        SqlOperator::And,
-        {makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(7)}),
-         makeComparison("name", SqlOperator::IsNotNull, ParameterValue{nullptr})});
+    WhereCondition innerAnd = makeComposite(SqlOperator::And, {makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(7)}),
+                                                               makeComparison("name", SqlOperator::IsNotNull, ParameterValue{nullptr})});
 
-    WhereCondition innerNot = makeComposite(
-        SqlOperator::Not,
-        {makeComparison("age", SqlOperator::Lt, ParameterValue{static_cast<std::int64_t>(30)})});
+    WhereCondition innerNot = makeComposite(SqlOperator::Not, {makeComparison("age", SqlOperator::Lt, ParameterValue{static_cast<std::int64_t>(30)})});
 
     QueryNode node;
     node.tableName = "users";
@@ -763,8 +723,7 @@ TEST(SqliteDialectWhere, NestedLogicCollectsParametersInSqlOrder)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT * FROM \"users\" WHERE ((\"id\" = ? AND \"name\" IS NOT NULL) OR NOT (\"age\" < ?))");
+    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" WHERE ((\"id\" = ? AND \"name\" IS NOT NULL) OR NOT (\"age\" < ?))");
     ASSERT_EQ(statement.parameters.size(), 2U);
     // 第一个参数来自第一个占位符（id = ?），第二个来自 NOT 内的 age < ?
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 7);
@@ -820,17 +779,15 @@ TEST(SqliteDialectClauses, GroupByHavingParameterOrderFollowsSql)
 
     QueryNode node;
     node.tableName = "orders";
-    node.whereConditions.push_back(
-        makeComparison("status", SqlOperator::Eq, ParameterValue{std::string("paid")}));
+    node.whereConditions.push_back(makeComparison("status", SqlOperator::Eq, ParameterValue{std::string("paid")}));
     node.groupBy.push_back(makeField("customer_id"));
     node.having = makeComparison("total", SqlOperator::Gt, ParameterValue{100.5});
     node.orderBy.push_back(OrderByClause{.field = makeField("customer_id"), .descending = false});
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT * FROM \"orders\" WHERE \"status\" = ? GROUP BY \"customer_id\" "
-              "HAVING \"total\" > ? ORDER BY \"customer_id\" ASC");
+    EXPECT_EQ(statement.sql, "SELECT * FROM \"orders\" WHERE \"status\" = ? GROUP BY \"customer_id\" "
+                             "HAVING \"total\" > ? ORDER BY \"customer_id\" ASC");
     ASSERT_EQ(statement.parameters.size(), 2U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "paid");
     EXPECT_DOUBLE_EQ(std::get<double>(statement.parameters[1]), 100.5);
@@ -885,8 +842,8 @@ TEST(SqliteDialectJoin, InnerJoinWithOnCondition)
     const SqliteDialect dialect;
 
     JoinClause joinClause;
-    joinClause.type      = JoinType::Inner;
-    joinClause.tableName = "orders";
+    joinClause.type       = JoinType::Inner;
+    joinClause.tableName  = "orders";
     joinClause.tableAlias = "o";
     joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
 
@@ -897,9 +854,8 @@ TEST(SqliteDialectJoin, InnerJoinWithOnCondition)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT \"id\", \"name\" FROM \"users\" "
-              "INNER JOIN \"orders\" AS \"o\" ON \"id\" = \"user_id\"");
+    EXPECT_EQ(statement.sql, "SELECT \"id\", \"name\" FROM \"users\" "
+                             "INNER JOIN \"orders\" AS \"o\" ON \"id\" = \"user_id\"");
     EXPECT_TRUE(statement.parameters.empty());
 }
 
@@ -915,8 +871,8 @@ TEST(SqliteDialectJoin, JoinTargetTableNameIsAlwaysQuoted)
     const SqliteDialect dialect;
 
     JoinClause joinClause;
-    joinClause.type       = JoinType::Inner;
-    joinClause.tableName  = "orders; DROP TABLE users; --";
+    joinClause.type      = JoinType::Inner;
+    joinClause.tableName = "orders; DROP TABLE users; --";
     joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
 
     QueryNode node;
@@ -925,9 +881,8 @@ TEST(SqliteDialectJoin, JoinTargetTableNameIsAlwaysQuoted)
 
     const SqlStatement statement = dialect.translate(node);
     // 整串在两个双引号之间：语句里那个分号只是名字的一部分，没有第二条语句被拼出来
-    EXPECT_EQ(statement.sql,
-              "SELECT * FROM \"users\" "
-              "INNER JOIN \"orders; DROP TABLE users; --\" ON \"id\" = \"user_id\"");
+    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" "
+                             "INNER JOIN \"orders; DROP TABLE users; --\" ON \"id\" = \"user_id\"");
 }
 
 /**
@@ -942,8 +897,8 @@ TEST(SqliteDialectJoin, SchemaPrefixedTableNamesAreQuotedSegmentBySegment)
     const SqliteDialect dialect;
 
     JoinClause joinClause;
-    joinClause.type       = JoinType::Inner;
-    joinClause.tableName  = "shop.orders";
+    joinClause.type      = JoinType::Inner;
+    joinClause.tableName = "shop.orders";
     joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
 
     QueryNode node;
@@ -971,8 +926,7 @@ TEST(SqliteDialectJoin, TableNameWithEmptySegmentAroundDotIsRejected)
     {
         static_cast<void>(dialect.translate(node));
         FAIL() << "点号后留空的表名应当在翻译阶段就被拒绝";
-    }
-    catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    } catch (const AsynGyanis::Base::InvalidArgumentException &failure)
     {
         EXPECT_NE(std::string_view(failure.what()).find("空段"), std::string_view::npos) << failure.what();
     }
@@ -988,7 +942,7 @@ TEST(SqliteDialectJoin, EmptyJoinTargetTableNameIsRejectedAsTableName)
     const SqliteDialect dialect;
 
     JoinClause joinClause;
-    joinClause.type       = JoinType::Inner;
+    joinClause.type = JoinType::Inner;
     joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
 
     QueryNode node;
@@ -999,8 +953,7 @@ TEST(SqliteDialectJoin, EmptyJoinTargetTableNameIsRejectedAsTableName)
     {
         static_cast<void>(dialect.translate(node));
         FAIL() << "空的被连接表名应当在翻译阶段就被拒绝";
-    }
-    catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    } catch (const AsynGyanis::Base::InvalidArgumentException &failure)
     {
         const std::string message = failure.what();
         EXPECT_NE(message.find("表名为空"), std::string::npos) << message;
@@ -1018,19 +971,16 @@ TEST(SqliteDialectJoin, JoinOnParametersPrecedeWhereParameters)
     JoinClause joinClause;
     joinClause.type      = JoinType::Left;
     joinClause.tableName = "orders";
-    joinClause.conditions.push_back(
-        makeComparison("status", SqlOperator::Eq, ParameterValue{std::string("已支付")}));
+    joinClause.conditions.push_back(makeComparison("status", SqlOperator::Eq, ParameterValue{std::string("已支付")}));
 
     QueryNode node;
     node.tableName = "users";
     node.joins.push_back(std::move(joinClause));
-    node.whereConditions.push_back(
-        makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}));
+    node.whereConditions.push_back(makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}));
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT * FROM \"users\" LEFT JOIN \"orders\" ON \"status\" = ? WHERE \"age\" >= ?");
+    EXPECT_EQ(statement.sql, "SELECT * FROM \"users\" LEFT JOIN \"orders\" ON \"status\" = ? WHERE \"age\" >= ?");
     ASSERT_EQ(statement.parameters.size(), 2U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "已支付");
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[1]), 18);
@@ -1074,12 +1024,9 @@ TEST(SqliteDialectParameter, ParameterTypesAreConverted)
 
     QueryNode node;
     node.tableName = "mixed";
-    node.whereConditions.push_back(
-        makeComparison("flag", SqlOperator::Eq, ParameterValue{true}));
-    node.whereConditions.push_back(
-        makeComparison("score", SqlOperator::Eq, ParameterValue{1.5}));
-    node.whereConditions.push_back(
-        makeComparison("deleted", SqlOperator::Eq, ParameterValue{nullptr}));
+    node.whereConditions.push_back(makeComparison("flag", SqlOperator::Eq, ParameterValue{true}));
+    node.whereConditions.push_back(makeComparison("score", SqlOperator::Eq, ParameterValue{1.5}));
+    node.whereConditions.push_back(makeComparison("deleted", SqlOperator::Eq, ParameterValue{nullptr}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -1101,8 +1048,7 @@ TEST(SqliteDialectParameter, UnsignedParameterWithinInt64RangeBecomesInt64)
 
     QueryNode node;
     node.tableName = "counters";
-    node.whereConditions.push_back(
-        makeComparison("value", SqlOperator::Eq, ParameterValue{static_cast<std::uint64_t>(42)}));
+    node.whereConditions.push_back(makeComparison("value", SqlOperator::Eq, ParameterValue{static_cast<std::uint64_t>(42)}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -1123,8 +1069,7 @@ TEST(SqliteDialectParameter, UnsignedParameterBeyondInt64RangeBecomesDecimalText
 
     QueryNode node;
     node.tableName = "counters";
-    node.whereConditions.push_back(
-        makeComparison("value", SqlOperator::Eq, ParameterValue{kBeyondInt64}));
+    node.whereConditions.push_back(makeComparison("value", SqlOperator::Eq, ParameterValue{kBeyondInt64}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -1143,20 +1088,15 @@ TEST(SqliteDialectParameter, PlaceholderCountMatchesParameterCount)
     JoinClause joinClause;
     joinClause.type      = JoinType::Inner;
     joinClause.tableName = "orders";
-    joinClause.conditions.push_back(
-        makeComparison("state", SqlOperator::Eq, ParameterValue{std::string("open")}));
+    joinClause.conditions.push_back(makeComparison("state", SqlOperator::Eq, ParameterValue{std::string("open")}));
 
     QueryNode node;
     node.tableName = "users";
     node.joins.push_back(std::move(joinClause));
-    node.whereConditions.push_back(makeComposite(
-        SqlOperator::And,
-        {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
-         makeInCondition("id",
-                         SqlOperator::In,
-                         {ParameterValue{static_cast<std::int64_t>(1)},
-                          ParameterValue{static_cast<std::int64_t>(2)}}),
-         makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})}));
+    node.whereConditions.push_back(
+            makeComposite(SqlOperator::And, {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
+                                             makeInCondition("id", SqlOperator::In, {ParameterValue{static_cast<std::int64_t>(1)}, ParameterValue{static_cast<std::int64_t>(2)}}),
+                                             makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})}));
     node.having = makeComparison("total", SqlOperator::Gt, ParameterValue{0.0});
     node.limit  = 5U;
 
@@ -1182,11 +1122,7 @@ TEST(SqliteDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)
     node.tableName     = "users";
     node.selectColumns = {"id", "name", "note"};
 
-    const std::vector<DatabaseValue> values{
-        std::int64_t{7},
-        std::string("O'Brien -- 中文"),
-        std::monostate{}
-    };
+    const std::vector<DatabaseValue> values{std::int64_t{7}, std::string("O'Brien -- 中文"), std::monostate{}};
 
     const SqlStatement statement = dialect.translateInsert(node, values);
 
@@ -1222,8 +1158,8 @@ TEST(SqliteDialectWrite, InsertDirectionsQuoteQualifiedTableNamesSegmentBySegmen
     const SqlStatement               single = dialect.translateInsert(node, values);
     EXPECT_NE(single.sql.find("INSERT INTO \"shop\".\"users\""), std::string::npos) << single.sql;
 
-    const std::vector<std::vector<DatabaseValue> > rows{values, values};
-    const SqlStatement batch = dialect.translateInsertBatch(node, rows);
+    const std::vector<std::vector<DatabaseValue>> rows{values, values};
+    const SqlStatement                            batch = dialect.translateInsertBatch(node, rows);
     EXPECT_NE(batch.sql.find("INSERT INTO \"shop\".\"users\""), std::string::npos) << batch.sql;
 
     // 插入方向不带别名："INSERT INTO 表 AS 别名" 是语法错误，别名只能出现在读侧
@@ -1242,20 +1178,17 @@ TEST(SqliteDialectWrite, EmptyTableNameIsRejectedInInsertDirection)
     QueryNode node;
     node.selectColumns = {"id"};
 
-    const std::vector<DatabaseValue>             values{std::int64_t{1}};
-    const std::vector<std::vector<DatabaseValue> > rows{values};
+    const std::vector<DatabaseValue>              values{std::int64_t{1}};
+    const std::vector<std::vector<DatabaseValue>> rows{values};
 
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, values)),
-                 AsynGyanis::Base::InvalidArgumentException);
-    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, rows)),
-                 AsynGyanis::Base::InvalidArgumentException);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, values)), AsynGyanis::Base::InvalidArgumentException);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, rows)), AsynGyanis::Base::InvalidArgumentException);
 
     try
     {
         static_cast<void>(dialect.translateInsert(node, values));
         FAIL() << "空表名应当在翻译阶段就被拒绝";
-    }
-    catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    } catch (const AsynGyanis::Base::InvalidArgumentException &failure)
     {
         EXPECT_NE(std::string_view(failure.what()).find("表名为空"), std::string_view::npos) << failure.what();
     }
@@ -1270,19 +1203,15 @@ TEST(SqliteDialectWrite, InsertRejectsColumnAndValueCountMismatch)
     node.selectColumns = {"id", "name"};
 
     // 少给值
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}})),
-                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}})), std::invalid_argument);
 
     // 多给值
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(
-                     node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("a"), std::string("b")})),
-                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("a"), std::string("b")})), std::invalid_argument);
 
     // 没有任何待写列
     QueryNode emptyColumnNode;
     emptyColumnNode.tableName = "users";
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(emptyColumnNode, std::vector<DatabaseValue>{})),
-                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(emptyColumnNode, std::vector<DatabaseValue>{})), std::invalid_argument);
 }
 
 /**
@@ -1295,8 +1224,7 @@ TEST(SqliteDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
     QueryNode node;
     node.tableName     = "users";
     node.selectColumns = {"name", "balance"};
-    node.whereConditions.push_back(
-        makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(42)}));
+    node.whereConditions.push_back(makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(42)}));
 
     const std::vector<DatabaseValue> values{std::string("王五"), 888.25};
 
@@ -1318,26 +1246,21 @@ TEST(SqliteDialectWrite, UpdateWithCompositeConditionKeepsParameterOrder)
     const SqliteDialect dialect;
 
     // NOT (deleted_at IS NULL) 不占参数；IN 展开成两个占位符
-    WhereCondition notNull = makeComposite(
-        SqlOperator::Not, {makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})});
+    WhereCondition notNull = makeComposite(SqlOperator::Not, {makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})});
 
     QueryNode node;
     node.tableName     = "users";
     node.tableAlias    = "u";
     node.selectColumns = {"name"};
-    node.whereConditions.push_back(
-        makeInCondition("id",
-                        SqlOperator::In,
-                        {ParameterValue{static_cast<std::int64_t>(1)}, ParameterValue{static_cast<std::int64_t>(2)}}));
+    node.whereConditions.push_back(makeInCondition("id", SqlOperator::In, {ParameterValue{static_cast<std::int64_t>(1)}, ParameterValue{static_cast<std::int64_t>(2)}}));
     node.whereConditions.push_back(std::move(notNull));
 
     const std::vector<DatabaseValue> values{std::string("李四")};
 
     const SqlStatement statement = dialect.translateUpdate(node, values);
 
-    EXPECT_EQ(statement.sql,
-              "UPDATE \"users\" AS \"u\" SET \"name\" = ? "
-              "WHERE \"id\" IN (?, ?) AND NOT (\"deleted_at\" IS NULL)");
+    EXPECT_EQ(statement.sql, "UPDATE \"users\" AS \"u\" SET \"name\" = ? "
+                             "WHERE \"id\" IN (?, ?) AND NOT (\"deleted_at\" IS NULL)");
     ASSERT_EQ(statement.parameters.size(), 3U);
     // 赋值参数在前，随后是两个 IN 集合元素，顺序与文本中占位符的先后一致
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "李四");
@@ -1374,11 +1297,8 @@ TEST(SqliteDialectWrite, DeleteRendersWhereConditionAndBindsParameters)
     QueryNode node;
     node.tableName = "users";
     node.whereConditions.push_back(makeComposite(
-        SqlOperator::And,
-        {makeComparison("active", SqlOperator::Eq, ParameterValue{false}),
-         makeInCondition("id",
-                         SqlOperator::In,
-                         {ParameterValue{static_cast<std::int64_t>(3)}, ParameterValue{static_cast<std::int64_t>(4)}})}));
+            SqlOperator::And, {makeComparison("active", SqlOperator::Eq, ParameterValue{false}),
+                               makeInCondition("id", SqlOperator::In, {ParameterValue{static_cast<std::int64_t>(3)}, ParameterValue{static_cast<std::int64_t>(4)}})}));
 
     const SqlStatement statement = dialect.translateDelete(node);
 
@@ -1408,8 +1328,7 @@ TEST(SqliteDialectWrite, DeleteWithoutConditionAndWithAlias)
     QueryNode aliasedNode;
     aliasedNode.tableName  = "users";
     aliasedNode.tableAlias = "u";
-    aliasedNode.whereConditions.push_back(
-        makeComparison("u.id", SqlOperator::Gt, ParameterValue{static_cast<std::int64_t>(10)}));
+    aliasedNode.whereConditions.push_back(makeComparison("u.id", SqlOperator::Gt, ParameterValue{static_cast<std::int64_t>(10)}));
 
     const SqlStatement aliased = dialect.translateDelete(aliasedNode);
     EXPECT_EQ(aliased.sql, "DELETE FROM \"users\" AS \"u\" WHERE \"u\".\"id\" > ?");
@@ -1434,14 +1353,12 @@ TEST(SqliteDialectWrite, DeleteWithLimitOrOffsetIsRejectedRatherThanMadeUnbounde
 
     // 行数上限：被丢掉之后「只删 1 行」变成「删掉全部匹配行」
     node.limit = 1U;
-    EXPECT_THROW(static_cast<void>(dialect.translateDelete(node)), AsynGyanis::Base::InvalidArgumentException)
-        << "带 LIMIT 的 DELETE 被静默渲染成无界删除";
+    EXPECT_THROW(static_cast<void>(dialect.translateDelete(node)), AsynGyanis::Base::InvalidArgumentException) << "带 LIMIT 的 DELETE 被静默渲染成无界删除";
 
     // 偏移量：同样改变被删的行集合（跳过前 N 行），必须一起拒
     node.limit  = std::nullopt;
     node.offset = 10U;
-    EXPECT_THROW(static_cast<void>(dialect.translateDelete(node)), AsynGyanis::Base::InvalidArgumentException)
-        << "带 OFFSET 的 DELETE 被静默渲染成无界删除";
+    EXPECT_THROW(static_cast<void>(dialect.translateDelete(node)), AsynGyanis::Base::InvalidArgumentException) << "带 OFFSET 的 DELETE 被静默渲染成无界删除";
 
     // 对照组：只带 ORDER BY 的删除仍渲染得出来——本方言同样不输出它，但它不改变被删的行集合
     QueryNode orderedNode;
@@ -1461,17 +1378,14 @@ TEST(SqliteDialectWrite, InsertBatchRendersMultipleValueRowsInOrder)
     node.tableName     = "accounts";
     node.selectColumns = {"id", "name", "note"};
 
-    const std::vector<std::vector<DatabaseValue>> rows{
-        {std::int64_t{1}, std::string("张三"), std::string("普通备注")},
-        {std::int64_t{2}, std::string("O'Brien -- DROP"), std::monostate{}},
-        {std::int64_t{3}, std::string("李四"), std::monostate{}}
-    };
+    const std::vector<std::vector<DatabaseValue>> rows{{std::int64_t{1}, std::string("张三"), std::string("普通备注")},
+                                                       {std::int64_t{2}, std::string("O'Brien -- DROP"), std::monostate{}},
+                                                       {std::int64_t{3}, std::string("李四"), std::monostate{}}};
 
     const SqlStatement statement = dialect.translateInsertBatch(node, rows);
 
-    EXPECT_EQ(statement.sql,
-              "INSERT INTO \"accounts\" (\"id\", \"name\", \"note\") "
-              "VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)");
+    EXPECT_EQ(statement.sql, "INSERT INTO \"accounts\" (\"id\", \"name\", \"note\") "
+                             "VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)");
 
     // 参数个数 = 行数 × 列数
     ASSERT_EQ(statement.parameters.size(), 9U);
@@ -1501,15 +1415,10 @@ TEST(SqliteDialectWrite, InsertBatchRejectsEmptyRowsAndColumnMismatch)
     node.selectColumns = {"id", "name"};
 
     // 空行集合：SQL 里 "VALUES" 后面必须有至少一组括号，无法生成合法语句
-    EXPECT_THROW(static_cast<void>(
-                     dialect.translateInsertBatch(node, std::vector<std::vector<DatabaseValue>>{})),
-                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, std::vector<std::vector<DatabaseValue>>{})), std::invalid_argument);
 
     // 某行少给一列：列与值错位会让数据写进错误的列，必须当场失败
-    const std::vector<std::vector<DatabaseValue>> mismatchedRows{
-        {std::int64_t{1}, std::string("张三")},
-        {std::int64_t{2}}
-    };
+    const std::vector<std::vector<DatabaseValue>> mismatchedRows{{std::int64_t{1}, std::string("张三")}, {std::int64_t{2}}};
     EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, mismatchedRows)), std::invalid_argument);
 }
 
@@ -1622,8 +1531,7 @@ TEST(DialectRegistryTest, RedisDialectThrowsWithChineseMessage)
     {
         static_cast<void>(DialectRegistry::dialectFor(DatabaseType::Redis));
         FAIL() << "Redis 不是 SQL 数据库，应当抛出异常";
-    }
-    catch (const std::invalid_argument &exception)
+    } catch (const std::invalid_argument &exception)
     {
         const std::string message = exception.what();
         EXPECT_NE(message.find("Redis"), std::string::npos);

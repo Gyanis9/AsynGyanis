@@ -36,15 +36,15 @@ namespace AsynGyanis::Net
         /// 挂在某个端点上的一次等待：节点由等待者的协程帧持有，摘链只动节点自己
         struct Waiter
         {
-            std::coroutine_handle<> handle; ///< 要唤醒的协程
-            Core::EventLoop        *loop{};  ///< 它所属的事件循环（唤醒要投回这条线程）
-            Waiter *previous{nullptr};      ///< 环形链表前驱；与 next 同时为空表示没挂着
-            Waiter *next{nullptr};          ///< 环形链表后继
+            std::coroutine_handle<> handle;            ///< 要唤醒的协程
+            Core::EventLoop        *loop{};            ///< 它所属的事件循环（唤醒要投回这条线程）
+            Waiter                 *previous{nullptr}; ///< 环形链表前驱；与 next 同时为空表示没挂着
+            Waiter                 *next{nullptr};     ///< 环形链表后继
         };
 
         HttpEstablishmentTable() = default;
 
-        HttpEstablishmentTable(const HttpEstablishmentTable &) = delete;
+        HttpEstablishmentTable(const HttpEstablishmentTable &)            = delete;
         HttpEstablishmentTable &operator=(const HttpEstablishmentTable &) = delete;
 
         /**
@@ -96,12 +96,12 @@ namespace AsynGyanis::Net
             }
 
             // 节点里存着指向自己成员的指针，拷贝会把链指到别的对象上，因此禁掉
-            Endpoint(const Endpoint &) = delete;
+            Endpoint(const Endpoint &)            = delete;
             Endpoint &operator=(const Endpoint &) = delete;
         };
 
-        std::mutex m_mutex;                                     ///< 保护下面这张表
-        std::unordered_map<std::string, Endpoint> m_endpoints;   ///< 在建连的端点 → 等待链表
+        std::mutex                                m_mutex;     ///< 保护下面这张表
+        std::unordered_map<std::string, Endpoint> m_endpoints; ///< 在建连的端点 → 等待链表
 
         /// 不带锁的摘链，只给 attach/detach/settle 这些已经持锁的地方用
         static void unlink(Waiter &waiter) noexcept;
@@ -124,10 +124,9 @@ namespace AsynGyanis::Net
          * @param endpointKey 等哪个端点的建连
          * @param loop 本协程跑在哪条循环上（决定唤醒投回哪里）
          */
-        HttpEstablishmentAwait(std::shared_ptr<HttpEstablishmentTable> table, std::string endpointKey,
-                               Core::EventLoop &loop) noexcept;
+        HttpEstablishmentAwait(std::shared_ptr<HttpEstablishmentTable> table, std::string endpointKey, Core::EventLoop &loop) noexcept;
 
-        HttpEstablishmentAwait(const HttpEstablishmentAwait &) = delete;
+        HttpEstablishmentAwait(const HttpEstablishmentAwait &)            = delete;
         HttpEstablishmentAwait &operator=(const HttpEstablishmentAwait &) = delete;
 
         /// 析构：协程帧被销毁而没等到唤醒时，把自己从链表上摘掉
@@ -148,10 +147,10 @@ namespace AsynGyanis::Net
         void await_resume() const noexcept;
 
     private:
-        std::shared_ptr<HttpEstablishmentTable> m_table; ///< 记账表，析构时要往它还一次锁
-        std::string    m_endpointKey;                     ///< 等的是哪个端点
-        Core::EventLoop &m_loop;                           ///< 本协程所属的循环
-        HttpEstablishmentTable::Waiter m_waiter;           ///< 链表节点（句柄在 suspend 时填）
+        std::shared_ptr<HttpEstablishmentTable> m_table;       ///< 记账表，析构时要往它还一次锁
+        std::string                             m_endpointKey; ///< 等的是哪个端点
+        Core::EventLoop                        &m_loop;        ///< 本协程所属的循环
+        HttpEstablishmentTable::Waiter          m_waiter;      ///< 链表节点（句柄在 suspend 时填）
     };
 } // namespace AsynGyanis::Net
 

@@ -32,7 +32,7 @@ namespace AsynGyanis::Database::Queryable
         using ClassType  = T;           ///< 所属结构体类型
         using MemberType = MemberType_; ///< 成员字段类型
 
-        MemberType_ T::* memberPointer = nullptr; ///< 成员指针，编译期可传递
+        MemberType_ T:: *memberPointer = nullptr; ///< 成员指针，编译期可传递
         std::string_view columnName    = {};      ///< 数据库列名
         std::string_view propertyName  = {};      ///< 属性名，默认与 columnName 相同
     };
@@ -49,11 +49,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T, typename MemberType_>
     consteval auto Column(MemberType_ T::*memberPointer, std::string_view columnName) noexcept -> ColumnDescriptor<T, MemberType_>
     {
-        return ColumnDescriptor<T, MemberType_>{
-                .memberPointer = memberPointer,
-                .columnName = columnName,
-                .propertyName = columnName
-        };
+        return ColumnDescriptor<T, MemberType_>{.memberPointer = memberPointer, .columnName = columnName, .propertyName = columnName};
     }
 
     /**
@@ -69,11 +65,7 @@ namespace AsynGyanis::Database::Queryable
     template<typename T, typename MemberType_>
     consteval auto Column(MemberType_ T::*memberPointer, std::string_view columnName, std::string_view propertyName) noexcept -> ColumnDescriptor<T, MemberType_>
     {
-        return ColumnDescriptor<T, MemberType_>{
-                .memberPointer = memberPointer,
-                .columnName = columnName,
-                .propertyName = propertyName
-        };
+        return ColumnDescriptor<T, MemberType_>{.memberPointer = memberPointer, .columnName = columnName, .propertyName = propertyName};
     }
 
 } // namespace AsynGyanis::Database::Queryable

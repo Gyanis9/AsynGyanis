@@ -4,13 +4,11 @@
 
 namespace AsynGyanis::Net
 {
-    StaticFileMappingCache::StaticFileMappingCache(const std::size_t maximumEntryCount) noexcept :
-        m_maximumEntryCount(maximumEntryCount)
+    StaticFileMappingCache::StaticFileMappingCache(const std::size_t maximumEntryCount) noexcept : m_maximumEntryCount(maximumEntryCount)
     {
     }
 
-    std::shared_ptr<const Platform::MemoryMappedFile> StaticFileMappingCache::find(const std::filesystem::path &filePath,
-                                                                                  const Platform::FileBasicInfo &fileBasicInfo)
+    std::shared_ptr<const Platform::MemoryMappedFile> StaticFileMappingCache::find(const std::filesystem::path &filePath, const Platform::FileBasicInfo &fileBasicInfo)
     {
         if (m_maximumEntryCount == 0)
         {
@@ -19,15 +17,14 @@ namespace AsynGyanis::Net
         }
 
         const std::lock_guard<std::mutex> guard(m_mutex);
-        const auto iterator = m_index.find(filePath);
+        const auto                        iterator = m_index.find(filePath);
         if (iterator == m_index.end())
         {
             return nullptr;
         }
 
         Entry &entry = *iterator->second;
-        if (entry.fileBasicInfo.sizeBytes != fileBasicInfo.sizeBytes ||
-            entry.fileBasicInfo.lastWriteSeconds != fileBasicInfo.lastWriteSeconds ||
+        if (entry.fileBasicInfo.sizeBytes != fileBasicInfo.sizeBytes || entry.fileBasicInfo.lastWriteSeconds != fileBasicInfo.lastWriteSeconds ||
             entry.fileBasicInfo.identityTag != fileBasicInfo.identityTag)
         {
             // 元数据变了就是换了内容：留着只会让下一次命中给出旧字节，就地摘掉，
@@ -45,8 +42,7 @@ namespace AsynGyanis::Net
         return entry.mappedFile;
     }
 
-    void StaticFileMappingCache::store(const std::filesystem::path &filePath,
-                                       std::shared_ptr<const Platform::MemoryMappedFile> mappedFile,
+    void StaticFileMappingCache::store(const std::filesystem::path &filePath, std::shared_ptr<const Platform::MemoryMappedFile> mappedFile,
                                        const Platform::FileBasicInfo &fileBasicInfo)
     {
         if (m_maximumEntryCount == 0 || mappedFile == nullptr)
@@ -68,8 +64,8 @@ namespace AsynGyanis::Net
         {
             // 同一路径再次登记（文件被改过、或并发下有两条都未命中）：覆盖旧条目而不是并存两份，
             // 否则同一文件会长期占两个名额，淘汰也腾不出多余的那份
-            Entry &entry = *existing->second;
-            entry.mappedFile = std::move(mappedFile);
+            Entry &entry        = *existing->second;
+            entry.mappedFile    = std::move(mappedFile);
             entry.fileBasicInfo = stampOfEntry;
             if (existing->second != m_entries.begin())
             {

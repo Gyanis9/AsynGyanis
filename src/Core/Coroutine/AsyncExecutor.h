@@ -142,9 +142,8 @@ namespace AsynGyanis::Core
         [[nodiscard]] Core::Task<ResultType> submit(Core::EventLoop &completionLoop, std::function<ResultType()> work)
         {
             // void 返回值无法区分「完成」与「未完成」，本执行器只服务「需要一个结果」的场景
-            static_assert(!std::is_void_v<ResultType>,
-                          "AsyncExecutor::submit：ResultType 不能是 void，"
-                          "需要无返回值的场景请让任务返回一个状态值或改用自定义 awaitable");
+            static_assert(!std::is_void_v<ResultType>, "AsyncExecutor::submit：ResultType 不能是 void，"
+                                                       "需要无返回值的场景请让任务返回一个状态值或改用自定义 awaitable");
 
             // 协程体只有一句：把接续点交给 awaitable，挂起与恢复逻辑全部收敛在那里
             co_return co_await SubmissionAwaiter<ResultType>(*this, completionLoop, std::move(work));
@@ -163,14 +162,14 @@ namespace AsynGyanis::Core
         template<typename ResultType>
         struct SubmissionState
         {
-            std::function<ResultType()> work;                    ///< 待执行的阻塞任务
-            std::optional<ResultType>   value;                   ///< 任务返回值（成功后才有值）
-            std::exception_ptr          error;                   ///< 任务抛出的异常（失败时非空）
+            std::function<ResultType()> work;  ///< 待执行的阻塞任务
+            std::optional<ResultType>   value; ///< 任务返回值（成功后才有值）
+            std::exception_ptr          error; ///< 任务抛出的异常（失败时非空）
             /// 待恢复的协程句柄，取走一次即作废（空即「等待体已析构」或「已被恢复」）。
             /// **必须是原子的**：清空发生在等待体（任意线程）的析构里，读取发生在工作线程的队列闭包里，
             /// 两者之间没有任何 happens-before（shared_ptr 的引用计数不建立它）
-            std::atomic<std::coroutine_handle<> > continuation{nullptr};
-            Core::EventLoop *           completionLoop{nullptr}; ///< 恢复该协程的事件循环
+            std::atomic<std::coroutine_handle<>> continuation{nullptr};
+            Core::EventLoop                     *completionLoop{nullptr}; ///< 恢复该协程的事件循环
         };
 
         /**
@@ -189,7 +188,7 @@ namespace AsynGyanis::Core
              * @param work 待执行的阻塞任务
              */
             SubmissionAwaiter(AsyncExecutor &executor, Core::EventLoop &completionLoop, std::function<ResultType()> work) :
-                m_executor(&executor), m_state(std::make_shared<SubmissionState<ResultType> >())
+                m_executor(&executor), m_state(std::make_shared<SubmissionState<ResultType>>())
             {
                 // 任务与事件循环都放进堆状态：工作线程只会用到它们，不依赖协程帧的存活
                 m_state->work           = std::move(work);
@@ -233,7 +232,7 @@ namespace AsynGyanis::Core
             bool await_suspend(std::coroutine_handle<> continuation)
             {
                 // 复制一份 shared_ptr 进入队列：只要任务还在队列里或正在执行，堆状态就不会被销毁
-                std::shared_ptr<SubmissionState<ResultType> > state = m_state;
+                std::shared_ptr<SubmissionState<ResultType>> state = m_state;
                 state->continuation.store(continuation, std::memory_order_release);
 
                 const SubmissionResult submission = m_executor->enqueue(
@@ -251,8 +250,7 @@ namespace AsynGyanis::Core
 
                             // exchange 取走即作废：取到空说明等待体已析构（调用方丢了 Task），
                             // 投出去等于踩已释放的帧，因此当场什么都不做；同一个句柄也因此只可能被恢复一次
-                            const std::coroutine_handle<> waitingCoroutine =
-                                    state->continuation.exchange(nullptr, std::memory_order_acq_rel);
+                            const std::coroutine_handle<> waitingCoroutine = state->continuation.exchange(nullptr, std::memory_order_acq_rel);
                             if (waitingCoroutine == nullptr)
                             {
                                 return;
@@ -268,11 +266,10 @@ namespace AsynGyanis::Core
                     // 抛出，比让调用方等一个永远不会来的恢复好得多。文案要分得开——
                     // 「已停止」指向本层生命周期用错了，「队列已满」指向上游并发该降下来
                     std::string rejectionReason = submission == SubmissionResult::RejectedByShutdown
-                            ? std::string("阻塞任务执行器已停止：本任务未被执行，请检查执行器的生命周期是否覆盖到本次提交")
-                            : std::string("阻塞任务执行器排队已满（每线程上限 ")
-                                      + std::to_string(kMaximumPendingTasksPerWorker)
-                                      + " 条）：下游明显慢于提交，请降低并发或改走非阻塞路径，不要继续向本执行器提交";
-                    state->error = std::make_exception_ptr(Base::LogicException(std::move(rejectionReason)));
+                                                          ? std::string("阻塞任务执行器已停止：本任务未被执行，请检查执行器的生命周期是否覆盖到本次提交")
+                                                          : std::string("阻塞任务执行器排队已满（每线程上限 ") + std::to_string(kMaximumPendingTasksPerWorker) +
+                                                                    " 条）：下游明显慢于提交，请降低并发或改走非阻塞路径，不要继续向本执行器提交";
+                    state->error                = std::make_exception_ptr(Base::LogicException(std::move(rejectionReason)));
                     return false;
                 }
                 return true;
@@ -299,8 +296,8 @@ namespace AsynGyanis::Core
             friend class AsyncExecutor;
 
         private:
-            AsyncExecutor *                               m_executor; ///< 目标执行器，生命周期由调用方保证
-            std::shared_ptr<SubmissionState<ResultType> > m_state;    ///< 与工作线程共享的任务状态
+            AsyncExecutor                               *m_executor; ///< 目标执行器，生命周期由调用方保证
+            std::shared_ptr<SubmissionState<ResultType>> m_state;    ///< 与工作线程共享的任务状态
         };
 
         /**
@@ -310,8 +307,8 @@ namespace AsynGyanis::Core
          */
         enum class SubmissionResult
         {
-            Accepted,               ///< 已入队并唤醒了一个工作线程
-            RejectedByShutdown,     ///< 执行器已进入停止流程，没人会再取队列
+            Accepted,                 ///< 已入队并唤醒了一个工作线程
+            RejectedByShutdown,       ///< 执行器已进入停止流程，没人会再取队列
             RejectedBySaturatedQueue, ///< 待执行任务已达本执行器的积压上限
         };
 
@@ -331,10 +328,10 @@ namespace AsynGyanis::Core
          */
         void workerLoop(const std::stop_token &stopToken);
 
-        std::mutex                         m_mutex;           ///< 保护任务队列
-        std::condition_variable            m_condition;       ///< 通知工作线程有新任务或收到停止请求
-        std::deque<std::function<void()> > m_tasks;           ///< 待执行的阻塞任务（FIFO，先到先服务）
-        std::atomic<std::size_t>           m_pendingCount{0}; ///< 队列长度（原子，供监控快速读取）
+        std::mutex                        m_mutex;           ///< 保护任务队列
+        std::condition_variable           m_condition;       ///< 通知工作线程有新任务或收到停止请求
+        std::deque<std::function<void()>> m_tasks;           ///< 待执行的阻塞任务（FIFO，先到先服务）
+        std::atomic<std::size_t>          m_pendingCount{0}; ///< 队列长度（原子，供监控快速读取）
 
         std::atomic<bool> m_isStopping{false}; ///< 是否已进入停止流程：析构一开始置真，此后 enqueue 一律拒绝——工作线程退出后没人再取队列，收下任务等于让提交方永久挂起
 

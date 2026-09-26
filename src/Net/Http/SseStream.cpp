@@ -9,11 +9,11 @@ namespace AsynGyanis::Net
     namespace
     {
         // SSE 行的固定片段：前缀写成具名常量，避免在拼帧处散落字面量
-        constexpr std::string_view kEventFieldPrefix = "event: ";   ///< event 字段行前缀
-        constexpr std::string_view kIdFieldPrefix = "id: ";         ///< id 字段行前缀
-        constexpr std::string_view kRetryFieldPrefix = "retry: ";   ///< retry 字段行前缀
-        constexpr std::string_view kDataLinePrefix = "data: ";      ///< data 行的行前缀
-        constexpr std::string_view kCommentLinePrefix = ": ";       ///< 注释行的行前缀
+        constexpr std::string_view kEventFieldPrefix  = "event: "; ///< event 字段行前缀
+        constexpr std::string_view kIdFieldPrefix     = "id: ";    ///< id 字段行前缀
+        constexpr std::string_view kRetryFieldPrefix  = "retry: "; ///< retry 字段行前缀
+        constexpr std::string_view kDataLinePrefix    = "data: ";  ///< data 行的行前缀
+        constexpr std::string_view kCommentLinePrefix = ": ";      ///< 注释行的行前缀
 
         /// SSE 的行分隔符固定为 LF（不是 HTTP 报文的 CRLF）：线格式按 LF 定界，收端也按 LF 解析
         constexpr char kLineFeed = '\n';
@@ -32,8 +32,7 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    SseStream::SseStream(HttpResponse &response) :
-        m_response(response)
+    SseStream::SseStream(HttpResponse &response) : m_response(response)
     {
         // 先进入流式模式再设头部：startChunkedResponse 会删掉调用方先设的 content-length，
         // 顺序反过来则连 SSE 需要的头部一起删掉。头部随首段正文上线，因此必须在这里定稿
@@ -93,8 +92,7 @@ namespace AsynGyanis::Net
         // 超长输入先按长度拦一道：整帧必然超限，没必要为一个注定被拒的帧先分配一大块内存
         if (comment.size() > kMaximumFrameLength)
         {
-            throw Base::LogicException("SseStream::sendComment：注释文本共 " + std::to_string(comment.size()) +
-                                       " 字节，已超过单帧上限 " + std::to_string(kMaximumFrameLength) +
+            throw Base::LogicException("SseStream::sendComment：注释文本共 " + std::to_string(comment.size()) + " 字节，已超过单帧上限 " + std::to_string(kMaximumFrameLength) +
                                        " 字节；注释帧只用于心跳与调试，请缩短这条注释，"
                                        "或把长文本改用 sendEvent() 分批发送");
         }
@@ -107,8 +105,7 @@ namespace AsynGyanis::Net
 
         if (frame.size() > kMaximumFrameLength)
         {
-            throw Base::LogicException("SseStream::sendComment：本次注释帧共 " + std::to_string(frame.size()) +
-                                       " 字节，超过单帧上限 " + std::to_string(kMaximumFrameLength) +
+            throw Base::LogicException("SseStream::sendComment：本次注释帧共 " + std::to_string(frame.size()) + " 字节，超过单帧上限 " + std::to_string(kMaximumFrameLength) +
                                        " 字节；请缩短这条注释，或把长文本改用 sendEvent() 分批发送");
         }
 
@@ -121,8 +118,7 @@ namespace AsynGyanis::Net
         co_return isSent;
     }
 
-    Core::Task<bool> SseStream::sendEvent(const std::string_view data, const std::string_view eventName,
-                                          const std::string_view eventId,
+    Core::Task<bool> SseStream::sendEvent(const std::string_view data, const std::string_view eventName, const std::string_view eventId,
                                           const std::optional<std::chrono::milliseconds> retry)
     {
         // 连接已不可用：直接短路，不写也不校验，也不记日志（理由同 sendComment()）
@@ -149,8 +145,7 @@ namespace AsynGyanis::Net
         // retry 是给客户端的重连建议值，负数属调用方取值错误，因此归入 logic_error 分支而非运行期故障
         if (retry.has_value() && retry->count() < 0)
         {
-            throw Base::InvalidArgumentException("SseStream::sendEvent：重连间隔 retry 不能为负数，收到 " +
-                                                 std::to_string(retry->count()) +
+            throw Base::InvalidArgumentException("SseStream::sendEvent：重连间隔 retry 不能为负数，收到 " + std::to_string(retry->count()) +
                                                  " 毫秒；retry 是给客户端的重连建议毫秒数，请传入非负值，"
                                                  "或传 std::nullopt 表示本次不带该字段");
         }
@@ -158,8 +153,7 @@ namespace AsynGyanis::Net
         // data 单独超限时整帧必然超限：先按长度拦一道，避免为一个注定被拒的帧先分配一大块内存
         if (data.size() > kMaximumFrameLength)
         {
-            throw Base::LogicException("SseStream::sendEvent：事件数据共 " + std::to_string(data.size()) +
-                                       " 字节，已超过单帧上限 " + std::to_string(kMaximumFrameLength) +
+            throw Base::LogicException("SseStream::sendEvent：事件数据共 " + std::to_string(data.size()) + " 字节，已超过单帧上限 " + std::to_string(kMaximumFrameLength) +
                                        " 字节；请把数据拆成多条小事件分别发送（客户端会按到达顺序逐条投递），"
                                        "或改用一次性普通响应下发这份内容");
         }
@@ -192,8 +186,7 @@ namespace AsynGyanis::Net
 
         if (frame.size() > kMaximumFrameLength)
         {
-            throw Base::LogicException("SseStream::sendEvent：本次事件帧共 " + std::to_string(frame.size()) +
-                                       " 字节，超过单帧上限 " + std::to_string(kMaximumFrameLength) +
+            throw Base::LogicException("SseStream::sendEvent：本次事件帧共 " + std::to_string(frame.size()) + " 字节，超过单帧上限 " + std::to_string(kMaximumFrameLength) +
                                        " 字节；请把数据拆成多条小事件分别发送，或改用一次性普通响应下发这份内容");
         }
 

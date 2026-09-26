@@ -1,13 +1,13 @@
 // 出站 TCP 客户端：连回本地 HTTP 服务器，读响应确认 200
-#include "HttpTestSupport.h"
-#include "Core/EventLoop/EventLoop.h"
-#include "Net/Tcp/TcpClient.h"
-#include <gtest/gtest.h>
 #include <chrono>
 #include <cstdint>
+#include <gtest/gtest.h>
 #include <memory>
 #include <string>
 #include <thread>
+#include "Core/EventLoop/EventLoop.h"
+#include "HttpTestSupport.h"
+#include "Net/Tcp/TcpClient.h"
 namespace AsynGyanis::Net
 {
     namespace
@@ -18,30 +18,34 @@ namespace AsynGyanis::Net
         /// 连接到服务器、发 GET 请求、读响应，结果写进 outOk 与 outResponse
         /// host 按值收：协程帧里存的是引用的话，调用方递字面量时那个临时 std::string 在跨过
         /// 第一次 co_await 之前就没了（ASan 报 stack-use-after-scope）
-        Core::Task<void> doClientWork(Core::EventLoop &loop, std::string host, uint16_t port,
-                                      bool &outOk, std::string &outResponse)
+        Core::Task<void> doClientWork(Core::EventLoop &loop, std::string host, uint16_t port, bool &outOk, std::string &outResponse)
         {
             std::unique_ptr<TcpStream> streamPtr = co_await TcpClient::connect(loop, std::move(host), port);
-            if (!streamPtr) { outOk = false; loop.stop(); co_return; }
-            outOk = true;
-            TcpStream &stream = *streamPtr;
+            if (!streamPtr)
+            {
+                outOk = false;
+                loop.stop();
+                co_return;
+            }
+            outOk                     = true;
+            TcpStream        &stream  = *streamPtr;
             const std::string request = "GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
             co_await stream.writeAll(request.data(), request.size());
             char buffer[256];
             while (true)
             {
                 const ssize_t n = co_await stream.read(buffer, sizeof(buffer));
-                if (n <= 0) break;
+                if (n <= 0)
+                    break;
                 outResponse.append(buffer, static_cast<std::size_t>(n));
             }
             loop.stop();
         }
-    }
+    } // namespace
 
     TEST(TcpClient, ConnectsToLocalhostAndReadsResponse)
     {
-        auto fixture = std::make_unique<RunningHttpServerFixture>(
-                HttpServerLimits{}, std::chrono::milliseconds{100});
+        auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100});
         ASSERT_TRUE(fixture->awaitRunning(kTimeout));
         const uint16_t port = fixture->listeningPort();
         ASSERT_NE(port, 0U);
@@ -56,9 +60,7 @@ namespace AsynGyanis::Net
         clientLoop.run();
 
         ASSERT_TRUE(ok) << "没有连上服务器";
-        EXPECT_TRUE(responseText.find("200") != std::string::npos ||
-                    responseText.find("served-hello") != std::string::npos)
-                << "响应：" << responseText;
+        EXPECT_TRUE(responseText.find("200") != std::string::npos || responseText.find("served-hello") != std::string::npos) << "响应：" << responseText;
     }
 
     /**

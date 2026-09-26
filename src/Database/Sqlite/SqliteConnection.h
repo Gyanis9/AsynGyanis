@@ -373,8 +373,8 @@ namespace AsynGyanis::Database
         /// 缓存里的一条游标连同它的使用记号
         struct CachedStatement
         {
-            sqlite3_stmt *statement{nullptr};  ///< 已编译且处于 reset 态的游标，所有权在表
-            std::uint64_t lastUseStamp{0};     ///< 最近一次被读到或写入时的戳记，越小越先被逐出
+            sqlite3_stmt *statement{nullptr}; ///< 已编译且处于 reset 态的游标，所有权在表
+            std::uint64_t lastUseStamp{0};    ///< 最近一次被读到或写入时的戳记，越小越先被逐出
         };
 
         sqlite3 *m_database{nullptr}; ///< SQLite C API 数据库句柄，本对象独占所有权
@@ -393,10 +393,10 @@ namespace AsynGyanis::Database
         /// 而超时的最大过冲只有一个指令批次的粒度
         static constexpr int kProgressHandlerInterval = 1000;
 
-        std::chrono::steady_clock::time_point m_statementDeadline{}; ///< 本条语句的最迟结束时刻，仅 m_statementDeadlineArmed 为真时有意义
-        int  m_statementDeadlineMilliseconds{0};                     ///< 装时限时使用毫秒数，只用于错误文案里报出上限
-        bool m_statementDeadlineArmed{false};                        ///< 时限是否生效，false 时回调不做任何时钟读取
-        bool m_statementDeadlineHit{false};                          ///< 本次执行是否真的因超时被打断，用于把 SQLITE_INTERRUPT 翻成可操作的中文原因
+        std::chrono::steady_clock::time_point m_statementDeadline{};              ///< 本条语句的最迟结束时刻，仅 m_statementDeadlineArmed 为真时有意义
+        int                                   m_statementDeadlineMilliseconds{0}; ///< 装时限时使用毫秒数，只用于错误文案里报出上限
+        bool                                  m_statementDeadlineArmed{false};    ///< 时限是否生效，false 时回调不做任何时钟读取
+        bool                                  m_statementDeadlineHit{false};      ///< 本次执行是否真的因超时被打断，用于把 SQLITE_INTERRUPT 翻成可操作的中文原因
     };
 
 } // namespace AsynGyanis::Database

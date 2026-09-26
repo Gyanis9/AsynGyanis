@@ -45,7 +45,7 @@ namespace AsynGyanis::Platform
          */
         int makeLoopbackListener(std::uint16_t &port)
         {
-            port = 0U;
+            port               = 0U;
             const int listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
             if (listener < 0)
             {
@@ -181,8 +181,7 @@ namespace AsynGyanis::Platform
         cleanup.add(channelReader);
 
         const auto selfProcessId = static_cast<std::uint64_t>(ProcessInfo::currentProcessId());
-        ASSERT_TRUE(Socket::writeListeningSocketHandoff(channelWriter, listener, selfProcessId))
-                << "交出监听套接字失败，错误码 " << PlatformError::lastErrorCode();
+        ASSERT_TRUE(Socket::writeListeningSocketHandoff(channelWriter, listener, selfProcessId)) << "交出监听套接字失败，错误码 " << PlatformError::lastErrorCode();
 
         const int received = Socket::readListeningSocketHandoff(channelReader);
         ASSERT_GE(received, 0) << "收端没能重建监听套接字，错误码 " << PlatformError::lastErrorCode();
@@ -253,15 +252,13 @@ namespace AsynGyanis::Platform
             std::uint16_t socketType;
             std::uint32_t blobByteCount;
         } foreignHeader{AF_INET, SOCK_STREAM, 4U};
-        ASSERT_EQ(::send(secondWriter, reinterpret_cast<const char *>(&foreignHeader), static_cast<int>(sizeof(foreignHeader)), 0),
-                   static_cast<int>(sizeof(foreignHeader)));
+        ASSERT_EQ(::send(secondWriter, reinterpret_cast<const char *>(&foreignHeader), static_cast<int>(sizeof(foreignHeader)), 0), static_cast<int>(sizeof(foreignHeader)));
         ASSERT_EQ(::send(secondWriter, "WXYZ", 4, 0), 4);
         FileDescriptor::close(secondWriter);
 
         EXPECT_EQ(Socket::readListeningSocketHandoff(secondReader), -1) << "载荷长度不合本平台的格式，却被当成有效移交";
         std::array<char, 4> leftover{};
-        ASSERT_EQ(::recv(secondReader, leftover.data(), static_cast<int>(leftover.size()), 0), 4)
-                << "收端在读格式之前就把载荷吃掉了：那不是「拒绝」，是「猜着解」";
+        ASSERT_EQ(::recv(secondReader, leftover.data(), static_cast<int>(leftover.size()), 0), 4) << "收端在读格式之前就把载荷吃掉了：那不是「拒绝」，是「猜着解」";
         EXPECT_EQ(std::string_view(leftover.data(), leftover.size()), "WXYZ") << "被读走的字节应当原样留在通道里";
     }
 

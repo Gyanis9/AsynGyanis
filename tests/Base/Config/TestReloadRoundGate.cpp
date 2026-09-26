@@ -110,17 +110,17 @@ namespace AsynGyanis::Base::Detail
     {
         ReloadRoundGate gate;
 
-        ASSERT_TRUE(gate.claimRound());                        // 1. R1 占到执行权
+        ASSERT_TRUE(gate.claimRound()); // 1. R1 占到执行权
         const std::uint64_t seenByFirstRound = gate.observedGeneration();
-        gate.noteChanged();                                    // 2. W1：R1 已经读过盘，这次要留给下一轮
+        gate.noteChanged(); // 2. W1：R1 已经读过盘，这次要留给下一轮
         EXPECT_FALSE(gate.claimRound()) << "W1 的事件应看到 R1 还在跑";
-        gate.finishRunning();                                  // 3. R1 交还执行权，然后停在接力之前
+        gate.finishRunning(); // 3. R1 交还执行权，然后停在接力之前
 
-        gate.noteChanged();                                    // 4. W2 到达并起走 R2
+        gate.noteChanged(); // 4. W2 到达并起走 R2
         ASSERT_TRUE(gate.claimRound());
         const std::uint64_t seenBySecondRound = gate.observedGeneration();
 
-        gate.noteChanged();                                    // 5. Wx 落在 R2 读盘之后 —— 必须还有人重读
+        gate.noteChanged(); // 5. Wx 落在 R2 读盘之后 —— 必须还有人重读
         EXPECT_FALSE(gate.claimRound()) << "Wx 的事件应看到 R2 还在跑";
 
         // 6. R1 此刻才继续：它那份快照确实旧了，但只许「比对」不许「消耗」
@@ -139,11 +139,11 @@ namespace AsynGyanis::Base::Detail
     {
         LegacyDualFlagProtocol legacy;
 
-        ASSERT_TRUE(legacy.noteChangedAndClaim());   // 1. R1 起轮
-        ASSERT_FALSE(legacy.noteChangedAndClaim());  // 2. W1 抢不到执行权，记下欠账
-        legacy.handBackClaim();                      // 3. R1 交还执行权后停在 exchange 之前
-        ASSERT_TRUE(legacy.noteChangedAndClaim());   // 4. W2 起走 R2（走抢权分支，不动欠账）
-        ASSERT_FALSE(legacy.noteChangedAndClaim());  // 5. Wx 抢不到 R2 的执行权，记下欠账
+        ASSERT_TRUE(legacy.noteChangedAndClaim());  // 1. R1 起轮
+        ASSERT_FALSE(legacy.noteChangedAndClaim()); // 2. W1 抢不到执行权，记下欠账
+        legacy.handBackClaim();                     // 3. R1 交还执行权后停在 exchange 之前
+        ASSERT_TRUE(legacy.noteChangedAndClaim());  // 4. W2 起走 R2（走抢权分支，不动欠账）
+        ASSERT_FALSE(legacy.noteChangedAndClaim()); // 5. Wx 抢不到 R2 的执行权，记下欠账
 
         // 6. R1 继续：把 Wx 的欠账 exchange 掉，却因 R2 仍在跑而抢不到接力 —— 欠账就此消失
         ASSERT_FALSE(legacy.consumeDebtAndRelay()) << "R1 应当既吃掉欠账又接力失败";
@@ -154,8 +154,8 @@ namespace AsynGyanis::Base::Detail
 
     TEST(ReloadRoundGate, ConcurrentClaimsNeverOverlapRounds)
     {
-        ReloadRoundGate        gate;
-        std::atomic<int>       roundsInFlight{0};
+        ReloadRoundGate  gate;
+        std::atomic<int> roundsInFlight{0};
         // fetch_max 只在无符号整数特化上提供（有符号的 atomic<int> 没有这个成员）
         std::atomic<std::uint32_t> maximumRoundsInFlight{0};
         std::atomic<bool>          keepGoing{true};

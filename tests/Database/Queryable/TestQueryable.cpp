@@ -21,10 +21,10 @@
 // - HavingThroughBuilderAppearsInSql（having() 入口 + 离线文本给出 GROUP BY 与 HAVING）
 
 #include "Database/Queryable/Column.h"
-#include "Database/Queryable/TableSchema.h"
-#include "Database/Queryable/QueryNode.h"
 #include "Database/Queryable/Expression.h"
+#include "Database/Queryable/QueryNode.h"
 #include "Database/Queryable/Queryable.h"
+#include "Database/Queryable/TableSchema.h"
 
 #include <gtest/gtest.h>
 
@@ -80,10 +80,10 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<User>
 {
     static constexpr std::string_view kTableName = "users";
-    static constexpr auto kColumns = std::tuple{
-        Column(&User::id,   "id"),
-        Column(&User::name, "name"),
-        Column(&User::age,  "age"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&User::id, "id"),
+            Column(&User::name, "name"),
+            Column(&User::age, "age"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -92,11 +92,11 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<Product>
 {
     static constexpr std::string_view kTableName = "products";
-    static constexpr auto kColumns = std::tuple{
-        Column(&Product::id,         "id"),
-        Column(&Product::title,      "title"),
-        Column(&Product::price,      "price"),
-        Column(&Product::categoryId, "category_id"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&Product::id, "id"),
+            Column(&Product::title, "title"),
+            Column(&Product::price, "price"),
+            Column(&Product::categoryId, "category_id"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -105,10 +105,10 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<Order>
 {
     static constexpr std::string_view kTableName = "orders";
-    static constexpr auto kColumns = std::tuple{
-        Column(&Order::orderId,       "order_id"),
-        Column(&Order::customerName,  "customer_name"),
-        Column(&Order::totalAmount,   "total_amount"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&Order::orderId, "order_id"),
+            Column(&Order::customerName, "customer_name"),
+            Column(&Order::totalAmount, "total_amount"),
     };
     static constexpr std::string_view kPrimaryKey = "order_id";
 };
@@ -151,10 +151,10 @@ namespace AsynGyanis::Database::Queryable
     {
         constexpr auto columnDescriptor = Column(&User::age, "user_age", "age");
 
-        static_assert(columnDescriptor.columnName   == "user_age");
+        static_assert(columnDescriptor.columnName == "user_age");
         static_assert(columnDescriptor.propertyName == "age");
 
-        EXPECT_EQ(columnDescriptor.columnName,   "user_age");
+        EXPECT_EQ(columnDescriptor.columnName, "user_age");
         EXPECT_EQ(columnDescriptor.propertyName, "age");
         EXPECT_EQ(columnDescriptor.memberPointer, &User::age);
     }
@@ -164,16 +164,16 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(QueryableColumn, ColumnDescriptorDifferentTypes)
     {
-        constexpr auto idCol   = Column(&User::id,   "id");
-        constexpr auto ageCol  = Column(&User::age,  "age");
+        constexpr auto idCol   = Column(&User::id, "id");
+        constexpr auto ageCol  = Column(&User::age, "age");
         constexpr auto nameCol = Column(&User::name, "name");
 
-        static_assert(std::is_same_v<decltype(idCol)::MemberType,   int>);
-        static_assert(std::is_same_v<decltype(ageCol)::MemberType,  int>);
+        static_assert(std::is_same_v<decltype(idCol)::MemberType, int>);
+        static_assert(std::is_same_v<decltype(ageCol)::MemberType, int>);
         static_assert(std::is_same_v<decltype(nameCol)::MemberType, std::string>);
 
-        EXPECT_EQ(idCol.columnName,   "id");
-        EXPECT_EQ(ageCol.columnName,  "age");
+        EXPECT_EQ(idCol.columnName, "id");
+        EXPECT_EQ(ageCol.columnName, "age");
         EXPECT_EQ(nameCol.columnName, "name");
     }
 
@@ -234,7 +234,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableExpression, WhereConditionComparesColumnAndValue)
     {
         constexpr auto ageColumn = Column(&User::age, "age");
-        const auto condition = ageColumn >= 18;
+        const auto     condition = ageColumn >= 18;
 
         ASSERT_TRUE(true);
         EXPECT_EQ(condition.left.name, "age");
@@ -345,8 +345,8 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(QueryableExpression, AndComposition)
     {
-        constexpr auto ageColumn  = Column(&User::age,  "age");
-        constexpr auto idColumn   = Column(&User::id,   "id");
+        constexpr auto ageColumn = Column(&User::age, "age");
+        constexpr auto idColumn  = Column(&User::id, "id");
 
         auto condition = (ageColumn >= 18) && (idColumn == 1);
 
@@ -392,8 +392,8 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(QueryableExpression, AndOrComposition)
     {
-        constexpr auto col1 = Column(&User::id,   "id");
-        constexpr auto col2 = Column(&User::age,  "age");
+        constexpr auto col1 = Column(&User::id, "id");
+        constexpr auto col2 = Column(&User::age, "age");
         constexpr auto col3 = Column(&User::name, "name");
 
         auto condition = (col1 == 1 && col2 == 2) || col3 == "test";
@@ -445,8 +445,8 @@ namespace AsynGyanis::Database::Queryable
     {
         constexpr auto idColumn = Column(&User::id, "id");
 
-        std::vector<int> ids = {1, 2, 3};
-        auto condition = in(idColumn, ids);
+        std::vector<int> ids       = {1, 2, 3};
+        auto             condition = in(idColumn, ids);
 
         EXPECT_EQ(condition.left.name, "id");
         EXPECT_EQ(condition.op, SqlOperator::In);
@@ -478,8 +478,8 @@ namespace AsynGyanis::Database::Queryable
     {
         constexpr auto ageColumn = Column(&User::age, "age");
 
-        std::vector<int> excluded = {0, 1, 99};
-        auto condition = in(ageColumn, excluded);
+        std::vector<int> excluded  = {0, 1, 99};
+        auto             condition = in(ageColumn, excluded);
         // NotIn 构建器暂未提供：手动把操作符置为 NotIn，只验证 inValues 机制本身
         condition.op = SqlOperator::NotIn;
 
@@ -495,7 +495,7 @@ namespace AsynGyanis::Database::Queryable
         constexpr auto idColumn = Column(&User::id, "id");
 
         std::vector<int> empty;
-        auto condition = in(idColumn, empty);
+        auto             condition = in(idColumn, empty);
 
         EXPECT_EQ(condition.op, SqlOperator::In);
         EXPECT_TRUE(condition.inValues.empty());
@@ -513,7 +513,7 @@ namespace AsynGyanis::Database::Queryable
         auto ascending  = asc("name");
         auto descending = desc("age");
 
-        EXPECT_EQ(ascending.field.name,  "name");
+        EXPECT_EQ(ascending.field.name, "name");
         EXPECT_FALSE(ascending.descending);
 
         EXPECT_EQ(descending.field.name, "age");
@@ -531,14 +531,10 @@ namespace AsynGyanis::Database::Queryable
     {
         Queryable<User> query;
 
-        constexpr auto ageColumn  = Column(&User::age,  "age");
+        constexpr auto ageColumn  = Column(&User::age, "age");
         constexpr auto nameColumn = Column(&User::name, "name");
 
-        query.where(ageColumn >= 18)
-             .where(nameColumn == "Alice")
-             .orderBy(asc("age"))
-             .limit(10)
-             .offset(5);
+        query.where(ageColumn >= 18).where(nameColumn == "Alice").orderBy(asc("age")).limit(10).offset(5);
 
         // 通过 toSql 间接验证树结构
         std::string sql = query.toSql();
@@ -569,10 +565,7 @@ namespace AsynGyanis::Database::Queryable
         condition.right = ParameterValue{static_cast<int64_t>(18)};
         node.whereConditions.push_back(std::move(condition));
 
-        node.orderBy.push_back(OrderByClause{
-            .field      = FieldReference{std::string("name")},
-            .descending = false
-        });
+        node.orderBy.push_back(OrderByClause{.field = FieldReference{std::string("name")}, .descending = false});
 
         EXPECT_EQ(node.tableName, "users");
         EXPECT_EQ(node.whereConditions.size(), 1);
@@ -589,7 +582,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, QueryNodeConvertsToSimpleSql)
     {
         Queryable<User> query;
-        std::string sql = query.toSql();
+        std::string     sql = query.toSql();
 
         EXPECT_EQ(sql, "SELECT * FROM users");
     }
@@ -600,7 +593,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, WhereConditionConvertsToSql)
     {
         Queryable<User> query;
-        constexpr auto ageColumn = Column(&User::age, "age");
+        constexpr auto  ageColumn = Column(&User::age, "age");
         query.where(ageColumn >= 18);
 
         std::string sql = query.toSql();
@@ -619,13 +612,10 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, QueryNodeConvertsToSql)
     {
         Queryable<User> query;
-        constexpr auto ageColumn  = Column(&User::age,  "age");
-        constexpr auto nameColumn = Column(&User::name, "name");
+        constexpr auto  ageColumn  = Column(&User::age, "age");
+        constexpr auto  nameColumn = Column(&User::name, "name");
 
-        query.where(ageColumn >= 18)
-             .where(nameColumn == "Alice")
-             .orderBy(asc("name"))
-             .limit(10);
+        query.where(ageColumn >= 18).where(nameColumn == "Alice").orderBy(asc("name")).limit(10);
 
         std::string sql = query.toSql();
 
@@ -644,15 +634,9 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, QueryNodeConvertsToSqlWithAllClauses)
     {
         Queryable<User> query;
-        constexpr auto ageColumn = Column(&User::age, "age");
+        constexpr auto  ageColumn = Column(&User::age, "age");
 
-        query.select({"id", "name", "age"})
-             .where(ageColumn >= 18)
-             .where(ageColumn <= 60)
-             .orderBy(asc("name"))
-             .orderBy(desc("age"))
-             .limit(20)
-             .offset(10);
+        query.select({"id", "name", "age"}).where(ageColumn >= 18).where(ageColumn <= 60).orderBy(asc("name")).orderBy(desc("age")).limit(20).offset(10);
 
         std::string sql = query.toSql();
 
@@ -672,8 +656,8 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, AndConditionGeneratesSql)
     {
         Queryable<User> query;
-        constexpr auto ageColumn = Column(&User::age, "age");
-        constexpr auto idColumn  = Column(&User::id,  "id");
+        constexpr auto  ageColumn = Column(&User::age, "age");
+        constexpr auto  idColumn  = Column(&User::id, "id");
 
         query.where(ageColumn >= 18 && idColumn == 1);
 
@@ -691,7 +675,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, OrConditionGeneratesSql)
     {
         Queryable<User> query;
-        constexpr auto ageColumn = Column(&User::age, "age");
+        constexpr auto  ageColumn = Column(&User::age, "age");
 
         query.where(ageColumn == 18 || ageColumn == 65);
 
@@ -709,9 +693,9 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, NestedAndOrGeneratesSql)
     {
         Queryable<User> query;
-        constexpr auto idColumn   = Column(&User::id,   "id");
-        constexpr auto ageColumn  = Column(&User::age,  "age");
-        constexpr auto nameColumn = Column(&User::name, "name");
+        constexpr auto  idColumn   = Column(&User::id, "id");
+        constexpr auto  ageColumn  = Column(&User::age, "age");
+        constexpr auto  nameColumn = Column(&User::name, "name");
 
         query.where((idColumn == 1 && ageColumn == 2) || nameColumn == "test");
 
@@ -731,7 +715,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, InExpressionGeneratesSql)
     {
         Queryable<User> query;
-        constexpr auto idColumn = Column(&User::id, "id");
+        constexpr auto  idColumn = Column(&User::id, "id");
 
         std::vector<int> ids = {1, 2, 3};
         query.where(in(idColumn, ids));
@@ -749,7 +733,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, NotConditionGeneratesSql)
     {
         Queryable<User> query;
-        constexpr auto ageColumn = Column(&User::age, "age");
+        constexpr auto  ageColumn = Column(&User::age, "age");
 
         query.where(!(ageColumn < 18));
 
@@ -769,7 +753,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, NotConditionIsWrappedInParenthesesLikeTheDialect)
     {
         Queryable<User> query;
-        constexpr auto ageColumn = Column(&User::age, "age");
+        constexpr auto  ageColumn = Column(&User::age, "age");
 
         query.where(!(ageColumn < 18));
 
@@ -873,7 +857,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, NullComparisonSql)
     {
         Queryable<User> query;
-        constexpr auto nameColumn = Column(&User::name, "name");
+        constexpr auto  nameColumn = Column(&User::name, "name");
         query.where(nameColumn == nullptr);
 
         std::string sql = query.toSql();
@@ -886,7 +870,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, IsNotNullSql)
     {
         Queryable<User> query;
-        constexpr auto nameColumn = Column(&User::name, "name");
+        constexpr auto  nameColumn = Column(&User::name, "name");
         query.where(nameColumn != nullptr);
 
         std::string sql = query.toSql();
@@ -899,7 +883,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, LikeSqlGeneration)
     {
         Queryable<User> query;
-        constexpr auto nameColumn = Column(&User::name, "name");
+        constexpr auto  nameColumn = Column(&User::name, "name");
         query.where(like(nameColumn, "%value%"));
 
         std::string sql = query.toSql();
@@ -916,14 +900,14 @@ namespace AsynGyanis::Database::Queryable
     TEST(QueryableSql, OfflineRendererAgreesWithDialectOnEmptyInAndLiteralMatch)
     {
         Queryable<User> emptyInQuery;
-        constexpr auto idColumn = Column(&User::id, "id");
+        constexpr auto  idColumn = Column(&User::id, "id");
         emptyInQuery.where(in(idColumn, std::vector<std::int64_t>{}));
         const std::string emptyInSql = emptyInQuery.toSql();
         EXPECT_NE(emptyInSql.find("(1 = 0)"), std::string::npos) << emptyInSql;
         EXPECT_EQ(emptyInSql.find("IN (?)"), std::string::npos) << emptyInSql;
 
         Queryable<User> literalQuery;
-        constexpr auto nameColumn = Column(&User::name, "name");
+        constexpr auto  nameColumn = Column(&User::name, "name");
         literalQuery.where(contains(nameColumn, std::string("50%")));
         const std::string literalSql = literalQuery.toSql();
         EXPECT_NE(literalSql.find("LIKE ? ESCAPE '!'"), std::string::npos) << literalSql;

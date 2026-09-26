@@ -28,11 +28,9 @@ namespace AsynGyanis::Database
          */
         std::unique_ptr<MySqlStatementResult> makeSampleResult()
         {
-            std::vector<std::string> columnNames{"id", "name", "note"};
-            std::vector<std::vector<DatabaseValue>> rows{
-                {std::int64_t{1}, std::string("张三"), std::monostate{}},
-                {std::int64_t{2}, std::string("O'Brien -- DROP"), std::string("普通备注")}
-            };
+            std::vector<std::string>                columnNames{"id", "name", "note"};
+            std::vector<std::vector<DatabaseValue>> rows{{std::int64_t{1}, std::string("张三"), std::monostate{}},
+                                                         {std::int64_t{2}, std::string("O'Brien -- DROP"), std::string("普通备注")}};
 
             return std::make_unique<MySqlStatementResult>(std::move(columnNames), std::move(rows));
         }
@@ -187,11 +185,9 @@ namespace AsynGyanis::Database
      */
     TEST(MySqlStatementResult, PreservesValueTypesAndEmbeddedNul)
     {
-        std::vector<std::string> columnNames{"flag", "score", "payload"};
-        std::vector<std::vector<DatabaseValue>> rows{
-            {true, 1.5, std::string("a\0b", 3)}
-        };
-        MySqlStatementResult result(std::move(columnNames), std::move(rows));
+        std::vector<std::string>                columnNames{"flag", "score", "payload"};
+        std::vector<std::vector<DatabaseValue>> rows{{true, 1.5, std::string("a\0b", 3)}};
+        MySqlStatementResult                    result(std::move(columnNames), std::move(rows));
 
         ASSERT_TRUE(result.next());
         ASSERT_TRUE(std::holds_alternative<bool>(result.getValue("flag")));
@@ -212,10 +208,10 @@ namespace AsynGyanis::Database
      */
     TEST(MySqlStatementResult, TakeValueMovesPayloadOutOfSnapshot)
     {
-        const std::string longPayload("blob\0very-long-payload-beyond-small-string-buffer-0123456789", 53);
-        std::vector<std::string>                 columnNames{"id", "payload"};
-        std::vector<std::vector<DatabaseValue> > rows{{std::int64_t{7}, longPayload}};
-        MySqlStatementResult                     singleRow(std::move(columnNames), std::move(rows));
+        const std::string                       longPayload("blob\0very-long-payload-beyond-small-string-buffer-0123456789", 53);
+        std::vector<std::string>                columnNames{"id", "payload"};
+        std::vector<std::vector<DatabaseValue>> rows{{std::int64_t{7}, longPayload}};
+        MySqlStatementResult                    singleRow(std::move(columnNames), std::move(rows));
 
         ASSERT_TRUE(singleRow.next());
         const DatabaseValue taken = singleRow.takeValue(1);
@@ -255,10 +251,10 @@ namespace AsynGyanis::Database
      */
     TEST(MySqlStatementResult, TakenCellsStayEmptyAcrossReset)
     {
-        const std::string longPayload("payload-beyond-small-string-buffer-0123456789-0123456789", 47);
-        std::vector<std::string>                 columnNames{"id", "payload"};
-        std::vector<std::vector<DatabaseValue> > rows{{std::int64_t{3}, longPayload}};
-        MySqlStatementResult                     singleRow(std::move(columnNames), std::move(rows));
+        const std::string                       longPayload("payload-beyond-small-string-buffer-0123456789-0123456789", 47);
+        std::vector<std::string>                columnNames{"id", "payload"};
+        std::vector<std::vector<DatabaseValue>> rows{{std::int64_t{3}, longPayload}};
+        MySqlStatementResult                    singleRow(std::move(columnNames), std::move(rows));
 
         ASSERT_TRUE(singleRow.next());
         const DatabaseValue taken = singleRow.takeValue(1);

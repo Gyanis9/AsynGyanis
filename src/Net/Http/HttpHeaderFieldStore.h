@@ -13,8 +13,8 @@
 
 #pragma once
 
-#include <cstddef>
 #include <concepts>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -155,7 +155,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] const std::unordered_map<std::string, std::string> &singleValueView() const;
 
         /// 按加入顺序遍历权威记录（序列化按它的顺序进行）
-        template <typename Visitor>
+        template<typename Visitor>
             requires std::invocable<Visitor, std::string_view, std::string_view>
         void forEachField(const Visitor &visitor) const
         {
@@ -164,8 +164,7 @@ namespace AsynGyanis::Net
             const char *const base = m_bytes.empty() ? "" : m_bytes.data();
             for (const FieldRef &ref: m_fields)
             {
-                visitor(std::string_view{base + ref.nameOffset, ref.nameLength},
-                        std::string_view{base + ref.valueOffset, ref.valueLength});
+                visitor(std::string_view{base + ref.nameOffset, ref.nameLength}, std::string_view{base + ref.valueOffset, ref.valueLength});
             }
         }
 
@@ -257,9 +256,9 @@ namespace AsynGyanis::Net
         /// 按需要重建单值视图（调用前视图已标脏）
         void rebuildSingleValueView() const;
 
-        std::vector<FieldRef> m_fields; ///< 权威记录，按加入顺序保存，决定序列化顺序
-        std::vector<char> m_bytes;      ///< 名与值的字节缓冲：整块头部只在这条缓冲要长时碰一次分配器
-        mutable std::unordered_map<std::string, std::string> m_singleValues; ///< 单值视图，首次查询时由权威记录建出
-        mutable bool m_isViewStale{true}; ///< 视图是否已过期（写入或清空后置位，查询前重建）
+        std::vector<FieldRef>                                m_fields;            ///< 权威记录，按加入顺序保存，决定序列化顺序
+        std::vector<char>                                    m_bytes;             ///< 名与值的字节缓冲：整块头部只在这条缓冲要长时碰一次分配器
+        mutable std::unordered_map<std::string, std::string> m_singleValues;      ///< 单值视图，首次查询时由权威记录建出
+        mutable bool                                         m_isViewStale{true}; ///< 视图是否已过期（写入或清空后置位，查询前重建）
     };
 } // namespace AsynGyanis::Net

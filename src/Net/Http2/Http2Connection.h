@@ -44,11 +44,11 @@ namespace AsynGyanis::Net
      */
     enum class Http2StreamState
     {
-        Idle,              ///< 未开启：对端发出该流号的 HEADERS 才离开此态
-        Open,              ///< 双向可收发
-        HalfClosedRemote,  ///< 对端已 END_STREAM：本端仍可发响应，对端不得再发 DATA/HEADERS
-        HalfClosedLocal,   ///< 本端已 END_STREAM：本端不再发正文，对端还能发它的正文
-        Closed             ///< 已终止：RST_STREAM（任一端）或双向 END_STREAM
+        Idle,             ///< 未开启：对端发出该流号的 HEADERS 才离开此态
+        Open,             ///< 双向可收发
+        HalfClosedRemote, ///< 对端已 END_STREAM：本端仍可发响应，对端不得再发 DATA/HEADERS
+        HalfClosedLocal,  ///< 本端已 END_STREAM：本端不再发正文，对端还能发它的正文
+        Closed            ///< 已终止：RST_STREAM（任一端）或双向 END_STREAM
     };
 
     /**
@@ -58,11 +58,11 @@ namespace AsynGyanis::Net
      */
     enum class Http2ConnectionState
     {
-        AwaitingPreface,   ///< 还在收 24 字节前奏，此刻不解释任何帧
-        AwaitingSettings,  ///< 前奏已收齐、初始 SETTINGS 已发出，等对端自己的 SETTINGS
-        Open,              ///< 协商完成：新流、正文、响应都可处理
-        Closing,           ///< 关闭中：本端已发收尾 GOAWAY 或已收到对端 GOAWAY，不再受理新流，既有流继续收发
-        Failed             ///< 违反协议或突破本端上限：粘滞错误态，按 errorCode() 收场
+        AwaitingPreface,  ///< 还在收 24 字节前奏，此刻不解释任何帧
+        AwaitingSettings, ///< 前奏已收齐、初始 SETTINGS 已发出，等对端自己的 SETTINGS
+        Open,             ///< 协商完成：新流、正文、响应都可处理
+        Closing,          ///< 关闭中：本端已发收尾 GOAWAY 或已收到对端 GOAWAY，不再受理新流，既有流继续收发
+        Failed            ///< 违反协议或突破本端上限：粘滞错误态，按 errorCode() 收场
     };
 
     /**
@@ -106,14 +106,14 @@ namespace AsynGyanis::Net
     struct Http2ConnectionConfiguration
     {
         std::uint32_t headerTableSize{kHpackDefaultDynamicTableSizeByteCount}; ///< SETTINGS_HEADER_TABLE_SIZE（§6.5.2 初值 4096），同时是本端 HPACK 解码器动态表的上限
-        std::uint32_t enablePush{0};                        ///< SETTINGS_ENABLE_PUSH（§6.5.2 初值 1）：本片不实现推送，取 0 如实告知对端不必预留
-        std::uint32_t maximumConcurrentStreams{100};        ///< SETTINGS_MAX_CONCURRENT_STREAMS（§6.5.2 初值不限）：本端策略上限，超出回 REFUSED_STREAM
-        std::uint32_t initialWindowSize{kHttp2InitialWindowSizeByteCount}; ///< SETTINGS_INITIAL_WINDOW_SIZE（§6.5.2 初值 65535）：本端允许对端每条流先发的字节数
-        std::uint32_t maximumFrameSize{kHttp2DefaultMaximumFrameSize};     ///< SETTINGS_MAX_FRAME_SIZE（§6.5.2 初值 16384，合法区间 [16384, 16777215]）：本端可接收的单帧负载上限
-        std::uint32_t maximumHeaderListSize{16U * 1024U};   ///< SETTINGS_MAX_HEADER_LIST_SIZE（§6.5.2 初值不限）：本端策略上限，算式按 §6.5.2 的「名长 + 值长 + 32」
-        std::uint32_t enableConnectProtocol{1};             ///< SETTINGS_ENABLE_CONNECT_PROTOCOL（RFC 8441 §3）：1 表示本端接受带 :protocol 的扩展 CONNECT（WebSocket over h2）
-        std::size_t maximumHeaderBlockByteCount{16U * 1024U}; ///< 本端策略：单个头块（HEADERS 与其 CONTINUATION 片段之和）的压缩后字节上限，防对端用无限 CONTINUATION 撑内存
-        std::size_t maximumTotalConsumedByteCount{0};       ///< 本端策略：本连接累计消费字节上限，0 表示不限；开着时超过即按 ENHANCE_YOUR_CALM 收场
+        std::uint32_t enablePush{0};                                           ///< SETTINGS_ENABLE_PUSH（§6.5.2 初值 1）：本片不实现推送，取 0 如实告知对端不必预留
+        std::uint32_t maximumConcurrentStreams{100};                           ///< SETTINGS_MAX_CONCURRENT_STREAMS（§6.5.2 初值不限）：本端策略上限，超出回 REFUSED_STREAM
+        std::uint32_t initialWindowSize{kHttp2InitialWindowSizeByteCount};     ///< SETTINGS_INITIAL_WINDOW_SIZE（§6.5.2 初值 65535）：本端允许对端每条流先发的字节数
+        std::uint32_t maximumFrameSize{kHttp2DefaultMaximumFrameSize}; ///< SETTINGS_MAX_FRAME_SIZE（§6.5.2 初值 16384，合法区间 [16384, 16777215]）：本端可接收的单帧负载上限
+        std::uint32_t maximumHeaderListSize{16U * 1024U};              ///< SETTINGS_MAX_HEADER_LIST_SIZE（§6.5.2 初值不限）：本端策略上限，算式按 §6.5.2 的「名长 + 值长 + 32」
+        std::uint32_t enableConnectProtocol{1};                 ///< SETTINGS_ENABLE_CONNECT_PROTOCOL（RFC 8441 §3）：1 表示本端接受带 :protocol 的扩展 CONNECT（WebSocket over h2）
+        std::size_t   maximumHeaderBlockByteCount{16U * 1024U}; ///< 本端策略：单个头块（HEADERS 与其 CONTINUATION 片段之和）的压缩后字节上限，防对端用无限 CONTINUATION 撑内存
+        std::size_t   maximumTotalConsumedByteCount{0};         ///< 本端策略：本连接累计消费字节上限，0 表示不限；开着时超过即按 ENHANCE_YOUR_CALM 收场
     };
 
     /**
@@ -125,16 +125,16 @@ namespace AsynGyanis::Net
      */
     struct Http2Request
     {
-        std::uint32_t streamId{0};                  ///< 该请求所属的流号，回响应时按它定位
-        std::string method;                         ///< :method 原文（未知方法原样保留）
-        std::string scheme;                         ///< :scheme 原文；CONNECT 请求为空
-        std::string path;                           ///< :path 原文；CONNECT 请求为空
-        std::string authority;                      ///< :authority 原文；对端没带时为空
+        std::uint32_t streamId{0}; ///< 该请求所属的流号，回响应时按它定位
+        std::string   method;      ///< :method 原文（未知方法原样保留）
+        std::string   scheme;      ///< :scheme 原文；CONNECT 请求为空
+        std::string   path;        ///< :path 原文；CONNECT 请求为空
+        std::string   authority;   ///< :authority 原文；对端没带时为空
         /// 普通头部，按到达顺序，名已校验为小写。与 HttpRequest 同一套存储，接线层整块换走、不逐字段抄
         HttpHeaderFieldStore headerFields;
-        bool hasBody{false};                        ///< 请求头未带 END_STREAM：正文会随 takeReceivedData() 交出
-        bool isHeaderListTooLarge{false};           ///< 头块超出本端上限：各字段全为空，上层应按 431 应答而不是派发路由
-        std::string protocol;                        ///< :protocol 原文（RFC 8441 的扩展 CONNECT）；普通请求为空
+        bool                 hasBody{false};              ///< 请求头未带 END_STREAM：正文会随 takeReceivedData() 交出
+        bool                 isHeaderListTooLarge{false}; ///< 头块超出本端上限：各字段全为空，上层应按 431 应答而不是派发路由
+        std::string          protocol;                    ///< :protocol 原文（RFC 8441 的扩展 CONNECT）；普通请求为空
     };
 
     /**
@@ -142,10 +142,10 @@ namespace AsynGyanis::Net
      */
     struct Http2ReceivedData
     {
-        std::uint32_t streamId{0}; ///< 数据所属的流号
-        std::string data;          ///< 应用数据；空串表示零长 DATA 帧（§6.1 允许，常见于带 END_STREAM 的收尾帧）
-        bool endStream{false};     ///< 对端在这片数据上置了 END_STREAM：该流的对端方向到此为止
-        std::size_t flowControlByteCount{0}; ///< 本片占用的流控字节数：DATA 帧负载原长（含 padding，§6.9.1 要求 padding 也计入）
+        std::uint32_t streamId{0};             ///< 数据所属的流号
+        std::string   data;                    ///< 应用数据；空串表示零长 DATA 帧（§6.1 允许，常见于带 END_STREAM 的收尾帧）
+        bool          endStream{false};        ///< 对端在这片数据上置了 END_STREAM：该流的对端方向到此为止
+        std::size_t   flowControlByteCount{0}; ///< 本片占用的流控字节数：DATA 帧负载原长（含 padding，§6.9.1 要求 padding 也计入）
         /// 这条流到此为止时一并交出的尾部字段（RFC 9113 §8.1 的 trailing header 块），按线上到达顺序。
         /// 只有尾部头块造出的那条收口信号会非空——尾部头块必须自带 END_STREAM（§7.1），因此「正文收齐」
         /// 与「尾部字段到齐」天然是同一件事，不需要另一条事件通道去排先后。
@@ -341,8 +341,7 @@ namespace AsynGyanis::Net
          * @return true 已把 RST_STREAM 排进待发字节并终止该流
          * @return false 没有写入任何字节：连接状态不允许收发、流不在账本里或已经终止
          */
-        [[nodiscard]] bool abortStream(std::uint32_t streamId, std::string_view reason, std::string *errorText = nullptr,
-                                       Http2ErrorCode errorCode = Http2ErrorCode::NoError);
+        [[nodiscard]] bool abortStream(std::uint32_t streamId, std::string_view reason, std::string *errorText = nullptr, Http2ErrorCode errorCode = Http2ErrorCode::NoError);
 
         /**
          * @brief 本端初始 SETTINGS 是否还没被对端 ACK
@@ -380,9 +379,8 @@ namespace AsynGyanis::Net
          *       RST_STREAM（对端还在等这条流的响应，不给个结论它只能等到超时）。调用方按返回值决定是
          *       只停这条流还是收口整条连接，不要只看 errorText（原因文本只供日志与排查）
          */
-        [[nodiscard]] Http2ResponseSendStatus sendResponseHeaders(std::uint32_t streamId, std::uint32_t statusCode,
-                                                                  const std::vector<HpackHeaderField> &headerFields, bool endStream,
-                                                                  std::string *errorText = nullptr);
+        [[nodiscard]] Http2ResponseSendStatus sendResponseHeaders(std::uint32_t streamId, std::uint32_t statusCode, const std::vector<HpackHeaderField> &headerFields,
+                                                                  bool endStream, std::string *errorText = nullptr);
 
         /**
          * @brief 在某条流上发尾部头块（trailing HEADERS），并以此收尾本端方向
@@ -401,9 +399,7 @@ namespace AsynGyanis::Net
          * @note 返回非 Sent 时不写任何字节（Rejected 与 HeaderListTooLarge 各排出一帧 RST_STREAM），
          *       且本端方向**不会**被收尾：调用方要么补一个裸的零长度 DATA 收尾，要么按结论停掉这条流
          */
-        [[nodiscard]] Http2ResponseSendStatus sendResponseTrailers(std::uint32_t streamId,
-                                                                   const std::vector<HpackHeaderField> &trailerFields,
-                                                                   std::string *errorText = nullptr);
+        [[nodiscard]] Http2ResponseSendStatus sendResponseTrailers(std::uint32_t streamId, const std::vector<HpackHeaderField> &trailerFields, std::string *errorText = nullptr);
 
         /**
          * @brief 在某条流上发响应正文
@@ -421,8 +417,7 @@ namespace AsynGyanis::Net
          *         退回调用方，停掉这条流即可，连接继续）；ConnectionUnavailable 连接尚未协商完成或已失败
          * @note 返回非 Sent 时不改动任何状态、也不写入任何字节；调用方按返回值决定是只停这条流还是收口整条连接
          */
-        [[nodiscard]] Http2ResponseSendStatus sendResponseData(std::uint32_t streamId, std::string_view data, bool endStream,
-                                                               std::string *errorText = nullptr);
+        [[nodiscard]] Http2ResponseSendStatus sendResponseData(std::uint32_t streamId, std::string_view data, bool endStream, std::string *errorText = nullptr);
 
         /**
          * @brief 取当前连接状态
@@ -514,9 +509,9 @@ namespace AsynGyanis::Net
          */
         enum class StreamTermination
         {
-            Completed,     ///< 双向 END_STREAM 正常收尾
-            ResetByPeer,   ///< 对端发来 RST_STREAM，本端只是接受了这次取消
-            ResetByLocal,  ///< 本端发出 RST_STREAM（拒新流、流错误、请对端别再发正文）
+            Completed,    ///< 双向 END_STREAM 正常收尾
+            ResetByPeer,  ///< 对端发来 RST_STREAM，本端只是接受了这次取消
+            ResetByLocal, ///< 本端发出 RST_STREAM（拒新流、流错误、请对端别再发正文）
         };
 
         /**
@@ -524,9 +519,9 @@ namespace AsynGyanis::Net
          */
         enum class TerminatedStreamFrameVerdict
         {
-            Ignore,          ///< 什么也不回：撤不回来的在途帧，或对端还没看到本端的终止帧
-            ResetStream,     ///< 按流错误 STREAM_CLOSED 回敬一枚 RST_STREAM（只回一次）
-            FailConnection,  ///< 按连接错误 STREAM_CLOSED 收尾整条连接
+            Ignore,         ///< 什么也不回：撤不回来的在途帧，或对端还没看到本端的终止帧
+            ResetStream,    ///< 按流错误 STREAM_CLOSED 回敬一枚 RST_STREAM（只回一次）
+            FailConnection, ///< 按连接错误 STREAM_CLOSED 收尾整条连接
         };
 
         /**
@@ -534,17 +529,17 @@ namespace AsynGyanis::Net
          */
         struct StreamRecord
         {
-            std::uint32_t streamId{0};                                        ///< 流号
-            Http2StreamState state{Http2StreamState::Idle};                   ///< 当前状态
-            StreamTermination termination{StreamTermination::Completed};       ///< 终止方式（未终止时无人读它）
-            std::int64_t sendWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端可发送的流级窗口，可为负（§6.9.2 要求允许并等 WINDOW_UPDATE 救回来）
-            std::string pendingData;                                          ///< 窗口不足时排队的正文
+            std::uint32_t     streamId{0};                                           ///< 流号
+            Http2StreamState  state{Http2StreamState::Idle};                         ///< 当前状态
+            StreamTermination termination{StreamTermination::Completed};             ///< 终止方式（未终止时无人读它）
+            std::int64_t      sendWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端可发送的流级窗口，可为负（§6.9.2 要求允许并等 WINDOW_UPDATE 救回来）
+            std::string       pendingData;                                           ///< 窗口不足时排队的正文
             /// 已交给对端的前缀长度（游标语义）：出帧后只推进游标，不整段搬移缓冲；
             /// 前缀攒够一定量才整段压缩一次，均摊下来出帧是 O(1)
-            std::size_t pendingDataOffset{0};
-            bool isEndStreamPending{false};                                   ///< 队列排空后是否还要补一个 END_STREAM
+            std::size_t  pendingDataOffset{0};
+            bool         isEndStreamPending{false};                                ///< 队列排空后是否还要补一个 END_STREAM
             std::int64_t receiveWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端已通告的流级接收窗口：对端还能发的字节数，扣成负数即 FLOW_CONTROL_ERROR
-            std::size_t pendingReceiveCreditByteCount{0};                     ///< 已消费、还没用 WINDOW_UPDATE 还回去的字节数
+            std::size_t  pendingReceiveCreditByteCount{0};                         ///< 已消费、还没用 WINDOW_UPDATE 还回去的字节数
 
             /**
              * @brief 队列里还有没发出去的正文吗
@@ -635,8 +630,7 @@ namespace AsynGyanis::Net
          * @param endHeaders HEADERS 是否带了 END_HEADERS
          * @return true 连接可以继续
          */
-        [[nodiscard]] bool beginHeaderBlock(std::uint32_t streamId, HeaderBlockPurpose purpose, bool endStream,
-                                            std::string_view firstFragment, bool endHeaders);
+        [[nodiscard]] bool beginHeaderBlock(std::uint32_t streamId, HeaderBlockPurpose purpose, bool endStream, std::string_view firstFragment, bool endHeaders);
 
         /**
          * @brief 把一段头块片段追加进拼接缓冲，并判本端字节上限
@@ -655,8 +649,7 @@ namespace AsynGyanis::Net
          * @param errorText 输出参数：失败时的中文原因（进入调用时先清空）
          * @return true 头列表是一个合法的请求
          */
-        [[nodiscard]] static bool acceptRequestHeaderFields(const std::vector<HpackHeaderField> &headerFields, Http2Request &request,
-                                                            std::string *errorText);
+        [[nodiscard]] static bool acceptRequestHeaderFields(const std::vector<HpackHeaderField> &headerFields, Http2Request &request, std::string *errorText);
 
         /**
          * @brief 校验尾部头块的语法：禁止伪头与连接特定头、头名必须全小写
@@ -727,8 +720,7 @@ namespace AsynGyanis::Net
          * @param frameType 落在它上面的帧类型
          * @return TerminatedStreamFrameVerdict 本帧的处置
          */
-        [[nodiscard]] static TerminatedStreamFrameVerdict judgeFrameOnTerminatedStream(StreamRecord &stream,
-                                                                                       Http2FrameType frameType);
+        [[nodiscard]] static TerminatedStreamFrameVerdict judgeFrameOnTerminatedStream(StreamRecord &stream, Http2FrameType frameType);
 
         /**
          * @brief 校验流号奇偶：本端不推送，偶数流号只可能属于服务端的对端，收到即意外流号
@@ -798,10 +790,8 @@ namespace AsynGyanis::Net
          *                     对端没通告这项时被置为 0
          * @return 越限时返回整份头列表的字节数，未越限（含对端根本没通告这项）返回 std::nullopt
          */
-        [[nodiscard]] std::optional<std::size_t> oversizeAgainstPeerHeaderListLimit(const std::vector<HpackHeaderField> &fields,
-                                                                                    std::string_view pseudoName,
-                                                                                    std::string_view pseudoValue,
-                                                                                    std::uint32_t *peerLimitOut) const;
+        [[nodiscard]] std::optional<std::size_t> oversizeAgainstPeerHeaderListLimit(const std::vector<HpackHeaderField> &fields, std::string_view pseudoName,
+                                                                                    std::string_view pseudoValue, std::uint32_t *peerLimitOut) const;
 
         /**
          * @brief 发一个头块：按对端 MAX_FRAME_SIZE 切成 HEADERS + 若干 CONTINUATION
@@ -870,40 +860,40 @@ namespace AsynGyanis::Net
          */
         void failStream(StreamRecord &stream, Http2ErrorCode errorCode, std::string reason);
 
-        Http2ConnectionConfiguration m_configuration{};              ///< 构造时按值落定的配置，没有运行期更换的入口
-        Http2ConnectionState m_state{Http2ConnectionState::AwaitingPreface}; ///< 连接状态
-        std::size_t m_prefaceByteCount{0};                            ///< 已收到的前奏字节数
-        std::size_t m_outstandingSettingsCount{0};                    ///< 本端已发出、还没被 ACK 的 SETTINGS 数（ACK 只允许匹配一次）
-        std::chrono::steady_clock::time_point m_lastSettingsSentTime{}; ///< 最近一次发出 SETTINGS 的时刻，供上层算 SETTINGS_TIMEOUT
-        Http2ErrorCode m_errorCode{Http2ErrorCode::NoError};          ///< 连接级失败的错误码（也是 GOAWAY 里带上的码）
-        std::string m_errorMessage;                                   ///< 连接级失败的中文原因
-        std::string m_lastStreamErrorMessage;                         ///< 最近一次流级错误的中文原因
+        Http2ConnectionConfiguration          m_configuration{};                              ///< 构造时按值落定的配置，没有运行期更换的入口
+        Http2ConnectionState                  m_state{Http2ConnectionState::AwaitingPreface}; ///< 连接状态
+        std::size_t                           m_prefaceByteCount{0};                          ///< 已收到的前奏字节数
+        std::size_t                           m_outstandingSettingsCount{0};                  ///< 本端已发出、还没被 ACK 的 SETTINGS 数（ACK 只允许匹配一次）
+        std::chrono::steady_clock::time_point m_lastSettingsSentTime{};                       ///< 最近一次发出 SETTINGS 的时刻，供上层算 SETTINGS_TIMEOUT
+        Http2ErrorCode                        m_errorCode{Http2ErrorCode::NoError};           ///< 连接级失败的错误码（也是 GOAWAY 里带上的码）
+        std::string                           m_errorMessage;                                 ///< 连接级失败的中文原因
+        std::string                           m_lastStreamErrorMessage;                       ///< 最近一次流级错误的中文原因
 
-        Http2FrameDecoder m_frameDecoder;                             ///< 帧解码器：单帧合法性由它把关
-        HpackDecoder m_hpackDecoder;                                  ///< 请求方向的头块解码器，动态表与对端编码器同步演进
-        HpackEncoder m_encoder;                                       ///< 响应方向的头块编码器，动态表与对端解码器同步演进
+        Http2FrameDecoder m_frameDecoder; ///< 帧解码器：单帧合法性由它把关
+        HpackDecoder      m_hpackDecoder; ///< 请求方向的头块解码器，动态表与对端编码器同步演进
+        HpackEncoder      m_encoder;      ///< 响应方向的头块编码器，动态表与对端解码器同步演进
 
-        bool m_isAssemblingHeaderBlock{false};                        ///< 是否正在拼一个头块（期间只收同流 CONTINUATION）
-        std::uint32_t m_pendingHeaderStreamId{0};                     ///< 正在拼的头块所属的流号
-        HeaderBlockPurpose m_pendingHeaderPurpose{HeaderBlockPurpose::Request}; ///< 正在拼的头块的用途
-        bool m_pendingHeaderEndStream{false};                         ///< 正在拼的头块是否带 END_STREAM
-        std::string m_pendingHeaderBlock;                             ///< 正在拼的头块字节
-        std::vector<HpackHeaderField> m_decodedHeaderFields;          ///< 头块解码的落点：表容量跨头块留着，字段本身每次解码重写
+        bool                          m_isAssemblingHeaderBlock{false};                    ///< 是否正在拼一个头块（期间只收同流 CONTINUATION）
+        std::uint32_t                 m_pendingHeaderStreamId{0};                          ///< 正在拼的头块所属的流号
+        HeaderBlockPurpose            m_pendingHeaderPurpose{HeaderBlockPurpose::Request}; ///< 正在拼的头块的用途
+        bool                          m_pendingHeaderEndStream{false};                     ///< 正在拼的头块是否带 END_STREAM
+        std::string                   m_pendingHeaderBlock;                                ///< 正在拼的头块字节
+        std::vector<HpackHeaderField> m_decodedHeaderFields;                               ///< 头块解码的落点：表容量跨头块留着，字段本身每次解码重写
 
-        std::map<std::uint32_t, StreamRecord> m_streams;              ///< 流账本：含刚终止的流
-        std::vector<std::uint32_t> m_terminatedStreamIds{};           ///< 终止顺序，用于给账本里已终止的记录设上限
-        bool m_hasEvictedTerminatedStreamRecord{false};               ///< 是否挤掉过终止流的记录：挤掉过就再也断不出「这条流号从未被开过」，idle 流上的违约帧只能宽容忽略
-        std::size_t m_openStreamCount{0};                             ///< Open 与两个半关状态的流数（并发上限的判据）
-        std::uint32_t m_highestPeerStreamId{0};                       ///< 对端已用过的最大流号：判「严格递增」与 GOAWAY 的 last-stream-id
-        std::int64_t m_connectionSendWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 连接级发送窗口（只受 WINDOW_UPDATE 影响，§6.9.2）
-        std::int64_t m_connectionReceiveWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端已通告的连接级接收窗口：对端还能发的字节数，扣成负数即 FLOW_CONTROL_ERROR
-        std::size_t m_pendingConnectionReceiveCreditByteCount{0};     ///< 已消费、还没用 WINDOW_UPDATE 还回去的连接级字节数
-        std::map<std::uint16_t, std::uint32_t> m_peerSettings;        ///< 对端 SETTINGS 记账（标识 → 取值，重复出现以来值为准）
-        bool m_hasPeerGoAway{false};                                  ///< 是否已收到对端 GOAWAY
-        Http2GoAwayPayload m_peerGoAway{};                            ///< 对端 GOAWAY 的负载
+        std::map<std::uint32_t, StreamRecord> m_streams;               ///< 流账本：含刚终止的流
+        std::vector<std::uint32_t>            m_terminatedStreamIds{}; ///< 终止顺序，用于给账本里已终止的记录设上限
+        bool          m_hasEvictedTerminatedStreamRecord{false};       ///< 是否挤掉过终止流的记录：挤掉过就再也断不出「这条流号从未被开过」，idle 流上的违约帧只能宽容忽略
+        std::size_t   m_openStreamCount{0};                            ///< Open 与两个半关状态的流数（并发上限的判据）
+        std::uint32_t m_highestPeerStreamId{0};                        ///< 对端已用过的最大流号：判「严格递增」与 GOAWAY 的 last-stream-id
+        std::int64_t  m_connectionSendWindowByteCount{kHttp2InitialWindowSizeByteCount};    ///< 连接级发送窗口（只受 WINDOW_UPDATE 影响，§6.9.2）
+        std::int64_t  m_connectionReceiveWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端已通告的连接级接收窗口：对端还能发的字节数，扣成负数即 FLOW_CONTROL_ERROR
+        std::size_t   m_pendingConnectionReceiveCreditByteCount{0};                         ///< 已消费、还没用 WINDOW_UPDATE 还回去的连接级字节数
+        std::map<std::uint16_t, std::uint32_t> m_peerSettings;                              ///< 对端 SETTINGS 记账（标识 → 取值，重复出现以来值为准）
+        bool                                   m_hasPeerGoAway{false};                      ///< 是否已收到对端 GOAWAY
+        Http2GoAwayPayload                     m_peerGoAway{};                              ///< 对端 GOAWAY 的负载
 
-        std::string m_outgoingBytes;                                  ///< 待发字节：由 takeOutgoingBytes() 一次取走
-        std::vector<Http2Request> m_pendingRequests;                  ///< 已校验通过、等着被取走的请求
-        std::vector<Http2ReceivedData> m_pendingReceivedData;         ///< 已收到、等着被取走的正文片段
+        std::string                    m_outgoingBytes;       ///< 待发字节：由 takeOutgoingBytes() 一次取走
+        std::vector<Http2Request>      m_pendingRequests;     ///< 已校验通过、等着被取走的请求
+        std::vector<Http2ReceivedData> m_pendingReceivedData; ///< 已收到、等着被取走的正文片段
     };
 } // namespace AsynGyanis::Net

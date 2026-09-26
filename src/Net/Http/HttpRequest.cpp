@@ -13,11 +13,11 @@ namespace AsynGyanis::Net
     {
         // RFC 9110 §10.1.1 只定义了一个期望值 100-continue；取值是逗号分隔的 token 列表，大小写不敏感
         constexpr std::string_view kContinueToken = "100-continue";
-        std::size_t tokenStart = 0;
+        std::size_t                tokenStart     = 0;
         while (tokenStart <= expectHeaderValue.size())
         {
             const std::size_t commaIndex = expectHeaderValue.find(',', tokenStart);
-            const std::size_t tokenEnd = commaIndex == std::string_view::npos ? expectHeaderValue.size() : commaIndex;
+            const std::size_t tokenEnd   = commaIndex == std::string_view::npos ? expectHeaderValue.size() : commaIndex;
 
             // 逐个 token 去掉首尾空白（OWS 只可能是 SP / HTAB）后做大小写不敏感的全等比较
             if (equalsIgnoringCase(trimOptionalWhitespace(expectHeaderValue.substr(tokenStart, tokenEnd - tokenStart)), kContinueToken))
@@ -338,7 +338,7 @@ namespace AsynGyanis::Net
 
             // 只按第一个 '=' 切分：键侧不可能含 '='（'=' 是分隔符），
             // 值侧剩下的 '='（如 ?q=a=b）都是值的组成部分，不该再切
-            std::string_view keyText   = currentPair;
+            std::string_view keyText = currentPair;
             std::string_view valueText;
             if (const std::size_t separatorPosition = currentPair.find('='); separatorPosition != std::string_view::npos)
             {
@@ -378,7 +378,7 @@ namespace AsynGyanis::Net
 
     void HttpRequest::reset()
     {
-        m_method      = HttpMethod::UNKNOWN;
+        m_method = HttpMethod::UNKNOWN;
         m_uri.clear();
         m_httpVersion.clear();
         m_headerStore.clear();

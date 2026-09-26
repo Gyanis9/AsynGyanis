@@ -85,11 +85,11 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformTime, LocalTimeCacheAnswersEachInputOnItsOwn)
     {
-        constexpr std::time_t firstSecond  = 1767225600; // 2026-01-01T00:00:00Z
-        constexpr std::time_t laterSecond  = firstSecond + 3600;
+        constexpr std::time_t firstSecond = 1767225600; // 2026-01-01T00:00:00Z
+        constexpr std::time_t laterSecond = firstSecond + 3600;
 
-        const std::tm firstTime     = PlatformTime::localTime(firstSecond);
-        const std::tm laterTime     = PlatformTime::localTime(laterSecond);
+        const std::tm firstTime       = PlatformTime::localTime(firstSecond);
+        const std::tm laterTime       = PlatformTime::localTime(laterSecond);
         const std::tm firstAskedTwice = PlatformTime::localTime(firstSecond);
 
         std::tm firstExpected{};
@@ -125,16 +125,8 @@ namespace AsynGyanis::Platform
         int firstYear  = -1;
         int secondYear = -1;
 
-        std::thread firstThread(
-                [&]()
-                {
-                    firstYear = PlatformTime::localTime(ktimeValue).tm_year;
-                });
-        std::thread secondThread(
-                [&]()
-                {
-                    secondYear = PlatformTime::localTime(ktimeValue).tm_year;
-                });
+        std::thread firstThread([&]() { firstYear = PlatformTime::localTime(ktimeValue).tm_year; });
+        std::thread secondThread([&]() { secondYear = PlatformTime::localTime(ktimeValue).tm_year; });
 
         firstThread.join();
         secondThread.join();
@@ -153,25 +145,25 @@ namespace AsynGyanis::Platform
     {
         struct EpochCase
         {
-            std::time_t   seconds;   ///< 自 Unix 纪元起的秒数（可为负）
-            int           year;      ///< 期望完整年份
-            int           month;     ///< 期望月份 1~12
-            int           day;       ///< 期望日 1~31
-            int           weekday;   ///< 期望星期，0 为周日
+            std::time_t seconds; ///< 自 Unix 纪元起的秒数（可为负）
+            int         year;    ///< 期望完整年份
+            int         month;   ///< 期望月份 1~12
+            int         day;     ///< 期望日 1~31
+            int         weekday; ///< 期望星期，0 为周日
         };
 
         constexpr EpochCase cases[] = {
-                {0, 1970, 1, 1, 4},                                // 纪元零点：周四
-                {-1, 1969, 12, 31, 3},                             // 纪元前一秒：周三，且仍在 1970 年之前
-                {-518400, 1969, 12, 26, 5},                        // 距纪元 6 天以前：只有按 floor 修正负余数才对得上
-                {86399, 1970, 1, 1, 4},                            // 纪日内最后一秒，不跨天
-                {-2203977600, 1900, 2, 28, 3},                     // 1900 不是闰年：这天是 2 月的最后一天（周三）
-                {4107542400, 2100, 3, 1, 1},                       // 2100 也不是闰年：2 月后直接进 3 月（周一）
-                {1709164800, 2024, 2, 29, 4},                      // 2024 能被 4 整除且非百年代际：有 2 月 29 日
-                {1234567890, 2009, 2, 13, 5},                      // 一个普通的工作日（周五）
+                {0, 1970, 1, 1, 4},            // 纪元零点：周四
+                {-1, 1969, 12, 31, 3},         // 纪元前一秒：周三，且仍在 1970 年之前
+                {-518400, 1969, 12, 26, 5},    // 距纪元 6 天以前：只有按 floor 修正负余数才对得上
+                {86399, 1970, 1, 1, 4},        // 纪日内最后一秒，不跨天
+                {-2203977600, 1900, 2, 28, 3}, // 1900 不是闰年：这天是 2 月的最后一天（周三）
+                {4107542400, 2100, 3, 1, 1},   // 2100 也不是闰年：2 月后直接进 3 月（周一）
+                {1709164800, 2024, 2, 29, 4},  // 2024 能被 4 整除且非百年代际：有 2 月 29 日
+                {1234567890, 2009, 2, 13, 5},  // 一个普通的工作日（周五）
         };
 
-        for (const auto &testCase : cases)
+        for (const auto &testCase: cases)
         {
             const UtcTimeFields fields = PlatformTime::utcTime(testCase.seconds);
             SCOPED_TRACE("seconds=" + std::to_string(static_cast<long long>(testCase.seconds)));
@@ -248,8 +240,8 @@ namespace AsynGyanis::Platform
 
         for (std::int64_t seconds = kstart; seconds <= kend; seconds += kprobeStep)
         {
-            const auto       timeValue = static_cast<std::time_t>(seconds);
-            std::tm          reference{};
+            const auto timeValue = static_cast<std::time_t>(seconds);
+            std::tm    reference{};
             ASSERT_NE(::gmtime_r(&timeValue, &reference), nullptr) << "参照实现折不出秒数 " << seconds;
 
             const UtcTimeFields fields = PlatformTime::utcTime(timeValue);

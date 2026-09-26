@@ -8,11 +8,8 @@
 
 namespace AsynGyanis::Net
 {
-    WebSocketSubscription::WebSocketSubscription(WebSocketHub &hub, std::shared_ptr<detail::WebSocketHubMember> member,
-                                                 const WebSocketSubscriptionId identifier) :
-        m_hub(&hub),
-        m_member(std::move(member)),
-        m_id(identifier)
+    WebSocketSubscription::WebSocketSubscription(WebSocketHub &hub, std::shared_ptr<detail::WebSocketHubMember> member, const WebSocketSubscriptionId identifier) :
+        m_hub(&hub), m_member(std::move(member)), m_id(identifier)
     {
     }
 
@@ -22,10 +19,7 @@ namespace AsynGyanis::Net
     }
 
     // 禁拷贝在头文件里声明为 delete：一份订阅对应表里一个成员，复制出两份就有两处除名点
-    WebSocketSubscription::WebSocketSubscription(WebSocketSubscription &&other) noexcept :
-        m_hub(other.m_hub),
-        m_member(std::move(other.m_member)),
-        m_id(other.m_id)
+    WebSocketSubscription::WebSocketSubscription(WebSocketSubscription &&other) noexcept : m_hub(other.m_hub), m_member(std::move(other.m_member)), m_id(other.m_id)
     {
         other.m_hub = nullptr;
         other.m_id  = 0U;
@@ -36,9 +30,9 @@ namespace AsynGyanis::Net
         if (this != &other)
         {
             reset(); // 自己原先那份要先除名，否则表里留下一条永远没人摘的成员
-            m_hub    = other.m_hub;
-            m_member = std::move(other.m_member);
-            m_id     = other.m_id;
+            m_hub       = other.m_hub;
+            m_member    = std::move(other.m_member);
+            m_id        = other.m_id;
             other.m_hub = nullptr;
             other.m_id  = 0U;
         }
@@ -51,10 +45,10 @@ namespace AsynGyanis::Net
         {
             return;
         }
-        WebSocketHub *const             hub        = m_hub;
-        const WebSocketSubscriptionId   identifier = m_id;
-        m_hub                                      = nullptr;
-        m_id                                       = 0U;
+        WebSocketHub *const           hub        = m_hub;
+        const WebSocketSubscriptionId identifier = m_id;
+        m_hub                                    = nullptr;
+        m_id                                     = 0U;
         m_member.reset();
         // 先把自己清干净再动集线器：unsubscribe 不会回到本对象，栈展开路径上也不会二次除名
         hub->unsubscribe(identifier);
@@ -70,8 +64,7 @@ namespace AsynGyanis::Net
         return m_hub != nullptr;
     }
 
-    WebSocketHub::WebSocketHub(const std::size_t maximumPendingByteCount) :
-        m_maximumPendingByteCount(maximumPendingByteCount)
+    WebSocketHub::WebSocketHub(const std::size_t maximumPendingByteCount) : m_maximumPendingByteCount(maximumPendingByteCount)
     {
         if (maximumPendingByteCount == 0U)
         {
@@ -81,8 +74,8 @@ namespace AsynGyanis::Net
 
     WebSocketSubscription WebSocketHub::subscribe(const std::string_view topic, WebSocketPeer &peer)
     {
-        auto member = std::make_shared<detail::WebSocketHubMember>();
-        member->peer = &peer;
+        auto member                              = std::make_shared<detail::WebSocketHubMember>();
+        member->peer                             = &peer;
         const WebSocketSubscriptionId identifier = m_nextIdentifier++;
         m_registrations.push_back(Registration{std::string(topic), member, identifier});
         return WebSocketSubscription(*this, std::move(member), identifier);
@@ -127,11 +120,8 @@ namespace AsynGyanis::Net
 
     std::size_t WebSocketHub::memberCount(const std::string_view topic) const
     {
-        return static_cast<std::size_t>(std::ranges::count_if(m_registrations,
-                                                              [topic](const Registration &registration)
-                                                              {
-                                                                  return registration.topic == topic && registration.member->peer != nullptr;
-                                                              }));
+        return static_cast<std::size_t>(
+                std::ranges::count_if(m_registrations, [topic](const Registration &registration) { return registration.topic == topic && registration.member->peer != nullptr; }));
     }
 
     std::size_t WebSocketHub::subscriptionCount() const noexcept
@@ -151,11 +141,7 @@ namespace AsynGyanis::Net
 
     void WebSocketHub::unsubscribe(const WebSocketSubscriptionId identifier)
     {
-        const auto found = std::ranges::find_if(m_registrations,
-                                                [identifier](const Registration &registration)
-                                                {
-                                                    return registration.identifier == identifier;
-                                                });
+        const auto found = std::ranges::find_if(m_registrations, [identifier](const Registration &registration) { return registration.identifier == identifier; });
         if (found == m_registrations.end())
         {
             return; // 已经被摘过：除名必须幂等，异常展开与显式 reset 可能都走到这里

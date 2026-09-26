@@ -1,16 +1,15 @@
 // AsyncResolver 单元测试：空主机名与不存在的主机、回环解析、IP 文本与惰性两步调用
 
-#include "Core/EventLoop/EventLoop.h"
-#include "Core/Socket/AsyncResolver.h"
-#include <gtest/gtest.h>
 #include <cstddef>
+#include <gtest/gtest.h>
 #include <string>
 #include <vector>
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/Socket/AsyncResolver.h"
 namespace AsynGyanis::Core
 {
     /// 把解析结果写入 result，然后停掉 loop（作为被调度到 loop 上的协程使用）
-    static Core::Task<void> doResolve(Core::EventLoop &loop, std::vector<InetAddress> &result,
-                                      std::string host, uint16_t port)
+    static Core::Task<void> doResolve(Core::EventLoop &loop, std::vector<InetAddress> &result, std::string host, uint16_t port)
     {
         result = co_await AsyncResolver::resolve(loop, host, port);
         loop.stop();
@@ -19,9 +18,9 @@ namespace AsynGyanis::Core
     /// 在专用 EventLoop 上执行 doResolve，阻塞等它完成
     static std::vector<InetAddress> resolveInLoop(std::string_view host, uint16_t port)
     {
-        Core::EventLoop loop;
+        Core::EventLoop          loop;
         std::vector<InetAddress> result;
-        auto work = doResolve(loop, result, std::string(host), port);
+        auto                     work = doResolve(loop, result, std::string(host), port);
         if (!work.isReady())
             loop.scheduler().schedule(work.handle());
         loop.run();
@@ -39,7 +38,11 @@ namespace AsynGyanis::Core
         ASSERT_FALSE(r.empty());
         bool has = false;
         for (auto &a: r)
-            if (a.ip() == "127.0.0.1" || a.ip() == "::1") { has = true; break; }
+            if (a.ip() == "127.0.0.1" || a.ip() == "::1")
+            {
+                has = true;
+                break;
+            }
         EXPECT_TRUE(has);
     }
 
@@ -75,20 +78,19 @@ namespace AsynGyanis::Core
      */
     TEST(AsyncResolver, CachesNameLookupsPerHostAndPort)
     {
-        const auto before = AsyncResolver::stats();
-        const std::vector<InetAddress> first = resolveInLoop("localhost", 8080);
-        const std::vector<InetAddress> second = resolveInLoop("localhost", 8080);
-        const std::vector<InetAddress> folded = resolveInLoop("LOCALHOST", 8080);
+        const auto                     before    = AsyncResolver::stats();
+        const std::vector<InetAddress> first     = resolveInLoop("localhost", 8080);
+        const std::vector<InetAddress> second    = resolveInLoop("localhost", 8080);
+        const std::vector<InetAddress> folded    = resolveInLoop("LOCALHOST", 8080);
         const std::vector<InetAddress> otherPort = resolveInLoop("localhost", 8081);
-        const auto after = AsyncResolver::stats();
+        const auto                     after     = AsyncResolver::stats();
 
         ASSERT_FALSE(first.empty()) << "localhost 都没解析出来，后面的判据都是空的";
         EXPECT_EQ(first.size(), second.size());
         EXPECT_EQ(first.size(), folded.size());
         EXPECT_EQ(first.size(), otherPort.size());
         EXPECT_EQ(after.lookupCount - before.lookupCount, 4U) << "四次名字查询没有都算进读数";
-        EXPECT_EQ(after.cacheHitCount - before.cacheHitCount, 2U)
-                << "第二次与换大小写那次该走缓存，实测命中增量=" << after.cacheHitCount - before.cacheHitCount;
+        EXPECT_EQ(after.cacheHitCount - before.cacheHitCount, 2U) << "第二次与换大小写那次该走缓存，实测命中增量=" << after.cacheHitCount - before.cacheHitCount;
     }
 
     TEST(AsyncResolver, ReturnsEmptyForNonexistentHost)
@@ -100,9 +102,8 @@ namespace AsynGyanis::Core
     static Core::Task<void> doResolveTwoStep(Core::EventLoop &loop, std::vector<InetAddress> &result)
     {
         // 主机名长度超过 SSO 阈值，确保它真的在堆上：只抄视图的话，这一行之后读的就是已释放内存
-        Core::Task<std::vector<InetAddress>> pending =
-                AsyncResolver::resolve(loop, std::string("no-such-host-with-a-long-name-99999999.example"), 80);
-        result = co_await pending;
+        Core::Task<std::vector<InetAddress>> pending = AsyncResolver::resolve(loop, std::string("no-such-host-with-a-long-name-99999999.example"), 80);
+        result                                       = co_await pending;
         loop.stop();
     }
 
@@ -159,7 +160,6 @@ namespace AsynGyanis::Core
         }
         loop.run();
 
-        EXPECT_EQ(emptyResultCount, 0U)
-            << "回环地址解析不该空手而归：空结果说明并发名额没归还，攒到上限后解析会永久被拒";
+        EXPECT_EQ(emptyResultCount, 0U) << "回环地址解析不该空手而归：空结果说明并发名额没归还，攒到上限后解析会永久被拒";
     }
 } // namespace AsynGyanis::Core

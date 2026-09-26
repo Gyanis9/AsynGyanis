@@ -59,32 +59,25 @@ namespace AsynGyanis::Net
                     if constexpr (std::is_same_v<ConcreteFrame, Http3DataFrame>)
                     {
                         return static_cast<std::uint64_t>(Http3FrameType::Data);
-                    }
-                    else if constexpr (std::is_same_v<ConcreteFrame, Http3HeadersFrame>)
+                    } else if constexpr (std::is_same_v<ConcreteFrame, Http3HeadersFrame>)
                     {
                         return static_cast<std::uint64_t>(Http3FrameType::Headers);
-                    }
-                    else if constexpr (std::is_same_v<ConcreteFrame, Http3CancelPushFrame>)
+                    } else if constexpr (std::is_same_v<ConcreteFrame, Http3CancelPushFrame>)
                     {
                         return static_cast<std::uint64_t>(Http3FrameType::CancelPush);
-                    }
-                    else if constexpr (std::is_same_v<ConcreteFrame, Http3SettingsFrame>)
+                    } else if constexpr (std::is_same_v<ConcreteFrame, Http3SettingsFrame>)
                     {
                         return static_cast<std::uint64_t>(Http3FrameType::Settings);
-                    }
-                    else if constexpr (std::is_same_v<ConcreteFrame, Http3PushPromiseFrame>)
+                    } else if constexpr (std::is_same_v<ConcreteFrame, Http3PushPromiseFrame>)
                     {
                         return static_cast<std::uint64_t>(Http3FrameType::PushPromise);
-                    }
-                    else if constexpr (std::is_same_v<ConcreteFrame, Http3GoAwayFrame>)
+                    } else if constexpr (std::is_same_v<ConcreteFrame, Http3GoAwayFrame>)
                     {
                         return static_cast<std::uint64_t>(Http3FrameType::GoAway);
-                    }
-                    else if constexpr (std::is_same_v<ConcreteFrame, Http3MaxPushIdFrame>)
+                    } else if constexpr (std::is_same_v<ConcreteFrame, Http3MaxPushIdFrame>)
                     {
                         return static_cast<std::uint64_t>(Http3FrameType::MaxPushId);
-                    }
-                    else
+                    } else
                     {
                         // 未知帧的类型值本来就带在结构体里，交回去时不许把它换成别的数
                         return concreteFrame.frameType;
@@ -109,8 +102,7 @@ namespace AsynGyanis::Net
              * @param frameTypeValue 本帧的类型值，进入所有失败文案
              * @param payload 按声明长度切好的载荷视图
              */
-            PayloadCursor(const std::uint64_t frameTypeValue, const std::span<const std::uint8_t> payload)
-                : m_frameTypeValue(frameTypeValue), m_payload(payload)
+            PayloadCursor(const std::uint64_t frameTypeValue, const std::span<const std::uint8_t> payload) : m_frameTypeValue(frameTypeValue), m_payload(payload)
             {
             }
 
@@ -158,7 +150,7 @@ namespace AsynGyanis::Net
             [[nodiscard]] std::span<const std::uint8_t> takeRemaining() noexcept
             {
                 const std::span<const std::uint8_t> view = m_payload.subspan(m_offset);
-                m_offset = m_payload.size();
+                m_offset                                 = m_payload.size();
                 return view;
             }
 
@@ -182,14 +174,13 @@ namespace AsynGyanis::Net
             [[nodiscard]] Http3FrameError makeError(std::string detail) const
             {
                 return Http3FrameError{Http3FrameErrorKind::Malformed,
-                                       std::format("{}帧（声明长度 {} 字节）：{}", http3FrameTypeName(m_frameTypeValue),
-                                                   m_payload.size(), std::move(detail))};
+                                       std::format("{}帧（声明长度 {} 字节）：{}", http3FrameTypeName(m_frameTypeValue), m_payload.size(), std::move(detail))};
             }
 
         private:
-            std::uint64_t m_frameTypeValue{0};       ///< 本帧类型值，只用于文案
-            std::span<const std::uint8_t> m_payload; ///< 按声明长度切好的载荷
-            std::size_t m_offset{0};                 ///< 已读到的位置
+            std::uint64_t                 m_frameTypeValue{0}; ///< 本帧类型值，只用于文案
+            std::span<const std::uint8_t> m_payload;           ///< 按声明长度切好的载荷
+            std::size_t                   m_offset{0};         ///< 已读到的位置
         };
 
         /**
@@ -198,8 +189,7 @@ namespace AsynGyanis::Net
          * @param fieldName 字段名，只用于文案定位
          * @return std::expected<std::uint64_t, Http3FrameError> 成功返回数值；缺字段或多尾巴均为 `Malformed`
          */
-        [[nodiscard]] std::expected<std::uint64_t, Http3FrameError> readSoleInteger(PayloadCursor &cursor,
-                                                                                   const std::string_view fieldName)
+        [[nodiscard]] std::expected<std::uint64_t, Http3FrameError> readSoleInteger(PayloadCursor &cursor, const std::string_view fieldName)
         {
             const auto value = cursor.readInteger(fieldName);
             if (!value.has_value())
@@ -220,8 +210,7 @@ namespace AsynGyanis::Net
          * @param payload 已按声明长度收齐的载荷
          * @return std::expected<Http3Frame, Http3FrameError> 类型不认识时返回 Http3UnknownFrame（不是错误）
          */
-        [[nodiscard]] std::expected<Http3Frame, Http3FrameError> decodeHttp3FramePayload(const std::uint64_t frameTypeValue,
-                                                                                        const std::span<const std::uint8_t> payload)
+        [[nodiscard]] std::expected<Http3Frame, Http3FrameError> decodeHttp3FramePayload(const std::uint64_t frameTypeValue, const std::span<const std::uint8_t> payload)
         {
             PayloadCursor cursor(frameTypeValue, payload);
             switch (frameTypeValue)
@@ -261,8 +250,7 @@ namespace AsynGyanis::Net
                         if (knownIdentifier.has_value())
                         {
                             settingsFrame.settings.emplace_back(*knownIdentifier, *value);
-                        }
-                        else
+                        } else
                         {
                             // 未知与保留标识都塞进旁路列表：§7.2.4 要求忽略不等于可以把它抹掉，
                             // 连接层要么照 §7.2.4.1 判错，要么原样再编出去
@@ -393,8 +381,7 @@ namespace AsynGyanis::Net
         appendQuicVariableLengthInteger(bytes, static_cast<std::uint64_t>(streamType));
     }
 
-    Http3FrameReader::Http3FrameReader(const std::size_t maximumFrameByteCount)
-        : m_maximumFrameByteCount(maximumFrameByteCount)
+    Http3FrameReader::Http3FrameReader(const std::size_t maximumFrameByteCount) : m_maximumFrameByteCount(maximumFrameByteCount)
     {
         if (m_maximumFrameByteCount == 0)
         {
@@ -412,10 +399,9 @@ namespace AsynGyanis::Net
         if (newBytes.size() > m_maximumFrameByteCount)
         {
             // 块长本身就是调用方给的：超过单帧上限说明没按约定切块，收下就等于让缓冲按这个尺度长出去
-            return std::unexpected(latchError(Http3FrameErrorKind::LimitExceeded,
-                                              std::format("本次喂入 {} 字节，超过单帧上限 {} 字节：请按不超过上限的块切好再喂"
-                                                          "（RFC 9114 §10.5 的过量负载防护）",
-                                                          newBytes.size(), m_maximumFrameByteCount)));
+            return std::unexpected(latchError(Http3FrameErrorKind::LimitExceeded, std::format("本次喂入 {} 字节，超过单帧上限 {} 字节：请按不超过上限的块切好再喂"
+                                                                                              "（RFC 9114 §10.5 的过量负载防护）",
+                                                                                              newBytes.size(), m_maximumFrameByteCount)));
         }
 
         // 上一次已交走的帧到此才从缓冲里挪走，好让那一帧的视图在本次调用前一直能读——
@@ -458,16 +444,15 @@ namespace AsynGyanis::Net
             return std::unexpected(latchError(Http3FrameErrorKind::LimitExceeded,
                                               std::format("{}帧声明载荷 {} 字节，加上 {} 字节帧头超过单帧上限 {} 字节"
                                                           "（RFC 9114 §10.8 要求长度自洽，本端不接受超上限的帧）",
-                                                          http3FrameTypeName(typeDecoded->value), lengthDecoded->value,
-                                                          headerByteCount, m_maximumFrameByteCount)));
+                                                          http3FrameTypeName(typeDecoded->value), lengthDecoded->value, headerByteCount, m_maximumFrameByteCount)));
         }
         if (buffered.size() < declaredFrameByteCount)
         {
             return std::optional<Http3Frame>{};
         }
 
-        const auto payload = buffered.subspan(headerByteCount, static_cast<std::size_t>(lengthDecoded->value));
-        auto decodedFrame = decodeHttp3FramePayload(typeDecoded->value, payload);
+        const auto payload      = buffered.subspan(headerByteCount, static_cast<std::size_t>(lengthDecoded->value));
+        auto       decodedFrame = decodeHttp3FramePayload(typeDecoded->value, payload);
         if (!decodedFrame.has_value())
         {
             return std::unexpected(latchError(decodedFrame.error().kind, std::move(decodedFrame.error().message)));

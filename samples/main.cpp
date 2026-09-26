@@ -1,29 +1,29 @@
 // 多线程 HTTP/HTTPS 服务器示例：每线程一个 EventLoop + HttpServer/HttpsServer（SO_REUSEPORT）
-#include "Base/Log/LogMacros.h"
-#include "Base/Log/LoggerRegistry.h"
-#include "Base/Log/Sinks/ConsoleSink.h"
-#include "Base/Log/Logger.h"
-#include "Base/Log/Formatters/JsonFormatter.h"
-#include "Base/Log/Sinks/LogSink.h"
 #include "Base/Config/ConfigManager.h"
 #include "Base/Exception/Exception.h"
-#include "Core/EventLoop/EventLoop.h"
-#include "Core/EventLoop/ConnectionDistributor.h"
-#include "Core/EventLoop/IoContext.h"
-#include "Core/Process/WorkerSupervisor.h"
-#include "Core/Tls/SessionTicketKeyRing.h"
-#include "Core/Socket/InetAddress.h"
+#include "Base/Log/Formatters/JsonFormatter.h"
+#include "Base/Log/LogMacros.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/ConsoleSink.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Coroutine/ThreadPool.h"
+#include "Core/EventLoop/ConnectionDistributor.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/IoContext.h"
+#include "Core/Process/WorkerSupervisor.h"
+#include "Core/Socket/InetAddress.h"
+#include "Core/Tls/SessionTicketKeyRing.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerConfig.h"
-#include "Net/Quic/QuicServer.h"
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/Middleware.h"
 #include "Net/Http/Router.h"
+#include "Net/Quic/QuicServer.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/System/CpuAffinity.h"
@@ -66,12 +66,12 @@ namespace
         static const std::string body = []
         {
             static constexpr std::string_view vocabulary[] = {
-                "server", "engine", "request", "connection", "scheduler", "socket", "buffer", "response",
-                "timeout", "header", "payload", "cipher", "packet", "stream", "window", "priority",
+                    "server",  "engine", "request", "connection", "scheduler", "socket", "buffer", "response",
+                    "timeout", "header", "payload", "cipher",     "packet",    "stream", "window", "priority",
             };
             // 数值是 Numerical Recipes 的 LCG 常数；只需伪随机，不需高质量随机源
             std::uint32_t randomState = 0x2545F491u;
-            std::string text;
+            std::string   text;
             text.reserve(kLargeBodyBytes + 1);
             while (text.size() < kLargeBodyBytes)
             {
@@ -87,105 +87,110 @@ namespace
 
     void setupRoutes(Net::Router &router)
     {
-        router.get("/", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "text/plain");
-            response.setBody("Hello World");
-            co_return;
-        });
+        router.get("/",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "text/plain");
+                       response.setBody("Hello World");
+                       co_return;
+                   });
 
-        router.get("/json", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "application/json");
-            // pid 一并给出：多进程模式下它同时是「这条请求落到哪个 worker」的答案，
-            // 部署排查与压测都靠它对上号（不必再去翻进程表）
-            response.setBody(R"({"status":"ok","version":"1.0.0","server":"AsynGyanis","pid":)" +
-                             std::to_string(Platform::ProcessInfo::currentProcessId()) + "}");
-            co_return;
-        });
+        router.get("/json",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "application/json");
+                       // pid 一并给出：多进程模式下它同时是「这条请求落到哪个 worker」的答案，
+                       // 部署排查与压测都靠它对上号（不必再去翻进程表）
+                       response.setBody(R"({"status":"ok","version":"1.0.0","server":"AsynGyanis","pid":)" + std::to_string(Platform::ProcessInfo::currentProcessId()) + "}");
+                       co_return;
+                   });
 
-        router.get("/trace", [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            // 链路上下文的自检出口：把本条请求所在的 trace-id / span-id / 采样位吐回来。
-            // 没装 --trace-context 且上游也没给字段时就报 null——「不在任何链路里」这个区分本身要看得到。
-            // 只回显经过严格校验的十六进制标识：tracestate 的取值是外部文本，原样拼进 JSON 就是注入
-            response.setStatus(200);
-            response.setHeader("Content-Type", "application/json");
-            std::string body = R"({"traceId":)";
-            if (const auto context = Net::extractTraceContext(request); context.has_value())
-            {
-                body += '"';
-                body.append(context->traceIdText());
-                body += R"(","spanId":")";
-                body.append(context->parentIdText());
-                body += R"(","sampled":)";
-                body += context->isSampled() ? "true" : "false";
-            } else
-            {
-                body += R"(null,"spanId":null,"sampled":null)";
-            }
-            body += ",\"pid\":" + std::to_string(Platform::ProcessInfo::currentProcessId()) + "}";
-            response.setBody(std::move(body));
-            co_return;
-        });
+        router.get("/trace",
+                   [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       // 链路上下文的自检出口：把本条请求所在的 trace-id / span-id / 采样位吐回来。
+                       // 没装 --trace-context 且上游也没给字段时就报 null——「不在任何链路里」这个区分本身要看得到。
+                       // 只回显经过严格校验的十六进制标识：tracestate 的取值是外部文本，原样拼进 JSON 就是注入
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "application/json");
+                       std::string body = R"({"traceId":)";
+                       if (const auto context = Net::extractTraceContext(request); context.has_value())
+                       {
+                           body += '"';
+                           body.append(context->traceIdText());
+                           body += R"(","spanId":")";
+                           body.append(context->parentIdText());
+                           body += R"(","sampled":)";
+                           body += context->isSampled() ? "true" : "false";
+                       } else
+                       {
+                           body += R"(null,"spanId":null,"sampled":null)";
+                       }
+                       body += ",\"pid\":" + std::to_string(Platform::ProcessInfo::currentProcessId()) + "}";
+                       response.setBody(std::move(body));
+                       co_return;
+                   });
 
-        router.get("/bench", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "text/plain");
-            response.setBody("OK");
-            co_return;
-        });
+        router.get("/bench",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "text/plain");
+                       response.setBody("OK");
+                       co_return;
+                   });
 
         // 响应压缩链路的端到端落点：/bench 的 2 字节正文永远到不了压缩阈值，所以「压完还能不能
         // 正确走完整条网络路径」（h1/h2 的序列化、content-length、vary）此前只有单测覆盖，
         // 这条路由给了进程外探针一个真 socket 的可比对象：同一地址带与不带 Accept-Encoding 各要一次
-        router.get("/big", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "text/plain");
-            response.setBody(largeCompressibleBody());
-            co_return;
-        });
+        router.get("/big",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "text/plain");
+                       response.setBody(largeCompressibleBody());
+                       co_return;
+                   });
 
         // 流式响应（SSE）验收用：分两段写出，客户端逐段收到就说明分块路径真的通
-        router.get("/sse", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.startChunkedResponse(200);
-            response.setHeader("Content-Type", "text/event-stream");
-            if (!co_await response.writeChunk("data: one\n\n"))
-            {
-                co_return;
-            }
-            static_cast<void>(co_await response.writeChunk("data: two\n\n"));
-            co_return;
-        });
+        router.get("/sse",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.startChunkedResponse(200);
+                       response.setHeader("Content-Type", "text/event-stream");
+                       if (!co_await response.writeChunk("data: one\n\n"))
+                       {
+                           co_return;
+                       }
+                       static_cast<void>(co_await response.writeChunk("data: two\n\n"));
+                       co_return;
+                   });
 
         // WebSocket 验收用：h1 的 Upgrade 与 h3 的扩展 CONNECT（RFC 9220）都走这条路由，
         // 收到一条就原样回一条——回显本身就把「帧进得来、也出得去」两件事一起验了。
         // 消息类型必须照搬：把 Binary 回成 Text 会让二进制协议的客户端解不出内容，
         // 而 Autobahn 1.2.x / 9.2.x / 12.2.x 那几族判据（含空负载与分片）盯的就是这一条
-        router.get("/ws", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.upgradeToWebSocket(
-                    [](Net::WebSocketPeer &peer) -> Core::Task<>
-                    {
-                        while (const auto message = co_await peer.receive())
-                        {
-                            const bool isSent = message->opCode == Net::WebSocketOpCode::Binary
-                                        ? co_await peer.sendBinary(message->payload)
-                                        : co_await peer.sendText(message->payload);
-                            if (!isSent)
-                            {
-                                co_return;
-                            }
-                        }
-                        co_return;
-                    });
-            co_return;
-        });
+        router.get("/ws",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.upgradeToWebSocket(
+                               [](Net::WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       const bool isSent = message->opCode == Net::WebSocketOpCode::Binary ? co_await peer.sendBinary(message->payload)
+                                                                                                           : co_await peer.sendText(message->payload);
+                                       if (!isSent)
+                                       {
+                                           co_return;
+                                       }
+                                   }
+                                   co_return;
+                               });
+                       co_return;
+                   });
     }
 
     /// 优雅关闭的等待上限：给在途请求留出把响应发完的时间，超出后由 drain 内部强制收口
@@ -204,14 +209,13 @@ namespace
      * @param timeout 等待上限
      * @return std::size_t 时限到点仍未进入监听态的监听器条数
      */
-    std::size_t waitForListenersToComeUp(const std::vector<Net::TcpServer *> &listeningServers, const Net::QuicServer *http3Server,
-                                         const std::chrono::milliseconds timeout)
+    std::size_t waitForListenersToComeUp(const std::vector<Net::TcpServer *> &listeningServers, const Net::QuicServer *http3Server, const std::chrono::milliseconds timeout)
     {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         for (;;)
         {
             std::size_t pendingCount = 0;
-            for (const Net::TcpServer *server : listeningServers)
+            for (const Net::TcpServer *server: listeningServers)
             {
                 pendingCount += server->isRunning() ? 0U : 1U;
             }
@@ -250,8 +254,7 @@ namespace
      * @param remainingDrainCount 输入输出：尚未完成的 drain 条数，完成一条减一
      * @return Core::Task<> 协程，drain 返回后立即完成
      */
-    Core::Task<> drainServerTask(Net::TcpServer &server, const std::chrono::milliseconds drainTimeout,
-                                 std::atomic<std::size_t> &remainingDrainCount)
+    Core::Task<> drainServerTask(Net::TcpServer &server, const std::chrono::milliseconds drainTimeout, std::atomic<std::size_t> &remainingDrainCount)
     {
         co_await server.drain(drainTimeout);
         remainingDrainCount.fetch_sub(1, std::memory_order_acq_rel);
@@ -267,40 +270,39 @@ namespace
      * @param remainingDrainCount 输入输出：尚未完成的 drain 条数，完成一条减一
      * @return Core::Task<> 协程，drain 返回后立即完成
      */
-    Core::Task<> drainHttp3ServerTask(Net::QuicServer &server, const std::chrono::milliseconds drainTimeout,
-                                      std::atomic<std::size_t> &remainingDrainCount)
+    Core::Task<> drainHttp3ServerTask(Net::QuicServer &server, const std::chrono::milliseconds drainTimeout, std::atomic<std::size_t> &remainingDrainCount)
     {
         co_await server.drain(drainTimeout);
         remainingDrainCount.fetch_sub(1, std::memory_order_acq_rel);
         co_return;
     }
-}
+} // namespace
 
 int main(int argc, char **argv)
 {
-    std::string host     = "localhost";
-    uint16_t    port     = 8080;
-    unsigned    threads  = 0; // 0 = auto (optimized for local benchmarks)
-    std::size_t maxConnectionsPerIp = 0; // 0 = 不限制单个来源的并发连接数
-    bool        useHttps = false;
-    bool        useHttp2Cleartext = false;
-    bool        exposeMetrics = false;
-    bool        logJson = false; // 日志按 JSON Lines 输出，供采集端解析
-    bool        dispatchAccept = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
-    bool        pinThreadsToCores = false; // 启动时把每个工作循环线程绑到一枚逻辑核上
-    bool        compressResponses = false; // 按 Accept-Encoding 协商压缩响应（zstd/br/gzip）
-    bool        compressInLoop    = false; // --compress-sync：压缩留在循环线程上做完，只作对照用
-    std::size_t maxInflightBodyBytes = 0; // 0 = 不限制在途正文字节总量
-    std::size_t workerProcessCount = 1;   // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
-    bool        isWorkerProcess = false; // 由 master 起的 worker 进程（内部开关，用户不必手写）
-    bool        useHttp3 = false; // 额外在同一个端口号的 UDP 上提供 HTTP/3（QUIC，需要证书）
-    bool        useTraceContext = false; // 挂 W3C Trace Context 中间件，把链路上下文归一化到请求头上
-    bool        showUsage = false;
-    std::string certificateFile = "cert.pem";
-    std::string keyFile  = "key.pem";
+    std::string host                 = "localhost";
+    uint16_t    port                 = 8080;
+    unsigned    threads              = 0; // 0 = auto (optimized for local benchmarks)
+    std::size_t maxConnectionsPerIp  = 0; // 0 = 不限制单个来源的并发连接数
+    bool        useHttps             = false;
+    bool        useHttp2Cleartext    = false;
+    bool        exposeMetrics        = false;
+    bool        logJson              = false; // 日志按 JSON Lines 输出，供采集端解析
+    bool        dispatchAccept       = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
+    bool        pinThreadsToCores    = false; // 启动时把每个工作循环线程绑到一枚逻辑核上
+    bool        compressResponses    = false; // 按 Accept-Encoding 协商压缩响应（zstd/br/gzip）
+    bool        compressInLoop       = false; // --compress-sync：压缩留在循环线程上做完，只作对照用
+    std::size_t maxInflightBodyBytes = 0;     // 0 = 不限制在途正文字节总量
+    std::size_t workerProcessCount   = 1;     // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
+    bool        isWorkerProcess      = false; // 由 master 起的 worker 进程（内部开关，用户不必手写）
+    bool        useHttp3             = false; // 额外在同一个端口号的 UDP 上提供 HTTP/3（QUIC，需要证书）
+    bool        useTraceContext      = false; // 挂 W3C Trace Context 中间件，把链路上下文归一化到请求头上
+    bool        showUsage            = false;
+    std::string certificateFile      = "cert.pem";
+    std::string keyFile              = "key.pem";
     /// 会话票据密钥文件，可重复给（首份签发、其余只解开旧票据）；空 = 按 OpenSSL 默认随机密钥
     std::vector<std::string> ticketKeyFiles;
-    std::string configFile;
+    std::string              configFile;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -316,20 +318,16 @@ int main(int argc, char **argv)
         {
             port = static_cast<uint16_t>(Samples::readNumericOption(argc, argv, i, "--port", 1U, 65535U));
             ++i;
-        }
-        else if (arg == "--threads")
+        } else if (arg == "--threads")
         {
             // 上限 4096：线程数按可用核数量级取，超出这个数只会把机器起爆，出现即视为笔误
             threads = static_cast<unsigned>(Samples::readNumericOption(argc, argv, i, "--threads", 0U, 4096U));
             ++i;
-        }
-        else if (arg == "--max-connections-per-ip")
+        } else if (arg == "--max-connections-per-ip")
         {
-            maxConnectionsPerIp = static_cast<std::size_t>(
-                    Samples::readNumericOption(argc, argv, i, "--max-connections-per-ip", 0U, std::numeric_limits<std::uint64_t>::max()));
+            maxConnectionsPerIp = static_cast<std::size_t>(Samples::readNumericOption(argc, argv, i, "--max-connections-per-ip", 0U, std::numeric_limits<std::uint64_t>::max()));
             ++i;
-        }
-        else if (arg == "--https")
+        } else if (arg == "--https")
             useHttps = true;
         else if (arg == "--h2c")
             useHttp2Cleartext = true;
@@ -352,41 +350,33 @@ int main(int argc, char **argv)
             // 一并打开压缩，只是把执行位置换回循环线程：与默认的外置路径对照才看得出差多少
             compressResponses = true;
             compressInLoop    = true;
-        }
-        else if (arg == "--max-inflight-body")
+        } else if (arg == "--max-inflight-body")
         {
-            maxInflightBodyBytes = static_cast<std::size_t>(
-                    Samples::readNumericOption(argc, argv, i, "--max-inflight-body", 0U, std::numeric_limits<std::uint64_t>::max()));
+            maxInflightBodyBytes = static_cast<std::size_t>(Samples::readNumericOption(argc, argv, i, "--max-inflight-body", 0U, std::numeric_limits<std::uint64_t>::max()));
             ++i;
-        }
-        else if (arg == "--cert")
+        } else if (arg == "--cert")
         {
             certificateFile = Samples::readOptionValue(argc, argv, i, "--cert", "一个证书文件路径");
             ++i;
-        }
-        else if (arg == "--ticket-key")
+        } else if (arg == "--ticket-key")
         {
             // 可重复：轮换的形态就是「新的插首位、旧的留在后面」，与 nginx 的同名指令一致
             ticketKeyFiles.push_back(Samples::readOptionValue(argc, argv, i, "--ticket-key", "一个会话票据密钥文件路径（48 或 80 字节）"));
             ++i;
-        }
-        else if (arg == "--key")
+        } else if (arg == "--key")
         {
             keyFile = Samples::readOptionValue(argc, argv, i, "--key", "一个私钥文件路径");
             ++i;
-        }
-        else if (arg == "--config")
+        } else if (arg == "--config")
         {
             configFile = Samples::readOptionValue(argc, argv, i, "--config", "一个配置文件路径");
             ++i;
-        }
-        else if (arg == "--workers")
+        } else if (arg == "--workers")
         {
             // 上限与 --threads 同一条理由：这么多进程只会把机器起爆，出现即视为笔误
             workerProcessCount = static_cast<std::size_t>(Samples::readNumericOption(argc, argv, i, "--workers", 0U, 4096U));
             ++i;
-        }
-        else if (arg == "--worker")
+        } else if (arg == "--worker")
             isWorkerProcess = true;
         else if (arg == "--help")
         {
@@ -420,7 +410,7 @@ int main(int argc, char **argv)
         LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
         LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
         LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）；"
-            "同时让 TCP 侧响应带上 alt-svc 通告，客户端由此自己学到 h3 端口");
+                 "同时让 TCP 侧响应带上 alt-svc 通告，客户端由此自己学到 h3 端口");
         LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
         LOG_INFO("  --trace-context 挂 W3C Trace Context 中间件：上游带了合法的 traceparent 就原样沿用，");
         LOG_INFO("            缺席或畸形（含同名多条）则新起一条链路并写回请求头，业务读 GET /trace 就能看到；");
@@ -468,18 +458,15 @@ int main(int argc, char **argv)
             // getSection() 才把 server 段还原成嵌套对象。读取器要的是「以 server 为根的文档」，
             // 这里补上段名这一层外壳：它只认文档结构，不关心配置来自文件还是内存
             Base::ConfigObject document;
-            document.emplace(std::string(Net::kHttpServerConfigSection),
-                             Base::ConfigManager::instance().getSection(Net::kHttpServerConfigSection));
+            document.emplace(std::string(Net::kHttpServerConfigSection), Base::ConfigManager::instance().getSection(Net::kHttpServerConfigSection));
             configuration = Net::readHttpServerConfiguration(Base::ConfigValue(std::move(document)));
         } catch (const std::exception &configurationException)
         {
             LOG_ERROR_EXCEPTION(configurationException, "配置读取失败，服务未启动。文件：{}，原因：{}", configFile, configurationException.what());
             return 1;
         }
-        LOG_INFO_FMT("已读取配置 {}：最大连接 {}，单来源 {}，限流 {} 请求/s（桶 {}），指标 {}",
-                     configFile, configuration.maximumConnections, configuration.maximumConnectionsPerIp,
-                     configuration.requestsPerSecond, configuration.rateLimitBurstCapacity,
-                     configuration.exposeMetrics ? "开" : "关");
+        LOG_INFO_FMT("已读取配置 {}：最大连接 {}，单来源 {}，限流 {} 请求/s（桶 {}），指标 {}", configFile, configuration.maximumConnections, configuration.maximumConnectionsPerIp,
+                     configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, configuration.exposeMetrics ? "开" : "关");
     }
 
     // 命令行覆盖：显式给出的开关优先于文件里的同名项
@@ -506,8 +493,8 @@ int main(int argc, char **argv)
             supervisorConfiguration.workerCount = workerProcessCount;
 
             Core::WorkerSupervisor supervisor(std::move(supervisorConfiguration));
-            LOG_INFO_FMT("多进程模式：{} 个 worker（master 进程号 {} 只做编排；Ctrl+C 或 SIGTERM 会让 worker 各自体面退出）",
-                         workerProcessCount, Platform::ProcessInfo::currentProcessId());
+            LOG_INFO_FMT("多进程模式：{} 个 worker（master 进程号 {} 只做编排；Ctrl+C 或 SIGTERM 会让 worker 各自体面退出）", workerProcessCount,
+                         Platform::ProcessInfo::currentProcessId());
             if (!supervisor.run())
             {
                 // 整池 worker 都「起来就崩」：原因上一条条记在日志里，这里只把结果落到退出码上，
@@ -571,8 +558,8 @@ int main(int argc, char **argv)
 #endif
 
     const char *proto = useHttps ? "https" : "http";
-    LOG_INFO_FMT("echo_server starting — {}://{}:{} threads={} pid={}{}", proto, host, port, threads,
-                 Platform::ProcessInfo::currentProcessId(), isWorkerProcess ? " (worker)" : "");
+    LOG_INFO_FMT("echo_server starting — {}://{}:{} threads={} pid={}{}", proto, host, port, threads, Platform::ProcessInfo::currentProcessId(),
+                 isWorkerProcess ? " (worker)" : "");
 
     // 多线程运行时
     // 压缩用的工作线程池要在 context 之前声明：析构按声明的逆序，因此它会比那些循环活得久，
@@ -593,16 +580,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    auto &   pool          = context.threadPool();
-    auto actualThreads = static_cast<unsigned>(pool.threadCount());
+    auto &pool          = context.threadPool();
+    auto  actualThreads = static_cast<unsigned>(pool.threadCount());
 
     // 绑核是部署方的选择：开了之后每条循环线程固定占一枚逻辑核，减少调度迁移与缓存被踩。
     // 线程数多于可用核数时只有前若干条被绑（实现里会记 WARN），这里只如实报出开关与核数
     if (pinThreadsToCores)
     {
         pool.setThreadsPinnedToCores(true);
-        LOG_INFO_FMT("已开启工作线程绑核：{} 条循环线程按线程池下标依次占核，本进程可用核 {} 枚",
-                     actualThreads, Platform::CpuAffinity::availableCoreCount());
+        LOG_INFO_FMT("已开启工作线程绑核：{} 条循环线程按线程池下标依次占核，本进程可用核 {} 枚", actualThreads, Platform::CpuAffinity::availableCoreCount());
     }
 
     LOG_INFO_FMT("Actual worker threads: {} (logical cores: {})", actualThreads, std::thread::hardware_concurrency());
@@ -639,8 +625,7 @@ int main(int argc, char **argv)
         if (sharedMetricsCollector == nullptr)
         {
             sharedMetricsCollector = server->metricsCollector();
-        }
-        else
+        } else
         {
             server->setMetricsCollector(sharedMetricsCollector);
         }
@@ -656,8 +641,7 @@ int main(int argc, char **argv)
     if (configuration.requestsPerSecond > 0.0)
     {
         rateLimitBucket = std::make_shared<Net::TokenBucket>(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity);
-        LOG_INFO_FMT("全局限流 {} 请求/s（桶容量 {}，所有监听器共享同一个桶）", configuration.requestsPerSecond,
-                     configuration.rateLimitBurstCapacity);
+        LOG_INFO_FMT("全局限流 {} 请求/s（桶容量 {}，所有监听器共享同一个桶）", configuration.requestsPerSecond, configuration.rateLimitBurstCapacity);
     }
 
     // 在途正文预算同样只有一份：它要的是「整个进程的正文占用上限」，各监听器各持一份等于上限乘以监听器数
@@ -791,10 +775,7 @@ int main(int argc, char **argv)
     };
 
     const auto buildServer = [&](Core::EventLoop &loop) -> std::unique_ptr<Net::TcpServer>
-    {
-        return useHttps ? std::unique_ptr<Net::TcpServer>(buildHttpsServer(loop))
-                        : std::unique_ptr<Net::TcpServer>(buildHttpServer(loop));
-    };
+    { return useHttps ? std::unique_ptr<Net::TcpServer>(buildHttpsServer(loop)) : std::unique_ptr<Net::TcpServer>(buildHttpServer(loop)); };
 
     // 每台服务器所属的循环下标：收尾要按「它自己的循环」投递停止/排水任务。分发模式下最后一台
     // （只接受与派发的那台）与前面的工作循环不同循环，按下标猜会把任务投到别的线程上
@@ -807,20 +788,16 @@ int main(int argc, char **argv)
         auto distributor = std::make_shared<Core::ConnectionDistributor>();
         for (unsigned i = 0; i < actualThreads; ++i)
         {
-            std::unique_ptr<Net::TcpServer> worker = buildServer(pool.eventLoop(i));
-            Net::TcpServer *rawWorker = worker.get();
-            distributor->addWorker(pool.eventLoop(i),
-                                   [rawWorker](const int fileDescriptor)
-                                   {
-                                       rawWorker->adoptConnection(fileDescriptor);
-                                   });
+            std::unique_ptr<Net::TcpServer> worker    = buildServer(pool.eventLoop(i));
+            Net::TcpServer                 *rawWorker = worker.get();
+            distributor->addWorker(pool.eventLoop(i), [rawWorker](const int fileDescriptor) { rawWorker->adoptConnection(fileDescriptor); });
             servers.push_back(std::move(worker));
             serverLoopIndexes.push_back(i);
         }
 
         // 只接受的那一台：自己从不建连接，因此不需要协议侧配置，但要占用同一个监听地址
-        std::unique_ptr<Net::TcpServer> acceptor = buildServer(pool.eventLoop(0));
-        Core::Task<> acceptTask = acceptor->startAccepting(distributor);
+        std::unique_ptr<Net::TcpServer> acceptor   = buildServer(pool.eventLoop(0));
+        Core::Task<>                    acceptTask = acceptor->startAccepting(distributor);
         pool.eventLoop(0).scheduler().schedule(acceptTask.handle());
         acceptTasks.push_back(std::move(acceptTask));
         // 分发模式下只有这一台自己 accept，工作服务器那几台的 isRunning 恒为 false
@@ -844,7 +821,7 @@ int main(int argc, char **argv)
         for (unsigned i = 0; i < actualThreads; ++i)
         {
             std::unique_ptr<Net::TcpServer> server = buildServer(pool.eventLoop(i));
-            Core::Task<> task = server->start();
+            Core::Task<>                    task   = server->start();
             pool.eventLoop(i).scheduler().schedule(task.handle());
             acceptTasks.push_back(std::move(task));
             listeningServers.push_back(server.get());
@@ -878,14 +855,14 @@ int main(int argc, char **argv)
         }
 
         Net::QuicServer::Configuration http3Configuration;
-        http3Configuration.certificateFile = certificateFile;
-        http3Configuration.privateKeyFile  = keyFile;
+        http3Configuration.certificateFile       = certificateFile;
+        http3Configuration.privateKeyFile        = keyFile;
         http3Configuration.sessionTicketKeyFiles = ticketKeyFiles;
         // 与 h1/h2 用同一份解析上限：h3 的正文总量上限同样不该由样本自己去猜
-        http3Configuration.parserLimits    = configuration.parserLimits;
+        http3Configuration.parserLimits = configuration.parserLimits;
         // 在途正文预算与 HTTP 侧共用同一份账：h3 的正文也驻留在进程内存里，
         // 不给它这份账就等于 --max-inflight-body 只管两条 TCP 通道
-        http3Configuration.memoryBudget    = inflightBodyBudget;
+        http3Configuration.memoryBudget = inflightBodyBudget;
         // 指标打开时 h3 的请求数、状态码类与单流取消并进上面那份采集端；没打开则为空指针、不采集
         http3Configuration.metricsCollector = http3MetricsCollector;
         // request-id 与两条 TCP 通道共用一份生成器：同一台机器上 h3 的 id 前缀不该另起一套
@@ -917,14 +894,13 @@ int main(int argc, char **argv)
     const std::size_t stuckListenerCount = waitForListenersToComeUp(listeningServers, http3Server.get(), kStartupConfirmTimeout);
     if (stuckListenerCount > 0)
     {
-        LOG_ERROR_FMT("{} 个监听器在 {}ms 内没有进入监听状态，服务未运行。监听地址：{}（协程里抛出的原因见上面的错误日志）",
-                      stuckListenerCount, kStartupConfirmTimeout.count(), address->toString());
+        LOG_ERROR_FMT("{} 个监听器在 {}ms 内没有进入监听状态，服务未运行。监听地址：{}（协程里抛出的原因见上面的错误日志）", stuckListenerCount, kStartupConfirmTimeout.count(),
+                      address->toString());
         // 关停走既有那条路径：真的起来的那几台照样体面收口，不另起一套收尾
         g_running.store(false);
-    }
-    else
+    } else
     {
-        LOG_INFO("" + std::string(proto) + " server started  "+ proto + "://" + address->toString());
+        LOG_INFO("" + std::string(proto) + " server started  " + proto + "://" + address->toString());
         LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
         LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench  |  GET /big");
         LOG_INFO("Press Ctrl+C to exit");
@@ -981,7 +957,7 @@ int main(int argc, char **argv)
     if (http3Server != nullptr)
     {
         std::atomic<std::size_t> remainingHttp3DrainCount{1};
-        Core::Task<>             http3DrainTask       = drainHttp3ServerTask(*http3Server, kShutdownDrainTimeout, remainingHttp3DrainCount);
+        Core::Task<>             http3DrainTask = drainHttp3ServerTask(*http3Server, kShutdownDrainTimeout, remainingHttp3DrainCount);
         pool.eventLoop(0).scheduler().scheduleRemote(http3DrainTask.handle());
         LOG_INFO_FMT("Draining HTTP/3 server, in-flight requests get up to {}ms...", kShutdownDrainTimeout.count());
         while (remainingHttp3DrainCount.load(std::memory_order_acquire) > 0)

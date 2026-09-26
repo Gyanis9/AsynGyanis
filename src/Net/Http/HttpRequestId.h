@@ -56,8 +56,8 @@ namespace AsynGyanis::Net
             // 从高位往低位逐个取 nibble：写满 16 位就等于零填充，不需要单独判「不足位补几个 0」
             for (std::size_t digitIndex = 0; digitIndex < kRequestIdSequenceDigitCount; ++digitIndex)
             {
-                const std::uint64_t shiftAmount = (kRequestIdSequenceDigitCount - 1 - digitIndex) * 4U;
-                const std::size_t digitValue = static_cast<std::size_t>((sequenceNumber >> shiftAmount) & 0xFULL);
+                const std::uint64_t shiftAmount        = (kRequestIdSequenceDigitCount - 1 - digitIndex) * 4U;
+                const std::size_t   digitValue         = static_cast<std::size_t>((sequenceNumber >> shiftAmount) & 0xFULL);
                 target[prefix.size() + 1 + digitIndex] = kHexDigits[digitValue];
             }
         }
@@ -96,8 +96,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 构造生成器：前缀取自进程内递增的服务器序号
          */
-        HttpRequestIdGenerator() :
-            m_prefix(makeServerPrefix())
+        HttpRequestIdGenerator() : m_prefix(makeServerPrefix())
         {
         }
 
@@ -223,7 +222,7 @@ namespace AsynGyanis::Net
             return std::format("{:04x}", serverIndex);
         }
 
-        std::string m_prefix;                            ///< 本服务器在进程内的唯一前缀（十六进制文本）
+        std::string                        m_prefix;      ///< 本服务器在进程内的唯一前缀（十六进制文本）
         mutable std::atomic<std::uint64_t> m_sequence{0}; ///< 本服务器已发放的 id 条数；可读接口是 const，故置 mutable
     };
 

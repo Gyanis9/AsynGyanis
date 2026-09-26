@@ -37,10 +37,10 @@ namespace AsynGyanis::Net
 
     private:
         // 纯静态工具类：把构造与拷贝/移动全部私有化并 delete，任何实例化写法都会在编译期失败
-        FileSender() = delete;
-        FileSender(const FileSender &) = delete;
+        FileSender()                              = delete;
+        FileSender(const FileSender &)            = delete;
         FileSender &operator=(const FileSender &) = delete;
-        FileSender(FileSender &&) = delete;
-        FileSender &operator=(FileSender &&) = delete;
+        FileSender(FileSender &&)                 = delete;
+        FileSender &operator=(FileSender &&)      = delete;
     };
 } // namespace AsynGyanis::Net

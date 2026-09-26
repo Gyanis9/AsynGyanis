@@ -7,10 +7,6 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 #pragma once
-#include "Core/Coroutine/Task.h"
-#include "Net/Http/Client/HttpResponseParser.h"
-#include "Net/Http/Client/HttpOutboundConnectionPool.h"
-#include "Net/Http/HttpBodyChunk.h"
 #include <chrono>
 #include <cstdint>
 #include <expected>
@@ -20,7 +16,14 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-namespace AsynGyanis::Core { class EventLoop; }
+#include "Core/Coroutine/Task.h"
+#include "Net/Http/Client/HttpOutboundConnectionPool.h"
+#include "Net/Http/Client/HttpResponseParser.h"
+#include "Net/Http/HttpBodyChunk.h"
+namespace AsynGyanis::Core
+{
+    class EventLoop;
+}
 namespace AsynGyanis::Core
 {
     class TlsContext;
@@ -35,10 +38,10 @@ namespace AsynGyanis::Net
     /// HTTP 客户端响应
     struct HttpClientResponse
     {
-        int      statusCode{0};  ///< 状态码；0 表示没拿到响应（连接或 TLS 失败）
-        std::string reasonPhrase; ///< 状态行里的原因短语
-        std::vector<HttpClientHeaderField> headers; ///< 头部字段，按收到的顺序原样留着
-        std::string body;        ///< 正文；chunked 已按块拼回原样
+        int                                statusCode{0}; ///< 状态码；0 表示没拿到响应（连接或 TLS 失败）
+        std::string                        reasonPhrase;  ///< 状态行里的原因短语
+        std::vector<HttpClientHeaderField> headers;       ///< 头部字段，按收到的顺序原样留着
+        std::string                        body;          ///< 正文；chunked 已按块拼回原样
     };
     /**
      * @brief 一次出站请求的参数
@@ -48,10 +51,10 @@ namespace AsynGyanis::Net
      */
     struct HttpClientRequest
     {
-        std::string method{"GET"};                       ///< 请求方法，原样写进请求行；HEAD 的应答按 RFC 9112 §6.3 在头块之后结束
-        std::string_view body{};                        ///< 正文；为空时不写 Content-Length，也不写 Content-Type
-        std::string_view contentType{};                 ///< 正文媒体类型，只随非空正文一起写出
-        std::vector<HttpClientHeaderField> headers{};   ///< 附加头部，按给出的顺序上线
+        std::string                        method{"GET"}; ///< 请求方法，原样写进请求行；HEAD 的应答按 RFC 9112 §6.3 在头块之后结束
+        std::string_view                   body{};        ///< 正文；为空时不写 Content-Length，也不写 Content-Type
+        std::string_view                   contentType{}; ///< 正文媒体类型，只随非空正文一起写出
+        std::vector<HttpClientHeaderField> headers{};     ///< 附加头部，按给出的顺序上线
         /**
          * @brief 流式正文的来源：一段一段交出，写完才算正文结束
          * @details 填了它就忽略 body（contentType 照旧生效）。两种正文写法同时给属于用法错误，当场拒绝。
@@ -105,9 +108,8 @@ namespace AsynGyanis::Net
          * @throws Base::InvalidArgumentException URL 畸形，或附加头部名字为空、含 CR/LF 控制字符，
          *         或占用了 Host、Content-Length、Connection
          */
-        [[nodiscard]] static Core::Task<std::expected<HttpClientResponse, std::string>>
-        send(Core::EventLoop &loop, std::string_view url, HttpClientRequest request,
-             std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
+        [[nodiscard]] static Core::Task<std::expected<HttpClientResponse, std::string>> send(Core::EventLoop &loop, std::string_view url, HttpClientRequest request,
+                                                                                             std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
 
         /**
          * @brief 发起 GET 请求
@@ -121,8 +123,7 @@ namespace AsynGyanis::Net
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
          * @note 失败原因会记进 ERROR 日志；要按原因分支就走 send()。需要附加头部也用 send()
          */
-        static Core::Task<std::unique_ptr<HttpClientResponse>> get(Core::EventLoop &loop, std::string_view url,
-                                                                   std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
+        static Core::Task<std::unique_ptr<HttpClientResponse>> get(Core::EventLoop &loop, std::string_view url, std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
 
         /**
          * @brief 发起 POST 请求（正文 Content-Type: application/x-www-form-urlencoded）
@@ -134,9 +135,8 @@ namespace AsynGyanis::Net
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
          * @note 失败原因会记进 ERROR 日志；要附加头部或按原因分支就走 send()
          */
-        static Core::Task<std::unique_ptr<HttpClientResponse>> post(Core::EventLoop &loop, std::string_view url,
-                                                                     std::string_view contentType, std::string_view body,
-                                                                     std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
+        static Core::Task<std::unique_ptr<HttpClientResponse>> post(Core::EventLoop &loop, std::string_view url, std::string_view contentType, std::string_view body,
+                                                                    std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
 
         /**
          * @brief 建一个带空闲连接池的客户端：同一目标主机的连续请求复用一条 keep-alive 连接
@@ -200,8 +200,7 @@ namespace AsynGyanis::Net
          *       集合里（GET/HEAD/OPTIONS/PUT/DELETE/TRACE，RFC 9110 §9.2.2；RFC 9112 §9.3.2 给的自动
          *       重试许可也只覆盖幂等方法）。HTTP/1.1 与 HTTP/2 两条通路用同一条判据
          */
-        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> get(
-                std::string_view url, std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
+        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> get(std::string_view url, std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
 
         /**
          * @brief 发一次 POST，复用与重试口径同 get()
@@ -211,9 +210,8 @@ namespace AsynGyanis::Net
          * @param requestTimeout 整体时限，语义同 get()
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
          */
-        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> post(
-                std::string_view url, std::string_view contentType, std::string_view body,
-                std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
+        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> post(std::string_view url, std::string_view contentType, std::string_view body,
+                                                                           std::chrono::milliseconds requestTimeout = kDefaultRequestTimeout);
 
         /// 当前空闲、可被复用的 HTTP/1.1 连接条数
         [[nodiscard]] std::size_t idleConnectionCount() const noexcept;
@@ -246,12 +244,10 @@ namespace AsynGyanis::Net
          * @param requestTimeout 整体时限（连接、握手、发送、收完响应四段之和）
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
          */
-        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> sendPooled(
-                std::string_view url, const HttpClientRequest &request,
-                std::chrono::milliseconds requestTimeout);
+        [[nodiscard]] Core::Task<std::unique_ptr<HttpClientResponse>> sendPooled(std::string_view url, const HttpClientRequest &request, std::chrono::milliseconds requestTimeout);
 
-        Core::EventLoop *m_loop{nullptr};   ///< 所属事件循环（不拥有）
-        HttpOutboundConnectionPool m_pool;  ///< 本客户端的空闲连接池
+        Core::EventLoop           *m_loop{nullptr}; ///< 所属事件循环（不拥有）
+        HttpOutboundConnectionPool m_pool;          ///< 本客户端的空闲连接池
         /// 本实例自己的 TLS 上下文（客户端角色）：策略、信任库与客户端证书都装在这里。
         /// 每个实例一份而不是共用进程级那一份：共用时一个实例的策略会把别人的握手档位一起改掉
         std::unique_ptr<Core::TlsContext> m_clientTls;

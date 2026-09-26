@@ -18,9 +18,9 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/StaticFileService.h"
-#include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Net/Http3/Http3Session.h"
 #include "Net/Quic/QuicConnection.h"
+#include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include <atomic>
 #include <chrono>
@@ -55,8 +55,8 @@ namespace AsynGyanis::Net
          */
         struct Configuration
         {
-            std::string              certificateFile;               ///< 服务器证书（PEM）
-            std::string              privateKeyFile;                ///< 私钥（PEM）
+            std::string certificateFile; ///< 服务器证书（PEM）
+            std::string privateKeyFile;  ///< 私钥（PEM）
             /// 会话票据密钥文件（可空：留空即 OpenSSL 默认，每个 SSL_CTX 一份随机密钥）。每份是
             /// 48 或 80 字节的二进制内容，首份用于签发、其余只用于解开轮换窗口内的旧票据。
             /// **多进程 worker 要共享恢复能力就得各进程装同一份**：QUIC 的恢复走 TLS 1.3 票据，
@@ -77,14 +77,14 @@ namespace AsynGyanis::Net
              *       而把**上限**压到 1.3 以下是一条 QUIC 满足不了的配置，构造当场抛。
              * @see Core::TlsPolicy
              */
-            Core::TlsPolicy          tlsPolicy;
-            std::size_t              maximumConnections{1024};      ///< 同时在线连接上限
-            std::chrono::seconds     idleTimeout{30};               ///< 空闲超时：超过即由传输层收口
-            std::string              applicationProtocol{"h3"};     ///< 必须协商出的 ALPN；不是它就拒绝握手
-            std::chrono::milliseconds expiryTickInterval{10};       ///< 定时器驱动的节拍（见 runExpiryTicker 的说明）
+            Core::TlsPolicy           tlsPolicy;
+            std::size_t               maximumConnections{1024};  ///< 同时在线连接上限
+            std::chrono::seconds      idleTimeout{30};           ///< 空闲超时：超过即由传输层收口
+            std::string               applicationProtocol{"h3"}; ///< 必须协商出的 ALPN；不是它就拒绝握手
+            std::chrono::milliseconds expiryTickInterval{10};    ///< 定时器驱动的节拍（见 runExpiryTicker 的说明）
             /// h3 会话的请求解析上限（正文总量上限等），与 h1/h2 同一套配置。
             /// 不设置时用 HttpParserLimits 的默认值——**不能没有上限**：一条 POST 就能把内存吃光
-            HttpParserLimits         parserLimits{};
+            HttpParserLimits parserLimits{};
             /// 在途正文字节的全局预算（可空：空表示不受约束）。与 HTTP 侧共用同一份账——
             /// h3 的正文同样驻留在进程内存里，只限「单条流」挡不住 100 条流各压 8 MiB
             std::shared_ptr<HttpMemoryBudget> memoryBudget;
@@ -233,10 +233,8 @@ namespace AsynGyanis::Net
          * @param tickInterval 配置的节拍上限（`Configuration::expiryTickInterval`）
          * @return 下一次唤醒的绝对时刻，恒不早于 now、恒不晚于 now + max(tickInterval, 空闲上界)
          */
-        [[nodiscard]] static std::chrono::steady_clock::time_point nextTickerWakePoint(bool hasConnections,
-                                                                                      std::chrono::steady_clock::time_point earliestExpiry,
-                                                                                      std::chrono::steady_clock::time_point now,
-                                                                                      std::chrono::milliseconds tickInterval);
+        [[nodiscard]] static std::chrono::steady_clock::time_point nextTickerWakePoint(bool hasConnections, std::chrono::steady_clock::time_point earliestExpiry,
+                                                                                       std::chrono::steady_clock::time_point now, std::chrono::milliseconds tickInterval);
 
     private:
         /**
@@ -265,8 +263,7 @@ namespace AsynGyanis::Net
          *       分成「排进就绪队列 + 由对象持有」那条路也能走通，但收报文本来就是串行的，
          *       直接 co_await 更简单，也少一份任务表的记账
          */
-        [[nodiscard]] Core::Task<> routeDatagram(const Platform::SocketAddress peerAddress,
-                                                 std::span<const std::uint8_t> datagram);
+        [[nodiscard]] Core::Task<> routeDatagram(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram);
 
         /**
          * @brief 把已收口的连接摘出路由表
@@ -302,24 +299,24 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<> pumpHttp3For(QuicConnection &connection);
 
-        Core::EventLoop     &m_eventLoop;           ///< 所属事件循环
-        Configuration        m_configuration;      ///< 服务端配置
-        SSL_CTX             *m_tlsContext{nullptr}; ///< QUIC 用的 SSL_CTX（含证书与 ALPN）
-        Platform::DatagramSocket m_datagramSocket;  ///< 绑定的 UDP 套接字
-        std::unique_ptr<Core::AsyncUdpSocket> m_socket; ///< 套接字的事件循环封装
-        Core::Timer          m_expiryTicker;       ///< 定时驱动的节拍定时器
+        Core::EventLoop                      &m_eventLoop;           ///< 所属事件循环
+        Configuration                         m_configuration;       ///< 服务端配置
+        SSL_CTX                              *m_tlsContext{nullptr}; ///< QUIC 用的 SSL_CTX（含证书与 ALPN）
+        Platform::DatagramSocket              m_datagramSocket;      ///< 绑定的 UDP 套接字
+        std::unique_ptr<Core::AsyncUdpSocket> m_socket;              ///< 套接字的事件循环封装
+        Core::Timer                           m_expiryTicker;        ///< 定时驱动的节拍定时器
         /// 实际绑定的端口：绑定成功才写入，故非 0 即「已在监听」。原子量是为了让外部线程能读这个
         /// 启动凭据（写侧在循环线程、读侧只观察它），不是允许跨线程碰本类的其他成员
         std::atomic<std::uint16_t> m_listeningPort{0};
-        std::atomic<bool>    m_isStopped{false};   ///< 是否已请求停止：可从别的线程置位，因此必须是原子
+        std::atomic<bool>          m_isStopped{false}; ///< 是否已请求停止：可从别的线程置位，因此必须是原子
         /// 排空期间只挡新连接（收报文与在途请求照常跑）：与 m_isStopped 分开，
         /// 因为后者会让收报文的循环退出，在途请求就永远做不完
-        std::atomic<bool> m_isRefusingNewConnections{false};
-        Platform::SocketAddress   m_localSocketAddress;   ///< 本端地址（建连接时要写进回包与日志）
-        QuicConnection::StreamDataHandler m_streamDataHandler; ///< 流数据回调（缺省为空，即收到流数据不回应）
+        std::atomic<bool>                 m_isRefusingNewConnections{false};
+        Platform::SocketAddress           m_localSocketAddress; ///< 本端地址（建连接时要写进回包与日志）
+        QuicConnection::StreamDataHandler m_streamDataHandler;  ///< 流数据回调（缺省为空，即收到流数据不回应）
 
-        Router *m_router{nullptr}; ///< 路由器（不持有；接上之后每条连接才会有 HTTP/3 会话）
-        StaticFileService m_staticFiles; ///< 静态目录配置本体；登记的兜底路由落在 m_router 上
+        Router           *m_router{nullptr}; ///< 路由器（不持有；接上之后每条连接才会有 HTTP/3 会话）
+        StaticFileService m_staticFiles;     ///< 静态目录配置本体；登记的兜底路由落在 m_router 上
 
         /// 每条连接上的 HTTP/3 会话：键是连接，会话的开流/写出/归还额度的口子都指向那条连接。
         /// 会话必须在连接被摘除时一起销毁（它内部存的是指向该连接的引用）

@@ -100,7 +100,7 @@ namespace AsynGyanis::Database::Queryable
      * @note 新增备选一律**追加在末尾**：既有备选的下标是已发布的契约，调整顺序会让按固定
      *       下标取值的调用点静默取错类型。
      */
-    using ParameterValue = std::variant<std::nullptr_t, bool, int64_t, uint64_t, double, std::string, std::vector<std::uint8_t> >;
+    using ParameterValue = std::variant<std::nullptr_t, bool, int64_t, uint64_t, double, std::string, std::vector<std::uint8_t>>;
 
     // ========================================================================
     // WhereCondition
@@ -181,7 +181,8 @@ namespace AsynGyanis::Database::Queryable
      */
     struct QueryNode
     {
-        std::string                   tableName;       ///< 主表名：所有方向（含 INSERT 与 DDL 侧）都按「库.表」逐段引用，其余字节由引用字符兜住；为空或点号留空即被拒。注意迁移器只在连接的默认库内建表，带前缀的表名会被它拒掉
+        std::string tableName; ///< 主表名：所有方向（含 INSERT 与 DDL
+                               ///< 侧）都按「库.表」逐段引用，其余字节由引用字符兜住；为空或点号留空即被拒。注意迁移器只在连接的默认库内建表，带前缀的表名会被它拒掉
         std::string                   tableAlias;      ///< 主表别名（可为空）
         std::vector<std::string>      selectColumns;   ///< SELECT 列名列表；为空时自动推断为所有列
         std::vector<WhereCondition>   whereConditions; ///< WHERE 条件列表（逻辑与连接）

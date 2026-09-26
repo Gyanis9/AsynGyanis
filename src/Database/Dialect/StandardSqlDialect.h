@@ -108,7 +108,7 @@ namespace AsynGyanis::Database
          * @return SqlStatement 多行 INSERT 文本与按序排列的绑定参数
          * @throws Base::InvalidArgumentException 列数为空、rows 为空，或某行取值个数与列数不一致
          */
-        [[nodiscard]] SqlStatement translateInsertBatch(const Queryable::QueryNode &query, std::span<const std::vector<DatabaseValue> > rows) const override;
+        [[nodiscard]] SqlStatement translateInsertBatch(const Queryable::QueryNode &query, std::span<const std::vector<DatabaseValue>> rows) const override;
 
         /**
          * @brief 用本引擎的引用字符引用标识符，并翻倍转义内部引用字符

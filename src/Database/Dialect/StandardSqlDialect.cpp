@@ -32,10 +32,9 @@ namespace AsynGyanis::Database
             // 且要求参数可表示为 unsigned char（负数直接传给它是未定义行为）
             const bool isAsciiLetter = (byte >= static_cast<unsigned char>('a') && byte <= static_cast<unsigned char>('z')) ||
                                        (byte >= static_cast<unsigned char>('A') && byte <= static_cast<unsigned char>('Z'));
-            const bool isAsciiDigit = byte >= static_cast<unsigned char>('0') && byte <= static_cast<unsigned char>('9');
+            const bool isAsciiDigit  = byte >= static_cast<unsigned char>('0') && byte <= static_cast<unsigned char>('9');
 
-            return isAsciiLetter || isAsciiDigit || byte == static_cast<unsigned char>('_') ||
-                   byte >= kUtf8ContinuationLowerBound;
+            return isAsciiLetter || isAsciiDigit || byte == static_cast<unsigned char>('_') || byte >= kUtf8ContinuationLowerBound;
         }
 
         /**
@@ -55,12 +54,7 @@ namespace AsynGyanis::Database
                 return false;
             }
 
-            if (!std::ranges::all_of(text, [quoteCharacter](const char character)
-            {
-                return isIdentifierByte(character)
-                       || character == quoteCharacter
-                       || character == ' ';
-            }))
+            if (!std::ranges::all_of(text, [quoteCharacter](const char character) { return isIdentifierByte(character) || character == quoteCharacter || character == ' '; }))
             {
                 return false;
             }
@@ -134,8 +128,7 @@ namespace AsynGyanis::Database
                 identifierBytes += order.field.name.size();
             }
 
-            const std::size_t fragmentCount = query.selectColumns.size() + query.joins.size() + query.groupBy.size()
-                                            + query.orderBy.size() + query.whereConditions.size() + 1;
+            const std::size_t fragmentCount = query.selectColumns.size() + query.joins.size() + query.groupBy.size() + query.orderBy.size() + query.whereConditions.size() + 1;
 
             return kClauseSkeletonBytes + identifierBytes * 2 + fragmentCount * kPerFragmentOverheadBytes;
         }
@@ -224,9 +217,8 @@ namespace AsynGyanis::Database
         // 产出 SELECT  FROM "t" 这种要到服务端才报语法错误的语句，指不出是哪一项空了
         if (fieldText.empty())
         {
-            throw Base::InvalidArgumentException(std::string(dialectName())
-                                                + " 方言：字段名为空，无法生成引用。SELECT 列表、GROUP BY、ORDER BY 与条件左值"
-                                                  "都必须是非空的列名或表达式（如 \"id\"、\"t.id\"、\"COUNT(*)\"）");
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：字段名为空，无法生成引用。SELECT 列表、GROUP BY、ORDER BY 与条件左值"
+                                                                              "都必须是非空的列名或表达式（如 \"id\"、\"t.id\"、\"COUNT(*)\"）");
         }
 
         // 单个通配符不是标识符：加引用会得到一个名为 "*" 的列，语义完全不同
@@ -255,8 +247,8 @@ namespace AsynGyanis::Database
         std::size_t segmentStart = 0;
         for (;;)
         {
-            const std::size_t dotPosition = fieldText.find('.', segmentStart);
-            const std::string_view segment = fieldText.substr(segmentStart, dotPosition - segmentStart);
+            const std::size_t      dotPosition = fieldText.find('.', segmentStart);
+            const std::string_view segment     = fieldText.substr(segmentStart, dotPosition - segmentStart);
 
             if (segment == "*")
             {
@@ -277,16 +269,14 @@ namespace AsynGyanis::Database
         }
     }
 
-    void StandardSqlDialect::appendTableReference(std::string &sqlText, const std::string_view tableName,
-                                                  const std::string_view tableAlias) const
+    void StandardSqlDialect::appendTableReference(std::string &sqlText, const std::string_view tableName, const std::string_view tableAlias) const
     {
         // 空表名加引用会得到 `""` / "" 这样一个合法但必定不存在的标识符，
         // 报出来的错在服务器侧（"no such table"），指不到「查询树根本没填表名」这个真因
         if (tableName.empty())
         {
-            throw Base::InvalidArgumentException(std::string(dialectName())
-                                                + " 方言：查询树的表名为空，无法生成语句。请填写 QueryNode::tableName"
-                                                  "（Queryable 走 TableSchema<T>::kTableName，特化时别留空）");
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：查询树的表名为空，无法生成语句。请填写 QueryNode::tableName"
+                                                                              "（Queryable 走 TableSchema<T>::kTableName，特化时别留空）");
         }
 
         // 点号在 SQL 里是「库.表」的层级分隔，因此逐段引用：整块包起来会得到一张名叫 shop.orders
@@ -296,14 +286,13 @@ namespace AsynGyanis::Database
         std::size_t segmentStart = 0;
         for (;;)
         {
-            const std::size_t dotPosition = tableName.find('.', segmentStart);
-            const std::string_view segment = tableName.substr(segmentStart, dotPosition - segmentStart);
+            const std::size_t      dotPosition = tableName.find('.', segmentStart);
+            const std::string_view segment     = tableName.substr(segmentStart, dotPosition - segmentStart);
             if (segment.empty())
             {
-                throw Base::InvalidArgumentException(std::string(dialectName())
-                                                    + " 方言：表名「" + std::string(tableName)
-                                                    + "」有点号相邻的空段，无法逐段引用。"
-                                                      "要指定库/模式前缀就写成 \"schema.table\"，两侧都要有名字");
+                throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：表名「" + std::string(tableName) +
+                                                     "」有点号相邻的空段，无法逐段引用。"
+                                                     "要指定库/模式前缀就写成 \"schema.table\"，两侧都要有名字");
             }
             appendQuotedIdentifier(sqlText, segment);
 
@@ -378,8 +367,7 @@ namespace AsynGyanis::Database
         sqlText += ')';
     }
 
-    void StandardSqlDialect::requireMatchingColumnCount(const Queryable::QueryNode &query,
-                                                        const std::size_t           valueCount) const
+    void StandardSqlDialect::requireMatchingColumnCount(const Queryable::QueryNode &query, const std::size_t valueCount) const
     {
         if (query.selectColumns.empty())
         {
@@ -390,9 +378,8 @@ namespace AsynGyanis::Database
         // 这种错误在业务层极难定位，因此必须在翻译阶段就拦住
         if (valueCount != query.selectColumns.size())
         {
-            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：取值个数（" + std::to_string(valueCount) +
-                                                 "）与待写列数（" + std::to_string(query.selectColumns.size()) +
-                                                 "）不一致，无法生成写语句（表 " + query.tableName + "）");
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：取值个数（" + std::to_string(valueCount) + "）与待写列数（" +
+                                                 std::to_string(query.selectColumns.size()) + "）不一致，无法生成写语句（表 " + query.tableName + "）");
         }
     }
 
@@ -405,10 +392,8 @@ namespace AsynGyanis::Database
         // 所以渲染前的估算数只能用于预留缓冲，拿它当判据会误拒贴着上限的查询
         if (const std::size_t parameterBudget = maximumStatementParameters(); parameterCount > parameterBudget)
         {
-            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：本条语句需要 " +
-                                                 std::to_string(parameterCount) + " 个绑定参数，超过该引擎单条语句的上限 " +
-                                                 std::to_string(parameterBudget) + " 个。请缩小 IN 列表或一次写入的列数，" +
-                                                 "也可以把这次操作按上限拆成多条语句分批执行");
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：本条语句需要 " + std::to_string(parameterCount) + " 个绑定参数，超过该引擎单条语句的上限 " +
+                                                 std::to_string(parameterBudget) + " 个。请缩小 IN 列表或一次写入的列数，" + "也可以把这次操作按上限拆成多条语句分批执行");
         }
     }
 
@@ -435,7 +420,7 @@ namespace AsynGyanis::Database
     SqlStatement StandardSqlDialect::translate(const Queryable::QueryNode &query) const
     {
         SqlStatement                statement;
-        std::string &               sqlText    = statement.sql;
+        std::string                &sqlText    = statement.sql;
         std::vector<DatabaseValue> &parameters = statement.parameters;
 
         // 一次把两处缓冲定够：文本按内容估上界，参数个数由条件树精确算出
@@ -599,7 +584,7 @@ namespace AsynGyanis::Database
         requireMatchingColumnCount(query, values.size());
 
         SqlStatement                statement;
-        std::string &               sqlText    = statement.sql;
+        std::string                &sqlText    = statement.sql;
         std::vector<DatabaseValue> &parameters = statement.parameters;
 
         sqlText.reserve(estimateSqlTextCapacity(query));
@@ -645,9 +630,8 @@ namespace AsynGyanis::Database
         // 无界的同条件删除」：那会把「只删 N 行」悄悄做成删掉全部匹配行，而这是不可逆的写
         if (query.limit.has_value() || query.offset.has_value())
         {
-            throw Base::InvalidArgumentException(std::string(dialectName()) +
-                                                 " 方言：DELETE 不支持 LIMIT / OFFSET。请先用带同样条件与分页的"
-                                                 "查询取到主键，再按主键集合删除（IN 条件），不要靠删除语句的行数上限兜底");
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：DELETE 不支持 LIMIT / OFFSET。请先用带同样条件与分页的"
+                                                                              "查询取到主键，再按主键集合删除（IN 条件），不要靠删除语句的行数上限兜底");
         }
 
         SqlStatement statement;
@@ -673,7 +657,7 @@ namespace AsynGyanis::Database
         return statement;
     }
 
-    SqlStatement StandardSqlDialect::translateInsertBatch(const Queryable::QueryNode &query, const std::span<const std::vector<DatabaseValue> > rows) const
+    SqlStatement StandardSqlDialect::translateInsertBatch(const Queryable::QueryNode &query, const std::span<const std::vector<DatabaseValue>> rows) const
     {
         if (rows.empty())
         {
@@ -693,7 +677,7 @@ namespace AsynGyanis::Database
         }
 
         SqlStatement                statement;
-        std::string &               sqlText    = statement.sql;
+        std::string                &sqlText    = statement.sql;
         std::vector<DatabaseValue> &parameters = statement.parameters;
 
         // 参数总数 = 行数 × 列数，调用方可能只算了一遍列数，这里按最坏情况预留容量避免反复扩容
@@ -791,8 +775,7 @@ namespace AsynGyanis::Database
                     // 多个子条件取非在语义上是不确定的：NOT (a AND b) 与 (NOT a) AND (NOT b) 结果不同，
                     // 替调用方挑一个就等于静默改谓词。公开的构造入口只会放一个子条件，
                     // 走到这里说明是手搓的树，宁可报错也不要给出一条「看起来对」的语句
-                    throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：NOT 条件带了 " +
-                                                         std::to_string(condition.children.size()) +
+                    throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：NOT 条件带了 " + std::to_string(condition.children.size()) +
                                                          " 个子条件，取非的含义不确定（NOT (a AND b) 与 NOT a AND NOT b 结果不同）。"
                                                          "请先用 && 或 || 把这批子条件合成一个节点，再用 ! 取非");
                 }
@@ -906,7 +889,7 @@ namespace AsynGyanis::Database
                             return static_cast<std::int64_t>(value);
                         }
                         return std::to_string(value);
-                    } else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t> >)
+                    } else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t>>)
                     {
                         // 二进制在两种 variant 里同名同类型，无需翻译。这里是唯一一个「类型本身就是
                         // 绑定线索」的备选：驱动靠它决定走 sqlite3_bind_blob / MYSQL_TYPE_BLOB，
@@ -963,8 +946,7 @@ namespace AsynGyanis::Database
             default:
                 // 复合节点与 IS NULL 系由渲染分支提前分流，走到这里说明漏了分支；
                 // 静默给出 "=" 会生成语义错误的 SQL，宁可当场失败
-                throw Base::LogicException("标准 SQL 方言：该操作符没有比较文本（枚举值 " +
-                                           std::to_string(std::to_underlying(sqlOperator)) + "），请检查条件渲染是否漏了分支");
+                throw Base::LogicException("标准 SQL 方言：该操作符没有比较文本（枚举值 " + std::to_string(std::to_underlying(sqlOperator)) + "），请检查条件渲染是否漏了分支");
         }
     }
 
@@ -996,8 +978,7 @@ namespace AsynGyanis::Database
                 return "CROSS";
             default:
                 // 未知取值静默当成 INNER 会把「连错表」变成「少连了一张表」，必须当场失败
-                throw Base::LogicException("标准 SQL 方言：未知的连接类型（枚举值 " +
-                                           std::to_string(std::to_underlying(joinType)) + "），请检查连接渲染分支");
+                throw Base::LogicException("标准 SQL 方言：未知的连接类型（枚举值 " + std::to_string(std::to_underlying(joinType)) + "），请检查连接渲染分支");
         }
     }
 

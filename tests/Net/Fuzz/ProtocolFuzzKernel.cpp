@@ -43,10 +43,10 @@ namespace AsynGyanis::Net::Fuzz
          */
         struct RunTrace
         {
-            std::vector<std::string> frameKeys;      ///< 依次产出的帧标识（可比对的纯值文本）
-            bool isEndedInError{false};              ///< 终态是否为错误
-            bool isEndedNeedMore{false};             ///< 终态是否为「还要数据」
-            std::size_t consumedByteCount{0};        ///< 累计消费字节数
+            std::vector<std::string> frameKeys;              ///< 依次产出的帧标识（可比对的纯值文本）
+            bool                     isEndedInError{false};  ///< 终态是否为错误
+            bool                     isEndedNeedMore{false}; ///< 终态是否为「还要数据」
+            std::size_t              consumedByteCount{0};   ///< 累计消费字节数
         };
 
         /**
@@ -60,8 +60,7 @@ namespace AsynGyanis::Net::Fuzz
          * @return RunTrace 本轮轨迹；同时把不变量违例写进 errorText（空表示没违例）
          */
         template<typename Decoder, typename DescribeFrame>
-        RunTrace driveParseStyle(Decoder &decoder, const std::string &input, const std::size_t chunkSize, DescribeFrame describe,
-                                 std::string &errorText)
+        RunTrace driveParseStyle(Decoder &decoder, const std::string &input, const std::size_t chunkSize, DescribeFrame describe, std::string &errorText)
         {
             RunTrace trace;
 
@@ -75,8 +74,8 @@ namespace AsynGyanis::Net::Fuzz
                 }
 
                 const std::size_t availableLength = std::min(chunkSize, input.size() - offset);
-                const auto status = decoder.parse(input.data() + offset, availableLength);
-                using Status = decltype(status);
+                const auto        status          = decoder.parse(input.data() + offset, availableLength);
+                using Status                      = decltype(status);
 
                 // 契约是「本次 parse 实际消费了多少」，因此每次都要按它推进 offset：
                 // 产出一帧不等于没消费字节，不推进就是把同一段字节反复重喂
@@ -121,15 +120,14 @@ namespace AsynGyanis::Net::Fuzz
         /// WebSocket 帧的可比对标识：操作码、压缩位与负载字节
         std::string describeWebSocketFrame(const WebSocketFrame &frame)
         {
-            return std::to_string(static_cast<int>(frame.opCode)) + '/' + (frame.isFinal ? "F" : "-") + (frame.isCompressed ? "C" : "-") +
-                   '/' + frame.payload;
+            return std::to_string(static_cast<int>(frame.opCode)) + '/' + (frame.isFinal ? "F" : "-") + (frame.isCompressed ? "C" : "-") + '/' + frame.payload;
         }
 
         /// HTTP/2 帧的可比对标识：帧类型、标志、流号、负载长度与负载字节
         std::string describeHttp2Frame(const Http2Frame &frame)
         {
-            return std::to_string(static_cast<int>(frame.header.type)) + '/' + std::to_string(frame.header.flags) + '/' +
-                   std::to_string(frame.header.streamId) + '/' + std::to_string(frame.header.payloadLength) + '/' + frame.payload;
+            return std::to_string(static_cast<int>(frame.header.type)) + '/' + std::to_string(frame.header.flags) + '/' + std::to_string(frame.header.streamId) + '/' +
+                   std::to_string(frame.header.payloadLength) + '/' + frame.payload;
         }
 
         /// 拼一个「掩码 + 定长」的合法客户端文本帧（服务端解码器要求客户端帧必须带掩码，RFC 6455 §5.3）
@@ -150,7 +148,7 @@ namespace AsynGyanis::Net::Fuzz
         /// 为 WebSocket 目标造输入：合法帧头骨架 + 随机长度/标志位/负载
         std::string makeWebSocketInput(DeterministicRandom &random)
         {
-            std::string input = makeMaskedTextFrame("hi");
+            std::string       input         = makeMaskedTextFrame("hi");
             const std::size_t mutationCount = 1U + random.nextBelow(4U);
             for (std::size_t mutation = 0; mutation < mutationCount && !input.empty(); ++mutation)
             {
@@ -168,10 +166,9 @@ namespace AsynGyanis::Net::Fuzz
         /// 为 HTTP/2 目标造输入：9 字节帧头（长度/类型/标志/流号都随机，R 位偶尔置上）+ 随机负载
         std::string makeHttp2Input(DeterministicRandom &random)
         {
-            const std::size_t payloadLength = random.nextBelow(40U);
-            const std::uint32_t declaredLength = random.nextBelow(2) == 0U
-                                                     ? static_cast<std::uint32_t>(payloadLength)
-                                                     : static_cast<std::uint32_t>(random.nextBelow(1U << 18U)); // 偶尔与实际长度不符
+            const std::size_t   payloadLength = random.nextBelow(40U);
+            const std::uint32_t declaredLength =
+                    random.nextBelow(2) == 0U ? static_cast<std::uint32_t>(payloadLength) : static_cast<std::uint32_t>(random.nextBelow(1U << 18U)); // 偶尔与实际长度不符
             std::string header;
             header.push_back(static_cast<char>((declaredLength >> 16U) & 0xFFU));
             header.push_back(static_cast<char>((declaredLength >> 8U) & 0xFFU));
@@ -199,13 +196,12 @@ namespace AsynGyanis::Net::Fuzz
         /// 为 HTTP/3 目标造输入：varint 帧类型 + varint 长度（1/2/4 字节编码都试）+ 随机负载
         std::string makeHttp3Input(DeterministicRandom &random)
         {
-            std::string input;
+            std::string         input;
             const std::uint64_t frameType = random.nextBelow(2) == 0U ? 0x00U : random.nextBelow(0x100U); // DATA / HEADERS / 少量未知类型
             input.push_back(static_cast<char>(static_cast<unsigned char>(frameType & 0x3FU)));
 
-            const std::size_t payloadLength = random.nextBelow(32U);
-            const std::uint64_t declaredLength =
-                    random.nextBelow(2) == 0U ? static_cast<std::uint64_t>(payloadLength) : random.nextBelow(1U << 20U);
+            const std::size_t   payloadLength  = random.nextBelow(32U);
+            const std::uint64_t declaredLength = random.nextBelow(2) == 0U ? static_cast<std::uint64_t>(payloadLength) : random.nextBelow(1U << 20U);
             if (declaredLength < 64U)
             {
                 input.push_back(static_cast<char>(static_cast<unsigned char>(declaredLength & 0x3FU)));
@@ -231,8 +227,8 @@ namespace AsynGyanis::Net::Fuzz
             static constexpr char kAlphabet[] = "abcxyz019:/- ";
 
             std::string input;
-            input.push_back(static_cast<char>(0x20U));                            // 不索引的字面量头字段，名字紧随其后
-            const std::size_t nameLength = 1U + random.nextBelow(6U);              // 名长（7 位前缀，单字节内）
+            input.push_back(static_cast<char>(0x20U));                // 不索引的字面量头字段，名字紧随其后
+            const std::size_t nameLength = 1U + random.nextBelow(6U); // 名长（7 位前缀，单字节内）
             input.push_back(static_cast<char>(static_cast<unsigned char>(nameLength)));
             for (std::size_t index = 0; index < nameLength; ++index)
             {
@@ -281,7 +277,7 @@ namespace AsynGyanis::Net::Fuzz
          */
         RunTrace driveHttp3(Http3FrameReader &reader, const std::string &input, const std::size_t chunkSize, std::string &errorText)
         {
-            RunTrace trace;
+            RunTrace          trace;
             const std::size_t maximumSteps = maximumDriveSteps(input.size());
 
             std::size_t offset = 0;
@@ -346,9 +342,9 @@ namespace AsynGyanis::Net::Fuzz
          */
         RunTrace driveHpack(HpackDecoder &decoder, const std::string &input, std::string &errorText)
         {
-            RunTrace trace;
+            RunTrace                      trace;
             std::vector<HpackHeaderField> fields;
-            std::string failureText;
+            std::string                   failureText;
             if (decoder.decode(input, fields, &failureText))
             {
                 for (const auto &field: fields)
@@ -392,11 +388,16 @@ namespace AsynGyanis::Net::Fuzz
     {
         switch (target)
         {
-            case Target::WebSocketFrame: return "WebSocketFrame";
-            case Target::Http2Frame: return "Http2Frame";
-            case Target::Http3Frame: return "Http3Frame";
-            case Target::HpackBlock: return "HpackBlock";
-            case Target::Count: break;
+            case Target::WebSocketFrame:
+                return "WebSocketFrame";
+            case Target::Http2Frame:
+                return "Http2Frame";
+            case Target::Http3Frame:
+                return "Http3Frame";
+            case Target::HpackBlock:
+                return "HpackBlock";
+            case Target::Count:
+                break;
         }
         return "Unknown";
     }
@@ -406,11 +407,20 @@ namespace AsynGyanis::Net::Fuzz
         std::string input;
         switch (target)
         {
-            case Target::WebSocketFrame: input = makeWebSocketInput(random); break;
-            case Target::Http2Frame: input = makeHttp2Input(random); break;
-            case Target::Http3Frame: input = makeHttp3Input(random); break;
-            case Target::HpackBlock: input = makeHpackInput(random); break;
-            case Target::Count: break;
+            case Target::WebSocketFrame:
+                input = makeWebSocketInput(random);
+                break;
+            case Target::Http2Frame:
+                input = makeHttp2Input(random);
+                break;
+            case Target::Http3Frame:
+                input = makeHttp3Input(random);
+                break;
+            case Target::HpackBlock:
+                input = makeHpackInput(random);
+                break;
+            case Target::Count:
+                break;
         }
         if (input.size() > maximumLength && maximumLength > 0)
         {
@@ -423,8 +433,10 @@ namespace AsynGyanis::Net::Fuzz
     {
         switch (target)
         {
-            case Target::WebSocketFrame: return makeMaskedTextFrame("reset-probe");
-            case Target::Http2Frame: return encodeHttp2SettingsFrame(Http2SettingsPayload{});
+            case Target::WebSocketFrame:
+                return makeMaskedTextFrame("reset-probe");
+            case Target::Http2Frame:
+                return encodeHttp2SettingsFrame(Http2SettingsPayload{});
             case Target::Http3Frame:
             {
                 std::string frame;
@@ -437,12 +449,12 @@ namespace AsynGyanis::Net::Fuzz
             {
                 // 用生产编码器生成：编解码互逆本就是它的契约，手写头块一旦与编码器口径有差，
                 // I5 判的就是「我自己的假设」而不是解码器
-                HpackEncoder encoder;
-                const std::vector<HpackHeaderField> fields{{HpackHeaderField{.name = ":status", .value = "200"},
-                                                            HpackHeaderField{.name = "content-type", .value = "text/plain"}}};
+                HpackEncoder                        encoder;
+                const std::vector<HpackHeaderField> fields{{HpackHeaderField{.name = ":status", .value = "200"}, HpackHeaderField{.name = "content-type", .value = "text/plain"}}};
                 return encoder.encode(fields);
             }
-            case Target::Count: break;
+            case Target::Count:
+                break;
         }
         return {};
     }
@@ -467,7 +479,7 @@ namespace AsynGyanis::Net::Fuzz
             case Target::WebSocketFrame:
             {
                 WebSocketFrameDecoder wholeDecoder;
-                const RunTrace whole = driveParseStyle(wholeDecoder, input, input.size(), describeWebSocketFrame, errorText);
+                const RunTrace        whole = driveParseStyle(wholeDecoder, input, input.size(), describeWebSocketFrame, errorText);
                 collect(whole);
                 if (!errorText.empty())
                 {
@@ -475,7 +487,7 @@ namespace AsynGyanis::Net::Fuzz
                 }
 
                 WebSocketFrameDecoder byteWiseDecoder;
-                const RunTrace byteWise = driveParseStyle(byteWiseDecoder, input, 1U, describeWebSocketFrame, errorText);
+                const RunTrace        byteWise = driveParseStyle(byteWiseDecoder, input, 1U, describeWebSocketFrame, errorText);
                 if (!errorText.empty())
                 {
                     return errorText;
@@ -488,8 +500,7 @@ namespace AsynGyanis::Net::Fuzz
                 // I4 粘滞 + I6 越权产出：错误态下再喂任何字节，仍判错且一个字节都不消费
                 if (whole.isEndedInError)
                 {
-                    if (wholeDecoder.parse("tail-more-bytes", 15U) != WebSocketDecodeStatus::Error ||
-                        wholeDecoder.consumedByteCount() != 0U)
+                    if (wholeDecoder.parse("tail-more-bytes", 15U) != WebSocketDecodeStatus::Error || wholeDecoder.consumedByteCount() != 0U)
                     {
                         return "错误态没粘住，或还在消费字节（I4/I6）";
                     }
@@ -498,8 +509,8 @@ namespace AsynGyanis::Net::Fuzz
                 // I5 复位可用：在**同一个**解码器上 reset() 后必须还能解出合法输入。
                 // 换成新建一个对象，这条就退化成「解码器能用」——粘滞没清干净恰好被绕过
                 wholeDecoder.reset();
-                const std::string probe = validInput(target);
-                const RunTrace resetTrace = driveParseStyle(wholeDecoder, probe, probe.size(), describeWebSocketFrame, errorText);
+                const std::string probe      = validInput(target);
+                const RunTrace    resetTrace = driveParseStyle(wholeDecoder, probe, probe.size(), describeWebSocketFrame, errorText);
                 if (resetTrace.isEndedInError || resetTrace.frameKeys.empty())
                 {
                     return "reset() 后合法输入解不出帧（I5）";
@@ -510,7 +521,7 @@ namespace AsynGyanis::Net::Fuzz
             case Target::Http2Frame:
             {
                 Http2FrameDecoder wholeDecoder(Http2FrameLimits{.maximumFrameSizeByteCount = kDecoderFrameLimitBytes});
-                const RunTrace whole = driveParseStyle(wholeDecoder, input, input.size(), describeHttp2Frame, errorText);
+                const RunTrace    whole = driveParseStyle(wholeDecoder, input, input.size(), describeHttp2Frame, errorText);
                 collect(whole);
                 if (!errorText.empty())
                 {
@@ -518,7 +529,7 @@ namespace AsynGyanis::Net::Fuzz
                 }
 
                 Http2FrameDecoder byteWiseDecoder(Http2FrameLimits{.maximumFrameSizeByteCount = kDecoderFrameLimitBytes});
-                const RunTrace byteWise = driveParseStyle(byteWiseDecoder, input, 1U, describeHttp2Frame, errorText);
+                const RunTrace    byteWise = driveParseStyle(byteWiseDecoder, input, 1U, describeHttp2Frame, errorText);
                 if (!errorText.empty())
                 {
                     return errorText;
@@ -540,8 +551,8 @@ namespace AsynGyanis::Net::Fuzz
 
                 // I5 复位可用：同一个对象 reset() 后必须还能解出合法帧（见 WebSocket 分支里同样的说明）
                 wholeDecoder.reset();
-                const std::string probe = validInput(target);
-                const RunTrace resetTrace = driveParseStyle(wholeDecoder, probe, probe.size(), describeHttp2Frame, errorText);
+                const std::string probe      = validInput(target);
+                const RunTrace    resetTrace = driveParseStyle(wholeDecoder, probe, probe.size(), describeHttp2Frame, errorText);
                 if (resetTrace.isEndedInError || resetTrace.frameKeys.empty())
                 {
                     return "reset() 后合法输入解不出帧（I5）";
@@ -552,14 +563,14 @@ namespace AsynGyanis::Net::Fuzz
             case Target::Http3Frame:
             {
                 Http3FrameReader wholeReader(kDecoderFrameLimitBytes);
-                const RunTrace whole = driveHttp3(wholeReader, input, input.size(), errorText);
+                const RunTrace   whole = driveHttp3(wholeReader, input, input.size(), errorText);
                 collect(whole);
                 if (!errorText.empty())
                 {
                     return errorText;
                 }
                 Http3FrameReader byteWiseReader(kDecoderFrameLimitBytes);
-                const RunTrace byteWise = driveHttp3(byteWiseReader, input, 1U, errorText);
+                const RunTrace   byteWise = driveHttp3(byteWiseReader, input, 1U, errorText);
                 if (!errorText.empty())
                 {
                     return errorText;
@@ -572,8 +583,8 @@ namespace AsynGyanis::Net::Fuzz
                 // I5 复位可用：同一个 reader reset() 后必须还能解出合法帧
                 wholeReader.reset();
                 const std::string probe = validInput(target);
-                std::string probeError;
-                const RunTrace resetTrace = driveHttp3(wholeReader, probe, probe.size(), probeError);
+                std::string       probeError;
+                const RunTrace    resetTrace = driveHttp3(wholeReader, probe, probe.size(), probeError);
                 if (!probeError.empty())
                 {
                     return probeError;
@@ -587,16 +598,16 @@ namespace AsynGyanis::Net::Fuzz
 
             case Target::HpackBlock:
             {
-                HpackDecoder firstDecoder;
-                std::string firstError;
+                HpackDecoder   firstDecoder;
+                std::string    firstError;
                 const RunTrace first = driveHpack(firstDecoder, input, firstError);
                 collect(first);
                 if (!firstError.empty())
                 {
                     return firstError;
                 }
-                HpackDecoder secondDecoder;
-                std::string secondError;
+                HpackDecoder   secondDecoder;
+                std::string    secondError;
                 const RunTrace second = driveHpack(secondDecoder, input, secondError);
                 if (!secondError.empty())
                 {
@@ -610,7 +621,7 @@ namespace AsynGyanis::Net::Fuzz
                 // I5 复位可用：同一个 decoder reset() 之后必须还能整块解出合法头块。
                 // 不挂在 isEndedInError 分支下：从「干净态 reset()」也该可用，且失败路径往往正是那种
                 firstDecoder.reset();
-                std::string resetError;
+                std::string    resetError;
                 const RunTrace resetTrace = driveHpack(firstDecoder, validInput(target), resetError);
                 if (!resetError.empty())
                 {
@@ -623,7 +634,8 @@ namespace AsynGyanis::Net::Fuzz
                 return {};
             }
 
-            case Target::Count: break;
+            case Target::Count:
+                break;
         }
         return "未知目标";
     }

@@ -40,11 +40,11 @@ namespace AsynGyanis::Database
      */
     struct RedisPushReply
     {
-        std::string    kind;                     ///< 回复类型：message / pmessage / subscribe / unsubscribe ...
-        std::string    channel;                  ///< 消息所在频道；pmessage 时是实际命中的那个频道
-        std::string    pattern;                  ///< 仅 pmessage 有值：命中的模式
-        std::string    payload;                  ///< 消息正文；订阅类回复没有这一段，留空
-        std::int64_t   subscriptionCount{0};     ///< 订阅类回复里的当前订阅数；消息类为 0
+        std::string  kind;                 ///< 回复类型：message / pmessage / subscribe / unsubscribe ...
+        std::string  channel;              ///< 消息所在频道；pmessage 时是实际命中的那个频道
+        std::string  pattern;              ///< 仅 pmessage 有值：命中的模式
+        std::string  payload;              ///< 消息正文；订阅类回复没有这一段，留空
+        std::int64_t subscriptionCount{0}; ///< 订阅类回复里的当前订阅数；消息类为 0
     };
 
     /**
@@ -57,10 +57,10 @@ namespace AsynGyanis::Database
      */
     struct RedisKeyspaceNotification
     {
-        std::int64_t database{0};      ///< 通知来自哪个键空间
+        std::int64_t database{0};       ///< 通知来自哪个键空间
         bool         isKeyEvent{false}; ///< true 表示走的是 __keyevent__（正文是键），false 是 __keyspace__（正文是事件）
-        std::string  key;              ///< 被改动的键
-        std::string  event;            ///< 事件名（set / del / expired / evicted ...）
+        std::string  key;               ///< 被改动的键
+        std::string  event;             ///< 事件名（set / del / expired / evicted ...）
     };
 
     /**
@@ -207,7 +207,7 @@ namespace AsynGyanis::Database
          *          记录原因、丢弃未读回的命令并断开连接，返回已取到的前缀，已登记的命令一律不重放到新连接。
          * @return std::vector<std::unique_ptr<DatabaseResult> > 与已发送命令一一对应（截断后）的结果集列表
          */
-        [[nodiscard]] std::vector<std::unique_ptr<DatabaseResult> > flushPipeline();
+        [[nodiscard]] std::vector<std::unique_ptr<DatabaseResult>> flushPipeline();
 
         /**
          * @brief 切换键空间（数据库编号）
@@ -248,7 +248,7 @@ namespace AsynGyanis::Database
          * @return false 频道列表为空、未连接或收发失败，原因见 lastError()
          * @note 订阅是连接级会话状态：这条连接不能再交回连接池。归还时 resetSessionState() 会直接
          *       断开它（回复流已与命令错位，留着比丢掉便宜）
-        */
+         */
         bool subscribe(std::span<const std::string_view> channels);
 
         /**
@@ -303,8 +303,7 @@ namespace AsynGyanis::Database
          * @return std::optional<RedisKeyspaceNotification> 认得出形状时给出拆好的两半
          * @return std::nullopt 频道不是这两种形状（前缀不对、缺分隔符、库号不是十进制整数）
          */
-        [[nodiscard]] static std::optional<RedisKeyspaceNotification> parseKeyspaceNotification(std::string_view channel,
-                                                                                               std::string_view payload);
+        [[nodiscard]] static std::optional<RedisKeyspaceNotification> parseKeyspaceNotification(std::string_view channel, std::string_view payload);
 
     protected:
         /**
@@ -367,14 +366,14 @@ namespace AsynGyanis::Database
 
         // 之所以在登记时就切词而不是原样缓存命令文本：命令文本的合法性错误能在 pipelineCommand()
         // 当场反馈，不必等到 flush 时才发现「N 条里有一条引号没闭合」
-        std::vector<std::vector<std::string> > m_pipelineCommands; ///< 管道命令缓冲区，元素是已切词好的参数数组
+        std::vector<std::vector<std::string>> m_pipelineCommands; ///< 管道命令缓冲区，元素是已切词好的参数数组
 
         bool m_isInTransaction{false}; ///< 服务端是否停在 MULTI 里：归还时发 DISCARD，否则下一个借用者的写全被排队
         bool m_isWatchingKeys{false};  ///< 服务端是否留着 WATCH 监视：归还时发 UNWATCH，否则别人的键改动会让他人的 EXEC 判成冲突
 
-        int  m_configuredKeySpaceIndex{0};      ///< 配置里那个键空间编号，即一条新会话应当停在的库
-        int  m_currentKeySpaceIndex{0};         ///< 本会话实际所在的键空间编号，与上面不等时归还前 SELECT 回去
-        bool m_isSessionModeChanged{false};     ///< 是否进入了退不回去的会话模式（MONITOR/订阅/HELLO）：归还时断开这条连接
+        int  m_configuredKeySpaceIndex{0};  ///< 配置里那个键空间编号，即一条新会话应当停在的库
+        int  m_currentKeySpaceIndex{0};     ///< 本会话实际所在的键空间编号，与上面不等时归还前 SELECT 回去
+        bool m_isSessionModeChanged{false}; ///< 是否进入了退不回去的会话模式（MONITOR/订阅/HELLO）：归还时断开这条连接
 
         // 两类订阅各记各的条数：服务端 UNSUBSCRIBE / PUNSUBSCRIBE 的确认里那个整数是**两类合计**
         // 的剩余订阅数，光看回复分不出「这一类退完了没」，因此按类记账才知道每条命令该收几条确认。

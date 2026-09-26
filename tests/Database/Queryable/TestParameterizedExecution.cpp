@@ -56,8 +56,7 @@ namespace
      */
     void createSampleTable(DatabaseConnection &connection)
     {
-        const auto createResult = connection.execute(
-            "CREATE TABLE samples (id INTEGER PRIMARY KEY, label TEXT, amount REAL, flag INTEGER)");
+        const auto createResult = connection.execute("CREATE TABLE samples (id INTEGER PRIMARY KEY, label TEXT, amount REAL, flag INTEGER)");
         ASSERT_TRUE(createResult != nullptr) << connection.lastError();
     }
 
@@ -76,20 +75,13 @@ TEST(ParameterizedExecution, SqliteBindsScalarParameterTypes)
     ASSERT_TRUE(connection->isConnected()) << connection->lastError();
     createSampleTable(*connection);
 
-    const std::vector<DatabaseValue> insertParameters{
-        std::int64_t{7},
-        std::string("O'Brien -- 中文"),
-        -12.5,
-        true
-    };
+    const std::vector<DatabaseValue> insertParameters{std::int64_t{7}, std::string("O'Brien -- 中文"), -12.5, true};
 
-    const auto insertResult = connection->execute(
-        "INSERT INTO samples (id, label, amount, flag) VALUES (?, ?, ?, ?)", insertParameters);
+    const auto insertResult = connection->execute("INSERT INTO samples (id, label, amount, flag) VALUES (?, ?, ?, ?)", insertParameters);
     ASSERT_TRUE(insertResult != nullptr) << connection->lastError();
 
     const std::vector<DatabaseValue> selectParameters{std::int64_t{7}};
-    const auto selectResult = connection->execute(
-        "SELECT id, label, amount, flag FROM samples WHERE id = ?", selectParameters);
+    const auto                       selectResult = connection->execute("SELECT id, label, amount, flag FROM samples WHERE id = ?", selectParameters);
     ASSERT_TRUE(selectResult != nullptr) << connection->lastError();
     ASSERT_TRUE(selectResult->next());
 
@@ -111,20 +103,13 @@ TEST(ParameterizedExecution, SqliteBindsNullParameter)
     ASSERT_TRUE(connection->isConnected()) << connection->lastError();
     createSampleTable(*connection);
 
-    const std::vector<DatabaseValue> insertParameters{
-        std::int64_t{1},
-        std::monostate{},
-        std::monostate{},
-        std::int64_t{0}
-    };
-    const auto insertResult = connection->execute(
-        "INSERT INTO samples (id, label, amount, flag) VALUES (?, ?, ?, ?)", insertParameters);
+    const std::vector<DatabaseValue> insertParameters{std::int64_t{1}, std::monostate{}, std::monostate{}, std::int64_t{0}};
+    const auto                       insertResult = connection->execute("INSERT INTO samples (id, label, amount, flag) VALUES (?, ?, ?, ?)", insertParameters);
     ASSERT_TRUE(insertResult != nullptr) << connection->lastError();
 
     const std::vector<DatabaseValue> selectParameters{std::int64_t{1}};
     // label 是 TEXT 且绑了 NULL：只有真正绑成 NULL，"IS NULL" 才成立
-    const auto selectResult = connection->execute(
-        "SELECT label IS NULL, amount IS NULL FROM samples WHERE id = ?", selectParameters);
+    const auto selectResult = connection->execute("SELECT label IS NULL, amount IS NULL FROM samples WHERE id = ?", selectParameters);
     ASSERT_TRUE(selectResult != nullptr) << connection->lastError();
     ASSERT_TRUE(selectResult->next());
 
@@ -133,12 +118,10 @@ TEST(ParameterizedExecution, SqliteBindsNullParameter)
 
     // 对照：绑空串时 IS NULL 不成立，证明二者没有被混为一谈
     const std::vector<DatabaseValue> emptyTextParameters{std::int64_t{2}, std::string(""), 0.0, std::int64_t{0}};
-    ASSERT_TRUE(connection->execute("INSERT INTO samples (id, label, amount, flag) VALUES (?, ?, ?, ?)",
-                                    emptyTextParameters) != nullptr) << connection->lastError();
+    ASSERT_TRUE(connection->execute("INSERT INTO samples (id, label, amount, flag) VALUES (?, ?, ?, ?)", emptyTextParameters) != nullptr) << connection->lastError();
 
     const std::vector<DatabaseValue> emptyTextSelectParameters{std::int64_t{2}};
-    const auto emptyTextResult = connection->execute(
-        "SELECT label IS NULL FROM samples WHERE id = ?", emptyTextSelectParameters);
+    const auto                       emptyTextResult = connection->execute("SELECT label IS NULL FROM samples WHERE id = ?", emptyTextSelectParameters);
     ASSERT_TRUE(emptyTextResult != nullptr) << connection->lastError();
     ASSERT_TRUE(emptyTextResult->next());
     EXPECT_EQ(std::get<std::int64_t>(emptyTextResult->getValue(0)), 0);
@@ -153,7 +136,7 @@ TEST(ParameterizedExecution, SqliteParameterizedSelectReturnsRows)
     ASSERT_TRUE(connection->isConnected()) << connection->lastError();
 
     const std::vector<DatabaseValue> parameters{std::int64_t{41}, std::string("七")};
-    const auto result = connection->execute("SELECT ? AS doubled, ? AS text", parameters);
+    const auto                       result = connection->execute("SELECT ? AS doubled, ? AS text", parameters);
     ASSERT_TRUE(result != nullptr) << connection->lastError();
     ASSERT_TRUE(result->next());
 
@@ -175,14 +158,12 @@ TEST(ParameterizedExecution, SqliteRejectsParameterCountMismatch)
     createSampleTable(*connection);
 
     // 少给参数：若按缺省 NULL 执行，WHERE id = NULL 会静默变成永假
-    const auto tooFewParameters = connection->execute("SELECT id FROM samples WHERE id = ?",
-                                                     std::vector<DatabaseValue>{});
+    const auto tooFewParameters = connection->execute("SELECT id FROM samples WHERE id = ?", std::vector<DatabaseValue>{});
     EXPECT_TRUE(tooFewParameters == nullptr);
     EXPECT_NE(connection->lastError().find("参数数量不匹配"), std::string::npos);
 
     // 多给参数：多出来的取值没有任何位置可绑定，属于调用方写错了 SQL 或参数列表
-    const auto tooManyParameters = connection->execute("SELECT id FROM samples",
-                                                      std::vector<DatabaseValue>{std::int64_t{1}});
+    const auto tooManyParameters = connection->execute("SELECT id FROM samples", std::vector<DatabaseValue>{std::int64_t{1}});
     EXPECT_TRUE(tooManyParameters == nullptr);
     EXPECT_NE(connection->lastError().find("参数数量不匹配"), std::string::npos);
 }
@@ -197,7 +178,7 @@ TEST(ParameterizedExecution, SqliteRejectsContainerParameter)
 
     // List / Hash 这类容器在 SQL 里无法映射成单个标量参数，正确做法是展开成多个占位符
     const std::vector<DatabaseValue> parameters{std::vector<std::string>{"甲", "乙"}};
-    const auto result = connection->execute("SELECT ?", parameters);
+    const auto                       result = connection->execute("SELECT ?", parameters);
 
     EXPECT_TRUE(result == nullptr);
     EXPECT_NE(connection->lastError().find("容器类型"), std::string::npos);
@@ -214,13 +195,13 @@ TEST(ParameterizedExecution, UnsupportedDriversRejectParameterizedExecute)
     // MySQL 已实现参数绑定（预处理语句）：未连接时以「未连接」这条判定拒绝，绝不把参数丢掉。
     // 参数个数与占位符个数是否匹配要在 prepare 之后才知道，需要可用的服务端才能验证
     MySqlConnection mySqlConnection(ConnectionConfig::mySqlDefault());
-    const auto mySqlResult = mySqlConnection.execute("SELECT ?", parameters);
+    const auto      mySqlResult = mySqlConnection.execute("SELECT ?", parameters);
     EXPECT_TRUE(mySqlResult == nullptr);
     EXPECT_NE(mySqlConnection.lastError().find("MySQL"), std::string::npos) << mySqlConnection.lastError();
 
     // Redis 仍无绑定实现：走基类默认实现，明确报「暂不支持参数化查询」并带上驱动名
     RedisConnection redisConnection(ConnectionConfig::redisDefault());
-    const auto redisResult = redisConnection.execute("GET ?", parameters);
+    const auto      redisResult = redisConnection.execute("GET ?", parameters);
     EXPECT_TRUE(redisResult == nullptr);
     EXPECT_NE(redisConnection.lastError().find("暂不支持参数化查询"), std::string::npos);
     EXPECT_NE(redisConnection.lastError().find("Redis"), std::string::npos);
@@ -240,34 +221,32 @@ TEST(ParameterizedExecution, PooledConnectionForwardsParameterizedExecute)
     poolConfiguration.maximumPoolSize = 1;
 
     ConnectionPool pool(
-        []()
-        {
-            auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(":memory:"));
-            connection->connect();
-            return connection;
-        },
-        poolConfiguration);
+            []()
+            {
+                auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(":memory:"));
+                connection->connect();
+                return connection;
+            },
+            poolConfiguration);
 
     {
         PooledConnection connection = pool.acquire();
         ASSERT_TRUE(connection);
-        ASSERT_TRUE(connection->execute("CREATE TABLE items (id INTEGER, name TEXT)") != nullptr)
-            << connection->lastError();
+        ASSERT_TRUE(connection->execute("CREATE TABLE items (id INTEGER, name TEXT)") != nullptr) << connection->lastError();
     }
 
     {
         PooledConnection connection = pool.acquire();
         ASSERT_TRUE(connection);
         const std::vector<DatabaseValue> parameters{std::int64_t{5}, std::string("需绑定的值")};
-        ASSERT_TRUE(connection->execute("INSERT INTO items (id, name) VALUES (?, ?)", parameters) != nullptr)
-            << connection->lastError();
+        ASSERT_TRUE(connection->execute("INSERT INTO items (id, name) VALUES (?, ?)", parameters) != nullptr) << connection->lastError();
     }
 
     {
         PooledConnection connection = pool.acquire();
         ASSERT_TRUE(connection);
         const std::vector<DatabaseValue> parameters{std::int64_t{5}};
-        const auto result = connection->execute("SELECT name FROM items WHERE id = ?", parameters);
+        const auto                       result = connection->execute("SELECT name FROM items WHERE id = ?", parameters);
         ASSERT_TRUE(result != nullptr) << connection->lastError();
         ASSERT_TRUE(result->next());
         EXPECT_EQ(std::get<std::string>(result->getValue(0)), "需绑定的值");

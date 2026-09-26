@@ -15,10 +15,8 @@ namespace
     {
         // 桶下标按 16 字节一档，超出一律落溢出桶：溢出桶 nonzero 就说明有单次申请大得离谱
         const std::size_t bucketIndex = size / AsynGyanis::TestSupport::kAllocationHistogramBucketBytes;
-        allocationHistogram[bucketIndex < AsynGyanis::TestSupport::kAllocationHistogramBucketCount
-                                ? bucketIndex
-                                : AsynGyanis::TestSupport::kAllocationHistogramBucketCount - 1U]
-            .fetch_add(1U, std::memory_order_relaxed);
+        allocationHistogram[bucketIndex < AsynGyanis::TestSupport::kAllocationHistogramBucketCount ? bucketIndex : AsynGyanis::TestSupport::kAllocationHistogramBucketCount - 1U]
+                .fetch_add(1U, std::memory_order_relaxed);
     }
 } // namespace
 

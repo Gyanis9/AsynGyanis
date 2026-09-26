@@ -9,8 +9,8 @@
 
 #pragma once
 
-#include "Base/Log/LogEvent.h"
 #include "Base/Log/Formatters/LogFormatter.h"
+#include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 
 #include <atomic>
@@ -104,7 +104,7 @@ namespace AsynGyanis::Base
         void formatEventInto(std::string &out, const LogEvent &event) const;
 
     private:
-        std::atomic<LogLevel>                       m_level{LogLevel::Trace}; ///< 当前最小日志级别
-        std::atomic<std::shared_ptr<LogFormatter> > m_formatter;              ///< 原子 shared_ptr，store/load 保证线程安全的读写
+        std::atomic<LogLevel>                      m_level{LogLevel::Trace}; ///< 当前最小日志级别
+        std::atomic<std::shared_ptr<LogFormatter>> m_formatter;              ///< 原子 shared_ptr，store/load 保证线程安全的读写
     };
 } // namespace AsynGyanis::Base

@@ -1,7 +1,7 @@
 // HTTP/2 客户端连接层的端到端用例：对端是自家服务端（已过 h2spec 146/146 那一侧）
+#include "Core/Socket/AsyncSocket.h"
 #include "Http2TestSupport.h"
 #include "HttpTestSupport.h"
-#include "Core/Socket/AsyncSocket.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http2/Http2ClientConnection.h"
 #include "Net/Tcp/TcpClient.h"
@@ -10,9 +10,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
-#include <algorithm>
 #include <coroutine>
 #include <memory>
 #include <string>
@@ -32,10 +32,10 @@ namespace AsynGyanis::Net
         /// 一轮「建连 → 发 N 次同样的请求 → 收尾」的结论
         struct ClientRunOutcome
         {
-            bool isStarted{false};          ///< 前奏与本端 SETTINGS 是否走完（含收到对端 SETTINGS）
-            std::vector<int> statusCodes;   ///< 每次请求的状态码，0 表示没拿到响应
-            std::vector<std::string> bodies; ///< 每次请求的正文
-            std::vector<std::string> errors; ///< 每次请求的中文失败原因（成功时为空串）
+            bool                     isStarted{false}; ///< 前奏与本端 SETTINGS 是否走完（含收到对端 SETTINGS）
+            std::vector<int>         statusCodes;      ///< 每次请求的状态码，0 表示没拿到响应
+            std::vector<std::string> bodies;           ///< 每次请求的正文
+            std::vector<std::string> errors;           ///< 每次请求的中文失败原因（成功时为空串）
         };
 
         /**
@@ -51,9 +51,8 @@ namespace AsynGyanis::Net
             {
                 co_return nullptr;
             }
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"127.0.0.1", port, false},
-                                                           std::move(*stream)));
+            auto connection =
+                    std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"127.0.0.1", port, false}, std::move(*stream)));
             if (!co_await connection->start(kClientWaitTimeout))
             {
                 co_return nullptr;
@@ -61,18 +60,16 @@ namespace AsynGyanis::Net
             co_return connection;
         }
 
-        Core::Task<void> runClientTask(Core::EventLoop &loop, const std::uint16_t port, const std::string &method,
-                                       const std::string &path, const std::string &body, const std::size_t requestCount,
-                                       const std::chrono::milliseconds requestTimeout, ClientRunOutcome &outcome)
+        Core::Task<void> runClientTask(Core::EventLoop &loop, const std::uint16_t port, const std::string &method, const std::string &path, const std::string &body,
+                                       const std::size_t requestCount, const std::chrono::milliseconds requestTimeout, ClientRunOutcome &outcome)
         {
-            auto connection = co_await openConnection(loop, port);
+            auto connection   = co_await openConnection(loop, port);
             outcome.isStarted = connection != nullptr;
             if (connection != nullptr)
             {
                 for (std::size_t index = 0; index < requestCount; ++index)
                 {
-                    Http2ClientResponse response = co_await connection->request(
-                            "http", "127.0.0.1:" + std::to_string(port), method, path, {}, body, requestTimeout);
+                    Http2ClientResponse response = co_await connection->request("http", "127.0.0.1:" + std::to_string(port), method, path, {}, body, requestTimeout);
                     outcome.statusCodes.push_back(response.statusCode);
                     outcome.bodies.push_back(std::move(response.body));
                     outcome.errors.push_back(std::move(response.errorMessage));
@@ -83,13 +80,12 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        ClientRunOutcome runClientRequests(const std::uint16_t port, const std::string &method, const std::string &path,
-                                           const std::string &body = {}, const std::size_t requestCount = 1,
-                                           const std::chrono::milliseconds requestTimeout = kClientWaitTimeout)
+        ClientRunOutcome runClientRequests(const std::uint16_t port, const std::string &method, const std::string &path, const std::string &body = {},
+                                           const std::size_t requestCount = 1, const std::chrono::milliseconds requestTimeout = kClientWaitTimeout)
         {
-            Core::EventLoop loop;
+            Core::EventLoop  loop;
             ClientRunOutcome outcome;
-            auto work = runClientTask(loop, port, method, path, body, requestCount, requestTimeout, outcome);
+            auto             work = runClientTask(loop, port, method, path, body, requestCount, requestTimeout, outcome);
             if (!work.isReady())
             {
                 loop.scheduler().schedule(work.handle());
@@ -101,18 +97,19 @@ namespace AsynGyanis::Net
         /// 带 /echo 路由（把请求正文原样回出）的夹具参数
         void registerEchoRoute(Router &router, Core::EventLoop &)
         {
-            router.post("/echo", [](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
-            {
-                response.setBody(request.body());
-                co_return;
-            });
+            router.post("/echo",
+                        [](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                        {
+                            response.setBody(request.body());
+                            co_return;
+                        });
         }
 
         /// 脚本化对端读到的一串帧，以及读过程中出的错
         struct PeerFrames
         {
-            std::vector<Http2Frame> frames; ///< 解出来的帧，按到达顺序
-            std::string errorText;          ///< 帧层解码失败的原因；空表示一路正常
+            std::vector<Http2Frame> frames;    ///< 解出来的帧，按到达顺序
+            std::string             errorText; ///< 帧层解码失败的原因；空表示一路正常
         };
 
         /**
@@ -128,7 +125,7 @@ namespace AsynGyanis::Net
             while (batch.frames.size() < expectedFrameCount && batch.errorText.empty())
             {
                 std::array<char, 4096> buffer{};
-                const ssize_t receivedByteCount = co_await stream.read(buffer.data(), buffer.size());
+                const ssize_t          receivedByteCount = co_await stream.read(buffer.data(), buffer.size());
                 if (receivedByteCount <= 0)
                 {
                     break; // 对端收口或读错：把手上已有的帧交回去，由用例断言
@@ -136,8 +133,7 @@ namespace AsynGyanis::Net
                 std::size_t offset = 0;
                 while (offset < static_cast<std::size_t>(receivedByteCount))
                 {
-                    const Http2FrameDecodeStatus status = decoder.parse(buffer.data() + offset,
-                                                                        static_cast<std::size_t>(receivedByteCount) - offset);
+                    const Http2FrameDecodeStatus status = decoder.parse(buffer.data() + offset, static_cast<std::size_t>(receivedByteCount) - offset);
                     if (status == Http2FrameDecodeStatus::NeedMore)
                     {
                         break;
@@ -159,8 +155,7 @@ namespace AsynGyanis::Net
         {
             for (const Http2Frame &frame: frames)
             {
-                if (frame.header.type == type
-                    && ((frame.header.flags & kHttp2FlagAcknowledge) != 0U) == requiresAck)
+                if (frame.header.type == type && ((frame.header.flags & kHttp2FlagAcknowledge) != 0U) == requiresAck)
                 {
                     return &frame;
                 }
@@ -178,11 +173,10 @@ namespace AsynGyanis::Net
          * @param payload 负载
          * @return std::string 9 字节帧头加负载
          */
-        std::string rawFrameBytes(const std::uint8_t type, const std::uint8_t flags, const std::uint32_t streamId,
-                                  const std::string_view payload)
+        std::string rawFrameBytes(const std::uint8_t type, const std::uint8_t flags, const std::uint32_t streamId, const std::string_view payload)
         {
             const std::size_t length = payload.size();
-            std::string bytes;
+            std::string       bytes;
             bytes.reserve(kHttp2FrameHeaderByteCount + length);
             bytes.push_back(static_cast<char>((length >> 16) & 0xFFU));
             bytes.push_back(static_cast<char>((length >> 8) & 0xFFU));
@@ -212,7 +206,7 @@ namespace AsynGyanis::Net
                 prefaceText.assign(preface.data(), preface.size());
 
                 bool isGreetingSent = false;
-                bool isAnswered = false;
+                bool isAnswered     = false;
                 while (true)
                 {
                     PeerFrames batch = co_await readPeerFrames(peer, decoder, 1);
@@ -223,24 +217,22 @@ namespace AsynGyanis::Net
                         if (isSettings && (frame.header.flags & kHttp2FlagAcknowledge) == 0U && !isGreetingSent)
                         {
                             // 自己的 SETTINGS 空负载（全按协议默认），外加一条 PING 探本端会不会原样 ACK
-                            isGreetingSent = true;
-                            const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {})
-                                                       + makeFrame(Http2FrameType::Ping, 0U, 0U, "12345678")
-                                                       // 夹一条本端不认识的帧类型：§4.1/§5.5 要求「忽略」而不是
-                                                       // 判死，判死的话这条请求就拿不到 200 了。未定义类型只能
-                                                       // 手拼——自家的帧编码器会拒绝产出它
-                                                       + rawFrameBytes(100U, 0U, 1U, "noise");
+                            isGreetingSent             = true;
+                            const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {}) +
+                                                         makeFrame(Http2FrameType::Ping, 0U, 0U, "12345678")
+                                                         // 夹一条本端不认识的帧类型：§4.1/§5.5 要求「忽略」而不是
+                                                         // 判死，判死的话这条请求就拿不到 200 了。未定义类型只能
+                                                         // 手拼——自家的帧编码器会拒绝产出它
+                                                         + rawFrameBytes(100U, 0U, 1U, "noise");
                             co_await peer.writeAll(greeting.data(), greeting.size());
                         }
                         if (frame.header.type == Http2FrameType::Headers && !isAnswered)
                         {
                             isAnswered = true;
-                            HpackEncoder peerEncoder;
+                            HpackEncoder      peerEncoder;
                             const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
-                            const std::string responseFrame = makeFrame(Http2FrameType::Headers,
-                                                                        static_cast<std::uint8_t>(kHttp2FlagEndHeaders
-                                                                                                 | kHttp2FlagEndStream),
-                                                                        frame.header.streamId, headerBlock);
+                            const std::string responseFrame =
+                                    makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), frame.header.streamId, headerBlock);
                             co_await peer.writeAll(responseFrame.data(), responseFrame.size());
                         }
                     }
@@ -265,23 +257,21 @@ namespace AsynGyanis::Net
         /// 本端走完全程的结论（走「描述符对 + 脚本对端」这一趟）
         struct RawPairRunOutcome
         {
-            bool isStarted{false};      ///< 前奏是否走完
-            int statusCode{0};          ///< 响应状态码
-            std::string errorMessage;   ///< 失败原因
+            bool        isStarted{false}; ///< 前奏是否走完
+            int         statusCode{0};    ///< 响应状态码
+            std::string errorMessage;     ///< 失败原因
         };
 
         /// 在已连好的通路上走完「前奏 → 一条 GET → 礼貌收尾」
         Core::Task<void> runRawPairClient(Core::EventLoop &loop, TcpStream clientSide, RawPairRunOutcome &outcome)
         {
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
 
             // 前奏没成也要把 request 问一句：它会把连接判死的原话带回来，否则用例只剩「没走通」一个字
-            Http2ClientResponse response = co_await connection->request(
-                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
-            outcome.statusCode = response.statusCode;
-            outcome.errorMessage = std::move(response.errorMessage);
+            Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.statusCode           = response.statusCode;
+            outcome.errorMessage         = std::move(response.errorMessage);
             co_await connection->shutdown();
             co_return;
         }
@@ -289,13 +279,13 @@ namespace AsynGyanis::Net
         /// 「一条连接只许开一条流」那趟的结论
         struct StreamBudgetRunOutcome
         {
-            bool isStarted{false};          ///< 前奏是否走完
-            int firstStatusCode{0};         ///< 第一条请求的状态码
+            bool        isStarted{false};   ///< 前奏是否走完
+            int         firstStatusCode{0}; ///< 第一条请求的状态码
             std::string firstErrorMessage;  ///< 第一条失败时的中文原因
             /// 第一条收齐之后连接是否还算健康：额度见顶且没有在途的流时，本端应当自己退场
-            bool isHealthyAfterFirst{true};
-            int secondStatusCode{0};        ///< 第二条请求的状态码（提不出流就该是 0）
-            std::string secondErrorMessage; ///< 第二条被拒时带回来的中文原因
+            bool        isHealthyAfterFirst{true};
+            int         secondStatusCode{0}; ///< 第二条请求的状态码（提不出流就该是 0）
+            std::string secondErrorMessage;  ///< 第二条被拒时带回来的中文原因
         };
 
         /**
@@ -311,32 +301,29 @@ namespace AsynGyanis::Net
         {
             Http2ClientConnection::Config config;
             config.maximumOpenedStreamCount = 1U;
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)),
-                    config);
+            auto connection =
+                    std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)), config);
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
 
-            const Http2ClientResponse first = co_await connection->request(
-                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
-            outcome.firstStatusCode = first.statusCode;
-            outcome.firstErrorMessage = first.errorMessage;
-            outcome.isHealthyAfterFirst = connection->isHealthy();
+            const Http2ClientResponse first = co_await connection->request("http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.firstStatusCode         = first.statusCode;
+            outcome.firstErrorMessage       = first.errorMessage;
+            outcome.isHealthyAfterFirst     = connection->isHealthy();
 
-            const Http2ClientResponse second = co_await connection->request(
-                    "http", "peer", "GET", "/tick-again", {}, {}, kClientWaitTimeout);
-            outcome.secondStatusCode = second.statusCode;
-            outcome.secondErrorMessage = second.errorMessage;
+            const Http2ClientResponse second = co_await connection->request("http", "peer", "GET", "/tick-again", {}, {}, kClientWaitTimeout);
+            outcome.secondStatusCode         = second.statusCode;
+            outcome.secondErrorMessage       = second.errorMessage;
             co_return;
         }
 
         /// 「一条在途、额度刚见顶」时提第二条的结论
         struct BusyBudgetRunOutcome
         {
-            bool isStarted{false};              ///< 前奏是否走完
-            std::size_t inFlightWhenRefused{0}; ///< 提第二条那一刻本端在途几条流
-            int secondStatusCode{0};            ///< 第二条的状态码（被拒就该是 0）
-            std::string secondErrorMessage;     ///< 第二条被拒的中文原因
-            bool isFirstStillPending{false};    ///< 第二条被拒之后，在途的第一条是否没被连坐
+            bool        isStarted{false};           ///< 前奏是否走完
+            std::size_t inFlightWhenRefused{0};     ///< 提第二条那一刻本端在途几条流
+            int         secondStatusCode{0};        ///< 第二条的状态码（被拒就该是 0）
+            std::string secondErrorMessage;         ///< 第二条被拒的中文原因
+            bool        isFirstStillPending{false}; ///< 第二条被拒之后，在途的第一条是否没被连坐
         };
 
         /**
@@ -347,13 +334,12 @@ namespace AsynGyanis::Net
          * @param statusCode 输出：状态码
          * @param errorMessage 输出：失败原因
          */
-        Core::Task<void> runOneBudgetRequest(Http2ClientConnection &connection, const std::string_view path,
-                                             const std::chrono::milliseconds waitTimeout, int &statusCode,
+        Core::Task<void> runOneBudgetRequest(Http2ClientConnection &connection, const std::string_view path, const std::chrono::milliseconds waitTimeout, int &statusCode,
                                              std::string &errorMessage)
         {
             const Http2ClientResponse response = co_await connection.request("http", "peer", "GET", path, {}, {}, waitTimeout);
-            statusCode = response.statusCode;
-            errorMessage = response.errorMessage;
+            statusCode                         = response.statusCode;
+            errorMessage                       = response.errorMessage;
             co_return;
         }
 
@@ -371,13 +357,12 @@ namespace AsynGyanis::Net
         {
             Http2ClientConnection::Config config;
             config.maximumOpenedStreamCount = 1U;
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)),
-                    config);
+            auto connection =
+                    std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)), config);
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
 
-            int firstStatus = 0;
-            std::string firstError;
+            int              firstStatus = 0;
+            std::string      firstError;
             Core::Task<void> firstWork = runOneBudgetRequest(*connection, "/tick", kClientWaitTimeout, firstStatus, firstError);
             if (!firstWork.isReady())
             {
@@ -392,11 +377,10 @@ namespace AsynGyanis::Net
             }
             outcome.inFlightWhenRefused = connection->inFlightStreamCount();
 
-            const Http2ClientResponse second = co_await connection->request(
-                    "http", "peer", "GET", "/tick-again", {}, {}, std::chrono::milliseconds{150});
-            outcome.secondStatusCode = second.statusCode;
-            outcome.secondErrorMessage = second.errorMessage;
-            outcome.isFirstStillPending = connection->inFlightStreamCount() == 1U;
+            const Http2ClientResponse second = co_await connection->request("http", "peer", "GET", "/tick-again", {}, {}, std::chrono::milliseconds{150});
+            outcome.secondStatusCode         = second.statusCode;
+            outcome.secondErrorMessage       = second.errorMessage;
+            outcome.isFirstStillPending      = connection->inFlightStreamCount() == 1U;
 
             // 收尾：本端关掉通路，对端的读取循环与本端那条在途的请求都随之收场
             connection->close();
@@ -412,16 +396,16 @@ namespace AsynGyanis::Net
         /// 「头块切片」「尾部头块」「响应收齐之后还来一帧」几趟共用的结论
         struct HeaderBlockRunOutcome
         {
-            bool isStarted{false};
-            int statusCode{0};
-            std::string body;
-            std::vector<std::pair<std::string, std::string>> headers;      ///< 本端解出的响应头部
-            std::vector<std::pair<std::string, std::string>> peerHeaders;   ///< 对端把切片拼回去后解出的请求字段
-            std::string errorMessage;
-            std::string peerDecodeErrorText;   ///< 对端解帧的报错（越界的单帧会在这里露出来）
-            std::size_t headersFrameCount{0};  ///< 对端看到的 HEADERS 帧数
-            std::size_t continuationCount{0};  ///< CONTINUATION 帧数
-            std::size_t largestFrameByteCount{0}; ///< 对端看到的最长帧负载
+            bool                                             isStarted{false};
+            int                                              statusCode{0};
+            std::string                                      body;
+            std::vector<std::pair<std::string, std::string>> headers;     ///< 本端解出的响应头部
+            std::vector<std::pair<std::string, std::string>> peerHeaders; ///< 对端把切片拼回去后解出的请求字段
+            std::string                                      errorMessage;
+            std::string                                      peerDecodeErrorText;      ///< 对端解帧的报错（越界的单帧会在这里露出来）
+            std::size_t                                      headersFrameCount{0};     ///< 对端看到的 HEADERS 帧数
+            std::size_t                                      continuationCount{0};     ///< CONTINUATION 帧数
+            std::size_t                                      largestFrameByteCount{0}; ///< 对端看到的最长帧负载
         };
 
         /**
@@ -430,7 +414,7 @@ namespace AsynGyanis::Net
          */
         Core::Task<void> runFragmentCollectingPeer(TcpStream peer, HeaderBlockRunOutcome &outcome)
         {
-            Http2FrameDecoder decoder;
+            Http2FrameDecoder    decoder;
             std::array<char, 24> preface{};
             static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
             static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
@@ -438,7 +422,7 @@ namespace AsynGyanis::Net
             co_await peer.writeAll(greeting.data(), greeting.size());
 
             std::string headBlock;
-            bool isHeadBlockEnded = false;
+            bool        isHeadBlockEnded = false;
             while (!isHeadBlockEnded)
             {
                 const PeerFrames batch = co_await readPeerFrames(peer, decoder, 1);
@@ -454,13 +438,11 @@ namespace AsynGyanis::Net
                     {
                         ++outcome.headersFrameCount;
                         headBlock += frame.payload;
-                    }
-                    else if (frame.header.type == Http2FrameType::Continuation)
+                    } else if (frame.header.type == Http2FrameType::Continuation)
                     {
                         ++outcome.continuationCount;
                         headBlock += frame.payload;
-                    }
-                    else
+                    } else
                     {
                         continue;
                     }
@@ -473,14 +455,13 @@ namespace AsynGyanis::Net
 
             HpackDecoderLimits headLimits;
             headLimits.maximumHeaderListByteCount = 64U * 1024U; // 本条要量的就是越界头块，缺省上限会先拒掉它
-            HpackDecoder headDecoder{headLimits};
+            HpackDecoder                  headDecoder{headLimits};
             std::vector<HpackHeaderField> headFields;
-            std::string headErrorText;
+            std::string                   headErrorText;
             if (!headDecoder.decode(headBlock, headFields, &headErrorText))
             {
                 outcome.peerDecodeErrorText = "拼起来的头块解不开：" + headErrorText;
-            }
-            else
+            } else
             {
                 for (const HpackHeaderField &field: headFields)
                 {
@@ -488,21 +469,17 @@ namespace AsynGyanis::Net
                 }
             }
 
-            HpackEncoder peerEncoder;
+            HpackEncoder      peerEncoder;
             const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
-            const std::string answer = makeFrame(Http2FrameType::Headers,
-                                                 static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream),
-                                                 1U, headerBlock);
+            const std::string answer      = makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), 1U, headerBlock);
             co_await peer.writeAll(answer.data(), answer.size());
             co_return;
         }
 
         /// 提一条带大头部字段的 GET，把「切了几片」与「解出来是什么」带回来
-        Core::Task<void> runFragmentedHeaderClient(Core::EventLoop &loop, TcpStream clientSide,
-                                                  HeaderBlockRunOutcome &outcome)
+        Core::Task<void> runFragmentedHeaderClient(Core::EventLoop &loop, TcpStream clientSide, HeaderBlockRunOutcome &outcome)
         {
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
             // 六个 4 KiB 的字段：合起来越过 16384 的帧上限要切片，单条又都在 HPACK 的头值上限之内
             std::vector<std::pair<std::string, std::string>> extraHeaders;
@@ -510,12 +487,11 @@ namespace AsynGyanis::Net
             {
                 extraHeaders.emplace_back("x-big-" + std::to_string(index), std::string(4U * 1024U, 'k'));
             }
-            const Http2ClientResponse response = co_await connection->request(
-                    "http", "peer", "GET", "/tick", extraHeaders, {}, kClientWaitTimeout);
-            outcome.statusCode = response.statusCode;
-            outcome.body = response.body;
-            outcome.headers = response.headers;
-            outcome.errorMessage = response.errorMessage;
+            const Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", extraHeaders, {}, kClientWaitTimeout);
+            outcome.statusCode                 = response.statusCode;
+            outcome.body                       = response.body;
+            outcome.headers                    = response.headers;
+            outcome.errorMessage               = response.errorMessage;
             loop.stop();
             co_return;
         }
@@ -527,7 +503,7 @@ namespace AsynGyanis::Net
          */
         Core::Task<void> runTrailingPeer(TcpStream peer)
         {
-            Http2FrameDecoder decoder;
+            Http2FrameDecoder    decoder;
             std::array<char, 24> preface{};
             static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
             static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
@@ -535,15 +511,11 @@ namespace AsynGyanis::Net
             co_await peer.writeAll(greeting.data(), greeting.size());
             static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 HEADERS
 
-            HpackEncoder peerEncoder;
-            const std::string headBlock = peerEncoder.encode({HpackHeaderField{":status", "200"},
-                                                             HpackHeaderField{"content-type", "text/plain"}});
+            HpackEncoder      peerEncoder;
+            const std::string headBlock    = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-type", "text/plain"}});
             const std::string trailerBlock = peerEncoder.encode({HpackHeaderField{"x-trace", "done"}});
-            const std::string bytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headBlock)
-                                      + makeFrame(Http2FrameType::Data, 0U, 1U, "body")
-                                      + makeFrame(Http2FrameType::Headers,
-                                                  static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream),
-                                                  1U, trailerBlock);
+            const std::string bytes        = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headBlock) + makeFrame(Http2FrameType::Data, 0U, 1U, "body") +
+                                             makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), 1U, trailerBlock);
             co_await peer.writeAll(bytes.data(), bytes.size());
             static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 等本端收口，顺带收掉它的回帧
             co_return;
@@ -552,15 +524,13 @@ namespace AsynGyanis::Net
         /// 提一条普通 GET，把本端交回的状态码、正文与头部带回来
         Core::Task<void> runTrailingClient(Core::EventLoop &loop, TcpStream clientSide, HeaderBlockRunOutcome &outcome)
         {
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
-            const Http2ClientResponse response = co_await connection->request(
-                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
-            outcome.statusCode = response.statusCode;
-            outcome.body = response.body;
-            outcome.headers = response.headers;
-            outcome.errorMessage = response.errorMessage;
+            const Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.statusCode                 = response.statusCode;
+            outcome.body                       = response.body;
+            outcome.headers                    = response.headers;
+            outcome.errorMessage               = response.errorMessage;
             loop.stop();
             co_return;
         }
@@ -576,22 +546,19 @@ namespace AsynGyanis::Net
          */
         Core::Task<void> runLateFrameClient(Core::EventLoop &loop, TcpStream clientSide, HeaderBlockRunOutcome &outcome)
         {
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
-            const Http2ClientResponse response = co_await connection->request(
-                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
-            outcome.statusCode = response.statusCode;
-            outcome.body = response.body;
-            outcome.headers = response.headers;
-            outcome.errorMessage = response.errorMessage;
+            const Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.statusCode                 = response.statusCode;
+            outcome.body                       = response.body;
+            outcome.headers                    = response.headers;
+            outcome.errorMessage               = response.errorMessage;
             co_return;
         }
         std::string singleSettingFrameBytes(const Http2SettingIdentifier identifier, const std::uint32_t value)
         {
             Http2SettingsPayload payload;
-            payload.parameters.push_back(
-                    Http2Setting{.identifier = static_cast<std::uint16_t>(identifier), .value = value});
+            payload.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(identifier), .value = value});
             return encodeHttp2SettingsFrame(payload);
         }
 
@@ -601,7 +568,7 @@ namespace AsynGyanis::Net
             bool isStarted{false};
             bool isAnyByteSent{false};
             bool isAnyByteReceived{false};
-            int statusCode{0};
+            int  statusCode{0};
             bool isOk{false};
         };
 
@@ -612,7 +579,7 @@ namespace AsynGyanis::Net
          */
         Core::Task<void> runSilentClosingPeer(TcpStream peer)
         {
-            Http2FrameDecoder decoder;
+            Http2FrameDecoder    decoder;
             std::array<char, 24> preface{};
             static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
             static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
@@ -626,15 +593,13 @@ namespace AsynGyanis::Net
         /// 提一条带正文的 POST，把两位「发出过 / 收到过」带回来
         Core::Task<void> runSentFlagClient(Core::EventLoop &loop, TcpStream clientSide, SentFlagRunOutcome &outcome)
         {
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
-            const Http2ClientResponse response = co_await connection->request(
-                    "http", "peer", "POST", "/upload", {}, std::string(4U * 1024U, 'y'), kClientWaitTimeout);
-            outcome.isAnyByteSent = response.isAnyByteSent;
-            outcome.isAnyByteReceived = response.isAnyByteReceived;
-            outcome.statusCode = response.statusCode;
-            outcome.isOk = response.isOk();
+            const Http2ClientResponse response = co_await connection->request("http", "peer", "POST", "/upload", {}, std::string(4U * 1024U, 'y'), kClientWaitTimeout);
+            outcome.isAnyByteSent              = response.isAnyByteSent;
+            outcome.isAnyByteReceived          = response.isAnyByteReceived;
+            outcome.statusCode                 = response.statusCode;
+            outcome.isOk                       = response.isOk();
             loop.stop();
             co_return;
         }
@@ -642,11 +607,11 @@ namespace AsynGyanis::Net
         /// 「对端只给了半截响应就收口」的结论
         struct TruncatedRunOutcome
         {
-            bool isStarted{false};
-            int statusCode{0};        ///< 解出来的状态码：它确实是 200，判据不在这里
-            std::string body;         ///< 已收到的那半截正文
-            std::string errorMessage; ///< 失败原因；修之前这里是空的
-            bool isOk{false};         ///< isOk() 的返回值——这条用例的主判据
+            bool        isStarted{false};
+            int         statusCode{0}; ///< 解出来的状态码：它确实是 200，判据不在这里
+            std::string body;          ///< 已收到的那半截正文
+            std::string errorMessage;  ///< 失败原因；修之前这里是空的
+            bool        isOk{false};   ///< isOk() 的返回值——这条用例的主判据
         };
 
         /**
@@ -655,7 +620,7 @@ namespace AsynGyanis::Net
          */
         Core::Task<void> runTruncatingPeer(Core::EventLoop &loop, TcpStream peer)
         {
-            Http2FrameDecoder decoder;
+            Http2FrameDecoder    decoder;
             std::array<char, 24> preface{};
             static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
             static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
@@ -663,10 +628,9 @@ namespace AsynGyanis::Net
             co_await peer.writeAll(greeting.data(), greeting.size());
             static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 HEADERS
 
-            HpackEncoder peerEncoder;
+            HpackEncoder      peerEncoder;
             const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
-            const std::string bytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock)
-                                      + makeFrame(Http2FrameType::Data, 0U, 1U, "half-body");
+            const std::string bytes       = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock) + makeFrame(Http2FrameType::Data, 0U, 1U, "half-body");
             co_await peer.writeAll(bytes.data(), bytes.size());
             // 之后什么都不发：本端要等的 END_STREAM 永远不会来。按住通路不收也不断，让本端自己的
             // 请求时限去掐——比「关掉套接字制造 EOF」稳定：回路上带未读数据收口会变成 RST，
@@ -679,15 +643,13 @@ namespace AsynGyanis::Net
         /// 走一趟「半截响应」：本端必须把它判成失败，而不是「200 加一段短正文」
         Core::Task<void> runTruncatedClient(Core::EventLoop &loop, TcpStream clientSide, TruncatedRunOutcome &outcome)
         {
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
-            const Http2ClientResponse response = co_await connection->request(
-                    "http", "peer", "GET", "/tick", {}, {}, std::chrono::milliseconds{200});
-            outcome.statusCode = response.statusCode;
-            outcome.body = response.body;
-            outcome.errorMessage = response.errorMessage;
-            outcome.isOk = response.isOk();
+            const Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {}, {}, std::chrono::milliseconds{200});
+            outcome.statusCode                 = response.statusCode;
+            outcome.body                       = response.body;
+            outcome.errorMessage               = response.errorMessage;
+            outcome.isOk                       = response.isOk();
             loop.stop();
             co_return;
         }
@@ -695,12 +657,12 @@ namespace AsynGyanis::Net
         /// 「正文越过本端上限」这一趟的结论
         struct BodyLimitRunOutcome
         {
-            bool isStarted{false};
-            int statusCode{0};                  ///< 状态码：它确实是 200，判据不在这里
-            bool isOk{true};                    ///< isOk() 的返回值——这条用例的主判据
-            std::string body;                   ///< 本端实际留下的正文字节
-            std::string errorMessage;           ///< 失败原因
-            bool isHealthyAfterBreach{true};    ///< 越界之后连接还算不算可用
+            bool        isStarted{false};
+            int         statusCode{0};              ///< 状态码：它确实是 200，判据不在这里
+            bool        isOk{true};                 ///< isOk() 的返回值——这条用例的主判据
+            std::string body;                       ///< 本端实际留下的正文字节
+            std::string errorMessage;               ///< 失败原因
+            bool        isHealthyAfterBreach{true}; ///< 越界之后连接还算不算可用
         };
 
         /**
@@ -713,7 +675,7 @@ namespace AsynGyanis::Net
          */
         Core::Task<void> runFloodedBodyPeer(TcpStream peer, const std::size_t chunkByteCount, const std::size_t chunkCount)
         {
-            Http2FrameDecoder decoder;
+            Http2FrameDecoder    decoder;
             std::array<char, 24> preface{};
             static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
             static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
@@ -721,14 +683,13 @@ namespace AsynGyanis::Net
             co_await peer.writeAll(greeting.data(), greeting.size());
             static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 HEADERS
 
-            HpackEncoder peerEncoder;
+            HpackEncoder      peerEncoder;
             const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
-            std::string bytes = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock);
+            std::string       bytes       = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock);
             for (std::size_t index = 0; index < chunkCount; ++index)
             {
                 const bool isLast = index + 1 == chunkCount;
-                bytes += makeFrame(Http2FrameType::Data, isLast ? kHttp2FlagEndStream : 0U, 1U,
-                                   std::string(chunkByteCount, 'x'));
+                bytes += makeFrame(Http2FrameType::Data, isLast ? kHttp2FlagEndStream : 0U, 1U, std::string(chunkByteCount, 'x'));
             }
             co_await peer.writeAll(bytes.data(), bytes.size());
             co_return;
@@ -741,22 +702,19 @@ namespace AsynGyanis::Net
          * @param maximumBodyBytes 本端的正文上限
          * @param outcome 就地收集结论
          */
-        Core::Task<void> runBodyLimitClient(Core::EventLoop &loop, TcpStream clientSide, const std::size_t maximumBodyBytes,
-                                           BodyLimitRunOutcome &outcome)
+        Core::Task<void> runBodyLimitClient(Core::EventLoop &loop, TcpStream clientSide, const std::size_t maximumBodyBytes, BodyLimitRunOutcome &outcome)
         {
             Http2ClientConnection::Config config;
             config.maximumResponseBodyBytes = maximumBodyBytes;
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)),
-                    config);
-            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
-            const Http2ClientResponse response = co_await connection->request(
-                    "http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
-            outcome.statusCode = response.statusCode;
-            outcome.isOk = response.isOk();
-            outcome.body = response.body;
-            outcome.errorMessage = response.errorMessage;
-            outcome.isHealthyAfterBreach = connection->isHealthy();
+            auto connection =
+                    std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)), config);
+            outcome.isStarted                  = co_await connection->start(kClientWaitTimeout);
+            const Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            outcome.statusCode                 = response.statusCode;
+            outcome.isOk                       = response.isOk();
+            outcome.body                       = response.body;
+            outcome.errorMessage               = response.errorMessage;
+            outcome.isHealthyAfterBreach       = connection->isHealthy();
             co_await connection->shutdown();
             loop.stop();
             co_return;
@@ -765,11 +723,11 @@ namespace AsynGyanis::Net
         /// 「两条大正文同时堵在写上」的结论
         struct ContendedWriteRunOutcome
         {
-            bool isStarted{false};
-            bool isHealthyWhileStalled{false};   ///< 两条都堵着、通路还活着时连接是否仍算可用
-            std::size_t inFlightWhileStalled{0}; ///< 同一刻在途的流数
-            std::size_t finishedRequestCount{0}; ///< 两条是否都收了口
-            std::string peerDecodeErrorText;     ///< 对端解帧的报错：被撕开的字节会在这里露出来
+            bool        isStarted{false};
+            bool        isHealthyWhileStalled{false}; ///< 两条都堵着、通路还活着时连接是否仍算可用
+            std::size_t inFlightWhileStalled{0};      ///< 同一刻在途的流数
+            std::size_t finishedRequestCount{0};      ///< 两条是否都收了口
+            std::string peerDecodeErrorText;          ///< 对端解帧的报错：被撕开的字节会在这里露出来
         };
 
         /**
@@ -778,13 +736,10 @@ namespace AsynGyanis::Net
          *          而本条要量的正是「两个协程同时堵在同一条通路的写上」。按住不收，512 KiB 的正文
          *          一定能把套接字缓冲塞满，两边都在等可写。
          */
-        Core::Task<void> runSlowDrainingPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received,
-                                             const std::chrono::milliseconds holdTime)
+        Core::Task<void> runSlowDrainingPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received, const std::chrono::milliseconds holdTime)
         {
             Http2SettingsPayload window;
-            window.parameters.push_back(Http2Setting{
-                    .identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize),
-                    .value = 8U * 1024U * 1024U});
+            window.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize), .value = 8U * 1024U * 1024U});
             const std::string greeting = encodeHttp2SettingsFrame(window);
             co_await peer.writeAll(greeting.data(), greeting.size());
 
@@ -822,11 +777,9 @@ namespace AsynGyanis::Net
         }
 
         /// 提起一条大正文的 POST：正文注定发不完，要看的只有它有没有把连接弄坏
-        Core::Task<void> runStalledPost(Http2ClientConnection &connection, const std::string &body,
-                                       std::size_t &finishedRequestCount)
+        Core::Task<void> runStalledPost(Http2ClientConnection &connection, const std::string &body, std::size_t &finishedRequestCount)
         {
-            static_cast<void>(co_await connection.request("http", "peer", "POST", "/upload", {}, body,
-                                                         std::chrono::milliseconds{400}));
+            static_cast<void>(co_await connection.request("http", "peer", "POST", "/upload", {}, body, std::chrono::milliseconds{400}));
             ++finishedRequestCount;
             co_return;
         }
@@ -840,15 +793,10 @@ namespace AsynGyanis::Net
         Core::Task<void> runNeverReadingPeer(Core::EventLoop &loop, TcpStream peer, const std::chrono::milliseconds holdTime)
         {
             Http2SettingsPayload window;
-            window.parameters.push_back(Http2Setting{
-                    .identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize),
-                    .value = 8U * 1024U * 1024U});
+            window.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize), .value = 8U * 1024U * 1024U});
             // 连接级 WINDOW_UPDATE 的增量按 32 位大端排：这里是 8 MiB。0 是非法增量（§6.9.1），不能写
-            const std::string connectionCredit{static_cast<char>(0x00), static_cast<char>(0x80),
-                                               static_cast<char>(0x00), static_cast<char>(0x00)};
-            const std::string greeting = encodeHttp2SettingsFrame(window)
-                                         + rawFrameBytes(static_cast<std::uint8_t>(Http2FrameType::WindowUpdate), 0U, 0U,
-                                                         connectionCredit);
+            const std::string connectionCredit{static_cast<char>(0x00), static_cast<char>(0x80), static_cast<char>(0x00), static_cast<char>(0x00)};
+            const std::string greeting = encodeHttp2SettingsFrame(window) + rawFrameBytes(static_cast<std::uint8_t>(Http2FrameType::WindowUpdate), 0U, 0U, connectionCredit);
             co_await peer.writeAll(greeting.data(), greeting.size());
             Core::Timer holdTimer(loop);
             co_await holdTimer.waitFor(holdTime);
@@ -858,18 +806,16 @@ namespace AsynGyanis::Net
         /**
          * @brief 两条 512 KiB 正文并发提交，在它们都堵在写上时采样连接状态
          */
-        Core::Task<void> runContendedWriteClient(Core::EventLoop &loop, TcpStream clientSide,
-                                                ContendedWriteRunOutcome &outcome, const std::size_t bodyByteCount)
+        Core::Task<void> runContendedWriteClient(Core::EventLoop &loop, TcpStream clientSide, ContendedWriteRunOutcome &outcome, const std::size_t bodyByteCount)
         {
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
             if (outcome.isStarted)
             {
                 const std::string body(bodyByteCount, 'x');
-                std::size_t finishedRequestCount = 0;
-                Core::Task<void> first = runStalledPost(*connection, body, finishedRequestCount);
-                Core::Task<void> second = runStalledPost(*connection, body, finishedRequestCount);
+                std::size_t       finishedRequestCount = 0;
+                Core::Task<void>  first                = runStalledPost(*connection, body, finishedRequestCount);
+                Core::Task<void>  second               = runStalledPost(*connection, body, finishedRequestCount);
                 if (!first.isReady())
                 {
                     loop.scheduler().schedule(first.handle());
@@ -886,7 +832,7 @@ namespace AsynGyanis::Net
                     Core::Timer settleTimer(loop);
                     co_await settleTimer.waitFor(std::chrono::milliseconds{1});
                 }
-                outcome.inFlightWhileStalled = connection->inFlightStreamCount();
+                outcome.inFlightWhileStalled  = connection->inFlightStreamCount();
                 outcome.isHealthyWhileStalled = connection->isHealthy();
 
                 const auto drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
@@ -907,8 +853,7 @@ namespace AsynGyanis::Net
          *          现场只剩「连接没了」对排查没有价值，对端也无从知道自己哪一步踩了线。收场之后本端
          *          可能还会先发自己的请求帧（正文洪泛那条就是这种顺序），所以要一直读到看见 GOAWAY。
          */
-        Core::Task<void> runOpeningPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received,
-                                        const std::string openingBytes)
+        Core::Task<void> runOpeningPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received, const std::string openingBytes)
         {
             Http2FrameDecoder decoder;
             try
@@ -953,8 +898,7 @@ namespace AsynGyanis::Net
          * @param received 输出：本端发来的帧与解帧报错
          * @param answerBytes 要回的脚本（不含 SETTINGS，那条在前奏里就发出去了）
          */
-        Core::Task<void> runAnsweringPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received,
-                                          const std::string answerBytes)
+        Core::Task<void> runAnsweringPeer(Core::EventLoop &loop, TcpStream peer, PeerFrames &received, const std::string answerBytes)
         {
             Http2FrameDecoder decoder;
             try
@@ -994,17 +938,16 @@ namespace AsynGyanis::Net
         /// 本端一侧只走到前奏：start() 的结论就是判据
         Core::Task<void> runBadSettingsClient(Core::EventLoop &loop, TcpStream clientSide, bool &isStarted)
         {
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
-            isStarted = co_await connection->start(kClientWaitTimeout);
+            auto connection = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            isStarted       = co_await connection->start(kClientWaitTimeout);
             co_return;
         }
         /// 两条请求同时在一条连接上跑完之后留下的结论
         struct MultiplexRunOutcome
         {
-            bool isStarted{false};
-            std::vector<std::string> bodies;   ///< 每条请求的正文，按提交顺序
-            std::vector<std::string> errors;   ///< 每条请求的失败原因（成功时为空串）
+            bool                     isStarted{false};
+            std::vector<std::string> bodies; ///< 每条请求的正文，按提交顺序
+            std::vector<std::string> errors; ///< 每条请求的失败原因（成功时为空串）
         };
 
         /**
@@ -1020,8 +963,7 @@ namespace AsynGyanis::Net
              * @param loop 唤醒投递到哪条循环
              * @param expectedCount 要等几个子协程
              */
-            JoinGate(Core::EventLoop &loop, const std::size_t expectedCount) noexcept
-                : m_loop(&loop), m_remaining(expectedCount)
+            JoinGate(Core::EventLoop &loop, const std::size_t expectedCount) noexcept : m_loop(&loop), m_remaining(expectedCount)
             {
             }
 
@@ -1037,7 +979,10 @@ namespace AsynGyanis::Net
             }
 
             /// 已经到齐就不挂
-            [[nodiscard]] bool await_ready() const noexcept { return m_remaining == 0U; }
+            [[nodiscard]] bool await_ready() const noexcept
+            {
+                return m_remaining == 0U;
+            }
 
             /**
              * @brief 登记驱动协程，等最后一个子协程来叫醒
@@ -1050,12 +995,14 @@ namespace AsynGyanis::Net
                 return true;
             }
 
-            void await_resume() const noexcept {}
+            void await_resume() const noexcept
+            {
+            }
 
         private:
-            Core::EventLoop *m_loop;            ///< 唤醒投递的目标循环
-            std::size_t m_remaining;            ///< 还差几个子协程
-            std::coroutine_handle<> m_waiter{}; ///< 挂着等他们的驱动协程
+            Core::EventLoop        *m_loop;      ///< 唤醒投递的目标循环
+            std::size_t             m_remaining; ///< 还差几个子协程
+            std::coroutine_handle<> m_waiter{};  ///< 挂着等他们的驱动协程
         };
 
         /**
@@ -1067,11 +1014,10 @@ namespace AsynGyanis::Net
          * @param peer 对端一侧的通路
          * @param openedRequests 输出：开始作答之前收到的「流号 + :path」，按到达顺序
          */
-        Core::Task<void> runMultiplexPeer(TcpStream peer,
-                                          std::vector<std::pair<std::uint32_t, std::string>> &openedRequests)
+        Core::Task<void> runMultiplexPeer(TcpStream peer, std::vector<std::pair<std::uint32_t, std::string>> &openedRequests)
         {
             Http2FrameDecoder decoder;
-            HpackDecoder pathDecoder;
+            HpackDecoder      pathDecoder;
             try
             {
                 std::array<char, 24> preface{};
@@ -1088,12 +1034,11 @@ namespace AsynGyanis::Net
                         if (frame.header.type == Http2FrameType::Headers)
                         {
                             std::vector<HpackHeaderField> headerFields;
-                            std::string decodeErrorText;
+                            std::string                   decodeErrorText;
                             // 头块照样得解完：本端的编码器在动态表里留着前面几条，跳过就不动了
                             if (pathDecoder.decode(frame.payload, headerFields, &decodeErrorText))
                             {
-                                openedRequests.emplace_back(frame.header.streamId,
-                                                            findHeaderValue(headerFields, ":path"));
+                                openedRequests.emplace_back(frame.header.streamId, findHeaderValue(headerFields, ":path"));
                             }
                         }
                     }
@@ -1106,10 +1051,10 @@ namespace AsynGyanis::Net
                 for (auto iterator = openedRequests.rbegin(); iterator != openedRequests.rend(); ++iterator)
                 {
                     const std::uint32_t streamId = iterator->first;
-                    HpackEncoder peerEncoder;
-                    const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
-                    std::string answer = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, streamId, headerBlock);
-                    const std::string bodyText = "peer-body-" + iterator->second;
+                    HpackEncoder        peerEncoder;
+                    const std::string   headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
+                    std::string         answer      = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, streamId, headerBlock);
+                    const std::string   bodyText    = "peer-body-" + iterator->second;
                     answer += makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, streamId, bodyText);
                     co_await peer.writeAll(answer.data(), answer.size());
                 }
@@ -1138,14 +1083,11 @@ namespace AsynGyanis::Net
         }
 
         /// 一条并发请求：结果写进 outcome 的第 index 格，回来就在 gate 上记一笔
-        Core::Task<void> runOneMultiplexRequest(Http2ClientConnection &connection, const std::size_t index,
-                                                MultiplexRunOutcome &outcome, JoinGate &gate)
+        Core::Task<void> runOneMultiplexRequest(Http2ClientConnection &connection, const std::size_t index, MultiplexRunOutcome &outcome, JoinGate &gate)
         {
-            Http2ClientResponse response = co_await connection.request("http", "peer", "GET",
-                                                                      index == 0U ? "/tick-a" : "/tick-b",
-                                                                      {}, {}, kClientWaitTimeout);
-            outcome.bodies[index] = std::move(response.body);
-            outcome.errors[index] = std::move(response.errorMessage);
+            Http2ClientResponse response = co_await connection.request("http", "peer", "GET", index == 0U ? "/tick-a" : "/tick-b", {}, {}, kClientWaitTimeout);
+            outcome.bodies[index]        = std::move(response.body);
+            outcome.errors[index]        = std::move(response.errorMessage);
             gate.arrive();
             co_return;
         }
@@ -1153,16 +1095,15 @@ namespace AsynGyanis::Net
         /// 走「描述符对 + 多路复用对端」这一趟：两条请求同时在一条连接上
         Core::Task<void> runMultiplexTask(Core::EventLoop &loop, TcpStream clientSide, MultiplexRunOutcome &outcome)
         {
-            auto connection = std::make_unique<Http2ClientConnection>(
-                    loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
             if (outcome.isStarted)
             {
                 constexpr std::size_t kRequestCount = 2U;
                 outcome.bodies.resize(kRequestCount);
                 outcome.errors.resize(kRequestCount);
-                JoinGate gate(loop, kRequestCount);
-                std::vector<Core::Task<void> > children;
+                JoinGate                      gate(loop, kRequestCount);
+                std::vector<Core::Task<void>> children;
                 children.reserve(kRequestCount);
                 for (std::size_t index = 0; index < kRequestCount; ++index)
                 {
@@ -1192,12 +1133,8 @@ namespace AsynGyanis::Net
      */
     TEST(Http2ClientConnection, GetsResponseOverCleartextHttp2)
     {
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                         RouteRegistrar{}, HttpParserLimits{},
-                                         [](TestHttpServer &server)
-                                         {
-                                             static_cast<void>(server.setHttp2CleartextEnabled(true));
-                                         });
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, RouteRegistrar{}, HttpParserLimits{},
+                                         [](TestHttpServer &server) { static_cast<void>(server.setHttp2CleartextEnabled(true)); });
         ASSERT_TRUE(fixture.awaitRunning(kClientWaitTimeout)) << "服务端未在时限内进入接受循环";
 
         const ClientRunOutcome outcome = runClientRequests(fixture.listeningPort(), "GET", "/hello");
@@ -1215,12 +1152,8 @@ namespace AsynGyanis::Net
      */
     TEST(Http2ClientConnection, KeepsHeaderCompressionInSyncAcrossRequests)
     {
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                         RouteRegistrar{}, HttpParserLimits{},
-                                         [](TestHttpServer &server)
-                                         {
-                                             static_cast<void>(server.setHttp2CleartextEnabled(true));
-                                         });
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, RouteRegistrar{}, HttpParserLimits{},
+                                         [](TestHttpServer &server) { static_cast<void>(server.setHttp2CleartextEnabled(true)); });
         ASSERT_TRUE(fixture.awaitRunning(kClientWaitTimeout)) << "服务端未在时限内进入接受循环";
 
         const ClientRunOutcome outcome = runClientRequests(fixture.listeningPort(), "GET", "/hello", {}, 3);
@@ -1240,19 +1173,12 @@ namespace AsynGyanis::Net
      */
     TEST(Http2ClientConnection, ExchangesBodyLargerThanTheFlowControlWindow)
     {
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                         [](Router &router, Core::EventLoop &loop)
-                                         {
-                                             registerEchoRoute(router, loop);
-                                         },
-                                         HttpParserLimits{},
-                                         [](TestHttpServer &server)
-                                         {
-                                             static_cast<void>(server.setHttp2CleartextEnabled(true));
-                                         });
+        RunningHttpServerFixture fixture(
+                HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, [](Router &router, Core::EventLoop &loop) { registerEchoRoute(router, loop); },
+                HttpParserLimits{}, [](TestHttpServer &server) { static_cast<void>(server.setHttp2CleartextEnabled(true)); });
         ASSERT_TRUE(fixture.awaitRunning(kClientWaitTimeout)) << "服务端未在时限内进入接受循环";
 
-        const std::string payload(200U * 1024U, 'x');
+        const std::string      payload(200U * 1024U, 'x');
         const ClientRunOutcome outcome = runClientRequests(fixture.listeningPort(), "POST", "/echo", payload);
         EXPECT_TRUE(outcome.isStarted);
         ASSERT_EQ(outcome.statusCodes.size(), 1U);
@@ -1268,12 +1194,8 @@ namespace AsynGyanis::Net
      */
     TEST(Http2ClientConnection, ReportsStatusForRouteMisses)
     {
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                         RouteRegistrar{}, HttpParserLimits{},
-                                         [](TestHttpServer &server)
-                                         {
-                                             static_cast<void>(server.setHttp2CleartextEnabled(true));
-                                         });
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, RouteRegistrar{}, HttpParserLimits{},
+                                         [](TestHttpServer &server) { static_cast<void>(server.setHttp2CleartextEnabled(true)); });
         ASSERT_TRUE(fixture.awaitRunning(kClientWaitTimeout)) << "服务端未在时限内进入接受循环";
 
         const ClientRunOutcome outcome = runClientRequests(fixture.listeningPort(), "GET", "/no-such-route");
@@ -1291,31 +1213,24 @@ namespace AsynGyanis::Net
      */
     TEST(Http2ClientConnection, CutOffByRequestDeadlineAgainstSlowServer)
     {
-        constexpr auto kSlowRouteTime = std::chrono::milliseconds{900};
+        constexpr auto kSlowRouteTime  = std::chrono::milliseconds{900};
         constexpr auto kRequestTimeout = std::chrono::milliseconds{150};
 
         SlowRouteOptions slowRoute;
         slowRoute.processingTime = kSlowRouteTime;
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute,
-                                         RouteRegistrar{}, HttpParserLimits{},
-                                         [](TestHttpServer &server)
-                                         {
-                                             static_cast<void>(server.setHttp2CleartextEnabled(true));
-                                         });
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute, RouteRegistrar{}, HttpParserLimits{},
+                                         [](TestHttpServer &server) { static_cast<void>(server.setHttp2CleartextEnabled(true)); });
         ASSERT_TRUE(fixture.awaitRunning(kClientWaitTimeout)) << "服务端未在时限内进入接受循环";
 
-        const auto startTime = std::chrono::steady_clock::now();
-        const ClientRunOutcome outcome =
-                runClientRequests(fixture.listeningPort(), "GET", "/slow", {}, 1, kRequestTimeout);
-        const auto elapsedMillis =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime);
+        const auto             startTime     = std::chrono::steady_clock::now();
+        const ClientRunOutcome outcome       = runClientRequests(fixture.listeningPort(), "GET", "/slow", {}, 1, kRequestTimeout);
+        const auto             elapsedMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime);
 
         EXPECT_TRUE(outcome.isStarted) << "前奏都没走完就测不出请求级时限";
         ASSERT_EQ(outcome.statusCodes.size(), 1U);
         EXPECT_EQ(outcome.statusCodes[0], 0) << "超时不该给出一个看起来像成功的状态码";
         EXPECT_FALSE(outcome.errors[0].empty()) << "超时必须把原因带回给调用方";
-        EXPECT_LT(elapsedMillis, kSlowRouteTime)
-                << "一直等到了服务端写完响应（" << elapsedMillis.count() << " 毫秒）：时限没有生效";
+        EXPECT_LT(elapsedMillis, kSlowRouteTime) << "一直等到了服务端写完响应（" << elapsedMillis.count() << " 毫秒）：时限没有生效";
 
         // 收尾前让那条慢路由自己跑完：夹具销毁会先让循环停手，不该把一条要靠定时器才结束的在途请求留到那之后
         std::this_thread::sleep_for(kSlowRouteTime);
@@ -1330,15 +1245,15 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, SendsSpecLegalFramesToRawPeer)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
-        PeerFrames received;
-        std::string prefaceText;
+        PeerFrames        received;
+        std::string       prefaceText;
         RawPairRunOutcome outcome;
-        auto peerWork = runScriptedPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, prefaceText);
-        auto clientWork = runRawPairClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        auto              peerWork   = runScriptedPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, prefaceText);
+        auto              clientWork = runRawPairClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1348,9 +1263,9 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(outcome.isStarted) << "前奏没走完，后面的帧自然无从谈起";
         EXPECT_EQ(outcome.statusCode, 200) << "失败原因：" << outcome.errorMessage;
 
-        const Http2Frame *ownSettings = findFrame(received.frames, Http2FrameType::Settings, false);
-        const Http2Frame *settingsAck = findFrame(received.frames, Http2FrameType::Settings, true);
-        const Http2Frame *pingAck = findFrame(received.frames, Http2FrameType::Ping, true);
+        const Http2Frame *ownSettings    = findFrame(received.frames, Http2FrameType::Settings, false);
+        const Http2Frame *settingsAck    = findFrame(received.frames, Http2FrameType::Settings, true);
+        const Http2Frame *pingAck        = findFrame(received.frames, Http2FrameType::Ping, true);
         const Http2Frame *requestHeaders = nullptr;
         for (const Http2Frame &frame: received.frames)
         {
@@ -1373,12 +1288,11 @@ namespace AsynGyanis::Net
         ASSERT_NE(requestHeaders, nullptr) << "没有 HEADERS，请求根本没提出来";
         EXPECT_EQ(requestHeaders->header.streamId, 1U) << "客户端首条流必须是 1，且只能是奇数（§5.1.1）";
         EXPECT_EQ(requestHeaders->header.flags & kHttp2FlagEndHeaders, kHttp2FlagEndHeaders) << "单帧头块要置 END_HEADERS";
-        EXPECT_EQ(requestHeaders->header.flags & kHttp2FlagEndStream, kHttp2FlagEndStream)
-                << "没有正文的请求必须用 END_HEADERS 就把流收口（§8.1）";
+        EXPECT_EQ(requestHeaders->header.flags & kHttp2FlagEndStream, kHttp2FlagEndStream) << "没有正文的请求必须用 END_HEADERS 就把流收口（§8.1）";
 
-        HpackDecoder peerSideDecoder;
+        HpackDecoder                  peerSideDecoder;
         std::vector<HpackHeaderField> headerFields;
-        std::string decodeErrorText;
+        std::string                   decodeErrorText;
         ASSERT_TRUE(peerSideDecoder.decode(requestHeaders->payload, headerFields, &decodeErrorText)) << decodeErrorText;
         EXPECT_EQ(findHeaderValue(headerFields, ":method"), "GET");
         EXPECT_EQ(findHeaderValue(headerFields, ":path"), "/tick");
@@ -1388,11 +1302,10 @@ namespace AsynGyanis::Net
         ASSERT_NE(goAway, nullptr) << "礼貌收尾要发 GOAWAY，对端才知道这条连接不再有新流（§6.8）";
         EXPECT_EQ(goAway->header.streamId, 0U);
         Http2GoAwayPayload goAwayPayload;
-        std::string goAwayErrorText;
+        std::string        goAwayErrorText;
         ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, goAwayPayload, &goAwayErrorText)) << goAwayErrorText;
         EXPECT_EQ(goAwayPayload.lastStreamId, 1U) << "已受理的最后一条流之外，对端可以把更后面的流整个不当回事";
-        EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::NoError))
-                << "正常收尾不该带错误码";
+        EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::NoError)) << "正常收尾不该带错误码";
     }
 
     /**
@@ -1407,15 +1320,15 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, RetiresConnectionWhenTheStreamIdBudgetIsSpent)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
-        PeerFrames received;
-        std::string prefaceText;
+        PeerFrames             received;
+        std::string            prefaceText;
         StreamBudgetRunOutcome outcome;
-        auto peerWork = runScriptedPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, prefaceText);
-        auto clientWork = runStreamBudgetClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        auto                   peerWork   = runScriptedPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, prefaceText);
+        auto                   clientWork = runStreamBudgetClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1425,18 +1338,16 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.firstStatusCode, 200) << "第一条本该照常走完，失败原因：" << outcome.firstErrorMessage;
         EXPECT_FALSE(outcome.isHealthyAfterFirst) << "额度见顶且最后一条流已收齐，本端应当自己退场而不是留着待用";
         EXPECT_EQ(outcome.secondStatusCode, 0) << "额度见顶之后还提出了第二条流：流号就要回绕了";
-        EXPECT_NE(outcome.secondErrorMessage.find("额度"), std::string::npos)
-                << "第二条被拒的原因没点名额度，排查时会以为是网络问题：「" << outcome.secondErrorMessage << "」";
+        EXPECT_NE(outcome.secondErrorMessage.find("额度"), std::string::npos) << "第二条被拒的原因没点名额度，排查时会以为是网络问题：「" << outcome.secondErrorMessage << "」";
 
         const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
         ASSERT_NE(goAway, nullptr) << "退场要按 §6.8 交代一句 GOAWAY，不能直接掐通路";
         EXPECT_EQ(goAway->header.streamId, 0U) << "GOAWAY 是连接级帧";
         Http2GoAwayPayload goAwayPayload;
-        std::string goAwayErrorText;
+        std::string        goAwayErrorText;
         ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, goAwayPayload, &goAwayErrorText)) << goAwayErrorText;
         EXPECT_EQ(goAwayPayload.lastStreamId, 1U) << "已受理的最后一条流是 1：更后面的流对端可以整个不当回事";
-        EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::NoError))
-                << "配额用完不是谁的违规，GOAWAY 不该带错误码";
+        EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::NoError)) << "配额用完不是谁的违规，GOAWAY 不该带错误码";
     }
 
     /**
@@ -1450,15 +1361,15 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, RefusesANewStreamWhenTheBudgetIsSpentWhileOneIsInFlight)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
-        PeerFrames received;
+        PeerFrames           received;
         BusyBudgetRunOutcome outcome;
-        const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
-        auto peerWork = runOpeningPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, greeting);
-        auto clientWork = runBusyBudgetClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        const std::string    greeting   = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+        auto                 peerWork   = runOpeningPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, greeting);
+        auto                 clientWork = runBusyBudgetClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1467,8 +1378,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(outcome.isStarted) << "前奏没走完，后面的额度判定无从谈起";
         EXPECT_EQ(outcome.inFlightWhenRefused, 1U) << "第一条没挂在途上：这条用例没测到「到界且有流在途」";
         EXPECT_EQ(outcome.secondStatusCode, 0) << "额度见顶且第一条还在途，第二条不该再占一条流";
-        EXPECT_NE(outcome.secondErrorMessage.find("额度"), std::string::npos)
-                << "第二条没被额度闸挡下（它等满了自己的时限），原因：「" << outcome.secondErrorMessage << "」";
+        EXPECT_NE(outcome.secondErrorMessage.find("额度"), std::string::npos) << "第二条没被额度闸挡下（它等满了自己的时限），原因：「" << outcome.secondErrorMessage << "」";
         EXPECT_TRUE(outcome.isFirstStillPending) << "第二条被拒时把在途的第一条连坐了：拒绝新流不该动已有的流";
 
         std::size_t peerHeadersFrameCount = 0;
@@ -1492,13 +1402,13 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, MarksARequestAsSentWhenThePeerAnsweredNothing)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
         SentFlagRunOutcome outcome;
-        auto peerWork = runSilentClosingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
-        auto clientWork = runSentFlagClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        auto               peerWork   = runSilentClosingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
+        auto               clientWork = runSentFlagClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1521,13 +1431,13 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, SplitsAnOverSizedHeaderBlockIntoContinuationFrames)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
         HeaderBlockRunOutcome outcome;
-        auto peerWork = runFragmentCollectingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), outcome);
-        auto clientWork = runFragmentedHeaderClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        auto                  peerWork   = runFragmentCollectingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), outcome);
+        auto                  clientWork = runFragmentedHeaderClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1555,13 +1465,13 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, AppendsTrailerFieldsToTheResponseHeaders)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
         HeaderBlockRunOutcome outcome;
-        auto peerWork = runTrailingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
-        auto clientWork = runTrailingClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        auto                  peerWork   = runTrailingPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
+        auto                  clientWork = runTrailingClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1584,21 +1494,20 @@ namespace AsynGyanis::Net
      */
     TEST(Http2ClientConnection, RejectsDataThatArrivesAfterTheResponseEnded)
     {
-        HpackEncoder peerEncoder;
+        HpackEncoder      peerEncoder;
         const std::string headBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
-        const std::string script = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headBlock)
-                                   + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, "keep-me")
-                                   + makeFrame(Http2FrameType::Data, 0U, 1U, "injected");
+        const std::string script = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headBlock) + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, "keep-me") +
+                                   makeFrame(Http2FrameType::Data, 0U, 1U, "injected");
 
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
-        PeerFrames received;
+        PeerFrames            received;
         HeaderBlockRunOutcome outcome;
-        auto peerWork = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
-        auto clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1608,7 +1517,7 @@ namespace AsynGyanis::Net
         const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
         ASSERT_NE(goAway, nullptr) << "本端静默关掉通路，对端不知道为什么（§6.8 要交代 GOAWAY）";
         Http2GoAwayPayload goAwayPayload;
-        std::string errorText;
+        std::string        errorText;
         ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, goAwayPayload, &errorText)) << errorText;
         EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::StreamClosed))
                 << "越界的一帧要报 STREAM_CLOSED，报成别的码会把排查带去别处";
@@ -1624,24 +1533,21 @@ namespace AsynGyanis::Net
      */
     TEST(Http2ClientConnection, RejectsHeadersThatArriveAfterTheResponseEnded)
     {
-        HpackEncoder peerEncoder;
-        const std::string headBlock = peerEncoder.encode({HpackHeaderField{":status", "200"},
-                                                          HpackHeaderField{"content-type", "text/plain"}});
+        HpackEncoder      peerEncoder;
+        const std::string headBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-type", "text/plain"}});
         const std::string lateBlock = peerEncoder.encode({HpackHeaderField{"x-injected", "yes"}});
-        const std::string script = makeFrame(Http2FrameType::Headers,
-                                             static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream),
-                                             1U, headBlock)
-                                   + makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, lateBlock);
+        const std::string script    = makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), 1U, headBlock) +
+                                      makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, lateBlock);
 
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
-        PeerFrames received;
+        PeerFrames            received;
         HeaderBlockRunOutcome outcome;
-        auto peerWork = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
-        auto clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1652,7 +1558,7 @@ namespace AsynGyanis::Net
         const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
         ASSERT_NE(goAway, nullptr) << "本端静默关掉通路，对端不知道为什么（§6.8 要交代 GOAWAY）";
         Http2GoAwayPayload goAwayPayload;
-        std::string errorText;
+        std::string        errorText;
         ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, goAwayPayload, &errorText)) << errorText;
         EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::StreamClosed))
                 << "越界的一段头块要报 STREAM_CLOSED，报成 COMPRESSION_ERROR 会把排查带去 HPACK 那边";
@@ -1668,13 +1574,13 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, RejectsAResponseThatNeverGotEndStream)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
         TruncatedRunOutcome outcome;
-        auto peerWork = runTruncatingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
-        auto clientWork = runTruncatedClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        auto                peerWork   = runTruncatingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)));
+        auto                clientWork = runTruncatedClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1697,16 +1603,14 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, KeepsTheConnectionUsableWhileTwoWritersAreStalled)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
-        PeerFrames received;
+        PeerFrames               received;
         ContendedWriteRunOutcome outcome;
-        auto peerWork = runSlowDrainingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received,
-                                           std::chrono::milliseconds{200});
-        auto clientWork = runContendedWriteClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome,
-                                                 512U * 1024U);
+        auto                     peerWork   = runSlowDrainingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, std::chrono::milliseconds{200});
+        auto                     clientWork = runContendedWriteClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome, 512U * 1024U);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1742,15 +1646,13 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, QueuesSecondWriterWhileTheSocketBufferIsFull)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
         ContendedWriteRunOutcome outcome;
-        auto peerWork = runNeverReadingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)),
-                                            std::chrono::milliseconds{600});
-        auto clientWork = runContendedWriteClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome,
-                                                8U * 1024U * 1024U);
+        auto                     peerWork   = runNeverReadingPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), std::chrono::milliseconds{600});
+        auto                     clientWork = runContendedWriteClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome, 8U * 1024U * 1024U);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1773,30 +1675,28 @@ namespace AsynGyanis::Net
         /// 一条越界的 SETTINGS 参数，连同本端应当回的错误码
         struct IllegalSetting
         {
-            const char *label;                      ///< 失败信息里说清踩了哪一档
-            Http2SettingIdentifier identifier;      ///< 参数标识
-            std::uint32_t value;                    ///< 越界取值
-            Http2ErrorCode expectedCode;            ///< 本端该在 GOAWAY 里带的错误码
+            const char            *label;        ///< 失败信息里说清踩了哪一档
+            Http2SettingIdentifier identifier;   ///< 参数标识
+            std::uint32_t          value;        ///< 越界取值
+            Http2ErrorCode         expectedCode; ///< 本端该在 GOAWAY 里带的错误码
         };
         const std::vector<IllegalSetting> illegalSettings = {
-            IllegalSetting{"MAX_FRAME_SIZE 低于下界", Http2SettingIdentifier::MaxFrameSize, 1U, Http2ErrorCode::ProtocolError},
-            IllegalSetting{"INITIAL_WINDOW_SIZE 越过 2^31-1", Http2SettingIdentifier::InitialWindowSize, 0x80000000U,
-                           Http2ErrorCode::FlowControlError},
-            IllegalSetting{"ENABLE_PUSH 不是布尔", Http2SettingIdentifier::EnablePush, 2U, Http2ErrorCode::ProtocolError},
+                IllegalSetting{"MAX_FRAME_SIZE 低于下界", Http2SettingIdentifier::MaxFrameSize, 1U, Http2ErrorCode::ProtocolError},
+                IllegalSetting{"INITIAL_WINDOW_SIZE 越过 2^31-1", Http2SettingIdentifier::InitialWindowSize, 0x80000000U, Http2ErrorCode::FlowControlError},
+                IllegalSetting{"ENABLE_PUSH 不是布尔", Http2SettingIdentifier::EnablePush, 2U, Http2ErrorCode::ProtocolError},
         };
 
         for (const IllegalSetting &entry: illegalSettings)
         {
             int clientDescriptor = -1;
-            int peerDescriptor = -1;
+            int peerDescriptor   = -1;
             ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor)) << entry.label;
 
             Core::EventLoop loop;
-            PeerFrames received;
-            bool isStarted = true;
-            auto peerWork = runOpeningPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received,
-                                           singleSettingFrameBytes(entry.identifier, entry.value));
-            auto clientWork = runBadSettingsClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), isStarted);
+            PeerFrames      received;
+            bool            isStarted  = true;
+            auto            peerWork   = runOpeningPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, singleSettingFrameBytes(entry.identifier, entry.value));
+            auto            clientWork = runBadSettingsClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), isStarted);
             static_cast<void>(peerWork.handle().resume());
             static_cast<void>(clientWork.handle().resume());
             loop.run();
@@ -1805,7 +1705,7 @@ namespace AsynGyanis::Net
             const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
             ASSERT_NE(goAway, nullptr) << entry.label << "：本端判死却没按 §6.8 发 GOAWAY，对端只看到一个断掉的连接";
             Http2GoAwayPayload payload;
-            std::string errorText;
+            std::string        errorText;
             ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, payload, &errorText)) << errorText;
             EXPECT_EQ(static_cast<std::uint16_t>(payload.errorCode), static_cast<std::uint16_t>(entry.expectedCode))
                     << entry.label << "：GOAWAY 里的错误码不对，现场会顺着错方向查";
@@ -1822,19 +1722,18 @@ namespace AsynGyanis::Net
      */
     TEST(Http2ClientConnection, RefusesToBufferAnOverSizedHeaderBlock)
     {
-        const std::string flood = makeFrame(Http2FrameType::Settings, 0U, 0U, {})
-                                  + makeFrame(Http2FrameType::Headers, 0U, 1U, std::string(8192U, 'x'))
-                                  + makeFrame(Http2FrameType::Continuation, 0U, 1U, std::string(8193U, 'x'));
+        const std::string flood = makeFrame(Http2FrameType::Settings, 0U, 0U, {}) + makeFrame(Http2FrameType::Headers, 0U, 1U, std::string(8192U, 'x')) +
+                                  makeFrame(Http2FrameType::Continuation, 0U, 1U, std::string(8193U, 'x'));
 
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
-        PeerFrames received;
+        PeerFrames        received;
         RawPairRunOutcome outcome;
-        auto peerWork = runOpeningPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, flood);
-        auto clientWork = runRawPairClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        auto              peerWork   = runOpeningPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, flood);
+        auto              clientWork = runRawPairClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1844,7 +1743,7 @@ namespace AsynGyanis::Net
         const Http2Frame *goAway = findFrame(received.frames, Http2FrameType::GoAway, false);
         ASSERT_NE(goAway, nullptr) << "本端静默关掉通路，对端不知道为什么";
         Http2GoAwayPayload payload;
-        std::string errorText;
+        std::string        errorText;
         ASSERT_TRUE(parseHttp2GoAwayPayload(*goAway, payload, &errorText)) << errorText;
         EXPECT_EQ(static_cast<std::uint16_t>(payload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::EnhanceYourCalm))
                 << "内存闸门触发的收口要报 ENHANCE_YOUR_CALM，报成协议错误会把排查带去别处";
@@ -1863,17 +1762,16 @@ namespace AsynGyanis::Net
     {
         constexpr std::size_t kLimitByteCount = 8192U;
         constexpr std::size_t kChunkByteCount = 4096U;
-        constexpr std::size_t kChunkCount = 5U;   ///< 两倍的量，明显越过上限
+        constexpr std::size_t kChunkCount     = 5U; ///< 两倍的量，明显越过上限
 
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
         BodyLimitRunOutcome outcome;
-        auto peerWork = runFloodedBodyPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), kChunkByteCount, kChunkCount);
-        auto clientWork = runBodyLimitClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), kLimitByteCount,
-                                             outcome);
+        auto                peerWork   = runFloodedBodyPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), kChunkByteCount, kChunkCount);
+        auto                clientWork = runBodyLimitClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), kLimitByteCount, outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();
@@ -1882,8 +1780,7 @@ namespace AsynGyanis::Net
         // 状态码确实是 200：头块收齐了，越界发生在正文上。所以判据不能看状态码，得看这次收场算不算成功
         EXPECT_EQ(outcome.statusCode, 200) << "对端的 :status 200 本该照收，越界的只是正文";
         EXPECT_FALSE(outcome.isOk) << "越过本端上限的正文被当成功收了：" << outcome.errorMessage;
-        EXPECT_NE(outcome.errorMessage.find("上限"), std::string::npos)
-                << "原因要说清是「本端的上限」而不是对端犯规：" << outcome.errorMessage;
+        EXPECT_NE(outcome.errorMessage.find("上限"), std::string::npos) << "原因要说清是「本端的上限」而不是对端犯规：" << outcome.errorMessage;
         EXPECT_LE(outcome.body.size(), kLimitByteCount) << "越过之后还在往里存字节：留下了 " << outcome.body.size() << " 字节";
         EXPECT_TRUE(outcome.isHealthyAfterBreach) << "本端的胃口问题收掉了整条连接：同连接上别的流被连坐";
     }
@@ -1897,14 +1794,14 @@ namespace AsynGyanis::Net
     TEST(Http2ClientConnection, ServesTwoConcurrentRequestsOnOneConnection)
     {
         Core::EventLoop loop;
-        int clientDescriptor = -1;
-        int peerDescriptor = -1;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
         ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
 
         std::vector<std::pair<std::uint32_t, std::string>> openedRequests;
-        MultiplexRunOutcome outcome;
-        auto peerWork = runMultiplexPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), openedRequests);
-        auto clientWork = runMultiplexTask(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        MultiplexRunOutcome                                outcome;
+        auto                                               peerWork   = runMultiplexPeer(TcpStream(Core::AsyncSocket(loop, peerDescriptor)), openedRequests);
+        auto                                               clientWork = runMultiplexTask(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
         static_cast<void>(peerWork.handle().resume());
         static_cast<void>(clientWork.handle().resume());
         loop.run();

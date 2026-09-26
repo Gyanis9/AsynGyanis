@@ -1,8 +1,8 @@
 // EventLoop 单元测试：启停状态、跨线程唤醒、调度器接入与协程执行
 
-#include "Core/EventLoop/EventLoop.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/EventLoop.h"
 
 #include "CoreTestSupport.h"
 
@@ -29,7 +29,7 @@ namespace AsynGyanis::Core
             value.store(42);
             co_return 0;
         }
-    }
+    } // namespace
 
     /**
      * @brief 构造即备好有效的 epoll 句柄，且此时并不处于运行态（run() 之前不误报 running）
@@ -47,19 +47,17 @@ namespace AsynGyanis::Core
      */
     TEST(EventLoop, RunAndStopTransitionsRunningState)
     {
-        EventLoop loop;
+        EventLoop         loop;
         std::atomic<bool> workerStarted{false};
-        std::thread worker([&]()
-        {
-            workerStarted.store(true);
-            loop.run();
-        });
+        std::thread       worker(
+                [&]()
+                {
+                    workerStarted.store(true);
+                    loop.run();
+                });
 
         // 轮询等待事件循环真正进入 run()
-        ASSERT_TRUE(waitForCondition([&]()
-        {
-            return workerStarted.load() && loop.isRunning();
-        }));
+        ASSERT_TRUE(waitForCondition([&]() { return workerStarted.load() && loop.isRunning(); }));
 
         loop.stop();
         worker.join();
@@ -81,18 +79,16 @@ namespace AsynGyanis::Core
      */
     TEST(EventLoop, WakeInterruptsBlockingWait)
     {
-        EventLoop loop;
+        EventLoop         loop;
         std::atomic<bool> workerStarted{false};
-        std::thread worker([&]()
-        {
-            workerStarted.store(true);
-            loop.run();
-        });
+        std::thread       worker(
+                [&]()
+                {
+                    workerStarted.store(true);
+                    loop.run();
+                });
 
-        ASSERT_TRUE(waitForCondition([&]()
-        {
-            return workerStarted.load() && loop.isRunning();
-        }));
+        ASSERT_TRUE(waitForCondition([&]() { return workerStarted.load() && loop.isRunning(); }));
 
         // 先唤醒阻塞在 epoll_wait 中的事件循环，随后停止应能正常退出
         loop.wake();
@@ -106,7 +102,7 @@ namespace AsynGyanis::Core
      */
     TEST(EventLoop, SchedulerExecutesScheduledCoroutine)
     {
-        EventLoop loop;
+        EventLoop        loop;
         std::atomic<int> value{0};
 
         auto task = setValue(value);
@@ -122,9 +118,9 @@ namespace AsynGyanis::Core
      */
     TEST(EventLoop, RunAllExecutesMultipleCoroutines)
     {
-        EventLoop loop;
-        int executionCount = 0;
-        int results[3]{};
+        EventLoop               loop;
+        int                     executionCount = 0;
+        int                     results[3]{};
         std::vector<Task<void>> tasks;
 
         // 三个协程各自记录执行结果。惰性 Task 的协程帧记住的是闭包对象的地址：闭包必须
@@ -171,17 +167,11 @@ namespace AsynGyanis::Core
      */
     TEST(EventLoop, StopFromAnotherThreadExitsLoop)
     {
-        EventLoop loop;
-        std::thread worker([&]()
-        {
-            loop.run();
-        });
+        EventLoop   loop;
+        std::thread worker([&]() { loop.run(); });
 
         // 轮询等待事件循环进入运行状态，替代固定 sleep
-        ASSERT_TRUE(waitForCondition([&]()
-        {
-            return loop.isRunning();
-        }));
+        ASSERT_TRUE(waitForCondition([&]() { return loop.isRunning(); }));
 
         loop.stop();
         worker.join();
@@ -193,16 +183,10 @@ namespace AsynGyanis::Core
      */
     TEST(EventLoop, DoubleStopIsSafe)
     {
-        EventLoop loop;
-        std::thread worker([&]()
-        {
-            loop.run();
-        });
+        EventLoop   loop;
+        std::thread worker([&]() { loop.run(); });
 
-        ASSERT_TRUE(waitForCondition([&]()
-        {
-            return loop.isRunning();
-        }));
+        ASSERT_TRUE(waitForCondition([&]() { return loop.isRunning(); }));
 
         loop.stop();
         EXPECT_NO_THROW(loop.stop());
@@ -221,7 +205,7 @@ namespace AsynGyanis::Core
         // 停止请求先于 run() 到达时必须被保留：start() 之后立刻 stop() 是常见写法，
         // 它会走到「标志已置位、工作线程还没进入 run()」这个时序。若 run() 开头清除该标志，
         // 这次停止请求就被吞掉，工作线程会永远阻塞在 epoll_wait 上、join 随之卡死
-        //（这不是假设：按「可重启」改法实现后，ThreadPool.DoubleStopIsSafe 实测挂死）
+        // （这不是假设：按「可重启」改法实现后，ThreadPool.DoubleStopIsSafe 实测挂死）
         loop.stop();
         EXPECT_NO_THROW(loop.run());
         EXPECT_FALSE(loop.isRunning());

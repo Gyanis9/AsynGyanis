@@ -51,19 +51,19 @@ namespace
     /// 自检攒下来的观测：全部在循环线程上写，主线程等标记置起后再读
     struct Observations
     {
-        bool        rejectsMissingCertificate{false};   ///< 证书文件不存在时 listen() 是否当场抛出
-        bool        certificateRejectionIsActionable{false}; ///< 抛出的中文说明里是否点名了证书
-        bool        rejectsMissingPrivateKey{false};    ///< 私钥不存在时同样被拒
-        bool        bindsEphemeralPort{false};          ///< 端口 0 起监听后能读回内核分配的实际端口
-        bool        honoursRequestedPort{false};        ///< 指定端口时读回的就是那个端口
-        bool        survivesGarbageDatagrams{false};    ///< 乱码数据报不建连接、不崩、端口还在
-        bool        survivesMalformedInitial{false};    ///< 形状像 Initial 的畸形长头同样被挡下
-        bool        reportsNoConnection{false};         ///< 上述期间在线连接数一直是 0
-        bool        statsReadableWithoutCollector{false};///< 没配采集端时 stats() 仍可读且为零
-        bool        survivesRouterAndHandlerWiring{false};///< 接上路由器与直通回调后仍照常容错
-        bool        expiryTickerKeepsServiceAlive{false};///< 空闲超时与节拍定时在没有连接时也能跑
-        bool        drainReturnsImmediatelyWhenIdle{false};///< 无在途连接时 drain() 立刻返回
-        std::uint16_t ephemeralPort{0};                 ///< 端口 0 实际拿到的端口号
+        bool          rejectsMissingCertificate{false};        ///< 证书文件不存在时 listen() 是否当场抛出
+        bool          certificateRejectionIsActionable{false}; ///< 抛出的中文说明里是否点名了证书
+        bool          rejectsMissingPrivateKey{false};         ///< 私钥不存在时同样被拒
+        bool          bindsEphemeralPort{false};               ///< 端口 0 起监听后能读回内核分配的实际端口
+        bool          honoursRequestedPort{false};             ///< 指定端口时读回的就是那个端口
+        bool          survivesGarbageDatagrams{false};         ///< 乱码数据报不建连接、不崩、端口还在
+        bool          survivesMalformedInitial{false};         ///< 形状像 Initial 的畸形长头同样被挡下
+        bool          reportsNoConnection{false};              ///< 上述期间在线连接数一直是 0
+        bool          statsReadableWithoutCollector{false};    ///< 没配采集端时 stats() 仍可读且为零
+        bool          survivesRouterAndHandlerWiring{false};   ///< 接上路由器与直通回调后仍照常容错
+        bool          expiryTickerKeepsServiceAlive{false};    ///< 空闲超时与节拍定时在没有连接时也能跑
+        bool          drainReturnsImmediatelyWhenIdle{false};  ///< 无在途连接时 drain() 立刻返回
+        std::uint16_t ephemeralPort{0};                        ///< 端口 0 实际拿到的端口号
     };
 
     Observations g_observations;
@@ -88,7 +88,7 @@ namespace
         for (int level = 0; level < 8 && !cursor.empty(); ++level)
         {
             cursor = cursor.parent_path();
-            std::error_code checkError;
+            std::error_code             checkError;
             const std::filesystem::path candidate = cursor / "tests/Core/fixtures" / std::string{fileName};
             if (std::filesystem::exists(candidate, checkError))
             {
@@ -106,9 +106,9 @@ namespace
     Platform::SocketAddress loopbackSocketAddress(const std::uint16_t port)
     {
         Platform::SocketAddress address{};
-        auto &                  ipv4 = reinterpret_cast<sockaddr_in &>(address.storage);
-        ipv4.sin_family = AF_INET;
-        ipv4.sin_port   = htons(port);
+        auto                   &ipv4 = reinterpret_cast<sockaddr_in &>(address.storage);
+        ipv4.sin_family              = AF_INET;
+        ipv4.sin_port                = htons(port);
 #if ASYN_PLATFORM_WIN32
         ipv4.sin_addr.S_un.S_addr = inet_addr("127.0.0.1");
 #else
@@ -140,9 +140,9 @@ namespace
      * @param listenTasks 输出：协程帧要活到跑完，由调用方持有
      * @return std::unique_ptr<Net::QuicServer> 已提交 listen 的服务端
      */
-    template <typename TaskList>
-    std::unique_ptr<Net::QuicServer> startServer(Core::EventLoop &loop, const Net::QuicServer::Configuration &configuration,
-                                                 const Core::InetAddress &localAddress, TaskList &listenTasks)
+    template<typename TaskList>
+    std::unique_ptr<Net::QuicServer> startServer(Core::EventLoop &loop, const Net::QuicServer::Configuration &configuration, const Core::InetAddress &localAddress,
+                                                 TaskList &listenTasks)
     {
         auto server = std::make_unique<Net::QuicServer>(loop, configuration);
         listenTasks.push_back(server->listen(localAddress));
@@ -243,11 +243,11 @@ namespace
     Net::QuicServer::Configuration makeConfiguration(const std::string &certificateFile, const std::string &keyFile)
     {
         Net::QuicServer::Configuration configuration;
-        configuration.certificateFile  = certificateFile;
-        configuration.privateKeyFile   = keyFile;
-        configuration.idleTimeout      = std::chrono::seconds{1};
+        configuration.certificateFile    = certificateFile;
+        configuration.privateKeyFile     = keyFile;
+        configuration.idleTimeout        = std::chrono::seconds{1};
         configuration.maximumConnections = 8;
-        configuration.parserLimits     = Net::HttpParserLimits{};
+        configuration.parserLimits       = Net::HttpParserLimits{};
         return configuration;
     }
 
@@ -292,9 +292,9 @@ namespace
                 co_await server.listen(*address);
             } catch (const Base::Exception &failure)
             {
-                g_observations.rejectsMissingCertificate          = true;
-                const std::string_view message                    = failure.what();
-                g_observations.certificateRejectionIsActionable   = message.find("证书") != std::string_view::npos;
+                g_observations.rejectsMissingCertificate        = true;
+                const std::string_view message                  = failure.what();
+                g_observations.certificateRejectionIsActionable = message.find("证书") != std::string_view::npos;
                 LOG_INFO_FMT("证书被拒的说明：{}", failure.what());
             } catch (...)
             {
@@ -302,8 +302,8 @@ namespace
             }
         }
         {
-            Net::QuicServer::Configuration badKey     = makeConfiguration(certificateFile, "does-not-exist-key.pem");
-            const auto                     address    = Core::InetAddress::resolve("127.0.0.1", 0);
+            Net::QuicServer::Configuration badKey  = makeConfiguration(certificateFile, "does-not-exist-key.pem");
+            const auto                     address = Core::InetAddress::resolve("127.0.0.1", 0);
             try
             {
                 Net::QuicServer server(loop, badKey);
@@ -318,11 +318,11 @@ namespace
         }
 
         // —— 2. 端口 0 起监听：内核分配的端口要能读回来 ——
-        const auto ephemeralAddress = Core::InetAddress::resolve("127.0.0.1", 0);
-        auto       server           = startServer(loop, makeConfiguration(certificateFile, keyFile), *ephemeralAddress, listenTasks);
-        const std::uint16_t ephemeralPort = co_await waitForListeningPort(loop, *server);
-        g_observations.bindsEphemeralPort = ephemeralPort != 0;
-        g_observations.ephemeralPort      = ephemeralPort;
+        const auto          ephemeralAddress = Core::InetAddress::resolve("127.0.0.1", 0);
+        auto                server           = startServer(loop, makeConfiguration(certificateFile, keyFile), *ephemeralAddress, listenTasks);
+        const std::uint16_t ephemeralPort    = co_await waitForListeningPort(loop, *server);
+        g_observations.bindsEphemeralPort    = ephemeralPort != 0;
+        g_observations.ephemeralPort         = ephemeralPort;
         if (ephemeralPort == 0)
         {
             g_isRunFinished.store(true, std::memory_order_release);
@@ -330,9 +330,8 @@ namespace
         }
 
         // 没配采集端时 stats() 仍可读，且除在线连接数外各计数为零
-        const Net::HttpServerStats bareStatistics = server->stats();
-        g_observations.statsReadableWithoutCollector =
-                bareStatistics.totalRequestCount == 0 && bareStatistics.activeConnectionCount == 0 && server->connectionCount() == 0;
+        const Net::HttpServerStats bareStatistics    = server->stats();
+        g_observations.statsReadableWithoutCollector = bareStatistics.totalRequestCount == 0 && bareStatistics.activeConnectionCount == 0 && server->connectionCount() == 0;
 
         // —— 3. 报文面容错：乱码与畸形长头都不该建连接、更不该让服务倒下 ——
         const std::size_t garbageSent = co_await sendDatagrams(loop, ephemeralPort, makeGarbagePayloads(30));
@@ -347,8 +346,7 @@ namespace
         }
         const std::size_t initialSent = co_await sendDatagrams(loop, ephemeralPort, initialPackets);
         co_await yieldFor(loop, std::chrono::milliseconds{200});
-        g_observations.survivesMalformedInitial =
-                initialSent == initialPackets.size() && server->listeningPort() == ephemeralPort && server->connectionCount() == 0;
+        g_observations.survivesMalformedInitial = initialSent == initialPackets.size() && server->listeningPort() == ephemeralPort && server->connectionCount() == 0;
 
         // —— 4. 定时驱动：idleTimeout 1 秒、节拍 10 毫秒，在没有任何连接时也要稳定跑 ——
         co_await yieldFor(loop, std::chrono::milliseconds{1400});
@@ -356,16 +354,15 @@ namespace
 
         // —— 5. 接上路由器与直通出口后仍然照常容错（这两条是 h3 与「纯传输层」两种形态的入口）——
         Net::Router router;
-        router.get("/hello", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setBody("hello-over-h3");
-            co_return;
-        });
+        router.get("/hello",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setBody("hello-over-h3");
+                       co_return;
+                   });
         server->setRouter(router);
-        server->setStreamDataHandler([](Net::QuicConnection &, const std::int64_t, const std::span<const std::uint8_t>, const bool) noexcept
-        {
-        });
+        server->setStreamDataHandler([](Net::QuicConnection &, const std::int64_t, const std::span<const std::uint8_t>, const bool) noexcept {});
         static_cast<void>(co_await sendDatagrams(loop, ephemeralPort, makeGarbagePayloads(10)));
         co_await yieldFor(loop, std::chrono::milliseconds{150});
         g_observations.survivesRouterAndHandlerWiring = server->listeningPort() == ephemeralPort && server->connectionCount() == 0;
@@ -373,7 +370,7 @@ namespace
         // —— 6. 排空与停止：没有连接时 drain() 不该白等，stop() 之后端口要能复用 ——
         const auto drainStartedAt = std::chrono::steady_clock::now();
         co_await server->drain(std::chrono::milliseconds{2000});
-        const auto drainElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartedAt);
+        const auto drainElapsed                        = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - drainStartedAt);
         g_observations.drainReturnsImmediatelyWhenIdle = drainElapsed < std::chrono::milliseconds{1500} && server->connectionCount() == 0;
 
         co_await wakeAndStop(loop, *server, ephemeralPort);
@@ -385,9 +382,9 @@ namespace
         // 要真测端口释放，得绕开 bindTo 用不带 SO_REUSEADDR 的裸套接字，那是 Platform 层的活
 
         // —— 7. 指定端口起监听：读回来的就是那个端口（换一个端口重起，顺带验可重复起停）——
-        const auto fixedAddress = Core::InetAddress::resolve("127.0.0.1", fixedPort);
-        auto       fixedServer  = startServer(loop, makeConfiguration(certificateFile, keyFile), *fixedAddress, listenTasks);
-        const std::uint16_t boundFixedPort = co_await waitForListeningPort(loop, *fixedServer);
+        const auto          fixedAddress    = Core::InetAddress::resolve("127.0.0.1", fixedPort);
+        auto                fixedServer     = startServer(loop, makeConfiguration(certificateFile, keyFile), *fixedAddress, listenTasks);
+        const std::uint16_t boundFixedPort  = co_await waitForListeningPort(loop, *fixedServer);
         g_observations.honoursRequestedPort = boundFixedPort == fixedPort;
         co_await wakeAndStop(loop, *fixedServer, fixedPort);
         fixedServer.reset();
@@ -417,19 +414,15 @@ int main(const int argc, char **argv)
     Samples::requirePortHeadroom(basePort, 3);
     const std::uint16_t fixedPort = static_cast<std::uint16_t>(basePort + 3);
 
-    Core::IoContext context(1);
-    auto &          pool = context.threadPool();
+    Core::IoContext  context(1);
+    auto            &pool = context.threadPool();
     Core::EventLoop &loop = pool.eventLoop(0);
 
     Core::Task<> runTask = runChecks(loop, certificateFixture.string(), keyFixture.string(), fixedPort);
     loop.scheduler().schedule(runTask.handle());
     pool.start();
 
-    const bool isRunDone = Samples::waitUntil([]
-                                              {
-                                                  return g_isRunFinished.load(std::memory_order_acquire);
-                                              },
-                                              std::chrono::seconds{60}, std::chrono::milliseconds{20});
+    const bool isRunDone = Samples::waitUntil([] { return g_isRunFinished.load(std::memory_order_acquire); }, std::chrono::seconds{60}, std::chrono::milliseconds{20});
     LOG_INFO_FMT("端口 0 起监听实际拿到 udp/{}", g_observations.ephemeralPort);
 
     samples.check(isRunDone, "整轮检查在时限内跑完（listen 的负向用例没有挂住）");

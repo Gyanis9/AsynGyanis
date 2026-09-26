@@ -39,10 +39,9 @@ namespace AsynGyanis::Net
          * @param startKeyIndex 本段首字节对应的掩码键下标，取值 0..3
          * @param maskKey 本帧的 4 字节掩码键
          */
-        void unmaskPayloadInPlace(char *bytes, const std::size_t length, const std::size_t startKeyIndex,
-                                  const std::array<std::uint8_t, kMaskKeyLength> &maskKey)
+        void unmaskPayloadInPlace(char *bytes, const std::size_t length, const std::size_t startKeyIndex, const std::array<std::uint8_t, kMaskKeyLength> &maskKey)
         {
-            std::size_t offset = 0;
+            std::size_t offset   = 0;
             std::size_t keyIndex = startKeyIndex;
 
             // 先逐字节推进到相位 0（至多 3 字节），之后的每 4 字节才恰好对齐键的 0..3
@@ -80,8 +79,7 @@ namespace AsynGyanis::Net
          */
         bool isKnownOpCodeValue(const std::uint8_t opCodeValue) noexcept
         {
-            return opCodeValue == 0x0 || opCodeValue == 0x1 || opCodeValue == 0x2 || opCodeValue == 0x8 || opCodeValue == 0x9 ||
-                   opCodeValue == 0xA;
+            return opCodeValue == 0x0 || opCodeValue == 0x1 || opCodeValue == 0x2 || opCodeValue == 0x8 || opCodeValue == 0x9 || opCodeValue == 0xA;
         }
 
         /**
@@ -157,20 +155,17 @@ namespace AsynGyanis::Net
         if (payload.size() < kSixteenBitLengthEscape)
         {
             frame.push_back(static_cast<char>(payload.size()));
-        }
-        else if (payload.size() < kSixtyFourBitLengthThreshold)
+        } else if (payload.size() < kSixtyFourBitLengthThreshold)
         {
             frame.push_back(static_cast<char>(kSixteenBitLengthEscape));
             appendBigEndian(frame, payload.size(), 2);
-        }
-        else
+        } else
         {
             // 64 位长度必须是不超过 2^63-1 的无符号数（RFC 6455 §5.2）:size_t 在 64 位平台上
             // 可达 2^64-1，因此显式判一次，不靠「平台不可能给出这么大的串」这种假设
             if (payload.size() > kMaximumSixtyFourBitLength)
             {
-                throw Base::InvalidArgumentException(
-                        std::format("负载长度 {} 字节超出 64 位长度域可表示的范围（RFC 6455 §5.2 要求最高位为 0）", payload.size()));
+                throw Base::InvalidArgumentException(std::format("负载长度 {} 字节超出 64 位长度域可表示的范围（RFC 6455 §5.2 要求最高位为 0）", payload.size()));
             }
             frame.push_back(static_cast<char>(kSixtyFourBitLengthEscape));
             appendBigEndian(frame, payload.size(), 8);
@@ -266,18 +261,17 @@ namespace AsynGyanis::Net
 
             // 走到这里只剩负载阶段，且长度已过上限校验，本次能收多少收多少
             const std::size_t remainingLength = static_cast<std::size_t>(m_payloadLength - m_framePayloadBytesSeen);
-            const std::size_t chunkLength = std::min(remainingLength, length - consumed);
+            const std::size_t chunkLength     = std::min(remainingLength, length - consumed);
 
             // 先整段追加、再就地解掩码：一次 append 比逐字节 push_back 少若干次扩容判断，
             // 而掩码必须解除（RFC 6455 §5.3），键按 4 字节循环、每个帧用自己的键。
             // 控制帧的负载落在自己的缓冲里：它可能插在分片消息中间，共用一块会把
             // 已重组的那半条消息冲掉（RFC 6455 §5.4）
-            std::string &payloadSink = isControlOpCodeValue(m_opCodeValue) ? m_controlPayloadBuffer : m_payloadBuffer;
+            std::string      &payloadSink   = isControlOpCodeValue(m_opCodeValue) ? m_controlPayloadBuffer : m_payloadBuffer;
             const std::size_t appendedBegin = payloadSink.size();
             payloadSink.append(data + consumed, chunkLength);
             // 本段首字节的键下标 = 本帧已收字节数 mod 4：分片输入可能停在键中间，相位要接着上一段
-            unmaskPayloadInPlace(payloadSink.data() + appendedBegin, chunkLength,
-                                 m_framePayloadBytesSeen % kMaskKeyLength, m_maskKey);
+            unmaskPayloadInPlace(payloadSink.data() + appendedBegin, chunkLength, m_framePayloadBytesSeen % kMaskKeyLength, m_maskKey);
             m_framePayloadBytesSeen += chunkLength;
             consumed += chunkLength;
 
@@ -321,15 +315,15 @@ namespace AsynGyanis::Net
         m_payloadBuffer.clear();
         m_controlPayloadBuffer.clear();
         m_isFragmentedMessageInProgress = false;
-        m_isCurrentMessageCompressed = false;
-        m_fragmentedMessageOpCodeValue = 0;
-        m_pendingFrame = WebSocketFrame{};
-        m_hasPendingFrame = false;
-        m_hasError = false;
-        m_isLimitExceeded = false;
+        m_isCurrentMessageCompressed    = false;
+        m_fragmentedMessageOpCodeValue  = 0;
+        m_pendingFrame                  = WebSocketFrame{};
+        m_hasPendingFrame               = false;
+        m_hasError                      = false;
+        m_isLimitExceeded               = false;
         m_errorMessage.clear();
         m_consumedByteCount = 0;
-        m_stage = Stage::FirstByte;
+        m_stage             = Stage::FirstByte;
     }
 
     bool WebSocketFrameDecoder::hasError() const
@@ -355,14 +349,14 @@ namespace AsynGyanis::Net
     bool WebSocketFrameDecoder::acceptFirstByte(const std::uint8_t firstByte)
     {
         // 首字节布局（RFC 6455 §5.2）：FIN(1) RSV1 RSV2 RSV3 操作码(4)
-        const bool isFinal = (firstByte & 0x80U) != 0;
+        const bool isFinal      = (firstByte & 0x80U) != 0;
         const auto reservedBits = static_cast<std::uint8_t>(firstByte & 0x70U);
-        const auto opCodeValue = static_cast<std::uint8_t>(firstByte & 0x0FU);
+        const auto opCodeValue  = static_cast<std::uint8_t>(firstByte & 0x0FU);
 
         // RSV 位口径（RFC 6455 §5.2 + RFC 7692 §6）：RSV2/RSV3 必须为 0；RSV1 只在协商过
         // permessage-deflate 且出现在数据消息首帧上时才合法——没协商就使用扩展必须判错，
         // 否则本端会接受一条自己解不开的消息
-        const bool isCompressed = (reservedBits & 0x40U) != 0;
+        const bool isCompressed      = (reservedBits & 0x40U) != 0;
         const auto otherReservedBits = static_cast<std::uint8_t>(reservedBits & 0x30U);
         if (otherReservedBits != 0)
         {
@@ -389,7 +383,7 @@ namespace AsynGyanis::Net
         if (isCompressed && (isControlFrame || opCodeValue == 0x0U))
         {
             recordFailure(false, isControlFrame ? "控制帧不得压缩（RFC 7692 §6.1）：RSV1 只能出现在数据消息的首帧上"
-                                               : "继续帧不得置 RSV1（RFC 7692 §6.1）：压缩标记只写在数据消息的首帧上");
+                                                : "继续帧不得置 RSV1（RFC 7692 §6.1）：压缩标记只写在数据消息的首帧上");
             return false;
         }
 
@@ -407,8 +401,7 @@ namespace AsynGyanis::Net
             // 控制帧独立成帧，负载落点从零开始（缓冲区里可能还留着上一帧移走前的残留内容）。
             // 落在 m_controlPayloadBuffer：分片消息的 m_payloadBuffer 此刻可能正存着半条消息
             m_controlPayloadBuffer.clear();
-        }
-        else if (opCodeValue == 0x0)
+        } else if (opCodeValue == 0x0)
         {
             // 继续帧必须接在一条未收尾的数据帧之后（RFC 6455 §5.4）
             if (!m_isFragmentedMessageInProgress)
@@ -416,8 +409,7 @@ namespace AsynGyanis::Net
                 recordFailure(false, "收到孤立的继续帧（Continuation）：它必须紧跟在一条未收尾的分片消息之后（RFC 6455 §5.4）");
                 return false;
             }
-        }
-        else
+        } else
         {
             // 数据帧开启一条新消息：此前不能有没收尾的分片，负载落点也从零开始
             if (m_isFragmentedMessageInProgress)
@@ -428,13 +420,13 @@ namespace AsynGyanis::Net
                 return false;
             }
             m_payloadBuffer.clear();
-            m_fragmentedMessageOpCodeValue = opCodeValue;
+            m_fragmentedMessageOpCodeValue  = opCodeValue;
             m_isFragmentedMessageInProgress = !isFinal;
             // 压缩标记只认消息首帧的 RSV1：后面的分片不带 RSV1，也改变不了本条消息的结论
             m_isCurrentMessageCompressed = isCompressed;
         }
 
-        m_isFinal = isFinal;
+        m_isFinal     = isFinal;
         m_opCodeValue = opCodeValue;
         return true;
     }
@@ -442,7 +434,7 @@ namespace AsynGyanis::Net
     bool WebSocketFrameDecoder::acceptLengthFirstByte(const std::uint8_t secondByte)
     {
         // 第二个字节布局（RFC 6455 §5.2）：MASK(1) 负载长度域(7)
-        const bool isMasked = (secondByte & 0x80U) != 0;
+        const bool isMasked         = (secondByte & 0x80U) != 0;
         const auto lengthFieldValue = static_cast<std::uint8_t>(secondByte & 0x7FU);
 
         // RFC 6455 §5.1：客户端发来的帧必须带掩码，服务端收到未掩码帧必须关闭连接。
@@ -459,21 +451,17 @@ namespace AsynGyanis::Net
             // 不必再读扩展长度
             if (lengthFieldValue > kWebSocketMaximumControlPayloadLength)
             {
-                recordFailure(false, std::format("控制帧负载不得超过 {} 字节（RFC 6455 §5.5）：请把长数据放进 Text/Binary 帧",
-                                                 kWebSocketMaximumControlPayloadLength));
+                recordFailure(false, std::format("控制帧负载不得超过 {} 字节（RFC 6455 §5.5）：请把长数据放进 Text/Binary 帧", kWebSocketMaximumControlPayloadLength));
                 return false;
             }
             m_payloadLength = lengthFieldValue;
-        }
-        else if (lengthFieldValue < kSixteenBitLengthEscape)
+        } else if (lengthFieldValue < kSixteenBitLengthEscape)
         {
             m_payloadLength = lengthFieldValue;
-        }
-        else if (lengthFieldValue == kSixteenBitLengthEscape)
+        } else if (lengthFieldValue == kSixteenBitLengthEscape)
         {
             m_extendedLengthByteCount = 2;
-        }
-        else
+        } else
         {
             m_extendedLengthByteCount = 8;
         }
@@ -481,9 +469,9 @@ namespace AsynGyanis::Net
         if (m_extendedLengthByteCount != 0)
         {
             // 扩展长度收齐之前不校验：16 位档要等两个字节都到齐才能判「不足 126」
-            m_payloadLength = 0;
+            m_payloadLength           = 0;
             m_extendedLengthBytesSeen = 0;
-            m_stage = Stage::ExtendedLength;
+            m_stage                   = Stage::ExtendedLength;
             return true;
         }
 
@@ -501,8 +489,7 @@ namespace AsynGyanis::Net
         // 不同的解析实现之间就会对同一段字节得出不同的帧边界
         if (m_extendedLengthByteCount == 2 && payloadLength < kSixteenBitLengthEscape)
         {
-            recordFailure(false, std::format("负载长度 {} 用了非最短编码（RFC 6455 §5.2）：16 位长度不得小于 126，请改用 7 位长度",
-                                             payloadLength));
+            recordFailure(false, std::format("负载长度 {} 用了非最短编码（RFC 6455 §5.2）：16 位长度不得小于 126，请改用 7 位长度", payloadLength));
             return false;
         }
         if (m_extendedLengthByteCount == 8)
@@ -514,9 +501,7 @@ namespace AsynGyanis::Net
             }
             if (payloadLength < kSixtyFourBitLengthThreshold)
             {
-                recordFailure(false,
-                              std::format("负载长度 {} 用了非最短编码（RFC 6455 §5.2）：64 位长度不得小于 65536，请改用更短的档位",
-                                          payloadLength));
+                recordFailure(false, std::format("负载长度 {} 用了非最短编码（RFC 6455 §5.2）：64 位长度不得小于 65536，请改用更短的档位", payloadLength));
                 return false;
             }
         }
@@ -532,11 +517,9 @@ namespace AsynGyanis::Net
         }
 
         // 消息总上限按「已重组 + 本帧声明」判断：分片消息的体量不设防同样能撑爆内存
-        if (m_isFragmentedMessageInProgress &&
-            static_cast<std::uint64_t>(m_payloadBuffer.size()) + payloadLength > static_cast<std::uint64_t>(kMaximumMessagePayloadLength))
+        if (m_isFragmentedMessageInProgress && static_cast<std::uint64_t>(m_payloadBuffer.size()) + payloadLength > static_cast<std::uint64_t>(kMaximumMessagePayloadLength))
         {
-            recordFailure(true, std::format("分片消息重组后超出总上限 {} 字节：请缩小消息体量或拆成多条消息发送",
-                                            kMaximumMessagePayloadLength));
+            recordFailure(true, std::format("分片消息重组后超出总上限 {} 字节：请缩小消息体量或拆成多条消息发送", kMaximumMessagePayloadLength));
             return false;
         }
 
@@ -559,13 +542,13 @@ namespace AsynGyanis::Net
         // 交付：控制帧就是它自己；数据帧的末帧交出的是重组好的整条消息，操作码取消息首帧的
         // ——继续帧自身的操作码只表示「我是后续片段」
         const bool isMessageEnd = !isControlFrame && m_opCodeValue == 0x0;
-        m_pendingFrame.opCode = isControlFrame ? static_cast<WebSocketOpCode>(m_opCodeValue)
-                                               : static_cast<WebSocketOpCode>(isMessageEnd ? m_fragmentedMessageOpCodeValue : m_opCodeValue);
-        m_pendingFrame.isFinal = true;
+        m_pendingFrame.opCode =
+                isControlFrame ? static_cast<WebSocketOpCode>(m_opCodeValue) : static_cast<WebSocketOpCode>(isMessageEnd ? m_fragmentedMessageOpCodeValue : m_opCodeValue);
+        m_pendingFrame.isFinal      = true;
         m_pendingFrame.isCompressed = !isControlFrame && m_isCurrentMessageCompressed;
         // 控制帧的负载在自己的缓冲里（数据消息的缓冲要留给还在进行中的分片）
         std::string &payloadSource = isControlFrame ? m_controlPayloadBuffer : m_payloadBuffer;
-        m_pendingFrame.payload = std::move(payloadSource);
+        m_pendingFrame.payload     = std::move(payloadSource);
         // 移动之后源串的状态未指定：显式清空，让容量留着供下一帧复用
         payloadSource.clear();
         m_hasPendingFrame = true;
@@ -576,7 +559,7 @@ namespace AsynGyanis::Net
         {
             // 消息到此收尾（未分片的数据帧与分片消息的末帧都走这里），下一帧要么开新消息，要么是控制帧
             m_isFragmentedMessageInProgress = false;
-            m_isCurrentMessageCompressed = false;
+            m_isCurrentMessageCompressed    = false;
         }
         clearFrameScratch();
         m_stage = Stage::FirstByte;
@@ -584,22 +567,22 @@ namespace AsynGyanis::Net
 
     void WebSocketFrameDecoder::recordFailure(const bool isLimitExceeded, std::string reason)
     {
-        m_hasError = true;
+        m_hasError        = true;
         m_isLimitExceeded = isLimitExceeded;
         // 前缀统一在这里补：调用点只写原因，文案风格不会因为某个分支漏写而不一致
         m_errorMessage = "WebSocket 帧解码失败：" + std::move(reason);
-        m_stage = Stage::Failed;
+        m_stage        = Stage::Failed;
     }
 
     void WebSocketFrameDecoder::clearFrameScratch() noexcept
     {
-        m_opCodeValue = 0;
-        m_isFinal = true;
-        m_payloadLength = 0;
+        m_opCodeValue             = 0;
+        m_isFinal                 = true;
+        m_payloadLength           = 0;
         m_extendedLengthByteCount = 0;
         m_extendedLengthBytesSeen = 0;
-        m_maskKey = {};
-        m_maskKeyBytesSeen = 0;
-        m_framePayloadBytesSeen = 0;
+        m_maskKey                 = {};
+        m_maskKeyBytesSeen        = 0;
+        m_framePayloadBytesSeen   = 0;
     }
 } // namespace AsynGyanis::Net

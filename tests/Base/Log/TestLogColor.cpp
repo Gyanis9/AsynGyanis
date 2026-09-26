@@ -3,8 +3,8 @@
 // 日志模块在 Windows 上要求先包含 Platform/Platform.h，以清除 windows.h 注入的 ERROR 宏
 #include <ranges>
 
-#include "Platform/Platform.h"
 #include "Base/Log/LogColor.h"
+#include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
 
@@ -20,7 +20,7 @@ namespace AsynGyanis::Base
     namespace
     {
         /// LogColor 提供的全部转义序列常量及其名称，用于统一遍历校验
-        const std::vector<std::pair<std::string_view, const char *> > kAllColorConstants = {
+        const std::vector<std::pair<std::string_view, const char *>> kAllColorConstants = {
                 {"kReset", LogColor::kReset},
                 {"kRed", LogColor::kRed},
                 {"kGreen", LogColor::kGreen},
@@ -97,12 +97,7 @@ namespace AsynGyanis::Base
     TEST(LogColor, ColorForLevelReturnsDifferentColorsForDifferentLevels)
     {
         const std::vector<LogLevel> severityLevels = {
-                LogLevel::Trace,
-                LogLevel::Debug,
-                LogLevel::Info,
-                LogLevel::Warn,
-                LogLevel::Error,
-                LogLevel::Fatal,
+                LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal,
         };
 
         std::unordered_set<std::string> distinctColors;

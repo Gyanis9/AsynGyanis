@@ -22,9 +22,9 @@ namespace AsynGyanis::Platform
      */
     struct FileBasicInfo
     {
-        bool isRegularFile = false;        ///< 是否普通文件；目录为 false（大小与时间照实给出，只是不代表正文长度）
-        std::uintmax_t sizeBytes = 0;      ///< 文件字节数
-        std::int64_t lastWriteSeconds = 0; ///< 最后修改时间的 Unix 秒，向下取整（两平台同口径，早于 1970 的时间戳也一致）
+        bool           isRegularFile    = false; ///< 是否普通文件；目录为 false（大小与时间照实给出，只是不代表正文长度）
+        std::uintmax_t sizeBytes        = 0;     ///< 文件字节数
+        std::int64_t   lastWriteSeconds = 0;     ///< 最后修改时间的 Unix 秒，向下取整（两平台同口径，早于 1970 的时间戳也一致）
         /**
          * @brief 「同一路径现在指向哪个文件」的身份标记，与大小、修改秒一起构成缓存命中判据
          * @details 只靠大小与修改秒会漏掉一种情形：文件被原子替换成新内容，长度一样、且落在同一秒内。
@@ -75,4 +75,4 @@ namespace AsynGyanis::Platform
      * @return std::optional<FileBasicInfo> 成功时给出信息；句柄无效或查询失败时为空，不抛异常
      */
     [[nodiscard]] std::optional<FileBasicInfo> queryOpenedFileBasicInfo(const NativeFileHandle handle) noexcept;
-}
+} // namespace AsynGyanis::Platform

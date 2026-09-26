@@ -1,8 +1,8 @@
 // HttpParser 单元测试：增量解析、报文定界、头部存储模型与资源上限
 #include "Net/Http/HttpParser.h"
 
-#include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpMethod.h"
+#include "Net/Http/HttpRequest.h"
 #include "Net/Http/ParseStatus.h"
 
 #include "Net/Http/HttpHeaderRules.h"
@@ -23,17 +23,17 @@ namespace AsynGyanis::Net
     {
         // HttpParser 的上限常量是私有成员，测试侧按同一口径复述一份数值：
         // 这些数字本身就是对外的 DoS 防护契约，实现改动必须让测试一起失败
-        constexpr std::size_t kUriLengthLimitInBytes = 8 * 1024;              ///< 请求 URI 上限
-        constexpr std::size_t kHeaderNameLimitInBytes = 256;                  ///< 单个头部名上限
-        constexpr std::size_t kHeaderValueLimitInBytes = 8 * 1024;            ///< 单个头部值上限
-        constexpr std::size_t kHeaderCountLimit = 100;                        ///< 头部条数上限
-        constexpr std::size_t kHeaderBlockLimitInBytes = 64 * 1024;           ///< 头部块总长上限
+        constexpr std::size_t kUriLengthLimitInBytes   = 8 * 1024;  ///< 请求 URI 上限
+        constexpr std::size_t kHeaderNameLimitInBytes  = 256;       ///< 单个头部名上限
+        constexpr std::size_t kHeaderValueLimitInBytes = 8 * 1024;  ///< 单个头部值上限
+        constexpr std::size_t kHeaderCountLimit        = 100;       ///< 头部条数上限
+        constexpr std::size_t kHeaderBlockLimitInBytes = 64 * 1024; ///< 头部块总长上限
 
         /// 上限探测用的「方法原文 + 期望枚举」配对
         struct MethodProbe
         {
-            std::string_view methodText;   ///< 请求行里的方法原文
-            HttpMethod expectedMethod;     ///< 期望映射到的枚举值
+            std::string_view methodText;     ///< 请求行里的方法原文
+            HttpMethod       expectedMethod; ///< 期望映射到的枚举值
         };
 
         /**
@@ -101,11 +101,7 @@ namespace AsynGyanis::Net
         HttpParser parser;
 
         // 按任意字节边界切开喂入：行中间、CRLF 中间、正文中间都要能续上
-        static constexpr std::array<std::string_view, 4> kChunks{
-                "POST /upload HTTP/1.1\r",
-                "\nContent-Length: 11\r",
-                "\n\r\nhel",
-                "lo world"};
+        static constexpr std::array<std::string_view, 4> kChunks{"POST /upload HTTP/1.1\r", "\nContent-Length: 11\r", "\n\r\nhel", "lo world"};
 
         for (std::size_t index = 0; index + 1 < kChunks.size(); ++index)
         {
@@ -321,7 +317,7 @@ namespace AsynGyanis::Net
 
         for (const MethodProbe &probe: kProbes)
         {
-            HttpParser parser;
+            HttpParser        parser;
             const std::string message = std::string(probe.methodText) + " /probe HTTP/1.1\r\n\r\n";
             ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done) << probe.methodText;
             EXPECT_EQ(parser.request().method(), probe.expectedMethod) << probe.methodText;
@@ -378,8 +374,8 @@ namespace AsynGyanis::Net
         const std::string message = makeRequestTextWithHeaders({"Set-Cookie: sid=1", "Set-Cookie: theme=dark"});
         EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done);
 
-        const HttpRequest &request = parser.request();
-        const std::vector<std::string> values = request.headerValues("set-cookie");
+        const HttpRequest             &request = parser.request();
+        const std::vector<std::string> values  = request.headerValues("set-cookie");
         ASSERT_EQ(values.size(), 2U);
         EXPECT_EQ(values[0], "sid=1");
         EXPECT_EQ(values[1], "theme=dark");
@@ -633,7 +629,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpParser, AcceptsIdenticalRepeatedContentLengthButRejectsConflictingOnes)
     {
-        HttpParser identicalParser;
+        HttpParser        identicalParser;
         const std::string sameValue = "POST /dup HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello";
         EXPECT_EQ(identicalParser.parse(sameValue.data(), sameValue.size()), ParseStatus::Done);
         EXPECT_EQ(identicalParser.request().body(), "hello");

@@ -13,10 +13,10 @@
 
 #include "DatabaseTestSupport.h"
 
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Dialect/SqliteDialect.h"
-#include "Core/Coroutine/AsyncExecutor.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
@@ -71,10 +71,10 @@ struct AsynGyanis::Database::Queryable::TableSchema<AsyncAccountRow>
 {
     // 表名含空格：顺带验证异步路径使用的仍是同一套标识符引用规则
     static constexpr std::string_view kTableName = "async accounts";
-    static constexpr auto kColumns = std::tuple{
-        Column(&AsyncAccountRow::id,   "id"),
-        Column(&AsyncAccountRow::name, "name"),
-        Column(&AsyncAccountRow::note, "note"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&AsyncAccountRow::id, "id"),
+            Column(&AsyncAccountRow::name, "name"),
+            Column(&AsyncAccountRow::note, "note"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -83,8 +83,8 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<AsyncMissingTableRow>
 {
     static constexpr std::string_view kTableName = "async missing table";
-    static constexpr auto kColumns = std::tuple{
-        Column(&AsyncMissingTableRow::id, "id"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&AsyncMissingTableRow::id, "id"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -95,8 +95,8 @@ struct AsynGyanis::Database::Queryable::TableSchema<AsyncMissingTableRow>
 
 namespace
 {
-    using AsynGyanis::Core::Task;
     using AsynGyanis::Core::AsyncExecutor;
+    using AsynGyanis::Core::Task;
     using AsynGyanis::Database::ConnectionConfig;
     using AsynGyanis::Database::ConnectionPool;
     using AsynGyanis::Database::DatabaseFactory;
@@ -129,14 +129,14 @@ namespace
             poolConfiguration.maximumPoolSize = 1;
 
             m_pool = std::make_unique<ConnectionPool>(
-                []()
-                {
-                    auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(":memory:"));
-                    // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
-                    connection->connect();
-                    return connection;
-                },
-                poolConfiguration);
+                    []()
+                    {
+                        auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(":memory:"));
+                        // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
+                        connection->connect();
+                        return connection;
+                    },
+                    poolConfiguration);
 
             // 建表交给 SchemaMigrator：DDL 与 ORM 共用同一份 TableSchema，两边不会脱节
             std::string errorText;
@@ -167,9 +167,7 @@ namespace
         void insertRow(const std::int64_t id, std::string name, std::optional<std::string> note)
         {
             Queryable<AsyncAccountRow> insertQuery(*m_pool);
-            ASSERT_EQ(1, insertQuery.insert(AsyncAccountRow{
-                              .id = id, .name = std::move(name), .note = std::move(note)
-                          }));
+            ASSERT_EQ(1, insertQuery.insert(AsyncAccountRow{.id = id, .name = std::move(name), .note = std::move(note)}));
         }
 
         /**
@@ -193,9 +191,9 @@ namespace
             return countQuery.count();
         }
 
-        std::unique_ptr<ConnectionPool>  m_pool;        ///< 用例独占的内存库连接池
-        AsyncExecutor                    m_executor{2}; ///< 注入的异步执行器：顺带覆盖 useAsyncExecutor 路径
-        EventLoopThread                  m_loopRunner;  ///< 后台事件循环 + 驱动协程帧的持有者（销毁纪律见其类注释）
+        std::unique_ptr<ConnectionPool> m_pool;        ///< 用例独占的内存库连接池
+        AsyncExecutor                   m_executor{2}; ///< 注入的异步执行器：顺带覆盖 useAsyncExecutor 路径
+        EventLoopThread                 m_loopRunner;  ///< 后台事件循环 + 驱动协程帧的持有者（销毁纪律见其类注释）
     };
 
 } // namespace
@@ -215,16 +213,13 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
 
     // ---- toListAsync 与 toList 相等 ----
     {
-        Queryable<AsyncAccountRow> syncQuery(*m_pool);
+        Queryable<AsyncAccountRow>         syncQuery(*m_pool);
         const std::vector<AsyncAccountRow> syncRows = syncQuery.orderBy(asc("id")).toList();
 
         Queryable<AsyncAccountRow> asyncQuery(*m_pool);
-        asyncQuery.useAsyncExecutor(m_executor)
-                  .where(Column(&AsyncAccountRow::id, "id") >= std::int64_t{1})
-                  .orderBy(asc("id"));
+        asyncQuery.useAsyncExecutor(m_executor).where(Column(&AsyncAccountRow::id, "id") >= std::int64_t{1}).orderBy(asc("id"));
 
-        const CompletedTask<std::vector<AsyncAccountRow>> completed =
-            m_loopRunner.runToCompletion(asyncQuery.toListAsync(eventLoop()));
+        const CompletedTask<std::vector<AsyncAccountRow>> completed = m_loopRunner.runToCompletion(asyncQuery.toListAsync(eventLoop()));
 
         ASSERT_TRUE(completed.finished) << "异步任务未在时限内完成";
         ASSERT_EQ(completed.error, nullptr);
@@ -242,15 +237,13 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
 
     // ---- firstAsync 与 first 相等（含可空列） ----
     {
-        Queryable<AsyncAccountRow> syncQuery(*m_pool);
-        const std::optional<AsyncAccountRow> syncFirst =
-            syncQuery.where(Column(&AsyncAccountRow::id, "id") == std::int64_t{2}).first();
+        Queryable<AsyncAccountRow>           syncQuery(*m_pool);
+        const std::optional<AsyncAccountRow> syncFirst = syncQuery.where(Column(&AsyncAccountRow::id, "id") == std::int64_t{2}).first();
 
         Queryable<AsyncAccountRow> asyncQuery(*m_pool);
         asyncQuery.useAsyncExecutor(m_executor).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{2});
 
-        const CompletedTask<std::optional<AsyncAccountRow>> completed =
-            m_loopRunner.runToCompletion(asyncQuery.firstAsync(eventLoop()));
+        const CompletedTask<std::optional<AsyncAccountRow>> completed = m_loopRunner.runToCompletion(asyncQuery.firstAsync(eventLoop()));
 
         ASSERT_TRUE(completed.finished) << "异步任务未在时限内完成";
         ASSERT_EQ(completed.error, nullptr);
@@ -263,8 +256,7 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
         // 命中不到行时同样返回空 optional（与同步版语义一致）
         Queryable<AsyncAccountRow> missingQuery(*m_pool);
         missingQuery.useAsyncExecutor(m_executor).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{999});
-        const CompletedTask<std::optional<AsyncAccountRow>> missing =
-            m_loopRunner.runToCompletion(missingQuery.firstAsync(eventLoop()));
+        const CompletedTask<std::optional<AsyncAccountRow>> missing = m_loopRunner.runToCompletion(missingQuery.firstAsync(eventLoop()));
 
         ASSERT_TRUE(missing.finished);
         ASSERT_EQ(missing.error, nullptr);
@@ -275,13 +267,12 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
     // ---- countAsync 与 count 相等（带条件） ----
     {
         Queryable<AsyncAccountRow> syncQuery(*m_pool);
-        const std::int64_t syncCount = syncQuery.where(Column(&AsyncAccountRow::id, "id") >= std::int64_t{2}).count();
+        const std::int64_t         syncCount = syncQuery.where(Column(&AsyncAccountRow::id, "id") >= std::int64_t{2}).count();
 
         Queryable<AsyncAccountRow> asyncQuery(*m_pool);
         asyncQuery.useAsyncExecutor(m_executor).where(Column(&AsyncAccountRow::id, "id") >= std::int64_t{2});
 
-        const CompletedTask<std::int64_t> completed =
-            m_loopRunner.runToCompletion(asyncQuery.countAsync(eventLoop()));
+        const CompletedTask<std::int64_t> completed = m_loopRunner.runToCompletion(asyncQuery.countAsync(eventLoop()));
 
         ASSERT_TRUE(completed.finished);
         ASSERT_EQ(completed.error, nullptr);
@@ -295,8 +286,7 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
         Queryable<AsyncAccountRow> asyncDeleteQuery(*m_pool);
         asyncDeleteQuery.useAsyncExecutor(m_executor).where(Column(&AsyncAccountRow::id, "id") >= std::int64_t{3});
 
-        const CompletedTask<std::int64_t> deleted =
-            m_loopRunner.runToCompletion(asyncDeleteQuery.executeNonQueryAsync(eventLoop()));
+        const CompletedTask<std::int64_t> deleted = m_loopRunner.runToCompletion(asyncDeleteQuery.executeNonQueryAsync(eventLoop()));
 
         ASSERT_TRUE(deleted.finished);
         ASSERT_EQ(deleted.error, nullptr);
@@ -327,8 +317,8 @@ TEST_F(QueryableAsyncTest, AsyncInsertWritesRowReadableBySyncQuery)
     Queryable<AsyncAccountRow> asyncInsertQuery(*m_pool);
     asyncInsertQuery.useAsyncExecutor(m_executor);
 
-    const CompletedTask<std::int64_t> inserted = m_loopRunner.runToCompletion(asyncInsertQuery.insertAsync(
-        AsyncAccountRow{.id = 1, .name = "异步写入", .note = std::string("首条")}, eventLoop()));
+    const CompletedTask<std::int64_t> inserted =
+            m_loopRunner.runToCompletion(asyncInsertQuery.insertAsync(AsyncAccountRow{.id = 1, .name = "异步写入", .note = std::string("首条")}, eventLoop()));
 
     ASSERT_TRUE(inserted.finished) << "异步写入未在时限内完成";
     ASSERT_EQ(inserted.error, nullptr);
@@ -337,16 +327,15 @@ TEST_F(QueryableAsyncTest, AsyncInsertWritesRowReadableBySyncQuery)
 
     // ---- 同步插入一行作对照：受影响行数必须与异步版相同 ----
     Queryable<AsyncAccountRow> syncInsertQuery(*m_pool);
-    const std::int64_t syncAffectedRows =
-        syncInsertQuery.insert(AsyncAccountRow{.id = 2, .name = "同步写入", .note = std::nullopt});
+    const std::int64_t         syncAffectedRows = syncInsertQuery.insert(AsyncAccountRow{.id = 2, .name = "同步写入", .note = std::nullopt});
     EXPECT_EQ(inserted.value.value(), syncAffectedRows);
 
     // ---- 异步写入一行备注为 NULL：可空列的另一个方向也要能读回空 optional ----
     Queryable<AsyncAccountRow> asyncNullNoteQuery(*m_pool);
     asyncNullNoteQuery.useAsyncExecutor(m_executor);
 
-    const CompletedTask<std::int64_t> insertedNullNote = m_loopRunner.runToCompletion(
-        asyncNullNoteQuery.insertAsync(AsyncAccountRow{.id = 3, .name = "无备注", .note = std::nullopt}, eventLoop()));
+    const CompletedTask<std::int64_t> insertedNullNote =
+            m_loopRunner.runToCompletion(asyncNullNoteQuery.insertAsync(AsyncAccountRow{.id = 3, .name = "无备注", .note = std::nullopt}, eventLoop()));
 
     ASSERT_TRUE(insertedNullNote.finished);
     ASSERT_EQ(insertedNullNote.error, nullptr);
@@ -389,8 +378,8 @@ TEST_F(QueryableAsyncTest, AsyncUpdateWritesRowReadableBySyncQuery)
     Queryable<AsyncAccountRow> asyncUpdateQuery(*m_pool);
     asyncUpdateQuery.useAsyncExecutor(m_executor);
 
-    const CompletedTask<std::int64_t> updated = m_loopRunner.runToCompletion(
-        asyncUpdateQuery.updateAsync(AsyncAccountRow{.id = 1, .name = "改后", .note = std::nullopt}, eventLoop()));
+    const CompletedTask<std::int64_t> updated =
+            m_loopRunner.runToCompletion(asyncUpdateQuery.updateAsync(AsyncAccountRow{.id = 1, .name = "改后", .note = std::nullopt}, eventLoop()));
 
     ASSERT_TRUE(updated.finished) << "异步更新未在时限内完成";
     ASSERT_EQ(updated.error, nullptr);
@@ -399,8 +388,7 @@ TEST_F(QueryableAsyncTest, AsyncUpdateWritesRowReadableBySyncQuery)
 
     // ---- 同步更新另一行作对照：受影响行数必须与异步版相同 ----
     Queryable<AsyncAccountRow> syncUpdateQuery(*m_pool);
-    const std::int64_t syncAffectedRows = syncUpdateQuery.update(
-        AsyncAccountRow{.id = 2, .name = "旁观者改后", .note = std::string("同步备注")});
+    const std::int64_t         syncAffectedRows = syncUpdateQuery.update(AsyncAccountRow{.id = 2, .name = "旁观者改后", .note = std::string("同步备注")});
     EXPECT_EQ(updated.value.value(), syncAffectedRows);
 
     // ---- 同步读回：逐字段核对，且未命中条件的那一行不受影响 ----
@@ -422,9 +410,8 @@ TEST_F(QueryableAsyncTest, AsyncUpdateWritesRowReadableBySyncQuery)
     Queryable<AsyncAccountRow> missingUpdateQuery(*m_pool);
     missingUpdateQuery.useAsyncExecutor(m_executor);
 
-    const CompletedTask<std::int64_t> missing = m_loopRunner.runToCompletion(
-        missingUpdateQuery.updateAsync(AsyncAccountRow{.id = 999, .name = "不存在的行", .note = std::nullopt},
-                                       eventLoop()));
+    const CompletedTask<std::int64_t> missing =
+            m_loopRunner.runToCompletion(missingUpdateQuery.updateAsync(AsyncAccountRow{.id = 999, .name = "不存在的行", .note = std::nullopt}, eventLoop()));
 
     ASSERT_TRUE(missing.finished);
     ASSERT_EQ(missing.error, nullptr);
@@ -447,18 +434,15 @@ TEST_F(QueryableAsyncTest, AsyncUpdateWritesRowReadableBySyncQuery)
  */
 TEST_F(QueryableAsyncTest, AsyncInsertBatchWritesRowsEqualToSyncInsertBatch)
 {
-    const std::vector<AsyncAccountRow> sampleRows{
-        AsyncAccountRow{.id = 1, .name = "批量甲", .note = std::string("有备注")},
-        AsyncAccountRow{.id = 2, .name = "批量乙", .note = std::nullopt},
-        AsyncAccountRow{.id = 3, .name = "批量丙", .note = std::string("")}
-    };
+    const std::vector<AsyncAccountRow> sampleRows{AsyncAccountRow{.id = 1, .name = "批量甲", .note = std::string("有备注")},
+                                                  AsyncAccountRow{.id = 2, .name = "批量乙", .note = std::nullopt},
+                                                  AsyncAccountRow{.id = 3, .name = "批量丙", .note = std::string("")}};
 
     // ---- 异步批量写：只 co_await 一次，语句在工作线程上执行 ----
     Queryable<AsyncAccountRow> asyncBatchQuery(*m_pool);
     asyncBatchQuery.useAsyncExecutor(m_executor);
 
-    const CompletedTask<std::int64_t> asyncInserted =
-        m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(sampleRows, eventLoop()));
+    const CompletedTask<std::int64_t> asyncInserted = m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(sampleRows, eventLoop()));
 
     ASSERT_TRUE(asyncInserted.finished) << "异步批量插入未在时限内完成";
     ASSERT_EQ(asyncInserted.error, nullptr);
@@ -509,33 +493,29 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchWritesRowsEqualToSyncInsertBatch)
 TEST_F(QueryableAsyncTest, AsyncInsertBatchChunkedPathSpansLocalTransaction)
 {
     // 参数上限与列数都取自生产实现：不把 999 与 3 硬编码成两个可能过期的数字
-    constexpr std::size_t kColumnCount = 3; ///< AsyncAccountRow 的列数（id / name / note）
-    const std::size_t parameterLimit   = SqliteDialect::kMaximumStatementParameters;
-    const std::size_t rowsPerStatement = parameterLimit / kColumnCount;
+    constexpr std::size_t kColumnCount     = 3; ///< AsyncAccountRow 的列数（id / name / note）
+    const std::size_t     parameterLimit   = SqliteDialect::kMaximumStatementParameters;
+    const std::size_t     rowsPerStatement = parameterLimit / kColumnCount;
 
     const std::size_t totalRowCount = rowsPerStatement + 7U;
     // 自检：本用例必须真的越过参数上限，否则它退化成一个普通批量用例，覆盖不到分块分支
-    ASSERT_GT(totalRowCount * kColumnCount, parameterLimit)
-        << "本用例要求行数 × 列数超过 SQLite 的参数上限，否则覆盖不到分块分支";
+    ASSERT_GT(totalRowCount * kColumnCount, parameterLimit) << "本用例要求行数 × 列数超过 SQLite 的参数上限，否则覆盖不到分块分支";
 
     std::vector<AsyncAccountRow> chunkedRows;
     chunkedRows.reserve(totalRowCount);
     for (std::size_t rowIndex = 0; rowIndex < totalRowCount; ++rowIndex)
     {
         const std::int64_t identifier = static_cast<std::int64_t>(rowIndex) + 1;
-        chunkedRows.push_back(AsyncAccountRow{
-            .id   = identifier,
-            .name = "分块行" + std::to_string(identifier),
-            // 奇数行给备注、偶数行不给：让分块边界两侧行的取值形态也不同
-            .note = (identifier % 2 == 0) ? std::optional<std::string>{} : std::optional<std::string>{"奇数行备注"}
-        });
+        chunkedRows.push_back(AsyncAccountRow{.id   = identifier,
+                                              .name = "分块行" + std::to_string(identifier),
+                                              // 奇数行给备注、偶数行不给：让分块边界两侧行的取值形态也不同
+                                              .note = (identifier % 2 == 0) ? std::optional<std::string>{} : std::optional<std::string>{"奇数行备注"}});
     }
 
     Queryable<AsyncAccountRow> asyncBatchQuery(*m_pool);
     asyncBatchQuery.useAsyncExecutor(m_executor);
 
-    const CompletedTask<std::int64_t> asyncInserted =
-        m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(chunkedRows, eventLoop()));
+    const CompletedTask<std::int64_t> asyncInserted = m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(chunkedRows, eventLoop()));
 
     ASSERT_TRUE(asyncInserted.finished) << "异步分块批量插入未在时限内完成";
     ASSERT_EQ(asyncInserted.error, nullptr);
@@ -547,8 +527,8 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchChunkedPathSpansLocalTransaction)
     EXPECT_EQ(countRows(), static_cast<std::int64_t>(totalRowCount));
 
     // 分块边界：第一块的最后一行与第二块的第一行，两侧都要在表里
-    const std::int64_t boundaryIdentifier = static_cast<std::int64_t>(rowsPerStatement);
-    const std::optional<AsyncAccountRow> lastOfFirstChunk = readRowBack(boundaryIdentifier);
+    const std::int64_t                   boundaryIdentifier = static_cast<std::int64_t>(rowsPerStatement);
+    const std::optional<AsyncAccountRow> lastOfFirstChunk   = readRowBack(boundaryIdentifier);
     ASSERT_TRUE(lastOfFirstChunk.has_value()) << "第一块的最后一行丢失，分块上界算错了";
     EXPECT_EQ(lastOfFirstChunk->name, "分块行" + std::to_string(rowsPerStatement));
 
@@ -585,8 +565,7 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchWithEmptyCollectionProducesNoStatemen
     Queryable<AsyncAccountRow> asyncBatchQuery(*m_pool);
     asyncBatchQuery.useAsyncExecutor(m_executor);
 
-    const CompletedTask<std::int64_t> asyncInserted =
-        m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(noRows, eventLoop()));
+    const CompletedTask<std::int64_t> asyncInserted = m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(noRows, eventLoop()));
 
     ASSERT_TRUE(asyncInserted.finished) << "空集合的异步批量插入也必须完成（不能挂起）";
     ASSERT_EQ(asyncInserted.error, nullptr);
@@ -614,11 +593,9 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchWithEmptyCollectionNeedsNoConnection)
     Queryable<AsyncAccountRow> asyncBatchQuery(*m_pool);
     asyncBatchQuery.useAsyncExecutor(m_executor);
 
-    const auto startedAt = std::chrono::steady_clock::now();
-    const CompletedTask<std::int64_t> asyncInserted =
-        m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(noRows, eventLoop()));
-    const auto elapsedMilliseconds =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
+    const auto                        startedAt           = std::chrono::steady_clock::now();
+    const CompletedTask<std::int64_t> asyncInserted       = m_loopRunner.runToCompletion(asyncBatchQuery.insertBatchAsync(noRows, eventLoop()));
+    const auto                        elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
 
     ASSERT_TRUE(asyncInserted.finished) << "池被占满时空集合也该当场完成，而不是先等一次借连接";
     ASSERT_EQ(asyncInserted.error, nullptr) << "空集合被「借不到连接」顶掉了（契约是给出 0）";
@@ -652,40 +629,32 @@ TEST_F(QueryableAsyncTest, AsyncExecutorSubmitDoesNotBlockCallingThread)
     std::exception_ptr           error;
     std::atomic<bool>            finishedFlag{false};
 
-    Task<void> driver = AsynGyanis::Database::TestSupport::collectTask<int>(
-        blockingExecutor.submit<int>(eventLoop(),
-                                     [&workStarted, &releaseWork, &workThreadIdentifier]() -> int
-                                     {
-                                         // 记录执行线程并宣告「已经开工」，然后卡在这里等测试放行
-                                         workThreadIdentifier.store(std::this_thread::get_id());
-                                         workStarted.store(true, std::memory_order_release);
-                                         releaseWork.wait();
-                                         return 42;
-                                     }),
-        value, error, finishedFlag);
+    Task<void> driver = AsynGyanis::Database::TestSupport::collectTask<int>(blockingExecutor.submit<int>(eventLoop(),
+                                                                                                         [&workStarted, &releaseWork, &workThreadIdentifier]() -> int
+                                                                                                         {
+                                                                                                             // 记录执行线程并宣告「已经开工」，然后卡在这里等测试放行
+                                                                                                             workThreadIdentifier.store(std::this_thread::get_id());
+                                                                                                             workStarted.store(true, std::memory_order_release);
+                                                                                                             releaseWork.wait();
+                                                                                                             return 42;
+                                                                                                         }),
+                                                                            value, error, finishedFlag);
 
     const auto submitBegin = std::chrono::steady_clock::now();
     // 提交动作只做入队：这里的 resume 不做任何阻塞调用，必须立刻返回
     driver.handle().resume();
-    const std::chrono::milliseconds submitDuration =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - submitBegin);
+    const std::chrono::milliseconds submitDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - submitBegin);
 
     // 提交耗时应当远小于「任务被卡住的时长」；100ms 对一次入队来说是极宽的上限
     EXPECT_LT(submitDuration, std::chrono::milliseconds(100)) << "提交动作耗时 " << submitDuration.count() << "ms";
     // 工作任务已经在某个线程上开始执行，而调用线程没有等它完成
-    EXPECT_TRUE(waitForCondition([&workStarted]()
-    {
-        return workStarted.load(std::memory_order_acquire);
-    })) << "工作任务迟迟没有开始";
+    EXPECT_TRUE(waitForCondition([&workStarted]() { return workStarted.load(std::memory_order_acquire); })) << "工作任务迟迟没有开始";
     EXPECT_FALSE(finishedFlag.load(std::memory_order_acquire));
     EXPECT_NE(workThreadIdentifier.load(), std::this_thread::get_id());
 
     // 放行后任务完成，协程在事件循环线程上被恢复
     releaseWork.count_down();
-    ASSERT_TRUE(waitForCondition([&finishedFlag]()
-    {
-        return finishedFlag.load(std::memory_order_acquire);
-    })) << "任务放行后仍未在时限内恢复协程";
+    ASSERT_TRUE(waitForCondition([&finishedFlag]() { return finishedFlag.load(std::memory_order_acquire); })) << "任务放行后仍未在时限内恢复协程";
     ASSERT_EQ(error, nullptr);
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value(), 42);
@@ -714,21 +683,17 @@ TEST_F(QueryableAsyncTest, AsyncWriteDoesNotBlockCallingThread)
     std::exception_ptr blockerError;
     std::atomic<bool>  blockerFinished{false};
 
-    Task<void> blockerDriver = AsynGyanis::Database::TestSupport::collectTask<int>(
-        blockingExecutor.submit<int>(eventLoop(),
-                                     [&workStarted, &releaseWork]() -> int
-                                     {
-                                         workStarted.store(true, std::memory_order_release);
-                                         releaseWork.wait();
-                                         return 0;
-                                     }),
-        blockerValue, blockerError, blockerFinished);
+    Task<void> blockerDriver = AsynGyanis::Database::TestSupport::collectTask<int>(blockingExecutor.submit<int>(eventLoop(),
+                                                                                                                [&workStarted, &releaseWork]() -> int
+                                                                                                                {
+                                                                                                                    workStarted.store(true, std::memory_order_release);
+                                                                                                                    releaseWork.wait();
+                                                                                                                    return 0;
+                                                                                                                }),
+                                                                                   blockerValue, blockerError, blockerFinished);
 
     blockerDriver.handle().resume();
-    EXPECT_TRUE(waitForCondition([&workStarted]()
-    {
-        return workStarted.load(std::memory_order_acquire);
-    })) << "占位任务迟迟没有开始，后续判据失去意义";
+    EXPECT_TRUE(waitForCondition([&workStarted]() { return workStarted.load(std::memory_order_acquire); })) << "占位任务迟迟没有开始，后续判据失去意义";
 
     // 工作线程此刻被卡住：任何投给 blockingExecutor 的任务都还没有机会执行
     Queryable<AsyncAccountRow> asyncInsertQuery(*m_pool);
@@ -743,8 +708,8 @@ TEST_F(QueryableAsyncTest, AsyncWriteDoesNotBlockCallingThread)
     std::exception_ptr          insertError;
     std::atomic<bool>           finishedFlag{false};
 
-    Task<void> insertDriver = AsynGyanis::Database::TestSupport::collectTask<std::int64_t>(
-        asyncInsertQuery.insertAsync(pendingRow, eventLoop()), insertedRows, insertError, finishedFlag);
+    Task<void> insertDriver =
+            AsynGyanis::Database::TestSupport::collectTask<std::int64_t>(asyncInsertQuery.insertAsync(pendingRow, eventLoop()), insertedRows, insertError, finishedFlag);
 
     // 内联启动：提交动作只入队，控制权立刻回到测试线程
     insertDriver.handle().resume();
@@ -761,10 +726,7 @@ TEST_F(QueryableAsyncTest, AsyncWriteDoesNotBlockCallingThread)
     m_loopRunner.parkDriver(std::move(blockerDriver));
     m_loopRunner.parkDriver(std::move(insertDriver));
 
-    ASSERT_TRUE(waitForCondition([&finishedFlag]()
-    {
-        return finishedFlag.load(std::memory_order_acquire);
-    })) << "放行工作线程后异步写仍未在时限内完成";
+    ASSERT_TRUE(waitForCondition([&finishedFlag]() { return finishedFlag.load(std::memory_order_acquire); })) << "放行工作线程后异步写仍未在时限内完成";
     ASSERT_EQ(insertError, nullptr);
     ASSERT_TRUE(insertedRows.has_value());
     EXPECT_EQ(insertedRows.value(), 1);
@@ -815,16 +777,14 @@ TEST_F(QueryableAsyncTest, AsyncSqlErrorSurfacesAsOriginalException)
     {
         static_cast<void>(missingQuery.toList());
         FAIL() << "表不存在时同步查询应当抛出 std::runtime_error";
-    }
-    catch (const std::runtime_error &exception)
+    } catch (const std::runtime_error &exception)
     {
         syncMessage = exception.what();
     }
 
     Queryable<AsyncMissingTableRow> asyncQuery(*m_pool);
     asyncQuery.useAsyncExecutor(m_executor);
-    const CompletedTask<std::vector<AsyncMissingTableRow>> completed =
-        m_loopRunner.runToCompletion(asyncQuery.toListAsync(eventLoop()));
+    const CompletedTask<std::vector<AsyncMissingTableRow>> completed = m_loopRunner.runToCompletion(asyncQuery.toListAsync(eventLoop()));
 
     ASSERT_TRUE(completed.finished) << "异常路径也必须完成（否则协程会被永久挂起）";
     ASSERT_NE(completed.error, nullptr);
@@ -834,8 +794,7 @@ TEST_F(QueryableAsyncTest, AsyncSqlErrorSurfacesAsOriginalException)
     {
         // 说明同上一处：rethrow_exception 必然抛出，后面不可能有可达语句
         std::rethrow_exception(completed.error);
-    }
-    catch (const std::runtime_error &exception)
+    } catch (const std::runtime_error &exception)
     {
         // 类型与消息都与同步版一致：异常原样穿过工作线程与调度投递，没有被包装或降级
         EXPECT_EQ(std::string(exception.what()), syncMessage);
@@ -854,13 +813,12 @@ TEST_F(QueryableAsyncTest, AsyncWriteSqlErrorSurfacesAsOriginalException)
 {
     // ---- 同步版先把单行写入的失败原因固定下来 ----
     Queryable<AsyncMissingTableRow> syncQuery(*m_pool);
-    std::string syncInsertMessage;
+    std::string                     syncInsertMessage;
     try
     {
         static_cast<void>(syncQuery.insert(AsyncMissingTableRow{.id = 1}));
         FAIL() << "表不存在时同步插入应当抛出 std::runtime_error";
-    }
-    catch (const std::runtime_error &exception)
+    } catch (const std::runtime_error &exception)
     {
         syncInsertMessage = exception.what();
     }
@@ -872,8 +830,7 @@ TEST_F(QueryableAsyncTest, AsyncWriteSqlErrorSurfacesAsOriginalException)
     // ---- 异步单行写入：异常在恢复处重新抛出，类型与消息与同步版一致 ----
     // co_await 的线程归属：语句在测试线程上生成并绑定，执行失败发生在 m_executor 的工作线程上，
     // 异常随协程恢复在 m_loopRunner 的循环线程上被重新抛出，再被驱动协程收进 completed.error
-    const CompletedTask<std::int64_t> singleInsert =
-        m_loopRunner.runToCompletion(asyncQuery.insertAsync(AsyncMissingTableRow{.id = 1}, eventLoop()));
+    const CompletedTask<std::int64_t> singleInsert = m_loopRunner.runToCompletion(asyncQuery.insertAsync(AsyncMissingTableRow{.id = 1}, eventLoop()));
 
     ASSERT_TRUE(singleInsert.finished) << "写失败也必须完成（否则协程会被永久挂起）";
     ASSERT_NE(singleInsert.error, nullptr);
@@ -884,16 +841,14 @@ TEST_F(QueryableAsyncTest, AsyncWriteSqlErrorSurfacesAsOriginalException)
         // rethrow_exception 是 [[noreturn]]：它必然抛出，后面写 FAIL() 只会被判成不可达代码。
         // 若抛出的类型与下面的 catch 不符，异常会继续外传，gtest 同样把这条测试判失败
         std::rethrow_exception(singleInsert.error);
-    }
-    catch (const std::runtime_error &exception)
+    } catch (const std::runtime_error &exception)
     {
         EXPECT_EQ(std::string(exception.what()), syncInsertMessage);
     }
 
     // ---- 异步批量写入：同一条异常链路，入口不同（走 insertBatchOn 的执行分支）----
     const std::vector<AsyncMissingTableRow> oneMissingRow{AsyncMissingTableRow{.id = 2}};
-    const CompletedTask<std::int64_t> batchInsert =
-        m_loopRunner.runToCompletion(asyncQuery.insertBatchAsync(oneMissingRow, eventLoop()));
+    const CompletedTask<std::int64_t>       batchInsert = m_loopRunner.runToCompletion(asyncQuery.insertBatchAsync(oneMissingRow, eventLoop()));
 
     ASSERT_TRUE(batchInsert.finished);
     ASSERT_NE(batchInsert.error, nullptr);
@@ -903,8 +858,7 @@ TEST_F(QueryableAsyncTest, AsyncWriteSqlErrorSurfacesAsOriginalException)
     {
         // 说明同上一处：rethrow_exception 必然抛出，后面不可能有可达语句
         std::rethrow_exception(batchInsert.error);
-    }
-    catch (const std::runtime_error &exception)
+    } catch (const std::runtime_error &exception)
     {
         // 同步批量写入给出的一定是同一句话：失败发生在同一条语句上
         EXPECT_EQ(std::string(exception.what()), syncInsertMessage);
@@ -919,8 +873,7 @@ TEST_F(QueryableAsyncTest, OfflineModeThrowsOnAsyncExecution)
     Queryable<AsyncAccountRow> offlineQuery;
 
     // Task 是惰性启动的：构造它不会执行任何代码，异常在协程真正被恢复时抛出
-    const CompletedTask<std::vector<AsyncAccountRow>> completed =
-        m_loopRunner.runToCompletion(offlineQuery.toListAsync(eventLoop()));
+    const CompletedTask<std::vector<AsyncAccountRow>> completed = m_loopRunner.runToCompletion(offlineQuery.toListAsync(eventLoop()));
 
     ASSERT_TRUE(completed.finished);
     ASSERT_NE(completed.error, nullptr);
@@ -929,8 +882,7 @@ TEST_F(QueryableAsyncTest, OfflineModeThrowsOnAsyncExecution)
     {
         // 说明同上一处：rethrow_exception 必然抛出，后面不可能有可达语句
         std::rethrow_exception(completed.error);
-    }
-    catch (const std::logic_error &exception)
+    } catch (const std::logic_error &exception)
     {
         EXPECT_NE(std::string(exception.what()).find("toListAsync()"), std::string::npos);
         EXPECT_NE(std::string(exception.what()).find("离线模式"), std::string::npos);

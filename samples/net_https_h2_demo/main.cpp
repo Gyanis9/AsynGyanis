@@ -38,9 +38,9 @@
 #include <filesystem>
 #include <functional>
 #include <map>
-#include <set>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -89,7 +89,7 @@ namespace
      * @param body 判定体
      * @return bool 这一步是否通过（异常一律算没过）
      */
-    template <typename Body>
+    template<typename Body>
     bool runGuarded(const std::string_view step, const Body &body)
     {
         try
@@ -111,23 +111,21 @@ namespace
      */
     struct TlsMaterial
     {
-        std::filesystem::path certificateFile; ///< 服务端出示的证书（SAN 含 IP:127.0.0.1）
-        std::filesystem::path keyFile;         ///< 与之配套的私钥
+        std::filesystem::path certificateFile;        ///< 服务端出示的证书（SAN 含 IP:127.0.0.1）
+        std::filesystem::path keyFile;                ///< 与之配套的私钥
         std::filesystem::path foreignCertificateFile; ///< 另一张自签证书：拿它当受信根必然不认服务端那张
 
         /// @return bool 三份材料都在（缺一份，后面的 TLS 步骤就无从判起）
         [[nodiscard]] bool isComplete() const
         {
             std::error_code error;
-            return std::filesystem::exists(certificateFile, error) && std::filesystem::exists(keyFile, error)
-                   && std::filesystem::exists(foreignCertificateFile, error);
+            return std::filesystem::exists(certificateFile, error) && std::filesystem::exists(keyFile, error) && std::filesystem::exists(foreignCertificateFile, error);
         }
 
         /// @return std::string 便于写进日志的一行摘要
         [[nodiscard]] std::string describe() const
         {
-            return "证书=" + certificateFile.string() + " 私钥=" + keyFile.string()
-                   + " 不受信根=" + foreignCertificateFile.string();
+            return "证书=" + certificateFile.string() + " 私钥=" + keyFile.string() + " 不受信根=" + foreignCertificateFile.string();
         }
     };
 
@@ -138,7 +136,7 @@ namespace
      */
     std::filesystem::path locateFixtureDirectory(const char *executablePath)
     {
-        std::error_code error;
+        std::error_code       error;
         std::filesystem::path candidate = std::filesystem::weakly_canonical(std::filesystem::absolute(executablePath), error);
         for (std::size_t depth = 0; depth < 8 && !error; ++depth)
         {
@@ -166,10 +164,10 @@ namespace
     TlsMaterial readTlsMaterial(const int argc, char **argv)
     {
         const std::filesystem::path fixtures = locateFixtureDirectory(argv[0]);
-        TlsMaterial                   material;
-        material.certificateFile         = fixtures / "test_ip_cert.pem";
-        material.keyFile                 = fixtures / "test_ip_key.pem";
-        material.foreignCertificateFile  = fixtures / "test_localhost_cert.pem";
+        TlsMaterial                 material;
+        material.certificateFile        = fixtures / "test_ip_cert.pem";
+        material.keyFile                = fixtures / "test_ip_key.pem";
+        material.foreignCertificateFile = fixtures / "test_localhost_cert.pem";
         for (int index = 1; index + 1 < argc; ++index)
         {
             const std::string_view option(argv[index]);
@@ -232,8 +230,7 @@ namespace
      * @param extraHeaderFields 追加的普通头，按给定顺序排在伪头之后
      * @return std::string 头块字节
      */
-    std::string makeGetRequestHeaderBlock(const std::string_view path, const bool isOverTls,
-                                          const std::vector<Net::HpackHeaderField> &extraHeaderFields = {})
+    std::string makeGetRequestHeaderBlock(const std::string_view path, const bool isOverTls, const std::vector<Net::HpackHeaderField> &extraHeaderFields = {})
     {
         std::string headerBlock;
         headerBlock += hpackIndexedField(2);                                            // :method GET
@@ -272,9 +269,7 @@ namespace
      */
     std::string makeRequestHeadersFrame(const std::uint32_t streamId, const std::string_view headerBlock, const bool isEndStream)
     {
-        return Net::encodeHttp2HeadersFrame(
-                Net::Http2HeadersPayload{.endStream = isEndStream, .endHeaders = true, .headerBlockFragment = std::string(headerBlock)},
-                streamId);
+        return Net::encodeHttp2HeadersFrame(Net::Http2HeadersPayload{.endStream = isEndStream, .endHeaders = true, .headerBlockFragment = std::string(headerBlock)}, streamId);
     }
 
     /// @return std::string 客户端的初始 SETTINGS：把流级初始窗口放大到 1 MiB
@@ -313,7 +308,7 @@ namespace
     class Http2LoopbackClient
     {
     public:
-        Http2LoopbackClient(const Http2LoopbackClient &) = delete;
+        Http2LoopbackClient(const Http2LoopbackClient &)            = delete;
         Http2LoopbackClient &operator=(const Http2LoopbackClient &) = delete;
 
         ~Http2LoopbackClient()
@@ -340,8 +335,7 @@ namespace
          * @param trustedCertificateFile 非空则校验服务端证书（并把它当唯一受信根），为空则不校验
          * @return std::unique_ptr<Http2LoopbackClient> 对象总能拿到，握手结论用 isHandshakeComplete() 问
          */
-        [[nodiscard]] static std::unique_ptr<Http2LoopbackClient> openOverTls(const std::uint16_t port,
-                                                                              const std::string_view offeredAlpnProtocol,
+        [[nodiscard]] static std::unique_ptr<Http2LoopbackClient> openOverTls(const std::uint16_t port, const std::string_view offeredAlpnProtocol,
                                                                               const std::string &trustedCertificateFile)
         {
             std::unique_ptr<Http2LoopbackClient> client = std::unique_ptr<Http2LoopbackClient>(new Http2LoopbackClient());
@@ -388,7 +382,7 @@ namespace
             {
                 return {};
             }
-            const unsigned char *protocolName = nullptr;
+            const unsigned char *protocolName       = nullptr;
             unsigned int         protocolNameLength = 0;
             SSL_get0_alpn_selected(m_ssl, &protocolName, &protocolNameLength);
             if (protocolName == nullptr || protocolNameLength == 0)
@@ -427,48 +421,46 @@ namespace
             }
             std::size_t writtenLength = 0;
             return Samples::waitUntil(
-                    [this, bytes, &writtenLength]()
-                    {
-                        while (writtenLength < bytes.size())
-                        {
-                            const std::size_t remainingLength = bytes.size() - writtenLength;
-                            if (m_ssl != nullptr)
-                            {
-                                const int writeLength =
-                                        SSL_write(m_ssl, bytes.data() + writtenLength, static_cast<int>(remainingLength));
-                                if (writeLength > 0)
-                                {
-                                    writtenLength += static_cast<std::size_t>(writeLength);
-                                    continue;
-                                }
-                                const int sslError = SSL_get_error(m_ssl, writeLength);
-                                if (sslError != SSL_ERROR_WANT_READ && sslError != SSL_ERROR_WANT_WRITE)
-                                {
-                                    m_handshakeFailureReason = describeChannelFailure("写出字节");
-                                    return true; // 硬失败：结束等待，由调用方看 writtenLength 判定
-                                }
-                                return false; // 还写得动，下一轮再来
-                            }
+                           [this, bytes, &writtenLength]()
+                           {
+                               while (writtenLength < bytes.size())
+                               {
+                                   const std::size_t remainingLength = bytes.size() - writtenLength;
+                                   if (m_ssl != nullptr)
+                                   {
+                                       const int writeLength = SSL_write(m_ssl, bytes.data() + writtenLength, static_cast<int>(remainingLength));
+                                       if (writeLength > 0)
+                                       {
+                                           writtenLength += static_cast<std::size_t>(writeLength);
+                                           continue;
+                                       }
+                                       const int sslError = SSL_get_error(m_ssl, writeLength);
+                                       if (sslError != SSL_ERROR_WANT_READ && sslError != SSL_ERROR_WANT_WRITE)
+                                       {
+                                           m_handshakeFailureReason = describeChannelFailure("写出字节");
+                                           return true; // 硬失败：结束等待，由调用方看 writtenLength 判定
+                                       }
+                                       return false; // 还写得动，下一轮再来
+                                   }
 
-                            const ssize_t sendLength =
-                                    Platform::FileDescriptor::write(m_descriptor, bytes.data() + writtenLength, remainingLength);
-                            if (sendLength > 0)
-                            {
-                                writtenLength += static_cast<std::size_t>(sendLength);
-                                continue;
-                            }
-                            const int socketError = Platform::PlatformError::lastSocketErrorCode();
-                            if (socketError == Platform::PlatformError::kWouldBlock || socketError == Platform::PlatformError::kInterrupted)
-                            {
-                                return false;
-                            }
-                            m_isClosedByPeer = true;
-                            return true;
-                        }
-                        return true;
-                    },
-                    kWaitTimeout, kPollInterval)
-                   && writtenLength == bytes.size();
+                                   const ssize_t sendLength = Platform::FileDescriptor::write(m_descriptor, bytes.data() + writtenLength, remainingLength);
+                                   if (sendLength > 0)
+                                   {
+                                       writtenLength += static_cast<std::size_t>(sendLength);
+                                       continue;
+                                   }
+                                   const int socketError = Platform::PlatformError::lastSocketErrorCode();
+                                   if (socketError == Platform::PlatformError::kWouldBlock || socketError == Platform::PlatformError::kInterrupted)
+                                   {
+                                       return false;
+                                   }
+                                   m_isClosedByPeer = true;
+                                   return true;
+                               }
+                               return true;
+                           },
+                           kWaitTimeout, kPollInterval) &&
+                   writtenLength == bytes.size();
         }
 
         /**
@@ -568,8 +560,7 @@ namespace
          * @param blockIndex 第几个头块，从 0 起（100 之后还有 200 时用得上）
          * @return std::string 头值；取不到时为空串
          */
-        [[nodiscard]] std::string responseHeaderValue(const std::uint32_t streamId, const std::string_view name,
-                                                      const std::size_t blockIndex = 0) const
+        [[nodiscard]] std::string responseHeaderValue(const std::uint32_t streamId, const std::string_view name, const std::size_t blockIndex = 0) const
         {
             const auto found = m_responseHeaderBlocks.find(streamId);
             if (found == m_responseHeaderBlocks.end() || blockIndex >= found->second.size())
@@ -813,8 +804,7 @@ namespace
             std::size_t consumedByteCount = 0;
             while (consumedByteCount < m_pendingFrameBytes.size())
             {
-                const Net::Http2FrameDecodeStatus status = m_frameDecoder.parse(m_pendingFrameBytes.data() + consumedByteCount,
-                                                                                m_pendingFrameBytes.size() - consumedByteCount);
+                const Net::Http2FrameDecodeStatus status = m_frameDecoder.parse(m_pendingFrameBytes.data() + consumedByteCount, m_pendingFrameBytes.size() - consumedByteCount);
                 if (status == Net::Http2FrameDecodeStatus::Error)
                 {
                     m_hasFrameDecodeError = true;
@@ -849,8 +839,7 @@ namespace
                     absorbRstStream(frame, streamId);
                     break;
                 case Net::Http2FrameType::Headers:
-                    appendHeaderFragment(streamId, frame.payload, (flags & Net::kHttp2FlagEndHeaders) != 0,
-                                         (flags & Net::kHttp2FlagEndStream) != 0);
+                    appendHeaderFragment(streamId, frame.payload, (flags & Net::kHttp2FlagEndHeaders) != 0, (flags & Net::kHttp2FlagEndStream) != 0);
                     break;
                 case Net::Http2FrameType::Continuation:
                     appendHeaderFragment(streamId, frame.payload, (flags & Net::kHttp2FlagEndHeaders) != 0, false);
@@ -898,10 +887,10 @@ namespace
                 LOG_ERROR_FMT("示例客户端：GOAWAY 解不开。原因：{}", errorText);
                 return;
             }
-            m_sawGoAway            = true;
-            m_goAwayLastStreamId   = payload.lastStreamId;
-            m_goAwayErrorCode      = payload.errorCode;
-            m_goAwayDebugText      = payload.debugData;
+            m_sawGoAway          = true;
+            m_goAwayLastStreamId = payload.lastStreamId;
+            m_goAwayErrorCode    = payload.errorCode;
+            m_goAwayDebugText    = payload.debugData;
         }
 
         void absorbRstStream(const Net::Http2Frame &frame, const std::uint32_t streamId)
@@ -921,8 +910,7 @@ namespace
          * @details 解码器与编码器成对演进：同一条连接上的多个响应必须按到达顺序解，
          *          换一个全新解码器就会解不开第二条（动态表里的索引无人认得）
          */
-        void appendHeaderFragment(const std::uint32_t streamId, const std::string_view fragment, const bool endHeaders,
-                                  const bool endStream)
+        void appendHeaderFragment(const std::uint32_t streamId, const std::string_view fragment, const bool endHeaders, const bool endStream)
         {
             if (endStream)
             {
@@ -939,8 +927,7 @@ namespace
             if (m_headerDecoder.decode(partial, headerFields, &errorText))
             {
                 m_responseHeaderBlocks[streamId].push_back(std::move(headerFields));
-            }
-            else
+            } else
             {
                 LOG_ERROR_FMT("示例客户端：响应头块解不开。原因：{}", errorText);
             }
@@ -949,33 +936,33 @@ namespace
 
         Platform::Socket::Initialization m_socketInitialization; ///< 保证 Winsock 在本对象存活期间保持初始化
 
-        int   m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 底层描述符（非阻塞）
-        SSL  *m_ssl{nullptr};                                   ///< TLS 对象；空表示明文连接
-        SSL_CTX *m_context{nullptr};                            ///< 客户端上下文（本对象持有）
-        bool  m_isAlpnListAccepted{false};                      ///< ALPN 列表是否被客户端侧接受
-        bool  m_verifiesPeerCertificate{false};                 ///< 是否启用了服务端证书校验
-        bool  m_isHandshakeDone{false};                         ///< TLS 握手是否走完
-        bool  m_isClosedByPeer{false};                          ///< 通道是否已断
-        std::string m_handshakeFailureReason;                   ///< 失败原因（握手或连接）
+        int         m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 底层描述符（非阻塞）
+        SSL        *m_ssl{nullptr};                                   ///< TLS 对象；空表示明文连接
+        SSL_CTX    *m_context{nullptr};                               ///< 客户端上下文（本对象持有）
+        bool        m_isAlpnListAccepted{false};                      ///< ALPN 列表是否被客户端侧接受
+        bool        m_verifiesPeerCertificate{false};                 ///< 是否启用了服务端证书校验
+        bool        m_isHandshakeDone{false};                         ///< TLS 握手是否走完
+        bool        m_isClosedByPeer{false};                          ///< 通道是否已断
+        std::string m_handshakeFailureReason;                         ///< 失败原因（握手或连接）
 
-        std::string           m_receivedText;       ///< 累计收到的明文字节（HTTP/1.1 步骤用）
-        std::string           m_pendingFrameBytes;  ///< 还没喂给解码器的字节
-        Net::Http2FrameDecoder m_frameDecoder;      ///< 生产帧解码器
-        Net::HpackDecoder      m_headerDecoder;     ///< 生产头块解码器（整条连接共用一份）
+        std::string            m_receivedText;               ///< 累计收到的明文字节（HTTP/1.1 步骤用）
+        std::string            m_pendingFrameBytes;          ///< 还没喂给解码器的字节
+        Net::Http2FrameDecoder m_frameDecoder;               ///< 生产帧解码器
+        Net::HpackDecoder      m_headerDecoder;              ///< 生产头块解码器（整条连接共用一份）
         bool                   m_hasFrameDecodeError{false}; ///< 帧解码是否已失败
 
-        std::map<std::uint32_t, std::string>                          m_partialHeaderBlocks;   ///< 拼装中的头块
-        std::map<std::uint32_t, std::vector<std::vector<Net::HpackHeaderField>>> m_responseHeaderBlocks; ///< 各流的响应头块
-        std::map<std::uint32_t, std::string>                          m_responseBodies;        ///< 各流的正文
-        std::map<std::uint32_t, Net::Http2ErrorCode>                  m_resetStreamCodes;      ///< 各流收到的 RST_STREAM
-        std::map<Net::Http2SettingIdentifier, std::uint32_t>          m_peerSettings;          ///< 对端 SETTINGS 记账
-        std::set<std::uint32_t>                                         m_endStreamSeen;         ///< 已收到 END_STREAM 的流号
-        bool                                                          m_sawPeerSettings{false};            ///< 是否收到服务端 SETTINGS
-        bool                                                          m_sawSettingsAcknowledgement{false}; ///< 是否看到对我们 SETTINGS 的 ACK
-        bool                                                          m_sawGoAway{false};                    ///< 是否收到 GOAWAY
-        std::uint32_t                                                 m_goAwayLastStreamId{0};             ///< GOAWAY 带的最后流号
-        Net::Http2ErrorCode                                           m_goAwayErrorCode{Net::Http2ErrorCode::NoError}; ///< GOAWAY 错误码
-        std::string                                                   m_goAwayDebugText{};                   ///< GOAWAY 的调试数据
+        std::map<std::uint32_t, std::string>                                     m_partialHeaderBlocks;                           ///< 拼装中的头块
+        std::map<std::uint32_t, std::vector<std::vector<Net::HpackHeaderField>>> m_responseHeaderBlocks;                          ///< 各流的响应头块
+        std::map<std::uint32_t, std::string>                                     m_responseBodies;                                ///< 各流的正文
+        std::map<std::uint32_t, Net::Http2ErrorCode>                             m_resetStreamCodes;                              ///< 各流收到的 RST_STREAM
+        std::map<Net::Http2SettingIdentifier, std::uint32_t>                     m_peerSettings;                                  ///< 对端 SETTINGS 记账
+        std::set<std::uint32_t>                                                  m_endStreamSeen;                                 ///< 已收到 END_STREAM 的流号
+        bool                                                                     m_sawPeerSettings{false};                        ///< 是否收到服务端 SETTINGS
+        bool                                                                     m_sawSettingsAcknowledgement{false};             ///< 是否看到对我们 SETTINGS 的 ACK
+        bool                                                                     m_sawGoAway{false};                              ///< 是否收到 GOAWAY
+        std::uint32_t                                                            m_goAwayLastStreamId{0};                         ///< GOAWAY 带的最后流号
+        Net::Http2ErrorCode                                                      m_goAwayErrorCode{Net::Http2ErrorCode::NoError}; ///< GOAWAY 错误码
+        std::string                                                              m_goAwayDebugText{};                             ///< GOAWAY 的调试数据
     };
 
     /**
@@ -991,11 +978,7 @@ namespace
             LOG_ERROR("示例客户端：前奏与 SETTINGS 没能写出去");
             return false;
         }
-        const bool gotSettings = client.pumpUntil([&client]()
-                                                 {
-                                                     return client.sawPeerSettings();
-                                                 },
-                                                 kWaitTimeout);
+        const bool gotSettings = client.pumpUntil([&client]() { return client.sawPeerSettings(); }, kWaitTimeout);
         if (!gotSettings)
         {
             LOG_ERROR("示例客户端：没在时限内收到服务端的初始 SETTINGS");
@@ -1007,11 +990,7 @@ namespace
             return false;
         }
         // 服务端的 ACK 排在自己的 SETTINGS 之后：等到它才算「协商双向完成」
-        return client.pumpUntil([&client]()
-                               {
-                                   return client.sawSettingsAcknowledgement();
-                               },
-                               kWaitTimeout);
+        return client.pumpUntil([&client]() { return client.sawSettingsAcknowledgement(); }, kWaitTimeout);
     }
 
     /// @return bool 一个 request-id 是否是服务器自动生成的形态
@@ -1027,7 +1006,7 @@ namespace
             {
                 continue;
             }
-            const char character = requestId[index];
+            const char character       = requestId[index];
             const bool isLowerHexDigit = (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
             if (!isLowerHexDigit)
             {
@@ -1048,16 +1027,16 @@ namespace
         std::size_t lineStart = 0;
         while (lineStart <= metricsBody.size())
         {
-            const std::size_t lineEnd = metricsBody.find('\n', lineStart);
-            const std::size_t  stopAt  = lineEnd == std::string::npos ? metricsBody.size() : lineEnd;
+            const std::size_t      lineEnd = metricsBody.find('\n', lineStart);
+            const std::size_t      stopAt  = lineEnd == std::string::npos ? metricsBody.size() : lineEnd;
             const std::string_view line(metricsBody.data() + lineStart, stopAt - lineStart);
             if (line.rfind(linePrefix, 0) == 0)
             {
-                std::string_view remainder = line.substr(linePrefix.size());
+                std::string_view  remainder  = line.substr(linePrefix.size());
                 const std::size_t firstDigit = remainder.find_first_of("0123456789");
                 if (firstDigit != std::string_view::npos)
                 {
-                    remainder = remainder.substr(firstDigit);
+                    remainder                   = remainder.substr(firstDigit);
                     const std::size_t lastDigit = remainder.find_last_of("0123456789");
                     try
                     {
@@ -1087,7 +1066,7 @@ namespace
         /// 在指定循环与地址上造服务器：路由与各项开关都在这一步里落定（必须在 start() 之前）
         using ServerFactory = std::function<std::unique_ptr<Net::TcpServer>(Core::EventLoop &, const Core::InetAddress &)>;
 
-        RunningServerHost(const RunningServerHost &) = delete;
+        RunningServerHost(const RunningServerHost &)            = delete;
         RunningServerHost &operator=(const RunningServerHost &) = delete;
 
         explicit RunningServerHost(const std::uint16_t port, const ServerFactory &factory)
@@ -1098,10 +1077,9 @@ namespace
                 if (!address.has_value())
                 {
                     m_failureReason = "解析回环地址失败，端口 " + std::to_string(port);
-                }
-                else
+                } else
                 {
-                    m_server        = factory(m_loop, *address);
+                    m_server = factory(m_loop, *address);
                     m_acceptTask.emplace(driveStartTask(*m_server, m_startFailureReason, m_startThrew));
                     m_loop.scheduler().schedule(m_acceptTask->handle());
                 }
@@ -1114,10 +1092,7 @@ namespace
                 m_server.reset();
                 m_failureReason = failure.what();
             }
-            m_loopThread = std::thread([this]()
-                                      {
-                                          m_loop.run();
-                                      });
+            m_loopThread = std::thread([this]() { m_loop.run(); });
         }
 
         ~RunningServerHost()
@@ -1162,12 +1137,7 @@ namespace
         /// 等到服务器真的进入接受循环
         [[nodiscard]] bool awaitAcceptingLoop() const
         {
-            return Samples::waitUntil(
-                    [this]()
-                    {
-                        return m_server != nullptr && m_server->isRunning();
-                    },
-                    kWaitTimeout, std::chrono::milliseconds{5});
+            return Samples::waitUntil([this]() { return m_server != nullptr && m_server->isRunning(); }, kWaitTimeout, std::chrono::milliseconds{5});
         }
 
         /**
@@ -1186,12 +1156,7 @@ namespace
             m_loop.scheduler().scheduleRemote(drainTask.handle());
             // 帧必须留到跑完：本向量持有到本对象析构（届时循环线程已经退出）
             m_shutdownTasks.push_back(std::move(drainTask));
-            return Samples::waitUntil(
-                    [this]()
-                    {
-                        return m_drainFinished.load(std::memory_order_acquire);
-                    },
-                    drainTimeout * 4 + kWaitTimeout, std::chrono::milliseconds{5});
+            return Samples::waitUntil([this]() { return m_drainFinished.load(std::memory_order_acquire); }, drainTimeout * 4 + kWaitTimeout, std::chrono::milliseconds{5});
         }
 
     private:
@@ -1226,8 +1191,7 @@ namespace
          * @param drainFinished 输出：drain 已返回
          * @return Core::Task<> 协程
          */
-        static Core::Task<> drainOnLoopTask(Net::TcpServer &server, const std::chrono::milliseconds drainTimeout,
-                                            std::atomic<bool> &drainFinished)
+        static Core::Task<> drainOnLoopTask(Net::TcpServer &server, const std::chrono::milliseconds drainTimeout, std::atomic<bool> &drainFinished)
         {
             server.stop();
             co_await server.drain(drainTimeout);
@@ -1235,15 +1199,15 @@ namespace
             co_return;
         }
 
-        Core::EventLoop                m_loop;            ///< 承载本服务器的循环
-        std::unique_ptr<Net::TcpServer> m_server;         ///< 服务器本体；构造失败时为空
-        std::optional<Core::Task<>>    m_acceptTask;      ///< 接受协程的帧
-        std::vector<Core::Task<>>      m_shutdownTasks;   ///< 关停协程的帧
-        std::thread                    m_loopThread;      ///< 跑 run() 的线程，最后构造、最先析构
-        std::atomic<bool>              m_startThrew{false};    ///< start() 是否以异常收场（发布位最后写）
-        std::atomic<bool>              m_drainFinished{false}; ///< drain 是否已返回
-        std::string                    m_startFailureReason;   ///< start() 的异常文本
-        std::string                    m_failureReason;        ///< 装配阶段的失败原因
+        Core::EventLoop                 m_loop;                 ///< 承载本服务器的循环
+        std::unique_ptr<Net::TcpServer> m_server;               ///< 服务器本体；构造失败时为空
+        std::optional<Core::Task<>>     m_acceptTask;           ///< 接受协程的帧
+        std::vector<Core::Task<>>       m_shutdownTasks;        ///< 关停协程的帧
+        std::thread                     m_loopThread;           ///< 跑 run() 的线程，最后构造、最先析构
+        std::atomic<bool>               m_startThrew{false};    ///< start() 是否以异常收场（发布位最后写）
+        std::atomic<bool>               m_drainFinished{false}; ///< drain 是否已返回
+        std::string                     m_startFailureReason;   ///< start() 的异常文本
+        std::string                     m_failureReason;        ///< 装配阶段的失败原因
     };
 
     /**
@@ -1268,7 +1232,7 @@ namespace
      */
     std::unique_ptr<Net::HttpClientResponse> requestWithHttpClient(const std::string &url, const std::chrono::milliseconds requestTimeout)
     {
-        Core::EventLoop                     loop;
+        Core::EventLoop                          loop;
         std::unique_ptr<Net::HttpClientResponse> result;
         // 惰性协程的帧记住的是闭包对象的地址：闭包必须先落到具名变量上再调用
         const auto requestBody = [&loop, &result, &url, requestTimeout]() -> Core::Task<>
@@ -1301,26 +1265,29 @@ namespace
      */
     void installSampleRoutes(Net::Router &router)
     {
-        router.get("/hello", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<>
-        {
-            response.setBody("served-hello");
-            co_return;
-        });
-        router.post("/echo", [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<>
-        {
-            // 回显正文长度：只有收全了才对得上，超限路径则根本走不到这里
-            response.setBody(std::to_string(request.body().size()));
-            co_return;
-        });
+        router.get("/hello",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setBody("served-hello");
+                       co_return;
+                   });
+        router.post("/echo",
+                    [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<>
+                    {
+                        // 回显正文长度：只有收全了才对得上，超限路径则根本走不到这里
+                        response.setBody(std::to_string(request.body().size()));
+                        co_return;
+                    });
         for (std::size_t streamIndex = 0; streamIndex < kMultiplexedStreamCount; ++streamIndex)
         {
             // 每条流要一个不同正文：串流（把 A 的正文发给 B）是多路复用最容易犯又最难察觉的错
             const std::size_t index = streamIndex;
-            router.get("/mux/" + std::to_string(index), [index](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<>
-            {
-                response.setBody("mux-answer-" + std::to_string(index));
-                co_return;
-            });
+            router.get("/mux/" + std::to_string(index),
+                       [index](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setBody("mux-answer-" + std::to_string(index));
+                           co_return;
+                       });
         }
     }
 
@@ -1332,14 +1299,15 @@ namespace
      */
     void installInflightRoute(Net::Router &router, Core::EventLoop &loopForTimer, std::atomic<bool> &handlerEntered)
     {
-        router.get("/slow", [&loopForTimer, &handlerEntered](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<>
-        {
-            handlerEntered.store(true, std::memory_order_release);
-            Core::Timer holdTimer(loopForTimer);
-            co_await holdTimer.waitFor(kInflightWorkDuration);
-            response.setBody("slow-finished");
-            co_return;
-        });
+        router.get("/slow",
+                   [&loopForTimer, &handlerEntered](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<>
+                   {
+                       handlerEntered.store(true, std::memory_order_release);
+                       Core::Timer holdTimer(loopForTimer);
+                       co_await holdTimer.waitFor(kInflightWorkDuration);
+                       response.setBody("slow-finished");
+                       co_return;
+                   });
     }
 
     // ============================================================================
@@ -1355,9 +1323,8 @@ namespace
         RunningServerHost host(port,
                                [&material, &tlsServer](Core::EventLoop &loop, const Core::InetAddress &address) -> std::unique_ptr<Net::TcpServer>
                                {
-                                   auto server = std::make_unique<Net::HttpsServer>(loop, address, material.certificateFile.string(),
-                                                                                    material.keyFile.string());
-                                   tlsServer = server.get();
+                                   auto server = std::make_unique<Net::HttpsServer>(loop, address, material.certificateFile.string(), material.keyFile.string());
+                                   tlsServer   = server.get();
                                    server->setLimits(makeLongTimeoutLimits());
                                    server->setIdleCheckInterval(std::chrono::milliseconds{50});
                                    installSampleRoutes(server->router());
@@ -1368,77 +1335,57 @@ namespace
                                });
 
         const bool isServing = host.isBuilt() && host.awaitAcceptingLoop();
-        samples.check(isServing && !host.startThrew(),
-                      isServing ? "HttpsServer 用夹具证书在 samplePort 上进入接受循环"
-                                : ("HttpsServer 没能起来：" + (host.isBuilt() ? host.startFailureReason() : host.failureReason())));
+        samples.check(isServing && !host.startThrew(), isServing ? "HttpsServer 用夹具证书在 samplePort 上进入接受循环"
+                                                                 : ("HttpsServer 没能起来：" + (host.isBuilt() ? host.startFailureReason() : host.failureReason())));
         if (!isServing)
         {
             return;
         }
 
         // —— 1. 客户端必须拒掉「不受信的服务端证书」，且拒因看得见 ——
-        const std::unique_ptr<Http2LoopbackClient> untrustedClient =
-                Http2LoopbackClient::openOverTls(port, "h2", material.foreignCertificateFile.string());
-        LOG_INFO_FMT("不受信客户端的握手结论：完成={}，原因={}", untrustedClient->isHandshakeComplete(),
-                     untrustedClient->handshakeFailureReason());
-        samples.check(!untrustedClient->isHandshakeComplete()
-                              && untrustedClient->certificateVerifyFailureText().find("certificate") != std::string::npos,
+        const std::unique_ptr<Http2LoopbackClient> untrustedClient = Http2LoopbackClient::openOverTls(port, "h2", material.foreignCertificateFile.string());
+        LOG_INFO_FMT("不受信客户端的握手结论：完成={}，原因={}", untrustedClient->isHandshakeComplete(), untrustedClient->handshakeFailureReason());
+        samples.check(!untrustedClient->isHandshakeComplete() && untrustedClient->certificateVerifyFailureText().find("certificate") != std::string::npos,
                       "只信另一张自签根的客户端在握手期就被拒，原因文本里带着证书校验的说明");
 
         // —— 2. 反向对照：同一台服务器、按回环 IP 校验名字，握手就该成 ——
-        //（缺了这条，上一条可能只是「TLS 整条路都不通」而不是「校验真的在拦」）
+        // （缺了这条，上一条可能只是「TLS 整条路都不通」而不是「校验真的在拦」）
         const std::unique_ptr<Http2LoopbackClient> trustedClient = Http2LoopbackClient::openOverTls(port, "h2", material.certificateFile.string());
         LOG_INFO_FMT("受信客户端的握手结论：完成={}，原因={}", trustedClient->isHandshakeComplete(), trustedClient->handshakeFailureReason());
         samples.check(trustedClient->isHandshakeComplete(), "把服务端那张夹具证书当受信根、并按 127.0.0.1 校验名字的客户端握手成功");
 
         // —— 3. ALPN 协商出 h2 ——
         const std::unique_ptr<Http2LoopbackClient> client = Http2LoopbackClient::openOverTls(port, "h2", {});
-        samples.check(client->isAlpnListAccepted() && client->isHandshakeComplete()
-                              && client->selectedApplicationProtocol() == "h2",
-                      "ALPN 提 h2 时两端协商出的协议名就是 h2");
+        samples.check(client->isAlpnListAccepted() && client->isHandshakeComplete() && client->selectedApplicationProtocol() == "h2", "ALPN 提 h2 时两端协商出的协议名就是 h2");
         samples.check(performHttp2Handshake(*client), "h2 连接前奏与 SETTINGS 双向交换完成（服务端也确认了我们的 SETTINGS）");
 
-        const std::optional<std::uint32_t> advertisedStreams = client->peerSetting(Net::Http2SettingIdentifier::MaxConcurrentStreams);
+        const std::optional<std::uint32_t> advertisedStreams    = client->peerSetting(Net::Http2SettingIdentifier::MaxConcurrentStreams);
         const std::optional<std::uint32_t> advertisedHeaderSize = client->peerSetting(Net::Http2SettingIdentifier::MaxHeaderListSize);
-        const std::optional<std::uint32_t> advertisedFrameSize = client->peerSetting(Net::Http2SettingIdentifier::MaxFrameSize);
-        const std::optional<std::uint32_t> advertisedPush = client->peerSetting(Net::Http2SettingIdentifier::EnablePush);
-        const std::optional<std::uint32_t> advertisedWindow = client->peerSetting(Net::Http2SettingIdentifier::InitialWindowSize);
-        LOG_INFO_FMT("服务端通告：并发流上限={}，头列表上限={}，帧上限={}，允许推送={}，初始窗口={}",
-                     advertisedStreams.value_or(0), advertisedHeaderSize.value_or(0), advertisedFrameSize.value_or(0),
-                     advertisedPush.value_or(0), advertisedWindow.value_or(0));
+        const std::optional<std::uint32_t> advertisedFrameSize  = client->peerSetting(Net::Http2SettingIdentifier::MaxFrameSize);
+        const std::optional<std::uint32_t> advertisedPush       = client->peerSetting(Net::Http2SettingIdentifier::EnablePush);
+        const std::optional<std::uint32_t> advertisedWindow     = client->peerSetting(Net::Http2SettingIdentifier::InitialWindowSize);
+        LOG_INFO_FMT("服务端通告：并发流上限={}，头列表上限={}，帧上限={}，允许推送={}，初始窗口={}", advertisedStreams.value_or(0), advertisedHeaderSize.value_or(0),
+                     advertisedFrameSize.value_or(0), advertisedPush.value_or(0), advertisedWindow.value_or(0));
         // 这些取值出自 Http2ConnectionConfiguration，公开 API 上没有改它们的入口：这里钉住「通告与实现内定值一致」
-        samples.check(advertisedStreams.has_value() && advertisedStreams.value() == 100U && advertisedHeaderSize.has_value()
-                              && advertisedHeaderSize.value() == 16U * 1024U && advertisedFrameSize.has_value()
-                              && advertisedFrameSize.value() == Net::kHttp2DefaultMaximumFrameSize && advertisedPush.has_value()
-                              && advertisedPush.value() == 0U && advertisedWindow.has_value()
-                              && advertisedWindow.value() == Net::kHttp2InitialWindowSizeByteCount,
+        samples.check(advertisedStreams.has_value() && advertisedStreams.value() == 100U && advertisedHeaderSize.has_value() && advertisedHeaderSize.value() == 16U * 1024U &&
+                              advertisedFrameSize.has_value() && advertisedFrameSize.value() == Net::kHttp2DefaultMaximumFrameSize && advertisedPush.has_value() &&
+                              advertisedPush.value() == 0U && advertisedWindow.has_value() && advertisedWindow.value() == Net::kHttp2InitialWindowSizeByteCount,
                       "服务端的 SETTINGS 如实通告了本端上限（并发 100 条流、头列表 16 KiB、帧 16 KiB、不推送）");
 
         // —— 4. 一条完整往返：GET /hello → 200 + 正文 + END_STREAM ——
         static_cast<void>(client->sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello", true), true)));
-        const bool answered = client->pumpUntil(
-                [&client]()
-                {
-                    return client->isResponseCompleteOnStream(1U);
-                },
-                kWaitTimeout);
+        const bool answered = client->pumpUntil([&client]() { return client->isResponseCompleteOnStream(1U); }, kWaitTimeout);
         samples.check(answered && client->responseHeaderValue(1U, ":status") == "200" && client->responsePayload(1U) == "served-hello",
                       "TLS 上的 h2 GET 拿到 200 与正确正文，末片带 END_STREAM");
 
         const std::string generatedRequestId = client->responseHeaderValue(1U, std::string_view(Net::kRequestIdHeaderName));
-        samples.check(looksLikeGeneratedRequestId(generatedRequestId),
-                      "h2 响应带形态合法的 x-request-id（4 位十六进制前缀 + '-' + 16 位十六进制序号）");
+        samples.check(looksLikeGeneratedRequestId(generatedRequestId), "h2 响应带形态合法的 x-request-id（4 位十六进制前缀 + '-' + 16 位十六进制序号）");
 
         // —— 5. 客户端自带的 request-id 原样回显 ——
         const std::string clientRequestId = "h2-sample-trace-id";
-        static_cast<void>(client->sendBytes(makeRequestHeadersFrame(
-                3U, makeGetRequestHeaderBlock("/hello", true, {{std::string(Net::kRequestIdHeaderName), clientRequestId}}), true)));
-        static_cast<void>(client->pumpUntil(
-                [&client]()
-                {
-                    return client->isResponseCompleteOnStream(3U);
-                },
-                kWaitTimeout));
+        static_cast<void>(
+                client->sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello", true, {{std::string(Net::kRequestIdHeaderName), clientRequestId}}), true)));
+        static_cast<void>(client->pumpUntil([&client]() { return client->isResponseCompleteOnStream(3U); }, kWaitTimeout));
         samples.check(client->responseHeaderValue(3U, std::string_view(Net::kRequestIdHeaderName)) == clientRequestId,
                       "客户端自带的合法 request-id 在 h2 上被原样回显，没被服务器换掉");
 
@@ -1468,69 +1415,46 @@ namespace
         for (std::size_t streamIndex = 0; streamIndex < kMultiplexedStreamCount; ++streamIndex)
         {
             const std::uint32_t streamId = static_cast<std::uint32_t>(5U + streamIndex * 2U);
-            isMultiplexingCorrect        = isMultiplexingCorrect && client->responsePayload(streamId) == "mux-answer-" + std::to_string(streamIndex)
-                                    && client->responseHeaderValue(streamId, ":status") == "200";
+            isMultiplexingCorrect        = isMultiplexingCorrect && client->responsePayload(streamId) == "mux-answer-" + std::to_string(streamIndex) &&
+                                           client->responseHeaderValue(streamId, ":status") == "200";
         }
         samples.check(isMultiplexingCorrect, "一条 TLS 连接上并发四条流各得其所：流号互不相同、正文与请求一一对应");
 
         // —— 7. request-id/指标/健康端点这套服务端功能在 h2 上照常可用 ——
         static_cast<void>(client->sendBytes(makeRequestHeadersFrame(13U, makeGetRequestHeaderBlock("/healthz", true), true)));
-        static_cast<void>(client->pumpUntil(
-                [&client]()
-                {
-                    return client->isResponseCompleteOnStream(13U);
-                },
-                kWaitTimeout));
+        static_cast<void>(client->pumpUntil([&client]() { return client->isResponseCompleteOnStream(13U); }, kWaitTimeout));
         samples.check(client->responseHeaderValue(13U, ":status") == "200" && client->responsePayload(13U) == std::string{Net::kHealthCheckResponseBody},
                       "h2 上的 /healthz 回的是与 h1 同一份固定正文（端点是普通路由，与协议无关）");
 
         static_cast<void>(client->sendBytes(makeRequestHeadersFrame(15U, makeGetRequestHeaderBlock("/metrics", true), true)));
-        static_cast<void>(client->pumpUntil(
-                [&client]()
-                {
-                    return client->isResponseCompleteOnStream(15U);
-                },
-                kWaitTimeout));
+        static_cast<void>(client->pumpUntil([&client]() { return client->isResponseCompleteOnStream(15U); }, kWaitTimeout));
         const std::optional<std::uint64_t> requestCount = readPrometheusCounter(client->responsePayload(15U), "asyn_http_requests_total");
         // 抓取这一刻已派发的请求：/hello 两条 + /mux 四条 + /healthz + /metrics 自己 = 8（计数在派发前落账）
         LOG_INFO_FMT("第一次抓 /metrics 读到请求计数 {}", requestCount.has_value() ? std::to_string(requestCount.value()) : "<没有这一行>");
         samples.check(requestCount.has_value() && requestCount.value() >= 8U, "h2 上抓 /metrics 能看到 TLS 路径自己那份请求计数");
 
         static_cast<void>(client->sendBytes(makeRequestHeadersFrame(17U, makeGetRequestHeaderBlock("/metrics", true), true)));
-        static_cast<void>(client->pumpUntil(
-                [&client]()
-                {
-                    return client->isResponseCompleteOnStream(17U);
-                },
-                kWaitTimeout));
-        const std::optional<std::uint64_t> responseCount =
-                readPrometheusCounter(client->responsePayload(17U), "asyn_http_responses_total{status_class=\"2xx\"}");
+        static_cast<void>(client->pumpUntil([&client]() { return client->isResponseCompleteOnStream(17U); }, kWaitTimeout));
+        const std::optional<std::uint64_t> responseCount = readPrometheusCounter(client->responsePayload(17U), "asyn_http_responses_total{status_class=\"2xx\"}");
         // 第二次抓取时前八条响应都已落账（本条自己的响应还没发完，故不计）
         LOG_INFO_FMT("第二次抓 /metrics 读到 2xx 响应计数 {}", responseCount.has_value() ? std::to_string(responseCount.value()) : "<没有这一行>");
         samples.check(responseCount.has_value() && responseCount.value() >= 8U, "第二次抓 /metrics 时状态码类计数已落账，与 stats() 同一份口径");
 
         const Net::HttpServerStats servedStats = tlsServer->stats();
         // 此刻这台服务器已派发九条请求（两条 /hello、四条 /mux、/healthz、两次 /metrics），其中八条的响应已落账
-        LOG_INFO_FMT("stats() 快照：请求 {} 条，2xx {} 条，协议错误 {} 条", servedStats.totalRequestCount, servedStats.status2xxCount,
-                     servedStats.badRequestCount);
+        LOG_INFO_FMT("stats() 快照：请求 {} 条，2xx {} 条，协议错误 {} 条", servedStats.totalRequestCount, servedStats.status2xxCount, servedStats.badRequestCount);
         samples.check(servedStats.totalRequestCount >= 9U && servedStats.status2xxCount >= 8U && servedStats.badRequestCount == 0U,
                       "服务器侧 stats() 快照与线上观测量同向增长，且没把正常请求记成协议错误");
 
         // —— 8. ALPN 只提 http/1.1：同一条 TLS 连接要交回 HTTP/1.1 事务循环 ——
-        const std::unique_ptr<Http2LoopbackClient> legacyClient = Http2LoopbackClient::openOverTls(port, "http/1.1", {});
-        bool isLegacyServed = false;
+        const std::unique_ptr<Http2LoopbackClient> legacyClient   = Http2LoopbackClient::openOverTls(port, "http/1.1", {});
+        bool                                       isLegacyServed = false;
         if (legacyClient->isHandshakeComplete() && legacyClient->selectedApplicationProtocol() == "http/1.1")
         {
             static_cast<void>(legacyClient->sendBytes("GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));
-            static_cast<void>(legacyClient->pumpUntil(
-                    [&legacyClient]()
-                    {
-                        return legacyClient->receivedText().find("served-hello") != std::string::npos;
-                    },
-                    kWaitTimeout));
+            static_cast<void>(legacyClient->pumpUntil([&legacyClient]() { return legacyClient->receivedText().find("served-hello") != std::string::npos; }, kWaitTimeout));
             isLegacyServed = legacyClient->receivedText().find("HTTP/1.1 200") != std::string::npos;
-        }
-        else
+        } else
         {
             LOG_ERROR_FMT("ALPN 提 http/1.1 的客户端没能协商成功：{}", legacyClient->handshakeFailureReason());
         }
@@ -1540,9 +1464,8 @@ namespace
         samples.check(runGuarded("HttpClient 直连自签服务端",
                                  [&port]()
                                  {
-                                     const std::string url = "https://127.0.0.1:" + std::to_string(port) + "/hello";
-                                     const std::unique_ptr<Net::HttpClientResponse> response =
-                                             requestWithHttpClient(url, std::chrono::milliseconds{3000});
+                                     const std::string                              url      = "https://127.0.0.1:" + std::to_string(port) + "/hello";
+                                     const std::unique_ptr<Net::HttpClientResponse> response = requestWithHttpClient(url, std::chrono::milliseconds{3000});
                                      if (response != nullptr)
                                      {
                                          LOG_ERROR_FMT("HttpClient 竟然拿到了 {}，自签证书的链校验没生效", response->statusCode);
@@ -1558,14 +1481,13 @@ namespace
 
     void demonstrateParserLimits(const TlsMaterial &material, const std::uint16_t port)
     {
-        auto &samples   = Samples::checklist();
+        auto             &samples      = Samples::checklist();
         Net::HttpsServer *limitsServer = nullptr;
 
         RunningServerHost host(port,
                                [&material, &limitsServer](Core::EventLoop &loop, const Core::InetAddress &address) -> std::unique_ptr<Net::TcpServer>
                                {
-                                   auto server = std::make_unique<Net::HttpsServer>(loop, address, material.certificateFile.string(),
-                                                                                    material.keyFile.string());
+                                   auto server  = std::make_unique<Net::HttpsServer>(loop, address, material.certificateFile.string(), material.keyFile.string());
                                    limitsServer = server.get();
                                    server->setLimits(makeLongTimeoutLimits());
                                    server->setIdleCheckInterval(std::chrono::milliseconds{50});
@@ -1582,8 +1504,8 @@ namespace
             samples.check(false, "限额服务器没能起来：" + (host.isBuilt() ? host.startFailureReason() : host.failureReason()));
             return;
         }
-        samples.check(limitsServer->parserLimits().maximumHeaderFieldValueLength == 32U && limitsServer->parserLimits().maximumUriLength == 64U
-                              && limitsServer->parserLimits().maximumBodySize == 16U,
+        samples.check(limitsServer->parserLimits().maximumHeaderFieldValueLength == 32U && limitsServer->parserLimits().maximumUriLength == 64U &&
+                              limitsServer->parserLimits().maximumBodySize == 16U,
                       "setParserLimits() 的三项上限都读得回来（会话按这一份判定，而不是默认值）");
 
         // 不提 ALPN 的客户端走 HTTP/1.1 路径：这里才看得到 431
@@ -1594,27 +1516,16 @@ namespace
             return;
         }
 
-        static_cast<void>(client->sendBytes("GET /hello HTTP/1.1\r\nHost: localhost\r\nx-blob: " + std::string(64, 'a')
-                                            + "\r\nConnection: close\r\n\r\n"));
-        static_cast<void>(client->pumpUntil(
-                [&client]()
-                {
-                    return client->receivedText().find("HTTP/1.1 431") != std::string::npos || client->isClosedByPeer();
-                },
-                kWaitTimeout));
+        static_cast<void>(client->sendBytes("GET /hello HTTP/1.1\r\nHost: localhost\r\nx-blob: " + std::string(64, 'a') + "\r\nConnection: close\r\n\r\n"));
+        static_cast<void>(client->pumpUntil([&client]() { return client->receivedText().find("HTTP/1.1 431") != std::string::npos || client->isClosedByPeer(); }, kWaitTimeout));
         const std::string &oversizeHeaderText = client->receivedText();
         samples.check(oversizeHeaderText.find("HTTP/1.1 431") != std::string::npos && oversizeHeaderText.find("HTTP/1.1 400") == std::string::npos,
                       "单个头部值越界回 431（体量越界）而不是 400（报文非法）");
 
         const std::unique_ptr<Http2LoopbackClient> longTargetClient = Http2LoopbackClient::openOverTls(port, {}, {});
-        static_cast<void>(longTargetClient->sendBytes("GET /" + std::string(200, 'x')
-                                                      + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));
+        static_cast<void>(longTargetClient->sendBytes("GET /" + std::string(200, 'x') + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));
         static_cast<void>(longTargetClient->pumpUntil(
-                [&longTargetClient]()
-                {
-                    return longTargetClient->receivedText().find("HTTP/1.1 4") != std::string::npos || longTargetClient->isClosedByPeer();
-                },
-                kWaitTimeout));
+                [&longTargetClient]() { return longTargetClient->receivedText().find("HTTP/1.1 4") != std::string::npos || longTargetClient->isClosedByPeer(); }, kWaitTimeout));
         const std::string &longTargetText = longTargetClient->receivedText();
         // 本框架把「请求目标过长」归进 HeaderTooLarge 一类：回 431，没有 414 这条映射
         samples.check(longTargetText.find("HTTP/1.1 431") != std::string::npos && longTargetText.find("HTTP/1.1 414") == std::string::npos,
@@ -1628,26 +1539,14 @@ namespace
             return;
         }
         static_cast<void>(h2Client->sendBytes(makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo", true), false)));
-        static_cast<void>(h2Client->sendBytes(
-                Net::encodeHttp2DataFrame(Net::Http2DataPayload{.endStream = false, .data = std::string(64U, 'x')}, 1U)));
-        static_cast<void>(h2Client->pumpUntil(
-                [&h2Client]()
-                {
-                    return h2Client->hasResponseHeaderBlock(1U) && h2Client->resetStreamCode(1U).has_value();
-                },
-                kWaitTimeout));
+        static_cast<void>(h2Client->sendBytes(Net::encodeHttp2DataFrame(Net::Http2DataPayload{.endStream = false, .data = std::string(64U, 'x')}, 1U)));
+        static_cast<void>(h2Client->pumpUntil([&h2Client]() { return h2Client->hasResponseHeaderBlock(1U) && h2Client->resetStreamCode(1U).has_value(); }, kWaitTimeout));
         const std::optional<Net::Http2ErrorCode> abortCode = h2Client->resetStreamCode(1U);
-        samples.check(h2Client->responseHeaderValue(1U, ":status") == "413" && abortCode.has_value()
-                              && abortCode.value() == Net::Http2ErrorCode::NoError && !h2Client->sawGoAway(),
+        samples.check(h2Client->responseHeaderValue(1U, ":status") == "413" && abortCode.has_value() && abortCode.value() == Net::Http2ErrorCode::NoError && !h2Client->sawGoAway(),
                       "h2 正文越界回 413 并用 RST_STREAM(NO_ERROR) 请对端停止上传，连接没被收掉");
 
         static_cast<void>(h2Client->sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello", true), true)));
-        static_cast<void>(h2Client->pumpUntil(
-                [&h2Client]()
-                {
-                    return h2Client->isResponseCompleteOnStream(3U);
-                },
-                kWaitTimeout));
+        static_cast<void>(h2Client->pumpUntil([&h2Client]() { return h2Client->isResponseCompleteOnStream(3U); }, kWaitTimeout));
         samples.check(h2Client->responseHeaderValue(3U, ":status") == "200" && h2Client->responsePayload(3U) == "served-hello",
                       "越界请求之后的另一条流仍被正常服务（单流越界不牵连整条连接）");
     }
@@ -1658,16 +1557,15 @@ namespace
 
     void demonstrateCleartextHttp2AndGracefulShutdown(const std::uint16_t port)
     {
-        auto &samples        = Samples::checklist();
+        auto &samples = Samples::checklist();
         // 声明顺序即生命周期顺序：这两个都要比 host 活得久（host 析构前，循环线程上的处理器还会碰它们）
         std::atomic<bool> handlerEntered{false};
         Net::HttpServer  *cleartextServer = nullptr;
 
         RunningServerHost host(port,
-                               [&handlerEntered, &cleartextServer](Core::EventLoop &loop,
-                                                                   const Core::InetAddress &address) -> std::unique_ptr<Net::TcpServer>
+                               [&handlerEntered, &cleartextServer](Core::EventLoop &loop, const Core::InetAddress &address) -> std::unique_ptr<Net::TcpServer>
                                {
-                                   auto server = std::make_unique<Net::HttpServer>(loop, address);
+                                   auto server     = std::make_unique<Net::HttpServer>(loop, address);
                                    cleartextServer = server.get();
                                    server->setLimits(makeLongTimeoutLimits());
                                    server->setIdleCheckInterval(std::chrono::milliseconds{50});
@@ -1682,8 +1580,7 @@ namespace
             samples.check(false, "h2c 服务器没能起来：" + (host.isBuilt() ? host.startFailureReason() : host.failureReason()));
             return;
         }
-        samples.check(cleartextServer->isHttp2CleartextEnabled(),
-                      "setHttp2CleartextEnabled(true) 落到了服务器上（读回来确实是明文 h2）");
+        samples.check(cleartextServer->isHttp2CleartextEnabled(), "setHttp2CleartextEnabled(true) 落到了服务器上（读回来确实是明文 h2）");
 
         // —— 1. 先验知识的往返：没有 TLS、没有 Upgrade，前奏直发 ——
         const std::unique_ptr<Http2LoopbackClient> client = Http2LoopbackClient::openCleartext(port);
@@ -1694,16 +1591,9 @@ namespace
                                      {
                                          return false;
                                      }
-                                     static_cast<void>(
-                                             client->sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello", false), true)));
-                                     static_cast<void>(client->pumpUntil(
-                                             [&client]()
-                                             {
-                                                 return client->isResponseCompleteOnStream(1U);
-                                             },
-                                             kWaitTimeout));
-                                     return client->responseHeaderValue(1U, ":status") == "200" && client->responsePayload(1U) == "served-hello"
-                                            && !client->sawGoAway();
+                                     static_cast<void>(client->sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello", false), true)));
+                                     static_cast<void>(client->pumpUntil([&client]() { return client->isResponseCompleteOnStream(1U); }, kWaitTimeout));
+                                     return client->responseHeaderValue(1U, ":status") == "200" && client->responsePayload(1U) == "served-hello" && !client->sawGoAway();
                                  }),
                       "明文连接按先验知识说 h2：前奏 + SETTINGS 交换后 GET 得到 200 与正文，且没有 GOAWAY");
 
@@ -1717,24 +1607,13 @@ namespace
                                          return false;
                                      }
                                      static_cast<void>(wrongProtocolClient->sendBytes("GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n"));
-                                     static_cast<void>(wrongProtocolClient->pumpUntil(
-                                             [&wrongProtocolClient]()
-                                             {
-                                                 return wrongProtocolClient->sawGoAway();
-                                             },
-                                             kWaitTimeout));
+                                     static_cast<void>(wrongProtocolClient->pumpUntil([&wrongProtocolClient]() { return wrongProtocolClient->sawGoAway(); }, kWaitTimeout));
                                      if (wrongProtocolClient->goAwayErrorCode() != Net::Http2ErrorCode::ProtocolError)
                                      {
                                          LOG_ERROR_FMT("GOAWAY 带的错误码是 {}", Net::http2ErrorCodeName(wrongProtocolClient->goAwayErrorCode()));
                                      }
-                                     return wrongProtocolClient->sawGoAway()
-                                            && wrongProtocolClient->goAwayErrorCode() == Net::Http2ErrorCode::ProtocolError
-                                            && wrongProtocolClient->pumpUntil(
-                                                    [&wrongProtocolClient]()
-                                                    {
-                                                        return wrongProtocolClient->isClosedByPeer();
-                                                    },
-                                                    kWaitTimeout);
+                                     return wrongProtocolClient->sawGoAway() && wrongProtocolClient->goAwayErrorCode() == Net::Http2ErrorCode::ProtocolError &&
+                                            wrongProtocolClient->pumpUntil([&wrongProtocolClient]() { return wrongProtocolClient->isClosedByPeer(); }, kWaitTimeout);
                                  }),
                       "h2c 端口上收到 HTTP/1.1 报文时按 PROTOCOL_ERROR 发 GOAWAY 并收口连接（不回退、不嗅探）");
 
@@ -1742,9 +1621,8 @@ namespace
         samples.check(runGuarded("HttpClient 打 h2c 端口",
                                  [&port]()
                                  {
-                                     const std::string url = "http://127.0.0.1:" + std::to_string(port) + "/hello";
-                                     const std::unique_ptr<Net::HttpClientResponse> response =
-                                             requestWithHttpClient(url, std::chrono::milliseconds{3000});
+                                     const std::string                              url      = "http://127.0.0.1:" + std::to_string(port) + "/hello";
+                                     const std::unique_ptr<Net::HttpClientResponse> response = requestWithHttpClient(url, std::chrono::milliseconds{3000});
                                      if (response != nullptr)
                                      {
                                          LOG_ERROR_FMT("HttpClient 竟然拿到了 {}：明文端不该被 h1 服务", response->statusCode);
@@ -1756,33 +1634,17 @@ namespace
         // —— 4. 优雅关停：在途请求做完，然后才发收尾 GOAWAY ——
         // 先确认处理器真的跑起来了（连接已被标成在途），再发起 drain，否则「等完在途」这句就落不到实处
         static_cast<void>(client->sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/slow", false), true)));
-        const bool isHandlerRunning = Samples::waitUntil(
-                [&handlerEntered]()
-                {
-                    return handlerEntered.load(std::memory_order_acquire);
-                },
-                kWaitTimeout, std::chrono::milliseconds{2});
+        const bool isHandlerRunning =
+                Samples::waitUntil([&handlerEntered]() { return handlerEntered.load(std::memory_order_acquire); }, kWaitTimeout, std::chrono::milliseconds{2});
         const bool isDrained = host.requestGracefulDrain(kGracefulDrainTimeout);
-        static_cast<void>(client->pumpUntil(
-                [&client]()
-                {
-                    return client->isResponseCompleteOnStream(3U) && client->sawGoAway();
-                },
-                kWaitTimeout));
-        samples.check(isHandlerRunning && isDrained && client->responseHeaderValue(3U, ":status") == "200"
-                              && client->responsePayload(3U) == "slow-finished",
+        static_cast<void>(client->pumpUntil([&client]() { return client->isResponseCompleteOnStream(3U) && client->sawGoAway(); }, kWaitTimeout));
+        samples.check(isHandlerRunning && isDrained && client->responseHeaderValue(3U, ":status") == "200" && client->responsePayload(3U) == "slow-finished",
                       "优雅关停没有在途请求做完之前就收手：慢请求仍拿到完整的 200 响应");
-        samples.check(client->sawGoAway() && client->goAwayErrorCode() == Net::Http2ErrorCode::NoError
-                              && client->goAwayLastStreamId() == 3U,
+        samples.check(client->sawGoAway() && client->goAwayErrorCode() == Net::Http2ErrorCode::NoError && client->goAwayLastStreamId() == 3U,
                       "关停前发出带 NO_ERROR 的收尾 GOAWAY，last-stream-id 是已受理的最后一条流");
         LOG_INFO_FMT("收尾 GOAWAY 带的调试文本：{}", client->goAwayDebugText());
 
-        const bool isChannelClosed = client->pumpUntil(
-                [&client]()
-                {
-                    return client->isClosedByPeer();
-                },
-                kWaitTimeout);
+        const bool                 isChannelClosed = client->pumpUntil([&client]() { return client->isClosedByPeer(); }, kWaitTimeout);
         const Net::HttpServerStats statsAfterDrain = cleartextServer->stats();
         samples.check(isChannelClosed && !host.server().isRunning() && statsAfterDrain.activeConnectionCount == 0U,
                       "drain 之后连接已关闭、服务器不再接受新连接，活跃连接数回落为零");
@@ -1796,7 +1658,7 @@ int main(const int argc, char **argv)
 
     const TlsMaterial material = readTlsMaterial(argc, argv);
     LOG_INFO_FMT("证书材料：{}", material.describe());
-    auto &samples = Samples::checklist();
+    auto      &samples         = Samples::checklist();
     const bool isMaterialReady = material.isComplete();
     samples.check(isMaterialReady, "仓库自签夹具（回环 IP 证书与私钥、另一张不同名的证书）都能按可执行文件位置找到");
     if (!isMaterialReady)
@@ -1805,7 +1667,7 @@ int main(const int argc, char **argv)
     }
 
     const std::uint16_t basePort = Samples::readPortArgument(argc, argv, kSamplePortOffset);
-    Samples::requirePortHeadroom(basePort, 2);   // 三台服务器依次占 basePort / +1 / +2
+    Samples::requirePortHeadroom(basePort, 2); // 三台服务器依次占 basePort / +1 / +2
     LOG_INFO_FMT("三台服务器依次使用端口 {} / {} / {}", basePort, basePort + 1, basePort + 2);
 
     if (isMaterialReady)

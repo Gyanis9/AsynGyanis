@@ -27,15 +27,8 @@ namespace AsynGyanis::Database
      * @note 新增备选一律**追加在末尾**：既有备选的下标是已发布的契约，调整顺序会让所有
      *       按固定下标取值的调用点静默取错类型。
      */
-    using DatabaseValue = std::variant<
-        std::monostate,
-        bool,
-        std::int64_t,
-        double,
-        std::string,
-        std::vector<std::string>,
-        std::unordered_map<std::string, std::string>,
-        std::vector<std::uint8_t> >;
+    using DatabaseValue = std::variant<std::monostate, bool, std::int64_t, double, std::string, std::vector<std::string>, std::unordered_map<std::string, std::string>,
+                                       std::vector<std::uint8_t>>;
 
     /**
      * @brief 取得数据库值的类型名称，用于日志与断言

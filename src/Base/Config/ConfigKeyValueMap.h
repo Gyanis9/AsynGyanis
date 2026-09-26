@@ -46,5 +46,5 @@ namespace AsynGyanis::Base
      * @details 键为点号扁平化后的路径（如 server.port），透明哈希 + std::equal_to<>
      *          使 get("a.b") 这类 string_view 实参无需先构造 std::string。
      */
-    using ConfigKeyValueMap = std::unordered_map<std::string, ConfigValue, TransparentStringHash, std::equal_to<> >;
+    using ConfigKeyValueMap = std::unordered_map<std::string, ConfigValue, TransparentStringHash, std::equal_to<>>;
 } // namespace AsynGyanis::Base

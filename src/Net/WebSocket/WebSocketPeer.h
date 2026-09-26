@@ -322,18 +322,18 @@ namespace AsynGyanis::Net
          */
         Core::Task<> echoCloseFrame(std::string_view payload);
 
-        FrameSender m_frameSender;                   ///< 发送路径，由会话注入
-        HttpMetricsCollector *m_metrics{nullptr};    ///< 统计采集端（非拥有）；空表示不上报 WebSocket 各项计数
-        WebSocketFrameDecoder m_decoder;             ///< 帧解码器：掩码校验、分片重组都在它内部完成
-        std::deque<WebSocketFrame> m_incomingFrames; ///< 已解出、等待业务取走的帧（FIFO）
+        FrameSender                m_frameSender;      ///< 发送路径，由会话注入
+        HttpMetricsCollector      *m_metrics{nullptr}; ///< 统计采集端（非拥有）；空表示不上报 WebSocket 各项计数
+        WebSocketFrameDecoder      m_decoder;          ///< 帧解码器：掩码校验、分片重组都在它内部完成
+        std::deque<WebSocketFrame> m_incomingFrames;   ///< 已解出、等待业务取走的帧（FIFO）
         /// 待交付帧的积压计数：enqueueFrame() 累加、出队处扣减，两处必须配对
-        std::size_t m_queuedPayloadByteCount{0};     ///< 队列里待交付帧的负载总字节数
-        std::coroutine_handle<> m_deliveryWaiter{};  ///< 业务正挂在 receive() 上的句柄，空表示无人等待
-        bool m_isOpen{true};                         ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
-        bool m_isWriteInFlight{false};               ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）
-        std::string m_payloadErrorMessage;           ///< 负载层失败的中文原因（文本非法含违规字节位置）；空表示最近一次失败不在负载层
-        std::uint16_t m_payloadErrorCloseCode{kWebSocketInvalidPayloadDataCode}; ///< 负载层失败对应的关闭状态码
-        bool m_isPerMessageDeflateEnabled{false};    ///< 是否已协商 permessage-deflate：决定收发两侧是否压缩
+        std::size_t             m_queuedPayloadByteCount{0};                               ///< 队列里待交付帧的负载总字节数
+        std::coroutine_handle<> m_deliveryWaiter{};                                        ///< 业务正挂在 receive() 上的句柄，空表示无人等待
+        bool                    m_isOpen{true};                                            ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
+        bool                    m_isWriteInFlight{false};                                  ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）
+        std::string             m_payloadErrorMessage;                                     ///< 负载层失败的中文原因（文本非法含违规字节位置）；空表示最近一次失败不在负载层
+        std::uint16_t           m_payloadErrorCloseCode{kWebSocketInvalidPayloadDataCode}; ///< 负载层失败对应的关闭状态码
+        bool                    m_isPerMessageDeflateEnabled{false};                       ///< 是否已协商 permessage-deflate：决定收发两侧是否压缩
 
         /// 本次关闭是对端 Close 的应答：一次对端发起的关闭只记在对端一侧，
         /// 回帧不再重复记成本侧发起。粘性标记——对端关闭后本对象即收口，不存在需要复位的下一轮

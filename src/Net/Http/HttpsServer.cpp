@@ -15,13 +15,10 @@
 
 namespace AsynGyanis::Net
 {
-    HttpsServer::HttpsServer(Core::EventLoop &loop, const int adoptedListeningDescriptor, const std::string &certificateFile,
-                             const std::string &keyFile, const Core::TlsPolicy &policy) :
-        TcpServer(loop, adoptedListeningDescriptor),
-        m_tlsContext(policy, Core::TlsContext::Role::Server),
-        m_limits(std::make_shared<const HttpServerLimits>()),
-        m_metrics(std::make_shared<HttpMetricsCollector>()),
-        m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
+    HttpsServer::HttpsServer(Core::EventLoop &loop, const int adoptedListeningDescriptor, const std::string &certificateFile, const std::string &keyFile,
+                             const Core::TlsPolicy &policy) :
+        TcpServer(loop, adoptedListeningDescriptor), m_tlsContext(policy, Core::TlsContext::Role::Server), m_limits(std::make_shared<const HttpServerLimits>()),
+        m_metrics(std::make_shared<HttpMetricsCollector>()), m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
     {
         // 连接数镜像先接上：本服务器的采集端从这一刻起就是它的计数出口，证书失败与否都不影响这条线
         attachActiveConnectionMirror();
@@ -36,11 +33,8 @@ namespace AsynGyanis::Net
 
     HttpsServer::HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile,
                              const Core::TlsPolicy &policy) :
-        TcpServer(loop, address),
-        m_tlsContext(policy, Core::TlsContext::Role::Server),
-        m_limits(std::make_shared<const HttpServerLimits>()),
-        m_metrics(std::make_shared<HttpMetricsCollector>()),
-        m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
+        TcpServer(loop, address), m_tlsContext(policy, Core::TlsContext::Role::Server), m_limits(std::make_shared<const HttpServerLimits>()),
+        m_metrics(std::make_shared<HttpMetricsCollector>()), m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
     {
         // 限额、统计与 request-id 生成器都在此就绪：会话按 shared_ptr 共享持有它们，
         // 采集是常开行为，且它们的生命周期一定覆盖所有会话，创建路径上不必判空
@@ -111,8 +105,8 @@ namespace AsynGyanis::Net
         // 协商出 h2 就跑 HTTP/2 循环，否则（http/1.1 或客户端没提 ALPN）走同一份 HTTP/1.1 事务循环。
         // 明文 h2c（前奏直发、无 ALPN）不在本片：那条路径上没有任何 ALPN 可读，连接按 HTTP/1.1 处理
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
-        return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
-                                              m_memoryBudget, m_http2Configuration);
+        return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits, m_memoryBudget,
+                                              m_http2Configuration);
     }
 
     std::shared_ptr<HttpMetricsCollector> HttpsServer::metricsCollector() const noexcept

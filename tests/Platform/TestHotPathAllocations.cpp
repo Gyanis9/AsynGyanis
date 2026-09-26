@@ -47,9 +47,9 @@ namespace AsynGyanis::Platform
 
 #ifdef NDEBUG
         // 名字里带 Total 的钉的是「一千次一共多少次」（原值），不是摊平读数
-        constexpr std::uint64_t kFileBasicInfoTotalAllocationsPerThousand = 0U;      ///< 静态文件每请求都要查的那一次
-        constexpr std::uint64_t kMappedFileOpenTotalAllocationsPerThousand = 0U;     ///< 映射未命中时才付，但同样每请求都可能付
-        constexpr std::uint64_t kOpenedFileInfoTotalAllocationsPerThousand = 0U;     ///< 核对「正文与验证器同版本」时每请求要问的那一次
+        constexpr std::uint64_t kFileBasicInfoTotalAllocationsPerThousand      = 0U; ///< 静态文件每请求都要查的那一次
+        constexpr std::uint64_t kMappedFileOpenTotalAllocationsPerThousand     = 0U; ///< 映射未命中时才付，但同样每请求都可能付
+        constexpr std::uint64_t kOpenedFileInfoTotalAllocationsPerThousand     = 0U; ///< 核对「正文与验证器同版本」时每请求要问的那一次
         constexpr std::uint64_t kPathTextConversionTotalAllocationsPerThousand = 0U; ///< 只取扩展名那条：产物短到留在内联缓冲里
 #endif
     } // namespace
@@ -77,7 +77,7 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformHotPathAllocations, MeasurementWindowHasNoBackgroundAllocations)
     {
-        std::uint64_t sink = 0;
+        std::uint64_t           sink    = 0;
         const AllocationProfile profile = measurePerOperation(
                 [&sink]
                 {
@@ -100,7 +100,7 @@ namespace AsynGyanis::Platform
         const TestSupport::TemporaryDirectory temporaryDirectory("HotPathAllocations_FileBasicInfo");
         ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", std::string(kLedgerFileBytes, 'x')));
         const std::filesystem::path existingPath = temporaryDirectory.path() / "asset.bin";
-        const std::filesystem::path missingPath = temporaryDirectory.path() / "does-not-exist.bin";
+        const std::filesystem::path missingPath  = temporaryDirectory.path() / "does-not-exist.bin";
 
         ASSERT_TRUE(queryFileBasicInfo(existingPath).has_value()) << "夹具文件没建出来，读数没意义";
         ASSERT_FALSE(queryFileBasicInfo(missingPath).has_value()) << "缺失路径不该查得出东西";
@@ -121,16 +121,12 @@ namespace AsynGyanis::Platform
         const AllocationProfile missing = measurePerOperation(queryMissingOnce);
 
         std::printf("queryFileBasicInfo 命中：每次 %llu 次 / %llu 字节（一千次共 %llu 次）；查不到：每次 %llu 次 / 一千次共 %llu 次\n",
-                    static_cast<unsigned long long>(existing.allocationsPerOperation),
-                    static_cast<unsigned long long>(existing.bytesPerOperation),
-                    static_cast<unsigned long long>(existing.totalAllocations),
-                    static_cast<unsigned long long>(missing.allocationsPerOperation),
+                    static_cast<unsigned long long>(existing.allocationsPerOperation), static_cast<unsigned long long>(existing.bytesPerOperation),
+                    static_cast<unsigned long long>(existing.totalAllocations), static_cast<unsigned long long>(missing.allocationsPerOperation),
                     static_cast<unsigned long long>(missing.totalAllocations));
 #ifdef NDEBUG
-        EXPECT_EQ(existing.totalAllocations, kFileBasicInfoTotalAllocationsPerThousand)
-                << "每请求一次的元数据查询开始碰堆：多半是有人在这里现造了路径文本或诊断串";
-        EXPECT_EQ(missing.totalAllocations, kFileBasicInfoTotalAllocationsPerThousand)
-                << "查不到那条路也开始碰堆，失败路径的分配比成功路径更难被压测看见";
+        EXPECT_EQ(existing.totalAllocations, kFileBasicInfoTotalAllocationsPerThousand) << "每请求一次的元数据查询开始碰堆：多半是有人在这里现造了路径文本或诊断串";
+        EXPECT_EQ(missing.totalAllocations, kFileBasicInfoTotalAllocationsPerThousand) << "查不到那条路也开始碰堆，失败路径的分配比成功路径更难被压测看见";
 #endif
     }
 
@@ -146,7 +142,7 @@ namespace AsynGyanis::Platform
 
         const auto openOnce = [&targetPath]
         {
-            MemoryMappedFile mappedFile = MemoryMappedFile::open(targetPath);
+            MemoryMappedFile  mappedFile  = MemoryMappedFile::open(targetPath);
             const std::size_t mappedBytes = mappedFile.isValid() ? mappedFile.bytes().size() : 0U;
             return mappedBytes;
         };
@@ -154,13 +150,10 @@ namespace AsynGyanis::Platform
 
         const AllocationProfile profile = measurePerOperation(openOnce);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * kLedgerFileBytes) << "有几次映射长度不一致";
-        std::printf("MemoryMappedFile::open+close 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n",
-                    static_cast<unsigned long long>(profile.allocationsPerOperation),
-                    static_cast<unsigned long long>(profile.bytesPerOperation),
-                    static_cast<unsigned long long>(profile.totalAllocations));
+        std::printf("MemoryMappedFile::open+close 每次分配 %llu 次 / %llu 字节（一千次共 %llu 次）\n", static_cast<unsigned long long>(profile.allocationsPerOperation),
+                    static_cast<unsigned long long>(profile.bytesPerOperation), static_cast<unsigned long long>(profile.totalAllocations));
 #ifdef NDEBUG
-        EXPECT_EQ(profile.totalAllocations, kMappedFileOpenTotalAllocationsPerThousand)
-                << "映射对象开始带堆成员了：它只该装句柄、长度与 error_code";
+        EXPECT_EQ(profile.totalAllocations, kMappedFileOpenTotalAllocationsPerThousand) << "映射对象开始带堆成员了：它只该装句柄、长度与 error_code";
 #endif
     }
 
@@ -188,12 +181,11 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(mappedQuery.resultSum, kMeasurementIterations * kLedgerFileBytes) << "有几次问不出大小，读的不是那条形状";
 
         // 整段读那条要预先备好缓冲：稳态下 resize 只改长度，这里量的是「读 + 问身份」这一段
-        std::string body(kLedgerFileBytes, '\0');
-        FileBasicInfo   openedAs;
-        const auto readOnce = [&targetPath, &body, &openedAs]
+        std::string   body(kLedgerFileBytes, '\0');
+        FileBasicInfo openedAs;
+        const auto    readOnce = [&targetPath, &body, &openedAs]
         {
-            const std::expected<std::size_t, std::error_code> read =
-                    readFileContentsInto(targetPath, 0U, kLedgerFileBytes, body, &openedAs);
+            const std::expected<std::size_t, std::error_code> read = readFileContentsInto(targetPath, 0U, kLedgerFileBytes, body, &openedAs);
             return read.has_value() ? *read : 0U;
         };
         ASSERT_EQ(readOnce(), kLedgerFileBytes) << "读不出整段正文，读数没意义";
@@ -201,15 +193,11 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(readWithIdentity.resultSum, kMeasurementIterations * kLedgerFileBytes) << "有几次没读满，读的不是那条形状";
 
         std::printf("openedFileInfo 每次 %llu 次 / %llu 字节；readFileContentsInto(带身份) 每次 %llu 次 / %llu 字节\n",
-                    static_cast<unsigned long long>(mappedQuery.allocationsPerOperation),
-                    static_cast<unsigned long long>(mappedQuery.bytesPerOperation),
-                    static_cast<unsigned long long>(readWithIdentity.allocationsPerOperation),
-                    static_cast<unsigned long long>(readWithIdentity.bytesPerOperation));
+                    static_cast<unsigned long long>(mappedQuery.allocationsPerOperation), static_cast<unsigned long long>(mappedQuery.bytesPerOperation),
+                    static_cast<unsigned long long>(readWithIdentity.allocationsPerOperation), static_cast<unsigned long long>(readWithIdentity.bytesPerOperation));
 #ifdef NDEBUG
-        EXPECT_EQ(mappedQuery.totalAllocations, kOpenedFileInfoTotalAllocationsPerThousand)
-                << "每请求一次的身份查询开始碰堆：产物只该是一份不带堆成员的 optional 值";
-        EXPECT_EQ(readWithIdentity.totalAllocations, kOpenedFileInfoTotalAllocationsPerThousand)
-                << "整段读带身份核对不再是稳态零分配：多半是失败路径开始现造诊断串";
+        EXPECT_EQ(mappedQuery.totalAllocations, kOpenedFileInfoTotalAllocationsPerThousand) << "每请求一次的身份查询开始碰堆：产物只该是一份不带堆成员的 optional 值";
+        EXPECT_EQ(readWithIdentity.totalAllocations, kOpenedFileInfoTotalAllocationsPerThousand) << "整段读带身份核对不再是稳态零分配：多半是失败路径开始现造诊断串";
 #endif
     }
 
@@ -224,46 +212,32 @@ namespace AsynGyanis::Platform
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("HotPathAllocations_MimeTypeText");
         ASSERT_TRUE(temporaryDirectory.writeFile("app.min.js", "x"));
-        const std::filesystem::path fullPath    = temporaryDirectory.path() / "app.min.js";
-        const std::filesystem::path extension   = fullPath.extension();
+        const std::filesystem::path fullPath  = temporaryDirectory.path() / "app.min.js";
+        const std::filesystem::path extension = fullPath.extension();
         // 拉长到超出小串内联的扩展名，作为「0 次是靠内联缓冲」的对照（取的是同一条形状：扩展名本身）
         const std::filesystem::path longExtension = std::filesystem::path("archive.thisisareallylongextension").extension();
 
-        const auto wholePathOnce = [&fullPath]
-        {
-            return FileSystem::utf8FromPath(fullPath).size();
-        };
-        const auto extensionOnce = [&extension]
-        {
-            return FileSystem::utf8FromPath(extension).size();
-        };
-        const auto longExtensionOnce = [&longExtension]
-        {
-            return FileSystem::utf8FromPath(longExtension).size();
-        };
+        const auto wholePathOnce     = [&fullPath] { return FileSystem::utf8FromPath(fullPath).size(); };
+        const auto extensionOnce     = [&extension] { return FileSystem::utf8FromPath(extension).size(); };
+        const auto longExtensionOnce = [&longExtension] { return FileSystem::utf8FromPath(longExtension).size(); };
 
-        const AllocationProfile wholePath    = measurePerOperation(wholePathOnce);
-        const AllocationProfile shortSuffix  = measurePerOperation(extensionOnce);
-        const AllocationProfile longSuffix   = measurePerOperation(longExtensionOnce);
+        const AllocationProfile wholePath   = measurePerOperation(wholePathOnce);
+        const AllocationProfile shortSuffix = measurePerOperation(extensionOnce);
+        const AllocationProfile longSuffix  = measurePerOperation(longExtensionOnce);
         // 产物长度自己算：这两条判据要证的是「一千轮都在读同一条形状」，不是某个手写常数
-        const std::size_t shortSuffixBytes  = FileSystem::utf8FromPath(extension).size();
-        const std::size_t longSuffixBytes   = FileSystem::utf8FromPath(longExtension).size();
+        const std::size_t shortSuffixBytes = FileSystem::utf8FromPath(extension).size();
+        const std::size_t longSuffixBytes  = FileSystem::utf8FromPath(longExtension).size();
         EXPECT_EQ(shortSuffix.resultSum, kMeasurementIterations * shortSuffixBytes) << "读的不是那条扩展名形状";
         EXPECT_EQ(longSuffix.resultSum, kMeasurementIterations * longSuffixBytes);
         ASSERT_GT(longSuffixBytes, shortSuffixBytes) << "对照形状没拉长，比不出内联缓冲的那一层";
 
         std::printf("出 MIME 用的路径文本：整条路径（%zu 字符）每次 %llu 次 / %llu 字节；只取扩展名（%zu 字符）%llu 次；"
                     "超出内联的长扩展名（%zu 字符）%llu 次\n",
-                    FileSystem::utf8FromPath(fullPath).size(),
-                    static_cast<unsigned long long>(wholePath.allocationsPerOperation),
-                    static_cast<unsigned long long>(wholePath.bytesPerOperation),
-                    shortSuffixBytes,
-                    static_cast<unsigned long long>(shortSuffix.allocationsPerOperation),
-                    longSuffixBytes,
-                    static_cast<unsigned long long>(longSuffix.allocationsPerOperation));
+                    FileSystem::utf8FromPath(fullPath).size(), static_cast<unsigned long long>(wholePath.allocationsPerOperation),
+                    static_cast<unsigned long long>(wholePath.bytesPerOperation), shortSuffixBytes, static_cast<unsigned long long>(shortSuffix.allocationsPerOperation),
+                    longSuffixBytes, static_cast<unsigned long long>(longSuffix.allocationsPerOperation));
 #ifdef NDEBUG
-        EXPECT_EQ(shortSuffix.totalAllocations, kPathTextConversionTotalAllocationsPerThousand)
-                << "只取扩展名的那条不该碰堆：产物长度只有 3，超出内联缓冲之前不该有分配";
+        EXPECT_EQ(shortSuffix.totalAllocations, kPathTextConversionTotalAllocationsPerThousand) << "只取扩展名的那条不该碰堆：产物长度只有 3，超出内联缓冲之前不该有分配";
         EXPECT_GT(wholePath.totalAllocations, 0U) << "整条路径出串那条一直是按长度碰堆的，读数为 0 说明探针没生效";
 #endif
     }
@@ -276,33 +250,24 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformHotPathAllocations, PathTextConversionAllocations)
     {
-        const std::string     asciiPath     = "wwwroot/assets/app.min.js";
-        const std::string     nonAsciiPath  = std::string("\xE6\x96\x87") + "\xE4\xBB\xB6/assets/\xE6\x8A\xA5\xE5\x91\x8A.txt";
-        const std::filesystem::path asciiPathObject     = FileSystem::pathFromUtf8(asciiPath);
-        const std::filesystem::path nonAsciiPathObject  = FileSystem::pathFromUtf8(nonAsciiPath);
+        const std::string           asciiPath          = "wwwroot/assets/app.min.js";
+        const std::string           nonAsciiPath       = std::string("\xE6\x96\x87") + "\xE4\xBB\xB6/assets/\xE6\x8A\xA5\xE5\x91\x8A.txt";
+        const std::filesystem::path asciiPathObject    = FileSystem::pathFromUtf8(asciiPath);
+        const std::filesystem::path nonAsciiPathObject = FileSystem::pathFromUtf8(nonAsciiPath);
 
         // 每条形状各跑一千次后核对「产物长度总和」，证明编译器没把那次转换当成空转删掉
         const auto measureConversion = [](const std::string &utf8Text, const std::filesystem::path &pathObject)
         {
-            const auto toPathOnce = [&utf8Text]
-            {
-                return FileSystem::pathFromUtf8(utf8Text).native().size();
-            };
-            const auto toTextOnce = [&pathObject]
-            {
-                return FileSystem::utf8FromPath(pathObject).size();
-            };
-            const AllocationProfile toPath   = measurePerOperation(toPathOnce);
-            const AllocationProfile toText   = measurePerOperation(toTextOnce);
+            const auto              toPathOnce = [&utf8Text] { return FileSystem::pathFromUtf8(utf8Text).native().size(); };
+            const auto              toTextOnce = [&pathObject] { return FileSystem::utf8FromPath(pathObject).size(); };
+            const AllocationProfile toPath     = measurePerOperation(toPathOnce);
+            const AllocationProfile toText     = measurePerOperation(toTextOnce);
             EXPECT_EQ(toPath.resultSum, kMeasurementIterations * pathObject.native().size());
             EXPECT_EQ(toText.resultSum, kMeasurementIterations * utf8Text.size());
             std::printf("  UTF-8→path %llu 次 / %llu 字节；path→UTF-8 %llu 次 / %llu 字节（各一千次共 %llu / %llu 次）\n",
-                        static_cast<unsigned long long>(toPath.allocationsPerOperation),
-                        static_cast<unsigned long long>(toPath.bytesPerOperation),
-                        static_cast<unsigned long long>(toText.allocationsPerOperation),
-                        static_cast<unsigned long long>(toText.bytesPerOperation),
-                        static_cast<unsigned long long>(toPath.totalAllocations),
-                        static_cast<unsigned long long>(toText.totalAllocations));
+                        static_cast<unsigned long long>(toPath.allocationsPerOperation), static_cast<unsigned long long>(toPath.bytesPerOperation),
+                        static_cast<unsigned long long>(toText.allocationsPerOperation), static_cast<unsigned long long>(toText.bytesPerOperation),
+                        static_cast<unsigned long long>(toPath.totalAllocations), static_cast<unsigned long long>(toText.totalAllocations));
         };
 
         std::printf("pathFromUtf8/utf8FromPath（ASCII 名 %zu 字符）\n", asciiPath.size());

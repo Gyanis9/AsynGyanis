@@ -80,10 +80,8 @@ namespace AsynGyanis::Net
          *       多线程上的会话并发上报同一个服务器是安全的
          * @note 解析器上限与连接级限额分属两套：后者管时间与请求条数，前者管单条报文的内存占用
          */
-        HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr,
-                    std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
-                    std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr,
-                    HttpParserLimits parserLimits = {},
+        HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr, std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
+                    std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr, HttpParserLimits parserLimits = {},
                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr);
 
         /**
@@ -121,18 +119,18 @@ namespace AsynGyanis::Net
         void onIdleTimeoutClosed() noexcept override;
 
     private:
-        Router &m_router;             ///< 路由器引用，用于分发请求
-        HttpParser m_parser;          ///< HTTP 增量解析器（资源上限构造时固定），两条报文之间由会话显式 reset()
+        Router    &m_router; ///< 路由器引用，用于分发请求
+        HttpParser m_parser; ///< HTTP 增量解析器（资源上限构造时固定），两条报文之间由会话显式 reset()
 
         // 接收窗口每连接一份、随连接存续，只在首次读取时分配一次，之后整条连接复用；因此不接共享缓冲池：
         // 池化能省下的只是「每条连接一次」的分配，而建连本身（accept/close）在 Release 基线里是 1.7k 连接/s
         // 这个量级，省下的被它淹没。要改先量「短连接 churn 下分配器占多少 CPU」，别凭「高频分配该池化」的直觉。
         std::vector<char> m_receiveBuffer; ///< 接收窗口：首次读取时分配，之后整条连接复用
 
-        std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，与服务器共享、只读（构造时保证非空）
-        std::shared_ptr<HttpMetricsCollector> m_metrics;  ///< 统计采集端，与服务器共享；空指针表示本会话不采集
+        std::shared_ptr<const HttpServerLimits> m_limits;             ///< 连接级限额，与服务器共享、只读（构造时保证非空）
+        std::shared_ptr<HttpMetricsCollector>   m_metrics;            ///< 统计采集端，与服务器共享；空指针表示本会话不采集
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器，与服务器共享；空指针表示不落定 request-id
-        std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，与服务器及同服务器上的其它连接共享；空指针表示不受该预算约束
+        std::shared_ptr<HttpMemoryBudget>       m_memoryBudget;       ///< 在途正文字节的全局预算，与服务器及同服务器上的其它连接共享；空指针表示不受该预算约束
     };
 
     // ============================================================================
@@ -243,8 +241,7 @@ namespace AsynGyanis::Net
              * @brief 置位所属连接的在途工作标记
              * @param connection 所属连接，其生命周期必须覆盖本守卫（两者同活在会话协程帧里）
              */
-            explicit BusyScope(Core::Connection &connection) noexcept :
-                m_connection(&connection)
+            explicit BusyScope(Core::Connection &connection) noexcept : m_connection(&connection)
             {
                 m_connection->setBusy(true);
             }
@@ -292,14 +289,8 @@ namespace AsynGyanis::Net
          *       本阶段的收发按压缩走。取值必须与 101 里回给对端的那一行一致，否则对端按明文解压缩帧
          */
         template<typename Socket>
-        Core::Task<> webSocketSessionStage(Socket &socket,
-                                           Core::Connection &connection,
-                                           const HttpServerLimits &limits,
-                                           HttpMetricsCollector *metrics,
-                                           WebSocketHandler handler,
-                                           std::vector<char> &receiveBuffer,
-                                           std::size_t pendingLength,
-                                           bool isPerMessageDeflateEnabled)
+        Core::Task<> webSocketSessionStage(Socket &socket, Core::Connection &connection, const HttpServerLimits &limits, HttpMetricsCollector *metrics, WebSocketHandler handler,
+                                           std::vector<char> &receiveBuffer, std::size_t pendingLength, bool isPerMessageDeflateEnabled)
         {
             // 帧发送路径：把一整帧按写超时约束写出去。写之前刷新截止时间的依据与 HTTP 阶段发送响应
             // 一致（HttpServerLimits::writeTimeout 约束的是「等待可写的最长空闲」，慢消费者防线）；
@@ -314,15 +305,14 @@ namespace AsynGyanis::Net
                 // 本次发送的失败原因：空串表示还没失败。异常与非正返回值两条路径都不在这里直接记，
                 // 而是汇到下面同一处写出，保证「一次失败只记一条日志」
                 std::string failureReason;
-                bool isSucceeded = true;
+                bool        isSucceeded = true;
                 try
                 {
                     // 一直写到整帧出门：asyncSend 允许部分写，而帧少一个字节对端就再也找不回边界
                     std::size_t writtenLength = 0;
                     while (writtenLength < frameBytes.size())
                     {
-                        const ssize_t writeLength =
-                                co_await socket.asyncSend(frameBytes.data() + writtenLength, frameBytes.size() - writtenLength);
+                        const ssize_t writeLength = co_await socket.asyncSend(frameBytes.data() + writtenLength, frameBytes.size() - writtenLength);
                         if (writeLength <= 0)
                         {
                             // 对端已在底层关闭（非正值而不是异常，见 AsyncSocket::asyncSend），
@@ -336,7 +326,7 @@ namespace AsynGyanis::Net
                 {
                     // 传输层写失败（对端 RST、描述符被清扫协程关掉、等可写期间被关闭）一律视为连接
                     // 不可用：字节流已断，这里没有可发给对端的东西。原因只暂存，等收尾处记一次
-                    isSucceeded = false;
+                    isSucceeded   = false;
                     failureReason = exception.what();
                 }
 
@@ -347,8 +337,7 @@ namespace AsynGyanis::Net
                     {
                         failureReason = "对端已关闭连接或连接不可用";
                     }
-                    LOG_ERROR_FMT("WebSocket 会话：帧写出失败，连接已不可用，此后不再尝试发送，请停止继续发送。原因：{}",
-                                  failureReason);
+                    LOG_ERROR_FMT("WebSocket 会话：帧写出失败，连接已不可用，此后不再尝试发送，请停止继续发送。原因：{}", failureReason);
                 }
                 co_return isSucceeded;
             };
@@ -486,17 +475,9 @@ namespace AsynGyanis::Net
          * @param memoryBudget    在途正文字节的全局预算，可为空；为空时正文不受该预算约束
          */
         template<typename Socket>
-        Core::Task<> httpKeepAliveLoop(Socket &socket,
-                                       Core::Cancelable &cancelable,
-                                       Router &router,
-                                       HttpParser &parser,
-                                       std::vector<char> &receiveBuffer,
-                                       const std::function<bool()> &isAlive,
-                                       Core::Connection &connection,
-                                       const HttpServerLimits &limits,
-                                       HttpMetricsCollector *metrics = nullptr,
-                                       const HttpRequestIdGenerator *requestIdGenerator = nullptr,
-                                       HttpMemoryBudget *memoryBudget = nullptr)
+        Core::Task<> httpKeepAliveLoop(Socket &socket, Core::Cancelable &cancelable, Router &router, HttpParser &parser, std::vector<char> &receiveBuffer,
+                                       const std::function<bool()> &isAlive, Core::Connection &connection, const HttpServerLimits &limits, HttpMetricsCollector *metrics = nullptr,
+                                       const HttpRequestIdGenerator *requestIdGenerator = nullptr, HttpMemoryBudget *memoryBudget = nullptr)
         {
             // 接收窗口里尚未交给解析器的字节数。窗口只用来「接住刚到的字节」：正文由解析器
             // 边收边存，跨读的半行也由解析器自己拼，因此这里永远是「窗口开头的一段」，
@@ -544,8 +525,7 @@ namespace AsynGyanis::Net
                 {
                     failureReason = "对端已关闭连接或连接不可用";
                 }
-                LOG_ERROR_FMT("HttpSession: 响应写出失败，连接已不可用，本条响应未完整发出，请停止继续写并收口连接。原因：{}",
-                              failureReason);
+                LOG_ERROR_FMT("HttpSession: 响应写出失败，连接已不可用，本条响应未完整发出，请停止继续写并收口连接。原因：{}", failureReason);
 
                 // 连接从此不再尝试写出：本侧收口。计数挂在翻转上，一条连接至多记一次——
                 // 「异常 + 非正返回值」两条来源汇到这里，短路后的重试不再进这个函数
@@ -570,8 +550,8 @@ namespace AsynGyanis::Net
             // （见上面的短路，此前必已记录过收口原因，不再记日志）与传输失败（对端正常关闭或复位、
             // 描述符被清扫协程关掉、等可写期间连接被关闭，本次记一条）。一次失败只记一条日志，不抛异常；
             // 只有非传输层的异常（如内存不足）才继续外抛
-            const auto sendResponse = [&socket, &connection, &limits, &isConnectionUnusable, &recordSendFailure](
-                                              const std::string_view head, const std::string_view body) -> Core::Task<bool>
+            const auto sendResponse = [&socket, &connection, &limits, &isConnectionUnusable, &recordSendFailure](const std::string_view head,
+                                                                                                                 const std::string_view body) -> Core::Task<bool>
             {
                 // 本侧已收口：不记日志——首个失败已经交代过原因，业务重试与流式收尾再各记一条
                 // 只会把同一件事刷成好几行
@@ -588,7 +568,7 @@ namespace AsynGyanis::Net
                 // 本次发送的失败原因：空串表示还没失败。异常与非正返回值两条路径都不在这里直接记，
                 // 而是汇到下面同一处写出，保证「一次失败只记一条日志」
                 std::string failureReason;
-                bool isSucceeded = false;
+                bool        isSucceeded = false;
                 try
                 {
                     if constexpr (requires { socket.asyncSendVectored(nullptr, 0); })
@@ -603,7 +583,7 @@ namespace AsynGyanis::Net
                         };
                         // 无正文时只提交头部一段：长度为 0 的段没有任何意义，少传一段就少一处待验证的组合
                         const std::size_t segmentCount = body.empty() ? 1 : 2;
-                        isSucceeded = (co_await socket.asyncSendVectored(buffers, segmentCount)) > 0;
+                        isSucceeded                    = (co_await socket.asyncSendVectored(buffers, segmentCount)) > 0;
                     } else
                     {
                         // TLS 只接受单块明文：头部与正文分两次顺序发送，头部没出门就不必再发正文
@@ -631,9 +611,8 @@ namespace AsynGyanis::Net
             // 从文件页缓存直接推给协议栈，不经过用户态视图——省掉整份正文的拷贝与映射首触缺页。
             // 失败契约与 sendResponse 完全一致：false = 本段未发出、连接不可再用、调用方应停止
             // 继续写并收口；本侧已收口则短路且不记日志（首个失败已交代过原因）
-            const auto sendResponseWithZeroCopyBody = [&socket, &connection, &limits, &isConnectionUnusable, &recordSendFailure](
-                                                              const std::string_view head,
-                                                              const HttpResponse::ZeroCopyBody zeroCopyBody) -> Core::Task<bool>
+            const auto sendResponseWithZeroCopyBody = [&socket, &connection, &limits, &isConnectionUnusable,
+                                                       &recordSendFailure](const std::string_view head, const HttpResponse::ZeroCopyBody zeroCopyBody) -> Core::Task<bool>
             {
                 if (isConnectionUnusable)
                 {
@@ -658,8 +637,7 @@ namespace AsynGyanis::Net
                         std::size_t writtenHeadLength = 0;
                         while (writtenHeadLength < head.size())
                         {
-                            const ssize_t headWriteLength =
-                                    co_await socket.asyncSend(head.data() + writtenHeadLength, head.size() - writtenHeadLength);
+                            const ssize_t headWriteLength = co_await socket.asyncSend(head.data() + writtenHeadLength, head.size() - writtenHeadLength);
                             if (headWriteLength <= 0)
                             {
                                 break;
@@ -669,8 +647,7 @@ namespace AsynGyanis::Net
 
                         if (writtenHeadLength == head.size())
                         {
-                            isSucceeded = (co_await socket.asyncSendFile(zeroCopyBody.fileDescriptor, zeroCopyBody.offset,
-                                                                         zeroCopyBody.length)) > 0;
+                            isSucceeded = (co_await socket.asyncSendFile(zeroCopyBody.fileDescriptor, zeroCopyBody.offset, zeroCopyBody.length)) > 0;
                         }
                     } catch (const Base::Exception &exception)
                     {
@@ -695,10 +672,7 @@ namespace AsynGyanis::Net
             // 传输层失败由 sendResponse 折成 false，本回调因此不抛异常——这正是
             // HttpResponse::writeChunk 文档里「false 即本段未发出、连接不可再用」得以成立的地方；
             // 连接被判死之后的短路（含本侧已收口）也由 sendResponse 一处承担，故这里不再重复记日志
-            const auto sendChunkSegment = [&sendResponse](const std::string_view segment) -> Core::Task<bool>
-            {
-                co_return co_await sendResponse(segment, std::string_view{});
-            };
+            const auto sendChunkSegment = [&sendResponse](const std::string_view segment) -> Core::Task<bool> { co_return co_await sendResponse(segment, std::string_view{}); };
 
             // 装配给按连接复用的响应对象：它绑定的是这条连接而不是某一条报文，因此装一次就够，
             // reset() 也不会把它清掉（只清流式模式标记）。装配必然早于任何一次路由
@@ -756,7 +730,7 @@ namespace AsynGyanis::Net
                 try
                 {
                     const ssize_t receivedLength = co_await socket.asyncReceive(receiveBuffer.data(), receiveBuffer.size());
-                    lastReadFilledWindow = receivedLength == static_cast<ssize_t>(receiveBuffer.size());
+                    lastReadFilledWindow         = receivedLength == static_cast<ssize_t>(receiveBuffer.size());
                     co_return receivedLength;
                 } catch (const std::exception &)
                 {
@@ -793,7 +767,7 @@ namespace AsynGyanis::Net
             {
                 if (windowLength != 0)
                 {
-                    const ParseStatus pumpStatus = parser.parse(receiveBuffer.data(), windowLength);
+                    const ParseStatus pumpStatus   = parser.parse(receiveBuffer.data(), windowLength);
                     const std::size_t pumpConsumed = parser.consumedByteCount();
 
                     // 契约：NeedMore 意味着本段输入已被全部消费（与主循环同一守卫）
@@ -834,21 +808,18 @@ namespace AsynGyanis::Net
             // 普通响应整块发出 → 统计与日志 → 复位解析器等连接状态。返回 true 表示连接可继续
             // 服务下一条报文，false 表示会话应当立即结束（发送失败或强制收口）。
             // isForceClose 供流式派发路径传入两个收口来源：正文排空时对端断开、正文中途解析失败
-            const auto respondAndFinish = [&](HttpRequest &request, HttpResponse &response,
-                                              const std::exception_ptr &handlerException,
-                                              const std::chrono::steady_clock::time_point requestReceivedTime,
-                                              const bool isForceClose) -> Core::Task<bool>
+            const auto respondAndFinish = [&](HttpRequest &request, HttpResponse &response, const std::exception_ptr &handlerException,
+                                              const std::chrono::steady_clock::time_point requestReceivedTime, const bool isForceClose) -> Core::Task<bool>
             {
                 // 计数与上限：达到上限就让 keepAlive 变 false，从而走既有的
                 // 「补 Connection: close 并收口」逻辑，而不是另开一条收尾路径
                 ++servedRequestCount;
-                const bool isRequestLimitReached = limits.maximumRequestsPerConnection > 0 &&
-                                                   servedRequestCount >= limits.maximumRequestsPerConnection;
+                const bool isRequestLimitReached = limits.maximumRequestsPerConnection > 0 && servedRequestCount >= limits.maximumRequestsPerConnection;
 
                 // 流式响应且头部已随首段正文上线（见 HttpResponse::writeChunk）：对端手里已经有
                 // 状态行与头部，此刻既改不了状态码、也补不了 Connection: close，收尾只剩补终止块
-                const bool isChunkedHeadSent = response.isChunkedResponse() && response.hasSentChunkedHead();
-                const std::string_view requestIdView = request.requestId();
+                const bool             isChunkedHeadSent = response.isChunkedResponse() && response.hasSentChunkedHead();
+                const std::string_view requestIdView     = request.requestId();
 
                 bool keepAlive = true;
 
@@ -858,8 +829,7 @@ namespace AsynGyanis::Net
                     // 是否保活仍按 shouldKeepAlive() 判定（请求或业务显式写了 close 就收口），
                     // 不因为是流式响应就强行声明 close —— 那会把「消息边界」与「连接存续」混为一谈。
                     // 业务抛异常是唯一例外：正文只发了一半，复用这条连接会让下一条报文接在半成品之后
-                    keepAlive = !isForceClose && !handlerException && HttpSession::shouldKeepAlive(request, response) &&
-                                !isRequestLimitReached;
+                    keepAlive = !isForceClose && !handlerException && HttpSession::shouldKeepAlive(request, response) && !isRequestLimitReached;
 
                     if (handlerException)
                     {
@@ -877,8 +847,7 @@ namespace AsynGyanis::Net
                         // 业务中途抛异常那一路只补裸终止块：尾部字段是业务对**它自己算完的那段正文**
                         // 的承诺（校验和、尾随状态），正文只发了一半就把承诺补上去，对端拿到的是一个
                         // 必然对不上的值。异常这一路连接本来也不保活，不补比补更安全
-                        std::string terminatorText = handlerException ? std::string{kChunkedTerminator}
-                                                                      : response.chunkedTerminatorText();
+                        std::string terminatorText = handlerException ? std::string{kChunkedTerminator} : response.chunkedTerminatorText();
                         if (!co_await sendChunkSegment(terminatorText))
                         {
                             // 终止块没发出去：本条消息对端收不全，不计状态码类与延迟
@@ -949,8 +918,7 @@ namespace AsynGyanis::Net
                     // 直接按普通路径走，避免白白多一次 sendfile 的系统调用
                     if constexpr (requires { socket.asyncSendFile(0, std::uint64_t{}, std::size_t{}); })
                     {
-                        const std::optional<HttpResponse::ZeroCopyBody> zeroCopyBody =
-                                request.method() == HttpMethod::HEAD ? std::nullopt : response.zeroCopyBody();
+                        const std::optional<HttpResponse::ZeroCopyBody> zeroCopyBody = request.method() == HttpMethod::HEAD ? std::nullopt : response.zeroCopyBody();
                         if (zeroCopyBody.has_value() && zeroCopyBody->length >= kZeroCopySendMinimumBytes)
                         {
                             if (!co_await sendResponseWithZeroCopyBody(serializedHead, *zeroCopyBody))
@@ -972,7 +940,7 @@ namespace AsynGyanis::Net
                         // 只有头部的响应（HEAD）与不允许带正文的状态码（1xx/204/304）都必须一个
                         // 正文字节都不发：多出去的字节会被对端当成下一条报文的开头（keep-alive 错位）
                         const bool             isBodySuppressed = request.method() == HttpMethod::HEAD || response.carriesNoContent();
-                        const std::string_view responseBody = isBodySuppressed ? std::string_view{} : response.body();
+                        const std::string_view responseBody     = isBodySuppressed ? std::string_view{} : response.body();
                         // HEAD 的正文段恒为空（上面已按方法取空），分块响应也不补终止块：那 5 个字节
                         // 会被对端当成下一条报文的开头。带尾部字段的分块响应补的是「终止块 + 字段段 + 空行」，
                         // 拼法只有一处（HttpResponse::chunkedTerminatorText），两条收尾出口不会分叉
@@ -982,8 +950,7 @@ namespace AsynGyanis::Net
                         {
                             chunkedTerminator = response.chunkedTerminatorText();
                         }
-                        const std::string_view trailingSegment = isChunkedWithBody ? std::string_view{chunkedTerminator}
-                                                                                   : responseBody;
+                        const std::string_view trailingSegment = isChunkedWithBody ? std::string_view{chunkedTerminator} : responseBody;
                         if (!co_await sendResponse(serializedHead, trailingSegment))
                         {
                             // 发送失败：响应没有真正发出，因此不计状态码类与延迟——那会让统计把
@@ -1015,8 +982,7 @@ namespace AsynGyanis::Net
                     // 级别下落这一行会让日志量随吞吐线性增长，需要按 id 对齐时再调低级别
                     if (!requestIdView.empty())
                     {
-                        LOG_DEBUG_FMT("HttpSession: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us",
-                                      requestIdView, request.uri(), response.status(),
+                        LOG_DEBUG_FMT("HttpSession: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us", requestIdView, request.uri(), response.status(),
                                       std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
                     }
                 }
@@ -1051,7 +1017,7 @@ namespace AsynGyanis::Net
                         // 对端正常关闭（0）或连接不可用（负值）：半截报文不值得回包，直接结束会话
                         co_return;
                     }
-                    windowLength = static_cast<std::size_t>(receivedLength);
+                    windowLength        = static_cast<std::size_t>(receivedLength);
                     isRequestInProgress = true;
 
                     // 读到字节即重新计时：慢速攻击是把一条请求拆成很多次缓慢的写入，
@@ -1059,7 +1025,7 @@ namespace AsynGyanis::Net
                     connection.refreshIdleDeadline(limits.readTimeout);
                 }
 
-                const ParseStatus status = parser.parse(receiveBuffer.data(), windowLength);
+                const ParseStatus status         = parser.parse(receiveBuffer.data(), windowLength);
                 const std::size_t consumedLength = parser.consumedByteCount();
 
                 // 契约：NeedMore 意味着本段输入已被全部消费。若一个字节都没消费却还要更多，
@@ -1069,12 +1035,10 @@ namespace AsynGyanis::Net
                 // 把剩余额度留给已经收下正文的那些连接。
                 // 取「解析器缓冲」与「已交给请求对象的正文」里的较大者：Done 那一轮解析器已把正文
                 // 移交给请求，只看解析器缓冲会让额度在应答之前就归零，跨连接的总量上限等于没设
-                const std::size_t residentBodyBytes =
-                        std::max(parser.bufferedBodyByteCount(), parser.request().body().size());
+                const std::size_t residentBodyBytes = std::max(parser.bufferedBodyByteCount(), parser.request().body().size());
                 if (!bodyBudget.growTo(residentBodyBytes))
                 {
-                    LOG_ERROR_FMT("HttpSession: 在途正文字节超出全局预算（已占 {} 字节），已回 503 并收口连接",
-                                  memoryBudget->reservedByteCount());
+                    LOG_ERROR_FMT("HttpSession: 在途正文字节超出全局预算（已占 {} 字节），已回 503 并收口连接", memoryBudget->reservedByteCount());
 
                     response.reset();
                     response.setStatus(503);
@@ -1125,7 +1089,7 @@ namespace AsynGyanis::Net
                             throw Base::LogicException("HttpSession: 头部已收齐却无法提前提交，流式派发无法继续");
                         }
 
-                        HttpRequest &streamRequest = parser.request();
+                        HttpRequest    &streamRequest = parser.request();
                         const BusyScope busyScope(connection);
 
                         // 本连接占用的正文额度在流式派发后同样要归还（异常路径由守卫兜底）：
@@ -1162,10 +1126,8 @@ namespace AsynGyanis::Net
                         // 帧会被当成正文继续解析。明确拒绝，不留一条含糊的连接
                         if (streamHandlerException == nullptr && response.isWebSocketUpgradeRequested())
                         {
-                            LOG_ERROR_FMT("HttpSession: 流式正文路由登记了 WebSocket 升级，已按 500 拒绝。request-id {}，路径 {}",
-                                          streamRequest.requestId(), streamRequest.uri());
-                            streamHandlerException =
-                                    std::make_exception_ptr(Base::LogicException("流式正文路由不支持 WebSocket 升级"));
+                            LOG_ERROR_FMT("HttpSession: 流式正文路由登记了 WebSocket 升级，已按 500 拒绝。request-id {}，路径 {}", streamRequest.requestId(), streamRequest.uri());
+                            streamHandlerException = std::make_exception_ptr(Base::LogicException("流式正文路由不支持 WebSocket 升级"));
                         }
 
                         // 业务可能没把正文读完：把剩余字节排空，连接才能按 keep-alive 复用；
@@ -1187,7 +1149,7 @@ namespace AsynGyanis::Net
                                 connection.refreshIdleDeadline(limits.readTimeout);
                             }
 
-                            const ParseStatus drainStatus = parser.parse(receiveBuffer.data(), windowLength);
+                            const ParseStatus drainStatus   = parser.parse(receiveBuffer.data(), windowLength);
                             const std::size_t drainConsumed = parser.consumedByteCount();
                             if (drainStatus == ParseStatus::NeedMore && drainConsumed == 0)
                             {
@@ -1299,8 +1261,8 @@ namespace AsynGyanis::Net
                     {
                         // 登记了升级但请求并不构成合法握手：回 400 让对端知道原因，随后按 close 收口。
                         // 中文原因同时进正文与日志——正文对端未必有人看，日志才是排查入口
-                        LOG_ERROR_FMT("HttpSession: WebSocket 升级请求不合法，已回 400 并收口连接。request-id {}，路径 {}，原因：{}",
-                                      request.requestId(), request.uri(), upgradeFailureReason);
+                        LOG_ERROR_FMT("HttpSession: WebSocket 升级请求不合法，已回 400 并收口连接。request-id {}，路径 {}，原因：{}", request.requestId(), request.uri(),
+                                      upgradeFailureReason);
                         if (metrics != nullptr)
                         {
                             metrics->countBadRequest();
@@ -1325,9 +1287,8 @@ namespace AsynGyanis::Net
 
                     // 扩展协商（RFC 7692 §7.1）：对端提供了 permessage-deflate 就接受，并在 101 里回一条
                     // 只含本端选定参数的 Sec-WebSocket-Extensions。协商结论同时决定后续数据帧能否用 RSV1
-                    const std::optional<std::string> extensionsHeader = request.getHeader(kWebSocketExtensionsHeaderName);
-                    const PerMessageDeflateNegotiation deflateNegotiation =
-                            negotiatePerMessageDeflate(extensionsHeader.has_value() ? *extensionsHeader : std::string_view{});
+                    const std::optional<std::string>   extensionsHeader   = request.getHeader(kWebSocketExtensionsHeaderName);
+                    const PerMessageDeflateNegotiation deflateNegotiation = negotiatePerMessageDeflate(extensionsHeader.has_value() ? *extensionsHeader : std::string_view{});
 
                     // 101 报文由握手模块逐字节生成，这里原样写出：不走 HttpResponse 的序列化，
                     // 否则会被补上 date / content-length，而切换协议的应答里没有这两条的位置
@@ -1350,8 +1311,7 @@ namespace AsynGyanis::Net
                     // windowLength 是 101 之前就到达的剩余字节（升级请求之后的那一部分），
                     // 客户端可能已经在里面发了第一帧，必须一并交给解码器。
                     // 整段 WebSocket 通话都算在途工作（上面的 BusyScope 覆盖到这里）：优雅关闭会等它结束
-                    co_return co_await detail::webSocketSessionStage(socket, connection, limits, metrics,
-                                                                     response.webSocketHandler(), receiveBuffer, windowLength,
+                    co_return co_await detail::webSocketSessionStage(socket, connection, limits, metrics, response.webSocketHandler(), receiveBuffer, windowLength,
                                                                      deflateNegotiation.accepted);
                 }
 

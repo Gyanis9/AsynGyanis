@@ -17,10 +17,10 @@
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/LogEvent.h"
 
-#include "BaseTestSupport.h"
 #include "Base/Log/Formatters/LogFormatter.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
+#include "BaseTestSupport.h"
 
 namespace AsynGyanis::Base
 {
@@ -114,8 +114,7 @@ namespace AsynGyanis::Base
             /**
              * @brief 使用给定前缀构造格式化器
              */
-            explicit MarkerFormatter(std::string prefix) :
-                m_prefix(std::move(prefix))
+            explicit MarkerFormatter(std::string prefix) : m_prefix(std::move(prefix))
             {
             }
 
@@ -138,11 +137,9 @@ namespace AsynGyanis::Base
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "sink message")
         {
-            return {
-                    level, TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789), "tid-112233",
-                    SourceLocation("sink_fixture.cpp", 8123, "sinkTestFunction"),
-                    "sink_logger", std::move(message)
-            };
+            return {level,         TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789),
+                    "tid-112233",  SourceLocation("sink_fixture.cpp", 8123, "sinkTestFunction"),
+                    "sink_logger", std::move(message)};
         }
 
         /**
@@ -150,10 +147,7 @@ namespace AsynGyanis::Base
          */
         const std::vector<LogLevel> &allLevels()
         {
-            static const std::vector<LogLevel> klevels = {
-                    LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn,
-                    LogLevel::Error, LogLevel::Fatal, LogLevel::Off
-            };
+            static const std::vector<LogLevel> klevels = {LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal, LogLevel::Off};
             return klevels;
         }
     } // namespace
@@ -241,11 +235,12 @@ namespace AsynGyanis::Base
         const std::future<void> levelStoredFuture = levelStored.get_future();
         LogLevel                observed          = LogLevel::Trace;
 
-        std::thread reader([&sink, &levelStoredFuture, &observed]
-        {
-            levelStoredFuture.wait();
-            observed = sink.getLevel();
-        });
+        std::thread reader(
+                [&sink, &levelStoredFuture, &observed]
+                {
+                    levelStoredFuture.wait();
+                    observed = sink.getLevel();
+                });
 
         sink.setLevel(LogLevel::Error);
         levelStored.set_value();
@@ -348,7 +343,7 @@ namespace AsynGyanis::Base
     TEST(LogSink, SinkStaysUsableThroughBaseReference)
     {
         const auto sink = std::make_unique<TestableSink>();
-        LogSink &  base = *sink;
+        LogSink   &base = *sink;
         base.setLevel(LogLevel::Debug);
         base.setFormatter(std::make_unique<MarkerFormatter>("BASE"));
 
@@ -379,28 +374,30 @@ namespace AsynGyanis::Base
         swappers.reserve(kswapperCount);
         for (int index = 0; index < kswapperCount; ++index)
         {
-            swappers.emplace_back([&sink, &stopSwapping, &swapsPerformed]
-            {
-                while (!stopSwapping.load(std::memory_order_relaxed))
-                {
-                    sink.setFormatter(std::make_unique<MarkerFormatter>("A"));
-                    sink.setFormatter(std::make_unique<ColorFormatter>());
-                    sink.setFormatter(std::make_unique<MarkerFormatter>("B"));
-                    swapsPerformed.fetch_add(3, std::memory_order_relaxed);
-                }
-            });
+            swappers.emplace_back(
+                    [&sink, &stopSwapping, &swapsPerformed]
+                    {
+                        while (!stopSwapping.load(std::memory_order_relaxed))
+                        {
+                            sink.setFormatter(std::make_unique<MarkerFormatter>("A"));
+                            sink.setFormatter(std::make_unique<ColorFormatter>());
+                            sink.setFormatter(std::make_unique<MarkerFormatter>("B"));
+                            swapsPerformed.fetch_add(3, std::memory_order_relaxed);
+                        }
+                    });
         }
 
         writers.reserve(kwriterCount);
         for (int index = 0; index < kwriterCount; ++index)
         {
-            writers.emplace_back([&sink]
-            {
-                for (int inner = 0; inner < kwritesPerThread; ++inner)
-                {
-                    sink.write(makeEvent(LogLevel::Info, "concurrent_" + std::to_string(inner)));
-                }
-            });
+            writers.emplace_back(
+                    [&sink]
+                    {
+                        for (int inner = 0; inner < kwritesPerThread; ++inner)
+                        {
+                            sink.write(makeEvent(LogLevel::Info, "concurrent_" + std::to_string(inner)));
+                        }
+                    });
         }
 
         for (std::thread &writer: writers)
@@ -435,15 +432,16 @@ namespace AsynGyanis::Base
         threads.reserve(kthreadCount);
         for (int index = 0; index < kthreadCount; ++index)
         {
-            threads.emplace_back([&sink, index]
-            {
-                for (int inner = 0; inner < kiterations; ++inner)
-                {
-                    sink.setLevel(static_cast<LogLevel>(inner % 6));
-                    (void) sink.shouldLog(LogLevel::Info);
-                    sink.write(makeEvent(LogLevel::Info, "mixed_" + std::to_string(index)));
-                }
-            });
+            threads.emplace_back(
+                    [&sink, index]
+                    {
+                        for (int inner = 0; inner < kiterations; ++inner)
+                        {
+                            sink.setLevel(static_cast<LogLevel>(inner % 6));
+                            (void) sink.shouldLog(LogLevel::Info);
+                            sink.write(makeEvent(LogLevel::Info, "mixed_" + std::to_string(index)));
+                        }
+                    });
         }
         for (std::thread &thread: threads)
         {
@@ -455,11 +453,10 @@ namespace AsynGyanis::Base
 
     TEST(LogSink, DestructorReleasesInjectedFormatterWithoutThrowing)
     {
-        EXPECT_NO_THROW(
-                {
-                const auto sink = std::make_unique<TestableSink>();
-                sink->setFormatter(std::make_unique<ColorFormatter>());
-                sink->write(makeEvent(LogLevel::Info, "last"));
-                });
+        EXPECT_NO_THROW({
+            const auto sink = std::make_unique<TestableSink>();
+            sink->setFormatter(std::make_unique<ColorFormatter>());
+            sink->write(makeEvent(LogLevel::Info, "last"));
+        });
     }
 } // namespace AsynGyanis::Base

@@ -30,8 +30,7 @@ namespace AsynGyanis::Net
     namespace
     {
         /// 分块请求的固定头部块，与 TestHttpParserChunked.cpp 同口径
-        constexpr std::string_view kChunkedHeaderBlock =
-                "POST /chunked HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n";
+        constexpr std::string_view kChunkedHeaderBlock = "POST /chunked HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n";
 
         /**
          * @brief 判断文本里是否出现指定子串（定义见 NetTestSupport.h）
@@ -110,13 +109,13 @@ namespace AsynGyanis::Net
         HttpParserLimits limits;
         limits.maximumUriLength = 8;
 
-        HttpParser atLimitParser(limits);
+        HttpParser        atLimitParser(limits);
         const std::string atLimit = "GET /" + std::string(7, 'a') + " HTTP/1.1\r\n\r\n";
         ASSERT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::Done);
         EXPECT_EQ(atLimitParser.request().uri().size(), 8u);
         EXPECT_FALSE(atLimitParser.hasError());
 
-        HttpParser aboveLimitParser(limits);
+        HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = "GET /" + std::string(8, 'a') + " HTTP/1.1\r\n\r\n";
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::HeaderTooLarge, "URI");
@@ -130,12 +129,12 @@ namespace AsynGyanis::Net
         HttpParserLimits limits;
         limits.maximumHeaderFieldNameLength = 8;
 
-        HttpParser atLimitParser(limits);
+        HttpParser        atLimitParser(limits);
         const std::string atLimit = makeRequestTextWithHeaders({std::string(8, 'x') + ": v"});
         ASSERT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::Done);
         EXPECT_EQ(atLimitParser.request().getHeader(std::string(8, 'x')).value_or(""), "v");
 
-        HttpParser aboveLimitParser(limits);
+        HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = makeRequestTextWithHeaders({std::string(9, 'x') + ": v"});
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::HeaderTooLarge, "头部名");
@@ -149,12 +148,12 @@ namespace AsynGyanis::Net
         HttpParserLimits limits;
         limits.maximumHeaderFieldValueLength = 16;
 
-        HttpParser atLimitParser(limits);
+        HttpParser        atLimitParser(limits);
         const std::string atLimit = makeRequestTextWithHeaders({"x-big: " + std::string(16, 'v')});
         ASSERT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::Done);
         EXPECT_EQ(atLimitParser.request().getHeader("x-big").value_or("").size(), 16u);
 
-        HttpParser aboveLimitParser(limits);
+        HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = makeRequestTextWithHeaders({"x-big: " + std::string(17, 'v')});
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::HeaderTooLarge, "头部值");
@@ -170,12 +169,12 @@ namespace AsynGyanis::Net
         HttpParserLimits limits;
         limits.maximumHeaderCount = 3;
 
-        HttpParser atLimitParser(limits);
+        HttpParser        atLimitParser(limits);
         const std::string atLimit = makeRequestTextWithHeaders(makeHeaderLines(3, 1));
         ASSERT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::Done);
         EXPECT_EQ(atLimitParser.request().headers().size(), 3u);
 
-        HttpParser aboveLimitParser(limits);
+        HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = makeRequestTextWithHeaders(makeHeaderLines(4, 1));
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::HeaderTooLarge, "条数");
@@ -190,12 +189,12 @@ namespace AsynGyanis::Net
         limits.maximumHeaderBlockLength = 32;
 
         // 名 "x-b" 占 3 字节，值给 29 字节时净字节正好 32
-        HttpParser atLimitParser(limits);
+        HttpParser        atLimitParser(limits);
         const std::string atLimit = makeRequestTextWithHeaders({"x-b: " + std::string(29, 'v')});
         ASSERT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::Done);
         EXPECT_EQ(atLimitParser.request().getHeader("x-b").value_or("").size(), 29u);
 
-        HttpParser aboveLimitParser(limits);
+        HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = makeRequestTextWithHeaders({"x-b: " + std::string(30, 'v')});
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::HeaderTooLarge, "总长");
@@ -209,13 +208,13 @@ namespace AsynGyanis::Net
         HttpParserLimits limits;
         limits.maximumBodySize = 8;
 
-        HttpParser atLimitParser(limits);
+        HttpParser        atLimitParser(limits);
         const std::string atLimit = "POST /submit HTTP/1.1\r\nContent-Length: 8\r\n\r\n12345678";
         ASSERT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::Done);
         EXPECT_EQ(atLimitParser.request().body(), "12345678");
 
         // 声明超 1 字节：正文字节一个都不必到就要判错，不能等收满再判
-        HttpParser aboveLimitParser(limits);
+        HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = "POST /submit HTTP/1.1\r\nContent-Length: 9\r\n\r\n";
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::BodyTooLarge, "上限 8 字节");
@@ -229,13 +228,13 @@ namespace AsynGyanis::Net
         HttpParserLimits limits;
         limits.maximumBodySize = 8;
 
-        HttpParser atLimitParser(limits);
+        HttpParser        atLimitParser(limits);
         const std::string atLimit = std::string(kChunkedHeaderBlock) + "4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n";
         ASSERT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::Done);
         EXPECT_EQ(atLimitParser.request().body(), "abcdefgh");
 
         // 单块都没超上限，解码后合计 10 字节：按累计量判错，而不是等正文无限收下去
-        HttpParser aboveLimitParser(limits);
+        HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = std::string(kChunkedHeaderBlock) + "5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n";
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::BodyTooLarge, "分块解码后的请求体超出上限 8 字节");
@@ -273,10 +272,9 @@ namespace AsynGyanis::Net
 
         // 14 个线上字节里只有 2 字节是正文，其余是分块长度行与 CRLF
         const std::string chunkedFrames = "1\r\na\r\n1\r\nb\r\n";
-        const std::string firstPart = std::string(kChunkedHeaderBlock) + chunkedFrames;
+        const std::string firstPart     = std::string(kChunkedHeaderBlock) + chunkedFrames;
         ASSERT_EQ(parser.parse(firstPart.data(), firstPart.size()), ParseStatus::NeedMore);
-        EXPECT_EQ(parser.bufferedBodyByteCount(), 2U)
-                << "读数把分块的帧开销也算进了正文（线上 " << chunkedFrames.size() << " 字节 / 解码后 2 字节）";
+        EXPECT_EQ(parser.bufferedBodyByteCount(), 2U) << "读数把分块的帧开销也算进了正文（线上 " << chunkedFrames.size() << " 字节 / 解码后 2 字节）";
 
         const std::string secondPart = "1\r\nc\r\n0\r\n\r\n";
         ASSERT_EQ(parser.parse(secondPart.data(), secondPart.size()), ParseStatus::Done);
@@ -299,14 +297,14 @@ namespace AsynGyanis::Net
         ASSERT_EQ(limits.requestLineLengthLimit(), requestLineLimit) << "整行上限应等于 URI 上限加固定余量";
 
         // 16 字节 URI 上限对应的整行上限，且没有 CRLF 的半行：没有收齐一行，只能停 NeedMore
-        HttpParser atLimitParser(limits);
+        HttpParser        atLimitParser(limits);
         const std::string atLimit = "GET /" + std::string(requestLineLimit - 5, 'a');
         ASSERT_EQ(atLimit.size(), requestLineLimit);
         EXPECT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::NeedMore);
         EXPECT_FALSE(atLimitParser.hasError());
 
         // 只多一个字节：整行上限是硬边界，多 1 字节即按 431 类别判错
-        HttpParser aboveLimitParser(limits);
+        HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = atLimit + "a";
         ASSERT_EQ(aboveLimit.size(), requestLineLimit + 1);
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
@@ -331,8 +329,7 @@ namespace AsynGyanis::Net
         HttpParserLimits relaxedLimits;
         relaxedLimits.maximumUriLength = 16u * 1024u; // 只放宽这一项
         HttpParser relaxedParser(relaxedLimits);
-        EXPECT_EQ(relaxedParser.parse(halfRequestLine.data(), halfRequestLine.size()), ParseStatus::NeedMore)
-                << relaxedParser.errorMessage();
+        EXPECT_EQ(relaxedParser.parse(halfRequestLine.data(), halfRequestLine.size()), ParseStatus::NeedMore) << relaxedParser.errorMessage();
         EXPECT_FALSE(relaxedParser.hasError()) << relaxedParser.errorMessage();
     }
 
@@ -345,13 +342,13 @@ namespace AsynGyanis::Net
         limits.maximumChunkSizeLineLength = 16;
 
         // 头部块之后是一行没有 CRLF 的块大小行（"5;" 加扩展）：长度 16 时只能停 NeedMore
-        HttpParser atLimitParser(limits);
+        HttpParser        atLimitParser(limits);
         const std::string atLimit = std::string(kChunkedHeaderBlock) + "5;" + std::string(14, 'a');
         ASSERT_EQ(atLimit.substr(kChunkedHeaderBlock.size()).size(), 16u);
         EXPECT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::NeedMore);
         EXPECT_FALSE(atLimitParser.hasError());
 
-        HttpParser aboveLimitParser(limits);
+        HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = std::string(kChunkedHeaderBlock) + "5;" + std::string(15, 'a');
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::BodyTooLarge, "分块块大小行");
@@ -380,8 +377,7 @@ namespace AsynGyanis::Net
         strict.maximumBodySize               = 8;
 
         // 5 条头部（多于 3 条档口）、其中一条的值 9000 字节（远超 8 KiB 出厂档口）、正文 64 字节
-        const std::vector<std::string> headerLines{
-                "x-a: 1", "x-b: 2", "x-c: 3", "x-d: 4", "x-blob: " + std::string(9000, 'v')};
+        const std::vector<std::string> headerLines{"x-a: 1", "x-b: 2", "x-c: 3", "x-d: 4", "x-blob: " + std::string(9000, 'v')};
 
         std::string message = "POST /indexed HTTP/1.1\r\n";
         for (const std::string &headerLine: headerLines)

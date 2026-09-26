@@ -49,26 +49,19 @@ namespace AsynGyanis::Net
         std::vector<std::pair<std::string, std::string>> snapshotFields(const HttpHeaderFieldStore &store)
         {
             std::vector<std::pair<std::string, std::string>> snapshot;
-            store.forEachField([&snapshot](const std::string_view name, const std::string_view value)
-                               {
-                                   snapshot.emplace_back(name, value);
-                               });
+            store.forEachField([&snapshot](const std::string_view name, const std::string_view value) { snapshot.emplace_back(name, value); });
             return snapshot;
         }
     } // namespace
 
     TEST(HttpHeaderFieldStore, SingleValueMergesRepeatsOfAnOrdinaryHeader)
     {
-        const HttpHeaderFieldStore store = makeStore({{"Accept-Encoding", "gzip"},
-                                                     {"host", "example.com"},
-                                                     {"accept-encoding", "br"},
-                                                     {"Accept-Encoding", "zstd"}});
+        const HttpHeaderFieldStore store = makeStore({{"Accept-Encoding", "gzip"}, {"host", "example.com"}, {"accept-encoding", "br"}, {"Accept-Encoding", "zstd"}});
 
         // 大小写不同的键走同一套归一化；三条按加入顺序合并
         EXPECT_EQ(store.get("accept-encoding").value_or("<缺失>"), "gzip, br, zstd");
         EXPECT_EQ(store.get("ACCEPT-ENCODING").value_or("<缺失>"), "gzip, br, zstd");
-        EXPECT_EQ(store.singleValueView().at("accept-encoding"), "gzip, br, zstd")
-                << "单值查询与整表视图口径分叉了";
+        EXPECT_EQ(store.singleValueView().at("accept-encoding"), "gzip, br, zstd") << "单值查询与整表视图口径分叉了";
     }
 
     TEST(HttpHeaderFieldStore, SingleValueMergesEvenWhenTheFirstValueIsEmpty)
@@ -93,9 +86,7 @@ namespace AsynGyanis::Net
 
     TEST(HttpHeaderFieldStore, SingleValueTakesFirstOccurrenceOfRepeatableHeader)
     {
-        const HttpHeaderFieldStore store = makeStore({{"set-cookie", "sid=1; Path=/"},
-                                                     {"set-cookie", "theme=dark, admin"},
-                                                     {"Set-Cookie", "locale=zh-CN"}});
+        const HttpHeaderFieldStore store = makeStore({{"set-cookie", "sid=1; Path=/"}, {"set-cookie", "theme=dark, admin"}, {"Set-Cookie", "locale=zh-CN"}});
 
         // cookie 值本身可以含逗号，合并后就再也切不回去，因此视图与 get 都只留首条
         EXPECT_EQ(store.get("set-cookie").value_or("<缺失>"), "sid=1; Path=/");
@@ -147,9 +138,7 @@ namespace AsynGyanis::Net
     {
         // 线上分两行发来的同名普通头部会留下两条记录；一次「set」之后这个名必须只剩一条，
         // 否则合并视图仍把旧那条一起带下去，改写等于没改干净
-        HttpHeaderFieldStore store = makeStore({{"traceparent", "00-old-old-old-old-01"},
-                                                {"accept", "*/*"},
-                                                {"traceparent", "00-older-older-older-00"}});
+        HttpHeaderFieldStore store = makeStore({{"traceparent", "00-old-old-old-old-01"}, {"accept", "*/*"}, {"traceparent", "00-older-older-older-00"}});
         ASSERT_EQ(store.countOf("traceparent"), 2U);
 
         store.overwriteOrAppend("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
@@ -157,21 +146,17 @@ namespace AsynGyanis::Net
         EXPECT_EQ(store.countOf("traceparent"), 1U);
         EXPECT_EQ(store.countOf("accept"), 1U) << "删同名不得牵连别的名字";
         EXPECT_EQ(store.countOf("x-absent"), 0U);
-        EXPECT_EQ(store.get("traceparent").value_or("<缺失>"), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
-                << "合并视图里还混着旧值：set 的语义没有生效";
+        EXPECT_EQ(store.get("traceparent").value_or("<缺失>"), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01") << "合并视图里还混着旧值：set 的语义没有生效";
         EXPECT_EQ(store.values("traceparent").size(), 1U);
     }
 
     TEST(HttpHeaderFieldStore, FirstValueTakesTheEarliestFieldAndNeverMerges)
     {
-        const HttpHeaderFieldStore store = makeStore({{"x-request-id", "trace-a"},
-                                                     {"host", "example.com"},
-                                                     {"x-request-id", "trace-b"}});
+        const HttpHeaderFieldStore store = makeStore({{"x-request-id", "trace-a"}, {"host", "example.com"}, {"x-request-id", "trace-b"}});
 
         // 首条原样交出：同名多条时 get() 会按 ", " 合并，那条口径不适合链路 id
         EXPECT_EQ(store.firstValue("x-request-id").value_or("<缺失>"), "trace-a");
-        EXPECT_EQ(store.firstValue("x-request-id"), store.values("x-request-id").front())
-                << "firstValue 必须与 values() 的首元素同值，否则两条读路径会分叉";
+        EXPECT_EQ(store.firstValue("x-request-id"), store.values("x-request-id").front()) << "firstValue 必须与 values() 的首元素同值，否则两条读路径会分叉";
         EXPECT_FALSE(store.firstValue("x-absent").has_value());
     }
 
@@ -193,8 +178,7 @@ namespace AsynGyanis::Net
     {
         // 可重复头部的判定名单登记的是小写；读侧不再先归一化查询名，因此名单比对也必须
         // 大小写不敏感——否则 "Set-Cookie" 会被当成普通头部按 ", " 合并，把两条独立 cookie 粘死
-        const HttpHeaderFieldStore store = makeStore({{"set-cookie", "sid=1; Path=/"},
-                                                     {"Set-Cookie", "theme=dark, admin"}});
+        const HttpHeaderFieldStore store = makeStore({{"set-cookie", "sid=1; Path=/"}, {"Set-Cookie", "theme=dark, admin"}});
 
         EXPECT_EQ(store.get("Set-Cookie").value_or("<缺失>"), "sid=1; Path=/");
         EXPECT_EQ(store.get("SET-COOKIE").value_or("<缺失>"), "sid=1; Path=/");
@@ -203,9 +187,7 @@ namespace AsynGyanis::Net
 
     TEST(HttpHeaderFieldStore, ContainsListTokenSplitsOnCommasAndIgnoresOwsAndCase)
     {
-        const HttpHeaderFieldStore store = makeStore({{"connection", "Keep-Alive, Upgrade"},
-                                                     {"x-flag", ""},
-                                                     {"x-flag", "  trailing , 中段  "}});
+        const HttpHeaderFieldStore store = makeStore({{"connection", "Keep-Alive, Upgrade"}, {"x-flag", ""}, {"x-flag", "  trailing , 中段  "}});
 
         EXPECT_TRUE(store.containsListToken("connection", "keep-alive"));
         EXPECT_TRUE(store.containsListToken("connection", "upgrade"));
@@ -266,8 +248,7 @@ namespace AsynGyanis::Net
     {
         // 解析器提交头部走的就是这条整块交换：记录（偏移）与字节缓冲必须成对换过来——
         // 只换了记录不换缓冲，取出来的就是别人内存里的字
-        HttpHeaderFieldStore staging = makeStore({{"x-request-id", "upstream-edge-0001-0000000000000abc"},
-                                                 {"content-type", "text/plain; charset=utf-8"}});
+        HttpHeaderFieldStore staging = makeStore({{"x-request-id", "upstream-edge-0001-0000000000000abc"}, {"content-type", "text/plain; charset=utf-8"}});
         HttpHeaderFieldStore destination;
         destination.append("host", "stale.example.com");
         destination.clear();
@@ -319,15 +300,13 @@ namespace AsynGyanis::Net
     {
         // 两条入口必须同一条查找：owning 版由视图版派生，否则「同名多条取首条」「大小写不敏感」
         // 这类口径会在某一次改写里只修一侧而分叉
-        const HttpHeaderFieldStore store = makeStore({{"accept", "*/*"},
-                                                      {"x-request-id", "upstream-edge-0001-0000000000000abc"},
-                                                      {"x-request-id", "second-edge-id"},
-                                                      {"set-cookie", "a=1"}});
+        const HttpHeaderFieldStore store =
+                makeStore({{"accept", "*/*"}, {"x-request-id", "upstream-edge-0001-0000000000000abc"}, {"x-request-id", "second-edge-id"}, {"set-cookie", "a=1"}});
 
         for (const std::string_view name: {"accept", "x-request-id", "set-cookie", "missing"})
         {
-            const std::optional<std::string>        owning    = store.firstValue(name);
-            const std::optional<std::string_view>   view      = store.firstValueView(name);
+            const std::optional<std::string>      owning = store.firstValue(name);
+            const std::optional<std::string_view> view   = store.firstValueView(name);
             EXPECT_EQ(owning.has_value(), view.has_value()) << "缺席与命中在两版上必须一致：" << name;
             if (view.has_value())
             {
@@ -339,7 +318,7 @@ namespace AsynGyanis::Net
         // 视图指向权威记录里的那段字节，而不是新拷贝：这是本入口存在的全部理由。
         // 判据取「两次独立查询交回同一地址」——每次现拷一份的实现交不回同一个地址（本 fixture 的
         // 取值有 33 字节，超过短串内联，真要拷贝必然是两块堆内存）
-        const std::optional<std::string_view> view = store.firstValueView("x-request-id");
+        const std::optional<std::string_view> view      = store.firstValueView("x-request-id");
         const std::optional<std::string_view> viewAgain = store.firstValueView("x-request-id");
         ASSERT_TRUE(view.has_value());
         ASSERT_TRUE(viewAgain.has_value());

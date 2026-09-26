@@ -31,7 +31,7 @@ namespace AsynGyanis::Core
                 {kSecondSegment.data(), kSecondSegment.size()},
                 {kThirdSegment.data(), kThirdSegment.size()},
         }};
-        const detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+        const detail::VectoredSendCursor                   cursor(buffers.data(), buffers.size());
 
         EXPECT_FALSE(cursor.isFinished());
         EXPECT_EQ(cursor.totalLength(), kFirstSegment.size() + kSecondSegment.size() + kThirdSegment.size());
@@ -57,7 +57,7 @@ namespace AsynGyanis::Core
                 {kSecondSegment.data(), kSecondSegment.size()},
                 {kThirdSegment.data(), kThirdSegment.size()},
         }};
-        detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+        detail::VectoredSendCursor                         cursor(buffers.data(), buffers.size());
 
         cursor.advance(3);
         EXPECT_EQ(cursor.sentLength(), 3U);
@@ -80,7 +80,7 @@ namespace AsynGyanis::Core
                 {kSecondSegment.data(), kSecondSegment.size()},
                 {kThirdSegment.data(), kThirdSegment.size()},
         }};
-        detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+        detail::VectoredSendCursor                         cursor(buffers.data(), buffers.size());
 
         cursor.advance(kFirstSegment.size());
         std::array<Platform::Socket::WriteBuffer, 3> pending{};
@@ -100,7 +100,7 @@ namespace AsynGyanis::Core
                 {kSecondSegment.data(), kSecondSegment.size()},
                 {kThirdSegment.data(), kThirdSegment.size()},
         }};
-        detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+        detail::VectoredSendCursor                         cursor(buffers.data(), buffers.size());
 
         // 跨过第一段与第二段，再在第三段里发出 2 字节
         cursor.advance(kFirstSegment.size() + kSecondSegment.size() + 2);
@@ -121,7 +121,7 @@ namespace AsynGyanis::Core
                 {kSecondSegment.data(), kSecondSegment.size()},
                 {kThirdSegment.data(), kThirdSegment.size()},
         }};
-        detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+        detail::VectoredSendCursor                         cursor(buffers.data(), buffers.size());
 
         std::array<Platform::Socket::WriteBuffer, 3> pending{};
         ASSERT_EQ(cursor.snapshotPending(pending.data(), pending.size()), 2U) << "零长度段不该占掉一次提交的段位";
@@ -143,7 +143,7 @@ namespace AsynGyanis::Core
                 {kFirstSegment.data(), kFirstSegment.size()},
                 {kSecondSegment.data(), kSecondSegment.size()},
         }};
-        detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+        detail::VectoredSendCursor                         cursor(buffers.data(), buffers.size());
 
         cursor.advance(0);
         EXPECT_EQ(cursor.sentLength(), 0U);
@@ -169,15 +169,15 @@ namespace AsynGyanis::Core
     {
         const std::array<Platform::Socket::WriteBuffer, 4> buffers{{
                 {kFirstSegment.data(), kFirstSegment.size()},
-                {kSecondSegment.data(), 0},                      // 空段在两段真实数据之间
+                {kSecondSegment.data(), 0}, // 空段在两段真实数据之间
                 {kSecondSegment.data(), kSecondSegment.size()},
                 {kThirdSegment.data(), kThirdSegment.size()},
         }};
-        const detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+        const detail::VectoredSendCursor                   cursor(buffers.data(), buffers.size());
 
         // 容量够：交出三段真实数据，顺序与长度都不受空段影响
         std::array<Platform::Socket::WriteBuffer, 4> roomy{};
-        const std::size_t roomyCount = cursor.snapshotPending(roomy.data(), roomy.size());
+        const std::size_t                            roomyCount = cursor.snapshotPending(roomy.data(), roomy.size());
         ASSERT_EQ(roomyCount, 3U) << "空段占掉了一次提交的段位";
         EXPECT_EQ(roomy[0].data, kFirstSegment.data());
         EXPECT_EQ(roomy[1].data, kSecondSegment.data());
@@ -217,7 +217,7 @@ namespace AsynGyanis::Core
                 {kSecondSegment.data(), kSecondSegment.size()},
                 {kThirdSegment.data(), kThirdSegment.size()},
         }};
-        const detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+        const detail::VectoredSendCursor                   cursor(buffers.data(), buffers.size());
 
         std::array<Platform::Socket::WriteBuffer, 2> pending{};
         ASSERT_EQ(cursor.snapshotPending(pending.data(), pending.size()), 2U);
@@ -237,7 +237,7 @@ namespace AsynGyanis::Core
                 {kSecondSegment.data(), kSecondSegment.size()},
                 {kThirdSegment.data(), kThirdSegment.size()},
         }};
-        const detail::VectoredSendCursor cursor(buffers.data(), buffers.size());
+        const detail::VectoredSendCursor                   cursor(buffers.data(), buffers.size());
 
         Platform::Socket::WriteBuffer sentinel{nullptr, 0};
         ASSERT_EQ(cursor.snapshotPending(&sentinel, 0), 0U) << "容量为 0 仍交出段：调用方按返回值遍历就会越界";

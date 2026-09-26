@@ -37,8 +37,7 @@ namespace AsynGyanis::Platform
 
     TEST(ProcessInfo, EnvironmentVariableReturnsNulloptForUndefinedName)
     {
-        const std::optional<std::string> missingValue =
-                ProcessInfo::environmentVariable("ASYN_GYANIS_DEFINITELY_UNDEFINED_VARIABLE");
+        const std::optional<std::string> missingValue = ProcessInfo::environmentVariable("ASYN_GYANIS_DEFINITELY_UNDEFINED_VARIABLE");
 
         EXPECT_FALSE(missingValue.has_value());
     }

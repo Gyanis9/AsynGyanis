@@ -32,12 +32,12 @@ namespace AsynGyanis::Net
     {
         using AsynGyanis::Net::TestSupport::containsText;
         using AsynGyanis::Net::TestSupport::makeBytesFromHex;
+        using AsynGyanis::TestSupport::AllocationHistogram;
+        using AsynGyanis::TestSupport::AllocationProfile;
         using AsynGyanis::TestSupport::kMeasurementIterations;
         using AsynGyanis::TestSupport::measurePerOperation;
         using AsynGyanis::TestSupport::resetAllocationHistogram;
         using AsynGyanis::TestSupport::snapshotAllocationHistogram;
-        using AsynGyanis::TestSupport::AllocationHistogram;
-        using AsynGyanis::TestSupport::AllocationProfile;
 
         /// 头列表按规范里的「名 = 值」二元组表述
         using FieldListEntry = std::pair<const char *, const char *>;
@@ -70,8 +70,8 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string toHex(std::string_view bytes)
         {
             static constexpr char hexDigits[] = "0123456789abcdef";
-            std::string text;
-            for (const char item : bytes)
+            std::string           text;
+            for (const char item: bytes)
             {
                 const auto byteValue = static_cast<unsigned char>(item);
                 text.push_back(hexDigits[byteValue >> 4]);
@@ -89,7 +89,7 @@ namespace AsynGyanis::Net
         {
             std::vector<QpackHeaderField> fieldLines;
             fieldLines.reserve(entries.size());
-            for (const FieldListEntry &entry : entries)
+            for (const FieldListEntry &entry: entries)
             {
                 fieldLines.push_back(QpackHeaderField{entry.first, entry.second});
             }
@@ -102,8 +102,7 @@ namespace AsynGyanis::Net
          * @param expected 期望的名值对
          * @param context 失败时的上下文说明
          */
-        void expectFieldsEqual(const std::vector<QpackHeaderField> &fields, const std::vector<FieldListEntry> &expected,
-                               const std::string_view context)
+        void expectFieldsEqual(const std::vector<QpackHeaderField> &fields, const std::vector<FieldListEntry> &expected, const std::string_view context)
         {
             ASSERT_EQ(fields.size(), expected.size()) << context;
             for (std::size_t index = 0; index < fields.size() && index < expected.size(); ++index)
@@ -119,8 +118,7 @@ namespace AsynGyanis::Net
          * @param expected 期望的名值对，按「新 → 旧」给出
          * @param context 失败时的上下文说明
          */
-        void expectTableEqual(const std::deque<QpackHeaderField> &entries, const std::vector<FieldListEntry> &expected,
-                              const std::string_view context)
+        void expectTableEqual(const std::deque<QpackHeaderField> &entries, const std::vector<FieldListEntry> &expected, const std::string_view context)
         {
             ASSERT_EQ(entries.size(), expected.size()) << context;
             for (std::size_t index = 0; index < entries.size() && index < expected.size(); ++index)
@@ -137,9 +135,8 @@ namespace AsynGyanis::Net
          * @param maximumFieldSectionSizeByteCount 本端公布的头段大小上限，0 为不限
          * @return QpackDecoderSettings 约束对象
          */
-        [[nodiscard]] QpackDecoderSettings makeDecoderSettings(std::size_t maximumTableCapacityByteCount,
-                                                              std::size_t maximumBlockedStreamCount,
-                                                              std::size_t maximumFieldSectionSizeByteCount = 0)
+        [[nodiscard]] QpackDecoderSettings makeDecoderSettings(std::size_t maximumTableCapacityByteCount, std::size_t maximumBlockedStreamCount,
+                                                               std::size_t maximumFieldSectionSizeByteCount = 0)
         {
             return QpackDecoderSettings{maximumTableCapacityByteCount, maximumBlockedStreamCount, maximumFieldSectionSizeByteCount};
         }
@@ -153,8 +150,8 @@ namespace AsynGyanis::Net
             const std::vector<std::uint8_t> instructions = hexToBytes("3fbd01"
                                                                       "c00f 7777 772e 6578 616d 706c 652e 636f 6d"
                                                                       "c10c 2f73 616d 706c 652f 7061 7468");
-            std::vector<std::uint64_t> unblockedStreamIds;
-            std::string controlBytes;
+            std::vector<std::uint64_t>      unblockedStreamIds;
+            std::string                     controlBytes;
             ASSERT_TRUE(decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes).has_value());
         }
 
@@ -166,9 +163,9 @@ namespace AsynGyanis::Net
         {
             feedAppendixB2Instructions(decoder);
             const std::vector<std::uint8_t> literalInsert = hexToBytes("4a63 7573 746f 6d2d 6b65 790c 6375 7374 6f6d 2d76 616c 7565");
-            const std::vector<std::uint8_t> duplicate = hexToBytes("02");
-            std::vector<std::uint64_t> unblockedStreamIds;
-            std::string controlBytes;
+            const std::vector<std::uint8_t> duplicate     = hexToBytes("02");
+            std::vector<std::uint64_t>      unblockedStreamIds;
+            std::string                     controlBytes;
             ASSERT_TRUE(decoder.feedEncoderStream(asSpan(literalInsert), unblockedStreamIds, controlBytes).has_value());
             ASSERT_TRUE(decoder.feedEncoderStream(asSpan(duplicate), unblockedStreamIds, controlBytes).has_value());
         }
@@ -180,12 +177,10 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::string encodeAppendixB2FieldSection(QpackEncoder &encoder)
         {
-            const std::vector<QpackHeaderField> fieldLines = makeFieldList({{":authority", "www.example.com"},
-                                                                           {":path", "/sample/path"}});
-            std::string headerBlock;
-            std::string encoderStreamBytes;
-            const auto result = encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(fieldLines), headerBlock,
-                                                           encoderStreamBytes);
+            const std::vector<QpackHeaderField> fieldLines = makeFieldList({{":authority", "www.example.com"}, {":path", "/sample/path"}});
+            std::string                         headerBlock;
+            std::string                         encoderStreamBytes;
+            const auto                          result = encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes);
             EXPECT_TRUE(result.has_value()) << (result.has_value() ? std::string() : result.error().message);
             EXPECT_EQ(toHex(encoderStreamBytes), "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468");
             return headerBlock;
@@ -227,33 +222,33 @@ namespace AsynGyanis::Net
     TEST(Qpack, StaticTableEntriesMatchRfcAppendixA)
     {
         static constexpr std::array<std::tuple<std::size_t, std::string_view, std::string_view>, 24> samples{{
-            {0, ":authority", ""},
-            {1, ":path", "/"},
-            {2, "age", "0"},
-            {4, "content-length", "0"},
-            {14, "set-cookie", ""},
-            {15, ":method", "CONNECT"},
-            {21, ":method", "PUT"},
-            {25, ":status", "200"},
-            {28, ":status", "503"},
-            {29, "accept", "*/*"},
-            {30, "accept", "application/dns-message"},
-            {31, "accept-encoding", "gzip, deflate, br"},
-            {41, "cache-control", "public, max-age=31536000"},
-            {45, "content-type", "application/javascript"},
-            {47, "content-type", "application/x-www-form-urlencoded"},
-            {52, "content-type", "text/html; charset=utf-8"},
-            {54, "content-type", "text/plain;charset=utf-8"},
-            {57, "strict-transport-security", "max-age=31536000; includesubdomains"},
-            {58, "strict-transport-security", "max-age=31536000; includesubdomains; preload"},
-            {62, "x-xss-protection", "1; mode=block"},
-            {85, "content-security-policy", "script-src 'none'; object-src 'none'; base-uri 'none'"},
-            {91, "purpose", "prefetch"},
-            {94, "upgrade-insecure-requests", "1"},
-            {98, "x-frame-options", "sameorigin"},
+                {0, ":authority", ""},
+                {1, ":path", "/"},
+                {2, "age", "0"},
+                {4, "content-length", "0"},
+                {14, "set-cookie", ""},
+                {15, ":method", "CONNECT"},
+                {21, ":method", "PUT"},
+                {25, ":status", "200"},
+                {28, ":status", "503"},
+                {29, "accept", "*/*"},
+                {30, "accept", "application/dns-message"},
+                {31, "accept-encoding", "gzip, deflate, br"},
+                {41, "cache-control", "public, max-age=31536000"},
+                {45, "content-type", "application/javascript"},
+                {47, "content-type", "application/x-www-form-urlencoded"},
+                {52, "content-type", "text/html; charset=utf-8"},
+                {54, "content-type", "text/plain;charset=utf-8"},
+                {57, "strict-transport-security", "max-age=31536000; includesubdomains"},
+                {58, "strict-transport-security", "max-age=31536000; includesubdomains; preload"},
+                {62, "x-xss-protection", "1; mode=block"},
+                {85, "content-security-policy", "script-src 'none'; object-src 'none'; base-uri 'none'"},
+                {91, "purpose", "prefetch"},
+                {94, "upgrade-insecure-requests", "1"},
+                {98, "x-frame-options", "sameorigin"},
         }};
 
-        for (const auto &[index, expectedName, expectedValue] : samples)
+        for (const auto &[index, expectedName, expectedValue]: samples)
         {
             EXPECT_EQ(kQpackStaticTable[index].name, expectedName) << "索引 " << index << " 的名与原文不符";
             EXPECT_EQ(kQpackStaticTable[index].value, expectedValue) << "索引 " << index << " 的值与原文不符";
@@ -303,13 +298,13 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderReadsAppendixB1LiteralFieldLineWithNameReference)
     {
-        QpackDecoder decoder(makeDecoderSettings(0, 0));
+        QpackDecoder                  decoder(makeDecoderSettings(0, 0));
         std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+        std::string                   controlBytes;
 
         const std::vector<std::uint8_t> section = hexToBytes("0000"
-                                                            "510b 2f69 6e64 6578 2e68 746d 6c");
-        const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+                                                             "510b 2f69 6e64 6578 2e68 746d 6c");
+        const auto                      result  = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
         EXPECT_EQ(*result, QpackFieldSectionDecodeStatus::Decoded) << "本段不含动态表引用，不该挂起";
         expectFieldsEqual(fields, {{":path", "/index.html"}}, "B.1 的头列表");
@@ -324,14 +319,14 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderReadsAppendixB2EncoderStreamInstructions)
     {
-        QpackDecoder decoder(makeDecoderSettings(220, 100));
+        QpackDecoder               decoder(makeDecoderSettings(220, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
 
         const std::vector<std::uint8_t> instructions = hexToBytes("3fbd01"
                                                                   "c00f 7777 772e 6578 616d 706c 652e 636f 6d"
                                                                   "c10c 2f73 616d 706c 652f 7061 7468");
-        const auto consumed = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
+        const auto                      consumed     = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
         ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
         EXPECT_EQ(*consumed, instructions.size()) << "整段指令都要被消费掉";
         EXPECT_TRUE(unblockedStreamIds.empty());
@@ -349,13 +344,13 @@ namespace AsynGyanis::Net
     TEST(Qpack, DecoderReadsAppendixB2FieldSectionAndDefersSectionAcknowledgement)
     {
         QpackDecoder decoder(makeDecoderSettings(220, 100));
-        std::string controlBytes;
+        std::string  controlBytes;
         feedAppendixB2Instructions(decoder);
 
         const std::vector<std::uint8_t> section = hexToBytes("0381"
-                                                            "10"
-                                                            "11");
-        std::vector<QpackHeaderField> fields;
+                                                             "10"
+                                                             "11");
+        std::vector<QpackHeaderField>   fields;
         controlBytes.clear();
         const auto result = decoder.decodeFieldSection(4, asSpan(section), fields, controlBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
@@ -380,22 +375,20 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderReadsAppendixB3SpeculativeInsert)
     {
-        QpackDecoder decoder(makeDecoderSettings(220, 100));
+        QpackDecoder               decoder(makeDecoderSettings(220, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
         feedAppendixB2Instructions(decoder);
 
         controlBytes.clear();
-        const std::vector<std::uint8_t> insert = hexToBytes("4a63 7573 746f 6d2d 6b65 790c 6375 7374 6f6d 2d76 616c 7565");
-        const auto consumed = decoder.feedEncoderStream(asSpan(insert), unblockedStreamIds, controlBytes);
+        const std::vector<std::uint8_t> insert   = hexToBytes("4a63 7573 746f 6d2d 6b65 790c 6375 7374 6f6d 2d76 616c 7565");
+        const auto                      consumed = decoder.feedEncoderStream(asSpan(insert), unblockedStreamIds, controlBytes);
         ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
         EXPECT_EQ(*consumed, insert.size());
         EXPECT_EQ(decoder.insertCount(), 3U);
         EXPECT_EQ(decoder.dynamicTableSizeByteCount(), 160U) << "RFC 的 B.3 标注 Size=160";
         EXPECT_EQ(toHex(controlBytes), "01") << "RFC 的 B.3 解码器流上就是 0x01（Insert Count Increment(1)）";
-        expectTableEqual(decoder.dynamicTableEntries(),
-                         {{"custom-key", "custom-value"}, {":path", "/sample/path"}, {":authority", "www.example.com"}},
-                         "B.3 的表");
+        expectTableEqual(decoder.dynamicTableEntries(), {{"custom-key", "custom-value"}, {":path", "/sample/path"}, {":authority", "www.example.com"}}, "B.3 的表");
 
         controlBytes.clear();
         EXPECT_EQ(decoder.emitInsertCountIncrement(controlBytes), 0U) << "同一个计数不得重复告诉对端（§4.4.3）";
@@ -408,36 +401,31 @@ namespace AsynGyanis::Net
     TEST(Qpack, DecoderReadsAppendixB4DuplicateAndStreamCancellation)
     {
         QpackDecoder decoder(makeDecoderSettings(220, 100));
-        std::string controlBytes;
+        std::string  controlBytes;
         replayAppendixB2ToB4Instructions(decoder);
 
         EXPECT_EQ(decoder.insertCount(), 4U) << "Duplicate 也占一次插入计数（§4.3.4）";
         EXPECT_EQ(decoder.dynamicTableSizeByteCount(), 217U) << "RFC 的 B.4 标注 Size=217";
         expectTableEqual(decoder.dynamicTableEntries(),
-                         {{":authority", "www.example.com"},
-                          {"custom-key", "custom-value"},
-                          {":path", "/sample/path"},
-                          {":authority", "www.example.com"}},
+                         {{":authority", "www.example.com"}, {"custom-key", "custom-value"}, {":path", "/sample/path"}, {":authority", "www.example.com"}},
                          "B.4 的表：绝对索引 3 是 0 的副本");
 
         const std::vector<std::uint8_t> section = hexToBytes("0500"
-                                                            "80"
-                                                            "c1"
-                                                            "81");
-        std::vector<QpackHeaderField> fields;
+                                                             "80"
+                                                             "c1"
+                                                             "81");
+        std::vector<QpackHeaderField>   fields;
         controlBytes.clear();
         const auto result = decoder.decodeFieldSection(8, asSpan(section), fields, controlBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
-        expectFieldsEqual(fields,
-                          {{":authority", "www.example.com"}, {":path", "/"}, {"custom-key", "custom-value"}},
-                          "B.4 的头列表：Base=4，相对索引 0/1 指向绝对索引 3/2");
+        expectFieldsEqual(fields, {{":authority", "www.example.com"}, {":path", "/"}, {"custom-key", "custom-value"}}, "B.4 的头列表：Base=4，相对索引 0/1 指向绝对索引 3/2");
 
         // 头块已解出但被放弃：按 §4.4.2 只发 Stream Cancellation，之前欠的 Section Ack 一并作废
         controlBytes.clear();
         decoder.noteStreamAbandoned(8, controlBytes);
         EXPECT_EQ(toHex(controlBytes), "48") << "RFC 的 B.4 解码器流上就是 0x48（Stream Cancellation, stream=8）";
         std::string lateControlBytes;
-        const auto delivered = decoder.noteFieldSectionDelivered(8, lateControlBytes);
+        const auto  delivered = decoder.noteFieldSectionDelivered(8, lateControlBytes);
         ASSERT_FALSE(delivered.has_value()) << "被放弃的段不再欠 Section Ack";
         EXPECT_EQ(delivered.error().kind, QpackErrorKind::DecoderStreamError) << delivered.error().message;
     }
@@ -447,29 +435,26 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderReadsAppendixB5InsertEvictsOldestEntry)
     {
-        QpackDecoder decoder(makeDecoderSettings(220, 100));
+        QpackDecoder               decoder(makeDecoderSettings(220, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
         replayAppendixB2ToB4Instructions(decoder);
 
         controlBytes.clear();
-        const std::vector<std::uint8_t> insert = hexToBytes("810d 6375 7374 6f6d 2d76 616c 7565 32");
-        const auto consumed = decoder.feedEncoderStream(asSpan(insert), unblockedStreamIds, controlBytes);
+        const std::vector<std::uint8_t> insert   = hexToBytes("810d 6375 7374 6f6d 2d76 616c 7565 32");
+        const auto                      consumed = decoder.feedEncoderStream(asSpan(insert), unblockedStreamIds, controlBytes);
         ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
         EXPECT_EQ(*consumed, insert.size());
         EXPECT_EQ(decoder.insertCount(), 5U) << "累计插入数不因淘汰而回退（§3.2.4）";
         EXPECT_EQ(decoder.dynamicTableSizeByteCount(), 215U) << "RFC 的 B.5 标注 Size=215";
         EXPECT_EQ(toHex(controlBytes), "01") << "又收到 1 次插入";
         expectTableEqual(decoder.dynamicTableEntries(),
-                         {{"custom-key", "custom-value2"},
-                          {":authority", "www.example.com"},
-                          {"custom-key", "custom-value"},
-                          {":path", "/sample/path"}},
+                         {{"custom-key", "custom-value2"}, {":authority", "www.example.com"}, {"custom-key", "custom-value"}, {":path", "/sample/path"}},
                          "B.5 的表：绝对索引 0 已被淘汰");
         // 淘汰后按绝对索引取项必须失败，而不是悄悄给一项别的
         const std::vector<std::uint8_t> referenceToEvicted = hexToBytes("0683"
-                                                                       "80");
-        std::vector<QpackHeaderField> fields;
+                                                                        "80");
+        std::vector<QpackHeaderField>   fields;
         controlBytes.clear();
         const auto result = decoder.decodeFieldSection(12, asSpan(referenceToEvicted), fields, controlBytes);
         ASSERT_FALSE(result.has_value()) << "引用已淘汰的绝对索引 0 必须判错（§2.2.3）";
@@ -486,13 +471,12 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, EncoderEmitsAppendixB1Bytes)
     {
-        QpackEncoder encoder(0, 0, 0);
+        QpackEncoder                        encoder(0, 0, 0);
         const std::vector<QpackHeaderField> fieldLines = makeFieldList({{":path", "/index.html"}});
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        std::string                         headerBlock;
+        std::string                         encoderStreamBytes;
 
-        const auto result = encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock,
-                                                       encoderStreamBytes);
+        const auto result = encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
         EXPECT_EQ(toHex(headerBlock), "0000510b2f696e6465782e68746d6c") << "RFC 的 B.1 原文：0000 510b 2f69 6e64 6578 2e68 746d 6c";
         EXPECT_TRUE(encoderStreamBytes.empty()) << "§3.2.3：对端上限为 0 时不得发任何编码器流指令";
@@ -505,17 +489,15 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, EncoderEmitsAppendixB2Bytes)
     {
-        QpackEncoder encoder(220, 100, 220);
-        const std::vector<QpackHeaderField> fieldLines = makeFieldList({{":authority", "www.example.com"},
-                                                                        {":path", "/sample/path"}});
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        QpackEncoder                        encoder(220, 100, 220);
+        const std::vector<QpackHeaderField> fieldLines = makeFieldList({{":authority", "www.example.com"}, {":path", "/sample/path"}});
+        std::string                         headerBlock;
+        std::string                         encoderStreamBytes;
 
-        const auto result = encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(fieldLines), headerBlock,
-                                                      encoderStreamBytes);
+        const auto result = encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
         EXPECT_EQ(toHex(encoderStreamBytes), "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468")
-            << "RFC 的 B.2 编码器流：3fbd01 + c00f www.example.com + c10c /sample/path";
+                << "RFC 的 B.2 编码器流：3fbd01 + c00f www.example.com + c10c /sample/path";
         EXPECT_EQ(toHex(headerBlock), "03811011") << "Required Insert Count=2、Base=0、两条表后索引";
         EXPECT_EQ(encoder.dynamicTableSizeByteCount(), 106U);
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 0U);
@@ -529,8 +511,8 @@ namespace AsynGyanis::Net
     TEST(Qpack, EncoderEmitsAppendixB3ToB5InstructionBytes)
     {
         QpackEncoder encoder(220, 100, 220);
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        std::string  headerBlock;
+        std::string  encoderStreamBytes;
 
         // B.2 的两条插入（含构造时欠下的容量指令），然后按 RFC 的样子把这一段确认掉
         headerBlock = encodeAppendixB2FieldSection(encoder);
@@ -539,9 +521,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 2U);
 
         // B.3：只有一行 custom-key=custom-value，双字面量插入 + 表后索引
-        const std::vector<QpackHeaderField> third = makeFieldList({{"custom-key", "custom-value"}});
-        const auto thirdResult = encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(third), headerBlock,
-                                                           encoderStreamBytes);
+        const std::vector<QpackHeaderField> third       = makeFieldList({{"custom-key", "custom-value"}});
+        const auto                          thirdResult = encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(third), headerBlock, encoderStreamBytes);
         ASSERT_TRUE(thirdResult.has_value()) << thirdResult.error().message;
         EXPECT_EQ(toHex(encoderStreamBytes), "4a637573746f6d2d6b65790c637573746f6d2d76616c7565") << "RFC 的 B.3 原文";
         EXPECT_EQ(toHex(headerBlock), "048010") << "Required Insert Count=3、Base=2";
@@ -549,9 +530,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 3U);
 
         // B.4：命中的 :authority 落在绝对索引 0（已被 draining 甩在身后），改发 Duplicate 并引用新副本
-        const std::vector<QpackHeaderField> fourth = makeFieldList({{":authority", "www.example.com"}});
-        const auto fourthResult = encoder.encodeFieldSection(12, std::span<const QpackHeaderField>(fourth), headerBlock,
-                                                            encoderStreamBytes);
+        const std::vector<QpackHeaderField> fourth       = makeFieldList({{":authority", "www.example.com"}});
+        const auto                          fourthResult = encoder.encodeFieldSection(12, std::span<const QpackHeaderField>(fourth), headerBlock, encoderStreamBytes);
         ASSERT_TRUE(fourthResult.has_value()) << fourthResult.error().message;
         EXPECT_EQ(toHex(encoderStreamBytes), "02") << "RFC 的 B.4 原文：Duplicate（相对索引 2）";
         EXPECT_EQ(toHex(headerBlock), "058010") << "Base=3、Required Insert Count=4，引用表首的新副本";
@@ -559,9 +539,8 @@ namespace AsynGyanis::Net
 
         // B.5：custom-key=custom-value2 只有名命中（绝对索引 2，相对索引 1）
         ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("8c"))).has_value()) << "Section Ack, stream=12";
-        const std::vector<QpackHeaderField> fifth = makeFieldList({{"custom-key", "custom-value2"}});
-        const auto fifthResult = encoder.encodeFieldSection(16, std::span<const QpackHeaderField>(fifth), headerBlock,
-                                                           encoderStreamBytes);
+        const std::vector<QpackHeaderField> fifth       = makeFieldList({{"custom-key", "custom-value2"}});
+        const auto                          fifthResult = encoder.encodeFieldSection(16, std::span<const QpackHeaderField>(fifth), headerBlock, encoderStreamBytes);
         ASSERT_TRUE(fifthResult.has_value()) << fifthResult.error().message;
         EXPECT_EQ(toHex(encoderStreamBytes), "810d637573746f6d2d76616c756532") << "RFC 的 B.5 原文";
         EXPECT_EQ(encoder.insertCount(), 5U);
@@ -574,21 +553,22 @@ namespace AsynGyanis::Net
     TEST(Qpack, EncoderNeverDuplicatesStaticEntries)
     {
         QpackEncoder encoder(4096, 100, 4096);
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        std::string  headerBlock;
+        std::string  encoderStreamBytes;
         ASSERT_TRUE(encoder.setMaximumTableCapacityByteCount(4096, encoderStreamBytes).has_value());
         EXPECT_EQ(toHex(encoderStreamBytes), "3fe11f") << "4096 的 5 位前缀编码是 3f e1 1f";
 
-        const std::vector<QpackHeaderField> fieldLines = makeFieldList({{":status", "200"},
-                                                                       {":method", "GET"},
-                                                                       {":path", "/"}});
+        const std::vector<QpackHeaderField> fieldLines = makeFieldList({{":status", "200"}, {":method", "GET"}, {":path", "/"}});
         headerBlock.clear();
         encoderStreamBytes.clear();
-        const auto result = encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock,
-                                                      encoderStreamBytes);
+        const auto result = encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
         EXPECT_TRUE(encoderStreamBytes.empty()) << "静态表整项命中不得产生任何指令：" << toHex(encoderStreamBytes);
-        EXPECT_EQ(toHex(headerBlock), "0000" "d9" "d1" "c1") << "前缀 0000 + 静态索引 25/17/1";
+        EXPECT_EQ(toHex(headerBlock), "0000"
+                                      "d9"
+                                      "d1"
+                                      "c1")
+                << "前缀 0000 + 静态索引 25/17/1";
         EXPECT_EQ(encoder.insertCount(), 0U);
         EXPECT_FALSE(encoder.hasBlockedStreams());
     }
@@ -619,7 +599,7 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DynamicTableInsertEvictAndIndexMapping)
     {
-        QpackDynamicTable table(64);
+        QpackDynamicTable                  table(64);
         const std::optional<std::uint64_t> firstIndex = table.insert(QpackHeaderField{"a", ""});
         ASSERT_TRUE(firstIndex.has_value()) << "33 字节的项放得进 64 字节的表";
         EXPECT_EQ(*firstIndex, 0U) << "首项的绝对索引是 0（§3.2.4）";
@@ -660,7 +640,7 @@ namespace AsynGyanis::Net
     TEST(Qpack, DynamicTableCapacityChangeKeepsAbsoluteIndexSpace)
     {
         QpackDynamicTable table(220);
-        for (const char *name : {"a", "b", "c"})
+        for (const char *name: {"a", "b", "c"})
         {
             ASSERT_TRUE(table.insert(QpackHeaderField{name, std::string(20, 'v')}).has_value());
         }
@@ -700,25 +680,25 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, RequiredInsertCountRestoresAcrossModuloWrap)
     {
-        QpackDecoder decoder(makeDecoderSettings(100, 100));
+        QpackDecoder               decoder(makeDecoderSettings(100, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
 
         // 十次插入，名依次是 0..9（每项 1 + 0 + 32 = 33 字节），容量 100 → 表里只留最近三项（绝对索引
         // 7/8/9）。名字取成可辨的字符，才能从解出的项反推还原出的 Required Insert Count。动态表初始容量
         // 为 0，插入前必须先来一条 Set Dynamic Table Capacity=100（§3.2.2、§4.3.1）
         const std::vector<std::uint8_t> instructions = hexToBytes("3f45"
-                                                                 "413000 413100 413200 413300 413400"
-                                                                 "413500 413600 413700 413800 413900");
-        const auto fed = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
+                                                                  "413000 413100 413200 413300 413400"
+                                                                  "413500 413600 413700 413800 413900");
+        const auto                      fed          = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
         ASSERT_TRUE(fed.has_value()) << fed.error().message;
         EXPECT_EQ(decoder.insertCount(), 10U);
         EXPECT_EQ(decoder.dynamicTableEntries().size(), 3U);
 
         // 规范原文算例：Encoded Insert Count = 4 → Required Insert Count = 9
         const std::vector<std::uint8_t> section = hexToBytes("0400"
-                                                            "80");
-        std::vector<QpackHeaderField> fields;
+                                                             "80");
+        std::vector<QpackHeaderField>   fields;
         controlBytes.clear();
         const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message << "：Base=9、相对索引 0 → 绝对索引 8，且 8 < 9";
@@ -727,15 +707,15 @@ namespace AsynGyanis::Net
         EXPECT_EQ(fields[0].name, "8") << "还原值只可能是 9：换成 10 就会指到绝对索引 9 那一项";
 
         // 同一取值在只收到 3 次插入的本端要还原成 3（离当前插入数最近的那一圈）
-        QpackDecoder shallowDecoder(makeDecoderSettings(100, 100));
-        std::vector<std::uint64_t> shallowUnblocked;
-        std::string shallowControl;
+        QpackDecoder                    shallowDecoder(makeDecoderSettings(100, 100));
+        std::vector<std::uint64_t>      shallowUnblocked;
+        std::string                     shallowControl;
         const std::vector<std::uint8_t> threeInserts = hexToBytes("3f45 413000 413100 413200");
         ASSERT_TRUE(shallowDecoder.feedEncoderStream(asSpan(threeInserts), shallowUnblocked, shallowControl).has_value());
         const std::vector<std::uint8_t> shallowSection = hexToBytes("0400"
-                                                                   "80");
-        std::vector<QpackHeaderField> shallowFields;
-        const auto shallowResult = shallowDecoder.decodeFieldSection(0, asSpan(shallowSection), shallowFields, shallowControl);
+                                                                    "80");
+        std::vector<QpackHeaderField>   shallowFields;
+        const auto                      shallowResult = shallowDecoder.decodeFieldSection(0, asSpan(shallowSection), shallowFields, shallowControl);
         ASSERT_TRUE(shallowResult.has_value()) << shallowResult.error().message << "：RIC=3 时 Base=3，绝对索引 2 仍在表里";
         EXPECT_EQ(shallowFields.size(), 1U);
         EXPECT_EQ(shallowFields[0].name, "2") << "还原成 3 才落在绝对索引 2 上，还原成 9 会因超出本端插入数而挂起";
@@ -746,12 +726,12 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, EncodedInsertCountMustBeZeroWhenTableHoldsNoEntry)
     {
-        QpackDecoder decoder(makeDecoderSettings(31, 0));
+        QpackDecoder                    decoder(makeDecoderSettings(31, 0));
         const std::vector<std::uint8_t> section = hexToBytes("0100"
-                                                            "80");
-        std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
-        const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+                                                             "80");
+        std::vector<QpackHeaderField>   fields;
+        std::string                     controlBytes;
+        const auto                      result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
         ASSERT_FALSE(result.has_value()) << "MaxEntries 为 0 时全Range 为 0：不得做取模，只能把非 0 编码值判错";
         EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
         EXPECT_TRUE(containsText(result.error().message, "4.5.1.1")) << result.error().message;
@@ -766,15 +746,15 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderBlocksStreamThenResumesAfterEncoderStream)
     {
-        QpackDecoder decoder(makeDecoderSettings(4096, 4));
+        QpackDecoder               decoder(makeDecoderSettings(4096, 4));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
 
         // 头块先到：Required Insert Count=1、Base=0、表后索引 0，但插入指令还在路上
         const std::vector<std::uint8_t> section = hexToBytes("0280"
-                                                            "10");
-        std::vector<QpackHeaderField> fields;
-        const auto blocked = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+                                                             "10");
+        std::vector<QpackHeaderField>   fields;
+        const auto                      blocked = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
         ASSERT_TRUE(blocked.has_value()) << blocked.error().message;
         EXPECT_EQ(*blocked, QpackFieldSectionDecodeStatus::Blocked);
         EXPECT_TRUE(fields.empty()) << "挂起时不产出字段行";
@@ -808,11 +788,11 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, ResumeBlockedFieldSectionReportsStillBlockedWithoutLosingState)
     {
-        QpackDecoder decoder(makeDecoderSettings(4096, 4));
+        QpackDecoder                    decoder(makeDecoderSettings(4096, 4));
         const std::vector<std::uint8_t> section = hexToBytes("0280"
-                                                            "10");
-        std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+                                                             "10");
+        std::vector<QpackHeaderField>   fields;
+        std::string                     controlBytes;
         ASSERT_EQ(*decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes), QpackFieldSectionDecodeStatus::Blocked);
 
         // 表还没补齐就急着续解：仍然是挂起，且挂起记录不能被消耗掉
@@ -831,11 +811,11 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderRejectsMoreBlockedStreamsThanAdvertised)
     {
-        QpackDecoder decoder(makeDecoderSettings(4096, 1));
+        QpackDecoder                    decoder(makeDecoderSettings(4096, 1));
         const std::vector<std::uint8_t> section = hexToBytes("0280"
-                                                            "10");
-        std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+                                                             "10");
+        std::vector<QpackHeaderField>   fields;
+        std::string                     controlBytes;
 
         EXPECT_EQ(*decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes), QpackFieldSectionDecodeStatus::Blocked);
         const auto secondStream = decoder.decodeFieldSection(4, asSpan(section), fields, controlBytes);
@@ -844,9 +824,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(decoder.blockedStreamCount(), 1U) << "判错的那条流不该被记账";
 
         // 同一条流上的第二段只是排队，不再占一个新名额
-        const std::vector<std::uint8_t> another = hexToBytes("0380"
-                                                            "10");
-        const auto sameStream = decoder.decodeFieldSection(0, asSpan(another), fields, controlBytes);
+        const std::vector<std::uint8_t> another    = hexToBytes("0380"
+                                                                "10");
+        const auto                      sameStream = decoder.decodeFieldSection(0, asSpan(another), fields, controlBytes);
         ASSERT_TRUE(sameStream.has_value()) << sameStream.error().message;
         EXPECT_EQ(*sameStream, QpackFieldSectionDecodeStatus::Blocked);
         EXPECT_EQ(decoder.blockedStreamCount(), 1U);
@@ -857,11 +837,11 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderStreamCancellationClearsBlockedState)
     {
-        QpackDecoder decoder(makeDecoderSettings(4096, 4));
+        QpackDecoder                    decoder(makeDecoderSettings(4096, 4));
         const std::vector<std::uint8_t> section = hexToBytes("0280"
-                                                            "10");
-        std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+                                                             "10");
+        std::vector<QpackHeaderField>   fields;
+        std::string                     controlBytes;
         ASSERT_EQ(*decoder.decodeFieldSection(4, asSpan(section), fields, controlBytes), QpackFieldSectionDecodeStatus::Blocked);
 
         controlBytes.clear();
@@ -876,24 +856,26 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, EncoderStopsReferencingUnacknowledgedEntriesWhenQuotaIsUsed)
     {
-        QpackEncoder encoder(220, 1, 220);
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        QpackEncoder                        encoder(220, 1, 220);
+        std::string                         headerBlock;
+        std::string                         encoderStreamBytes;
         const std::vector<QpackHeaderField> authority = makeFieldList({{":authority", "www.example.com"}});
 
         // 第一条流：插入并引用，本端承认这条流可能让对端阻塞
-        ASSERT_TRUE(encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(authority), headerBlock, encoderStreamBytes)
-                        .has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(authority), headerBlock, encoderStreamBytes).has_value());
         EXPECT_EQ(toHex(headerBlock), "028010");
         EXPECT_EQ(encoder.blockedStreamCount(), 1U);
 
         // 第二条流：名额已满 → 不许引用未确认项，也不许新插入，退化成带静态名引用的字面量
         std::string secondHeaderBlock;
         std::string secondEncoderStream;
-        ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(authority), secondHeaderBlock,
-                                               secondEncoderStream).has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(authority), secondHeaderBlock, secondEncoderStream).has_value());
         EXPECT_TRUE(toHex(secondEncoderStream).empty()) << "本段没有新的表项要告诉对端：" << toHex(secondEncoderStream);
-        EXPECT_EQ(toHex(secondHeaderBlock), "0000" "50" "0f" "7777772e6578616d706c652e636f6d") << "Required Insert Count 为 0";
+        EXPECT_EQ(toHex(secondHeaderBlock), "0000"
+                                            "50"
+                                            "0f"
+                                            "7777772e6578616d706c652e636f6d")
+                << "Required Insert Count 为 0";
         EXPECT_EQ(encoder.blockedStreamCount(), 1U) << "第二条流不该新增名额";
         EXPECT_EQ(encoder.insertCount(), 1U) << "不能引用的项也不必插入";
 
@@ -902,8 +884,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 1U);
         EXPECT_EQ(encoder.blockedStreamCount(), 0U);
         std::string thirdHeaderBlock;
-        ASSERT_TRUE(encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(authority), thirdHeaderBlock,
-                                               encoderStreamBytes).has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(authority), thirdHeaderBlock, encoderStreamBytes).has_value());
         EXPECT_EQ(toHex(thirdHeaderBlock), "020080") << "Base=1、Required Insert Count=1，相对索引 0 指向绝对索引 0";
         EXPECT_TRUE(encoderStreamBytes.empty()) << "引用已确认的项不需要任何指令";
         EXPECT_EQ(encoder.blockedStreamCount(), 0U) << "引用全在已知计数之内，这条流不会阻塞";
@@ -914,21 +895,18 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, EncoderTracksSectionAcknowledgementsAndCancellations)
     {
-        QpackEncoder encoder(220, 100, 220);
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        QpackEncoder                        encoder(220, 100, 220);
+        std::string                         headerBlock;
+        std::string                         encoderStreamBytes;
         const std::vector<QpackHeaderField> authority = makeFieldList({{":authority", "www.example.com"}});
-        const std::vector<QpackHeaderField> path = makeFieldList({{":path", "/sample/path"}});
+        const std::vector<QpackHeaderField> path      = makeFieldList({{":path", "/sample/path"}});
         const std::vector<QpackHeaderField> customKey = makeFieldList({{"custom-key", "custom-value"}});
 
         // 流 4 上两段头块各自插入一项，Required Insert Count 依次是 1 与 2，只占一个阻塞名额；流 8 那段
         // 引用自己新插入的项（Required Insert Count=3），才会在流 4 全部确认后仍然占着名额（§2.1.2）
-        ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(authority), headerBlock, encoderStreamBytes)
-                        .has_value());
-        ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(path), headerBlock, encoderStreamBytes)
-                        .has_value());
-        ASSERT_TRUE(encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(customKey), headerBlock, encoderStreamBytes)
-                        .has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(authority), headerBlock, encoderStreamBytes).has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(path), headerBlock, encoderStreamBytes).has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(customKey), headerBlock, encoderStreamBytes).has_value());
         EXPECT_EQ(encoder.insertCount(), 3U) << "三段各自插入一项（§2.1.1 允许插入任意字段行）";
         EXPECT_EQ(encoder.blockedStreamCount(), 2U);
 
@@ -961,11 +939,9 @@ namespace AsynGyanis::Net
         // 什么都没发过的流同样按忽略处理，且解析游标要照常前进：把「无据 Ack」与「一条合法指令」拼进
         // 同一趟喂进来，后一条必须照样生效——否则就是游标没走、把后面的字节当垃圾重解了一遍
         QpackEncoder strayThenValid(220, 100, 220);
-        std::string validHeaderBlock;
-        std::string validEncoderStreamBytes;
-        ASSERT_TRUE(strayThenValid.encodeFieldSection(4, std::span<const QpackHeaderField>(authority), validHeaderBlock,
-                                                     validEncoderStreamBytes)
-                        .has_value());
+        std::string  validHeaderBlock;
+        std::string  validEncoderStreamBytes;
+        ASSERT_TRUE(strayThenValid.encodeFieldSection(4, std::span<const QpackHeaderField>(authority), validHeaderBlock, validEncoderStreamBytes).has_value());
         // 0x90 是 Section Ack(stream=16)（本端从没在这条流上发过头块），0x84 才是刚发出去那段的确认
         const auto strayThenValidConsumed = strayThenValid.feedDecoderStream(asSpan(hexToBytes("9084")));
         ASSERT_TRUE(strayThenValidConsumed.has_value()) << "无据 Ack 之后同趟的合法指令被判坏了";
@@ -979,7 +955,7 @@ namespace AsynGyanis::Net
     TEST(Qpack, EncoderRejectsInvalidInsertCountIncrements)
     {
         QpackEncoder encoder(220, 100, 220);
-        const auto zeroIncrement = encoder.feedDecoderStream(asSpan(hexToBytes("00")));
+        const auto   zeroIncrement = encoder.feedDecoderStream(asSpan(hexToBytes("00")));
         ASSERT_FALSE(zeroIncrement.has_value()) << "增量为 0 非法";
         EXPECT_EQ(zeroIncrement.error().kind, QpackErrorKind::DecoderStreamError) << zeroIncrement.error().message;
 
@@ -995,31 +971,31 @@ namespace AsynGyanis::Net
     TEST(Qpack, EncoderCannotEvictEntriesStillReferenced)
     {
         QpackEncoder encoder(106, 100, 106);
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        std::string  headerBlock;
+        std::string  encoderStreamBytes;
 
         // 两项就把表填满：:authority(57) + :path(49)
-        const std::vector<QpackHeaderField> first = makeFieldList({{":authority", "www.example.com"},
-                                                                 {":path", "/sample/path"}});
-        ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(first), headerBlock, encoderStreamBytes)
-                        .has_value());
+        const std::vector<QpackHeaderField> first = makeFieldList({{":authority", "www.example.com"}, {":path", "/sample/path"}});
+        ASSERT_TRUE(encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(first), headerBlock, encoderStreamBytes).has_value());
         EXPECT_EQ(encoder.dynamicTableSizeByteCount(), 106U);
         encoderStreamBytes.clear();
 
         // 表满且两项都被未确认头块引用：新项挤不进来，只能退化成字面量
         const std::vector<QpackHeaderField> second = makeFieldList({{"custom-key", "custom-value"}});
-        ASSERT_TRUE(encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(second), headerBlock, encoderStreamBytes)
-                        .has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(second), headerBlock, encoderStreamBytes).has_value());
         EXPECT_TRUE(encoderStreamBytes.empty()) << "插不进去时不得留下半条插入指令：" << toHex(encoderStreamBytes);
         EXPECT_EQ(encoder.insertCount(), 2U);
-        EXPECT_EQ(toHex(headerBlock), "0000" "2703" "637573746f6d2d6b6579" "0c" "637573746f6d2d76616c7565")
-            << "双字面量表示：'001' + N=0 + 4 位前缀串的名长 10（3 位前缀满值 7 + 续字节 3）+ 值长 12";
+        EXPECT_EQ(toHex(headerBlock), "0000"
+                                      "2703"
+                                      "637573746f6d2d6b6579"
+                                      "0c"
+                                      "637573746f6d2d76616c7565")
+                << "双字面量表示：'001' + N=0 + 4 位前缀串的名长 10（3 位前缀满值 7 + 续字节 3）+ 值长 12";
 
         // 确认掉第一段后两项变得可淘汰，同样的字段这次就能插进表
         ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("84"))).has_value());
         encoderStreamBytes.clear();
-        ASSERT_TRUE(encoder.encodeFieldSection(12, std::span<const QpackHeaderField>(second), headerBlock, encoderStreamBytes)
-                        .has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(12, std::span<const QpackHeaderField>(second), headerBlock, encoderStreamBytes).has_value());
         EXPECT_EQ(toHex(encoderStreamBytes), "4a637573746f6d2d6b65790c637573746f6d2d76616c7565");
         EXPECT_EQ(encoder.insertCount(), 3U);
     }
@@ -1033,17 +1009,17 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderFeedsEncoderStreamOneByteAtATime)
     {
-        QpackDecoder decoder(makeDecoderSettings(220, 100));
-        const std::vector<std::uint8_t> instructions = hexToBytes("3fbd01"
-                                                                 "c00f 7777772e6578616d706c652e636f6d"
-                                                                 "c10c2f73616d706c652f70617468");
-        std::size_t totalConsumed = 0;
+        QpackDecoder                    decoder(makeDecoderSettings(220, 100));
+        const std::vector<std::uint8_t> instructions  = hexToBytes("3fbd01"
+                                                                   "c00f 7777772e6578616d706c652e636f6d"
+                                                                   "c10c2f73616d706c652f70617468");
+        std::size_t                     totalConsumed = 0;
         for (std::size_t index = 0; index < instructions.size(); ++index)
         {
-            std::vector<std::uint64_t> unblockedStreamIds;
-            std::string controlBytes;
+            std::vector<std::uint64_t>          unblockedStreamIds;
+            std::string                         controlBytes;
             const std::span<const std::uint8_t> oneByte(instructions.data() + index, 1);
-            const auto consumed = decoder.feedEncoderStream(oneByte, unblockedStreamIds, controlBytes);
+            const auto                          consumed = decoder.feedEncoderStream(oneByte, unblockedStreamIds, controlBytes);
             ASSERT_TRUE(consumed.has_value()) << "第 " << index << " 字节被判错：" << consumed.error().message;
             EXPECT_LE(*consumed, 1U) << "一次最多喂了一个字节";
             totalConsumed += *consumed;
@@ -1062,13 +1038,13 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderKeepsPartialInstructionForNextFeed)
     {
-        QpackDecoder decoder(makeDecoderSettings(220, 100));
+        QpackDecoder               decoder(makeDecoderSettings(220, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
 
         // 容量指令 + 第一条插入完整，第二条插入只给到名字索引
-        const std::vector<std::uint8_t> firstHalf = hexToBytes("3fbd01 c00f7777772e6578616d706c652e636f6d c1");
-        const auto firstConsumed = decoder.feedEncoderStream(asSpan(firstHalf), unblockedStreamIds, controlBytes);
+        const std::vector<std::uint8_t> firstHalf     = hexToBytes("3fbd01 c00f7777772e6578616d706c652e636f6d c1");
+        const auto                      firstConsumed = decoder.feedEncoderStream(asSpan(firstHalf), unblockedStreamIds, controlBytes);
         ASSERT_TRUE(firstConsumed.has_value()) << firstConsumed.error().message;
         EXPECT_EQ(*firstConsumed, firstHalf.size() - 1U) << "最后那个 0xc1 是半条指令，不该被消费";
         EXPECT_EQ(decoder.insertCount(), 1U);
@@ -1088,19 +1064,18 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, EncoderFeedsDecoderStreamAcrossBoundaries)
     {
-        QpackEncoder encoder(4096, 100, 4096);
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        QpackEncoder                                     encoder(4096, 100, 4096);
+        std::string                                      headerBlock;
+        std::string                                      encoderStreamBytes;
         const std::vector<std::vector<QpackHeaderField>> sections = {
-            makeFieldList({{"custom-key", "custom-value"}}),
-            makeFieldList({{"custom-key", "custom-value2"}}),
-            makeFieldList({{"custom-key", "custom-value3"}}),
+                makeFieldList({{"custom-key", "custom-value"}}),
+                makeFieldList({{"custom-key", "custom-value2"}}),
+                makeFieldList({{"custom-key", "custom-value3"}}),
         };
         for (std::size_t index = 0; index < sections.size(); ++index)
         {
             const std::uint64_t streamId = index == 2 ? 200 : index * 4;
-            ASSERT_TRUE(encoder.encodeFieldSection(streamId, std::span<const QpackHeaderField>(sections[index]), headerBlock,
-                                                   encoderStreamBytes).has_value());
+            ASSERT_TRUE(encoder.encodeFieldSection(streamId, std::span<const QpackHeaderField>(sections[index]), headerBlock, encoderStreamBytes).has_value());
         }
         EXPECT_EQ(encoder.insertCount(), 3U);
         EXPECT_EQ(encoder.blockedStreamCount(), 3U);
@@ -1112,8 +1087,8 @@ namespace AsynGyanis::Net
         };
 
         // 一整批里最后一条只到一半：前面两条都要生效，消费的字节数只算完整的那两条
-        const std::vector<std::uint8_t> batch = hexToBytes("80 84 ff");
-        const auto batchConsumed = encoder.feedDecoderStream(asSpan(batch));
+        const std::vector<std::uint8_t> batch         = hexToBytes("80 84 ff");
+        const auto                      batchConsumed = encoder.feedDecoderStream(asSpan(batch));
         ASSERT_TRUE(batchConsumed.has_value()) << batchConsumed.error().message;
         EXPECT_EQ(*batchConsumed, 2U) << "0xff 是半条 Section Ack，留下趟";
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 2U) << "确认了流 0（RIC=1）与流 4（RIC=2）";
@@ -1143,13 +1118,13 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderAcceptsCapacityChangeAndRejectsItAboveAdvertisedMaximum)
     {
-        QpackDecoder decoder(makeDecoderSettings(220, 100));
+        QpackDecoder               decoder(makeDecoderSettings(220, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
 
         // 容量 220 → 插一项 → 容量 0 清空表 → 容量再回到 220：四条指令一趟吃完
         const std::vector<std::uint8_t> instructions = hexToBytes("3fbd01 4a637573746f6d2d6b65790c637573746f6d2d76616c7565 20 3fbd01");
-        const auto consumed = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
+        const auto                      consumed     = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
         ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
         EXPECT_EQ(*consumed, instructions.size()) << "容量指令不必打头，中间的变更也照收";
         EXPECT_EQ(decoder.insertCount(), 1U) << "累计插入数不因清空而回退";
@@ -1168,11 +1143,10 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderRejectsEntryLargerThanCapacity)
     {
-        QpackDecoder decoder(makeDecoderSettings(220, 100));
+        QpackDecoder               decoder(makeDecoderSettings(220, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
-        ASSERT_TRUE(decoder.feedEncoderStream(asSpan(hexToBytes("3f01")), unblockedStreamIds, controlBytes).has_value())
-            << "先把容量设成 32 字节";
+        std::string                controlBytes;
+        ASSERT_TRUE(decoder.feedEncoderStream(asSpan(hexToBytes("3f01")), unblockedStreamIds, controlBytes).has_value()) << "先把容量设成 32 字节";
         EXPECT_EQ(decoder.tableCapacityByteCount(), 32U);
 
         const auto oversized = decoder.feedEncoderStream(asSpan(hexToBytes("416100")), unblockedStreamIds, controlBytes);
@@ -1187,36 +1161,36 @@ namespace AsynGyanis::Net
     {
         // 每个用例都用新的解码器：一条指令被判错后本层的表状态已不可信，接着喂只会重复报同一个错
         {
-            QpackDecoder emptyTable(makeDecoderSettings(220, 100));
+            QpackDecoder               emptyTable(makeDecoderSettings(220, 100));
             std::vector<std::uint64_t> unblockedStreamIds;
-            std::string controlBytes;
-            const auto badDuplicate = emptyTable.feedEncoderStream(asSpan(hexToBytes("02")), unblockedStreamIds, controlBytes);
+            std::string                controlBytes;
+            const auto                 badDuplicate = emptyTable.feedEncoderStream(asSpan(hexToBytes("02")), unblockedStreamIds, controlBytes);
             ASSERT_FALSE(badDuplicate.has_value()) << "空表上的 Duplicate（相对索引 2）没有来源项";
             EXPECT_EQ(badDuplicate.error().kind, QpackErrorKind::EncoderStreamError) << badDuplicate.error().message;
         }
         {
-            QpackDecoder emptyTable(makeDecoderSettings(220, 100));
+            QpackDecoder               emptyTable(makeDecoderSettings(220, 100));
             std::vector<std::uint64_t> unblockedStreamIds;
-            std::string controlBytes;
-            const auto badNameReference = emptyTable.feedEncoderStream(asSpan(hexToBytes("8000 00")), unblockedStreamIds, controlBytes);
+            std::string                controlBytes;
+            const auto                 badNameReference = emptyTable.feedEncoderStream(asSpan(hexToBytes("8000 00")), unblockedStreamIds, controlBytes);
             ASSERT_FALSE(badNameReference.has_value()) << "插入指令引用了不存在的动态表名";
             EXPECT_EQ(badNameReference.error().kind, QpackErrorKind::EncoderStreamError) << badNameReference.error().message;
         }
         {
-            QpackDecoder emptyTable(makeDecoderSettings(220, 100));
+            QpackDecoder               emptyTable(makeDecoderSettings(220, 100));
             std::vector<std::uint64_t> unblockedStreamIds;
-            std::string controlBytes;
-            const auto badStaticIndex = emptyTable.feedEncoderStream(asSpan(hexToBytes("ff24 00")), unblockedStreamIds, controlBytes);
+            std::string                controlBytes;
+            const auto                 badStaticIndex = emptyTable.feedEncoderStream(asSpan(hexToBytes("ff24 00")), unblockedStreamIds, controlBytes);
             ASSERT_FALSE(badStaticIndex.has_value()) << "静态表只有 99 项，索引 99 非法";
             EXPECT_EQ(badStaticIndex.error().kind, QpackErrorKind::EncoderStreamError) << badStaticIndex.error().message;
         }
         {
             // 引用落在被淘汰过的区间上：相对索引按当前插入数换算，越过表尾即判错（§2.2.3）
-            QpackDecoder decoder(makeDecoderSettings(64, 100));
+            QpackDecoder               decoder(makeDecoderSettings(64, 100));
             std::vector<std::uint64_t> unblockedStreamIds;
-            std::string controlBytes;
-            ASSERT_TRUE(decoder.feedEncoderStream(asSpan(hexToBytes("3f21 40 00 40 00 40 00")), unblockedStreamIds, controlBytes)
-                            .has_value()) << "容量 64 里塞进三次空项，最早那次插入的项已被淘汰";
+            std::string                controlBytes;
+            ASSERT_TRUE(decoder.feedEncoderStream(asSpan(hexToBytes("3f21 40 00 40 00 40 00")), unblockedStreamIds, controlBytes).has_value())
+                    << "容量 64 里塞进三次空项，最早那次插入的项已被淘汰";
             EXPECT_EQ(decoder.insertCount(), 3U);
             EXPECT_EQ(decoder.dynamicTableEntries().size(), 2U);
             const auto stale = decoder.feedEncoderStream(asSpan(hexToBytes("8200")), unblockedStreamIds, controlBytes);
@@ -1230,23 +1204,17 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderReadsHuffmanEncodedLiteralsFromLsqpackVector)
     {
-        QpackDecoder decoder(makeDecoderSettings(4096, 100));
+        QpackDecoder               decoder(makeDecoderSettings(4096, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
 
         // lsqpack 1.3.0 的编码器在容量 4096 的首个流上产出：全静态/字面量 + Huffman 头值
         const std::vector<std::uint8_t> headerBlock = hexToBytes("0000d1518860d5485f2bce9a68d7dd5f508825b650c3cb8170"
-                                                                "7f55861c01fb523805");
-        std::vector<QpackHeaderField> fields;
-        const auto result = decoder.decodeFieldSection(0, asSpan(headerBlock), fields, controlBytes);
+                                                                 "7f55861c01fb523805");
+        std::vector<QpackHeaderField>   fields;
+        const auto                      result = decoder.decodeFieldSection(0, asSpan(headerBlock), fields, controlBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
-        expectFieldsEqual(fields,
-                          {{":method", "GET"},
-                           {":path", "/index.html"},
-                           {":scheme", "https"},
-                           {"accept", "*/*"},
-                           {"user-agent", "curl/8.0.0"},
-                           {"cookie", "a=1; b=2"}},
+        expectFieldsEqual(fields, {{":method", "GET"}, {":path", "/index.html"}, {":scheme", "https"}, {"accept", "*/*"}, {"user-agent", "curl/8.0.0"}, {"cookie", "a=1; b=2"}},
                           "lsqpack 向量的头列表");
         EXPECT_FALSE(decoder.hasBlockedStreams());
     }
@@ -1256,35 +1224,27 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderReadsDynamicReferencesFromLsqpackVector)
     {
-        QpackDecoder decoder(makeDecoderSettings(4096, 100));
+        QpackDecoder               decoder(makeDecoderSettings(4096, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
 
         // ls-qpack 的编码器流以容量指令开头：动态表初始容量为 0，没有它就谈不上插入（§3.2.2）
         const std::vector<std::uint8_t> encoderStream = hexToBytes("3fe11f"
-                                                                  "c18860d5485f2bce9a68ff208825b650c3cb8170"
-                                                                  "7fc5861c01fb523805");
+                                                                   "c18860d5485f2bce9a68ff208825b650c3cb8170"
+                                                                   "7fc5861c01fb523805");
         ASSERT_TRUE(decoder.feedEncoderStream(asSpan(encoderStream), unblockedStreamIds, controlBytes).has_value());
         EXPECT_EQ(decoder.insertCount(), 3U) << "三条插入：:path、user-agent、cookie";
 
         const std::vector<std::uint8_t> headerBlock = hexToBytes("0482d110d7dd1112");
-        std::vector<QpackHeaderField> fields;
+        std::vector<QpackHeaderField>   fields;
         controlBytes.clear();
         const auto result = decoder.decodeFieldSection(4, asSpan(headerBlock), fields, controlBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
         EXPECT_EQ(*result, QpackFieldSectionDecodeStatus::Decoded) << "Required Insert Count=3、Base=0，全走表后索引";
-        expectFieldsEqual(fields,
-                          {{":method", "GET"},
-                           {":path", "/index.html"},
-                           {":scheme", "https"},
-                           {"accept", "*/*"},
-                           {"user-agent", "curl/8.0.0"},
-                           {"cookie", "a=1; b=2"}},
+        expectFieldsEqual(fields, {{":method", "GET"}, {":path", "/index.html"}, {":scheme", "https"}, {"accept", "*/*"}, {"user-agent", "curl/8.0.0"}, {"cookie", "a=1; b=2"}},
                           "lsqpack 第二段的头列表");
         // 插入指令里也带了 Huffman 编码的字面量名/值，表内容要解压正确
-        expectTableEqual(decoder.dynamicTableEntries(),
-                         {{"cookie", "a=1; b=2"}, {"user-agent", "curl/8.0.0"}, {":path", "/index.html"}},
-                         "lsqpack 三条插入的表内容");
+        expectTableEqual(decoder.dynamicTableEntries(), {{"cookie", "a=1; b=2"}, {"user-agent", "curl/8.0.0"}, {":path", "/index.html"}}, "lsqpack 三条插入的表内容");
     }
 
     /**
@@ -1292,15 +1252,15 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderAcceptsNeverIndexedLiteralRepresentation)
     {
-        QpackDecoder decoder(makeDecoderSettings(0, 0));
+        QpackDecoder                  decoder(makeDecoderSettings(0, 0));
         std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+        std::string                   controlBytes;
 
         // 0x71 = '01' + N=1 + T=1 + 静态索引 1（:path），值长度为 0
         const std::vector<std::uint8_t> section = hexToBytes("0000"
-                                                            "71"
-                                                            "00");
-        const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+                                                             "71"
+                                                             "00");
+        const auto                      result  = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
         expectFieldsEqual(fields, {{":path", ""}}, "N 位为 1 的带名引用字面量");
     }
@@ -1310,24 +1270,24 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderAcceptsZeroLengthStringLiterals)
     {
-        QpackDecoder decoder(makeDecoderSettings(0, 0));
+        QpackDecoder                  decoder(makeDecoderSettings(0, 0));
         std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+        std::string                   controlBytes;
 
         // 双字面量表示：0x20 = '001' + N=0 + H=0 + 名长(3 位前缀)=0，值同样是长度 0
         const std::vector<std::uint8_t> bothEmpty = hexToBytes("0000"
-                                                              "20"
-                                                              "00");
-        const auto result = decoder.decodeFieldSection(0, asSpan(bothEmpty), fields, controlBytes);
+                                                               "20"
+                                                               "00");
+        const auto                      result    = decoder.decodeFieldSection(0, asSpan(bothEmpty), fields, controlBytes);
         ASSERT_TRUE(result.has_value()) << result.error().message;
         expectFieldsEqual(fields, {{"", ""}}, "名与值都为空的字面量在本层是合法的（语义由 HTTP 层判）");
 
         // 带静态名引用（索引 0 = :authority）+ 空值：0x50 = '01' + N=0 + T=1 + 索引 0
         const std::vector<std::uint8_t> emptyValue = hexToBytes("0000"
-                                                               "50"
-                                                               "00");
-        std::vector<QpackHeaderField> secondFields;
-        const auto secondResult = decoder.decodeFieldSection(4, asSpan(emptyValue), secondFields, controlBytes);
+                                                                "50"
+                                                                "00");
+        std::vector<QpackHeaderField>   secondFields;
+        const auto                      secondResult = decoder.decodeFieldSection(4, asSpan(emptyValue), secondFields, controlBytes);
         ASSERT_TRUE(secondResult.has_value()) << secondResult.error().message;
         expectFieldsEqual(secondFields, {{":authority", ""}}, "静态表里 :authority 的值本就是空串");
     }
@@ -1337,28 +1297,28 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderRejectsMalformedHuffmanStrings)
     {
-        QpackDecoder decoder(makeDecoderSettings(0, 0));
+        QpackDecoder                  decoder(makeDecoderSettings(0, 0));
         std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+        std::string                   controlBytes;
 
         {
             // 'a'(00011) 之后残留 010：既不是完整码字也不是全 1 填充
             const std::vector<std::uint8_t> section = hexToBytes("0000 51 81 1a");
-            const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+            const auto                      result  = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
             ASSERT_FALSE(result.has_value()) << "填充位不是全 1 必须判错";
             EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
         }
         {
             // 30 位全 1 撞上 EOS 码字
             const std::vector<std::uint8_t> section = hexToBytes("0000 51 84 ffffffff");
-            const auto result = decoder.decodeFieldSection(4, asSpan(section), fields, controlBytes);
+            const auto                      result  = decoder.decodeFieldSection(4, asSpan(section), fields, controlBytes);
             ASSERT_FALSE(result.has_value()) << "编码数据里出现 EOS 必须判错";
             EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
         }
         {
             // 声明长度 8 字节却只给 1 字节
             const std::vector<std::uint8_t> section = hexToBytes("0000 51 88 ff");
-            const auto result = decoder.decodeFieldSection(8, asSpan(section), fields, controlBytes);
+            const auto                      result  = decoder.decodeFieldSection(8, asSpan(section), fields, controlBytes);
             ASSERT_FALSE(result.has_value()) << "字面量长度越界必须判错";
             EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
         }
@@ -1369,24 +1329,24 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderRejectsAbsurdStringDeclarationInsteadOfWaitingForBytes)
     {
-        QpackDecoder decoder(makeDecoderSettings(0, 0));
+        QpackDecoder                  decoder(makeDecoderSettings(0, 0));
         std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+        std::string                   controlBytes;
 
         // 值长度用 7 位前缀的多字节整数推到 2^62 以上：要么 62 位超限要么本端上限，总之必须立刻判错
         const std::vector<std::uint8_t> section = hexToBytes("0000 51"
-                                                            "ff ff ff ff ff ff ff ff ff ff 7f");
-        const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+                                                             "ff ff ff ff ff ff ff ff ff ff 7f");
+        const auto                      result  = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
         ASSERT_FALSE(result.has_value()) << "超长字面量必须判错，不能当成「还没到齐」";
         EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
 
         // 编码器流上的同一形状要判 EncoderStreamError：类别跟着通道走
-        QpackDecoder encoderStreamDecoder(makeDecoderSettings(4096, 100));
-        std::vector<std::uint64_t> unblockedStreamIds;
-        std::string decoderStreamBytes;
+        QpackDecoder                    encoderStreamDecoder(makeDecoderSettings(4096, 100));
+        std::vector<std::uint64_t>      unblockedStreamIds;
+        std::string                     decoderStreamBytes;
         const std::vector<std::uint8_t> instructions = hexToBytes("c0"
                                                                   "ff ff ff ff ff ff ff ff ff ff 7f");
-        const auto consumed = encoderStreamDecoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, decoderStreamBytes);
+        const auto                      consumed     = encoderStreamDecoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, decoderStreamBytes);
         ASSERT_FALSE(consumed.has_value()) << "字段值长度越界的插入指令";
         EXPECT_EQ(consumed.error().kind, QpackErrorKind::EncoderStreamError) << consumed.error().message;
     }
@@ -1396,24 +1356,24 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderRejectsTruncatedFieldSection)
     {
-        QpackDecoder decoder(makeDecoderSettings(0, 0));
+        QpackDecoder                  decoder(makeDecoderSettings(0, 0));
         std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+        std::string                   controlBytes;
 
         {
             const std::vector<std::uint8_t> noPrefix = hexToBytes("00");
-            const auto result = decoder.decodeFieldSection(0, asSpan(noPrefix), fields, controlBytes);
+            const auto                      result   = decoder.decodeFieldSection(0, asSpan(noPrefix), fields, controlBytes);
             ASSERT_FALSE(result.has_value()) << "只有 Required Insert Count 一个字节";
             EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
         }
         {
             const std::vector<std::uint8_t> noBase = hexToBytes("00");
-            const auto result = decoder.decodeFieldSection(4, asSpan(noBase), fields, controlBytes);
+            const auto                      result = decoder.decodeFieldSection(4, asSpan(noBase), fields, controlBytes);
             EXPECT_FALSE(result.has_value()) << "缺 Base 那一字节";
         }
         {
             const std::vector<std::uint8_t> cutLiteral = hexToBytes("0000 510b 2f69");
-            const auto result = decoder.decodeFieldSection(8, asSpan(cutLiteral), fields, controlBytes);
+            const auto                      result     = decoder.decodeFieldSection(8, asSpan(cutLiteral), fields, controlBytes);
             ASSERT_FALSE(result.has_value()) << "值声明 11 字节只给了 2 字节";
             EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
             EXPECT_TRUE(fields.empty()) << "失败时头列表必须是空的";
@@ -1425,40 +1385,40 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderRejectsOutOfRangeIndexes)
     {
-        QpackDecoder decoder(makeDecoderSettings(220, 100));
+        QpackDecoder               decoder(makeDecoderSettings(220, 100));
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string controlBytes;
+        std::string                controlBytes;
         feedAppendixB2Instructions(decoder);
 
         {
             // 静态表索引 99（0xdf 后跟 0x24）越界
             const std::vector<std::uint8_t> section = hexToBytes("0000 df24");
-            std::vector<QpackHeaderField> fields;
-            const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+            std::vector<QpackHeaderField>   fields;
+            const auto                      result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
             ASSERT_FALSE(result.has_value()) << "静态表只有 99 项";
             EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
         }
         {
             // Base=1 时相对索引 1 会算出负的绝对索引
             const std::vector<std::uint8_t> section = hexToBytes("0280 81");
-            std::vector<QpackHeaderField> fields;
-            const auto result = decoder.decodeFieldSection(4, asSpan(section), fields, controlBytes);
+            std::vector<QpackHeaderField>   fields;
+            const auto                      result = decoder.decodeFieldSection(4, asSpan(section), fields, controlBytes);
             ASSERT_FALSE(result.has_value()) << "相对索引不小于 Base";
             EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
         }
         {
             // Required Insert Count=1、Base=2：相对索引 0 指向绝对索引 1，不小于 RIC
             const std::vector<std::uint8_t> section = hexToBytes("0201 80");
-            std::vector<QpackHeaderField> fields;
-            const auto result = decoder.decodeFieldSection(8, asSpan(section), fields, controlBytes);
+            std::vector<QpackHeaderField>   fields;
+            const auto                      result = decoder.decodeFieldSection(8, asSpan(section), fields, controlBytes);
             ASSERT_FALSE(result.has_value()) << "引用的表项必须严格小于本段声明的 Required Insert Count（§2.2.3）";
             EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
         }
         {
             // 符号位为 1 且 Delta Base 不小于 Required Insert Count：Base 会为负（§4.5.1.2）
             const std::vector<std::uint8_t> section = hexToBytes("0281 10");
-            std::vector<QpackHeaderField> fields;
-            const auto result = decoder.decodeFieldSection(12, asSpan(section), fields, controlBytes);
+            std::vector<QpackHeaderField>   fields;
+            const auto                      result = decoder.decodeFieldSection(12, asSpan(section), fields, controlBytes);
             ASSERT_FALSE(result.has_value()) << "Required Insert Count=1、Delta Base=1 → Base 为负";
             EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
             EXPECT_TRUE(containsText(result.error().message, "4.5.1.2")) << result.error().message;
@@ -1470,13 +1430,13 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderRejectsImpossibleEncodedInsertCount)
     {
-        QpackDecoder decoder(makeDecoderSettings(32, 100));
+        QpackDecoder                  decoder(makeDecoderSettings(32, 100));
         std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+        std::string                   controlBytes;
 
         // MaxEntries=1 → FullRange=2；Encoded Insert Count 3 不可能由合规编码器产生
         const std::vector<std::uint8_t> section = hexToBytes("0300 80");
-        const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+        const auto                      result  = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
         ASSERT_FALSE(result.has_value());
         EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
         EXPECT_TRUE(containsText(result.error().message, "可表示范围")) << result.error().message;
@@ -1487,13 +1447,13 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, DecoderRejectsFieldSectionAboveAdvertisedSize)
     {
-        QpackDecoder decoder(makeDecoderSettings(0, 0, 40));
+        QpackDecoder                  decoder(makeDecoderSettings(0, 0, 40));
         std::vector<QpackHeaderField> fields;
-        std::string controlBytes;
+        std::string                   controlBytes;
 
         const std::vector<std::uint8_t> section = hexToBytes("0000"
-                                                            "510b 2f69 6e64 6578 2e68 746d 6c");
-        const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+                                                             "510b 2f69 6e64 6578 2e68 746d 6c");
+        const auto                      result  = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
         ASSERT_FALSE(result.has_value()) << ":path + /index.html + 32 = 48 字节，超过 40 字节的约束";
         EXPECT_EQ(result.error().kind, QpackErrorKind::FieldSectionTooLarge) << result.error().message;
         EXPECT_EQ(toHttp3ErrorCode(result.error().kind), Http3ErrorCode::ExcessiveLoad);
@@ -1501,7 +1461,7 @@ namespace AsynGyanis::Net
 
         // 上限为 0 表示不限（RFC 9114 §7.2.4.1 的默认取值）
         QpackDecoder unlimited(makeDecoderSettings(0, 0, 0));
-        const auto unlimitedResult = unlimited.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+        const auto   unlimitedResult = unlimited.decodeFieldSection(0, asSpan(section), fields, controlBytes);
         ASSERT_TRUE(unlimitedResult.has_value()) << unlimitedResult.error().message;
         EXPECT_EQ(fields.size(), 1U);
     }
@@ -1511,20 +1471,19 @@ namespace AsynGyanis::Net
      */
     TEST(Qpack, EncoderRejectsCapacityAbovePeerMaximum)
     {
-        QpackEncoder encoder(220, 100, 4096);
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        QpackEncoder                        encoder(220, 100, 4096);
+        std::string                         headerBlock;
+        std::string                         encoderStreamBytes;
         const std::vector<QpackHeaderField> fieldLines = makeFieldList({{":path", "/index.html"}});
 
-        const auto result = encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock,
-                                                      encoderStreamBytes);
+        const auto result = encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes);
         ASSERT_FALSE(result.has_value()) << "要求的容量超过对端上限时不得偷偷降到 220";
         EXPECT_EQ(result.error().kind, QpackErrorKind::InvalidLocalState) << result.error().message;
         EXPECT_TRUE(headerBlock.empty()) << "失败时不留半截头块";
         EXPECT_TRUE(encoderStreamBytes.empty());
 
         std::string capacityBytes;
-        const auto raised = encoder.setMaximumTableCapacityByteCount(221, capacityBytes);
+        const auto  raised = encoder.setMaximumTableCapacityByteCount(221, capacityBytes);
         ASSERT_FALSE(raised.has_value()) << "运行期改容量同样受对端上限约束";
         EXPECT_EQ(raised.error().kind, QpackErrorKind::InvalidLocalState) << raised.error().message;
         EXPECT_TRUE(capacityBytes.empty());
@@ -1536,8 +1495,8 @@ namespace AsynGyanis::Net
     TEST(Qpack, EncoderRejectsCapacityChangeThatWouldEvictReferencedEntries)
     {
         QpackEncoder encoder(220, 100, 220);
-        std::string headerBlock;
-        std::string encoderStreamBytes;
+        std::string  headerBlock;
+        std::string  encoderStreamBytes;
         ASSERT_TRUE(encodeAppendixB2FieldSection(encoder).size() > 0);
         EXPECT_EQ(encoder.dynamicTableSizeByteCount(), 106U);
 
@@ -1564,18 +1523,21 @@ namespace AsynGyanis::Net
     TEST(Qpack, EncoderStaysSilentWhenPeerDisablesDynamicTable)
     {
         QpackEncoder encoder(0, 0, 0);
-        std::string encoderStreamBytes;
+        std::string  encoderStreamBytes;
         ASSERT_TRUE(encoder.setMaximumTableCapacityByteCount(0, encoderStreamBytes).has_value()) << "本端要的容量与对端上限都是 0";
         EXPECT_TRUE(encoderStreamBytes.empty()) << "初始容量本就是 0，无需通告（§3.2.2）";
 
-        std::string headerBlock;
-        const std::vector<QpackHeaderField> fieldLines = makeFieldList({{"custom-key", "custom-value"},
-                                                                        {":path", "/"}});
-        ASSERT_TRUE(encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes)
-                        .has_value());
+        std::string                         headerBlock;
+        const std::vector<QpackHeaderField> fieldLines = makeFieldList({{"custom-key", "custom-value"}, {":path", "/"}});
+        ASSERT_TRUE(encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes).has_value());
         EXPECT_TRUE(encoderStreamBytes.empty()) << "§3.2.3：对端上限为 0 时不得发任何编码器流指令";
         EXPECT_EQ(encoder.insertCount(), 0U);
-        EXPECT_EQ(toHex(headerBlock), "0000" "2703" "637573746f6d2d6b6579" "0c" "637573746f6d2d76616c7565" "c1");
+        EXPECT_EQ(toHex(headerBlock), "0000"
+                                      "2703"
+                                      "637573746f6d2d6b6579"
+                                      "0c"
+                                      "637573746f6d2d76616c7565"
+                                      "c1");
     }
 
     // ============================================================================
@@ -1597,19 +1559,18 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(encoder.setMaximumTableCapacityByteCount(4096, capacityBytes).has_value());
         std::string accumulatedInstructions = capacityBytes;
 
-        std::vector<std::vector<QpackHeaderField>> expectedSections;
-        std::vector<std::string> headerBlocks;
+        std::vector<std::vector<QpackHeaderField>>     expectedSections;
+        std::vector<std::string>                       headerBlocks;
         const std::vector<std::vector<FieldListEntry>> sections = {
-            {{":method", "POST"}, {":path", "/submit"}, {"content-type", "application/json"}},
-            {{":method", "POST"}, {":path", "/submit"}, {"content-type", "application/json"}, {"x-request-id", "0123456789abcdef"}},
-            {{":status", "200"}, {"content-type", "application/json"}, {"x-request-id", "0123456789abcdef"}},
+                {{":method", "POST"}, {":path", "/submit"}, {"content-type", "application/json"}},
+                {{":method", "POST"}, {":path", "/submit"}, {"content-type", "application/json"}, {"x-request-id", "0123456789abcdef"}},
+                {{":status", "200"}, {"content-type", "application/json"}, {"x-request-id", "0123456789abcdef"}},
         };
         for (std::size_t index = 0; index < sections.size(); ++index)
         {
             std::vector<QpackHeaderField> fieldLines = makeFieldList(sections[index]);
-            std::string localEncoderStream;
-            const auto encoded = encoder.encodeFieldSection(index * 4, std::span<const QpackHeaderField>(fieldLines), headerBlock,
-                                                           localEncoderStream);
+            std::string                   localEncoderStream;
+            const auto                    encoded = encoder.encodeFieldSection(index * 4, std::span<const QpackHeaderField>(fieldLines), headerBlock, localEncoderStream);
             ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
             expectedSections.push_back(std::move(fieldLines));
             headerBlocks.push_back(headerBlock);
@@ -1619,12 +1580,12 @@ namespace AsynGyanis::Net
 
         // 最坏顺序：三段头块都先于编码器流指令到达
         std::vector<std::uint64_t> blockedStreamIds;
-        std::string decoderStreamBytes;
+        std::string                decoderStreamBytes;
         for (std::size_t index = 0; index < headerBlocks.size(); ++index)
         {
             const std::vector<std::uint8_t> sectionBytes(headerBlocks[index].begin(), headerBlocks[index].end());
-            std::vector<QpackHeaderField> fields;
-            const auto result = decoder.decodeFieldSection(index * 4, asSpan(sectionBytes), fields, decoderStreamBytes);
+            std::vector<QpackHeaderField>   fields;
+            const auto                      result = decoder.decodeFieldSection(index * 4, asSpan(sectionBytes), fields, decoderStreamBytes);
             ASSERT_TRUE(result.has_value()) << result.error().message;
             EXPECT_EQ(*result, QpackFieldSectionDecodeStatus::Blocked) << "第 " << index << " 段引用的表项还没收到";
             EXPECT_TRUE(fields.empty()) << "挂起时不产出字段行";
@@ -1634,13 +1595,13 @@ namespace AsynGyanis::Net
 
         // 编码器流补齐后，报出的可续解流要能一一解回原始头列表
         const std::vector<std::uint8_t> instructionBytes(accumulatedInstructions.begin(), accumulatedInstructions.end());
-        std::vector<std::uint64_t> unblockedStreamIds;
+        std::vector<std::uint64_t>      unblockedStreamIds;
         decoderStreamBytes.clear();
         const auto fed = decoder.feedEncoderStream(asSpan(instructionBytes), unblockedStreamIds, decoderStreamBytes);
         ASSERT_TRUE(fed.has_value()) << fed.error().message;
         EXPECT_EQ(unblockedStreamIds.size(), blockedStreamIds.size()) << "三条流都该被报出来";
 
-        for (const std::uint64_t streamId : blockedStreamIds)
+        for (const std::uint64_t streamId: blockedStreamIds)
         {
             std::vector<QpackHeaderField> fields;
             decoderStreamBytes.clear();
@@ -1675,29 +1636,24 @@ namespace AsynGyanis::Net
      */
     TEST(QpackAllocations, EncodesResponseHeaderSectionIntoReusedBuffersWithoutAllocating)
     {
-        QpackEncoder encoder(0, 0, 0);
+        QpackEncoder                        encoder(0, 0, 0);
         const std::vector<QpackHeaderField> fieldLines = makeFieldList({
-            {":status", "200"},
-            {"content-type", "application/json"},
-            {"content-length", "1024"},
-            {"date", "Tue, 23 Sep 2025 10:00:00 GMT"},
-            {"server", "AsynGyanis"},
-            {"x-trace-id", "0f1e2d3c4b5a6978"},
+                {":status", "200"},
+                {"content-type", "application/json"},
+                {"content-length", "1024"},
+                {"date", "Tue, 23 Sep 2025 10:00:00 GMT"},
+                {"server", "AsynGyanis"},
+                {"x-trace-id", "0f1e2d3c4b5a6978"},
         });
 
         std::string headerBlock;
         std::string encoderStreamBytes;
-        ASSERT_TRUE(encoder.encodeFieldSection(0U, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes)
-                        .has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(0U, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes).has_value());
         const std::size_t blockByteCount = headerBlock.size();
         ASSERT_GT(blockByteCount, 40U) << "这段短到看不出扩容代价，读数量的不是被测形状";
 
         const auto encodeOnce = [&encoder, &fieldLines, &headerBlock, &encoderStreamBytes]() -> std::size_t
-        {
-            return encoder.encodeFieldSection(0U, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes)
-                       ? headerBlock.size()
-                       : 0U;
-        };
+        { return encoder.encodeFieldSection(0U, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes) ? headerBlock.size() : 0U; };
 
         resetAllocationHistogram();
         const AllocationProfile profile = measurePerOperation(encodeOnce);
@@ -1710,13 +1666,11 @@ namespace AsynGyanis::Net
         {
             if (histogram[bucket] != 0)
             {
-                std::printf("  桶 %zu-%zu 字节：一千段合计 %llu 次\n", bucket * 16U, bucket * 16U + 15U,
-                            static_cast<unsigned long long>(histogram[bucket]));
+                std::printf("  桶 %zu-%zu 字节：一千段合计 %llu 次\n", bucket * 16U, bucket * 16U + 15U, static_cast<unsigned long long>(histogram[bucket]));
             }
         }
-        EXPECT_EQ(profile.totalAllocations, 0ULL)
-                << "编一段响应头块仍在碰堆：读数为每次 "
-                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+        EXPECT_EQ(profile.totalAllocations, 0ULL) << "编一段响应头块仍在碰堆：读数为每次 " << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations)
+                                                  << " 次";
     }
 
     /**
@@ -1727,31 +1681,29 @@ namespace AsynGyanis::Net
      */
     TEST(QpackAllocations, DecodesRequestHeaderSectionIntoReusedBuffersWithoutAllocating)
     {
-        QpackEncoder encoder(0, 0, 0);
-        QpackDecoder decoder(makeDecoderSettings(0, 0));
+        QpackEncoder                        encoder(0, 0, 0);
+        QpackDecoder                        decoder(makeDecoderSettings(0, 0));
         const std::vector<QpackHeaderField> requestLines = makeFieldList({
-            {":method", "POST"},
-            {":scheme", "https"},
-            {":path", "/api/v1/orders/12345?page=2"},
-            {":authority", "api.example.com"},
-            {"user-agent", "AsynGyanisH3Client/1.0"},
-            {"accept", "application/json;charset=utf-8"},
-            {"content-type", "application/json"},
-            {"x-request-id", "0f1e2d3c4b5a69789abcdef"},
+                {":method", "POST"},
+                {":scheme", "https"},
+                {":path", "/api/v1/orders/12345?page=2"},
+                {":authority", "api.example.com"},
+                {"user-agent", "AsynGyanisH3Client/1.0"},
+                {"accept", "application/json;charset=utf-8"},
+                {"content-type", "application/json"},
+                {"x-request-id", "0f1e2d3c4b5a69789abcdef"},
         });
-        std::string encoded;
-        std::string instructions;
-        ASSERT_TRUE(encoder.encodeFieldSection(0U, std::span<const QpackHeaderField>(requestLines), encoded, instructions)
-                        .has_value());
+        std::string                         encoded;
+        std::string                         instructions;
+        ASSERT_TRUE(encoder.encodeFieldSection(0U, std::span<const QpackHeaderField>(requestLines), encoded, instructions).has_value());
         ASSERT_TRUE(instructions.empty()) << "这台形状不该产生编码器流指令，否则读的是动态表路径";
         const std::vector<std::uint8_t> fieldSection(encoded.begin(), encoded.end());
 
         std::vector<QpackHeaderField> fields;
-        std::string decoderStreamBytes;
-        const auto decodeOnce = [&decoder, &fieldSection, &fields, &decoderStreamBytes]() -> std::size_t
+        std::string                   decoderStreamBytes;
+        const auto                    decodeOnce = [&decoder, &fieldSection, &fields, &decoderStreamBytes]() -> std::size_t
         {
-            const auto decoded = decoder.decodeFieldSection(0U, std::span<const std::uint8_t>(fieldSection), fields,
-                                                            decoderStreamBytes);
+            const auto decoded = decoder.decodeFieldSection(0U, std::span<const std::uint8_t>(fieldSection), fields, decoderStreamBytes);
             return decoded.has_value() && *decoded == QpackFieldSectionDecodeStatus::Decoded ? fields.size() : 0U;
         };
 
@@ -1766,8 +1718,7 @@ namespace AsynGyanis::Net
         {
             if (histogram[bucket] != 0)
             {
-                std::printf("  桶 %zu-%zu 字节：一千段合计 %llu 次\n", bucket * 16U, bucket * 16U + 15U,
-                            static_cast<unsigned long long>(histogram[bucket]));
+                std::printf("  桶 %zu-%zu 字节：一千段合计 %llu 次\n", bucket * 16U, bucket * 16U + 15U, static_cast<unsigned long long>(histogram[bucket]));
             }
         }
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * requestLines.size()) << "有一千段没解出全部字段，读数不可信";
@@ -1776,7 +1727,6 @@ namespace AsynGyanis::Net
         // 要经过三个带错误出参的解析助手，实测每次 3 条 * 字段行数。交付点若改成临时量再移动，
         // 同一形状实测涨到每次 45 次，当场越过这条线。
         EXPECT_LE(profile.totalAllocations, kMeasurementIterations * requestLines.size() * 4U)
-                << "解一段请求头块的逐条分配超线：读数为每次 "
-                << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+                << "解一段请求头块的逐条分配超线：读数为每次 " << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
 } // namespace AsynGyanis::Net

@@ -74,11 +74,11 @@ namespace AsynGyanis::Core
              */
             void skipExhaustedSegments() noexcept;
 
-            const Platform::Socket::WriteBuffer *m_buffers;       ///< 段数组（非拥有）
-            std::size_t                          m_bufferCount;   ///< 段数
-            std::size_t                          m_totalLength{0}; ///< 各段长度之和（构造时累加，必须有初值）
-            std::size_t                          m_sentLength{0}; ///< 已发出的字节数
-            std::size_t                          m_pendingIndex{0};  ///< 下一个待发段的下标
+            const Platform::Socket::WriteBuffer *m_buffers;            ///< 段数组（非拥有）
+            std::size_t                          m_bufferCount;        ///< 段数
+            std::size_t                          m_totalLength{0};     ///< 各段长度之和（构造时累加，必须有初值）
+            std::size_t                          m_sentLength{0};      ///< 已发出的字节数
+            std::size_t                          m_pendingIndex{0};    ///< 下一个待发段的下标
             std::size_t                          m_offsetInPending{0}; ///< 该段内已发出的字节数
         };
     } // namespace detail

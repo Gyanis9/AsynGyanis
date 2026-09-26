@@ -31,14 +31,14 @@ namespace AsynGyanis::Core
         {
             return std::make_shared<Connection>(AsyncSocket(loop, -1));
         }
-    }
+    } // namespace
 
     /**
      * @brief 验证 add() 让活跃计数加一（计数是过载保护的判据，不能多算少算）
      */
     TEST(ConnectionManager, AddIncrementsActiveCount)
     {
-        EventLoop loop;
+        EventLoop         loop;
         ConnectionManager manager;
         ASSERT_EQ(manager.activeCount(), 0);
 
@@ -54,8 +54,8 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, RemoveByPointerDecrementsActiveCount)
     {
-        EventLoop loop;
-        ConnectionManager manager;
+        EventLoop                   loop;
+        ConnectionManager           manager;
         std::shared_ptr<Connection> connection = makeDummyConnection(loop);
 
         manager.add(connection);
@@ -70,7 +70,7 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, RemoveNullPointerIsNoOp)
     {
-        EventLoop loop;
+        EventLoop         loop;
         ConnectionManager manager;
 
         EXPECT_NO_THROW(manager.remove(nullptr));
@@ -82,7 +82,7 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, AddNullPointerIsIgnored)
     {
-        EventLoop loop;
+        EventLoop         loop;
         ConnectionManager manager;
 
         manager.add(nullptr);
@@ -94,11 +94,11 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, TracksMultipleConnections)
     {
-        EventLoop loop;
+        EventLoop         loop;
         ConnectionManager manager;
-        const auto connection1 = makeDummyConnection(loop);
-        const auto connection2 = makeDummyConnection(loop);
-        const auto connection3 = makeDummyConnection(loop);
+        const auto        connection1 = makeDummyConnection(loop);
+        const auto        connection2 = makeDummyConnection(loop);
+        const auto        connection3 = makeDummyConnection(loop);
 
         manager.add(connection1);
         manager.add(connection2);
@@ -117,10 +117,10 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, ShutdownRequestsStopOnAllConnections)
     {
-        EventLoop loop;
+        EventLoop         loop;
         ConnectionManager manager;
-        const auto connection1 = makeDummyConnection(loop);
-        const auto connection2 = makeDummyConnection(loop);
+        const auto        connection1 = makeDummyConnection(loop);
+        const auto        connection2 = makeDummyConnection(loop);
 
         manager.add(connection1);
         manager.add(connection2);
@@ -140,7 +140,7 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, AddAfterShutdownClosesNewcomerImmediately)
     {
-        EventLoop loop;
+        EventLoop         loop;
         ConnectionManager manager;
         manager.shutdown();
 
@@ -169,17 +169,18 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, WaitAllReturnsOnceAllConnectionsRemoved)
     {
-        EventLoop loop;
-        ConnectionManager manager;
+        EventLoop                   loop;
+        ConnectionManager           manager;
         std::shared_ptr<Connection> connection = makeDummyConnection(loop);
         manager.add(connection);
 
         std::atomic<bool> finished{false};
-        std::thread waiter([&manager, &finished]()
-        {
-            manager.waitAll();
-            finished.store(true);
-        });
+        std::thread       waiter(
+                [&manager, &finished]()
+                {
+                    manager.waitAll();
+                    finished.store(true);
+                });
 
         // 集合非空时 waitAll 必然不会返回（不依赖线程调度时序，确定成立）
         ASSERT_FALSE(finished.load());
@@ -196,8 +197,8 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, RemoveUnknownPointerIsNoOp)
     {
-        EventLoop loop;
-        ConnectionManager manager;
+        EventLoop                   loop;
+        ConnectionManager           manager;
         std::shared_ptr<Connection> connection = makeDummyConnection(loop);
         manager.add(connection);
 
@@ -225,15 +226,15 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, SnapshotIsIndependentCopyHoldingConnectionsAlive)
     {
-        EventLoop loop;
+        EventLoop         loop;
         ConnectionManager manager;
-        const auto connection1 = makeDummyConnection(loop);
-        const auto connection2 = makeDummyConnection(loop);
+        const auto        connection1 = makeDummyConnection(loop);
+        const auto        connection2 = makeDummyConnection(loop);
 
         manager.add(connection1);
         manager.add(connection2);
 
-        std::vector<std::shared_ptr<Connection> > snapshot = manager.snapshot();
+        std::vector<std::shared_ptr<Connection>> snapshot = manager.snapshot();
         ASSERT_EQ(snapshot.size(), 2U);
 
         const std::weak_ptr<Connection> firstConnectionRef = connection1;
@@ -253,7 +254,7 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionManager, SharedMirrorAggregatesCountsWithoutDrifting)
     {
-        EventLoop loop;
+        EventLoop                  loop;
         std::atomic<std::uint64_t> sharedCount{0};
 
         ConnectionManager firstManager;
@@ -290,4 +291,4 @@ namespace AsynGyanis::Core
         EXPECT_EQ(sharedCount.load(), 0U);
         EXPECT_EQ(firstManager.activeCount(), 1U);
     }
-}
+} // namespace AsynGyanis::Core

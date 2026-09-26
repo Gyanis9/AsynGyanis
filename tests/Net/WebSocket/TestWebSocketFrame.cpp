@@ -47,8 +47,7 @@ namespace AsynGyanis::Net
          * @param maskKey 4 字节掩码键
          * @return std::string 帧头字节
          */
-        std::string makeMaskedFrameHead(const WebSocketOpCode opCode, const std::size_t payloadLength, const bool isFinal,
-                                        const std::array<std::uint8_t, 4> &maskKey)
+        std::string makeMaskedFrameHead(const WebSocketOpCode opCode, const std::size_t payloadLength, const bool isFinal, const std::array<std::uint8_t, 4> &maskKey)
         {
             std::string frame;
             frame.push_back(static_cast<char>(static_cast<std::uint8_t>(opCode) | (isFinal ? 0x80U : 0x00U)));
@@ -56,14 +55,12 @@ namespace AsynGyanis::Net
             if (payloadLength < 126)
             {
                 frame.push_back(static_cast<char>(0x80U | payloadLength));
-            }
-            else if (payloadLength < 65536)
+            } else if (payloadLength < 65536)
             {
                 frame.push_back(static_cast<char>(0x80U | 126U));
                 frame.push_back(static_cast<char>((payloadLength >> 8) & 0xFFU));
                 frame.push_back(static_cast<char>(payloadLength & 0xFFU));
-            }
-            else
+            } else
             {
                 frame.push_back(static_cast<char>(0x80U | 127U));
                 for (int shiftBitCount = 56; shiftBitCount >= 0; shiftBitCount -= 8)
@@ -108,13 +105,12 @@ namespace AsynGyanis::Net
          */
         std::string maskUnmaskedFrame(const std::string_view serverFrame, const std::array<std::uint8_t, 4> &maskKey = kRfcExampleMaskKey)
         {
-            std::size_t headerLength = 2;
-            const auto lengthFieldValue = static_cast<unsigned char>(serverFrame[1]);
+            std::size_t headerLength     = 2;
+            const auto  lengthFieldValue = static_cast<unsigned char>(serverFrame[1]);
             if (lengthFieldValue == 126)
             {
                 headerLength += 2;
-            }
-            else if (lengthFieldValue == 127)
+            } else if (lengthFieldValue == 127)
             {
                 headerLength += 8;
             }
@@ -148,7 +144,7 @@ namespace AsynGyanis::Net
             }
 
             const std::size_t extensionByteCount = lengthFieldValue == 126 ? 2 : 8;
-            std::uint64_t payloadLength = 0;
+            std::uint64_t     payloadLength      = 0;
             for (std::size_t index = 0; index < extensionByteCount; ++index)
             {
                 payloadLength = (payloadLength << 8) | static_cast<unsigned char>(frame[2 + index]);
@@ -222,7 +218,7 @@ namespace AsynGyanis::Net
         std::vector<WebSocketFrame> decodeAllInOneFeed(WebSocketFrameDecoder &decoder, const std::string_view stream)
         {
             std::vector<WebSocketFrame> frames;
-            std::size_t offset = 0;
+            std::size_t                 offset = 0;
             while (offset < stream.size())
             {
                 const WebSocketDecodeStatus status = decoder.parse(stream.data() + offset, stream.size() - offset);
@@ -286,7 +282,7 @@ namespace AsynGyanis::Net
     TEST(WebSocketFrame, DecoderUnmasksRfc6455MaskedHelloTextFrame)
     {
         WebSocketFrameDecoder decoder;
-        const std::string rfcMaskedFrame = "\x81\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58";
+        const std::string     rfcMaskedFrame = "\x81\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58";
 
         const WebSocketFrame frame = feedAndTakeFrame(decoder, rfcMaskedFrame);
 
@@ -312,7 +308,7 @@ namespace AsynGyanis::Net
 
         // 掩码键与负载取自 §5.7 示例 4 的带掩码 Pong 帧，只把操作码换成客户端方向的 Ping
         WebSocketFrameDecoder decoder;
-        const WebSocketFrame frame = feedAndTakeFrame(decoder, "\x89\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58");
+        const WebSocketFrame  frame = feedAndTakeFrame(decoder, "\x89\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58");
 
         expectFrameEquals(frame, WebSocketOpCode::Ping, "Hello");
     }
@@ -329,8 +325,7 @@ namespace AsynGyanis::Net
 
         const std::string sixtyFourKiBBytePayload(65536, 'y');
         const std::string sixtyFourBitFrame = encodeWebSocketFrame(WebSocketOpCode::Binary, sixtyFourKiBBytePayload);
-        EXPECT_EQ(sixtyFourBitFrame.substr(0, 10), makeBytes({0x82, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}))
-                << "64 KiB 要用 64 位长度域（示例 6）";
+        EXPECT_EQ(sixtyFourBitFrame.substr(0, 10), makeBytes({0x82, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00})) << "64 KiB 要用 64 位长度域（示例 6）";
         // 64 位长度的最高位必须为 0（RFC 6455 §5.2）
         EXPECT_EQ(static_cast<unsigned char>(sixtyFourBitFrame[2]) & 0x80U, 0U);
         EXPECT_EQ(sixtyFourBitFrame.size(), 10U + sixtyFourKiBBytePayload.size());
@@ -375,7 +370,7 @@ namespace AsynGyanis::Net
             const std::string clientFrame = makeMaskedClientFrame(WebSocketOpCode::Binary, payload);
 
             WebSocketFrameDecoder decoder;
-            const WebSocketFrame frame = feedAndTakeFrame(decoder, clientFrame);
+            const WebSocketFrame  frame = feedAndTakeFrame(decoder, clientFrame);
 
             EXPECT_EQ(decoder.consumedByteCount(), clientFrame.size()) << "负载长度 " << payloadLength;
             expectFrameEquals(frame, WebSocketOpCode::Binary, payload);
@@ -392,11 +387,11 @@ namespace AsynGyanis::Net
     TEST(WebSocketFrame, UnmaskingCyclesTheFourByteKey)
     {
         const std::array<std::uint8_t, 4> maskKey{0x01, 0x02, 0x03, 0x04};
-        const std::string payload = "0123456789";
+        const std::string                 payload = "0123456789";
 
         WebSocketFrameDecoder decoder;
-        const std::string clientFrame = makeMaskedClientFrame(WebSocketOpCode::Binary, payload, true, maskKey);
-        const WebSocketFrame frame = feedAndTakeFrame(decoder, clientFrame);
+        const std::string     clientFrame = makeMaskedClientFrame(WebSocketOpCode::Binary, payload, true, maskKey);
+        const WebSocketFrame  frame       = feedAndTakeFrame(decoder, clientFrame);
 
         // 线路上的字节确实被异或过：键非 0，密文与明文不可能相等
         EXPECT_NE(clientFrame.substr(clientFrame.size() - payload.size()), payload);
@@ -408,15 +403,14 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketFrame, RoundTripsEveryOpCodeThroughTheMaskingStep)
     {
-        for (const WebSocketOpCode opCode: {WebSocketOpCode::Text, WebSocketOpCode::Binary, WebSocketOpCode::Ping, WebSocketOpCode::Pong,
-                                            WebSocketOpCode::Close})
+        for (const WebSocketOpCode opCode: {WebSocketOpCode::Text, WebSocketOpCode::Binary, WebSocketOpCode::Ping, WebSocketOpCode::Pong, WebSocketOpCode::Close})
         {
             // 负载刻意含 NUL 与高位字节：文本帧与二进制帧都必须按「指针 + 长度」处理
             const std::string payload = opCode == WebSocketOpCode::Text ? std::string("hello 世界") : makeBytes({0x00, 0x7f, 0x80, 0xff});
 
-            const std::string serverFrame = encodeWebSocketFrame(opCode, payload);
+            const std::string     serverFrame = encodeWebSocketFrame(opCode, payload);
             WebSocketFrameDecoder decoder;
-            const WebSocketFrame frame = feedAndTakeFrame(decoder, maskUnmaskedFrame(serverFrame));
+            const WebSocketFrame  frame = feedAndTakeFrame(decoder, maskUnmaskedFrame(serverFrame));
 
             expectFrameEquals(frame, opCode, payload);
         }
@@ -432,8 +426,8 @@ namespace AsynGyanis::Net
     TEST(WebSocketFrame, ReassemblesFragmentedMessageIntoOneFrame)
     {
         WebSocketFrameDecoder decoder;
-        const std::string firstFragment = makeMaskedClientFrame(WebSocketOpCode::Text, "Hel", false);
-        const std::string lastFragment = makeMaskedClientFrame(WebSocketOpCode::Continuation, "lo", true);
+        const std::string     firstFragment = makeMaskedClientFrame(WebSocketOpCode::Text, "Hel", false);
+        const std::string     lastFragment  = makeMaskedClientFrame(WebSocketOpCode::Continuation, "lo", true);
 
         EXPECT_EQ(feed(decoder, firstFragment), WebSocketDecodeStatus::NeedMore) << "中间片段不构成完整消息";
 
@@ -474,14 +468,12 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketFrame, DeliversControlFramesIndividually)
     {
-        const std::string maximumControlPayload(125, 'p');
+        const std::string     maximumControlPayload(125, 'p');
         WebSocketFrameDecoder decoder;
 
-        expectFrameEquals(feedAndTakeFrame(decoder, makeMaskedClientFrame(WebSocketOpCode::Pong, maximumControlPayload)),
-                          WebSocketOpCode::Pong, maximumControlPayload);
+        expectFrameEquals(feedAndTakeFrame(decoder, makeMaskedClientFrame(WebSocketOpCode::Pong, maximumControlPayload)), WebSocketOpCode::Pong, maximumControlPayload);
         // Close 帧的负载在这里只当字节处理：状态码与原因文本的语义校验属于上层
-        expectFrameEquals(feedAndTakeFrame(decoder, makeMaskedClientFrame(WebSocketOpCode::Close, makeBytes({0x03, 0xe8}))),
-                          WebSocketOpCode::Close, makeBytes({0x03, 0xe8}));
+        expectFrameEquals(feedAndTakeFrame(decoder, makeMaskedClientFrame(WebSocketOpCode::Close, makeBytes({0x03, 0xe8}))), WebSocketOpCode::Close, makeBytes({0x03, 0xe8}));
     }
 
     /**
@@ -494,7 +486,7 @@ namespace AsynGyanis::Net
     TEST(WebSocketFrame, HandsInvalidUtf8TextPayloadToSessionLayerUnchanged)
     {
         // 0xFF 0xFE 不是合法的 UTF-8 序列：帧层只保证帧格式，文本语义由上层负责
-        const std::string invalidUtf8Payload = makeBytes({0xff, 0xfe});
+        const std::string     invalidUtf8Payload = makeBytes({0xff, 0xfe});
         WebSocketFrameDecoder decoder;
 
         const WebSocketFrame frame = feedAndTakeFrame(decoder, makeMaskedClientFrame(WebSocketOpCode::Text, invalidUtf8Payload));
@@ -531,8 +523,8 @@ namespace AsynGyanis::Net
         for (const unsigned char firstByte: kReservedBitVariants)
         {
             WebSocketFrameDecoder decoder;
-            std::string frame = makeMaskedClientFrame(WebSocketOpCode::Text, "x");
-            frame[0] = static_cast<char>(firstByte);
+            std::string           frame = makeMaskedClientFrame(WebSocketOpCode::Text, "x");
+            frame[0]                    = static_cast<char>(firstByte);
 
             EXPECT_TRUE(containsText(feedAndExpectError(decoder, frame), "RSV")) << "首字节 " << static_cast<int>(firstByte);
         }
@@ -548,7 +540,7 @@ namespace AsynGyanis::Net
         for (const unsigned char opCodeValue: kReservedOpCodeValues)
         {
             WebSocketFrameDecoder decoder;
-            std::string frame = makeMaskedClientFrame(WebSocketOpCode::Text, "x");
+            std::string           frame = makeMaskedClientFrame(WebSocketOpCode::Text, "x");
             // 保留操作码必须带 FIN 才走到「操作码未定义」这一条判定上
             frame[0] = static_cast<char>(0x80U | opCodeValue);
 
@@ -565,7 +557,7 @@ namespace AsynGyanis::Net
         const std::string declaredTooLong = makeMaskedFrameHead(WebSocketOpCode::Ping, 126, true, kRfcExampleMaskKey);
 
         WebSocketFrameDecoder decoder;
-        const std::string reason = feedAndExpectError(decoder, declaredTooLong);
+        const std::string     reason = feedAndExpectError(decoder, declaredTooLong);
 
         EXPECT_TRUE(containsText(reason, "125")) << "原因里要给上限数值";
         EXPECT_FALSE(decoder.isLimitExceeded()) << "这是协议错误，不是资源超限";
@@ -636,8 +628,7 @@ namespace AsynGyanis::Net
         const std::size_t declaredLength = WebSocketFrameDecoder::kMaximumFramePayloadLength + 1;
 
         WebSocketFrameDecoder decoder;
-        const std::string reason = feedAndExpectError(
-                decoder, makeMaskedFrameHead(WebSocketOpCode::Binary, declaredLength, true, kRfcExampleMaskKey));
+        const std::string     reason = feedAndExpectError(decoder, makeMaskedFrameHead(WebSocketOpCode::Binary, declaredLength, true, kRfcExampleMaskKey));
 
         EXPECT_TRUE(containsText(reason, "上限")) << "原因里要给上限数值";
         EXPECT_TRUE(decoder.isLimitExceeded()) << "超限必须能与协议错误区分开";
@@ -685,14 +676,14 @@ namespace AsynGyanis::Net
         {
             // 0x82 0xFF 后跟 8 字节长度，最高位（0x80）被置位
             WebSocketFrameDecoder decoder;
-            const std::string reason = feedAndExpectError(decoder, makeBytes({0x82, 0xff, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00}));
+            const std::string     reason = feedAndExpectError(decoder, makeBytes({0x82, 0xff, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00}));
 
             EXPECT_TRUE(containsText(reason, "最高位"));
         }
         {
             // 用了 64 位档却只写 65535：比 16 位档还短
             WebSocketFrameDecoder decoder;
-            const std::string reason = feedAndExpectError(decoder, makeBytes({0x82, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff}));
+            const std::string     reason = feedAndExpectError(decoder, makeBytes({0x82, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff}));
 
             EXPECT_TRUE(containsText(reason, "最短"));
         }
@@ -716,10 +707,10 @@ namespace AsynGyanis::Net
         stream += makeMaskedClientFrame(WebSocketOpCode::Text, "Hel", false);
         stream += makeMaskedClientFrame(WebSocketOpCode::Continuation, "lo", true);
 
-        WebSocketFrameDecoder oneFeedDecoder;
+        WebSocketFrameDecoder             oneFeedDecoder;
         const std::vector<WebSocketFrame> oneFeedFrames = decodeAllInOneFeed(oneFeedDecoder, stream);
 
-        WebSocketFrameDecoder byteByByteDecoder;
+        WebSocketFrameDecoder             byteByByteDecoder;
         const std::vector<WebSocketFrame> byteByByteFrames = decodeByteByByte(byteByByteDecoder, stream);
 
         ASSERT_EQ(oneFeedFrames.size(), 5U) << "六帧输入应产出五条消息（分片两帧合成一条）";
@@ -770,7 +761,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketFrame, ErrorStateIsStickyAndStopsConsumingBytes)
     {
-        const std::string validFrame = makeMaskedClientFrame(WebSocketOpCode::Text, "Hello");
+        const std::string     validFrame = makeMaskedClientFrame(WebSocketOpCode::Text, "Hello");
         WebSocketFrameDecoder decoder;
 
         EXPECT_EQ(feed(decoder, "\x81\x05Hello"), WebSocketDecodeStatus::Error);
@@ -791,7 +782,7 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketFrame, ResetClearsPartialFrameState)
     {
-        const std::string frame = makeMaskedClientFrame(WebSocketOpCode::Text, "Hello");
+        const std::string     frame = makeMaskedClientFrame(WebSocketOpCode::Text, "Hello");
         WebSocketFrameDecoder decoder;
 
         // 先让状态停在「负载收到一半」
@@ -808,8 +799,8 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketFrame, PendingFrameIsNotOverwrittenAndConsumesNoByte)
     {
-        const std::string firstFrame = makeMaskedClientFrame(WebSocketOpCode::Text, "one");
-        const std::string secondFrame = makeMaskedClientFrame(WebSocketOpCode::Text, "two");
+        const std::string     firstFrame  = makeMaskedClientFrame(WebSocketOpCode::Text, "one");
+        const std::string     secondFrame = makeMaskedClientFrame(WebSocketOpCode::Text, "two");
         WebSocketFrameDecoder decoder;
 
         EXPECT_EQ(feed(decoder, firstFrame), WebSocketDecodeStatus::Frame);
@@ -874,29 +865,29 @@ namespace AsynGyanis::Net
             EXPECT_TRUE(containsText(message, "Text/Binary")) << "报错要写清替代做法";
         }
     }
-        /// RSV1 位：permessage-deflate 用它声明本条消息被压缩过（RFC 7692 §6）
-        constexpr std::uint8_t kRsv1Bit = 0x40U;
+    /// RSV1 位：permessage-deflate 用它声明本条消息被压缩过（RFC 7692 §6）
+    constexpr std::uint8_t kRsv1Bit = 0x40U;
 
-        /// RSV2 位：本实现永远拒绝——RFC 7692 只让出了 RSV1
-        constexpr std::uint8_t kRsv2Bit = 0x20U;
+    /// RSV2 位：本实现永远拒绝——RFC 7692 只让出了 RSV1
+    constexpr std::uint8_t kRsv2Bit = 0x20U;
 
-        /// 由 Python zlib 独立算出的 "hello" 压缩负载（裸 deflate + Z_SYNC_FLUSH，去掉尾部 00 00 FF FF）
-        constexpr std::string_view kCompressedHelloPayload = "\xCA\x48\xCD\xC9\xC9\x07\x00";
+    /// 由 Python zlib 独立算出的 "hello" 压缩负载（裸 deflate + Z_SYNC_FLUSH，去掉尾部 00 00 FF FF）
+    constexpr std::string_view kCompressedHelloPayload = "\xCA\x48\xCD\xC9\xC9\x07\x00";
 
-        /**
-         * @brief 拼一条置了 RSV1 的客户端数据帧
-         * @details 先按普通帧拼好再置位首字节的 RSV1：不复用被测编码器，编码器出错时断言不会跟着错
-         * @param opCode 操作码
-         * @param payload 负载
-         * @param isFinal 是否末帧
-         * @return std::string 客户端帧字节
-         */
-        std::string makeMaskedCompressedFrame(const WebSocketOpCode opCode, const std::string_view payload, const bool isFinal = true)
-        {
-            std::string frame = makeMaskedClientFrame(opCode, payload, isFinal);
-            frame[0] = static_cast<char>(static_cast<std::uint8_t>(frame[0]) | kRsv1Bit);
-            return frame;
-        }
+    /**
+     * @brief 拼一条置了 RSV1 的客户端数据帧
+     * @details 先按普通帧拼好再置位首字节的 RSV1：不复用被测编码器，编码器出错时断言不会跟着错
+     * @param opCode 操作码
+     * @param payload 负载
+     * @param isFinal 是否末帧
+     * @return std::string 客户端帧字节
+     */
+    std::string makeMaskedCompressedFrame(const WebSocketOpCode opCode, const std::string_view payload, const bool isFinal = true)
+    {
+        std::string frame = makeMaskedClientFrame(opCode, payload, isFinal);
+        frame[0]          = static_cast<char>(static_cast<std::uint8_t>(frame[0]) | kRsv1Bit);
+        return frame;
+    }
 
     // ============================================================================
     // permessage-deflate（RFC 7692）：RSV1 的编码与解码口径
@@ -948,7 +939,7 @@ namespace AsynGyanis::Net
     TEST(WebSocketFrame, DecoderRejectsRsv1WithoutNegotiation)
     {
         WebSocketFrameDecoder decoder;
-        const std::string reason = feedAndExpectError(decoder, makeMaskedCompressedFrame(WebSocketOpCode::Text, "hello"));
+        const std::string     reason = feedAndExpectError(decoder, makeMaskedCompressedFrame(WebSocketOpCode::Text, "hello"));
         EXPECT_TRUE(containsText(reason, "permessage-deflate")) << "原因要指出缺的是这项扩展协商，实际：" << reason;
     }
 
@@ -965,8 +956,7 @@ namespace AsynGyanis::Net
         expectFrameEquals(plainFrame, WebSocketOpCode::Text, "plain");
         EXPECT_FALSE(plainFrame.isCompressed);
 
-        const WebSocketFrame compressedFrame =
-                feedAndTakeFrame(decoder, makeMaskedCompressedFrame(WebSocketOpCode::Text, kCompressedHelloPayload));
+        const WebSocketFrame compressedFrame = feedAndTakeFrame(decoder, makeMaskedCompressedFrame(WebSocketOpCode::Text, kCompressedHelloPayload));
         expectFrameEquals(compressedFrame, WebSocketOpCode::Text, kCompressedHelloPayload);
         EXPECT_TRUE(compressedFrame.isCompressed) << "置了 RSV1 的消息必须带压缩标记交给上层去解压";
     }
@@ -984,8 +974,7 @@ namespace AsynGyanis::Net
         WebSocketFrameDecoder continuationDecoder;
         continuationDecoder.setPerMessageDeflateEnabled(true);
         ASSERT_EQ(feed(continuationDecoder, makeMaskedClientFrame(WebSocketOpCode::Text, "he", false)), WebSocketDecodeStatus::NeedMore);
-        const std::string continuationReason =
-                feedAndExpectError(continuationDecoder, makeMaskedCompressedFrame(WebSocketOpCode::Continuation, "llo"));
+        const std::string continuationReason = feedAndExpectError(continuationDecoder, makeMaskedCompressedFrame(WebSocketOpCode::Continuation, "llo"));
         EXPECT_TRUE(containsText(continuationReason, "继续帧")) << continuationReason;
     }
 
@@ -1011,8 +1000,8 @@ namespace AsynGyanis::Net
         WebSocketFrameDecoder decoder;
         decoder.setPerMessageDeflateEnabled(true);
 
-        std::string frame = makeMaskedClientFrame(WebSocketOpCode::Text, "x");
-        frame[0] = static_cast<char>(static_cast<std::uint8_t>(frame[0]) | kRsv2Bit);
+        std::string frame        = makeMaskedClientFrame(WebSocketOpCode::Text, "x");
+        frame[0]                 = static_cast<char>(static_cast<std::uint8_t>(frame[0]) | kRsv2Bit);
         const std::string reason = feedAndExpectError(decoder, frame);
         EXPECT_TRUE(containsText(reason, "RSV2")) << reason;
     }
@@ -1032,19 +1021,19 @@ namespace AsynGyanis::Net
             plaintext.push_back(static_cast<char>(static_cast<std::uint8_t>(index * 7 + 1)));
         }
         const std::array<std::uint8_t, 4> maskKey{0x11, 0x22, 0x33, 0x44};
-        const std::string clientFrame = makeMaskedClientFrame(WebSocketOpCode::Binary, plaintext, true, maskKey);
+        const std::string                 clientFrame = makeMaskedClientFrame(WebSocketOpCode::Binary, plaintext, true, maskKey);
 
         const std::vector<std::size_t> strides{1, 2, 3, 4, 5, 6, 7, 9, 17, clientFrame.size()};
         for (const std::size_t stride: strides)
         {
             WebSocketFrameDecoder decoder;
-            std::string reassembled;
-            std::size_t offset = 0;
+            std::string           reassembled;
+            std::size_t           offset = 0;
             while (offset < clientFrame.size())
             {
-                const std::size_t remaining = clientFrame.size() - offset;
-                const std::size_t chunkLength = stride < remaining ? stride : remaining;
-                const WebSocketDecodeStatus status = decoder.parse(clientFrame.data() + offset, chunkLength);
+                const std::size_t           remaining   = clientFrame.size() - offset;
+                const std::size_t           chunkLength = stride < remaining ? stride : remaining;
+                const WebSocketDecodeStatus status      = decoder.parse(clientFrame.data() + offset, chunkLength);
                 ASSERT_TRUE(status == WebSocketDecodeStatus::Frame || status == WebSocketDecodeStatus::NeedMore)
                         << "步长 " << stride << " 喂到 offset " << offset << " 判错：" << decoder.errorMessage();
                 // 契约：NeedMore 吃满本段、Frame 只吃本帧字节；两者都按 consumedByteCount() 推进

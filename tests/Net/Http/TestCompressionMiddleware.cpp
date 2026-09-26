@@ -102,7 +102,7 @@ namespace AsynGyanis::Net
             static const std::string body = []
             {
                 std::uint32_t randomState = 0x9E3779B9U;
-                std::string bytes;
+                std::string   bytes;
                 bytes.reserve(4096);
                 while (bytes.size() < 4096)
                 {
@@ -191,12 +191,10 @@ namespace AsynGyanis::Net
             };
 
             const ServerConfigurator configureServer = [minimumBodySize](TestHttpServer &server)
-            {
-                server.router().addMiddleware(compressionMiddleware({.minimumBodySize = minimumBodySize}));
-            };
+            { server.router().addMiddleware(compressionMiddleware({.minimumBodySize = minimumBodySize})); };
 
-            auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                                                       registerRoutes, HttpParserLimits{}, configureServer);
+            auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, registerRoutes, HttpParserLimits{},
+                                                                      configureServer);
             EXPECT_TRUE(fixture->awaitRunning(kCompressionTestTimeout));
             return fixture;
         }
@@ -209,7 +207,7 @@ namespace AsynGyanis::Net
          */
         std::optional<std::string> unzstd(const std::string_view input, const std::size_t expectedSize)
         {
-            std::string output(expectedSize, '\0');
+            std::string       output(expectedSize, '\0');
             const std::size_t writtenLength = ZSTD_decompress(output.data(), output.size(), input.data(), input.size());
             if (ZSTD_isError(writtenLength) != 0 || writtenLength != expectedSize)
             {
@@ -228,8 +226,8 @@ namespace AsynGyanis::Net
         {
             std::string output(expectedSize, '\0');
             std::size_t decodedLength = output.size();
-            if (BrotliDecoderDecompress(input.size(), reinterpret_cast<const std::uint8_t *>(input.data()), &decodedLength,
-                                        reinterpret_cast<std::uint8_t *>(output.data())) != BROTLI_DECODER_RESULT_SUCCESS ||
+            if (BrotliDecoderDecompress(input.size(), reinterpret_cast<const std::uint8_t *>(input.data()), &decodedLength, reinterpret_cast<std::uint8_t *>(output.data())) !=
+                        BROTLI_DECODER_RESULT_SUCCESS ||
                 decodedLength != expectedSize)
             {
                 return std::nullopt;
@@ -257,11 +255,10 @@ namespace AsynGyanis::Net
             static const std::string body = []
             {
                 static constexpr std::string_view vocabulary[] = {
-                    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
-                    "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
+                        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
                 };
                 std::uint32_t randomState = 0x2545F491U;
-                std::string text;
+                std::string   text;
                 text.reserve(kWordyBodyBytes + 1);
                 while (text.size() < kWordyBodyBytes)
                 {
@@ -292,37 +289,40 @@ namespace AsynGyanis::Net
          * @param isHugeHandled 输入输出：大正文路由被调用过就置真，调用方据此确定重叠窗口
          * @return std::unique_ptr<RunningHttpServerFixture> 已在监听的服务器
          */
-        std::unique_ptr<RunningHttpServerFixture> makeCompressionProbeFixture(
-                const std::function<MiddlewareFunc(Core::EventLoop &)> &makeMiddleware, std::atomic<bool> &isHugeHandled)
+        std::unique_ptr<RunningHttpServerFixture> makeCompressionProbeFixture(const std::function<MiddlewareFunc(Core::EventLoop &)> &makeMiddleware,
+                                                                              std::atomic<bool>                                      &isHugeHandled)
         {
             const RouteRegistrar registerRoutes = [&](Router &router, Core::EventLoop &loop)
             {
-                router.get("/huge", [&isHugeHandled](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                {
-                    response.setHeader("content-type", "text/plain; charset=utf-8");
-                    response.setBody(wordyLargeBody());
-                    // 交回中间件之前先亮旗：调用方据此知道「服务端正要开始压」，
-                    // 重叠是自己构造出来的，不靠睡眠去猜调度
-                    isHugeHandled.store(true);
-                    co_return;
-                });
-                router.get("/mid", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                {
-                    response.setHeader("content-type", "text/plain; charset=utf-8");
-                    response.setBody(midBody());
-                    co_return;
-                });
-                router.get("/quick", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                {
-                    response.setHeader("content-type", "text/plain; charset=utf-8");
-                    response.setBody("ok");
-                    co_return;
-                });
+                router.get("/huge",
+                           [&isHugeHandled](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.setHeader("content-type", "text/plain; charset=utf-8");
+                               response.setBody(wordyLargeBody());
+                               // 交回中间件之前先亮旗：调用方据此知道「服务端正要开始压」，
+                               // 重叠是自己构造出来的，不靠睡眠去猜调度
+                               isHugeHandled.store(true);
+                               co_return;
+                           });
+                router.get("/mid",
+                           [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.setHeader("content-type", "text/plain; charset=utf-8");
+                               response.setBody(midBody());
+                               co_return;
+                           });
+                router.get("/quick",
+                           [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.setHeader("content-type", "text/plain; charset=utf-8");
+                               response.setBody("ok");
+                               co_return;
+                           });
                 router.addMiddleware(makeMiddleware(loop));
             };
 
-            auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                                                       registerRoutes, HttpParserLimits{}, [](TestHttpServer &) {});
+            auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, registerRoutes, HttpParserLimits{},
+                                                                      [](TestHttpServer &) {});
             EXPECT_TRUE(fixture->awaitRunning(kCompressionTestTimeout));
             return fixture;
         }
@@ -337,8 +337,7 @@ namespace AsynGyanis::Net
         const std::uint16_t                             port    = fixture->listeningPort();
         ASSERT_NE(port, 0U);
 
-        const std::optional<ParsedResponse> response =
-                sendAndReadResponse(port, makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
+        const std::optional<ParsedResponse> response = sendAndReadResponse(port, makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
         ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "响应没有声明 gzip 编码：\n" << response->headers;
@@ -362,8 +361,8 @@ namespace AsynGyanis::Net
         const std::uint16_t                             port    = fixture->listeningPort();
         ASSERT_NE(port, 0U);
 
-        const std::optional<ParsedResponse> response = sendAndReadResponse(
-                port, makeRequestText("GET /declared-length HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
+        const std::optional<ParsedResponse> response =
+                sendAndReadResponse(port, makeRequestText("GET /declared-length HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
         ASSERT_TRUE(response.has_value()) << "没有读到完整响应：content-length 可能仍是压缩前的旧值";
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "响应没有声明 gzip 编码：\n" << response->headers;
@@ -447,13 +446,10 @@ namespace AsynGyanis::Net
         for (const std::string_view encoding: {"gzip", "br", "zstd"})
         {
             const std::optional<ParsedResponse> response =
-                    sendAndReadResponse(port, makeRequestText("GET /high-entropy HTTP/1.1",
-                                                              {std::string{"accept-encoding: "} + std::string{encoding}}),
-                                        kCompressionTestTimeout);
+                    sendAndReadResponse(port, makeRequestText("GET /high-entropy HTTP/1.1", {std::string{"accept-encoding: "} + std::string{encoding}}), kCompressionTestTimeout);
             ASSERT_TRUE(response.has_value()) << encoding << "：没有读到完整响应";
 
-            EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding"))
-                    << encoding << "：压完更大却仍然换了表示\n" << response->headers;
+            EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding")) << encoding << "：压完更大却仍然换了表示\n" << response->headers;
             EXPECT_FALSE(hasHeaderLine(response->headers, "vary:")) << encoding << "：没换表示就不该新增 vary";
             EXPECT_EQ(response->body, body) << encoding << "：正文被换成了更差的表示";
         }
@@ -516,20 +512,16 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
 
         const std::optional<ParsedResponse> compressedVariant = sendAndReadResponse(
-                fixture->listeningPort(),
-                makeRequestText("GET /etagged-revalidated HTTP/1.1", {"accept-encoding: gzip", "if-none-match: \"strong-validator\""}),
+                fixture->listeningPort(), makeRequestText("GET /etagged-revalidated HTTP/1.1", {"accept-encoding: gzip", "if-none-match: \"strong-validator\""}),
                 kCompressionTestTimeout);
         ASSERT_TRUE(compressedVariant.has_value()) << "没有读到 304 响应";
         ASSERT_TRUE(compressedVariant->headers.starts_with("HTTP/1.1 304")) << compressedVariant->headers;
         EXPECT_TRUE(hasHeaderLine(compressedVariant->headers, "vary: accept-encoding")) << "304 没回带 Vary：\n" << compressedVariant->headers;
-        EXPECT_TRUE(hasHeaderLine(compressedVariant->headers, "etag: W/\"strong-validator\"")) << "304 回的是强校验器：\n"
-                                                                                              << compressedVariant->headers;
+        EXPECT_TRUE(hasHeaderLine(compressedVariant->headers, "etag: W/\"strong-validator\"")) << "304 回的是强校验器：\n" << compressedVariant->headers;
 
         // 对照：只接受 identity 的客户端本来就不会被压缩，304 也就不该被降级或加 Vary
         const std::optional<ParsedResponse> identityVariant = sendAndReadResponse(
-                fixture->listeningPort(),
-                makeRequestText("GET /etagged-revalidated HTTP/1.1",
-                                {"accept-encoding: identity", "if-none-match: \"strong-validator\""}),
+                fixture->listeningPort(), makeRequestText("GET /etagged-revalidated HTTP/1.1", {"accept-encoding: identity", "if-none-match: \"strong-validator\""}),
                 kCompressionTestTimeout);
         ASSERT_TRUE(identityVariant.has_value()) << "没有读到对照响应";
         ASSERT_TRUE(identityVariant->headers.starts_with("HTTP/1.1 304")) << identityVariant->headers;
@@ -544,8 +536,8 @@ namespace AsynGyanis::Net
     {
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
 
-        const std::optional<ParsedResponse> response = sendAndReadResponse(
-                fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, deflate, br, zstd"}), kCompressionTestTimeout);
+        const std::optional<ParsedResponse> response =
+                sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, deflate, br, zstd"}), kCompressionTestTimeout);
         ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: zstd")) << "偏好顺序没有选 zstd：\n" << response->headers;
@@ -563,8 +555,8 @@ namespace AsynGyanis::Net
     {
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
 
-        const std::optional<ParsedResponse> response = sendAndReadResponse(
-                fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, br, zstd;q=0"}), kCompressionTestTimeout);
+        const std::optional<ParsedResponse> response =
+                sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, br, zstd;q=0"}), kCompressionTestTimeout);
         ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: br")) << "zstd 被拒后没有退到 brotli：\n" << response->headers;
@@ -600,26 +592,16 @@ namespace AsynGyanis::Net
         Core::AsyncExecutor executor{1};
         std::atomic<bool>   isHugeHandled{false};
 
-        const std::unique_ptr<RunningHttpServerFixture> inLoopFixture = makeCompressionProbeFixture(
-                [](Core::EventLoop &)
-                {
-                    return compressionMiddleware({.minimumBodySize = kTestThresholdBytes});
-                },
-                isHugeHandled);
+        const std::unique_ptr<RunningHttpServerFixture> inLoopFixture =
+                makeCompressionProbeFixture([](Core::EventLoop &) { return compressionMiddleware({.minimumBodySize = kTestThresholdBytes}); }, isHugeHandled);
         const std::unique_ptr<RunningHttpServerFixture> offloadedFixture = makeCompressionProbeFixture(
-                [&executor](Core::EventLoop &loop)
-                {
-                    return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes});
-                },
-                isHugeHandled);
+                [&executor](Core::EventLoop &loop) { return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes}); }, isHugeHandled);
         ASSERT_NE(inLoopFixture->listeningPort(), 0U);
         ASSERT_NE(offloadedFixture->listeningPort(), 0U);
 
-        const std::string requestText = makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"});
-        const std::optional<ParsedResponse> inLoopResponse =
-                sendAndReadResponse(inLoopFixture->listeningPort(), requestText, kCompressionTestTimeout);
-        const std::optional<ParsedResponse> offloadedResponse =
-                sendAndReadResponse(offloadedFixture->listeningPort(), requestText, kCompressionTestTimeout);
+        const std::string                   requestText       = makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"});
+        const std::optional<ParsedResponse> inLoopResponse    = sendAndReadResponse(inLoopFixture->listeningPort(), requestText, kCompressionTestTimeout);
+        const std::optional<ParsedResponse> offloadedResponse = sendAndReadResponse(offloadedFixture->listeningPort(), requestText, kCompressionTestTimeout);
         ASSERT_TRUE(inLoopResponse.has_value()) << "就地压缩那条没读到完整响应";
         ASSERT_TRUE(offloadedResponse.has_value()) << "外置压缩那条没读到完整响应";
 
@@ -640,24 +622,16 @@ namespace AsynGyanis::Net
      */
     TEST(CompressionMiddleware, OffloadedCompressionLeavesTheLoopFreeWhileCompressing)
     {
-        Core::AsyncExecutor executor{2};
-        std::atomic<bool>   isHugeHandled{false};
+        Core::AsyncExecutor                             executor{2};
+        std::atomic<bool>                               isHugeHandled{false};
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionProbeFixture(
-                [&executor](Core::EventLoop &loop)
-                {
-                    return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes});
-                },
-                isHugeHandled);
+                [&executor](Core::EventLoop &loop) { return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes}); }, isHugeHandled);
         const std::uint16_t port = fixture->listeningPort();
         ASSERT_NE(port, 0U);
 
         std::optional<ParsedResponse> hugeResponse;
         const std::string             hugeRequestText = makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"});
-        std::thread                   hugeReader(
-                [&]
-                {
-                    hugeResponse = sendAndReadResponse(port, hugeRequestText, kCompressionTestTimeout);
-                });
+        std::thread                   hugeReader([&] { hugeResponse = sendAndReadResponse(port, hugeRequestText, kCompressionTestTimeout); });
 
         const auto deadline = std::chrono::steady_clock::now() + kCompressionTestTimeout;
         while (!isHugeHandled.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
@@ -666,16 +640,14 @@ namespace AsynGyanis::Net
         }
         ASSERT_TRUE(isHugeHandled.load(std::memory_order_acquire)) << "大正文请求没有在时限内进到服务端";
 
-        const auto quickBegin = std::chrono::steady_clock::now();
-        const std::optional<ParsedResponse> quickResponse =
-                sendAndReadResponse(port, makeRequestText("GET /quick HTTP/1.1"), kCompressionTestTimeout);
-        const auto quickElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - quickBegin);
+        const auto                          quickBegin    = std::chrono::steady_clock::now();
+        const std::optional<ParsedResponse> quickResponse = sendAndReadResponse(port, makeRequestText("GET /quick HTTP/1.1"), kCompressionTestTimeout);
+        const auto                          quickElapsed  = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - quickBegin);
 
         hugeReader.join();
         ASSERT_TRUE(quickResponse.has_value()) << "压缩期间第二条请求没读到响应";
         EXPECT_EQ(quickResponse->body, "ok");
-        EXPECT_LT(quickElapsed, kLoopMustStayFreeBudget)
-                << "压缩期间同一条循环上的其他请求被堵了 " << quickElapsed.count() << "ms：压缩没真的挪出循环线程";
+        EXPECT_LT(quickElapsed, kLoopMustStayFreeBudget) << "压缩期间同一条循环上的其他请求被堵了 " << quickElapsed.count() << "ms：压缩没真的挪出循环线程";
 
         ASSERT_TRUE(hugeResponse.has_value()) << "大正文那条没读到完整响应";
         const std::optional<std::string> restored = gunzip(hugeResponse->body);
@@ -692,14 +664,10 @@ namespace AsynGyanis::Net
      */
     TEST(CompressionMiddleware, SmallBodiesStayOnTheLoopWhenOffloading)
     {
-        Core::AsyncExecutor executor{1};
-        std::atomic<bool>   isHugeHandled{false};
+        Core::AsyncExecutor                             executor{1};
+        std::atomic<bool>                               isHugeHandled{false};
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionProbeFixture(
-                [&executor](Core::EventLoop &loop)
-                {
-                    return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes});
-                },
-                isHugeHandled);
+                [&executor](Core::EventLoop &loop) { return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes}); }, isHugeHandled);
         const std::uint16_t port = fixture->listeningPort();
         ASSERT_NE(port, 0U);
 
@@ -710,10 +678,9 @@ namespace AsynGyanis::Net
                 [&]
                 {
                     const auto began = std::chrono::steady_clock::now();
-                    hugeResponse = sendAndReadResponse(port, hugeRequestText, kCompressionTestTimeout);
-                    hugeElapsedMilliseconds.store(
-                            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count(),
-                            std::memory_order_release);
+                    hugeResponse     = sendAndReadResponse(port, hugeRequestText, kCompressionTestTimeout);
+                    hugeElapsedMilliseconds.store(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count(),
+                                                  std::memory_order_release);
                 });
 
         const auto deadline = std::chrono::steady_clock::now() + kCompressionTestTimeout;
@@ -723,10 +690,9 @@ namespace AsynGyanis::Net
         }
         ASSERT_TRUE(isHugeHandled.load(std::memory_order_acquire)) << "大正文请求没有在时限内进到服务端";
 
-        const auto midBegin = std::chrono::steady_clock::now();
-        const std::optional<ParsedResponse> midResponse =
-                sendAndReadResponse(port, makeRequestText("GET /mid HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
-        const auto midElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - midBegin);
+        const auto                          midBegin    = std::chrono::steady_clock::now();
+        const std::optional<ParsedResponse> midResponse = sendAndReadResponse(port, makeRequestText("GET /mid HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
+        const auto                          midElapsed  = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - midBegin);
 
         hugeReader.join();
         ASSERT_TRUE(midResponse.has_value()) << "小正文那条没读到响应";
@@ -734,9 +700,7 @@ namespace AsynGyanis::Net
         EXPECT_GE(hugeElapsedMilliseconds.load(std::memory_order_acquire), kLoopMustStayFreeBudget.count())
                 << "大正文没占住工作线程（只耗时 " << hugeElapsedMilliseconds.load() << "ms），前置条件不成立，本用例说明不了排队";
 
-        EXPECT_LT(midElapsed, kLoopMustStayFreeBudget)
-                << "门槛之下的 " << kMidBodyBytes << " 字节正文被外派后排在长任务后面等了 " << midElapsed.count()
-                << "ms：这道门槛没生效";
+        EXPECT_LT(midElapsed, kLoopMustStayFreeBudget) << "门槛之下的 " << kMidBodyBytes << " 字节正文被外派后排在长任务后面等了 " << midElapsed.count() << "ms：这道门槛没生效";
         EXPECT_TRUE(hasHeaderLine(midResponse->headers, "content-encoding: gzip")) << "小正文压根没被压缩：\n" << midResponse->headers;
         const std::optional<std::string> restoredMid = gunzip(midResponse->body);
         ASSERT_TRUE(restoredMid.has_value()) << "小正文压出来的响应解不开";

@@ -59,12 +59,11 @@ namespace AsynGyanis::Net
                 static std::atomic<unsigned int> sequenceCounter{0};
 
                 // 三重盐值隔开同一秒内并发运行的多个测试进程（gtest_discover_tests 会按用例起进程）
-                const std::string salt = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
-                                         std::to_string(sequenceCounter.fetch_add(1)) + "_" +
+                const std::string salt = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" + std::to_string(sequenceCounter.fetch_add(1)) + "_" +
                                          std::to_string(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id())));
-                m_baseDirectory = std::filesystem::temp_directory_path() / ("AsynGyanis_Net_" + namePrefix + "_" + salt);
+                m_baseDirectory        = std::filesystem::temp_directory_path() / ("AsynGyanis_Net_" + namePrefix + "_" + salt);
 
-                m_staticRoot = m_baseDirectory / "static";
+                m_staticRoot    = m_baseDirectory / "static";
                 m_alternateRoot = m_baseDirectory / "alternate";
 
                 std::error_code error;
@@ -85,7 +84,7 @@ namespace AsynGyanis::Net
                 std::filesystem::remove_all(m_baseDirectory, error);
             }
 
-            TemporaryStaticTree(const TemporaryStaticTree &) = delete;
+            TemporaryStaticTree(const TemporaryStaticTree &)            = delete;
             TemporaryStaticTree &operator=(const TemporaryStaticTree &) = delete;
 
             /// 首选静态根目录
@@ -121,8 +120,7 @@ namespace AsynGyanis::Net
             [[nodiscard]] bool isReady() const
             {
                 std::error_code error;
-                return std::filesystem::is_directory(m_staticRoot, error) &&
-                       std::filesystem::is_regular_file(m_staticRoot / "hello.txt", error) &&
+                return std::filesystem::is_directory(m_staticRoot, error) && std::filesystem::is_regular_file(m_staticRoot / "hello.txt", error) &&
                        std::filesystem::is_regular_file(m_baseDirectory / "leak.txt", error);
             }
 
@@ -198,7 +196,7 @@ namespace AsynGyanis::Net
          */
         HttpResponse serveRequest(HttpServer &server, const HttpMethod method, std::string uri)
         {
-            HttpRequest request = makeRequest(method, std::move(uri));
+            HttpRequest  request = makeRequest(method, std::move(uri));
             HttpResponse response;
             routeRequestSync(server.router(), request, response);
             return response;
@@ -212,8 +210,7 @@ namespace AsynGyanis::Net
          * @param headers 附加头部（名, 值）序列，用于构造条件请求与 Range 请求
          * @return HttpResponse 路由写完的响应
          */
-        HttpResponse serveRequestWithHeaders(HttpServer &server, const HttpMethod method, std::string uri,
-                                             const std::vector<std::pair<std::string, std::string>> &headers)
+        HttpResponse serveRequestWithHeaders(HttpServer &server, const HttpMethod method, std::string uri, const std::vector<std::pair<std::string, std::string>> &headers)
         {
             HttpRequest request = makeRequest(method, std::move(uri));
             for (const auto &[headerName, headerText]: headers)
@@ -274,8 +271,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, RepeatedStaticFileDirOnlyUpdatesConfiguration)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirIdempotent");
         ASSERT_TRUE(tree.isReady()) << "临时静态目录树创建失败，后续断言没有意义";
 
@@ -297,8 +294,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, EmptyDirectoryPathDisablesStaticService)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirDisable");
         ASSERT_TRUE(tree.isReady());
 
@@ -338,8 +335,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, ServesFileFromNestedSubdirectory)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirNested");
         ASSERT_TRUE(tree.isReady());
 
@@ -401,8 +398,8 @@ namespace AsynGyanis::Net
         TemporaryStaticTree tree("StaticDirNonAsciiRoot");
         ASSERT_TRUE(tree.isReady());
 
-        const std::string         rootNameUtf8 = std::string("\xE6\x96\x87") + "\xE4\xBB\xB6";
-        const std::filesystem::path rootPath   = tree.staticRoot() / Platform::FileSystem::pathFromUtf8(rootNameUtf8);
+        const std::string           rootNameUtf8 = std::string("\xE6\x96\x87") + "\xE4\xBB\xB6";
+        const std::filesystem::path rootPath     = tree.staticRoot() / Platform::FileSystem::pathFromUtf8(rootNameUtf8);
         std::error_code             createError;
         std::filesystem::create_directories(rootPath, createError);
         ASSERT_FALSE(createError) << createError.message();
@@ -413,8 +410,7 @@ namespace AsynGyanis::Net
 
         server.staticFileDir(Platform::FileSystem::utf8FromPath(rootPath));
         ASSERT_FALSE(server.staticFileDir().empty()) << "目录被判成规范化失败，静态服务根本没开起来";
-        EXPECT_NE(server.staticFileDir().find(rootNameUtf8), std::string::npos)
-                << "按 UTF-8 配进去的目录名读回来换了编码：两侧不同刻度就没法核对配置，也没法和 URI 里的名字比对";
+        EXPECT_NE(server.staticFileDir().find(rootNameUtf8), std::string::npos) << "按 UTF-8 配进去的目录名读回来换了编码：两侧不同刻度就没法核对配置，也没法和 URI 里的名字比对";
 
         const HttpResponse response = serveRequest(server, HttpMethod::GET, "/index.txt");
         EXPECT_EQ(response.status(), 200);
@@ -423,8 +419,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, FollowsExtensionCaseForContentType)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirMimeType");
         ASSERT_TRUE(tree.isReady());
 
@@ -443,8 +439,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, AnswersHeadWithRealContentLengthAndWithoutBody)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirHead");
         ASSERT_TRUE(tree.isReady());
 
@@ -463,8 +459,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, RejectsMethodsOtherThanGetAndHeadWith405)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirMethod");
         ASSERT_TRUE(tree.isReady());
 
@@ -478,8 +474,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, ReportsNotFoundForMissingFileAndForDirectoryItself)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirMissing");
         ASSERT_TRUE(tree.isReady());
 
@@ -494,8 +490,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, BlocksEncodedParentTraversalWith403)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirTraversal");
         ASSERT_TRUE(tree.isReady());
 
@@ -504,12 +500,7 @@ namespace AsynGyanis::Net
         // 三种写法指向同一件事：往上走一级去读根目录之外的 leak.txt。
         // 百分号解码之后才做分段判断，所以 %2e%2e 与 ..%2f 都骗不过清洗逻辑
         const std::vector<std::string> attackPaths{
-                "/%2e%2e/leak.txt",
-                "/%2E%2E/leak.txt",
-                "/..%2fleak.txt",
-                "/../leak.txt",
-                "/static/..%2f..%2fetc",
-                "/%2e%2e",
+                "/%2e%2e/leak.txt", "/%2E%2E/leak.txt", "/..%2fleak.txt", "/../leak.txt", "/static/..%2f..%2fetc", "/%2e%2e",
         };
 
         for (const std::string &attackPath: attackPaths)
@@ -522,8 +513,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, BlocksWindowsAndAbsoluteFormPathsWith403)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirAbsolute");
         ASSERT_TRUE(tree.isReady());
 
@@ -532,11 +523,7 @@ namespace AsynGyanis::Net
         // 反斜杠整体拒绝：Windows 下 '\' 与 '/' 同义，留着它就能绕过只管 '/' 的分段判断；
         // 冒号整体拒绝：挡住 "C:/Windows" 这类带盘符注入与 NTFS 交替数据流
         const std::vector<std::string> attackPaths{
-                "/C:/Windows/win.ini",
-                R"(/C:\Windows\win.ini)",
-                "/%5cserver%5cshare",
-                "//example.com/etc/passwd",
-                "/hello.txt:c::$DATA",
+                "/C:/Windows/win.ini", R"(/C:\Windows\win.ini)", "/%5cserver%5cshare", "//example.com/etc/passwd", "/hello.txt:c::$DATA",
         };
 
         for (const std::string &attackPath: attackPaths)
@@ -549,8 +536,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, BlocksMalformedPathEscapesWith400)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirMalformed");
         ASSERT_TRUE(tree.isReady());
 
@@ -574,8 +561,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, SystemAbsolutePathsResolveToNotFoundInsideRoot)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirSystemPath");
         ASSERT_TRUE(tree.isReady());
 
@@ -594,8 +581,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, NormalizedRelativePathStillCannotEscapeRoot)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirLexical");
         ASSERT_TRUE(tree.isReady());
 
@@ -613,17 +600,18 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, ExplicitRouteStillWinsOverStaticFallback)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirPriority");
         ASSERT_TRUE(tree.isReady());
 
         // 兜底静态路由是 "*" 通配模式，精确路径永远优先于它，与注册先后无关
-        server.router().get("/hello.txt", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-        {
-            response.setBody("handler-wins");
-            co_return;
-        });
+        server.router().get("/hello.txt",
+                            [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                            {
+                                response.setBody("handler-wins");
+                                co_return;
+                            });
         server.staticFileDir(tree.staticRootText());
 
         const HttpResponse response = serveRequest(server, HttpMethod::GET, "/hello.txt");
@@ -633,8 +621,8 @@ namespace AsynGyanis::Net
 
     TEST(HttpServer, MissingDirectoryStillAnswersNotFoundNotServerError)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticDirAbsent");
         ASSERT_TRUE(tree.isReady());
 
@@ -656,8 +644,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, AdvertisesValidatorsAndRangeSupportOnStaticFile)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCacheValidators");
         ASSERT_TRUE(tree.isReady());
 
@@ -693,8 +681,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, StrongEtagIsHexSizeDashHexMtimeAndSharesItWithLastModified)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticEtagShape");
         ASSERT_TRUE(tree.isReady());
 
@@ -704,17 +692,14 @@ namespace AsynGyanis::Net
         const std::uintmax_t        fileSize  = std::filesystem::file_size(helloPath);
         // file_time_type 的纪元两家不一样（MSVC 是 1601-01-01，libstdc++ 是 1970-01-01），只有
         // clock_cast 给出跨平台的 UTC 时刻；直接取 time_since_epoch 会把这个差值当成秒数算进期望值
-        const std::int64_t writeSeconds = std::chrono::duration_cast<std::chrono::seconds>(
-                                                 std::chrono::clock_cast<std::chrono::system_clock>(
-                                                         std::filesystem::last_write_time(helloPath))
-                                                         .time_since_epoch())
-                                                 .count();
+        const std::int64_t writeSeconds =
+                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(helloPath)).time_since_epoch())
+                        .count();
 
         const HttpResponse response = serveRequest(server, HttpMethod::GET, "/hello.txt");
         ASSERT_EQ(response.status(), 200);
         EXPECT_EQ(headerValueOf(response, "etag"), std::format("\"{:x}-{:x}\"", fileSize, writeSeconds));
-        EXPECT_EQ(headerValueOf(response, "last-modified"),
-                  formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(writeSeconds))))
+        EXPECT_EQ(headerValueOf(response, "last-modified"), formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(writeSeconds))))
                 << "Last-Modified 与 ETag 里的修改秒不是同一个数";
     }
 
@@ -723,15 +708,15 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, AnswersNotModifiedWhenIfNoneMatchHitsEtag)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCacheEtag");
         ASSERT_TRUE(tree.isReady());
 
         server.staticFileDir(tree.staticRootText());
 
         const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
-        const std::string etag = headerValueOf(baseline, "etag");
+        const std::string  etag     = headerValueOf(baseline, "etag");
         ASSERT_FALSE(etag.empty());
 
         const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-none-match", etag}});
@@ -745,9 +730,8 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(response.getHeader("accept-ranges").has_value());
         // 但 content-length 是个例外：RFC 9112 §6.2 允许 304 携带它，前提是取值等于「同一请求的
         // 200 会发出的正文长度」——静态文件路径正是唯一知道这个长度的位置，因此显式写出。
-        //（200 那条的 content-length 是序列化时按正文长度补的，头部表里查不到，故直接对文件长度）
-        EXPECT_EQ(headerValueOf(response, "content-length"), std::to_string(kHelloFileContent.size()))
-                << "304 声明的长度必须与 200 会发出的正文长度一致";
+        // （200 那条的 content-length 是序列化时按正文长度补的，头部表里查不到，故直接对文件长度）
+        EXPECT_EQ(headerValueOf(response, "content-length"), std::to_string(kHelloFileContent.size())) << "304 声明的长度必须与 200 会发出的正文长度一致";
     }
 
     /**
@@ -755,8 +739,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, AnswersNotModifiedForWildcardIfNoneMatch)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCacheWildcard");
         ASSERT_TRUE(tree.isReady());
 
@@ -773,15 +757,15 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, AnswersNotModifiedWhenIfModifiedSinceHitsLastModified)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCacheModifiedSince");
         ASSERT_TRUE(tree.isReady());
 
         server.staticFileDir(tree.staticRootText());
 
-        const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
-        const std::string lastModified = headerValueOf(baseline, "last-modified");
+        const HttpResponse baseline     = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        const std::string  lastModified = headerValueOf(baseline, "last-modified");
         ASSERT_FALSE(lastModified.empty());
 
         const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-modified-since", lastModified}});
@@ -795,15 +779,14 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, ServesFullBodyWhenIfModifiedSinceIsStale)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCacheStaleSince");
         ASSERT_TRUE(tree.isReady());
 
         server.staticFileDir(tree.staticRootText());
 
-        const HttpResponse response =
-                serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-modified-since", "Thu, 01 Jan 1970 00:00:00 GMT"}});
+        const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-modified-since", "Thu, 01 Jan 1970 00:00:00 GMT"}});
 
         EXPECT_EQ(response.status(), 200);
         EXPECT_EQ(response.body(), kHelloFileContent);
@@ -814,20 +797,19 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, IfNoneMatchPresentSuppressesIfModifiedSince)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCachePrecedence");
         ASSERT_TRUE(tree.isReady());
 
         server.staticFileDir(tree.staticRootText());
 
-        const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
-        const std::string lastModified = headerValueOf(baseline, "last-modified");
+        const HttpResponse baseline     = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        const std::string  lastModified = headerValueOf(baseline, "last-modified");
         ASSERT_FALSE(lastModified.empty());
 
-        const HttpResponse response = serveRequestWithHeaders(
-                server, HttpMethod::GET, "/hello.txt",
-                {{"if-none-match", "\"definitely-not-the-etag\""}, {"if-modified-since", lastModified}});
+        const HttpResponse response =
+                serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-none-match", "\"definitely-not-the-etag\""}, {"if-modified-since", lastModified}});
 
         EXPECT_EQ(response.status(), 200) << "If-None-Match 在场时不该再看 If-Modified-Since";
         EXPECT_EQ(response.body(), kHelloFileContent);
@@ -838,8 +820,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, ServesSingleByteRangeInThreeForms)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticRangeForms");
         ASSERT_TRUE(tree.isReady());
 
@@ -870,14 +852,14 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, ClampsRangeEndToRepresentationEnd)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticRangeClamp");
         ASSERT_TRUE(tree.isReady());
 
         server.staticFileDir(tree.staticRootText());
 
-        const std::string content(kHelloFileContent);
+        const std::string  content(kHelloFileContent);
         const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-9999"}});
 
         ASSERT_EQ(response.status(), 206);
@@ -890,8 +872,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, AnswersRangeNotSatisfiableForOutOfBoundsRange)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticRangeUnsatisfiable");
         ASSERT_TRUE(tree.isReady());
 
@@ -915,8 +897,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, IgnoresMalformedRangeOnEmptyFileAndRejectsOnlyValidUnsatisfiableOne)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticRangeEmptyFile");
         ASSERT_TRUE(tree.isReady());
         // 空的表示：只在本用例里造，不动共用夹具的文件集合（别处有按目录列举的用例）
@@ -944,8 +926,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, IgnoresMultipleRangesAndServesFullBody)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticRangeMultiple");
         ASSERT_TRUE(tree.isReady());
 
@@ -963,25 +945,23 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, AppliesRangeOnlyWhenIfRangeMatches)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticRangeIfRange");
         ASSERT_TRUE(tree.isReady());
 
         server.staticFileDir(tree.staticRootText());
 
         const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
-        const std::string etag = headerValueOf(baseline, "etag");
+        const std::string  etag     = headerValueOf(baseline, "etag");
         ASSERT_FALSE(etag.empty());
 
-        const HttpResponse mismatched = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt",
-                                                                {{"range", "bytes=0-4"}, {"if-range", "\"stale-etag\""}});
+        const HttpResponse mismatched = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-4"}, {"if-range", "\"stale-etag\""}});
         EXPECT_EQ(mismatched.status(), 200);
         EXPECT_EQ(mismatched.body(), kHelloFileContent);
         EXPECT_FALSE(mismatched.getHeader("content-range").has_value());
 
-        const HttpResponse matched = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt",
-                                                             {{"range", "bytes=0-4"}, {"if-range", etag}});
+        const HttpResponse matched = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-4"}, {"if-range", etag}});
         ASSERT_EQ(matched.status(), 206);
         EXPECT_EQ(matched.body(), "hello");
     }
@@ -994,25 +974,20 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, AppliesRangeOnlyWhenIfRangeDateEqualsLastModified)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticRangeIfRangeDate");
         ASSERT_TRUE(tree.isReady());
 
         server.staticFileDir(tree.staticRootText());
 
-        const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
-        const std::optional<std::chrono::system_clock::time_point> lastWriteTimePoint =
-                parseHttpDate(headerValueOf(baseline, "last-modified"));
+        const HttpResponse                                         baseline           = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        const std::optional<std::chrono::system_clock::time_point> lastWriteTimePoint = parseHttpDate(headerValueOf(baseline, "last-modified"));
         ASSERT_TRUE(lastWriteTimePoint.has_value()) << "基线响应没给出可解析的 Last-Modified";
-        const std::int64_t lastWriteSeconds =
-                std::chrono::duration_cast<std::chrono::seconds>(lastWriteTimePoint->time_since_epoch()).count();
-        const auto dateOfSeconds = [](const std::int64_t seconds)
-        { return formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(seconds))); };
+        const std::int64_t lastWriteSeconds = std::chrono::duration_cast<std::chrono::seconds>(lastWriteTimePoint->time_since_epoch()).count();
+        const auto         dateOfSeconds    = [](const std::int64_t seconds) { return formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(seconds))); };
 
-        const HttpResponse equalDate = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt",
-                                                               {{"range", "bytes=0-4"},
-                                                                {"if-range", dateOfSeconds(lastWriteSeconds)}});
+        const HttpResponse equalDate = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-4"}, {"if-range", dateOfSeconds(lastWriteSeconds)}});
         ASSERT_EQ(equalDate.status(), 206) << "日期与 Last-Modified 相等时必须按 Range 处理";
         EXPECT_EQ(equalDate.body(), "hello");
 
@@ -1020,8 +995,7 @@ namespace AsynGyanis::Net
         // 旧写法（不晚于即放行）正是在这一支上误把 Range 接了下来
         for (const std::string &ifRangeDate: {dateOfSeconds(lastWriteSeconds + 60), dateOfSeconds(lastWriteSeconds - 60)})
         {
-            const HttpResponse ignored = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt",
-                                                                {{"range", "bytes=0-4"}, {"if-range", ifRangeDate}});
+            const HttpResponse ignored = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-4"}, {"if-range", ifRangeDate}});
             EXPECT_EQ(ignored.status(), 200) << "If-Range 日期与当前表示不相等，Range 必须被忽略";
             EXPECT_EQ(ignored.body(), kHelloFileContent);
             EXPECT_FALSE(ignored.getHeader("content-range").has_value());
@@ -1033,8 +1007,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, AnswersHeadWithRangeHeadersAndWithoutBody)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticRangeHead");
         ASSERT_TRUE(tree.isReady());
 
@@ -1053,8 +1027,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, ServesUpdatedStaticFileAfterTheFileChanges)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCacheInvalidation");
         ASSERT_TRUE(tree.isReady());
 
@@ -1080,8 +1054,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, ServesByteRangeFromTheCachedWholeFileMapping)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCacheRange");
         ASSERT_TRUE(tree.isReady());
 
@@ -1100,8 +1074,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, ServesStaticFileWithMappingCacheDisabled)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCacheDisabled");
         ASSERT_TRUE(tree.isReady());
 
@@ -1123,8 +1097,8 @@ namespace AsynGyanis::Net
      */
     TEST(HttpServer, EmitsConfiguredCacheControlOnStaticResponses)
     {
-        Core::EventLoop loop;
-        HttpServer      server(loop, Core::InetAddress::localhost(0));
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
         TemporaryStaticTree tree("StaticCacheControl");
         ASSERT_TRUE(tree.isReady());
 
@@ -1140,7 +1114,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(ranged.status(), 206);
         EXPECT_EQ(headerValueOf(ranged, "cache-control"), "public, max-age=3600");
 
-        const std::string etag = headerValueOf(full, "etag");
+        const std::string  etag        = headerValueOf(full, "etag");
         const HttpResponse notModified = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-none-match", etag}});
         ASSERT_EQ(notModified.status(), 304);
         EXPECT_EQ(headerValueOf(notModified, "cache-control"), "public, max-age=3600");

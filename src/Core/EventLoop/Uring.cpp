@@ -44,7 +44,7 @@ namespace AsynGyanis::Core
     Uring::Uring()
     {
         io_uring_params parameters{};
-        const long     ringFileDescriptor = ::syscall(__NR_io_uring_setup, kRingEntryCount, &parameters);
+        const long      ringFileDescriptor = ::syscall(__NR_io_uring_setup, kRingEntryCount, &parameters);
         if (ringFileDescriptor < 0)
         {
             throw Base::SystemException("io_uring_setup 失败（内核可能不支持 io_uring 或被禁用）");
@@ -58,8 +58,7 @@ namespace AsynGyanis::Core
         if ((parameters.features & IORING_FEAT_SINGLE_MMAP) != 0)
         {
             const std::size_t combinedSize = submissionRingSize > completionRingSize ? submissionRingSize : completionRingSize;
-            void *const       mapping      = ::mmap(nullptr, combinedSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE,
-                                                   m_ringFileDescriptor, IORING_OFF_SQ_RING);
+            void *const       mapping      = ::mmap(nullptr, combinedSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, m_ringFileDescriptor, IORING_OFF_SQ_RING);
             if (mapping == MAP_FAILED)
             {
                 destroy();
@@ -71,8 +70,7 @@ namespace AsynGyanis::Core
             m_completionRingMappingSize = combinedSize;
         } else
         {
-            void *const submissionMapping = ::mmap(nullptr, submissionRingSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE,
-                                                   m_ringFileDescriptor, IORING_OFF_SQ_RING);
+            void *const submissionMapping = ::mmap(nullptr, submissionRingSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, m_ringFileDescriptor, IORING_OFF_SQ_RING);
             if (submissionMapping == MAP_FAILED)
             {
                 destroy();
@@ -81,8 +79,7 @@ namespace AsynGyanis::Core
             m_submissionRingMapping     = submissionMapping;
             m_submissionRingMappingSize = submissionRingSize;
 
-            void *const completionMapping = ::mmap(nullptr, completionRingSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE,
-                                                   m_ringFileDescriptor, IORING_OFF_CQ_RING);
+            void *const completionMapping = ::mmap(nullptr, completionRingSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, m_ringFileDescriptor, IORING_OFF_CQ_RING);
             if (completionMapping == MAP_FAILED)
             {
                 destroy();
@@ -94,8 +91,7 @@ namespace AsynGyanis::Core
 
         m_submissionEntriesMappingSize = parameters.sq_entries * sizeof(io_uring_sqe);
         void *const submissionEntriesMapping =
-                ::mmap(nullptr, m_submissionEntriesMappingSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, m_ringFileDescriptor,
-                       IORING_OFF_SQES);
+                ::mmap(nullptr, m_submissionEntriesMappingSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, m_ringFileDescriptor, IORING_OFF_SQES);
         if (submissionEntriesMapping == MAP_FAILED)
         {
             destroy();
@@ -148,35 +144,35 @@ namespace AsynGyanis::Core
         if (this != &other)
         {
             destroy();
-            m_submissionHead              = std::exchange(other.m_submissionHead, nullptr);
-            m_submissionTail              = std::exchange(other.m_submissionTail, nullptr);
-            m_submissionRingMask          = std::exchange(other.m_submissionRingMask, nullptr);
-            m_submissionEntriesCount      = std::exchange(other.m_submissionEntriesCount, nullptr);
-            m_submissionArray             = std::exchange(other.m_submissionArray, nullptr);
-            m_completionHead              = std::exchange(other.m_completionHead, nullptr);
-            m_completionTail              = std::exchange(other.m_completionTail, nullptr);
-            m_completionRingMask          = std::exchange(other.m_completionRingMask, nullptr);
-            m_submissionEntries           = std::exchange(other.m_submissionEntries, nullptr);
-            m_completionEntries           = std::exchange(other.m_completionEntries, nullptr);
-            m_submissionRingMapping       = std::exchange(other.m_submissionRingMapping, nullptr);
-            m_submissionRingMappingSize   = std::exchange(other.m_submissionRingMappingSize, 0);
-            m_completionRingMapping       = std::exchange(other.m_completionRingMapping, nullptr);
-            m_completionRingMappingSize   = std::exchange(other.m_completionRingMappingSize, 0);
-            m_submissionEntriesMapping    = std::exchange(other.m_submissionEntriesMapping, nullptr);
+            m_submissionHead               = std::exchange(other.m_submissionHead, nullptr);
+            m_submissionTail               = std::exchange(other.m_submissionTail, nullptr);
+            m_submissionRingMask           = std::exchange(other.m_submissionRingMask, nullptr);
+            m_submissionEntriesCount       = std::exchange(other.m_submissionEntriesCount, nullptr);
+            m_submissionArray              = std::exchange(other.m_submissionArray, nullptr);
+            m_completionHead               = std::exchange(other.m_completionHead, nullptr);
+            m_completionTail               = std::exchange(other.m_completionTail, nullptr);
+            m_completionRingMask           = std::exchange(other.m_completionRingMask, nullptr);
+            m_submissionEntries            = std::exchange(other.m_submissionEntries, nullptr);
+            m_completionEntries            = std::exchange(other.m_completionEntries, nullptr);
+            m_submissionRingMapping        = std::exchange(other.m_submissionRingMapping, nullptr);
+            m_submissionRingMappingSize    = std::exchange(other.m_submissionRingMappingSize, 0);
+            m_completionRingMapping        = std::exchange(other.m_completionRingMapping, nullptr);
+            m_completionRingMappingSize    = std::exchange(other.m_completionRingMappingSize, 0);
+            m_submissionEntriesMapping     = std::exchange(other.m_submissionEntriesMapping, nullptr);
             m_submissionEntriesMappingSize = std::exchange(other.m_submissionEntriesMappingSize, 0);
-            m_submissionCapacity          = std::exchange(other.m_submissionCapacity, 0);
-            m_reservedSubmissionCount     = std::exchange(other.m_reservedSubmissionCount, 0);
-            m_ringFileDescriptor          = std::exchange(other.m_ringFileDescriptor, -1);
-            m_isValid                     = std::exchange(other.m_isValid, false);
-            m_timeoutValue                = std::exchange(other.m_timeoutValue, nullptr);
-            m_registrations               = std::move(other.m_registrations);
-            m_zombiePolls                 = std::move(other.m_zombiePolls);
-            m_inFlightSlots                 = std::move(other.m_inFlightSlots);
-            m_freeInFlightSlots             = std::move(other.m_freeInFlightSlots);
-            m_attentionDescriptors        = std::move(other.m_attentionDescriptors);
-            m_nextTicket                  = std::exchange(other.m_nextTicket, 1);
-            m_timeoutTicket               = std::exchange(other.m_timeoutTicket, 0);
-            m_readyEvents                 = std::move(other.m_readyEvents);
+            m_submissionCapacity           = std::exchange(other.m_submissionCapacity, 0);
+            m_reservedSubmissionCount      = std::exchange(other.m_reservedSubmissionCount, 0);
+            m_ringFileDescriptor           = std::exchange(other.m_ringFileDescriptor, -1);
+            m_isValid                      = std::exchange(other.m_isValid, false);
+            m_timeoutValue                 = std::exchange(other.m_timeoutValue, nullptr);
+            m_registrations                = std::move(other.m_registrations);
+            m_zombiePolls                  = std::move(other.m_zombiePolls);
+            m_inFlightSlots                = std::move(other.m_inFlightSlots);
+            m_freeInFlightSlots            = std::move(other.m_freeInFlightSlots);
+            m_attentionDescriptors         = std::move(other.m_attentionDescriptors);
+            m_nextTicket                   = std::exchange(other.m_nextTicket, 1);
+            m_timeoutTicket                = std::exchange(other.m_timeoutTicket, 0);
+            m_readyEvents                  = std::move(other.m_readyEvents);
         }
         return *this;
     }
@@ -272,8 +268,7 @@ namespace AsynGyanis::Core
             m_inFlightSlots[slotIndex].generation = generation;
             m_inFlightSlots[slotIndex].record     = &registration;
             m_freeInFlightSlots.pop_back();
-        }
-        else
+        } else
         {
             slotIndex = static_cast<std::uint32_t>(m_inFlightSlots.size());
             if (m_inFlightSlots.size() == m_inFlightSlots.capacity())
@@ -302,7 +297,7 @@ namespace AsynGyanis::Core
             return nullptr;
         }
         Registration *const registration = slot.record;
-        slot.record = nullptr;
+        slot.record                      = nullptr;
         m_freeInFlightSlots.push_back(static_cast<std::uint32_t>(encodedSlotIndex - 1U));
         return registration;
     }
@@ -325,8 +320,8 @@ namespace AsynGyanis::Core
             }
         }
 
-        const unsigned index = m_reservedSubmissionCount & *m_submissionRingMask;
-        io_uring_sqe  *const submission = &m_submissionEntries[index];
+        const unsigned      index      = m_reservedSubmissionCount & *m_submissionRingMask;
+        io_uring_sqe *const submission = &m_submissionEntries[index];
         std::memset(submission, 0, sizeof(io_uring_sqe));
         m_submissionArray[index] = index;
         // 只推进本地计数，**不发布尾指针**：调用方随后才填 opcode/fd 这些字段，
@@ -479,12 +474,12 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        auto registration           = std::make_unique<Registration>();
+        auto registration            = std::make_unique<Registration>();
         registration->fileDescriptor = fileDescriptor;
         registration->userData       = userData;
         // EPOLLONESHOT 与 EPOLLET 是 epoll 专有位，POLL_ADD 不认：语义由本类用「一次性」承担
-        registration->isOneShot      = (events & EPOLLONESHOT) != 0;
-        registration->events         = events & ~(EPOLLONESHOT | EPOLLET);
+        registration->isOneShot = (events & EPOLLONESHOT) != 0;
+        registration->events    = events & ~(EPOLLONESHOT | EPOLLET);
 
         Registration *const raw = registration.get();
         m_registrations.emplace(fileDescriptor, std::move(registration));
@@ -504,10 +499,10 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        registration->userData  = userData;
-        registration->isOneShot = (events & EPOLLONESHOT) != 0;
+        registration->userData        = userData;
+        registration->isOneShot       = (events & EPOLLONESHOT) != 0;
         const std::uint32_t newEvents = events & ~(EPOLLONESHOT | EPOLLET);
-        registration->events = newEvents;
+        registration->events          = newEvents;
 
         if (registration->inFlightTicket != 0)
         {
@@ -523,8 +518,7 @@ namespace AsynGyanis::Core
                 if (submitPollRemove(registration->inFlightTicket))
                 {
                     registration->pendingRemove = true;
-                }
-                else
+                } else
                 {
                     // 撤不动就登记下来让维护重试：重投整条链路都挂在这次取消之后，
                     // 没人再提它就等于这条描述符从此不再上报
@@ -607,10 +601,8 @@ namespace AsynGyanis::Core
         if (result >= 0)
         {
             // 轮询结果就是 POLL* 掩码，数值与 EPOLL* 同源
-            reportedEvents = static_cast<std::uint32_t>(result) &
-                             (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDNORM | EPOLLWRNORM);
-        }
-        else if (result != -ECANCELED)
+            reportedEvents = static_cast<std::uint32_t>(result) & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDNORM | EPOLLWRNORM);
+        } else if (result != -ECANCELED)
         {
             // 轮询本身失败（描述符被关闭等）：按错误事件上报，让等待方收尾
             reportedEvents = EPOLLERR | EPOLLHUP;
@@ -623,8 +615,7 @@ namespace AsynGyanis::Core
         if (registration->events == 0)
         {
             reportedEvents = 0;
-        }
-        else
+        } else
         {
             reportedEvents &= registration->events | EPOLLERR | EPOLLHUP;
         }
@@ -648,8 +639,7 @@ namespace AsynGyanis::Core
 
         // 走到这里这条记录手上的轮询已经不算在途了（票据在上面被清掉），可它可能还得重新武装：
         // 水平触发的要补投，重投没成功的要再试。登记下来，别等下一次全表扫描——维护只走登记的。
-        if (registration->inFlightTicket == 0 && !registration->pendingDelete
-            && (registration->pendingRearm || (!registration->isOneShot && registration->events != 0)))
+        if (registration->inFlightTicket == 0 && !registration->pendingDelete && (registration->pendingRearm || (!registration->isOneShot && registration->events != 0)))
         {
             m_attentionDescriptors.push_back(registration->fileDescriptor);
         }
@@ -711,23 +701,19 @@ namespace AsynGyanis::Core
                     if (submitPollRemove(registration->inFlightTicket))
                     {
                         registration->pendingRemove = true;
-                    }
-                    else
+                    } else
                     {
                         needsAnotherPass = true;
                     }
                 }
-            }
-            else if (!registration->pendingDelete && registration->events != 0
-                     && (registration->pendingRearm || !registration->isOneShot))
+            } else if (!registration->pendingDelete && registration->events != 0 && (registration->pendingRearm || !registration->isOneShot))
             {
                 // 没武装的两种活：取消完成后的按新掩码重投（成功才清位，失败下次再补），
                 // 以及水平触发的重新武装——原 epoll 会一直上报，这里入睡前补投一次，效果等价
                 if (submitPoll(*registration))
                 {
                     registration->pendingRearm = false;
-                }
-                else
+                } else
                 {
                     needsAnotherPass = true;
                 }
@@ -737,8 +723,7 @@ namespace AsynGyanis::Core
                 m_attentionDescriptors.push_back(fileDescriptor);
             }
         }
-        m_attentionDescriptors.erase(m_attentionDescriptors.begin(),
-                                     m_attentionDescriptors.begin() + static_cast<std::ptrdiff_t>(registeredCount));
+        m_attentionDescriptors.erase(m_attentionDescriptors.begin(), m_attentionDescriptors.begin() + static_cast<std::ptrdiff_t>(registeredCount));
     }
 
     std::span<epoll_event> Uring::wait(const int timeoutMs)

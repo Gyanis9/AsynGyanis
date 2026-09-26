@@ -96,8 +96,8 @@ namespace AsynGyanis::Platform
          */
         static VOID CALLBACK timerCallback(PVOID context, BOOLEAN timerOrWaitFired);
 
-        int    m_writeDescriptor{-1};      ///< 写端描述符（定时器回调写入）
-        HANDLE m_waitableTimer{nullptr};   ///< 高精度可等待定时器句柄（拿不到高精度档时退化为普通档）
+        int    m_writeDescriptor{-1};       ///< 写端描述符（定时器回调写入）
+        HANDLE m_waitableTimer{nullptr};    ///< 高精度可等待定时器句柄（拿不到高精度档时退化为普通档）
         HANDLE m_waitRegistration{nullptr}; ///< 线程池等待登记句柄，销毁时要先阻塞注销再关上面的句柄
 #endif
     };

@@ -20,11 +20,11 @@ namespace AsynGyanis::Net
         constexpr std::size_t kTraceIdFieldStart      = 3U;
         constexpr std::size_t kSpanIdFieldStart       = 36U;
         constexpr std::size_t kTraceFlagsFieldStart   = 53U;
-        constexpr std::size_t kVersionSeparatorOffset  = 2U;
-        constexpr std::size_t kTraceIdSeparatorOffset  = 35U;
-        constexpr std::size_t kSpanIdSeparatorOffset   = 52U;
+        constexpr std::size_t kVersionSeparatorOffset = 2U;
+        constexpr std::size_t kTraceIdSeparatorOffset = 35U;
+        constexpr std::size_t kSpanIdSeparatorOffset  = 52U;
         /// 版本 0 字段的定长口径来自公开常量，校验与调用方截断因此共用一个数
-        constexpr std::size_t kTraceparentLength       = kTraceparentCanonicalLength;
+        constexpr std::size_t kTraceparentLength = kTraceparentCanonicalLength;
 
         /// 规范里点名作废的两个键（历史实现冲突），不接受也不生成
         constexpr std::string_view kInvalidTraceStateKeys[] = {"congo", "tircongo"};
@@ -63,10 +63,7 @@ namespace AsynGyanis::Net
          */
         bool isAllZeroHexField(const std::string_view field) noexcept
         {
-            return std::ranges::all_of(field, [](const char character)
-                                      {
-                                          return character == '0';
-                                      });
+            return std::ranges::all_of(field, [](const char character) { return character == '0'; });
         }
 
         /**
@@ -86,11 +83,7 @@ namespace AsynGyanis::Net
          */
         bool areLowerHexDigits(const std::string_view field) noexcept
         {
-            return std::ranges::all_of(field,
-                                       [](const char character)
-                                       {
-                                           return hexDigitValue(character) != kNotAHexDigit;
-                                       });
+            return std::ranges::all_of(field, [](const char character) { return hexDigitValue(character) != kNotAHexDigit; });
         }
 
         /**
@@ -105,8 +98,8 @@ namespace AsynGyanis::Net
         {
             for (std::size_t byteIndex = 0; byteIndex < SourceSize; ++byteIndex)
             {
-                target[byteIndex * 2U]       = kLowerHexDigits[(source[byteIndex] >> 4U) & 0x0FU];
-                target[byteIndex * 2U + 1U]  = kLowerHexDigits[source[byteIndex] & 0x0FU];
+                target[byteIndex * 2U]      = kLowerHexDigits[(source[byteIndex] >> 4U) & 0x0FU];
+                target[byteIndex * 2U + 1U] = kLowerHexDigits[source[byteIndex] & 0x0FU];
             }
             target[DigitCount] = '\0';
         }
@@ -123,8 +116,7 @@ namespace AsynGyanis::Net
             thread_local std::uint64_t state = []
             {
                 std::uint64_t seed = std::random_device{}();
-                seed               = seed * 6364136223846793005ULL
-                     ^ static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+                seed               = seed * 6364136223846793005ULL ^ static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
                 seed ^= std::hash<std::thread::id>{}(std::this_thread::get_id()) + 0x9E3779B97F4A7C15ULL;
                 return seed;
             }();
@@ -158,10 +150,7 @@ namespace AsynGyanis::Net
                         bytes[offset + inner] = static_cast<std::uint8_t>(word >> (inner * 8U));
                     }
                 }
-            } while (std::ranges::all_of(bytes, [](const std::uint8_t byteValue)
-                                        {
-                                            return byteValue == 0U;
-                                        }));
+            } while (std::ranges::all_of(bytes, [](const std::uint8_t byteValue) { return byteValue == 0U; }));
             return bytes;
         }
 
@@ -172,8 +161,8 @@ namespace AsynGyanis::Net
          */
         constexpr bool isTraceStateKeyCharacter(const char character) noexcept
         {
-            return (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_'
-                   || character == '-' || character == '.' || character == '@' || character == '/' || character == '*';
+            return (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_' || character == '-' || character == '.' ||
+                   character == '@' || character == '/' || character == '*';
         }
     } // namespace
 
@@ -208,12 +197,11 @@ namespace AsynGyanis::Net
             return std::nullopt;
         }
 
-        const std::string_view versionField   = value.substr(kVersionFieldStart, kHexPairLength);
-        const std::string_view traceIdField   = value.substr(kTraceIdFieldStart, kTraceIdHexDigitCount);
-        const std::string_view spanIdField    = value.substr(kSpanIdFieldStart, kSpanIdHexDigitCount);
+        const std::string_view versionField    = value.substr(kVersionFieldStart, kHexPairLength);
+        const std::string_view traceIdField    = value.substr(kTraceIdFieldStart, kTraceIdHexDigitCount);
+        const std::string_view spanIdField     = value.substr(kSpanIdFieldStart, kSpanIdHexDigitCount);
         const std::string_view traceFlagsField = value.substr(kTraceFlagsFieldStart, kHexPairLength);
-        if (!areLowerHexDigits(versionField) || !areLowerHexDigits(traceIdField) || !areLowerHexDigits(spanIdField)
-            || !areLowerHexDigits(traceFlagsField))
+        if (!areLowerHexDigits(versionField) || !areLowerHexDigits(traceIdField) || !areLowerHexDigits(spanIdField) || !areLowerHexDigits(traceFlagsField))
         {
             return std::nullopt;
         }
@@ -263,8 +251,8 @@ namespace AsynGyanis::Net
     void Traceparent::renderInto(std::string &target, const TraceIdentifiers &identifiers)
     {
         target.resize(kTraceparentLength);
-        std::size_t cursor = 0;
-        const auto appendHexByte = [&target, &cursor](const std::uint8_t byteValue)
+        std::size_t cursor        = 0;
+        const auto  appendHexByte = [&target, &cursor](const std::uint8_t byteValue)
         {
             target[cursor++] = kLowerHexDigits[(byteValue >> 4U) & 0x0FU];
             target[cursor++] = kLowerHexDigits[byteValue & 0x0FU];
@@ -298,9 +286,9 @@ namespace AsynGyanis::Net
         std::size_t cursor = 0;
         while (true)
         {
-            const std::size_t separatorOffset = value.find(',', cursor);
-            const std::size_t memberEnd       = separatorOffset == std::string_view::npos ? value.size() : separatorOffset;
-            const std::string_view member     = trimOptionalWhitespace(value.substr(cursor, memberEnd - cursor));
+            const std::size_t      separatorOffset = value.find(',', cursor);
+            const std::size_t      memberEnd       = separatorOffset == std::string_view::npos ? value.size() : separatorOffset;
+            const std::string_view member          = trimOptionalWhitespace(value.substr(cursor, memberEnd - cursor));
             // 走到这里空条目就是畸形：多出来的一个逗号会在中间留下一个空成员
             const std::size_t equalOffset = member.find('=');
             if (member.empty() || equalOffset == std::string_view::npos)
@@ -313,11 +301,7 @@ namespace AsynGyanis::Net
             {
                 return std::nullopt;
             }
-            const bool isDuplicated = std::ranges::any_of(state.m_entries,
-                                                          [&key](const TraceStateEntry &entry)
-                                                          {
-                                                              return entry.key == key;
-                                                          });
+            const bool isDuplicated = std::ranges::any_of(state.m_entries, [&key](const TraceStateEntry &entry) { return entry.key == key; });
             if (isDuplicated)
             {
                 return std::nullopt; // 规范把重复键整条判废：半条可信比全都不可信更糟
@@ -350,11 +334,7 @@ namespace AsynGyanis::Net
         {
             return false;
         }
-        return std::ranges::all_of(key,
-                                   [](const char character)
-                                   {
-                                       return isTraceStateKeyCharacter(character);
-                                   });
+        return std::ranges::all_of(key, [](const char character) { return isTraceStateKeyCharacter(character); });
     }
 
     bool TraceState::isValidValue(const std::string_view value) noexcept
@@ -378,11 +358,7 @@ namespace AsynGyanis::Net
             return false;
         }
         // 规范要求的三步：插到最前、丢掉后面的同名旧条目、按上限从尾部截断（§3.2.4.1）
-        std::erase_if(m_entries,
-                      [&key](const TraceStateEntry &entry)
-                      {
-                          return entry.key == key;
-                      });
+        std::erase_if(m_entries, [&key](const TraceStateEntry &entry) { return entry.key == key; });
         m_entries.insert(m_entries.begin(), TraceStateEntry{std::string(key), std::string(value)});
         if (m_entries.size() > kMaximumTraceStateEntryCount)
         {

@@ -25,7 +25,7 @@ namespace AsynGyanis::Net
          */
         std::optional<std::string> unzstd(const std::string_view input, const std::size_t expectedSize)
         {
-            std::string output(expectedSize, '\0');
+            std::string       output(expectedSize, '\0');
             const std::size_t writtenLength = ZSTD_decompress(output.data(), output.size(), input.data(), input.size());
             if (ZSTD_isError(writtenLength) != 0 || writtenLength != expectedSize)
             {
@@ -44,8 +44,8 @@ namespace AsynGyanis::Net
         {
             std::string output(expectedSize, '\0');
             std::size_t decodedLength = output.size();
-            if (BrotliDecoderDecompress(input.size(), reinterpret_cast<const std::uint8_t *>(input.data()), &decodedLength,
-                                        reinterpret_cast<std::uint8_t *>(output.data())) != BROTLI_DECODER_RESULT_SUCCESS ||
+            if (BrotliDecoderDecompress(input.size(), reinterpret_cast<const std::uint8_t *>(input.data()), &decodedLength, reinterpret_cast<std::uint8_t *>(output.data())) !=
+                        BROTLI_DECODER_RESULT_SUCCESS ||
                 decodedLength != expectedSize)
             {
                 return std::nullopt;
@@ -114,9 +114,9 @@ namespace AsynGyanis::Net
      */
     TEST(CompressionCodecs, ZstdReusesContextAcrossCallsWithoutLeakingState)
     {
-        const std::string repeated = "复用的 ZSTD_CCtx 不得把上一条响应的状态带进这一条：中文 + ASCII 混排正文。";
-        const std::optional<std::string> first = zstdCompress(repeated);
-        const std::optional<std::string> second = zstdCompress(repeated);
+        const std::string                repeated = "复用的 ZSTD_CCtx 不得把上一条响应的状态带进这一条：中文 + ASCII 混排正文。";
+        const std::optional<std::string> first    = zstdCompress(repeated);
+        const std::optional<std::string> second   = zstdCompress(repeated);
         ASSERT_TRUE(first.has_value());
         ASSERT_TRUE(second.has_value());
         EXPECT_EQ(*first, *second) << "同一输入连压两次必须逐字节一致（证明每次 compressCCtx 自复位）";

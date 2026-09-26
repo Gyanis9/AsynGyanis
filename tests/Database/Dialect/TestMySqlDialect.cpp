@@ -15,9 +15,9 @@
 // - DDL 支撑：逻辑列类型到 MySQL 物理类型名的映射、表存在性元数据语句（按当前库限定 + 表名绑定）
 // - DialectRegistry：MySQL 可取得且与 SQLite 是不同实例，Redis 抛出中文异常
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Dialect/ColumnType.h"
 #include "Database/Dialect/DialectRegistry.h"
-#include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Dialect/MySqlDialect.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqlStatement.h"
@@ -232,8 +232,7 @@ TEST(MySqlDialectWhere, SingleComparisonBindsParameter)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}));
+    node.whereConditions.push_back(makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -252,8 +251,7 @@ TEST(MySqlDialectWhere, StringParameterIsBoundWithoutQuoting)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("name", SqlOperator::Eq, ParameterValue{std::string("O'Brien -- DROP")}));
+    node.whereConditions.push_back(makeComparison("name", SqlOperator::Eq, ParameterValue{std::string("O'Brien -- DROP")}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -298,8 +296,7 @@ TEST(MySqlDialectWhere, LikeCondition)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("name", SqlOperator::Like, ParameterValue{std::string("%张%")}));
+    node.whereConditions.push_back(makeComparison("name", SqlOperator::Like, ParameterValue{std::string("%张%")}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -321,8 +318,7 @@ TEST(MySqlDialectWhere, LikeLiteralConditionCarriesEscapeClause)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("name", SqlOperator::LikeLiteral, ParameterValue{std::string("100!%")}));
+    node.whereConditions.push_back(makeComparison("name", SqlOperator::LikeLiteral, ParameterValue{std::string("100!%")}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -340,15 +336,12 @@ TEST(MySqlDialectWhere, NullChecksProduceNoParameter)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(
-        makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr}));
-    node.whereConditions.push_back(
-        makeComparison("created_at", SqlOperator::IsNotNull, ParameterValue{nullptr}));
+    node.whereConditions.push_back(makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr}));
+    node.whereConditions.push_back(makeComparison("created_at", SqlOperator::IsNotNull, ParameterValue{nullptr}));
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT * FROM `users` WHERE `deleted_at` IS NULL AND `created_at` IS NOT NULL");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE `deleted_at` IS NULL AND `created_at` IS NOT NULL");
     // NULL 判断用 IS 而不是 "= NULL"，也不占用任何绑定参数
     EXPECT_TRUE(statement.parameters.empty());
 }
@@ -384,11 +377,8 @@ TEST(MySqlDialectWhere, InConditionExpandsPlaceholdersInOrder)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(makeInCondition("id",
-                                                   SqlOperator::In,
-                                                   {ParameterValue{static_cast<std::int64_t>(1)},
-                                                    ParameterValue{static_cast<std::int64_t>(2)},
-                                                    ParameterValue{static_cast<std::int64_t>(3)}}));
+    node.whereConditions.push_back(makeInCondition(
+            "id", SqlOperator::In, {ParameterValue{static_cast<std::int64_t>(1)}, ParameterValue{static_cast<std::int64_t>(2)}, ParameterValue{static_cast<std::int64_t>(3)}}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -408,10 +398,7 @@ TEST(MySqlDialectWhere, NotInConditionWithStrings)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(makeInCondition("name",
-                                                   SqlOperator::NotIn,
-                                                   {ParameterValue{std::string("张三")},
-                                                    ParameterValue{std::string("李四")}}));
+    node.whereConditions.push_back(makeInCondition("name", SqlOperator::NotIn, {ParameterValue{std::string("张三")}, ParameterValue{std::string("李四")}}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -449,10 +436,8 @@ TEST(MySqlDialectWhere, AndRecursionAddsParentheses)
 
     QueryNode node;
     node.tableName = "users";
-    node.whereConditions.push_back(makeComposite(
-        SqlOperator::And,
-        {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
-         makeComparison("age", SqlOperator::Le, ParameterValue{static_cast<std::int64_t>(60)})}));
+    node.whereConditions.push_back(makeComposite(SqlOperator::And, {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
+                                                                    makeComparison("age", SqlOperator::Le, ParameterValue{static_cast<std::int64_t>(60)})}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -470,14 +455,10 @@ TEST(MySqlDialectWhere, NestedLogicCollectsParametersInSqlOrder)
 {
     const MySqlDialect dialect;
 
-    WhereCondition innerAnd = makeComposite(
-        SqlOperator::And,
-        {makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(7)}),
-         makeComparison("name", SqlOperator::IsNotNull, ParameterValue{nullptr})});
+    WhereCondition innerAnd = makeComposite(SqlOperator::And, {makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(7)}),
+                                                               makeComparison("name", SqlOperator::IsNotNull, ParameterValue{nullptr})});
 
-    WhereCondition innerNot = makeComposite(
-        SqlOperator::Not,
-        {makeComparison("age", SqlOperator::Lt, ParameterValue{static_cast<std::int64_t>(30)})});
+    WhereCondition innerNot = makeComposite(SqlOperator::Not, {makeComparison("age", SqlOperator::Lt, ParameterValue{static_cast<std::int64_t>(30)})});
 
     QueryNode node;
     node.tableName = "users";
@@ -485,8 +466,7 @@ TEST(MySqlDialectWhere, NestedLogicCollectsParametersInSqlOrder)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT * FROM `users` WHERE ((`id` = ? AND `name` IS NOT NULL) OR NOT (`age` < ?))");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` WHERE ((`id` = ? AND `name` IS NOT NULL) OR NOT (`age` < ?))");
     ASSERT_EQ(statement.parameters.size(), 2U);
     // 第一个参数来自第一个占位符（id = ?），第二个来自 NOT 内的 age < ?
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[0]), 7);
@@ -542,17 +522,15 @@ TEST(MySqlDialectClauses, GroupByHavingParameterOrderFollowsSql)
 
     QueryNode node;
     node.tableName = "orders";
-    node.whereConditions.push_back(
-        makeComparison("status", SqlOperator::Eq, ParameterValue{std::string("paid")}));
+    node.whereConditions.push_back(makeComparison("status", SqlOperator::Eq, ParameterValue{std::string("paid")}));
     node.groupBy.push_back(makeField("customer_id"));
     node.having = makeComparison("total", SqlOperator::Gt, ParameterValue{100.5});
     node.orderBy.push_back(OrderByClause{.field = makeField("customer_id"), .descending = false});
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT * FROM `orders` WHERE `status` = ? GROUP BY `customer_id` "
-              "HAVING `total` > ? ORDER BY `customer_id` ASC");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `orders` WHERE `status` = ? GROUP BY `customer_id` "
+                             "HAVING `total` > ? ORDER BY `customer_id` ASC");
     ASSERT_EQ(statement.parameters.size(), 2U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "paid");
     EXPECT_DOUBLE_EQ(std::get<double>(statement.parameters[1]), 100.5);
@@ -661,9 +639,8 @@ TEST(MySqlDialectJoin, InnerJoinWithOnCondition)
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT `id`, `name` FROM `users` "
-              "INNER JOIN `orders` AS `o` ON `id` = `user_id`");
+    EXPECT_EQ(statement.sql, "SELECT `id`, `name` FROM `users` "
+                             "INNER JOIN `orders` AS `o` ON `id` = `user_id`");
     EXPECT_TRUE(statement.parameters.empty());
 }
 
@@ -679,8 +656,8 @@ TEST(MySqlDialectJoin, JoinTargetTableNameFollowsTheSameQuotingRule)
     const MySqlDialect dialect;
 
     JoinClause joinClause;
-    joinClause.type       = JoinType::Inner;
-    joinClause.tableName  = "shop.orders";
+    joinClause.type      = JoinType::Inner;
+    joinClause.tableName = "shop.orders";
     joinClause.conditions.push_back(makeColumnComparison("id", SqlOperator::Eq, "user_id"));
 
     QueryNode node;
@@ -692,12 +669,12 @@ TEST(MySqlDialectJoin, JoinTargetTableNameFollowsTheSameQuotingRule)
     EXPECT_NE(qualified.sql.find("`shop`.`orders`"), std::string::npos) << qualified.sql;
 
     // 名字里带连字符：整段进反引号，仍然是一个合法可查的表名
-    node.tableName = "Asyn_Mysql_Quote-Table";
+    node.tableName                = "Asyn_Mysql_Quote-Table";
     const SqlStatement hyphenated = dialect.translate(node);
     EXPECT_NE(hyphenated.sql.find("`Asyn_Mysql_Quote-Table`"), std::string::npos) << hyphenated.sql;
 
     // 看着像注入串的名字同样只是名字：分号落在反引号之内，没有第二条语句被拼出来
-    node.tableName = "t; DROP TABLE users; --";
+    node.tableName             = "t; DROP TABLE users; --";
     const SqlStatement hostile = dialect.translate(node);
     EXPECT_NE(hostile.sql.find("`t; DROP TABLE users; --`"), std::string::npos) << hostile.sql;
 }
@@ -712,19 +689,16 @@ TEST(MySqlDialectJoin, JoinOnParametersPrecedeWhereParameters)
     JoinClause joinClause;
     joinClause.type      = JoinType::Left;
     joinClause.tableName = "orders";
-    joinClause.conditions.push_back(
-        makeComparison("status", SqlOperator::Eq, ParameterValue{std::string("已支付")}));
+    joinClause.conditions.push_back(makeComparison("status", SqlOperator::Eq, ParameterValue{std::string("已支付")}));
 
     QueryNode node;
     node.tableName = "users";
     node.joins.push_back(std::move(joinClause));
-    node.whereConditions.push_back(
-        makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}));
+    node.whereConditions.push_back(makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}));
 
     const SqlStatement statement = dialect.translate(node);
 
-    EXPECT_EQ(statement.sql,
-              "SELECT * FROM `users` LEFT JOIN `orders` ON `status` = ? WHERE `age` >= ?");
+    EXPECT_EQ(statement.sql, "SELECT * FROM `users` LEFT JOIN `orders` ON `status` = ? WHERE `age` >= ?");
     ASSERT_EQ(statement.parameters.size(), 2U);
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "已支付");
     EXPECT_EQ(std::get<std::int64_t>(statement.parameters[1]), 18);
@@ -768,12 +742,9 @@ TEST(MySqlDialectParameter, ParameterTypesAreConverted)
 
     QueryNode node;
     node.tableName = "mixed";
-    node.whereConditions.push_back(
-        makeComparison("flag", SqlOperator::Eq, ParameterValue{true}));
-    node.whereConditions.push_back(
-        makeComparison("score", SqlOperator::Eq, ParameterValue{1.5}));
-    node.whereConditions.push_back(
-        makeComparison("deleted", SqlOperator::Eq, ParameterValue{nullptr}));
+    node.whereConditions.push_back(makeComparison("flag", SqlOperator::Eq, ParameterValue{true}));
+    node.whereConditions.push_back(makeComparison("score", SqlOperator::Eq, ParameterValue{1.5}));
+    node.whereConditions.push_back(makeComparison("deleted", SqlOperator::Eq, ParameterValue{nullptr}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -795,8 +766,7 @@ TEST(MySqlDialectParameter, UnsignedParameterWithinInt64RangeBecomesInt64)
 
     QueryNode node;
     node.tableName = "counters";
-    node.whereConditions.push_back(
-        makeComparison("value", SqlOperator::Eq, ParameterValue{static_cast<std::uint64_t>(42)}));
+    node.whereConditions.push_back(makeComparison("value", SqlOperator::Eq, ParameterValue{static_cast<std::uint64_t>(42)}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -817,8 +787,7 @@ TEST(MySqlDialectParameter, UnsignedParameterBeyondInt64RangeBecomesDecimalText)
 
     QueryNode node;
     node.tableName = "counters";
-    node.whereConditions.push_back(
-        makeComparison("value", SqlOperator::Eq, ParameterValue{kBeyondInt64}));
+    node.whereConditions.push_back(makeComparison("value", SqlOperator::Eq, ParameterValue{kBeyondInt64}));
 
     const SqlStatement statement = dialect.translate(node);
 
@@ -837,20 +806,15 @@ TEST(MySqlDialectParameter, PlaceholderCountMatchesParameterCount)
     JoinClause joinClause;
     joinClause.type      = JoinType::Inner;
     joinClause.tableName = "orders";
-    joinClause.conditions.push_back(
-        makeComparison("state", SqlOperator::Eq, ParameterValue{std::string("open")}));
+    joinClause.conditions.push_back(makeComparison("state", SqlOperator::Eq, ParameterValue{std::string("open")}));
 
     QueryNode node;
     node.tableName = "users";
     node.joins.push_back(std::move(joinClause));
-    node.whereConditions.push_back(makeComposite(
-        SqlOperator::And,
-        {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
-         makeInCondition("id",
-                         SqlOperator::In,
-                         {ParameterValue{static_cast<std::int64_t>(1)},
-                          ParameterValue{static_cast<std::int64_t>(2)}}),
-         makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})}));
+    node.whereConditions.push_back(
+            makeComposite(SqlOperator::And, {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
+                                             makeInCondition("id", SqlOperator::In, {ParameterValue{static_cast<std::int64_t>(1)}, ParameterValue{static_cast<std::int64_t>(2)}}),
+                                             makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})}));
     node.having = makeComparison("total", SqlOperator::Gt, ParameterValue{0.0});
     node.limit  = 5U;
     node.offset = 10U;
@@ -877,11 +841,7 @@ TEST(MySqlDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)
     node.tableName     = "users";
     node.selectColumns = {"id", "name", "note"};
 
-    const std::vector<DatabaseValue> values{
-        std::int64_t{7},
-        std::string("O'Brien -- 中文"),
-        std::monostate{}
-    };
+    const std::vector<DatabaseValue> values{std::int64_t{7}, std::string("O'Brien -- 中文"), std::monostate{}};
 
     const SqlStatement statement = dialect.translateInsert(node, values);
 
@@ -917,8 +877,8 @@ TEST(MySqlDialectWrite, InsertDirectionsQuoteQualifiedTableNamesSegmentBySegment
     EXPECT_NE(single.sql.find("INSERT INTO `shop`.`users`"), std::string::npos) << single.sql;
     EXPECT_EQ(single.sql.find(" AS "), std::string::npos) << single.sql;
 
-    const std::vector<std::vector<DatabaseValue> > rows{values, values};
-    const SqlStatement batch = dialect.translateInsertBatch(node, rows);
+    const std::vector<std::vector<DatabaseValue>> rows{values, values};
+    const SqlStatement                            batch = dialect.translateInsertBatch(node, rows);
     EXPECT_NE(batch.sql.find("INSERT INTO `shop`.`users`"), std::string::npos) << batch.sql;
 }
 
@@ -931,19 +891,15 @@ TEST(MySqlDialectWrite, InsertRejectsColumnAndValueCountMismatch)
     node.selectColumns = {"id", "name"};
 
     // 少给值
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}})),
-                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}})), std::invalid_argument);
 
     // 多给值
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(
-                     node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("a"), std::string("b")})),
-                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("a"), std::string("b")})), std::invalid_argument);
 
     // 没有任何待写列
     QueryNode emptyColumnNode;
     emptyColumnNode.tableName = "users";
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(emptyColumnNode, std::vector<DatabaseValue>{})),
-                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsert(emptyColumnNode, std::vector<DatabaseValue>{})), std::invalid_argument);
 }
 
 /**
@@ -956,8 +912,7 @@ TEST(MySqlDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
     QueryNode node;
     node.tableName     = "users";
     node.selectColumns = {"name", "balance"};
-    node.whereConditions.push_back(
-        makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(42)}));
+    node.whereConditions.push_back(makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(42)}));
 
     const std::vector<DatabaseValue> values{std::string("王五"), 888.25};
 
@@ -979,26 +934,21 @@ TEST(MySqlDialectWrite, UpdateWithCompositeConditionKeepsParameterOrder)
     const MySqlDialect dialect;
 
     // NOT (deleted_at IS NULL) 不占参数；IN 展开成两个占位符
-    WhereCondition notNull = makeComposite(
-        SqlOperator::Not, {makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})});
+    WhereCondition notNull = makeComposite(SqlOperator::Not, {makeComparison("deleted_at", SqlOperator::IsNull, ParameterValue{nullptr})});
 
     QueryNode node;
     node.tableName     = "users";
     node.tableAlias    = "u";
     node.selectColumns = {"name"};
-    node.whereConditions.push_back(
-        makeInCondition("id",
-                        SqlOperator::In,
-                        {ParameterValue{static_cast<std::int64_t>(1)}, ParameterValue{static_cast<std::int64_t>(2)}}));
+    node.whereConditions.push_back(makeInCondition("id", SqlOperator::In, {ParameterValue{static_cast<std::int64_t>(1)}, ParameterValue{static_cast<std::int64_t>(2)}}));
     node.whereConditions.push_back(std::move(notNull));
 
     const std::vector<DatabaseValue> values{std::string("李四")};
 
     const SqlStatement statement = dialect.translateUpdate(node, values);
 
-    EXPECT_EQ(statement.sql,
-              "UPDATE `users` AS `u` SET `name` = ? "
-              "WHERE `id` IN (?, ?) AND NOT (`deleted_at` IS NULL)");
+    EXPECT_EQ(statement.sql, "UPDATE `users` AS `u` SET `name` = ? "
+                             "WHERE `id` IN (?, ?) AND NOT (`deleted_at` IS NULL)");
     ASSERT_EQ(statement.parameters.size(), 3U);
     // 赋值参数在前，随后是两个 IN 集合元素，顺序与文本中占位符的先后一致
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "李四");
@@ -1035,11 +985,8 @@ TEST(MySqlDialectWrite, DeleteRendersWhereConditionAndBindsParameters)
     QueryNode node;
     node.tableName = "users";
     node.whereConditions.push_back(makeComposite(
-        SqlOperator::And,
-        {makeComparison("active", SqlOperator::Eq, ParameterValue{false}),
-         makeInCondition("id",
-                         SqlOperator::In,
-                         {ParameterValue{static_cast<std::int64_t>(3)}, ParameterValue{static_cast<std::int64_t>(4)}})}));
+            SqlOperator::And, {makeComparison("active", SqlOperator::Eq, ParameterValue{false}),
+                               makeInCondition("id", SqlOperator::In, {ParameterValue{static_cast<std::int64_t>(3)}, ParameterValue{static_cast<std::int64_t>(4)}})}));
 
     const SqlStatement statement = dialect.translateDelete(node);
 
@@ -1069,8 +1016,7 @@ TEST(MySqlDialectWrite, DeleteWithoutConditionAndWithAlias)
     QueryNode aliasedNode;
     aliasedNode.tableName  = "users";
     aliasedNode.tableAlias = "u";
-    aliasedNode.whereConditions.push_back(
-        makeComparison("u.id", SqlOperator::Gt, ParameterValue{static_cast<std::int64_t>(10)}));
+    aliasedNode.whereConditions.push_back(makeComparison("u.id", SqlOperator::Gt, ParameterValue{static_cast<std::int64_t>(10)}));
 
     const SqlStatement aliased = dialect.translateDelete(aliasedNode);
     EXPECT_EQ(aliased.sql, "DELETE FROM `users` AS `u` WHERE `u`.`id` > ?");
@@ -1089,17 +1035,14 @@ TEST(MySqlDialectWrite, InsertBatchRendersMultipleValueRowsInOrder)
     node.tableName     = "accounts";
     node.selectColumns = {"id", "name", "note"};
 
-    const std::vector<std::vector<DatabaseValue>> rows{
-        {std::int64_t{1}, std::string("张三"), std::string("普通备注")},
-        {std::int64_t{2}, std::string("O'Brien -- DROP"), std::monostate{}},
-        {std::int64_t{3}, std::string("李四"), std::monostate{}}
-    };
+    const std::vector<std::vector<DatabaseValue>> rows{{std::int64_t{1}, std::string("张三"), std::string("普通备注")},
+                                                       {std::int64_t{2}, std::string("O'Brien -- DROP"), std::monostate{}},
+                                                       {std::int64_t{3}, std::string("李四"), std::monostate{}}};
 
     const SqlStatement statement = dialect.translateInsertBatch(node, rows);
 
-    EXPECT_EQ(statement.sql,
-              "INSERT INTO `accounts` (`id`, `name`, `note`) "
-              "VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)");
+    EXPECT_EQ(statement.sql, "INSERT INTO `accounts` (`id`, `name`, `note`) "
+                             "VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)");
 
     // 参数个数 = 行数 × 列数
     ASSERT_EQ(statement.parameters.size(), 9U);
@@ -1129,15 +1072,10 @@ TEST(MySqlDialectWrite, InsertBatchRejectsEmptyRowsAndColumnMismatch)
     node.selectColumns = {"id", "name"};
 
     // 空行集合：SQL 里 "VALUES" 后面必须有至少一组括号，无法生成合法语句
-    EXPECT_THROW(static_cast<void>(
-                     dialect.translateInsertBatch(node, std::vector<std::vector<DatabaseValue>>{})),
-                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, std::vector<std::vector<DatabaseValue>>{})), std::invalid_argument);
 
     // 某行少给一列：列与值错位会让数据写进错误的列，必须当场失败
-    const std::vector<std::vector<DatabaseValue>> mismatchedRows{
-        {std::int64_t{1}, std::string("张三")},
-        {std::int64_t{2}}
-    };
+    const std::vector<std::vector<DatabaseValue>> mismatchedRows{{std::int64_t{1}, std::string("张三")}, {std::int64_t{2}}};
     EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, mismatchedRows)), std::invalid_argument);
 }
 
@@ -1210,9 +1148,8 @@ TEST(MySqlDialectDdl, TableExistsStatementScopesToCurrentDatabase)
     // 因此必须同时用 DATABASE() 限定当前会话的默认库。
     // 视图与表在 MySQL 里共用一个名字空间，只判名字存在会把视图当成「表已存在」——
     // 建表被跳过、后续写入落在视图上才报错，所以还要按 table_type 排除视图（SQLite 侧同为 type='table'）
-    EXPECT_EQ(statement.sql,
-              "SELECT COUNT(*) FROM information_schema.tables "
-              "WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' AND table_name = ?");
+    EXPECT_EQ(statement.sql, "SELECT COUNT(*) FROM information_schema.tables "
+                             "WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' AND table_name = ?");
     ASSERT_EQ(statement.parameters.size(), 1U);
     ASSERT_TRUE(std::holds_alternative<std::string>(statement.parameters[0]));
     EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "users");

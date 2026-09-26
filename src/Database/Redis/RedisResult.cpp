@@ -79,8 +79,7 @@ namespace AsynGyanis::Database
         }
     } // namespace
 
-    RedisResult::RedisResult(redisReply *const ownedReply) :
-        m_replyPointer(ownedReply)
+    RedisResult::RedisResult(redisReply *const ownedReply) : m_replyPointer(ownedReply)
     {
         // 空回复代表「什么都没有」：类型与列数保持默认值，isEmpty() 自然为 true，
         // 析构也不会对 nullptr 调用 freeReplyObject
@@ -291,8 +290,7 @@ namespace AsynGyanis::Database
         // 列数是个位数级别的规模，这里为每次比较生成临时串换来的可读写得比省下一次分配更值
         for (size_t index = 0; index < m_columnCount; ++index)
         {
-            if (const std::optional<std::string> synthesizedName = columnName(index);
-                synthesizedName.has_value() && name == synthesizedName.value())
+            if (const std::optional<std::string> synthesizedName = columnName(index); synthesizedName.has_value() && name == synthesizedName.value())
             {
                 return index;
             }

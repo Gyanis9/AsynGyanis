@@ -32,9 +32,7 @@ namespace AsynGyanis::Core
      * @param description 日志里写的对象名，便于现场分辨是哪一层掐断了
      */
     template<typename WatchedType>
-    Task<void> watchDeadline(EventLoop &loop, WatchedType &watched,
-                             const std::chrono::milliseconds timeout, const bool &isCancelled,
-                             const std::string_view description)
+    Task<void> watchDeadline(EventLoop &loop, WatchedType &watched, const std::chrono::milliseconds timeout, const bool &isCancelled, const std::string_view description)
     {
         Timer timer(loop);
         co_await timer.waitFor(timeout);
@@ -67,9 +65,8 @@ namespace AsynGyanis::Core
          * @param timeout 时限
          * @param description 日志里写的对象名
          */
-        DeadlineGuard(EventLoop &loop, WatchedType &watched, const std::chrono::milliseconds timeout,
-                      const std::string_view description)
-            : m_watchdog(watchDeadline(loop, watched, timeout, m_isCancelled, description))
+        DeadlineGuard(EventLoop &loop, WatchedType &watched, const std::chrono::milliseconds timeout, const std::string_view description) :
+            m_watchdog(watchDeadline(loop, watched, timeout, m_isCancelled, description))
         {
             m_watchdog->handle().resume(); // 惰性协程：手动启动
         }
@@ -80,13 +77,13 @@ namespace AsynGyanis::Core
             m_watchdog.reset();
         }
 
-        DeadlineGuard(const DeadlineGuard &) = delete;
+        DeadlineGuard(const DeadlineGuard &)            = delete;
         DeadlineGuard &operator=(const DeadlineGuard &) = delete;
-        DeadlineGuard(DeadlineGuard &&) = delete;
-        DeadlineGuard &operator=(DeadlineGuard &&) = delete;
+        DeadlineGuard(DeadlineGuard &&)                 = delete;
+        DeadlineGuard &operator=(DeadlineGuard &&)      = delete;
 
     private:
-        bool m_isCancelled{false};              ///< 监视已结束（看门狗协程按引用持有）
-        std::optional<Task<>> m_watchdog; ///< 看门狗协程帧：置空即撤销
+        bool                  m_isCancelled{false}; ///< 监视已结束（看门狗协程按引用持有）
+        std::optional<Task<>> m_watchdog;           ///< 看门狗协程帧：置空即撤销
     };
 } // namespace AsynGyanis::Core

@@ -47,7 +47,7 @@ namespace AsynGyanis::Database::TestPoolSupport
         {
             const std::lock_guard lock(m_mutex);
             m_hasArrived = false;
-            m_isArmed = true;
+            m_isArmed    = true;
         }
 
         /**
@@ -84,10 +84,10 @@ namespace AsynGyanis::Database::TestPoolSupport
         }
 
     private:
-        std::mutex m_mutex;                        ///< 保护布防与到达两个标志
-        std::condition_variable m_condition;       ///< 放行停在门闩里的断开
-        bool m_isArmed{false};                     ///< 是否布防：布防期间到达的断开原地等待
-        bool m_hasArrived{false};                  ///< 是否已有一次断开到达
+        std::mutex              m_mutex;             ///< 保护布防与到达两个标志
+        std::condition_variable m_condition;         ///< 放行停在门闩里的断开
+        bool                    m_isArmed{false};    ///< 是否布防：布防期间到达的断开原地等待
+        bool                    m_hasArrived{false}; ///< 是否已有一次断开到达
     };
 
     /**
@@ -95,12 +95,12 @@ namespace AsynGyanis::Database::TestPoolSupport
      */
     struct ConnectionCounter
     {
-        std::atomic<std::int64_t> totalCreated{0};   ///< 累计创建的连接数
-        std::atomic<std::int64_t> totalDestroyed{0};  ///< 累计销毁的连接数
-        std::atomic<std::int64_t> healthCheckCount{0}; ///< isConnected() 调用次数
-        std::atomic<std::int64_t> sessionResetCount{0}; ///< resetSessionState() 调用次数（会话状态复位钩子）
-        std::atomic<bool> connectionsHealthy{true};     ///< 全体连接的存活开关：用例据此造出「入栈后失联」
-        ArrivalGate *disconnectGate{nullptr};        ///< 断开门闩，空则 disconnect() 不额外停留
+        std::atomic<std::int64_t> totalCreated{0};          ///< 累计创建的连接数
+        std::atomic<std::int64_t> totalDestroyed{0};        ///< 累计销毁的连接数
+        std::atomic<std::int64_t> healthCheckCount{0};      ///< isConnected() 调用次数
+        std::atomic<std::int64_t> sessionResetCount{0};     ///< resetSessionState() 调用次数（会话状态复位钩子）
+        std::atomic<bool>         connectionsHealthy{true}; ///< 全体连接的存活开关：用例据此造出「入栈后失联」
+        ArrivalGate              *disconnectGate{nullptr};  ///< 断开门闩，空则 disconnect() 不额外停留
     };
 
     /**
@@ -119,9 +119,7 @@ namespace AsynGyanis::Database::TestPoolSupport
          * @param counter 全局计数器（非空），用于统计
          * @param id      连接唯一 ID
          */
-        explicit MockConnection(ConnectionCounter &counter, std::int64_t id)
-            : m_counter(&counter)
-            , m_id(id)
+        explicit MockConnection(ConnectionCounter &counter, std::int64_t id) : m_counter(&counter), m_id(id)
         {
         }
 
@@ -198,19 +196,25 @@ namespace AsynGyanis::Database::TestPoolSupport
          * @brief 获取连接唯一 ID
          * @return std::int64_t 连接 ID
          */
-        [[nodiscard]] std::int64_t id() const noexcept { return m_id; }
+        [[nodiscard]] std::int64_t id() const noexcept
+        {
+            return m_id;
+        }
 
         /**
          * @brief 设置健康检查的返回值
          * @param ok true 表示健康
          */
-        void setHealthOk(bool ok) noexcept { m_healthOk = ok; }
+        void setHealthOk(bool ok) noexcept
+        {
+            m_healthOk = ok;
+        }
 
     private:
-        ConnectionCounter *m_counter;   ///< 全局计数器
-        std::int64_t       m_id;        ///< 连接唯一 ID
+        ConnectionCounter *m_counter;           ///< 全局计数器
+        std::int64_t       m_id;                ///< 连接唯一 ID
         bool               m_connectOk{true};   ///< connect() 的返回值
-        bool               m_healthOk{true};  ///< isConnected() 的返回值
+        bool               m_healthOk{true};    ///< isConnected() 的返回值
         bool               m_isConnected{true}; ///< 连接状态（由 connect/disconnect 控制）
     };
 
@@ -219,8 +223,7 @@ namespace AsynGyanis::Database::TestPoolSupport
      * @param counter 全局计数器
      * @return 返回可传递给 ConnectionPool 的工厂函数
      */
-    inline std::function<std::unique_ptr<DatabaseConnection>()>
-    makeMockFactory(ConnectionCounter &counter)
+    inline std::function<std::unique_ptr<DatabaseConnection>()> makeMockFactory(ConnectionCounter &counter)
     {
         return [&counter]() -> std::unique_ptr<DatabaseConnection>
         {

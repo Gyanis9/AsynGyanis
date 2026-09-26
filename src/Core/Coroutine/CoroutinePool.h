@@ -89,7 +89,7 @@ namespace AsynGyanis::Core
         // 两档把两侧都盖住，仍超过大档的极少数帧才回退全局堆
         static constexpr size_t kDefaultBlockSize     = 256;   ///< 默认（小档）块大小：几十到两百字节的小帧用这一档，不浪费
         static constexpr size_t kLargeBlockSize       = 2048;  ///< 大档块大小：框架里路由、会话这类帧实测 1.2–2.2 KB，小档装不下，落到全局堆就是每请求一次分配器调用
-        static constexpr size_t kTierCount            = 2;      ///< 规格档数：小档与大档各有自己的空闲链表、每线程缓存与内存段
+        static constexpr size_t kTierCount            = 2;     ///< 规格档数：小档与大档各有自己的空闲链表、每线程缓存与内存段
         static constexpr size_t kDefaultInitialBlocks = 128;   ///< 首次扩容的块数
         static constexpr size_t kMaximumTotalBlocks   = 16384; ///< 块数上限（两档合计），小块规格下约 4MB
         static constexpr size_t kLocalCacheCapacity   = 64;    ///< 每线程每档缓存上限
@@ -131,8 +131,8 @@ namespace AsynGyanis::Core
          */
         struct ThreadCache
         {
-            std::array<void *, kTierCount>   freeHeads{};  ///< 各档的空闲链表头（空闲块首字节存 next）
-            std::array<size_t, kTierCount>   freeCounts{}; ///< 各档链表长度
+            std::array<void *, kTierCount> freeHeads{};  ///< 各档的空闲链表头（空闲块首字节存 next）
+            std::array<size_t, kTierCount> freeCounts{}; ///< 各档链表长度
 
             /**
              * @brief 线程退出时把缓存里剩余的块按档全部归还全局池
@@ -185,13 +185,13 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] bool isOwnedBlock(const void *pointer) const noexcept;
 
-        size_t                          m_blockSize;               ///< 小档块大小（构造参数；大档固定 kLargeBlockSize）
-        std::array<MemoryChunk, kMaximumChunkCount> m_chunks{};    ///< 内存段描述：先写描述、再发布段数量，故可无锁读
-        std::atomic<size_t>             m_chunkCount{0};           ///< 已发布的内存段数量（release 发布，acquire 读取）
-        std::atomic<size_t>             m_allocatedCount{0};       ///< 已切分的块总数（两档合计，跨线程可读）
-        std::array<size_t, kTierCount>  m_tierAllocatedCount{};    ///< 各档已切分的块数（仅持锁读写）：扩容翻倍按本档历史，不按两档合计
-        std::array<void *, kTierCount>  m_globalFreeHeads{};       ///< 各档全局空闲链表头（仅持锁访问）
-        mutable std::mutex              m_mutex;                   ///< 只保护全局空闲链表与扩容
+        size_t                                      m_blockSize;            ///< 小档块大小（构造参数；大档固定 kLargeBlockSize）
+        std::array<MemoryChunk, kMaximumChunkCount> m_chunks{};             ///< 内存段描述：先写描述、再发布段数量，故可无锁读
+        std::atomic<size_t>                         m_chunkCount{0};        ///< 已发布的内存段数量（release 发布，acquire 读取）
+        std::atomic<size_t>                         m_allocatedCount{0};    ///< 已切分的块总数（两档合计，跨线程可读）
+        std::array<size_t, kTierCount>              m_tierAllocatedCount{}; ///< 各档已切分的块数（仅持锁读写）：扩容翻倍按本档历史，不按两档合计
+        std::array<void *, kTierCount>              m_globalFreeHeads{};    ///< 各档全局空闲链表头（仅持锁访问）
+        mutable std::mutex                          m_mutex;                ///< 只保护全局空闲链表与扩容
     };
 
     /**

@@ -10,9 +10,9 @@
 #pragma once
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
-#include "Net/Http/HttpMethod.h"
 #include "Net/Http/Middleware.h"
 
 #include <cstddef>
@@ -225,8 +225,7 @@ namespace AsynGyanis::Net
              * @param routeHandler 处理函数，所有权转移给本条目
              * @param isStreaming 本条路由是否按流式接口注册，存进 streaming 供流式判定读取
              */
-            PatternRoute(HttpMethod routeMethod, bool matchAnyMethod, std::string routePattern, Handler routeHandler,
-                         bool isStreaming = false);
+            PatternRoute(HttpMethod routeMethod, bool matchAnyMethod, std::string routePattern, Handler routeHandler, bool isStreaming = false);
 
             /**
              * @brief 把路径模式拆成段：普通段原样、":name" 段以 ':' 前缀保留，通配形态记入 isWildcard 与 wildcardPrefix
@@ -234,14 +233,14 @@ namespace AsynGyanis::Net
              */
             void precomputeSegments(const std::string &routePattern);
 
-            HttpMethod method{HttpMethod::GET}; ///< 绑定的方法；isAnyMethod 为 true 时该字段不参与判定
-            bool       isAnyMethod{false};      ///< 是否为任意方法路由（显式通配，与 UNKNOWN 无关）
-            std::string pattern;                ///< 模式原文，用于替换判等与诊断输出
-            std::vector<std::string> segments;  ///< 预解析的逐段模式，已去掉分隔用的 '/'
-            std::string wildcardPrefix;         ///< 通配路由的目录前缀（含结尾 '/'），非通配路由为空
-            bool        isWildcard{false};      ///< 是否以 '*' 结尾的前缀通配路由
-            bool        streaming{false};       ///< 是否流式正文路由（见 postStreaming()）
-            Handler     handler;                ///< 业务处理函数，路由期间只按引用使用，不拷贝
+            HttpMethod               method{HttpMethod::GET}; ///< 绑定的方法；isAnyMethod 为 true 时该字段不参与判定
+            bool                     isAnyMethod{false};      ///< 是否为任意方法路由（显式通配，与 UNKNOWN 无关）
+            std::string              pattern;                 ///< 模式原文，用于替换判等与诊断输出
+            std::vector<std::string> segments;                ///< 预解析的逐段模式，已去掉分隔用的 '/'
+            std::string              wildcardPrefix;          ///< 通配路由的目录前缀（含结尾 '/'），非通配路由为空
+            bool                     isWildcard{false};       ///< 是否以 '*' 结尾的前缀通配路由
+            bool                     streaming{false};        ///< 是否流式正文路由（见 postStreaming()）
+            Handler                  handler;                 ///< 业务处理函数，路由期间只按引用使用，不拷贝
         };
 
         /**

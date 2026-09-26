@@ -53,8 +53,7 @@ namespace AsynGyanis::Database
             try
             {
                 invocation();
-            }
-            catch (const std::invalid_argument &error)
+            } catch (const std::invalid_argument &error)
             {
                 return {error.what()};
             }
@@ -98,8 +97,8 @@ namespace AsynGyanis::Database
     TEST(DatabaseFactory, CreateByTypeKeepsEveryDriverDisconnected)
     {
         // 工厂只挑驱动不做连接：返回的连接一律处于未连接状态，connect() 才是发起 IO 的唯一入口
-        const std::unique_ptr<DatabaseConnection> mySqlConnection = DatabaseFactory::create(DatabaseType::MySql, ConnectionConfig::mySqlDefault());
-        const std::unique_ptr<DatabaseConnection> redisConnection = DatabaseFactory::create(DatabaseType::Redis, ConnectionConfig::redisDefault());
+        const std::unique_ptr<DatabaseConnection> mySqlConnection  = DatabaseFactory::create(DatabaseType::MySql, ConnectionConfig::mySqlDefault());
+        const std::unique_ptr<DatabaseConnection> redisConnection  = DatabaseFactory::create(DatabaseType::Redis, ConnectionConfig::redisDefault());
         const std::unique_ptr<DatabaseConnection> sqliteConnection = DatabaseFactory::create(DatabaseType::Sqlite, ConnectionConfig::sqliteDefault());
 
         EXPECT_FALSE(mySqlConnection->isConnected());
@@ -141,16 +140,12 @@ namespace AsynGyanis::Database
     TEST(DatabaseFactory, CreateByTypeThrowsForOutOfRangeEnumValue)
     {
         // 三个 case 覆盖完之后没有 default 返回值，越界取值必须抛而不是给出静默默认驱动
-        const DatabaseType unknownType = static_cast<DatabaseType>(99);
+        const DatabaseType     unknownType   = static_cast<DatabaseType>(99);
         const ConnectionConfig configuration = ConnectionConfig::sqliteDefault();
 
         EXPECT_THROW(static_cast<void>(DatabaseFactory::create(unknownType, configuration)), std::invalid_argument);
 
-        const std::string message = captureInvalidArgumentMessage(
-                [&unknownType, &configuration]()
-                {
-                    static_cast<void>(DatabaseFactory::create(unknownType, configuration));
-                });
+        const std::string message = captureInvalidArgumentMessage([&unknownType, &configuration]() { static_cast<void>(DatabaseFactory::create(unknownType, configuration)); });
 
         EXPECT_FALSE(message.empty());
         EXPECT_TRUE(containsLocalizedText(message)) << message;
@@ -183,7 +178,7 @@ namespace AsynGyanis::Database
     {
         // SQLite 不需要端口：port 为 0 且给了库路径就按嵌入式库处理（不能回退成 MySQL）
         const std::unique_ptr<DatabaseConnection> memoryConnection = DatabaseFactory::create(ConnectionConfig::sqliteDefault());
-        const std::unique_ptr<DatabaseConnection> fileConnection = DatabaseFactory::create(ConnectionConfig::sqliteDefault("data/application.db"));
+        const std::unique_ptr<DatabaseConnection> fileConnection   = DatabaseFactory::create(ConnectionConfig::sqliteDefault("data/application.db"));
 
         EXPECT_EQ(memoryConnection->databaseType(), DatabaseType::Sqlite);
         EXPECT_EQ(fileConnection->databaseType(), DatabaseType::Sqlite);
@@ -240,11 +235,7 @@ namespace AsynGyanis::Database
 
         EXPECT_THROW(static_cast<void>(DatabaseFactory::create(configuration)), std::invalid_argument);
 
-        const std::string message = captureInvalidArgumentMessage(
-                [&configuration]()
-                {
-                    static_cast<void>(DatabaseFactory::create(configuration));
-                });
+        const std::string message = captureInvalidArgumentMessage([&configuration]() { static_cast<void>(DatabaseFactory::create(configuration)); });
 
         EXPECT_FALSE(message.empty());
         EXPECT_TRUE(containsLocalizedText(message)) << message;
@@ -261,11 +252,7 @@ namespace AsynGyanis::Database
 
         EXPECT_THROW(static_cast<void>(DatabaseFactory::create(configuration)), std::invalid_argument);
 
-        const std::string message = captureInvalidArgumentMessage(
-                [&configuration]()
-                {
-                    static_cast<void>(DatabaseFactory::create(configuration));
-                });
+        const std::string message = captureInvalidArgumentMessage([&configuration]() { static_cast<void>(DatabaseFactory::create(configuration)); });
 
         EXPECT_FALSE(message.empty());
         EXPECT_TRUE(containsLocalizedText(message)) << message;
@@ -281,11 +268,7 @@ namespace AsynGyanis::Database
      */
     TEST(DatabaseFactory, CreateFromConfigRejectionNamesTheFieldThatIsActuallyMissing)
     {
-        const std::string emptyConfigurationMessage = captureInvalidArgumentMessage(
-                []()
-                {
-                    static_cast<void>(DatabaseFactory::create(ConnectionConfig{}));
-                });
+        const std::string emptyConfigurationMessage = captureInvalidArgumentMessage([]() { static_cast<void>(DatabaseFactory::create(ConnectionConfig{})); });
 
         EXPECT_TRUE(containsLocalizedText(emptyConfigurationMessage)) << emptyConfigurationMessage;
         EXPECT_NE(emptyConfigurationMessage.find("database"), std::string::npos) << emptyConfigurationMessage;
@@ -296,11 +279,7 @@ namespace AsynGyanis::Database
         ConnectionConfig networkOnly;
         networkOnly.host = "127.0.0.1";
 
-        const std::string networkMessage = captureInvalidArgumentMessage(
-                [&networkOnly]()
-                {
-                    static_cast<void>(DatabaseFactory::create(networkOnly));
-                });
+        const std::string networkMessage = captureInvalidArgumentMessage([&networkOnly]() { static_cast<void>(DatabaseFactory::create(networkOnly)); });
 
         EXPECT_NE(networkMessage.find("网络库特征"), std::string::npos) << networkMessage;
     }

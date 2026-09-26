@@ -86,8 +86,7 @@ namespace AsynGyanis::Database
          * @param type 主键成员的逻辑列类型
          * @return std::string 该列的完整定义；主键不是整数类型时为空串
          */
-        [[nodiscard]] std::string autoIncrementPrimaryKeyDefinition(std::string_view quotedColumnName,
-                                                                   ColumnType type) const override;
+        [[nodiscard]] std::string autoIncrementPrimaryKeyDefinition(std::string_view quotedColumnName, ColumnType type) const override;
 
         /**
          * @brief 生成 SQLite 的「表是否存在」查询

@@ -67,34 +67,34 @@ namespace
     // 换编译器、换配置、或换掉链接的 SQLite（它的 prepare/step 也走 malloc，一样计入），都要重测再钉。
 #if defined(_MSC_VER) && !defined(NDEBUG)
     /// MSVC Debug（迭代器检查开满，门禁这一路还带 ASan）的实测读数加一档
-    inline constexpr std::uint64_t kFirstRowAllocationBudget = 80U;         ///< 实测 75
-    inline constexpr std::uint64_t kListAllocationBudget = 340U;            ///< 实测 318
-    inline constexpr std::uint64_t kCountAllocationBudget = 34U;            ///< 实测 31
-    inline constexpr std::uint64_t kUpdateAllocationBudget = 78U;           ///< 实测 72
-    inline constexpr std::uint64_t kSmallBatchAllocationBudget = 232U;      ///< 实测 216
-    inline constexpr std::uint64_t kSmallBatchBytesBudget = 14848U;        ///< 实测 13816
+    inline constexpr std::uint64_t kFirstRowAllocationBudget     = 80U;     ///< 实测 75
+    inline constexpr std::uint64_t kListAllocationBudget         = 340U;    ///< 实测 318
+    inline constexpr std::uint64_t kCountAllocationBudget        = 34U;     ///< 实测 31
+    inline constexpr std::uint64_t kUpdateAllocationBudget       = 78U;     ///< 实测 72
+    inline constexpr std::uint64_t kSmallBatchAllocationBudget   = 232U;    ///< 实测 216
+    inline constexpr std::uint64_t kSmallBatchBytesBudget        = 14848U;  ///< 实测 13816
     inline constexpr std::uint64_t kChunkedBatchAllocationBudget = 9600U;   ///< 实测 9077
-    inline constexpr std::uint64_t kChunkedBatchBytesBudget = 696320U;     ///< 实测 643028
+    inline constexpr std::uint64_t kChunkedBatchBytesBudget      = 696320U; ///< 实测 643028
 #elif defined(_MSC_VER)
     /// MSVC Release 的实测读数加一档：STL 分档与扩容系数与 libstdc++ 不同，同一形状高一截
-    inline constexpr std::uint64_t kFirstRowAllocationBudget = 14U;         ///< 实测 14，已收到实测值本身
-    inline constexpr std::uint64_t kListAllocationBudget = 96U;             ///< 实测 86
-    inline constexpr std::uint64_t kCountAllocationBudget = 8U;             ///< 实测 6
-    inline constexpr std::uint64_t kUpdateAllocationBudget = 24U;           ///< 实测 20
-    inline constexpr std::uint64_t kSmallBatchAllocationBudget = 100U;      ///< 实测 88
-    inline constexpr std::uint64_t kSmallBatchBytesBudget = 12U * 1024U;    ///< 实测 9960
-    inline constexpr std::uint64_t kChunkedBatchAllocationBudget = 4300U;   ///< 实测 4022
-    inline constexpr std::uint64_t kChunkedBatchBytesBudget = 512U * 1024U; ///< 实测 473954
+    inline constexpr std::uint64_t kFirstRowAllocationBudget     = 14U;          ///< 实测 14，已收到实测值本身
+    inline constexpr std::uint64_t kListAllocationBudget         = 96U;          ///< 实测 86
+    inline constexpr std::uint64_t kCountAllocationBudget        = 8U;           ///< 实测 6
+    inline constexpr std::uint64_t kUpdateAllocationBudget       = 24U;          ///< 实测 20
+    inline constexpr std::uint64_t kSmallBatchAllocationBudget   = 100U;         ///< 实测 88
+    inline constexpr std::uint64_t kSmallBatchBytesBudget        = 12U * 1024U;  ///< 实测 9960
+    inline constexpr std::uint64_t kChunkedBatchAllocationBudget = 4300U;        ///< 实测 4022
+    inline constexpr std::uint64_t kChunkedBatchBytesBudget      = 512U * 1024U; ///< 实测 473954
 #else
     /// libstdc++（容器 GCC 13，门禁那一路带 ASan）的实测读数加一档
-    inline constexpr std::uint64_t kFirstRowAllocationBudget = 13U;         ///< 实测 13，已收到实测值
-    inline constexpr std::uint64_t kListAllocationBudget = 44U;             ///< 实测 37
-    inline constexpr std::uint64_t kCountAllocationBudget = 8U;             ///< 实测 6
-    inline constexpr std::uint64_t kUpdateAllocationBudget = 18U;           ///< 实测 16
-    inline constexpr std::uint64_t kSmallBatchAllocationBudget = 100U;      ///< 实测 88，与 MSVC 同数
-    inline constexpr std::uint64_t kSmallBatchBytesBudget = 12U * 1024U;    ///< 实测 8729
-    inline constexpr std::uint64_t kChunkedBatchAllocationBudget = 4300U;   ///< 实测 4022，与 MSVC 同数
-    inline constexpr std::uint64_t kChunkedBatchBytesBudget = 512U * 1024U; ///< 实测 415451
+    inline constexpr std::uint64_t kFirstRowAllocationBudget     = 13U;          ///< 实测 13，已收到实测值
+    inline constexpr std::uint64_t kListAllocationBudget         = 44U;          ///< 实测 37
+    inline constexpr std::uint64_t kCountAllocationBudget        = 8U;           ///< 实测 6
+    inline constexpr std::uint64_t kUpdateAllocationBudget       = 18U;          ///< 实测 16
+    inline constexpr std::uint64_t kSmallBatchAllocationBudget   = 100U;         ///< 实测 88，与 MSVC 同数
+    inline constexpr std::uint64_t kSmallBatchBytesBudget        = 12U * 1024U;  ///< 实测 8729
+    inline constexpr std::uint64_t kChunkedBatchAllocationBudget = 4300U;        ///< 实测 4022，与 MSVC 同数
+    inline constexpr std::uint64_t kChunkedBatchBytesBudget      = 512U * 1024U; ///< 实测 415451
 #endif
 
     /// 台账用的行数：二十行足够让「每行成本」与「每次调用成本」分得开，又不让单条用例跑太久
@@ -114,11 +114,11 @@ namespace
      */
     struct LedgerRow
     {
-        std::int64_t               id;      ///< 主键
-        std::string                name;    ///< 名称
-        double                     amount;  ///< 金额
-        std::optional<std::string> note;    ///< 备注，可空
-        bool                       active;  ///< 是否启用
+        std::int64_t               id;     ///< 主键
+        std::string                name;   ///< 名称
+        double                     amount; ///< 金额
+        std::optional<std::string> note;   ///< 备注，可空
+        bool                       active; ///< 是否启用
     };
 
     /**
@@ -128,8 +128,8 @@ namespace
      */
     struct BatchLedgerRow
     {
-        std::int64_t id;    ///< 序号，无约束
-        std::string  name;  ///< 名称，刻意超过短串内联长度
+        std::int64_t id;   ///< 序号，无约束
+        std::string  name; ///< 名称，刻意超过短串内联长度
     };
 
 } // namespace
@@ -138,12 +138,9 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<LedgerRow>
 {
     static constexpr std::string_view kTableName = "ledger";
-    static constexpr auto kColumns = std::tuple{
-        Column(&LedgerRow::id,     "id"),
-        Column(&LedgerRow::name,   "name"),
-        Column(&LedgerRow::amount, "amount"),
-        Column(&LedgerRow::note,   "note"),
-        Column(&LedgerRow::active, "active"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&LedgerRow::id, "id"),     Column(&LedgerRow::name, "name"),     Column(&LedgerRow::amount, "amount"),
+            Column(&LedgerRow::note, "note"), Column(&LedgerRow::active, "active"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -152,9 +149,9 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<BatchLedgerRow>
 {
     static constexpr std::string_view kTableName = "ledger_batch";
-    static constexpr auto kColumns = std::tuple{
-        Column(&BatchLedgerRow::id,   "id"),
-        Column(&BatchLedgerRow::name, "name"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&BatchLedgerRow::id, "id"),
+            Column(&BatchLedgerRow::name, "name"),
     };
     /// 无主键：本表只做批量写入的台账，按主键更新/删除的形状另有 ledger 表覆盖
     static constexpr std::string_view kPrimaryKey = "";
@@ -178,31 +175,27 @@ namespace
             poolConfiguration.acquireTimeoutMilliseconds = 3000;
 
             m_pool = std::make_unique<ConnectionPool>(
-                [this]()
-                {
-                    auto connection = DatabaseFactory::createSqlite(
-                        ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
-                    // 池的工厂契约要求交出「已经 connect() 完成」的连接
-                    static_cast<void>(connection->connect());
-                    return connection;
-                },
-                poolConfiguration);
+                    [this]()
+                    {
+                        auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
+                        // 池的工厂契约要求交出「已经 connect() 完成」的连接
+                        static_cast<void>(connection->connect());
+                        return connection;
+                    },
+                    poolConfiguration);
 
             const PooledConnection connection = m_pool->acquire();
             ASSERT_TRUE(connection);
-            ASSERT_TRUE(connection->execute(
-                            "CREATE TABLE ledger ("
-                            "id INTEGER PRIMARY KEY, "
-                            "name TEXT NOT NULL, "
-                            "amount REAL, "
-                            "note TEXT, "
-                            "active INTEGER NOT NULL)") != nullptr)
+            ASSERT_TRUE(connection->execute("CREATE TABLE ledger ("
+                                            "id INTEGER PRIMARY KEY, "
+                                            "name TEXT NOT NULL, "
+                                            "amount REAL, "
+                                            "note TEXT, "
+                                            "active INTEGER NOT NULL)") != nullptr)
                     << connection->lastError();
 
             // 批量写入格用的表：无主键、无约束，因此同一批行可以连着写一千轮而不撞约束
-            ASSERT_TRUE(connection->execute(
-                            "CREATE TABLE ledger_batch (id INTEGER, name TEXT)") != nullptr)
-                    << connection->lastError();
+            ASSERT_TRUE(connection->execute("CREATE TABLE ledger_batch (id INTEGER, name TEXT)") != nullptr) << connection->lastError();
 
             for (std::int64_t index = 1; index <= kLedgerRowCount; ++index)
             {
@@ -218,17 +211,11 @@ namespace
          */
         [[nodiscard]] static LedgerRow makeLedgerRow(const std::int64_t id)
         {
-            return LedgerRow{
-                .id     = id,
-                .name   = "ledger-account-name-" + std::to_string(id),
-                .amount = 1.5,
-                .note   = std::nullopt,
-                .active = true
-            };
+            return LedgerRow{.id = id, .name = "ledger-account-name-" + std::to_string(id), .amount = 1.5, .note = std::nullopt, .active = true};
         }
 
         /// 临时库文件必须先于池声明、后于池析构：Windows 上打开着的文件删不掉
-        TemporaryDatabaseFile m_databaseFile{"OrmAlloc"};
+        TemporaryDatabaseFile           m_databaseFile{"OrmAlloc"};
         std::unique_ptr<ConnectionPool> m_pool; ///< 夹具独占的连接池
     };
 
@@ -275,17 +262,15 @@ namespace
         const AllocationProfile profile = measurePerOperation(
                 [this]
                 {
-                    Queryable<LedgerRow> query(*m_pool);
-                    const std::optional<LedgerRow> row =
-                            query.where(Column(&LedgerRow::id, "id") == std::int64_t{7}).first();
+                    Queryable<LedgerRow>           query(*m_pool);
+                    const std::optional<LedgerRow> row = query.where(Column(&LedgerRow::id, "id") == std::int64_t{7}).first();
                     return row.has_value() ? static_cast<std::uint64_t>(row->name.size()) : 0U;
                 });
 
         EXPECT_EQ(profile.resultSum, kMeasurementIterations * 21U) << "有几次迭代没取到行，读数不能算稳态";
         // 一次按主键取行：GCC 实测 14 次 / 1964 字节，MSVC 实测 15 次。
         // 上界按各自的实测留一档，别把两台编译器的分配器差异算成回归
-        EXPECT_LE(profile.allocationsPerOperation, kFirstRowAllocationBudget)
-                << "first() 分配次数涨了，实测=" << profile.allocationsPerOperation;
+        EXPECT_LE(profile.allocationsPerOperation, kFirstRowAllocationBudget) << "first() 分配次数涨了，实测=" << profile.allocationsPerOperation;
     }
 
     /**
@@ -302,10 +287,9 @@ namespace
         const AllocationProfile profile = measurePerOperation(
                 [this]
                 {
-                    Queryable<LedgerRow> query(*m_pool);
-                    const std::vector<LedgerRow> rows =
-                            query.orderBy(AsynGyanis::Database::Queryable::asc("id")).toList();
-                    std::uint64_t nameBytes = 0;
+                    Queryable<LedgerRow>         query(*m_pool);
+                    const std::vector<LedgerRow> rows      = query.orderBy(AsynGyanis::Database::Queryable::asc("id")).toList();
+                    std::uint64_t                nameBytes = 0;
                     for (const LedgerRow &row: rows)
                     {
                         nameBytes += row.name.size();
@@ -316,8 +300,7 @@ namespace
         // 二十行整表读回：GCC 实测 37 次 / 23736 字节（每行不到两次），MSVC 实测 86 次——
         // 差在 vector 扩容系数与 string 的分档上，与我们的代码无关，所以两侧各自收紧。
         // 这条的门禁意义是「别退回成每格一次分配」：那一格是 20 行 x 5 列 = 100 次起
-        EXPECT_LE(profile.allocationsPerOperation, kListAllocationBudget)
-                << "每行的分配次数退化了，实测=" << profile.allocationsPerOperation;
+        EXPECT_LE(profile.allocationsPerOperation, kListAllocationBudget) << "每行的分配次数退化了，实测=" << profile.allocationsPerOperation;
     }
 
     /**
@@ -332,19 +315,16 @@ namespace
                     return static_cast<std::uint64_t>(query.count());
                 });
         // count() 只要一个标量：Release 下两台编译器都实测 6 次 / 451 字节，MSVC Debug 实测 31 次
-        EXPECT_LE(countProfile.allocationsPerOperation, kCountAllocationBudget)
-                << "count() 分配次数涨了，实测=" << countProfile.allocationsPerOperation;
+        EXPECT_LE(countProfile.allocationsPerOperation, kCountAllocationBudget) << "count() 分配次数涨了，实测=" << countProfile.allocationsPerOperation;
 
         const AllocationProfile updateProfile = measurePerOperation(
                 [this]
                 {
                     Queryable<LedgerRow> query(*m_pool);
-                    return static_cast<std::uint64_t>(
-                            query.update(makeLedgerRow(1)));
+                    return static_cast<std::uint64_t>(query.update(makeLedgerRow(1)));
                 });
         // update() 走写方向的完整翻译与参数收集：GCC 实测 16 次 / 1812 字节，MSVC 实测 20 次
-        EXPECT_LE(updateProfile.allocationsPerOperation, kUpdateAllocationBudget)
-                << "update() 分配次数涨了，实测=" << updateProfile.allocationsPerOperation;
+        EXPECT_LE(updateProfile.allocationsPerOperation, kUpdateAllocationBudget) << "update() 分配次数涨了，实测=" << updateProfile.allocationsPerOperation;
     }
 
     /**
@@ -360,10 +340,7 @@ namespace
         rows.reserve(rowCount);
         for (std::size_t index = 0; index < rowCount; ++index)
         {
-            rows.push_back(BatchLedgerRow{
-                .id   = static_cast<std::int64_t>(index),
-                .name = "batch-account-name-" + std::to_string(index)
-            });
+            rows.push_back(BatchLedgerRow{.id = static_cast<std::int64_t>(index), .name = "batch-account-name-" + std::to_string(index)});
         }
         return rows;
     }
@@ -388,18 +365,15 @@ namespace
 
         // 次数刻意低于其它格：文件库上每批都是一次独立提交，容器 overlayfs 的提交成本会把用例拖到秒级
         const AllocationProfile profile = measureOperations(kSmallBatchIterations,
-                [this, &batch]
-                {
-                    Queryable<BatchLedgerRow> query(*m_pool);
-                    return static_cast<std::uint64_t>(query.insertBatch(batch));
-                });
+                                                            [this, &batch]
+                                                            {
+                                                                Queryable<BatchLedgerRow> query(*m_pool);
+                                                                return static_cast<std::uint64_t>(query.insertBatch(batch));
+                                                            });
 
-        EXPECT_EQ(profile.resultSum, kSmallBatchIterations * kSmallBatchRowCount)
-            << "有整批没写进去，读数不能算稳态";
-        EXPECT_LE(profile.allocationsPerOperation, kSmallBatchAllocationBudget)
-            << "20 行一批的分配次数涨了，实测=" << profile.allocationsPerOperation;
-        EXPECT_LE(profile.bytesPerOperation, kSmallBatchBytesBudget)
-            << "20 行一批的申请字节涨了，实测=" << profile.bytesPerOperation;
+        EXPECT_EQ(profile.resultSum, kSmallBatchIterations * kSmallBatchRowCount) << "有整批没写进去，读数不能算稳态";
+        EXPECT_LE(profile.allocationsPerOperation, kSmallBatchAllocationBudget) << "20 行一批的分配次数涨了，实测=" << profile.allocationsPerOperation;
+        EXPECT_LE(profile.bytesPerOperation, kSmallBatchBytesBudget) << "20 行一批的申请字节涨了，实测=" << profile.bytesPerOperation;
     }
 
     /**
@@ -419,18 +393,15 @@ namespace
         }
 
         const AllocationProfile profile = measureOperations(kChunkedBatchIterations,
-                [this, &batch]
-                {
-                    Queryable<BatchLedgerRow> query(*m_pool);
-                    return static_cast<std::uint64_t>(query.insertBatch(batch));
-                });
+                                                            [this, &batch]
+                                                            {
+                                                                Queryable<BatchLedgerRow> query(*m_pool);
+                                                                return static_cast<std::uint64_t>(query.insertBatch(batch));
+                                                            });
 
-        EXPECT_EQ(profile.resultSum, kChunkedBatchIterations * kChunkedBatchRowCount)
-            << "有整批没写进去，读数不能算稳态";
-        EXPECT_LE(profile.allocationsPerOperation, kChunkedBatchAllocationBudget)
-            << "1000 行一批的分配次数涨了，实测=" << profile.allocationsPerOperation;
-        EXPECT_LE(profile.bytesPerOperation, kChunkedBatchBytesBudget)
-            << "1000 行一批的申请字节涨了，实测=" << profile.bytesPerOperation;
+        EXPECT_EQ(profile.resultSum, kChunkedBatchIterations * kChunkedBatchRowCount) << "有整批没写进去，读数不能算稳态";
+        EXPECT_LE(profile.allocationsPerOperation, kChunkedBatchAllocationBudget) << "1000 行一批的分配次数涨了，实测=" << profile.allocationsPerOperation;
+        EXPECT_LE(profile.bytesPerOperation, kChunkedBatchBytesBudget) << "1000 行一批的申请字节涨了，实测=" << profile.bytesPerOperation;
     }
 
 } // namespace

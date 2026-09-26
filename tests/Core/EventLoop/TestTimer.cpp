@@ -3,8 +3,8 @@
 // 用例手工推进事件循环（复刻 EventLoop::run() 的「分发事件 + 清空调度队列」两步），
 // 不引入循环线程，因此时序由用例自己掌握；真实定时器仍需等待内核到期，超时判失败而不是把用例挂住。
 
-#include "Core/EventLoop/Timer.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/EventLoop/TimerQueue.h"
 
 #include "CoreTestSupport.h"
@@ -28,7 +28,7 @@ namespace AsynGyanis::Core
         using TestSupport::kWaitTimeout;
 
         /// 精度用例请求的等待时长，以及允许的迟到上限：8 ms 仍小于 Windows 的一个时钟整拍（15.6 ms）
-        constexpr long long kPrecisionWaitMilliseconds = 20;
+        constexpr long long kPrecisionWaitMilliseconds   = 20;
         constexpr long long kMaximumLatenessMilliseconds = 8;
 
         /// 精度用例的采样次数：判据取这几次里最快的一次，见该用例的 @details
@@ -43,9 +43,8 @@ namespace AsynGyanis::Core
          *          再慢的机器也颠倒不了它们的先后，到期顺序因此只由堆序决定。
          *          其余一律 30 秒量级，用例期间永不到期，只负责把堆撑大、把取消点摊到各层
          */
-        constexpr std::array<long long, kScrambledTimerCount> kScrambledDurationsMs
-            {30000, 15, 30001, 45, 30002, 30003, 30004, 135, 30005,
-             30006, 30007, 405, 30008, 30009, 30010, 30011, 30012, 30013};
+        constexpr std::array<long long, kScrambledTimerCount> kScrambledDurationsMs{30000, 15,    30001, 45,    30002, 30003, 30004, 135,   30005,
+                                                                                    30006, 30007, 405,   30008, 30009, 30010, 30011, 30012, 30013};
 
         /// 截止时刻最短的一批里没被取消的下标，按截止时间升序——这就是预期的醒来顺序
         constexpr std::array<std::size_t, 3> kExpectedFiredIndexes{1, 7, 11};
@@ -78,10 +77,7 @@ namespace AsynGyanis::Core
     {
         EventLoop loop;
 
-        EXPECT_NO_THROW(
-        {
-            Timer timer(loop);
-        });
+        EXPECT_NO_THROW({ Timer timer(loop); });
     }
 
     /**
@@ -90,7 +86,7 @@ namespace AsynGyanis::Core
     TEST(Timer, WaitForReturnsAwaiter)
     {
         EventLoop loop;
-        Timer timer(loop);
+        Timer     timer(loop);
 
         // 未被 co_await 的等待器不会登记任何定时器，仅验证可构造
         [[maybe_unused]] auto awaiter = timer.waitFor(std::chrono::milliseconds(100));
@@ -223,11 +219,8 @@ namespace AsynGyanis::Core
         Timer     timer(loop);
 
         {
-            auto cancelledBody = [&timer]() -> Task<>
-            {
-                co_await timer.waitFor(std::chrono::milliseconds(50));
-            };
-            auto cancelled = cancelledBody();
+            auto cancelledBody = [&timer]() -> Task<> { co_await timer.waitFor(std::chrono::milliseconds(50)); };
+            auto cancelled     = cancelledBody();
             cancelled.handle().resume();
             ASSERT_EQ(loop.timerQueue().pendingCount(), 1U);
         }
@@ -265,9 +258,9 @@ namespace AsynGyanis::Core
         long long fastestLatenessMilliseconds = std::numeric_limits<long long>::max();
         for (int sample = 0; sample < kPrecisionSamples; ++sample)
         {
-            bool isExpired = false;
-            const auto begin = std::chrono::steady_clock::now();
-            auto waitingBody = [&timer, &isExpired]() -> Task<>
+            bool       isExpired   = false;
+            const auto begin       = std::chrono::steady_clock::now();
+            auto       waitingBody = [&timer, &isExpired]() -> Task<>
             {
                 co_await timer.waitFor(std::chrono::milliseconds(kPrecisionWaitMilliseconds));
                 isExpired = true;
@@ -275,20 +268,16 @@ namespace AsynGyanis::Core
             auto waiting = waitingBody();
             waiting.handle().resume();
 
-            ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout))
-                << "第 " << sample << " 次采样：定时等待没有在时限内完成";
+            ASSERT_TRUE(advanceUntil(loop, [&isExpired] { return isExpired; }, kWaitTimeout)) << "第 " << sample << " 次采样：定时等待没有在时限内完成";
 
-            const long long elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                      std::chrono::steady_clock::now() - begin)
-                                                      .count();
+            const long long elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
             // 每一次都不许提前到期：早醒是硬缺陷，与机器忙闲无关
             EXPECT_GE(elapsedMilliseconds, kPrecisionWaitMilliseconds) << "第 " << sample << " 次采样提前到期";
             fastestLatenessMilliseconds = std::min(fastestLatenessMilliseconds, elapsedMilliseconds - kPrecisionWaitMilliseconds);
         }
 
         EXPECT_LT(fastestLatenessMilliseconds, kMaximumLatenessMilliseconds)
-                << kPrecisionSamples << " 次采样里最快的一次也迟到了 " << fastestLatenessMilliseconds
-                << " ms：到期被抬到了系统时钟的下一个整拍";
+                << kPrecisionSamples << " 次采样里最快的一次也迟到了 " << fastestLatenessMilliseconds << " ms：到期被抬到了系统时钟的下一个整拍";
     }
 
     /**
@@ -304,13 +293,13 @@ namespace AsynGyanis::Core
         EventLoop loop;
         Timer     timer(loop);
 
-        std::vector<std::size_t> firedIndexes;
-        std::vector<std::unique_ptr<Task<> > > waiters;
+        std::vector<std::size_t>             firedIndexes;
+        std::vector<std::unique_ptr<Task<>>> waiters;
         waiters.reserve(kScrambledTimerCount);
 
         for (std::size_t index = 0; index < kScrambledTimerCount; ++index)
         {
-            waiters.push_back(std::make_unique<Task<> >(recordFiringOnExpiry(timer, firedIndexes, index)));
+            waiters.push_back(std::make_unique<Task<>>(recordFiringOnExpiry(timer, firedIndexes, index)));
             waiters.back()->handle().resume();
         }
         ASSERT_EQ(loop.timerQueue().pendingCount(), kScrambledTimerCount);
@@ -320,20 +309,18 @@ namespace AsynGyanis::Core
         {
             waiters[index].reset();
         }
-        EXPECT_EQ(loop.timerQueue().pendingCount(), kScrambledTimerCount - kCancelledTimerCount)
-            << "取消后堆里剩的项数不对：补位或下标回写漏了";
+        EXPECT_EQ(loop.timerQueue().pendingCount(), kScrambledTimerCount - kCancelledTimerCount) << "取消后堆里剩的项数不对：补位或下标回写漏了";
 
         // 等到最后一条短截止到期：被取消的那条 45 毫秒此刻早已越过时限，它若漏摘就会多出一条记录
-        ASSERT_TRUE(advanceUntil(loop, [&firedIndexes] { return firedIndexes.size() >= kExpectedFiredIndexes.size(); },
-                                 kWaitTimeout))
-            << "有未被取消的定时器没有到期：取消后的堆顶或重新武装被弄坏了";
+        ASSERT_TRUE(advanceUntil(
+                loop, [&firedIndexes] { return firedIndexes.size() >= kExpectedFiredIndexes.size(); }, kWaitTimeout))
+                << "有未被取消的定时器没有到期：取消后的堆顶或重新武装被弄坏了";
 
         EXPECT_EQ(firedIndexes, std::vector<std::size_t>(kExpectedFiredIndexes.begin(), kExpectedFiredIndexes.end()))
-            << "醒来的不是「按截止时间升序的、未被取消的那几条」：堆序、取消定位或补位坏了";
+                << "醒来的不是「按截止时间升序的、未被取消的那几条」：堆序、取消定位或补位坏了";
 
         // 三条已摘走，剩下的只有远截止那几条：它们一条都不该被派发
-        EXPECT_EQ(loop.timerQueue().pendingCount(), kScrambledTimerCount - kCancelledTimerCount - kExpectedFiredIndexes.size())
-            << "未到期的定时器被误摘或误派发";
+        EXPECT_EQ(loop.timerQueue().pendingCount(), kScrambledTimerCount - kCancelledTimerCount - kExpectedFiredIndexes.size()) << "未到期的定时器被误摘或误派发";
 
         // 收尾销毁全部等待者：摘除点再次覆盖堆的各层，漏回写下标会在这里留下悬空登记
         waiters.clear();
@@ -355,7 +342,7 @@ namespace AsynGyanis::Core
         auto awaiter = timer.waitFor(std::chrono::milliseconds(80));
         std::this_thread::sleep_for(std::chrono::milliseconds(120));
 
-        bool isExpired    = false;
+        bool isExpired   = false;
         auto waitingBody = [&awaiter, &isExpired]() -> Task<>
         {
             co_await awaiter;
@@ -365,8 +352,7 @@ namespace AsynGyanis::Core
         waiting.handle().resume();
 
         // 挂起后 30ms 内不应到期：此刻到期的只可能是「构造时起算」的旧截止时间
-        EXPECT_FALSE(advanceUntil(loop, [&isExpired] { return isExpired; }, std::chrono::milliseconds(30)))
-                << "等待器在被 co_await 之前就算到期了：截止时间应当在挂起时才算出";
+        EXPECT_FALSE(advanceUntil(loop, [&isExpired] { return isExpired; }, std::chrono::milliseconds(30))) << "等待器在被 co_await 之前就算到期了：截止时间应当在挂起时才算出";
         EXPECT_FALSE(isExpired);
 
         // 再给足时间：正常路径下 80ms 的等待必须真的完成
@@ -381,7 +367,7 @@ namespace AsynGyanis::Core
         EventLoop loop;
         Timer     timer(loop);
 
-        bool isExpired    = false;
+        bool isExpired   = false;
         auto waitingBody = [&timer, &isExpired]() -> Task<>
         {
             co_await timer.waitFor(std::chrono::milliseconds::max());
@@ -391,8 +377,7 @@ namespace AsynGyanis::Core
         waiting.handle().resume();
 
         // 溢出成负值的话截止时间落在过去，这一次推进就会把它捞出来
-        EXPECT_FALSE(advanceUntil(loop, [&isExpired] { return isExpired; }, std::chrono::milliseconds(50)))
-                << "milliseconds::max() 的等待立刻完成了：截止时间在相加时溢出";
+        EXPECT_FALSE(advanceUntil(loop, [&isExpired] { return isExpired; }, std::chrono::milliseconds(50))) << "milliseconds::max() 的等待立刻完成了：截止时间在相加时溢出";
         EXPECT_FALSE(isExpired);
         EXPECT_EQ(loop.timerQueue().pendingCount(), 1U);
     }
@@ -412,11 +397,8 @@ namespace AsynGyanis::Core
         bool isVictimDestroyed = false;
 
         // 牺牲者：等待 1ms（截止时间晚于下面那个「尽快到期」的销毁者）
-        auto victimBody = [&timer]() -> Task<>
-        {
-            co_await timer.waitFor(std::chrono::milliseconds(1));
-        };
-        std::unique_ptr<Task<>> victim = std::make_unique<Task<>>(victimBody());
+        auto                    victimBody = [&timer]() -> Task<> { co_await timer.waitFor(std::chrono::milliseconds(1)); };
+        std::unique_ptr<Task<>> victim     = std::make_unique<Task<>>(victimBody());
         victim->handle().resume();
 
         auto destroyerBody = [&timer, &victim, &isVictimDestroyed]() -> Task<>
@@ -447,8 +429,7 @@ namespace AsynGyanis::Core
         const Clock::time_point origin{};
 
         // 差 4 毫秒 700 微秒：武装 5 毫秒。武装 4 毫秒就是那记提前且空转的唤醒
-        EXPECT_EQ(detail::armedDurationFor(origin + std::chrono::microseconds{4700}, origin), std::chrono::milliseconds{5})
-                << "向下取整会让定时器提前醒，之后还要再武装一次";
+        EXPECT_EQ(detail::armedDurationFor(origin + std::chrono::microseconds{4700}, origin), std::chrono::milliseconds{5}) << "向下取整会让定时器提前醒，之后还要再武装一次";
         // 正好整毫秒：不该多送一毫秒
         EXPECT_EQ(detail::armedDurationFor(origin + std::chrono::milliseconds{5}, origin), std::chrono::milliseconds{5});
         // 差不足 1 毫秒：仍给 1 毫秒，0 会被描述符当成「解除武装」

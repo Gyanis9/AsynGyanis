@@ -71,7 +71,7 @@ namespace AsynGyanis::Core
     TimerQueue::Awaiter *TimerQueue::takeHeapTop() noexcept
     {
         Awaiter *const top = m_heap.front();
-        top->m_isQueued     = false;
+        top->m_isQueued    = false;
 
         // 末尾项补到堆顶再下沉；补的正是被摘走的那一项时（堆里只剩一项）直接弹出
         const std::size_t lastIndex = m_heap.size() - 1;
@@ -85,8 +85,7 @@ namespace AsynGyanis::Core
     }
 
     TimerQueue::Awaiter::Awaiter(TimerQueue &queue, const std::chrono::milliseconds duration) noexcept :
-        m_queue(&queue),
-        m_duration(std::max(duration, std::chrono::milliseconds::zero()))
+        m_queue(&queue), m_duration(std::max(duration, std::chrono::milliseconds::zero()))
     {
     }
 
@@ -126,16 +125,14 @@ namespace AsynGyanis::Core
         // 上限必须在**毫秒域**里算：直接拿时长与「时间点最大值 - 此刻」比较，两侧单位不同，
         // 比较会先把毫秒折成时钟的滴答（Windows 上是 100ns），毫秒量级的大数在这一步就越界了，
         // 比较结果随之失真——正是要防的那种溢出。折到毫秒只做除法，不会溢出
-        const auto maximumDuration =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::time_point::max() - now);
+        const auto maximumDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::time_point::max() - now);
 
         // 时长加不进去（例如 milliseconds::max()）时饱和到时间点最大值：宁可等得比要求更久，
         // 也不能因溢出把截止时间算成过去，那会让等待立刻完成
         m_deadline = (m_duration >= maximumDuration) ? std::chrono::steady_clock::time_point::max() : now + m_duration;
     }
 
-    TimerQueue::TimerQueue(EventLoop &loop) :
-        m_loop(loop), m_timer(), m_watcher(loop, m_timer.fileDescriptor()), m_driverTask(drive())
+    TimerQueue::TimerQueue(EventLoop &loop) : m_loop(loop), m_timer(), m_watcher(loop, m_timer.fileDescriptor()), m_driverTask(drive())
     {
         // 判据取「本平台的定时机制齐不齐」而不是「读端描述符可用」：Windows 一侧除 socketpair 的
         // 读端外还要一枚可等待定时器与它的等待登记，任一项建不起来都只能靠 arm() 恒失败收场，
@@ -302,7 +299,7 @@ namespace AsynGyanis::Core
         // 到期的等待器按截止时间先后收进待恢复表（堆顶即最早，故收集顺序天然升序）
         while (!m_heap.empty() && m_heap.front()->m_deadline <= now)
         {
-            Awaiter *const awaiter = takeHeapTop();
+            Awaiter *const awaiter     = takeHeapTop();
             awaiter->m_isPendingResume = true;
             m_expiredAwaiters.push_back(awaiter);
         }

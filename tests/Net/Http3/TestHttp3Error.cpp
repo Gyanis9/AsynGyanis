@@ -4,8 +4,8 @@
 
 namespace
 {
-    using AsynGyanis::Net::http3ErrorCodeName;
     using AsynGyanis::Net::Http3ErrorCode;
+    using AsynGyanis::Net::http3ErrorCodeName;
 } // namespace
 
 TEST(Http3Error, NamesMatchTheWireIdentifiers)

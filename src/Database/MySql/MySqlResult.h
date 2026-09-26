@@ -185,7 +185,7 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] DatabaseValue convertValue(const char *rawValue, size_t byteLength, size_t index) const;
 
-        MYSQL_RES *  m_result{nullptr};     ///< MySQL 预读结果集句柄，非空时由本对象负责 mysql_free_result
+        MYSQL_RES   *m_result{nullptr};     ///< MySQL 预读结果集句柄，非空时由本对象负责 mysql_free_result
         MYSQL_ROW    m_currentRow{nullptr}; ///< 当前行的列指针数组，空表示游标未停在有效行上
         size_t       m_rowCount{0};         ///< 构造时快照的行数，写回执结果为 0
         size_t       m_columnCount{0};      ///< 构造时快照的列数，写回执结果为 0

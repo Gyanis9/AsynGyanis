@@ -42,20 +42,20 @@ namespace
      */
     struct Options
     {
-        std::uint16_t port{0U};                       ///< 0 表示由内核分配，实际端口打在 PORT 行
-        std::string   certificateFile{};              ///< 证书 PEM
-        std::string   privateKeyFile{};               ///< 私钥 PEM
-        std::string   alpn{"h3"};                     ///< 服务端要求的 ALPN，对端不提它就拒握手
-        std::string   echoPrefix{"pong:"};            ///< 回显正文的前缀
-        std::string   abortMarker{};                  ///< 命中该正文即按错误码收口这条流；空即不启用
-        std::uint64_t abortCode{0x010BU};             ///< 收口用的应用错误码（RFC 9114 §8.1 的一档）
-        std::string   largeReplyMarker{};             ///< 命中该正文即回一大块**不收口**的数据
-        std::size_t   largeReplyBytes{2U * 1024U * 1024U};
-        std::size_t   perIpLimit{0U};                 ///< 单来源并发上限，0 表示不限
-        long          idleTimeoutSeconds{30};         ///< 传输层空闲超时
-        long          drainAfterRequestMs{-1};        ///< 答完第一条请求后多久收口；负数表示不
-        bool          drainImmediately{false};        ///< 启动即收口：新连接不该握手完成
-        std::vector<std::string> ticketKeyFiles{};    ///< 会话票据密钥文件，可重复
+        std::uint16_t            port{0U};            ///< 0 表示由内核分配，实际端口打在 PORT 行
+        std::string              certificateFile{};   ///< 证书 PEM
+        std::string              privateKeyFile{};    ///< 私钥 PEM
+        std::string              alpn{"h3"};          ///< 服务端要求的 ALPN，对端不提它就拒握手
+        std::string              echoPrefix{"pong:"}; ///< 回显正文的前缀
+        std::string              abortMarker{};       ///< 命中该正文即按错误码收口这条流；空即不启用
+        std::uint64_t            abortCode{0x010BU};  ///< 收口用的应用错误码（RFC 9114 §8.1 的一档）
+        std::string              largeReplyMarker{};  ///< 命中该正文即回一大块**不收口**的数据
+        std::size_t              largeReplyBytes{2U * 1024U * 1024U};
+        std::size_t              perIpLimit{0U};          ///< 单来源并发上限，0 表示不限
+        long                     idleTimeoutSeconds{30};  ///< 传输层空闲超时
+        long                     drainAfterRequestMs{-1}; ///< 答完第一条请求后多久收口；负数表示不
+        bool                     drainImmediately{false}; ///< 启动即收口：新连接不该握手完成
+        std::vector<std::string> ticketKeyFiles{};        ///< 会话票据密钥文件，可重复
     };
 
     void printUsage(const char *programName)
@@ -121,60 +121,46 @@ namespace
             if (flag == "--port")
             {
                 options.port = static_cast<std::uint16_t>(parseSize(needValue(argc, argv, index, flag), flag));
-            }
-            else if (flag == "--cert")
+            } else if (flag == "--cert")
             {
                 options.certificateFile = needValue(argc, argv, index, flag);
-            }
-            else if (flag == "--key")
+            } else if (flag == "--key")
             {
                 options.privateKeyFile = needValue(argc, argv, index, flag);
-            }
-            else if (flag == "--alpn")
+            } else if (flag == "--alpn")
             {
                 options.alpn = needValue(argc, argv, index, flag);
-            }
-            else if (flag == "--idle-timeout")
+            } else if (flag == "--idle-timeout")
             {
                 options.idleTimeoutSeconds = parseLong(needValue(argc, argv, index, flag), flag);
-            }
-            else if (flag == "--ticket-key")
+            } else if (flag == "--ticket-key")
             {
                 options.ticketKeyFiles.push_back(needValue(argc, argv, index, flag));
-            }
-            else if (flag == "--per-ip-limit")
+            } else if (flag == "--per-ip-limit")
             {
                 options.perIpLimit = parseSize(needValue(argc, argv, index, flag), flag);
-            }
-            else if (flag == "--echo-prefix")
+            } else if (flag == "--echo-prefix")
             {
                 options.echoPrefix = needValue(argc, argv, index, flag);
-            }
-            else if (flag == "--abort-on")
+            } else if (flag == "--abort-on")
             {
                 options.abortMarker = needValue(argc, argv, index, flag);
-            }
-            else if (flag == "--abort-code")
+            } else if (flag == "--abort-code")
             {
                 options.abortCode = parseSize(needValue(argc, argv, index, flag), flag);
-            }
-            else if (flag == "--large-reply-on")
+            } else if (flag == "--large-reply-on")
             {
                 options.largeReplyMarker = needValue(argc, argv, index, flag);
-            }
-            else if (flag == "--large-reply-bytes")
+            } else if (flag == "--large-reply-bytes")
             {
                 options.largeReplyBytes = parseSize(needValue(argc, argv, index, flag), flag);
-            }
-            else if (flag == "--drain-after-request")
+            } else if (flag == "--drain-after-request")
             {
                 options.drainAfterRequestMs = parseLong(needValue(argc, argv, index, flag), flag);
-            }
-            else if (flag == "--drain-immediately")
+            } else if (flag == "--drain-immediately")
             {
                 options.drainImmediately = true;
-            }
-            else
+            } else
             {
                 printUsage(argv[0]);
                 failWith("不认识的参数「" + flag + "」");
@@ -250,8 +236,7 @@ namespace
      * @details 时限由调用方给：探针要判的是「对端有没有收到 CONNECTION_CLOSE」，等待由探针那边
      *          有界轮询，这里不猜对方的节奏。delayTimer 声明在协程帧内，唤醒后才排 drain 那一支。
      */
-    AsynGyanis::Core::Task<> drainLater(AsynGyanis::Core::EventLoop &loop, AsynGyanis::Net::QuicServer &server,
-                                        const long delayMs)
+    AsynGyanis::Core::Task<> drainLater(AsynGyanis::Core::EventLoop &loop, AsynGyanis::Net::QuicServer &server, const long delayMs)
     {
         if (delayMs > 0)
         {
@@ -269,8 +254,7 @@ namespace
      *          （直接读就是与循环线程抢同一个成员）。drain-immediately 也在这里触发，保证发生在
      *          「服务已经能接受连接」之后。
      */
-    AsynGyanis::Core::Task<> announceReady(AsynGyanis::Core::EventLoop &loop, AsynGyanis::Net::QuicServer &server,
-                                           const bool drainImmediately)
+    AsynGyanis::Core::Task<> announceReady(AsynGyanis::Core::EventLoop &loop, AsynGyanis::Net::QuicServer &server, const bool drainImmediately)
     {
         while (server.listeningPort() == 0U)
         {
@@ -296,7 +280,7 @@ int main(const int argc, char **argv)
         return 1;
     }
 
-    AsynGyanis::Core::EventLoop loop;
+    AsynGyanis::Core::EventLoop                loop;
     AsynGyanis::Net::QuicServer::Configuration configuration;
     configuration.certificateFile       = options.certificateFile;
     configuration.privateKeyFile        = options.privateKeyFile;
@@ -311,11 +295,10 @@ int main(const int argc, char **argv)
     AsynGyanis::Net::QuicServer server(loop, configuration);
     // 大块正文只准备一份：每条命中探针的流都指向同一段字节，不做逐次拷贝
     const std::vector<std::uint8_t> largeReply(options.largeReplyBytes, static_cast<std::uint8_t>('x'));
-    std::atomic<bool> hasAnsweredFirstRequest{false};
+    std::atomic<bool>               hasAnsweredFirstRequest{false};
 
     server.setStreamDataHandler(
-            [&](AsynGyanis::Net::QuicConnection &connection, const std::int64_t streamId,
-                const std::span<const std::uint8_t> data, const bool /*isEndStream*/)
+            [&](AsynGyanis::Net::QuicConnection &connection, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool /*isEndStream*/)
             {
                 emit("STREAM " + std::to_string(streamId) + " BYTES " + std::to_string(data.size()));
                 const std::string payload(data.begin(), data.end());
@@ -334,10 +317,7 @@ int main(const int argc, char **argv)
                     return;
                 }
                 const std::string reply = options.echoPrefix + payload;
-                static_cast<void>(connection.queueStreamData(
-                        streamId, std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t *>(reply.data()),
-                                                                reply.size()},
-                        true));
+                static_cast<void>(connection.queueStreamData(streamId, std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t *>(reply.data()), reply.size()}, true));
                 emit("ECHOED " + std::to_string(streamId) + " " + std::to_string(reply.size()));
                 if (!hasAnsweredFirstRequest.exchange(true) && options.drainAfterRequestMs >= 0)
                 {

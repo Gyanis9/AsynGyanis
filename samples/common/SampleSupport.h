@@ -105,8 +105,7 @@ namespace AsynGyanis::Samples
      * @param useJsonFormatter true 时按 JSON Lines 输出（供采集端解析）
      * @param level 根记录器级别；示例默认 Info
      */
-    inline void setupConsoleLogging(const bool useJsonFormatter = false,
-                                    const Base::LogLevel level    = Base::LogLevel::Info)
+    inline void setupConsoleLogging(const bool useJsonFormatter = false, const Base::LogLevel level = Base::LogLevel::Info)
     {
         auto &rootLogger  = Base::LoggerRegistry::instance().getRootLogger();
         auto  consoleSink = std::make_unique<Base::ConsoleSink>();
@@ -154,13 +153,11 @@ namespace AsynGyanis::Samples
      * @details 「选项排在末尾却没有取值」不当成「没给这个选项」：静默回落会让脚本以为程序按某个
      *          地址/某份配置在跑，实际跑的是默认值，结论行照旧是 PASS。
      */
-    inline const char *readOptionValue(const int argc, char **argv, const int optionIndex, const std::string_view optionName,
-                                       const std::string_view expectedValueHint)
+    inline const char *readOptionValue(const int argc, char **argv, const int optionIndex, const std::string_view optionName, const std::string_view expectedValueHint)
     {
         if (optionIndex + 1 >= argc)
         {
-            printStartupError(std::format("启动参数非法：{} 后面缺少取值。请补上{}，或整个去掉该选项让程序按默认值运行",
-                                          optionName, expectedValueHint));
+            printStartupError(std::format("启动参数非法：{} 后面缺少取值。请补上{}，或整个去掉该选项让程序按默认值运行", optionName, expectedValueHint));
             std::exit(2);
         }
         return argv[optionIndex + 1];
@@ -180,17 +177,16 @@ namespace AsynGyanis::Samples
      *          非法一律以退出码 2 终止而不回落默认值：脚本分发了哪个端口与程序实际听在哪个端口必须是
      *          同一件事，否则「另一个配置跑成功」也会留下一行 PASS。
      */
-    inline std::uint64_t readNumericOption(const int argc, char **argv, const int optionIndex, const std::string_view optionName,
-                                           const std::uint64_t minimumValue, const std::uint64_t maximumValue)
+    inline std::uint64_t readNumericOption(const int argc, char **argv, const int optionIndex, const std::string_view optionName, const std::uint64_t minimumValue,
+                                           const std::uint64_t maximumValue)
     {
-        const std::string valueRangeText = std::format("{}-{}", minimumValue, maximumValue);
-        const std::string expectedValueHint = std::format("一个 {} 之间的十进制整数", valueRangeText);
-        const auto       *const valuePointer = readOptionValue(argc, argv, optionIndex, optionName, expectedValueHint);
+        const std::string      valueRangeText    = std::format("{}-{}", minimumValue, maximumValue);
+        const std::string      expectedValueHint = std::format("一个 {} 之间的十进制整数", valueRangeText);
+        const auto *const      valuePointer      = readOptionValue(argc, argv, optionIndex, optionName, expectedValueHint);
         const std::string_view valueText(valuePointer);
         std::uint64_t          parsedValue = 0;
         const auto             parseResult = std::from_chars(valueText.data(), valueText.data() + valueText.size(), parsedValue);
-        if (parseResult.ec != std::errc{} || parseResult.ptr != valueText.data() + valueText.size()
-            || parsedValue < minimumValue || parsedValue > maximumValue)
+        if (parseResult.ec != std::errc{} || parseResult.ptr != valueText.data() + valueText.size() || parsedValue < minimumValue || parsedValue > maximumValue)
         {
             printStartupError(std::format("启动参数非法：{} 的值「{}」不是一个 {} 之间的十进制整数。"
                                           "请改成区间内的取值，或整个去掉该选项让程序按默认值运行",
@@ -219,8 +215,7 @@ namespace AsynGyanis::Samples
         {
             if (std::string_view(argv[index]) == "--port")
             {
-                return static_cast<std::uint16_t>(
-                        readNumericOption(argc, argv, index, "--port", 1U, kMaximumPortNumber));
+                return static_cast<std::uint16_t>(readNumericOption(argc, argv, index, "--port", 1U, kMaximumPortNumber));
             }
         }
         return samplePort(offset);
@@ -245,10 +240,7 @@ namespace AsynGyanis::Samples
         }
         printStartupError(std::format("启动参数非法：基准端口 {} 太靠上，本示例最多要用到端口 {}，而端口号上限是 {}。"
                                       "请把 --port 降到 {} 或以下",
-                                      basePort,
-                                      highestUsedPort,
-                                      static_cast<std::uint32_t>(kMaximumPortNumber),
-                                      static_cast<std::uint32_t>(kMaximumPortNumber) - highestDelta));
+                                      basePort, highestUsedPort, static_cast<std::uint32_t>(kMaximumPortNumber), static_cast<std::uint32_t>(kMaximumPortNumber) - highestDelta));
         std::exit(2);
     }
 
@@ -260,9 +252,8 @@ namespace AsynGyanis::Samples
      * @param interval 两次判定之间的间隔
      * @return true 条件在时限内成立
      */
-    template <typename Predicate>
-    bool waitUntil(const Predicate &predicate, const std::chrono::milliseconds timeout,
-                   const std::chrono::milliseconds interval = std::chrono::milliseconds{10})
+    template<typename Predicate>
+    bool waitUntil(const Predicate &predicate, const std::chrono::milliseconds timeout, const std::chrono::milliseconds interval = std::chrono::milliseconds{10})
     {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline)
@@ -291,12 +282,10 @@ namespace AsynGyanis::Samples
         // 吞掉）留下的正是「没有失败也没有证据」的结论行，只判 failureCount()==0 会把它报成绿
         const bool hasEvidence = steps.failureCount() == 0 && steps.stepCount() > 0;
         // 结论同时走 stdout：脚本读这一行判定，级别与 sink 被示例自己改掉也不影响（本示例就有这一步）
-        std::cout << "RESULT " << sampleName << ' ' << (hasEvidence ? "PASS " : "FAIL ") << steps.stepCount()
-                  << " gated " << steps.gatedCount() << std::endl;
+        std::cout << "RESULT " << sampleName << ' ' << (hasEvidence ? "PASS " : "FAIL ") << steps.stepCount() << " gated " << steps.gatedCount() << std::endl;
         if (hasEvidence)
         {
-            LOG_INFO_FMT("示例 {} 自检通过：{} 步全绿，另有 {} 步因环境不齐备跳过",
-                         sampleName, steps.stepCount(), steps.gatedCount());
+            LOG_INFO_FMT("示例 {} 自检通过：{} 步全绿，另有 {} 步因环境不齐备跳过", sampleName, steps.stepCount(), steps.gatedCount());
             return 0;
         }
         if (steps.stepCount() == 0)

@@ -69,8 +69,7 @@ namespace AsynGyanis::Platform
                 for (const auto &[filePath, changeType]: m_events)
                 {
                     (void) changeType;
-                    if (filePath.size() >= fileName.size() &&
-                        filePath.compare(filePath.size() - fileName.size(), fileName.size(), fileName) == 0)
+                    if (filePath.size() >= fileName.size() && filePath.compare(filePath.size() - fileName.size(), fileName.size(), fileName) == 0)
                     {
                         return true;
                     }
@@ -103,8 +102,7 @@ namespace AsynGyanis::Platform
              * @param changeType 只统计这一类事件；nullopt 表示不限类型
              * @return std::size_t 符合条件的事件条数
              */
-            [[nodiscard]] std::size_t eventCountForFile(const std::string &fileName,
-                                                        const std::optional<FileChangeType> changeType = std::nullopt) const
+            [[nodiscard]] std::size_t eventCountForFile(const std::string &fileName, const std::optional<FileChangeType> changeType = std::nullopt) const
             {
                 std::lock_guard lock(m_mutex);
                 std::size_t     count = 0;
@@ -181,10 +179,10 @@ namespace AsynGyanis::Platform
                 return separator == std::string_view::npos ? filePath : filePath.substr(separator + 1);
             }
 
-            mutable std::mutex                                   m_mutex;  ///< 保护事件列表
-            std::vector<std::pair<std::string, FileChangeType> > m_events; ///< 已记录事件
-            std::unordered_set<std::string>                      m_distinctNames; ///< 出现过事件的文件名，record() 增量维护
-            bool                                                 m_sawRescanEvent{false}; ///< 是否出现过 NeedsRescan
+            mutable std::mutex                                  m_mutex;                 ///< 保护事件列表
+            std::vector<std::pair<std::string, FileChangeType>> m_events;                ///< 已记录事件
+            std::unordered_set<std::string>                     m_distinctNames;         ///< 出现过事件的文件名，record() 增量维护
+            bool                                                m_sawRescanEvent{false}; ///< 是否出现过 NeedsRescan
         };
 
         /**
@@ -196,9 +194,7 @@ namespace AsynGyanis::Platform
          * @param threadCount 并发写入的线程数
          * @return std::vector<std::string> 确实写成功的文件名（写失败的那些文件根本不存在，不该有事件）
          */
-        std::vector<std::string> floodDirectory(const TestSupport::TemporaryDirectory &directory,
-                                                const std::size_t fileCount,
-                                                const std::size_t threadCount)
+        std::vector<std::string> floodDirectory(const TestSupport::TemporaryDirectory &directory, const std::size_t fileCount, const std::size_t threadCount)
         {
             std::vector<std::string> fileNames;
             fileNames.reserve(fileCount);
@@ -208,8 +204,8 @@ namespace AsynGyanis::Platform
             }
 
             // 灌入必须全部发生完才谈得上「有没有漏」：线程组放在内层作用域里，出作用域即 join
-            std::mutex                 writtenNamesMutex;
-            std::vector<std::string>   writtenNames;
+            std::mutex               writtenNamesMutex;
+            std::vector<std::string> writtenNames;
             writtenNames.reserve(fileCount);
             {
                 std::vector<std::jthread> floodThreads;
@@ -275,10 +271,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         ASSERT_TRUE(watcher->start());
@@ -287,12 +280,7 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         ASSERT_TRUE(temporaryDirectory.writeFile("watched.yaml", "value: 2\n"));
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("watched.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("watched.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "未收到 watched.yaml 的变更回调";
@@ -307,10 +295,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         ASSERT_TRUE(watcher->start());
@@ -318,12 +303,7 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         ASSERT_TRUE(temporaryDirectory.writeFile("brand-new.yaml", "fresh: true\n"));
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("brand-new.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("brand-new.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "未收到新建文件的变更回调";
@@ -337,10 +317,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         EXPECT_TRUE(watcher->removeWatch(temporaryDirectory.path().string()));
@@ -372,10 +349,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         ASSERT_TRUE(watcher->start());
@@ -385,12 +359,7 @@ namespace AsynGyanis::Platform
         std::filesystem::rename(temporaryDirectory.path() / "config.yaml.tmp", temporaryDirectory.path() / "config.yaml", renameError);
         ASSERT_FALSE(static_cast<bool>(renameError)) << "改名覆盖失败：" << renameError.message();
 
-        const bool sawCreated = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamedWithType("config.yaml", FileChangeType::Created);
-                },
-                3000);
+        const bool sawCreated = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamedWithType("config.yaml", FileChangeType::Created); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(sawCreated) << "改名落位没有按「原子替换后落位」报出 Created，两侧口径不一致";
@@ -415,10 +384,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch((temporaryDirectory.path() / "tree").string(), true));
         ASSERT_TRUE(watcher->start());
@@ -432,12 +398,7 @@ namespace AsynGyanis::Platform
         for (int attempt = 0; attempt < 12 && !covered; ++attempt)
         {
             ASSERT_TRUE(temporaryDirectory.writeNestedFile("tree/arrived/deep.yaml", "deep: true\n"));
-            covered = TestSupport::waitForCondition(
-                    [&recorder]()
-                    {
-                        return recorder.sawFileNamed("deep.yaml");
-                    },
-                    500);
+            covered = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("deep.yaml"); }, 500);
         }
 
         watcher->stop();
@@ -459,10 +420,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         EXPECT_TRUE(watcher->removeWatch(temporaryDirectory.path().string()));
@@ -492,17 +450,14 @@ namespace AsynGyanis::Platform
         const std::unique_ptr<FileWatcher>    watcher = FileWatcher::create();
         ASSERT_NE(watcher, nullptr);
 
-        const std::filesystem::path controlDirectory = temporaryDirectory.path() / "watched-sub";
+        const std::filesystem::path controlDirectory  = temporaryDirectory.path() / "watched-sub";
         const std::filesystem::path measuredDirectory = temporaryDirectory.path() / "dropped-sub";
         std::filesystem::create_directories(controlDirectory);
         std::filesystem::create_directories(measuredDirectory);
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
@@ -532,8 +487,7 @@ namespace AsynGyanis::Platform
 
         // 判据只看「有没有报出这个文件名」，不比事件条数：控制步骤那一次写入会陆续补报
         // （close/attrib 之类），拿条数作差就是在赌它已经报完
-        EXPECT_FALSE(recorder.sawFileNamed("should_be_ignored.yaml"))
-                << "撤销递归根之后，子目录那份活监视仍在派发回调";
+        EXPECT_FALSE(recorder.sawFileNamed("should_be_ignored.yaml")) << "撤销递归根之后，子目录那份活监视仍在派发回调";
     }
 
 #if ASYN_PLATFORM_LINUX
@@ -557,19 +511,15 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(watchedPath));
         ASSERT_TRUE(watcher->start());
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
         // 把整个被监视目录改名走开，再在**原路径**上建一个同名新目录（全程不 stop、不 removeWatch）
-        const std::filesystem::path movedAwayPath =
-                temporaryDirectory.path().parent_path() / (temporaryDirectory.path().filename().string() + ".moved");
-        std::error_code renameError;
+        const std::filesystem::path movedAwayPath = temporaryDirectory.path().parent_path() / (temporaryDirectory.path().filename().string() + ".moved");
+        std::error_code             renameError;
         std::filesystem::rename(temporaryDirectory.path(), movedAwayPath, renameError);
         ASSERT_FALSE(static_cast<bool>(renameError)) << "改名走开失败：" << renameError.message();
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -579,12 +529,7 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(1600));
 
         ASSERT_TRUE(temporaryDirectory.writeFile("after_rename.yaml", "back: true\n"));
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("after_rename.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("after_rename.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "改名走开后在同一原路径重建的目录没被重新监视，其内部变更永久丢失";
@@ -610,10 +555,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(watchedPath));
         ASSERT_TRUE(watcher->start());
@@ -631,12 +573,7 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         ASSERT_TRUE(temporaryDirectory.writeFile("reborn.yaml", "back: true\n"));
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("reborn.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("reborn.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "重建出来的目录收不到事件：监视没挂上（IN_IGNORED 之后映射没清）";
@@ -661,10 +598,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(watchedFilePath));
         ASSERT_TRUE(watcher->start());
@@ -673,12 +607,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(temporaryDirectory.writeFile("single.yaml", "value: 2\n"));
 
         // 先确认单文件监视挂得上：这一步红了就别去怪后面的补挂
-        const bool firstEventArrived = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.eventCountForFile("single.yaml", FileChangeType::Modified) > 0;
-                },
-                3000);
+        const bool firstEventArrived = TestSupport::waitForCondition([&recorder]() { return recorder.eventCountForFile("single.yaml", FileChangeType::Modified) > 0; }, 3000);
         ASSERT_TRUE(firstEventArrived) << "监视单个文件本身就没有效果，补挂的判据无从谈起";
 
         std::error_code removeError;
@@ -688,20 +617,14 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
         // 判据只数 Modified：删除自身留下一条 Deleted，把它算进来就等于「监视失效也能通过」
-        const std::size_t modifiedCountBeforeReplacement =
-                recorder.eventCountForFile("single.yaml", FileChangeType::Modified);
+        const std::size_t modifiedCountBeforeReplacement = recorder.eventCountForFile("single.yaml", FileChangeType::Modified);
 
         bool rearmed = false;
         for (int attempt = 0; attempt < 12 && !rearmed; ++attempt)
         {
             ASSERT_TRUE(temporaryDirectory.writeFile("single.yaml", "value: 3\n"));
-            rearmed = TestSupport::waitForCondition(
-                    [&recorder, modifiedCountBeforeReplacement]()
-                    {
-                        return recorder.eventCountForFile("single.yaml", FileChangeType::Modified) >
-                               modifiedCountBeforeReplacement;
-                    },
-                    500);
+            rearmed = TestSupport::waitForCondition([&recorder, modifiedCountBeforeReplacement]()
+                                                    { return recorder.eventCountForFile("single.yaml", FileChangeType::Modified) > modifiedCountBeforeReplacement; }, 500);
         }
 
         watcher->stop();
@@ -730,8 +653,7 @@ namespace AsynGyanis::Platform
 
         EXPECT_FALSE(watcher->addWatch("")) << "空路径被当成「相对于当前目录」挂上了，监视对象换成了进程落脚的地方";
         EXPECT_FALSE(watcher->removeWatch("")) << "既然没挂上，也不该留下能摘掉的东西（那一步会去摘 CWD 那条）";
-        EXPECT_TRUE(watcher->removeWatch(FileSystem::utf8FromPath(temporaryDirectory.path())))
-                << "上一步的拒绝不该把合法那条监视一起弄坏";
+        EXPECT_TRUE(watcher->removeWatch(FileSystem::utf8FromPath(temporaryDirectory.path()))) << "上一步的拒绝不该把合法那条监视一起弄坏";
         watcher->stop();
 #endif
     }
@@ -763,24 +685,16 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_FALSE(watcher->addWatch(missingDirectory.string())) << "目录不在时这条注册就该当场报失败";
 
         ASSERT_TRUE(std::filesystem::create_directories(missingDirectory));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(2200));   // 跨过至少两个自愈节拍
+        std::this_thread::sleep_for(std::chrono::milliseconds(2200)); // 跨过至少两个自愈节拍
 
         ASSERT_TRUE(temporaryDirectory.writeNestedFile("not_created/late.yaml", "attached: true\n"));
-        const bool attachedLater = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("late.yaml");
-                },
-                3000);
+        const bool attachedLater = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("late.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(attachedLater) << "待挂登记没起作用：目录后来出现也没人替这条路径补挂监视";
@@ -802,26 +716,21 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_FALSE(watcher->addWatch(missingDirectory.string()));
-        EXPECT_TRUE(watcher->removeWatch(missingDirectory.string()))
-                << "撤销该承认「收回了一条待挂登记」——它确实动过状态，只是没在监听";
+        EXPECT_TRUE(watcher->removeWatch(missingDirectory.string())) << "撤销该承认「收回了一条待挂登记」——它确实动过状态，只是没在监听";
 
         ASSERT_TRUE(std::filesystem::create_directories(missingDirectory));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(2200));   // 跨过至少两个自愈节拍
+        std::this_thread::sleep_for(std::chrono::milliseconds(2200)); // 跨过至少两个自愈节拍
 
         ASSERT_TRUE(temporaryDirectory.writeNestedFile("not_created/late.yaml", "surprise: true\n"));
         std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
         const std::size_t reportedEventCount = recorder.eventCount();
         watcher->stop();
-        EXPECT_EQ(reportedEventCount, 0U)
-                << "被撤销过的 addWatch 后来自己开始派发事件：调用方拿到的「撤销成功」成了一句空话";
+        EXPECT_EQ(reportedEventCount, 0U) << "被撤销过的 addWatch 后来自己开始派发事件：调用方拿到的「撤销成功」成了一句空话";
     }
 
     TEST(FileWatcher, AddingSameDirectoryTwiceIsIdempotent)
@@ -844,22 +753,14 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::seconds(30));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         ASSERT_TRUE(watcher->start());
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         ASSERT_TRUE(temporaryDirectory.writeFile("debounced.yaml", "round: 2\n"));
-        ASSERT_TRUE(TestSupport::waitForCondition(
-            [&recorder]()
-            {
-            return recorder.eventCount() >= 1;
-            },
-            3000));
+        ASSERT_TRUE(TestSupport::waitForCondition([&recorder]() { return recorder.eventCount() >= 1; }, 3000));
 
         // 防抖窗口内继续改写，不应产生第二条事件
         ASSERT_TRUE(temporaryDirectory.writeFile("debounced.yaml", "round: 3\n"));
@@ -881,10 +782,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
@@ -897,12 +795,7 @@ namespace AsynGyanis::Platform
             subFile << "nested: true\n";
         }
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("nested.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("nested.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "递归监听未能覆盖子目录中的文件";
@@ -921,10 +814,9 @@ namespace AsynGyanis::Platform
     {
         TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_NonAsciiRecursive");
         // 名字用转义写：用例要钉的是「交给文件系统的那段字节是 UTF-8」，不该依赖源文件编码
-        const std::string             nonAsciiNameUtf8 = "\xE6\x96\x87\xE4\xBB\xB6";
-        const std::filesystem::path   nonAsciiDirectory
-                = temporaryDirectory.path() / FileSystem::pathFromUtf8(nonAsciiNameUtf8);
-        std::error_code                 createError;
+        const std::string           nonAsciiNameUtf8  = "\xE6\x96\x87\xE4\xBB\xB6";
+        const std::filesystem::path nonAsciiDirectory = temporaryDirectory.path() / FileSystem::pathFromUtf8(nonAsciiNameUtf8);
+        std::error_code             createError;
         std::filesystem::create_directories(nonAsciiDirectory / "sub", createError);
         ASSERT_FALSE(createError) << createError.message();
 
@@ -933,10 +825,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-                             {
-                                 recorder.record(filePath, changeType);
-                             });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         // 交给监视器的是调用方手里那段 UTF-8 文本（配置读来的、URI 解出来的都是这种形态）
         ASSERT_TRUE(watcher->addWatch(FileSystem::utf8FromPath(nonAsciiDirectory), true));
@@ -947,24 +836,14 @@ namespace AsynGyanis::Platform
             std::ofstream topLevelFile(nonAsciiDirectory / "top.yaml");
             topLevelFile << "top: true\n";
         }
-        const bool sawRootEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("top.yaml");
-                },
-                3000);
+        const bool sawRootEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("top.yaml"); }, 3000);
         EXPECT_TRUE(sawRootEvent) << "根目录里的文件没有事件，这条用例的对照步骤不成立";
 
         {
             std::ofstream nestedFile(nonAsciiDirectory / "sub" / "nested.yaml");
             nestedFile << "nested: true\n";
         }
-        const bool sawNestedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("nested.yaml");
-                },
-                3000);
+        const bool sawNestedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("nested.yaml"); }, 3000);
 
         std::optional<std::string> nestedEventPath;
         if (sawNestedEvent)
@@ -976,9 +855,8 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(sawNestedEvent) << "递归根的名字是中文时，子目录里的变更没有上报：注册函数按本地代码页"
                                        "去解释那段 UTF-8 字节，递归枚举整段被跳过，而 addWatch 仍返回 true";
         ASSERT_TRUE(nestedEventPath.has_value());
-        EXPECT_NE(nestedEventPath->find(nonAsciiNameUtf8), std::string::npos)
-                << "回调报回的整条路径不是 UTF-8（实测Windows 上带中文的名字经 path::string() 会得到 GBK "
-                   "字节）：文件名对得上没用的，调用方拿这段字节去和配置里的路径比对永远对不上";
+        EXPECT_NE(nestedEventPath->find(nonAsciiNameUtf8), std::string::npos) << "回调报回的整条路径不是 UTF-8（实测Windows 上带中文的名字经 path::string() 会得到 GBK "
+                                                                                 "字节）：文件名对得上没用的，调用方拿这段字节去和配置里的路径比对永远对不上";
     }
 
     /**
@@ -990,10 +868,9 @@ namespace AsynGyanis::Platform
     TEST(FileWatcher, RemoveWatchOnNonAsciiSubDirectoryStopsDelivery)
     {
         TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_NonAsciiRemove");
-        const std::string               nonAsciiNameUtf8 = "\xE6\x96\x87\xE4\xBB\xB6";
-        const std::filesystem::path     nonAsciiDirectory
-                = temporaryDirectory.path() / FileSystem::pathFromUtf8(nonAsciiNameUtf8);
-        std::error_code createError;
+        const std::string               nonAsciiNameUtf8  = "\xE6\x96\x87\xE4\xBB\xB6";
+        const std::filesystem::path     nonAsciiDirectory = temporaryDirectory.path() / FileSystem::pathFromUtf8(nonAsciiNameUtf8);
+        std::error_code                 createError;
         std::filesystem::create_directories(nonAsciiDirectory / "sub", createError);
         ASSERT_FALSE(createError) << createError.message();
 
@@ -1002,10 +879,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-                             {
-                                 recorder.record(filePath, changeType);
-                             });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(FileSystem::utf8FromPath(nonAsciiDirectory), true));
         ASSERT_TRUE(watcher->start());
@@ -1015,16 +889,10 @@ namespace AsynGyanis::Platform
             std::ofstream nestedFile(nonAsciiDirectory / "sub" / "first.yaml");
             nestedFile << "first: true\n";
         }
-        const bool sawFirstEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("first.yaml");
-                },
-                3000);
+        const bool sawFirstEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("first.yaml"); }, 3000);
         EXPECT_TRUE(sawFirstEvent) << "子目录没被覆盖，撤销这一步就没有可撤销的东西";
 
-        EXPECT_TRUE(watcher->removeWatch(FileSystem::utf8FromPath(nonAsciiDirectory / "sub")))
-                << "按 UTF-8 报出的子目录路径摘不掉那条监视：登记表里存的键是本地代码页的字节";
+        EXPECT_TRUE(watcher->removeWatch(FileSystem::utf8FromPath(nonAsciiDirectory / "sub"))) << "按 UTF-8 报出的子目录路径摘不掉那条监视：登记表里存的键是本地代码页的字节";
 
         // 判据取「第二个文件名没出现过」而不是「事件总数不再增长」：往子目录里写东西，父目录那条监视
         // 会报出子目录本身的一条 Modified，那一条与被撤销的监视无关，摘掉它也不该消失
@@ -1057,10 +925,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         // 先按非递归注册，再对同一条路径要递归——第二次调用才是「把这条监视升级」的意图
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), false));
@@ -1073,12 +938,7 @@ namespace AsynGyanis::Platform
             promotedFile << "promoted: true\n";
         }
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("promoted.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("promoted.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "addWatch 第二次要递归时被「已注册」挡回，先就存在的子目录成了监听盲区";
@@ -1099,10 +959,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
@@ -1120,12 +977,7 @@ namespace AsynGyanis::Platform
             lateFile << "late: true\n";
         }
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("late.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("late.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "递归监听开始之后新建的子目录没有被补挂监视";
@@ -1147,10 +999,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(watchedPath, /*recursive=*/true));
         ASSERT_TRUE(watcher->start());
@@ -1168,12 +1017,7 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(temporaryDirectory.writeFile("replaced.yaml", "back: true\n"));
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("replaced.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("replaced.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "换掉重建的递归根没有被补挂监视：它内部的变更此后永久丢失";
@@ -1196,10 +1040,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(watchedDirectory.string(), /*recursive=*/false));
         ASSERT_TRUE(watcher->start());
@@ -1215,12 +1056,7 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(1600));
         ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/inside.yaml", "back: true\n"));
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("inside.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("inside.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "换掉重建的非递归监视没有被补挂：它内部的变更此后永久丢失";
@@ -1247,10 +1083,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(watchedDirectory.string(), /*recursive=*/false));
         ASSERT_TRUE(watcher->start());
@@ -1264,14 +1097,9 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         ASSERT_TRUE(std::filesystem::create_directories(watchedDirectory));
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1600));   // 至少跨过一个自愈节拍
+        std::this_thread::sleep_for(std::chrono::milliseconds(1600)); // 至少跨过一个自愈节拍
         ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/first.yaml", "rearmed: true\n"));
-        const bool isRearmed = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("first.yaml");
-                },
-                3000);
+        const bool isRearmed = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("first.yaml"); }, 3000);
         ASSERT_TRUE(isRearmed) << "补挂没发生，后面的判据都是空转";
 
         // 补挂之后再建子目录，并**等它的 Created 通知被处理完**再往里写文件：覆盖集被污染时，正是这条
@@ -1279,30 +1107,19 @@ namespace AsynGyanis::Platform
         // 才补挂，深那条就来不及报上来，用例就成了赌打包时机
         const std::filesystem::path subDirectory = watchedDirectory / "nested";
         ASSERT_TRUE(std::filesystem::create_directories(subDirectory));
-        const bool sawSubDirectoryCreation = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("nested");
-                },
-                3000);
+        const bool sawSubDirectoryCreation = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("nested"); }, 3000);
         ASSERT_TRUE(sawSubDirectoryCreation) << "子目录的建立没被报上来：本目录的监视在补挂后已经失效";
 
         ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/nested/deep.yaml", "leaked: true\n"));
         ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/second.yaml", "control: true\n"));
 
-        const bool sawControl = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("second.yaml");
-                },
-                3000);
+        const bool sawControl = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("second.yaml"); }, 3000);
         // 再多等一拍：自动补挂若走的是自愈那条路，它的时间点在本节拍之后
         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
 
         watcher->stop();
         EXPECT_TRUE(sawControl) << "补挂后的监视没活着，下面的「看不见子目录」就成了假绿";
-        EXPECT_FALSE(recorder.sawFileNamed("deep.yaml"))
-                << "子目录里的变更报了上来：这条只要一层的请求被自愈补挂悄悄扩成了递归监视";
+        EXPECT_FALSE(recorder.sawFileNamed("deep.yaml")) << "子目录里的变更报了上来：这条只要一层的请求被自愈补挂悄悄扩成了递归监视";
     }
 
 #if ASYN_PLATFORM_WIN32
@@ -1325,10 +1142,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         EXPECT_FALSE(watcher->addWatch(targetPath.string())) << "普通文件不是可监视的目录，要当场报失败";
 
@@ -1348,12 +1162,7 @@ namespace AsynGyanis::Platform
             probeFile << "inside: true";
         }
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("inside.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("inside.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "先前那次失败的注册挡住了这个目录，换成功后事件永久丢失";
@@ -1381,10 +1190,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
@@ -1405,12 +1211,7 @@ namespace AsynGyanis::Platform
             probeFile << "back: true";
         }
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("after_rename.yaml");
-                },
-                3000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("after_rename.yaml"); }, 3000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "被改名走开的子目录占住了监视键，原地重建的同名目录从此收不到事件";
@@ -1424,7 +1225,7 @@ namespace AsynGyanis::Platform
      */
     TEST(FileWatcher, WatchesMoreDirectoriesThanOneWaitBatch)
     {
-        constexpr int kSubDirectoryCount = 70; // 超过 63 才会触发截断
+        constexpr int                   kSubDirectoryCount = 70; // 超过 63 才会触发截断
         TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_ManyDirectories");
         std::error_code                 error;
         for (int index = 0; index < kSubDirectoryCount; ++index)
@@ -1438,10 +1239,7 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
@@ -1453,12 +1251,7 @@ namespace AsynGyanis::Platform
             tailFile << "tail: true\n";
         }
 
-        const bool receivedEvent = TestSupport::waitForCondition(
-                [&recorder]()
-                {
-                    return recorder.sawFileNamed("tail.yaml");
-                },
-                5000);
+        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("tail.yaml"); }, 5000);
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "排在等待批次之外的目录收不到事件：批次没有轮转";
@@ -1477,8 +1270,8 @@ namespace AsynGyanis::Platform
      */
     TEST(FileWatcher, ConcurrentChangesAreNeverSilentlyDropped)
     {
-        constexpr std::size_t kFloodFileCount   = 1200;
-        constexpr std::size_t kFloodThreadCount = 8;
+        constexpr std::size_t                 kFloodFileCount   = 1200;
+        constexpr std::size_t                 kFloodThreadCount = 8;
         const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Overflow");
 
         const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
@@ -1486,18 +1279,14 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-        {
-            recorder.record(filePath, changeType);
-        });
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         ASSERT_TRUE(watcher->start());
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
         const std::vector<std::string> writtenNames = floodDirectory(temporaryDirectory, kFloodFileCount, kFloodThreadCount);
-        ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4)
-                << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
+        ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4) << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
 
         const bool everythingArrived = TestSupport::waitForCondition(
                 [&recorder, &writtenNames]()
@@ -1509,8 +1298,7 @@ namespace AsynGyanis::Platform
         const std::size_t missingCount = recorder.missingFileCount(writtenNames);
 
         watcher->stop();
-        EXPECT_TRUE(everythingArrived || recorder.sawRescan())
-                << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
+        EXPECT_TRUE(everythingArrived || recorder.sawRescan()) << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
     }
 
     /**
@@ -1524,8 +1312,8 @@ namespace AsynGyanis::Platform
      */
     TEST(FileWatcher, StalledConsumerIsToldToRescanInsteadOfLosingEvents)
     {
-        constexpr std::size_t kFloodFileCount   = 2000;
-        constexpr std::size_t kFloodThreadCount = 8;
+        constexpr std::size_t                 kFloodFileCount   = 2000;
+        constexpr std::size_t                 kFloodThreadCount = 8;
         const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_StalledConsumer");
 
         const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
@@ -1551,21 +1339,15 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
         const std::vector<std::string> writtenNames = floodDirectory(temporaryDirectory, kFloodFileCount, kFloodThreadCount);
-        ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4)
-                << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
+        ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4) << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
 
-        const bool everythingArrived = TestSupport::waitForCondition(
-                [&recorder, &writtenNames]()
-                {
-                    return recorder.sawRescan() || recorder.missingFileCount(writtenNames) == 0;
-                },
-                8000);
+        const bool everythingArrived =
+                TestSupport::waitForCondition([&recorder, &writtenNames]() { return recorder.sawRescan() || recorder.missingFileCount(writtenNames) == 0; }, 8000);
         const std::size_t missingCount = recorder.missingFileCount(writtenNames);
         const bool        rescanned    = recorder.sawRescan();
 
         watcher->stop();
-        EXPECT_TRUE(everythingArrived || rescanned)
-                << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
+        EXPECT_TRUE(everythingArrived || rescanned) << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
 #ifdef _WIN32
         // 这个停摆量必然丢出溢出（探针读数见 @details），所以 Windows 侧再钉两条：一条没丢就是构造
         // 失效（用例白跑而报告全绿）；丢了却没告状就是那条「成功、零字节」的溢出告状被当成没事发生
@@ -1585,10 +1367,7 @@ namespace AsynGyanis::Platform
 
             const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
             ASSERT_NE(watcher, nullptr);
-            watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType)
-            {
-                recorder.record(filePath, changeType);
-            });
+            watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
             ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
             ASSERT_TRUE(watcher->start());
@@ -1614,12 +1393,28 @@ namespace AsynGyanis::Platform
             return shouldDispatchChange(filePath);
         }
 
-        bool addWatch(const std::string_view, const bool) override { return true; }
-        bool removeWatch(const std::string_view) override { return true; }
-        void setCallback(FileChangeCallback) override {}
-        bool start() override { return true; }
-        void stop() override {}
-        [[nodiscard]] bool isRunning() const noexcept override { return false; }
+        bool addWatch(const std::string_view, const bool) override
+        {
+            return true;
+        }
+        bool removeWatch(const std::string_view) override
+        {
+            return true;
+        }
+        void setCallback(FileChangeCallback) override
+        {
+        }
+        bool start() override
+        {
+            return true;
+        }
+        void stop() override
+        {
+        }
+        [[nodiscard]] bool isRunning() const noexcept override
+        {
+            return false;
+        }
     };
 
     /**
@@ -1632,7 +1427,7 @@ namespace AsynGyanis::Platform
     TEST(FileWatcher, SuppressionsSurviveAPathFloodBeyondTheTableCap)
     {
         constexpr std::size_t kFloodPathCount = 5000;
-        DebounceProbeWatcher watcher;
+        DebounceProbeWatcher  watcher;
         watcher.setDebounceInterval(std::chrono::milliseconds(5000));
 
         // 表还没满之前记下的路径，要能在整轮涌入之后仍处于被抑制状态
@@ -1645,8 +1440,7 @@ namespace AsynGyanis::Platform
             static_cast<void>(watcher.touch("flood-" + std::to_string(index) + ".yaml"));
         }
 
-        EXPECT_FALSE(watcher.touch(earlyPath))
-                << "防抖表被涌入的路径撑满后，把已在窗口内的记录整表清空了：这条路径会被重复派发";
+        EXPECT_FALSE(watcher.touch(earlyPath)) << "防抖表被涌入的路径撑满后，把已在窗口内的记录整表清空了：这条路径会被重复派发";
 
         // 表满且最旧一条都还在窗口内时，新路径不记账：本窗口内它每次都派发（这是有意的取舍，
         // 挤占只会让被挤掉的那条立刻当「新路径」插回来，来回抖动）

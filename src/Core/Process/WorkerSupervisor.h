@@ -37,14 +37,14 @@ namespace AsynGyanis::Core
          */
         struct Configuration
         {
-            std::string              executablePath;                ///< 要起的可执行文件（通常就是本进程自己的映像）
-            std::vector<std::string> workerArguments;               ///< 每个 worker 的固定参数（不含 argv[0]）
-            std::size_t              workerCount{1};                ///< worker 个数；必须大于 1，等于 1 时直接用单进程跑，不需要本类
-            std::chrono::milliseconds pollInterval{100};             ///< 观察存活与响应停止请求的轮询间隔
-            std::chrono::milliseconds restartBackoff{500};           ///< 补 worker 前的等待：避免崩溃循环里打转
-            std::chrono::milliseconds shutdownTimeout{10000};        ///< 收尾期限：请求退出后等到这个点就强杀
-            std::chrono::milliseconds crashLoopWindow{3000};         ///< 存活不足这个时长就退出，算一次「起来就崩」；必须大于 0
-            std::size_t              crashLoopLimit{5};              ///< 连续「起来就崩」达到这个次数就停止补该 worker；至少为 1
+            std::string               executablePath;         ///< 要起的可执行文件（通常就是本进程自己的映像）
+            std::vector<std::string>  workerArguments;        ///< 每个 worker 的固定参数（不含 argv[0]）
+            std::size_t               workerCount{1};         ///< worker 个数；必须大于 1，等于 1 时直接用单进程跑，不需要本类
+            std::chrono::milliseconds pollInterval{100};      ///< 观察存活与响应停止请求的轮询间隔
+            std::chrono::milliseconds restartBackoff{500};    ///< 补 worker 前的等待：避免崩溃循环里打转
+            std::chrono::milliseconds shutdownTimeout{10000}; ///< 收尾期限：请求退出后等到这个点就强杀
+            std::chrono::milliseconds crashLoopWindow{3000};  ///< 存活不足这个时长就退出，算一次「起来就崩」；必须大于 0
+            std::size_t               crashLoopLimit{5};      ///< 连续「起来就崩」达到这个次数就停止补该 worker；至少为 1
         };
 
         /**
@@ -101,10 +101,10 @@ namespace AsynGyanis::Core
          */
         struct Worker
         {
-            Platform::Process::Handle            handle;      ///< 进程句柄
-            std::chrono::steady_clock::time_point startTime;  ///< 启动时刻：判「起来就崩」用
-            std::size_t                          crashCount{0};///< 该位连续「起来就崩」的次数
-            bool                                 isGivenUp{false}; ///< 是否已放弃补它（连续崩太多次）
+            Platform::Process::Handle             handle;           ///< 进程句柄
+            std::chrono::steady_clock::time_point startTime;        ///< 启动时刻：判「起来就崩」用
+            std::size_t                           crashCount{0};    ///< 该位连续「起来就崩」的次数
+            bool                                  isGivenUp{false}; ///< 是否已放弃补它（连续崩太多次）
         };
 
         /**
@@ -134,8 +134,8 @@ namespace AsynGyanis::Core
          */
         void waitForForcedTerminationsToLand();
 
-        Configuration             m_configuration;   ///< 编排参数（构造时已校验）
-        std::vector<Worker>       m_workers;         ///< worker 槽位；下标即序号，槽位固定不搬
+        Configuration       m_configuration; ///< 编排参数（构造时已校验）
+        std::vector<Worker> m_workers;       ///< worker 槽位；下标即序号，槽位固定不搬
 
         /// 停止请求：只置一个无锁原子，因此信号处理函数里调用 requestStop() 是安全的
         /// （.cpp 里对 is_always_lock_free 做了断言，平台不满足会在编译期就拦住）

@@ -1,8 +1,8 @@
 // LogLevel 单元测试：枚举数值连续性与顺序、等级字符串双向转换、大小写折叠的边界、非法输入回落
 
 // 日志模块在 Windows 上要求先包含 Platform/Platform.h，以清除 windows.h 注入的 ERROR 宏
-#include "Platform/Platform.h"
 #include "Base/Log/LogLevel.h"
+#include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
 
@@ -33,13 +33,7 @@ namespace AsynGyanis::Base
 
         /// 全部有效日志等级，按严重程度递增排列
         const std::vector<LogLevel> kAllLevels = {
-                LogLevel::Trace,
-                LogLevel::Debug,
-                LogLevel::Info,
-                LogLevel::Warn,
-                LogLevel::Error,
-                LogLevel::Fatal,
-                LogLevel::Off,
+                LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal, LogLevel::Off,
         };
     } // namespace
 
@@ -147,13 +141,10 @@ namespace AsynGyanis::Base
         };
 
         const std::vector<LabelCase> labelCases = {
-                {"trace", LogLevel::Trace}, {"Trace", LogLevel::Trace}, {"tRaCe", LogLevel::Trace},
-                {"debug", LogLevel::Debug}, {"Debug", LogLevel::Debug},
-                {"info", LogLevel::Info}, {"Info", LogLevel::Info}, {"iNFO", LogLevel::Info},
-                {"warn", LogLevel::Warn}, {"Warn", LogLevel::Warn}, {"WArN", LogLevel::Warn},
-                {"error", LogLevel::Error}, {"Error", LogLevel::Error},
-                {"fatal", LogLevel::Fatal}, {"Fatal", LogLevel::Fatal},
-                {"off", LogLevel::Off}, {"Off", LogLevel::Off},
+                {"trace", LogLevel::Trace}, {"Trace", LogLevel::Trace}, {"tRaCe", LogLevel::Trace}, {"debug", LogLevel::Debug}, {"Debug", LogLevel::Debug},
+                {"info", LogLevel::Info},   {"Info", LogLevel::Info},   {"iNFO", LogLevel::Info},   {"warn", LogLevel::Warn},   {"Warn", LogLevel::Warn},
+                {"WArN", LogLevel::Warn},   {"error", LogLevel::Error}, {"Error", LogLevel::Error}, {"fatal", LogLevel::Fatal}, {"Fatal", LogLevel::Fatal},
+                {"off", LogLevel::Off},     {"Off", LogLevel::Off},
         };
 
         for (const LabelCase &testCase: labelCases)
@@ -194,13 +185,7 @@ namespace AsynGyanis::Base
     TEST(LogLevel, FromStringFallsBackToInfoForUnknownLabels)
     {
         const std::vector<std::string_view> unknownLabels = {
-                "",
-                "   ",
-                "NOTICE",
-                "CRITICAL",
-                "INFORMATION",
-                "INF",
-                "INFOO",
+                "", "   ", "NOTICE", "CRITICAL", "INFORMATION", "INF", "INFOO",
         };
 
         for (const std::string_view label: unknownLabels)
@@ -212,7 +197,7 @@ namespace AsynGyanis::Base
     TEST(LogLevel, FromStringEmitsVisibleDiagnosticForUnknownLabels)
     {
         ::testing::internal::CaptureStderr();
-        const LogLevel fallback = logLevelFromString("INFOO");
+        const LogLevel    fallback   = logLevelFromString("INFOO");
         const std::string diagnostic = ::testing::internal::GetCapturedStderr();
 
         // 返回值仍是刻意容错后的 Info，但写错的配置必须留下可见痕迹
@@ -225,8 +210,7 @@ namespace AsynGyanis::Base
     TEST(LogLevel, FromStringStaysSilentForRecognizedLabels)
     {
         // 小写写法如今也是「认识」的取值，因此同样不该留下诊断：每条被挡下的写法都要付一行 stderr
-        const std::vector<std::string_view> knownLabels = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF",
-                                                           "trace", "debug", "info", "warn", "error", "fatal", "off"};
+        const std::vector<std::string_view> knownLabels = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF", "trace", "debug", "info", "warn", "error", "fatal", "off"};
 
         ::testing::internal::CaptureStderr();
         for (const std::string_view label: knownLabels)
@@ -259,12 +243,7 @@ namespace AsynGyanis::Base
     TEST(LogLevel, SeverityLevelsRoundTripThroughTrimmedLabel)
     {
         const std::vector<LogLevel> roundTripLevels = {
-                LogLevel::Trace,
-                LogLevel::Debug,
-                LogLevel::Info,
-                LogLevel::Warn,
-                LogLevel::Error,
-                LogLevel::Fatal,
+                LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal,
         };
 
         for (const LogLevel level: roundTripLevels)
@@ -288,7 +267,7 @@ namespace AsynGyanis::Base
         {
             LogLevel threshold;
             LogLevel level;
-            bool expected;
+            bool     expected;
         };
 
         const std::vector<FilterCase> cases = {
@@ -317,8 +296,7 @@ namespace AsynGyanis::Base
 
         for (const auto &[threshold, level, expected]: cases)
         {
-            EXPECT_EQ(logLevelPassesFilter(threshold, level), expected)
-                    << "threshold=" << static_cast<int>(threshold) << " level=" << static_cast<int>(level);
+            EXPECT_EQ(logLevelPassesFilter(threshold, level), expected) << "threshold=" << static_cast<int>(threshold) << " level=" << static_cast<int>(level);
         }
     }
 

@@ -27,10 +27,10 @@ namespace AsynGyanis::Net
     /// HTTP/2 客户端收到的响应：伪头与普通头分开留，正文按 DATA 拼回
     struct Http2ClientResponse
     {
-        int         statusCode{0};                              ///< :status 的值；0 表示没拿到响应
-        std::vector<std::pair<std::string, std::string>> headers; ///< 除伪头之外的响应字段，按收到的顺序留着
-        std::string body;                                       ///< 正文（DATA 帧拼接，已按本端消耗归还流控窗口）
-        std::string errorMessage;                               ///< 失败时的中文原因；为空表示这条响应是正常收齐的
+        int                                              statusCode{0}; ///< :status 的值；0 表示没拿到响应
+        std::vector<std::pair<std::string, std::string>> headers;       ///< 除伪头之外的响应字段，按收到的顺序留着
+        std::string                                      body;          ///< 正文（DATA 帧拼接，已按本端消耗归还流控窗口）
+        std::string                                      errorMessage;  ///< 失败时的中文原因；为空表示这条响应是正常收齐的
         /// 这条流上有没有收到过对端的任何帧。复用连接时靠它区分「对端在我们手里把连接收了」（可以重来
         /// 一次）与「响应本身出问题了」（重发会把非幂等请求做两遍）——与 HTTP/1.1 侧同一位判据
         bool isAnyByteReceived{false};
@@ -74,8 +74,8 @@ namespace AsynGyanis::Net
         /// 后面三项是本端内部的闸门（头块缓冲、正文胃口、开流配额），不对外承诺
         struct Config
         {
-            std::uint32_t initialWindowByteCount{64u * 1024};  ///< 本端愿意为一条流缓冲多少未读正文字节
-            std::uint32_t maximumFrameByteSize{16u * 1024};    ///< 本端能收的最大帧负载，合法区间 [16384, 16777215]
+            std::uint32_t initialWindowByteCount{64u * 1024}; ///< 本端愿意为一条流缓冲多少未读正文字节
+            std::uint32_t maximumFrameByteSize{16u * 1024};   ///< 本端能收的最大帧负载，合法区间 [16384, 16777215]
             /// 单个头块（HEADERS 与其后 CONTINUATION 片段之和）的压缩后字节上限，与服务端侧同档：
             /// CONTINUATION 可以无限续，不设闸门等于让对端用一个头块把本端内存撑掉
             std::size_t maximumHeaderBlockByteCount{16u * 1024};
@@ -97,8 +97,7 @@ namespace AsynGyanis::Net
          *         SETTINGS_MAX_FRAME_SIZE，帧解码器当场就拒。开流额度填 0 或填得比 §5.1.1 的上界
          *         （2^30 条）还大也走这条：前者一条流都提不出，后者会让流号越过 2^31-1
          */
-        Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport)
-            : Http2ClientConnection(loop, std::move(transport), Config{})
+        Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport) : Http2ClientConnection(loop, std::move(transport), Config{})
         {
         }
 
@@ -112,10 +111,9 @@ namespace AsynGyanis::Net
          *          与 Http3Connection 那处同型，故补一把委托构造，调用方写法一字不变。
          * @throws Base::InvalidArgumentException 同二参那把
          */
-        Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport,
-                              Config config);
+        Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport, Config config);
 
-        Http2ClientConnection(const Http2ClientConnection &) = delete;
+        Http2ClientConnection(const Http2ClientConnection &)            = delete;
         Http2ClientConnection &operator=(const Http2ClientConnection &) = delete;
 
         /**
@@ -147,10 +145,9 @@ namespace AsynGyanis::Net
          * @param waitTimeout 本次请求的整体时限：写出、等响应头、收完正文三段之和
          * @return Http2ClientResponse 响应；失败时 errorMessage 给出断在哪一段
          */
-        [[nodiscard]] Core::Task<Http2ClientResponse> request(std::string_view scheme, std::string_view authority,
-                                                              std::string_view method, std::string_view path,
-                                                              const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-                                                              std::string_view body, std::chrono::milliseconds waitTimeout);
+        [[nodiscard]] Core::Task<Http2ClientResponse> request(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
+                                                              const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
+                                                              std::chrono::milliseconds waitTimeout);
 
         /**
          * @brief 提一条**流式正文**的请求：正文由 bodySource 一段一段交出，交完才收尾流
@@ -169,10 +166,9 @@ namespace AsynGyanis::Net
          * @param waitTimeout 本次请求的整体时限（含生产正文那一段）
          * @return Http2ClientResponse 结论；正文写到一半被对端中止时按失败交出
          */
-        [[nodiscard]] Core::Task<Http2ClientResponse> requestStreamed(
-                std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
-                const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-                const HttpBodyChunkSource &bodySource, std::chrono::milliseconds waitTimeout);
+        [[nodiscard]] Core::Task<Http2ClientResponse> requestStreamed(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
+                                                                      const std::vector<std::pair<std::string, std::string>> &extraHeaders, const HttpBodyChunkSource &bodySource,
+                                                                      std::chrono::milliseconds waitTimeout);
 
         /**
          * @brief 礼貌收尾：先尽力把 GOAWAY 发出去，再关掉通路
@@ -193,7 +189,10 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isHealthy() const noexcept;
 
         /// 在途（已提出、还没收齐）的流条数：连接池据此判断这条连接是不是正被人用着
-        [[nodiscard]] std::size_t inFlightStreamCount() const noexcept { return m_pendingStreams.size(); }
+        [[nodiscard]] std::size_t inFlightStreamCount() const noexcept
+        {
+            return m_pendingStreams.size();
+        }
 
     private:
         /**
@@ -205,7 +204,9 @@ namespace AsynGyanis::Net
         {
         public:
             /// @param connection 已被 tryTakePumpLease() 取走租约的那条连接
-            explicit PumpLease(Http2ClientConnection &connection) noexcept : m_connection(connection) {}
+            explicit PumpLease(Http2ClientConnection &connection) noexcept : m_connection(connection)
+            {
+            }
 
             /// 放开租约并叫醒等待者
             ~PumpLease() noexcept
@@ -214,7 +215,7 @@ namespace AsynGyanis::Net
                 m_connection.wakeWaitingStreams();
             }
 
-            PumpLease(const PumpLease &) = delete;
+            PumpLease(const PumpLease &)            = delete;
             PumpLease &operator=(const PumpLease &) = delete;
 
         private:
@@ -231,7 +232,9 @@ namespace AsynGyanis::Net
         {
         public:
             /// @param connection 已把 m_isFlushInProgress 置真的那条连接
-            explicit FlushTurnGuard(Http2ClientConnection &connection) noexcept : m_connection(connection) {}
+            explicit FlushTurnGuard(Http2ClientConnection &connection) noexcept : m_connection(connection)
+            {
+            }
 
             /// 放开写权并叫醒排队的写者
             ~FlushTurnGuard() noexcept
@@ -240,7 +243,7 @@ namespace AsynGyanis::Net
                 m_connection.wakeFlushWaiters();
             }
 
-            FlushTurnGuard(const FlushTurnGuard &) = delete;
+            FlushTurnGuard(const FlushTurnGuard &)            = delete;
             FlushTurnGuard &operator=(const FlushTurnGuard &) = delete;
 
         private:
@@ -255,13 +258,18 @@ namespace AsynGyanis::Net
         {
         public:
             /// @param connection 所属连接（生命周期由本次等待覆盖）
-            explicit FlushTurnAwaiter(Http2ClientConnection &connection) noexcept : m_connection(&connection) {}
+            explicit FlushTurnAwaiter(Http2ClientConnection &connection) noexcept : m_connection(&connection)
+            {
+            }
 
             /**
              * @brief 写权空着就不用挂：调用方会自己去抢这一轮
              * @return true 不必挂起
              */
-            [[nodiscard]] bool await_ready() const noexcept { return !m_connection->m_isFlushInProgress; }
+            [[nodiscard]] bool await_ready() const noexcept
+            {
+                return !m_connection->m_isFlushInProgress;
+            }
 
             /**
              * @brief 把本协程排进写队
@@ -270,7 +278,9 @@ namespace AsynGyanis::Net
             void await_suspend(std::coroutine_handle<> waiter) noexcept;
 
             /// 醒来即完成：接下来由调用方自己再看一眼写权与待发缓冲
-            void await_resume() const noexcept {}
+            void await_resume() const noexcept
+            {
+            }
 
         private:
             Http2ClientConnection *m_connection; ///< 归属连接（非拥有）
@@ -291,8 +301,7 @@ namespace AsynGyanis::Net
              * @param connection 所属连接对象（生命周期由本次等待覆盖）
              * @param streamId 等的是哪条流
              */
-            StreamAwaiter(Http2ClientConnection &connection, const std::uint32_t streamId) noexcept
-                : m_connection(&connection), m_streamId(streamId)
+            StreamAwaiter(Http2ClientConnection &connection, const std::uint32_t streamId) noexcept : m_connection(&connection), m_streamId(streamId)
             {
             }
 
@@ -310,24 +319,26 @@ namespace AsynGyanis::Net
             bool await_suspend(std::coroutine_handle<> waiter) noexcept;
 
             /// 醒来即完成：结论本来就在流记录里，等待体不额外带东西
-            void await_resume() const noexcept {}
+            void await_resume() const noexcept
+            {
+            }
 
         private:
             Http2ClientConnection *m_connection; ///< 所属连接（非拥有）
-            std::uint32_t m_streamId;            ///< 等的那条流
+            std::uint32_t          m_streamId;   ///< 等的那条流
         };
 
         /// 一条在途请求的收包状态。窗口与头块片段按流记：同一条连接上并发跑几条时，各自的账不能互相顶
         struct PendingStream
         {
-            std::uint32_t streamId{0};
-            Http2ClientResponse response;
-            std::int64_t sendWindowByteCount{0};   ///< 这条流的发送窗口，建流时取对端通告的初值（§6.9.2）
-            std::string pendingHeaderBlock;        ///< 头块累积字节（CONTINUATION 之前先攒着）
-            bool isAwaitingContinuation{false};    ///< 正在收一段头块（等 CONTINUATION）
-            bool isResponseComplete{false};        ///< 收到带 END_STREAM 的帧
-            bool isReset{false};                   ///< 对端 RST 掉了这条流
-            std::coroutine_handle<> waiter{};      ///< 挂在这条流上的请求协程；空表示没人等
+            std::uint32_t           streamId{0};
+            Http2ClientResponse     response;
+            std::int64_t            sendWindowByteCount{0};        ///< 这条流的发送窗口，建流时取对端通告的初值（§6.9.2）
+            std::string             pendingHeaderBlock;            ///< 头块累积字节（CONTINUATION 之前先攒着）
+            bool                    isAwaitingContinuation{false}; ///< 正在收一段头块（等 CONTINUATION）
+            bool                    isResponseComplete{false};     ///< 收到带 END_STREAM 的帧
+            bool                    isReset{false};                ///< 对端 RST 掉了这条流
+            std::coroutine_handle<> waiter{};                      ///< 挂在这条流上的请求协程；空表示没人等
         };
 
         /// 处理一层已解出的帧；返回 false 表示连接不可再用
@@ -351,7 +362,10 @@ namespace AsynGyanis::Net
         Core::Task<bool> pumpSome();
 
         /// 本端已经开过几条流：流号从 1 起按 2 递增，故「下一条 - 1」除以 2 就是已用条数
-        [[nodiscard]] std::uint32_t openedStreamCount() const noexcept { return (m_nextStreamId - 1U) / 2U; }
+        [[nodiscard]] std::uint32_t openedStreamCount() const noexcept
+        {
+            return (m_nextStreamId - 1U) / 2U;
+        }
 
         /**
          * @brief 取一个客户端流号：按 §5.1.1 取奇数且严格递增的那条，且不许越过 2^31-1
@@ -409,10 +423,9 @@ namespace AsynGyanis::Net
          * @param waitTimeout 本次请求的整体时限
          * @return Http2ClientResponse 结论
          */
-        Core::Task<Http2ClientResponse> requestWithBody(
-                std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
-                const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
-                const HttpBodyChunkSource *bodySourceOrNull, std::chrono::milliseconds waitTimeout);
+        Core::Task<Http2ClientResponse> requestWithBody(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
+                                                        const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
+                                                        const HttpBodyChunkSource *bodySourceOrNull, std::chrono::milliseconds waitTimeout);
 
         /// 本端 SETTINGS 的编码结果（通告 INITIAL_WINDOW_SIZE 与 MAX_FRAME_SIZE 两项）
         [[nodiscard]] std::string encodeLocalSettings() const;
@@ -450,28 +463,28 @@ namespace AsynGyanis::Net
 
         void fail(std::string reason);
 
-        Core::EventLoop &m_loop;                     ///< 所属事件循环：时限看门狗的定时器用它
+        Core::EventLoop                        &m_loop; ///< 所属事件循环：时限看门狗的定时器用它
         std::unique_ptr<HttpOutboundConnection> m_transport;
-        Config m_config;
-        Http2FrameDecoder m_decoder;
-        HpackEncoder m_encoder;
-        HpackDecoder m_headerDecoder;
+        Config                                  m_config;
+        Http2FrameDecoder                       m_decoder;
+        HpackEncoder                            m_encoder;
+        HpackDecoder                            m_headerDecoder;
 
-        std::string m_outgoing;                    ///< 待写字节：本端把所有帧先攒在这里再一次写出
-        std::uint32_t m_nextStreamId{1};           ///< 客户端流号：奇数且严格递增（RFC 7540 §5.1.1）
-        std::int64_t m_connectionSendWindowByteCount{65535};  ///< 连接级发送窗口，初值是协议默认（§6.9.2）
-        std::int64_t m_peerMaximumFrameByteSize{16384};       ///< 对端能收的最大帧负载
-        std::uint32_t m_peerInitialStreamWindowByteCount{65535}; ///< 对端通告的流初始窗口，用于换算新流窗口
+        std::string                            m_outgoing;                                ///< 待写字节：本端把所有帧先攒在这里再一次写出
+        std::uint32_t                          m_nextStreamId{1};                         ///< 客户端流号：奇数且严格递增（RFC 7540 §5.1.1）
+        std::int64_t                           m_connectionSendWindowByteCount{65535};    ///< 连接级发送窗口，初值是协议默认（§6.9.2）
+        std::int64_t                           m_peerMaximumFrameByteSize{16384};         ///< 对端能收的最大帧负载
+        std::uint32_t                          m_peerInitialStreamWindowByteCount{65535}; ///< 对端通告的流初始窗口，用于换算新流窗口
         std::map<std::uint32_t, PendingStream> m_pendingStreams;
-        bool m_isPumpLeaseTaken{false};            ///< 这一轮谁在读通路并顺带回帧：同一时刻只许一个
-        std::size_t m_waitingStreamCount{0};       ///< 挂在 StreamAwaiter 上的请求协程数
-        bool m_isFlushInProgress{false};           ///< 写权在谁手上：两个协程同时 send 会把帧撕开
-        std::vector<std::coroutine_handle<>> m_flushWaiters; ///< 排队等写权的协程
-        bool m_isHealthy{true};                    ///< 连接层是否还能用
-        bool m_isPeerGoAway{false};                ///< 对端是否已通告收尾
-        bool m_isPeerSettingsReceived{false};      ///< 是否已收到对端的 SETTINGS（能提请求的前提）
-        bool m_isOwnSettingsAcknowledged{false};   ///< 对端是否已 ACK 过本端那一条 SETTINGS（只许 ACK 一次）
-        std::string m_errorMessage;                ///< 最后一次失败的中文原因
+        bool                                   m_isPumpLeaseTaken{false};          ///< 这一轮谁在读通路并顺带回帧：同一时刻只许一个
+        std::size_t                            m_waitingStreamCount{0};            ///< 挂在 StreamAwaiter 上的请求协程数
+        bool                                   m_isFlushInProgress{false};         ///< 写权在谁手上：两个协程同时 send 会把帧撕开
+        std::vector<std::coroutine_handle<>>   m_flushWaiters;                     ///< 排队等写权的协程
+        bool                                   m_isHealthy{true};                  ///< 连接层是否还能用
+        bool                                   m_isPeerGoAway{false};              ///< 对端是否已通告收尾
+        bool                                   m_isPeerSettingsReceived{false};    ///< 是否已收到对端的 SETTINGS（能提请求的前提）
+        bool                                   m_isOwnSettingsAcknowledged{false}; ///< 对端是否已 ACK 过本端那一条 SETTINGS（只许 ACK 一次）
+        std::string                            m_errorMessage;                     ///< 最后一次失败的中文原因
 
         /// 客户端前奏的字节（RFC 7540 §3.4），本端在 start() 里第一个写出
         static constexpr std::string_view kClientPrefaceBytes = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";

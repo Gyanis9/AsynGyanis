@@ -74,4 +74,4 @@ namespace AsynGyanis::Core
         bool                    m_stopped{false}; ///< 是否已请求停止
     };
 
-}
+} // namespace AsynGyanis::Core

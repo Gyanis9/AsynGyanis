@@ -70,7 +70,7 @@ namespace AsynGyanis::Core
         struct HandoffRecord
         {
             int             fileDescriptor{Platform::FileDescriptor::kInvalid}; ///< 接手的描述符
-            std::thread::id handledOn{};                                       ///< 接手动作跑在哪个线程上
+            std::thread::id handledOn{};                                        ///< 接手动作跑在哪个线程上
         };
 
         /**
@@ -96,20 +96,14 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionDistributorTest, DistributesRoundRobinAndRunsOnTargetLoopThread)
     {
-        EventLoop workerA;
-        EventLoop workerB;
-        std::thread threadA([&workerA]()
-        {
-            workerA.run();
-        });
-        std::thread threadB([&workerB]()
-        {
-            workerB.run();
-        });
+        EventLoop   workerA;
+        EventLoop   workerB;
+        std::thread threadA([&workerA]() { workerA.run(); });
+        std::thread threadB([&workerB]() { workerB.run(); });
 
-        std::mutex                     recordsMutex;
-        std::vector<HandoffRecord>     records;
-        std::vector<std::thread::id>   workerThreadIds;
+        std::mutex                   recordsMutex;
+        std::vector<HandoffRecord>   records;
+        std::vector<std::thread::id> workerThreadIds;
 
         const auto recordHandoff = [&recordsMutex, &records](const int fileDescriptor)
         {
@@ -140,7 +134,7 @@ namespace AsynGyanis::Core
         {
             const std::lock_guard lock(recordsMutex);
             ASSERT_EQ(records.size(), kConnectionCount);
-            for (const HandoffRecord &record : records)
+            for (const HandoffRecord &record: records)
             {
                 EXPECT_NE(record.handledOn, std::this_thread::get_id()) << "回调跑在了派发线程上，连接没有真的换循环";
                 EXPECT_NE(record.fileDescriptor, Platform::FileDescriptor::kInvalid);
@@ -176,16 +170,11 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionDistributorTest, RejectsInvalidDescriptor)
     {
-        EventLoop worker;
-        std::thread workerThread([&worker]()
-        {
-            worker.run();
-        });
+        EventLoop   worker;
+        std::thread workerThread([&worker]() { worker.run(); });
 
         ConnectionDistributor distributor;
-        distributor.addWorker(worker, [](int)
-        {
-        });
+        distributor.addWorker(worker, [](int) {});
 
         EXPECT_FALSE(distributor.distribute(Platform::FileDescriptor::kInvalid));
         EXPECT_EQ(distributor.distributedCount(), 0U);
@@ -248,30 +237,22 @@ namespace AsynGyanis::Core
         TestSupport::EventLoopThread runner;
         ASSERT_TRUE(runner.waitUntilRunning());
 
-        std::atomic<bool> isAdopterEntered{false};
+        std::atomic<bool>     isAdopterEntered{false};
         ConnectionDistributor distributor;
-        distributor.addWorker(runner.loop(), [&isAdopterEntered](int)
-        {
-            isAdopterEntered.store(true, std::memory_order_release);
-            throw std::runtime_error("用例设定的接手失败");
-        });
+        distributor.addWorker(runner.loop(),
+                              [&isAdopterEntered](int)
+                              {
+                                  isAdopterEntered.store(true, std::memory_order_release);
+                                  throw std::runtime_error("用例设定的接手失败");
+                              });
 
         const int fileDescriptor = makeDetachedSocketDescriptor();
         ASSERT_NE(fileDescriptor, static_cast<int>(Platform::FileDescriptor::kInvalid));
         EXPECT_TRUE(distributor.distribute(fileDescriptor)) << "句柄已建成，按契约应当报「已接管」";
 
-        ASSERT_TRUE(waitForCondition([&isAdopterEntered]
-                                    {
-                                        return isAdopterEntered.load(std::memory_order_acquire);
-                                    }))
-                << "接手动作根本没跑起来，这条路径没被走到";
-        const bool isClosedEventually = waitForCondition(
-                [fileDescriptor]
-                {
-                    return !isDescriptorStillOpen(fileDescriptor);
-                });
-        EXPECT_TRUE(isClosedEventually)
-                << "adopter 抛出后描述符 " << fileDescriptor << " 仍开着：每次接手失败都会漏一个句柄";
+        ASSERT_TRUE(waitForCondition([&isAdopterEntered] { return isAdopterEntered.load(std::memory_order_acquire); })) << "接手动作根本没跑起来，这条路径没被走到";
+        const bool isClosedEventually = waitForCondition([fileDescriptor] { return !isDescriptorStillOpen(fileDescriptor); });
+        EXPECT_TRUE(isClosedEventually) << "adopter 抛出后描述符 " << fileDescriptor << " 仍开着：每次接手失败都会漏一个句柄";
 
         if (isDescriptorStillOpen(fileDescriptor))
         {
@@ -300,15 +281,11 @@ namespace AsynGyanis::Core
         {
             EventLoop             loop; // 不启动：没有人会来取这条投递
             ConnectionDistributor distributor;
-            distributor.addWorker(loop, [&isAdopterEntered](int)
-            {
-                isAdopterEntered.store(true, std::memory_order_release);
-            });
+            distributor.addWorker(loop, [&isAdopterEntered](int) { isAdopterEntered.store(true, std::memory_order_release); });
 
             ASSERT_TRUE(distributor.distribute(fileDescriptor)) << "句柄已建成，按契约应当报「已接管」";
             distributedCountBeforeScopeEnd = distributor.distributedCount();
-            EXPECT_TRUE(isDescriptorStillOpen(fileDescriptor))
-                    << "投递还没被执行就把描述符关掉，等于掐掉一条本可以接手成功的连接";
+            EXPECT_TRUE(isDescriptorStillOpen(fileDescriptor)) << "投递还没被执行就把描述符关掉，等于掐掉一条本可以接手成功的连接";
 
             // 出作用域：distributor 先销毁（投递自带 adopter 副本，不依赖它），随后 loop 销毁
             // → 调度器成员析构 → 队列里那条投递连同交接句柄一起被丢掉
@@ -316,8 +293,7 @@ namespace AsynGyanis::Core
 
         EXPECT_EQ(distributedCountBeforeScopeEnd, 1U) << "计数应当把这条「已交出所有权」的连接算进去";
         EXPECT_FALSE(isAdopterEntered.load(std::memory_order_acquire)) << "循环没跑过，接手动作不该执行";
-        EXPECT_FALSE(isDescriptorStillOpen(fileDescriptor))
-                << "目标循环退出后没被执行的那条投递没有把描述符关回去：每丢一条就漏一个句柄";
+        EXPECT_FALSE(isDescriptorStillOpen(fileDescriptor)) << "目标循环退出后没被执行的那条投递没有把描述符关回去：每丢一条就漏一个句柄";
     }
 
     /**
@@ -369,16 +345,14 @@ namespace AsynGyanis::Core
                 });
         const auto baselineHistogram = AsynGyanis::TestSupport::snapshotAllocationHistogram();
 
-        std::printf("distributor-handoff total=%llu bytes=%llu\n", static_cast<unsigned long long>(profile.totalAllocations),
-                    static_cast<unsigned long long>(profile.totalBytes));
+        std::printf("distributor-handoff total=%llu bytes=%llu\n", static_cast<unsigned long long>(profile.totalAllocations), static_cast<unsigned long long>(profile.totalBytes));
         std::printf("distributor-baseline total=%llu bytes=%llu\n", static_cast<unsigned long long>(baseline.totalAllocations),
                     static_cast<unsigned long long>(baseline.totalBytes));
         for (std::size_t bucket = 0; bucket < handoffHistogram.size(); ++bucket)
         {
             if (handoffHistogram[bucket] != 0)
             {
-                std::printf("   handoff bucket=%zu bytes=%zu count=%llu\n", bucket,
-                            bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
+                std::printf("   handoff bucket=%zu bytes=%zu count=%llu\n", bucket, bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
                             static_cast<unsigned long long>(handoffHistogram[bucket]));
             }
         }
@@ -388,8 +362,7 @@ namespace AsynGyanis::Core
         {
             if (baselineHistogram[bucket] != 0)
             {
-                std::printf("   baseline bucket=%zu bytes=%zu count=%llu\n", bucket,
-                            bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
+                std::printf("   baseline bucket=%zu bytes=%zu count=%llu\n", bucket, bucket * AsynGyanis::TestSupport::kAllocationHistogramBucketBytes,
                             static_cast<unsigned long long>(baselineHistogram[bucket]));
             }
         }
@@ -399,15 +372,13 @@ namespace AsynGyanis::Core
         EXPECT_EQ(handledCount.load(std::memory_order_relaxed), static_cast<int>(kMeasurementIterations));
         // 对照组必须显著小于被测组：否则「每连接两块」就是拿造描述符的开销冒充派发本身的开销。
         // 实测两侧读数为 2002 与 0（MSVC 与 libstdc++ 同向）
-        EXPECT_LE(baseline.totalAllocations, profile.totalAllocations / 2U)
-                << "对照组的分配已接近派发全程：台账把库自己的开销记到了交接头上";
+        EXPECT_LE(baseline.totalAllocations, profile.totalAllocations / 2U) << "对照组的分配已接近派发全程：台账把库自己的开销记到了交接头上";
 
 #ifdef NDEBUG
         // 一千次派发实测 2002 块（MSVC）/ 2062 块（libstdc++）：每交一条连接两块，一块是交接句柄
         // （「没人接手就关闭」要求载荷可复制，只能共享持有），一块是投进队列的回调载荷。上界取
         // 「每连接至多三块」——换 STL 与队列分块差异都落在里面，而真多出一块时立刻报红
-        EXPECT_LE(profile.totalAllocations, kMeasurementIterations * 3U)
-                << "每交一条连接的堆块数越界：交接这条路上多半又多了一次分配";
+        EXPECT_LE(profile.totalAllocations, kMeasurementIterations * 3U) << "每交一条连接的堆块数越界：交接这条路上多半又多了一次分配";
 #endif
     }
 } // namespace AsynGyanis::Core

@@ -16,9 +16,8 @@ namespace AsynGyanis::Net
          * @details 不随注册顺序变化，客户端每次拿到的 Allow 字面量一致，便于做断言与缓存。
          *          这里刻意不含 UNKNOWN：它不是一个可以申请的方法，写进 Allow 等于自曝实现细节。
          */
-        constexpr std::array<HttpMethod, 7> kRecognizedMethodOrder{
-                HttpMethod::GET, HttpMethod::HEAD, HttpMethod::POST,
-                HttpMethod::PUT, HttpMethod::DELETE, HttpMethod::PATCH, HttpMethod::OPTIONS};
+        constexpr std::array<HttpMethod, 7> kRecognizedMethodOrder{HttpMethod::GET,    HttpMethod::HEAD,  HttpMethod::POST,   HttpMethod::PUT,
+                                                                   HttpMethod::DELETE, HttpMethod::PATCH, HttpMethod::OPTIONS};
 
         /**
          * @brief 拼 Allow 头时方法之间的分隔符（ASCII，遵循 RFC 9110 §10.4 的 "#rulelist" 写法）
@@ -30,10 +29,8 @@ namespace AsynGyanis::Net
     // PatternRoute
     // ============================================================================
 
-    Router::PatternRoute::PatternRoute(const HttpMethod routeMethod, const bool matchAnyMethod, std::string routePattern,
-                                       Handler routeHandler, const bool isStreaming) :
-        method(routeMethod), isAnyMethod(matchAnyMethod), pattern(std::move(routePattern)), streaming(isStreaming),
-        handler(std::move(routeHandler))
+    Router::PatternRoute::PatternRoute(const HttpMethod routeMethod, const bool matchAnyMethod, std::string routePattern, Handler routeHandler, const bool isStreaming) :
+        method(routeMethod), isAnyMethod(matchAnyMethod), pattern(std::move(routePattern)), streaming(isStreaming), handler(std::move(routeHandler))
     {
         // 预解析放在构造里：模式在路由生命周期内不变，没必要每请求再拆一遍
         precomputeSegments(pattern);
@@ -69,9 +66,8 @@ namespace AsynGyanis::Net
 
         // 取出参与逐段比对的固定部分：通配模式取 wildcardPrefix 去掉结尾 '/'，其余取整个模式。
         // 两种形态随后都统一剥掉开头的 '/'，得到不含首斜杠的待拆串
-        const std::string_view fixedPart = isWildcard
-                                               ? std::string_view(wildcardPrefix.data(), wildcardPrefix.empty() ? 0 : wildcardPrefix.size() - 1)
-                                               : std::string_view(routePattern);
+        const std::string_view fixedPart =
+                isWildcard ? std::string_view(wildcardPrefix.data(), wildcardPrefix.empty() ? 0 : wildcardPrefix.size() - 1) : std::string_view(routePattern);
         std::string_view remainder = (!fixedPart.empty() && fixedPart.front() == '/') ? fixedPart.substr(1) : fixedPart;
 
         while (!remainder.empty())
@@ -180,8 +176,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    void Router::addRoute(const HttpMethod method, const bool isAnyMethod, const std::string &path, Handler handler,
-                          const bool streaming)
+    void Router::addRoute(const HttpMethod method, const bool isAnyMethod, const std::string &path, Handler handler, const bool streaming)
     {
         // 空路径按根路径处理：注册 "" 的人本意就是「访问站点根」，留着一个永远匹配不上的键只会让人困惑
         const std::string normalizedPath = path.empty() ? std::string("/") : path;
@@ -245,7 +240,7 @@ namespace AsynGyanis::Net
                 return false;
             }
 
-            const std::size_t slashPosition = remainingPath.find('/');
+            const std::size_t      slashPosition  = remainingPath.find('/');
             const std::string_view currentSegment = remainingPath.substr(0, slashPosition);
 
             if (!patternSegment.empty() && patternSegment.front() == ':')
@@ -368,8 +363,8 @@ namespace AsynGyanis::Net
     {
         // 路径取视图而不是副本：request.path() 返回指向请求对象的视图，路由这里只读不改，
         // 每请求因此省掉一次路径串拷贝（精确路由的查找靠下面的透明哈希做到零分配）
-        const std::string_view requestPath = request.path();
-        const HttpMethod  requestMethod = request.method();
+        const std::string_view requestPath   = request.path();
+        const HttpMethod       requestMethod = request.method();
 
         // 方法是否被本框架收录：未收录（CONNECT/TRACE/M-SEARCH 等）一律不进业务匹配。
         // UNKNOWN 不参与通配匹配：放行它等于让任何畸形方法都能蹭到兜底路由上。
@@ -378,10 +373,10 @@ namespace AsynGyanis::Net
         // 本条路径上允许的方法集合，用于路径命中而方法不合时生成 405 的 Allow 头。
         // 用定长数组而不是 vector：收录的方法一共 7 个，any() 路由至多把它们全列一遍，
         // 8 个位置足够——为它每请求分配一次堆内存不值当
-        constexpr std::size_t kMaximumAllowedMethodCount = kRecognizedMethodOrder.size() + 1;
+        constexpr std::size_t                              kMaximumAllowedMethodCount = kRecognizedMethodOrder.size() + 1;
         std::array<HttpMethod, kMaximumAllowedMethodCount> allowedMethodSet{};
-        std::size_t allowedMethodCount = 0;
-        const auto  isMethodAllowed = [&allowedMethodSet, &allowedMethodCount](const HttpMethod method)
+        std::size_t                                        allowedMethodCount = 0;
+        const auto                                         isMethodAllowed    = [&allowedMethodSet, &allowedMethodCount](const HttpMethod method)
         {
             const auto end = allowedMethodSet.begin() + static_cast<std::ptrdiff_t>(allowedMethodCount);
             return std::find(allowedMethodSet.begin(), end, method) != end;
@@ -495,10 +490,7 @@ namespace AsynGyanis::Net
         {
             // 终点回调把「请求 + 响应 + 命中的 handler」绑成管道要求的无参可调用对象。
             // 它只在下面这次 co_await 期间存在，故引用捕获即可，无需 shared_ptr 续命。
-            const TerminalHandler terminalHandler = [&request, &response, selectedHandler]() -> Core::Task<void>
-            {
-                co_await (*selectedHandler)(request, response);
-            };
+            const TerminalHandler terminalHandler = [&request, &response, selectedHandler]() -> Core::Task<void> { co_await (*selectedHandler)(request, response); };
 
             // 中间件与 handler 的异常一律向上传播，由会话统一重置成 500，路由器不吞也不翻译
             co_await m_pipeline.run(request, response, terminalHandler);
@@ -544,8 +536,7 @@ namespace AsynGyanis::Net
         // 若把重置放到终点里，中间件刚写下的 CORS 头会被一起抹掉
         response.reset();
 
-        const TerminalHandler unmatchedTerminalHandler =
-                [this, &request, &response, isMethodNotAllowed, &allowedMethods]() -> Core::Task<void>
+        const TerminalHandler unmatchedTerminalHandler = [this, &request, &response, isMethodNotAllowed, &allowedMethods]() -> Core::Task<void>
         {
             writeNotFoundOrNotAllowed(request, response, isMethodNotAllowed, allowedMethods);
             co_return;
@@ -603,8 +594,8 @@ namespace AsynGyanis::Net
         }
 
         // 路径截取与 HttpRequest::path() 同一口径：第一个 '?' 之前算路径
-        const std::size_t queryPosition = uri.find('?');
-        const std::string_view requestPath = queryPosition == std::string_view::npos ? uri : uri.substr(0, queryPosition);
+        const std::size_t      queryPosition = uri.find('?');
+        const std::string_view requestPath   = queryPosition == std::string_view::npos ? uri : uri.substr(0, queryPosition);
 
         // HEAD 复用 GET 的兜底不需要镜像：本类只提供 postStreaming()/putStreaming() 两种
         // 流式注册，HEAD 请求在方法层就与它们不相干

@@ -97,8 +97,7 @@ namespace AsynGyanis::Net
                 // 长度行是十六进制的字节数，逐字符消费完才算合法
                 const std::string_view lengthText(rawResponse.data() + cursor, lengthLineEnd - cursor);
                 std::size_t            chunkLength = 0;
-                const auto [parsedEnd, parseError] =
-                        std::from_chars(lengthText.data(), lengthText.data() + lengthText.size(), chunkLength, 16);
+                const auto [parsedEnd, parseError] = std::from_chars(lengthText.data(), lengthText.data() + lengthText.size(), chunkLength, 16);
                 if (parseError != std::errc() || parsedEnd != lengthText.data() + lengthText.size())
                 {
                     return false;
@@ -137,10 +136,7 @@ namespace AsynGyanis::Net
         bool runSseRequest(const std::string &path, HandlerType handler, std::string &responseText)
         {
             RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
-                                             [&path, handler](Router &router, Core::EventLoop &)
-                                             {
-                                                 router.get(path, handler);
-                                             });
+                                             [&path, handler](Router &router, Core::EventLoop &) { router.get(path, handler); });
 
             if (!fixture.awaitRunning(kWaitTimeout))
             {
@@ -170,14 +166,15 @@ namespace AsynGyanis::Net
         // 钉住头部与帧的逐字节形态：头部必须声明 chunked 与 text/event-stream、不得出现 content-length，
         // 帧必须恰好是「data: hello + 行尾 + 空行」。先等终止块，响应字节完整后再解码
         std::string responseText;
-        const bool  isComplete = runSseRequest("/sse-head",
-                                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                               {
-                                                   SseStream stream(response);
-                                                   co_await stream.sendEvent("hello");
-                                                   co_return;
-                                               },
-                                               responseText);
+        const bool  isComplete = runSseRequest(
+                "/sse-head",
+                [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                {
+                    SseStream stream(response);
+                    co_await stream.sendEvent("hello");
+                    co_return;
+                },
+                responseText);
         ASSERT_TRUE(isComplete) << "流式响应未以终止块收尾：上界 kWaitTimeout，已收到：" << responseText;
 
         const std::size_t headEndPosition = responseText.find("\r\n\r\n");
@@ -198,20 +195,20 @@ namespace AsynGyanis::Net
     {
         // 钉住 data 的拆行：\n、\r\n 与裸 \r 都算换行，每段一行 data:，帧内不残留 \r
         std::string responseText;
-        const bool  isComplete = runSseRequest("/sse-multiline",
-                                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                               {
-                                                   SseStream stream(response);
-                                                   co_await stream.sendEvent("line-one\nline-two\rline-three\r\nline-four");
-                                                   co_return;
-                                               },
-                                               responseText);
+        const bool  isComplete = runSseRequest(
+                "/sse-multiline",
+                [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                {
+                    SseStream stream(response);
+                    co_await stream.sendEvent("line-one\nline-two\rline-three\r\nline-four");
+                    co_return;
+                },
+                responseText);
         ASSERT_TRUE(isComplete) << "流式响应未以终止块收尾：上界 kWaitTimeout，已收到：" << responseText;
 
         std::string payload;
         ASSERT_TRUE(decodeChunkedBody(responseText, payload)) << "响应字节无法按 chunked 解码：" << responseText;
-        EXPECT_EQ(payload, "data: line-one\ndata: line-two\ndata: line-three\ndata: line-four\n\n")
-                << "三种换行都应当拆成独立的 data: 行，实际：" << payload;
+        EXPECT_EQ(payload, "data: line-one\ndata: line-two\ndata: line-three\ndata: line-four\n\n") << "三种换行都应当拆成独立的 data: 行，实际：" << payload;
         EXPECT_EQ(payload.find('\r'), std::string::npos) << "帧内不得残留 CR：" << payload;
     }
 
@@ -219,35 +216,35 @@ namespace AsynGyanis::Net
     {
         // 钉住字段顺序与格式：event → id → retry → data，末尾一个空行
         std::string responseText;
-        const bool  isComplete = runSseRequest("/sse-fields",
-                                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                               {
-                                                   SseStream stream(response);
-                                                   co_await stream.sendEvent("payload-value", "update", "42",
-                                                                             std::chrono::milliseconds{3000});
-                                                   co_return;
-                                               },
-                                               responseText);
+        const bool  isComplete = runSseRequest(
+                "/sse-fields",
+                [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                {
+                    SseStream stream(response);
+                    co_await stream.sendEvent("payload-value", "update", "42", std::chrono::milliseconds{3000});
+                    co_return;
+                },
+                responseText);
         ASSERT_TRUE(isComplete) << "流式响应未以终止块收尾：上界 kWaitTimeout，已收到：" << responseText;
 
         std::string payload;
         ASSERT_TRUE(decodeChunkedBody(responseText, payload)) << "响应字节无法按 chunked 解码：" << responseText;
-        EXPECT_EQ(payload, "event: update\nid: 42\nretry: 3000\ndata: payload-value\n\n")
-                << "字段顺序或格式与约定不符，实际：" << payload;
+        EXPECT_EQ(payload, "event: update\nid: 42\nretry: 3000\ndata: payload-value\n\n") << "字段顺序或格式与约定不符，实际：" << payload;
     }
 
     TEST(SseStream, EmitsEmptyDataLineForEmptyData)
     {
         // 钉住空 data：仍是一条合法事件，产出一条空 data: 行加收尾空行
         std::string responseText;
-        const bool  isComplete = runSseRequest("/sse-empty-data",
-                                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                               {
-                                                   SseStream stream(response);
-                                                   co_await stream.sendEvent("");
-                                                   co_return;
-                                               },
-                                               responseText);
+        const bool  isComplete = runSseRequest(
+                "/sse-empty-data",
+                [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                {
+                    SseStream stream(response);
+                    co_await stream.sendEvent("");
+                    co_return;
+                },
+                responseText);
         ASSERT_TRUE(isComplete) << "流式响应未以终止块收尾：上界 kWaitTimeout，已收到：" << responseText;
 
         std::string payload;
@@ -259,21 +256,21 @@ namespace AsynGyanis::Net
     {
         // 钉住注释帧：`: <注释>\n\n`，注释文本里的换行拆成多条注释行，且不吞掉后续事件的帧
         std::string responseText;
-        const bool  isComplete = runSseRequest("/sse-comment",
-                                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                               {
-                                                   SseStream stream(response);
-                                                   co_await stream.sendComment("ping\npong");
-                                                   co_await stream.sendEvent("after-comment");
-                                                   co_return;
-                                               },
-                                               responseText);
+        const bool  isComplete = runSseRequest(
+                "/sse-comment",
+                [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                {
+                    SseStream stream(response);
+                    co_await stream.sendComment("ping\npong");
+                    co_await stream.sendEvent("after-comment");
+                    co_return;
+                },
+                responseText);
         ASSERT_TRUE(isComplete) << "流式响应未以终止块收尾：上界 kWaitTimeout，已收到：" << responseText;
 
         std::string payload;
         ASSERT_TRUE(decodeChunkedBody(responseText, payload)) << "响应字节无法按 chunked 解码：" << responseText;
-        EXPECT_EQ(payload, ": ping\n: pong\n\ndata: after-comment\n\n")
-                << "注释帧格式不对，或影响了后续事件，实际：" << payload;
+        EXPECT_EQ(payload, ": ping\n: pong\n\ndata: after-comment\n\n") << "注释帧格式不对，或影响了后续事件，实际：" << payload;
     }
 
     TEST(SseStream, RejectsInvalidEventFieldsOversizedFramesAndNegativeRetry)
@@ -281,26 +278,19 @@ namespace AsynGyanis::Net
         // 钉住拒绝面：单行字段含 CR/LF/NUL、整帧超上限（连边界一起对照）、retry 为负。
         // 校验发生在写任何字节之前，因此不需要真实连接，用一句「丢弃字节」的假回调驱动即可
         HttpResponse response;
-        response.setChunkSender(
-                [](const std::string_view) -> Core::Task<bool>
-                {
-                    co_return true;
-                });
+        response.setChunkSender([](const std::string_view) -> Core::Task<bool> { co_return true; });
         SseStream stream(response);
         EXPECT_TRUE(stream.isOpen());
 
         EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "bad\nevent"))), Base::LogicException);
         EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "bad\revent"))), Base::LogicException);
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", std::string_view("bad\0event", 9)))),
-                     Base::LogicException);
+        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", std::string_view("bad\0event", 9)))), Base::LogicException);
         EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "ok", "bad\nid"))), Base::LogicException);
         EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "ok", "bad\rid"))), Base::LogicException);
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "ok", std::string_view("bad\0id", 6)))),
-                     Base::LogicException);
+        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "ok", std::string_view("bad\0id", 6)))), Base::LogicException);
 
         // retry 是用法错误：抛兄弟分支 invalid_argument，与 LogicException 同属 std::logic_error
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", {}, {}, std::chrono::milliseconds{-1}))),
-                     Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", {}, {}, std::chrono::milliseconds{-1}))), Base::InvalidArgumentException);
 
         // 边界对照：帧长度恰好等于上限时接受，多一个字节即拒绝 —— 差异只来自帧长
         const std::string atLimitData(SseStream::kMaximumFrameLength - kDataFrameOverhead, 'x');
@@ -324,34 +314,32 @@ namespace AsynGyanis::Net
         std::atomic<bool> clientObservedFirstEvent{false};
         std::atomic<bool> handlerFinished{false};
 
-        RunningHttpServerFixture fixture(
-                HttpServerLimits{}, std::chrono::milliseconds{50}, {},
-                [&clientObservedFirstEvent, &handlerFinished](Router &router, Core::EventLoop &loop)
-                {
-                    router.get("/sse-progressive",
-                               [&loop, &clientObservedFirstEvent, &handlerFinished](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                    {
-                        SseStream stream(response);
-                        if (!co_await stream.sendEvent("first-event-marker"))
-                        {
-                            handlerFinished.store(true, std::memory_order_release);
-                            co_return;
-                        }
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
+                                         [&clientObservedFirstEvent, &handlerFinished](Router &router, Core::EventLoop &loop)
+                                         {
+                                             router.get("/sse-progressive",
+                                                        [&loop, &clientObservedFirstEvent, &handlerFinished](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            SseStream stream(response);
+                                                            if (!co_await stream.sendEvent("first-event-marker"))
+                                                            {
+                                                                handlerFinished.store(true, std::memory_order_release);
+                                                                co_return;
+                                                            }
 
-                        // 第一帧没被对端读到就不往下写。轮询上限 2 秒（远大于客户端读第一帧的期望
-                        // 耗时）保证实现有问题时用例干净失败，而不是把测试线程挂死
-                        Core::Timer waitTimer(loop);
-                        for (int pollRound = 0;
-                             pollRound < 2000 && !clientObservedFirstEvent.load(std::memory_order_acquire); ++pollRound)
-                        {
-                            co_await waitTimer.waitFor(std::chrono::milliseconds(1));
-                        }
+                                                            // 第一帧没被对端读到就不往下写。轮询上限 2 秒（远大于客户端读第一帧的期望
+                                                            // 耗时）保证实现有问题时用例干净失败，而不是把测试线程挂死
+                                                            Core::Timer waitTimer(loop);
+                                                            for (int pollRound = 0; pollRound < 2000 && !clientObservedFirstEvent.load(std::memory_order_acquire); ++pollRound)
+                                                            {
+                                                                co_await waitTimer.waitFor(std::chrono::milliseconds(1));
+                                                            }
 
-                        co_await stream.sendEvent("second-event-marker");
-                        handlerFinished.store(true, std::memory_order_release);
-                        co_return;
-                    });
-                });
+                                                            co_await stream.sendEvent("second-event-marker");
+                                                            handlerFinished.store(true, std::memory_order_release);
+                                                            co_return;
+                                                        });
+                                         });
 
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
         const std::uint16_t listeningPort = fixture.listeningPort();
@@ -363,15 +351,12 @@ namespace AsynGyanis::Net
         std::string responseText;
         ASSERT_TRUE(client.waitForText(responseText, "data: first-event-marker", kWaitTimeout))
                 << "处理器结束之前没能读到第一条事件（帧被攒到处理器结束才发）：上界 kWaitTimeout，已收到：" << responseText;
-        EXPECT_FALSE(handlerFinished.load(std::memory_order_acquire))
-                << "读到第一条事件时处理器已经结束，无法证明事件是边写边到的";
-        EXPECT_EQ(responseText.find("data: second-event-marker"), std::string::npos)
-                << "读到第一条事件时不该已经出现第二条：" << responseText;
+        EXPECT_FALSE(handlerFinished.load(std::memory_order_acquire)) << "读到第一条事件时处理器已经结束，无法证明事件是边写边到的";
+        EXPECT_EQ(responseText.find("data: second-event-marker"), std::string::npos) << "读到第一条事件时不该已经出现第二条：" << responseText;
 
         // 放行处理器：它接着写第二条事件；这里仍然只等子串，不等终止块
         clientObservedFirstEvent.store(true, std::memory_order_release);
-        ASSERT_TRUE(client.waitForText(responseText, "data: second-event-marker", kWaitTimeout))
-                << "放行之后第二条事件未到达：上界 kWaitTimeout，已收到：" << responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "data: second-event-marker", kWaitTimeout)) << "放行之后第二条事件未到达：上界 kWaitTimeout，已收到：" << responseText;
         EXPECT_NE(responseText.find("content-type: text/event-stream"), std::string::npos) << responseText;
 
         client.closeNow();
@@ -381,7 +366,7 @@ namespace AsynGyanis::Net
     {
         // 钉住短路：writeChunk 返回 false 之后 isOpen() 恒为 false，后续调用既不写连接也不抛异常
         // （对端已经收不到任何东西，抛「参数非法」只会误导调用方）
-        int        writeAttemptCount = 0;
+        int          writeAttemptCount = 0;
         HttpResponse response;
         response.setChunkSender(
                 [&writeAttemptCount](const std::string_view) -> Core::Task<bool>
@@ -411,17 +396,16 @@ namespace AsynGyanis::Net
      */
     TEST(SseStream, HeadRequestOnStreamingRouteGetsHeadersOnly)
     {
-        RunningHttpServerFixture fixture(
-                HttpServerLimits{}, std::chrono::milliseconds{50}, {},
-                [](Router &router, Core::EventLoop &)
-                {
-                    router.get("/sse-head",
-                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                               {
-                                   SseStream stream(response);
-                                   static_cast<void>(co_await stream.sendEvent("must-not-reach-the-wire"));
-                               });
-                });
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/sse-head",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            SseStream stream(response);
+                                                            static_cast<void>(co_await stream.sendEvent("must-not-reach-the-wire"));
+                                                        });
+                                         });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
 
         LoopbackClient client(fixture.listeningPort());
@@ -435,9 +419,7 @@ namespace AsynGyanis::Net
         const std::size_t headerEnd = accumulated.find("\r\n\r\n");
         ASSERT_NE(headerEnd, std::string::npos) << "连响应头部都没收到：" << accumulated;
         EXPECT_NE(accumulated.find("HTTP/1.1 200"), std::string::npos) << "HEAD 也应当拿到状态行";
-        EXPECT_EQ(accumulated.size(), headerEnd + 4U)
-                << "HEAD 的响应在头部之后就结束了，后面不该有任何字节（分块帧与终止块都算正文）："
-                << accumulated.substr(headerEnd + 4U);
+        EXPECT_EQ(accumulated.size(), headerEnd + 4U) << "HEAD 的响应在头部之后就结束了，后面不该有任何字节（分块帧与终止块都算正文）：" << accumulated.substr(headerEnd + 4U);
         EXPECT_EQ(accumulated.find("must-not-reach-the-wire"), std::string::npos) << "SSE 负载不该出现在 HEAD 响应里";
     }
 } // namespace AsynGyanis::Net

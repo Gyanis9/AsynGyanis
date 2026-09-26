@@ -73,8 +73,8 @@ namespace AsynGyanis::Net
     TEST(Traceparent, KeepsUndefinedTraceFlagBitsAndOnlyReadsSampledFromItsOwnBit)
     {
         // flags 取 "0a"：采样位为 0，另一位按规范「原样传递、收到时忽略」
-        const std::string unsampledWithOtherBits = corruptedByReplacing(kCanonicalTraceparent, 54U, 'a');
-        const std::optional<TraceIdentifiers> identifiers = Traceparent::parse(unsampledWithOtherBits);
+        const std::string                     unsampledWithOtherBits = corruptedByReplacing(kCanonicalTraceparent, 54U, 'a');
+        const std::optional<TraceIdentifiers> identifiers            = Traceparent::parse(unsampledWithOtherBits);
         ASSERT_TRUE(identifiers.has_value());
         EXPECT_EQ(identifiers->flags, 0x0AU);
         EXPECT_FALSE(identifiers->isSampled());
@@ -83,7 +83,7 @@ namespace AsynGyanis::Net
     TEST(Traceparent, AcceptsFutureVersionWithAdditionalDashSeparatedFields)
     {
         // 版本 01 并多带一个附加字段：本实现不认识它的含义，但必须整条采信（§3.2.2）
-        const std::string future = "01-" + std::string(kCanonicalTraceId) + "-" + std::string(kCanonicalSpanId) + "-01-extra";
+        const std::string                     future      = "01-" + std::string(kCanonicalTraceId) + "-" + std::string(kCanonicalSpanId) + "-01-extra";
         const std::optional<TraceIdentifiers> identifiers = Traceparent::parse(future);
         ASSERT_TRUE(identifiers.has_value());
         EXPECT_EQ(identifiers->version, 1U);
@@ -109,17 +109,17 @@ namespace AsynGyanis::Net
     TEST(Traceparent, RejectsMalformedValues)
     {
         const std::array<std::string_view, 11> rejected{
-                "",                                                                                          // 空
-                "00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01",                                   // trace-id 少一位
-                "00-4bf92f3577b34da6a3ce929d0e0e47366-00f067aa0ba902b7-01",                                 // trace-id 多一位（截到 55 字节后分隔符错位）
-                "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",                                  // ff 是哨兵，不是版本
-                "00-000000000000000000000000000000000-00f067aa0ba902b7-01",                                 // 全零 trace-id
-                "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",                                  // 全零 parent-id
-                "00_4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",                                  // 分隔符不是 '-'
-                "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01",                                  // 大写十六进制：ABNF 只收小写
-                "00-4bf92f3577b34da6a3ce929d0e0e473g-00f067aa0ba902b7-01",                                  // 非十六进制字符
-                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01x",                                 // 版本 0 之后多一个字符
-                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01,x",                                // 多条同名头部被折成一条带逗号的取值
+                "",                                                          // 空
+                "00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01",    // trace-id 少一位
+                "00-4bf92f3577b34da6a3ce929d0e0e47366-00f067aa0ba902b7-01",  // trace-id 多一位（截到 55 字节后分隔符错位）
+                "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",   // ff 是哨兵，不是版本
+                "00-000000000000000000000000000000000-00f067aa0ba902b7-01",  // 全零 trace-id
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",   // 全零 parent-id
+                "00_4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",   // 分隔符不是 '-'
+                "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01",   // 大写十六进制：ABNF 只收小写
+                "00-4bf92f3577b34da6a3ce929d0e0e473g-00f067aa0ba902b7-01",   // 非十六进制字符
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01x",  // 版本 0 之后多一个字符
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01,x", // 多条同名头部被折成一条带逗号的取值
         };
         for (const std::string_view candidate: rejected)
         {
@@ -131,8 +131,7 @@ namespace AsynGyanis::Net
     {
         for (std::size_t length = 0; length < kTraceparentCanonicalLength; ++length)
         {
-            EXPECT_FALSE(Traceparent::parse(kCanonicalTraceparent.substr(0, length)).has_value())
-                    << "截到 " << length << " 字节仍被采信，定长校验没起作用";
+            EXPECT_FALSE(Traceparent::parse(kCanonicalTraceparent.substr(0, length)).has_value()) << "截到 " << length << " 字节仍被采信，定长校验没起作用";
         }
     }
 
@@ -142,13 +141,13 @@ namespace AsynGyanis::Net
 
     TEST(Traceparent, GeneratesDistinctParseableIdentifiers)
     {
-        constexpr std::size_t kSampleCount = 2000U;
+        constexpr std::size_t           kSampleCount = 2000U;
         std::unordered_set<std::string> seenTraceIds;
         seenTraceIds.reserve(kSampleCount);
         for (std::size_t index = 0; index < kSampleCount; ++index)
         {
-            const TraceIdentifiers generated = Traceparent::generate(true);
-            const std::optional<TraceIdentifiers> reparsed = Traceparent::parse(Traceparent::value(generated));
+            const TraceIdentifiers                generated = Traceparent::generate(true);
+            const std::optional<TraceIdentifiers> reparsed  = Traceparent::parse(Traceparent::value(generated));
             ASSERT_TRUE(reparsed.has_value()) << "自己生成的字段解析不回来：渲染与校验口径分叉了";
             EXPECT_EQ(reparsed->version, 0U);
             EXPECT_TRUE(reparsed->isSampled());
@@ -205,13 +204,13 @@ namespace AsynGyanis::Net
     TEST(TraceState, RejectsMalformedListsWholesale)
     {
         const std::array<std::string_view, 7> rejected{
-                "roto=abc,,other=1",   // 多一个逗号留下空成员
-                ",roto=abc",           // 开头就是分隔符
-                "roto",                // 缺等号
-                "=abc",                // 键为空
-                "ROTO=abc",            // 键含大写：规范里键是小写
-                "congo=abc",           // 点名作废的键
-                "roto=abc,roto=xyz",   // 重复键：整条判废，不留「一半可信」
+                "roto=abc,,other=1", // 多一个逗号留下空成员
+                ",roto=abc",         // 开头就是分隔符
+                "roto",              // 缺等号
+                "=abc",              // 键为空
+                "ROTO=abc",          // 键含大写：规范里键是小写
+                "congo=abc",         // 点名作废的键
+                "roto=abc,roto=xyz", // 重复键：整条判废，不留「一半可信」
         };
         for (const std::string_view candidate: rejected)
         {
@@ -284,11 +283,7 @@ namespace AsynGyanis::Net
         std::vector<std::string> collectHeaderNames(const HttpRequest &request)
         {
             std::vector<std::string> names;
-            request.forEachHeaderField(
-                    [&names](const std::string_view name, const std::string_view)
-                    {
-                        names.push_back(std::string(name));
-                    });
+            request.forEachHeaderField([&names](const std::string_view name, const std::string_view) { names.push_back(std::string(name)); });
             return names;
         }
     } // namespace
@@ -366,7 +361,7 @@ namespace AsynGyanis::Net
             request.reset();
             static_cast<void>(request.setHeader(kTraceparentHeaderName, kCanonicalTraceparent));
             const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
-            thread_local std::string scratch;
+            thread_local std::string              scratch;
             Traceparent::renderInto(scratch, identifiers.value_or(Traceparent::generate(false)));
             static_cast<void>(request.setHeader(kTraceparentHeaderName, scratch));
             return identifiers.has_value() ? 1U : 0U;
@@ -378,8 +373,7 @@ namespace AsynGyanis::Net
             static_cast<void>(normalizeOnce());
         }
 
-        const auto profile = AsynGyanis::TestSupport::measureOperations(
-                AsynGyanis::TestSupport::kMeasurementIterations, normalizeOnce);
+        const auto profile = AsynGyanis::TestSupport::measureOperations(AsynGyanis::TestSupport::kMeasurementIterations, normalizeOnce);
 
         // 与 request-id 同一口径：字段字节写进请求自己的缓冲，读回来不拷一份
         EXPECT_EQ(profile.totalAllocations, 0U) << "读一次上下文或渲染一条字段就碰堆，说明复用缓冲的路子被改坏了";

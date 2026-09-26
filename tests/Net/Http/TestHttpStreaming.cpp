@@ -67,8 +67,7 @@ namespace AsynGyanis::Net
         class HandlerFrameGuard
         {
         public:
-            explicit HandlerFrameGuard(std::atomic<bool> &isAlive) :
-                m_isAlive(isAlive)
+            explicit HandlerFrameGuard(std::atomic<bool> &isAlive) : m_isAlive(isAlive)
             {
                 m_isAlive.store(true, std::memory_order_release);
             }
@@ -94,25 +93,25 @@ namespace AsynGyanis::Net
          * @param parts 依次写出的正文段
          * @details 段间空一小会儿：分段是真被发出去的，而不是在内存里攒成一份整块正文
          */
-        void addStreamingRoute(Router &router, const std::string &path, Core::EventLoop &loop,
-                               const std::array<std::string_view, 3> &parts)
+        void addStreamingRoute(Router &router, const std::string &path, Core::EventLoop &loop, const std::array<std::string_view, 3> &parts)
         {
-            router.get(path, [&loop, parts](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.startChunkedResponse(200);
-                response.setHeader("content-type", "text/event-stream");
+            router.get(path,
+                       [&loop, parts](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.startChunkedResponse(200);
+                           response.setHeader("content-type", "text/event-stream");
 
-                Core::Timer gapTimer(loop);
-                for (const std::string_view part: parts)
-                {
-                    co_await gapTimer.waitFor(std::chrono::milliseconds(5));
-                    if (!co_await response.writeChunk(part))
-                    {
-                        co_return;
-                    }
-                }
-                co_return;
-            });
+                           Core::Timer gapTimer(loop);
+                           for (const std::string_view part: parts)
+                           {
+                               co_await gapTimer.waitFor(std::chrono::milliseconds(5));
+                               if (!co_await response.writeChunk(part))
+                               {
+                                   co_return;
+                               }
+                           }
+                           co_return;
+                       });
         }
     } // namespace
 
@@ -165,8 +164,7 @@ namespace AsynGyanis::Net
         for (const int bodylessStatusCode: {100, 103, 204, 304})
         {
             HttpResponse response;
-            EXPECT_THROW(response.startChunkedResponse(bodylessStatusCode), Base::LogicException)
-                    << "状态码 " << bodylessStatusCode << " 的响应不允许正文，不该被接受";
+            EXPECT_THROW(response.startChunkedResponse(bodylessStatusCode), Base::LogicException) << "状态码 " << bodylessStatusCode << " 的响应不允许正文，不该被接受";
         }
 
         // 方向一：已经设过整块正文，再进流式模式（不报错就等于把这段正文悄悄丢掉）
@@ -191,17 +189,12 @@ namespace AsynGyanis::Net
             FAIL() << "非流式模式下 writeChunk 应当抛异常";
         } catch (const Base::LogicException &exception)
         {
-            EXPECT_NE(std::string(exception.what()).find("startChunkedResponse"), std::string::npos)
-                    << "报错文案应指出先调用 startChunkedResponse：" << exception.what();
+            EXPECT_NE(std::string(exception.what()).find("startChunkedResponse"), std::string::npos) << "报错文案应指出先调用 startChunkedResponse：" << exception.what();
         }
 
         // 头部上线之后再改状态码：改什么都到不了对端，必须报错
         HttpResponse streaming;
-        streaming.setChunkSender(
-                [](const std::string_view) -> Core::Task<bool>
-                {
-                    co_return true;
-                });
+        streaming.setChunkSender([](const std::string_view) -> Core::Task<bool> { co_return true; });
         streaming.startChunkedResponse(200);
         ASSERT_TRUE(driveWriteChunk(streaming.writeChunk("first")));
         EXPECT_TRUE(streaming.hasSentChunkedHead());
@@ -211,12 +204,8 @@ namespace AsynGyanis::Net
     TEST(HttpStreaming, StreamsThreeChunksInOrderOverRealLoopback)
     {
         // 钉住真正流式：一条真实连接上分三次写出的正文，客户端按序拿到三帧并以终止块收尾
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
-                                         [](Router &router, Core::EventLoop &loop)
-                                         {
-                                             addStreamingRoute(router, "/stream", loop,
-                                                               std::array<std::string_view, 3>{"first-part", "second-part", "third-part"});
-                                         });
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {}, [](Router &router, Core::EventLoop &loop)
+                                         { addStreamingRoute(router, "/stream", loop, std::array<std::string_view, 3>{"first-part", "second-part", "third-part"}); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
         EXPECT_FALSE(fixture.startThrew());
 
@@ -227,8 +216,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendText(makeRequestText("GET /stream HTTP/1.1"), kWaitTimeout));
 
         std::string responseText;
-        ASSERT_TRUE(client.waitForText(responseText, "0\r\n\r\n", kWaitTimeout))
-                << "流式响应未以终止块收尾：上界 kWaitTimeout，已收到：" << responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "0\r\n\r\n", kWaitTimeout)) << "流式响应未以终止块收尾：上界 kWaitTimeout，已收到：" << responseText;
 
         EXPECT_NE(responseText.find("HTTP/1.1 200"), std::string::npos) << responseText;
         EXPECT_NE(responseText.find("transfer-encoding: chunked"), std::string::npos) << responseText;
@@ -247,8 +235,7 @@ namespace AsynGyanis::Net
         ASSERT_NE(thirdFramePosition, std::string::npos) << responseText;
         EXPECT_EQ(secondFramePosition, firstFramePosition + kFirstFrame.size()) << "两段之间夹了别的内容：" << responseText;
         EXPECT_EQ(thirdFramePosition, secondFramePosition + kSecondFrame.size()) << "两段之间夹了别的内容：" << responseText;
-        EXPECT_TRUE(responseText.ends_with(std::string(kThirdFrame) + "0\r\n\r\n"))
-                << "末尾应当是最后一段紧跟终止块：" << responseText;
+        EXPECT_TRUE(responseText.ends_with(std::string(kThirdFrame) + "0\r\n\r\n")) << "末尾应当是最后一段紧跟终止块：" << responseText;
 
         client.closeNow();
     }
@@ -265,20 +252,21 @@ namespace AsynGyanis::Net
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
                                          [](Router &router, Core::EventLoop &)
                                          {
-                                             router.get("/trailing", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                             {
-                                                 response.startChunkedResponse(200);
-                                                 // 声明只在头部上线前那一刻有效：字段要在写第一段之前登记完，
-                                                 // 否则对端收到字段却读不到承诺（RFC 9110 §6.5.1 允许严格收端忽略未声明的）
-                                                 static_cast<void>(response.addTrailerField("x-checksum", "abc123"));
-                                                 static_cast<void>(response.addTrailerField("x-rows", "2"));
-                                                 if (!co_await response.writeChunk("first-part"))
-                                                 {
-                                                     co_return;
-                                                 }
-                                                 static_cast<void>(co_await response.writeChunk("second"));
-                                                 co_return;
-                                             });
+                                             router.get("/trailing",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.startChunkedResponse(200);
+                                                            // 声明只在头部上线前那一刻有效：字段要在写第一段之前登记完，
+                                                            // 否则对端收到字段却读不到承诺（RFC 9110 §6.5.1 允许严格收端忽略未声明的）
+                                                            static_cast<void>(response.addTrailerField("x-checksum", "abc123"));
+                                                            static_cast<void>(response.addTrailerField("x-rows", "2"));
+                                                            if (!co_await response.writeChunk("first-part"))
+                                                            {
+                                                                co_return;
+                                                            }
+                                                            static_cast<void>(co_await response.writeChunk("second"));
+                                                            co_return;
+                                                        });
                                          });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
         EXPECT_FALSE(fixture.startThrew());
@@ -293,8 +281,7 @@ namespace AsynGyanis::Net
 
         EXPECT_NE(responseText.find("trailer: x-checksum, x-rows\r\n"), std::string::npos) << "头部缺声明或与到货的字段对不上号：" << responseText;
         EXPECT_EQ(responseText.find("content-length"), std::string::npos) << "流式响应不得写 content-length：" << responseText;
-        EXPECT_TRUE(responseText.ends_with("6\r\nsecond\r\n0\r\nx-checksum: abc123\r\nx-rows: 2\r\n\r\n"))
-                << "两段正文之后依次是终止块、字段段、收尾空行：" << responseText;
+        EXPECT_TRUE(responseText.ends_with("6\r\nsecond\r\n0\r\nx-checksum: abc123\r\nx-rows: 2\r\n\r\n")) << "两段正文之后依次是终止块、字段段、收尾空行：" << responseText;
 
         client.closeNow();
     }
@@ -307,35 +294,33 @@ namespace AsynGyanis::Net
         std::atomic<bool> clientObservedFirstChunk{false};
         std::atomic<bool> handlerFinished{false};
 
-        RunningHttpServerFixture fixture(
-                HttpServerLimits{}, std::chrono::milliseconds{50}, {},
-                [&clientObservedFirstChunk, &handlerFinished](Router &router, Core::EventLoop &loop)
-                {
-                    router.get("/early",
-                               [&loop, &clientObservedFirstChunk, &handlerFinished](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                    {
-                        response.startChunkedResponse(200);
-                        response.setHeader("content-type", "text/event-stream");
-                        if (!co_await response.writeChunk("first-part"))
-                        {
-                            handlerFinished.store(true, std::memory_order_release);
-                            co_return;
-                        }
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
+                                         [&clientObservedFirstChunk, &handlerFinished](Router &router, Core::EventLoop &loop)
+                                         {
+                                             router.get("/early",
+                                                        [&loop, &clientObservedFirstChunk, &handlerFinished](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.startChunkedResponse(200);
+                                                            response.setHeader("content-type", "text/event-stream");
+                                                            if (!co_await response.writeChunk("first-part"))
+                                                            {
+                                                                handlerFinished.store(true, std::memory_order_release);
+                                                                co_return;
+                                                            }
 
-                        // 第一段没被对端读到就不往下写。轮询上限 2 秒（远大于客户端读第一段的
-                        // 期望耗时）保证实现有问题时用例干净失败，而不是把测试线程挂死
-                        Core::Timer waitTimer(loop);
-                        for (int pollRound = 0; pollRound < 2000 && !clientObservedFirstChunk.load(std::memory_order_acquire);
-                             ++pollRound)
-                        {
-                            co_await waitTimer.waitFor(std::chrono::milliseconds(1));
-                        }
+                                                            // 第一段没被对端读到就不往下写。轮询上限 2 秒（远大于客户端读第一段的
+                                                            // 期望耗时）保证实现有问题时用例干净失败，而不是把测试线程挂死
+                                                            Core::Timer waitTimer(loop);
+                                                            for (int pollRound = 0; pollRound < 2000 && !clientObservedFirstChunk.load(std::memory_order_acquire); ++pollRound)
+                                                            {
+                                                                co_await waitTimer.waitFor(std::chrono::milliseconds(1));
+                                                            }
 
-                        co_await response.writeChunk("second-part");
-                        handlerFinished.store(true, std::memory_order_release);
-                        co_return;
-                    });
-                });
+                                                            co_await response.writeChunk("second-part");
+                                                            handlerFinished.store(true, std::memory_order_release);
+                                                            co_return;
+                                                        });
+                                         });
 
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
         const std::uint16_t listeningPort = fixture.listeningPort();
@@ -347,16 +332,13 @@ namespace AsynGyanis::Net
         std::string responseText;
         ASSERT_TRUE(client.waitForText(responseText, "a\r\nfirst-part\r\n", kWaitTimeout))
                 << "处理器结束之前没能读到第一段（正文被攒到处理器结束才发）：上界 kWaitTimeout，已收到：" << responseText;
-        EXPECT_FALSE(handlerFinished.load(std::memory_order_acquire))
-                << "读到第一段时处理器已经结束，无法证明正文是边写边到的";
-        EXPECT_NE(responseText.find("transfer-encoding: chunked"), std::string::npos)
-                << "第一段到达时，承载它的头部也必须已经到达：" << responseText;
+        EXPECT_FALSE(handlerFinished.load(std::memory_order_acquire)) << "读到第一段时处理器已经结束，无法证明正文是边写边到的";
+        EXPECT_NE(responseText.find("transfer-encoding: chunked"), std::string::npos) << "第一段到达时，承载它的头部也必须已经到达：" << responseText;
         EXPECT_EQ(responseText.find("second-part"), std::string::npos) << "读到第一段时不该已经出现第二段";
 
         // 放行处理器：它接着写第二段，会话再补终止块
         clientObservedFirstChunk.store(true, std::memory_order_release);
-        ASSERT_TRUE(client.waitForText(responseText, "0\r\n\r\n", kWaitTimeout))
-                << "第二段与终止块未在时限内到达：上界 kWaitTimeout，已收到：" << responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "0\r\n\r\n", kWaitTimeout)) << "第二段与终止块未在时限内到达：上界 kWaitTimeout，已收到：" << responseText;
         EXPECT_TRUE(handlerFinished.load(std::memory_order_acquire));
         EXPECT_NE(responseText.find("b\r\nsecond-part\r\n"), std::string::npos) << responseText;
         EXPECT_TRUE(responseText.ends_with("0\r\n\r\n")) << responseText;
@@ -371,19 +353,21 @@ namespace AsynGyanis::Net
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
                                          [](Router &router, Core::EventLoop &)
                                          {
-                                             router.get("/stream-once", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                             {
-                                                 response.startChunkedResponse(200);
-                                                 response.setHeader("x-stream", "once");
-                                                 co_await response.writeChunk("streamed-once");
-                                                 co_return;
-                                             });
+                                             router.get("/stream-once",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.startChunkedResponse(200);
+                                                            response.setHeader("x-stream", "once");
+                                                            co_await response.writeChunk("streamed-once");
+                                                            co_return;
+                                                        });
                                              // 只声明进入流式模式、一段都不写：收尾由会话补头部与终止块
-                                             router.get("/empty-stream", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                             {
-                                                 response.startChunkedResponse(200);
-                                                 co_return;
-                                             });
+                                             router.get("/empty-stream",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.startChunkedResponse(200);
+                                                            co_return;
+                                                        });
                                          });
 
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -395,18 +379,15 @@ namespace AsynGyanis::Net
         // 第一条：写了正文段的流式响应
         ASSERT_TRUE(client.sendText(makeRequestText("GET /stream-once HTTP/1.1"), kWaitTimeout));
         std::string responseText;
-        ASSERT_TRUE(client.waitForText(responseText, "0\r\n\r\n", kWaitTimeout))
-                << "流式响应未以终止块收尾：上界 kWaitTimeout，已收到：" << responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "0\r\n\r\n", kWaitTimeout)) << "流式响应未以终止块收尾：上界 kWaitTimeout，已收到：" << responseText;
         const std::size_t firstResponseLength = responseText.size();
         EXPECT_NE(responseText.find("d\r\nstreamed-once\r\n"), std::string::npos) << responseText;
         EXPECT_EQ(responseText.find("content-length"), std::string::npos) << "流式响应不得写 content-length：" << responseText;
-        EXPECT_EQ(responseText.find("connection: close"), std::string::npos)
-                << "消息边界已由终止块给出，不必为流式响应额外宣告 close：" << responseText;
+        EXPECT_EQ(responseText.find("connection: close"), std::string::npos) << "消息边界已由终止块给出，不必为流式响应额外宣告 close：" << responseText;
 
         // 第二条：同一连接上的空流式响应（头部与终止块一起发出）
         ASSERT_TRUE(client.sendText(makeRequestText("GET /empty-stream HTTP/1.1"), kWaitTimeout));
-        ASSERT_TRUE(client.waitForText(responseText, "\r\n\r\n0\r\n\r\n", kWaitTimeout))
-                << "空流式响应未在时限内补出头部与终止块：上界 kWaitTimeout，已收到：" << responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "\r\n\r\n0\r\n\r\n", kWaitTimeout)) << "空流式响应未在时限内补出头部与终止块：上界 kWaitTimeout，已收到：" << responseText;
         const std::string emptyStreamResponse = responseText.substr(firstResponseLength);
         EXPECT_NE(emptyStreamResponse.find("HTTP/1.1 200"), std::string::npos) << emptyStreamResponse;
         EXPECT_NE(emptyStreamResponse.find("transfer-encoding: chunked"), std::string::npos) << emptyStreamResponse;
@@ -414,8 +395,7 @@ namespace AsynGyanis::Net
 
         // 第三条：普通响应照常被服务，证明两条流式消息的边界都没有多算或漏算
         ASSERT_TRUE(client.sendText(makeRequestText("GET /hello HTTP/1.1"), kWaitTimeout));
-        ASSERT_TRUE(client.waitForText(responseText, "served-hello", kWaitTimeout))
-                << "流式响应之后同一条连接上的普通请求没被服务：上界 kWaitTimeout，已收到：" << responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "served-hello", kWaitTimeout)) << "流式响应之后同一条连接上的普通请求没被服务：上界 kWaitTimeout，已收到：" << responseText;
         EXPECT_EQ(countStatusLines(responseText), 3u) << "应当恰好三条响应：" << responseText;
 
         client.closeNow();
@@ -427,15 +407,16 @@ namespace AsynGyanis::Net
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
                                          [](Router &router, Core::EventLoop &)
                                          {
-                                             router.get("/boom-stream", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                             {
-                                                 response.startChunkedResponse(200);
-                                                 // 登记一条尾部字段：异常这一路不该把它补上线（见下面那条断言）
-                                                 static_cast<void>(response.addTrailerField("x-checksum", "abc123"));
-                                                 co_await response.writeChunk("half-body");
-                                                 throw Base::Exception("测试用：流式响应写到一半业务抛异常");
-                                                 co_return;
-                                             });
+                                             router.get("/boom-stream",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.startChunkedResponse(200);
+                                                            // 登记一条尾部字段：异常这一路不该把它补上线（见下面那条断言）
+                                                            static_cast<void>(response.addTrailerField("x-checksum", "abc123"));
+                                                            co_await response.writeChunk("half-body");
+                                                            throw Base::Exception("测试用：流式响应写到一半业务抛异常");
+                                                            co_return;
+                                                        });
                                          });
 
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -446,8 +427,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendText(makeRequestText("GET /boom-stream HTTP/1.1"), kWaitTimeout));
 
         std::string responseText;
-        ASSERT_TRUE(client.waitForText(responseText, "0\r\n\r\n", kWaitTimeout))
-                << "半途抛异常后没有补终止块：上界 kWaitTimeout，已收到：" << responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "0\r\n\r\n", kWaitTimeout)) << "半途抛异常后没有补终止块：上界 kWaitTimeout，已收到：" << responseText;
         EXPECT_NE(responseText.find("HTTP/1.1 200"), std::string::npos) << responseText;
         EXPECT_EQ(responseText.find("500"), std::string::npos) << "头部已上线，不可能再改 500：" << responseText;
         EXPECT_NE(responseText.find("9\r\nhalf-body\r\n"), std::string::npos) << responseText;
@@ -475,33 +455,32 @@ namespace AsynGyanis::Net
         std::atomic<bool> didHandlerObserveWriteFailure{false};
         std::atomic<bool> isHandlerFrameAlive{false};
 
-        RunningHttpServerFixture fixture(
-                limits, std::chrono::milliseconds{50}, {},
-                [&didHandlerObserveWriteFailure, &isHandlerFrameAlive](Router &router, Core::EventLoop &)
-                {
-                    router.get("/abort-mid-stream",
-                               [&didHandlerObserveWriteFailure, &isHandlerFrameAlive](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                    {
-                        const HandlerFrameGuard frameGuard(isHandlerFrameAlive);
-                        response.startChunkedResponse(200);
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{50}, {},
+                                         [&didHandlerObserveWriteFailure, &isHandlerFrameAlive](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/abort-mid-stream",
+                                                        [&didHandlerObserveWriteFailure, &isHandlerFrameAlive](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            const HandlerFrameGuard frameGuard(isHandlerFrameAlive);
+                                                            response.startChunkedResponse(200);
 
-                        // 一直写到对端不再可用为止：对端停读让发送缓冲填满，处理器随即停在等可写上，
-                        // RST 到达时正是这次挂起的写把失败交回来
-                        const std::string payload(64 * 1024, 'x');
-                        for (int round = 0; round < 64; ++round)
-                        {
-                            if (!co_await response.writeChunk(payload))
-                            {
-                                // 连接已不可用：再写一段仍应是 false，绝不换成异常
-                                const bool isRetryChunkWritten = co_await response.writeChunk("retry-after-failure");
-                                EXPECT_FALSE(isRetryChunkWritten) << "连接已不可用，writeChunk 仍应返回 false 而不是抛异常";
-                                didHandlerObserveWriteFailure.store(true, std::memory_order_release);
-                                co_return;
-                            }
-                        }
-                        co_return;
-                    });
-                });
+                                                            // 一直写到对端不再可用为止：对端停读让发送缓冲填满，处理器随即停在等可写上，
+                                                            // RST 到达时正是这次挂起的写把失败交回来
+                                                            const std::string payload(64 * 1024, 'x');
+                                                            for (int round = 0; round < 64; ++round)
+                                                            {
+                                                                if (!co_await response.writeChunk(payload))
+                                                                {
+                                                                    // 连接已不可用：再写一段仍应是 false，绝不换成异常
+                                                                    const bool isRetryChunkWritten = co_await response.writeChunk("retry-after-failure");
+                                                                    EXPECT_FALSE(isRetryChunkWritten) << "连接已不可用，writeChunk 仍应返回 false 而不是抛异常";
+                                                                    didHandlerObserveWriteFailure.store(true, std::memory_order_release);
+                                                                    co_return;
+                                                                }
+                                                            }
+                                                            co_return;
+                                                        });
+                                         });
 
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
         const std::uint16_t listeningPort = fixture.listeningPort();
@@ -517,10 +496,8 @@ namespace AsynGyanis::Net
         client.closeNow();
 
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kDisconnectWaitTimeout)) << "会话在客户端断开后没有收口";
-        EXPECT_TRUE(didHandlerObserveWriteFailure.load(std::memory_order_acquire))
-                << "处理器没有被 writeChunk 的 false 唤醒：传输层失败以异常打穿了处理器，或写侧一直宣称成功";
-        EXPECT_FALSE(isHandlerFrameAlive.load(std::memory_order_acquire))
-                << "会话都收口了，处理器协程仍挂在写等待上";
+        EXPECT_TRUE(didHandlerObserveWriteFailure.load(std::memory_order_acquire)) << "处理器没有被 writeChunk 的 false 唤醒：传输层失败以异常打穿了处理器，或写侧一直宣称成功";
+        EXPECT_FALSE(isHandlerFrameAlive.load(std::memory_order_acquire)) << "会话都收口了，处理器协程仍挂在写等待上";
         EXPECT_FALSE(fixture.startThrew()) << "一条断开的流式连接把服务器主协程带崩了";
     }
 
@@ -549,26 +526,26 @@ namespace AsynGyanis::Net
                 {
                     router.get("/endless",
                                [&isHandlerFrameAlive, &didHandlerObserveWriteFailure, &writtenChunkCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                    {
-                        const HandlerFrameGuard frameGuard(isHandlerFrameAlive);
-                        response.startChunkedResponse(200);
+                               {
+                                   const HandlerFrameGuard frameGuard(isHandlerFrameAlive);
+                                   response.startChunkedResponse(200);
 
-                        // 一直写到对端不再可用为止：断开的信号从 writeChunk 的返回值上来。
-                        // 轮数上限只为兜住极端情况
-                        const std::string payload(64 * 1024, 'x');
-                        for (int round = 0; round < 64; ++round)
-                        {
-                            if (!co_await response.writeChunk(payload))
-                            {
-                                // 传输层失败以 false 抵达：处理器据此收手，并留下可核对的证据
-                                didHandlerObserveWriteFailure.store(true, std::memory_order_release);
-                                break;
-                            }
-                            writtenChunkCount.fetch_add(1, std::memory_order_relaxed);
-                        }
+                                   // 一直写到对端不再可用为止：断开的信号从 writeChunk 的返回值上来。
+                                   // 轮数上限只为兜住极端情况
+                                   const std::string payload(64 * 1024, 'x');
+                                   for (int round = 0; round < 64; ++round)
+                                   {
+                                       if (!co_await response.writeChunk(payload))
+                                       {
+                                           // 传输层失败以 false 抵达：处理器据此收手，并留下可核对的证据
+                                           didHandlerObserveWriteFailure.store(true, std::memory_order_release);
+                                           break;
+                                       }
+                                       writtenChunkCount.fetch_add(1, std::memory_order_relaxed);
+                                   }
 
-                        co_return;
-                    });
+                                   co_return;
+                               });
                 });
 
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -580,8 +557,7 @@ namespace AsynGyanis::Net
 
         // 先确认流真的在往外写：读到头部即说明首段（头部随首段上线）已经发出
         std::string responseText;
-        ASSERT_TRUE(client.waitForText(responseText, "transfer-encoding: chunked", kWaitTimeout))
-                << "流式响应未开始：上界 kWaitTimeout，已收到：" << responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "transfer-encoding: chunked", kWaitTimeout)) << "流式响应未开始：上界 kWaitTimeout，已收到：" << responseText;
         // 64 KiB 的段长写出来就是十六进制的 10000，后面紧跟正文首字节
         ASSERT_TRUE(client.waitForText(responseText, "10000\r\nx", kWaitTimeout)) << "第一段正文没发出来：" << responseText;
 
@@ -591,13 +567,10 @@ namespace AsynGyanis::Net
         // 会话必须收口（写超时 + 清扫兜底），且服务器主协程不得被带崩
         EXPECT_FALSE(fixture.startThrew()) << "一条断开的流式连接把服务器主协程带崩了";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kDisconnectWaitTimeout)) << "会话在客户端断开后没有收口";
-        EXPECT_TRUE(didHandlerObserveWriteFailure.load(std::memory_order_acquire))
-                << "对端已断开，处理器没有观察到 writeChunk 的 false（异常打穿或写侧一直宣称成功）";
+        EXPECT_TRUE(didHandlerObserveWriteFailure.load(std::memory_order_acquire)) << "对端已断开，处理器没有观察到 writeChunk 的 false（异常打穿或写侧一直宣称成功）";
         // 会话收口意味着处理器已被 await 完：此刻它必须已经离开等可写、帧已释放
-        EXPECT_FALSE(isHandlerFrameAlive.load(std::memory_order_acquire))
-                << "会话都收口了，处理器协程仍挂在写等待上：帧与缓冲一直滞留，直到进程退出";
-        EXPECT_LT(writtenChunkCount.load(std::memory_order_relaxed), 64)
-                << "对端已经断开，写侧却宣称 64 段全部成功";
+        EXPECT_FALSE(isHandlerFrameAlive.load(std::memory_order_acquire)) << "会话都收口了，处理器协程仍挂在写等待上：帧与缓冲一直滞留，直到进程退出";
+        EXPECT_LT(writtenChunkCount.load(std::memory_order_relaxed), 64) << "对端已经断开，写侧却宣称 64 段全部成功";
     }
 
     TEST(HttpStreaming, ReleasesWriterParkedOnSweepClose)
@@ -612,30 +585,30 @@ namespace AsynGyanis::Net
         std::atomic<bool> isHandlerFrameAlive{false};
         std::atomic<int>  writtenChunkCount{0};
 
-        RunningHttpServerFixture fixture(
-                limits, std::chrono::milliseconds{50}, {},
-                [&isHandlerFrameAlive, &writtenChunkCount](Router &router, Core::EventLoop &)
-                {
-                    router.get("/endless", [&isHandlerFrameAlive, &writtenChunkCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                    {
-                        const HandlerFrameGuard frameGuard(isHandlerFrameAlive);
-                        response.startChunkedResponse(200);
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{50}, {},
+                                         [&isHandlerFrameAlive, &writtenChunkCount](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/endless",
+                                                        [&isHandlerFrameAlive, &writtenChunkCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            const HandlerFrameGuard frameGuard(isHandlerFrameAlive);
+                                                            response.startChunkedResponse(200);
 
-                        // 一直写到对端读不动为止：这里不会有 RST，写侧只会落在等可写上，
-                        // 直到写超时到期后清扫协程关掉连接
-                        const std::string payload(64 * 1024, 'x');
-                        for (int round = 0; round < 64; ++round)
-                        {
-                            if (!co_await response.writeChunk(payload))
-                            {
-                                break;
-                            }
-                            writtenChunkCount.fetch_add(1, std::memory_order_relaxed);
-                        }
+                                                            // 一直写到对端读不动为止：这里不会有 RST，写侧只会落在等可写上，
+                                                            // 直到写超时到期后清扫协程关掉连接
+                                                            const std::string payload(64 * 1024, 'x');
+                                                            for (int round = 0; round < 64; ++round)
+                                                            {
+                                                                if (!co_await response.writeChunk(payload))
+                                                                {
+                                                                    break;
+                                                                }
+                                                                writtenChunkCount.fetch_add(1, std::memory_order_relaxed);
+                                                            }
 
-                        co_return;
-                    });
-                });
+                                                            co_return;
+                                                        });
+                                         });
 
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
         const std::uint16_t listeningPort = fixture.listeningPort();
@@ -650,14 +623,11 @@ namespace AsynGyanis::Net
 
         // 写超时 200ms + 清扫节拍 50ms：清扫关连接必须把停在等可写上的处理器放出来
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kDisconnectWaitTimeout)) << "慢消费者连接没有被清扫收口";
-        EXPECT_FALSE(isHandlerFrameAlive.load(std::memory_order_acquire))
-                << "清扫关连接之后处理器协程仍挂在写等待上：关闭没有唤醒等可写的等待者";
-        EXPECT_LT(writtenChunkCount.load(std::memory_order_relaxed), 64)
-                << "对端早已停止读取，写侧却宣称 64 段全部成功";
+        EXPECT_FALSE(isHandlerFrameAlive.load(std::memory_order_acquire)) << "清扫关连接之后处理器协程仍挂在写等待上：关闭没有唤醒等可写的等待者";
+        EXPECT_LT(writtenChunkCount.load(std::memory_order_relaxed), 64) << "对端早已停止读取，写侧却宣称 64 段全部成功";
         // 收口的归因也要落账：这类连接是「写不出去」而不是「没人来取」，缺了这一条，运维在
         // /metrics 上看到的仍是 timeout_closed 之外的沉默流失
-        EXPECT_GE(fixture.server().stats().timeoutClosedCount, 1u)
-                << "写超时把这条慢消费者收口了，却没记进 timeout_closed：观测口径漏了这一类";
+        EXPECT_GE(fixture.server().stats().timeoutClosedCount, 1u) << "写超时把这条慢消费者收口了，却没记进 timeout_closed：观测口径漏了这一类";
         EXPECT_FALSE(fixture.startThrew()) << "把写侧卡住的连接收口时把服务器主协程带崩了";
     }
 
@@ -679,39 +649,34 @@ namespace AsynGyanis::Net
 
         RunningHttpServerFixture fixture(
                 limits, std::chrono::milliseconds{50}, {},
-                [&logCapture, &didHandlerObserveWriteFailure, &didRetryReturnFalse, &logCountAtFailure, &logCountAfterRetry](
-                        Router &router, Core::EventLoop &)
+                [&logCapture, &didHandlerObserveWriteFailure, &didRetryReturnFalse, &logCountAtFailure, &logCountAfterRetry](Router &router, Core::EventLoop &)
                 {
                     router.get("/abort-mid-stream",
-                               [&logCapture, &didHandlerObserveWriteFailure, &didRetryReturnFalse, &logCountAtFailure, &logCountAfterRetry](
-                                       HttpRequest &, HttpResponse &response) -> Core::Task<>
-                    {
-                        response.startChunkedResponse(200);
+                               [&logCapture, &didHandlerObserveWriteFailure, &didRetryReturnFalse, &logCountAtFailure, &logCountAfterRetry](HttpRequest &,
+                                                                                                                                            HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.startChunkedResponse(200);
 
-                        // 一直写到对端不再可用为止：对端停读让发送缓冲填满，处理器随即停在等可写上，
-                        // RST 到达时正是这次挂起的写把失败交回来
-                        const std::string payload(64 * 1024, 'x');
-                        for (int round = 0; round < 64; ++round)
-                        {
-                            if (!co_await response.writeChunk(payload))
-                            {
-                                // 失败那一刻：同一次失败只应留下一条日志（异常一条 + 非正值一条就该是 2）
-                                logCountAtFailure.store(
-                                        static_cast<int>(logCapture.countContaining(kResponseWriteFailureFragment)),
-                                        std::memory_order_release);
-                                didHandlerObserveWriteFailure.store(true, std::memory_order_release);
+                                   // 一直写到对端不再可用为止：对端停读让发送缓冲填满，处理器随即停在等可写上，
+                                   // RST 到达时正是这次挂起的写把失败交回来
+                                   const std::string payload(64 * 1024, 'x');
+                                   for (int round = 0; round < 64; ++round)
+                                   {
+                                       if (!co_await response.writeChunk(payload))
+                                       {
+                                           // 失败那一刻：同一次失败只应留下一条日志（异常一条 + 非正值一条就该是 2）
+                                           logCountAtFailure.store(static_cast<int>(logCapture.countContaining(kResponseWriteFailureFragment)), std::memory_order_release);
+                                           didHandlerObserveWriteFailure.store(true, std::memory_order_release);
 
-                                // 本侧已收口：再次发送仍以 false 返回，且不得新增日志
-                                const bool isRetryChunkWritten = co_await response.writeChunk("retry-after-failure");
-                                logCountAfterRetry.store(
-                                        static_cast<int>(logCapture.countContaining(kResponseWriteFailureFragment)),
-                                        std::memory_order_release);
-                                didRetryReturnFalse.store(!isRetryChunkWritten, std::memory_order_release);
-                                co_return;
-                            }
-                        }
-                        co_return;
-                    });
+                                           // 本侧已收口：再次发送仍以 false 返回，且不得新增日志
+                                           const bool isRetryChunkWritten = co_await response.writeChunk("retry-after-failure");
+                                           logCountAfterRetry.store(static_cast<int>(logCapture.countContaining(kResponseWriteFailureFragment)), std::memory_order_release);
+                                           didRetryReturnFalse.store(!isRetryChunkWritten, std::memory_order_release);
+                                           co_return;
+                                       }
+                                   }
+                                   co_return;
+                               });
                 });
 
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -729,19 +694,16 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(fixture.awaitConnectionsDrained(kDisconnectWaitTimeout)) << "会话在客户端断开后没有收口";
         ASSERT_TRUE(didHandlerObserveWriteFailure.load(std::memory_order_acquire)) << "处理器没有观察到 writeChunk 的 false";
-        EXPECT_EQ(logCountAtFailure.load(std::memory_order_acquire), 1)
-                << "同一次传输失败只应记一条日志，实际条数见上：异常路径与非正返回值路径各记一条就会是 2";
+        EXPECT_EQ(logCountAtFailure.load(std::memory_order_acquire), 1) << "同一次传输失败只应记一条日志，实际条数见上：异常路径与非正返回值路径各记一条就会是 2";
         EXPECT_TRUE(didRetryReturnFalse.load(std::memory_order_acquire)) << "本侧收口之后的再次发送仍应返回 false";
-        EXPECT_EQ(logCountAfterRetry.load(std::memory_order_acquire), logCountAtFailure.load(std::memory_order_acquire))
-                << "本侧收口之后的短路返回不得新增日志";
+        EXPECT_EQ(logCountAfterRetry.load(std::memory_order_acquire), logCountAtFailure.load(std::memory_order_acquire)) << "本侧收口之后的短路返回不得新增日志";
 
         // 会话收尾补终止块同样走这条已判死的连接，因此整条断开连接只留一条日志
         EXPECT_EQ(logCapture.countContaining(kResponseWriteFailureFragment), 1u) << "会话收尾阶段把同一件事又记了一遍";
         EXPECT_EQ(logCapture.countContaining("请停止继续写并收口连接"), 1u) << "唯一那条日志必须是可操作的中文文案";
         // 连接计数与日志共用同一个翻转点：一次失败记一条，重试与会话收尾的短路返回都不再加。
         // 本用例只有一条连接，因此这个读数同时是「正常写出的连接不误计」的反向证据
-        EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u)
-                << "写出失败的连接计数与日志口径不一致：同一次失败被记了多次，或一次都没记上";
+        EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u) << "写出失败的连接计数与日志口径不一致：同一次失败被记了多次，或一次都没记上";
         EXPECT_FALSE(fixture.startThrew()) << "一条断开的流式连接把服务器主协程带崩了";
     }
 } // namespace AsynGyanis::Net

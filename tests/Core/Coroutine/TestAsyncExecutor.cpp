@@ -22,9 +22,9 @@
 #include <chrono>
 #include <future>
 #include <string>
-#include <vector>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Core
 {
@@ -36,9 +36,9 @@ namespace AsynGyanis::Core
         /// 一次提交的观测结果。就绪标记最后发布：finished 为真后另两个字段才可读
         struct SubmitProbe
         {
-            std::atomic<int> value{0};              ///< co_await 拿到的任务返回值
-            std::atomic<std::thread::id> resumeThread{}; ///< 恢复点所在线程
-            std::atomic<bool> finished{false};      ///< 「恢复之后的代码跑完了」：以 release 发布的就绪标记
+            std::atomic<int>             value{0};        ///< co_await 拿到的任务返回值
+            std::atomic<std::thread::id> resumeThread{};  ///< 恢复点所在线程
+            std::atomic<bool>            finished{false}; ///< 「恢复之后的代码跑完了」：以 release 发布的就绪标记
         };
 
         /**
@@ -50,19 +50,17 @@ namespace AsynGyanis::Core
          * @param workDone 工作线程跑完任务时置真
          * @param releaseGate 工作线程在此等待，由用例决定何时放行
          */
-        Core::Task<void> probeSubmit(AsyncExecutor &executor, Core::EventLoop &completionLoop, SubmitProbe &probe,
-                                     std::atomic<bool> &workStarted, std::atomic<bool> &workDone,
+        Core::Task<void> probeSubmit(AsyncExecutor &executor, Core::EventLoop &completionLoop, SubmitProbe &probe, std::atomic<bool> &workStarted, std::atomic<bool> &workDone,
                                      const std::shared_future<void> &releaseGate)
         {
-            const int result = co_await executor.submit<int>(
-                    completionLoop,
-                    [&workStarted, &workDone, releaseGate]()
-                    {
-                        workStarted.store(true, std::memory_order_release);
-                        releaseGate.wait();
-                        workDone.store(true, std::memory_order_release);
-                        return 42;
-                    });
+            const int result = co_await executor.submit<int>(completionLoop,
+                                                             [&workStarted, &workDone, releaseGate]()
+                                                             {
+                                                                 workStarted.store(true, std::memory_order_release);
+                                                                 releaseGate.wait();
+                                                                 workDone.store(true, std::memory_order_release);
+                                                                 return 42;
+                                                             });
 
             // 载荷先写、就绪标记最后以 release 发布：等待方以 acquire 配对后才能读到上面的值
             probe.value.store(result, std::memory_order_relaxed);
@@ -91,12 +89,12 @@ namespace AsynGyanis::Core
         {
             AsyncExecutor executor(1);
 
-            SubmitProbe probe;
+            SubmitProbe     probe;
             EventLoopThread loopThread; // 声明在探针之后：销毁顺序因此是先 join 循环、后销毁探针
 
-            std::atomic<bool> workStarted{false};
-            std::atomic<bool> workDone{false};
-            std::promise<void> releaseSignal;
+            std::atomic<bool>              workStarted{false};
+            std::atomic<bool>              workDone{false};
+            std::promise<void>             releaseSignal;
             const std::shared_future<void> releaseGate = releaseSignal.get_future().share();
 
             Core::Task<void> driver = probeSubmit(executor, loopThread.loop(), probe, workStarted, workDone, releaseGate);
@@ -104,21 +102,13 @@ namespace AsynGyanis::Core
             driver.handle().resume();
             loopThread.parkDriver(std::move(driver));
 
-            requireReached([&workStarted]()
-            {
-                return workStarted.load(std::memory_order_acquire);
-            }, "工作线程没接到任务");
+            requireReached([&workStarted]() { return workStarted.load(std::memory_order_acquire); }, "工作线程没接到任务");
             releaseSignal.set_value();
 
-            requireReached([&probe]()
-            {
-                return probe.finished.load(std::memory_order_acquire);
-            }, "协程没被恢复");
+            requireReached([&probe]() { return probe.finished.load(std::memory_order_acquire); }, "协程没被恢复");
             EXPECT_EQ(probe.value.load(std::memory_order_relaxed), 42);
-            EXPECT_EQ(probe.resumeThread.load(std::memory_order_relaxed), loopThread.threadId())
-                    << "恢复没落在指定事件循环的线程上";
-            EXPECT_NE(probe.resumeThread.load(std::memory_order_relaxed), std::this_thread::get_id())
-                    << "恢复不该发生在调用线程上";
+            EXPECT_EQ(probe.resumeThread.load(std::memory_order_relaxed), loopThread.threadId()) << "恢复没落在指定事件循环的线程上";
+            EXPECT_NE(probe.resumeThread.load(std::memory_order_relaxed), std::this_thread::get_id()) << "恢复不该发生在调用线程上";
         }
 
         /**
@@ -135,29 +125,23 @@ namespace AsynGyanis::Core
             // 循环声明在执行器之前：成员逆序析构因此是先 join 全部工作线程、后销毁循环，
             // 不会留下「工作线程正往已析构的循环里投递恢复」的窗口
             Core::EventLoop loop; // 不启动：恢复只排进队列，不会有人执行
-            AsyncExecutor executor(1);
+            AsyncExecutor   executor(1);
 
-            SubmitProbe        probe;
-            std::atomic<bool>  workStarted{false};
-            std::atomic<bool>  workDone{false};
-            std::promise<void> releaseSignal;
+            SubmitProbe                    probe;
+            std::atomic<bool>              workStarted{false};
+            std::atomic<bool>              workDone{false};
+            std::promise<void>             releaseSignal;
             const std::shared_future<void> releaseGate = releaseSignal.get_future().share();
 
             {
                 Core::Task<void> driver = probeSubmit(executor, loop, probe, workStarted, workDone, releaseGate);
                 driver.handle().resume(); // 提交：任务入队、协程挂起
-                requireReached([&workStarted]()
-                {
-                    return workStarted.load(std::memory_order_acquire);
-                }, "工作线程没接到任务");
+                requireReached([&workStarted]() { return workStarted.load(std::memory_order_acquire); }, "工作线程没接到任务");
                 // driver 在本作用域末尾析构 → 协程帧连同等待体一起销毁，堆状态里的句柄随之作废
             }
 
             releaseSignal.set_value(); // 工作线程此刻才交付结果：它取到的必须是空句柄
-            requireReached([&workDone]()
-            {
-                return workDone.load(std::memory_order_acquire);
-            }, "工作线程没跑完任务");
+            requireReached([&workDone]() { return workDone.load(std::memory_order_acquire); }, "工作线程没跑完任务");
 
             // 队列里若真留着那次恢复，runAll() 这一刻就会踩已释放的帧；空操作则什么都不会发生
             loop.scheduler().runAll();
@@ -174,29 +158,22 @@ namespace AsynGyanis::Core
         TEST(AsyncExecutor, AbandonedSubmissionDoesNotStrandTheWorker)
         {
             Core::EventLoop loop; // 同上：先 join 工作线程再销毁循环
-            AsyncExecutor executor(1);
+            AsyncExecutor   executor(1);
 
-            SubmitProbe        abandonedProbe;
-            std::atomic<bool>  abandonedStarted{false};
-            std::atomic<bool>  abandonedDone{false};
-            std::promise<void> abandonGate;
+            SubmitProbe                    abandonedProbe;
+            std::atomic<bool>              abandonedStarted{false};
+            std::atomic<bool>              abandonedDone{false};
+            std::promise<void>             abandonGate;
             const std::shared_future<void> abandonedReleaseGate = abandonGate.get_future().share();
 
             {
-                Core::Task<void> driver = probeSubmit(executor, loop, abandonedProbe, abandonedStarted, abandonedDone,
-                                                      abandonedReleaseGate);
+                Core::Task<void> driver = probeSubmit(executor, loop, abandonedProbe, abandonedStarted, abandonedDone, abandonedReleaseGate);
                 driver.handle().resume();
-                requireReached([&abandonedStarted]()
-                {
-                    return abandonedStarted.load(std::memory_order_acquire);
-                }, "工作线程没接到被丢弃的任务");
+                requireReached([&abandonedStarted]() { return abandonedStarted.load(std::memory_order_acquire); }, "工作线程没接到被丢弃的任务");
                 // 出作用域即销毁帧，句柄留在堆状态里作废——与下一条用例同一收口形态
             }
             abandonGate.set_value();
-            requireReached([&abandonedDone]()
-            {
-                return abandonedDone.load(std::memory_order_acquire);
-            }, "工作线程没跑完被丢弃的任务");
+            requireReached([&abandonedDone]() { return abandonedDone.load(std::memory_order_acquire); }, "工作线程没跑完被丢弃的任务");
 
             // 第二条的门禁在提交前就打开：这条只需要证明「还能跑完」
             std::promise<void> followUpSignal;
@@ -206,17 +183,17 @@ namespace AsynGyanis::Core
             SubmitProbe       followUpProbe;
             std::atomic<bool> followUpStarted{false};
             std::atomic<bool> followUpDone{false};
-            Core::Task<void>  followUp = probeSubmit(executor, loop, followUpProbe, followUpStarted, followUpDone,
-                                                     followUpGate);
+            Core::Task<void>  followUp = probeSubmit(executor, loop, followUpProbe, followUpStarted, followUpDone, followUpGate);
             followUp.handle().resume();
 
             // 工作线程先置 workDone 再投递恢复，因此必须在轮询里反复 runAll() 把恢复取出来，
             // 不能等到 followUpDone 就断言已经恢复完（那是赌两个线程恰好重叠）
-            const bool isFollowUpResumed = waitForCondition([&loop, &followUpProbe]()
-            {
-                loop.scheduler().runAll();
-                return followUpProbe.finished.load(std::memory_order_acquire);
-            });
+            const bool isFollowUpResumed = waitForCondition(
+                    [&loop, &followUpProbe]()
+                    {
+                        loop.scheduler().runAll();
+                        return followUpProbe.finished.load(std::memory_order_acquire);
+                    });
             ASSERT_TRUE(isFollowUpResumed) << "被丢弃的提交占住了工作线程，后续提交没能完成";
             EXPECT_EQ(followUpProbe.value.load(std::memory_order_relaxed), 42);
             EXPECT_FALSE(abandonedProbe.finished.load(std::memory_order_acquire)) << "被丢弃的那次提交不该产出结果";
@@ -236,8 +213,7 @@ namespace AsynGyanis::Core
 
         if (const std::size_t allowedCoreCount = Platform::CpuAffinity::availableCoreCount(); allowedCoreCount > 0)
         {
-            EXPECT_LE(executor.workerCount(), allowedCoreCount)
-                    << "工作线程数超出了本进程被允许的核集合，配额内的 CPU 会被从事件循环手里抢走";
+            EXPECT_LE(executor.workerCount(), allowedCoreCount) << "工作线程数超出了本进程被允许的核集合，配额内的 CPU 会被从事件循环手里抢走";
         }
     }
     /**
@@ -253,28 +229,26 @@ namespace AsynGyanis::Core
         EventLoopThread runner;
         ASSERT_TRUE(runner.waitUntilRunning());
 
-        AsyncExecutor   executor(1);
+        AsyncExecutor     executor(1);
         std::atomic<bool> isGateOpen{false};
         std::atomic<bool> isGateKeeperRunning{false};
 
-        Task<int> gateKeeper = executor.submit<int>(runner.loop(), [&isGateOpen, &isGateKeeperRunning]()
-        {
-            isGateKeeperRunning.store(true, std::memory_order_release);
-            while (!isGateOpen.load(std::memory_order_acquire))
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds{1});
-            }
-            return 0;
-        });
+        Task<int> gateKeeper = executor.submit<int>(runner.loop(),
+                                                    [&isGateOpen, &isGateKeeperRunning]()
+                                                    {
+                                                        isGateKeeperRunning.store(true, std::memory_order_release);
+                                                        while (!isGateOpen.load(std::memory_order_acquire))
+                                                        {
+                                                            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                                        }
+                                                        return 0;
+                                                    });
         gateKeeper.handle().resume();
-        ASSERT_TRUE(waitForCondition([&isGateKeeperRunning]
-                                     {
-                                         return isGateKeeperRunning.load(std::memory_order_acquire);
-                                     }))
+        ASSERT_TRUE(waitForCondition([&isGateKeeperRunning] { return isGateKeeperRunning.load(std::memory_order_acquire); }))
                 << "门闩任务没被那唯一的工作线程取走，后面的排队数就说不清是谁占的";
 
-        constexpr std::size_t kCapacity = AsyncExecutor::kMaximumPendingTasksPerWorker;
-        std::vector<Task<int> > heldTasks;
+        constexpr std::size_t  kCapacity = AsyncExecutor::kMaximumPendingTasksPerWorker;
+        std::vector<Task<int>> heldTasks;
         heldTasks.reserve(kCapacity + 8);
         std::size_t rejectedCount = 0;
         std::string firstRejectionText;
@@ -304,15 +278,10 @@ namespace AsynGyanis::Core
 
         EXPECT_EQ(executor.pendingTaskCount(), kCapacity) << "队列长度越过了每线程上限：排队仍然是无界的";
         EXPECT_EQ(rejectedCount, 8U) << "超出上限的提交数应当全部被拒";
-        EXPECT_NE(firstRejectionText.find("排队已满"), std::string::npos)
-                << "拒绝原因要说清是排队满了（该降并发），文案是：" + firstRejectionText;
+        EXPECT_NE(firstRejectionText.find("排队已满"), std::string::npos) << "拒绝原因要说清是排队满了（该降并发），文案是：" + firstRejectionText;
 
         isGateOpen.store(true, std::memory_order_release);
-        ASSERT_TRUE(waitForCondition([&executor]
-                                     {
-                                         return executor.pendingTaskCount() == 0;
-                                     }))
-                << "放行之后排队的任务没有做完";
+        ASSERT_TRUE(waitForCondition([&executor] { return executor.pendingTaskCount() == 0; })) << "放行之后排队的任务没有做完";
         // 帧的销毁必须晚于循环线程收手（见 EventLoopThread 的销毁纪律）：先显式 join 再让上面
         // 那批 Task 出作用域，否则收尾里可能有人在 resume 已经消亡的帧
         runner.join();

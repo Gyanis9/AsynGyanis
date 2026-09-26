@@ -31,13 +31,12 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    QuicCongestionControl::QuicCongestionControl(const std::size_t maximumDatagramByteLength) noexcept
-        : m_maximumDatagramByteLength(maximumDatagramByteLength),
-          m_congestionWindowByteLength(std::min(kInitialWindowDatagramMultiple * maximumDatagramByteLength,
-                                               std::max(kMinimumWindowDatagramMultiple * maximumDatagramByteLength,
-                                                        kInitialWindowFloorByteLength))),
-          // 阈值先取「无穷大」，慢启动这才从第一个确认开始涨（§7.3.1）
-          m_slowStartThresholdByteLength(std::numeric_limits<std::size_t>::max())
+    QuicCongestionControl::QuicCongestionControl(const std::size_t maximumDatagramByteLength) noexcept :
+        m_maximumDatagramByteLength(maximumDatagramByteLength),
+        m_congestionWindowByteLength(std::min(kInitialWindowDatagramMultiple * maximumDatagramByteLength,
+                                              std::max(kMinimumWindowDatagramMultiple * maximumDatagramByteLength, kInitialWindowFloorByteLength))),
+        // 阈值先取「无穷大」，慢启动这才从第一个确认开始涨（§7.3.1）
+        m_slowStartThresholdByteLength(std::numeric_limits<std::size_t>::max())
     {
     }
 
@@ -50,12 +49,10 @@ namespace AsynGyanis::Net
         }
     }
 
-    void QuicCongestionControl::onCongestionUpdate(const std::vector<QuicSentPacketInfo> &acknowledged,
-                                                  const std::vector<QuicSentPacketInfo> &lost,
-                                                  const QuicTime eventTime)
+    void QuicCongestionControl::onCongestionUpdate(const std::vector<QuicSentPacketInfo> &acknowledged, const std::vector<QuicSentPacketInfo> &lost, const QuicTime eventTime)
     {
         std::size_t acknowledgedByteCount = 0;
-        for (const QuicSentPacketInfo &packet : acknowledged)
+        for (const QuicSentPacketInfo &packet: acknowledged)
         {
             if (!packet.isAckEliciting)
             {
@@ -64,7 +61,7 @@ namespace AsynGyanis::Net
             m_bytesInFlight = saturatingSubtract(m_bytesInFlight, packet.byteCount);
             acknowledgedByteCount += packet.byteCount;
         }
-        for (const QuicSentPacketInfo &packet : lost)
+        for (const QuicSentPacketInfo &packet: lost)
         {
             if (packet.isAckEliciting)
             {
@@ -74,9 +71,7 @@ namespace AsynGyanis::Net
 
         // §7.3.2：恢复期在「恢复期之后发出的包被确认」时结束。先看这一帧有没有把恢复期结掉，
         // 再判新的丢包，否则同一轮里既出圈又进圈会被漏掉
-        if (m_recoveryStartTime.has_value() &&
-            std::ranges::any_of(acknowledged, [this](const QuicSentPacketInfo &packet)
-            { return packet.timeSent > *m_recoveryStartTime; }))
+        if (m_recoveryStartTime.has_value() && std::ranges::any_of(acknowledged, [this](const QuicSentPacketInfo &packet) { return packet.timeSent > *m_recoveryStartTime; }))
         {
             m_recoveryStartTime = std::nullopt;
         }
@@ -84,10 +79,9 @@ namespace AsynGyanis::Net
         if (!lost.empty() && !isInRecovery())
         {
             // 已经在恢复期里就不再二次降窗：一轮拥塞只降一次（§7.3.2）
-            m_slowStartThresholdByteLength = std::max(m_congestionWindowByteLength / kLossReductionDivisor,
-                                                      kMinimumWindowDatagramMultiple * m_maximumDatagramByteLength);
-            m_congestionWindowByteLength = m_slowStartThresholdByteLength;
-            m_recoveryStartTime = eventTime;
+            m_slowStartThresholdByteLength = std::max(m_congestionWindowByteLength / kLossReductionDivisor, kMinimumWindowDatagramMultiple * m_maximumDatagramByteLength);
+            m_congestionWindowByteLength   = m_slowStartThresholdByteLength;
+            m_recoveryStartTime            = eventTime;
             return;
         }
 
@@ -105,15 +99,13 @@ namespace AsynGyanis::Net
             return;
         }
         // 拥塞避免：每个「确认掉整个窗口」的时间才涨一个数据报，整数除法向下取整，最少 1 字节
-        m_congestionWindowByteLength += std::max<std::size_t>(1,
-                                                             m_maximumDatagramByteLength * acknowledgedByteCount /
-                                                             m_congestionWindowByteLength);
+        m_congestionWindowByteLength += std::max<std::size_t>(1, m_maximumDatagramByteLength * acknowledgedByteCount / m_congestionWindowByteLength);
     }
 
     void QuicCongestionControl::onPacketsDiscarded(const std::vector<QuicSentPacketInfo> &discardedPackets) noexcept
     {
         // 只销账不涨窗：退休一个空间不是「网络变好了」的信号，把它当确认来涨窗口会让拥塞控制白送一段
-        for (const QuicSentPacketInfo &packet : discardedPackets)
+        for (const QuicSentPacketInfo &packet: discardedPackets)
         {
             if (packet.isAckEliciting)
             {
@@ -138,8 +130,7 @@ namespace AsynGyanis::Net
         {
             return QuicCongestionPhase::Recovery;
         }
-        return m_congestionWindowByteLength < m_slowStartThresholdByteLength ? QuicCongestionPhase::SlowStart
-                                                                            : QuicCongestionPhase::CongestionAvoidance;
+        return m_congestionWindowByteLength < m_slowStartThresholdByteLength ? QuicCongestionPhase::SlowStart : QuicCongestionPhase::CongestionAvoidance;
     }
 
     std::size_t QuicCongestionControl::congestionWindowByteLength() const noexcept

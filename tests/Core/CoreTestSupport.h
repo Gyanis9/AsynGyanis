@@ -13,11 +13,11 @@
 
 #pragma once
 
+#include "CommonTestSupport.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoWatcher.h"
-#include "CommonTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -122,16 +122,12 @@ namespace AsynGyanis::Core::TestSupport
      * @return Task<void> 驱动协程
      */
     template<typename ResultType>
-    Task<void> collectTask(Task<ResultType> inner,
-                           std::optional<ResultType> &value,
-                           std::exception_ptr &error,
-                           std::atomic<bool> &finished)
+    Task<void> collectTask(Task<ResultType> inner, std::optional<ResultType> &value, std::exception_ptr &error, std::atomic<bool> &finished)
     {
         try
         {
             value.emplace(co_await std::move(inner));
-        }
-        catch (...)
+        } catch (...)
         {
             // 任务异常在此收敛：驱动协程本身不向上抛，调用线程只需看 error 是否被写入
             error = std::current_exception();
@@ -153,12 +149,7 @@ namespace AsynGyanis::Core::TestSupport
     {
     public:
         /// 自持模式：内建事件循环，随本对象销毁；适合「用例只关心一个后台循环」的场景
-        EventLoopThread() :
-            m_ownedLoop(std::make_unique<EventLoop>()), m_loop(m_ownedLoop.get()),
-            m_thread([this]()
-            {
-                runLoopGuarded();
-            })
+        EventLoopThread() : m_ownedLoop(std::make_unique<EventLoop>()), m_loop(m_ownedLoop.get()), m_thread([this]() { runLoopGuarded(); })
         {
         }
 
@@ -166,11 +157,7 @@ namespace AsynGyanis::Core::TestSupport
          * @brief 借用模式：只驱动调用方给出的事件循环，不接管它的生命周期
          * @param loop 待驱动的事件循环；调用方必须保证它比本对象活得久
          */
-        explicit EventLoopThread(EventLoop &loop) :
-            m_loop(&loop), m_thread([this]()
-            {
-                runLoopGuarded();
-            })
+        explicit EventLoopThread(EventLoop &loop) : m_loop(&loop), m_thread([this]() { runLoopGuarded(); })
         {
         }
 
@@ -232,10 +219,7 @@ namespace AsynGyanis::Core::TestSupport
          */
         [[nodiscard]] bool waitUntilRunning() const
         {
-            return waitForCondition([this]()
-            {
-                return m_loop->isRunning();
-            });
+            return waitForCondition([this]() { return m_loop->isRunning(); });
         }
 
         /**
@@ -270,10 +254,7 @@ namespace AsynGyanis::Core::TestSupport
             Task<void> driver = collectTask<ResultType>(std::move(task), completed.value, completed.error, finishedFlag);
             m_loop->scheduler().scheduleRemote(driver.handle());
 
-            completed.finished = waitForCondition([&finishedFlag]()
-            {
-                return finishedFlag.load(std::memory_order_acquire);
-            });
+            completed.finished = waitForCondition([&finishedFlag]() { return finishedFlag.load(std::memory_order_acquire); });
 
             // 帧的销毁推迟到事件循环线程 join 之后（见类注释的成员声明顺序）
             m_driverTasks.push_back(std::move(driver));
@@ -316,8 +297,8 @@ namespace AsynGyanis::Core::TestSupport
         }
 
         std::unique_ptr<EventLoop> m_ownedLoop;     ///< 自持模式下的事件循环；借用模式下为空
-        EventLoop *                m_loop{nullptr}; ///< 实际驱动的事件循环，恒非空
-        std::vector<Task<void> >   m_driverTasks;   ///< 驱动协程：声明在 m_thread 之前，故晚于 join 销毁
+        EventLoop                 *m_loop{nullptr}; ///< 实际驱动的事件循环，恒非空
+        std::vector<Task<void>>    m_driverTasks;   ///< 驱动协程：声明在 m_thread 之前，故晚于 join 销毁
         std::jthread               m_thread;        ///< 跑 m_loop->run() 的后台线程，析构自动 join
     };
 } // namespace AsynGyanis::Core::TestSupport

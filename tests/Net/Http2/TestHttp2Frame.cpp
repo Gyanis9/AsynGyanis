@@ -56,8 +56,7 @@ namespace AsynGyanis::Net
          * @param streamIdField 流号字段的 32 位原始取值（含 R 位）
          * @return std::string 9 字节帧头
          */
-        std::string makeFrameHeaderBytes(const std::uint32_t payloadLength, const unsigned char typeValue,
-                                         const unsigned char flags, const std::uint32_t streamIdField)
+        std::string makeFrameHeaderBytes(const std::uint32_t payloadLength, const unsigned char typeValue, const unsigned char flags, const std::uint32_t streamIdField)
         {
             std::string header;
             header.push_back(static_cast<char>((payloadLength >> 16) & 0xFFU));
@@ -127,7 +126,7 @@ namespace AsynGyanis::Net
         std::vector<Http2Frame> decodeAllInOneFeed(Http2FrameDecoder &decoder, const std::string_view stream)
         {
             std::vector<Http2Frame> frames;
-            std::size_t offset = 0;
+            std::size_t             offset = 0;
             while (offset < stream.size())
             {
                 const Http2FrameDecodeStatus status = decoder.parse(stream.data() + offset, stream.size() - offset);
@@ -225,9 +224,9 @@ namespace AsynGyanis::Net
     {
         Http2FrameHeader header;
         header.payloadLength = 0x010203;
-        header.type = Http2FrameType::Continuation;
-        header.flags = 0x24;
-        header.streamId = 0x00000005;
+        header.type          = Http2FrameType::Continuation;
+        header.flags         = 0x24;
+        header.streamId      = 0x00000005;
 
         const std::string encoded = encodeHttp2FrameHeader(header);
 
@@ -249,25 +248,24 @@ namespace AsynGyanis::Net
     {
         Http2FrameHeader header;
         header.payloadLength = kHttp2MaximumFramePayloadByteCount;
-        header.type = Http2FrameType::Data;
-        header.streamId = 1;
+        header.type          = Http2FrameType::Data;
+        header.streamId      = 1;
         EXPECT_EQ(encodeHttp2FrameHeader(header).substr(0, 3), makeBytes({0xff, 0xff, 0xff}));
 
         header.payloadLength = kHttp2MaximumFramePayloadByteCount + 1;
         EXPECT_THROW(static_cast<void>(encodeHttp2FrameHeader(header)), Base::InvalidArgumentException);
 
         header.payloadLength = 0;
-        header.streamId = kHttp2MaximumStreamId + 1;
+        header.streamId      = kHttp2MaximumStreamId + 1;
         EXPECT_THROW(static_cast<void>(encodeHttp2FrameHeader(header)), Base::InvalidArgumentException);
 
         // 未定义类型不允许被编出去：对端只会忽略它，发出去等于白占带宽
         header.streamId = 1;
-        header.type = static_cast<Http2FrameType>(0xF);
+        header.type     = static_cast<Http2FrameType>(0xF);
         EXPECT_THROW(static_cast<void>(encodeHttp2FrameHeader(header)), Base::InvalidArgumentException);
 
         // 负载整体超长同样在编码侧挡住（encodeHttp2Frame 先判后转，不会静默回绕）
-        EXPECT_THROW(static_cast<void>(encodeHttp2Frame(Http2FrameType::Data, 0, 1,
-                                                       std::string(static_cast<std::size_t>(kHttp2MaximumFramePayloadByteCount) + 1, 'x'))),
+        EXPECT_THROW(static_cast<void>(encodeHttp2Frame(Http2FrameType::Data, 0, 1, std::string(static_cast<std::size_t>(kHttp2MaximumFramePayloadByteCount) + 1, 'x'))),
                      Base::InvalidArgumentException);
     }
 
@@ -299,8 +297,7 @@ namespace AsynGyanis::Net
 
         // 帧头校验在写缓冲之前：抛错时目标缓冲保持原样
         appended = "PREFIX";
-        EXPECT_THROW(static_cast<void>(appendHttp2Frame(appended, static_cast<Http2FrameType>(0xF), 0U, 1U, "x")),
-                     Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(appendHttp2Frame(appended, static_cast<Http2FrameType>(0xF), 0U, 1U, "x")), Base::InvalidArgumentException);
         EXPECT_EQ(appended, "PREFIX") << "校验不过时不能留下半帧";
     }
 
@@ -320,7 +317,7 @@ namespace AsynGyanis::Net
             {
                 // §6.2 的两位：END_STREAM = 0x1、END_HEADERS = 0x4，视图这条出口不该带 PRIORITY 位
                 const std::uint8_t expectedFlags = static_cast<std::uint8_t>((endStream ? 0x1 : 0) | (endHeaders ? 0x4 : 0));
-                const std::string appended = [&]
+                const std::string  appended      = [&]
                 {
                     std::string bytes = "PREFIX";
                     appendHttp2HeadersFrame(bytes, block, endStream, endHeaders, 3U);
@@ -329,8 +326,8 @@ namespace AsynGyanis::Net
                 EXPECT_EQ(appended, "PREFIX" + makeFrame(Http2FrameType::Headers, expectedFlags, 3U, block));
 
                 Http2HeadersPayload payload;
-                payload.endStream = endStream;
-                payload.endHeaders = endHeaders;
+                payload.endStream           = endStream;
+                payload.endHeaders          = endHeaders;
                 payload.headerBlockFragment = block;
                 EXPECT_EQ(appended, "PREFIX" + encodeHttp2HeadersFrame(payload, 3U)) << "两条出口必须产出同一份线上字节";
             }
@@ -355,7 +352,7 @@ namespace AsynGyanis::Net
     {
         // 独立入口：掩掉 R 位后按低 31 位认流，不是判错
         Http2FrameHeader header;
-        std::string reason;
+        std::string      reason;
         ASSERT_TRUE(decodeHttp2FrameHeader(makeFrameHeaderBytes(0, 0x0, 0, 0x80000001U), header, &reason)) << reason;
         EXPECT_EQ(header.streamId, 1U);
 
@@ -363,14 +360,14 @@ namespace AsynGyanis::Net
         std::string wireFrame = makeFrameHeaderBytes(2, 0x0, 0, 0x80000001U);
         wireFrame += makeBytes({'h', 'i'});
         Http2FrameDecoder decoder;
-        const Http2Frame frame = feedAndTakeFrame(decoder, wireFrame);
+        const Http2Frame  frame = feedAndTakeFrame(decoder, wireFrame);
         EXPECT_EQ(frame.header.streamId, 1U);
         EXPECT_EQ(frame.payload, "hi");
         EXPECT_EQ(decoder.errorKind(), Http2FrameErrorKind::None);
 
         // 发送侧：置位的 R 位仍按非法流号拒绝，且不动目标缓冲
         Http2FrameHeader outbound{};
-        outbound.type = Http2FrameType::Data;
+        outbound.type     = Http2FrameType::Data;
         outbound.streamId = 0x80000001U;
         EXPECT_THROW(static_cast<void>(encodeHttp2FrameHeader(outbound)), Base::InvalidArgumentException);
     }
@@ -383,7 +380,7 @@ namespace AsynGyanis::Net
         const std::string frame = makeFrame(Http2FrameType::Ping, 0, 0, std::string(8, '\x00'));
 
         Http2FrameHeader header;
-        std::string reason;
+        std::string      reason;
         EXPECT_FALSE(decodeHttp2FrameHeader(std::string_view(frame.data(), 8), header, &reason));
         EXPECT_FALSE(reason.empty());
 
@@ -410,16 +407,14 @@ namespace AsynGyanis::Net
 
         const std::string settingsFrame = encodeHttp2SettingsFrame(payload);
         // 帧头：长度 18 = 3 个参数 × 6 字节，类型 0x4，无标志，流号 0（SETTINGS 是连接级帧）
-        const std::string expected = makeBytes({0x00, 0x00, 0x12, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00}) +
-                                     makeBytes({0x00, 0x01, 0x00, 0x00, 0x10, 0x00}) + makeBytes({0x00, 0x02, 0x00, 0x00, 0x00, 0x01}) +
-                                     makeBytes({0x00, 0x04, 0x00, 0x00, 0xff, 0xff});
+        const std::string expected = makeBytes({0x00, 0x00, 0x12, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00}) + makeBytes({0x00, 0x01, 0x00, 0x00, 0x10, 0x00}) +
+                                     makeBytes({0x00, 0x02, 0x00, 0x00, 0x00, 0x01}) + makeBytes({0x00, 0x04, 0x00, 0x00, 0xff, 0xff});
         EXPECT_EQ(settingsFrame, expected);
 
         // ACK 帧：长度 0、ACK 标志置位、流号 0（§6.5）
         Http2SettingsPayload acknowledgement;
         acknowledgement.isAcknowledgement = true;
-        EXPECT_EQ(encodeHttp2SettingsFrame(acknowledgement),
-                  makeBytes({0x00, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00}));
+        EXPECT_EQ(encodeHttp2SettingsFrame(acknowledgement), makeBytes({0x00, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00}));
 
         // 带参数却置 ACK 是用法错误：对端按连接错误处理（§6.5）
         acknowledgement.parameters.push_back({0x0, 0x0});
@@ -440,7 +435,7 @@ namespace AsynGyanis::Net
         payload.parameters.push_back({static_cast<std::uint16_t>(Http2SettingIdentifier::MaxFrameSize), 40000});
 
         Http2FrameDecoder decoder;
-        const Http2Frame frame = feedAndTakeFrame(decoder, encodeHttp2SettingsFrame(payload));
+        const Http2Frame  frame = feedAndTakeFrame(decoder, encodeHttp2SettingsFrame(payload));
         EXPECT_EQ(frame.header.type, Http2FrameType::Settings);
         EXPECT_EQ(frame.header.streamId, 0U);
 
@@ -474,11 +469,10 @@ namespace AsynGyanis::Net
         ping.opaqueData = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
 
         const std::string pingFrame = encodeHttp2PingFrame(ping);
-        EXPECT_EQ(pingFrame, makeBytes({0x00, 0x00, 0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00}) +
-                                     makeBytes({0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}));
+        EXPECT_EQ(pingFrame, makeBytes({0x00, 0x00, 0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00}) + makeBytes({0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}));
 
         Http2FrameDecoder decoder;
-        Http2PingPayload decoded;
+        Http2PingPayload  decoded;
         ASSERT_TRUE(parseHttp2PingPayload(feedAndTakeFrame(decoder, pingFrame), decoded));
         EXPECT_FALSE(decoded.isAcknowledgement);
         EXPECT_EQ(decoded.opaqueData, ping.opaqueData);
@@ -497,14 +491,13 @@ namespace AsynGyanis::Net
     {
         Http2GoAwayPayload goAway;
         goAway.lastStreamId = 31;
-        goAway.errorCode = Http2ErrorCode::ProtocolError;
-        goAway.debugData = "bad frame";
+        goAway.errorCode    = Http2ErrorCode::ProtocolError;
+        goAway.debugData    = "bad frame";
 
         const std::string goAwayFrame = encodeHttp2GoAwayFrame(goAway);
-        EXPECT_EQ(goAwayFrame, makeBytes({0x00, 0x00, 0x11, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00}) +
-                                       makeBytes({0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x01}) + "bad frame");
+        EXPECT_EQ(goAwayFrame, makeBytes({0x00, 0x00, 0x11, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00}) + makeBytes({0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x01}) + "bad frame");
 
-        Http2FrameDecoder decoder;
+        Http2FrameDecoder  decoder;
         Http2GoAwayPayload decoded;
         ASSERT_TRUE(parseHttp2GoAwayPayload(feedAndTakeFrame(decoder, goAwayFrame), decoded));
         EXPECT_EQ(decoded.lastStreamId, 31U);
@@ -513,8 +506,8 @@ namespace AsynGyanis::Net
 
         // 调试数据可以为空：负载正好 8 字节是合法下界（§6.8 只要求不小于 8）
         goAway.debugData.clear();
-        goAway.lastStreamId = 0;
-        goAway.errorCode = Http2ErrorCode::EnhanceYourCalm;
+        goAway.lastStreamId           = 0;
+        goAway.errorCode              = Http2ErrorCode::EnhanceYourCalm;
         const std::string shortGoAway = encodeHttp2GoAwayFrame(goAway);
         EXPECT_EQ(shortGoAway.size(), kHttp2FrameHeaderByteCount + 8);
         ASSERT_TRUE(parseHttp2GoAwayPayload(feedAndTakeFrame(decoder, shortGoAway), decoded));
@@ -528,18 +521,16 @@ namespace AsynGyanis::Net
     TEST(Http2Frame, EncodesAndDecodesRstStreamAndWindowUpdateFrames)
     {
         Http2RstStreamPayload rstStream;
-        rstStream.errorCode = Http2ErrorCode::Cancel;
+        rstStream.errorCode              = Http2ErrorCode::Cancel;
         const std::string rstStreamFrame = encodeHttp2RstStreamFrame(rstStream, 3);
-        EXPECT_EQ(rstStreamFrame, makeBytes({0x00, 0x00, 0x04, 0x03, 0x00, 0x00, 0x00, 0x00, 0x03}) +
-                                          makeBytes({0x00, 0x00, 0x00, 0x08}));
+        EXPECT_EQ(rstStreamFrame, makeBytes({0x00, 0x00, 0x04, 0x03, 0x00, 0x00, 0x00, 0x00, 0x03}) + makeBytes({0x00, 0x00, 0x00, 0x08}));
 
         Http2WindowUpdatePayload windowUpdate;
-        windowUpdate.windowSizeIncrement = 1;
+        windowUpdate.windowSizeIncrement    = 1;
         const std::string windowUpdateFrame = encodeHttp2WindowUpdateFrame(windowUpdate, 0);
-        EXPECT_EQ(windowUpdateFrame, makeBytes({0x00, 0x00, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00}) +
-                                             makeBytes({0x00, 0x00, 0x00, 0x01}));
+        EXPECT_EQ(windowUpdateFrame, makeBytes({0x00, 0x00, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00}) + makeBytes({0x00, 0x00, 0x00, 0x01}));
 
-        Http2FrameDecoder decoder;
+        Http2FrameDecoder     decoder;
         Http2RstStreamPayload decodedRstStream;
         ASSERT_TRUE(parseHttp2RstStreamPayload(feedAndTakeFrame(decoder, rstStreamFrame), decodedRstStream));
         EXPECT_EQ(decodedRstStream.errorCode, Http2ErrorCode::Cancel);
@@ -549,7 +540,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(decodedWindowUpdate.windowSizeIncrement, 1U);
 
         // 流控窗口最大 2^31-1（§6.9.1）：满值可编；增量为 0 或超 31 位在编码侧就被拒
-        windowUpdate.windowSizeIncrement = kHttp2MaximumStreamId;
+        windowUpdate.windowSizeIncrement      = kHttp2MaximumStreamId;
         const std::string maximumWindowUpdate = encodeHttp2WindowUpdateFrame(windowUpdate, 7);
         ASSERT_TRUE(parseHttp2WindowUpdatePayload(feedAndTakeFrame(decoder, maximumWindowUpdate), decodedWindowUpdate));
         EXPECT_EQ(decodedWindowUpdate.windowSizeIncrement, kHttp2MaximumStreamId);
@@ -578,8 +569,8 @@ namespace AsynGyanis::Net
         Http2FrameDecoder decoder;
 
         Http2DataPayload sent;
-        sent.endStream = true;
-        sent.data = "hello";
+        sent.endStream               = true;
+        sent.data                    = "hello";
         const std::string plainFrame = encodeHttp2DataFrame(sent, 1);
 
         Http2DataPayload decoded;
@@ -588,9 +579,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(decoded.data, "hello");
 
         // 带 padding 的形态：标志为 END_STREAM|PADDED，Pad Length = 4、数据 "abc"、尾部 4 字节填充
-        const std::string paddedData = makeBytes({0x00, 0x00, 0x08, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01}) +
-                                       makeBytes({0x04}) + "abc" + makeBytes({0x00, 0x00, 0x00, 0x00});
-        const Http2Frame paddedFrame = feedAndTakeFrame(decoder, paddedData);
+        const std::string paddedData  = makeBytes({0x00, 0x00, 0x08, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01}) + makeBytes({0x04}) + "abc" + makeBytes({0x00, 0x00, 0x00, 0x00});
+        const Http2Frame  paddedFrame = feedAndTakeFrame(decoder, paddedData);
         EXPECT_EQ(paddedFrame.header.payloadLength, 8U) << "线上的长度含填充长度字节与尾部填充";
         EXPECT_EQ(paddedFrame.payload, "abc") << "padding 必须在帧层剥掉";
 
@@ -618,18 +608,14 @@ namespace AsynGyanis::Net
     TEST(Http2Frame, DecodesHeadersFrameWithPaddingAndPriority)
     {
         // 自造：Pad Length = 2，优先级字段 E=1 依赖流 5 权重 15，片段 0x82 0x86，尾部 2 字节填充
-        const std::string headersFrame =
-                makeFrame(Http2FrameType::Headers,
-                          static_cast<unsigned char>(kHttp2FlagEndHeaders | kHttp2FlagPriority | kHttp2FlagPadded), 3,
-                          makeBytes({0x02}) + makeBytes({0x80, 0x00, 0x00, 0x05, 0x0f}) + makeBytes({0x82, 0x86}) +
-                                  makeBytes({0x00, 0x00}));
+        const std::string headersFrame = makeFrame(Http2FrameType::Headers, static_cast<unsigned char>(kHttp2FlagEndHeaders | kHttp2FlagPriority | kHttp2FlagPadded), 3,
+                                                   makeBytes({0x02}) + makeBytes({0x80, 0x00, 0x00, 0x05, 0x0f}) + makeBytes({0x82, 0x86}) + makeBytes({0x00, 0x00}));
 
         Http2FrameDecoder decoder;
-        const Http2Frame frame = feedAndTakeFrame(decoder, headersFrame);
+        const Http2Frame  frame = feedAndTakeFrame(decoder, headersFrame);
 
         EXPECT_EQ(frame.header.type, Http2FrameType::Headers);
-        EXPECT_EQ(static_cast<unsigned>(frame.header.flags),
-                  static_cast<unsigned>(kHttp2FlagEndHeaders | kHttp2FlagPriority | kHttp2FlagPadded));
+        EXPECT_EQ(static_cast<unsigned>(frame.header.flags), static_cast<unsigned>(kHttp2FlagEndHeaders | kHttp2FlagPriority | kHttp2FlagPadded));
         EXPECT_TRUE(frame.hasPriority);
         EXPECT_TRUE(frame.priority.isExclusive) << "E 位是优先级字段的最高位";
         EXPECT_EQ(frame.priority.streamDependency, 5U);
@@ -645,8 +631,8 @@ namespace AsynGyanis::Net
 
         // 头块续帧：END_HEADERS 在标志位上（§6.10），负载就是片段本身
         Http2ContinuationPayload continuation;
-        continuation.endHeaders = true;
-        continuation.headerBlockFragment = makeBytes({0x40, 0x01, 0x61, 0x01, 0x62});
+        continuation.endHeaders            = true;
+        continuation.headerBlockFragment   = makeBytes({0x40, 0x01, 0x61, 0x01, 0x62});
         const Http2Frame continuationFrame = feedAndTakeFrame(decoder, encodeHttp2ContinuationFrame(continuation, 3));
         EXPECT_FALSE(continuationFrame.hasPriority);
 
@@ -662,19 +648,19 @@ namespace AsynGyanis::Net
     TEST(Http2Frame, RoundTripsHeadersAndPriorityFrames)
     {
         Http2HeadersPayload headers;
-        headers.endStream = true;
-        headers.endHeaders = false;
-        headers.hasPriority = true;
+        headers.endStream                 = true;
+        headers.endHeaders                = false;
+        headers.hasPriority               = true;
         headers.priority.streamDependency = 1;
-        headers.priority.isExclusive = false;
-        headers.priority.weight = 200;
-        headers.headerBlockFragment = makeBytes({0x82, 0x84});
+        headers.priority.isExclusive      = false;
+        headers.priority.weight           = 200;
+        headers.headerBlockFragment       = makeBytes({0x82, 0x84});
 
         const std::string encodedHeaders = encodeHttp2HeadersFrame(headers, 5);
         EXPECT_EQ(static_cast<unsigned>(encodedHeaders[4]), static_cast<unsigned>(kHttp2FlagEndStream | kHttp2FlagPriority));
         EXPECT_EQ(static_cast<unsigned>(encodedHeaders[3]), 0x1U);
 
-        Http2FrameDecoder decoder;
+        Http2FrameDecoder   decoder;
         Http2HeadersPayload decoded;
         ASSERT_TRUE(parseHttp2HeadersPayload(feedAndTakeFrame(decoder, encodedHeaders), decoded));
         EXPECT_TRUE(decoded.endStream);
@@ -686,12 +672,12 @@ namespace AsynGyanis::Net
 
         // PRIORITY 帧的负载就是同一份 5 字节优先级字段（§6.3）
         Http2Priority priority;
-        priority.streamDependency = 3;
-        priority.weight = 7;
+        priority.streamDependency       = 3;
+        priority.weight                 = 7;
         const std::string priorityFrame = encodeHttp2PriorityFrame(priority, 5);
 
         Http2FrameDecoder priorityDecoder;
-        const Http2Frame decodedPriorityFrame = feedAndTakeFrame(priorityDecoder, priorityFrame);
+        const Http2Frame  decodedPriorityFrame = feedAndTakeFrame(priorityDecoder, priorityFrame);
         EXPECT_EQ(decodedPriorityFrame.header.type, Http2FrameType::Priority);
         EXPECT_TRUE(decodedPriorityFrame.hasPriority);
         EXPECT_EQ(decodedPriorityFrame.priority.streamDependency, 3U);
@@ -721,8 +707,7 @@ namespace AsynGyanis::Net
 
         // 恰好等于上限的声明必须放行
         Http2FrameDecoder atLimitDecoder;
-        EXPECT_EQ(feed(atLimitDecoder, makeFrameHeaderBytes(kHttp2DefaultMaximumFrameSize, 0x0, 0x0, 1)),
-                  Http2FrameDecodeStatus::NeedMore);
+        EXPECT_EQ(feed(atLimitDecoder, makeFrameHeaderBytes(kHttp2DefaultMaximumFrameSize, 0x0, 0x0, 1)), Http2FrameDecodeStatus::NeedMore);
         EXPECT_EQ(feed(atLimitDecoder, std::string(kHttp2DefaultMaximumFrameSize, 'x')), Http2FrameDecodeStatus::Frame);
         EXPECT_EQ(atLimitDecoder.takeFrame().payload.size(), kHttp2DefaultMaximumFrameSize);
     }
@@ -752,11 +737,11 @@ namespace AsynGyanis::Net
     {
         struct LengthProbe
         {
-            std::uint32_t payloadLength; ///< 声明的负载长度
-            unsigned char typeValue;     ///< 帧类型
-            unsigned char flags;         ///< 标志位
-            std::uint32_t streamId;      ///< 流号
-            std::string_view expected;   ///< 错误文案里应出现的关键词
+            std::uint32_t    payloadLength; ///< 声明的负载长度
+            unsigned char    typeValue;     ///< 帧类型
+            unsigned char    flags;         ///< 标志位
+            std::uint32_t    streamId;      ///< 流号
+            std::string_view expected;      ///< 错误文案里应出现的关键词
         };
 
         const std::vector<LengthProbe> probes{
@@ -772,8 +757,7 @@ namespace AsynGyanis::Net
         for (const LengthProbe &probe: probes)
         {
             Http2FrameDecoder decoder;
-            const std::string reason = feedAndExpectError(
-                    decoder, makeFrameHeaderBytes(probe.payloadLength, probe.typeValue, probe.flags, probe.streamId));
+            const std::string reason = feedAndExpectError(decoder, makeFrameHeaderBytes(probe.payloadLength, probe.typeValue, probe.flags, probe.streamId));
 
             EXPECT_EQ(decoder.errorKind(), Http2FrameErrorKind::FrameSizeError) << probe.expected;
             EXPECT_TRUE(containsText(reason, probe.expected)) << "原因里要点出是哪种帧：" << reason;
@@ -807,11 +791,9 @@ namespace AsynGyanis::Net
         for (const StreamProbe &probe: probes)
         {
             Http2FrameDecoder decoder;
-            static_cast<void>(feedAndExpectError(
-                    decoder, makeFrameHeaderBytes(probe.payloadLength, probe.typeValue, 0, probe.streamId)));
+            static_cast<void>(feedAndExpectError(decoder, makeFrameHeaderBytes(probe.payloadLength, probe.typeValue, 0, probe.streamId)));
 
-            EXPECT_EQ(decoder.errorKind(), Http2FrameErrorKind::ProtocolError)
-                    << "类型取值 " << static_cast<unsigned>(probe.typeValue) << " 流号 " << probe.streamId;
+            EXPECT_EQ(decoder.errorKind(), Http2FrameErrorKind::ProtocolError) << "类型取值 " << static_cast<unsigned>(probe.typeValue) << " 流号 " << probe.streamId;
         }
     }
 
@@ -823,8 +805,7 @@ namespace AsynGyanis::Net
         {
             // Pad Length = 5，负载正好只有这 1 个字节：填充没有着落
             Http2FrameDecoder decoder;
-            const std::string reason =
-                    feedAndExpectError(decoder, makeFrame(Http2FrameType::Data, kHttp2FlagPadded, 1, makeBytes({0x05})));
+            const std::string reason = feedAndExpectError(decoder, makeFrame(Http2FrameType::Data, kHttp2FlagPadded, 1, makeBytes({0x05})));
 
             EXPECT_TRUE(containsText(reason, "填充")) << reason;
             EXPECT_EQ(decoder.errorKind(), Http2FrameErrorKind::ProtocolError);
@@ -839,16 +820,12 @@ namespace AsynGyanis::Net
         {
             // 填充长度比负载还大（0x05 > 4 字节负载）
             Http2FrameDecoder decoder;
-            EXPECT_TRUE(containsText(feedAndExpectError(
-                                             decoder, makeFrame(Http2FrameType::Data, kHttp2FlagPadded, 1,
-                                                                makeBytes({0x05, 0x01, 0x02, 0x03}))),
-                                     "填充"));
+            EXPECT_TRUE(containsText(feedAndExpectError(decoder, makeFrame(Http2FrameType::Data, kHttp2FlagPadded, 1, makeBytes({0x05, 0x01, 0x02, 0x03}))), "填充"));
         }
         {
             // 合法边界：Pad Length = 1、恰好剩 1 字节数据
             Http2FrameDecoder decoder;
-            const Http2Frame frame =
-                    feedAndTakeFrame(decoder, makeFrame(Http2FrameType::Data, kHttp2FlagPadded, 1, makeBytes({0x01, 'x', 0x00})));
+            const Http2Frame  frame = feedAndTakeFrame(decoder, makeFrame(Http2FrameType::Data, kHttp2FlagPadded, 1, makeBytes({0x01, 'x', 0x00})));
 
             Http2DataPayload payload;
             ASSERT_TRUE(parseHttp2DataPayload(frame, payload));
@@ -862,18 +839,15 @@ namespace AsynGyanis::Net
     TEST(Http2Frame, RejectsHeadersWithTruncatedPriorityField)
     {
         Http2FrameDecoder decoder;
-        const std::string reason = feedAndExpectError(
-                decoder, makeFrame(Http2FrameType::Headers, kHttp2FlagPriority, 1, makeBytes({0x00, 0x00, 0x00, 0x01})));
+        const std::string reason = feedAndExpectError(decoder, makeFrame(Http2FrameType::Headers, kHttp2FlagPriority, 1, makeBytes({0x00, 0x00, 0x00, 0x01})));
 
         EXPECT_TRUE(containsText(reason, "PRIORITY")) << reason;
         EXPECT_EQ(decoder.errorKind(), Http2FrameErrorKind::FrameSizeError);
 
         // 带 padding 时优先级字段按「剥掉填充之后」的长度判：3 字节数据 + 2 字节填充仍不足 5
         Http2FrameDecoder paddedDecoder;
-        const std::string paddedReason = feedAndExpectError(
-                paddedDecoder,
-                makeFrame(Http2FrameType::Headers, static_cast<unsigned char>(kHttp2FlagPriority | kHttp2FlagPadded), 1,
-                          makeBytes({0x02, 0x00, 0x00, 0x01, 0x00, 0x00})));
+        const std::string paddedReason = feedAndExpectError(paddedDecoder, makeFrame(Http2FrameType::Headers, static_cast<unsigned char>(kHttp2FlagPriority | kHttp2FlagPadded), 1,
+                                                                                     makeBytes({0x02, 0x00, 0x00, 0x01, 0x00, 0x00})));
 
         EXPECT_TRUE(containsText(paddedReason, "PRIORITY")) << paddedReason;
     }
@@ -885,18 +859,14 @@ namespace AsynGyanis::Net
     {
         // HEADERS：E 位 + 依赖流 3，而帧本身就在流 3 上
         Http2FrameDecoder headersDecoder;
-        const std::string headersReason = feedAndExpectError(
-                headersDecoder, makeFrame(Http2FrameType::Headers, kHttp2FlagPriority, 3, makeBytes({0x00, 0x00, 0x00, 0x03, 0x10})));
+        const std::string headersReason = feedAndExpectError(headersDecoder, makeFrame(Http2FrameType::Headers, kHttp2FlagPriority, 3, makeBytes({0x00, 0x00, 0x00, 0x03, 0x10})));
 
         EXPECT_TRUE(containsText(headersReason, "依赖自己")) << headersReason;
         EXPECT_EQ(headersDecoder.errorKind(), Http2FrameErrorKind::ProtocolError);
 
         // PRIORITY 帧同理
         Http2FrameDecoder priorityDecoder;
-        EXPECT_TRUE(containsText(feedAndExpectError(
-                                         priorityDecoder,
-                                         makeFrame(Http2FrameType::Priority, 0, 7, makeBytes({0x80, 0x00, 0x00, 0x07, 0x00}))),
-                                 "依赖自己"));
+        EXPECT_TRUE(containsText(feedAndExpectError(priorityDecoder, makeFrame(Http2FrameType::Priority, 0, 7, makeBytes({0x80, 0x00, 0x00, 0x07, 0x00}))), "依赖自己"));
 
         // 编码侧同样拒绝，不把必然被判错的帧发出去
         Http2Priority priority;
@@ -911,18 +881,16 @@ namespace AsynGyanis::Net
     TEST(Http2Frame, RejectsWindowUpdateWithZeroIncrement)
     {
         Http2FrameDecoder decoder;
-        const std::string reason =
-                feedAndExpectError(decoder, makeFrame(Http2FrameType::WindowUpdate, 0, 0, makeBytes({0x00, 0x00, 0x00, 0x00})));
+        const std::string reason = feedAndExpectError(decoder, makeFrame(Http2FrameType::WindowUpdate, 0, 0, makeBytes({0x00, 0x00, 0x00, 0x00})));
 
         EXPECT_TRUE(containsText(reason, "增量")) << reason;
         EXPECT_EQ(decoder.errorKind(), Http2FrameErrorKind::ProtocolError);
 
         // 保留位（最高位）按 §6.9 在读取侧被忽略：置位不影响增量的解析
-        Http2FrameDecoder reservedBitDecoder;
+        Http2FrameDecoder        reservedBitDecoder;
         Http2WindowUpdatePayload payload;
-        ASSERT_TRUE(parseHttp2WindowUpdatePayload(
-                feedAndTakeFrame(reservedBitDecoder, makeFrame(Http2FrameType::WindowUpdate, 0, 0, makeBytes({0x80, 0x00, 0x00, 0x01}))),
-                payload));
+        ASSERT_TRUE(
+                parseHttp2WindowUpdatePayload(feedAndTakeFrame(reservedBitDecoder, makeFrame(Http2FrameType::WindowUpdate, 0, 0, makeBytes({0x80, 0x00, 0x00, 0x01}))), payload));
         EXPECT_EQ(payload.windowSizeIncrement, 1U);
     }
 
@@ -932,13 +900,13 @@ namespace AsynGyanis::Net
     TEST(Http2Frame, PayloadParsersRejectWrongTypeAndMalformedFrames)
     {
         Http2FrameDecoder decoder;
-        const Http2Frame pingFrame = feedAndTakeFrame(decoder, encodeHttp2PingFrame(Http2PingPayload{}));
+        const Http2Frame  pingFrame = feedAndTakeFrame(decoder, encodeHttp2PingFrame(Http2PingPayload{}));
 
-        Http2SettingsPayload settings;
+        Http2SettingsPayload     settings;
         Http2WindowUpdatePayload windowUpdate;
-        Http2GoAwayPayload goAway;
-        Http2RstStreamPayload rstStream;
-        std::string reason = "残留";
+        Http2GoAwayPayload       goAway;
+        Http2RstStreamPayload    rstStream;
+        std::string              reason = "残留";
         EXPECT_FALSE(parseHttp2SettingsPayload(pingFrame, settings, &reason));
         EXPECT_TRUE(containsText(reason, "SETTINGS")) << "类型不符要给出可操作的中文原因：" << reason;
         EXPECT_FALSE(parseHttp2WindowUpdatePayload(pingFrame, windowUpdate, nullptr));
@@ -948,14 +916,14 @@ namespace AsynGyanis::Net
         // 手工构造一个「负载长度不是 6 的整数倍」的 SETTINGS：帧层不会交出这种帧，解析函数自身也得挡住
         Http2Frame malformed;
         malformed.header.type = Http2FrameType::Settings;
-        malformed.payload = makeBytes({0x00, 0x01, 0x00});
+        malformed.payload     = makeBytes({0x00, 0x01, 0x00});
         reason.clear();
         EXPECT_FALSE(parseHttp2SettingsPayload(malformed, settings, &reason));
         EXPECT_TRUE(containsText(reason, "SETTINGS")) << reason;
 
         // 出参契约：成功返回时也要把上一次的失败原因清掉，否则调用方会把旧原因当成这一次的
         Http2FrameDecoder okDecoder;
-        const Http2Frame emptySettings = feedAndTakeFrame(okDecoder, encodeHttp2SettingsFrame({}));
+        const Http2Frame  emptySettings = feedAndTakeFrame(okDecoder, encodeHttp2SettingsFrame({}));
         ASSERT_TRUE(parseHttp2SettingsPayload(emptySettings, settings, &reason));
         EXPECT_TRUE(reason.empty());
     }
@@ -971,10 +939,9 @@ namespace AsynGyanis::Net
     TEST(Http2Frame, SkipsUnknownFrameTypesInsteadOfFailing)
     {
         // 未知类型只能手拼：编码器拒绝产出未定义类型的帧
-        const std::string unknownFrames = makeFrameHeaderBytes(6, 0xA, 0xFF, 0) + "opaque" +
-                                          makeFrameHeaderBytes(0, 0xF, 0x00, 0) + encodeHttp2PingFrame(Http2PingPayload{});
+        const std::string unknownFrames = makeFrameHeaderBytes(6, 0xA, 0xFF, 0) + "opaque" + makeFrameHeaderBytes(0, 0xF, 0x00, 0) + encodeHttp2PingFrame(Http2PingPayload{});
 
-        Http2FrameDecoder decoder;
+        Http2FrameDecoder             decoder;
         const std::vector<Http2Frame> frames = decodeAllInOneFeed(decoder, unknownFrames);
 
         ASSERT_EQ(frames.size(), 3U);
@@ -996,7 +963,7 @@ namespace AsynGyanis::Net
         const std::string dataWithStrayFlags = makeFrame(Http2FrameType::Data, 0x40, 1, "abc");
 
         Http2FrameDecoder decoder;
-        Http2PingPayload ping;
+        Http2PingPayload  ping;
         ASSERT_TRUE(parseHttp2PingPayload(feedAndTakeFrame(decoder, pingWithStrayFlags), ping));
         EXPECT_FALSE(ping.isAcknowledgement) << "ACK 位没置，其余位置位是无关的";
         EXPECT_EQ(static_cast<unsigned>(ping.opaqueData[0]), 0x11U);
@@ -1023,26 +990,23 @@ namespace AsynGyanis::Net
 
         std::string stream;
         stream += encodeHttp2SettingsFrame(settings);
-        stream += makeFrame(Http2FrameType::Headers,
-                            static_cast<unsigned char>(kHttp2FlagEndHeaders | kHttp2FlagPriority | kHttp2FlagPadded), 5,
+        stream += makeFrame(Http2FrameType::Headers, static_cast<unsigned char>(kHttp2FlagEndHeaders | kHttp2FlagPriority | kHttp2FlagPadded), 5,
                             makeBytes({0x01}) + makeBytes({0x00, 0x00, 0x00, 0x01, 0x03}) + "block" + makeBytes({0x00}));
-        stream += makeFrame(Http2FrameType::Data, static_cast<unsigned char>(kHttp2FlagEndStream | kHttp2FlagPadded), 5,
-                            makeBytes({0x02}) + "body" + makeBytes({0x00, 0x00}));
+        stream += makeFrame(Http2FrameType::Data, static_cast<unsigned char>(kHttp2FlagEndStream | kHttp2FlagPadded), 5, makeBytes({0x02}) + "body" + makeBytes({0x00, 0x00}));
         stream += makeFrameHeaderBytes(7, 0xB, 0, 0) + "ignored";
         stream += encodeHttp2PingFrame(Http2PingPayload{});
 
-        Http2FrameDecoder oneFeedDecoder;
+        Http2FrameDecoder             oneFeedDecoder;
         const std::vector<Http2Frame> oneFeedFrames = decodeAllInOneFeed(oneFeedDecoder, stream);
 
-        Http2FrameDecoder byteByByteDecoder;
+        Http2FrameDecoder             byteByByteDecoder;
         const std::vector<Http2Frame> byteByByteFrames = decodeByteByByte(byteByByteDecoder, stream);
 
         ASSERT_EQ(oneFeedFrames.size(), 5U);
         ASSERT_EQ(byteByByteFrames.size(), oneFeedFrames.size());
         for (std::size_t index = 0; index < oneFeedFrames.size(); ++index)
         {
-            EXPECT_EQ(byteByByteFrames[index].header.payloadLength, oneFeedFrames[index].header.payloadLength)
-                    << "第 " << index << " 帧";
+            EXPECT_EQ(byteByByteFrames[index].header.payloadLength, oneFeedFrames[index].header.payloadLength) << "第 " << index << " 帧";
             EXPECT_EQ(byteByByteFrames[index].header.type, oneFeedFrames[index].header.type) << "第 " << index << " 帧";
             EXPECT_EQ(byteByByteFrames[index].payload, oneFeedFrames[index].payload) << "第 " << index << " 帧";
             EXPECT_EQ(byteByByteFrames[index].hasPriority, oneFeedFrames[index].hasPriority) << "第 " << index << " 帧";
@@ -1058,9 +1022,9 @@ namespace AsynGyanis::Net
      */
     TEST(Http2Frame, NeedMoreConsumesEverythingAndFrameStopsAtItsEnd)
     {
-        const std::string firstFrame = encodeHttp2PingFrame(Http2PingPayload{});
+        const std::string firstFrame  = encodeHttp2PingFrame(Http2PingPayload{});
         const std::string secondFrame = makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1, "next");
-        const std::string bothFrames = firstFrame + secondFrame;
+        const std::string bothFrames  = firstFrame + secondFrame;
 
         Http2FrameDecoder decoder;
         // 只喂帧头前 5 字节：切在帧头中间
@@ -1074,7 +1038,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(decoder.takeFrame().header.type, Http2FrameType::Ping);
 
         // 第二帧自己单独喂也必须能交出来
-        Http2FrameDecoder tailDecoder;
+        Http2FrameDecoder             tailDecoder;
         const std::vector<Http2Frame> tailFrames = decodeByteByByte(tailDecoder, secondFrame);
         ASSERT_EQ(tailFrames.size(), 1U);
         EXPECT_EQ(tailFrames[0].payload, "next");
@@ -1085,7 +1049,7 @@ namespace AsynGyanis::Net
      */
     TEST(Http2Frame, EmptySettingsFrameIsDeliveredWithoutExtraByte)
     {
-        Http2FrameDecoder decoder;
+        Http2FrameDecoder    decoder;
         Http2SettingsPayload payload;
         payload.isAcknowledgement = true;
 
@@ -1141,7 +1105,7 @@ namespace AsynGyanis::Net
      */
     TEST(Http2Frame, PendingFrameIsNotOverwrittenAndConsumesNoByte)
     {
-        const std::string firstFrame = makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1, "one");
+        const std::string firstFrame  = makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1, "one");
         const std::string secondFrame = makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1, "two");
         Http2FrameDecoder decoder;
 
@@ -1185,8 +1149,7 @@ namespace AsynGyanis::Net
      */
     TEST(Http2Frame, TotalConsumedLimitTriggersEnhanceYourCalm)
     {
-        const std::string twoFrames = makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1, "abcdef") +
-                                      makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1, "ghijkl");
+        const std::string twoFrames = makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1, "abcdef") + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1, "ghijkl");
 
         // 上限 20 字节：第一帧（15 字节）收得下，第二帧的帧头读到第 6 个字节时越界
         Http2FrameDecoder decoder(Http2FrameLimits{kHttp2DefaultMaximumFrameSize, 20});

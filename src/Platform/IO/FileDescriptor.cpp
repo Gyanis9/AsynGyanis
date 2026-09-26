@@ -46,8 +46,7 @@ namespace AsynGyanis::Platform
 #if ASYN_PLATFORM_WIN32
         // Winsock 建出来的句柄默认带继承位，只能建好之后再取消（带 WSA_FLAG_NO_HANDLE_INHERIT 的
         // WSASocketW 在老系统上会让整个创建失败，不划算走那条路）
-        return ::SetHandleInformation(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(fileDescriptor)),
-                                      HANDLE_FLAG_INHERIT, 0) != 0;
+        return ::SetHandleInformation(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(fileDescriptor)), HANDLE_FLAG_INHERIT, 0) != 0;
 #else
         const int flags = ::fcntl(fileDescriptor, F_GETFD);
         return flags >= 0 && ::fcntl(fileDescriptor, F_SETFD, flags | FD_CLOEXEC) == 0;

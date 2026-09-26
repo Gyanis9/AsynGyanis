@@ -17,19 +17,18 @@ namespace AsynGyanis::Net
     {
         /// server 段直接支持的键
         constexpr std::array<std::string_view, 6> kServerKeys{
-            "maximum_connections", "maximum_connections_per_ip", "expose_metrics", "limits", "parser_limits", "rate_limit",
+                "maximum_connections", "maximum_connections_per_ip", "expose_metrics", "limits", "parser_limits", "rate_limit",
         };
 
         /// limits 子段支持的键
         constexpr std::array<std::string_view, 5> kLimitsKeys{
-            "idle_timeout_ms", "read_timeout_ms", "write_timeout_ms", "settings_acknowledgement_timeout_ms",
-            "maximum_requests_per_connection",
+                "idle_timeout_ms", "read_timeout_ms", "write_timeout_ms", "settings_acknowledgement_timeout_ms", "maximum_requests_per_connection",
         };
 
         /// parser_limits 子段支持的键
         constexpr std::array<std::string_view, 7> kParserLimitsKeys{
-            "maximum_uri_length", "maximum_header_field_name_length", "maximum_header_field_value_length",
-            "maximum_header_count", "maximum_header_block_length", "maximum_body_size", "maximum_chunk_size_line_length",
+                "maximum_uri_length", "maximum_header_field_name_length", "maximum_header_field_value_length", "maximum_header_count", "maximum_header_block_length",
+                "maximum_body_size",  "maximum_chunk_size_line_length",
         };
 
         /// rate_limit 子段支持的键
@@ -38,18 +37,18 @@ namespace AsynGyanis::Net
         /// parser_limits 的结构体字段名与配置键一一对应，指针成员便于逐项读取时不写七遍重复代码
         struct ParserLimitBinding
         {
-            std::string_view name;                     ///< 配置键名
-            std::size_t HttpParserLimits::*member;     ///< 对应的结构体成员
+            std::string_view name;                 ///< 配置键名
+            std::size_t HttpParserLimits::*member; ///< 对应的结构体成员
         };
 
         constexpr std::array<ParserLimitBinding, kParserLimitsKeys.size()> kParserLimitBindings{{
-            {"maximum_uri_length", &HttpParserLimits::maximumUriLength},
-            {"maximum_header_field_name_length", &HttpParserLimits::maximumHeaderFieldNameLength},
-            {"maximum_header_field_value_length", &HttpParserLimits::maximumHeaderFieldValueLength},
-            {"maximum_header_count", &HttpParserLimits::maximumHeaderCount},
-            {"maximum_header_block_length", &HttpParserLimits::maximumHeaderBlockLength},
-            {"maximum_body_size", &HttpParserLimits::maximumBodySize},
-            {"maximum_chunk_size_line_length", &HttpParserLimits::maximumChunkSizeLineLength},
+                {"maximum_uri_length", &HttpParserLimits::maximumUriLength},
+                {"maximum_header_field_name_length", &HttpParserLimits::maximumHeaderFieldNameLength},
+                {"maximum_header_field_value_length", &HttpParserLimits::maximumHeaderFieldValueLength},
+                {"maximum_header_count", &HttpParserLimits::maximumHeaderCount},
+                {"maximum_header_block_length", &HttpParserLimits::maximumHeaderBlockLength},
+                {"maximum_body_size", &HttpParserLimits::maximumBodySize},
+                {"maximum_chunk_size_line_length", &HttpParserLimits::maximumChunkSizeLineLength},
         }};
 
         /**
@@ -79,20 +78,14 @@ namespace AsynGyanis::Net
          * @param keys 该层支持的键
          * @param pathPrefix 出错时用于拼出完整键路径的前缀
          */
-        void rejectUnknownKeys(const Base::ConfigValue &node, const std::string_view *keys, const std::size_t keyCount,
-                               const std::string &pathPrefix)
+        void rejectUnknownKeys(const Base::ConfigValue &node, const std::string_view *keys, const std::size_t keyCount, const std::string &pathPrefix)
         {
             for (const auto &[memberName, memberValue]: node.items())
             {
-                const bool isAccepted = std::any_of(keys, keys + keyCount,
-                                                    [&memberName](const std::string_view accepted)
-                                                    {
-                                                        return accepted == memberName;
-                                                    });
+                const bool isAccepted = std::any_of(keys, keys + keyCount, [&memberName](const std::string_view accepted) { return accepted == memberName; });
                 if (!isAccepted)
                 {
-                    throw Base::ConfigValidationException(pathPrefix + "." + memberName,
-                                                          "未知的配置键；本层支持：" + joinKeys(keys, keyCount));
+                    throw Base::ConfigValidationException(pathPrefix + "." + memberName, "未知的配置键；本层支持：" + joinKeys(keys, keyCount));
                 }
             }
         }
@@ -177,8 +170,7 @@ namespace AsynGyanis::Net
          * @return const Base::ConfigValue* 子节点；不存在时为空指针
          * @throws Base::ConfigValidationException 子键存在但不是对象
          */
-        [[nodiscard]] const Base::ConfigValue *findOptionalObject(const Base::ConfigValue &node, const std::string_view key,
-                                                                 const std::string &pathPrefix)
+        [[nodiscard]] const Base::ConfigValue *findOptionalObject(const Base::ConfigValue &node, const std::string_view key, const std::string &pathPrefix)
         {
             if (!node.contains(key))
             {
@@ -201,18 +193,15 @@ namespace AsynGyanis::Net
             // 超时统一按毫秒整数配置；0 表示关闭该项保护（与结构体自身的语义一致）
             if (node.contains("idle_timeout_ms"))
             {
-                limits.idleTimeout = toMilliseconds(requireNonNegativeInteger(node.at("idle_timeout_ms"), sectionPath + ".idle_timeout_ms"),
-                                                    sectionPath + ".idle_timeout_ms");
+                limits.idleTimeout = toMilliseconds(requireNonNegativeInteger(node.at("idle_timeout_ms"), sectionPath + ".idle_timeout_ms"), sectionPath + ".idle_timeout_ms");
             }
             if (node.contains("read_timeout_ms"))
             {
-                limits.readTimeout = toMilliseconds(requireNonNegativeInteger(node.at("read_timeout_ms"), sectionPath + ".read_timeout_ms"),
-                                                    sectionPath + ".read_timeout_ms");
+                limits.readTimeout = toMilliseconds(requireNonNegativeInteger(node.at("read_timeout_ms"), sectionPath + ".read_timeout_ms"), sectionPath + ".read_timeout_ms");
             }
             if (node.contains("write_timeout_ms"))
             {
-                limits.writeTimeout = toMilliseconds(requireNonNegativeInteger(node.at("write_timeout_ms"), sectionPath + ".write_timeout_ms"),
-                                                     sectionPath + ".write_timeout_ms");
+                limits.writeTimeout = toMilliseconds(requireNonNegativeInteger(node.at("write_timeout_ms"), sectionPath + ".write_timeout_ms"), sectionPath + ".write_timeout_ms");
             }
             if (node.contains("settings_acknowledgement_timeout_ms"))
             {
@@ -239,8 +228,7 @@ namespace AsynGyanis::Net
                 {
                     continue;
                 }
-                parserLimits.*binding.member = static_cast<std::size_t>(
-                        requireNonNegativeInteger(node.at(binding.name), sectionPath + "." + std::string(binding.name)));
+                parserLimits.*binding.member = static_cast<std::size_t>(requireNonNegativeInteger(node.at(binding.name), sectionPath + "." + std::string(binding.name)));
             }
         }
 
@@ -285,8 +273,7 @@ namespace AsynGyanis::Net
 
         if (section.contains("maximum_connections"))
         {
-            configuration.maximumConnections =
-                    static_cast<std::size_t>(requireNonNegativeInteger(section.at("maximum_connections"), sectionPath + ".maximum_connections"));
+            configuration.maximumConnections = static_cast<std::size_t>(requireNonNegativeInteger(section.at("maximum_connections"), sectionPath + ".maximum_connections"));
         }
         if (section.contains("maximum_connections_per_ip"))
         {
@@ -322,8 +309,7 @@ namespace AsynGyanis::Net
         // 表现为「服务一上线就全 429」——配置错误要在这里拦住，而不是等线上发现
         if (configuration.requestsPerSecond > 0.0 && configuration.rateLimitBurstCapacity < 1.0)
         {
-            throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".rate_limit.burst_capacity",
-                                                  "启用限流时容量必须不小于 1，否则任何请求都放行不了");
+            throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".rate_limit.burst_capacity", "启用限流时容量必须不小于 1，否则任何请求都放行不了");
         }
         return configuration;
     }

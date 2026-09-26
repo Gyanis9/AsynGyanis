@@ -59,8 +59,8 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::uint64_t deliveredOffset() const noexcept;
 
     private:
-        std::map<std::uint64_t, std::vector<std::uint8_t>> m_fragments{}; ///< 覆盖区，按起始偏移索引且互不重叠、互不相接
-        std::uint64_t m_deliveredOffset{0};                               ///< 已经交出去的字节数
-        std::size_t m_bufferedByteCount{0};                               ///< 缓存字节数，随插入与排干增减
+        std::map<std::uint64_t, std::vector<std::uint8_t>> m_fragments{};          ///< 覆盖区，按起始偏移索引且互不重叠、互不相接
+        std::uint64_t                                      m_deliveredOffset{0};   ///< 已经交出去的字节数
+        std::size_t                                        m_bufferedByteCount{0}; ///< 缓存字节数，随插入与排干增减
     };
 } // namespace AsynGyanis::Net

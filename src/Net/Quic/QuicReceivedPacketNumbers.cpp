@@ -34,7 +34,7 @@ namespace AsynGyanis::Net
             // 接在右邻开头之前：起点前移一格。键不能直接改，用 extract 摘下节点改完再装回去——
             // 自始至终是同一块内存，因此这条路一次分配都不产生
             ++m_trackedPacketNumberCount;
-            auto movedRange = m_ranges.extract(next);
+            auto movedRange  = m_ranges.extract(next);
             movedRange.key() = packetNumber;
             m_ranges.insert(std::move(movedRange));
             return true;
@@ -49,9 +49,9 @@ namespace AsynGyanis::Net
     {
         while (!m_ranges.empty() && m_trackedPacketNumberCount > maximumTracked)
         {
-            const auto oldest = m_ranges.begin();
+            const auto        oldest     = m_ranges.begin();
             const std::size_t oldestSpan = static_cast<std::size_t>(oldest->second - oldest->first + 1U);
-            const std::size_t excess = m_trackedPacketNumberCount - maximumTracked;
+            const std::size_t excess     = m_trackedPacketNumberCount - maximumTracked;
             if (oldestSpan <= excess)
             {
                 // 整段都在额度之外：连着这段一起丢，留下一段空起点没有意义

@@ -26,19 +26,14 @@ namespace AsynGyanis::Net
         // 窗口初值与上限两条常量在 Http2Frame.h：那是角色中立的协议数值，两条方向共用一份
     } // namespace
 
-    Http2ClientConnection::Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport,
-                                                 const Config config)
-        : m_loop(loop)
-        , m_transport(std::move(transport))
-        , m_config(config)
-        , m_decoder(Http2FrameLimits{.maximumFrameSizeByteCount = config.maximumFrameByteSize})
+    Http2ClientConnection::Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport, const Config config) :
+        m_loop(loop), m_transport(std::move(transport)), m_config(config), m_decoder(Http2FrameLimits{.maximumFrameSizeByteCount = config.maximumFrameByteSize})
     {
         m_connectionSendWindowByteCount = kHttp2InitialWindowSizeByteCount;
         if (config.maximumOpenedStreamCount == 0U || config.maximumOpenedStreamCount > kMaximumOpenedStreamCount)
         {
-            throw Base::InvalidArgumentException(
-                    "Http2ClientConnection: 本端开流额度必须落在 1 到 2^30 之间：填 0 一条流都提不出，"
-                    "填得更大就会让流号越过 RFC 7540 §5.1.1 的 2^31-1 上界。");
+            throw Base::InvalidArgumentException("Http2ClientConnection: 本端开流额度必须落在 1 到 2^30 之间：填 0 一条流都提不出，"
+                                                 "填得更大就会让流号越过 RFC 7540 §5.1.1 的 2^31-1 上界。");
         }
     }
 
@@ -75,7 +70,7 @@ namespace AsynGyanis::Net
 
     void Http2ClientConnection::fail(std::string reason)
     {
-        m_isHealthy = false;
+        m_isHealthy    = false;
         m_errorMessage = std::move(reason);
     }
 
@@ -98,13 +93,9 @@ namespace AsynGyanis::Net
     std::string Http2ClientConnection::encodeLocalSettings() const
     {
         Http2SettingsPayload payload;
-        payload.parameters.push_back(
-                Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::EnablePush), .value = 0U});
-        payload.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize),
-                                                  .value = m_config.initialWindowByteCount});
-        payload.parameters.push_back(
-                Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::MaxFrameSize),
-                             .value = m_config.maximumFrameByteSize});
+        payload.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::EnablePush), .value = 0U});
+        payload.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize), .value = m_config.initialWindowByteCount});
+        payload.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::MaxFrameSize), .value = m_config.maximumFrameByteSize});
         return encodeHttp2SettingsFrame(payload);
     }
 
@@ -124,7 +115,7 @@ namespace AsynGyanis::Net
             }
             m_isFlushInProgress = true;
             const FlushTurnGuard guard(*this);
-            std::string pending;
+            std::string          pending;
             pending.swap(m_outgoing);
             bool isWritten = false;
             try
@@ -175,13 +166,13 @@ namespace AsynGyanis::Net
         {
             fail(m_errorMessage.empty() ? "没等到对端的 SETTINGS：连接前奏没走完" : m_errorMessage);
         }
-        co_return m_isPeerSettingsReceived && isHealthy();
+        co_return m_isPeerSettingsReceived &&isHealthy();
     }
 
     Core::Task<bool> Http2ClientConnection::pumpSome()
     {
         std::array<char, kReadChunkByteCount> buffer{};
-        ssize_t receivedByteCount = -1;
+        ssize_t                               receivedByteCount = -1;
         try
         {
             receivedByteCount = co_await m_transport->receive(buffer.data(), buffer.size());
@@ -203,7 +194,7 @@ namespace AsynGyanis::Net
             co_return false;
         }
 
-        std::size_t offset = 0;
+        std::size_t       offset            = 0;
         const std::size_t readableByteCount = static_cast<std::size_t>(receivedByteCount);
         while (offset < readableByteCount && isHealthy())
         {
@@ -271,7 +262,7 @@ namespace AsynGyanis::Net
     bool Http2ClientConnection::handleSettingsFrame(const Http2Frame &frame)
     {
         Http2SettingsPayload payload;
-        std::string errorText;
+        std::string          errorText;
         if (!parseHttp2SettingsPayload(frame, payload, &errorText))
         {
             failConnection(Http2ErrorCode::ProtocolError, "SETTINGS 帧不合规：" + errorText);
@@ -283,8 +274,7 @@ namespace AsynGyanis::Net
             // 说明对端把账记错了，留着它等于承认后面每条 SETTINGS 都可以各回一次确认
             if (m_isOwnSettingsAcknowledged)
             {
-                failConnection(Http2ErrorCode::ProtocolError,
-                               "收到多余的 SETTINGS ACK：本端只发过一次 SETTINGS（RFC 7540 §6.5.3）");
+                failConnection(Http2ErrorCode::ProtocolError, "收到多余的 SETTINGS ACK：本端只发过一次 SETTINGS（RFC 7540 §6.5.3）");
                 return false;
             }
             m_isOwnSettingsAcknowledged = true;
@@ -309,8 +299,7 @@ namespace AsynGyanis::Net
                     {
                         // 两条布尔型参数同理：0/1 之外的取值没有第三种语义可推（§6.5.2 与 RFC 8441 §3）
                         failConnection(Http2ErrorCode::ProtocolError,
-                                       std::format("对端 SETTINGS 的参数 {} 取值 {} 非法：布尔型只允许 0 或 1（RFC 7540 §6.5.2）",
-                                                   setting.identifier, setting.value));
+                                       std::format("对端 SETTINGS 的参数 {} 取值 {} 非法：布尔型只允许 0 或 1（RFC 7540 §6.5.2）", setting.identifier, setting.value));
                         return false;
                     }
                     break;
@@ -319,23 +308,21 @@ namespace AsynGyanis::Net
                     if (setting.value > kHttp2MaximumWindowSizeByteCount)
                     {
                         failConnection(Http2ErrorCode::FlowControlError,
-                                       std::format("对端 SETTINGS 的 INITIAL_WINDOW_SIZE 取值 {} 超过上限 2^31-1（RFC 7540 §6.5.2）",
-                                                   setting.value));
+                                       std::format("对端 SETTINGS 的 INITIAL_WINDOW_SIZE 取值 {} 超过上限 2^31-1（RFC 7540 §6.5.2）", setting.value));
                         return false;
                     }
                     // §6.9.2：改了初值要按差值追溯地调整**每一条在途流**的窗口，否则新旧几条流按两套账
                     // 算；平移之后越过上限同样是流控错误（对端把窗口"改大到装不下"也是它挑的）
-                    const std::int64_t deltaByteCount = static_cast<std::int64_t>(setting.value)
-                                                      - static_cast<std::int64_t>(m_peerInitialStreamWindowByteCount);
+                    const std::int64_t deltaByteCount = static_cast<std::int64_t>(setting.value) - static_cast<std::int64_t>(m_peerInitialStreamWindowByteCount);
                     for (auto &entry: m_pendingStreams)
                     {
                         PendingStream &stream = entry.second;
                         stream.sendWindowByteCount += deltaByteCount;
                         if (stream.sendWindowByteCount > static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
                         {
-                            failConnection(Http2ErrorCode::FlowControlError,
-                                           std::format("对端把 INITIAL_WINDOW_SIZE 改成 {} 之后，流 {} 的发送窗口超过上限 2^31-1（RFC 7540 §6.9.2）",
-                                                       setting.value, stream.streamId));
+                            failConnection(
+                                    Http2ErrorCode::FlowControlError,
+                                    std::format("对端把 INITIAL_WINDOW_SIZE 改成 {} 之后，流 {} 的发送窗口超过上限 2^31-1（RFC 7540 §6.9.2）", setting.value, stream.streamId));
                             return false;
                         }
                     }
@@ -346,9 +333,8 @@ namespace AsynGyanis::Net
                     if (setting.value < kHttp2DefaultMaximumFrameSize || setting.value > kHttp2MaximumMaximumFrameSize)
                     {
                         // 这一条不只是合法性问题：本端按它切正文，收到 0 就是每帧 0 字节的死循环
-                        failConnection(Http2ErrorCode::ProtocolError,
-                                       std::format("对端 SETTINGS 的 MAX_FRAME_SIZE 取值 {} 越界：合法区间是 [{}, {}]（RFC 7540 §6.5.2）",
-                                                   setting.value, kHttp2DefaultMaximumFrameSize, kHttp2MaximumMaximumFrameSize));
+                        failConnection(Http2ErrorCode::ProtocolError, std::format("对端 SETTINGS 的 MAX_FRAME_SIZE 取值 {} 越界：合法区间是 [{}, {}]（RFC 7540 §6.5.2）",
+                                                                                  setting.value, kHttp2DefaultMaximumFrameSize, kHttp2MaximumMaximumFrameSize));
                         return false;
                     }
                     m_peerMaximumFrameByteSize = setting.value;
@@ -385,7 +371,7 @@ namespace AsynGyanis::Net
             // 只攒不写——写由 pumpSome 的收尾统一做，这里再早退就不会把这条 GOAWAY 送出去
             Http2GoAwayPayload payload;
             payload.lastStreamId = lastOpenedStreamId();
-            payload.errorCode = errorCode;
+            payload.errorCode    = errorCode;
             appendOutgoing(encodeHttp2GoAwayFrame(payload));
         }
         fail(std::move(reason));
@@ -438,14 +424,13 @@ namespace AsynGyanis::Net
         const PendingStream &stream = iterator->second;
         // 「此刻没人驱动连接」这一条不能省：等着的人里必须有一个去当驱动者，否则全体挂起、
         // 连上再没人读字节，连接就地僵在这里
-        return stream.isResponseComplete || stream.isReset || !m_connection->isHealthy()
-               || !m_connection->m_isPumpLeaseTaken;
+        return stream.isResponseComplete || stream.isReset || !m_connection->isHealthy() || !m_connection->m_isPumpLeaseTaken;
     }
 
     bool Http2ClientConnection::StreamAwaiter::await_suspend(const std::coroutine_handle<> waiter) noexcept
     {
-        auto &connection = *m_connection;
-        const auto iterator = connection.m_pendingStreams.find(m_streamId);
+        auto      &connection = *m_connection;
+        const auto iterator   = connection.m_pendingStreams.find(m_streamId);
         if (iterator == connection.m_pendingStreams.end())
         {
             return false; // 挂不上就不挂：让协程继续往下走，它自己的收尾逻辑会处理
@@ -478,10 +463,9 @@ namespace AsynGyanis::Net
         // 解码器，两边的动态表就此错位，留着连接只会让后面每条响应都解歪
         if (stream.pendingHeaderBlock.size() + fragment.size() > m_config.maximumHeaderBlockByteCount)
         {
-            failConnection(Http2ErrorCode::EnhanceYourCalm,
-                           std::format("流 {} 的头块压缩后已超过本端上限 {} 字节（HEADERS 与 CONTINUATION 片段之和）："
-                                       "本端无法在撑爆内存的前提下继续同步 HPACK 动态表，只能终止连接，请对端减小头列表",
-                                       stream.streamId, m_config.maximumHeaderBlockByteCount));
+            failConnection(Http2ErrorCode::EnhanceYourCalm, std::format("流 {} 的头块压缩后已超过本端上限 {} 字节（HEADERS 与 CONTINUATION 片段之和）："
+                                                                        "本端无法在撑爆内存的前提下继续同步 HPACK 动态表，只能终止连接，请对端减小头列表",
+                                                                        stream.streamId, m_config.maximumHeaderBlockByteCount));
             return false;
         }
         stream.pendingHeaderBlock.append(fragment);
@@ -491,8 +475,8 @@ namespace AsynGyanis::Net
     bool Http2ClientConnection::finishHeaderBlock(PendingStream &stream)
     {
         std::vector<HpackHeaderField> headerFields;
-        std::string errorText;
-        const std::string headerBlock = std::move(stream.pendingHeaderBlock);
+        std::string                   errorText;
+        const std::string             headerBlock = std::move(stream.pendingHeaderBlock);
         stream.pendingHeaderBlock.clear();
         if (!m_headerDecoder.decode(headerBlock, headerFields, &errorText))
         {
@@ -506,11 +490,7 @@ namespace AsynGyanis::Net
         stream.response.isAnyByteReceived = true;
         // 只有带 :status 的那一段才是「一个新的响应头部」，清空旧的才有意义；尾部头块（trailers）不带
         // 伪头，它是要往已有头部后面接的——一起清掉就把真正的响应头部抹没了
-        const bool isNewResponseHead = std::any_of(headerFields.begin(), headerFields.end(),
-                                                   [](const HpackHeaderField &field)
-                                                   {
-                                                       return field.name == ":status";
-                                                   });
+        const bool isNewResponseHead = std::any_of(headerFields.begin(), headerFields.end(), [](const HpackHeaderField &field) { return field.name == ":status"; });
         if (isNewResponseHead)
         {
             stream.response.headers.clear();
@@ -533,7 +513,7 @@ namespace AsynGyanis::Net
     bool Http2ClientConnection::handleHeadersFrame(const Http2Frame &frame)
     {
         Http2HeadersPayload payload;
-        std::string errorText;
+        std::string         errorText;
         if (!parseHttp2HeadersPayload(frame, payload, &errorText))
         {
             failConnection(Http2ErrorCode::ProtocolError, "HEADERS 帧不合规：" + errorText);
@@ -548,24 +528,21 @@ namespace AsynGyanis::Net
             if (!payload.endHeaders)
             {
                 failConnection(Http2ErrorCode::ProtocolError,
-                               std::format("流 {} 的头块没结束却没人替它攒片段：本端不认识这条流，多段头块无法继续同步 HPACK 动态表",
-                                           frame.header.streamId));
+                               std::format("流 {} 的头块没结束却没人替它攒片段：本端不认识这条流，多段头块无法继续同步 HPACK 动态表", frame.header.streamId));
                 return false;
             }
             PendingStream orphan;
             orphan.streamId = frame.header.streamId;
-            return appendHeaderBlockFragment(orphan, payload.headerBlockFragment)
-                   && finishHeaderBlock(orphan);
+            return appendHeaderBlockFragment(orphan, payload.headerBlockFragment) && finishHeaderBlock(orphan);
         }
         PendingStream &stream = iterator->second;
         if (stream.isResponseComplete)
         {
             // 与 DATA 那一支同一条法：尾部头块（trailers）必须在它自己的 END_STREAM **之前**到，
             // 收齐之后再来的头块就不是尾部，而是对一条已关闭的流动手脚（§5.1「closed」段）
-            failConnection(Http2ErrorCode::StreamClosed,
-                           std::format("流 {} 已收到 END_STREAM 又来 HEADERS：RFC 7540 §5.1「closed」段要求按连接错误 "
-                                       "STREAM_CLOSED 处理",
-                                       frame.header.streamId));
+            failConnection(Http2ErrorCode::StreamClosed, std::format("流 {} 已收到 END_STREAM 又来 HEADERS：RFC 7540 §5.1「closed」段要求按连接错误 "
+                                                                     "STREAM_CLOSED 处理",
+                                                                     frame.header.streamId));
             return false;
         }
         stream.isAwaitingContinuation = !payload.endHeaders;
@@ -591,7 +568,7 @@ namespace AsynGyanis::Net
     bool Http2ClientConnection::handleContinuationFrame(const Http2Frame &frame)
     {
         Http2ContinuationPayload payload;
-        std::string errorText;
+        std::string              errorText;
         if (!parseHttp2ContinuationPayload(frame, payload, &errorText))
         {
             failConnection(Http2ErrorCode::ProtocolError, "CONTINUATION 帧不合规：" + errorText);
@@ -604,7 +581,7 @@ namespace AsynGyanis::Net
             failConnection(Http2ErrorCode::ProtocolError, "收到不该出现的 CONTINUATION");
             return false;
         }
-        PendingStream &stream = iterator->second;
+        PendingStream &stream         = iterator->second;
         stream.isAwaitingContinuation = !payload.endHeaders;
         if (!appendHeaderBlockFragment(stream, payload.headerBlockFragment))
         {
@@ -620,14 +597,14 @@ namespace AsynGyanis::Net
     bool Http2ClientConnection::handleDataFrame(const Http2Frame &frame)
     {
         Http2DataPayload payload;
-        std::string errorText;
+        std::string      errorText;
         if (!parseHttp2DataPayload(frame, payload, &errorText))
         {
             failConnection(Http2ErrorCode::ProtocolError, "DATA 帧不合规：" + errorText);
             return false;
         }
         const std::uint32_t streamId = frame.header.streamId;
-        const auto iterator = m_pendingStreams.find(streamId);
+        const auto          iterator = m_pendingStreams.find(streamId);
         if (iterator == m_pendingStreams.end())
         {
             // 已收完或已被 RST 的流上还在来数据：字节仍占着连接窗口，账要还，内容丢掉
@@ -640,10 +617,9 @@ namespace AsynGyanis::Net
             // 双向 END_STREAM 之后这条流就是「closed」态：再来的 DATA 按连接错误 STREAM_CLOSED 收，
             // 与入站侧同一条法（§5.1「closed」段）。放任它 append 就是让对端往已收齐的正文尾巴上
             // 塞字节——调用方拿到的长度比流上宣告的多出一截，且没有任何一处会报错
-            failConnection(Http2ErrorCode::StreamClosed,
-                           std::format("流 {} 已收到 END_STREAM 又来 DATA：RFC 7540 §5.1「closed」段要求按连接错误 "
-                                       "STREAM_CLOSED 处理",
-                                       streamId));
+            failConnection(Http2ErrorCode::StreamClosed, std::format("流 {} 已收到 END_STREAM 又来 DATA：RFC 7540 §5.1「closed」段要求按连接错误 "
+                                                                     "STREAM_CLOSED 处理",
+                                                                     streamId));
             return false;
         }
         if (stream.isReset)
@@ -654,13 +630,11 @@ namespace AsynGyanis::Net
             return true;
         }
         stream.response.isAnyByteReceived = true;
-        if (m_config.maximumResponseBodyBytes != 0U
-            && stream.response.body.size() + payload.data.size() > m_config.maximumResponseBodyBytes)
+        if (m_config.maximumResponseBodyBytes != 0U && stream.response.body.size() + payload.data.size() > m_config.maximumResponseBodyBytes)
         {
             // 上限是本端的胃口，不是对端犯了协议错：只结这一条流（RST CANCEL），连接留给别的流用
             rejectStreamForBodyLimit(stream);
-        }
-        else
+        } else
         {
             stream.response.body.append(payload.data);
         }
@@ -676,18 +650,17 @@ namespace AsynGyanis::Net
 
     void Http2ClientConnection::rejectStreamForBodyLimit(PendingStream &stream)
     {
-        stream.isReset = true;
+        stream.isReset               = true;
         stream.response.errorMessage = std::format("响应正文超过本端上限 {} 字节：不打算收这么大的响应就把 "
                                                    "Config::maximumResponseBodyBytes 调高（填 0 表示不限）",
                                                    m_config.maximumResponseBodyBytes);
-        appendOutgoing(encodeHttp2RstStreamFrame(
-                Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, stream.streamId));
+        appendOutgoing(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, stream.streamId));
     }
 
     bool Http2ClientConnection::handleWindowUpdateFrame(const Http2Frame &frame)
     {
         Http2WindowUpdatePayload payload;
-        std::string errorText;
+        std::string              errorText;
         if (!parseHttp2WindowUpdatePayload(frame, payload, &errorText))
         {
             failConnection(Http2ErrorCode::ProtocolError, "WINDOW_UPDATE 帧不合规：" + errorText);
@@ -715,10 +688,9 @@ namespace AsynGyanis::Net
         if (stream.sendWindowByteCount > static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
         {
             // 单流溢出只结这条流（与自家服务端同一条判据），牵连不到别的流
-            stream.isReset = true;
+            stream.isReset               = true;
             stream.response.errorMessage = "对端的流控增量越过 31 位上界（RFC 7540 §6.9.1）";
-            appendOutgoing(encodeHttp2RstStreamFrame(
-                    Http2RstStreamPayload{.errorCode = Http2ErrorCode::FlowControlError}, frame.header.streamId));
+            appendOutgoing(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::FlowControlError}, frame.header.streamId));
         }
         return true;
     }
@@ -726,7 +698,7 @@ namespace AsynGyanis::Net
     bool Http2ClientConnection::handleGoAwayFrame(const Http2Frame &frame)
     {
         Http2GoAwayPayload payload;
-        std::string errorText;
+        std::string        errorText;
         if (!parseHttp2GoAwayPayload(frame, payload, &errorText))
         {
             failConnection(Http2ErrorCode::ProtocolError, "GOAWAY 帧不合规：" + errorText);
@@ -737,7 +709,7 @@ namespace AsynGyanis::Net
         {
             if (entry.first > payload.lastStreamId)
             {
-                entry.second.isReset = true;
+                entry.second.isReset               = true;
                 entry.second.response.errorMessage = "对端收尾时没把这条流算进已受理范围（GOAWAY）";
             }
         }
@@ -747,7 +719,7 @@ namespace AsynGyanis::Net
     bool Http2ClientConnection::handleRstStreamFrame(const Http2Frame &frame)
     {
         Http2RstStreamPayload payload;
-        std::string errorText;
+        std::string           errorText;
         if (!parseHttp2RstStreamPayload(frame, payload, &errorText))
         {
             failConnection(Http2ErrorCode::ProtocolError, "RST_STREAM 帧不合规：" + errorText);
@@ -760,16 +732,15 @@ namespace AsynGyanis::Net
         }
         // 对端亲手中止这条流，说明请求已被接手：这一位为真，复用侧就不该再重来一次
         iterator->second.response.isAnyByteReceived = true;
-        iterator->second.isReset = true;
-        iterator->second.response.errorMessage =
-                std::string("对端按「") + std::string(http2ErrorCodeName(payload.errorCode)) + "」中止了这条流";
+        iterator->second.isReset                    = true;
+        iterator->second.response.errorMessage      = std::string("对端按「") + std::string(http2ErrorCodeName(payload.errorCode)) + "」中止了这条流";
         return true;
     }
 
     bool Http2ClientConnection::handlePingFrame(const Http2Frame &frame)
     {
         Http2PingPayload payload;
-        std::string errorText;
+        std::string      errorText;
         if (!parseHttp2PingPayload(frame, payload, &errorText))
         {
             failConnection(Http2ErrorCode::ProtocolError, "PING 帧不合规：" + errorText);
@@ -784,8 +755,7 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    Core::Task<bool> Http2ClientConnection::sendBody(PendingStream &stream, const std::string_view body,
-                                                     const bool isEndOfBody)
+    Core::Task<bool> Http2ClientConnection::sendBody(PendingStream &stream, const std::string_view body, const bool isEndOfBody)
     {
         std::size_t offset = 0;
         while (offset < body.size())
@@ -814,16 +784,14 @@ namespace AsynGyanis::Net
                 co_return false;
             }
             const std::size_t chunkByteCount =
-                    std::min(static_cast<std::size_t>(availableByteCount),
-                             std::min(body.size() - offset, static_cast<std::size_t>(m_peerMaximumFrameByteSize)));
+                    std::min(static_cast<std::size_t>(availableByteCount), std::min(body.size() - offset, static_cast<std::size_t>(m_peerMaximumFrameByteSize)));
             const bool isLastChunk = isEndOfBody && offset + chunkByteCount >= body.size();
             // 窗口先扣再写：写是一次 await，这期间别人看的必须是扣过的账。两条流各自按同一份连接
             // 窗口算一遍，总量就会越过对端通告的上界（§6.9.1 的 FLOW_CONTROL_ERROR）
             m_connectionSendWindowByteCount -= static_cast<std::int64_t>(chunkByteCount);
             stream.sendWindowByteCount -= static_cast<std::int64_t>(chunkByteCount);
             stream.response.isAnyByteSent = true;
-            appendOutgoing(encodeHttp2Frame(Http2FrameType::Data, isLastChunk ? kHttp2FlagEndStream : 0U, stream.streamId,
-                                            body.substr(offset, chunkByteCount)));
+            appendOutgoing(encodeHttp2Frame(Http2FrameType::Data, isLastChunk ? kHttp2FlagEndStream : 0U, stream.streamId, body.substr(offset, chunkByteCount)));
             if (!co_await flushOutgoing())
             {
                 co_return false;
@@ -864,28 +832,24 @@ namespace AsynGyanis::Net
         co_return co_await flushOutgoing();
     }
 
-    Core::Task<Http2ClientResponse> Http2ClientConnection::request(
-            const std::string_view scheme, const std::string_view authority, const std::string_view method,
-            const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-            const std::string_view body, const std::chrono::milliseconds waitTimeout)
+    Core::Task<Http2ClientResponse> Http2ClientConnection::request(const std::string_view scheme, const std::string_view authority, const std::string_view method,
+                                                                   const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
+                                                                   const std::string_view body, const std::chrono::milliseconds waitTimeout)
     {
         co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, body, nullptr, waitTimeout);
     }
 
-    Core::Task<Http2ClientResponse> Http2ClientConnection::requestStreamed(
-            const std::string_view scheme, const std::string_view authority, const std::string_view method,
-            const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-            const HttpBodyChunkSource &bodySource, const std::chrono::milliseconds waitTimeout)
+    Core::Task<Http2ClientResponse> Http2ClientConnection::requestStreamed(const std::string_view scheme, const std::string_view authority, const std::string_view method,
+                                                                           const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
+                                                                           const HttpBodyChunkSource &bodySource, const std::chrono::milliseconds waitTimeout)
     {
-        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, std::string_view{},
-                                           &bodySource, waitTimeout);
+        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, std::string_view{}, &bodySource, waitTimeout);
     }
 
-    Core::Task<Http2ClientResponse> Http2ClientConnection::requestWithBody(
-            const std::string_view scheme, const std::string_view authority, const std::string_view method,
-            const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-            const std::string_view body, const HttpBodyChunkSource *const bodySourceOrNull,
-            const std::chrono::milliseconds waitTimeout)
+    Core::Task<Http2ClientResponse> Http2ClientConnection::requestWithBody(const std::string_view scheme, const std::string_view authority, const std::string_view method,
+                                                                           const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
+                                                                           const std::string_view body, const HttpBodyChunkSource *const bodySourceOrNull,
+                                                                           const std::chrono::milliseconds waitTimeout)
     {
         Http2ClientResponse response;
         if (!isHealthy())
@@ -924,7 +888,7 @@ namespace AsynGyanis::Net
         pending.streamId = streamId;
         // 新流的发送窗口从对端通告的初值起算（§6.9.2）；本端 SETTINGS 里那条改的是自己收侧的账
         pending.sendWindowByteCount = static_cast<std::int64_t>(m_peerInitialStreamWindowByteCount);
-        PendingStream &stream = m_pendingStreams.emplace(streamId, std::move(pending)).first->second;
+        PendingStream &stream       = m_pendingStreams.emplace(streamId, std::move(pending)).first->second;
 
         const std::string headerBlock = m_encoder.encode(fields);
         // 只有「既没有整份正文、也没有流式来源」才轮到 HEADERS 收尾：END_STREAM 落在头块上就等于
@@ -937,21 +901,17 @@ namespace AsynGyanis::Net
         const std::size_t maximumFragmentByteCount = static_cast<std::size_t>(m_peerMaximumFrameByteSize);
         for (std::size_t offset = 0U;;)
         {
-            const std::size_t fragmentByteCount = std::min(maximumFragmentByteCount, headerBlock.size() - offset);
-            const bool isLastFragment = offset + fragmentByteCount >= headerBlock.size();
+            const std::size_t      fragmentByteCount = std::min(maximumFragmentByteCount, headerBlock.size() - offset);
+            const bool             isLastFragment    = offset + fragmentByteCount >= headerBlock.size();
             const std::string_view fragment(headerBlock.data() + offset, fragmentByteCount);
             if (offset == 0U)
             {
                 appendOutgoing(encodeHttp2Frame(Http2FrameType::Headers,
-                                                static_cast<std::uint8_t>(
-                                                        (isLastFragment ? kHttp2FlagEndHeaders : 0U)
-                                                        | (isEndStreamOnHeaders ? kHttp2FlagEndStream : 0U)),
+                                                static_cast<std::uint8_t>((isLastFragment ? kHttp2FlagEndHeaders : 0U) | (isEndStreamOnHeaders ? kHttp2FlagEndStream : 0U)),
                                                 streamId, fragment));
-            }
-            else
+            } else
             {
-                appendOutgoing(encodeHttp2Frame(Http2FrameType::Continuation,
-                                                isLastFragment ? kHttp2FlagEndHeaders : 0U, streamId, fragment));
+                appendOutgoing(encodeHttp2Frame(Http2FrameType::Continuation, isLastFragment ? kHttp2FlagEndHeaders : 0U, streamId, fragment));
             }
             offset += fragmentByteCount;
             if (isLastFragment)
@@ -961,7 +921,7 @@ namespace AsynGyanis::Net
         }
 
         const Core::DeadlineGuard<Http2ClientConnection> deadline(m_loop, *this, waitTimeout, "Http2ClientConnection");
-        const bool isHeadWritten = co_await flushOutgoing();
+        const bool                                       isHeadWritten = co_await flushOutgoing();
         if (isHeadWritten)
         {
             // 写成功才算「发出去了」：通路本来就死着的话这次写会失败，那仍属于「对端在我们手里把连接
@@ -975,8 +935,7 @@ namespace AsynGyanis::Net
             if (bodySourceOrNull != nullptr)
             {
                 isBodyWritten = co_await sendStreamedBody(stream, *bodySourceOrNull);
-            }
-            else
+            } else
             {
                 isBodyWritten = body.empty() || co_await sendBody(stream, body);
             }
@@ -1017,12 +976,12 @@ namespace AsynGyanis::Net
             }
         }
 
-        bool isConcluded = false;
+        bool       isConcluded       = false;
         const auto remainingIterator = m_pendingStreams.find(streamId);
         if (remainingIterator != m_pendingStreams.end())
         {
             isConcluded = remainingIterator->second.isResponseComplete || remainingIterator->second.isReset;
-            response = std::move(remainingIterator->second.response);
+            response    = std::move(remainingIterator->second.response);
             m_pendingStreams.erase(remainingIterator);
         }
         if (!isConcluded && response.errorMessage.empty())
@@ -1046,7 +1005,7 @@ namespace AsynGyanis::Net
         {
             Http2GoAwayPayload payload;
             payload.lastStreamId = lastOpenedStreamId();
-            payload.errorCode = Http2ErrorCode::NoError;
+            payload.errorCode    = Http2ErrorCode::NoError;
             appendOutgoing(encodeHttp2GoAwayFrame(payload));
             static_cast<void>(co_await flushOutgoing());
         }

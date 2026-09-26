@@ -29,10 +29,10 @@ namespace
     {
         Platform::SocketAddress address{};
         auto                   &ipv4 = reinterpret_cast<sockaddr_in &>(address.storage);
-        ipv4.sin_family = AF_INET;
-        ipv4.sin_port = htons(port);
-        ipv4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        address.length = static_cast<socklen_t>(sizeof(sockaddr_in));
+        ipv4.sin_family              = AF_INET;
+        ipv4.sin_port                = htons(port);
+        ipv4.sin_addr.s_addr         = htonl(INADDR_LOOPBACK);
+        address.length               = static_cast<socklen_t>(sizeof(sockaddr_in));
         return address;
     }
 
@@ -61,30 +61,27 @@ namespace
 
     void demonstrateDescriptors()
     {
-        Samples::checklist().check(!Platform::FileDescriptor::isValid(Platform::FileDescriptor::kInvalid) &&
-                                           Platform::FileDescriptor::isValid(0),
+        Samples::checklist().check(!Platform::FileDescriptor::isValid(Platform::FileDescriptor::kInvalid) && Platform::FileDescriptor::isValid(0),
                                    "FileDescriptor::isValid 认得哨兵值");
 
-        int readDescriptor = -1;
-        int writeDescriptor = -1;
-        const bool isPairCreated = Platform::FileDescriptor::createPair(readDescriptor, writeDescriptor);
-        Samples::checklist().check(isPairCreated && Platform::FileDescriptor::isValid(readDescriptor),
-                                   "createPair 造出一对可通讯的描述符");
+        int        readDescriptor  = -1;
+        int        writeDescriptor = -1;
+        const bool isPairCreated   = Platform::FileDescriptor::createPair(readDescriptor, writeDescriptor);
+        Samples::checklist().check(isPairCreated && Platform::FileDescriptor::isValid(readDescriptor), "createPair 造出一对可通讯的描述符");
         if (!isPairCreated)
         {
             return;
         }
 
-        const char        payload[] = "ping";
-        const ssize_t     writtenByteCount = Platform::FileDescriptor::write(writeDescriptor, payload, sizeof(payload) - 1);
-        std::string       receivedText(static_cast<std::size_t>(writtenByteCount), '\0');
-        const ssize_t     readByteCount = Platform::FileDescriptor::read(readDescriptor, receivedText.data(), receivedText.size());
-        Samples::checklist().check(writtenByteCount == 4 && readByteCount == 4 && receivedText == "ping",
-                                   "管道写入的字节能原样读回来");
+        const char    payload[]        = "ping";
+        const ssize_t writtenByteCount = Platform::FileDescriptor::write(writeDescriptor, payload, sizeof(payload) - 1);
+        std::string   receivedText(static_cast<std::size_t>(writtenByteCount), '\0');
+        const ssize_t readByteCount = Platform::FileDescriptor::read(readDescriptor, receivedText.data(), receivedText.size());
+        Samples::checklist().check(writtenByteCount == 4 && readByteCount == 4 && receivedText == "ping", "管道写入的字节能原样读回来");
 
         // 置非阻塞之后，空管道上的读要立刻返回错误而不是把调用方挂住
         static_cast<void>(Platform::FileDescriptor::setNonBlocking(readDescriptor));
-        std::uint8_t scratch[4]{};
+        std::uint8_t  scratch[4]{};
         const ssize_t wouldBlockRead = Platform::FileDescriptor::read(readDescriptor, scratch, sizeof(scratch));
         Samples::checklist().check(wouldBlockRead <= 0, "非阻塞的读在没数据时立刻返回而不停下");
 
@@ -97,11 +94,9 @@ namespace
         Platform::EventNotifier notifier;
         Samples::checklist().check(notifier.isValid(), "EventNotifier 建出了可用的唤醒通道");
         notifier.notify();
-        Samples::checklist().check(waitReadable(notifier.readDescriptor(), std::chrono::seconds{1}),
-                                   "notify 之后读端立刻可读");
+        Samples::checklist().check(waitReadable(notifier.readDescriptor(), std::chrono::seconds{1}), "notify 之后读端立刻可读");
         notifier.drain();
-        Samples::checklist().check(!waitReadable(notifier.readDescriptor(), std::chrono::milliseconds{80}),
-                                   "drain 之后读端不再可读出通知");
+        Samples::checklist().check(!waitReadable(notifier.readDescriptor(), std::chrono::milliseconds{80}), "drain 之后读端不再可读出通知");
 
         Platform::TimerFileDescriptor timer;
         Samples::checklist().check(timer.isValid(), "TimerFileDescriptor 可用（Windows 上走定时器队列桥接）");
@@ -110,8 +105,7 @@ namespace
             return;
         }
         Samples::checklist().check(timer.arm(std::chrono::milliseconds{20}), "arm 一个 20 毫秒的一次性定时");
-        Samples::checklist().check(waitReadable(timer.fileDescriptor(), std::chrono::seconds{2}),
-                                   "到点之后读端拿到了到期通知");
+        Samples::checklist().check(waitReadable(timer.fileDescriptor(), std::chrono::seconds{2}), "到点之后读端拿到了到期通知");
         timer.drain();
         timer.cancel();
     }
@@ -124,8 +118,7 @@ namespace
             output << std::string(4096, 'A');
         }
         auto mapped = Platform::MemoryMappedFile::open(path);
-        Samples::checklist().check(mapped.isValid() && mapped.bytes().size() == 4096,
-                                   "MemoryMappedFile 把整个文件映射进来了");
+        Samples::checklist().check(mapped.isValid() && mapped.bytes().size() == 4096, "MemoryMappedFile 把整个文件映射进来了");
         if (mapped.isValid())
         {
             Samples::checklist().check(*mapped.bytes().begin() == std::byte{'A'}, "映射区的第一个字节就是文件内容");
@@ -140,24 +133,20 @@ namespace
     void demonstrateDatagramRoundTrip()
     {
         auto socket = Platform::DatagramSocket::bindTo(makeLoopbackAddress(0));
-        Samples::checklist().check(socket.isValid() && portOf(socket.localAddress()) != 0,
-                                   "数据报套接字绑到内核分配的端口");
+        Samples::checklist().check(socket.isValid() && portOf(socket.localAddress()) != 0, "数据报套接字绑到内核分配的端口");
         if (!socket.isValid())
         {
             return;
         }
-        const std::string text = "hello-datagram";
-        const ssize_t     sentByteCount = socket.send(socket.localAddress(), text.data(), text.size());
-        std::string       receivedText(text.size(), '\0');
+        const std::string       text          = "hello-datagram";
+        const ssize_t           sentByteCount = socket.send(socket.localAddress(), text.data(), text.size());
+        std::string             receivedText(text.size(), '\0');
         Platform::SocketAddress peerAddress{};
-        const ssize_t           receivedByteCount =
-                socket.receive(receivedText.data(), receivedText.size(), peerAddress);
-        Samples::checklist().check(sentByteCount == static_cast<ssize_t>(text.size()) &&
-                                           receivedByteCount == sentByteCount && receivedText == text &&
+        const ssize_t           receivedByteCount = socket.receive(receivedText.data(), receivedText.size(), peerAddress);
+        Samples::checklist().check(sentByteCount == static_cast<ssize_t>(text.size()) && receivedByteCount == sentByteCount && receivedText == text &&
                                            portOf(peerAddress) == portOf(socket.localAddress()),
                                    "同一条数据报套接字自发自收，来源地址也带回来了");
-        Samples::checklist().check(Platform::DatagramSocket::kMaximumDatagramBytes <= 65535U,
-                                   "数据报上限常量在合理范围内");
+        Samples::checklist().check(Platform::DatagramSocket::kMaximumDatagramBytes <= 65535U, "数据报上限常量在合理范围内");
     }
 
     void demonstrateSocketOptions()
@@ -178,9 +167,7 @@ namespace
         static_cast<void>(Platform::Socket::setDeferAccept(descriptor, 1));
         static_cast<void>(Platform::Socket::setFastOpen(descriptor, 3));
         static_cast<void>(Platform::Socket::setIpv6Only(descriptor, false));
-        Samples::checklist().check(Platform::Socket::setSendBufferSize(descriptor, 64 * 1024) &&
-                                           Platform::Socket::setReceiveBufferSize(descriptor, 64 * 1024),
-                                   "收发缓冲可以设大");
+        Samples::checklist().check(Platform::Socket::setSendBufferSize(descriptor, 64 * 1024) && Platform::Socket::setReceiveBufferSize(descriptor, 64 * 1024), "收发缓冲可以设大");
 
         // 未发生过错误的套接字上，待决错误应为 0；listening/UDP fd 上的 accept 直接失败
         Samples::checklist().check(Platform::Socket::takePendingError(descriptor) == 0, "takePendingError 报 0");
@@ -189,8 +176,8 @@ namespace
         Samples::checklist().check(Platform::Socket::accept(descriptor, reinterpret_cast<sockaddr *>(&peerStorage), &peerLength) < 0,
                                    "在没有待决连接的套接字上 accept 立刻返回负值");
 
-        const char *first = "ab";
-        const char *second = "cd";
+        const char                         *first     = "ab";
+        const char                         *second    = "cd";
         const Platform::Socket::WriteBuffer buffers[] = {{first, 2}, {second, 2}};
         static_cast<void>(Platform::Socket::writeVectored(descriptor, buffers, 2));
         Samples::checklist().check(Platform::Socket::kMaximumVectorCount == 16U, "聚合写的向量上限就位");
@@ -199,18 +186,16 @@ namespace
         Samples::checklist().check(Platform::Socket::kMaximumSendFileChunk > 0U, "零拷贝的分块上限常量就位");
 #endif
 
-        int readDescriptor = -1;
+        int readDescriptor  = -1;
         int writeDescriptor = -1;
         if (Platform::FileDescriptor::createPair(readDescriptor, writeDescriptor))
         {
             const ssize_t vectoredByteCount = Platform::Socket::writeVectored(writeDescriptor, buffers, 2);
-            Samples::checklist().check(vectoredByteCount == 4 || vectoredByteCount < 0,
-                                       "聚合写在管道上要么全写要么如实报错（平台差异）");
+            Samples::checklist().check(vectoredByteCount == 4 || vectoredByteCount < 0, "聚合写在管道上要么全写要么如实报错（平台差异）");
 #ifndef _WIN32
             // 把零拷贝用在不合适的目标上（源不是普通文件、目的不是流式套接字）必须如实返回负值，
             // 不能静默「成功 0 字节」
-            Samples::checklist().check(Platform::Socket::sendFileChunk(readDescriptor, writeDescriptor, 0, 16) < 0,
-                                       "把零拷贝用在不合适的套接字上被如实拒绝");
+            Samples::checklist().check(Platform::Socket::sendFileChunk(readDescriptor, writeDescriptor, 0, 16) < 0, "把零拷贝用在不合适的套接字上被如实拒绝");
 #endif
             static_cast<void>(Platform::FileDescriptor::close(readDescriptor));
             static_cast<void>(Platform::FileDescriptor::close(writeDescriptor));
@@ -229,41 +214,30 @@ namespace
 #endif
         auto quickProcess = Platform::Process::spawn(quickOptions);
         Samples::checklist().check(quickProcess.isValid(), "spawn 起一个立刻退出的子进程");
-        const bool isFinished = Samples::waitUntil(
-                [&quickProcess]
-                { return Platform::Process::pollExitCode(quickProcess).value_or(-1) == 0; }, std::chrono::seconds{10});
-        Samples::checklist().check(isFinished && !Platform::Process::isRunning(quickProcess),
-                                   "子进程按约定的退出码 0 结束");
+        const bool isFinished = Samples::waitUntil([&quickProcess] { return Platform::Process::pollExitCode(quickProcess).value_or(-1) == 0; }, std::chrono::seconds{10});
+        Samples::checklist().check(isFinished && !Platform::Process::isRunning(quickProcess), "子进程按约定的退出码 0 结束");
 
         auto longProcess = Platform::Process::spawn(longOptions);
-        Samples::checklist().check(longProcess.isValid() && Platform::Process::isRunning(longProcess),
-                                   "长驻子进程起来之后 isRunning 为真");
+        Samples::checklist().check(longProcess.isValid() && Platform::Process::isRunning(longProcess), "长驻子进程起来之后 isRunning 为真");
         static_cast<void>(Platform::Process::requestTermination(longProcess));
         // 请求终止是「请它自己收手」，子进程可以不理；这里只在它响应时确认，不响应则留给 forceTermination
-        static_cast<void>(Samples::waitUntil([&longProcess] { return !Platform::Process::isRunning(longProcess); },
-                                             std::chrono::seconds{3}));
+        static_cast<void>(Samples::waitUntil([&longProcess] { return !Platform::Process::isRunning(longProcess); }, std::chrono::seconds{3}));
         static_cast<void>(Platform::Process::forceTermination(longProcess));
-        const bool isGone = Samples::waitUntil([&longProcess] { return !Platform::Process::isRunning(longProcess); },
-                                               std::chrono::seconds{5});
+        const bool isGone = Samples::waitUntil([&longProcess] { return !Platform::Process::isRunning(longProcess); }, std::chrono::seconds{5});
         Samples::checklist().check(isGone, "forceTermination 之后长驻子进程确实没了");
 
         Platform::Process::LaunchOptions bogusOptions;
         bogusOptions.executablePath = "asyn-definitely-not-an-executable";
-        const auto bogusProcess = Platform::Process::spawn(bogusOptions);
+        const auto bogusProcess     = Platform::Process::spawn(bogusOptions);
 #if ASYN_PLATFORM_WIN32
         // Windows 上 CreateProcess 当场失败：拿不到句柄，也不抛
         Samples::checklist().check(!bogusProcess.isValid(), "启动不存在的程序时给出无效句柄而不是抛异常");
 #else
         // POSIX 上是 fork + exec：fork 会成功、exec 才失败，本层的约定是「子进程以 127 退出」，
         // 所以这里句柄有效、退出码才是结论。两端不同形这件事本身就是这份清单要记录的内容之一
-        const bool isBogusFinished = Samples::waitUntil([&bogusProcess]
-                                                        {
-                                                            return !Platform::Process::isRunning(bogusProcess);
-                                                        },
-                                                        std::chrono::seconds{5});
-        const std::optional<int> bogusExitCode = Platform::Process::pollExitCode(bogusProcess);
-        Samples::checklist().check(isBogusFinished && bogusExitCode.value_or(-1) == 127,
-                                   "POSIX 上 fork 成功而 exec 失败：句柄有效，退出码按本层约定为 127");
+        const bool               isBogusFinished = Samples::waitUntil([&bogusProcess] { return !Platform::Process::isRunning(bogusProcess); }, std::chrono::seconds{5});
+        const std::optional<int> bogusExitCode   = Platform::Process::pollExitCode(bogusProcess);
+        Samples::checklist().check(isBogusFinished && bogusExitCode.value_or(-1) == 127, "POSIX 上 fork 成功而 exec 失败：句柄有效，退出码按本层约定为 127");
 #endif
     }
 
@@ -275,29 +249,22 @@ namespace
         Platform::Socket::finalize();
         Samples::checklist().check(isSecondInitialize, "initialize/finalize 按引用计数配对，可重复调用");
 
-        const std::string utf8Text = "中文与 emoji 🙂";
+        const std::string utf8Text  = "中文与 emoji 🙂";
         const std::string roundTrip = Platform::TextEncoding::toUtf8String(Platform::TextEncoding::toWideString(utf8Text));
         Samples::checklist().check(roundTrip == utf8Text, "UTF-8 与宽字符往返一致");
 
         const auto utcFields = Platform::PlatformTime::utcTime(0);
-        Samples::checklist().check(utcFields.year == 1970 && utcFields.month == 1 && utcFields.day == 1,
-                                   "epoch 0 换 UTC 是 1970-01-01");
+        Samples::checklist().check(utcFields.year == 1970 && utcFields.month == 1 && utcFields.day == 1, "epoch 0 换 UTC 是 1970-01-01");
         const auto localFields = Platform::PlatformTime::localTime(0);
-        Samples::checklist().check(localFields.tm_year + 1900 >= 1970 && localFields.tm_mon >= 0 && localFields.tm_mday >= 1,
-                                   "localTime 也能给出完整字段");
+        Samples::checklist().check(localFields.tm_year + 1900 >= 1970 && localFields.tm_mon >= 0 && localFields.tm_mday >= 1, "localTime 也能给出完整字段");
 
-        Samples::checklist().check(!Platform::PlatformError::message(0).empty() &&
-                                           !Platform::PlatformError::message(Platform::PlatformError::kInvalidArgument).empty(),
+        Samples::checklist().check(!Platform::PlatformError::message(0).empty() && !Platform::PlatformError::message(Platform::PlatformError::kInvalidArgument).empty(),
                                    "错误码能翻成可读文本（含 0 与常见码）");
 
-        Samples::checklist().check(Platform::ProcessInfo::currentProcessId() > 0 &&
-                                           !Platform::ProcessInfo::applicationDirectory().empty(),
-                                   "进程号与程序目录都拿得到");
-        Samples::checklist().check(Platform::ProcessInfo::environmentVariable("PATH").has_value() ||
-                                           Platform::ProcessInfo::environmentVariable("Path").has_value(),
+        Samples::checklist().check(Platform::ProcessInfo::currentProcessId() > 0 && !Platform::ProcessInfo::applicationDirectory().empty(), "进程号与程序目录都拿得到");
+        Samples::checklist().check(Platform::ProcessInfo::environmentVariable("PATH").has_value() || Platform::ProcessInfo::environmentVariable("Path").has_value(),
                                    "环境变量按名字能取到（大小写随平台）");
-        Samples::checklist().check(!Platform::ProcessInfo::environmentVariable("ASYN_DEFINITELY_UNSET").has_value(),
-                                   "不存在的环境变量返回空而不是编出一个值");
+        Samples::checklist().check(!Platform::ProcessInfo::environmentVariable("ASYN_DEFINITELY_UNSET").has_value(), "不存在的环境变量返回空而不是编出一个值");
 
         // 只装配、不断言：ensureUtf8Output() 返回 void，控制台输出代码页在进程内没有可查询的出口，
         // 而 supportsAnsiEscapeCodes() 的值由终端能力决定、不是这次装配的结果。留一条恒真断言等于
@@ -305,14 +272,13 @@ namespace
         Platform::Console::ensureUtf8Output();
         LOG_INFO_FMT("终端是否支持 ANSI 颜色转义：{}", Platform::Console::supportsAnsiEscapeCodes() ? "支持" : "不支持");
     }
-}
+} // namespace
 
 int main()
 {
     Samples::setupConsoleLogging();
 
-    const auto directory = std::filesystem::temp_directory_path() /
-                           ("asyn-sample-platform-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
+    const auto directory = std::filesystem::temp_directory_path() / ("asyn-sample-platform-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
     std::filesystem::remove_all(directory);
     std::filesystem::create_directories(directory);
 

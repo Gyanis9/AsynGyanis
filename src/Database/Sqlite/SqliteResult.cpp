@@ -7,8 +7,7 @@
 
 namespace AsynGyanis::Database
 {
-    SqliteResult::SqliteResult(sqlite3_stmt *const statement, sqlite3 *const database) :
-        m_statement(statement), m_database(database)
+    SqliteResult::SqliteResult(sqlite3_stmt *const statement, sqlite3 *const database) : m_statement(statement), m_database(database)
     {
         // 影响行数与最近插入 rowid 都是 SQLite 的连接级计数器：必须在构造这一刻快照，
         // 否则调用方之后在本连接上再执行一条写语句，本对象读到的就是别人的计数
@@ -276,8 +275,8 @@ namespace AsynGyanis::Database
         // 游标退回首行之前，当前行随之失效：不清这个标志会让 getValue() 继续读已被释放的列值
         m_hasCurrentRow = false;
         // 快照模式下重遍历就是把下标拨回去，游标一侧不需要再 reset（构造期已 reset 过，且此后不再读它）
-        m_materializedRowCursor       = 0;
-        m_isCurrentRowMaterialized    = false;
+        m_materializedRowCursor    = 0;
+        m_isCurrentRowMaterialized = false;
         // 解除耗尽闸门：基类契约要求 reset() 之后可以重新完整遍历一遍
         m_scanCompleted = false;
 
@@ -335,8 +334,7 @@ namespace AsynGyanis::Database
             // 预扫描中途出错（例如锁超时）：已数到的行数只是下界，构造阶段属于写路径，
             // 允许记录错误文本；SQLite 的 errmsg 指针会在下一次 API 调用后失效，必须立即拷贝。
             // 句柄缺失（构造时只传了语句）时不能调 sqlite3_errmsg，退回不依赖句柄的全局 sqlite3_errstr
-            m_lastError = std::string("统计 SQLite 结果集行数失败：") +
-                          (m_database != nullptr ? sqlite3_errmsg(m_database) : sqlite3_errstr(stepResult));
+            m_lastError = std::string("统计 SQLite 结果集行数失败：") + (m_database != nullptr ? sqlite3_errmsg(m_database) : sqlite3_errstr(stepResult));
             break;
         }
 
@@ -370,7 +368,7 @@ namespace AsynGyanis::Database
         const int resetResult = sqlite3_reset(m_statement);
         if (resetResult != SQLITE_OK && m_lastError.empty())
         {
-            m_lastError = std::string("重置 SQLite 游标失败：") + sqlite3_errstr(resetResult);
+            m_lastError               = std::string("重置 SQLite 游标失败：") + sqlite3_errstr(resetResult);
             m_isMaterializedRowsValid = false;
         }
     }

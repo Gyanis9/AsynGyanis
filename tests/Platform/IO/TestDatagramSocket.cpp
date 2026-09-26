@@ -39,7 +39,7 @@ namespace AsynGyanis::Platform
         SocketAddress makeLoopbackAddress(const std::uint16_t port)
         {
             SocketAddress address;
-            sockaddr_in    addressV4{};
+            sockaddr_in   addressV4{};
             addressV4.sin_family      = AF_INET;
             addressV4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
             addressV4.sin_port        = htons(port);
@@ -72,8 +72,7 @@ namespace AsynGyanis::Platform
             sockaddr_in rightV4{};
             std::memcpy(&leftV4, &left.storage, sizeof(leftV4));
             std::memcpy(&rightV4, &right.storage, sizeof(rightV4));
-            return leftV4.sin_family == rightV4.sin_family && leftV4.sin_addr.s_addr == rightV4.sin_addr.s_addr &&
-                   leftV4.sin_port == rightV4.sin_port;
+            return leftV4.sin_family == rightV4.sin_family && leftV4.sin_addr.s_addr == rightV4.sin_addr.s_addr && leftV4.sin_port == rightV4.sin_port;
         }
 
         /**
@@ -156,8 +155,7 @@ namespace AsynGyanis::Platform
         for (std::size_t index = 1; index < kListenerCount; ++index)
         {
             listeners.emplace_back(DatagramSocket::bindTo(makeLoopbackAddress(port)));
-            ASSERT_TRUE(listeners.back().isValid()) << "第 " << index + 1 << " 个监听器绑不上共用端口 " << port
-                                                    << "，套接字错误码 " << PlatformError::lastSocketErrorCode();
+            ASSERT_TRUE(listeners.back().isValid()) << "第 " << index + 1 << " 个监听器绑不上共用端口 " << port << "，套接字错误码 " << PlatformError::lastSocketErrorCode();
         }
 
         const SocketAddress listeningAddress = makeLoopbackAddress(port);
@@ -174,8 +172,7 @@ namespace AsynGyanis::Platform
         // 等到条数收齐或时限到点：不靠「睡一会儿大概就到了」，构造不出条件时本例应当红
         std::array<std::size_t, kListenerCount> receivedCount{};
         std::size_t                             totalReceivedCount = 0;
-        const auto                              deadline           = std::chrono::steady_clock::now() +
-                                                                     std::chrono::milliseconds(kWaitTimeoutMilliseconds);
+        const auto                              deadline           = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitTimeoutMilliseconds);
         while (totalReceivedCount < static_cast<std::size_t>(kFlowCount) && std::chrono::steady_clock::now() < deadline)
         {
             for (std::size_t index = 0; index < listeners.size(); ++index)
@@ -191,17 +188,11 @@ namespace AsynGyanis::Platform
             std::this_thread::sleep_for(std::chrono::milliseconds{2});
         }
 
-        EXPECT_EQ(totalReceivedCount, static_cast<std::size_t>(kFlowCount))
-                << "共用端口的 " << kListenerCount << " 个监听器一共只收到 " << totalReceivedCount << " 条，报文不该丢";
+        EXPECT_EQ(totalReceivedCount, static_cast<std::size_t>(kFlowCount)) << "共用端口的 " << kListenerCount << " 个监听器一共只收到 " << totalReceivedCount << " 条，报文不该丢";
 
-        const std::size_t activeListenerCount = static_cast<std::size_t>(
-                std::ranges::count_if(receivedCount, [](const std::size_t count)
-                                      {
-                                          return count > 0;
-                                      }));
-        EXPECT_GT(activeListenerCount, 1U) << "全部 " << totalReceivedCount << " 条报文都落在同一个监听器上（分布 "
-                                           << receivedCount[0] << '/' << receivedCount[1] << '/' << receivedCount[2]
-                                           << "）：这些监听器都报告绑定成功，其余的其实一条也收不到";
+        const std::size_t activeListenerCount = static_cast<std::size_t>(std::ranges::count_if(receivedCount, [](const std::size_t count) { return count > 0; }));
+        EXPECT_GT(activeListenerCount, 1U) << "全部 " << totalReceivedCount << " 条报文都落在同一个监听器上（分布 " << receivedCount[0] << '/' << receivedCount[1] << '/'
+                                           << receivedCount[2] << "）：这些监听器都报告绑定成功，其余的其实一条也收不到";
     }
 
     /**
@@ -226,10 +217,8 @@ namespace AsynGyanis::Platform
         const ssize_t        receivedByteCount = receiveWithTimeout(receiver, payloadBuffer.data(), payloadBuffer.size(), peerAddress);
 
         ASSERT_EQ(receivedByteCount, static_cast<ssize_t>(kPayload.size())) << "没有收到报文";
-        EXPECT_EQ(std::string_view(payloadBuffer.data(), static_cast<std::size_t>(receivedByteCount)), kPayload)
-                << "收到的内容与发出的不一致";
-        EXPECT_TRUE(isSameIpv4Endpoint(peerAddress, sender.localAddress()))
-                << "来源地址不是发送方的地址：端口 " << portOf(peerAddress) << " 与 " << portOf(sender.localAddress());
+        EXPECT_EQ(std::string_view(payloadBuffer.data(), static_cast<std::size_t>(receivedByteCount)), kPayload) << "收到的内容与发出的不一致";
+        EXPECT_TRUE(isSameIpv4Endpoint(peerAddress, sender.localAddress())) << "来源地址不是发送方的地址：端口 " << portOf(peerAddress) << " 与 " << portOf(sender.localAddress());
     }
 
     /**
@@ -249,12 +238,11 @@ namespace AsynGyanis::Platform
         const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
         ASSERT_TRUE(sender.isValid());
 
-        ASSERT_EQ(sender.send(receiver.localAddress(), nullptr, 0), static_cast<ssize_t>(0))
-                << "空报文应当照发，套接字错误码 " << PlatformError::lastSocketErrorCode();
+        ASSERT_EQ(sender.send(receiver.localAddress(), nullptr, 0), static_cast<ssize_t>(0)) << "空报文应当照发，套接字错误码 " << PlatformError::lastSocketErrorCode();
 
         std::array<char, 16> payloadBuffer{};
         SocketAddress        peerAddress;
-        const ssize_t receivedByteCount = receiveWithTimeout(receiver, payloadBuffer.data(), payloadBuffer.size(), peerAddress);
+        const ssize_t        receivedByteCount = receiveWithTimeout(receiver, payloadBuffer.data(), payloadBuffer.size(), peerAddress);
         ASSERT_EQ(receivedByteCount, static_cast<ssize_t>(0)) << "没收到空报文（-1 表示压根没到，不是收到零字节）";
         EXPECT_TRUE(isSameIpv4Endpoint(peerAddress, sender.localAddress())) << "空报文也该带来源地址";
     }
@@ -272,8 +260,7 @@ namespace AsynGyanis::Platform
         std::array<char, 16> payloadBuffer{};
         SocketAddress        peerAddress;
         EXPECT_EQ(socket.receive(payloadBuffer.data(), payloadBuffer.size(), peerAddress), -1);
-        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kWouldBlock)
-                << "无数据应当报「暂时没有」而不是别的错误";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kWouldBlock) << "无数据应当报「暂时没有」而不是别的错误";
         EXPECT_EQ(peerAddress.length, 0U) << "没收到报文时不该给出来源地址";
     }
 
@@ -368,8 +355,8 @@ namespace AsynGyanis::Platform
         DatagramSocket target = DatagramSocket::bindTo(makeLoopbackAddress(0));
         ASSERT_TRUE(target.isValid()) << "绑定失败，套接字错误码 " << PlatformError::lastSocketErrorCode();
 
-        const std::uint16_t sourcePort   = portOf(source.localAddress());
-        const int           displacedFd  = target.fileDescriptor();
+        const std::uint16_t sourcePort  = portOf(source.localAddress());
+        const int           displacedFd = target.fileDescriptor();
 
         target = std::move(source);
 
@@ -379,14 +366,13 @@ namespace AsynGyanis::Platform
 
         // 被顶替的那只必须已经关闭：还开着的话 getsockname 照常成功，端口也就一直被占着
         sockaddr_storage staleAddress{};
-        socklen_t      staleLength = sizeof(staleAddress);
-        EXPECT_NE(::getsockname(displacedFd, reinterpret_cast<sockaddr *>(&staleAddress), &staleLength), 0)
-                << "被顶替的套接字没被关掉，它的端口会一直被占到进程退出";
+        socklen_t        staleLength = sizeof(staleAddress);
+        EXPECT_NE(::getsockname(displacedFd, reinterpret_cast<sockaddr *>(&staleAddress), &staleLength), 0) << "被顶替的套接字没被关掉，它的端口会一直被占到进程退出";
 
         // 字面量上的「把自己 std::move 给自己」会被编译器直接判成缺陷（GCC 的 -Wself-move），
         // 而这里要验的正是实现里那道 `this != &other` 自检，因此经由一个别名引用把同一个对象递进去
         DatagramSocket &sameSocket = target;
-        target = std::move(sameSocket);
+        target                     = std::move(sameSocket);
         EXPECT_TRUE(target.isValid()) << "自赋值把套接字关掉后又接到自己空出来的描述符上";
         EXPECT_EQ(portOf(target.localAddress()), sourcePort) << "自赋值不该改变已经拥有的套接字";
     }
@@ -405,8 +391,7 @@ namespace AsynGyanis::Platform
         const DatagramSocket socket = DatagramSocket::bindTo(makeLoopbackAddress(0));
         ASSERT_TRUE(socket.isValid());
 
-        EXPECT_TRUE(TestSupport::isNotInheritable(socket.fileDescriptor()))
-                << "绑好的数据报套接字可被继承：worker 子进程会在父进程退出之后继续占着这个端口";
+        EXPECT_TRUE(TestSupport::isNotInheritable(socket.fileDescriptor())) << "绑好的数据报套接字可被继承：worker 子进程会在父进程退出之后继续占着这个端口";
     }
 #endif
 
@@ -426,8 +411,7 @@ namespace AsynGyanis::Platform
 
         const int descriptorFlags = ::fcntl(socket.fileDescriptor(), F_GETFD);
         ASSERT_GE(descriptorFlags, 0) << "读不到描述符标志";
-        EXPECT_TRUE((descriptorFlags & FD_CLOEXEC) != 0)
-                << "描述符没标 FD_CLOEXEC，子进程会继承它并占住这个 UDP 端口（标志实际为 " << descriptorFlags << "）";
+        EXPECT_TRUE((descriptorFlags & FD_CLOEXEC) != 0) << "描述符没标 FD_CLOEXEC，子进程会继承它并占住这个 UDP 端口（标志实际为 " << descriptorFlags << "）";
     }
 #endif
 
@@ -457,26 +441,21 @@ namespace AsynGyanis::Platform
         ASSERT_EQ(sender.send(receiver.localAddress(), payload.data(), payload.size()), static_cast<ssize_t>(kPayloadBytes));
 
         // 缓冲用满：交付长度应当恰好等于容量（截断而不是拒收），且缓冲区每个字节都被写过
-        constexpr std::size_t kCapacityBytes = 64U;
+        constexpr std::size_t            kCapacityBytes = 64U;
         std::array<char, kCapacityBytes> buffer{};
         buffer.fill('\0');
         SocketAddress peerAddress;
         const ssize_t receivedByteCount = receiveWithTimeout(receiver, buffer.data(), buffer.size(), peerAddress);
-        ASSERT_EQ(receivedByteCount, static_cast<ssize_t>(kCapacityBytes))
-                << "比缓冲大的报文没有按容量交付：Windows 那侧把它当硬错误丢掉、Linux 那侧短于容量都算口径不符";
-        EXPECT_TRUE(std::equal(buffer.begin(), buffer.begin() + receivedByteCount, payload.begin()))
-                << "交付的不是报文开头的那一段，截断把数据错位了";
+        ASSERT_EQ(receivedByteCount, static_cast<ssize_t>(kCapacityBytes)) << "比缓冲大的报文没有按容量交付：Windows 那侧把它当硬错误丢掉、Linux 那侧短于容量都算口径不符";
+        EXPECT_TRUE(std::equal(buffer.begin(), buffer.begin() + receivedByteCount, payload.begin())) << "交付的不是报文开头的那一段，截断把数据错位了";
         EXPECT_TRUE(isSameIpv4Endpoint(peerAddress, sender.localAddress()))
-                << "截断时交付了数据却丢了来源地址（端口 " << portOf(peerAddress) << " 与 "
-                << portOf(sender.localAddress()) << "）：调用方会照着它把回包发进黑洞";
+                << "截断时交付了数据却丢了来源地址（端口 " << portOf(peerAddress) << " 与 " << portOf(sender.localAddress()) << "）：调用方会照着它把回包发进黑洞";
 
         // 数据报按整条交付：截断丢掉的后半不该留在队列里被下一次读拿到
         std::array<char, kCapacityBytes> leftover{};
         SocketAddress                    leftoverPeer;
-        const ssize_t leftoverByteCount = receiver.receive(leftover.data(), leftover.size(), leftoverPeer);
-        EXPECT_EQ(leftoverByteCount, -1)
-                << "截断之后套接字里还剩 " << leftoverByteCount << " 字节：UDP 该丢掉整条报文而不是留半截";
-        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kWouldBlock)
-                << "截断后没有回到「无数据可读」态，错误码也不可信";
+        const ssize_t                    leftoverByteCount = receiver.receive(leftover.data(), leftover.size(), leftoverPeer);
+        EXPECT_EQ(leftoverByteCount, -1) << "截断之后套接字里还剩 " << leftoverByteCount << " 字节：UDP 该丢掉整条报文而不是留半截";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kWouldBlock) << "截断后没有回到「无数据可读」态，错误码也不可信";
     }
 } // namespace AsynGyanis::Platform

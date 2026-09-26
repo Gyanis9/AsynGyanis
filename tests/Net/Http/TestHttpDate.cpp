@@ -40,7 +40,7 @@ namespace AsynGyanis::Net
         struct StableDateSample
         {
             std::int64_t secondOfEpoch = 0; ///< 采样落在哪一秒
-            std::string text;               ///< 该秒对应的缓存文本
+            std::string  text;              ///< 该秒对应的缓存文本
         };
 
         /// 等墙钟跨过当前秒的轮数上限：每轮 2 ms，1000 轮即 2 秒，正常一秒必然到
@@ -57,9 +57,9 @@ namespace AsynGyanis::Net
         {
             for (int attempt = 0; attempt < attemptLimit; ++attempt)
             {
-                const std::int64_t secondBefore = secondsOf(std::chrono::system_clock::now());
-                const std::string_view cachedText = currentHttpDateText();
-                const std::int64_t secondAfter = secondsOf(std::chrono::system_clock::now());
+                const std::int64_t     secondBefore = secondsOf(std::chrono::system_clock::now());
+                const std::string_view cachedText   = currentHttpDateText();
+                const std::int64_t     secondAfter  = secondsOf(std::chrono::system_clock::now());
                 if (secondBefore == secondAfter)
                 {
                     return StableDateSample{.secondOfEpoch = secondBefore, .text = std::string(cachedText)};
@@ -108,11 +108,11 @@ namespace AsynGyanis::Net
      */
     TEST(HttpDate, FixedBufferFormatProducesTheSameTextIntoTheCallersBuffer)
     {
-        for (const std::int64_t seconds : {784111777LL, 0LL, -1LL, 1788393600LL})
+        for (const std::int64_t seconds: {784111777LL, 0LL, -1LL, 1788393600LL})
         {
             const std::chrono::system_clock::time_point instant = instantFromSeconds(seconds);
-            std::array<char, kHttpDateTextLength> buffer{};
-            const std::string_view formatted = formatHttpDate(instant, buffer);
+            std::array<char, kHttpDateTextLength>       buffer{};
+            const std::string_view                      formatted = formatHttpDate(instant, buffer);
             EXPECT_EQ(formatted, formatHttpDate(instant)) << "秒数 " << seconds << " 两条出口不同文";
             EXPECT_EQ(formatted.data(), buffer.data()) << "产物没落在调用方的缓冲里，这条还是在碰堆";
             EXPECT_EQ(formatted.size(), kHttpDateTextLength);
@@ -207,9 +207,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(firstSample.has_value()) << "没能在重试上限内取到第一个不跨秒的样本";
 
         // 等到墙钟真的跨过那一秒（上限 2 秒）：用例自己构造出「秒已改变」这个条件
-        for (int waitRoundCount = 0;
-             secondsOf(std::chrono::system_clock::now()) <= firstSample->secondOfEpoch;
-             ++waitRoundCount)
+        for (int waitRoundCount = 0; secondsOf(std::chrono::system_clock::now()) <= firstSample->secondOfEpoch; ++waitRoundCount)
         {
             ASSERT_LT(waitRoundCount, kSecondRollOverWaitRoundLimit) << "墙钟秒没有推进，环境时钟异常";
             std::this_thread::sleep_for(std::chrono::milliseconds{2});
@@ -229,10 +227,7 @@ namespace AsynGyanis::Net
     TEST(HttpDate, CurrentHttpDateTextIsSampledPerThread)
     {
         std::optional<StableDateSample> threadSample;
-        std::thread worker([&threadSample]
-        {
-            threadSample = sampleStableCurrentHttpDateText();
-        });
+        std::thread                     worker([&threadSample] { threadSample = sampleStableCurrentHttpDateText(); });
         worker.join();
 
         ASSERT_TRUE(threadSample.has_value()) << "工作线程没能在重试上限内取到不跨秒的样本";

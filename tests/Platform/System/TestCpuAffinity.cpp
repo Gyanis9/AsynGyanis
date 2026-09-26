@@ -100,14 +100,15 @@ namespace AsynGyanis::Platform
         bool pinOnDedicatedThread(const std::size_t coreIndex, std::uint64_t &maskAfterPinning, bool &isSuccess)
         {
             std::atomic<bool> isFinished{false};
-            std::thread worker([&]
-            {
-                const auto pinResult = CpuAffinity::pinCurrentThreadToCore(coreIndex);
-                // 先写全部载荷，再用 release 发布完成标记：等待方拿到标记时读数一定已落地
-                maskAfterPinning = CpuAffinity::currentThreadCoreMask();
-                isSuccess = pinResult.has_value();
-                isFinished.store(true, std::memory_order_release);
-            });
+            std::thread       worker(
+                    [&]
+                    {
+                        const auto pinResult = CpuAffinity::pinCurrentThreadToCore(coreIndex);
+                        // 先写全部载荷，再用 release 发布完成标记：等待方拿到标记时读数一定已落地
+                        maskAfterPinning = CpuAffinity::currentThreadCoreMask();
+                        isSuccess        = pinResult.has_value();
+                        isFinished.store(true, std::memory_order_release);
+                    });
             const bool isSettled = waitUntilSettled(isFinished);
             worker.join();
             return isSettled;
@@ -144,7 +145,7 @@ namespace AsynGyanis::Platform
             const auto readFirstLine = [](const std::string &path) -> std::string
             {
                 std::ifstream stream(path);
-                std::string line;
+                std::string   line;
                 if (stream)
                 {
                     std::getline(stream, line);
@@ -152,13 +153,13 @@ namespace AsynGyanis::Platform
                 return line;
             };
 
-            std::ifstream procStream("/proc/self/cgroup");
+            std::ifstream     procStream("/proc/self/cgroup");
             const std::string procContents{std::istreambuf_iterator<char>(procStream), std::istreambuf_iterator<char>()};
             const std::string groupPath = CpuAffinity::cgroupPathFromProcRecord(procContents);
 
             std::int64_t quota  = 0;
             std::int64_t period = 0;
-            std::size_t offset  = 0;
+            std::size_t  offset = 0;
             if (const std::string cpuMax = readFirstLine("/sys/fs/cgroup" + groupPath + "/cpu.max"); !cpuMax.empty())
             {
                 // cgroup v2：一行两列「<quota|max> <period>」，首列写成 max 就是不设限
@@ -167,14 +168,13 @@ namespace AsynGyanis::Platform
                 {
                     return 0;
                 }
-            }
-            else
+            } else
             {
                 // cgroup v1：两个文件，未限时配额写 -1
-                const std::string quotaText  = readFirstLine("/sys/fs/cgroup/cpu" + groupPath + "/cpu.cfs_quota_us");
-                const std::string periodText = readFirstLine("/sys/fs/cgroup/cpu" + groupPath + "/cpu.cfs_period_us");
-                std::size_t quotaOffset  = 0;
-                std::size_t periodOffset = 0;
+                const std::string quotaText    = readFirstLine("/sys/fs/cgroup/cpu" + groupPath + "/cpu.cfs_quota_us");
+                const std::string periodText   = readFirstLine("/sys/fs/cgroup/cpu" + groupPath + "/cpu.cfs_period_us");
+                std::size_t       quotaOffset  = 0;
+                std::size_t       periodOffset = 0;
                 if (!nextInteger(quotaText, quotaOffset, quota) || !nextInteger(periodText, periodOffset, period))
                 {
                     return 0;
@@ -214,8 +214,8 @@ namespace AsynGyanis::Platform
             std::size_t offset    = 0;
             while (offset < list.size())
             {
-                const std::size_t comma = list.find(',', offset);
-                const std::size_t itemEnd = comma == std::string::npos ? list.size() : comma;
+                const std::size_t comma     = list.find(',', offset);
+                const std::size_t itemEnd   = comma == std::string::npos ? list.size() : comma;
                 std::size_t       itemBegin = list.find_first_not_of(" \t", offset);
                 if (itemBegin == std::string::npos || itemBegin >= itemEnd)
                 {
@@ -281,7 +281,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(targetCore.has_value()) << "本机没有放行任何核，无法验证绑定";
 
         std::uint64_t maskAfterPinning = 0;
-        bool isSuccess = false;
+        bool          isSuccess        = false;
         ASSERT_TRUE(pinOnDedicatedThread(*targetCore, maskAfterPinning, isSuccess));
 
         EXPECT_TRUE(isSuccess) << "绑到许可集合内的核 " << *targetCore << " 应当成功";
@@ -294,9 +294,9 @@ namespace AsynGyanis::Platform
         // 本线程全程不绑核：工作线程的绑定不得串到这里来（亲和性按线程而非按进程生效）
         const std::uint64_t ownMaskBefore = CpuAffinity::currentThreadCoreMask();
 
-        std::uint64_t maskAfterPinning = 0;
-        bool isSuccess = false;
-        const std::optional<std::size_t> targetCore = lowestSetCoreIndex(ownMaskBefore);
+        std::uint64_t                    maskAfterPinning = 0;
+        bool                             isSuccess        = false;
+        const std::optional<std::size_t> targetCore       = lowestSetCoreIndex(ownMaskBefore);
         ASSERT_TRUE(targetCore.has_value());
         ASSERT_TRUE(pinOnDedicatedThread(*targetCore, maskAfterPinning, isSuccess));
 
@@ -318,14 +318,12 @@ namespace AsynGyanis::Platform
         constexpr std::size_t kExpressibleCoreWidth = 64U;
 #endif
         const std::string expectedBoundText = std::to_string(kExpressibleCoreWidth - 1U);
-        for (const std::size_t tooLargeIndex: {kExpressibleCoreWidth, kExpressibleCoreWidth + 1U,
-                                               std::size_t{100000}})
+        for (const std::size_t tooLargeIndex: {kExpressibleCoreWidth, kExpressibleCoreWidth + 1U, std::size_t{100000}})
         {
             const auto pinResult = CpuAffinity::pinCurrentThreadToCore(tooLargeIndex);
             ASSERT_FALSE(pinResult.has_value()) << "编号 " << tooLargeIndex << " 超出本平台集合宽度，必须拒绝";
             EXPECT_NE(pinResult.error().find(expectedBoundText), std::string::npos)
-                    << "拒绝文案要写清本平台的真实上限（0-" << kExpressibleCoreWidth - 1U << "），实际："
-                    << pinResult.error();
+                    << "拒绝文案要写清本平台的真实上限（0-" << kExpressibleCoreWidth - 1U << "），实际：" << pinResult.error();
         }
 
         // 拒绝路径不留半成品：掩码一位都不该被改过
@@ -346,28 +344,26 @@ namespace AsynGyanis::Platform
         for (const std::size_t coreIndex: {64U, 65U, 127U})
         {
             std::optional<std::string> failureText;
-            std::jthread worker([&]
-            {
-                const auto pinResult = CpuAffinity::pinCurrentThreadToCore(coreIndex);
-                if (!pinResult.has_value())
-                {
-                    failureText = pinResult.error();
-                }
-            });
+            std::jthread               worker(
+                    [&]
+                    {
+                        const auto pinResult = CpuAffinity::pinCurrentThreadToCore(coreIndex);
+                        if (!pinResult.has_value())
+                        {
+                            failureText = pinResult.error();
+                        }
+                    });
             worker.join();
 
             if (!failureText.has_value())
             {
                 // 放行这个核，说明机器确实宽过 64：那计数也必须看得见它，否则定容又会少一半
-                EXPECT_GT(allowedCoreCount, 64U) << "绑上了编号 " << coreIndex << " 却只数到 " << allowedCoreCount
-                                                 << " 枚核，说明计数仍被 64 位掩码截断";
+                EXPECT_GT(allowedCoreCount, 64U) << "绑上了编号 " << coreIndex << " 却只数到 " << allowedCoreCount << " 枚核，说明计数仍被 64 位掩码截断";
                 continue;
             }
             EXPECT_NE(failureText->find("不在本进程被允许的 CPU 集合"), std::string::npos)
-                    << "编号 " << coreIndex << " 在 1024 位的集合里可表达，该报的是本机没放行，实际："
-                    << *failureText;
-            EXPECT_EQ(failureText->find("本工具支持的"), std::string::npos)
-                    << "不得把「本机没放行」报成「本工具表达不了」，实际：" << *failureText;
+                    << "编号 " << coreIndex << " 在 1024 位的集合里可表达，该报的是本机没放行，实际：" << *failureText;
+            EXPECT_EQ(failureText->find("本工具支持的"), std::string::npos) << "不得把「本机没放行」报成「本工具表达不了」，实际：" << *failureText;
         }
     }
 
@@ -379,16 +375,14 @@ namespace AsynGyanis::Platform
     TEST(CpuAffinity, AllowedCoreCountMatchesTheKernelCpuList)
     {
         const std::optional<std::size_t> kernelAllowedCount = readKernelAllowedCoreCount();
-        ASSERT_TRUE(kernelAllowedCount.has_value())
-                << "读不出 /proc/self/status 的 Cpus_allowed_list，这条对照没有判据可用";
-        EXPECT_EQ(CpuAffinity::availableCoreCount(), *kernelAllowedCount)
-                << "计数与内核上报的许可核清单不一致（清单：" << *kernelAllowedCount << "）";
+        ASSERT_TRUE(kernelAllowedCount.has_value()) << "读不出 /proc/self/status 的 Cpus_allowed_list，这条对照没有判据可用";
+        EXPECT_EQ(CpuAffinity::availableCoreCount(), *kernelAllowedCount) << "计数与内核上报的许可核清单不一致（清单：" << *kernelAllowedCount << "）";
     }
 #endif
 
     TEST(CpuAffinity, PinningRefusesCoresOutsideTheAllowedSet)
     {
-        const std::uint64_t maskBefore = CpuAffinity::currentThreadCoreMask();
+        const std::uint64_t              maskBefore     = CpuAffinity::currentThreadCoreMask();
         const std::optional<std::size_t> disallowedCore = firstDisallowedCoreIndex(maskBefore);
         if (!disallowedCore.has_value())
         {
@@ -397,8 +391,7 @@ namespace AsynGyanis::Platform
 
         const auto pinResult = CpuAffinity::pinCurrentThreadToCore(*disallowedCore);
         ASSERT_FALSE(pinResult.has_value()) << "核 " << *disallowedCore << " 不在许可集合内，必须拒绝";
-        EXPECT_NE(pinResult.error().find("不在本进程被允许的 CPU 集合"), std::string::npos)
-                << "拒绝文案要说清原因与下一步，实际：" << pinResult.error();
+        EXPECT_NE(pinResult.error().find("不在本进程被允许的 CPU 集合"), std::string::npos) << "拒绝文案要说清原因与下一步，实际：" << pinResult.error();
         EXPECT_EQ(CpuAffinity::currentThreadCoreMask(), maskBefore) << "被拒的绑定不得留下半个效果";
     }
 
@@ -440,8 +433,7 @@ namespace AsynGyanis::Platform
         const std::size_t quotaCoreCount = readOwnCgroupQuotaCoreCount();
         if (quotaCoreCount > 0)
         {
-            EXPECT_LE(recommended, quotaCoreCount)
-                    << "本进程被 cgroup 配额限到 " << quotaCoreCount << " 核，推荐值却更高";
+            EXPECT_LE(recommended, quotaCoreCount) << "本进程被 cgroup 配额限到 " << quotaCoreCount << " 核，推荐值却更高";
         }
     }
 
@@ -453,13 +445,10 @@ namespace AsynGyanis::Platform
     TEST(CpuAffinity, CgroupPathFromProcRecordHandlesBothVersionsAndMalformedLines)
     {
         EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord("0::/\n"), "/") << "v2 根分组";
-        EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord("0::/system.slice/my.service\n"), "/system.slice/my.service")
-                << "v2 子分组：限额挂在自己的路径下";
-        EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord(
-                      "12:cpu,cpuacct:/user.slice/1000.scope\n11:memory:/user.slice/1000.scope\n"),
-                  "/user.slice/1000.scope") << "v1 每个控制器一行，路径取第一行";
-        EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord("0::init.scope\n"), "/init.scope")
-                << "缺前导斜杠要补上，拼出来才是 /sys/fs/cgroup 下的真实目录";
+        EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord("0::/system.slice/my.service\n"), "/system.slice/my.service") << "v2 子分组：限额挂在自己的路径下";
+        EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord("12:cpu,cpuacct:/user.slice/1000.scope\n11:memory:/user.slice/1000.scope\n"), "/user.slice/1000.scope")
+                << "v1 每个控制器一行，路径取第一行";
+        EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord("0::init.scope\n"), "/init.scope") << "缺前导斜杠要补上，拼出来才是 /sys/fs/cgroup 下的真实目录";
         EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord("0::/a/b\r\n"), "/a/b") << "行尾的 \\r 不得留在路径里";
         EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord("0::/a/b \n"), "/a/b") << "行尾空白同样剥掉";
         EXPECT_EQ(CpuAffinity::cgroupPathFromProcRecord("garbage\n"), "/") << "没有冒号的残缺行按根分组处理";

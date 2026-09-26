@@ -17,7 +17,7 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kPacketReorderingThreshold = 3;
 
         /// kTimeThreshold 取 9/8（RFC 9002 §6.1.2），拆开写避免整数除法先于乘法发生
-        constexpr std::int64_t kTimeThresholdNumerator = 9;
+        constexpr std::int64_t kTimeThresholdNumerator   = 9;
         constexpr std::int64_t kTimeThresholdDenominator = 8;
 
         /**
@@ -31,7 +31,7 @@ namespace AsynGyanis::Net
         bool isWithinAcknowledgementRanges(const std::vector<QuicAcknowledgementRange> &ranges, const std::uint64_t packetNumber)
         {
             return std::ranges::any_of(ranges, [packetNumber](const QuicAcknowledgementRange &range)
-            { return packetNumber >= range.smallestAcknowledged && packetNumber <= range.largestAcknowledged; });
+                                       { return packetNumber >= range.smallestAcknowledged && packetNumber <= range.largestAcknowledged; });
         }
     } // namespace
 
@@ -43,15 +43,15 @@ namespace AsynGyanis::Net
     QuicRecovery::QuicRecovery() noexcept
     {
         // 没采过样本前也要有个数能用：PTO 与时间阈值都从这组初值算（§5.3）
-        m_estimate.smoothed = kInitialRoundTripTime;
+        m_estimate.smoothed  = kInitialRoundTripTime;
         m_estimate.variation = kInitialRoundTripTime / 2;
     }
 
     void QuicRecovery::onPacketSent(const QuicRecoverySpace space, QuicSentPacketInfo packet)
     {
-        SpaceState &state = m_spaces[spaceIndex(space)];
+        SpaceState         &state        = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = packet.packetNumber;
-        const std::size_t byteCount = packet.byteCount;
+        const std::size_t   byteCount    = packet.byteCount;
 
         const auto existing = state.unacknowledged.find(packetNumber);
         if (existing != state.unacknowledged.end())
@@ -59,24 +59,21 @@ namespace AsynGyanis::Net
             // 同包号重复登记是把上一条覆盖掉：先冲掉旧账，在途字节才不会只增不减
             m_inFlightByteCount -= existing->second.byteCount;
             existing->second = std::move(packet);
-        }
-        else
+        } else
         {
             state.unacknowledged.emplace(packetNumber, std::move(packet));
         }
         m_inFlightByteCount += byteCount;
     }
 
-    QuicAcknowledgementUpdate QuicRecovery::onAcknowledgementReceived(const QuicRecoverySpace space,
-                                                                      const QuicAcknowledgementFrame &acknowledgement,
-                                                                      const QuicTime acknowledgementTime,
-                                                                      const QuicTime acknowledgementDelay)
+    QuicAcknowledgementUpdate QuicRecovery::onAcknowledgementReceived(const QuicRecoverySpace space, const QuicAcknowledgementFrame &acknowledgement,
+                                                                      const QuicTime acknowledgementTime, const QuicTime acknowledgementDelay)
     {
-        SpaceState &state = m_spaces[spaceIndex(space)];
+        SpaceState         &state               = m_spaces[spaceIndex(space)];
         const std::uint64_t largestAcknowledged = acknowledgement.largestAcknowledgedPacketNumber;
-        state.largestAcknowledged = std::max(state.largestAcknowledged.value_or(largestAcknowledged), largestAcknowledged);
+        state.largestAcknowledged               = std::max(state.largestAcknowledged.value_or(largestAcknowledged), largestAcknowledged);
 
-        QuicAcknowledgementUpdate update;
+        QuicAcknowledgementUpdate         update;
         std::optional<QuicSentPacketInfo> largestAcknowledgedPacket;
         for (auto packetIterator = state.unacknowledged.begin(); packetIterator != state.unacknowledged.end();)
         {
@@ -124,14 +121,14 @@ namespace AsynGyanis::Net
         {
             // 第一个样本直接重置估算，不留初值的权重（§5.3）
             m_hasRoundTripSample = true;
-            m_estimate.minimum = latestRoundTripTime;
-            m_estimate.smoothed = latestRoundTripTime;
+            m_estimate.minimum   = latestRoundTripTime;
+            m_estimate.smoothed  = latestRoundTripTime;
             m_estimate.variation = latestRoundTripTime / 2;
             return;
         }
 
         // min_rtt 不看对端报告的延迟：它必须是本端能自证的下界（§5.2）
-        m_estimate.minimum = std::min(m_estimate.minimum, latestRoundTripTime);
+        m_estimate.minimum    = std::min(m_estimate.minimum, latestRoundTripTime);
         QuicTime clampedDelay = acknowledgementDelay;
         if (m_isHandshakeConfirmed)
         {
@@ -145,22 +142,20 @@ namespace AsynGyanis::Net
         }
 
         // 顺序照 RFC 9002 附录 A.7：rttvar 用的是**更新前**的 smoothed_rtt
-        const QuicTime variationSample = m_estimate.smoothed > adjustedRoundTripTime
-                                             ? m_estimate.smoothed - adjustedRoundTripTime
-                                             : adjustedRoundTripTime - m_estimate.smoothed;
-        m_estimate.variation = (3 * m_estimate.variation + variationSample) / 4;
-        m_estimate.smoothed = m_estimate.smoothed + (adjustedRoundTripTime - m_estimate.smoothed) / 8;
+        const QuicTime variationSample = m_estimate.smoothed > adjustedRoundTripTime ? m_estimate.smoothed - adjustedRoundTripTime : adjustedRoundTripTime - m_estimate.smoothed;
+        m_estimate.variation           = (3 * m_estimate.variation + variationSample) / 4;
+        m_estimate.smoothed            = m_estimate.smoothed + (adjustedRoundTripTime - m_estimate.smoothed) / 8;
     }
 
     void QuicRecovery::onHandshakeConfirmed(const QuicTime peerMaximumAcknowledgmentDelay) noexcept
     {
-        m_isHandshakeConfirmed = true;
+        m_isHandshakeConfirmed           = true;
         m_peerMaximumAcknowledgmentDelay = peerMaximumAcknowledgmentDelay;
     }
 
     std::vector<QuicSentPacketInfo> QuicRecovery::detectLostPackets(const QuicRecoverySpace space, const QuicTime now)
     {
-        SpaceState &state = m_spaces[spaceIndex(space)];
+        SpaceState                     &state = m_spaces[spaceIndex(space)];
         std::vector<QuicSentPacketInfo> lost;
         state.lossTime = std::nullopt;
         if (!state.largestAcknowledged.has_value())
@@ -171,9 +166,8 @@ namespace AsynGyanis::Net
 
         // loss_delay = max(kTimeThreshold * max(latest_rtt, smoothed_rtt), kGranularity)（§6.1.2）
         const QuicTime largestObserved = std::max(m_estimate.latest, m_estimate.smoothed);
-        const QuicTime lossDelay = std::max(largestObserved * kTimeThresholdNumerator / kTimeThresholdDenominator,
-                                            kTimerGranularity);
-        const QuicTime lostSendTime = now - lossDelay;
+        const QuicTime lossDelay       = std::max(largestObserved * kTimeThresholdNumerator / kTimeThresholdDenominator, kTimerGranularity);
+        const QuicTime lostSendTime    = now - lossDelay;
 
         for (auto packetIterator = state.unacknowledged.begin(); packetIterator != state.unacknowledged.end();)
         {
@@ -205,15 +199,14 @@ namespace AsynGyanis::Net
     std::pair<std::optional<QuicTime>, QuicRecoverySpace> QuicRecovery::earliestLossTime() const noexcept
     {
         std::optional<QuicTime> earliest;
-        QuicRecoverySpace space = QuicRecoverySpace::Initial;
-        for (const QuicRecoverySpace candidate : {QuicRecoverySpace::Initial, QuicRecoverySpace::Handshake,
-                                                  QuicRecoverySpace::Application})
+        QuicRecoverySpace       space = QuicRecoverySpace::Initial;
+        for (const QuicRecoverySpace candidate: {QuicRecoverySpace::Initial, QuicRecoverySpace::Handshake, QuicRecoverySpace::Application})
         {
             const std::optional<QuicTime> &lossTime = m_spaces[spaceIndex(candidate)].lossTime;
             if (lossTime.has_value() && (!earliest.has_value() || *lossTime < *earliest))
             {
                 earliest = lossTime;
-                space = candidate;
+                space    = candidate;
             }
         }
         return {earliest, space};
@@ -221,17 +214,16 @@ namespace AsynGyanis::Net
 
     std::pair<std::optional<QuicTime>, QuicRecoverySpace> QuicRecovery::probeTimeoutDeadline() const noexcept
     {
-        QuicRecoverySpace space = QuicRecoverySpace::Initial;
+        QuicRecoverySpace       space = QuicRecoverySpace::Initial;
         std::optional<QuicTime> earliest;
         // PTO 基准：smoothed + max(4*rttvar, kGranularity)，再乘退避倍数（§6.2.1）
         const QuicTime baseDuration = m_estimate.smoothed + std::max(4 * m_estimate.variation, kTimerGranularity);
         // 退避倍数是 2 的幂：乘一个整数而不是移位，`duration` 没有位移运算符
         const std::int64_t backoffFactor = static_cast<std::int64_t>(1ULL << std::min<std::size_t>(m_probeBackoffExponent, 16));
 
-        for (const QuicRecoverySpace candidate : {QuicRecoverySpace::Initial, QuicRecoverySpace::Handshake,
-                                                  QuicRecoverySpace::Application})
+        for (const QuicRecoverySpace candidate: {QuicRecoverySpace::Initial, QuicRecoverySpace::Handshake, QuicRecoverySpace::Application})
         {
-            const SpaceState &state = m_spaces[spaceIndex(candidate)];
+            const SpaceState             &state    = m_spaces[spaceIndex(candidate)];
             const std::optional<QuicTime> lastSent = lastAckElicitingSentTime(state);
             if (!lastSent.has_value())
             {
@@ -252,7 +244,7 @@ namespace AsynGyanis::Net
             if (!earliest.has_value() || deadline < *earliest)
             {
                 earliest = deadline;
-                space = candidate;
+                space    = candidate;
             }
         }
         return {earliest, space};
@@ -279,7 +271,7 @@ namespace AsynGyanis::Net
             {
                 return action;
             }
-            action.lost = detectLostPackets(lossSpace, now);
+            action.lost      = detectLostPackets(lossSpace, now);
             action.lostSpace = lossSpace;
             return action;
         }
@@ -291,7 +283,7 @@ namespace AsynGyanis::Net
         }
         // 探测到期本身不代表丢包，所以这里不判丢（§6.2 明确要求别把 PTO 当丢包信号）
         action.isProbeTimeout = true;
-        action.probeSpace = probeSpace;
+        action.probeSpace     = probeSpace;
         ++m_probeBackoffExponent;
         return action;
     }
@@ -312,7 +304,7 @@ namespace AsynGyanis::Net
     void QuicRecovery::discardSpace(const QuicRecoverySpace space)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
-        for (const auto &[packetNumber, packet] : state.unacknowledged)
+        for (const auto &[packetNumber, packet]: state.unacknowledged)
         {
             m_inFlightByteCount -= packet.byteCount;
         }
@@ -327,10 +319,10 @@ namespace AsynGyanis::Net
 
     std::vector<QuicSentPacketInfo> QuicRecovery::unacknowledgedPackets(const QuicRecoverySpace space) const
     {
-        const SpaceState &state = m_spaces[spaceIndex(space)];
+        const SpaceState               &state = m_spaces[spaceIndex(space)];
         std::vector<QuicSentPacketInfo> packets;
         packets.reserve(state.unacknowledged.size());
-        for (const auto &[packetNumber, packet] : state.unacknowledged)
+        for (const auto &[packetNumber, packet]: state.unacknowledged)
         {
             packets.push_back(packet);
         }
@@ -342,7 +334,7 @@ namespace AsynGyanis::Net
         QuicRoundTripTimeEstimate estimate = m_estimate;
         // 交出去的 PTO 带当前退避倍数，日志与用例看到的和定时器用的是同一个数
         const QuicTime baseDuration = estimate.smoothed + std::max(4 * estimate.variation, kTimerGranularity);
-        estimate.probeTimeout = baseDuration * static_cast<std::int64_t>(1ULL << std::min<std::size_t>(m_probeBackoffExponent, 16));
+        estimate.probeTimeout       = baseDuration * static_cast<std::int64_t>(1ULL << std::min<std::size_t>(m_probeBackoffExponent, 16));
         return estimate;
     }
 } // namespace AsynGyanis::Net

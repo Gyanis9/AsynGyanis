@@ -1,18 +1,18 @@
 // HTTP 出站客户端端到端用例
-#include "HttpTestSupport.h"
-#include "Net/Http/Client/HttpClient.h"
-#include "Net/Http/Gzip.h"
-#include <gtest/gtest.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <gtest/gtest.h>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+#include "HttpTestSupport.h"
+#include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/Gzip.h"
 namespace AsynGyanis::Net
 {
     namespace
@@ -20,22 +20,19 @@ namespace AsynGyanis::Net
         using namespace HttpTestSupport;
         constexpr auto kTimeout = std::chrono::seconds{10};
 
-        Core::Task<void> doGetTask(Core::EventLoop &loop,
-                                   std::unique_ptr<HttpClientResponse> &result,
-                                   std::string url,
-                                   std::chrono::milliseconds requestTimeout)
+        Core::Task<void> doGetTask(Core::EventLoop &loop, std::unique_ptr<HttpClientResponse> &result, std::string url, std::chrono::milliseconds requestTimeout)
         {
             result = co_await HttpClient::get(loop, url, requestTimeout);
             loop.stop();
         }
 
-        static std::unique_ptr<HttpClientResponse> doGet(std::string_view url,
-                                                          std::chrono::milliseconds requestTimeout = HttpClient::kDefaultRequestTimeout)
+        static std::unique_ptr<HttpClientResponse> doGet(std::string_view url, std::chrono::milliseconds requestTimeout = HttpClient::kDefaultRequestTimeout)
         {
-            Core::EventLoop loop;
+            Core::EventLoop                     loop;
             std::unique_ptr<HttpClientResponse> result;
-            auto work = doGetTask(loop, result, std::string(url), requestTimeout);
-            if (!work.isReady()) loop.scheduler().schedule(work.handle());
+            auto                                work = doGetTask(loop, result, std::string(url), requestTimeout);
+            if (!work.isReady())
+                loop.scheduler().schedule(work.handle());
             loop.run();
             return result;
         }
@@ -44,11 +41,7 @@ namespace AsynGyanis::Net
          * @brief 走 send() 发一次请求，把成功正文与失败原因分别落到调用方的两个串里
          * @details 参数按值/按引用落到协程帧里，闭包对象不参与（惰性协程帧记的是闭包地址）
          */
-        Core::Task<void> sendOnceTask(Core::EventLoop &loop,
-                                      std::string url,
-                                      HttpClientRequest request,
-                                      std::string &observedBody,
-                                      std::string &observedReason,
+        Core::Task<void> sendOnceTask(Core::EventLoop &loop, std::string url, HttpClientRequest request, std::string &observedBody, std::string &observedReason,
                                       std::chrono::milliseconds requestTimeout)
         {
             try
@@ -57,13 +50,11 @@ namespace AsynGyanis::Net
                 if (sent.has_value())
                 {
                     observedBody = sent->body;
-                }
-                else
+                } else
                 {
                     observedReason = sent.error();
                 }
-            }
-            catch (const std::exception &failure)
+            } catch (const std::exception &failure)
             {
                 observedReason = failure.what();
             }
@@ -76,13 +67,13 @@ namespace AsynGyanis::Net
             std::string reason;
         };
 
-        SendOutcome runSend(std::string_view url, const HttpClientRequest &request,
-                            std::chrono::milliseconds requestTimeout = HttpClient::kDefaultRequestTimeout)
+        SendOutcome runSend(std::string_view url, const HttpClientRequest &request, std::chrono::milliseconds requestTimeout = HttpClient::kDefaultRequestTimeout)
         {
             Core::EventLoop loop;
-            SendOutcome outcome;
-            auto task = sendOnceTask(loop, std::string(url), request, outcome.body, outcome.reason, requestTimeout);
-            if (!task.isReady()) loop.scheduler().schedule(task.handle());
+            SendOutcome     outcome;
+            auto            task = sendOnceTask(loop, std::string(url), request, outcome.body, outcome.reason, requestTimeout);
+            if (!task.isReady())
+                loop.scheduler().schedule(task.handle());
             loop.run();
             return outcome;
         }
@@ -91,12 +82,8 @@ namespace AsynGyanis::Net
          * @brief 走 send() 但把整份响应留下（要断言头部本身有没有被改掉）
          * @details runSend 只留正文与原因，够不上「解压后头部要跟正文一致」这类判据
          */
-        Core::Task<void> sendCapturingTask(Core::EventLoop &loop,
-                                           std::string url,
-                                           HttpClientRequest request,
-                                           std::unique_ptr<HttpClientResponse> &result,
-                                           std::string &observedReason,
-                                           std::chrono::milliseconds requestTimeout)
+        Core::Task<void> sendCapturingTask(Core::EventLoop &loop, std::string url, HttpClientRequest request, std::unique_ptr<HttpClientResponse> &result,
+                                           std::string &observedReason, std::chrono::milliseconds requestTimeout)
         {
             try
             {
@@ -104,37 +91,40 @@ namespace AsynGyanis::Net
                 if (sent.has_value())
                 {
                     result = std::make_unique<HttpClientResponse>(std::move(*sent));
-                }
-                else
+                } else
                 {
                     observedReason = sent.error();
                 }
-            }
-            catch (const std::exception &failure)
+            } catch (const std::exception &failure)
             {
                 observedReason = failure.what();
             }
             loop.stop();
         }
-    }
+    } // namespace
 
     TEST(HttpClientUrl, ParsesSimpleUrl)
     {
         auto u = parseUrl("http://example.com/path");
-        EXPECT_EQ(u.scheme, "http");  EXPECT_EQ(u.host, "example.com");
-        EXPECT_EQ(u.port, 80);        EXPECT_EQ(u.path, "/path");
+        EXPECT_EQ(u.scheme, "http");
+        EXPECT_EQ(u.host, "example.com");
+        EXPECT_EQ(u.port, 80);
+        EXPECT_EQ(u.path, "/path");
     }
 
     TEST(HttpClientUrl, ParsesUrlWithPort)
     {
         auto u = parseUrl("http://localhost:8080/test");
-        EXPECT_EQ(u.host, "localhost"); EXPECT_EQ(u.port, 8080); EXPECT_EQ(u.path, "/test");
+        EXPECT_EQ(u.host, "localhost");
+        EXPECT_EQ(u.port, 8080);
+        EXPECT_EQ(u.path, "/test");
     }
 
     TEST(HttpClientUrl, ParsesHttpsScheme)
     {
         auto u = parseUrl("https://api.example.com/v1/data");
-        EXPECT_EQ(u.scheme, "https"); EXPECT_EQ(u.port, 443);
+        EXPECT_EQ(u.scheme, "https");
+        EXPECT_EQ(u.port, 443);
     }
 
     TEST(HttpClientUrl, DefaultsPathToSlash)
@@ -203,12 +193,12 @@ namespace AsynGyanis::Net
 
     TEST(HttpClient, GetsLocalhostAndReceives200)
     {
-        auto fixture = std::make_unique<RunningHttpServerFixture>(
-                HttpServerLimits{}, std::chrono::milliseconds{100});
+        auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100});
         ASSERT_TRUE(fixture->awaitRunning(kTimeout));
-        auto port = fixture->listeningPort();  ASSERT_NE(port, 0U);
+        auto port = fixture->listeningPort();
+        ASSERT_NE(port, 0U);
         auto url = "http://127.0.0.1:" + std::to_string(port) + "/hello";
-        auto r = doGet(url);
+        auto r   = doGet(url);
         ASSERT_NE(r, nullptr) << "请求失败";
         EXPECT_EQ(r->statusCode, 200);
         EXPECT_NE(r->body.find("served-hello"), std::string::npos) << "正文：" << r->body;
@@ -221,7 +211,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpClient, TimesOutAgainstSilentServer)
     {
-        constexpr auto kSlowRouteTime = std::chrono::milliseconds{900};
+        constexpr auto   kSlowRouteTime = std::chrono::milliseconds{900};
         SlowRouteOptions slowRoute;
         slowRoute.processingTime = kSlowRouteTime;
 
@@ -237,8 +227,7 @@ namespace AsynGyanis::Net
         const auto elapsedMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime);
 
         EXPECT_EQ(response, nullptr) << "超时的请求不该给出响应";
-        EXPECT_LT(elapsedMillis, kSlowRouteTime)
-                << "客户端一直等到了服务器写完响应（用时 " << elapsedMillis.count() << " 毫秒）：时限没有生效";
+        EXPECT_LT(elapsedMillis, kSlowRouteTime) << "客户端一直等到了服务器写完响应（用时 " << elapsedMillis.count() << " 毫秒）：时限没有生效";
 
         // 收尾前等这条慢路由自己跑完：夹具销毁会先让循环停手，不该把一条「要等定时器才肯结束」
         // 的在途请求留到那之后（既有用例都刻意避开这个状态）
@@ -294,8 +283,8 @@ namespace AsynGyanis::Net
             std::string value;
         };
         const std::array<BadHeader, 2> brokenValues{
-            BadHeader{"x-token", "abc\r\nX-Injected: 1"},
-            BadHeader{"x-token", "line\nfeed"},
+                BadHeader{"x-token", "abc\r\nX-Injected: 1"},
+                BadHeader{"x-token", "line\nfeed"},
         };
         for (const BadHeader &bad: brokenValues)
         {
@@ -320,7 +309,7 @@ namespace AsynGyanis::Net
         for (const std::string &method: brokenMethods)
         {
             HttpClientRequest request;
-            request.method = method;
+            request.method            = method;
             const SendOutcome outcome = runSend(url, request);
             EXPECT_TRUE(outcome.body.empty()) << "这个方法名本该被拒：「" << method << "」";
             EXPECT_NE(outcome.reason.find("token"), std::string::npos) << "原因要点明方法名必须是 HTTP token：" << outcome.reason;
@@ -357,8 +346,7 @@ namespace AsynGyanis::Net
         }
 
         const HttpClientRequest request;
-        const SendOutcome refused = runSend("http://127.0.0.1:" + std::to_string(closedPort) + "/", request,
-                                            std::chrono::seconds{5});
+        const SendOutcome       refused = runSend("http://127.0.0.1:" + std::to_string(closedPort) + "/", request, std::chrono::seconds{5});
         EXPECT_TRUE(refused.body.empty());
         EXPECT_NE(refused.reason.find("建立 TCP 连接失败"), std::string::npos) << "要指出断在连接这一段：" << refused.reason;
     }
@@ -380,31 +368,34 @@ namespace AsynGyanis::Net
          */
         void registerEncodingRoutes(Router &router, Core::EventLoop &)
         {
-            router.get("/gzip", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                const std::optional<std::string> packed = gzipCompress(kCompressiblePayload);
-                if (!packed.has_value())
-                {
-                    response.setStatus(500);
-                    co_return;
-                }
-                static_cast<void>(response.setHeader("content-encoding", "gzip"));
-                response.setBody(*packed);
-                co_return;
-            });
-            router.get("/br", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                // 对端发了本端没声明过的编码：字节看着像正文，其实是别的压缩格式
-                static_cast<void>(response.setHeader("content-encoding", "br"));
-                response.setBody("brotli-not-here");
-                co_return;
-            });
-            router.get("/echo-accept", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                const std::vector<std::string> values = request.headerValues("accept-encoding");
-                response.setBody(std::to_string(values.size()) + "|" + (values.empty() ? std::string("<none>") : values.front()));
-                co_return;
-            });
+            router.get("/gzip",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           const std::optional<std::string> packed = gzipCompress(kCompressiblePayload);
+                           if (!packed.has_value())
+                           {
+                               response.setStatus(500);
+                               co_return;
+                           }
+                           static_cast<void>(response.setHeader("content-encoding", "gzip"));
+                           response.setBody(*packed);
+                           co_return;
+                       });
+            router.get("/br",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           // 对端发了本端没声明过的编码：字节看着像正文，其实是别的压缩格式
+                           static_cast<void>(response.setHeader("content-encoding", "br"));
+                           response.setBody("brotli-not-here");
+                           co_return;
+                       });
+            router.get("/echo-accept",
+                       [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                       {
+                           const std::vector<std::string> values = request.headerValues("accept-encoding");
+                           response.setBody(std::to_string(values.size()) + "|" + (values.empty() ? std::string("<none>") : values.front()));
+                           co_return;
+                       });
         }
 
         /**
@@ -423,10 +414,7 @@ namespace AsynGyanis::Net
                 }
                 std::string folded = field.first;
                 std::transform(folded.begin(), folded.end(), folded.begin(),
-                               [](const unsigned char byte)
-                               {
-                                   return (byte >= 'A' && byte <= 'Z') ? static_cast<char>(byte + 32) : byte;
-                               });
+                               [](const unsigned char byte) { return (byte >= 'A' && byte <= 'Z') ? static_cast<char>(byte + 32) : byte; });
                 if (folded == lowerName)
                 {
                     return true;
@@ -443,15 +431,14 @@ namespace AsynGyanis::Net
      */
     TEST(HttpClient, DecompressesGzipResponseBodyAndDropsTheTwoDescribingHeaders)
     {
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                         registerEncodingRoutes);
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, registerEncodingRoutes);
         ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
         const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/gzip";
 
-        Core::EventLoop loop;
+        Core::EventLoop                     loop;
         std::unique_ptr<HttpClientResponse> result;
-        std::string reason;
-        auto task = sendCapturingTask(loop, url, HttpClientRequest{}, result, reason, kTimeout);
+        std::string                         reason;
+        auto                                task = sendCapturingTask(loop, url, HttpClientRequest{}, result, reason, kTimeout);
         if (!task.isReady())
         {
             loop.scheduler().schedule(task.handle());
@@ -470,8 +457,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpClient, AdvertisesOnlyTheEncodingsItCanDecode)
     {
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                         registerEncodingRoutes);
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, registerEncodingRoutes);
         ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
         const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/echo-accept";
 
@@ -487,8 +473,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpClient, LeavesTheBodyAloneWhenTheCallerAdvertisesItsOwnAcceptEncoding)
     {
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                         registerEncodingRoutes);
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, registerEncodingRoutes);
         ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
         const std::string host = "http://127.0.0.1:" + std::to_string(fixture.listeningPort());
 
@@ -498,10 +483,10 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(echoed.reason.empty()) << "请求失败：" << echoed.reason;
         EXPECT_EQ(echoed.body, "1|identity") << "本端替调用方加了一条声明：" << echoed.body;
 
-        Core::EventLoop loop;
+        Core::EventLoop                     loop;
         std::unique_ptr<HttpClientResponse> result;
-        std::string reason;
-        auto task = sendCapturingTask(loop, host + "/gzip", request, result, reason, kTimeout);
+        std::string                         reason;
+        auto                                task = sendCapturingTask(loop, host + "/gzip", request, result, reason, kTimeout);
         if (!task.isReady())
         {
             loop.scheduler().schedule(task.handle());
@@ -521,8 +506,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpClient, FailsInsteadOfHandingBackBytesItCannotDecode)
     {
-        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                         registerEncodingRoutes);
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, registerEncodingRoutes);
         ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
         const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/br";
 

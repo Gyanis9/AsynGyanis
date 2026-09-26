@@ -40,8 +40,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <random>
@@ -162,8 +162,7 @@ namespace AsynGyanis::Database
                 return;
             }
 
-            const std::unique_ptr<DatabaseResult> leftoverKeys =
-                connection.executeCommand({"KEYS", testKeyPrefix() + "*"});
+            const std::unique_ptr<DatabaseResult> leftoverKeys = connection.executeCommand({"KEYS", testKeyPrefix() + "*"});
             if (leftoverKeys != nullptr && !leftoverKeys->isEmpty())
             {
                 std::string leftoverNames;
@@ -184,12 +183,12 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] static ConnectionConfig configFromEnvironment(const std::string &password)
         {
-            ConnectionConfig configuration      = ConnectionConfig::redisDefault();
-            configuration.host                  = readEnvironmentTextOrDefault("ASYN_REDIS_TEST_HOST", "127.0.0.1");
-            configuration.port                  = readEnvironmentPortOrDefault("ASYN_REDIS_TEST_PORT", 6379);
-            configuration.userName              = readEnvironmentTextOrDefault("ASYN_REDIS_TEST_USER", "");
-            configuration.password              = password;
-            configuration.database              = readEnvironmentTextOrDefault("ASYN_REDIS_TEST_DATABASE", kDefaultTestKeyspace);
+            ConnectionConfig configuration = ConnectionConfig::redisDefault();
+            configuration.host             = readEnvironmentTextOrDefault("ASYN_REDIS_TEST_HOST", "127.0.0.1");
+            configuration.port             = readEnvironmentPortOrDefault("ASYN_REDIS_TEST_PORT", 6379);
+            configuration.userName         = readEnvironmentTextOrDefault("ASYN_REDIS_TEST_USER", "");
+            configuration.password         = password;
+            configuration.database         = readEnvironmentTextOrDefault("ASYN_REDIS_TEST_DATABASE", kDefaultTestKeyspace);
             return configuration;
         }
 
@@ -221,9 +220,9 @@ namespace AsynGyanis::Database
             return result->getValue(0);
         }
 
-        ConnectionConfig                   m_configuration;      ///< 由环境变量组装的连接配置
-        std::unique_ptr<RedisConnection>   m_connection;         ///< 用例独占的连接
-        std::vector<std::string>           m_createdKeys;        ///< 本用例写入的键，TearDown 逐个删除
+        ConnectionConfig                 m_configuration; ///< 由环境变量组装的连接配置
+        std::unique_ptr<RedisConnection> m_connection;    ///< 用例独占的连接
+        std::vector<std::string>         m_createdKeys;   ///< 本用例写入的键，TearDown 逐个删除
     };
 
     /**
@@ -246,7 +245,7 @@ namespace AsynGyanis::Database
     TEST_F(RedisIntegrationTest, ConnectWithWrongPasswordFailsWithLocalizedReason)
     {
         ConnectionConfig wrongConfiguration = m_configuration;
-        wrongConfiguration.password        = "definitely-not-the-password";
+        wrongConfiguration.password         = "definitely-not-the-password";
 
         RedisConnection wrongConnection(wrongConfiguration);
         EXPECT_FALSE(wrongConnection.connect());
@@ -516,12 +515,9 @@ namespace AsynGyanis::Database
         const std::string heapKey   = makeKey("heap-args");
 
         // 8 个参数（命令名 + 键 + 6 个值）：正好落在栈上容量之内
-        ASSERT_TRUE(m_connection->executeCommand({"LPUSH", inlineKey, "a1", "a2", "a3", "a4", "a5", "a6"}) != nullptr)
-            << m_connection->lastError();
+        ASSERT_TRUE(m_connection->executeCommand({"LPUSH", inlineKey, "a1", "a2", "a3", "a4", "a5", "a6"}) != nullptr) << m_connection->lastError();
         // 12 个参数：超出容量，走堆上的兜底数组
-        ASSERT_TRUE(m_connection->executeCommand({"LPUSH", heapKey, "b1", "b2", "b3", "b4", "b5", "b6",
-                                                 "b7", "b8", "b9", "b10"}) != nullptr)
-            << m_connection->lastError();
+        ASSERT_TRUE(m_connection->executeCommand({"LPUSH", heapKey, "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9", "b10"}) != nullptr) << m_connection->lastError();
 
         const std::optional<DatabaseValue> inlineLength = runScalar({"LLEN", inlineKey});
         const std::optional<DatabaseValue> heapLength   = runScalar({"LLEN", heapKey});
@@ -601,8 +597,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(m_connection->executeCommand({"EXEC"}), nullptr) << m_connection->lastError();
 
         m_connection->resetSessionState();
-        EXPECT_TRUE(m_connection->lastError().empty()) << "事务已经了结，复位却发出了被服务端拒绝的命令："
-                                                      << m_connection->lastError();
+        EXPECT_TRUE(m_connection->lastError().empty()) << "事务已经了结，复位却发出了被服务端拒绝的命令：" << m_connection->lastError();
 
         const std::optional<DatabaseValue> readBack = runScalar({"GET", key});
         ASSERT_TRUE(readBack.has_value());
@@ -695,7 +690,7 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(m_connection->pipelineCommand("WATCH " + key));
         ASSERT_TRUE(m_connection->pipelineCommand("EXEC"));
 
-        const std::vector<std::unique_ptr<DatabaseResult> > replies = m_connection->flushPipeline();
+        const std::vector<std::unique_ptr<DatabaseResult>> replies = m_connection->flushPipeline();
         ASSERT_EQ(replies.size(), 2U);
         ASSERT_NE(replies[1], nullptr);
         EXPECT_FALSE(replies[1]->lastError().empty()) << "管道里的 EXEC 应当以 error 回复收场，否则这条用例没有构造出前提";
@@ -788,8 +783,7 @@ namespace AsynGyanis::Database
         {
             RedisConnection connection(m_configuration);
             connection.setConnectTimeout(timeoutMilliseconds);
-            EXPECT_TRUE(connection.connect()) << "connectTimeout=" << timeoutMilliseconds
-                                              << " 被折算成立刻超时：" << connection.lastError();
+            EXPECT_TRUE(connection.connect()) << "connectTimeout=" << timeoutMilliseconds << " 被折算成立刻超时：" << connection.lastError();
             EXPECT_TRUE(connection.isConnected());
 
             // 连上了还得能发命令：只把 connect() 判成成功而句柄不可用，同样是不设超时没落地
@@ -817,15 +811,15 @@ namespace AsynGyanis::Database
         poolConfiguration.maximumPoolSize            = 1;
         poolConfiguration.acquireTimeoutMilliseconds = 5000;
         const ConnectionConfig configuration         = m_configuration;
-        ConnectionPool pool(
-            [configuration]() -> std::unique_ptr<DatabaseConnection>
-            {
-                auto connection = std::make_unique<RedisConnection>(configuration);
-                // 池的工厂契约要求交出「已经 connect() 完成」的连接
-                static_cast<void>(connection->connect());
-                return connection;
-            },
-            poolConfiguration);
+        ConnectionPool         pool(
+                [configuration]() -> std::unique_ptr<DatabaseConnection>
+                {
+                    auto connection = std::make_unique<RedisConnection>(configuration);
+                    // 池的工厂契约要求交出「已经 connect() 完成」的连接
+                    static_cast<void>(connection->connect());
+                    return connection;
+                },
+                poolConfiguration);
 
         // 命令数组与管道接口在 RedisConnection 上而不是基类，取值前先按类型取回具体驱动
         const RedisConnection *firstBorrowedConnection = nullptr;
@@ -872,7 +866,7 @@ namespace AsynGyanis::Database
 
         // 另开一条连到 0 号库的连接：同一个键在那里必须不存在，才说明 SELECT 真的生效了
         ConnectionConfig defaultKeyspaceConfiguration = m_configuration;
-        defaultKeyspaceConfiguration.database        = "0";
+        defaultKeyspaceConfiguration.database         = "0";
 
         RedisConnection defaultKeyspaceConnection(defaultKeyspaceConfiguration);
         ASSERT_TRUE(defaultKeyspaceConnection.connect()) << defaultKeyspaceConnection.lastError();
@@ -912,10 +906,9 @@ namespace AsynGyanis::Database
         m_connection->setQueryTimeout(200);
         const std::string blockedKey = makeKey("blpop-timeout");
 
-        const auto startedAt = std::chrono::steady_clock::now();
-        const std::unique_ptr<DatabaseResult> blocked = m_connection->executeCommand({"BLPOP", blockedKey, "0"});
-        const auto elapsedMilliseconds =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
+        const auto                            startedAt           = std::chrono::steady_clock::now();
+        const std::unique_ptr<DatabaseResult> blocked             = m_connection->executeCommand({"BLPOP", blockedKey, "0"});
+        const auto                            elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
 
         ASSERT_EQ(blocked, nullptr) << "BLPOP 拿到了回复，说明新的收发超时没落到上下文上";
         EXPECT_LT(elapsedMilliseconds, 3000) << "耗时 " << elapsedMilliseconds << " 毫秒，不像是 200 毫秒截断的";

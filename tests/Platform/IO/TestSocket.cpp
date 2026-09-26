@@ -148,8 +148,7 @@ namespace AsynGyanis::Platform
 
         sockaddr_in peerAddress{};
         socklen_t   peerAddressLength = sizeof(peerAddress);
-        const int   accepted          = acceptWithTimeout(listener, reinterpret_cast<sockaddr *>(&peerAddress),
-                                               &peerAddressLength);
+        const int   accepted          = acceptWithTimeout(listener, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength);
 
         ASSERT_TRUE(FileDescriptor::isValid(accepted));
         EXPECT_EQ(peerAddress.sin_family, AF_INET);
@@ -237,9 +236,9 @@ namespace AsynGyanis::Platform
         int writeDescriptor = -1;
         ASSERT_TRUE(FileDescriptor::createPair(readDescriptor, writeDescriptor));
 
-        const std::string_view first = "alpha";
-        const std::string_view empty = first.substr(1, 0); // 长度为 0 但指针非空，两个平台都接受
-        const std::string_view third = "beta";
+        const std::string_view    first      = "alpha";
+        const std::string_view    empty      = first.substr(1, 0); // 长度为 0 但指针非空，两个平台都接受
+        const std::string_view    third      = "beta";
         const Socket::WriteBuffer buffers[3] = {
                 {first.data(), first.size()},
                 {empty.data(), empty.size()},
@@ -376,8 +375,7 @@ namespace AsynGyanis::Platform
     TEST(Socket, TakePendingErrorDistinguishesUnusableDescriptorFromNoError)
     {
         Socket::initialize();
-        EXPECT_NE(Socket::takePendingError(FileDescriptor::kInvalid), 0)
-                << "无效描述符必须交出非 0 的错误码，否则与「没有错误」同形";
+        EXPECT_NE(Socket::takePendingError(FileDescriptor::kInvalid), 0) << "无效描述符必须交出非 0 的错误码，否则与「没有错误」同形";
 
         std::uint16_t assignedPort = 0;
         const int     listener     = createLoopbackListener(assignedPort);
@@ -406,7 +404,7 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
 
         // 长度为 0 的空段是合法的（调用方常拿它占位），不能被同一判据一起拒掉
-        const char placeholder[] = "a";
+        const char                placeholder[]       = "a";
         const Socket::WriteBuffer acceptableBuffers[] = {
                 {placeholder, sizeof(placeholder) - 1},
                 {nullptr, 0},
@@ -433,8 +431,7 @@ namespace AsynGyanis::Platform
         Socket::finalize();
 
         const int descriptor = createStreamSocket();
-        ASSERT_TRUE(FileDescriptor::isValid(descriptor))
-                << "还有一份引用没放回，Winsock 却被清理了：错误码 " << PlatformError::lastSocketErrorCode();
+        ASSERT_TRUE(FileDescriptor::isValid(descriptor)) << "还有一份引用没放回，Winsock 却被清理了：错误码 " << PlatformError::lastSocketErrorCode();
         EXPECT_TRUE(Socket::setNoDelay(descriptor));
 
         // 本用例借来的两份引用要如数归还，否则同一进程里后续用例会看到被清理掉的 Winsock

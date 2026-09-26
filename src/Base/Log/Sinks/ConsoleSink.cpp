@@ -11,8 +11,7 @@
 
 namespace AsynGyanis::Base
 {
-    ConsoleSink::ConsoleSink(const bool enableColor) :
-        m_colorEnabled(enableColor)
+    ConsoleSink::ConsoleSink(const bool enableColor) : m_colorEnabled(enableColor)
     {
         AsynGyanis::Platform::Console::ensureUtf8Output();
         // 构造只是「带初值」的一次切换，与运行期切换共用同一条 formatter 选择路径
@@ -69,9 +68,7 @@ namespace AsynGyanis::Base
         hasReported = true;
         // 诊断交给另一条流：本 Sink 就是日志出口，拿根日志器报自己等于让 write() 递归回来
         std::ostream &escape = (&stream == &std::cout) ? std::cerr : std::cout;
-        escape << "ConsoleSink：" << streamLabel
-                << " 写出失败（目标可能已被关闭，或重定向到了已退出的读取端）；流已失效，该流上的后续日志不会再输出"
-                << '\n';
+        escape << "ConsoleSink：" << streamLabel << " 写出失败（目标可能已被关闭，或重定向到了已退出的读取端）；流已失效，该流上的后续日志不会再输出" << '\n';
         escape.flush();
     }
 

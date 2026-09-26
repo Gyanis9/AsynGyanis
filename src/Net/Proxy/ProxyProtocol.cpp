@@ -8,11 +8,11 @@
 
 #include <algorithm>
 #include <charconv>
-#include <cstdio>
 #include <cstddef>
 #include <cstdint>
-#include <string>
+#include <cstdio>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace AsynGyanis::Net
@@ -39,9 +39,9 @@ namespace AsynGyanis::Net
 
         /// v2 的地址族编码
         constexpr std::uint8_t kV2FamilyUnspec = 0U;
-        constexpr std::uint8_t kV2FamilyIpv4 = 1U;
-        constexpr std::uint8_t kV2FamilyIpv6 = 2U;
-        constexpr std::uint8_t kV2FamilyUnix = 3U;
+        constexpr std::uint8_t kV2FamilyIpv4   = 1U;
+        constexpr std::uint8_t kV2FamilyIpv6   = 2U;
+        constexpr std::uint8_t kV2FamilyUnix   = 3U;
 
         /**
          * @brief 读出一个十进制端口（v1 用），越界与非数字都算失败
@@ -55,9 +55,9 @@ namespace AsynGyanis::Net
             {
                 return false;
             }
-            unsigned int value = 0U;
-            const char *const end = text.data() + text.size();
-            const auto result = std::from_chars(text.data(), end, value);
+            unsigned int      value  = 0U;
+            const char *const end    = text.data() + text.size();
+            const auto        result = std::from_chars(text.data(), end, value);
             if (result.ec != std::errc{} || result.ptr != end || value > 65535U)
             {
                 return false;
@@ -74,18 +74,15 @@ namespace AsynGyanis::Net
          * @details 走 InetAddress 的文本构造函数：它自己会抛 `InvalidArgumentException`，这里就地
          *          接住翻成空值——报文格式问题不该把异常穿过接受循环
          */
-        [[nodiscard]] std::optional<Core::InetAddress> makeAddress(std::string_view text,
-                                                                   const std::uint16_t port) noexcept
+        [[nodiscard]] std::optional<Core::InetAddress> makeAddress(std::string_view text, const std::uint16_t port) noexcept
         {
             try
             {
                 return Core::InetAddress{text, port};
-            }
-            catch (const Base::InvalidArgumentException &)
+            } catch (const Base::InvalidArgumentException &)
             {
                 return std::nullopt;
-            }
-            catch (const Base::Exception &)
+            } catch (const Base::Exception &)
             {
                 return std::nullopt;
             }
@@ -99,7 +96,7 @@ namespace AsynGyanis::Net
          */
         std::size_t splitV1Fields(std::string_view line, std::string_view *fields, const std::size_t capacity) noexcept
         {
-            std::size_t count = 0U;
+            std::size_t count  = 0U;
             std::size_t cursor = 0U;
             while (cursor < line.size())
             {
@@ -140,21 +137,20 @@ namespace AsynGyanis::Net
                     return false;
                 }
                 const auto *const bytes = reinterpret_cast<const std::uint8_t *>(block.data());
-                char sourceText[64]{};
+                char              sourceText[64]{};
                 std::snprintf(sourceText, sizeof(sourceText), "%u.%u.%u.%u", bytes[0], bytes[1], bytes[2], bytes[3]);
                 char destinationText[64]{};
-                std::snprintf(destinationText, sizeof(destinationText), "%u.%u.%u.%u", bytes[4], bytes[5], bytes[6],
-                              bytes[7]);
-                const std::uint16_t sourcePort = static_cast<std::uint16_t>((bytes[8] << 8) | bytes[9]);
+                std::snprintf(destinationText, sizeof(destinationText), "%u.%u.%u.%u", bytes[4], bytes[5], bytes[6], bytes[7]);
+                const std::uint16_t sourcePort      = static_cast<std::uint16_t>((bytes[8] << 8) | bytes[9]);
                 const std::uint16_t destinationPort = static_cast<std::uint16_t>((bytes[10] << 8) | bytes[11]);
-                const auto source = makeAddress(sourceText, sourcePort);
-                const auto destination = makeAddress(destinationText, destinationPort);
+                const auto          source          = makeAddress(sourceText, sourcePort);
+                const auto          destination     = makeAddress(destinationText, destinationPort);
                 if (!source.has_value() || !destination.has_value())
                 {
                     return false;
                 }
-                endpoint.source = *source;
-                endpoint.destination = *destination;
+                endpoint.source       = *source;
+                endpoint.destination  = *destination;
                 endpoint.hasAddresses = true;
                 return true;
             }
@@ -170,32 +166,25 @@ namespace AsynGyanis::Net
                 auto render = [bytes](const std::size_t offset)
                 {
                     char text[64]{};
-                    std::snprintf(text, sizeof(text), "%x:%x:%x:%x:%x:%x:%x:%x",
-                                  (bytes[offset] << 8) | bytes[offset + 1U],
-                                  (bytes[offset + 2U] << 8) | bytes[offset + 3U],
-                                  (bytes[offset + 4U] << 8) | bytes[offset + 5U],
-                                  (bytes[offset + 6U] << 8) | bytes[offset + 7U],
-                                  (bytes[offset + 8U] << 8) | bytes[offset + 9U],
-                                  (bytes[offset + 10U] << 8) | bytes[offset + 11U],
-                                  (bytes[offset + 12U] << 8) | bytes[offset + 13U],
+                    std::snprintf(text, sizeof(text), "%x:%x:%x:%x:%x:%x:%x:%x", (bytes[offset] << 8) | bytes[offset + 1U], (bytes[offset + 2U] << 8) | bytes[offset + 3U],
+                                  (bytes[offset + 4U] << 8) | bytes[offset + 5U], (bytes[offset + 6U] << 8) | bytes[offset + 7U], (bytes[offset + 8U] << 8) | bytes[offset + 9U],
+                                  (bytes[offset + 10U] << 8) | bytes[offset + 11U], (bytes[offset + 12U] << 8) | bytes[offset + 13U],
                                   (bytes[offset + 14U] << 8) | bytes[offset + 15U]);
                     return std::string{text};
                 };
-                const std::string sourceText = render(0U);
-                const std::string destinationText = render(16U);
-                const std::size_t portOffset = 32U;
-                const std::uint16_t sourcePort =
-                        static_cast<std::uint16_t>((bytes[portOffset] << 8) | bytes[portOffset + 1U]);
-                const std::uint16_t destinationPort =
-                        static_cast<std::uint16_t>((bytes[portOffset + 2U] << 8) | bytes[portOffset + 3U]);
-                const auto source = makeAddress(sourceText, sourcePort);
-                const auto destination = makeAddress(destinationText, destinationPort);
+                const std::string   sourceText      = render(0U);
+                const std::string   destinationText = render(16U);
+                const std::size_t   portOffset      = 32U;
+                const std::uint16_t sourcePort      = static_cast<std::uint16_t>((bytes[portOffset] << 8) | bytes[portOffset + 1U]);
+                const std::uint16_t destinationPort = static_cast<std::uint16_t>((bytes[portOffset + 2U] << 8) | bytes[portOffset + 3U]);
+                const auto          source          = makeAddress(sourceText, sourcePort);
+                const auto          destination     = makeAddress(destinationText, destinationPort);
                 if (!source.has_value() || !destination.has_value())
                 {
                     return false;
                 }
-                endpoint.source = *source;
-                endpoint.destination = *destination;
+                endpoint.source       = *source;
+                endpoint.destination  = *destination;
                 endpoint.hasAddresses = true;
                 return true;
             }
@@ -213,8 +202,8 @@ namespace AsynGyanis::Net
         bool parseV1Line(std::string_view line, ProxyEndpoint &endpoint) noexcept
         {
             constexpr std::size_t kFieldCapacity = 6U;
-            std::string_view fields[kFieldCapacity]{};
-            const std::size_t count = splitV1Fields(line, fields, kFieldCapacity);
+            std::string_view      fields[kFieldCapacity]{};
+            const std::size_t     count = splitV1Fields(line, fields, kFieldCapacity);
 
             endpoint.hasAddresses = false;
             if (count == 1U && fields[0] == "UNKNOWN")
@@ -227,13 +216,13 @@ namespace AsynGyanis::Net
                 return false;
             }
 
-            std::uint16_t sourcePort = 0U;
+            std::uint16_t sourcePort      = 0U;
             std::uint16_t destinationPort = 0U;
             if (!parsePortText(fields[3], sourcePort) || !parsePortText(fields[4], destinationPort))
             {
                 return false;
             }
-            const auto source = makeAddress(fields[1], sourcePort);
+            const auto source      = makeAddress(fields[1], sourcePort);
             const auto destination = makeAddress(fields[2], destinationPort);
             if (!source.has_value() || !destination.has_value())
             {
@@ -243,7 +232,7 @@ namespace AsynGyanis::Net
             // 声明的地址族与实际文本必须对得上：TCP4 里塞一个 IPv6、或两族互换，都算报文不合规范。
             // v1 只定义 TCP4/TCP6/UNKNOWN 三种，别的形式（TCP、UDP）不在规范里，认了就等于给
             // 「什么样的字节算合法头」开一个规范之外的口子
-            const bool sourceIsIpv6 = source->family() == AF_INET6;
+            const bool sourceIsIpv6      = source->family() == AF_INET6;
             const bool destinationIsIpv6 = destination->family() == AF_INET6;
             if (fields[0] == "TCP4" && (sourceIsIpv6 || destinationIsIpv6))
             {
@@ -258,8 +247,8 @@ namespace AsynGyanis::Net
                 return false;
             }
 
-            endpoint.source = *source;
-            endpoint.destination = *destination;
+            endpoint.source       = *source;
+            endpoint.destination  = *destination;
             endpoint.hasAddresses = true;
             return true;
         }
@@ -276,9 +265,9 @@ namespace AsynGyanis::Net
         // 先问「已读到的这段还可能是什么」：两个版本的前缀都只对得上自己那一支，全对不上就不是头。
         // 这一步不能跳：v2 的签名以 CR 开头，读满 12 字节之前和「不是头」长得一模一样
         const std::size_t v2Compared = std::min(buffered.size(), kV2Signature.size());
-        const bool couldBeV2 = kV2Signature.substr(0U, v2Compared) == buffered.substr(0U, v2Compared);
+        const bool        couldBeV2  = kV2Signature.substr(0U, v2Compared) == buffered.substr(0U, v2Compared);
         const std::size_t v1Compared = std::min(buffered.size(), kV1Prefix.size());
-        const bool couldBeV1 = kV1Prefix.substr(0U, v1Compared) == buffered.substr(0U, v1Compared);
+        const bool        couldBeV1  = kV1Prefix.substr(0U, v1Compared) == buffered.substr(0U, v1Compared);
         if (!couldBeV2 && !couldBeV1)
         {
             framing.isStillPlausible = false;
@@ -291,9 +280,9 @@ namespace AsynGyanis::Net
             {
                 return framing; // 定长段还没读满，长度字段读不出来
             }
-            const auto *const bytes = reinterpret_cast<const std::uint8_t *>(buffered.data());
+            const auto *const bytes    = reinterpret_cast<const std::uint8_t *>(buffered.data());
             const std::size_t declared = (bytes[kV2LengthOffset] << 8) | bytes[kV2LengthOffset + 1U];
-            const std::size_t total = kV2FixedPartBytes + declared;
+            const std::size_t total    = kV2FixedPartBytes + declared;
             if (total > kMaximumProxyHeaderV2Bytes)
             {
                 // 长度字段谎报到上界之外：这条头不可能是合法代理发出来的，判死比继续读便宜
@@ -327,11 +316,11 @@ namespace AsynGyanis::Net
 
         if (header.size() >= kV2FixedPartBytes && header.substr(0U, kV2Signature.size()) == kV2Signature)
         {
-            const auto *const bytes = reinterpret_cast<const std::uint8_t *>(header.data());
-            const std::uint8_t version = static_cast<std::uint8_t>(bytes[kV2VersionCommandOffset] >> 4U);
-            const std::uint8_t command = static_cast<std::uint8_t>(bytes[kV2VersionCommandOffset] & 0x0FU);
-            const std::uint8_t family = static_cast<std::uint8_t>(bytes[kV2FamilyOffset] >> 4U);
-            const std::size_t declared = (bytes[kV2LengthOffset] << 8) | bytes[kV2LengthOffset + 1U];
+            const auto *const  bytes    = reinterpret_cast<const std::uint8_t *>(header.data());
+            const std::uint8_t version  = static_cast<std::uint8_t>(bytes[kV2VersionCommandOffset] >> 4U);
+            const std::uint8_t command  = static_cast<std::uint8_t>(bytes[kV2VersionCommandOffset] & 0x0FU);
+            const std::uint8_t family   = static_cast<std::uint8_t>(bytes[kV2FamilyOffset] >> 4U);
+            const std::size_t  declared = (bytes[kV2LengthOffset] << 8) | bytes[kV2LengthOffset + 1U];
             if (version != 2U || declared + kV2FixedPartBytes > header.size())
             {
                 return std::nullopt;

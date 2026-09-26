@@ -1,10 +1,10 @@
 #include "Core/Socket/AsyncSocket.h"
+#include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Socket/VectoredSendCursor.h"
-#include "Base/Exception/InvalidArgumentException.h"
-#include "Base/Exception/SystemException.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/System/PlatformError.h"
@@ -64,10 +64,7 @@ namespace AsynGyanis::Core
             std::array<char, kDiscardChunkBytes> scratchBuffer;
             for (int roundCount = 0; roundCount < kDiscardRoundLimit; ++roundCount)
             {
-                const ssize_t receivedBytes = ::recv(fileDescriptor,
-                                                     scratchBuffer.data(),
-                                                     static_cast<int>(scratchBuffer.size()),
-                                                     MSG_DONTWAIT);
+                const ssize_t receivedBytes = ::recv(fileDescriptor, scratchBuffer.data(), static_cast<int>(scratchBuffer.size()), MSG_DONTWAIT);
                 // 0 是对端已收口、-1 配 WOULD_BLOCK 是队列已空、配其它错误码是连接已不可用：
                 // 三种情况都没有需要继续丢弃的字节
                 if (receivedBytes <= 0)
@@ -78,8 +75,7 @@ namespace AsynGyanis::Core
         }
     } // namespace
 
-    AsyncSocket::AsyncSocket(EventLoop &loop, const int fileDescriptor) :
-        m_loop(loop), m_fileDescriptor(fileDescriptor)
+    AsyncSocket::AsyncSocket(EventLoop &loop, const int fileDescriptor) : m_loop(loop), m_fileDescriptor(fileDescriptor)
     {
         if (m_fileDescriptor >= 0)
         {
@@ -106,8 +102,7 @@ namespace AsynGyanis::Core
     }
 
     AsyncSocket::AsyncSocket(AsyncSocket &&other) noexcept :
-        m_loop(other.m_loop), m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1)),
-        m_watcher(std::move(other.m_watcher)), m_isListening(other.m_isListening),
+        m_loop(other.m_loop), m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1)), m_watcher(std::move(other.m_watcher)), m_isListening(other.m_isListening),
         m_advertisedPeer(std::move(other.m_advertisedPeer))
     {
     }
@@ -136,7 +131,7 @@ namespace AsynGyanis::Core
         // 失败值 INVALID_SOCKET 恰好变成 -1，与下面的有效性判定对齐。POSIX 用 SOCK_CLOEXEC 在建好时
         // 就断掉继承，Windows 的 ::socket 没有等价标志位，只能建完取消继承位——监听套接字与已建立的
         // 连接都不该随库外消费者的 CreateProcess(bInheritHandles=TRUE) 传下去
-        const SOCKET socketHandle = ::socket(domain, type, 0);
+        const SOCKET socketHandle   = ::socket(domain, type, 0);
         const int    fileDescriptor = static_cast<int>(socketHandle);
         static_cast<void>(Platform::FileDescriptor::markNonInheritable(fileDescriptor));
 #else
@@ -266,14 +261,13 @@ namespace AsynGyanis::Core
         if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
         {
             throw Base::InvalidArgumentException("单次接收长度超过上限（" + std::to_string(length) +
-                                        " 字节 > INT_MAX）：底层 recv 的长度形参是 int，"
-                                        "超限会被静默窄化；请把数据分成多次接收");
+                                                 " 字节 > INT_MAX）：底层 recv 的长度形参是 int，"
+                                                 "超限会被静默窄化；请把数据分成多次接收");
         }
 
         while (true)
         {
-            const ssize_t receivedBytes =
-                    ::recv(m_fileDescriptor, static_cast<char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
+            const ssize_t receivedBytes = ::recv(m_fileDescriptor, static_cast<char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
             if (receivedBytes > 0)
                 co_return receivedBytes;
             if (receivedBytes == 0)
@@ -304,14 +298,13 @@ namespace AsynGyanis::Core
         if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
         {
             throw Base::InvalidArgumentException("单次发送长度超过上限（" + std::to_string(length) +
-                                        " 字节 > INT_MAX）：底层 send 的长度形参是 int，"
-                                        "超限会被静默窄化；请把数据分成多次发送");
+                                                 " 字节 > INT_MAX）：底层 send 的长度形参是 int，"
+                                                 "超限会被静默窄化；请把数据分成多次发送");
         }
 
         while (true)
         {
-            const ssize_t sentBytes =
-                    ::send(m_fileDescriptor, static_cast<const char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
+            const ssize_t sentBytes = ::send(m_fileDescriptor, static_cast<const char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
             if (sentBytes > 0)
                 co_return sentBytes;
             // send 返回 0 说明对端已关闭：这条路径下 errno 未被设置，
@@ -344,9 +337,7 @@ namespace AsynGyanis::Core
         }
         if (bufferCount > Platform::Socket::kMaximumVectorCount)
         {
-            throw Base::InvalidArgumentException("聚合发送失败：段数 " + std::to_string(bufferCount) +
-                                                 " 超过平台上限 " +
-                                                 std::to_string(Platform::Socket::kMaximumVectorCount) +
+            throw Base::InvalidArgumentException("聚合发送失败：段数 " + std::to_string(bufferCount) + " 超过平台上限 " + std::to_string(Platform::Socket::kMaximumVectorCount) +
                                                  "（Windows 的 WSASend 最多 16 段），请先把相邻小段合并后再发送");
         }
 
@@ -357,7 +348,7 @@ namespace AsynGyanis::Core
         while (!cursor.isFinished())
         {
             Platform::Socket::WriteBuffer pending[Platform::Socket::kMaximumVectorCount]{};
-            const std::size_t pendingCount = cursor.snapshotPending(pending, Platform::Socket::kMaximumVectorCount);
+            const std::size_t             pendingCount = cursor.snapshotPending(pending, Platform::Socket::kMaximumVectorCount);
             if (pendingCount == 0)
             {
                 // 游标说没发完，却拼不出任何待发段：段数组内部不一致（长度之和与游标对不上），
@@ -415,13 +406,12 @@ namespace AsynGyanis::Core
         // 在这里当场报错能把「哪一侧的参数不对」说清楚
         if (fileDescriptor < 0)
         {
-            throw Base::InvalidArgumentException("零拷贝发送失败：源文件描述符无效（" + std::to_string(fileDescriptor) +
-                                        "），请先把文件打开再交给本方法");
+            throw Base::InvalidArgumentException("零拷贝发送失败：源文件描述符无效（" + std::to_string(fileDescriptor) + "），请先把文件打开再交给本方法");
         }
         if (length == 0)
         {
             throw Base::InvalidArgumentException("零拷贝发送失败：待发字节数为 0，本方法只用于发送文件正文，"
-                                        "空正文请直接跳过发送");
+                                                 "空正文请直接跳过发送");
         }
 
         std::uint64_t currentOffset   = offset;
@@ -445,14 +435,12 @@ namespace AsynGyanis::Core
                 // 发过一部分才是文件比声称的长度短——归错因会把排查支到相反的方向
                 if (remainingLength == length)
                 {
-                    throw Base::SystemException("零拷贝发送失败：起点已在源文件末尾之后（偏移 " +
-                                                std::to_string(currentOffset) +
+                    throw Base::SystemException("零拷贝发送失败：起点已在源文件末尾之后（偏移 " + std::to_string(currentOffset) +
                                                 " 处读不到任何字节），请按源文件实际长度校正偏移与长度");
                 }
                 // 已经上线的前缀收不回来：调用方若整块重发，这段字节会在流里重复一遍
-                throw Base::SystemException("零拷贝发送失败：已发出 " + std::to_string(length - remainingLength) +
-                                            " 字节后到达文件末尾，源文件比声称的长度 " + std::to_string(length) +
-                                            " 短（此刻偏移 " + std::to_string(currentOffset) +
+                throw Base::SystemException("零拷贝发送失败：已发出 " + std::to_string(length - remainingLength) + " 字节后到达文件末尾，源文件比声称的长度 " +
+                                            std::to_string(length) + " 短（此刻偏移 " + std::to_string(currentOffset) +
                                             "）。长度多半取自早前的 stat、文件随后被改写；"
                                             "已上线的前缀不可整块重发，只能收口本条连接");
             }
@@ -600,4 +588,4 @@ namespace AsynGyanis::Core
         }
         return InetAddress(address, addressLength);
     }
-}
+} // namespace AsynGyanis::Core

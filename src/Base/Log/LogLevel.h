@@ -30,11 +30,11 @@ namespace AsynGyanis::Base
     {
         Trace = 0, ///< 跟踪级别（最详细）
         Debug = 1, ///< 调试级别
-        Info = 2,  ///< 信息级别
-        Warn = 3,  ///< 警告级别
+        Info  = 2, ///< 信息级别
+        Warn  = 3, ///< 警告级别
         Error = 4, ///< 错误级别
         Fatal = 5, ///< 致命错误级别
-        Off = 6    ///< 关闭全部日志输出
+        Off   = 6  ///< 关闭全部日志输出
     };
 
     /**
@@ -100,8 +100,7 @@ namespace AsynGyanis::Base
          * @param canonicalLabel 规范写法（已知等级名）
          * @return bool 两者在不区分大小写的意义下相等时返回 true
          */
-        [[nodiscard]] inline constexpr bool logLevelLabelEquals(const std::string_view label,
-                                                                const std::string_view canonicalLabel) noexcept
+        [[nodiscard]] inline constexpr bool logLevelLabelEquals(const std::string_view label, const std::string_view canonicalLabel) noexcept
         {
             if (label.size() != canonicalLabel.size())
             {
@@ -147,8 +146,7 @@ namespace AsynGyanis::Base
         if (logLevelLabelEquals(levelString, "OFF"))
             return LogLevel::Off;
 
-        std::cerr << "日志等级：无法识别 '" << levelString
-                << "'，已回落为 INFO（可用取值：TRACE/DEBUG/INFO/WARN/ERROR/FATAL/OFF，不区分大小写）" << '\n';
+        std::cerr << "日志等级：无法识别 '" << levelString << "'，已回落为 INFO（可用取值：TRACE/DEBUG/INFO/WARN/ERROR/FATAL/OFF，不区分大小写）" << '\n';
         return LogLevel::Info;
     }
 } // namespace AsynGyanis::Base

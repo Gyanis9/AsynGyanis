@@ -41,8 +41,7 @@ namespace AsynGyanis::Base::Detail
         {
             return std::format("{:04d}-{:02d}-{:02d}", localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday);
         }
-        return std::format("{:04d}-{:02d}-{:02d}_{:02d}", localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday,
-                           localTime.tm_hour);
+        return std::format("{:04d}-{:02d}-{:02d}_{:02d}", localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday, localTime.tm_hour);
     }
 
     /**
@@ -62,10 +61,8 @@ namespace AsynGyanis::Base::Detail
 
         // 当前周期内已过的秒数：整日策略看时分秒，整点策略只看分秒
         // 当前周期内已过的秒数：整日策略看时分秒，整点策略只看分秒
-        const std::int64_t elapsedSeconds = isDailyPolicy
-                                               ? static_cast<std::int64_t>(localTime.tm_hour) * kSecondsPerHour +
-                                                 localTime.tm_min * 60 + localTime.tm_sec
-                                               : static_cast<std::int64_t>(localTime.tm_min) * 60 + localTime.tm_sec;
+        const std::int64_t elapsedSeconds = isDailyPolicy ? static_cast<std::int64_t>(localTime.tm_hour) * kSecondsPerHour + localTime.tm_min * 60 + localTime.tm_sec
+                                                          : static_cast<std::int64_t>(localTime.tm_min) * 60 + localTime.tm_sec;
 
         // elapsedSeconds 最大为 periodSeconds - 1，因此结果恒落在 (moment, moment + periodSeconds] 内
         return moment + static_cast<std::time_t>(periodSeconds - elapsedSeconds);

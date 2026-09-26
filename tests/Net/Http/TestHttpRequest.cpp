@@ -422,7 +422,7 @@ namespace AsynGyanis::Net
 
     TEST(HttpRequest, RequestsCancelOnlyOnce)
     {
-        HttpRequest request;
+        HttpRequest           request;
         const std::stop_token token = request.cancelToken();
 
         EXPECT_FALSE(token.stop_requested());
@@ -540,8 +540,7 @@ namespace AsynGyanis::Net
         const auto encoding = request.firstHeaderValueView("accept-encoding");
         ASSERT_TRUE(encoding.has_value());
         EXPECT_EQ(*encoding, "gzip, deflate, br");
-        EXPECT_EQ(request.firstHeaderValue("Accept-Encoding").value_or("<缺失>"), *encoding)
-                << "两版取到的必须是同一个首值";
+        EXPECT_EQ(request.firstHeaderValue("Accept-Encoding").value_or("<缺失>"), *encoding) << "两版取到的必须是同一个首值";
 
         // 空取值算「存在」：写 `Content-Length:` 与压根不写这条头部不是同一回事
         EXPECT_TRUE(request.hasHeader("x-empty"));

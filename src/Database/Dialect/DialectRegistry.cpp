@@ -34,7 +34,8 @@ namespace AsynGyanis::Database
 
             default:
                 // 新增枚举值却忘了登记方言时走这里，异常文本带上数值便于定位
-                throw Base::InvalidArgumentException("方言注册表：不支持的数据库类型（枚举值 " + std::to_string(static_cast<int>(type)) + "）：请为该类型实现 SqlDialect 后在本注册表登记");
+                throw Base::InvalidArgumentException("方言注册表：不支持的数据库类型（枚举值 " + std::to_string(static_cast<int>(type)) +
+                                                     "）：请为该类型实现 SqlDialect 后在本注册表登记");
         }
     }
 

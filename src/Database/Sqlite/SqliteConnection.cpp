@@ -210,8 +210,8 @@ namespace AsynGyanis::Database
                 const int     remainingLength   = static_cast<int>(commandText.c_str() + commandText.size() - unusedTail);
                 sqlite3_stmt *trailingStatement = nullptr;
                 // pTail 出参传 nullptr 是 SQLite 明确允许的：本次探测只关心「还有没有语句」，不需要剩余位置
-                const int     trailingResult    = sqlite3_prepare_v2(m_database, unusedTail, remainingLength, &trailingStatement, nullptr);
-                const bool    hasExtraStatement = (trailingResult == SQLITE_OK && trailingStatement != nullptr);
+                const int  trailingResult    = sqlite3_prepare_v2(m_database, unusedTail, remainingLength, &trailingStatement, nullptr);
+                const bool hasExtraStatement = (trailingResult == SQLITE_OK && trailingStatement != nullptr);
 
                 if (trailingStatement != nullptr)
                 {
@@ -279,13 +279,11 @@ namespace AsynGyanis::Database
                 if (isFromCache)
                 {
                     static_cast<void>(result->releaseCursor());
-                }
-                else
+                } else
                 {
                     cacheStatement(std::move(commandText), result->releaseCursor());
                 }
-            }
-            else if (isFromCache)
+            } else if (isFromCache)
             {
                 // 行没跑完（超过快照上限或带写副作用的 RETURNING）：游标要随结果集活到调用方手里，
                 // 结果集析构时 finalize 它。表里那个键必须先行摘掉，否则同一条游标会被释放两次
@@ -420,12 +418,10 @@ namespace AsynGyanis::Database
         if (m_statementCache.size() >= kMaximumCachedStatements && m_statementCache.find(sqlText) == m_statementCache.end())
         {
             evictLeastRecentlyUsedStatement();
-
         }
 
         // try_emplace 对已存在的键是空操作：既不会把表里那份换成同一个指针，也不会漏 finalize 谁
-        static_cast<void>(m_statementCache.try_emplace(std::move(sqlText),
-                                                      CachedStatement{statement, ++m_statementCacheUseStamp}));
+        static_cast<void>(m_statementCache.try_emplace(std::move(sqlText), CachedStatement{statement, ++m_statementCacheUseStamp}));
     }
 
     void SqliteConnection::evictLeastRecentlyUsedStatement() noexcept
@@ -460,7 +456,7 @@ namespace AsynGyanis::Database
 
     void SqliteConnection::clearStatementCache() noexcept
     {
-        for (const auto &[sqlText, cached] : m_statementCache)
+        for (const auto &[sqlText, cached]: m_statementCache)
         {
             static_cast<void>(sqlText);
             sqlite3_finalize(cached.statement);
@@ -507,8 +503,7 @@ namespace AsynGyanis::Database
                 // 「写入一个数」于是静默变成「写入空值」，既不报错也读不回原值，只能在绑定前拦下
                 if (!std::isfinite(*realValue))
                 {
-                    m_lastError = "SQLite 驱动：第 " + std::to_string(index + 1U) + " 个参数是" +
-                                  (std::isnan(*realValue) ? " NaN" : "无穷大") +
+                    m_lastError = "SQLite 驱动：第 " + std::to_string(index + 1U) + " 个参数是" + (std::isnan(*realValue) ? " NaN" : "无穷大") +
                                   "，而 REAL 列无法保存它（SQLite 会把它改写成 NULL）。请先挡掉非有限取值，或改用文本列承载并写明其表示法";
                     return false;
                 }
@@ -525,8 +520,7 @@ namespace AsynGyanis::Database
                 // SQLITE_TRANSIENT 让 SQLite 立刻复制一份文本：语句的 step 可能晚于本函数返回
                 // （带返回列的语句要等调用方遍历结果集才真正执行），若用 SQLITE_STATIC，
                 // 数据库读到的会是调用方早已释放的缓冲区。文本按字节长度传递，内嵌 '\0' 不丢失
-                bindResult = sqlite3_bind_text(statement, parameterIndex, textValue->data(),
-                                               static_cast<int>(textValue->size()), SQLITE_TRANSIENT);
+                bindResult = sqlite3_bind_text(statement, parameterIndex, textValue->data(), static_cast<int>(textValue->size()), SQLITE_TRANSIENT);
             } else if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
             {
                 // sqlite3_bind_blob 的长度参数同样是 int，超长二进制照样会被静默截断
@@ -545,8 +539,7 @@ namespace AsynGyanis::Database
                 } else
                 {
                     // SQLITE_TRANSIENT 的理由与文本分支相同：语句可能晚于本函数返回才真正执行
-                    bindResult = sqlite3_bind_blob(statement, parameterIndex, byteValue->data(),
-                                                   static_cast<int>(byteValue->size()), SQLITE_TRANSIENT);
+                    bindResult = sqlite3_bind_blob(statement, parameterIndex, byteValue->data(), static_cast<int>(byteValue->size()), SQLITE_TRANSIENT);
                 }
             } else
             {
@@ -612,8 +605,7 @@ namespace AsynGyanis::Database
     {
         // 底层只报 "interrupted"，既看不出是谁打断的也看不出该改哪个参数，因此把上限毫秒数与出路写全
         return composeNativeErrorText("执行 SQL 语句超过 " + std::to_string(m_statementDeadlineMilliseconds) + " 毫秒的时限被打断",
-                                      "interrupted；如需更多时间请调大 queryTimeout，反复超时的语句应改用索引或拆成小批扫描",
-                                      sqlite3_errstr(SQLITE_INTERRUPT), SQLITE_INTERRUPT);
+                                      "interrupted；如需更多时间请调大 queryTimeout，反复超时的语句应改用索引或拆成小批扫描", sqlite3_errstr(SQLITE_INTERRUPT), SQLITE_INTERRUPT);
     }
 
     void SqliteConnection::captureError(const std::string_view description)
@@ -642,7 +634,7 @@ namespace AsynGyanis::Database
         // sqlite3_exec 依赖零终止符，string_view 未必带，落一份副本再用
         const std::string statementText(pragmaText);
 
-        char *            rawError      = nullptr;
+        char *rawError = nullptr;
         // 错误出参由 SQLite 分配，官方约定必须由调用方 sqlite3_free 释放
         const int         execResult    = sqlite3_exec(m_database, statementText.c_str(), nullptr, nullptr, &rawError);
         const std::string failureReason = (rawError != nullptr) ? rawError : "";

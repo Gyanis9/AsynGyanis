@@ -5,8 +5,8 @@
 
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
-#include "Base/Log/Sinks/LogSink.h"
 #include "Base/Log/Logger.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Base/Log/SourceLocation.h"
 
 #include <gtest/gtest.h>
@@ -105,8 +105,7 @@ namespace AsynGyanis::Base
         {
         public:
             /** @brief 构造记录型 Sink，事件写入给定账本 */
-            explicit RecordingSink(std::shared_ptr<SinkLedger> ledger) :
-                m_ledger(std::move(ledger))
+            explicit RecordingSink(std::shared_ptr<SinkLedger> ledger) : m_ledger(std::move(ledger))
             {
             }
 
@@ -144,9 +143,7 @@ namespace AsynGyanis::Base
              * @param ledger 本 Sink 的事件账本
              * @param peer 每次收到事件后要把阈值放开的那个 Sink（不持有所有权）
              */
-            PeerEnablingSink(std::shared_ptr<SinkLedger> ledger, LogSink *peer) :
-                m_ledger(std::move(ledger))
-                , m_peer(peer)
+            PeerEnablingSink(std::shared_ptr<SinkLedger> ledger, LogSink *peer) : m_ledger(std::move(ledger)), m_peer(peer)
             {
             }
 
@@ -183,7 +180,7 @@ namespace AsynGyanis::Base
 
         private:
             std::shared_ptr<SinkLedger> m_ledger; ///< 事件账本
-            LogSink *m_peer;                      ///< 收到事件后要放行阈值的同伴 Sink（不持有）
+            LogSink                    *m_peer;   ///< 收到事件后要放行阈值的同伴 Sink（不持有）
         };
 
         /**
@@ -325,9 +322,7 @@ namespace AsynGyanis::Base
         for (const auto &[threshold, level, expected]: cases)
         {
             logger.setLevel(threshold);
-            EXPECT_EQ(logger.shouldLog(level), expected)
-                    << "threshold=" << logLevelToString(threshold)
-                    << " level=" << logLevelToString(level);
+            EXPECT_EQ(logger.shouldLog(level), expected) << "threshold=" << logLevelToString(threshold) << " level=" << logLevelToString(level);
         }
     }
 
@@ -509,8 +504,8 @@ namespace AsynGyanis::Base
         constexpr std::string_view kMessage = "the dispatch decision must be sampled once, so this message stays long";
 
         Logger logger("dispatch");
-        auto secondSink      = std::make_unique<RecordingSink>(secondLedger);
-        auto *secondSinkView = secondSink.get();
+        auto   secondSink     = std::make_unique<RecordingSink>(secondLedger);
+        auto  *secondSinkView = secondSink.get();
         secondSinkView->setLevel(LogLevel::Off);
         logger.addSink(std::make_unique<PeerEnablingSink>(firstLedger, secondSinkView));
         logger.addSink(std::move(secondSink));
@@ -519,8 +514,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(firstLedger->lastMessage(), kMessage) << "前一个 Sink 就该收到完整事件";
         ASSERT_EQ(secondLedger->eventCount(), 1U) << "阈值被中途放行的后一个 Sink 也会收到这一行";
-        EXPECT_EQ(secondLedger->lastMessage(), kMessage)
-                << "后一个 Sink 记下了空行：事件本体已被移交给前一个 Sink";
+        EXPECT_EQ(secondLedger->lastMessage(), kMessage) << "后一个 Sink 记下了空行：事件本体已被移交给前一个 Sink";
     }
 
     TEST_F(LoggerTest, ThrowingSinkDoesNotStopOtherSinks)
@@ -543,8 +537,8 @@ namespace AsynGyanis::Base
         Logger logger("noisy_sink");
         logger.addSink(std::make_unique<ThrowingSink>());
 
-        std::ostringstream capturedError;
-        std::streambuf    *const originalErrorBuffer = std::cerr.rdbuf(capturedError.rdbuf());
+        std::ostringstream    capturedError;
+        std::streambuf *const originalErrorBuffer = std::cerr.rdbuf(capturedError.rdbuf());
         EXPECT_NO_THROW(logger.log(LogLevel::Info, "diagnostic message"));
         std::cerr.rdbuf(originalErrorBuffer);
 
@@ -764,14 +758,14 @@ namespace AsynGyanis::Base
 
         for (int workerIndex = 0; workerIndex < kthreadCount; ++workerIndex)
         {
-            workers.emplace_back([&logger, workerIndex, kmessagesPerThread]
-            {
-                for (int messageIndex = 0; messageIndex < kmessagesPerThread; ++messageIndex)
-                {
-                    logger.log(LogLevel::Info,
-                               "worker" + std::to_string(workerIndex) + "_message" + std::to_string(messageIndex));
-                }
-            });
+            workers.emplace_back(
+                    [&logger, workerIndex, kmessagesPerThread]
+                    {
+                        for (int messageIndex = 0; messageIndex < kmessagesPerThread; ++messageIndex)
+                        {
+                            logger.log(LogLevel::Info, "worker" + std::to_string(workerIndex) + "_message" + std::to_string(messageIndex));
+                        }
+                    });
         }
         for (std::thread &worker: workers)
         {
@@ -797,13 +791,14 @@ namespace AsynGyanis::Base
         constexpr int kmessageCount = 500;
 
         std::atomic<bool> keepFlushing{true};
-        std::thread       flusher([&logger, &keepFlushing]
-        {
-            while (keepFlushing.load(std::memory_order_acquire))
-            {
-                logger.flush();
-            }
-        });
+        std::thread       flusher(
+                [&logger, &keepFlushing]
+                {
+                    while (keepFlushing.load(std::memory_order_acquire))
+                    {
+                        logger.flush();
+                    }
+                });
 
         for (int messageIndex = 0; messageIndex < kmessageCount; ++messageIndex)
         {
@@ -827,8 +822,8 @@ namespace AsynGyanis::Base
      */
     TEST(Logger, FatalLineFlushesEverySinkThatTookIt)
     {
-        auto firstLedger  = std::make_shared<SinkLedger>();
-        auto secondLedger = std::make_shared<SinkLedger>();
+        auto   firstLedger  = std::make_shared<SinkLedger>();
+        auto   secondLedger = std::make_shared<SinkLedger>();
         Logger logger("fatal_flush");
         logger.setLevel(LogLevel::Trace);
         logger.addSink(std::make_unique<RecordingSink>(firstLedger));
@@ -844,7 +839,7 @@ namespace AsynGyanis::Base
         EXPECT_EQ(secondLedger->eventCount(), 2U);
 
         // 没收下这条的 Sink 不该被顺带刷新（它的缓冲里没有这条内容，刷了也只是白付一次系统调用）
-        auto skippedLedger = std::make_shared<SinkLedger>();
+        auto   skippedLedger = std::make_shared<SinkLedger>();
         Logger warnOnly("fatal_flush_warn_only");
         warnOnly.setLevel(LogLevel::Warn);
         warnOnly.addSink(std::make_unique<RecordingSink>(skippedLedger));

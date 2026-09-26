@@ -24,10 +24,7 @@ namespace AsynGyanis::Base
         /** @brief 构造一条字段齐全、便于断言的日志事件 */
         LogEvent makeEventWithMessage(const std::string &message)
         {
-            return {
-                    LogLevel::Warn, kFixedMoment, "12345",
-                    SourceLocation("TestLogEvent.cpp", 100, "makeEventWithMessage"), "eventLogger", message
-            };
+            return {LogLevel::Warn, kFixedMoment, "12345", SourceLocation("TestLogEvent.cpp", 100, "makeEventWithMessage"), "eventLogger", message};
         }
     } // namespace
 
@@ -151,15 +148,12 @@ namespace AsynGyanis::Base
 
         const std::shared_ptr<const std::string> &mainThreadId = threadIdString();
         std::vector<std::string>                  workerIds(kworkerCount);
-        std::vector<std::thread> workers;
+        std::vector<std::thread>                  workers;
 
         workers.reserve(kworkerCount);
         for (std::size_t index = 0; index < kworkerCount; ++index)
         {
-            workers.emplace_back([&workerIds, index]()
-            {
-                workerIds[index] = *threadIdString();
-            });
+            workers.emplace_back([&workerIds, index]() { workerIds[index] = *threadIdString(); });
         }
         for (std::thread &worker: workers)
         {
@@ -179,9 +173,9 @@ namespace AsynGyanis::Base
 
     TEST(LogEvent, EventAssembledFromHelpersMatchesCallerContext)
     {
-        const SourceLocation location = SourceLocation::current();
+        const SourceLocation  location = SourceLocation::current();
         const TimestampMoment moment   = std::chrono::system_clock::now();
-        const LogEvent       event(LogLevel::Info, moment, threadIdString(), location, std::make_shared<const std::string>("root"), "assembled message");
+        const LogEvent        event(LogLevel::Info, moment, threadIdString(), location, std::make_shared<const std::string>("root"), "assembled message");
 
         EXPECT_EQ(event.timestamp, moment) << "事件带出的时刻必须就是构造时那个，不在中途改取";
         EXPECT_EQ(event.threadId.get(), threadIdString().get()) << "事件应当直接共享本线程的 ID 快照，而不是另分配一份";

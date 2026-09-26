@@ -18,10 +18,10 @@
 // - SteadyBorrowAndReturnTouchNoHeap：稳态下的借出与归还一次都不碰堆（热路径分配台账）
 // - BorrowTimeoutIsCountedOnlyWhenTheWaitEndsEmptyHanded：累计创建数与借出超时数各自只在该长的时候长
 
-#include "Database/Pool/PooledConnection.h"
+#include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
-#include "Database/Common/DatabaseConnection.h"
+#include "Database/Pool/PooledConnection.h"
 
 #include "TestConnectionPool.h"
 
@@ -61,7 +61,7 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, AcquireReleaseReusesConnection)
         {
             ConnectionCounter counter;
-            auto factory = makeMockFactory(counter);
+            auto              factory = makeMockFactory(counter);
 
             PoolConfig configuration;
             configuration.maximumPoolSize = 1;
@@ -81,8 +81,7 @@ namespace AsynGyanis::Database
 
             DatabaseConnection *secondPointer = second.operator->();
 
-            EXPECT_EQ(firstPointer, secondPointer)
-                << "第二次应得到与第一次相同的连接指针";
+            EXPECT_EQ(firstPointer, secondPointer) << "第二次应得到与第一次相同的连接指针";
         }
 
         // ========================================================================
@@ -95,10 +94,10 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, AcquireBlocksThenSucceeds)
         {
             ConnectionCounter counter;
-            auto factory = makeMockFactory(counter);
+            auto              factory = makeMockFactory(counter);
 
             PoolConfig configuration;
-            configuration.maximumPoolSize    = 1;
+            configuration.maximumPoolSize            = 1;
             configuration.acquireTimeoutMilliseconds = 5000; // 足够长
 
             ConnectionPool pool(factory, configuration);
@@ -109,14 +108,15 @@ namespace AsynGyanis::Database
 
             // 另一线程尝试获取（将阻塞）
             std::atomic<bool> secondGotConnection{false};
-            std::thread secondThread([&]()
-            {
-                PooledConnection second = pool.acquire();
-                if (second)
-                {
-                    secondGotConnection.store(true);
-                }
-            });
+            std::thread       secondThread(
+                    [&]()
+                    {
+                        PooledConnection second = pool.acquire();
+                        if (second)
+                        {
+                            secondGotConnection.store(true);
+                        }
+                    });
 
             // 等到第二个线程真的挂在等待列表上再归还：固定 sleep 只能缩小「还没开始等」的窗口，
             // 慢机器上下面那条断言就退化成赌调度（同文件其它用例已统一改成这种有界轮询）
@@ -132,8 +132,7 @@ namespace AsynGyanis::Database
 
             secondThread.join();
 
-            EXPECT_TRUE(secondGotConnection.load())
-                << "归还连接后，阻塞的线程应成功获取连接";
+            EXPECT_TRUE(secondGotConnection.load()) << "归还连接后，阻塞的线程应成功获取连接";
         }
 
         // ========================================================================
@@ -155,8 +154,8 @@ namespace AsynGyanis::Database
             configuration.maximumPoolSize            = 1;
             configuration.maximumLifetimeSeconds     = 3600;
             configuration.idleTimeoutSeconds         = 3600;
-            configuration.healthCheckIntervalSeconds = 3600;   // 后台驱逐不参与本用例的时序
-            configuration.acquireTimeoutMilliseconds = 3000;   // 旧写法下等待者会等满这里才返回空
+            configuration.healthCheckIntervalSeconds = 3600; // 后台驱逐不参与本用例的时序
+            configuration.acquireTimeoutMilliseconds = 3000; // 旧写法下等待者会等满这里才返回空
 
             ConnectionPool pool(factory, configuration);
 
@@ -166,10 +165,7 @@ namespace AsynGyanis::Database
             occupying->markEstablishedAt(std::chrono::steady_clock::now() - std::chrono::hours(2));
 
             PooledConnection woken;
-            std::thread      waiterThread([&pool, &woken]
-            {
-                woken = pool.acquire();
-            });
+            std::thread      waiterThread([&pool, &woken] { woken = pool.acquire(); });
 
             const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
             while (pool.waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
@@ -183,8 +179,7 @@ namespace AsynGyanis::Database
             waiterThread.join();
 
             EXPECT_TRUE(woken) << "归还的连接被丢弃后，等待者白等到超时——腾出的名额没人去用";
-            EXPECT_LT(std::chrono::steady_clock::now() - releasedAt, std::chrono::milliseconds(1500))
-                << "拿到连接本该是立刻的事，等满超时就是走回了旧路径";
+            EXPECT_LT(std::chrono::steady_clock::now() - releasedAt, std::chrono::milliseconds(1500)) << "拿到连接本该是立刻的事，等满超时就是走回了旧路径";
             EXPECT_EQ(counter.totalCreated.load(), 2) << "等待者应当补建一条，而不是拿回那条过期的";
             EXPECT_EQ(counter.totalDestroyed.load(), 1) << "过期那条要被丢弃，不能留在池里";
             EXPECT_EQ(pool.activeCount(), 1U);
@@ -205,18 +200,17 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, AcquireTimeoutReturnsEmpty)
         {
             ConnectionCounter counter;
-            auto factory = makeMockFactory(counter);
+            auto              factory = makeMockFactory(counter);
 
             PoolConfig configuration;
-            configuration.maximumPoolSize    = 0;          // 不允许创建任何连接
+            configuration.maximumPoolSize            = 0;   // 不允许创建任何连接
             configuration.acquireTimeoutMilliseconds = 100; // 短超时
 
             ConnectionPool pool(factory, configuration);
 
             PooledConnection connection = pool.acquire();
 
-            EXPECT_FALSE(connection)
-                << "容量为 0 时 acquire 应超时并返回空连接";
+            EXPECT_FALSE(connection) << "容量为 0 时 acquire 应超时并返回空连接";
         }
 
         // ========================================================================
@@ -229,7 +223,7 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, TryAcquireReturnsEmptyWhenExhausted)
         {
             ConnectionCounter counter;
-            auto factory = makeMockFactory(counter);
+            auto              factory = makeMockFactory(counter);
 
             PoolConfig configuration;
             configuration.maximumPoolSize = 1;
@@ -258,29 +252,28 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, ExcessLifetimeConnectionIsDiscarded)
         {
             ConnectionCounter counter;
-            auto factory = makeMockFactory(counter);
+            auto              factory = makeMockFactory(counter);
 
             PoolConfig configuration;
-            configuration.maximumPoolSize       = 2;
+            configuration.maximumPoolSize        = 2;
             configuration.maximumLifetimeSeconds = 0; // 立即过期
 
             ConnectionPool pool(factory, configuration);
 
             PooledConnection first = pool.acquire();
             ASSERT_TRUE(first);
-            MockConnection *firstMock = static_cast<MockConnection *>(first.operator->());
-            const std::int64_t firstId = firstMock->id();
+            MockConnection    *firstMock = static_cast<MockConnection *>(first.operator->());
+            const std::int64_t firstId   = firstMock->id();
 
             // 归还：应被丢弃（maxLifetimeSeconds == 0）
             first.release();
 
             PooledConnection second = pool.acquire();
             ASSERT_TRUE(second);
-            MockConnection *secondMock = static_cast<MockConnection *>(second.operator->());
-            const std::int64_t secondId = secondMock->id();
+            MockConnection    *secondMock = static_cast<MockConnection *>(second.operator->());
+            const std::int64_t secondId   = secondMock->id();
 
-            EXPECT_NE(firstId, secondId)
-                << "过期连接被丢弃后，应创建一个新连接";
+            EXPECT_NE(firstId, secondId) << "过期连接被丢弃后，应创建一个新连接";
         }
 
         // ========================================================================
@@ -293,7 +286,7 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, UnhealthyConnectionIsDiscarded)
         {
             ConnectionCounter counter;
-            auto factory = makeMockFactory(counter);
+            auto              factory = makeMockFactory(counter);
 
             PoolConfig configuration;
             configuration.maximumPoolSize = 1;
@@ -302,8 +295,8 @@ namespace AsynGyanis::Database
 
             PooledConnection first = pool.acquire();
             ASSERT_TRUE(first);
-            MockConnection *firstMock = static_cast<MockConnection *>(first.operator->());
-            const std::int64_t firstId = firstMock->id();
+            MockConnection    *firstMock = static_cast<MockConnection *>(first.operator->());
+            const std::int64_t firstId   = firstMock->id();
 
             // 模拟连接不健康
             firstMock->setHealthOk(false);
@@ -313,11 +306,10 @@ namespace AsynGyanis::Database
 
             PooledConnection second = pool.acquire();
             ASSERT_TRUE(second);
-            MockConnection *secondMock = static_cast<MockConnection *>(second.operator->());
-            const std::int64_t secondId = secondMock->id();
+            MockConnection    *secondMock = static_cast<MockConnection *>(second.operator->());
+            const std::int64_t secondId   = secondMock->id();
 
-            EXPECT_NE(firstId, secondId)
-                << "不健康的连接被丢弃后，应创建一个新连接";
+            EXPECT_NE(firstId, secondId) << "不健康的连接被丢弃后，应创建一个新连接";
         }
 
         // ========================================================================
@@ -333,15 +325,15 @@ namespace AsynGyanis::Database
          */
         TEST(ConnectionPool, ConcurrentAcquireReleaseStress)
         {
-            constexpr std::size_t kThreadCount = 8;
+            constexpr std::size_t kThreadCount         = 8;
             constexpr std::size_t kIterationsPerThread = 100;
-            constexpr std::size_t kPoolSize = 4;
+            constexpr std::size_t kPoolSize            = 4;
 
             ConnectionCounter counter;
-            auto factory = makeMockFactory(counter);
+            auto              factory = makeMockFactory(counter);
 
             PoolConfig configuration;
-            configuration.maximumPoolSize    = kPoolSize;
+            configuration.maximumPoolSize            = kPoolSize;
             configuration.acquireTimeoutMilliseconds = 10000; // 足够长
 
             ConnectionPool pool(factory, configuration);
@@ -351,38 +343,37 @@ namespace AsynGyanis::Database
 
             for (std::size_t t = 0; t < kThreadCount; ++t)
             {
-                threads.emplace_back([&]()
-                {
-                    for (std::size_t i = 0; i < kIterationsPerThread; ++i)
-                    {
-                        PooledConnection connection = pool.acquire();
-                        if (!connection)
+                threads.emplace_back(
+                        [&]()
                         {
-                            emptyAcquires.fetch_add(1);
-                            continue;
-                        }
+                            for (std::size_t i = 0; i < kIterationsPerThread; ++i)
+                            {
+                                PooledConnection connection = pool.acquire();
+                                if (!connection)
+                                {
+                                    emptyAcquires.fetch_add(1);
+                                    continue;
+                                }
 
-                        // 模拟使用连接
-                        std::this_thread::yield();
+                                // 模拟使用连接
+                                std::this_thread::yield();
 
-                        connection.release();
-                    }
-                });
+                                connection.release();
+                            }
+                        });
             }
 
-            for (auto &thread : threads)
+            for (auto &thread: threads)
             {
                 thread.join();
             }
 
-            EXPECT_EQ(emptyAcquires.load(), 0)
-                << "所有线程都应成功获取到连接";
+            EXPECT_EQ(emptyAcquires.load(), 0) << "所有线程都应成功获取到连接";
 
             const std::size_t active = pool.activeCount();
             const std::size_t idle   = pool.idleCount();
             const std::size_t total  = pool.totalCount();
-            EXPECT_EQ(total, active + idle)
-                << "总连接数应等于活跃数 + 空闲数";
+            EXPECT_EQ(total, active + idle) << "总连接数应等于活跃数 + 空闲数";
         }
 
         // ========================================================================
@@ -395,7 +386,7 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, StatisticsAreConsistent)
         {
             ConnectionCounter counter;
-            auto factory = makeMockFactory(counter);
+            auto              factory = makeMockFactory(counter);
 
             PoolConfig configuration;
             configuration.maximumPoolSize = 3;
@@ -452,7 +443,7 @@ namespace AsynGyanis::Database
             ConnectionCounter counter;
             PoolConfig        configuration;
             configuration.maximumPoolSize = 2;
-            ConnectionPool    pool(makeMockFactory(counter), configuration);
+            ConnectionPool pool(makeMockFactory(counter), configuration);
 
             pool.returnConnection({});
             // 无符号回绕后的值远大于池上限，一眼可辨；正确实现应当停在 0
@@ -478,7 +469,7 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, PooledConnectionMoveSemantics)
         {
             ConnectionCounter counter;
-            auto factory = makeMockFactory(counter);
+            auto              factory = makeMockFactory(counter);
 
             PoolConfig configuration;
             configuration.maximumPoolSize = 2;
@@ -538,11 +529,12 @@ namespace AsynGyanis::Database
 
             std::atomic<bool> waiterFinished{false};
             PooledConnection  assignedToWaiter;
-            std::thread       waiter([&pool, &assignedToWaiter, &waiterFinished]()
-            {
-                assignedToWaiter = pool.acquire(); // 池满：阻塞等待
-                waiterFinished.store(true, std::memory_order_release);
-            });
+            std::thread       waiter(
+                    [&pool, &assignedToWaiter, &waiterFinished]()
+                    {
+                        assignedToWaiter = pool.acquire(); // 池满：阻塞等待
+                        waiterFinished.store(true, std::memory_order_release);
+                    });
 
             // 等它真的挂在等待列表上再归还，保证走的是「直接交给等待者」那条路
             const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -586,17 +578,15 @@ namespace AsynGyanis::Database
             // 锁与停摆标志兜住
             ConnectionPool *const poolPointer = pool.get();
 
-            std::atomic<bool>          isWaiterReturned{false};
-            std::atomic<bool>          isWaiterGotConnection{true};
-            std::atomic<std::int64_t>  waiterElapsedMilliseconds{0};
-            std::thread                waiter(
+            std::atomic<bool>         isWaiterReturned{false};
+            std::atomic<bool>         isWaiterGotConnection{true};
+            std::atomic<std::int64_t> waiterElapsedMilliseconds{0};
+            std::thread               waiter(
                     [poolPointer, &isWaiterReturned, &isWaiterGotConnection, &waiterElapsedMilliseconds]
                     {
-                        const auto startedAt = std::chrono::steady_clock::now();
+                        const auto             startedAt  = std::chrono::steady_clock::now();
                         const PooledConnection connection = poolPointer->acquire();
-                        waiterElapsedMilliseconds.store(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                                std::chrono::steady_clock::now() - startedAt)
-                                                                .count(),
+                        waiterElapsedMilliseconds.store(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count(),
                                                         std::memory_order_relaxed);
                         isWaiterGotConnection.store(static_cast<bool>(connection));
                         isWaiterReturned.store(true, std::memory_order_release);
@@ -621,12 +611,9 @@ namespace AsynGyanis::Database
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
 
-            EXPECT_TRUE(isWaiterReturned.load(std::memory_order_acquire))
-                    << "析构返回后同步等待者还睡着：它只能等满 30 秒超时，而条件变量已经随对象销毁";
+            EXPECT_TRUE(isWaiterReturned.load(std::memory_order_acquire)) << "析构返回后同步等待者还睡着：它只能等满 30 秒超时，而条件变量已经随对象销毁";
             EXPECT_FALSE(isWaiterGotConnection.load()) << "池停摆时被唤醒的同步等待者应拿到空连接";
-            EXPECT_LT(waiterElapsedMilliseconds.load(), 10000)
-                    << "等待者是被自己的 30 秒超时叫醒的，而不是被析构叫醒的（等待了 "
-                    << waiterElapsedMilliseconds.load() << "ms）";
+            EXPECT_LT(waiterElapsedMilliseconds.load(), 10000) << "等待者是被自己的 30 秒超时叫醒的，而不是被析构叫醒的（等待了 " << waiterElapsedMilliseconds.load() << "ms）";
 
             waiter.join();
         }
@@ -647,13 +634,13 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, ReturnPathDoesNotHoldTheIdleStackLockAcrossDisconnect)
         {
             ConnectionCounter counter;
-            ArrivalGate        gate;
+            ArrivalGate       gate;
             counter.disconnectGate = &gate;
 
             PoolConfig configuration;
             configuration.maximumPoolSize            = 2;
-            configuration.maximumLifetimeSeconds     = 0;      // 一归还就过期：必然走丢弃出口
-            configuration.healthCheckIntervalSeconds = 3600;   // 后台驱逐不参与本用例的时序
+            configuration.maximumLifetimeSeconds     = 0;    // 一归还就过期：必然走丢弃出口
+            configuration.healthCheckIntervalSeconds = 3600; // 后台驱逐不参与本用例的时序
 
             ConnectionPool pool(makeMockFactory(counter), configuration);
 
@@ -661,35 +648,26 @@ namespace AsynGyanis::Database
             ASSERT_TRUE(static_cast<bool>(connection)) << "连接没拿到：用例前提不成立";
 
             gate.arm();
-            std::thread returner([&connection]()
-            {
-                connection.release();
-            });
+            std::thread returner([&connection]() { connection.release(); });
 
-            ASSERT_TRUE(TestSupport::waitForCondition([&gate]()
-            {
-                return gate.hasArrived();
-            }, 2000)) << "归还没有发生断开：用例没有量到它要量的那条出口";
+            ASSERT_TRUE(TestSupport::waitForCondition([&gate]() { return gate.hasArrived(); }, 2000)) << "归还没有发生断开：用例没有量到它要量的那条出口";
 
             std::atomic<bool> isObserverDone{false};
-            std::thread       observer([&pool, &isObserverDone]()
-            {
-                static_cast<void>(pool.idleCount());
-                isObserverDone.store(true, std::memory_order_release);
-            });
+            std::thread       observer(
+                    [&pool, &isObserverDone]()
+                    {
+                        static_cast<void>(pool.idleCount());
+                        isObserverDone.store(true, std::memory_order_release);
+                    });
 
             // 一次互斥量交接用不了 200ms：读不到只能是那把锁还被占着
-            const bool observerGotThrough = TestSupport::waitForCondition([&isObserverDone]()
-            {
-                return isObserverDone.load(std::memory_order_acquire);
-            }, 200);
+            const bool observerGotThrough = TestSupport::waitForCondition([&isObserverDone]() { return isObserverDone.load(std::memory_order_acquire); }, 200);
 
             gate.release();
             returner.join();
             observer.join();
 
-            EXPECT_TRUE(observerGotThrough)
-                    << "归还路径握着 m_mutex 做 disconnect：一次慢关闭会把取出路径与统计读取一起堵住";
+            EXPECT_TRUE(observerGotThrough) << "归还路径握着 m_mutex 做 disconnect：一次慢关闭会把取出路径与统计读取一起堵住";
         }
 
         /**
@@ -701,7 +679,7 @@ namespace AsynGyanis::Database
         TEST(ConnectionPool, AcquirePathDoesNotHoldTheIdleStackLockAcrossDisconnect)
         {
             ConnectionCounter counter;
-            ArrivalGate        gate;
+            ArrivalGate       gate;
             counter.disconnectGate = &gate;
 
             PoolConfig configuration;
@@ -721,36 +699,31 @@ namespace AsynGyanis::Database
             gate.arm();
 
             // 取出的那条必然被丢弃，丢弃后要补建一条（池未满），因此这里拿到的是新连接
-            std::thread acquirer([&pool]()
-            {
-                const PooledConnection replacement = pool.acquire();
-                static_cast<void>(replacement);
-            });
+            std::thread acquirer(
+                    [&pool]()
+                    {
+                        const PooledConnection replacement = pool.acquire();
+                        static_cast<void>(replacement);
+                    });
 
-            ASSERT_TRUE(TestSupport::waitForCondition([&gate]()
-            {
-                return gate.hasArrived();
-            }, 2000)) << "取出没有发生断开：用例没有量到它要量的那条出口";
+            ASSERT_TRUE(TestSupport::waitForCondition([&gate]() { return gate.hasArrived(); }, 2000)) << "取出没有发生断开：用例没有量到它要量的那条出口";
 
             std::atomic<bool> isObserverDone{false};
-            std::thread       observer([&pool, &isObserverDone]()
-            {
-                static_cast<void>(pool.totalCount());
-                isObserverDone.store(true, std::memory_order_release);
-            });
+            std::thread       observer(
+                    [&pool, &isObserverDone]()
+                    {
+                        static_cast<void>(pool.totalCount());
+                        isObserverDone.store(true, std::memory_order_release);
+                    });
 
-            const bool observerGotThrough = TestSupport::waitForCondition([&isObserverDone]()
-            {
-                return isObserverDone.load(std::memory_order_acquire);
-            }, 200);
+            const bool observerGotThrough = TestSupport::waitForCondition([&isObserverDone]() { return isObserverDone.load(std::memory_order_acquire); }, 200);
 
             counter.connectionsHealthy.store(true);
             gate.release();
             acquirer.join();
             observer.join();
 
-            EXPECT_TRUE(observerGotThrough)
-                    << "取出路径握着 m_mutex 做 disconnect：过期与健康判定都留在锁内时，统计读取要等那次关闭";
+            EXPECT_TRUE(observerGotThrough) << "取出路径握着 m_mutex 做 disconnect：过期与健康判定都留在锁内时，统计读取要等那次关闭";
         }
 
         /**
@@ -777,16 +750,16 @@ namespace AsynGyanis::Database
             // 建连要失败两次才会让借用者走到「试完一轮、准备睡下」那一步：第一次失败把它送进等待段，
             // 第二次失败被停在工厂里——归还因此能落进「这一轮已经试过、觉还没睡着」的窗口，
             // 那一次 notify_one 必然落空（唤醒不会补发），丢通知从概率事件变成必然事件
-            auto innerFactory = makeMockFactory(counter);
+            auto                     innerFactory = makeMockFactory(counter);
             std::atomic<std::size_t> factoryCallCount{0};
-            auto factory = [&innerFactory, &factoryGate, &factoryCallCount]() -> std::unique_ptr<DatabaseConnection>
+            auto                     factory = [&innerFactory, &factoryGate, &factoryCallCount]() -> std::unique_ptr<DatabaseConnection>
             {
                 switch (factoryCallCount.fetch_add(1))
                 {
                     case 0U:
                         return innerFactory(); // 主线程借走的那条
                     case 1U:
-                        return nullptr;        // 第一次补建就失败：把借用者送进等待段
+                        return nullptr; // 第一次补建就失败：把借用者送进等待段
                     case 2U:
                         factoryGate.arrive(); // 第二次补建停在工厂里，归还落进这次的空档
                         return nullptr;
@@ -805,17 +778,15 @@ namespace AsynGyanis::Database
 
             PooledConnection  waiterConnection;
             std::atomic<bool> isWaiterDone{false};
-            std::thread       waiter([&pool, &waiterConnection, &isWaiterDone]()
-            {
-                waiterConnection = pool.acquire();
-                isWaiterDone.store(true, std::memory_order_release);
-            });
+            std::thread       waiter(
+                    [&pool, &waiterConnection, &isWaiterDone]()
+                    {
+                        waiterConnection = pool.acquire();
+                        isWaiterDone.store(true, std::memory_order_release);
+                    });
 
             // 本行往下都必须走到 waiter.join()：线程还挂在 joinable 上就返回，std::thread 析构会 terminate
-            const bool isParkedInFactory = TestSupport::waitForCondition([&factoryGate]()
-            {
-                return factoryGate.hasArrived();
-            }, 2000);
+            const bool isParkedInFactory = TestSupport::waitForCondition([&factoryGate]() { return factoryGate.hasArrived(); }, 2000);
 
             if (isParkedInFactory)
             {
@@ -825,16 +796,12 @@ namespace AsynGyanis::Database
             }
             factoryGate.release();
 
-            const bool isRecheckedInTime = TestSupport::waitForCondition([&isWaiterDone]()
-            {
-                return isWaiterDone.load(std::memory_order_acquire);
-            }, 1500);
+            const bool isRecheckedInTime = TestSupport::waitForCondition([&isWaiterDone]() { return isWaiterDone.load(std::memory_order_acquire); }, 1500);
 
             waiter.join();
 
             EXPECT_TRUE(isParkedInFactory) << "借用者没有走到建连那一步：用例没有量到它要量的那段空档";
-            EXPECT_TRUE(isRecheckedInTime)
-                    << "回锁后没先复检空闲栈：明明有一条已归还的连接，借用者仍睡到接近超时";
+            EXPECT_TRUE(isRecheckedInTime) << "回锁后没先复检空闲栈：明明有一条已归还的连接，借用者仍睡到接近超时";
             EXPECT_TRUE(static_cast<bool>(waiterConnection)) << "复检了却仍没拿到连接";
             EXPECT_EQ(pool.idleCount(), 0U) << "它拿的不是那条归还回来的连接";
         }
@@ -869,8 +836,7 @@ namespace AsynGyanis::Database
             second.release();
 
             // 池里只有一条连接（上限 2、只建过一条），因此第二次借用拿到的就是同一条
-            EXPECT_EQ(reusedEstablishedAt, firstEstablishedAt)
-                    << "借用/归还会给连接重新盖建立时刻，存活期上限因此永远到不了";
+            EXPECT_EQ(reusedEstablishedAt, firstEstablishedAt) << "借用/归还会给连接重新盖建立时刻，存活期上限因此永远到不了";
         }
 
         /**
@@ -893,8 +859,8 @@ namespace AsynGyanis::Database
             configuration.maximumLifetimeSeconds     = 3600;
             configuration.healthCheckIntervalSeconds = 3600; // 让后台线程绝大部分时间都在睡
 
-            constexpr int kPoolCycles            = 6;
-            constexpr auto kDwellPerCycle        = std::chrono::milliseconds(100);
+            constexpr int     kPoolCycles         = 6;
+            constexpr auto    kDwellPerCycle      = std::chrono::milliseconds(100);
             constexpr int64_t kBudgetMilliseconds = 1500;
 
             const auto begin = std::chrono::steady_clock::now();
@@ -906,12 +872,9 @@ namespace AsynGyanis::Database
                 ASSERT_TRUE(static_cast<bool>(connection)) << "第 " << cycle << " 次建池后拿不到连接";
                 std::this_thread::sleep_for(kDwellPerCycle);
             }
-            const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                     std::chrono::steady_clock::now() - begin)
-                                                     .count();
+            const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
 
-            EXPECT_LT(elapsedMilliseconds, kBudgetMilliseconds)
-                    << "六次建拆用了 " << elapsedMilliseconds << " ms：析构在等健康线程睡满 1 秒分片";
+            EXPECT_LT(elapsedMilliseconds, kBudgetMilliseconds) << "六次建拆用了 " << elapsedMilliseconds << " ms：析构在等健康线程睡满 1 秒分片";
         }
 
         /**
@@ -954,14 +917,12 @@ namespace AsynGyanis::Database
             EXPECT_EQ(pool.idleCount(), 0U) << "后台驱逐没有收走过期空闲连接";
             EXPECT_EQ(pool.totalCount(), 0U) << "空闲栈清了但总数没跟着降：驱逐没有退还名额";
             EXPECT_EQ(pool.activeCount(), 0U);
-            EXPECT_EQ(counter.totalDestroyed.load(), destroyedBeforeEviction + 1)
-                    << "过期的那条只是被摘了记录，连接对象没被销毁（远端名额仍占着）";
+            EXPECT_EQ(counter.totalDestroyed.load(), destroyedBeforeEviction + 1) << "过期的那条只是被摘了记录，连接对象没被销毁（远端名额仍占着）";
 
             // 名额账目要经得起后续多轮扫描：把上限两条借满，第三条仍必须拿不到
             const PooledConnection first  = pool.acquire();
             const PooledConnection second = pool.acquire();
-            ASSERT_TRUE(static_cast<bool>(first) && static_cast<bool>(second))
-                    << "驱逐后借不满上限：后台那一轮没有把名额退还给池";
+            ASSERT_TRUE(static_cast<bool>(first) && static_cast<bool>(second)) << "驱逐后借不满上限：后台那一轮没有把名额退还给池";
             EXPECT_FALSE(static_cast<bool>(pool.tryAcquire())) << "驱逐多减了名额：池能建出超过上限的连接";
         }
 
@@ -1052,9 +1013,7 @@ namespace AsynGyanis::Database
                     });
 
             EXPECT_EQ(profile.resultSum, kMeasurementIterations) << "有一轮没借到连接，分配读数就不成立";
-            EXPECT_EQ(profile.totalAllocations, 0U)
-                    << "一千次借还共碰了 " << profile.totalAllocations << " 次堆、申请 " << profile.totalBytes
-                    << " 字节，稳态预算应是 0";
+            EXPECT_EQ(profile.totalAllocations, 0U) << "一千次借还共碰了 " << profile.totalAllocations << " 次堆、申请 " << profile.totalBytes << " 字节，稳态预算应是 0";
             EXPECT_EQ(counter.totalCreated.load(), 1) << "测量窗口里又新建了连接：复用没生效";
         }
 

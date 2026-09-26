@@ -45,9 +45,9 @@ namespace AsynGyanis::Net
         QuicSentPacketInfo makeSentPacket(const std::uint64_t packetNumber, const QuicTime timeSent, const std::size_t byteCount = 100)
         {
             QuicSentPacketInfo packet;
-            packet.packetNumber = packetNumber;
-            packet.timeSent = timeSent;
-            packet.byteCount = byteCount;
+            packet.packetNumber   = packetNumber;
+            packet.timeSent       = timeSent;
+            packet.byteCount      = byteCount;
             packet.isAckEliciting = true;
             return packet;
         }
@@ -58,12 +58,11 @@ namespace AsynGyanis::Net
          * @param ranges 区间列表（递减、闭区间）
          * @return QuicAcknowledgementFrame 交给恢复层的帧
          */
-        QuicAcknowledgementFrame makeAcknowledgement(const std::uint64_t largestAcknowledged,
-                                                    const std::vector<QuicAcknowledgementRange> &ranges)
+        QuicAcknowledgementFrame makeAcknowledgement(const std::uint64_t largestAcknowledged, const std::vector<QuicAcknowledgementRange> &ranges)
         {
             QuicAcknowledgementFrame acknowledgement;
             acknowledgement.largestAcknowledgedPacketNumber = largestAcknowledged;
-            acknowledgement.ranges = ranges;
+            acknowledgement.ranges                          = ranges;
             return acknowledgement;
         }
 
@@ -79,7 +78,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicRecovery, InitializesEstimateAndArmsOneSecondProbeAtStart)
     {
-        QuicRecovery recovery;
+        QuicRecovery                    recovery;
         const QuicRoundTripTimeEstimate initial = recovery.roundTripTimeEstimate();
         EXPECT_EQ(initial.smoothed, milliseconds(333));
         EXPECT_EQ(initial.variation, milliseconds(166) + QuicTime{500});
@@ -143,7 +142,7 @@ namespace AsynGyanis::Net
         // 样本 2：latest=50ms、延迟 15ms → 50 >= 20+15，减完 adjusted=35ms
         // rttvar = (3*10000 + |20000-35000|)/4 = 11250；smoothed = 20000 + 15000/8 = 21875
         recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, milliseconds(50)));
-        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(1), milliseconds(100), milliseconds(15));
+        std::ignore                           = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(1), milliseconds(100), milliseconds(15));
         QuicRoundTripTimeEstimate afterSecond = recovery.roundTripTimeEstimate();
         EXPECT_EQ(afterSecond.smoothed, milliseconds(21) + QuicTime{875});
         EXPECT_EQ(afterSecond.variation, milliseconds(11) + QuicTime{250});
@@ -152,7 +151,7 @@ namespace AsynGyanis::Net
         // adjusted=30000；rttvar = (3*11250 + |21875-30000|)/4 = 41875/4 = 10468（向零截断）
         // smoothed = 21875 + 8125/8 = 21875 + 1015 = 22890
         recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(2, milliseconds(110)));
-        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(2), milliseconds(140), milliseconds(15));
+        std::ignore                                = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(2), milliseconds(140), milliseconds(15));
         const QuicRoundTripTimeEstimate afterThird = recovery.roundTripTimeEstimate();
         EXPECT_EQ(afterThird.smoothed, milliseconds(22) + QuicTime{890});
         EXPECT_EQ(afterThird.variation, milliseconds(10) + QuicTime{468});
@@ -165,7 +164,7 @@ namespace AsynGyanis::Net
     {
         QuicRecovery unconfirmed;
         QuicRecovery confirmed;
-        for (QuicRecovery *recovery : {&unconfirmed, &confirmed})
+        for (QuicRecovery *recovery: {&unconfirmed, &confirmed})
         {
             recovery->onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{0}));
             std::ignore = recovery->onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(20), QuicTime{0});
@@ -173,7 +172,7 @@ namespace AsynGyanis::Net
         confirmed.onHandshakeConfirmed(milliseconds(25));
 
         // 对端报告 1000ms 延迟：确认前全信（减不动，因为 60 < 20+1000），确认后夹到 25ms（60 >= 45 → adjusted=35ms）
-        for (QuicRecovery *recovery : {&unconfirmed, &confirmed})
+        for (QuicRecovery *recovery: {&unconfirmed, &confirmed})
         {
             recovery->onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, milliseconds(50)));
             std::ignore = recovery->onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(1), milliseconds(110), milliseconds(1000));
@@ -194,8 +193,7 @@ namespace AsynGyanis::Net
         {
             recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(packetNumber, QuicTime{0}));
         }
-        const auto update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(4), milliseconds(10),
-                                                             QuicTime{0});
+        const auto update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(4), milliseconds(10), QuicTime{0});
 
         // 4 >= 0+3 与 4 >= 1+3 成立；2、3 还差一点，交给时间阈值
         ASSERT_EQ(update.lost.size(), 2U);
@@ -215,8 +213,7 @@ namespace AsynGyanis::Net
         QuicRecovery recovery;
         recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{0}));
         recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, QuicTime{0}));
-        const auto update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(1), milliseconds(10),
-                                                              QuicTime{0});
+        const auto update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(1), milliseconds(10), QuicTime{0});
         // 样本 10ms → smoothed=10ms；loss_delay = 9/8*10ms = 11250us，包号阈值又不够（1 < 0+3）
         EXPECT_TRUE(update.lost.empty());
         EXPECT_EQ(recovery.nextDeadline(), milliseconds(11) + QuicTime{250});
@@ -257,13 +254,11 @@ namespace AsynGyanis::Net
         {
             recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(packetNumber, QuicTime{0}));
         }
-        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(2), milliseconds(10),
-                                                        QuicTime{0});
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(2), milliseconds(10), QuicTime{0});
         // 包 0、1 还不够包号阈值（2 < 0+3），于是留下一个按时间判丢的定时点
         ASSERT_EQ(recovery.nextDeadline(), milliseconds(11) + QuicTime{250});
 
-        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(1, {{0, 1}}),
-                                                         milliseconds(11), QuicTime{0});
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(1, {{0, 1}}), milliseconds(11), QuicTime{0});
         EXPECT_FALSE(recovery.nextDeadline().has_value()) << "积压已清空，旧的判丢时刻不该继续武装定时器";
 
         // 之后新发的包要按新的时刻重新算，而不是沿用已作废的那条。
@@ -280,13 +275,11 @@ namespace AsynGyanis::Net
     {
         QuicRecovery recovery;
         recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{0}));
-        const auto first = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(30),
-                                                             QuicTime{0});
+        const auto first = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(30), QuicTime{0});
         ASSERT_TRUE(first.isRoundTripSampled);
 
         // 同一个 ACK 再来一遍（对端重发确认是常态）：没有新确认，也就不该有样本
-        const auto second = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(9000),
-                                                              QuicTime{0});
+        const auto second = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(9000), QuicTime{0});
         EXPECT_TRUE(second.acknowledged.empty());
         EXPECT_FALSE(second.isRoundTripSampled);
         EXPECT_EQ(recovery.roundTripTimeEstimate().smoothed, milliseconds(30));
@@ -310,8 +303,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(recovery.nextDeadline(), milliseconds(1998));
 
         recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, milliseconds(1000)));
-        const auto update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(1),
-                                                              milliseconds(1010), QuicTime{0});
+        const auto update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(1), milliseconds(1010), QuicTime{0});
         // 包号 0 离确认值不到 3 个包，但发出时刻早已超出 loss_delay，于是被判丢
         ASSERT_EQ(update.lost.size(), 1U);
         EXPECT_EQ(update.lost[0].packetNumber, 0U);
@@ -364,19 +356,16 @@ namespace AsynGyanis::Net
      */
     TEST(QuicRecovery, DoesNotArmProbeForNonAckElicitingPackets)
     {
-        QuicRecovery recovery;
+        QuicRecovery       recovery;
         QuicSentPacketInfo paddingOnly = makeSentPacket(0, QuicTime{0});
-        paddingOnly.isAckEliciting = false;
+        paddingOnly.isAckEliciting     = false;
         recovery.onPacketSent(QuicRecoverySpace::Initial, paddingOnly);
         EXPECT_FALSE(recovery.nextDeadline().has_value()) << "只发 PADDING/ACK 的包不该指望对端确认（§13.2）";
 
         // 跟着一条触发确认的包进来，两包都在途；ACK 一次收掉两个
         recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, milliseconds(10)));
         ASSERT_TRUE(recovery.nextDeadline().has_value());
-        const auto update = recovery.onAcknowledgementReceived(
-                QuicRecoverySpace::Initial,
-                makeAcknowledgement(1, {{0, 1}}),
-                milliseconds(20), QuicTime{0});
+        const auto update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(1, {{0, 1}}), milliseconds(20), QuicTime{0});
         EXPECT_EQ(update.acknowledged.size(), 2U);
         EXPECT_TRUE(update.isRoundTripSampled);
         EXPECT_FALSE(recovery.nextDeadline().has_value());
@@ -384,11 +373,10 @@ namespace AsynGyanis::Net
 
         // §5.1 的第二条：只确认了非触发确认的包时不许再采样本——这种 ACK 的延迟字段可以任意大
         QuicSentPacketInfo paddingPacket = makeSentPacket(2, milliseconds(500), 60);
-        paddingPacket.isAckEliciting = false; // 只有 PADDING：对端不会为它发确认，报告延迟也就无从解释
+        paddingPacket.isAckEliciting     = false; // 只有 PADDING：对端不会为它发确认，报告延迟也就无从解释
         recovery.onPacketSent(QuicRecoverySpace::Initial, paddingPacket);
         const auto paddingAcknowledgement = makeAcknowledgement(2, {{2, 2}});
-        const auto third = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, paddingAcknowledgement,
-                                                              milliseconds(900), QuicTime{0});
+        const auto third                  = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, paddingAcknowledgement, milliseconds(900), QuicTime{0});
         EXPECT_EQ(third.acknowledged.size(), 1U);
         EXPECT_FALSE(third.isRoundTripSampled);
         EXPECT_EQ(recovery.roundTripTimeEstimate().smoothed, milliseconds(10)) << "没触发确认的包不该抬高估算";
@@ -406,16 +394,14 @@ namespace AsynGyanis::Net
         recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, QuicTime{10800}));
 
         // 第一帧只认到 1 号：样本 200 微秒，时间阈值被 1 毫秒的粒度抬着，10500 那包还差一点
-        const auto first = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(1, {{1, 1}}),
-                                                            QuicTime{11000}, QuicTime{0});
+        const auto first = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(1, {{1, 1}}), QuicTime{11000}, QuicTime{0});
         ASSERT_TRUE(first.isRoundTripSampled);
         EXPECT_TRUE(first.lost.empty()) << "1 毫秒的窗口还没到，此时判丢太急";
         ASSERT_TRUE(recovery.nextDeadline().has_value());
         EXPECT_EQ(*recovery.nextDeadline(), QuicTime{11500}) << "待判丢时刻 = 发出时刻 + loss_delay";
 
         // 同一帧再来一次：没有新确认，也就不该再采样本，但空洞到这会儿已经过线
-        const auto second = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(1, {{1, 1}}),
-                                                              QuicTime{12000}, QuicTime{0});
+        const auto second = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(1, {{1, 1}}), QuicTime{12000}, QuicTime{0});
         EXPECT_TRUE(second.acknowledged.empty());
         EXPECT_FALSE(second.isRoundTripSampled) << "§5.1：重复的 ACK 不许再采一次样本";
         ASSERT_EQ(second.lost.size(), 1U) << "重复的 ACK 也要把空洞判丢";

@@ -59,8 +59,8 @@ namespace AsynGyanis::Platform
      */
     TEST(FileSystem, Utf8FromPathDescribesNameOutsideCodePage)
     {
-        const std::string       utf8Path = "🐳-鲸.log";
-        const std::filesystem::path path = FileSystem::pathFromUtf8(utf8Path);
+        const std::string           utf8Path = "🐳-鲸.log";
+        const std::filesystem::path path     = FileSystem::pathFromUtf8(utf8Path);
 
         std::string described;
         EXPECT_NO_THROW(described = FileSystem::utf8FromPath(path));
@@ -72,7 +72,7 @@ namespace AsynGyanis::Platform
         TestSupport::TemporaryDirectory temporaryDirectory("FileSystem_Utf8");
 
         // 以 UTF-8 字符串作为唯一来源，避免经 path::string() 按 ANSI 代码页丢字
-        const std::string       fileName   = "用户设置.json";
+        const std::string           fileName   = "用户设置.json";
         const std::filesystem::path targetPath = temporaryDirectory.path() / FileSystem::pathFromUtf8(fileName);
 
         const std::string content = R"({"language": "zh-CN"})";

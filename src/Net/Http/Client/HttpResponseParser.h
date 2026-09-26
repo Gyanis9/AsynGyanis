@@ -24,10 +24,10 @@ namespace AsynGyanis::Net
     /// 响应解析结果
     struct HttpResponseInfo
     {
-        int                                                     statusCode{0};
-        std::string                                             reasonPhrase;
-        std::vector<std::pair<std::string, std::string>>        headers;
-        std::string                                             body;
+        int                                              statusCode{0};
+        std::string                                      reasonPhrase;
+        std::vector<std::pair<std::string, std::string>> headers;
+        std::string                                      body;
     };
     /**
      * @brief 自顶向下解析 HTTP 响应报文
@@ -74,11 +74,20 @@ namespace AsynGyanis::Net
         /// 喂入数据，返回本轮消费的字节数（返回 0 表示需要更多数据）
         std::size_t feed(std::string_view data);
         /// 解析是否已完成（所有期望的正文都收到了）
-        [[nodiscard]] bool isComplete() const noexcept { return m_stage == Stage::Complete; }
+        [[nodiscard]] bool isComplete() const noexcept
+        {
+            return m_stage == Stage::Complete;
+        }
         /// 当前状态是否为失败
-        [[nodiscard]] bool hasFailed() const noexcept { return m_stage == Stage::Failed; }
+        [[nodiscard]] bool hasFailed() const noexcept
+        {
+            return m_stage == Stage::Failed;
+        }
         /// 取解析结果（仅有在 isComplete() 为 true 时内容完整）
-        [[nodiscard]] const HttpResponseInfo &result() const noexcept { return m_result; }
+        [[nodiscard]] const HttpResponseInfo &result() const noexcept
+        {
+            return m_result;
+        }
         /// 通知对端已关闭（close-delimited 模式下据此完成解析）
         void endOfStream();
 
@@ -86,7 +95,10 @@ namespace AsynGyanis::Net
          * @brief 当前生效的正文上限（字节）
          * @return std::size_t 上限；0 表示不限
          */
-        [[nodiscard]] std::size_t maximumBodySize() const noexcept { return m_maximumBodySize; }
+        [[nodiscard]] std::size_t maximumBodySize() const noexcept
+        {
+            return m_maximumBodySize;
+        }
 
         /**
          * @brief 这次失败是不是「正文越过本端上限」触发的
@@ -96,7 +108,10 @@ namespace AsynGyanis::Net
          *          「已收字节 > 上限」——Content-Length 那条路在头部阶段就按声明值拒了，一个正文字节
          *          都没收，按字节数判会说「没越界」
          */
-        [[nodiscard]] bool isBodyOverLimit() const noexcept { return m_isBodyLimitHit; }
+        [[nodiscard]] bool isBodyOverLimit() const noexcept
+        {
+            return m_isBodyLimitHit;
+        }
 
         /**
          * @brief 改正文上限（0 表示不限）
@@ -116,10 +131,14 @@ namespace AsynGyanis::Net
          *          「HEAD 应答不带 Content-Length」会被按「读到连接关闭」处理，客户端只能干等
          *          对端关闭（keep-alive 连接上是等不到结果的）
          */
-        void markAsHeadResponse() noexcept { m_isHeadResponse = true; }
+        void markAsHeadResponse() noexcept
+        {
+            m_isHeadResponse = true;
+        }
 
         /// 重置解析器状态
         void reset();
+
     private:
         /// chunked 正文的读取阶段（RFC 9112 §7.1）
         enum class ChunkPhase
@@ -134,17 +153,17 @@ namespace AsynGyanis::Net
         HttpResponseInfo m_result;                   ///< 累积中的解析结果，收齐后才完整
         std::string      m_lineBuffer;               ///< 跨馈送的半行暂存，凑满一行才清
         /// 上一次跨馈送取行把手里的视图交出去了：下一次取行时才能清暂存
-        ///（交出去就清会让 std::string 在首字节写 NUL，调用方读到坏内容）
-        bool             m_isLineHandedOut{false};
-        std::size_t      m_headerBlockByteCount{0}; ///< 已收头部块的净字节数（名 + 值）
-        std::size_t      m_expectedBodyBytes{0};    ///< 还欠多少正文字节（Content-Length 或块边界给的）
-        bool             m_isChunked{false};        ///< 正文按 chunked 分块定界
-        bool             m_isCloseDelimited{false}; ///< 正文靠对端关闭连接定界
-        bool             m_isHeadResponse{false}; ///< 接下来解析的是 HEAD 请求的应答（RFC 9112 §6.3 第 1 条）
-        ChunkPhase       m_chunkPhase{ChunkPhase::SizeLine}; ///< chunked 读取当前停在哪一步
-        std::size_t      m_chunkSize{0};            ///< 当前块还剩多少字节没收
-        std::size_t      m_maximumBodySize{kDefaultMaximumBodySize}; ///< 正文上限（0 表示不限）
-        bool             m_isBodyLimitHit{false};   ///< 这次失败是否由正文越界触发（对外的那句话靠它）
+        /// （交出去就清会让 std::string 在首字节写 NUL，调用方读到坏内容）
+        bool        m_isLineHandedOut{false};
+        std::size_t m_headerBlockByteCount{0};                  ///< 已收头部块的净字节数（名 + 值）
+        std::size_t m_expectedBodyBytes{0};                     ///< 还欠多少正文字节（Content-Length 或块边界给的）
+        bool        m_isChunked{false};                         ///< 正文按 chunked 分块定界
+        bool        m_isCloseDelimited{false};                  ///< 正文靠对端关闭连接定界
+        bool        m_isHeadResponse{false};                    ///< 接下来解析的是 HEAD 请求的应答（RFC 9112 §6.3 第 1 条）
+        ChunkPhase  m_chunkPhase{ChunkPhase::SizeLine};         ///< chunked 读取当前停在哪一步
+        std::size_t m_chunkSize{0};                             ///< 当前块还剩多少字节没收
+        std::size_t m_maximumBodySize{kDefaultMaximumBodySize}; ///< 正文上限（0 表示不限）
+        bool        m_isBodyLimitHit{false};                    ///< 这次失败是否由正文越界触发（对外的那句话靠它）
 
         /**
          * @brief 已收正文的字节数是否已越过上限

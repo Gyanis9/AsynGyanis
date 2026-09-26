@@ -6,9 +6,7 @@
 namespace AsynGyanis::Database
 {
 
-    PooledConnection::PooledConnection(std::unique_ptr<DatabaseConnection> connection, ConnectionPool *pool) noexcept :
-        m_connection(std::move(connection))
-        , m_pool(pool)
+    PooledConnection::PooledConnection(std::unique_ptr<DatabaseConnection> connection, ConnectionPool *pool) noexcept : m_connection(std::move(connection)), m_pool(pool)
     {
         // 构造时取一份池存活令牌：池析构之后归还路径据此直接关闭连接，
         // 而不是回头调用已释放的池（构造函数不检查参数有效性：空连接 + 空池是合法的「空包装」）
@@ -24,9 +22,7 @@ namespace AsynGyanis::Database
     }
 
     PooledConnection::PooledConnection(PooledConnection &&other) noexcept :
-        m_connection(std::exchange(other.m_connection, nullptr))
-        , m_pool(std::exchange(other.m_pool, nullptr))
-        , m_poolLiveness(std::move(other.m_poolLiveness))
+        m_connection(std::exchange(other.m_connection, nullptr)), m_pool(std::exchange(other.m_pool, nullptr)), m_poolLiveness(std::move(other.m_poolLiveness))
     {
     }
 

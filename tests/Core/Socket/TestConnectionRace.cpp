@@ -97,7 +97,7 @@ namespace AsynGyanis::Core
         std::vector<InetAddress> makeRefusingAddresses(EventLoop &loop, const std::size_t count)
         {
             std::vector<std::unique_ptr<TestListener>> holders;
-            std::vector<InetAddress> addresses;
+            std::vector<InetAddress>                   addresses;
             holders.reserve(count);
             addresses.reserve(count);
             for (std::size_t index = 0; index < count; ++index)
@@ -115,10 +115,10 @@ namespace AsynGyanis::Core
          */
         struct RaceObservation
         {
-            bool isConcluded{false};                        ///< 竞赛协程自己收场了；false 表示它挂住或抛了
-            std::optional<std::uint16_t> winnerPort{};      ///< 连上的候选端口，没人连上时为空
-            std::size_t markerSentBytes{0};                 ///< 在胜者那条连接上写出去的字节数
-            std::chrono::milliseconds elapsed{0};           ///< 从发起到收场的墙钟耗时
+            bool                         isConcluded{false}; ///< 竞赛协程自己收场了；false 表示它挂住或抛了
+            std::optional<std::uint16_t> winnerPort{};       ///< 连上的候选端口，没人连上时为空
+            std::size_t                  markerSentBytes{0}; ///< 在胜者那条连接上写出去的字节数
+            std::chrono::milliseconds    elapsed{0};         ///< 从发起到收场的墙钟耗时
         };
 
         /**
@@ -128,23 +128,19 @@ namespace AsynGyanis::Core
          * @param deadline 整场时限
          * @return Task<RaceObservation> 观测量
          */
-        Task<RaceObservation> observeRace(EventLoop &loop, std::vector<InetAddress> candidates,
-                                         const std::chrono::milliseconds deadline)
+        Task<RaceObservation> observeRace(EventLoop &loop, std::vector<InetAddress> candidates, const std::chrono::milliseconds deadline)
         {
             RaceObservation observation;
-            const auto startedAt = std::chrono::steady_clock::now();
+            const auto      startedAt = std::chrono::steady_clock::now();
 
-            std::optional<ConnectedCandidate> winner =
-                    co_await connectCandidates(loop, std::move(candidates), deadline);
-            observation.isConcluded = true;
-            observation.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - startedAt);
+            std::optional<ConnectedCandidate> winner = co_await connectCandidates(loop, std::move(candidates), deadline);
+            observation.isConcluded                  = true;
+            observation.elapsed                      = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
             if (winner.has_value())
             {
                 observation.winnerPort = winner->address.port();
                 const std::string marker(kProbeMarker);
-                observation.markerSentBytes = static_cast<std::size_t>(
-                        co_await winner->socket.asyncSend(marker.data(), marker.size()));
+                observation.markerSentBytes = static_cast<std::size_t>(co_await winner->socket.asyncSend(marker.data(), marker.size()));
                 winner->socket.close();
             }
             co_return observation;
@@ -157,19 +153,16 @@ namespace AsynGyanis::Core
          * @param deadline 整场时限
          * @return RaceObservation 观测量；未收场时 isConcluded 为 false
          */
-        RaceObservation runRace(EventLoopThread &runner, const std::vector<InetAddress> &candidates,
-                               const std::chrono::milliseconds deadline)
+        RaceObservation runRace(EventLoopThread &runner, const std::vector<InetAddress> &candidates, const std::chrono::milliseconds deadline)
         {
-            TestSupport::CompletedTask<RaceObservation> completed =
-                    runner.runToCompletion(observeRace(runner.loop(), candidates, deadline));
+            TestSupport::CompletedTask<RaceObservation> completed = runner.runToCompletion(observeRace(runner.loop(), candidates, deadline));
             if (completed.error)
             {
                 // 竞赛契约是「失败交出空值，不抛」：逃出来的异常先报出底层原因，再按未收场处理
                 try
                 {
                     std::rethrow_exception(completed.error);
-                }
-                catch (const std::exception &failure)
+                } catch (const std::exception &failure)
                 {
                     ADD_FAILURE() << "竞赛协程抛出了异常（契约要求失败返回空值）：" << failure.what();
                 }
@@ -191,10 +184,8 @@ namespace AsynGyanis::Core
          */
         bool isBlackholePending(EventLoopThread &runner)
         {
-            const RaceObservation probed = runRace(runner, {InetAddress(kBlackholeIp, kBlackholePort)},
-                                                   kBlackholeProbeDeadline);
-            return probed.isConcluded && !probed.winnerPort.has_value()
-                   && probed.elapsed >= kBlackholeMinimumPendingMilliseconds;
+            const RaceObservation probed = runRace(runner, {InetAddress(kBlackholeIp, kBlackholePort)}, kBlackholeProbeDeadline);
+            return probed.isConcluded && !probed.winnerPort.has_value() && probed.elapsed >= kBlackholeMinimumPendingMilliseconds;
         }
     } // namespace
 
@@ -207,9 +198,7 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionRace, OrdersCandidatesByAlternatingFamilies)
     {
-        const std::vector<InetAddress> v4First{
-                InetAddress("192.0.2.1", 1), InetAddress("192.0.2.2", 2),
-                InetAddress("2001:db8::1", 3), InetAddress("2001:db8::2", 4)};
+        const std::vector<InetAddress> v4First{InetAddress("192.0.2.1", 1), InetAddress("192.0.2.2", 2), InetAddress("2001:db8::1", 3), InetAddress("2001:db8::2", 4)};
         const std::vector<InetAddress> orderedV4First = orderForConnectionRace(v4First);
         ASSERT_EQ(orderedV4First.size(), v4First.size());
         EXPECT_EQ(orderedV4First[0].toString(), v4First[0].toString()) << "首选族的第一条要排在最前";
@@ -217,8 +206,7 @@ namespace AsynGyanis::Core
         EXPECT_EQ(orderedV4First[2].toString(), v4First[1].toString());
         EXPECT_EQ(orderedV4First[3].toString(), v4First[3].toString());
 
-        const std::vector<InetAddress> v6First{
-                InetAddress("2001:db8::1", 1), InetAddress("192.0.2.1", 2), InetAddress("2001:db8::2", 3)};
+        const std::vector<InetAddress> v6First{InetAddress("2001:db8::1", 1), InetAddress("192.0.2.1", 2), InetAddress("2001:db8::2", 3)};
         const std::vector<InetAddress> orderedV6First = orderForConnectionRace(v6First);
         ASSERT_EQ(orderedV6First.size(), v6First.size());
         EXPECT_EQ(orderedV6First[0].toString(), v6First[0].toString());
@@ -242,8 +230,8 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionRace, FailsOverToTheNextCandidateWhenTheHeadIsRefused)
     {
-        EventLoopThread runner;
-        const TestListener live(runner.loop());
+        EventLoopThread                runner;
+        const TestListener             live(runner.loop());
         const std::vector<InetAddress> candidates{makeRefusingAddresses(runner.loop(), 1U)[0], live.address()};
 
         const RaceObservation outcome = runRace(runner, candidates, std::chrono::milliseconds{2000});
@@ -261,7 +249,7 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionRace, LaunchesCandidatesBeyondTheConcurrentCapAfterTheHeadConcludes)
     {
-        EventLoopThread runner;
+        EventLoopThread    runner;
         const TestListener live(runner.loop());
 
         std::vector<InetAddress> candidates = makeRefusingAddresses(runner.loop(), kMaximumConcurrentCandidates);
@@ -288,7 +276,7 @@ namespace AsynGyanis::Core
             GTEST_SKIP() << "本机对 192.0.2.1 立刻给出不可达而不是静默丢包，「在途候选不拖住整场」这条判据在这里没有鉴别力";
         }
 
-        const TestListener live(runner.loop());
+        const TestListener             live(runner.loop());
         const std::vector<InetAddress> candidates{InetAddress(kBlackholeIp, kBlackholePort), live.address()};
 
         const RaceObservation outcome = runRace(runner, candidates, std::chrono::milliseconds{1500});
@@ -312,9 +300,8 @@ namespace AsynGyanis::Core
             GTEST_SKIP() << "本机对 192.0.2.1 立刻给出不可达而不是静默丢包，这里就没有「挂到时限才收场」的候选可验";
         }
 
-        const std::vector<InetAddress> candidates{makeRefusingAddresses(runner.loop(), 1U)[0],
-                                                 InetAddress(kBlackholeIp, kBlackholePort)};
-        const RaceObservation outcome = runRace(runner, candidates, std::chrono::milliseconds{300});
+        const std::vector<InetAddress> candidates{makeRefusingAddresses(runner.loop(), 1U)[0], InetAddress(kBlackholeIp, kBlackholePort)};
+        const RaceObservation          outcome = runRace(runner, candidates, std::chrono::milliseconds{300});
         ASSERT_TRUE(outcome.isConcluded) << "整场没收场：到点的那条候选没被关掉或没报收口";
         EXPECT_FALSE(outcome.winnerPort.has_value()) << "一条都连不上，却交出了胜者";
         EXPECT_GE(outcome.elapsed, std::chrono::milliseconds{250}) << "比时限早这么多就收场，看门狗的时限没生效";
@@ -327,7 +314,7 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionRace, SettlesAtOnceWhenThereIsNothingToTry)
     {
-        EventLoopThread runner;
+        EventLoopThread    runner;
         const TestListener live(runner.loop());
 
         const RaceObservation withoutCandidates = runRace(runner, {}, std::chrono::milliseconds{2000});

@@ -172,7 +172,6 @@ namespace AsynGyanis::Platform
         static constexpr std::size_t kEventBufferBytes = 4096; ///< 单次读取的事件缓冲区字节数
         /// 注册的事件掩码：写入完成（内容修改）、新建/移入（创建）、删除/移出（删除），
         /// 以及监视目标自身被删除或移动——监视单个文件时只会有最后一类事件，且不带名字
-        static constexpr std::uint32_t kWatchEventMask =
-                IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF;
+        static constexpr std::uint32_t kWatchEventMask = IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF;
     };
 } // namespace AsynGyanis::Platform

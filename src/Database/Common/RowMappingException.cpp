@@ -2,8 +2,7 @@
 
 namespace AsynGyanis::Database
 {
-    RowMappingException::RowMappingException(const std::string &message, const std::source_location &sourceLocation) :
-        DatabaseException(message, sourceLocation)
+    RowMappingException::RowMappingException(const std::string &message, const std::source_location &sourceLocation) : DatabaseException(message, sourceLocation)
     {
     }
 

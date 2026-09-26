@@ -26,8 +26,8 @@ namespace AsynGyanis::Platform
         // 「写临时文件 + rename 覆盖」在视图存活时仍以 ERROR_ACCESS_DENIED(5) 失败，就地截断以
         // ERROR_USER_MAPPED_FILE(1224) 失败——这是段对象自己的限制，与共享位无关。因此需要让发布方
         // 随时替换文件的场景（静态文件服务）在本平台不要长期持有映射，读完即走的堆正文才是那条路
-        HANDLE fileHandle = ::CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                          nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE fileHandle =
+                ::CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (fileHandle == INVALID_HANDLE_VALUE)
         {
             mappedFile.m_lastError = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
@@ -101,8 +101,8 @@ namespace AsynGyanis::Platform
             return mappedFile;
         }
 
-        const auto mappedLength = static_cast<std::size_t>(fileStatus.st_size);
-        void *const mappedBase  = ::mmap(nullptr, mappedLength, PROT_READ, MAP_PRIVATE, fileDescriptor, 0);
+        const auto  mappedLength = static_cast<std::size_t>(fileStatus.st_size);
+        void *const mappedBase   = ::mmap(nullptr, mappedLength, PROT_READ, MAP_PRIVATE, fileDescriptor, 0);
         if (mappedBase == MAP_FAILED)
         {
             mappedFile.m_lastError = std::error_code(errno, std::system_category());
@@ -127,12 +127,13 @@ namespace AsynGyanis::Platform
     }
 
     MemoryMappedFile::MemoryMappedFile(MemoryMappedFile &&other) noexcept :
-        m_base(std::exchange(other.m_base, nullptr)), m_length(std::exchange(other.m_length, 0)),
-        m_lastError(other.m_lastError), m_isValid(std::exchange(other.m_isValid, false))
+        m_base(std::exchange(other.m_base, nullptr)), m_length(std::exchange(other.m_length, 0)), m_lastError(other.m_lastError), m_isValid(std::exchange(other.m_isValid, false))
 #if ASYN_PLATFORM_WIN32
-        , m_mappingHandle(std::exchange(other.m_mappingHandle, nullptr)), m_fileHandle(std::exchange(other.m_fileHandle, nullptr))
+        ,
+        m_mappingHandle(std::exchange(other.m_mappingHandle, nullptr)), m_fileHandle(std::exchange(other.m_fileHandle, nullptr))
 #else
-        , m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1))
+        ,
+        m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1))
 #endif
     {
     }

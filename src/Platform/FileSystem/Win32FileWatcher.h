@@ -116,7 +116,7 @@ namespace AsynGyanis::Platform
             bool                 pending{false};                        ///< 是否有一次未完成的读取请求
             /// 读操作以硬错误收场（目录被删、句柄失效）：这条监听再也收不到事件，由 watchLoop 摘掉它
             /// （落在递归覆盖清单里的目录会在下一秒的自愈复查里重新挂上）
-            bool                 isDead{false};
+            bool isDead{false};
         };
 
         /**
@@ -131,8 +131,7 @@ namespace AsynGyanis::Platform
          * @param renamedPairs 输出参数，收集本批里成对出现的目录改名（旧路径, 新路径），供调用方把
          *        被改名目录自己的监视跟到新位置
          */
-        void processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType> > &events,
-                          std::vector<std::pair<std::string, std::string> > &renamedPairs);
+        void processEntry(WatchEntry &entry, std::vector<std::pair<std::string, FileChangeType>> &events, std::vector<std::pair<std::string, std::string>> &renamedPairs);
 
         /**
          * @brief 为目录发起一次 ReadDirectoryChangesW 重叠读
@@ -207,7 +206,7 @@ namespace AsynGyanis::Platform
          *          永远收不到它内部的变更。必须在锁外调用：addWatch() 要拿写锁
          * @param events 本轮的（路径, 变更类型）列表
          */
-        void watchNewSubdirectories(const std::vector<std::pair<std::string, FileChangeType> > &events);
+        void watchNewSubdirectories(const std::vector<std::pair<std::string, FileChangeType>> &events);
 
         /**
          * @brief 判断某路径是否落在某条递归监视覆盖的范围之内
@@ -217,7 +216,7 @@ namespace AsynGyanis::Platform
          */
         [[nodiscard]] bool isUnderRecursiveWatch(const std::string &path) const;
 
-        std::unordered_map<std::string, std::unique_ptr<WatchEntry> > m_watches; ///< 目录路径到监听上下文的映射
+        std::unordered_map<std::string, std::unique_ptr<WatchEntry>> m_watches; ///< 目录路径到监听上下文的映射
 
         /// 递归监视覆盖到的目录：登记时 recursive=true 的那条根，以及把根枚举出来的每一个子目录。
         /// 两个用途——条目被摘掉后由自愈复查按这份清单补挂，以及判定新建目录是否落在递归范围内。
@@ -244,7 +243,7 @@ namespace AsynGyanis::Platform
         /// processEntry）。64 KiB 让常见突发一趟带走、少跑几趟；每条监视一份缓冲区，常驻内存按
         /// 监视目录数线性增长（配置目录这类用法以 KiB 计）
         static constexpr std::size_t kBufferSize  = 65536;
-        static constexpr DWORD       kWatchFilter =       ///< 关注的目录变更类型掩码
+        static constexpr DWORD       kWatchFilter = ///< 关注的目录变更类型掩码
                 FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE;
     };
 } // namespace AsynGyanis::Platform

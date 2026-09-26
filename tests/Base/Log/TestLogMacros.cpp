@@ -211,20 +211,10 @@ namespace AsynGyanis::Base
         ASSERT_EQ(events.size(), 6U);
 
         const std::vector<LogLevel> expectedLevels = {
-                LogLevel::Trace,
-                LogLevel::Debug,
-                LogLevel::Info,
-                LogLevel::Warn,
-                LogLevel::Error,
-                LogLevel::Fatal,
+                LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal,
         };
         const std::vector<std::string> expectedMessages = {
-                "trace message",
-                "debug message",
-                "info message",
-                "warn message",
-                "error message",
-                "fatal message",
+                "trace message", "debug message", "info message", "warn message", "error message", "fatal message",
         };
 
         for (std::size_t index = 0; index < expectedLevels.size(); ++index)
@@ -394,8 +384,8 @@ namespace AsynGyanis::Base
 
     TEST_F(LogMacros, LoggerStackMacroRoutesToGivenLogger)
     {
-        Logger localLogger("stack_local_logger");
-        auto   ownedSink              = std::make_unique<RecordingLogSink>();
+        Logger            localLogger("stack_local_logger");
+        auto              ownedSink = std::make_unique<RecordingLogSink>();
         RecordingLogSink *localSink = ownedSink.get();
         localLogger.addSink(std::move(ownedSink));
 
@@ -408,8 +398,8 @@ namespace AsynGyanis::Base
 
     TEST_F(LogMacros, LoggerExceptionMacroRoutesToGivenLogger)
     {
-        Logger localLogger("exception_target_logger");
-        auto   ownedSink            = std::make_unique<RecordingLogSink>();
+        Logger            localLogger("exception_target_logger");
+        auto              ownedSink = std::make_unique<RecordingLogSink>();
         RecordingLogSink *localSink = ownedSink.get();
         localLogger.addSink(std::move(ownedSink));
 

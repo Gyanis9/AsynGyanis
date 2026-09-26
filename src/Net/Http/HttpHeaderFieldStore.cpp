@@ -21,8 +21,7 @@ namespace AsynGyanis::Net
         constexpr std::array<std::string_view, 1> kRepeatableHeaderNames{"set-cookie"};
     } // namespace
 
-    std::string_view HttpHeaderFieldStore::segmentOf(const std::vector<char> &bytes, const std::size_t offset,
-                                                      const std::size_t length) noexcept
+    std::string_view HttpHeaderFieldStore::segmentOf(const std::vector<char> &bytes, const std::size_t offset, const std::size_t length) noexcept
     {
         // 零长段直接交空视图：空缓冲的 data() 是空指针，给空指针加偏移本身就是错的，
         // 而「有记录但取值为空」是合法形态（`foo:` 这种空取值）
@@ -83,8 +82,7 @@ namespace AsynGyanis::Net
             if (ref.valueLength == value.size() && !value.empty())
             {
                 std::memcpy(m_bytes.data() + ref.valueOffset, value.data(), value.size());
-            }
-            else
+            } else
             {
                 appendValueToBytes(ref, value);
             }
@@ -100,8 +98,7 @@ namespace AsynGyanis::Net
                     m_fields.erase(m_fields.begin() + static_cast<std::ptrdiff_t>(index));
                 }
             }
-        }
-        else
+        } else
         {
             // 只有新建条目才需要折小写（线上形态由入库名决定）
             append(name, value);
@@ -112,10 +109,7 @@ namespace AsynGyanis::Net
 
     void HttpHeaderFieldStore::removeAll(const std::string_view name)
     {
-        const auto isSameName = [this, name](const FieldRef &ref)
-        {
-            return equalsIgnoringCase(nameOf(ref), name);
-        };
+        const auto isSameName = [this, name](const FieldRef &ref) { return equalsIgnoringCase(nameOf(ref), name); };
         m_fields.erase(std::ranges::remove_if(m_fields, isSameName).begin(), m_fields.end());
 
         // 视图不在这里维护：标脏即可，下次查询由权威记录重建（否则会留下
@@ -131,8 +125,8 @@ namespace AsynGyanis::Net
         // 与解析整条 h1 请求的耗时同量级）。视图留给真正要整表的调用方（headers()）。
         // 比较就地折 ASCII 大小写而不先造归一化副本：入库名已是小写，两侧折完结果一致，
         // 而名字一超过短字符串缓冲（15 字符），那次拷贝就是每条查询一次的堆分配
-        //（CORS 预检读 access-control-request-method、握手读 sec-websocket-version 都落在这一格）
-        const bool isRepeatableName = isRepeatableHeaderName(name);
+        // （CORS 预检读 access-control-request-method、握手读 sec-websocket-version 都落在这一格）
+        const bool                 isRepeatableName = isRepeatableHeaderName(name);
         std::optional<std::string> collectedValue;
         for (const FieldRef &ref: m_fields)
         {
@@ -262,7 +256,7 @@ namespace AsynGyanis::Net
         // 两边各自清掉，下次有人整表查询时由权威记录重建
         m_singleValues.clear();
         source.m_singleValues.clear();
-        m_isViewStale = true;
+        m_isViewStale        = true;
         source.m_isViewStale = true;
     }
 
@@ -295,21 +289,13 @@ namespace AsynGyanis::Net
     {
         // 名单极小，线性比较比构造哈希集合划算。登记形式是小写，而读侧不再先归一化查询名，
         // 故这里按 ASCII 大小写不敏感比：调用方传 "Set-Cookie" 也要认得出是可重复头部
-        return std::ranges::any_of(kRepeatableHeaderNames,
-                                   [name](const std::string_view registeredName)
-                                   {
-                                       return equalsIgnoringCase(registeredName, name);
-                                   });
+        return std::ranges::any_of(kRepeatableHeaderNames, [name](const std::string_view registeredName) { return equalsIgnoringCase(registeredName, name); });
     }
 
     std::vector<HttpHeaderFieldStore::FieldRef>::iterator HttpHeaderFieldStore::findField(const std::string_view name)
     {
         // 头部数量级为几十条，线性比较比再挂一张「名到迭代器」的索引表更划算，也少一份要维护的一致性
-        return std::ranges::find_if(m_fields,
-                                    [this, name](const FieldRef &ref)
-                                    {
-                                        return equalsIgnoringCase(nameOf(ref), name);
-                                    });
+        return std::ranges::find_if(m_fields, [this, name](const FieldRef &ref) { return equalsIgnoringCase(nameOf(ref), name); });
     }
 
     void HttpHeaderFieldStore::rebuildSingleValueView() const
@@ -317,7 +303,7 @@ namespace AsynGyanis::Net
         m_singleValues.clear();
         for (const FieldRef &ref: m_fields)
         {
-            const std::string_view name = nameOf(ref);
+            const std::string_view name  = nameOf(ref);
             const std::string_view value = valueOf(ref);
             if (isRepeatableHeaderName(name))
             {
@@ -330,8 +316,7 @@ namespace AsynGyanis::Net
 
             // 普通头部同名多条时，按 RFC 7230 §3.2.2 的收件人规则以 ", " 合并到同一条，
             // 视图里的条目位置与键都不变（可重复头部也不会派生出伪键）
-            if (const auto [iterator, isInserted] = m_singleValues.try_emplace(std::string{name}, std::string{value});
-                !isInserted)
+            if (const auto [iterator, isInserted] = m_singleValues.try_emplace(std::string{name}, std::string{value}); !isInserted)
             {
                 iterator->second.append(kMergedHeaderSeparator);
                 iterator->second.append(value);

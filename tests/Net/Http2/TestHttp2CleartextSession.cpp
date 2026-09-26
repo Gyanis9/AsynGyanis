@@ -17,9 +17,9 @@
 #include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerLimits.h"
+#include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Connection.h"
 #include "Net/Http2/Http2Frame.h"
-#include "Net/Http2/Hpack.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
 #include "HttpTestSupport.h"
@@ -53,9 +53,9 @@ namespace AsynGyanis::Net
         HttpServerLimits makeCleartextLimits()
         {
             HttpServerLimits limits;
-            limits.idleTimeout    = std::chrono::seconds{10};
-            limits.readTimeout    = std::chrono::seconds{10};
-            limits.writeTimeout   = std::chrono::seconds{10};
+            limits.idleTimeout                    = std::chrono::seconds{10};
+            limits.readTimeout                    = std::chrono::seconds{10};
+            limits.writeTimeout                   = std::chrono::seconds{10};
             limits.settingsAcknowledgementTimeout = std::chrono::seconds{10};
             return limits;
         }
@@ -104,10 +104,7 @@ namespace AsynGyanis::Net
          */
         std::string makeRequestHeadersFrame(const std::uint32_t streamId, const std::string &headerBlock, const bool endStream)
         {
-            return encodeHttp2HeadersFrame(Http2HeadersPayload{.endStream = endStream,
-                                                                .endHeaders = true,
-                                                                .headerBlockFragment = headerBlock},
-                                           streamId);
+            return encodeHttp2HeadersFrame(Http2HeadersPayload{.endStream = endStream, .endHeaders = true, .headerBlockFragment = headerBlock}, streamId);
         }
 
         /**
@@ -135,11 +132,9 @@ namespace AsynGyanis::Net
         std::string makeTrailersFrame(const std::uint32_t streamId)
         {
             // 尾部头块里不得出现伪头（:method 之类），因此用普通头；它同时是 END_STREAM 的载体
-            return encodeHttp2HeadersFrame(Http2HeadersPayload{.endStream = true,
-                                                               .endHeaders = true,
-                                                               .headerBlockFragment =
-                                                                       hpackLiteralField("x-trailer", "done")
-                                                                       + hpackLiteralField("content-length", "999")},
+            return encodeHttp2HeadersFrame(Http2HeadersPayload{.endStream           = true,
+                                                               .endHeaders          = true,
+                                                               .headerBlockFragment = hpackLiteralField("x-trailer", "done") + hpackLiteralField("content-length", "999")},
                                            streamId);
         }
 
@@ -151,8 +146,7 @@ namespace AsynGyanis::Net
              * @brief 连接服务端端口
              * @param port 服务端监听端口
              */
-            explicit CleartextHttp2Client(const std::uint16_t port) :
-                m_socket(port)
+            explicit CleartextHttp2Client(const std::uint16_t port) : m_socket(port)
             {
             }
 
@@ -179,8 +173,7 @@ namespace AsynGyanis::Net
              * @param timeout 等待上限
              * @return true 谓词在时限内满足
              */
-            bool pumpUntil(std::vector<Http2Frame> &frames, const std::function<bool(const std::vector<Http2Frame> &)> &isDone,
-                           const std::chrono::milliseconds timeout)
+            bool pumpUntil(std::vector<Http2Frame> &frames, const std::function<bool(const std::vector<Http2Frame> &)> &isDone, const std::chrono::milliseconds timeout)
             {
                 const auto deadline = std::chrono::steady_clock::now() + timeout;
                 while (true)
@@ -246,9 +239,7 @@ namespace AsynGyanis::Net
                 std::size_t consumedByteCount = 0;
                 while (consumedByteCount < m_pendingFrameBytes.size())
                 {
-                    const Http2FrameDecodeStatus status =
-                            m_frameDecoder.parse(m_pendingFrameBytes.data() + consumedByteCount,
-                                                 m_pendingFrameBytes.size() - consumedByteCount);
+                    const Http2FrameDecodeStatus status = m_frameDecoder.parse(m_pendingFrameBytes.data() + consumedByteCount, m_pendingFrameBytes.size() - consumedByteCount);
                     if (status != Http2FrameDecodeStatus::Frame)
                     {
                         if (status == Http2FrameDecodeStatus::Error)
@@ -264,10 +255,10 @@ namespace AsynGyanis::Net
                 m_pendingFrameBytes.clear();
             }
 
-            LoopbackClient m_socket;             ///< 明文回环连接（发字节、收字节）
-            Http2FrameDecoder m_frameDecoder;    ///< 生产解码器：服务端吐出的字节由它解回
-            std::string m_pendingFrameBytes;     ///< 已收到、还没喂给解码器的字节
-            bool m_hasDecodeError{false};        ///< 是否已解出非法帧
+            LoopbackClient    m_socket;                ///< 明文回环连接（发字节、收字节）
+            Http2FrameDecoder m_frameDecoder;          ///< 生产解码器：服务端吐出的字节由它解回
+            std::string       m_pendingFrameBytes;     ///< 已收到、还没喂给解码器的字节
+            bool              m_hasDecodeError{false}; ///< 是否已解出非法帧
         };
 
         /// 该流上是否出现过 END_STREAM（消息边界：响应正文到此为止）
@@ -290,12 +281,11 @@ namespace AsynGyanis::Net
          * @param blockIndex 第几个头块，从 0 起；一条流上可能有多个（例如先 100 再 200）
          * @return std::string 头块字节；不足那么多个时返回空串
          */
-        std::string responseHeaderBlock(const std::vector<Http2Frame> &frames, const std::uint32_t streamId,
-                                        const std::size_t blockIndex = 0)
+        std::string responseHeaderBlock(const std::vector<Http2Frame> &frames, const std::uint32_t streamId, const std::size_t blockIndex = 0)
         {
             std::string headerBlock;
-            std::size_t blockCount = 0;
-            bool isCollecting = false;
+            std::size_t blockCount   = 0;
+            bool        isCollecting = false;
             for (const Http2Frame &frame: frames)
             {
                 if (frame.header.streamId != streamId)
@@ -350,11 +340,11 @@ namespace AsynGyanis::Net
          * @param name 头名
          * @return std::string 头值；取不到时为空串
          */
-        std::string findResponseHeaderValue(HpackDecoder &decoder, const std::vector<Http2Frame> &frames, const std::uint32_t streamId,
-                                           const std::string_view name, const std::size_t blockIndex = 0)
+        std::string findResponseHeaderValue(HpackDecoder &decoder, const std::vector<Http2Frame> &frames, const std::uint32_t streamId, const std::string_view name,
+                                            const std::size_t blockIndex = 0)
         {
             std::vector<HpackHeaderField> headerFields;
-            std::string errorText;
+            std::string                   errorText;
             if (!decoder.decode(responseHeaderBlock(frames, streamId, blockIndex), headerFields, &errorText))
             {
                 return {};
@@ -379,7 +369,7 @@ namespace AsynGyanis::Net
         std::map<std::uint32_t, std::string> collectResponseStatuses(const std::vector<Http2Frame> &frames)
         {
             std::map<std::uint32_t, std::string> statusByStream;
-            HpackDecoder decoder;
+            HpackDecoder                         decoder;
             for (const Http2Frame &frame: frames)
             {
                 if (frame.header.type != Http2FrameType::Headers || frame.header.streamId == 0U)
@@ -387,7 +377,7 @@ namespace AsynGyanis::Net
                     continue;
                 }
                 std::vector<HpackHeaderField> headerFields;
-                std::string errorText;
+                std::string                   errorText;
                 if (!decoder.decode(frame.payload, headerFields, &errorText))
                 {
                     continue;
@@ -410,9 +400,8 @@ namespace AsynGyanis::Net
             {
                 return Http2ErrorCode::NoError;
             }
-            const auto rawValue = static_cast<std::uint32_t>(
-                    (static_cast<std::uint8_t>(payload[4]) << 24) | (static_cast<std::uint8_t>(payload[5]) << 16) |
-                    (static_cast<std::uint8_t>(payload[6]) << 8) | static_cast<std::uint8_t>(payload[7]));
+            const auto rawValue = static_cast<std::uint32_t>((static_cast<std::uint8_t>(payload[4]) << 24) | (static_cast<std::uint8_t>(payload[5]) << 16) |
+                                                             (static_cast<std::uint8_t>(payload[6]) << 8) | static_cast<std::uint8_t>(payload[7]));
             return static_cast<Http2ErrorCode>(rawValue);
         }
 
@@ -423,14 +412,13 @@ namespace AsynGyanis::Net
             {
                 return 0U;
             }
-            const auto rawValue = static_cast<std::uint32_t>(
-                    (static_cast<std::uint8_t>(payload[0]) << 24) | (static_cast<std::uint8_t>(payload[1]) << 16) |
-                    (static_cast<std::uint8_t>(payload[2]) << 8) | static_cast<std::uint8_t>(payload[3]));
+            const auto rawValue = static_cast<std::uint32_t>((static_cast<std::uint8_t>(payload[0]) << 24) | (static_cast<std::uint8_t>(payload[1]) << 16) |
+                                                             (static_cast<std::uint8_t>(payload[2]) << 8) | static_cast<std::uint8_t>(payload[3]));
             return rawValue & 0x7fffffffU;
         }
 
         /// RFC 6455 §1.3 的示例 key 与它对应的 Sec-WebSocket-Accept（规范原文给出的黄金值）
-        constexpr std::string_view kRfc6455SampleKey = "dGhlIHNhbXBsZSBub25jZQ==";
+        constexpr std::string_view kRfc6455SampleKey    = "dGhlIHNhbXBsZSBub25jZQ==";
         constexpr std::string_view kRfc6455SampleAccept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
 
         /**
@@ -461,7 +449,7 @@ namespace AsynGyanis::Net
         std::string makeMaskedClientFrame(const std::uint8_t opCode, const std::string_view payload)
         {
             const std::array<std::uint8_t, 4> maskKey{0x12U, 0x34U, 0x56U, 0x78U};
-            std::string frameBytes;
+            std::string                       frameBytes;
             frameBytes.push_back(static_cast<char>(0x80U | opCode));
             frameBytes.push_back(static_cast<char>(0x80U | static_cast<std::uint8_t>(payload.size())));
             for (const std::uint8_t maskByte: maskKey)
@@ -485,7 +473,7 @@ namespace AsynGyanis::Net
         std::string makeExtendedMaskedClientFrame(const std::uint8_t opCode, const std::string_view payload)
         {
             const std::array<std::uint8_t, 4> maskKey{0x12U, 0x34U, 0x56U, 0x78U};
-            std::string frameBytes;
+            std::string                       frameBytes;
             frameBytes.push_back(static_cast<char>(0x80U | opCode));
             frameBytes.push_back(static_cast<char>(0x80U | 126U));
             frameBytes.push_back(static_cast<char>(static_cast<std::uint8_t>(payload.size() >> 8U)));
@@ -512,7 +500,7 @@ namespace AsynGyanis::Net
             {
                 return {-1, {}};
             }
-            const auto firstByte = static_cast<std::uint8_t>(frameBytes[0]);
+            const auto firstByte  = static_cast<std::uint8_t>(frameBytes[0]);
             const auto secondByte = static_cast<std::uint8_t>(frameBytes[1]);
             if ((secondByte & 0x80U) != 0U)
             {
@@ -554,10 +542,7 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, ServesRequestWhenCleartextHttp2IsEnabled)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         EXPECT_TRUE(fixture.server().isHttp2CleartextEnabled()) << "开关没有落到服务器上";
         const std::uint16_t listeningPort = fixture.listeningPort();
@@ -571,24 +556,18 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
 
         // 服务端必须先用自己的 SETTINGS 起头（§3.4：服务端前奏即一个 SETTINGS 帧）
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() &&
-                                                receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
         EXPECT_EQ(frames.front().header.streamId, 0U) << "SETTINGS 必须是连接级帧（流号 0）";
         ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
 
         // 一条完整请求：GET /hello，头块与 END_STREAM 一并发（无正文）
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "没有在时限内拿到流 1 的完整响应";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "没有在时限内拿到流 1 的完整响应";
 
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
@@ -611,15 +590,16 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, AdvertisesConfiguredSettingsWhenServerOverridesThem)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-            Http2ConnectionConfiguration configuration;
-            configuration.maximumConcurrentStreams = 3;
-            configuration.maximumFrameSize         = 32768;
-            configuration.maximumHeaderListSize    = 2048;
-            server.setHttp2Configuration(configuration);
-        });
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {},
+                                         [](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                             Http2ConnectionConfiguration configuration;
+                                             configuration.maximumConcurrentStreams = 3;
+                                             configuration.maximumFrameSize         = 32768;
+                                             configuration.maximumHeaderListSize    = 2048;
+                                             server.setHttp2Configuration(configuration);
+                                         });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
 
         CleartextHttp2Client client(fixture.listeningPort());
@@ -627,13 +607,10 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() &&
-                                                receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         Http2SettingsPayload serverSettings;
         std::string          parseError;
@@ -694,18 +671,19 @@ namespace AsynGyanis::Net
     TEST(Http2CleartextSession, ServesStaticFileAndReleasesMappingAfterResponse)
     {
         const AsynGyanis::TestSupport::TemporaryDirectory directory("H2cStaticFile");
-        const std::filesystem::path assetPath = directory.path() / "asset.txt";
+        const std::filesystem::path                       assetPath = directory.path() / "asset.txt";
         {
             std::ofstream initial(assetPath, std::ios::binary | std::ios::trunc);
             initial << "first-version-body";
         }
         ASSERT_TRUE(std::filesystem::exists(assetPath));
 
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [&directory](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-            server.staticFileDir(directory.path().string());
-        });
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {},
+                                         [&directory](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                             server.staticFileDir(directory.path().string());
+                                         });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
 
         CleartextHttp2Client client(fixture.listeningPort());
@@ -713,12 +691,10 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
         ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
 
         // 一条请求一个流号；两次都走同一条连接，第二次只在第一次彻底收尾之后才发出
@@ -728,12 +704,7 @@ namespace AsynGyanis::Net
             {
                 return false;
             }
-            return client.pumpUntil(frames,
-                                    [streamId](const std::vector<Http2Frame> &receivedFrames)
-                                    {
-                                        return hasEndStream(receivedFrames, streamId);
-                                    },
-                                    kWaitTimeout);
+            return client.pumpUntil(frames, [streamId](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, streamId); }, kWaitTimeout);
         };
 
         ASSERT_TRUE(requestStaticFile(1U, "/asset.txt")) << "没有在时限内拿到静态文件的首条响应";
@@ -747,10 +718,7 @@ namespace AsynGyanis::Net
 
         // 等到服务端把这条响应落账：recordResponse 排在会话解除映射之后，且两者之间没有挂起点，
         // 因此计数可见就说明「发送完成后的收尾」已经跑过，替换动作不必赌调度
-        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&fixture]()
-        {
-            return fixture.server().stats().status2xxCount >= 1U;
-        })) << "服务端没有把首条静态响应落账";
+        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&fixture]() { return fixture.server().stats().status2xxCount >= 1U; })) << "服务端没有把首条静态响应落账";
 
         // 发布方的常规做法：写临时文件再 rename 覆盖。响应若还攥着那份映射，Windows 上这一步会被挡下
         const std::filesystem::path replacementPath = directory.path() / "asset.txt.next";
@@ -789,10 +757,7 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, RejectsHttp11RequestWithGoAwayWhenCleartextHttp2IsEnabled)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -804,19 +769,21 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendBytes("GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n", kWaitTimeout));
 
         std::vector<Http2Frame> frames;
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.type == Http2FrameType::GoAway)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "HTTP/1.1 报文没有被判为非法前奏，也没收到 GOAWAY";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.type == Http2FrameType::GoAway)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "HTTP/1.1 报文没有被判为非法前奏，也没收到 GOAWAY";
 
         const Http2Frame *goAwayFrame = nullptr;
         for (const Http2Frame &frame: frames)
@@ -829,8 +796,7 @@ namespace AsynGyanis::Net
         }
         ASSERT_NE(goAwayFrame, nullptr);
         EXPECT_EQ(goAwayFrame->header.streamId, 0U) << "GOAWAY 必须是连接级帧（流号 0）";
-        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::ProtocolError)
-                << "非法前奏应按 PROTOCOL_ERROR 收口（RFC 9113 §3.4）";
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::ProtocolError) << "非法前奏应按 PROTOCOL_ERROR 收口（RFC 9113 §3.4）";
         EXPECT_TRUE(client.waitForClosure(frames, kWaitTimeout)) << "GOAWAY 之后连接没有关闭";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
         EXPECT_FALSE(fixture.startThrew());
@@ -876,8 +842,7 @@ namespace AsynGyanis::Net
 
         // h2 服务端在这里会先吐一个二进制 SETTINGS 帧（首字节 0x00），HTTP/1.1 服务端只可能回文本状态行
         std::string responseText;
-        ASSERT_TRUE(client.waitForText(responseText, "HTTP/1.", kWaitTimeout)) << "关闭 h2c 时没有按 HTTP/1.1 应答：已收到 "
-                                                                              << responseText.size() << " 字节";
+        ASSERT_TRUE(client.waitForText(responseText, "HTTP/1.", kWaitTimeout)) << "关闭 h2c 时没有按 HTTP/1.1 应答：已收到 " << responseText.size() << " 字节";
         EXPECT_FALSE(responseText.empty());
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
         EXPECT_FALSE(fixture.startThrew());
@@ -893,21 +858,22 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, ServesRequestWhoseBodyEndsWithTrailers)
     {
-        const std::string_view requestBody = "trailed-body";
-        const std::string expectedBody = std::string(requestBody) + "|tf=done|tcl=no";
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [expectedBody](Router &router, Core::EventLoop &)
-        {
-            router.post("/echo", [expectedBody](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                // 回显正文与 trailer：只有正文真被收齐、尾部字段也落了档，回显才等于预期
-                response.setBody(std::string(request.body()) + "|tf=" + request.getTrailerField("x-trailer").value_or("-")
-                                 + "|tcl=" + (request.getTrailerField("content-length").has_value() ? "yes" : "no"));
-                co_return;
-            });
-        }, HttpParserLimits{}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+        const std::string_view   requestBody  = "trailed-body";
+        const std::string        expectedBody = std::string(requestBody) + "|tf=done|tcl=no";
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [expectedBody](Router &router, Core::EventLoop &)
+                {
+                    router.post("/echo",
+                                [expectedBody](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                {
+                                    // 回显正文与 trailer：只有正文真被收齐、尾部字段也落了档，回显才等于预期
+                                    response.setBody(std::string(request.body()) + "|tf=" + request.getTrailerField("x-trailer").value_or("-") +
+                                                     "|tcl=" + (request.getTrailerField("content-length").has_value() ? "yes" : "no"));
+                                    co_return;
+                                });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -917,12 +883,10 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 三段一气的请求：请求头（不收尾）→ 正文（不收尾）→ 尾部头块（收尾）
         std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo"), false);
@@ -930,12 +894,9 @@ namespace AsynGyanis::Net
         requestBytes += makeTrailersFrame(1U);
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
 
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "以尾部头块收尾的请求没有被路由（正文收齐没有被识别）";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "以尾部头块收尾的请求没有被路由（正文收齐没有被识别）";
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
         EXPECT_EQ(responseDataPayload(frames, 1U), expectedBody) << "正文没有被完整收齐，或尾部字段没有交进业务手里";
@@ -953,10 +914,7 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, SendsGoAwayBeforeGracefulShutdown)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -966,38 +924,35 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 先服务一条完整请求：关停通告里的 last-stream-id 才有可断言的取值（应当是 1）
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "请求没有在时限内被服务";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "请求没有在时限内被服务";
 
         // 关停：连接此时没有在途工作，属于「优雅收口」那一路
         ASSERT_TRUE(fixture.drainServer(std::chrono::milliseconds{1000}, kWaitTimeout)) << "drain 没有在时限内完成";
 
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.type == Http2FrameType::GoAway)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "关停时没有收到收尾 GOAWAY";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.type == Http2FrameType::GoAway)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "关停时没有收到收尾 GOAWAY";
 
         const Http2Frame *goAwayFrame = nullptr;
         for (const Http2Frame &frame: frames)
@@ -1025,13 +980,9 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, SendsGoAwayAfterHandlerThatResumedOutsideTheLoop)
     {
-        std::atomic<bool> handlerStarted{false};
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30},
-                                         SlowRouteOptions{std::chrono::milliseconds{100}, &handlerStarted}, {}, HttpParserLimits{},
-                                         [](TestHttpServer &server)
-                                         {
-                                             server.setHttp2CleartextEnabled(true);
-                                         });
+        std::atomic<bool>        handlerStarted{false};
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, SlowRouteOptions{std::chrono::milliseconds{100}, &handlerStarted}, {},
+                                         HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1041,26 +992,18 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // /slow 的处理器挂到定时器上：响应一定是在循环之外的那次唤醒里写出的
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/slow"), true), kWaitTimeout));
-        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&handlerStarted]
-        {
-            return handlerStarted.load(std::memory_order_acquire);
-        },
-                                                              kWaitTimeout)) << "慢路由的处理器没有被进入";
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "挂过定时器的请求没有在时限内服务完";
+        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&handlerStarted] { return handlerStarted.load(std::memory_order_acquire); }, kWaitTimeout))
+                << "慢路由的处理器没有被进入";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "挂过定时器的请求没有在时限内服务完";
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
         EXPECT_EQ(responseDataPayload(frames, 1U), "served-slow");
@@ -1068,19 +1011,21 @@ namespace AsynGyanis::Net
         // 此刻循环已重新停在读等待上：只有处理器自己结清忙标记，drain 才会认为这条连接可以收口
         ASSERT_TRUE(fixture.drainServer(std::chrono::milliseconds{1000}, kWaitTimeout)) << "drain 没有在时限内完成";
 
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.type == Http2FrameType::GoAway)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "服务完一条挂过定时器的请求之后，关停时没有收到收尾 GOAWAY";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.type == Http2FrameType::GoAway)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "服务完一条挂过定时器的请求之后，关停时没有收到收尾 GOAWAY";
 
         const Http2Frame *goAwayFrame = nullptr;
         for (const Http2Frame &frame: frames)
@@ -1105,10 +1050,8 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, Answers431ForOversizedRequestHeadersAndKeepsConnection)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, HttpParserLimits{}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, HttpParserLimits{},
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1118,24 +1061,17 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 一条 9000 字节的头值：远超单条头值的 8 KiB 上限，但整个头块仍在一帧之内（16 KiB）
-        std::string requestBytes = makeRequestHeadersFrame(1U,
-                                                           makeGetRequestHeaderBlock("/hello") + hpackLiteralField("x-big", std::string(9000U, 'a')),
-                                                           true);
+        std::string requestBytes = makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello") + hpackLiteralField("x-big", std::string(9000U, 'a')), true);
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !responseHeaderBlock(receivedFrames, 1U, 0).empty();
-                                     },
-                                     kWaitTimeout)) << "超大头部的请求没有收到应答";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseHeaderBlock(receivedFrames, 1U, 0).empty(); }, kWaitTimeout))
+                << "超大头部的请求没有收到应答";
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "431");
         for (const Http2Frame &frame: frames)
@@ -1145,12 +1081,9 @@ namespace AsynGyanis::Net
 
         // 同一条连接随后那条正常请求必须拿到 200：HPACK 上下文没被这次拒绝弄乱
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !responseHeaderBlock(receivedFrames, 3U, 0).empty();
-                                     },
-                                     kWaitTimeout)) << "越限请求之后的正常请求没有收到应答";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseHeaderBlock(receivedFrames, 3U, 0).empty(); }, kWaitTimeout))
+                << "越限请求之后的正常请求没有收到应答";
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200");
     }
 
@@ -1162,10 +1095,8 @@ namespace AsynGyanis::Net
         // 正文上限设得很小：一条 64 字节的 POST 必然越界
         HttpParserLimits parserLimits;
         parserLimits.maximumBodySize = 16;
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, parserLimits, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, parserLimits,
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1175,12 +1106,10 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 超限的 POST：请求头不收尾、正文不收尾（对端还有更多要传）
         std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo"), false);
@@ -1188,38 +1117,39 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
 
         // 413 与 RST_STREAM(NO_ERROR) 都要出现：前者是应答，后者是「别再传了」（RFC 9113 §8.1）
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         bool hasTooLarge = false;
-                                         bool hasAbort = false;
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             hasTooLarge = hasTooLarge || frame.header.type == Http2FrameType::Headers;
-                                             hasAbort = hasAbort || frame.header.type == Http2FrameType::RstStream;
-                                         }
-                                         return hasTooLarge && hasAbort;
-                                     },
-                                     kWaitTimeout)) << "超限上传没有收到 413 与中止请求的 RST_STREAM";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    bool hasTooLarge = false;
+                    bool hasAbort    = false;
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        hasTooLarge = hasTooLarge || frame.header.type == Http2FrameType::Headers;
+                        hasAbort    = hasAbort || frame.header.type == Http2FrameType::RstStream;
+                    }
+                    return hasTooLarge && hasAbort;
+                },
+                kWaitTimeout))
+                << "超限上传没有收到 413 与中止请求的 RST_STREAM";
 
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "413");
         Http2ErrorCode abortErrorCode = Http2ErrorCode::ProtocolError;
-        bool hasAbortFrame = false;
+        bool           hasAbortFrame  = false;
         for (const Http2Frame &frame: frames)
         {
             if (frame.header.type == Http2FrameType::RstStream && frame.header.streamId == 1U)
             {
                 Http2RstStreamPayload payload;
-                std::string parseErrorText;
+                std::string           parseErrorText;
                 ASSERT_TRUE(parseHttp2RstStreamPayload(frame, payload, &parseErrorText)) << parseErrorText;
                 abortErrorCode = payload.errorCode;
-                hasAbortFrame = true;
+                hasAbortFrame  = true;
             }
         }
         ASSERT_TRUE(hasAbortFrame) << "流 1 上没有中止请求的 RST_STREAM";
-        EXPECT_EQ(abortErrorCode, Http2ErrorCode::NoError)
-                << "请对端中止发送用的是 NO_ERROR（§8.1），不是把这条流判成出错";
+        EXPECT_EQ(abortErrorCode, Http2ErrorCode::NoError) << "请对端中止发送用的是 NO_ERROR（§8.1），不是把这条流判成出错";
         for (const Http2Frame &frame: frames)
         {
             EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "中止单流不该把连接收掉";
@@ -1227,12 +1157,9 @@ namespace AsynGyanis::Net
 
         // 连接照常工作：越界请求之后的另一条请求仍得到 200
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 3U);
-                                     },
-                                     kWaitTimeout)) << "越界上传之后连接不再可用";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "越界上传之后连接不再可用";
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200");
         EXPECT_EQ(responseDataPayload(frames, 3U), "served-hello");
 
@@ -1248,7 +1175,7 @@ namespace AsynGyanis::Net
     TEST(Http2CleartextSession, Answers503WhenInflightBodyBudgetIsExhausted)
     {
         // 预算只够 16 字节，而下面这条 POST 有 64 字节正文
-        auto budget = std::make_shared<HttpMemoryBudget>(16);
+        auto                     budget = std::make_shared<HttpMemoryBudget>(16);
         RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, HttpParserLimits{},
                                          [budget](TestHttpServer &server)
                                          {
@@ -1262,35 +1189,34 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 越预算的 POST：头块与正文都不收尾（正文还会继续变多，本端已判定不再需要）
         std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo"), false);
         requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(64U, 'x')}, 1U);
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
 
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.type == Http2FrameType::Headers && frame.header.streamId == 1U)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "超出全局预算的请求没有收到应答";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.type == Http2FrameType::Headers && frame.header.streamId == 1U)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "超出全局预算的请求没有收到应答";
 
         HpackDecoder responseDecoder;
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "503")
-                << "全局预算用尽应当是 503（本端没余量），不是 413（对端报文越界）";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "503") << "全局预算用尽应当是 503（本端没余量），不是 413（对端报文越界）";
 
         // 额度随流的记录一起归还：轮询等一小会儿，因为「客户端读到 503」与「记录被摘掉」之间没有严格顺序
         const auto quotaDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
@@ -1313,32 +1239,34 @@ namespace AsynGyanis::Net
     TEST(Http2CleartextSession, SharesOneBodyBudgetAcrossConcurrentStreams)
     {
         // 预算 100：两条流各 60 字节，单看都合规，加起来就越界
-        constexpr std::size_t kFirstStreamBodyBytes = 60;
+        constexpr std::size_t kFirstStreamBodyBytes  = 60;
         constexpr std::size_t kSecondStreamBodyBytes = 60;
-        constexpr std::size_t kFirstStreamTailBytes = 10;
+        constexpr std::size_t kFirstStreamTailBytes  = 10;
 
         auto budget = std::make_shared<HttpMemoryBudget>(100);
 
         HttpParserLimits parserLimits;
         parserLimits.maximumBodySize = 1024; // 让全局预算成为唯一的约束，而不是单报文正文上限
 
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {},
-                                         [](Router &router, Core::EventLoop &)
-                                         {
-                                             // 回显路由由用例自己注册：这样「先受理那条的正文被完整收下」
-                                             // 才有明确对照，而不是落在未匹配路径的兜底响应上
-                                             router.post("/echo", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-                                             {
-                                                 response.setBody(request.body());
-                                                 co_return;
-                                             });
-                                         },
-                                         parserLimits,
-                                         [budget](TestHttpServer &server)
-                                         {
-                                             server.setHttp2CleartextEnabled(true);
-                                             server.setMemoryBudget(budget);
-                                         });
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    // 回显路由由用例自己注册：这样「先受理那条的正文被完整收下」
+                    // 才有明确对照，而不是落在未匹配路径的兜底响应上
+                    router.post("/echo",
+                                [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                {
+                                    response.setBody(request.body());
+                                    co_return;
+                                });
+                },
+                parserLimits,
+                [budget](TestHttpServer &server)
+                {
+                    server.setHttp2CleartextEnabled(true);
+                    server.setMemoryBudget(budget);
+                });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
 
         CleartextHttp2Client client(fixture.listeningPort());
@@ -1346,36 +1274,27 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 两条流都只发到一半（不带 END_STREAM）：第二条那 60 字节落进来时，第一条的 60 字节还占着额度
-        std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo"), false)
-                                 + encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kFirstStreamBodyBytes, 'x')}, 1U)
-                                 + makeRequestHeadersFrame(3U, makePostRequestHeaderBlock("/echo"), false)
-                                 + encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kSecondStreamBodyBytes, 'y')}, 3U);
+        std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/echo"), false) +
+                                   encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kFirstStreamBodyBytes, 'x')}, 1U) +
+                                   makeRequestHeadersFrame(3U, makePostRequestHeaderBlock("/echo"), false) +
+                                   encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kSecondStreamBodyBytes, 'y')}, 3U);
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
 
         // 越界那条不必等对端收尾就当场可判：它拿到 503，而先受理的那条还在等正文收齐
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 3U);
-                                     },
-                                     kWaitTimeout)) << "超出全局预算的那条流没有收到应答";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "超出全局预算的那条流没有收到应答";
 
-        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kFirstStreamTailBytes, 'x')}, 1U),
-                                     kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "先受理的那条流补齐正文后没有收到应答";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kFirstStreamTailBytes, 'x')}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "先受理的那条流补齐正文后没有收到应答";
 
         const std::map<std::uint32_t, std::string> statusByStream = collectResponseStatuses(frames);
         // 先确认两条响应都解得开：解不开时 .at() 抛的是「查不到键」，那会掩盖真正要判的口径问题
@@ -1406,10 +1325,7 @@ namespace AsynGyanis::Net
     TEST(Http2CleartextSession, Answers404WithMatchingStatusForUnregisteredPath)
     {
         RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, HttpParserLimits{},
-                                         [](TestHttpServer &server)
-                                         {
-                                             server.setHttp2CleartextEnabled(true);
-                                         });
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
 
         CleartextHttp2Client client(fixture.listeningPort());
@@ -1418,12 +1334,9 @@ namespace AsynGyanis::Net
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/no-such-path"), true), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "未注册路径的请求没有收到应答";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "未注册路径的请求没有收到应答";
 
         const std::map<std::uint32_t, std::string> statusByStream = collectResponseStatuses(frames);
         ASSERT_EQ(statusByStream.count(1U), 1U) << "响应头块解不开";
@@ -1441,17 +1354,18 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, ServesTwoConcurrentStreamsOverOneConnection)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
-        {
-            router.get("/world", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.setBody("served-world");
-                co_return;
-            });
-        }, HttpParserLimits{}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/world",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.setBody("served-world");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1461,24 +1375,19 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 两条并发请求一次写出：流 1 要 /hello，流 3 要 /world
         std::string requestBytes = makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true);
         requestBytes += makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/world"), true);
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
 
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U) && hasEndStream(receivedFrames, 3U);
-                                     },
-                                     kWaitTimeout)) << "两条并发流没有都在时限内收完";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U) && hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "两条并发流没有都在时限内收完";
 
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
@@ -1502,32 +1411,34 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, ServesWebSocketTunnelOverExtendedConnect)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
-        {
-            // 同一个处理器同时服务 h1 的 101 升级与 h2 的扩展 CONNECT：后者按 GET 参与路由（见 mapToHttpRequest）
-            router.get("/chat", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.upgradeToWebSocket([](WebSocketPeer &peer) -> Core::Task<>
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
                 {
-                    while (true)
-                    {
-                        const std::optional<WebSocketMessage> message = co_await peer.receive();
-                        if (!message.has_value())
-                        {
-                            co_return;
-                        }
-                        if (!co_await peer.sendText(message->payload))
-                        {
-                            co_return;
-                        }
-                    }
-                });
-                co_return;
-            });
-        }, HttpParserLimits{}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+                    // 同一个处理器同时服务 h1 的 101 升级与 h2 的扩展 CONNECT：后者按 GET 参与路由（见 mapToHttpRequest）
+                    router.get("/chat",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [](WebSocketPeer &peer) -> Core::Task<>
+                                           {
+                                               while (true)
+                                               {
+                                                   const std::optional<WebSocketMessage> message = co_await peer.receive();
+                                                   if (!message.has_value())
+                                                   {
+                                                       co_return;
+                                                   }
+                                                   if (!co_await peer.sendText(message->payload))
+                                                   {
+                                                       co_return;
+                                                   }
+                                               }
+                                           });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1537,28 +1448,28 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 扩展 CONNECT：伪头齐全（:protocol=websocket），并要求本侧不要在 200 之后收尾
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "扩展 CONNECT 没有得到应答";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "扩展 CONNECT 没有得到应答";
         for (const Http2Frame &frame: frames)
         {
             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
@@ -1569,34 +1480,24 @@ namespace AsynGyanis::Net
 
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, "sec-websocket-accept"), kRfc6455SampleAccept)
-                << "accept 值必须是 RFC 6455 §1.3 的规范黄金值";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, "sec-websocket-accept"), kRfc6455SampleAccept) << "accept 值必须是 RFC 6455 §1.3 的规范黄金值";
 
         // 隧道里的文本帧：客户端发带掩码的帧（装在 DATA 帧里），服务端回不带掩码的同内容帧
-        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x1U, "hi-tunnel")}, 1U),
-                                     kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !responseDataPayload(receivedFrames, 1U).empty();
-                                     },
-                                     kWaitTimeout)) << "隧道里没有回显";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x1U, "hi-tunnel")}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseDataPayload(receivedFrames, 1U).empty(); }, kWaitTimeout))
+                << "隧道里没有回显";
         const std::pair<int, std::string> echoedFrame = parseServerFrame(responseDataPayload(frames, 1U));
         EXPECT_EQ(echoedFrame.first, 1) << "回显的应当是文本帧";
         EXPECT_EQ(echoedFrame.second, "hi-tunnel");
 
         // 关闭握手：客户端发 Close，服务端回 Close 并把本侧方向以 END_STREAM 收尾
-        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x8U, "")}, 1U),
-                                     kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "Close 之后隧道没有收尾";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x8U, "")}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "Close 之后隧道没有收尾";
         const std::string tunnelPayload = responseDataPayload(frames, 1U);
-        EXPECT_NE(tunnelPayload.find(static_cast<char>(0x88U)), std::string::npos)
-                << "服务端应当回一条 Close 帧（FIN + 操作码 8）";
+        EXPECT_NE(tunnelPayload.find(static_cast<char>(0x88U)), std::string::npos) << "服务端应当回一条 Close 帧（FIN + 操作码 8）";
         for (const Http2Frame &frame: frames)
         {
             EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "隧道正常收尾不该把连接收掉";
@@ -1618,26 +1519,26 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, AwaitsBusinessHandlerWhenTunnelEndsAbruptly)
     {
-        std::atomic<bool> isHandlerResumed{false};
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {},
-                                         [&isHandlerResumed](Router &router, Core::EventLoop &)
-                                         {
-                                             router.get("/chat", [&isHandlerResumed](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                                             {
-                                                 response.upgradeToWebSocket([&isHandlerResumed](WebSocketPeer &peer) -> Core::Task<>
-                                                 {
-                                                     // 不等对端发帧：让隧道在业务正挂着的时候被拆掉
-                                                     static_cast<void>(co_await peer.receive());
-                                                     isHandlerResumed.store(true);
-                                                     co_return;
-                                                 });
-                                                 co_return;
-                                             });
-                                         },
-                                         HttpParserLimits{}, [](TestHttpServer &server)
-                                         {
-                                             server.setHttp2CleartextEnabled(true);
-                                         });
+        std::atomic<bool>        isHandlerResumed{false};
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [&isHandlerResumed](Router &router, Core::EventLoop &)
+                {
+                    router.get("/chat",
+                               [&isHandlerResumed](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [&isHandlerResumed](WebSocketPeer &peer) -> Core::Task<>
+                                           {
+                                               // 不等对端发帧：让隧道在业务正挂着的时候被拆掉
+                                               static_cast<void>(co_await peer.receive());
+                                               isHandlerResumed.store(true);
+                                               co_return;
+                                           });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1647,26 +1548,26 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "扩展 CONNECT 没有得到应答";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "扩展 CONNECT 没有得到应答";
 
         // 不发任何隧道帧、也不走关闭握手：直接收掉客户端连接，让隧道的读循环拿到「传输层已不可用」
         client.closeNow();
@@ -1680,21 +1581,19 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, Answers501ForUnsupportedConnectProtocol)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
-        {
-            router.get("/chat", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                // 故意注册一个会登记升级的处理器：:protocol 不是 websocket 时不该走到这里
-                response.upgradeToWebSocket([](WebSocketPeer &) -> Core::Task<>
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
                 {
-                    co_return;
-                });
-                co_return;
-            });
-        }, HttpParserLimits{}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+                    router.get("/chat",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   // 故意注册一个会登记升级的处理器：:protocol 不是 websocket 时不该走到这里
+                                   response.upgradeToWebSocket([](WebSocketPeer &) -> Core::Task<> { co_return; });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1704,12 +1603,10 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // :protocol=https：本端只实现 websocket，应按「协议未实现」回 501
         std::string headerBlock;
@@ -1719,24 +1616,18 @@ namespace AsynGyanis::Net
         headerBlock += hpackLiteralField(1, "localhost");
         headerBlock += hpackLiteralField(":protocol", "https");
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, headerBlock, false), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "未实现的 :protocol 没有得到应答";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "未实现的 :protocol 没有得到应答";
 
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "501");
 
         // 连接照旧可用：随后一条普通请求正常服务
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 3U);
-                                     },
-                                     kWaitTimeout)) << "未实现的 :protocol 之后连接不再可用";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "未实现的 :protocol 之后连接不再可用";
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200");
 
         client.closeNow();
@@ -1751,31 +1642,33 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, ServesConcurrentStreamsWhileTunnelIsOpen)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
-        {
-            router.get("/chat", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.upgradeToWebSocket([](WebSocketPeer &peer) -> Core::Task<>
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
                 {
-                    while (true)
-                    {
-                        const std::optional<WebSocketMessage> message = co_await peer.receive();
-                        if (!message.has_value())
-                        {
-                            co_return;
-                        }
-                        if (!co_await peer.sendText(message->payload))
-                        {
-                            co_return;
-                        }
-                    }
-                });
-                co_return;
-            });
-        }, HttpParserLimits{}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+                    router.get("/chat",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [](WebSocketPeer &peer) -> Core::Task<>
+                                           {
+                                               while (true)
+                                               {
+                                                   const std::optional<WebSocketMessage> message = co_await peer.receive();
+                                                   if (!message.has_value())
+                                                   {
+                                                       co_return;
+                                                   }
+                                                   if (!co_await peer.sendText(message->payload))
+                                                   {
+                                                       co_return;
+                                                   }
+                                               }
+                                           });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1785,61 +1678,49 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 先立起隧道（流 1），再用流 3 发一条普通请求
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "隧道没有建立";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "隧道没有建立";
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 3U);
-                                     },
-                                     kWaitTimeout)) << "隧道期间的另一条流没有得到应答";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "隧道期间的另一条流没有得到应答";
 
         HpackDecoder responseDecoder;
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200")
-                << "隧道期间其它流应当照常服务，而不是被拒绝";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200") << "隧道期间其它流应当照常服务，而不是被拒绝";
         EXPECT_EQ(responseDataPayload(frames, 3U), "served-hello") << "其它流的正文串了";
 
         // 隧道本身不受影响：仍能收发帧，并在 Close 之后正常收尾
-        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x1U, "still-alive")}, 1U),
-                                     kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !responseDataPayload(receivedFrames, 1U).empty();
-                                     },
-                                     kWaitTimeout)) << "隧道在服务其它流之后失效了";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x1U, "still-alive")}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseDataPayload(receivedFrames, 1U).empty(); }, kWaitTimeout))
+                << "隧道在服务其它流之后失效了";
         const std::pair<int, std::string> echoedFrame = parseServerFrame(responseDataPayload(frames, 1U));
         EXPECT_EQ(echoedFrame.second, "still-alive");
 
-        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x8U, "")}, 1U),
-                                     kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "隧道没有按 Close 收尾";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x8U, "")}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "隧道没有按 Close 收尾";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
@@ -1855,31 +1736,33 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, CreditsReceiveWindowWhileTunnelIsOpen)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
-        {
-            router.get("/chat", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.upgradeToWebSocket([](WebSocketPeer &peer) -> Core::Task<>
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
                 {
-                    while (true)
-                    {
-                        const std::optional<WebSocketMessage> message = co_await peer.receive();
-                        if (!message.has_value())
-                        {
-                            co_return;
-                        }
-                        if (!co_await peer.sendText(message->payload))
-                        {
-                            co_return;
-                        }
-                    }
-                });
-                co_return;
-            });
-        }, HttpParserLimits{}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+                    router.get("/chat",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [](WebSocketPeer &peer) -> Core::Task<>
+                                           {
+                                               while (true)
+                                               {
+                                                   const std::optional<WebSocketMessage> message = co_await peer.receive();
+                                                   if (!message.has_value())
+                                                   {
+                                                       co_return;
+                                                   }
+                                                   if (!co_await peer.sendText(message->payload))
+                                                   {
+                                                       co_return;
+                                                   }
+                                               }
+                                           });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1889,63 +1772,56 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "隧道没有建立";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "隧道没有建立";
 
         // 每片 16000 字节（一条 DATA 帧装一条完整的文本帧），共 80000 字节：明显超过初始窗口 65535。
         // 逐片等回显再发下一片，客户端因此始终按本端通告的窗口行事
         constexpr std::size_t kChunkPayloadByteCount = 16000;
-        constexpr std::size_t kChunkCount = 5;
+        constexpr std::size_t kChunkCount            = 5;
         for (std::size_t chunkIndex = 0; chunkIndex < kChunkCount; ++chunkIndex)
         {
             const std::string payload(kChunkPayloadByteCount, static_cast<char>('a' + static_cast<int>(chunkIndex)));
-            ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false,
-                                                                              .data = makeExtendedMaskedClientFrame(0x1U, payload)},
-                                                             1U),
-                                         kWaitTimeout));
+            ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeExtendedMaskedClientFrame(0x1U, payload)}, 1U), kWaitTimeout));
             // 回显帧不带掩码、负载超过 125 字节时用 16 位扩展长度：帧头 4 字节 + 负载
-            constexpr std::size_t kEchoFrameByteCount = kChunkPayloadByteCount + 4U;
-            const std::size_t expectedEchoByteCount = (chunkIndex + 1U) * kEchoFrameByteCount;
-            ASSERT_TRUE(client.pumpUntil(frames,
-                                         [expectedEchoByteCount](const std::vector<Http2Frame> &receivedFrames)
-                                         {
-                                             return responseDataPayload(receivedFrames, 1U).size() >= expectedEchoByteCount;
-                                         },
-                                         kWaitTimeout))
+            constexpr std::size_t kEchoFrameByteCount   = kChunkPayloadByteCount + 4U;
+            const std::size_t     expectedEchoByteCount = (chunkIndex + 1U) * kEchoFrameByteCount;
+            ASSERT_TRUE(client.pumpUntil(
+                    frames, [expectedEchoByteCount](const std::vector<Http2Frame> &receivedFrames)
+                    { return responseDataPayload(receivedFrames, 1U).size() >= expectedEchoByteCount; }, kWaitTimeout))
                     << "第 " << chunkIndex + 1U << " 片没有被回显（累计应收 " << expectedEchoByteCount << " 字节）：隧道多半已被流控收口";
 
             // 客户端也得按收下的字节回窗口：回显占的是服务端的发送窗口（连接级与流级初值都是 65535），
             // 不回的话第 5 片回显根本发不出来，失败原因就与本用例要考的「服务端收」那一侧无关了
-            const std::string windowUpdates =
-                    encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = static_cast<std::uint32_t>(kEchoFrameByteCount)}, 0U) +
-                    encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = static_cast<std::uint32_t>(kEchoFrameByteCount)}, 1U);
+            const std::string windowUpdates = encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = static_cast<std::uint32_t>(kEchoFrameByteCount)}, 0U) +
+                                              encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = static_cast<std::uint32_t>(kEchoFrameByteCount)}, 1U);
             ASSERT_TRUE(client.sendBytes(windowUpdates, kWaitTimeout));
         }
 
-        bool hasGoAway = false;
+        bool hasGoAway       = false;
         bool hasWindowUpdate = false;
         for (const Http2Frame &frame: frames)
         {
-            hasGoAway = hasGoAway || frame.header.type == Http2FrameType::GoAway;
+            hasGoAway       = hasGoAway || frame.header.type == Http2FrameType::GoAway;
             hasWindowUpdate = hasWindowUpdate || frame.header.type == Http2FrameType::WindowUpdate;
         }
         EXPECT_FALSE(hasGoAway) << "按窗口规矩发送的对端不该被收口";
@@ -1963,17 +1839,18 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, AnswersContinueBeforeTheBodyArrives)
     {
-        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, [](Router &router, Core::EventLoop &)
-        {
-            router.post("/upload", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                response.setBody("received-" + std::to_string(request.body().size()));
-                co_return;
-            });
-        }, HttpParserLimits{}, [](TestHttpServer &server)
-        {
-            server.setHttp2CleartextEnabled(true);
-        });
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.post("/upload",
+                                [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                {
+                                    response.setBody("received-" + std::to_string(request.body().size()));
+                                    co_return;
+                                });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -1983,35 +1860,34 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 请求头带 expect，正文（DATA）留到看到 100 之后再发
         std::string headerBlock = makePostRequestHeaderBlock("/upload");
         headerBlock += hpackLiteralField("content-length", "5");
         headerBlock += hpackLiteralField("expect", "100-continue");
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, headerBlock, false), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到 100（响应头）";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "没有在时限内收到 100（响应头）";
 
         HpackDecoder responseDecoder;
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status", 0), "100")
-                << "先到的应当是 100，而不是最终状态码";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status", 0), "100") << "先到的应当是 100，而不是最终状态码";
         for (const Http2Frame &frame: frames)
         {
             if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
@@ -2023,12 +1899,9 @@ namespace AsynGyanis::Net
 
         // 补上正文：本端照常路由并以 200 + 回显正文收尾
         ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = "12345"}, 1U), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "补正文之后没有拿到最终响应";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "补正文之后没有拿到最终响应";
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status", 1), "200");
         EXPECT_EQ(responseDataPayload(frames, 1U), "received-5");
 
@@ -2054,40 +1927,37 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [&hasObservedFirstBatch, &firstBatchLength, &batchCount](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/stream", [&hasObservedFirstBatch, &firstBatchLength, &batchCount](
-                                                        HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
+            router.postStreaming("/stream",
+                                 [&hasObservedFirstBatch, &firstBatchLength, &batchCount](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("no-stream");
+                                         co_return;
+                                     }
 
-                std::size_t totalBytes = 0;
-                int         batches    = 0;
-                while (co_await stream->readNext())
-                {
-                    if (batches == 0)
-                    {
-                        // 首段到达即置位：客户端据此确认「正文没发完，处理器已经跑起来了」
-                        firstBatchLength.store(stream->chunk().size(), std::memory_order_release);
-                        hasObservedFirstBatch.store(true, std::memory_order_release);
-                    }
-                    totalBytes += stream->chunk().size();
-                    ++batches;
-                }
-                batchCount.store(batches, std::memory_order_release);
-                response.setBody("bytes=" + std::to_string(totalBytes));
-                co_return;
-            });
+                                     std::size_t totalBytes = 0;
+                                     int         batches    = 0;
+                                     while (co_await stream->readNext())
+                                     {
+                                         if (batches == 0)
+                                         {
+                                             // 首段到达即置位：客户端据此确认「正文没发完，处理器已经跑起来了」
+                                             firstBatchLength.store(stream->chunk().size(), std::memory_order_release);
+                                             hasObservedFirstBatch.store(true, std::memory_order_release);
+                                         }
+                                         totalBytes += stream->chunk().size();
+                                         ++batches;
+                                     }
+                                     batchCount.store(batches, std::memory_order_release);
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, HttpParserLimits{},
-                                        [](TestHttpServer &server)
-                                        {
-                                            server.setHttp2CleartextEnabled(true);
-                                        });
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -2097,32 +1967,24 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 请求头 + 第一段正文，两帧都不收尾
         std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream"), false);
         requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kFirstPortion)}, 1U);
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
 
-        EXPECT_TRUE(waitForFlag(hasObservedFirstBatch, kWaitTimeout))
-                << "正文未收完时处理器没有拿到首段：h2 上的流式派发没有发生";
-        EXPECT_LE(firstBatchLength.load(std::memory_order_acquire), kFirstPortion.size())
-                << "首段里出现了客户端尚未发送的字节";
+        EXPECT_TRUE(waitForFlag(hasObservedFirstBatch, kWaitTimeout)) << "正文未收完时处理器没有拿到首段：h2 上的流式派发没有发生";
+        EXPECT_LE(firstBatchLength.load(std::memory_order_acquire), kFirstPortion.size()) << "首段里出现了客户端尚未发送的字节";
 
         // 补上第二段并收尾
-        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kSecondPortion)}, 1U),
-                                     kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "补正文之后没有拿到最终响应";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kSecondPortion)}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "补正文之后没有拿到最终响应";
 
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
@@ -2149,30 +2011,28 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [&observedTotalBytes](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/stream", [&observedTotalBytes](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
-                std::size_t totalBytes = 0;
-                while (co_await stream->readNext())
-                {
-                    totalBytes += stream->chunk().size();
-                }
-                observedTotalBytes.store(totalBytes, std::memory_order_release);
-                response.setBody("bytes=" + std::to_string(totalBytes));
-                co_return;
-            });
+            router.postStreaming("/stream",
+                                 [&observedTotalBytes](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("no-stream");
+                                         co_return;
+                                     }
+                                     std::size_t totalBytes = 0;
+                                     while (co_await stream->readNext())
+                                     {
+                                         totalBytes += stream->chunk().size();
+                                     }
+                                     observedTotalBytes.store(totalBytes, std::memory_order_release);
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, HttpParserLimits{},
-                                        [](TestHttpServer &server)
-                                        {
-                                            server.setHttp2CleartextEnabled(true);
-                                        });
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -2182,28 +2042,22 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 三段 DATA 拼成一份 48 KiB 的正文（每段都是合法帧长），末段收尾
         std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream"), false);
         for (std::size_t frameIndex = 0; frameIndex < kFrameCount; ++frameIndex)
         {
             const bool isLastFrame = frameIndex + 1 == kFrameCount;
-            requestBytes += encodeHttp2DataFrame(
-                    Http2DataPayload{.endStream = isLastFrame, .data = std::string(kFramePayloadBytes, static_cast<char>('a' + frameIndex))}, 1U);
+            requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = isLastFrame, .data = std::string(kFramePayloadBytes, static_cast<char>('a' + frameIndex))}, 1U);
         }
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "多帧正文没有被服务完";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "多帧正文没有被服务完";
 
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
@@ -2214,12 +2068,9 @@ namespace AsynGyanis::Net
         std::string secondRequestBytes = makeRequestHeadersFrame(3U, makePostRequestHeaderBlock("/stream"), false);
         secondRequestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kTailBytes, 'z')}, 3U);
         ASSERT_TRUE(client.sendBytes(secondRequestBytes, kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 3U);
-                                     },
-                                     kWaitTimeout)) << "流式收尾之后同一条连接不再服务后续请求";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "流式收尾之后同一条连接不再服务后续请求";
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200");
         EXPECT_EQ(responseDataPayload(frames, 3U), "bytes=" + std::to_string(kTailBytes));
         for (const Http2Frame &frame: frames)
@@ -2249,28 +2100,26 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [&hasHandledRequest](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/stream", [&hasHandledRequest](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                hasHandledRequest.store(true, std::memory_order_release);
-                HttpRequestBody *stream = request.bodyStream();
-                std::size_t      totalBytes = 0;
-                if (stream != nullptr)
-                {
-                    while (co_await stream->readNext())
-                    {
-                        totalBytes += stream->chunk().size();
-                    }
-                }
-                response.setBody("bytes=" + std::to_string(totalBytes));
-                co_return;
-            });
+            router.postStreaming("/stream",
+                                 [&hasHandledRequest](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     hasHandledRequest.store(true, std::memory_order_release);
+                                     HttpRequestBody *stream     = request.bodyStream();
+                                     std::size_t      totalBytes = 0;
+                                     if (stream != nullptr)
+                                     {
+                                         while (co_await stream->readNext())
+                                         {
+                                             totalBytes += stream->chunk().size();
+                                         }
+                                     }
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, parserLimits,
-                                        [](TestHttpServer &server)
-                                        {
-                                            server.setHttp2CleartextEnabled(true);
-                                        });
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -2280,29 +2129,22 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream"), false);
         requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kPayloadBytes, 'x')}, 1U);
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "正文越界后没有拿到响应";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "正文越界后没有拿到响应";
 
         HpackDecoder responseDecoder;
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "413")
-                << "正文越过上限时应当回 413，而不是把业务写出的 200 发出去";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "413") << "正文越过上限时应当回 413，而不是把业务写出的 200 发出去";
         EXPECT_EQ(responseDataPayload(frames, 1U), "Payload Too Large");
-        EXPECT_TRUE(hasHandledRequest.load(std::memory_order_acquire))
-                << "越界也应当先按流式派发把请求交给路由（头部收齐即派发），而不是绕过路由直接回 413";
+        EXPECT_TRUE(hasHandledRequest.load(std::memory_order_acquire)) << "越界也应当先按流式派发把请求交给路由（头部收齐即派发），而不是绕过路由直接回 413";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
@@ -2321,10 +2163,10 @@ namespace AsynGyanis::Net
     TEST(Http2CleartextSession, CreditsReceiveWindowOnlyAfterTheHandlerConsumes)
     {
         // 正文总量取「一个初始窗口 + 一段」：超出的那一段只有在服务端归还窗口之后才发得出去
-        constexpr std::size_t kWindowBytes      = kHttp2InitialWindowSizeByteCount;
-        constexpr std::size_t kWireFrameBytes   = 16383;
-        constexpr std::size_t kWireFrameCount   = kWindowBytes / kWireFrameBytes;
-        constexpr std::size_t kBeyondWindowBytes = 4096;
+        constexpr std::size_t kWindowBytes        = kHttp2InitialWindowSizeByteCount;
+        constexpr std::size_t kWireFrameBytes     = 16383;
+        constexpr std::size_t kWireFrameCount     = kWindowBytes / kWireFrameBytes;
+        constexpr std::size_t kBeyondWindowBytes  = 4096;
         constexpr auto        kAbsenceCheckWindow = std::chrono::milliseconds{300};
 
         std::atomic<bool>        hasHeldFirstBatch{false};
@@ -2333,44 +2175,41 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [&hasHeldFirstBatch, &isHandlerReleased, &observedTotalBytes](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/stream", [&hasHeldFirstBatch, &isHandlerReleased, &observedTotalBytes](
-                                                        HttpRequest &request, HttpResponse &response) -> Core::Task<>
-            {
-                HttpRequestBody *stream = request.bodyStream();
-                if (stream == nullptr)
-                {
-                    response.setBody("no-stream");
-                    co_return;
-                }
+            router.postStreaming("/stream",
+                                 [&hasHeldFirstBatch, &isHandlerReleased, &observedTotalBytes](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream == nullptr)
+                                     {
+                                         response.setBody("no-stream");
+                                         co_return;
+                                     }
 
-                std::size_t totalBytes = 0;
-                bool        isFirst    = true;
-                while (co_await stream->readNext())
-                {
-                    if (isFirst)
-                    {
-                        // 慢消费者：上一段还没被消费（读取器要到下一次 readNext 才丢弃它并归还窗口），
-                        // 处理器就在这里停住——服务端此刻不该归还任何接收窗口
-                        hasHeldFirstBatch.store(true, std::memory_order_release);
-                        isFirst = false;
-                        while (!isHandlerReleased.load(std::memory_order_acquire))
-                        {
-                            std::this_thread::sleep_for(std::chrono::milliseconds{1});
-                        }
-                    }
-                    totalBytes += stream->chunk().size();
-                }
-                observedTotalBytes.store(totalBytes, std::memory_order_release);
-                response.setBody("bytes=" + std::to_string(totalBytes));
-                co_return;
-            });
+                                     std::size_t totalBytes = 0;
+                                     bool        isFirst    = true;
+                                     while (co_await stream->readNext())
+                                     {
+                                         if (isFirst)
+                                         {
+                                             // 慢消费者：上一段还没被消费（读取器要到下一次 readNext 才丢弃它并归还窗口），
+                                             // 处理器就在这里停住——服务端此刻不该归还任何接收窗口
+                                             hasHeldFirstBatch.store(true, std::memory_order_release);
+                                             isFirst = false;
+                                             while (!isHandlerReleased.load(std::memory_order_acquire))
+                                             {
+                                                 std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                             }
+                                         }
+                                         totalBytes += stream->chunk().size();
+                                     }
+                                     observedTotalBytes.store(totalBytes, std::memory_order_release);
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     co_return;
+                                 });
         };
 
         RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, HttpParserLimits{},
-                                        [](TestHttpServer &server)
-                                        {
-                                            server.setHttp2CleartextEnabled(true);
-                                        });
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -2380,19 +2219,16 @@ namespace AsynGyanis::Net
 
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 先发满初始窗口（连接级与流级初值都是 65535，因此这些字节一个都不越界），超出窗口的那段留到放行之后
         std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream"), false);
         for (std::size_t frameIndex = 0; frameIndex < kWireFrameCount; ++frameIndex)
         {
-            requestBytes += encodeHttp2DataFrame(
-                    Http2DataPayload{.endStream = false, .data = std::string(kWireFrameBytes, static_cast<char>('a' + frameIndex))}, 1U);
+            requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kWireFrameBytes, static_cast<char>('a' + frameIndex))}, 1U);
         }
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
 
@@ -2402,45 +2238,35 @@ namespace AsynGyanis::Net
         const auto absenceDeadline = std::chrono::steady_clock::now() + kAbsenceCheckWindow;
         while (std::chrono::steady_clock::now() < absenceDeadline)
         {
-            static_cast<void>(client.pumpUntil(frames,
-                                               [](const std::vector<Http2Frame> &)
-                                               {
-                                                   return false;
-                                               },
-                                               std::chrono::milliseconds{50}));
+            static_cast<void>(client.pumpUntil(frames, [](const std::vector<Http2Frame> &) { return false; }, std::chrono::milliseconds{50}));
         }
         for (const Http2Frame &frame: frames)
         {
-            EXPECT_NE(frame.header.type, Http2FrameType::WindowUpdate)
-                    << "业务还没消费，服务端就归还了接收窗口：背压没有落在消费上";
+            EXPECT_NE(frame.header.type, Http2FrameType::WindowUpdate) << "业务还没消费，服务端就归还了接收窗口：背压没有落在消费上";
         }
 
         // 正面：放行后随消费归还窗口；客户端等到归还才发超出窗口的那一段
         isHandlerReleased.store(true, std::memory_order_release);
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         for (const Http2Frame &frame: receivedFrames)
-                                         {
-                                             if (frame.header.type == Http2FrameType::WindowUpdate)
-                                             {
-                                                 return true;
-                                             }
-                                         }
-                                         return false;
-                                     },
-                                     kWaitTimeout)) << "消费之后也没有归还接收窗口：对端的窗口会被一路耗尽，超出窗口的正文永远发不出来";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.type == Http2FrameType::WindowUpdate)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "消费之后也没有归还接收窗口：对端的窗口会被一路耗尽，超出窗口的正文永远发不出来";
 
-        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true,
-                                                                          .data = std::string(kBeyondWindowBytes, 'z')},
-                                                         1U),
-                                     kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return hasEndStream(receivedFrames, 1U);
-                                     },
-                                     kWaitTimeout)) << "放行之后没有拿到最终响应";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kBeyondWindowBytes, 'z')}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "放行之后没有拿到最终响应";
 
         const std::size_t expectedBodyBytes = kWireFrameCount * kWireFrameBytes + kBeyondWindowBytes;
         HpackDecoder      responseDecoder;
@@ -2471,27 +2297,25 @@ namespace AsynGyanis::Net
     {
         const auto registerRoutes = [](Router &router, Core::EventLoop &)
         {
-            router.get("/abort-mid-body", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                // 一段段写到传输层拒绝为止：这样失败一定落在某次写出上，不依赖内核能缓冲多少字节
-                response.startChunkedResponse(200);
-                const std::string payload(64U * 1024U, 'x');
-                for (int round = 0; round < 64; ++round)
-                {
-                    if (!co_await response.writeChunk(payload))
-                    {
-                        co_return;
-                    }
-                }
-                co_return;
-            });
+            router.get("/abort-mid-body",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           // 一段段写到传输层拒绝为止：这样失败一定落在某次写出上，不依赖内核能缓冲多少字节
+                           response.startChunkedResponse(200);
+                           const std::string payload(64U * 1024U, 'x');
+                           for (int round = 0; round < 64; ++round)
+                           {
+                               if (!co_await response.writeChunk(payload))
+                               {
+                                   co_return;
+                               }
+                           }
+                           co_return;
+                       });
         };
 
         RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, {},
-                                         [](TestHttpServer &server)
-                                         {
-                                             server.setHttp2CleartextEnabled(true);
-                                         });
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -2500,12 +2324,10 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
         ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
 
         // 窗口先给足再发请求：不给窗口的话服务端会停在流控上，永远不碰套接字，
@@ -2518,23 +2340,20 @@ namespace AsynGyanis::Net
         requestWithCredits += encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 4U * 1024U * 1024U}, 1U);
         ASSERT_TRUE(client.sendBytes(requestWithCredits, kWaitTimeout)) << "额度与请求未能写入";
 
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return std::any_of(receivedFrames.begin(),
-                                                           receivedFrames.end(),
-                                                           [](const Http2Frame &frame)
-                                                           {
-                                                               return frame.header.type == Http2FrameType::Data && frame.header.streamId == 1U;
-                                                           });
-                                     },
-                                     kWaitTimeout)) << "一段正文都没拿到：服务端可能压根没开始写";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    return std::any_of(receivedFrames.begin(), receivedFrames.end(),
+                                       [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::Data && frame.header.streamId == 1U; });
+                },
+                kWaitTimeout))
+                << "一段正文都没拿到：服务端可能压根没开始写";
 
         // 此刻内核里还压着大量未读字节，直接关闭回的是 RST 而不是优雅 EOF
         client.closeNow();
         ASSERT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在对端断开后没有收口";
-        EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u)
-                << "写出被中途抽走的连接没有记上（或记了多次）：这条连接只该有一份「未发完」的记录";
+        EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u) << "写出被中途抽走的连接没有记上（或记了多次）：这条连接只该有一份「未发完」的记录";
 
         // 反向下界：一条完整送到的连接不得被算成「写出被抽走」。同一条用例里读同一个计数，
         // 因此它钉的是「不误计」，而不是另一个装配下的另一份读数
@@ -2544,12 +2363,9 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(healthyClient.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
         ASSERT_TRUE(healthyClient.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
         ASSERT_TRUE(healthyClient.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
-        ASSERT_TRUE(healthyClient.pumpUntil(healthyFrames,
-                                            [](const std::vector<Http2Frame> &receivedFrames)
-                                            {
-                                                return hasEndStream(receivedFrames, 1U);
-                                            },
-                                            kWaitTimeout)) << "对照请求没有拿到完整响应";
+        ASSERT_TRUE(healthyClient.pumpUntil(
+                healthyFrames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "对照请求没有拿到完整响应";
         EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u) << "正常写满收口的连接被误计成写出失败";
 
         healthyClient.closeNow();
@@ -2568,18 +2384,16 @@ namespace AsynGyanis::Net
     {
         const auto registerRoutes = [](Router &router, Core::EventLoop &)
         {
-            router.get("/huge", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.setBody(std::string(4U * 1024U * 1024U, 'x'));
-                co_return;
-            });
+            router.get("/huge",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setBody(std::string(4U * 1024U * 1024U, 'x'));
+                           co_return;
+                       });
         };
 
         RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, {},
-                                         [](TestHttpServer &server)
-                                         {
-                                             server.setHttp2CleartextEnabled(true);
-                                         });
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
         const std::uint16_t listeningPort = fixture.listeningPort();
         ASSERT_NE(listeningPort, 0);
@@ -2588,33 +2402,28 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings;
-                                     },
-                                     kWaitTimeout)) << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
         ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
 
         // 刻意只给连接级窗口、不给流级窗口，也不补 WINDOW_UPDATE：服务端送完初始窗口的量之后
         // 就把剩下的正文留在流的队列里，写侧一次都不失败
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/huge"), true), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames,
-                                     [](const std::vector<Http2Frame> &receivedFrames)
-                                     {
-                                         return std::any_of(receivedFrames.begin(),
-                                                           receivedFrames.end(),
-                                                           [](const Http2Frame &frame)
-                                                           {
-                                                               return frame.header.type == Http2FrameType::Data && frame.header.streamId == 1U;
-                                                           });
-                                     },
-                                     kWaitTimeout)) << "初始窗口内的正文都没送到：这条用例没测到流控停住的那条路";
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    return std::any_of(receivedFrames.begin(), receivedFrames.end(),
+                                       [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::Data && frame.header.streamId == 1U; });
+                },
+                kWaitTimeout))
+                << "初始窗口内的正文都没送到：这条用例没测到流控停住的那条路";
 
         client.closeNow();
         ASSERT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在对端断开后没有收口";
-        EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u)
-                << "响应停在流控队列里就被抽走的连接没记上：这类连接写侧不报错，只有收口时看得见";
+        EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u) << "响应停在流控队列里就被抽走的连接没记上：这类连接写侧不报错，只有收口时看得见";
 
         EXPECT_FALSE(fixture.startThrew());
     }

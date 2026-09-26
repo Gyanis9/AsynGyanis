@@ -39,10 +39,10 @@ namespace AsynGyanis::Net
      */
     enum class QuicEncryptionLevel
     {
-        Initial,      ///< 首批握手字节
-        ZeroRtt,      ///< 早数据（本实现不支持，只作为级别取值占位）
-        Handshake,    ///< 握手后续字节
-        Application,  ///< 1-RTT 字节，含握手完成后的票据
+        Initial,     ///< 首批握手字节
+        ZeroRtt,     ///< 早数据（本实现不支持，只作为级别取值占位）
+        Handshake,   ///< 握手后续字节
+        Application, ///< 1-RTT 字节，含握手完成后的票据
     };
 
     /// 密钥的方向，按「谁发出」命名，与 `QuicPacketDirection` 同一套判据
@@ -65,8 +65,8 @@ namespace AsynGyanis::Net
      */
     struct QuicTlsRecord
     {
-        QuicEncryptionLevel level{QuicEncryptionLevel::Initial}; ///< 该用哪个级别的密钥保护
-        std::vector<std::uint8_t> data{};                        ///< 握手字节，交给 CRYPTO 帧
+        QuicEncryptionLevel       level{QuicEncryptionLevel::Initial}; ///< 该用哪个级别的密钥保护
+        std::vector<std::uint8_t> data{};                              ///< 握手字节，交给 CRYPTO 帧
     };
 
     /**
@@ -77,7 +77,7 @@ namespace AsynGyanis::Net
      */
     struct QuicClientTlsSettings
     {
-        std::string hostName{};                            ///< 服务端的规范主机名：同时用作 SNI 与证书里的校验目标
+        std::string              hostName{};                       ///< 服务端的规范主机名：同时用作 SNI 与证书里的校验目标
         std::vector<std::string> applicationProtocolIdentifiers{}; ///< 本端能说的应用层协议，按优先级排列（如 {"h3"}）
     };
 
@@ -107,8 +107,7 @@ namespace AsynGyanis::Net
          * @throws Base::Exception 运行期故障：建会话失败、挂回调失败、OpenSSL 拒绝了参数，
          *         或客户端身份设置落不上去（SNI/校验名/ALPN 三项都是硬要求，缺一项握手就该失败而不是静默降级）
          */
-        QuicTlsContext(SSL_CTX &tlsContext, bool isServerSide, std::span<const std::uint8_t> localTransportParameters,
-                       const QuicClientTlsSettings *clientSettings = nullptr);
+        QuicTlsContext(SSL_CTX &tlsContext, bool isServerSide, std::span<const std::uint8_t> localTransportParameters, const QuicClientTlsSettings *clientSettings = nullptr);
 
         /**
          * @brief 释放 TLS 会话
@@ -116,7 +115,7 @@ namespace AsynGyanis::Net
          */
         ~QuicTlsContext();
 
-        QuicTlsContext(const QuicTlsContext &) = delete;
+        QuicTlsContext(const QuicTlsContext &)            = delete;
         QuicTlsContext &operator=(const QuicTlsContext &) = delete;
 
         /**
@@ -203,8 +202,7 @@ namespace AsynGyanis::Net
         static int onSendCryptoData(SSL *session, const unsigned char *data, std::size_t length, std::size_t *consumed, void *argument);
         static int onReadCryptoData(SSL *session, const unsigned char **data, std::size_t *length, void *argument);
         static int onReleaseCryptoData(SSL *session, std::size_t length, void *argument);
-        static int onYieldSecret(SSL *session, std::uint32_t protectionLevel, int direction, const unsigned char *secret,
-                                 std::size_t length, void *argument);
+        static int onYieldSecret(SSL *session, std::uint32_t protectionLevel, int direction, const unsigned char *secret, std::size_t length, void *argument);
         static int onGotTransportParameters(SSL *session, const unsigned char *params, std::size_t length, void *argument);
         static int onAlert(SSL *session, unsigned char alertCode, void *argument);
 
@@ -221,18 +219,18 @@ namespace AsynGyanis::Net
         /// 把一段产出接进待发队列：同级且正好接在尾条之后的合成一条
         void appendOutbound(QuicEncryptionLevel level, std::span<const std::uint8_t> data);
 
-        SSL            *m_session{nullptr}; ///< 每连接的 TLS 会话；构造成功交回对象时恒非空
+        SSL *m_session{nullptr}; ///< 每连接的 TLS 会话；构造成功交回对象时恒非空
         /// 本端参数的副本：OpenSSL 只记指针不拷内容，所以这段字节必须活到 `SSL_free` 之后。
         /// 成员要等析构函数体（里面做 `SSL_free`）跑完才销毁，顺序天然满足
-        std::vector<std::uint8_t> m_localTransportParameters{};
-        std::array<std::vector<std::uint8_t>, kLevelCount> m_inboundData{}; ///< 各级别对端交来、尚未被 TLS 消耗完的握手字节
-        QuicEncryptionLevel m_inboundLevel{QuicEncryptionLevel::Initial};    ///< TLS 当前该从哪个级别取字节
-        std::deque<QuicTlsRecord> m_outboundRecords{};  ///< 待交出的 TLS 记录，按产出顺序
-        std::array<std::optional<QuicPacketKeys>, kKeySlotCount> m_keys{}; ///< 各级别各方向的密钥槽
-        std::vector<std::uint8_t> m_peerTransportParameters{}; ///< 对端参数原文
-        std::optional<std::uint8_t> m_alert{};            ///< 最近一次告警码
-        std::optional<QuicCipherSuite> m_cipherSuite{};   ///< 已协商出的套件
-        QuicEncryptionLevel m_transmissionLevel{QuicEncryptionLevel::Initial}; ///< 下一条产出记录属于哪个级别
-        bool m_handshakeCompleted{false}; ///< 握手完成标记，最后发布
+        std::vector<std::uint8_t>                                m_localTransportParameters{};
+        std::array<std::vector<std::uint8_t>, kLevelCount>       m_inboundData{};                                   ///< 各级别对端交来、尚未被 TLS 消耗完的握手字节
+        QuicEncryptionLevel                                      m_inboundLevel{QuicEncryptionLevel::Initial};      ///< TLS 当前该从哪个级别取字节
+        std::deque<QuicTlsRecord>                                m_outboundRecords{};                               ///< 待交出的 TLS 记录，按产出顺序
+        std::array<std::optional<QuicPacketKeys>, kKeySlotCount> m_keys{};                                          ///< 各级别各方向的密钥槽
+        std::vector<std::uint8_t>                                m_peerTransportParameters{};                       ///< 对端参数原文
+        std::optional<std::uint8_t>                              m_alert{};                                         ///< 最近一次告警码
+        std::optional<QuicCipherSuite>                           m_cipherSuite{};                                   ///< 已协商出的套件
+        QuicEncryptionLevel                                      m_transmissionLevel{QuicEncryptionLevel::Initial}; ///< 下一条产出记录属于哪个级别
+        bool                                                     m_handshakeCompleted{false};                       ///< 握手完成标记，最后发布
     };
 } // namespace AsynGyanis::Net

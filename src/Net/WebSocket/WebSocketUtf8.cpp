@@ -56,7 +56,7 @@ namespace AsynGyanis::Net
         while (offset < text.size())
         {
             // char 的符号性随平台而异：先转成无符号字节再判形状，否则高位字节会变成负值
-            const auto leadingByte = static_cast<std::uint8_t>(text[offset]);
+            const auto        leadingByte    = static_cast<std::uint8_t>(text[offset]);
             const std::size_t sequenceLength = utf8SequenceLength(leadingByte);
 
             // 首字节形状非法、或剩余字节数不够这个序列的长度（截断）：违规点都算序列起点

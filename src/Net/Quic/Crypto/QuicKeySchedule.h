@@ -20,9 +20,8 @@
 namespace AsynGyanis::Net
 {
     /// v1 的 Initial 盐，逐字节取自 RFC 9001 §5.2 的 pseudocode（换版本必须换新盐，以防中间盒跨版本解密）
-    inline constexpr std::array<std::uint8_t, 20> kQuicInitialSalt{
-            0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,
-            0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a};
+    inline constexpr std::array<std::uint8_t, 20> kQuicInitialSalt{0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,
+                                                                   0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a};
 
     /// Initial 一律用 SHA-256 做 HKDF（RFC 9001 §5.2），与协商出的套件无关
     inline constexpr std::size_t kQuicInitialSecretByteLength = 32;
@@ -49,8 +48,7 @@ namespace AsynGyanis::Net
      * @return QuicPacketKeys Initial 的密钥、IV 与头部保护密钥
      * @throws Base::Exception 运行期故障：OpenSSL 取不到 HKDF 实现或推导失败
      */
-    [[nodiscard]] QuicPacketKeys deriveQuicInitialPacketKeys(std::span<const std::uint8_t> destinationConnectionId,
-                                                             QuicPacketDirection direction);
+    [[nodiscard]] QuicPacketKeys deriveQuicInitialPacketKeys(std::span<const std::uint8_t> destinationConnectionId, QuicPacketDirection direction);
 
     /**
      * @brief 由 TLS 交出的流量秘密导出一组包保护密钥

@@ -9,8 +9,8 @@
 
 #pragma once
 
-#include "Base/Log/Sinks/LogSink.h"
 #include "Base/Log/LogEvent.h"
+#include "Base/Log/Sinks/LogSink.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -175,18 +175,18 @@ namespace AsynGyanis::Base
          */
         void settleAcceptedEvent();
 
-        std::unique_ptr<LogSink> m_wrappedSink;      ///< 被包装的下游 Sink
-        std::vector<LogEvent>    m_slots;            ///< 事件槽位数组；m_headIndex 之前的槽位已消费、待回收
-        std::size_t              m_headIndex = 0;    ///< 队首事件所在槽位下标
+        std::unique_ptr<LogSink> m_wrappedSink;   ///< 被包装的下游 Sink
+        std::vector<LogEvent>    m_slots;         ///< 事件槽位数组；m_headIndex 之前的槽位已消费、待回收
+        std::size_t              m_headIndex = 0; ///< 队首事件所在槽位下标
 
-        size_t                   m_maximumQueueSize; ///< 队列容量上限（已钳到 kMinimumQueueSize 以上）
-        OverflowPolicy           m_overflowPolicy;   ///< 溢出策略
+        size_t         m_maximumQueueSize; ///< 队列容量上限（已钳到 kMinimumQueueSize 以上）
+        OverflowPolicy m_overflowPolicy;   ///< 溢出策略
 
-        size_t m_acceptedCount = 0; ///< 已受理（进了队列）的事件累计数，flush() 据此定自己的等待水位
-        size_t m_settledCount  = 0; ///< 已了结的事件累计数：落地、被过滤丢弃、被淘汰都算，追平受理数即无在途
+        size_t m_acceptedCount    = 0; ///< 已受理（进了队列）的事件累计数，flush() 据此定自己的等待水位
+        size_t m_settledCount     = 0; ///< 已了结的事件累计数：落地、被过滤丢弃、被淘汰都算，追平受理数即无在途
         size_t m_flushWaiterCount = 0; ///< 正在等 flush 的线程数，为 0 时逐条核销不必碰条件变量
 
-        std::mutex              m_queueMutex;     ///< 保护 m_slots/m_headIndex 与受理/已结计数的互斥锁
+        std::mutex m_queueMutex; ///< 保护 m_slots/m_headIndex 与受理/已结计数的互斥锁
         /// 「队列非空」条件：只有 worker 在此等待，入队一侧 notify_one。与腾位条件分开是因为
         /// 一条条件变量上挂着两类谓词时，notify_one 可能叫到谓词不成立的那一类，唤醒被当场吞掉
         std::condition_variable m_workCondition;

@@ -30,7 +30,7 @@ namespace AsynGyanis::Net
         constexpr std::size_t kLargeFileBytes = 200 * 1024;
 
         /// 区间响应覆盖的区间：长度同样超过零拷贝阈值，用来覆盖「带偏移的零拷贝发送」
-        constexpr std::size_t kRangeStart = 1000;
+        constexpr std::size_t kRangeStart  = 1000;
         constexpr std::size_t kRangeLength = 120 * 1024;
 
         /// 小文件字节数：低于零拷贝阈值，Linux 上应回退到「聚合写 + 映射视图」
@@ -72,10 +72,9 @@ namespace AsynGyanis::Net
             {
                 static std::atomic<unsigned int> sequenceCounter{0};
 
-                const std::string salt = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
-                                         std::to_string(sequenceCounter.fetch_add(1)) + "_" +
+                const std::string salt = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" + std::to_string(sequenceCounter.fetch_add(1)) + "_" +
                                          std::to_string(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id())));
-                m_baseDirectory = std::filesystem::temp_directory_path() / ("AsynGyanis_Net_Transfer_" + salt);
+                m_baseDirectory        = std::filesystem::temp_directory_path() / ("AsynGyanis_Net_Transfer_" + salt);
 
                 std::error_code error;
                 std::filesystem::create_directories(m_baseDirectory, error);
@@ -146,14 +145,11 @@ namespace AsynGyanis::Net
          */
         std::unique_ptr<RunningHttpServerFixture> makeStaticFileFixture(const std::filesystem::path &directory)
         {
-            const std::string          directoryText = directory.string();
-            const ServerConfigurator   configureServer = [directoryText](TestHttpServer &server)
-            {
-                server.staticFileDir(directoryText);
-            };
+            const std::string        directoryText   = directory.string();
+            const ServerConfigurator configureServer = [directoryText](TestHttpServer &server) { server.staticFileDir(directoryText); };
 
-            auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                                                       RouteRegistrar{}, HttpParserLimits{}, configureServer);
+            auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, RouteRegistrar{}, HttpParserLimits{},
+                                                                      configureServer);
             EXPECT_TRUE(fixture->awaitRunning(kWaitTimeout));
             return fixture;
         }
@@ -173,9 +169,8 @@ namespace AsynGyanis::Net
             {
                 if (actual[index] != expected[index])
                 {
-                    FAIL() << context << "：正文在偏移 " << index << " 处开始不一致（实际 0x" << std::hex
-                           << static_cast<int>(static_cast<unsigned char>(actual[index])) << "，预期 0x"
-                           << static_cast<int>(static_cast<unsigned char>(expected[index])) << std::dec << "）";
+                    FAIL() << context << "：正文在偏移 " << index << " 处开始不一致（实际 0x" << std::hex << static_cast<int>(static_cast<unsigned char>(actual[index]))
+                           << "，预期 0x" << static_cast<int>(static_cast<unsigned char>(expected[index])) << std::dec << "）";
                 }
             }
         }
@@ -185,9 +180,9 @@ namespace AsynGyanis::Net
          */
         struct ResponseSlice
         {
-            std::string headers;              ///< 头部块（含状态行，不含结尾空行）
-            std::size_t bodyOffset{0};        ///< 正文在流中的起始偏移
-            std::size_t bodyLength{0};        ///< 正文字节数（取自 content-length）
+            std::string headers;       ///< 头部块（含状态行，不含结尾空行）
+            std::size_t bodyOffset{0}; ///< 正文在流中的起始偏移
+            std::size_t bodyLength{0}; ///< 正文字节数（取自 content-length）
         };
 
         /**
@@ -227,8 +222,7 @@ namespace AsynGyanis::Net
         const std::uint16_t                             port    = fixture->listeningPort();
         ASSERT_NE(port, 0U);
 
-        const std::optional<ParsedResponse> response =
-                sendAndReadResponse(port, makeRequestText("GET /large.bin HTTP/1.1"), kTransferTimeout);
+        const std::optional<ParsedResponse> response = sendAndReadResponse(port, makeRequestText("GET /large.bin HTTP/1.1"), kTransferTimeout);
         ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
 
         ASSERT_TRUE(response->headers.starts_with("HTTP/1.1 200")) << response->headers;
@@ -250,15 +244,13 @@ namespace AsynGyanis::Net
         const TemporaryTransferTree                     tree;
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeStaticFileFixture(tree.directory());
 
-        const std::string rangeLine = "range: bytes=" + std::to_string(kRangeStart) + "-" + std::to_string(kRangeStart + kRangeLength - 1);
-        const std::optional<ParsedResponse> response =
-                sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large.bin HTTP/1.1", {rangeLine}), kTransferTimeout);
+        const std::string                   rangeLine = "range: bytes=" + std::to_string(kRangeStart) + "-" + std::to_string(kRangeStart + kRangeLength - 1);
+        const std::optional<ParsedResponse> response  = sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large.bin HTTP/1.1", {rangeLine}), kTransferTimeout);
         ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
 
         ASSERT_TRUE(response->headers.starts_with("HTTP/1.1 206")) << response->headers;
         const std::string expectedContentRange =
-                "content-range: bytes " + std::to_string(kRangeStart) + "-" + std::to_string(kRangeStart + kRangeLength - 1) + "/" +
-                std::to_string(kLargeFileBytes);
+                "content-range: bytes " + std::to_string(kRangeStart) + "-" + std::to_string(kRangeStart + kRangeLength - 1) + "/" + std::to_string(kLargeFileBytes);
         EXPECT_TRUE(hasHeaderLine(response->headers, expectedContentRange)) << response->headers;
 
         expectBytesEqual(response->body, std::string_view(tree.largeContent()).substr(kRangeStart, kRangeLength), "大文件区间响应");
@@ -276,8 +268,7 @@ namespace AsynGyanis::Net
         const TemporaryTransferTree                     tree;
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeStaticFileFixture(tree.directory());
 
-        const std::optional<ParsedResponse> response =
-                sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /small.bin HTTP/1.1"), kTransferTimeout);
+        const std::optional<ParsedResponse> response = sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /small.bin HTTP/1.1"), kTransferTimeout);
         ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
 
         ASSERT_TRUE(response->headers.starts_with("HTTP/1.1 200")) << response->headers;
@@ -308,8 +299,8 @@ namespace AsynGyanis::Net
         const std::string headerBlock = accumulated.substr(0, headerEnd);
 
         ASSERT_TRUE(headerBlock.starts_with("HTTP/1.1 200")) << headerBlock;
-        EXPECT_TRUE(hasHeaderLine(headerBlock, "content-length: " + std::to_string(kLargeFileBytes)))
-                << "HEAD 的头部必须与同一路径 GET 逐字节一致（含 content-length）：\n" << headerBlock;
+        EXPECT_TRUE(hasHeaderLine(headerBlock, "content-length: " + std::to_string(kLargeFileBytes))) << "HEAD 的头部必须与同一路径 GET 逐字节一致（含 content-length）：\n"
+                                                                                                      << headerBlock;
 
         // 正文抑制：头部声明了 content-length 只是「GET 会给出多大」，HEAD 本身一个字节都不发。
         // 再读一小会儿确认对端没有把文件正文跟出来（读空即 Idle，keep-alive 下不会关闭）

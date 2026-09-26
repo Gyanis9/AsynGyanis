@@ -39,9 +39,8 @@ namespace
         std::error_code createError;
         std::filesystem::create_directories(evidenceDirectory, createError);
 
-        const std::filesystem::path evidenceFile =
-                std::filesystem::path(evidenceDirectory) / ("worker-" + std::to_string(Platform::ProcessInfo::currentProcessId()) + ".pid");
-        std::ofstream stream(evidenceFile);
+        const std::filesystem::path evidenceFile = std::filesystem::path(evidenceDirectory) / ("worker-" + std::to_string(Platform::ProcessInfo::currentProcessId()) + ".pid");
+        std::ofstream               stream(evidenceFile);
         stream << Platform::ProcessInfo::currentProcessId() << '\n';
         stream.close();
         if (!stream)
@@ -74,10 +73,10 @@ namespace
      */
     struct SupervisionOutcome
     {
-        std::chrono::milliseconds elapsed; ///< 从进入 run() 到它返回用了多久（挂死的段不会回到这里，由外层超时判负）
-        std::size_t              spawned;  ///< 证据目录里出现过的 worker 次数
-        std::size_t              runningAtExit; ///< run() 返回后编排视图里还在的 worker 数（此时循环已结束，读取无并发）
-        bool                     isPoolGivenUp{false}; ///< 这一段是不是以「整池都起来就崩」收场的
+        std::chrono::milliseconds elapsed;              ///< 从进入 run() 到它返回用了多久（挂死的段不会回到这里，由外层超时判负）
+        std::size_t               spawned;              ///< 证据目录里出现过的 worker 次数
+        std::size_t               runningAtExit;        ///< run() 返回后编排视图里还在的 worker 数（此时循环已结束，读取无并发）
+        bool                      isPoolGivenUp{false}; ///< 这一段是不是以「整池都起来就崩」收场的
     };
 
     /**
@@ -87,8 +86,7 @@ namespace
      * @param evidenceDirectory 证据目录，用于统计 worker 起过几次；空表示不统计
      * @return SupervisionOutcome 观测结果
      */
-    SupervisionOutcome superviseFor(Core::WorkerSupervisor::Configuration configuration, const std::chrono::milliseconds holdFor,
-                                     const std::string &evidenceDirectory)
+    SupervisionOutcome superviseFor(Core::WorkerSupervisor::Configuration configuration, const std::chrono::milliseconds holdFor, const std::string &evidenceDirectory)
     {
         Core::WorkerSupervisor supervisor(std::move(configuration));
 
@@ -100,8 +98,9 @@ namespace
 #else
         // 停止请求走信号：run() 要求进程此刻只有调用线程（fork 的固有限制），因此不能另起线程去轮询，
         // 只能把「过一会儿停下来」交给定时器信号——这也正是 master 收到 SIGTERM 时的同一条路径
-        g_supervisorToStop = &supervisor;
-        void (*previousHandler)(int) = std::signal(SIGALRM, [](int)
+        g_supervisorToStop           = &supervisor;
+        void (*previousHandler)(int) = std::signal(SIGALRM,
+                                                   [](int)
                                                    {
                                                        if (g_supervisorToStop != nullptr)
                                                        {
@@ -118,7 +117,7 @@ namespace
         // run() 报的是「这次是不是按请求收的口」，本结构记的是相反的那面（整池是否被放弃）：
         // 两段各自断言一种收场，取反要在这里做一次，别留给读者猜
         const bool isPoolGivenUp = !supervisor.run();
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+        const auto elapsed       = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
 
         const std::size_t spawnedWorkerCount = evidenceDirectory.empty() ? 0 : countSpawnedWorkers(evidenceDirectory);
         const std::size_t runningAtExit      = supervisor.runningWorkerCount();
@@ -137,8 +136,7 @@ namespace
      * @param expectedFragment 异常文本里应出现的关键片段
      * @return bool 抛出了且文本含关键片段
      */
-    bool constructionRejects(const std::string &label, const Core::WorkerSupervisor::Configuration &configuration,
-                             const std::string_view expectedFragment)
+    bool constructionRejects(const std::string &label, const Core::WorkerSupervisor::Configuration &configuration, const std::string_view expectedFragment)
     {
         try
         {
@@ -201,30 +199,29 @@ int main(const int argc, char **argv)
     const std::string executablePath = selfPath.string();
 
     // 配置校验在两个平台上都成立，先把它钉住：空路径、worker 数不足都该在构造期就说清
-    samples.check(constructionRejects("可执行文件路径为空", Core::WorkerSupervisor::Configuration{.executablePath = "", .workerCount = 2},
-                                      "可执行文件路径为空"),
+    samples.check(constructionRejects("可执行文件路径为空", Core::WorkerSupervisor::Configuration{.executablePath = "", .workerCount = 2}, "可执行文件路径为空"),
                   "路径为空在构造期就被拒，不留到运行期");
-    samples.check(constructionRejects("worker 数小于 2", Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 1},
-                                      "至少为 2"),
+    samples.check(constructionRejects("worker 数小于 2", Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 1}, "至少为 2"),
                   "worker 数小于 2 在构造期就被拒（单进程不需要编排器）");
     samples.check(constructionRejects("轮询间隔为 0",
                                       Core::WorkerSupervisor::Configuration{
-                                              .executablePath = executablePath, .workerCount = 2, .pollInterval = std::chrono::milliseconds{0},
+                                              .executablePath = executablePath,
+                                              .workerCount    = 2,
+                                              .pollInterval   = std::chrono::milliseconds{0},
                                       },
                                       "轮询间隔"),
                   "轮询间隔为 0 在构造期就被拒，否则循环会空转");
 
 #if ASYN_PLATFORM_WIN32
     // Windows 上没有 SO_REUSEPORT：多进程共享端口无从谈起，构造当场拒绝而不是留下「只有一个能绑上」的假成功
-    samples.check(constructionRejects("Windows 上的多进程编排",
-                                      Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 2},
+    samples.check(constructionRejects("Windows 上的多进程编排", Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 2},
                                       "Windows 不支持多进程 worker 模型"),
                   "Windows 构造多进程编排在当场被拒，改指 workers=1 或 Linux 部署");
     return Samples::finishSample("core_worker");
 #else
     // —— 以下只在 POSIX 上跑：worker 真的被起起来、真的被补位、真的按时刻表收手 ——
-    const std::string evidenceDirectory = (std::filesystem::temp_directory_path() /
-                                           ("asyn-sample-core_worker-" + std::to_string(Platform::ProcessInfo::currentProcessId()))).string();
+    const std::string evidenceDirectory =
+            (std::filesystem::temp_directory_path() / ("asyn-sample-core_worker-" + std::to_string(Platform::ProcessInfo::currentProcessId()))).string();
     std::error_code cleanError;
     std::filesystem::remove_all(evidenceDirectory, cleanError);
 

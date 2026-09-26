@@ -108,8 +108,7 @@ namespace AsynGyanis::Platform
             // 移动必须把源侧的描述符置回无效：本类在析构里关闭句柄，若照搬默认的逐成员移动，
             // 源对象析构时会把同一批描述符再关一遍（可能关掉期间被复用的新描述符）
             LoopbackPair(LoopbackPair &&other) noexcept :
-                server(std::exchange(other.server, FileDescriptor::kInvalid)),
-                client(std::exchange(other.client, FileDescriptor::kInvalid)),
+                server(std::exchange(other.server, FileDescriptor::kInvalid)), client(std::exchange(other.client, FileDescriptor::kInvalid)),
                 listener(std::exchange(other.listener, FileDescriptor::kInvalid))
             {
             }
@@ -292,8 +291,7 @@ namespace AsynGyanis::Platform
          * @param errorCode 输出参数：非可重试错误的错误码（未出错时为 0）
          * @return std::size_t 实际发出的字节数；返回 0 表示源侧已到文件末尾
          */
-        std::size_t sendWholeFile(const int socketDescriptor, const NativeFileHandle nativeHandle, const std::size_t totalByteCount,
-                                  int &errorCode)
+        std::size_t sendWholeFile(const int socketDescriptor, const NativeFileHandle nativeHandle, const std::size_t totalByteCount, int &errorCode)
         {
             std::size_t sentByteCount = 0;
             errorCode                 = 0;
@@ -341,10 +339,7 @@ namespace AsynGyanis::Platform
         // 收与发分在两个线程：发送方续发时可能在等对端腾出缓冲，同一线程里没法既发又收
         std::string receivedBytes;
         const int   clientDescriptor = pair.client;
-        std::thread receiver([clientDescriptor, &receivedBytes]
-        {
-            receiveExactly(clientDescriptor, receivedBytes, kTransferFileBytes, kWaitTimeoutMilliseconds);
-        });
+        std::thread receiver([clientDescriptor, &receivedBytes] { receiveExactly(clientDescriptor, receivedBytes, kTransferFileBytes, kWaitTimeoutMilliseconds); });
 
         int               sendErrorCode = 0;
         const std::size_t sentByteCount = sendWholeFile(pair.server, nativeHandleFor(mappedFile), kTransferFileBytes, sendErrorCode);
@@ -379,16 +374,13 @@ namespace AsynGyanis::Platform
         // 接收方持续排空，确保「发到末尾」不是因为发送缓冲区满
         std::string receivedBytes;
         const int   clientDescriptor = pair.client;
-        std::thread receiver([clientDescriptor, &receivedBytes]
-        {
-            receiveExactly(clientDescriptor, receivedBytes, kFileBytes, kWaitTimeoutMilliseconds);
-        });
+        std::thread receiver([clientDescriptor, &receivedBytes] { receiveExactly(clientDescriptor, receivedBytes, kFileBytes, kWaitTimeoutMilliseconds); });
 
         // 第一次发起就会发到文件末尾为止，之后再发起必然拿到 0
-        std::size_t sentByteCount = 0;
-        bool        hasReachedEnd = false;
-        const auto  deadline      = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitTimeoutMilliseconds);
-        const NativeFileHandle nativeHandle = nativeHandleFor(mappedFile);
+        std::size_t            sentByteCount = 0;
+        bool                   hasReachedEnd = false;
+        const auto             deadline      = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitTimeoutMilliseconds);
+        const NativeFileHandle nativeHandle  = nativeHandleFor(mappedFile);
         while (sentByteCount < kRequestedByteCount && std::chrono::steady_clock::now() < deadline)
         {
             const ssize_t chunk = Socket::sendFileChunk(pair.server, nativeHandle, sentByteCount, kRequestedByteCount - sentByteCount);
@@ -443,20 +435,21 @@ namespace AsynGyanis::Platform
         // 结果放进堆上的共享状态：真阻塞时线程会被 detach，栈上的量已经不存在了
         struct SendOutcome
         {
-            std::atomic<bool>    hasReturned{false};    ///< 调用是否已返回
-            std::atomic<ssize_t> byteCount{0};          ///< 返回值
-            std::atomic<int>     errorCode{0};          ///< 返回 ≤0 时的最近错误码
+            std::atomic<bool>    hasReturned{false}; ///< 调用是否已返回
+            std::atomic<ssize_t> byteCount{0};       ///< 返回值
+            std::atomic<int>     errorCode{0};       ///< 返回 ≤0 时的最近错误码
         };
 
-        const auto           outcome          = std::make_shared<SendOutcome>();
-        const int            serverDescriptor = pair.server;
-        const NativeFileHandle nativeHandle   = nativeHandleFor(mappedFile);
-        std::thread          sender([serverDescriptor, nativeHandle, outcome]
-        {
-            outcome->byteCount.store(Socket::sendFileChunk(serverDescriptor, nativeHandle, 0, kBigFileBytes));
-            outcome->errorCode.store(PlatformError::lastSocketErrorCode());
-            outcome->hasReturned.store(true);
-        });
+        const auto             outcome          = std::make_shared<SendOutcome>();
+        const int              serverDescriptor = pair.server;
+        const NativeFileHandle nativeHandle     = nativeHandleFor(mappedFile);
+        std::thread            sender(
+                [serverDescriptor, nativeHandle, outcome]
+                {
+                    outcome->byteCount.store(Socket::sendFileChunk(serverDescriptor, nativeHandle, 0, kBigFileBytes));
+                    outcome->errorCode.store(PlatformError::lastSocketErrorCode());
+                    outcome->hasReturned.store(true);
+                });
 
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitTimeoutMilliseconds);
         while (!outcome->hasReturned.load() && std::chrono::steady_clock::now() < deadline)
@@ -474,8 +467,7 @@ namespace AsynGyanis::Platform
 
         const ssize_t chunkResult = outcome->byteCount.load();
         const int     errorCode   = outcome->errorCode.load();
-        EXPECT_TRUE(chunkResult > 0 || errorCode == PlatformError::kWouldBlock)
-                << "返回形态既不是部分写也不是 kWouldBlock：" << PlatformError::message(errorCode);
+        EXPECT_TRUE(chunkResult > 0 || errorCode == PlatformError::kWouldBlock) << "返回形态既不是部分写也不是 kWouldBlock：" << PlatformError::message(errorCode);
         EXPECT_LT(chunkResult, static_cast<ssize_t>(kBigFileBytes)) << "缓冲区被压到 4 KiB 却报称整份发出，进度反推有误";
     }
 } // namespace AsynGyanis::Platform

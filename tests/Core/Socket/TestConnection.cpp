@@ -21,7 +21,7 @@ namespace AsynGyanis::Core
      */
     TEST(Connection, ConstructionKeepsSocketAndAliveFlag)
     {
-        EventLoop loop;
+        EventLoop  loop;
         Connection connection(AsyncSocket(loop, -1)); // 描述符 -1 的哑 socket，仅验证对象生命周期
 
         EXPECT_TRUE(connection.isAlive());
@@ -33,7 +33,7 @@ namespace AsynGyanis::Core
      */
     TEST(Connection, CloseMarksConnectionNotAlive)
     {
-        EventLoop loop;
+        EventLoop  loop;
         Connection connection(AsyncSocket(loop, -1));
 
         connection.close();
@@ -46,7 +46,7 @@ namespace AsynGyanis::Core
      */
     TEST(Connection, CloseRequestsStopOnCancelable)
     {
-        EventLoop loop;
+        EventLoop  loop;
         Connection connection(AsyncSocket(loop, -1));
 
         connection.close();
@@ -59,7 +59,7 @@ namespace AsynGyanis::Core
      */
     TEST(Connection, BaseStartCompletesImmediately)
     {
-        EventLoop loop;
+        EventLoop  loop;
         Connection connection(AsyncSocket(loop, -1));
 
         auto task = connection.start();
@@ -85,13 +85,11 @@ namespace AsynGyanis::Core
 
         Connection connection(std::move(socket));
 
-        EXPECT_EQ(connection.localAddress(), "127.0.0.1:" + std::to_string(boundPort))
-                << "本地地址文本与绑定值不一致：按端口归指标的日志会指着另一个监听器";
+        EXPECT_EQ(connection.localAddress(), "127.0.0.1:" + std::to_string(boundPort)) << "本地地址文本与绑定值不一致：按端口归指标的日志会指着另一个监听器";
         // 取对端的动作要包一层：EXPECT_THROW 会丢掉返回值，而本方法是 [[nodiscard]] 的
         // （MSVC 据此报 C4834 并因「告警即错误」直接拒绝构建，GCC 不报这一条）
         const auto readPeerAddress = [&connection]() { return connection.remoteAddress(); };
-        EXPECT_THROW(readPeerAddress(), Base::SystemException)
-                << "只绑定未连接的套接字问不出对端，必须报错而不是交出「0.0.0.0:0」这类假地址";
+        EXPECT_THROW(readPeerAddress(), Base::SystemException) << "只绑定未连接的套接字问不出对端，必须报错而不是交出「0.0.0.0:0」这类假地址";
     }
 
     /**
@@ -99,7 +97,7 @@ namespace AsynGyanis::Core
      */
     TEST(Connection, MoveConstructionPreservesAliveState)
     {
-        EventLoop loop;
+        EventLoop  loop;
         Connection connection1(AsyncSocket(loop, -1));
         connection1.close();
 
@@ -113,7 +111,7 @@ namespace AsynGyanis::Core
      */
     TEST(Connection, MoveAssignmentPreservesAliveState)
     {
-        EventLoop loop;
+        EventLoop  loop;
         Connection connection1(AsyncSocket(loop, -1));
         Connection connection2(AsyncSocket(loop, -1));
 
@@ -128,7 +126,7 @@ namespace AsynGyanis::Core
      */
     TEST(Connection, CancelableReflectsStopRequest)
     {
-        EventLoop loop;
+        EventLoop  loop;
         Connection connection(AsyncSocket(loop, -1));
 
         Cancelable &cancelable = connection.cancelable();
@@ -200,7 +198,6 @@ namespace AsynGyanis::Core
 
         Connection connection2(std::move(connection1));
 
-        EXPECT_TRUE(connection2.isIdleExpired(std::chrono::steady_clock::now() + std::chrono::hours(1)))
-                << "移动后截止时间丢失：这条连接会被空闲清扫漏掉";
+        EXPECT_TRUE(connection2.isIdleExpired(std::chrono::steady_clock::now() + std::chrono::hours(1))) << "移动后截止时间丢失：这条连接会被空闲清扫漏掉";
     }
-}
+} // namespace AsynGyanis::Core

@@ -38,18 +38,16 @@ namespace AsynGyanis::Net
          * @param maximumUnidirectionalStreams 允许对端发起的单向流数
          * @return QuicTransportParameters 填好的参数
          */
-        QuicTransportParameters makeParameters(const std::uint64_t maximumData, const std::uint64_t bidiLocal,
-                                               const std::uint64_t bidiRemote, const std::uint64_t uni,
-                                               const std::uint64_t maximumBidirectionalStreams,
-                                               const std::uint64_t maximumUnidirectionalStreams)
+        QuicTransportParameters makeParameters(const std::uint64_t maximumData, const std::uint64_t bidiLocal, const std::uint64_t bidiRemote, const std::uint64_t uni,
+                                               const std::uint64_t maximumBidirectionalStreams, const std::uint64_t maximumUnidirectionalStreams)
         {
             QuicTransportParameters parameters;
-            parameters.initialMaximumData = maximumData;
-            parameters.initialMaximumStreamDataBidirectionalLocal = bidiLocal;
+            parameters.initialMaximumData                          = maximumData;
+            parameters.initialMaximumStreamDataBidirectionalLocal  = bidiLocal;
             parameters.initialMaximumStreamDataBidirectionalRemote = bidiRemote;
-            parameters.initialMaximumStreamDataUnidirectional = uni;
-            parameters.initialMaximumBidirectionalStreams = maximumBidirectionalStreams;
-            parameters.initialMaximumUnidirectionalStreams = maximumUnidirectionalStreams;
+            parameters.initialMaximumStreamDataUnidirectional      = uni;
+            parameters.initialMaximumBidirectionalStreams          = maximumBidirectionalStreams;
+            parameters.initialMaximumUnidirectionalStreams         = maximumUnidirectionalStreams;
             return parameters;
         }
 
@@ -87,21 +85,20 @@ namespace AsynGyanis::Net
          * @param isFinal 是否带 FIN
          * @return QuicStreamFrame 交进流层
          */
-        QuicStreamFrame makeStreamFrame(const std::uint64_t streamId, const std::uint64_t offset,
-                                        const std::vector<std::uint8_t> &data, const bool isFinal = false)
+        QuicStreamFrame makeStreamFrame(const std::uint64_t streamId, const std::uint64_t offset, const std::vector<std::uint8_t> &data, const bool isFinal = false)
         {
             QuicStreamFrame frame;
             frame.streamId = streamId;
-            frame.offset = offset;
-            frame.data = std::span<const std::uint8_t>(data);
-            frame.isFinal = isFinal;
+            frame.offset   = offset;
+            frame.data     = std::span<const std::uint8_t>(data);
+            frame.isFinal  = isFinal;
             return frame;
         }
 
         /// 把编出来的帧字节解回帧序列；解不开即失败，返回空序列
         std::vector<QuicFrame> decodeFrames(const std::string &encoded)
         {
-            const std::span<const std::uint8_t> payload(reinterpret_cast<const std::uint8_t *>(encoded.data()), encoded.size());
+            const std::span<const std::uint8_t>                          payload(reinterpret_cast<const std::uint8_t *>(encoded.data()), encoded.size());
             const std::expected<std::vector<QuicFrame>, QuicDecodeError> decoded = decodeQuicFrames(payload);
             EXPECT_TRUE(decoded.has_value()) << "编出来的帧解不回去";
             return decoded.has_value() ? *decoded : std::vector<QuicFrame>{};
@@ -113,11 +110,11 @@ namespace AsynGyanis::Net
          * @param encoded collectFrames 的产物
          * @return std::vector<FrameType> 按出现顺序
          */
-        template <typename FrameType>
+        template<typename FrameType>
         std::vector<FrameType> framesOfType(const std::string &encoded)
         {
             std::vector<FrameType> picked;
-            for (const QuicFrame &frame : decodeFrames(encoded))
+            for (const QuicFrame &frame: decodeFrames(encoded))
             {
                 if (std::get_if<FrameType>(&frame) != nullptr)
                 {
@@ -155,18 +152,17 @@ namespace AsynGyanis::Net
         /// 一次窗口更新的收集结果，省掉每个用例两行样板
         struct Collected
         {
-            std::string frames{};                                    ///< 编出来的帧字节
-            std::vector<QuicStreamRange> ranges{};                   ///< 排进数据帧的字节区间
-            std::vector<QuicStreamAnnouncement> announcements{};      ///< 排进本包的收口宣告
-            bool hasFrames{false};                                   ///< collectFrames 的返回值
+            std::string                         frames{};         ///< 编出来的帧字节
+            std::vector<QuicStreamRange>        ranges{};         ///< 排进数据帧的字节区间
+            std::vector<QuicStreamAnnouncement> announcements{};  ///< 排进本包的收口宣告
+            bool                                hasFrames{false}; ///< collectFrames 的返回值
         };
 
         /// 按给定预算收一轮帧
         Collected collect(QuicStreamLayer &layer, const std::size_t byteBudget)
         {
             Collected collected;
-            collected.hasFrames = layer.collectFrames(collected.frames, byteBudget, collected.ranges,
-                                                      collected.announcements);
+            collected.hasFrames = layer.collectFrames(collected.frames, byteBudget, collected.ranges, collected.announcements);
             return collected;
         }
 
@@ -184,7 +180,7 @@ namespace AsynGyanis::Net
         }
 
         /// @return 编好的字节里第一条指定类型帧；一条都没有即失败
-        template <typename FrameType>
+        template<typename FrameType>
         FrameType firstFrameOf(const std::string &encoded)
         {
             const std::vector<FrameType> picked = framesOfType<FrameType>(encoded);
@@ -221,7 +217,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, RejectsDataOnLocallyInitiatedUnidirectionalStream)
     {
-        QuicStreamLayer layer(makeLocalParameters());
+        QuicStreamLayer                                layer(makeLocalParameters());
         const std::expected<void, QuicStreamViolation> accepted = layer.onStreamFrame(makeStreamFrame(0x03, 0, bytesOf("hi")));
         ASSERT_FALSE(accepted.has_value());
         EXPECT_EQ(accepted.error().errorCode, 0x0aU);
@@ -232,7 +228,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, RejectsDataOnUnknownLocallyInitiatedBidirectionalStream)
     {
-        QuicStreamLayer layer(makeLocalParameters());
+        QuicStreamLayer                                layer(makeLocalParameters());
         const std::expected<void, QuicStreamViolation> accepted = layer.onStreamFrame(makeStreamFrame(0x01, 0, bytesOf("hi")));
         ASSERT_FALSE(accepted.has_value());
         EXPECT_EQ(accepted.error().errorCode, 0x0aU);
@@ -276,7 +272,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, DeliversEmptyFinalSegmentForZeroLengthStream)
     {
-        QuicStreamLayer layer(makeLocalParameters());
+        QuicStreamLayer                 layer(makeLocalParameters());
         const std::vector<std::uint8_t> nothing;
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, nothing, true)).has_value());
         ASSERT_TRUE(layer.hasDeliveries());
@@ -357,7 +353,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, RejectsStreamOffsetBeyondStreamLimit)
     {
-        QuicStreamLayer layer(makeLocalParameters());
+        QuicStreamLayer                                layer(makeLocalParameters());
         const std::expected<void, QuicStreamViolation> accepted = layer.onStreamFrame(makeStreamFrame(0x00, 1020, bytesOf("0123456789")));
         ASSERT_FALSE(accepted.has_value());
         EXPECT_EQ(accepted.error().errorCode, 0x03U);
@@ -371,8 +367,7 @@ namespace AsynGyanis::Net
         QuicStreamLayer layer(makeParameters(100, 1000, 1000, 1000, 4, 4));
         // 单条流的额度够，连接级只有 100：第二条流一进来就越界
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, std::vector<std::uint8_t>(80, 'a'))).has_value());
-        const std::expected<void, QuicStreamViolation> accepted =
-                layer.onStreamFrame(makeStreamFrame(0x04, 0, std::vector<std::uint8_t>(30, 'b')));
+        const std::expected<void, QuicStreamViolation> accepted = layer.onStreamFrame(makeStreamFrame(0x04, 0, std::vector<std::uint8_t>(30, 'b')));
         ASSERT_FALSE(accepted.has_value());
         EXPECT_EQ(accepted.error().errorCode, 0x03U);
     }
@@ -423,7 +418,7 @@ namespace AsynGyanis::Net
         shrinkData.maximumData = 4;
         EXPECT_TRUE(layer.onMaxDataFrame(shrinkData).has_value());
         QuicMaxStreamDataFrame shrinkStream;
-        shrinkStream.streamId = 0x03;
+        shrinkStream.streamId          = 0x03;
         shrinkStream.maximumStreamData = 4;
         EXPECT_TRUE(layer.onMaxStreamDataFrame(shrinkStream).has_value());
 
@@ -446,8 +441,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(layer.writeStreamData(0x01, payload, false), 10U);
         EXPECT_EQ(layer.writeStreamData(0x03, payload, false), 10U);
 
-        const Collected collected = collect(layer, 1200);
-        const std::vector<QuicStreamFrame> sent = framesOfType<QuicStreamFrame>(collected.frames);
+        const Collected                    collected = collect(layer, 1200);
+        const std::vector<QuicStreamFrame> sent      = framesOfType<QuicStreamFrame>(collected.frames);
         ASSERT_EQ(sent.size(), 3U);
         EXPECT_EQ(sent[0].streamId, 0x00U);
         EXPECT_EQ(payloadTextOf(sent[0]).size(), 4U) << "对端发起的流取对端的 0x05";
@@ -501,7 +496,7 @@ namespace AsynGyanis::Net
         QuicStreamLayer layer(makeEstablishedLayer());
         EXPECT_EQ(layer.writeStreamData(0x03, bytesOf("0123456789"), true), 10U);
 
-        std::string text;
+        std::string                  text;
         std::vector<QuicStreamRange> allRanges;
         for (std::size_t round = 0; round < 6; ++round)
         {
@@ -510,7 +505,7 @@ namespace AsynGyanis::Net
             {
                 break;
             }
-            for (const QuicStreamFrame &frame : framesOfType<QuicStreamFrame>(collected.frames))
+            for (const QuicStreamFrame &frame: framesOfType<QuicStreamFrame>(collected.frames))
             {
                 EXPECT_EQ(frame.offset, allRanges.empty() ? 0U : allRanges.back().endOffset) << "分片必须首尾相接";
                 text += payloadTextOf(frame);
@@ -537,7 +532,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(collect(layer, 1200).hasFrames) << "额度用完了，不该再编数据帧";
 
         QuicMaxStreamDataFrame maxStreamData;
-        maxStreamData.streamId = 0x03;
+        maxStreamData.streamId          = 0x03;
         maxStreamData.maximumStreamData = 10;
         EXPECT_TRUE(layer.onMaxStreamDataFrame(maxStreamData).has_value());
         const Collected second = collect(layer, 1200);
@@ -555,11 +550,11 @@ namespace AsynGyanis::Net
         EXPECT_EQ(layer.writeStreamData(0x03, bytesOf("0123456789"), false), 10U);
         EXPECT_EQ(layer.writeStreamData(0x07, bytesOf("0123456789"), false), 10U);
 
-        const Collected collected = collect(layer, 1200);
-        const std::vector<QuicStreamFrame> sent = framesOfType<QuicStreamFrame>(collected.frames);
+        const Collected                    collected = collect(layer, 1200);
+        const std::vector<QuicStreamFrame> sent      = framesOfType<QuicStreamFrame>(collected.frames);
         ASSERT_EQ(sent.size(), 2U);
         std::size_t sentByteCount = 0;
-        for (const QuicStreamFrame &frame : sent)
+        for (const QuicStreamFrame &frame: sent)
         {
             sentByteCount += frame.data.size();
         }
@@ -577,13 +572,12 @@ namespace AsynGyanis::Net
         layer.adoptPeerParameters(makeParameters(0, 0, 0, 0, 4, 4));
 
         const std::vector<std::uint8_t> segment(64U * 1024U, std::uint8_t{'x'});
-        std::size_t acceptedTotalByteCount = 0;
+        std::size_t                     acceptedTotalByteCount = 0;
         for (int attempt = 0; attempt < 32; ++attempt)
         {
             acceptedTotalByteCount += layer.writeStreamData(0x03, segment, false);
         }
-        EXPECT_EQ(acceptedTotalByteCount, QuicStreamLayer::kMaximumPendingSendByteCount)
-                << "收下的总量必须恰好停在上界：多一个字节就是让对端替本端决定占多少内存";
+        EXPECT_EQ(acceptedTotalByteCount, QuicStreamLayer::kMaximumPendingSendByteCount) << "收下的总量必须恰好停在上界：多一个字节就是让对端替本端决定占多少内存";
         EXPECT_EQ(layer.pendingSendByteCount(0x03), acceptedTotalByteCount);
         EXPECT_EQ(layer.writeStreamData(0x03, segment, false), 0U) << "到界之后一字节也不收";
         EXPECT_FALSE(collect(layer, 1200).hasFrames) << "没有窗口就不该编出数据帧";
@@ -595,9 +589,8 @@ namespace AsynGyanis::Net
     TEST(QuicStreamLayer, KeepsAcceptingFinalMarkerAndResumesAfterTheQueueDrains)
     {
         QuicStreamLayer layer(makeLocalParameters());
-        layer.adoptPeerParameters(makeParameters(8U * 1024U * 1024U, 8U * 1024U * 1024U, 8U * 1024U * 1024U,
-                                                 8U * 1024U * 1024U, 4, 4));
-        const std::size_t capByteCount = QuicStreamLayer::kMaximumPendingSendByteCount;
+        layer.adoptPeerParameters(makeParameters(8U * 1024U * 1024U, 8U * 1024U * 1024U, 8U * 1024U * 1024U, 8U * 1024U * 1024U, 4, 4));
+        const std::size_t               capByteCount = QuicStreamLayer::kMaximumPendingSendByteCount;
         const std::vector<std::uint8_t> fullSegment(capByteCount, std::uint8_t{'y'});
         ASSERT_EQ(layer.writeStreamData(0x03, fullSegment, false), capByteCount) << "恰好等于上界的那一段应当全收下";
         EXPECT_EQ(layer.writeStreamData(0x03, fullSegment, false), 0U) << "队列已满，第二段一个字节也不该收";
@@ -605,10 +598,10 @@ namespace AsynGyanis::Net
         // 零长的收尾写不吃队列空间：到界也要收下它，否则这条流永远收不了口、正文停在半路
         layer.writeStreamData(0x03, std::span<const std::uint8_t>{}, true);
 
-        const Collected collected = collect(layer, 16U * 1024U * 1024U);
-        const std::vector<QuicStreamFrame> sent = framesOfType<QuicStreamFrame>(collected.frames);
-        std::size_t framedByteCount = 0;
-        for (const QuicStreamFrame &frame : sent)
+        const Collected                    collected       = collect(layer, 16U * 1024U * 1024U);
+        const std::vector<QuicStreamFrame> sent            = framesOfType<QuicStreamFrame>(collected.frames);
+        std::size_t                        framedByteCount = 0;
+        for (const QuicStreamFrame &frame: sent)
         {
             framedByteCount += frame.data.size();
         }
@@ -635,16 +628,13 @@ namespace AsynGyanis::Net
     TEST(QuicStreamLayer, CapsConnectionPendingQueueAcrossStreams)
     {
         QuicStreamLayer layer(makeLocalParameters());
-        layer.adoptPeerParameters(makeParameters(1024U * 1024U * 1024U, 1024U * 1024U * 1024U, 1024U * 1024U * 1024U,
-                                                 1024U * 1024U * 1024U, 4, 16));
+        layer.adoptPeerParameters(makeParameters(1024U * 1024U * 1024U, 1024U * 1024U * 1024U, 1024U * 1024U * 1024U, 1024U * 1024U * 1024U, 4, 16));
 
-        const std::size_t streamCount = QuicStreamLayer::kMaximumConnectionPendingSendByteCount
-                                        / QuicStreamLayer::kMaximumPendingSendByteCount;
+        const std::size_t               streamCount = QuicStreamLayer::kMaximumConnectionPendingSendByteCount / QuicStreamLayer::kMaximumPendingSendByteCount;
         const std::vector<std::uint8_t> segment(QuicStreamLayer::kMaximumPendingSendByteCount, std::uint8_t{'z'});
         for (std::size_t streamIndex = 0; streamIndex < streamCount; ++streamIndex)
         {
-            ASSERT_EQ(layer.writeStreamData(3 + streamIndex * 4, segment, false), segment.size())
-                    << "第 " << streamIndex << " 条流要先各自填满单流额度";
+            ASSERT_EQ(layer.writeStreamData(3 + streamIndex * 4, segment, false), segment.size()) << "第 " << streamIndex << " 条流要先各自填满单流额度";
         }
         EXPECT_EQ(layer.totalPendingSendByteCount(), QuicStreamLayer::kMaximumConnectionPendingSendByteCount);
 
@@ -657,8 +647,7 @@ namespace AsynGyanis::Net
         const std::size_t drainedByteCount = layer.takeDrainedSendByteCount();
         ASSERT_GT(drainedByteCount, 0U);
         const std::vector<std::uint8_t> drainedSegment(drainedByteCount, std::uint8_t{'w'});
-        EXPECT_EQ(layer.writeStreamData(freshStreamId, drainedSegment, false), drainedByteCount)
-                << "只按刚腾出的量收，多一个字节都是把总量闸放开";
+        EXPECT_EQ(layer.writeStreamData(freshStreamId, drainedSegment, false), drainedByteCount) << "只按刚腾出的量收，多一个字节都是把总量闸放开";
     }
 
     /**
@@ -690,7 +679,7 @@ namespace AsynGyanis::Net
         layer.onSendRangesAcknowledged(collect(layer, 1200).ranges);
 
         EXPECT_EQ(layer.writeStreamData(0x03, bytesOf("gh"), true), 2U);
-        const Collected next = collect(layer, 1200);
+        const Collected                    next = collect(layer, 1200);
         const std::vector<QuicStreamFrame> sent = framesOfType<QuicStreamFrame>(next.frames);
         ASSERT_EQ(sent.size(), 1U);
         EXPECT_EQ(payloadTextOf(sent.front()), "gh");
@@ -705,11 +694,11 @@ namespace AsynGyanis::Net
     {
         QuicStreamLayer layer(makeEstablishedLayer());
         EXPECT_EQ(layer.writeStreamData(0x03, bytesOf("abcdefghij"), true), 10U);
-        const Collected first = collect(layer, 8);
+        const Collected first  = collect(layer, 8);
         const Collected second = collect(layer, 40);
         ASSERT_EQ(first.ranges.size(), 1U);
         ASSERT_EQ(second.ranges.size(), 1U);
-        const std::string firstText = payloadTextOf(firstFrameOf<QuicStreamFrame>(first.frames));
+        const std::string firstText  = payloadTextOf(firstFrameOf<QuicStreamFrame>(first.frames));
         const std::string secondText = payloadTextOf(firstFrameOf<QuicStreamFrame>(second.frames));
         EXPECT_EQ(firstText + secondText, "abcdefghij");
         EXPECT_EQ(second.ranges.front().beginOffset, first.ranges.front().endOffset);
@@ -752,8 +741,8 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(collect(layer, 1200).hasFrames) << "还剩一半，不该抬";
 
         layer.releaseReceiveWindow(0x00, 16);
-        const Collected collected = collect(layer, 1200);
-        const std::vector<QuicMaxStreamDataFrame> updates = framesOfType<QuicMaxStreamDataFrame>(collected.frames);
+        const Collected                           collected = collect(layer, 1200);
+        const std::vector<QuicMaxStreamDataFrame> updates   = framesOfType<QuicMaxStreamDataFrame>(collected.frames);
         ASSERT_EQ(updates.size(), 1U);
         EXPECT_EQ(updates.front().streamId, 0x00U);
         EXPECT_EQ(updates.front().maximumStreamData, 96U) << "抬到消费点 + 初始窗口";
@@ -784,8 +773,8 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, bytesOf("a"))).has_value());
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x04, 0, bytesOf("b"))).has_value());
 
-        const Collected collected = collect(layer, 1200);
-        const std::vector<QuicMaxStreamsFrame> updates = framesOfType<QuicMaxStreamsFrame>(collected.frames);
+        const Collected                        collected = collect(layer, 1200);
+        const std::vector<QuicMaxStreamsFrame> updates   = framesOfType<QuicMaxStreamsFrame>(collected.frames);
         ASSERT_EQ(updates.size(), 1U);
         EXPECT_FALSE(updates.front().isUnidirectional) << "单向流一条没给，也就没有单向的上限可续";
         EXPECT_EQ(updates.front().maximumStreams, 4U) << "2 条用满，按初始值再给一轮";
@@ -802,9 +791,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(drainDeliveries(layer, 0x00), "abc");
 
         QuicResetStreamFrame reset;
-        reset.streamId = 0x00;
+        reset.streamId             = 0x00;
         reset.applicationErrorCode = 0x100;
-        reset.finalSize = 12;
+        reset.finalSize            = 12;
         EXPECT_TRUE(layer.onResetStreamFrame(reset).has_value());
         ASSERT_TRUE(layer.hasAbortedStreams());
         EXPECT_EQ(layer.takeAbortedStream().value_or(999), 0x00U);
@@ -821,7 +810,7 @@ namespace AsynGyanis::Net
         QuicStreamLayer layer(makeLocalParameters());
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, bytesOf("abc"), true)).has_value());
         QuicResetStreamFrame reset;
-        reset.streamId = 0x00;
+        reset.streamId  = 0x00;
         reset.finalSize = 2;
         EXPECT_EQ(violationCodeOf(layer.onResetStreamFrame(reset)), 0x06U);
     }
@@ -831,13 +820,13 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, RejectsStateErrorsOnOneWayStreams)
     {
-        QuicStreamLayer layer(makeEstablishedLayer());
+        QuicStreamLayer      layer(makeEstablishedLayer());
         QuicResetStreamFrame reset;
         reset.streamId = 0x03;
         EXPECT_EQ(violationCodeOf(layer.onResetStreamFrame(reset)), 0x05U) << "本端发起的单向流没有可对端复位的东西";
 
         QuicMaxStreamDataFrame maxStreamData;
-        maxStreamData.streamId = 0x02;
+        maxStreamData.streamId          = 0x02;
         maxStreamData.maximumStreamData = 100;
         EXPECT_EQ(violationCodeOf(layer.onMaxStreamDataFrame(maxStreamData)), 0x05U) << "对端发起的单向流本端不能发";
 
@@ -851,9 +840,9 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, IgnoresResetForUnknownStream)
     {
-        QuicStreamLayer layer(makeLocalParameters());
+        QuicStreamLayer      layer(makeLocalParameters());
         QuicResetStreamFrame reset;
-        reset.streamId = 0x08;
+        reset.streamId  = 0x08;
         reset.finalSize = 100;
         EXPECT_TRUE(layer.onResetStreamFrame(reset).has_value());
         EXPECT_FALSE(layer.hasAbortedStreams());
@@ -871,7 +860,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(layer.hasOutgoingFrames());
 
         QuicStopSendingFrame stopSending;
-        stopSending.streamId = 0x03;
+        stopSending.streamId             = 0x03;
         stopSending.applicationErrorCode = 0x200;
         EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
         EXPECT_EQ(layer.takeAbortedStream().value_or(999), 0x03U);
@@ -933,8 +922,8 @@ namespace AsynGyanis::Net
 
         layer.resetStreamSending(0x01, 0x010b);
         EXPECT_TRUE(layer.hasOutgoingFrames());
-        const Collected aborted = collect(layer, 1200);
-        const std::vector<QuicResetStreamFrame> resets = framesOfType<QuicResetStreamFrame>(aborted.frames);
+        const Collected                         aborted = collect(layer, 1200);
+        const std::vector<QuicResetStreamFrame> resets  = framesOfType<QuicResetStreamFrame>(aborted.frames);
         ASSERT_EQ(resets.size(), 1U);
         EXPECT_EQ(resets.front().streamId, 0x01U);
         EXPECT_EQ(resets.front().applicationErrorCode, 0x010bU);
@@ -1027,7 +1016,7 @@ namespace AsynGyanis::Net
         static_cast<void>(collect(layer, 1200));
 
         QuicStopSendingFrame stopSending;
-        stopSending.streamId = 0x01;
+        stopSending.streamId             = 0x01;
         stopSending.applicationErrorCode = 0x010b;
         EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
 
@@ -1046,8 +1035,8 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, bytesOf("abc"))).has_value());
         layer.stopStreamReceiving(0x00, 0x010b);
 
-        const Collected collected = collect(layer, 1200);
-        const std::vector<QuicStopSendingFrame> stops = framesOfType<QuicStopSendingFrame>(collected.frames);
+        const Collected                         collected = collect(layer, 1200);
+        const std::vector<QuicStopSendingFrame> stops     = framesOfType<QuicStopSendingFrame>(collected.frames);
         ASSERT_EQ(stops.size(), 1U);
         EXPECT_EQ(stops.front().streamId, 0x00U);
         EXPECT_EQ(stops.front().applicationErrorCode, 0x010bU);
@@ -1055,7 +1044,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(collected.announcements.front().isResetStream);
 
         QuicResetStreamFrame reset;
-        reset.streamId = 0x00;
+        reset.streamId  = 0x00;
         reset.finalSize = 3;
         EXPECT_TRUE(layer.onResetStreamFrame(reset).has_value());
         // 让那条宣告重新变成待发：若它没被撤下，这一轮就会把一帧多余的 STOP_SENDING 发出去
@@ -1106,7 +1095,7 @@ namespace AsynGyanis::Net
          */
         void runCompletedRequestRoundTrip(QuicStreamLayer &layer, const std::size_t requestIndex, const std::size_t requestByteCount)
         {
-            const std::uint64_t streamId = peerBidirectionalStreamIdOf(requestIndex);
+            const std::uint64_t             streamId = peerBidirectionalStreamIdOf(requestIndex);
             const std::vector<std::uint8_t> request(requestByteCount, 'r');
             EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(streamId, 0, request, true)).has_value());
             while (layer.hasDeliveries())
@@ -1133,7 +1122,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, RetiredReceiveSideDoesNotBlockTheResponse)
     {
-        QuicStreamLayer layer(makeEstablishedLayer());
+        QuicStreamLayer                 layer(makeEstablishedLayer());
         const std::vector<std::uint8_t> request = bytesOf("payload");
         ASSERT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, request, true)).has_value());
         while (layer.hasDeliveries())
@@ -1200,18 +1189,16 @@ namespace AsynGyanis::Net
 
         // 与请求正文等长的一次重复投递：偏移 0、带 FIN
         const std::vector<std::uint8_t> replay(8, 'r');
-        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(peerBidirectionalStreamIdOf(0), 0, replay, true)).has_value())
-                << "已收口的流上迟到帧被当成了违规";
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(peerBidirectionalStreamIdOf(0), 0, replay, true)).has_value()) << "已收口的流上迟到帧被当成了违规";
         // 越界的一段同样忽略：本层已不记得收尾长度，判错的成本是把好连接杀掉
         const std::vector<std::uint8_t> beyond(64, 'x');
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(peerBidirectionalStreamIdOf(0), 8, beyond, true)).has_value());
         // 对端的 STOP_SENDING 也不该把这条流又激活：凭空回一条收尾长度为 0 的 RESET_STREAM 会误导对端
         QuicStopSendingFrame stopSending;
-        stopSending.streamId = peerBidirectionalStreamIdOf(0);
+        stopSending.streamId             = peerBidirectionalStreamIdOf(0);
         stopSending.applicationErrorCode = 0x010b;
         EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
-        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(peerBidirectionalStreamIdOf(1), 0, replay, true)).has_value())
-                << "回收不该挡住真正的新流";
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(peerBidirectionalStreamIdOf(1), 0, replay, true)).has_value()) << "回收不该挡住真正的新流";
 
         EXPECT_EQ(layer.trackedStreamCount(), 1U) << "迟到帧与停发都不该留下记账，只有新流的那条入站记录该在";
         EXPECT_FALSE(layer.hasAbortedStreams()) << "被忽略的停发不该又排给上层一条已作废的流";
@@ -1225,7 +1212,7 @@ namespace AsynGyanis::Net
     TEST(QuicStreamLayer, KeepsTheUnsettledSideOfAStream)
     {
         // 其一：响应的 FIN 已发完并确认（出站可摘），但正文的额度上层还没报回来（入站必须留）
-        QuicStreamLayer unpaidWindow(makeEstablishedLayer());
+        QuicStreamLayer                 unpaidWindow(makeEstablishedLayer());
         const std::vector<std::uint8_t> request = bytesOf("payload");
         ASSERT_TRUE(unpaidWindow.onStreamFrame(makeStreamFrame(0x00, 0, request, true)).has_value());
         while (unpaidWindow.hasDeliveries())
@@ -1264,7 +1251,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, KeepsStreamWhoseFinalSegmentWasLost)
     {
-        QuicStreamLayer layer(makeEstablishedLayer());
+        QuicStreamLayer                 layer(makeEstablishedLayer());
         const std::vector<std::uint8_t> request = bytesOf("payload");
         ASSERT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, request, true)).has_value());
         while (layer.hasDeliveries())
@@ -1294,15 +1281,14 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, DeliversInOrderAcrossInterleavedPushAndTake)
     {
-        QuicStreamLayer layer(makeEstablishedLayer());
+        QuicStreamLayer       layer(makeEstablishedLayer());
         constexpr std::size_t firstBatchCount  = 40;
         constexpr std::size_t interleavedCount = 20;
 
         for (std::size_t index = 0; index < firstBatchCount; ++index)
         {
             const std::vector<std::uint8_t> oneByte{static_cast<std::uint8_t>(index)};
-            ASSERT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, index, oneByte)).has_value())
-                    << "第 " << index << " 段没被收下";
+            ASSERT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, index, oneByte)).has_value()) << "第 " << index << " 段没被收下";
         }
 
         std::size_t expectedNextByte = 0;
@@ -1344,12 +1330,11 @@ namespace AsynGyanis::Net
          * @param bufferedByteCount 压在乱序缓存里的尾部字节数（与已送达段之间留 3 字节空洞）
          * @return std::size_t 上层能为这条流报回来的字节数，即已送达的那一段
          */
-        std::size_t feedStreamUpToPeerReset(QuicStreamLayer &layer, const std::uint64_t streamId,
-                                            const std::size_t deliveredByteCount, const std::size_t bufferedByteCount)
+        std::size_t feedStreamUpToPeerReset(QuicStreamLayer &layer, const std::uint64_t streamId, const std::size_t deliveredByteCount, const std::size_t bufferedByteCount)
         {
             const std::vector<std::uint8_t> delivered(deliveredByteCount, 'd');
             EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(streamId, 0, delivered)).has_value());
-            const std::uint64_t bufferedOffset = deliveredByteCount + 3U;
+            const std::uint64_t             bufferedOffset = deliveredByteCount + 3U;
             const std::vector<std::uint8_t> buffered(bufferedByteCount, 'b');
             EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(streamId, bufferedOffset, buffered)).has_value());
             while (layer.hasDeliveries())
@@ -1358,9 +1343,9 @@ namespace AsynGyanis::Net
             }
 
             QuicResetStreamFrame reset;
-            reset.streamId = streamId;
+            reset.streamId             = streamId;
             reset.applicationErrorCode = 0x010c;
-            reset.finalSize = bufferedOffset + bufferedByteCount;
+            reset.finalSize            = bufferedOffset + bufferedByteCount;
             EXPECT_TRUE(layer.onResetStreamFrame(reset).has_value());
             return deliveredByteCount;
         }
@@ -1374,7 +1359,7 @@ namespace AsynGyanis::Net
         {
             static_cast<void>(layer.writeStreamData(streamId, bytesOf("part"), false));
             QuicStopSendingFrame stopSending;
-            stopSending.streamId = streamId;
+            stopSending.streamId             = streamId;
             stopSending.applicationErrorCode = 0x010b;
             EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
         }
@@ -1387,7 +1372,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, ForgetsIncomingStreamThatPeerReset)
     {
-        QuicStreamLayer layer(makeEstablishedLayer());
+        QuicStreamLayer   layer(makeEstablishedLayer());
         const std::size_t delivered = feedStreamUpToPeerReset(layer, 0x00, 5, 4);
         ASSERT_TRUE(layer.hasAbortedStreams()) << "复位没排给上层，用例就没走到被打断这一路";
 
@@ -1398,7 +1383,7 @@ namespace AsynGyanis::Net
         // 摘掉之后迟到的一段与重复的复位都不该把它又激活
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, std::vector<std::uint8_t>(12, 'x'), true)).has_value());
         QuicResetStreamFrame again;
-        again.streamId = 0x00;
+        again.streamId  = 0x00;
         again.finalSize = 12;
         EXPECT_TRUE(layer.onResetStreamFrame(again).has_value());
         EXPECT_EQ(layer.trackedStreamCount(), 0U) << "已作废的流上重复的复位又记了一份账";
@@ -1448,7 +1433,7 @@ namespace AsynGyanis::Net
 
         // 摘掉之后对端的迟到额度与又一次叫停都不该把它建回来
         QuicMaxStreamDataFrame maxStreamData;
-        maxStreamData.streamId = 0x00;
+        maxStreamData.streamId          = 0x00;
         maxStreamData.maximumStreamData = 4096;
         EXPECT_TRUE(layer.onMaxStreamDataFrame(maxStreamData).has_value());
         stopOurSendSideOn(layer, 0x00);
@@ -1462,12 +1447,12 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, KeepsStreamTableBoundedAcrossAbortedRequests)
     {
-        QuicStreamLayer layer(makeEstablishedLayer());
+        QuicStreamLayer       layer(makeEstablishedLayer());
         constexpr std::size_t requestCount = 50;
         for (std::size_t requestIndex = 0; requestIndex < requestCount; ++requestIndex)
         {
-            const std::uint64_t streamId = peerBidirectionalStreamIdOf(requestIndex);
-            const std::size_t delivered = feedStreamUpToPeerReset(layer, streamId, 5, 4);
+            const std::uint64_t streamId  = peerBidirectionalStreamIdOf(requestIndex);
+            const std::size_t   delivered = feedStreamUpToPeerReset(layer, streamId, 5, 4);
             layer.releaseReceiveWindow(streamId, delivered);
             stopOurSendSideOn(layer, streamId);
 
@@ -1485,7 +1470,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, AbortedStreamsComeOutInOrderAcrossInterleavedTakeAndPush)
     {
-        QuicStreamLayer layer(makeEstablishedLayer());
+        QuicStreamLayer       layer(makeEstablishedLayer());
         constexpr std::size_t abortedStreamCount = 30;
 
         for (std::size_t index = 0; index < abortedStreamCount / 2; ++index)
@@ -1534,7 +1519,7 @@ namespace AsynGyanis::Net
 
         QuicMaxStreamsFrame unidirectionalBoost;
         unidirectionalBoost.isUnidirectional = true;
-        unidirectionalBoost.maximumStreams = 3;
+        unidirectionalBoost.maximumStreams   = 3;
         ASSERT_TRUE(layer.onMaxStreamsFrame(unidirectionalBoost).has_value());
 
         // 单向抬到 3 条：能再开两条，且双向额度一条也没多——两条判据合起来才挡得住「取错一档」
@@ -1545,14 +1530,14 @@ namespace AsynGyanis::Net
 
         QuicMaxStreamsFrame bidirectionalBoost;
         bidirectionalBoost.isUnidirectional = false;
-        bidirectionalBoost.maximumStreams = 2;
+        bidirectionalBoost.maximumStreams   = 2;
         ASSERT_TRUE(layer.onMaxStreamsFrame(bidirectionalBoost).has_value());
         EXPECT_EQ(layer.writeStreamData(5, payload, false), 1U) << "双向抬到 2 条之后第二条流可写";
 
         // 不增大的通告按 §4.6 忽略：既不把额度收回，也不报错
         QuicMaxStreamsFrame shrink;
         shrink.isUnidirectional = false;
-        shrink.maximumStreams = 1;
+        shrink.maximumStreams   = 1;
         EXPECT_TRUE(layer.onMaxStreamsFrame(shrink).has_value());
         EXPECT_EQ(layer.writeStreamData(5, payload, false), 1U) << "已抬上去的双向额度不该被更小的通告收回去";
         EXPECT_FALSE(layer.openUnidirectionalStream().has_value()) << "双向的收缩也不该动单向那本账";
@@ -1572,8 +1557,8 @@ namespace AsynGyanis::Net
 
         QuicMaxStreamsFrame absurd;
         absurd.isUnidirectional = true;
-        absurd.maximumStreams = (std::uint64_t{1} << 60) + 1;
-        const auto rejected = layer.onMaxStreamsFrame(absurd);
+        absurd.maximumStreams   = (std::uint64_t{1} << 60) + 1;
+        const auto rejected     = layer.onMaxStreamsFrame(absurd);
         ASSERT_FALSE(rejected.has_value());
         EXPECT_EQ(rejected.error().errorCode, 0x07) << "0x07 即 FRAME_ENCODING_ERROR（§4.6 的 MUST）";
         EXPECT_NE(rejected.error().reasonPhrase.find("2^60"), std::string::npos) << rejected.error().reasonPhrase;
@@ -1582,7 +1567,7 @@ namespace AsynGyanis::Net
         // 恰好 2^60 是允许的上界：收下它，之后的正常通告也照常处理
         QuicMaxStreamsFrame boundary;
         boundary.isUnidirectional = true;
-        boundary.maximumStreams = std::uint64_t{1} << 60;
+        boundary.maximumStreams   = std::uint64_t{1} << 60;
         EXPECT_TRUE(layer.onMaxStreamsFrame(boundary).has_value()) << "2^60 本身合法";
         EXPECT_TRUE(layer.openUnidirectionalStream().has_value()) << "边界之内就该把额度抬起来";
     }

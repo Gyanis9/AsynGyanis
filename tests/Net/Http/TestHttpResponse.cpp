@@ -62,7 +62,7 @@ namespace AsynGyanis::Net
                 return message;
             }
             const std::size_t lineStart = datePosition + 2;
-            const std::size_t lineEnd = message.find("\r\n", lineStart);
+            const std::size_t lineEnd   = message.find("\r\n", lineStart);
             if (lineEnd == std::string::npos)
             {
                 return message;
@@ -260,8 +260,8 @@ namespace AsynGyanis::Net
         response.setHeader("Set-Cookie", "first=1");
         response.setHeader("Set-Cookie", "second=2");
 
-        const std::string output = response.toString();
-        const std::size_t firstPosition = positionOfText(output, "set-cookie: first=1\r\n");
+        const std::string output         = response.toString();
+        const std::size_t firstPosition  = positionOfText(output, "set-cookie: first=1\r\n");
         const std::size_t secondPosition = positionOfText(output, "set-cookie: second=2\r\n");
 
         EXPECT_NE(firstPosition, std::string::npos);
@@ -290,10 +290,10 @@ namespace AsynGyanis::Net
         response.setHeader("x-alast", "1");
         response.setHeader("x-cmiddle", "3");
 
-        const std::string output = response.toString();
-        const std::size_t firstPosition = positionOfText(output, "x-bsecond: 2\r\n");
+        const std::string output         = response.toString();
+        const std::size_t firstPosition  = positionOfText(output, "x-bsecond: 2\r\n");
         const std::size_t secondPosition = positionOfText(output, "x-alast: 1\r\n");
-        const std::size_t thirdPosition = positionOfText(output, "x-cmiddle: 3\r\n");
+        const std::size_t thirdPosition  = positionOfText(output, "x-cmiddle: 3\r\n");
 
         EXPECT_NE(firstPosition, std::string::npos);
         EXPECT_LT(firstPosition, secondPosition);
@@ -311,10 +311,10 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(response.setHeader("x-second", "new"));
 
-        const std::string output = response.toString();
-        const std::size_t firstPosition = positionOfText(output, "x-first: 1\r\n");
+        const std::string output            = response.toString();
+        const std::size_t firstPosition     = positionOfText(output, "x-first: 1\r\n");
         const std::size_t rewrittenPosition = positionOfText(output, "x-second: new\r\n");
-        const std::size_t thirdPosition = positionOfText(output, "x-third: 3\r\n");
+        const std::size_t thirdPosition     = positionOfText(output, "x-third: 3\r\n");
 
         EXPECT_NE(rewrittenPosition, std::string::npos);
         EXPECT_LT(firstPosition, rewrittenPosition);
@@ -472,7 +472,7 @@ namespace AsynGyanis::Net
         response.setBody("abc");
         response.setHeader("x-trace", "1");
 
-        const std::string output = response.toString();
+        const std::string output        = response.toString();
         const std::size_t bodySeparator = positionOfText(output, "\r\n\r\n");
 
         EXPECT_NE(bodySeparator, std::string::npos);
@@ -491,7 +491,7 @@ namespace AsynGyanis::Net
 
         // 头部形态的断言要看 serializeHead()：toString() 后面还跟着正文，不以 GMT 收尾
         const std::string serializedHead = response.serializeHead();
-        const std::size_t datePosition = positionOfText(serializedHead, "\r\ndate: ");
+        const std::size_t datePosition   = positionOfText(serializedHead, "\r\ndate: ");
 
         ASSERT_NE(datePosition, std::string::npos);
         // date 值必须完整落在头部块内，并以 " GMT" 收尾（IMF-fixdate 固定 GMT 时区）
@@ -509,7 +509,7 @@ namespace AsynGyanis::Net
         HttpResponse response;
         ASSERT_TRUE(response.setHeader("Date", "Sun, 06 Nov 1994 08:49:37 GMT"));
 
-        const std::string output = response.toString();
+        const std::string output            = response.toString();
         const std::size_t firstDatePosition = positionOfText(output, "date: Sun, 06 Nov 1994 08:49:37 GMT\r\n");
 
         EXPECT_NE(firstDatePosition, std::string::npos);
@@ -551,7 +551,7 @@ namespace AsynGyanis::Net
         HttpResponse response;
         response.setBody("stale-plaintext");
 
-        std::string ownedBody(256, 'z');  // 远超短字符串缓冲，确保走真实堆所有权转移而非逐字节内联拷贝
+        std::string ownedBody(256, 'z'); // 远超短字符串缓冲，确保走真实堆所有权转移而非逐字节内联拷贝
         ownedBody = "owned-body-content";
         response.setOwnedBody(std::move(ownedBody));
 
@@ -589,8 +589,8 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(containsText(response.serializeHead(), "content-length: 4\r\n"));
 
         // 与映射正文互斥：备堆缓冲要顺手解除已挂的映射，否则 body() 仍读到旧的文件页
-        const TemporaryFile             temporaryFile("PrepareBodyAfterMapping", "mapped-contents-here");
-        Platform::MemoryMappedFile      mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
+        const TemporaryFile        temporaryFile("PrepareBodyAfterMapping", "mapped-contents-here");
+        Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
         ASSERT_TRUE(mappedFile.isValid());
         response.setMappedBody(std::move(mappedFile));
         ASSERT_EQ(response.body(), "mapped-contents-here");
@@ -665,7 +665,7 @@ namespace AsynGyanis::Net
     TEST(HttpResponse, ServesMappedFileAsBodyWithByteAccurateContentLength)
     {
         // UTF-8 三字节字符混在 ASCII 里：映射长度若误按字符数计算，content-length 会当场失真
-        const std::string content = "mapped-body-" + std::string(kThreeByteUtf8Character);
+        const std::string   content = "mapped-body-" + std::string(kThreeByteUtf8Character);
         const TemporaryFile temporaryFile("MappedBody", content);
 
         Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
@@ -706,7 +706,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponse, MappedBodyReplacesHeapBody)
     {
-        const std::string content = "mapped-takes-over";
+        const std::string   content = "mapped-takes-over";
         const TemporaryFile temporaryFile("MappedReplaces", content);
 
         Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
@@ -762,7 +762,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponse, InvalidMappedFileCountsAsEmptyBody)
     {
-        const TemporaryFile temporaryFile("InvalidMapped", "unused");
+        const TemporaryFile         temporaryFile("InvalidMapped", "unused");
         const std::filesystem::path missingPath = temporaryFile.path().parent_path() / "no-such-file.bin";
 
         Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(missingPath);
@@ -780,7 +780,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponse, ServesMappedFileRangeAsBody)
     {
-        const std::string content = "0123456789";
+        const std::string   content = "0123456789";
         const TemporaryFile temporaryFile("MappedRange", content);
 
         Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
@@ -801,7 +801,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponse, SharesOneMappingBetweenResponsesUntilAllReleaseIt)
     {
-        const std::string content = "0123456789";
+        const std::string   content = "0123456789";
         const TemporaryFile temporaryFile("MappedShared", content);
 
         auto sharedMapping = std::make_shared<Platform::MemoryMappedFile>(Platform::MemoryMappedFile::open(temporaryFile.path()));
@@ -842,7 +842,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponse, MappedFileRangeTreatsZeroLengthAsEmptyBody)
     {
-        const std::string content = "abcdef";
+        const std::string   content = "abcdef";
         const TemporaryFile temporaryFile("MappedRangeEmpty", content);
 
         Platform::MemoryMappedFile mappedFile = Platform::MemoryMappedFile::open(temporaryFile.path());
@@ -860,7 +860,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponse, RejectsMappedBodyRangeBeyondMapping)
     {
-        const std::string content = "0123456789";
+        const std::string   content = "0123456789";
         const TemporaryFile temporaryFile("MappedRangeOverflow", content);
 
         HttpResponse response;
@@ -905,8 +905,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(head.find("text/html"), std::string::npos) << "被覆盖掉的那条不该还在线上";
         const std::size_t firstContentType = head.find("content-type:");
         ASSERT_NE(firstContentType, std::string::npos);
-        EXPECT_EQ(head.find("content-type:", firstContentType + 1), std::string::npos)
-                << "头部块里只该有一条 content-type（大小写不同的同名写入是覆盖，不是追加）";
+        EXPECT_EQ(head.find("content-type:", firstContentType + 1), std::string::npos) << "头部块里只该有一条 content-type（大小写不同的同名写入是覆盖，不是追加）";
     }
 
     /**
@@ -924,14 +923,10 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(response.setHeader("content-type", "text/plain"));
 
         std::vector<std::string> visitedFields;
-        response.forEachHeaderField(
-            [&visitedFields](const std::string_view headerName, const std::string_view headerValue)
-            {
-                visitedFields.push_back(std::string(headerName) + "=" + std::string(headerValue));
-            });
+        response.forEachHeaderField([&visitedFields](const std::string_view headerName, const std::string_view headerValue)
+                                    { visitedFields.push_back(std::string(headerName) + "=" + std::string(headerValue)); });
 
-        EXPECT_EQ(visitedFields,
-                  (std::vector<std::string>{"set-cookie=a=1", "x-trace=first", "set-cookie=b=2", "content-type=text/plain"}))
+        EXPECT_EQ(visitedFields, (std::vector<std::string>{"set-cookie=a=1", "x-trace=first", "set-cookie=b=2", "content-type=text/plain"}))
                 << "遍历顺序不是设置顺序：中间插入的其它头名会把同名多条拆散，h2/h3 的头块也就与 h1 不一致";
     }
 
@@ -957,8 +952,7 @@ namespace AsynGyanis::Net
         // 第二条更短：复用同一缓冲必须只含短头部，长度回落到短头部的字节数（清空的证据）
         shortResponse.serializeHeadInto(reusedBuffer);
         EXPECT_EQ(reusedBuffer, shortResponse.serializeHead());
-        EXPECT_LT(reusedBuffer.size(), static_cast<std::size_t>(longResponse.serializeHead().size()))
-                << "缓冲没有被清空：短头部会接在上一次长头部之后，破坏 keep-alive 报文边界";
+        EXPECT_LT(reusedBuffer.size(), static_cast<std::size_t>(longResponse.serializeHead().size())) << "缓冲没有被清空：短头部会接在上一次长头部之后，破坏 keep-alive 报文边界";
     }
 
     TEST(HttpResponse, ReportsHeaderPresenceWithoutCopyingTheValue)

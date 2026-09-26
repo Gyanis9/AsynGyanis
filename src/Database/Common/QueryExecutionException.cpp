@@ -2,8 +2,7 @@
 
 namespace AsynGyanis::Database
 {
-    QueryExecutionException::QueryExecutionException(const std::string &message, const std::source_location &sourceLocation) :
-        DatabaseException(message, sourceLocation)
+    QueryExecutionException::QueryExecutionException(const std::string &message, const std::source_location &sourceLocation) : DatabaseException(message, sourceLocation)
     {
     }
 

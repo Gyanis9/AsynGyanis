@@ -54,8 +54,7 @@ namespace AsynGyanis::Platform
         PlatformError::setLastErrorCode(0);
         EXPECT_EQ(FileDescriptor::read(FileDescriptor::kInvalid, buffer, sizeof(buffer)), -1);
         EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
-        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument)
-                << "只置了 socket 那一侧，按文件类通道读错误码的调用方拿到的还是残值";
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument) << "只置了 socket 那一侧，按文件类通道读错误码的调用方拿到的还是残值";
 
         PlatformError::setLastErrorCode(0);
         EXPECT_EQ(FileDescriptor::write(FileDescriptor::kInvalid, buffer, sizeof(buffer)), -1);
@@ -116,20 +115,17 @@ namespace AsynGyanis::Platform
         int writeDescriptor = FileDescriptor::kInvalid;
         ASSERT_TRUE(FileDescriptor::createPair(readDescriptor, writeDescriptor));
 
-        const std::size_t    oversizedLength = static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1U;
-        char                 buffer[8]       = {0};
+        const std::size_t oversizedLength = static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1U;
+        char              buffer[8]       = {0};
         // 先把错误码清成 0：要证的是「本次调用置的码」，不能靠上一次留下的值蒙对
         PlatformError::setLastErrorCode(0);
 
-        EXPECT_EQ(FileDescriptor::read(readDescriptor, buffer, oversizedLength), -1)
-                << "超限的读取长度必须在交给内核之前拒掉";
+        EXPECT_EQ(FileDescriptor::read(readDescriptor, buffer, oversizedLength), -1) << "超限的读取长度必须在交给内核之前拒掉";
         EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
-        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument)
-                << "错误码只置在平台侧、没置 errno，调用方按文件类通道读就是残值";
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument) << "错误码只置在平台侧、没置 errno，调用方按文件类通道读就是残值";
 
         PlatformError::setLastErrorCode(0);
-        EXPECT_EQ(FileDescriptor::write(writeDescriptor, buffer, oversizedLength), -1)
-                << "超限的写入长度宁可失败，也不能少写字节却回报成功";
+        EXPECT_EQ(FileDescriptor::write(writeDescriptor, buffer, oversizedLength), -1) << "超限的写入长度宁可失败，也不能少写字节却回报成功";
         EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
         EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument);
 
@@ -188,8 +184,7 @@ namespace AsynGyanis::Platform
         const auto  deadline   = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
         while (totalRead < payload.size() && std::chrono::steady_clock::now() < deadline)
         {
-            const ssize_t bytesRead = FileDescriptor::read(readDescriptor, buffer + totalRead,
-                                                           payload.size() - totalRead);
+            const ssize_t bytesRead = FileDescriptor::read(readDescriptor, buffer + totalRead, payload.size() - totalRead);
             if (bytesRead > 0)
             {
                 totalRead += static_cast<std::size_t>(bytesRead);
@@ -277,10 +272,8 @@ namespace AsynGyanis::Platform
         constexpr std::size_t wrappingLength = static_cast<std::size_t>(1) << 32;
         char                  buffer[1]      = {};
 
-        EXPECT_EQ(FileDescriptor::read(readDescriptor, buffer, wrappingLength), -1)
-                << "长度回绕成 0 会安静地什么也没读，而 0 在本接口里另有「对端关闭」的含义";
-        EXPECT_EQ(FileDescriptor::write(writeDescriptor, buffer, wrappingLength), -1)
-                << "写侧同样的回绕会报成「发送了 0 字节」，调用方以为已经发完";
+        EXPECT_EQ(FileDescriptor::read(readDescriptor, buffer, wrappingLength), -1) << "长度回绕成 0 会安静地什么也没读，而 0 在本接口里另有「对端关闭」的含义";
+        EXPECT_EQ(FileDescriptor::write(writeDescriptor, buffer, wrappingLength), -1) << "写侧同样的回绕会报成「发送了 0 字节」，调用方以为已经发完";
 
         FileDescriptor::close(readDescriptor);
         FileDescriptor::close(writeDescriptor);

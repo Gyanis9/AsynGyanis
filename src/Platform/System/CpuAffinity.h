@@ -50,8 +50,7 @@ namespace AsynGyanis::Platform
          * @param periodMicroseconds 调度周期长度（微秒）；≤0 表示读不到有效周期
          * @return std::size_t 等效核数；不设限或周期无效时返回 0，由调用方按「没有这条约束」处理
          */
-        [[nodiscard]] static std::size_t coresFromCgroupQuota(std::int64_t quotaMicroseconds,
-                                                              std::int64_t periodMicroseconds) noexcept;
+        [[nodiscard]] static std::size_t coresFromCgroupQuota(std::int64_t quotaMicroseconds, std::int64_t periodMicroseconds) noexcept;
 
         /**
          * @brief 从 /proc/self/cgroup 的文本里取出本进程所在 cgroup 的相对路径

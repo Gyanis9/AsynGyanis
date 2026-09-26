@@ -33,9 +33,9 @@
 namespace AsynGyanis::Database
 {
 
-    using TestSupport::containsLocalizedText;
     using TestSupport::asInteger;
     using TestSupport::asText;
+    using TestSupport::containsLocalizedText;
     using TestSupport::executeRequired;
     namespace
     {
@@ -44,46 +44,39 @@ namespace AsynGyanis::Database
 
         /// 本机实测约 21 秒的递归统计（Python 的同款查询实测 2 百万行 210 毫秒，这里取 100 倍）：
         /// 语句时限一生效就应当在毫秒级截断它，用作「打断确实发生了」的下界判据
-        constexpr const char *kUnboundedCountSql =
-                "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 200000000)"
-                " SELECT count(*) FROM tick";
+        constexpr const char *kUnboundedCountSql = "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 200000000)"
+                                                   " SELECT count(*) FROM tick";
 
         /// 本机实测约 0.8 秒的递归统计：既长到能被 20 毫秒的时限截断，又短到能放宽时限后当场跑完
-        constexpr const char *kSlowCountSql =
-                "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 8000000)"
-                " SELECT count(*) FROM tick";
+        constexpr const char *kSlowCountSql = "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 8000000)"
+                                              " SELECT count(*) FROM tick";
 
         /// 上式在时限放宽后的正确返回值，一并钉住「打断的不是算错了的查询」
         constexpr std::int64_t kSlowCountExpectedValue = 8000000;
 
         /// 本机实测约 0.2 秒的递归统计：只用来证明非正超时没被当成「立即打断」
-        constexpr const char kQuickCountSql[] =
-                "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 2000000)"
-                " SELECT count(*) FROM tick";
+        constexpr const char kQuickCountSql[] = "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 2000000)"
+                                                " SELECT count(*) FROM tick";
 
         /// 超过结果集物化上限（256 行）的单列查询：execute() 返回后行仍要靠 next() 逐条取
-        constexpr const char kStreamingRowCountSql[] =
-                "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 400)"
-                " SELECT n FROM tick";
+        constexpr const char kStreamingRowCountSql[] = "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 400)"
+                                                       " SELECT n FROM tick";
 
         /// 上述游标查询的总行数，与语句里的上限一致
         constexpr std::size_t kStreamingRowCount = 400;
 
         /// 建表样板：一列主键 + 文本 + 整数 + 浮点 + 整型布尔位 + 二进制，覆盖全部映射分支
-        constexpr const char *kCreateUsersTableSql =
-                "CREATE TABLE users ("
-                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                " name TEXT NOT NULL,"
-                " age INTEGER,"
-                " score REAL,"
-                " active INTEGER NOT NULL DEFAULT 1,"
-                " payload BLOB)";
+        constexpr const char *kCreateUsersTableSql = "CREATE TABLE users ("
+                                                     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                                                     " name TEXT NOT NULL,"
+                                                     " age INTEGER,"
+                                                     " score REAL,"
+                                                     " active INTEGER NOT NULL DEFAULT 1,"
+                                                     " payload BLOB)";
 
         /// 样本数据：三行的 rowid 依次为 1..3，第三条只写 name，其余列走默认值与 NULL
-        constexpr const char *kInsertAliceSql =
-                "INSERT INTO users (name, age, score, active, payload) VALUES ('Alice', 30, 95.5, 1, x'5c0041')";
-        constexpr const char *kInsertBobSql =
-                "INSERT INTO users (name, age, score, active) VALUES ('Bob', 25, 60.25, 0)";
+        constexpr const char *kInsertAliceSql = "INSERT INTO users (name, age, score, active, payload) VALUES ('Alice', 30, 95.5, 1, x'5c0041')";
+        constexpr const char *kInsertBobSql   = "INSERT INTO users (name, age, score, active) VALUES ('Bob', 25, 60.25, 0)";
         constexpr const char *kInsertCarolSql = "INSERT INTO users (name) VALUES ('Carol')";
 
         /**
@@ -156,8 +149,7 @@ namespace AsynGyanis::Database
             m_connection = std::make_unique<SqliteConnection>(ConnectionConfig::sqliteDefault());
             ASSERT_TRUE(m_connection->connect()) << m_connection->lastError();
 
-            constexpr std::array<const char *, 4> kSeedCommands = {
-                    kCreateUsersTableSql, kInsertAliceSql, kInsertBobSql, kInsertCarolSql};
+            constexpr std::array<const char *, 4> kSeedCommands = {kCreateUsersTableSql, kInsertAliceSql, kInsertBobSql, kInsertCarolSql};
             for (const char *seedCommand: kSeedCommands)
             {
                 const std::unique_ptr<DatabaseResult> seedResult = m_connection->execute(seedCommand);
@@ -430,9 +422,8 @@ namespace AsynGyanis::Database
     TEST(SqliteConnection, ConnectIntoMissingDirectoryFailsAndReportsRequestedPath)
     {
         // 父目录不存在且刻意不创建：SQLite 只能报「打不开文件」，这是无需权限即可稳定复现的失败路径
-        const std::filesystem::path missingDirectoryPath = std::filesystem::temp_directory_path() /
-                                                           TestSupport::makeUniqueDatabaseName("MissingDirectory") /
-                                                           "nested" / "database.db";
+        const std::filesystem::path missingDirectoryPath =
+                std::filesystem::temp_directory_path() / TestSupport::makeUniqueDatabaseName("MissingDirectory") / "nested" / "database.db";
         ASSERT_FALSE(std::filesystem::exists(missingDirectoryPath.parent_path()));
 
         ConnectionConfig configuration;
@@ -699,8 +690,7 @@ namespace AsynGyanis::Database
             connection.setQueryTimeout(timeoutSetting);
             ASSERT_TRUE(connection.connect()) << connection.lastError();
 
-            EXPECT_EQ(readScalarInteger(connection, "PRAGMA busy_timeout"), std::optional<std::int64_t>(0))
-                    << "queryTimeout=" << timeoutSetting;
+            EXPECT_EQ(readScalarInteger(connection, "PRAGMA busy_timeout"), std::optional<std::int64_t>(0)) << "queryTimeout=" << timeoutSetting;
         }
     }
 
@@ -710,10 +700,9 @@ namespace AsynGyanis::Database
         // 这条查询不受界要跑数十秒，时限 100 毫秒：用例本身因此只花几十毫秒
         connection().setQueryTimeout(100);
 
-        const auto                        startedAt = std::chrono::steady_clock::now();
-        const std::unique_ptr<DatabaseResult> result = connection().execute(kUnboundedCountSql);
-        const auto                        elapsedMilliseconds =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
+        const auto                            startedAt           = std::chrono::steady_clock::now();
+        const std::unique_ptr<DatabaseResult> result              = connection().execute(kUnboundedCountSql);
+        const auto                            elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
 
         ASSERT_EQ(result, nullptr) << "长查询没有被语句时限打断，耗时 " << elapsedMilliseconds << " 毫秒";
         EXPECT_TRUE(containsText(connection().lastError(), "时限")) << connection().lastError();
@@ -810,8 +799,7 @@ namespace AsynGyanis::Database
 
         // 库文件必须落在系统临时目录，而不是测试进程的当前工作目录——否则会往源码树里写残留。
         // Windows 的 temp_directory_path() 带结尾分隔符，两侧都先做路径归一化再比较
-        EXPECT_EQ(std::filesystem::weakly_canonical(m_databaseFile.path().parent_path()),
-                  std::filesystem::weakly_canonical(std::filesystem::temp_directory_path()));
+        EXPECT_EQ(std::filesystem::weakly_canonical(m_databaseFile.path().parent_path()), std::filesystem::weakly_canonical(std::filesystem::temp_directory_path()));
 
         const std::unique_ptr<DatabaseResult> result = executeRequired(connection(), "SELECT 1");
         ASSERT_NE(result, nullptr);
@@ -891,8 +879,7 @@ namespace AsynGyanis::Database
     /** @brief 钉住工厂交出的基类指针能对配置的文件读写 */
     TEST_F(SqliteTemporaryFileDatabase, FactoryCreatedConnectionWritesAndReadsConfiguredFile)
     {
-        const std::unique_ptr<DatabaseConnection> connection =
-                DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
+        const std::unique_ptr<DatabaseConnection> connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
 
         // 工厂交出的是基类指针：SQLite 专有信息通过基类接口 + 类型枚举间接确认
         ASSERT_NE(connection, nullptr);
@@ -940,8 +927,7 @@ namespace AsynGyanis::Database
         connection.resetSessionState();
 
         // 事务被滚掉：未提交的行随之消失，也就是没有串给下一个借用者
-        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t"), std::optional<std::int64_t>(0))
-                << "归还时没有滚掉未提交的事务：下一个借用者会继承上一笔事务";
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t"), std::optional<std::int64_t>(0)) << "归还时没有滚掉未提交的事务：下一个借用者会继承上一笔事务";
 
         // 幂等：没有活动事务时再调一次什么都不做，也不留下错误文本
         EXPECT_NO_THROW(connection.resetSessionState());
@@ -965,22 +951,20 @@ namespace AsynGyanis::Database
         for (std::size_t roundIndex = 0; roundIndex < kRoundCount; ++roundIndex)
         {
             // 占位符顺序即绑定顺序：先 name 后 id
-            const std::array<DatabaseValue, 2> parameters{
-                    "round-" + std::to_string(roundIndex), static_cast<std::int64_t>((roundIndex % 3U) + 1U)};
-            const std::unique_ptr<DatabaseResult> result = connection.execute(
-                    "UPDATE t SET name = ? WHERE id = ?", std::span<const DatabaseValue>(parameters));
+            const std::array<DatabaseValue, 2>    parameters{"round-" + std::to_string(roundIndex), static_cast<std::int64_t>((roundIndex % 3U) + 1U)};
+            const std::unique_ptr<DatabaseResult> result = connection.execute("UPDATE t SET name = ? WHERE id = ?", std::span<const DatabaseValue>(parameters));
             ASSERT_NE(result, nullptr) << "第 " << roundIndex << " 轮失败：" << connection.lastError();
             EXPECT_EQ(result->affectedRowCount(), 1) << "第 " << roundIndex << " 轮一行都没改到：复用的游标没有回到可重跑状态";
         }
 
         // 轮 i 写 id = i % 3 + 1，故五轮下来 id1 最后被第 3 轮改写、id2 被第 4 轮、id3 被第 2 轮。
         // 逐行核对最终值：只要有一轮的绑定残留到了下一轮（或游标没被 reset），这里就对不上
-        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 1 AND name = 'round-3'"),
-                  std::optional<std::int64_t>(1)) << "id 1 的最终值不是第 3 轮写的：绑定在复用间串了";
-        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 2 AND name = 'round-4'"),
-                  std::optional<std::int64_t>(1)) << "id 2 的最终值不是第 4 轮写的：绑定在复用间串了";
-        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 3 AND name = 'round-2'"),
-                  std::optional<std::int64_t>(1)) << "id 3 的最终值不是第 2 轮写的：绑定在复用间串了";
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 1 AND name = 'round-3'"), std::optional<std::int64_t>(1))
+                << "id 1 的最终值不是第 3 轮写的：绑定在复用间串了";
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 2 AND name = 'round-4'"), std::optional<std::int64_t>(1))
+                << "id 2 的最终值不是第 4 轮写的：绑定在复用间串了";
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 3 AND name = 'round-2'"), std::optional<std::int64_t>(1))
+                << "id 3 的最终值不是第 2 轮写的：绑定在复用间串了";
     }
 
     /**
@@ -1002,8 +986,7 @@ namespace AsynGyanis::Database
         for (std::int64_t rowIndex = 1; rowIndex <= 300; ++rowIndex)
         {
             const std::array<DatabaseValue, 2> parameters{rowIndex, "seed-" + std::to_string(rowIndex)};
-            ASSERT_NE(connection.execute("INSERT INTO seed_rows VALUES (?, ?)", std::span<const DatabaseValue>(parameters)), nullptr)
-                << connection.lastError();
+            ASSERT_NE(connection.execute("INSERT INTO seed_rows VALUES (?, ?)", std::span<const DatabaseValue>(parameters)), nullptr) << connection.lastError();
         }
 
         // 第一次用一个筛不出行的条件：0 行属于「已跑完」，这条文本因此被收进缓存
@@ -1015,16 +998,14 @@ namespace AsynGyanis::Database
 
         // 第二次换条件跑出 300 行（> 物化上限）：这次是缓存命中，而游标要跟着结果集活到
         // 调用方手里——归还路径必须先把这个键从表里摘掉，否则下面的逐出会释放一条仍在用的游标
-        const std::array<DatabaseValue, 1> warmBound{std::int64_t{0}};
-        const std::unique_ptr<DatabaseResult> heldSelection =
-                connection.execute(kSelectionSql, std::span<const DatabaseValue>(warmBound));
+        const std::array<DatabaseValue, 1>    warmBound{std::int64_t{0}};
+        const std::unique_ptr<DatabaseResult> heldSelection = connection.execute(kSelectionSql, std::span<const DatabaseValue>(warmBound));
         ASSERT_NE(heldSelection, nullptr) << connection.lastError();
         // 越界一格：70 条互不相同的写语句文本，从第 65 条起每次都触发表满逐出
         for (std::int64_t index = 1; index <= 70; ++index)
         {
-            const std::string statement =
-                    "INSERT INTO t VALUES (" + std::to_string(1000 + index) + ", 'bulk-" + std::to_string(index) + "')";
-            const std::unique_ptr<DatabaseResult> receipt = connection.execute(statement);
+            const std::string                     statement = "INSERT INTO t VALUES (" + std::to_string(1000 + index) + ", 'bulk-" + std::to_string(index) + "')";
+            const std::unique_ptr<DatabaseResult> receipt   = connection.execute(statement);
             ASSERT_NE(receipt, nullptr) << statement << "：" << connection.lastError();
             EXPECT_EQ(receipt->affectedRowCount(), 1) << statement;
         }
@@ -1039,10 +1020,8 @@ namespace AsynGyanis::Database
 
         // 最早入表的那几条已被逐出：再跑一次只能重新编译，行为与第一次一模一样
         const std::array<DatabaseValue, 2> rebind{std::string{"re-bound"}, std::int64_t{1001}};
-        ASSERT_NE(connection.execute("UPDATE t SET name = ? WHERE id = ?", std::span<const DatabaseValue>(rebind)), nullptr)
-            << connection.lastError();
-        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 1001 AND name = 're-bound'"),
-                  std::optional<std::int64_t>(1));
+        ASSERT_NE(connection.execute("UPDATE t SET name = ? WHERE id = ?", std::span<const DatabaseValue>(rebind)), nullptr) << connection.lastError();
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 1001 AND name = 're-bound'"), std::optional<std::int64_t>(1));
         EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t"), std::optional<std::int64_t>(70));
     }
 
@@ -1060,7 +1039,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
         ASSERT_NE(executeRequired(connection, "CREATE TABLE hot (id INTEGER PRIMARY KEY, tag TEXT NOT NULL)"), nullptr);
 
-        constexpr const char *kHotSql = "UPDATE hot SET tag = 'hot' WHERE id = ?";
+        constexpr const char              *kHotSql = "UPDATE hot SET tag = 'hot' WHERE id = ?";
         const std::array<DatabaseValue, 1> hotBound{std::int64_t{1}};
 
         // 第一次执行是编译（不入账为命中），第二次起才走缓存
@@ -1122,17 +1101,15 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(connection.connect()) << connection.lastError();
 
         // 换句柄即换库：内存库里那张表已经不在了，这条语句必须是重新编译的那一份在跑
-        ASSERT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM sqlite_master WHERE name = 't'"), std::optional<std::int64_t>(0))
-                << "重连没有拿到新的空库，用例的前提不成立";
+        ASSERT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM sqlite_master WHERE name = 't'"), std::optional<std::int64_t>(0)) << "重连没有拿到新的空库，用例的前提不成立";
         ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
         ASSERT_NE(executeRequired(connection, "INSERT INTO t VALUES (7, 'fresh')"), nullptr);
 
-        const std::array<DatabaseValue, 2> parameters{std::string{"after-reconnect"}, std::int64_t{7}};
+        const std::array<DatabaseValue, 2>    parameters{std::string{"after-reconnect"}, std::int64_t{7}};
         const std::unique_ptr<DatabaseResult> result = connection.execute(kUpdateSql, std::span<const DatabaseValue>(parameters));
         ASSERT_NE(result, nullptr) << connection.lastError();
         EXPECT_EQ(result->affectedRowCount(), 1) << "重连后同一条 SQL 用到了旧句柄上的游标";
-        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 7 AND name = 'after-reconnect'"),
-                  std::optional<std::int64_t>(1));
+        EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE id = 7 AND name = 'after-reconnect'"), std::optional<std::int64_t>(1));
     }
 
     /**
@@ -1149,9 +1126,7 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(connection.connect()) << connection.lastError();
         ASSERT_NE(executeRequired(connection, "CREATE TABLE t (id INTEGER PRIMARY KEY, value REAL)"), nullptr);
 
-        const std::array<double, 3> nonFiniteValues{std::numeric_limits<double>::quiet_NaN(),
-                                                    std::numeric_limits<double>::infinity(),
-                                                    -std::numeric_limits<double>::infinity()};
+        const std::array<double, 3> nonFiniteValues{std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
         for (std::size_t valueIndex = 0; valueIndex < nonFiniteValues.size(); ++valueIndex)
         {
             const std::array<DatabaseValue, 2> parameters{static_cast<std::int64_t>(valueIndex), nonFiniteValues[valueIndex]};
@@ -1168,14 +1143,11 @@ namespace AsynGyanis::Database
 
         // 有限取值不受影响，且能原样读回（含边界上的极大有限值）
         const std::array<DatabaseValue, 2> finiteParameters{std::int64_t{7}, 3.5};
-        ASSERT_NE(connection.execute("INSERT INTO t VALUES (?, ?)", std::span<const DatabaseValue>(finiteParameters)), nullptr)
-                << connection.lastError();
+        ASSERT_NE(connection.execute("INSERT INTO t VALUES (?, ?)", std::span<const DatabaseValue>(finiteParameters)), nullptr) << connection.lastError();
         const std::array<DatabaseValue, 2> extremeFiniteParameters{std::int64_t{8}, std::numeric_limits<double>::max()};
-        ASSERT_NE(connection.execute("INSERT INTO t VALUES (?, ?)", std::span<const DatabaseValue>(extremeFiniteParameters)), nullptr)
-                << connection.lastError();
+        ASSERT_NE(connection.execute("INSERT INTO t VALUES (?, ?)", std::span<const DatabaseValue>(extremeFiniteParameters)), nullptr) << connection.lastError();
 
-        const std::unique_ptr<DatabaseResult> readBack =
-                executeRequired(connection, "SELECT value FROM t WHERE id = 7");
+        const std::unique_ptr<DatabaseResult> readBack = executeRequired(connection, "SELECT value FROM t WHERE id = 7");
         ASSERT_TRUE(readBack->next());
         EXPECT_EQ(std::get<double>(readBack->getValue(0)), 3.5);
         EXPECT_EQ(readScalarInteger(connection, "SELECT COUNT(*) FROM t WHERE value IS NULL"), std::optional<std::int64_t>(0));
@@ -1196,16 +1168,14 @@ namespace AsynGyanis::Database
         ASSERT_NE(executeRequired(connection, "CREATE TABLE keep (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr);
         ASSERT_NE(executeRequired(connection, "INSERT INTO keep VALUES (1, 'same')"), nullptr);
 
-        const std::array<DatabaseValue, 2> parameters{std::string("same"), std::int64_t{1}};
-        const std::unique_ptr<DatabaseResult> noOpUpdate =
-                connection.execute("UPDATE keep SET name = ? WHERE id = ?", std::span<const DatabaseValue>(parameters));
+        const std::array<DatabaseValue, 2>    parameters{std::string("same"), std::int64_t{1}};
+        const std::unique_ptr<DatabaseResult> noOpUpdate = connection.execute("UPDATE keep SET name = ? WHERE id = ?", std::span<const DatabaseValue>(parameters));
         ASSERT_NE(noOpUpdate, nullptr) << connection.lastError();
         EXPECT_EQ(noOpUpdate->affectedRowCount(), 1) << "SQLite 按匹配并写入的行计数；这里变成 0 说明计数口径被换成了 MySQL 那套";
 
         // 行不存在才是 0：与上面那一格的差别正是文档要写清的点
-        const std::array<DatabaseValue, 2> missingParameters{std::string("same"), std::int64_t{999}};
-        const std::unique_ptr<DatabaseResult> missingUpdate =
-                connection.execute("UPDATE keep SET name = ? WHERE id = ?", std::span<const DatabaseValue>(missingParameters));
+        const std::array<DatabaseValue, 2>    missingParameters{std::string("same"), std::int64_t{999}};
+        const std::unique_ptr<DatabaseResult> missingUpdate = connection.execute("UPDATE keep SET name = ? WHERE id = ?", std::span<const DatabaseValue>(missingParameters));
         ASSERT_NE(missingUpdate, nullptr) << connection.lastError();
         EXPECT_EQ(missingUpdate->affectedRowCount(), 0);
     }

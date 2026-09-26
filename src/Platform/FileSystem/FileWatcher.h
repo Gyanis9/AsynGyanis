@@ -15,8 +15,8 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
-#include <memory>
 #include <list>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -155,7 +155,7 @@ namespace AsynGyanis::Platform
         /// 一条路径的上次触发时间；同时挂在防抖序表里，淘汰时按「最近触发」定序
         struct DebounceRecord
         {
-            std::string path;                                ///< 触发过事件的路径
+            std::string                           path;       ///< 触发过事件的路径
             std::chrono::steady_clock::time_point lastTime{}; ///< 上一次派发出去的时刻
         };
 

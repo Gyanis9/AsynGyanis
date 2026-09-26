@@ -7,8 +7,7 @@
 
 namespace AsynGyanis::Core
 {
-    IoContext::IoContext(const size_t threadCount) :
-        m_threadPool(threadCount)
+    IoContext::IoContext(const size_t threadCount) : m_threadPool(threadCount)
     {
         Platform::Socket::initialize();
     }
@@ -40,10 +39,7 @@ namespace AsynGyanis::Core
 
         // 启动完成后才进入等待，且谓词读取 m_stopped，锁外的 stop() 不会丢失唤醒
         std::unique_lock lock(m_mutex);
-        m_condition.wait(lock, [this]
-        {
-            return m_stopped;
-        });
+        m_condition.wait(lock, [this] { return m_stopped; });
     }
 
     void IoContext::stop()

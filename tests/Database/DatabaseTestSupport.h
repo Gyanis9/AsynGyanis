@@ -66,9 +66,9 @@ namespace AsynGyanis::Database::TestSupport
     {
         static std::atomic<unsigned int> sequenceCounter{0};
 
-        const std::string clockSalt     = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-        const std::string sequenceSalt  = std::to_string(sequenceCounter.fetch_add(1));
-        const std::string entropySalt   = std::to_string(std::random_device{}());
+        const std::string clockSalt    = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        const std::string sequenceSalt = std::to_string(sequenceCounter.fetch_add(1));
+        const std::string entropySalt  = std::to_string(std::random_device{}());
 
         return "AsynGyanis_Database_" + namePrefix + "_" + clockSalt + "_" + sequenceSalt + "_" + entropySalt;
     }
@@ -103,8 +103,7 @@ namespace AsynGyanis::Database::TestSupport
          * @brief 拼接临时目录下的唯一数据库路径，不创建文件
          * @param namePrefix 便于定位问题的用途前缀，如 "SqliteWal"
          */
-        explicit TemporaryDatabaseFile(const std::string &namePrefix)
-            : m_path(std::filesystem::temp_directory_path() / (makeUniqueDatabaseName(namePrefix) + ".db"))
+        explicit TemporaryDatabaseFile(const std::string &namePrefix) : m_path(std::filesystem::temp_directory_path() / (makeUniqueDatabaseName(namePrefix) + ".db"))
         {
         }
 
@@ -154,7 +153,7 @@ namespace AsynGyanis::Database::TestSupport
          */
         [[nodiscard]] std::uintmax_t fileSizeBytes() const
         {
-            std::error_code error;
+            std::error_code      error;
             const std::uintmax_t fileSize = std::filesystem::file_size(m_path, error);
             return error ? 0 : fileSize;
         }
@@ -212,8 +211,7 @@ namespace AsynGyanis::Database::TestSupport
      */
     [[nodiscard]] inline bool containsLocalizedText(const std::string &text)
     {
-        return std::any_of(text.begin(), text.end(),
-                           [](const char character) { return static_cast<unsigned char>(character) >= 0x80; });
+        return std::any_of(text.begin(), text.end(), [](const char character) { return static_cast<unsigned char>(character) >= 0x80; });
     }
 
     /**
@@ -244,7 +242,7 @@ namespace AsynGyanis::Database::TestSupport
             return fallback;
         }
 
-        int        parsedPort = 0;
+        int parsedPort                          = 0;
         const auto [remainderBegin, parseError] = std::from_chars(portText.data(), portText.data() + portText.size(), parsedPort);
 
         // 三种非法情形一律回落：解析失败、尾部有余文、超出 1..65535 的端口范围
@@ -295,15 +293,9 @@ namespace AsynGyanis::Database::TestSupport
      * @param value 右操作数参数值
      * @return Queryable::WhereCondition 条件节点
      */
-    [[nodiscard]] inline Queryable::WhereCondition makeComparison(const std::string &columnName,
-                                                                  const Queryable::SqlOperator sqlOperator,
-                                                                  const Queryable::ParameterValue &value)
+    [[nodiscard]] inline Queryable::WhereCondition makeComparison(const std::string &columnName, const Queryable::SqlOperator sqlOperator, const Queryable::ParameterValue &value)
     {
-        return Queryable::WhereCondition{
-            .left  = makeField(columnName),
-            .op    = sqlOperator,
-            .right = value
-        };
+        return Queryable::WhereCondition{.left = makeField(columnName), .op = sqlOperator, .right = value};
     }
 
     /**
@@ -313,15 +305,9 @@ namespace AsynGyanis::Database::TestSupport
      * @param rightColumnName 右列名
      * @return Queryable::WhereCondition 条件节点
      */
-    [[nodiscard]] inline Queryable::WhereCondition makeColumnComparison(const std::string &columnName,
-                                                                       const Queryable::SqlOperator sqlOperator,
-                                                                       const std::string &rightColumnName)
+    [[nodiscard]] inline Queryable::WhereCondition makeColumnComparison(const std::string &columnName, const Queryable::SqlOperator sqlOperator, const std::string &rightColumnName)
     {
-        return Queryable::WhereCondition{
-            .left  = makeField(columnName),
-            .op    = sqlOperator,
-            .right = makeField(rightColumnName)
-        };
+        return Queryable::WhereCondition{.left = makeField(columnName), .op = sqlOperator, .right = makeField(rightColumnName)};
     }
 
     /**
@@ -330,8 +316,7 @@ namespace AsynGyanis::Database::TestSupport
      * @param children 子条件列表
      * @return Queryable::WhereCondition 复合条件节点
      */
-    [[nodiscard]] inline Queryable::WhereCondition makeComposite(const Queryable::SqlOperator sqlOperator,
-                                                                std::vector<Queryable::WhereCondition> children)
+    [[nodiscard]] inline Queryable::WhereCondition makeComposite(const Queryable::SqlOperator sqlOperator, std::vector<Queryable::WhereCondition> children)
     {
         Queryable::WhereCondition condition;
         condition.op       = sqlOperator;
@@ -347,9 +332,8 @@ namespace AsynGyanis::Database::TestSupport
      * @param values 值集合
      * @return Queryable::WhereCondition 条件节点
      */
-    [[nodiscard]] inline Queryable::WhereCondition makeInCondition(const std::string &columnName,
-                                                                  const Queryable::SqlOperator sqlOperator,
-                                                                  std::vector<Queryable::ParameterValue> values)
+    [[nodiscard]] inline Queryable::WhereCondition makeInCondition(const std::string &columnName, const Queryable::SqlOperator sqlOperator,
+                                                                   std::vector<Queryable::ParameterValue> values)
     {
         Queryable::WhereCondition condition;
         condition.left     = makeField(columnName);

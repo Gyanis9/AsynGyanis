@@ -23,9 +23,7 @@ namespace AsynGyanis::Platform
          */
         HANDLE createWaitableTimer()
         {
-            if (HANDLE timer = ::CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-                                                        TIMER_ALL_ACCESS);
-                timer != nullptr)
+            if (HANDLE timer = ::CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS); timer != nullptr)
             {
                 return timer;
             }
@@ -52,8 +50,8 @@ namespace AsynGyanis::Platform
         {
             // 一次登记长期有效：每次到期后线程池自己重挂等待，因此武装只是改期，不再建/删内核对象。
             // 等待上限取最大毫秒数（约 24.8 天），正常生命周期内不会因等待超时而误醒
-            if (!::RegisterWaitForSingleObject(&m_waitRegistration, m_waitableTimer, &TimerFileDescriptor::timerCallback,
-                                               this, kMaximumDueTimeMilliseconds, WT_EXECUTEINTIMERTHREAD))
+            if (!::RegisterWaitForSingleObject(&m_waitRegistration, m_waitableTimer, &TimerFileDescriptor::timerCallback, this, kMaximumDueTimeMilliseconds,
+                                               WT_EXECUTEINTIMERTHREAD))
             {
                 m_waitRegistration = nullptr;
                 ::CloseHandle(m_waitableTimer);
@@ -96,8 +94,7 @@ namespace AsynGyanis::Platform
 #if ASYN_PLATFORM_LINUX
         return FileDescriptor::isValid(m_fileDescriptor);
 #else
-        return FileDescriptor::isValid(m_fileDescriptor) && FileDescriptor::isValid(m_writeDescriptor)
-               && m_waitableTimer != nullptr && m_waitRegistration != nullptr;
+        return FileDescriptor::isValid(m_fileDescriptor) && FileDescriptor::isValid(m_writeDescriptor) && m_waitableTimer != nullptr && m_waitRegistration != nullptr;
 #endif
     }
 
@@ -126,8 +123,7 @@ namespace AsynGyanis::Platform
         }
         // 负 due 是「相对此刻」，与调用方传的剩余时长同口径；也免掉与循环外线程共享绝对时钟的麻烦
         LARGE_INTEGER due{};
-        due.QuadPart = -static_cast<LONGLONG>(std::min<long long>(duration.count(), kMaximumDueTimeMilliseconds))
-                       * kHundredNanosecondsPerMillisecond;
+        due.QuadPart = -static_cast<LONGLONG>(std::min<long long>(duration.count(), kMaximumDueTimeMilliseconds)) * kHundredNanosecondsPerMillisecond;
         // period 取 0 即一次性，语义与 Linux 侧不重复触发的 itimerspec 一致
         return ::SetWaitableTimer(m_waitableTimer, &due, 0, nullptr, nullptr, FALSE) != FALSE;
 #endif

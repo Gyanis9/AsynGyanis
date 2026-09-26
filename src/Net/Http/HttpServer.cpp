@@ -13,9 +13,9 @@
 #include "Net/Http2/Http2Session.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/FileSystem/FileSystem.h"
-#include "Platform/Platform.h"
 #include "Platform/IO/FileContents.h"
 #include "Platform/IO/MemoryMappedFile.h"
+#include "Platform/Platform.h"
 
 #include <array>
 #include <cctype>
@@ -63,9 +63,7 @@ namespace AsynGyanis::Net
          */
         constexpr bool isHexadecimalDigit(const char character)
         {
-            return (character >= '0' && character <= '9') ||
-                   (character >= 'a' && character <= 'f') ||
-                   (character >= 'A' && character <= 'F');
+            return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F');
         }
 
         /**
@@ -183,11 +181,11 @@ namespace AsynGyanis::Net
 
             // 逐段检查并重组：剥掉前导 '/'，按 '/' 切开
             const std::string_view segmentsView(decodedPath.data() + 1, decodedPath.size() - 1);
-            std::string_view remainder = segmentsView;
+            std::string_view       remainder = segmentsView;
 
             while (!remainder.empty())
             {
-                const std::size_t slashPosition = remainder.find('/');
+                const std::size_t      slashPosition  = remainder.find('/');
                 const std::string_view currentSegment = remainder.substr(0, slashPosition);
 
                 // '..' 一律拒绝：静态服务没有「往上走一级」的正当需求，
@@ -269,7 +267,7 @@ namespace AsynGyanis::Net
             {
                 return false;
             }
-            std::uintmax_t parsedValue = 0;
+            std::uintmax_t parsedValue         = 0;
             const auto [endPointer, errorCode] = std::from_chars(text.data(), text.data() + text.size(), parsedValue);
             if (errorCode != std::errc() || endPointer != text.data() + text.size())
             {
@@ -289,22 +287,21 @@ namespace AsynGyanis::Net
          * @param buffer 输出缓冲，容量恰为 kMaximumEtagTextBytes
          * @return 形如 "\"1a-5f2c3d4e\"" 的带双引号标签；大小或修改时间任一变化都会改变它
          */
-        std::string_view makeStrongEtag(const std::uintmax_t fileSize, const std::int64_t lastWriteSeconds,
-                                        std::array<char, kMaximumEtagTextBytes> &buffer)
+        std::string_view makeStrongEtag(const std::uintmax_t fileSize, const std::int64_t lastWriteSeconds, std::array<char, kMaximumEtagTextBytes> &buffer)
         {
             // 写法与旧的「两段 to_chars 再拼进 string」逐字节一致：同一个十六进制基数、同一个字段
             // 次序，只是目标换成了调用方的缓冲。这段文本只活到 setHeader 把内容拷走，按值交出就是
             // 每个静态请求一份超出小串内联缓冲的堆分配
             std::size_t cursor = 0;
-            buffer[cursor++] = '"';
+            buffer[cursor++]   = '"';
             // 缓冲按上限算足（1+16+1+17+1 = 36），仍按剩余区间逐段交出：to_chars 写不下只会返回
             // 错误而不越界
             const auto sizeResult = std::to_chars(buffer.data() + cursor, buffer.data() + buffer.size(), fileSize, 16);
-            cursor = static_cast<std::size_t>(sizeResult.ptr - buffer.data());
-            buffer[cursor++] = '-';
+            cursor                = static_cast<std::size_t>(sizeResult.ptr - buffer.data());
+            buffer[cursor++]      = '-';
             const auto timeResult = std::to_chars(buffer.data() + cursor, buffer.data() + buffer.size(), lastWriteSeconds, 16);
-            cursor = static_cast<std::size_t>(timeResult.ptr - buffer.data());
-            buffer[cursor++] = '"';
+            cursor                = static_cast<std::size_t>(timeResult.ptr - buffer.data());
+            buffer[cursor++]      = '"';
             return std::string_view(buffer.data(), cursor);
         }
 
@@ -336,8 +333,8 @@ namespace AsynGyanis::Net
             std::string_view remainder = listValue;
             while (true)
             {
-                const std::size_t commaPosition = remainder.find(',');
-                const std::string_view candidate = trimOptionalWhitespace(remainder.substr(0, commaPosition));
+                const std::size_t      commaPosition = remainder.find(',');
+                const std::string_view candidate     = trimOptionalWhitespace(remainder.substr(0, commaPosition));
                 if (candidate == "*" || stripWeakPrefix(candidate) == entityTag)
                 {
                     return true;
@@ -484,7 +481,7 @@ namespace AsynGyanis::Net
                     return RangeVerdict::Unsatisfiable;
                 }
                 byteRange.start = (suffixLength >= representationSize) ? 0 : representationSize - suffixLength;
-                byteRange.end = representationSize - 1;
+                byteRange.end   = representationSize - 1;
                 return RangeVerdict::Satisfiable;
             }
 
@@ -505,8 +502,8 @@ namespace AsynGyanis::Net
                 return RangeVerdict::Unsatisfiable;
             }
 
-            const std::string_view endText = rangeSpec.substr(dashPosition + 1);
-            std::uintmax_t endValue = representationSize - 1;
+            const std::string_view endText  = rangeSpec.substr(dashPosition + 1);
+            std::uintmax_t         endValue = representationSize - 1;
             if (!endText.empty())
             {
                 if (!parseUnsignedDecimal(endText, endValue))
@@ -525,7 +522,7 @@ namespace AsynGyanis::Net
             }
 
             byteRange.start = startValue;
-            byteRange.end = endValue;
+            byteRange.end   = endValue;
             return RangeVerdict::Satisfiable;
         }
 
@@ -594,8 +591,7 @@ namespace AsynGyanis::Net
             std::error_code pathError;
             // URI 解码给出的是 UTF-8 文本，先按 UTF-8 解成路径对象再拼接：直接把窄串交给 path，Windows
             // 会按本地代码页解释这段字节，非 ASCII 的名字因此永远指向另一个目录项（一律 404）
-            const std::filesystem::path candidatePath
-                    = std::filesystem::weakly_canonical(settings->rootDirectory / Platform::FileSystem::pathFromUtf8(relativeText), pathError);
+            const std::filesystem::path candidatePath = std::filesystem::weakly_canonical(settings->rootDirectory / Platform::FileSystem::pathFromUtf8(relativeText), pathError);
             if (pathError)
             {
                 // 归一化失败多因路径过长、字符集不支持或中途权限不足：与「不存在」同权重，回 404
@@ -647,10 +643,9 @@ namespace AsynGyanis::Net
             // 两份验证器文本都落在栈上：它们只活到 setHeader 把内容拷进响应的头部存储为止，
             // 按 std::string 交回就是每请求两次超出内联缓冲的堆分配（ETag 最长 36、日期定长 29）
             std::array<char, kMaximumEtagTextBytes> etagBuffer{};
-            const std::string_view entityTagText = makeStrongEtag(fileSize, lastWriteSeconds, etagBuffer);
-            std::array<char, kHttpDateTextLength> lastModifiedBuffer{};
-            const std::string_view lastModifiedText = formatHttpDate(
-                    std::chrono::system_clock::time_point(std::chrono::seconds(lastWriteSeconds)), lastModifiedBuffer);
+            const std::string_view                  entityTagText = makeStrongEtag(fileSize, lastWriteSeconds, etagBuffer);
+            std::array<char, kHttpDateTextLength>   lastModifiedBuffer{};
+            const std::string_view lastModifiedText = formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(lastWriteSeconds)), lastModifiedBuffer);
             // MIME 只看最后一段扩展名，因此只把扩展名按 UTF-8 出串：整条路径的文本要一次堆分配，
             // 而扩展名短到能留在小串内联里。两条都不走 path::string()——Windows 上它按本地代码页出串，
             // 代码页装不下的名字会在这里抛出，而这条正站在每个静态请求的路上
@@ -683,9 +678,9 @@ namespace AsynGyanis::Net
             }
 
             // Range：仅在 If-Range 放行时解析，不放行时按 200 全量
-            ByteRange byteRange{};
-            RangeVerdict rangeVerdict = RangeVerdict::Ignored;
-            const std::optional<std::string> rangeHeader = request.getHeader("range");
+            ByteRange                        byteRange{};
+            RangeVerdict                     rangeVerdict = RangeVerdict::Ignored;
+            const std::optional<std::string> rangeHeader  = request.getHeader("range");
             if (rangeHeader.has_value() && isRangeApplicable(request, entityTagText, lastWriteSeconds))
             {
                 rangeVerdict = parseSingleByteRange(*rangeHeader, fileSize, byteRange);
@@ -707,9 +702,7 @@ namespace AsynGyanis::Net
 #if !ASYN_PLATFORM_WIN32
             const auto prepareMappedFile = [&]() -> std::shared_ptr<const Platform::MemoryMappedFile>
             {
-                if (const std::shared_ptr<const Platform::MemoryMappedFile> cached =
-                        settings->mappingCache->find(candidatePath, *fileBasicInfo);
-                    cached != nullptr)
+                if (const std::shared_ptr<const Platform::MemoryMappedFile> cached = settings->mappingCache->find(candidatePath, *fileBasicInfo); cached != nullptr)
                 {
                     return cached;
                 }
@@ -737,8 +730,8 @@ namespace AsynGyanis::Net
                 // 发出去的是新版本的字节、配的是旧版本的验证器，客户端会把这份内容长期挂在旧 ETag 下。
                 // 这里在登记之前判，对不上就不登记（登记了会让后续请求按旧元数据命中这份新映射）
                 const std::optional<Platform::FileBasicInfo> mappedAs = mappedFile->openedFileInfo();
-                if (!mappedAs.has_value() || mappedAs->sizeBytes != fileSize ||
-                    mappedAs->lastWriteSeconds != lastWriteSeconds || mappedAs->identityTag != fileBasicInfo->identityTag)
+                if (!mappedAs.has_value() || mappedAs->sizeBytes != fileSize || mappedAs->lastWriteSeconds != lastWriteSeconds ||
+                    mappedAs->identityTag != fileBasicInfo->identityTag)
                 {
                     response.setStatus(500);
                     response.setBody("Internal Server Error");
@@ -755,12 +748,9 @@ namespace AsynGyanis::Net
 
             // 正文取哪段、取多少：206 只给区间那一段，200 给整份。HEAD 报的 content-length 也取自
             // 这两个数，与「同一个请求的 GET 会发多大」严格一致
-            const std::size_t bodyOffset = rangeVerdict == RangeVerdict::Satisfiable
-                                               ? static_cast<std::size_t>(byteRange.start)
-                                               : 0U;
-            const std::size_t bodyLength = rangeVerdict == RangeVerdict::Satisfiable
-                                               ? static_cast<std::size_t>(byteRange.end - byteRange.start + 1)
-                                               : static_cast<std::size_t>(fileSize);
+            const std::size_t bodyOffset = rangeVerdict == RangeVerdict::Satisfiable ? static_cast<std::size_t>(byteRange.start) : 0U;
+            const std::size_t bodyLength =
+                    rangeVerdict == RangeVerdict::Satisfiable ? static_cast<std::size_t>(byteRange.end - byteRange.start + 1) : static_cast<std::size_t>(fileSize);
 
             // 表示头部一旦写下就与状态码绑定了，所以正文必须在此之前拿稳：这里失败的话，响应还只是
             // 一条光秃秃的错误（content-type + 正文），不会留下「500 带 Content-Range 与 ETag」这种
@@ -774,18 +764,16 @@ namespace AsynGyanis::Net
             // 复用），第二条请求起这条路上一次堆分配都不发生
             if (!isHeadRequest)
             {
-                std::string &bodyBuffer = response.prepareBodyBuffer(bodyLength);
-                Platform::FileBasicInfo openedBody;
-                const std::expected<std::size_t, std::error_code> readResult =
-                        Platform::readFileContentsInto(candidatePath, bodyOffset, bodyLength, bodyBuffer, &openedBody);
+                std::string                                      &bodyBuffer = response.prepareBodyBuffer(bodyLength);
+                Platform::FileBasicInfo                           openedBody;
+                const std::expected<std::size_t, std::error_code> readResult = Platform::readFileContentsInto(candidatePath, bodyOffset, bodyLength, bodyBuffer, &openedBody);
                 // 验证器取自查元数据那一次，正文取自这一次打开：两次之间文件被原子替换时，发出去的是
                 // 新版本的字节配的却是旧版本的 ETag/Last-Modified，客户端会把这份内容长期挂在旧验证器
                 // 下。两处必须是同一个对象，否则与短读一样按服务端故障收口
                 // 正文长度为 0 时那一步压根没打开文件（少一次系统调用），openedBody 也就无从填起：
                 // 空文件是一条合法表示，不能因为「比不了」被判成服务端故障
-                const bool isVersionMismatch = bodyLength > 0U &&
-                        (openedBody.sizeBytes != fileSize || openedBody.lastWriteSeconds != lastWriteSeconds ||
-                         openedBody.identityTag != fileBasicInfo->identityTag);
+                const bool isVersionMismatch = bodyLength > 0U && (openedBody.sizeBytes != fileSize || openedBody.lastWriteSeconds != lastWriteSeconds ||
+                                                                   openedBody.identityTag != fileBasicInfo->identityTag);
                 if (!readResult.has_value() || *readResult < bodyLength || isVersionMismatch)
                 {
                     // 两种情形都不是「可以发出去的正文」：文件在 stat 之后被删/改权限（TOCTOU 窗口），
@@ -808,8 +796,7 @@ namespace AsynGyanis::Net
 
                 // stat 与映射之间文件被截断：请求区间已落在映射之外，按 500 收口，
                 // 不让越界区间走到正文校验里变成异常
-                if (rangeVerdict == RangeVerdict::Satisfiable &&
-                    mappedFile->bytes().size() < static_cast<std::size_t>(byteRange.end) + 1)
+                if (rangeVerdict == RangeVerdict::Satisfiable && mappedFile->bytes().size() < static_cast<std::size_t>(byteRange.end) + 1)
                 {
                     response.setStatus(500);
                     response.setBody("Internal Server Error");
@@ -827,8 +814,7 @@ namespace AsynGyanis::Net
             if (rangeVerdict == RangeVerdict::Satisfiable)
             {
                 response.setStatus(206);
-                response.setHeader("content-range",
-                                   "bytes " + std::to_string(byteRange.start) + "-" + std::to_string(byteRange.end) + "/" + std::to_string(fileSize));
+                response.setHeader("content-range", "bytes " + std::to_string(byteRange.start) + "-" + std::to_string(byteRange.end) + "/" + std::to_string(fileSize));
 
                 // HEAD 只报「GET 会给出多大」：区间长度即 content-length，正文一个字节都不读
                 if (isHeadRequest)
@@ -865,9 +851,7 @@ namespace AsynGyanis::Net
     } // namespace
 
     HttpServer::HttpServer(Core::EventLoop &loop, const Core::InetAddress &address) :
-        TcpServer(loop, address),
-        m_limits(std::make_shared<const HttpServerLimits>()),
-        m_metrics(std::make_shared<HttpMetricsCollector>()),
+        TcpServer(loop, address), m_limits(std::make_shared<const HttpServerLimits>()), m_metrics(std::make_shared<HttpMetricsCollector>()),
         m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
     {
         // 默认限额、统计与 request-id 生成器同样构造即就绪，理由见 metricsCollector() 的说明
@@ -875,9 +859,7 @@ namespace AsynGyanis::Net
     }
 
     HttpServer::HttpServer(Core::EventLoop &loop, const int adoptedListeningDescriptor) :
-        TcpServer(loop, adoptedListeningDescriptor),
-        m_limits(std::make_shared<const HttpServerLimits>()),
-        m_metrics(std::make_shared<HttpMetricsCollector>()),
+        TcpServer(loop, adoptedListeningDescriptor), m_limits(std::make_shared<const HttpServerLimits>()), m_metrics(std::make_shared<HttpMetricsCollector>()),
         m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
     {
         // 与按地址构造的那一份同一接线：本服务器的连接数从一开始就并进自己的采集端
@@ -903,11 +885,10 @@ namespace AsynGyanis::Net
         // h2c 打开时明文连接进 HTTP/2 会话：它按先验知识直接进 HTTP/2 循环，不做协议嗅探
         if (m_isHttp2CleartextEnabled)
         {
-            return std::make_shared<Http2Session>(m_loop, std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
-                                                 m_memoryBudget, m_http2Configuration);
+            return std::make_shared<Http2Session>(m_loop, std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits, m_memoryBudget,
+                                                  m_http2Configuration);
         }
-        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits,
-                                             m_memoryBudget);
+        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits, m_memoryBudget);
     }
 
     void HttpServer::setHttp2Configuration(Http2ConnectionConfiguration configuration)
@@ -1034,10 +1015,7 @@ namespace AsynGyanis::Net
         }
 #endif
         m_settings->mappingCache = std::make_shared<StaticFileMappingCache>(mappedFileCountLimit);
-        router.any("*", [settings = m_settings](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-        {
-            co_await serveStaticFileRequest(request, response, settings);
-        });
+        router.any("*", [settings = m_settings](HttpRequest &request, HttpResponse &response) -> Core::Task<> { co_await serveStaticFileRequest(request, response, settings); });
     }
 
     void StaticFileService::setDirectory(const std::string &directoryPath)
@@ -1053,8 +1031,7 @@ namespace AsynGyanis::Net
         std::error_code canonicalError;
         // 配置里的目录文本按 UTF-8 解释：直接交给 path 会让 Windows 拿本地代码页读这段字节，中文站点
         // 目录会被规范化成另一个名字，之后每个请求都在那个名字下找不到的文件上
-        const std::filesystem::path canonicalRoot =
-            std::filesystem::weakly_canonical(Platform::FileSystem::pathFromUtf8(directoryPath), canonicalError);
+        const std::filesystem::path canonicalRoot = std::filesystem::weakly_canonical(Platform::FileSystem::pathFromUtf8(directoryPath), canonicalError);
 
         // 规范化失败（无权限、路径过长）就关掉静态服务并记中文告警：
         // 把问题留在配置时刻，好过在每个请求上都复现一次不确定行为
@@ -1062,8 +1039,7 @@ namespace AsynGyanis::Net
         {
             m_settings->isEnabled = false;
             m_settings->rootDirectory.clear();
-            LOG_WARN_FMT("StaticFile: 静态目录规范化失败，已关闭静态文件服务。目录：{}，原因：{}",
-                         directoryPath, canonicalError.message());
+            LOG_WARN_FMT("StaticFile: 静态目录规范化失败，已关闭静态文件服务。目录：{}，原因：{}", directoryPath, canonicalError.message());
             return;
         }
 
@@ -1075,9 +1051,8 @@ namespace AsynGyanis::Net
         {
             m_settings->isEnabled = false;
             m_settings->rootDirectory.clear();
-            LOG_WARN_FMT("StaticFile: 静态目录不存在或不是目录，已关闭静态文件服务。目录：{}（规范化为 {}），原因：{}",
-                         directoryPath, Platform::FileSystem::utf8FromPath(canonicalRoot),
-                         existsError ? existsError.message() : "该路径不是一个已存在的目录");
+            LOG_WARN_FMT("StaticFile: 静态目录不存在或不是目录，已关闭静态文件服务。目录：{}（规范化为 {}），原因：{}", directoryPath,
+                         Platform::FileSystem::utf8FromPath(canonicalRoot), existsError ? existsError.message() : "该路径不是一个已存在的目录");
             return;
         }
 
@@ -1101,9 +1076,8 @@ namespace AsynGyanis::Net
     {
         // 值会被原样写进头部块：含 CR/LF/NUL 就等于让调用方提前结束头部块（响应拆分），
         // 与静态目录配置一致，问题留在配置时刻暴露并记中文告警，而不是每请求静默少一条头
-        if (cacheControl.has_value()
-            && (cacheControl->find('\r') != std::string::npos || cacheControl->find('\n') != std::string::npos
-                || cacheControl->find('\0') != std::string::npos))
+        if (cacheControl.has_value() &&
+            (cacheControl->find('\r') != std::string::npos || cacheControl->find('\n') != std::string::npos || cacheControl->find('\0') != std::string::npos))
         {
             m_settings->cacheControl.reset();
             LOG_WARN_FMT("StaticFile: 静态文件 Cache-Control 含非法字符（CR/LF/NUL），已忽略该配置。值：{}", *cacheControl);

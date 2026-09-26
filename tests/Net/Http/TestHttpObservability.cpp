@@ -73,8 +73,8 @@ namespace AsynGyanis::Net
          * @param timeout 等待上限
          * @return true 在时限内凑齐
          */
-        bool waitForTextOccurrences(const LoopbackClient &client, std::string &accumulated, const std::string_view expectedText,
-                                    const std::size_t expectedCount, const std::chrono::milliseconds timeout)
+        bool waitForTextOccurrences(const LoopbackClient &client, std::string &accumulated, const std::string_view expectedText, const std::size_t expectedCount,
+                                    const std::chrono::milliseconds timeout)
         {
             const auto deadline = std::chrono::steady_clock::now() + timeout;
             while (countTextOccurrences(accumulated, expectedText) < expectedCount)
@@ -182,8 +182,7 @@ namespace AsynGyanis::Net
 
         EXPECT_TRUE(looksLikeGeneratedRequestId(firstRequestId))
                 << "第 1 条响应的 request-id 形态不符合约定（应为 4 位十六进制前缀 + '-' + 16 位十六进制序号）：「" << firstRequestId << "」";
-        EXPECT_TRUE(looksLikeGeneratedRequestId(secondRequestId))
-                << "第 2 条响应的 request-id 形态不符合约定：「" << secondRequestId << "」";
+        EXPECT_TRUE(looksLikeGeneratedRequestId(secondRequestId)) << "第 2 条响应的 request-id 形态不符合约定：「" << secondRequestId << "」";
         EXPECT_NE(firstRequestId, secondRequestId) << "同一服务器上的两条请求拿到了同一个 request-id";
     }
 
@@ -204,8 +203,7 @@ namespace AsynGyanis::Net
         // 取 64 字节上限内的合法值：可见 ASCII，且带常见的前缀与连字符形态
         const std::string clientRequestId = "trace-id-from-client-42";
         std::string       receivedText;
-        ASSERT_TRUE(client.sendText(makeRequestText("GET /hello HTTP/1.1", {"x-request-id: " + clientRequestId}), kWaitTimeout))
-                << "带 x-request-id 的请求未能写入";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /hello HTTP/1.1", {"x-request-id: " + clientRequestId}), kWaitTimeout)) << "带 x-request-id 的请求未能写入";
         ASSERT_TRUE(waitForTextOccurrences(client, receivedText, "served-hello", 1, kWaitTimeout)) << "请求未得到完整响应";
 
         EXPECT_EQ(requestIdHeaderAt(receivedText, 0), clientRequestId) << "客户端自带的合法 request-id 没有被原样回显";
@@ -233,15 +231,12 @@ namespace AsynGyanis::Net
             std::string receivedText;
             ASSERT_TRUE(client.sendText(makeRequestText("GET /hello HTTP/1.1", {"x-request-id: " + unacceptableCase.value}), kWaitTimeout))
                     << "请求未能写入：" << unacceptableCase.description;
-            ASSERT_TRUE(waitForTextOccurrences(client, receivedText, "served-hello", 1, kWaitTimeout))
-                    << "请求未得到完整响应：" << unacceptableCase.description;
+            ASSERT_TRUE(waitForTextOccurrences(client, receivedText, "served-hello", 1, kWaitTimeout)) << "请求未得到完整响应：" << unacceptableCase.description;
 
             const std::string echoedRequestId = requestIdHeaderAt(receivedText, 0);
-            EXPECT_EQ(echoedRequestId.find("untrusted"), std::string::npos)
-                    << "不可信的 request-id 被回显进了响应头：" << unacceptableCase.description;
+            EXPECT_EQ(echoedRequestId.find("untrusted"), std::string::npos) << "不可信的 request-id 被回显进了响应头：" << unacceptableCase.description;
             EXPECT_NE(echoedRequestId, unacceptableCase.value) << "不可信的 request-id 被原样采信：" << unacceptableCase.description;
-            EXPECT_TRUE(looksLikeGeneratedRequestId(echoedRequestId))
-                    << "不可信取值没有被换成生成形态（而应「按客户端没给」处理）：「" << echoedRequestId << "」";
+            EXPECT_TRUE(looksLikeGeneratedRequestId(echoedRequestId)) << "不可信取值没有被换成生成形态（而应「按客户端没给」处理）：「" << echoedRequestId << "」";
         }
     }
 
@@ -267,19 +262,14 @@ namespace AsynGyanis::Net
         for (std::size_t requestIndex = 0; requestIndex < kSuccessfulRequestCount; ++requestIndex)
         {
             ASSERT_TRUE(client.sendText(helloRequestText(), kWaitTimeout)) << "第 " << requestIndex + 1 << " 条请求未能写入";
-            ASSERT_TRUE(waitForTextOccurrences(client, receivedText, "served-hello", requestIndex + 1, kWaitTimeout))
-                    << "第 " << requestIndex + 1 << " 条请求未得到完整响应";
+            ASSERT_TRUE(waitForTextOccurrences(client, receivedText, "served-hello", requestIndex + 1, kWaitTimeout)) << "第 " << requestIndex + 1 << " 条请求未得到完整响应";
         }
         ASSERT_TRUE(client.sendText(makeRequestText("GET /missing HTTP/1.1"), kWaitTimeout)) << "404 请求未能写入";
         ASSERT_TRUE(client.waitForStatusLines(receivedText, kTotalRequestCount, kWaitTimeout)) << "404 响应没有到达";
 
         // 响应发出与计数落账之间隔着一次协程恢复，因此按条件轮询而不是立刻断言
-        ASSERT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().stats().totalRequestCount >= kTotalRequestCount;
-                },
-                kWaitTimeout)) << "统计未在时限内记满 " << kTotalRequestCount << " 条请求";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().stats().totalRequestCount >= kTotalRequestCount; }, kWaitTimeout))
+                << "统计未在时限内记满 " << kTotalRequestCount << " 条请求";
 
         const HttpServerStats stats = fixture.server().stats();
         EXPECT_EQ(stats.totalRequestCount, kTotalRequestCount) << "累计请求条数不符（不含解析失败）";
@@ -288,8 +278,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(stats.status1xxCount, 0u) << "1xx 计数应为 0";
         EXPECT_EQ(stats.status3xxCount, 0u) << "3xx 计数应为 0";
         EXPECT_EQ(stats.status5xxCount, 0u) << "5xx 计数应为 0";
-        EXPECT_EQ(stats.latencySampleCount(), stats.totalRequestCount)
-                << "延迟直方图的样本数与请求条数不一致：有一条请求漏进了直方图";
+        EXPECT_EQ(stats.latencySampleCount(), stats.totalRequestCount) << "延迟直方图的样本数与请求条数不一致：有一条请求漏进了直方图";
         EXPECT_EQ(stats.badRequestCount, 0u) << "正常报文被记成了协议错误";
         EXPECT_GE(stats.activeConnectionCount, 1u) << "连接仍在服务，活跃连接数却是 0";
 
@@ -327,12 +316,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(client.waitForClosure(receivedText, kWaitTimeout)) << "空闲连接未被清扫协程收口";
         EXPECT_TRUE(receivedText.empty()) << "服务端在空闲连接上发了不该发的字节";
 
-        EXPECT_TRUE(waitForCondition(
-                [&fixture]
-                {
-                    return fixture.server().stats().timeoutClosedCount >= 1;
-                },
-                kWaitTimeout)) << "被超时收口的连接没有计入 timeoutClosedCount";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().stats().timeoutClosedCount >= 1; }, kWaitTimeout)) << "被超时收口的连接没有计入 timeoutClosedCount";
 
         const HttpServerStats stats = fixture.server().stats();
         // 断言下界而不是恰好相等：会话退出与「从连接管理器摘除」之间隔着一轮调度，
@@ -360,12 +344,8 @@ namespace AsynGyanis::Net
         ASSERT_NE(sharedCollector, nullptr);
 
         // 第二台在 start() 之前换接到同一份采集端：配置动作正是为此时机准备的
-        RunningHttpServerFixture shadowFixture(
-                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, {}, HttpParserLimits{},
-                [&sharedCollector](auto &server)
-                {
-                    server.setMetricsCollector(sharedCollector);
-                });
+        RunningHttpServerFixture shadowFixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, {}, HttpParserLimits{},
+                                               [&sharedCollector](auto &server) { server.setMetricsCollector(sharedCollector); });
         ASSERT_TRUE(shadowFixture.awaitRunning(kWaitTimeout)) << "共用采集端的第二台未在时限内进入接受循环";
 
         // 两条连接都要保持打开到断言之后：客户端一旦析构，活跃连接数就落回去了
@@ -382,12 +362,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(waitForTextOccurrences(shadowClient, shadowText, "served-hello", 1, kWaitTimeout)) << "第二台监听器上请求未得到完整响应";
 
         // 计数落在响应发完之后的那一轮恢复里，因此按条件轮询
-        ASSERT_TRUE(waitForCondition(
-                [&sharedCollector]
-                {
-                    return sharedCollector->snapshot().totalRequestCount >= 2;
-                },
-                kWaitTimeout)) << "两台服务器的请求没有并进同一份采集端";
+        ASSERT_TRUE(waitForCondition([&sharedCollector] { return sharedCollector->snapshot().totalRequestCount >= 2; }, kWaitTimeout)) << "两台服务器的请求没有并进同一份采集端";
 
         const HttpServerStats sharedStats = sharedCollector->snapshot();
         EXPECT_GE(sharedStats.activeConnectionCount, 2u) << "共用采集端的活跃连接数只报出了一台那一份";

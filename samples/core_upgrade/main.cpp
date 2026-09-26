@@ -16,8 +16,8 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
-#include <cstdint>
 #include <csignal>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -99,8 +99,7 @@ namespace
         const std::string text = path.string();
         if (text.empty() || text.size() > sizeof(sockaddr_un::sun_path) - 1U)
         {
-            Samples::printStartupError(std::format("交接通道路径长度 {} 超出 unix 套接字路径上限 {}",
-                                                   text.size(), sizeof(sockaddr_un::sun_path) - 1U));
+            Samples::printStartupError(std::format("交接通道路径长度 {} 超出 unix 套接字路径上限 {}", text.size(), sizeof(sockaddr_un::sun_path) - 1U));
             return -1;
         }
         const int descriptor = static_cast<int>(::socket(AF_UNIX, SOCK_STREAM, 0));
@@ -113,8 +112,7 @@ namespace
         address.sun_family = AF_UNIX;
         std::strncpy(address.sun_path, text.c_str(), sizeof(address.sun_path) - 1U);
         const bool isBound = ::unlink(text.c_str()) == 0 || errno == ENOENT;
-        if (isBound && (::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0
-                        || ::listen(descriptor, 4) != 0))
+        if (isBound && (::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0 || ::listen(descriptor, 4) != 0))
         {
             Platform::FileDescriptor::close(descriptor);
             ::umask(previousMask);
@@ -132,8 +130,7 @@ namespace
     /// 本代这一轮用的交接通道路径（放在临时目录里，按进程号错开，退出时删掉）
     std::filesystem::path channelPathForCurrentProcess()
     {
-        return std::filesystem::temp_directory_path()
-               / ("asyn-core-upgrade-" + std::to_string(Platform::ProcessInfo::currentProcessId()) + ".sock");
+        return std::filesystem::temp_directory_path() / ("asyn-core-upgrade-" + std::to_string(Platform::ProcessInfo::currentProcessId()) + ".sock");
     }
 
     /**
@@ -148,7 +145,9 @@ namespace
          * @brief 记下要在作用域结束时删掉的路径
          * @param path 套接字文件路径
          */
-        explicit ChannelPathGuard(std::filesystem::path path) : m_path(std::move(path)) {}
+        explicit ChannelPathGuard(std::filesystem::path path) : m_path(std::move(path))
+        {
+        }
 
         ChannelPathGuard(const ChannelPathGuard &) = delete;
 
@@ -179,8 +178,7 @@ namespace
             return -1;
         }
         sockaddr_in address = loopbackEndpoint(0U);
-        if (::bind(descriptor, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0
-            || ::listen(descriptor, 128) != 0)
+        if (::bind(descriptor, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 || ::listen(descriptor, 128) != 0)
         {
             Platform::FileDescriptor::close(descriptor);
             return -1;
@@ -240,14 +238,14 @@ namespace
     /// 两代注册同一份路由：把本进程 pid 报出去，答话者因此可辨认
     void registerRoutes(Net::Router &router)
     {
-        router.get("/pid", [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
-        {
-            response.setStatus(200);
-            response.setHeader("Content-Type", "application/json");
-            response.setBody(R"({"pid":)" + std::to_string(Platform::ProcessInfo::currentProcessId())
-                             + R"(,"generation":"alive"})");
-            co_return;
-        });
+        router.get("/pid",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "application/json");
+                       response.setBody(R"({"pid":)" + std::to_string(Platform::ProcessInfo::currentProcessId()) + R"(,"generation":"alive"})");
+                       co_return;
+                   });
     }
 
     /**
@@ -258,8 +256,8 @@ namespace
      */
     bool probeOnce(const std::uint16_t port, long &answeringPid)
     {
-        answeringPid = 0L;
-        const int    client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        answeringPid     = 0L;
+        const int client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
         if (client < 0)
         {
             return false;
@@ -279,8 +277,7 @@ namespace
         }
 
         static constexpr std::string_view kRequest = "GET /pid HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-        if (::send(client, kRequest.data(), static_cast<int>(kRequest.size()), 0)
-            != static_cast<int>(kRequest.size()))
+        if (::send(client, kRequest.data(), static_cast<int>(kRequest.size()), 0) != static_cast<int>(kRequest.size()))
         {
             Platform::FileDescriptor::close(client);
             return false;
@@ -328,8 +325,7 @@ namespace
      * @param targetPid 与 isStoppingAtTargetPid 搭配的目标进程号
      * @return int 这一轮里的失败次数
      */
-    int probePhase(const std::uint16_t port, const int attempts, std::vector<long> &answers,
-                   const bool isStoppingAtTargetPid, const long targetPid)
+    int probePhase(const std::uint16_t port, const int attempts, std::vector<long> &answers, const bool isStoppingAtTargetPid, const long targetPid)
     {
         int failures = 0;
         for (int attempt = 0; attempt < attempts; ++attempt)
@@ -342,8 +338,7 @@ namespace
                 {
                     return failures;
                 }
-            }
-            else
+            } else
             {
                 ++failures;
             }
@@ -443,10 +438,7 @@ int main(int argc, char **argv)
     Core::EventLoop loop;
     Net::HttpServer server(loop, serviceSocket);
     registerRoutes(server.router());
-    std::thread loopThread([&loop]
-    {
-        loop.run();
-    });
+    std::thread loopThread([&loop] { loop.run(); });
     // 循环已经在另一条线程上跑着：投递必须走 scheduleRemote（跨线程）
     Core::Task<void> listenTask = server.start();
     loop.scheduler().scheduleRemote(listenTask.handle());
@@ -458,8 +450,7 @@ int main(int argc, char **argv)
     const int         beforeHandoffFailures = probePhase(servicePort, kPhaseProbeCount, beforeHandoff, false, 0L);
     const int         servedByParent        = countAnswers(beforeHandoff, parentPid);
     samples.check(servedByParent == kPhaseProbeCount && beforeHandoffFailures == 0,
-                  std::format("交棒前 {} 次请求全部由本代答话（实际 {} 次，失败 {} 次）",
-                              kPhaseProbeCount, servedByParent, beforeHandoffFailures));
+                  std::format("交棒前 {} 次请求全部由本代答话（实际 {} 次，失败 {} 次）", kPhaseProbeCount, servedByParent, beforeHandoffFailures));
 
     const int channel = Platform::Socket::accept(channelListener, nullptr, nullptr);
     Platform::FileDescriptor::close(channelListener);
@@ -473,8 +464,7 @@ int main(int argc, char **argv)
     }
 
     // 交出去。本代不关：SCM_RIGHTS 让两代各持同一个开放文件描述的一份引用，收口的顺序决定端口有空窗没空窗
-    const bool isHandoffWritten =
-            Platform::Socket::writeListeningSocketHandoff(channel, serviceSocket, static_cast<std::uint64_t>(childPid));
+    const bool isHandoffWritten = Platform::Socket::writeListeningSocketHandoff(channel, serviceSocket, static_cast<std::uint64_t>(childPid));
     Platform::FileDescriptor::close(channel);
     if (!isHandoffWritten)
     {
@@ -490,8 +480,8 @@ int main(int argc, char **argv)
     const int         handoffPhaseFailures     = probePhase(servicePort, kHandoffWaitAttempts, afterHandoff, true, childPid);
     const int         servedByChildBeforeDrain = countAnswers(afterHandoff, childPid);
     samples.check(servedByChildBeforeDrain >= 1 && handoffPhaseFailures == 0,
-                  std::format("交棒后、本代收口前新一代答过话（答话 {} 次，本轮探测 {} 次，失败 {} 次）",
-                              servedByChildBeforeDrain, afterHandoff.size() + handoffPhaseFailures, handoffPhaseFailures));
+                  std::format("交棒后、本代收口前新一代答过话（答话 {} 次，本轮探测 {} 次，失败 {} 次）", servedByChildBeforeDrain, afterHandoff.size() + handoffPhaseFailures,
+                              handoffPhaseFailures));
 
     // 本代收口：drain 是堆帧协程，Task 要活到它跑完
     {
@@ -502,32 +492,26 @@ int main(int argc, char **argv)
 
     // 老一代退出之后，端口应当仍由新一代服务
     std::vector<long> afterDrain;
-    const int         afterDrainFailures = probePhase(servicePort, kPhaseProbeCount, afterDrain, false, 0L);
+    const int         afterDrainFailures      = probePhase(servicePort, kPhaseProbeCount, afterDrain, false, 0L);
     const int         servedByChildAfterDrain = countAnswers(afterDrain, childPid);
     samples.check(servedByChildAfterDrain == kPhaseProbeCount && afterDrainFailures == 0,
-                  std::format("本代收口后 {} 次请求全部由新一代答话（实际 {} 次，失败 {} 次）",
-                              kPhaseProbeCount, servedByChildAfterDrain, afterDrainFailures));
+                  std::format("本代收口后 {} 次请求全部由新一代答话（实际 {} 次，失败 {} 次）", kPhaseProbeCount, servedByChildAfterDrain, afterDrainFailures));
 
-    const int totalProbeCount = static_cast<int>(beforeHandoff.size()) + beforeHandoffFailures
-                                + static_cast<int>(afterHandoff.size()) + handoffPhaseFailures
-                                + static_cast<int>(afterDrain.size()) + afterDrainFailures;
+    const int totalProbeCount = static_cast<int>(beforeHandoff.size()) + beforeHandoffFailures + static_cast<int>(afterHandoff.size()) + handoffPhaseFailures +
+                                static_cast<int>(afterDrain.size()) + afterDrainFailures;
     const int totalFailures   = beforeHandoffFailures + handoffPhaseFailures + afterDrainFailures;
-    samples.check(totalFailures == 0,
-                  std::format("全程 {} 次探测零失败：换代期间端口没有一次没人接（失败 {} 次）", totalProbeCount, totalFailures));
+    samples.check(totalFailures == 0, std::format("全程 {} 次探测零失败：换代期间端口没有一次没人接（失败 {} 次）", totalProbeCount, totalFailures));
 
     loop.stop();
     loopThread.join();
     // 新一代此时仍在服务，端口挂在它身上：不收掉就成了占着端口的野进程
     samples.check(Platform::Process::forceTermination(childHandle), "收口时向新一代发出了终止");
     // 句柄一释放就没人回收那个 pid，刚强杀过必须先等它结束（POSIX 上否则留下僵尸）
-    const bool isChildGone = Samples::waitUntil([&childHandle]
-    {
-        return !Platform::Process::isRunning(childHandle);
-    }, std::chrono::milliseconds{kChildExitWaitMs});
+    const bool isChildGone = Samples::waitUntil([&childHandle] { return !Platform::Process::isRunning(childHandle); }, std::chrono::milliseconds{kChildExitWaitMs});
     samples.check(isChildGone, "新一代已随本示例收口，没留下占着端口的进程");
 
-    LOG_INFO_FMT("换代结论：本代答话 {} 次；收口前新一代答话 {} 次；收口后新一代答话 {} 次；服务端口 {}",
-                 servedByParent, servedByChildBeforeDrain, servedByChildAfterDrain, servicePort);
+    LOG_INFO_FMT("换代结论：本代答话 {} 次；收口前新一代答话 {} 次；收口后新一代答话 {} 次；服务端口 {}", servedByParent, servedByChildBeforeDrain, servedByChildAfterDrain,
+                 servicePort);
 
     return Samples::finishSample("core_upgrade");
 }

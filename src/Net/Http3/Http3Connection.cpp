@@ -58,10 +58,8 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    Http3Connection::Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks,
-                                     const LocalSettings settings) :
-        m_streamOpener(std::move(opener)), m_streamWriter(std::move(writer)), m_streamCrediter(std::move(crediter)),
-        m_callbacks(std::move(callbacks)), m_localSettings(settings)
+    Http3Connection::Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks, const LocalSettings settings) :
+        m_streamOpener(std::move(opener)), m_streamWriter(std::move(writer)), m_streamCrediter(std::move(crediter)), m_callbacks(std::move(callbacks)), m_localSettings(settings)
     {
         if (!m_streamOpener || !m_streamWriter)
         {
@@ -81,8 +79,8 @@ namespace AsynGyanis::Net
 
         // 解码器按本端公布的能力建：它决定本端能接受多大的动态表与多少条同时阻塞的头块
         m_qpackDecoder.emplace(QpackDecoderSettings{
-                .maximumTableCapacityByteCount = m_localSettings.qpackMaximumTableCapacityByteCount,
-                .maximumBlockedStreamCount = m_localSettings.qpackMaximumBlockedStreamCount,
+                .maximumTableCapacityByteCount    = m_localSettings.qpackMaximumTableCapacityByteCount,
+                .maximumBlockedStreamCount        = m_localSettings.qpackMaximumBlockedStreamCount,
                 .maximumFieldSectionSizeByteCount = m_localSettings.maximumFieldSectionSizeByteCount,
         });
 
@@ -113,8 +111,7 @@ namespace AsynGyanis::Net
 
         m_isUsable = true;
         flush();
-        LOG_DEBUG_FMT("Http3Connection: HTTP/3 协议层已建立（控制流 {}、编码器流 {}、解码器流 {}）", m_localControlStreamId,
-                      m_localEncoderStreamId, m_localDecoderStreamId);
+        LOG_DEBUG_FMT("Http3Connection: HTTP/3 协议层已建立（控制流 {}、编码器流 {}、解码器流 {}）", m_localControlStreamId, m_localEncoderStreamId, m_localDecoderStreamId);
     }
 
     bool Http3Connection::isUsable() const noexcept
@@ -142,8 +139,7 @@ namespace AsynGyanis::Net
         return m_qpackEncoder ? m_qpackEncoder->tableCapacityByteCount() : std::size_t{0};
     }
 
-    void Http3Connection::consumeStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data,
-                                            const bool isEndStream)
+    void Http3Connection::consumeStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
     {
         if (!isUsable())
         {
@@ -214,8 +210,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Http3Connection::consumePeerUnidirectionalTypePrefix(const std::int64_t streamId, const std::span<const std::uint8_t> data,
-                                                             const bool isEndStream)
+    void Http3Connection::consumePeerUnidirectionalTypePrefix(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
     {
         std::string &buffer = m_peerStreamTypeBuffers[streamId];
         buffer.append(reinterpret_cast<const char *>(data.data()), data.size());
@@ -234,7 +229,7 @@ namespace AsynGyanis::Net
         }
 
         const std::size_t prefixByteCount = decoded->byteCount;
-        const std::string remaining = buffer.substr(prefixByteCount);
+        const std::string remaining       = buffer.substr(prefixByteCount);
         m_peerStreamTypeBuffers.erase(streamId);
 
         PeerStreamKind kind = PeerStreamKind::Ignored;
@@ -256,9 +251,8 @@ namespace AsynGyanis::Net
         }
 
         // 每种角色只允许一条，第二条就是重复开通关键流（RFC 9114 §6.2.1）
-        const bool isDuplicated = (kind == PeerStreamKind::Control && m_peerControlStreamId >= 0)
-                                  || (kind == PeerStreamKind::QpackEncoder && m_peerEncoderStreamId >= 0)
-                                  || (kind == PeerStreamKind::QpackDecoder && m_peerDecoderStreamId >= 0);
+        const bool isDuplicated = (kind == PeerStreamKind::Control && m_peerControlStreamId >= 0) || (kind == PeerStreamKind::QpackEncoder && m_peerEncoderStreamId >= 0) ||
+                                  (kind == PeerStreamKind::QpackDecoder && m_peerDecoderStreamId >= 0);
         if (isDuplicated)
         {
             breakConnection(Http3ErrorCode::StreamCreationError, "对端重复开通了关键单向流");
@@ -267,12 +261,10 @@ namespace AsynGyanis::Net
         if (kind == PeerStreamKind::Control)
         {
             m_peerControlStreamId = streamId;
-        }
-        else if (kind == PeerStreamKind::QpackEncoder)
+        } else if (kind == PeerStreamKind::QpackEncoder)
         {
             m_peerEncoderStreamId = streamId;
-        }
-        else if (kind == PeerStreamKind::QpackDecoder)
+        } else if (kind == PeerStreamKind::QpackDecoder)
         {
             m_peerDecoderStreamId = streamId;
         }
@@ -314,8 +306,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Http3Connection::consumeControlStreamBytes(const std::int64_t streamId, const std::span<const std::uint8_t> data,
-                                                   const bool isEndStream)
+    void Http3Connection::consumeControlStreamBytes(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
     {
         StreamState &state = streamStateFor(streamId);
         if (!state.reader)
@@ -358,8 +349,8 @@ namespace AsynGyanis::Net
     void Http3Connection::consumeQpackEncoderStreamBytes(const std::span<const std::uint8_t> data)
     {
         std::vector<std::uint64_t> unblockedStreamIds;
-        std::string decoderStreamBytes;
-        const auto fed = m_qpackDecoder->feedEncoderStream(data, unblockedStreamIds, decoderStreamBytes);
+        std::string                decoderStreamBytes;
+        const auto                 fed = m_qpackDecoder->feedEncoderStream(data, unblockedStreamIds, decoderStreamBytes);
         if (!fed)
         {
             breakConnection(toHttp3ErrorCode(fed.error().kind), fed.error().message);
@@ -377,8 +368,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Http3Connection::consumeRequestStream(const std::int64_t streamId, const std::span<const std::uint8_t> data,
-                                               const bool isEndStream)
+    void Http3Connection::consumeRequestStream(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
     {
         // 这条流是不是刚见到：决定要不要按排空通告拒绝，也决定 GOAWAY 该报哪个标识
         const bool isNewRequestStream = !m_streams.contains(streamId);
@@ -455,8 +445,7 @@ namespace AsynGyanis::Net
         pruneAbandonedStream(streamId);
     }
 
-    std::expected<void, QpackError> Http3Connection::handleRequestFrame(const std::int64_t streamId, StreamState &state,
-                                                                        const Http3Frame &frame)
+    std::expected<void, QpackError> Http3Connection::handleRequestFrame(const std::int64_t streamId, StreamState &state, const Http3Frame &frame)
     {
         if (std::holds_alternative<Http3HeadersFrame>(frame))
         {
@@ -473,10 +462,9 @@ namespace AsynGyanis::Net
                 state.isTrailersSeen = true;
             }
 
-            std::vector<QpackHeaderField> &fields = m_inboundFieldLines;
-            std::string &decoderStreamBytes = m_decoderStreamScratch;
-            const auto decoded = m_qpackDecoder->decodeFieldSection(static_cast<std::uint64_t>(streamId), headersFrame.encodedFieldSection,
-                                                                    fields, decoderStreamBytes);
+            std::vector<QpackHeaderField> &fields             = m_inboundFieldLines;
+            std::string                   &decoderStreamBytes = m_decoderStreamScratch;
+            const auto decoded = m_qpackDecoder->decodeFieldSection(static_cast<std::uint64_t>(streamId), headersFrame.encodedFieldSection, fields, decoderStreamBytes);
             queueQpackInstructions({}, decoderStreamBytes);
             if (!decoded)
             {
@@ -530,8 +518,7 @@ namespace AsynGyanis::Net
 
         // 剩下的都是「出现在错误位置的已知帧」：SETTINGS/PUSH_PROMISE/GOAWAY/MAX_PUSH_ID/CANCEL_PUSH
         // 都只许出现在控制流上（RFC 9114 §7.2.4/§7.2.5/§7.2.6/§7.2.7/§7.2.3）
-        failStream(streamId, Http3ErrorCode::FrameUnexpected,
-                   std::string("帧类型 ") + std::string(http3FrameTypeName(http3FrameTypeValue(frame))) + " 不得出现在请求流上");
+        failStream(streamId, Http3ErrorCode::FrameUnexpected, std::string("帧类型 ") + std::string(http3FrameTypeName(http3FrameTypeValue(frame))) + " 不得出现在请求流上");
         return {};
     }
 
@@ -543,8 +530,7 @@ namespace AsynGyanis::Net
             {
                 // 一条连接上只能有一个 SETTINGS，且必须是控制流的第一个帧（RFC 9114 §7.2.4.1）
                 breakConnection(Http3ErrorCode::FrameUnexpected, "对端在控制流上发了第二个 SETTINGS");
-            }
-            else
+            } else
             {
                 m_isPeerSettingsReceived = true;
                 applyPeerSettings(*settingsFrame);
@@ -578,13 +564,11 @@ namespace AsynGyanis::Net
             return {};
         }
 
-        breakConnection(Http3ErrorCode::FrameUnexpected,
-                        std::string("帧类型 ") + std::string(http3FrameTypeName(http3FrameTypeValue(frame))) + " 不得出现在控制流上");
+        breakConnection(Http3ErrorCode::FrameUnexpected, std::string("帧类型 ") + std::string(http3FrameTypeName(http3FrameTypeValue(frame))) + " 不得出现在控制流上");
         return {};
     }
 
-    bool Http3Connection::deliverFieldSection(const std::int64_t streamId, StreamState &state,
-                                              const std::vector<QpackHeaderField> &fields, const bool isTrailers)
+    bool Http3Connection::deliverFieldSection(const std::int64_t streamId, StreamState &state, const std::vector<QpackHeaderField> &fields, const bool isTrailers)
     {
         // 判定器按流持有：尾段的合法性（不得有伪头、必须在头段之后）依赖头段已经收过这个事实，
         // 每个头段新建一份就会把合法尾段判成非法序列
@@ -615,7 +599,7 @@ namespace AsynGyanis::Net
         if (!isTrailers)
         {
             // 正文对账要用的声明长度在这里落表：DATA 到达时只累加，收尾时比对
-            state.hasContentLengthDeclaration = validator.contentLengthByteCount().has_value();
+            state.hasContentLengthDeclaration    = validator.contentLengthByteCount().has_value();
             state.declaredContentLengthByteCount = validator.contentLengthByteCount().value_or(0);
         }
 
@@ -650,9 +634,9 @@ namespace AsynGyanis::Net
         }
         StreamState &state = entry->second;
 
-        std::vector<QpackHeaderField> &fields = m_inboundFieldLines;
-        std::string &decoderStreamBytes = m_decoderStreamScratch;
-        const auto resumed = m_qpackDecoder->resumeBlockedFieldSection(static_cast<std::uint64_t>(streamId), fields, decoderStreamBytes);
+        std::vector<QpackHeaderField> &fields             = m_inboundFieldLines;
+        std::string                   &decoderStreamBytes = m_decoderStreamScratch;
+        const auto                     resumed            = m_qpackDecoder->resumeBlockedFieldSection(static_cast<std::uint64_t>(streamId), fields, decoderStreamBytes);
         queueQpackInstructions({}, decoderStreamBytes);
         if (!resumed)
         {
@@ -679,8 +663,8 @@ namespace AsynGyanis::Net
         {
             // §4.1.2 明写：声明长度与 DATA 总长不等即畸形
             failStream(streamId, Http3ErrorCode::MessageError,
-                       "content-length 声明 " + std::to_string(state.declaredContentLengthByteCount) + " 字节，实收 "
-                           + std::to_string(state.receivedBodyByteCount) + " 字节（RFC 9114 §4.1.2）");
+                       "content-length 声明 " + std::to_string(state.declaredContentLengthByteCount) + " 字节，实收 " + std::to_string(state.receivedBodyByteCount) +
+                               " 字节（RFC 9114 §4.1.2）");
             return;
         }
 
@@ -698,11 +682,9 @@ namespace AsynGyanis::Net
             return;
         }
         // 读取器已消化的字节 = 喂进去的 - 还留在缓冲里的；DATA 载荷归上层还，别还两次
-        const std::size_t consumedTotal = state.fedByteCount > state.reader->pendingByteCount()
-                                              ? static_cast<std::size_t>(state.fedByteCount - state.reader->pendingByteCount())
-                                              : 0;
-        const std::size_t increment = consumedTotal > state.creditedByteCount ? static_cast<std::size_t>(consumedTotal - state.creditedByteCount)
-                                                                              : 0;
+        const std::size_t consumedTotal =
+                state.fedByteCount > state.reader->pendingByteCount() ? static_cast<std::size_t>(state.fedByteCount - state.reader->pendingByteCount()) : 0;
+        const std::size_t increment = consumedTotal > state.creditedByteCount ? static_cast<std::size_t>(consumedTotal - state.creditedByteCount) : 0;
         state.creditedByteCount += increment;
         if (increment <= dataPayloadByteCount)
         {
@@ -711,24 +693,20 @@ namespace AsynGyanis::Net
         m_streamCrediter(streamId, increment - dataPayloadByteCount);
     }
 
-    std::expected<void, QpackError> Http3Connection::submitResponseHead(const std::int64_t streamId,
-                                                                        const std::vector<QpackHeaderField> &fieldLines,
-                                                                        const bool isEndOfStream)
+    std::expected<void, QpackError> Http3Connection::submitResponseHead(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isEndOfStream)
     {
         return submitResponseFieldSection(streamId, fieldLines, /*isTrailers=*/false, isEndOfStream);
     }
 
-    std::expected<void, QpackError> Http3Connection::submitResponseTrailers(const std::int64_t streamId,
-                                                                           const std::vector<QpackHeaderField> &fieldLines)
+    std::expected<void, QpackError> Http3Connection::submitResponseTrailers(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines)
     {
         // 尾段之后什么都不剩，FIN 只能跟着它：END_STREAM 因此写死为真，不给调用方一个能把协议写坏的开关
         // （RFC 9114 §4.3 与 §7.2.3——尾段是这条流的最后一个帧）
         return submitResponseFieldSection(streamId, fieldLines, /*isTrailers=*/true, /*isEndOfStream=*/true);
     }
 
-    std::expected<void, QpackError> Http3Connection::submitResponseFieldSection(const std::int64_t streamId,
-                                                                               const std::vector<QpackHeaderField> &fieldLines,
-                                                                               const bool isTrailers, const bool isEndOfStream)
+    std::expected<void, QpackError> Http3Connection::submitResponseFieldSection(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isTrailers,
+                                                                                const bool isEndOfStream)
     {
         if (m_isBroken)
         {
@@ -738,8 +716,7 @@ namespace AsynGyanis::Net
         if (entry == m_streams.end() || entry->second.isAbandoned || entry->second.isLocalFinished)
         {
             // 流不在了或已收尾：只作废这一条响应，不牵连连接（对端多半已重置该流）
-            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState,
-                                              .message = "流 " + std::to_string(streamId) + " 已不存在或本端已收尾，响应作废"});
+            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState, .message = "流 " + std::to_string(streamId) + " 已不存在或本端已收尾，响应作废"});
         }
 
         // 上限那道闸先跑：它一拒就是「半个段都不上线」，排在判定器之后就会把「这个段已经过完」留在流上，
@@ -756,12 +733,10 @@ namespace AsynGyanis::Net
             if (fieldSectionSizeByteCount > m_peerMaximumFieldSectionSizeByteCount)
             {
                 const std::string_view sectionName = isTrailers ? "响应尾段" : "响应头段";
-                return std::unexpected(QpackError{
-                    .kind = QpackErrorKind::InvalidLocalState,
-                    .message = "流 " + std::to_string(streamId) + " 的" + std::string(sectionName) + " "
-                               + std::to_string(fieldSectionSizeByteCount) +
-                               " 字节越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE " +
-                               std::to_string(m_peerMaximumFieldSectionSizeByteCount) + " 字节，本端不作答这条流（RFC 9114 §4.2.2）"});
+                return std::unexpected(QpackError{.kind    = QpackErrorKind::InvalidLocalState,
+                                                  .message = "流 " + std::to_string(streamId) + " 的" + std::string(sectionName) + " " + std::to_string(fieldSectionSizeByteCount) +
+                                                             " 字节越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE " + std::to_string(m_peerMaximumFieldSectionSizeByteCount) +
+                                                             " 字节，本端不作答这条流（RFC 9114 §4.2.2）"});
             }
         }
 
@@ -772,13 +747,10 @@ namespace AsynGyanis::Net
         std::unique_ptr<Http3HeaderValidator> oneShotValidator;
         if (isInformationalFieldSection(fieldLines))
         {
-            oneShotValidator =
-                    std::make_unique<Http3HeaderValidator>(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
-        }
-        else if (entry->second.responseValidator == nullptr)
+            oneShotValidator = std::make_unique<Http3HeaderValidator>(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
+        } else if (entry->second.responseValidator == nullptr)
         {
-            entry->second.responseValidator =
-                    std::make_unique<Http3HeaderValidator>(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
+            entry->second.responseValidator = std::make_unique<Http3HeaderValidator>(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
         }
         Http3HeaderValidator &validator = oneShotValidator != nullptr ? *oneShotValidator : *entry->second.responseValidator;
         if (const auto began = validator.beginHeaderBlock(isTrailers); !began)
@@ -799,8 +771,7 @@ namespace AsynGyanis::Net
 
         std::string headerBlock;
         std::string encoderStreamBytes;
-        if (const auto encoded = m_qpackEncoder->encodeFieldSection(static_cast<std::uint64_t>(streamId),
-                                                                    std::span<const QpackHeaderField>(fieldLines.data(), fieldLines.size()),
+        if (const auto encoded = m_qpackEncoder->encodeFieldSection(static_cast<std::uint64_t>(streamId), std::span<const QpackHeaderField>(fieldLines.data(), fieldLines.size()),
                                                                     headerBlock, encoderStreamBytes);
             !encoded)
         {
@@ -821,22 +792,18 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<std::size_t, QpackError> Http3Connection::appendResponseBody(const std::int64_t streamId,
-                                                                                const std::span<const std::uint8_t> bytes,
-                                                                                const bool isEndStream)
+    std::expected<std::size_t, QpackError> Http3Connection::appendResponseBody(const std::int64_t streamId, const std::span<const std::uint8_t> bytes, const bool isEndStream)
     {
         const auto entry = m_streams.find(streamId);
         if (entry == m_streams.end() || entry->second.isAbandoned || entry->second.isLocalFinished)
         {
-            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState,
-                                              .message = "流 " + std::to_string(streamId) + " 已不存在或本端已收尾，正文作废"});
+            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState, .message = "流 " + std::to_string(streamId) + " 已不存在或本端已收尾，正文作废"});
         }
 
         if (!bytes.empty())
         {
             queueOutboundFrame(streamId, Http3FrameType::Data, bytes, isEndStream);
-        }
-        else if (isEndStream)
+        } else if (isEndStream)
         {
             // 没有正文也要把收尾传下去：空字节段加 endStream 是本端结束这条流的唯一写法
             queueOutboundBytes(streamId, {}, true);
@@ -887,7 +854,7 @@ namespace AsynGyanis::Net
             return;
         }
         entry->second.isPeerFinished = true;
-        entry->second.isAbandoned = true;
+        entry->second.isAbandoned    = true;
         if (m_callbacks.onStreamReset)
         {
             m_callbacks.onStreamReset(streamId, Http3ErrorCode::RequestCancelled);
@@ -942,8 +909,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Http3Connection::retainUnsentOutboundBytes(const std::int64_t streamId, const OutboundStream &outbound,
-                                                    const std::size_t acceptedByteCount)
+    void Http3Connection::retainUnsentOutboundBytes(const std::int64_t streamId, const OutboundStream &outbound, const std::size_t acceptedByteCount)
     {
         // 收尾标记跟着最后那几个字节走：只交出一半就把 END_STREAM 记成「已本地收尾」，
         // 上层便以为这条流结束了，而线上那段正文永远没出去
@@ -961,13 +927,11 @@ namespace AsynGyanis::Net
     {
         if (!m_isUsable)
         {
-            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState,
-                                              .message = "HTTP/3 协议层没建起来，控制流还不存在，GOAWAY 无处可发"});
+            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState, .message = "HTTP/3 协议层没建起来，控制流还不存在，GOAWAY 无处可发"});
         }
         if (m_isBroken)
         {
-            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState,
-                                              .message = "HTTP/3 协议层已作废，不再往任何流写字节"});
+            return std::unexpected(QpackError{.kind = QpackErrorKind::InvalidLocalState, .message = "HTTP/3 协议层已作废，不再往任何流写字节"});
         }
         // 通告只发一次：后发的 GOAWAY 标识不得比先发的大（§7.2.6），重复发也不带来新信息
         if (m_isDraining)
@@ -978,8 +942,7 @@ namespace AsynGyanis::Net
         m_isDraining = true;
         // 语义是「等于或高于该标识都被拒绝」，因此要留住的最后一条流本身不能进通告值，
         // 报它之后的下一条客户端双向流号；一条请求都没收过时按 §5.2 报 0
-        m_rejectedFromStreamId =
-                m_lastProcessedRequestStreamId < 0 ? 0 : m_lastProcessedRequestStreamId + kClientBidirectionalStreamIdStep;
+        m_rejectedFromStreamId = m_lastProcessedRequestStreamId < 0 ? 0 : m_lastProcessedRequestStreamId + kClientBidirectionalStreamIdStep;
 
         Http3GoAwayFrame goAwayFrame;
         goAwayFrame.streamIdOrPushId = static_cast<std::uint64_t>(m_rejectedFromStreamId);
@@ -1001,7 +964,7 @@ namespace AsynGyanis::Net
         // 先建状态再立刻放弃：不建的话对端后续字节会被当成「一条全新的流」重新判一遍，
         // 而「已受理」与「已拒绝」的边界必须稳定
         StreamState &state = streamStateFor(streamId);
-        state.isAbandoned = true;
+        state.isAbandoned  = true;
         if (m_streamCrediter && !data.empty())
         {
             m_streamCrediter(streamId, data.size());
@@ -1073,8 +1036,7 @@ namespace AsynGyanis::Net
         outbound.isEndStream = outbound.isEndStream || isEndStream;
     }
 
-    void Http3Connection::queueOutboundFrame(const std::int64_t streamId, const Http3FrameType frameType,
-                                             const std::span<const std::uint8_t> payload, const bool isEndStream)
+    void Http3Connection::queueOutboundFrame(const std::int64_t streamId, const Http3FrameType frameType, const std::span<const std::uint8_t> payload, const bool isEndStream)
     {
         if (m_isBroken)
         {
@@ -1089,8 +1051,8 @@ namespace AsynGyanis::Net
 
     void Http3Connection::applyPeerSettings(const Http3SettingsFrame &settingsFrame)
     {
-        std::size_t peerTableCapacityByteCount = 0;
-        std::size_t peerMaximumBlockedStreamCount = 0;
+        std::size_t peerTableCapacityByteCount           = 0;
+        std::size_t peerMaximumBlockedStreamCount        = 0;
         std::size_t peerMaximumFieldSectionSizeByteCount = 0;
         for (const auto &[settingId, value]: settingsFrame.settings)
         {
@@ -1120,7 +1082,7 @@ namespace AsynGyanis::Net
 
         m_peerMaximumBlockedStreamCount = peerMaximumBlockedStreamCount;
         // 必须在下面那条「对端不接动态表」的提前返回之前落地：头段上限与动态表是两件独立的事
-        m_peerMaximumFieldSectionSizeByteCount = peerMaximumFieldSectionSizeByteCount;
+        m_peerMaximumFieldSectionSizeByteCount       = peerMaximumFieldSectionSizeByteCount;
         const std::size_t effectiveCapacityByteCount = std::min(peerTableCapacityByteCount, m_localSettings.qpackMaximumTableCapacityByteCount);
         if (effectiveCapacityByteCount == 0)
         {
@@ -1174,7 +1136,7 @@ namespace AsynGyanis::Net
         {
             return; // 只记第一个原因：后面的都是同一个故障的连带表现
         }
-        m_isBroken = true;
+        m_isBroken            = true;
         m_connectionErrorCode = errorCode;
         m_connectionErrorReason.assign(reason);
         LOG_WARN_FMT("Http3Connection: {}（{}），HTTP/3 协议层作废", reason, http3ErrorCodeName(errorCode));
@@ -1201,8 +1163,7 @@ namespace AsynGyanis::Net
 
     void Http3Connection::failStream(const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view reason)
     {
-        LOG_WARN_FMT("Http3Connection: 流 {} 被判定为 {}（{}），该流作废；连接与其它流不受影响", streamId, reason,
-                     http3ErrorCodeName(errorCode));
+        LOG_WARN_FMT("Http3Connection: 流 {} 被判定为 {}（{}），该流作废；连接与其它流不受影响", streamId, reason, http3ErrorCodeName(errorCode));
         m_outbound.erase(streamId);
 
         const auto entry = m_streams.find(streamId);

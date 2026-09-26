@@ -106,8 +106,7 @@ namespace AsynGyanis::Base
             {
                 // 窄化到 float 前先判范围，避免溢出成无穷大这一步静默变形
                 if (std::isfinite(number) &&
-                    (number > static_cast<double>(std::numeric_limits<ValueType>::max()) ||
-                     number < -static_cast<double>(std::numeric_limits<ValueType>::max())))
+                    (number > static_cast<double>(std::numeric_limits<ValueType>::max()) || number < -static_cast<double>(std::numeric_limits<ValueType>::max())))
                 {
                     return std::nullopt;
                 }

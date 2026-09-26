@@ -21,8 +21,7 @@ namespace AsynGyanis::Core
         class HandoffDescriptor
         {
         public:
-            explicit HandoffDescriptor(const int fileDescriptor) noexcept :
-                m_fileDescriptor(fileDescriptor)
+            explicit HandoffDescriptor(const int fileDescriptor) noexcept : m_fileDescriptor(fileDescriptor)
             {
             }
 
@@ -63,8 +62,8 @@ namespace AsynGyanis::Core
         if (!adopter)
         {
             throw Base::InvalidArgumentException("给连接分发器登记工作循环时接手动作为空："
-                                                "请传入一个以连接描述符为参数的可调用体；"
-                                                "不希望某个循环参与分发就不要登记它");
+                                                 "请传入一个以连接描述符为参数的可调用体；"
+                                                 "不希望某个循环参与分发就不要登记它");
         }
         m_workers.push_back(Worker{&loop, std::move(adopter)});
     }
@@ -82,7 +81,7 @@ namespace AsynGyanis::Core
         }
 
         // 登记顺序即轮转顺序，游标只在本线程（接受循环）里推进
-        Worker &worker = m_workers[m_nextWorkerIndex];
+        Worker &worker    = m_workers[m_nextWorkerIndex];
         m_nextWorkerIndex = (m_nextWorkerIndex + 1) % m_workers.size();
 
         // 交接句柄与回调一起投递：目标循环先退出时回调被丢弃，句柄析构把描述符关上。

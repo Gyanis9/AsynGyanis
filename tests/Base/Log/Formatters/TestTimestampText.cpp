@@ -9,8 +9,8 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <format>
 #include <string>
@@ -37,9 +37,8 @@ namespace AsynGyanis::Base
         std::string referenceLocalText(const std::int64_t epochSeconds, const std::int64_t millisecondValue)
         {
             const std::tm localTime = Platform::PlatformTime::localTime(static_cast<std::time_t>(epochSeconds));
-            return std::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}",
-                               localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday,
-                               localTime.tm_hour, localTime.tm_min, localTime.tm_sec, millisecondValue);
+            return std::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}.{:03d}", localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday, localTime.tm_hour,
+                               localTime.tm_min, localTime.tm_sec, millisecondValue);
         }
 
         /**
@@ -97,8 +96,8 @@ namespace AsynGyanis::Base
     {
         // epoch 往前 1.5 秒落在 1969-12-31 23:59:58.500（本地时区偏移不参与这个判定，
         // 断言比的是「整秒向下取整 + 非负残差」这条拆分规则）
-        const TimestampMoment  moment = TimestampMoment{} - std::chrono::milliseconds(1500);
-        const std::string      text   = renderToString(moment);
+        const TimestampMoment moment = TimestampMoment{} - std::chrono::milliseconds(1500);
+        const std::string     text   = renderToString(moment);
 
         ASSERT_EQ(text.size(), kTimestampTextLength) << text;
         EXPECT_EQ(text[19], '.') << text;
@@ -125,20 +124,17 @@ namespace AsynGyanis::Base
         std::array<char, kTimestampTextBufferSize> buffer{};
 
         // 同一秒内换毫秒：前缀走缓存，尾部四位必须被逐次改写，不留上一条的残余
-        const TimestampMoment firstMoment  = TestSupport::makeLocalMoment(2026, 6, 1, 10, 0, 0, 111);
-        const TimestampMoment sameSecond   = firstMoment + std::chrono::milliseconds(222);
+        const TimestampMoment firstMoment = TestSupport::makeLocalMoment(2026, 6, 1, 10, 0, 0, 111);
+        const TimestampMoment sameSecond  = firstMoment + std::chrono::milliseconds(222);
         EXPECT_EQ(std::string_view{formatTimestampText(buffer, firstMoment)}, "2026-06-01 10:00:00.111");
-        EXPECT_EQ(std::string_view{formatTimestampText(buffer, sameSecond)}, "2026-06-01 10:00:00.333")
-                << "同秒的第二次渲染没换毫秒";
+        EXPECT_EQ(std::string_view{formatTimestampText(buffer, sameSecond)}, "2026-06-01 10:00:00.333") << "同秒的第二次渲染没换毫秒";
 
         // 跨过一秒：缓存必须按新的整秒重折日历，而不是只改毫秒
         const TimestampMoment nextSecond = TestSupport::makeLocalMoment(2026, 6, 1, 10, 0, 1, 5);
-        EXPECT_EQ(std::string_view{formatTimestampText(buffer, nextSecond)}, "2026-06-01 10:00:01.005")
-                << "按秒缓存没有刷新前缀";
+        EXPECT_EQ(std::string_view{formatTimestampText(buffer, nextSecond)}, "2026-06-01 10:00:01.005") << "按秒缓存没有刷新前缀";
 
         // 时钟回拨同样要跟着回退：缓存键是整秒值本身，不是「比上次大就更新」
-        EXPECT_EQ(std::string_view{formatTimestampText(buffer, firstMoment)}, "2026-06-01 10:00:00.111")
-                << "回拨后的时刻被上一条的缓存顶掉了";
+        EXPECT_EQ(std::string_view{formatTimestampText(buffer, firstMoment)}, "2026-06-01 10:00:00.111") << "回拨后的时刻被上一条的缓存顶掉了";
     }
 
     TEST(TimestampText, ConsecutiveMomentsNeverRenderBackwards)
@@ -174,8 +170,7 @@ namespace AsynGyanis::Base
     {
         // 系统时钟的两端都拿真实缓冲试一次：这些时刻折不成合法挂钟（换算失败交出零值日历），
         // 但写入长度必须始终落在缓冲之内——越出一个 std::array 会被 ASan 当场抓住
-        for (const TimestampMoment moment: {(std::chrono::system_clock::time_point::max)(),
-                                            (std::chrono::system_clock::time_point::min)()})
+        for (const TimestampMoment moment: {(std::chrono::system_clock::time_point::max) (), (std::chrono::system_clock::time_point::min) ()})
         {
             std::array<char, kTimestampTextBufferSize> buffer{};
             const std::string_view                     text = formatTimestampText(buffer, moment);
@@ -193,12 +188,10 @@ namespace AsynGyanis::Base
      */
     TEST(TimestampText, ExtremeMomentsStillRenderDigitFields)
     {
-        for (const TimestampMoment moment: {(std::chrono::system_clock::time_point::max)(),
-                                            (std::chrono::system_clock::time_point::min)()})
+        for (const TimestampMoment moment: {(std::chrono::system_clock::time_point::max) (), (std::chrono::system_clock::time_point::min) ()})
         {
             const std::string text = renderToString(moment);
-            EXPECT_TRUE(hasExpectedShape(text)) << "极端时刻渲染成了非法版式，长度 " << text.size()
-                                                << "：[" << text.substr(0, 28) << "]";
+            EXPECT_TRUE(hasExpectedShape(text)) << "极端时刻渲染成了非法版式，长度 " << text.size() << "：[" << text.substr(0, 28) << "]";
         }
     }
 } // namespace AsynGyanis::Base

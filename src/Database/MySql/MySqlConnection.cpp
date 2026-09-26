@@ -95,8 +95,7 @@ namespace AsynGyanis::Database
             // 单位换算取向上取整：客户端选项只吃整秒，若向下取整，500 毫秒会被截成 0——
             // 而 0 的语义恰好相反（永不超时），一个「更短的超时」变成了「没有超时」
             const auto positiveMilliseconds = static_cast<unsigned int>(milliseconds);
-            return (positiveMilliseconds + static_cast<unsigned int>(kMillisecondsPerSecond) - 1U) /
-                   static_cast<unsigned int>(kMillisecondsPerSecond);
+            return (positiveMilliseconds + static_cast<unsigned int>(kMillisecondsPerSecond) - 1U) / static_cast<unsigned int>(kMillisecondsPerSecond);
         }
 
         /**
@@ -185,8 +184,7 @@ namespace AsynGyanis::Database
         // database 为空串时不选择默认库，这是 mysql_real_connect 的正规用法之一；
         // mysql_real_connect 只接受零终止 C 字符串：配置里内嵌 '\0' 会让它静默截断成半截，
         // 表现成「认证失败」这类与真实原因无关的报错，因此先本地拦下
-        const std::string_view configurationTexts[] = {m_configuration.host, m_configuration.userName,
-                                                       m_configuration.password, m_configuration.database};
+        const std::string_view configurationTexts[] = {m_configuration.host, m_configuration.userName, m_configuration.password, m_configuration.database};
         for (const std::string_view configurationText: configurationTexts)
         {
             if (configurationText.find('\0') != std::string_view::npos)
@@ -201,14 +199,8 @@ namespace AsynGyanis::Database
         // 默认那套（改值才算）是 MySQL 独有的：同一条 ORM 更新在 SQLite 上报 1、在这里报 0，而调用方
         // 拿这个数判的就是「那行在不在」——把值改回原样并不能让行凭空消失。开这个位把两侧对齐。
         // 其余位照旧不开：CLIENT_MULTI_STATEMENTS（一次一条语句，别给拼接注入留门）与 LOCAL_INFILE。
-        if (mysql_real_connect(m_mysqlHandle,
-                               m_configuration.host.c_str(),
-                               m_configuration.userName.c_str(),
-                               m_configuration.password.c_str(),
-                               m_configuration.database.c_str(),
-                               m_configuration.port,
-                               nullptr,
-                               CLIENT_FOUND_ROWS) == nullptr)
+        if (mysql_real_connect(m_mysqlHandle, m_configuration.host.c_str(), m_configuration.userName.c_str(), m_configuration.password.c_str(), m_configuration.database.c_str(),
+                               m_configuration.port, nullptr, CLIENT_FOUND_ROWS) == nullptr)
         {
             // 先摘 mysql_error 的文本再 disconnect：mysql_close 会释放错误缓冲，顺序反了就读到悬垂指针
             captureError("连接 MySQL 服务失败");
@@ -332,8 +324,7 @@ namespace AsynGyanis::Database
             // 自增标识与它同一条纪律、同一个分支：文本协议下的 mysql_insert_id 同样是语句级值
             if (mysql_field_count(m_mysqlHandle) == 0)
             {
-                return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_affected_rows(m_mysqlHandle)),
-                                                     mysql_insert_id(m_mysqlHandle));
+                return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_affected_rows(m_mysqlHandle)), mysql_insert_id(m_mysqlHandle));
             }
 
             // 有返回列却没拿到结果集。这里要分两种，判据是客户端库文档给的：mysql_store_result 返回 NULL
@@ -449,8 +440,7 @@ namespace AsynGyanis::Database
         // 自增标识同理：它来自本次执行收到的 OK 包，跟着一起快照，调用方就不必再发一条查询去问
         if (mysql_stmt_field_count(rawStatement) == 0)
         {
-            return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_stmt_affected_rows(rawStatement)),
-                                                 mysql_stmt_insert_id(rawStatement));
+            return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_stmt_affected_rows(rawStatement)), mysql_stmt_insert_id(rawStatement));
         }
 
         // 有返回列 = 查询：先把整份结果从服务端读进客户端内存，之后逐行 fetch 不再有任何网络往返。
@@ -549,8 +539,7 @@ namespace AsynGyanis::Database
         // 会话变量的单位与基类一致（毫秒），不做换算；非正值下发 0，含义是服务端不设限——
         // 不下发会把上一次设过的值继续留着，让「改成不设时限」变成一句空话。
         // 这个数来自 queryTimeout() 这个 int，不是外部文本，因此直接拼进语句不引入注入面
-        const std::string statementText =
-                "SET SESSION MAX_EXECUTION_TIME = " + std::to_string(timeoutMilliseconds > 0 ? timeoutMilliseconds : 0);
+        const std::string statementText = "SET SESSION MAX_EXECUTION_TIME = " + std::to_string(timeoutMilliseconds > 0 ? timeoutMilliseconds : 0);
 
         if (execute(statementText) != nullptr)
         {
@@ -585,7 +574,7 @@ namespace AsynGyanis::Database
         }
 
         const unsigned int errorNumber = mysql_errno(m_mysqlHandle);
-        const char *       rawMessage  = mysql_error(m_mysqlHandle);
+        const char        *rawMessage  = mysql_error(m_mysqlHandle);
 
         // 带上错误码：只留一句中文 + 服务端英文原文时，排查 1045 / CR_* 之类问题仍需原始数字
         m_lastError = composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber);
@@ -603,7 +592,7 @@ namespace AsynGyanis::Database
         // 预处理语句的错误状态挂在语句句柄上：连接级 mysql_errno 此时读到的可能是上一条
         // 连接操作的陈旧错误，必须用 mysql_stmt_* 这一对接口
         const unsigned int errorNumber = mysql_stmt_errno(statement);
-        const char *       rawMessage  = mysql_stmt_error(statement);
+        const char        *rawMessage  = mysql_stmt_error(statement);
 
         // 文本同样必须先拷贝再让调用方关闭语句：mysql_stmt_close 会释放该缓冲
         m_lastError = composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber);
@@ -634,8 +623,7 @@ namespace AsynGyanis::Database
         }
 
         // try_emplace 对已存在的键是空操作：既不会把表里那份换成同一个指针，也不会漏关谁
-        static_cast<void>(m_statementCache.try_emplace(std::move(statementText),
-                                                      CachedStatement{statement, ++m_statementCacheUseStamp}));
+        static_cast<void>(m_statementCache.try_emplace(std::move(statementText), CachedStatement{statement, ++m_statementCacheUseStamp}));
     }
 
     void MySqlConnection::evictLeastRecentlyUsedStatement() noexcept
@@ -698,7 +686,7 @@ namespace AsynGyanis::Database
 
         for (std::size_t index = 0; index < parameters.size(); ++index)
         {
-            MYSQL_BIND &         binding        = bindings[index];
+            MYSQL_BIND          &binding        = bindings[index];
             const DatabaseValue &parameterValue = parameters[index];
 
             // 用 std::get_if 取指针而不是 std::get：类型不符时走到 else 分支给出中文错误，
@@ -769,9 +757,9 @@ namespace AsynGyanis::Database
                 binding.buffer_type     = MYSQL_TYPE_BLOB;
                 // 空载荷指向静态字节而不是空指针：buffer 为空时客户端库行为无保证，
                 // 而长度为 0 已足够表达「零长度 BLOB」
-                binding.buffer          = asBindBuffer(byteValue->empty() ? &kEmptyBinaryPayloadByte : byteValue->data());
-                binding.buffer_length   = parameterLengths[index];
-                binding.length          = &parameterLengths[index];
+                binding.buffer        = asBindBuffer(byteValue->empty() ? &kEmptyBinaryPayloadByte : byteValue->data());
+                binding.buffer_length = parameterLengths[index];
+                binding.length        = &parameterLengths[index];
                 continue;
             }
 
@@ -825,7 +813,7 @@ namespace AsynGyanis::Database
         }
         std::unique_ptr<MYSQL_RES, ResultReleaser> guardedMetadata{rawMetadata};
 
-        const auto    columnCount = static_cast<std::size_t>(mysql_num_fields(rawMetadata));
+        const auto columnCount = static_cast<std::size_t>(mysql_num_fields(rawMetadata));
         // 这里要非 const 的字段数组：本轮取完数据后得把每列的 max_length 归零（见循环后的说明）
         MYSQL_FIELD *fields = mysql_fetch_fields(rawMetadata);
         if (fields == nullptr && columnCount > 0)
@@ -840,12 +828,12 @@ namespace AsynGyanis::Database
 
         // 取值缓冲按列分配：外层容器一次性定型，之后只改内层内容，
         // 因此各列缓冲区首地址在整个预读过程中保持稳定（绑定指针只在开始时取一次）
-        std::vector<std::vector<char> > columnBuffers(columnCount);
-        std::vector<unsigned long>      columnLengths(columnCount, 0UL);
-        std::vector<int>                columnTypes(columnCount, 0);
+        std::vector<std::vector<char>> columnBuffers(columnCount);
+        std::vector<unsigned long>     columnLengths(columnCount, 0UL);
+        std::vector<int>               columnTypes(columnCount, 0);
         // 字符集号是二进制列与文本列的唯一区分依据（两者在协议层共用同一个类型码），
         // 因此必须与类型码一起缓存下来供逐列转换使用
-        std::vector<unsigned int>       columnCharacterSets(columnCount, 0U);
+        std::vector<unsigned int> columnCharacterSets(columnCount, 0U);
 
         // MYSQL_BIND 的 is_null 形参类型是 bool*，而 std::vector<bool> 是位压缩的、取不到元素地址，
         // 因此用 make_unique 动态分配一段定长 bool 数组（不是裸 new）
@@ -861,11 +849,10 @@ namespace AsynGyanis::Database
             columnCharacterSets[index] = static_cast<unsigned int>(field.charsetnr);
 
             // max_length 为 0 表示整列都是 NULL 或空串，此时取 1 字节只为拿到合法指针
-            const unsigned long bufferBytes =
-                    field.max_length > kMinimumColumnBufferBytes ? field.max_length : kMinimumColumnBufferBytes;
+            const unsigned long bufferBytes = field.max_length > kMinimumColumnBufferBytes ? field.max_length : kMinimumColumnBufferBytes;
             columnBuffers[index].assign(static_cast<std::size_t>(bufferBytes), '\0');
 
-            MYSQL_BIND &binding   = resultBindings[index];
+            MYSQL_BIND &binding = resultBindings[index];
             // 一律按字符串缓冲取值（MySQL 会把数值、日期等列转成文本写进缓冲区），再按列声明类型解析；
             // 这与文本协议路径「按 (指针, 长度) 拿字节 + 按列类型解析」完全同构，
             // 两条路径的取值映射因此不会出现分歧（列类型到 DatabaseValue 的规则见 MySqlValueConversion.h）
@@ -883,7 +870,7 @@ namespace AsynGyanis::Database
         }
 
         // 行数已由 store_result 全部取回，num_rows 是精确值，按它预留容量避免反复扩容
-        std::vector<std::vector<DatabaseValue> > rows;
+        std::vector<std::vector<DatabaseValue>> rows;
         rows.reserve(static_cast<std::size_t>(mysql_stmt_num_rows(statement)));
 
         while (true)
@@ -923,9 +910,7 @@ namespace AsynGyanis::Database
                     MYSQL_BIND columnBinding{};
                     // 补取也要按列的真实性质选类型：二进制列若按 MYSQL_TYPE_STRING 重取，
                     // 客户端库会按字符集转换一次，拿回来的就不再是原始字节
-                    columnBinding.buffer_type = Detail::isBinaryColumn(columnTypes[index], columnCharacterSets[index])
-                                                    ? MYSQL_TYPE_BLOB
-                                                    : MYSQL_TYPE_STRING;
+                    columnBinding.buffer_type   = Detail::isBinaryColumn(columnTypes[index], columnCharacterSets[index]) ? MYSQL_TYPE_BLOB : MYSQL_TYPE_STRING;
                     columnBinding.buffer        = exactBuffer.data();
                     columnBinding.buffer_length = actualLength;
                     columnBinding.length        = &columnLengths[index];
@@ -936,15 +921,12 @@ namespace AsynGyanis::Database
                         return nullptr;
                     }
 
-                    currentRow.push_back(Detail::convertColumnText(columnTypes[index], columnCharacterSets[index],
-                                                                   exactBuffer.data(),
-                                                                   static_cast<std::size_t>(actualLength)));
+                    currentRow.push_back(Detail::convertColumnText(columnTypes[index], columnCharacterSets[index], exactBuffer.data(), static_cast<std::size_t>(actualLength)));
                     continue;
                 }
 
-                currentRow.push_back(Detail::convertColumnText(columnTypes[index], columnCharacterSets[index],
-                                                               columnBuffers[index].data(),
-                                                               static_cast<std::size_t>(columnLengths[index])));
+                currentRow.push_back(
+                        Detail::convertColumnText(columnTypes[index], columnCharacterSets[index], columnBuffers[index].data(), static_cast<std::size_t>(columnLengths[index])));
             }
 
             rows.push_back(std::move(currentRow));
@@ -1049,14 +1031,14 @@ namespace AsynGyanis::Database
         const MySqlDialect dialect;
         // 事务语句没有返回列，execute() 非空即代表 START TRANSACTION 已被服务端接受
         const bool isStarted = execute(dialect.beginTransactionStatement()) != nullptr;
-        m_isTransactionOpen = isStarted;
+        m_isTransactionOpen  = isStarted;
         return isStarted;
     }
 
     bool MySqlConnection::commit()
     {
         const MySqlDialect dialect;
-        const bool    isCommitted = execute(dialect.commitStatement()) != nullptr;
+        const bool         isCommitted = execute(dialect.commitStatement()) != nullptr;
         if (isCommitted)
         {
             m_isTransactionOpen = false;

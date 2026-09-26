@@ -36,8 +36,8 @@ namespace AsynGyanis::Net
         class FixtureContext
         {
         public:
-            FixtureContext() = default;
-            FixtureContext(const FixtureContext &) = delete;
+            FixtureContext()                                  = default;
+            FixtureContext(const FixtureContext &)            = delete;
             FixtureContext &operator=(const FixtureContext &) = delete;
 
             /// 允许把建好的上下文交回调用方：删掉拷贝之后没有移动构造就 return 不出来
@@ -70,7 +70,7 @@ namespace AsynGyanis::Net
                 holder.m_context = SSL_CTX_new(TLS_server_method());
                 SSL_CTX_set_min_proto_version(holder.m_context, TLS1_3_VERSION);
                 const std::string certificatePath = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem").string();
-                const std::string keyPath = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem").string();
+                const std::string keyPath         = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem").string();
                 if (SSL_CTX_use_certificate_chain_file(holder.m_context, certificatePath.c_str()) != 1 ||
                     SSL_CTX_use_PrivateKey_file(holder.m_context, keyPath.c_str(), SSL_FILETYPE_PEM) != 1)
                 {
@@ -99,7 +99,7 @@ namespace AsynGyanis::Net
          */
         std::vector<std::uint8_t> makeTransportParameters(const std::uint64_t parameterId, const std::string_view valueHex)
         {
-            const auto value = makeBytesFromHex(valueHex);
+            const auto                value = makeBytesFromHex(valueHex);
             std::vector<std::uint8_t> bytes{static_cast<std::uint8_t>(parameterId), static_cast<std::uint8_t>(value.size())};
             bytes.insert(bytes.end(), value.begin(), value.end());
             // 再挂一项 initial_max_data（标识 0x04），让参数不止一项，验证拼接不会只搬第一段
@@ -146,8 +146,8 @@ namespace AsynGyanis::Net
         ASSERT_NE(serverContext.get(), nullptr) << "夹具证书加载失败";
         ASSERT_NE(clientContext.get(), nullptr);
 
-        const auto serverParameters = makeTransportParameters(0x00, "8394c8f03e515708");
-        const auto clientParameters = makeTransportParameters(0x00, "f0eec687a7eb7f48");
+        const auto     serverParameters = makeTransportParameters(0x00, "8394c8f03e515708");
+        const auto     clientParameters = makeTransportParameters(0x00, "f0eec687a7eb7f48");
         QuicTlsContext server(*serverContext.get(), true, serverParameters);
         QuicTlsContext client(*clientContext.get(), false, clientParameters);
 
@@ -174,10 +174,8 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(client.alert().has_value());
         EXPECT_FALSE(server.peerTransportParameters().empty());
         // 本类只搬不解释：对端设进去的字节要原样回来
-        EXPECT_EQ(std::vector<std::uint8_t>(server.peerTransportParameters().begin(), server.peerTransportParameters().end()),
-                  clientParameters);
-        EXPECT_EQ(std::vector<std::uint8_t>(client.peerTransportParameters().begin(), client.peerTransportParameters().end()),
-                  serverParameters);
+        EXPECT_EQ(std::vector<std::uint8_t>(server.peerTransportParameters().begin(), server.peerTransportParameters().end()), clientParameters);
+        EXPECT_EQ(std::vector<std::uint8_t>(client.peerTransportParameters().begin(), client.peerTransportParameters().end()), serverParameters);
     }
 
     /**
@@ -188,7 +186,7 @@ namespace AsynGyanis::Net
         const FixtureContext serverContext = FixtureContext::server();
         const FixtureContext clientContext = FixtureContext::client();
         ASSERT_NE(serverContext.get(), nullptr);
-        const auto parameters = makeTransportParameters(0x00, "8394c8f03e515708");
+        const auto     parameters = makeTransportParameters(0x00, "8394c8f03e515708");
         QuicTlsContext server(*serverContext.get(), true, parameters);
         QuicTlsContext client(*clientContext.get(), false, parameters);
 
@@ -241,7 +239,7 @@ namespace AsynGyanis::Net
     {
         const FixtureContext serverContext = FixtureContext::server();
         ASSERT_NE(serverContext.get(), nullptr);
-        const auto parameters = makeTransportParameters(0x00, "8394c8f03e515708");
+        const auto     parameters = makeTransportParameters(0x00, "8394c8f03e515708");
         QuicTlsContext server(*serverContext.get(), true, parameters);
 
         // 一条 ServerHello（类型 0x02）：服务端在等 ClientHello，收到它就是 unexpected_message

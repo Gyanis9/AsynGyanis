@@ -59,9 +59,9 @@ namespace AsynGyanis::Net
 
         // 可移动、不可拷贝：换成共享所有权存映射正文之后，编译器本会把拷贝操作放出来，
         // 而「复制一份响应」意味着复制一份它正在引用的文件页视图——语义上就该由调用方显式做
-        HttpResponse(const HttpResponse &) = delete;
-        HttpResponse &operator=(const HttpResponse &) = delete;
-        HttpResponse(HttpResponse &&) noexcept = default;
+        HttpResponse(const HttpResponse &)                = delete;
+        HttpResponse &operator=(const HttpResponse &)     = delete;
+        HttpResponse(HttpResponse &&) noexcept            = default;
         HttpResponse &operator=(HttpResponse &&) noexcept = default;
 
         /**
@@ -195,7 +195,7 @@ namespace AsynGyanis::Net
          * @tparam Visitor 可调用体，形如 `void (std::string_view name, std::string_view value)`
          * @param visitor 每个字段访问一次；名字已折小写，视图只在本次回调内有效
          */
-        template <typename Visitor>
+        template<typename Visitor>
         void forEachTrailerField(const Visitor &visitor) const
         {
             if (m_trailerStore.has_value())
@@ -535,7 +535,7 @@ namespace AsynGyanis::Net
          * @tparam Visitor 可调用对象，接受 (头名视图, 头值视图)
          * @param visitor 每个头部访问一次
          */
-        template <typename Visitor>
+        template<typename Visitor>
         void forEachHeaderField(const Visitor &visitor) const
         {
             m_headerStore.forEachField(visitor);
@@ -611,28 +611,28 @@ namespace AsynGyanis::Net
          */
         void appendHead(std::string &result) const;
 
-        int m_status{200};                                     ///< HTTP 状态码，默认 200
-        std::string m_httpVersion{"HTTP/1.1"};                 ///< HTTP 版本，默认 1.1
-        HttpHeaderFieldStore m_headerStore; ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
+        int                  m_status{200};             ///< HTTP 状态码，默认 200
+        std::string          m_httpVersion{"HTTP/1.1"}; ///< HTTP 版本，默认 1.1
+        HttpHeaderFieldStore m_headerStore;             ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
         /// 尾部字段存储，按需创建：不带尾部的响应一次额外分配也不付。`reset()` 要把它**整份解除**
         /// 而不是清空，否则 hasTrailerFields() 会因为「空的那一份也存在」而说谎
         std::optional<HttpHeaderFieldStore> m_trailerStore;
-        bool m_isStreamingBodySuppressed{false};               ///< HEAD 请求：流式响应只发头部、不发正文段
-        std::string m_body; ///< 响应正文（堆存储），与 m_mappedBody 互斥
+        bool                                m_isStreamingBodySuppressed{false}; ///< HEAD 请求：流式响应只发头部、不发正文段
+        std::string                         m_body;                             ///< 响应正文（堆存储），与 m_mappedBody 互斥
         /**
          * @brief 映射正文的来源；空指针表示没有映射正文
          * @details 刻意用共享所有权而非内嵌对象：一份映射可以同时支撑多条在途响应（静态文件的
          *          映射缓存淘汰时不能把还在发送的响应脚下抽走），响应只保证「自己活着时页有效」
          */
         std::shared_ptr<const Platform::MemoryMappedFile> m_mappedBody;
-        std::size_t m_mappedBodyOffset{0}; ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）
-        std::size_t m_mappedBodyLength{0}; ///< 映射正文的长度，单位为字节（决定 bodyView 与 content-length）
-        bool m_isChunked{false};                               ///< 是否处于流式响应模式：正文由 writeChunk 逐段写出，头部按 chunked 序列化
-        bool m_hasSentChunkedHead{false};                      ///< 流式头部是否已随首段正文上线；上线之后状态码与头部都改不了
-        ChunkSender m_chunkSender;                             ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
-        std::string m_chunkFrameBuffer;                        ///< writeChunk 的帧缓冲，跨段复用；只 clear 不缩容量，reset 也不清空
-        WebSocketHandler m_webSocketHandler;                   ///< 升级成功后的业务处理器；空表示本次没有登记升级
-        bool m_isWebSocketUpgradeRequested{false};              ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
-        mutable std::string m_autoDateValue;                   ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
+        std::size_t                                       m_mappedBodyOffset{0};                ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）
+        std::size_t                                       m_mappedBodyLength{0};                ///< 映射正文的长度，单位为字节（决定 bodyView 与 content-length）
+        bool                                              m_isChunked{false};                   ///< 是否处于流式响应模式：正文由 writeChunk 逐段写出，头部按 chunked 序列化
+        bool                                              m_hasSentChunkedHead{false};          ///< 流式头部是否已随首段正文上线；上线之后状态码与头部都改不了
+        ChunkSender                                       m_chunkSender;                        ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
+        std::string                                       m_chunkFrameBuffer;                   ///< writeChunk 的帧缓冲，跨段复用；只 clear 不缩容量，reset 也不清空
+        WebSocketHandler                                  m_webSocketHandler;                   ///< 升级成功后的业务处理器；空表示本次没有登记升级
+        bool                                              m_isWebSocketUpgradeRequested{false}; ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
+        mutable std::string                               m_autoDateValue;                      ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
     };
 } // namespace AsynGyanis::Net

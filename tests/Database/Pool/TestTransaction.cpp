@@ -70,17 +70,9 @@ namespace
      * @param note 备注，可为空
      * @return LedgerRow 结构体
      */
-    [[nodiscard]] LedgerRow makeLedgerRow(const std::int64_t id,
-                                          std::string name,
-                                          const double amount,
-                                          std::optional<std::string> note)
+    [[nodiscard]] LedgerRow makeLedgerRow(const std::int64_t id, std::string name, const double amount, std::optional<std::string> note)
     {
-        return LedgerRow{
-            .id     = id,
-            .name   = std::move(name),
-            .amount = amount,
-            .note   = std::move(note)
-        };
+        return LedgerRow{.id = id, .name = std::move(name), .amount = amount, .note = std::move(note)};
     }
 
 } // namespace
@@ -89,11 +81,11 @@ template<>
 struct AsynGyanis::Database::Queryable::TableSchema<LedgerRow>
 {
     static constexpr std::string_view kTableName = "ledger";
-    static constexpr auto kColumns = std::tuple{
-        Column(&LedgerRow::id,     "id"),
-        Column(&LedgerRow::name,   "name"),
-        Column(&LedgerRow::amount, "amount"),
-        Column(&LedgerRow::note,   "note"),
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&LedgerRow::id, "id"),
+            Column(&LedgerRow::name, "name"),
+            Column(&LedgerRow::amount, "amount"),
+            Column(&LedgerRow::note, "note"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -150,25 +142,23 @@ namespace
         void SetUp() override
         {
             m_pool = std::make_unique<ConnectionPool>(
-                [this]()
-                {
-                    auto connection = DatabaseFactory::createSqlite(
-                        ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
-                    // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
-                    connection->connect();
-                    return connection;
-                },
-                makePoolConfiguration(2));
+                    [this]()
+                    {
+                        auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
+                        // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
+                        connection->connect();
+                        return connection;
+                    },
+                    makePoolConfiguration(2));
 
             PooledConnection connection = m_pool->acquire();
             ASSERT_TRUE(connection);
             // 建表走原生 SQL：DDL 不由 ORM 生成
-            const auto createResult = connection->execute(
-                "CREATE TABLE ledger ("
-                "id INTEGER PRIMARY KEY, "
-                "name TEXT NOT NULL, "
-                "amount REAL, "
-                "note TEXT)");
+            const auto createResult = connection->execute("CREATE TABLE ledger ("
+                                                          "id INTEGER PRIMARY KEY, "
+                                                          "name TEXT NOT NULL, "
+                                                          "amount REAL, "
+                                                          "note TEXT)");
             ASSERT_TRUE(createResult != nullptr) << connection->lastError();
         }
 
@@ -207,8 +197,8 @@ namespace
             return query.where(AsynGyanis::Database::Queryable::Column(&LedgerRow::id, "id") == id).first();
         }
 
-        TemporaryDatabaseFile          m_databaseFile{"Transaction"}; ///< 临时数据库文件，必须先于池析构
-        std::unique_ptr<ConnectionPool> m_pool;                       ///< 用例独占的连接池
+        TemporaryDatabaseFile           m_databaseFile{"Transaction"}; ///< 临时数据库文件，必须先于池析构
+        std::unique_ptr<ConnectionPool> m_pool;                        ///< 用例独占的连接池
     };
 
 } // namespace
@@ -255,7 +245,7 @@ TEST_F(TransactionTest, CommitMakesChangesVisibleToOtherConnections)
 TEST_F(TransactionTest, RollbackDiscardsChanges)
 {
     {
-        Transaction transaction(*m_pool);
+        Transaction          transaction(*m_pool);
         Queryable<LedgerRow> transactionalQuery(transaction);
         EXPECT_EQ(transactionalQuery.insert(makeLedgerRow(1, "会被回滚", 1.0, std::nullopt)), 1);
 
@@ -272,7 +262,7 @@ TEST_F(TransactionTest, RollbackDiscardsChanges)
 TEST_F(TransactionTest, DestructorRollsBackUncommittedWork)
 {
     {
-        Transaction transaction(*m_pool);
+        Transaction          transaction(*m_pool);
         Queryable<LedgerRow> transactionalQuery(transaction);
         EXPECT_EQ(transactionalQuery.insert(makeLedgerRow(1, "未提交", 1.0, std::nullopt)), 1);
 
@@ -293,18 +283,17 @@ TEST_F(TransactionTest, DestructorRollsBackUncommittedWork)
 TEST_F(TransactionTest, DestructorRollsBackEvenWhenPoolResetDoesNot)
 {
     ConnectionPool unresettingPool(
-        [this]() -> std::unique_ptr<DatabaseConnection>
-        {
-            auto connection = std::make_unique<NoSessionResetSqliteConnection>(
-                ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
-            // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
-            static_cast<void>(connection->connect());
-            return connection;
-        },
-        makePoolConfiguration(1));
+            [this]() -> std::unique_ptr<DatabaseConnection>
+            {
+                auto connection = std::make_unique<NoSessionResetSqliteConnection>(ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
+                // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
+                static_cast<void>(connection->connect());
+                return connection;
+            },
+            makePoolConfiguration(1));
 
     {
-        Transaction transaction(unresettingPool);
+        Transaction          transaction(unresettingPool);
         Queryable<LedgerRow> transactionalQuery(transaction);
         ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "只能由析构回滚", 1.0, std::nullopt)), 1);
         // 刻意不提交也不回滚，且这个池的复位路径什么都不做：回滚只剩事务析构一个来源
@@ -335,7 +324,7 @@ TEST_F(TransactionTest, ExceptionPathRollsBackAndKeepsDatabaseClean)
 
     const auto failingInserts = [this]()
     {
-        Transaction transaction(*m_pool);
+        Transaction          transaction(*m_pool);
         Queryable<LedgerRow> transactionalQuery(transaction);
 
         // 第一条是全新行，第二条与已提交的主键 1 冲突 → 驱动报错 → Queryable 抛异常
@@ -366,7 +355,7 @@ TEST_F(TransactionTest, ExceptionPathRollsBackAndKeepsDatabaseClean)
 TEST_F(TransactionTest, RepeatedCommitAndRollbackAreIdempotent)
 {
     {
-        Transaction transaction(*m_pool);
+        Transaction          transaction(*m_pool);
         Queryable<LedgerRow> transactionalQuery(transaction);
         EXPECT_EQ(transactionalQuery.insert(makeLedgerRow(1, "提交一次", 1.0, std::nullopt)), 1);
 
@@ -397,7 +386,7 @@ TEST_F(TransactionTest, RepeatedCommitAndRollbackAreIdempotent)
 TEST_F(TransactionTest, CommitThenRollbackKeepsCommittedData)
 {
     {
-        Transaction transaction(*m_pool);
+        Transaction          transaction(*m_pool);
         Queryable<LedgerRow> transactionalQuery(transaction);
         EXPECT_EQ(transactionalQuery.insert(makeLedgerRow(1, "已提交", 2.0, std::string("备注"))), 1);
         ASSERT_TRUE(transaction.commit()) << transaction.lastError();
@@ -420,16 +409,15 @@ TEST_F(TransactionTest, TransactionHoldsItsConnectionUntilItEnds)
 {
     // 独立的单连接池：事务一旦借走，池里就没有第二条连接可给
     ConnectionPool singleConnectionPool(
-        [this]()
-        {
-            auto connection = DatabaseFactory::createSqlite(
-                ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
-            connection->connect();
-            return connection;
-        },
-        makePoolConfiguration(1));
+            [this]()
+            {
+                auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
+                connection->connect();
+                return connection;
+            },
+            makePoolConfiguration(1));
 
-    Transaction transaction(singleConnectionPool);
+    Transaction          transaction(singleConnectionPool);
     Queryable<LedgerRow> transactionalQuery(transaction);
     EXPECT_EQ(transactionalQuery.insert(makeLedgerRow(1, "单连接事务", 3.0, std::nullopt)), 1);
 
@@ -489,7 +477,7 @@ TEST_F(TransactionTest, BatchInsertOnTransactionRollsBackWithIt)
     }
 
     {
-        Transaction transaction(*m_pool);
+        Transaction          transaction(*m_pool);
         Queryable<LedgerRow> transactionalQuery(transaction);
 
         // 三块全部落在事务连接上，因此一次回滚就能把三块一起撤销
@@ -564,21 +552,17 @@ TEST_F(TransactionTest, StatementsOnOneTransactionWaitForTheConnection)
     std::unique_lock<std::mutex> heldLock = transaction.acquireStatementLock();
     ASSERT_TRUE(heldLock.owns_lock());
 
-    std::future<std::vector<LedgerRow> > rowsFuture = std::async(std::launch::async, [&transaction]()
-    {
-        Queryable<LedgerRow> transactionalQuery(transaction);
-        return transactionalQuery.toList();
-    });
-    std::future<bool> commitFuture = std::async(std::launch::async, [&transaction]()
-    {
-        return transaction.commit();
-    });
+    std::future<std::vector<LedgerRow>> rowsFuture   = std::async(std::launch::async,
+                                                                  [&transaction]()
+                                                                  {
+                                                                    Queryable<LedgerRow> transactionalQuery(transaction);
+                                                                    return transactionalQuery.toList();
+                                                                  });
+    std::future<bool>                   commitFuture = std::async(std::launch::async, [&transaction]() { return transaction.commit(); });
 
     // 使用权没交还之前两侧都到不了终点
-    EXPECT_EQ(rowsFuture.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
-        << "查询没等连接使用权：它会与占着连接的语句同时踩同一个驱动句柄";
-    EXPECT_EQ(commitFuture.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
-        << "COMMIT 没等连接使用权：它可能在语句执行到一半时落下";
+    EXPECT_EQ(rowsFuture.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout) << "查询没等连接使用权：它会与占着连接的语句同时踩同一个驱动句柄";
+    EXPECT_EQ(commitFuture.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout) << "COMMIT 没等连接使用权：它可能在语句执行到一半时落下";
 
     heldLock.unlock();
 
@@ -609,14 +593,14 @@ TEST_F(TransactionTest, ChunkedBatchInsertHoldsTheConnectionForTheWholeBatch)
     std::unique_lock<std::mutex> heldLock = transaction.acquireStatementLock();
     ASSERT_TRUE(heldLock.owns_lock());
 
-    std::future<std::int64_t> insertedRows = std::async(std::launch::async, [&transaction, &rows]()
-    {
-        Queryable<LedgerRow> transactionalQuery(transaction);
-        return transactionalQuery.insertBatch(rows);
-    });
+    std::future<std::int64_t> insertedRows = std::async(std::launch::async,
+                                                        [&transaction, &rows]()
+                                                        {
+                                                            Queryable<LedgerRow> transactionalQuery(transaction);
+                                                            return transactionalQuery.insertBatch(rows);
+                                                        });
 
-    EXPECT_EQ(insertedRows.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout)
-        << "分块批量插入没等连接使用权：块语句会与并发语句交错在同一个驱动句柄上";
+    EXPECT_EQ(insertedRows.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout) << "分块批量插入没等连接使用权：块语句会与并发语句交错在同一个驱动句柄上";
 
     heldLock.unlock();
 
@@ -634,17 +618,21 @@ TEST_F(TransactionTest, SequentialStatementsFromDifferentThreadsBothRun)
 {
     Transaction transaction(*m_pool);
 
-    static_cast<void>(std::async(std::launch::async, [&transaction]()
-    {
-        Queryable<LedgerRow> transactionalQuery(transaction);
-        return static_cast<void>(transactionalQuery.insert(makeLedgerRow(1, "第一个线程", 1.5, std::nullopt)));
-    }).get());
+    static_cast<void>(std::async(std::launch::async,
+                                 [&transaction]()
+                                 {
+                                     Queryable<LedgerRow> transactionalQuery(transaction);
+                                     return static_cast<void>(transactionalQuery.insert(makeLedgerRow(1, "第一个线程", 1.5, std::nullopt)));
+                                 })
+                              .get());
 
-    static_cast<void>(std::async(std::launch::async, [&transaction]()
-    {
-        Queryable<LedgerRow> transactionalQuery(transaction);
-        return static_cast<void>(transactionalQuery.insert(makeLedgerRow(2, "第二个线程", 2.5, std::nullopt)));
-    }).get());
+    static_cast<void>(std::async(std::launch::async,
+                                 [&transaction]()
+                                 {
+                                     Queryable<LedgerRow> transactionalQuery(transaction);
+                                     return static_cast<void>(transactionalQuery.insert(makeLedgerRow(2, "第二个线程", 2.5, std::nullopt)));
+                                 })
+                              .get());
 
     EXPECT_TRUE(transaction.commit());
     EXPECT_EQ(countCommittedRows(), 2);

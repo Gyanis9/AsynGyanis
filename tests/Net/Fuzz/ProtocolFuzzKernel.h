@@ -25,10 +25,10 @@ namespace AsynGyanis::Net::Fuzz
     enum class Target : std::uint8_t
     {
         WebSocketFrame, ///< WebSocket 增量帧解码器（RFC 6455 + 服务端侧的掩码/控制帧约束）
-        Http2Frame,      ///< HTTP/2 增量帧解码器（RFC 7540 §4 + 本端上限）
-        Http3Frame,      ///< HTTP/3 帧读取器（RFC 9114 §7 + varint 帧头 + 单帧上限）
-        HpackBlock,      ///< HPACK 头块解码器（RFC 7541 + 动态表与头列表上限）
-        Count,           ///< 哨兵：目标总数，用于遍历，不是可解码的目标
+        Http2Frame,     ///< HTTP/2 增量帧解码器（RFC 7540 §4 + 本端上限）
+        Http3Frame,     ///< HTTP/3 帧读取器（RFC 9114 §7 + varint 帧头 + 单帧上限）
+        HpackBlock,     ///< HPACK 头块解码器（RFC 7541 + 动态表与头列表上限）
+        Count,          ///< 哨兵：目标总数，用于遍历，不是可解码的目标
     };
 
     /**
@@ -40,8 +40,7 @@ namespace AsynGyanis::Net::Fuzz
     class DeterministicRandom
     {
     public:
-        explicit DeterministicRandom(const std::uint64_t seed) noexcept :
-            m_state(seed)
+        explicit DeterministicRandom(const std::uint64_t seed) noexcept : m_state(seed)
         {
         }
 
@@ -90,7 +89,7 @@ namespace AsynGyanis::Net::Fuzz
     struct RunStats
     {
         std::size_t producedFrameCount{0}; ///< 本轮解出的帧数（HPACK 记解出的字段数）
-        bool isErrorEnd{false};            ///< 本轮是否以「拒绝」收场
+        bool        isErrorEnd{false};     ///< 本轮是否以「拒绝」收场
     };
 
     /**

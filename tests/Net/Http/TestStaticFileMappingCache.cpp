@@ -13,7 +13,6 @@
 #include <filesystem>
 #include <memory>
 #include <string>
-#include <memory>
 #include <thread>
 #include <vector>
 
@@ -26,9 +25,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 造一份命中判据用的元数据：缓存只认「大小 + 修改秒 + 身份标记」这三个数
          */
-        [[nodiscard]] Platform::FileBasicInfo makeStamp(const std::uintmax_t sizeBytes,
-                                                        const std::int64_t lastWriteSeconds,
-                                                        const std::uint64_t identityTag = 7)
+        [[nodiscard]] Platform::FileBasicInfo makeStamp(const std::uintmax_t sizeBytes, const std::int64_t lastWriteSeconds, const std::uint64_t identityTag = 7)
         {
             Platform::FileBasicInfo info;
             info.isRegularFile    = true;
@@ -65,7 +62,7 @@ namespace AsynGyanis::Net
      */
     TEST(StaticFileMappingCache, ReusesTheSameMappingWhileMetadataMatches)
     {
-        const TemporaryFile temporaryFile("CacheHit", "0123456789");
+        const TemporaryFile                                     temporaryFile("CacheHit", "0123456789");
         const std::shared_ptr<const Platform::MemoryMappedFile> mapping = openMapping(temporaryFile.path());
 
         StaticFileMappingCache cache{4};
@@ -81,7 +78,7 @@ namespace AsynGyanis::Net
      */
     TEST(StaticFileMappingCache, DropsEntryWhenSizeChanges)
     {
-        const TemporaryFile temporaryFile("CacheSize", "0123456789");
+        const TemporaryFile                                     temporaryFile("CacheSize", "0123456789");
         const std::shared_ptr<const Platform::MemoryMappedFile> mapping = openMapping(temporaryFile.path());
 
         StaticFileMappingCache cache{4};
@@ -96,7 +93,7 @@ namespace AsynGyanis::Net
      */
     TEST(StaticFileMappingCache, DropsEntryWhenFileIdentityChanges)
     {
-        const TemporaryFile temporaryFile("CacheIdentity", "0123456789");
+        const TemporaryFile                                     temporaryFile("CacheIdentity", "0123456789");
         const std::shared_ptr<const Platform::MemoryMappedFile> mapping = openMapping(temporaryFile.path());
 
         StaticFileMappingCache cache{4};
@@ -111,7 +108,7 @@ namespace AsynGyanis::Net
      */
     TEST(StaticFileMappingCache, DropsEntryWhenModificationTimeChanges)
     {
-        const TemporaryFile temporaryFile("CacheMtime", "0123456789");
+        const TemporaryFile                                     temporaryFile("CacheMtime", "0123456789");
         const std::shared_ptr<const Platform::MemoryMappedFile> mapping = openMapping(temporaryFile.path());
 
         StaticFileMappingCache cache{4};
@@ -201,50 +198,49 @@ namespace AsynGyanis::Net
     TEST(StaticFileMappingCache, StaysWithinCapacityUnderConcurrentFindAndStore)
     {
         constexpr std::size_t threadCount = 4;
-        constexpr std::size_t iterations = 200;
-        constexpr std::size_t pathCount = 6;
+        constexpr std::size_t iterations  = 200;
+        constexpr std::size_t pathCount   = 6;
 
         // 夹具带用户声明的析构函数，因此不可移动：并发用例要按数量造，就用所有权指针装着
         std::vector<std::unique_ptr<TemporaryFile>> files;
         files.reserve(pathCount);
         for (std::size_t index = 0; index < pathCount; ++index)
         {
-            files.push_back(std::make_unique<TemporaryFile>("CacheConcurrent" + std::to_string(index),
-                                                            std::string(4, static_cast<char>('a' + index))));
+            files.push_back(std::make_unique<TemporaryFile>("CacheConcurrent" + std::to_string(index), std::string(4, static_cast<char>('a' + index))));
         }
 
         std::vector<std::shared_ptr<const Platform::MemoryMappedFile>> mappings;
         mappings.reserve(pathCount);
-        for (const std::unique_ptr<TemporaryFile> &file : files)
+        for (const std::unique_ptr<TemporaryFile> &file: files)
         {
             mappings.push_back(openMapping(file->path()));
         }
 
-        StaticFileMappingCache cache{3};
-        std::barrier reuseBarrier{threadCount};
-        std::barrier finishBarrier{threadCount};
+        StaticFileMappingCache   cache{3};
+        std::barrier             reuseBarrier{threadCount};
+        std::barrier             finishBarrier{threadCount};
         std::vector<std::thread> workers;
         workers.reserve(threadCount);
         for (std::size_t threadIndex = 0; threadIndex < threadCount; ++threadIndex)
         {
             workers.emplace_back(
-                [&cache, &files, &mappings, &reuseBarrier, &finishBarrier, threadIndex]
-                {
-                    reuseBarrier.arrive_and_wait();
-                    for (std::size_t iteration = 0; iteration < iterations; ++iteration)
+                    [&cache, &files, &mappings, &reuseBarrier, &finishBarrier, threadIndex]
                     {
-                        const std::size_t slot = (threadIndex * 3 + iteration) % pathCount;
-                        // 读写交替，且元数据每 5 轮故意错一次，把「不命中即摘条目」的分支也压进并发里
-                        const std::uintmax_t sizeBytes = iteration % 5 == 4 ? 999 : 4;
-                        if (cache.find(files[slot]->path(), makeStamp(sizeBytes, 1)) == nullptr)
+                        reuseBarrier.arrive_and_wait();
+                        for (std::size_t iteration = 0; iteration < iterations; ++iteration)
                         {
-                            cache.store(files[slot]->path(), mappings[slot], makeStamp(sizeBytes, 1));
+                            const std::size_t slot = (threadIndex * 3 + iteration) % pathCount;
+                            // 读写交替，且元数据每 5 轮故意错一次，把「不命中即摘条目」的分支也压进并发里
+                            const std::uintmax_t sizeBytes = iteration % 5 == 4 ? 999 : 4;
+                            if (cache.find(files[slot]->path(), makeStamp(sizeBytes, 1)) == nullptr)
+                            {
+                                cache.store(files[slot]->path(), mappings[slot], makeStamp(sizeBytes, 1));
+                            }
                         }
-                    }
-                    finishBarrier.arrive_and_wait();
-                });
+                        finishBarrier.arrive_and_wait();
+                    });
         }
-        for (std::thread &worker : workers)
+        for (std::thread &worker: workers)
         {
             worker.join();
         }
@@ -261,23 +257,21 @@ namespace AsynGyanis::Net
      */
     TEST(StaticFileMappingCache, KeysEntryByMappingLengthRatherThanByCallerStamp)
     {
-        const TemporaryFile temporaryFile("StaleStamp", "0123456789");
+        const TemporaryFile                                     temporaryFile("StaleStamp", "0123456789");
         const std::shared_ptr<const Platform::MemoryMappedFile> mapping = openMapping(temporaryFile.path());
         ASSERT_EQ(mapping->bytes().size(), 10U);
 
         {
             StaticFileMappingCache cache{4};
             cache.store(temporaryFile.path(), mapping, makeStamp(4, 100));
-            EXPECT_NE(cache.find(temporaryFile.path(), makeStamp(10, 100)), nullptr)
-                    << "键必须描述这份映射真能交出的字节数，否则映射长度那份读数永远命不中";
+            EXPECT_NE(cache.find(temporaryFile.path(), makeStamp(10, 100)), nullptr) << "键必须描述这份映射真能交出的字节数，否则映射长度那份读数永远命不中";
         }
 
         {
             StaticFileMappingCache cache{4};
             cache.store(temporaryFile.path(), mapping, makeStamp(4, 100));
             // 判据不一致时 find 会就地摘掉条目，因此这里既要不命中、也要看到表被清空
-            EXPECT_EQ(cache.find(temporaryFile.path(), makeStamp(4, 100)), nullptr)
-                    << "调用方的过期读数被照抄进键，就会允许「键 4 字节 / 正文 10 字节」的条目存在";
+            EXPECT_EQ(cache.find(temporaryFile.path(), makeStamp(4, 100)), nullptr) << "调用方的过期读数被照抄进键，就会允许「键 4 字节 / 正文 10 字节」的条目存在";
             EXPECT_EQ(cache.entryCount(), 0U);
         }
     }

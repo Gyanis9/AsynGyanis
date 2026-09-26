@@ -50,8 +50,7 @@ namespace AsynGyanis::Core
 #endif
     } // namespace
 
-    WorkerSupervisor::WorkerSupervisor(Configuration configuration) :
-        m_configuration(std::move(configuration))
+    WorkerSupervisor::WorkerSupervisor(Configuration configuration) : m_configuration(std::move(configuration))
     {
         if (m_configuration.executablePath.empty())
         {
@@ -59,8 +58,7 @@ namespace AsynGyanis::Core
         }
         if (m_configuration.workerCount < 2)
         {
-            throw Base::LogicException("多进程编排要求 worker 数至少为 2（当前 " +
-                                       std::to_string(m_configuration.workerCount) +
+            throw Base::LogicException("多进程编排要求 worker 数至少为 2（当前 " + std::to_string(m_configuration.workerCount) +
                                        "）。只想跑单进程时不要构造 WorkerSupervisor，直接启动服务器即可");
         }
         if (m_configuration.pollInterval <= std::chrono::milliseconds::zero() || m_configuration.shutdownTimeout <= std::chrono::milliseconds::zero())
@@ -116,16 +114,15 @@ namespace AsynGyanis::Core
         class SignalRegistration
         {
         public:
-            explicit SignalRegistration(WorkerSupervisor &supervisor) noexcept
-                : m_previousTerminateHandler(std::signal(SIGTERM, &handleStopSignal)),
-                  m_previousInterruptHandler(std::signal(SIGINT, &handleStopSignal))
+            explicit SignalRegistration(WorkerSupervisor &supervisor) noexcept :
+                m_previousTerminateHandler(std::signal(SIGTERM, &handleStopSignal)), m_previousInterruptHandler(std::signal(SIGINT, &handleStopSignal))
             {
                 // 先装 handler 再发布指针：handler 只在指针非空时才转达，装反的一拍里
                 // 信号最多被当成「没人要停」丢掉，而不是解引用一个还没定下来的 this
                 g_runningSupervisor.store(&supervisor, std::memory_order_release);
             }
 
-            SignalRegistration(const SignalRegistration &) = delete;
+            SignalRegistration(const SignalRegistration &)            = delete;
             SignalRegistration &operator=(const SignalRegistration &) = delete;
 
             /// 还原先前两个 handler 并收回全局指针：之后再收到停止信号就与本编排器无关了
@@ -137,8 +134,8 @@ namespace AsynGyanis::Core
             }
 
         private:
-            void (*m_previousTerminateHandler)(int);  ///< 被本登记换掉的 SIGTERM 处理函数
-            void (*m_previousInterruptHandler)(int);   ///< 被本登记换掉的 SIGINT 处理函数
+            void (*m_previousTerminateHandler)(int); ///< 被本登记换掉的 SIGTERM 处理函数
+            void (*m_previousInterruptHandler)(int); ///< 被本登记换掉的 SIGINT 处理函数
         };
 
         const SignalRegistration signalRegistration(*this);
@@ -205,8 +202,7 @@ namespace AsynGyanis::Core
 
             if (givenUpWorkerCount >= m_workers.size())
             {
-                LOG_ERROR_FMT("WorkerSupervisor: {} 个 worker 全部因「起来就崩」被放弃，编排退出（请检查可执行文件与配置）",
-                              givenUpWorkerCount);
+                LOG_ERROR_FMT("WorkerSupervisor: {} 个 worker 全部因「起来就崩」被放弃，编排退出（请检查可执行文件与配置）", givenUpWorkerCount);
                 isPoolGivenUp = true;
                 break;
             }
@@ -245,8 +241,8 @@ namespace AsynGyanis::Core
         {
             // 起不来不重试：把该槽位按「起来就崩」记一次，连续到上限就放弃，免得把日志刷满
             ++worker.crashCount;
-            LOG_ERROR_FMT("WorkerSupervisor: worker {} 起不来（平台错误码 {}），这是连续第 {} 次。路径 {}", workerIndex,
-                          Platform::PlatformError::lastErrorCode(), worker.crashCount, m_configuration.executablePath);
+            LOG_ERROR_FMT("WorkerSupervisor: worker {} 起不来（平台错误码 {}），这是连续第 {} 次。路径 {}", workerIndex, Platform::PlatformError::lastErrorCode(),
+                          worker.crashCount, m_configuration.executablePath);
             if (worker.crashCount >= m_configuration.crashLoopLimit)
             {
                 worker.isGivenUp = true;
@@ -261,10 +257,9 @@ namespace AsynGyanis::Core
 
     bool WorkerSupervisor::reapWorker(Worker &worker, const std::size_t workerIndex)
     {
-        const std::optional<int> exitCode = Platform::Process::pollExitCode(worker.handle);
+        const std::optional<int> exitCode   = Platform::Process::pollExitCode(worker.handle);
         const bool               isFastExit = std::chrono::steady_clock::now() - worker.startTime < m_configuration.crashLoopWindow;
-        LOG_INFO_FMT("WorkerSupervisor: worker {} 已退出（进程号 {}，退出码 {}，存活 {} 毫秒）{}", workerIndex, worker.handle.processId(),
-                     exitCode.value_or(-1),
+        LOG_INFO_FMT("WorkerSupervisor: worker {} 已退出（进程号 {}，退出码 {}，存活 {} 毫秒）{}", workerIndex, worker.handle.processId(), exitCode.value_or(-1),
                      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - worker.startTime).count(),
                      isFastExit ? "，按「起来就崩」记一次" : "");
         worker.handle.close();
@@ -275,8 +270,8 @@ namespace AsynGyanis::Core
             if (worker.crashCount >= m_configuration.crashLoopLimit)
             {
                 worker.isGivenUp = true;
-                LOG_ERROR_FMT("WorkerSupervisor: worker {} 连续 {} 次存活不足 {} 毫秒就退出，放弃补它（请检查它的启动日志）",
-                              workerIndex, worker.crashCount, m_configuration.crashLoopWindow.count());
+                LOG_ERROR_FMT("WorkerSupervisor: worker {} 连续 {} 次存活不足 {} 毫秒就退出，放弃补它（请检查它的启动日志）", workerIndex, worker.crashCount,
+                              m_configuration.crashLoopWindow.count());
                 return true;
             }
             return false;
@@ -353,8 +348,7 @@ namespace AsynGyanis::Core
             }
             if (Platform::Process::isRunning(worker.handle))
             {
-                LOG_WARN_FMT("WorkerSupervisor: worker 进程号 {} 在强杀后仍未结束，句柄已释放但没回收（POSIX 上可能留下僵尸）",
-                             worker.handle.processId());
+                LOG_WARN_FMT("WorkerSupervisor: worker 进程号 {} 在强杀后仍未结束，句柄已释放但没回收（POSIX 上可能留下僵尸）", worker.handle.processId());
             }
             worker.handle.close();
         }
@@ -373,12 +367,8 @@ namespace AsynGyanis::Core
         const auto reapDeadline = std::chrono::steady_clock::now() + kForcedReapWait;
         while (std::chrono::steady_clock::now() < reapDeadline)
         {
-            const bool hasUnreapedWorker = std::ranges::any_of(m_workers,
-                                                               [](const Worker &worker)
-                                                               {
-                                                                   return worker.handle.isValid() &&
-                                                                          Platform::Process::isRunning(worker.handle);
-                                                               });
+            const bool hasUnreapedWorker =
+                    std::ranges::any_of(m_workers, [](const Worker &worker) { return worker.handle.isValid() && Platform::Process::isRunning(worker.handle); });
             if (!hasUnreapedWorker)
             {
                 return;

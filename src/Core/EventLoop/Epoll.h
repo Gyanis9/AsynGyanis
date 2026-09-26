@@ -131,8 +131,8 @@ namespace AsynGyanis::Core
         void destroy();
 
         Platform::EpollHandle    m_fileDescriptor{Platform::kInvalidEpollHandle}; ///< epoll 实例句柄（Linux: 文件描述符, Windows: HANDLE）
-        std::vector<epoll_event> m_events;                                        ///< wait() 的落地缓冲：构造时一次定容为 kMaximumEventCount，此后不再改容量（改容量会让已交出去的视图悬垂）
-        static constexpr int     kMaximumEventCount = 1024;                       ///< 单次 wait 最多返回的事件数，同时也是缓冲的固定容量
+        std::vector<epoll_event> m_events;                  ///< wait() 的落地缓冲：构造时一次定容为 kMaximumEventCount，此后不再改容量（改容量会让已交出去的视图悬垂）
+        static constexpr int     kMaximumEventCount = 1024; ///< 单次 wait 最多返回的事件数，同时也是缓冲的固定容量
     };
 } // namespace AsynGyanis::Core
 

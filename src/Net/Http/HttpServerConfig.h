@@ -31,13 +31,13 @@ namespace AsynGyanis::Net
      */
     struct HttpServerConfiguration
     {
-        HttpServerLimits limits{};              ///< 连接级限额：超时与单连接请求数上限
-        HttpParserLimits parserLimits{};        ///< 单条报文的内存上限
-        std::size_t maximumConnections{0};      ///< 全局并发连接上限，0 = 不限
-        std::size_t maximumConnectionsPerIp{0}; ///< 单个来源的并发连接上限，0 = 不限
-        double requestsPerSecond{0.0};          ///< 全局请求速率上限（令牌桶速率），0 = 不限流
-        double rateLimitBurstCapacity{1.0};     ///< 令牌桶容量，即瞬时允许的突发量；速率不为 0 时必须 ≥ 1
-        bool exposeMetrics{false};              ///< 是否注册 /metrics 与 /healthz
+        HttpServerLimits limits{};                    ///< 连接级限额：超时与单连接请求数上限
+        HttpParserLimits parserLimits{};              ///< 单条报文的内存上限
+        std::size_t      maximumConnections{0};       ///< 全局并发连接上限，0 = 不限
+        std::size_t      maximumConnectionsPerIp{0};  ///< 单个来源的并发连接上限，0 = 不限
+        double           requestsPerSecond{0.0};      ///< 全局请求速率上限（令牌桶速率），0 = 不限流
+        double           rateLimitBurstCapacity{1.0}; ///< 令牌桶容量，即瞬时允许的突发量；速率不为 0 时必须 ≥ 1
+        bool             exposeMetrics{false};        ///< 是否注册 /metrics 与 /healthz
     };
 
     /**

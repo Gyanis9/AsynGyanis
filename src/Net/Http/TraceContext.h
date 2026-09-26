@@ -55,10 +55,10 @@ namespace AsynGyanis::Net
      */
     struct TraceIdentifiers
     {
-        std::array<char, kTraceIdHexDigitCount + 1U> traceId{}; ///< 32 位小写十六进制 + NUL
-        std::array<char, kSpanIdHexDigitCount + 1U> parentId{}; ///< 16 位小写十六进制 + NUL
-        std::uint8_t flags{0};                                  ///< trace-flags 的原值（含未定义的位）
-        std::uint8_t version{0};                                ///< 收到的版本号；本实现只生成 0
+        std::array<char, kTraceIdHexDigitCount + 1U> traceId{};  ///< 32 位小写十六进制 + NUL
+        std::array<char, kSpanIdHexDigitCount + 1U>  parentId{}; ///< 16 位小写十六进制 + NUL
+        std::uint8_t                                 flags{0};   ///< trace-flags 的原值（含未定义的位）
+        std::uint8_t                                 version{0}; ///< 收到的版本号；本实现只生成 0
 
         /// @brief 链路标识文本（32 位十六进制），不含 NUL
         [[nodiscard]] std::string_view traceIdText() const noexcept;

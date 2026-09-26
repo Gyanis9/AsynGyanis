@@ -91,7 +91,7 @@ namespace AsynGyanis::Core
         }
 
         // 本地待执行代码优先于本地协程：它们多是「为即将运行的协程铺路」的动作
-        //（例如定时到期的恢复），先做掉能让紧接着恢复的协程看到收敛后的状态
+        // （例如定时到期的恢复），先做掉能让紧接着恢复的协程看到收敛后的状态
         if (!m_localCallables.empty())
         {
             std::function<void()> callable = std::move(m_localCallables.front());
@@ -154,12 +154,12 @@ namespace AsynGyanis::Core
         // 第二阶段：分批取用全局队列，防止本地任务持续产生导致全局饥饿；每批不超过
         // kMaximumRemoteItemsPerPass 件，取满就把控制权还给调用方（见该常量的说明）。
         // 批处理缓冲提到循环外：跨批次复用已申请的容量，避免每轮都做一次堆分配
-        std::vector<std::coroutine_handle<> > batch;
-        std::deque<std::function<void()> >    callableBatch;
+        std::vector<std::coroutine_handle<>> batch;
+        std::deque<std::function<void()>>    callableBatch;
         while (true)
         {
-            std::size_t takenHandleCount    = 0;
-            std::size_t takenCallableCount  = 0;
+            std::size_t takenHandleCount   = 0;
+            std::size_t takenCallableCount = 0;
             {
                 const std::lock_guard lock(m_globalMutex);
                 batch.clear();
@@ -284,4 +284,4 @@ namespace AsynGyanis::Core
         return m_localQueue.size();
     }
 
-}
+} // namespace AsynGyanis::Core

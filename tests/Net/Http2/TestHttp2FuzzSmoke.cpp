@@ -10,9 +10,9 @@
 // 随机源是自带种子的 LCG（不用 std::random_device），因此失败可复现：断言消息里带上轮次，必要时可复算。
 // 真正的 libFuzzer 目标需要 clang + Linux，本机工具链没有，故用这套属性化用例作为常驻防线。
 
+#include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Connection.h"
 #include "Net/Http2/Http2Frame.h"
-#include "Net/Http2/Hpack.h"
 
 #include <gtest/gtest.h>
 
@@ -41,15 +41,14 @@ namespace AsynGyanis::Net
         constexpr int kHealthyFeedRoundCount = 2000;
 
         /// HPACK 往返轮次与随机块轮次
-        constexpr int kHpackRoundTripRoundCount = 400;
+        constexpr int kHpackRoundTripRoundCount   = 400;
         constexpr int kHpackRandomBlockRoundCount = 400;
 
         /// 自带种子的线性同余发生器：固定种子保证失败可复现
         class DeterministicRandom
         {
         public:
-            explicit DeterministicRandom(const std::uint64_t seed) noexcept :
-                m_state(seed)
+            explicit DeterministicRandom(const std::uint64_t seed) noexcept : m_state(seed)
             {
             }
 
@@ -83,17 +82,14 @@ namespace AsynGyanis::Net
         std::vector<std::string> makeValidFrameCorpus()
         {
             std::vector<std::string> corpus;
-            corpus.push_back(encodeHttp2SettingsFrame(Http2SettingsPayload{
-                    .parameters = {{static_cast<std::uint16_t>(Http2SettingIdentifier::MaxFrameSize), 16384U}}}));
+            corpus.push_back(encodeHttp2SettingsFrame(Http2SettingsPayload{.parameters = {{static_cast<std::uint16_t>(Http2SettingIdentifier::MaxFrameSize), 16384U}}}));
             corpus.push_back(encodeHttp2PingFrame(Http2PingPayload{}));
             corpus.push_back(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, 1U));
             corpus.push_back(encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 1024U}, 1U));
             corpus.push_back(encodeHttp2GoAwayFrame(Http2GoAwayPayload{.lastStreamId = 1U, .debugData = "bye"}));
-            corpus.push_back(encodeHttp2HeadersFrame(
-                    Http2HeadersPayload{.endStream = true, .endHeaders = true, .headerBlockFragment = "\x82\x86\x84"}, 1U));
+            corpus.push_back(encodeHttp2HeadersFrame(Http2HeadersPayload{.endStream = true, .endHeaders = true, .headerBlockFragment = "\x82\x86\x84"}, 1U));
             corpus.push_back(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = "payload"}, 1U));
-            corpus.push_back(encodeHttp2ContinuationFrame(
-                    Http2ContinuationPayload{.endHeaders = true, .headerBlockFragment = "\x82\x86\x84"}, 1U));
+            corpus.push_back(encodeHttp2ContinuationFrame(Http2ContinuationPayload{.endHeaders = true, .headerBlockFragment = "\x82\x86\x84"}, 1U));
             return corpus;
         }
 
@@ -113,13 +109,11 @@ namespace AsynGyanis::Net
             }
 
             Http2FrameDecoder decoder;
-            std::size_t consumedByteCount = 0;
+            std::size_t       consumedByteCount = 0;
             while (consumedByteCount < outgoingBytes.size())
             {
-                const Http2FrameDecodeStatus status =
-                        decoder.parse(outgoingBytes.data() + consumedByteCount, outgoingBytes.size() - consumedByteCount);
-                ASSERT_NE(status, Http2FrameDecodeStatus::Error)
-                        << "第 " << roundIndex << " 轮：本端产出的字节里有非法帧——" << decoder.errorMessage();
+                const Http2FrameDecodeStatus status = decoder.parse(outgoingBytes.data() + consumedByteCount, outgoingBytes.size() - consumedByteCount);
+                ASSERT_NE(status, Http2FrameDecodeStatus::Error) << "第 " << roundIndex << " 轮：本端产出的字节里有非法帧——" << decoder.errorMessage();
                 if (status == Http2FrameDecodeStatus::NeedMore)
                 {
                     break;
@@ -129,8 +123,7 @@ namespace AsynGyanis::Net
                 consumedByteCount += frameByteCount;
                 static_cast<void>(decoder.takeFrame());
             }
-            EXPECT_EQ(consumedByteCount, outgoingBytes.size())
-                    << "第 " << roundIndex << " 轮：本端产出的字节不是整数条帧（有半条帧留在里面）";
+            EXPECT_EQ(consumedByteCount, outgoingBytes.size()) << "第 " << roundIndex << " 轮：本端产出的字节不是整数条帧（有半条帧留在里面）";
         }
     } // namespace
 
@@ -144,13 +137,12 @@ namespace AsynGyanis::Net
             ASSERT_GT(frameBytes.size(), 9U) << "语料里的帧都必须带非空负载，截断矩阵才有意义";
             for (std::size_t prefixLength = 0; prefixLength < frameBytes.size(); ++prefixLength)
             {
-                Http2FrameDecoder decoder;
+                Http2FrameDecoder            decoder;
                 const Http2FrameDecodeStatus status = decoder.parse(frameBytes.data(), prefixLength);
                 if (status == Http2FrameDecodeStatus::Frame)
                 {
                     // 前缀自成一帧是允许的（例如变长负载帧的短负载），但必须正好吃掉整个前缀
-                    EXPECT_EQ(decoder.consumedByteCount(), prefixLength)
-                            << "前缀长度 " << prefixLength << " 被当成帧，却只消费了 " << decoder.consumedByteCount() << " 字节";
+                    EXPECT_EQ(decoder.consumedByteCount(), prefixLength) << "前缀长度 " << prefixLength << " 被当成帧，却只消费了 " << decoder.consumedByteCount() << " 字节";
                     continue;
                 }
                 EXPECT_NE(status, Http2FrameDecodeStatus::Frame);
@@ -167,7 +159,7 @@ namespace AsynGyanis::Net
 
         for (int roundIndex = 0; roundIndex < kRandomStreamRoundCount; ++roundIndex)
         {
-            std::string streamBytes;
+            std::string       streamBytes;
             const std::size_t streamLength = random.nextBelow(kMaximumRandomLength);
             streamBytes.reserve(streamLength);
             for (std::size_t index = 0; index < streamLength; ++index)
@@ -177,12 +169,12 @@ namespace AsynGyanis::Net
 
             // 随机切分：每次喂 1..17 字节，模拟 TCP 分段
             Http2FrameDecoder decoder;
-            std::size_t offset = 0;
-            bool hasFailed = false;
+            std::size_t       offset    = 0;
+            bool              hasFailed = false;
             while (offset < streamBytes.size())
             {
-                const std::size_t chunkLength = std::min<std::size_t>(1U + random.nextBelow(17U), streamBytes.size() - offset);
-                const Http2FrameDecodeStatus status = decoder.parse(streamBytes.data() + offset, chunkLength);
+                const std::size_t            chunkLength = std::min<std::size_t>(1U + random.nextBelow(17U), streamBytes.size() - offset);
+                const Http2FrameDecodeStatus status      = decoder.parse(streamBytes.data() + offset, chunkLength);
                 if (status == Http2FrameDecodeStatus::Frame)
                 {
                     const std::size_t frameByteCount = decoder.consumedByteCount();
@@ -216,8 +208,8 @@ namespace AsynGyanis::Net
     TEST(Http2FuzzSmoke, ConnectionEmitsOnlyWellFormedFramesAfterMutatedInput)
     {
         const std::vector<std::string> corpus = makeValidFrameCorpus();
-        DeterministicRandom random(0xc0ffeeU);
-        int healthyRoundCount = 0;
+        DeterministicRandom            random(0xc0ffeeU);
+        int                            healthyRoundCount = 0;
 
         for (int roundIndex = 0; roundIndex < kConnectionMutationRoundCount; ++roundIndex)
         {
@@ -227,21 +219,21 @@ namespace AsynGyanis::Net
             ASSERT_EQ(connection.feedBytes(clientSettings.data(), clientSettings.size()), Http2ConnectionFeedStatus::NeedMore);
             expectOutgoingBytesAreWellFormed(connection, roundIndex);
 
-            std::string mutatedFrame = corpus[random.nextBelow(corpus.size())];
+            std::string       mutatedFrame  = corpus[random.nextBelow(corpus.size())];
             const std::size_t mutationCount = 1U + random.nextBelow(4U);
             for (std::size_t mutation = 0; mutation < mutationCount; ++mutation)
             {
                 const std::size_t position = random.nextBelow(mutatedFrame.size());
-                mutatedFrame[position] = static_cast<char>(mutatedFrame[position] ^ (1 << random.nextBelow(8U)));
+                mutatedFrame[position]     = static_cast<char>(mutatedFrame[position] ^ (1 << random.nextBelow(8U)));
             }
 
             // 随机切分成若干段喂入：连接层必须只回 NeedMore 或 Failed
-            std::size_t offset = 0;
+            std::size_t               offset     = 0;
             Http2ConnectionFeedStatus feedStatus = Http2ConnectionFeedStatus::NeedMore;
             while (offset < mutatedFrame.size())
             {
                 const std::size_t chunkLength = std::min<std::size_t>(1U + random.nextBelow(mutatedFrame.size()), mutatedFrame.size() - offset);
-                feedStatus = connection.feedBytes(mutatedFrame.data() + offset, chunkLength);
+                feedStatus                    = connection.feedBytes(mutatedFrame.data() + offset, chunkLength);
                 offset += chunkLength;
                 expectOutgoingBytesAreWellFormed(connection, roundIndex);
                 if (feedStatus == Http2ConnectionFeedStatus::Failed)
@@ -270,7 +262,7 @@ namespace AsynGyanis::Net
     TEST(Http2FuzzSmoke, ConnectionStaysHealthyWhileFeedingValidFrames)
     {
         DeterministicRandom random(0x13572468U);
-        Http2Connection connection;
+        Http2Connection     connection;
         ASSERT_EQ(connection.feedBytes(kHttp2ConnectionPreface.data(), kHttp2ConnectionPreface.size()), Http2ConnectionFeedStatus::NeedMore);
         const std::string clientSettings = encodeHttp2SettingsFrame(Http2SettingsPayload{});
         ASSERT_EQ(connection.feedBytes(clientSettings.data(), clientSettings.size()), Http2ConnectionFeedStatus::NeedMore);
@@ -283,25 +275,19 @@ namespace AsynGyanis::Net
         static_cast<void>(connection.takeOutgoingBytes());
 
         // 请求头块用生产编码器生成：顺带把「编码 → 解码 → 校验」这条链路也走厚
-        HpackEncoder encoder;
+        HpackEncoder                        encoder;
         const std::vector<HpackHeaderField> requestHeaderFields = {
-                {.name = ":method", .value = "GET"},
-                {.name = ":scheme", .value = "http"},
-                {.name = ":path", .value = "/"},
-                {.name = ":authority", .value = "localhost"}};
+                {.name = ":method", .value = "GET"}, {.name = ":scheme", .value = "http"}, {.name = ":path", .value = "/"}, {.name = ":authority", .value = "localhost"}};
 
-        std::uint32_t nextStreamId = 1;
-        int servedRequestCount = 0;
+        std::uint32_t nextStreamId       = 1;
+        int           servedRequestCount = 0;
         for (int roundIndex = 0; roundIndex < kHealthyFeedRoundCount; ++roundIndex)
         {
             if (random.nextBelow(2U) == 0U)
             {
                 // 一条完整请求：头块带 END_STREAM（无正文）
                 const std::string frameBytes = encodeHttp2HeadersFrame(
-                        Http2HeadersPayload{.endStream = true,
-                                            .endHeaders = true,
-                                            .headerBlockFragment = encoder.encode(requestHeaderFields)},
-                        nextStreamId);
+                        Http2HeadersPayload{.endStream = true, .endHeaders = true, .headerBlockFragment = encoder.encode(requestHeaderFields)}, nextStreamId);
                 ASSERT_EQ(connection.feedBytes(frameBytes.data(), frameBytes.size()), Http2ConnectionFeedStatus::NeedMore)
                         << "第 " << roundIndex << " 轮：合法请求把连接喂失败了——" << connection.errorMessage();
                 for (const Http2Request &request: connection.takeRequests())
@@ -316,9 +302,8 @@ namespace AsynGyanis::Net
             }
 
             // 连接级帧：PING（要求回 ACK）与连接级 WINDOW_UPDATE，两者都可以反复出现
-            const std::string frameBytes = random.nextBelow(2U) == 0U
-                                                   ? encodeHttp2PingFrame(Http2PingPayload{})
-                                                   : encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 1024U}, 0U);
+            const std::string frameBytes = random.nextBelow(2U) == 0U ? encodeHttp2PingFrame(Http2PingPayload{})
+                                                                      : encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 1024U}, 0U);
             ASSERT_EQ(connection.feedBytes(frameBytes.data(), frameBytes.size()), Http2ConnectionFeedStatus::NeedMore)
                     << "第 " << roundIndex << " 轮：合法的连接级帧把连接喂失败了——" << connection.errorMessage();
 
@@ -336,19 +321,19 @@ namespace AsynGyanis::Net
     TEST(Http2FuzzSmoke, HpackRoundTripsRandomHeaderLists)
     {
         DeterministicRandom random(0xabcdefU);
-        HpackEncoder encoder;
-        HpackDecoder decoder;
+        HpackEncoder        encoder;
+        HpackDecoder        decoder;
 
         for (int roundIndex = 0; roundIndex < kHpackRoundTripRoundCount; ++roundIndex)
         {
             std::vector<HpackHeaderField> headerFields;
-            const std::size_t fieldCount = 1U + random.nextBelow(8U);
+            const std::size_t             fieldCount = 1U + random.nextBelow(8U);
             for (std::size_t index = 0; index < fieldCount; ++index)
             {
                 // 名字在固定池里取（覆盖静态表命中与全新名字），值取随机字母数字串
                 static constexpr std::string_view kNamePool[] = {"content-type", "date", "x-round", "user-agent", "x-value"};
-                HpackHeaderField field;
-                field.name = std::string(kNamePool[random.nextBelow(std::size(kNamePool))]);
+                HpackHeaderField                  field;
+                field.name                    = std::string(kNamePool[random.nextBelow(std::size(kNamePool))]);
                 const std::size_t valueLength = random.nextBelow(24U);
                 field.value.reserve(valueLength);
                 for (std::size_t valueIndex = 0; valueIndex < valueLength; ++valueIndex)
@@ -359,11 +344,10 @@ namespace AsynGyanis::Net
                 headerFields.push_back(std::move(field));
             }
 
-            const std::string headerBlock = encoder.encode(headerFields);
+            const std::string             headerBlock = encoder.encode(headerFields);
             std::vector<HpackHeaderField> decodedFields;
-            std::string errorText;
-            ASSERT_TRUE(decoder.decode(headerBlock, decodedFields, &errorText))
-                    << "第 " << roundIndex << " 轮：本端编码出的头块解不开——" << errorText;
+            std::string                   errorText;
+            ASSERT_TRUE(decoder.decode(headerBlock, decodedFields, &errorText)) << "第 " << roundIndex << " 轮：本端编码出的头块解不开——" << errorText;
             ASSERT_EQ(decodedFields.size(), headerFields.size()) << "第 " << roundIndex << " 轮：往返后字段数不一致";
             for (std::size_t index = 0; index < headerFields.size(); ++index)
             {
@@ -382,7 +366,7 @@ namespace AsynGyanis::Net
 
         for (int roundIndex = 0; roundIndex < kHpackRandomBlockRoundCount; ++roundIndex)
         {
-            std::string headerBlock;
+            std::string       headerBlock;
             const std::size_t blockLength = random.nextBelow(128U);
             headerBlock.reserve(blockLength);
             for (std::size_t index = 0; index < blockLength; ++index)
@@ -391,10 +375,10 @@ namespace AsynGyanis::Net
             }
 
             // 每轮用全新解码器：失败是粘滞的，复用会把上一轮的失败带进来
-            HpackDecoder decoder;
+            HpackDecoder                  decoder;
             std::vector<HpackHeaderField> decodedFields;
-            std::string errorText;
-            const bool isDecoded = decoder.decode(headerBlock, decodedFields, &errorText);
+            std::string                   errorText;
+            const bool                    isDecoded = decoder.decode(headerBlock, decodedFields, &errorText);
             if (!isDecoded)
             {
                 EXPECT_TRUE(decoder.hasError()) << "第 " << roundIndex << " 轮：解码失败却没有落错误标记";

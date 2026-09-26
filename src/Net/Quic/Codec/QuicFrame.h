@@ -51,30 +51,30 @@ namespace AsynGyanis::Net
      */
     enum class QuicFrameType : std::uint64_t
     {
-        Padding              = 0x00, ///< 只填充，不占拥塞窗口也不触发 ACK（§19.1）
-        Ping                 = 0x01, ///< 对端必须回 ACK，用于探活（§19.2）
-        Acknowledgement      = 0x02, ///< 确认，不带 ECN 计数（§19.3）
-        AcknowledgementEcn   = 0x03, ///< 确认，带三个 ECN 计数（§19.3.2）
-        ResetStream          = 0x04, ///< 放弃读某条流的剩余数据（§19.4）
-        StopSending          = 0x05, ///< 要求对端停止发送某条流（§19.5）
-        Crypto               = 0x06, ///< TLS 握手字节，按偏移递交（§19.6）
-        NewToken             = 0x07, ///< 地址验证令牌，供下次连接用（§19.7）
-        Stream               = 0x08, ///< 流数据的基值，低位是 OFF/LEN/FIN（§19.8）
-        MaxData              = 0x10, ///< 连接级接收额度（§19.9）
-        MaxStreamData        = 0x11, ///< 流级接收额度（§19.10）
-        MaxStreamsBidi       = 0x12, ///< 双向流数量上限（§19.11）
-        MaxStreamsUni        = 0x13, ///< 单向流数量上限（§19.11）
-        DataBlocked          = 0x14, ///< 卡在连接级额度上（§19.12）
-        StreamDataBlocked    = 0x15, ///< 卡在流级额度上（§19.13）
-        StreamsBlockedBidi   = 0x16, ///< 卡在双向流数量上（§19.14）
-        StreamsBlockedUni    = 0x17, ///< 卡在单向流数量上（§19.14）
-        NewConnectionId      = 0x18, ///< 签发新连接标识（§19.15）
-        RetireConnectionId   = 0x19, ///< 本端不再用某个连接标识收包（§19.16）
-        PathChallenge        = 0x1a, ///< 路径验证探测（§19.17）
-        PathResponse         = 0x1b, ///< 路径验证应答（§19.18）
-        ConnectionClose      = 0x1c, ///< 传输层收口（含应用错误码 APPLICATION_ERROR）（§19.19）
-        ApplicationClose     = 0x1d, ///< 应用层收口（§19.19）
-        HandshakeDone        = 0x1e, ///< 握手完成，服务端在确认后首次飞行里发（§19.20）
+        Padding            = 0x00, ///< 只填充，不占拥塞窗口也不触发 ACK（§19.1）
+        Ping               = 0x01, ///< 对端必须回 ACK，用于探活（§19.2）
+        Acknowledgement    = 0x02, ///< 确认，不带 ECN 计数（§19.3）
+        AcknowledgementEcn = 0x03, ///< 确认，带三个 ECN 计数（§19.3.2）
+        ResetStream        = 0x04, ///< 放弃读某条流的剩余数据（§19.4）
+        StopSending        = 0x05, ///< 要求对端停止发送某条流（§19.5）
+        Crypto             = 0x06, ///< TLS 握手字节，按偏移递交（§19.6）
+        NewToken           = 0x07, ///< 地址验证令牌，供下次连接用（§19.7）
+        Stream             = 0x08, ///< 流数据的基值，低位是 OFF/LEN/FIN（§19.8）
+        MaxData            = 0x10, ///< 连接级接收额度（§19.9）
+        MaxStreamData      = 0x11, ///< 流级接收额度（§19.10）
+        MaxStreamsBidi     = 0x12, ///< 双向流数量上限（§19.11）
+        MaxStreamsUni      = 0x13, ///< 单向流数量上限（§19.11）
+        DataBlocked        = 0x14, ///< 卡在连接级额度上（§19.12）
+        StreamDataBlocked  = 0x15, ///< 卡在流级额度上（§19.13）
+        StreamsBlockedBidi = 0x16, ///< 卡在双向流数量上（§19.14）
+        StreamsBlockedUni  = 0x17, ///< 卡在单向流数量上（§19.14）
+        NewConnectionId    = 0x18, ///< 签发新连接标识（§19.15）
+        RetireConnectionId = 0x19, ///< 本端不再用某个连接标识收包（§19.16）
+        PathChallenge      = 0x1a, ///< 路径验证探测（§19.17）
+        PathResponse       = 0x1b, ///< 路径验证应答（§19.18）
+        ConnectionClose    = 0x1c, ///< 传输层收口（含应用错误码 APPLICATION_ERROR）（§19.19）
+        ApplicationClose   = 0x1d, ///< 应用层收口（§19.19）
+        HandshakeDone      = 0x1e, ///< 握手完成，服务端在确认后首次飞行里发（§19.20）
     };
 
     /// STREAM 帧类型位的 OFF 位：置位则带 Offset 字段（RFC 9000 §19.8）
@@ -127,19 +127,19 @@ namespace AsynGyanis::Net
      */
     struct QuicAcknowledgementFrame
     {
-        std::uint64_t largestAcknowledgedPacketNumber{0};        ///< 被确认的最大包号
-        std::uint64_t acknowledgementDelay{0};                   ///< 收到最大包号到发出本帧的延迟，**线上值**：单位是 2^本端 ack_delay_exponent 微秒，本层只搬运不换算（§19.3）
-        std::vector<QuicAcknowledgementRange> ranges{};          ///< 被确认的包号区间，按包号递减且不重叠
-        bool hasEcnCounts{false};                                ///< 是否带三个 ECN 计数（帧类型为 0x03 时为 true）
-        std::array<std::uint64_t, 3> ecnCounts{};                ///< 依次是 ECT(0)、ECT(1)、ECN-CE 的包数
+        std::uint64_t largestAcknowledgedPacketNumber{0};          ///< 被确认的最大包号
+        std::uint64_t acknowledgementDelay{0};                     ///< 收到最大包号到发出本帧的延迟，**线上值**：单位是 2^本端 ack_delay_exponent 微秒，本层只搬运不换算（§19.3）
+        std::vector<QuicAcknowledgementRange> ranges{};            ///< 被确认的包号区间，按包号递减且不重叠
+        bool                                  hasEcnCounts{false}; ///< 是否带三个 ECN 计数（帧类型为 0x03 时为 true）
+        std::array<std::uint64_t, 3>          ecnCounts{};         ///< 依次是 ECT(0)、ECT(1)、ECN-CE 的包数
     };
 
     /// RESET_STREAM 帧（§19.4）：告知对端本端不再发送这条流的剩余数据，收尾长度由本帧给出
     struct QuicResetStreamFrame
     {
-        std::uint64_t streamId{0};           ///< 流号
+        std::uint64_t streamId{0};             ///< 流号
         std::uint64_t applicationErrorCode{0}; ///< 应用错误码
-        std::uint64_t finalSize{0};          ///< 本端发送侧的收尾长度，重发时不得改变（§13.3）
+        std::uint64_t finalSize{0};            ///< 本端发送侧的收尾长度，重发时不得改变（§13.3）
     };
 
     /// STOP_SENDING 帧（§19.5）：要求对端别再往这条流上发
@@ -155,8 +155,8 @@ namespace AsynGyanis::Net
      */
     struct QuicCryptoFrame
     {
-        std::uint64_t offset{0};              ///< 这段握手字节在加密握手流上的偏移
-        std::span<const std::uint8_t> data{}; ///< 握手字节
+        std::uint64_t                 offset{0}; ///< 这段握手字节在加密握手流上的偏移
+        std::span<const std::uint8_t> data{};    ///< 握手字节
     };
 
     /**
@@ -179,7 +179,7 @@ namespace AsynGyanis::Net
         std::uint64_t streamId{0};    ///< 流号
         std::uint64_t beginOffset{0}; ///< 本段起始偏移
         std::uint64_t endOffset{0};   ///< 结束偏移（不含）
-        bool isFinal{false};          ///< 本段是否带着 FIN
+        bool          isFinal{false}; ///< 本段是否带着 FIN
 
         [[nodiscard]] bool operator==(const QuicStreamRange &) const = default;
     };
@@ -193,8 +193,8 @@ namespace AsynGyanis::Net
      */
     struct QuicStreamAnnouncement
     {
-        std::uint64_t streamId{0}; ///< 流号
-        bool isResetStream{false}; ///< true 是 RESET_STREAM（本端不再发），false 是 STOP_SENDING（请对端别再发）
+        std::uint64_t streamId{0};          ///< 流号
+        bool          isResetStream{false}; ///< true 是 RESET_STREAM（本端不再发），false 是 STOP_SENDING（请对端别再发）
 
         [[nodiscard]] bool operator==(const QuicStreamAnnouncement &) const = default;
     };
@@ -208,10 +208,10 @@ namespace AsynGyanis::Net
      */
     struct QuicStreamFrame
     {
-        std::uint64_t streamId{0};            ///< 流号
-        std::uint64_t offset{0};              ///< 这段数据在流上的偏移
-        std::span<const std::uint8_t> data{}; ///< 流数据；LEN 位为 0 时覆盖到载荷末尾
-        bool isFinal{false};                  ///< FIN 位：本段之后流结束
+        std::uint64_t                 streamId{0};    ///< 流号
+        std::uint64_t                 offset{0};      ///< 这段数据在流上的偏移
+        std::span<const std::uint8_t> data{};         ///< 流数据；LEN 位为 0 时覆盖到载荷末尾
+        bool                          isFinal{false}; ///< FIN 位：本段之后流结束
     };
 
     /// MAX_DATA 帧（§19.9）：连接级的累计接收上限
@@ -223,7 +223,7 @@ namespace AsynGyanis::Net
     /// MAX_STREAM_DATA 帧（§19.10）：单条流的累计接收上限
     struct QuicMaxStreamDataFrame
     {
-        std::uint64_t streamId{0};       ///< 流号
+        std::uint64_t streamId{0};          ///< 流号
         std::uint64_t maximumStreamData{0}; ///< 该流上愿意接收的最大累计偏移
     };
 
@@ -232,8 +232,8 @@ namespace AsynGyanis::Net
      */
     struct QuicMaxStreamsFrame
     {
-        std::uint64_t maximumStreams{0}; ///< 允许对端发起的流数上限（按单向/双向各自计数）
-        bool isUnidirectional{false};    ///< true 对应 0x13（单向），false 对应 0x12（双向）
+        std::uint64_t maximumStreams{0};       ///< 允许对端发起的流数上限（按单向/双向各自计数）
+        bool          isUnidirectional{false}; ///< true 对应 0x13（单向），false 对应 0x12（双向）
     };
 
     /// DATA_BLOCKED 帧（§19.12）：本端被连接级额度卡住
@@ -245,15 +245,15 @@ namespace AsynGyanis::Net
     /// STREAM_DATA_BLOCKED 帧（§19.13）：本端被某条流的额度卡住
     struct QuicStreamDataBlockedFrame
     {
-        std::uint64_t streamId{0};         ///< 流号
-        std::uint64_t streamDataLimit{0};  ///< 该流上已达到的上限
+        std::uint64_t streamId{0};        ///< 流号
+        std::uint64_t streamDataLimit{0}; ///< 该流上已达到的上限
     };
 
     /// STREAMS_BLOCKED 帧（§19.14）：本端想开新流但数量到顶
     struct QuicStreamsBlockedFrame
     {
-        std::uint64_t streamLimit{0};     ///< 已达到的流数上限
-        bool isUnidirectional{false};     ///< true 对应 0x17（单向），false 对应 0x16（双向）
+        std::uint64_t streamLimit{0};          ///< 已达到的流数上限
+        bool          isUnidirectional{false}; ///< true 对应 0x17（单向），false 对应 0x16（双向）
     };
 
     /**
@@ -262,10 +262,10 @@ namespace AsynGyanis::Net
      */
     struct QuicNewConnectionIdFrame
     {
-        std::uint64_t sequenceNumber{0};    ///< 序号：对端按它退休标识
-        std::uint64_t retirePriorTo{0};     ///< 序号小于此值的标识都要退休
-        std::span<const std::uint8_t> connectionId{};                  ///< 新标识，长度 1..20
-        std::span<const std::uint8_t> statelessResetToken{};           ///< 16 字节无状态重置令牌
+        std::uint64_t                 sequenceNumber{0};     ///< 序号：对端按它退休标识
+        std::uint64_t                 retirePriorTo{0};      ///< 序号小于此值的标识都要退休
+        std::span<const std::uint8_t> connectionId{};        ///< 新标识，长度 1..20
+        std::span<const std::uint8_t> statelessResetToken{}; ///< 16 字节无状态重置令牌
     };
 
     /// RETIRE_CONNECTION_ID 帧（§19.16）：告知对端本端不再用某个标识收包
@@ -298,8 +298,8 @@ namespace AsynGyanis::Net
      */
     struct QuicConnectionCloseFrame
     {
-        std::uint64_t errorCode{0};                        ///< 0x1c 用 §20.1 的传输错误码，0x1d 用应用自定义码
-        std::optional<std::uint64_t> triggeredFrameType{};  ///< 触发错误的帧类型；nullopt 表示走 0x1d 形态
+        std::uint64_t                 errorCode{0};         ///< 0x1c 用 §20.1 的传输错误码，0x1d 用应用自定义码
+        std::optional<std::uint64_t>  triggeredFrameType{}; ///< 触发错误的帧类型；nullopt 表示走 0x1d 形态
         std::span<const std::uint8_t> reasonPhrase{};       ///< 诊断文本，约定 UTF-8 但不校验；可为空
     };
 
@@ -309,11 +309,10 @@ namespace AsynGyanis::Net
      * @details 用 variant 而不是「一个大结构 + 类型判别」：每种帧的字段互不相干，摊平会造出一堆
      *          对本类型无意义的空位，上层 switch 完还要各自记住哪几个字段才有效。
      */
-    using QuicFrame = std::variant<QuicPaddingFrame, QuicPingFrame, QuicAcknowledgementFrame, QuicResetStreamFrame,
-                                   QuicStopSendingFrame, QuicCryptoFrame, QuicNewTokenFrame, QuicStreamFrame, QuicMaxDataFrame,
-                                   QuicMaxStreamDataFrame, QuicMaxStreamsFrame, QuicDataBlockedFrame, QuicStreamDataBlockedFrame,
-                                   QuicStreamsBlockedFrame, QuicNewConnectionIdFrame, QuicRetireConnectionIdFrame,
-                                   QuicPathChallengeFrame, QuicPathResponseFrame, QuicConnectionCloseFrame, QuicHandshakeDoneFrame>;
+    using QuicFrame =
+            std::variant<QuicPaddingFrame, QuicPingFrame, QuicAcknowledgementFrame, QuicResetStreamFrame, QuicStopSendingFrame, QuicCryptoFrame, QuicNewTokenFrame, QuicStreamFrame,
+                         QuicMaxDataFrame, QuicMaxStreamDataFrame, QuicMaxStreamsFrame, QuicDataBlockedFrame, QuicStreamDataBlockedFrame, QuicStreamsBlockedFrame,
+                         QuicNewConnectionIdFrame, QuicRetireConnectionIdFrame, QuicPathChallengeFrame, QuicPathResponseFrame, QuicConnectionCloseFrame, QuicHandshakeDoneFrame>;
 
     /**
      * @brief 取帧的类型值（含 STREAM 家族与 ACK 的低位变体）
@@ -333,8 +332,7 @@ namespace AsynGyanis::Net
      * @note 返回的帧里 CRYPTO/STREAM/NEW_TOKEN/NEW_CONNECTION_ID 等持有指向 payload 的视图，
      *       payload 必须活到这些帧用完为止
      */
-    [[nodiscard]] std::expected<std::vector<QuicFrame>, QuicDecodeError>
-    decodeQuicFrames(std::span<const std::uint8_t> payload);
+    [[nodiscard]] std::expected<std::vector<QuicFrame>, QuicDecodeError> decodeQuicFrames(std::span<const std::uint8_t> payload);
 
     /**
      * @brief 把报文载荷里的全部帧解进调用方给的缓冲
@@ -345,8 +343,7 @@ namespace AsynGyanis::Net
      * @return std::expected<void, QuicDecodeError> 成功返回空值；失败与按值那一份同口径
      * @note 视图进出的规矩同按值那一份：解出的帧持有指向 payload 的视图，payload 必须活到帧用完
      */
-    [[nodiscard]] std::expected<void, QuicDecodeError>
-    decodeQuicFrames(std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames);
+    [[nodiscard]] std::expected<void, QuicDecodeError> decodeQuicFrames(std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames);
 
     /**
      * @brief 把一帧追写到缓冲末尾
@@ -367,6 +364,5 @@ namespace AsynGyanis::Net
      * @param acknowledgedUpTo 本次确认到的包号（含），即 ACK 帧的最大确认值
      * @return std::vector<QuicAcknowledgementRange> 递减的区间，至少一段
      */
-    [[nodiscard]] std::vector<QuicAcknowledgementRange>
-    buildQuicAcknowledgementRanges(const QuicReceivedPacketNumbers &receivedPacketNumbers, std::uint64_t acknowledgedUpTo);
+    [[nodiscard]] std::vector<QuicAcknowledgementRange> buildQuicAcknowledgementRanges(const QuicReceivedPacketNumbers &receivedPacketNumbers, std::uint64_t acknowledgedUpTo);
 } // namespace AsynGyanis::Net

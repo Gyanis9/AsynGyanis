@@ -80,7 +80,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicVariableLengthInteger, AcceptsNonMinimalEncodingsBecauseRfcAllowsThem)
     {
-        const auto twoBytePadded = makeUnsignedBytes({0x40, 0x25});
+        const auto twoBytePadded  = makeUnsignedBytes({0x40, 0x25});
         const auto fourBytePadded = makeUnsignedBytes({0x80, 0x00, 0x00, 0x25});
 
         const auto decodedTwo = decodeQuicVariableLengthInteger(twoBytePadded);
@@ -101,7 +101,7 @@ namespace AsynGyanis::Net
     {
         struct Sample
         {
-            std::uint64_t value;
+            std::uint64_t             value;
             std::vector<std::uint8_t> bytes;
         };
 
@@ -142,8 +142,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(quicVariableLengthIntegerByteCount(kQuicMaximumFourByteIntegerValue), 4U);
         EXPECT_EQ(quicVariableLengthIntegerByteCount(kQuicMaximumFourByteIntegerValue + 1ULL), 8U);
         EXPECT_EQ(quicVariableLengthIntegerByteCount(kQuicMaximumIntegerValue), 8U);
-        EXPECT_EQ(quicVariableLengthIntegerByteCount(kQuicMaximumIntegerValue + 1ULL), 0U)
-                << "超出 62 位上限必须返回 0 而不是回绕成 1 档";
+        EXPECT_EQ(quicVariableLengthIntegerByteCount(kQuicMaximumIntegerValue + 1ULL), 0U) << "超出 62 位上限必须返回 0 而不是回绕成 1 档";
     }
 
     /**
@@ -159,7 +158,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(first->byteCount, 2U);
 
         const std::span<const std::uint8_t> remaining(buffer.begin() + static_cast<std::ptrdiff_t>(first->byteCount), buffer.end());
-        const auto second = decodeQuicVariableLengthInteger(remaining);
+        const auto                          second = decodeQuicVariableLengthInteger(remaining);
         ASSERT_TRUE(second.has_value()) << "按 byteCount 前移后，下一个字段必须能接着解";
         EXPECT_EQ(second->value, 37ULL);
     }
@@ -171,8 +170,8 @@ namespace AsynGyanis::Net
     {
         struct Case
         {
-            std::vector<std::uint8_t> bytes; ///< 只给到本数开头若干字节的缓冲
-            std::size_t declaredWidth;       ///< 首字节前缀声明的宽度
+            std::vector<std::uint8_t> bytes;         ///< 只给到本数开头若干字节的缓冲
+            std::size_t               declaredWidth; ///< 首字节前缀声明的宽度
         };
 
         const std::vector<Case> cases{
@@ -184,8 +183,7 @@ namespace AsynGyanis::Net
         for (const Case &testCase: cases)
         {
             const auto decoded = decodeQuicVariableLengthInteger(testCase.bytes);
-            ASSERT_FALSE(decoded.has_value()) << "宽度 " << testCase.declaredWidth << " 只剩 " << testCase.bytes.size()
-                                              << " 字节，必须判截断";
+            ASSERT_FALSE(decoded.has_value()) << "宽度 " << testCase.declaredWidth << " 只剩 " << testCase.bytes.size() << " 字节，必须判截断";
             EXPECT_EQ(decoded.error().kind, QuicDecodeErrorKind::Truncated);
             EXPECT_TRUE(containsText(decoded.error().message, "丢弃")) << "文案要写清后果：" << decoded.error().message;
         }
@@ -217,8 +215,7 @@ namespace AsynGyanis::Net
     TEST(QuicVariableLengthInteger, LeavesBufferUntouchedWhenRejectingArguments)
     {
         std::string bytes = "keep";
-        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumIntegerValue + 1ULL),
-                     Base::InvalidArgumentException);
+        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumIntegerValue + 1ULL), Base::InvalidArgumentException);
         EXPECT_EQ(bytes, "keep") << "先算好再写：半途写入会污染调用方正在组装的报文";
     }
 } // namespace AsynGyanis::Net

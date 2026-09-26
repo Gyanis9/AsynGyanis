@@ -60,11 +60,11 @@ namespace AsynGyanis::Net
          */
         struct Configuration
         {
-            std::string hostName{};                    ///< 服务端的规范主机名：SNI 与证书里的校验目标，必填
-            std::vector<std::string> applicationProtocolIdentifiers{std::string{"h3"}}; ///< 要提供的 ALPN，按优先级排列
-            Core::TlsPolicy tlsPolicy{};               ///< TLS 策略：信任库/吊销名单/版本区间等，出站侧校验恒开
-            std::chrono::milliseconds handshakeTimeout{5000}; ///< 握手时限，到点直接收场（对端不说话时靠它）
-            std::chrono::milliseconds idleTimeout{30000};     ///< 空闲超时，同时是本端宣告的 max_idle_timeout
+            std::string               hostName{};                                        ///< 服务端的规范主机名：SNI 与证书里的校验目标，必填
+            std::vector<std::string>  applicationProtocolIdentifiers{std::string{"h3"}}; ///< 要提供的 ALPN，按优先级排列
+            Core::TlsPolicy           tlsPolicy{};                                       ///< TLS 策略：信任库/吊销名单/版本区间等，出站侧校验恒开
+            std::chrono::milliseconds handshakeTimeout{5000};                            ///< 握手时限，到点直接收场（对端不说话时靠它）
+            std::chrono::milliseconds idleTimeout{30000};                                ///< 空闲超时，同时是本端宣告的 max_idle_timeout
         };
 
         /**
@@ -179,21 +179,21 @@ namespace AsynGyanis::Net
         /// 一条流在本端的接收账：已到达、还没被取走的字节，加上对端是否已收尾
         struct IncomingStreamState
         {
-            std::vector<std::uint8_t> receivedBytes{}; ///< 自上次取走之后到达的字节
-            bool isEndStreamReceived{false};           ///< 对端已发 FIN
+            std::vector<std::uint8_t> receivedBytes{};            ///< 自上次取走之后到达的字节
+            bool                      isEndStreamReceived{false}; ///< 对端已发 FIN
         };
 
         /// 流数据回调的落点：按流号记账，供 `takeReceivedData` 取走
         void noteStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream);
 
-        Core::EventLoop                             &m_loop;              ///< 所属事件循环（非拥有）
-        Configuration                                m_configuration;      ///< 建好本对象时那份配置
-        std::unique_ptr<Core::TlsContext>            m_tlsContext{};       ///< 客户端 TLS 上下文，连接销毁前一直持有
-        std::unique_ptr<Core::AsyncUdpSocket>        m_socket{};           ///< 自持的 UDP 套接字，connect() 时建
-        std::unique_ptr<QuicConnection>              m_connection{};       ///< 跑这条连接的状态机外壳
-        Platform::SocketAddress                      m_serverAddress{};    ///< 服务端地址，收包时据此丢弃旁来的报文
-        std::vector<std::uint8_t>                    m_receiveBuffer{};    ///< 收包缓冲，一次一条数据报
-        std::map<std::int64_t, IncomingStreamState>  m_incoming{};         ///< 按流号记的接收账
-        bool                                         m_isStopped{false};   ///< 本端已收口或被时限掐断
+        Core::EventLoop                            &m_loop;             ///< 所属事件循环（非拥有）
+        Configuration                               m_configuration;    ///< 建好本对象时那份配置
+        std::unique_ptr<Core::TlsContext>           m_tlsContext{};     ///< 客户端 TLS 上下文，连接销毁前一直持有
+        std::unique_ptr<Core::AsyncUdpSocket>       m_socket{};         ///< 自持的 UDP 套接字，connect() 时建
+        std::unique_ptr<QuicConnection>             m_connection{};     ///< 跑这条连接的状态机外壳
+        Platform::SocketAddress                     m_serverAddress{};  ///< 服务端地址，收包时据此丢弃旁来的报文
+        std::vector<std::uint8_t>                   m_receiveBuffer{};  ///< 收包缓冲，一次一条数据报
+        std::map<std::int64_t, IncomingStreamState> m_incoming{};       ///< 按流号记的接收账
+        bool                                        m_isStopped{false}; ///< 本端已收口或被时限掐断
     };
 } // namespace AsynGyanis::Net

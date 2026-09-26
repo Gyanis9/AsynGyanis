@@ -18,20 +18,20 @@ namespace AsynGyanis::Net
     bool HttpEstablishmentTable::attach(const std::string &endpointKey, Waiter &waiter) noexcept
     {
         const std::lock_guard<std::mutex> guard(m_mutex);
-        const auto iterator = m_endpoints.find(endpointKey);
+        const auto                        iterator = m_endpoints.find(endpointKey);
         if (iterator == m_endpoints.end())
         {
             // 领导者在这一刻与挂链之间已经结算完了：不挂一个没人会唤醒的节点，让调用方直接往下走
             return false;
         }
 
-        Endpoint   &endpoint = iterator->second;
-        Waiter     &sentinel = endpoint.sentinel;
-        Waiter     *tail     = sentinel.previous;
-        waiter.next          = &sentinel;
-        waiter.previous      = tail;
-        tail->next           = &waiter;
-        sentinel.previous    = &waiter;
+        Endpoint &endpoint = iterator->second;
+        Waiter   &sentinel = endpoint.sentinel;
+        Waiter   *tail     = sentinel.previous;
+        waiter.next        = &sentinel;
+        waiter.previous    = tail;
+        tail->next         = &waiter;
+        sentinel.previous  = &waiter;
         return true;
     }
 
@@ -62,7 +62,7 @@ namespace AsynGyanis::Net
         std::vector<std::pair<Core::EventLoop *, std::coroutine_handle<>>> toWake;
         {
             const std::lock_guard<std::mutex> guard(m_mutex);
-            const auto iterator = m_endpoints.find(endpointKey);
+            const auto                        iterator = m_endpoints.find(endpointKey);
             if (iterator == m_endpoints.end())
             {
                 return;
@@ -86,8 +86,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    HttpEstablishmentAwait::HttpEstablishmentAwait(std::shared_ptr<HttpEstablishmentTable> table,
-                                                   std::string endpointKey, Core::EventLoop &loop) noexcept :
+    HttpEstablishmentAwait::HttpEstablishmentAwait(std::shared_ptr<HttpEstablishmentTable> table, std::string endpointKey, Core::EventLoop &loop) noexcept :
         m_table(std::move(table)), m_endpointKey(std::move(endpointKey)), m_loop(loop)
     {
     }

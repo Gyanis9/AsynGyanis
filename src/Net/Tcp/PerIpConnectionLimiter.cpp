@@ -28,8 +28,8 @@ namespace AsynGyanis::Net
          */
         bool isDottedDecimalIpv4(const std::string_view value) noexcept
         {
-            std::size_t groupCount = 0;
-            std::size_t digitCount = 0;
+            std::size_t  groupCount = 0;
+            std::size_t  digitCount = 0;
             unsigned int groupValue = 0;
             for (std::size_t index = 0; index <= value.size(); ++index)
             {
@@ -87,13 +87,11 @@ namespace AsynGyanis::Net
     {
     }
 
-    PerIpConnectionLimiter::Lease::Lease(std::shared_ptr<State> state, std::string ipKey) :
-        m_state(std::move(state)), m_ipKey(std::move(ipKey))
+    PerIpConnectionLimiter::Lease::Lease(std::shared_ptr<State> state, std::string ipKey) : m_state(std::move(state)), m_ipKey(std::move(ipKey))
     {
     }
 
-    PerIpConnectionLimiter::Lease::Lease(Lease &&other) noexcept :
-        m_state(std::move(other.m_state)), m_ipKey(std::move(other.m_ipKey))
+    PerIpConnectionLimiter::Lease::Lease(Lease &&other) noexcept : m_state(std::move(other.m_state)), m_ipKey(std::move(other.m_ipKey))
     {
         // 把被移走的一方置空：否则它的析构会把同一个名额再还一次，计数越还越少、上限被悄悄放大
         other.m_state.reset();
@@ -152,8 +150,7 @@ namespace AsynGyanis::Net
         {
             // 首次见到这个来源：插入而不是自增（ipKey 还要交给凭据保管，故传拷贝）
             m_state->activeCounts.emplace(ipKey, 1);
-        }
-        else
+        } else
         {
             if (iterator->second >= m_maximumConnectionsPerIp)
             {
@@ -171,9 +168,9 @@ namespace AsynGyanis::Net
     {
         // 与 tryAcquire 同一套规范化：查询侧不折键就会看着像「这个来源一条都没占」，
         // 而记账其实发生在去掉前缀的那一格上
-        const std::string normalizedKey = normalizeIpKey(ipKey);
+        const std::string           normalizedKey = normalizeIpKey(ipKey);
         std::lock_guard<std::mutex> guard(m_state->mutex);
-        const auto iterator = m_state->activeCounts.find(normalizedKey);
+        const auto                  iterator = m_state->activeCounts.find(normalizedKey);
         return iterator == m_state->activeCounts.end() ? 0 : iterator->second;
     }
 

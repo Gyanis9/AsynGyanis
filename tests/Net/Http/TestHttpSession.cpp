@@ -49,10 +49,10 @@ namespace AsynGyanis::Net
         /// 会话协程的退出方式
         enum class FailureKind
         {
-            None,             ///< 正常收口
-            SystemException,  ///< 抛出 Base::SystemException
-            BaseException,    ///< 抛出其它 Base::Exception
-            UnknownException  ///< 抛出框架外的异常
+            None,            ///< 正常收口
+            SystemException, ///< 抛出 Base::SystemException
+            BaseException,   ///< 抛出其它 Base::Exception
+            UnknownException ///< 抛出框架外的异常
         };
 
         /**
@@ -61,8 +61,8 @@ namespace AsynGyanis::Net
          */
         struct SessionOutcome
         {
-            std::atomic<bool> finished{false};      ///< start() 协程是否已结束
-            FailureKind failure{FailureKind::None}; ///< 结束方式
+            std::atomic<bool> finished{false};            ///< start() 协程是否已结束
+            FailureKind       failure{FailureKind::None}; ///< 结束方式
         };
 
         /**
@@ -95,7 +95,7 @@ namespace AsynGyanis::Net
                 Platform::FileDescriptor::close(m_peerSide);
             }
 
-            LoopbackDescriptorPair(const LoopbackDescriptorPair &) = delete;
+            LoopbackDescriptorPair(const LoopbackDescriptorPair &)            = delete;
             LoopbackDescriptorPair &operator=(const LoopbackDescriptorPair &) = delete;
 
             [[nodiscard]] bool isValid() const noexcept
@@ -126,9 +126,9 @@ namespace AsynGyanis::Net
             }
 
         private:
-            bool m_creationSucceeded{false};                                     ///< 配对是否成功
-            int  m_sessionSide{Platform::FileDescriptor::kInvalid};              ///< 交给会话的一端
-            int  m_peerSide{Platform::FileDescriptor::kInvalid};                 ///< 测试自己持有的一端
+            bool m_creationSucceeded{false};                        ///< 配对是否成功
+            int  m_sessionSide{Platform::FileDescriptor::kInvalid}; ///< 交给会话的一端
+            int  m_peerSide{Platform::FileDescriptor::kInvalid};    ///< 测试自己持有的一端
         };
 
         /**
@@ -139,13 +139,12 @@ namespace AsynGyanis::Net
          */
         bool writeFully(const int descriptor, const std::string_view payload, const std::chrono::milliseconds timeout)
         {
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            const auto  deadline      = std::chrono::steady_clock::now() + timeout;
             std::size_t writtenLength = 0;
 
             while (writtenLength < payload.size())
             {
-                const ssize_t writeLength = Platform::FileDescriptor::write(
-                        descriptor, payload.data() + writtenLength, payload.size() - writtenLength);
+                const ssize_t writeLength = Platform::FileDescriptor::write(descriptor, payload.data() + writtenLength, payload.size() - writtenLength);
                 if (writeLength > 0)
                 {
                     writtenLength += static_cast<std::size_t>(writeLength);
@@ -168,10 +167,9 @@ namespace AsynGyanis::Net
          * @param timeout 等待上限
          * @return true 谓词在时限内成立
          */
-        bool readUntilPredicate(const int descriptor, std::string &received, const std::function<bool(const std::string &)> &predicate,
-                                const std::chrono::milliseconds timeout)
+        bool readUntilPredicate(const int descriptor, std::string &received, const std::function<bool(const std::string &)> &predicate, const std::chrono::milliseconds timeout)
         {
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            const auto                         deadline = std::chrono::steady_clock::now() + timeout;
             std::array<char, kPeerChunkLength> chunkStorage{};
 
             while (!predicate(received))
@@ -204,7 +202,7 @@ namespace AsynGyanis::Net
          */
         bool readUntilPeerClosed(const int descriptor, std::string &received, const std::chrono::milliseconds timeout)
         {
-            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            const auto                         deadline = std::chrono::steady_clock::now() + timeout;
             std::array<char, kPeerChunkLength> chunkStorage{};
 
             while (std::chrono::steady_clock::now() < deadline)
@@ -236,10 +234,10 @@ namespace AsynGyanis::Net
             // 正文之后（形如 served-firstHTTP/1.1 200 OK），既不在行首也不在 0 位置。
             // 这里直接统计状态行前缀的出现次数，前提是测试用的正文里不含该字面量
             constexpr std::string_view statusLinePrefix = "HTTP/1.";
-            std::size_t statusLineCount = 0;
+            std::size_t                statusLineCount  = 0;
 
             for (std::size_t foundPosition = responseText.find(statusLinePrefix); foundPosition != std::string::npos;
-                 foundPosition = responseText.find(statusLinePrefix, foundPosition + statusLinePrefix.size()))
+                 foundPosition             = responseText.find(statusLinePrefix, foundPosition + statusLinePrefix.size()))
             {
                 ++statusLineCount;
             }
@@ -324,14 +322,11 @@ namespace AsynGyanis::Net
         {
         public:
             HttpSessionFixture() :
-                m_loop(),
-                m_descriptors(),
-                m_session(Core::AsyncSocket(m_loop, m_descriptors.takeSessionSide()), m_router),
-                m_startTask(runSession(m_session, m_outcome))
+                m_loop(), m_descriptors(), m_session(Core::AsyncSocket(m_loop, m_descriptors.takeSessionSide()), m_router), m_startTask(runSession(m_session, m_outcome))
             {
             }
 
-            HttpSessionFixture(const HttpSessionFixture &) = delete;
+            HttpSessionFixture(const HttpSessionFixture &)            = delete;
             HttpSessionFixture &operator=(const HttpSessionFixture &) = delete;
 
             /// 描述符对是否创建成功（失败时用例立即失败，而不是拿无效描述符去跑）
@@ -384,12 +379,7 @@ namespace AsynGyanis::Net
             /// 会话协程是否已结束
             bool awaitFinished(const std::chrono::milliseconds timeout)
             {
-                return waitForCondition(
-                        [this]
-                        {
-                            return m_outcome.finished.load(std::memory_order_acquire);
-                        },
-                        timeout);
+                return waitForCondition([this] { return m_outcome.finished.load(std::memory_order_acquire); }, timeout);
             }
 
             /// 会话协程当前是否已结束
@@ -412,13 +402,13 @@ namespace AsynGyanis::Net
             }
 
         private:
-            Core::EventLoop m_loop;                      ///< 事件循环本体
-            LoopbackDescriptorPair m_descriptors;        ///< 全双工描述符对
-            Router m_router;                             ///< 路由器，会话持有其引用
-            HttpSession m_session;                       ///< 被测会话
-            SessionOutcome m_outcome;                    ///< 会话协程结果槽
-            Core::Task<> m_startTask;                    ///< 会话主协程任务
-            std::optional<EventLoopThread> m_loopThread; ///< 循环线程，最后构造、最先析构
+            Core::EventLoop                m_loop;        ///< 事件循环本体
+            LoopbackDescriptorPair         m_descriptors; ///< 全双工描述符对
+            Router                         m_router;      ///< 路由器，会话持有其引用
+            HttpSession                    m_session;     ///< 被测会话
+            SessionOutcome                 m_outcome;     ///< 会话协程结果槽
+            Core::Task<>                   m_startTask;   ///< 会话主协程任务
+            std::optional<EventLoopThread> m_loopThread;  ///< 循环线程，最后构造、最先析构
         };
 
         /**
@@ -429,11 +419,12 @@ namespace AsynGyanis::Net
         void addPathEchoingRoute(Router &router, const std::string &path)
         {
             // 按值捕获 path：handler 会存活到用例结束，绑引用就是悬垂
-            router.get(path, [path](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                response.setBody("served-" + path.substr(1));
-                co_return;
-            });
+            router.get(path,
+                       [path](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setBody("served-" + path.substr(1));
+                           co_return;
+                       });
         }
 
         /**
@@ -444,25 +435,19 @@ namespace AsynGyanis::Net
          * @param timeout 等待上限
          * @return true 在时限内出现
          */
-        bool awaitResponseLines(HttpSessionFixture &fixture, std::string &responseText, const std::size_t expectedStatusLines,
-                                const std::chrono::milliseconds timeout)
+        bool awaitResponseLines(HttpSessionFixture &fixture, std::string &responseText, const std::size_t expectedStatusLines, const std::chrono::milliseconds timeout)
         {
-            return readUntilPredicate(fixture.peerDescriptor(), responseText,
-                                      [expectedStatusLines](const std::string &accumulated)
-                                      {
-                                          return countStatusLines(accumulated) >= expectedStatusLines;
-                                      },
-                                      timeout);
+            return readUntilPredicate(
+                    fixture.peerDescriptor(), responseText, [expectedStatusLines](const std::string &accumulated) { return countStatusLines(accumulated) >= expectedStatusLines; },
+                    timeout);
         }
     } // namespace
 
     TEST(HttpSession, ConstructorTakesSocketAndRouterOnly)
     {
         // 构造函数已去掉从未使用的 Core::EventLoop& 形参：事件循环由 AsyncSocket 内部持有
-        static_assert(std::is_constructible_v<HttpSession, Core::AsyncSocket, Router &>,
-                      "HttpSession 应能以 (AsyncSocket, Router&) 构造");
-        static_assert(!std::is_constructible_v<HttpSession, Core::EventLoop &, Core::AsyncSocket, Router &>,
-                      "多余的 EventLoop& 形参应已删除");
+        static_assert(std::is_constructible_v<HttpSession, Core::AsyncSocket, Router &>, "HttpSession 应能以 (AsyncSocket, Router&) 构造");
+        static_assert(!std::is_constructible_v<HttpSession, Core::EventLoop &, Core::AsyncSocket, Router &>, "多余的 EventLoop& 形参应已删除");
         static_assert(std::is_base_of_v<Core::Connection, HttpSession>, "HttpSession 必须是一种 Connection");
         static_assert(std::is_polymorphic_v<HttpSession>, "start() 是虚函数，会话必须可多态销毁");
         SUCCEED() << "以上均为编译期断言";
@@ -587,9 +572,7 @@ namespace AsynGyanis::Net
 
         // 回归防护：一个包里粘着两条请求时，第一条应答完剩下的字节必须留在接收缓冲里，
         // 下一轮先喂进解析器；每次都从缓冲区开头读会把第二条请求静默丢掉
-        const std::string packet =
-                makeRequestText("GET /first HTTP/1.1", {"host: test"}) +
-                makeRequestText("GET /second HTTP/1.1", {"host: test"});
+        const std::string packet = makeRequestText("GET /first HTTP/1.1", {"host: test"}) + makeRequestText("GET /second HTTP/1.1", {"host: test"});
         ASSERT_TRUE(fixture.writeRequest(packet));
         fixture.start();
 
@@ -598,7 +581,7 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(countStatusLines(responseText), 2u);
         EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 200"));
-        const std::size_t firstMarkerPosition = responseText.find("served-first");
+        const std::size_t firstMarkerPosition  = responseText.find("served-first");
         const std::size_t secondMarkerPosition = responseText.find("served-second");
         ASSERT_NE(firstMarkerPosition, std::string::npos);
         ASSERT_NE(secondMarkerPosition, std::string::npos);
@@ -613,20 +596,19 @@ namespace AsynGyanis::Net
         HttpSessionFixture fixture;
         ASSERT_TRUE(fixture.isValid());
         addPathEchoingRoute(fixture.router(), "/ping");
-        fixture.router().post("/upload", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-        {
-            response.setBody("received-" + std::to_string(request.body().size()));
-            co_return;
-        });
+        fixture.router().post("/upload",
+                              [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                              {
+                                  response.setBody("received-" + std::to_string(request.body().size()));
+                                  co_return;
+                              });
 
         // 第一条请求完整、第二条请求只写到头部块中间（连结尾空行都没给）：
         // 会话答完第一条后必然在「继续收第二条」的路上挂起，等下一次 write 把剩余字节补上。
         // 时序说明：第二段字节是在「看到第一条响应」之后才写的，此时挂起确实已发生；
         // 唯一的风险窗口是「会话刚返回 EAGAIN、还没把描述符登记进 epoll」那一瞬，
         // 故给出 kWaitTimeout（2 秒）上界，超时只判失败不挂用例。
-        const std::string firstPart =
-                makeRequestText("GET /ping HTTP/1.1", {"host: test"}) +
-                "POST /upload HTTP/1.1\r\nhost: test\r\ncontent-length: 5\r\n";
+        const std::string firstPart = makeRequestText("GET /ping HTTP/1.1", {"host: test"}) + "POST /upload HTTP/1.1\r\nhost: test\r\ncontent-length: 5\r\n";
         ASSERT_TRUE(fixture.writeRequest(firstPart));
         fixture.start();
 
@@ -652,11 +634,12 @@ namespace AsynGyanis::Net
     {
         HttpSessionFixture fixture;
         ASSERT_TRUE(fixture.isValid());
-        fixture.router().get("/big", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-        {
-            response.setBody(request.getHeader("x-tail").value_or("<缺失>"));
-            co_return;
-        });
+        fixture.router().get("/big",
+                             [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 response.setBody(request.getHeader("x-tail").value_or("<缺失>"));
+                                 co_return;
+                             });
 
         std::vector<std::string> headerLines;
         headerLines.reserve(61);
@@ -675,8 +658,7 @@ namespace AsynGyanis::Net
         std::string responseText;
         ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kWaitTimeout)) << "大头部请求未答：上界 kWaitTimeout";
         EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 200"));
-        EXPECT_NE(responseText.find("tail-survived-window-growth"), std::string::npos)
-                << "跨多趟读取的头部块没拼完整：最后一位头部丢了";
+        EXPECT_NE(responseText.find("tail-survived-window-growth"), std::string::npos) << "跨多趟读取的头部块没拼完整：最后一位头部丢了";
 
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
     }
@@ -690,15 +672,15 @@ namespace AsynGyanis::Net
     {
         HttpSessionFixture fixture;
         ASSERT_TRUE(fixture.isValid());
-        fixture.router().post("/upload", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-        {
-            response.setBody("received-" + std::to_string(request.body().size()));
-            co_return;
-        });
+        fixture.router().post("/upload",
+                              [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                              {
+                                  response.setBody("received-" + std::to_string(request.body().size()));
+                                  co_return;
+                              });
 
         // 只发头部（含 expect），正文留到看到 100 之后再发——这正是真实客户端的行为
-        ASSERT_TRUE(fixture.writeRequest(
-                "POST /upload HTTP/1.1\r\nhost: test\r\ncontent-length: 5\r\nexpect: 100-continue\r\n\r\n"));
+        ASSERT_TRUE(fixture.writeRequest("POST /upload HTTP/1.1\r\nhost: test\r\ncontent-length: 5\r\nexpect: 100-continue\r\n\r\n"));
         fixture.start();
 
         std::string responseText;
@@ -742,9 +724,7 @@ namespace AsynGyanis::Net
         addPathEchoingRoute(fixture.router(), "/never");
 
         // 请求显式 close：答完这条就必须收口，同一包里紧随其后的那条不再处理
-        const std::string packet =
-                makeRequestText("GET /leave HTTP/1.1", {"host: test", "connection: close"}) +
-                makeRequestText("GET /never HTTP/1.1", {"host: test"});
+        const std::string packet = makeRequestText("GET /leave HTTP/1.1", {"host: test", "connection: close"}) + makeRequestText("GET /never HTTP/1.1", {"host: test"});
         ASSERT_TRUE(fixture.writeRequest(packet));
         fixture.start();
 
@@ -787,8 +767,7 @@ namespace AsynGyanis::Net
         addPathEchoingRoute(fixture.router(), "/huge");
 
         // 声明正文超过 8 MiB 上限：定界器现在就拦，一个正文字节都不必收进内存
-        const std::string request = makeRequestText("POST /huge HTTP/1.1",
-                                                    {"host: test", "content-length: 9000000000", "content-type: text/plain"});
+        const std::string request = makeRequestText("POST /huge HTTP/1.1", {"host: test", "content-length: 9000000000", "content-type: text/plain"});
         ASSERT_TRUE(fixture.writeRequest(request));
         fixture.start();
 
@@ -807,9 +786,7 @@ namespace AsynGyanis::Net
         addPathEchoingRoute(fixture.router(), "/later");
 
         // 报文根本读不懂（协议版本号非法）：回 400，且收口前不复用这条连接
-        const std::string packet =
-                makeRequestText("GET /broken HTTP/9.9", {"host: test"}) +
-                makeRequestText("GET /later HTTP/1.1", {"host: test"});
+        const std::string packet = makeRequestText("GET /broken HTTP/9.9", {"host: test"}) + makeRequestText("GET /later HTTP/1.1", {"host: test"});
         ASSERT_TRUE(fixture.writeRequest(packet));
         fixture.start();
 
@@ -833,15 +810,15 @@ namespace AsynGyanis::Net
 
         // 路由把收到的正文原样回写：断言的是「解码后的字节进了 request.body()」。
         // body() 是 string_view，拼串前显式转成 string（string_view 没有 operator+）
-        fixture.router().post("/stream", [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-        {
-            response.setBody("received-" + std::string(request.body()));
-            co_return;
-        });
+        fixture.router().post("/stream",
+                              [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                              {
+                                  response.setBody("received-" + std::string(request.body()));
+                                  co_return;
+                              });
 
         const std::string request =
-                makeRequestText("POST /stream HTTP/1.1", {"host: test", "transfer-encoding: chunked"}) +
-                "5\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: v\r\n\r\n";
+                makeRequestText("POST /stream HTTP/1.1", {"host: test", "transfer-encoding: chunked"}) + "5\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: v\r\n\r\n";
         ASSERT_TRUE(fixture.writeRequest(request));
         fixture.start();
 
@@ -863,9 +840,7 @@ namespace AsynGyanis::Net
         addPathEchoingRoute(fixture.router(), "/smuggle");
 
         // 同一份报文有两个正文边界解释：会话按解析器给出的 Malformed 回 400 并收口
-        const std::string request =
-                makeRequestText("POST /smuggle HTTP/1.1", {"host: test", "content-length: 5", "transfer-encoding: chunked"}) +
-                "5\r\nhello\r\n0\r\n\r\n";
+        const std::string request = makeRequestText("POST /smuggle HTTP/1.1", {"host: test", "content-length: 5", "transfer-encoding: chunked"}) + "5\r\nhello\r\n0\r\n\r\n";
         ASSERT_TRUE(fixture.writeRequest(request));
         fixture.start();
 
@@ -880,15 +855,16 @@ namespace AsynGyanis::Net
     {
         HttpSessionFixture fixture;
         ASSERT_TRUE(fixture.isValid());
-        fixture.router().get("/boom", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-        {
-            // handler 已经写了一半头部与正文：会话必须先整体 reset 再填 500，
-            // 否则半成品连同错的 content-length 会一起发出去
-            response.setHeader("x-partial", "half-written-marker");
-            response.setBody("half-written-body");
-            throw Base::Exception("测试用：业务处理函数抛出异常");
-            co_return;
-        });
+        fixture.router().get("/boom",
+                             [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                             {
+                                 // handler 已经写了一半头部与正文：会话必须先整体 reset 再填 500，
+                                 // 否则半成品连同错的 content-length 会一起发出去
+                                 response.setHeader("x-partial", "half-written-marker");
+                                 response.setBody("half-written-body");
+                                 throw Base::Exception("测试用：业务处理函数抛出异常");
+                                 co_return;
+                             });
 
         ASSERT_TRUE(fixture.writeRequest(makeRequestText("GET /boom HTTP/1.1", {"host: test"})));
         fixture.start();
@@ -915,7 +891,7 @@ namespace AsynGyanis::Net
         // 业务侧只认 request.cancelToken() 一处出口
         std::atomic<bool> handlerEntered{false};
         std::atomic<bool> cancelObserved{false};
-        Core::EventLoop &loop = fixture.loop();
+        Core::EventLoop  &loop = fixture.loop();
         fixture.router().get("/slow",
                              [&loop, &handlerEntered, &cancelObserved](HttpRequest &request, HttpResponse &response) -> Core::Task<>
                              {
@@ -936,19 +912,9 @@ namespace AsynGyanis::Net
 
         // 时序说明：两个等待都是 2 秒上界。第一步证明 handler 已在跑（才会命中转发器），
         // 第二步要求它在同一轮事务里观察到取消信号；handler 内部的自轮询上限是 1 秒。
-        ASSERT_TRUE(waitForCondition(
-                [&handlerEntered]
-                {
-                    return handlerEntered.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "handler 未进入：上界 kWaitTimeout";
+        ASSERT_TRUE(waitForCondition([&handlerEntered] { return handlerEntered.load(std::memory_order_acquire); }, kWaitTimeout)) << "handler 未进入：上界 kWaitTimeout";
         EXPECT_TRUE(fixture.session().cancelable().requestStop());
-        EXPECT_TRUE(waitForCondition(
-                [&cancelObserved]
-                {
-                    return cancelObserved.load(std::memory_order_acquire);
-                },
-                kWaitTimeout)) << "连接停止没转成请求取消：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition([&cancelObserved] { return cancelObserved.load(std::memory_order_acquire); }, kWaitTimeout)) << "连接停止没转成请求取消：上界 kWaitTimeout";
 
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
     }
@@ -973,8 +939,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.awaitFinished(kWaitTimeout)) << "1.0 事务结束后会话未收口：上界 kWaitTimeout";
         // 会话收口即关闭它那一端：测试端随后必然读到 EOF（返回 0），而不是「暂时没数据」
         std::string drainedText;
-        EXPECT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), drainedText, kWaitTimeout))
-                << "会话退出后描述符没有关掉：上界 kWaitTimeout";
+        EXPECT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), drainedText, kWaitTimeout)) << "会话退出后描述符没有关掉：上界 kWaitTimeout";
     }
 
     TEST(HttpSession, EchoesKeepAliveHeaderForHttp10Request)
@@ -1008,14 +973,15 @@ namespace AsynGyanis::Net
         // 「读到 EOF」因此是本用例手里最确定的「响应已经结束」信号
         const auto registerDocumentRoute = [](Router &router)
         {
-            router.get("/document", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-            {
-                // date 由用例钉死：默认由序列化层按当前时刻生成，两次请求跨秒会让
-                // 「逐字节一致」偶发失败，而那与被测契约无关
-                response.setHeader("date", "Mon, 01 Jan 2024 00:00:00 GMT");
-                response.setBody("1234567");
-                co_return;
-            });
+            router.get("/document",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           // date 由用例钉死：默认由序列化层按当前时刻生成，两次请求跨秒会让
+                           // 「逐字节一致」偶发失败，而那与被测契约无关
+                           response.setHeader("date", "Mon, 01 Jan 2024 00:00:00 GMT");
+                           response.setBody("1234567");
+                           co_return;
+                       });
         };
 
         std::string getResponseText;
@@ -1025,8 +991,7 @@ namespace AsynGyanis::Net
             registerDocumentRoute(getFixture.router());
             ASSERT_TRUE(getFixture.writeRequest(makeRequestText("GET /document HTTP/1.1", {"host: test", "connection: close"})));
             getFixture.start();
-            ASSERT_TRUE(readUntilPeerClosed(getFixture.peerDescriptor(), getResponseText, kWaitTimeout))
-                    << "GET 请求未在时限内收口：上界 kWaitTimeout";
+            ASSERT_TRUE(readUntilPeerClosed(getFixture.peerDescriptor(), getResponseText, kWaitTimeout)) << "GET 请求未在时限内收口：上界 kWaitTimeout";
         }
 
         std::string headResponseText;
@@ -1036,8 +1001,7 @@ namespace AsynGyanis::Net
             registerDocumentRoute(headFixture.router());
             ASSERT_TRUE(headFixture.writeRequest(makeRequestText("HEAD /document HTTP/1.1", {"host: test", "connection: close"})));
             headFixture.start();
-            ASSERT_TRUE(readUntilPeerClosed(headFixture.peerDescriptor(), headResponseText, kWaitTimeout))
-                    << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
+            ASSERT_TRUE(readUntilPeerClosed(headFixture.peerDescriptor(), headResponseText, kWaitTimeout)) << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
         }
 
         const std::size_t headTerminatorPosition = getResponseText.find("\r\n\r\n");
@@ -1052,8 +1016,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(headResponseText.starts_with("HTTP/1.1 200 OK\r\n")) << headResponseText;
         EXPECT_NE(headResponseText.find("content-length: 7"), std::string::npos) << headResponseText;
         // 且没有正文：响应字节数正好等于头部长度，末尾就是头部块终止空行
-        EXPECT_EQ(headResponseText.size(), getHead.size())
-                << "HEAD 响应多出了正文字节：" << headResponseText.substr(getHead.size());
+        EXPECT_EQ(headResponseText.size(), getHead.size()) << "HEAD 响应多出了正文字节：" << headResponseText.substr(getHead.size());
         EXPECT_TRUE(headResponseText.ends_with("\r\n\r\n")) << headResponseText;
     }
 
@@ -1063,27 +1026,27 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.isValid()) << "全双工描述符对创建失败";
 
         // 两个处理器给出不同长度的正文：线上出现哪条 content-length，就是谁被选中
-        fixture.router().get("/probe", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-        {
-            response.setBody("from-get-handler");
-            co_return;
-        });
-        fixture.router().head("/probe", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-        {
-            response.setBody("head");
-            co_return;
-        });
+        fixture.router().get("/probe",
+                             [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                             {
+                                 response.setBody("from-get-handler");
+                                 co_return;
+                             });
+        fixture.router().head("/probe",
+                              [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                              {
+                                  response.setBody("head");
+                                  co_return;
+                              });
 
         ASSERT_TRUE(fixture.writeRequest(makeRequestText("HEAD /probe HTTP/1.1", {"host: test", "connection: close"})));
         fixture.start();
 
         std::string responseText;
-        ASSERT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), responseText, kWaitTimeout))
-                << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
+        ASSERT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), responseText, kWaitTimeout)) << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
 
         EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 200")) << responseText;
-        EXPECT_NE(responseText.find("content-length: 4"), std::string::npos)
-                << "显式注册的 head() 没有优先于 GET 复用：" << responseText;
+        EXPECT_NE(responseText.find("content-length: 4"), std::string::npos) << "显式注册的 head() 没有优先于 GET 复用：" << responseText;
         EXPECT_EQ(responseText.find("content-length: 16"), std::string::npos) << "被选中的是 GET 处理器：" << responseText;
         EXPECT_EQ(responseText.find("from-get-handler"), std::string::npos) << "GET 处理器被跑到：" << responseText;
 
@@ -1097,24 +1060,24 @@ namespace AsynGyanis::Net
         HttpSessionFixture fixture;
         ASSERT_TRUE(fixture.isValid()) << "全双工描述符对创建失败";
 
-        fixture.router().post("/submit", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-        {
-            response.setBody("created");
-            co_return;
-        });
+        fixture.router().post("/submit",
+                              [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                              {
+                                  response.setBody("created");
+                                  co_return;
+                              });
 
         ASSERT_TRUE(fixture.writeRequest(makeRequestText("HEAD /submit HTTP/1.1", {"host: test", "connection: close"})));
         fixture.start();
 
         std::string responseText;
-        ASSERT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), responseText, kWaitTimeout))
-                << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
+        ASSERT_TRUE(readUntilPeerClosed(fixture.peerDescriptor(), responseText, kWaitTimeout)) << "HEAD 请求未在时限内收口：上界 kWaitTimeout";
 
         // 路径上只有 POST：HEAD 复用 GET 无从谈起，Allow 如实列出 POST
         // （GET 存在时才会按 RFC 9110 §9.1/§15.5.7 补上隐含可用的 HEAD）
         EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 405")) << responseText;
         constexpr std::string_view allowHeaderName = "allow: ";
-        const std::size_t allowPosition = responseText.find(allowHeaderName);
+        const std::size_t          allowPosition   = responseText.find(allowHeaderName);
         ASSERT_NE(allowPosition, std::string::npos) << responseText;
         const std::size_t allowEnd = responseText.find("\r\n", allowPosition);
         ASSERT_NE(allowEnd, std::string::npos) << responseText;

@@ -156,8 +156,7 @@ namespace AsynGyanis::Core
          * @brief 从协程句柄构造 Task 对象。
          * @param handle 协程句柄
          */
-        explicit Task(const Handle handle) :
-            m_handle(handle)
+        explicit Task(const Handle handle) : m_handle(handle)
         {
         }
 
@@ -169,8 +168,7 @@ namespace AsynGyanis::Core
          * @brief 移动构造函数。
          * @param other 要移动的 Task 对象
          */
-        Task(Task &&other) noexcept :
-            m_handle(std::exchange(other.m_handle, nullptr))
+        Task(Task &&other) noexcept : m_handle(std::exchange(other.m_handle, nullptr))
         {
             // 接管句柄的同时把源对象置空：协程帧只能被销毁一次，
             // 源对象随后析构时若仍持有同一句柄，就会对同一帧重复 destroy
@@ -315,17 +313,17 @@ namespace AsynGyanis::Core
                 if (m_isResultConsumed)
                 {
                     throw Base::InvalidArgumentException("读取协程结果失败：这个 Task 的返回值已经被取走一次。"
-                                                        "同一个 Task 只应被读取一次；要反复使用请把结果留在调用方，"
-                                                        "或按每次使用重新起一个协程");
+                                                         "同一个 Task 只应被读取一次；要反复使用请把结果留在调用方，"
+                                                         "或按每次使用重新起一个协程");
                 }
                 m_isResultConsumed = true;
                 return std::move(*m_value);
             }
 
-            std::optional<T>        m_value;                 ///< 协程的返回值（若存在）
-            std::exception_ptr      m_exception;             ///< 协程中发生的异常（若有）
-            std::coroutine_handle<> m_continuation{nullptr}; ///< 等待该协程的父协程句柄
-            bool                    m_isStarted{false};       ///< 协程体是否已开始执行（初始挂起点被恢复过）
+            std::optional<T>        m_value;                   ///< 协程的返回值（若存在）
+            std::exception_ptr      m_exception;               ///< 协程中发生的异常（若有）
+            std::coroutine_handle<> m_continuation{nullptr};   ///< 等待该协程的父协程句柄
+            bool                    m_isStarted{false};        ///< 协程体是否已开始执行（初始挂起点被恢复过）
             bool                    m_isResultConsumed{false}; ///< 结果是否已被取走（一次性的，第二次读要报出来）
         };
 
@@ -415,8 +413,7 @@ namespace AsynGyanis::Core
          * @brief 从协程句柄构造 Task<void> 对象。
          * @param handle 协程句柄
          */
-        explicit Task(const Handle handle) :
-            m_handle(handle)
+        explicit Task(const Handle handle) : m_handle(handle)
         {
         }
 
@@ -428,8 +425,7 @@ namespace AsynGyanis::Core
          * @brief 移动构造函数。
          * @param other 要移动的 Task 对象
          */
-        Task(Task &&other) noexcept :
-            m_handle(std::exchange(other.m_handle, nullptr))
+        Task(Task &&other) noexcept : m_handle(std::exchange(other.m_handle, nullptr))
         {
             // 接管句柄的同时把源对象置空：协程帧只能被销毁一次，
             // 源对象随后析构时若仍持有同一句柄，就会对同一帧重复 destroy
@@ -544,7 +540,7 @@ namespace AsynGyanis::Core
 
             std::exception_ptr      m_exception;             ///< 协程中发生的异常（若有）
             std::coroutine_handle<> m_continuation{nullptr}; ///< 等待该协程的父协程句柄
-            bool                    m_isStarted{false};       ///< 协程体是否已开始执行（初始挂起点被恢复过）
+            bool                    m_isStarted{false};      ///< 协程体是否已开始执行（初始挂起点被恢复过）
         };
 
         /**
@@ -607,4 +603,4 @@ namespace AsynGyanis::Core
         Handle m_handle; ///< 协程句柄
     };
 
-}
+} // namespace AsynGyanis::Core

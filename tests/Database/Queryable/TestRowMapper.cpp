@@ -27,9 +27,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cmath>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -107,7 +107,7 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperStringMove, MovesTextBufferIntoStringMember)
     {
-        DatabaseValue cell{std::string(4096, 'x')};   // 远超短字符串缓冲，是真实堆缓冲
+        DatabaseValue     cell{std::string(4096, 'x')}; // 远超短字符串缓冲，是真实堆缓冲
         const std::string converted = Detail::convertDatabaseValue<std::string>(std::move(cell), kColumnName);
         EXPECT_EQ(converted, std::string(4096, 'x'));
         EXPECT_TRUE(std::get<std::string>(cell).empty()) << "源变体的文本缓冲应已被搬空（走移动而非拷贝路径）";
@@ -119,8 +119,8 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperBinaryMove, MovesCanonicalByteBufferIntoMember)
     {
-        const BinaryBytes expected(4096, static_cast<std::uint8_t>(0xAB));   // 真实堆缓冲
-        DatabaseValue cell{expected};
+        const BinaryBytes expected(4096, static_cast<std::uint8_t>(0xAB)); // 真实堆缓冲
+        DatabaseValue     cell{expected};
         const BinaryBytes converted = Detail::convertDatabaseValue<BinaryBytes>(std::move(cell), kColumnName);
         EXPECT_EQ(converted, expected);
         EXPECT_TRUE(std::get<BinaryBytes>(cell).empty()) << "源二进制缓冲应已被搬空（走移动而非整块拷贝）";
@@ -133,8 +133,8 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperBinaryMove, ByteSpellingStillRoundTripsThroughMoveEntry)
     {
-        const BinaryBytes expected{0x00, 0x7F, 0x80, 0xFF};
-        DatabaseValue cell{expected};
+        const BinaryBytes            expected{0x00, 0x7F, 0x80, 0xFF};
+        DatabaseValue                cell{expected};
         const std::vector<std::byte> converted = Detail::convertDatabaseValue<std::vector<std::byte>>(std::move(cell), kColumnName);
         ASSERT_EQ(converted.size(), expected.size());
         for (std::size_t index = 0; index < expected.size(); ++index)
@@ -150,9 +150,8 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperStringMove, MovesTextBufferIntoOptionalStringMember)
     {
-        DatabaseValue cell{std::string(4096, 'y')};   // 远超短字符串缓冲，是真实堆缓冲
-        const std::optional<std::string> converted =
-                Detail::convertDatabaseValue<std::optional<std::string>>(std::move(cell), kColumnName);
+        DatabaseValue                    cell{std::string(4096, 'y')}; // 远超短字符串缓冲，是真实堆缓冲
+        const std::optional<std::string> converted = Detail::convertDatabaseValue<std::optional<std::string>>(std::move(cell), kColumnName);
         ASSERT_TRUE(converted.has_value());
         EXPECT_EQ(*converted, std::string(4096, 'y'));
         EXPECT_TRUE(std::get<std::string>(cell).empty()) << "可空文本列源缓冲应已被搬空（走移动而非拷贝路径）";
@@ -166,14 +165,12 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperStringMove, OptionalStringStillMapsNullToEmptyAndRejectsMismatch)
     {
-        DatabaseValue nullCell{std::monostate{}};
-        const std::optional<std::string> converted =
-                Detail::convertDatabaseValue<std::optional<std::string>>(std::move(nullCell), kColumnName);
+        DatabaseValue                    nullCell{std::monostate{}};
+        const std::optional<std::string> converted = Detail::convertDatabaseValue<std::optional<std::string>>(std::move(nullCell), kColumnName);
         EXPECT_FALSE(converted.has_value()) << "SQL NULL 应映射成空 optional";
 
         DatabaseValue integerCell{std::int64_t{7}};
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::optional<std::string>>(std::move(integerCell), kColumnName)),
-                     RowMappingException)
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::optional<std::string>>(std::move(integerCell), kColumnName)), RowMappingException)
                 << "整数落到 optional<std::string> 仍须报列类型不一致，移动分支不得放宽拒绝面";
     }
 
@@ -183,10 +180,9 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperBinaryMove, MovesCanonicalByteBufferIntoOptionalBinaryMember)
     {
-        const BinaryBytes expected(4096, static_cast<std::uint8_t>(0x5A));
-        DatabaseValue cell{expected};
-        const std::optional<BinaryBytes> converted =
-                Detail::convertDatabaseValue<std::optional<BinaryBytes>>(std::move(cell), kColumnName);
+        const BinaryBytes                expected(4096, static_cast<std::uint8_t>(0x5A));
+        DatabaseValue                    cell{expected};
+        const std::optional<BinaryBytes> converted = Detail::convertDatabaseValue<std::optional<BinaryBytes>>(std::move(cell), kColumnName);
         ASSERT_TRUE(converted.has_value());
         EXPECT_EQ(*converted, expected);
         EXPECT_TRUE(std::get<BinaryBytes>(cell).empty()) << "可空二进制列源缓冲应已被搬空";
@@ -222,10 +218,8 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperUnsigned, AcceptsTextBeyondInt64Range)
     {
         // 这两段文本正是 MySQL 的 BIGINT UNSIGNED 在超出 int64 后会返回的形态
-        EXPECT_EQ(kTwoToTheSixtyThird,
-                  Detail::convertDatabaseValue<std::uint64_t>(textValue("9223372036854775808"), kColumnName));
-        EXPECT_EQ(kMaximumUInt64,
-                  Detail::convertDatabaseValue<std::uint64_t>(textValue("18446744073709551615"), kColumnName));
+        EXPECT_EQ(kTwoToTheSixtyThird, Detail::convertDatabaseValue<std::uint64_t>(textValue("9223372036854775808"), kColumnName));
+        EXPECT_EQ(kMaximumUInt64, Detail::convertDatabaseValue<std::uint64_t>(textValue("18446744073709551615"), kColumnName));
     }
 
     /**
@@ -234,9 +228,7 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperUnsigned, RejectsTextBeyondTargetWidth)
     {
         // 2^64：比 uint64 上界大 1，必须拒绝而不是回绕成 0
-        EXPECT_THROW(
-            static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("18446744073709551616"), kColumnName)),
-            std::runtime_error);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("18446744073709551616"), kColumnName)), std::runtime_error);
 
         // 32 位无符号成员同样按自己的上界判定（文本支路不能只看 uint64）
         EXPECT_EQ(4294967295U, Detail::convertDatabaseValue<std::uint32_t>(textValue("4294967295"), kColumnName));
@@ -273,10 +265,8 @@ namespace AsynGyanis::Database::Queryable
     {
         EXPECT_EQ(-1, Detail::convertDatabaseValue<std::int64_t>(textValue("-1"), kColumnName));
         EXPECT_EQ(0, Detail::convertDatabaseValue<std::int64_t>(textValue("0"), kColumnName));
-        EXPECT_EQ(std::numeric_limits<std::int64_t>::max(),
-                  Detail::convertDatabaseValue<std::int64_t>(textValue("9223372036854775807"), kColumnName));
-        EXPECT_EQ(std::numeric_limits<std::int64_t>::min(),
-                  Detail::convertDatabaseValue<std::int64_t>(textValue("-9223372036854775808"), kColumnName));
+        EXPECT_EQ(std::numeric_limits<std::int64_t>::max(), Detail::convertDatabaseValue<std::int64_t>(textValue("9223372036854775807"), kColumnName));
+        EXPECT_EQ(std::numeric_limits<std::int64_t>::min(), Detail::convertDatabaseValue<std::int64_t>(textValue("-9223372036854775808"), kColumnName));
     }
 
     /**
@@ -285,12 +275,8 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperSigned, RejectsTextOutOfRangeOrMalformed)
     {
         // 2^63 放不进 int64：即便它是 uint64 的有效取值，对 int64 成员也必须失败
-        EXPECT_THROW(
-            static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("9223372036854775808"), kColumnName)),
-            std::runtime_error);
-        EXPECT_THROW(
-            static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("-9223372036854775809"), kColumnName)),
-            std::runtime_error);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("9223372036854775808"), kColumnName)), std::runtime_error);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("-9223372036854775809"), kColumnName)), std::runtime_error);
 
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("1.5"), kColumnName)), std::runtime_error);
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("abc"), kColumnName)), std::runtime_error);
@@ -339,10 +325,8 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperOptional, MapsNullToEmptyAndTextToValue)
     {
-        EXPECT_FALSE(Detail::convertDatabaseValue<std::optional<std::uint64_t>>(DatabaseValue{std::monostate{}}, kColumnName)
-                         .has_value());
-        EXPECT_EQ(kMaximumUInt64,
-                  Detail::convertDatabaseValue<std::optional<std::uint64_t>>(textValue("18446744073709551615"), kColumnName));
+        EXPECT_FALSE(Detail::convertDatabaseValue<std::optional<std::uint64_t>>(DatabaseValue{std::monostate{}}, kColumnName).has_value());
+        EXPECT_EQ(kMaximumUInt64, Detail::convertDatabaseValue<std::optional<std::uint64_t>>(textValue("18446744073709551615"), kColumnName));
         EXPECT_EQ(7U, Detail::convertDatabaseValue<std::optional<std::uint32_t>>(integerValue(7), kColumnName));
     }
 
@@ -416,13 +400,11 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_EQ(allByteValues, Detail::convertDatabaseValue<BinaryBytes>(payload, kColumnName));
 
         // std::byte 拼法读同一份载荷：逐元素转换必须无损，否则两种拼法就不等价
-        const std::vector<std::byte> rawSpelling =
-            Detail::convertDatabaseValue<std::vector<std::byte>>(payload, kColumnName);
+        const std::vector<std::byte> rawSpelling = Detail::convertDatabaseValue<std::vector<std::byte>>(payload, kColumnName);
         ASSERT_EQ(rawSpelling.size(), allByteValues.size());
         for (std::size_t index = 0; index < allByteValues.size(); ++index)
         {
-            EXPECT_EQ(static_cast<std::uint8_t>(rawSpelling[index]), allByteValues[index])
-                << "第 " << index << " 个字节转换后不一致";
+            EXPECT_EQ(static_cast<std::uint8_t>(rawSpelling[index]), allByteValues[index]) << "第 " << index << " 个字节转换后不一致";
         }
     }
 
@@ -451,12 +433,10 @@ namespace AsynGyanis::Database::Queryable
     {
         const BinaryBytes payload{0x01, 0x02};
 
-        const DatabaseValue written =
-            Detail::toDatabaseValue<std::optional<BinaryBytes>>(std::optional<BinaryBytes>(payload));
+        const DatabaseValue written = Detail::toDatabaseValue<std::optional<BinaryBytes>>(std::optional<BinaryBytes>(payload));
         ASSERT_TRUE(std::holds_alternative<BinaryBytes>(written)) << databaseValueTypeName(written);
 
-        const std::optional<BinaryBytes> readBack =
-            Detail::convertDatabaseValue<std::optional<BinaryBytes>>(written, kColumnName);
+        const std::optional<BinaryBytes> readBack = Detail::convertDatabaseValue<std::optional<BinaryBytes>>(written, kColumnName);
         ASSERT_TRUE(readBack.has_value());
         EXPECT_EQ(payload, readBack.value());
 
@@ -476,16 +456,14 @@ namespace AsynGyanis::Database::Queryable
         {
             static_cast<void>(Detail::convertDatabaseValue<BinaryBytes>(textValue("not binary"), kColumnName));
             FAIL() << "文本不应映射到二进制成员";
-        }
-        catch (const std::runtime_error &error)
+        } catch (const std::runtime_error &error)
         {
             const std::string message = error.what();
             EXPECT_NE(message.find("big"), std::string::npos) << message;
             EXPECT_NE(message.find("二进制"), std::string::npos) << message;
         }
 
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<BinaryBytes>(integerValue(7), kColumnName)),
-                     std::runtime_error);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<BinaryBytes>(integerValue(7), kColumnName)), std::runtime_error);
     }
 
     /**
@@ -510,10 +488,7 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperException, MappingFailureIsCatchableThroughProjectAndModuleBases)
     {
-        const auto throwMappingFailure = []
-        {
-            static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("abc"), kColumnName));
-        };
+        const auto throwMappingFailure = [] { static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("abc"), kColumnName)); };
 
         EXPECT_THROW(throwMappingFailure(), RowMappingException);
         EXPECT_THROW(throwMappingFailure(), DatabaseException);
@@ -549,8 +524,7 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(2), kColumnName)), RowMappingException);
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(7), kColumnName)), RowMappingException);
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(-1), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(std::numeric_limits<std::int64_t>::min()), kColumnName)),
-                     RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(std::numeric_limits<std::int64_t>::min()), kColumnName)), RowMappingException);
 
         // 文本形态同样拒绝：本方法只认布尔备选与 0/1 整数
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(textValue("1"), kColumnName)), RowMappingException);
@@ -560,8 +534,7 @@ namespace AsynGyanis::Database::Queryable
         {
             static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(7), kColumnName));
             FAIL() << "7 映射为 bool 应当失败";
-        }
-        catch (const RowMappingException &failure)
+        } catch (const RowMappingException &failure)
         {
             EXPECT_NE(std::string_view{failure.what()}.find("big"), std::string_view::npos) << failure.what();
             EXPECT_NE(std::string_view{failure.what()}.find("整型"), std::string_view::npos) << failure.what();
@@ -577,10 +550,8 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperFloating, AcceptsIntegersUpToTheExactRepresentableBound)
     {
         EXPECT_DOUBLE_EQ(static_cast<double>(kTwoToTheFiftyThird), Detail::convertDatabaseValue<double>(integerValue(kTwoToTheFiftyThird), kColumnName));
-        EXPECT_DOUBLE_EQ(-static_cast<double>(kTwoToTheFiftyThird),
-                         Detail::convertDatabaseValue<double>(integerValue(-kTwoToTheFiftyThird), kColumnName));
-        EXPECT_FLOAT_EQ(static_cast<float>(kTwoToTheTwentyFourth),
-                        Detail::convertDatabaseValue<float>(integerValue(kTwoToTheTwentyFourth), kColumnName));
+        EXPECT_DOUBLE_EQ(-static_cast<double>(kTwoToTheFiftyThird), Detail::convertDatabaseValue<double>(integerValue(-kTwoToTheFiftyThird), kColumnName));
+        EXPECT_FLOAT_EQ(static_cast<float>(kTwoToTheTwentyFourth), Detail::convertDatabaseValue<float>(integerValue(kTwoToTheTwentyFourth), kColumnName));
         EXPECT_DOUBLE_EQ(1.0, Detail::convertDatabaseValue<double>(integerValue(1), kColumnName));
     }
 
@@ -592,12 +563,9 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperFloating, RejectsIntegersBeyondTheExactRepresentableBound)
     {
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(kTwoToTheFiftyThird + 1), kColumnName)),
-                     RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)),
-                     RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(kTwoToTheTwentyFourth + 1), kColumnName)),
-                     RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(kTwoToTheFiftyThird + 1), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(kTwoToTheTwentyFourth + 1), kColumnName)), RowMappingException);
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(-16777217), kColumnName)), RowMappingException);
     }
 
@@ -612,24 +580,18 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperFloating, JudgesExactnessByTheMemberTypeOwnDigitCount)
     {
         // 两侧共同的接受面：2^53 在任何浮点成员上都精确
-        EXPECT_EQ(static_cast<long double>(kTwoToTheFiftyThird),
-                  Detail::convertDatabaseValue<long double>(integerValue(kTwoToTheFiftyThird), kColumnName));
+        EXPECT_EQ(static_cast<long double>(kTwoToTheFiftyThird), Detail::convertDatabaseValue<long double>(integerValue(kTwoToTheFiftyThird), kColumnName));
 
         if constexpr (std::numeric_limits<long double>::digits >= std::numeric_limits<std::int64_t>::digits)
         {
             const std::int64_t maximumSigned = std::numeric_limits<std::int64_t>::max();
-            EXPECT_EQ(static_cast<long double>(maximumSigned),
-                      Detail::convertDatabaseValue<long double>(integerValue(maximumSigned), kColumnName));
+            EXPECT_EQ(static_cast<long double>(maximumSigned), Detail::convertDatabaseValue<long double>(integerValue(maximumSigned), kColumnName));
             // double 装不下的那个奇数，宽尾数类型仍然逐位精确
             constexpr std::int64_t beyondDoubleExactness = -9007199254740993LL;
-            EXPECT_EQ(static_cast<long double>(beyondDoubleExactness),
-                      Detail::convertDatabaseValue<long double>(integerValue(beyondDoubleExactness), kColumnName));
-        }
-        else
+            EXPECT_EQ(static_cast<long double>(beyondDoubleExactness), Detail::convertDatabaseValue<long double>(integerValue(beyondDoubleExactness), kColumnName));
+        } else
         {
-            EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<long double>(
-                             integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)),
-                         RowMappingException);
+            EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<long double>(integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)), RowMappingException);
         }
     }
 

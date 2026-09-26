@@ -55,4 +55,4 @@ namespace AsynGyanis::Core
         TimerQueue &m_queue; ///< 所属循环的定时器队列（非拥有，循环比定时器活得久）
     };
 
-}
+} // namespace AsynGyanis::Core

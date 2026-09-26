@@ -9,9 +9,9 @@
 
 #pragma once
 
+#include "Net/Http/HttpBodySource.h"
 #include "Net/Http/HttpParseErrorKind.h"
 #include "Net/Http/HttpParserLimits.h"
-#include "Net/Http/HttpBodySource.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/ParseStatus.h"
 
@@ -264,8 +264,7 @@ namespace AsynGyanis::Net
          * @param value 输出参数：已裁掉首尾 OWS 的字段值，返回 true 时有效
          * @return true 合法
          */
-        [[nodiscard]] bool parseFieldLine(std::string_view line, std::string_view fieldContextLabel,
-                                          std::string_view &name, std::string_view &value);
+        [[nodiscard]] bool parseFieldLine(std::string_view line, std::string_view fieldContextLabel, std::string_view &name, std::string_view &value);
 
         /**
          * @brief 按当前阶段校验一行（含尚未收尾的半行）的长度上限
@@ -380,12 +379,12 @@ namespace AsynGyanis::Net
         HttpRequest m_currentRequest; ///< 对外可见的请求对象，只在 Done 那一刻被填充
 
         // 解析过程的暂存：全部在解析器内部，收齐那一刻才整体移交。容器跨报文复用
-        //（clear 保留容量），因此稳态下不产生额外分配
-        HttpMethod                m_method{HttpMethod::UNKNOWN}; ///< 请求方法
-        std::string               m_uri;                         ///< 请求目标
-        std::string               m_httpVersion;                 ///< 版本原文
-        HttpHeaderFieldStore      m_headerStaging;               ///< 已解析的头部，按到达顺序；提交时与请求对象整块交换缓冲
-        std::string               m_body;                        ///< 已收正文
+        // （clear 保留容量），因此稳态下不产生额外分配
+        HttpMethod           m_method{HttpMethod::UNKNOWN}; ///< 请求方法
+        std::string          m_uri;                         ///< 请求目标
+        std::string          m_httpVersion;                 ///< 版本原文
+        HttpHeaderFieldStore m_headerStaging;               ///< 已解析的头部，按到达顺序；提交时与请求对象整块交换缓冲
+        std::string          m_body;                        ///< 已收正文
 
         std::string m_pendingLine; ///< 尚未等到 CRLF 的半行（可能跨多次 parse()）
         /// 本条报文收到的 trailer 字段，按线上到达顺序攒着，等尾部空行（报文收齐）一次交给请求对象。
@@ -419,10 +418,10 @@ namespace AsynGyanis::Net
         std::size_t m_chunkRemainingBytes{0};      ///< 当前分块尚未收到的块数据字节数
         std::size_t m_chunkTerminatorBytesSeen{0}; ///< 块数据之后已收到的 CRLF 字节数（0 或 1）
 
-        bool        m_hasError{false};        ///< 是否已发生解析错误
+        bool               m_hasError{false};                     ///< 是否已发生解析错误
         HttpParseErrorKind m_errorKind{HttpParseErrorKind::None}; ///< 失败类别（决定上层回哪个状态码）
-        std::string m_errorMessage;           ///< 面向使用者的中文错误描述
-        std::size_t m_consumedByteCount{0};   ///< 最近一次 parse() 实际消费的字节数
+        std::string        m_errorMessage;                        ///< 面向使用者的中文错误描述
+        std::size_t        m_consumedByteCount{0};                ///< 最近一次 parse() 实际消费的字节数
 
         /// 方法原文上限 32 B：llhttp 同档取值，通用方法最长 7 B（OPTIONS），留足自定义动词余地。
         /// 它是协议语法约束而不是按部署调整的内存闸门，因此不放进 HttpParserLimits；

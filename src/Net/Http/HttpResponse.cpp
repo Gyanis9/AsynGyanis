@@ -27,41 +27,40 @@ namespace AsynGyanis::Net
         // 预留只是容量提示，估少了 std::string 会自行扩容，不影响正确性，只影响分配次数
         // ====================================================================
 
-        constexpr std::string_view kCrLf = "\r\n";                            ///< 报文行分隔符，HTTP 固定为 CR LF
+        constexpr std::string_view kCrLf = "\r\n"; ///< 报文行分隔符，HTTP 固定为 CR LF
 
         // 状态行结构：版本 SP 状态码 SP 原因短语 CRLF（RFC 9110 §3.1.2）
-        constexpr std::size_t kCrLfLength = 2;                                ///< CRLF 占用字节数
-        constexpr std::size_t kHttpVersionReserveLength = 16;                  ///< "HTTP/1.1" 实为 8 字节，取 16 容纳自定义版本串
-        constexpr std::size_t kSingleSpaceLength = 1;                          ///< 状态行里的字段分隔空格
-        constexpr std::size_t kStatusCodeTextLength = 3;                       ///< 状态码按规范恰为三位十进制
-        constexpr std::size_t kLongestReasonPhraseLength = 29;                 ///< 表内最长原因短语 "Unavailable For Legal Reasons"
-        constexpr std::size_t kStatusLineReserveLength =
-                kHttpVersionReserveLength + kSingleSpaceLength + kStatusCodeTextLength + kSingleSpaceLength +
-                kLongestReasonPhraseLength + kCrLfLength;                       ///< 状态行预留量 = 16 + 1 + 3 + 1 + 29 + 2 = 52
+        constexpr std::size_t kCrLfLength                = 2;  ///< CRLF 占用字节数
+        constexpr std::size_t kHttpVersionReserveLength  = 16; ///< "HTTP/1.1" 实为 8 字节，取 16 容纳自定义版本串
+        constexpr std::size_t kSingleSpaceLength         = 1;  ///< 状态行里的字段分隔空格
+        constexpr std::size_t kStatusCodeTextLength      = 3;  ///< 状态码按规范恰为三位十进制
+        constexpr std::size_t kLongestReasonPhraseLength = 29; ///< 表内最长原因短语 "Unavailable For Legal Reasons"
+        constexpr std::size_t kStatusLineReserveLength = kHttpVersionReserveLength + kSingleSpaceLength + kStatusCodeTextLength + kSingleSpaceLength + kLongestReasonPhraseLength +
+                                                         kCrLfLength; ///< 状态行预留量 = 16 + 1 + 3 + 1 + 29 + 2 = 52
 
         // 单条头部结构：名 ":" SP 值 CRLF
-        constexpr std::string_view kHeaderNameValueSeparator = ": ";           ///< 头部名与值之间的分隔符
-        constexpr std::size_t kHeaderLineReserveLength =
-                kHeaderNameValueSeparator.size() + kCrLfLength;                 ///< "name: value\r\n" 里除名与值之外的固定开销 = 2 + 2
+        constexpr std::string_view kHeaderNameValueSeparator = ": ";                                           ///< 头部名与值之间的分隔符
+        constexpr std::size_t      kHeaderLineReserveLength  = kHeaderNameValueSeparator.size() + kCrLfLength; ///< "name: value\r\n" 里除名与值之外的固定开销 = 2 + 2
 
-        constexpr std::size_t kHeaderBlockTerminatorReserveLength = kCrLfLength;///< 头部块收尾的空白行
+        constexpr std::size_t kHeaderBlockTerminatorReserveLength = kCrLfLength; ///< 头部块收尾的空白行
 
         // 自动补出的头部：与下面的名字常量同处定义，改名字时不会漏改预留量
-        constexpr std::string_view kContentTypeHeaderName = "content-type";     ///< 媒体类型头部名（小写形态）
-        constexpr std::string_view kContentLengthHeaderName = "content-length"; ///< 正文长度头部名（小写形态）
-        constexpr std::string_view kDateHeaderName = "date";                    ///< 日期头部名（小写形态）
-        constexpr std::string_view kTransferEncodingHeaderName = "transfer-encoding"; ///< 传输编码头部名（小写形态）
-        constexpr std::string_view kTrailerHeaderName = "trailer";                     ///< 尾部字段声明头名（小写形态，RFC 9110 §6.5.1）
-        constexpr std::string_view kChunkedTransferEncodingValue = "chunked";   ///< 分块传输编码值：正文长度未知，边界由分块帧给出（RFC 9112 §6）
-        constexpr std::string_view kAutoContentTypeHeader = "content-type: text/plain\r\n";      ///< 未设媒体类型且有正文时补出的整条头部
-        constexpr std::string_view kAutoContentLengthHeaderPrefix = "content-length: ";          ///< 未设正文长度时补出的头部名前缀（含冒号与空格）
-        constexpr std::string_view kAutoDateHeaderPrefix = "date: ";                             ///< 未设日期时补出的头部名前缀（含冒号与空格）
+        constexpr std::string_view kContentTypeHeaderName         = "content-type";                 ///< 媒体类型头部名（小写形态）
+        constexpr std::string_view kContentLengthHeaderName       = "content-length";               ///< 正文长度头部名（小写形态）
+        constexpr std::string_view kDateHeaderName                = "date";                         ///< 日期头部名（小写形态）
+        constexpr std::string_view kTransferEncodingHeaderName    = "transfer-encoding";            ///< 传输编码头部名（小写形态）
+        constexpr std::string_view kTrailerHeaderName             = "trailer";                      ///< 尾部字段声明头名（小写形态，RFC 9110 §6.5.1）
+        constexpr std::string_view kChunkedTransferEncodingValue  = "chunked";                      ///< 分块传输编码值：正文长度未知，边界由分块帧给出（RFC 9112 §6）
+        constexpr std::string_view kAutoContentTypeHeader         = "content-type: text/plain\r\n"; ///< 未设媒体类型且有正文时补出的整条头部
+        constexpr std::string_view kAutoContentLengthHeaderPrefix = "content-length: ";             ///< 未设正文长度时补出的头部名前缀（含冒号与空格）
+        constexpr std::string_view kAutoDateHeaderPrefix          = "date: ";                       ///< 未设日期时补出的头部名前缀（含冒号与空格）
 
-        constexpr std::size_t kMaximumUnsignedDecimalTextLength = std::numeric_limits<std::uint64_t>::max_digits10; ///< 64 位无符号十进制最长 20 位；有符号 int 在 appendDecimal 里按 max_digits10 + 2（含负号位）同理推导
+        constexpr std::size_t kMaximumUnsignedDecimalTextLength =
+                std::numeric_limits<std::uint64_t>::max_digits10; ///< 64 位无符号十进制最长 20 位；有符号 int 在 appendDecimal 里按 max_digits10 + 2（含负号位）同理推导
 
-        constexpr std::size_t kAutoContentTypeReserveLength = kAutoContentTypeHeader.size();     ///< "content-type: text/plain\r\n" 的实际字节数 = 26
+        constexpr std::size_t kAutoContentTypeReserveLength = kAutoContentTypeHeader.size(); ///< "content-type: text/plain\r\n" 的实际字节数 = 26
         constexpr std::size_t kAutoContentLengthReserveLength =
-                kAutoContentLengthHeaderPrefix.size() + kMaximumUnsignedDecimalTextLength + kCrLfLength; ///< 前缀 16 + 最多 20 位数字 + CRLF 2 = 38
+                kAutoContentLengthHeaderPrefix.size() + kMaximumUnsignedDecimalTextLength + kCrLfLength;                 ///< 前缀 16 + 最多 20 位数字 + CRLF 2 = 38
         constexpr std::size_t kAutoDateReserveLength = kAutoDateHeaderPrefix.size() + kHttpDateTextLength + kCrLfLength; ///< 前缀 6 + 定长 29 + CRLF 2 = 37
 
         /**
@@ -72,14 +71,13 @@ namespace AsynGyanis::Net
          * @param target 目标字符串，结果追加在其尾部
          * @param value  待写出的整数值
          */
-        template <typename IntegerType>
+        template<typename IntegerType>
         void appendDecimal(std::string &target, const IntegerType value)
         {
             static_assert(std::is_integral_v<IntegerType>, "appendDecimal 只接受整数类型");
 
             std::array<char, std::numeric_limits<IntegerType>::max_digits10 + 2> textBuffer{};
-            const auto [pointer, errorCode] =
-                    std::to_chars(textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
+            const auto [pointer, errorCode] = std::to_chars(textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
 
             if (errorCode == std::errc())
             {
@@ -196,8 +194,8 @@ namespace AsynGyanis::Net
         // 定界字段与连接级字段不许进尾部（RFC 9112 §7.1.1.1）：前者会给同一条报文造出两个长度
         // 解释，后者压根不该出现在正文之后的位置。这里拒收而不是静默丢弃，调用方才看得见自己写歪了
         const std::string normalizedName = HttpHeaderFieldStore::toCanonicalHeaderName(name);
-        if (normalizedName.front() == ':' || normalizedName == kContentLengthHeaderName
-            || normalizedName == kTransferEncodingHeaderName || isConnectionSpecificHeaderName(normalizedName))
+        if (normalizedName.front() == ':' || normalizedName == kContentLengthHeaderName || normalizedName == kTransferEncodingHeaderName ||
+            isConnectionSpecificHeaderName(normalizedName))
         {
             return false;
         }
@@ -322,9 +320,7 @@ namespace AsynGyanis::Net
         setSharedMappedBody(std::make_shared<Platform::MemoryMappedFile>(std::move(mappedFile)), offset, length);
     }
 
-    void HttpResponse::setSharedMappedBody(std::shared_ptr<const Platform::MemoryMappedFile> mappedFile,
-                                           const std::size_t offset,
-                                           const std::size_t length)
+    void HttpResponse::setSharedMappedBody(std::shared_ptr<const Platform::MemoryMappedFile> mappedFile, const std::size_t offset, const std::size_t length)
     {
         // 互斥判定放在最前：流式模式下的整块正文（无论来自堆还是映射）都不允许，
         // 也不该让调用方以为「越界检查通过了就能设」
@@ -342,9 +338,8 @@ namespace AsynGyanis::Net
         // content-length 与实际字节数悄悄不一致，那正是收端报文边界错位的源头
         if (offset > availableLength || length > availableLength - offset)
         {
-            throw Base::InvalidArgumentException("HttpResponse 的映射正文入口：区间越界，offset=" + std::to_string(offset) +
-                                                 "，length=" + std::to_string(length) + "，映射字节数=" + std::to_string(availableLength) +
-                                                 "；请先按 MemoryMappedFile::bytes().size() 校验区间，或改用整份映射的重载");
+            throw Base::InvalidArgumentException("HttpResponse 的映射正文入口：区间越界，offset=" + std::to_string(offset) + "，length=" + std::to_string(length) +
+                                                 "，映射字节数=" + std::to_string(availableLength) + "；请先按 MemoryMappedFile::bytes().size() 校验区间，或改用整份映射的重载");
         }
 
         // 反向的互斥：映射正文接管后堆正文必须清空，避免 content-length 按残留字节数算错
@@ -352,7 +347,7 @@ namespace AsynGyanis::Net
         // content-length 与 setBody 同一口径：调用方显式声明的长度原样保留（区间响应
         // 正是「先声明区间长度、再交出映射」的写法），只有替换正文的中间件需要自己清
         // 无效映射（含空指针）归一成「没有映射正文」：读侧只需判一次指针，不必每次再问 isValid
-        m_mappedBody = isUsableMapping ? std::move(mappedFile) : nullptr;
+        m_mappedBody       = isUsableMapping ? std::move(mappedFile) : nullptr;
         m_mappedBodyOffset = offset;
         m_mappedBodyLength = length;
     }
@@ -454,7 +449,7 @@ namespace AsynGyanis::Net
                                                  "请传入形如 std::function<Core::Task<>(WebSocketPeer &)> 的处理器");
         }
 
-        m_webSocketHandler = std::move(handler);
+        m_webSocketHandler            = std::move(handler);
         m_isWebSocketUpgradeRequested = true;
     }
 
@@ -493,8 +488,8 @@ namespace AsynGyanis::Net
                                        "请去掉 setBody()/setMappedBody() 调用，正文改用 writeChunk() 逐段写出");
         }
 
-        m_status = statusCode;
-        m_isChunked = true;
+        m_status             = statusCode;
+        m_isChunked          = true;
         m_hasSentChunkedHead = false;
 
         // content-length 与 transfer-encoding 不得并存（RFC 9112 §6.1）：收端若按前者定界，
@@ -665,13 +660,12 @@ namespace AsynGyanis::Net
 
     std::size_t HttpResponse::headReserveLength() const
     {
-        std::size_t reservedLength = kStatusLineReserveLength + kHeaderBlockTerminatorReserveLength;
-        bool        hasContentTypeHeader = false;
+        std::size_t reservedLength         = kStatusLineReserveLength + kHeaderBlockTerminatorReserveLength;
+        bool        hasContentTypeHeader   = false;
         bool        hasContentLengthHeader = false;
-        bool        hasDateHeader = false;
+        bool        hasDateHeader          = false;
         m_headerStore.forEachField(
-                [&reservedLength, &hasContentTypeHeader, &hasContentLengthHeader, &hasDateHeader](
-                        const std::string_view name, const std::string_view value)
+                [&reservedLength, &hasContentTypeHeader, &hasContentLengthHeader, &hasDateHeader](const std::string_view name, const std::string_view value)
                 {
                     reservedLength += name.size() + value.size() + kHeaderLineReserveLength;
 
@@ -715,12 +709,11 @@ namespace AsynGyanis::Net
 
         // ---- 头部块。按权威记录的设置顺序逐条输出，不再遍历 unordered_map ----
         // 顺带解决了两件事：跨次运行顺序稳定；多条 Set-Cookie 各占一行且先设先发
-        bool hasContentTypeHeader  = false;
+        bool hasContentTypeHeader   = false;
         bool hasContentLengthHeader = false;
-        bool hasDateHeader = false;
+        bool hasDateHeader          = false;
         m_headerStore.forEachField(
-                [&result, &hasContentTypeHeader, &hasContentLengthHeader, &hasDateHeader, this](
-                        const std::string_view name, const std::string_view value)
+                [&result, &hasContentTypeHeader, &hasContentLengthHeader, &hasDateHeader, this](const std::string_view name, const std::string_view value)
                 {
                     if (name == kContentTypeHeaderName)
                     {
@@ -879,11 +872,11 @@ namespace AsynGyanis::Net
 
         // 流式模式标记一并复位：残留下去会让下一条报文也按分块定界，而对端等的是终止块。
         // 发送回调刻意不动：它绑定的是连接，不是本条报文
-        m_isChunked = false;
+        m_isChunked          = false;
         m_hasSentChunkedHead = false;
 
         // 升级意图与处理器一起清：留在复用对象上会把下一条报文也拖进升级分支
-        m_webSocketHandler = WebSocketHandler{};
+        m_webSocketHandler            = WebSocketHandler{};
         m_isWebSocketUpgradeRequested = false;
 
         // 正文抑制标记同样复位：它属于「这一条报文」，下一条可能是 GET，正文必须照发

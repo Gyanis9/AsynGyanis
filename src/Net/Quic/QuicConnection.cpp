@@ -22,7 +22,7 @@ namespace AsynGyanis::Net
         constexpr std::size_t kMaximumFlushRounds = 4;
 
         /// 服务端宣告的流量控制额度：连接级 1 MiB、单条流 256 KiB，够放一次大响应又不放任吃内存
-        constexpr std::uint64_t kInitialMaximumData = 1024ULL * 1024ULL;
+        constexpr std::uint64_t kInitialMaximumData       = 1024ULL * 1024ULL;
         constexpr std::uint64_t kInitialMaximumStreamData = 256ULL * 1024ULL;
 
         /// 服务端允许对端发起的流数：HTTP/3 一条连接上并发几十个请求是常态
@@ -53,17 +53,16 @@ namespace AsynGyanis::Net
          * @param coreConfiguration 待填的状态机配置
          * @param configuration 外壳配置，取其中的 idleTimeout
          */
-        void announceLocalLimits(QuicConnectionCoreConfiguration &coreConfiguration,
-                                 const QuicConnection::Configuration &configuration)
+        void announceLocalLimits(QuicConnectionCoreConfiguration &coreConfiguration, const QuicConnection::Configuration &configuration)
         {
-            QuicTransportParameters &parameters = coreConfiguration.transportParameters;
-            parameters.initialMaximumData = kInitialMaximumData;
-            parameters.initialMaximumStreamDataBidirectionalLocal = kInitialMaximumStreamData;
+            QuicTransportParameters &parameters                    = coreConfiguration.transportParameters;
+            parameters.initialMaximumData                          = kInitialMaximumData;
+            parameters.initialMaximumStreamDataBidirectionalLocal  = kInitialMaximumStreamData;
             parameters.initialMaximumStreamDataBidirectionalRemote = kInitialMaximumStreamData;
-            parameters.initialMaximumStreamDataUnidirectional = kInitialMaximumStreamData;
-            parameters.initialMaximumBidirectionalStreams = kInitialMaximumStreams;
-            parameters.initialMaximumUnidirectionalStreams = kInitialMaximumStreams;
-            parameters.maximumIdleTimeoutMilliseconds = static_cast<std::uint64_t>(configuration.idleTimeout.count());
+            parameters.initialMaximumStreamDataUnidirectional      = kInitialMaximumStreamData;
+            parameters.initialMaximumBidirectionalStreams          = kInitialMaximumStreams;
+            parameters.initialMaximumUnidirectionalStreams         = kInitialMaximumStreams;
+            parameters.maximumIdleTimeoutMilliseconds              = static_cast<std::uint64_t>(configuration.idleTimeout.count());
         }
 
         /// 客户端第一个 Initial 里那个自造目的标识的长度：RFC 9000 §7.2 只要求「至少 8 字节以免撞车」，
@@ -72,8 +71,7 @@ namespace AsynGyanis::Net
     } // namespace
 
     std::unique_ptr<QuicConnection> QuicConnection::accept(const Configuration &configuration, const Platform::SocketAddress &localAddress,
-                                                           const Platform::SocketAddress &peerAddress,
-                                                           const std::span<const std::uint8_t> clientInitial)
+                                                           const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> clientInitial)
     {
         if (configuration.tlsContext == nullptr || !configuration.sendDatagram)
         {
@@ -84,8 +82,7 @@ namespace AsynGyanis::Net
         // 只有能解出包头的 v1 Initial 才有资格起一条新连接：版本不认识的、短头的都直接不要。
         // 本端此刻还没装任何密钥，也不要去猜别的形态（RFC 9000 §5.2.2、§17.2.5）
         const std::expected<QuicPacketHeader, QuicDecodeError> decodedHeader = decodeQuicPacketHeader(clientInitial, kSourceConnectionIdLength);
-        if (!decodedHeader.has_value() || !decodedHeader->isLongHeader || decodedHeader->longPacketType != QuicLongPacketType::Initial ||
-            decodedHeader->version != kQuicVersion1)
+        if (!decodedHeader.has_value() || !decodedHeader->isLongHeader || decodedHeader->longPacketType != QuicLongPacketType::Initial || decodedHeader->version != kQuicVersion1)
         {
             LOG_DEBUG("QuicConnection: 报文不可接受（不是 v1 的 Initial），已丢弃");
             return nullptr;
@@ -100,42 +97,37 @@ namespace AsynGyanis::Net
         }
 
         QuicConnectionCoreConfiguration coreConfiguration;
-        coreConfiguration.role = QuicConnectionRole::Server;
-        coreConfiguration.tlsContext = configuration.tlsContext;
+        coreConfiguration.role              = QuicConnectionRole::Server;
+        coreConfiguration.tlsContext        = configuration.tlsContext;
         coreConfiguration.localConnectionId = std::move(sourceConnectionIdBytes);
         // 回包要打在客户端**自报**的源标识上（RFC 9000 §7.2）；填成报文里的目的标识会让对端
         // 把所有回包当成无主报文丢掉
         coreConfiguration.peerConnectionId.assign(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
         // 客户端首个 Initial 的目的标识是它自己造的：Initial 密钥与参数里的 ODCID 都由它算
-        coreConfiguration.originalDestinationConnectionId.assign(header.destinationConnectionId.begin(),
-                                                                 header.destinationConnectionId.end());
+        coreConfiguration.originalDestinationConnectionId.assign(header.destinationConnectionId.begin(), header.destinationConnectionId.end());
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));
-        connection->m_peerAddress = peerAddress;
+        connection->m_peerAddress  = peerAddress;
         connection->m_localAddress = localAddress;
-        connection->m_timeOrigin = std::chrono::steady_clock::now();
-        connection->m_sourceConnectionId.assign(reinterpret_cast<const char *>(coreConfiguration.localConnectionId.data()),
-                                                coreConfiguration.localConnectionId.size());
+        connection->m_timeOrigin   = std::chrono::steady_clock::now();
+        connection->m_sourceConnectionId.assign(reinterpret_cast<const char *>(coreConfiguration.localConnectionId.data()), coreConfiguration.localConnectionId.size());
         try
         {
             connection->m_core = std::make_unique<QuicConnectionCore>(std::move(coreConfiguration));
-        }
-        catch (const Base::Exception &error)
+        } catch (const Base::Exception &error)
         {
             // TLS 会话建不起来（上下文里没证书之类）：这一条报文不值得让服务端整体失败
             LOG_ERROR_FMT("QuicConnection: 状态机创建失败，连接未建立：{}", error.what());
             return nullptr;
         }
 
-        LOG_DEBUG_FMT("QuicConnection: 已接受一条连接（连接标识 {} 字节，版本 0x{:08x}）", connection->m_sourceConnectionId.size(),
-                      header.version);
+        LOG_DEBUG_FMT("QuicConnection: 已接受一条连接（连接标识 {} 字节，版本 0x{:08x}）", connection->m_sourceConnectionId.size(), header.version);
         return connection;
     }
 
     std::unique_ptr<QuicConnection> QuicConnection::connect(const Configuration &configuration, const Platform::SocketAddress &localAddress,
-                                                            const Platform::SocketAddress &peerAddress,
-                                                            const QuicClientTlsSettings &clientTlsSettings)
+                                                            const Platform::SocketAddress &peerAddress, const QuicClientTlsSettings &clientTlsSettings)
     {
         if (configuration.tlsContext == nullptr || !configuration.sendDatagram)
         {
@@ -143,7 +135,7 @@ namespace AsynGyanis::Net
             return nullptr;
         }
 
-        std::vector<std::uint8_t> sourceConnectionIdBytes = randomBytes(kSourceConnectionIdLength);
+        std::vector<std::uint8_t> sourceConnectionIdBytes        = randomBytes(kSourceConnectionIdLength);
         std::vector<std::uint8_t> initialDestinationConnectionId = randomBytes(kInitialPeerConnectionIdLength);
         if (sourceConnectionIdBytes.empty() || initialDestinationConnectionId.empty())
         {
@@ -152,28 +144,26 @@ namespace AsynGyanis::Net
         }
 
         QuicConnectionCoreConfiguration coreConfiguration;
-        coreConfiguration.role = QuicConnectionRole::Client;
-        coreConfiguration.tlsContext = configuration.tlsContext;
+        coreConfiguration.role              = QuicConnectionRole::Client;
+        coreConfiguration.tlsContext        = configuration.tlsContext;
         coreConfiguration.localConnectionId = std::move(sourceConnectionIdBytes);
         // 第一个 Initial 打给谁由本端自造；它同时是 Initial 密钥的推导依据与参数里的 ODCID
         // （RFC 9000 §7.3 要求服务端把同一个值回传，客户端据此核对这条连接是不是自己发起的那一条）。
         // 收到服务端的长头报文后状态机会按 §7.2 把目的标识换成它自报的那个，这里只是起点
-        coreConfiguration.peerConnectionId = initialDestinationConnectionId;
+        coreConfiguration.peerConnectionId                = initialDestinationConnectionId;
         coreConfiguration.originalDestinationConnectionId = std::move(initialDestinationConnectionId);
-        coreConfiguration.clientTlsSettings = clientTlsSettings;
+        coreConfiguration.clientTlsSettings               = clientTlsSettings;
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));
-        connection->m_peerAddress = peerAddress;
+        connection->m_peerAddress  = peerAddress;
         connection->m_localAddress = localAddress;
-        connection->m_timeOrigin = std::chrono::steady_clock::now();
-        connection->m_sourceConnectionId.assign(reinterpret_cast<const char *>(coreConfiguration.localConnectionId.data()),
-                                                coreConfiguration.localConnectionId.size());
+        connection->m_timeOrigin   = std::chrono::steady_clock::now();
+        connection->m_sourceConnectionId.assign(reinterpret_cast<const char *>(coreConfiguration.localConnectionId.data()), coreConfiguration.localConnectionId.size());
         try
         {
             connection->m_core = std::make_unique<QuicConnectionCore>(std::move(coreConfiguration));
-        }
-        catch (const Base::Exception &error)
+        } catch (const Base::Exception &error)
         {
             // TLS 会话建不起来（上下文里没装信任锚、SNI/ALPN 落不上去之类）：原因照实记下来，
             // 出站失败的排查全靠这一句
@@ -185,8 +175,7 @@ namespace AsynGyanis::Net
         return connection;
     }
 
-    QuicConnection::QuicConnection(Configuration configuration) :
-        m_configuration(std::move(configuration))
+    QuicConnection::QuicConnection(Configuration configuration) : m_configuration(std::move(configuration))
     {
     }
 
@@ -225,8 +214,7 @@ namespace AsynGyanis::Net
         {
             // 对端参数还没到手、或它给的双向流额度已用尽：这两种都开不出请求流，日志要说清是哪一种，
             // 否则出站侧只会看到「请求发不出去」
-            LOG_WARN_FMT("QuicConnection: 打开本端双向流失败（对端参数{}到手），出站请求无法建立",
-                         m_core->peerTransportParameters() == nullptr ? "还没" : "已");
+            LOG_WARN_FMT("QuicConnection: 打开本端双向流失败（对端参数{}到手），出站请求无法建立", m_core->peerTransportParameters() == nullptr ? "还没" : "已");
             return -1;
         }
         m_needsFlush = true;
@@ -245,8 +233,7 @@ namespace AsynGyanis::Net
         m_needsFlush = true;
     }
 
-    std::size_t QuicConnection::queueStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data,
-                                                const bool endStream)
+    std::size_t QuicConnection::queueStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
     {
         if (m_core == nullptr || streamId < 0)
         {
@@ -257,8 +244,7 @@ namespace AsynGyanis::Net
         {
             // 一字节也没收下：对端用 STOP_SENDING 叫停了这条流、它超出了对端给的流数上限，
             // 或该流的待发队列已到上界。前两种是响应没地方去，第三种靠上层的续交闸门
-            LOG_DEBUG_FMT("QuicConnection: 流 {} 拒收了 {} 字节待发数据（流已收尾、被打断或待发队列到上界）", streamId,
-                          data.size());
+            LOG_DEBUG_FMT("QuicConnection: 流 {} 拒收了 {} 字节待发数据（流已收尾、被打断或待发队列到上界）", streamId, data.size());
             return 0;
         }
         m_needsFlush = true;
@@ -288,8 +274,7 @@ namespace AsynGyanis::Net
 
         // 对端地址变了（NAT 重绑定）：本实现不做路径迁移，但回包仍要打到最新来源地址上，
         // 否则对端换了端口之后再也收不到东西
-        if (peerAddress.length != m_peerAddress.length ||
-            std::memcmp(&peerAddress.storage, &m_peerAddress.storage, peerAddress.length) != 0)
+        if (peerAddress.length != m_peerAddress.length || std::memcmp(&peerAddress.storage, &m_peerAddress.storage, peerAddress.length) != 0)
         {
             m_peerAddress = peerAddress;
         }
@@ -359,8 +344,7 @@ namespace AsynGyanis::Net
                 ++sentDatagramCount;
                 // 报文本体从队列移交到这条栈上的 optional，因此这份指针在整次 await 期间都有效。
                 // std::string 在本仓里当字节缓冲用，这里只是把字符指针按线上字节解释
-                if (!co_await m_configuration.sendDatagram(m_peerAddress,
-                                                           reinterpret_cast<const std::uint8_t *>(datagram->data()), datagram->size()))
+                if (!co_await m_configuration.sendDatagram(m_peerAddress, reinterpret_cast<const std::uint8_t *>(datagram->data()), datagram->size()))
                 {
                     LOG_WARN("QuicConnection: 报文发送失败（对端可能已不可达），连接收口");
                     m_isClosed = true;
@@ -462,8 +446,7 @@ namespace AsynGyanis::Net
             return;
         }
         m_isHandshakeLogged = true;
-        LOG_INFO_FMT("QuicConnection: 握手完成（连接标识 {} 字节，ALPN {}）", m_sourceConnectionId.size(),
-                     m_core->selectedApplicationProtocol());
+        LOG_INFO_FMT("QuicConnection: 握手完成（连接标识 {} 字节，ALPN {}）", m_sourceConnectionId.size(), m_core->selectedApplicationProtocol());
     }
 
     void QuicConnection::pumpStreamCallbacks()

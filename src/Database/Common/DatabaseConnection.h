@@ -212,12 +212,12 @@ namespace AsynGyanis::Database
         {
         }
 
-        ConnectionConfig m_configuration;          ///< 连接配置
-        std::string      m_lastError;              ///< 最后一次错误信息
-        int              m_connectTimeout = 5000;  ///< 连接超时毫秒数
-        int              m_queryTimeout   = 30000; ///< 单条命令执行超时毫秒数
-        bool             m_isConnected    = false; ///< 连接状态，由派生类同步维护
-        std::chrono::steady_clock::time_point m_establishedAt = std::chrono::steady_clock::now(); ///< 最近一次建立成功的时刻，池在 connect() 成功后改写
+        ConnectionConfig                      m_configuration;                                     ///< 连接配置
+        std::string                           m_lastError;                                         ///< 最后一次错误信息
+        int                                   m_connectTimeout = 5000;                             ///< 连接超时毫秒数
+        int                                   m_queryTimeout   = 30000;                            ///< 单条命令执行超时毫秒数
+        bool                                  m_isConnected    = false;                            ///< 连接状态，由派生类同步维护
+        std::chrono::steady_clock::time_point m_establishedAt  = std::chrono::steady_clock::now(); ///< 最近一次建立成功的时刻，池在 connect() 成功后改写
     };
 
 } // namespace AsynGyanis::Database

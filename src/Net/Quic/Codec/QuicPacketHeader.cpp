@@ -34,8 +34,7 @@ namespace AsynGyanis::Net
          */
         QuicDecodeError makeTruncatedError(std::string_view fieldDescription, std::string detail)
         {
-            return QuicDecodeError{QuicDecodeErrorKind::Truncated,
-                                   std::format("{}：{}；本包只能整包丢弃", fieldDescription, detail)};
+            return QuicDecodeError{QuicDecodeErrorKind::Truncated, std::format("{}：{}；本包只能整包丢弃", fieldDescription, detail)};
         }
 
         /**
@@ -66,14 +65,12 @@ namespace AsynGyanis::Net
          * @param connectionId 输出：指向数据报的视图
          * @return std::expected<void, QuicDecodeError> 失败原样带回错误
          */
-        std::expected<void, QuicDecodeError> readLongHeaderConnectionId(std::span<const std::uint8_t> datagram, std::size_t &readOffset,
-                                                                       std::string_view fieldDescription,
-                                                                       std::span<const std::uint8_t> &connectionId)
+        std::expected<void, QuicDecodeError> readLongHeaderConnectionId(std::span<const std::uint8_t> datagram, std::size_t &readOffset, std::string_view fieldDescription,
+                                                                        std::span<const std::uint8_t> &connectionId)
         {
             if (readOffset >= datagram.size())
             {
-                return std::unexpected(makeTruncatedError(fieldDescription, std::format("连长度字节都没有（数据报只有 {} 字节）",
-                                                                                         datagram.size())));
+                return std::unexpected(makeTruncatedError(fieldDescription, std::format("连长度字节都没有（数据报只有 {} 字节）", datagram.size())));
             }
             const std::size_t length = static_cast<std::size_t>(datagram[readOffset]);
             ++readOffset;
@@ -86,8 +83,7 @@ namespace AsynGyanis::Net
             }
             if (datagram.size() - readOffset < length)
             {
-                return std::unexpected(makeTruncatedError(fieldDescription, std::format("长度声明 {} 字节，数据报只剩 {} 字节",
-                                                                                         length, datagram.size() - readOffset)));
+                return std::unexpected(makeTruncatedError(fieldDescription, std::format("长度声明 {} 字节，数据报只剩 {} 字节", length, datagram.size() - readOffset)));
             }
             connectionId = datagram.subspan(readOffset, length);
             readOffset += length;
@@ -136,13 +132,11 @@ namespace AsynGyanis::Net
             }
 
             std::size_t readOffset = 5;
-            if (const auto result = readLongHeaderConnectionId(datagram, readOffset, "目的连接标识", header.destinationConnectionId);
-                !result.has_value())
+            if (const auto result = readLongHeaderConnectionId(datagram, readOffset, "目的连接标识", header.destinationConnectionId); !result.has_value())
             {
                 return std::unexpected(result.error());
             }
-            if (const auto result = readLongHeaderConnectionId(datagram, readOffset, "源连接标识", header.sourceConnectionId);
-                !result.has_value())
+            if (const auto result = readLongHeaderConnectionId(datagram, readOffset, "源连接标识", header.sourceConnectionId); !result.has_value())
             {
                 return std::unexpected(result.error());
             }
@@ -158,9 +152,8 @@ namespace AsynGyanis::Net
                 readOffset += tokenLength->byteCount;
                 if (datagram.size() - readOffset < tokenLength->value)
                 {
-                    return std::unexpected(makeTruncatedError("Initial 的 Token", std::format("长度 {} 字节，数据报只剩 {} 字节",
-                                                                                              tokenLength->value,
-                                                                                              datagram.size() - readOffset)));
+                    return std::unexpected(
+                            makeTruncatedError("Initial 的 Token", std::format("长度 {} 字节，数据报只剩 {} 字节", tokenLength->value, datagram.size() - readOffset)));
                 }
                 header.token = datagram.subspan(readOffset, static_cast<std::size_t>(tokenLength->value));
                 readOffset += static_cast<std::size_t>(tokenLength->value);
@@ -179,14 +172,13 @@ namespace AsynGyanis::Net
             }
             if (lengthField->value > datagram.size() - readOffset)
             {
-                return std::unexpected(makeTruncatedError("长头声明的报文长度",
-                                                          std::format("Length 为 {} 字节，去掉头部后数据报只剩 {} 字节",
-                                                                      lengthField->value, datagram.size() - readOffset)));
+                return std::unexpected(
+                        makeTruncatedError("长头声明的报文长度", std::format("Length 为 {} 字节，去掉头部后数据报只剩 {} 字节", lengthField->value, datagram.size() - readOffset)));
             }
 
-            header.packetNumberOffset               = readOffset;
-            header.packetNumberAndPayloadByteCount  = static_cast<std::size_t>(lengthField->value);
-            header.packetByteCount                  = readOffset + static_cast<std::size_t>(lengthField->value);
+            header.packetNumberOffset              = readOffset;
+            header.packetNumberAndPayloadByteCount = static_cast<std::size_t>(lengthField->value);
+            header.packetByteCount                 = readOffset + static_cast<std::size_t>(lengthField->value);
             return header;
         }
 
@@ -208,31 +200,29 @@ namespace AsynGyanis::Net
             }
             if (datagram.size() - 1 < destinationConnectionIdLength)
             {
-                return std::unexpected(makeTruncatedError("短头的目的连接标识", std::format("按本端约定需要 {} 字节，数据报只剩 {} 字节",
-                                                                                             destinationConnectionIdLength,
-                                                                                             datagram.size() - 1)));
+                return std::unexpected(
+                        makeTruncatedError("短头的目的连接标识", std::format("按本端约定需要 {} 字节，数据报只剩 {} 字节", destinationConnectionIdLength, datagram.size() - 1)));
             }
             header.destinationConnectionId = datagram.subspan(1, destinationConnectionIdLength);
             // 短头不带版本（§17.3.1），保持 0 而不是谎报成 1：调用方要用的是建连接时谈定的版本
-            header.version = 0;
+            header.version            = 0;
             header.packetNumberOffset = 1 + destinationConnectionIdLength;
             // 短头没有 Length 域，本包吃掉数据报的剩余全部字节（§17.3.1）
             header.packetNumberAndPayloadByteCount = datagram.size() - header.packetNumberOffset;
-            header.packetByteCount = datagram.size();
+            header.packetByteCount                 = datagram.size();
             return header;
         }
     } // namespace
 
-    std::expected<QuicPacketHeader, QuicDecodeError>
-    decodeQuicPacketHeader(const std::span<const std::uint8_t> datagram, const std::size_t shortHeaderDestinationConnectionIdLength)
+    std::expected<QuicPacketHeader, QuicDecodeError> decodeQuicPacketHeader(const std::span<const std::uint8_t> datagram,
+                                                                            const std::size_t                   shortHeaderDestinationConnectionIdLength)
     {
         if (shortHeaderDestinationConnectionIdLength > kQuicMaximumConnectionIdLength)
         {
             // 这是本端配置错了而不是对端发了坏包：让调用方的 bug 冒出去，不冒充可恢复的解码失败
             throw Base::InvalidArgumentException(std::format("短头目的连接标识长度 {} 超过版本 1 的上限 {} 字节（RFC 9000 §5.1.1、§17.2）："
                                                              "请检查本端签发连接标识时用的长度",
-                                                             shortHeaderDestinationConnectionIdLength,
-                                                             kQuicMaximumConnectionIdLength));
+                                                             shortHeaderDestinationConnectionIdLength, kQuicMaximumConnectionIdLength));
         }
         if (datagram.empty())
         {
@@ -243,23 +233,20 @@ namespace AsynGyanis::Net
         header.firstByte    = datagram[0];
         header.isLongHeader = (datagram[0] & kQuicLongHeaderFlagBit) != 0;
 
-        return header.isLongHeader ? decodeLongHeaderPacket(header, datagram)
-                                   : decodeShortHeaderPacket(header, datagram, shortHeaderDestinationConnectionIdLength);
+        return header.isLongHeader ? decodeLongHeaderPacket(header, datagram) : decodeShortHeaderPacket(header, datagram, shortHeaderDestinationConnectionIdLength);
     }
 
-    std::expected<void, QuicDecodeError>
-    refreshQuicPacketHeader(QuicPacketHeader &header, const std::uint8_t unmaskedFirstByte, const std::span<const std::uint8_t> datagram)
+    std::expected<void, QuicDecodeError> refreshQuicPacketHeader(QuicPacketHeader &header, const std::uint8_t unmaskedFirstByte, const std::span<const std::uint8_t> datagram)
     {
-        header.firstByte = unmaskedFirstByte;
+        header.firstByte             = unmaskedFirstByte;
         header.packetNumberByteCount = packetNumberByteCountFromFirstByte(unmaskedFirstByte);
-        header.isSpinBitSet     = (unmaskedFirstByte & kQuicSpinBitMask) != 0;
-        header.isKeyPhaseBitSet = (unmaskedFirstByte & kQuicKeyPhaseBitMask) != 0;
+        header.isSpinBitSet          = (unmaskedFirstByte & kQuicSpinBitMask) != 0;
+        header.isKeyPhaseBitSet      = (unmaskedFirstByte & kQuicKeyPhaseBitMask) != 0;
 
         // 先判偏移本身是否还在数据报内：后面的减法都建立在这个前提上，否则无符号回绕会把结论反过来
         if (header.packetNumberOffset > datagram.size())
         {
-            return std::unexpected(makeTruncatedError("包号字段", std::format("起始偏移 {} 已越过数据报末尾（共 {} 字节）",
-                                                                              header.packetNumberOffset, datagram.size())));
+            return std::unexpected(makeTruncatedError("包号字段", std::format("起始偏移 {} 已越过数据报末尾（共 {} 字节）", header.packetNumberOffset, datagram.size())));
         }
         // 包号长度那两位也在被保护的范围内：掩出来的值若大于 Length 域，本包自相矛盾（§17.2）
         if (header.packetNumberByteCount > header.packetNumberAndPayloadByteCount)
@@ -270,9 +257,8 @@ namespace AsynGyanis::Net
         }
         if (header.packetNumberByteCount > datagram.size() - header.packetNumberOffset)
         {
-            return std::unexpected(makeTruncatedError("包号字段", std::format("需要 {} 字节，数据报在偏移 {} 处只剩 {} 字节",
-                                                                               header.packetNumberByteCount, header.packetNumberOffset,
-                                                                               datagram.size() - header.packetNumberOffset)));
+            return std::unexpected(makeTruncatedError("包号字段", std::format("需要 {} 字节，数据报在偏移 {} 处只剩 {} 字节", header.packetNumberByteCount,
+                                                                              header.packetNumberOffset, datagram.size() - header.packetNumberOffset)));
         }
         header.packetNumber = readBigEndianInteger(datagram.subspan(header.packetNumberOffset), header.packetNumberByteCount);
         return {};
@@ -295,8 +281,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::uint64_t restoreQuicPacketNumber(const std::uint64_t largestReceivedPacketNumber, const std::uint64_t truncatedPacketNumber,
-                                         const std::size_t packetNumberByteCount)
+    std::uint64_t restoreQuicPacketNumber(const std::uint64_t largestReceivedPacketNumber, const std::uint64_t truncatedPacketNumber, const std::size_t packetNumberByteCount)
     {
         if (packetNumberByteCount < 1 || packetNumberByteCount > 4)
         {
@@ -305,11 +290,11 @@ namespace AsynGyanis::Net
                                                              packetNumberByteCount));
         }
 
-        const std::uint64_t windowSize  = 1ULL << (packetNumberByteCount * 8ULL);
-        const std::uint64_t halfWindow  = windowSize / 2ULL;
-        const std::uint64_t windowMask  = windowSize - 1ULL;
-        const std::uint64_t expected    = largestReceivedPacketNumber + 1ULL;
-        const std::uint64_t candidate   = (expected & ~windowMask) | truncatedPacketNumber;
+        const std::uint64_t windowSize = 1ULL << (packetNumberByteCount * 8ULL);
+        const std::uint64_t halfWindow = windowSize / 2ULL;
+        const std::uint64_t windowMask = windowSize - 1ULL;
+        const std::uint64_t expected   = largestReceivedPacketNumber + 1ULL;
+        const std::uint64_t candidate  = (expected & ~windowMask) | truncatedPacketNumber;
 
         // 附录 A.3 的第一支：候选值落在窗口下沿之下，说明高位借错了一位，补回一个窗口。
         // 判据写成 candidate + halfWindow <= expected 而不是 candidate <= expected - halfWindow，

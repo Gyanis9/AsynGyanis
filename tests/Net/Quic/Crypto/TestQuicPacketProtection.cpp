@@ -42,12 +42,11 @@ namespace AsynGyanis::Net
          * @param initializationVectorHex 12 字节 IV
          * @return QuicPacketKeys 密钥组（头部保护密钥本层用不到，留空）
          */
-        QuicPacketKeys makeKeys(const QuicCipherSuite cipherSuite, const std::string_view keyHex,
-                                const std::string_view initializationVectorHex)
+        QuicPacketKeys makeKeys(const QuicCipherSuite cipherSuite, const std::string_view keyHex, const std::string_view initializationVectorHex)
         {
             QuicPacketKeys keys;
-            keys.cipherSuite = cipherSuite;
-            const auto keyBytes = makeBytesFromHex(keyHex);
+            keys.cipherSuite       = cipherSuite;
+            const auto keyBytes    = makeBytesFromHex(keyHex);
             const auto vectorBytes = makeBytesFromHex(initializationVectorHex);
             std::copy(keyBytes.begin(), keyBytes.end(), keys.encryptionKey.begin());
             std::copy(vectorBytes.begin(), vectorBytes.end(), keys.initializationVector.begin());
@@ -90,8 +89,7 @@ namespace AsynGyanis::Net
          * @param plaintext 明文
          * @return std::vector<std::uint8_t> 密文加标签
          */
-        std::vector<std::uint8_t> sealToBytes(const QuicPacketKeys &keys, const std::uint64_t packetNumber,
-                                              const std::vector<std::uint8_t> &additionalData,
+        std::vector<std::uint8_t> sealToBytes(const QuicPacketKeys &keys, const std::uint64_t packetNumber, const std::vector<std::uint8_t> &additionalData,
                                               const std::vector<std::uint8_t> &plaintext)
         {
             std::string output;
@@ -105,12 +103,11 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, SealsChaCha20PayloadPerAppendixA5)
     {
-        const auto keys = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
+        const auto keys           = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
         const auto additionalData = makeBytesFromHex(kAppendixA5AdditionalData);
-        const auto plaintext = makeBytesFromHex(kAppendixA5Plaintext);
+        const auto plaintext      = makeBytesFromHex(kAppendixA5Plaintext);
 
-        EXPECT_EQ(sealToBytes(keys, kAppendixA5PacketNumber, additionalData, plaintext),
-                  makeBytesFromHex(kAppendixA5ProtectedPayload))
+        EXPECT_EQ(sealToBytes(keys, kAppendixA5PacketNumber, additionalData, plaintext), makeBytesFromHex(kAppendixA5ProtectedPayload))
                 << "nonce = IV XOR 包号、AAD = 头部，任一处算错都产不出这条密文";
     }
 
@@ -119,13 +116,12 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, OpensChaCha20PayloadPerAppendixA5)
     {
-        const auto keys = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
-        const auto additionalData = makeBytesFromHex(kAppendixA5AdditionalData);
+        const auto keys             = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
+        const auto additionalData   = makeBytesFromHex(kAppendixA5AdditionalData);
         const auto protectedPayload = makeBytesFromHex(kAppendixA5ProtectedPayload);
 
         std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
-        const auto opened = openQuicProtectedPayload(plaintext, keys, kAppendixA5PacketNumber, additionalData,
-                                                     protectedPayload);
+        const auto                opened = openQuicProtectedPayload(plaintext, keys, kAppendixA5PacketNumber, additionalData, protectedPayload);
         ASSERT_TRUE(opened.has_value()) << opened.error().message;
         EXPECT_EQ(*opened, 1U);
         EXPECT_EQ(plaintext, makeBytesFromHex(kAppendixA5Plaintext));
@@ -136,10 +132,9 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, SealsAes128GcmClientInitialPerAppendixA2)
     {
-        const auto keys = deriveQuicInitialPacketKeys(kSampleDestinationConnectionId,
-                                                      QuicPacketDirection::ClientToServer);
-        const auto additionalData = makeBytesFromHex(kAppendixA2AdditionalData);
-        const auto plaintext = buildAppendixA2Plaintext();
+        const auto keys             = deriveQuicInitialPacketKeys(kSampleDestinationConnectionId, QuicPacketDirection::ClientToServer);
+        const auto additionalData   = makeBytesFromHex(kAppendixA2AdditionalData);
+        const auto plaintext        = buildAppendixA2Plaintext();
         const auto protectedPayload = makeBytesFromHex(kAppendixA2ProtectedPayload);
 
         EXPECT_EQ(sealToBytes(keys, kAppendixA2PacketNumber, additionalData, plaintext), protectedPayload);
@@ -150,14 +145,12 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, OpensAes128GcmClientInitialPerAppendixA2)
     {
-        const auto keys = deriveQuicInitialPacketKeys(kSampleDestinationConnectionId,
-                                                      QuicPacketDirection::ClientToServer);
-        const auto additionalData = makeBytesFromHex(kAppendixA2AdditionalData);
+        const auto keys             = deriveQuicInitialPacketKeys(kSampleDestinationConnectionId, QuicPacketDirection::ClientToServer);
+        const auto additionalData   = makeBytesFromHex(kAppendixA2AdditionalData);
         const auto protectedPayload = makeBytesFromHex(kAppendixA2ProtectedPayload);
 
         std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
-        const auto opened = openQuicProtectedPayload(plaintext, keys, kAppendixA2PacketNumber, additionalData,
-                                                     protectedPayload);
+        const auto                opened = openQuicProtectedPayload(plaintext, keys, kAppendixA2PacketNumber, additionalData, protectedPayload);
         ASSERT_TRUE(opened.has_value()) << opened.error().message;
         EXPECT_EQ(plaintext, buildAppendixA2Plaintext());
     }
@@ -167,14 +160,13 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, RejectsTamperedCiphertext)
     {
-        const auto keys = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
-        const auto additionalData = makeBytesFromHex(kAppendixA5AdditionalData);
-        auto protectedPayload = makeBytesFromHex(kAppendixA5ProtectedPayload);
-        protectedPayload[0] = static_cast<std::uint8_t>(protectedPayload[0] ^ 0x01);
+        const auto keys             = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
+        const auto additionalData   = makeBytesFromHex(kAppendixA5AdditionalData);
+        auto       protectedPayload = makeBytesFromHex(kAppendixA5ProtectedPayload);
+        protectedPayload[0]         = static_cast<std::uint8_t>(protectedPayload[0] ^ 0x01);
 
         std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
-        const auto opened = openQuicProtectedPayload(plaintext, keys, kAppendixA5PacketNumber, additionalData,
-                                                     protectedPayload);
+        const auto                opened = openQuicProtectedPayload(plaintext, keys, kAppendixA5PacketNumber, additionalData, protectedPayload);
         ASSERT_FALSE(opened.has_value());
         EXPECT_EQ(opened.error().kind, QuicDecodeErrorKind::AuthenticationFailed);
     }
@@ -184,13 +176,12 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, RejectsMismatchedPacketNumber)
     {
-        const auto keys = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
-        const auto additionalData = makeBytesFromHex(kAppendixA5AdditionalData);
+        const auto keys             = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
+        const auto additionalData   = makeBytesFromHex(kAppendixA5AdditionalData);
         const auto protectedPayload = makeBytesFromHex(kAppendixA5ProtectedPayload);
 
         std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
-        const auto opened = openQuicProtectedPayload(plaintext, keys, kAppendixA5PacketNumber + 1ULL, additionalData,
-                                                     protectedPayload);
+        const auto                opened = openQuicProtectedPayload(plaintext, keys, kAppendixA5PacketNumber + 1ULL, additionalData, protectedPayload);
         ASSERT_FALSE(opened.has_value());
         EXPECT_EQ(opened.error().kind, QuicDecodeErrorKind::AuthenticationFailed) << "换个包号就解开，说明 nonce 根本没把包号算进去";
     }
@@ -200,15 +191,14 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, RejectsTamperedAdditionalData)
     {
-        const auto keys = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
-        auto additionalData = makeBytesFromHex(kAppendixA5AdditionalData);
+        const auto keys             = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
+        auto       additionalData   = makeBytesFromHex(kAppendixA5AdditionalData);
         const auto protectedPayload = makeBytesFromHex(kAppendixA5ProtectedPayload);
         // 改掉自旋位：它不属于被保护字段，解包时也不会被掩码改动，正是「只改 AAD」的干净样本
         additionalData[0] = static_cast<std::uint8_t>(additionalData[0] ^ 0x20);
 
         std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
-        const auto opened = openQuicProtectedPayload(plaintext, keys, kAppendixA5PacketNumber, additionalData,
-                                                     protectedPayload);
+        const auto                opened = openQuicProtectedPayload(plaintext, keys, kAppendixA5PacketNumber, additionalData, protectedPayload);
         ASSERT_FALSE(opened.has_value());
         EXPECT_EQ(opened.error().kind, QuicDecodeErrorKind::AuthenticationFailed);
     }
@@ -218,8 +208,8 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, RejectsPayloadShorterThanTag)
     {
-        const auto keys = makeKeys(QuicCipherSuite::Aes128Gcm, kAppendixA5Key, kAppendixA5InitializationVector);
-        const auto shortPayload = makeBytesFromHex("00112233445566778899");
+        const auto                keys         = makeKeys(QuicCipherSuite::Aes128Gcm, kAppendixA5Key, kAppendixA5InitializationVector);
+        const auto                shortPayload = makeBytesFromHex("00112233445566778899");
         std::vector<std::uint8_t> plaintext(10);
 
         const auto opened = openQuicProtectedPayload(plaintext, keys, 0ULL, shortPayload, shortPayload);
@@ -232,25 +222,23 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, HandlesMaximumPacketNumberAndRejectsBeyondIt)
     {
-        const auto keys = makeKeys(QuicCipherSuite::Aes128Gcm, kClientInitialKey, kClientInitialInitializationVector);
+        const auto keys           = makeKeys(QuicCipherSuite::Aes128Gcm, kClientInitialKey, kClientInitialInitializationVector);
         const auto additionalData = makeBytesFromHex("c000000001");
-        const auto plaintext = makeBytesFromHex("01020304");
+        const auto plaintext      = makeBytesFromHex("01020304");
 
-        const auto protectedPayload = sealToBytes(keys, kQuicMaximumIntegerValue, additionalData, plaintext);
+        const auto                protectedPayload = sealToBytes(keys, kQuicMaximumIntegerValue, additionalData, plaintext);
         std::vector<std::uint8_t> openedPlaintext(plaintext.size());
-        const auto opened = openQuicProtectedPayload(openedPlaintext, keys, kQuicMaximumIntegerValue, additionalData,
-                                                     protectedPayload);
+        const auto                opened = openQuicProtectedPayload(openedPlaintext, keys, kQuicMaximumIntegerValue, additionalData, protectedPayload);
         ASSERT_TRUE(opened.has_value()) << opened.error().message << "：最高位包号要能自洽（IV 拼接的移位边界）";
         EXPECT_EQ(openedPlaintext, plaintext);
 
         // 包号不同就必须解不开，否则说明高位那几个字节根本没进 nonce
         const auto mismatched = openQuicProtectedPayload(openedPlaintext, keys, kQuicMaximumIntegerValue - 1ULL, additionalData,
-                                                         
+
                                                          protectedPayload);
         EXPECT_FALSE(mismatched.has_value());
 
-        EXPECT_THROW(static_cast<void>(sealToBytes(keys, kQuicMaximumIntegerValue + 1ULL, additionalData, plaintext)),
-                     Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(sealToBytes(keys, kQuicMaximumIntegerValue + 1ULL, additionalData, plaintext)), Base::InvalidArgumentException);
     }
 
     /**
@@ -258,18 +246,18 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketProtection, RejectsOutputBufferWithWrongLength)
     {
-        const auto keys = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
-        const auto additionalData = makeBytesFromHex(kAppendixA5AdditionalData);
+        const auto keys             = makeKeys(QuicCipherSuite::ChaCha20Poly1305, kAppendixA5Key, kAppendixA5InitializationVector);
+        const auto additionalData   = makeBytesFromHex(kAppendixA5AdditionalData);
         const auto protectedPayload = makeBytesFromHex(kAppendixA5ProtectedPayload);
         // A.5 的明文只有 1 字节：零长缓冲与 8 字节缓冲都不是「密文长减 16」
         std::vector<std::uint8_t> tooSmall(0);
         std::vector<std::uint8_t> tooLarge(8);
 
         EXPECT_THROW(static_cast<void>(openQuicProtectedPayload(tooSmall, keys, kAppendixA5PacketNumber, additionalData, protectedPayload)),
-                     
+
                      Base::InvalidArgumentException);
         EXPECT_THROW(static_cast<void>(openQuicProtectedPayload(tooLarge, keys, kAppendixA5PacketNumber, additionalData, protectedPayload)),
-                     
+
                      Base::InvalidArgumentException);
     }
 } // namespace AsynGyanis::Net

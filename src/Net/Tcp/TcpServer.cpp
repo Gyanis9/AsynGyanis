@@ -33,15 +33,13 @@ namespace AsynGyanis::Net
         constexpr std::chrono::seconds kProxyRejectionLogWindow{10};
     } // namespace
 
-    TcpServer::TcpServer(Core::EventLoop &loop, const Core::InetAddress &address) :
-        m_loop(loop), m_acceptor(loop, address), m_idleTimer(loop)
+    TcpServer::TcpServer(Core::EventLoop &loop, const Core::InetAddress &address) : m_loop(loop), m_acceptor(loop, address), m_idleTimer(loop)
     {
         // 监听器与连接管理器都按引用持有同一个循环：连接的接受与处理必须在同一线程上串行，
         // 这也是本类不做任何容器加锁的前提
     }
 
-    TcpServer::TcpServer(Core::EventLoop &loop, const int adoptedListeningDescriptor) :
-        m_loop(loop), m_acceptor(loop, adoptedListeningDescriptor), m_idleTimer(loop)
+    TcpServer::TcpServer(Core::EventLoop &loop, const int adoptedListeningDescriptor) : m_loop(loop), m_acceptor(loop, adoptedListeningDescriptor), m_idleTimer(loop)
     {
         // 监听器接手了外部交来的套接字，其余与按地址构造时一致
     }
@@ -131,8 +129,7 @@ namespace AsynGyanis::Net
                     // 不静默丢弃——症状同样是「在监听但连不上」，没有日志就无从下手。
                     // 描述符已经从套接字对象手里交出来了（它此后不再关闭它），这里不关就是漏一个 fd
                     Platform::FileDescriptor::close(acceptedFileDescriptor);
-                    LOG_ERROR_FMT("TcpServer: 没有可用的工作循环，已丢弃一条新连接，监听地址 {}",
-                                  m_acceptor.localAddress().toString());
+                    LOG_ERROR_FMT("TcpServer: 没有可用的工作循环，已丢弃一条新连接，监听地址 {}", m_acceptor.localAddress().toString());
                 }
                 continue;
             }
@@ -227,11 +224,10 @@ namespace AsynGyanis::Net
 
         // 读头的时限由看门狗掐：挂在 recv 上的协程不会被「对端不说话」叫醒，到点只能靠关掉套接字
         // 让它收口（与出站连接那一段同一处置）
-        const Core::DeadlineGuard<Core::AsyncSocket> deadlineGuard(m_loop, socket, kProxyProtocolHeaderTimeout,
-                                                                   "PROXY 协议头");
+        const Core::DeadlineGuard<Core::AsyncSocket> deadlineGuard(m_loop, socket, kProxyProtocolHeaderTimeout, "PROXY 协议头");
         try
         {
-            std::string buffered;
+            std::string           buffered;
             std::array<char, 256> chunk{};
 
             while (true)
@@ -243,25 +239,21 @@ namespace AsynGyanis::Net
                     {
                         LOG_WARN_FMT("TcpServer: 连接开头的字节不是合法的 PROXY 协议头，已收口这条连接，监听地址 {}"
                                      "（过去 {} 秒内另有 {} 条同类被压掉）",
-                                     m_acceptor.localAddress().toString(),
-                                     kProxyRejectionLogWindow.count(),
-                                     throttle.droppedCount());
+                                     m_acceptor.localAddress().toString(), kProxyRejectionLogWindow.count(), throttle.droppedCount());
                     }
                     co_return;
                 }
                 if (framing.totalLength.has_value() && buffered.size() >= *framing.totalLength)
                 {
-                    std::size_t consumedBytes = 0U;
-                    const std::optional<ProxyEndpoint> endpoint = parseProxyHeader(buffered, consumedBytes);
+                    std::size_t                        consumedBytes = 0U;
+                    const std::optional<ProxyEndpoint> endpoint      = parseProxyHeader(buffered, consumedBytes);
                     if (!endpoint.has_value())
                     {
                         if (auto &throttle = ASYN_LOG_THROTTLED(kProxyRejectionLogWindow); throttle.acquire())
                         {
                             LOG_WARN_FMT("TcpServer: PROXY 协议头不合规范，已收口这条连接，监听地址 {}"
                                          "（过去 {} 秒内另有 {} 条同类被压掉）",
-                                         m_acceptor.localAddress().toString(),
-                                         kProxyRejectionLogWindow.count(),
-                                         throttle.droppedCount());
+                                         m_acceptor.localAddress().toString(), kProxyRejectionLogWindow.count(), throttle.droppedCount());
                         }
                         co_return;
                     }
@@ -273,10 +265,7 @@ namespace AsynGyanis::Net
                         {
                             LOG_WARN_FMT("TcpServer: PROXY 头之后还有 {} 字节未被处理，已收口这条连接，监听地址 {}"
                                          "（过去 {} 秒内另有 {} 条同类被压掉）",
-                                         buffered.size() - consumedBytes,
-                                         m_acceptor.localAddress().toString(),
-                                         kProxyRejectionLogWindow.count(),
-                                         throttle.droppedCount());
+                                         buffered.size() - consumedBytes, m_acceptor.localAddress().toString(), kProxyRejectionLogWindow.count(), throttle.droppedCount());
                         }
                         co_return;
                     }
@@ -295,17 +284,14 @@ namespace AsynGyanis::Net
                 try
                 {
                     received = co_await socket.asyncReceive(chunk.data(), chunk.size());
-                }
-                catch (const std::exception &)
+                } catch (const std::exception &)
                 {
                     // 到点被看门狗关掉、或对端直接断开：两种都归「没把头说完」，收口这条连接
                     if (auto &throttle = ASYN_LOG_THROTTLED(kProxyRejectionLogWindow); throttle.acquire())
                     {
                         LOG_WARN_FMT("TcpServer: 没等到完整的 PROXY 协议头，已收口这条连接，监听地址 {}"
                                      "（过去 {} 秒内另有 {} 条同类被压掉）",
-                                     m_acceptor.localAddress().toString(),
-                                     kProxyRejectionLogWindow.count(),
-                                     throttle.droppedCount());
+                                     m_acceptor.localAddress().toString(), kProxyRejectionLogWindow.count(), throttle.droppedCount());
                     }
                     co_return;
                 }
@@ -315,23 +301,18 @@ namespace AsynGyanis::Net
                     {
                         LOG_WARN_FMT("TcpServer: 对端在发完 PROXY 协议头之前就收尾了，已收口这条连接，监听地址 {}"
                                      "（过去 {} 秒内另有 {} 条同类被压掉）",
-                                     m_acceptor.localAddress().toString(),
-                                     kProxyRejectionLogWindow.count(),
-                                     throttle.droppedCount());
+                                     m_acceptor.localAddress().toString(), kProxyRejectionLogWindow.count(), throttle.droppedCount());
                     }
                     co_return;
                 }
                 buffered.append(chunk.data(), static_cast<std::size_t>(received));
             }
-        }
-        catch (const std::exception &proxyException)
+        } catch (const std::exception &proxyException)
         {
             // 本协程由调度器独立恢复，异常逃逸等于在事件循环线程上抛异常，会把整个进程带崩；
             // 剩下的收口由 closeSocket 负责
-            LOG_ERROR_EXCEPTION(proxyException, "TcpServer: 读取 PROXY 协议头一轮失败，已收口这条连接。原因：{}",
-                                proxyException.what());
-        }
-        catch (...)
+            LOG_ERROR_EXCEPTION(proxyException, "TcpServer: 读取 PROXY 协议头一轮失败，已收口这条连接。原因：{}", proxyException.what());
+        } catch (...)
         {
             // 只有正文固定（不带原因）的这一条压重复；上面那条带 what() 的不压——它的价值就在
             // 每次可能不同的原因文本上，压掉等于把要查的那个原因一起丢了
@@ -339,8 +320,7 @@ namespace AsynGyanis::Net
             {
                 LOG_ERROR_FMT("TcpServer: 读取 PROXY 协议头一轮失败，已收口这条连接。原因：非标准库异常"
                               "（过去 {} 秒内另有 {} 条同类被压掉）",
-                              kProxyRejectionLogWindow.count(),
-                              throttle.droppedCount());
+                              kProxyRejectionLogWindow.count(), throttle.droppedCount());
             }
         }
     }
@@ -356,13 +336,12 @@ namespace AsynGyanis::Net
         // 关掉、或接手到的是一条没连上的描述符），而这条异常只关于这一条连接。让它穿出去会把接受循环
         // 一起带走——之后所有来源都不再有人接。adoptConnection 的契约也写明只返回真/假，不抛
         std::shared_ptr<Core::Connection> connection;
-        PerIpConnectionLimiter::Lease      perIpLease;
+        PerIpConnectionLimiter::Lease     perIpLease;
         try
         {
             if (m_perIpConnectionLimiter != nullptr)
             {
-                std::optional<PerIpConnectionLimiter::Lease> acquiredLease =
-                        m_perIpConnectionLimiter->tryAcquire(socket.remoteAddress().ip());
+                std::optional<PerIpConnectionLimiter::Lease> acquiredLease = m_perIpConnectionLimiter->tryAcquire(socket.remoteAddress().ip());
                 if (!acquiredLease.has_value())
                 {
                     return false;
@@ -399,13 +378,8 @@ namespace AsynGyanis::Net
         // 到达阈值才清扫：把 O(n) 的全表扫描摊到每 64 条连接一次，并把阈值推到「当前长度 + 一轮」
         if (m_connectionTasks.size() > m_nextTaskCleanupThreshold)
         {
-            std::erase_if(m_connectionTasks,
-                          [](const Core::Task<void> &finishedTask)
-                          {
-                              return finishedTask.isReady();
-                          });
-            m_nextTaskCleanupThreshold = std::max<std::size_t>(kFinishedTaskCleanupStride,
-                                                              m_connectionTasks.size() + kFinishedTaskCleanupStride);
+            std::erase_if(m_connectionTasks, [](const Core::Task<void> &finishedTask) { return finishedTask.isReady(); });
+            m_nextTaskCleanupThreshold = std::max<std::size_t>(kFinishedTaskCleanupStride, m_connectionTasks.size() + kFinishedTaskCleanupStride);
         }
         return true;
     }
@@ -452,9 +426,7 @@ namespace AsynGyanis::Net
                     {
                         // 日志带上对端地址与本轮的清扫节拍（实际超时 = 连接自己的时限 + 节拍，
                         // 因此节拍就是这条日志能给出的误差上界），便于从日志定位是哪条连接、误差多大
-                        LOG_INFO_FMT("TcpServer: 连接空闲超过截止时间，正在关闭。对端 {}，清扫节拍 {}ms",
-                                     connection->remoteAddress(),
-                                     m_idleCheckInterval.count());
+                        LOG_INFO_FMT("TcpServer: 连接空闲超过截止时间，正在关闭。对端 {}，清扫节拍 {}ms", connection->remoteAddress(), m_idleCheckInterval.count());
 
                         // 先请求停止再关描述符，与 ConnectionManager::shutdown() 同一顺序：
                         // 会话先看到取消信号，随后描述符被关会唤醒仍挂在 epoll 上的读写
@@ -466,8 +438,7 @@ namespace AsynGyanis::Net
                         connection->onIdleTimeoutClosed();
                     } catch (const std::exception &connectionException)
                     {
-                        LOG_ERROR_EXCEPTION(connectionException, "TcpServer: 关闭空闲超期连接失败，已跳过该连接并继续本轮。原因：{}",
-                                            connectionException.what());
+                        LOG_ERROR_EXCEPTION(connectionException, "TcpServer: 关闭空闲超期连接失败，已跳过该连接并继续本轮。原因：{}", connectionException.what());
                         continue;
                     } catch (...)
                     {
@@ -487,8 +458,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<> TcpServer::handleConnectionWithLease(std::shared_ptr<Core::Connection> connection,
-                                                     PerIpConnectionLimiter::Lease lease)
+    Core::Task<> TcpServer::handleConnectionWithLease(std::shared_ptr<Core::Connection> connection, PerIpConnectionLimiter::Lease lease)
     {
         co_await handleConnection(std::move(connection));
 
@@ -585,8 +555,7 @@ namespace AsynGyanis::Net
 
             // 兜底：期限已到仍未结束的连接由 shutdown() 强关，它们的会话协程会在下一次读写失败后退出
             const std::size_t remainingConnectionCount = m_connectionManager.activeCount();
-            LOG_INFO_FMT("TcpServer: 优雅关闭等待超时，已强制关闭剩余连接。等待时长 {}ms，剩余连接 {} 条",
-                         drainTimeout.count(), remainingConnectionCount);
+            LOG_INFO_FMT("TcpServer: 优雅关闭等待超时，已强制关闭剩余连接。等待时长 {}ms，剩余连接 {} 条", drainTimeout.count(), remainingConnectionCount);
             m_connectionManager.shutdown();
             co_return;
         } catch (const std::exception &drainException)

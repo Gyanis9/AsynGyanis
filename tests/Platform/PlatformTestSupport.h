@@ -71,8 +71,7 @@ namespace AsynGyanis::Platform::TestSupport
     {
 #if ASYN_PLATFORM_WIN32
         DWORD flags = 0;
-        return ::GetHandleInformation(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(fileDescriptor)), &flags) != 0
-               && (flags & HANDLE_FLAG_INHERIT) == 0;
+        return ::GetHandleInformation(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(fileDescriptor)), &flags) != 0 && (flags & HANDLE_FLAG_INHERIT) == 0;
 #else
         const int flags = ::fcntl(fileDescriptor, F_GETFD);
         return flags >= 0 && (flags & FD_CLOEXEC) != 0;

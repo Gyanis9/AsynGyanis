@@ -2,8 +2,8 @@
 // Windows 侧另测完成端口的探针重投记账会不会把日志写成噪声
 
 #include "Core/EventLoop/Epoll.h"
-#include "Platform/Platform.h"
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/Platform.h"
 
 #include "AllocationProbe.h"
 
@@ -12,8 +12,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <string>
 #include <vector>
@@ -65,7 +65,7 @@ namespace AsynGyanis::Core
                 // createPair 内部已设置非阻塞，这里保留兜底设置以防实现回退
                 Platform::FileDescriptor::setNonBlocking(fileDescriptor);
 #else
-                fileDescriptor      = static_cast<int>(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
+                fileDescriptor  = static_cast<int>(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
                 writeDescriptor = fileDescriptor;
 #endif
             }
@@ -97,14 +97,13 @@ namespace AsynGyanis::Core
                 const std::uint64_t value = 1;
 #if ASYN_PLATFORM_WIN32
                 // Windows 上描述符实为 socket，写入走 Winsock send
-                return ::send(writeDescriptor, reinterpret_cast<const char *>(&value), sizeof(value), 0)
-                       == static_cast<int>(sizeof(value));
+                return ::send(writeDescriptor, reinterpret_cast<const char *>(&value), sizeof(value), 0) == static_cast<int>(sizeof(value));
 #else
                 return ::write(writeDescriptor, &value, sizeof(value)) == static_cast<ssize_t>(sizeof(value));
 #endif
             }
         };
-    }
+    } // namespace
 
     /**
      * @brief 构造后立即持有可用的 epoll 句柄，而不是 kInvalidEpollHandle 占位
@@ -120,7 +119,7 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, MoveConstructorTransfersHandle)
     {
-        Epoll first;
+        Epoll                       first;
         const Platform::EpollHandle originalHandle = first.fileDescriptor();
 
         Epoll second(std::move(first));
@@ -133,8 +132,8 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, MoveAssignmentTransfersHandle)
     {
-        Epoll first;
-        Epoll second;
+        Epoll                       first;
+        Epoll                       second;
         const Platform::EpollHandle originalHandle = first.fileDescriptor();
 
         second = std::move(first);
@@ -147,7 +146,7 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, AddFileDescriptorDeliversReadableEvent)
     {
-        Epoll epoll;
+        Epoll       epoll;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -167,7 +166,7 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, DelFileDescriptorStopsEventDelivery)
     {
-        Epoll epoll;
+        Epoll       epoll;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -189,19 +188,17 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, RejectsInvalidAndDuplicateRegistrationWithoutHurtingTheFirst)
     {
-        Epoll backend;
+        Epoll       backend;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
-        EXPECT_FALSE(backend.addFileDescriptor(Platform::FileDescriptor::kInvalid, EPOLLIN, nullptr))
-                << "无效描述符被收下：注册表里会留一条永远等不到通知的记录";
+        EXPECT_FALSE(backend.addFileDescriptor(Platform::FileDescriptor::kInvalid, EPOLLIN, nullptr)) << "无效描述符被收下：注册表里会留一条永远等不到通知的记录";
 
         int firstSentinel = 1;
         ASSERT_TRUE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &firstSentinel));
 
         int secondSentinel = 2;
-        EXPECT_FALSE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &secondSentinel))
-                << "同一个描述符注册了两次都报成功：两份注册对象会在同一个就绪上互相覆盖";
+        EXPECT_FALSE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &secondSentinel)) << "同一个描述符注册了两次都报成功：两份注册对象会在同一个就绪上互相覆盖";
 
         // 被拒的那一次不许动第一次的归属：触发一次，事件仍要带着第一份用户数据回来
         ASSERT_TRUE(eventFd.trigger());
@@ -219,19 +216,17 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, OperationsOnUnregisteredDescriptorsReportFailure)
     {
-        Epoll backend;
+        Epoll       backend;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
         int sentinel = 1;
-        EXPECT_FALSE(backend.modFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &sentinel))
-                << "没注册过的描述符被当成改成功了";
+        EXPECT_FALSE(backend.modFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &sentinel)) << "没注册过的描述符被当成改成功了";
         EXPECT_FALSE(backend.delFileDescriptor(eventFd.fileDescriptor)) << "没注册过的描述符被当成注销成功了";
 
         ASSERT_TRUE(backend.addFileDescriptor(eventFd.fileDescriptor, EPOLLIN, &sentinel));
         ASSERT_TRUE(backend.delFileDescriptor(eventFd.fileDescriptor));
-        EXPECT_FALSE(backend.delFileDescriptor(eventFd.fileDescriptor))
-                << "第二次注销也报成功：注销的返回值就成了不可靠信号，重复摘除会被当成一次真实收尾";
+        EXPECT_FALSE(backend.delFileDescriptor(eventFd.fileDescriptor)) << "第二次注销也报成功：注销的返回值就成了不可靠信号，重复摘除会被当成一次真实收尾";
     }
 
     /**
@@ -242,7 +237,7 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, ClearedMaskStaysQuietAndRestoringItDeliversAgain)
     {
-        Epoll backend;
+        Epoll       backend;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -308,14 +303,12 @@ namespace AsynGyanis::Core
         {
             if (histogram[bucket] != 0)
             {
-                histogramText += " " + std::to_string(bucket * TestSupport::kAllocationHistogramBucketBytes) + "B×"
-                                 + std::to_string(histogram[bucket]);
+                histogramText += " " + std::to_string(bucket * TestSupport::kAllocationHistogramBucketBytes) + "B×" + std::to_string(histogram[bucket]);
             }
         }
 
-        EXPECT_EQ(profile.totalAllocations, 0U)
-                << "稳态每轮 wait() 付了 " << (profile.totalAllocations / TestSupport::kMeasurementIterations)
-                << " 次分配（一千轮共 " << profile.totalAllocations << " 次，大小分布:" << histogramText << "）";
+        EXPECT_EQ(profile.totalAllocations, 0U) << "稳态每轮 wait() 付了 " << (profile.totalAllocations / TestSupport::kMeasurementIterations) << " 次分配（一千轮共 "
+                                                << profile.totalAllocations << " 次，大小分布:" << histogramText << "）";
 
         for (auto &eventFd: eventFds)
         {
@@ -333,13 +326,13 @@ namespace AsynGyanis::Core
     TEST(Epoll, IdleRegistrationSurvivesTicketWraparound)
     {
         // 8 条「挂着不动」的注册：整个用例期间都不触发，所以票据一直留在途、且越来越旧
-        constexpr std::size_t kIdleDescriptorCount   = 8;
+        constexpr std::size_t kIdleDescriptorCount = 8;
         // 256 条每轮冲刷的注册：每轮两张新票据，几千张之后必然越过一整圈槽位与旧票据撞格
         constexpr std::size_t kActiveDescriptorCount = 256;
         constexpr std::size_t kRoundCount            = 24;
 
-        Epoll backend;
-        std::array<TestEventFd, kIdleDescriptorCount> idleFds;
+        Epoll                                           backend;
+        std::array<TestEventFd, kIdleDescriptorCount>   idleFds;
         std::array<TestEventFd, kActiveDescriptorCount> activeFds;
         for (auto &idleFd: idleFds)
         {
@@ -376,19 +369,14 @@ namespace AsynGyanis::Core
             {
                 const auto *const slot = static_cast<const TestEventFd *>(event.data.ptr);
                 // 只在空闲那批里比对地址（活跃批的指针也在这里出现，跨数组相减是未定义的）
-                const auto idleIterator = std::find_if(idleFds.begin(), idleFds.end(),
-                                                       [slot](const TestEventFd &candidate)
-                                                       {
-                                                           return &candidate == slot;
-                                                       });
+                const auto idleIterator = std::find_if(idleFds.begin(), idleFds.end(), [slot](const TestEventFd &candidate) { return &candidate == slot; });
                 if (idleIterator != idleFds.end())
                 {
                     ++idleReportedCount;
                 }
             }
         }
-        EXPECT_GE(idleReportedCount, kIdleDescriptorCount)
-                << "空闲注册被冲刷的票据挤掉了：那份在途轮询的归属已经丢了";
+        EXPECT_GE(idleReportedCount, kIdleDescriptorCount) << "空闲注册被冲刷的票据挤掉了：那份在途轮询的归属已经丢了";
 
         for (auto &idleFd: idleFds)
         {
@@ -412,7 +400,7 @@ namespace AsynGyanis::Core
         constexpr std::size_t kRegisteredDescriptorCount = 200;
         constexpr std::size_t kRoundCount                = 40;
 
-        Epoll backend;
+        Epoll                                               backend;
         std::array<TestEventFd, kRegisteredDescriptorCount> eventFds;
         for (auto &eventFd: eventFds)
         {
@@ -422,7 +410,7 @@ namespace AsynGyanis::Core
         }
 
         std::array<std::size_t, kRegisteredDescriptorCount> reportedCounts{};
-        const auto collectReports = [&backend, &eventFds, &reportedCounts]()
+        const auto                                          collectReports = [&backend, &eventFds, &reportedCounts]()
         {
             for (const auto &event: backend.wait(500))
             {
@@ -454,8 +442,7 @@ namespace AsynGyanis::Core
 
         for (std::size_t index = 0; index < reportedCounts.size(); ++index)
         {
-            EXPECT_GE(reportedCounts[index], kRoundCount)
-                    << "第 " << index << " 号描述符只报了 " << reportedCounts[index] << " 次，冲刷中被摘丢了";
+            EXPECT_GE(reportedCounts[index], kRoundCount) << "第 " << index << " 号描述符只报了 " << reportedCounts[index] << " 次，冲刷中被摘丢了";
         }
 
         for (auto &eventFd: eventFds)
@@ -473,7 +460,7 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, CannotReRegisterAnOpenDescriptorAfterDelete)
     {
-        Epoll backend;
+        Epoll       backend;
         TestEventFd drained;
         TestEventFd pending;
         ASSERT_GE(drained.fileDescriptor, 0);
@@ -484,26 +471,23 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(backend.addFileDescriptor(drained.fileDescriptor, EPOLLIN, &drained));
         ASSERT_FALSE(backend.wait(200).empty()) << "前提不成立：可读的描述符没在首轮报出就绪";
         ASSERT_TRUE(backend.delFileDescriptor(drained.fileDescriptor));
-        EXPECT_FALSE(backend.addFileDescriptor(drained.fileDescriptor, EPOLLIN, &drained))
-                << "探针跑完一轮之后仍不该能把同一个活描述符再注册回来";
+        EXPECT_FALSE(backend.addFileDescriptor(drained.fileDescriptor, EPOLLIN, &drained)) << "探针跑完一轮之后仍不该能把同一个活描述符再注册回来";
 
         // 时序二：注销时取消完成还压在队列里
         ASSERT_TRUE(backend.addFileDescriptor(pending.fileDescriptor, EPOLLIN, &pending));
         ASSERT_TRUE(backend.delFileDescriptor(pending.fileDescriptor));
-        EXPECT_FALSE(backend.addFileDescriptor(pending.fileDescriptor, EPOLLIN, &pending))
-                << "取消完成尚未取回时再注册应当同样被拒";
+        EXPECT_FALSE(backend.addFileDescriptor(pending.fileDescriptor, EPOLLIN, &pending)) << "取消完成尚未取回时再注册应当同样被拒";
 
         // 时序三：把那一轮等待做完（取消完成已被收掉）之后再试
         static_cast<void>(backend.wait(200));
-        EXPECT_FALSE(backend.addFileDescriptor(pending.fileDescriptor, EPOLLIN, &pending))
-                << "收掉取消完成之后就注册得回来了——那这条限制就不是 Windows 的硬边界，文档要改";
+        EXPECT_FALSE(backend.addFileDescriptor(pending.fileDescriptor, EPOLLIN, &pending)) << "收掉取消完成之后就注册得回来了——那这条限制就不是 Windows 的硬边界，文档要改";
 
         // 关掉之后新句柄复用同一个号是另一回事（下面那条 POSIX 用例钉的就是它），这里先把句柄还掉
         Platform::FileDescriptor::close(drained.fileDescriptor);
         Platform::FileDescriptor::close(pending.fileDescriptor);
-        drained.fileDescriptor = Platform::FileDescriptor::kInvalid;
+        drained.fileDescriptor  = Platform::FileDescriptor::kInvalid;
         drained.writeDescriptor = Platform::FileDescriptor::kInvalid;
-        pending.fileDescriptor = Platform::FileDescriptor::kInvalid;
+        pending.fileDescriptor  = Platform::FileDescriptor::kInvalid;
         pending.writeDescriptor = Platform::FileDescriptor::kInvalid;
     }
 #endif
@@ -533,8 +517,7 @@ namespace AsynGyanis::Core
         ASSERT_EQ(::dup2(freshEventFd.writeDescriptor, reusedDescriptorNumber), reusedDescriptorNumber);
 
         int secondSentinel = 2;
-        EXPECT_TRUE(epoll.addFileDescriptor(reusedDescriptorNumber, EPOLLIN, &secondSentinel))
-                << "注销后同一个描述符号不能再注册：描述符键没有当场释放";
+        EXPECT_TRUE(epoll.addFileDescriptor(reusedDescriptorNumber, EPOLLIN, &secondSentinel)) << "注销后同一个描述符号不能再注册：描述符键没有当场释放";
 
         // 新注册必须真的生效：让这个号变成可读，事件要带新挂的用户数据
         ASSERT_TRUE(freshEventFd.trigger());
@@ -564,7 +547,7 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, ModFileDescriptorChangesEventMask)
     {
-        Epoll epoll;
+        Epoll       epoll;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -583,7 +566,7 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, MultipleFileDescriptorsReportTriggeredOne)
     {
-        Epoll epoll;
+        Epoll       epoll;
         TestEventFd firstEventFd;
         TestEventFd secondEventFd;
         ASSERT_GE(firstEventFd.fileDescriptor, 0);
@@ -631,8 +614,7 @@ namespace AsynGyanis::Core
         rlimit descriptorLimit{};
         if (getrlimit(RLIMIT_NOFILE, &descriptorLimit) == 0 && descriptorLimit.rlim_cur < kRequiredDescriptors)
         {
-            GTEST_SKIP() << "本进程只允许 " << descriptorLimit.rlim_cur
-                         << " 个描述符，凑不出「连续两次推满半容量」的高负载现场";
+            GTEST_SKIP() << "本进程只允许 " << descriptorLimit.rlim_cur << " 个描述符，凑不出「连续两次推满半容量」的高负载现场";
         }
 
         TestEventFd trigger;
@@ -641,7 +623,7 @@ namespace AsynGyanis::Core
         // 因此这一写让全部副本同时可读，而只要不去读它就一直是可读的（水平触发会反复上报）
         ASSERT_TRUE(trigger.trigger());
 
-        Epoll         backend;
+        Epoll            backend;
         std::vector<int> descriptors;
         descriptors.reserve(1024);
         for (int index = 0; index < 1024; ++index)
@@ -649,8 +631,7 @@ namespace AsynGyanis::Core
             const int duplicated = ::dup(trigger.fileDescriptor);
             ASSERT_GE(duplicated, 0) << "dup 到第 " << index << " 次就失败了，环境句柄数不够";
             descriptors.push_back(duplicated);
-            ASSERT_TRUE(backend.addFileDescriptor(duplicated, EPOLLIN,
-                                                  reinterpret_cast<void *>(static_cast<std::uintptr_t>(index + 1U))));
+            ASSERT_TRUE(backend.addFileDescriptor(duplicated, EPOLLIN, reinterpret_cast<void *>(static_cast<std::uintptr_t>(index + 1U))));
         }
 
         const auto firstBatch = backend.wait(0);
@@ -659,8 +640,7 @@ namespace AsynGyanis::Core
         ASSERT_EQ(secondBatch.size(), 1024U) << "水平触发下这批描述符仍就绪，第二次也该取满";
 
         // 同址 = 上一个视图没被换掉；旧实现在这里会因为第二次翻倍而拿到不同的基址
-        EXPECT_EQ(firstBatch.data(), secondBatch.data())
-                << "wait() 换了落地缓冲：上一次交出去的视图已经悬垂，事件循环跨 handleEvents() 持有它就是野指针读";
+        EXPECT_EQ(firstBatch.data(), secondBatch.data()) << "wait() 换了落地缓冲：上一次交出去的视图已经悬垂，事件循环跨 handleEvents() 持有它就是野指针读";
 
         // 再回读一次上一个视图的内容（ASan 下这是最直接的悬垂读探针）
         EXPECT_NE(firstBatch[0].data.ptr, nullptr) << "回读上一个视图的内容应当仍是本次注册的哨兵";
@@ -688,11 +668,9 @@ namespace AsynGyanis::Core
         constexpr std::size_t kMaximumEventsPerWait = 1024;
 
         rlimit descriptorLimit{};
-        if (getrlimit(RLIMIT_NOFILE, &descriptorLimit) != 0
-            || descriptorLimit.rlim_cur < kTriggeredDescriptorCount + 256)
+        if (getrlimit(RLIMIT_NOFILE, &descriptorLimit) != 0 || descriptorLimit.rlim_cur < kTriggeredDescriptorCount + 256)
         {
-            GTEST_SKIP() << "本进程只允许 " << descriptorLimit.rlim_cur
-                         << " 个描述符，凑不出「超过单轮上限的一批就绪事件」";
+            GTEST_SKIP() << "本进程只允许 " << descriptorLimit.rlim_cur << " 个描述符，凑不出「超过单轮上限的一批就绪事件」";
         }
 
         TestEventFd trigger;
@@ -700,7 +678,7 @@ namespace AsynGyanis::Core
         // 写一次计数：dup 出来的副本共享同一个 open file description，因此全部副本同时可读
         ASSERT_TRUE(trigger.trigger());
 
-        Epoll          backend;
+        Epoll            backend;
         std::vector<int> descriptors;
         descriptors.reserve(kTriggeredDescriptorCount);
         for (int index = 0; index < kTriggeredDescriptorCount; ++index)
@@ -708,19 +686,16 @@ namespace AsynGyanis::Core
             const int duplicated = ::dup(trigger.fileDescriptor);
             ASSERT_GE(duplicated, 0) << "dup 到第 " << index << " 次失败，环境句柄数不够";
             descriptors.push_back(duplicated);
-            ASSERT_TRUE(backend.addFileDescriptor(duplicated, EPOLLIN,
-                                                  reinterpret_cast<void *>(static_cast<std::uintptr_t>(index + 1U))));
+            ASSERT_TRUE(backend.addFileDescriptor(duplicated, EPOLLIN, reinterpret_cast<void *>(static_cast<std::uintptr_t>(index + 1U))));
         }
 
         const auto firstBatch = backend.wait(0);
-        EXPECT_EQ(firstBatch.size(), kMaximumEventsPerWait)
-                << "单轮交出 " << firstBatch.size() << " 条：要么没按 " << kMaximumEventsPerWait
-                << " 的上限截断，要么没把就绪的描述符取满";
+        EXPECT_EQ(firstBatch.size(), kMaximumEventsPerWait) << "单轮交出 " << firstBatch.size() << " 条：要么没按 " << kMaximumEventsPerWait
+                                                            << " 的上限截断，要么没把就绪的描述符取满";
 
         const auto secondBatch = backend.wait(0);
         EXPECT_GE(secondBatch.size(), static_cast<std::size_t>(kTriggeredDescriptorCount) - kMaximumEventsPerWait)
-                << "首轮取满之后，剩下的 " << kTriggeredDescriptorCount - kMaximumEventsPerWait
-                << " 条至少要留到下一次交付，一条都不能丢";
+                << "首轮取满之后，剩下的 " << kTriggeredDescriptorCount - kMaximumEventsPerWait << " 条至少要留到下一次交付，一条都不能丢";
 
         for (const int descriptor: descriptors)
         {
@@ -776,9 +751,8 @@ namespace AsynGyanis::Core
                 isWritableReported = true;
             }
         }
-        EXPECT_TRUE(isWritableReported)
-                << "无限等待只被兜底的 timerfd 叫醒，没有交付刚改成的可写位："
-                   "那条重投还悬在提交队列里，没在入睡前交给内核";
+        EXPECT_TRUE(isWritableReported) << "无限等待只被兜底的 timerfd 叫醒，没有交付刚改成的可写位："
+                                           "那条重投还悬在提交队列里，没在入睡前交给内核";
 
         static_cast<void>(backend.delFileDescriptor(eventFd.fileDescriptor));
         static_cast<void>(backend.delFileDescriptor(timerDescriptor));
@@ -803,11 +777,9 @@ namespace AsynGyanis::Core
 
         // 两张表都要挂得上描述符（读写两端各一个号），不够就跳过而不是把用例做成假绿
         rlimit descriptorLimit{};
-        if (getrlimit(RLIMIT_NOFILE, &descriptorLimit) != 0
-            || descriptorLimit.rlim_cur < kLargeRegistrationCount * 2 + 64)
+        if (getrlimit(RLIMIT_NOFILE, &descriptorLimit) != 0 || descriptorLimit.rlim_cur < kLargeRegistrationCount * 2 + 64)
         {
-            GTEST_SKIP() << "本进程只允许 " << descriptorLimit.rlim_cur
-                         << " 个描述符，凑不出「大表显著大于小表」的对照现场";
+            GTEST_SKIP() << "本进程只允许 " << descriptorLimit.rlim_cur << " 个描述符，凑不出「大表显著大于小表」的对照现场";
         }
 
         const auto measureEmptyWaitCost = [](const std::size_t registrationCount) -> std::int64_t
@@ -842,10 +814,8 @@ namespace AsynGyanis::Core
                 {
                     static_cast<void>(backend.wait(0));
                 }
-                const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                             std::chrono::steady_clock::now() - beginTime)
-                                             .count();
-                bestNanoseconds = std::min(bestNanoseconds, elapsed / kMeasurementIterations);
+                const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - beginTime).count();
+                bestNanoseconds    = std::min(bestNanoseconds, elapsed / kMeasurementIterations);
             }
 
             for (const int descriptor: descriptors)
@@ -861,13 +831,10 @@ namespace AsynGyanis::Core
         ASSERT_GE(smallCost, 0) << "挂不上 " << kSmallRegistrationCount << " 个描述符，环境不允许";
         ASSERT_GE(largeCost, 0) << "挂不上 " << kLargeRegistrationCount << " 个描述符，环境不允许";
 
-        std::printf("PROBE wait0_ns small=%lld large=%lld\n",
-                    static_cast<long long>(smallCost), static_cast<long long>(largeCost));
+        std::printf("PROBE wait0_ns small=%lld large=%lld\n", static_cast<long long>(smallCost), static_cast<long long>(largeCost));
 
-        EXPECT_LT(largeCost, smallCost * kMaximumCostRatio)
-                << "空等待的固定开销随在册条数增长：" << kSmallRegistrationCount << " 条 " << smallCost
-                << " 纳秒，" << kLargeRegistrationCount << " 条 " << largeCost
-                << " 纳秒。每一次等待都不许按在册条数走一遍登记表";
+        EXPECT_LT(largeCost, smallCost * kMaximumCostRatio) << "空等待的固定开销随在册条数增长：" << kSmallRegistrationCount << " 条 " << smallCost << " 纳秒，"
+                                                            << kLargeRegistrationCount << " 条 " << largeCost << " 纳秒。每一次等待都不许按在册条数走一遍登记表";
     }
 #endif
 
@@ -928,9 +895,9 @@ namespace AsynGyanis::Core
             }
 
         private:
-            std::atomic<bool>          m_isRecording{false}; ///< 是否仍在记录（默认关，只有作用域内开着）
-            mutable std::mutex         m_mutex{};           ///< 保护原文列表
-            std::vector<std::string>   m_messages{};        ///< 已记下的告警原文
+            std::atomic<bool>        m_isRecording{false}; ///< 是否仍在记录（默认关，只有作用域内开着）
+            mutable std::mutex       m_mutex{};            ///< 保护原文列表
+            std::vector<std::string> m_messages{};         ///< 已记下的告警原文
         };
 
         /**
@@ -943,8 +910,7 @@ namespace AsynGyanis::Core
              * @brief 用给定账本构造 Sink
              * @param ledger 事件账本（进程内唯一的那份，由 ScopedWarningCapture 开关）
              */
-            explicit WarningRecordingSink(std::shared_ptr<WarningLedger> ledger) :
-                m_ledger(std::move(ledger))
+            explicit WarningRecordingSink(std::shared_ptr<WarningLedger> ledger) : m_ledger(std::move(ledger))
             {
             }
 
@@ -976,8 +942,7 @@ namespace AsynGyanis::Core
         class ScopedWarningCapture
         {
         public:
-            ScopedWarningCapture() :
-                m_ledger(processLedger())
+            ScopedWarningCapture() : m_ledger(processLedger())
             {
                 m_ledger->begin();
             }
@@ -1012,8 +977,7 @@ namespace AsynGyanis::Core
                 static const std::shared_ptr<WarningLedger> kLedger = []
                 {
                     auto ledger = std::make_shared<WarningLedger>();
-                    Base::LoggerRegistry::instance().getRootLogger().addSink(
-                            std::make_unique<WarningRecordingSink>(ledger));
+                    Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<WarningRecordingSink>(ledger));
                     return ledger;
                 }();
                 return kLedger;
@@ -1086,54 +1050,50 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, RejectsConcurrentUseFromAnotherThread)
     {
-        Epoll backend;
+        Epoll             backend;
         std::atomic<bool> isStopping{false};
         std::atomic<int>  rejectionCount{0};
 
         // 占位的一路：wait(1) 每次都在内核里停约 1 毫秒，占空比接近九成
-        std::thread holder{
-                [&backend, &isStopping, &rejectionCount]
-                {
-                    // 线程入口必须接住：被拒的一方如果让它抛出，整个测试进程当场就没（terminate）
-                    try
-                    {
-                        while (!isStopping.load(std::memory_order_acquire))
-                        {
-                            static_cast<void>(backend.wait(1));
-                        }
-                    } catch (const Base::LogicException &)
-                    {
-                        ++rejectionCount;
-                    }
-                }};
+        std::thread holder{[&backend, &isStopping, &rejectionCount]
+                           {
+                               // 线程入口必须接住：被拒的一方如果让它抛出，整个测试进程当场就没（terminate）
+                               try
+                               {
+                                   while (!isStopping.load(std::memory_order_acquire))
+                                   {
+                                       static_cast<void>(backend.wait(1));
+                                   }
+                               } catch (const Base::LogicException &)
+                               {
+                                   ++rejectionCount;
+                               }
+                           }};
 
         // 探路的一路：拿「未注册的描述符只回 false」这个无副作用入口反复敲门，被拒就记账
-        std::thread poker{
-                [&backend, &isStopping, &rejectionCount]
-                {
-                    while (!isStopping.load(std::memory_order_acquire))
-                    {
-                        try
-                        {
-                            static_cast<void>(backend.delFileDescriptor(0x7FFF));
-                        } catch (const Base::LogicException &)
-                        {
-                            ++rejectionCount;
-                        }
-                    }
-                }};
+        std::thread poker{[&backend, &isStopping, &rejectionCount]
+                          {
+                              while (!isStopping.load(std::memory_order_acquire))
+                              {
+                                  try
+                                  {
+                                      static_cast<void>(backend.delFileDescriptor(0x7FFF));
+                                  } catch (const Base::LogicException &)
+                                  {
+                                      ++rejectionCount;
+                                  }
+                              }
+                          }};
 
         std::this_thread::sleep_for(std::chrono::milliseconds{500});
         isStopping.store(true, std::memory_order_release);
         holder.join();
         poker.join();
 
-        EXPECT_GT(rejectionCount.load(), 0)
-                << "并发使用没被拒：注册表与待办表都是无锁容器，两个线程同时进只会把堆写坏，"
-                   "而报错位置离肇因隔着几层（实测报成另一处 vector 的 negative-size-param）";
+        EXPECT_GT(rejectionCount.load(), 0) << "并发使用没被拒：注册表与待办表都是无锁容器，两个线程同时进只会把堆写坏，"
+                                               "而报错位置离肇因隔着几层（实测报成另一处 vector 的 negative-size-param）";
 
-        EXPECT_NO_THROW(static_cast<void>(backend.delFileDescriptor(0x7FFF)))
-                << "顺序交接也被拒了：本检查只该管「同时在场」";
+        EXPECT_NO_THROW(static_cast<void>(backend.delFileDescriptor(0x7FFF))) << "顺序交接也被拒了：本检查只该管「同时在场」";
     }
 #endif
 } // namespace AsynGyanis::Core

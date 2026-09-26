@@ -36,12 +36,12 @@ namespace AsynGyanis::Net
         {
             SSL_CTX *const rawContext = SSL_CTX_new(TLS_server_method());
             return {rawContext, [](SSL_CTX *context)
-            {
-                if (context != nullptr)
-                {
-                    SSL_CTX_free(context);
-                }
-            }};
+                    {
+                        if (context != nullptr)
+                        {
+                            SSL_CTX_free(context);
+                        }
+                    }};
         }
 
         /**
@@ -55,8 +55,7 @@ namespace AsynGyanis::Net
         std::vector<std::uint8_t> makeClientInitial(const std::uint8_t clientChosenDestinationId = 0xA5)
         {
             std::vector<std::uint8_t> datagram{
-                    0xC3, 0x00, 0x00, 0x00, 0x01,
-                    static_cast<std::uint8_t>(kClientDestinationConnectionIdLength),
+                    0xC3, 0x00, 0x00, 0x00, 0x01, static_cast<std::uint8_t>(kClientDestinationConnectionIdLength),
             };
             datagram.reserve(30U);
             for (std::size_t byteIndex = 0; byteIndex < kClientDestinationConnectionIdLength; ++byteIndex)
@@ -69,8 +68,8 @@ namespace AsynGyanis::Net
             {
                 datagram.push_back(static_cast<std::uint8_t>(0x10 + byteIndex));
             }
-            datagram.push_back(0x00);  // Token 长度
-            datagram.push_back(0x05);  // Length：包号 4 字节 + 载荷 1 字节
+            datagram.push_back(0x00); // Token 长度
+            datagram.push_back(0x05); // Length：包号 4 字节 + 载荷 1 字节
             datagram.resize(datagram.size() + 5U, 0x00);
             return datagram;
         }
@@ -86,8 +85,7 @@ namespace AsynGyanis::Net
             QuicConnection::Configuration configuration;
             configuration.tlsContext   = &tlsContext;
             configuration.idleTimeout  = kIdleTimeout;
-            configuration.sendDatagram = [&sentDatagramLengths](const Platform::SocketAddress &, const std::uint8_t *,
-                                                               const std::size_t length) -> Core::Task<bool>
+            configuration.sendDatagram = [&sentDatagramLengths](const Platform::SocketAddress &, const std::uint8_t *, const std::size_t length) -> Core::Task<bool>
             {
                 sentDatagramLengths.push_back(length);
                 co_return true;
@@ -118,10 +116,8 @@ namespace AsynGyanis::Net
         {
         public:
             explicit AcceptedConnectionFixture(const std::uint8_t clientChosenDestinationId = 0xA5) :
-                m_tlsContext(makeBareTlsContext()),
-                m_configuration(makeConfiguration(*m_tlsContext, m_sentDatagramLengths)),
-                m_connection(QuicConnection::accept(m_configuration, makeLoopbackAddress(4433), makeLoopbackAddress(55000),
-                                                    makeClientInitial(clientChosenDestinationId)))
+                m_tlsContext(makeBareTlsContext()), m_configuration(makeConfiguration(*m_tlsContext, m_sentDatagramLengths)),
+                m_connection(QuicConnection::accept(m_configuration, makeLoopbackAddress(4433), makeLoopbackAddress(55000), makeClientInitial(clientChosenDestinationId)))
             {
             }
 
@@ -156,8 +152,7 @@ namespace AsynGyanis::Net
              */
             void deliver(const std::vector<std::uint8_t> &datagram)
             {
-                const Core::Task<> handlingTask = m_connection->handleDatagram(makeLoopbackAddress(55000),
-                                                                               std::span<const std::uint8_t>(datagram));
+                const Core::Task<> handlingTask = m_connection->handleDatagram(makeLoopbackAddress(55000), std::span<const std::uint8_t>(datagram));
                 handlingTask.handle().resume();
                 EXPECT_TRUE(handlingTask.handle().done()) << "handleDatagram 没跑完";
             }
@@ -178,30 +173,28 @@ namespace AsynGyanis::Net
 
     TEST(QuicConnection, DoesNotBuildAStateMachineForUnacceptableDatagrams)
     {
-        auto                       tlsContext = makeBareTlsContext();
-        std::vector<std::size_t>   sentLengths;
+        auto                                tlsContext = makeBareTlsContext();
+        std::vector<std::size_t>            sentLengths;
         const QuicConnection::Configuration configuration = makeConfiguration(*tlsContext, sentLengths);
 
         // 一条都不该被接受：解不出头部、不是长头、版本不对、类型是 Retry/Handshake/0-RTT、
         // 标识长度越过 v1 上限、Length 与实际字节数不符
-        const std::vector<std::pair<const char *, std::vector<std::uint8_t>>> rejectedCases =
-                {
-                        {"空数据报", {}},
-                        {"只有首字节与版本", {0xC3, 0x00, 0x00, 0x00, 0x01}},
-                        {"固定位为 0 的长头", {0x83, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}},
-                        {"版本 2", {0xC3, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00}},
-                        {"版本为 0 的协商报文", {0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-                        {"Retry 类型", {0xCD, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}},
-                };
+        const std::vector<std::pair<const char *, std::vector<std::uint8_t>>> rejectedCases = {
+                {"空数据报", {}},
+                {"只有首字节与版本", {0xC3, 0x00, 0x00, 0x00, 0x01}},
+                {"固定位为 0 的长头", {0x83, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}},
+                {"版本 2", {0xC3, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00}},
+                {"版本为 0 的协商报文", {0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+                {"Retry 类型", {0xCD, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}},
+        };
         for (const auto &[caseName, datagram]: rejectedCases)
         {
-            EXPECT_EQ(QuicConnection::accept(configuration, makeLoopbackAddress(4433), makeLoopbackAddress(55000), datagram), nullptr)
-                    << "被拒的那条没生效：" << caseName;
+            EXPECT_EQ(QuicConnection::accept(configuration, makeLoopbackAddress(4433), makeLoopbackAddress(55000), datagram), nullptr) << "被拒的那条没生效：" << caseName;
         }
 
         // 头部形状合法、但 Length 字段与实际字节数不符的两条：一条声明得比实收长，一条声明为 0
         std::vector<std::uint8_t> overClaiming = makeClientInitial();
-        overClaiming.back()                     = 0x7F;
+        overClaiming.back()                    = 0x7F;
         overClaiming.resize(overClaiming.size() - 3U);
         EXPECT_EQ(QuicConnection::accept(configuration, makeLoopbackAddress(4433), makeLoopbackAddress(55000), overClaiming), nullptr)
                 << "Length 超出实收字节的数据报被当成了合法 Initial";
@@ -223,8 +216,7 @@ namespace AsynGyanis::Net
         // 缺 TLS 上下文：连会话都建不起来，不该往下走
         QuicConnection::Configuration missingTlsContext = makeConfiguration(*tlsContext, sentLengths);
         missingTlsContext.tlsContext                    = nullptr;
-        EXPECT_EQ(QuicConnection::accept(missingTlsContext, makeLoopbackAddress(4433), makeLoopbackAddress(55000), makeClientInitial()),
-                  nullptr);
+        EXPECT_EQ(QuicConnection::accept(missingTlsContext, makeLoopbackAddress(4433), makeLoopbackAddress(55000), makeClientInitial()), nullptr);
 
         // 缺报文出口：握手字节能解出去却没有地方写，等价于建一条必然卡死的连接
         QuicConnection::Configuration missingSender = makeConfiguration(*tlsContext, sentLengths);
@@ -270,10 +262,9 @@ namespace AsynGyanis::Net
         // 后面的入口都挂在「对端发起的那条流」上：这类流不需要本端有额度就能记账
         constexpr std::int64_t peerInitiatedBidirectionalStreamId = 0;
 
-        const std::string payload = "hello";
+        const std::string                   payload = "hello";
         const std::span<const std::uint8_t> payloadBytes(reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size());
-        EXPECT_EQ(connection.queueStreamData(peerInitiatedBidirectionalStreamId, payloadBytes, false), payload.size())
-                << "正文没被收下，后面的待刷判定就全是空转";
+        EXPECT_EQ(connection.queueStreamData(peerInitiatedBidirectionalStreamId, payloadBytes, false), payload.size()) << "正文没被收下，后面的待刷判定就全是空转";
         EXPECT_TRUE(connection.needsFlush()) << "排进去的正文没被记成待发";
 
         // flush 之后标记归零：否则服务端的定时拍会每拍都为这条连接空跑一次
@@ -320,7 +311,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.accepted());
         QuicConnection &connection = fixture.connection();
 
-        const std::string payload = "hello";
+        const std::string                   payload = "hello";
         const std::span<const std::uint8_t> payloadBytes(reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size());
         static_cast<void>(connection.queueStreamData(0, payloadBytes, false));
         fixture.flushUntilSettled();
@@ -345,8 +336,7 @@ namespace AsynGyanis::Net
         // 服务端的定时拍只在「到期时刻已过」时才去问这条连接该不该收口，因此一个没有截止时刻的连接
         // 等同于永远不被检查——它可能一个字节都没发出去过，也就没有任何重传定时器会来补这一刀
         const auto expiry = connection.nextExpiry();
-        ASSERT_NE(expiry, (std::chrono::steady_clock::time_point::max()))
-                << "新建连接没有截止时刻：只发过一份报文的对端可以把这条表项永久留在路由表里";
+        ASSERT_NE(expiry, (std::chrono::steady_clock::time_point::max())) << "新建连接没有截止时刻：只发过一份报文的对端可以把这条表项永久留在路由表里";
         EXPECT_GE(expiry, now + kIdleTimeout - std::chrono::seconds{1}) << "到期时刻比宣告的空闲超时早到太多";
         EXPECT_LE(expiry, now + kIdleTimeout + std::chrono::seconds{1}) << "到期时刻比宣告的空闲超时晚到太多";
     }

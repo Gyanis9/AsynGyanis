@@ -29,22 +29,18 @@ namespace AsynGyanis::Base
         constexpr auto kFixedTimestamp = "2026-09-10 12:34:56.789";
         /// 事件携带的固定时刻：由上面那段本地挂钟折出，格式化器渲染回去即得同一文本，故断言与时区无关
         const TimestampMoment kFixedTimestampMoment = TestSupport::makeLocalMoment(2026, 9, 10, 12, 34, 56, 789);
-        constexpr auto kThreadId       = "tid-778899";
-        constexpr auto kLoggerName     = "formatter_logger";
-        constexpr auto kSourceFile     = "formatter_fixture.cpp";
-        constexpr auto kSourceFunction = "testFunction";
-        constexpr int  kSourceLine     = 4271;
+        constexpr auto        kThreadId             = "tid-778899";
+        constexpr auto        kLoggerName           = "formatter_logger";
+        constexpr auto        kSourceFile           = "formatter_fixture.cpp";
+        constexpr auto        kSourceFunction       = "testFunction";
+        constexpr int         kSourceLine           = 4271;
 
         /**
          * @brief 构造字段齐备、各字段取值固定的日志事件，便于逐字段断言版式
          */
         LogEvent makeEvent(const LogLevel level, std::string message = "formatter message")
         {
-            return {
-                    level, kFixedTimestampMoment, kThreadId,
-                    SourceLocation(kSourceFile, kSourceLine, kSourceFunction),
-                    kLoggerName, std::move(message)
-            };
+            return {level, kFixedTimestampMoment, kThreadId, SourceLocation(kSourceFile, kSourceLine, kSourceFunction), kLoggerName, std::move(message)};
         }
 
         /**
@@ -133,14 +129,10 @@ namespace AsynGyanis::Base
 
     TEST(DefaultFormatter, EverySeverityRendersItsOwnPaddedToken)
     {
-        DefaultFormatter                                     formatter;
-        const std::vector<std::pair<LogLevel, std::string> > levelTokens = {
-                {LogLevel::Trace, "TRACE"},
-                {LogLevel::Debug, "DEBUG"},
-                {LogLevel::Info, "INFO "},
-                {LogLevel::Warn, "WARN "},
-                {LogLevel::Error, "ERROR"},
-                {LogLevel::Fatal, "FATAL"},
+        DefaultFormatter                                    formatter;
+        const std::vector<std::pair<LogLevel, std::string>> levelTokens = {
+                {LogLevel::Trace, "TRACE"}, {LogLevel::Debug, "DEBUG"}, {LogLevel::Info, "INFO "},
+                {LogLevel::Warn, "WARN "},  {LogLevel::Error, "ERROR"}, {LogLevel::Fatal, "FATAL"},
         };
 
         for (const auto &[level, token]: levelTokens)
@@ -232,13 +224,10 @@ namespace AsynGyanis::Base
             return location;
         }();
 
-        const std::string shortOutput = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
-                         SourceLocation("a.cpp", 1, kSourceFunction), kLoggerName, "padding short"));
-        const std::string longOutput = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
-                         SourceLocation("a-much-longer-fixture-file-name.cpp", 987654, kSourceFunction),
-                         kLoggerName, "padding long"));
+        const std::string shortOutput =
+                formatter.format(LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId, SourceLocation("a.cpp", 1, kSourceFunction), kLoggerName, "padding short"));
+        const std::string longOutput = formatter.format(LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
+                                                                 SourceLocation("a-much-longer-fixture-file-name.cpp", 987654, kSourceFunction), kLoggerName, "padding long"));
 
         EXPECT_TRUE(contains(shortOutput, paddedLocation)) << shortOutput;
         EXPECT_TRUE(contains(longOutput, "a-much-longer-fixture-file-name.cpp:987654")) << longOutput;
@@ -252,8 +241,7 @@ namespace AsynGyanis::Base
         const std::string longFileName(80, 'n');
 
         const std::string output = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
-                         SourceLocation(longFileName.c_str(), 1234567, kSourceFunction), kLoggerName, "padding long name"));
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId, SourceLocation(longFileName.c_str(), 1234567, kSourceFunction), kLoggerName, "padding long name"));
 
         EXPECT_TRUE(contains(output, longFileName + ":1234567")) << output;
         EXPECT_TRUE(contains(output, longFileName + ":1234567 padding long name")) << output;
@@ -267,20 +255,17 @@ namespace AsynGyanis::Base
 
         const auto referenceLine = [](const char *fileName, const int line, const std::string &message)
         {
-            return std::format("{} {} [{:<5}] [{}] {:<13} {}",
-                               kFixedTimestamp, kThreadId, logLevelToString(LogLevel::Info),
-                               kLoggerName, std::format("{}:{}", fileName, line), message);
+            return std::format("{} {} [{:<5}] [{}] {:<13} {}", kFixedTimestamp, kThreadId, logLevelToString(LogLevel::Info), kLoggerName, std::format("{}:{}", fileName, line),
+                               message);
         };
 
         const std::string hitFileName = "hit_fixture.cpp";
         const std::string fallbackFileName(80, 'n');
 
-        const std::string hitOutput = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
-                         SourceLocation(hitFileName.c_str(), 42, kSourceFunction), kLoggerName, "hit path"));
+        const std::string hitOutput =
+                formatter.format(LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId, SourceLocation(hitFileName.c_str(), 42, kSourceFunction), kLoggerName, "hit path"));
         const std::string fallbackOutput = formatter.format(
-                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId,
-                         SourceLocation(fallbackFileName.c_str(), 1234567, kSourceFunction), kLoggerName, "fallback path"));
+                LogEvent(LogLevel::Info, kFixedTimestampMoment, kThreadId, SourceLocation(fallbackFileName.c_str(), 1234567, kSourceFunction), kLoggerName, "fallback path"));
 
         EXPECT_EQ(hitOutput, referenceLine(hitFileName.c_str(), 42, "hit path")) << hitOutput;
         EXPECT_EQ(fallbackOutput, referenceLine(fallbackFileName.c_str(), 1234567, "fallback path")) << fallbackOutput;
@@ -329,7 +314,7 @@ namespace AsynGyanis::Base
 
     TEST(DefaultFormatter, AppendsResolvedStackTraceWhenEventCarriesOne)
     {
-        LogEvent event = makeEvent(LogLevel::Error, "boom");
+        LogEvent event   = makeEvent(LogLevel::Error, "boom");
         event.stackTrace = captureStackTrace();
 
         if (!TestSupport::hasResolvedStackTraceFrames(formatStackTrace(event.stackTrace)))
@@ -376,35 +361,23 @@ namespace AsynGyanis::Base
         DefaultFormatter formatter;
         for (const auto &shape: shapes)
         {
-            const LogEvent event{shape.level, kFixedTimestampMoment, kThreadId,
-                                 SourceLocation{shape.file, kSourceLine, shape.function}, shape.logger, shape.message};
+            const LogEvent event{shape.level, kFixedTimestampMoment, kThreadId, SourceLocation{shape.file, kSourceLine, shape.function}, shape.logger, shape.message};
 
             std::array<char, kTimestampTextBufferSize> timestampBuffer{};
-            const std::string_view timestampText = formatTimestampText(timestampBuffer, event.timestamp);
+            const std::string_view                     timestampText = formatTimestampText(timestampBuffer, event.timestamp);
 
 #ifdef ASYN_DEBUG
             // 同 TestColorFormatter：这三行只在 Debug 版式里被读到，留在 #ifdef 外会让 Release
             // 构建因「赋值了却没读」在 -Werror 下失败，整套 Release 侧的 Base 用例随之构建不出来
             std::array<char, kSourceLocationTextBufferSize> locationBuffer{};
             std::string                                     locationOverflow;
-            const std::string_view                          location = formatSourceLocationText(event.location, locationBuffer,
-                                                                                                locationOverflow);
-            const std::string expected = std::format("{} {} [{:<5}] [{}] {:<13} {}",
-                                                     timestampText,
-                                                     event.threadIdView(),
-                                                     logLevelToString(shape.level),
-                                                     event.loggerNameView(),
-                                                     location,
-                                                     event.message);
+            const std::string_view                          location = formatSourceLocationText(event.location, locationBuffer, locationOverflow);
+            const std::string expected = std::format("{} {} [{:<5}] [{}] {:<13} {}", timestampText, event.threadIdView(), logLevelToString(shape.level), event.loggerNameView(),
+                                                     location, event.message);
 #else
-            const std::string expected = std::format("{} [{:<5}] [{}] {}",
-                                                     timestampText,
-                                                     logLevelToString(shape.level),
-                                                     event.loggerNameView(),
-                                                     event.message);
+            const std::string expected = std::format("{} [{:<5}] [{}] {}", timestampText, logLevelToString(shape.level), event.loggerNameView(), event.message);
 #endif
-            EXPECT_EQ(formatter.format(event), expected) << "形状：文件 " << shape.file << "、logger 是否为空 "
-                                                        << shape.logger.empty();
+            EXPECT_EQ(formatter.format(event), expected) << "形状：文件 " << shape.file << "、logger 是否为空 " << shape.logger.empty();
         }
     }
 } // namespace AsynGyanis::Base

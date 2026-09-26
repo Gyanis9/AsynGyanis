@@ -1,8 +1,8 @@
 // MemoryMappedFile 单元测试：映射内容、空文件、失败路径与移动语义
 #include "Platform/IO/MemoryMappedFile.h"
 
-#include "Platform/FileSystem/FileBasicInfo.h"
 #include <optional>
+#include "Platform/FileSystem/FileBasicInfo.h"
 
 #include <gtest/gtest.h>
 
@@ -83,7 +83,7 @@ namespace AsynGyanis::Platform
     TEST(MemoryMappedFile, MoveConstructionTransfersMapping)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("Mmap_MoveCtor");
-        const std::string content = "move-существующая-construction";
+        const std::string                     content = "move-существующая-construction";
         ASSERT_TRUE(temporaryDirectory.writeFile("move.txt", content));
 
         MemoryMappedFile source = MemoryMappedFile::open(temporaryDirectory.path() / "move.txt");
@@ -129,7 +129,7 @@ namespace AsynGyanis::Platform
     TEST(MemoryMappedFile, ViewCoversFileBeyondTheFirstPage)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("Mmap_Pages");
-        constexpr std::size_t kFileLength = 1024 * 1024;
+        constexpr std::size_t                 kFileLength = 1024 * 1024;
 
         std::string content;
         content.reserve(kFileLength);
@@ -146,10 +146,7 @@ namespace AsynGyanis::Platform
         const std::span<const std::byte> mappedBytes = mappedFile.bytes();
         ASSERT_EQ(mappedBytes.size(), kFileLength);
 
-        const auto byteAt = [&mappedBytes](const std::size_t index)
-        {
-            return static_cast<char>(mappedBytes[index]);
-        };
+        const auto byteAt = [&mappedBytes](const std::size_t index) { return static_cast<char>(mappedBytes[index]); };
         EXPECT_EQ(byteAt(0), content[0]);
         EXPECT_EQ(byteAt(4095), content[4095]);
         EXPECT_EQ(byteAt(4096), content[4096]);
@@ -188,8 +185,7 @@ namespace AsynGyanis::Platform
     TEST(MemoryMappedFile, OpenedFileInfoIsEmptyForInvalidObject)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("Mmap_OpenedInfoMissing");
-        const MemoryMappedFile mappedFile =
-                MemoryMappedFile::open(temporaryDirectory.path() / "missing.bin");
+        const MemoryMappedFile                mappedFile = MemoryMappedFile::open(temporaryDirectory.path() / "missing.bin");
         ASSERT_FALSE(mappedFile.isValid());
         EXPECT_FALSE(mappedFile.openedFileInfo().has_value());
     }

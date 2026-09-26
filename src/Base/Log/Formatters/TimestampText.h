@@ -41,10 +41,10 @@ namespace AsynGyanis::Base
          */
         struct TimestampPrefixCache
         {
-            std::int64_t cachedSecondValue = 0;                        ///< 已折算成文本的那个整秒（epoch 起算）
-            std::array<char, kTimestampPrefixCapacity> prefixText{};   ///< 「YYYY-MM-DD HH:MM:SS」形态的前缀
-            std::size_t  prefixLength      = 0;                        ///< 前缀的有效字节数
-            bool         hasValue          = false;                    ///< 本线程是否已经折算过至少一条
+            std::int64_t                               cachedSecondValue = 0; ///< 已折算成文本的那个整秒（epoch 起算）
+            std::array<char, kTimestampPrefixCapacity> prefixText{};          ///< 「YYYY-MM-DD HH:MM:SS」形态的前缀
+            std::size_t                                prefixLength = 0;      ///< 前缀的有效字节数
+            bool                                       hasValue     = false;  ///< 本线程是否已经折算过至少一条
         };
     } // namespace detail
 
@@ -58,12 +58,11 @@ namespace AsynGyanis::Base
      * @note 不落堆也不抛异常：换算失败的极端时刻由 PlatformTime::localTime() 交回零值日历，
      *       渲染出的是那个零值而不是上一个缓存前缀
      */
-    inline std::string_view formatTimestampText(std::array<char, kTimestampTextBufferSize> &buffer,
-                                                const std::chrono::system_clock::time_point moment) noexcept
+    inline std::string_view formatTimestampText(std::array<char, kTimestampTextBufferSize> &buffer, const std::chrono::system_clock::time_point moment) noexcept
     {
         // 向下取整到整秒：朝零截断会让预 1970 的时刻偏一整秒，且下面的毫秒残差成了负数
-        const auto wholeSeconds = std::chrono::floor<std::chrono::seconds>(moment);
-        const std::int64_t secondValue = wholeSeconds.time_since_epoch().count();
+        const auto         wholeSeconds = std::chrono::floor<std::chrono::seconds>(moment);
+        const std::int64_t secondValue  = wholeSeconds.time_since_epoch().count();
 
         // 残差按「毫秒刻度」取，不用 moment - wholeSeconds：两个 time_point 相减要先落到彼此更细的
         // 公共单位（本平台是纳秒或 100 纳秒），那次整秒→细单位的乘法在 time_point::min()/max() 上
@@ -71,9 +70,8 @@ namespace AsynGyanis::Base
         // 溢出。要的恰是 floor 而不是 duration_cast：后者朝零截断，落在 (-1ms, 0) 这类「不足一毫秒的
         // 负时刻」上会把这段量当成 0，残差于是等于 1000，逐位写的三位毫秒溢出成 ".:00" 这种不合版式的文本
         constexpr std::int64_t kMillisecondsPerSecond = 1'000LL;
-        const std::int64_t millisecondCount =
-                std::chrono::floor<std::chrono::milliseconds>(moment.time_since_epoch()).count();
-        const std::int64_t millisecondValue = millisecondCount - secondValue * kMillisecondsPerSecond;
+        const std::int64_t     millisecondCount       = std::chrono::floor<std::chrono::milliseconds>(moment.time_since_epoch()).count();
+        const std::int64_t     millisecondValue       = millisecondCount - secondValue * kMillisecondsPerSecond;
 
         thread_local detail::TimestampPrefixCache prefixCache;
 
@@ -82,11 +80,9 @@ namespace AsynGyanis::Base
         {
             const std::tm localTime = Platform::PlatformTime::localTime(static_cast<std::time_t>(secondValue));
 
-            const auto written = std::format_to_n(prefixCache.prefixText.begin(), prefixCache.prefixText.size(),
-                                                  "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}",
-                                                  localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday,
-                                                  localTime.tm_hour, localTime.tm_min, localTime.tm_sec);
-            prefixCache.prefixLength      = static_cast<std::size_t>(written.out - prefixCache.prefixText.begin());
+            const auto written       = std::format_to_n(prefixCache.prefixText.begin(), prefixCache.prefixText.size(), "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}",
+                                                        localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday, localTime.tm_hour, localTime.tm_min, localTime.tm_sec);
+            prefixCache.prefixLength = static_cast<std::size_t>(written.out - prefixCache.prefixText.begin());
             prefixCache.cachedSecondValue = secondValue;
             prefixCache.hasValue          = true;
         }

@@ -31,8 +31,7 @@ namespace AsynGyanis::Net
     namespace
     {
         /// 合法请求样本：完整、带头部与正文，正文长度与 content-length 一致
-        constexpr std::string_view kValidRequest =
-                "POST /submit?x=1 HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+        constexpr std::string_view kValidRequest = "POST /submit?x=1 HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
 
         /// 随机流轮次：够覆盖各种切分与畸形组合，又不至于拖慢全量用例
         constexpr int kRandomRoundCount = 4000;
@@ -44,8 +43,7 @@ namespace AsynGyanis::Net
         class DeterministicRandom
         {
         public:
-            explicit DeterministicRandom(const std::uint64_t seed) noexcept :
-                m_state(seed)
+            explicit DeterministicRandom(const std::uint64_t seed) noexcept : m_state(seed)
             {
             }
 
@@ -99,7 +97,7 @@ namespace AsynGyanis::Net
         // 当成一条完整请求处理，这是请求走私与越界读的温床
         for (std::size_t prefixLength = 0; prefixLength < kValidRequest.size(); ++prefixLength)
         {
-            HttpParser parser;
+            HttpParser        parser;
             const ParseStatus status = parser.parse(kValidRequest.data(), prefixLength);
 
             EXPECT_TRUE(isKnownStatus(status)) << "前缀长度 " << prefixLength << " 返回了未知状态";
@@ -132,19 +130,18 @@ namespace AsynGyanis::Net
                 input.push_back(static_cast<char>(random.nextBelow(4) == 0 ? random.nextBelow(256) : 0x20 + random.nextBelow(0x5F)));
             }
 
-            HttpParser parser;
-            std::size_t fedLength = 0;
+            HttpParser  parser;
+            std::size_t fedLength     = 0;
             std::size_t consumedTotal = 0;
 
             // 随机切分喂入：模拟 TCP 把一条报文拆成任意片段
             while (fedLength < input.size())
             {
                 const std::size_t chunkLength = 1 + random.nextBelow(input.size() - fedLength);
-                const ParseStatus status = parser.parse(input.data() + fedLength, chunkLength);
+                const ParseStatus status      = parser.parse(input.data() + fedLength, chunkLength);
 
                 ASSERT_TRUE(isKnownStatus(status)) << "第 " << round << " 轮返回未知状态，输入：" << toEscapedText(input);
-                EXPECT_LE(parser.consumedByteCount(), chunkLength)
-                        << "第 " << round << " 轮消费超界，输入：" << toEscapedText(input);
+                EXPECT_LE(parser.consumedByteCount(), chunkLength) << "第 " << round << " 轮消费超界，输入：" << toEscapedText(input);
 
                 consumedTotal += parser.consumedByteCount();
                 fedLength += chunkLength;
@@ -172,7 +169,7 @@ namespace AsynGyanis::Net
             std::string mutated(kValidRequest);
             mutated[position] = static_cast<char>(random.nextBelow(256));
 
-            HttpParser parser;
+            HttpParser        parser;
             const ParseStatus status = parser.parse(mutated.data(), mutated.size());
 
             ASSERT_TRUE(isKnownStatus(status)) << "位置 " << position << " 返回未知状态";
@@ -239,10 +236,10 @@ namespace AsynGyanis::Net
         const std::vector<std::pair<std::string, std::string>> &framingCorpus()
         {
             static const std::vector<std::pair<std::string, std::string>> corpus = {
-                {"GET /plain HTTP/1.1\r\nHost: a\r\n\r\n", "/plain"},
-                {"POST /cl HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello", "/cl"},
-                {"POST /chunked HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", "/chunked"},
-                {"POST /trailers HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Tail: 1\r\n\r\n", "/trailers"},
+                    {"GET /plain HTTP/1.1\r\nHost: a\r\n\r\n", "/plain"},
+                    {"POST /cl HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello", "/cl"},
+                    {"POST /chunked HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", "/chunked"},
+                    {"POST /trailers HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Tail: 1\r\n\r\n", "/trailers"},
             };
             return corpus;
         }
@@ -256,8 +253,7 @@ namespace AsynGyanis::Net
          *        吃掉的字节，因此要逐次相加才是报文边界；Error 那一次记 0，故这个数只在 Done 时可比。
          * @return 最后一次 parse() 给出的状态
          */
-        ParseStatus feedUntilDecided(HttpParser &parser, const std::string &text, const std::size_t chunkLength,
-                                     std::size_t &consumedTotal)
+        ParseStatus feedUntilDecided(HttpParser &parser, const std::string &text, const std::size_t chunkLength, std::size_t &consumedTotal)
         {
             ParseStatus status = ParseStatus::NeedMore;
             consumedTotal      = 0;
@@ -282,7 +278,7 @@ namespace AsynGyanis::Net
         {
             const std::string pipelined = message + std::string(kTrailingPipelinedRequest);
 
-            HttpParser parser;
+            HttpParser        parser;
             const ParseStatus status = parser.parse(pipelined.data(), pipelined.size());
             ASSERT_EQ(status, ParseStatus::Done) << "报文「" << toEscapedText(message) << "」没被认成完整请求";
             // 多吃的任何一个字节都会把第二条请求的前缀吞进第一条的正文/头部——就是走私本身
@@ -291,12 +287,11 @@ namespace AsynGyanis::Net
 
             // 剩下的字节必须正好是一条可独立解析的下一请求。consumedByteCount 要先取出来再 reset：
             // 复位会把消费量清成 0，用复位后的值切分就变成「从第一个字节再解一遍」
-            const std::size_t   firstMessageLength = parser.consumedByteCount();
-            const std::string   remainder          = pipelined.substr(firstMessageLength);
+            const std::size_t firstMessageLength = parser.consumedByteCount();
+            const std::string remainder          = pipelined.substr(firstMessageLength);
             parser.reset();
             HttpParser followUp;
-            ASSERT_EQ(followUp.parse(remainder.data(), remainder.size()), ParseStatus::Done)
-                    << "边界之后的剩余字节解不出下一条请求，报文「" << toEscapedText(message) << "」";
+            ASSERT_EQ(followUp.parse(remainder.data(), remainder.size()), ParseStatus::Done) << "边界之后的剩余字节解不出下一条请求，报文「" << toEscapedText(message) << "」";
             EXPECT_EQ(followUp.request().path(), "/second");
             EXPECT_EQ(followUp.consumedByteCount(), kTrailingPipelinedRequest.size());
         }
@@ -311,13 +306,13 @@ namespace AsynGyanis::Net
         {
             const std::string pipelined = message + std::string(kTrailingPipelinedRequest);
 
-            HttpParser whole;
-            std::size_t wholeConsumedTotal = 0;
-            const ParseStatus wholeStatus = feedUntilDecided(whole, pipelined, pipelined.size(), wholeConsumedTotal);
+            HttpParser        whole;
+            std::size_t       wholeConsumedTotal = 0;
+            const ParseStatus wholeStatus        = feedUntilDecided(whole, pipelined, pipelined.size(), wholeConsumedTotal);
 
-            HttpParser split;
-            std::size_t splitConsumedTotal = 0;
-            const ParseStatus splitStatus = feedUntilDecided(split, pipelined, 1, splitConsumedTotal);
+            HttpParser        split;
+            std::size_t       splitConsumedTotal = 0;
+            const ParseStatus splitStatus        = feedUntilDecided(split, pipelined, 1, splitConsumedTotal);
 
             EXPECT_EQ(wholeStatus, splitStatus) << "分片方式改变了结论，报文「" << toEscapedText(message) << "」";
             if (wholeStatus == ParseStatus::Done && splitStatus == ParseStatus::Done)
@@ -337,22 +332,20 @@ namespace AsynGyanis::Net
             std::string mutated(chunkedSample);
             mutated[position] = static_cast<char>(random.nextBelow(256));
 
-            HttpParser whole;
-            std::size_t wholeConsumedTotal = 0;
-            const ParseStatus wholeStatus = feedUntilDecided(whole, mutated, mutated.size(), wholeConsumedTotal);
+            HttpParser        whole;
+            std::size_t       wholeConsumedTotal = 0;
+            const ParseStatus wholeStatus        = feedUntilDecided(whole, mutated, mutated.size(), wholeConsumedTotal);
 
-            HttpParser split;
-            std::size_t splitConsumedTotal = 0;
-            const ParseStatus splitStatus = feedUntilDecided(split, mutated, 1, splitConsumedTotal);
+            HttpParser        split;
+            std::size_t       splitConsumedTotal = 0;
+            const ParseStatus splitStatus        = feedUntilDecided(split, mutated, 1, splitConsumedTotal);
 
             ASSERT_TRUE(isKnownStatus(wholeStatus)) << "位置 " << position << " 整体喂返回未知状态";
-            EXPECT_EQ(wholeStatus, splitStatus) << "位置 " << position << " 变异「" << toEscapedText(mutated)
-                                                << "」在两种喂法下结论不同";
+            EXPECT_EQ(wholeStatus, splitStatus) << "位置 " << position << " 变异「" << toEscapedText(mutated) << "」在两种喂法下结论不同";
             // 只在两侧都宣布完成时比边界：NeedMore 下的消费量取决于这一次喂了多少，本就不可比
             if (wholeStatus == ParseStatus::Done && splitStatus == ParseStatus::Done)
             {
-                EXPECT_EQ(wholeConsumedTotal, splitConsumedTotal) << "位置 " << position << " 变异「" << toEscapedText(mutated)
-                                                      << "」在两种喂法下给出不同的报文边界";
+                EXPECT_EQ(wholeConsumedTotal, splitConsumedTotal) << "位置 " << position << " 变异「" << toEscapedText(mutated) << "」在两种喂法下给出不同的报文边界";
             }
         }
     }

@@ -32,8 +32,7 @@ namespace AsynGyanis::Core
         // 按无符号数解释，0 跳校验深度等于关掉链深度保护，两者都不会给出任何信号
         if (policy.securityLevel < 0)
         {
-            throw CoreException("TLS 策略无效：安全等级不能为负（当前 " + std::to_string(policy.securityLevel)
-                                + "）；要放宽请显式给 0 或 1");
+            throw CoreException("TLS 策略无效：安全等级不能为负（当前 " + std::to_string(policy.securityLevel) + "）；要放宽请显式给 0 或 1");
         }
         if (policy.verifyDepth.has_value() && *policy.verifyDepth <= 0)
         {
@@ -46,25 +45,20 @@ namespace AsynGyanis::Core
 
         // 版本区间：只给下限时上限交给 OpenSSL，反之亦然。写反了由这里先给一句人话——
         // OpenSSL 只会回「operation not supported」，看不出是自己把区间填倒了
-        if (policy.minimumProtocolVersion.has_value() && policy.maximumProtocolVersion.has_value()
-            && *policy.minimumProtocolVersion > *policy.maximumProtocolVersion)
+        if (policy.minimumProtocolVersion.has_value() && policy.maximumProtocolVersion.has_value() && *policy.minimumProtocolVersion > *policy.maximumProtocolVersion)
         {
-            throw CoreException(std::string("TLS 策略无效：最低版本 ") + protocolVersionName(*policy.minimumProtocolVersion)
-                                + " 高于最高版本 " + protocolVersionName(*policy.maximumProtocolVersion));
+            throw CoreException(std::string("TLS 策略无效：最低版本 ") + protocolVersionName(*policy.minimumProtocolVersion) + " 高于最高版本 " +
+                                protocolVersionName(*policy.maximumProtocolVersion));
         }
-        if (policy.minimumProtocolVersion.has_value()
-            && SSL_CTX_set_min_proto_version(context, toOpenSslVersion(*policy.minimumProtocolVersion)) == 0)
+        if (policy.minimumProtocolVersion.has_value() && SSL_CTX_set_min_proto_version(context, toOpenSslVersion(*policy.minimumProtocolVersion)) == 0)
         {
-            throw CoreException(std::string("施加 TLS 策略失败：无法把最低协议版本设为 ")
-                                + protocolVersionName(*policy.minimumProtocolVersion)
-                                + "（OpenSSL 可能未启用该版本，请检查库的编译配置）");
+            throw CoreException(std::string("施加 TLS 策略失败：无法把最低协议版本设为 ") + protocolVersionName(*policy.minimumProtocolVersion) +
+                                "（OpenSSL 可能未启用该版本，请检查库的编译配置）");
         }
-        if (policy.maximumProtocolVersion.has_value()
-            && SSL_CTX_set_max_proto_version(context, toOpenSslVersion(*policy.maximumProtocolVersion)) == 0)
+        if (policy.maximumProtocolVersion.has_value() && SSL_CTX_set_max_proto_version(context, toOpenSslVersion(*policy.maximumProtocolVersion)) == 0)
         {
-            throw CoreException(std::string("施加 TLS 策略失败：无法把最高协议版本设为 ")
-                                + protocolVersionName(*policy.maximumProtocolVersion)
-                                + "（OpenSSL 可能未启用该版本，请检查库的编译配置）");
+            throw CoreException(std::string("施加 TLS 策略失败：无法把最高协议版本设为 ") + protocolVersionName(*policy.maximumProtocolVersion) +
+                                "（OpenSSL 可能未启用该版本，请检查库的编译配置）");
         }
 
         // 套件串不做预先解析：什么算合法由 OpenSSL 说了算（它随发行版与编译配置变化），
@@ -74,19 +68,16 @@ namespace AsynGyanis::Core
             const std::string cipherList = policy.cipherList.empty() ? std::string(builtInCipherList) : policy.cipherList;
             if (SSL_CTX_set_cipher_list(context, cipherList.c_str()) == 0)
             {
-                throw CoreException("施加 TLS 策略失败：TLS 1.2 及以下的套件列表 \"" + cipherList
-                                    + "\" 没有匹配到任何可用套件（可能被当前安全等级或库的编译选项排除）");
+                throw CoreException("施加 TLS 策略失败：TLS 1.2 及以下的套件列表 \"" + cipherList + "\" 没有匹配到任何可用套件（可能被当前安全等级或库的编译选项排除）");
             }
         }
         if (!policy.tls13CipherSuites.empty() && SSL_CTX_set_ciphersuites(context, policy.tls13CipherSuites.c_str()) == 0)
         {
-            throw CoreException("施加 TLS 策略失败：TLS 1.3 套件列表 \"" + policy.tls13CipherSuites
-                                + "\" 没有匹配到任何可用套件");
+            throw CoreException("施加 TLS 策略失败：TLS 1.3 套件列表 \"" + policy.tls13CipherSuites + "\" 没有匹配到任何可用套件");
         }
         if (!policy.supportedGroups.empty() && SSL_CTX_set1_curves_list(context, policy.supportedGroups.c_str()) == 0)
         {
-            throw CoreException("施加 TLS 策略失败：命名曲线/组列表 \"" + policy.supportedGroups
-                                + "\" 无效（要用冒号分隔，且名字得是当前 OpenSSL 认得的）");
+            throw CoreException("施加 TLS 策略失败：命名曲线/组列表 \"" + policy.supportedGroups + "\" 无效（要用冒号分隔，且名字得是当前 OpenSSL 认得的）");
         }
 
         // 信任库：文件与目录可以同时给，OpenSSL 两处都查。只给一项时另一项传 nullptr，
@@ -98,8 +89,7 @@ namespace AsynGyanis::Core
             const char *const caPath = policy.certificateAuthorityPath.empty() ? nullptr : policy.certificateAuthorityPath.c_str();
             if (SSL_CTX_load_verify_locations(context, caFile, caPath) != 1)
             {
-                throw CoreException("施加 TLS 策略失败：CA 信任库加载不了（文件=\"" + policy.certificateAuthorityFile
-                                    + "\"，目录=\"" + policy.certificateAuthorityPath + "\"）");
+                throw CoreException("施加 TLS 策略失败：CA 信任库加载不了（文件=\"" + policy.certificateAuthorityFile + "\"，目录=\"" + policy.certificateAuthorityPath + "\"）");
             }
         }
         if (policy.verifyDepth.has_value())
@@ -120,16 +110,15 @@ namespace AsynGyanis::Core
             }
             if (X509_STORE_load_file(store, policy.revocationListFile.c_str()) != 1)
             {
-                throw CoreException("施加 TLS 策略失败：吊销列表加载不了（文件=\"" + policy.revocationListFile
-                                    + "\"）；要的是 PEM 或 DER 格式的 CRL，纯文本或写错的指针都会走到这里");
+                throw CoreException("施加 TLS 策略失败：吊销列表加载不了（文件=\"" + policy.revocationListFile +
+                                    "\"）；要的是 PEM 或 DER 格式的 CRL，纯文本或写错的指针都会走到这里");
             }
             X509_VERIFY_PARAM *const parameters = X509_STORE_get0_param(store);
             if (parameters == nullptr)
             {
                 throw CoreException("施加 TLS 策略失败：证书存储没有校验参数（X509_STORE_get0_param 返回空）");
             }
-            const unsigned long revocationFlags = X509_V_FLAG_CRL_CHECK
-                                                  | (policy.revocationCoversWholeChain ? X509_V_FLAG_CRL_CHECK_ALL : 0UL);
+            const unsigned long revocationFlags = X509_V_FLAG_CRL_CHECK | (policy.revocationCoversWholeChain ? X509_V_FLAG_CRL_CHECK_ALL : 0UL);
             if (X509_VERIFY_PARAM_set_flags(parameters, revocationFlags) == 0)
             {
                 throw CoreException("施加 TLS 策略失败：没能打开吊销检查的标志位");
@@ -141,10 +130,9 @@ namespace AsynGyanis::Core
         if (policy.areSessionTicketsEnabled)
         {
             SSL_CTX_clear_options(context, SSL_OP_NO_TICKET);
-        }
-        else
+        } else
         {
             SSL_CTX_set_options(context, SSL_OP_NO_TICKET);
         }
     }
-}
+} // namespace AsynGyanis::Core

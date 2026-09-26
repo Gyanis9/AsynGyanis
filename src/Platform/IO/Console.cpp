@@ -1,6 +1,6 @@
 #include "Platform/IO/Console.h"
-#include "Platform/System/ProcessInfo.h"
 #include "Platform/Platform.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include <atomic>
 #include <string>
