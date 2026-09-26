@@ -8,6 +8,7 @@ find_package(yaml-cpp 0.9.0 CONFIG REQUIRED)
 set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Base nlohmann_json yaml-cpp)
 
 add_subdirectory(Exception)
+add_subdirectory(Coding)
 add_subdirectory(Config)
 add_subdirectory(Log)
 

@@ -8,6 +8,7 @@ add_executable(TestBase
         # 分配计数探针的实体（替换全局 operator new，每个可执行体只能有一份定义）
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
 
+        Coding/TestBase64.cpp
         Config/TestConfigValue.cpp
         Config/TestConfigValueType.cpp
         Config/TestConfigSchema.cpp

@@ -8,6 +8,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Core OpenSSL)
 set_property(GLOBAL PROPERTY AsynGyanisCoreSources "")
 
 add_subdirectory(Exception)
+add_subdirectory(Crypto)
 add_subdirectory(EventLoop)
 add_subdirectory(Coroutine)
 add_subdirectory(Socket)

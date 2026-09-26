@@ -16,6 +16,8 @@ add_executable(TestCore
         EventLoop/TestConnectionDistributor.cpp
         EventLoop/TestTimer.cpp
 
+        Crypto/TestDigest.cpp
+
         Coroutine/TestScheduler.cpp
         Coroutine/TestTask.cpp
         Coroutine/TestCoroutinePool.cpp

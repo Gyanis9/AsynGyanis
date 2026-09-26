@@ -1,12 +1,9 @@
 #include "Net/WebSocket/WebSocketHandshake.h"
 
+#include "Base/Coding/Base64.h"
+#include "Core/Crypto/Digest.h"
 #include "Net/Http/HttpHeaderRules.h"
 
-#include "Base/Exception/Exception.h"
-
-#include <openssl/evp.h>
-
-#include <array>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -27,15 +24,6 @@ namespace AsynGyanis::Net
 
         /// Sec-WebSocket-Key 解码后的字节数（RFC 6455 §4.1 第 7 条），即客户端随机数长度
         constexpr std::size_t kWebSocketKeyByteLength = 16;
-
-        /// SHA-1 摘要长度，单位字节
-        constexpr std::size_t kSha1DigestByteLength = 20;
-
-        /// 掩码键以外的最大 base64 填充符数量：16 字节的编码末尾只会出现两个 '='
-        constexpr std::size_t kMaximumBase64PaddingLength = 2;
-
-        /// 标准 Base64 字母表（RFC 4648 §4）
-        constexpr std::string_view kBase64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
         /**
          * @brief 解析「HTTP/主版本.次版本」形式的版本串
@@ -70,115 +58,7 @@ namespace AsynGyanis::Net
                    minorEndPointer == minorText.data() + minorText.size();
         }
 
-        /**
-         * @brief 标准 Base64 编码（RFC 4648 §4）
-         * @param bytes 待编码字节，可为任意二进制
-         * @return std::string 不含换行的 base64 文本，末尾按规则补 '='
-         */
-        std::string encodeBase64(const std::string_view bytes)
-        {
-            std::string encoded;
-            encoded.reserve((bytes.size() + 2) / 3 * 4);
 
-            // 每 3 字节编成 4 个字符：24 位正好切成四段 6 位
-            for (std::size_t index = 0; index < bytes.size(); index += 3)
-            {
-                const std::size_t   remainingLength = bytes.size() - index;
-                const std::uint32_t firstByte       = static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index]));
-                const std::uint32_t secondByte      = remainingLength > 1 ? static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 1])) : 0U;
-                const std::uint32_t thirdByte       = remainingLength > 2 ? static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 2])) : 0U;
-                const std::uint32_t groupValue      = (firstByte << 16) | (secondByte << 8) | thirdByte;
-
-                encoded.push_back(kBase64Alphabet[(groupValue >> 18) & 0x3FU]);
-                encoded.push_back(kBase64Alphabet[(groupValue >> 12) & 0x3FU]);
-                // 末组只剩 1 字节时第三、四个字符没有信息，按规范用 '=' 占位
-                encoded.push_back(remainingLength > 1 ? kBase64Alphabet[(groupValue >> 6) & 0x3FU] : '=');
-                encoded.push_back(remainingLength > 2 ? kBase64Alphabet[groupValue & 0x3FU] : '=');
-            }
-            return encoded;
-        }
-
-        /**
-         * @brief 严格 Base64 解码（标准字母表）
-         * @details 只接受长度是 4 的倍数、字符全在字母表内、'=' 只出现在末尾且至多两个的输入；
-         *          填充位必须为 0（RFC 4648 §3.5），否则同一个字节串会有多种写法。
-         * @param text 待解码文本
-         * @param decoded 输出：解码结果
-         * @return true 是规范编码，decoded 有效；false 表示输入非法，decoded 的内容不可用
-         */
-        bool decodeBase64(const std::string_view text, std::string &decoded)
-        {
-            if (text.empty() || text.size() % 4 != 0)
-            {
-                return false;
-            }
-
-            // 填充符只允许在末尾：先数出末尾有几个 '='，它们之前的一切都必须是字母表字符
-            std::size_t paddingLength = 0;
-            while (paddingLength < kMaximumBase64PaddingLength && paddingLength < text.size() && text[text.size() - 1 - paddingLength] == '=')
-            {
-                ++paddingLength;
-            }
-            const std::size_t dataLength = text.size() - paddingLength;
-
-            decoded.clear();
-            decoded.reserve(dataLength / 4 * 3 + 3);
-
-            std::uint32_t accumulator         = 0;
-            std::size_t   accumulatorBitCount = 0;
-            for (std::size_t index = 0; index < dataLength; ++index)
-            {
-                const std::size_t encodedValue = kBase64Alphabet.find(text[index]);
-                // '=' 与字母表之外的字符都只能出现在末尾的填充位置，出现在这里就是非法编码
-                if (encodedValue == std::string_view::npos)
-                {
-                    return false;
-                }
-
-                accumulator = (accumulator << 6) | static_cast<std::uint32_t>(encodedValue);
-                accumulatorBitCount += 6;
-                if (accumulatorBitCount >= 8)
-                {
-                    accumulatorBitCount -= 8;
-                    decoded.push_back(static_cast<char>((accumulator >> accumulatorBitCount) & 0xFFU));
-                    // 只保留尚未消费的低位：accumulator 会随左移不断溢出，靠这一步把它压回 12 位以内
-                    accumulator &= (1U << accumulatorBitCount) - 1U;
-                }
-            }
-
-            // 掩码后 accumulator 只剩不足一字节的填充位，非 0 说明填充位被置位，即非规范编码
-            return accumulator == 0;
-        }
-
-        /**
-         * @brief 用 OpenSSL EVP 算 SHA-1 摘要
-         * @details EVP_sha1() 是本仓库允许的取向：OpenSSL 3.0 起 SHA1() 便捷函数已被标记废弃。
-         * @param data 待摘要数据，按「指针 + 长度」取
-         * @return std::array<unsigned char, 20> 20 字节摘要
-         * @throws Base::Exception 摘要上下文创建失败或摘要接口返回失败
-         */
-        std::array<unsigned char, kSha1DigestByteLength> computeSha1(const std::string_view data)
-        {
-            std::array<unsigned char, kSha1DigestByteLength> digest{};
-
-            EVP_MD_CTX *const context = EVP_MD_CTX_new();
-            if (context == nullptr)
-            {
-                throw Base::Exception("WebSocket 握手失败：无法创建 SHA-1 摘要上下文（OpenSSL 未正确初始化或内存不足）");
-            }
-
-            unsigned int digestLength = 0;
-            const bool   isSucceeded  = EVP_DigestInit_ex(context, EVP_sha1(), nullptr) == 1 && EVP_DigestUpdate(context, data.data(), data.size()) == 1 &&
-                                        EVP_DigestFinal_ex(context, digest.data(), &digestLength) == 1;
-            // 无论成败都先释放上下文：这条路径可能因抛出而退出，漏掉就是每连接一次的句柄泄漏
-            EVP_MD_CTX_free(context);
-
-            if (!isSucceeded || static_cast<std::size_t>(digestLength) != digest.size())
-            {
-                throw Base::Exception("WebSocket 握手失败：SHA-1 摘要未能算出完整结果（OpenSSL 摘要接口返回失败）");
-            }
-            return digest;
-        }
     } // namespace
 
     std::string computeWebSocketAcceptValue(const std::string_view clientKey)
@@ -190,9 +70,9 @@ namespace AsynGyanis::Net
         handshakeSource.append(clientKey);
         handshakeSource.append(kWebSocketHandshakeGuid);
 
-        const std::array<unsigned char, kSha1DigestByteLength> digest = computeSha1(handshakeSource);
+        const Core::Digest::Sha1Value digest = Core::Digest::sha1(handshakeSource);
         // 摘要按「指针 + 长度」交给编码器：它是二进制，中间可能含 NUL，不能按零终止字符串处理
-        return encodeBase64(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
+        return Base::base64Encode(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
     }
 
     bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *const failureReason)
@@ -282,18 +162,18 @@ namespace AsynGyanis::Net
             return reject("WebSocket 握手缺少 Sec-WebSocket-Key 头：请补上 16 字节随机数的标准 base64 编码");
         }
 
-        std::string decodedKey;
-        if (!decodeBase64(trimOptionalWhitespace(*keyValue), decodedKey))
+        const std::optional<std::string> decodedKey = Base::base64Decode(trimOptionalWhitespace(*keyValue));
+        if (!decodedKey.has_value())
         {
             return reject(std::format("Sec-WebSocket-Key 不是规范的 base64 文本（收到的值：{}），请发送 16 字节随机数的标准 base64 编码，"
                                       "形如 dGhlIHNhbXBsZSBub25jZQ==",
                                       *keyValue));
         }
-        if (decodedKey.size() != kWebSocketKeyByteLength)
+        if (decodedKey->size() != kWebSocketKeyByteLength)
         {
             return reject(std::format("Sec-WebSocket-Key 解码后必须是 16 字节（RFC 6455 §4.1），本次解码得到 {} 字节，"
                                       "请发送 16 字节随机数的标准 base64 编码",
-                                      decodedKey.size()));
+                                      decodedKey->size()));
         }
 
         clientKey = trimOptionalWhitespace(*keyValue);

@@ -17,6 +17,15 @@
 
 ### 新增
 
+- **Base64 与摘要工具从各自的使用点收上来**：新增 `Base::base64Encode/base64Decode`（RFC 4648 标准字母表，
+  解码严格到「填充位必须为 0」——放过非规范编码等于允许同一份凭据有多种「合法」写法，比较时就会判成不相等）
+  与 `Core::Digest`（`sha1`/`sha256`/`hmacSha256` 及十六进制输出）。WebSocket 握手原先自带一份 base64 与
+  一段 EVP 样板，两处都改成调用这两个入口；摘要工具放在 Core 而不是 Base，因为 Base 不链接 OpenSSL。
+  HMAC 走 `EVP_MAC_fetch` 的显式流程，不用 `HMAC()`/`EVP_Q_mac` 一次性接口：前者 3.x 起标弃用，
+  后者的参数形状在 3.x 各小版本之间漂过（本机这份第 5 参已是 `OSSL_PARAM*`）。
+  摘要向量类用例都另拿一份独立实现（Python `hmac`/`hashlib`）对过——HMAC-SHA-1 与 HMAC-SHA-256 对同一组
+  key/data 的前 8 个字符都是 `f7bc83f4`，靠记忆写期望值只会误导后来人。
+
 - **JSON 有了对外的解析与序列化入口，HTTP 两侧都有对应工具**：`Base::parseConfigValue()` 把语法错误
   翻成空 optional 而不是抛异常（外部输入不该靠异常否定一次调用），注释是显式开关（配置文件那条路开，
   HTTP 正文按 RFC 8259 不开）；`Base::serializeConfigValue()` 在 dump 之前先查非有限浮点——nlohmann 缺省
