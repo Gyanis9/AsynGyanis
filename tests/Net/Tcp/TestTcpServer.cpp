@@ -14,6 +14,9 @@
 #include "Platform/Platform.h"
 
 #include "CoreTestSupport.h"
+// 根日志器的记录型 Sink（LogCapture）：闸门类用例据此数某个调用点落了几条日志。
+// 与 WebSocket 侧用例同一接法——tests/Net/Http 在 TestNet 的包含路径上
+#include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -1188,6 +1191,9 @@ namespace AsynGyanis::Net
 
     namespace
     {
+        /// 「开头不是合法头」那条告警的正文片段：闸门用例据此数日志条数
+        constexpr std::string_view kInvalidProxyHeaderWarning{"不是合法的 PROXY 协议头"};
+
         /**
          * @brief 拼一条 v1 PROXY 头
          */
@@ -1362,6 +1368,54 @@ namespace AsynGyanis::Net
                 },
                 kNegativeCheckTimeout))
                 << "与首条同源的第三条被放行了：同一个真实来源拿到了两个名额";
+    }
+
+    /**
+     * @brief 同一个调用点的 PROXY 告警要经过闸门：三条同样不合格的连接不多落日志
+     * @details 为什么断「这一批至多一条」加「全进程至少一条」这一对，而不是「恰好一条」：
+     *          闸门是**进程内**的函数局部 static，本文件里另有几条用例命中同一个调用点，
+     *          谁先跑谁占那一拍的窗口。两半合起来才是完整判据——只数一批会放过「整条路径不再写日志」，
+     *          只数全进程会放过「每条连接各写一条」。「首条一定放行」与「放行那条带上被压掉的条数」
+     *          由 tests/Base/Log/TestLogThrottle.cpp 在单元层钉（那里的闸门由用例自己建、窗口可控）。
+     *          撤掉 TcpServer.cpp 里的 ASYN_LOG_THROTTLED 包装，本用例数到一批 3 条。
+     */
+    TEST(TcpServer, ThrottlesRepeatedProxyRejectionWarnings)
+    {
+        // 闸门先挂上再开服：日志走的是根日志器，晚一步就漏掉前面几条
+        const HttpTestSupport::LogCapture logCapture;
+
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ObservesStopRequest;
+        options.proxyProtocolRequired = true;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const std::size_t warningCountBefore = logCapture.countContaining(kInvalidProxyHeaderWarning);
+        constexpr std::size_t kJunkConnectionCount = 5U;
+        for (std::size_t connectionIndex = 0; connectionIndex < kJunkConnectionCount; ++connectionIndex)
+        {
+            const LoopbackClient client(listeningPort);
+            ASSERT_TRUE(client.isValid());
+            // 首字节就不是 "PROXY "：这一批五条全部命中同一个调用点
+            ASSERT_TRUE(client.sendAll("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+            ASSERT_TRUE(waitForCondition(
+                    [&client]
+                    {
+                        return client.isClosedByPeer();
+                    },
+                    kWaitTimeout))
+                    << "第 " << connectionIndex << " 条不合格的连接没被收口";
+        }
+
+        const std::size_t warningCountAfter = logCapture.countContaining(kInvalidProxyHeaderWarning);
+        EXPECT_LE(warningCountAfter - warningCountBefore, 1U)
+                << "一批 " << kJunkConnectionCount << " 条同类连接写出了多条告警：这个调用点没接闸门";
+        EXPECT_GE(warningCountAfter, 1U)
+                << "整个进程里一条 PROXY 告警都没有：闸门把这条信号整个吞掉了";
+        EXPECT_EQ(fixture.server().createConnectionCalls(), 0U) << "被告警挡下的连接里有的还是建了会话";
     }
 
     /**

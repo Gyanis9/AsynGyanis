@@ -22,6 +22,7 @@ add_executable(TestBase
         Log/TestSourceLocation.cpp
         Log/TestLogEvent.cpp
         Log/TestLogMacros.cpp
+        Log/TestLogThrottle.cpp
         Log/TestLogger.cpp
         Log/TestLoggerRegistry.cpp
         Log/TestLoggerConfigLoader.cpp

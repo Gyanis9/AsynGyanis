@@ -7,10 +7,12 @@
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
+#include "Base/Log/LogThrottle.h"
 #include "Core/EventLoop/EventLoop.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <exception>
 #include <memory>
 #include <optional>
@@ -20,6 +22,15 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        /**
+         * @brief 同类 PROXY 收口告警的放行间隔
+         * @details 这几条 WARN 是**对端一句话就能触发一次**的：开了 `setProxyProtocolRequired()` 的端口上，
+         *          每个不打头的连接都会留一条。逐条落盘的后果有两层——日志被同一句话刷满，真正要看的信息
+         *          淹在里面；以及同步写日志把事件循环拖住（本仓库真出过一次：热路径上的日志把停摆表现成
+         *          backlog 灌满后回 ECONNREFUSED）。压重复条而不是关掉这条告警，因为「有人在打这个端口」
+         *          本身是要让运维看见的事，被压掉的条数也会写进放行的那一条。
+         */
+        constexpr std::chrono::seconds kProxyRejectionLogWindow{10};
     } // namespace
 
     TcpServer::TcpServer(Core::EventLoop &loop, const Core::InetAddress &address) :
@@ -228,8 +239,14 @@ namespace AsynGyanis::Net
                 const ProxyHeaderFraming framing = frameProxyHeader(buffered);
                 if (!framing.isStillPlausible)
                 {
-                    LOG_WARN_FMT("TcpServer: 连接开头的字节不是合法的 PROXY 协议头，已收口这条连接，监听地址 {}",
-                                 m_acceptor.localAddress().toString());
+                    if (auto &throttle = ASYN_LOG_THROTTLED(kProxyRejectionLogWindow); throttle.acquire())
+                    {
+                        LOG_WARN_FMT("TcpServer: 连接开头的字节不是合法的 PROXY 协议头，已收口这条连接，监听地址 {}"
+                                     "（过去 {} 秒内另有 {} 条同类被压掉）",
+                                     m_acceptor.localAddress().toString(),
+                                     kProxyRejectionLogWindow.count(),
+                                     throttle.droppedCount());
+                    }
                     co_return;
                 }
                 if (framing.totalLength.has_value() && buffered.size() >= *framing.totalLength)
@@ -238,16 +255,29 @@ namespace AsynGyanis::Net
                     const std::optional<ProxyEndpoint> endpoint = parseProxyHeader(buffered, consumedBytes);
                     if (!endpoint.has_value())
                     {
-                        LOG_WARN_FMT("TcpServer: PROXY 协议头不合规范，已收口这条连接，监听地址 {}",
-                                     m_acceptor.localAddress().toString());
+                        if (auto &throttle = ASYN_LOG_THROTTLED(kProxyRejectionLogWindow); throttle.acquire())
+                        {
+                            LOG_WARN_FMT("TcpServer: PROXY 协议头不合规范，已收口这条连接，监听地址 {}"
+                                         "（过去 {} 秒内另有 {} 条同类被压掉）",
+                                         m_acceptor.localAddress().toString(),
+                                         kProxyRejectionLogWindow.count(),
+                                         throttle.droppedCount());
+                        }
                         co_return;
                     }
                     if (consumedBytes != buffered.size())
                     {
                         // 头之后还留着字节：那是代理和请求一起送过来的正文前缀，本层没有地方安放它——
                         // 会话的读缓冲在连接对象里，从这儿塞不进去。宁可拒绝也不静默错位，所以判死
-                        LOG_WARN_FMT("TcpServer: PROXY 头之后还有 {} 字节未被处理，已收口这条连接，监听地址 {}",
-                                     buffered.size() - consumedBytes, m_acceptor.localAddress().toString());
+                        if (auto &throttle = ASYN_LOG_THROTTLED(kProxyRejectionLogWindow); throttle.acquire())
+                        {
+                            LOG_WARN_FMT("TcpServer: PROXY 头之后还有 {} 字节未被处理，已收口这条连接，监听地址 {}"
+                                         "（过去 {} 秒内另有 {} 条同类被压掉）",
+                                         buffered.size() - consumedBytes,
+                                         m_acceptor.localAddress().toString(),
+                                         kProxyRejectionLogWindow.count(),
+                                         throttle.droppedCount());
+                        }
                         co_return;
                     }
                     if (endpoint->hasAddresses)
@@ -269,14 +299,26 @@ namespace AsynGyanis::Net
                 catch (const std::exception &)
                 {
                     // 到点被看门狗关掉、或对端直接断开：两种都归「没把头说完」，收口这条连接
-                    LOG_WARN_FMT("TcpServer: 没等到完整的 PROXY 协议头，已收口这条连接，监听地址 {}",
-                                 m_acceptor.localAddress().toString());
+                    if (auto &throttle = ASYN_LOG_THROTTLED(kProxyRejectionLogWindow); throttle.acquire())
+                    {
+                        LOG_WARN_FMT("TcpServer: 没等到完整的 PROXY 协议头，已收口这条连接，监听地址 {}"
+                                     "（过去 {} 秒内另有 {} 条同类被压掉）",
+                                     m_acceptor.localAddress().toString(),
+                                     kProxyRejectionLogWindow.count(),
+                                     throttle.droppedCount());
+                    }
                     co_return;
                 }
                 if (received <= 0)
                 {
-                    LOG_WARN_FMT("TcpServer: 对端在发完 PROXY 协议头之前就收尾了，已收口这条连接，监听地址 {}",
-                                 m_acceptor.localAddress().toString());
+                    if (auto &throttle = ASYN_LOG_THROTTLED(kProxyRejectionLogWindow); throttle.acquire())
+                    {
+                        LOG_WARN_FMT("TcpServer: 对端在发完 PROXY 协议头之前就收尾了，已收口这条连接，监听地址 {}"
+                                     "（过去 {} 秒内另有 {} 条同类被压掉）",
+                                     m_acceptor.localAddress().toString(),
+                                     kProxyRejectionLogWindow.count(),
+                                     throttle.droppedCount());
+                    }
                     co_return;
                 }
                 buffered.append(chunk.data(), static_cast<std::size_t>(received));
@@ -291,7 +333,15 @@ namespace AsynGyanis::Net
         }
         catch (...)
         {
-            LOG_ERROR_FMT("TcpServer: 读取 PROXY 协议头一轮失败，已收口这条连接。原因：非标准库异常");
+            // 只有正文固定（不带原因）的这一条压重复；上面那条带 what() 的不压——它的价值就在
+            // 每次可能不同的原因文本上，压掉等于把要查的那个原因一起丢了
+            if (auto &throttle = ASYN_LOG_THROTTLED(kProxyRejectionLogWindow); throttle.acquire())
+            {
+                LOG_ERROR_FMT("TcpServer: 读取 PROXY 协议头一轮失败，已收口这条连接。原因：非标准库异常"
+                              "（过去 {} 秒内另有 {} 条同类被压掉）",
+                              kProxyRejectionLogWindow.count(),
+                              throttle.droppedCount());
+            }
         }
     }
 
