@@ -17,6 +17,15 @@
 
 ### 新增
 
+- **`HttpClient` 默认带一个出站熔断器（行为变化）**：同一端点连续 5 次失败（传输层失败或 5xx）即开闸
+  30 秒，开闸期间对新请求直接给出失败原因，不再付 DNS、TCP 与 TLS 握手的钱。原先上游整个塌掉时
+  这笔钱每个请求都要重付一遍，而调用方看到的只是「超时」。判据用「连续失败」而不是「失败率」：
+  连续口径不需要采样窗口，也不会让一个刚上线、请求量还小的端点被一次失败按比例判成不健康。
+  4xx 不算失败（那是使用方的请求有问题，记到上游头上会让一次错误的调用把所有人挡在门外）；
+  半开时一次只放一条探测。端点账是有界的（默认 256 个端点，超出按最久未更新淘汰）。
+  不想要这层保护可以 `setCircuitBreaker(nullptr)` 关掉；换阈值用 `OutboundCircuitBreaker::Configuration`。
+  另补 `setCircuitBreaker()`/`circuitBreaker()` 与可观测读数 `trackedEndpointCount()`/`openEndpointCount()`。
+
 - **Base64 与摘要工具从各自的使用点收上来**：新增 `Base::base64Encode/base64Decode`（RFC 4648 标准字母表，
   解码严格到「填充位必须为 0」——放过非规范编码等于允许同一份凭据有多种「合法」写法，比较时就会判成不相等）
   与 `Core::Digest`（`sha1`/`sha256`/`hmacSha256` 及十六进制输出）。WebSocket 握手原先自带一份 base64 与

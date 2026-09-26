@@ -13,6 +13,7 @@
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Client/HttpCookieJar.h"
+#include "Net/Http/Client/OutboundCircuitBreaker.h"
 #include "Net/Http/Gzip.h"
 namespace AsynGyanis::Net
 {
@@ -589,5 +590,62 @@ namespace AsynGyanis::Net
         EXPECT_EQ(observedJarCount, 1U) << "服务端发的 Set-Cookie 没有收进罐子";
         EXPECT_EQ(secondBody, "sid=42") << "收了却不发：第二次请求应当自动带上罐子里那条";
         EXPECT_EQ(thirdBody, "mine=1") << "调用方自己写了 cookie 头，罐子不该把他那份改掉";
+    }
+    /**
+     * @brief 用带熔断器的实例连发三次同一端点，把三份结果与结束时的开闸端点数落下来
+     */
+    Core::Task<void> breakerProbeTask(Core::EventLoop &loop, const std::string url, std::vector<std::unique_ptr<HttpClientResponse>> &results, std::size_t &openCountAtEnd)
+    {
+        HttpClient                            client(loop);
+        OutboundCircuitBreaker::Configuration configuration;
+        configuration.consecutiveFailureThreshold = 2;
+        configuration.openDuration                = std::chrono::minutes{5};
+        client.setCircuitBreaker(std::make_shared<OutboundCircuitBreaker>(configuration));
+
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            results.push_back(co_await client.send(url, HttpClientRequest{}));
+        }
+        openCountAtEnd = client.circuitBreaker()->openEndpointCount();
+        loop.stop();
+    }
+
+    /**
+     * @brief 熔断器在实例这一路上生效：连续 5xx 之后，下一次请求连套接字都不建
+     * @details 挡的是「这笔握手的钱」。判据要能被证伪：阈值是 2，因此前两次必须真拿到 500 响应、
+     *          第三次才是被挡下的——如果熔断器根本没接进通路，第三次也会拿到响应而不是空指针
+     */
+    TEST(HttpClient, BreakerOpensAfterRepeatedServerErrorAndStopsDialing)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/broken",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.setStatus(500);
+                                                            response.setBody("nope");
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/broken";
+
+        Core::EventLoop                                  loop;
+        std::vector<std::unique_ptr<HttpClientResponse>> results;
+        std::size_t                                      openCountAtEnd = 0;
+        auto                                             task           = breakerProbeTask(loop, url, results, openCountAtEnd);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        ASSERT_EQ(results.size(), 3U);
+        ASSERT_TRUE(results[0] != nullptr) << "第一条请求就该拿到 500 响应";
+        ASSERT_TRUE(results[1] != nullptr);
+        EXPECT_EQ(results[1]->statusCode, 500);
+        EXPECT_TRUE(results[2] == nullptr) << "阈值已过却没挡住第三次请求：熔断器没接进这条通路";
+        EXPECT_EQ(openCountAtEnd, 1U);
     }
 } // namespace AsynGyanis::Net

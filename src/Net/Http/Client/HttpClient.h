@@ -18,6 +18,7 @@
 #include <vector>
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
+#include "Net/Http/Client/OutboundCircuitBreaker.h"
 #include "Net/Http/Client/HttpResponseParser.h"
 #include "Net/Http/HttpBodyChunk.h"
 namespace AsynGyanis::Core
@@ -255,6 +256,21 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::shared_ptr<HttpCookieJar> cookieJar() const noexcept;
 
         /**
+         * @brief 换上（或摘掉）出站熔断器。
+         * @details 实例构造时**自带**一个默认配置的熔断器：同一端点连续 5 次失败即开闸 30 秒，
+         *          开闸期间对新请求直接给出失败原因，不再付 DNS、TCP 与 TLS 握手的钱——上游整个塌掉时
+         *          这笔钱原本每个请求都要重付一遍，而调用方看到的只是「超时」。
+         * @param circuitBreaker 熔断器；传空指针即关掉这条保护，退回「每次都试」的行为
+         */
+        void setCircuitBreaker(std::shared_ptr<OutboundCircuitBreaker> circuitBreaker) noexcept;
+
+        /**
+         * @brief 取回当前生效的熔断器。
+         * @return std::shared_ptr<OutboundCircuitBreaker> 已被摘掉时返回空指针
+         */
+        [[nodiscard]] std::shared_ptr<OutboundCircuitBreaker> circuitBreaker() const noexcept;
+
+        /**
          * @brief 走本实例的连接池（以及挂上的 Cookie 罐）发一次完整请求。
          * @details 实例这一向原先只有 `get`/`post` 两个便利入口，带自定义头部的请求只能退回静态
          *          `send()`——那条路不带池，也就把连接复用与 Cookie 罐一起丢了。这里补上的是同一个
@@ -287,5 +303,8 @@ namespace AsynGyanis::Net
         std::unique_ptr<Core::TlsContext> m_clientTls;
         /// 可选的 Cookie 存储罐：为空即完全不管 Cookie（不额外拷一份请求，也不改动任何头部）
         std::shared_ptr<HttpCookieJar> m_cookieJar;
+        /// 出站熔断器。构造时即装一个默认配置的：塌掉的上游被反复重试是引擎侧的缺陷，
+        /// 不该让每个使用方自己想起来开
+        std::shared_ptr<OutboundCircuitBreaker> m_circuitBreaker;
     };
 } // namespace AsynGyanis::Net

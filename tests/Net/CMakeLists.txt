@@ -20,6 +20,7 @@ add_executable(TestNet
         Http/TestHttpDate.cpp
         Http/TestHttpCookie.cpp
         Http/TestHttpCookieJar.cpp
+        Http/TestOutboundCircuitBreaker.cpp
         Http/TestHttpHeaderRules.cpp
         Http/TestHttpHeaderFieldStore.cpp
         Http/TestHotPathAllocations.cpp

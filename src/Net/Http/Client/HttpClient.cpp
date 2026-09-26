@@ -1132,7 +1132,8 @@ namespace AsynGyanis::Net
     HttpClient::~HttpClient() = default;
 
     HttpClient::HttpClient(Core::EventLoop &loop, const HttpOutboundConnectionPool::Config poolConfig, const Core::TlsPolicy &tlsPolicy) :
-        m_loop(&loop), m_pool(poolConfig), m_clientTls(std::make_unique<Core::TlsContext>(tlsPolicy, Core::TlsContext::Role::Client))
+        m_loop(&loop), m_pool(poolConfig), m_clientTls(std::make_unique<Core::TlsContext>(tlsPolicy, Core::TlsContext::Role::Client)),
+        m_circuitBreaker(std::make_shared<OutboundCircuitBreaker>())
     {
         // 出站一侧恒要校验对端证书：不校验等于任何受信 CA 给他域签的证书都能冒充目标主机（CWE-297）。
         // 这一句放在构造而不是每条连接里，是为了让「策略里自带 CA」与「用系统信任库」两种配置的取舍
@@ -1188,12 +1189,38 @@ namespace AsynGyanis::Net
         }
 
         validateRequest(*effectiveRequest);
-        std::string                         failureReason;
+        std::string failureReason;
+
+        const HttpOutboundEndpointKey endpointKey{parsed.host, parsed.port, parsed.scheme == "https"};
+        if (m_circuitBreaker != nullptr && !m_circuitBreaker->allowRequest(endpointKey))
+        {
+            // 开闸期间连套接字都不建：上游塌掉时这笔钱原本每个请求重付一遍，而调用方只看到「超时」
+            failureReason = std::format("{} {} 被本地熔断器挡下：该端点处于开闸期，不解析地址、不建连接也不握手（到点会自动放一条探测请求）", request.method, url);
+            LOG_ERROR_FMT("HttpClient: {}", failureReason);
+            co_return nullptr;
+        }
+
         std::unique_ptr<HttpClientResponse> response = co_await performRequest(*m_loop, *effectiveRequest, parsed, requestTimeout, &m_pool, failureReason, m_clientTls.get());
         if (!response)
         {
+            if (m_circuitBreaker != nullptr)
+            {
+                m_circuitBreaker->reportFailure(endpointKey);
+            }
             LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);
             co_return nullptr;
+        }
+        if (m_circuitBreaker != nullptr)
+        {
+            // 传输层失败与 5xx 记失败；4xx 是使用方的请求有问题，记到上游头上会让一次错误的
+            // 调用把所有人挡在门外
+            if (response->statusCode >= 500)
+            {
+                m_circuitBreaker->reportFailure(endpointKey);
+            } else
+            {
+                m_circuitBreaker->reportSuccess(endpointKey);
+            }
         }
         if (!applyContentEncoding(*effectiveRequest, *response, failureReason))
         {
@@ -1232,6 +1259,16 @@ namespace AsynGyanis::Net
     std::shared_ptr<HttpCookieJar> HttpClient::cookieJar() const noexcept
     {
         return m_cookieJar;
+    }
+
+    void HttpClient::setCircuitBreaker(std::shared_ptr<OutboundCircuitBreaker> circuitBreaker) noexcept
+    {
+        m_circuitBreaker = std::move(circuitBreaker);
+    }
+
+    std::shared_ptr<OutboundCircuitBreaker> HttpClient::circuitBreaker() const noexcept
+    {
+        return m_circuitBreaker;
     }
 
     std::size_t HttpClient::idleConnectionCount() const noexcept
