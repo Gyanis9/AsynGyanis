@@ -26,6 +26,10 @@
 #include <thread>
 #include <vector>
 
+#if !ASYN_PLATFORM_WIN32
+#include <unistd.h>
+#endif
+
 namespace AsynGyanis::Core
 {
     namespace
@@ -230,8 +234,10 @@ namespace AsynGyanis::Core
                     isDone.store(true, std::memory_order_release);
                 });
 
-        // 信号被挡在屏蔽字之外，因此不会按缺省动作终止进程，只会被等待线程取走
-        ASSERT_EQ(::raise(SIGTERM), 0) << "raise 失败，这条用例就没有把信号送出去";
+        // 必须用 kill(getpid()) 而不是 raise()：raise 送的是**线程定向**的挂起信号，只有调用线程自己能收，
+        // 而本类的等待线程要靠**进程定向**的挂起信号才能取到它（raise 的这颗会一直挂在主线程的掩码后面，
+        // 析构解除屏蔽时才按缺省动作把进程干掉）。这与外部 `kill -TERM <pid>` 的实际形状一致
+        ASSERT_EQ(::kill(::getpid(), SIGTERM), 0) << "kill 失败，这条用例就没有把信号送出去";
 
         ASSERT_TRUE(waitForCondition([&isDone] { return isDone.load(std::memory_order_acquire); })) << "SIGTERM 送达后收尾没有执行";
         EXPECT_TRUE(shutdown.isTriggered());

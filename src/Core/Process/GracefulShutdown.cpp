@@ -28,9 +28,10 @@ namespace AsynGyanis::Core
         /// 进程级唯一的观察者：信号掩码与处理器都是进程级的东西，两个实例只会互相抢
         GracefulShutdown *g_owner = nullptr;
 
-#if ASYN_PLATFORM_WIN32
-        /// 关闭、注销与关机事件留给收尾动作的时间上限：处理器一返回，系统就要终止进程
+        /// 需要原地等收尾跑完的那类触发（Windows 的关闭、注销、关机事件）留给它的时间上限
         constexpr std::chrono::milliseconds kConsoleEventBudget{5000};
+
+#if ASYN_PLATFORM_WIN32
 
         /**
          * @brief 系统要求的 C 回调跳板

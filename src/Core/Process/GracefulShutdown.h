@@ -40,8 +40,12 @@ namespace AsynGyanis::Core
      * @note 一个进程只允许一个观察者：信号处理器与 SIGTERM 的屏蔽都是进程级的，两个实例会互相抢。
      *       第二个实例不会装处理器，`isInstalled()` 返回 false 并记一条 ERROR 日志——不静默降级。
      * @note POSIX 侧要求**尽早构造**（在其它工作线程创建之前）：构造时把 SIGINT/SIGTERM 加进本线程的
-     *       信号屏蔽字，之后派生的线程继承它，信号因此只会由本类那个 `sigwait` 线程取走。
+     *       信号屏蔽字，之后派生的线程继承它，信号因此只会由本类那个等待线程（带超时的 sigtimedwait
+     *       轮询）取走。
      *       已经跑起来的线程不会被打上屏蔽，它们仍可能自己收到信号并按缺省动作终止进程。
+     * @note 只收**进程定向**的信号（`kill(pid, SIGTERM)`、终端的 Ctrl+C 都是这一类）：用 `raise()` 或
+     *       `pthread_kill()` 送给某条线程的线程定向信号，只有那条线程自己能收，本类的等待线程取不到它。
+     *       要在进程内模拟一次真信号，请用 `kill(getpid(), SIGTERM)`，或者直接调 requestShutdown()。
      * @note 目标循环如果已经退出，投回去的动作会被丢弃（`Scheduler::postRemote` 的既有语义）：
      *       收尾动作不该依赖一个已经不在跑的循环。
      */
