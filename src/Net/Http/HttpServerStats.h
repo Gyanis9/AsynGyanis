@@ -102,6 +102,16 @@ namespace AsynGyanis::Net
         std::uint64_t admissionRejectedConnectionCount{0};
 
         /**
+         * @brief 取快照这一刻排在阻塞任务执行器队列里的任务条数（进程级，0 表示没有积压）
+         * @details 这是「事件循环有没有被拖住」最早的信号：队列开始涨，说明下游变慢或工作线程不够，
+         *          而请求侧此时往往还只是延迟，看不出问题。
+         */
+        std::uint64_t blockingTaskQueueDepth{0};
+
+        /// 因排队已满而被拒的阻塞任务条数（进程级累计）；提交方当场收到异常，运维据此判断要不要降并发
+        std::uint64_t blockingTaskRejectedCount{0};
+
+        /**
          * @brief 取延迟直方图的样本总数
          * @return std::uint64_t 各档累计值之和；与 totalRequestCount 的差即「已收齐但响应未落账」的
          *         条数，其中既有响应未发出的，也有升级到 WebSocket 的（101 不经 recordResponse 落账）
@@ -276,38 +286,13 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 取当前计数的快照
+         * @details 除采集端自己的计数外，这里还并入进程级的运行期积压读数（阻塞任务队列的深度与
+         *          被拒条数，见 `applyRuntimeBacklogStats`）。并入放在这一处而不是各通道的 `stats()`
+         *          里：三条通道都从这里取快照，收在一处就不存在「哪条通道忘了接」。
          * @return HttpServerStats 各字段分别原子读取的结果；activeConnectionCount 是这一刻
          *         共用本采集端的连接管理器在册条数之和
          */
-        [[nodiscard]] HttpServerStats snapshot() const noexcept
-        {
-            HttpServerStats stats;
-            stats.totalRequestCount           = m_totalRequestCount.load(std::memory_order_relaxed);
-            stats.activeConnectionCount       = m_activeConnectionCount.load(std::memory_order_relaxed);
-            stats.badRequestCount             = m_badRequestCount.load(std::memory_order_relaxed);
-            stats.timeoutClosedCount          = m_timeoutClosedCount.load(std::memory_order_relaxed);
-            stats.writeAbortedConnectionCount = m_writeAbortedConnectionCount.load(std::memory_order_relaxed);
-            stats.status1xxCount              = m_status1xxCount.load(std::memory_order_relaxed);
-            stats.status2xxCount              = m_status2xxCount.load(std::memory_order_relaxed);
-            stats.status3xxCount              = m_status3xxCount.load(std::memory_order_relaxed);
-            stats.status4xxCount              = m_status4xxCount.load(std::memory_order_relaxed);
-            stats.status5xxCount              = m_status5xxCount.load(std::memory_order_relaxed);
-
-            stats.webSocketUpgradeCount            = m_webSocketUpgradeCount.load(std::memory_order_relaxed);
-            stats.webSocketMessageCount            = m_webSocketMessageCount.load(std::memory_order_relaxed);
-            stats.webSocketProtocolErrorCloseCount = m_webSocketProtocolErrorCloseCount.load(std::memory_order_relaxed);
-            stats.webSocketPeerCloseCount          = m_webSocketPeerCloseCount.load(std::memory_order_relaxed);
-            stats.webSocketServerCloseCount        = m_webSocketServerCloseCount.load(std::memory_order_relaxed);
-            stats.streamCancelledCount             = m_streamCancelledCount.load(std::memory_order_relaxed);
-            stats.zeroCopySendCount                = m_zeroCopySendCount.load(std::memory_order_relaxed);
-
-            for (std::size_t index = 0; index < kHttpLatencyBucketCount; ++index)
-            {
-                stats.latencyBucketCounts[index] = m_latencyBucketCounts[index].load(std::memory_order_relaxed);
-            }
-            stats.totalLatencyMicroseconds = m_totalLatencyMicroseconds.load(std::memory_order_relaxed);
-            return stats;
-        }
+        [[nodiscard]] HttpServerStats snapshot() const noexcept;
 
     private:
         /**
@@ -393,5 +378,15 @@ namespace AsynGyanis::Net
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
+
+    /**
+     * @brief 把进程级的运行期积压读数并进一份统计快照。
+     * @details 阻塞任务执行器是进程级共享的一份，不住在任何采集端里，因此与准入闸门同一办法：
+     *          取快照时现读。由 `HttpMetricsCollector::snapshot()` 统一调用，三条通道（明文 HTTP、
+     *          HTTPS/HTTP2、QUIC）因此报的是同一份读数，也不会出现某条通道忘了接的情况。
+     *          读数本身与「哪个实例在报」无关，HELP 文案里已按进程级说明。
+     * @param stats 待补的快照，就地改写 blockingTaskQueueDepth 与 blockingTaskRejectedCount
+     */
+    void applyRuntimeBacklogStats(HttpServerStats &stats) noexcept;
 
 } // namespace AsynGyanis::Net

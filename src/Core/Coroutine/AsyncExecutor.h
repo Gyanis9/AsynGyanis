@@ -114,6 +114,17 @@ namespace AsynGyanis::Core
         }
 
         /**
+         * @brief 获取因排队已满而被拒的累计条数
+         * @details 拒绝当场就会给提交方抛异常，因此这条计数不是「功能正确性」的判据，而是运维看趋势用的：
+         *          它在涨说明并发已经超出现有的工作线程能消化的量。停机期的拒绝不计入（见成员注释）。
+         * @return std::size_t 累计条数
+         */
+        [[nodiscard]] std::size_t saturatedRejectionCount() const noexcept
+        {
+            return m_saturatedRejectionCount.load(std::memory_order_relaxed);
+        }
+
+        /**
          * @brief 取得进程级共享的执行器
          *
          * @details 函数内静态对象，首次调用时创建（线程安全），随进程退出销毁并 join 全部线程。
@@ -332,6 +343,9 @@ namespace AsynGyanis::Core
         std::condition_variable           m_condition;       ///< 通知工作线程有新任务或收到停止请求
         std::deque<std::function<void()>> m_tasks;           ///< 待执行的阻塞任务（FIFO，先到先服务）
         std::atomic<std::size_t>          m_pendingCount{0}; ///< 队列长度（原子，供监控快速读取）
+
+        /// 因排队已满被拒的累计条数（只算这一种拒绝：停机期的拒绝发生在进程收尾，报出来只会让告警自己响一次）
+        std::atomic<std::size_t> m_saturatedRejectionCount{0};
 
         std::atomic<bool> m_isStopping{false}; ///< 是否已进入停止流程：析构一开始置真，此后 enqueue 一律拒绝——工作线程退出后没人再取队列，收下任务等于让提交方永久挂起
 

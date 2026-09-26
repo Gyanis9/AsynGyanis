@@ -111,6 +111,14 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "admission_rejected_connections_total"), "被按来源 IP 的并发限额挡掉的连接条数（限额器可在多条通道间共用，报的是总量）",
                       stats.admissionRejectedConnectionCount);
 
+        // 运行期积压：阻塞任务队列是进程级共享的，多条通道报的是同一份读数（不是各自的份额）
+        const std::string queueDepthName = makeMetricName(metricNamePrefix, "blocking_task_queue_depth");
+        out += std::format("# HELP {} 取快照那一刻排在阻塞任务执行器队列里的任务条数（进程级，多条通道报同一份）\n"
+                           "# TYPE {} gauge\n{} {}\n",
+                           queueDepthName, queueDepthName, queueDepthName, stats.blockingTaskQueueDepth);
+        appendCounter(out, makeMetricName(metricNamePrefix, "blocking_task_rejected_total"),
+                      "因排队已满被拒的阻塞任务条数（进程级累计；提交方当场收到异常，涨了就说明该降并发或加工作线程）", stats.blockingTaskRejectedCount);
+
         return out;
     }
 

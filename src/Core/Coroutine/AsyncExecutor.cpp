@@ -71,6 +71,7 @@ namespace AsynGyanis::Core
             // 队列无界时一次下游变慢就能把进程撑死，而那本来只是几个请求的延迟问题
             if (m_tasks.size() >= workerCount() * kMaximumPendingTasksPerWorker)
             {
+                m_saturatedRejectionCount.fetch_add(1, std::memory_order_relaxed);
                 return SubmissionResult::RejectedBySaturatedQueue;
             }
 

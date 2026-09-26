@@ -278,6 +278,7 @@ namespace AsynGyanis::Core
 
         EXPECT_EQ(executor.pendingTaskCount(), kCapacity) << "队列长度越过了每线程上限：排队仍然是无界的";
         EXPECT_EQ(rejectedCount, 8U) << "超出上限的提交数应当全部被拒";
+        EXPECT_EQ(executor.saturatedRejectionCount(), rejectedCount) << "被拒条数没有在计数器上留痕：运维看趋势时这条队列是看不见的";
         EXPECT_NE(firstRejectionText.find("排队已满"), std::string::npos) << "拒绝原因要说清是排队满了（该降并发），文案是：" + firstRejectionText;
 
         isGateOpen.store(true, std::memory_order_release);

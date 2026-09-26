@@ -4,20 +4,25 @@
 #include "Net/Http/HttpServerStats.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "HttpTestSupport.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -111,6 +116,8 @@ namespace AsynGyanis::Net
             stats.zeroCopySendCount                = 13;
             stats.writeAbortedConnectionCount      = 14;
             stats.admissionRejectedConnectionCount = 15;
+            stats.blockingTaskQueueDepth           = 16;
+            stats.blockingTaskRejectedCount        = 17;
             return stats;
         }
     } // namespace
@@ -135,6 +142,9 @@ namespace AsynGyanis::Net
         EXPECT_NE(text.find("asyn_http_http2_stream_cancelled_total 12\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_zerocopy_sends_total 13\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_admission_rejected_connections_total 15\n"), std::string::npos);
+        // 队列深度是瞬时量（gauge），被拒条数是累计量（counter）——两族语义不同，报错了采集侧会算增长率
+        EXPECT_NE(text.find("# TYPE asyn_http_blocking_task_queue_depth gauge\nasyn_http_blocking_task_queue_depth 16\n"), std::string::npos);
+        EXPECT_NE(text.find("# TYPE asyn_http_blocking_task_rejected_total counter\nasyn_http_blocking_task_rejected_total 17\n"), std::string::npos);
 
         // 活跃连接数是瞬时量，必须是 gauge——报成 counter 采集侧会去算增长率
         EXPECT_NE(text.find("# TYPE asyn_http_active_connections gauge\nasyn_http_active_connections 2\n"), std::string::npos);
@@ -300,6 +310,67 @@ namespace AsynGyanis::Net
         }
 
         EXPECT_EQ(fixture.server().stats().admissionRejectedConnectionCount, 1u) << "挡下了一条却没在快照里留痕：这道闸门在服务端侧等于看不见";
+    }
+
+    /**
+     * @brief 钉住：快照里的运行期积压读数确实来自共享执行器，不是恒为零的摆设
+     * @details 判据要能被证伪：把共享执行器的工作线程逐个占住（卡在条件变量上，不烧 CPU），
+     *          再投一条——那条只能排在队列里，于是「深度」有了一个非零的真值可比。
+     *          收尾次序按「放行 → 等队列排空 → join 循环线程 → 协程帧出作用域」，
+     *          反过来的话恢复会打到已经消亡的帧上。
+     */
+    TEST(HttpMetricsEndpoint, RuntimeBacklogReadingsMirrorTheSharedExecutorQueue)
+    {
+        HttpMetricsCollector collector;
+        Core::AsyncExecutor &executor    = Core::AsyncExecutor::shared();
+        const std::size_t    workerCount = executor.workerCount();
+        ASSERT_GT(workerCount, 0U);
+
+        std::mutex               gateMutex;
+        std::condition_variable  gateCondition;
+        bool                     isGateOpen = false;
+        std::atomic<std::size_t> parkedCount{0};
+
+        const auto parkUntilGateOpens = [&gateMutex, &gateCondition, &isGateOpen, &parkedCount]()
+        {
+            parkedCount.fetch_add(1, std::memory_order_release);
+            std::unique_lock<std::mutex> lock(gateMutex);
+            gateCondition.wait(lock, [&isGateOpen] { return isGateOpen; });
+            return 1;
+        };
+
+        EventLoopThread runner;
+        ASSERT_TRUE(runner.waitUntilRunning());
+
+        std::vector<Core::Task<int>> parkedTasks;
+        parkedTasks.reserve(workerCount + 1);
+        for (std::size_t index = 0; index < workerCount; ++index)
+        {
+            Core::Task<int> parkedTask = executor.submit<int>(runner.loop(), parkUntilGateOpens);
+            parkedTask.handle().resume();
+            parkedTasks.push_back(std::move(parkedTask));
+        }
+        ASSERT_TRUE(waitForCondition([&parkedCount, workerCount] { return parkedCount.load(std::memory_order_acquire) == workerCount; }))
+                << "工作线程没有被全部占住，后面那条任务的「只能排队」就不成立";
+
+        Core::Task<int> queuedTask = executor.submit<int>(runner.loop(), []() { return 2; });
+        queuedTask.handle().resume();
+        ASSERT_TRUE(waitForCondition([&executor] { return executor.pendingTaskCount() >= 1; })) << "多投的那条没有排进队列";
+
+        const HttpServerStats snapshot = collector.snapshot();
+        EXPECT_GE(snapshot.blockingTaskQueueDepth, 1U) << "队列里压着任务，快照却报零：这条读数没有接线";
+        EXPECT_EQ(snapshot.blockingTaskQueueDepth, static_cast<std::uint64_t>(executor.pendingTaskCount()));
+        EXPECT_EQ(snapshot.blockingTaskRejectedCount, static_cast<std::uint64_t>(executor.saturatedRejectionCount()));
+
+        {
+            const std::lock_guard<std::mutex> lock(gateMutex);
+            isGateOpen = true;
+        }
+        gateCondition.notify_all();
+        ASSERT_TRUE(waitForCondition([&executor] { return executor.pendingTaskCount() == 0; })) << "放行之后排队的任务没有做完";
+        parkedTasks.push_back(std::move(queuedTask));
+
+        runner.join();
     }
 
 } // namespace AsynGyanis::Net
