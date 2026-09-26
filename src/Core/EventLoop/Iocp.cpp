@@ -5,6 +5,7 @@
 #include "Base/Log/LogMacros.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -76,6 +77,16 @@ namespace AsynGyanis::Core
         std::uint32_t registeredEvents{0};            ///< 最近一次登记的关注位（含 EPOLLONESHOT 与否）
         ProbeContext  readProbe{};                    ///< 读方向（监听描述符上是 AcceptEx）
         ProbeContext  writeProbe{};                   ///< 写方向
+
+        /// 连接操作（ConnectEx）自己的探针与结果：只在 `beginConnect()` 之后存在。
+        /// 它不复用 writeProbe——两者的完成含义不同（一个问「缓冲放得下吗」，一个报「连上了吗」），
+        /// 混在一起会让 armProbe 分不清该不该再投零字节探针
+        ProbeContext  connectProbe{};                 ///< 连接操作的重叠结构（完成通知按地址认它）
+        bool          isConnectPending{false};        ///< 连接操作已投递、还没等到完成
+        bool          hasConnectResult{false};        ///< 完成已到，结果等 takeConnectResult() 取走
+        int           connectErrorCode{0};            ///< 完成包里译出的 Winsock 错误码，0 为连上
+        std::unique_ptr<char[]> connectAddressBuffer; ///< ConnectEx 的地址输出区（本地/远端各一份，含 16 字节余量）
+
         char          readBuffer[1]{};                ///< 1 字节 MSG_PEEK 探针缓冲：只读不取，内容无用
         bool          hasReadProbe{false};            ///< 读探针是否已在途
         bool          hasWriteProbe{false};           ///< 写探针是否已在途
@@ -109,7 +120,7 @@ namespace AsynGyanis::Core
         /// 是否还有探针没等到完成通知
         [[nodiscard]] bool hasProbeInFlight() const noexcept
         {
-            return hasReadProbe || hasWriteProbe;
+            return hasReadProbe || hasWriteProbe || isConnectPending;
         }
 
         /// 初始化探针的固定字段
@@ -119,6 +130,8 @@ namespace AsynGyanis::Core
             readProbe.direction = EPOLLIN;
             writeProbe.owner     = this;
             writeProbe.direction = EPOLLOUT;
+            connectProbe.owner     = this;
+            connectProbe.direction = EPOLLOUT;
             userData            = watcherData;
         }
     };
@@ -399,6 +412,101 @@ namespace AsynGyanis::Core
         return true;
     }
 
+    bool Iocp::beginConnect(const int fileDescriptor, const sockaddr *const address, const int addressLength,
+                            int *const immediateErrorCode)
+    {
+        const ExclusiveUse exclusive(*this, "beginConnect");
+        const auto iterator = m_sockets.find(fileDescriptor);
+        if (iterator == m_sockets.end())
+        {
+            // 没注册就没有落脚的 OVERLAPPED：调用方（AsyncSocket）先经 ensureWatcher() 建好注册对象
+            *immediateErrorCode = ENOTSOCK;
+            return false;
+        }
+
+        SocketState &state = *iterator->second;
+        if (state.isConnectPending)
+        {
+            *immediateErrorCode = EALREADY;
+            return false;
+        }
+
+        GUID connectId = WSAID_CONNECTEX;
+        LPFN_CONNECTEX connectFunction = nullptr;
+        DWORD          resolvedLength  = 0;
+        if (::WSAIoctl(state.socketHandle, SIO_GET_EXTENSION_FUNCTION_POINTER, &connectId, sizeof(connectId),
+                       &connectFunction, sizeof(connectFunction), &resolvedLength, nullptr, nullptr) != 0 ||
+            connectFunction == nullptr)
+        {
+            *immediateErrorCode = WSAGetLastError();
+            return false;
+        }
+
+        // ConnectEx 要求先绑定：未绑定时直接投会拿到 WSAEINVAL（实测）。判「没绑过」以 getsockname
+        // 为准——Windows 上未绑定的套接字是**调用失败**（WSAEINVAL），不是回一个 AF_UNSPEC 的地址；
+        // 已绑定的（调用方自己 bind 过）不动它
+        sockaddr_storage boundName{};
+        int              boundLength = static_cast<int>(sizeof(boundName));
+        const bool       isUnbound   = ::getsockname(state.socketHandle, reinterpret_cast<sockaddr *>(&boundName), &boundLength) != 0
+                                       || boundName.ss_family == AF_UNSPEC;
+        if (isUnbound)
+        {
+            sockaddr_storage anyAddress{};
+            anyAddress.ss_family = address->sa_family;
+            const int bindLength = address->sa_family == AF_INET ? static_cast<int>(sizeof(sockaddr_in))
+                                                                 : static_cast<int>(sizeof(sockaddr_in6));
+            static_cast<void>(::bind(state.socketHandle, reinterpret_cast<const sockaddr *>(&anyAddress), bindLength));
+        }
+
+        // 地址输出区按文档要求留两份「最大地址长度 + 16」；本框架只跑 IPv4/IPv6，取 sockaddr_in6 一份
+        if (state.connectAddressBuffer == nullptr)
+        {
+            state.connectAddressBuffer = std::make_unique<char[]>(2 * (sizeof(sockaddr_in6) + 16));
+        }
+
+        std::memset(&state.connectProbe.overlapped, 0, sizeof(OVERLAPPED));
+        DWORD transferred = 0;
+        const BOOL isStarted = connectFunction(state.socketHandle, address, addressLength, nullptr, 0, &transferred,
+                                              &state.connectProbe.overlapped);
+        if (isStarted == TRUE)
+        {
+            // 当场就连上了：完成通知仍会入队（结果码为 0），因此同样记成在途，由它把结果取回
+            *immediateErrorCode  = 0;
+            state.isConnectPending = true;
+            return true;
+        }
+
+        const int startError = ::WSAGetLastError();
+        if (startError != ERROR_IO_PENDING && startError != WSAEWOULDBLOCK)
+        {
+            *immediateErrorCode = startError;
+            return false;
+        }
+        *immediateErrorCode    = 0;
+        state.isConnectPending = true;
+        return true;
+    }
+
+    bool Iocp::takeConnectResult(const int fileDescriptor, int *const errorCode)
+    {
+        const ExclusiveUse exclusive(*this, "takeConnectResult");
+        const auto iterator = m_sockets.find(fileDescriptor);
+        if (iterator == m_sockets.end())
+        {
+            return false;
+        }
+
+        SocketState &state = *iterator->second;
+        if (!state.hasConnectResult)
+        {
+            return false;
+        }
+        *errorCode              = state.connectErrorCode;
+        state.hasConnectResult  = false;
+        state.connectErrorCode  = 0;
+        return true;
+    }
+
     /**
      * @brief 探针投递失败是否属于「等下一拍再来」的可重试错误
      * @details 连接尚未建立（监听描述符还没 listen()、客户端套接字还没 connect 完）与发送缓冲
@@ -510,6 +618,15 @@ namespace AsynGyanis::Core
 
         if (state.hasWriteProbe)
         {
+            return true;
+        }
+
+        if (state.isConnectPending)
+        {
+            // 连接在途：这条套接字上零字节 WSASend 连投递都上不去（实测 WSAENOTCONN 贯穿整个连接期），
+            // 记成「待重投」等于让等待方永久静默、只能靠上层看门狗收场。这里认「已武装」——
+            // 完成通知由 ConnectEx 自己带来，见 beginConnect()
+            state.failedDirections &= ~EPOLLOUT;
             return true;
         }
 
@@ -764,10 +881,32 @@ namespace AsynGyanis::Core
         // 失败的完成（对端复位、取消、AcceptEx 出错）在 OVERLAPPED::Internal 上带负的状态码
         const bool isFailed = static_cast<LONG_PTR>(context->overlapped.Internal) < 0;
 
+        // 连接操作（ConnectEx）的完成：结果只存在于完成包里——实测此刻 SO_ERROR 仍是 0，
+        // 而包里的 NTSTATUS 要经 WSAGetOverlappedResult 才译得回 Winsock 错误码。
+        // 认下来之后照常走通用收尾：清在途标记、按关注位上报，失败时报 EPOLLERR|EPOLLHUP
+        const bool isConnectProbe = context == &state.connectProbe;
+        bool isFailedForReport = isFailed;
+        if (isConnectProbe)
+        {
+            state.isConnectPending = false;
+            DWORD transferred = 0;
+            DWORD flags = 0;
+            const bool succeeded =
+                    ::WSAGetOverlappedResult(state.socketHandle, &state.connectProbe.overlapped, &transferred, FALSE, &flags) == TRUE;
+            state.connectErrorCode = succeeded ? 0 : ::WSAGetLastError();
+            if (succeeded)
+            {
+                // 不补这一步，这条套接字拿不到监听侧的上下文，随后的收发会报「未连接」
+                static_cast<void>(::setsockopt(state.socketHandle, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, nullptr, 0));
+            }
+            state.hasConnectResult = true;
+            isFailedForReport      = !succeeded;
+        }
+
         if (direction == EPOLLIN)
         {
             state.hasReadProbe = false;
-        } else
+        } else if (!isConnectProbe)
         {
             state.hasWriteProbe = false;
         }
@@ -818,7 +957,7 @@ namespace AsynGyanis::Core
         epoll_event event{};
         event.data.ptr = state.userData;
         event.events   = direction;
-        if (isFailed)
+        if (isFailedForReport)
         {
             // 与 epoll 一致：错误与挂断同时算作可读与可写，让上层自己去拿真实错误
             event.events |= EPOLLERR | EPOLLHUP;
@@ -921,6 +1060,10 @@ namespace AsynGyanis::Core
         if (state.hasWriteProbe)
         {
             static_cast<void>(::CancelIoEx(toHandle(state.socketHandle), &state.writeProbe.overlapped));
+        }
+        if (state.isConnectPending)
+        {
+            static_cast<void>(::CancelIoEx(toHandle(state.socketHandle), &state.connectProbe.overlapped));
         }
     }
 

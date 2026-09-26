@@ -56,6 +56,15 @@ namespace AsynGyanis::Core
         /// 每轮发送的负载长度：对端不读时，两侧缓冲加起来远小于这里一轮的量
         constexpr std::size_t kBlockingSendChunkLength = 64 * 1024;
 
+        /// 「对端拒绝」在本机错误空间里的数值：Windows 是 WSAECONNREFUSED，POSIX 是 ECONNREFUSED。
+        /// 两侧都按 std::system_category() 递交，因此数值可以直接对照
+        constexpr int kExpectedRefusedErrorCode =
+#if ASYN_PLATFORM_WIN32
+            10061;
+#else
+            ECONNREFUSED;
+#endif
+
         /// 触发「等可写」的轮数上限：跑满说明本机没有构造出写阻塞，而不是实现出错
         constexpr int kBlockingSendRoundLimit = 4096;
 
@@ -535,6 +544,54 @@ namespace AsynGyanis::Core
 
         client.close();
         listener.close();
+    }
+
+    /**
+     * @brief 连接被拒要由 IO 后端报回来，而不是等上层的看门狗
+     *
+     * @details Windows 上这一条曾经走不通：非阻塞 `connect()` 之后 IOCP 永远不给可写事件——连接中的
+     *          套接字上零字节 `WSASend` 连投递都上不去（实测 WSAENOTCONN 贯穿整个连接期），于是
+     *          `asyncConnect` 只能靠时限收场，报出来的原因是「等待期间套接字被关闭」而不是「对端拒绝」。
+     *          现在连接是一次真正的重叠操作：完成通知带着译回 Winsock 空间的错误码回来。
+     *
+     * @note 判据取错误身份而不是墙钟毫秒：回环上「被拒」的完成时刻由内核决定（实测约 2 秒），
+     *       把毫秒钉进用例等于赌调度运气。
+     */
+    TEST(AsyncSocket, ReportsRefusedConnectThroughTheIoBackend)
+    {
+        EventLoop loop;
+
+        AsyncSocket listener = AsyncSocket::create(loop);
+        ASSERT_TRUE(listener.bind(InetAddress(static_cast<std::uint16_t>(0), "127.0.0.1")));
+        ASSERT_TRUE(listener.listen(1));
+        const std::uint16_t deadPort = listener.localAddress().port();
+        ASSERT_GT(deadPort, 0);
+        listener.close(); // 关掉之后这条端口没人听：连它会被内核拒绝
+
+        AsyncSocket client     = AsyncSocket::create(loop);
+        Task<>      connecting = client.asyncConnect(InetAddress("127.0.0.1", deadPort));
+        connecting.handle().resume();
+
+        ASSERT_TRUE(advanceUntil(loop, [&connecting]
+        {
+            return connecting.isReady();
+        }, std::chrono::seconds{15}))
+                << "连接被拒却没醒：等待方只能靠看门狗收场，这正是要修掉的形态";
+
+        int  reportedCode = 0;
+        bool isRefused    = false;
+        try
+        {
+            connecting.handle().promise().result();
+            FAIL() << "连一个没人听的端口居然成功了";
+        } catch (const Base::SystemException &failure)
+        {
+            reportedCode = failure.nativeError();
+            isRefused    = reportedCode == kExpectedRefusedErrorCode;
+        }
+        EXPECT_TRUE(isRefused) << "醒来是醒来了，但报的错误码不是「对端拒绝」：实测拿到 "
+                               << reportedCode << "（期望 " << kExpectedRefusedErrorCode << "）";
+        client.close();
     }
 
     /**

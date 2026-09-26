@@ -190,6 +190,40 @@ namespace AsynGyanis::Core
 
     Task<> AsyncSocket::asyncConnect(const sockaddr *const address, const socklen_t addressLength) const
     {
+#if ASYN_PLATFORM_WIN32
+        // Windows 上把连接做成一次真正的重叠操作。走 POSIX 那条「非阻塞 connect + 等可写」在这里是死路：
+        // 连接中的套接字上零字节 WSASend 连投递都上不去（实测 WSAENOTCONN 贯穿整个连接期），
+        // IOCP 因此永远不会报可写，等待方只能靠上层的看门狗收场——连接被拒要等到预算耗尽。
+        // ConnectEx 的 OVERLAPPED 归后端所有，所以先建好注册对象再投递。
+        if (ensureWatcher() == nullptr)
+        {
+            throw Base::SystemException("发起连接失败：套接字已无效", lastSocketError());
+        }
+
+        int immediateError = 0;
+        if (!m_loop.epoll().beginConnect(m_fileDescriptor, address, static_cast<int>(addressLength), &immediateError))
+        {
+            throw Base::SystemException("发起连接失败", std::error_code(immediateError, std::system_category()));
+        }
+
+        if (!co_await waitWritable())
+        {
+            throw Base::SystemException("等待连接完成期间套接字被关闭", localSocketClosedError());
+        }
+
+        // 结果优先从完成包里取：实测被拒的 ConnectEx 完成时 SO_ERROR 仍是 0，
+        // 只有包里的状态码译得回 WSAECONNREFUSED。没取到（例如被别的等待者收走）再退回问内核
+        int connectError = 0;
+        if (!m_loop.epoll().takeConnectResult(m_fileDescriptor, &connectError))
+        {
+            connectError = Platform::Socket::takePendingError(m_fileDescriptor);
+        }
+        if (connectError != 0)
+        {
+            throw Base::SystemException("连接对端失败", std::error_code(connectError, std::system_category()));
+        }
+        co_return;
+#else
         if (const int result = ::connect(m_fileDescriptor, address, addressLength); result == 0)
         {
             co_return;
@@ -210,6 +244,7 @@ namespace AsynGyanis::Core
             throw Base::SystemException("连接对端失败", std::error_code(pendingError, std::system_category()));
         }
         co_return;
+#endif
     }
 
     Task<> AsyncSocket::asyncConnect(const InetAddress address) const

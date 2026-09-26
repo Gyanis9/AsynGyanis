@@ -122,6 +122,41 @@ namespace AsynGyanis::Core
         bool takeAcceptedSocket(int listenerFileDescriptor, int *acceptedFileDescriptor);
 
         /**
+         * @brief 用 ConnectEx 发起一条连接，让「连接完成」以后端事件的形式到达
+         * @param fileDescriptor 目标套接字（必须已注册到本后端）
+         * @param address 目标地址
+         * @param addressLength 地址长度
+         * @param immediateErrorCode 输出参数：ConnectEx 同步返回时的 Winsock 错误码（0 表示操作已排上）
+         * @return true 操作已投递（或已当场成功），此后 `takeConnectResult()` 会交出结果；
+         *         false 表示连投递都没成功（原因见 immediateErrorCode）
+         *
+         * @details 非阻塞 `connect()` 之后，Windows 的 IOCP **不会**为「可写」给出任何通知：连接中的
+         *          套接字上零字节 `WSASend` 连投递都失败（实测 WSAENOTCONN 持续整个连接期），
+         *          于是等可写的协程只能靠上层的看门狗收场——连接被拒要等到预算耗尽。
+         *          ConnectEx 把连接变成一次真正的重叠操作，完成通知带着结果回来，等待方按对端时序醒来。
+         *
+         * @note ConnectEx 要求套接字**已绑定**：未绑定时本方法先就地绑到本族的任意地址（实测不绑直接
+         *       WSAEINVAL），已绑定的（调用方自己 bind 过）不动它。
+         * @note 调用方必须在**同一次循环迭代内**接着等这个描述符的可写事件，中间不要挂起：完成通知
+         *        只在 wait() 里处理，投递后立刻进入等待才可能接住它；否则结果会留在状态里等
+         *        `takeConnectResult()` 取，而唤醒源已经没有了。`AsyncSocket::asyncConnect()` 就是这个形状。
+         * @note 完成后本方法负责补 `SO_UPDATE_CONNECT_CONTEXT`，否则这条套接字拿不到监听侧的上下文
+         */
+        bool beginConnect(int fileDescriptor, const sockaddr *address, int addressLength, int *immediateErrorCode);
+
+        /**
+         * @brief 取走一次连接操作的结果
+         * @param fileDescriptor 目标套接字
+         * @param errorCode 输出参数：Winsock 错误码，0 表示连接已建立
+         * @return true 结果已就绪（本次调用把它取走）
+         * @return false 连接还没完成，或这个描述符上没有在途的连接操作
+         *
+         * @details 错误码从完成包里取（`WSAGetOverlappedResult`），**不能**看 `SO_ERROR`：实测被拒的
+         *          ConnectEx 完成时 `SO_ERROR` 仍是 0，而包里的状态码译回来才是 1225/WSAECONNREFUSED。
+         */
+        bool takeConnectResult(int fileDescriptor, int *errorCode);
+
+        /**
          * @brief 取完成端口句柄
          * @return Platform::EpollHandle 完成端口句柄（HANDLE）
          */
