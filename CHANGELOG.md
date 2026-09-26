@@ -17,6 +17,42 @@
 
 ### 新增
 
+- **Cookie 有了结构化表示，客户端也有了自己的 Cookie 罐**：`HttpCookie` 负责一条 Cookie 的名字、取值
+  与属性（Path/Domain/Expires/Max-Age/Secure/HttpOnly/SameSite），`HttpRequest::cookies()` 读、
+  `HttpResponse::setCookie()` 写。以前这两头都得手写 `name=v; Path=/; HttpOnly` 这样的字符串，
+  最容易漏的正是 Secure/HttpOnly 几个字，而把 Expires 写成对端不认的日期格式在响应里是**静默**的。
+  属性只有显式设过才输出——「没设 Path 就补 Path=/」会静默改变作用域，而作用域是 Cookie 最容易出事的地方。
+  新增 `HttpCookieJar`：按 RFC 6265 收发放，域属性必须罩得住请求主机、IP 字面量不收 Domain 属性、
+  Secure 的 Cookie 在明文连接上收侧就丢、缺省路径按 §5.1.4 的 removal 规则推、Max-Age 非正数即删除、
+  同名同域同路径即替换；存储有界（单域上限先挤本站最旧的，总量上限兜住跨域），因为一个愿意一直回
+  Set-Cookie 的对端本可以把客户端内存吃光。`HttpClient::setCookieJar()` 挂上即自动收发，
+  调用方自己写的 cookie 头以他为准。
+- **实例版本的 `HttpClient::send(url, request, timeout)`**：此前实例只有 `get`/`post` 两个便利入口，
+  要发带自定义头部的请求只能退回静态 `send()`，而那条不带池——连接复用与刚挂上的 Cookie 罐一起丢掉。
+- **配置文件之上多了一层环境变量**：`ConfigManager::setEnvironmentOverridePrefix("ASYN_")` 打开后，
+  `ASYN_SERVER__PORT=9090` 覆盖配置键 `server.port`（`__` 是层级分隔符，段内单下划线保留，字母按 ASCII
+  转小写）。容器部署从此不必为改一个端口去挂配置文件。叠加只贴在 `commitConfigData` 这一个出口，
+  所以首次加载、reload 与热重载共用同一份口径，不会出现「改一次文件就把部署侧的值悄悄换回去」。
+  类型取自文件里已有的值，其次取 schema 声明，两处都没有时按字符串交出**不猜**；对象与数组按 JSON 解析，
+  布尔接受 1/0、true/false、yes/no、on/off。值转换失败判整批不应用（半份覆盖比没有覆盖更难查），
+  名字畸形映射不出键的那条只忽略自己并出声。整表枚举归位在 `Platform::ProcessInfo`。
+  快照带 `environmentOverrideCount()`，运维入口与用例都读得到这轮生效了几条。
+- **`/metrics` 多出两族运行期积压读数**：`blocking_task_queue_depth`（gauge）与
+  `blocking_task_rejected_total`（counter）。`AsyncExecutor::pendingTaskCount()` 此前只有定义处一个读者，
+  而队列开始变长恰恰是「事件循环被拖住」最早的信号——在此之前它在观测面上完全看不见。
+  读数并入 `HttpMetricsCollector::snapshot()` 而不是三条通道各自的 `stats()`：明文 HTTP、HTTPS/HTTP2 与
+  QUIC 都从这一个漏斗取快照，收在一处就不存在「哪条通道忘了接」。执行器另加一个只在饱和拒绝分支上自增的
+  计数（停机期的拒绝不计，那只会让告警在进程退出时自己响一次）。
+- **HTTP 日期解析认得两种过时格式了**：RFC 9110 §5.6.7 要求收端兼容 RFC 850
+  （`Sunday, 06-Nov-94 08:49:37 GMT`）与 asctime（`Sun Nov  6 08:49:37 1994`），此前只认 29 字节的
+  IMF-fixdate，这类 `If-Modified-Since` 会被判「解析不出来」。后果是安全的（按条件不命中回完整表示，
+  不会误判成「没变」），但老客户端的条件请求整条白给。两位年份按固定规则折叠（0..69 记 2000 年代、
+  70..99 记 1900 年代），不按「离现在最近的世纪」解释——那样同一条头会在某个时刻之后解析出另一个世纪，
+  缓存验证器就不复现了。
+- **仓库补上了 LICENSE、SECURITY.md 与 Issue 模板**：README 一直自称 MIT 而仓库根没有许可证文件
+  （vcpkg 公共注册表因此带不上 copyright）；自研 QUIC/QPACK/HPACK 这些远程可达的解析器此前也没有
+  对外报告漏洞的通道。
+
 - **`QuicServer` 也能在启动前换限额了（`setLimits`/`setParserLimits`，与两条 TCP 监听器同形）**：
   此前 h3 的限额只能在构造 `QuicServer` 那一刻由 `Configuration` 定死，而 `HttpServer`/`HttpsServer`
   都有 `setLimits(HttpServerLimits)` 与 `setParserLimits(HttpParserLimits)`——同一份配置喂三条通道时，
