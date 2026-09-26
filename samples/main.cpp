@@ -33,6 +33,8 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
@@ -303,6 +305,9 @@ int main(int argc, char **argv)
     /// 会话票据密钥文件，可重复给（首份签发、其余只解开旧票据）；空 = 按 OpenSSL 默认随机密钥
     std::vector<std::string> ticketKeyFiles;
     std::string              configFile;
+    /// 静态目录（--static）：空表示不提供服务。三条通道（h1/h2/h3）共用同一个目录，与 --metrics、
+    /// --compress 一样是「一份配置喂三个监听器」，不给某一条留后门
+    std::string staticDirectory;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -326,6 +331,10 @@ int main(int argc, char **argv)
         } else if (arg == "--max-connections-per-ip")
         {
             maxConnectionsPerIp = static_cast<std::size_t>(Samples::readNumericOption(argc, argv, i, "--max-connections-per-ip", 0U, std::numeric_limits<std::uint64_t>::max()));
+            ++i;
+        } else if (arg == "--static")
+        {
+            staticDirectory = Samples::readOptionValue(argc, argv, i, "--static", "一个静态文件目录");
             ++i;
         } else if (arg == "--https")
             useHttps = true;
@@ -402,7 +411,7 @@ int main(int argc, char **argv)
     if (showUsage)
     {
         LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
-        LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c] [--h3]");
+        LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c] [--h3] [--static <目录>]");
         LOG_INFO("                  [--ticket-key <文件>] [--max-connections-per-ip N] [--metrics] [--config <文件>]");
         LOG_INFO("  --ticket-key TLS 会话票据密钥文件（48 或 80 字节二进制，openssl rand 48 > ticket.key）：");
         LOG_INFO("                  可重复给（首份签发、其余只解旧票据，即轮换）。多进程 --workers 下各进程装同一份，");
@@ -518,6 +527,13 @@ int main(int argc, char **argv)
     }
 
     // QUIC 自带 TLS：没有证书就起不了 h3，与其起一个永远握不上手的监听器，不如在启动期直接说清
+    // 静态目录在碰网络之前先验：三条通道共用这一份配置，等到某一侧的构造里抛出，报出来的就是
+    // 「某个监听器起不来」，而不是「你给的目录不存在」这么一句直接能用的话
+    if (!staticDirectory.empty() && !std::filesystem::is_directory(staticDirectory))
+    {
+        LOG_ERROR_FMT("--static 给的不是一个存在的目录：「{}」（h1/h2/h3 三条通道共用它，任一通道都起不来）", staticDirectory);
+        return 1;
+    }
     if (useHttp3 && !useHttps)
     {
         LOG_ERROR("--h3 需要证书：QUIC 自带 TLS，请与 --https 一起用（--cert/--key）");
@@ -700,6 +716,11 @@ int main(int argc, char **argv)
         server->setLimits(configuration.limits);
         server->setParserLimits(configuration.parserLimits);
         server->setMemoryBudget(inflightBodyBudget);
+        // 静态目录要在 start() 之前登记：它往本监听器的路由器上挂兜底路由
+        if (!staticDirectory.empty())
+        {
+            server->staticFileDir(staticDirectory);
+        }
         if (rateLimitBucket != nullptr)
         {
             server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
@@ -753,6 +774,11 @@ int main(int argc, char **argv)
         server->setLimits(configuration.limits);
         server->setParserLimits(configuration.parserLimits);
         server->setMemoryBudget(inflightBodyBudget);
+        // 静态目录要在 start() 之前登记：它往本监听器的路由器上挂兜底路由
+        if (!staticDirectory.empty())
+        {
+            server->staticFileDir(staticDirectory);
+        }
         if (rateLimitBucket != nullptr)
         {
             server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
@@ -876,6 +902,12 @@ int main(int argc, char **argv)
         {
             http3Server = std::make_unique<Net::QuicServer>(pool.eventLoop(0), http3Configuration);
             http3Server->setRouter(http3Router);
+            // 顺序有讲究：QuicServer::staticFileDir() 要求路由器已经挂上（没挂就抛），因此排在
+            // setRouter 之后；与两条 TCP 通道同一份目录，不给 h3 留一条「只能打路由」的偏路
+            if (!staticDirectory.empty())
+            {
+                http3Server->staticFileDir(staticDirectory);
+            }
             http3ListenTask.emplace(http3Server->listen(*address));
             pool.eventLoop(0).scheduler().schedule(http3ListenTask->handle());
         } catch (const Base::Exception &http3Exception)

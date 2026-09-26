@@ -19,6 +19,12 @@ port="${ASYN_H3_CROSS_PORT:-18493}"
 certificate="tests/Core/fixtures/test_cert.pem"
 private_key="tests/Core/fixtures/test_key.pem"
 server_log="${ASYN_H3_CROSS_LOG:-$(mktemp)}"
+# 一次性的小静态站点：让 h3 的静态正文与两个验证器也接受独立实现的核对。会话层用例的对端是
+# 测试自己排字节的替身，它看不见「content-length 与文件里的字节数是否同源」这类跨实现的事实
+static_dir="$(mktemp -d)"
+static_body="hello-h3-static-body"
+printf '%s' "$static_body" > "$static_dir/greeting.txt"
+static_bytes=$(wc -c < "$static_dir/greeting.txt" | tr -d ' ')
 
 if [[ ! -x "$server_binary" ]]; then
     echo "找不到可执行体 $server_binary（先 cmake --build $build_dir --target echo_server）" >&2
@@ -30,12 +36,13 @@ if ! command -v "$python_binary" >/dev/null 2>&1; then
 fi
 
 "$server_binary" --port "$port" --threads 1 --https --h3 --compress --cert "$certificate" --key "$private_key" \
-    >"$server_log" 2>&1 &
+    --static "$static_dir" >"$server_log" 2>&1 &
 server_pid=$!
 
 cleanup() {
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
+    rm -rf "$static_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -87,6 +94,15 @@ runScenario big-body /big 200
 runScenario gzip-big /big --accept-encoding gzip 200
 # 扩展 CONNECT（RFC 9220）隧道：2xx 建立 + 两条帧的回显逐字节对上
 runScenario websocket-tunnel /ws --websocket hello-h3
+# 静态文件：正文按字节取回、content-type 按扩展名推出、两个验证器（etag 与 last-modified）都在场。
+# 长度用文件实际字节数，而不是写死的字面串——「HEAD 与 GET 的 content-length 同源」这条判据才不是自证
+runScenario static-get /greeting.txt 200 "$static_body" \
+    --expect-header content-type --expect-header "content-length=$static_bytes" \
+    --expect-header etag --expect-header last-modified
+# 同一条静态资源的 HEAD：要给出 GET 会发的那份头部（含同一个长度），线上一个正文字节都不许有
+runScenario static-head /greeting.txt --head --expect-header "content-length=$static_bytes" --expect-header etag
+# 目录里没有的名字：兜底路由要把请求让给 404，而不是回一份空正文当作命中
+runScenario static-missing /no-such-file.txt 404
 
 if [[ $failures -ne 0 ]]; then
     echo "HTTP/3 跨实现验收失败 $failures 条" >&2
@@ -95,4 +111,4 @@ if [[ $failures -ne 0 ]]; then
     exit 1
 fi
 
-echo "HTTP/3 跨实现验收全部通过（8 条场景）"
+echo "HTTP/3 跨实现验收全部通过（11 条场景）"
