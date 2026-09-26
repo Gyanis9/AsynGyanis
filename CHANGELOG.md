@@ -661,6 +661,19 @@
 
 ### 修复
 
+- **Windows 上从源码编译 Platform 直接失败，而报错全在 SDK 头里**：本轮全量格式化把 `Platform/Platform.h`
+  里那四行系统包含按字母重排了，`mswsock.h` 就此排到 `winsock2.h` 与 `windows.h` 之前。这几份 SDK 头都
+  不自带所需的基础类型——`mswsockdef.h` 里 `ULONG`、`BOOL` 那一套要靠先包含进来的 `winsock2.h`、
+  `windows.h` 提供，顺序一乱它自己就解析不了。症状因此不落在我们任何一行源码上：`mswsockdef.h(93):
+  error C3646: “Status”: 未知重写说明符` 之类成片冒出，14 个 Platform 源文件一起倒下，看见的人第一反应
+  是「SDK 或工具链坏了」，还会去改 SDK 版本。
+  两步收口：四行恢复成有约束的书写顺序（`winsock2.h` → `ws2tcpip.h` → `mswsock.h` → `windows.h`），并在
+  其上写明这个顺序为什么不能按字母排；`.clang-format` 关掉 `SortIncludes`（原先没写这个键，取的是默认的
+  「排」）——clang-format 判断不了「谁必须先被包含」，只恢复顺序不留这条配置，下一次格式化照样排回去。
+  门禁（同一份内容）：Windows Debug（MSVC `/W4 /WX` + ASan）全目标零告警、`ctest -j 14` 3202/3202 全绿；
+  容器 GCC 13 Debug + ASan/LSan/UBSan 全目标零告警、`ctest -j 8` 3211/3211 全绿（68 条真库用例按环境
+  SKIP）、零 sanitizer 命中。
+
 - **一个消失的对端不再带走整台 QUIC 服务器**：`Core::AsyncUdpSocket::asyncReceiveFrom()` 此前把平台层
   报错按硬失败抛出，而抛出的异常落不进正在 await 它的那层——本框架里被调度器恢复的协程抛异常只会被记
   一行「协程有异常没人接住」然后丢弃，`QuicServer::listen()` 的收包循环当场消失。形态是端口还在、进程

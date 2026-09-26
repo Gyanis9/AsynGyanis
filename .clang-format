@@ -49,6 +49,9 @@ MacroBlockBegin: ''
 MacroBlockEnd: ''
 MaxEmptyLinesToKeep: 2
 NamespaceIndentation: All
+# 包含排序关掉： clang-format 只会按字母排，而 Windows SDK 头（Platform.h 的 winsock2/ws2tcpip/
+# mswsock/windows）与「先定义宏再包含」的那几处都靠书写顺序成立，排过的版本直接编不过。
+SortIncludes: Never
 SpaceAfterCStyleCast: true
 SpaceAfterTemplateKeyword: false
 SpaceBeforeRangeBasedForLoopColon: false

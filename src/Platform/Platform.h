@@ -32,17 +32,19 @@
 #include <cstddef>
 
 #if ASYN_PLATFORM_WIN32
-// winsock2.h 必须先于 windows.h 包含，否则将链接到旧版 winsock
+// 这四行的顺序是有约束的，不能按字母排：mswsock.h 与 ws2tcpip.h 都不自带所需的基础类型，
+// 它们要靠先包含进来的 winsock2.h 与 windows.h 提供；一旦排到前面，SDK 头自身就解析失败
+// （症状是 mswsockdef.h 里成片「未知重写说明符」「缺少类型说明符」，不看错源码的人会去查 SDK）。
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <mswsock.h>
-#include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mswsock.h>
+#include <windows.h>
 
 // Windows SDK 宏与项目标识符冲突，必须在此清除：
 //   DELETE —— winnt.h 中的访问权限常量 (0x00010000L)
