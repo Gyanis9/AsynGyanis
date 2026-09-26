@@ -54,11 +54,17 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 解析 HTTP 日期文本
-     * @details 支持 RFC 9110 §5.6.7 的 IMF-fixdate；格式、星期名、月份名或字段取值不合法时
-     *          返回空 optional，不抛异常——外部输入不能靠异常否定整个请求。
+     * @details 认 RFC 9110 §5.6.7 的三种格式：首选的 IMF-fixdate，以及该节要求收端保持兼容的两种
+     *          过时格式——RFC 850（`Sunday, 06-Nov-94 08:49:37 GMT`，两位年份按「0..69 记 2000 年代、
+     *          70..99 记 1900 年代」折叠，不按「离现在最近的世纪」解释，否则同一个头在不同时刻会解析
+     *          出不同结果，而缓存验证器要的是可复现的判据）与 asctime（`Sun Nov  6 08:49:37 1994`，
+     *          日右对齐补空格、格式里没有时区段故按 GMT 处理）。
+     * @details 格式、名称或字段取值不合法时返回空 optional，不抛异常——外部输入不能靠异常否定整个请求。
      * @param text 待解析文本，允许首尾空白
      * @return 解析出的时间点；无法解析时为空 optional
-     * @note 星期名只校验是否为七个合法缩写之一，不要求它与日期字段自洽（RFC 允许收端忽略）
+     * @note 星期名只校验是否为合法名称之一，不要求它与日期字段自洽（RFC 允许收端忽略）；
+     *       RFC 850 的星期全称与三字母缩写都收
+     * @note 名称逐字区分大小写：HTTP 日期的 ABNF 已把大小写固定下来，放宽只会放过真正畸形的头
      */
     [[nodiscard]] std::optional<std::chrono::system_clock::time_point> parseHttpDate(std::string_view text);
 } // namespace AsynGyanis::Net

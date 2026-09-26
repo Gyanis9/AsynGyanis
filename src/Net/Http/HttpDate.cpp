@@ -21,6 +21,15 @@ namespace AsynGyanis::Net
         constexpr std::array<std::string_view, 7>  kWeekdayNames{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
         constexpr std::array<std::string_view, 12> kMonthNames{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
+        /// RFC 850 的星期是全称（"Sunday,"），收端要连它一起认，否则老客户端的条件请求头会整条判无效
+        constexpr std::array<std::string_view, 7> kFullWeekdayNames{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
+        /// RFC 850 去掉星期段之后的定长形状："06-Nov-94 08:49:37 GMT"
+        constexpr std::size_t kRfc850BodyLength = 22;
+
+        /// asctime 的整条定长形状："Sun Nov  6 08:49:37 1994"（日占两位，个位数右对齐补空格）
+        constexpr std::size_t kAsctimeLength = 24;
+
         /// 一天的秒数，用于把「距纪元的天数」折成秒
         constexpr std::int64_t kSecondsPerDay = 86400;
 
@@ -164,6 +173,163 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
+    namespace
+    {
+        /**
+         * @brief 在缩写表里查一个名字的下标
+         * @param names 名称表（大小写敏感的逐字比较：HTTP 日期的 ABNF 已固定大小写）
+         * @param text 待查文本
+         * @return std::optional<std::size_t> 命中的下标；没查到返回空
+         */
+        template<std::size_t Count>
+        [[nodiscard]] std::optional<std::size_t> findNameIndex(const std::array<std::string_view, Count> &names, const std::string_view text) noexcept
+        {
+            const auto found = std::ranges::find(names, text);
+            if (found == names.end())
+            {
+                return std::nullopt;
+            }
+            return static_cast<std::size_t>(found - names.begin());
+        }
+
+        /**
+         * @brief 把已经拆出来的六个字段折成时间点
+         * @details 三条格式（IMF、RFC 850、asctime）共用这一份折算与范围检查：闰秒允许 second==60，
+         *          日必须落在该月的实际天数内（闰年 2 月 29 合法、4 月 31 不合法）。
+         * @return std::optional<std::chrono::system_clock::time_point> 字段越界时返回空
+         */
+        [[nodiscard]] std::optional<std::chrono::system_clock::time_point> makeUtcTimePoint(const unsigned year, const unsigned month, const unsigned day, const unsigned hour,
+                                                                                            const unsigned minute, const unsigned second)
+        {
+            if (hour > 23 || minute > 59 || second > 60)
+            {
+                return std::nullopt;
+            }
+            if (day > daysInMonth(static_cast<int>(year), month))
+            {
+                return std::nullopt;
+            }
+
+            const std::int64_t days = daysFromCivil(static_cast<int>(year), month, day);
+            const std::int64_t seconds =
+                    days * kSecondsPerDay + static_cast<std::int64_t>(hour) * 3600 + static_cast<std::int64_t>(minute) * 60 + static_cast<std::int64_t>(second);
+            return std::chrono::system_clock::time_point(std::chrono::seconds(seconds));
+        }
+
+        /**
+         * @brief 解析 RFC 850 的过时格式：`Sunday, 06-Nov-94 08:49:37 GMT`
+         * @details 星期允许全称（RFC 850 的原形）也允许三字母缩写——发过这种头的老客户端两种都在写。
+         *          两位年份按 RFC 9110 §5.6.7 指向的 RFC 6265 规则折叠：0..69 记 2000 年代，
+         *          70..99 记 1900 年代。**不**按「离现在最近的世纪」解释，那会让同一个头在不同时刻
+         *          解析出不同结果，缓存验证器要的是可复现的判据。
+         * @param text 已去首尾空白的整条文本
+         * @return std::optional<std::chrono::system_clock::time_point> 形状不符时返回空
+         */
+        [[nodiscard]] std::optional<std::chrono::system_clock::time_point> parseRfc850Date(const std::string_view text)
+        {
+            const std::size_t commaPosition = text.find(',');
+            if (commaPosition == std::string_view::npos)
+            {
+                return std::nullopt;
+            }
+            const std::string_view weekdayText = text.substr(0, commaPosition);
+            if (!findNameIndex(kWeekdayNames, weekdayText).has_value() && !findNameIndex(kFullWeekdayNames, weekdayText).has_value())
+            {
+                return std::nullopt;
+            }
+
+            const std::string_view body = text.substr(commaPosition + 1);
+            if (body.size() != kRfc850BodyLength + 1 || body.front() != ' ')
+            {
+                return std::nullopt;
+            }
+            // "06-Nov-94 08:49:37 GMT"：位置固定，逐段切
+            const std::string_view dateText = body.substr(1, 9);
+            const std::string_view timeText = body.substr(11, 8);
+            if (body[10] != ' ' || body[19] != ' ' || body.substr(20, 3) != "GMT" || dateText[2] != '-' || dateText[6] != '-')
+            {
+                return std::nullopt;
+            }
+
+            unsigned twoDigitYear = 0;
+            unsigned day          = 0;
+            if (!parseDigits(dateText.substr(0, 2), day) || !parseDigits(dateText.substr(7, 2), twoDigitYear))
+            {
+                return std::nullopt;
+            }
+            const std::optional<std::size_t> monthIndex = findNameIndex(kMonthNames, dateText.substr(3, 3));
+            if (!monthIndex.has_value())
+            {
+                return std::nullopt;
+            }
+            const unsigned year = twoDigitYear <= 69U ? 2000U + twoDigitYear : 1900U + twoDigitYear;
+
+            unsigned hour   = 0;
+            unsigned minute = 0;
+            unsigned second = 0;
+            if (!parseDigits(timeText.substr(0, 2), hour) || timeText[2] != ':' || !parseDigits(timeText.substr(3, 2), minute) || timeText[5] != ':' ||
+                !parseDigits(timeText.substr(6, 2), second))
+            {
+                return std::nullopt;
+            }
+            return makeUtcTimePoint(year, static_cast<unsigned>(*monthIndex) + 1U, day, hour, minute, second);
+        }
+
+        /**
+         * @brief 解析 asctime 的过时格式：`Sun Nov  6 08:49:37 1994`
+         * @details 日占两位、个位数右对齐补空格，这是它跟其它两种最容易分叉的一处；年份本就是四位，
+         *          不做折叠。时区段在该格式里不存在，按 GMT 处理（RFC 9110 §5.6.7 就是这么定的）。
+         * @param text 已去首尾空白的整条文本
+         * @return std::optional<std::chrono::system_clock::time_point> 形状不符时返回空
+         */
+        [[nodiscard]] std::optional<std::chrono::system_clock::time_point> parseAsctimeDate(const std::string_view text)
+        {
+            if (text.size() != kAsctimeLength)
+            {
+                return std::nullopt;
+            }
+            if (!findNameIndex(kWeekdayNames, text.substr(0, 3)).has_value() || text[3] != ' ' || text[7] != ' ' || text[10] != ' ' || text[19] != ' ')
+            {
+                return std::nullopt;
+            }
+            const std::optional<std::size_t> monthIndex = findNameIndex(kMonthNames, text.substr(4, 3));
+            if (!monthIndex.has_value())
+            {
+                return std::nullopt;
+            }
+
+            // 日字段右对齐：个位数时首位是空格，把它当成空串再单独解析
+            const std::string_view dayText = text.substr(8, 2);
+            unsigned               day     = 0;
+            if (dayText[0] == ' ')
+            {
+                if (!parseDigits(dayText.substr(1, 1), day))
+                {
+                    return std::nullopt;
+                }
+            } else if (!parseDigits(dayText, day))
+            {
+                return std::nullopt;
+            }
+
+            const std::string_view timeText = text.substr(11, 8);
+            unsigned               hour     = 0;
+            unsigned               minute   = 0;
+            unsigned               second   = 0;
+            if (!parseDigits(timeText.substr(0, 2), hour) || timeText[2] != ':' || !parseDigits(timeText.substr(3, 2), minute) || timeText[5] != ':' ||
+                !parseDigits(timeText.substr(6, 2), second))
+            {
+                return std::nullopt;
+            }
+            unsigned year = 0;
+            if (!parseDigits(text.substr(20, 4), year))
+            {
+                return std::nullopt;
+            }
+            return makeUtcTimePoint(year, static_cast<unsigned>(*monthIndex) + 1U, day, hour, minute, second);
+        }
+    } // namespace
+
     std::string_view formatHttpDate(const std::chrono::system_clock::time_point time, const std::span<char, kHttpDateTextLength> buffer) noexcept
     {
         const std::time_t                           calendarTime = std::chrono::system_clock::to_time_t(time);
@@ -205,10 +371,15 @@ namespace AsynGyanis::Net
     {
         text = trimOptionalWhitespace(text);
 
-        // IMF-fixdate 是定长格式，长度不对不必再逐字段试
+        // IMF-fixdate 是定长格式：长度不符就不必逐字段试，直接转去认两种过时格式
+        // （RFC 9110 §5.6.7 要求收端对它们保持兼容，判不出来就等于把老客户端的条件请求整条作废）
         if (text.size() != kHttpDateTextLength)
         {
-            return std::nullopt;
+            if (const auto rfc850Text = parseRfc850Date(text); rfc850Text.has_value())
+            {
+                return rfc850Text;
+            }
+            return parseAsctimeDate(text);
         }
 
         const std::string_view weekdayText = text.substr(0, 3);
@@ -269,18 +440,7 @@ namespace AsynGyanis::Net
             return std::nullopt;
         }
 
-        // 逐字段范围检查：秒允许 60 以容纳闰秒
-        if (hour > 23 || minute > 59 || second > 60)
-        {
-            return std::nullopt;
-        }
-        if (day > daysInMonth(static_cast<int>(year), month))
-        {
-            return std::nullopt;
-        }
-
-        const std::int64_t days    = daysFromCivil(static_cast<int>(year), month, day);
-        const std::int64_t seconds = days * kSecondsPerDay + static_cast<std::int64_t>(hour) * 3600 + static_cast<std::int64_t>(minute) * 60 + static_cast<std::int64_t>(second);
-        return std::chrono::system_clock::time_point(std::chrono::seconds(seconds));
+        // 逐字段范围检查与折算同另外两种格式共用一份（含闰秒那一条）
+        return makeUtcTimePoint(year, month, day, hour, minute, second);
     }
 } // namespace AsynGyanis::Net

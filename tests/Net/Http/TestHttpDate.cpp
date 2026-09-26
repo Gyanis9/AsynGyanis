@@ -233,4 +233,87 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(threadSample.has_value()) << "工作线程没能在重试上限内取到不跨秒的样本";
         EXPECT_EQ(threadSample->text, formatHttpDate(instantFromSeconds(threadSample->secondOfEpoch)));
     }
+    /**
+     * @brief 钉住：RFC 850 的过时格式解析到与等价 IMF 文本同一时刻
+     * @details 判据不写死秒数，而是拿本层自己的 IMF 通路当参照：两条必须落在同一刻，
+     *          写死数字的话参照物本身错了也测不出来。
+     */
+    TEST(HttpDate, ObsoleteRfc850FormatMatchesItsImfEquivalent)
+    {
+        const std::optional<std::chrono::system_clock::time_point> obsolete  = parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT");
+        const std::optional<std::chrono::system_clock::time_point> reference = parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT");
+
+        ASSERT_TRUE(obsolete.has_value()) << "RFC 850 的日期被判成不可解析：老客户端的条件请求会整条作废";
+        ASSERT_TRUE(reference.has_value());
+        EXPECT_EQ(secondsOf(*obsolete), secondsOf(*reference));
+        EXPECT_EQ(secondsOf(*obsolete), 784111777LL) << "RFC 9110 的样例时刻本身就是黄金值";
+    }
+
+    /**
+     * @brief RFC 850 的星期写成三字母缩写也要收（老客户端两种都在发）
+     */
+    TEST(HttpDate, ObsoleteRfc850AcceptsAbbreviatedWeekday)
+    {
+        const std::optional<std::chrono::system_clock::time_point> abbreviated = parseHttpDate("Sun, 06-Nov-94 08:49:37 GMT");
+
+        ASSERT_TRUE(abbreviated.has_value());
+        EXPECT_EQ(secondsOf(*abbreviated), 784111777LL);
+    }
+
+    /**
+     * @brief 两位年份按固定规则折叠：0..69 记 2000 年代，70..99 记 1900 年代
+     * @details 折叠必须是确定的算术，不能「挑离现在最近的世纪」——那样同一条头会在某个时刻之后
+     *          解析出另一个世纪，缓存验证器就不可复现了。
+     */
+    TEST(HttpDate, ObsoleteRfc850TwoDigitYearFoldsAtFixedBoundary)
+    {
+        const std::optional<std::chrono::system_clock::time_point> lowerCentury = parseHttpDate("Sunday, 06-Nov-69 08:49:37 GMT");
+        const std::optional<std::chrono::system_clock::time_point> upperCentury = parseHttpDate("Sunday, 06-Nov-70 08:49:37 GMT");
+        const std::optional<std::chrono::system_clock::time_point> year2069     = parseHttpDate("Sun, 06 Nov 2069 08:49:37 GMT");
+        const std::optional<std::chrono::system_clock::time_point> year1970     = parseHttpDate("Thu, 06 Nov 1970 08:49:37 GMT");
+
+        ASSERT_TRUE(lowerCentury.has_value() && upperCentury.has_value() && year2069.has_value() && year1970.has_value());
+        EXPECT_EQ(secondsOf(*lowerCentury), secondsOf(*year2069)) << "69 应当落在 2000 年代";
+        EXPECT_EQ(secondsOf(*upperCentury), secondsOf(*year1970)) << "70 应当落在 1900 年代";
+    }
+
+    /**
+     * @brief 钉住：asctime 的两种日宽（个位补空格与两位）都解析到同一 IMF 时刻
+     */
+    TEST(HttpDate, ObsoleteAsctimeFormatMatchesItsImfEquivalentForBothDayWidths)
+    {
+        const std::optional<std::chrono::system_clock::time_point> paddedDay       = parseHttpDate("Sun Nov  6 08:49:37 1994");
+        const std::optional<std::chrono::system_clock::time_point> wideDay         = parseHttpDate("Wed Nov 16 08:49:37 1994");
+        const std::optional<std::chrono::system_clock::time_point> paddedReference = parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT");
+        const std::optional<std::chrono::system_clock::time_point> wideReference   = parseHttpDate("Wed, 16 Nov 1994 08:49:37 GMT");
+
+        ASSERT_TRUE(paddedDay.has_value()) << "日右对齐补空格是 asctime 的原形，判不可解析等于该格式没被实现";
+        ASSERT_TRUE(wideDay.has_value());
+        ASSERT_TRUE(paddedReference.has_value() && wideReference.has_value());
+        EXPECT_EQ(secondsOf(*paddedDay), secondsOf(*paddedReference));
+        EXPECT_EQ(secondsOf(*wideDay), secondsOf(*wideReference));
+    }
+
+    /**
+     * @brief 过时格式的畸形写法照样拒绝：分隔符、名称、日宽、越界日期与时分秒
+     * @details 放宽到「两种过时格式」不等于放宽成「什么像日期都收」：收错了会把一个不存在的
+     *          验证器当成有效，比判不出来更糟。
+     */
+    TEST(HttpDate, MalformedObsoleteFormatsAreRejected)
+    {
+        const std::vector<std::string_view> rejectedTexts{
+                "Sunday, 06/Nov/94 08:49:37 GMT", // 日期段分隔符错
+                "Sundan, 06-Nov-94 08:49:37 GMT", // 星期名不是七个之一
+                "Sunday, 06-Nov-94 08:49:37 UTC", // 该格式的时区段固定写作 GMT
+                "Sun Nov 6 08:49:37 1994",        // asctime 的日必须占两位
+                "Sun Nov  6 08:49:37 199",        // 年份不足四位，整条长度也不符
+                "Sunday, 31-Apr-94 08:49:37 GMT", // 四月没有三十一日
+                "Sun Nov  6 24:49:37 1994",       // 小时越界
+        };
+
+        for (const std::string_view text: rejectedTexts)
+        {
+            EXPECT_FALSE(parseHttpDate(text).has_value()) << "这条本该判不可解析：" << text;
+        }
+    }
 } // namespace AsynGyanis::Net
