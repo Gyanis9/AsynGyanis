@@ -5,11 +5,16 @@
 #include "Platform/IO/Socket.h"
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -23,6 +28,104 @@ namespace AsynGyanis::Core
 
         /// 当前在跑的解析数（进程级）
         std::atomic<int> g_activeResolutionCount{0};
+
+        /**
+         * @brief 解析结果的缓存有效期
+         * @details getaddrinfo 不把记录的 TTL 交出来，所以这个数只能自己定。定短（而不是「一天」这类
+         *          常见默认）的理由是「换 IP 的域名要能自己恢复」：一次 DNS 故障、一次重绑定、或一次
+         *          运维改记录，最坏情况下也只有这么久在继续用旧地址。定长省下的那几次解析不值钱——
+         *          一次解析几毫秒，而用错地址的代价是一次连不上。
+         */
+        constexpr std::chrono::seconds kCacheTimeToLive{60};
+
+        /// 缓存条数上界：解析必须能继续，缓存不能吃掉内存
+        constexpr std::size_t kMaximumCacheEntryCount = 256U;
+
+        /// 一条缓存：解析出来的地址与它的到期时刻
+        struct CacheEntry
+        {
+            std::vector<InetAddress>            addresses;  ///< 解析结果（IPv4 在前、IPv6 在后）
+            std::chrono::steady_clock::time_point expiresAt; ///< 到点即视为未命中
+        };
+
+        /// 缓存表与其锁：后台解析线程不碰它，只有等待方所在线程读写；但不同事件循环的线程会问同一份表，
+        /// 所以必须互斥。锁里只做查与放，不碰任何系统调用
+        std::mutex g_cacheMutex;
+        std::unordered_map<std::string, CacheEntry> g_addressCache;
+
+        /// 总查询次数与其中命中缓存的次数（进程级）。这是「缓存到底有没有在起作用」的唯一出口，
+        /// 用例也靠它的增量来证伪「把缓存撤掉」
+        std::atomic<std::uint64_t> g_lookupCount{0};
+        std::atomic<std::uint64_t> g_cacheHitCount{0};
+
+        /**
+         * @brief 缓存键：主机文本按 ASCII 折小写，端口用单元分隔符接在后面
+         * @details 域名大小写无关（RFC 4343），不折叠就会让 Example.COM 与 example.com 各占一格。
+         *          分隔符不用 ':'——IPv6 文本（含 IPv4 映射写法 ::ffff:1.2.3.4）里全是冒号，
+         *          按它切分会把键切成不唯一的形状。
+         */
+        std::string cacheKeyOf(const std::string &host, const uint16_t port)
+        {
+            std::string key;
+            key.reserve(host.size() + 8U);
+            for (const char character: host)
+            {
+                key += (character >= 'A' && character <= 'Z') ? static_cast<char>(character + ('a' - 'A')) : character;
+            }
+            key += '\x1f';
+            key += std::to_string(port);
+            return key;
+        }
+
+        /**
+         * @brief 取缓存：过期的条目当场作废
+         * @param key 缓存键
+         * @return std::optional<std::vector<InetAddress>> 命中时交出存的地址；未命中为空
+         */
+        std::optional<std::vector<InetAddress>> readCache(const std::string &key)
+        {
+            const std::lock_guard<std::mutex> guard(g_cacheMutex);
+            const auto iterator = g_addressCache.find(key);
+            if (iterator == g_addressCache.end())
+            {
+                return std::nullopt;
+            }
+            if (std::chrono::steady_clock::now() >= iterator->second.expiresAt)
+            {
+                g_addressCache.erase(iterator);
+                return std::nullopt;
+            }
+            return iterator->second.addresses;
+        }
+
+        /**
+         * @brief 写缓存：只存非空结果；表满时先清过期的，仍满就整表丢掉
+         * @param key 缓存键
+         * @param addresses 本次解析出来的地址
+         */
+        void writeCache(const std::string &key, const std::vector<InetAddress> &addresses)
+        {
+            // 空列表把「解析失败」和「这个域名确实没有 A/AAAA 记录」混成一件事，两者都不该粘住
+            // 60 秒：一次临时故障被缓存放大成一分钟的连不上，而负向缓存的收益（少问一次）明显更小
+            if (addresses.empty())
+            {
+                return;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            const std::lock_guard<std::mutex> guard(g_cacheMutex);
+            if (g_addressCache.size() >= kMaximumCacheEntryCount)
+            {
+                for (auto iterator = g_addressCache.begin(); iterator != g_addressCache.end();)
+                {
+                    iterator = iterator->second.expiresAt <= now ? g_addressCache.erase(iterator) : std::next(iterator);
+                }
+                if (g_addressCache.size() >= kMaximumCacheEntryCount)
+                {
+                    g_addressCache.clear();
+                }
+            }
+            g_addressCache.insert_or_assign(key, CacheEntry{addresses, now + kCacheTimeToLive});
+        }
 
         /**
          * @brief 一份已占住的解析名额：构造即计一次，析构即还一次
@@ -200,6 +303,15 @@ namespace AsynGyanis::Core
             co_return std::vector<InetAddress>{*literal};
         }
 
+        // 命不命中都要先算键：ResolveAwaiter 会把 host 移走，之后再读它就是空串
+        const std::string cacheKey = cacheKeyOf(host, port);
+        g_lookupCount.fetch_add(1, std::memory_order_relaxed);
+        if (auto cached = readCache(cacheKey); cached.has_value())
+        {
+            g_cacheHitCount.fetch_add(1, std::memory_order_relaxed);
+            co_return *cached;
+        }
+
         // state 在协程帧里存活，覆盖整个 co_await 期以及后面的结果读取
         auto state = std::make_shared<ResolveState>();
 
@@ -261,6 +373,13 @@ namespace AsynGyanis::Core
         };
 
         co_await ResolveAwaiter{loop, std::move(host), port, state};
+        writeCache(cacheKey, state->addresses);
         co_return std::move(state->addresses);
+    }
+
+    AsyncResolver::Stats AsyncResolver::stats() noexcept
+    {
+        return Stats{g_lookupCount.load(std::memory_order_relaxed),
+                     g_cacheHitCount.load(std::memory_order_relaxed)};
     }
 } // namespace AsynGyanis::Core

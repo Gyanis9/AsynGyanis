@@ -66,6 +66,31 @@ namespace AsynGyanis::Core
         EXPECT_EQ(resolved[0].port(), 8080);
     }
 
+    /**
+     * @brief 钉住：名字解析按「主机+端口」缓存，且键对大小写不敏感
+     * @details 判据取 stats() 的增量而不是耗时——命中与否是可数的，而计时在共享机器上量不出东西
+     *          （同进程的其它用例还会一起动计数，所以只看差值）。四条查询三种结局：第一次必 miss，
+     *          第二次同键必命中，换大小写仍算同一个键（域名大小写无关，不折叠就会各占一格），
+     *          换端口必 miss（端口是键的一部分——把不同端口答成同一次命中是最坏的缓存）。
+     */
+    TEST(AsyncResolver, CachesNameLookupsPerHostAndPort)
+    {
+        const auto before = AsyncResolver::stats();
+        const std::vector<InetAddress> first = resolveInLoop("localhost", 8080);
+        const std::vector<InetAddress> second = resolveInLoop("localhost", 8080);
+        const std::vector<InetAddress> folded = resolveInLoop("LOCALHOST", 8080);
+        const std::vector<InetAddress> otherPort = resolveInLoop("localhost", 8081);
+        const auto after = AsyncResolver::stats();
+
+        ASSERT_FALSE(first.empty()) << "localhost 都没解析出来，后面的判据都是空的";
+        EXPECT_EQ(first.size(), second.size());
+        EXPECT_EQ(first.size(), folded.size());
+        EXPECT_EQ(first.size(), otherPort.size());
+        EXPECT_EQ(after.lookupCount - before.lookupCount, 4U) << "四次名字查询没有都算进读数";
+        EXPECT_EQ(after.cacheHitCount - before.cacheHitCount, 2U)
+                << "第二次与换大小写那次该走缓存，实测命中增量=" << after.cacheHitCount - before.cacheHitCount;
+    }
+
     TEST(AsyncResolver, ReturnsEmptyForNonexistentHost)
     {
         EXPECT_TRUE(resolveInLoop("i-definitely-do-not-exist-99999999.example", 80).empty());

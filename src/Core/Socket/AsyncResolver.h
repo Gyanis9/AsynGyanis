@@ -26,10 +26,26 @@ namespace AsynGyanis::Core
      *
      * @details 将阻塞的 getaddrinfo 调用卸到后台线程执行，结果经 Scheduler::postRemote
      *          投回调用方的事件循环，不会阻塞任何工作线程的事件循环。
+     * @note 名字查询带一层进程级缓存（按「主机+端口」为键，默认 60 秒过期）：池冷启动、连接被对端
+     *       收掉后重连、以及每一条新出站请求都要问一次同一个域名，不缓存就是每次一趟线程往返。
+     *       只缓存**非空**结果——解析失败与「这个域名确实没有记录」在 getaddrinfo 的返回里是同一个
+     *       空列表，把失败缓存 60 秒等于把一次抖动放大成一分钟连不上。IP 字面量不进这套流程
+     *       （见 resolve 的说明），也就谈不上缓存。
      */
     class AsyncResolver
     {
     public:
+        /**
+         * @brief 解析器的观测读数（进程级累计）
+         * @details 用「前后两次读数的差」来判，别读绝对值：这是进程级计数，同一进程里跑过的其它
+         *          查询会一起算进来。
+         */
+        struct Stats
+        {
+            std::uint64_t lookupCount{0};    ///< 走进名字解析流程的查询次数；字面量直接构造地址，不算查询
+            std::uint64_t cacheHitCount{0};  ///< 其中由缓存直接答出的次数
+        };
+
         AsyncResolver() = default;
 
         AsyncResolver(const AsyncResolver &) = delete;
@@ -54,5 +70,13 @@ namespace AsynGyanis::Core
          *       循环若会在有在途解析时被销毁，先把那些协程的帧收掉
          */
         static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port);
+
+        /**
+         * @brief 取进程级的解析读数
+         * @return Stats 累计的查询次数与其中命中缓存的次数
+         * @note 用「前后两次读数的差」来判，别读绝对值：这是进程级计数，同一进程里跑过的其它用例会
+         *       一起算进来
+         */
+        [[nodiscard]] static Stats stats() noexcept;
     };
 } // namespace AsynGyanis::Core
