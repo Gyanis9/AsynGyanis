@@ -26,6 +26,7 @@ add_executable(TestCore
         Process/TestWorkerSupervisor.cpp
 
         Socket/TestAsyncSocket.cpp
+        Socket/TestConnectionRace.cpp
         Socket/TestAsyncUdpSocket.cpp
         Socket/TestAsyncResolver.cpp
         Socket/TestVectoredSendCursor.cpp

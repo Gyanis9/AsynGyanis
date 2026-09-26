@@ -1,20 +1,23 @@
 /**
- * @file RequestDeadlineGuard.h
- * @brief 出站请求的时限看门狗：到点就把被监视对象关掉，让挂在收发上的协程立刻收口
+ * @file DeadlineGuard.h
+ * @brief 到点就把被监视对象关掉的看门狗：让挂在收发上的协程在时限到达时立刻收口
  * @author Gyanis
- * @date 2026-09-25
+ * @date 2026-09-26
  * @copyright Copyright (c) . All rights reserved.
  */
 #pragma once
 
+#include "Base/Log/LogMacros.h"
+#include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 
 #include <chrono>
 #include <optional>
+#include <string_view>
 #include <utility>
 
-namespace AsynGyanis::Net
+namespace AsynGyanis::Core
 {
     /**
      * @brief 到期就关掉被监视对象的看门狗协程
@@ -25,22 +28,22 @@ namespace AsynGyanis::Net
      * @param loop 所属事件循环（提供定时器）
      * @param watched 被监视对象（非拥有；生命周期由调用方保证长于本协程）
      * @param timeout 时限
-     * @param isCancelled 请求已结束的标志；为真时看门狗醒来什么都不做
+     * @param isCancelled 监视已结束的标志；为真时看门狗醒来什么都不做
      * @param description 日志里写的对象名，便于现场分辨是哪一层掐断了
      */
     template<typename WatchedType>
-    Core::Task<void> watchRequestDeadline(Core::EventLoop &loop, WatchedType &watched,
-                                          const std::chrono::milliseconds timeout, const bool &isCancelled,
-                                          const std::string_view description)
+    Task<void> watchDeadline(EventLoop &loop, WatchedType &watched,
+                             const std::chrono::milliseconds timeout, const bool &isCancelled,
+                             const std::string_view description)
     {
-        Core::Timer timer(loop);
+        Timer timer(loop);
         co_await timer.waitFor(timeout);
         if (isCancelled)
         {
             co_return;
         }
         // 超时是「对端不说话」这类外部状况，调用方只会拿到一个空结果，因此在这里留一条日志：否则排查
-        // 现场时只能看到「请求没结果」，看不出是被时限掐断的
+        // 现场时只能看到「没结果」，看不出是被时限掐断的
         LOG_WARN_FMT("{}: 超过 {} 毫秒仍未完成，已关闭连接", description, timeout.count());
         watched.close();
         co_return;
@@ -54,7 +57,7 @@ namespace AsynGyanis::Net
      * @tparam WatchedType 被监视对象
      */
     template<typename WatchedType>
-    class RequestDeadlineGuard
+    class DeadlineGuard
     {
     public:
         /**
@@ -64,26 +67,26 @@ namespace AsynGyanis::Net
          * @param timeout 时限
          * @param description 日志里写的对象名
          */
-        RequestDeadlineGuard(Core::EventLoop &loop, WatchedType &watched, const std::chrono::milliseconds timeout,
-                             const std::string_view description)
-            : m_watchdog(watchRequestDeadline(loop, watched, timeout, m_isCancelled, description))
+        DeadlineGuard(EventLoop &loop, WatchedType &watched, const std::chrono::milliseconds timeout,
+                      const std::string_view description)
+            : m_watchdog(watchDeadline(loop, watched, timeout, m_isCancelled, description))
         {
             m_watchdog->handle().resume(); // 惰性协程：手动启动
         }
 
-        ~RequestDeadlineGuard()
+        ~DeadlineGuard()
         {
             m_isCancelled = true;
             m_watchdog.reset();
         }
 
-        RequestDeadlineGuard(const RequestDeadlineGuard &) = delete;
-        RequestDeadlineGuard &operator=(const RequestDeadlineGuard &) = delete;
-        RequestDeadlineGuard(RequestDeadlineGuard &&) = delete;
-        RequestDeadlineGuard &operator=(RequestDeadlineGuard &&) = delete;
+        DeadlineGuard(const DeadlineGuard &) = delete;
+        DeadlineGuard &operator=(const DeadlineGuard &) = delete;
+        DeadlineGuard(DeadlineGuard &&) = delete;
+        DeadlineGuard &operator=(DeadlineGuard &&) = delete;
 
     private:
-        bool m_isCancelled{false};             ///< 请求已结束（看门狗协程按引用持有）
-        std::optional<Core::Task<>> m_watchdog; ///< 看门狗协程帧：置空即撤销
+        bool m_isCancelled{false};              ///< 监视已结束（看门狗协程按引用持有）
+        std::optional<Task<>> m_watchdog; ///< 看门狗协程帧：置空即撤销
     };
-} // namespace AsynGyanis::Net
+} // namespace AsynGyanis::Core

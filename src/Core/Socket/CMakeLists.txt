@@ -6,6 +6,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/AsyncUdpSocket.h
         ${CMAKE_CURRENT_LIST_DIR}/AsyncUdpSocket.cpp
         ${CMAKE_CURRENT_LIST_DIR}/AsyncSocket.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/ConnectionRace.h
+        ${CMAKE_CURRENT_LIST_DIR}/ConnectionRace.cpp
         ${CMAKE_CURRENT_LIST_DIR}/VectoredSendCursor.h
         ${CMAKE_CURRENT_LIST_DIR}/VectoredSendCursor.cpp
         ${CMAKE_CURRENT_LIST_DIR}/InetAddress.h

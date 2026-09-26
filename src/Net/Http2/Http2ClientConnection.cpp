@@ -3,7 +3,7 @@
 #include "Net/Http2/Http2ClientConnection.h"
 
 #include "Base/Log/LogMacros.h"
-#include "Net/Http/Client/RequestDeadlineGuard.h"
+#include "Core/Coroutine/DeadlineGuard.h"
 
 #include <algorithm>
 #include <array>
@@ -159,7 +159,7 @@ namespace AsynGyanis::Net
 
         // 对端的 SETTINGS 是本端开始提请求的前提：它带着流初始窗口、帧上限与动态表大小，
         // 少一样都会让第一帧就按错的账发出去
-        const RequestDeadlineGuard<Http2ClientConnection> deadline(m_loop, *this, waitTimeout, "Http2ClientConnection");
+        const Core::DeadlineGuard<Http2ClientConnection> deadline(m_loop, *this, waitTimeout, "Http2ClientConnection");
         // 前奏期间把驱动权拿在手上：契约是「前奏走完才把对象交给别的协程」，但真有请求挤进来，
         // 它会挂在等待体上等我叫醒，而不是自己跑去读同一条通路
         static_cast<void>(tryTakePumpLease());
@@ -960,7 +960,7 @@ namespace AsynGyanis::Net
             }
         }
 
-        const RequestDeadlineGuard<Http2ClientConnection> deadline(m_loop, *this, waitTimeout, "Http2ClientConnection");
+        const Core::DeadlineGuard<Http2ClientConnection> deadline(m_loop, *this, waitTimeout, "Http2ClientConnection");
         const bool isHeadWritten = co_await flushOutgoing();
         if (isHeadWritten)
         {

@@ -2,16 +2,17 @@
 #include "Core/Tls/TlsContext.h"
 #include "Net/Http/Client/HttpContentCoding.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
-#include "Net/Http/Client/RequestDeadlineGuard.h"
 #include "Net/Http2/Http2ClientConnection.h"
 #include "Net/Http2/Http2Session.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/Coroutine/DeadlineGuard.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncResolver.h"
 #include "Core/Socket/AsyncSocket.h"
+#include "Core/Socket/ConnectionRace.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Platform/IO/Socket.h"
 #include "Net/Tcp/TcpStream.h"
@@ -533,7 +534,7 @@ namespace AsynGyanis::Net
                                                          const std::chrono::milliseconds requestTimeout,
                                                          std::string &failureReason)
         {
-            const RequestDeadlineGuard<HttpOutboundConnection> deadline(loop, connection, requestTimeout, "HttpClient");
+            const Core::DeadlineGuard<HttpOutboundConnection> deadline(loop, connection, requestTimeout, "HttpClient");
             OutboundExchange exchange;
             const std::string host = connection.endpointKey().host;
             if (isHeadRequest)
@@ -621,11 +622,16 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 带时限地连一条 TCP 通路：解析 → 非阻塞 connect → 到点就把套接字关掉
+         * @brief 带时限地连一条 TCP 通路：解析 → 排序 → 并发试候选 → 到点就把没连上的都关掉
          * @details 这一段为什么必须由本层盯时限，而不是交给内核的 SYN 重试兜底：Windows 的完成端口后端
          *          上「连不上」并没有可写事件可等——实测对刚关掉的监听端口，系统 2 秒内就把连接拒了，
          *          而挂在可写上的协程永远等不到那一次唤醒，调用方就此无限期停在这里。Linux 那边靠可写
          *          事件带出 SO_ERROR，能自己醒。两条平台要按同一个契约走，所以时限统一由看门狗掐。
+         *
+         *          候选地址交给 Core::connectCandidates() 并发起，而不是按顺序一条条试：顺序试法里一条
+         *          黑洞地址（发出去没人应答，常见于 IPv6 链路已断却仍路由得出去）会把整段预算吃干净，
+         *          后面的候选根本轮不到——表现就是「双栈主机连不上、纯 IPv4 主机连得上」。排序按
+         *          RFC 8305 §4 的族间交错，两族都有候选时谁都不许占满前几席。
          * @param loop 所属事件循环
          * @param host 目标主机名或 IP 字面量
          * @param port 目标端口
@@ -643,28 +649,16 @@ namespace AsynGyanis::Net
                 failureReason = "解析地址失败：没能把「" + host + "」解析成可用地址";
                 co_return std::nullopt;
             }
-            for (const Core::InetAddress &address: addresses)
+
+            auto connected = co_await Core::connectCandidates(loop, Core::orderForConnectionRace(addresses),
+                                                              connectTimeout);
+            if (!connected)
             {
-                // 套接字按**这条候选地址自己的协议族**建。AsyncSocket::create 的默认档是 AF_INET，
-                // 拿 AF_INET 的套接字去 connect 一个 sockaddr_in6 只会以「协议族不符」收场——于是
-                // 解析器给出的 IPv6 候选永远连不上：双栈主机上表现为只能走 IPv4，纯 IPv6 目标直接不可达
-                Core::AsyncSocket socket = Core::AsyncSocket::create(loop, address.family());
-                try
-                {
-                    const RequestDeadlineGuard<Core::AsyncSocket> deadline(loop, socket, connectTimeout, "HttpClient");
-                    co_await socket.asyncConnect(address);
-                }
-                catch (const Base::Exception &failure)
-                {
-                    // 底层原文只进日志（what() 里带抛出点，不该交回调用方），交出去的那句要能指出断在哪一段
-                    LOG_WARN_FMT("HttpClient: 连接 {}:{} 失败。底层原因：{}", host, port, failure.what());
-                    continue;
-                }
-                co_return socket;
+                failureReason = "建立 TCP 连接失败：对端拒绝、不可达或还没连上就超时（目标 " + host + ":"
+                                + std::to_string(port) + "）";
+                co_return std::nullopt;
             }
-            failureReason = "建立 TCP 连接失败：对端拒绝、不可达或还没连上就超时（目标 " + host + ":"
-                            + std::to_string(port) + "）";
-            co_return std::nullopt;
+            co_return std::move(connected->socket);
         }
 
         /**
@@ -788,7 +782,7 @@ namespace AsynGyanis::Net
                 failureReason = "本次请求已到时限：还没做 TLS 握手（主机 " + u.host + "）";
                 co_return nullptr;
             }
-            const RequestDeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, *handshakeBudget,
+            const Core::DeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, *handshakeBudget,
                                                             "HttpClient");
             try
             {
