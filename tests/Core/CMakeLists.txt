@@ -23,6 +23,7 @@ add_executable(TestCore
         Coroutine/TestThreadPool.cpp
         Coroutine/TestAsyncExecutor.cpp
 
+        Process/TestGracefulShutdown.cpp
         Process/TestWorkerSupervisor.cpp
 
         Socket/TestAsyncSocket.cpp
