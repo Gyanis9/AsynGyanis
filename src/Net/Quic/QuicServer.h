@@ -17,6 +17,7 @@
 #include "Core/Tls/TlsPolicy.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
+#include "Net/Http/StaticFileService.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Net/Http3/Http3Session.h"
 #include "Net/Quic/QuicConnection.h"
@@ -142,6 +143,26 @@ namespace AsynGyanis::Net
         void setRouter(Router &router) noexcept;
 
         /**
+         * @brief 设置（或关闭）静态文件目录：第三条通道也接同一份静态服务实现
+         * @param directoryPath 静态文件根目录（UTF-8 文本），相对或绝对均可；空串表示关闭
+         * @details 与 `HttpServer::staticFileDir()` / `HttpsServer::staticFileDir()` 共用
+         *          `StaticFileService`：目录在此刻规范化、Cache-Control 的非法字符当场忽略并告警、
+         *          那条 `any("*")` 兜底路由只登记一次。零拷贝发送是 Linux 明文侧的形态，h3 上走的是
+         *          映射正文交给连接层这条路，语义相同。
+         * @throws Base::InvalidArgumentException 还没 setRouter() 时调用：兜底路由要有地方登记，
+         *         而本服务端的路由器是外部交来的（不持有），先给路由器再配静态目录是唯一说得清的顺序
+         * @note 必须在 listen() 之前调用：路由登记发生在配置时刻，之后每条新连接才看得到这条兜底
+         */
+        void staticFileDir(const std::string &directoryPath);
+
+        /// @brief 读回当前生效的静态根目录（UTF-8 文本）；未启用时为空串
+        [[nodiscard]] std::string staticFileDir() const;
+
+        /// @brief 设置静态文件响应的 Cache-Control 值；空 optional 表示不发这条头
+        void setStaticFileCacheControl(std::optional<std::string> cacheControl);
+
+
+        /**
          * @brief 当前在线连接数
          * @return std::size_t 连接数
          */
@@ -219,6 +240,14 @@ namespace AsynGyanis::Net
 
     private:
         /**
+         * @brief 确保静态目录配置本体与 "*" 兜底路由已建立（幂等）
+         * @details 与两条 TCP 服务器同一个形状：建立动作在 StaticFileService::install() 里，
+         *          这里只递本服务端的路由器与映射缓存上限。路由器还没接上时当场抛出——
+         *          本类的路由器是外部交来的（不持有），顺序说不清就不能装作配好了。
+         */
+        void ensureStaticFileSettings();
+
+        /**
          * @brief 取全部在线连接里最早的交易截止时刻（PTO、握手与空闲超时都记在连接自己身上）
          * @details 定时驱动据此决定下一次什么时候醒。空表返回 `time_point::max()`，调用方据此判「没有可查的截止」。
          * @return 最早的截止时刻；没有在线连接时为 `time_point::max()`
@@ -290,6 +319,7 @@ namespace AsynGyanis::Net
         QuicConnection::StreamDataHandler m_streamDataHandler; ///< 流数据回调（缺省为空，即收到流数据不回应）
 
         Router *m_router{nullptr}; ///< 路由器（不持有；接上之后每条连接才会有 HTTP/3 会话）
+        StaticFileService m_staticFiles; ///< 静态目录配置本体；登记的兜底路由落在 m_router 上
 
         /// 每条连接上的 HTTP/3 会话：键是连接，会话的开流/写出/归还额度的口子都指向那条连接。
         /// 会话必须在连接被摘除时一起销毁（它内部存的是指向该连接的引用）

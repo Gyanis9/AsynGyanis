@@ -17,6 +17,7 @@
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
+#include "Net/Http/StaticFileService.h"
 #include "Net/Http/Router.h"
 #include "Net/Http2/Http2Connection.h"
 #include "Net/Tcp/TcpServer.h"
@@ -101,6 +102,26 @@ namespace AsynGyanis::Net
          * @note 必须在 start() 之前完成注册
          */
         [[nodiscard]] Router &router();
+
+        /**
+         * @brief 设置（或关闭）静态文件目录，语义与明文侧逐字相同
+         * @param directoryPath 静态文件的根目录（UTF-8 文本），相对或绝对均可；空串表示关闭
+         * @details 与 `HttpServer::staticFileDir()` 共用同一份实现（StaticFileService），包括
+         *          「目录在此刻规范化、失败即关闭并告警」与那条只登记一次的 `any("*")` 兜底路由。
+         *          零拷贝发送只在 Linux 明文上发生（TLS 侧一律走聚合写），因此这一条在 HTTPS 上的
+         *          性能形态与明文不同、语义相同。
+         * @note 必须在 start() 之前调用
+         */
+        void staticFileDir(const std::string &directoryPath);
+
+        /// @brief 读回当前生效的静态根目录（UTF-8 文本）；未启用时为空串
+        [[nodiscard]] std::string staticFileDir() const;
+
+        /// @brief 设置静态文件响应的 Cache-Control 值；空 optional 表示不发这条头
+        void setStaticFileCacheControl(std::optional<std::string> cacheControl);
+
+        /// @brief 读回当前生效的 Cache-Control 配置；未设置时为空 optional
+        [[nodiscard]] std::optional<std::string> staticFileCacheControl() const;
 
         /**
          * @brief 为一条新连接创建 TLS 加密的 HTTP 会话。
@@ -302,6 +323,13 @@ namespace AsynGyanis::Net
 
     private:
         /**
+         * @brief 确保静态目录配置与 "*" 兜底路由已建立（幂等）
+         * @details 建立动作在 StaticFileService::install() 里，与明文侧共用；这里只递本服务器的
+         *          路由器与当时的映射缓存限额。四个静态方法先调它一次，配置顺序因此无所谓。
+         */
+        void ensureStaticFileSettings();
+
+        /**
          * @brief 把本服务器的连接数镜像接到当前采集端上
          * @details 构造与 setMetricsCollector() 各接一次：换采集端不重接就会把连接数写进
          *          已经没人读的那一份
@@ -309,6 +337,7 @@ namespace AsynGyanis::Net
         void attachActiveConnectionMirror() noexcept;
 
         Router m_router;          ///< 路由器，存储 HTTP 路由表与处理函数
+        StaticFileService m_staticFiles; ///< 静态目录配置本体；四个静态方法都转发到它（与明文侧同一份实现）
         Core::TlsContext m_tlsContext; ///< TLS 上下文，管理 SSL_CTX 与证书，被所有连接共享
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
         HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）

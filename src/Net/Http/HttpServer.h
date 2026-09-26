@@ -19,6 +19,7 @@
 #include "Net/Http/Router.h"
 #include "Net/Http2/Http2Connection.h"
 #include "Net/Http/StaticFileMappingCache.h"
+#include "Net/Http/StaticFileService.h"
 #include "Net/Tcp/TcpServer.h"
 
 #include <cstdint>
@@ -29,27 +30,6 @@
 
 namespace AsynGyanis::Net
 {
-    /**
-     * @brief 静态文件服务的当前配置
-     *
-     * @details 单独成类型（而不是塞进 HttpServer 的私有成员）是因为通配路由的处理函数要读它：
-     *          按值捕获一个共享的 settings 比捕获 `this` 更安全——处理函数可能在服务器之后才
-     *          被销毁。rootDirectory 存的是规范化后的绝对路径，配置一次、每请求只读。
-     * @note 只在事件循环线程上读写：静态服务开关与目录的变更不会与在途请求交错。
-     */
-    struct StaticFileSettings
-    {
-        bool isEnabled{false};                ///< 是否启用静态文件服务；根目录规范化失败即为 false
-        std::filesystem::path rootDirectory;  ///< 规范化（weakly_canonical）之后的静态根目录，绝对路径
-        std::optional<std::string> cacheControl; ///< 静态文件响应的 Cache-Control 值；空表示不发这条头
-        /**
-         * @brief 映射缓存，由 ensureStaticFileSettings() 按当时的限额建立，之后只读
-         * @note 条目上限取自建立配置那一刻的 HttpServerLimits::maximumMappedStaticFiles，
-         *       因此要改上限必须先 setLimits() 再 staticFileDir()
-         */
-        std::shared_ptr<StaticFileMappingCache> mappingCache;
-    };
-
     /**
      * @brief HTTP 服务器类。
      *
@@ -321,9 +301,10 @@ namespace AsynGyanis::Net
 
     private:
         /**
-         * @brief 确保静态文件设置对象与 "*" 兜底路由已就绪（幂等）
-         * @details 设置对象与兜底路由必须同时建立：只建对象不建路由会让后续 staticFileDir()
-         *          误判「已注册过」而跳过注册，静态服务再也接不上请求
+         * @brief 确保静态文件配置本体与 "*" 兜底路由已就绪（幂等）
+         * @details 建立动作在 StaticFileService::install() 里（三条 HTTP 服务器共用那份实现），
+         *          这里只把本服务器的路由器与当时的映射缓存限额递过去。三个静态配置方法都先调它一次，
+         *          于是「先设 Cache-Control 再设目录」与反过来的顺序等价。
          */
         void ensureStaticFileSettings();
 
@@ -335,7 +316,7 @@ namespace AsynGyanis::Net
         void attachActiveConnectionMirror() noexcept;
 
         Router m_router;                                ///< 路由器，存储路由表与处理函数
-        std::shared_ptr<StaticFileSettings> m_staticFileSettings; ///< 静态文件配置；空指针表示还没调用过 staticFileDir()
+        StaticFileService m_staticFiles;                  ///< 静态目录配置本体；三个静态方法都转发到它
         std::shared_ptr<const HttpServerLimits> m_limits; ///< 连接级限额，按只读配置交给会话共享
         HttpParserLimits m_parserLimits{}; ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
         Http2ConnectionConfiguration m_http2Configuration{}; ///< h2 连接层配置，按值交给每个新会话（两条通道共用这一份）

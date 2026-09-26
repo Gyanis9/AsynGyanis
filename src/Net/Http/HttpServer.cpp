@@ -1007,106 +1007,143 @@ namespace AsynGyanis::Net
                      });
     }
 
-    void HttpServer::ensureStaticFileSettings()
+    void StaticFileService::install(Router &router, const std::size_t maximumMappedStaticFiles)
     {
-        // 设置对象与兜底路由一起建立：注册一次之后处理函数只读配置，
-        // 于是「改目录」「关静态服务」「改 Cache-Control」都只写配置，不再有第二条 "*" 路由
-        if (m_staticFileSettings != nullptr)
+        // 配置本体与兜底路由一起建立：注册一次之后处理函数只读配置，于是「改目录」「关静态服务」
+        // 「改 Cache-Control」都只写这一份，不会出现第二条 "*" 路由或新旧目录同时在服务
+        if (m_settings != nullptr)
         {
             return;
         }
 
-        m_staticFileSettings = std::make_shared<StaticFileSettings>();
-        // 缓存随配置一起建立：上限取当下这份限额（限额要在 staticFileDir() 之前设），
-        // 之后只做读写、不再重建，处理函数因此只依赖 settings 而不依赖服务器本身
-        std::size_t maximumMappedStaticFiles = m_limits->maximumMappedStaticFiles;
+        m_settings = std::make_shared<StaticFileSettings>();
+        // 缓存随配置一起建立：上限取登记那一刻的限额（限额要在静态目录之前设），之后只做读写、
+        // 不再重建，处理函数因此只依赖 settings 而不依赖任何一台服务器本身
+        std::size_t mappedFileCountLimit = maximumMappedStaticFiles;
 #if ASYN_PLATFORM_WIN32
         // Windows 上刻意不缓存映射：文件只要还挂着一个活动映射，既不能就地截断，也不能被 rename
         // 覆盖（实测 5 与 1224，共享位换不来这两条）。「写临时文件 + rename」是静态资源发布的常规
         // 做法，让缓存把它挡掉，代价比省下的那次「打开 + 建映射」重得多。本平台的静态正文因此走
         // 堆读取、压根不建映射（实测更省，见 serveStaticFileRequest 的说明），这个限额在 Windows 上
         // 无论取什么值都不再有作用；POSIX 不受影响。
-        if (maximumMappedStaticFiles != 0)
+        if (mappedFileCountLimit != 0)
         {
-            LOG_INFO("HttpServer: 本平台不启用静态文件映射缓存（映射期间文件无法被替换或截断），"
+            LOG_INFO("StaticFile: 本平台不启用静态文件映射缓存（映射期间文件无法被替换或截断），"
                      "已按关闭处理；需要省掉这次映射开销请把服务跑在 POSIX 平台上");
-            maximumMappedStaticFiles = 0;
+            mappedFileCountLimit = 0;
         }
 #endif
-        m_staticFileSettings->mappingCache = std::make_shared<StaticFileMappingCache>(maximumMappedStaticFiles);
-        m_router.any("*", [settings = m_staticFileSettings](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+        m_settings->mappingCache = std::make_shared<StaticFileMappingCache>(mappedFileCountLimit);
+        router.any("*", [settings = m_settings](HttpRequest &request, HttpResponse &response) -> Core::Task<>
         {
             co_await serveStaticFileRequest(request, response, settings);
         });
     }
 
-    void HttpServer::staticFileDir(const std::string &directoryPath)
+    void StaticFileService::setDirectory(const std::string &directoryPath)
     {
-        ensureStaticFileSettings();
-
         // 空串按「关闭静态服务」处理：比让调用方传一个不存在的目录再等它规范化失败更直白
         if (directoryPath.empty())
         {
-            m_staticFileSettings->isEnabled = false;
-            m_staticFileSettings->rootDirectory.clear();
+            m_settings->isEnabled = false;
+            m_settings->rootDirectory.clear();
             return;
         }
 
         std::error_code canonicalError;
         // 配置里的目录文本按 UTF-8 解释：直接交给 path 会让 Windows 拿本地代码页读这段字节，中文站点
         // 目录会被规范化成另一个名字，之后每个请求都在那个名字下找不到的文件上
-        const std::filesystem::path canonicalRoot = std::filesystem::weakly_canonical(Platform::FileSystem::pathFromUtf8(directoryPath), canonicalError);
+        const std::filesystem::path canonicalRoot =
+            std::filesystem::weakly_canonical(Platform::FileSystem::pathFromUtf8(directoryPath), canonicalError);
 
-        // 规范化失败（含目录不存在、无权限、路径过长）就关掉静态服务并记中文告警：
+        // 规范化失败（无权限、路径过长）就关掉静态服务并记中文告警：
         // 把问题留在配置时刻，好过在每个请求上都复现一次不确定行为
         if (canonicalError)
         {
-            m_staticFileSettings->isEnabled = false;
-            m_staticFileSettings->rootDirectory.clear();
-            LOG_WARN_FMT("HttpServer: 静态目录规范化失败，已关闭静态文件服务。目录：{}，原因：{}", directoryPath, canonicalError.message());
+            m_settings->isEnabled = false;
+            m_settings->rootDirectory.clear();
+            LOG_WARN_FMT("StaticFile: 静态目录规范化失败，已关闭静态文件服务。目录：{}，原因：{}",
+                         directoryPath, canonicalError.message());
+            return;
+        }
+
+        // 「目录此刻不存在」单独判一次：weakly_canonical 对不存在的路径是按词法规范化的，它会安静地
+        // 成功，只看它的错误码就等于把「配置的目录根本没建」这种最常见的拼错放过——之后每个请求都
+        // 回 404，而配置面读起来一切正常。文档承诺的是配置时刻就报出来，这里补齐那道判定
+        std::error_code existsError;
+        if (!std::filesystem::is_directory(canonicalRoot, existsError))
+        {
+            m_settings->isEnabled = false;
+            m_settings->rootDirectory.clear();
+            LOG_WARN_FMT("StaticFile: 静态目录不存在或不是目录，已关闭静态文件服务。目录：{}（规范化为 {}），原因：{}",
+                         directoryPath, Platform::FileSystem::utf8FromPath(canonicalRoot),
+                         existsError ? existsError.message() : "该路径不是一个已存在的目录");
             return;
         }
 
         // 配置在此落定：之后每个请求都拿这份绝对路径去做包含判定，不再碰文件系统去解析根目录本身
-        m_staticFileSettings->rootDirectory = canonicalRoot;
-        m_staticFileSettings->isEnabled     = true;
+        m_settings->rootDirectory = canonicalRoot;
+        m_settings->isEnabled     = true;
     }
 
-    std::string HttpServer::staticFileDir() const
+    std::string StaticFileService::directory() const
     {
-        if (m_staticFileSettings == nullptr || !m_staticFileSettings->isEnabled)
+        if (m_settings == nullptr || !m_settings->isEnabled)
         {
             return {};
         }
         // 出去的口与进来的口同一刻度：调用方按 UTF-8 配的目录，读回来也必须是 UTF-8 文本
         // （Windows 上 path::string() 给的是本地代码页的字节，中文目录名会读回另一串）
-        return Platform::FileSystem::utf8FromPath(m_staticFileSettings->rootDirectory);
+        return Platform::FileSystem::utf8FromPath(m_settings->rootDirectory);
+    }
+
+    void StaticFileService::setCacheControl(const std::optional<std::string> cacheControl)
+    {
+        // 值会被原样写进头部块：含 CR/LF/NUL 就等于让调用方提前结束头部块（响应拆分），
+        // 与静态目录配置一致，问题留在配置时刻暴露并记中文告警，而不是每请求静默少一条头
+        if (cacheControl.has_value()
+            && (cacheControl->find('\r') != std::string::npos || cacheControl->find('\n') != std::string::npos
+                || cacheControl->find('\0') != std::string::npos))
+        {
+            m_settings->cacheControl.reset();
+            LOG_WARN_FMT("StaticFile: 静态文件 Cache-Control 含非法字符（CR/LF/NUL），已忽略该配置。值：{}", *cacheControl);
+            return;
+        }
+
+        m_settings->cacheControl = cacheControl;
+    }
+
+    std::shared_ptr<StaticFileSettings> StaticFileService::settings() const noexcept
+    {
+        return m_settings;
+    }
+
+    void HttpServer::ensureStaticFileSettings()
+    {
+        m_staticFiles.install(m_router, m_limits->maximumMappedStaticFiles);
+    }
+
+    void HttpServer::staticFileDir(const std::string &directoryPath)
+    {
+        ensureStaticFileSettings();
+        m_staticFiles.setDirectory(directoryPath);
+    }
+
+    std::string HttpServer::staticFileDir() const
+    {
+        return m_staticFiles.directory();
     }
 
     void HttpServer::setStaticFileCacheControl(const std::optional<std::string> cacheControl)
     {
         ensureStaticFileSettings();
-
-        // 值会被原样写进头部块：含 CR/LF/NUL 就等于让调用方提前结束头部块（响应拆分），
-        // 与静态目录配置一致，问题留在配置时刻暴露并记中文告警，而不是每请求静默少一条头
-        if (cacheControl.has_value() &&
-            (cacheControl->find('\r') != std::string::npos || cacheControl->find('\n') != std::string::npos || cacheControl->find('\0') != std::string::npos))
-        {
-            m_staticFileSettings->cacheControl.reset();
-            LOG_WARN_FMT("HttpServer: 静态文件 Cache-Control 含非法字符（CR/LF/NUL），已忽略该配置。值：{}", *cacheControl);
-            return;
-        }
-
-        m_staticFileSettings->cacheControl = cacheControl;
+        m_staticFiles.setCacheControl(cacheControl);
     }
 
     std::optional<std::string> HttpServer::staticFileCacheControl() const
     {
-        if (m_staticFileSettings == nullptr)
-        {
-            return std::nullopt;
-        }
-        return m_staticFileSettings->cacheControl;
+        const std::shared_ptr<StaticFileSettings> settings = m_staticFiles.settings();
+        return settings == nullptr ? std::nullopt : settings->cacheControl;
     }
 
     void HttpServer::setLimits(HttpServerLimits limits)

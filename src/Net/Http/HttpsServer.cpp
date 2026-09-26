@@ -63,6 +63,34 @@ namespace AsynGyanis::Net
         return m_router;
     }
 
+    void HttpsServer::ensureStaticFileSettings()
+    {
+        m_staticFiles.install(m_router, m_limits->maximumMappedStaticFiles);
+    }
+
+    void HttpsServer::staticFileDir(const std::string &directoryPath)
+    {
+        ensureStaticFileSettings();
+        m_staticFiles.setDirectory(directoryPath);
+    }
+
+    std::string HttpsServer::staticFileDir() const
+    {
+        return m_staticFiles.directory();
+    }
+
+    void HttpsServer::setStaticFileCacheControl(const std::optional<std::string> cacheControl)
+    {
+        ensureStaticFileSettings();
+        m_staticFiles.setCacheControl(cacheControl);
+    }
+
+    std::optional<std::string> HttpsServer::staticFileCacheControl() const
+    {
+        const std::shared_ptr<StaticFileSettings> settings = m_staticFiles.settings();
+        return settings == nullptr ? std::nullopt : settings->cacheControl;
+    }
+
     std::shared_ptr<Core::Connection> HttpsServer::createConnection(Core::AsyncSocket socket)
     {
         // 与基类契约的差异见头文件 Doxygen：这里多了一步 SSL 对象申请，失败以异常而非空指针上报，

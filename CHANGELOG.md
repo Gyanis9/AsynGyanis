@@ -17,6 +17,28 @@
 
 ### 新增
 
+- **静态文件服务在 HTTPS 与 HTTP/3 上同样可配**：新增 `Net/Http/StaticFileService.h`，把「静态目录」这项
+  配置的本体（配置对象、目录规范化、Cache-Control 的合法性判定、那条只登记一次的 `any("*")` 兜底路由）
+  从 `HttpServer` 的方法里收出来，三条服务器共用一份实现：`HttpsServer` 与 `QuicServer` 各新增
+  `staticFileDir()`（设与读）和 `setStaticFileCacheControl()`，明文侧的公开接口逐字不变。此前这项能力
+  只长在明文 HTTP 上——**明文能配的静态目录，换到 TLS 或 h3 端口上就没有入口**，而 443 才是静态资源的
+  常态落点；三段抄三份的漂移形态是「明文侧修了一个路径穿越，TLS 侧没有」，所以这里选的是收本体而不是
+  抄第二遍。`QuicServer` 的路由器是外部交来的（本类不持有），因此它的静态配置在 `setRouter()` 之前
+  当场抛出并说明顺序，而不是把配置落进一个永远不被服务到的对象里。
+  顺带修一处文档与行为不符：**目录此刻不存在**也要在配置时刻关闭静态服务并告警。原先只看
+  `weakly_canonical` 的错误码，而它对不存在的路径是按词法规范化安静成功的——「目录名拼错」由此变成一个
+  静默的配置错误：`staticFileDir()` 读起来一切正常，而每个请求都回 404。文档承诺的是配置时报出来。
+  用例：`HttpsServer.ServesStaticFilesFromAConfiguredDirectory`（回环 TLS 上真取一份文件：200 + 正文 +
+  `content-type` + Cache-Control，另钉「不存在的文件由静态服务自己回 404」与读回的目录一致）、
+  `Http3Session.ServesStaticFileFromInstalledFallbackRoute`（h3 会话层经字节级对端取回映射正文，
+  钉 content-type 与 ETag 同源带出）、`QuicServer.RejectsStaticDirectoryConfigurationBeforeARouterIsAttached`
+  （没路由器时拒、有路由器后不存在的目录降级为未启用而不抛）。既有静态用例（`HttpStaticFileTransfer` 5 条、
+  `StaticFileMappingCache` 11 条、`HttpServer` 里的若干条）在补上存在性判定之后全部照旧通过。
+  证伪：把存在性判定换成永假的条件，QUIC 那条红；把 HTTPS 侧的 `setDirectory` 转发改成空操作，HTTPS 那条
+  红（3044 ms 后才失败——它在等一个永远不来的正文）。两处突变互不掩盖。
+  一条待补：给 `echo_server` 加 `--static` 并在 `scripts/h3_cross_check.sh` 里加一条静态场景，让 h3 的静态
+  正文也过一次进程外裁判；本文件的 h3 用例钉的是「映射正文能不能经 h3 的流通路交出去」这一层，
+  帧的合规性由既有 8 条场景走的是同一条 `submitResponse` 通路代验。
 - **HTTP/3 的采集账与两条 TCP 通道对齐**：三处原先漏记的地方补上，`/metrics` 里 h1/h2/h3 从此是
   同一套口径。① **耗时直方图**：h3 每条响应现在都落一个样本，起点是「会话收下这条请求」的那一刻、
   终点是「响应排进待发字节」——与 h2 的 `requestReceivedTime` 在同一相对位置。原先的口径是「h3 不参与

@@ -1,6 +1,7 @@
 #include "Net/Quic/QuicServer.h"
 #include "Net/Quic/QuicOpenSslError.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Scheduler.h"
@@ -343,6 +344,41 @@ namespace AsynGyanis::Net
     void QuicServer::setRouter(Router &router) noexcept
     {
         m_router = &router;
+    }
+
+    void QuicServer::ensureStaticFileSettings()
+    {
+        // 兜底路由要有地方登记，而本服务端的路由器是外部交来的（不持有）：先 setRouter 再配静态
+        // 目录是唯一说得清的顺序，这里当场拒而不是「配了但没人服务它」
+        if (m_router == nullptr)
+        {
+            throw Base::InvalidArgumentException(
+                "QUIC 服务端配置失败：设置静态目录之前必须先 setRouter()——兜底路由要登记在那台路由器上，"
+                "而本服务端不持有路由器");
+        }
+        // 限额没配时取默认档那一个值：与 h3 其它配置项同一取舍（parserLimits 留空即取默认）。
+        // Windows 上这份上限在 install() 里一律按关闭处理，POSIX 上它才是映射缓存的条数上限
+        const std::size_t maximumMappedStaticFiles =
+            m_configuration.serverLimits == nullptr ? HttpServerLimits{}.maximumMappedStaticFiles
+                                                    : m_configuration.serverLimits->maximumMappedStaticFiles;
+        m_staticFiles.install(*m_router, maximumMappedStaticFiles);
+    }
+
+    void QuicServer::staticFileDir(const std::string &directoryPath)
+    {
+        ensureStaticFileSettings();
+        m_staticFiles.setDirectory(directoryPath);
+    }
+
+    std::string QuicServer::staticFileDir() const
+    {
+        return m_staticFiles.directory();
+    }
+
+    void QuicServer::setStaticFileCacheControl(const std::optional<std::string> cacheControl)
+    {
+        ensureStaticFileSettings();
+        m_staticFiles.setCacheControl(cacheControl);
     }
 
     Http3Session &QuicServer::http3SessionFor(QuicConnection &connection)

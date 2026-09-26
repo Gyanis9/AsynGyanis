@@ -14,6 +14,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
+#include "Platform/FileSystem/FileSystem.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpResponse.h"
@@ -24,6 +25,7 @@
 
 #include "HttpTestSupport.h"
 
+#include "CoreTestSupport.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -2166,5 +2168,57 @@ namespace AsynGyanis::Net
                     << "同一台服务器上未超限的请求未被正常服务：" << receivedText;
             EXPECT_NE(receivedText.find("HTTP/1.1 200"), std::string::npos) << receivedText;
         }
+    }
+
+    /**
+     * @brief 钉住：静态文件目录这项能力在 HTTPS 上同样成立，与明文共用一份实现
+     * @details 这一条测的是「TLS 侧接上了那个配置本体」，不是静态服务的全部语义——条件请求、Range、
+     *          映射缓存那一整套由 TestHttpStaticFileTransfer 在明文侧钉住，两边跑的是同一个
+     *          StaticFileService 与同一个处理函数。此前这项能力只长在明文服务器上：明文能配的静态目录，
+     *          换到 TLS 端口上就没有入口，而 443 才是静态资源的常态落点。
+     *          Cache-Control 与「目录外不存在」的 404 一并钉住：前者证明配置真的到了响应里，
+     *          后者证明兜底路由接的是本服务器的路由器而不是明文那台。
+     */
+    TEST(HttpsServer, ServesStaticFilesFromAConfiguredDirectory)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath))
+                << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        AsynGyanis::TestSupport::TemporaryDirectory site("HttpsStaticSite");
+        const std::string                           fileContent = "static-over-tls";
+        ASSERT_TRUE(site.writeBinaryFile("hello.txt", fileContent));
+        // 目录交给服务器之前先转成 UTF-8 文本：配置面收的就是这个刻度（Windows 上 path::string()
+        // 给的是本地代码页的字节）
+        const std::string siteDirectory = Platform::FileSystem::utf8FromPath(site.path());
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
+                                          [&siteDirectory](HttpsServer &server)
+                                          {
+                                              server.staticFileDir(siteDirectory);
+                                              server.setStaticFileCacheControl(std::optional<std::string>{"max-age=7"});
+                                          });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        // 读回来的是规范化后的绝对路径：两边做同一道规范化再逐字比，比出来的相等才是「配置落在本服务器上」
+        // 这条断言，而不是分隔符/大小写差异下的侥幸
+        EXPECT_EQ(Platform::FileSystem::utf8FromPath(std::filesystem::weakly_canonical(site.path())),
+                  fixture.server().staticFileDir());
+
+        TlsLoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::string staticText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /hello.txt HTTP/1.1"), kWaitTimeout)) << "静态文件请求未能写入";
+        ASSERT_TRUE(client.waitForTextOccurrences(staticText, fileContent, 1, kWaitTimeout))
+                << "HTTPS 上的静态文件没有回正文：「" << staticText << "」";
+        EXPECT_NE(staticText.find("HTTP/1.1 200"), std::string::npos) << staticText;
+        EXPECT_NE(staticText.find("content-type: text/plain"), std::string::npos) << staticText;
+        EXPECT_NE(staticText.find("cache-control: max-age=7"), std::string::npos) << "Cache-Control 没跟着静态响应出去：" << staticText;
+
+        // 兜底路由之外、也确实不存在的文件：静态服务自己回 404（不是「路由没登记所以走了别的分支」）
+        std::string missingText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /no-such-file.txt HTTP/1.1"), kWaitTimeout)) << "缺失文件的请求未能写入";
+        ASSERT_TRUE(client.waitForTextOccurrences(missingText, "404", 1, kWaitTimeout))
+                << "不存在的静态文件应当回 404：「" << missingText << "」";
     }
 } // namespace AsynGyanis::Net

@@ -1,8 +1,13 @@
 // HTTP/3 会话层的用例：本端单向流的绑定、SETTINGS 的产出、请求到 Router 的映射，以及隧道与限额这套状态机。前几条只驱动会话本身——单向流的开流口与流数据出口都是测试给的假实现，因此不涉及 QUIC 与真实 UDP。后面的真字节用例由测试自带的字节级对端（Http3ClientPeer）驱动：请求按 RFC 9114/9204 排成帧、响应按帧解回来，中间同样不经 UDP。为什么对端是自己写的：链接进来的第三方实现与被测代码同属一次构建、可以一起改软，那种「跨实现裁判」迟早只剩名字。字节合不合规范的判定因此在进程外做（scripts/h3_acceptance.py 与 scripts/quic_cross_check.sh 用 aioquic 真握手真编解），本文件留的是状态机与业务映射的回归判据。
 #include "Net/Http3/Http3Session.h"
 
+#include "Platform/FileSystem/FileSystem.h"
+
+#include "CoreTestSupport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Router.h"
+#include "Net/Http/StaticFileService.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http3/Qpack.h"
 #include "Net/Http3/Http3Frame.h"
@@ -3124,4 +3129,57 @@ namespace AsynGyanis::Net
         ASSERT_EQ(abortedStreams.size(), 1U) << "那条没能答出的流要被交代一次复位，对端才不必干等";
         EXPECT_EQ(abortedStreams.front().applicationErrorCode, static_cast<std::uint64_t>(Http3ErrorCode::InternalError));
     }
+
+    /**
+     * @brief 钉住：静态文件兜底路由在 h3 这条通道上生效（会话层，不经 UDP）
+     * @details 静态服务原先只长在明文 HTTP 上，本轮把配置本体收进 StaticFileService 让三条通道共用
+     *          同一份实现。这里钉 h3 这一端的落点：正文由映射交给连接层之后，客户端要能拿回那段字节，
+     *          且 content-length 与 content-type 这类同源头部不缺——少了任何一步都说明「路由登记了但
+     *          这条通道的正文路径接不上」。ETag 一并钉：它是条件请求的键，只在明文侧验过等于没验。
+     */
+    TEST(Http3Session, ServesStaticFileFromInstalledFallbackRoute)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory site("H3StaticSite");
+        const std::string                           fileContent = "hello-h3-static-body";
+        ASSERT_TRUE(site.writeBinaryFile("greeting.txt", fileContent));
+
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session(
+            std::ref(opener),
+            [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+            {
+                sentStreamData.push_back(
+                        CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                return data.size();
+            });
+
+        Router            router;
+        StaticFileService staticFiles;
+        // 限额给 0（关闭映射缓存）：本条要测的是路由与正文通路，不是缓存的条数账
+        staticFiles.install(router, 0);
+        staticFiles.setDirectory(Platform::FileSystem::utf8FromPath(site.path()));
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/greeting.txt", "example.com"))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        ASSERT_EQ(peer.response().status, 200) << "h3 上的静态文件没有回 200";
+        EXPECT_EQ(peer.response().body, fileContent) << "h3 上取回的静态正文与文件内容不一致";
+        const auto contentType = peer.response().headers.find("content-type");
+        ASSERT_TRUE(contentType != peer.response().headers.end()) << "静态响应少了 content-type";
+        EXPECT_EQ(contentType->second.find("text/plain"), 0U) << "content-type 不是按扩展名推出来的那一串：" << contentType->second;
+        EXPECT_TRUE(peer.response().headers.contains("etag")) << "静态响应少了 ETag：条件请求在 h3 上没有键可用";
+    }
+
 } // namespace AsynGyanis::Net

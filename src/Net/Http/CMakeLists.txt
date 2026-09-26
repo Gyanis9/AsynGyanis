@@ -52,6 +52,9 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/FileSender.h
         ${CMAKE_CURRENT_LIST_DIR}/StaticFileMappingCache.h
         ${CMAKE_CURRENT_LIST_DIR}/StaticFileMappingCache.cpp
+        # 只有头文件：StaticFileService 的成员函数定义在 HttpServer.cpp 里，与它要调用的
+        # serveStaticFileRequest（条件请求、Range、映射那一整套）同处，不另开一份翻译单元
+        ${CMAKE_CURRENT_LIST_DIR}/StaticFileService.h
         ${CMAKE_CURRENT_LIST_DIR}/FileSender.cpp
         # HTTP 客户端（出站）
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpResponseParser.h

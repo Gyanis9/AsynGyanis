@@ -16,6 +16,7 @@
 #include "Core/EventLoop/TimerQueue.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
+#include "Net/Http/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include "CoreTestSupport.h"
@@ -342,4 +343,33 @@ namespace AsynGyanis::Net
         const Clock::time_point farDeadline = now + std::chrono::seconds{30};
         EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, farDeadline, now, std::chrono::milliseconds::zero()), farDeadline);
     }
+
+    /**
+     * @brief 钉住：静态目录这类配置要有路由器可登记，没接之前当场拒而不是装作配好了
+     * @details QuicServer 的路由器是外部交来的（本类不持有），这与两条 TCP 服务器自己持有路由器的
+     *          形态不同。若允许在没接路由器时设静态目录，配置会落进一个永远不会被服务到的对象里——
+     *          运维看到的就是「配了目录但一个文件都不出」，而这条路径上没有任何一条报错。
+     *          另一侧也要钉：接上路由器之后目录不存在只降级为「未启用」并记告警，不抛——
+     *          与明文/TLS 两侧同一判据（规范化失败是关闭静态服务，不是启动失败）。
+     */
+    TEST(QuicServer, RejectsStaticDirectoryConfigurationBeforeARouterIsAttached)
+    {
+        Core::EventLoop loop;
+
+        QuicServer::Configuration configuration;
+        configuration.certificateFile = certificatePath();
+        configuration.privateKeyFile  = privateKeyPath();
+        QuicServer server(loop, configuration);
+
+        EXPECT_THROW(server.staticFileDir("web"), Base::InvalidArgumentException);
+        EXPECT_THROW(server.setStaticFileCacheControl(std::optional<std::string>{"max-age=5"}), Base::InvalidArgumentException);
+
+        Router router;
+        server.setRouter(router);
+        // 不存在的目录：关静态服务并告警，读出空串；这一步不许抛
+        EXPECT_NO_THROW(server.staticFileDir("definitely-not-here-asyngyanis"));
+        EXPECT_TRUE(server.staticFileDir().empty()) << "规范化失败的目录应当落为「未启用」";
+        EXPECT_NO_THROW(server.setStaticFileCacheControl(std::optional<std::string>{"max-age=5"}));
+    }
+
 } // namespace AsynGyanis::Net
