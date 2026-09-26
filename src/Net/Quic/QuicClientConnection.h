@@ -29,6 +29,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <span>
@@ -133,6 +134,19 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::int64_t openStream();
 
         /**
+         * @brief 开一条本端发起的单向流（HTTP/3 的控制流与两条 QPACK 流走这里）
+         * @return std::int64_t 新流号（客户端侧 0x02、0x06……）；额度用尽时为 -1
+         */
+        [[nodiscard]] std::int64_t openUnidirectionalStream();
+
+        /**
+         * @brief 把这条连接上已排好的字节送上线
+         * @details 写完流数据之后必须显式叫它一次，否则字节只躺在 QUIC 流的待发队列里：本框架不做
+         *          「后台自动 flush」，为的是让调用方能精确控制每一拍送什么（与服务端侧同一分工）
+         */
+        [[nodiscard]] Core::Task<> sendPending();
+
+        /**
          * @brief 往一条流上写数据
          * @param streamId 流号
          * @param data 待写字节
@@ -141,6 +155,15 @@ namespace AsynGyanis::Net
          *         剩下的要先 `pumpOnce()` 把窗口腾出来再交
          */
         std::size_t writeStream(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream);
+
+        /**
+         * @brief 把收到的流数据**直接转交**给一个出口，不再在本对象里排队
+         * @details 上层是 HTTP/3 时必须要这一条：h3 那层自己按流分派、自己管额度，中间再放一层
+         *          「按流缓冲、等谁来取」就是把同一批字节存两遍，还会让它看不到收尾（FIN）。
+         *          设了它之后 `takeReceivedData` 就只会拿到空——一份字节只交给一边。
+         * @param sink 转交出口；交空即退回「本对象排队、由调用方取走」那一档（默认就是这一档）
+         */
+        void setStreamDataSink(std::function<void(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream)> sink);
 
         /**
          * @brief 取走一条流上已收到的字节（取完即清空）
@@ -170,6 +193,14 @@ namespace AsynGyanis::Net
         void close();
 
         /**
+         * @brief 所属事件循环
+         * @details 上层要在这条连接上挂 `Core::DeadlineGuard`（它的构造需要循环提供定时器），
+         *          而自己再造一份「哪个循环」的记账就会与本类的线程契约脱钩
+         * @return Core::EventLoop& 构造时交来的那一个
+         */
+        [[nodiscard]] Core::EventLoop &eventLoop() const noexcept;
+
+        /**
          * @brief 本端地址（绑定后由内核定的那个端口）
          * @return Platform::SocketAddress 未连接时是未设置的地址
          */
@@ -186,14 +217,15 @@ namespace AsynGyanis::Net
         /// 流数据回调的落点：按流号记账，供 `takeReceivedData` 取走
         void noteStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream);
 
-        Core::EventLoop                            &m_loop;             ///< 所属事件循环（非拥有）
-        Configuration                               m_configuration;    ///< 建好本对象时那份配置
-        std::unique_ptr<Core::TlsContext>           m_tlsContext{};     ///< 客户端 TLS 上下文，连接销毁前一直持有
-        std::unique_ptr<Core::AsyncUdpSocket>       m_socket{};         ///< 自持的 UDP 套接字，connect() 时建
-        std::unique_ptr<QuicConnection>             m_connection{};     ///< 跑这条连接的状态机外壳
-        Platform::SocketAddress                     m_serverAddress{};  ///< 服务端地址，收包时据此丢弃旁来的报文
-        std::vector<std::uint8_t>                   m_receiveBuffer{};  ///< 收包缓冲，一次一条数据报
-        std::map<std::int64_t, IncomingStreamState> m_incoming{};       ///< 按流号记的接收账
-        bool                                        m_isStopped{false}; ///< 本端已收口或被时限掐断
+        Core::EventLoop                                                       &m_loop;             ///< 所属事件循环（非拥有）
+        Configuration                                                          m_configuration;    ///< 建好本对象时那份配置
+        std::unique_ptr<Core::TlsContext>                                      m_tlsContext{};     ///< 客户端 TLS 上下文，连接销毁前一直持有
+        std::unique_ptr<Core::AsyncUdpSocket>                                  m_socket{};         ///< 自持的 UDP 套接字，connect() 时建
+        std::unique_ptr<QuicConnection>                                        m_connection{};     ///< 跑这条连接的状态机外壳
+        Platform::SocketAddress                                                m_serverAddress{};  ///< 服务端地址，收包时据此丢弃旁来的报文
+        std::vector<std::uint8_t>                                              m_receiveBuffer{};  ///< 收包缓冲，一次一条数据报
+        std::map<std::int64_t, IncomingStreamState>                            m_incoming{};       ///< 按流号记的接收账
+        std::function<void(std::int64_t, std::span<const std::uint8_t>, bool)> m_streamDataSink{}; ///< 已设的转交出口；空即在本对象排队
+        bool                                                                   m_isStopped{false}; ///< 本端已收口或被时限掐断
     };
 } // namespace AsynGyanis::Net

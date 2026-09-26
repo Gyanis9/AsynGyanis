@@ -545,6 +545,95 @@ TEST(Http3Connection, BlockedFieldSectionIsDeliveredOnceTheEncoderStreamCatchesU
     EXPECT_FALSE(connection->isBroken());
 }
 
+/**
+ * @brief 头段还阻塞着就收到 END_STREAM：那一下收尾要推迟到指令补齐，不能把空消息报给上层
+ * @details 现场是自家出站 h3 客户端打自家服务端：响应的头段引用动态表，而它要的插入指令排在头段
+ *          之后才到（QPACK 的两条流之间，传输层不保证先后）。就地按 END_STREAM 收尾会让
+ *          `onRequestEnded` 赶在任何 `onHeaderField` 之前到达，拿「已完」当「已收齐」的那层于是
+ *          交回一份零字段的响应——正文反倒可能已经计过错
+ * @note 证伪：把收尾判定改回不看 `isFieldSectionBlocked`（或摘掉续解点的补收尾），本条在第一段
+ *       的 `requestsEnded` 判据处立刻红
+ */
+TEST(Http3Connection, EndStreamOnBlockedFieldSectionDefersTheMessageEnd)
+{
+    FakeTransport                  transport;
+    EventLog                       events;
+    Http3Connection::LocalSettings settings;
+    settings.qpackMaximumTableCapacityByteCount = 4096;
+    auto connection                             = makeConnection(transport, events, settings);
+
+    std::string encoderBytes;
+    std::string headerBlock;
+    {
+        QpackEncoder peerEncoder(4096, 100, 4096);
+        const auto   first = peerEncoder.encodeFieldSection(0, std::span<const QpackHeaderField>(minimalRequestFields()), headerBlock, encoderBytes);
+        ASSERT_TRUE(first.has_value()) << first.error().message;
+    }
+    ASSERT_FALSE(encoderBytes.empty()) << "对端确实插了动态表，这条用例的前提才成立";
+
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02)), false);
+    // 头段与 FIN 同批到达，而它引用的指令还在路上：既不能交付字段，也不能宣布这条消息收完了
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), true);
+    EXPECT_TRUE(events.headerFields.empty()) << "内容没齐就不该交出任何字段";
+    EXPECT_TRUE(events.requestsEnded.empty()) << "头段还没齐就把「收完」报上去：上层会拿一份空消息去作答";
+
+    // 指令到达：先交付字段，再补上被推迟的那一下收尾
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(encoderBytes), false);
+    EXPECT_FALSE(events.headerFields.empty()) << "补齐之后字段要交出去";
+    ASSERT_EQ(events.requestsEnded.size(), 1u) << "补齐之后要补上被推迟的收尾";
+    EXPECT_EQ(events.requestsEnded[0], kRequestStreamId);
+    EXPECT_TRUE(events.streamsClosed.empty()) << "本端还没作答，这条流的两侧没齐，状态不该回收";
+
+    // 本端作答并收尾：此刻两侧都收完，状态要在这里回收（推迟收尾不能把流留成永久驻留）
+    ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "204"}}, true).has_value());
+    connection->flush();
+    EXPECT_EQ(events.streamsClosed.size(), 1u) << "两侧都收完之后要把这条流收掉";
+    EXPECT_FALSE(connection->isBroken());
+}
+
+/**
+ * @brief 头段挂起期间正文照常到达：续解之后那一段仍要按「头段」交付，不能被当成尾段
+ * @details 判据取自自家两型的实测现场——服务端响应的头段引用动态表、指令排在头段之后，而正文帧夹在
+ *          中间先到。按「续解时是否已收过正文」判身份就会把这一判成尾段：响应头明明解全了，上层却收到
+ *          「头块序列非法」，一条答对的响应被本端自己作废
+ * @note 证伪：把交付点改回 `state.isBodyStarted`，本条在 `malformedRequests` 判据处红
+ */
+TEST(Http3Connection, BodyArrivingWhileFieldSectionBlockedDoesNotTurnTheHeadIntoTrailers)
+{
+    FakeTransport                  transport;
+    EventLog                       events;
+    Http3Connection::LocalSettings settings;
+    settings.qpackMaximumTableCapacityByteCount = 4096;
+    auto connection                             = makeConnection(transport, events, settings);
+
+    std::string encoderBytes;
+    std::string headerBlock;
+    {
+        QpackEncoder peerEncoder(4096, 100, 4096);
+        const auto   first = peerEncoder.encodeFieldSection(0, std::span<const QpackHeaderField>(minimalRequestFields()), headerBlock, encoderBytes);
+        ASSERT_TRUE(first.has_value()) << first.error().message;
+    }
+    ASSERT_FALSE(encoderBytes.empty()) << "对端确实插了动态表，这条用例的前提才成立";
+
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02)), false);
+    // 头段挂起，紧跟其后的正文帧照常收下：此刻 isBodyStarted 已经是真
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "payload")), true);
+    EXPECT_TRUE(events.headerFields.empty());
+    EXPECT_EQ(events.bodyBytes, "payload") << "正文不必等头段，先收下才对得上流控";
+
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(encoderBytes), false);
+    EXPECT_TRUE(events.malformedRequests.empty()) << "挂起的头段被按尾段判了非法序列（正文先到不该改它的身份）";
+    EXPECT_FALSE(events.headerFields.empty()) << "头段要在补齐之后交出去";
+    // 头段齐了、正文也收完并带 END_STREAM：这条请求到此就是完整的，必须派发出去
+    // （与上一条用例「推迟收尾」的那一下同一位置）
+    ASSERT_EQ(events.requestsEnded.size(), 1u) << "补齐之后没补上被推迟的收尾：请求永远躺在会话外面没人派";
+    EXPECT_EQ(events.requestsEnded[0], kRequestStreamId);
+    EXPECT_TRUE(events.streamsClosed.empty()) << "本端还没作答，这条流的两侧没齐，状态不该回收";
+}
+
 TEST(Http3Connection, FlushHandsEveryStreamItsOwnWriteAndDrainsTheQueue)
 {
     FakeTransport transport;

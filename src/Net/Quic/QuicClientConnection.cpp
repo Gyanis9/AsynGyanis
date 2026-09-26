@@ -13,6 +13,7 @@
 
 #include <cstring>
 #include <utility>
+#include <utility>
 
 namespace AsynGyanis::Net
 {
@@ -192,6 +193,24 @@ namespace AsynGyanis::Net
         return m_connection->openBidirectionalStream();
     }
 
+    std::int64_t QuicClientConnection::openUnidirectionalStream()
+    {
+        if (!isReady())
+        {
+            return -1;
+        }
+        return m_connection->openUnidirectionalStream();
+    }
+
+    Core::Task<> QuicClientConnection::sendPending()
+    {
+        if (m_connection != nullptr && !m_connection->isClosed())
+        {
+            co_await m_connection->flush();
+        }
+        co_return;
+    }
+
     std::size_t QuicClientConnection::writeStream(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
     {
         if (m_connection == nullptr || streamId < 0)
@@ -236,13 +255,29 @@ namespace AsynGyanis::Net
         m_isStopped = true;
     }
 
+    Core::EventLoop &QuicClientConnection::eventLoop() const noexcept
+    {
+        return m_loop;
+    }
+
     Platform::SocketAddress QuicClientConnection::localAddress() const noexcept
     {
         return m_socket != nullptr ? m_socket->localAddress() : Platform::SocketAddress{};
     }
 
+    void QuicClientConnection::setStreamDataSink(std::function<void(std::int64_t, std::span<const std::uint8_t>, bool)> sink)
+    {
+        m_streamDataSink = std::move(sink);
+    }
+
     void QuicClientConnection::noteStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
     {
+        if (m_streamDataSink)
+        {
+            // 转交档：不在这里排队，收尾也要原样带上去（h3 那层靠它判这条流的消息收齐了没有）
+            m_streamDataSink(streamId, data, isEndStream);
+            return;
+        }
         IncomingStreamState &state = m_incoming[streamId];
         state.receivedBytes.insert(state.receivedBytes.end(), data.begin(), data.end());
         state.isEndStreamReceived = state.isEndStreamReceived || isEndStream;

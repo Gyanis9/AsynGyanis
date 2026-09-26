@@ -22,7 +22,8 @@ python="${2:-python3}"
 # /g/Codes/... 这种 MSYS 形状递给 Windows 版 python，对方打不开就崩，而报出来的是「对端没起来」
 certificate="tests/Core/fixtures/test_localhost_cert.pem"
 privateKey="tests/Core/fixtures/test_localhost_key.pem"
-message="quic-outbound-probe-payload"
+# 对端答回来的正文与 .py 里的 SERVED_BODY 必须一致，长度也写进判据里
+servedBody="aioquic-h3-served"
 logDir="$(mktemp -d)"
 serverPid=""
 failures=0
@@ -111,17 +112,22 @@ runScenario() {
         return
     fi
 
-    "$probe" --port "$port" --host localhost --ca "$certificate" --alpn "$clientAlpn" \
-        --message "$message" --handshake-timeout 3000 --wait-timeout 3000 >"$clientLog" 2>&1
+    # MSYS2_ARG_CONV_EXCL：Git Bash 会把 `--path /probe` 里那个以 / 开头的取值换成一个真实存在的
+    # Windows 路径（实测换成 C:/Users/.../probe），本端的 :path 校验会把它判成非法——
+    # 看着像实现坏了，其实是命令行参数被换算过（本仓库踩过两次同型坑）
+    MSYS2_ARG_CONV_EXCL='*' "$probe" --port "$port" --host localhost --ca "$certificate" --alpn "$clientAlpn" \
+        --path /probe --handshake-timeout 3000 --wait-timeout 6000 >"$clientLog" 2>&1
     local clientExit=$?
 
-    local messageBytes=${#message}
+    local servedBytes=${#servedBody}
     if [ "$expectHandshake" = "ok" ]; then
         expectLine "$serverLog" '^HANDSHAKE alpn='"$serverAlpn"'$' "$name：对端解出了握手并协商到 $serverAlpn"
-        expectLine "$serverLog" "^RECEIVED [0-9]+ $messageBytes\$" "$name：对端收满了 $messageBytes 字节流数据"
+        expectLine "$serverLog" "^REQUEST [0-9]+ GET /probe\$" "$name：对端把我们的请求解成了 GET /probe"
+        expectLine "$serverLog" "^ANSWERED [0-9]+ $servedBytes\$" "$name：对端答出了 $servedBytes 字节正文"
         expectLine "$clientLog" '^CONNECTED '"$clientAlpn"'$' "$name：本端握手完成且 ALPN 一致"
-        expectLine "$clientLog" "^STREAM [0-9]+ SENT $messageBytes\$" "$name：本端把整段正文都交进了流"
-        expectLine "$clientLog" "^ECHOED [0-9]+ $messageBytes\$" "$name：本端收回的回显与送出逐字相同"
+        expectLine "$clientLog" '^HEADERS$' "$name：本端开出了控制流与两条 QPACK 流"
+        expectLine "$clientLog" "^RESPONSE 200 $servedBytes\$" "$name：本端收到 200 与 $servedBytes 字节正文"
+        expectLine "$clientLog" '^BODY_MATCH$' "$name：正文与对端所答逐字相同"
         expectLine "$clientLog" '^RESULT ok$' "$name：探针自评为整趟走通"
         if [ "$clientExit" -ne 0 ]; then
             echo "FAIL $name：事件行都齐了但探针退出码是 $clientExit"

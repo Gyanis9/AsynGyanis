@@ -64,6 +64,7 @@ add_executable(TestNet
         Http3/TestHttp3Connection.cpp
         Http3/TestQpack.cpp
         Http3/TestHttp3Session.cpp
+        Http3/TestHttp3ClientConnection.cpp
         WebSocket/TestPerMessageDeflate.cpp
         Http/TestCompressionMiddleware.cpp
         Http/TestHttpAcceptDispatch.cpp

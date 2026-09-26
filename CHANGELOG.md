@@ -17,6 +17,39 @@
 
 ### 新增
 
+- **出站 HTTP/3 客户端（`Net::Http3ClientConnection`）**：h3 从此两个方向都走得通——此前只有服务端一侧
+  （`QuicServer`/`Http3Session`），要拿本框架当 h3 客户端访问别人的服务就只能借外部实现。位置与 h2 侧的
+  `Http2ClientConnection` 对应：在一条已握手的 `QuicClientConnection` 上开出三条本端单向流并把 SETTINGS
+  送上线（`start()`），之后 `request()` 一问一答、每条请求占一条本端双向流，同一条连接上可以并发提多条；
+  `shutdown()` 先发 GOAWAY 再收连接（顺序与 h2 同理：GOAWAY 要让对端看见才有意义）。结论结构体
+  `Http3ClientResponse` 的字段形状与 `Http2ClientResponse` 逐字对齐，为的是调用方在两协议之间不写两套判断
+  ——两份没有合成一份，因为那是 `Http2` 模块的公开类型，要合得先决定上收到哪一层。本类不自带后台协程：
+  等响应时由 `request()` 自己一圈圈推（送已排好的字节 → 收一条报文），谁先收齐谁先返回。
+  **一处要说清的口径**：`request()` 的时限到点是**收掉整条连接**而不是只弃这条流——本层不替调用方揣测
+  「同一条连接上别的请求还要不要」。复用一条连接时，超时那次会连带让其它在途请求拿不到答案，调用方按
+  「对端在我们手里把连接收了」那一支重来即可（判据是响应里的 `isAnyByteReceived`）。
+  为了让这条路真能走通，`Http3Connection` 侧补了两处：**角色化**（流号归属、收侧与写侧允许的消息种类三处
+  判据按两型分开）、以及出站侧要能把流数据直接转交给协议层（`QuicClientConnection` 的 sink——中间再排一次队
+  会把同一批字节存两遍，而且看不见 FIN）。本端自己开的请求流必须**先登记再提交**，否则第一帧回来时无人认领。
+  同时修掉一条远端可触发的判读缺陷：QPACK 的头段可能先到、它引用的动态表插入指令排在**之后**才到
+  （控制流与编码器流之间传输层不保证先后，RFC 9204 §2.2.1 就是让解码器等）。原先按 END_STREAM 就地收尾会让
+  `onRequestEnded` 赶在任何 `onHeaderField` 之前到达，拿「已完」当「已收齐」的那层于是交回一份**零字段的响应**；
+  另一种错法是续解时按「此刻是否已收过正文」判这一段是头段还是尾段——正文帧夹在中间先到时，请求头会被当尾段
+  判成非法序列（RFC 9114 §4.1），一条答对的响应被本端自己作废。改法是挂起时记下两个事实（这一段还阻塞着、
+  它是头段还是尾段），指令补齐后先交付字段、再补上被推迟的那一下收尾。**含一处用例订正**：随本条进来的
+  `BodyArrivingWhileFieldSectionBlockedDoesNotTurnTheHeadIntoTrailers` 初稿把「本端还没作答，这条流的两侧没齐，
+  状态不该回收」这条判据挂到了 `requestsEnded` 上（与同批另一条用例同文，那边对的是 `streamsClosed`）——
+  按头段与正文都已收齐的事实，这里应当断言请求**已经收完并被派发**（`requestsEnded` 一条）而流状态**尚未回收**
+  （`streamsClosed` 为空），已按此改正。
+  外部裁判与用例：`scripts/quic_outbound_cross_check.sh` 的对端从「aioquic 当客户端」扩成也能当 H3 服务端
+  （`tests/Tools/QuicProbeClient.cpp` 是我们这边的被测端），两条通路各留一行事实行、缺一行即 FAIL。
+  树内 `Http3ClientConnection.CompletesARequestRoundTripAgainstOurOwnServer` 钉「自家客户端打自家服务端」的
+  完整往返（握手 → 起 h3 → 提一条 GET → 逐字核对状态码、响应头字段、正文与服务端的请求计数）。
+  证伪分两处做：摘掉续解点的补收尾 → 两条 QPACK 判读用例同时红在「请求收完」那一行；把续解点的身份判据换回
+  「此刻是否已收过正文」→ 只有那条正文先到的用例红在「没被判非法序列 + 字段交得出」两行。
+  **本轮仍未接上**：`HttpClient` 与出站池要用 h3 还差最后一公里（ALPN/协议选择那一档目前只有 h1/h2），
+  现在能拿到的是协议层这一格：能握手、能提请求、能收响应、能礼貌收尾。
+
 - **HTTP/3 从此也有「响应产出预算」这道闸门（`HttpServerLimits::writeTimeout` 在 h3 上真的算数了）**：
   这条通路此前只有读时限（`readTimeout`）在按时限收口，`Http3Session::expireStaleRequests()` 里那句
   「处理器那一头的预算本类不判」就是缺口本身。h1 与 h2 两侧由连接的空闲截止时间同时罩着两头（把请求交给

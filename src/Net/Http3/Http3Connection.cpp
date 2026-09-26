@@ -19,17 +19,11 @@ namespace AsynGyanis::Net
         /// 客户端发起的双向流号之间的跨度（RFC 9000 §2.1：这类流号恒 ≡ 0 mod 4）
         constexpr std::int64_t kClientBidirectionalStreamIdStep = 4;
 
-        /// 对端发起的双向流：请求只跑在这类流上（RFC 9000 §2.1 的低位编码）
-        [[nodiscard]] constexpr bool isPeerInitiatedBidirectionalStream(const std::int64_t streamId) noexcept
-        {
-            return (streamId & 3) == 0;
-        }
+        /// 单向流的低位标记（RFC 9000 §2.1：bit1 为 1 即单向，控制流与两条 QPACK 流都是单向流）
+        constexpr std::int64_t kUnidirectionalStreamBitMask = 0x02;
 
-        /// 对端发起的单向流：控制流与两条 QPACK 流（RFC 9114 §6.2）
-        [[nodiscard]] constexpr bool isPeerInitiatedUnidirectionalStream(const std::int64_t streamId) noexcept
-        {
-            return (streamId & 3) == 2;
-        }
+        /// 发起方标记（RFC 9000 §2.1：bit0 随角色翻，服务端 1、客户端 0）
+        constexpr std::int64_t kInitiatorBitMask = 0x01;
 
         /// 帧层的错误类别映射成线上码：布局不合是帧错误，撑破缓冲是过量负载（RFC 9114 §8.1）
         [[nodiscard]] Http3ErrorCode toHttp3ErrorCode(const Http3FrameErrorKind errorKind) noexcept
@@ -58,8 +52,10 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    Http3Connection::Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks, const LocalSettings settings) :
-        m_streamOpener(std::move(opener)), m_streamWriter(std::move(writer)), m_streamCrediter(std::move(crediter)), m_callbacks(std::move(callbacks)), m_localSettings(settings)
+    Http3Connection::Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks, const LocalSettings settings,
+                                     const QuicConnectionRole role) :
+        m_streamOpener(std::move(opener)), m_streamWriter(std::move(writer)), m_streamCrediter(std::move(crediter)), m_callbacks(std::move(callbacks)), m_localSettings(settings),
+        m_isLocalServer(role == QuicConnectionRole::Server)
     {
         if (!m_streamOpener || !m_streamWriter)
         {
@@ -114,6 +110,43 @@ namespace AsynGyanis::Net
         LOG_DEBUG_FMT("Http3Connection: HTTP/3 协议层已建立（控制流 {}、编码器流 {}、解码器流 {}）", m_localControlStreamId, m_localEncoderStreamId, m_localDecoderStreamId);
     }
 
+    bool Http3Connection::isLocallyInitiatedStream(const std::int64_t streamId) const noexcept
+    {
+        // 服务端发起的流低位是 1，客户端发起的是 0（RFC 9000 §2.1）
+        const std::int64_t localInitiatorBit = m_isLocalServer ? kInitiatorBitMask : 0;
+        return (streamId & kInitiatorBitMask) == localInitiatorBit;
+    }
+
+    bool Http3Connection::isUnidirectionalStream(const std::int64_t streamId) noexcept
+    {
+        return (streamId & kUnidirectionalStreamBitMask) != 0;
+    }
+
+    Http3MessageKind Http3Connection::inboundMessageKind() const noexcept
+    {
+        return m_isLocalServer ? Http3MessageKind::Request : Http3MessageKind::Response;
+    }
+
+    Http3MessageKind Http3Connection::outboundMessageKind() const noexcept
+    {
+        return m_isLocalServer ? Http3MessageKind::Response : Http3MessageKind::Request;
+    }
+
+    std::expected<void, QpackError> Http3Connection::submitRequestHead(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isEndOfStream)
+    {
+        // 请求流是本端开出来的，协议层此前没见过它：先登记一份状态再提交。
+        // 这句只放在客户端的入口里——服务端那侧「不给没见过的流写响应」那道闸要留着，
+        // 它挡的是「对端已重置的流上继续写响应」，放宽就等于把那份保护挪走
+        static_cast<void>(streamStateFor(streamId));
+        return submitResponseFieldSection(streamId, fieldLines, /*isTrailers=*/false, isEndOfStream);
+    }
+
+    std::expected<std::size_t, QpackError> Http3Connection::appendRequestBody(const std::int64_t streamId, const std::span<const std::uint8_t> bytes, const bool isEndStream)
+    {
+        static_cast<void>(streamStateFor(streamId));
+        return appendResponseBody(streamId, bytes, isEndStream);
+    }
+
     bool Http3Connection::isUsable() const noexcept
     {
         return m_isUsable && !m_isBroken;
@@ -146,7 +179,7 @@ namespace AsynGyanis::Net
             return;
         }
 
-        if (isPeerInitiatedUnidirectionalStream(streamId))
+        if (isUnidirectionalStream(streamId) && !isLocallyInitiatedStream(streamId))
         {
             if (const auto kindEntry = m_peerStreamKinds.find(streamId); kindEntry == m_peerStreamKinds.end())
             {
@@ -196,8 +229,27 @@ namespace AsynGyanis::Net
             return;
         }
 
-        if (isPeerInitiatedBidirectionalStream(streamId))
+        if (!isUnidirectionalStream(streamId) && !isLocallyInitiatedStream(streamId))
         {
+            // 服务端一侧：对端发起的双向流就是一问一答的请求流。作客户端时这类流是**对端发起的推送**
+            // （本端从不发 MAX_PUSH_ID，RFC 9114 §4.6 允许直接拒绝），按忽略处置但归还额度
+            if (m_isLocalServer)
+            {
+                consumeRequestStream(streamId, data, isEndStream);
+                return;
+            }
+            LOG_DEBUG_FMT("Http3Connection: 收到对端发起的推送流 {}，本端不接受推送，已忽略", streamId);
+            if (m_streamCrediter && !data.empty())
+            {
+                m_streamCrediter(streamId, data.size());
+            }
+            return;
+        }
+
+        if (!isUnidirectionalStream(streamId))
+        {
+            // 客户端一侧：本端发起的双向流上回来的是响应（服务端一侧走不到这里——它自己发起的
+            // 只有单向的控制流与 QPACK 流）
             consumeRequestStream(streamId, data, isEndStream);
             return;
         }
@@ -439,7 +491,13 @@ namespace AsynGyanis::Net
         if (isEndStream && !state.isPeerFinished && !state.isAbandoned)
         {
             state.isPeerFinished = true;
-            finishRequestStreamIfEnded(streamId, state);
+            // 头段还压在解码器等那条编码器流的指令时不收这个尾：交付点在 deliverResumedFieldSection，
+            // 那里补一次收尾。就地收尾等于把这条消息判成空——拿「已完」当「已收齐」的上层会交回一份
+            // 一个字段都没有的响应，而对端其实只是把指令排在了头段后面
+            if (!state.isFieldSectionBlocked)
+            {
+                finishRequestStreamIfEnded(streamId, state);
+            }
         }
         // 此刻不再使用该流的引用：把处理中途被判定放弃的流在这里回收
         pruneAbandonedStream(streamId);
@@ -476,6 +534,8 @@ namespace AsynGyanis::Net
             {
                 state.isHeaderSectionSeen = true;
             }
+            state.isFieldSectionBlocked         = *decoded == QpackFieldSectionDecodeStatus::Blocked;
+            state.isBlockedFieldSectionTrailers = isTrailers;
             if (*decoded == QpackFieldSectionDecodeStatus::Blocked)
             {
                 // 声明的动态表内容还没到：整段由解码器代管，等编码器流补齐后再交（RFC 9204 §2.2.1）
@@ -574,7 +634,7 @@ namespace AsynGyanis::Net
         // 每个头段新建一份就会把合法尾段判成非法序列
         if (!state.validator)
         {
-            state.validator = std::make_unique<Http3HeaderValidator>(Http3MessageKind::Request, m_localSettings.isExtendedConnectEnabled);
+            state.validator = std::make_unique<Http3HeaderValidator>(inboundMessageKind(), m_localSettings.isExtendedConnectEnabled);
         }
         Http3HeaderValidator &validator = *state.validator;
         if (const auto began = validator.beginHeaderBlock(isTrailers); !began)
@@ -647,8 +707,15 @@ namespace AsynGyanis::Net
         {
             return; // 还没补齐，继续等
         }
-        // 阻塞过的头段一定是请求的头段：正文不可能排在它之前，所以 isTrailers 恒假
-        static_cast<void>(deliverFieldSection(streamId, state, fields, state.isBodyStarted));
+        state.isFieldSectionBlocked = false;
+        // 按挂起时记下的那一类交付，而不是按「此刻是否已收过正文」：后者在挂起期间会被正文帧翻上去
+        static_cast<void>(deliverFieldSection(streamId, state, fields, state.isBlockedFieldSectionTrailers));
+        // 对端在指令到达之前就已 END_STREAM：那一刀的收尾当时被推迟，补在这里。本函数最后一次用到
+        // state 就是这一句——收尾判定会把两侧都收完的流从表里摘掉，之后再碰它就是踩已释放的对象
+        if (state.isPeerFinished)
+        {
+            finishRequestStreamIfEnded(streamId, state);
+        }
     }
 
     void Http3Connection::finishRequestStreamIfEnded(const std::int64_t streamId, StreamState &state)
@@ -732,7 +799,9 @@ namespace AsynGyanis::Net
             }
             if (fieldSectionSizeByteCount > m_peerMaximumFieldSectionSizeByteCount)
             {
-                const std::string_view sectionName = isTrailers ? "响应尾段" : "响应头段";
+                // 名字按角色取：服务端写的是响应，客户端写的是请求，判据同一条
+                const std::string_view messageName = m_isLocalServer ? "响应" : "请求";
+                const std::string_view sectionName = isTrailers ? messageName == "响应" ? "响应尾段" : "请求尾段" : messageName == "响应" ? "响应头段" : "请求头段";
                 return std::unexpected(QpackError{.kind    = QpackErrorKind::InvalidLocalState,
                                                   .message = "流 " + std::to_string(streamId) + " 的" + std::string(sectionName) + " " + std::to_string(fieldSectionSizeByteCount) +
                                                              " 字节越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE " + std::to_string(m_peerMaximumFieldSectionSizeByteCount) +
@@ -750,7 +819,9 @@ namespace AsynGyanis::Net
             oneShotValidator = std::make_unique<Http3HeaderValidator>(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
         } else if (entry->second.responseValidator == nullptr)
         {
-            entry->second.responseValidator = std::make_unique<Http3HeaderValidator>(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
+            // 种类随角色翻：服务端在这条流上写响应，客户端写请求。1xx 那份一次性判定器不受影响——
+            // 信息性响应只可能出现在响应侧，请求字段行里没有 :status，上面那个判据恒不成立
+            entry->second.responseValidator = std::make_unique<Http3HeaderValidator>(outboundMessageKind(), m_localSettings.isExtendedConnectEnabled);
         }
         Http3HeaderValidator &validator = oneShotValidator != nullptr ? *oneShotValidator : *entry->second.responseValidator;
         if (const auto began = validator.beginHeaderBlock(isTrailers); !began)

@@ -9,9 +9,16 @@
  * @details 位置与 HTTP/2 侧的 `Http2Connection` 对应：只管协议，不管业务，也不碰 socket 与事件循环。
  *          传输层以「流号 + 字节段」喂入、以同样的形状取走待发字节，因此本类对底下是哪一套 QUIC
  *          实现一无所知。
+ *
+ * @note 两个角色共用一份状态机（`QuicConnectionRole`），落差只在三处判据：哪些流号算对端发起、
+ *       一问一答那条流上本端读的是请求还是响应、以及本端写出去的头段按哪种消息校验。
+ *       `Callbacks` 里那组名字是按服务端一侧的读向取的（`onRequestEnded` 等）：作客户端时同一条
+ *       回调表示「这条流上的响应收齐了」，出站 façade 会把它翻成响应侧的说法再交给自己的调用方。
  */
 
 #pragma once
+
+#include "Net/Quic/QuicConnectionRole.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -129,8 +136,12 @@ namespace AsynGyanis::Net
          * @param callbacks 通知集合；缺哪一项就不发哪一项通知，不因此失败
          * @param settings 本端能力，写进控制流的 SETTINGS 帧。默认值取不到这里来：`LocalSettings` 的
          *        成员初值属于本类的 complete-class context，写成默认参数在 GCC 下非法（[class.mem]）
+         * @param role 本端角色。它不进 SETTINGS，改的是三处读向与写向的判据：哪些流号算对端发起、
+         *        一问一答那条流上本端读的是请求还是响应、以及本端写出去的头段按哪种消息校验。
+         *        缺省为服务端，与既有调用点逐字一致
          */
-        Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks, const LocalSettings settings);
+        Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks, const LocalSettings settings,
+                        QuicConnectionRole role = QuicConnectionRole::Server);
 
         /**
          * @brief 析构函数：流状态与待发缓冲都是按值的标准容器，无额外资源需要回收
@@ -210,6 +221,24 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::expected<std::size_t, QpackError> appendResponseBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream);
 
         /**
+         * @brief 作客户端时提交请求头：与 `submitResponseHead` 同一实现，只是按 Request 种类校验
+         * @param streamId 本端发起的双向流（RFC 9000 §2.1 的客户端那一档）
+         * @param fieldLines 头字段，含 :method/:path/:scheme；伪头必须在最前
+         * @param isEndOfStream true 表示这条请求没有正文，交完头就收尾
+         * @return 成功返回空；失败返回错误，此时一个字节也没排进待发队列
+         */
+        [[nodiscard]] std::expected<void, QpackError> submitRequestHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream);
+
+        /**
+         * @brief 作客户端时追加请求正文：与 `appendResponseBody` 同一实现（DATA 帧不分方向）
+         * @param streamId 流号
+         * @param bytes 正文字节
+         * @param isEndStream true 表示正文到此为止
+         * @return 成功返回已收下的字节数；失败返回错误
+         */
+        [[nodiscard]] std::expected<std::size_t, QpackError> appendRequestBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream);
+
+        /**
          * @brief 该流上还有多少字节没交给传输层
          * @param streamId 流号
          * @return 待发字节数；流不存在时为 0
@@ -267,12 +296,25 @@ namespace AsynGyanis::Net
             std::uint64_t                         declaredContentLengthByteCount{0};  ///< 头段声明的正文长度
             bool                                  hasContentLengthDeclaration{false}; ///< 头段是否声明了 content-length
             bool                                  isHeaderSectionSeen{false};         ///< 是否已收到过头段（DATA 必须排在它之后）
-            bool                                  isHeadRejected{false};              ///< 头段已被判畸形并交回会话作答，后续字节只看不再解释
-            bool                                  isTrailersSeen{false};              ///< 尾段只允许一个
-            bool                                  isBodyStarted{false};               ///< 是否已收到 DATA：再来的头段就是尾段
-            bool                                  isPeerFinished{false};              ///< 对端已 END_STREAM
-            bool                                  isLocalFinished{false};             ///< 本端已收尾
-            bool                                  isAbandoned{false};                 ///< 已因错误重置，不再产生任何事件
+            /**
+             * @brief 最近一个头段还压在解码器等编码器流的指令，尚未交付
+             * @details 引用动态表的头段可能先到、它要用的插入指令后到（两条流之间传输层不保证先后，
+             *          RFC 9204 §2.2.1 就是让解码器等）。等期间这条流**不算收完**：按 END_STREAM 就地
+             *          收尾会把整条消息判成空——头段一个字节都没交出去，正文却已经计过数了
+             */
+            bool isFieldSectionBlocked{false};
+            /**
+             * @brief 那个被挂起的段是头段还是尾段
+             * @details 挂起期间正文照常被收下，续解点叫醒时「是否已开始收正文」早已不说明
+             *          这一段的身份；判错会把请求头当尾段交给判定器，被按 §4.1 判成非法序列
+             */
+            bool isBlockedFieldSectionTrailers{false};
+            bool isHeadRejected{false};  ///< 头段已被判畸形并交回会话作答，后续字节只看不再解释
+            bool isTrailersSeen{false};  ///< 尾段只允许一个
+            bool isBodyStarted{false};   ///< 是否已收到 DATA：再来的头段就是尾段
+            bool isPeerFinished{false};  ///< 对端已 END_STREAM
+            bool isLocalFinished{false}; ///< 本端已收尾
+            bool isAbandoned{false};     ///< 已因错误重置，不再产生任何事件
         };
 
         /// 一条流的待发字节
@@ -388,13 +430,26 @@ namespace AsynGyanis::Net
         /// 排空通告之后才见到的新请求流：不处理也不回应，只把这条流标记为放弃并归还额度
         void rejectStreamAfterDrain(std::int64_t streamId, std::span<const std::uint8_t> data);
 
+        /// 这条流是不是本端发起的（低位随角色翻转，RFC 9000 §2.1）：服务端认低位 1，客户端认低位 0
+        [[nodiscard]] bool isLocallyInitiatedStream(std::int64_t streamId) const noexcept;
+
+        /// 这条单向流是否由对端发起（本端的控制流与两条 QPACK 流都不该带回字节）
+        [[nodiscard]] static bool isUnidirectionalStream(std::int64_t streamId) noexcept;
+
+        /// 本端读的那种消息（服务端读请求、客户端读响应）该用哪种头段判定器
+        [[nodiscard]] Http3MessageKind inboundMessageKind() const noexcept;
+
+        /// 本端写的那种消息（服务端写响应、客户端写请求）该用哪种头段判定器
+        [[nodiscard]] Http3MessageKind outboundMessageKind() const noexcept;
+
         static constexpr std::size_t kMaximumFlushRounds = 64; ///< 一次 flush 最多搬多少段
 
-        StreamOpener   m_streamOpener;   ///< 开本端单向流的口
-        StreamWriter   m_streamWriter;   ///< 一条流上待发字节的出口
-        StreamCrediter m_streamCrediter; ///< 已消费字节归还接收窗口的口
-        Callbacks      m_callbacks;      ///< 交给上层的通知集合，缺哪一项就不发哪一项
-        LocalSettings  m_localSettings;  ///< 本端公布的能力，构造时写进 SETTINGS 帧
+        StreamOpener   m_streamOpener;        ///< 开本端单向流的口
+        StreamWriter   m_streamWriter;        ///< 一条流上待发字节的出口
+        StreamCrediter m_streamCrediter;      ///< 已消费字节归还接收窗口的口
+        Callbacks      m_callbacks;           ///< 交给上层的通知集合，缺哪一项就不发哪一项
+        LocalSettings  m_localSettings;       ///< 本端公布的能力，构造时写进 SETTINGS 帧
+        bool           m_isLocalServer{true}; ///< 本端是不是服务端：只用来翻那三处角色判据
 
         std::optional<QpackEncoder> m_qpackEncoder; ///< 本端编码器：写自己的动态表，受对端公布容量约束
         std::optional<QpackDecoder> m_qpackDecoder; ///< 本端解码器：受本端公布的容量约束

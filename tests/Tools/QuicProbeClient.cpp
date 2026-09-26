@@ -8,10 +8,12 @@
 //
 // 输出协议（每行一条，立即 flush，供运行脚本核对）：
 //   CONNECTED <alpn>          握手完成与协商到的应用层协议
-//   STREAM <id> SENT <n>      在这样一条双向流上送出去 n 字节
-//   ECHOED <id> <n>           从同一条流收回 n 字节（内容与送出的逐字相同才打这行）
+//   HEADERS <id>              三条本端单向流（控制流与两条 QPACK 流）已开出并送上 SETTINGS
+//   RESPONSE <status> <n>     拿到响应：状态码与正文字节数
+//   BODY_MATCH                正文与 --expect-body 逐字相同
 //   FAILED <原因>             没握手成功、对端不回、或回显内容不符
 //   CLOSED                    本端已收口，探针即将退出
+#include "Net/Http3/Http3ClientConnection.h"
 #include "Net/Quic/QuicClientConnection.h"
 
 #include "Core/EventLoop/EventLoop.h"
@@ -45,14 +47,15 @@ namespace
      */
     struct Options
     {
-        std::uint16_t port{0U};                       ///< 对端端口，必填
-        std::string   hostName{};                     ///< SNI 与证书校验目标，必填
-        std::string   certificateAuthority{};         ///< 信任锚 PEM，必填
-        std::string   applicationProtocol{"h3"};      ///< 要提供的 ALPN
-        std::string   message{"quic-outbound-probe"}; ///< 送出去并期待原样回显的正文
-        long          handshakeTimeoutMs{3000};       ///< 握手时限
-        long          waitTimeoutMs{4000};            ///< 等回显的上限
-        std::string   address{"127.0.0.1"};           ///< 对端地址
+        std::uint16_t port{0U};                          ///< 对端端口，必填
+        std::string   hostName{};                        ///< SNI 与证书校验目标，必填
+        std::string   certificateAuthority{};            ///< 信任锚 PEM，必填
+        std::string   applicationProtocol{"h3"};         ///< 要提供的 ALPN
+        std::string   path{"/probe"};                    ///< 要提的请求路径
+        std::string   expectedBody{"aioquic-h3-served"}; ///< 期待对端答回来的正文
+        long          handshakeTimeoutMs{3000};          ///< 握手时限
+        long          waitTimeoutMs{4000};               ///< 等回显的上限
+        std::string   address{"127.0.0.1"};              ///< 对端地址
     };
 
     /**
@@ -117,9 +120,12 @@ namespace
             } else if (flag == "--alpn")
             {
                 options.applicationProtocol = nextValue();
-            } else if (flag == "--message")
+            } else if (flag == "--path")
             {
-                options.message = nextValue();
+                options.path = nextValue();
+            } else if (flag == "--expect-body")
+            {
+                options.expectedBody = nextValue();
             } else if (flag == "--address")
             {
                 options.address = nextValue();
@@ -179,47 +185,40 @@ namespace
         }
         emitLine("CONNECTED " + client->negotiatedApplicationProtocol());
 
-        const std::int64_t streamId = client->openStream();
-        if (streamId < 0)
+        // 走 HTTP/3 这一格：三条本端单向流 + 一条请求流，判据全在对端 aioquic 的解析器上
+        AsynGyanis::Net::Http3ClientConnection http3{*client};
+        if (!co_await http3.start())
         {
-            emitLine("FAILED 开不出双向流（对端给的双向流额度为 0？）");
+            emitLine("FAILED 开不出控制流与 QPACK 流（对端给的单向流额度为 0？）");
             client.reset();
             isSuccess.store(false);
             isFinished.store(true);
             co_return;
         }
-        const std::span<const std::uint8_t> outbound{reinterpret_cast<const std::uint8_t *>(options.message.data()), options.message.size()};
-        const std::size_t                   acceptedByteCount = client->writeStream(streamId, outbound, true);
-        emitLine("STREAM " + std::to_string(streamId) + " SENT " + std::to_string(acceptedByteCount));
+        emitLine("HEADERS");
 
-        // 等回显：一条条收，最多收到上限为止。没有后台协程，正是 pumpOnce 的用法本意
-        std::vector<std::uint8_t> echoed{};
-        const auto                deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{options.waitTimeoutMs};
-        while (echoed.size() < options.message.size() && std::chrono::steady_clock::now() < deadline)
+        const std::string authority = options.hostName + ":" + std::to_string(options.port);
+        const auto        response  = co_await http3.request("https", authority, "GET", options.path, {}, {}, std::chrono::milliseconds{options.waitTimeoutMs});
+        if (!response.isOk())
         {
-            co_await client->pumpOnce();
-            for (auto received = client->takeReceivedData(streamId); !received.empty(); received = client->takeReceivedData(streamId))
-            {
-                echoed.insert(echoed.end(), received.begin(), received.end());
-                if (echoed.size() >= options.message.size())
-                {
-                    break;
-                }
-            }
-        }
-
-        if (echoed.size() != options.message.size() || std::memcmp(echoed.data(), options.message.data(), echoed.size()) != 0)
-        {
-            emitLine("FAILED 回显不符（收到 " + std::to_string(echoed.size()) + " 字节）");
+            emitLine("FAILED 响应没收到：" + response.errorMessage);
             client.reset();
             isSuccess.store(false);
             isFinished.store(true);
             co_return;
         }
-        emitLine("ECHOED " + std::to_string(streamId) + " " + std::to_string(echoed.size()));
+        emitLine("RESPONSE " + std::to_string(response.statusCode) + " " + std::to_string(response.body.size()));
+        if (response.body != options.expectedBody)
+        {
+            emitLine("FAILED 正文与期待不符（收到 " + std::to_string(response.body.size()) + " 字节）");
+            client.reset();
+            isSuccess.store(false);
+            isFinished.store(true);
+            co_return;
+        }
+        emitLine("BODY_MATCH");
 
-        client->close();
-        co_await client->pumpOnce();
+        co_await http3.shutdown();
         emitLine("CLOSED");
         client.reset();
         isSuccess.store(true);

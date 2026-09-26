@@ -12,6 +12,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Qpack.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http3Connection.h
         ${CMAKE_CURRENT_LIST_DIR}/Http3Connection.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Http3ClientConnection.h
+        ${CMAKE_CURRENT_LIST_DIR}/Http3ClientConnection.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http3Session.h
         ${CMAKE_CURRENT_LIST_DIR}/Http3Session.cpp
 )
