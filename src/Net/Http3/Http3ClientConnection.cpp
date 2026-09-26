@@ -198,6 +198,19 @@ namespace AsynGyanis::Net
     {
         PendingExchange &exchange           = exchangeFor(streamId);
         exchange.response.isAnyByteReceived = true;
+        if (!exchange.response.errorMessage.empty())
+        {
+            return; // 已判死的流不再累计：结论不会再变，继续攒只是让内存跟着对端的节奏长
+        }
+        if (m_config.maximumResponseBodyBytes != 0U && exchange.response.body.size() + bytes.size() > m_config.maximumResponseBodyBytes)
+        {
+            // 上限是本端的胃口，不是对端犯了协议错：只结这一条流（RESET + STOP_SENDING），连接留给别的流
+            noteStreamFailed(streamId, std::format("响应正文超过本端上限 {} 字节：不打算收这么大的响应就把 Config::maximumResponseBodyBytes 调高（填 0 表示不限）",
+                                                   m_config.maximumResponseBodyBytes));
+            exchange.response.body.clear(); // 半份正文不交回调用方：它连一个完整的字段段都不构成
+            m_connection.abortStream(streamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled));
+            return;
+        }
         exchange.response.body.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
     }
 

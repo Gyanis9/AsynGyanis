@@ -87,6 +87,16 @@ namespace AsynGyanis::Net
                     configuration.tlsPolicy.certificateAuthorityFile = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_cert.pem").string();
                 }
 
+                // 一条远超默认上限的正文：出站侧「越过本端胃口就只结这一条流」的判据要拿它当对端
+                m_router.get("/big",
+                             [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 static_cast<void>(request);
+                                 response.setStatus(200);
+                                 response.setBody(std::string(200U * 1024U, 'x'));
+                                 co_return;
+                             });
+
                 m_server = std::make_unique<QuicServer>(m_loop, configuration);
                 m_server->setRouter(m_router);
                 if (configureServer)
@@ -469,6 +479,87 @@ namespace AsynGyanis::Net
             std::atomic<bool>           m_isFinished{false};
         };
 
+
+        /**
+         * @brief 用给定的 h3 本端能力提两条请求：第一条打到超限的那条流上，第二条验连接还在
+         * @details 整段跑在链路所属的循环线程上（连接对象不跨线程访问）。第二条请求是关键的一半：
+         *          越界只该结掉那一条流，连接要留给别的请求用——不复位而把整条连接判死的那种实现，
+         *          在这一格会红。
+         */
+        class BodyCapAttempt
+        {
+        public:
+            BodyCapAttempt(const std::uint16_t port, const Http3ClientConnection::Config &config) : m_port(port), m_config(config)
+            {
+                m_task.emplace(run());
+                m_loop.scheduler().schedule(m_task->handle());
+                m_loopThread = std::thread([this] { m_loop.run(); });
+            }
+
+            ~BodyCapAttempt()
+            {
+                m_loop.stop();
+                if (m_loopThread.joinable())
+                {
+                    m_loopThread.join();
+                }
+            }
+
+            BodyCapAttempt(const BodyCapAttempt &)            = delete;
+            BodyCapAttempt &operator=(const BodyCapAttempt &) = delete;
+
+            bool awaitFinished(const std::chrono::milliseconds timeout)
+            {
+                return waitForCondition([this] { return m_isFinished.load(std::memory_order_acquire); }, timeout);
+            }
+
+            [[nodiscard]] bool isConnected() const noexcept
+            {
+                return m_isConnected;
+            }
+            [[nodiscard]] const Http3ClientResponse &oversize() const noexcept
+            {
+                return m_oversize;
+            }
+            [[nodiscard]] const Http3ClientResponse &following() const noexcept
+            {
+                return m_following;
+            }
+            [[nodiscard]] bool isLinkHealthyAfterOverflow() const noexcept
+            {
+                return m_isHealthyAfterOverflow;
+            }
+
+        private:
+            /// 在循环线程上跑完两条请求与一次健康检查
+            Core::Task<> run()
+            {
+                const auto address = Core::InetAddress::resolve("127.0.0.1", m_port).value();
+                auto       link    = std::make_shared<Http3OutboundLink>(m_loop, makeLinkConfiguration(m_port), m_config);
+                m_isConnected      = co_await link->connect(address);
+                if (m_isConnected)
+                {
+                    const std::string authority = "127.0.0.1:" + std::to_string(m_port);
+                    m_oversize                  = co_await link->http3().request("https", authority, "GET", "/big", {}, {}, std::chrono::milliseconds{3000});
+                    m_isHealthyAfterOverflow    = link->http3().isHealthy();
+                    m_following                 = co_await link->http3().request("https", authority, "GET", "/probe", {}, {}, std::chrono::milliseconds{3000});
+                }
+                m_isFinished.store(true, std::memory_order_release);
+                co_return;
+            }
+
+            Core::EventLoop               m_loop;
+            std::uint16_t                 m_port{0U};
+            Http3ClientConnection::Config m_config;
+            std::optional<Core::Task<>>   m_task{};
+            std::thread                   m_loopThread{};
+            Http3ClientResponse           m_oversize{};
+            Http3ClientResponse           m_following{};
+            bool                          m_isConnected{false};
+            bool                          m_isHealthyAfterOverflow{false};
+            std::atomic<bool>             m_isFinished{false};
+        };
+
     } // namespace
 
     /**
@@ -611,6 +702,36 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(attempt.isLinkConnected()) << "链路没握上手，后面的判据都是空的";
         EXPECT_TRUE(attempt.first().isOk()) << "第一条请求就没成：" << attempt.first().errorMessage;
         EXPECT_FALSE(attempt.second().isOk()) << "单连接请求数到量之后第二条仍被服务：setLimits 没交到会话手上";
+    }
+
+
+    /**
+     * @brief 响应正文越过本端上限：只结这一条流，连接留给后面的请求
+     * @details 上限是使用方的胃口而不是对端犯了协议错，所以处置只能是「这一条不要了」而不能把整条
+     *          连接判死——同一条连接上别的请求还要用。不复位的话对端会一直往一条我们不再读的流上发
+     *          字节，本端的接收窗口额度也要等连接收口才还得回去，因此这里同时验三件事：越界那次拿到
+     *          的是失败结论（且**不交半份正文**）、链路仍然健康、紧随其后的正常请求答得出来。
+     * @note 证伪：把 `noteBodyBytes` 里的上限判定摘掉 → 第一条断言红（拿到 200 与 200 KiB 正文）；
+     *       把越界处置改成「连连接一起判死」（不调 `abortStream` 而调 `close()`）→ 后两条红。
+     */
+    TEST(Http3ClientConnection, CapsResponseBodyAtTheConfiguredLimitAndKeepsTheConnection)
+    {
+        RunningHttp3Server server;
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        Http3ClientConnection::Config config;
+        config.maximumResponseBodyBytes = 4096U;
+
+        BodyCapAttempt attempt{server.listeningPort(), config};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "越界这条请求既没失败也没跑完，挂在那里";
+        ASSERT_TRUE(attempt.isConnected()) << "链路没握上手，后面的判据都是空的";
+
+        EXPECT_FALSE(attempt.oversize().isOk()) << "正文越过本端上限还被判成成功：" << attempt.oversize().statusCode;
+        EXPECT_TRUE(attempt.oversize().body.empty()) << "越界的响应把半份正文交回了调用方";
+        EXPECT_NE(attempt.oversize().errorMessage.find("maximumResponseBodyBytes"), std::string::npos) << "失败原因没指出该调哪一项：" << attempt.oversize().errorMessage;
+        EXPECT_TRUE(attempt.isLinkHealthyAfterOverflow()) << "越界把整条连接判死了：同连接上别的请求跟着遭殃";
+        EXPECT_TRUE(attempt.following().isOk()) << "越界之后同一条连接上的下一条请求没答上来：" << attempt.following().errorMessage;
+        EXPECT_EQ(attempt.following().body, std::string{kServedBody});
     }
 
 } // namespace AsynGyanis::Net

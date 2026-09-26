@@ -201,6 +201,15 @@ namespace AsynGyanis::Net
         return std::string{m_connection->selectedApplicationProtocol()};
     }
 
+    void QuicClientConnection::abortStream(const std::int64_t streamId, const std::uint64_t applicationErrorCode) noexcept
+    {
+        if (m_connection == nullptr)
+        {
+            return; // 连接还没建起来（或已交还）：没有流可收口，调用方的结论不受影响
+        }
+        m_connection->abortStream(streamId, applicationErrorCode);
+    }
+
     std::int64_t QuicClientConnection::openStream()
     {
         if (!isReady())

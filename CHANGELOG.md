@@ -793,6 +793,20 @@
 
 ### 修复
 
+- **出站 HTTP/3 客户端补上响应正文上界（`Http3ClientConnection::Config::maximumResponseBodyBytes`）**：
+  出站三条通路里，h1 与 h2 早就共用一份「本端愿意收多大的响应」（`HttpOutboundConnectionPool::Config`，
+  默认 8 MiB），而刚并入的 h3 一侧没有这道闸——正文长度由对端发多少 DATA 决定，连它声明的
+  content-length 都防不住撒谎的对端，形态是「一个恶意/失常的服务端能让本端一直分配内存直到耗尽」。
+  语义与另两条通路对齐：越界时**只结这一条流**（交出 RESET_STREAM 与 STOP_SENDING，连接留给别的请求用），
+  失败原因点名该调哪一项（`Config::maximumResponseBodyBytes`，填 0 表示不限），且**不把半份正文交回
+  调用方**——那一半连一个完整的字段段都不构成。默认档与两条通路同值，这条由
+  `HttpResponseParser` 里那条「三条通路的默认档不许分叉」的用例盯着（此前只盯两条）。
+  顺带给 `QuicClientConnection` 补了「收口单条流」的出口（此前只有开流口，越界的这条只能连连接一起放掉）。
+  用例 `Http3ClientConnection.CapsResponseBodyAtTheConfiguredLimitAndKeepsTheConnection` 一次验三件：
+  越界那次拿到失败结论且不交正文、链路仍然健康、紧随其后的正常请求照答。证伪分两处：摘掉上限判定 →
+  前三行红（拿到 200 与 200 KiB 正文）；把越界处置换成「连连接一起判死」→ 后两行红（同连接的下一条
+  请求被牵连）。两处红集不重叠，才算各自钉住。
+
 - **Windows 上从源码编译 Platform 直接失败，而报错全在 SDK 头里**：本轮全量格式化把 `Platform/Platform.h`
   里那四行系统包含按字母重排了，`mswsock.h` 就此排到 `winsock2.h` 与 `windows.h` 之前。这几份 SDK 头都
   不自带所需的基础类型——`mswsockdef.h` 里 `ULONG`、`BOOL` 那一套要靠先包含进来的 `winsock2.h`、

@@ -3,6 +3,7 @@
 
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http2/Http2ClientConnection.h"
+#include "Net/Http3/Http3ClientConnection.h"
 
 #include <gtest/gtest.h>
 
@@ -411,6 +412,7 @@ namespace AsynGyanis::Net
     {
         EXPECT_EQ(HttpOutboundConnectionPool::kDefaultMaximumResponseBodyBytes, HttpResponseParser::kDefaultMaximumBodySize) << "池与 h1 解析器的默认档分叉了";
         EXPECT_EQ(Http2ClientConnection::kDefaultMaximumResponseBodyBytes, HttpResponseParser::kDefaultMaximumBodySize) << "h2 与 h1 的默认档分叉了：换协议就换胃口";
+        EXPECT_EQ(Http3ClientConnection::kDefaultMaximumResponseBodyBytes, HttpResponseParser::kDefaultMaximumBodySize) << "h3 与 h1 的默认档分叉了：三条通路共用一份胃口才对";
     }
 
     /**

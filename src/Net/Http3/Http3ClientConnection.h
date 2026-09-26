@@ -70,10 +70,17 @@ namespace AsynGyanis::Net
         /**
          * @brief 本端能力与额度
          */
+        /// 一条响应正文的默认字节上限：与 h1 解析器、h2 出站侧同档（三条通路共用一份胃口，
+        /// 由 TestHttpResponseParser 里那条「默认档不许分叉」的用例盯着）
+        static constexpr std::size_t kDefaultMaximumResponseBodyBytes = 8ull * 1024 * 1024;
+
         struct Config
         {
             std::size_t maximumFieldSectionSizeByteCount{64U * 1024U}; ///< 本端愿收的最大头段字节数（RFC 9114 §4.2.2）
             std::size_t maximumOpenedStreamCount{1024U};               ///< 一条连接上最多开多少条请求流（流号到顶就要换代）
+            /// 一条响应正文的字节上限；0 表示不限。没有这道闸就是让对端决定本进程分配多少内存
+            /// （h3 的正文长度由对端发多少 DATA 决定，声明了的 content-length 也防不住撒谎的对端）
+            std::size_t maximumResponseBodyBytes{kDefaultMaximumResponseBodyBytes};
         };
 
         /**

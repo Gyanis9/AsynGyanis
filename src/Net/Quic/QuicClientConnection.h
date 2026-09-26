@@ -146,6 +146,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::int64_t openUnidirectionalStream();
 
         /**
+         * @brief 收口一条本端发起的流：交出 RESET_STREAM，并视需要请对端 STOP_SENDING
+         * @param streamId 要收口的流号
+         * @param applicationErrorCode 写进帧里的应用错误码（RFC 9114 §8.1 那一档）
+         * @details 存在的理由是「这一条不要了，但连接还要留给别的流」。出站 HTTP/3 的响应正文越过
+         *          本端胃口时就走这里：不复位的话对端会一直往一条我们不再读的流上发字节，而本端的
+         *          接收窗口额度也得等这条连接收口才还回去。
+         * @note 连接已收口时静默返回（与 close() 一样幂等）：调用方的结论已经拿到了，不该因为
+         *       「收尾的时机晚了」多出一条报错
+         */
+        void abortStream(std::int64_t streamId, std::uint64_t applicationErrorCode) noexcept;
+
+        /**
          * @brief 把这条连接上已排好的字节送上线
          * @details 写完流数据之后必须显式叫它一次，否则字节只躺在 QUIC 流的待发队列里：本框架不做
          *          「后台自动 flush」，为的是让调用方能精确控制每一拍送什么（与服务端侧同一分工）
