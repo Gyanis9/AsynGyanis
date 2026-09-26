@@ -216,7 +216,7 @@ namespace AsynGyanis::Core
 
     } // namespace
 
-    TlsContext::TlsContext()
+    TlsContext::TlsContext(const TlsPolicy &policy, const Role role) : m_policy(policy), m_role(role)
     {
 #ifndef _WIN32
         // OpenSSL 内部的 read()/write() 绕不开 MSG_NOSIGNAL：向已关闭的对端写数据
@@ -227,12 +227,20 @@ namespace AsynGyanis::Core
         std::signal(SIGPIPE, SIG_IGN);
 #endif
 
-        m_context = createHardenedContext();
+        m_context = createHardenedContext(role, policy);
+
+        // 策略里带了 CA 就等于「校验对端证书的信任库已就位」：setClientCertificateRequired(true)
+        // 的判据据此放行，调用方不必再补一次 loadClientCertificateAuthority()——两处都能给信任库，
+        // 但只有这一条路支持 CA 目录与校验深度
+        if (!policy.certificateAuthorityFile.empty() || !policy.certificateAuthorityPath.empty())
+        {
+            m_clientCertificateAuthorityLoaded = true;
+        }
     }
 
-    SSL_CTX *TlsContext::createHardenedContext()
+    SSL_CTX *TlsContext::createHardenedContext(const Role role, const TlsPolicy &policy)
     {
-        SSL_CTX *context = SSL_CTX_new(TLS_server_method());
+        SSL_CTX *context = SSL_CTX_new(role == Role::Server ? TLS_server_method() : TLS_client_method());
         if (!context)
         {
             // SSL_CTX_new 只在内存不足或 OpenSSL 未被正确初始化时才返回空：
@@ -241,18 +249,16 @@ namespace AsynGyanis::Core
                                 "（通常是内存不足，或 OpenSSL 库未正确初始化）");
         }
 
-        // 最低协议限定 TLS 1.2：RFC 8996 已把 TLS 1.0/1.1 列为废弃，
-        // 两者仍有已知攻击面（BEAST 等）与过时的算法组合，服务端不再接受
-        if (SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION) == 0)
+        // 加固项里属于「策略」的那一批（安全等级、版本区间、套件与曲线、信任库、票据）交给
+        // applyTlsPolicy，一处实现；服务端那一档默认值也在这里补进策略，而不是散在两段代码里：
+        // 最低协议限定 TLS 1.2（RFC 8996 已把 1.0/1.1 列为废弃，两者仍有已知攻击面与过时算法组合）
+        TlsPolicy effectivePolicy = policy;
+        if (role == Role::Server && !effectivePolicy.minimumProtocolVersion.has_value())
         {
-            // 失败路径先释放刚建的句柄再抛，否则漏掉一个 SSL_CTX。热轮换路径同样依赖这一点：
-            // 由调用方决定是抛给上层还是退化成「这次轮换没成」
-            SSL_CTX_free(context);
-            throw CoreException("创建 TLS 上下文失败：无法把最低协议版本设为 TLS 1.2"
-                                "（OpenSSL 可能未启用该版本，请检查库的编译配置）");
+            effectivePolicy.minimumProtocolVersion = TlsPolicy::ProtocolVersion::Tls1_2;
         }
 
-        // 关闭压缩：压缩会引入 CRIME 侧信道，服务端一律不协商压缩
+        // 关闭压缩：压缩会引入 CRIME 侧信道，两侧都不协商压缩
         SSL_CTX_set_options(context, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
 
         // 关掉服务端侧重协商：TLS 1.2 及更早的「客户端可要求重新握手」是一条按连接放大的 CPU 消耗
@@ -261,20 +267,26 @@ namespace AsynGyanis::Core
         // 认证在 TLS 1.3 里另有机制，而 1.3 本身没有重协商）。行业默认（nginx/cloudflare）同样关闭
         SSL_CTX_set_options(context, SSL_OP_NO_RENEGOTIATION);
 
-        // 安全等级 2：拒绝 1024 位以下 RSA/DH 与 SHA-1 签名；本仓库夹具证书是
-        // 2048 位 RSA + SHA-256，实测可在等级 2 下完成握手，故不降到等级 1
-        SSL_CTX_set_security_level(context, 2);
-
-        // 安全等级只管强度阈值，弱算法类别另由套件列表显式排除
-        if (SSL_CTX_set_cipher_list(context, kServerCipherList) == 0)
+        try
+        {
+            // 服务端那份套件列表显式排除弱算法（MD5/RC4/3DES/DES/导出级/匿名/PSK/SRP），与安全等级
+            // 形成双保险；客户端一侧不预设列表——原先就没设过，设了反而可能把本可以连上的服务器拒掉
+            applyTlsPolicy(context, effectivePolicy, role == Role::Server ? kServerCipherList : nullptr);
+        } catch (...)
         {
             SSL_CTX_free(context);
-            throw CoreException("创建 TLS 上下文失败：套件列表 \"" + std::string(kServerCipherList) +
-                                "\" 没有匹配到任何可用套件（OpenSSL 可能被编译成不含高强度算法，请检查库的编译配置）");
+            throw;
         }
 
-        // 注册 ALPN 选择回调：选择策略见 selectAlpnProtocol()
-        SSL_CTX_set_alpn_select_cb(context, selectAlpnProtocol, nullptr);
+        if (role == Role::Server)
+        {
+            // 注册 ALPN 选择回调：选择策略见 selectAlpnProtocol()。客户端是提出协议名的一方，
+            // 挂这个回调没有意义（OpenSSL 也不会调它）
+            SSL_CTX_set_alpn_select_cb(context, selectAlpnProtocol, nullptr);
+
+            // OCSP 装订：客户端在 ClientHello 里请求 status_request 时按需回应；未配置响应则不装订
+            SSL_CTX_set_tlsext_status_cb(context, stapleOcspResponse);
+        }
 
         // session id context：把「会话属于哪个应用」固定进恢复票据与缓存。OpenSSL 在启用
         // 客户端证书校验（SSL_VERIFY_PEER）时要求已设置它，否则会话恢复会被拒绝；非 mTLS
@@ -285,9 +297,6 @@ namespace AsynGyanis::Core
             SSL_CTX_free(context);
             throw CoreException("创建 TLS 上下文失败：无法设置 session id context（长度超出 OpenSSL 上限）");
         }
-
-        // OCSP 装订：客户端在 ClientHello 里请求 status_request 时按需回应；未配置响应则不装订
-        SSL_CTX_set_tlsext_status_cb(context, stapleOcspResponse);
 
         SSL_CTX_set_mode(context, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
         return context;
@@ -363,7 +372,9 @@ namespace AsynGyanis::Core
         SSL_CTX *newContext = nullptr;
         try
         {
-            newContext = createHardenedContext();
+            // 按同一角色、同一策略重建：只复现证书会漏掉加固项，而漏掉策略等于一次续期把
+            // 「最低版本/套件/曲线」悄悄换回默认档
+            newContext = createHardenedContext(m_role, m_policy);
         } catch (const CoreException &)
         {
             // 加固项在当前 OpenSSL 上无法生效：同上，本次轮换失败，旧证书继续服务
@@ -376,19 +387,12 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        // 复现已加载的 mTLS 状态：漏掉这一步会让一次续期把对端证书校验悄悄关掉，
+        // 复现「要求并校验对端证书」这一档：CA 已随策略在新上下文上就位（信任库、校验深度都在策略里），
+        // 但校验模式是 setClientCertificateRequired() 单独设的，漏掉这一步会让一次续期把 mTLS 悄悄关掉——
         // 那是「续期看起来成功、安全性反而降级」的典型形态
-        if (!m_clientCertificateAuthorityFile.empty())
+        if (m_clientCertificateRequired)
         {
-            if (SSL_CTX_load_verify_locations(newContext, m_clientCertificateAuthorityFile.c_str(), nullptr) != 1)
-            {
-                SSL_CTX_free(newContext);
-                return false;
-            }
-            if (m_clientCertificateRequired)
-            {
-                SSL_CTX_set_verify(newContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
-            }
+            SSL_CTX_set_verify(newContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
         }
 
         // 复现已加载的 OCSP 响应：续期通常把响应与证书一起更新，因此按原路径**重读**而不是沿用旧字节；
@@ -448,7 +452,9 @@ namespace AsynGyanis::Core
 
         // CA 就绪才允许开启对端校验，这个标志就是 setClientCertificateRequired() 的判据
         m_clientCertificateAuthorityLoaded = true;
-        m_clientCertificateAuthorityFile   = caFile;
+        // 路径记进策略而不是另开一个成员：换代时的复现只有一条路（createHardenedContext 里
+        // 按策略施加），两处各记一份迟早会有一份忘了被复现
+        m_policy.certificateAuthorityFile = caFile;
         return true;
     }
 

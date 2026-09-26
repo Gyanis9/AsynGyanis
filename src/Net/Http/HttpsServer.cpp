@@ -16,8 +16,9 @@
 namespace AsynGyanis::Net
 {
     HttpsServer::HttpsServer(Core::EventLoop &loop, const int adoptedListeningDescriptor, const std::string &certificateFile,
-                             const std::string &keyFile) :
+                             const std::string &keyFile, const Core::TlsPolicy &policy) :
         TcpServer(loop, adoptedListeningDescriptor),
+        m_tlsContext(policy, Core::TlsContext::Role::Server),
         m_limits(std::make_shared<const HttpServerLimits>()),
         m_metrics(std::make_shared<HttpMetricsCollector>()),
         m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
@@ -33,8 +34,10 @@ namespace AsynGyanis::Net
         }
     }
 
-    HttpsServer::HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile) :
+    HttpsServer::HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile,
+                             const Core::TlsPolicy &policy) :
         TcpServer(loop, address),
+        m_tlsContext(policy, Core::TlsContext::Role::Server),
         m_limits(std::make_shared<const HttpServerLimits>()),
         m_metrics(std::make_shared<HttpMetricsCollector>()),
         m_requestIdGenerator(std::make_shared<HttpRequestIdGenerator>())
@@ -217,6 +220,19 @@ namespace AsynGyanis::Net
     {
         // 同 reloadCertificate()：纯转发，密钥环的存放、快照替换与换代复现都由 TlsContext 负责
         m_tlsContext.loadSessionTicketKeys(keyFiles);
+    }
+
+    bool HttpsServer::loadClientCertificateAuthority(const std::string &caFile)
+    {
+        // 纯转发：信任库的存放与热轮换时的复现都在 TlsContext 里（复现走策略那一条路）
+        return m_tlsContext.loadClientCertificateAuthority(caFile);
+    }
+
+    void HttpsServer::setClientCertificateRequired(const bool required)
+    {
+        // 同 loadClientCertificateAuthority()：校验模式挂在上下文上，"要求校验却没有 CA" 的拒绝
+        // 由 TlsContext 负责，这里不重复判一遍（两处判据迟早会漂）
+        m_tlsContext.setClientCertificateRequired(required);
     }
 
 } // namespace AsynGyanis::Net

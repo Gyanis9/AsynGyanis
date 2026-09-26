@@ -49,10 +49,15 @@ namespace AsynGyanis::Net
          * @param address 监听的本地地址（IP 与端口）
          * @param certificateFile 服务器证书文件路径（PEM 格式，可含证书链）
          * @param keyFile 服务器私钥文件路径（PEM 格式）
+         * @param policy TLS 策略（版本区间、套件与曲线、安全等级、信任库与校验深度、票据开关）；
+         *        默认构造即本服务器既有档位，因此老调用方行为逐字不变
          * @throws Base::SystemException 基类创建监听套接字失败
          * @throws Base::Exception 证书或私钥加载失败（文件缺失、格式不对、口令不符）
+         * @throws Core::CoreException 策略里某一项被当前 OpenSSL 拒绝（版本区间、套件列表、曲线、
+         *         CA 信任库）：与证书失败一样属于启动期配置错误，当场抛而不是带着半生效的策略上线
          */
-        HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile);
+        HttpsServer(Core::EventLoop &loop, const Core::InetAddress &address, const std::string &certificateFile, const std::string &keyFile,
+                    const Core::TlsPolicy &policy = {});
 
         /**
          * @brief 用「已经在监听中的套接字」构造 HTTPS 服务器：零停机重启的接手侧
@@ -60,12 +65,35 @@ namespace AsynGyanis::Net
          * @param adoptedListeningDescriptor 已经在监听状态的套接字描述符，所有权随之转移
          * @param certificateFile 证书链文件路径
          * @param keyFile 私钥文件路径
+         * @param policy TLS 策略，语义与按地址构造那一支相同
          * @throws Base::InvalidArgumentException 描述符无效
          * @throws Base::Exception 证书或私钥加载失败
          * @see TcpServer::TcpServer(Core::EventLoop &, int)
          */
         HttpsServer(Core::EventLoop &loop, int adoptedListeningDescriptor, const std::string &certificateFile,
-                    const std::string &keyFile);
+                    const std::string &keyFile, const Core::TlsPolicy &policy = {});
+
+        /**
+         * @brief 加载用于校验客户端证书的 CA，开启双向 TLS 的第一步
+         * @details 纯转发，完整语义（可含多张、必须在开始接受连接之前调用、热轮换时按原路径复现）见
+         *          Core::TlsContext::loadClientCertificateAuthority()。之所以要在这一层露出来：
+         *          对端证书校验是「谁能连我」的问题，属服务器配置，不该逼调用方去摸内部上下文。
+         * @param caFile CA 文件路径（PEM，即客户端证书的签发者或其根）
+         * @return true 信任库已就位；false 加载不了（原因在 OpenSSL 错误栈里），此时不做任何降级
+         * @note 要 CA 目录或校验深度就走构造期的 TlsPolicy：那条路径同时支持 CApath 与 verify_depth
+         * @see setClientCertificateRequired(), TlsPolicy
+         */
+        bool loadClientCertificateAuthority(const std::string &caFile);
+
+        /**
+         * @brief 设置是否要求客户端出示并通过校验证书（mTLS 的第二步）
+         * @param required true 要求（不出示即终止握手，不退化成可选校验）；false 关闭该校验
+         * @throws Core::CoreException 传 true 但 CA 从未就绪：要求校验却没有 CA 会让每条连接都
+         *         握手失败，属于配置错误，故当场拒绝
+         * @note 必须在 start() 之前调用：校验模式挂在上下文上，此后新建的连接才看得到
+         * @see loadClientCertificateAuthority()
+         */
+        void setClientCertificateRequired(bool required);
 
         /**
          * @brief 获取路由器的引用，用于注册路由处理函数与中间件。

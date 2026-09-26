@@ -34,6 +34,7 @@ add_executable(TestCore
         Socket/TestConnectionManager.cpp
 
         Tls/TestTlsContext.cpp
+        Tls/TestTlsPolicy.cpp
         Tls/TestTlsSocket.cpp
 )
 

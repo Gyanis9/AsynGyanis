@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "Core/Tls/TlsPolicy.h"
+
 #include <openssl/err.h>
 
 #include <mutex>
@@ -35,13 +37,28 @@ namespace AsynGyanis::Core
     {
     public:
         /**
+         * @brief 上下文站在哪一侧
+         * @details 两侧要设的东西不是一套：ALPN 选择回调与 OCSP 装订只在服务端有意义（客户端是
+         *          *提出* 协议名与装订请求的一方），把它们装到客户端上下文上不会有报错，只会在
+         *          对端看来莫名其妙——所以角色必须是显式的，不能靠「设了也不影响」混过去。
+         */
+        enum class Role
+        {
+            Server, ///< 服务端：对外提供身份，含 ALPN 选择与 OCSP 装订回调
+            Client, ///< 出站客户端：只带加固与信任库，握手里程由调用方逐连接设（SNI、主机名）
+        };
+
+        /**
          * @brief 构造 TlsContext 对象并创建 SSL_CTX 实例
          * @details 有意不做显式的库初始化：OpenSSL 1.1 起会自动初始化，SSL_library_init()
          *          之类的旧接口不必也不该由库代码替使用者调用
-         * @throws CoreException 创建 SSL_CTX 失败（通常是内存不足），或安全加固项不被当前
-         *         OpenSSL 支持（最低版本、套件列表）。它派生自 Base::Exception，一条 catch 可兜住
+         * @param policy TLS 策略；默认构造即本类既有档位（最低 TLS 1.2、安全等级 2、排除弱算法的
+         *        套件列表、票据开启），因此老调用方（不带参数）行为逐字不变
+         * @param role 本上下文站在哪一侧，见 Role 的说明
+         * @throws CoreException 创建 SSL_CTX 失败（通常是内存不足），或策略里某一项被当前 OpenSSL
+         *         拒绝（版本区间、套件列表、曲线、CA 信任库）。它派生自 Base::Exception，一条 catch 可兜住
          */
-        TlsContext();
+        explicit TlsContext(const TlsPolicy &policy = {}, Role role = Role::Server);
 
         /**
          * @brief 析构函数，释放 SSL_CTX 资源（内部调用 SSL_CTX_free）。
@@ -159,11 +176,13 @@ namespace AsynGyanis::Core
 
     private:
         /**
-         * @brief 新建一个 SSL_CTX 并施加全部安全加固（构造与热轮换共用同一份，避免两处配置各自漂移）
+         * @brief 新建一个 SSL_CTX 并施加全部安全加固与策略（构造与热轮换共用同一份，避免两处配置各自漂移）
+         * @param role 本上下文站在哪一侧：服务端才挂 ALPN 选择与 OCSP 装订回调
+         * @param policy 待施加的 TLS 策略
          * @return SSL_CTX* 已加固的上下文，所有权归调用方
-         * @throws CoreException 创建失败或加固项无法生效（调用方负责先释放已建的句柄）
+         * @throws CoreException 创建失败或策略里某一项无法生效（调用方负责先释放已建的句柄）
          */
-        [[nodiscard]] static SSL_CTX *createHardenedContext();
+        [[nodiscard]] static SSL_CTX *createHardenedContext(Role role, const TlsPolicy &policy);
 
         /**
          * @brief 把证书与私钥装进指定上下文并校验两者配对
@@ -176,13 +195,17 @@ namespace AsynGyanis::Core
                                                     const std::string &keyFile);
 
         SSL_CTX *m_context{nullptr}; ///< OpenSSL SSL_CTX 句柄，RAII 管理
+        /// 构造时给定的 TLS 策略：热轮换要在新上下文上原样复现，否则一次续期就把策略悄悄换回默认档。
+        /// 与下面几项同理由为 mutable——加载类接口改的是 SSL_CTX 的内容而不是本对象的身份，
+        /// 而 CA 文件这类配置既可能从构造函数进来、也可能事后 loadClientCertificateAuthority() 补
+        mutable TlsPolicy m_policy;
+        Role      m_role{Role::Server}; ///< 本上下文的角色，同样要在换代时复现（构造之后不再变）
         mutable std::mutex m_contextMutex; ///< 保护 m_context 的读取与整台换代（createSSL/reload 互斥）
 
         // 下面五项记录「当前生效的配置」，供 reloadCertificate() 在新上下文上原样复现。
         // 加载类接口都是 const（它们改的是 SSL_CTX 内容而不是本对象的身份），因此这几项为 mutable
         mutable std::string m_certificateFile; ///< 上次成功加载的证书路径；空表示还没加载过，reloadCertificate() 据此判断
         mutable std::string m_keyFile;         ///< 上次成功加载的私钥路径
-        mutable std::string m_clientCertificateAuthorityFile; ///< 已加载的校验 CA 路径；换代时要复现，空表示没加载过
         mutable std::string m_ocspResponseFile; ///< 已加载的 OCSP 响应路径；换代时按此重读，空表示没加载过
         mutable std::vector<std::string> m_sessionTicketKeyFiles; ///< 已装载的票据密钥文件路径，首份用于签发、其余只用于解开旧票据；换代时按此重读，空表示没装载过
 

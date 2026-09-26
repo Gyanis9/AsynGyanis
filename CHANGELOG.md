@@ -16,6 +16,25 @@
 ## [Unreleased]
 
 ### 新增
+- **TLS 的可配置面收成一份 `Core::TlsPolicy`，服务端与出站客户端共用**：能配的档位是最低/最高协议版本
+  （只认 TLS 1.2 与 1.3 两档——1.0/1.1 由 RFC 8996 列为废弃，留一个能调回去的口子等于把服务端重新暴露给
+  已知攻击面，所以不给）、TLS 1.2 及以下的套件列表、TLS 1.3 套件列表、命名曲线/组、OpenSSL 安全等级、
+  校验对端证书用的 CA 文件**与 CA 目录**、证书链校验深度、会话票据开关。此前这些全部写死在
+  `TlsContext::createHardenedContext()` 里，而 QUIC 服务端与出站客户端又各建各的 `SSL_CTX`——
+  改一处策略要翻三处代码，那三处迟早会漂（证书安装与 ALPN 选择已经是两份实现了）。
+  **默认构造的策略与改造前逐字等价**（最低 1.2、安全等级 2、那份显式排除弱算法的套件列表、票据开着），
+  因此不带参数的老写法不会在升级后换档；这条等价性由 `TlsPolicy.DefaultPolicyKeepsTheHardenedBaseline`
+  与 `ServerRoleKeepsTheTls12FloorAndClientRoleDoesNot` 钉住。
+- **`HttpsServer` 现在能开双向 TLS**：`loadClientCertificateAuthority()` 与 `setClientCertificateRequired()`
+  两个转发口此前只存在于 Core 层，服务器这一侧摸不到——也就是说「谁能连我」这件事在公开 API 上配不出来。
+  信任库可以从两处给（构造期的策略，或事后 `loadClientCertificateAuthority()`），两处都算「CA 已就位」，
+  不再出现「CA 明明装载了、开启校验却说没 CA」那种自相矛盾；要 CA 目录或校验深度只能走策略这一条。
+  证书热轮换时 CA、校验模式、OCSP 与票据密钥都要在新上下文上复现，漏任一项就是一次「看起来成功、
+  安全性反而降级」的续期，因此复现只有一条路：按同一角色 + 同一策略重建。
+- **`Core::TlsContext` 有了角色**：`Role::Server`（默认）与 `Role::Client`。ALPN 选择回调与 OCSP 装订回调
+  只在服务端有意义，挂到客户端上下文上不会报错，只会在对端看来莫名其妙；客户端一侧也不预设套件列表
+  （原先就没设过，设了可能把本可以连上的对端拒掉）。服务端角色在未指定下限时补 TLS 1.2 这一档，
+  客户端角色不强加下限。
 
 - **出站客户端会透明解压响应正文**：`HttpClient` 现在替调用方声明 `Accept-Encoding: gzip, deflate`，
   并按响应的 `Content-Encoding` 把正文解回来，解完把 `content-encoding` 与 `content-length` 两条头部

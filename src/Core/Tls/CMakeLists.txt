@@ -4,6 +4,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/SessionTicketKeyRing.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TlsContext.h
         ${CMAKE_CURRENT_LIST_DIR}/TlsContext.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/TlsPolicy.h
+        ${CMAKE_CURRENT_LIST_DIR}/TlsPolicy.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TlsSocket.h
         ${CMAKE_CURRENT_LIST_DIR}/TlsSocket.cpp
 )
