@@ -12,8 +12,11 @@
 
 #include <openssl/err.h>
 
+#include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -77,6 +80,35 @@ namespace AsynGyanis::Core
          * @note 只放本机证书的单张文件同样合法；链里不需要包含根 CA（对端按本地信任库补最后一跳）
          */
         bool loadCertificate(const std::string &certificateFile, const std::string &keyFile) const;
+
+        /**
+         * @brief 为某个主机名登记一份证书，握手按 ClientHello 里的 server_name 选它（SNI，RFC 6066 §3）
+         *
+         * @details 一个端口服务多个 HTTPS 站点的最小要件：一份默认证书 + 若干按主名分配的证书。
+         *          名字比对只看归一化后的字面值（折小写、去结尾根点），**不做通配**——通配站点这件事
+         *          由证书自己负责（一张 `*.example.com` 的证书本来就覆盖全部子域，再拿 `*.example.com`
+         *          当登记键只会多出一条永不需要的匹配规则）。名字没登记过、或客户端根本没带 SNI
+         *          （TLS 1.3 之前老客户端、直连 IP 的探活）时用默认证书，与 nginx 的 default server 同形。
+         *
+         * @param hostName 该站点的主机名，大小写无关；`localhost` 这类名字照字面比对
+         * @param certificateFile 证书链文件路径（PEM），与 loadCertificate() 同一套读法与配对校验
+         * @param keyFile 私钥文件路径（PEM）
+         * @return true 已登记（此后带这个名字的新连接出示这份证书）；false 表示证书或私钥读不出来、
+         *         不是合法 PEM 或两者不配对，原因留在 OpenSSL 错误栈里，登记表一个字节都不动
+         * @throws Base::InvalidArgumentException 名字去掉首尾空白后为空，或含 `*`、`:` 与内部空白：
+         *         这些都不是一条可比对的 SNI 键，收下等于登记一条永不命中的规则，而它的表现是
+         *         「那个域名莫名拿到默认证书」，比当场拒绝难查。角色不是 Role::Server 同样拒绝：
+         *         客户端上下文没有「对外出示身份」这件事
+         * @note 必须在任何 SSL 对象创建之前登记完（与 loadCertificate() 同一条时限）：SNI 回调装在
+         *       主上下文上，登记表随上下文生死，握手中的连接看到的是它当时那份
+         * @note OCSP 装订只对默认证书生效：响应是按上下文挂的（`loadOcspResponse()`），登记的站点不带
+         *       响应时握手照常、只是不装订。给每个站点配一份响应需要一套「哪张证书配哪份响应」的记账，
+         *       本类没做，别指望默认证书那份响应会被装订到别的站点的证书上——那是错的凭据
+         * @note 热轮换同样覆盖登记的站点：reloadCertificate() 按登记时记下的路径重读每一对证书，
+         *       任一份读不出来就整次换代失败、旧上下文继续服务（与默认证书、OCSP、票据密钥同一语义）
+         * @see loadCertificate(), reloadCertificate()
+         */
+        bool loadCertificateForHost(const std::string &hostName, const std::string &certificateFile, const std::string &keyFile) const;
 
         /**
          * @brief 加载用于校验对端（客户端）证书的 CA 文件
@@ -204,6 +236,81 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] static bool installCertificate(SSL_CTX *context, const std::string &certificateFile, const std::string &keyFile);
 
+        /// SNI 站点登记表：归一化主机名 → 该主名的上下文
+        /**
+         * @details 存放在 SSL_CTX 的 ex_data 里而不是本类成员：选证书的回调在握手线程上运行，
+         *          解引用一个可能已析构的 TlsContext 会悬垂（与 OCSP 装订数据同一条理由）。
+         *          上下文按 shared_ptr 持有，登记过的站点在还有连接引用它之前不会被释放。
+         */
+        struct VirtualHostRegistry
+        {
+            /// 读多写少：每条握手的 server_name 都要读一次，只有登记与换代才写
+            mutable std::shared_mutex                                 mutex;
+            std::unordered_map<std::string, std::shared_ptr<SSL_CTX>> contexts; ///< 主机名 → 该主名的上下文
+        };
+
+        /// 一份站点证书的路径对：reloadCertificate() 按它重读并重建上下文（与默认证书同为「路径即身份」）
+        struct HostCertificateFiles
+        {
+            std::string hostName;        ///< 归一化后的主机名，即比对键
+            std::string certificateFile; ///< 证书链路径（PEM）
+            std::string keyFile;         ///< 私钥路径（PEM）
+        };
+
+        /**
+         * @brief 把 SSL_CTX 收进 shared_ptr：登记的站点按引用计数释放，握手中不会被抽走
+         * @param context 已创建好的上下文，所有权交给返回的 shared_ptr
+         * @return 持有该上下文的 shared_ptr
+         */
+        [[nodiscard]] static std::shared_ptr<SSL_CTX> adoptContext(SSL_CTX *context);
+
+        /**
+         * @brief 取 SNI 登记表的 ex_data 下标（首次调用时注册，释放回调 delete 持有者）
+         * @return int 下标；注册失败返回 -1，调用方据此跳过 SNI 能力
+         */
+        [[nodiscard]] static int virtualHostRegistryIndex();
+
+        /**
+         * @brief 取指定上下文上的 SNI 登记表
+         * @param context 目标上下文
+         * @return 登记表指针；这份上下文还没登记过站点（或 ex_data 注册失败）时为空指针
+         */
+        [[nodiscard]] static VirtualHostRegistry *registryOf(SSL_CTX *context);
+
+        /**
+         * @brief 在指定上下文上备好 SNI 登记表并挂上选站回调（已有则原样交回）
+         * @param context 主上下文
+         * @return 登记表指针；ex_data 注册失败时为空指针（此时 SNI 能力整体不可用）
+         */
+        [[nodiscard]] static VirtualHostRegistry *ensureRegistry(SSL_CTX *context);
+
+        /**
+         * @brief OpenSSL 的 servername 回调：按 ClientHello 里的 server_name 换成该站点的上下文
+         * @param ssl 当前握手对象
+         * @param alert 出参：要送出的告警码（本实现不填，交给 OpenSSL 的默认告警）
+         * @param arg 回调参数（未使用：登记表从上下文自己的 ex_data 取）
+         * @return int SSL_TLSEXT_ERR_OK 继续握手（含「没带 SNI」「名字没登记过」两条，都用默认证书）；
+         *         SSL_TLSEXT_ERR_ALERT_FATAL 只在换上下文本身失败时给
+         */
+        static int selectContextByServerName(SSL *ssl, int *alert, void *arg);
+
+        /**
+         * @brief 新建一份加固过的站点上下文并装上证书
+         * @param policy 与本服务一致的策略（漏掉它，登记的站点就会用默认档跑，弱套件照样能谈成）
+         * @param role 本上下文的角色
+         * @param certificateFile 证书链路径
+         * @param keyFile 私钥路径
+         * @return std::shared_ptr<SSL_CTX> 装好的上下文；证书读不出来、不是合法 PEM 或两者不配对时为空
+         */
+        [[nodiscard]] static std::shared_ptr<SSL_CTX> buildHostContext(const TlsPolicy &policy, Role role, const std::string &certificateFile, const std::string &keyFile);
+
+        /**
+         * @brief 把主机名收成比对键：折成小写 ASCII、去掉结尾的根点
+         * @param hostName 登记时给出的名字
+         * @return std::string 归一化后的键；空名字交回空串，由调用方拒绝
+         */
+        [[nodiscard]] static std::string serverNameKey(std::string_view hostName);
+
         SSL_CTX *m_context{nullptr}; ///< OpenSSL SSL_CTX 句柄，RAII 管理
         /// 构造时给定的 TLS 策略：热轮换要在新上下文上原样复现，否则一次续期就把策略悄悄换回默认档。
         /// 与下面几项同理由为 mutable——加载类接口改的是 SSL_CTX 的内容而不是本对象的身份，
@@ -218,6 +325,10 @@ namespace AsynGyanis::Core
         mutable std::string              m_keyFile;               ///< 上次成功加载的私钥路径
         mutable std::string              m_ocspResponseFile;      ///< 已加载的 OCSP 响应路径；换代时按此重读，空表示没加载过
         mutable std::vector<std::string> m_sessionTicketKeyFiles; ///< 已装载的票据密钥文件路径，首份用于签发、其余只用于解开旧票据；换代时按此重读，空表示没装载过
+
+        /// 已按主机名登记的站点证书（键已归一化），reloadCertificate() 据此重建每一张上下文；
+        /// 空表示从未登记过，主上下文因此不挂 SNI 回调
+        mutable std::vector<HostCertificateFiles> m_hostCertificateFiles;
 
         mutable bool m_clientCertificateRequired{false};        ///< 是否要求并校验对端证书（换代时同样要复现）
         mutable bool m_clientCertificateAuthorityLoaded{false}; ///< 是否已成功加载校验对端证书的 CA

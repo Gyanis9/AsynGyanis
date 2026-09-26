@@ -268,6 +268,27 @@ namespace AsynGyanis::Net
         bool reloadCertificate();
 
         /**
+         * @brief 为某个主机名登记一份证书，握手按 ClientHello 的 server_name 选它（SNI）
+         *
+         * @details 纯转发到 `Core::TlsContext::loadCertificateForHost()`：比对规则、没带 SNI 或
+         *          名字没登记过时回落默认证书、OCSP 只对默认证书生效这些语义都在那一层。
+         *          与 `Router::virtualHost()` 是配套的两件事：证书按 SNI 选、路由按 Host 选，
+         *          两处的键都是同一个小写主机名，因此「这个域名用这张证书」与「这个域名走这组路由」
+         *          不会各说各话。
+         *
+         * @param hostName 站点主机名，大小写无关（不做通配：通配身份由证书自己的 SAN 负责）
+         * @param certificateFile 证书链文件路径（PEM）
+         * @param keyFile 私钥文件路径（PEM）
+         * @return true 已登记，此后带这个名字的新连接出示这份证书；false 表示证书或私钥读不出来、
+         *         不是合法 PEM 或两者不配对，原因可在 OpenSSL 错误栈里查到
+         * @throws Base::InvalidArgumentException 名字不是一个可比对的 SNI 键（空、含 `*`、冒号或内部空白），或服务端角色不符
+         * @note 必须在 start() 之前登记完：SNI 回调装在服务端的 TLS 上下文上，握手中的连接看到的是
+         *       它当时那份登记表
+         * @see Core::TlsContext::loadCertificateForHost(), Router::virtualHost()
+         */
+        bool loadCertificateForHost(const std::string &hostName, const std::string &certificateFile, const std::string &keyFile);
+
+        /**
          * @brief 加载 OCSP 响应文件（DER 格式），此后 TLS 握手按客户端请求装订（stapling）。
          *
          * @details 与 reloadCertificate() 同为「路径即身份」的运维形态：此后每次证书热轮换

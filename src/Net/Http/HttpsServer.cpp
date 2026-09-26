@@ -235,6 +235,13 @@ namespace AsynGyanis::Net
         return m_tlsContext.reloadCertificate();
     }
 
+    bool HttpsServer::loadCertificateForHost(const std::string &hostName, const std::string &certificateFile, const std::string &keyFile)
+    {
+        // 同 reloadCertificate()：纯转发，登记表存放、选站回调与换代复现都在 TlsContext 里。
+        // 这一层存在的意义是让部署方不必碰内部上下文对象就能配出「一个端口多个站点」
+        return m_tlsContext.loadCertificateForHost(hostName, certificateFile, keyFile);
+    }
+
     bool HttpsServer::loadOcspResponse(const std::string &ocspResponseFile)
     {
         // 同 reloadCertificate()：纯转发，装订数据的存放与线程安全都由 TlsContext 负责

@@ -1,16 +1,22 @@
 #include "Core/Tls/TlsContext.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Exception/CoreException.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
 
 #include <openssl/ocsp.h>
 #include <openssl/ssl.h>
+#include <openssl/tls1.h>
 
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <shared_mutex>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -347,6 +353,194 @@ namespace AsynGyanis::Core
         return true;
     }
 
+    std::shared_ptr<SSL_CTX> TlsContext::adoptContext(SSL_CTX *context)
+    {
+        return std::shared_ptr<SSL_CTX>(context, [](SSL_CTX *held) { SSL_CTX_free(held); });
+    }
+
+    int TlsContext::virtualHostRegistryIndex()
+    {
+        // 与装订数据同一条理由：登记表的生死跟着 SSL_CTX 走，回调在握手线程上才不会碰到已析构的 TlsContext
+        static const int index = SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr,
+                                                          [](void *, void *pointer, CRYPTO_EX_DATA *, int, long, void *) { delete static_cast<VirtualHostRegistry *>(pointer); });
+        return index;
+    }
+
+    TlsContext::VirtualHostRegistry *TlsContext::registryOf(SSL_CTX *context)
+    {
+        if (context == nullptr)
+        {
+            return nullptr;
+        }
+        const int index = virtualHostRegistryIndex();
+        if (index < 0)
+        {
+            return nullptr;
+        }
+        return static_cast<VirtualHostRegistry *>(SSL_CTX_get_ex_data(context, index));
+    }
+
+    TlsContext::VirtualHostRegistry *TlsContext::ensureRegistry(SSL_CTX *context)
+    {
+        if (VirtualHostRegistry *existing = registryOf(context); existing != nullptr)
+        {
+            return existing;
+        }
+
+        const int index = virtualHostRegistryIndex();
+        if (index < 0)
+        {
+            return nullptr;
+        }
+
+        auto *registry = new VirtualHostRegistry();
+        if (SSL_CTX_set_ex_data(context, index, registry) != 1)
+        {
+            delete registry;
+            return nullptr;
+        }
+
+        // 回调只在真有登记表时挂：一个站点都没登记过的上下文，不该在每条握手里多走一次查表
+        SSL_CTX_set_tlsext_servername_callback(context, &TlsContext::selectContextByServerName);
+        return registry;
+    }
+
+    std::string TlsContext::serverNameKey(const std::string_view hostName)
+    {
+        // 先去掉两侧空白（配置文件里多打一个空格是常态），再折小写、去结尾根点。
+        // 不处理端口：SNI 按 RFC 6066 不带端口，替调用方剥掉反而会把「填错了」这件事藏起来
+        std::size_t beginIndex = 0;
+        std::size_t endIndex   = hostName.size();
+        while (beginIndex < endIndex && (hostName[beginIndex] == ' ' || hostName[beginIndex] == '\t'))
+        {
+            ++beginIndex;
+        }
+        while (endIndex > beginIndex && (hostName[endIndex - 1] == ' ' || hostName[endIndex - 1] == '\t'))
+        {
+            --endIndex;
+        }
+        const std::string_view trimmed = hostName.substr(beginIndex, endIndex - beginIndex);
+
+        std::string key;
+        key.reserve(trimmed.size());
+        for (const char character: trimmed)
+        {
+            key.push_back((character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a') : character);
+        }
+        while (key.size() > 1 && key.back() == '.')
+        {
+            key.pop_back();
+        }
+        return key;
+    }
+
+    int TlsContext::selectContextByServerName(SSL *ssl, int *, void *)
+    {
+        const char *serverName = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+        if (serverName == nullptr || *serverName == '\0')
+        {
+            // 客户端没带 SNI（老客户端、直连 IP 的探活）：交回默认证书，与 nginx 的 default server 同形
+            return SSL_TLSEXT_ERR_OK;
+        }
+
+        VirtualHostRegistry *registry = registryOf(SSL_get_SSL_CTX(ssl));
+        if (registry == nullptr)
+        {
+            return SSL_TLSEXT_ERR_OK;
+        }
+
+        const std::string        key = serverNameKey(serverName);
+        std::shared_ptr<SSL_CTX> target;
+        {
+            const std::shared_lock<std::shared_mutex> guard(registry->mutex);
+            if (const auto found = registry->contexts.find(key); found != registry->contexts.end())
+            {
+                target = found->second;
+            }
+        }
+        if (target == nullptr)
+        {
+            // 名字没登记过同样不是错误：这类客户端要的就是那个「什么特别站点都不是」的默认身份
+            return SSL_TLSEXT_ERR_OK;
+        }
+
+        // SSL_set_SSL_CTX 只改 ssl->ctx、不给新上下文加引用（它的返回值是换上去的那个上下文，不是成败码）：
+        // 这条引用链由「SSL 持有主上下文、主上下文持有登记表、登记表持有站点上下文」三段共同保证，
+        // 只要这条连接还认着主上下文，站点上下文就不会先被释放
+        if (SSL_set_SSL_CTX(ssl, target.get()) == nullptr)
+        {
+            return SSL_TLSEXT_ERR_ALERT_FATAL;
+        }
+        return SSL_TLSEXT_ERR_OK;
+    }
+
+    std::shared_ptr<SSL_CTX> TlsContext::buildHostContext(const TlsPolicy &policy, const Role role, const std::string &certificateFile, const std::string &keyFile)
+    {
+        SSL_CTX *context = nullptr;
+        try
+        {
+            // 按与主上下文同一份策略与角色建：漏掉策略，登记的站点就会用默认档跑，
+            // 主上下文挡掉的弱套件换个域名照样能谈成
+            context = createHardenedContext(role, policy);
+        } catch (const CoreException &)
+        {
+            return nullptr;
+        }
+
+        if (!installCertificate(context, certificateFile, keyFile))
+        {
+            SSL_CTX_free(context);
+            return nullptr;
+        }
+        return adoptContext(context);
+    }
+
+    bool TlsContext::loadCertificateForHost(const std::string &hostName, const std::string &certificateFile, const std::string &keyFile) const
+    {
+        if (m_role != Role::Server)
+        {
+            throw Base::InvalidArgumentException("TlsContext: 只有服务端上下文能登记站点证书——客户端一侧不对外出示身份，SNI 选证书没有对应的动作");
+        }
+
+        const std::string key = serverNameKey(hostName);
+        // 空串、带通配符、带空格或冒号：都不是一条可比对的 SNI 键。收下等于登记一条永不命中的规则，
+        // 而它的表现是「那个域名莫名拿到默认证书」，比当场拒绝难查得多
+        if (key.empty() || key.find('*') != std::string::npos || key.find_first_of(" \t:") != std::string::npos)
+        {
+            throw Base::InvalidArgumentException("TlsContext: SNI 站点名不能是空串或「" + hostName + "」，需要 localhost 这样一个真实主机名（通配、端口与空白都不属于 SNI）");
+        }
+
+        std::lock_guard<std::mutex> guard(m_contextMutex);
+
+        // 先把证书装进新上下文再动登记表：任一份读不出来，登记表都保持原样（与热轮换同一口径——
+        // 配置错误不该让正在服务的站点表变成半份）
+        std::shared_ptr<SSL_CTX> hostContext = buildHostContext(m_policy, m_role, certificateFile, keyFile);
+        if (hostContext == nullptr)
+        {
+            return false;
+        }
+
+        VirtualHostRegistry *registry = ensureRegistry(m_context);
+        if (registry == nullptr)
+        {
+            // ex_data 下标注册失败：本进程用不了 SNI 能力，如实报失败而不是悄悄只装好上下文
+            return false;
+        }
+
+        {
+            const std::unique_lock<std::shared_mutex> registryGuard(registry->mutex);
+            // 同名重复登记就地替换：与 loadCertificate() 的「再调一次就是换一份身份」同一口径
+            registry->contexts[key] = std::move(hostContext);
+        }
+
+        // 路径记录同样按名字去重，换代时以最后一份为准
+        m_hostCertificateFiles.erase(
+                std::remove_if(m_hostCertificateFiles.begin(), m_hostCertificateFiles.end(), [&key](const HostCertificateFiles &entry) { return entry.hostName == key; }),
+                m_hostCertificateFiles.end());
+        m_hostCertificateFiles.push_back(HostCertificateFiles{key, certificateFile, keyFile});
+        return true;
+    }
+
     bool TlsContext::reloadCertificate()
     {
         std::lock_guard<std::mutex> guard(m_contextMutex);
@@ -419,6 +613,30 @@ namespace AsynGyanis::Core
                 return false;
             }
             SessionTicketKeyRing::install(newContext, std::move(ticketKeys));
+        }
+
+        // 复现按主机名登记的站点证书：漏掉这一步，一次续期就把 SNI 站点全部退回默认证书——
+        // 客户端看到的是「与它请求的主机不匹配的一张证书」，比续期失败更难查
+        if (!m_hostCertificateFiles.empty())
+        {
+            VirtualHostRegistry *newRegistry = ensureRegistry(newContext);
+            if (newRegistry == nullptr)
+            {
+                SSL_CTX_free(newContext);
+                return false;
+            }
+            for (const HostCertificateFiles &entry: m_hostCertificateFiles)
+            {
+                std::shared_ptr<SSL_CTX> hostContext = buildHostContext(m_policy, m_role, entry.certificateFile, entry.keyFile);
+                if (hostContext == nullptr)
+                {
+                    // 某一份站点证书读不出来：整次换代作废，旧上下文连着旧的站点表继续服务
+                    SSL_CTX_free(newContext);
+                    return false;
+                }
+                const std::unique_lock<std::shared_mutex> registryGuard(newRegistry->mutex);
+                newRegistry->contexts[entry.hostName] = std::move(hostContext);
+            }
         }
 
         SSL_CTX *previousContext = m_context;

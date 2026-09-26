@@ -4,6 +4,7 @@
 #include "Core/Tls/TlsPolicy.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Exception/CoreException.h"
 #include "Platform/IO/FileDescriptor.h"
 
@@ -295,6 +296,61 @@ namespace AsynGyanis::Core
     {
         const TlsContext tlsContext;
         EXPECT_FALSE(tlsContext.loadCertificate("/nonexistent/cert.pem", "/nonexistent/key.pem"));
+    }
+
+    /**
+     * @brief 站点证书能登记，名字按大小写/端口外的写法归一（同名不同写法是替换不是多开一条规则）
+     */
+    TEST(TlsContext, LoadCertificateForHostAcceptsFixturePairAndNormalizesName)
+    {
+        const TlsContext tlsContext;
+
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath));
+        ASSERT_TRUE(std::filesystem::exists(kTestKeyPath));
+        EXPECT_TRUE(tlsContext.loadCertificateForHost("API.Example.COM.", kTestCertificatePath.string(), kTestKeyPath.string()));
+        // 归一化后同一个键：重复登记就地替换那张上下文，登记表里不会留着一条永不命中的旧条目
+        EXPECT_TRUE(tlsContext.loadCertificateForHost(" api.example.com ", kTestCertificatePath.string(), kTestKeyPath.string()));
+    }
+
+    /**
+     * @brief 站点证书的拒绝面与默认证书同口径：读不出来或不配对都返回 false
+     * @details 配对这一步不能省：把 A 站的证书配 B 站的私钥装上，握手时才报「解密失败」，
+     *          现场看不出是配置串了行
+     */
+    TEST(TlsContext, LoadCertificateForHostReportsUnreadableOrMismatchedMaterial)
+    {
+        const TlsContext tlsContext;
+        EXPECT_FALSE(tlsContext.loadCertificateForHost("api.example.com", "/nonexistent/cert.pem", "/nonexistent/key.pem"));
+
+        const std::filesystem::path localhostCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_cert.pem";
+        ASSERT_TRUE(std::filesystem::exists(localhostCertificatePath));
+        // 名字与私钥都不属于同一张证书：必须判失败
+        EXPECT_FALSE(tlsContext.loadCertificateForHost("api.example.com", localhostCertificatePath.string(), kTestKeyPath.string()));
+    }
+
+    /**
+     * @brief 不是一个可比对的 SNI 键的名字当场拒绝：收下等于登记一条永不命中的规则
+     */
+    TEST(TlsContext, LoadCertificateForHostRejectsNamesThatCannotBeServerNames)
+    {
+        const TlsContext tlsContext;
+
+        for (const std::string_view unusable: {"", "   ", "*", "*.example.com", "api.example.com:443", "a b.example.com"})
+        {
+            EXPECT_THROW(static_cast<void>(tlsContext.loadCertificateForHost(std::string(unusable), kTestCertificatePath.string(), kTestKeyPath.string())),
+                         Base::InvalidArgumentException)
+                    << "「" << unusable << "」不该被当成一个站点名收下";
+        }
+    }
+
+    /**
+     * @brief 客户端上下文不能登记站点证书：那一侧根本不对外出示身份
+     */
+    TEST(TlsContext, LoadCertificateForHostRejectsClientRoleContext)
+    {
+        const TlsContext clientContext(TlsPolicy{}, TlsContext::Role::Client);
+        EXPECT_THROW(static_cast<void>(clientContext.loadCertificateForHost("api.example.com", kTestCertificatePath.string(), kTestKeyPath.string())),
+                     Base::InvalidArgumentException);
     }
 
     /**

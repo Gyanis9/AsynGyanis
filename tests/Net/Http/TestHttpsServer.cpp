@@ -2123,4 +2123,81 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendText(makeRequestText("GET /no-such-file.txt HTTP/1.1"), kWaitTimeout)) << "缺失文件的请求未能写入";
         ASSERT_TRUE(client.waitForTextOccurrences(missingText, "404", 1, kWaitTimeout)) << "不存在的静态文件应当回 404：「" << missingText << "」";
     }
+
+    /**
+     * @brief 钉住 SNI 选证书：ClientHello 里那个名字决定出示哪一张
+     * @details 默认证书故意用 test_cert.pem（对 127.0.0.1 既不受信也不匹配），登记的那张用
+     *          test_ip_cert.pem。因此「拿到 200」只可能来自一次真的按名字换过上下文的握手——
+     *          没有 SNI 能力时这里必然是握手失败，而不是别的错法
+     */
+    TEST(HttpsServer, ServesTheCertificateRegisteredForThatServerName)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少站点证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        bool                      registrationResult = false;
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, [&registrationResult](HttpsServer &server)
+                { registrationResult = server.loadCertificateForHost("127.0.0.1", kLoopbackCertificatePath.string(), kLoopbackKeyPath.string()); }, kTestCertificatePath,
+                kTestKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        EXPECT_TRUE(registrationResult) << "登记的站点证书没装上：证书夹具或私钥路径有问题";
+
+        const std::string                         url      = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        const std::unique_ptr<HttpClientResponse> response = doHttpsGet(url);
+        ASSERT_NE(response, nullptr) << "带 SNI 的连接没能拿到登记的那张证书";
+        EXPECT_EQ(response->statusCode, 200);
+        EXPECT_NE(response->body.find("served-hello"), std::string::npos) << "正文：" << response->body;
+    }
+
+    /**
+     * @brief 名字没登记过（或客户端根本没带 SNI）时用默认证书，不猜一个相近的站点
+     * @details 登记的是另一个名字，请求的 SNI 对不上：服务端应原样出示默认证书，
+     *          而那张对 127.0.0.1 既不受信也不匹配，客户端必然拒——这条同时排除
+     *          「登记过任何站点就随便挑一张」这种错法
+     */
+    TEST(HttpsServer, FallsBackToDefaultCertificateWhenServerNameIsNotRegistered)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少站点证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
+                [](HttpsServer &server) { static_cast<void>(server.loadCertificateForHost("nope.invalid", kLoopbackCertificatePath.string(), kLoopbackKeyPath.string())); },
+                kTestCertificatePath, kTestKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        EXPECT_EQ(doHttpsGet(url), nullptr) << "SNI 对不上却出示了别的站点的证书，等于一个域名的凭据能被另一台拿走";
+    }
+
+    /**
+     * @brief 证书热轮换要连登记的站点一起换，不能只换默认证书
+     * @details 漏掉这一步的表现很难查：续期「成功」了，带 SNI 的站点却退回默认证书，
+     *          客户端看到的是名字不匹配的证书。这里用同一条 200 判据证明换代后登记表还在
+     */
+    TEST(HttpsServer, KeepsHostCertificatesThroughCertificateReload)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少站点证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        bool                      reloadResult = false;
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
+                [&reloadResult](HttpsServer &server)
+                {
+                    ASSERT_TRUE(server.loadCertificateForHost("127.0.0.1", kLoopbackCertificatePath.string(), kLoopbackKeyPath.string()))
+                            << "登记站点证书失败，后面的换代判据就没有意义";
+                    // 路径不变、内容不变的一次「续期」：只判换代有没有把站点表一起复现
+                    reloadResult = server.reloadCertificate();
+                },
+                kTestCertificatePath, kTestKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_TRUE(reloadResult) << "证书热轮换本身就没成，测不到站点表";
+
+        const std::string                         url      = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        const std::unique_ptr<HttpClientResponse> response = doHttpsGet(url);
+        ASSERT_NE(response, nullptr) << "换代之后 SNI 站点没拿到登记的那张证书，说明站点表没被复现";
+        EXPECT_EQ(response->statusCode, 200);
+    }
 } // namespace AsynGyanis::Net
