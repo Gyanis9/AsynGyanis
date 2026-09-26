@@ -136,7 +136,13 @@ namespace AsynGyanis::Net
                         co_await m_socket->asyncReceiveFrom(m_receiveBuffer.data(), m_receiveBuffer.size());
                 if (received.receivedByteCount <= 0)
                 {
-                    // 负值是套接字被关（时限掐断），零长报文对 QUIC 没有意义：两种都收场
+                    // -1 且带错误码＝对端不可达那一类 ICMP 回声：套接字还能用，QUIC 自己的丢包与
+                    // 空闲计时器才是这条连接的裁判，这里不据此收场。
+                    // 0 长报文对 QUIC 没有意义、-1 且无码＝套接字被关（时限掐断）：两种都收场
+                    if (received.socketErrorCode != 0)
+                    {
+                        continue;
+                    }
                     break;
                 }
                 co_await m_connection->handleDatagram(
@@ -163,6 +169,9 @@ namespace AsynGyanis::Net
         }
         const Core::AsyncUdpSocket::DatagramReceiveResult received =
                 co_await m_socket->asyncReceiveFrom(m_receiveBuffer.data(), m_receiveBuffer.size());
+        // 本方法一轮只读一条，两种「没有报文」（-1 与 0 长）都是直接收手：留着这条连接等下一轮。
+        // 带错误码的 -1 尤其不能当成对端已死——那是 ICMP 捎来的回声，判死这条连接的是它自己的
+        // 丢包与空闲计时器（理由见 connect() 里同一段）
         if (received.receivedByteCount <= 0)
         {
             co_return;

@@ -117,9 +117,10 @@ namespace AsynGyanis::Core
             {
                 continue;
             }
-            throw Base::SystemException("数据报接收失败：" + Platform::PlatformError::message(errorCode) +
-                                "（对端不可达一类错误在报文层面上不改变本端状态，但这里按硬失败上报，"
-                                "以免把「收不到」静默成「没有报文」）");
+            // 见头文件里的 @note：这里抛出去等于把调用方的循环静默干掉，故按「-1 + 错误码」交出，
+            // 由调用方决定是继续读还是收手（它才知道自己是不是已经关了套接字）
+            co_return DatagramReceiveResult{.receivedByteCount = -1, .peerAddress = Platform::SocketAddress{},
+                                             .socketErrorCode = errorCode};
         }
     }
 

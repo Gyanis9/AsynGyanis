@@ -72,8 +72,14 @@ namespace AsynGyanis::Core
          */
         struct DatagramReceiveResult
         {
-            ssize_t                 receivedByteCount{-1}; ///< 收到的字节数；负值表示失败（-1）
+            ssize_t                 receivedByteCount{-1}; ///< 收到的字节数；负值表示没收到（原因看 socketErrorCode）
             Platform::SocketAddress peerAddress;           ///< 来源地址（失败时无意义）
+            /**
+             * @brief 没收到字节时的平台错误码；0 表示「只是没数据、套接字已不可用」这一类无码收场
+             * @details 单靠 receivedByteCount 分不开两种「-1」：套接字被关（该收手）与对端不可达
+             *          （ICMP 带回来的错误，套接字本身还好好的，该继续读）。混为一谈的代价见 @note
+             */
+            int socketErrorCode{0};
         };
 
         /**
@@ -81,10 +87,16 @@ namespace AsynGyanis::Core
          * @param buffer 目标缓冲
          * @param capacity 缓冲容量，至少 1 字节（空报文也要占一位）
          * @return 字节数与来源地址（见结构体说明：按值返回）
-         * @note 等待可读期间套接字被关闭时 receivedByteCount 为 -1；**0 是合法的空报文**
+         * @note 等待可读期间套接字被关闭时 receivedByteCount 为 -1 且 socketErrorCode 为 0；
+         *       **0 是合法的空报文**
          * @note 缓冲放不下整条报文时多出的字节被丢弃（UDP 语义），返回值即 capacity
+         * @note 平台报错同样按 -1 + socketErrorCode 交出，**不抛**：无连接套接字上这些码
+         *       （WSAECONNRESET / EHOSTUNREACH / ECONNREFUSED …）都是 ICMP 替某个已消失的对端
+         *       捎来的回声，套接字本身还能用。之前这里按硬失败抛，而抛出的异常落不进正在 await 的
+         *       协程——本框架里被调度器恢复的协程抛异常只会被记一行「没人接住」然后丢弃，
+         *       于是**监听循环当场消失**：一个消失的对端就让整台 QUIC 服务器不再接受任何来源
          * @throws Base::InvalidArgumentException 缓冲为空或容量为 0（调用方写错了，不必重试）
-         * @throws Base::SystemException 套接字无效（已被移动走或关闭），或平台层报错
+         * @throws Base::SystemException 套接字无效（已被移动走或关闭）
          */
         [[nodiscard]] Task<DatagramReceiveResult> asyncReceiveFrom(void *buffer, std::size_t capacity);
 

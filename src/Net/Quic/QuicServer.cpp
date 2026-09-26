@@ -4,6 +4,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
+#include "Base/Log/LogThrottle.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/EventLoop/TimerQueue.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
@@ -24,6 +25,13 @@
 
 namespace AsynGyanis::Net
 {
+    namespace
+    {
+        /// 同类读数报错的放行间隔：报文本里带着对端不可达的具体原因，逐条落盘会把日志刷满，
+        /// 而这类错误的发生率本身就受对端控制（见收包循环里的说明）
+        constexpr std::chrono::seconds kReceiveErrorLogWindow{10};
+    } // namespace
+
     namespace
     {
         /// 无状态重置令牌的密钥长度：够长即可，服务端级固定一份
@@ -199,7 +207,23 @@ namespace AsynGyanis::Net
             const Platform::SocketAddress &peerAddress    = received.peerAddress;
             if (receivedLength < 0)
             {
-                // 套接字被关（stop()）或读失败：退出收循环，收尾交给析构
+                // 「对端已经不在了」那一类 socket 错误（Windows 的 WSAECONNRESET、Linux 的
+                // EHOSTUNREACH/ECONNREFUSED）是 ICMP 替某个已消失的对端捎来的回声：报文层面没改变本端
+                // 任何状态，套接字还能用。这里必须**继续读**而不是退出——退出等于让一个消失的对端把整台
+                // 服务器变成不再接受任何来源（端口还在、进程还在、只是没人再读报文）
+                if (received.socketErrorCode != 0 && m_socket->isValid() &&
+                    !m_isStopped.load(std::memory_order_acquire))
+                {
+                    if (auto &throttle = ASYN_LOG_THROTTLED(kReceiveErrorLogWindow); throttle.acquire())
+                    {
+                        LOG_WARN_FMT("QuicServer: 数据报读数报错（错误码 {}），已跳过这一次读数并继续监听"
+                                     "（过去 {} 秒内另有 {} 条同类被压掉）",
+                                     received.socketErrorCode, kReceiveErrorLogWindow.count(), throttle.droppedCount());
+                    }
+                    continue;
+                }
+                // 到这里就是「只是没数据且套接字已不可用」：stop() 关掉本端，或本端故障，退出收循环，
+                // 收尾交给析构
                 break;
             }
             if (receivedLength == 0)

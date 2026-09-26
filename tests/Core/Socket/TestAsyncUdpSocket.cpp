@@ -67,6 +67,7 @@ namespace AsynGyanis::Core
         {
             std::optional<ssize_t>  sentByteCount;     ///< 发送返回的字节数
             std::optional<ssize_t>  receivedByteCount; ///< 接收返回的字节数；空表示还没收到
+            int receiveErrorCode{0};                  ///< 没收到字节时的平台错误码；0 表示无码收场
             std::string             receivedPayload;   ///< 收到的内容
             Platform::SocketAddress peerAddress;       ///< 收到报文的来源地址
             std::string             failureMessage;    ///< 协程内捕获到的异常文本；空表示没出异常
@@ -120,6 +121,7 @@ namespace AsynGyanis::Core
                 const ssize_t receivedByteCount = received.receivedByteCount;
                 observation.peerAddress         = received.peerAddress;
                 observation.receivedByteCount   = receivedByteCount;
+                observation.receiveErrorCode    = received.socketErrorCode;
                 if (receivedByteCount > 0)
                 {
                     observation.receivedPayload.assign(buffer.data(), static_cast<std::size_t>(receivedByteCount));
@@ -431,4 +433,69 @@ namespace AsynGyanis::Core
         EXPECT_EQ(received.receivedByteCount, static_cast<ssize_t>(payload.size()));
         EXPECT_EQ(std::string(receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)), payload);
     }
+
+    /**
+     * @brief 对端消失带回来的 socket 错误要按「-1 + 错误码」交出，**不能抛**
+     * @details 这条契约是给 QUIC 监听循环定的：被调度器恢复的协程抛异常，在本框架里只会被记一行
+     *          「协程有异常没人接住」然后丢弃——正在 await 它的那层连通知都收不到，于是整个收包循环
+     *          静默消失（端口还在、进程还在，只是不再有任何响应）。触发方式是确定的：把套接字 connect
+     *          到一个刚被关掉的回环端口再发一条，内核自己就会把「端口不可达」递到自己的下次读数上。
+     *          改回「按硬失败抛出」，本条立刻红（异常文本落进 failureMessage）。
+     */
+    TEST(AsyncUdpSocket, ReportsPeerUnreachableReceiveErrorAsACodeInsteadOfThrowing)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        // 先占一个回环端口再关掉：之后的发送就有了一个确定「无人接收」的目标
+        std::uint16_t deadPort = 0U;
+        {
+            const Platform::DatagramSocket occupied = Platform::DatagramSocket::bindTo(makeLoopbackAddress(0));
+            ASSERT_TRUE(occupied.isValid());
+            const Platform::SocketAddress occupiedAddress = occupied.localAddress();
+            deadPort = ntohs(reinterpret_cast<const sockaddr_in *>(&occupiedAddress.storage)->sin_port);
+        } // 作用域结束即关闭，这个端口此后没人监听
+
+        EventLoop      loop;
+        AsyncUdpSocket socket = bindLoopbackSocket(loop);
+        ASSERT_TRUE(socket.isValid());
+
+        // 这里先 connect 是为了让「端口不可达」确定地递到自己的下次读数上（三大平台一致：Windows
+        // 的 10054、Linux 与 macOS 的 ECONNREFUSED）。真实服务端并不 connect（一条套接字对所有来源），
+        // Windows 上同样会递 10054——那正是它整个监听循环死掉的现场
+        const Platform::SocketAddress deadAddress = makeLoopbackAddress(deadPort);
+        ASSERT_EQ(::connect(socket.fileDescriptor(), reinterpret_cast<const sockaddr *>(&deadAddress.storage),
+                            deadAddress.length),
+                  0)
+                << "connect 没成：这条用例需要一个会收 ICMP 的已连接套接字";
+        ASSERT_GT(::send(socket.fileDescriptor(), "x", 1, 0), 0) << "发往死端口这一步本身就该成功";
+
+        // 先等那条 ICMP 真递到本端：select 只问「可读吗」，不会把错误吃掉（挂着错误本身就算可读事件），
+        // 于是接下来那次异步读数拿到的就是它。不等这一步，读数可能先撞上「暂无数据」而转去等可读，
+        // 本条就在两个分支之间漂移（判据只能落在确实取到错误的那一次上）
+        const int fileDescriptor = socket.fileDescriptor();
+        fd_set    readSet{};
+        FD_ZERO(&readSet);
+        FD_SET(fileDescriptor, &readSet);
+        timeval waitTime{2, 0};
+        ASSERT_GT(::select(fileDescriptor + 1, &readSet, nullptr, nullptr, &waitTime), 0)
+                << "对端不可达的错误两秒内没递到本端：平台行为与预期不符，下面的判据无从建立";
+
+        TransferObservation observation;
+        Task<void>          scenario = receiveOnlyTask(socket, observation);
+        loop.scheduler().schedule(scenario.handle());
+        ASSERT_TRUE(advanceUntil(loop, [&observation]
+                                 {
+                                     return observation.receivedByteCount.has_value() || !observation.failureMessage.empty();
+                                 }))
+                << "一次读数既不返回也不抛：调用方会被永久挂住";
+
+        EXPECT_TRUE(observation.failureMessage.empty())
+                << "对端不可达这类错误不该抛出（它会让正在 await 的循环静默消失）：" << observation.failureMessage;
+        ASSERT_TRUE(observation.receivedByteCount.has_value());
+        EXPECT_LT(*observation.receivedByteCount, 0) << "错误已经到位，读数却没报出失败：那递给调用方的是什么";
+        EXPECT_NE(observation.receiveErrorCode, 0)
+                << "报「没收到」却不给错误码：调用方分不开「套接字已不可用」与「对端不在了」";
+        EXPECT_TRUE(socket.isValid()) << "递回一个对端错误不该把本端套接字一起判死";
+    }
+
 } // namespace AsynGyanis::Core
