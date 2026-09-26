@@ -15,9 +15,11 @@
 // 报给上层的仍是同一套 epoll 语义（上层的 IoWatcher / EventLoop 因此无需平台分支）
 #include "wepoll.h"
 
+#include <atomic>
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -126,6 +128,43 @@ namespace AsynGyanis::Core
         [[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept;
 
     private:
+        /**
+         * @brief 后端独占标记：同一份完成端口状态不许被两个线程同时用
+         *
+         * @details 本后端的注册表与三张待办表都是无锁的普通容器，两份线程同时进来就是数据竞争，
+         *          而且坏得没有现场：实测表现为另一处 vector 的头被打乱，由 AddressSanitizer 在
+         *          与肇因无关的位置报成 negative-size-param。事件循环的线程契约是「后端只由它所属
+         *          循环的那条线程碰」，这个标记把违约变成一次当场抛出的错误。
+         *
+         * @note 只查「同时在场」，不查「换了线程」：注册推迟到第一次等待才做，同一个对象被两条线程
+         *       **先后**使用是既有的良性形态（顺序交接），不在本检查范围内——按属主线程判会误伤一大片。
+         * @note 同一线程的重入同样拒绝：那意味着在 wait() 还没返回时又进了后端，交出去的事件视图
+         *       会被下一批覆盖。
+         */
+        class ExclusiveUse
+        {
+        public:
+            /**
+             * @brief 抢独占标记，抢不到就抛
+             * @param backend 目标后端
+             * @param operation 调用方所在的操作名（只用于报错文本）
+             * @throws Base::LogicException 后端正被使用（含同线程重入）
+             */
+            ExclusiveUse(Iocp &backend, const char *operation);
+
+            /// 归还独占标记（抛出去的那一路不持有，因此不需要归还）
+            ~ExclusiveUse() noexcept;
+
+            ExclusiveUse(const ExclusiveUse &) = delete;
+            ExclusiveUse &operator=(const ExclusiveUse &) = delete;
+            ExclusiveUse(ExclusiveUse &&) = delete;
+            ExclusiveUse &operator=(ExclusiveUse &&) = delete;
+
+        private:
+            Iocp &m_backend;      ///< 被守护的后端
+            bool  m_isAcquired{false}; ///< 本次是否真的拿到了标记（拿到过才要还）
+        };
+
         /// 一个探针自带的完成信息：完成通知给出的是 OVERLAPPED 的地址，靠它反查所属状态与方向
         struct ProbeContext;
 
@@ -272,5 +311,11 @@ namespace AsynGyanis::Core
         std::vector<SocketState *>     m_pendingRearm;      ///< 需要重新武装的水平触发状态
         std::vector<SocketState *>     m_pendingArmRetry;   ///< 上一次投递失败、需要重试的状态
         std::vector<SocketState *>     m_pendingSyntheticReady; ///< 探针投递时撞上硬错误、等下一轮合成成事件的状态
+        /// 独占标记的持有状态（见 ExclusiveUse）：移动后从「没人持有」重新开始——移动本身就要求
+        /// 没有操作在进行，把标记原样搬过去只会让新对象永久卡死
+        std::atomic_flag               m_inUse = ATOMIC_FLAG_INIT;
+        /// 此刻正在用后端的线程指纹（线程 id 的哈希 + 1，0 表示没人）：只进报错文本，
+        /// 因此存原子量而不是 thread::id——后者读写没有同步就是一次数据竞争，而这里只想要个名字
+        std::atomic<std::uint64_t>     m_inUseByHash{0};
     };
 } // namespace AsynGyanis::Core

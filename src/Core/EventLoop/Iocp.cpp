@@ -1,10 +1,14 @@
 #include "Core/EventLoop/Iocp.h"
 
+#include "Base/Exception/LogicException.h"
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
+#include <string>
+#include <thread>
 
 namespace AsynGyanis::Core
 {
@@ -228,8 +232,49 @@ namespace AsynGyanis::Core
         return m_iocp;
     }
 
+    namespace
+    {
+        /// 线程指纹：0 留给「没人持有」，所以实际值取哈希再 +1
+        [[nodiscard]] std::uint64_t threadFingerprint(const std::thread::id id) noexcept
+        {
+            static const std::hash<std::thread::id> hasher{};
+            return static_cast<std::uint64_t>(hasher(id)) + 1U;
+        }
+    } // namespace
+
+    Iocp::ExclusiveUse::ExclusiveUse(Iocp &backend, const char *const operation) : m_backend(backend)
+    {
+        if (!m_backend.m_inUse.test_and_set(std::memory_order_acquire))
+        {
+            m_backend.m_inUseByHash.store(threadFingerprint(std::this_thread::get_id()), std::memory_order_relaxed);
+            m_isAcquired = true;
+            return;
+        }
+
+        // 违约不静默：这里的并发写会把别的对象打乱，报错位置离肇因隔着几层，事后无从反推。
+        // 指纹只进报错文本，因此用松弛序读——它与「是否拒绝」这个决定无关，决定只来自那个原子标记
+        const std::uint64_t holderFingerprint = m_backend.m_inUseByHash.load(std::memory_order_relaxed);
+        const std::uint64_t selfFingerprint   = threadFingerprint(std::this_thread::get_id());
+        throw Base::LogicException(
+                "IOCP 事件后端被并发使用：操作 " + std::string{operation} + " 想在线程指纹 "
+                + std::to_string(selfFingerprint) + " 上进入，而后端正被线程指纹 "
+                + std::to_string(holderFingerprint)
+                + (holderFingerprint == selfFingerprint ? "（同一条线程的重入）" : "（另一条线程）")
+                + " 占用。事件后端只该由它所属事件循环的那条线程碰，外部线程请走 EventLoop::postRemote()");
+    }
+
+    Iocp::ExclusiveUse::~ExclusiveUse() noexcept
+    {
+        if (m_isAcquired)
+        {
+            m_backend.m_inUseByHash.store(0, std::memory_order_relaxed);
+            m_backend.m_inUse.clear(std::memory_order_release);
+        }
+    }
+
     bool Iocp::addFileDescriptor(const int fileDescriptor, const std::uint32_t events, void *const userData)
     {
+        const ExclusiveUse exclusive(*this, "addFileDescriptor");
         if (m_sockets.contains(fileDescriptor))
         {
             // 调用方多半是把两个注册对象套在了同一个描述符上。
@@ -278,6 +323,7 @@ namespace AsynGyanis::Core
 
     bool Iocp::modFileDescriptor(const int fileDescriptor, const std::uint32_t events, void *const userData)
     {
+        const ExclusiveUse exclusive(*this, "modFileDescriptor");
         const auto iterator = m_sockets.find(fileDescriptor);
         if (iterator == m_sockets.end())
         {
@@ -301,6 +347,7 @@ namespace AsynGyanis::Core
 
     bool Iocp::delFileDescriptor(const int fileDescriptor)
     {
+        const ExclusiveUse exclusive(*this, "delFileDescriptor");
         const auto iterator = m_sockets.find(fileDescriptor);
         if (iterator == m_sockets.end())
         {
@@ -333,6 +380,7 @@ namespace AsynGyanis::Core
 
     bool Iocp::takeAcceptedSocket(const int listenerFileDescriptor, int *const acceptedFileDescriptor)
     {
+        const ExclusiveUse exclusive(*this, "takeAcceptedSocket");
         const auto iterator = m_sockets.find(listenerFileDescriptor);
         if (iterator == m_sockets.end())
         {
@@ -660,6 +708,7 @@ namespace AsynGyanis::Core
 
     std::span<epoll_event> Iocp::wait(const int timeoutMs)
     {
+        const ExclusiveUse exclusive(*this, "wait");
         // 补投上一次失败的探针：注册成功但当时武装不上（监听描述符还没 listen() 等）的方向
         // 必须在阻塞之前补上，否则这一睡就再也没有完成通知能把循环叫醒
         retryFailedArms();

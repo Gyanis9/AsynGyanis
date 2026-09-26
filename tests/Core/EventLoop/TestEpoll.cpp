@@ -19,6 +19,7 @@
 #include <vector>
 
 #if ASYN_PLATFORM_WIN32
+#include "Base/Exception/LogicException.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/Logger.h"
@@ -29,6 +30,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <utility>
 #endif
 
@@ -1073,6 +1075,65 @@ namespace AsynGyanis::Core
 
         EXPECT_EQ(warningCount, 0U) << "预期中的暂时状态被写成了告警，日志会随连接数线性膨胀";
         Platform::Socket::finalize();
+    }
+
+    /**
+     * @brief 两条线程同时用同一份后端要当场抛出，而不是把堆写坏
+     * @details 判据是「同时在场」而不是「换了线程」：注册推迟到第一次等待才做，同一个后端被两条线程
+     *          **先后**使用是既有的良性形态（用例里就有几百次），按属主线程判会误伤一大片。
+     *          两条线程各按自己的节奏反复进出后端，占位在场的窗口彼此重叠，被拒的次数按「两边都记」
+     *          来判——抢占是双向的，只盯其中一边会漏（实测那种写法在 30 次里红 15 次）。
+     */
+    TEST(Epoll, RejectsConcurrentUseFromAnotherThread)
+    {
+        Epoll backend;
+        std::atomic<bool> isStopping{false};
+        std::atomic<int>  rejectionCount{0};
+
+        // 占位的一路：wait(1) 每次都在内核里停约 1 毫秒，占空比接近九成
+        std::thread holder{
+                [&backend, &isStopping, &rejectionCount]
+                {
+                    // 线程入口必须接住：被拒的一方如果让它抛出，整个测试进程当场就没（terminate）
+                    try
+                    {
+                        while (!isStopping.load(std::memory_order_acquire))
+                        {
+                            static_cast<void>(backend.wait(1));
+                        }
+                    } catch (const Base::LogicException &)
+                    {
+                        ++rejectionCount;
+                    }
+                }};
+
+        // 探路的一路：拿「未注册的描述符只回 false」这个无副作用入口反复敲门，被拒就记账
+        std::thread poker{
+                [&backend, &isStopping, &rejectionCount]
+                {
+                    while (!isStopping.load(std::memory_order_acquire))
+                    {
+                        try
+                        {
+                            static_cast<void>(backend.delFileDescriptor(0x7FFF));
+                        } catch (const Base::LogicException &)
+                        {
+                            ++rejectionCount;
+                        }
+                    }
+                }};
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{500});
+        isStopping.store(true, std::memory_order_release);
+        holder.join();
+        poker.join();
+
+        EXPECT_GT(rejectionCount.load(), 0)
+                << "并发使用没被拒：注册表与待办表都是无锁容器，两个线程同时进只会把堆写坏，"
+                   "而报错位置离肇因隔着几层（实测报成另一处 vector 的 negative-size-param）";
+
+        EXPECT_NO_THROW(static_cast<void>(backend.delFileDescriptor(0x7FFF)))
+                << "顺序交接也被拒了：本检查只该管「同时在场」";
     }
 #endif
 } // namespace AsynGyanis::Core
