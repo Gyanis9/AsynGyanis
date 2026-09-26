@@ -376,6 +376,20 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::unordered_map<std::string, std::string> queryParams() const;
 
         /**
+         * @brief 解析 `application/x-www-form-urlencoded` 的请求正文为表单字段。
+         * @details 与 queryParams() 走**同一份**解析（同一套分对规则、同一个百分号解码、同一个
+         *          '+' 当空格的约定），所以 `a%20b`、`a+b`、`a=b=c` 这类写法在两条路上必然得到
+         *          同一个解释——写两份就会漂移。规则同查询串：无 '=' 的分对值为空串，键为空的分对
+         *          跳过，重复键后出现的覆盖先出现的。
+         * @note 媒体类型不是 `application/x-www-form-urlencoded` 时交回**空表**，不去猜：把 JSON 或
+         *       二进制正文按 '&' 切开拼成「参数」是凭空造数据。类型参数（`; charset=utf-8`）不参与判定，
+         *       媒体类型本身大小写不敏感。
+         * @note 流式正文（`bodyStream()` 那一路）不适用：这条只读已经收齐的整份正文。
+         * @return 表单字段的 unordered_map，键值均为解码后的文本
+         */
+        [[nodiscard]] std::unordered_map<std::string, std::string> formFields() const;
+
+        /**
          * @brief 设置路由参数（路径中的 ":id" 之类占位符匹配到的值）。
          * @param key   参数名
          * @param value 参数值，同名覆盖
@@ -430,6 +444,14 @@ namespace AsynGyanis::Net
          * @return 解码后的文本
          */
         static std::string percentDecode(std::string_view source);
+
+        /**
+         * @brief 按 www-form-urlencoded 的形状拆一段文本（查询串与表单正文共用）
+         * @details 先按 '&' 拆分对，每对再按「第一个 '='」拆键值，键值都做百分号解码。
+         * @param queryText 待解析文本（不含前导 '?'）
+         * @return 解码后的键值表；重复键后出现的覆盖先出现的
+         */
+        [[nodiscard]] static std::unordered_map<std::string, std::string> parseUrlEncoded(std::string_view text);
 
         HttpMethod           m_method{HttpMethod::UNKNOWN}; ///< HTTP 方法
         std::string          m_uri;                         ///< 原始 URI，含查询串

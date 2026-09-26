@@ -317,19 +317,9 @@ namespace AsynGyanis::Net
         return decoded;
     }
 
-    std::unordered_map<std::string, std::string> HttpRequest::queryParams() const
+    std::unordered_map<std::string, std::string> HttpRequest::parseUrlEncoded(const std::string_view queryText)
     {
         std::unordered_map<std::string, std::string> parameters;
-
-        const std::size_t queryPosition = m_uri.find('?');
-        if (queryPosition == std::string::npos)
-        {
-            // 没有 '?' 就没有查询串，交回空表而不是抛异常：路径查询是常规操作
-            return parameters;
-        }
-
-        // '?' 之后的全部字符即查询串；URI 以 '?' 收尾时这里得到空视图，substr 不会越界
-        const std::string_view queryText = std::string_view(m_uri).substr(queryPosition + 1);
 
         std::size_t pairStart = 0;
         while (pairStart < queryText.size())
@@ -375,6 +365,37 @@ namespace AsynGyanis::Net
         }
 
         return parameters;
+    }
+
+    std::unordered_map<std::string, std::string> HttpRequest::queryParams() const
+    {
+        const std::size_t queryPosition = m_uri.find('?');
+        if (queryPosition == std::string::npos)
+        {
+            // 没有 '?' 就没有查询串，交回空表而不是抛异常：路径查询是常规操作
+            return {};
+        }
+
+        // '?' 之后的全部字符即查询串；URI 以 '?' 收尾时这里得到空视图，substr 不会越界
+        return parseUrlEncoded(std::string_view(m_uri).substr(queryPosition + 1));
+    }
+
+    std::unordered_map<std::string, std::string> HttpRequest::formFields() const
+    {
+        // 媒体类型必须真是 application/x-www-form-urlencoded：把 JSON 或二进制正文按 '&' 切开
+        // 拼成「参数」是凭空造数据，宁可交回空表。类型参数（"; charset=utf-8"）不参与判定
+        const std::optional<std::string> contentType = getHeader("content-type");
+        if (!contentType.has_value())
+        {
+            return {};
+        }
+        const std::size_t      parameterPosition = contentType->find(';');
+        const std::string_view mediaType         = trimOptionalWhitespace(std::string_view(*contentType).substr(0, parameterPosition));
+        if (!equalsIgnoringCase(mediaType, "application/x-www-form-urlencoded"))
+        {
+            return {};
+        }
+        return parseUrlEncoded(body());
     }
 
     void HttpRequest::setParam(std::string key, std::string value)

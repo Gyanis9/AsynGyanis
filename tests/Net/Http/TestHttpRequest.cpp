@@ -552,4 +552,93 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(request.hasHeader("accept-encoding")) << "复用连接后不得看到上一条请求的头部";
         EXPECT_FALSE(request.firstHeaderValueView("accept-encoding").has_value());
     }
+
+    /**
+     * @brief 表单正文能按字段取出来
+     */
+    TEST(HttpRequestTest, FormFieldsParsesUrlEncodedBody)
+    {
+        HttpRequest request;
+        request.setMethod(HttpMethod::POST);
+        request.setUri("/login");
+        EXPECT_TRUE(request.setHeader("content-type", "application/x-www-form-urlencoded"));
+        request.setBody("user=abc&pass%20word=x%2B1&newsletter");
+
+        const std::unordered_map<std::string, std::string> fields = request.formFields();
+        ASSERT_EQ(fields.size(), 3U);
+        EXPECT_EQ(fields.at("user"), "abc");
+        EXPECT_EQ(fields.at("pass word"), "x+1") << "键做百分号解码，值里的 %2B 是加号本身而不是空格";
+        EXPECT_EQ(fields.at("newsletter"), "") << "有键无值即空串";
+    }
+
+    /**
+     * @brief 表单与查询串共用同一份解码规则（同一段文本，两条路必须给出同一张表）
+     * @details 这条钉的是「不要写两份实现」：两份实现在 a+b、%20、值里带 '='、重复键这些细节上
+     *          迟早漂移，而漂移的表现是同一个字段从查询串取和从正文取结果不一样
+     */
+    TEST(HttpRequestTest, FormFieldsAndQueryParamsShareOneDecoder)
+    {
+        constexpr std::string_view sampleText{"a+b=1+c&x=y=z&&=novalue&dup=first&dup=second&empty="};
+
+        HttpRequest viaQuery;
+        viaQuery.setUri(std::string("/probe?") + std::string(sampleText));
+
+        HttpRequest viaBody;
+        viaBody.setMethod(HttpMethod::POST);
+        viaBody.setUri("/probe");
+        EXPECT_TRUE(viaBody.setHeader("content-type", "application/x-www-form-urlencoded"));
+        viaBody.setBody(std::string(sampleText));
+
+        const std::unordered_map<std::string, std::string> queryParameters = viaQuery.queryParams();
+        const std::unordered_map<std::string, std::string> formFields      = viaBody.formFields();
+        EXPECT_EQ(formFields, queryParameters) << "同一段文本，正文与查询串解出来不一样，说明有两份实现在漂移";
+        EXPECT_FALSE(queryParameters.empty()) << "样例文本本身没解出任何东西，那上面的相等就是空对空的假绿";
+        EXPECT_EQ(queryParameters.size(), 4U);
+        EXPECT_EQ(queryParameters.at("a b"), "1 c");
+        EXPECT_EQ(queryParameters.at("x"), "y=z");
+        EXPECT_EQ(queryParameters.at("dup"), "second") << "重复键应当后出现的覆盖先出现的";
+    }
+
+    /**
+     * @brief 媒体类型不对就不猜：交回空表而不是把 JSON 拆成「参数」
+     * @details 缺头部、类型不符两类都算「没带表单」。把 JSON 正文按 '&' 切开拼成字段，
+     *          等于凭空造出一份调用方从未提交过的数据
+     */
+    TEST(HttpRequestTest, FormFieldsRefuseBodiesThatAreNotFormEncoded)
+    {
+        HttpRequest jsonBody;
+        jsonBody.setMethod(HttpMethod::POST);
+        jsonBody.setUri("/api");
+        EXPECT_TRUE(jsonBody.setHeader("content-type", "application/json"));
+        jsonBody.setBody(R"({"a":"1","b":"2"})");
+        EXPECT_TRUE(jsonBody.formFields().empty());
+
+        HttpRequest noContentType;
+        noContentType.setMethod(HttpMethod::POST);
+        noContentType.setUri("/api");
+        noContentType.setBody("a=1&b=2");
+        EXPECT_TRUE(noContentType.formFields().empty());
+
+        HttpRequest emptyBody;
+        emptyBody.setMethod(HttpMethod::POST);
+        emptyBody.setUri("/api");
+        EXPECT_TRUE(emptyBody.setHeader("content-type", "application/x-www-form-urlencoded"));
+        EXPECT_TRUE(emptyBody.formFields().empty());
+    }
+
+    /**
+     * @brief 媒体类型判定忽略大小写与类型参数（`; charset=utf-8` 不该让表单读不出来）
+     */
+    TEST(HttpRequestTest, FormContentTypeMatchingIsLenientAboutCaseAndParameters)
+    {
+        HttpRequest request;
+        request.setMethod(HttpMethod::POST);
+        request.setUri("/login");
+        EXPECT_TRUE(request.setHeader("content-type", "APPLICATION/X-WWW-FORM-URLENCODED; charset=utf-8"));
+        request.setBody("name=value");
+
+        const std::unordered_map<std::string, std::string> fields = request.formFields();
+        ASSERT_EQ(fields.size(), 1U);
+        EXPECT_EQ(fields.at("name"), "value");
+    }
 } // namespace AsynGyanis::Net

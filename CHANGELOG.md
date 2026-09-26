@@ -17,6 +17,23 @@
 
 ### 新增
 
+- **`Core::GracefulShutdown`：停机信号的接管进了库**。此前每个使用方都要自己写一遍
+  `std::signal` + 一个全局标志，抄错的后果是「Ctrl+C 之后连接被硬切、在途请求随进程一起丢」，
+  而且没人会知道自己抄错了。POSIX 接管 SIGINT/SIGTERM（屏蔽字 + 一个带超时的 `sigtimedwait` 轮询线程），
+  Windows 接管控制台的四类关闭事件；收尾动作一律投回构造时给的事件循环执行——它们通常要碰服务器与会话
+  状态，而那些状态按本库的线程契约只允许在所属循环上读写。三条刻意的取舍：触发是单向的（连按两次
+  Ctrl+C 是催命，第二次交还给系统强杀）；单个动作抛异常就地接住并记 ERROR，后面的照跑；收尾已开始才
+  注册的动作按「迟到注册」补投一次而不是静默丢掉。关闭/注销/关机这三类事件里处理器一返回系统就终止进程，
+  因此 `requestShutdown(ConsoleEvent)` 原地等收尾跑完（上限 5 秒，超时也要放手）。每进程只装一个观察者，
+  第二个如实报 `isInstalled()` 为 false。
+  **要在进程内模拟一次真信号请用 `kill(getpid(), SIGTERM)` 而不是 `raise()`**：后者送的是线程定向的
+  挂起信号，本类的等待线程取不到（这条区别是容器门禁实测出来的）。
+- **`HttpRequest::formFields()`：表单正文有了取值入口**，与 `queryParams()` 共用**同一份**解析
+  （同一套分对规则、同一个百分号解码、同一个 `+` 当空格的约定），所以同一段文本从查询串取和从正文取
+  必然给出同一张表——写两份实现迟早在这几个细节上漂移。媒体类型不是
+  `application/x-www-form-urlencoded` 时交回空表而不是猜：把 JSON 或二进制正文按 `&` 切开拼成
+  「参数」等于凭空造出调用方从未提交过的数据。类型参数（`; charset=utf-8`）不参与判定，媒体类型
+  本身大小写不敏感。
 - **Cookie 有了结构化表示，客户端也有了自己的 Cookie 罐**：`HttpCookie` 负责一条 Cookie 的名字、取值
   与属性（Path/Domain/Expires/Max-Age/Secure/HttpOnly/SameSite），`HttpRequest::cookies()` 读、
   `HttpResponse::setCookie()` 写。以前这两头都得手写 `name=v; Path=/; HttpOnly` 这样的字符串，
