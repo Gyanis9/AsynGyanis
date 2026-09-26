@@ -134,6 +134,19 @@ namespace AsynGyanis::Net
         }
         SSL_CTX_set_alpn_select_cb(tlsContext, selectApplicationProtocol, nullptr);
 
+        // 校验模式落在 SSL_CTX 上：h3 的连接是数据报路由命中时才 SSL_new 出来的，没有「先建好连接再改
+        // 校验模式」的位置，而 Configuration 本身就是构造期一次定（要改只能整台换）
+        if (m_configuration.requireClientCertificates)
+        {
+            if (m_configuration.tlsPolicy.certificateAuthorityFile.empty() && m_configuration.tlsPolicy.certificateAuthorityPath.empty())
+            {
+                throw Base::SystemException("QUIC 服务端启动失败：requireClientCertificates 开着，却没有给校验客户端证书用的 CA"
+                                            "（tlsPolicy.certificateAuthorityFile 或 certificateAuthorityPath 至少要一项）");
+            }
+            // FAIL_IF_NO_PEER_CERT：对端不出示证书时立即终止握手，而不是退化成「可选校验」
+            SSL_CTX_set_verify(tlsContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+        }
+
         // 票据密钥与证书一样在构造期就位：装不上就是配置错误，当场抛（消息点名是哪一份文件），
         // 而不是悄悄退回「每个上下文一份随机密钥」——那种形态的代价只在恢复命中率上体现，查起来最费时间
         if (!m_configuration.sessionTicketKeyFiles.empty())

@@ -4,6 +4,7 @@
 #include "Net/Quic/QuicClientConnection.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/Router.h"
@@ -18,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -60,14 +62,22 @@ namespace AsynGyanis::Net
              * @brief 按给定证书起服务端并等它进入监听
              * @param certificateFile 服务端证书
              * @param privateKeyFile 配套私钥
+             * @param configurationTweak 造服务端之前对配置的追加改动。双向 TLS 那两条要靠它打开
+             *                           「服务端要求客户端证书」并装上校验用的 CA——配置判据全在构造期
+             *                           定死，这是唯一的下手机会
              */
-            RunningServerPeer(std::filesystem::path certificateFile, std::filesystem::path privateKeyFile)
+            RunningServerPeer(std::filesystem::path certificateFile, std::filesystem::path privateKeyFile,
+                              const std::function<void(QuicServer::Configuration &)> &configurationTweak = {})
             {
                 QuicServer::Configuration configuration;
                 configuration.certificateFile = std::move(certificateFile).string();
                 configuration.privateKeyFile  = std::move(privateKeyFile).string();
                 configuration.idleTimeout     = std::chrono::seconds{30};
-                m_server                      = std::make_unique<QuicServer>(m_loop, configuration);
+                if (configurationTweak)
+                {
+                    configurationTweak(configuration);
+                }
+                m_server = std::make_unique<QuicServer>(m_loop, configuration);
                 m_server->setRouter(m_router);
                 m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
                 m_loop.scheduler().schedule(m_listenTask->handle());
@@ -95,6 +105,7 @@ namespace AsynGyanis::Net
             {
                 return m_server->listeningPort();
             }
+
 
         private:
             Core::EventLoop             m_loop;         ///< 服务端所属循环
@@ -271,6 +282,76 @@ namespace AsynGyanis::Net
         configuration.applicationProtocolIdentifiers = {std::string{"h3"}};
 
         EXPECT_THROW(static_cast<void>(QuicClientConnection{loop, configuration}), Base::InvalidArgumentException) << "空主机名被放过了：这条连接出去不会校验对端身份";
+    }
+
+    /**
+     * @brief 把服务端配成「要求客户端证书却没给信任锚」时，构造当场抛而不是留一条永远握不成的监听器
+     * @details 这种配置在 TLS 里的形态不是「退化成不校验」而是**每条握手都失败**（没有可对照的根，
+     *          任何客户端证书都验不过）。启动时点名比让运维从一堆握手失败里反推这一行配置便宜得多，
+     *          与 HTTPS 侧 `setClientCertificateRequired()` 的拒绝同一判据。
+     */
+    TEST(QuicServer, RejectsClientCertificateRequirementWithoutATrustAnchor)
+    {
+        Core::EventLoop           loop;
+        QuicServer::Configuration configuration;
+        configuration.certificateFile           = kIpCertificatePath.string();
+        configuration.privateKeyFile            = kIpPrivateKeyPath.string();
+        configuration.requireClientCertificates = true;
+
+        try
+        {
+            static_cast<void>(QuicServer{loop, configuration});
+            FAIL() << "要求客户端证书却没有 CA 的配置被放过了：这台服务端每条握手都会失败";
+        } catch (const Base::SystemException &failure)
+        {
+            // 判据取「点名了该给的那一项」：只断异常类型的话，任何一条别的构造期拒绝都能顶掉这条用例
+            const std::string reason = failure.what();
+            EXPECT_NE(reason.find("certificateAuthorityFile"), std::string::npos) << "原因没指出缺的是信任锚：" << reason;
+        }
+    }
+
+    /**
+     * @brief 服务端要求客户端证书时，出示受信任证书的客户端能握上手并谈定 h3
+     * @details 夹具是自签的：一张证书既是服务端身份又是它自己的根，因此同一份文件既能当服务端的
+     *          证书、又能当校验客户端证书的 CA（与 HTTPS 侧那条 mTLS 用例同一手法）。
+     */
+    TEST(QuicClientConnection, CompletesTheHandshakeWhenTheClientPresentsATrustedCertificate)
+    {
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [](QuicServer::Configuration &configuration)
+                                 {
+                                     configuration.requireClientCertificates          = true;
+                                     configuration.tlsPolicy.certificateAuthorityFile = kIpCertificatePath.string();
+                                 }};
+        ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
+
+        auto configuration                  = makeConfiguration("127.0.0.1", kIpCertificatePath, 4s);
+        configuration.clientCertificateFile = kIpCertificatePath.string();
+        configuration.clientPrivateKeyFile  = kIpPrivateKeyPath.string();
+
+        ConnectAttempt attempt{configuration, Core::InetAddress::resolve("127.0.0.1", server.listeningPort()).value()};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "带客户端证书的握手既没成也没失败，挂在那里";
+        EXPECT_TRUE(attempt.isSuccessful()) << "合法客户端证书没被接受：" << attempt.elapsed().count() << " 毫秒后收场";
+        EXPECT_EQ(attempt.negotiatedApplicationProtocol(), "h3") << "握手成了但 ALPN 没谈定";
+    }
+
+    /**
+     * @brief 客户端证书与私钥只给一项时在构造期就拒
+     * @details 只给一项的后果不在启动时报「少一个参数」，而是到握手里出示证书那一刻才发现没有可签名的
+     *          私钥（或反过来）——失败点离成因隔了一整条握手，最难查。
+     */
+    TEST(QuicClientConnection, RejectsAHalfSuppliedClientIdentityDuringConstruction)
+    {
+        Core::EventLoop loop;
+
+        for (const auto &halfSupplied: {std::pair{kIpCertificatePath.string(), std::string{}}, std::pair{std::string{}, kIpPrivateKeyPath.string()}})
+        {
+            auto configuration                  = makeConfiguration("127.0.0.1", kIpCertificatePath, 4s);
+            configuration.clientCertificateFile = halfSupplied.first;
+            configuration.clientPrivateKeyFile  = halfSupplied.second;
+
+            EXPECT_THROW(static_cast<void>(QuicClientConnection{loop, configuration}), Base::InvalidArgumentException)
+                    << "证书与私钥只给了一项却被放过：证书=\"" << halfSupplied.first << "\"，私钥=\"" << halfSupplied.second << "\"";
+        }
     }
 
 } // namespace AsynGyanis::Net

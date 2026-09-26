@@ -17,6 +17,33 @@
 
 ### 新增
 
+- **HTTP/3 与 QUIC 支持双向 TLS（mTLS）**：此前 h3 这条通路两端都缺——服务端从不向对端要证书，
+  策略里那几项（`certificateAuthorityFile/Path`、`verifyDepth`、`revocationListFile`）装进信任库也没人
+  去查；出站 QUIC/h3 客户端也没有出示自己身份的入口。现在：
+  `QuicServer::Configuration::requireClientCertificates` 打开后，本服务端按
+  `SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT` 要求并校验客户端证书，吊销检查也随之从
+  「配了但不生效」变成真的参与客户端链；`QuicClientConnection::Configuration::clientCertificateFile`
+  与 `clientPrivateKeyFile` 成对给出即在本端出示身份（h3 出站会话走同一份配置，因此
+  `Http3ClientConnection` 一并可用）。
+  两处配置错误都在**构造期**拒绝而不是留到握手里：要求校验却没给任何信任锚（这种配置在 TLS 里的形态
+  不是「退化成不校验」而是**每条握手都失败**，与 `HttpsServer::setClientCertificateRequired()` 同一判据）、
+  以及证书与私钥只给一项（只给一项的后果要到握手深处才暴露，失败点离成因隔了一整条握手）。
+  **一条容易踩错的判据平面**：TLS 1.3 里客户端收完服务端的 `Finished` 就自认握手完成，它对「服务端
+  后来有没有接受我的 `Certificate`」没有任何可见性（服务端拒绝只能靠加密后的 alert 传达）。所以
+  「被拒的客户端 `connect()` 返回 false」这种断言在实现完全正确时也会红。这里的用例把拒绝判在
+  **服务端平面**：被要求证书却不出示（或出示一张不在信任锚里的）客户端，拿不到任何响应，且服务端的
+  请求计数一条也不涨。实测还顺手量掉一个担心：这种被拒的连接**不是**攥在服务端手里等空闲超时——
+  本端在几十毫秒内就看到它被收掉（用例把「两秒内收场」钉成判据，请求预算本身是 4 秒）。
+  已知边界：`Core::TlsPolicy` 的那三项在 h3 上从此**只有在 `requireClientCertificates` 开着时**才参与
+  校验（不开时本服务端连证书都不要），`QuicServer.h` 里原来那句「对本监听器不适用」已随之更正。
+  用例 5 条：h3 层「带受信任证书→四个判据全成立（状态码/正文/响应头/服务端计数）」「不给证书→拿不到答
+  且服务端计数为 0」「给一张不在信任锚里的证书→同样拿不到答」，QUIC 层「客户端出示受信任证书能握手并
+  谈定 h3」「证书与私钥只给一项在构造期拒」，服务端「要求校验却没有信任锚在构造期抛且点名那一项」。
+  证伪：把服务端那一刀 `SSL_CTX_set_verify` 摘掉（条件改成不可达）→「不给证书」那条立刻红在
+  「拿到了响应 + 计数 1」两处，正例与其余各条照绿。
+  门禁（同一份内容）：Windows Debug（MSVC `/W4 /WX` 加 ASan）全目标零告警、ctest 3215/3215；容器 GCC 13
+  Debug 加 ASan/LSan/UBSan 全目标零告警、ctest 3224/3224（真库用例按环境 SKIP）、零 sanitizer 命中。
+
 - **出站 HTTP/3 客户端（`Net::Http3ClientConnection`）**：h3 从此两个方向都走得通——此前只有服务端一侧
   （`QuicServer`/`Http3Session`），要拿本框架当 h3 客户端访问别人的服务就只能借外部实现。位置与 h2 侧的
   `Http2ClientConnection` 对应：在一条已握手的 `QuicClientConnection` 上开出三条本端单向流并把 SETTINGS

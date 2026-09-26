@@ -57,6 +57,13 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("QUIC 出站连接配置不合格：主机名为空，SNI 与证书校验目标都无处可取");
         }
+        // 客户端证书与私钥只能成对出现：只给一项的后果不是在启动时报「少一个参数」，而是到握手里
+        // 出示证书那一刻才发现没有可签名的私钥——失败点离成因隔了一整条握手
+        if (m_configuration.clientCertificateFile.empty() != m_configuration.clientPrivateKeyFile.empty())
+        {
+            throw Base::InvalidArgumentException("QUIC 出站连接配置不合格：客户端证书与私钥必须同时给或同时不给（证书=\"" + m_configuration.clientCertificateFile + "\"，私钥=\"" +
+                                                 m_configuration.clientPrivateKeyFile + "\"）");
+        }
     }
 
     QuicClientConnection::~QuicClientConnection()
@@ -88,6 +95,16 @@ namespace AsynGyanis::Net
         // （与 `HttpClient` 同一处调用，判据只在 `enableClientPeerVerification` 一处）。漏掉的形态是
         // 握手照成、证书照收，只是没人核对对端身份——用例 RejectsATrustedCertificateWhoseNameDoesNotMatch 钉它
         m_tlsContext->enableClientPeerVerification();
+
+        // 本端身份要在建连接之前装好：SSL_new 之后改证书等于给每条连接重配一次，而这里只有一个上下文
+        if (!m_configuration.clientCertificateFile.empty() && !m_tlsContext->loadCertificate(m_configuration.clientCertificateFile, m_configuration.clientPrivateKeyFile))
+        {
+            // 不抛：本函数的契约是「bool 交结果」，抛出会落进无人接住的协程里被丢弃（连接对象连同
+            // 已建好的套接字留在原地）。装不上身份是部署错误，日志要点名两个路径
+            LOG_ERROR_FMT("QuicClientConnection：客户端身份装不上，本次握手不发出证书（证书=\"%s\"，私钥=\"%s\"）", m_configuration.clientCertificateFile.c_str(),
+                          m_configuration.clientPrivateKeyFile.c_str());
+            co_return false;
+        }
 
         QuicConnection::Configuration connectionConfiguration;
         connectionConfiguration.tlsContext   = m_tlsContext->nativeHandle();

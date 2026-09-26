@@ -75,9 +75,27 @@ namespace AsynGyanis::Net
              *       后者才需要拒绝。
              * @note 版本区间由本层管到底：策略的**下限**低于 1.3 时这里钉回 1.3（只会更严，不算说谎），
              *       而把**上限**压到 1.3 以下是一条 QUIC 满足不了的配置，构造当场抛。
-             * @see Core::TlsPolicy
+             * @note `cipherList`（1.2 及以下的套件串）对本监听器恒不适用——QUIC 只跑 TLS 1.3。
+             *       其余那几项（`certificateAuthorityFile/Path`、`verifyDepth`、
+             *       `revocationListFile`/`revocationCoversWholeChain`）是否生效取决于下面的
+             *       `requireClientCertificates`：不开它，本服务端根本不会向对端要证书，那些字段装进
+             *       信任库也没人去查；开了它们才真的参与校验（吊销检查同样只在这条开着时对客户端链生效）。
+             *       被原样带上而不报错，是因为同一份策略多半还要交给 `HttpsServer` 或出站客户端用，
+             *       在那两侧它们本就生效。
+             * @see Core::TlsPolicy、requireClientCertificates
              */
-            Core::TlsPolicy           tlsPolicy;
+            Core::TlsPolicy tlsPolicy;
+            /**
+             * @brief 是否要求并校验客户端证书（双向 TLS / mTLS）
+             *
+             * @details 与 `HttpsServer::setClientCertificateRequired()` 同一档能力，只是这里在构造期一次
+             *          定：h3 的连接由数据报路由而来，没有「先监听再改配置」的中间态，改校验模式只能整台换。
+             * @note 为真时 `tlsPolicy.certificateAuthorityFile` 或 `certificateAuthorityPath` **至少要给一项**，
+             *       否则构造当场抛——「要求校验却没有信任锚」在握手里的形态是每条连接都失败，与其留一条
+             *       永远握不成的监听器，不如在启动时就点名。与 HTTPS 侧同一判据（那边是拒绝启用而非静默放行）。
+             * @note 开启后对端不出示证书即被拒（`SSL_VERIFY_FAIL_IF_NO_PEER_CERT`），不退化成「可选校验」。
+             */
+            bool                      requireClientCertificates{false};
             std::size_t               maximumConnections{1024};  ///< 同时在线连接上限
             std::chrono::seconds      idleTimeout{30};           ///< 空闲超时：超过即由传输层收口
             std::string               applicationProtocol{"h3"}; ///< 必须协商出的 ALPN；不是它就拒绝握手

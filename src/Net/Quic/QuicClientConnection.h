@@ -61,11 +61,17 @@ namespace AsynGyanis::Net
          */
         struct Configuration
         {
-            std::string               hostName{};                                        ///< 服务端的规范主机名：SNI 与证书里的校验目标，必填
-            std::vector<std::string>  applicationProtocolIdentifiers{std::string{"h3"}}; ///< 要提供的 ALPN，按优先级排列
-            Core::TlsPolicy           tlsPolicy{};                                       ///< TLS 策略：信任库/吊销名单/版本区间等，出站侧校验恒开
-            std::chrono::milliseconds handshakeTimeout{5000};                            ///< 握手时限，到点直接收场（对端不说话时靠它）
-            std::chrono::milliseconds idleTimeout{30000};                                ///< 空闲超时，同时是本端宣告的 max_idle_timeout
+            std::string              hostName{};                                        ///< 服务端的规范主机名：SNI 与证书里的校验目标，必填
+            std::vector<std::string> applicationProtocolIdentifiers{std::string{"h3"}}; ///< 要提供的 ALPN，按优先级排列
+            /// 本端要出示的客户端证书（PEM）与配套私钥，双向 TLS 的客户端一侧。**两项必须同时给或
+            /// 同时不给**，只给一项在构造期就抛：那种配置在握手里的形态是「服务端要证书而我们给得出
+            /// 证书、给不出签名」，失败点离成因很远。留空即不提客户端证书——服务端要求时握手会被拒，
+            /// 那正是服务端的意图，本端不替调用方猜要不要身份
+            std::string               clientCertificateFile{};
+            std::string               clientPrivateKeyFile{}; ///< 与上面那张证书配套的私钥（PEM）
+            Core::TlsPolicy           tlsPolicy{};            ///< TLS 策略：信任库/吊销名单/版本区间等，出站侧校验恒开
+            std::chrono::milliseconds handshakeTimeout{5000}; ///< 握手时限，到点直接收场（对端不说话时靠它）
+            std::chrono::milliseconds idleTimeout{30000};     ///< 空闲超时，同时是本端宣告的 max_idle_timeout
         };
 
         /**
