@@ -17,6 +17,40 @@
 
 ### 新增
 
+- **QUIC 出站连接（`Net::QuicClientConnection`）**：自研传输层从此两个角色都走得通——之前只有服务端一侧
+  （`QuicServer`/`QuicConnection::accept`），出站方向要连别人的 QUIC 服务就只能借外部实现。
+  `QuicConnectionCore` 与流层按 `QuicConnectionRole` 角色化，落差的那一小撮判据集中在六处：Initial 密钥的
+  收发方向、TLS 侧以谁的身份建、传输参数里 `original_destination_connection_id` 该不该出现（服务端必填、
+  客户端只在接住 Retry 之后才允许，本实现不做 Retry 故必须不写）、§7.3 绑定校验查哪一边、
+  HANDSHAKE_DONE 的收发方向（服务端收到即 PROTOCOL_VIOLATION，客户端收到是 §4.1.2 的确认信号之一）、
+  以及只约束服务端的那两条（§8.1 反放大上限与地址验证）。客户端另加三条自己的义务：§7.2 的「把回包目的标识
+  换成服务端自报的源标识」（只跟一次、只跟长头）、§14.1 的「握手期 Initial 补到 1200 字节」、
+  流号低位翻转（本端发起的双向流 0x00/0x04……、单向 0x02/0x06……，`QuicStreamLayer` 里那条
+  「是不是本端发起」的判据因此从文件内自由函数变成带角色的成员——十来处共用它，同一个流号在两型眼里归属相反）。
+  外壳按**组合**而不是再抄一份：`QuicConnection::connect()` 与 `accept()` 同形（本端签发与对端标识都自己造），
+  收发/flush/恢复层定时那一套两型共用。出站 TLS 用 `Core::TlsContext(policy, Role::Client)` 的现成上下文，
+  每连接的 SNI、证书校验名与 ALPN 新增为 `QuicClientTlsSettings`（三项都硬要求，落不上去当场抛而不是静默跳过）。
+  `Core::AsyncUdpSocket` 补了 `close()`——顺序仍是「先销毁注册对象（它唤醒挂在上面的协程）再关描述符」，
+  握手时限（`Core::DeadlineGuard`）靠这条才掐得断。
+  用例：`QuicClientConnection` 4 条（与自家服务端做完握手并谈定 h3、证书链可信但名字不符要被拒、
+  对端完全不说话时按握手时限收场且耗时落在上下界内、主机名为空在构造期就拒）；
+  `QuicConnectionCore.PadsClientInitialDatagramsAndIgnoresTheAmplificationLimit` 钉补足与反放大豁免。
+  **跨实现裁判换成外部工具**（这一轮的验收主力，`scripts/quic_outbound_cross_check.sh` + 同名 .py 与
+  `tests/Tools/QuicProbeClient.cpp`）：对端是 aioquic 起的 QUIC 服务端，按它自己的解析器回显流数据，
+  两边各打事实行、缺一行即 FAIL。两个场景：ALPN 谈得拢（对端要报出握手 + 收满 27 字节，本端要报出回显逐字相同）、
+  ALPN 谈不拢（对端要报收到过报文却没报握手完成，本端要自评失败）。
+  证伪：不补足 Initial → 那条尺寸用例红；把反放大上限也套到客户端头上 → 尺寸用例与回环握手同时红；
+  客户端也把 ODCID 写进参数 → 回环握手红（自家服务端按 §7.3 拒了它）；**去掉 §7.2 的连接标识跟随 →
+  树内四条用例全绿、只有外部裁判红**（aioquic 不再认得我们的包，自家服务端却同时认得客户端自造的那个标识）。
+  这一条正是「按自家代码互测暴露不出来的缺陷」的实例，记在这里当作后续角色化改动的判据参照。
+  两条已知边界：作客户端**不能接住 Retry**（不实现，缓解只到「挑 8 字节以上的随机目的标识」），
+  以及本轮**没有把 h3 出站会话接上**——`HttpClient`/出站池要等下一轮的 `Http3ClientConnection`，
+  现在拿到的是传输层这一格：能握手、能验身份、能在流上双向送字节。
+  一处实现细节值得记：`enableClientPeerVerification()` 必须显式调（`Role::Client` 只摆形状、
+  真正把 `SSL_VERIFY_PEER` 打开的是这一句，与 `HttpClient` 同一处）——漏掉时的形态是握手照成、
+  证书照收、没人核对身份，本轮就是被那条名字不符的用例抓出来的。
+
+
 - **远端一句话就能触发的重复告警有了时间闸门**：新增 `Base/Log/LogThrottle.h`（`Base::LogThrottle` 与宏
   `ASYN_LOG_THROTTLED(间隔)`），并把 `TcpServer` 要求 PROXY 协议头时的那几条收口告警接上——开了
   `setProxyProtocolRequired()` 的端口上，每个不打头的连接原本都会留一条 WARN，而日志是同步落盘的。

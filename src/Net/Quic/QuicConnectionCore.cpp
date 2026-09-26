@@ -43,6 +43,14 @@ namespace AsynGyanis::Net
         constexpr std::size_t kQuicCryptoFrameHeaderByteLimit = 18;
 
         /**
+         * @brief 客户端握手期一条 Initial 数据报的最小净载荷（RFC 9000 §8.1「Minimum Initial Packet Size」）
+         * @details 与 §14.1 那个「端点收到的数据报小于 1200 字节即可丢弃」的门槛是同一个数：凑不够
+         *          就等于把自己的握手送给对端丢。数值恰与 `kQuicMaximumDatagramPayloadByteLength` 相同，
+         *          因此补足之后不会越过单数据报上限
+         */
+        constexpr std::size_t kQuicMinimumInitialDatagramByteLength = 1200;
+
+        /**
          * @brief 二进制安全的字符串转字节视图
          * @param text 内容可以是任意字节
          * @return std::span<const std::uint8_t> 指向原文的视图，空串也返回空视图而非空指针
@@ -233,7 +241,7 @@ namespace AsynGyanis::Net
 
     QuicConnectionCore::QuicConnectionCore(QuicConnectionCoreConfiguration configuration)
         : m_configuration(std::move(configuration)),
-          m_streams(m_configuration.transportParameters)
+          m_streams(m_configuration.transportParameters, m_configuration.role)
     {
         if (m_configuration.tlsContext == nullptr)
         {
@@ -243,29 +251,86 @@ namespace AsynGyanis::Net
         requireConnectionIdWithinLimit(m_configuration.peerConnectionId, "对端自报");
         requireConnectionIdWithinLimit(m_configuration.originalDestinationConnectionId, "客户端第一个 Initial 的目的");
 
-        // §7.3 要求服务端把「收到的原始目的标识」和「自己第一个 Initial 的源标识」都写进参数：
-        // 这两项由本类按配置补齐，调用方漏了也照样合法，免得每条连接都要手抄一遍再抄错
+        // §7.3 要求**服务端**把「收到的原始目的标识」和「自己第一个 Initial 的源标识」都写进参数：
+        // 这两项由本类按配置补齐，调用方漏了也照样合法，免得每条连接都要手抄一遍再抄错。
+        // 客户端一侧相反：原始目的标识只有在接住 Retry 之后才允许出现（本实现不做 Retry，故必须不写），
+        // 写了会被对端按非法参数收口
         QuicTransportParameters localParameters = m_configuration.transportParameters;
-        localParameters.originalDestinationConnectionId = m_configuration.originalDestinationConnectionId;
+        if (isLocalServer())
+        {
+            localParameters.originalDestinationConnectionId = m_configuration.originalDestinationConnectionId;
+        }
+        else
+        {
+            localParameters.originalDestinationConnectionId.reset();
+        }
         localParameters.initialSourceConnectionId = m_configuration.localConnectionId;
         std::string encodedParameters;
         appendQuicTransportParameters(encodedParameters, localParameters);
         m_configuration.transportParameters = std::move(localParameters);
 
-        m_tls = std::make_unique<QuicTlsContext>(*m_configuration.tlsContext, true, asBytes(encodedParameters));
+        m_tls = std::make_unique<QuicTlsContext>(*m_configuration.tlsContext, isLocalServer(), asBytes(encodedParameters),
+                                                 m_configuration.clientTlsSettings.has_value()
+                                                     ? &*m_configuration.clientTlsSettings
+                                                     : nullptr);
 
-        // Initial 密钥只由客户端第一个 Initial 的目的标识决定（RFC 9001 §5.2）：服务端在收到任何字节
-        // 之前就知道该用什么密钥解，这正是 Initial 不需要协商的原因
+        // Initial 密钥只由客户端第一个 Initial 的目的标识决定（RFC 9001 §5.2），两个方向各自的标签
+        // 由角色定：服务端读的是「客户端→服务端」那套，客户端反过来
+        const QuicPacketDirection inboundInitialDirection = isLocalServer()
+                                                                    ? QuicPacketDirection::ClientToServer
+                                                                    : QuicPacketDirection::ServerToClient;
+        const QuicPacketDirection outboundInitialDirection = isLocalServer()
+                                                                     ? QuicPacketDirection::ServerToClient
+                                                                     : QuicPacketDirection::ClientToServer;
         SpaceState &initialSpace = m_spaces[spaceIndex(PacketNumberSpace::Initial)];
         initialSpace.readKeys = deriveQuicInitialPacketKeys(m_configuration.originalDestinationConnectionId,
-                                                            QuicPacketDirection::ClientToServer);
+                                                            inboundInitialDirection);
         initialSpace.writeKeys = deriveQuicInitialPacketKeys(m_configuration.originalDestinationConnectionId,
-                                                             QuicPacketDirection::ServerToClient);
+                                                             outboundInitialDirection);
 
         // 建状态本身就是「收到了一份看起来属于本连接的报文」，因此这条连接的寿命从此刻起算，而不是
         // 从第一次解密成功起算：解不开的报文按 §10.1 不算活动，若截止时刻也只在解密成功后才亮，
         // 一个只发无法解密报文就消失的对端会让这条表项永远留在服务端的路由表里
         restartIdleTimer(Timestamp{});
+    }
+
+    bool QuicConnectionCore::isLocalServer() const noexcept
+    {
+        return m_configuration.role == QuicConnectionRole::Server;
+    }
+
+    bool QuicConnectionCore::isAmplificationLimited() const noexcept
+    {
+        // §8.1 那条上限是给「被陌生人打到地址上」的一方设的：客户端自己先出声，收到的字节可能一条
+        // 都还没有，照它算连第一个 Initial 都发不出去
+        return isLocalServer() && !m_isAddressValidated;
+    }
+
+    void QuicConnectionCore::followPeerConnectionId(const QuicPacketHeader &header)
+    {
+        if (isLocalServer() || m_hasAdoptedPeerConnectionId || !header.isLongHeader ||
+            header.sourceConnectionId.empty())
+        {
+            return;
+        }
+        // §7.2：客户端只允许把**长头**报文里的源标识拿来当后续发包的目的标识（短头没有那个字段）。
+        // 只跟第一次：服务端此后按 §5.1 可以换标识，跟错一次会把整条连接打成「对端认不出」
+        m_hasAdoptedPeerConnectionId = true;
+        m_configuration.peerConnectionId.assign(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
+    }
+
+    void QuicConnectionCore::confirmHandshake()
+    {
+        if (m_isHandshakeConfirmed)
+        {
+            return;
+        }
+        m_isHandshakeConfirmed = true;
+        const std::uint64_t peerMaximumDelayMilliseconds = m_peerParameters.has_value()
+                                                                ? m_peerParameters->maximumAcknowledgmentDelayMilliseconds
+                                                                : kQuicDefaultMaximumAcknowledgmentDelayMilliseconds;
+        m_recovery.onHandshakeConfirmed(std::chrono::duration_cast<QuicTime>(
+                std::chrono::milliseconds{peerMaximumDelayMilliseconds}));
     }
 
     std::expected<void, QuicDecodeError> QuicConnectionCore::onDatagramReceived(const std::span<const std::uint8_t> datagram,
@@ -419,6 +484,13 @@ namespace AsynGyanis::Net
             m_peerFirstInitialSourceConnectionId = std::vector<std::uint8_t>(header.sourceConnectionId.begin(),
                                                                             header.sourceConnectionId.end());
         }
+        followPeerConnectionId(header);
+        if (!isLocalServer() && *level == QuicEncryptionLevel::Application)
+        {
+            // §4.1.2 给客户端的那条判据：能解开一条 1-RTT 报文，说明服务端的 Finished 已被 TLS 验过
+            // （应用密钥就在那之后才导出），握手至此可算确认
+            confirmHandshake();
+        }
         // §10.1：「收到并处理成功」才算活动，解不开的包不能拿来续命。自发的那一份活动在下面
         // emitPacket 里按「收包之后第一次发触发确认的包」补上
         restartIdleTimer(arrivalTime);
@@ -510,9 +582,16 @@ namespace AsynGyanis::Net
                     }
                     else if constexpr (std::same_as<FrameType, QuicHandshakeDoneFrame>)
                     {
-                        // §19.20：只有服务端会发这一帧，而「服务端收到它」本身就写死了要按
-                        // PROTOCOL_VIOLATION 收口——本实现只有服务端一侧，不必再看它出现在哪个空间
-                        beginClose(kQuicProtocolViolation, "对端向服务端发了 HANDSHAKE_DONE（RFC 9000 §19.20）", arrivalTime);
+                        // §19.20：这一帧只有服务端会发。「服务端收到它」本身就写死了按 PROTOCOL_VIOLATION
+                        // 收口；作客户端时它是合法信号，且正好是 §4.1.2 给客户端的另一条「握手已确认」判据
+                        if (isLocalServer())
+                        {
+                            beginClose(kQuicProtocolViolation, "对端向服务端发了 HANDSHAKE_DONE（RFC 9000 §19.20）", arrivalTime);
+                        }
+                        else
+                        {
+                            confirmHandshake();
+                        }
                     }
                     // PADDING 与 PING 不需要动作：PING 的确认由触发确认的记账统一处理。
                     // DATA_BLOCKED 那三类只是对端的自述，本层不需要反应（§19.12–§19.14）。
@@ -569,14 +648,9 @@ namespace AsynGyanis::Net
 
         // §4.1.2：服务端「握手已确认」的判据就是对端确认了 Handshake 空间的包。确认之后才允许给
         // 进入用空间武装 PTO，也才该发 HANDSHAKE_DONE
-        if (!m_isHandshakeConfirmed && space == PacketNumberSpace::Handshake && !update.acknowledged.empty())
+        if (space == PacketNumberSpace::Handshake && !update.acknowledged.empty())
         {
-            m_isHandshakeConfirmed = true;
-            const std::uint64_t peerMaximumDelayMilliseconds = m_peerParameters.has_value()
-                                                                    ? m_peerParameters->maximumAcknowledgmentDelayMilliseconds
-                                                                    : kQuicDefaultMaximumAcknowledgmentDelayMilliseconds;
-            m_recovery.onHandshakeConfirmed(std::chrono::duration_cast<QuicTime>(
-                    std::chrono::milliseconds{peerMaximumDelayMilliseconds}));
+            confirmHandshake();
         }
         if (!update.lost.empty())
         {
@@ -646,7 +720,9 @@ namespace AsynGyanis::Net
             return;
         }
         const std::expected<QuicTransportParameters, QuicDecodeError> decoded =
-                decodeQuicTransportParameters(m_tls->peerTransportParameters(), QuicTransportParameterSenderRole::Client);
+                decodeQuicTransportParameters(m_tls->peerTransportParameters(),
+                                              isLocalServer() ? QuicTransportParameterSenderRole::Client
+                                                              : QuicTransportParameterSenderRole::Server);
         if (!decoded.has_value())
         {
             beginClose(kQuicTransportParameterError, std::format("对端传输参数不合格：{}", decoded.error().message), now);
@@ -659,6 +735,21 @@ namespace AsynGyanis::Net
             beginClose(kQuicTransportParameterError,
                        "对端的 initial_source_connection_id 与它第一个 Initial 里的源标识不符（RFC 9000 §7.3）", now);
             return;
+        }
+        if (!isLocalServer())
+        {
+            // §7.3 给客户端的那条：服务端必须把「客户端第一个 Initial 的目的标识」原样回传，
+            // 客户端拿它核对自己当初挑的那个值——不一致就说明中间有人换了连接标识，或这条连接不是
+            // 自己发起的那一条
+            if (!decoded->originalDestinationConnectionId.has_value() ||
+                !std::ranges::equal(*decoded->originalDestinationConnectionId,
+                                    m_configuration.originalDestinationConnectionId))
+            {
+                beginClose(kQuicTransportParameterError,
+                           "服务端的 original_destination_connection_id 与本端第一个 Initial 的目的标识不符（RFC 9000 §7.3）",
+                           now);
+                return;
+            }
         }
         m_peerParameters = *decoded;
         // 流层的发送额度全部来自对端参数：到手之前一条流数据也发不出去（§4.1）
@@ -770,9 +861,10 @@ namespace AsynGyanis::Net
         }
         // §19.20：握手完成、且对端确认过 Handshake 空间的包之后才发 HANDSHAKE_DONE，且它是 **1-RTT
         // 帧**（§19 表 3 的 Protection 列只有 1）——塞进 Handshake 空间的包会被对端按「该级别不该
-        // 出现这种帧」判 PROTOCOL_VIOLATION（aioquic 即如此）
-        bool owesHandshakeDone = space == PacketNumberSpace::Application && m_phase == QuicConnectionPhase::Established &&
-                                 m_isHandshakeConfirmed && isHandshakeDonePending();
+        // 出现这种帧」判 PROTOCOL_VIOLATION（aioquic 即如此）。这一帧也只归服务端发
+        bool owesHandshakeDone = isLocalServer() && space == PacketNumberSpace::Application &&
+                                 m_phase == QuicConnectionPhase::Established && m_isHandshakeConfirmed &&
+                                 isHandshakeDonePending();
         bool owesProbe = m_probeSpace.has_value() && *m_probeSpace == space;
         // 整轮探测都豁免窗口（§7.5）：欠的那一条可能分两包出去，只豁免第一包等于把后半段卡在门外
         const bool isProbingSpace = owesProbe;
@@ -934,6 +1026,19 @@ namespace AsynGyanis::Net
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = state.nextPacketNumber;
+        // 客户端握手期的 Initial 要按 §14.1 补到最小尺寸：补的是 PADDING 帧（0x00 一字节一帧），
+        // 落在受保护载荷里，所以长度要等包头与标签都算得出来之后才知道差多少
+        std::string minimumSizeFrameAssembly;
+        if (!isLocalServer() && space == PacketNumberSpace::Initial)
+        {
+            const std::size_t projectedByteLength = packetOverheadByteLength(m_configuration, true)
+                                                    - kQuicCryptoFrameHeaderByteLimit + frames.size();
+            if (projectedByteLength < kQuicMinimumInitialDatagramByteLength)
+            {
+                minimumSizeFrameAssembly = frames;
+                minimumSizeFrameAssembly.append(kQuicMinimumInitialDatagramByteLength - projectedByteLength, '\0');
+            }
+        }
         QuicOutboundPacket packet;
         packet.isLongHeader = space != PacketNumberSpace::Application;
         packet.longPacketType = space == PacketNumberSpace::Handshake ? QuicLongPacketType::Handshake : QuicLongPacketType::Initial;
@@ -943,7 +1048,7 @@ namespace AsynGyanis::Net
         packet.packetNumber = packetNumber;
         packet.packetNumberByteCount = 1;
         packet.isKeyPhaseBitSet = m_isSendKeyPhaseSet;
-        packet.frames = asBytes(frames);
+        packet.frames = minimumSizeFrameAssembly.empty() ? asBytes(frames) : asBytes(minimumSizeFrameAssembly);
 
         std::string datagram;
         appendQuicPacket(datagram, packet, *state.writeKeys);
@@ -986,7 +1091,7 @@ namespace AsynGyanis::Net
             // 窗口余量也得先减掉这一包的固定开销，否则算出来的分片一定超窗
             budget = std::min(budget, saturatingSubtract(m_congestion.remainingByteBudget(), reservedByteLength));
         }
-        if (!m_isAddressValidated)
+        if (isAmplificationLimited())
         {
             // §8.1：地址验证之前最多回三倍已收字节。这条排在最后，因为它是硬上限，探针也不例外
             budget = std::min(budget, saturatingSubtract(amplificationRemainingByteCount(), reservedByteLength));
@@ -996,7 +1101,7 @@ namespace AsynGyanis::Net
 
     bool QuicConnectionCore::isBlockedByAmplificationLimit(const std::size_t reservedByteLength) const noexcept
     {
-        return !m_isAddressValidated && reservedByteLength > amplificationRemainingByteCount();
+        return isAmplificationLimited() && reservedByteLength > amplificationRemainingByteCount();
     }
 
     std::size_t QuicConnectionCore::amplificationRemainingByteCount() const noexcept

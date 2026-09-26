@@ -10,10 +10,11 @@
  *          解报头 → 去头部保护 → 还原包号 → AEAD 解密 → 解帧 → 按级别喂 TLS → 取 TLS 产出编成 CRYPTO
  *          帧 → 组包发出。时间戳一律由调用方注入，因此整条链可以在单测里逐字节复现，不需要真实网络。
  *
- * @note 能力范围：服务端握手、1-RTT 的流与流量控制、1-RTT 密钥更新，以及恢复层的发包记账、RTT、
- *       判丢、探测超时、按偏移重发、拥塞窗口许可与 Initial 空间的退休。
+ * @note 能力范围：两个角色各自的握手、1-RTT 的流与流量控制、1-RTT 密钥更新，以及恢复层的发包记账、
+ *       RTT、判丢、探测超时、按偏移重发、拥塞窗口许可与 Initial 空间的退休。
  *       刻意不做：0-RTT、RETRY、版本协商、连接迁移与本端签发额外连接标识——收到对应的报文按各自
- *       章节丢弃或忽略。
+ *       章节丢弃或忽略。作客户端时因此**不能接住服务端下发的 Retry**：挑一个 8 字节以上的随机目的标识
+ *       （§7.3 建议的最小长度）是当前唯一的缓解，真要互操作到开了 Retry 的服务端，得先补这一路。
  * @warning 不是线程安全的：一个实例属于一条连接，只能在所属事件循环线程上驱动。
  */
 
@@ -26,6 +27,7 @@
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 #include "Net/Quic/Recovery/QuicCongestionControl.h"
+#include "Net/Quic/QuicConnectionRole.h"
 #include "Net/Quic/QuicReassemblyBuffer.h"
 #include "Net/Quic/QuicReceivedPacketNumbers.h"
 #include "Net/Quic/Recovery/QuicRecovery.h"
@@ -57,24 +59,28 @@ namespace AsynGyanis::Net
      * @brief 建连接状态机需要的全部外部值
      *
      * @details 三条连接标识各自独立：本端签发的、回包要打的、以及客户端第一个 Initial 里那个目的标识
-     *          （它决定 Initial 密钥，也必须经传输参数回传给对端，RFC 9000 §7.3）。
+     *          （它决定 Initial 密钥，服务端必须经传输参数把它回传给对端，RFC 9000 §7.3）。
+     *          作客户端时「客户端第一个 Initial 的目的标识」就是本端自己挑的那个值，且一开始也是
+     *          `peerConnectionId`；收到服务端自报的源标识后，本类会按 §7.2 把 `peerConnectionId` 换过去。
      * @note 各 vector 都拷进本对象，构造完成后调用方即可销毁源容器。
      */
     struct QuicConnectionCoreConfiguration
     {
+        QuicConnectionRole role{QuicConnectionRole::Server};                  ///< 本端角色；缺省值与既有服务端调用点一致
         SSL_CTX *tlsContext{nullptr};                                      ///< 已配好证书与 ALPN 的 TLS 上下文，生命周期须覆盖本对象
         std::vector<std::uint8_t> localConnectionId{};                     ///< 本端签发的源连接标识：短头按它定长度，路由表也认它
         std::vector<std::uint8_t> peerConnectionId{};                      ///< 回包的目的连接标识：对端自报的源标识（§7.2）
         std::vector<std::uint8_t> originalDestinationConnectionId{};       ///< 客户端第一个 Initial 的目的标识，Initial 密钥由它推导
         QuicTransportParameters transportParameters{};                     ///< 本端要声明的传输参数；两个必填的连接标识项由本类按上面三个值补齐
+        std::optional<QuicClientTlsSettings> clientTlsSettings{};          ///< 作客户端时按连接生效的身份（SNI、校验名、ALPN）；服务端一侧留空
     };
 
     /**
-     * @brief 一条连接的服务端传输状态机
+     * @brief 一条连接的传输状态机（两个角色共用，判据见 `QuicConnectionRole`）
      *
      * @details 输入只有 `onDatagramReceived`，输出只有 `takeOutboundDatagram`：本类不持有 socket，也不
-     *          自己决定何时发包，由外层（现在的 `QuicConnection` 外壳或单测）喂完包调 `drive`、再把待发
-     *          队列抽干。
+     *          自己决定何时发包，由外层（服务端一侧的 `QuicConnection` 外壳、客户端一侧的
+     *          `QuicClientConnection`，或单测）喂完包调 `drive`、再把待发队列抽干。
      *
      * @note 包号分三个空间各算各的（Initial / Handshake / Application）：一个数据报里混放不同级别的
      *       报文是合法写法（§12.2 合包），跨空间的包号互相看不见。
@@ -265,6 +271,31 @@ namespace AsynGyanis::Net
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicEncryptionLevel level) noexcept;
         [[nodiscard]] static std::size_t spaceIndex(QuicEncryptionLevel level) noexcept;
         [[nodiscard]] static std::size_t spaceIndex(PacketNumberSpace space) noexcept;
+
+        /// 本端是不是服务端：那几条只约束服务端的规则（反放大、HANDSHAKE_DONE 的方向、参数绑定）都问它
+        [[nodiscard]] bool isLocalServer() const noexcept;
+        /**
+         * @brief 本次出包是否受 §8.1 的反放大上限约束
+         * @details 只有「服务端 + 地址还没验证」这一种组合受。作客户端时本端就是主动出声的一方，
+         *          收到的字节可能一条都没有，按那条上限算会连第一个 Initial 都发不出去
+         * @return true 发包额度要先被 3 倍已收字节压一道
+         */
+        [[nodiscard]] bool isAmplificationLimited() const noexcept;
+        /**
+         * @brief 客户端按 §7.2 把回包的目的标识换成服务端自报的源标识
+         * @details 只跟一次：服务端第一个长头报文里的源标识就是它此后认的那个值。本端的 `Initial`
+         *          密钥不受影响（那由 §5.2 的原始目的标识定，与这里换掉的值无关）
+         * @param header 刚认证通过的报文头
+         */
+        void followPeerConnectionId(const QuicPacketHeader &header);
+
+        /**
+         * @brief 把「握手已确认」记下来并武装恢复层（RFC 9001 §4.1.2）
+         * @details 两型各有一条成立路径，都收在这个入口里：服务端看对端确认过 Handshake 空间的包，
+         *          客户端看自己解开了第一条 1-RTT 报文（那之前拿不到应用密钥，也就解不开）或收到
+         *          HANDSHAKE_DONE。重复调用无副作用
+         */
+        void confirmHandshake();
         [[nodiscard]] static QuicRecoverySpace recoverySpaceOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicRecoverySpace space) noexcept;
 
@@ -381,6 +412,7 @@ namespace AsynGyanis::Net
         bool m_isHandshakeDoneInFlight{false};     ///< 有一份 HANDSHAKE_DONE 还在途：确认或判丢之前不重复发
         bool m_isHandshakeConfirmed{false};                          ///< 对端确认过 Handshake 空间的包，§4.1.2 的「握手已确认」
         bool m_isAddressValidated{false};                            ///< 收到过能解开的 Handshake 及以上级别的包，§8.1 的反放大上限到此为止
+        bool m_hasAdoptedPeerConnectionId{false};              ///< 客户端已把回包目的标识换成服务端自报的那个（§7.2），此后不再跟
         std::optional<PacketNumberSpace> m_probeSpace{};             ///< 探测超时到期后欠一条触发确认的包，出包时补上
         std::optional<Timestamp> m_idleDeadline{};                    ///< 空闲超时的截止时刻，只在「活动」发生时重算
         std::optional<Timestamp> m_idlePeriod{};                      ///< 本期空闲额度，收包那一刻定下；主动发包的续期沿用它

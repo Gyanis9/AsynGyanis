@@ -41,16 +41,6 @@ namespace AsynGyanis::Net
         constexpr std::size_t kQuicStreamFrameTypeByteLength = 1;
 
         /**
-         * @brief 这条流是不是本端发起的（服务端即低位为 1 的那两档）
-         * @param streamId 流号
-         * @return true 本端发起
-         */
-        bool isLocallyInitiated(const std::uint64_t streamId) noexcept
-        {
-            return (streamId & kStreamInitiatorBitMask) != 0;
-        }
-
-        /**
          * @brief 这条流是不是单向的
          * @param streamId 流号
          * @return true 单向
@@ -158,12 +148,23 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    QuicStreamLayer::QuicStreamLayer(const QuicTransportParameters &localParameters)
+    QuicStreamLayer::QuicStreamLayer(const QuicTransportParameters &localParameters, const QuicConnectionRole role)
         : m_localParameters(localParameters),
           m_connectionAdvertisedLimit(localParameters.initialMaximumData),
           m_advertisedBidirectionalStreams(localParameters.initialMaximumBidirectionalStreams),
-          m_advertisedUnidirectionalStreams(localParameters.initialMaximumUnidirectionalStreams)
+          m_advertisedUnidirectionalStreams(localParameters.initialMaximumUnidirectionalStreams),
+          m_isLocalServer(role == QuicConnectionRole::Server),
+          // §2.1 的流号低位：本端发起的双向流服务端 0x01、客户端 0x00，单向流服务端 0x03、客户端 0x02
+          m_nextBidirectionalStreamId(m_isLocalServer ? 0x01 : 0x00),
+          m_nextUnidirectionalStreamId(m_isLocalServer ? 0x03 : 0x02)
     {
+    }
+
+    bool QuicStreamLayer::isLocallyInitiated(const std::uint64_t streamId) const noexcept
+    {
+        // 服务端发起的那两档低位是 1，客户端发起的那两档是 0（§2.1 表「Client-Initiated」）
+        const std::uint64_t localInitiatorBit = m_isLocalServer ? 1U : 0U;
+        return (streamId & kStreamInitiatorBitMask) == localInitiatorBit;
     }
 
     void QuicStreamLayer::adoptPeerParameters(const QuicTransportParameters &peerParameters)
@@ -584,7 +585,19 @@ namespace AsynGyanis::Net
             return std::nullopt;
         }
         m_nextUnidirectionalStreamId += kStreamIdStride;
-        // 条目当场建好：这条流的额度与后续写入都记在它身上
+        // 条目当场建好：这条流的额度与后续写入都记在它上面
+        static_cast<void>(outgoingStream(streamId));
+        return streamId;
+    }
+
+    std::optional<std::uint64_t> QuicStreamLayer::openBidirectionalStream()
+    {
+        const std::uint64_t streamId = m_nextBidirectionalStreamId;
+        if (streamIndexOfType(streamId) >= m_outgoingBidirectionalLimit)
+        {
+            return std::nullopt;
+        }
+        m_nextBidirectionalStreamId += kStreamIdStride;
         static_cast<void>(outgoingStream(streamId));
         return streamId;
     }

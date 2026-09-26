@@ -38,6 +38,9 @@ namespace AsynGyanis::Net
 {
     class QuicConnectionCore;
 
+    /// 出站连接的身份设置（SNI、校验名、ALPN），定义在 `Crypto/QuicTlsContext.h`；这里只按引用交出去
+    struct QuicClientTlsSettings;
+
     /**
      * @brief 一条 QUIC 连接的外壳
      *
@@ -99,6 +102,24 @@ namespace AsynGyanis::Net
                                                                     const Platform::SocketAddress &peerAddress,
                                                                     std::span<const std::uint8_t> clientInitial);
 
+        /**
+         * @brief 作客户端起一条新连接
+         * @details 与 `accept` 相对的那一半：本端先出声。两条随机连接标识都在这里造好——本端签发的源标识
+         *          仍是 `kSourceConnectionIdLength` 字节（短头不携带长度字段，收包侧要靠它定长），
+         *          第一个 Initial 的目的标识由本端自造（RFC 9000 §7.2 建议至少 8 字节以免撞车），
+         *          Initial 的密钥与参数里的 ODCID 都由它算出。
+         * @param configuration 连接配置（`tlsContext` 须是**客户端**角色、且已装好信任锚的上下文）
+         * @param localAddress 本端地址（随发的数据报由 socket 决定实际源地址，这里只作日志与后续路由用）
+         * @param peerAddress 服务端地址
+         * @param clientTlsSettings 这条连接的身份设置：SNI、证书校验名与要提供的 ALPN 列表
+         * @return std::unique_ptr<QuicConnection> 起不来时返回空（配置不完整、随机数不可用、TLS 会话建不起来）；
+         *         成功只表示状态机已就绪，**还没发出任何字节**——调用方随后调 `drive`/`flush` 才开始握手
+         */
+        [[nodiscard]] static std::unique_ptr<QuicConnection> connect(const Configuration &configuration,
+                                                                     const Platform::SocketAddress &localAddress,
+                                                                     const Platform::SocketAddress &peerAddress,
+                                                                     const QuicClientTlsSettings &clientTlsSettings);
+
         ~QuicConnection();
 
         QuicConnection(const QuicConnection &) = delete;
@@ -116,6 +137,15 @@ namespace AsynGyanis::Net
          * @return std::int64_t 新流号；连接已收口或对端的单向流额度用尽时为 -1
          */
         [[nodiscard]] std::int64_t openUnidirectionalStream();
+
+        /**
+         * @brief 开一条本端发起的**双向**流并返回流号
+         * @details 出站 HTTP/3 一条请求一条双向流（RFC 9000 §1.3），这条路只有作客户端时才用得到：
+         *          服务端一侧的请求流都是对端发起的。额度来自对端参数的 `initial_max_streams_bidi`，
+         *          参数还没到手之前一条也开不出来（§4.6）
+         * @return std::int64_t 新流号；连接已收口、对端参数未到或双向流额度用尽时为 -1
+         */
+        [[nodiscard]] std::int64_t openBidirectionalStream();
 
         /**
          * @brief 归还接收额度：把应用已经消费掉的字节数写回流量控制窗口
@@ -159,6 +189,20 @@ namespace AsynGyanis::Net
          * @return true 已收口，服务端应把它摘出路由表
          */
         [[nodiscard]] bool isClosed() const noexcept;
+
+        /**
+         * @brief 握手是否已完成（1-RTT 密钥就位、对端身份已验）
+         * @details 出站侧要靠它判断 `connect()` 能不能收场：状态机进入 Established 之后才能开流发数据。
+         *          作服务端时这一判据由 `logHandshakeCompletionOnce()` 用同一处取值记日志，两型同源
+         * @return true 已完成；连接已收口或还在握手中时为 false
+         */
+        [[nodiscard]] bool isHandshakeComplete() const noexcept;
+
+        /**
+         * @brief 协商出的 ALPN 协议名，握手完成前为空
+         * @return std::string_view 出站侧要靠它确认对端真的愿意说 h3，而不是握手通了却谈错协议
+         */
+        [[nodiscard]] std::string_view selectedApplicationProtocol() const noexcept;
 
         /**
          * @brief 「有协程正拿着本连接」的记账守卫

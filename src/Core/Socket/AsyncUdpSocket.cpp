@@ -175,4 +175,12 @@ namespace AsynGyanis::Core
             throw Base::SystemException("数据报发送失败：" + Platform::PlatformError::message(errorCode));
         }
     }
+
+    void AsyncUdpSocket::close() noexcept
+    {
+        // 顺序不能反：销毁注册对象会把仍挂在上面的等待协程唤醒（等到的结果是「注册已失效」），
+        // 而关掉描述符本身不会让 epoll/IOCP 的等待者醒来
+        m_watcher.reset();
+        m_socket.close();
+    }
 } // namespace AsynGyanis::Core

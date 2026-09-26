@@ -9,3 +9,10 @@ add_executable(quic_probe_server
         QuicProbeServer.cpp)
 
 target_link_libraries(quic_probe_server PRIVATE Net Core Base Platform)
+
+# QUIC 出站跨实现校验探针的被测端：把 QuicClientConnection 的传输行为打成 stdout 事件行，
+# 由 scripts/quic_outbound_cross_check.py（aioquic 起服务端）与同名 .sh 消费
+add_executable(quic_probe_client
+        QuicProbeClient.cpp)
+
+target_link_libraries(quic_probe_client PRIVATE Net Core Base Platform)

@@ -102,6 +102,16 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] Task<ssize_t> asyncSendTo(Platform::SocketAddress peerAddress, const void *buffer, std::size_t length);
 
+        /**
+         * @brief 关闭套接字
+         * @details 顺序与 `AsyncSocket::close()` 同理：**先**销毁注册对象——它会唤醒仍挂在可读/可写上的
+         *          等待协程（关描述符本身不唤醒 epoll 的等待者），**再**关描述符。少了前一步，
+         *          正在等的协程就永远醒不过来，出站侧的看门狗于是形同虚设。
+         * @note 幂等：已关闭或描述符已被移动走时什么都不做
+         * @warning 只能在所属事件循环线程上调用（与等待同一线程的约定）
+         */
+        void close() noexcept;
+
     private:
         /**
          * @brief 首次等待时才建立 IoWatcher

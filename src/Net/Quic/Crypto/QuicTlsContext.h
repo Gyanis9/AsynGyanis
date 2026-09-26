@@ -26,6 +26,7 @@
 #include <deque>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -69,6 +70,18 @@ namespace AsynGyanis::Net
     };
 
     /**
+     * @brief 作客户端时要落到每连接会话上的那三样身份设置
+     *
+     * @details 都是**按连接**而非按上下文生效的：一个上下文要服务多个主机的出站连接，SNI、校验名与
+     *          ALPN 列表逐条连接才可能不同。服务端一侧留空即可（那些值是listen侧配置的 ALPN 回调给的）。
+     */
+    struct QuicClientTlsSettings
+    {
+        std::string hostName{};                            ///< 服务端的规范主机名：同时用作 SNI 与证书里的校验目标
+        std::vector<std::string> applicationProtocolIdentifiers{}; ///< 本端能说的应用层协议，按优先级排列（如 {"h3"}）
+    };
+
+    /**
      * @brief 一条连接的 TLS 上下文
      *
      * @details 持有每连接的 `SSL`，实现 OpenSSL 的六个 QUIC TLS 回调：产出握手数据、取回入站数据、
@@ -83,16 +96,19 @@ namespace AsynGyanis::Net
     public:
         /**
          * @brief 建立每连接的 TLS 上下文
-         * @details 服务端走 accept 态、客户端走 connect 态，两侧都挂同一张回调表：客户端只用于测试与
-         *          将来的主动连接，服务端才是本项目的生产路径。
+         * @details 服务端走 accept 态、客户端走 connect 态，两侧都挂同一张回调表。
          * @param tlsContext 已配好证书与 ALPN 的上下文（生命周期必须覆盖本对象）
          * @param isServerSide true 为服务端
          * @param localTransportParameters 已按 RFC 9000 §18 编码的本端参数；交空即不设参数（握手会因缺
          *        `initial_source_connection_id` 等必填项被对端判错）。**本类会复制一份**：OpenSSL 的
          *        `SSL_set_quic_tls_transport_params` 只记指针不拷内容，所以交临时缓冲进来也不会悬空
-         * @throws Base::Exception 运行期故障：建会话失败、挂回调失败或 OpenSSL 拒绝了参数
+         * @param clientSettings 作客户端时的身份设置（SNI、证书校验名、ALPN）；服务端一侧交空指针即可。
+         *        只在这次构造里读，不留指针
+         * @throws Base::Exception 运行期故障：建会话失败、挂回调失败、OpenSSL 拒绝了参数，
+         *         或客户端身份设置落不上去（SNI/校验名/ALPN 三项都是硬要求，缺一项握手就该失败而不是静默降级）
          */
-        QuicTlsContext(SSL_CTX &tlsContext, bool isServerSide, std::span<const std::uint8_t> localTransportParameters);
+        QuicTlsContext(SSL_CTX &tlsContext, bool isServerSide, std::span<const std::uint8_t> localTransportParameters,
+                       const QuicClientTlsSettings *clientSettings = nullptr);
 
         /**
          * @brief 释放 TLS 会话

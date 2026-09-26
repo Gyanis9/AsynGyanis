@@ -1,18 +1,70 @@
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Quic/Crypto/QuicKeySchedule.h"
 #include "Net/Quic/QuicOpenSslError.h"
 
 #include <openssl/core_dispatch.h>
 #include <openssl/obj_mac.h>
 
+#include <cstdint>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
     namespace
     {
+        /**
+         * @brief 把出站连接的三项身份落到这条会话上：SNI、证书里的校验名、ALPN
+         * @details 三项都是**硬要求**而不是可调项：少了 SNI，前面坐着 SNI 路由的服务端只会给出默认证书；
+         *          少了校验名，OpenSSL 只按名字表里的 CN/SAN 做默认比对，主机名拼错也就没人管。
+         *          落不上去时当场抛，不静默跳过——一条「看起来握手成功、其实没验身份」的连接比握手失败更危险。
+         * @param session 已建好、尚未挂回调的会话
+         * @param settings 客户端身份设置
+         * @throws Base::InvalidArgumentException 用法错误：主机名为空，或某个协议标识长度不合法
+         * @throws Base::Exception 运行期故障：OpenSSL 拒了这三项里的任何一项
+         */
+        void applyClientTlsSettings(SSL &session, const QuicClientTlsSettings &settings)
+        {
+            if (settings.hostName.empty())
+            {
+                throw Base::InvalidArgumentException("QUIC 出站连接建立失败：客户端身份设置里主机名为空，"
+                                                     "SNI 与证书校验名都无处可取");
+            }
+            if (SSL_set_tlsext_host_name(&session, settings.hostName.c_str()) != 1)
+            {
+                throw Base::Exception("QUIC 出站连接建立失败：SNI 落不上去（" + quicOpenSslErrorText() + "）");
+            }
+            if (SSL_set1_host(&session, settings.hostName.c_str()) != 1)
+            {
+                throw Base::Exception("QUIC 出站连接建立失败：证书校验名落不上去（" + quicOpenSslErrorText() + "）");
+            }
+            if (settings.applicationProtocolIdentifiers.empty())
+            {
+                return;
+            }
+            // ALPN 的线格式是「长度 + 字节」逐条串起来，OpenSSL 不替你算这个前缀
+            std::vector<unsigned char> encodedIdentifiers;
+            for (const std::string &identifier: settings.applicationProtocolIdentifiers)
+            {
+                if (identifier.empty() || identifier.size() > 255U)
+                {
+                    throw Base::InvalidArgumentException("QUIC 出站连接建立失败：ALPN 协议标识 \"" + identifier
+                                                         + "\" 长度不合法（须在 1..255 字节之间）");
+                }
+                encodedIdentifiers.push_back(static_cast<unsigned char>(identifier.size()));
+                encodedIdentifiers.insert(encodedIdentifiers.end(), identifier.begin(), identifier.end());
+            }
+            // 注意这条的返回值是**反的**：0 才是成功（与 SSL_CTX_set_alpn_protos 同一口径）
+            if (SSL_set_alpn_protos(&session, encodedIdentifiers.data(),
+                                    static_cast<unsigned int>(encodedIdentifiers.size())) != 0)
+            {
+                throw Base::Exception("QUIC 出站连接建立失败：ALPN 列表落不上去（" + quicOpenSslErrorText() + "）");
+            }
+        }
         /**
          * @brief 把 OpenSSL 的保护级别换成自家的加密级别
          * @param protectionLevel OSSL_RECORD_PROTECTION_LEVEL_* 之一
@@ -76,7 +128,8 @@ namespace AsynGyanis::Net
     }
 
     QuicTlsContext::QuicTlsContext(SSL_CTX &tlsContext, const bool isServerSide,
-                                   const std::span<const std::uint8_t> localTransportParameters)
+                                   const std::span<const std::uint8_t> localTransportParameters,
+                                   const QuicClientTlsSettings *clientSettings)
     {
         // 全程用局部指针，成功到底才交给成员：任何一步抛出去都不存在「构造失败但析构又来放一次」的会话
         SSL *const session = SSL_new(&tlsContext);
@@ -91,6 +144,19 @@ namespace AsynGyanis::Net
         else
         {
             SSL_set_connect_state(session);
+        }
+
+        if (clientSettings != nullptr)
+        {
+            try
+            {
+                applyClientTlsSettings(*session, *clientSettings);
+            }
+            catch (...)
+            {
+                SSL_free(session);
+                throw;
+            }
         }
 
         if (SSL_set_quic_tls_cbs(session, dispatchTable(), this) != 1)

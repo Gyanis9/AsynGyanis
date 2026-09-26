@@ -1279,9 +1279,39 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 作客户端时，第一个 Initial 要补到最小数据报尺寸，且不受反放大上限约束
+     * @details 两件事在同一条判据里：§8.1 那条「最多回三倍已收字节」的上限是给服务端设的，客户端一条
+     *          字节都还没收到就要出声，照它算连第一个包都发不出去；§14.1 又要求客户端把握手期的
+     *          Initial 补到 1200 字节，否则服务端可以整条丢掉。两个方向各撤一次都能让本条变红：
+     *          把上限也套到客户端头上 → 产不出任何数据报；去掉补足 → 产出不足 1200 字节的一条。
+     */
+    TEST(QuicConnectionCore, PadsClientInitialDatagramsAndIgnoresTheAmplificationLimit)
+    {
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(clientContext.get(), nullptr) << "夹具证书加载失败";
+
+        // 与服务端配置只差角色与两条连接标识：这里要的就是「同一个客户端挑的目的标识」这一份输入
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*clientContext.get());
+        configuration.role = QuicConnectionRole::Client;
+        configuration.peerConnectionId = kOriginalDestinationConnectionId;
+        configuration.originalDestinationConnectionId = kOriginalDestinationConnectionId;
+
+        QuicConnectionCore core(configuration);
+        core.drive(Timestamp{0});
+        const std::vector<std::vector<std::uint8_t>> produced = drain(core);
+        ASSERT_FALSE(produced.empty()) << "一条字节都没收到就被反放大上限挡住了：客户端永远起不了握手";
+        for (const std::vector<std::uint8_t> &datagram: produced)
+        {
+            EXPECT_EQ(datagram.size(), kQuicMaximumDatagramPayloadByteLength)
+                    << "握手期的 Initial 数据报没补足到最小尺寸（§14.1），服务端可以整条丢掉";
+        }
+    }
+
+    /**
      * @brief 同一条数据报重复交来不能把握手字节喂给 TLS 第二次（§12.5）
      */
     TEST(QuicConnectionCore, IgnoresRetransmittedPackets)
+
     {
         const FixtureContext serverContext = FixtureContext::server();
         const FixtureContext clientContext = FixtureContext::client();

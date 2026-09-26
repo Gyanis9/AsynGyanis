@@ -40,6 +40,7 @@ add_executable(TestNet
         Http/TestGzip.cpp
         Http/TestCompressionCodecs.cpp
         Quic/TestQuicServer.cpp
+        Quic/TestQuicClientConnection.cpp
         Quic/Codec/TestQuicVariableLengthInteger.cpp
         Quic/Codec/TestQuicPacketHeader.cpp
         Quic/Codec/TestQuicFrame.cpp

@@ -10,7 +10,9 @@
  *          也不碰事件循环。连接级额度管的是各流「最大偏移之和」（§4.1），流级额度只管单条流，
  *          两套各自记账；越界的判定归本层，传输错误码交给连接核心收口。
  *
- * @note 只有服务端视角：流号低位 0x00/0x02 是对端发起的，0x01/0x03 是本端发起的（§2.1）。
+ * @note 流号低位按角色定（§2.1）：作服务端时本端发起的是低位为 1 的那两档（双向 0x01、单向 0x03），
+ *       作客户端时是本端发起低位为 0 的那两档（双向 0x00、单向 0x02）。其余判据（额度、上限、
+ *       按号数算的流数）两型对称。
  * @warning 不是线程安全的：一条连接一份，只能在所属事件循环线程上驱动。
  */
 
@@ -18,6 +20,7 @@
 
 #include "Net/Quic/Codec/QuicFrame.h"
 #include "Net/Quic/Codec/QuicTransportParameters.h"
+#include "Net/Quic/QuicConnectionRole.h"
 #include "Net/Quic/QuicReassemblyBuffer.h"
 
 #include <array>
@@ -82,11 +85,15 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kMaximumConnectionPendingSendByteCount = 8U * 1024U * 1024U;
 
         /**
-         * @brief 用本端宣告的参数建流层
-         * @details 本端参数决定「愿意收多少」；「能发多少」要等对端参数到手，在那之前一条也不发
+         * @brief 用本端宣告的参数与角色建流层
+         * @details 本端参数决定「愿意收多少」；「能发多少」要等对端参数到手，在那之前一条也不发。
+         *          角色只定一件事：本端发起的流号取哪一档低位（§2.1）
          * @param localParameters 本端传输参数，取 initial_max_data 与三个 initial_max_stream_data_*
+         * @param role 本端角色，见 `QuicConnectionRole`；缺省为服务端，与 `QuicConnectionCoreConfiguration`
+         *        的缺省角色同一口径
          */
-        explicit QuicStreamLayer(const QuicTransportParameters &localParameters);
+        explicit QuicStreamLayer(const QuicTransportParameters &localParameters,
+                                 QuicConnectionRole role = QuicConnectionRole::Server);
 
         /**
          * @brief 对端参数到手：把发送侧的额度从 0 换成对端宣告的值
@@ -173,12 +180,21 @@ namespace AsynGyanis::Net
         void stopStreamReceiving(std::uint64_t streamId, std::uint64_t applicationErrorCode);
 
         /**
-         * @brief 开一条本端发起的单向流：0x03、0x07、0x0b……
+         * @brief 开一条本端发起的单向流：服务端侧 0x03、0x07……，客户端侧 0x02、0x06……
          * @details 调用即占用，计数器立刻推进，因此连续两次不会给出同一个流号；条目也当场建好，
          *          后续 `writeStreamData` 直接落在它上面
          * @return std::optional<std::uint64_t> 对端宣告的单向流数已用满时返回空
          */
         [[nodiscard]] std::optional<std::uint64_t> openUnidirectionalStream();
+
+        /**
+         * @brief 开一条本端发起的双向流：客户端侧 0x00、0x04……，服务端侧 0x01、0x05……
+         * @details 与单向那条同一套记账：调用即占用、条目当场建好。出站 HTTP 请求走的就是这一条路
+         *          （RFC 9000 §1.3 把客户端发起的双向流当作「请求流」），限制来自对端参数的
+         *          `initial_max_streams_bidi`，参数没到手之前一条也开不出来（§4.6）
+         * @return std::optional<std::uint64_t> 对端宣告的双向流数已用满时返回空
+         */
+        [[nodiscard]] std::optional<std::uint64_t> openBidirectionalStream();
 
         /**
          * @brief 上层消费掉数据后归还额度：流级与连接级一起抬
@@ -340,6 +356,16 @@ namespace AsynGyanis::Net
             std::size_t m_readPosition{0};        ///< 下一个待取元素的下标
         };
 
+        /**
+         * @brief 这条流是不是本端发起的（判据随角色翻转，§2.1）
+         * @details 作服务端时是本端发起低位为 1 的那两档，作客户端时是低位为 0 的那两档。
+         *          这一条判据被额度取用、流数上限、收口宣告等十来处共用，因此它必须是**带角色的成员**
+         *          而不是文件内的自由函数——同一个流号在两型眼里归属相反
+         * @param streamId 流号
+         * @return true 本端发起
+         */
+        [[nodiscard]] bool isLocallyInitiated(std::uint64_t streamId) const noexcept;
+
         [[nodiscard]] OutgoingStream &outgoingStream(std::uint64_t streamId);
 
         /**
@@ -433,7 +459,9 @@ namespace AsynGyanis::Net
         bool m_streamsBidirectionalUpdatePending{false};      ///< 欠一条 MAX_STREAMS（双向）
         bool m_streamsUnidirectionalUpdatePending{false};     ///< 欠一条 MAX_STREAMS（单向）
 
-        std::uint64_t m_nextUnidirectionalStreamId{0x03};     ///< 本端下一条单向流（服务端发起的单向流低位是 0x03）
+        bool m_isLocalServer{true};                               ///< 本端是不是服务端：只用来定流号低位（§2.1）
+        std::uint64_t m_nextBidirectionalStreamId{0x01};    ///< 本端下一条双向流（服务端发起的双向流低位是 0x01，客户端 0x00）
+        std::uint64_t m_nextUnidirectionalStreamId{0x03};     ///< 本端下一条单向流（服务端发起的单向流低位是 0x03，客户端 0x02）
         std::uint64_t m_outgoingBidirectionalLimit{0};        ///< 对端允许本端发起的双向流数
         std::uint64_t m_outgoingUnidirectionalLimit{0};       ///< 对端允许本端发起的单向流数
     };
