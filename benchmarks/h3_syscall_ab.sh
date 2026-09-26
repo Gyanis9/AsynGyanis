@@ -15,6 +15,10 @@
 #      与负载无关**：要降它得把「固定节拍轮询」换成「按最早的交易截止时间睡」，
 #      加 recvmmsg 批量并不能碰它一分
 #
+#   改完再跑同一条负载（`--threads 1`，同一台容器、同一棵树）：epoll_wait 2126、
+#   recvfrom 417、sendto 379 —— 唤醒少了 95%，数据面两次调用几乎没动，省下的确实都是空转。
+#   这就是这条画像当守护读数的理由：两侧都过得了用例，只有它能分出差别。
+#
 # 两处实测出来的坑，别绕过：
 #   ① 不能用 `strace -p` 挂到已存在的进程上——这个容器不给 PTRACE_SEIZE 权限
 #      （"ptrace(PTRACE_SEIZE, ...): Operation not permitted"），只有随 strace 一起 fork
@@ -37,6 +41,7 @@ pkill -x echo_server 2>/dev/null
 pkill -x strace 2>/dev/null
 sleep 1
 
+started_at=$SECONDS
 strace -f -c -e trace=recvfrom,recvmmsg,recvmsg,sendto,sendmsg,writev,epoll_wait \
   -o "$log_dir/$label-strace.txt" \
   "$build_dir/samples/echo_server" --host 127.0.0.1 --port "$port" --https --h3 \
@@ -60,7 +65,7 @@ sleep 1
 
 kill -INT "$server_pid"
 wait
-echo "SOAK_EXIT=$soak_exit LABEL=$label FLAGS=[$extra_flags] SERVER_PID=$server_pid"
+echo "SOAK_EXIT=$soak_exit LABEL=$label FLAGS=[$extra_flags] SERVER_PID=$server_pid ELAPSED_SECONDS=$((SECONDS - started_at))"
 tail -2 "$log_dir/$label-soak.txt"
 echo "----- syscall summary ($label) -----"
 grep -aE "epoll_wait|recvfrom|recvmmsg|sendto|sendmsg|recvmsg|writev|total" "$log_dir/$label-strace.txt" | tail -10

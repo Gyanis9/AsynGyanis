@@ -4,6 +4,7 @@
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Scheduler.h"
+#include "Core/EventLoop/TimerQueue.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
@@ -597,11 +598,58 @@ namespace AsynGyanis::Net
         }
     }
 
+    std::chrono::steady_clock::time_point QuicServer::nextTickerWakePoint(const bool hasConnections,
+                                                                         const std::chrono::steady_clock::time_point earliestExpiry,
+                                                                         const std::chrono::steady_clock::time_point now,
+                                                                         const std::chrono::milliseconds tickInterval)
+    {
+        // 一台没有在线连接的监听器没有任何到期要落实：这时按节拍轮询是纯白烧（实测空闲每秒 100 次唤醒，
+        // 每次约两趟 epoll_wait）。退到空闲上界，新连接的头一拍最多延后这一档
+        if (!hasConnections)
+        {
+            return now + kIdleTickerSleep;
+        }
+        // 节拍上限仍要留着：needsFlush 那一档补刀与 h3 请求的读时限都没有可查的截止时刻，只能靠轮询兜。
+        // 节拍配成非正数时按「不设上限」处理，此时只剩各连接自己的截止时刻（armedDurationFor 会把
+        // 已经过掉的时刻折成 1 毫秒，不会真的睡过去）
+        if (tickInterval <= std::chrono::milliseconds::zero())
+        {
+            return earliestExpiry;
+        }
+        const std::chrono::steady_clock::time_point tickDeadline = now + tickInterval;
+        if (earliestExpiry >= tickDeadline)
+        {
+            return tickDeadline;
+        }
+        // 早于节拍的截止按时到；已到期的（earliestExpiry <= now）留 now，由换算函数折成 1 毫秒的最近唤醒
+        return earliestExpiry > now ? earliestExpiry : now;
+    }
+
+    std::chrono::steady_clock::time_point QuicServer::earliestConnectionExpiry() const
+    {
+        auto earliest = std::chrono::steady_clock::time_point::max();
+        for (const auto &connectionEntry: m_connections)
+        {
+            if (const auto expiry = connectionEntry.second->nextExpiry(); expiry < earliest)
+            {
+                earliest = expiry;
+            }
+        }
+        return earliest;
+    }
+
     Core::Task<> QuicServer::runExpiryTicker()
     {
         while (!m_isStopped.load(std::memory_order_acquire))
         {
-            co_await m_expiryTicker.waitFor(m_configuration.expiryTickInterval);
+            // 先按当前状态算出这一觉睡到什么时候，再挂上去：唤醒点要么是所有连接里最早的交易截止，
+            // 要么是配置的节拍（先到为准），零连接时退到空闲上界
+            const std::chrono::steady_clock::time_point planningNow = std::chrono::steady_clock::now();
+            const std::chrono::milliseconds sleepDuration = Core::detail::armedDurationFor(
+                    nextTickerWakePoint(!m_connections.empty(), earliestConnectionExpiry(), planningNow,
+                                        m_configuration.expiryTickInterval),
+                    planningNow);
+            co_await m_expiryTicker.waitFor(sleepDuration);
             if (m_isStopped.load(std::memory_order_acquire))
             {
                 break;

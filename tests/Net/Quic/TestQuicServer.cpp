@@ -13,6 +13,7 @@
 #include "Base/Exception/SystemException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/TimerQueue.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
@@ -209,5 +210,59 @@ namespace AsynGyanis::Net
         {
             EXPECT_THROW(QuicServer server(loop, missingCertificate), Base::SystemException);
         }
+    }
+
+    namespace
+    {
+        /**
+         * @brief 只把定时驱动的纯换算转发出来的探针
+         * @details 不构造对象，因此不需要证书、UDP 端口与事件循环——要测的是「什么时候该醒」这条
+         *          纯换算，把它从读时钟的循环里剥出来才能确定性地判。
+         */
+        class TickerWakePointProbe : public QuicServer
+        {
+        public:
+            using QuicServer::kIdleTickerSleep;
+            using QuicServer::nextTickerWakePoint;
+        };
+    } // namespace
+
+    /**
+     * @brief 钉住：定时驱动下一次醒来的时刻——最早截止优先、节拍封顶、零连接退到空闲上界
+     * @details 这条换算是「不再一律按固定节拍轮询」改动的全部判据，因此按纯函数直测而不是等时钟：
+     *          读时钟的用例在共享机器上必然飘。零连接那一档不是洁癖——实测一台空闲监听器按 10 毫秒
+     *          白轮每秒 100 次，占了整场进程外画像里四万次 epoll_wait 的绝大部分。
+     *          节拍上限留着是有原因的：needsFlush 那一档补刀与 h3 请求的读时限都没有可查的截止时刻，
+     *          只能靠轮询兜，所以「有连接但截止很远」必须仍按节拍到。
+     */
+    TEST(QuicServer, PicksTheEarliestDeadlineButCapsTheTickerAndIdlesWhenEmpty)
+    {
+        using Clock = std::chrono::steady_clock;
+        const Clock::time_point now{std::chrono::milliseconds{1'000'000}};
+        constexpr auto tick = std::chrono::milliseconds{10};
+
+        // 零连接：不管传进来的截止是什么，都按空闲上界睡
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(false, Clock::time_point::max(), now, tick),
+                  now + TickerWakePointProbe::kIdleTickerSleep);
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(false, now + std::chrono::milliseconds{1}, now, tick),
+                  now + TickerWakePointProbe::kIdleTickerSleep) << "没有连接时，任何截止时刻都不该把节拍叫醒";
+
+        // 有连接：早于节拍的截止按时到
+        const Clock::time_point soonDeadline = now + std::chrono::milliseconds{3};
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, soonDeadline, now, tick), soonDeadline);
+        // 晚于节拍的按节拍到（补刀那一档靠轮询兜）
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, now + std::chrono::seconds{5}, now, tick), now + tick);
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, Clock::time_point::max(), now, tick), now + tick)
+                << "查不到截止时不能睡过头";
+        // 已经到期：不早于 now（睡过头就等于把这条截止丢到下下拍）
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, now - std::chrono::milliseconds{1}, now, tick), now);
+        // 换算成立：0 会被定时器当成解除武装，因此已到期的那一拍必须折成最近的一次唤醒
+        EXPECT_EQ(Core::detail::armedDurationFor(
+                          TickerWakePointProbe::nextTickerWakePoint(true, now - std::chrono::milliseconds{1}, now, tick), now),
+                  std::chrono::milliseconds{1});
+
+        // 节拍配成非正数＝不设上限，只按各连接自己的截止时刻睡
+        const Clock::time_point farDeadline = now + std::chrono::seconds{30};
+        EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, farDeadline, now, std::chrono::milliseconds::zero()), farDeadline);
     }
 } // namespace AsynGyanis::Net

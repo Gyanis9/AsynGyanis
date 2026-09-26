@@ -163,14 +163,50 @@ namespace AsynGyanis::Net
     private:
         /// 排空期间的轮询间隔：决定「没有在途工作」多快被发现，代价是等待期间多几次唤醒
         static constexpr std::chrono::milliseconds kDrainPollInterval{50};
+
         /**
-         * @brief 定时器驱动：按固定节拍检查各连接的到期时刻
+         * @brief 定时器驱动：按「下一次真正有东西可查的时刻」检查各连接的到期
          * @details QUIC 的 PTO/空闲超时/握手超时都要在「没有报文到达」时也准时触发，因此不能只靠
-         *          收到报文时顺手处理。这里用固定节拍（默认 10ms）而不是给每条连接各排一个精确定时器：
-         *          节拍实现简单、行为可预期，代价是到期处理最多晚一个节拍——对 PTO（毫秒到秒级）足够。
+         *          收到报文时顺手处理。原来是一律按固定节拍（默认 10ms）轮询——简单可预期，代价是
+         *          到期处理最多晚一个节拍，且**在线连接为零时也在轮**。现在按
+         *          `nextTickerWakePoint()` 那条算法定睡眠点：早于节拍的截止按时到，晚于节拍的仍按
+         *          节拍到（needsFlush 那一档补刀与 h3 请求的读时限没有可查的截止时刻，只能靠轮询兜），
+         *          零连接时退到 kIdleTickerSleep。
+         * @note 本协程不被 stop() 等待（听天由命地看到停止标志即收手），因此睡眠上界不影响关停时延
          * @return Core::Task<> 停止时完成
          */
         [[nodiscard]] Core::Task<> runExpiryTicker();
+
+    protected:
+        /// 连接表空着时一拍睡多久：一台没有在线连接的监听器没有任何到期要落实，节拍纯粹是白烧唤醒。
+        /// 实测（benchmarks/h3_syscall_ab.sh，负载跑完之后那段空档）空闲节拍占掉整场画像里
+        /// 四万次 epoll_wait 的绝大部分，按 10 毫秒节拍折算就是每秒 100 次唤醒、每次约两趟等待。
+        /// 取 1 秒而不是无限：新连接的头一拍最多延后这一档，之后节拍自动回到 expiryTickInterval。
+        static constexpr std::chrono::milliseconds kIdleTickerSleep{1000};
+
+        /**
+         * @brief 算出定时器驱动下一次该在什么时候醒来（纯换算，不读状态）
+         * @details 单列成一张纯函数是为了能被确定性地测出来：读时钟的分支在测试里只能靠等，
+         *          而「什么时候该醒」这件事恰恰是这条改动的全部判据。放在 protected 而不是 private，
+         *          是为了让用例按派生类转发的既有办法直接调它（不必构造一台带证书的服务端）。
+         * @param hasConnections 当前是否还有在线连接（零连接时不看截止时刻，直接按空闲上界睡）
+         * @param earliestExpiry 全部连接里最早的交易截止时刻；没有可查的截止时传 `time_point::max()`
+         * @param now 计算时刻
+         * @param tickInterval 配置的节拍上限（`Configuration::expiryTickInterval`）
+         * @return 下一次唤醒的绝对时刻，恒不早于 now、恒不晚于 now + max(tickInterval, 空闲上界)
+         */
+        [[nodiscard]] static std::chrono::steady_clock::time_point nextTickerWakePoint(bool hasConnections,
+                                                                                      std::chrono::steady_clock::time_point earliestExpiry,
+                                                                                      std::chrono::steady_clock::time_point now,
+                                                                                      std::chrono::milliseconds tickInterval);
+
+    private:
+        /**
+         * @brief 取全部在线连接里最早的交易截止时刻（PTO、握手与空闲超时都记在连接自己身上）
+         * @details 定时驱动据此决定下一次什么时候醒。空表返回 `time_point::max()`，调用方据此判「没有可查的截止」。
+         * @return 最早的截止时刻；没有在线连接时为 `time_point::max()`
+         */
+        [[nodiscard]] std::chrono::steady_clock::time_point earliestConnectionExpiry() const;
 
         /**
          * @brief 按目的连接标识把报文交给对应的连接；不认识的长头 Initial 则开一条新连接
