@@ -29,6 +29,7 @@ namespace AsynGyanis::Core
 namespace AsynGyanis::Net
 {
     class Http2ClientConnection;
+    class Http3OutboundLink;
 
     /**
      * @brief 一条出站连接的可复用身份：主机、端口与是否 TLS
@@ -256,6 +257,31 @@ namespace AsynGyanis::Net
          */
         void adoptHttp2(const HttpOutboundEndpointKey &endpointKey, std::shared_ptr<Http2ClientConnection> connection);
 
+        /**
+         * @brief 取回某台主机上留着的那条 h3 链路，取用时先判一次健康
+         * @details 与 h2 那一对同一形状：复用发生在流上，故不交出独占所有权、也不摘走。判死即从表里
+         *          抹掉并返回空——h3 的一条链路连着一条 QUIC 连接与一份 QPACK 动态表，断了就不能再
+         *          拿它发下一条（与 h2 侧「判死不留缓存」同一条理由）。
+         * @param endpointKey 目标身份
+         * @return std::shared_ptr<Http3OutboundLink> 可用则给出一份共同持有的引用；没有可复用的返回空
+         */
+        [[nodiscard]] std::shared_ptr<Http3OutboundLink> acquireHttp3(const HttpOutboundEndpointKey &endpointKey);
+
+        /**
+         * @brief 把一条已经握好并起好 h3 层的链路放进缓存；不可用的不收
+         * @param endpointKey 这条链路的目标身份
+         * @param link 已 `connect()` 成功的链路（与调用方共同持有）
+         * @details 一台主机只留一条（与 h2 同一取舍：第二条链路换不来吞吐，只多占一个 UDP 端口与一份
+         *          QPACK 状态）。已有货且那条还健康时，收下的这条由调用方放手即关掉。
+         */
+        void adoptHttp3(const HttpOutboundEndpointKey &endpointKey, std::shared_ptr<Http3OutboundLink> link);
+
+        /// 池里留着的 h3 链路条数（测试与观测用）
+        [[nodiscard]] std::size_t idleHttp3LinkCount() const noexcept;
+
+        /// 最忙的那条 h3 链路上同时在途的流数：取各条最大值而不是求和，理由同 h2 那条
+        [[nodiscard]] std::size_t http3MaximumInFlightStreamCount() const noexcept;
+
         /// 池里留着的 h2 连接条数（测试与观测用；与下面那条 h1 的空闲数各量各的）
         [[nodiscard]] std::size_t idleHttp2ConnectionCount() const noexcept;
 
@@ -324,6 +350,10 @@ namespace AsynGyanis::Net
         /// 每台主机留一条 h2 连接，与调用方共同持有：它不像 h1 那样一次租给一个请求，也不按
         /// idleTimeout 收（对端还认它就一直用），要收的是「已经断了」这件事——只在取用时判
         std::map<HttpOutboundEndpointKey, std::shared_ptr<Http2ClientConnection>> m_http2ByEndpoint;
+
+        /// 每台主机留一条 h3 链路（QUIC 连接 + h3 会话成对持有），语义与上面那张 h2 表一致：
+        /// 共同持有、不按 idleTimeout 收、只在取用时判健康
+        std::map<HttpOutboundEndpointKey, std::shared_ptr<Http3OutboundLink>> m_http3ByEndpoint;
 
         /// 「同一端点同时只建一次连」的记账表： shared_ptr 是为了让挂着的等待者不必依赖池还活着
         std::shared_ptr<HttpEstablishmentTable> m_establishments{std::make_shared<HttpEstablishmentTable>()};

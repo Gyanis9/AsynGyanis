@@ -239,4 +239,26 @@ namespace AsynGyanis::Net
         return m_pendingStreams[streamId];
     }
 
+
+    Http3OutboundLink::Http3OutboundLink(Core::EventLoop &loop, QuicClientConnection::Configuration configuration, Http3ClientConnection::Config http3Configuration) :
+        m_quic(std::make_unique<QuicClientConnection>(loop, std::move(configuration))), m_http3(*m_quic, http3Configuration)
+    {
+    }
+
+    Core::Task<bool> Http3OutboundLink::connect(const Core::InetAddress &serverAddress)
+    {
+        if (!co_await m_quic->connect(serverAddress))
+        {
+            co_return false;
+        }
+        co_return co_await m_http3.start();
+    }
+
+    bool Http3OutboundLink::isHealthy() const noexcept
+    {
+        // 两层都要问：会话那边的「健康」只管 h3 自己（GOAWAY、协议错误、流号用尽），而 QUIC 连接可能
+        // 先被对端或对端的网络收掉——那时会话那边还没收到任何信号，只看它会给出一个能提请求的假象
+        return m_http3.isHealthy() && !m_quic->isClosed();
+    }
+
 } // namespace AsynGyanis::Net

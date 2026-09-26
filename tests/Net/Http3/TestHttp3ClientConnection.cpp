@@ -9,6 +9,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
+#include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http/Router.h"
 #include "Net/Quic/QuicClientConnection.h"
 #include "Net/Quic/QuicServer.h"
@@ -230,6 +231,162 @@ namespace AsynGyanis::Net
             bool                                  m_isStarted{false};
             std::atomic<bool>                     m_isFinished{false};
         };
+
+        /**
+         * @brief 造一份指向回环某端口的出站 QUIC 配置（与 `Http3RequestAttempt` 用同一套信任锚）
+         * @param port 目标端口（当前只用于日志，配置本身按主机名校验）
+         * @return QuicClientConnection::Configuration 配好的配置
+         */
+        QuicClientConnection::Configuration makeLinkConfiguration(const std::uint16_t port)
+        {
+            QuicClientConnection::Configuration configuration;
+            configuration.hostName                           = "127.0.0.1";
+            configuration.applicationProtocolIdentifiers     = {std::string{"h3"}};
+            configuration.tlsPolicy.certificateAuthorityFile = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_cert.pem").string();
+            configuration.handshakeTimeout                   = std::chrono::milliseconds{4000};
+            configuration.idleTimeout                        = std::chrono::seconds{30};
+            static_cast<void>(port);
+            return configuration;
+        }
+
+        /**
+         * @brief 在链路自己的循环线程上把「出站池 + h3 链路」的几条契约一次跑完
+         * @details 池的取用、判死与计数都只能在连接所属的循环上读：一条 h3 链路连着 QUIC 连接与 UDP
+         *          套接字，跨线程看它的健康状态就是踩别人正在写的内存（本框架的循环与连接对象不跨线程
+         *          访问）。所以整段判据放在一个协程里跑完，结果交回测试线程读；链路也在协程结束前放手，
+         *          销毁同样留在循环线程上。
+         */
+        class PoolRoundTrip
+        {
+        public:
+            explicit PoolRoundTrip(const std::uint16_t port) : m_port(port)
+            {
+                m_task.emplace(run());
+                m_loop.scheduler().schedule(m_task->handle());
+                m_loopThread = std::thread([this] { m_loop.run(); });
+            }
+
+            ~PoolRoundTrip()
+            {
+                m_loop.stop();
+                if (m_loopThread.joinable())
+                {
+                    m_loopThread.join();
+                }
+            }
+
+            PoolRoundTrip(const PoolRoundTrip &)            = delete;
+            PoolRoundTrip &operator=(const PoolRoundTrip &) = delete;
+
+            bool awaitFinished(const std::chrono::milliseconds timeout)
+            {
+                return waitForCondition([this] { return m_isFinished.load(std::memory_order_acquire); }, timeout);
+            }
+
+            [[nodiscard]] bool isConnected() const noexcept
+            {
+                return m_isConnected;
+            }
+            [[nodiscard]] bool isReusedSameLink() const noexcept
+            {
+                return m_isReusedSameLink;
+            }
+            [[nodiscard]] bool isAcquireAfterCloseNull() const noexcept
+            {
+                return m_isAcquireAfterCloseNull;
+            }
+            [[nodiscard]] std::size_t linkCountAfterAdopt() const noexcept
+            {
+                return m_linkCountAfterAdopt;
+            }
+            [[nodiscard]] std::size_t linkCountAfterSecondAdopt() const noexcept
+            {
+                return m_linkCountAfterSecondAdopt;
+            }
+            [[nodiscard]] std::size_t inFlightAfterRequest() const noexcept
+            {
+                return m_inFlightAfterRequest;
+            }
+            [[nodiscard]] bool isFirstLinkAfterSecondAdopt() const noexcept
+            {
+                return m_isFirstLinkAfterSecondAdopt;
+            }
+            [[nodiscard]] std::size_t linkCountAfterEvict() const noexcept
+            {
+                return m_linkCountAfterEvict;
+            }
+            [[nodiscard]] const Http3ClientResponse &response() const noexcept
+            {
+                return m_response;
+            }
+
+        private:
+            /// 在循环线程上跑完整段：建链 → 进池 → 取回 → 提一条请求 → 再建一条 → 关掉之后取
+            Core::Task<> run()
+            {
+                const HttpOutboundEndpointKey key{std::string{"127.0.0.1"}, m_port, true};
+                const auto                    address = Core::InetAddress::resolve("127.0.0.1", m_port).value();
+
+                auto first    = std::make_shared<Http3OutboundLink>(m_loop, makeLinkConfiguration(m_port));
+                m_isConnected = co_await first->connect(address);
+                if (!m_isConnected)
+                {
+                    finish();
+                    co_return;
+                }
+
+                m_pool.adoptHttp3(key, first);
+                m_isReusedSameLink    = (m_pool.acquireHttp3(key) == first);
+                m_linkCountAfterAdopt = m_pool.idleHttp3LinkCount();
+
+                m_response = co_await first->http3().request("https", "127.0.0.1:" + std::to_string(m_port), "GET", "/probe", {}, {}, std::chrono::milliseconds{4000});
+                // 请求收完之后在途就该归零：还留着数说明流上的账没结清
+                m_inFlightAfterRequest = m_pool.http3MaximumInFlightStreamCount();
+
+                // 一台主机只留一条：第二条链路应当被拒收
+                auto second = std::make_shared<Http3OutboundLink>(m_loop, makeLinkConfiguration(m_port));
+                if (co_await second->connect(address))
+                {
+                    m_pool.adoptHttp3(key, second);
+                }
+                m_linkCountAfterSecondAdopt = m_pool.idleHttp3LinkCount();
+                // 只数条数判不出「覆盖」与「保留第一条」的差别（两种都剩一条）：这里比的是身份
+                m_isFirstLinkAfterSecondAdopt = (m_pool.acquireHttp3(key) == first);
+
+                // 关掉之后取用要判死并抹掉：QPACK 动态表与拥塞状态都随连接作废，留着它只会交出废链
+                first->http3().close();
+                m_isAcquireAfterCloseNull = (m_pool.acquireHttp3(key) == nullptr);
+                m_linkCountAfterEvict     = m_pool.idleHttp3LinkCount();
+
+                m_pool.closeAll();
+                first.reset();
+                second.reset();
+                finish();
+                co_return;
+            }
+
+            void finish()
+            {
+                m_isFinished.store(true, std::memory_order_release);
+            }
+
+            Core::EventLoop             m_loop;
+            std::uint16_t               m_port{0U};
+            HttpOutboundConnectionPool  m_pool;                           ///< 被测对象：池按 h2 那一对的形状管 h3 链路
+            std::optional<Core::Task<>> m_task{};                         ///< 跑判据的协程
+            std::thread                 m_loopThread{};                   ///< 链路所属的循环线程
+            Http3ClientResponse         m_response{};                     ///< 经链路提的那条请求的结论
+            bool                        m_isConnected{false};             ///< 链路是否握上手并起好 h3 层
+            bool                        m_isReusedSameLink{false};        ///< 取回来的是不是放进去那一条
+            bool                        m_isAcquireAfterCloseNull{false}; ///< 关掉之后再取应当拿空
+            std::size_t                 m_linkCountAfterAdopt{0U};        ///< 进池后的链路条数
+            std::size_t                 m_linkCountAfterSecondAdopt{0U};
+            bool                        m_isFirstLinkAfterSecondAdopt{false}; ///< 再塞第二条之后的链路条数（应仍为 1）
+            std::size_t                 m_inFlightAfterRequest{0U};           ///< 请求收完之后的最大在途流数（应为 0）
+            std::size_t                 m_linkCountAfterEvict{0U};            ///< 判死之后的链路条数（应为 0）
+            std::atomic<bool>           m_isFinished{false};                  ///< 结果已就位
+        };
+
     } // namespace
 
     /**
@@ -318,6 +475,35 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "被拒的请求既没回也没按时限收场，挂在那里";
         EXPECT_FALSE(attempt.response().isOk()) << "信任锚之外的客户端证书被接受了：" << attempt.response().errorMessage;
         EXPECT_EQ(server.servedRequestCount(), 0U) << "服务端查都没查就把这条请求处理了：CA 那一项根本没被用上";
+    }
+
+
+    /**
+     * @brief 出站池按与 h2 同一形状管 h3 链路：取回同一条、一台主机只留一条、判死即抹掉
+     * @details `Http3OutboundLink` 存在的理由是**共同持有**——h3 会话只借用它的 QUIC 连接，池与调用方
+     *          各拿一半就会松开一条还在用的链路。这里连池的三条契约一起判：取回的就是放进去那条
+     *          （复用发生在流上，不摘走）、第二条链路不占位置、关掉之后取既拿到空也把表清干净。
+     * @note 证伪：把 `adoptHttp3` 的「已有货就不收」去掉 → 第二条链路那条判据红；把 `acquireHttp3`
+     *       里的健康判定删掉 → 最后两条判据一起红（把废链交回调用方）。
+     */
+    TEST(Http3OutboundLink, IsPooledAndEvictedLikeTheHttp2Side)
+    {
+        RunningHttp3Server server;
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        PoolRoundTrip roundTrip{server.listeningPort()};
+        ASSERT_TRUE(roundTrip.awaitFinished(kWaitTimeout)) << "池里这一段既没跑完也没报错，挂在那里";
+        ASSERT_TRUE(roundTrip.isConnected()) << "链路没握上手，后面的判据都是空的";
+        EXPECT_TRUE(roundTrip.response().isOk()) << "经链路提的请求没拿到答：" << roundTrip.response().errorMessage;
+        EXPECT_EQ(roundTrip.response().body, std::string{kServedBody});
+
+        EXPECT_TRUE(roundTrip.isReusedSameLink()) << "取回来的不是放进去那条：h3 的复用没接上";
+        EXPECT_EQ(roundTrip.linkCountAfterAdopt(), 1U);
+        EXPECT_EQ(roundTrip.inFlightAfterRequest(), 0U) << "请求收完之后仍算在途：流上的账没结清";
+        EXPECT_TRUE(roundTrip.isFirstLinkAfterSecondAdopt()) << "第二条把第一条顶掉了：只数条数看不出这种覆盖，被在途握着的那条不能换";
+        EXPECT_EQ(roundTrip.linkCountAfterSecondAdopt(), 1U) << "同一台主机留了两条 h3 链路：多占一个 UDP 端口与一份 QPACK 状态，换不来吞吐";
+        EXPECT_TRUE(roundTrip.isAcquireAfterCloseNull()) << "链路已经关掉，池还把同一条交出去";
+        EXPECT_EQ(roundTrip.linkCountAfterEvict(), 0U) << "判死的链路留在表上：下一次取用会拿到一条废链";
     }
 
 } // namespace AsynGyanis::Net

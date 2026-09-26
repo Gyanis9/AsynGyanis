@@ -4,6 +4,7 @@
 
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http2/Http2ClientConnection.h"
+#include "Net/Http3/Http3ClientConnection.h"
 
 #include <algorithm>
 #include <utility>
@@ -254,6 +255,16 @@ namespace AsynGyanis::Net
             }
         }
         m_http2ByEndpoint.clear();
+        for (auto &entry: m_http3ByEndpoint)
+        {
+            // 与 h2 侧同一契约：只收空闲的那部分。在途请求还握着这条链路的引用，这里掐它等于把
+            // 别人的请求判死
+            if (entry.second->inFlightStreamCount() == 0U)
+            {
+                entry.second->http3().close();
+            }
+        }
+        m_http3ByEndpoint.clear();
     }
 
     HttpOutboundConnectionPool::~HttpOutboundConnectionPool() = default;
@@ -279,6 +290,53 @@ namespace AsynGyanis::Net
     std::size_t HttpOutboundConnectionPool::idleHttp2ConnectionCount() const noexcept
     {
         return m_http2ByEndpoint.size();
+    }
+
+    std::shared_ptr<Http3OutboundLink> HttpOutboundConnectionPool::acquireHttp3(const HttpOutboundEndpointKey &endpointKey)
+    {
+        const auto iterator = m_http3ByEndpoint.find(endpointKey);
+        if (iterator == m_http3ByEndpoint.end())
+        {
+            return nullptr;
+        }
+        // 取用前判一次健康就够（与 h2 同）：QPACK 动态表与拥塞状态都随连接作废，判死不留缓存
+        if (!iterator->second->isHealthy())
+        {
+            m_http3ByEndpoint.erase(iterator);
+            return nullptr;
+        }
+        // 不摘走：h3 一条连接上并发几条流，摘走等于每次取用都独占一条
+        return iterator->second;
+    }
+
+    void HttpOutboundConnectionPool::adoptHttp3(const HttpOutboundEndpointKey &endpointKey, std::shared_ptr<Http3OutboundLink> link)
+    {
+        if (link == nullptr || !link->isHealthy())
+        {
+            return; // 不可用的不收：最后一个持有者放手时通路随之关掉
+        }
+        const auto iterator = m_http3ByEndpoint.find(endpointKey);
+        if (iterator != m_http3ByEndpoint.end() && iterator->second->isHealthy())
+        {
+            return; // 一台主机只留一条；旧的那条继续被在途请求持有，去留不由这里做主
+        }
+        m_http3ByEndpoint[endpointKey] = std::move(link);
+    }
+
+    std::size_t HttpOutboundConnectionPool::idleHttp3LinkCount() const noexcept
+    {
+        return m_http3ByEndpoint.size();
+    }
+
+    std::size_t HttpOutboundConnectionPool::http3MaximumInFlightStreamCount() const noexcept
+    {
+        std::size_t maximumStreamCount = 0;
+        for (const auto &entry: m_http3ByEndpoint)
+        {
+            // 逐条取最大而不是求和：求和会把「两条链路各一条流」也算成 2，那样就分不出复用了
+            maximumStreamCount = std::max(maximumStreamCount, entry.second->inFlightStreamCount());
+        }
+        return maximumStreamCount;
     }
 
     std::size_t HttpOutboundConnectionPool::http2MaximumInFlightStreamCount() const noexcept

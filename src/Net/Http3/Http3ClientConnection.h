@@ -172,4 +172,68 @@ namespace AsynGyanis::Net
         std::size_t                             m_openedStreamCount{0U}; ///< 本端已开过的请求流条数
         bool                                    m_isHealthy{false};      ///< 是否可继续提请求
     };
+
+    /**
+     * @brief 一条出站 h3 链路的持有对：QUIC 连接与 h3 会话同生同灭
+     *
+     * @details 存在的理由是**共同持有**。`Http3ClientConnection` 只借用它的 QUIC 连接（不拥有），
+     *          而出站池要把一条可复用的 h3 连接交给多个在途请求共同持有——把两份所有权分开交出去，
+     *          就会出现「会话还在人手里、底下的 QUIC 连接先被释放」那种踩空。成对构造、成对释放，
+     *          拿到 shared_ptr 的人就同时保住两层。
+     *
+     * @note 成员声明顺序承担一件不看代码想不到的事：会话必须比它的 QUIC 连接**先**销毁（它持有那个
+     *       引用），而成员是按声明逆序销毁的，所以会话排在后面。改动这两个成员的次序是会崩的。
+     * @warning 只能在所属事件循环线程上用（与 `Http3ClientConnection` 同一份线程契约）。
+     */
+    class Http3OutboundLink
+    {
+    public:
+        /**
+         * @brief 建链路：造出 QUIC 连接并把 h3 会话挂在它上面（不碰网络）
+         * @param loop 所属事件循环
+         * @param configuration 出站 QUIC 配置（主机名、ALPN、信任库、时限）
+         * @param http3Configuration h3 本端能力；默认取 `Http3ClientConnection::Config` 的默认值
+         */
+        Http3OutboundLink(Core::EventLoop &loop, QuicClientConnection::Configuration configuration, Http3ClientConnection::Config http3Configuration = {});
+
+        Http3OutboundLink(const Http3OutboundLink &)            = delete;
+        Http3OutboundLink &operator=(const Http3OutboundLink &) = delete;
+        Http3OutboundLink(Http3OutboundLink &&)                 = delete;
+        Http3OutboundLink &operator=(Http3OutboundLink &&)      = delete;
+        ~Http3OutboundLink()                                    = default;
+
+        /**
+         * @brief 握一条 QUIC 连接并把 h3 层起起来（三条本端单向流 + SETTINGS）
+         * @param serverAddress 目标地址
+         * @return true 这条链路已经可以提请求
+         * @return false 握手或 h3 起步没成；调用方按「换一条通路」处置（本对象此后不会再变健康）
+         */
+        [[nodiscard]] Core::Task<bool> connect(const Core::InetAddress &serverAddress);
+
+        /// h3 会话本体（提请求、礼貌收尾都走它）
+        [[nodiscard]] Http3ClientConnection &http3() noexcept
+        {
+            return m_http3;
+        }
+
+        /// 这条链路还能不能提请求：会话健康且 QUIC 连接没被收掉
+        [[nodiscard]] bool isHealthy() const noexcept;
+
+        /// 在途（已提出、还没收齐）的请求流条数：池判断「这条能不能立刻收掉」与观测复用度都读它
+        [[nodiscard]] std::size_t inFlightStreamCount() const noexcept
+        {
+            return m_http3.inFlightStreamCount();
+        }
+
+        /// 本端已开过的请求流条数：流号要用尽时池据此换一条新链路
+        [[nodiscard]] std::size_t openedStreamCount() const noexcept
+        {
+            return m_http3.openedStreamCount();
+        }
+
+    private:
+        std::unique_ptr<QuicClientConnection> m_quic{}; ///< 先建、后销毁：h3 会话引用它
+        Http3ClientConnection                 m_http3;  ///< 后建、先销毁（见类注释里的成员次序）
+    };
+
 } // namespace AsynGyanis::Net
