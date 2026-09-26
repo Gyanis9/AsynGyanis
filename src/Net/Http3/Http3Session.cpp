@@ -470,6 +470,9 @@ namespace AsynGyanis::Net
             {
                 m_metrics->countParsedRequest();
             }
+            // 耗时起点：收下这条请求、准备交付业务的那一刻。与 h2 的 requestReceivedTime 取在同一
+            // 相对位置，因此跨协议的耗时读数可以对照着看（都不含传输层的排队与重传）
+            const std::chrono::steady_clock::time_point requestReceivedTime = std::chrono::steady_clock::now();
 
             HttpResponse response;
             // 业务异常在这里就地收口（与 h1/h2 同一处置）：不捕获的话它会穿出 pump()、
@@ -564,6 +567,12 @@ namespace AsynGyanis::Net
                     co_await serveWebSocketTunnel(streamId,
                                                   request.getHeader(kWebSocketExtensionsHeaderName).value_or(std::string{}),
                                                   response);
+                    // 隧道这条请求的应答也要落账：h3 按 RFC 9220 以 2xx 应答（没有 101 这一档），
+                    // 记的就是那个真实状态码。耗时覆盖整条隧道的在途时长——与 h2 同一口径
+                    if (m_metrics != nullptr)
+                    {
+                        m_metrics->recordResponse(response.status(), std::chrono::steady_clock::now() - requestReceivedTime);
+                    }
                     continue;
                 }
             } else
@@ -573,23 +582,36 @@ namespace AsynGyanis::Net
                 response.setBody("HTTP/3 会话尚未接上路由器");
             }
 
+            // 耗时在响应真的排进待发字节之后才取：与 h2 同一相对位置，也免得把收尾这几个调用的
+            // 开销漏在账外。两条分支各算一次，日志复用同一个量，不在热路径上多戳时钟
+            std::chrono::steady_clock::duration requestElapsed{0};
+            const bool isTruncatedStreamingResponse = response.isChunkedResponse() && handlerException != nullptr;
             if (response.isChunkedResponse())
             {
                 // 流式响应：响应头与各块在处理器写的过程中已经出去了，这里只做收尾
                 finishStreamingResponse(streamId, response, handlerException == nullptr);
                 // 中途抛异常的流式响应只发了一半，落账等于把半成品记成已应答（与 h2 同一判据）
-                if (m_metrics != nullptr && handlerException == nullptr)
+                if (m_metrics != nullptr && !isTruncatedStreamingResponse)
                 {
-                    m_metrics->countResponseStatus(response.status());
+                    requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
+                    m_metrics->recordResponse(response.status(), requestElapsed);
                 }
             } else
             {
                 finalizeResponseForHttp3(streamId, response);
                 submitResponse(streamId, response, request.method() == HttpMethod::HEAD);
+                requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
                 if (m_metrics != nullptr)
                 {
-                    m_metrics->countResponseStatus(response.status());
+                    m_metrics->recordResponse(response.status(), requestElapsed);
                 }
+            }
+            // 一条请求一条日志：request-id 同时出现在响应头与这里，客户端报的响应与服务端的处理记录
+            // 因此能按同一个键对齐。与 h1/h2 同口径，同样定为 Debug（每请求热路径）
+            if (!request.requestId().empty() && !isTruncatedStreamingResponse)
+            {
+                LOG_DEBUG_FMT("Http3Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us", request.requestId(),
+                              request.uri(), response.status(), std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
             }
             // 答完一条就记一笔：单连接请求条数上限靠它触发排空
             noteRequestServed();
@@ -1151,6 +1173,14 @@ namespace AsynGyanis::Net
 
     Core::Task<> Http3Session::serveStreamingRequest(const std::int64_t streamId, StreamingRequest &streamingRequest)
     {
+        // 流式正文路由的请求也要计入请求数：它与 h1/h2 的流式路由同一时刻派发（头部收齐即交给业务，
+        // 正文随后分批到），那边是在同一条派发路径上记的。此前这条漏斗一笔都不落账——只用流式上传
+        // 路由的 h3 服务在 /metrics 里看着像没有流量，而请求确实被收下了
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countParsedRequest();
+        }
+
         HttpResponse response;
         attachChunkSender(streamId, response);
         if (streamingRequest.request.method() == HttpMethod::HEAD)
@@ -1168,9 +1198,12 @@ namespace AsynGyanis::Net
         {
             handlerException = std::current_exception();
         }
+        // 头部是否已经上线要在改判之前问：response.reset() 之后 hasSentChunkedHead() 就不再反映
+        // 真实发生过的事，而「半成品」这个判据要的正是它
+        const bool isStreamingHeadSent = response.isChunkedResponse() && response.hasSentChunkedHead();
         if (handlerException != nullptr)
         {
-            if (response.isChunkedResponse() && response.hasSentChunkedHead())
+            if (isStreamingHeadSent)
             {
                 LOG_ERROR_FMT("Http3Session: 流 {} 的流式响应中途抛出异常，头部已上线无法改写状态码，已按原状态码收尾", streamId);
             } else
@@ -1203,6 +1236,20 @@ namespace AsynGyanis::Net
         {
             finalizeResponseForHttp3(streamId, response);
             submitResponse(streamId, response, streamingRequest.request.method() == HttpMethod::HEAD);
+        }
+        // 落账与 h2 同一条判据：头部已上线之后半途抛异常的那条，正文只发了一半、状态码也不是真实
+        // 结果，记成已应答会把直方图与状态码类一起写脏
+        if (m_metrics != nullptr && !(isStreamingHeadSent && handlerException != nullptr))
+        {
+            const std::chrono::steady_clock::duration requestElapsed =
+                std::chrono::steady_clock::now() - streamingRequest.requestReceivedAt;
+            m_metrics->recordResponse(response.status(), requestElapsed);
+            if (!streamingRequest.request.requestId().empty())
+            {
+                LOG_DEBUG_FMT("Http3Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us（流式正文路由）",
+                              streamingRequest.request.requestId(), streamingRequest.request.uri(), response.status(),
+                              std::chrono::duration_cast<std::chrono::microseconds>(requestElapsed).count());
+            }
         }
         if (isRejectedByBodyOverflow)
         {

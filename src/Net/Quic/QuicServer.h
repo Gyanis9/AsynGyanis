@@ -148,10 +148,10 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t connectionCount() const noexcept;
 
         /**
-         * @brief 取本服务端的统计快照（h3 会话的请求数、状态码类、单流取消与在线连接数）
+         * @brief 取本服务端的统计快照（h3 会话的请求数、状态码类、耗时、单流取消与在线连接数）
          * @details 与 HttpServer::stats() 同一形态与同一套指标口径，只是数据来自 h3 会话：
-         *          请求数与状态码类由各会话累加，耗时直方图不参与（h3 没有可信的请求起始戳，
-         *          详见 Http3Session 构造函数的说明）
+         *          请求数、状态码类与耗时直方图都由各会话累加（h3 的耗时起点是会话收下这条请求的
+         *          那一刻，详见 Http3Session 构造函数的说明）；本服务端额外就地补上在线连接数
          * @return HttpServerStats 快照；未配置采集端时除在线连接数外各计数为零
          * @note 可从任意线程调用（计数是原子量、连接数是加锁读的近似值）
          */

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <coroutine>
 #include <cstdlib>
@@ -23,6 +24,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1369,9 +1371,13 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 接上采集端后，h3 的请求数与状态码类如实落账
-     * @details 与 h1/h2 同一套口径：收齐的请求计一条、响应按状态码类归档。耗时直方图**不参与**——
-     *          h3 各流由传输层驱动，会话没有「收到完整请求」那一刻的戳，宁可不记也不用 0 秒糊弄
+     * @brief 接上采集端后，h3 的请求数、状态码类与耗时如实落账
+     * @details 与 h1/h2 同一套口径：收齐的请求计一条、响应按状态码类归档、耗时进直方图。
+     *          这一条原先钉的是「耗时刻意不记」（理由是会话没有可信的请求起始戳）——那个理由在
+     *          代码里站不住：请求收齐并交付业务的那一刻就是戳，h2 也正是从那一刻起算的。把 h3 排除
+     *          在直方图外的代价是混合部署下的延迟读数只覆盖两条 TCP 通道，而看的人不知道。
+     *          处理器里睡 2 毫秒是为了让「耗时是真量出来的」这句断言有下界可钉：本用例没有事件循环，
+     *          阻塞的就是驱动会话的这一条线程，不影响任何判定。
      */
     TEST(Http3Session, ReportsRequestsAndStatusClassesToMetricsCollector)
     {
@@ -1392,6 +1398,7 @@ namespace AsynGyanis::Net
         router.get("/hello",
                    [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                    {
+                       std::this_thread::sleep_for(std::chrono::milliseconds{2});
                        response.setStatus(200);
                        response.setBody("hi");
                        co_return;
@@ -1419,9 +1426,10 @@ namespace AsynGyanis::Net
         EXPECT_EQ(snapshot.totalRequestCount, 1U) << "h3 的请求没有计入请求数";
         EXPECT_EQ(snapshot.status2xxCount, 1U) << "h3 的 200 响应没有计入 2xx";
         EXPECT_EQ(snapshot.badRequestCount, 0U);
-        // 延迟刻意不记：两条计数都不该被写脏
-        EXPECT_EQ(snapshot.totalLatencyMicroseconds, 0U) << "h3 不该往耗时直方图里记样本";
-        EXPECT_TRUE(std::ranges::all_of(snapshot.latencyBucketCounts, [](const std::uint64_t count) { return count == 0U; }));
+        // 耗时是真量出来的：落了一个样本，且不小于处理器里那 2 毫秒
+        EXPECT_EQ(snapshot.latencySampleCount(), 1U) << "h3 的响应没有落进耗时直方图";
+        EXPECT_GE(snapshot.totalLatencyMicroseconds, 2000U)
+                << "耗时不像从「收下请求」量起的：" << snapshot.totalLatencyMicroseconds << " 微秒";
     }
 
     /**
@@ -1808,6 +1816,65 @@ namespace AsynGyanis::Net
         EXPECT_EQ(peer.response().status, 200) << "流式正文路由应当正常服务，而不是回错";
         EXPECT_EQ(peer.response().body, "uploaded") << "处理器的响应没有回到客户端";
     }
+
+    /**
+     * @brief 钉住：走流式正文路由的 h3 请求也要计入采集端（请求数、状态码类、耗时）
+     * @details 这条漏斗原先一笔都不落账：普通请求的记账写在收齐后派发的那一段里，而流式路由是
+     *          「头部收齐即派发」、由本流自己的协程服务到底，绕过了那一段。后果是「只挂流式上传路由」
+     *          的 h3 服务在 /metrics 上看着像没有流量——请求确实被收下并答了，计数却全是零。
+     *          h1/h2 两条通道的流式路由都在同一条派发路径上记账，因此这是 h3 独有的漏项。
+     */
+    TEST(Http3Session, CountsStreamingBodyRouteRequestIntoMetricsCollector)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(
+                                         CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                             },
+                             Http3Session::StreamCrediter{}, metrics);
+
+        Router router;
+        router.postStreaming("/upload",
+                             [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 while (co_await request.bodyStream()->readNext())
+                                 {
+                                 }
+                                 response.setStatus(200);
+                                 response.setBody("uploaded");
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "streaming-upload-body", 8));
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        ASSERT_EQ(peer.response().status, 200) << "用例前提：这条流式请求应当被正常应答";
+
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.totalRequestCount, 1U) << "流式正文路由的请求没计入请求数：这类服务在指标上像没有流量";
+        EXPECT_EQ(snapshot.status2xxCount, 1U) << "流式正文路由的 200 没计入状态码类";
+        EXPECT_EQ(snapshot.latencySampleCount(), 1U) << "流式正文路由的响应没落进耗时直方图";
+    }
     /**
      * @brief 对端取消（RESET_STREAM）一条正在收正文的流：会话在下一个安全点把它整条回收
      * @details 会话层自己看不到 QUIC 层的重置信号。少了承载层这一路通知，被取消的请求会连同已攒下的
@@ -1886,12 +1953,16 @@ namespace AsynGyanis::Net
      * @brief 扩展 CONNECT 与 END_STREAM 同一趟到达时，隧道建立即收尾、响应正常收完
      * @details 头收齐那一刻流号只进了「待建隧道」集合，随后的 END_STREAM 此前被这条分支直接丢掉：
      *          隧道建成后业务永远挂在 receive() 上、对端也拿不到响应收尾。这里钉住「头与 END_STREAM
-     *          同趟到达」这条路径——客户端的响应必须收尾（isComplete）
+     *          同趟到达」这条路径——客户端的响应必须收尾（isComplete）。
+     *          顺带在这里钉隧道的采集账：隧道那条请求计入请求数，应答（h3 按 RFC 9220 是 2xx，
+     *          没有 101 这一档）也要落状态码类与耗时——原先 `continue` 直接跳过了整个落账分支，
+     *          于是只挂 WebSocket 的 h3 服务在 /metrics 上是「有请求、没响应」。
      */
     TEST(Http3Session, ClosesTunnelWhenConnectAndEndStreamArriveTogether)
     {
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
 
         Http3Session session(std::ref(opener),
                              [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
@@ -1899,7 +1970,8 @@ namespace AsynGyanis::Net
                                  sentStreamData.push_back(
                                          CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                                  return data.size();
-                             });
+                             },
+                             Http3Session::StreamCrediter{}, metrics);
 
         bool             isBusinessFinished = false;
         Router           router;
@@ -1944,6 +2016,11 @@ namespace AsynGyanis::Net
                 << "对端已收尾的隧道没有跟着收口：响应永远收不完（业务也醒不过来）";
         EXPECT_TRUE(isBusinessFinished) << "隧道收口后业务没有醒来收尾";
         EXPECT_FALSE(session.hasOutstandingWork()) << "同趟收尾的隧道收口后仍留在账上：承载层会一直认为这条连接有在途工作";
+
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.totalRequestCount, 1U) << "隧道这条请求没计入请求数";
+        EXPECT_EQ(snapshot.status2xxCount, 1U) << "隧道的 2xx 应答没落进状态码类：h3 没有 101 这一档";
+        EXPECT_EQ(snapshot.latencySampleCount(), 1U) << "隧道的响应没落进耗时直方图";
     }
 
     /**

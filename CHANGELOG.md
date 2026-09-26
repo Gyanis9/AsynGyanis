@@ -17,6 +17,28 @@
 
 ### 新增
 
+- **HTTP/3 的采集账与两条 TCP 通道对齐**：三处原先漏记的地方补上，`/metrics` 里 h1/h2/h3 从此是
+  同一套口径。① **耗时直方图**：h3 每条响应现在都落一个样本，起点是「会话收下这条请求」的那一刻、
+  终点是「响应排进待发字节」——与 h2 的 `requestReceivedTime` 在同一相对位置。原先的口径是「h3 不参与
+  直方图，因为会话没有可信的请求起始戳」，那个理由站不住：请求收齐并交付业务的那一刻就是戳，
+  h2 也正是从那一刻起算；把它排除在外的实际后果是混合部署下的延迟读数只覆盖两条 TCP 通道，而看的人
+  不知道。② **流式正文路由的请求原先一笔都不落账**（不计请求数、不计状态码、不计耗时）：普通请求的
+  记账写在「收齐后派发」那一段里，而流式路由是头部收齐即派发、由本流自己的协程服务到底，绕过了那一段。
+  只挂流式上传路由的 h3 服务因此在指标上看着像没有流量，而请求确实被收下并答了。③ **WebSocket 隧道**
+  （RFC 9220 的扩展 CONNECT）的应答原先随 `continue` 一起跳过落账：这类服务报出的是「有请求、没响应」，
+  而 h2 那一侧是记 101 的。h3 没有 101 这一档，记的就是真实发出的那个 2xx。
+  三条派发路径共用一条判据：半途抛异常、头部已上线的流式响应只发了一半，不落账（记成已应答会把
+  状态码类与直方图一起写脏）。h3 也补上了每请求一条的 Debug 完成日志（含 request-id 与耗时微秒），
+  与 h1/h2 同口径。
+  用例：`Http3Session.ReportsRequestsAndStatusClassesToMetricsCollector`（耗时要真量出来：处理器里
+  睡 2 毫秒，断言样本数为 1 且总耗时不小于那 2 毫秒）、新增
+  `CountsStreamingBodyRouteRequestIntoMetricsCollector`（流式漏斗三笔账）、
+  `ClosesTunnelWhenConnectAndEndStreamArriveTogether` 尾部加钉隧道的三笔账。
+  证伪（分两次构建，每次只红自己那条）：把流式漏斗的计入与落账去掉、把主循环两处 `recordResponse`
+  换回 `countResponseStatus`——同一趟构建里这两条各红各的；再把隧道那处的落账去掉，红的恰好只有
+  隧道那条。
+  跨协议一致的对外判定仍由进程外的 aioquic 做（`scripts/quic_cross_check.sh`、`scripts/h3_acceptance.py`），
+  本文件里的字节级对端只作状态机回归。
 - **准入闸门把自己挡掉的连接报出来**：`/metrics` 新增一族计数器
   `admission_rejected_connections_total`，取的是按来源 IP 的并发限额器累计拒绝的条数
   （`PerIpConnectionLimiter::rejectedConnectionCount()`，经新增的

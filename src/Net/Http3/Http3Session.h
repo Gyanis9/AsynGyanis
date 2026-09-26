@@ -101,9 +101,12 @@ namespace AsynGyanis::Net
          * @note 构造里就把 HTTP/3 连接层建起来：三条本端单向流、SETTINGS 与 QPACK 两侧都在那时接上。
          *       开流失败只记日志并让会话保持不可用（`isUsable()` 为假），不抛异常：
          *       一条连接建不起 h3 不该把服务端拖垮
-         * @note 采集口径与 h1/h2 对齐：请求数与 413/协议性拒绝计入，响应按状态码类计数，
-         *       被对端 RESET_STREAM 取消的流计入「单流取消」。**耗时直方图不参与**——
-         *       h3 各流由传输层驱动，会话没有「收到完整请求」那一刻的戳，宁可不记也不用 0 秒糊弄
+         * @note 采集口径与 h1/h2 对齐：请求数与 413/协议性拒绝计入，响应按状态码类计数并落耗时直方图，
+         *        被对端 RESET_STREAM 取消的流计入「单流取消」。**三条派发路径都算账**：普通请求、
+         *        流式正文路由的请求（头部收齐即派发，与 h1/h2 同一时刻计入）、RFC 9220 的隧道
+         *        （以 2xx 应答，那条响应同样落账）。耗时的起点是「本会话收下这条请求」的那一刻：
+         *        普通路径在收齐并交付业务时取戳，流式路径在头部收齐、派发协程建立时取戳——
+         *        与 h2 的 `requestReceivedTime` 同一相对位置，不含传输层的排队与重传
          */
         Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {},
                      std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
@@ -370,6 +373,10 @@ namespace AsynGyanis::Net
             bool hasPendingWake{false};           ///< 有新正文/收尾/断开，等回到安全点再唤醒
             /// 正文还没收完时「下一次该有进展」的时刻，随每段到达按 readTimeout 往后推；收完之后不再判
             Deadline deadline{std::chrono::steady_clock::now()};
+            /// 本流「收下这条请求」的时刻（头部收齐、派发协程建立那一刻），用于耗时直方图的起点。
+            /// 取在构造而不是派发开始：构造就是会话知道请求完整的时刻，与 h2 的 requestReceivedTime
+            /// 在相对位置上同一档（都不含传输层的排队与重传）
+            std::chrono::steady_clock::time_point requestReceivedAt{std::chrono::steady_clock::now()};
         };
 
         /**
