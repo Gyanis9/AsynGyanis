@@ -1,12 +1,17 @@
 // 出站 keep-alive 连接池的端到端用例
 #include "HttpTestSupport.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/HttpRequestBody.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
+#include <expected>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -422,5 +427,97 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.statusCode, 0) << "对端收了这条连接，本端分不清请求有没有被接手，不该给出一个成功";
         EXPECT_EQ(postEntryCount.load(std::memory_order_acquire), 0U)
                 << "服务端收到了那条 POST：已整个写出的非幂等请求被换一条连接重发了一遍";
+    }
+
+    /**
+     * @brief 钉住：流式上传是一段一段写上通路的，服务端按段收齐且拼回的正文完整
+     * @details 判据用握手而不是计时：客户端生产第 k 段之前，先等服务端把第 k-1 批交付完（处理器的计数
+     *          已抬起，见 registerStreamingEchoRoute）。于是「整份攒成一坨再发」那种退化会让服务端
+     *          始终只看到 1 批，批次数当场报红；而等待预算用完时照常交正文，用例是**失败**不是挂住。
+     * @details 另两条各拦一处：拼回的正文等于三段之和拦「丢段、重段、把终止块当正文发出去」（零长块
+     *          按 RFC 9112 §7.1 就是终止块）；客户端拿到 200 拦「chunked 定界写坏，对端把请求读成
+     *          不合规范」。
+     */
+    TEST(HttpOutboundConnectionPool, UploadsStreamedBodyAsChunkedRequest)
+    {
+        std::atomic<std::size_t> serverBatchCount{0};
+        std::mutex receivedGuard;
+        std::string receivedText;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [&serverBatchCount, &receivedGuard, &receivedText](Router &router, Core::EventLoop &)
+                                         {
+                                             registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText);
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
+
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort())
+                + std::string{kStreamEchoRoutePath};
+        Core::EventLoop loop;
+        std::expected<HttpClientResponse, std::string> outcome{std::unexpect, "还没跑"};
+        auto drive = [&loop, &url, &outcome, &serverBatchCount]() -> Core::Task<>
+        {
+            HttpClientRequest request;
+            request.method = "POST";
+            request.contentType = "text/plain";
+            request.bodySource = makeStreamEchoChunkSource(loop, serverBatchCount);
+            outcome = co_await HttpClient::send(loop, url, request);
+            loop.stop();
+        };
+        // 闭包先落到具名对象上再调用：协程帧记的是闭包地址，临时量在语句结束就析构，
+        // 恢复时读的是死对象（容器里的 ASan 报 stack-use-after-scope）
+        auto work = drive();
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        ASSERT_TRUE(outcome.has_value()) << "流式上传没走通：" << outcome.error();
+        EXPECT_EQ(outcome->statusCode, 200);
+        EXPECT_EQ(outcome->body, "echoed=3") << "服务端按批交付的次数不对：" << outcome->body;
+        EXPECT_EQ(serverBatchCount.load(std::memory_order_acquire), kStreamEchoChunkCount) << "正文不是一段一段到服务端的";
+        const std::lock_guard<std::mutex> guard(receivedGuard);
+        EXPECT_EQ(receivedText, kStreamEchoExpectedText) << "拼回的正文：「" << receivedText << "」";
+    }
+
+    /**
+     * @brief 钉住：整份正文与流式来源同时给属于用法错误，当场拒绝
+     * @details 两种写法的定界头互斥（Content-Length 与 Transfer-Encoding: chunked），同时给等于让对端
+     *          挑一份信，而挑哪一份由中间盒决定。口径同 URL 畸形与占用 owned 头部：抛出，不折进失败值。
+     * @details 异常在协程体里抛、由 run() 记一条日志后重抛。这里就地接住而不是让 run() 往外抛：往外抛
+     *          的话循环里定时器与协程帧的收尾顺序就不再是平时那一条，用例测的东西会跟着变。
+     */
+    TEST(HttpOutboundConnectionPool, RejectsRequestWithBothBufferedAndStreamedBody)
+    {
+        HttpClientRequest request;
+        request.method = "POST";
+        request.body = "whole-body";
+        request.bodySource = []() -> Core::Task<std::optional<std::string>>
+        {
+            co_return std::nullopt;
+        };
+        Core::EventLoop loop;
+        bool isRejected{false};
+        auto drive = [&loop, &request, &isRejected]() -> Core::Task<>
+        {
+            try
+            {
+                const auto outcome = co_await HttpClient::send(loop, "http://127.0.0.1:1/stream-echo", request);
+                static_cast<void>(outcome);
+            }
+            catch (const Base::InvalidArgumentException &)
+            {
+                isRejected = true;
+            }
+            loop.stop();
+        };
+        auto work = drive();
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_TRUE(isRejected) << "两种正文写法同时给却没被拒：定界头会互相矛盾";
     }
 } // namespace AsynGyanis::Net

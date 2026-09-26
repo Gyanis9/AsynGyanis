@@ -10,10 +10,12 @@
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpResponseParser.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
+#include "Net/Http/HttpBodyChunk.h"
 #include <chrono>
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -50,6 +52,16 @@ namespace AsynGyanis::Net
         std::string_view body{};                        ///< 正文；为空时不写 Content-Length，也不写 Content-Type
         std::string_view contentType{};                 ///< 正文媒体类型，只随非空正文一起写出
         std::vector<HttpClientHeaderField> headers{};   ///< 附加头部，按给出的顺序上线
+        /**
+         * @brief 流式正文的来源：一段一段交出，写完才算正文结束
+         * @details 填了它就忽略 body（contentType 照旧生效）。两种正文写法同时给属于用法错误，当场拒绝。
+         *          上线的形状按通路而定：HTTP/1.1 是 `Transfer-Encoding: chunked`（不再写
+         *          Content-Length），HTTP/2 是分帧的 DATA；两条都是**拉一段、发一段**，所以传一个大文件
+         *          时内存里同时只有一份分段，而不是整份先攒进一个字符串。
+         * @note 整体时限（requestTimeout）覆盖「生产正文」这一段：来源自己按住不放，到点就是一条失败
+         *       请求，不会把循环挂住
+         */
+        HttpBodyChunkSource bodySource{};
     };
     /**
      * @brief 拆开的请求 URL

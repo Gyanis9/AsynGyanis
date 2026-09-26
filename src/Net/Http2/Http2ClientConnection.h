@@ -9,6 +9,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
+#include "Net/Http/HttpBodyChunk.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 
@@ -143,12 +144,35 @@ namespace AsynGyanis::Net
          * @param extraHeaders 附加字段，按给出的顺序排在四个伪头之后
          * @param body 请求正文；为空时头块直接带 END_STREAM。超出对端流控窗口的部分会等 WINDOW_UPDATE
          *        续发，等待期间照常处理对端送来的帧
+         * @param waitTimeout 本次请求的整体时限：写出、等响应头、收完正文三段之和
          * @return Http2ClientResponse 响应；失败时 errorMessage 给出断在哪一段
          */
         [[nodiscard]] Core::Task<Http2ClientResponse> request(std::string_view scheme, std::string_view authority,
                                                               std::string_view method, std::string_view path,
                                                               const std::vector<std::pair<std::string, std::string>> &extraHeaders,
                                                               std::string_view body, std::chrono::milliseconds waitTimeout);
+
+        /**
+         * @brief 提一条**流式正文**的请求：正文由 bodySource 一段一段交出，交完才收尾流
+         * @details 与 request() 的整份正文那一支的差别只在正文从哪来：那一支要一整份在手（长度事先
+         *          知道，最后一段 DATA 带 END_STREAM），这一支边生产边发（END_STREAM 落在收尾那条空
+         *          DATA 上）。拉一段发一段就是背压：上一段没写上通路（对端的流控窗口还没还）不会叫
+         *          下一段，所以传大文件时内存里同时只有一份分段。
+         * @details 有意另起一个名字而不是重载：整份那一支的正文形参是 string_view，`{}` 同时配得上
+         *          两个重载，重载会让既有写法变成歧义调用。
+         * @param scheme 请求伪头 :scheme
+         * @param authority 请求伪头 :authority
+         * @param method 请求伪头 :method
+         * @param path 请求伪头 :path
+         * @param extraHeaders 普通请求字段（含 content-type 这类由调用方给的）
+         * @param bodySource 正文来源；交 nullopt 表示结束
+         * @param waitTimeout 本次请求的整体时限（含生产正文那一段）
+         * @return Http2ClientResponse 结论；正文写到一半被对端中止时按失败交出
+         */
+        [[nodiscard]] Core::Task<Http2ClientResponse> requestStreamed(
+                std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
+                const std::vector<std::pair<std::string, std::string>> &extraHeaders,
+                const HttpBodyChunkSource &bodySource, std::chrono::milliseconds waitTimeout);
 
         /**
          * @brief 礼貌收尾：先尽力把 GOAWAY 发出去，再关掉通路
@@ -363,7 +387,32 @@ namespace AsynGyanis::Net
         Core::Task<bool> flushOutgoing();
 
         /// 按连接级与这条流两层的窗口余量把正文发完，必要时等 WINDOW_UPDATE 续发
-        Core::Task<bool> sendBody(PendingStream &stream, std::string_view body);
+        Core::Task<bool> sendBody(PendingStream &stream, std::string_view body, bool isEndOfBody = true);
+
+        /**
+         * @brief 把流式正文一段一段发完，最后补一条带 END_STREAM 的空 DATA
+         * @param stream 目标流
+         * @param bodySource 正文来源；交 nullopt 表示结束
+         * @return true 整个正文发完且收尾已写上通路；false 中途通路或流已不可用（原因在流记录里）
+         */
+        Core::Task<bool> sendStreamedBody(PendingStream &stream, const HttpBodyChunkSource &bodySource);
+
+        /**
+         * @brief request() 两支共用的实现：bodySource 非空即走流式那一条
+         * @param scheme 请求伪头 :scheme
+         * @param authority 请求伪头 :authority
+         * @param method 请求伪头 :method
+         * @param path 请求伪头 :path
+         * @param extraHeaders 普通请求字段
+         * @param body 整份正文；走流式时为空
+         * @param bodySourceOrNull 流式正文的来源，空指针表示用 body
+         * @param waitTimeout 本次请求的整体时限
+         * @return Http2ClientResponse 结论
+         */
+        Core::Task<Http2ClientResponse> requestWithBody(
+                std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
+                const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
+                const HttpBodyChunkSource *bodySourceOrNull, std::chrono::milliseconds waitTimeout);
 
         /// 本端 SETTINGS 的编码结果（通告 INITIAL_WINDOW_SIZE 与 MAX_FRAME_SIZE 两项）
         [[nodiscard]] std::string encodeLocalSettings() const;

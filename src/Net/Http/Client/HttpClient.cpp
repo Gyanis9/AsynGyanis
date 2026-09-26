@@ -24,6 +24,7 @@
 #include <cstring>
 #include <charconv>
 #include <chrono>
+#include <format>
 #include <memory>
 #include <optional>
 #include <string>
@@ -391,6 +392,12 @@ namespace AsynGyanis::Net
          */
         void validateRequest(const HttpClientRequest &request)
         {
+            if (!request.body.empty() && request.bodySource)
+            {
+                // 两种正文写法同时给：一份 Content-Length 加一份 chunked 是让对端挑一个信，
+                // 而挑哪个由中间盒决定——当场拒绝，不猜
+                throw Base::InvalidArgumentException("HttpClient：body 与 bodySource 只能选一种：前者一次性交整份正文，后者按段拉出去");
+            }
             if (!isTokenText(request.method))
             {
                 throw Base::InvalidArgumentException(R"(HttpClient：请求方法「)" + request.method +
@@ -443,7 +450,17 @@ namespace AsynGyanis::Net
             {
                 text += "Accept-Encoding: "; text += kOutboundAcceptEncodingValue; text += "\r\n";
             }
-            if (!request.body.empty())
+            if (request.bodySource)
+            {
+                // 流式正文：长度事先不知道，按 chunked 定界（RFC 9112 §7.1）。这一支不写
+                // Content-Length——两份定界同时挂在一条报文上，对端挑哪一份信由中间盒决定
+                if (!request.contentType.empty())
+                {
+                    text += "Content-Type: "; text += request.contentType; text += "\r\n";
+                }
+                text += "Transfer-Encoding: chunked\r\n";
+            }
+            else if (!request.body.empty())
             {
                 if (!request.contentType.empty())
                 {
@@ -511,7 +528,8 @@ namespace AsynGyanis::Net
          * @return OutboundExchange 响应与「有没有读到过字节」；响应为空即失败
          */
         Core::Task<OutboundExchange> exchangeOnConnection(Core::EventLoop &loop, HttpOutboundConnection &connection,
-                                                         const std::string &requestText, const bool isHeadRequest,
+                                                         const std::string &requestText,
+                                                         const HttpBodyChunkSource &bodySource, const bool isHeadRequest,
                                                          const std::chrono::milliseconds requestTimeout,
                                                          std::string &failureReason)
         {
@@ -530,6 +548,39 @@ namespace AsynGyanis::Net
                     co_return exchange;
                 }
                 exchange.isAnyByteSent = true;
+                if (bodySource)
+                {
+                    // 拉一段、发一段：上一段没写上通路就不叫下一段，这就是上传的背压。零长的段按
+                    // §7.1 就是终止块，不能当正文发出去（那等于提前把正文判完，后面的段落没人认领）
+                    while (true)
+                    {
+                        const std::optional<std::string> chunk = co_await bodySource();
+                        if (!chunk.has_value())
+                        {
+                            break;
+                        }
+                        if (chunk->empty())
+                        {
+                            continue;
+                        }
+                        std::string frame;
+                        frame.reserve(chunk->size() + 16U);
+                        frame += std::format("{:x}\r\n", chunk->size());
+                        frame += *chunk;
+                        frame += "\r\n";
+                        if (!co_await connection.send(frame))
+                        {
+                            failureReason = "写出流式正文失败：对端在收完正文前收线，或本次请求已到时限（主机 " + host + "）";
+                            co_return exchange;
+                        }
+                    }
+                    const std::string terminator = "0\r\n\r\n";
+                    if (!co_await connection.send(terminator))
+                    {
+                        failureReason = "收尾流式正文失败：终止块没能写上通路（对端收线或已到时限，主机 " + host + "）";
+                        co_return exchange;
+                    }
+                }
 
                 std::array<char, 4096> buffer{};
                 while (true)
@@ -815,14 +866,20 @@ namespace AsynGyanis::Net
             const std::string_view scheme = u.scheme == "https" ? "https" : "http";
             const std::string method = request.method;
             const std::string body(request.body);
+            // 流式来源也落到本帧的对象上：它要跨过 co_await 活着。空的 std::function 拷贝不分配，
+            // 所以这一句对不用流式上传的调用方是零成本
+            const HttpBodyChunkSource bodySource = request.bodySource;
             const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
             if (!exchangeBudget.has_value())
             {
                 failureReason = "本次请求已到时限：还没把请求写上通路（主机 " + u.host + "）";
                 co_return exchange;
             }
-            Http2ClientResponse response = co_await client.request(
-                    scheme, authority, method, u.path, extraHeaders, body, *exchangeBudget);
+            Http2ClientResponse response = bodySource
+                                               ? co_await client.requestStreamed(scheme, authority, method, u.path,
+                                                                                extraHeaders, bodySource, *exchangeBudget)
+                                               : co_await client.request(scheme, authority, method, u.path, extraHeaders,
+                                                                         body, *exchangeBudget);
             exchange.isAnyByteReceived = response.isAnyByteReceived;
             exchange.isAnyByteSent = response.isAnyByteSent;
             if (!response.isOk())
@@ -899,7 +956,8 @@ namespace AsynGyanis::Net
                     if (reusedBudget.has_value())
                     {
                         const std::string requestText = makeRequestText();
-                        OutboundExchange exchange = co_await exchangeOnConnection(loop, *reused, requestText, isHeadRequest,
+                        OutboundExchange exchange = co_await exchangeOnConnection(loop, *reused, requestText,
+                                                                                 request.bodySource, isHeadRequest,
                                                                                  *reusedBudget, failureReason);
                         if (exchange.response)
                         {
@@ -990,7 +1048,8 @@ namespace AsynGyanis::Net
                 co_return nullptr;
             }
             const std::string requestText = makeRequestText();
-            OutboundExchange exchange = co_await exchangeOnConnection(loop, *connection, requestText, isHeadRequest,
+            OutboundExchange exchange = co_await exchangeOnConnection(loop, *connection, requestText,
+                                                                     request.bodySource, isHeadRequest,
                                                                      *exchangeBudget, failureReason);
             if (exchange.response && pool != nullptr && isResponseReusable(exchange.response->headers))
             {

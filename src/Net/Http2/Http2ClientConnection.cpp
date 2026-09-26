@@ -784,7 +784,8 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    Core::Task<bool> Http2ClientConnection::sendBody(PendingStream &stream, const std::string_view body)
+    Core::Task<bool> Http2ClientConnection::sendBody(PendingStream &stream, const std::string_view body,
+                                                     const bool isEndOfBody)
     {
         std::size_t offset = 0;
         while (offset < body.size())
@@ -815,7 +816,7 @@ namespace AsynGyanis::Net
             const std::size_t chunkByteCount =
                     std::min(static_cast<std::size_t>(availableByteCount),
                              std::min(body.size() - offset, static_cast<std::size_t>(m_peerMaximumFrameByteSize)));
-            const bool isLastChunk = offset + chunkByteCount >= body.size();
+            const bool isLastChunk = isEndOfBody && offset + chunkByteCount >= body.size();
             // 窗口先扣再写：写是一次 await，这期间别人看的必须是扣过的账。两条流各自按同一份连接
             // 窗口算一遍，总量就会越过对端通告的上界（§6.9.1 的 FLOW_CONTROL_ERROR）
             m_connectionSendWindowByteCount -= static_cast<std::int64_t>(chunkByteCount);
@@ -832,10 +833,59 @@ namespace AsynGyanis::Net
         co_return true;
     }
 
+    Core::Task<bool> Http2ClientConnection::sendStreamedBody(PendingStream &stream, const HttpBodyChunkSource &bodySource)
+    {
+        while (true)
+        {
+            const std::optional<std::string> chunk = co_await bodySource();
+            if (!chunk.has_value())
+            {
+                break;
+            }
+            if (chunk->empty())
+            {
+                // 空的这一段既不占窗口也不该提前把流收尾：结束只认 nullopt
+                continue;
+            }
+            if (!co_await sendBody(stream, std::string_view{*chunk}, false))
+            {
+                co_return false;
+            }
+        }
+        if (!isHealthy() || stream.isReset || stream.isResponseComplete)
+        {
+            // 流已经不需要收尾了：对端中止、响应提前收齐（413/401 那一类），或通路已断
+            co_return false;
+        }
+        // 收尾用一条空的 DATA 带 END_STREAM：最后一段正文早在交出去时就定下不带收尾位了，
+        // 而 §6.1 明确允许空帧带 END_STREAM——它不是错误，只是「正文到此为止」的另一种写法
+        stream.response.isAnyByteSent = true;
+        appendOutgoing(encodeHttp2Frame(Http2FrameType::Data, kHttp2FlagEndStream, stream.streamId, std::string_view{}));
+        co_return co_await flushOutgoing();
+    }
+
     Core::Task<Http2ClientResponse> Http2ClientConnection::request(
             const std::string_view scheme, const std::string_view authority, const std::string_view method,
             const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
             const std::string_view body, const std::chrono::milliseconds waitTimeout)
+    {
+        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, body, nullptr, waitTimeout);
+    }
+
+    Core::Task<Http2ClientResponse> Http2ClientConnection::requestStreamed(
+            const std::string_view scheme, const std::string_view authority, const std::string_view method,
+            const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
+            const HttpBodyChunkSource &bodySource, const std::chrono::milliseconds waitTimeout)
+    {
+        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, std::string_view{},
+                                           &bodySource, waitTimeout);
+    }
+
+    Core::Task<Http2ClientResponse> Http2ClientConnection::requestWithBody(
+            const std::string_view scheme, const std::string_view authority, const std::string_view method,
+            const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
+            const std::string_view body, const HttpBodyChunkSource *const bodySourceOrNull,
+            const std::chrono::milliseconds waitTimeout)
     {
         Http2ClientResponse response;
         if (!isHealthy())
@@ -877,6 +927,9 @@ namespace AsynGyanis::Net
         PendingStream &stream = m_pendingStreams.emplace(streamId, std::move(pending)).first->second;
 
         const std::string headerBlock = m_encoder.encode(fields);
+        // 只有「既没有整份正文、也没有流式来源」才轮到 HEADERS 收尾：END_STREAM 落在头块上就等于
+        // 宣告正文为空，流式那一支的正文还在后面，提前收尾会让对端把请求当成没正文的
+        const bool isEndStreamOnHeaders = body.empty() && bodySourceOrNull == nullptr;
         // 头块按对端能收的最大帧负载切片：一条 HEADERS 的负载越过 SETTINGS_MAX_FRAME_SIZE 是对端
         // 会拒的帧尺寸错误（§4.2 与 §6.5.2 的取值区间），拆成 HEADERS + CONTINUATION 才是规范
         // 给的办法（§6.10：续帧必须紧跟同一条流的头块，最后一条带 END_HEADERS）。
@@ -892,7 +945,7 @@ namespace AsynGyanis::Net
                 appendOutgoing(encodeHttp2Frame(Http2FrameType::Headers,
                                                 static_cast<std::uint8_t>(
                                                         (isLastFragment ? kHttp2FlagEndHeaders : 0U)
-                                                        | (body.empty() ? kHttp2FlagEndStream : 0U)),
+                                                        | (isEndStreamOnHeaders ? kHttp2FlagEndStream : 0U)),
                                                 streamId, fragment));
             }
             else
@@ -915,7 +968,19 @@ namespace AsynGyanis::Net
             // 收了」那一支，调用方重来一次不算把非幂等请求做两遍
             stream.response.isAnyByteSent = true;
         }
-        const bool isBodyWritten = !isHeadWritten || body.empty() || co_await sendBody(stream, body);
+        // 头都没写成就谈不上正文：下面那道判据按 isHeadWritten 收场，这里先记「不必再发」
+        bool isBodyWritten = !isHeadWritten;
+        if (isHeadWritten)
+        {
+            if (bodySourceOrNull != nullptr)
+            {
+                isBodyWritten = co_await sendStreamedBody(stream, *bodySourceOrNull);
+            }
+            else
+            {
+                isBodyWritten = body.empty() || co_await sendBody(stream, body);
+            }
+        }
         if (!isHeadWritten || !isBodyWritten)
         {
             const auto failedIterator = m_pendingStreams.find(streamId);

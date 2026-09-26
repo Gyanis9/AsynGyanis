@@ -19,8 +19,10 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
-#include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpBodyChunk.h"
 #include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/Router.h"
@@ -662,6 +664,101 @@ namespace AsynGyanis::Net
                             co_return;
                         });
         }
+
+        /// 流式上传用例共用的路由路径与段数：两条承载（HTTP/1.1 与 HTTP/2）用同一份形状，才好比形状之外的事
+        inline constexpr std::string_view kStreamEchoRoutePath = "/stream-echo";
+        inline constexpr std::size_t kStreamEchoChunkCount = 3U;
+
+        /**
+         * @brief 注册一条「收流式正文、每交付一批就推进计数」的 POST 路由（路径 /stream-echo）
+         * @details 走 `postStreaming` 而不是普通 POST：那才是「头部收齐即派发、正文按到达批次交付」的
+         *          一侧。批次数是判据，而**交付一批之后立刻把计数抬上去**——出站侧的来源正等着这个数
+         *          才肯生产下一段，于是「一段一段发」由握手保证，不靠计时碰运气。
+         * @param router 目标路由器
+         * @param batchCount 服务端已交付的批次数（跨线程读写，按原子量记）
+         * @param receivedGuard 保护 receivedText 的锁
+         * @param receivedText 拼回的正文（处理器里拷出来，交用例读）
+         */
+        inline void registerStreamingEchoRoute(Router &router, std::atomic<std::size_t> *batchCount,
+                                              std::mutex *receivedGuard, std::string *receivedText)
+        {
+            router.postStreaming(std::string{kStreamEchoRoutePath},
+                                 [batchCount, receivedGuard, receivedText](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                                 {
+                                     std::size_t batches{0};
+                                     std::string text;
+                                     if (auto *body = request.bodyStream(); body != nullptr)
+                                     {
+                                         while (co_await body->readNext())
+                                         {
+                                             text.append(body->chunk());
+                                             // 先记账再要下一批：出站侧的来源在等这一位
+                                             ++batches;
+                                             batchCount->store(batches, std::memory_order_release);
+                                         }
+                                     }
+                                     const std::lock_guard<std::mutex> guard(*receivedGuard);
+                                     *receivedText = std::move(text);
+                                     response.setBody("echoed=" + std::to_string(batches));
+                                     co_return;
+                                 });
+        }
+
+        /**
+         * @brief 在出站侧这条循环上等服务端的批次数达到 target，最多花掉 waitBudget
+         * @param loop 出站客户端的事件循环（定时器挂在它上面）
+         * @param batchCount 服务端已交付的批次数
+         * @param target 要等到不小于这个数
+         * @param waitBudget 这一段的等待预算
+         * @return true 等到了；false 预算用完——调用方照常交正文，让判据落在批次数上而不是把用例挂住
+         */
+        inline Core::Task<bool> waitForBatchCount(Core::EventLoop &loop, const std::atomic<std::size_t> &batchCount,
+                                                 const std::size_t target, const std::chrono::milliseconds waitBudget)
+        {
+            const auto startedAt = std::chrono::steady_clock::now();
+            Core::Timer pollTimer(loop);
+            while (batchCount.load(std::memory_order_acquire) < target)
+            {
+                if (std::chrono::steady_clock::now() - startedAt >= waitBudget)
+                {
+                    co_return false;
+                }
+                co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+            }
+            co_return true;
+        }
+
+        /**
+         * @brief 造一个「按段交 chunk-0、chunk-1…，交完收工」的流式正文来源
+         * @details 游标放 shared_ptr 里：std::function 要求来源可拷贝，而进度只能有一份。
+         *          第 k 段（k>0）交出去之前先等服务端把第 k-1 批交付完——这就是背压的正面证据，
+         *          也是「整份攒成一坨再发」那种退化会被判红的原因。
+         * @param loop 出站客户端的事件循环
+         * @param batchCount 服务端已交付的批次数
+         * @return HttpBodyChunkSource 可直接赋给 HttpClientRequest::bodySource 的来源
+         */
+        inline HttpBodyChunkSource makeStreamEchoChunkSource(Core::EventLoop &loop,
+                                                             const std::atomic<std::size_t> &batchCount)
+        {
+            auto cursor = std::make_shared<std::size_t>(0);
+            return [&loop, &batchCount, cursor]() -> Core::Task<std::optional<std::string>>
+            {
+                const std::size_t index = *cursor;
+                if (index > 0U && index < kStreamEchoChunkCount)
+                {
+                    static_cast<void>(co_await waitForBatchCount(loop, batchCount, index, std::chrono::milliseconds{1500}));
+                }
+                if (index >= kStreamEchoChunkCount)
+                {
+                    co_return std::nullopt;
+                }
+                ++*cursor;
+                co_return "chunk-" + std::to_string(index);
+            };
+        }
+
+        /// 服务端把三段拼回去应当看到的文本
+        inline constexpr std::string_view kStreamEchoExpectedText = "chunk-0chunk-1chunk-2";
 
         /// 服务器启动前的最后一道配置动作：拿到服务器本体，用于落定 setLimits() 之外的开关
         /// （例如 setHttp2CleartextEnabled()）——这些开关同样必须在 start() 之前生效

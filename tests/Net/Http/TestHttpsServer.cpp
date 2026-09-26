@@ -1668,6 +1668,61 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：流式上传在协商出 HTTP/2 的通路上一段一段地发，服务端按段收齐
+     * @details 与 `HttpOutboundConnectionPool.UploadsStreamedBodyAsChunkedRequest` 是一对：同一个请求
+     *          字段（bodySource），两条承载各自决定线上形状（chunked 分块 vs 分帧 DATA）。判据沿用
+     *          那一条的握手：客户端生产第 k 段之前先等服务端交付完第 k-1 批，所以「整份攒成一坨」
+     *          当场露。h2 这一侧多钉一件事：HEADERS 不许带 END_STREAM——带了就等于宣告「没有正文」，
+     *          服务端只会看到 0 批，回显因此是 echoed=0 而不是 echoed=3。
+     */
+    TEST(HttpsServer, UploadsStreamedBodyAsDataFrameSequence)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        std::atomic<std::size_t> serverBatchCount{0};
+        std::mutex receivedGuard;
+        std::string receivedText;
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                                          [&serverBatchCount, &receivedGuard, &receivedText](Router &router, Core::EventLoop &)
+                                          {
+                                              registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText);
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort())
+                + std::string{kStreamEchoRoutePath};
+        Core::EventLoop loop;
+        std::expected<HttpClientResponse, std::string> outcome{std::unexpect, "还没跑"};
+        auto drive = [&loop, &url, &outcome, &serverBatchCount]() -> Core::Task<>
+        {
+            HttpClientRequest request;
+            request.method = "POST";
+            request.contentType = "text/plain";
+            request.bodySource = makeStreamEchoChunkSource(loop, serverBatchCount);
+            outcome = co_await HttpClient::send(loop, url, request, std::chrono::milliseconds{8000});
+            loop.stop();
+        };
+        // 闭包先落到具名对象上再调用：协程帧记住的是闭包地址，临时量在语句结束就析构，
+        // 恢复时读的就是死对象（容器里的 ASan 报 stack-use-after-scope）
+        auto work = drive();
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        ASSERT_TRUE(outcome.has_value()) << "流式上传没走通：" << outcome.error();
+        EXPECT_EQ(outcome->statusCode, 200);
+        EXPECT_TRUE(outcome->reasonPhrase.empty()) << "有原因短语＝那条其实是 HTTP/1.1 的答，h2 这一支没被走到";
+        EXPECT_EQ(outcome->body, "echoed=3") << "服务端按批交付的次数不对：" << outcome->body;
+        EXPECT_EQ(serverBatchCount.load(std::memory_order_acquire), kStreamEchoChunkCount) << "正文不是一段一段到服务端的";
+        const std::lock_guard<std::mutex> guard(receivedGuard);
+        EXPECT_EQ(receivedText, kStreamEchoExpectedText) << "拼回的正文：「" << receivedText << "」";
+    }
+
+    /**
      * @brief 钉住：HTTPS 响应带形态合法的 x-request-id，且客户端自带的合法取值被原样回显
      * @details 两条请求走同一条 keep-alive TLS 连接：第一条不带 id 验证生成面，第二条带合法 id 验证采信面。
      */

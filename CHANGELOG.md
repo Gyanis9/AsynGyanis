@@ -16,6 +16,23 @@
 ## [Unreleased]
 
 ### 新增
+
+- **出站客户端能流式上传正文**：`HttpClientRequest` 多一个字段 `bodySource`——一段一段把正文交出去的
+  异步来源（`HttpBodyChunkSource`，交 `std::nullopt` 表示结束）。填了它就忽略 `body`（`contentType`
+  照旧生效），两者同时给属于用法错误，当场抛 `InvalidArgumentException`：两种写法的定界头互斥
+  （`Content-Length` 与 `Transfer-Encoding: chunked`），同时挂上等于让对端挑一份信，而挑哪一份由
+  中间盒决定。上线的形状按通路而定：HTTP/1.1 是 chunked 分块（RFC 9112 §7.1，末尾补终止块），
+  HTTP/2 是分帧的 DATA（HEADERS 不再带 END_STREAM，收尾用一条空的 DATA 带 END_STREAM，§6.1 允许）。
+  **两条都是「拉一段、发一段」**：上一段没写上通路（h1 是套接字没收下，h2 是对端的流控窗口还没还）
+  就不会叫下一段，于是传大文件时内存里同时只有一份分段，而不是整份先攒进一个字符串再发。
+  整体时限覆盖生产正文那一段：来源自己按住不放，到点就是一条失败请求，不会把循环挂住。
+  与入站侧的 `HttpRequestBody`（服务端收流式正文）正好是一对镜像。
+  用例两条同名前缀的端到端（`HttpOutboundConnectionPool.UploadsStreamedBodyAsChunkedRequest` 与
+  `HttpsServer.UploadsStreamedBodyAsDataFrameSequence`），判据用**握手**而不是计时：处理器的交付计数
+  抬起之后客户端才肯生产下一段，所以「整份攒成一坨再发」会让服务端只看到 1 批而当场报红——
+  不需要靠 sleep 制造重叠，慢机器上也不会假绿。另有一条拒绝用例（两种正文同时给）。三处证伪各自
+  变红：撤掉 chunked 分块与泵段（h1 红）、把 END_STREAM 提前打在 HEADERS 上（h2 红）、漏掉收尾那条
+  空 DATA（h2 红）。
 - **TLS 的可配置面收成一份 `Core::TlsPolicy`，服务端与出站客户端共用**：能配的档位是最低/最高协议版本
   （只认 TLS 1.2 与 1.3 两档——1.0/1.1 由 RFC 8996 列为废弃，留一个能调回去的口子等于把服务端重新暴露给
   已知攻击面，所以不给）、TLS 1.2 及以下的套件列表、TLS 1.3 套件列表、命名曲线/组、OpenSSL 安全等级、
