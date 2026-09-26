@@ -301,6 +301,36 @@ namespace AsynGyanis::Net
         return maximumStreamCount;
     }
 
+    std::string HttpOutboundConnectionPool::establishmentKeyOf(const HttpOutboundEndpointKey &endpointKey)
+    {
+        // 字段之间用单元分隔符而不是冒号：主机文本本身就有冒号（IPv6 字面量），拿冒号当分隔符会让
+        // 「主机里带端口样子文本」的两个端点撞进同一格，合并错对象比不合并更糟
+        std::string key;
+        key.reserve(endpointKey.host.size() + 16U);
+        key += endpointKey.host;
+        key += '\x1F';
+        key += std::to_string(endpointKey.port);
+        key += '\x1F';
+        key += endpointKey.isTls ? 'T' : 'P';
+        return key;
+    }
+
+    bool HttpOutboundConnectionPool::tryBeginEstablishment(const HttpOutboundEndpointKey &endpointKey)
+    {
+        return m_establishments->tryBecomeLeader(establishmentKeyOf(endpointKey));
+    }
+
+    void HttpOutboundConnectionPool::settleEstablishment(const HttpOutboundEndpointKey &endpointKey)
+    {
+        m_establishments->settle(establishmentKeyOf(endpointKey));
+    }
+
+    HttpEstablishmentAwait HttpOutboundConnectionPool::awaitEstablishment(const HttpOutboundEndpointKey &endpointKey,
+                                                                          Core::EventLoop &loop)
+    {
+        return HttpEstablishmentAwait(m_establishments, establishmentKeyOf(endpointKey), loop);
+    }
+
     void HttpOutboundConnectionPool::adoptHttp2(const HttpOutboundEndpointKey &endpointKey,
                                                 std::shared_ptr<Http2ClientConnection> connection)
     {

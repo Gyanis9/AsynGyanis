@@ -42,6 +42,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -796,6 +797,100 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        /// 冷池并发一把的观测量
+        struct ColdBurstOutcome
+        {
+            std::atomic<std::size_t> finishedCount{0}; ///< 已经收口的条数
+            std::atomic<std::size_t> successCount{0};  ///< 拿到 200 的条数
+            std::size_t              heldConnectionCount{0}; ///< 最后一条收口时池里留着的 h2 连接条数
+            std::size_t              activeWhileHeld{0};     ///< 请求都还在途时服务器侧在册的连接数
+        };
+
+        /**
+         * @brief 在请求都还挂在服务器里的时候，从服务器一侧读「同时有多少条连接」
+         * @details 判据必须在请求还没答完的时候取：跑完之后池按端点只留一格，五条握手会被折叠成
+         *          一格，那时再数就分不出「一条连接服务五条请求」与「五条连接各服务一条然后剩一条」。
+         *          服务器侧的在册连接数没有这个问题——会话是谁建的它就数谁。
+         * @note 读数的回调**按值收**：协程的参数住在帧里，首次恢复之后才读，收引用的话
+         *       调用点那个临时 `std::function` 早就出了作用域（ASan 报 stack-use-after-scope 抓到过）。
+         */
+        Core::Task<void> sampleActiveConnections(Core::EventLoop &loop, const std::function<std::size_t()> reader,
+                                                  std::size_t *const destination)
+        {
+            Core::Timer timer(loop);
+            co_await timer.waitFor(std::chrono::milliseconds{150});
+            *destination = reader();
+            co_return;
+        }
+
+        /**
+         * @brief 冷池上并发发出的一条 GET；最后一条收口时记下池里的连接条数并叫停循环
+         * @details 「池里剩几条连接」只有在全都跑完之后才有意义，因此把读数放在最后一条的收尾里做。
+         *          收口计数用原子量：这几路协程各自在自己的挂起/恢复上来写同一个 outcome。
+         */
+        Core::Task<void> fetchOneOnColdPool(Core::EventLoop &loop, HttpClient &client, const std::string &url,
+                                            const std::size_t expectedCount, ColdBurstOutcome &outcome)
+        {
+            const std::unique_ptr<HttpClientResponse> response = co_await client.get(url);
+            if (response != nullptr && response->statusCode == 200)
+            {
+                outcome.successCount.fetch_add(1U, std::memory_order_relaxed);
+            }
+            if (outcome.finishedCount.fetch_add(1U, std::memory_order_acq_rel) + 1U == expectedCount)
+            {
+                outcome.heldConnectionCount = client.idleHttp2ConnectionCount();
+                loop.stop();
+            }
+            co_return;
+        }
+
+        /// 建连必败那一路的观测量：几条并发有没有各自收场
+        struct RefusalBurstOutcome
+        {
+            std::atomic<std::size_t> finishedCount{0}; ///< 已经回来的条数（有人挂住就数不满）
+            std::atomic<std::size_t> refusedCount{0};  ///< 拿回空响应的条数
+        };
+
+        /**
+         * @brief 冷池上并发发出的一条 GET，预期拿回空响应；最后一条收口时叫停循环
+         * @param loop 客户端的事件循环
+         * @param client 被测客户端（用它的池）
+         * @param url 必败的目标（连一个刚关掉的监听端口）
+         * @param timeout 本次请求的时限
+         * @param expectedCount 一共几条，用于认出「最后一条」
+         * @param outcome 输出：收口与拒绝的条数
+         */
+        Core::Task<void> fetchOneUntilRefused(Core::EventLoop &loop, HttpClient &client, const std::string &url,
+                                              const std::chrono::milliseconds timeout,
+                                              const std::size_t expectedCount, RefusalBurstOutcome &outcome)
+        {
+            const std::unique_ptr<HttpClientResponse> response = co_await client.get(url, timeout);
+            if (response == nullptr)
+            {
+                outcome.refusedCount.fetch_add(1U, std::memory_order_relaxed);
+            }
+            if (outcome.finishedCount.fetch_add(1U, std::memory_order_acq_rel) + 1U == expectedCount)
+            {
+                loop.stop();
+            }
+            co_return;
+        }
+
+        /**
+         * @brief 到点就叫停循环的看门狗：把「有人永远回不来」从挂死的用例变成一条红断言
+         * @details 没有它时，一次漏掉的结算会让 loop.run() 转到天荒地老（等建连的那一步本身不设时限，
+         *          靠领导者结算唤醒）。这里给一个远超正常收场耗时的宽限窗，到点直接 stop。
+         * @param loop 要叫停的循环
+         * @param grace 宽限时长
+         */
+        Core::Task<void> stopLoopAfterGrace(Core::EventLoop &loop, const std::chrono::milliseconds grace)
+        {
+            Core::Timer timer(loop);
+            co_await timer.waitFor(grace);
+            loop.stop();
+            co_return;
+        }
+
         /**
          * @brief 注册一条「进门即计数、按住 400 毫秒再回正文」的 GET 路由（路径 /slow）
          * @details 400 毫秒是给客户端侧留的观察窗口：慢到够在客户端循环里采样到「请求仍在途」，
@@ -1343,6 +1438,157 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.mismatchCount, 0U) << "有请求拿回了别人的正文：复用把响应串到别的流上了";
         EXPECT_EQ(outcome.heldConnectionCount, 1U) << "这一批没走复用在同一条连接上";
         EXPECT_EQ(outcome.inFlightAfterRun, 0U) << "收口之后在途流没清零：流表在长连接上越积越多";
+    }
+
+    /**
+     * @brief 冷池上同时进来的请求要共用一次 h2 握手，而不是每条各握手一遍
+     * @details 顺序复用早就成立（上一条），但池子空的时候同时进来的请求各自去建连：TCP、TLS、ALPN、
+     *          h2 前奏重复 N 遍——而 HTTP/2 的立身之本就是一条连接上多路复用，后到的请求应该等第一条
+     *          握手完成再用它。判据取「请求都还挂在服务器里时，服务器在册几条连接」（采样点为什么必须
+     *          在请求完成之前，见 sampleActiveConnections）；池里的条数只作旁证。
+     */
+    TEST(HttpsServer, CoalescesConcurrentColdStartsOntoOneHttp2Connection)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                                          [](Router &router, Core::EventLoop &serverLoop)
+                                          {
+                                              registerHoldingRoute(router, serverLoop, nullptr);
+                                          },
+                                          HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+        constexpr std::size_t kConcurrentRequests = 5U;
+
+        Core::EventLoop loop;
+        HttpClient      client(loop);
+        ColdBurstOutcome outcome;
+        std::vector<Core::Task<void> > workers;
+        workers.reserve(kConcurrentRequests + 1U);
+        workers.push_back(sampleActiveConnections(loop, [&fixture]
+        {
+            return fixture.server().activeConnectionCount();
+        }, &outcome.activeWhileHeld));
+        for (std::size_t index = 0U; index < kConcurrentRequests; ++index)
+        {
+            workers.push_back(fetchOneOnColdPool(loop, client, url, kConcurrentRequests, outcome));
+        }
+        for (Core::Task<void> &worker: workers)
+        {
+            if (!worker.isReady())
+            {
+                loop.scheduler().schedule(worker.handle());
+            }
+        }
+        loop.run();
+
+        EXPECT_EQ(outcome.successCount.load(std::memory_order_acquire), kConcurrentRequests) << "有请求没拿到 200";
+        EXPECT_EQ(outcome.activeWhileHeld, 1U)
+                << "冷池上 " << kConcurrentRequests << " 条并发在服务器上开了 " << outcome.activeWhileHeld
+                << " 条连接：握手没被合并，重复付了这么多遍 TCP+TLS+前奏";
+        EXPECT_EQ(outcome.heldConnectionCount, 1U) << "跑完之后池里不止一条：这一项单独看没有鉴别力，见采样点的说明";
+    }
+
+    /**
+     * @brief 钉住：领导者建连失败时，等它的人要各自收场，而不是永远等一次不会来的结算
+     * @details 合并握手把等待挂在「建连资格」上：领导者每条出口都得归还资格，漏一处就把这个端点的
+     *          出站请求**永久**堵死——等建连那一步自己不设时限，只有 settle 叫得醒它，比 h2 帧那种
+     *          「退化」的漏还严重一档。连一个刚关掉的监听端口是确定复现「建连必败」的写法（比挑一个
+     *          自认为空闲的端口可靠）。判据取「每条都自己回来了」：漏结算时那几条会挂在等待里，
+     *          循环只由看门狗叫停，收口计数数不满。
+     */
+    TEST(HttpsServer, FailingEstablishmentHandsTheEndpointBackToItsWaiters)
+    {
+        std::uint16_t closedPort = 0U;
+        {
+            RunningHttpServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{50});
+            ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+            closedPort = fixture.listeningPort();
+            ASSERT_NE(closedPort, 0U);
+        }
+
+        // 刻意走明文：客户端的 SSL_CTX 是进程级缓存，在这里建一次会把后跑的 TLS 用例的受信配置
+        // 挡在外面（NamesTheStageThatFailed 同一条顾虑）
+        const std::string url = "http://127.0.0.1:" + std::to_string(closedPort) + "/";
+        constexpr std::size_t kConcurrentRequests = 3U;
+
+        Core::EventLoop     loop;
+        HttpClient          client(loop);
+        RefusalBurstOutcome outcome;
+        std::vector<Core::Task<void> > workers;
+        workers.reserve(kConcurrentRequests + 1U);
+        workers.push_back(stopLoopAfterGrace(loop, std::chrono::milliseconds{6000}));
+        for (std::size_t index = 0U; index < kConcurrentRequests; ++index)
+        {
+            workers.push_back(fetchOneUntilRefused(loop, client, url, std::chrono::milliseconds{1000},
+                                                   kConcurrentRequests, outcome));
+        }
+        for (Core::Task<void> &worker: workers)
+        {
+            if (!worker.isReady())
+            {
+                loop.scheduler().schedule(worker.handle());
+            }
+        }
+        loop.run();
+
+        const std::size_t finished = outcome.finishedCount.load(std::memory_order_acquire);
+        EXPECT_EQ(finished, kConcurrentRequests)
+                << "只有 " << finished << " 条收场，其余的挂在「等同一端点的建连」里没回来：建连失败那一条出口"
+                << "没归还建连资格，这个端点往后的出站请求会一直等下去";
+        EXPECT_EQ(outcome.refusedCount.load(std::memory_order_acquire), kConcurrentRequests)
+                << "连的是个没人听的端口，却有请求拿回了响应";
+    }
+
+    /**
+     * @brief 钉住：合并只针对「能共享的那一次握手」，明文 HTTP/1.1 的并发冷启动各建各的、全都成事
+     * @details h1 的连接一次只租给一个请求，领导者没有把结论交进池给别人复用的那一步，所以它在走交换
+     *          之前就得把资格还回去。漏还时等待者既拿不到可复用的连接、也叫不醒自己，只能挂到各自的
+     *          三十秒时限上——判据取「三条全拿到 200」，另配一条看门狗把「挂住」折成红断言而不是跑到天荒地老。
+     */
+    TEST(HttpsServer, ConcurrentColdStartsOnHttp1EachBuildTheirOwnConnection)
+    {
+        RunningHttpServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/tick", [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                             {
+                                                 response.setBody("ok");
+                                                 co_return;
+                                             });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/tick";
+        constexpr std::size_t kConcurrentRequests = 3U;
+
+        Core::EventLoop   loop;
+        HttpClient        client(loop);
+        ColdBurstOutcome  outcome;
+        std::vector<Core::Task<void> > workers;
+        workers.reserve(kConcurrentRequests + 1U);
+        workers.push_back(stopLoopAfterGrace(loop, std::chrono::milliseconds{6000}));
+        for (std::size_t index = 0U; index < kConcurrentRequests; ++index)
+        {
+            workers.push_back(fetchOneOnColdPool(loop, client, url, kConcurrentRequests, outcome));
+        }
+        for (Core::Task<void> &worker: workers)
+        {
+            if (!worker.isReady())
+            {
+                loop.scheduler().schedule(worker.handle());
+            }
+        }
+        loop.run();
+
+        EXPECT_EQ(outcome.successCount.load(std::memory_order_acquire), kConcurrentRequests)
+                << "并发 " << kConcurrentRequests << " 条明文请求只成了 "
+                << outcome.successCount.load(std::memory_order_acquire)
+                << " 条：h1 这一侧的建连资格没在走交换之前归还，等它的人醒不过来";
     }
 
     /**

@@ -917,140 +917,206 @@ namespace AsynGyanis::Net
             };
             const bool isHeadRequest = request.method == "HEAD";
 
-            if (pool != nullptr)
+            // 复用→建连这一整段要能重跑一遍：等同一端点建连的人醒来之后，第一件该做的
+            // 还是回池里看有没有现成的连接，而不是就地假设「有」或「没有」。
+            while (true)
             {
-                // h2 的待命连接问在 h1 的空闲表之前：一台主机的 ALPN 结果是稳定的，两处不会同时有货
-                if (auto cachedHttp2 = pool->acquireHttp2(endpointKey); cachedHttp2 != nullptr)
+                if (pool != nullptr)
                 {
-                    Http2Exchange cachedExchange = co_await exchangeOnHttp2(
-                            *cachedHttp2, u, request, startedAt, requestTimeout, failureReason);
-                    if (cachedExchange.response)
+                    // h2 的待命连接问在 h1 的空闲表之前：一台主机的 ALPN 结果是稳定的，两处不会同时有货
+                    if (auto cachedHttp2 = pool->acquireHttp2(endpointKey); cachedHttp2 != nullptr)
                     {
-                        co_return std::move(cachedExchange.response);
-                    }
-                    if (cachedExchange.isAnyByteReceived)
-                    {
-                        // 对端答过话：响应本身出了问题，换一条连接重来不会换一个答案
-                        co_return nullptr;
-                    }
-                    if (cachedExchange.isAnyByteSent && !isIdempotentRequestMethod(request.method))
-                    {
-                        // 请求已整个交上通路却没有回音：非幂等的不做第二遍
-                        failureReason = "请求已整个写上通路而对端没答话：方法 " + std::string{request.method}
-                                        + " 不在幂等集合里，本端不重发（主机 " + u.host + "）";
-                        co_return nullptr;
-                    }
-                    // 一个字节没发出、也没收到，或是幂等方法发出去没了回音：多半是对端在我们手里把这条
-                    // 连接收了（与 h1 的 keep-alive 同一条竞态）。这条就此作废——不作废也没有下一句，
-                    // HPACK 动态表跟着连接一起丢——往下重开一条重来一次，对调用方仍是一次成功请求
-                }
-                if (auto reused = pool->acquire(endpointKey))
-                {
-                    const std::optional<std::chrono::milliseconds> reusedBudget = remainingBudget(startedAt, requestTimeout);
-                    if (reusedBudget.has_value())
-                    {
-                        const std::string requestText = makeRequestText();
-                        OutboundExchange exchange = co_await exchangeOnConnection(loop, *reused, requestText,
-                                                                                 request.bodySource, isHeadRequest,
-                                                                                 *reusedBudget, failureReason);
-                        if (exchange.response)
+                        Http2Exchange cachedExchange = co_await exchangeOnHttp2(
+                                *cachedHttp2, u, request, startedAt, requestTimeout, failureReason);
+                        if (cachedExchange.response)
                         {
-                            if (isResponseReusable(exchange.response->headers))
-                            {
-                                reused->prepareForNextRequest();
-                                pool->release(std::move(reused));
-                            }
-                            co_return std::move(exchange.response);
+                            co_return std::move(cachedExchange.response);
                         }
-                        // 复用来的连接上连一个字节都没读到：这多半是对端在我们手里空闲期间把它关掉了
-                        // （keep-alive 的经典竞态）。换一条新连接重来一次，对调用方仍是一次成功请求；
-                        // 读到过字节才失败的不能重来——那已经是「响应本身有问题」，重发也不换一个答案
-                        if (exchange.isAnyByteReceived)
+                        if (cachedExchange.isAnyByteReceived)
                         {
+                            // 对端答过话：响应本身出了问题，换一条连接重来不会换一个答案
                             co_return nullptr;
                         }
-                        if (exchange.isAnyByteSent && !isIdempotentRequestMethod(request.method))
+                        if (cachedExchange.isAnyByteSent && !isIdempotentRequestMethod(request.method))
                         {
-                            // 请求已整个写上通路却没有回音：本端分不清「对端没见过它」与「对端正慢」，
-                            // 非幂等的按可能已经执行过处置（RFC 9112 §9.3.2 的重试许可只给幂等方法）
+                            // 请求已整个交上通路却没有回音：非幂等的不做第二遍
                             failureReason = "请求已整个写上通路而对端没答话：方法 " + std::string{request.method}
                                             + " 不在幂等集合里，本端不重发（主机 " + u.host + "）";
                             co_return nullptr;
                         }
-                        reused->close();
+                        // 一个字节没发出、也没收到，或是幂等方法发出去没了回音：多半是对端在我们手里把这条
+                        // 连接收了（与 h1 的 keep-alive 同一条竞态）。这条就此作废——不作废也没有下一句，
+                        // HPACK 动态表跟着连接一起丢——往下重开一条重来一次，对调用方仍是一次成功请求
+                    }
+                    if (auto reused = pool->acquire(endpointKey))
+                    {
+                        const std::optional<std::chrono::milliseconds> reusedBudget = remainingBudget(startedAt, requestTimeout);
+                        if (reusedBudget.has_value())
+                        {
+                            const std::string requestText = makeRequestText();
+                            OutboundExchange exchange = co_await exchangeOnConnection(loop, *reused, requestText,
+                                                                                     request.bodySource, isHeadRequest,
+                                                                                     *reusedBudget, failureReason);
+                            if (exchange.response)
+                            {
+                                if (isResponseReusable(exchange.response->headers))
+                                {
+                                    reused->prepareForNextRequest();
+                                    pool->release(std::move(reused));
+                                }
+                                co_return std::move(exchange.response);
+                            }
+                            // 复用来的连接上连一个字节都没读到：这多半是对端在我们手里空闲期间把它关掉了
+                            // （keep-alive 的经典竞态）。换一条新连接重来一次，对调用方仍是一次成功请求；
+                            // 读到过字节才失败的不能重来——那已经是「响应本身有问题」，重发也不换一个答案
+                            if (exchange.isAnyByteReceived)
+                            {
+                                co_return nullptr;
+                            }
+                            if (exchange.isAnyByteSent && !isIdempotentRequestMethod(request.method))
+                            {
+                                // 请求已整个写上通路却没有回音：本端分不清「对端没见过它」与「对端正慢」，
+                                // 非幂等的按可能已经执行过处置（RFC 9112 §9.3.2 的重试许可只给幂等方法）
+                                failureReason = "请求已整个写上通路而对端没答话：方法 " + std::string{request.method}
+                                                + " 不在幂等集合里，本端不重发（主机 " + u.host + "）";
+                                co_return nullptr;
+                            }
+                            reused->close();
+                        }
                     }
                 }
-            }
 
-            std::unique_ptr<HttpOutboundConnection> connection;
-            if (u.scheme == "https")
-            {
-                connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason, clientTls);
-            }
-            else
-            {
-                connection = co_await establishPlainConnection(loop, endpointKey, startedAt, requestTimeout,
-                                                               failureReason);
-            }
-            if (!connection)
-            {
-                co_return nullptr;
-            }
-            // 正文上限按池的配置落在这条新连接上：解析器是连接的成员初值（默认档）建的，而「这台
-            // 客户端允许收多大的响应」是使用方定的。从池里取回来的那条在建好时就落过同一个数
-            if (pool != nullptr)
-            {
-                connection->parser().setMaximumBodySize(pool->config().maximumResponseBodyBytes);
-            }
-            if (connection->selectedAlpnProtocol() == kHttp2AlpnProtocolName)
-            {
-                // ALPN 选到了 h2：换一种说话方式。前奏在这里走——从池里拿回来的那条早就走过了，
-                // 所以这一步只属于「刚建好的」这一支
-                const std::optional<std::chrono::milliseconds> startBudget = remainingBudget(startedAt, requestTimeout);
-                Http2ClientConnection::Config http2Config;
-                if (pool != nullptr)
+                // 同一端点同时只允许一次建连：占不到资格的人等领导者结算，醒来重新跑一遍上面那段
+                // （h2 的结论已经进池，直接用；h1 是独占的，等不到也不该等，自己建一条）。
+                bool isEstablishmentLeader = false;
+                while (pool != nullptr)
                 {
-                    // 同一条胃口换成 h2 那一侧的说法：协商出哪条协议不该改变本端愿意收多少正文
-                    http2Config.maximumResponseBodyBytes = pool->config().maximumResponseBodyBytes;
+                    if (pool->tryBeginEstablishment(endpointKey))
+                    {
+                        isEstablishmentLeader = true;
+                        break;
+                    }
+                    co_await pool->awaitEstablishment(endpointKey, loop);
+                    if (!remainingBudget(startedAt, requestTimeout).has_value())
+                    {
+                        failureReason = "本次请求已到时限：等同一端点的建连把预算用尽（主机 " + u.host + "）";
+                        co_return nullptr;
+                    }
+                    // 领导者建成了可共享的 h2 连接：直接拿它，一次握手都不用再付
+                    if (auto shared = pool->acquireHttp2(endpointKey); shared != nullptr)
+                    {
+                        Http2Exchange sharedExchange = co_await exchangeOnHttp2(
+                                *shared, u, request, startedAt, requestTimeout, failureReason);
+                        if (sharedExchange.response)
+                        {
+                            co_return std::move(sharedExchange.response);
+                        }
+                        if (sharedExchange.isAnyByteReceived || (sharedExchange.isAnyByteSent && !isIdempotentRequestMethod(request.method)))
+                        {
+                            // 与第一次复用上同样的判据：对端答过话、或幂等性不允许，重开也不换一个答案
+                            co_return nullptr;
+                        }
+                        // 这条已经废了：回去抢资格，抢到了就自己建一条
+                        continue;
+                    }
                 }
-                auto http2Connection = std::make_shared<Http2ClientConnection>(loop, std::move(connection),
-                                                                              std::move(http2Config));
-                if (!startBudget.has_value() || !co_await http2Connection->start(*startBudget))
+
+                // 领导者归还资格的地方只有这几处：结论进池之后、走 h1 之前、以及每条失败出口。
+                // 不用作用域守卫是因为本框架的协程帧**不在 co_return 时销毁**（FinalAwaiter 是 no-op），
+                // 帧要等调用方放手才回收——那时才结算，等待方白等一整段请求时间。
+                // 也不设兜底的异常出口：连接、握手与 h2 三层各自把通路异常折成了返回值（见
+                // connectWithDeadline、establishSecureConnection 的 catch，与 Http2ClientConnection
+                // 「绝不让异常穿过协程帧」那条），这一段里能逃给调用方的只剩分配失败
+                const auto settleEstablishmentNow = [&]
                 {
-                    failureReason = "HTTP/2 前奏没走完：对端没接我们的 SETTINGS，或时限先到（主机 " + u.host + "）";
+                    if (isEstablishmentLeader)
+                    {
+                        isEstablishmentLeader = false;
+                        pool->settleEstablishment(endpointKey);
+                    }
+                };
+
+                std::unique_ptr<HttpOutboundConnection> connection;
+                if (u.scheme == "https")
+                {
+                    connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason, clientTls);
+                }
+                else
+                {
+                    connection = co_await establishPlainConnection(loop, endpointKey, startedAt, requestTimeout,
+                                                                   failureReason);
+                }
+                if (!connection)
+                {
+                    settleEstablishmentNow();
                     co_return nullptr;
                 }
-                Http2Exchange freshExchange = co_await exchangeOnHttp2(
-                        *http2Connection, u, request, startedAt, requestTimeout, failureReason);
-                if (pool == nullptr)
+                // 正文上限按池的配置落在这条新连接上：解析器是连接的成员初值（默认档）建的，而「这台
+                // 客户端允许收多大的响应」是使用方定的。从池里取回来的那条在建好时就落过同一个数
+                if (pool != nullptr)
                 {
-                    // 没有池就是一次性的：主动 shutdown 而不是任其析构，否则对端把这次收口记成 abrupt
-                    co_await http2Connection->shutdown();
+                    connection->parser().setMaximumBodySize(pool->config().maximumResponseBodyBytes);
                 }
-                else if (http2Connection->isHealthy())
+                if (connection->selectedAlpnProtocol() == kHttp2AlpnProtocolName)
                 {
-                    // 收进池里留着待命；不健康的那条不收，跟着最后一个持有者一起收口
-                    pool->adoptHttp2(endpointKey, std::move(http2Connection));
+                    // ALPN 选到了 h2：换一种说话方式。前奏在这里走——从池里拿回来的那条早就走过了，
+                    // 所以这一步只属于「刚建好的」这一支
+                    const std::optional<std::chrono::milliseconds> startBudget = remainingBudget(startedAt, requestTimeout);
+                    Http2ClientConnection::Config http2Config;
+                    if (pool != nullptr)
+                    {
+                        // 同一条胃口换成 h2 那一侧的说法：协商出哪条协议不该改变本端愿意收多少正文
+                        http2Config.maximumResponseBodyBytes = pool->config().maximumResponseBodyBytes;
+                    }
+                    auto http2Connection = std::make_shared<Http2ClientConnection>(loop, std::move(connection),
+                                                                                  std::move(http2Config));
+                    if (!startBudget.has_value() || !co_await http2Connection->start(*startBudget))
+                    {
+                        failureReason = "HTTP/2 前奏没走完：对端没接我们的 SETTINGS，或时限先到（主机 " + u.host + "）";
+                        settleEstablishmentNow();
+                        co_return nullptr;
+                    }
+                    Http2Exchange freshExchange = co_await exchangeOnHttp2(
+                            *http2Connection, u, request, startedAt, requestTimeout, failureReason);
+                    if (pool == nullptr)
+                    {
+                        // 没有池就是一次性的：主动 shutdown 而不是任其析构，否则对端把这次收口记成 abrupt
+                        co_await http2Connection->shutdown();
+                    }
+                    else if (http2Connection->isHealthy())
+                    {
+                        // 收进池里留着待命；不健康的那条不收，跟着最后一个持有者一起收口
+                        pool->adoptHttp2(endpointKey, std::move(http2Connection));
+                    }
+                    // 交出结论之后再归还建连资格：等待者醒来时要么能拿到这条连接，要么看到它已废、
+                    // 自己去建一条。试过「前奏一完就交池并结算」让等待者只等一次握手（而不是等完
+                    // 领导者整条请求），那一版在 keep-alive 竞态的恢复用例上红：第二条新建的连接
+                    // 立刻读失败，机理没查清，因此这里取正确的那一种
+                    settleEstablishmentNow();
+                    co_return std::move(freshExchange.response);
                 }
-                co_return std::move(freshExchange.response);
-            }
 
-            const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
-            if (!exchangeBudget.has_value())
-            {
-                failureReason = "本次请求已到时限：连接建好了却没剩下写请求的预算（主机 " + u.host + "）";
-                co_return nullptr;
+                // 走 h1 之前归还建连资格：h1 的连接是独占的，领导者不会把它交进池给别人用，
+                // 等待者继续等的意义只有一条——等一个不会来的复用。让它们立刻各自去建
+                settleEstablishmentNow();
+
+                const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
+                if (!exchangeBudget.has_value())
+                {
+                    failureReason = "本次请求已到时限：连接建好了却没剩下写请求的预算（主机 " + u.host + "）";
+                    co_return nullptr;
+                }
+                const std::string requestText = makeRequestText();
+                OutboundExchange exchange = co_await exchangeOnConnection(loop, *connection, requestText,
+                                                                         request.bodySource, isHeadRequest,
+                                                                         *exchangeBudget, failureReason);
+                if (exchange.response && pool != nullptr && isResponseReusable(exchange.response->headers))
+                {
+                    connection->prepareForNextRequest();
+                    pool->release(std::move(connection));
+                }
+                co_return std::move(exchange.response);
             }
-            const std::string requestText = makeRequestText();
-            OutboundExchange exchange = co_await exchangeOnConnection(loop, *connection, requestText,
-                                                                     request.bodySource, isHeadRequest,
-                                                                     *exchangeBudget, failureReason);
-            if (exchange.response && pool != nullptr && isResponseReusable(exchange.response->headers))
-            {
-                connection->prepareForNextRequest();
-                pool->release(std::move(connection));
-            }
-            co_return std::move(exchange.response);
         }
     }
 

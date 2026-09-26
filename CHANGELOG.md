@@ -17,6 +17,27 @@
 
 ### 新增
 
+- **出站冷池上同时进来的请求共用一次握手**：新增 `Net/Http/Client/HttpOutboundEstablishment.h`
+  （`HttpEstablishmentTable` + `HttpEstablishmentAwait`），连接池按端点（主机 + 端口 + TLS 位，键文本
+  用单元分隔符而不是冒号）记「这一头正在建连」：第一个到的当领导者，后来的 `co_await` 它结算，醒来
+  直接复用结论。此前冷池上并发进来的每条请求各建一条连接——五条并发就是五遍 TCP+TLS+ALPN+h2 前奏，
+  而 HTTP/2 的复用恰恰发生在同一条连接上。判据取「请求都还挂在服务器里时，服务器在册几条连接」
+  （`activeConnectionCount()`；池里的条数没有鉴别力，五条握手会被折叠成一格）：改动前五条，改动后一条。
+  三条边界各由一条用例钉住：① 领导者把结论交进池之后才结算资格——试过「前奏一完就交池并结算」让等待者
+  只等一次握手而不是等完领导者整条请求，那一版在 keep-alive 竞态的恢复用例上红（第二条新建的连接立刻读
+  失败），机理未查清，因此这里取正确的那一种；② 领导者**每条出口**都要归还资格，包括建连失败那一条，
+  漏一处不是退化而是把这个端点的出站请求永久堵死——等建连那一步自己不设时限，只有结算叫得醒它；
+  ③ h1 的连接一次只租给一个请求，没有可共享的结论，所以走 h1 之前先把归还做掉，等待者立刻各自去建。
+  等待不设时限，但醒来仍按自己的剩余预算判定：预算被这段等待吃光时是一条点明阶段的失败
+  （「等同一端点的建连把预算用尽」），不是一次无声挂起。记账表由 `shared_ptr` 持有、等待者也拿一份，
+  于是池先于某个挂着的等待者销毁时，后者析构摸的是自己手里这张表（连接池踩过一次这个坑，代价是一起
+  真实 UAF）；唤醒一律走 `scheduleRemote` 投回协程自己那条循环，本表不碰套接字。
+  用例：`HttpsServer.CoalescesConcurrentColdStartsOntoOneHttp2Connection`、
+  `FailingEstablishmentHandsTheEndpointBackToItsWaiters`、
+  `ConcurrentColdStartsOnHttp1EachBuildTheirOwnConnection`。
+  证伪：删掉建连失败那一条归还，第二条红在 6.02 秒（三条并发只回一条，其余挂在等待里，由用例自带的
+  看门狗叫停循环）；删掉 h1 那一条归还，第三条红在 6.01 秒（同样三条只回一条）；两处都删时 h2 的合并
+  用例照常绿，说明三条判据各钉各的。
 - **服务器可要求 PROXY 协议头，把连接记到真实客户端头上**：新增 `Net/Proxy/ProxyProtocol.h`
   （`frameProxyHeader()` 分帧 + `parseProxyHeader()` 解析，v1 文本行与 v2 二进制块都支持，纯函数不碰
   套接字），`TcpServer::setProxyProtocolRequired(true)` 打开后每条新连接先读一条头，读到的来源地址

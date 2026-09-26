@@ -8,6 +8,7 @@
 #pragma once
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Http/Client/HttpOutboundEstablishment.h"
 #include "Net/Http/Client/HttpResponseParser.h"
 #include "Net/Tcp/TcpStream.h"
 
@@ -267,7 +268,42 @@ namespace AsynGyanis::Net
         /// 归还所有权：池里所有连接当场收口
         void closeAll() noexcept;
 
+        /**
+         * @brief 占下这个端点的「建连」资格：占到的人负责建，没占到的人等
+         * @param endpointKey 目标身份
+         * @return true 本次成为领导者：去建连，每条出口都**必须** settleEstablishment()
+         * @return false 已有别的请求在建：改 co_await awaitEstablishment()，醒来再看池
+         * @details 存在的理由：冷池上同时进来的请求原本各建一条连接，5 条并发就是 5 遍
+         *          TCP+TLS+ALPN+h2 前奏（实测服务器侧同时在册 5 条），而 HTTP/2 的复用就发生在这条
+         *          连接上。合并之后同批请求共用一次握手。
+         * @see awaitEstablishment, settleEstablishment
+         */
+        bool tryBeginEstablishment(const HttpOutboundEndpointKey &endpointKey);
+
+        /**
+         * @brief 结算一个端点的建连：撤掉在途标记并唤醒等待者
+         * @param endpointKey 目标身份
+         * @details 不论建成还是失败都要调，且**不能靠作用域守卫**：本框架的协程帧不在 `co_return` 时
+         *          销毁（FinalAwaiter 是 no-op），守卫要等调用方放手才触发，那时等待者已经白等一整段
+         *          请求时间。所以领导者要在交出结论的当下显式结算。
+         */
+        void settleEstablishment(const HttpOutboundEndpointKey &endpointKey);
+
+        /**
+         * @brief 等某个端点的建连结算（协程用）
+         * @param endpointKey 等哪个端点
+         * @param loop 本协程所属的事件循环（唤醒投回这里）
+         * @return HttpEstablishmentAwait 可直接 co_await；醒来后调用方要重新看一遍池
+         * @note 等待本身不设时限：领导者那条建连被它自己的请求时限管着，它一结算这里就醒。
+         *       醒来之后本端仍要自己算剩余预算——这一段等待可能已经吃掉了一部分。
+         */
+        [[nodiscard]] HttpEstablishmentAwait awaitEstablishment(const HttpOutboundEndpointKey &endpointKey,
+                                                                Core::EventLoop &loop);
+
     private:
+        /// 端点键在记账表里的文本形态（表按字符串分组，转换只在这一处）
+        [[nodiscard]] static std::string establishmentKeyOf(const HttpOutboundEndpointKey &endpointKey);
+
         using Clock = std::chrono::steady_clock;
 
         /// 一条空闲连接连同它最后一次被使用的时间
@@ -283,6 +319,10 @@ namespace AsynGyanis::Net
         /// 每台主机留一条 h2 连接，与调用方共同持有：它不像 h1 那样一次租给一个请求，也不按
         /// idleTimeout 收（对端还认它就一直用），要收的是「已经断了」这件事——只在取用时判
         std::map<HttpOutboundEndpointKey, std::shared_ptr<Http2ClientConnection>> m_http2ByEndpoint;
+
+        /// 「同一端点同时只建一次连」的记账表： shared_ptr 是为了让挂着的等待者不必依赖池还活着
+        std::shared_ptr<HttpEstablishmentTable> m_establishments{std::make_shared<HttpEstablishmentTable>()};
+
         Config m_config;
     };
 } // namespace AsynGyanis::Net
