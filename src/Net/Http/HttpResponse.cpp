@@ -174,6 +174,20 @@ namespace AsynGyanis::Net
         static_cast<void>(setHeader("set-cookie", cookie.renderAsSetCookie()));
     }
 
+    bool HttpResponse::setJsonBody(const Base::ConfigValue &value, const bool isIndented)
+    {
+        const std::optional<std::string> serialized = Base::serializeConfigValue(value, isIndented ? 2 : -1);
+        if (!serialized.has_value())
+        {
+            // 值是 NaN、±Inf 或字符串里带着非 UTF-8 字节。此时一个字都不动：
+            // 发出一条语法上不合法的 JSON 比发不出响应更糟，对端会当成功响应去读
+            return false;
+        }
+        static_cast<void>(setHeader("content-type", "application/json; charset=utf-8"));
+        setBody(*serialized);
+        return true;
+    }
+
     void HttpResponse::suppressStreamingBody() noexcept
     {
         m_isStreamingBodySuppressed = true;

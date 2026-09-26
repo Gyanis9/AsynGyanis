@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <cstdint>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -640,5 +641,58 @@ namespace AsynGyanis::Net
         const std::unordered_map<std::string, std::string> fields = request.formFields();
         ASSERT_EQ(fields.size(), 1U);
         EXPECT_EQ(fields.at("name"), "value");
+    }
+    /**
+     * @brief JSON 正文按 application/json 解析成配置值
+     */
+    TEST(HttpRequestTest, JsonBodyParsesApplicationJsonBodies)
+    {
+        HttpRequest request;
+        request.setMethod(HttpMethod::POST);
+        request.setUri("/api");
+        EXPECT_TRUE(request.setHeader("content-type", "application/json; charset=utf-8"));
+        request.setBody(R"({"name":"asyn","count":3,"tags":["a","b"]})");
+
+        const std::optional<Base::ConfigValue> parsed = request.jsonBody();
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_EQ(parsed->at("name").get<std::string>(), "asyn");
+        EXPECT_EQ(parsed->at("count").get<std::int64_t>(), 3);
+        ASSERT_EQ(parsed->at("tags").size(), 2U);
+    }
+
+    /**
+     * @brief 类型不对、正文不是合法 JSON、以及带注释的正文一律交回空
+     * @details 不抛异常：请求正文是对端给的，语法错误是常规事实而不是致命事件。
+     *          注释这一条单独钉：HTTP 的 JSON 按 RFC 8259 没有注释，这里宽容一下就会和
+     *          配置文件那条路分成两套解析器
+     */
+    TEST(HttpRequestTest, JsonBodyRefusesOtherContentTypesMalformedTextAndComments)
+    {
+        HttpRequest formBody;
+        formBody.setMethod(HttpMethod::POST);
+        formBody.setUri("/api");
+        EXPECT_TRUE(formBody.setHeader("content-type", "application/x-www-form-urlencoded"));
+        formBody.setBody(R"({"a":1})");
+        EXPECT_FALSE(formBody.jsonBody().has_value()) << "类型不是 application/json 也该给出解析结果，等于替调用方造数据";
+
+        HttpRequest malformed;
+        malformed.setMethod(HttpMethod::POST);
+        malformed.setUri("/api");
+        EXPECT_TRUE(malformed.setHeader("content-type", "application/json"));
+        malformed.setBody("{\"a\": }");
+        EXPECT_FALSE(malformed.jsonBody().has_value());
+
+        HttpRequest withComment;
+        withComment.setMethod(HttpMethod::POST);
+        withComment.setUri("/api");
+        EXPECT_TRUE(withComment.setHeader("content-type", "application/json"));
+        withComment.setBody("{\n  \"a\": 1 // 注释\n}\n");
+        EXPECT_FALSE(withComment.jsonBody().has_value()) << "HTTP 的 JSON 不宽容注释";
+
+        HttpRequest empty;
+        empty.setMethod(HttpMethod::POST);
+        empty.setUri("/api");
+        EXPECT_TRUE(empty.setHeader("content-type", "application/json"));
+        EXPECT_FALSE(empty.jsonBody().has_value());
     }
 } // namespace AsynGyanis::Net

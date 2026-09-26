@@ -38,6 +38,24 @@ namespace AsynGyanis::Net
     {
         // 一个完整的百分号转义序列形如 "%XY"，占 3 个字符
         constexpr std::size_t kPercentEscapeSequenceLength = 3;
+
+        /**
+         * @brief 判断内容类型头部是否指向指定的媒体类型
+         * @details 只看类型本身：`; charset=utf-8` 这类参数不参与判定，媒体类型大小写不敏感
+         *          （RFC 9110 §8.3）。缺头部一律判否——把没标类型的正文当成某种已知格式来解是凭空造数据。
+         * @param contentTypeHeader 内容类型头部取值，可为空
+         * @param expectedMediaType 期望的媒体类型（小写书写）
+         * @return true 匹配
+         */
+        [[nodiscard]] bool contentTypeIs(const std::optional<std::string> &contentTypeHeader, const std::string_view expectedMediaType) noexcept
+        {
+            if (!contentTypeHeader.has_value())
+            {
+                return false;
+            }
+            const std::size_t parameterPosition = contentTypeHeader->find(';');
+            return equalsIgnoringCase(trimOptionalWhitespace(std::string_view(*contentTypeHeader).substr(0, parameterPosition)), expectedMediaType);
+        }
     } // namespace
 
     HttpMethod HttpRequest::methodFromString(const std::string_view method)
@@ -383,19 +401,23 @@ namespace AsynGyanis::Net
     std::unordered_map<std::string, std::string> HttpRequest::formFields() const
     {
         // 媒体类型必须真是 application/x-www-form-urlencoded：把 JSON 或二进制正文按 '&' 切开
-        // 拼成「参数」是凭空造数据，宁可交回空表。类型参数（"; charset=utf-8"）不参与判定
-        const std::optional<std::string> contentType = getHeader("content-type");
-        if (!contentType.has_value())
-        {
-            return {};
-        }
-        const std::size_t      parameterPosition = contentType->find(';');
-        const std::string_view mediaType         = trimOptionalWhitespace(std::string_view(*contentType).substr(0, parameterPosition));
-        if (!equalsIgnoringCase(mediaType, "application/x-www-form-urlencoded"))
+        // 拼成「参数」是凭空造数据，宁可交回空表
+        if (!contentTypeIs(getHeader("content-type"), "application/x-www-form-urlencoded"))
         {
             return {};
         }
         return parseUrlEncoded(body());
+    }
+
+    std::optional<Base::ConfigValue> HttpRequest::jsonBody() const
+    {
+        if (!contentTypeIs(getHeader("content-type"), "application/json"))
+        {
+            return std::nullopt;
+        }
+        // 正文里的注释不开：HTTP 的 JSON 按 RFC 8259 没有注释这一说，这里宽容一下就会和
+        // 配置文件那条路分成两套解析器
+        return Base::parseConfigValue(body());
     }
 
     void HttpRequest::setParam(std::string key, std::string value)

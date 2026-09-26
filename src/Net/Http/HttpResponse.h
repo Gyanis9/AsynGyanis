@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Base/Config/ConfigValue.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
@@ -147,6 +148,17 @@ namespace AsynGyanis::Net
          * @return true 只发头部、不发正文段
          */
         [[nodiscard]] bool isStreamingBodySuppressed() const noexcept;
+
+        /**
+         * @brief 用一段 JSON 作为响应正文，并顺带把媒体类型设成 `application/json; charset=utf-8`。
+         * @details 序列化失败（值是 NaN、±Inf，或字符串里带着非 UTF-8 字节）时返回 false 且**不改动**
+         *          已经设好的正文与头部：发出一条语法上不合法的 JSON 比发不出响应更糟——对端的解析器
+         *          会把它当成一次成功的响应去读，读出来的是什么没人知道。
+         * @param value 要交出的值（`Base::ConfigValue`，即本仓统一使用的 JSON 值类型）
+         * @param isIndented 是否按两格缩进美化输出；缺省紧凑，因为响应通常是被机器读的
+         * @return true 已写入；false 该值无法表示成合法 JSON，响应未被改动
+         */
+        [[nodiscard]] bool setJsonBody(const Base::ConfigValue &value, bool isIndented = false);
 
         /**
          * @brief 追加一条 Set-Cookie。

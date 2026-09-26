@@ -13,9 +13,11 @@
 
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 namespace AsynGyanis::Base
@@ -29,6 +31,78 @@ namespace AsynGyanis::Base
     using ConfigValue  = nlohmann::json;        ///< 配置值即 JSON 文档
     using ConfigArray  = ConfigValue::array_t;  ///< 配置数组（std::vector<ConfigValue>）
     using ConfigObject = ConfigValue::object_t; ///< 配置对象（按键有序的映射）
+
+    /**
+     * @brief 解析一段 JSON 文本，语法不合法时交回空而不是抛异常。
+     * @details 外部输入不该靠异常否定一次调用：配置正文、请求正文都可能有对端写错的一天，
+     *          而 nlohmann 缺省的异常版 parse 会把语法错误一路抛到调用栈顶上。这里走
+     *          allow_exceptions=false 的入口，把它的 discarded 哨兵翻成 std::nullopt。
+     * @param text 待解析文本，允许首尾空白
+     * @param allowComments 是否容忍注释（配置文件那一路开，HTTP 正文按 RFC 8259 不开）
+     * @return std::optional<ConfigValue> 解析结果；不合法时为空
+     * @note 顶层标量（`42`、`"s"`、`true`、`null`）都是合法 JSON，照样解析成功——
+     *       是不是「只接受对象」是使用方的判据，不在这一层拦
+     */
+    [[nodiscard]] inline std::optional<ConfigValue> parseConfigValue(const std::string_view text, const bool allowComments = false) noexcept
+    {
+        const ConfigValue parsed = ConfigValue::parse(text.begin(), text.end(), nullptr, false, allowComments);
+        if (parsed.is_discarded())
+        {
+            return std::nullopt;
+        }
+        return parsed;
+    }
+
+    /**
+     * @brief 判断一个值能否表示成合法的 JSON 文本
+     * @details 非有限浮点（NaN、±Inf）单独判不可表示：nlohmann 的 dump 对它们缺省是**替换成 null**
+     *          而不报错，那是静默变形——与 configValueAs() 同一条口径（宁可失败也不变形）。
+     *          非 UTF-8 的字符串不在这里判：dump 的严格错误处理会抛出来，由 serializeConfigValue 接住。
+     * @param value 待判定的值，递归检查数组与对象的每个子节点
+     * @return true 可以安全序列化
+     */
+    [[nodiscard]] inline bool isJsonRepresentable(const ConfigValue &value)
+    {
+        if (value.is_number_float())
+        {
+            return std::isfinite(value.get<double>());
+        }
+        if (value.is_array() || value.is_object())
+        {
+            for (const ConfigValue &child: value)
+            {
+                if (!isJsonRepresentable(child))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief 把配置值序列化成 JSON 文本
+     * @details 直接交出 nlohmann 的 dump 并不够用：NaN 与 ±Inf 会被它悄悄换成 null，
+     *          而非 UTF-8 字符串会抛 type_error——前者是静默变形，后者是会打到调用栈上的异常。
+     *          两种都在这里翻成「交回空」。
+     * @param value 待序列化的值
+     * @param indent 缩进空格数，负数（缺省）表示紧凑输出
+     * @return std::optional<std::string> 文本；该值无法表示成合法 JSON 时为空
+     */
+    [[nodiscard]] inline std::optional<std::string> serializeConfigValue(const ConfigValue &value, const int indent = -1) noexcept
+    {
+        if (!isJsonRepresentable(value))
+        {
+            return std::nullopt;
+        }
+        try
+        {
+            return value.dump(indent);
+        } catch (const std::exception &)
+        {
+            return std::nullopt;
+        }
+    }
 
     /**
      * @brief 严格取用配置值：不做截断、不回绕、不跨类型转换

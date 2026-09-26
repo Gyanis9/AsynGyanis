@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -127,5 +128,72 @@ namespace AsynGyanis::Base
         EXPECT_STREQ(configTypeNameOf<ConfigArray>(), "array");
         EXPECT_STREQ(configTypeNameOf<ConfigObject>(), "object");
         EXPECT_STREQ(configTypeNameOf<const char *>(), "value");
+    }
+
+    /**
+     * @brief 解析入口把语法错误翻成空 optional，而不是把异常抛给调用方
+     */
+    TEST(ConfigValueTest, ParseConfigValueReturnsNulloptForMalformedDocuments)
+    {
+        const std::optional<ConfigValue> parsed = parseConfigValue(R"({"a": 1, "b": [true, null]})");
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_EQ(parsed->at("a").get<std::int64_t>(), 1);
+        EXPECT_TRUE(parsed->at("b").is_array());
+        EXPECT_EQ(parsed->at("b").size(), 2U);
+
+        EXPECT_FALSE(parseConfigValue("{").has_value());
+        EXPECT_FALSE(parseConfigValue(R"({"a": })").has_value());
+        EXPECT_FALSE(parseConfigValue("").has_value());
+        // 顶层标量按 RFC 8259 是合法文档，这一层不替调用方拦「只准是对象」
+        ASSERT_TRUE(parseConfigValue("42").has_value());
+        EXPECT_TRUE(parseConfigValue("42")->is_number_integer());
+    }
+
+    /**
+     * @brief 注释是显式开关：配置文件那条路开，HTTP 正文那条路不开
+     * @details 这里宽容一次，两处就会变成两套解析器，差异只会以「同一份 JSON 一边能读一边不能」暴露
+     */
+    TEST(ConfigValueTest, ParseConfigValueTreatsCommentsAsAnOptInSwitch)
+    {
+        constexpr std::string_view textWithComment = R"({ "a": 1 // 一行说明
+        })";
+
+        EXPECT_FALSE(parseConfigValue(textWithComment).has_value());
+        EXPECT_TRUE(parseConfigValue(textWithComment, true).has_value());
+    }
+
+    /**
+     * @brief 序列化：紧凑与缩进两种形状，以及无法表示成 JSON 的值如实失败
+     */
+    TEST(ConfigValueTest, SerializeConfigValueRoundTripsAndRefusesUnrepresentableValues)
+    {
+        const ConfigValue value = ConfigValue::parse(std::string{R"({"b":2,"a":1})"});
+
+        const std::optional<std::string> compact = serializeConfigValue(value);
+        ASSERT_TRUE(compact.has_value());
+        // 对象键按字典序输出：这里的映射是按键有序的 std::map，插入顺序不保留。
+        // 写进用例是因为使用方常以为「我按什么顺序给的就会按什么顺序发出去」
+        EXPECT_EQ(*compact, R"({"a":1,"b":2})");
+
+        const std::optional<std::string> pretty = serializeConfigValue(value, 2);
+        ASSERT_TRUE(pretty.has_value());
+        EXPECT_NE(pretty->find("\n"), std::string::npos) << "给了缩进就该换行";
+
+        // NaN 在 JSON 里没有表示法：静默改成 null 或 0 都是替调用方造数据，交回空才对
+        const ConfigValue notANumber = std::nan("");
+        EXPECT_FALSE(serializeConfigValue(notANumber).has_value());
+        const ConfigValue infinite = ConfigValue{std::numeric_limits<double>::infinity()};
+        EXPECT_FALSE(serializeConfigValue(infinite).has_value());
+        const ConfigValue brokenText = std::string{"\xff\xfe", 2};
+        EXPECT_FALSE(serializeConfigValue(brokenText).has_value());
+
+        // 非有限值藏在结构里也要判出来：只查顶层等于给「数组里一个 NaN」留了个变形成 null 的后门
+        ConfigValue inner = ConfigValue::array();
+        inner.push_back(1);
+        inner.push_back(std::numeric_limits<double>::quiet_NaN());
+        ConfigValue nested;
+        nested["list"]    = std::move(inner);
+        nested["healthy"] = 2;
+        EXPECT_FALSE(serializeConfigValue(nested).has_value());
     }
 } // namespace AsynGyanis::Base

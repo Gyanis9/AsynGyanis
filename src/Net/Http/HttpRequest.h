@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Base/Config/ConfigValue.h"
 #include "Net/Http/HttpCookie.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpMethod.h"
@@ -388,6 +389,17 @@ namespace AsynGyanis::Net
          * @return 表单字段的 unordered_map，键值均为解码后的文本
          */
         [[nodiscard]] std::unordered_map<std::string, std::string> formFields() const;
+
+        /**
+         * @brief 把请求正文按 JSON 解析成一份配置值（与 `Base::ConfigValue` 同一个类型，不做二次搬运）。
+         * @details 媒体类型不是 `application/json` 时交回空，语法不合法也交回空：调用方判空即可，
+         *          不需要接异常——外部输入不该靠异常否定一次调用。
+         * @note 正文里的注释**不**宽容（RFC 8259 没有注释这一说）：在这里放宽一次，就会和配置文件
+         *       那条路分成两套解析器，而两套的差异只会以「同一份 JSON 一边能读一边不能」的形式暴露。
+         * @note 流式正文那一路不适用，这条只读已经收齐的整份正文。
+         * @return std::optional<Base::ConfigValue> 解析结果；不适用或语法错误时为空
+         */
+        [[nodiscard]] std::optional<Base::ConfigValue> jsonBody() const;
 
         /**
          * @brief 设置路由参数（路径中的 ":id" 之类占位符匹配到的值）。

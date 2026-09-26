@@ -9,7 +9,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -1094,5 +1096,44 @@ namespace AsynGyanis::Net
         chunked.reset();
         ASSERT_TRUE(chunked.addTrailerField("x-late", "only-after-reset"));
         EXPECT_EQ(chunked.chunkedTerminatorText(), "0\r\nx-late: only-after-reset\r\n\r\n") << "reset 之后登记的要能正常写出来";
+    }
+    /**
+     * @brief setJsonBody 一次把正文与媒体类型都设好，紧凑与缩进两种形状
+     */
+    TEST(HttpResponse, SetJsonBodyWritesBodyAndContentType)
+    {
+        HttpResponse            response;
+        const Base::ConfigValue value = Base::ConfigValue::parse(std::string{R"({"b":2,"a":1})"});
+
+        ASSERT_TRUE(response.setJsonBody(value));
+        EXPECT_EQ(response.getHeader("content-type"), "application/json; charset=utf-8");
+        EXPECT_EQ(response.body(), R"({"a":1,"b":2})") << "对象按键的字典序输出（映射是有序 std::map），插入顺序不保留";
+
+        HttpResponse prettyResponse;
+        ASSERT_TRUE(prettyResponse.setJsonBody(value, true));
+        EXPECT_NE(prettyResponse.body().find('\n'), std::string_view::npos) << "要了缩进就该换行";
+    }
+
+    /**
+     * @brief 无法表示成 JSON 的值如实报 false，并且一个字都不改
+     * @details 发出一条语法上不合法的 JSON 比发不出响应更糟：对端会把它当成功响应去解析，
+     *          读出来的是什么没人知道。NaN 与 ±Inf 在 JSON 里没有表示法，非 UTF-8 字节同样不行。
+     */
+    TEST(HttpResponse, SetJsonBodyRefusesUnrepresentableValuesWithoutTouchingTheResponse)
+    {
+        HttpResponse response;
+        response.setStatus(201);
+        response.setBody("keep-me");
+
+        const Base::ConfigValue notANumber = std::nan("");
+        EXPECT_FALSE(response.setJsonBody(notANumber));
+        EXPECT_EQ(response.body(), "keep-me") << "序列化失败却把正文改了一半";
+        EXPECT_FALSE(response.getHeader("content-type").has_value()) << "拒了就不该顺手把媒体类型也换掉";
+
+        const Base::ConfigValue infinite = Base::ConfigValue{std::numeric_limits<double>::infinity()};
+        EXPECT_FALSE(response.setJsonBody(infinite));
+        const Base::ConfigValue brokenText = std::string{"\xff\xfe", 2};
+        EXPECT_FALSE(response.setJsonBody(brokenText));
+        EXPECT_EQ(response.status(), 201);
     }
 } // namespace AsynGyanis::Net

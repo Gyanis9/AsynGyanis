@@ -17,6 +17,14 @@
 
 ### 新增
 
+- **JSON 有了对外的解析与序列化入口，HTTP 两侧都有对应工具**：`Base::parseConfigValue()` 把语法错误
+  翻成空 optional 而不是抛异常（外部输入不该靠异常否定一次调用），注释是显式开关（配置文件那条路开，
+  HTTP 正文按 RFC 8259 不开）；`Base::serializeConfigValue()` 在 dump 之前先查非有限浮点——nlohmann 缺省
+  把 NaN 与 ±Inf **悄悄换成 null**，与本仓「宁可失败也不静默变形」的口径相反（`configValueAs()` 同一条线）。
+  对象键按字典序输出（映射是有序 `std::map`），插入顺序不保留，这一点写进用例而不是等人踩。
+  HTTP 侧新增 `HttpResponse::setJsonBody()`（一次把正文与媒体类型都设好，无法表示时返回 false 且
+  一个字都不改）与 `HttpRequest::jsonBody()`（媒体类型不是 application/json 就交回空，不去猜）。
+
 - **`Core::GracefulShutdown`：停机信号的接管进了库**。此前每个使用方都要自己写一遍
   `std::signal` + 一个全局标志，抄错的后果是「Ctrl+C 之后连接被硬切、在途请求随进程一起丢」，
   而且没人会知道自己抄错了。POSIX 接管 SIGINT/SIGTERM（屏蔽字 + 一个带超时的 `sigtimedwait` 轮询线程），
