@@ -32,6 +32,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/HttpStreamBody.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpStreamBody.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpChunkFrame.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpCookie.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpCookie.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpChunkFrame.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpHeaderFieldStore.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpHeaderFieldStore.cpp

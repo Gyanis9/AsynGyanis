@@ -18,6 +18,7 @@ add_executable(TestNet
         Http/TestHttpParserChunked.cpp
         Http/TestHttpParserFuzzSmoke.cpp
         Http/TestHttpDate.cpp
+        Http/TestHttpCookie.cpp
         Http/TestHttpHeaderRules.cpp
         Http/TestHttpHeaderFieldStore.cpp
         Http/TestHotPathAllocations.cpp

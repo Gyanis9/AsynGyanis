@@ -190,6 +190,22 @@ namespace AsynGyanis::Net
         return m_headerStore.values(key);
     }
 
+    std::vector<HttpCookie> HttpRequest::cookies() const
+    {
+        // Cookie 头允许出现多条（RFC 6265 §5.4 只把它们按顺序拼成一条发送，代理也可能拆开），
+        // 因此逐条解析再按到达顺序接在一起，而不是只读第一条
+        std::vector<HttpCookie> cookies;
+        for (const std::string &headerValue: m_headerStore.values("cookie"))
+        {
+            std::vector<HttpCookie> parsed = HttpCookie::parseCookieHeader(headerValue);
+            for (auto &cookie: parsed)
+            {
+                cookies.push_back(std::move(cookie));
+            }
+        }
+        return cookies;
+    }
+
     const std::unordered_map<std::string, std::string> &HttpRequest::headers() const
     {
         return m_headerStore.singleValueView();

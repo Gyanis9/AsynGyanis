@@ -12,6 +12,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
+#include "Net/Http/HttpCookie.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/IO/MemoryMappedFile.h"
@@ -146,6 +147,16 @@ namespace AsynGyanis::Net
          * @return true 只发头部、不发正文段
          */
         [[nodiscard]] bool isStreamingBodySuppressed() const noexcept;
+
+        /**
+         * @brief 追加一条 Set-Cookie。
+         * @details 与 `setHeader("set-cookie", cookie.renderAsSetCookie())` 同效，区别在属性由
+         *          `HttpCookie` 拼装：手写属性串最容易漏掉 Secure/HttpOnly，或把 Expires 写成
+         *          对端不认的日期格式——那种错在响应里是静默的。
+         * @details set-cookie 是可重复头部，调几次就发几条，先设先发，顺序稳定可复现。
+         * @param cookie 待发出的 Cookie
+         */
+        void setCookie(const HttpCookie &cookie);
 
         /**
          * @brief 获取所有头部字段的单值视图。

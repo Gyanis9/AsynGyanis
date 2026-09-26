@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Net/Http/HttpCookie.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpMethod.h"
 
@@ -252,6 +253,15 @@ namespace AsynGyanis::Net
          * @return true 至少一条取值列出了该 token
          */
         [[nodiscard]] bool hasHeaderValueToken(std::string_view key, std::string_view expectedToken) const;
+
+        /**
+         * @brief 取出这条请求带来的 Cookie。
+         * @details 解析全部 Cookie 头部（同名多条按到达顺序合并），请求侧只有名字与取值，
+         *          属性一律为未设。单项畸形（名字非法、缺 '='）跳过而不判整条头失败——
+         *          浏览器与代理拼出的 Cookie 头里混一个怪项，不该让其余的也读不到。
+         * @return std::vector<HttpCookie> 按出现顺序给出；没有 Cookie 头时为空
+         */
+        [[nodiscard]] std::vector<HttpCookie> cookies() const;
 
         /**
          * @brief 获取所有头部字段的单值视图。

@@ -168,6 +168,12 @@ namespace AsynGyanis::Net
         return m_headerStore.values(name);
     }
 
+    void HttpResponse::setCookie(const HttpCookie &cookie)
+    {
+        // set-cookie 是可重复头部：setHeader 对它每次新增一条独立记录，先设先发
+        static_cast<void>(setHeader("set-cookie", cookie.renderAsSetCookie()));
+    }
+
     void HttpResponse::suppressStreamingBody() noexcept
     {
         m_isStreamingBodySuppressed = true;
