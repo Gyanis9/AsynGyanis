@@ -470,6 +470,30 @@ jobs:
   # 当前以**报告形式**接入：存量的告警数量还没有清点过，直接把 --warnings-as-errors 打开会让
   # 每次推送都红。CI 日志里能看到全部发现；把下面的 -warnings-as-errors 改成 '*'（或先清干净
   # 存量再打开）它就成为门禁。clang-tidy 只扫本仓库源码（src/，不含 third_party/）。
+  # 格式门禁：仓库已按 clang-format 23.1.1 全量排过一遍（配置见 .clang-format），这里保证不再漂。
+  # 版本必须钉死到与本地同一版：换版本折行结果就变，门禁会红成一堆与改动无关的差异，那种红只会教人
+  # 忽略它。检查只喂 git ls-files 的产出——即被跟踪的文件，构建产物与未跟踪的第三方落点自然排除。
+  # 立这条之前先实测过：全仓 605 个跟踪的 C++ 源文件在本版下 0 违规（当初那次全量格式化漏了三个文件，
+  # 它们的注释在对齐组里放不下 ColumnLimit，需要人把它们挪到声明上方才能收敛）。
+  formatting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装与本地同版的 clang-format（钉版本，不让它随 runner 漂移）
+        run: |
+          python3 -m venv "$HOME/fmt-venv"
+          "$HOME/fmt-venv/bin/pip" install "clang-format==23.1.1"
+          "$HOME/fmt-venv/bin/clang-format" --version
+
+      - name: 全仓格式检查（只报差异，不改文件；有差异即失败）
+        run: |
+          # -z/-0 配对：文件名里出现空格也不会被拆开
+          git ls-files -z '*.h' '*.hpp' '*.cpp' '*.cc' \
+            | xargs -0 "$HOME/fmt-venv/bin/clang-format" --style=file --dry-run -Werror
+
   clang-tidy:
     runs-on: ubuntu-latest
     timeout-minutes: 60
