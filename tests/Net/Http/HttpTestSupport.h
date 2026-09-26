@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Base/Exception/Exception.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
@@ -113,16 +114,23 @@ namespace AsynGyanis::Net
          * @brief 查询描述符上由内核实际分配的本地端口
          * @param descriptor 监听描述符
          * @return std::uint16_t 实际端口，失败返回 0
+         * @note 缓冲区按 sockaddr_storage 给：Windows 上用 sockaddr_in 去问一个 AF_INET6 套接字的
+         *       名字是**直接失败**而不是截断（实测），端口就会读成 0——用例随后连向端口 0，
+         *       表现出来的是「IPv6 连不上」，与本用例要测的东西毫无关系
          */
         inline std::uint16_t queryBoundPort(const int descriptor)
         {
-            sockaddr_in address{};
-            socklen_t   addressLength = static_cast<socklen_t>(sizeof(address));
-            if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
+            sockaddr_storage storage{};
+            socklen_t        storageLength = static_cast<socklen_t>(sizeof(storage));
+            if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&storage), &storageLength) != 0)
             {
                 return 0;
             }
-            return ntohs(address.sin_port);
+            if (storage.ss_family == AF_INET6)
+            {
+                return ntohs(reinterpret_cast<const sockaddr_in6 *>(&storage)->sin6_port);
+            }
+            return ntohs(reinterpret_cast<const sockaddr_in *>(&storage)->sin_port);
         }
 
         /**
@@ -852,16 +860,18 @@ namespace AsynGyanis::Net
              * @param registerRoutes 可选的附加路由注册动作，在投递 start() 之前执行
              * @param parserLimits 可选的解析器资源上限，在投递 start() 之前落定，只影响此后新建的会话
              * @param configureServer 可选的启动前配置动作（例如打开 h2c），同样在投递 start() 之前执行
+             * @param listenAddress 监听地址，默认回环 IPv4 由内核分配端口；IPv6 用例传 ::1
              */
             RunningHttpServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval,
                                      const SlowRouteOptions &slowRoute = {}, const RouteRegistrar &registerRoutes = {},
                                      const HttpParserLimits &parserLimits = HttpParserLimits{},
-                                     const ServerConfigurator &configureServer = {}) :
+                                     const ServerConfigurator &configureServer = {},
+                                     const Core::InetAddress &listenAddress = Core::InetAddress::localhost(0)) :
                 RunningServerFixture<TestHttpServer>(
                         limits, sweepInterval, parserLimits,
-                        [](Core::EventLoop &serverLoop)
+                        [&listenAddress](Core::EventLoop &serverLoop)
                         {
-                            return TestHttpServer(serverLoop, Core::InetAddress::localhost(0));
+                            return TestHttpServer(serverLoop, listenAddress);
                         })
             {
                 // 慢路由用定时等待模拟「处理中」：定时等待挂在事件循环上，因此 drain 与本请求都能照常推进，
@@ -946,6 +956,32 @@ namespace AsynGyanis::Net
             std::atomic<bool> m_drainFinished{false}; ///< drain 是否已返回，必须先于 drain 任务构造
             Core::Task<>      m_drainTask{nullptr};   ///< 由 driveDrain 产生的 drain 协程任务
         };
+
+        /**
+         * @brief 起一台只监听给定地址的 HttpServer；地址绑不上时交出空指针
+         * @details 「空」只说明这台机器没有那个地址（典型是纯 IPv4 环境里没有 ::1），不说明被测代码
+         *          有问题——用例据此按环境跳过，而不是报一条与环境无关的红。绑失败在构造期以异常收场
+         *          （TcpServer 建监听套接字即抛），这里就地兜住并折成空。
+         * @param listenAddress 监听地址，端口给 0 由内核分配
+         * @param limits 连接级限额
+         * @param sweepInterval 空闲清扫节拍
+         * @return std::unique_ptr<RunningHttpServerFixture> 起好了交出夹具，起不来交空
+         */
+        inline std::unique_ptr<RunningHttpServerFixture> tryStartHttpServerOn(
+                const Core::InetAddress &listenAddress, const HttpServerLimits &limits = HttpServerLimits{},
+                const std::chrono::milliseconds sweepInterval = std::chrono::milliseconds{100})
+        {
+            try
+            {
+                return std::make_unique<RunningHttpServerFixture>(limits, sweepInterval, SlowRouteOptions{},
+                                                                  RouteRegistrar{}, HttpParserLimits{},
+                                                                  ServerConfigurator{}, listenAddress);
+            }
+            catch (const Base::Exception &)
+            {
+                return nullptr;
+            }
+        }
 
         /**
          * @brief 组装一条请求报文

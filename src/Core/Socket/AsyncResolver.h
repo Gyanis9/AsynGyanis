@@ -42,6 +42,10 @@ namespace AsynGyanis::Core
          * @param host 主机名；空字符串返回空列表
          * @param port 端口号（主机字节序）
          * @return 按地址族分组的地址列表（IPv4 在前、IPv6 在后）；空列表表示解析失败或主机名为空
+         * @note IP 字面量走**不经 getaddrinfo** 的直接构造：一是不必问任何人，二是 hints 里的
+         *       AI_ADDRCONFIG 会按「本机有没有配到该族的非回环地址」筛结果——只有 ::1 可用的容器上
+         *       连 getaddrinfo("::1") 都会报 EAI_ADDRFAMILY，写在脸上的地址反倒解析不出来。
+         *       名字查询仍带那一项，那本来就是它的用途
          * @note getaddrinfo 是阻塞调用，卸到后台线程执行；返回时已回到发起协程的事件循环上
          * @note host 按值取 std::string 而不是视图：本函数是惰性 Task，帧体要等 co_await 才跑，
          *       视图参数在那时早已悬垂

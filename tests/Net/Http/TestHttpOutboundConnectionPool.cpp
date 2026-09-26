@@ -197,6 +197,37 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：目标只有 IPv6 时出站请求走得通，池照样只复用一条
+     * @details 修之前这条根本走不通：解析器给出 ::1，而 AsyncSocket::create 的默认档是 AF_INET，
+     *          拿 IPv4 的套接字去 connect 一个 sockaddr_in6 只会以「协议族不符」收场。这里让服务器
+     *          只监听 ::1，IPv6 就是唯一那条路。URL 里的方括号（RFC 3986 §3.2.2）要在拆分时去掉——
+     *          带着括号去解析会得到一个并不存在的名字。第二条请求顺带钉住 keep-alive 与分组键在
+     *          IPv6 上同样成立。这台机器没有可用的 IPv6 回环时按环境跳过，不报一条环境相关的红。
+     */
+    TEST(HttpOutboundConnectionPool, ReusesOneConnectionOverIpv6Loopback)
+    {
+        const auto fixture = tryStartHttpServerOn(Core::InetAddress{0, "::1"});
+        if (fixture == nullptr)
+        {
+            GTEST_SKIP() << "::1 绑不上：这台机器没有可用的 IPv6 回环";
+        }
+        ASSERT_TRUE(fixture->awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
+
+        const std::string url = "http://[::1]:" + std::to_string(fixture->listeningPort()) + "/hello";
+        const std::vector<std::string> urls{url, url};
+        const PooledRunOutcome outcome = runPooledRequests(urls);
+
+        ASSERT_EQ(outcome.statusCodes.size(), 2U);
+        EXPECT_EQ(outcome.statusCodes[0], 200) << "连不上只监听 ::1 的服务器：IPv6 候选被拿去用 IPv4 的套接字连了";
+        EXPECT_EQ(outcome.statusCodes[1], 200);
+        for (const std::string &body: outcome.bodies)
+        {
+            EXPECT_NE(body.find("served-hello"), std::string::npos) << "正文：「" << body << "」";
+        }
+        EXPECT_EQ(outcome.idleConnectionCount, 1U) << "两条 IPv6 请求该共用一条连接，而不是每条各开一条";
+    }
+
+    /**
      * @brief 钉住对端声明 close 时不还回池里
      * @details 响应头里的 Connection: close 等于对端宣布这条连接到此为止（RFC 9112 §9.6）。留着它，
      *          下一条请求会写进一条正在收尾的连接；这里的判据是池里一条都不留，而第二条请求仍要成功

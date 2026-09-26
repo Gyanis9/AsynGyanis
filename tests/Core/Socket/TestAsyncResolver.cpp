@@ -51,6 +51,21 @@ namespace AsynGyanis::Core
         EXPECT_EQ(r[0].port(), 8080);
     }
 
+    /**
+     * @brief 钉住：IPv6 字面量不受 AI_ADDRCONFIG 那层筛选的摆布
+     * @details hints 带 AI_ADDRCONFIG 时，glibc 按「本机有没有配到该族的非回环地址」筛掉结果——
+     *          只有 ::1 可用的容器里 getaddrinfo("::1") 直接 EAI_ADDRFAMILY（实测），调用方写在脸上
+     *          的地址反倒解析不出来，出站连 [::1]:端口 就永远失败。字面量不需要问任何人，就不该看
+     *          这台机器的接口配置。配了非回环 IPv6 的机器上旧写法也能过，因此这条的红要在容器里读。
+     */
+    TEST(AsyncResolver, ResolvesIpv6LiteralWithoutAddressConfigFiltering)
+    {
+        const std::vector<InetAddress> resolved = resolveInLoop("::1", 8080);
+        ASSERT_EQ(resolved.size(), 1U) << "IPv6 字面量没解析出来：它被当成名字查询交给了 AI_ADDRCONFIG";
+        EXPECT_EQ(resolved[0].ip(), "::1");
+        EXPECT_EQ(resolved[0].port(), 8080);
+    }
+
     TEST(AsyncResolver, ReturnsEmptyForNonexistentHost)
     {
         EXPECT_TRUE(resolveInLoop("i-definitely-do-not-exist-99999999.example", 80).empty());

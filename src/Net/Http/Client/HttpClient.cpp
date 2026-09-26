@@ -584,7 +584,10 @@ namespace AsynGyanis::Net
             }
             for (const Core::InetAddress &address: addresses)
             {
-                Core::AsyncSocket socket = Core::AsyncSocket::create(loop);
+                // 套接字按**这条候选地址自己的协议族**建。AsyncSocket::create 的默认档是 AF_INET，
+                // 拿 AF_INET 的套接字去 connect 一个 sockaddr_in6 只会以「协议族不符」收场——于是
+                // 解析器给出的 IPv6 候选永远连不上：双栈主机上表现为只能走 IPv4，纯 IPv6 目标直接不可达
+                Core::AsyncSocket socket = Core::AsyncSocket::create(loop, address.family());
                 try
                 {
                     const RequestDeadlineGuard<Core::AsyncSocket> deadline(loop, socket, connectTimeout, "HttpClient");

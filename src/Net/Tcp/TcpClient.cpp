@@ -27,7 +27,9 @@ namespace AsynGyanis::Net
         // 第二步：逐个尝试连接，首个成功即返回
         for (const Core::InetAddress &addr: addresses)
         {
-            auto socket = Core::AsyncSocket::create(loop);
+            // 按这条候选地址自己的协议族建套接字：默认档 AF_INET 的套接字连不上 sockaddr_in6，
+            // 那样解析器给出的 IPv6 候选就永远白跑一趟（出站 HTTP 客户端同一条口径）
+            auto socket = Core::AsyncSocket::create(loop, addr.family());
             try
             {
                 co_await socket.asyncConnect(addr);

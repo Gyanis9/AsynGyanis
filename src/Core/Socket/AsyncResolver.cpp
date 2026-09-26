@@ -7,6 +7,7 @@
 #include <atomic>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -152,6 +153,34 @@ namespace AsynGyanis::Core
 
             deliverResult(targetLoop, state);
         }
+        /**
+         * @brief 把主机文本按 IP 字面量解析成地址；不是字面量时返回空
+         * @param host 主机文本（IPv6 的方括号由上层 URL 解析负责去掉）
+         * @param port 端口（主机字节序）
+         * @return std::optional<InetAddress> 字面量对应的那个地址
+         */
+        std::optional<InetAddress> numericLiteralAddress(const std::string &host, const uint16_t port)
+        {
+            in_addr v4{};
+            if (::inet_pton(AF_INET, host.c_str(), &v4) == 1)
+            {
+                sockaddr_in address{};
+                address.sin_family = AF_INET;
+                address.sin_addr   = v4;
+                address.sin_port   = htons(port);
+                return InetAddress{address};
+            }
+            in6_addr v6{};
+            if (::inet_pton(AF_INET6, host.c_str(), &v6) == 1)
+            {
+                sockaddr_in6 address{};
+                address.sin6_family = AF_INET6;
+                address.sin6_addr   = v6;
+                address.sin6_port   = htons(port);
+                return InetAddress{address};
+            }
+            return std::nullopt;
+        }
     } // namespace
 
     Task<std::vector<InetAddress>> AsyncResolver::resolve(EventLoop &loop, std::string host, const uint16_t port)
@@ -159,6 +188,16 @@ namespace AsynGyanis::Core
         if (host.empty())
         {
             co_return std::vector<InetAddress>{};
+        }
+
+        // 字面量不进 getaddrinfo。两处理由：
+        // ①正确性——hints 里的 AI_ADDRCONFIG 会按「本机有没有配到该族的非回环地址」过滤结果，于是
+        //   只有 ::1 可用的容器里连 `[::1]:8080` 都解析不出地址（实测 EAI_ADDRFAMILY），而调用方
+        //   已经把地址写在脸上了，没有任何「要不要考虑这台机器支不支持 v6」的余地；
+        // ②省一次线程往返——字面量不需要问任何人，起线程跑阻塞调用是白起
+        if (const auto literal = numericLiteralAddress(host, port); literal.has_value())
+        {
+            co_return std::vector<InetAddress>{*literal};
         }
 
         // state 在协程帧里存活，覆盖整个 co_await 期以及后面的结果读取
