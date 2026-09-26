@@ -171,9 +171,6 @@ add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
 
 enable_testing()
 
-# 第三方源码在业务模块之前进来：模块链接它的目标时目标必须已经存在（见 third_party/CMakeLists.txt）
-add_subdirectory(third_party)
-
 add_subdirectory(src)
 
 # 两个开发者开关：默认全开（本地开发与 CI 都要它们），只有把本仓库打成对外分发包时才关。
@@ -202,7 +199,7 @@ endif()
 # CI 的注释一直写着「构建失败与告警都会让这一步红」，但此前**没有任何告警开关**——Linux 侧只开
 # 了 GCC 默认那几条，未初始化、未使用、窄化这类常见缺陷根本不会被拦下。这里把门禁真正接上。
 #
-# 只加在**本仓库自己的目标**上：third_party/ 下若再 vendor 第三方源码，它们不参与，
+# 只加在**本仓库自己的目标**上：将来若再 vendor 第三方源码，它们不参与，
 # 它们的告警不是我们要修的，也不能靠改它们的代码消掉；而全局 add_compile_options 会一并命中它们，
 # 再在第三方目录里用 /W0 覆盖又会触发 MSVC 的 D9025（/WX 下直接变成错误）——因此按目标逐个开启。
 function(asyn_enable_strict_warnings target_name)

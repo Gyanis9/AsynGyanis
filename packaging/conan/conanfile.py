@@ -68,17 +68,15 @@ class AsynGyanisLibrary(ConanFile):
 
     def export_sources(self):
         # 源就在本仓库里，导出时从仓库根整棵快照：包内容因此与仓库版本严格对应，不需要在
-        # 配方里复制任何一份源。四项都是构建库本体必需的：CMakeLists.txt（顶层入口）、
-        # src/**（模块源）、cmake/**（构建助手）、third_party/**（当前没有 vendored 库，但顶层
-        # CMakeLists 无条件 add_subdirectory(third_party)，那份清单文件缺了配置期就失败——这条
-        # 路径没有任何 CI 作业跑到，所以只能在改配方时盯住）。
+        # 配方里复制任何一份源。三项都是构建库本体必需的：CMakeLists.txt（顶层入口）、
+        # src/**（模块源）、cmake/**（构建助手）。曾经还导出过 third_party/**，那份 vendored
+        # 清单已清空、目录整体删除；将来若再 vendor 源码，这里要记得补上导出。
         # 测试/示例/基准目录不进来：它们由下面的两个开关在配置阶段关掉，缺目录也不会被碰到
         repository_root = os.path.abspath(os.path.join(self.recipe_folder, "..", ".."))
         copy(self, "CMakeLists.txt", src=repository_root, dst=self.export_sources_folder)
         # 目录必须用 ** 递归匹配：不带通配符的 "src" 只会去找一个叫 src 的文件，目录匹配不上
         copy(self, "src/**", src=repository_root, dst=self.export_sources_folder)
         copy(self, "cmake/**", src=repository_root, dst=self.export_sources_folder)
-        copy(self, "third_party/**", src=repository_root, dst=self.export_sources_folder)
 
     def layout(self):
         cmake_layout(self)
