@@ -48,10 +48,18 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief 按默认上限建一个空罐子
+         * @details 与下面的带参构造分开写而不是给 `Limits` 缺省实参：GCC 不接受「嵌套类带非静态数据
+         *          成员初始化器」当外层类成员的默认实参（本仓在 Http/3 那侧踩过同一条），
+         *          而 `Limits{}` 又正是这种写法
+         */
+        HttpCookieJar() noexcept;
+
+        /**
          * @brief 按给定上限建一个空罐子
          * @param limits 存储上限
          */
-        explicit HttpCookieJar(Limits limits = {}) noexcept;
+        explicit HttpCookieJar(Limits limits) noexcept;
 
         /**
          * @brief 收下响应里的全部 Set-Cookie

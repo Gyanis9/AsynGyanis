@@ -147,6 +147,10 @@ namespace AsynGyanis::Net
         return resetOctet();
     }
 
+    HttpCookieJar::HttpCookieJar() noexcept : m_limits(Limits{})
+    {
+    }
+
     HttpCookieJar::HttpCookieJar(const Limits limits) noexcept : m_limits(limits)
     {
     }
