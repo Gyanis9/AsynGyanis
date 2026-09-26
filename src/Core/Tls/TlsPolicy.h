@@ -1,6 +1,6 @@
 /**
  * @file TlsPolicy.h
- * @brief TLS 策略：版本区间、套件与曲线、信任库与校验深度、票据开关——服务端与出站客户端共用一份
+ * @brief TLS 策略：版本区间、套件与曲线、信任库与校验深度、吊销列表、票据开关——服务端与出站客户端共用一份
  * @author Gyanis
  * @date 2026-09-26
  * @version 1.0.0
@@ -65,6 +65,23 @@ namespace AsynGyanis::Core
         std::string certificateAuthorityPath;
         /// 证书链校验深度；空表示用 OpenSSL 默认（100 跳，实践中先被对端配置卡住）
         std::optional<int> verifyDepth;
+
+        /**
+         * @brief 吊销列表（CRL）文件；**给了就等于要求做吊销检查**
+         *
+         * @details 为什么把「开关」并进这一个字段：留一个独立的 requireRevocationChecking 布尔，
+         *          就会出现「开了检查却没有任何列表可查」那种配置——它在 OpenSSL 侧不是「没查」而是
+         *          **每条握手都失败**（unable to get certificate CRL）。挂在一个只能同时成立的动作上，
+         *          这类配置就写不出来。
+         * @note 只支持单个文件（PEM 或 DER，OpenSSL 自己分辨，也可以一份文件里放多张 CRL）。
+         *       哈希目录那种布局刻意不做：多一处目录约定就多一处「c_rehash 忘了跑」这类只在运行期
+         *       暴露的错，而把若干张 CRL 串成一个文件是同样可达、却不依赖部署动作的写法。
+         * @note 吊销检查是**失败即关**的：启用它却没有覆盖到发证 CA 的列表时，握手一条也不成。
+         *       这方向不是疏忽——「列表没同步到就被当作没吊销」比「同步断了先拒掉」危险。
+         */
+        std::string revocationListFile;
+        /// 只查对端那一张证书，还是链上每张（含中间 CA）都查；前者是默认，也是常见的部署形态
+        bool revocationCoversWholeChain{false};
 
         /// 是否启用会话票据。关掉它多用于「恢复只靠 session id 缓存」或合规要求；关掉后多进程间
         /// 也就无从共享恢复能力，票据密钥文件那条配置随之失去作用

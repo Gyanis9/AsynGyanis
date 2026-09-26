@@ -2,6 +2,8 @@
 
 #include "Core/Exception/CoreException.h"
 
+#include <openssl/x509_vfy.h>
+
 namespace AsynGyanis::Core
 {
     namespace
@@ -103,6 +105,35 @@ namespace AsynGyanis::Core
         if (policy.verifyDepth.has_value())
         {
             SSL_CTX_set_verify_depth(context, *policy.verifyDepth);
+        }
+
+        // 吊销检查：列表进的是**同一个存储**——CA 与 CRL 本来就住在 X509_STORE 的一张表里，
+        // 分开两处放会让「信任谁」与「查谁的吊销名单」各走各的，而后者只有在前者认的那张证书上
+        // 才查得到。开关与文件是同一件事（见头文件那条 @details），所以这里只在给了文件时生效。
+        // 标志用「或」进去而不是 X509_STORE_set_flags 整个替换：存储的默认位里可能已经有别的判据
+        if (!policy.revocationListFile.empty())
+        {
+            X509_STORE *const store = SSL_CTX_get_cert_store(context);
+            if (store == nullptr)
+            {
+                throw CoreException("施加 TLS 策略失败：拿不到上下文的证书存储（SSL_CTX_get_cert_store 返回空）");
+            }
+            if (X509_STORE_load_file(store, policy.revocationListFile.c_str()) != 1)
+            {
+                throw CoreException("施加 TLS 策略失败：吊销列表加载不了（文件=\"" + policy.revocationListFile
+                                    + "\"）；要的是 PEM 或 DER 格式的 CRL，纯文本或写错的指针都会走到这里");
+            }
+            X509_VERIFY_PARAM *const parameters = X509_STORE_get0_param(store);
+            if (parameters == nullptr)
+            {
+                throw CoreException("施加 TLS 策略失败：证书存储没有校验参数（X509_STORE_get0_param 返回空）");
+            }
+            const unsigned long revocationFlags = X509_V_FLAG_CRL_CHECK
+                                                  | (policy.revocationCoversWholeChain ? X509_V_FLAG_CRL_CHECK_ALL : 0UL);
+            if (X509_VERIFY_PARAM_set_flags(parameters, revocationFlags) == 0)
+            {
+                throw CoreException("施加 TLS 策略失败：没能打开吊销检查的标志位");
+            }
         }
 
         // 票据开关：SSL_OP_NO_TICKET 对 TLS 1.2 与 1.3 都管用（1.3 的 NewSessionTicket 一并停掉）。

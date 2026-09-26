@@ -1,6 +1,7 @@
 // TlsContext 单元测试：证书与 CA 加载、SSL 对象创建，以及协议加固后的握手行为（使用仓库预生成证书）
 
 #include "Core/Tls/TlsContext.h"
+#include "Core/Tls/TlsPolicy.h"
 
 #include "Base/Exception/Exception.h"
 #include "Core/Exception/CoreException.h"
@@ -14,6 +15,7 @@
 #include <openssl/ocsp.h>
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
+#include <openssl/x509v3.h>
 
 #include <ctime>
 #include <cstddef>
@@ -21,6 +23,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <atomic>
 #include <chrono>
@@ -57,6 +60,7 @@ namespace AsynGyanis::Core
             bool        clientCertificateInstalled{false};  ///< 客户端是否成功装载了证书与私钥
             std::string serverErrorText;                    ///< 服务端失败时的 OpenSSL 错误串
             std::string clientErrorText;                    ///< 客户端失败时的 OpenSSL 错误串
+            long        clientVerifyResult{0};              ///< 客户端对服务端证书的校验结果（X509_V_OK 为 0）
             int         clientErrorReason{0};               ///< 客户端失败原因码（ERR_GET_REASON）
             std::string protocolVersion;                    ///< 服务端视角协商出的协议版本
             std::string serverAlpn;                         ///< 服务端视角的 ALPN 协商结果
@@ -225,6 +229,9 @@ namespace AsynGyanis::Core
             outcome.protocolVersion = SSL_get_version(serverSsl.get());
             // 校验结果由服务端视角给出：mTLS 用例据此断言对端证书确实被验过
             outcome.serverVerifyResult = SSL_get_verify_result(serverSsl.get());
+            // 客户端那一侧同样要读：吊销用例判的是「客户端有没有认出这张证书被吊销」，
+            // 只看握手成不成功分不出「没吊销」与「列表没查到所以直接放行」
+            outcome.clientVerifyResult = SSL_get_verify_result(clientSsl.get());
 
             const unsigned char *selectedProtocol = nullptr;
             unsigned int         selectedLength   = 0;
@@ -1748,6 +1755,205 @@ namespace AsynGyanis::Core
         }
 
         /**
+         * @brief 造一张由夹具 CA 签发的证书，可按需带上「这是一张 CA」的关键扩展
+         * @details 吊销用例需要一条「根 → 中间 → 叶」的三级链，才分得出「只查对端那一张」与
+         *          「整条链都查」两种口径；writeCaSignedLeafCertificate 不带任何扩展，做不出中间 CA
+         *          （OpenSSL 3 的链校验会把没有 basicConstraints 的 v3 签发者判成 invalid CA）。
+         * @param outputFile 证书输出路径
+         * @param serialNumber 序列号（CRL 按它点名吊销哪一张）
+         * @param commonName 主题名（也是下一级证书的 issuer 名，两张 CRL 靠它区分）
+         * @param isCertificateAuthority 为真时加 critical 的 basicConstraints CA:TRUE
+         * @param issuerCertificatePath 签发者证书；默认是仓库夹具那张自签根，传中间证书就得到三级链
+         * @return bool 写成功
+         */
+        bool writeCertificateSignedByFixture(const std::filesystem::path &outputFile, const long serialNumber,
+                                             const std::string &commonName, const bool isCertificateAuthority,
+                                             const std::filesystem::path &issuerCertificatePath = kTestCertificatePath)
+        {
+            const auto issuerCertificate = loadCertificateFrom(issuerCertificatePath);
+            // 签名密钥一律是夹具私钥：本文件造出的每一张证书用的都是它，链的建路靠名字串起来
+            const auto issuerKey = loadFixturePrivateKey();
+            if (!issuerCertificate || !issuerKey)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<X509, decltype(&X509_free)> certificate(X509_new(), &X509_free);
+            if (!certificate)
+            {
+                return false;
+            }
+            X509_set_version(certificate.get(), 2);
+            ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), serialNumber);
+            X509_gmtime_adj(X509_getm_notBefore(certificate.get()), 0);
+            X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 24L * 60L * 60L);
+            if (X509_set_pubkey(certificate.get(), issuerKey.get()) != 1)
+            {
+                return false;
+            }
+
+            X509_NAME *subjectName = X509_get_subject_name(certificate.get());
+            if (X509_NAME_add_entry_by_txt(subjectName, "CN", MBSTRING_ASC,
+                                           reinterpret_cast<const unsigned char *>(commonName.c_str()), -1, -1, 0) != 1)
+            {
+                return false;
+            }
+            if (X509_set_issuer_name(certificate.get(), X509_get_subject_name(issuerCertificate.get())) != 1)
+            {
+                return false;
+            }
+
+            if (isCertificateAuthority)
+            {
+                const std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)> basicConstraints(
+                    X509V3_EXT_nconf_nid(nullptr, nullptr, NID_basic_constraints, "critical,CA:TRUE"),
+                    &X509_EXTENSION_free);
+                if (!basicConstraints || X509_add_ext(certificate.get(), basicConstraints.get(), -1) != 1)
+                {
+                    return false;
+                }
+            }
+
+            if (X509_sign(certificate.get(), issuerKey.get(), EVP_sha256()) == 0)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<FILE, FileCloser> stream(openFileStream(outputFile.string().c_str(), "wb"), &std::fclose);
+            if (!stream)
+            {
+                return false;
+            }
+            return PEM_write_X509(stream.get(), certificate.get()) == 1;
+        }
+
+        /**
+         * @brief 造一份由指定签发者签发的吊销列表（CRL）并写成 PEM
+         * @details OpenSSL 按**签发者名字**在存储里找 CRL：名字对不上就是「找不到列表」，与「列表里
+         *          没有这一张」是两种不同的失败（前者是 X509_V_ERR_UNABLE_TO_GET_CRL，后者才是被吊销）。
+         *          吊销用例两条都要能造得出来，所以签发者证书由参数给，序列号表可为空（空表＝谁都还没吊销）。
+         * @param outputFile CRL 输出路径
+         * @param issuerCertificatePath 签发者证书 PEM（提供 CRL 的名字与校验用的公钥）
+         * @param revokedSerialNumbers 要列进去的序列号
+         * @return bool 写成功
+         */
+        bool writeRevocationList(const std::filesystem::path &outputFile,
+                                 const std::filesystem::path &issuerCertificatePath,
+                                 const std::vector<long> &revokedSerialNumbers)
+        {
+            const auto issuerCertificate = loadCertificateFrom(issuerCertificatePath);
+            // 签名密钥统一是夹具私钥：本文件造出的每一张证书用的都是它
+            const auto issuerKey = loadFixturePrivateKey();
+            if (!issuerCertificate || !issuerKey)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<X509_CRL, decltype(&X509_CRL_free)> crl(X509_CRL_new(), &X509_CRL_free);
+            if (!crl)
+            {
+                return false;
+            }
+            // CRL 版本号 1 对应 X.509 v2 CRL——唯一在用的那一档
+            X509_CRL_set_version(crl.get(), 1);
+            if (X509_CRL_set_issuer_name(crl.get(), X509_get_subject_name(issuerCertificate.get())) != 1)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> thisUpdate(X509_gmtime_adj(nullptr, 0),
+                                                                                  &ASN1_TIME_free);
+            const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)> nextUpdate(
+                X509_gmtime_adj(nullptr, 60L * 60L * 24L), &ASN1_TIME_free);
+            if (!thisUpdate || !nextUpdate)
+            {
+                return false;
+            }
+            if (X509_CRL_set1_lastUpdate(crl.get(), thisUpdate.get()) != 1
+                || X509_CRL_set1_nextUpdate(crl.get(), nextUpdate.get()) != 1)
+            {
+                return false;
+            }
+
+            for (const long serialNumber: revokedSerialNumbers)
+            {
+                // 不写成 const：add0 之后条目归 CRL 所有，唯一指针要 release() 放手，
+                // 否则离开作用域时二次释放
+                std::unique_ptr<X509_REVOKED, decltype(&X509_REVOKED_free)> revoked(X509_REVOKED_new(),
+                                                                                   &X509_REVOKED_free);
+                const std::unique_ptr<ASN1_INTEGER, decltype(&ASN1_INTEGER_free)> serial(ASN1_INTEGER_new(),
+                                                                                        &ASN1_INTEGER_free);
+                if (!revoked || !serial)
+                {
+                    return false;
+                }
+                ASN1_INTEGER_set(serial.get(), serialNumber);
+                if (X509_REVOKED_set_serialNumber(revoked.get(), serial.get()) != 1
+                    || X509_REVOKED_set_revocationDate(revoked.get(), thisUpdate.get()) != 1)
+                {
+                    return false;
+                }
+                if (X509_CRL_add0_revoked(crl.get(), revoked.get()) != 1)
+                {
+                    return false;
+                }
+                static_cast<void>(revoked.release());
+            }
+
+            if (X509_CRL_sort(crl.get()) != 1)
+            {
+                return false;
+            }
+            // 成功时 OpenSSL 交回的是签名长度而不是 1（与 X509_sign 同一条口径）：按 != 1 判失败，
+            // 会把每一份其实签成功的列表都打回「造不出来」
+            if (X509_CRL_sign(crl.get(), issuerKey.get(), EVP_sha256()) <= 0)
+            {
+                return false;
+            }
+
+            const std::unique_ptr<FILE, FileCloser> stream(openFileStream(outputFile.string().c_str(), "wb"), &std::fclose);
+            if (!stream)
+            {
+                return false;
+            }
+            return PEM_write_X509_CRL(stream.get(), crl.get()) == 1;
+        }
+
+        /**
+         * @brief 按一份 TLS 策略建出「会校验对端证书」的客户端上下文
+         * @details 吊销检查生效的前提是客户端真的去验：SSL_VERIFY_PEER 不设，OpenSSL 连存储都不查，
+         *          那份 CRL 就成了摆设。用例一律从这里建客户端，免得某一条漏设而假绿。
+         * @param policy 待施加的策略（信任库与吊销列表都在里面）
+         * @return SslContextPointer 客户端上下文；施加策略失败时抛出（CoreException）
+         */
+        SslContextPointer createVerifyingClientContext(const TlsPolicy &policy)
+        {
+            SslContextPointer context = createClientContext();
+            EXPECT_NE(context, nullptr);
+            applyTlsPolicy(context.get(), policy, nullptr);
+            SSL_CTX_set_verify(context.get(), SSL_VERIFY_PEER, nullptr);
+            return context;
+        }
+
+        /**
+         * @brief 用给定的服务端证书材料与一份 TLS 策略跑一次握手，取回两端的结论
+         * @details 服务端固定用夹具私钥（本文件造出的每张证书都是这把钥匙），链文件按
+         *          「本机证书在前、中间证书在后」的顺序摆，与部署形态一致。
+         * @param serverCertificateChainPath 服务端出示的证书链 PEM
+         * @param policy 客户端侧策略（信任库与吊销列表都在里面）
+         * @return HandshakeOutcome 客户端是否完成握手、以及它对服务端证书的校验码
+         */
+        HandshakeOutcome runHandshakeAgainstPolicy(const std::filesystem::path &serverCertificateChainPath,
+                                                   const TlsPolicy &policy)
+        {
+            const TlsContext serverContext;
+            EXPECT_TRUE(serverContext.loadCertificate(serverCertificateChainPath.string(), kTestKeyPath.string()))
+                << "服务端证书材料没装上去；OpenSSL 错误：" << lastOpenSslErrorText();
+            const SslContextPointer clientContext = createVerifyingClientContext(policy);
+            return runInProcessHandshake(serverContext.nativeHandle(), clientContext.get(), false, false);
+        }
+
+        /**
          * @brief 造一份与给定叶证书匹配的 OCSP 响应（DER 字节）
          * @details 服务端装订前会按「序列号 + 签发者名哈希」把响应与叶证书对上（OpenSSL 3.x），
          *          因此用例必须造真实匹配的响应；服务端不验签，但这里照样签名保持结构真实。
@@ -2048,5 +2254,168 @@ namespace AsynGyanis::Core
         EXPECT_EQ(presentedCertificateSerialNumber(context.nativeHandle()), previousSerialNumber);
 
         std::filesystem::remove(certificatePath, errorCode);
+    }
+
+    // ============================================================================
+    // 吊销检查（CRL）
+    // ============================================================================
+
+    /**
+     * @brief 钉住：列表里点名吊销的那张证书要拒，没点名的要放行
+     * @details 两条断言用的是**同一张**叶证书，只差那份列表的内容——于是「拒」不可能来自链本身
+     *          验不过（同一张证书在空列表下能成），也不能来自「反正开了吊销就一律拒」。
+     *          判据取客户端的校验码而不是「握手没成」：证书被吊销、找不到列表、名字对不上、主机名
+     *          不符在握手层都是「没成」，只有校验码分得开是哪一种。
+     */
+    TEST(TlsContext, RevocationListRejectsTheCertificateItLists)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("RevocationLeaf");
+        constexpr long kLeafSerial = 0xBEEFL;
+        const std::filesystem::path leafPath          = directory.path() / "leaf.pem";
+        const std::filesystem::path revokedListPath   = directory.path() / "revoked.crl.pem";
+        const std::filesystem::path emptyListPath     = directory.path() / "empty.crl.pem";
+        ASSERT_TRUE(writeCertificateSignedByFixture(leafPath, kLeafSerial, "asyngyanis-crl-leaf", false));
+        ASSERT_TRUE(writeRevocationList(revokedListPath, kTestCertificatePath, {kLeafSerial}));
+        ASSERT_TRUE(writeRevocationList(emptyListPath, kTestCertificatePath, {}));
+
+        TlsPolicy policy;
+        policy.certificateAuthorityFile = kTestCertificatePath.string();
+        policy.revocationListFile       = revokedListPath.string();
+
+        const HandshakeOutcome revoked = runHandshakeAgainstPolicy(leafPath, policy);
+        EXPECT_FALSE(revoked.clientCompleted) << "这张证书就在列表里被吊销了，握手却成了";
+        EXPECT_EQ(revoked.clientVerifyResult, static_cast<long>(X509_V_ERR_CERT_REVOKED))
+                << "拒绝的理由应当是「证书已被吊销」，而不是别的校验失败：" << revoked.clientErrorText;
+
+        policy.revocationListFile = emptyListPath.string();
+        const HandshakeOutcome notRevoked = runHandshakeAgainstPolicy(leafPath, policy);
+        EXPECT_TRUE(notRevoked.clientCompleted) << "同一张证书、换成空列表就该放行：" << notRevoked.clientErrorText;
+        EXPECT_EQ(notRevoked.clientVerifyResult, static_cast<long>(X509_V_OK));
+
+        // 对照组二：整份策略不给列表时同样放行——说明上面那次拒绝来自列表内容，与「开了什么怪配置」无关
+        TlsPolicy withoutRevocation;
+        withoutRevocation.certificateAuthorityFile = kTestCertificatePath.string();
+        const HandshakeOutcome noList = runHandshakeAgainstPolicy(leafPath, withoutRevocation);
+        EXPECT_TRUE(noList.clientCompleted) << "不查吊销时就是一次普通的验通：" << noList.clientErrorText;
+    }
+
+    /**
+     * @brief 钉住：查不到发证 CA 的列表时是**失败即关**，而不是当作没吊销
+     * @details 三级链（根 → 中间 → 叶）下只给根那份列表：叶的发证者是中间证书，存储里没有它的列表。
+     *          OpenSSL 在这里报「unable to get certificate CRL」而不是放行，本仓库认为这个方向是对的
+     *          ——「列表没同步到就被当作没吊销」比「同步断了先拒掉」危险，所以配置里不准备反向开关。
+     *          对照组用**同一套证书材料**、只是不带列表：握手要成，否则这条测的就不是吊销而是链本身。
+     */
+    TEST(TlsContext, RevocationCheckingFailsClosedWhenTheIssuingAuthorityHasNoList)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("RevocationFailClosed");
+        constexpr long          kIntermediateSerial = 0x1001L;
+        constexpr long          kLeafSerial         = 0x2002L;
+        const std::filesystem::path intermediatePath = directory.path() / "intermediate.pem";
+        const std::filesystem::path leafPath         = directory.path() / "leaf.pem";
+        const std::filesystem::path chainPath        = directory.path() / "chain.pem";
+        const std::filesystem::path rootListPath     = directory.path() / "root.crl.pem";
+        ASSERT_TRUE(writeCertificateSignedByFixture(intermediatePath, kIntermediateSerial,
+                                                    "asyngyanis-crl-intermediate", true));
+        ASSERT_TRUE(writeCertificateSignedByFixture(leafPath, kLeafSerial, "asyngyanis-crl-leaf", false,
+                                                    intermediatePath));
+        ASSERT_TRUE(concatenateTextFiles(leafPath, intermediatePath, chainPath));
+        ASSERT_TRUE(writeRevocationList(rootListPath, kTestCertificatePath, {}));
+
+        TlsPolicy policy;
+        policy.certificateAuthorityFile = kTestCertificatePath.string();
+        policy.revocationListFile       = rootListPath.string();
+
+        const HandshakeOutcome missingList = runHandshakeAgainstPolicy(chainPath, policy);
+        EXPECT_FALSE(missingList.clientCompleted) << "发证 CA 的列表查不到时不该放行";
+        EXPECT_EQ(missingList.clientVerifyResult, static_cast<long>(X509_V_ERR_UNABLE_TO_GET_CRL))
+                << "这条要的判据是「没有对应列表」，别的通知失败都不算：" << missingList.clientErrorText;
+
+        policy.revocationListFile.clear();
+        const HandshakeOutcome withoutChecking = runHandshakeAgainstPolicy(chainPath, policy);
+        EXPECT_TRUE(withoutChecking.clientCompleted)
+                << "同一套三级链不查吊销时应当验通，否则上一条测的就不是吊销：" << withoutChecking.clientErrorText;
+    }
+
+    /**
+     * @brief 钉住：整条链都查与只查对端那一张是两种口径，中间证书被吊销时二者结论相反
+     * @details 默认只查对端那一张（业界常见部署形态：链上每张都要有列表，实操里很容易因为漏同步而
+     *          全线拒绝）。打开 revocationCoversWholeChain 之后，被吊销的中间证书也拦得住。
+     *          两次握手用的是**同一份列表文件**（根的那份点名吊销中间证书 + 中间那份是空表），
+     *          所以结论之差只能来自这个开关——这也是这条配置不是死开关的证明。
+     */
+    TEST(TlsContext, WholeChainRevocationCheckingAlsoRejectsARevokedIntermediateAuthority)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("RevocationWholeChain");
+        constexpr long          kIntermediateSerial = 0x3003L;
+        constexpr long          kLeafSerial         = 0x4004L;
+        const std::filesystem::path intermediatePath = directory.path() / "intermediate.pem";
+        const std::filesystem::path leafPath         = directory.path() / "leaf.pem";
+        const std::filesystem::path chainPath        = directory.path() / "chain.pem";
+        const std::filesystem::path rootListPath     = directory.path() / "root.crl.pem";
+        const std::filesystem::path intermediateListPath = directory.path() / "intermediate.crl.pem";
+        const std::filesystem::path bothListsPath        = directory.path() / "both.crl.pem";
+        ASSERT_TRUE(writeCertificateSignedByFixture(intermediatePath, kIntermediateSerial,
+                                                    "asyngyanis-chain-intermediate", true));
+        ASSERT_TRUE(writeCertificateSignedByFixture(leafPath, kLeafSerial, "asyngyanis-chain-leaf", false,
+                                                    intermediatePath));
+        ASSERT_TRUE(concatenateTextFiles(leafPath, intermediatePath, chainPath));
+        ASSERT_TRUE(writeRevocationList(rootListPath, kTestCertificatePath, {kIntermediateSerial}));
+        ASSERT_TRUE(writeRevocationList(intermediateListPath, intermediatePath, {}));
+        ASSERT_TRUE(concatenateTextFiles(rootListPath, intermediateListPath, bothListsPath));
+
+        TlsPolicy policy;
+        policy.certificateAuthorityFile = kTestCertificatePath.string();
+        policy.revocationListFile       = bothListsPath.string();
+
+        const HandshakeOutcome leafOnly = runHandshakeAgainstPolicy(chainPath, policy);
+        EXPECT_TRUE(leafOnly.clientCompleted)
+                << "只查对端那一张时，叶证书的列表是空的，中间证书被吊销不该牵连它：" << leafOnly.clientErrorText;
+
+        policy.revocationCoversWholeChain = true;
+        const HandshakeOutcome wholeChain = runHandshakeAgainstPolicy(chainPath, policy);
+        EXPECT_FALSE(wholeChain.clientCompleted) << "整条链都查的时候，被吊销的中间证书必须拦下来";
+        EXPECT_EQ(wholeChain.clientVerifyResult, static_cast<long>(X509_V_ERR_CERT_REVOKED))
+                << "拒绝的理由应当是「证书已被吊销」：" << wholeChain.clientErrorText;
+    }
+
+    /**
+     * @brief 钉住：列表读不出来时策略施加当场抛，而不是「这项没生效但其它照旧」
+     * @details 半生效的 TLS 策略比启动失败危险得多：一条写错路径的吊销配置如果只被静默忽略，
+     *          运维看到的仍是「已开吊销检查」，而实际每条握手都在按没有列表放行。抛出的消息点名文件，
+     *          配置错了能一眼看出是哪一行。
+     */
+    TEST(TlsContext, UnreadableRevocationListIsRejectedAtPolicyApplyTime)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory directory("RevocationBadList");
+        const std::filesystem::path garbageListPath = directory.path() / "garbage.crl.pem";
+        ASSERT_TRUE(overwriteBytes(garbageListPath, "this is not a CRL at all"));
+
+        for (const std::filesystem::path &candidate: {directory.path() / "missing.crl.pem", garbageListPath})
+        {
+            TlsPolicy policy;
+            policy.certificateAuthorityFile = kTestCertificatePath.string();
+            policy.revocationListFile       = candidate.string();
+
+            const SslContextPointer context = createClientContext();
+            ASSERT_NE(context, nullptr);
+            EXPECT_THROW(applyTlsPolicy(context.get(), policy, nullptr), CoreException)
+                    << "这份列表读不出来却准备静默放过：" << candidate.string();
+        }
+
+        // 消息要点名是哪一份文件（同一个循环里两份文件时，光说「加载不了」分不出是哪一步）
+        TlsPolicy policy;
+        policy.revocationListFile = garbageListPath.string();
+        const SslContextPointer context = createClientContext();
+        ASSERT_NE(context, nullptr);
+        try
+        {
+            applyTlsPolicy(context.get(), policy, nullptr);
+            FAIL() << "读不出来的列表本该抛出";
+        } catch (const CoreException &failure)
+        {
+            EXPECT_NE(std::string{failure.what()}.find("garbage.crl.pem"), std::string::npos)
+                    << "消息没点名是哪一份文件：" << failure.what();
+        }
     }
 }

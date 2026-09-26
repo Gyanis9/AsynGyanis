@@ -17,6 +17,27 @@
 
 ### 新增
 
+- **TLS 策略加吊销检查（CRL）**：`Core::TlsPolicy` 新增 `revocationListFile` 与
+  `revocationCoversWholeChain`，`applyTlsPolicy()` 把列表读进上下文自己的那份证书存储，再打开
+  `X509_V_FLAG_CRL_CHECK`（整条链都查时再加 `_ALL`）。因为服务端与出站客户端共用同一份策略，
+  `HttpsServer` 与 `HttpClient` 两侧同时拿到这个能力，不需要各做一遍。三条口径写死在这里：
+  **给了文件就等于要求吊销检查**——不留「开了检查却没给列表」那种配置，它在 OpenSSL 侧不是「没查」
+  而是每条握手都失败，挂在一个只能同时成立的动作上就写不出这种配置；**查不到发证 CA 的列表时失败即关**
+  （`X509_V_ERR_UNABLE_TO_GET_CRL`），因为「列表没同步到就被当作没吊销」比「同步断了先拒掉」危险，
+  所以不准备反向开关；**只支持单个文件**（PEM 或 DER，一份里可以放多张 CRL），哈希目录那种布局刻意
+  不做——多一处目录约定就多一处 `c_rehash` 忘了跑这类只在运行期暴露的错。默认构造的策略仍然不查吊销，
+  行为与本项出现之前逐字相同；列表读不出来时策略施加**当场抛出**并点名是哪一份文件（半生效的 TLS
+  策略比启动失败危险得多）。
+  用例：`TlsContext.RevocationListRejectsTheCertificateItLists`（同一张叶证书，列表点名它则拒、
+  空列表则放行，判据取客户端校验码 `X509_V_ERR_CERT_REVOKED` 而不是「握手没成」）、
+  `RevocationCheckingFailsClosedWhenTheIssuingAuthorityHasNoList`（三级链下只给根那份列表，
+  配「同一套材料不查吊销时验通」的对照组）、
+  `WholeChainRevocationCheckingAlsoRejectsARevokedIntermediateAuthority`（同一份列表文件，
+  只查对端那一张放行、整条链都查拦下）、
+  `UnreadableRevocationListIsRejectedAtPolicyApplyTime`（路径不存在与内容是垃圾两种都抛）。
+  四份材料（根 / 中间 / 叶 / CRL）全部在用例里现造，不留会过期的证书夹具。
+  证伪：把打开标志那一步换成长度恒零的等价写法，前三条一起红（第四条不受影响，说明它测的是加载
+  而不是标志）；只把 `_ALL` 那一元去掉，红出的恰好只有整链那一条。
 - **出站冷池上同时进来的请求共用一次握手**：新增 `Net/Http/Client/HttpOutboundEstablishment.h`
   （`HttpEstablishmentTable` + `HttpEstablishmentAwait`），连接池按端点（主机 + 端口 + TLS 位，键文本
   用单元分隔符而不是冒号）记「这一头正在建连」：第一个到的当领导者，后来的 `co_await` 它结算，醒来
