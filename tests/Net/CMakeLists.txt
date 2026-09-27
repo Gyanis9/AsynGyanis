@@ -6,6 +6,7 @@ add_executable(TestNet
         Quic/QuicRfcVectors.h
         Http/HttpTestSupport.h
         Http2/Http2TestSupport.h
+        Tracing/TracingTestSupport.h
         # 协议解码器的属性化随机模糊：内核与用例（libFuzzer 入口另见文件末尾的可选目标）
         Fuzz/ProtocolFuzzKernel.h
         Fuzz/ProtocolFuzzKernel.cpp
@@ -72,6 +73,11 @@ add_executable(TestNet
         Http3/TestQpack.cpp
         Http3/TestHttp3Session.cpp
         Http3/TestHttp3ClientConnection.cpp
+        # 链路（Tracing）：节的形状与标识哨兵、编排器的采样与计数、两种出口的正文
+        Tracing/TestSpan.cpp
+        Tracing/TestTracer.cpp
+        Tracing/TestOtlpTraceJson.cpp
+        Tracing/TestFileSpanExporter.cpp
         WebSocket/TestPerMessageDeflate.cpp
         Http/TestCompressionMiddleware.cpp
         Http/TestHttpAcceptDispatch.cpp
@@ -134,6 +140,7 @@ target_include_directories(TestNet PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/Http
         ${CMAKE_CURRENT_SOURCE_DIR}/Http2
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tracing
         ${CMAKE_CURRENT_SOURCE_DIR}/Quic
         ${CMAKE_SOURCE_DIR}/tests/Core
         ${CMAKE_SOURCE_DIR}/tests/TestSupport

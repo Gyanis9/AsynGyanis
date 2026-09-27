@@ -378,4 +378,27 @@ namespace AsynGyanis::Net
         // 与 request-id 同一口径：字段字节写进请求自己的缓冲，读回来不拷一份
         EXPECT_EQ(profile.totalAllocations, 0U) << "读一次上下文或渲染一条字段就碰堆，说明复用缓冲的路子被改坏了";
     }
+
+    /**
+     * @brief generateSpanIdentifier() 交出的是定长小写十六进制、非全零、且每次都不一样
+     * @details 链路桥每开一节都要一个新段标识，而 Traceparent::generate() 会白造一个用不上的 trace-id，
+     *          因此单开这一条入口；它与 generate() 共用同一个随机源与「全零重取」的规矩，
+     *          这里判的就是那两件事是否真成立。
+     */
+    TEST(SpanIdentifier, IsLowerHexNonZeroAndDistinctAcrossCalls)
+    {
+        std::array<char, kSpanIdHexDigitCount + 1U> previous = generateSpanIdentifier();
+        const auto textOf = [](const std::array<char, kSpanIdHexDigitCount + 1U> &identifier) { return std::string_view(identifier.data(), kSpanIdHexDigitCount); };
+
+        EXPECT_EQ(previous[kSpanIdHexDigitCount], '\0') << "定长缓冲的最后一格必须是 NUL";
+        for (int index = 0; index < 64; ++index)
+        {
+            const auto current = generateSpanIdentifier();
+            EXPECT_EQ(current[kSpanIdHexDigitCount], '\0');
+            EXPECT_EQ(textOf(current).find_first_not_of("0123456789abcdef"), std::string_view::npos) << textOf(current);
+            EXPECT_NE(textOf(current), std::string(kSpanIdHexDigitCount, '0')) << "全零的段标识在规范里是非法值";
+            EXPECT_NE(textOf(current), textOf(previous)) << "连着两次给出同一个段标识，随机源没动";
+            previous = current;
+        }
+    }
 } // namespace AsynGyanis::Net

@@ -248,6 +248,13 @@ namespace AsynGyanis::Net
         return identifiers;
     }
 
+    std::array<char, kSpanIdHexDigitCount + 1U> generateSpanIdentifier() noexcept
+    {
+        std::array<char, kSpanIdHexDigitCount + 1U> spanId{};
+        writeHexText<kSpanIdHexDigitCount>(spanId, randomIdentifierBytes<kSpanIdHexDigitCount / 2U>());
+        return spanId;
+    }
+
     void Traceparent::renderInto(std::string &target, const TraceIdentifiers &identifiers)
     {
         target.resize(kTraceparentLength);

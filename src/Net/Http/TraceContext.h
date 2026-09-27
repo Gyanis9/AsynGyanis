@@ -126,6 +126,16 @@ namespace AsynGyanis::Net
     };
 
     /**
+     * @brief 生成一个新的段标识（16 位小写十六进制 + NUL）
+     * @details 与 Traceparent::generate() 同一随机源、同一条「全零要重取」的规矩（全零的段标识在
+     *          规范里是非法值），只是不附带一条新链路。要给「已经在某条链路上、现在要开下一节」的
+     *          调用方用——链路桥（tracing）里每开一节都要一个新段标识，而 Traceparent::generate()
+     *          还会顺带造一个用不上的 trace-id。
+     * @return std::array<char, kSpanIdHexDigitCount + 1U> 可直接当 traceparent 的 parent-id 段用
+     */
+    [[nodiscard]] std::array<char, kSpanIdHexDigitCount + 1U> generateSpanIdentifier() noexcept;
+
+    /**
      * @brief tracestate 的一条键值（§3.2.3）
      */
     struct TraceStateEntry
