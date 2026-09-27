@@ -432,6 +432,9 @@ namespace AsynGyanis::Net
 
         std::map<std::uint64_t, IncomingStream> m_incoming{}; ///< 对端发起或回写的流
         std::map<std::uint64_t, OutgoingStream> m_outgoing{}; ///< 本端发起的流
+        /// 出流的轮转游标：下一次组包从这条号之后起手。流表按号升序遍历，不轮转的话
+        /// 每回都是低号流（往往也是最早那条大响应）先吃掉包预算，新开的短流一直排到最后
+        std::uint64_t m_nextSendStreamId{0}; ///< 下一趟collectStreamData的起始流号下界
         /// 对端发起的流里「已作废」的流号边界，取的是同类型的第几条。两侧必须分开——一条请求的
         /// 入站侧往往先结清，共用一条边界会把同一条流的响应也挡掉
         std::array<std::array<std::uint64_t, 2>, 2> m_retiredPeerStreamBoundaries{}; ///< [收/发][双向/单向] 各一条边界

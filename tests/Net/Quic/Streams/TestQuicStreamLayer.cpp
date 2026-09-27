@@ -8,7 +8,7 @@
 //   4) 乱序缓存、重叠裁剪、纯 FIN 也要通知（§7.5）；
 //   5) 流数超限判 STREAM_LIMIT_ERROR，用掉一半自动续上限（§4.6）；
 //   6) 单向方向性错误的三处 STREAM_STATE_ERROR 与 PROTOCOL_VIOLATION（§2.1、§4.5、§4.6）；
-//   7) 发送排队：按额度与包预算分片、判丢按原偏移重排、确认销账、STOP_SENDING 作废待发（§4.5）；
+//   7) 发送排队：按额度与包预算分片、判丢按原偏移重排、确认销账、STOP_SENDING 作废待发、预算不够时按流轮转（§4.5）；
 //   8) 窗口续期按「消费掉一半」批量抬，且任何预算下都不超编（§2.2）；
 //   9) 本端收口一条流：RESET_STREAM / STOP_SENDING 各编得出、在途不重发、判丢补发同一份、确认即落定（§3.5、§13.3）。
 
@@ -648,6 +648,50 @@ namespace AsynGyanis::Net
         ASSERT_GT(drainedByteCount, 0U);
         const std::vector<std::uint8_t> drainedSegment(drainedByteCount, std::uint8_t{'w'});
         EXPECT_EQ(layer.writeStreamData(freshStreamId, drainedSegment, false), drainedByteCount) << "只按刚腾出的量收，多一个字节都是把总量闸放开";
+    }
+
+    /**
+     * @brief 钉住：包预算不够分给所有待发流时，下一包要从上一包被喂过的那条之后起手
+     * @details 流表按号升序，且一包预算只够喂满一条（帧头一装不下就整趟收手）。不轮转的话
+     *          每一包都是最低号那条先吃，高号流（新来的短响应）要等前者完全排空才见得到预算
+     */
+    TEST(QuicStreamLayer, RotatesSendBudgetAcrossPendingStreams)
+    {
+        QuicStreamLayer layer(makeLocalParameters());
+        layer.adoptPeerParameters(makeParameters(1024U * 1024U, 1024U * 1024U, 1024U * 1024U, 1024U * 1024U, 4, 16));
+
+        // 三条单向流各排 400 字节，一包只给 120 字节：一轮恰好只喂得到一条
+        const std::vector<std::uint8_t> payload(400U, std::uint8_t{'x'});
+        for (const std::uint64_t streamId: {3ULL, 7ULL, 11ULL})
+        {
+            ASSERT_EQ(layer.writeStreamData(streamId, payload, false), payload.size()) << "待发队列要先各自填满，才有得轮";
+        }
+
+        std::size_t firstStreamByteCount  = 0;
+        std::size_t secondStreamByteCount = 0;
+        std::size_t thirdStreamByteCount  = 0;
+        for (std::size_t round = 0; round < 3; ++round)
+        {
+            for (const QuicStreamFrame &frame: framesOfType<QuicStreamFrame>(collect(layer, 120U).frames))
+            {
+                if (frame.streamId == 3ULL)
+                {
+                    firstStreamByteCount += frame.data.size();
+                } else if (frame.streamId == 7ULL)
+                {
+                    secondStreamByteCount += frame.data.size();
+                } else if (frame.streamId == 11ULL)
+                {
+                    thirdStreamByteCount += frame.data.size();
+                }
+            }
+        }
+
+        EXPECT_GT(firstStreamByteCount, 0U);
+        EXPECT_GT(secondStreamByteCount, 0U) << "第二包该轮到 7 号流：预算每包都被低号流吃掉就是饿死";
+        EXPECT_GT(thirdStreamByteCount, 0U) << "第三包该轮到 11 号流：同上";
+        // 三包合计不超过预算之和，也不该有人被喂了两回而另一回零
+        EXPECT_LE(firstStreamByteCount + secondStreamByteCount + thirdStreamByteCount, 3U * 120U);
     }
 
     /**

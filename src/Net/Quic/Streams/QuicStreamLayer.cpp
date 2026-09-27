@@ -687,83 +687,104 @@ namespace AsynGyanis::Net
             return 0;
         }
         std::size_t usedByteCount = 0;
-        for (auto &[streamId, stream]: m_outgoing)
+
+        // 一趟只走到「预算见底」或「这段流表走完」为止。预算见底时的提前收手要保持可中断，
+        // 因此把遍历体收成一段闭包，由外面按「先游标之后、再从头到游标」的顺序各调一次
+        const auto collectRange = [&](const std::map<std::uint64_t, OutgoingStream>::iterator beginIterator, const std::map<std::uint64_t, OutgoingStream>::iterator endIterator)
         {
-            if (stream.isAborted)
+            for (auto iterator = beginIterator; iterator != endIterator; ++iterator)
             {
-                continue;
-            }
-            while (!stream.pendingQueue.empty())
-            {
-                const std::size_t      remainingBudget  = byteBudget > usedByteCount ? byteBudget - usedByteCount : 0;
-                const QuicStreamChunk &front            = stream.pendingQueue.front();
-                const std::size_t      headerByteLength = streamFrameHeaderByteLength(streamId, front.beginOffset);
-                const std::size_t      creditByteCount  = sendCreditOf(stream);
-                if (creditByteCount == 0)
+                const std::uint64_t streamId = iterator->first;
+                OutgoingStream     &stream   = iterator->second;
+                if (stream.isAborted)
                 {
-                    // 这条流的额度见底，换下一条：额度是分流的，后面的流可能还很宽裕
-                    break;
+                    continue;
                 }
-                if (remainingBudget <= headerByteLength + 1)
+                while (!stream.pendingQueue.empty())
                 {
-                    // 连「帧头 + 最窄长度域」都装不下，后面的流同样装不下
-                    return usedByteCount;
-                }
-                // 长度域的宽度取决于载荷多长，而载荷多长又取决于留出多少长度域：先按最窄档算，
-                // 算出来的值跨档就按宽一档重算一次。第二次一定收敛（载荷只会变小）
-                std::size_t payloadByteLength = std::min({front.bytes.size(), creditByteCount, remainingBudget - headerByteLength - 1});
-                if (const std::size_t widenedByteCount = quicVariableLengthIntegerByteCount(static_cast<std::uint64_t>(payloadByteLength)); widenedByteCount > 1)
-                {
-                    if (remainingBudget <= headerByteLength + widenedByteCount)
+                    const std::size_t      remainingBudget  = byteBudget > usedByteCount ? byteBudget - usedByteCount : 0;
+                    const QuicStreamChunk &front            = stream.pendingQueue.front();
+                    const std::size_t      headerByteLength = streamFrameHeaderByteLength(streamId, front.beginOffset);
+                    const std::size_t      creditByteCount  = sendCreditOf(stream);
+                    if (creditByteCount == 0)
                     {
-                        return usedByteCount;
+                        // 这条流的额度见底，换下一条：额度是分流的，后面的流可能还很宽裕
+                        break;
                     }
-                    payloadByteLength = std::min({front.bytes.size(), creditByteCount, remainingBudget - headerByteLength - widenedByteCount});
-                }
-                if (payloadByteLength == 0 && !front.isFinal)
-                {
-                    return usedByteCount;
-                }
+                    if (remainingBudget <= headerByteLength + 1)
+                    {
+                        // 连「帧头 + 最窄长度域」都装不下，后面的流同样装不下
+                        return;
+                    }
+                    // 长度域的宽度取决于载荷多长，而载荷多长又取决于留出多少长度域：先按最窄档算，
+                    // 算出来的值跨档就按宽一档重算一次。第二次一定收敛（载荷只会变小）
+                    std::size_t payloadByteLength = std::min({front.bytes.size(), creditByteCount, remainingBudget - headerByteLength - 1});
+                    if (const std::size_t widenedByteCount = quicVariableLengthIntegerByteCount(static_cast<std::uint64_t>(payloadByteLength)); widenedByteCount > 1)
+                    {
+                        if (remainingBudget <= headerByteLength + widenedByteCount)
+                        {
+                            return;
+                        }
+                        payloadByteLength = std::min({front.bytes.size(), creditByteCount, remainingBudget - headerByteLength - widenedByteCount});
+                    }
+                    if (payloadByteLength == 0 && !front.isFinal)
+                    {
+                        return;
+                    }
 
-                const bool      carriesFinal = front.isFinal && payloadByteLength == front.bytes.size();
-                QuicStreamFrame streamFrame;
-                streamFrame.streamId = streamId;
-                streamFrame.offset   = front.beginOffset;
-                streamFrame.data     = std::span<const std::uint8_t>(front.bytes).subspan(0, payloadByteLength);
-                streamFrame.isFinal  = carriesFinal;
+                    // 记下「下一条从谁开始」：本包预算用尽时，下一次组包要从这条之后起手，
+                    // 否则永远是低号流（往往也是最早那条大响应）每回先占满，新开的短流排到最后
+                    m_nextSendStreamId = streamId + 1U;
 
-                const std::size_t beforeByteCount = frames.size();
-                appendQuicFrame(frames, QuicFrame{streamFrame});
-                usedByteCount += frames.size() - beforeByteCount;
+                    const bool      carriesFinal = front.isFinal && payloadByteLength == front.bytes.size();
+                    QuicStreamFrame streamFrame;
+                    streamFrame.streamId = streamId;
+                    streamFrame.offset   = front.beginOffset;
+                    streamFrame.data     = std::span<const std::uint8_t>(front.bytes).subspan(0, payloadByteLength);
+                    streamFrame.isFinal  = carriesFinal;
 
-                const std::uint64_t endOffset = front.beginOffset + payloadByteLength;
-                if (endOffset > stream.sentHighWater)
-                {
-                    m_connectionSentHighWater += endOffset - stream.sentHighWater;
-                    stream.sentHighWater = endOffset;
-                }
-                sentRanges.push_back(QuicStreamRange{streamId, front.beginOffset, endOffset, carriesFinal});
-                if (carriesFinal)
-                {
-                    // 记一笔「FIN 已上线」：本端发送侧就此收口，之后不必也不该再发 RESET_STREAM（§3.5）
-                    stream.isFinalSentToPeer = true;
-                }
-                stream.inFlight[front.beginOffset] = QuicStreamChunk{
-                        front.beginOffset, std::vector<std::uint8_t>(front.bytes.begin(), front.bytes.begin() + static_cast<std::ptrdiff_t>(payloadByteLength)), carriesFinal};
+                    const std::size_t beforeByteCount = frames.size();
+                    appendQuicFrame(frames, QuicFrame{streamFrame});
+                    usedByteCount += frames.size() - beforeByteCount;
 
-                if (payloadByteLength == front.bytes.size())
-                {
-                    stream.pendingQueue.pop_front();
-                } else
-                {
-                    // 只排出去一段：剩下的仍留在队首，偏移跟着后移，下一段续在同一处
-                    QuicStreamChunk &mutableFront = stream.pendingQueue.front();
-                    mutableFront.bytes.erase(mutableFront.bytes.begin(), mutableFront.bytes.begin() + static_cast<std::ptrdiff_t>(payloadByteLength));
-                    mutableFront.beginOffset += payloadByteLength;
+                    const std::uint64_t endOffset = front.beginOffset + payloadByteLength;
+                    if (endOffset > stream.sentHighWater)
+                    {
+                        m_connectionSentHighWater += endOffset - stream.sentHighWater;
+                        stream.sentHighWater = endOffset;
+                    }
+                    sentRanges.push_back(QuicStreamRange{streamId, front.beginOffset, endOffset, carriesFinal});
+                    if (carriesFinal)
+                    {
+                        // 记一笔「FIN 已上线」：本端发送侧就此收口，之后不必也不该再发 RESET_STREAM（§3.5）
+                        stream.isFinalSentToPeer = true;
+                    }
+                    stream.inFlight[front.beginOffset] = QuicStreamChunk{
+                            front.beginOffset, std::vector<std::uint8_t>(front.bytes.begin(), front.bytes.begin() + static_cast<std::ptrdiff_t>(payloadByteLength)), carriesFinal};
+
+                    if (payloadByteLength == front.bytes.size())
+                    {
+                        stream.pendingQueue.pop_front();
+                    } else
+                    {
+                        // 只排出去一段：剩下的仍留在队首，偏移跟着后移，下一段续在同一处
+                        QuicStreamChunk &mutableFront = stream.pendingQueue.front();
+                        mutableFront.bytes.erase(mutableFront.bytes.begin(), mutableFront.bytes.begin() + static_cast<std::ptrdiff_t>(payloadByteLength));
+                        mutableFront.beginOffset += payloadByteLength;
+                    }
+                    // 记一笔「队列又空出这么多」：上层因本层到界而留下的那段字节靠这个数续交
+                    m_drainedSendByteCount += payloadByteLength;
                 }
-                // 记一笔「队列又空出这么多」：上层因本层到界而留下的那段字节靠这个数续交
-                m_drainedSendByteCount += payloadByteLength;
             }
+        };
+
+        // 两段遍历：先从上一回被喂过的那条之后起、走到表尾，还有预算才回头补表头那一段。
+        // 于是「一包预算只够一条大响应」的情形下，每回轮到被喂的流会换人，短流不会一直排在最后
+        const auto rotationPoint = m_outgoing.lower_bound(m_nextSendStreamId);
+        collectRange(rotationPoint, m_outgoing.end());
+        if (usedByteCount < byteBudget)
+        {
+            collectRange(m_outgoing.begin(), rotationPoint);
         }
         return usedByteCount;
     }
