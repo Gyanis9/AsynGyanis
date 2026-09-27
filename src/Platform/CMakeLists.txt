@@ -15,10 +15,13 @@ add_library(Platform STATIC
 )
 
 # 网络子系统仅在 Windows 需要 Winsock 库，Linux 侧由 libc 内建提供
+# iphlpapi：if_nametoindex/if_indextoname 在 Windows SDK 里由 netioapi.h 声明、iphlpapi.lib 实现
+# （Linux 侧这两个函数在 libc 内），IPv6 的 %接口名 写法要靠它换算成数字作用域号
 if(WIN32)
     target_link_libraries(Platform PUBLIC
             ws2_32
             Mswsock
+            iphlpapi
     )
 endif()
 
