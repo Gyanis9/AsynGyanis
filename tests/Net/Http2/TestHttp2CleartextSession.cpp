@@ -2501,4 +2501,99 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(fixture.startThrew());
     }
 
+    /**
+     * @brief 钉住：命中验证器的条件请求在 h2c 上回 304（与 h1 同解）
+     * @details 判定本体只有 HttpServer.cpp 那一份（三条通道都经路由器走到它），这条钉的是「h2 的帧路径
+     *          能把判定完整送到」：304 若被当成「有正文的响应」去等 DATA，客户端会挂到超时；206 少了
+     *          Content-Range，客户端就无从知道总长。与 h3 侧同名用例是一对，故意把断言写成一样的形状。
+     */
+    TEST(Http2CleartextSession, AnswersNotModifiedForConditionalStaticRequest)
+    {
+        const AsynGyanis::TestSupport::TemporaryDirectory directory("H2cStaticConditional");
+        const std::filesystem::path                       assetPath = directory.path() / "asset.txt";
+        {
+            std::ofstream initial(assetPath, std::ios::binary | std::ios::trunc);
+            initial << "first-version-body"; // 18 字节
+        }
+        ASSERT_TRUE(std::filesystem::exists(assetPath));
+
+        RunningHttpServerFixture fixture{makeCleartextLimits(),
+                                         std::chrono::milliseconds{30},
+                                         SlowRouteOptions{},
+                                         {},
+                                         {},
+                                         [&directory](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                             server.staticFileDir(directory.path().string());
+                                         }};
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
+
+        // 第一条：If-None-Match: * ——命中即 304，且整条流不该有 DATA
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/asset.txt") + hpackLiteralField("if-none-match", "*"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "条件请求没有按时收尾：把 304 当成「还有正文」就会挂住";
+        HpackDecoder notModifiedDecoder;
+        EXPECT_EQ(findResponseHeaderValue(notModifiedDecoder, frames, 1U, ":status"), "304") << "命中验证器却没回 304：客户端会白下整份文件";
+        EXPECT_EQ(responseDataPayload(frames, 1U), "") << "304 不允许带正文";
+        HpackDecoder validatorDecoder;
+        EXPECT_FALSE(findResponseHeaderValue(validatorDecoder, frames, 1U, "etag").empty()) << "304 仍要带 ETag（RFC 9110 §15.4.5）";
+    }
+
+    /**
+     * @brief 钉住：单段 Range 在 h2c 上回 206 并带上 Content-Range（与 h1 同解）
+     */
+    TEST(Http2CleartextSession, AnswersPartialContentForRangeStaticRequest)
+    {
+        const AsynGyanis::TestSupport::TemporaryDirectory directory("H2cStaticRange");
+        const std::filesystem::path                       assetPath = directory.path() / "asset.txt";
+        {
+            std::ofstream initial(assetPath, std::ios::binary | std::ios::trunc);
+            initial << "first-version-body"; // 18 字节
+        }
+        ASSERT_TRUE(std::filesystem::exists(assetPath));
+
+        RunningHttpServerFixture fixture{makeCleartextLimits(),
+                                         std::chrono::milliseconds{30},
+                                         SlowRouteOptions{},
+                                         {},
+                                         {},
+                                         [&directory](TestHttpServer &server)
+                                         {
+                                             server.setHttp2CleartextEnabled(true);
+                                             server.staticFileDir(directory.path().string());
+                                         }};
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/asset.txt") + hpackLiteralField("range", "bytes=0-4"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "分段请求没有按时收尾";
+        EXPECT_EQ(responseDataPayload(frames, 1U), "first") << "分段正文必须正好是请求的那一段";
+        HpackDecoder rangeDecoder;
+        EXPECT_EQ(findResponseHeaderValue(rangeDecoder, frames, 1U, ":status"), "206") << "可满足的 Range 应当回 206（与 h1 同解）";
+        EXPECT_EQ(findResponseHeaderValue(rangeDecoder, frames, 1U, "content-range"), "bytes 0-4/18") << "206 少了正确的 Content-Range 就是让客户端猜总长";
+    }
+
 } // namespace AsynGyanis::Net

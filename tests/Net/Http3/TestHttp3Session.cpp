@@ -3565,6 +3565,95 @@ namespace AsynGyanis::Net
 
 
     /**
+     * @brief 钉住：命中验证器的条件请求在 h3 上回 304（与 h1 同解）
+     * @details 判定本体只有一份（HttpServer.cpp 里那组静态文件助手，三条通道都经路由器走到它），
+     *          因此这条用例钉的是「这条通道能不能把那条判定完整送到」：少送一个 304、或 206 少了
+     *          content-range，客户端就会重下整份文件或把半截正文当全部。
+     */
+    TEST(Http3Session, AnswersNotModifiedForConditionalStaticRequest)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory site("H3StaticConditional");
+        const std::string                           fileContent = "hello-h3-static-body";
+        ASSERT_TRUE(site.writeBinaryFile("greeting.txt", fileContent));
+
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session(std::ref(opener),
+                                                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                                                {
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                                                });
+
+        Router            router;
+        StaticFileService staticFiles;
+        staticFiles.install(router, 0);
+        staticFiles.setDirectory(Platform::FileSystem::utf8FromPath(site.path()));
+        session.attachRouter(router);
+
+        // 一条用例一次交换：If-None-Match: * ——资源存在即命中，应当回 304 且不带正文
+        Http3ClientPeer notModifiedPeer;
+        for (const CapturedStreamData &chunk: notModifiedPeer.submitRequest("GET", "/greeting.txt", "example.com", kFirstRequestStreamId, {{"if-none-match", "*"}}))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> firstPump = session.pump();
+        resumeUntilReady(firstPump);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            notModifiedPeer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        // 只钉 304 这一条：一条用例一次交换，与这个文件里其余 h3 用例同形（第二次交换要重放
+        // QPACK 动态表，串在一条用例里测的是握手而不是判定）
+        EXPECT_EQ(notModifiedPeer.response().status, 304) << "命中验证器却没回 304：客户端会白下整份文件";
+        EXPECT_TRUE(notModifiedPeer.response().body.empty()) << "304 不允许带正文";
+        EXPECT_TRUE(notModifiedPeer.response().headers.contains("etag")) << "304 仍要带 ETag（RFC 9110 §15.4.5）";
+    }
+
+    /**
+     * @brief 钉住：单段 Range 在 h3 上回 206 并带上 Content-Range（与 h1 同解）
+     */
+    TEST(Http3Session, AnswersPartialContentForRangeStaticRequest)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory site("H3StaticRange");
+        const std::string                           fileContent = "hello-h3-static-body";
+        ASSERT_TRUE(site.writeBinaryFile("greeting.txt", fileContent));
+
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session(std::ref(opener),
+                                                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                                                {
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                                                });
+
+        Router            router;
+        StaticFileService staticFiles;
+        staticFiles.install(router, 0);
+        staticFiles.setDirectory(Platform::FileSystem::utf8FromPath(site.path()));
+        session.attachRouter(router);
+
+        Http3ClientPeer partialPeer;
+        for (const CapturedStreamData &chunk: partialPeer.submitRequest("GET", "/greeting.txt", "example.com", kFirstRequestStreamId, {{"range", "bytes=0-4"}}))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            partialPeer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_EQ(partialPeer.response().status, 206) << "可满足的 Range 应当回 206（与 h1 同解）";
+        EXPECT_EQ(partialPeer.response().body, "hello") << "分段正文必须正好是请求的那一段";
+        const auto contentRange = partialPeer.response().headers.find("content-range");
+        ASSERT_TRUE(contentRange != partialPeer.response().headers.end()) << "206 少了 Content-Range 就是让客户端自己猜总长";
+        EXPECT_EQ(contentRange->second, "bytes 0-4/" + std::to_string(fileContent.size()));
+    }
+
+    /**
      * @brief 处理函数在最终响应之前先写一条 103 Early Hints（h3 侧）
      * @details 与 h1 侧 HttpSession.SendsEarlyHintsBeforeTheFinalResponse、h2 侧
      *          Http2CleartextSession.SendsEarlyHintsBeforeTheFinalResponse 是同一条契约的三份证据：
