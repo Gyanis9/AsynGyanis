@@ -200,9 +200,7 @@ namespace AsynGyanis::Net
                          // 与明文侧同一张表：读的是进程内每条循环自己的原子量，与 TLS 无关
                          response.setStatus(200);
                          response.setHeader("content-type", kLoopDiagnosticsContentType);
-                         response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(),
-                                                                    Core::unregisteredEventLoopCount(),
-                                                                    std::chrono::steady_clock::now()));
+                         response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(), Core::unregisteredEventLoopCount(), std::chrono::steady_clock::now()));
                          co_return;
                      });
     }

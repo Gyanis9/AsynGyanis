@@ -153,17 +153,17 @@ namespace AsynGyanis::Platform
 #else
         // /proc/self/statm 的一行是七个**页计数**（大小 常驻 共享 文本 库 数据 脏页），第二列才是要的那一列。
         // 单位是页，所以还要乘页尺寸；procfs 上这类文件报大小为 0，故按固定上界读一段而不是按大小读
-        constexpr std::size_t kStatmProbeLength = 128;
-        const std::expected<std::string, std::error_code> contents = readFileContents("/proc/self/statm", 0, kStatmProbeLength);
+        constexpr std::size_t                             kStatmProbeLength = 128;
+        const std::expected<std::string, std::error_code> contents          = readFileContents("/proc/self/statm", 0, kStatmProbeLength);
         if (!contents.has_value())
         {
             return 0;
         }
 
         const std::string_view line(*contents);
-        std::size_t   cursor        = 0;
-        std::uint64_t virtualPages  = 0;
-        std::uint64_t residentPages = 0;
+        std::size_t            cursor        = 0;
+        std::uint64_t          virtualPages  = 0;
+        std::uint64_t          residentPages = 0;
         for (std::uint64_t *const column: {&virtualPages, &residentPages})
         {
             // from_chars 不跳前导空白，因此每列取完都要自己把分隔空格越过去；

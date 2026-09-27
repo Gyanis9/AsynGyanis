@@ -1468,9 +1468,7 @@ namespace AsynGyanis::Net
                          // 现取整表现场渲染：读的都是各条循环自己的原子量，不需要把动作投进任何一条循环
                          response.setStatus(200);
                          response.setHeader("content-type", kLoopDiagnosticsContentType);
-                         response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(),
-                                                                    Core::unregisteredEventLoopCount(),
-                                                                    std::chrono::steady_clock::now()));
+                         response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(), Core::unregisteredEventLoopCount(), std::chrono::steady_clock::now()));
                          co_return;
                      });
     }

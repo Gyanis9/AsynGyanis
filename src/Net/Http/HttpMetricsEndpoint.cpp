@@ -58,9 +58,12 @@ namespace AsynGyanis::Net
         {
             switch (phase)
             {
-            case Core::LoopPhase::NotStarted: return "not_started";
-            case Core::LoopPhase::Working: return "working";
-            case Core::LoopPhase::WaitingForEvents: return "waiting_for_events";
+                case Core::LoopPhase::NotStarted:
+                    return "not_started";
+                case Core::LoopPhase::Working:
+                    return "working";
+                case Core::LoopPhase::WaitingForEvents:
+                    return "waiting_for_events";
             }
             return "unknown";
         }
@@ -156,14 +159,11 @@ namespace AsynGyanis::Net
         return out;
     }
 
-    std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops,
-                                          const std::size_t unregisteredLoopCount,
+    std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops, const std::size_t unregisteredLoopCount,
                                           const std::chrono::steady_clock::time_point nowMoment)
     {
-        const auto thresholdMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(Core::kSlowWorkingSegmentAlertThreshold).count();
-        std::string out                    = std::format("{{\"stallThresholdMicroseconds\":{},\"unregisteredLoopCount\":{},\"loops\":[",
-                                                         thresholdMicroseconds,
-                                                         unregisteredLoopCount);
+        const auto  thresholdMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(Core::kSlowWorkingSegmentAlertThreshold).count();
+        std::string out = std::format("{{\"stallThresholdMicroseconds\":{},\"unregisteredLoopCount\":{},\"loops\":[", thresholdMicroseconds, unregisteredLoopCount);
 
         for (std::size_t rowIndex = 0; const auto &entry: observedLoops)
         {
@@ -176,16 +176,8 @@ namespace AsynGyanis::Net
 
             out += std::format("{}{{\"serial\":{},\"thread\":\"{}\",\"running\":{},\"phase\":\"{}\",\"phaseMicroseconds\":{},"
                                "\"completedWorkingSegments\":{},\"slowestWorkingSegmentMicroseconds\":{},\"remotePendingCount\":{},\"stalled\":{}}}",
-                               rowIndex++ == 0 ? "" : ",",
-                               serialNumber,
-                               threadFingerprint(snapshot.ownerThread),
-                               snapshot.isRunning,
-                               phaseName(snapshot.phase),
-                               phaseMicroseconds,
-                               snapshot.completedWorkingSegments,
-                               snapshot.slowestWorkingSegment.count(),
-                               snapshot.remotePendingCount,
-                               isStalled);
+                               rowIndex++ == 0 ? "" : ",", serialNumber, threadFingerprint(snapshot.ownerThread), snapshot.isRunning, phaseName(snapshot.phase), phaseMicroseconds,
+                               snapshot.completedWorkingSegments, snapshot.slowestWorkingSegment.count(), snapshot.remotePendingCount, isStalled);
         }
 
         out += "]}";

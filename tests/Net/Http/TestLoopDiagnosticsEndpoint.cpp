@@ -39,22 +39,21 @@ namespace AsynGyanis::Net
          * @param phaseAge 这一相已持续多久（从 kRenderMoment 往回推）
          * @return Core::ObservedEventLoop 可直接喂给渲染函数的一行
          */
-        [[nodiscard]] Core::ObservedEventLoop makeLoopRow(const std::uint64_t serialNumber,
-                                                          const Core::LoopPhase phase,
-                                                          const bool isRunning,
+        [[nodiscard]] Core::ObservedEventLoop makeLoopRow(const std::uint64_t serialNumber, const Core::LoopPhase phase, const bool isRunning,
                                                           const std::chrono::milliseconds phaseAge)
         {
             return Core::ObservedEventLoop{
                     .serialNumber = serialNumber,
-                    .snapshot     = Core::EventLoopSnapshot{
-                            .ownerThread              = std::thread::id{},
-                            .isRunning                = isRunning,
-                            .phase                    = phase,
-                            .phaseStartedAt           = kRenderMoment - phaseAge,
-                            .completedWorkingSegments = 42,
-                            .slowestWorkingSegment    = std::chrono::microseconds{7},
-                            .remotePendingCount       = 3,
-                    },
+                    .snapshot =
+                            Core::EventLoopSnapshot{
+                                    .ownerThread              = std::thread::id{},
+                                    .isRunning                = isRunning,
+                                    .phase                    = phase,
+                                    .phaseStartedAt           = kRenderMoment - phaseAge,
+                                    .completedWorkingSegments = 42,
+                                    .slowestWorkingSegment    = std::chrono::microseconds{7},
+                                    .remotePendingCount       = 3,
+                            },
             };
         }
 
@@ -75,10 +74,10 @@ namespace AsynGyanis::Net
     TEST(LoopDiagnosticsEndpoint, JudgesStallOnlyForALiveWorkingLoopBeyondThreshold)
     {
         const std::vector<Core::ObservedEventLoop> rows{
-                makeLoopRow(1, Core::LoopPhase::Working, true, std::chrono::milliseconds{500}),   // 真停顿
-                makeLoopRow(2, Core::LoopPhase::Working, true, std::chrono::milliseconds{5}),     // 干活但没超阈值
-                makeLoopRow(3, Core::LoopPhase::WaitingForEvents, true, std::chrono::seconds{60}),// 空闲
-                makeLoopRow(4, Core::LoopPhase::Working, false, std::chrono::seconds{60}),        // 已停止
+                makeLoopRow(1, Core::LoopPhase::Working, true, std::chrono::milliseconds{500}),    // 真停顿
+                makeLoopRow(2, Core::LoopPhase::Working, true, std::chrono::milliseconds{5}),      // 干活但没超阈值
+                makeLoopRow(3, Core::LoopPhase::WaitingForEvents, true, std::chrono::seconds{60}), // 空闲
+                makeLoopRow(4, Core::LoopPhase::Working, false, std::chrono::seconds{60}),         // 已停止
         };
 
         const ConfigValue parsed = parseBody(formatLoopDiagnosticsJson(rows, 0, kRenderMoment));
@@ -136,8 +135,7 @@ namespace AsynGyanis::Net
      */
     TEST(LoopDiagnosticsEndpoint, ServesLoopDiagnosticsOverLoopback)
     {
-        const ServerConfigurator configureServer = [](TestHttpServer &server)
-        { server.enableLoopDiagnosticsEndpoint(); };
+        const ServerConfigurator configureServer = [](TestHttpServer &server) { server.enableLoopDiagnosticsEndpoint(); };
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
 

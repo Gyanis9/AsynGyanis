@@ -69,8 +69,7 @@ namespace AsynGyanis::Net
      *       两边口径不同就会一个报警一个不报，那比没有更糟
      * @see Core::eventLoopSnapshots(), HttpServer::enableLoopDiagnosticsEndpoint()
      */
-    [[nodiscard]] std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops,
-                                                        std::size_t unregisteredLoopCount,
+    [[nodiscard]] std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops, std::size_t unregisteredLoopCount,
                                                         std::chrono::steady_clock::time_point nowMoment);
 
 } // namespace AsynGyanis::Net

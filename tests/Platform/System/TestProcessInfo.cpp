@@ -179,9 +179,9 @@ namespace AsynGyanis::Platform
     {
         const std::uint64_t beforeBytes = ProcessInfo::residentMemoryBytes();
 
-        constexpr std::size_t kHeldPageCount = 16ULL << 10; // 64 MiB 的 4 KiB 页
+        constexpr std::size_t      kHeldPageCount = 16ULL << 10; // 64 MiB 的 4 KiB 页
         std::vector<std::uint64_t> held(kHeldPageCount, 0);
-        std::uint64_t                touchedSlots = 0;
+        std::uint64_t              touchedSlots = 0;
         for (auto &slot: held)
         {
             slot = 1; // 逐页写过才算进常驻：只分配不触碰，内核可以一直不给页面

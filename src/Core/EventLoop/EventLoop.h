@@ -47,13 +47,13 @@ namespace AsynGyanis::Core
      */
     struct EventLoopSnapshot
     {
-        std::thread::id ownerThread{};                              ///< run() 所在线程；未启动过则是默认值
-        bool                isRunning{};                            ///< 是否正处于 run() 的循环体里
-        LoopPhase           phase{LoopPhase::NotStarted};           ///< 当前相
-        std::chrono::steady_clock::time_point phaseStartedAt{};     ///< 当前这一相的起点
-        std::uint64_t     completedWorkingSegments{};               ///< 已跑完的工作段条数，一条等于「一轮里不含等待的那段」
-        std::chrono::microseconds slowestWorkingSegment{};          ///< 历史最慢的一条工作段（高水位，只升不降）
-        std::size_t       remotePendingCount{};                     ///< 跨线程投递里还没被取走的件数（本地就绪队列不在内）
+        std::thread::id                       ownerThread{};                ///< run() 所在线程；未启动过则是默认值
+        bool                                  isRunning{};                  ///< 是否正处于 run() 的循环体里
+        LoopPhase                             phase{LoopPhase::NotStarted}; ///< 当前相
+        std::chrono::steady_clock::time_point phaseStartedAt{};             ///< 当前这一相的起点
+        std::uint64_t                         completedWorkingSegments{};   ///< 已跑完的工作段条数，一条等于「一轮里不含等待的那段」
+        std::chrono::microseconds             slowestWorkingSegment{};      ///< 历史最慢的一条工作段（高水位，只升不降）
+        std::size_t                           remotePendingCount{};         ///< 跨线程投递里还没被取走的件数（本地就绪队列不在内）
     };
 
     /**
@@ -64,8 +64,8 @@ namespace AsynGyanis::Core
      */
     struct ObservedEventLoop
     {
-        std::uint64_t      serialNumber{}; ///< 观测槽位号，从 1 起；循环销毁后该槽位可被后来的循环复用
-        EventLoopSnapshot  snapshot;       ///< 那条循环自己的快照
+        std::uint64_t     serialNumber{}; ///< 观测槽位号，从 1 起；循环销毁后该槽位可被后来的循环复用
+        EventLoopSnapshot snapshot;       ///< 那条循环自己的快照
     };
 
     /// 一条工作段超过这个时长就落 ERROR：循环线程被占住这么久，同循环上的其余连接都在等它
@@ -212,11 +212,11 @@ namespace AsynGyanis::Core
         std::atomic<bool>       m_running;        ///< 循环是否正在运行中（原子标记）
         std::atomic<bool>       m_stopRequested;  ///< 是否已请求停止（原子标记，线程安全）
         /// 自观测那一组量：只有本循环的线程写，任意线程读，因此全是原子量且不需要与登记表配合
-        std::atomic<LoopPhase> m_phase{LoopPhase::NotStarted};                  ///< 当前相，最后发布（见 enterPhase）
-        std::atomic<std::int64_t> m_phaseStartedAtNanos{0};                     ///< 当前相的起点：steady 纪元的纳秒
-        std::atomic<std::uint64_t> m_completedWorkingSegments{0};               ///< 已结束的工作段条数
-        std::atomic<std::int64_t> m_slowestWorkingSegmentMicros{0};           ///< 最慢工作段的高水位（微秒）
-        std::atomic<std::thread::id> m_ownerThread{};                           ///< 跑 run() 的那条线程，进入时写
+        std::atomic<LoopPhase>       m_phase{LoopPhase::NotStarted};   ///< 当前相，最后发布（见 enterPhase）
+        std::atomic<std::int64_t>    m_phaseStartedAtNanos{0};         ///< 当前相的起点：steady 纪元的纳秒
+        std::atomic<std::uint64_t>   m_completedWorkingSegments{0};    ///< 已结束的工作段条数
+        std::atomic<std::int64_t>    m_slowestWorkingSegmentMicros{0}; ///< 最慢工作段的高水位（微秒）
+        std::atomic<std::thread::id> m_ownerThread{};                  ///< 跑 run() 的那条线程，进入时写
         /// 定时器队列。声明在最后 = 最先销毁：驱动协程与循环唯一的 timerfd 先于其余部件退出，
         /// 收尾时不会再向调度器投递等待者
         TimerQueue m_timerQueue;

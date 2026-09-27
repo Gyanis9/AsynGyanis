@@ -40,8 +40,8 @@ namespace AsynGyanis::Core
          */
         struct MessageTable
         {
-            mutable std::mutex       mutex;     ///< 保护下面那张表
-            std::vector<std::string> messages;  ///< 已收到的日志原文
+            mutable std::mutex       mutex;    ///< 保护下面那张表
+            std::vector<std::string> messages; ///< 已收到的日志原文
         };
 
         /**
@@ -118,13 +118,11 @@ namespace AsynGyanis::Core
         /// 把一条空可调用体投给循环，并等这一轮真的跑完（工作段计数落下）
         void runOneRound(EventLoopThread &driver)
         {
-            const auto segmentsBefore = driver.loop().snapshot().completedWorkingSegments;
+            const auto        segmentsBefore = driver.loop().snapshot().completedWorkingSegments;
             std::atomic<bool> ran{false};
-            driver.loop().scheduler().postRemote([&ran]
-                                                 { ran.store(true); });
+            driver.loop().scheduler().postRemote([&ran] { ran.store(true); });
             // 等到计数落下而不是等到 ran：计数是在工作段收尾时才写的，早于它就只能断言「代码跑过了」
-            ASSERT_TRUE(waitForCondition([&driver, segmentsBefore]
-                                         { return driver.loop().snapshot().completedWorkingSegments > segmentsBefore; }))
+            ASSERT_TRUE(waitForCondition([&driver, segmentsBefore] { return driver.loop().snapshot().completedWorkingSegments > segmentsBefore; }))
                     << "投递的活儿没能让工作段计数加一";
             EXPECT_TRUE(ran.load());
         }
@@ -152,10 +150,8 @@ namespace AsynGyanis::Core
     TEST(EventLoopObservability, NotRunningLoopStillCountsWorkThrownAtIt)
     {
         EventLoop loop;
-        loop.scheduler().postRemote([]
-                                    {});
-        loop.scheduler().postRemote([]
-                                    {});
+        loop.scheduler().postRemote([] {});
+        loop.scheduler().postRemote([] {});
 
         const EventLoopSnapshot snapshot = loop.snapshot();
         EXPECT_FALSE(snapshot.isRunning);
@@ -198,9 +194,7 @@ namespace AsynGyanis::Core
         runOneRound(driver);
 
         // 有界轮询等它进等待相：这条循环此后没活儿，进相之后就一直停在那儿
-        ASSERT_TRUE(waitForCondition([&driver]
-                                     { return driver.loop().snapshot().phase == LoopPhase::WaitingForEvents; }))
-                << "跑完一轮的循环没有回到等待相";
+        ASSERT_TRUE(waitForCondition([&driver] { return driver.loop().snapshot().phase == LoopPhase::WaitingForEvents; })) << "跑完一轮的循环没有回到等待相";
         EXPECT_TRUE(driver.loop().snapshot().isRunning);
     }
 
@@ -219,10 +213,8 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(driver.waitUntilRunning());
 
         const auto segmentsBefore = driver.loop().snapshot().completedWorkingSegments;
-        driver.loop().scheduler().postRemote([]
-                                             { std::this_thread::sleep_for(kBlockedWorkingSegment); });
-        ASSERT_TRUE(waitForCondition([&driver, segmentsBefore]
-                                     { return driver.loop().snapshot().completedWorkingSegments > segmentsBefore; }))
+        driver.loop().scheduler().postRemote([] { std::this_thread::sleep_for(kBlockedWorkingSegment); });
+        ASSERT_TRUE(waitForCondition([&driver, segmentsBefore] { return driver.loop().snapshot().completedWorkingSegments > segmentsBefore; }))
                 << "睡了一觉的活儿没能让工作段计数加一";
 
         const EventLoopSnapshot snapshot = driver.loop().snapshot();
@@ -233,9 +225,7 @@ namespace AsynGyanis::Core
                 [messages]
                 {
                     const std::vector<std::string> snapshotOfMessages = messagesOf(*messages);
-                    return std::ranges::any_of(snapshotOfMessages,
-                                               [](const std::string &message)
-                                               { return message.find("工作段耗时") != std::string::npos; });
+                    return std::ranges::any_of(snapshotOfMessages, [](const std::string &message) { return message.find("工作段耗时") != std::string::npos; });
                 });
         ASSERT_TRUE(alertArrived) << "超阈值的工作段没有落 ERROR";
     }

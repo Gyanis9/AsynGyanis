@@ -261,7 +261,7 @@ namespace AsynGyanis::Core
 
     void EventLoop::enterPhase(const LoopPhase phase) noexcept
     {
-        const auto nowMoment = std::chrono::steady_clock::now();
+        const auto nowMoment     = std::chrono::steady_clock::now();
         const auto previousPhase = m_phase.load(std::memory_order_relaxed);
         const auto previousStart = steadyMoment(m_phaseStartedAtNanos.load(std::memory_order_relaxed));
         // 刚结束那一相的时长：本函数每相只被调一次，因此一次读数就够（一轮两条相，各记各的）
@@ -283,8 +283,7 @@ namespace AsynGyanis::Core
             {
                 LOG_ERROR_FMT("EventLoop: 一条工作段耗时 {} 毫秒，超过 {} 毫秒的告警阈值：这时长里循环线程被占住，"
                               "同一条循环上的其余连接都在等它（累计工作段 {} 条）",
-                              std::chrono::duration_cast<std::chrono::milliseconds>(segmentMicroseconds).count(),
-                              kSlowWorkingSegmentAlertThreshold.count(),
+                              std::chrono::duration_cast<std::chrono::milliseconds>(segmentMicroseconds).count(), kSlowWorkingSegmentAlertThreshold.count(),
                               m_completedWorkingSegments.load(std::memory_order_relaxed));
             }
         }
