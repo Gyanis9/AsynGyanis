@@ -12,6 +12,10 @@
 #include "Platform/Platform.h"
 
 #include <cstdint>
+#include <expected>
+#include <string>
+#include <string_view>
+#include <system_error>
 
 namespace AsynGyanis::Platform
 {
@@ -275,6 +279,56 @@ namespace AsynGyanis::Platform
         // ============================================================================
         // 跨进程移交监听套接字：零停机换代的地基
         // ============================================================================
+
+        /**
+         * @brief 一条已开好的换代交接通道：交棒方持有的监听端 + 新一代连它要用的地址文本
+         * @details 交给 Core 层的编排器持有与收尾；本层只负责按平台把这条通道开出来。
+         */
+        struct HandoffChannelEndpoint
+        {
+            int         listener{-1};     ///< 已在监听的通道描述符；负值表示没开出来
+            std::string address{};        ///< 新一代连这条通道要用的地址文本（POSIX 是文件路径，Windows 是 127.0.0.1:端口）
+            std::string socketFilePath{}; ///< POSIX 上那个套接字文件的路径，收尾要删掉；Windows 上为空
+        };
+
+        /**
+         * @brief 开一条一次性的换代交接通道（交棒方）
+         * @details POSIX 用 AF_UNIX 流套接字——内核只在 unix 域里随 SCM_RIGHTS 送描述符（见
+         *          writeListeningSocketHandoff 的那条 @note）。套接字文件的权限按 0700 那档落定：
+         *          这条通道交出去的是**监听套接字的一份引用**，任何本机进程都能连上来取的话，
+         *          那道门就由文件权限把守。用 umask 而不是 bind 之后再 chmod，因为文件一建出来
+         *          就允许别人连，那个窗口关不掉。
+         *          Windows 上没有描述符随字节流走的机制，改走 loopback TCP：交出去的载荷是
+         *          WSADuplicateSocketW 换出来的协议信息，那是普通字节，任何字节流通道都行，
+         *          而本机可连的范围就是回环。
+         * @return std::expected<HandoffChannelEndpoint, std::error_code> 开好的通道；失败给出错误码
+         * @note 路径长度受 sun_path 上限约束（POSIX），临时目录本身太长就会失败——失败文案由调用方给出
+         */
+        [[nodiscard]] static std::expected<HandoffChannelEndpoint, std::error_code> openHandoffChannel() noexcept;
+
+        /**
+         * @brief 收掉交接通道的监听端，并删掉 POSIX 上留下的套接字文件
+         * @param endpoint 要收尾的通道；返回后 listener 置为无效、路径清空
+         * @note 幂等；删除失败不报（文件不在就是已达目的，也恢复不了什么结论）
+         */
+        static void closeHandoffChannel(HandoffChannelEndpoint &endpoint) noexcept;
+
+        /**
+         * @brief 阻塞等新一代连上这条通道
+         * @param listenerDescriptor openHandoffChannel 交出的监听端
+         * @return int 已连通的通道描述符；负值表示没等到（失败原因见 PlatformError::lastSocketErrorCode()）
+         */
+        [[nodiscard]] static int acceptHandoffPeer(int listenerDescriptor) noexcept;
+
+        /**
+         * @brief 连上交接通道（接棒方），只试一次
+         * @param address openHandoffChannel 给出的地址文本
+         * @return int 已连通的通道描述符；负值表示这次没连上
+         * @note 一次失败不说明问题：交棒方可能还在准备通道。重试由调用方按预算决定，
+         *       且**每次重试都要换新描述符**——connect 失败后的套接字不再保证可用，
+         *       同一个 fd 上重连不算重试
+         */
+        [[nodiscard]] static int connectHandoffChannel(std::string_view address) noexcept;
 
         /**
          * @brief 通过一条已连通的字节通道，把一个监听套接字交给另一个进程

@@ -3,13 +3,20 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
+#include <atomic>
+#include <charconv>
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <mutex>
+#include <system_error>
 
 #if !ASYN_PLATFORM_WIN32
 #include <csignal>
 #include <sys/sendfile.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #endif
 
 namespace AsynGyanis::Platform
@@ -542,6 +549,179 @@ namespace AsynGyanis::Platform
             return -1;
         }
         return receivedDescriptor;
+#endif
+    }
+
+    namespace
+    {
+        /// 把最近一次套接字调用失败包成 expected 的失败值（两侧都按套接字错误码取）
+        std::error_code lastSocketError() noexcept
+        {
+            return std::error_code(PlatformError::lastSocketErrorCode(), std::system_category());
+        }
+    } // namespace
+
+    std::expected<Socket::HandoffChannelEndpoint, std::error_code> Socket::openHandoffChannel() noexcept
+    {
+        HandoffChannelEndpoint endpoint;
+#if ASYN_PLATFORM_WIN32
+        const int descriptor = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        if (descriptor < 0)
+        {
+            return std::unexpected(lastSocketError());
+        }
+        // 交接通道是一次性的，不留 TIME_WAIT 干扰下一次换代；继承位一律取消
+        static_cast<void>(setReuseAddress(descriptor));
+        static_cast<void>(FileDescriptor::markNonInheritable(descriptor));
+
+        sockaddr_in address{};
+        address.sin_family      = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port        = 0;
+        if (::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0 || ::listen(descriptor, 1) != 0)
+        {
+            const std::error_code failure = lastSocketError();
+            static_cast<void>(FileDescriptor::close(descriptor));
+            return std::unexpected(failure);
+        }
+        socklen_t addressLength = static_cast<socklen_t>(sizeof(address));
+        if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
+        {
+            const std::error_code failure = lastSocketError();
+            static_cast<void>(FileDescriptor::close(descriptor));
+            return std::unexpected(failure);
+        }
+        endpoint.listener = descriptor;
+        endpoint.address  = "127.0.0.1:" + std::to_string(ntohs(address.sin_port));
+        return endpoint;
+#else
+        // 同一进程可能开多条通道（换代演练与用例都会），光靠进程号不够，再加一个进程内序号
+        static std::atomic<unsigned> sequence{0U};
+        std::error_code              pathError;
+        const std::filesystem::path  directory = std::filesystem::temp_directory_path(pathError);
+        if (pathError)
+        {
+            return std::unexpected(pathError);
+        }
+        const std::filesystem::path path = directory / ("asyn-handoff-" + std::to_string(static_cast<long long>(::getpid())) + "-" +
+                                                        std::to_string(sequence.fetch_add(1U, std::memory_order_relaxed)) + ".sock");
+        const std::string           text = path.string();
+        if (text.empty() || text.size() > sizeof(sockaddr_un::sun_path) - 1U)
+        {
+            // 路径长度超上限时 bind 会失败在别处，症状是「通道开不出来」而看不出为什么；这里当场说明
+            return std::unexpected(std::make_error_code(std::errc::filename_too_long));
+        }
+
+        const int descriptor = static_cast<int>(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
+        if (descriptor < 0)
+        {
+            return std::unexpected(lastSocketError());
+        }
+        // umask 而不是 bind 之后 chmod：套接字文件一建出来就允许别人连，而它交出去的是监听套接字
+        // 的一份引用——那个窗口里任何本机进程连上来都能拿走一份
+        const mode_t previousMask = ::umask(S_IRWXG | S_IRWXO);
+        sockaddr_un  address{};
+        address.sun_family = AF_UNIX;
+        std::strncpy(address.sun_path, text.c_str(), sizeof(address.sun_path) - 1U);
+        // 上一次运行被强杀时这个文件会留在原地，bind 于是以 EADDRINUSE 失败：先 unlink，
+        // 「本来就没有」算成功，别的失败原因照原样交出去
+        const bool isPathClear = ::unlink(text.c_str()) == 0 || errno == ENOENT;
+        const bool isBound     = isPathClear && ::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0 && ::listen(descriptor, 1) == 0;
+        ::umask(previousMask);
+        if (!isBound)
+        {
+            const std::error_code failure = isPathClear ? lastSocketError() : std::error_code(errno, std::system_category());
+            static_cast<void>(FileDescriptor::close(descriptor));
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+            return std::unexpected(failure);
+        }
+        endpoint.listener       = descriptor;
+        endpoint.address        = text;
+        endpoint.socketFilePath = text;
+        return endpoint;
+#endif
+    }
+
+    void Socket::closeHandoffChannel(HandoffChannelEndpoint &endpoint) noexcept
+    {
+        if (endpoint.listener >= 0)
+        {
+            static_cast<void>(FileDescriptor::close(endpoint.listener));
+            endpoint.listener = -1;
+        }
+        if (!endpoint.socketFilePath.empty())
+        {
+            // 删除失败不报：文件不在就是已达目的，路径也不可恢复什么结论
+            std::error_code ignored;
+            std::filesystem::remove(endpoint.socketFilePath, ignored);
+            endpoint.socketFilePath.clear();
+        }
+        endpoint.address.clear();
+    }
+
+    int Socket::acceptHandoffPeer(const int listenerDescriptor) noexcept
+    {
+        // 只等一个对端：这条通道交出去的是监听套接字的一份引用，交给谁必须确定，
+        // 因此不排第二个连接（第二个连接者拿不到任何东西，白占一次 accept）
+        return accept(listenerDescriptor, nullptr, nullptr);
+    }
+
+    int Socket::connectHandoffChannel(const std::string_view address) noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        // 地址文本是 "127.0.0.1:端口"：端口分隔符只有一个冒号，按最后一个切即可
+        const std::size_t portSeparator = address.rfind(':');
+        if (portSeparator == std::string_view::npos || portSeparator + 1U >= address.size())
+        {
+            PlatformError::setLastErrorCode(EINVAL);
+            return -1;
+        }
+        std::uint32_t port        = 0U;
+        const auto    parseResult = std::from_chars(address.data() + portSeparator + 1U, address.data() + address.size(), port);
+        if (parseResult.ec != std::errc{} || parseResult.ptr != address.data() + address.size() || port == 0U || port > 65535U)
+        {
+            PlatformError::setLastErrorCode(EINVAL);
+            return -1;
+        }
+        const int descriptor = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        if (descriptor < 0)
+        {
+            return -1;
+        }
+        static_cast<void>(FileDescriptor::markNonInheritable(descriptor));
+        sockaddr_in target{};
+        target.sin_family      = AF_INET;
+        target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        target.sin_port        = htons(static_cast<std::uint16_t>(port));
+        if (::connect(descriptor, reinterpret_cast<const sockaddr *>(&target), sizeof(target)) != 0)
+        {
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            static_cast<void>(FileDescriptor::close(descriptor));
+            return -1;
+        }
+        return descriptor;
+#else
+        if (address.empty() || address.size() > sizeof(sockaddr_un::sun_path) - 1U)
+        {
+            PlatformError::setLastErrorCode(EINVAL);
+            return -1;
+        }
+        const int descriptor = static_cast<int>(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
+        if (descriptor < 0)
+        {
+            return -1;
+        }
+        sockaddr_un target{};
+        target.sun_family = AF_UNIX;
+        std::strncpy(target.sun_path, std::string(address).c_str(), sizeof(target.sun_path) - 1U);
+        if (::connect(descriptor, reinterpret_cast<const sockaddr *>(&target), sizeof(target)) != 0)
+        {
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            static_cast<void>(FileDescriptor::close(descriptor));
+            return -1;
+        }
+        return descriptor;
 #endif
     }
 } // namespace AsynGyanis::Platform

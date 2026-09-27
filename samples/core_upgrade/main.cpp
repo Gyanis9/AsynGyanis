@@ -3,6 +3,7 @@
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/Process/UpgradeChannel.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/Router.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -69,8 +70,6 @@ namespace
     constexpr int kDrainTimeoutMs    = 500;
     constexpr int kDrainSettleWaitMs = 900;
 
-    /// 新一代连通道的重试次数（每次之间歇 50 毫秒）：本代可能还在准备通道，别把一次竞态判成失败
-    constexpr int kChannelConnectAttempts = 100;
 
     /// 强杀新一代之后等它真正消失的上限（句柄释放前必须确认，否则留下僵尸）
     constexpr int kChildExitWaitMs = 2000;
@@ -84,85 +83,6 @@ namespace
         address.sin_port        = htons(port);
         return address;
     }
-
-    /**
-     * @brief 造一条已在监听的 unix 域通道（描述符只能随 AF_UNIX 过去，理由见文件头）
-     * @param path 套接字文件路径
-     * @return int 通道监听描述符；失败为 -1
-     * @note bind 前先 unlink：上一次运行被强杀时这个文件会留在原地，bind 于是以 EADDRINUSE 失败，
-     *       看起来像「端口被占」而其实只是个残文件
-     * @note 用 umask 而不是 bind 之后 chmod：套接字文件一建出来就允许别人连，而它交出去的是监听
-     *       套接字——那个窗口里任何本机进程连上来都能拿走这份引用
-     */
-    int createUnixChannelListener(const std::filesystem::path &path)
-    {
-        const std::string text = path.string();
-        if (text.empty() || text.size() > sizeof(sockaddr_un::sun_path) - 1U)
-        {
-            Samples::printStartupError(std::format("交接通道路径长度 {} 超出 unix 套接字路径上限 {}", text.size(), sizeof(sockaddr_un::sun_path) - 1U));
-            return -1;
-        }
-        const int descriptor = static_cast<int>(::socket(AF_UNIX, SOCK_STREAM, 0));
-        if (descriptor < 0)
-        {
-            return -1;
-        }
-        const mode_t previousMask = ::umask(S_IRWXG | S_IRWXO);
-        sockaddr_un  address{};
-        address.sun_family = AF_UNIX;
-        std::strncpy(address.sun_path, text.c_str(), sizeof(address.sun_path) - 1U);
-        const bool isBound = ::unlink(text.c_str()) == 0 || errno == ENOENT;
-        if (isBound && (::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0 || ::listen(descriptor, 4) != 0))
-        {
-            Platform::FileDescriptor::close(descriptor);
-            ::umask(previousMask);
-            return -1;
-        }
-        ::umask(previousMask);
-        if (!isBound)
-        {
-            Platform::FileDescriptor::close(descriptor);
-            return -1;
-        }
-        return descriptor;
-    }
-
-    /// 本代这一轮用的交接通道路径（放在临时目录里，按进程号错开，退出时删掉）
-    std::filesystem::path channelPathForCurrentProcess()
-    {
-        return std::filesystem::temp_directory_path() / ("asyn-core-upgrade-" + std::to_string(Platform::ProcessInfo::currentProcessId()) + ".sock");
-    }
-
-    /**
-     * @brief 作用域结束时删掉套接字文件的守卫
-     * @details bind 之前已经 unlink 过一次（残文件不挡路），这里收尾只是不让临时目录攒下一堆
-     *          本示例留下的空壳。删除失败不报：文件不在就是已达目的，路径也不可恢复什么结论。
-     */
-    class ChannelPathGuard
-    {
-    public:
-        /**
-         * @brief 记下要在作用域结束时删掉的路径
-         * @param path 套接字文件路径
-         */
-        explicit ChannelPathGuard(std::filesystem::path path) : m_path(std::move(path))
-        {
-        }
-
-        ChannelPathGuard(const ChannelPathGuard &) = delete;
-
-        ChannelPathGuard &operator=(const ChannelPathGuard &) = delete;
-
-        /// @brief 删掉那个套接字文件；文件已不在或删不掉都不报（既成事实，也不影响任何结论）
-        ~ChannelPathGuard()
-        {
-            std::error_code ignored;
-            std::filesystem::remove(m_path, ignored);
-        }
-
-    private:
-        std::filesystem::path m_path; ///< 要删掉的套接字文件路径
-    };
 
     /**
      * @brief 造一个已在监听的套接字（端口交给内核挑）
@@ -191,48 +111,6 @@ namespace
         }
         port = ntohs(address.sin_port);
         return descriptor;
-    }
-
-    /**
-     * @brief 造一条已在监听的交接通道，并给出新一代连它要用的地址文本
-     * @param[out] addressText 交给 --takeover 的取值：unix 套接字的路径
-     * @return int 通道监听描述符；失败为 -1
-     */
-    int createChannelListener(std::string &addressText)
-    {
-        const std::filesystem::path path       = channelPathForCurrentProcess();
-        const int                   descriptor = createUnixChannelListener(path);
-        addressText                            = path.string();
-        return descriptor;
-    }
-
-    /**
-     * @brief 连上交接通道
-     * @param addressText createChannelListener 给出的通道地址
-     * @return int 已连通的通道描述符；-1 表示重试到上限仍没连上
-     * @note 每次重试都换一个新描述符：connect 失败后的套接字不再保证可用，同一个 fd 上重连不算重试
-     */
-    int connectChannel(const std::string &addressText)
-    {
-        sockaddr_un address{};
-        address.sun_family = AF_UNIX;
-        std::strncpy(address.sun_path, addressText.c_str(), sizeof(address.sun_path) - 1U);
-
-        for (int attempt = 0; attempt < kChannelConnectAttempts; ++attempt)
-        {
-            const int descriptor = static_cast<int>(::socket(AF_UNIX, SOCK_STREAM, 0));
-            if (descriptor < 0)
-            {
-                return -1;
-            }
-            if (::connect(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0)
-            {
-                return descriptor;
-            }
-            Platform::FileDescriptor::close(descriptor);
-            std::this_thread::sleep_for(std::chrono::milliseconds{50});
-        }
-        return -1;
     }
 
     /// 两代注册同一份路由：把本进程 pid 报出去，答话者因此可辨认
@@ -349,28 +227,21 @@ namespace
 
     /**
      * @brief 新一代：连上交接通道、收下监听套接字，并在它上面起服务器
-     * @param channelAddress 本代交出的通道地址（见 createChannelListener 的两种取值）
+     * @param channelAddress 本代交出的通道地址（Core::UpgradeChannel::address() 的取值）
      * @return int 退出码：0 表示接手并服务过
      */
     int runTakeoverChild(const std::string &channelAddress)
     {
-        const int channel = connectChannel(channelAddress);
-        if (channel < 0)
+        // 连通道 + 收描述符这一整段都在库里（重试预算给 10 秒：本代可能还在准备通道）
+        const auto adopted = Core::adoptHandedOverListener(channelAddress, std::chrono::milliseconds{10000});
+        if (!adopted.has_value())
         {
-            Samples::printStartupError("新一代连不上交接通道");
-            return 3;
-        }
-
-        const int adopted = Platform::Socket::readListeningSocketHandoff(channel);
-        Platform::FileDescriptor::close(channel);
-        if (adopted < 0)
-        {
-            Samples::printStartupError(std::format("新一代没能收下监听套接字，错误码 {}", Platform::PlatformError::lastErrorCode()));
+            Samples::printStartupError("新一代没能接手监听套接字：" + adopted.error());
             return 4;
         }
 
         Core::EventLoop loop;
-        Net::HttpServer server(loop, adopted);
+        Net::HttpServer server(loop, *adopted);
         registerRoutes(server.router());
         // 循环就在本线程上跑，投递用 schedule() 即可（同线程）
         Core::Task<void> listenTask = server.start();
@@ -412,15 +283,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    std::string channelAddress;
-    const int   channelListener = createChannelListener(channelAddress);
-    if (channelListener < 0)
+    auto channel = Core::UpgradeChannel::open();
+    if (!channel.has_value())
     {
-        Samples::printStartupError("本代没能建立交接通道");
+        Samples::printStartupError("本代没能建立交接通道：" + channel.error());
         return 1;
     }
-    // unix 套接字是个文件：本代退出时把它带走，不让临时目录攒下空壳
-    const ChannelPathGuard channelGuard(channelAddress);
+    const std::string channelAddress = channel->address();
 
     // 派生必须在起循环线程之前：spawn 在 POSIX 上是 fork + exec，多线程下 fork 出来的子进程
     // 只带着调用线程（见 Process::spawn 的警告）。新一代此时只会阻塞在通道读取上，等本代交棒。
@@ -452,11 +321,11 @@ int main(int argc, char **argv)
     samples.check(servedByParent == kPhaseProbeCount && beforeHandoffFailures == 0,
                   std::format("交棒前 {} 次请求全部由本代答话（实际 {} 次，失败 {} 次）", kPhaseProbeCount, servedByParent, beforeHandoffFailures));
 
-    const int channel = Platform::Socket::accept(channelListener, nullptr, nullptr);
-    Platform::FileDescriptor::close(channelListener);
-    if (channel < 0)
+    // 等新一代连上通道。通道是阻塞式的，因此这一步之后才交出监听套接字；监听端由 waitForPeer 顺手收掉
+    const auto peer = channel->waitForPeer();
+    if (!peer.has_value())
     {
-        samples.check(false, "新一代没连上交接通道");
+        samples.check(false, "新一代没连上交接通道：" + peer.error());
         loop.stop();
         loopThread.join();
         static_cast<void>(Platform::Process::forceTermination(childHandle));
@@ -464,11 +333,11 @@ int main(int argc, char **argv)
     }
 
     // 交出去。本代不关：SCM_RIGHTS 让两代各持同一个开放文件描述的一份引用，收口的顺序决定端口有空窗没空窗
-    const bool isHandoffWritten = Platform::Socket::writeListeningSocketHandoff(channel, serviceSocket, static_cast<std::uint64_t>(childPid));
-    Platform::FileDescriptor::close(channel);
-    if (!isHandoffWritten)
+    const auto isHandoffWritten = channel->handOffListener(*peer, serviceSocket, static_cast<std::uint64_t>(childPid));
+    Platform::FileDescriptor::close(*peer);
+    if (!isHandoffWritten.has_value())
     {
-        samples.check(false, std::format("交出监听套接字失败，错误码 {}", Platform::PlatformError::lastErrorCode()));
+        samples.check(false, std::format("交出监听套接字失败：{}", isHandoffWritten.error()));
         loop.stop();
         loopThread.join();
         static_cast<void>(Platform::Process::forceTermination(childHandle));
