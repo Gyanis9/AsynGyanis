@@ -418,12 +418,13 @@ namespace AsynGyanis::Net
             return lastWriteSeconds == ifRangeSeconds;
         }
 
-        /// 单个字节区间的解析结论
+        /// 字节区间的解析结论
         enum class RangeVerdict
         {
-            Ignored,       ///< 不存在、语法非法或含多个区间：忽略该头，按 200 全量返回
-            Unsatisfiable, ///< 起点超出表示长度或后缀为 0：应答 416
-            Satisfiable    ///< 得到一个可用的闭区间 [start, end]
+            Ignored,         ///< 头不存在、语法非法、区间太多或拼起来太大：忽略该头，按 200 全量返回
+            Unsatisfiable,   ///< 起点超出表示长度或后缀为 0：应答 416
+            Satisfiable,     ///< 合并后只剩一个可用闭区间：单段 206
+            MultiSatisfiable ///< 合并后仍有多个区间：206 带 multipart/byteranges
         };
 
         /**
@@ -435,35 +436,37 @@ namespace AsynGyanis::Net
             std::uintmax_t end{0};   ///< 区间结束偏移（含）
         };
 
+        /// 一条 Range 合并后最多接受几个区间：再多就不是「补几段」而是用一条请求榨内存
+        constexpr std::size_t kMaximumRequestedByteRangeCount = 8;
+
+        /// 多区间拼成一包正文的字节上界；越过它就整条 Range 当没看见（回 200 全量）
+        constexpr std::uintmax_t kMaximumMultiRangeBodyBytes = 8ull * 1024 * 1024;
+
+        /// multipart/byteranges 的分隔符（RFC 2046 §5.1.1 的 bchars）
         /**
-         * @brief 解析 Range 头里的单个字节区间
-         * @details 只支持 bytes 单位的单个区间：单位不符、语法非法或含多个区间时按 RFC 允许的
-         *          做法整条忽略（回 200 全量）；`bytes=start-end`、`bytes=start-`、`bytes=-suffix`
-         *          三种形态都支持，end 超出表示末尾时截到末尾。
-         * @param headerValue Range 头原文
+         * @details 固定而不随机：同一请求的两次应答要逐字一致，日志与用例才钉得住。
+         *          代价是正文里可能撞上它——那一判的处理是回全量，不换边界重试（换边界等于
+         *          同一请求两次给出不同报文，比多发一段全量更难解释）
+         */
+        constexpr std::string_view kByterangesBoundary = "AsynGyanisByteranges";
+
+        /**
+         * @brief 解析 byte-range-spec：'bytes=' 之后、按逗号切开的其中一段
+         * @details `bytes=start-end`、`bytes=start-`、`bytes=-suffix` 三种形态都支持，end 超出表示
+         *          末尾时截到末尾（RFC 9110 §14.1.1）。返回 Ignored 表示这一段写法本身不合法，
+         *          按规范整条 Range 都该被忽略；Unsatisfiable 只表示这一段越界，别的段仍可满足。
+         * @param spec 这一段区间原文（不含单位与前后的逗号）
          * @param representationSize 当前表示的字节数
          * @param byteRange 输出：可满足的闭区间（仅返回 Satisfiable 时有效）
-         * @return RangeVerdict 解析结论
+         * @return RangeVerdict 这一段的结论（只会是 Ignored/Unsatisfiable/Satisfiable）
          */
-        RangeVerdict parseSingleByteRange(const std::string_view headerValue, const std::uintmax_t representationSize, ByteRange &byteRange)
+        RangeVerdict parseOneByteRange(const std::string_view spec, const std::uintmax_t representationSize, ByteRange &byteRange)
         {
             byteRange = ByteRange{};
 
-            const std::size_t equalsPosition = headerValue.find('=');
-            if (equalsPosition == std::string_view::npos)
+            const std::string_view rangeSpec = trimOptionalWhitespace(spec);
+            if (rangeSpec.empty())
             {
-                return RangeVerdict::Ignored;
-            }
-            // 区间单位大小写不敏感（RFC 9110 §14.1）
-            if (!equalsIgnoringCase(trimOptionalWhitespace(headerValue.substr(0, equalsPosition)), "bytes"))
-            {
-                return RangeVerdict::Ignored;
-            }
-
-            const std::string_view rangeSpec = trimOptionalWhitespace(headerValue.substr(equalsPosition + 1));
-            if (rangeSpec.empty() || rangeSpec.find(',') != std::string_view::npos)
-            {
-                // 多区间请求整条忽略：本服务器不做 multipart/byteranges 拼装
                 return RangeVerdict::Ignored;
             }
             if (rangeSpec.front() == '-')
@@ -498,7 +501,7 @@ namespace AsynGyanis::Net
             }
             if (startValue >= representationSize)
             {
-                // 起点已在表示之外：不可满足
+                // 起点已在表示之外：这一段不可满足，别的段照旧算
                 return RangeVerdict::Unsatisfiable;
             }
 
@@ -524,6 +527,109 @@ namespace AsynGyanis::Net
             byteRange.start = startValue;
             byteRange.end   = endValue;
             return RangeVerdict::Satisfiable;
+        }
+
+        /**
+         * @brief 解析 Range 头里的一个或多个字节区间，并把重叠与相邻的段合并
+         *
+         * @details 合并是 RFC 9110 §14.2 明给的自由（「服务端可以把重叠或相邻的区间合成一段发」），
+         *          这里用它换两样东西：`0-4,3-6` 这种写法不会发出两份重叠字节，以及
+         *          「区间数」这个上界判的是真正要发的段数而不是对端写了几段。
+         *          两道刻意的退回：段数越过上限、或合并后总字节越过上限时**整条 Range 当没看见**
+         *          （回 200 全量）——与其用一条请求换走数倍正文内存，不如让对端拿完整表示。
+         *
+         * @param headerValue Range 头原文
+         * @param representationSize 当前表示的字节数
+         * @param ranges 输出：按起点升序、互不重叠也不相邻的闭区间（仅在返回 Satisfiable/MultiSatisfiable 时非空）
+         * @return RangeVerdict 整体结论
+         */
+        RangeVerdict parseByteRanges(const std::string_view headerValue, const std::uintmax_t representationSize, std::vector<ByteRange> &ranges)
+        {
+            ranges.clear();
+
+            const std::size_t equalsPosition = headerValue.find('=');
+            if (equalsPosition == std::string_view::npos)
+            {
+                return RangeVerdict::Ignored;
+            }
+            // 区间单位大小写不敏感（RFC 9110 §14.1）
+            if (!equalsIgnoringCase(trimOptionalWhitespace(headerValue.substr(0, equalsPosition)), "bytes"))
+            {
+                return RangeVerdict::Ignored;
+            }
+
+            const std::string_view rangeSpec = trimOptionalWhitespace(headerValue.substr(equalsPosition + 1));
+            if (rangeSpec.empty())
+            {
+                return RangeVerdict::Ignored;
+            }
+
+            std::vector<ByteRange> parsed{};
+            bool                   hasUnsatisfiableSegment = false;
+            std::size_t            segmentStart            = 0;
+            while (segmentStart <= rangeSpec.size())
+            {
+                const std::size_t  commaPosition = rangeSpec.find(',', segmentStart);
+                const std::size_t  segmentEnd    = commaPosition == std::string_view::npos ? rangeSpec.size() : commaPosition;
+                ByteRange          one{};
+                const RangeVerdict segmentVerdict = parseOneByteRange(rangeSpec.substr(segmentStart, segmentEnd - segmentStart), representationSize, one);
+                if (segmentVerdict == RangeVerdict::Ignored)
+                {
+                    // 有一段写法不合法：整条 byte-range-set 就非法，按 RFC 忽略（回 200 全量）
+                    ranges.clear();
+                    return RangeVerdict::Ignored;
+                }
+                if (segmentVerdict == RangeVerdict::Unsatisfiable)
+                {
+                    hasUnsatisfiableSegment = true;
+                } else
+                {
+                    parsed.push_back(one);
+                }
+                if (commaPosition == std::string_view::npos)
+                {
+                    break;
+                }
+                segmentStart = commaPosition + 1;
+            }
+
+            if (parsed.empty())
+            {
+                // 全都越界才是 416；一段都没有（空表）在上面已被 Ignored 分支挡掉
+                return hasUnsatisfiableSegment ? RangeVerdict::Unsatisfiable : RangeVerdict::Ignored;
+            }
+
+            // 按起点排序后合并「重叠或紧邻」的段：合并后的段数才是要真发出去的段数，
+            // 两道上限都按它判（对端写了几段不算）
+            std::ranges::sort(parsed, [](const ByteRange &left, const ByteRange &right) { return left.start < right.start; });
+            ranges.push_back(parsed.front());
+            std::uintmax_t totalBytes = parsed.front().end - parsed.front().start + 1;
+            for (std::size_t index = 1; index < parsed.size(); ++index)
+            {
+                ByteRange &tail = ranges.back();
+                // end 是「含」的闭区间末端：+1 后与下一段起点相接即视为可合并（紧邻的两段合成一段发，
+                // 少一个 MIME 段也少一份头部）。+1 之前先判是否已到表示末尾，避免末端绕回
+                const bool isAdjacentOrOverlapping = parsed[index].start <= tail.end || parsed[index].start == tail.end + 1;
+                if (isAdjacentOrOverlapping)
+                {
+                    if (parsed[index].end > tail.end)
+                    {
+                        totalBytes += parsed[index].end - tail.end;
+                        tail.end = parsed[index].end;
+                    }
+                    continue;
+                }
+                totalBytes += parsed[index].end - parsed[index].start + 1;
+                ranges.push_back(parsed[index]);
+            }
+
+            // 两道退回都是「宁可回全量」：段数或总字节越界时不陪对端做内存游戏
+            if (ranges.size() > kMaximumRequestedByteRangeCount || (ranges.size() > 1 && totalBytes > kMaximumMultiRangeBodyBytes))
+            {
+                ranges.clear();
+                return RangeVerdict::Ignored;
+            }
+            return ranges.size() == 1 ? RangeVerdict::Satisfiable : RangeVerdict::MultiSatisfiable;
         }
 
         /// 一份目录列表最多列出的条目数：更大的目录不该把整棵树的字节名塞进一条响应
@@ -742,6 +848,111 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 把多区间的正文拼成一份 multipart/byteranges 并写成一条 206
+         *
+         * @details 状态码与 content-type 只在**全部正文就位之后**才写：半途失败（文件被删或被换成
+         *          另一个版本、正文里撞上了分隔符）时响应还是一个干净的空对象，调用方可以改判
+         *          「这条 Range 没接」回 200 全量，而不是发出一份自相矛盾的 206。
+         *          零拷贝在这里换不成：正文是多段拼出来的，每段读完都要拷进那一块缓冲——代价由
+         *          `kMaximumMultiRangeBodyBytes` 封顶，仍比让对端重取整份文件便宜。
+         *
+         * @param candidatePath 已确认落在静态根之内的文件路径
+         * @param ranges 合并后的区间序列（起点升序、互不重叠也不相邻，长度 ≥ 2）
+         * @param fileSize 表示的字节数，只用于每段的 Content-Range 总长
+         * @param mimeType 这份文件的媒体类型，逐段带上（RFC 9110 §14.7）
+         * @param statInfo 建立验证器那次查询拿到的文件身份，逐段复核
+         * @param isHeadRequest 是否为 HEAD：只报「GET 会发多大」，一段正文都不必读
+         * @param response 待填的响应
+         * @return true 已写成 206；false 表示没写成且响应未被改动
+         */
+        Core::Task<bool> writeMultipartByteRangesBody(const std::filesystem::path &candidatePath, const std::vector<ByteRange> &ranges, const std::uintmax_t fileSize,
+                                                      const std::string_view mimeType, const Platform::FileBasicInfo &statInfo, const bool isHeadRequest, HttpResponse &response)
+        {
+            const std::string delimiter = "--" + std::string(kByterangesBoundary);
+
+            // 先把每段的头部文本拼出来并算总长：HEAD 只要这个长度，GET 按它填满正文缓冲
+            std::vector<std::string> partHeaders;
+            partHeaders.reserve(ranges.size());
+            std::size_t totalBytes = 0;
+            for (const ByteRange &range: ranges)
+            {
+                std::string partHeader;
+                partHeader.reserve(delimiter.size() + mimeType.size() + 96U);
+                partHeader.append(delimiter);
+                partHeader.append("\r\n");
+                partHeader.append("content-type: ");
+                partHeader.append(mimeType);
+                partHeader.append("\r\n");
+                partHeader.append("content-range: bytes ");
+                partHeader.append(std::to_string(range.start));
+                partHeader.push_back('-');
+                partHeader.append(std::to_string(range.end));
+                partHeader.push_back('/');
+                partHeader.append(std::to_string(fileSize));
+                partHeader.append("\r\n\r\n");
+                // 段与段之间的界线是「CRLF + 分隔符行」：那对 CRLF 归在这一段的末尾，
+                // 不属于正文（RFC 2046 §5.1），所以每段实际占的长度还要再加 2 字节
+                totalBytes += partHeader.size() + static_cast<std::size_t>(range.end - range.start + 1) + 2U;
+                partHeaders.push_back(std::move(partHeader));
+            }
+            const std::string closingDelimiter = delimiter + "--\r\n";
+            totalBytes += closingDelimiter.size();
+
+            if (isHeadRequest)
+            {
+                response.setStatus(206);
+                response.setHeader("content-type", "multipart/byteranges; boundary=" + std::string(kByterangesBoundary));
+                response.setHeader("content-length", std::to_string(totalBytes));
+                co_return true;
+            }
+
+            std::string &body     = response.prepareBodyBuffer(totalBytes);
+            std::size_t  position = 0;
+            std::string  scratch; ///< 每段先读到这里再拷进正文：容量跨段复用，不再逐段要堆
+            for (std::size_t index = 0; index < ranges.size(); ++index)
+            {
+                const ByteRange  &segment       = ranges[index];
+                const std::size_t segmentLength = static_cast<std::size_t>(segment.end - segment.start + 1);
+                std::char_traits<char>::copy(body.data() + position, partHeaders[index].data(), partHeaders[index].size());
+                position += partHeaders[index].size();
+
+                const std::size_t                                 dataOffset = position;
+                Platform::FileBasicInfo                           openedAs{};
+                const std::expected<std::size_t, std::error_code> readResult =
+                        Platform::readFileContentsInto(candidatePath, static_cast<std::size_t>(segment.start), segmentLength, scratch, &openedAs);
+                if (!readResult.has_value() || *readResult != segmentLength)
+                {
+                    // 读不出来或短读：文件在两次请求之间被截断/换掉，不能发半份区间
+                    response.setBody(std::string{});
+                    co_return false;
+                }
+                if (openedAs.sizeBytes != fileSize || openedAs.lastWriteSeconds != statInfo.lastWriteSeconds || openedAs.identityTag != statInfo.identityTag)
+                {
+                    // 验证器描述的是「建立它那次查询」的那个版本，正文却来自另一个对象：
+                    // 与单区间那一条同样的判据，宁可回全量也不把两个版本的字节拼给对端
+                    response.setBody(std::string{});
+                    co_return false;
+                }
+                if (scratch.find("\r\n" + delimiter) != std::string::npos)
+                {
+                    // 正文里出现了分隔符：发出去会被对端切错段，改判回全量（见 kByterangesBoundary 的取舍）
+                    response.setBody(std::string{});
+                    co_return false;
+                }
+                std::char_traits<char>::copy(body.data() + dataOffset, scratch.data(), segmentLength);
+                position += segmentLength;
+                // 段末尾那对 CRLF 与下一行的 "--boundary" 一起构成分隔符（RFC 2046 §5.1）
+                std::char_traits<char>::copy(body.data() + position, "\r\n", 2U);
+                position += 2U;
+            }
+            std::char_traits<char>::copy(body.data() + position, closingDelimiter.data(), closingDelimiter.size());
+
+            response.setStatus(206);
+            response.setHeader("content-type", "multipart/byteranges; boundary=" + std::string(kByterangesBoundary));
+            co_return true;
+        }
+
+        /**
          * @brief 把一条请求当作静态文件请求处理，填充响应
          * @details 除路径清洗与文件查找外，还负责缓存验证（ETag / Last-Modified 与 304）
          *          与单区间 Range（206/416）；只读取方法、路径与条件请求/区间头部。
@@ -913,12 +1124,32 @@ namespace AsynGyanis::Net
             }
 
             // Range：仅在 If-Range 放行时解析，不放行时按 200 全量
+            std::vector<ByteRange>           byteRanges{};
             ByteRange                        byteRange{};
             RangeVerdict                     rangeVerdict = RangeVerdict::Ignored;
             const std::optional<std::string> rangeHeader  = request.getHeader("range");
             if (rangeHeader.has_value() && isRangeApplicable(request, entityTagText, lastWriteSeconds))
             {
-                rangeVerdict = parseSingleByteRange(*rangeHeader, fileSize, byteRange);
+                rangeVerdict = parseByteRanges(*rangeHeader, fileSize, byteRanges);
+                if (rangeVerdict == RangeVerdict::Satisfiable)
+                {
+                    byteRange = byteRanges.front();
+                }
+            }
+
+            // 多个区间：拼一份 multipart/byteranges 交出去（RFC 9110 §14.7）。拼不成——正文里撞上了
+            // 分隔符、文件在两次读之间换了版本、某段读失败——就把这条 Range 当没接，照常往下走回
+            // 200 全量：一份自相矛盾的 206 比让对端重取整份文件糟得多
+            if (rangeVerdict == RangeVerdict::MultiSatisfiable)
+            {
+                if (co_await writeMultipartByteRangesBody(candidatePath, byteRanges, fileSize, mimeType, *fileBasicInfo, isHeadRequest, response))
+                {
+                    response.setHeader("accept-ranges", "bytes");
+                    appendCacheHeaders();
+                    co_return;
+                }
+                byteRanges.clear();
+                rangeVerdict = RangeVerdict::Ignored;
             }
 
             if (rangeVerdict == RangeVerdict::Unsatisfiable)

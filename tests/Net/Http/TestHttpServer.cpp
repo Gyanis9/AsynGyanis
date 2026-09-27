@@ -239,6 +239,30 @@ namespace AsynGyanis::Net
             std::error_code error;
             return std::filesystem::weakly_canonical(directoryPath, error).string();
         }
+        /**
+         * @brief 拼一份 multipart/byteranges 的正文（分隔符固定，见实现里的 kByterangesBoundary）
+         * @param segments 每段的 (start, end, 正文)，按要上线的顺序给出
+         * @param representationSize 表示总长，写进每段的 Content-Range
+         * @param mimeType 每段带上的媒体类型
+         * @return 完整正文文本
+         */
+        std::string makeByterangesBody(const std::vector<std::pair<std::string, std::string>> &segments, const std::size_t representationSize, const std::string_view mimeType)
+        {
+            std::string body;
+            for (const std::pair<std::string, std::string> &segment: segments)
+            {
+                body += "--AsynGyanisByteranges\r\n";
+                body += "content-type: ";
+                body += mimeType;
+                body += "\r\n";
+                body += "content-range: bytes " + segment.first + "/" + std::to_string(representationSize) + "\r\n";
+                body += "\r\n";
+                body += segment.second;
+                body += "\r\n";
+            }
+            body += "--AsynGyanisByteranges--\r\n";
+            return body;
+        }
     } // namespace
 
     TEST(HttpServer, CreatesHttpSessionForAcceptedSocket)
@@ -922,22 +946,165 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 一条 Range 里出现多个区间时整条忽略：回 200 全量，不发 content-range
+     * @brief 钉住：一条 Range 里多个区间时回 206 + multipart/byteranges，正文逐段拼装
+     * @details 旧行为是「整条忽略回 200 全量」——那对下载器与图片预览器意味着为了拿两段字节而
+     *          重取整个文件。现在按 RFC 9110 §14.7 逐段带 content-type 与 content-range，
+     *          顶层不再写 Content-Range（那是单区间的形状），并且**正文逐字节钉住**：
+     *          分隔符、空行与顺序错一处，对端就切错段
      */
-    TEST(HttpServer, IgnoresMultipleRangesAndServesFullBody)
+    TEST(HttpServer, ServesMultipleRangesAsMultipartByteranges)
     {
         Core::EventLoop     loop;
         HttpServer          server(loop, Core::InetAddress::localhost(0));
-        TemporaryStaticTree tree("StaticRangeMultiple");
+        TemporaryStaticTree tree("StaticRangeMulti");
         ASSERT_TRUE(tree.isReady());
 
         server.staticFileDir(tree.staticRootText());
 
         const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-4,6-9"}});
 
-        EXPECT_EQ(response.status(), 200);
+        EXPECT_EQ(response.status(), 206);
+        EXPECT_EQ(headerValueOf(response, "content-type"), "multipart/byteranges; boundary=AsynGyanisByteranges");
+        EXPECT_FALSE(response.getHeader("content-range").has_value()) << "顶层 Content-Range 是单区间的形状，与分包正文互斥";
+        EXPECT_EQ(headerValueOf(response, "accept-ranges"), "bytes");
+        EXPECT_EQ(response.body(), makeByterangesBody({{"0-4", "hello"}, {"6-9", "from"}}, kHelloFileContent.size(), "text/plain"));
+    }
+
+    /**
+     * @brief 重叠与紧邻的区间合成一段发：同一份字节不该出现在包里两次
+     * @details RFC 9110 §14.2 明给「服务端可以把重叠或相邻的区间合并」；合并之后只剩一段，
+     *          形状就回到单区间 206（带顶层 Content-Range、不带 multipart）
+     */
+    TEST(HttpServer, MergesOverlappingAndAdjacentRangesIntoOneSegment)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeMerge");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        for (const std::string_view rangeValue: {"bytes=0-4,3-9", "bytes=0-4,5-9"})
+        {
+            const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", std::string(rangeValue)}});
+            EXPECT_EQ(response.status(), 206) << rangeValue;
+            EXPECT_EQ(headerValueOf(response, "content-type"), "text/plain") << rangeValue << " 没合并成一段，走了分包";
+            EXPECT_EQ(headerValueOf(response, "content-range"), "bytes 0-9/" + std::to_string(kHelloFileContent.size())) << rangeValue;
+            EXPECT_EQ(response.body(), "hello-from") << rangeValue;
+        }
+    }
+
+    /**
+     * @brief 多区间里有一段越界：丢掉那一段，其余照发；全越界才是 416
+     * @details 「全部区间都不可满足」才构得上一条 416（RFC 9110 §14.4），拿一段越界去否掉整条请求
+     *          会让对端白重取一份文件
+     */
+    TEST(HttpServer, DropsUnsatisfiableSegmentsAndKeepsTheRest)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangePartial");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse partial = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-3,9999-10000"}});
+        EXPECT_EQ(partial.status(), 206);
+        EXPECT_EQ(headerValueOf(partial, "content-range"), "bytes 0-3/" + std::to_string(kHelloFileContent.size())) << "越界那段被留下来拼进包里了";
+        EXPECT_EQ(partial.body(), "hell");
+
+        const HttpResponse none = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=9999-10000,20000-20001"}});
+        EXPECT_EQ(none.status(), 416);
+        EXPECT_EQ(headerValueOf(none, "content-range"), "bytes */" + std::to_string(kHelloFileContent.size()));
+    }
+
+    /**
+     * @brief 多区间里出现写法不合法的段：整条 Range 按非法忽略，回 200 全量
+     * @details 与单区间同一条判据（RFC 9110 §14.1 把一段坏掉的 byte-range-set 整体判非法），
+     *          挑「能解的那几段」发出去等于替对端猜它原本想要什么
+     */
+    TEST(HttpServer, IgnoresWholeRangeWhenAnySegmentIsMalformed)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeMalformedSegment");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        for (const std::string_view rangeValue: {"bytes=0-4,abc", "bytes=0-4,", "bytes=0-4,-"})
+        {
+            const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", std::string(rangeValue)}});
+            EXPECT_EQ(response.status(), 200) << rangeValue;
+            EXPECT_EQ(response.body(), kHelloFileContent) << rangeValue;
+            EXPECT_FALSE(response.getHeader("content-range").has_value()) << rangeValue;
+        }
+    }
+
+    /**
+     * @brief 段数或合并后的总字节越过上限时整条 Range 当没看见：一条请求不该换走数倍正文内存
+     */
+    TEST(HttpServer, IgnoresRangeWithTooManySegments)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeTooMany");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-0,2-2,4-4,6-6,8-8,10-10,12-12,14-14,16-16"}});
+        EXPECT_EQ(response.status(), 200) << "9 段越过上限却照发，等于给对端开了一条内存放大通道";
         EXPECT_EQ(response.body(), kHelloFileContent);
-        EXPECT_FALSE(response.getHeader("content-range").has_value());
+    }
+
+    /**
+     * @brief 正文里撞上固定分隔符时回全量：发出去会被对端切错段，宁可不发这条 206
+     * @details 分隔符是固定的（同一请求两次应答逐字一致），代价就是这里有这一道判据——
+     *          换随机边界会让同一条请求给出两份不同报文，更难解释
+     */
+    TEST(HttpServer, IgnoresMultipleRangesWhenContentCollidesWithBoundary)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeBoundaryCollision");
+        ASSERT_TRUE(tree.isReady());
+
+        const std::string collisionContent = std::string("0123456789") + "\r\n--AsynGyanisByteranges" + "tail-content";
+        {
+            std::ofstream collisionFile(tree.staticRoot() / "collide.txt", std::ios::out | std::ios::binary | std::ios::trunc);
+            collisionFile << collisionContent;
+        }
+        ASSERT_TRUE(std::filesystem::exists(tree.staticRoot() / "collide.txt"));
+
+        server.staticFileDir(tree.staticRootText());
+
+        // 第一段就把整条分隔符（含前面的 CRLF）包进正文：判到就退回全量
+        const HttpResponse response = serveRequestWithHeaders(server, HttpMethod::GET, "/collide.txt", {{"range", "bytes=0-33,36-40"}});
+        EXPECT_EQ(response.status(), 200) << "正文里含分隔符还硬发 206，对端会按它切错段";
+        EXPECT_EQ(response.body(), collisionContent);
+    }
+
+    /**
+     * @brief HEAD 的多区间请求只报「GET 会发多大」：长度由拼包结构算出，不读一个正文字节
+     * @details 这条钉的是「HEAD 的长度与 GET 的实际正文逐字节一致」——分包头部文本是算出来的，
+     *          与真正写进正文的那份只有一份来源，两处漂移这里就会红
+     */
+    TEST(HttpServer, ReportsMultipartLengthOnHeadWithoutReadingSegments)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticRangeHeadMulti");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse head = serveRequestWithHeaders(server, HttpMethod::HEAD, "/hello.txt", {{"range", "bytes=0-4,6-9"}});
+        const HttpResponse get  = serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"range", "bytes=0-4,6-9"}});
+
+        EXPECT_EQ(head.status(), 206);
+        EXPECT_EQ(headerValueOf(head, "content-type"), "multipart/byteranges; boundary=AsynGyanisByteranges");
+        EXPECT_EQ(headerValueOf(head, "content-length"), std::to_string(get.body().size())) << "HEAD 报的长度与 GET 实际发出去的正文不一致";
     }
 
     /**
