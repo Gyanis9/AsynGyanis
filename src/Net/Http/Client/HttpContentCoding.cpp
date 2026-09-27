@@ -134,7 +134,8 @@ namespace AsynGyanis::Net
 
     bool applyContentEncoding(const HttpClientRequest &request, HttpClientResponse &response, std::string &failureReason)
     {
-        if (!shouldAdvertiseAcceptEncoding(request.headers))
+        // 挂了接收口就不代解：交出去的是逐段的原样字节，本端拿不到整份压缩流，硬解只会把成功报成失败
+        if (!shouldAdvertiseAcceptEncoding(request.headers) || request.responseBodyReceiver)
         {
             return true;
         }

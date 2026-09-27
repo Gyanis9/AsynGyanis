@@ -72,6 +72,9 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Client/OutboundCircuitBreaker.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpContentCoding.h
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpContentCoding.cpp
+        # text/event-stream 的增量解析器：配合 HttpClientRequest::responseBodyReceiver 用
+        ${CMAKE_CURRENT_LIST_DIR}/Client/SseEventParser.h
+        ${CMAKE_CURRENT_LIST_DIR}/Client/SseEventParser.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpOutboundConnectionPool.h
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpOutboundConnectionPool.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpOutboundEstablishment.h

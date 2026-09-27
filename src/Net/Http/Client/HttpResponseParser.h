@@ -92,6 +92,26 @@ namespace AsynGyanis::Net
         void endOfStream();
 
         /**
+         * @brief 头部是否已收齐（状态行与头部完整，正文可以开始逐批交付）
+         * @return true `result()` 里的状态码与头部已可信；正文还一条字节都没交出来时也为 true
+         * @note 失败态不算「头部收齐」：那份头部本身不可信，调用方不该拿它当响应头用
+         */
+        [[nodiscard]] bool isHeadComplete() const noexcept
+        {
+            return m_stage == Stage::Body || m_stage == Stage::Complete;
+        }
+
+        /**
+         * @brief 把已收到的正文段取走（清空内部缓冲，不动累计计数）
+         * @param target 取回的字节（调用方的旧内容被覆盖）
+         * @return std::size_t 取回的字节数
+         * @details 给「边到边交」的接收口用：正文不必整份攒在本端内存里，交完一段就腾出来，
+         *          于是**峰值占用是一段的大小而不是整条响应的**。上限照旧按累计收到的字节判
+         *          （见 `isAccumulatedBodyOverLimit()`），所以取走字节绝不会把上限掏空。
+         */
+        std::size_t takeBodyBytes(std::string &target);
+
+        /**
          * @brief 当前生效的正文上限（字节）
          * @return std::size_t 上限；0 表示不限
          */
@@ -156,6 +176,7 @@ namespace AsynGyanis::Net
         /// （交出去就清会让 std::string 在首字节写 NUL，调用方读到坏内容）
         bool        m_isLineHandedOut{false};
         std::size_t m_headerBlockByteCount{0};                  ///< 已收头部块的净字节数（名 + 值）
+        std::size_t m_receivedBodyByteCount{0};                 ///< 累计收到的正文字节数（取走的段也算，上限按它判）
         std::size_t m_expectedBodyBytes{0};                     ///< 还欠多少正文字节（Content-Length 或块边界给的）
         bool        m_isChunked{false};                         ///< 正文按 chunked 分块定界
         bool        m_isCloseDelimited{false};                  ///< 正文靠对端关闭连接定界
@@ -173,7 +194,9 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool isAccumulatedBodyOverLimit() const noexcept
         {
-            return m_maximumBodySize != 0 && m_result.body.size() > m_maximumBodySize;
+            // 按**累计收到**的字节判，不按「还留在缓冲里多少」判：接收口可以逐段把字节取走
+            // （takeBodyBytes），留着的字节会一直很小，用缓冲大小当上限等于把闸门拆了
+            return m_maximumBodySize != 0 && m_receivedBodyByteCount > m_maximumBodySize;
         }
     };
 } // namespace AsynGyanis::Net

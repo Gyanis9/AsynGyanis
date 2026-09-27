@@ -331,6 +331,7 @@ namespace AsynGyanis::Net
                             {
                                 const auto toCopy = std::min(m_chunkSize, data.size());
                                 m_result.body.append(data.data(), toCopy);
+                                m_receivedBodyByteCount += toCopy;
                                 data.remove_prefix(toCopy);
                                 m_chunkSize -= toCopy;
                                 // 分块的长度由对端一块一块给：只有边收边判才拦得住「无限分块」
@@ -397,6 +398,7 @@ namespace AsynGyanis::Net
                         const auto available = data.size();
                         const auto toCopy    = std::min(m_expectedBodyBytes, available);
                         m_result.body.append(data.data(), toCopy);
+                        m_receivedBodyByteCount += toCopy;
                         data.remove_prefix(toCopy);
                         m_expectedBodyBytes -= toCopy;
                         if (m_expectedBodyBytes == 0)
@@ -409,6 +411,7 @@ namespace AsynGyanis::Net
                         // 超上限按失败收口：这条路的正文长度完全由对端决定（一直不关连接就一直收），
                         // 没有上限就是让对端决定本进程分配多少内存
                         m_result.body.append(data.data(), data.size());
+                        m_receivedBodyByteCount += data.size();
                         data = {};
                         if (isAccumulatedBodyOverLimit())
                         {
@@ -446,9 +449,19 @@ namespace AsynGyanis::Net
         m_chunkSize            = 0;
         // 越界这一位也是「按条」的状态：留着它，下一条响应什么都不做也会被告知「正文超限」
         m_isBodyLimitHit = false;
+        // 累计字节数与上面同一族：按条清，否则一条大响应之后整条连接上的后续请求都被误拒
+        m_receivedBodyByteCount = 0;
         // HEAD 的标记也是「按请求」的状态：keep-alive 上复用同一个解析器时，漏了它会让第二条响应
         // 也在头块之后收口——正文被静默丢掉，而状态码看着完全正常
         m_isHeadResponse = false;
+    }
+
+    std::size_t HttpResponseParser::takeBodyBytes(std::string &target)
+    {
+        // 只搬缓冲、不动 m_receivedBodyByteCount：上限要按「一共收了多少」判，取走多少不算退账
+        target.swap(m_result.body);
+        m_result.body.clear();
+        return target.size();
     }
 
     void HttpResponseParser::endOfStream()

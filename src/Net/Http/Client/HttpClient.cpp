@@ -470,7 +470,8 @@ namespace AsynGyanis::Net
                 text += "\r\n";
             }
             // 代为声明本端真能解回来的编码：调用方自己写过 accept-encoding 就整个不管正文（同 h2 那一支）
-            if (shouldAdvertiseAcceptEncoding(request.headers))
+            // 挂了接收口也不代加：交出去的必须是对端发的那一份原样字节，本端不替你逐段解压
+            if (shouldAdvertiseAcceptEncoding(request.headers) && !request.responseBodyReceiver)
             {
                 text += "Accept-Encoding: ";
                 text += kOutboundAcceptEncodingValue;
@@ -558,12 +559,15 @@ namespace AsynGyanis::Net
          * @return OutboundExchange 响应与「有没有读到过字节」；响应为空即失败
          */
         Core::Task<OutboundExchange> exchangeOnConnection(Core::EventLoop &loop, HttpOutboundConnection &connection, const std::string &requestText,
-                                                          const HttpBodyChunkSource &bodySource, const bool isHeadRequest, const std::chrono::milliseconds requestTimeout,
-                                                          std::string &failureReason)
+                                                          const HttpBodyChunkSource &bodySource, const HttpResponseBodyReceiver &responseBodyReceiver, const bool isHeadRequest,
+                                                          const std::chrono::milliseconds requestTimeout, std::string &failureReason)
         {
             const Core::DeadlineGuard<HttpOutboundConnection> deadline(loop, connection, requestTimeout, "HttpClient");
             OutboundExchange                                  exchange;
             const std::string                                 host = connection.endpointKey().host;
+            // 接收口自己收的口：响应只交到那一为止，连接当场关掉（半条正文的连接不能还池）
+            bool        isStoppedByReceiver = false;
+            std::string deliveredBatch;
             if (isHeadRequest)
             {
                 connection.parser().markAsHeadResponse();
@@ -625,7 +629,25 @@ namespace AsynGyanis::Net
                     }
                     exchange.isAnyByteReceived = true;
                     connection.parser().feed({buffer.data(), static_cast<std::size_t>(receivedByteCount)});
-                    if (connection.parser().isComplete())
+                    // 没挂接收口就是原样：一直读到整条响应收齐
+                    if (!responseBodyReceiver || !connection.parser().isHeadComplete())
+                    {
+                        if (connection.parser().isComplete())
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                    // 头部一收齐就逐批交付：这一段交完之前不去读下一批通路字节，背压因此落在接收口上
+                    if (const std::size_t batchByteCount = connection.parser().takeBodyBytes(deliveredBatch); batchByteCount > 0)
+                    {
+                        if (!co_await responseBodyReceiver(connection.parser().result(), std::string_view(deliveredBatch), false))
+                        {
+                            isStoppedByReceiver = true;
+                            break;
+                        }
+                    }
+                    if (connection.parser().isComplete() || connection.parser().hasFailed())
                     {
                         break;
                     }
@@ -639,9 +661,28 @@ namespace AsynGyanis::Net
                 connection.close();
                 co_return exchange;
             }
+            if (isStoppedByReceiver)
+            {
+                // 调用方主动收的口：头部仍是完整可信的响应，正文到此为止。剩下的字节留在通路里，
+                // 这条连接当场关掉——留着它还回池，下一条请求会把剩下的正文当自己的响应头读
+                connection.close();
+                auto stoppedResponse          = std::make_unique<HttpClientResponse>();
+                stoppedResponse->statusCode   = connection.parser().result().statusCode;
+                stoppedResponse->reasonPhrase = connection.parser().result().reasonPhrase;
+                stoppedResponse->headers      = connection.parser().result().headers;
+                exchange.response             = std::move(stoppedResponse);
+                co_return exchange;
+            }
             if (!connection.parser().isComplete())
             {
                 connection.parser().endOfStream();
+            }
+            // 最后一批要在收齐之后交出去（零长的收尾也要交），接收口由此能分清「走完了」与「断了」；
+            // 中途失败时不再交——那批字节是残缺的，调用方从返回的响应为空就能看出这条没成
+            if (responseBodyReceiver && connection.parser().isComplete())
+            {
+                connection.parser().takeBodyBytes(deliveredBatch);
+                static_cast<void>(co_await responseBodyReceiver(connection.parser().result(), std::string_view(deliveredBatch), true));
             }
             exchange.response = takeParsedResponse(connection.parser(), host, failureReason);
             co_return exchange;
@@ -721,12 +762,16 @@ namespace AsynGyanis::Net
          * @param startedAt 本次请求的开始时刻
          * @param requestTimeout 整体时限
          * @param failureReason 输出：断在哪一段（解析地址 / 连接 / TLS 那几步 / 握手）
+         * @param clientTls 复用的 TLS 客户端上下文，可空
+         * @param isMultiplexedAdvertised 是否在 ALPN 里声明 h2：带响应接收口的请求给 false，
+         *        那条请求要的是逐批交付，而流式交付目前只在 HTTP/1.1 上接通（宁可明确按 h1 建通路，
+         *        也不要「协商到 h2 之后把接收口悄悄忽略」那种静默变形）
          * @return std::unique_ptr<HttpOutboundConnection> 握手成功就交出连接；任一步失败返回空
          */
         Core::Task<std::unique_ptr<HttpOutboundConnection>> establishSecureConnection(Core::EventLoop &loop, const ParsedUrl &u,
                                                                                       const std::chrono::steady_clock::time_point startedAt,
                                                                                       const std::chrono::milliseconds requestTimeout, std::string &failureReason,
-                                                                                      const Core::TlsContext *clientTls)
+                                                                                      const Core::TlsContext *clientTls, const bool isMultiplexedAdvertised = true)
         {
             HttpOutboundEndpointKey key{u.host, u.port, true};
 
@@ -782,12 +827,17 @@ namespace AsynGyanis::Net
             // 带 ALPN：h2 只能靠协商结果识别，不在 ClientHello 里声明就永远只会收到 HTTP/1.1 的答。
             // 两个名字都提，本端偏好写在前面（服务端按自己的偏好在这份列表里挑）；列表的线格式是
             // 「单字节长度 + 协议名」的串联，不是逗号分隔——填错不会报错，只会对端一条都匹配不上
-            static constexpr unsigned char kAlpnProtocolList[] = {
+            static constexpr unsigned char kAlpnMultiplexedList[] = {
                     2U, 'h', '2', 8U, 'h', 't', 't', 'p', '/', '1', '.', '1',
             };
+            static constexpr unsigned char kAlpnHttp1OnlyList[] = {
+                    8U, 'h', 't', 't', 'p', '/', '1', '.', '1',
+            };
+            const std::span<const unsigned char> alpnProtocols =
+                    isMultiplexedAdvertised ? std::span<const unsigned char>{kAlpnMultiplexedList} : std::span<const unsigned char>{kAlpnHttp1OnlyList};
             // OpenSSL 这一支的返回值是反的：0 才是成功。名字用 SSL_set_alpn_protos 而不是 ...protocols：
             // 前者从 1.0.2 起就是真身并一直保留，后者只是新版本里加的兼容写法，按旧名调两边都在
-            if (::SSL_set_alpn_protos(ssl, kAlpnProtocolList, static_cast<unsigned int>(sizeof(kAlpnProtocolList))) != 0)
+            if (::SSL_set_alpn_protos(ssl, alpnProtocols.data(), static_cast<unsigned int>(alpnProtocols.size())) != 0)
             {
                 SSL_free(ssl);
                 failureReason = "TLS 没能设置 ALPN 协议列表：OpenSSL 拒绝了这份写法";
@@ -841,7 +891,8 @@ namespace AsynGyanis::Net
                 extraFields.emplace_back(std::move(foldedName), field.second);
             }
             // 与 h1 那一支同一条判据：代加声明才透明解压，三条通路问的是同一个函数（见 HttpContentCoding）
-            if (shouldAdvertiseAcceptEncoding(request.headers))
+            // 挂了接收口同样不加：理由与 h1 那一支一样，交出去的是对端发的原样字节
+            if (shouldAdvertiseAcceptEncoding(request.headers) && !request.responseBodyReceiver)
             {
                 extraFields.emplace_back("accept-encoding", std::string(kOutboundAcceptEncodingValue));
             }
@@ -1125,7 +1176,10 @@ namespace AsynGyanis::Net
             const auto makeRequestText = [&] { return buildRequestText(request, u, isKeepAlive); };
             const bool isHeadRequest   = request.method == "HEAD";
             // 这次请求有没有资格走 h3：开关与 URL 形状之外，还要这个端点没被探败过
-            const bool isHttp3Eligible = pool != nullptr && canUseHttp3(u, request, http3) && !isHttp3ProbeRejected(endpointKey, *http3);
+            // 挂了响应接收口的请求只走 HTTP/1.1：逐批交付目前只在 h1 上接通（h2/h3 那两路按各自的
+            // 流控另做，见 CHANGELOG），宁可不共享多路复用的好处，也不把「要流」这个明确请求悄悄降级
+            const bool isMultiplexedAllowed = !request.responseBodyReceiver;
+            const bool isHttp3Eligible      = isMultiplexedAllowed && pool != nullptr && canUseHttp3(u, request, http3) && !isHttp3ProbeRejected(endpointKey, *http3);
 
             // 复用→建连这一整段要能重跑一遍：等同一端点建连的人醒来之后，第一件该做的
             // 还是回池里看有没有现成的连接，而不是就地假设「有」或「没有」。
@@ -1153,7 +1207,8 @@ namespace AsynGyanis::Net
                         }
                     }
                     // h2 的待命连接问在 h1 的空闲表之前：一台主机的 ALPN 结果是稳定的，两处不会同时有货
-                    if (auto cachedHttp2 = pool->acquireHttp2(endpointKey); cachedHttp2 != nullptr)
+                    // 带响应接收口的请求不去问：那条连接已经协商到 h2，而逐批交付只在 h1 上接通
+                    if (auto cachedHttp2 = isMultiplexedAllowed ? pool->acquireHttp2(endpointKey) : std::shared_ptr<Http2ClientConnection>{}; cachedHttp2 != nullptr)
                     {
                         OutboundExchange cachedExchange = co_await exchangeOnHttp2(*cachedHttp2, u, request, startedAt, requestTimeout, failureReason);
                         switch (classifyMultiplexedExchange(cachedExchange, request.method, u.host, failureReason))
@@ -1175,10 +1230,13 @@ namespace AsynGyanis::Net
                         if (reusedBudget.has_value())
                         {
                             const std::string requestText = makeRequestText();
-                            OutboundExchange  exchange = co_await exchangeOnConnection(loop, *reused, requestText, request.bodySource, isHeadRequest, *reusedBudget, failureReason);
+                            OutboundExchange  exchange = co_await exchangeOnConnection(loop, *reused, requestText, request.bodySource, request.responseBodyReceiver, isHeadRequest,
+                                                                                       *reusedBudget, failureReason);
                             if (exchange.response)
                             {
-                                if (isResponseReusable(exchange.response->headers))
+                                // isOpen() 这一位是给「接收口半路收口、连接已被关掉」留的：那种连接
+                                // 不能还池，否则下一条请求会把剩下的正文当响应头读
+                                if (reused->isOpen() && isResponseReusable(exchange.response->headers))
                                 {
                                     reused->prepareForNextRequest();
                                     pool->release(std::move(reused));
@@ -1238,7 +1296,7 @@ namespace AsynGyanis::Net
                         }
                     }
                     // 领导者建成了可共享的 h2 连接：直接拿它，一次握手都不用再付
-                    if (auto shared = pool->acquireHttp2(endpointKey); shared != nullptr)
+                    if (auto shared = isMultiplexedAllowed ? pool->acquireHttp2(endpointKey) : std::shared_ptr<Http2ClientConnection>{}; shared != nullptr)
                     {
                         OutboundExchange sharedExchange = co_await exchangeOnHttp2(*shared, u, request, startedAt, requestTimeout, failureReason);
                         switch (classifyMultiplexedExchange(sharedExchange, request.method, u.host, failureReason))
@@ -1309,7 +1367,7 @@ namespace AsynGyanis::Net
                 std::unique_ptr<HttpOutboundConnection> connection;
                 if (u.scheme == "https")
                 {
-                    connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason, clientTls);
+                    connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason, clientTls, isMultiplexedAllowed);
                 } else
                 {
                     connection = co_await establishPlainConnection(loop, endpointKey, startedAt, requestTimeout, failureReason);
@@ -1372,8 +1430,9 @@ namespace AsynGyanis::Net
                     co_return nullptr;
                 }
                 const std::string requestText = makeRequestText();
-                OutboundExchange  exchange    = co_await exchangeOnConnection(loop, *connection, requestText, request.bodySource, isHeadRequest, *exchangeBudget, failureReason);
-                if (exchange.response && pool != nullptr && isResponseReusable(exchange.response->headers))
+                OutboundExchange  exchange    = co_await exchangeOnConnection(loop, *connection, requestText, request.bodySource, request.responseBodyReceiver, isHeadRequest,
+                                                                              *exchangeBudget, failureReason);
+                if (exchange.response && pool != nullptr && connection->isOpen() && isResponseReusable(exchange.response->headers))
                 {
                     connection->prepareForNextRequest();
                     pool->release(std::move(connection));

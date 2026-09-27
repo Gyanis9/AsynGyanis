@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -55,6 +56,17 @@ namespace AsynGyanis::Net
      *          co_await 返回。headers 只准添附加字段——Host、Content-Length、Connection 由客户端按这次
      *          请求的实际情况写，占用它们等于让调用方自己撕裂请求行，因此连同含 CR/LF 的名字与值一起拒绝。
      */
+    /**
+     * @brief 响应正文的接收口：按到达批次把正文交给调用方，交完才去读下一批通路字节
+     *
+     * @details 这就是背压的落点——本口没返回，客户端就不会再读，TCP 窗口与 h2/h3 的流控因此自己闭合。
+     * @param head 已收齐的响应头部（状态码与头部可信；**只在本次调用内有效**，要留就自己抄下来）
+     * @param batch 本批正文（**只在本次调用内有效**；`isLastBatch` 为真时可为空，表示零长收尾）
+     * @param isLastBatch 是否最后一批：Content-Length 收满、分块终止块读完、或对端收线
+     * @return true 还要下一批；false 就此收口（不再读正文，这条连接当场关闭、不还池）
+     */
+    using HttpResponseBodyReceiver = std::function<Core::Task<bool>(const HttpResponseInfo &head, std::string_view batch, bool isLastBatch)>;
+
     struct HttpClientRequest
     {
         std::string                        method{"GET"}; ///< 请求方法，原样写进请求行；HEAD 的应答按 RFC 9112 §6.3 在头块之后结束
@@ -71,6 +83,18 @@ namespace AsynGyanis::Net
          *       请求，不会把循环挂住
          */
         HttpBodyChunkSource bodySource{};
+
+        /**
+         * @brief 响应正文的接收口：设了就「边到边交」，整条响应的正文不再攒在本端内存里
+         * @details 签名的读法见 `HttpResponseBodyReceiver`。设了这个口子时，交回来的
+         *          `HttpClientResponse::body` 是**空的**（字节都交给了接收口），成败仍看返回的响应
+         *          是否为空；`isLastBatch` 为真才算正文走到头。
+         * @note 整体时限（requestTimeout）照旧覆盖到正文交完为止：对端按住不送、或本口自己按住不放，
+         *       到点就是一条失败请求。本客户端没有「不限时限」这一档，要收一条不结束的流
+         *       （`text/event-stream` 那一类），就把时限给到你能接受的上限，并在需要时从本口返回
+         *       false 主动收口。
+         */
+        HttpResponseBodyReceiver responseBodyReceiver{};
 
         /**
          * @brief 要上线的链路上下文：填了就由本客户端按它写出 traceparent 头部
