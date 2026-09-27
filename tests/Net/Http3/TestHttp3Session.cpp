@@ -1051,6 +1051,77 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：路由层生成的 405 与 allow 字段在 h3 上完整上线，与 h1/h2 同一份答案
+     * @details 405 与 allow 都是 Router 写的，h3 这一侧还要过一遍自己的字段段编码与响应侧校验；
+     *          allow 被当成连接专属头剔掉时，客户端只看到一个不给允许方法列表的 405。
+     *          h2 侧早有同一条（Http2Session 的未收录方法用例），这次补的是三条通道的对照。
+     */
+    TEST(Http3Session, Answers405WithAllowHeaderForUnlistedMethod)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        std::atomic<bool> isHandlerEntered{false};
+        Router            router;
+        router.get("/hello",
+                   [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       isHandlerEntered.store(true);
+                       response.setStatus(200);
+                       response.setBody("served-hello");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("BREW", "/hello", "example.com");
+        ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（未知方法连请求都没编出来）";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_FALSE(isHandlerEntered.load()) << "未收录的方法不该命中 GET 业务";
+        const Http3ClientPeer::DecodedResponse response = peer.response();
+        EXPECT_EQ(response.status, 405) << "路径命中而方法不被允许时应回 405（与 h1/h2 一致）";
+        const auto allowHeader = response.headers.find("allow");
+        ASSERT_NE(allowHeader, response.headers.end()) << "405 必须带 allow：没有它客户端无从知道该换哪个方法";
+        EXPECT_NE(allowHeader->second.find("GET"), std::string::npos) << "allow 里要列出这条路径允许的方法";
+    }
+
+    /**
+     * @brief 钉住：未注册的路径在 h3 上回 404，且不带业务正文
+     */
+    TEST(Http3Session, Answers404ForUnregisteredPath)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/hello",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setStatus(200);
+                       response.setBody("served-hello");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                        peer;
+        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/not-registered");
+        EXPECT_EQ(response.status, 404) << "未注册的路径应由路由层兜底成 404（与 h1/h2 一致）";
+        EXPECT_EQ(response.body.find("served-hello"), std::string::npos) << "404 的正文里出现了别条路径的业务输出：路由匹配串了";
+    }
+
+    /**
      * @brief 钉住：h3 的尾部字段发成正文之后的第二个字段段，且收尾由它带出来
      * @details RFC 9114 §4.3 与 h2 同源：尾段就是一个排在最后一个 DATA 之后的普通字段段，而它之后
      *          什么都不剩（FIN 只能跟着它）。三件事一并钉：段数、字段落在哪一段、头段带着 trailer 声明。
