@@ -277,6 +277,26 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 按请求里给的链路上下文写出 traceparent 头部
+         * @details 线上形态只在这一处生成：调用方交来上下文，本函数负责那 55 字节的写法，
+         *          于是「自己拼头部」的第二份实现不会出现（拼错的 traceparent 在对端是整条链路断掉）。
+         * @param headers 要追加头部的容器（就地改）
+         * @param context 本端这一跳的上下文
+         * @throws Base::InvalidArgumentException headers 里已经手写过一条 traceparent：
+         *         一处出站请求只能有一个上级，替调用方挑一个就是把两份意图混成一条头部
+         */
+        void appendTraceparentHeader(std::vector<HttpClientHeaderField> &headers, const TraceIdentifiers &context)
+        {
+            const bool callerWroteIt = std::ranges::any_of(headers, [](const HttpClientHeaderField &field) { return equalsIgnoreAsciiCase(field.first, kTraceparentHeaderName); });
+            if (callerWroteIt)
+            {
+                throw Base::InvalidArgumentException("HttpClient：请求的 traceContext 与 headers 里手写的 traceparent 同时给了："
+                                                     "一处出站请求只能有一个上级上下文。请去掉其中一处再试");
+            }
+            headers.emplace_back(kTraceparentHeaderName, Traceparent::value(context));
+        }
+
+        /**
          * @brief 从整体时限里扣掉已经花掉的那一段
          * @details 契约是「握手、发送、收完响应三段之和」：分两段各给一次完整时限，等于把契约放宽
          *          一倍。返回空表示预算已经用完，调用方据此直接判失败。
@@ -1365,6 +1385,11 @@ namespace AsynGyanis::Net
         // 畸形 URL 与不合规范的头部都是用法错误，按 parseUrl 的既有口径抛出，不折进 expected 的失败值
         const ParsedUrl parsed = parseUrl(url);
         validateRequest(request);
+        if (request.traceContext.has_value())
+        {
+            // request 是按下标传进来的副本：改它的头部不影响调用方，也不必再有一份实现去拼那条头部
+            appendTraceparentHeader(request.headers, *request.traceContext);
+        }
         std::string failureReason;
         // 静态那一路不带池、也没有承载 TLS 策略与 h3 开关的地方，因此永不走 h3（两个空指针即此意）
         std::unique_ptr<HttpClientResponse> response = co_await performRequest(loop, request, parsed, requestTimeout, nullptr, failureReason, nullptr, nullptr);
@@ -1500,6 +1525,17 @@ namespace AsynGyanis::Net
                     effectiveRequest = &requestWithCookie.value();
                 }
             }
+        }
+
+        // 链路上下文也按「要改头部才拷」的规矩处理：不填时开销与行为都和原来一样
+        if (request.traceContext.has_value())
+        {
+            if (!requestWithCookie.has_value())
+            {
+                requestWithCookie = request;
+                effectiveRequest  = &requestWithCookie.value();
+            }
+            appendTraceparentHeader(requestWithCookie->headers, *request.traceContext);
         }
 
         validateRequest(*effectiveRequest);

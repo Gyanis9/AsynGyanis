@@ -23,6 +23,7 @@
 #include "Net/Http/Client/OutboundCircuitBreaker.h"
 #include "Net/Http/Client/HttpResponseParser.h"
 #include "Net/Http/HttpBodyChunk.h"
+#include "Net/Http/TraceContext.h"
 namespace AsynGyanis::Core
 {
     class EventLoop;
@@ -70,6 +71,19 @@ namespace AsynGyanis::Net
          *       请求，不会把循环挂住
          */
         HttpBodyChunkSource bodySource{};
+
+        /**
+         * @brief 要上线的链路上下文：填了就由本客户端按它写出 traceparent 头部
+         * @details 装的是**本端这一跳的上下文**——通常就是当前那一节的 `Span::identifiers()`，
+         *          或入站请求归一化后读到的那份（`extractTraceContext()`）。标识按原样渲染，
+         *          本客户端不重新生成：谁在跟踪这一跳，谁的标识才作数。
+         * @note 不填（默认）时行为与从前一致：headers 里已有 traceparent 就原样发出，没有就不发。
+         *          出站链路记录是可选的，不记链路的调用方不必先学一套上下文模型。
+         * @note 与 headers 里手写的 traceparent 同时给出属于用法错误，当场拒绝：一处请求只能有一个
+         *          上级，替调用方挑一个就是把两份意图混成一条上线头部。
+         * @see Net::Traceparent, Net::Span::identifiers()
+         */
+        std::optional<TraceIdentifiers> traceContext{};
     };
     /**
      * @brief 拆开的请求 URL

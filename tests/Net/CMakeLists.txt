@@ -41,6 +41,7 @@ add_executable(TestNet
         Http/TestHttpStaticFileTransfer.cpp
         Http/TestHttpClient.cpp
         Http/TestHttpClientHttp3.cpp
+        Http/TestHttpClientTraceContext.cpp
         Http/TestHttpOutboundConnectionPool.cpp
         Http/TestHttpResponseParser.cpp
         Http/TestHttpServerLimits.cpp
