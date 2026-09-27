@@ -26,6 +26,8 @@
 #include "Net/Http/Router.h"
 #include "Net/Quic/QuicServer.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
+#include "Net/Tracing/HttpTracingMiddleware.h"
+#include "Net/Tracing/TracingConfiguration.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/System/CpuAffinity.h"
 #include "Platform/System/ProcessInfo.h"
@@ -420,6 +422,9 @@ int main(int argc, char **argv)
         LOG_INFO("  --trace-context 挂 W3C Trace Context 中间件：上游带了合法的 traceparent 就原样沿用，");
         LOG_INFO("            缺席或畸形（含同名多条）则新起一条链路并写回请求头，业务读 GET /trace 就能看到；");
         LOG_INFO("            同时把自己的条目 asyn=<span-id> 挪到 tracestate 最前（上游条目次序不动）");
+        LOG_INFO("  --config 的 tracing 段开链路记录：tracing.enabled + service_name 起一节 SERVER，");
+        LOG_INFO("            tracing.file.path 每节一行 JSON 落盘、tracing.otlp.endpoint 按 OTLP/HTTP 发给采集端；");
+        LOG_INFO("            比例、批量与时限分别是 sample_ratio / batch_span_count / export_interval_ms");
         LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz；开了 --h3 时 h3 的请求数/状态码类一并计入");
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
@@ -447,6 +452,7 @@ int main(int argc, char **argv)
     // 配置优先级：命令行 > 配置文件 > 内置默认值。文件是「这台服务的常态配置」，
     // 命令行是「这一次运行的临时改动」，临时改动优先
     Net::HttpServerConfiguration configuration;
+    Net::TracingConfiguration    tracingConfiguration;
     if (!configFile.empty())
     {
         // 整块都在 try 里：读文件、取段、校验任何一步失败都只让这次启动失败并说明原因。
@@ -464,7 +470,13 @@ int main(int argc, char **argv)
             // 这里补上段名这一层外壳：它只认文档结构，不关心配置来自文件还是内存
             Base::ConfigObject document;
             document.emplace(std::string(Net::kHttpServerConfigSection), Base::ConfigManager::instance().getSection(Net::kHttpServerConfigSection));
-            configuration = Net::readHttpServerConfiguration(Base::ConfigValue(std::move(document)));
+            document.emplace(std::string(Net::kTracingConfigSection), Base::ConfigManager::instance().getSection(Net::kTracingConfigSection));
+            // 这里必须用圆括号：花括号会去配 initializer_list 那个构造，整份文档就变成一个数组，
+            // 两个读取器都找不到自己的段而全部走默认值——现象只是「配置写了没生效」
+            const Base::ConfigValue configurationDocument(std::move(document));
+            configuration = Net::readHttpServerConfiguration(configurationDocument);
+            // 链路段与 server 段同批读：读不出来的写法（未知键、类型不符）不该等到装配出口时才炸
+            tracingConfiguration = Net::readTracingConfiguration(configurationDocument);
         } catch (const std::exception &configurationException)
         {
             LOG_ERROR_EXCEPTION(configurationException, "配置读取失败，服务未启动。文件：{}，原因：{}", configFile, configurationException.what());
@@ -472,6 +484,35 @@ int main(int argc, char **argv)
         }
         LOG_INFO_FMT("已读取配置 {}：最大连接 {}，单来源 {}，限流 {} 请求/s（桶 {}），指标 {}", configFile, configuration.maximumConnections, configuration.maximumConnectionsPerIp,
                      configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, configuration.exposeMetrics ? "开" : "关");
+    }
+
+    // 链路装配：开关在配置里（tracing.enabled），没配就是 nullptr——后续的中间件注册与日志都按空指针走。
+    // 地址写错、服务名缺失这类问题在这里当场终止启动：留着一个发不出东西的出口，比不记链路更糟
+    std::shared_ptr<Net::Tracer> tracer;
+    try
+    {
+        tracer = Net::buildTracer(tracingConfiguration);
+    } catch (const std::exception &tracingException)
+    {
+        LOG_ERROR_EXCEPTION(tracingException, "链路装配失败，服务未启动。原因：{}", tracingException.what());
+        return 1;
+    }
+    // 关着也要说一句：「配置文件里写了 tracing 段却没生效」是这类装配最难查的形态，
+    // 只有一行启动日志能把它与「段根本没读到」分开
+    if (tracer != nullptr)
+    {
+        if (!useTraceContext)
+        {
+            // 归一化那一步没开：畸形或残缺的 traceparent 会被本节直接当上级用（一节仍然记，只是父子关系跟着上游的写法走）
+            LOG_WARN("链路：开了 tracing.enabled 但没开 --trace-context，本节会按请求头上原样的上下文起，畸形写法不会重起一条");
+        }
+        LOG_INFO_FMT("链路：开（服务名 {}，采样比例 {}，出口 = 文件 {} + OTLP {}）", tracingConfiguration.serviceName, tracingConfiguration.sampleRatio,
+                     tracingConfiguration.spanFilePath.empty() ? "未配" : tracingConfiguration.spanFilePath,
+                     tracingConfiguration.otlpEndpoint.empty() ? "未配" : tracingConfiguration.otlpEndpoint);
+    } else
+    {
+        LOG_INFO_FMT("链路：关（tracing.enabled 未开，或服务未给出服务名；当前读到 enabled={}、service_name={}）", tracingConfiguration.enabled ? "true" : "false",
+                     tracingConfiguration.serviceName.empty() ? "未配" : tracingConfiguration.serviceName);
     }
 
     // 命令行覆盖：显式给出的开关优先于文件里的同名项
@@ -694,14 +735,19 @@ int main(int argc, char **argv)
     // 业务与下游读的是同一份状态；三端（h1/h2/https 与 h3）各挂一次，见 Net/Http/TraceContext.h
     const auto enableTraceContextIfRequested = [&](Net::Router &router)
     {
-        if (!useTraceContext)
+        if (useTraceContext)
         {
-            return;
+            Net::TraceContextOptions options;
+            // tracestate 里代表本进程的条目，值取本段的 span-id
+            options.vendorKey = "asyn";
+            router.addMiddleware(Net::traceContextMiddleware(std::move(options)));
         }
-        Net::TraceContextOptions options;
-        // tracestate 里代表本进程的条目，值取本段的 span-id
-        options.vendorKey = "asyn";
-        router.addMiddleware(Net::traceContextMiddleware(std::move(options)));
+        // 链路一节不依赖上面那步（没归一化就按头上原样的上下文起），但两步都在时顺序要紧：
+        // 一节要按归一化之后的上下文起，否则上游写错一环就把整条链路的父子关系带歪
+        if (tracer != nullptr)
+        {
+            router.addMiddleware(Net::tracingSpanMiddleware(tracer));
+        }
     };
 
     // 按 --https 决定造哪种协议的服务器；返回基类指针，两条路径共用一套构造逻辑
