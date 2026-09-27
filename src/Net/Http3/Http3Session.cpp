@@ -1645,6 +1645,11 @@ namespace AsynGyanis::Net
                     // 只查不建会让第一块直接失败（另一条路径——隧道帧——才必须只查不建）
                     co_return co_await sendStreamingChunk(streamId, streamingResponseFor(streamId), response, chunk);
                 });
+
+        // 中间响应（1xx）的出口：本流上一个不收尾的头块（RFC 9114 §5.3.2）。
+        // 装配时机与流式发送口同一处，false 含义也一致：没写成、这条流已不可用
+        response.setInformationalWriter([this, streamId](const int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields) -> Core::Task<bool>
+                                        { co_return sendInformationalResponse(streamId, statusCode, fields); });
     }
 
     std::shared_ptr<Http3Session::StreamingResponse> Http3Session::findStreamingResponse(const std::int64_t streamId) const noexcept
@@ -1857,6 +1862,42 @@ namespace AsynGyanis::Net
         }
     }
 
+    bool Http3Session::sendInformationalResponse(const std::int64_t streamId, const int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields)
+    {
+        if (m_connection == nullptr)
+        {
+            return false;
+        }
+
+        std::vector<QpackHeaderField> fieldLines;
+        fieldLines.reserve(fields.size() + 1U);
+        fieldLines.push_back(QpackHeaderField{.name = std::string(kStatusHeaderName), .value = std::to_string(statusCode)});
+        for (const HttpResponse::InformationalHeaderField &field: fields)
+        {
+            // 与 h2 同一条：线上头部名必须小写（RFC 9114 §4.2、RFC 9204），归一落在会话层
+            std::string lowerCaseName;
+            lowerCaseName.reserve(field.first.size());
+            for (const char character: field.first)
+            {
+                lowerCaseName.push_back(toLowerAscii(character));
+            }
+            fieldLines.push_back(QpackHeaderField{.name = std::move(lowerCaseName), .value = field.second});
+        }
+
+        // 只交一个头块，不收尾也不带正文（RFC 9114 §5.3.2 的信息性响应）
+        if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, false); !submitted)
+        {
+            LOG_ERROR_FMT("Http3Session: 流 {} 的 {} 中间响应未能排进待发字节。原因：{}", streamId, statusCode, submitted.error().message);
+            return false;
+        }
+        // 只落状态码类，不落延迟样本：中间响应不是这条请求的答复
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countResponseStatus(statusCode);
+        }
+        return true;
+    }
+
     void Http3Session::answerExpectContinueIfRequested(const std::int64_t streamId, const IncomingRequest &incoming)
     {
         if (m_connection == nullptr)
@@ -1878,13 +1919,9 @@ namespace AsynGyanis::Net
             return;
         }
 
-        // 只交一个 :status 100 的头块，不收尾也不带正文（RFC 9114 §5.3.2 的信息性响应）。
-        // 失败不外抛也不改答：100 只是催对端发正文，真正的问题会在随后交最终响应时暴露出来
-        const std::vector<QpackHeaderField> fieldLines{QpackHeaderField{.name = kStatusHeaderName, .value = "100"}};
-        if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, false); !submitted)
-        {
-            LOG_ERROR_FMT("Http3Session: 流 {} 的 100 Continue 未能排进待发字节。原因：{}", streamId, submitted.error().message);
-        }
+        // 与处理器发 1xx 走同一条出口：线上形状不变（一个 :status 100 的头块、不收尾），
+        // 但这条 100 从此也落进 status1xx 计数——那个计数器此前在 h3 上恒为 0
+        static_cast<void>(sendInformationalResponse(streamId, 100, {}));
     }
 
     void Http3Session::answerMalformedRequest(const std::int64_t streamId, const std::string_view reason)

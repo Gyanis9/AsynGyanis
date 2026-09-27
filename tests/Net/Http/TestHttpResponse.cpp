@@ -1,6 +1,9 @@
-// HttpResponse 单元测试：头部写入校验、可重复头部模型、序列化顺序、自动补齐（date/content-type/content-length） 与映射正文（整份与区间）的字节精确性
+// HttpResponse 单元测试：头部写入校验、可重复头部模型、序列化顺序、自动补齐（date/content-type/content-length）、
+// 中间响应（1xx）的报文形状与映射正文（整份与区间）的字节精确性
 #include "Net/Http/HttpResponse.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
+#include "Core/Coroutine/Task.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include "NetTestSupport.h"
@@ -1136,4 +1139,91 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(response.setJsonBody(brokenText));
         EXPECT_EQ(response.status(), 201);
     }
+
+    namespace
+    {
+        /**
+         * @brief 在测试线程上同步驱动一次中间响应写出并取出结果
+         * @details sendInformational() 是惰性协程：不 resume 就不执行函数体，因此「直接 EXPECT_THROW
+         *          包住 sendInformational(...)」什么都测不到。这里按「resume 到终结点 + await_resume
+         *          取结果」两步驱动，抛出的异常会在取结果时重新抛出
+         * @param sendTask sendInformational 返回的任务，所有权随参数转移
+         * @return true 已写出（本文件里由装配的回调决定）
+         */
+        bool driveInformationalSend(Core::Task<bool> sendTask)
+        {
+            sendTask.handle().resume();
+            return sendTask.await_resume();
+        }
+    } // namespace
+
+    /// 中间响应的报文形状：一条独立报文，只有状态行、给定字段与收尾空行
+    TEST(HttpResponseInformational, BuildsMessageTextWithStatusLineAndFieldsOnly)
+    {
+        // 会话自己回的那条 100 也走这一份文本：形状与历史上的字面量逐字一致
+        EXPECT_EQ(HttpResponse::informationalMessage(100, {}), "HTTP/1.1 100 Continue\r\n\r\n");
+
+        const std::string hints = HttpResponse::informationalMessage(103, {{"link", "</style.css>; rel=preload; as=style"}});
+        EXPECT_EQ(hints, "HTTP/1.1 103 Early Hints\r\nlink: </style.css>; rel=preload; as=style\r\n\r\n");
+        // 未收录原因短语的 1xx 仍要出得来（RFC 9110 §3.1.2 允许 reason-phrase 为空）
+        EXPECT_EQ(HttpResponse::informationalMessage(199, {}), "HTTP/1.1 199 \r\n\r\n");
+    }
+
+    /// 没装配写出回调时交回 false：手工构造的响应对象背后没有连接
+    TEST(HttpResponseInformational, ReportsFalseWithoutAWriter)
+    {
+        HttpResponse response;
+        EXPECT_FALSE(response.canSendInformational());
+        EXPECT_FALSE(driveInformationalSend(response.sendInformational(103, {{"link", "</a.css>"}})));
+    }
+
+    /// 写出回调收到的是状态码与字段原样，且本响应的状态与头部一个字都不动
+    TEST(HttpResponseInformational, PassesStatusAndFieldsToWriterAndLeavesResponseUntouched)
+    {
+        HttpResponse response;
+        response.setStatus(200);
+
+        int                                                 capturedStatus = 0;
+        std::vector<HttpResponse::InformationalHeaderField> capturedFields;
+        response.setInformationalWriter(
+                [&capturedStatus, &capturedFields](const int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields) -> Core::Task<bool>
+                {
+                    capturedStatus = statusCode;
+                    capturedFields = fields;
+                    co_return true;
+                });
+        EXPECT_TRUE(response.canSendInformational());
+
+        EXPECT_TRUE(driveInformationalSend(response.sendInformational(103, {{"link", "</a.css>; rel=preload"}})));
+        EXPECT_EQ(capturedStatus, 103);
+        ASSERT_EQ(capturedFields.size(), 1U);
+        EXPECT_EQ(capturedFields[0].first, "link");
+        EXPECT_EQ(capturedFields[0].second, "</a.css>; rel=preload");
+
+        // 中间响应是同一条连接上的另一份报文：本响应既没被它改掉状态，也不该带上它的字段
+        EXPECT_EQ(response.status(), 200);
+        EXPECT_FALSE(response.hasHeader("link"));
+    }
+
+    /// 非 1xx 的状态码当场拒绝：把 200 当中间响应发出去，一条连接上就出现两份最终答复
+    TEST(HttpResponseInformational, RejectsStatusCodesOutsideTheInformationalRange)
+    {
+        HttpResponse response;
+        for (const int badStatus: {0, 99, 200, 404})
+        {
+            EXPECT_THROW(static_cast<void>(driveInformationalSend(response.sendInformational(badStatus))), Base::InvalidArgumentException) << "状态码 " << badStatus;
+        }
+    }
+
+    /// 字段写法会撕裂这条报文时当场拒绝（名字带空格冒号、取值含 CR/LF）
+    TEST(HttpResponseInformational, RejectsFieldsThatWouldBreakTheMessage)
+    {
+        HttpResponse response;
+
+        EXPECT_THROW(static_cast<void>(driveInformationalSend(response.sendInformational(103, {{"bad name", "x"}}))), Base::InvalidArgumentException);
+
+        Core::Task<bool> injectedValue = response.sendInformational(103, {{"link", "x\r\ncontent-length: 99"}});
+        EXPECT_THROW(static_cast<void>(driveInformationalSend(std::move(injectedValue))), Base::InvalidArgumentException);
+    }
+
 } // namespace AsynGyanis::Net

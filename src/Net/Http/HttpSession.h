@@ -678,6 +678,29 @@ namespace AsynGyanis::Net
             // reset() 也不会把它清掉（只清流式模式标记）。装配必然早于任何一次路由
             response.setChunkSender(sendChunkSegment);
 
+            // 中间响应（1xx）的写出通道：一条**独立报文**——状态行 + 给定字段 + 空行，不带正文，
+            // 也不读不写本响应的状态与头部。写路径与流式分段共用 sendResponse，因此同样受写超时约束，
+            // 传输失败折成 false（口径与 ChunkSender 逐字相同）。
+            // 会话自己回 100（Expect: 100-continue）也走这一条：两处各写一份字面量的话，
+            // 「处理器发的 1xx」与「会话发的 100」迟早长出不一样
+            response.setInformationalWriter(
+                    [&sendResponse, &metrics](const int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields) -> Core::Task<bool>
+                    {
+                        // 文本形状由 HttpResponse 负责（一条独立报文：状态行 + 字段 + 空行，
+                        // 不补 Date/Server/content-length），这里只管写
+                        if (!co_await sendResponse(HttpResponse::informationalMessage(statusCode, fields), std::string_view{}))
+                        {
+                            co_return false;
+                        }
+                        // 中间响应只落状态码类，不落延迟样本：它不是「这条请求的答复」，
+                        // 拿它的时间当样本会把直方图写脏
+                        if (metrics != nullptr)
+                        {
+                            metrics->countResponseStatus(statusCode);
+                        }
+                        co_return true;
+                    });
+
             // 把异常的指针取成可读文本：流式响应中途失败时头部已经上线，改状态码已不可能，
             // 日志是唯一能交代原因的地方
             const auto describeException = [](const std::exception_ptr &exceptionPointer) -> std::string
@@ -1072,8 +1095,9 @@ namespace AsynGyanis::Net
                     // 否则对端要白等到自己的超时（curl 是 1 秒）才肯发正文
                     if (parser.takeContinueRequest())
                     {
-                        static constexpr std::string_view kContinueResponse = "HTTP/1.1 100 Continue\r\n\r\n";
-                        if (!co_await sendResponse(kContinueResponse, {}))
+                        // 走与处理器发 1xx 同一条通道：字节形状与原先那条字面量逐字相同
+                        // （"HTTP/1.1 100 Continue\r\n\r\n"），但从此 100 也落进 status1xx 计数
+                        if (!co_await response.sendInformational(100))
                         {
                             co_return;
                         }

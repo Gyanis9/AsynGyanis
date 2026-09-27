@@ -434,6 +434,63 @@ namespace AsynGyanis::Net
         m_chunkSender = std::move(chunkSender);
     }
 
+    void HttpResponse::setInformationalWriter(InformationalWriter informationalWriter)
+    {
+        // 与 setChunkSender() 同一条：装配即接管，回调绑的是连接而不是某一条报文
+        m_informationalWriter = std::move(informationalWriter);
+    }
+
+    bool HttpResponse::canSendInformational() const noexcept
+    {
+        return static_cast<bool>(m_informationalWriter);
+    }
+
+    Core::Task<bool> HttpResponse::sendInformational(const int statusCode, std::vector<InformationalHeaderField> fields)
+    {
+        // 区间判定放在最前面：把 200 当中间响应发出去，等于一条报文里出现两个状态行，
+        // 对端会把它当最终响应收掉，本响应随后再写一次就成了对端无法解析的流
+        if (statusCode < 100 || statusCode > 199)
+        {
+            throw Base::InvalidArgumentException("HttpResponse: 中间响应的状态码必须落在 1xx，收到的是 " + std::to_string(statusCode));
+        }
+        for (const InformationalHeaderField &field: fields)
+        {
+            // 与最终响应同一套字段规则：名字必须是 token、取值不得含 CR/LF，否则这条报文自己撕裂
+            if (!isValidHeaderFieldName(field.first) || !containsOnlyFieldValueCharacters(field.second))
+            {
+                throw Base::InvalidArgumentException("HttpResponse: 中间响应的字段写法会破坏头部结构：「" + field.first + "」");
+            }
+        }
+
+        if (!canSendInformational())
+        {
+            // 没有装配写出回调 = 这个响应对象背后没有连接（手工构造、或该通道没接这条能力）。
+            // 交回 false 而不是抛：处理器不该因为「这条连接还没法写」收到一个异常
+            co_return false;
+        }
+        co_return co_await m_informationalWriter(statusCode, fields);
+    }
+
+    std::string HttpResponse::informationalMessage(const int statusCode, const std::vector<InformationalHeaderField> &fields)
+    {
+        std::string message;
+        message.reserve(64U + fields.size() * 48U);
+        message.append("HTTP/1.1 ");
+        message.append(std::to_string(statusCode));
+        message.append(" ");
+        message.append(statusMessage(statusCode));
+        message.append("\r\n");
+        for (const InformationalHeaderField &field: fields)
+        {
+            message.append(field.first);
+            message.append(": ");
+            message.append(field.second);
+            message.append("\r\n");
+        }
+        message.append("\r\n");
+        return message;
+    }
+
     bool HttpResponse::isChunkedResponse() const noexcept
     {
         return m_isChunked;

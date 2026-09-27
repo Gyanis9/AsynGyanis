@@ -567,6 +567,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<bool> sendStreamingSegment(std::uint32_t streamId, HttpResponse &response, std::string_view segment);
 
         /**
+         * @brief 在某条流上发一条中间响应（1xx）：一个不带 END_STREAM 的 HEADERS 块（RFC 9113 §8.1）
+         * @details 会话自己回 100-continue 与处理函数发 102/103 共用这一条出口，两处不会长出不一样。
+         *          字段名在本层折成小写（§8.1.2 要求线上全小写，而调用方习惯的是大小写随意的 HTTP/1.1）。
+         *          成功排入时顺带落一条状态码类计数——不落延迟样本，中间响应不是这条请求的答复。
+         * @param streamId 目标流号
+         * @param statusCode 中间响应状态码（调用方已保证落在 1xx）
+         * @param fields 这条中间响应携带的字段，可为空
+         * @return true 已排入待发字节；false 表示这条流已不可写或头部不合规（原因已记日志）
+         */
+        bool sendInformationalResponse(std::uint32_t streamId, int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields);
+
+        /**
          * @brief 流式响应收尾：给这条流补上 END_STREAM
          *
          * @details 头部已随首段上线时补一个零长 DATA 帧带 END_STREAM（RFC 9113 §6.1 允许零长），

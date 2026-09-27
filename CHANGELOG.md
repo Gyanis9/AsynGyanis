@@ -17,6 +17,21 @@
 
 ### 新增
 
+- **`HttpResponse::sendInformational()`：处理函数能在最终响应之前先写一条 1xx**。此前库内唯一的中间响应
+  是会话自己回的那条 `100 Continue`，而且是一条硬编码字面量（`"HTTP/1.1 100 Continue\r\n\r\n"`），
+  谁想发 `103 Early Hints`（RFC 8297：最终响应还在生成时就把 `Link: rel=preload` 交出去，浏览器据此
+  提前取 CSS/字体）或 `102 Processing` 都没有出口——把状态码设成 103 只会得到一份「以 103 为最终答复」
+  的报文，对端等不到后面的答复。现在三条通道同一个入口：h1 是一条独立的状态行报文，h2/h3 是
+  **不带 END_STREAM 的 HEADERS 块**（RFC 9113 §8.1、RFC 9114 §5.3.2），处理函数换个协议不必改写法。
+  装配方式与流式发送口同形（`setInformationalWriter()` 由会话在路由之前装，`HttpResponse` 不认识 socket），
+  没装配时 `sendInformational()` 交回 false 而不是抛；状态码不在 1xx、字段写法会撕裂这条报文时当场抛
+  （那是处理器自己的 bug，不该悄悄少发一条中间响应）。中间响应**不碰**本响应的状态码与头部：
+  它的字段不会出现在最终答复里，最终答复也照常由本对象给出。
+  顺带两件收口：会话自己回的那条 100 改走同一个出口（h1 的线上字节逐字不变，用例钉住），
+  而 `status1xxCount` 从此真的有数——此前它在三条通道上都恒为 0，是一份假指标。中间响应只落状态码类
+  计数，不落延迟样本：它不是「这条请求的答复」，拿它的时间进直方图会把图写脏。
+  端到端证据是三份同名用例（h1/h2/h3 各一份），断言「先到 103、再到 200、Link 只在第一段、正文照旧完整」。
+
 - **`staticDirectoryListing(bool)`：静态目录的 HTML 列表（默认关闭）**，`HttpServer`/`HttpsServer`/
   `QuicServer` 三条通道同一个开关、同一份实现（本体在 `StaticFileService`，列表生成挂在静态请求那
   一条漏斗上）。默认关闭是刻意的：列表会把目录结构、文件名与大小交给任何一句 `GET /assets/` 的探测者。
@@ -2673,3 +2688,5 @@
 [Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/Gyanis9/AsynGyanis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Gyanis9/AsynGyanis/releases/tag/v1.0.0
+true
+PYEOF

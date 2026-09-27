@@ -557,6 +557,18 @@ namespace AsynGyanis::Net
         void attachChunkSender(std::int64_t streamId, HttpResponse &response);
 
         /**
+         * @brief 在某条流上发一条中间响应（1xx）：一个不收尾的头块（RFC 9114 §5.3.2）
+         * @details 会话回 100-continue 与处理函数发 102/103 共用这一条出口，两处不会长出不一样。
+         *          头部名在本层折成小写（§4.2 要求线上小写），成功排入时落一条状态码类计数、
+         *          不落延迟样本。
+         * @param streamId 目标流号
+         * @param statusCode 中间响应状态码（调用方已保证落在 1xx）
+         * @param fields 这条中间响应携带的字段，可为空
+         * @return true 已排进待发字节；false 表示连接缺席或这条流已不可写（原因已记日志）
+         */
+        bool sendInformationalResponse(std::int64_t streamId, int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields);
+
+        /**
          * @brief 取（必要时创建）某条流的流式响应状态
          * @param streamId 流号
          * @return std::shared_ptr<StreamingResponse> 该流的状态（活在 m_streamingResponses 里；

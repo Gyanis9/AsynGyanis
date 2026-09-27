@@ -3369,4 +3369,63 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(peer.response().headers.contains("etag")) << "静态响应少了 ETag：条件请求在 h3 上没有键可用";
     }
 
+
+    /**
+     * @brief 处理函数在最终响应之前先写一条 103 Early Hints（h3 侧）
+     * @details 与 h1 侧 HttpSession.SendsEarlyHintsBeforeTheFinalResponse、h2 侧
+     *          Http2CleartextSession.SendsEarlyHintsBeforeTheFinalResponse 是同一条契约的三份证据：
+     *          信息性响应是一段不收尾的头块，最终响应照旧跟在后面，Link 只出现在前一段里。
+     *          三条通道若在这里给出不同答案，表现就是换个协议业务少一个功能
+     */
+    TEST(Http3Session, SendsEarlyHintsBeforeTheFinalResponse)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/page",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       // GCC 13 在「co_await 的参数直接用花括号初始化一个 vector」上会内部编译错误
+                       // （build_special_member_call），故先落成具名对象再交出：语义相同
+                       const std::vector<HttpResponse::InformationalHeaderField> hintFields{{"link", "</style.css>; rel=preload; as=style"}};
+                       const bool                                                isHintsSent = co_await response.sendInformational(103, hintFields);
+                       if (!isHintsSent)
+                       {
+                           co_return;
+                       }
+                       response.setBody("page-body");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/page", "example.com");
+        ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        const Http3ClientPeer::DecodedResponse response = peer.response();
+        ASSERT_EQ(response.statuses.size(), 2U) << "应当是一段 103 加一段最终响应：" << response.statuses.size();
+        EXPECT_EQ(response.statuses[0], 103) << "先到的应当是 103";
+        EXPECT_EQ(response.statuses[1], 200) << "最终响应要照旧给出";
+        ASSERT_GE(response.fieldSections.size(), 2U);
+        EXPECT_TRUE(std::ranges::any_of(response.fieldSections[0], [](const std::pair<std::string, std::string> &field) { return field.first == "link"; }))
+                << "Link 没随 103 那段上线";
+        EXPECT_TRUE(std::ranges::none_of(response.fieldSections[1], [](const std::pair<std::string, std::string> &field) { return field.first == "link"; }))
+                << "Link 跑到了最终响应里：中间响应的字段不该出现在答复中";
+        EXPECT_EQ(response.body, "page-body");
+        EXPECT_TRUE(response.isComplete) << "这条流没有收尾";
+    }
+
 } // namespace AsynGyanis::Net

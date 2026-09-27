@@ -374,6 +374,65 @@ namespace AsynGyanis::Net
          */
         void setChunkSender(ChunkSender chunkSender);
 
+        /// 一条中间响应携带的字段：名与值都按调用方给的原文上线（不做大小写归一）
+        using InformationalHeaderField = std::pair<std::string, std::string>;
+
+        /**
+         * @brief 中间响应（1xx）的写出回调：把一条信息性报文写到本响应所属的连接
+         *
+         * @details 与 ChunkSender 同一装配时机（会话在路由之前装配，HttpResponse 自己不认识 socket）。
+         *          回调只写「状态行 + 给定字段 + 空行」，不写正文，也不读不写本响应的状态与头部——
+         *          中间响应是一条**独立报文**，最终响应照常由本对象给出。
+         *          false = 没写成、连接不可再用（失败口径与 ChunkSender 逐字相同）。
+         */
+        using InformationalWriter = std::function<Core::Task<bool>(int statusCode, const std::vector<InformationalHeaderField> &fields)>;
+
+        /**
+         * @brief 装配中间响应写出回调（由会话在路由之前调用）
+         * @param informationalWriter 写出回调；传空 std::function 表示清除装配
+         * @note 回调绑定的是连接而不是某一条报文，因此 reset() 不清理它（与 setChunkSender() 同口径）
+         */
+        void setInformationalWriter(InformationalWriter informationalWriter);
+
+        /**
+         * @brief 本响应能不能发中间响应
+         * @return true 会话已装配写出回调；false 表示这个响应对象没有可写的连接（手工构造，或该通道未接）
+         */
+        [[nodiscard]] bool canSendInformational() const noexcept;
+
+        /**
+         * @brief 先写一条中间响应（1xx），本响应照常等着被填满最终答复
+         *
+         * @details 用途两条：`103 Early Hints`（RFC 8297：最终响应还在生成时先把 `Link: rel=preload`
+         *          交出去，浏览器可以据此提前取 CSS 与字体）与 `102 Processing`（长任务先表态）。
+         *          三条通道同一个语义出处：h1 是一条独立的状态行报文，h2/h3 是**不带 END_STREAM 的
+         *          HEADERS 块**（RFC 9113 §8.1、RFC 9114 §5.3.2），因此处理函数换协议不必改写法。
+         *
+         * @param statusCode 必须落在 1xx（100~199）。100 由会话在收到 `Expect: 100-continue` 时自动回，
+         *        处理函数要的一般是 102 或 103
+         * @param fields 这条中间响应携带的字段（103 至少要有一条 Link），原样上线
+         * @return Core::Task<bool> true 已写出；false 表示连接已不可用，或本对象没装配写出回调
+         * @throws Base::InvalidArgumentException statusCode 不在 1xx 区间，或字段写法会破坏头部结构
+         *         （名字带空格冒号、取值含 CR/LF）——那等于让这条报文自己撕裂
+         * @note 不影响本响应的状态码与头部：中间响应是一条独立消息，本对象照常等待最终答复
+         * @see setInformationalWriter(), canSendInformational()
+         */
+        [[nodiscard]] Core::Task<bool> sendInformational(int statusCode, std::vector<InformationalHeaderField> fields = {});
+
+        /**
+         * @brief 组一条 HTTP/1.1 的中间响应（1xx）报文文本：状态行 + 给定字段 + 空行
+         *
+         * @details 与最终响应的序列化分开的理由有两条：一条中间响应**没有正文**，也不该被写成一份
+         *          可缓存的答复——所以不补 Date、不补 Server、不写 content-length（RFC 9112 §6.1 里
+         *          那份日期是给最终响应的）；同时它也不读不写本对象的头部，是同一条连接上的另一份报文。
+         *          h2/h3 不用这个函数：那两条通道上中间响应是一个不带 END_STREAM 的 HEADERS 块。
+         *
+         * @param statusCode 必须落在 1xx（调用方由 `sendInformational()` 保证）
+         * @param fields 随这条报文上线的字段（103 一般是若干条 Link），按原样写出
+         * @return std::string 完整报文文本，以空行收尾
+         */
+        [[nodiscard]] static std::string informationalMessage(int statusCode, const std::vector<InformationalHeaderField> &fields);
+
         /**
          * @brief 进入流式响应模式：正文此后只能由 writeChunk() 逐段写出
          *
@@ -648,14 +707,17 @@ namespace AsynGyanis::Net
          *          映射缓存淘汰时不能把还在发送的响应脚下抽走），响应只保证「自己活着时页有效」
          */
         std::shared_ptr<const Platform::MemoryMappedFile> m_mappedBody;
-        std::size_t                                       m_mappedBodyOffset{0};                ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）
-        std::size_t                                       m_mappedBodyLength{0};                ///< 映射正文的长度，单位为字节（决定 bodyView 与 content-length）
-        bool                                              m_isChunked{false};                   ///< 是否处于流式响应模式：正文由 writeChunk 逐段写出，头部按 chunked 序列化
-        bool                                              m_hasSentChunkedHead{false};          ///< 流式头部是否已随首段正文上线；上线之后状态码与头部都改不了
-        ChunkSender                                       m_chunkSender;                        ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
-        std::string                                       m_chunkFrameBuffer;                   ///< writeChunk 的帧缓冲，跨段复用；只 clear 不缩容量，reset 也不清空
-        WebSocketHandler                                  m_webSocketHandler;                   ///< 升级成功后的业务处理器；空表示本次没有登记升级
-        bool                                              m_isWebSocketUpgradeRequested{false}; ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
-        mutable std::string                               m_autoDateValue;                      ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
+        std::size_t                                       m_mappedBodyOffset{0};       ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）
+        std::size_t                                       m_mappedBodyLength{0};       ///< 映射正文的长度，单位为字节（决定 bodyView 与 content-length）
+        bool                                              m_isChunked{false};          ///< 是否处于流式响应模式：正文由 writeChunk 逐段写出，头部按 chunked 序列化
+        bool                                              m_hasSentChunkedHead{false}; ///< 流式头部是否已随首段正文上线；上线之后状态码与头部都改不了
+        ChunkSender                                       m_chunkSender;               ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
+
+        /// 中间响应（1xx）写出回调，由会话装配；空表示这条连接没有可写的通道
+        InformationalWriter m_informationalWriter;
+        std::string         m_chunkFrameBuffer;                   ///< writeChunk 的帧缓冲，跨段复用；只 clear 不缩容量，reset 也不清空
+        WebSocketHandler    m_webSocketHandler;                   ///< 升级成功后的业务处理器；空表示本次没有登记升级
+        bool                m_isWebSocketUpgradeRequested{false}; ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
+        mutable std::string m_autoDateValue;                      ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
     };
 } // namespace AsynGyanis::Net

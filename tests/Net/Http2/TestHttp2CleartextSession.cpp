@@ -2427,4 +2427,78 @@ namespace AsynGyanis::Net
 
         EXPECT_FALSE(fixture.startThrew());
     }
+
+    /**
+     * @brief 处理函数在最终响应之前先写一条 103 Early Hints（h2 侧）
+     * @details 与 h1/h3 侧同名用例同一条契约：信息性响应是一个不带 END_STREAM 的 HEADERS，
+     *          最终响应照旧在后面。三段判据各自成立才算「换个协议不少功能」
+     */
+    TEST(Http2CleartextSession, SendsEarlyHintsBeforeTheFinalResponse)
+    {
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/page",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   // GCC 13 在「co_await 的参数直接用花括号初始化一个 vector」上会内部编译错误
+                                   // （build_special_member_call），故先落成具名对象再交出：语义相同
+                                   const std::vector<HttpResponse::InformationalHeaderField> hintFields{{"link", "</style.css>; rel=preload; as=style"}};
+                                   const bool                                                isHintsSent = co_await response.sendInformational(103, hintFields);
+                                   if (!isHintsSent)
+                                   {
+                                       co_return;
+                                   }
+                                   response.setBody("page-body");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/page"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &received)
+                {
+                    std::size_t headerBlockCount = 0;
+                    for (const Http2Frame &frame: received)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            ++headerBlockCount;
+                        }
+                    }
+                    return headerBlockCount >= 2;
+                },
+                kWaitTimeout))
+                << "没有等到 103 与最终响应这两段头块";
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status", 0), "103") << "先到的应当是 103，而不是最终状态码";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status", 1), "200") << "最终响应要照旧给出";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, "link", 0), "</style.css>; rel=preload; as=style") << "Link 没随 103 上线";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, "link", 1), "") << "Link 跑到了最终响应里";
+
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+            {
+                EXPECT_EQ(frame.header.flags & kHttp2FlagEndStream, 0) << "第一段头块就收尾了这条流，最终响应没地方放";
+                break;
+            }
+        }
+
+        EXPECT_EQ(responseDataPayload(frames, 1U), "page-body");
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
 } // namespace AsynGyanis::Net

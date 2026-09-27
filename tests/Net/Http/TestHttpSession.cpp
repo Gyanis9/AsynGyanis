@@ -695,6 +695,53 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
     }
 
+    /**
+     * @brief 钉住：处理函数可以在最终响应之前先写一条 103 Early Hints（RFC 8297）
+     * @details 中间响应是同一条连接上的**另一份报文**：它不带正文，也不该被写成一份可缓存的答复
+     *          （不补 Date、不补 content-length），最终响应照常跟在后面。这条用例同时钉住
+     *          「两条报文在同一连接上按先后顺序上线」——顺序反了对端会把 103 当最终响应收掉
+     */
+    TEST(HttpSession, SendsEarlyHintsBeforeTheFinalResponse)
+    {
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid());
+        fixture.router().get("/page",
+                             [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                             {
+                                 // GCC 13 在「co_await 的参数直接用花括号初始化一个 vector」上会内部编译错误
+                                 // （build_special_member_call），故先落成具名对象再交出：语义相同
+                                 const std::vector<HttpResponse::InformationalHeaderField> hintFields{{"link", "</style.css>; rel=preload; as=style"}};
+                                 const bool                                                isHintsSent = co_await response.sendInformational(103, hintFields);
+                                 if (!isHintsSent)
+                                 {
+                                     co_return;
+                                 }
+                                 response.setBody("page-body");
+                                 co_return;
+                             });
+
+        ASSERT_TRUE(fixture.writeRequest(makeRequestText("GET /page HTTP/1.1", {"host: test"})));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 2, kWaitTimeout)) << "103 与最终响应没都上线：已收到「" << responseText << "」";
+
+        const std::size_t hintsPosition = responseText.find("HTTP/1.1 103 Early Hints\r\n");
+        const std::size_t finalPosition = responseText.find("HTTP/1.1 200");
+        ASSERT_NE(hintsPosition, std::string::npos) << responseText;
+        ASSERT_NE(finalPosition, std::string::npos) << responseText;
+        EXPECT_LT(hintsPosition, finalPosition) << "中间响应必须早于最终响应，否则对端把 103 当成答复收掉";
+
+        const std::string hintText = responseText.substr(hintsPosition, finalPosition - hintsPosition);
+        EXPECT_NE(hintText.find("link: </style.css>; rel=preload; as=style"), std::string::npos) << hintText;
+        EXPECT_EQ(hintText.find("content-length"), std::string::npos) << "中间响应带长度就是把没发的正文算进去了：" << hintText;
+        EXPECT_EQ(hintText.find("date:"), std::string::npos) << "1xx 不该被写成一份可缓存的答复：" << hintText;
+        EXPECT_NE(responseText.find("page-body", finalPosition), std::string::npos) << "最终响应缺正文";
+        EXPECT_EQ(responseText.substr(finalPosition).find("103"), std::string::npos) << "最终响应的状态码被中间响应污染";
+
+        EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
+    }
+
     TEST(HttpSession, AnswersTwoRoundsOnOneKeptAliveConnection)
     {
         HttpSessionFixture fixture;

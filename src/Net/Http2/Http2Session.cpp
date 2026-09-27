@@ -484,12 +484,9 @@ namespace AsynGyanis::Net
             // 先回一个 100 的 HEADERS（不带 END_STREAM），免得对端等到自己的超时才发正文
             if (isContinueRequested)
             {
-                std::string                   continueErrorText;
-                const Http2ResponseSendStatus continueStatus = m_connection.sendResponseHeaders(http2Request.streamId, 100U, {}, false, &continueErrorText);
-                if (continueStatus != Http2ResponseSendStatus::Sent)
-                {
-                    LOG_ERROR_FMT("Http2Session: 流 {} 的 100 Continue 未能排入待发字节。原因：{}", http2Request.streamId, continueErrorText);
-                }
+                // 与处理器发 1xx 走同一条出口：线上形状不变（一个 :status 100 的 HEADERS，不带 END_STREAM），
+                // 但这条 100 从此也落进 status1xx 计数——那个计数器此前恒为 0，等于一个假指标
+                static_cast<void>(sendInformationalResponse(http2Request.streamId, 100, {}));
             }
         }
         m_connection.recycleRequests(std::move(requests));
@@ -1026,6 +1023,11 @@ namespace AsynGyanis::Net
         // 之上的工具因此零改动就能在 h2 上工作
         response.setChunkSender([this, &response, streamId](const std::string_view segment) -> Core::Task<bool>
                                 { co_return co_await sendStreamingSegment(streamId, response, segment); });
+
+        // 中间响应（1xx）的出口：本流上一个不带 END_STREAM 的 HEADERS 块（RFC 9113 §8.1）。
+        // 与 h1 侧同一装配时机、同一 false 含义（没写成、这条流已不可用），处理函数因此不必知道底层协议
+        response.setInformationalWriter([this, streamId](const int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields) -> Core::Task<bool>
+                                        { co_return sendInformationalResponse(streamId, statusCode, fields); });
 
         // 流式正文：来源是本流自己的正文缓冲，业务经 request.bodyStream() 边收边读。泵每推进一步
         // 就驱动一次连接（与主循环同一条路径），业务不拉就不驱动——背压的落点，也是「处理器拉一次、
@@ -1720,6 +1722,40 @@ namespace AsynGyanis::Net
         // 剥离逻辑已上收到 Net/Http/HttpChunkFrame：h2 与 h3 面对的是同一份 h1 分块帧，
         // 各自实现一遍只会让两边的边界判定慢慢走偏。这里保留一个转发的成员函数，叫法不变
         return Net::chunkFramePayload(chunkFrame);
+    }
+
+    bool Http2Session::sendInformationalResponse(const std::uint32_t streamId, const int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields)
+    {
+        std::vector<HpackHeaderField> headerFields;
+        headerFields.reserve(fields.size());
+        for (const HttpResponse::InformationalHeaderField &field: fields)
+        {
+            // h2 的头部名必须全小写（RFC 9113 §8.1.2）：大写名会被对端判成协议错误并 reset 这条流。
+            // 调用方写的是 HTTP/1.1 那套大小写随意的习惯，归一落在这一层，而不是让每个处理器记住
+            // 每种协议的规矩
+            std::string lowerCaseName;
+            lowerCaseName.reserve(field.first.size());
+            for (const char character: field.first)
+            {
+                lowerCaseName.push_back(toLowerAscii(character));
+            }
+            headerFields.push_back(HpackHeaderField{std::move(lowerCaseName), field.second});
+        }
+
+        std::string errorText;
+        // endStream 恒为 false：中间响应不收尾这条流，最终响应还在后面
+        const Http2ResponseSendStatus sendStatus = m_connection.sendResponseHeaders(streamId, static_cast<std::uint32_t>(statusCode), headerFields, false, &errorText);
+        if (sendStatus != Http2ResponseSendStatus::Sent)
+        {
+            LOG_ERROR_FMT("Http2Session: 流 {} 的 {} 中间响应未能排入待发字节。原因：{}", streamId, statusCode, errorText);
+            return false;
+        }
+        // 只落状态码类，不落延迟样本：中间响应不是「这条请求的答复」
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countResponseStatus(statusCode);
+        }
+        return true;
     }
 
     Core::Task<bool> Http2Session::sendStreamingSegment(const std::uint32_t streamId, HttpResponse &response, const std::string_view segment)
