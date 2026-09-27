@@ -118,6 +118,7 @@ namespace AsynGyanis::Net
             stats.admissionRejectedConnectionCount = 15;
             stats.blockingTaskQueueDepth           = 16;
             stats.blockingTaskRejectedCount        = 17;
+            stats.residentMemoryBytes              = 18;
             return stats;
         }
     } // namespace
@@ -145,6 +146,8 @@ namespace AsynGyanis::Net
         // 队列深度是瞬时量（gauge），被拒条数是累计量（counter）——两族语义不同，报错了采集侧会算增长率
         EXPECT_NE(text.find("# TYPE asyn_http_blocking_task_queue_depth gauge\nasyn_http_blocking_task_queue_depth 16\n"), std::string::npos);
         EXPECT_NE(text.find("# TYPE asyn_http_blocking_task_rejected_total counter\nasyn_http_blocking_task_rejected_total 17\n"), std::string::npos);
+        // 常驻内存是进程级的瞬时量：名字要跟着 process_* 的既成约定，类型必须是 gauge
+        EXPECT_NE(text.find("# TYPE asyn_http_process_resident_memory_bytes gauge\nasyn_http_process_resident_memory_bytes 18\n"), std::string::npos);
 
         // 活跃连接数是瞬时量，必须是 gauge——报成 counter 采集侧会去算增长率
         EXPECT_NE(text.find("# TYPE asyn_http_active_connections gauge\nasyn_http_active_connections 2\n"), std::string::npos);
@@ -361,6 +364,8 @@ namespace AsynGyanis::Net
         EXPECT_GE(snapshot.blockingTaskQueueDepth, 1U) << "队列里压着任务，快照却报零：这条读数没有接线";
         EXPECT_EQ(snapshot.blockingTaskQueueDepth, static_cast<std::uint64_t>(executor.pendingTaskCount()));
         EXPECT_EQ(snapshot.blockingTaskRejectedCount, static_cast<std::uint64_t>(executor.saturatedRejectionCount()));
+        // 常驻内存走的是同一条并入漏斗：报零就意味着这条通道没接线（真进程不可能一字节都不占）
+        EXPECT_GT(snapshot.residentMemoryBytes, 0ULL) << "快照没把进程常驻量接进来";
 
         {
             const std::lock_guard<std::mutex> lock(gateMutex);

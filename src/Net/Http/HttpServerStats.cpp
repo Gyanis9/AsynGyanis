@@ -1,6 +1,7 @@
 #include "Net/Http/HttpServerStats.h"
 
 #include "Core/Coroutine/AsyncExecutor.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include <cstddef>
 
@@ -13,6 +14,8 @@ namespace AsynGyanis::Net
         // 「哪条通道忘了接」那种分叉
         stats.blockingTaskQueueDepth    = static_cast<std::uint64_t>(Core::AsyncExecutor::shared().pendingTaskCount());
         stats.blockingTaskRejectedCount = static_cast<std::uint64_t>(Core::AsyncExecutor::shared().saturatedRejectionCount());
+        // 常驻内存是同一类「进程级、不住在采集端里」的读数：三条通道共用一份，才有「抓哪台都一样」
+        stats.residentMemoryBytes = Platform::ProcessInfo::residentMemoryBytes();
     }
 
     HttpServerStats HttpMetricsCollector::snapshot() const noexcept

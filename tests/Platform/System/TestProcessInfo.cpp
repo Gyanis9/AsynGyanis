@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -154,5 +155,44 @@ namespace AsynGyanis::Platform
 #else
         EXPECT_TRUE(findVariable(matches, "ASYN_ENUM_DEMO_MixedCase").has_value()) << "POSIX 上名字应逐字保留大小写";
 #endif
+    }
+    /**
+     * @brief 常驻内存读数要落在「一个真活着的进程」的量级里
+     * @details 下界挡的是「忘了乘页尺寸」：测试进程按页计的话读数会掉到千字节级；
+     *          上界挡的是反向的单位错（乘多了会大到不可信）。两端都不钉具体值——
+     *          具体占多少内存随构建配置（ASan 一开就翻几倍）变化，钉死它等于把噪声写进断言
+     */
+    TEST(ProcessInfo, ResidentMemoryBytesIsPlausibleForALiveProcess)
+    {
+        const std::uint64_t residentBytes = ProcessInfo::residentMemoryBytes();
+
+        EXPECT_GT(residentBytes, 1ULL << 20) << "本进程不可能只占不到 1 MiB：读到的是页数或零？";
+        EXPECT_LT(residentBytes, 512ULL << 30) << "超出可信上界：单位换算多半乘多了";
+    }
+
+    /**
+     * @brief 钉住：抓住一大块已写过的内存时，常驻量不会因此变小
+     * @note 刻意不断言「一定涨了多少」：分配器可能把此前已常驻的页面复用掉，那种断言会随
+     *       用例执行顺序翻脸。这里钉的是方向——读数必须跟着本进程占住的东西走，而不是恒为一个常数
+     */
+    TEST(ProcessInfo, ResidentMemoryBytesDoesNotDropWhileMemoryIsHeld)
+    {
+        const std::uint64_t beforeBytes = ProcessInfo::residentMemoryBytes();
+
+        constexpr std::size_t kHeldPageCount = 16ULL << 10; // 64 MiB 的 4 KiB 页
+        std::vector<std::uint64_t> held(kHeldPageCount, 0);
+        std::uint64_t                touchedSlots = 0;
+        for (auto &slot: held)
+        {
+            slot = 1; // 逐页写过才算进常驻：只分配不触碰，内核可以一直不给页面
+            touchedSlots += slot;
+        }
+        EXPECT_EQ(touchedSlots, kHeldPageCount) << "写入被优化掉了，这块内存其实没被触碰";
+
+        const std::uint64_t duringHoldBytes = ProcessInfo::residentMemoryBytes();
+        EXPECT_GE(duringHoldBytes, beforeBytes) << "抓着一大块已写过的内存，常驻量反而变小了";
+
+        held.clear();
+        held.shrink_to_fit();
     }
 } // namespace AsynGyanis::Platform

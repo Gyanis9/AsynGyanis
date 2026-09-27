@@ -1,13 +1,18 @@
 #include "Platform/System/ProcessInfo.h"
+#include "Platform/IO/FileContents.h"
 #include "Platform/Platform.h"
 #include "Platform/System/TextEncoding.h"
 
+#include <charconv>
 #include <cstdlib>
 #include <string_view>
 #include <vector>
 
 // 非 Windows 的平台都从 unistd.h 取 getpid/readlink（不止 Linux 用得到这两个）
-#if !ASYN_PLATFORM_WIN32
+#if ASYN_PLATFORM_WIN32
+// PROCESS_MEMORY_COUNTERS 与 K32GetProcessMemoryInfo 的声明都在这里（库不用另链：K32* 在 kernel32）
+#include <psapi.h>
+#else
 #include <unistd.h>
 // environ 在 glibc 与 BSD 上都由 unistd.h 给出声明，这里再声明一次是为了不依赖各家的特性宏组合：
 // 少了它，整表枚举会在没开 _GNU_SOURCE 的构建里编不过
@@ -130,6 +135,57 @@ namespace AsynGyanis::Platform
 #else
         // getpid 在 POSIX 上不失败（永远返回有效进程号）
         return static_cast<long>(::getpid());
+#endif
+    }
+
+    std::uint64_t ProcessInfo::residentMemoryBytes() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        // K32GetProcessMemoryInfo 自 Vista 起就由 kernel32 导出，因此不必再链 psapi.lib：多认领一个
+        // 系统库，包消费方（Conan 与 vcpkg 两条路线）都要跟着补一份依赖声明
+        PROCESS_MEMORY_COUNTERS counters{};
+        counters.cb = static_cast<DWORD>(sizeof(counters));
+        if (::K32GetProcessMemoryInfo(::GetCurrentProcess(), &counters, counters.cb) == 0)
+        {
+            return 0;
+        }
+        return static_cast<std::uint64_t>(counters.WorkingSetSize);
+#else
+        // /proc/self/statm 的一行是七个**页计数**（大小 常驻 共享 文本 库 数据 脏页），第二列才是要的那一列。
+        // 单位是页，所以还要乘页尺寸；procfs 上这类文件报大小为 0，故按固定上界读一段而不是按大小读
+        constexpr std::size_t kStatmProbeLength = 128;
+        const std::expected<std::string, std::error_code> contents = readFileContents("/proc/self/statm", 0, kStatmProbeLength);
+        if (!contents.has_value())
+        {
+            return 0;
+        }
+
+        const std::string_view line(*contents);
+        std::size_t   cursor        = 0;
+        std::uint64_t virtualPages  = 0;
+        std::uint64_t residentPages = 0;
+        for (std::uint64_t *const column: {&virtualPages, &residentPages})
+        {
+            // from_chars 不跳前导空白，因此每列取完都要自己把分隔空格越过去；
+            // 前两列任何一处解析不动，这份读数就不可信，宁可按「不知道」交回 0
+            const std::from_chars_result parsed = std::from_chars(line.begin() + cursor, line.end(), *column);
+            if (parsed.ec != std::errc{})
+            {
+                return 0;
+            }
+            cursor = static_cast<std::size_t>(parsed.ptr - line.begin());
+            while (cursor < line.size() && line[cursor] == ' ')
+            {
+                ++cursor;
+            }
+        }
+
+        const long pageSize = ::sysconf(_SC_PAGE_SIZE);
+        if (pageSize <= 0)
+        {
+            return 0;
+        }
+        return residentPages * static_cast<std::uint64_t>(pageSize);
 #endif
     }
 } // namespace AsynGyanis::Platform

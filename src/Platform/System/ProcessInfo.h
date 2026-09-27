@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -60,5 +61,16 @@ namespace AsynGyanis::Platform
          * @return long 进程号；平台调用失败时返回 0（调用方按「不知道」处理，不要当成合法进程号）
          */
         static long currentProcessId() noexcept;
+
+        /**
+         * @brief 取当前进程此刻占住的常驻内存字节数（RSS）
+         * @details 这是「运行期内存采样」的最小读数：泄漏与缓存无界增长都先体现在它上面，而进程内没有
+         *          别的通道能把它交出去（分配器统计要等 mimalloc 那一档才存在，且各家口径不同）。
+         *          Windows 取工作集，POSIX 取 /proc/self/statm 的常驻页乘页尺寸。
+         * @return std::uint64_t 常驻字节数；平台读不出时返回 0（按「不知道」处理，与 currentProcessId 同口径）
+         * @note 分配器把空闲页面留在自己的池里时，释放内存不一定让这一列掉下来（glibc 就是如此），
+         *       因此它读的是**趋势**而不是「当前活跃分配了多少字节」
+         */
+        static std::uint64_t residentMemoryBytes() noexcept;
     };
 } // namespace AsynGyanis::Platform

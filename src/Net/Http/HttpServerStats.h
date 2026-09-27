@@ -112,6 +112,13 @@ namespace AsynGyanis::Net
         std::uint64_t blockingTaskRejectedCount{0};
 
         /**
+         * @brief 取快照这一刻本进程的常驻内存字节数（进程级；0 表示平台读不出）
+         * @details 泄漏与无界缓存最先体现在这一列的趋势上。它不是「活跃分配量」：分配器留下的空闲页
+         *          仍算常驻（glibc 就不把页面还给内核），所以掉下来的曲线才算「真的还回来了」。
+         */
+        std::uint64_t residentMemoryBytes{0};
+
+        /**
          * @brief 取延迟直方图的样本总数
          * @return std::uint64_t 各档累计值之和；与 totalRequestCount 的差即「已收齐但响应未落账」的
          *         条数，其中既有响应未发出的，也有升级到 WebSocket 的（101 不经 recordResponse 落账）

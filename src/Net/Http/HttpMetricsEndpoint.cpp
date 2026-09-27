@@ -147,6 +147,12 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "blocking_task_rejected_total"),
                       "因排队已满被拒的阻塞任务条数（进程级累计；提交方当场收到异常，涨了就说明该降并发或加工作线程）", stats.blockingTaskRejectedCount);
 
+        // 常驻内存：进程级读数，抓哪台都是同一份。名字跟着 Prometheus 的既成约定走（process_*）
+        const std::string residentMemoryName = makeMetricName(metricNamePrefix, "process_resident_memory_bytes");
+        out += std::format("# HELP {} 本进程此刻占住的常驻字节数（进程级；0 表示平台读不出，不代表没有内存）\n"
+                           "# TYPE {} gauge\n{} {}\n",
+                           residentMemoryName, residentMemoryName, residentMemoryName, stats.residentMemoryBytes);
+
         return out;
     }
 
