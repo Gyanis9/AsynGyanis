@@ -889,6 +889,20 @@
   两处刻意的当场拒绝：地址为空或不成形、附加头部占用了 `Host`/`Content-Length`/`Connection`/`Content-Type`
   这些本出口自己会写的名字（含 CR/LF/NUL 的值同样），都在构造期抛出而不是留到运行期默默变形。
 
+- **入站一侧接上链路：`Net::tracingSpanMiddleware()`**。这条中间件按请求上的上下文开一节 SERVER
+  （名字只取方法原文——路径是无界的，进名字会把检索侧的分组打碎），写下 `http.request.method`、`url.path`、
+  `http.response.status_code` 三条维度，5xx 判 Error 而 4xx 不判（那是按业务规则给出的正常答复），
+  处理器抛出也照样把这一节带着失败结局交出去再原样回抛。**它还把请求上的 traceparent 改写成本节的段标识**——
+  否则处理器与出站客户端从头部读到的上下文是「我们上面那一跳」，整条链路就少一环；看不懂的更高版本原样转发，
+  一个字都不动（W3C §3.5）。顺带上收：`HttpMethod` 补 `methodKeyword()`（与既有的 `methodFromString()` 配成
+  一对），Router 里那份私有的 Allow 头映射改为委派它——同两张表各抄一份迟早会分叉。
+
+- **出站一侧接上链路：`HttpClientRequest::traceContext`**。填了这一个字段，traceparent 的线上形态就由
+  客户端在这一处生成（那 55 字节不必每个调用点各拼一份，拼错的后果是整条链路在对端断开）；与手写的
+  traceparent 同时给出属于用法错误，当场抛出而不是替调用方挑一个上级；两处都不给时行为与从前完全一致。
+  静态 `send()` 与带池的实例通路两个入口都接了，各钉一条用例——三条承载（h1/h2/h3）读的是同一份 headers，
+  判「两个入口都接上」比再去搭一套 h2 对端更贴得住这个改动。
+
 ### 变更
 
 - **`Http3ClientConnection::isHealthy()` 从此把「流号余量」算进健康**：一句「还能不能提请求」的问答

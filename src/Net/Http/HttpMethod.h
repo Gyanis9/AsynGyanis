@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <string_view>
+
 namespace AsynGyanis::Net
 {
     /**
@@ -36,4 +38,36 @@ namespace AsynGyanis::Net
         OPTIONS, ///< OPTIONS：查询支持的通信选项
         UNKNOWN  ///< 未知或未收录的方法
     };
+    /**
+     * @brief 把方法枚举折回报文里的写法
+     * @details 与 methodFromString() 配对：只有往返都齐，日志与链路维度这类「要把方法写成文本」的
+     *          场合才不必各自再抄一份映射表（Router 的 Allow 头就用它）。
+     * @param method HTTP 方法
+     * @return std::string_view 指向静态字符串的视图；UNKNOWN 交出空视图——本框架没收录它的方法原文，
+     *         猜一个动词就是把「不认识」报成「认识」
+     */
+    [[nodiscard]] inline std::string_view methodKeyword(const HttpMethod method) noexcept
+    {
+        switch (method)
+        {
+            case HttpMethod::GET:
+                return "GET";
+            case HttpMethod::POST:
+                return "POST";
+            case HttpMethod::PUT:
+                return "PUT";
+            case HttpMethod::DELETE:
+                return "DELETE";
+            case HttpMethod::PATCH:
+                return "PATCH";
+            case HttpMethod::HEAD:
+                return "HEAD";
+            case HttpMethod::OPTIONS:
+                return "OPTIONS";
+            case HttpMethod::UNKNOWN:
+                break;
+        }
+        return {};
+    }
+
 } // namespace AsynGyanis::Net

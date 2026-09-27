@@ -213,27 +213,9 @@ namespace AsynGyanis::Net
 
     std::string_view Router::methodName(const HttpMethod method)
     {
-        switch (method)
-        {
-            case HttpMethod::GET:
-                return "GET";
-            case HttpMethod::HEAD:
-                return "HEAD";
-            case HttpMethod::POST:
-                return "POST";
-            case HttpMethod::PUT:
-                return "PUT";
-            case HttpMethod::DELETE:
-                return "DELETE";
-            case HttpMethod::PATCH:
-                return "PATCH";
-            case HttpMethod::OPTIONS:
-                return "OPTIONS";
-            case HttpMethod::UNKNOWN:
-                // 未收录方法不进 Allow：它既不是本服务器支持的能力，也不该被客户端拿去重试
-                return {};
-        }
-        return {};
+        // 映射表住在 HttpMethod 上（与 methodFromString 配对），这里只是换个贴合 Allow 语义的名字。
+        // 未收录方法交出空视图：它既不是本服务器支持的能力，也不该被客户端拿去重试
+        return methodKeyword(method);
     }
 
     void Router::addRoute(const HttpMethod method, const bool isAnyMethod, const std::string &path, Handler handler, const bool streaming)
