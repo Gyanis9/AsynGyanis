@@ -174,7 +174,9 @@ namespace AsynGyanis::Net
 
     bool Http3ClientConnection::isHealthy() const noexcept
     {
-        return m_isHealthy && !m_connection.isClosed();
+        // 「还能不能提请求」包含流号余量：客户端流号严格递增且到顶之后没有合法的新号可提
+        // （RFC 9000 §2.1），一条只会回「请换一条连接」的连接留在池里，等于让每次取用都先撞一次失败
+        return m_isHealthy && !m_connection.isClosed() && m_openedStreamCount < m_config.maximumOpenedStreamCount;
     }
 
     std::size_t Http3ClientConnection::inFlightStreamCount() const noexcept

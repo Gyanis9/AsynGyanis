@@ -428,9 +428,10 @@ namespace AsynGyanis::Net
         std::atomic<std::size_t> serverBatchCount{0};
         std::mutex               receivedGuard;
         std::string              receivedText;
+        std::string              receivedContentType;
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                                         [&serverBatchCount, &receivedGuard, &receivedText](Router &router, Core::EventLoop &)
-                                         { registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText); });
+                                         [&serverBatchCount, &receivedGuard, &receivedText, &receivedContentType](Router &router, Core::EventLoop &)
+                                         { registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText, &receivedContentType); });
         ASSERT_TRUE(fixture.awaitRunning(kPooledWaitTimeout)) << "服务端未在时限内进入接受循环";
 
         const std::string                              url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + std::string{kStreamEchoRoutePath};
@@ -460,6 +461,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(serverBatchCount.load(std::memory_order_acquire), kStreamEchoChunkCount) << "正文不是一段一段到服务端的";
         const std::lock_guard<std::mutex> guard(receivedGuard);
         EXPECT_EQ(receivedText, kStreamEchoExpectedText) << "拼回的正文：「" << receivedText << "」";
+        // 这一条是 h1 的基线：媒体类型与承载协议无关，h2/h3 那两支共用同一份判据（少它就会被丢掉）
+        EXPECT_EQ(receivedContentType, "text/plain") << "chunked 上传的媒体类型没上来：服务端收到的 content-type 是「" << receivedContentType << "」";
     }
 
     /**

@@ -140,7 +140,8 @@ namespace AsynGyanis::Net
          */
         void close() noexcept;
 
-        /// 这条连接是否还能提请求
+        /// 这条连接是否还能提请求：没被收口、底层 QUIC 还在，且流号仍有余量
+        /// （客户端流号严格递增、到顶就没有合法的新号可提，RFC 9000 §2.1）
         [[nodiscard]] bool isHealthy() const noexcept;
 
         /// 在途（已提出、还没收齐）的请求流条数：连接池据此判断这条连接是不是正被人用着

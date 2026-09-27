@@ -8,10 +8,12 @@
  */
 #pragma once
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -189,6 +191,8 @@ namespace AsynGyanis::Net
          * @return true 已装载；false 加载失败（文件缺失、格式不对、与私钥不配对），本端保持原状态
          * @note 与信任库那几项不同，身份不是策略字段：它是「这台客户端是谁」，与「怎么握手」分开，
          *       也便于只换证书不动其它 TLS 配置
+         * @note 路径会被记下来：开了 HTTP/3 时 QUIC 连接按同样的路径带身份，双向 TLS 的两侧
+         *       不会一条通道带、另一条不带
          */
         bool setClientCertificate(const std::string &certificateFile, const std::string &keyFile);
 
@@ -271,6 +275,38 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::shared_ptr<OutboundCircuitBreaker> circuitBreaker() const noexcept;
 
         /**
+         * @brief 打开或关掉本客户端的 HTTP/3 出站通路（默认关）
+         * @details 开关而不是自动协商：本框架不缓存 Alt-Svc，调用方要的是「这个 URL 会走哪条通路」
+         *          的确定性。打开之后每条 https 出站先试 h3——池里有待命链路就直接复用，没有就探
+         *          一条；探不通、起步没走完或这条流没答话，都**回落到 TCP**（h2 还是 h1 由 ALPN 定），
+         *          调用方拿到的响应与协议无关。
+         * @param isEnabled true 允许走 h3；false 恒走 TCP，与打开之前的行为逐字一致
+         * @note 四条边界：①明文 `http://` 不走 h3（QUIC 的 TLS 是强制的）；②带 `bodySource` 的流式
+         *       上传不走 h3——h3 的出站入口只收整份正文，没有流式出口，这条请求改走 TCP 而不是把
+         *       来源整块缓冲下来（那会悄悄改掉这条请求的内存账）；③静态的 `get()/post()/send()`
+         *       那一支没有承载开关与 TLS 策略的地方，恒走 TCP；④**一个端点在本客户端的存活期内只探
+         *       一次**：探败过就记下、此后直接走 TCP。少了这条记账，一批并发请求会各付一次探测时限
+         *       （它们还被同一端点的建连资格串在彼此后面）；服务端「后来才开 h3」要重新建一个客户端才认。
+         */
+        void setHttp3Enabled(bool isEnabled) noexcept;
+
+        /// 本客户端当前是否允许走 HTTP/3
+        [[nodiscard]] bool isHttp3Enabled() const noexcept;
+
+        /**
+         * @brief 池里留着的 h3 链路条数（一台主机最多一条）
+         * @return std::size_t 活着的 h3 链路条数
+         */
+        [[nodiscard]] std::size_t idleHttp3LinkCount() const noexcept;
+
+        /**
+         * @brief 最忙的那条待命 h3 链路上同时在途的流数
+         * @details 与上面的条数一起读才是复用的证据，口径同 h2 那一对。
+         * @return std::size_t 各条链路在途流数的最大值；池里没货返回 0
+         */
+        [[nodiscard]] std::size_t http3MaximumInFlightStreamCount() const noexcept;
+
+        /**
          * @brief 走本实例的连接池（以及挂上的 Cookie 罐）发一次完整请求。
          * @details 实例这一向原先只有 `get`/`post` 两个便利入口，带自定义头部的请求只能退回静态
          *          `send()`——那条路不带池，也就把连接复用与 Cookie 罐一起丢了。这里补上的是同一个
@@ -301,6 +337,17 @@ namespace AsynGyanis::Net
         /// 本实例自己的 TLS 上下文（客户端角色）：策略、信任库与客户端证书都装在这里。
         /// 每个实例一份而不是共用进程级那一份：共用时一个实例的策略会把别人的握手档位一起改掉
         std::unique_ptr<Core::TlsContext> m_clientTls;
+        /// 上面那份策略的副本，用指针留着是为了让本头文件继续只前向声明 TlsPolicy（见构造函数的说明）。
+        /// 副本存在的理由：h3 的 QUIC 连接要**自己建**一份 TLS 上下文，它吃的是策略而不是现成的上下文
+        std::unique_ptr<Core::TlsPolicy> m_tlsPolicy;
+        /// setClientCertificate() 给过的身份路径：TCP 侧已经装在 m_clientTls 上，
+        /// QUIC 侧建连接时要按同样的路径带身份（双向 TLS 的两侧不能一个带一个不带）
+        std::string m_clientCertificateFile{};
+        std::string m_clientPrivateKeyFile{};
+        /// HTTP/3 出站开关，默认关（语义与边界见 setHttp3Enabled）
+        bool m_isHttp3Enabled{false};
+        /// 探败过 h3 的端点：一个端点只探一次，此后这条客户端对它直接走 TCP
+        std::set<HttpOutboundEndpointKey> m_http3RejectedEndpoints;
         /// 可选的 Cookie 存储罐：为空即完全不管 Cookie（不额外拷一份请求，也不改动任何头部）
         std::shared_ptr<HttpCookieJar> m_cookieJar;
         /// 出站熔断器。构造时即装一个默认配置的：塌掉的上游被反复重试是引擎侧的缺陷，

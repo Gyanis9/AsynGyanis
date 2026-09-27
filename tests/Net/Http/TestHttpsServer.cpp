@@ -1860,9 +1860,11 @@ namespace AsynGyanis::Net
         std::atomic<std::size_t>  serverBatchCount{0};
         std::mutex                receivedGuard;
         std::string               receivedText;
+        std::string               receivedContentType;
         RunningHttpsServerFixture fixture(
-                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, [&serverBatchCount, &receivedGuard, &receivedText](Router &router, Core::EventLoop &)
-                { registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText); }, HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, [&serverBatchCount, &receivedGuard, &receivedText, &receivedContentType](Router &router, Core::EventLoop &)
+                { registerStreamingEchoRoute(router, &serverBatchCount, &receivedGuard, &receivedText, &receivedContentType); }, HttpParserLimits{}, {}, kLoopbackCertificatePath,
+                kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
 
         const std::string                              url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + std::string{kStreamEchoRoutePath};
@@ -1893,6 +1895,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(serverBatchCount.load(std::memory_order_acquire), kStreamEchoChunkCount) << "正文不是一段一段到服务端的";
         const std::lock_guard<std::mutex> guard(receivedGuard);
         EXPECT_EQ(receivedText, kStreamEchoExpectedText) << "拼回的正文：「" << receivedText << "」";
+        // 媒体类型这一条是这一支的旧缺口：h2 与 h3 的附加字段曾经只在「整块正文」存在时才带上
+        // content-type，流式上传（body 为空、正文来自 bodySource）于是被服务端按缺省类型处理
+        EXPECT_EQ(receivedContentType, "text/plain") << "流式上传在 h2 上丢了媒体类型：服务端收到的 content-type 是「" << receivedContentType << "」";
     }
 
     /**

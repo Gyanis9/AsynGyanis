@@ -9,12 +9,14 @@
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/ConnectionRace.h"
 #include "Core/Tls/TlsContext.h"
+#include "Core/Tls/TlsPolicy.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/Client/HttpContentCoding.h"
 #include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http2/Http2ClientConnection.h"
 #include "Net/Http2/Http2Session.h"
+#include "Net/Http3/Http3ClientConnection.h"
 #include "Net/Tcp/TcpStream.h"
 #include "Platform/IO/Socket.h"
 
@@ -29,6 +31,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -238,12 +241,22 @@ namespace AsynGyanis::Net
             return ::inet_pton(AF_INET, host.c_str(), addressBytes.data()) == 1 || ::inet_pton(AF_INET6, host.c_str(), addressBytes.data()) == 1;
         }
 
-        /// 一次出站交换的结论：响应，以及「有没有读到过响应的第一个字节」「请求有没有整个写上通路」
+        /**
+         * @brief 一次出站交换的结论：响应，以及「有没有读到过对端的第一个字节」「请求有没有整个
+         *        写上通路」
+         * @details 三条通路（h1 一条连接一个请求、h2 与 h3 按流复用）共用这一份结论，因此重来的判据
+         *          在谁那里都一样：读到过字节＝响应本身出了问题，换连接不换一个答案；没读到也没写出＝
+         *          通路本来就死着，重来一次不涉及重复执行；已整个写出却没回音＝本端分不清「对端没见过
+         *          它」与「对端正慢」，于是只按方法幂等性决定要不要重来（见 isIdempotentRequestMethod，
+         *          RFC 9112 §9.3.2 的自动重试许可只覆盖幂等方法）。
+         *          复用型通路上「写成功」尤其要紧：一条连接上跑几条流，一条被时限掐掉会把同一条通路上的
+         *          兄弟一起带走，只看「有没有收到字节」判不出该不该重发，非幂等请求就可能被悄悄做两遍。
+         */
         struct OutboundExchange
         {
             std::unique_ptr<HttpClientResponse> response;
             bool                                isAnyByteReceived{false};
-            /// 请求文本有没有被通路完整收下。写成功才算发出：通路本来就死着时 send 返回 false，
+            /// 请求有没有被通路完整收下。写成功才算发出：通路本来就死着时 send 返回 false，
             /// 那一支仍是「对端在我们手里把连接收了」，重来不涉及重复执行
             bool isAnyByteSent{false};
         };
@@ -779,20 +792,55 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 一次 h2 交换的结论：响应，以及「有没有收到过对端字节」「请求有没有整个写上通路」
-         * @details 两位一起看才分得开三种情形：收到过字节＝响应本身出了问题，重来不换一个答案；
-         *          没收到也没写出＝通路本来就死着，重来一次不涉及重复执行；已整个写出却没回音＝
-         *          本端分不清「对端没见过它」与「对端正慢」，于是只按方法幂等性决定要不要重来
-         *          （见 isIdempotentRequestMethod）。HTTP/1.1 那一侧用的是同一条判据。
+         * @brief 按复用型通路（HTTP/2 与 HTTP/3）的要求备齐附加字段
+         * @details 两条通路的字段段形状一样（小写 ASCII 名 + 原文值），差别只在线上是 HPACK 还是
+         *          QPACK，因此这里只留一份。名字折小写是协议要求（RFC 9113 §8.1.2、RFC 9114 §4.2），
+         *          值原样保留——大小写对值语义有影响。
+         * @param request 方法、正文、媒体类型与附加头部
+         * @param isAnyBody 这次是否带正文，整块与流式来源都算：媒体类型只随正文上线，
+         *        口径与 h1 那一支的 `buildRequestText` 一致（少这一条会让流式上传在 h2/h3 上丢掉
+         *        Content-Type，而服务端按缺省媒体类型处理这份正文）
+         * @return std::vector<std::pair<std::string, std::string>> 按给出的顺序排好的字段
          */
-        struct Http2Exchange
+        std::vector<std::pair<std::string, std::string>> buildVersionedExtraFields(const HttpClientRequest &request, const bool isAnyBody)
         {
-            std::unique_ptr<HttpClientResponse> response;
-            bool                                isAnyByteReceived{false};
-            /// 请求有没有写上过通路。h2 一条连接上跑几条流，一条被时限掐掉会把同一条通路上的兄弟一起
-            /// 带走，只看「有没有收到字节」判不出该不该重发，于是非幂等请求可能被悄悄做两遍
-            bool isAnyByteSent{false};
-        };
+            std::vector<std::pair<std::string, std::string>> extraFields;
+            if (isAnyBody && !request.contentType.empty())
+            {
+                extraFields.emplace_back("content-type", std::string(request.contentType));
+            }
+            for (const HttpClientHeaderField &field: request.headers)
+            {
+                std::string foldedName = field.first;
+                std::transform(foldedName.begin(), foldedName.end(), foldedName.begin(),
+                               [](const unsigned char byte) { return (byte >= 'A' && byte <= 'Z') ? static_cast<char>(byte + ('a' - 'A')) : byte; });
+                extraFields.emplace_back(std::move(foldedName), field.second);
+            }
+            // 与 h1 那一支同一条判据：代加声明才透明解压，三条通路问的是同一个函数（见 HttpContentCoding）
+            if (shouldAdvertiseAcceptEncoding(request.headers))
+            {
+                extraFields.emplace_back("accept-encoding", std::string(kOutboundAcceptEncodingValue));
+            }
+            return extraFields;
+        }
+
+        /**
+         * @brief 把复用型通路交回的字段段搬进对外的响应形状
+         * @details reasonPhrase 留空是协议形状决定的：h2 与 h3 的状态只有 :status 这一个数，
+         *          没有原因短语那一项。
+         * @param statusCode 状态码
+         * @param headers 响应字段（含尾段），按收到的顺序
+         * @param body 正文
+         * @return std::unique_ptr<HttpClientResponse> 对外的响应
+         */
+        std::unique_ptr<HttpClientResponse> makeClientResponse(const int statusCode, std::vector<std::pair<std::string, std::string>> headers, std::string body)
+        {
+            auto result        = std::make_unique<HttpClientResponse>();
+            result->statusCode = statusCode;
+            result->headers    = std::move(headers);
+            result->body       = std::move(body);
+            return result;
+        }
 
         /**
          * @brief 在一条已经协商好的 h2 连接上走完一次请求
@@ -804,62 +852,230 @@ namespace AsynGyanis::Net
          * @param startedAt 本次请求的开始时刻，用于把整体时限摊到剩下的那一段上
          * @param requestTimeout 整体时限
          * @param failureReason 输出：这次交换失败的原因（对端 RST、时限、响应本身不合规范）
-         * @return Http2Exchange 响应；失败时 response 为空。reasonPhrase 恒为空——HTTP/2 没有原因
+         * @return OutboundExchange 响应；失败时 response 为空。reasonPhrase 恒为空——HTTP/2 没有原因
          *         短语这一项，状态语义只靠 :status
          */
-        Core::Task<Http2Exchange> exchangeOnHttp2(Http2ClientConnection &client, const ParsedUrl &u, const HttpClientRequest &request,
-                                                  const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout, std::string &failureReason)
+        Core::Task<OutboundExchange> exchangeOnHttp2(Http2ClientConnection &client, const ParsedUrl &u, const HttpClientRequest &request,
+                                                     const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout,
+                                                     std::string &failureReason)
         {
-            Http2Exchange                                    exchange;
-            std::vector<std::pair<std::string, std::string>> extraHeaders;
-            if (!request.body.empty() && !request.contentType.empty())
-            {
-                extraHeaders.emplace_back("content-type", std::string(request.contentType));
-            }
-            for (const HttpClientHeaderField &field: request.headers)
-            {
-                // h2 的头部名必须是全小写 ASCII（RFC 7540 §8.1.2），调用方给的大写名字在这里折下去；
-                // 值原样保留，大小写对值语义有影响
-                std::string foldedName = field.first;
-                std::transform(foldedName.begin(), foldedName.end(), foldedName.begin(),
-                               [](const unsigned char byte) { return (byte >= 'A' && byte <= 'Z') ? static_cast<char>(byte + ('a' - 'A')) : byte; });
-                extraHeaders.emplace_back(std::move(foldedName), field.second);
-            }
-            // 与 h1 那一支同一条判据：代加声明才透明解压，两边问的是同一个函数（见 HttpContentCoding）
-            if (shouldAdvertiseAcceptEncoding(request.headers))
-            {
-                extraHeaders.emplace_back("accept-encoding", std::string(kOutboundAcceptEncodingValue));
-            }
+            OutboundExchange exchange;
             // 主机文本与协议名都要先落到具名对象上：co_await 挂起期间 string_view 指着的临时串会先析构
-            const std::string      authority = authorityText(u);
-            const std::string_view scheme    = u.scheme == "https" ? "https" : "http";
-            const std::string      method    = request.method;
-            const std::string      body(request.body);
+            const std::string authority = authorityText(u);
+            const std::string method    = request.method;
+            const std::string body(request.body);
             // 流式来源也落到本帧的对象上：它要跨过 co_await 活着。空的 std::function 拷贝不分配，
             // 所以这一句对不用流式上传的调用方是零成本
-            const HttpBodyChunkSource                      bodySource     = request.bodySource;
-            const std::optional<std::chrono::milliseconds> exchangeBudget = remainingBudget(startedAt, requestTimeout);
+            const HttpBodyChunkSource                              bodySource     = request.bodySource;
+            const std::vector<std::pair<std::string, std::string>> extraFields    = buildVersionedExtraFields(request, !body.empty() || static_cast<bool>(bodySource));
+            const std::optional<std::chrono::milliseconds>         exchangeBudget = remainingBudget(startedAt, requestTimeout);
             if (!exchangeBudget.has_value())
             {
                 failureReason = "本次请求已到时限：还没把请求写上通路（主机 " + u.host + "）";
                 co_return exchange;
             }
-            Http2ClientResponse response = bodySource ? co_await client.requestStreamed(scheme, authority, method, u.path, extraHeaders, bodySource, *exchangeBudget)
-                                                      : co_await client.request(scheme, authority, method, u.path, extraHeaders, body, *exchangeBudget);
-            exchange.isAnyByteReceived   = response.isAnyByteReceived;
-            exchange.isAnyByteSent       = response.isAnyByteSent;
+            const std::string_view scheme   = u.scheme == "https" ? "https" : "http";
+            Http2ClientResponse    response = bodySource ? co_await client.requestStreamed(scheme, authority, method, u.path, extraFields, bodySource, *exchangeBudget)
+                                                         : co_await client.request(scheme, authority, method, u.path, extraFields, body, *exchangeBudget);
+            exchange.isAnyByteReceived      = response.isAnyByteReceived;
+            exchange.isAnyByteSent          = response.isAnyByteSent;
             if (!response.isOk())
             {
                 // 状态码为 0（没收到响应头）或被对端中途 RST 掉：都不算一次成功的出站
                 failureReason = response.errorMessage.empty() ? "HTTP/2 这一侧没拿到有效响应：状态码缺失或流被对端收尾（主机 " + u.host + "）" : std::move(response.errorMessage);
                 co_return exchange;
             }
-            auto result        = std::make_unique<HttpClientResponse>();
-            result->statusCode = response.statusCode;
-            result->headers    = std::move(response.headers);
-            result->body       = std::move(response.body);
-            exchange.response  = std::move(result);
+            exchange.response = makeClientResponse(response.statusCode, std::move(response.headers), std::move(response.body));
             co_return exchange;
+        }
+
+        /**
+         * @brief 在一条已握手的 h3 链路上走完一次请求
+         * @details 与 h2 那一支逐条同形：字段折小写的口径、时限摊到剩余预算、失败时带上「有没有答过话
+         *          / 有没有写上通路」两位判据。差别只有一处、也是选路要管它的原因：h3 的出站入口
+         *          只收整份正文，没有流式出口，所以带 `bodySource` 的请求根本不会走到这里
+         *          （见 canUseHttp3 那条判据）。
+         * @param client 已 start() 的 h3 会话
+         * @param u 已拆开的 URL
+         * @param request 方法、正文与附加头部
+         * @param startedAt 本次请求的开始时刻
+         * @param requestTimeout 整体时限
+         * @param failureReason 输出：这次交换失败的原因
+         * @return OutboundExchange 响应；失败时 response 为空
+         */
+        Core::Task<OutboundExchange> exchangeOnHttp3(Http3ClientConnection &client, const ParsedUrl &u, const HttpClientRequest &request,
+                                                     const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout,
+                                                     std::string &failureReason)
+        {
+            OutboundExchange                                       exchange;
+            const std::vector<std::pair<std::string, std::string>> extraFields = buildVersionedExtraFields(request, !request.body.empty());
+            const std::string                                      authority   = authorityText(u);
+            const std::string                                      method      = request.method;
+            const std::string                                      body(request.body);
+            const std::optional<std::chrono::milliseconds>         exchangeBudget = remainingBudget(startedAt, requestTimeout);
+            if (!exchangeBudget.has_value())
+            {
+                failureReason = "本次请求已到时限：还没把请求写上通路（主机 " + u.host + "）";
+                co_return exchange;
+            }
+            // QUIC 的 TLS 是强制的，:scheme 因此在 h3 上恒为 https（能走到这里已由 canUseHttp3 保证）
+            Http3ClientResponse response = co_await client.request("https", authority, method, u.path, extraFields, body, *exchangeBudget);
+            exchange.isAnyByteReceived   = response.isAnyByteReceived;
+            exchange.isAnyByteSent       = response.isAnyByteSent;
+            if (!response.isOk())
+            {
+                failureReason = response.errorMessage.empty() ? "HTTP/3 这一侧没拿到有效响应：状态码缺失或这条流被收尾（主机 " + u.host + "）" : std::move(response.errorMessage);
+                co_return exchange;
+            }
+            exchange.response = makeClientResponse(response.statusCode, std::move(response.headers), std::move(response.body));
+            co_return exchange;
+        }
+
+        /// 一次「复用型通路」（HTTP/2 或 HTTP/3）上的交换之后，这条请求该怎么收场
+        enum class ReuseDisposition
+        {
+            Serve, ///< 拿到了响应，直接交出去
+            Fail,  ///< 不许重来：failureReason 已写明是对端答过话还是幂等性不允许
+            Retry  ///< 通路在我们手里被收了：换一条（甚至换一种协议）重来一次
+        };
+
+        /**
+         * @brief 复用型通路上一次交换的收尾判据
+         * @details 三条出口的理由：对端答过话就换不换答案（响应本身出了问题，换连接也是白换）；
+         *          请求已整个写上通路而非幂等方法不能重来（可能已经执行过，RFC 9112 §9.3.2 的自动
+         *          重试许可只覆盖幂等方法）；其余都当作 keep-alive 的固有竞态——对端在我们手里把这条
+         *          连接收了，换一条重来对调用方仍是一次成功请求。h2 与 h3、待命链路和新起的链路
+         *          共用这一份判据，四条通路各抄一遍迟早抄出四种口径。
+         * @param exchange 刚跑完的那次交换的结论（Serve 时它的 response 仍在里面，由调用方取走）
+         * @param method 请求方法原文，判幂等性用
+         * @param host 目标主机，只进文案
+         * @param failureReason 输出：两条终止出口都要写下原因
+         * @return ReuseDisposition 该走哪条出口
+         */
+        ReuseDisposition classifyMultiplexedExchange(const OutboundExchange &exchange, const std::string_view method, const std::string &host, std::string &failureReason)
+        {
+            if (exchange.response)
+            {
+                return ReuseDisposition::Serve;
+            }
+            if (exchange.isAnyByteReceived)
+            {
+                // 对端答过话：响应本身出了问题，换一条连接重来不会换一个答案
+                return ReuseDisposition::Fail;
+            }
+            if (exchange.isAnyByteSent && !isIdempotentRequestMethod(method))
+            {
+                failureReason = "请求已整个写上通路而对端没答话：方法 " + std::string{method} + " 不在幂等集合里，本端不重发（主机 " + host + "）";
+                return ReuseDisposition::Fail;
+            }
+            return ReuseDisposition::Retry;
+        }
+
+        /**
+         * @brief 出站 h3 的本端设置：由带池的 HttpClient 备一份，静态那一路传空即永不走 h3
+         * @details 存的是指针而不是值拷贝：这份设置每条请求都要读一次，而策略里带着 CA 路径等字符串，
+         *          按值传等于给每次出站多加几份拷贝。它的真身是 HttpClient 的成员，活到本客户端析构，
+         *          比任何一条请求都长。
+         */
+        struct Http3OutboundContext
+        {
+            bool                               isEnabled{false};               ///< setHttp3Enabled() 的结果
+            const Core::TlsPolicy             *tlsPolicy{nullptr};             ///< QUIC 连接自己建 TLS 上下文，吃的是策略而不是现成的上下文
+            const std::string                 *clientCertificateFile{nullptr}; ///< 双向 TLS 的客户端身份，与私钥同时给才带
+            const std::string                 *clientPrivateKeyFile{nullptr};  ///< 配套私钥
+            std::set<HttpOutboundEndpointKey> *rejectedEndpoints{nullptr};     ///< 探败过的端点：一个端点只探一次
+        };
+
+        /// 探一条 h3 链路的时限上界。UDP 被中间网络黑洞时「连不上」没有快速回音、只能等时限到，
+        /// 因此这一笔不能由整条请求的预算出：到点就交回 false，剩下的预算仍归那次真正的 TCP 请求用
+        constexpr std::chrono::milliseconds kHttp3ProbeTimeout{3000};
+
+        /**
+         * @brief 这次请求能不能走 h3：三个条件各挡一件事
+         * @param u 已拆开的 URL
+         * @param request 方法、正文与流式来源
+         * @param http3 本端设置；为空即这一路没有 h3 可用
+         * @return true 允许试 h3（不代表一定能成）
+         */
+        bool canUseHttp3(const ParsedUrl &u, const HttpClientRequest &request, const Http3OutboundContext *http3)
+        {
+            // ①QUIC 的 TLS 是强制的：明文 http:// 没有 h3 这一说；
+            // ②h3 的出站入口只收整份正文，没有流式出口。带 bodySource 的请求改走 TCP，
+            //   而不是把来源整块缓冲下来——那会悄悄改变这条请求的内存账；
+            // ③开关没开，或这一路根本没带设置（静态的 get/post/send）；策略缺失时同样不走——
+            //   拿不到信任库的连接等于不校验对端证书
+            return http3 != nullptr && http3->isEnabled && http3->tlsPolicy != nullptr && u.scheme == "https" && !static_cast<bool>(request.bodySource);
+        }
+
+        /// 这个端点此前是否已经探败过 h3：一个端点在本客户端的存活期内只探一次
+        bool isHttp3ProbeRejected(const HttpOutboundEndpointKey &endpointKey, const Http3OutboundContext &http3)
+        {
+            return http3.rejectedEndpoints != nullptr && http3.rejectedEndpoints->contains(endpointKey);
+        }
+
+        /// 记下这个端点的 h3 没走通，此后同端点的请求直接走 TCP（理由见 setHttp3Enabled 的第④条）
+        void rejectHttp3Probe(const HttpOutboundEndpointKey &endpointKey, const Http3OutboundContext &http3)
+        {
+            if (http3.rejectedEndpoints != nullptr)
+            {
+                http3.rejectedEndpoints->insert(endpointKey);
+            }
+        }
+
+        /**
+         * @brief 探一条 h3 链路：解析地址 → 握 QUIC → 起 h3 层
+         * @details 候选地址取排序后的第一个：并发试多条候选是 TCP 那一路的做法（每条候选各占一个
+         *          套接字），QUIC 一侧要把 Initial 发到一条确定的路径上，本层不替调用方猜该试哪条；
+         *          排序仍按 RFC 8305 §4 的族间交错，双栈主机不会一律压在 IPv6 上。
+         * @param loop 所属事件循环
+         * @param u 已拆开的 URL（主机与端口）
+         * @param pool 连接池：正文上限要从它的配置落到这条链路的 h3 本端能力上
+         * @param http3 本端设置
+         * @param failureReason 输出：断在哪一段
+         * @return std::shared_ptr<Http3OutboundLink> 已可提请求的链路；任何一段没成返回空
+         */
+        Core::Task<std::shared_ptr<Http3OutboundLink>> establishHttp3Link(Core::EventLoop &loop, const ParsedUrl &u, const HttpOutboundConnectionPool &pool,
+                                                                          const Http3OutboundContext &http3, std::string &failureReason)
+        {
+            const std::vector<Core::InetAddress> addresses = co_await Core::AsyncResolver::resolve(loop, u.host, u.port);
+            if (addresses.empty())
+            {
+                failureReason = "解析地址失败：没能把「" + u.host + "」解析成可用地址";
+                co_return nullptr;
+            }
+
+            QuicClientConnection::Configuration configuration;
+            configuration.hostName              = u.host; ///< SNI 与证书校验目标，h3 上没有「不带身份的连接」这一档
+            configuration.tlsPolicy             = *http3.tlsPolicy;
+            configuration.handshakeTimeout      = kHttp3ProbeTimeout;
+            configuration.clientCertificateFile = http3.clientCertificateFile != nullptr ? *http3.clientCertificateFile : std::string{};
+            configuration.clientPrivateKeyFile  = http3.clientPrivateKeyFile != nullptr ? *http3.clientPrivateKeyFile : std::string{};
+
+            Http3ClientConnection::Config http3Config;
+            // 同一条胃口换成 h3 那一侧的说法：协商出哪条协议不该改变本端愿意收多少正文
+            http3Config.maximumResponseBodyBytes = pool.config().maximumResponseBodyBytes;
+
+            const std::vector<Core::InetAddress> orderedCandidates = Core::orderForConnectionRace(addresses);
+            auto                                 link              = std::make_shared<Http3OutboundLink>(loop, std::move(configuration), http3Config);
+            try
+            {
+                // connect() 一次走完两段：QUIC 握手 + h3 层起步（三条单向流与 SETTINGS），任一没成回 false
+                if (!co_await link->connect(orderedCandidates.front()))
+                {
+                    failureReason = "HTTP/3 这一侧没走通：对端没在这个 UDP 端口上听 h3、证书没通过校验、控制流开不出来，"
+                                    "或这条网络路径把 UDP 黑洞了（主机 " +
+                                    u.host + "）";
+                    co_return nullptr;
+                }
+            } catch (const Base::Exception &failure)
+            {
+                // UDP 套接字建不起来是这条链路上唯一的抛出点（见 QuicClientConnection::connect 的 @throws）：
+                // 与其它几段一样折成返回值，不让异常穿过这一段
+                LOG_WARN_FMT("HttpClient: 与 {} 建 HTTP/3 链路失败。底层原因：{}", u.host, failure.what());
+                failureReason = "HTTP/3 这一侧没走通：本端建不起 UDP 套接字（主机 " + u.host + "）";
+                co_return nullptr;
+            }
+            co_return link;
         }
 
         /**
@@ -870,18 +1086,22 @@ namespace AsynGyanis::Net
          * @param requestTimeout 整体时限（握手、发送、收完响应三段之和）
          * @param pool 空闲连接池；为空即一次一条连接
          * @param failureReason 输出：失败发生在哪一段，供 send() 折成 expected 的失败值
+         * @param clientTls 本客户端的出站 TLS 上下文；为空即静态那一路的进程级默认档
+         * @param http3 出站 h3 的本端设置；为空、开关关着、明文 URL 或流式上传都不走 h3
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
          */
         Core::Task<std::unique_ptr<HttpClientResponse>> performRequest(Core::EventLoop &loop, const HttpClientRequest &request, const ParsedUrl &u,
                                                                        const std::chrono::milliseconds requestTimeout, HttpOutboundConnectionPool *pool, std::string &failureReason,
-                                                                       const Core::TlsContext *clientTls)
+                                                                       const Core::TlsContext *clientTls, const Http3OutboundContext *http3)
         {
             const std::chrono::steady_clock::time_point startedAt   = std::chrono::steady_clock::now();
             const bool                                  isKeepAlive = pool != nullptr;
             const HttpOutboundEndpointKey               endpointKey{u.host, u.port, u.scheme == "https"};
-            // 请求文按要再拼：h2 那一支用不上它（帧里没有请求行），提前拼一份等于把正文整块多拷一次
+            // 请求文按要再拼：h2 与 h3 那一支用不上它（帧里没有请求行），提前拼一份等于把正文整块多拷一次
             const auto makeRequestText = [&] { return buildRequestText(request, u, isKeepAlive); };
             const bool isHeadRequest   = request.method == "HEAD";
+            // 这次请求有没有资格走 h3：开关与 URL 形状之外，还要这个端点没被探败过
+            const bool isHttp3Eligible = pool != nullptr && canUseHttp3(u, request, http3) && !isHttp3ProbeRejected(endpointKey, *http3);
 
             // 复用→建连这一整段要能重跑一遍：等同一端点建连的人醒来之后，第一件该做的
             // 还是回池里看有没有现成的连接，而不是就地假设「有」或「没有」。
@@ -889,28 +1109,41 @@ namespace AsynGyanis::Net
             {
                 if (pool != nullptr)
                 {
+                    // h3 的待命链路问在最前：开关开着时它优先，走不通才落到 TCP 那两张表
+                    if (isHttp3Eligible)
+                    {
+                        if (auto cachedHttp3 = pool->acquireHttp3(endpointKey); cachedHttp3 != nullptr)
+                        {
+                            OutboundExchange cachedHttp3Exchange = co_await exchangeOnHttp3(cachedHttp3->http3(), u, request, startedAt, requestTimeout, failureReason);
+                            switch (classifyMultiplexedExchange(cachedHttp3Exchange, request.method, u.host, failureReason))
+                            {
+                                case ReuseDisposition::Serve:
+                                    co_return std::move(cachedHttp3Exchange.response);
+                                case ReuseDisposition::Fail:
+                                    co_return nullptr;
+                                case ReuseDisposition::Retry:
+                                    // 这条链路一个字节都没答过：多半是空闲期间被对端收了（QUIC 的 idle
+                                    // timeout 或对端直接走掉）。往下重开一条，对调用方仍是一次成功请求
+                                    break;
+                            }
+                        }
+                    }
                     // h2 的待命连接问在 h1 的空闲表之前：一台主机的 ALPN 结果是稳定的，两处不会同时有货
                     if (auto cachedHttp2 = pool->acquireHttp2(endpointKey); cachedHttp2 != nullptr)
                     {
-                        Http2Exchange cachedExchange = co_await exchangeOnHttp2(*cachedHttp2, u, request, startedAt, requestTimeout, failureReason);
-                        if (cachedExchange.response)
+                        OutboundExchange cachedExchange = co_await exchangeOnHttp2(*cachedHttp2, u, request, startedAt, requestTimeout, failureReason);
+                        switch (classifyMultiplexedExchange(cachedExchange, request.method, u.host, failureReason))
                         {
-                            co_return std::move(cachedExchange.response);
+                            case ReuseDisposition::Serve:
+                                co_return std::move(cachedExchange.response);
+                            case ReuseDisposition::Fail:
+                                co_return nullptr;
+                            case ReuseDisposition::Retry:
+                                // 一个字节没发出、也没收到，或是幂等方法发出去没了回音：多半是对端在我们手里把这条
+                                // 连接收了（与 h1 的 keep-alive 同一条竞态）。这条就此作废——不作废也没有下一句，
+                                // HPACK 动态表跟着连接一起丢——往下重开一条重来一次，对调用方仍是一次成功请求
+                                break;
                         }
-                        if (cachedExchange.isAnyByteReceived)
-                        {
-                            // 对端答过话：响应本身出了问题，换一条连接重来不会换一个答案
-                            co_return nullptr;
-                        }
-                        if (cachedExchange.isAnyByteSent && !isIdempotentRequestMethod(request.method))
-                        {
-                            // 请求已整个交上通路却没有回音：非幂等的不做第二遍
-                            failureReason = "请求已整个写上通路而对端没答话：方法 " + std::string{request.method} + " 不在幂等集合里，本端不重发（主机 " + u.host + "）";
-                            co_return nullptr;
-                        }
-                        // 一个字节没发出、也没收到，或是幂等方法发出去没了回音：多半是对端在我们手里把这条
-                        // 连接收了（与 h1 的 keep-alive 同一条竞态）。这条就此作废——不作废也没有下一句，
-                        // HPACK 动态表跟着连接一起丢——往下重开一条重来一次，对调用方仍是一次成功请求
                     }
                     if (auto reused = pool->acquire(endpointKey))
                     {
@@ -948,7 +1181,7 @@ namespace AsynGyanis::Net
                 }
 
                 // 同一端点同时只允许一次建连：占不到资格的人等领导者结算，醒来重新跑一遍上面那段
-                // （h2 的结论已经进池，直接用；h1 是独占的，等不到也不该等，自己建一条）。
+                // （h3 与 h2 的结论都已进池，直接用；h1 是独占的，等不到也不该等，自己建一条）。
                 bool isEstablishmentLeader = false;
                 while (pool != nullptr)
                 {
@@ -963,21 +1196,37 @@ namespace AsynGyanis::Net
                         failureReason = "本次请求已到时限：等同一端点的建连把预算用尽（主机 " + u.host + "）";
                         co_return nullptr;
                     }
+                    // 领导者建好的通路都在池里：h3 与 h2 两条待命表重新问一遍，谁有货就用谁
+                    if (isHttp3Eligible)
+                    {
+                        if (auto sharedHttp3 = pool->acquireHttp3(endpointKey); sharedHttp3 != nullptr)
+                        {
+                            OutboundExchange sharedHttp3Exchange = co_await exchangeOnHttp3(sharedHttp3->http3(), u, request, startedAt, requestTimeout, failureReason);
+                            switch (classifyMultiplexedExchange(sharedHttp3Exchange, request.method, u.host, failureReason))
+                            {
+                                case ReuseDisposition::Serve:
+                                    co_return std::move(sharedHttp3Exchange.response);
+                                case ReuseDisposition::Fail:
+                                    co_return nullptr;
+                                case ReuseDisposition::Retry:
+                                    continue; // 这条已经废了：回去抢资格
+                            }
+                        }
+                    }
                     // 领导者建成了可共享的 h2 连接：直接拿它，一次握手都不用再付
                     if (auto shared = pool->acquireHttp2(endpointKey); shared != nullptr)
                     {
-                        Http2Exchange sharedExchange = co_await exchangeOnHttp2(*shared, u, request, startedAt, requestTimeout, failureReason);
-                        if (sharedExchange.response)
+                        OutboundExchange sharedExchange = co_await exchangeOnHttp2(*shared, u, request, startedAt, requestTimeout, failureReason);
+                        switch (classifyMultiplexedExchange(sharedExchange, request.method, u.host, failureReason))
                         {
-                            co_return std::move(sharedExchange.response);
+                            case ReuseDisposition::Serve:
+                                co_return std::move(sharedExchange.response);
+                            case ReuseDisposition::Fail:
+                                // 与第一次复用上同样的判据：对端答过话、或幂等性不允许，重开也不换一个答案
+                                co_return nullptr;
+                            case ReuseDisposition::Retry:
+                                continue; // 这条已经废了：回去抢资格，抢到了就自己建一条
                         }
-                        if (sharedExchange.isAnyByteReceived || (sharedExchange.isAnyByteSent && !isIdempotentRequestMethod(request.method)))
-                        {
-                            // 与第一次复用上同样的判据：对端答过话、或幂等性不允许，重开也不换一个答案
-                            co_return nullptr;
-                        }
-                        // 这条已经废了：回去抢资格，抢到了就自己建一条
-                        continue;
                     }
                 }
 
@@ -995,6 +1244,43 @@ namespace AsynGyanis::Net
                         pool->settleEstablishment(endpointKey);
                     }
                 };
+
+                // 占到建连资格的人先探 h3：探成就用这条通路，探不通再落到下面的 TCP。
+                // 探测的时限单独设上界（kHttp3ProbeTimeout），UDP 被黑洞时也只吃掉这一小段，
+                // 剩下的预算仍归那次真正的 TCP 请求用——这是「失败回落」这条承诺能成立的地方
+                if (isHttp3Eligible)
+                {
+                    std::shared_ptr<Http3OutboundLink> link = co_await establishHttp3Link(loop, u, *pool, *http3, failureReason);
+                    if (link == nullptr)
+                    {
+                        // 这个端点的 h3 没走通：记一笔，此后同端点的请求直接走 TCP，不再各付一次探测时限
+                        rejectHttp3Probe(endpointKey, *http3);
+                    } else
+                    {
+                        OutboundExchange freshHttp3 = co_await exchangeOnHttp3(link->http3(), u, request, startedAt, requestTimeout, failureReason);
+                        switch (classifyMultiplexedExchange(freshHttp3, request.method, u.host, failureReason))
+                        {
+                            case ReuseDisposition::Serve:
+                                // 还能提请求才收进池：出过问题的那条跟着最后一个持有者一起收口
+                                if (link->isHealthy())
+                                {
+                                    pool->adoptHttp3(endpointKey, std::move(link));
+                                }
+                                settleEstablishmentNow();
+                                co_return std::move(freshHttp3.response);
+                            case ReuseDisposition::Fail:
+                                settleEstablishmentNow();
+                                co_return nullptr;
+                            case ReuseDisposition::Retry:
+                                // 握手与起步都成了、这条请求却一个字节都没走通：这个端点的 h3 记下别再探，
+                                // 这条链路跟着放手收口，下面按 TCP 重来一次
+                                rejectHttp3Probe(endpointKey, *http3);
+                                break;
+                        }
+                    }
+                    // h3 这一路没给出结论：把探测阶段的措辞清掉，让下面那一段写它自己的失败原因
+                    failureReason.clear();
+                }
 
                 std::unique_ptr<HttpOutboundConnection> connection;
                 if (u.scheme == "https")
@@ -1033,7 +1319,7 @@ namespace AsynGyanis::Net
                         settleEstablishmentNow();
                         co_return nullptr;
                     }
-                    Http2Exchange freshExchange = co_await exchangeOnHttp2(*http2Connection, u, request, startedAt, requestTimeout, failureReason);
+                    OutboundExchange freshExchange = co_await exchangeOnHttp2(*http2Connection, u, request, startedAt, requestTimeout, failureReason);
                     if (pool == nullptr)
                     {
                         // 没有池就是一次性的：主动 shutdown 而不是任其析构，否则对端把这次收口记成 abrupt
@@ -1079,8 +1365,9 @@ namespace AsynGyanis::Net
         // 畸形 URL 与不合规范的头部都是用法错误，按 parseUrl 的既有口径抛出，不折进 expected 的失败值
         const ParsedUrl parsed = parseUrl(url);
         validateRequest(request);
-        std::string                         failureReason;
-        std::unique_ptr<HttpClientResponse> response = co_await performRequest(loop, request, parsed, requestTimeout, nullptr, failureReason, nullptr);
+        std::string failureReason;
+        // 静态那一路不带池、也没有承载 TLS 策略与 h3 开关的地方，因此永不走 h3（两个空指针即此意）
+        std::unique_ptr<HttpClientResponse> response = co_await performRequest(loop, request, parsed, requestTimeout, nullptr, failureReason, nullptr, nullptr);
         if (!response)
         {
             // 每条失败路径都会先写下原因；这里兜住的是「哪天新增了忘了写的出口」，而不是让调用方拿到空原因
@@ -1133,7 +1420,7 @@ namespace AsynGyanis::Net
 
     HttpClient::HttpClient(Core::EventLoop &loop, const HttpOutboundConnectionPool::Config poolConfig, const Core::TlsPolicy &tlsPolicy) :
         m_loop(&loop), m_pool(poolConfig), m_clientTls(std::make_unique<Core::TlsContext>(tlsPolicy, Core::TlsContext::Role::Client)),
-        m_circuitBreaker(std::make_shared<OutboundCircuitBreaker>())
+        m_tlsPolicy(std::make_unique<Core::TlsPolicy>(tlsPolicy)), m_circuitBreaker(std::make_shared<OutboundCircuitBreaker>())
     {
         // 出站一侧恒要校验对端证书：不校验等于任何受信 CA 给他域签的证书都能冒充目标主机（CWE-297）。
         // 这一句放在构造而不是每条连接里，是为了让「策略里自带 CA」与「用系统信任库」两种配置的取舍
@@ -1144,7 +1431,34 @@ namespace AsynGyanis::Net
     bool HttpClient::setClientCertificate(const std::string &certificateFile, const std::string &keyFile)
     {
         // 装载失败保持原状态：本客户端继续以「不带身份」出站，调用方拿到 false 自己决定要不要放弃
-        return m_clientTls->loadCertificate(certificateFile, keyFile);
+        // 路径也一并记下：开了 HTTP/3 时 QUIC 连接按同样的路径带身份，两条通路不能一条带一条不带
+        if (!m_clientTls->loadCertificate(certificateFile, keyFile))
+        {
+            return false;
+        }
+        m_clientCertificateFile = certificateFile;
+        m_clientPrivateKeyFile  = keyFile;
+        return true;
+    }
+
+    void HttpClient::setHttp3Enabled(const bool isEnabled) noexcept
+    {
+        m_isHttp3Enabled = isEnabled;
+    }
+
+    bool HttpClient::isHttp3Enabled() const noexcept
+    {
+        return m_isHttp3Enabled;
+    }
+
+    std::size_t HttpClient::idleHttp3LinkCount() const noexcept
+    {
+        return m_pool.idleHttp3LinkCount();
+    }
+
+    std::size_t HttpClient::http3MaximumInFlightStreamCount() const noexcept
+    {
+        return m_pool.http3MaximumInFlightStreamCount();
     }
 
     Core::Task<std::unique_ptr<HttpClientResponse>> HttpClient::get(std::string_view url, const std::chrono::milliseconds requestTimeout)
@@ -1200,7 +1514,17 @@ namespace AsynGyanis::Net
             co_return nullptr;
         }
 
-        std::unique_ptr<HttpClientResponse> response = co_await performRequest(*m_loop, *effectiveRequest, parsed, requestTimeout, &m_pool, failureReason, m_clientTls.get());
+        // 出站 h3 的本端设置：几份引用都指向本客户端的成员，活到这次 co_await 完成之后。
+        // 按引用而不是拷贝交给选路那一段，是为了不给每条出站请求添几份字符串拷贝
+        Http3OutboundContext http3Context;
+        http3Context.isEnabled             = m_isHttp3Enabled;
+        http3Context.tlsPolicy             = m_tlsPolicy.get();
+        http3Context.clientCertificateFile = &m_clientCertificateFile;
+        http3Context.clientPrivateKeyFile  = &m_clientPrivateKeyFile;
+        http3Context.rejectedEndpoints     = &m_http3RejectedEndpoints;
+
+        std::unique_ptr<HttpClientResponse> response =
+                co_await performRequest(*m_loop, *effectiveRequest, parsed, requestTimeout, &m_pool, failureReason, m_clientTls.get(), &http3Context);
         if (!response)
         {
             if (m_circuitBreaker != nullptr)

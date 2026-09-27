@@ -560,6 +560,88 @@ namespace AsynGyanis::Net
             std::atomic<bool>             m_isFinished{false};
         };
 
+        /**
+         * @brief 把流号名额压到一条，问「名额用尽之后这条还算健康吗」
+         * @details 整段跑在链路所属的循环线程上。第二次 request() 应当被本端直接拒掉（没有合法的
+         *          新流号可提，RFC 9000 §2.1），而 isHealthy() 必须跟着说「不能再用」——池正是读它来
+         *          决定这条要不要从待命表里抹掉：只看连接层还活着就会把一条只会回「换一条连接」的
+         *          链路一直留在池里，每次取用都先撞一次失败。
+         */
+        class StreamCapAttempt
+        {
+        public:
+            explicit StreamCapAttempt(const std::uint16_t port) : m_port(port)
+            {
+                m_config.maximumOpenedStreamCount = 1U;
+                m_task.emplace(run());
+                m_loop.scheduler().schedule(m_task->handle());
+                m_loopThread = std::thread([this] { m_loop.run(); });
+            }
+
+            ~StreamCapAttempt()
+            {
+                m_loop.stop();
+                if (m_loopThread.joinable())
+                {
+                    m_loopThread.join();
+                }
+            }
+
+            StreamCapAttempt(const StreamCapAttempt &)            = delete;
+            StreamCapAttempt &operator=(const StreamCapAttempt &) = delete;
+
+            bool awaitFinished(const std::chrono::milliseconds timeout)
+            {
+                return waitForCondition([this] { return m_isFinished.load(std::memory_order_acquire); }, timeout);
+            }
+
+            [[nodiscard]] bool isConnected() const noexcept
+            {
+                return m_isConnected;
+            }
+            [[nodiscard]] const Http3ClientResponse &first() const noexcept
+            {
+                return m_first;
+            }
+            [[nodiscard]] const Http3ClientResponse &second() const noexcept
+            {
+                return m_second;
+            }
+            [[nodiscard]] bool isHealthyAfterStreamExhaustion() const noexcept
+            {
+                return m_isHealthyAfterExhaustion;
+            }
+
+        private:
+            /// 在循环线程上跑完两条请求与一次健康检查
+            Core::Task<> run()
+            {
+                const std::string authority = "127.0.0.1:" + std::to_string(m_port);
+                const auto        address   = Core::InetAddress::resolve("127.0.0.1", m_port).value();
+                auto              link      = std::make_shared<Http3OutboundLink>(m_loop, makeLinkConfiguration(m_port), m_config);
+                m_isConnected               = co_await link->connect(address);
+                if (m_isConnected)
+                {
+                    m_first                    = co_await link->http3().request("https", authority, "GET", "/probe", {}, {}, std::chrono::milliseconds{3000});
+                    m_second                   = co_await link->http3().request("https", authority, "GET", "/probe", {}, {}, std::chrono::milliseconds{3000});
+                    m_isHealthyAfterExhaustion = link->http3().isHealthy();
+                }
+                m_isFinished.store(true, std::memory_order_release);
+                co_return;
+            }
+
+            Core::EventLoop               m_loop;
+            std::uint16_t                 m_port{0U};
+            Http3ClientConnection::Config m_config;
+            std::optional<Core::Task<>>   m_task{};
+            std::thread                   m_loopThread{};
+            Http3ClientResponse           m_first{};
+            Http3ClientResponse           m_second{};
+            bool                          m_isConnected{false};
+            bool                          m_isHealthyAfterExhaustion{true};
+            std::atomic<bool>             m_isFinished{false};
+        };
+
     } // namespace
 
     /**
@@ -732,6 +814,30 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(attempt.isLinkHealthyAfterOverflow()) << "越界把整条连接判死了：同连接上别的请求跟着遭殃";
         EXPECT_TRUE(attempt.following().isOk()) << "越界之后同一条连接上的下一条请求没答上来：" << attempt.following().errorMessage;
         EXPECT_EQ(attempt.following().body, std::string{kServedBody});
+    }
+
+    /**
+     * @brief 钉住：流号用尽之后这条链路不再算健康
+     * @details 客户端流号严格递增，名额用尽后本端只能回「换一条连接重来」（RFC 9000 §2.1）。出站池
+     *          读的正是 `isHealthy()` 来决定这条要不要从待命表里抹掉：只看连接层还活着，就会把一条
+     *          只会拒绝请求的链路一直留着，每次取用都先撞一次失败，而调用方看到的只是莫名变慢。
+     * @note 证伪：把 `isHealthy()` 里那条流号余量判定摘掉 → `isHealthyAfterStreamExhaustion()` 为真，
+     *       本用例红。第一条请求照旧答得出来是这条用例的前提（名额确实是被它用完的，不是一开始就没）。
+     */
+    TEST(Http3ClientConnection, StopsReportingHealthyOnceTheStreamBudgetIsExhausted)
+    {
+        RunningHttp3Server server;
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        StreamCapAttempt attempt{server.listeningPort()};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这两条请求既没跑完也没失败，挂在那里";
+        ASSERT_TRUE(attempt.isConnected()) << "链路没握上手，后面的判据都是空的";
+
+        EXPECT_TRUE(attempt.first().isOk()) << "第一条请求就该用完那个唯一的名额：" << attempt.first().errorMessage;
+        EXPECT_EQ(attempt.first().body, std::string{kServedBody});
+        EXPECT_FALSE(attempt.second().isOk()) << "流号到顶还被当成能提请求";
+        EXPECT_NE(attempt.second().errorMessage.find("上限"), std::string::npos) << "失败原因没点出是名额用尽：" << attempt.second().errorMessage;
+        EXPECT_FALSE(attempt.isHealthyAfterStreamExhaustion()) << "只会拒请求的链路还算健康：出站池会一直把它当可复用的存货";
     }
 
 } // namespace AsynGyanis::Net

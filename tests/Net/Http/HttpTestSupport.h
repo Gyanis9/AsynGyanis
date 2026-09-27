@@ -668,13 +668,16 @@ namespace AsynGyanis::Net
          *          才肯生产下一段，于是「一段一段发」由握手保证，不靠计时碰运气。
          * @param router 目标路由器
          * @param batchCount 服务端已交付的批次数（跨线程读写，按原子量记）
-         * @param receivedGuard 保护 receivedText 的锁
+         * @param receivedGuard 保护 receivedText 与 receivedContentType 的锁
          * @param receivedText 拼回的正文（处理器里拷出来，交用例读）
+         * @param receivedContentType 可选出参：服务端实际收到的 content-type 原文。三条通路共用这一份
+         *        判据——媒体类型应当与承载协议无关，哪一条把它丢了，这里就报空（h2 曾丢过一次）
          */
-        inline void registerStreamingEchoRoute(Router &router, std::atomic<std::size_t> *batchCount, std::mutex *receivedGuard, std::string *receivedText)
+        inline void registerStreamingEchoRoute(Router &router, std::atomic<std::size_t> *batchCount, std::mutex *receivedGuard, std::string *receivedText,
+                                               std::string *receivedContentType = nullptr)
         {
             router.postStreaming(std::string{kStreamEchoRoutePath},
-                                 [batchCount, receivedGuard, receivedText](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                                 [batchCount, receivedGuard, receivedText, receivedContentType](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
                                  {
                                      std::size_t batches{0};
                                      std::string text;
@@ -688,8 +691,13 @@ namespace AsynGyanis::Net
                                              batchCount->store(batches, std::memory_order_release);
                                          }
                                      }
+                                     const std::string                 receivedMedia = std::string{request.firstHeaderValueView("content-type").value_or(std::string_view{})};
                                      const std::lock_guard<std::mutex> guard(*receivedGuard);
                                      *receivedText = std::move(text);
+                                     if (receivedContentType != nullptr)
+                                     {
+                                         *receivedContentType = receivedMedia;
+                                     }
                                      response.setBody("echoed=" + std::to_string(batches));
                                      co_return;
                                  });
