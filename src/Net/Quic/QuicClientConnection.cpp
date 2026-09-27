@@ -279,6 +279,16 @@ namespace AsynGyanis::Net
             m_connection->requestClose();
         }
         m_isStopped = true;
+        // 套接字要跟着关掉：叫醒挂在可读上的协程的是销毁注册对象，不是把标记翻上去，而本类不自带后台
+        // 协程——对端一旦不再发东西，那条等待就没人收得回来（与析构里同一条理由）。顺序上先置标记再关：
+        // 醒来那一轮看到 m_isStopped / isClosed() 就自己收场，不会再往发送口写。
+        // 记一句实话：这条改动钉不出**它自己**的用例（回环上任何一条入站报文都算一次叫醒，把下面两行
+        // 摘掉现有用例照样绿），依据是析构那条同型规则与一次实测——满载并行跑全量时一条 h3 请求挂在
+        // 读上停过 25 秒不返回。叫醒机制本身由 `AsyncUdpSocket.CloseWakesCoroutineBlockedOnReceive` 钉。
+        if (m_socket != nullptr)
+        {
+            m_socket->close();
+        }
     }
 
     Core::EventLoop &QuicClientConnection::eventLoop() const noexcept

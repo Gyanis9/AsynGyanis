@@ -466,4 +466,36 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(socket.isValid()) << "递回一个对端错误不该把本端套接字一起判死";
     }
 
+    /**
+     * @brief 关掉数据报套接字必须叫醒挂在「等可读」上的接收协程
+     * @details 与 `AsyncSocket.CloseWakesCoroutineBlockedOnSend` 是对称的那一半，而这一半更常被用到：
+     *          QUIC 的收包循环与出站 HTTP/3 的请求循环都挂在数据报的读上，「对端不再说话」是常态而不
+     *          是意外。叫醒等待者的只能是 close() 里销毁注册对象那一步——关掉描述符本身不会让内核唤醒
+     *          等待者。这里全程没人发报文，因此「它醒了」只可能来自 close()。
+     * @note 证伪：把 `AsyncUdpSocket::close()` 里 `m_watcher.reset()` 摘掉 → 那条接收协程永不收尾，
+     *       本条红。
+     */
+    TEST(AsyncUdpSocket, CloseWakesCoroutineBlockedOnReceive)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        EventLoop      loop;
+        AsyncUdpSocket socket = bindLoopbackSocket(loop);
+        ASSERT_TRUE(socket.isValid());
+
+        std::array<char, 32>                        buffer{};
+        Task<AsyncUdpSocket::DatagramReceiveResult> receiving = socket.asyncReceiveFrom(buffer.data(), buffer.size());
+        static_cast<void>(receiving.handle().resume());
+        ASSERT_FALSE(receiving.isReady()) << "没挂在读上就没有判据：这条问的是「close 叫不叫醒等待者」";
+
+        // 与写侧那条同做法：关闭发生在事件循环线程上
+        socket.close();
+        // 唤醒是投递到调度队列的（注册对象正在析构，不能就地恢复），因此要把队列排空一次
+        loop.scheduler().runAll();
+
+        ASSERT_TRUE(receiving.isReady()) << "关掉套接字之后，卡在等可读上的协程仍未被唤醒：等它的人只能一直等";
+        const AsyncUdpSocket::DatagramReceiveResult received = receiving.handle().promise().result();
+        EXPECT_LE(received.receivedByteCount, static_cast<ssize_t>(0)) << "是被关掉叫醒的，却报成收到了字节：等待结果没区分「关闭」与「就绪」";
+    }
+
 } // namespace AsynGyanis::Core
