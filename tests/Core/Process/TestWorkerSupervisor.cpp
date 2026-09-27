@@ -214,7 +214,10 @@ namespace AsynGyanis::Core
             FAIL() << "Windows 上构造多进程编排应当被拒绝";
         } catch (const Base::LogicException &exception)
         {
-            EXPECT_NE(std::string(exception.what()).find("SO_REUSEPORT"), std::string::npos) << "拒绝原因应当说清缺的是端口共享能力：" << exception.what();
+            const std::string text{exception.what()};
+            EXPECT_NE(text.find("SO_REUSEPORT"), std::string::npos) << "拒绝原因应当说清缺的是端口共享能力：" << text;
+            // 光说「不支持」不够：拒绝的同时要把当下能用的形状交出来，否则调用方只能去翻代码
+            EXPECT_NE(text.find("workers 设为 1"), std::string::npos) << "拒绝信息应当给出可落地的替代配置：" << text;
         }
     }
 #else

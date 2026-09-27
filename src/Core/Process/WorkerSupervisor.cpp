@@ -75,10 +75,12 @@ namespace AsynGyanis::Core
                                        "crashLoopLimit 至少为 1（连续崩这么多次就停止补那个 worker）");
         }
 #if ASYN_PLATFORM_WIN32
-        // Windows 上没有 SO_REUSEPORT 的等价物，端口共享无从谈起：这里当场拒绝，
-        // 而不是让调用方拿到一个「启动了多个进程但只有一个能绑定端口」的假成功
-        throw Base::LogicException("Windows 不支持多进程 worker 模型：端口共享依赖 SO_REUSEPORT，而 Windows 没有等价物。"
-                                   "请把 workers 设为 1（单进程 + 多工作循环），或改在 Linux 上部署");
+        // Windows 上没有 SO_REUSEPORT 的等价物，本类「每 worker 各自 bind 同一端口」的分摊无从谈起：
+        // 这里当场拒绝，而不是让调用方拿到一个「启动了多个进程但只有一个能绑定端口」的假成功。
+        // 缺的是这套编排而不是交接通道（master 持有监听、逐个移交那条路的原语已在 Platform::Socket 与
+        // UpgradeChannel 里），要按那个形状做 worker 编排得单独设计，见类文档的 @note
+        throw Base::LogicException("Windows 上本类的多进程模型无法成立：每个 worker 各自绑定同一端口要靠 SO_REUSEPORT，"
+                                   "而 Windows 没有等价物。请把 workers 设为 1（单进程 + 多工作循环 + 接受分发），或改在 Linux 上部署");
 #else
         m_workers.resize(m_configuration.workerCount);
 #endif

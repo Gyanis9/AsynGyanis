@@ -213,10 +213,10 @@ int main(const int argc, char **argv)
                   "轮询间隔为 0 在构造期就被拒，否则循环会空转");
 
 #if ASYN_PLATFORM_WIN32
-    // Windows 上没有 SO_REUSEPORT：多进程共享端口无从谈起，构造当场拒绝而不是留下「只有一个能绑上」的假成功
-    samples.check(constructionRejects("Windows 上的多进程编排", Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 2},
-                                      "Windows 不支持多进程 worker 模型"),
-                  "Windows 构造多进程编排在当场被拒，改指 workers=1 或 Linux 部署");
+    // Windows 上没有 SO_REUSEPORT：本类「每 worker 各自 bind 同一端口」的分摊无从谈起，构造当场拒绝而不是留下「只有一个能绑上」的假成功
+    samples.check(
+            constructionRejects("Windows 上的多进程编排", Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 2}, "本类的多进程模型无法成立"),
+            "Windows 构造多进程编排在当场被拒，改指 workers=1 或 Linux 部署");
     return Samples::finishSample("core_worker");
 #else
     // —— 以下只在 POSIX 上跑：worker 真的被起起来、真的被补位、真的按时刻表收手 ——

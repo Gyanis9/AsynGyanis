@@ -1033,6 +1033,12 @@
   路由表里除本端标识之外只剩客户端最初选定的那个目的标识。刻意未做的还有路径迁移、0-RTT、
   RETRY 与 DATAGRAM 帧。
 
+- **Windows 上多进程编排那句拒绝语把去路一并说出来**。原文写的是「Windows 不支持多进程 worker 模型」，
+  读起来像「Windows 跑不了多进程」，而实际不成立的只是本类这套「每个 worker 各自 bind 同一端口」的内核分摊。
+  现在这句话点明缺的是 `SO_REUSEPORT` 的等价物，并给出当下可用的形状（`workers=1` + 多工作循环 + 接受分发）；
+  类文档另记一条：Windows 上缺的是这套编排而不是交接通道——master 独占监听、经 `Core::UpgradeChannel`
+  逐个移交那份套接字的原语已在库里（零停机换代在用），按这个形状编排 worker 还需另设计，本类未实现。
+
 ### 修复
 
 - **流式上传（`HttpClientRequest::bodySource`）在 HTTP/2 上不再丢掉 `content-type`**：h2 那一支备附加字段时

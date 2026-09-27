@@ -23,8 +23,13 @@ namespace AsynGyanis::Core
      * @brief 多进程 worker 的编排器（master 侧）：起进程、盯退出、按需重启、收尾送走；worker 参数全部由调用方给
      * @warning run() 必须在**进程还是单线程**时调用：worker 由 fork + exec 起（见 Platform::Process），
      *          多线程下 fork 出的子进程只带调用线程，锁与运行库状态都可能不自洽。
-     * @warning Windows 上多进程共享端口没有等价物（缺 SO_REUSEPORT），因此 workerCount > 1 在构造时
-     *          直接拒绝，而不是跑起来才发现只有一个进程能绑上端口。
+     * @warning Windows 上本类的共享端口模型（每个 worker 各自 bind 同一端口）不成立：端口分摊依赖
+     *          SO_REUSEPORT，而 Windows 没有等价物，因此 workerCount > 1 在构造时直接拒绝，
+     *          而不是跑起来才发现只有一个进程能绑上端口。
+     * @note Windows 上缺的是这一套编排而不是交接通道：master 绑定并 listen、自己不收连接，
+     *       改用 @c UpgradeChannel 把 Platform::Socket 复制出的那份监听套接字逐个交给 worker，
+     *       已排队的连接会随描述符一并过去（零停机换代走的就是这条路）。按这个形状编排 worker
+     *       还要处理「监听套接字由 master 独占、worker 崩了得重新移交」，本类未实现。
      * @note 进程之间**不共享任何状态**：按来源 IP 的并发限额、限流桶、指标计数都是各进程一份。
      *       多进程下这意味着「单来源上限 × N、请求速率上限 × N、指标要按进程分别采集」——
      *       要真正的全局口径就得引入进程间共享（或改用单进程多工作循环 + 接受分发）。
@@ -51,7 +56,7 @@ namespace AsynGyanis::Core
          * @brief 校验配置并构造
          * @param configuration 编排参数
          * @throws Base::LogicException 配置不成立（可执行文件为空、workerCount 小于 2、崩溃判据
-         *         非正）或本平台不支持（Windows 上没有 SO_REUSEPORT，多进程无法共享端口；
+         *         非正）或本平台跑不了这套模型（Windows 没有 SO_REUSEPORT，多个进程绑不上同一个端口；
          *         提示改用 workers=1）
          */
         explicit WorkerSupervisor(Configuration configuration);
