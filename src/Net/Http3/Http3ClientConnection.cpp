@@ -221,7 +221,7 @@ namespace AsynGyanis::Net
         }
         exchange.response.body.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         // 拷进本端缓冲就是消费掉了，当场把额度还回去。协议层刻意把 DATA 载荷的归还留给接收方
-        // （`Http3Connection::creditConsumedBytes` 只就地上还非载荷字节），不还在这里还就没有别处还：
+        // （`Http3Connection::creditConsumedBytes` 只就地归还非载荷字节），不还在这里还就没有别处还：
         // 对端写满本端宣告的流窗口（每条 256 KiB）就不再发，而本端还在等它继续发
         m_connection.extendReceiveWindow(streamId, bytes.size());
     }

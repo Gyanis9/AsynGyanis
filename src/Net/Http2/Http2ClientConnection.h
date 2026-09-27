@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -45,6 +46,18 @@ namespace AsynGyanis::Net
             return statusCode != 0 && errorMessage.empty();
         }
     };
+
+    /**
+     * @brief 一条 h2 响应正文的接收口，按到达批次交出这条流上的正文
+     * @details 读法与 HTTP/1.1 那一侧的接收口一致，只是头部落在 `Http2ClientResponse` 里。两处不同：
+     *          收口时 RST_STREAM 结掉这一条流就够（h1 没有流可结，只能关整条连接）；且流控窗口按交付
+     *          进度归还，一批没交完就不还额度——这既是背压的落点，也是本端内存的上界。
+     * @param head 这条流当前的响应记录（状态码与头部可信，`body` 恒为空；只在本次调用内有效）
+     * @param batch 本批正文（只在本次调用内有效；`isLastBatch` 为真时可为空，表示零长收尾）
+     * @param isLastBatch 是否最后一批：收到带 END_STREAM 的帧，或本端按上限判死
+     * @return true 还要下一批；false 就此收口（本端 RST 掉这条流，连接仍可用）
+     */
+    using Http2ResponseBodyReceiver = std::function<Core::Task<bool>(const Http2ClientResponse &head, std::string_view batch, bool isLastBatch)>;
 
     /**
      * @brief HTTP/2 的客户端一侧：与自家 Http2Connection（服务端角色）互为对端
@@ -143,11 +156,13 @@ namespace AsynGyanis::Net
          * @param body 请求正文；为空时头块直接带 END_STREAM。超出对端流控窗口的部分会等 WINDOW_UPDATE
          *        续发，等待期间照常处理对端送来的帧
          * @param waitTimeout 本次请求的整体时限：写出、等响应头、收完正文三段之和
+         * @param responseReceiver 响应正文的接收口；留空即整份攒进返回值的 body（挂法见
+         *        `Http2ResponseBodyReceiver`：交一批才还一批的额度）
          * @return Http2ClientResponse 响应；失败时 errorMessage 给出断在哪一段
          */
         [[nodiscard]] Core::Task<Http2ClientResponse> request(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
                                                               const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
-                                                              std::chrono::milliseconds waitTimeout);
+                                                              std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver = {});
 
         /**
          * @brief 提一条**流式正文**的请求：正文由 bodySource 一段一段交出，交完才收尾流
@@ -164,11 +179,12 @@ namespace AsynGyanis::Net
          * @param extraHeaders 普通请求字段（含 content-type 这类由调用方给的）
          * @param bodySource 正文来源；交 nullopt 表示结束
          * @param waitTimeout 本次请求的整体时限（含生产正文那一段）
+         * @param responseReceiver 响应正文的接收口；留空即整份攒进返回值的 body
          * @return Http2ClientResponse 结论；正文写到一半被对端中止时按失败交出
          */
         [[nodiscard]] Core::Task<Http2ClientResponse> requestStreamed(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
                                                                       const std::vector<std::pair<std::string, std::string>> &extraHeaders, const HttpBodyChunkSource &bodySource,
-                                                                      std::chrono::milliseconds waitTimeout);
+                                                                      std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver = {});
 
         /**
          * @brief 礼貌收尾：先尽力把 GOAWAY 发出去，再关掉通路
@@ -337,8 +353,14 @@ namespace AsynGyanis::Net
             std::string             pendingHeaderBlock;            ///< 头块累积字节（CONTINUATION 之前先攒着）
             bool                    isAwaitingContinuation{false}; ///< 正在收一段头块（等 CONTINUATION）
             bool                    isResponseComplete{false};     ///< 收到带 END_STREAM 的帧
-            bool                    isReset{false};                ///< 对端 RST 掉了这条流
+            bool                    isReset{false};                ///< 这条流已判死（对端 RST、本端越限或接收口收口）
             std::coroutine_handle<> waiter{};                      ///< 挂在这条流上的请求协程；空表示没人等
+            // 响应正文的接收口；空表示整份攒进 response.body。挂了就多一条规矩：额度按交付进度归还，
+            // 本端缓冲因此以一档接收窗口为上界，而不是以正文总长为上界
+            Http2ResponseBodyReceiver responseReceiver{};
+            std::string               undeliveredBodyBytes{};       ///< 到了货但还没交给接收口的那段正文
+            std::size_t               receivedBodyByteCount{0};     ///< 这条流上累计收到的正文字节（上限按它判，不按缓冲）
+            bool                      isFinalBatchDelivered{false}; ///< 收尾那一批（含零长收尾）已经交出去了
         };
 
         /// 处理一层已解出的帧；返回 false 表示连接不可再用
@@ -421,17 +443,32 @@ namespace AsynGyanis::Net
          * @param body 整份正文；走流式时为空
          * @param bodySourceOrNull 流式正文的来源，空指针表示用 body
          * @param waitTimeout 本次请求的整体时限
+         * @param responseReceiverOrNull 响应正文的接收口，空指针表示整份攒进响应的 body
          * @return Http2ClientResponse 结论
          */
         Core::Task<Http2ClientResponse> requestWithBody(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
                                                         const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
-                                                        const HttpBodyChunkSource *bodySourceOrNull, std::chrono::milliseconds waitTimeout);
+                                                        const HttpBodyChunkSource *bodySourceOrNull, std::chrono::milliseconds waitTimeout,
+                                                        const Http2ResponseBodyReceiver *responseReceiverOrNull);
+
+        /**
+         * @brief 把这条流上到了货的正文交一批给接收口，交完才归还这一批的流控额度
+         * @details 只有提起这条流的那个协程会调它：驱动通路的那位负责读字节，不负责替别人交货，
+         *          否则接收口就跑在了别人的栈上。
+         * @param stream 要交货的那条流
+         * @return true 接收口还要下一批
+         * @return false 接收口收口了（本端已 RST 这条流）
+         */
+        Core::Task<bool> deliverReceivedBody(PendingStream &stream);
 
         /// 本端 SETTINGS 的编码结果（通告 INITIAL_WINDOW_SIZE 与 MAX_FRAME_SIZE 两项）
         [[nodiscard]] std::string encodeLocalSettings() const;
 
         /// 归还本端已消费的接收窗口（连接级 + 流级各一条）
         void creditWindow(std::uint32_t streamId, std::uint32_t increment);
+
+        /// 只归还连接级窗口：流已经 RST 掉了，再替它发一条流级 WINDOW_UPDATE 就是§5.1 禁止的动作
+        void creditConnectionWindow(std::uint32_t increment);
 
         /**
          * @brief 把这条流的正文判到本端胃口之外：流死掉并交代一条 RST(CANCEL)，连接留着

@@ -14,6 +14,7 @@
 #include <array>
 #include <chrono>
 #include <coroutine>
+#include <format>
 #include <memory>
 #include <string>
 #include <thread>
@@ -1123,6 +1124,174 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        /// 「逐批交付」这一趟的结论（对端是自家服务端）
+        struct BatchDeliveryRunOutcome
+        {
+            bool isStarted{false}; ///< 前奏是否走完
+
+            std::vector<std::string> batches;                  ///< 接收口每次拿到的那一批，按交付顺序
+            std::vector<bool>        isLastFlags;              ///< 每批上带的「是收尾」标记
+            int                      statusCode{0};            ///< 请求交回的状态码
+            bool                     isOk{false};              ///< 请求交回的结论算不算成功
+            std::string              returnedBody;             ///< 交回的正文字节：挂了接收口就该是空的
+            std::string              errorMessage;             ///< 失败原因
+            bool                     isHealthyAfterRun{false}; ///< 这一趟跑完连接还算不算可用
+
+            int         followUpStatusCode{0}; ///< 同一条连接上紧接着那条普通请求的状态码
+            std::string followUpBody;          ///< 它答回来的正文
+        };
+
+        /**
+         * @brief 挂上接收口走一条 /echo 请求；交够 stopAfterBatchCount 批就主动收口
+         * @details 接收口只在事件循环线程上被叫到，记录直接落进 outcome，因此不需要跨线程同步。
+         * @param loop 客户端事件循环
+         * @param port 服务端端口
+         * @param payload 发上去、再由 /echo 原样答回来的字节
+         * @param stopAfterBatchCount 收到这么多批就返回 false；0 表示交完整个流
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runBatchDeliveringClient(Core::EventLoop &loop, const std::uint16_t port, const std::string &payload, const std::size_t stopAfterBatchCount,
+                                                  BatchDeliveryRunOutcome &outcome)
+        {
+            auto connection   = co_await openConnection(loop, port);
+            outcome.isStarted = connection != nullptr;
+            if (connection != nullptr)
+            {
+                // 接收口会被按值存进这条流的记录里，它引用的这两份对象都得活到请求结束：outcome 由
+                // 用例持有并活到 loop.run() 之后，payload 是本协程帧上的形参
+                const Http2ResponseBodyReceiver receiver = [&outcome, stopAfterBatchCount](const Http2ClientResponse &, const std::string_view batch,
+                                                                                           const bool isLastBatch) -> Core::Task<bool>
+                {
+                    outcome.batches.emplace_back(batch);
+                    outcome.isLastFlags.push_back(isLastBatch);
+                    co_return stopAfterBatchCount == 0U || outcome.batches.size() < stopAfterBatchCount;
+                };
+                const Http2ClientResponse response =
+                        co_await connection->request("http", "127.0.0.1:" + std::to_string(port), "POST", "/echo", {}, payload, kClientWaitTimeout, receiver);
+                outcome.statusCode        = response.statusCode;
+                outcome.isOk              = response.isOk();
+                outcome.returnedBody      = std::move(response.body);
+                outcome.errorMessage      = std::move(response.errorMessage);
+                outcome.isHealthyAfterRun = connection->isHealthy();
+
+                // 再问一条普通的：h2 收口一条流不该牵连别人，这条能答上来才是「连接仍可复用」的证据
+                const Http2ClientResponse followUp = co_await connection->request("http", "127.0.0.1:" + std::to_string(port), "GET", "/hello", {}, {}, kClientWaitTimeout);
+                outcome.followUpStatusCode         = followUp.statusCode;
+                outcome.followUpBody               = std::move(followUp.body);
+                if (stopAfterBatchCount == 0U)
+                {
+                    co_await connection->shutdown();
+                }
+            }
+            loop.stop();
+            co_return;
+        }
+
+        /// 「接收口收口」这一趟的结论（对端是脚本化的假对端，重点是它看见本端发了哪些帧）
+        struct ReceiverStopRunOutcome
+        {
+            bool        isStarted{false};          ///< 前奏是否走完
+            std::size_t deliveredBatchCount{0};    ///< 一共交了几批
+            int         statusCode{0};             ///< 交回的状态码
+            bool        isOk{false};               ///< 交回的结论算不算成功
+            std::string returnedBody;              ///< 交回的正文字节
+            std::string errorMessage;              ///< 失败原因
+            bool        isHealthyAfterStop{false}; ///< 收口之后连接还算不算可用
+        };
+
+        /**
+         * @brief 回一句 200、连发若干段正文，然后把本端发出的帧全收集起来的对端
+         * @details 收集是这条用例的重点：要判的不是「请求成功了」，而是本端在这条流上到底发了哪些帧、
+         *          顺序对不对（窗口更新该在 RST 之前，之后一条都不许再有流级的）。
+         * @note 正文总量要小到一次 `writeAll` 就能塞进回环缓冲：接收口半路收口会关掉通路，那时还堵在
+         *       写上的字节会让这个脚本带着异常退场，后面的帧就一条也收不到了。
+         * @param loop 脚本所属的事件循环（脚本负责在收口时把它停下来）
+         * @param peer 对端一侧的通路
+         * @param received 输出：本端发出的帧，按到达顺序
+         * @param chunkByteCount 每段正文的字节数
+         * @param chunkCount 段数（最后一段带 END_STREAM）
+         */
+        Core::Task<void> runBatchPeerCapturingFrames(Core::EventLoop &loop, TcpStream peer, PeerFrames &received, const std::size_t chunkByteCount, const std::size_t chunkCount)
+        {
+            Http2FrameDecoder    decoder;
+            std::array<char, 24> preface{};
+            static_cast<void>(co_await peer.readExact(preface.data(), preface.size()));
+            static_cast<void>(co_await readPeerFrames(peer, decoder, 1)); // 本端的 SETTINGS
+            try
+            {
+                const std::string greeting = makeFrame(Http2FrameType::Settings, 0U, 0U, {});
+                co_await peer.writeAll(greeting.data(), greeting.size());
+                const PeerFrames headBatch = co_await readPeerFrames(peer, decoder, 1); // 本端的 HEADERS
+                for (const Http2Frame &frame: headBatch.frames)
+                {
+                    received.frames.push_back(frame);
+                }
+
+                HpackEncoder      peerEncoder;
+                const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
+                std::string       bytes       = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock);
+                for (std::size_t index = 0; index < chunkCount; ++index)
+                {
+                    const bool isLast = index + 1 == chunkCount;
+                    bytes += makeFrame(Http2FrameType::Data, isLast ? kHttp2FlagEndStream : 0U, 1U, std::string(chunkByteCount, 'x'));
+                }
+                co_await peer.writeAll(bytes.data(), bytes.size());
+
+                // 答完之后一直读到本端收口：它该发的窗口更新与 RST 都落在这一段里
+                while (true)
+                {
+                    const PeerFrames batch = co_await readPeerFrames(peer, decoder, 1);
+                    for (const Http2Frame &frame: batch.frames)
+                    {
+                        received.frames.push_back(frame);
+                    }
+                    if (!batch.errorText.empty() || batch.frames.empty())
+                    {
+                        break; // 通路收口或解不下去了：已攒到的帧照样交给用例
+                    }
+                }
+            } catch (const std::exception &)
+            {
+                // 本端先把通路关掉了：脚本就此为止
+            }
+            // 收 loop 的是这条脚本而不是客户端：本端一收口就关掉通路，那之后还堵在套接字里的
+            // 最后几帧要留给上面的读取循环排空，否则用例看不见本端最后发出去的动作
+            loop.stop();
+            co_return;
+        }
+
+        /**
+         * @brief 在脚本对端上挂接收口，交够 stopAfterBatchCount 批就返回 false 收口
+         * @param loop 客户端事件循环
+         * @param clientSide 本端一侧的通路
+         * @param stopAfterBatchCount 交多少批之后收口
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runReceiverStoppingClient(Core::EventLoop &loop, TcpStream clientSide, const std::size_t stopAfterBatchCount, ReceiverStopRunOutcome &outcome)
+        {
+            auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
+            outcome.isStarted = co_await connection->start(kClientWaitTimeout);
+
+            std::size_t deliveredBatchCount = 0;
+            // deliveredBatchCount 是本协程帧上的对象：接收口被复制进流记录之后仍指着它，而这条流
+            // 由本协程从头等到尾，因此活到最后一次叫停
+            const Http2ResponseBodyReceiver receiver = [&deliveredBatchCount, stopAfterBatchCount](const Http2ClientResponse &, const std::string_view,
+                                                                                                   const bool) -> Core::Task<bool>
+            {
+                ++deliveredBatchCount;
+                co_return deliveredBatchCount < stopAfterBatchCount;
+            };
+
+            const Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout, receiver);
+            outcome.deliveredBatchCount        = deliveredBatchCount;
+            outcome.statusCode                 = response.statusCode;
+            outcome.isOk                       = response.isOk();
+            outcome.returnedBody               = std::move(response.body);
+            outcome.errorMessage               = std::move(response.errorMessage);
+            outcome.isHealthyAfterStop         = connection->isHealthy();
+            co_return;
+        }
+
     } // namespace
 
     /**
@@ -1820,4 +1989,114 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.bodies[0], "peer-body-/tick-a") << "第一条拿到了别人的响应：" << outcome.bodies[0];
         EXPECT_EQ(outcome.bodies[1], "peer-body-/tick-b") << "第二条拿到了别人的响应：" << outcome.bodies[1];
     }
+    /**
+     * @brief 钉住：挂着接收口时响应正文一批一批交出去，且额度按交付进度归还
+     * @details 判据为什么是「批数 > 1」：本端给连接级的窗口是协议默认的 65535，而 /echo 答回来的是
+     *          200 KiB——对端发满一档就得等本端的 WINDOW_UPDATE，本端那一档里到的货会被合成一批交出去，
+     *          于是「多条窗口边界」必然落成「多次交付」，不靠调度运气。反过来，只在收齐之后一次性交付的
+     *          实现这里只会看到一批。
+     * @note 证伪：把 `handleDataFrame` 里「挂了接收口就攒着待交」改回直接 append 进 body → 接收口一批
+     *       也拿不到、batches 为空而红；把交付时的 `creditWindow` 摘掉 → 对端发满一档就再也推不动，
+     *       整条请求等到时限而红。
+     */
+    TEST(Http2ClientConnection, DeliversResponseBodyInBatchesAndCreditsAfterEachDelivery)
+    {
+        RunningHttpServerFixture fixture(
+                HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, [](Router &router, Core::EventLoop &loop) { registerEchoRoute(router, loop); },
+                HttpParserLimits{}, [](TestHttpServer &server) { static_cast<void>(server.setHttp2CleartextEnabled(true)); });
+        ASSERT_TRUE(fixture.awaitRunning(kClientWaitTimeout)) << "服务端未在时限内进入接受循环";
+
+        const std::string       payload(200U * 1024U, 'y');
+        Core::EventLoop         loop;
+        BatchDeliveryRunOutcome outcome;
+        auto                    work = runBatchDeliveringClient(loop, fixture.listeningPort(), payload, 0U, outcome);
+        static_cast<void>(work.handle().resume());
+        loop.run();
+
+        ASSERT_TRUE(outcome.isStarted) << "前奏没走完，后面的判据都是空的";
+        EXPECT_TRUE(outcome.isOk) << "这一趟本该正常收完：" << outcome.errorMessage;
+        EXPECT_TRUE(outcome.returnedBody.empty()) << "挂了接收口还把整份正文留在响应里：白攒一份内存";
+        ASSERT_FALSE(outcome.batches.empty()) << "一批都没交出去";
+        EXPECT_GT(outcome.batches.size(), 1U) << "只在收齐之后交了一次：逐批交付没生效";
+        std::string stitched;
+        for (const std::string &batch: outcome.batches)
+        {
+            stitched += batch;
+        }
+        EXPECT_EQ(stitched, payload) << "拼接后的正文与对端答出来的不等（交了多少批：" << outcome.batches.size() << "）";
+        ASSERT_EQ(outcome.isLastFlags.size(), outcome.batches.size());
+        EXPECT_TRUE(outcome.isLastFlags.back()) << "最后一批没带上收尾标记：接收口分不清「走完了」与「断了」";
+        EXPECT_EQ(std::count(outcome.isLastFlags.begin(), outcome.isLastFlags.end(), true), 1) << "收尾标记出现了不止一次";
+    }
+
+    /**
+     * @brief 钉住：接收口返回 false 时本端只结这一条流，且不再替它发窗口更新
+     * @details 这是 h2 比 h1 强的那一点：h1 收口只能关掉整条连接，h2 的帧是分流的，RST_STREAM 结掉
+     *          这一条就够（§5.3.2）。三条判据各钉一处：交够指定的批数、对端看见一条带 CANCEL 的
+     *          RST_STREAM、而 RST 之后不许再出现这一条流的 WINDOW_UPDATE——§5.1 把「已关闭流上的窗口
+     *          更新」判成 STREAM_CLOSED，发出去就是把本端的收口做成对端眼里的协议错。
+     * @note 证伪：把 `deliverReceivedBody` 里那句 RST 摘掉 → 对端看不见 RST 而红；把收口那一批的归还
+     *       从 `creditConnectionWindow` 换成 `creditWindow` → RST 之后多出一条流级窗口更新而红。
+     */
+    TEST(Http2ClientConnection, ResetsOnlyThatStreamWhenTheReceiverClosesIt)
+    {
+        constexpr std::size_t kStopAfterBatchCount = 2U;
+        constexpr std::size_t kChunkByteCount      = 8192U;
+        constexpr std::size_t kChunkCount          = 3U; ///< 交完两批就该收口，第三段还用不上
+
+        Core::EventLoop loop;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames             peerSaw;
+        ReceiverStopRunOutcome outcome;
+        auto                   peerWork   = runBatchPeerCapturingFrames(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), peerSaw, kChunkByteCount, kChunkCount);
+        auto                   clientWork = runReceiverStoppingClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), kStopAfterBatchCount, outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        ASSERT_TRUE(outcome.isStarted) << "前奏没走完，后面的判据都是空的";
+        EXPECT_EQ(outcome.deliveredBatchCount, kStopAfterBatchCount) << "交出去的批数不对：接收口说的「不要了」没被当数";
+        EXPECT_TRUE(outcome.isOk) << "主动收口是一次成功的交换，不是失败：" << outcome.errorMessage;
+        EXPECT_TRUE(outcome.returnedBody.empty());
+        EXPECT_TRUE(outcome.isHealthyAfterStop) << "收掉一条流把整条连接也判死了：同连接上别的流被连坐";
+
+        // 帧序列进报错文本：这三条判据红的时候，「对端到底看见了什么」就是唯一的线索
+        std::string peerSawText;
+        for (const Http2Frame &frame: peerSaw.frames)
+        {
+            peerSawText += std::format("{}(stream={}) ", http2FrameTypeName(frame.header.type), frame.header.streamId);
+        }
+        std::size_t resetFrameIndex        = peerSaw.frames.size();
+        std::size_t streamWindowUpdate     = 0;
+        std::size_t streamCreditAfterReset = 0;
+        for (std::size_t index = 0; index < peerSaw.frames.size(); ++index)
+        {
+            const Http2Frame &frame = peerSaw.frames[index];
+            if (frame.header.type == Http2FrameType::RstStream && frame.header.streamId == 1U)
+            {
+                Http2RstStreamPayload payload;
+                if (parseHttp2RstStreamPayload(frame, payload) && payload.errorCode == Http2ErrorCode::Cancel)
+                {
+                    resetFrameIndex = index;
+                }
+            }
+            if (frame.header.type == Http2FrameType::WindowUpdate && frame.header.streamId == 1U)
+            {
+                if (index < resetFrameIndex)
+                {
+                    ++streamWindowUpdate;
+                } else
+                {
+                    ++streamCreditAfterReset;
+                }
+            }
+        }
+        EXPECT_LT(resetFrameIndex, peerSaw.frames.size()) << "本端没替这条流交代 RST_STREAM(CANCEL)：对端会一直发下去。看见的帧：" << peerSawText;
+        EXPECT_GE(streamWindowUpdate, 1U) << "交出去的那一批没还窗口：背压的落点没接上。看见的帧：" << peerSawText;
+        EXPECT_EQ(streamCreditAfterReset, 0U) << "RST 之后还在替这条流发 WINDOW_UPDATE（§5.1：对已关闭的流是非法动作）。看见的帧：" << peerSawText;
+    }
+
 } // namespace AsynGyanis::Net

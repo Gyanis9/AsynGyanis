@@ -90,6 +90,18 @@ namespace AsynGyanis::Net
         appendOutgoing(encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = increment}, 0U));
     }
 
+    void Http2ClientConnection::creditConnectionWindow(const std::uint32_t increment)
+    {
+        if (increment == 0U)
+        {
+            return;
+        }
+        // 只还连接级那一本账：这条流已经不在了（收齐、被判死或已被本端 RST），再替它发一条流级
+        // WINDOW_UPDATE 就是 §5.1 不许的动作（对 closed 流的窗口更新按 STREAM_CLOSED 论）。
+        // 但这些字节确实占过连接窗口，不还就是让整条连接的额度随每次收口一路漏下去
+        appendOutgoing(encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = increment}, 0U));
+    }
+
     std::string Http2ClientConnection::encodeLocalSettings() const
     {
         Http2SettingsPayload payload;
@@ -422,9 +434,11 @@ namespace AsynGyanis::Net
             return true; // 记录都不在了，没有可等的东西
         }
         const PendingStream &stream = iterator->second;
+        // 「有到了货还没交出去的正文」这一条是接收口那支的：额度要等它交货才还，人挂着不还
+        // 就是对端等本端、本端等对端。
         // 「此刻没人驱动连接」这一条不能省：等着的人里必须有一个去当驱动者，否则全体挂起、
         // 连上再没人读字节，连接就地僵在这里
-        return stream.isResponseComplete || stream.isReset || !m_connection->isHealthy() || !m_connection->m_isPumpLeaseTaken;
+        return stream.isResponseComplete || stream.isReset || !stream.undeliveredBodyBytes.empty() || !m_connection->isHealthy() || !m_connection->m_isPumpLeaseTaken;
     }
 
     bool Http2ClientConnection::StreamAwaiter::await_suspend(const std::coroutine_handle<> waiter) noexcept
@@ -607,8 +621,9 @@ namespace AsynGyanis::Net
         const auto          iterator = m_pendingStreams.find(streamId);
         if (iterator == m_pendingStreams.end())
         {
-            // 已收完或已被 RST 的流上还在来数据：字节仍占着连接窗口，账要还，内容丢掉
-            creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
+            // 已收完或已被 RST 的流上还在来数据：字节仍占着连接窗口，账要还，内容丢掉。
+            // 只还连接级——这条流本端已经不认了，替它发流级窗口更新是 §5.1 禁止的动作
+            creditConnectionWindow(static_cast<std::uint32_t>(payload.data.size()));
             return true;
         }
         PendingStream &stream = iterator->second;
@@ -625,22 +640,32 @@ namespace AsynGyanis::Net
         if (stream.isReset)
         {
             // 这条流已经判死（本端正面上限、对端 RST、流控越界）：字节仍占着连接窗口，账要还，
-            // 内容丢掉。放任它 append 就是让一份永远不会交回调用方的正文继续长
-            creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
+            // 内容丢掉。放任它 append 就是让一份永远不会交回调用方的正文继续长。只还连接级：
+            // 本端已经 RST 过的流再收窗口更新，按 §5.1 是对 closed 流的非法动作
+            creditConnectionWindow(static_cast<std::uint32_t>(payload.data.size()));
             return true;
         }
         stream.response.isAnyByteReceived = true;
-        if (m_config.maximumResponseBodyBytes != 0U && stream.response.body.size() + payload.data.size() > m_config.maximumResponseBodyBytes)
+        // 上限按**累计**收到的字节判：挂了接收口时正文交一批就腾空一批，只量缓冲的话一道闸门
+        // 就只剩「一次能堆多大」，对端可以一直发下去
+        stream.receivedBodyByteCount += payload.data.size();
+        if (m_config.maximumResponseBodyBytes != 0U && stream.receivedBodyByteCount > m_config.maximumResponseBodyBytes)
         {
             // 上限是本端的胃口，不是对端犯了协议错：只结这一条流（RST CANCEL），连接留给别的流用
             rejectStreamForBodyLimit(stream);
+            // 越界那一批的连接级额度照样要还（收下不还让整条连接的窗口一路漏），但这条流已被
+            // 本端 RST，不再替它发流级窗口更新
+            creditConnectionWindow(static_cast<std::uint32_t>(payload.data.size()));
+        } else if (stream.responseReceiver)
+        {
+            // 挂了接收口：这一段攒着待交，额度等这一批交完再还。还得早了就没有背压——
+            // 对端会照着窗口继续往下灌，本端缓冲的上界就成了正文总长而不是一档窗口
+            stream.undeliveredBodyBytes.append(payload.data);
         } else
         {
             stream.response.body.append(payload.data);
+            creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
         }
-        // 越界那一批照样把窗口还回去：收下不还让连接级窗口一路漏下去，而对端收到 RST 之后
-        // 就不该再在这条流上发字节了
-        creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
         if (payload.endStream)
         {
             stream.isResponseComplete = true;
@@ -834,22 +859,26 @@ namespace AsynGyanis::Net
 
     Core::Task<Http2ClientResponse> Http2ClientConnection::request(const std::string_view scheme, const std::string_view authority, const std::string_view method,
                                                                    const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-                                                                   const std::string_view body, const std::chrono::milliseconds waitTimeout)
+                                                                   const std::string_view body, const std::chrono::milliseconds waitTimeout,
+                                                                   const Http2ResponseBodyReceiver &responseReceiver)
     {
-        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, body, nullptr, waitTimeout);
+        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, body, nullptr, waitTimeout, responseReceiver ? &responseReceiver : nullptr);
     }
 
     Core::Task<Http2ClientResponse> Http2ClientConnection::requestStreamed(const std::string_view scheme, const std::string_view authority, const std::string_view method,
                                                                            const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-                                                                           const HttpBodyChunkSource &bodySource, const std::chrono::milliseconds waitTimeout)
+                                                                           const HttpBodyChunkSource &bodySource, const std::chrono::milliseconds waitTimeout,
+                                                                           const Http2ResponseBodyReceiver &responseReceiver)
     {
-        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, std::string_view{}, &bodySource, waitTimeout);
+        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, std::string_view{}, &bodySource, waitTimeout,
+                                           responseReceiver ? &responseReceiver : nullptr);
     }
 
     Core::Task<Http2ClientResponse> Http2ClientConnection::requestWithBody(const std::string_view scheme, const std::string_view authority, const std::string_view method,
                                                                            const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
                                                                            const std::string_view body, const HttpBodyChunkSource *const bodySourceOrNull,
-                                                                           const std::chrono::milliseconds waitTimeout)
+                                                                           const std::chrono::milliseconds        waitTimeout,
+                                                                           const Http2ResponseBodyReceiver *const responseReceiverOrNull)
     {
         Http2ClientResponse response;
         if (!isHealthy())
@@ -888,7 +917,13 @@ namespace AsynGyanis::Net
         pending.streamId = streamId;
         // 新流的发送窗口从对端通告的初值起算（§6.9.2）；本端 SETTINGS 里那条改的是自己收侧的账
         pending.sendWindowByteCount = static_cast<std::int64_t>(m_peerInitialStreamWindowByteCount);
-        PendingStream &stream       = m_pendingStreams.emplace(streamId, std::move(pending)).first->second;
+        // 接收口按值存进这条流的记录：调用方那份 std::function 只保证活到 co_await 返回，
+        // 而这份记录要在好几次唤醒里都认得「该把正文交给谁」
+        if (responseReceiverOrNull != nullptr)
+        {
+            pending.responseReceiver = *responseReceiverOrNull;
+        }
+        PendingStream &stream = m_pendingStreams.emplace(streamId, std::move(pending)).first->second;
 
         const std::string headerBlock = m_encoder.encode(fields);
         // 只有「既没有整份正文、也没有流式来源」才轮到 HEADERS 收尾：END_STREAM 落在头块上就等于
@@ -959,6 +994,12 @@ namespace AsynGyanis::Net
 
         while (isHealthy())
         {
+            // 先交货再判收齐：带着 END_STREAM 的那一批也在货里，判据排在前面就把收尾漏给了调用方。
+            // 交货只由提起这条流的人做——驱动通路的那位负责读字节，不替别人的接收口干活
+            if (stream.responseReceiver && !co_await deliverReceivedBody(stream))
+            {
+                break; // 接收口收口：这条流已被本端 RST，连接留着给别的流用
+            }
             if (stream.isResponseComplete || stream.isReset)
             {
                 break;
@@ -997,6 +1038,45 @@ namespace AsynGyanis::Net
         }
         co_await retireIfStreamBudgetSpent();
         co_return response;
+    }
+
+    Core::Task<bool> Http2ClientConnection::deliverReceivedBody(PendingStream &stream)
+    {
+        const bool isLastBatch = stream.isResponseComplete;
+        if (stream.undeliveredBodyBytes.empty() && (!isLastBatch || stream.isFinalBatchDelivered))
+        {
+            co_return true; // 还没到货；或收尾那一批（含零长收尾）已经交过了
+        }
+
+        // 取走这一批再交：本端缓冲就此腾空，而额度要到交完才还，对端能压在本端窗口里的
+        // 字节因此不超过 Config::initialWindowByteCount
+        std::string batch;
+        batch.swap(stream.undeliveredBodyBytes);
+        const std::size_t takenByteCount = batch.size();
+        stream.isFinalBatchDelivered     = stream.isFinalBatchDelivered || isLastBatch;
+
+        if (!co_await stream.responseReceiver(stream.response, std::string_view{batch}, isLastBatch))
+        {
+            // 调用方主动收的口：头部仍是完整可信的响应，正文到此为止。结掉这一条流就够了（§5.3.2），
+            // 不必像 h1 那样关整条连接——帧是分流的，剩下的字节认领得回来
+            stream.isReset = true;
+            appendOutgoing(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, stream.streamId));
+            // 这批字节确实占过连接窗口：不还的话每收一次口就漏掉一批额度，整条连接迟早停摆
+            creditConnectionWindow(static_cast<std::uint32_t>(takenByteCount));
+            static_cast<void>(co_await flushOutgoing());
+            co_return false;
+        }
+        if (takenByteCount != 0)
+        {
+            // 交完才还这一批的额度：这就是背压的落点。攒着不还也得有人把它写出去，
+            // 否则对端等窗口、本端等对端发下一批，两边互等成一次超时
+            creditWindow(stream.streamId, static_cast<std::uint32_t>(takenByteCount));
+            if (!co_await flushOutgoing())
+            {
+                co_return false; // 通路已不可用，外层按「不健康」收场
+            }
+        }
+        co_return true;
     }
 
     Core::Task<void> Http2ClientConnection::shutdown()
