@@ -62,13 +62,12 @@ namespace
 
     /**
      * @brief 发一次带接收口的请求（具名协程：IIFE 的闭包对象在全表达式结束时就成了悬空 this）
-     * @param loop 本次用的事件循环
      * @param client 带池的客户端
-     * @param url 目标地址
+     * @param url 目标地址（按值收：本协程会带着它 co_await）
      * @param observation 观测结果
      * @param stopAfterBatchCount 收到这么多批就返回 false 主动收口；0 表示交完整个流
      */
-    Task<void> streamOnceTask(EventLoop &loop, HttpClient &client, std::string url, DeliveryObservation &observation, std::size_t stopAfterBatchCount)
+    Task<void> streamOnceTask(HttpClient &client, std::string url, DeliveryObservation &observation, std::size_t stopAfterBatchCount)
     {
         HttpClientRequest request;
         request.responseBodyReceiver = [&observation, stopAfterBatchCount](const HttpResponseInfo &head, const std::string_view batch, const bool isLastBatch) -> Task<bool>
@@ -96,7 +95,6 @@ namespace
         {
             observation.failureReason = failure.what();
         }
-        loop.stop();
         co_return;
     }
 
@@ -112,6 +110,29 @@ namespace
     }
 
     /**
+     * @brief 同一个客户端上连发两次：先半路收口一条大的，再完整收一条小的
+     * @details 两条必须共用一个池——否则第一条留下的脏连接根本没有被复用的机会，
+     *          「关掉」这条动作就测不到（分开两个客户端跑时，把 close 去掉用例照样绿，实测过）
+     */
+    Task<void> twoRequestsTask(EventLoop &loop, HttpClient &client, std::string bigUrl, std::string smallUrl, DeliveryObservation &stopped, DeliveryObservation &followUp)
+    {
+        co_await streamOnceTask(client, bigUrl, stopped, 1);
+        co_await streamOnceTask(client, smallUrl, followUp, 0);
+        loop.stop();
+        co_return;
+    }
+
+    /**
+     * @brief 发一次请求然后把循环停下（具名协程；跑完就停，不等调度时序）
+     */
+    Task<void> stopAfterRequestTask(EventLoop &loop, HttpClient &client, std::string url, DeliveryObservation &observation, std::size_t stopAfterBatchCount)
+    {
+        co_await streamOnceTask(client, url, observation, stopAfterBatchCount);
+        loop.stop();
+        co_return;
+    }
+
+    /**
      * @brief 在一条全新的循环上，用一个带池的客户端发一次带接收口的请求
      * @param url 目标地址
      * @param observation 观测结果
@@ -121,7 +142,7 @@ namespace
     {
         EventLoop  loop;
         HttpClient client(loop, HttpOutboundConnectionPool::Config{});
-        Task<void> task = streamOnceTask(loop, client, url, observation, stopAfterBatchCount);
+        Task<void> task = stopAfterRequestTask(loop, client, url, observation, stopAfterBatchCount);
         loop.scheduler().schedule(task.handle());
         loop.run();
     }
@@ -236,16 +257,20 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器没起来";
         const std::string baseUrl = "http://127.0.0.1:" + std::to_string(fixture.listeningPort());
 
+        // 两条请求共用一个客户端与一个池：第一条脏了的连接若还池，第二条就会读到它剩下的正文
+        EventLoop           loop;
+        HttpClient          client(loop, HttpOutboundConnectionPool::Config{});
         DeliveryObservation stopped;
-        runStreamingRequest(baseUrl + "/big", stopped, 1);
+        DeliveryObservation followUp;
+        Task<void>          task = twoRequestsTask(loop, client, baseUrl + "/big", baseUrl + "/small", stopped, followUp);
+        loop.scheduler().schedule(task.handle());
+        loop.run();
+
         EXPECT_TRUE(stopped.failureReason.empty()) << stopped.failureReason;
         EXPECT_EQ(stopped.batches.size(), 1U) << "返回 false 之后不该再交第二批";
         EXPECT_EQ(stopped.headStatus, 200) << "主动收口也要把头部交回来";
         EXPECT_FALSE(stopped.sawLastBatch) << "正文没走完，不该谎称那是最后一批";
 
-        // 紧接着在同一条池化通路上再发一次：被弄脏的连接会在这一条上露出来
-        DeliveryObservation followUp;
-        runStreamingRequest(baseUrl + "/small", followUp, 0);
         EXPECT_TRUE(followUp.failureReason.empty()) << "第二条请求被第一条的残留弄坏了：" << followUp.failureReason;
         std::string followUpBody;
         for (const std::string &batch: followUp.batches)
