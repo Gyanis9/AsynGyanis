@@ -346,6 +346,8 @@ namespace AsynGyanis::Net
 
         EXPECT_THROW(server.staticFileDir("web"), Base::InvalidArgumentException);
         EXPECT_THROW(server.setStaticFileCacheControl(std::optional<std::string>{"max-age=5"}), Base::InvalidArgumentException);
+        // 目录列表开关与另外两条静态配置同一条前置：兜底路由没登记时没有可设置的配置本体
+        EXPECT_THROW(server.staticDirectoryListing(true), Base::InvalidArgumentException);
 
         Router router;
         server.setRouter(router);
@@ -353,6 +355,7 @@ namespace AsynGyanis::Net
         EXPECT_NO_THROW(server.staticFileDir("definitely-not-here-asyngyanis"));
         EXPECT_TRUE(server.staticFileDir().empty()) << "规范化失败的目录应当落为「未启用」";
         EXPECT_NO_THROW(server.setStaticFileCacheControl(std::optional<std::string>{"max-age=5"}));
+        EXPECT_NO_THROW(server.staticDirectoryListing(true)) << "h3 一侧没接上目录列表开关";
     }
 
 
@@ -379,7 +382,7 @@ namespace AsynGyanis::Net
 
         HttpParserLimits parserLimits;
         parserLimits.maximumHeaderCount = 33;
-        configuration.parserLimits           = parserLimits;
+        configuration.parserLimits      = parserLimits;
 
         QuicServer server(loop, configuration);
         // 默认读的就是配置里那一份（不是 HttpServerLimits 的默认档）：这条若红，说明构造时接错了源

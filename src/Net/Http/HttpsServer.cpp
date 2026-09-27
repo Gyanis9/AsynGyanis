@@ -73,6 +73,14 @@ namespace AsynGyanis::Net
         return m_staticFiles.directory();
     }
 
+    void HttpsServer::staticDirectoryListing(const bool enabled)
+    {
+        // 与 HttpServer/QuicServer 同一条路：本体在 StaticFileService，这里只转发。
+        // 三条通道若在「目录列不列」上给出不同答案，表现就是换个协议换个形状
+        ensureStaticFileSettings();
+        m_staticFiles.setDirectoryListing(enabled);
+    }
+
     void HttpsServer::setStaticFileCacheControl(const std::optional<std::string> cacheControl)
     {
         ensureStaticFileSettings();

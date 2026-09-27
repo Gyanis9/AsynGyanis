@@ -2101,6 +2101,9 @@ namespace AsynGyanis::Net
                                           {
                                               server.staticFileDir(siteDirectory);
                                               server.setStaticFileCacheControl(std::optional<std::string>{"max-age=7"});
+                                              // 目录列表开关与静态目录、Cache-Control 同一批配置，
+                                              // h1/h2/h3 三条通道都认它（这里钉 TLS 那一侧）
+                                              server.staticDirectoryListing(true);
                                           });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
 
@@ -2122,6 +2125,15 @@ namespace AsynGyanis::Net
         std::string missingText;
         ASSERT_TRUE(client.sendText(makeRequestText("GET /no-such-file.txt HTTP/1.1"), kWaitTimeout)) << "缺失文件的请求未能写入";
         ASSERT_TRUE(client.waitForTextOccurrences(missingText, "404", 1, kWaitTimeout)) << "不存在的静态文件应当回 404：「" << missingText << "」";
+
+        // 打开列表之后，打到静态根本身是一条 HTML 列表：TLS 这一侧认同一个开关，
+        // 且列表带自己的 no-store，不该被套上文件那份 Cache-Control
+        std::string listingText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET / HTTP/1.1"), kWaitTimeout)) << "目录列表请求未能写入";
+        ASSERT_TRUE(client.waitForTextOccurrences(listingText, "Index of", 1, kWaitTimeout)) << "TLS 一侧的目录没有被列出：「" << listingText << "」";
+        EXPECT_NE(listingText.find("hello.txt"), std::string::npos) << listingText;
+        EXPECT_NE(listingText.find("cache-control: no-store"), std::string::npos) << "生成型的列表该禁止缓存：" << listingText;
+        EXPECT_EQ(listingText.find("max-age=7"), std::string::npos) << "列表是生成型的，不该带上文件那份 Cache-Control";
     }
 
     /**
