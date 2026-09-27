@@ -9,13 +9,19 @@
 
 #pragma once
 
+#include "Core/EventLoop/EventLoop.h"
 #include "Net/Http/HttpServerStats.h"
 
+#include <chrono>
+#include <cstddef>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
+    /// /debug/loops 的 content-type：正文是 JSON
+    inline constexpr std::string_view kLoopDiagnosticsContentType = "application/json";
     /// /metrics 的 content-type：Prometheus 文本展示格式 0.0.4；显式声明 UTF-8，因为 HELP 文本是中文
     inline constexpr std::string_view kPrometheusTextContentType = "text/plain; version=0.0.4; charset=utf-8";
 
@@ -47,5 +53,24 @@ namespace AsynGyanis::Net
      * @see HttpServer::enableMetricsEndpoint(), HttpServerStats
      */
     [[nodiscard]] std::string formatPrometheusMetrics(const HttpServerStats &stats, std::string_view metricNamePrefix);
+
+    /**
+     * @brief 把进程内事件循环的自观测表渲染成 JSON，作为 /debug/loops 的应答正文
+     *
+     * @details 判停顿只看「工作相已经持续多久」：等事件的那一相再久也不是停顿（那只是空闲），
+     *          已经停下的循环也不参与判定（它不再更新相位，读出来是一个停在原地的旧时刻）。
+     * @param observedLoops Core::eventLoopSnapshots() 的返回值，按槽位号升序
+     * @param unregisteredLoopCount 因观测槽位已满而没进表的循环条数；非零时表是不全的
+     * @param nowMoment 算「这一相已持续多久」的基准时刻，由调用方给，渲染因此可复现可断言
+     * @return std::string 紧凑 JSON：顶层给 stallThresholdMicroseconds 与 unregisteredLoopCount，
+     *         loops 数组一条循环一行（serial/thread/running/phase/phaseMicroseconds/
+     *         completedWorkingSegments/slowestWorkingSegmentMicroseconds/remotePendingCount/stalled）
+     * @note stalled 与 Core 那条「工作段超阈值就落 ERROR」用的是同一个阈值（kSlowWorkingSegmentAlertThreshold），
+     *       两边口径不同就会一个报警一个不报，那比没有更糟
+     * @see Core::eventLoopSnapshots(), HttpServer::enableLoopDiagnosticsEndpoint()
+     */
+    [[nodiscard]] std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops,
+                                                        std::size_t unregisteredLoopCount,
+                                                        std::chrono::steady_clock::time_point nowMoment);
 
 } // namespace AsynGyanis::Net

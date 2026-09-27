@@ -90,6 +90,7 @@ add_executable(TestNet
         Http/TestHttpServerParserLimits.cpp
         Http/TestHttpObservability.cpp
         Http/TestHttpMetricsEndpoint.cpp
+        Http/TestLoopDiagnosticsEndpoint.cpp
         Http/TestRouter.cpp
         Http/TestMiddleware.cpp
         Http/TestFileSender.cpp

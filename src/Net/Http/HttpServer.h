@@ -298,6 +298,21 @@ namespace AsynGyanis::Net
         void enableHealthEndpoint(std::string_view path = "/healthz");
 
         /**
+         * @brief 在本服务器上注册事件循环观测端点（/debug/loops）
+         *
+         * @details 应答是进程内**每条事件循环**一行的 JSON：当前在哪一相、这一相已持续多久、
+         *          跑完过多少条工作段、最慢一条多久、门口还堆着几件外来投递。它答的是「哪条循环
+         *          被处理器占住了」——本框架不做鉴权，公网可达就把内部线程画像公开了出去。
+         * @param path 端点路径，必须以 `/` 开头；默认 `/debug/loops`
+         * @note 读的全是原子量，因此处理函数不必把动作投进任何一条循环：真停住的循环正是没法应答
+         *       的那条，能隔着线程读才有诊断价值
+         * @note 与指标端点同样默认不开，且必须在 start() 之前调用
+         * @throws Base::InvalidArgumentException 路径不以 `/` 开头
+         * @see Core::eventLoopSnapshots(), formatLoopDiagnosticsJson()
+         */
+        void enableLoopDiagnosticsEndpoint(std::string_view path = "/debug/loops");
+
+        /**
          * @brief 设置本服务器的在途正文字节预算
          *
          * @details 单条报文的上限（`HttpParserLimits::maximumBodySize`）挡不住「很多条连接各压着一条大

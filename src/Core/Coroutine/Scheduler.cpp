@@ -284,4 +284,11 @@ namespace AsynGyanis::Core
         return m_localQueue.size();
     }
 
+    std::size_t Scheduler::remotePendingCount() const noexcept
+    {
+        // 只读两条跨线程队列各自的原子计数：这两笔是投递方在锁外也维护着的，因此本函数不需要
+        // m_globalMutex，也就不会与循环取活儿的那一趟抢锁（读到的和至差一件，观测口径可接受）
+        return m_globalCount.load(std::memory_order_relaxed) + m_remoteCallableCount.load(std::memory_order_relaxed);
+    }
+
 } // namespace AsynGyanis::Core

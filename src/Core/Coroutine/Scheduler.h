@@ -29,8 +29,9 @@ namespace AsynGyanis::Core
      *          （跨线程完成回调要 resume 在发起者循环、套接字与 TLS 通道按循环归属），把它们
      *          偷到别的循环执行会破坏亲和性并引入数据竞争；跨循环的负载均衡发生在接受层
      *          （每循环一个监听器 + SO_REUSEPORT），不发生在就绪队列层。
-     * @note 本类非线程安全，除 scheduleRemote() 与 postRemote() 这两个投递入口外，其他成员函数
-     *       （含 hasWork() 与 runOne()/runAll()）都应由所属 EventLoop 线程调用。
+     * @note 本类非线程安全，除 scheduleRemote() 与 postRemote() 这两个投递入口、以及只读原子计数的
+     *       remotePendingCount() 之外，其他成员函数（含 hasWork() 与 runOne()/runAll()）都应由所属
+     *       EventLoop 线程调用。
      */
     class Scheduler
     {
@@ -114,6 +115,15 @@ namespace AsynGyanis::Core
          * @return 本地队列中的协程数量
          */
         [[nodiscard]] size_t localQueueSize() const;
+
+        /**
+         * @brief 跨线程投递里还没被取走的件数（协程 + 可调用体）
+         * @details 与 hasWork() 不同，本函数**只读原子计数**，不碰本地队列，因此任意线程可调——
+         *          事件循环的自观测快照要靠它回答「活儿已经堆在门口而没人进来取」，而那正是循环
+         *          可能已经停住的时候。本地就绪队列不在口径里：那份账只有循环线程自己数得清。
+         * @return std::size_t 两条跨线程队列的长度之和
+         */
+        [[nodiscard]] std::size_t remotePendingCount() const noexcept;
 
     private:
         std::vector<std::coroutine_handle<>> m_localQueue;             ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）

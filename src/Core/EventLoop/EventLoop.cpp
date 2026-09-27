@@ -4,8 +4,78 @@
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/EventLoop/TimerQueue.h"
 
+#include <string_view>
+#include <utility>
+
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /**
+         * @brief 观测槽位表的上限
+         * @details 一槽一条循环，取 1024 是「比任何真实部署都宽」的整数：这张表只为观测存在，
+         *          占满了既不拦构造也不丢循环，只是那几条循环不出现在快照里（差额由
+         *          unregisteredEventLoopCount() 报出来）。
+         */
+        constexpr std::size_t kMaximumObservedEventLoops = 1024;
+
+        /// 常量初始化、无析构：进程退出时不会出现「循环比登记表活得久」那种顺序问题
+        std::atomic<const EventLoop *> g_observationSlots[kMaximumObservedEventLoops];
+        std::atomic<std::size_t>       g_unregisteredLoopCount{0};
+
+        /// 把时刻折成 steady 纪元的纳秒整数，好塞进原子量（MSVC 的 steady 刻度是 100 ns，折出来仍是整纳秒）
+        [[nodiscard]] std::int64_t steadyNanos(const std::chrono::steady_clock::time_point moment) noexcept
+        {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(moment.time_since_epoch()).count();
+        }
+
+        /// steadyNanos() 的反向换算
+        [[nodiscard]] std::chrono::steady_clock::time_point steadyMoment(const std::int64_t nanos) noexcept
+        {
+            return std::chrono::steady_clock::time_point{std::chrono::nanoseconds{nanos}};
+        }
+
+        /**
+         * @brief 登记一条循环：占到一个空槽就把指针发布出去
+         * @param loop 目标循环（非拥有）
+         * @note 槽位满时只记一笔差额（由 unregisteredEventLoopCount() 报出），不拦构造——
+         *        观测面少一条记录，总好过让一条能跑的循环建不起来
+         */
+        void attachObservation(const EventLoop &loop) noexcept
+        {
+            for (std::atomic<const EventLoop *> &slot: g_observationSlots)
+            {
+                const EventLoop *expected = nullptr;
+                // CAS 而不是直接写：两条线程可以同时在构造各自的循环，先到先得即可，槽位本身没有语义。
+                // release 配对读侧的 acquire：看到指针的一方同时看得到构造期写好的每一个成员
+                if (slot.compare_exchange_strong(expected, &loop, std::memory_order_release, std::memory_order_relaxed))
+                {
+                    return;
+                }
+            }
+            // 满表：差额要能被数出来，否则「快照少几条」与「真的只有这几条」在外部看起来一模一样
+            g_unregisteredLoopCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /**
+         * @brief 摘除一条循环的登记
+         * @param loop 目标循环
+         * @return true 表里本来就有它，已摘掉；false 表里没有，说明当初就没占上槽位
+         */
+        bool detachObservation(const EventLoop &loop) noexcept
+        {
+            for (std::atomic<const EventLoop *> &slot: g_observationSlots)
+            {
+                const EventLoop *expected = &loop;
+                if (slot.compare_exchange_strong(expected, nullptr, std::memory_order_release, std::memory_order_relaxed))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    } // namespace
+
     EventLoop::EventLoop() : m_timerQueue(*this)
     {
         // 唤醒描述符挂载一个固定哨兵指针：run() 靠 data.ptr 是否等于它来区分
@@ -25,10 +95,27 @@ namespace AsynGyanis::Core
         {
             throw Base::SystemException("把唤醒描述符注册进事件后端失败：跨线程投递与 stop() 都将无法工作");
         }
+
+        // 登记放在构造的最后一步：指针一发布，别的线程就能立刻读这一条循环的成员，
+        // 因此必须等所有成员都建好之后才交出去
+        // 登记放在构造的最后一步：指针一发布，别的线程就能立刻读这一条循环的成员，
+        // 因此必须等所有成员都建好之后才交出去
+        attachObservation(*this);
     }
 
     EventLoop::~EventLoop()
     {
+        // 摘不到就是当初没占上槽位（表满），那笔差额要还回去，否则未登记计数只涨不落。
+        // 饱和减：这条计数只用于「快照可能不全」的提示，减过头绕回极大值比停在 0 更误导
+        if (!detachObservation(*this))
+        {
+            std::size_t seen = g_unregisteredLoopCount.load(std::memory_order_relaxed);
+            while (seen > 0 && !g_unregisteredLoopCount.compare_exchange_weak(seen, seen - 1, std::memory_order_relaxed))
+            {
+                // compare_exchange_weak 失败时已把最新值写回 seen，循环重试即可
+            }
+        }
+
         if (m_running.load(std::memory_order_acquire))
             stop();
 
@@ -45,6 +132,11 @@ namespace AsynGyanis::Core
         // 若在 run() 开头清除标志，那次停止请求就会被吞掉，工作线程将永远阻塞在
         // epoll_wait 上，join 随之卡死（实测过）。需要重新运行请新建 EventLoop 实例
         m_running.store(true, std::memory_order_release);
+
+        // 自观测：先记下跑这条循环的线程，再以「工作相」开场——第一条工作段的起点就是这里
+        m_ownerThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+        m_phaseStartedAtNanos.store(steadyNanos(std::chrono::steady_clock::now()), std::memory_order_relaxed);
+        m_phase.store(LoopPhase::Working, std::memory_order_release);
 
         while (true)
         {
@@ -64,7 +156,12 @@ namespace AsynGyanis::Core
 
                 // 有就绪协程时用 0 超时轮询，否则无限阻塞等待 epoll 事件
                 const int timeoutMs = m_scheduler.hasWork() ? 0 : -1;
-                for (auto events = m_epoll.wait(timeoutMs); const auto &ev: events)
+                // 进等待相：这条工作段到此为止，它的时长与是否超阈值都在 enterPhase 里记账
+                enterPhase(LoopPhase::WaitingForEvents);
+                auto events = m_epoll.wait(timeoutMs);
+                // 醒过来即回到工作相。等待那一段单独记成一相，不算进工作段耗时——空闲不是停顿
+                enterPhase(LoopPhase::Working);
+                for (const auto &ev: events)
                 {
                     if (ev.data.ptr == &m_wakeupSentinel)
                     {
@@ -160,6 +257,78 @@ namespace AsynGyanis::Core
     bool EventLoop::isRunning() const noexcept
     {
         return m_running.load(std::memory_order_acquire);
+    }
+
+    void EventLoop::enterPhase(const LoopPhase phase) noexcept
+    {
+        const auto nowMoment = std::chrono::steady_clock::now();
+        const auto previousPhase = m_phase.load(std::memory_order_relaxed);
+        const auto previousStart = steadyMoment(m_phaseStartedAtNanos.load(std::memory_order_relaxed));
+        // 刚结束那一相的时长：本函数每相只被调一次，因此一次读数就够（一轮两条相，各记各的）
+        const auto segmentMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(nowMoment - previousStart);
+
+        if (previousPhase == LoopPhase::Working)
+        {
+            m_completedWorkingSegments.fetch_add(1, std::memory_order_relaxed);
+            // 高水位只有本循环的线程会写，读侧拿到稍旧的值也只是少报一次峰值，故不做 CAS
+            if (segmentMicroseconds > std::chrono::microseconds{m_slowestWorkingSegmentMicros.load(std::memory_order_relaxed)})
+            {
+                m_slowestWorkingSegmentMicros.store(segmentMicroseconds.count(), std::memory_order_relaxed);
+            }
+
+            // 一条工作段吃掉阈值这么多，说明有处理器把循环线程占死了：这段时间里同一条循环上的
+            // 其余连接一个事件都收不到。每段各报一条，不按调用点合并——八条循环一起卡的时候，
+            // 压成一行就看不出卡的是哪条（正文里的时长与条数条条不同，正是 LogThrottle 的适用面之外）
+            if (segmentMicroseconds > kSlowWorkingSegmentAlertThreshold)
+            {
+                LOG_ERROR_FMT("EventLoop: 一条工作段耗时 {} 毫秒，超过 {} 毫秒的告警阈值：这时长里循环线程被占住，"
+                              "同一条循环上的其余连接都在等它（累计工作段 {} 条）",
+                              std::chrono::duration_cast<std::chrono::milliseconds>(segmentMicroseconds).count(),
+                              kSlowWorkingSegmentAlertThreshold.count(),
+                              m_completedWorkingSegments.load(std::memory_order_relaxed));
+            }
+        }
+
+        // 先写起点再换相位：读侧看到新相位时一定也看得到这一相的起点（配 snapshot() 的 acquire 读）
+        m_phaseStartedAtNanos.store(steadyNanos(nowMoment), std::memory_order_relaxed);
+        m_phase.store(phase, std::memory_order_release);
+    }
+
+    EventLoopSnapshot EventLoop::snapshot() const noexcept
+    {
+        const auto phase = m_phase.load(std::memory_order_acquire);
+        return EventLoopSnapshot{
+                .ownerThread              = m_ownerThread.load(std::memory_order_relaxed),
+                .isRunning                = m_running.load(std::memory_order_acquire),
+                .phase                    = phase,
+                .phaseStartedAt           = steadyMoment(m_phaseStartedAtNanos.load(std::memory_order_relaxed)),
+                .completedWorkingSegments = m_completedWorkingSegments.load(std::memory_order_relaxed),
+                .slowestWorkingSegment    = std::chrono::microseconds{m_slowestWorkingSegmentMicros.load(std::memory_order_relaxed)},
+                .remotePendingCount       = m_scheduler.remotePendingCount(),
+        };
+    }
+
+    std::vector<ObservedEventLoop> eventLoopSnapshots()
+    {
+        std::vector<ObservedEventLoop> report;
+        for (std::size_t index = 0; index < kMaximumObservedEventLoops; ++index)
+        {
+            // acquire 配对构造末尾那次 release 登记：拿到指针就等于拿到建好的循环
+            const auto *loop = g_observationSlots[index].load(std::memory_order_acquire);
+            if (loop == nullptr)
+            {
+                continue;
+            }
+            // 槽位号由读表的一方填：循环自己不知道自己在表里的位置，构造期也就不存在
+            // 「指针已发布、号还没写好」那种半截状态
+            report.push_back(ObservedEventLoop{.serialNumber = static_cast<std::uint64_t>(index) + 1U, .snapshot = loop->snapshot()});
+        }
+        return report;
+    }
+
+    std::size_t unregisteredEventLoopCount() noexcept
+    {
+        return g_unregisteredLoopCount.load(std::memory_order_relaxed);
     }
 
 } // namespace AsynGyanis::Core

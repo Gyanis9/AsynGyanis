@@ -237,6 +237,17 @@ namespace AsynGyanis::Net
         void enableHealthEndpoint(std::string_view path = "/healthz");
 
         /**
+         * @brief 在本服务器上注册事件循环观测端点（/debug/loops）
+         * @details 与 HttpServer::enableLoopDiagnosticsEndpoint() 同一份正文：报的是**进程内**所有
+         *          事件循环的画像，不分 TLS 与否，两条服务路径注册哪个都看到同一张表。
+         * @param path 端点路径，必须以 `/` 开头；默认 `/debug/loops`
+         * @note 与指标端点同样默认不开，且必须在 start() 之前调用
+         * @throws Base::InvalidArgumentException 路径不以 `/` 开头
+         * @see HttpServer::enableLoopDiagnosticsEndpoint(), formatLoopDiagnosticsJson()
+         */
+        void enableLoopDiagnosticsEndpoint(std::string_view path = "/debug/loops");
+
+        /**
          * @brief 取本服务器的统计采集端
          * @details 采集端是共享对象：把它传给别的服务端（例如 QuicServer 的
          *          Configuration::metricsCollector），那条服务路径的计数就会并进本服务器的

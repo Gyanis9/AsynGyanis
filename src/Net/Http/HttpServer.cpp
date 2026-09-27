@@ -1454,6 +1454,27 @@ namespace AsynGyanis::Net
                      });
     }
 
+    void HttpServer::enableLoopDiagnosticsEndpoint(const std::string_view path)
+    {
+        // 与另两个端点同样的形状校验：不以 / 开头的路径永远匹配不到，静默注册就是给人一个假象
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpServer: 事件循环观测端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+
+        m_router.get(std::string(path),
+                     [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                     {
+                         // 现取整表现场渲染：读的都是各条循环自己的原子量，不需要把动作投进任何一条循环
+                         response.setStatus(200);
+                         response.setHeader("content-type", kLoopDiagnosticsContentType);
+                         response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(),
+                                                                    Core::unregisteredEventLoopCount(),
+                                                                    std::chrono::steady_clock::now()));
+                         co_return;
+                     });
+    }
+
     void StaticFileService::install(Router &router, const std::size_t maximumMappedStaticFiles)
     {
         // 配置本体与兜底路由一起建立：注册一次之后处理函数只读配置，于是「改目录」「关静态服务」

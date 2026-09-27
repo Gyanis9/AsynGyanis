@@ -3,7 +3,10 @@
 #include <array>
 #include <cstddef>
 #include <format>
+#include <functional>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -35,6 +38,31 @@ namespace AsynGyanis::Net
         void appendCounter(std::string &out, const std::string &metricName, const std::string_view help, const std::uint64_t value)
         {
             out += std::format("# HELP {} {}\n# TYPE {} counter\n{} {}\n", metricName, help, metricName, metricName, value);
+        }
+
+        /**
+         * @brief 把线程标识折成定宽十六进制指纹
+         * @details 这一列只用来把快照里的行与 OS 线程对上（两条循环的线程不同，行因此可区分），
+         *          不要求能反推回 native id——平台间的线程号本来就不是一套。
+         * @param id 线程标识
+         * @return std::string 16 位十六进制
+         */
+        [[nodiscard]] std::string threadFingerprint(const std::thread::id id)
+        {
+            static const std::hash<std::thread::id> hasher{};
+            return std::format("{:016x}", hasher(id));
+        }
+
+        /// 相位名：与 Core::LoopPhase 一一对应，写成 JSON 里可直接比对的常量文本
+        [[nodiscard]] std::string_view phaseName(const Core::LoopPhase phase) noexcept
+        {
+            switch (phase)
+            {
+            case Core::LoopPhase::NotStarted: return "not_started";
+            case Core::LoopPhase::Working: return "working";
+            case Core::LoopPhase::WaitingForEvents: return "waiting_for_events";
+            }
+            return "unknown";
         }
     } // namespace
 
@@ -119,6 +147,42 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "blocking_task_rejected_total"),
                       "因排队已满被拒的阻塞任务条数（进程级累计；提交方当场收到异常，涨了就说明该降并发或加工作线程）", stats.blockingTaskRejectedCount);
 
+        return out;
+    }
+
+    std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops,
+                                          const std::size_t unregisteredLoopCount,
+                                          const std::chrono::steady_clock::time_point nowMoment)
+    {
+        const auto thresholdMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(Core::kSlowWorkingSegmentAlertThreshold).count();
+        std::string out                    = std::format("{{\"stallThresholdMicroseconds\":{},\"unregisteredLoopCount\":{},\"loops\":[",
+                                                         thresholdMicroseconds,
+                                                         unregisteredLoopCount);
+
+        for (std::size_t rowIndex = 0; const auto &entry: observedLoops)
+        {
+            const auto &[serialNumber, snapshot] = entry;
+            // 当前这一相已经持续多久：读的是循环自己记的原子时刻，与抓取时刻之差
+            const auto phaseMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(nowMoment - snapshot.phaseStartedAt).count();
+            // 三条都要成立才算停顿：还在跑（停下的循环相位时刻不再更新，读出来会是一个很大的假数）、
+            // 正在干活（等事件的那一相再久也只是空闲）、且超过了 Core 落 ERROR 用的同一个阈值
+            const bool isStalled = snapshot.isRunning && snapshot.phase == Core::LoopPhase::Working && phaseMicroseconds > thresholdMicroseconds;
+
+            out += std::format("{}{{\"serial\":{},\"thread\":\"{}\",\"running\":{},\"phase\":\"{}\",\"phaseMicroseconds\":{},"
+                               "\"completedWorkingSegments\":{},\"slowestWorkingSegmentMicroseconds\":{},\"remotePendingCount\":{},\"stalled\":{}}}",
+                               rowIndex++ == 0 ? "" : ",",
+                               serialNumber,
+                               threadFingerprint(snapshot.ownerThread),
+                               snapshot.isRunning,
+                               phaseName(snapshot.phase),
+                               phaseMicroseconds,
+                               snapshot.completedWorkingSegments,
+                               snapshot.slowestWorkingSegment.count(),
+                               snapshot.remotePendingCount,
+                               isStalled);
+        }
+
+        out += "]}";
         return out;
     }
 

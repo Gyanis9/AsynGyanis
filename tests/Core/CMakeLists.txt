@@ -12,6 +12,7 @@ add_executable(TestCore
         EventLoop/TestEpoll.cpp
         EventLoop/TestIoWatcher.cpp
         EventLoop/TestEventLoop.cpp
+        EventLoop/TestEventLoopObservability.cpp
         EventLoop/TestIoContext.cpp
         EventLoop/TestConnectionDistributor.cpp
         EventLoop/TestTimer.cpp

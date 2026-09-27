@@ -15,11 +15,79 @@
 #include "Platform/IO/EventNotifier.h"
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <mutex>
+#include <thread>
 #include <unordered_set>
+#include <vector>
 
 namespace AsynGyanis::Core
 {
+    /**
+     * @brief 事件循环当前所处的那一相
+     *
+     * @details 「在等事件」与「在干活」必须分开：空闲的循环可以整分钟不完成一轮，那不是停顿；
+     *          占住循环线程的只有工作段。观测面因此按相记账，读侧只对 Working 判停顿。
+     */
+    enum class LoopPhase : std::uint8_t
+    {
+        NotStarted,       ///< run() 还没进来过
+        Working,          ///< 正在跑就绪协程、派发 I/O 事件或执行投递进来的代码
+        WaitingForEvents, ///< 阻塞在事件后端的等待里，等唤醒或超时
+    };
+
+    /**
+     * @brief 一个事件循环的自观测快照
+     *
+     * @details 字段全部来自循环自己写、任意线程读的原子量，取快照因此不需要把动作投递进那个循环
+     *          ——被怀疑卡住的循环恰恰没法应答，能隔着线程读才有诊断价值。
+     * @note 循环停下之后相位与相位起点都停在最后一次记账的值上，判「还在不在跑」要读 isRunning()，
+     *       不能只看相位已经持续多久
+     */
+    struct EventLoopSnapshot
+    {
+        std::thread::id ownerThread{};                              ///< run() 所在线程；未启动过则是默认值
+        bool                isRunning{};                            ///< 是否正处于 run() 的循环体里
+        LoopPhase           phase{LoopPhase::NotStarted};           ///< 当前相
+        std::chrono::steady_clock::time_point phaseStartedAt{};     ///< 当前这一相的起点
+        std::uint64_t     completedWorkingSegments{};               ///< 已跑完的工作段条数，一条等于「一轮里不含等待的那段」
+        std::chrono::microseconds slowestWorkingSegment{};          ///< 历史最慢的一条工作段（高水位，只升不降）
+        std::size_t       remotePendingCount{};                     ///< 跨线程投递里还没被取走的件数（本地就绪队列不在内）
+    };
+
+    /**
+     * @brief 观测表里的一行：槽位号 + 那条循环的快照
+     *
+     * @details 槽位号由读表的一方按登记位置填上（不是循环自己的成员），于是构造期的发布顺序里
+     *          没有「标签还没写好、指针已发布」这种半截状态。
+     */
+    struct ObservedEventLoop
+    {
+        std::uint64_t      serialNumber{}; ///< 观测槽位号，从 1 起；循环销毁后该槽位可被后来的循环复用
+        EventLoopSnapshot  snapshot;       ///< 那条循环自己的快照
+    };
+
+    /// 一条工作段超过这个时长就落 ERROR：循环线程被占住这么久，同循环上的其余连接都在等它
+    inline constexpr std::chrono::milliseconds kSlowWorkingSegmentAlertThreshold{100};
+
+    /**
+     * @brief 取回进程内**所有**登记在观测槽位上的事件循环的快照
+     *
+     * @details 按槽位号升序返回，同一台机器上两次抓取因此对得上行。一个进程里通常有多条循环
+     *          （每工作线程一条、链路出口自己的那条、客户端临时起的），整表端点因此不必知道循环归谁。
+     * @return std::vector<ObservedEventLoop> 观测表；没有循环活着时为空
+     * @note 任意线程可调，且不会把动作投递进被观测的那条循环
+     */
+    [[nodiscard]] std::vector<ObservedEventLoop> eventLoopSnapshots();
+
+    /**
+     * @brief 因槽位已满而没被观测到的循环条数
+     * @return std::size_t 未登记条数；非零时 eventLoopSnapshots() 只是不全，不是没有循环在跑
+     */
+    [[nodiscard]] std::size_t unregisteredEventLoopCount() noexcept;
+
+    class IoWatcher;
     /**
      * @brief 每线程一个的事件循环，封装 epoll 事件监控与协程调度
      *
@@ -117,7 +185,22 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] bool isRunning() const noexcept;
 
+        /**
+         * @brief 取本循环自己的那一行自观测快照
+         * @details 读的全是原子量，因此**任意线程可调**：不必把动作投进本循环再等它应答——真停顿的
+         *          循环正是应答不了的那条。要拿进程内所有循环的整表，用 eventLoopSnapshots()。
+         * @return EventLoopSnapshot 各字段的口径见该结构体说明
+         */
+        [[nodiscard]] EventLoopSnapshot snapshot() const noexcept;
+
     private:
+        /**
+         * @brief 换到给定的那一相，并给刚结束的那一相记账
+         * @param phase 要进入的相
+         * @note 每条工作段结束在此累计条数、高水位，并按 kSlowWorkingSegmentAlertThreshold 落 ERROR
+         */
+        void enterPhase(LoopPhase phase) noexcept;
+
         /// 存活登记表：IoWatcher 构造/析构时登记与注销，事件派发前据此确认接收对象还活着
         mutable std::mutex                    m_liveWatcherMutex; ///< 保护下面那张表的锁，跨线程注销也要用
         std::unordered_set<const IoWatcher *> m_liveWatchers;     ///< 当前还活着的 IoWatcher
@@ -128,6 +211,12 @@ namespace AsynGyanis::Core
         int                     m_wakeupSentinel; ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）
         std::atomic<bool>       m_running;        ///< 循环是否正在运行中（原子标记）
         std::atomic<bool>       m_stopRequested;  ///< 是否已请求停止（原子标记，线程安全）
+        /// 自观测那一组量：只有本循环的线程写，任意线程读，因此全是原子量且不需要与登记表配合
+        std::atomic<LoopPhase> m_phase{LoopPhase::NotStarted};                  ///< 当前相，最后发布（见 enterPhase）
+        std::atomic<std::int64_t> m_phaseStartedAtNanos{0};                     ///< 当前相的起点：steady 纪元的纳秒
+        std::atomic<std::uint64_t> m_completedWorkingSegments{0};               ///< 已结束的工作段条数
+        std::atomic<std::int64_t> m_slowestWorkingSegmentMicros{0};           ///< 最慢工作段的高水位（微秒）
+        std::atomic<std::thread::id> m_ownerThread{};                           ///< 跑 run() 的那条线程，进入时写
         /// 定时器队列。声明在最后 = 最先销毁：驱动协程与循环唯一的 timerfd 先于其余部件退出，
         /// 收尾时不会再向调度器投递等待者
         TimerQueue m_timerQueue;

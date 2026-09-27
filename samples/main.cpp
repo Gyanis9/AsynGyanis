@@ -425,7 +425,8 @@ int main(int argc, char **argv)
         LOG_INFO("  --config 的 tracing 段开链路记录：tracing.enabled + service_name 起一节 SERVER，");
         LOG_INFO("            tracing.file.path 每节一行 JSON 落盘、tracing.otlp.endpoint 按 OTLP/HTTP 发给采集端；");
         LOG_INFO("            比例、批量与时限分别是 sample_ratio / batch_span_count / export_interval_ms");
-        LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）与 GET /healthz；开了 --h3 时 h3 的请求数/状态码类一并计入");
+        LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）、GET /healthz 与 GET /debug/loops（进程内每条事件循环一行的 JSON，");
+        LOG_INFO("          看哪条循环被处理器占住）；开了 --h3 时 h3 的请求数/状态码类一并计入");
         LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
         LOG_INFO("  --pin-threads 启动时把每条工作循环线程绑到一枚逻辑核上（按线程池下标顺序占核，");
@@ -796,6 +797,8 @@ int main(int argc, char **argv)
             joinSharedMetricsCollector(server);
             server->enableMetricsEndpoint();
             server->enableHealthEndpoint();
+            // 循环观测与它们同开同关：都是运维面，且都不做鉴权
+            server->enableLoopDiagnosticsEndpoint();
         }
         return server;
     };
@@ -842,6 +845,7 @@ int main(int argc, char **argv)
             joinSharedMetricsCollector(server);
             server->enableMetricsEndpoint();
             server->enableHealthEndpoint();
+            server->enableLoopDiagnosticsEndpoint();
         }
         return server;
     };

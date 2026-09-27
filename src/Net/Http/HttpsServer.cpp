@@ -9,6 +9,7 @@
 
 #include <openssl/ssl.h>
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -182,6 +183,26 @@ namespace AsynGyanis::Net
                          response.setStatus(200);
                          response.setHeader("content-type", "application/json");
                          response.setBody(kHealthCheckResponseBody);
+                         co_return;
+                     });
+    }
+
+    void HttpsServer::enableLoopDiagnosticsEndpoint(const std::string_view path)
+    {
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpsServer: 事件循环观测端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+
+        m_router.get(std::string(path),
+                     [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                     {
+                         // 与明文侧同一张表：读的是进程内每条循环自己的原子量，与 TLS 无关
+                         response.setStatus(200);
+                         response.setHeader("content-type", kLoopDiagnosticsContentType);
+                         response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(),
+                                                                    Core::unregisteredEventLoopCount(),
+                                                                    std::chrono::steady_clock::now()));
                          co_return;
                      });
     }
