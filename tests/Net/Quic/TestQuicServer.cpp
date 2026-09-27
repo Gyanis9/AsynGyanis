@@ -289,7 +289,31 @@ namespace AsynGyanis::Net
             using QuicServer::kIdleTickerSleep;
             using QuicServer::nextTickerWakePoint;
         };
+
+        /**
+         * @brief 只把连接准入换算转发出来的探针（不起对象，理由同 TickerWakePointProbe）
+         */
+        class ConnectionAdmissionProbe : public QuicServer
+        {
+        public:
+            using QuicServer::admitsNewConnection;
+        };
     } // namespace
+
+    /**
+     * @brief 钉住：在线连接上限里的 0 是「不限」，到数才关；两条口径必须与 HTTP 侧一致
+     * @details 把 0 当成「一个也不收」时症状极难自查：监听在跑、日志还会说「已达上限 0」，
+     *          而配置者以为自己设的是「不设限」。`HttpServerConfig::maximumConnections` 一直是
+     *          0 = 不限，同一份配置在两条服务路径上必须同一把尺。
+     */
+    TEST(QuicServer, TreatsZeroConnectionLimitAsUnlimitedAndClosesAtTheCap)
+    {
+        EXPECT_TRUE(ConnectionAdmissionProbe::admitsNewConnection(0, 0));
+        EXPECT_TRUE(ConnectionAdmissionProbe::admitsNewConnection(10'000, 0)) << "0 被当成「一个也不收」时，一台监听谁都连不上";
+        EXPECT_TRUE(ConnectionAdmissionProbe::admitsNewConnection(9, 10));
+        EXPECT_FALSE(ConnectionAdmissionProbe::admitsNewConnection(10, 10)) << "到达上限这一条就该关，不是超过才关";
+        EXPECT_FALSE(ConnectionAdmissionProbe::admitsNewConnection(11, 10));
+    }
 
     /**
      * @brief 钉住：定时驱动下一次醒来的时刻——最早截止优先、节拍封顶、零连接退到空闲上界

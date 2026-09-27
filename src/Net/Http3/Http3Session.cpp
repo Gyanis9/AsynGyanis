@@ -446,8 +446,10 @@ namespace AsynGyanis::Net
             HttpMemoryBudget::Reservation bodyBudget = std::move(m_readyRequests.front().bodyBudget);
             m_readyRequests.pop_front();
 
-            // 与 h1/h2 同口径：收齐的请求计入请求数（含随后被 413 拒掉的那些，它们同样是有效的 h3 请求）
-            if (m_metrics != nullptr)
+            // 请求数只记「真交给业务的那批」：四条没交给业务的收口（431/414/413/503 预算）都只进
+            // bad_requests_total。这一笔与 h1/h2 同口径——那两路在 431/413 上就只落这一笔，
+            // 跨协议对照时 requests_total 必须表示同一件事，否则一台机两种协议各报一半
+            if (m_metrics != nullptr && !isRejectedWithoutHandler)
             {
                 m_metrics->countParsedRequest();
             }
@@ -594,7 +596,9 @@ namespace AsynGyanis::Net
                 finalizeResponseForHttp3(streamId, response);
                 submitResponse(streamId, response, request.method() == HttpMethod::HEAD);
                 requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
-                if (m_metrics != nullptr)
+                // 没交给业务的那些收口不落这一笔：状态码类与耗时直方图因此与 requests_total 同进同退，
+                // 三条协议上的「抓一次 /metrics 看到什么」是同一份口径（理由见上面 countParsedRequest 处）
+                if (m_metrics != nullptr && !isRejectedWithoutHandler)
                 {
                     m_metrics->recordResponse(response.status(), requestElapsed);
                 }

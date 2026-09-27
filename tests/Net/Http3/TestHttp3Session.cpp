@@ -1396,7 +1396,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 正文越界的 h3 请求：既计请求数，也计一条「坏请求」，响应状态码记 4xx
+     * @brief 正文越界的 h3 请求只计一条「坏请求」，不进请求数、状态码类与耗时直方图
      */
     TEST(Http3Session, ReportsOversizeRequestAsBadRequestToMetricsCollector)
     {
@@ -1448,9 +1448,132 @@ namespace AsynGyanis::Net
         ASSERT_EQ(peer.response().status, 413) << "用例前提：这条请求应当被 413 拒绝";
 
         const HttpServerStats snapshot = metrics->snapshot();
-        EXPECT_EQ(snapshot.totalRequestCount, 1U) << "被 413 拒掉的请求同样是收齐的 h3 请求，要计入请求数";
+        // 与 h1/h2 同口径：没交给业务的收口只进 bad_requests_total，不进请求数、状态码类与直方图。
+        // 旧断言是「413 也算一条收齐的请求」，两条协议各报一套时，抓一次 /metrics 看到的 requests_total
+        // 取决于对端选了哪种协议——跨协议对照必须先让这一笔同解（依据：本仓库对 requests_total 的对外
+        // 文案「已收齐并交付业务的请求条数」）
+        EXPECT_EQ(snapshot.totalRequestCount, 0U) << "被挡下的请求不该进请求数：三条协议要在这一点上同解";
         EXPECT_EQ(snapshot.badRequestCount, 1U) << "正文越界应当计一条坏请求（与 h2 同一口径）";
-        EXPECT_EQ(snapshot.status4xxCount, 1U) << "413 属于 4xx 类";
+        EXPECT_EQ(snapshot.status4xxCount, 0U) << "状态码类只记交给业务的响应，否则与 requests_total 不同进同退";
+        EXPECT_EQ(snapshot.latencySampleCount(), 0U) << "没交给业务的请求不该落进耗时直方图";
+    }
+
+    /**
+     * @brief 钉住：h3 的头部整块越界回 431、不交给业务，且这笔账与 h1/h2 同解
+     * @details 这条路径（isHeaderLimitExceeded）此前在 h3 侧零直测——上限只在 h1/h2 钉过。把整块上限
+     *          调到 64 字节，一条带 200 字节值的头就该挡在业务之外；状态码与「只进 bad_requests_total」
+     *          两件事一起钉，跨协议抓一次 /metrics 才是同一个数。
+     */
+    TEST(Http3Session, Answers431ForOversizedHeaderBlockWithoutHandingItToBusiness)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
+
+        HttpParserLimits limits;
+        limits.maximumHeaderBlockLength = 64;
+        session.setParserLimits(limits);
+
+        std::atomic<bool> isHandlerEntered{false};
+        Router            router;
+        router.get("/hello",
+                   [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       isHandlerEntered.store(true);
+                       response.setStatus(200);
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hello", "example.com", kFirstRequestStreamId, {{"x-big", std::string(200U, 'a')}});
+        ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_FALSE(isHandlerEntered.load()) << "越界的头部不该交给业务";
+        EXPECT_EQ(peer.response().status, 431) << "头部整块越界的状态码要与 h1/h2 一致（431）";
+        EXPECT_EQ(peer.response().body, "Request Header Fields Too Large");
+
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.badRequestCount, 1U) << "越界要留下一笔坏请求，否则指标上像没发生过";
+        EXPECT_EQ(snapshot.totalRequestCount, 0U) << "没交给业务的收口不进请求数：三条协议同解";
+        EXPECT_EQ(snapshot.status4xxCount, 0U);
+    }
+
+    /**
+     * @brief 钉住：h3 的请求目标越界回 414，与 h1/h2 同一状态码与同一笔账
+     */
+    TEST(Http3Session, Answers414ForOversizedRequestTargetWithoutHandingItToBusiness)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
+
+        HttpParserLimits limits;
+        limits.maximumUriLength = 16;
+        session.setParserLimits(limits);
+
+        std::atomic<bool> isHandlerEntered{false};
+        Router            router;
+        router.get("/long",
+                   [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       isHandlerEntered.store(true);
+                       response.setStatus(200);
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        const std::string                     oversizePath = "/long" + std::string(200U, 'x');
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", oversizePath, "example.com");
+        ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_FALSE(isHandlerEntered.load()) << "越界的请求目标不该交给业务";
+        EXPECT_EQ(peer.response().status, 414) << "请求目标越界的状态码要与 h1/h2 一致（414）";
+        EXPECT_EQ(peer.response().body, "URI Too Long");
+
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.badRequestCount, 1U);
+        EXPECT_EQ(snapshot.totalRequestCount, 0U) << "没交给业务的收口不进请求数：三条协议同解";
+        EXPECT_EQ(snapshot.status4xxCount, 0U);
     }
 
     /**

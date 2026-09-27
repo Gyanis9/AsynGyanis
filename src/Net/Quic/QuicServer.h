@@ -95,8 +95,12 @@ namespace AsynGyanis::Net
              *       永远握不成的监听器，不如在启动时就点名。与 HTTPS 侧同一判据（那边是拒绝启用而非静默放行）。
              * @note 开启后对端不出示证书即被拒（`SSL_VERIFY_FAIL_IF_NO_PEER_CERT`），不退化成「可选校验」。
              */
-            bool                      requireClientCertificates{false};
-            std::size_t               maximumConnections{1024};  ///< 同时在线连接上限
+            bool requireClientCertificates{false};
+            /// 同时在线连接上限；**0 = 不限**，与 `HttpServerConfig::maximumConnections` 同口径
+            /// （那边 0 就是不限，抄过来时若把 0 当成「一个也不收」，症状是一台监听正常却谁也连不上）。
+            /// 默认取 1024 而不是 0：QUIC 的每条在线连接都常驻一份 TLS 会话、流表与拥塞状态，
+            /// 而且它没有内核接受队列可挡——新连接一握手就是本端的账，所以本端自己先设一道有限值
+            std::size_t               maximumConnections{1024};
             std::chrono::seconds      idleTimeout{30};           ///< 空闲超时：超过即由传输层收口
             std::string               applicationProtocol{"h3"}; ///< 必须协商出的 ALPN；不是它就拒绝握手
             std::chrono::milliseconds expiryTickInterval{10};    ///< 定时器驱动的节拍（见 runExpiryTicker 的说明）
@@ -280,6 +284,16 @@ namespace AsynGyanis::Net
         /// 四万次 epoll_wait 的绝大部分，按 10 毫秒节拍折算就是每秒 100 次唤醒、每次约两趟等待。
         /// 取 1 秒而不是无限：新连接的头一拍最多延后这一档，之后节拍自动回到 expiryTickInterval。
         static constexpr std::chrono::milliseconds kIdleTickerSleep{1000};
+
+        /**
+         * @brief 在线连接数达到这个上限时是否还容得下新连接（纯换算，不读状态）
+         * @param onlineConnectionCount 当前在线连接条数
+         * @param maximumConnections 配置的上限；0 = 不限
+         * @return true 可以为一新连接建状态
+         * @note 单列成纯函数是为了能确定性地把「0 是不限」这条钉住：真要端到端地拒一条连接，
+         *       得先跑完一次握手，那不该是用例的前提
+         */
+        [[nodiscard]] static bool admitsNewConnection(std::size_t onlineConnectionCount, std::size_t maximumConnections) noexcept;
 
         /**
          * @brief 算出定时器驱动下一次该在什么时候醒来（纯换算，不读状态）

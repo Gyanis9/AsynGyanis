@@ -574,7 +574,7 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        if (m_connections.size() >= m_configuration.maximumConnections)
+        if (!admitsNewConnection(m_connections.size(), m_configuration.maximumConnections))
         {
             LOG_WARN_FMT("QuicServer: 在线连接已达上限 {}，新连接被拒绝", m_configuration.maximumConnections);
             co_return;
@@ -712,6 +712,13 @@ namespace AsynGyanis::Net
             }
             ++iterator;
         }
+    }
+
+    bool QuicServer::admitsNewConnection(const std::size_t onlineConnectionCount, const std::size_t maximumConnections) noexcept
+    {
+        // 0 = 不限：与 HTTP 侧那套配置的口径对齐（那边 0 就是不限）。把 0 当成「一个也不收」的形态
+        // 极难自查——监听在跑、日志还会说「已达上限 0」，而配置者以为自己在设「不设限」
+        return maximumConnections == 0 || onlineConnectionCount < maximumConnections;
     }
 
     std::chrono::steady_clock::time_point QuicServer::nextTickerWakePoint(const bool hasConnections, const std::chrono::steady_clock::time_point earliestExpiry,

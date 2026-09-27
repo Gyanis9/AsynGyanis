@@ -40,9 +40,13 @@ namespace AsynGyanis::Net
         std::size_t maximumHeaderFieldNameLength{256};          ///< 单个头部名上限，单位字节；标准头名最长不过数十字节，留足 x-amz- 一类私有前缀。0 表示不限
         std::size_t maximumHeaderFieldValueLength{8ull * 1024}; ///< 单个头部值上限，单位字节；与 URI 同档，覆盖超长 Cookie 的现实用量。0 表示不限
         std::size_t maximumHeaderCount{100};                    ///< 头部条数上限，单位条；trailer 头部同样计入。0 表示不限条数
-        std::size_t maximumHeaderBlockLength{64ull * 1024};     ///< 头部块总长上限，单位字节，只算名与值的净字节（不含 ": " 与 CRLF）。0 表示不限
-        std::size_t maximumBodySize{8ull * 1024 * 1024};        ///< 正文上限，单位字节；分块按解码后的字节数累计。0 表示不限
-        std::size_t maximumChunkSizeLineLength{1024};           ///< 分块块大小行上限，单位字节（含块扩展，不含 CRLF）。0 表示不限
+        /// 头部块总长上限，单位字节，只算名与值的净字节（不含 ": " 与 CRLF）。0 表示不限。
+        /// h1 与 h3 用这一把尺；h2 的对应上限是 `Http2ConnectionConfiguration::maximumHeaderListSize`
+        /// （按 RFC 7540 §6.5.2 的「名长 + 值长 + 32」逐条计，且随 SETTINGS 宣告给对端），
+        /// 要收紧 h2 走 `HttpServer::setHttp2Configuration()`
+        std::size_t maximumHeaderBlockLength{64ull * 1024};
+        std::size_t maximumBodySize{8ull * 1024 * 1024}; ///< 正文上限，单位字节；分块按解码后的字节数累计。0 表示不限
+        std::size_t maximumChunkSizeLineLength{1024};    ///< 分块块大小行上限，单位字节（含块扩展，不含 CRLF）。0 表示不限
 
         /**
          * @brief 推导请求行整行的长度上限

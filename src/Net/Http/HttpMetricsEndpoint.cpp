@@ -76,7 +76,7 @@ namespace AsynGyanis::Net
         // 预留一些容量：一整套指标大约 40 行、每行几十字节，省掉反复扩容
         out.reserve(2048);
 
-        appendCounter(out, makeMetricName(metricNamePrefix, "requests_total"), "已收齐的请求条数", stats.totalRequestCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "requests_total"), "交给业务处理的请求条数（被挡下的进 bad_requests_total）", stats.totalRequestCount);
         appendCounter(out, makeMetricName(metricNamePrefix, "bad_requests_total"), "解析失败或协议错误收口的请求条数", stats.badRequestCount);
         appendCounter(out, makeMetricName(metricNamePrefix, "timeout_closed_connections_total"), "被空闲清扫按超时关闭的连接数", stats.timeoutClosedCount);
         appendCounter(out, makeMetricName(metricNamePrefix, "write_aborted_connections_total"),
