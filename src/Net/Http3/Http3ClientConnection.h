@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -60,6 +61,19 @@ namespace AsynGyanis::Net
             return statusCode != 0 && errorMessage.empty();
         }
     };
+
+    /**
+     * @brief 一条 h3 响应正文的接收口，按到达批次交出这条流上的正文
+     * @details 读法与 h2、HTTP/1.1 那两侧一致，只是头部落在 `Http3ClientResponse` 里。收口时本端
+     *          RESET_STREAM + STOP_SENDING 结掉这一条流，连接留给别的请求用。
+     * @details 挂了这个口，`head.body` 恒为空（字节都在批次里），且接收额度按交付进度归还——一批
+     *          没交完就不抬 MAX_STREAM_DATA，本端缓冲的上界因此是一档接收窗口而不是正文总长。
+     * @param head 这条流当前的响应记录（状态码与头部可信，`body` 恒为空；只在本次调用内有效）
+     * @param batch 本批正文（只在本次调用内有效；`isLastBatch` 为真时可为空，表示零长收尾）
+     * @param isLastBatch 是否最后一批：对端在这条流上收尾，或本端按上限判死
+     * @return true 还要下一批；false 就此收口（本端结掉这条流，连接仍可用）
+     */
+    using Http3ResponseBodyReceiver = std::function<Core::Task<bool>(const Http3ClientResponse &head, std::string_view batch, bool isLastBatch)>;
 
     /**
      * @brief HTTP/3 的客户端连接
@@ -112,6 +126,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 提一条请求并等它收齐；同一条连接上可以并发提多条（各占一条流）
+         * @details 挂上 `responseReceiver` 就是逐批交付：这一支不再把正文攒进返回值的 body，
+         *          而是每交完一批才归还那一档接收额度。
          * @param scheme 目标 URI 的协议名，写进 :scheme（h3 里恒为 "https"）
          * @param authority 目标主机[:端口]，写进 :authority
          * @param method 请求方法，写进 :method
@@ -119,6 +135,7 @@ namespace AsynGyanis::Net
          * @param extraHeaders 附加字段，按给出的顺序排在四个伪头之后
          * @param body 请求正文；为空时头段直接收尾这条流
          * @param waitTimeout 本次请求的整体时限（写出、等响应头、收完正文三段之和）
+         * @param responseReceiver 响应正文的接收口；留空即整份攒进返回值的 body
          * @return Http3ClientResponse 响应；失败时 errorMessage 给出断在哪一段
          * @warning 时限到点是**收掉整条连接**而不是只弃这条流：本层不替调用方揣测「同一条连接上别的
          *          请求还要不要」。因此复用一条连接时，超时的那一次会连带让其它在途请求拿不到答案，
@@ -126,7 +143,7 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<Http3ClientResponse> request(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
                                                               const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
-                                                              std::chrono::milliseconds waitTimeout);
+                                                              std::chrono::milliseconds waitTimeout, const Http3ResponseBodyReceiver &responseReceiver = {});
 
         /**
          * @brief 礼貌收尾：发一条 GOAWAY 再关掉底层连接
@@ -159,6 +176,13 @@ namespace AsynGyanis::Net
         {
             Http3ClientResponse response{};        ///< 逐段填起来的结论
             bool                isComplete{false}; ///< 收到收尾（FIN/流关闭），或已被判死
+
+            // 响应正文的接收口；空表示整份攒进 response.body。挂了就多一条规矩：接收额度按交付
+            // 进度归还，本端缓冲的上界因此是一档窗口而不是正文总长
+            Http3ResponseBodyReceiver responseReceiver{};
+            std::string               undeliveredBodyBytes{};       ///< 到了货但还没交给接收口的那段正文
+            std::size_t               receivedBodyByteCount{0};     ///< 这条流上累计收到的正文字节（上限按它判，不按缓冲）
+            bool                      isFinalBatchDelivered{false}; ///< 收尾那一批（含零长收尾）已经交出去了
         };
 
         /// h3 那组按流的回调 → 本类的响应侧说法
@@ -166,6 +190,19 @@ namespace AsynGyanis::Net
         void noteBodyBytes(std::int64_t streamId, std::span<const std::uint8_t> bytes);
         void noteMessageEnded(std::int64_t streamId);
         void noteStreamFailed(std::int64_t streamId, std::string_view reason);
+
+        /**
+         * @brief 取这条流在途的账；已经不认的流交出空条目，**不新建记录**
+         * @details 请求协程收口时会把这条流的账摘掉，而对端在途的字节还能后到（本端刚结掉一条流，
+         *          STOP_SENDING 至少还要一个来回才到）。那时按 `m_pendingStreams[id]` 取就会凭空
+         *          立一条谁也不会再摘掉的记录——在途数从此再也回不到 0，链路看着一直被人用着。
+         * @param streamId 来字节的流
+         * @return PendingExchange* 这条流的账；本端已经不认了则为空
+         */
+        [[nodiscard]] PendingExchange *liveExchange(std::int64_t streamId) noexcept;
+
+        /// 把这条流上到了货的正文交一批给接收口；返回 false 表示接收口收口了（本端已结掉这条流）
+        Core::Task<bool> deliverReceivedBody(PendingExchange &exchange, std::int64_t streamId);
 
         /// 把这条连接上所有在途请求按同一原因判死（连接被收掉时用）
         void failAllPending(std::string_view reason);

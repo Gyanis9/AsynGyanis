@@ -29,6 +29,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -179,8 +180,7 @@ namespace AsynGyanis::Net
              * @param path 请求路径，默认打夹具里那条小正文的路由
              */
             Http3RequestAttempt(const std::uint16_t port, const std::string &clientCertificateFile = {}, const std::string &clientPrivateKeyFile = {},
-                                const std::string path = "/probe") :
-                m_port(port), m_clientCertificateFile(clientCertificateFile), m_clientPrivateKeyFile(clientPrivateKeyFile)
+                                const std::string path = "/probe") : m_port(port), m_clientCertificateFile(clientCertificateFile), m_clientPrivateKeyFile(clientPrivateKeyFile)
             {
                 // 路径在排协程之前落定：run() 第一次被驱动就已经在读它
                 m_path = path;
@@ -671,6 +671,113 @@ namespace AsynGyanis::Net
             std::atomic<bool>             m_isFinished{false};
         };
 
+        /**
+         * @brief 在链路自己的循环线程上挂接收口跑一条 /large，并按需主动收口
+         * @details 结论都由循环线程写、测试线程在停止标志置真之后才读（acquire 与写侧的 release
+         *          配对），因此不构成跨线程同时读写。
+         */
+        class Http3DeliveryAttempt
+        {
+        public:
+            /**
+             * @brief 排好一次「握手 → 起 h3 → 带接收口提请求 → 再提一条普通请求」
+             * @param port 目标端口
+             * @param stopAfterBatchCount 交够这么多批就返回 false 主动收口；0 表示交完整个流
+             */
+            Http3DeliveryAttempt(const std::uint16_t port, const std::size_t stopAfterBatchCount) : m_port(port), m_stopAfterBatchCount(stopAfterBatchCount)
+            {
+                m_task.emplace(run());
+                m_loop.scheduler().schedule(m_task->handle());
+                m_loopThread = std::thread([this] { m_loop.run(); });
+            }
+
+            ~Http3DeliveryAttempt()
+            {
+                m_loop.stop();
+                if (m_loopThread.joinable())
+                {
+                    m_loopThread.join();
+                }
+            }
+
+            Http3DeliveryAttempt(const Http3DeliveryAttempt &)            = delete;
+            Http3DeliveryAttempt &operator=(const Http3DeliveryAttempt &) = delete;
+
+            /// 等到这条链路上的两次请求都落了账
+            [[nodiscard]] bool awaitFinished(const std::chrono::milliseconds timeout)
+            {
+                return waitForCondition([this] { return m_isFinished.load(std::memory_order_acquire); }, timeout);
+            }
+
+            [[nodiscard]] const std::vector<std::string> &batches() const noexcept
+            {
+                return m_batches;
+            }
+            [[nodiscard]] const std::vector<bool> &lastFlags() const noexcept
+            {
+                return m_lastBatchFlags;
+            }
+            [[nodiscard]] const Http3ClientResponse &first() const noexcept
+            {
+                return m_first;
+            }
+            [[nodiscard]] const Http3ClientResponse &followUp() const noexcept
+            {
+                return m_followUp;
+            }
+            [[nodiscard]] bool isLinkHealthyAfterRun() const noexcept
+            {
+                return m_isHealthyAfterRun;
+            }
+            [[nodiscard]] std::size_t inFlightAfterFollowUp() const noexcept
+            {
+                return m_inFlightAfterFollowUp;
+            }
+
+        private:
+            Core::Task<> run()
+            {
+                const std::string authority = "127.0.0.1:" + std::to_string(m_port);
+                const auto        address   = Core::InetAddress::resolve("127.0.0.1", m_port).value();
+                auto              link      = std::make_shared<Http3OutboundLink>(m_loop, makeLinkConfiguration(m_port));
+                if (!co_await link->connect(address))
+                {
+                    m_isFinished.store(true, std::memory_order_release);
+                    co_return;
+                }
+
+                const Http3ResponseBodyReceiver receiver = [this](const Http3ClientResponse &, const std::string_view batch, const bool isLastBatch) -> Core::Task<bool>
+                {
+                    m_batches.emplace_back(batch);
+                    m_lastBatchFlags.push_back(isLastBatch);
+                    co_return m_stopAfterBatchCount == 0U || m_batches.size() < m_stopAfterBatchCount;
+                };
+                m_first = co_await link->http3().request("https", authority, "GET", "/large", {}, {}, std::chrono::milliseconds{6000}, receiver);
+                // 收口之后同一条链路还要能接着服务：h3 的正文是分流的，结掉这一条就够
+                m_isHealthyAfterRun = link->isHealthy();
+                m_followUp          = co_await link->http3().request("https", authority, "GET", "/probe", {}, {}, std::chrono::milliseconds{6000});
+                // 在途数要回得到 0：本端结掉一条流之后还有晚到的字节，那一段若被当成「一条新的在途请求」
+                // 立账，就再也没有人来摘它，链路会一直看着被人用着
+                m_inFlightAfterFollowUp = link->inFlightStreamCount();
+                m_isFinished.store(true, std::memory_order_release);
+                co_return;
+            }
+
+            Core::EventLoop             m_loop;
+            std::uint16_t               m_port{0U};
+            std::size_t                 m_stopAfterBatchCount{0U};
+            std::optional<Core::Task<>> m_task{};
+            std::thread                 m_loopThread{};
+            std::vector<std::string>    m_batches{};
+            std::vector<bool>           m_lastBatchFlags{};
+            Http3ClientResponse         m_first{};
+            Http3ClientResponse         m_followUp{};
+            bool                        m_isHealthyAfterRun{false};
+            std::size_t                 m_inFlightAfterFollowUp{0U};
+            std::atomic<bool>           m_isFinished{false};
+        };
+
+
     } // namespace
 
     /**
@@ -900,6 +1007,76 @@ namespace AsynGyanis::Net
             }
         }
         EXPECT_EQ(firstMismatchOffset, kLargeBodyByteCount) << "从第 " << firstMismatchOffset << " 字节起与服务端所答不一致";
+    }
+
+    /**
+     * @brief 钉住：挂着接收口时 h3 的响应正文一批一批交出去
+     * @details 判据为什么不会靠调度运气：本端给每条流的接收额度按消耗归还，而对端要把一帧（拆帧之后
+     *          16 KiB）发完才轮得到下一帧，交付又排在每一轮推动通路之前——600 KiB 的正文必然落成多次
+     *          交付。拼接起来逐字节等于服务端答出去的那一份，才算既没交重也没漏交。
+     * @note 证伪：把 `noteBodyBytes` 里「挂了接收口就攒着待交」改回直接进 body 并当场还额度 → 本条红
+     *       （响应里留着整份正文、批数为 1）；只把 `deliverReceivedBody` 里的额度归还摘掉 → 也红
+     *       （攒满一档 256 KiB 的流窗口之后对端不再发，本条等到时限）。
+     */
+    TEST(Http3ClientConnection, DeliversResponseBodyInBatchesAndCreditsAfterEachDelivery)
+    {
+        RunningHttp3Server server;
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        Http3DeliveryAttempt attempt{server.listeningPort(), 0U};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这条带接收口的请求既没成也没败，挂在那里";
+        ASSERT_TRUE(attempt.first().isOk()) << "大正文没整个收下：" << attempt.first().errorMessage;
+        EXPECT_TRUE(attempt.first().body.empty()) << "挂了接收口还把整份正文留在响应里：白攒一份内存";
+        ASSERT_FALSE(attempt.batches().empty()) << "一批都没交出去";
+        EXPECT_GT(attempt.batches().size(), 1U) << "只在收齐之后交了一次：逐批交付没生效";
+        std::string stitched;
+        for (const std::string &batch: attempt.batches())
+        {
+            stitched += batch;
+        }
+        ASSERT_EQ(stitched.size(), kLargeBodyByteCount) << "交出去的总量与对端答组成的一份不等";
+        std::size_t firstMismatchOffset = kLargeBodyByteCount;
+        for (std::size_t offset = 0; offset < kLargeBodyByteCount; ++offset)
+        {
+            if (stitched[offset] != largeBodyByteAt(offset))
+            {
+                firstMismatchOffset = offset;
+                break;
+            }
+        }
+        EXPECT_EQ(firstMismatchOffset, kLargeBodyByteCount) << "从第 " << firstMismatchOffset << " 字节起与对端所答不一致";
+        ASSERT_EQ(attempt.lastFlags().size(), attempt.batches().size());
+        EXPECT_TRUE(attempt.lastFlags().back()) << "最后一批没带上收尾标记：接收口分不清「走完了」与「断了」";
+        EXPECT_EQ(std::count(attempt.lastFlags().begin(), attempt.lastFlags().end(), true), 1) << "收尾标记出现了不止一次";
+        EXPECT_TRUE(attempt.isLinkHealthyAfterRun());
+    }
+
+    /**
+     * @brief 钉住：h3 的接收口主动收口只结这一条流，连接留着还能再提请求
+     * @details 与 h2 那一支同形，也是比 HTTP/1.1 强的地方：h1 半路收口只能关掉整条连接。这里连三条
+     *          一起判：交够指定的批数就停、拿到的仍是完整头部且算成功、紧随其后的普通请求在同一链路
+     *          上答得出来。最后一问还顺手盯着「在途数回不回得到 0」——本端结掉一条流之后仍有晚到的
+     *          字节，若那条账被重立起来就没人再来摘，链路会一直看着被人占用。
+     * @note 证伪：把 `noteBodyBytes` 里「不认这条流就只还额度」换回 `exchangeFor`（顺手立账）→ 在途数
+     *       那条红（实测确实有晚到的字节）；摘掉收口那支的交付判据（`deliverReceivedBody` 返回假的
+     *       true）→ 批数那条红。至于本端结流那一句 `abortStream`：它的效果全在对端一侧（别再为这条
+     *       流发字节），自家服务端这几条路由并不阻塞，摘与不摘本层看不出来——那套动作本身在传输层已有
+     *       直测（`TestQuicStreamLayer` 的 STOP_SENDING 一组）。
+     */
+    TEST(Http3ClientConnection, StopsDeliveringAndKeepsTheConnectionForTheNextRequest)
+    {
+        RunningHttp3Server server;
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        Http3DeliveryAttempt attempt{server.listeningPort(), 2U};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这条收口的请求既没成也没败，挂在那里";
+        EXPECT_EQ(attempt.batches().size(), 2U) << "接收口说的「不要了」没被当数";
+        EXPECT_TRUE(attempt.first().isOk()) << "主动收口是一次成功的交换：" << attempt.first().errorMessage;
+        EXPECT_TRUE(attempt.first().body.empty());
+        EXPECT_TRUE(attempt.isLinkHealthyAfterRun()) << "收掉一条流把整条链路也判死了";
+        EXPECT_TRUE(attempt.followUp().isOk()) << "收口之后同一条链路上的下一条请求没答上来：" << attempt.followUp().errorMessage;
+        EXPECT_EQ(attempt.followUp().body, std::string{kServedBody});
+        EXPECT_EQ(attempt.inFlightAfterFollowUp(), 0U) << "晚到的字节给已收口的流重立了账：在途数再也回不到 0";
     }
 
 } // namespace AsynGyanis::Net

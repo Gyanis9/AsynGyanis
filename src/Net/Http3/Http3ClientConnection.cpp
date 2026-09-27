@@ -63,7 +63,8 @@ namespace AsynGyanis::Net
 
     Core::Task<Http3ClientResponse> Http3ClientConnection::request(const std::string_view scheme, const std::string_view authority, const std::string_view method,
                                                                    const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-                                                                   const std::string_view body, const std::chrono::milliseconds waitTimeout)
+                                                                   const std::string_view body, const std::chrono::milliseconds waitTimeout,
+                                                                   const Http3ResponseBodyReceiver &responseReceiver)
     {
         Http3ClientResponse outcome{};
         if (!m_isHealthy || m_protocol == nullptr)
@@ -100,7 +101,13 @@ namespace AsynGyanis::Net
         }
 
         PendingExchange &exchange = exchangeFor(streamId);
-        const bool       hasBody  = !body.empty();
+        // 接收口按值存进这条流的账：调用方那份只保证活到 co_await 返回，而这份账要在好几轮里
+        // 都认得「该把正文交给谁」
+        if (static_cast<bool>(responseReceiver))
+        {
+            exchange.responseReceiver = responseReceiver;
+        }
+        const bool hasBody = !body.empty();
         if (const auto submitted = m_protocol->submitRequestHead(streamId, fieldLines, !hasBody); !submitted)
         {
             // 头段没被编出去，也就没有需要收口的流：把这条记账摘掉直接回因即可
@@ -126,6 +133,12 @@ namespace AsynGyanis::Net
             const Core::DeadlineGuard<QuicClientConnection> requestWatchdog(m_connection.eventLoop(), m_connection, waitTimeout, "HTTP/3 出站请求");
             for (std::size_t round = 0; round < kMaximumDriveRounds; ++round)
             {
+                // 交货排在推动通路之前：这一批交完才归还额度，而归还的 MAX_STREAM_DATA 要靠下面
+                // 那两句送出去——先推后交就会把「还窗口」推迟到对端已经没得发的时候
+                if (exchange.responseReceiver && !co_await deliverReceivedBody(exchange, streamId))
+                {
+                    break; // 接收口收口：这条流已被本端结掉，连接留着给别的请求用
+                }
                 m_protocol->flush();
                 co_await m_connection.sendPending();
                 // 只要送过一轮就算「字节上过通路」：h3 的正文是边编边送，事后无从分辨哪一段先上线，
@@ -186,21 +199,37 @@ namespace AsynGyanis::Net
 
     void Http3ClientConnection::noteHeaderField(const std::int64_t streamId, const std::string_view name, const std::string_view value)
     {
-        PendingExchange &exchange           = exchangeFor(streamId);
-        exchange.response.isAnyByteReceived = true;
-        if (name == ":status")
+        // 本端已经不认这条流（收完或被结掉）：字段没有落账的地方，丢掉
+        PendingExchange *exchange = liveExchange(streamId);
+        if (exchange == nullptr)
         {
-            exchange.response.statusCode = std::atoi(std::string{value}.c_str());
             return;
         }
-        exchange.response.headers.emplace_back(std::string{name}, std::string{value});
+        exchange->response.isAnyByteReceived = true;
+        if (name == ":status")
+        {
+            exchange->response.statusCode = std::atoi(std::string{value}.c_str());
+            return;
+        }
+        exchange->response.headers.emplace_back(std::string{name}, std::string{value});
     }
 
     void Http3ClientConnection::noteBodyBytes(const std::int64_t streamId, const std::span<const std::uint8_t> bytes)
     {
-        PendingExchange &exchange           = exchangeFor(streamId);
-        exchange.response.isAnyByteReceived = true;
-        if (!exchange.response.errorMessage.empty())
+        // 本端已经不认这条流：字节仍占着接收额度，账要还，内容丢掉。这里**不能**顺手立一条新账——
+        // 请求协程收口时把这条流的记录摘掉了，而本端刚结掉一条流时 STOP_SENDING 至少还要一个来回
+        // 才到对端，那之后到的字节正是走这一支；立了新账就没有人再来摘它，在途数再也回不到 0
+        PendingExchange *exchange = liveExchange(streamId);
+        if (exchange == nullptr)
+        {
+            m_connection.extendReceiveWindow(streamId, bytes.size());
+            return;
+        }
+        exchange->response.isAnyByteReceived = true;
+        // 上限按**累计**收到的字节判：挂了接收口时正文交一批就腾空一批，只量缓冲的话这道闸门
+        // 就只剩「一次能堆多大」，对端可以一直发下去
+        exchange->receivedBodyByteCount += bytes.size();
+        if (!exchange->response.errorMessage.empty())
         {
             // 已判死的流不再累计：结论不会再变，继续攒只是让内存跟着对端的节奏长。但账要还——
             // 与 h2 侧 `handleDataFrame` 那条同解：收下不还等于让连接级窗口一路漏，
@@ -208,22 +237,63 @@ namespace AsynGyanis::Net
             m_connection.extendReceiveWindow(streamId, bytes.size());
             return;
         }
-        if (m_config.maximumResponseBodyBytes != 0U && exchange.response.body.size() + bytes.size() > m_config.maximumResponseBodyBytes)
+        if (m_config.maximumResponseBodyBytes != 0U && exchange->receivedBodyByteCount > m_config.maximumResponseBodyBytes)
         {
             // 上限是本端的胃口，不是对端犯了协议错：只结这一条流（RESET + STOP_SENDING），连接留给别的流
             noteStreamFailed(streamId, std::format("响应正文超过本端上限 {} 字节：不打算收这么大的响应就把 Config::maximumResponseBodyBytes 调高（填 0 表示不限）",
                                                    m_config.maximumResponseBodyBytes));
-            exchange.response.body.clear(); // 半份正文不交回调用方：它连一个完整的字段段都不构成
+            exchange->response.body.clear(); // 半份正文不交回调用方：它连一个完整的字段段都不构成
+            exchange->undeliveredBodyBytes.clear();
             m_connection.abortStream(streamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled));
             // 越界这一段仍然要还额度：流已判死，本层不会有人再来取它，不还就是让对端的连接级窗口一路漏
             m_connection.extendReceiveWindow(streamId, bytes.size());
             return;
         }
-        exchange.response.body.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+        if (exchange->responseReceiver)
+        {
+            // 挂了接收口：这一段攒着待交，额度等这一批交完再还。还得早了就没有背压——
+            // 对端会照着窗口继续往下灌，本端缓冲的上界就成了正文总长而不是一档窗口
+            exchange->undeliveredBodyBytes.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+            return;
+        }
+        exchange->response.body.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         // 拷进本端缓冲就是消费掉了，当场把额度还回去。协议层刻意把 DATA 载荷的归还留给接收方
         // （`Http3Connection::creditConsumedBytes` 只就地归还非载荷字节），不还在这里还就没有别处还：
         // 对端写满本端宣告的流窗口（每条 256 KiB）就不再发，而本端还在等它继续发
         m_connection.extendReceiveWindow(streamId, bytes.size());
+    }
+
+    Core::Task<bool> Http3ClientConnection::deliverReceivedBody(PendingExchange &exchange, const std::int64_t streamId)
+    {
+        if (!exchange.response.errorMessage.empty())
+        {
+            co_return true; // 已判死的响应不再交：调用方从「返回的响应为空」就能看出这条没成
+        }
+        const bool isLastBatch = exchange.isComplete;
+        if (exchange.undeliveredBodyBytes.empty() && (!isLastBatch || exchange.isFinalBatchDelivered))
+        {
+            co_return true; // 还没到货；或收尾那一批（含零长收尾）已经交过了
+        }
+
+        // 取走这一批再交：本端缓冲就此腾空，而额度要到交完才还，对端能压在本端窗口里的字节
+        // 因此不超过 Config 里那档接收窗口
+        std::string batch;
+        batch.swap(exchange.undeliveredBodyBytes);
+        const std::size_t takenByteCount = batch.size();
+        exchange.isFinalBatchDelivered   = exchange.isFinalBatchDelivered || isLastBatch;
+
+        if (!co_await exchange.responseReceiver(exchange.response, std::string_view{batch}, isLastBatch))
+        {
+            // 调用方主动收的口：头部仍是完整可信的响应，正文到此为止，这一条按成功交出。
+            // 结掉这一条流就够（RESET + STOP_SENDING），连接上的别的请求不受牵连
+            exchange.isComplete = true;
+            m_connection.abortStream(streamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled));
+            co_return false;
+        }
+        // 交完才还这一批的额度：这就是背压的落点。还不出去也没关系——本层每一轮都先 flush
+        // 再 sendPending，MAX_STREAM_DATA 跟着下一轮的包走
+        m_connection.extendReceiveWindow(streamId, takenByteCount);
+        co_return true;
     }
 
     void Http3ClientConnection::noteMessageEnded(const std::int64_t streamId)
@@ -262,6 +332,12 @@ namespace AsynGyanis::Net
     Http3ClientConnection::PendingExchange &Http3ClientConnection::exchangeFor(const std::int64_t streamId)
     {
         return m_pendingStreams[streamId];
+    }
+
+    Http3ClientConnection::PendingExchange *Http3ClientConnection::liveExchange(const std::int64_t streamId) noexcept
+    {
+        const auto entry = m_pendingStreams.find(streamId);
+        return entry == m_pendingStreams.end() ? nullptr : &entry->second;
     }
 
 
