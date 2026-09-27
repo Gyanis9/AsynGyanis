@@ -17,6 +17,19 @@
 
 ### 新增
 
+- **`staticDirectoryListing(bool)`：静态目录的 HTML 列表（默认关闭）**，`HttpServer`/`HttpsServer`/
+  `QuicServer` 三条通道同一个开关、同一份实现（本体在 `StaticFileService`，列表生成挂在静态请求那
+  一条漏斗上）。默认关闭是刻意的：列表会把目录结构、文件名与大小交给任何一句 `GET /assets/` 的探测者。
+  打开之后四条口径：
+  ①列表**不带验证器**且带 `cache-control: no-store`——被缓存下来的列表会在目录变化之后继续宣称
+  「这里有这些文件」，而生成型正文没有可信的 ETag/Last-Modified 来源；
+  ②**忽略 Range**并回 `accept-ranges: none`：列表不是长度稳定的表示，给它切片等于承诺一个不存在的长度；
+  ③**条目链接一律绝对路径**（`/sub/inner.txt` 而不是 `inner.txt`）：同一棵目录可能挂在 `/sub` 也可能
+  挂在 `/sub/` 下，相对链接在前者上会全部指到父目录，点了打不开而列表看着完全正常；
+  ④**条目数有上界**（1000），到界就在末尾写明「还有 N 项未列出」，不做半截列表装作是全的。
+  名字里的 `&` 等按 HTML 转义、空格与 `%`、`#` 按 URL 编码（`%` 必须先行编码，否则名字里本来就有的
+  `%41` 会被解成字母 A，链接指到另一个条目上去）。HEAD 走同一条生成路径，`content-length` 与 GET 实测一致。
+
 - **`TlsContext::loadCertificateForHost()` 与 `HttpsServer::loadCertificateForHost()`：按 SNI 分站点证书**
   （RFC 6066 §3）。与上面的 `Router::virtualHost()` 是配套的两件事：证书按 ClientHello 的 server_name 选、
   路由按 Host 选，两处的键都是同一个小写主机名，因此「这个域名用这张证书」与「这个域名走这组路由」

@@ -405,6 +405,13 @@ namespace AsynGyanis::Net
         return m_staticFiles.directory();
     }
 
+    void QuicServer::staticDirectoryListing(const bool enabled)
+    {
+        // 与 HttpServer/HttpsServer 同一条路：本体在 StaticFileService，这里只转发
+        ensureStaticFileSettings();
+        m_staticFiles.setDirectoryListing(enabled);
+    }
+
     void QuicServer::setStaticFileCacheControl(const std::optional<std::string> cacheControl)
     {
         ensureStaticFileSettings();

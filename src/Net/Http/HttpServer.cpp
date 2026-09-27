@@ -526,6 +526,221 @@ namespace AsynGyanis::Net
             return RangeVerdict::Satisfiable;
         }
 
+        /// 一份目录列表最多列出的条目数：更大的目录不该把整棵树的字节名塞进一条响应
+        constexpr std::size_t kMaximumListedDirectoryEntries = 1000;
+
+        /**
+         * @brief 按 HTML 文本/属性节点的要求转义一段文本
+         * @details 文件名里出现 `<`、`&`、引号是完全合法的，不转义就等于让对端往本服务生成的
+         *          页面里写标签（存储型 XSS 的经典入口：文件名由上传方决定）
+         * @param output 追加目标
+         * @param text 待转义文本
+         */
+        void appendHtmlEscapedText(std::string &output, const std::string_view text)
+        {
+            for (const char character: text)
+            {
+                switch (character)
+                {
+                    case '<':
+                        output.append("&lt;");
+                        break;
+                    case '>':
+                        output.append("&gt;");
+                        break;
+                    case '&':
+                        output.append("&amp;");
+                        break;
+                    case '"':
+                        output.append("&quot;");
+                        break;
+                    case '\'':
+                        output.append("&#39;");
+                        break;
+                    default:
+                        output.push_back(character);
+                }
+            }
+        }
+
+        /**
+         * @brief 把文件名收成能放进 href 的路径段
+         * @details 保留字符、控制字符、空格与 `%` 一律百分号编码——`%` 必须先编码，否则名字里
+         *          本来就有的「%41」会被浏览器解成字母 A，链接指到另一个条目上去。
+         *          非 ASCII 字节原样留着：页面已声明 UTF-8，浏览器自己折算。
+         * @param output 追加目标
+         * @param name 文件名原文（UTF-8）
+         */
+        void appendUrlEncodedPathSegment(std::string &output, const std::string_view name)
+        {
+            static constexpr std::string_view kUnreservedCharacters = "-._~";
+            static constexpr char             kHexDigits[]          = "0123456789ABCDEF";
+            for (const char character: name)
+            {
+                const bool isAlphaNumeric = (character >= '0' && character <= '9') || (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+                if (isAlphaNumeric || kUnreservedCharacters.find(character) != std::string_view::npos)
+                {
+                    output.push_back(character);
+                    continue;
+                }
+                const unsigned char byte = static_cast<unsigned char>(character);
+                output.push_back('%');
+                output.push_back(kHexDigits[byte >> 4U]);
+                output.push_back(kHexDigits[byte & 0x0FU]);
+            }
+        }
+
+        /**
+         * @brief 一个待列出的目录条目
+         */
+        struct DirectoryEntry
+        {
+            std::string    name;                ///< 文件名原文（UTF-8）
+            bool           isDirectory{false};  ///< 是否目录（列表里带尾斜杠并排在文件之前）
+            std::uintmax_t sizeBytes{0};        ///< 字节数；目录按 0 报，不替它算子树大小
+            std::int64_t   lastWriteSeconds{0}; ///< 最后修改时间的 Unix 秒
+        };
+
+        /**
+         * @brief 生成一份 HTML 目录列表并写进响应
+         *
+         * @details 三条刻意的口径，都写进用例：
+         *          @li 正文现读生成，因此**不给验证器**且带 `cache-control: no-store`——一份被缓存的
+         *              列表会在目录变化之后继续宣称「这里有这些文件」，而条件请求那套（ETag/Last-Modified）
+         *              在这里没有可信的来源；
+         *          @li 忽略 Range：列表不是一个长度稳定的表示；
+         *          @li 条目数到上界就停，并在末尾如实写明还有多少项没列出，不做半截列表装作是全的。
+         *
+         * @param directory 要列出的目录（调用方已确认它在静态根之内）
+         * @param requestPath 请求路径原文，用于标题、条目链接的前缀与「上一级」的判定
+         * @param response 待填的响应
+         */
+        void renderDirectoryListing(const std::filesystem::path &directory, const std::string_view requestPath, HttpResponse &response)
+        {
+            std::vector<DirectoryEntry> entries;
+            entries.reserve(kMaximumListedDirectoryEntries);
+
+            std::error_code                     iterateError;
+            std::filesystem::directory_iterator iterator(directory, std::filesystem::directory_options::skip_permission_denied, iterateError);
+            if (iterateError)
+            {
+                // 打不开目录（权限、被删除、或它压根不是目录）：与「没有这个资源」同形状，
+                // 不把文件系统错误细节交给探测者
+                response.setStatus(404);
+                response.setBody("Not Found");
+                response.setHeader("content-type", "text/plain");
+                return;
+            }
+
+            std::size_t observedEntryCount = 0;
+            for (const std::filesystem::directory_entry &candidate: iterator)
+            {
+                ++observedEntryCount;
+                if (entries.size() >= kMaximumListedDirectoryEntries)
+                {
+                    continue; // 到界之后只数不列，末尾那句「还有 N 项未列出」靠这个计数
+                }
+
+                std::error_code typeError;
+                const bool      isDirectory = candidate.is_directory(typeError);
+                if (typeError)
+                {
+                    continue; // 迭代之后条目又被删掉：跳过这一条，不交出半截信息
+                }
+
+                // 大小与修改时间走平台那一份查询：它同时给出正确的 UTF-8 刻度时间换算，
+                // 而 std::filesystem::last_write_time 的 file_time 在两平台不是一个坐标系
+                const std::optional<Platform::FileBasicInfo> entryInfo = Platform::queryFileBasicInfo(candidate.path());
+                if (!entryInfo.has_value())
+                {
+                    continue;
+                }
+
+                DirectoryEntry entry;
+                // 名字按 UTF-8 出串：Windows 上 path::string() 走本地代码页，非 ASCII 的名字
+                // 会列成另一串，链接点了就找不到（与静态目录配置那套 UTF-8 刻度同一个坑）
+                entry.name             = Platform::FileSystem::utf8FromPath(candidate.path().filename());
+                entry.isDirectory      = isDirectory;
+                entry.sizeBytes        = isDirectory ? 0U : entryInfo->sizeBytes;
+                entry.lastWriteSeconds = entryInfo->lastWriteSeconds;
+                entries.push_back(std::move(entry));
+            }
+
+            // 目录排在文件前，各自按名字排序：翻列表的人先看到结构再看到文件
+            std::ranges::sort(entries,
+                              [](const DirectoryEntry &left, const DirectoryEntry &right)
+                              {
+                                  if (left.isDirectory != right.isDirectory)
+                                  {
+                                      return left.isDirectory;
+                                  }
+                                  return left.name < right.name;
+                              });
+
+            std::string body;
+            body.reserve(512U + entries.size() * 96U);
+            body.append("<!DOCTYPE html>\r\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>Index of ");
+            appendHtmlEscapedText(body, requestPath);
+            body.append("</title></head>\r\n<body><h1>Index of ");
+            appendHtmlEscapedText(body, requestPath);
+            body.append("</h1>\r\n<ul>\r\n");
+
+            // 链接一律用绝对路径：同一棵目录既可能被挂在 /sub（没有尾斜杠）下，也可能挂在 /sub/ 下，
+            // 相对链接在前者上会全部指到父目录去——那比列错一个名字更难查
+            std::string basePath(requestPath);
+            if (basePath.empty() || basePath.back() != '/')
+            {
+                basePath.push_back('/');
+            }
+
+            // 根目录没有「上一级」可去。求父级是在 basePath（必以 '/' 收尾）上剥掉最后一段：
+            // "/sub/" → "/"，"/a/b/" → "/a/"
+            if (basePath.size() > 1U)
+            {
+                const std::string parentPath = basePath.substr(0, basePath.find_last_of('/', basePath.size() - 2) + 1U);
+                body.append("<li><a href=\"");
+                appendHtmlEscapedText(body, parentPath);
+                body.append("\">../</a></li>\r\n");
+            }
+
+            for (const DirectoryEntry &entry: entries)
+            {
+                body.append("<li><a href=\"");
+                body.append(basePath);
+                appendUrlEncodedPathSegment(body, entry.name);
+                if (entry.isDirectory)
+                {
+                    body.append("/\">");
+                    appendHtmlEscapedText(body, entry.name);
+                    body.append("/</a></li>\r\n");
+                    continue;
+                }
+                body.append("\">");
+                appendHtmlEscapedText(body, entry.name);
+                body.append("</a> ");
+                body.append(std::to_string(entry.sizeBytes));
+                body.append(" B");
+                std::array<char, kHttpDateTextLength> dateBuffer{};
+                body.append(" ");
+                body.append(formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(entry.lastWriteSeconds)), dateBuffer));
+                body.append("</li>\r\n");
+            }
+
+            if (observedEntryCount > entries.size())
+            {
+                body.append("<li>…另有 ");
+                body.append(std::to_string(observedEntryCount - entries.size()));
+                body.append(" 项未列出</li>\r\n");
+            }
+            body.append("</ul>\r\n</body></html>\r\n");
+
+            response.setStatus(200);
+            response.setHeader("content-type", "text/html; charset=utf-8");
+            response.setHeader("cache-control", "no-store");
+            response.setHeader("accept-ranges", "none");
+            response.setBody(std::move(body));
+        }
+
         /**
          * @brief 把一条请求当作静态文件请求处理，填充响应
          * @details 除路径清洗与文件查找外，还负责缓存验证（ETag / Last-Modified 与 304）
@@ -579,12 +794,17 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            // 请求打到目录本身：本服务器不做目录索引，也不返回目录内容，按 404 处理
+            // 请求打到静态根本身：开了目录列表就列出来，没开（默认）按 404 处理
             if (relativeText.empty())
             {
-                response.setStatus(404);
-                response.setBody("Not Found");
-                response.setHeader("content-type", "text/plain");
+                if (!settings->listingEnabled)
+                {
+                    response.setStatus(404);
+                    response.setBody("Not Found");
+                    response.setHeader("content-type", "text/plain");
+                    co_return;
+                }
+                renderDirectoryListing(settings->rootDirectory, request.path(), response);
                 co_return;
             }
 
@@ -616,9 +836,24 @@ namespace AsynGyanis::Net
             // 「路径 → 元数据」缓存并配失效策略（交给 file watcher 或 TTL），实测表明它成为瓶颈
             // 之前不做：缓存失效写错会把「文件更新后仍旧 ETag」变成真缺陷
             const std::optional<Platform::FileBasicInfo> fileBasicInfo = Platform::queryFileBasicInfo(candidatePath);
-            if (!fileBasicInfo.has_value() || !fileBasicInfo->isRegularFile)
+            if (!fileBasicInfo.has_value())
             {
-                // 不存在、是目录、是设备文件，或查询本身失败：一律 404，避免把目录结构泄露给探测者
+                // 查不到元数据（不存在、权限不足或查询本身失败）：按「没有这个资源」处理
+                response.setStatus(404);
+                response.setBody("Not Found");
+                response.setHeader("content-type", "text/plain");
+                co_return;
+            }
+            if (!fileBasicInfo->isRegularFile)
+            {
+                // 目录与设备文件都到不了「把文件正文发出去」那一步。只有显式开了目录列表才多问一次
+                // 「这是目录吗」：列表关着时（默认）探测者拿到的仍是一条普通 404，不泄露目录结构
+                std::error_code directoryError;
+                if (settings->listingEnabled && std::filesystem::is_directory(candidatePath, directoryError) && !directoryError)
+                {
+                    renderDirectoryListing(candidatePath, request.path(), response);
+                    co_return;
+                }
                 response.setStatus(404);
                 response.setBody("Not Found");
                 response.setHeader("content-type", "text/plain");
@@ -1087,6 +1322,11 @@ namespace AsynGyanis::Net
         m_settings->cacheControl = cacheControl;
     }
 
+    void StaticFileService::setDirectoryListing(const bool enabled)
+    {
+        m_settings->listingEnabled = enabled;
+    }
+
     std::shared_ptr<StaticFileSettings> StaticFileService::settings() const noexcept
     {
         return m_settings;
@@ -1106,6 +1346,14 @@ namespace AsynGyanis::Net
     std::string HttpServer::staticFileDir() const
     {
         return m_staticFiles.directory();
+    }
+
+    void HttpServer::staticDirectoryListing(const bool enabled)
+    {
+        // 与另外两条静态配置同一条路：本体在 StaticFileService，服务器一侧只转发，
+        // 明文/TLS/h3 三条通道因此不会在「目录列不列」上给出不同答案
+        ensureStaticFileSettings();
+        m_staticFiles.setDirectoryListing(enabled);
     }
 
     void HttpServer::setStaticFileCacheControl(const std::optional<std::string> cacheControl)

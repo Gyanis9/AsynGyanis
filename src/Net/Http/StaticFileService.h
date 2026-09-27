@@ -33,6 +33,12 @@ namespace AsynGyanis::Net
         bool                       isEnabled{false}; ///< 是否启用静态文件服务；根目录规范化失败即为 false
         std::filesystem::path      rootDirectory;    ///< 规范化（weakly_canonical）之后的静态根目录，绝对路径
         std::optional<std::string> cacheControl;     ///< 静态文件响应的 Cache-Control 值；空表示不发这条头
+        /// 请求打到目录本身时是否生成 HTML 列表；false（默认）按 404 处理
+        /**
+         * @note 默认关闭是刻意的：列表会把目录结构、文件名与大小一并交给任何人来一句 `GET /assets/`
+         *       的探测者，而多数部署里静态目录只是资源仓库，不是给人翻的档案柜。
+         */
+        bool listingEnabled{false};
         /**
          * @brief 映射缓存，由 StaticFileService::install() 按当时的限额建立，之后只读
          * @note 条目上限取自登记那一刻的 HttpServerLimits::maximumMappedStaticFiles，
@@ -85,6 +91,19 @@ namespace AsynGyanis::Net
          *        空 optional 表示不发这条头
          */
         void setCacheControl(std::optional<std::string> cacheControl);
+
+        /**
+         * @brief 设置请求打到目录本身时要不要生成 HTML 目录列表
+         * @param enabled true 列出该目录的条目；false（默认）按 404 处理，与关闭静态目录时的形状一致
+         * @details 列表是现读生成的，因此**不带验证器**且带 `cache-control: no-store`：一份被缓存
+         *          下来的列表会在目录内容变化之后继续对外宣称「这里有这些文件」。条目数有上界
+         *          （超出时在末尾如实写明还有多少项没列出）。Range 对列表一律忽略——它不是一个
+         *          稳定的表示，给它切片等于承诺一个不存在的长度。
+         * @note 只在显式打开时才多问一次「这是目录吗」：关着的时候探测者拿到的仍是一条普通 404，
+         *       不泄露目录结构
+         * @see StaticFileSettings::listingEnabled
+         */
+        void setDirectoryListing(bool enabled);
 
         /**
          * @brief 取配置本体（兜底路由的处理函数持有的就是它）

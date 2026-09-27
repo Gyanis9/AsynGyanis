@@ -118,6 +118,19 @@ namespace AsynGyanis::Net
         void setStaticFileCacheControl(std::optional<std::string> cacheControl);
 
         /**
+         * @brief 设置请求打到静态目录时是否生成 HTML 目录列表
+         *
+         * @details 默认关闭：列表会把目录结构、文件名与大小交给任何一句 `GET /assets/` 的探测者，
+         *          而多数部署里静态目录只是资源仓库。打开之后列表**不带验证器**且带
+         *          `cache-control: no-store`（被缓存的列表会在目录变化后继续宣称「这里有这些文件」），
+         *          Range 对它一律忽略，条目数有上界。完整语义见 `StaticFileService::setDirectoryListing()`。
+         * @param enabled true 列出目录条目；false（默认）按 404 处理
+         * @note 必须在 start() 之前配置，与静态目录本身同一时限
+         * @see staticFileDir(), StaticFileService::setDirectoryListing()
+         */
+        void staticDirectoryListing(bool enabled);
+
+        /**
          * @brief 查询当前配置的静态文件 Cache-Control 值。
          * @return 已设置的值；未设置或从未配置过静态目录时为空 optional
          */
