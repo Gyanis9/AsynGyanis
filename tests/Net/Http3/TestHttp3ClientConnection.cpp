@@ -42,6 +42,15 @@ namespace AsynGyanis::Net
         /// 服务端答出去的正文，两侧同一个字面串
         constexpr std::string_view kServedBody{"served-over-h3-client"};
 
+        /// 一条比本端给每条流宣告的接收窗口（256 KiB）还大的正文：窗口归还的判据要拿它当对端
+        constexpr std::size_t kLargeBodyByteCount = 600U * 1024U;
+
+        /// 大正文按位置轮转 26 个字母：服务端与用例共用同一份形状，「拼回来的是不是完整那一份」才可判
+        [[nodiscard]] char largeBodyByteAt(const std::size_t offset) noexcept
+        {
+            return static_cast<char>('a' + static_cast<int>(offset % 26U));
+        }
+
         /**
          * @brief 起一个真的 HTTP/3 服务端：带一条 GET 路由，跑在自己的循环线程上
          * @details 与传输层那一份夹具的差别只在这里挂了 Router——本文件判的是「请求进得来、答得出去」
@@ -94,6 +103,21 @@ namespace AsynGyanis::Net
                                  static_cast<void>(request);
                                  response.setStatus(200);
                                  response.setBody(std::string(200U * 1024U, 'x'));
+                                 co_return;
+                             });
+
+                // 比本端单流接收窗口还大的一整份正文：出站侧「收下多少就得还多少窗口」的判据要拿它当对端
+                m_router.get("/large",
+                             [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 static_cast<void>(request);
+                                 std::string largeBody(kLargeBodyByteCount, '\0');
+                                 for (std::size_t offset = 0; offset < largeBody.size(); ++offset)
+                                 {
+                                     largeBody[offset] = largeBodyByteAt(offset);
+                                 }
+                                 response.setStatus(200);
+                                 response.setBody(std::move(largeBody));
                                  co_return;
                              });
 
@@ -152,10 +176,14 @@ namespace AsynGyanis::Net
              * @param port 目标端口
              * @param clientCertificateFile 客户端身份证书；与私钥同时给才出示（双向 TLS 那一侧）
              * @param clientPrivateKeyFile 配套的私钥
+             * @param path 请求路径，默认打夹具里那条小正文的路由
              */
-            Http3RequestAttempt(const std::uint16_t port, const std::string &clientCertificateFile = {}, const std::string &clientPrivateKeyFile = {}) :
+            Http3RequestAttempt(const std::uint16_t port, const std::string &clientCertificateFile = {}, const std::string &clientPrivateKeyFile = {},
+                                const std::string path = "/probe") :
                 m_port(port), m_clientCertificateFile(clientCertificateFile), m_clientPrivateKeyFile(clientPrivateKeyFile)
             {
+                // 路径在排协程之前落定：run() 第一次被驱动就已经在读它
+                m_path = path;
                 m_task.emplace(run());
                 m_loop.scheduler().schedule(m_task->handle());
                 m_loopThread = std::thread([this] { m_loop.run(); });
@@ -226,7 +254,7 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                m_response = co_await http3.request("https", "127.0.0.1:" + std::to_string(m_port), "GET", "/probe", {}, {}, std::chrono::milliseconds{4000});
+                m_response = co_await http3.request("https", "127.0.0.1:" + std::to_string(m_port), "GET", m_path, {}, {}, std::chrono::milliseconds{4000});
                 co_await http3.shutdown();
                 client.reset();
                 finish();
@@ -241,9 +269,10 @@ namespace AsynGyanis::Net
 
             Core::EventLoop m_loop;
             std::uint16_t   m_port{0U};
-            /// 下面两项在构造时定死：协程帧跑在循环线程上，测试线程之后改它没有意义也不安全
+            /// 下面三项在构造时定死：协程帧跑在循环线程上，测试线程之后改它们没有意义也不安全
             std::string                           m_clientCertificateFile{};
             std::string                           m_clientPrivateKeyFile{};
+            std::string                           m_path{};
             std::chrono::steady_clock::time_point m_startedAt{}; ///< 整次尝试的起点
             std::chrono::milliseconds             m_elapsed{0};  ///< finish() 时结算的耗时
             std::optional<Core::Task<>>           m_task{};
@@ -838,6 +867,39 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(attempt.second().isOk()) << "流号到顶还被当成能提请求";
         EXPECT_NE(attempt.second().errorMessage.find("上限"), std::string::npos) << "失败原因没点出是名额用尽：" << attempt.second().errorMessage;
         EXPECT_FALSE(attempt.isHealthyAfterStreamExhaustion()) << "只会拒请求的链路还算健康：出站池会一直把它当可复用的存货";
+    }
+
+    /**
+     * @brief 钉住：比本端单流接收窗口还大的响应正文能整个收下来
+     * @details 本端给每条流入站流宣告 256 KiB 窗口（`QuicConnection` 的 kInitialMaximumStreamData），
+     *          而协议层把 DATA 载荷的额度归还留给接收方（`Http3Connection::creditConsumedBytes` 明确
+     *          把这一截扣掉，非载荷字节才就地还）。出站侧收下就是拷进了 `response.body`，因此归还点
+     *          只能落在 `noteBodyBytes`：不还，服务端写到窗口边缘就再也没法推进，本端只能等到时限把
+     *          整条连接掐掉——症状是「小响应全通、大响应全 timeout」。
+     * @note 证伪：摘掉 `noteBodyBytes` 里那句 `extendReceiveWindow` → 服务端推满 256 KiB 后停住，
+     *       本用例在 4 秒时限后拿到「响应没收齐」而红。
+     */
+    TEST(Http3ClientConnection, CreditsTheReceiveWindowForBodyBeyondTheAdvertisedStreamWindow)
+    {
+        RunningHttp3Server server;
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        Http3RequestAttempt attempt{server.listeningPort(), {}, {}, "/large"};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这条大正文请求既没成也没败，挂在那里";
+        ASSERT_TRUE(attempt.response().isOk()) << "大正文没整个收下：" << attempt.response().errorMessage << "（实收 " << attempt.response().body.size()
+                                               << " 字节，窗口是 256 KiB）";
+        ASSERT_EQ(attempt.response().body.size(), kLargeBodyByteCount) << "正文长度与服务端答出去的那一份不等";
+        // 逐字节比对形状：只判长度时「攒够了但拼错位」也能绿，而窗口归还正是按累计字节数还的
+        std::size_t firstMismatchOffset = kLargeBodyByteCount;
+        for (std::size_t offset = 0; offset < kLargeBodyByteCount; ++offset)
+        {
+            if (attempt.response().body[offset] != largeBodyByteAt(offset))
+            {
+                firstMismatchOffset = offset;
+                break;
+            }
+        }
+        EXPECT_EQ(firstMismatchOffset, kLargeBodyByteCount) << "从第 " << firstMismatchOffset << " 字节起与服务端所答不一致";
     }
 
 } // namespace AsynGyanis::Net

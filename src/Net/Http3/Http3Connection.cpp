@@ -2,6 +2,7 @@
 
 #include "Base/Log/LogMacros.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <ranges>
 #include <variant>
@@ -24,6 +25,11 @@ namespace AsynGyanis::Net
 
         /// 发起方标记（RFC 9000 §2.1：bit0 随角色翻，服务端 1、客户端 0）
         constexpr std::int64_t kInitiatorBitMask = 0x01;
+
+        /// 一条 DATA 帧最多装多少载荷字节：与 HTTP/2 的 SETTINGS_MAX_FRAME_SIZE 缺省同档。
+        /// 设这个上界的理由是「收得齐」而不是「好看」：接收方要凑齐一整帧才交货并归还额度，
+        /// 一帧比对方肯给的流窗口还大就永远凑不齐（本端自己给每条流宣告的是 256 KiB，各家同量级）
+        constexpr std::size_t kMaximumDataPayloadByteCount = 16U * 1024U;
 
         /// 帧层的错误类别映射成线上码：布局不合是帧错误，撑破缓冲是过量负载（RFC 9114 §8.1）
         [[nodiscard]] Http3ErrorCode toHttp3ErrorCode(const Http3FrameErrorKind errorKind) noexcept
@@ -873,7 +879,17 @@ namespace AsynGyanis::Net
 
         if (!bytes.empty())
         {
-            queueOutboundFrame(streamId, Http3FrameType::Data, bytes, isEndStream);
+            // 一段正文按上界拆成多条 DATA 帧。整份塞进一条帧时，接收方要凑齐**一整帧**才交货，
+            // 而它自己宣告的流窗口比正文小，于是凑不齐 → 不消费 → 不还额度 → 本端也发不出去，
+            // 双方互等到时限（实测 600 KiB 的正文一字节也到不了对端）。拆小之后每一帧都能在一档
+            // 窗口里发完，额度按消耗持续推进，多大的正文都走得通
+            for (std::size_t offset = 0; offset < bytes.size(); offset += kMaximumDataPayloadByteCount)
+            {
+                const std::size_t chunkByteCount = std::min(kMaximumDataPayloadByteCount, bytes.size() - offset);
+                const bool        isLastChunk    = offset + chunkByteCount >= bytes.size();
+                // 收尾只跟最后一片：END_STREAM 落在中间的片上等于把正文判完，后面的段落没人认领
+                queueOutboundFrame(streamId, Http3FrameType::Data, bytes.subspan(offset, chunkByteCount), isEndStream && isLastChunk);
+            }
         } else if (isEndStream)
         {
             // 没有正文也要把收尾传下去：空字节段加 endStream 是本端结束这条流的唯一写法

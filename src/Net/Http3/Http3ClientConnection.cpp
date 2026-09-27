@@ -202,7 +202,11 @@ namespace AsynGyanis::Net
         exchange.response.isAnyByteReceived = true;
         if (!exchange.response.errorMessage.empty())
         {
-            return; // 已判死的流不再累计：结论不会再变，继续攒只是让内存跟着对端的节奏长
+            // 已判死的流不再累计：结论不会再变，继续攒只是让内存跟着对端的节奏长。但账要还——
+            // 与 h2 侧 `handleDataFrame` 那条同解：收下不还等于让连接级窗口一路漏，
+            // 而那一本账是这条连接上所有流共用的
+            m_connection.extendReceiveWindow(streamId, bytes.size());
+            return;
         }
         if (m_config.maximumResponseBodyBytes != 0U && exchange.response.body.size() + bytes.size() > m_config.maximumResponseBodyBytes)
         {
@@ -211,9 +215,15 @@ namespace AsynGyanis::Net
                                                    m_config.maximumResponseBodyBytes));
             exchange.response.body.clear(); // 半份正文不交回调用方：它连一个完整的字段段都不构成
             m_connection.abortStream(streamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled));
+            // 越界这一段仍然要还额度：流已判死，本层不会有人再来取它，不还就是让对端的连接级窗口一路漏
+            m_connection.extendReceiveWindow(streamId, bytes.size());
             return;
         }
         exchange.response.body.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+        // 拷进本端缓冲就是消费掉了，当场把额度还回去。协议层刻意把 DATA 载荷的归还留给接收方
+        // （`Http3Connection::creditConsumedBytes` 只就地上还非载荷字节），不还在这里还就没有别处还：
+        // 对端写满本端宣告的流窗口（每条 256 KiB）就不再发，而本端还在等它继续发
+        m_connection.extendReceiveWindow(streamId, bytes.size());
     }
 
     void Http3ClientConnection::noteMessageEnded(const std::int64_t streamId)
