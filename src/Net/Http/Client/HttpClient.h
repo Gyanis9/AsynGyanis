@@ -99,11 +99,12 @@ namespace AsynGyanis::Net
     /**
      * @brief 拆一个 http(s) URL
      * @details 只做拆分，不改写：不百分号解码，也不接受空白与控制字符（那会撕裂请求行）。
-     *          写错的端口不会回落到 80——那会让一个 https URL 静默连到明文端口上。
-     * @param url 形如 http(s)://host[:port]/path；协议名大小写无关，IPv6 主机必须写成 "[::1]:8080"
+     *          写错的端口不会回落到 80、缺协议名也不会补成 http——两者都是「猜一个」，
+     *          而猜错的后果是把一段本应加密的流量静默按明文发出去。
+     * @param url 形如 http(s)://host[:port]/path；协议名必须写出来且大小写无关，IPv6 主机必须写成 "[::1]:8080"
      * @return ParsedUrl 拆好的协议、主机、端口与路径
-     * @throws Base::InvalidArgumentException URL 含空白或控制字符、协议不是 http/https、没有主机、
-     *         端口不是 1..65535 的十进制数、方括号没闭合，或 IPv6 字面量没加方括号
+     * @throws Base::InvalidArgumentException URL 含空白或控制字符、没有协议名、协议不是 http/https、
+     *         没有主机、端口不是 1..65535 的十进制数、方括号没闭合，或 IPv6 字面量没加方括号
      */
     [[nodiscard]] ParsedUrl parseUrl(std::string_view url);
     /**

@@ -97,22 +97,26 @@ namespace AsynGyanis::Net
         ParsedUrl         parsed;
         std::string_view  remainder       = url;
         const std::size_t schemeSeparator = remainder.find("://");
-        if (schemeSeparator != std::string_view::npos)
+        // 协议名必须写出来。缺了就缺了，不能猜：猜 http 等于把一段本应加密的流量静默改成明文外发，
+        // 猜 https 又会连到一个只有明文端口的服务——两种猜法的失败都不出声
+        if (schemeSeparator == std::string_view::npos)
         {
-            const std::string_view schemeText = remainder.substr(0, schemeSeparator);
-            // 协议名大小写无关（RFC 3986 §6.2.3）：HTTPS:// 悄悄当成 http 就是把 TLS 整段降级
-            if (equalsIgnoreAsciiCase(schemeText, "https"))
-            {
-                parsed.scheme = "https";
-            } else if (equalsIgnoreAsciiCase(schemeText, "http"))
-            {
-                parsed.scheme = "http";
-            } else
-            {
-                throw Base::InvalidArgumentException(R"(HttpClient：只支持 "http" 与 "https" 两种协议，收到的是「)" + std::string(schemeText) + R"(」：换成 http(s):// 开头再试)");
-            }
-            remainder.remove_prefix(schemeSeparator + 3);
+            throw Base::InvalidArgumentException(R"(HttpClient：URL 少了协议名，要写成 http:// 或 https:// 开头：「)" + std::string(url) +
+                                                 R"(」。这里不替调用方补默认协议：补错一次就是把 TLS 整段绕过去)");
         }
+        const std::string_view schemeText = remainder.substr(0, schemeSeparator);
+        // 协议名大小写无关（RFC 3986 §6.2.3）：HTTPS:// 悄悄当成 http 就是把 TLS 整段降级
+        if (equalsIgnoreAsciiCase(schemeText, "https"))
+        {
+            parsed.scheme = "https";
+        } else if (equalsIgnoreAsciiCase(schemeText, "http"))
+        {
+            parsed.scheme = "http";
+        } else
+        {
+            throw Base::InvalidArgumentException(R"(HttpClient：只支持 "http" 与 "https" 两种协议，收到的是「)" + std::string(schemeText) + R"(」：换成 http(s):// 开头再试)");
+        }
+        remainder.remove_prefix(schemeSeparator + 3);
 
         const std::size_t      pathSeparator = remainder.find('/');
         const std::string_view authority     = pathSeparator == std::string_view::npos ? remainder : remainder.substr(0, pathSeparator);

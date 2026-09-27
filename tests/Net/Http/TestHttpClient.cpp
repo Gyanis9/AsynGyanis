@@ -149,6 +149,28 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：协议名缺失一律拒绝，不替调用方补一个 http
+     * @details 「host:port」这种写法以前能过——schemeSeparator 找不到 `://` 就顺着把整串当 authority，
+     *          结果 protocol 静默成 http：一个想连 TLS 端口的地址被明文发出去，而且失败方式与「连上了
+     *          但对方不回话」难以区分。补默认值这条路比直接拒绝危险，故与「写错的端口不回落到 80」同判
+     */
+    TEST(HttpClientUrl, RequiresAnExplicitScheme)
+    {
+        ASSERT_THROW(static_cast<void>(parseUrl("127.0.0.1:8080/x")), std::invalid_argument);
+        ASSERT_THROW(static_cast<void>(parseUrl("api.example.com")), std::invalid_argument);
+        ASSERT_THROW(static_cast<void>(parseUrl("example.com:443/v1")), std::invalid_argument) << "看着像 https 的地址会被静默按明文发出";
+
+        try
+        {
+            static_cast<void>(parseUrl("127.0.0.1:8080/x"));
+            FAIL() << "缺协议名的 URL 本该被拒";
+        } catch (const std::exception &failure)
+        {
+            EXPECT_NE(std::string{failure.what()}.find("协议名"), std::string::npos) << failure.what();
+        }
+    }
+
+    /**
      * @brief 钉住：写错的端口当场拒绝，不回落到 80
      * @details 这四形都是「冒号后面不是端口」：非数字、空、超出 65535、以及带尾巴的数字。
      *          回落会静默改掉对端地址，一个 https URL 能因此连到明文 80 端口上
