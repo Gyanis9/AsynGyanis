@@ -42,6 +42,12 @@ namespace AsynGyanis::Net
 
         constexpr std::chrono::milliseconds kWaitTimeout{10000};
 
+        /// 对端夹具「起没起得来」的上限，与请求时限分开设：这里量的是 listen/start 协程排到调度器的
+        /// 时间——全量并行跑（一进程一用例、十几个这样的进程同时在建套接字）时这一段会被明显拉长，
+        /// 实测出现过 10 秒不够而单跑 3 秒就位的情况。放宽它不掩盖任何缺陷：对端真起不来时，
+        /// 每个用法它的用例仍会在自己的断言上红，只是从「夹具没起来」变成「请求全拿不到响应」。
+        constexpr std::chrono::milliseconds kPeerReadyTimeout{30000};
+
         /// 既是服务端身份又是它自己的信任锚，因此同一份文件两头通用（SAN 里有 IP:127.0.0.1）
         const std::filesystem::path kLoopbackCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_cert.pem";
         const std::filesystem::path kLoopbackKeyPath         = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_key.pem";
@@ -197,14 +203,14 @@ namespace AsynGyanis::Net
             {
                 if (shape == PeerShape::Http3Only)
                 {
-                    if (!waitForCondition([this] { return m_quic != nullptr && m_quic->listeningPort() != 0U; }, kWaitTimeout))
+                    if (!waitForCondition([this] { return m_quic != nullptr && m_quic->listeningPort() != 0U; }, kPeerReadyTimeout))
                     {
                         return false;
                     }
                     m_port = m_quic->listeningPort();
                     return m_port != 0U;
                 }
-                if (!waitForCondition([this] { return m_https != nullptr && m_https->isRunning(); }, kWaitTimeout))
+                if (!waitForCondition([this] { return m_https != nullptr && m_https->isRunning(); }, kPeerReadyTimeout))
                 {
                     return false;
                 }
