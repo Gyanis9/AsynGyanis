@@ -462,7 +462,7 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模（2026-09-27 实测）：**Windows Debug（含 ASan）3457 例全绿、69 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3467 例全绿、68 例 SKIP、零告警、零泄漏、零未定义行为**。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、`Process` 与多进程 worker 的真实行为、停机信号的实投递；Windows 独有完成端口相关与「本机不支持多进程」那几条。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。68 例 SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言）
+- 当前规模（2026-09-27 实测）：**Windows Debug（含 ASan）3458 例全绿、69 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3468 例全绿、68 例 SKIP、零告警、零泄漏、零未定义行为**。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、`Process` 与多进程 worker 的真实行为、停机信号的实投递；Windows 独有完成端口相关与「本机不支持多进程」那几条。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。68 例 SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 
@@ -471,6 +471,18 @@ AsynGyanis/
 表中读数来自**未开** `ASYN_WITH_MIMALLOC`、**未开** `ASYN_WITH_IO_URING` 的 Release 构建（epoll / 完成端口后端 +
 系统分配器）。把这一句写在这里是为了别让「Release + LTO」被读成「全部性能开关都开了」：这两档的开/关差异
 尚未实测，没测过的收益不写。
+
+两档都默认关，各有明确理由，不是没来得及打开：
+
+- **`ASYN_WITH_MIMALLOC`**：它与 sanitizer **互斥**（mimalloc 会遮蔽 ASan/LSan/TSan 的分配拦截，配置阶段直接
+  `FATAL_ERROR` 拦住），而本仓库每一笔提交都在 sanitizer 下过门禁。默认打开它等于默认关掉内存与线程门禁——
+  代价远大于未实测的分配收益。要用它请在**生产构建**里显式开：`cmake -DASYN_WITH_MIMALLOC=ON`，并另行安排
+  不带 sanitizer 的验证轮。接管是全局的（`Core` 以 PUBLIC 链入 `mimalloc-static`，最终可执行文件的
+  `malloc/free` 整个换掉），包消费方要能在 Conan 缓存里找到它。
+- **`ASYN_WITH_IO_URING`**：容器与部分宿主内核的 seccomp 会挡 `io_uring_setup`（`EPERM`），默认打开会让
+  「在这台机器上建不起事件循环」成为常态失败；而且它只改后端选择（`Epoll.h` 里 `using Epoll = Uring`），
+  三后端共用一套契约、多数断言在 epoll 下恒绿，所以对齐是靠 CI 里那条 `io-uring-compile` 作业**带着用例**
+  跑出来的（内核不放行时跳过运行，不放行就等于没测）。要评估收益请在支持它的环境里显式打开。
 
 单进程、同机回环，客户端与被测服务共享同一台机器。这类数字只能用于**同一台机器上的前后对比**：
 换一次会话、换个邻居负载都能差出近一倍，跨机器比没有意义，因此这里不写「比谁快」的结论。
