@@ -62,8 +62,8 @@ namespace AsynGyanis::Net
      * @details 这就是背压的落点——本口没返回，客户端就不会再读，TCP 窗口与 h2/h3 的流控因此自己闭合。
      * @param head 已收齐的响应头部（状态码与头部可信；**只在本次调用内有效**，要留就自己抄下来）
      * @param batch 本批正文（**只在本次调用内有效**；`isLastBatch` 为真时可为空，表示零长收尾）
-     * @param isLastBatch 是否最后一批：Content-Length 收满、分块终止块读完、或对端收线
-     * @return true 还要下一批；false 就此收口（不再读正文，这条连接当场关闭、不还池）
+     * @param isLastBatch 是否最后一批：长度收满、分块或流读到收尾，或对端收线
+     * @return true 还要下一批；false 就此收口（HTTP/1.1 关整条连接，h2 与 h3 只结这一条流）
      */
     using HttpResponseBodyReceiver = std::function<Core::Task<bool>(const HttpResponseInfo &head, std::string_view batch, bool isLastBatch)>;
 

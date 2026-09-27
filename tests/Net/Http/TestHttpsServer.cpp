@@ -467,6 +467,98 @@ namespace AsynGyanis::Net
                 startServer();
             }
         };
+        /// 大正文路由答出去的字节数：远过本端给每条 h2 流宣告的接收窗口（64 KiB），
+        /// 于是「还不还窗口」直接决定收不收得齐，不必赌调度
+        constexpr std::size_t kStreamedBigBodyByteCount = 200U * 1024U;
+
+        /// 「h2 上挂接收口」这一趟的结论
+        struct Http2StreamingRunOutcome
+        {
+            std::vector<std::string> batches;             ///< 接收口每次拿到的那一批，按交付顺序
+            std::size_t              lastBatchCount{0};   ///< 带上「是收尾」标记的批数
+            int                      headStatus{0};       ///< 接收口第一次被叫到时头部里的状态码
+            std::string              reasonPhrase;        ///< 交回响应的原因短语：h2 没有这一项
+            std::string              returnedBody;        ///< 交回的正文：挂了接收口应为空
+            std::string              followUpBody;        ///< 紧随其后的那条普通请求的正文
+            std::size_t              heldHttp2Count{0};   ///< 跑完时池里留着的 h2 连接条数
+            std::size_t              inFlightAfterRun{0}; ///< 跑完最忙一条 h2 连接上还在途的流数
+            std::size_t              failureCount{0};     ///< 两次请求里没拿到响应的条数
+        };
+
+        /**
+         * @brief 同一个带池的客户端上，先按批次收一条大正文，再完整问一条小的
+         * @details 两条走同一条 h2 连接：第二条答不答得出来、池里还剩几条连接、还在途的流数回不回
+         *          得到 0，合起来才答得出「半路收口有没有把这条复用的通路弄脏」。
+         * @param client 被测客户端（持有池）
+         * @param bigUrlText 大正文那条的地址（具名串：本协程带着它 co_await，视图得活到返回）
+         * @param smallUrlText 收口之后问的那条
+         * @param stopAfterBatchCount 交够这么多批就返回 false 主动收口
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runHttp2StreamingDelivery(HttpClient &client, const std::string &bigUrlText, const std::string &smallUrlText, const std::size_t stopAfterBatchCount,
+                                                   Http2StreamingRunOutcome &outcome)
+        {
+            HttpClientRequest request;
+            request.responseBodyReceiver = [&outcome, stopAfterBatchCount](const HttpResponseInfo &head, const std::string_view batch, const bool isLastBatch) -> Core::Task<bool>
+            {
+                outcome.headStatus = head.statusCode;
+                outcome.batches.emplace_back(batch);
+                outcome.lastBatchCount += isLastBatch ? 1U : 0U;
+                co_return stopAfterBatchCount == 0U || outcome.batches.size() < stopAfterBatchCount;
+            };
+            const std::unique_ptr<HttpClientResponse> response = co_await client.send(bigUrlText, request, std::chrono::seconds{30});
+            if (response != nullptr)
+            {
+                outcome.returnedBody = response->body;
+                outcome.reasonPhrase = response->reasonPhrase;
+            } else
+            {
+                ++outcome.failureCount;
+            }
+
+            const std::unique_ptr<HttpClientResponse> followUp = co_await client.get(smallUrlText, std::chrono::seconds{30});
+            if (followUp != nullptr)
+            {
+                outcome.followUpBody = followUp->body;
+            } else
+            {
+                ++outcome.failureCount;
+            }
+            outcome.heldHttp2Count   = client.idleHttp2ConnectionCount();
+            outcome.inFlightAfterRun = client.http2MaximumInFlightStreamCount();
+            co_return;
+        }
+
+        /**
+         * @brief 挂接收口在一条协商出 h2 的通路跑一趟：大正文按批次收，收口之后再完整问一条小的
+         * @param port 服务端端口
+         * @param stopAfterBatchCount 交够这么多批就返回 false 主动收口；0 表示交完整个流
+         * @return Http2StreamingRunOutcome 交付历史与两条请求的结论
+         */
+        Http2StreamingRunOutcome runHttp2Streaming(const std::uint16_t port, const std::size_t stopAfterBatchCount)
+        {
+            Core::EventLoop          loop;
+            HttpClient               client(loop);
+            Http2StreamingRunOutcome outcome;
+            const std::string        bigUrl   = "https://127.0.0.1:" + std::to_string(port) + "/h2big";
+            const std::string        smallUrl = "https://127.0.0.1:" + std::to_string(port) + "/hello";
+
+            auto drive = [&loop, &client, &bigUrl, &smallUrl, stopAfterBatchCount, &outcome]() -> Core::Task<>
+            {
+                co_await runHttp2StreamingDelivery(client, bigUrl, smallUrl, stopAfterBatchCount, outcome);
+                loop.stop();
+                co_return;
+            };
+            // 闭包先落到具名对象上再调用：惰性协程的帧记的是闭包地址，临时量在语句结束就析构
+            auto work = drive();
+            if (!work.isReady())
+            {
+                loop.scheduler().schedule(work.handle());
+            }
+            loop.run();
+            return outcome;
+        }
+
     } // namespace
 
     /**
@@ -2217,4 +2309,87 @@ namespace AsynGyanis::Net
         ASSERT_NE(response, nullptr) << "换代之后 SNI 站点没拿到登记的那张证书，说明站点表没被复现";
         EXPECT_EQ(response->statusCode, 200);
     }
+    /**
+     * @brief 钉住：挂了接收口的请求照样协商到 h2，并按到达批次交付
+     * @details 这一条要存在，是因为「带接收口就只按 HTTP/1.1 建通路」那道门被拆掉了。走没走 h2 不靠
+     *          内部计数：h2 的答没有原因短语，退回 HTTP/1.1 就一定带 "OK"。批次判据也不靠调度运气：
+     *          正文 200 KiB 而本端给每条流宣告的接收窗口是 64 KiB，对端发满一档就得等本端还窗口，
+     *          还窗口又排在交付之后——于是必然不止一批。
+     * @note 证伪：把选路里那道门加回去（带接收口时 ALPN 只声明 http/1.1）→ 原因短语非空、批数为 1，
+     *       两处一起红；把 h2 侧的「攒着待交」改回整份进 body → 批数与「交回的正文为空」两条红。
+     */
+    TEST(HttpsServer, StreamsResponseBodyInBatchesOverHttp2)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/h2big",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                               {
+                                   response.setStatus(200);
+                                   response.setBody(std::string(kStreamedBigBodyByteCount, 'y'));
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        const Http2StreamingRunOutcome outcome = runHttp2Streaming(fixture.listeningPort(), 0U);
+        EXPECT_EQ(outcome.failureCount, 0U) << "有一问没拿到响应：带接收口的请求在 h2 上没走通";
+        EXPECT_EQ(outcome.headStatus, 200);
+        EXPECT_TRUE(outcome.reasonPhrase.empty()) << "拿到了原因短语「" << outcome.reasonPhrase << "」：这趟走的是 HTTP/1.1";
+        EXPECT_GT(outcome.batches.size(), 1U) << "只交了一批：逐批交付在 h2 上没生效（批数 " << outcome.batches.size() << "）";
+        EXPECT_EQ(outcome.lastBatchCount, 1U) << "收尾标记应当只出现一次";
+        EXPECT_TRUE(outcome.returnedBody.empty()) << "挂了接收口还把整份正文留在响应里：白攒一份内存";
+        std::size_t stitchedByteCount = 0U;
+        for (const std::string &batch: outcome.batches)
+        {
+            stitchedByteCount += batch.size();
+        }
+        EXPECT_EQ(stitchedByteCount, kStreamedBigBodyByteCount) << "各批拼起来的总量与对端答出去的不等";
+    }
+
+    /**
+     * @brief 钉住：h2 上半路收口只结那一条流，连接仍留在池里给下一条用
+     * @details 与 HTTP/1.1 那一条对照着看才有意义：h1 没有流可结，收口只能关掉整条连接（那边的用例
+     *          钉的就是「不还池」），而 h2 结掉这一条流（RFC 7540 §5.3.2）之后同一条连接仍该能服务。
+     *          三条判据各指一处：交够指定的批数就停、下一条请求在同一条连接上答得出来、池里那条 h2
+     *          连接还在且还在途的流数回到 0（收口的流没从在途表里摘走的话，最后一条先红）。
+     * @note 证伪：把收口那支的返回值改成「照旧继续读」→ 批数与收尾标记两条红；把收口时的连接判死
+     *       （模拟 h1 那种关整条的做法）→ 池里连接条数红。
+     */
+    TEST(HttpsServer, EarlyStopKeepsTheHttp2ConnectionPooled)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/h2big",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<void>
+                               {
+                                   response.setStatus(200);
+                                   response.setBody(std::string(kStreamedBigBodyByteCount, 'y'));
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        const Http2StreamingRunOutcome outcome = runHttp2Streaming(fixture.listeningPort(), 2U);
+        EXPECT_EQ(outcome.batches.size(), 2U) << "接收口说的「不要了」没被当数";
+        EXPECT_EQ(outcome.lastBatchCount, 0U) << "半路收口不该带收尾标记：那条流没走到头";
+        EXPECT_TRUE(outcome.reasonPhrase.empty()) << "这趟没走 h2，后面的判据量的就不是 h2";
+        EXPECT_EQ(outcome.failureCount, 0U) << "收口之后那条普通请求没答上来";
+        EXPECT_NE(outcome.followUpBody.find("served-hello"), std::string::npos) << "第二条的正文不对：连接被收口弄脏了";
+        EXPECT_EQ(outcome.heldHttp2Count, 1U) << "收口把整条连接丢了：h2 只需要结掉那一条流";
+        EXPECT_EQ(outcome.inFlightAfterRun, 0U) << "收口的流没从在途表里摘走：这条连接再也进不了「空闲可复用」那一档";
+    }
+
 } // namespace AsynGyanis::Net

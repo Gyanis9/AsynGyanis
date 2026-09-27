@@ -322,6 +322,82 @@ namespace AsynGyanis::Net
         {
             return "https://127.0.0.1:" + std::to_string(port) + std::string{kBigRoutePath};
         }
+
+        /// 「h3 上挂接收口」这一趟的结论
+        struct Http3StreamingRunOutcome
+        {
+            std::vector<std::string> batches;           ///< 接收口每次拿到的那一批，按交付顺序
+            std::size_t              lastBatchCount{0}; ///< 带上「是收尾」标记的批数
+            int                      headStatus{0};     ///< 接收口第一次见到 :status 时它已是这个值
+            std::string              returnedBody;      ///< 交回的正文：挂了接收口应为空
+            std::string              followUpBody;      ///< 收口之后那条普通请求的正文（读它就是读「谁答的」）
+            std::size_t              http3LinkCount{0}; ///< 跑完时池里留着的 h3 链路条数
+            std::size_t              failureCount{0};   ///< 两次请求里没拿到响应的条数
+        };
+
+        /**
+         * @brief 同一个客户端上先按批次收一条大正文（交够 stopAfterBatchCount 批就收口），再完整问一条小的
+         * @details 两条必须共用一个池：换一条链路去答第二条，「半路收口有没有把这条链路弄脏」就没人回答。
+         *          链路条数与正文两处一起读，才分得开「只结了那条流」与「把整条链路丢了」。
+         * @param port 对端端口（只有 UDP 在听，因此答出来的必然走 h3）
+         * @param stopAfterBatchCount 交够这么多批就返回 false 主动收口
+         * @return Http3StreamingRunOutcome 交付历史与两条请求的结论
+         */
+        Http3StreamingRunOutcome runStreamingOverHttp3(const std::uint16_t port, const std::size_t stopAfterBatchCount)
+        {
+            Core::EventLoop loop;
+            Core::TlsPolicy policy;
+            policy.certificateAuthorityFile = kLoopbackCertificatePath.string();
+            Http3StreamingRunOutcome outcome;
+            // 客户端由协程在循环线程上建、也在循环线程上收（事件循环线程契约）
+            std::optional<HttpClient> client;
+
+            auto drive = [&loop, &client, &outcome, &policy, port, stopAfterBatchCount]() -> Core::Task<>
+            {
+                client.emplace(loop, HttpOutboundConnectionPool::Config{}, policy);
+                client->setHttp3Enabled(true);
+
+                HttpClientRequest request;
+                request.responseBodyReceiver = [&outcome, stopAfterBatchCount](const HttpResponseInfo &head, const std::string_view batch,
+                                                                               const bool isLastBatch) -> Core::Task<bool>
+                {
+                    outcome.headStatus = head.statusCode;
+                    outcome.batches.emplace_back(batch);
+                    outcome.lastBatchCount += isLastBatch ? 1U : 0U;
+                    co_return stopAfterBatchCount == 0U || outcome.batches.size() < stopAfterBatchCount;
+                };
+                const std::unique_ptr<HttpClientResponse> response = co_await client->send(bigUrl(port), request, std::chrono::seconds{30});
+                if (response != nullptr)
+                {
+                    outcome.returnedBody = response->body;
+                } else
+                {
+                    ++outcome.failureCount;
+                }
+
+                const std::unique_ptr<HttpClientResponse> followUp = co_await client->get(probeUrl(port), std::chrono::seconds{30});
+                if (followUp != nullptr)
+                {
+                    outcome.followUpBody = followUp->body;
+                } else
+                {
+                    ++outcome.failureCount;
+                }
+                outcome.http3LinkCount = client->idleHttp3LinkCount();
+                client.reset();
+                loop.stop();
+                co_return;
+            };
+            // 闭包先落到具名对象上再调用：惰性协程的帧记的是闭包地址，临时量在语句结束就析构
+            auto work = drive();
+            if (!work.isReady())
+            {
+                loop.scheduler().schedule(work.handle());
+            }
+            loop.run();
+            return outcome;
+        }
+
     } // namespace
 
     /**
@@ -454,4 +530,56 @@ namespace AsynGyanis::Net
         EXPECT_EQ(defaultSized.bodies[0].size(), kBigBodyByteCount);
         EXPECT_EQ(defaultSized.bodies[0], std::string(kBigBodyByteCount, 'x')) << "大正文没按字节收齐";
     }
+    /**
+     * @brief 钉住：挂了接收口的请求照样走 h3，并按到达批次交付
+     * @details 这一条要存在，是因为「带接收口就只按 HTTP/1.1 建通路」那道门被拆掉了。对端只有 UDP 在
+     *          听，因此答得出来就等于走了 h3（退回 TCP 会连不上）。批次判据不靠调度运气：正文 200 KiB
+     *          而拆帧之后每帧 16 KiB，一条报文只装得下一帧的一截，交付又是每轮一次，批数必然大于 1。
+     * @note 证伪：把 h3 侧的「攒着待交」改回整份进 body → 批数与「交回的正文为空」两条红；把选路里
+     *       那道门加回去（带接收口时不去问 h3）→ 两次请求全失败，failureCount 红。
+     */
+    TEST(HttpClientHttp3, StreamsResponseBodyInBatchesOverHttp3)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少证书夹具：" << kLoopbackCertificatePath.string();
+        RunningPeer peer{PeerShape::Http3Only};
+        ASSERT_TRUE(peer.awaitRunning()) << "对端没进入服务循环";
+
+        // 0 表示不主动收口：交完整个流
+        const Http3StreamingRunOutcome outcome = runStreamingOverHttp3(peer.port(), 0U);
+        EXPECT_EQ(outcome.failureCount, 0U) << "有一问没拿到响应：带接收口的请求在 h3 上没走通";
+        EXPECT_EQ(outcome.headStatus, 200);
+        EXPECT_GT(outcome.batches.size(), 1U) << "只交了一批：逐批交付在 h3 上没生效（批数 " << outcome.batches.size() << "）";
+        EXPECT_EQ(outcome.lastBatchCount, 1U) << "收尾标记应当只出现一次";
+        EXPECT_TRUE(outcome.returnedBody.empty()) << "挂了接收口还把整份正文留在响应里：白攒一份内存";
+        std::size_t stitchedByteCount = 0U;
+        for (const std::string &batch: outcome.batches)
+        {
+            stitchedByteCount += batch.size();
+        }
+        EXPECT_EQ(stitchedByteCount, kBigBodyByteCount) << "各批拼起来的总量与对端答出去的不等";
+    }
+
+    /**
+     * @brief 钉住：h3 上半路收口只结那一条流，链路仍留在池里给下一条用
+     * @details 与 HTTP/1.1 那一条对照着看才有意义：h1 没有流可结，收口只能关掉整条连接；h3 的正文是
+     *          分流的，结掉这一条就够。三条判据各指一处：交够指定的批数就停、下一条请求答得出来且答案
+     *          来自那台只监听 UDP 的对端、池里那条链路还在（丢了链路的话最后一条先红）。
+     * @note 证伪：把收口那支的返回值改成「照旧继续读」→ 批数与收尾标记两条红；把收口同时把链路判死
+     *       （模拟 h1 那种关整条的做法）→ 链路条数红。
+     */
+    TEST(HttpClientHttp3, EarlyStopKeepsTheHttp3LinkUsable)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少证书夹具：" << kLoopbackCertificatePath.string();
+        RunningPeer peer{PeerShape::Http3Only};
+        ASSERT_TRUE(peer.awaitRunning()) << "对端没进入服务循环";
+
+        const Http3StreamingRunOutcome outcome = runStreamingOverHttp3(peer.port(), 2U);
+        EXPECT_EQ(outcome.batches.size(), 2U) << "接收口说的「不要了」没被当数";
+        EXPECT_EQ(outcome.lastBatchCount, 0U) << "半路收口不该带收尾标记：那条流没走到头";
+        EXPECT_TRUE(outcome.returnedBody.empty());
+        EXPECT_EQ(outcome.failureCount, 0U) << "收口之后那条普通请求没答上来";
+        EXPECT_EQ(outcome.followUpBody, std::string{kHttp3ServedBody}) << "第二条的答案不是那台 h3 对端给的：链路被收口弄脏了";
+        EXPECT_EQ(outcome.http3LinkCount, 1U) << "收口把整条链路丢了：h3 只需要结掉那一条流";
+    }
+
 } // namespace AsynGyanis::Net

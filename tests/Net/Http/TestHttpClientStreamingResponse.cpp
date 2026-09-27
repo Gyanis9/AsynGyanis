@@ -79,6 +79,7 @@ namespace
                 observation.sawLastBatch = true;
             }
             // 交完这一批就收口：剩下的正文不该再被读，这条连接也不能还池
+            // （HTTP/1.1 没有「流」可结——h2 与 h3 上同一个返回只结那一条流，见另外两份通路用例）
             co_return stopAfterBatchCount == 0 || observation.batches.size() < stopAfterBatchCount;
         };
         try

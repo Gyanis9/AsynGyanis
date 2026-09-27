@@ -7,6 +7,7 @@
 #include "Net/Http3/Http3ClientConnection.h"
 
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
@@ -39,12 +40,17 @@ namespace AsynGyanis::Net
         using namespace std::chrono_literals;
 
         constexpr std::chrono::milliseconds kWaitTimeout{8000};
+        /// 带大正文那两条的等待上限：见 `Http3DeliveryAttempt` 的说明，这里赌的是「丢报文之后
+        /// 还要重传完」，不是「这条通路走不走得通」
+        constexpr std::chrono::milliseconds kDeliveryWaitTimeout{25000};
 
         /// 服务端答出去的正文，两侧同一个字面串
         constexpr std::string_view kServedBody{"served-over-h3-client"};
 
-        /// 一条比本端给每条流宣告的接收窗口（256 KiB）还大的正文：窗口归还的判据要拿它当对端
-        constexpr std::size_t kLargeBodyByteCount = 600U * 1024U;
+        /// 一条比本端给每条流宣告的接收窗口（256 KiB）还大的正文：窗口归还的判据要拿它当对端。
+        /// 取 300 KiB 而不是更大：这条链路上搬的是 UDP 报文，全量并行跑时搬得越多越可能丢，一丢就要
+        /// 等重传；判据只要「大过一档窗口」就成立，不必多担这份风险
+        constexpr std::size_t kLargeBodyByteCount = 300U * 1024U;
 
         /// 大正文按位置轮转 26 个字母：服务端与用例共用同一份形状，「拼回来的是不是完整那一份」才可判
         [[nodiscard]] char largeBodyByteAt(const std::size_t offset) noexcept
@@ -104,6 +110,20 @@ namespace AsynGyanis::Net
                                  static_cast<void>(request);
                                  response.setStatus(200);
                                  response.setBody(std::string(200U * 1024U, 'x'));
+                                 co_return;
+                             });
+
+                // 收了请求但不答的静默路由：出站侧「时限到了就得把等待收回来」的判据要拿它当对端。
+                // 30 秒远过用例给请求的时限，也远过服务端自己的读时限，因此答案只能由本端的时限带回来
+                // 处理器按引用拿着夹具的循环：路由表是本成员，它比循环先销毁
+                m_router.get("/stall",
+                             [this](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 static_cast<void>(request);
+                                 Core::Timer silence(m_loop);
+                                 co_await silence.waitFor(std::chrono::seconds{30});
+                                 response.setStatus(200);
+                                 response.setBody("eventually");
                                  co_return;
                              });
 
@@ -180,10 +200,12 @@ namespace AsynGyanis::Net
              * @param path 请求路径，默认打夹具里那条小正文的路由
              */
             Http3RequestAttempt(const std::uint16_t port, const std::string &clientCertificateFile = {}, const std::string &clientPrivateKeyFile = {},
-                                const std::string path = "/probe") : m_port(port), m_clientCertificateFile(clientCertificateFile), m_clientPrivateKeyFile(clientPrivateKeyFile)
+                                const std::string path = "/probe", const std::chrono::milliseconds requestTimeout = std::chrono::milliseconds{4000}) :
+                m_port(port), m_clientCertificateFile(clientCertificateFile), m_clientPrivateKeyFile(clientPrivateKeyFile)
             {
                 // 路径在排协程之前落定：run() 第一次被驱动就已经在读它
-                m_path = path;
+                m_path           = path;
+                m_requestTimeout = requestTimeout;
                 m_task.emplace(run());
                 m_loop.scheduler().schedule(m_task->handle());
                 m_loopThread = std::thread([this] { m_loop.run(); });
@@ -254,7 +276,7 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                m_response = co_await http3.request("https", "127.0.0.1:" + std::to_string(m_port), "GET", m_path, {}, {}, std::chrono::milliseconds{4000});
+                m_response = co_await http3.request("https", "127.0.0.1:" + std::to_string(m_port), "GET", m_path, {}, {}, m_requestTimeout);
                 co_await http3.shutdown();
                 client.reset();
                 finish();
@@ -273,8 +295,9 @@ namespace AsynGyanis::Net
             std::string                           m_clientCertificateFile{};
             std::string                           m_clientPrivateKeyFile{};
             std::string                           m_path{};
-            std::chrono::steady_clock::time_point m_startedAt{}; ///< 整次尝试的起点
-            std::chrono::milliseconds             m_elapsed{0};  ///< finish() 时结算的耗时
+            std::chrono::milliseconds             m_requestTimeout{4000}; ///< 这条请求自己的时限（静默对端那条要调小）
+            std::chrono::steady_clock::time_point m_startedAt{};          ///< 整次尝试的起点
+            std::chrono::milliseconds             m_elapsed{0};           ///< finish() 时结算的耗时
             std::optional<Core::Task<>>           m_task{};
             std::thread                           m_loopThread{};
             Http3ClientResponse                   m_response{};
@@ -683,6 +706,9 @@ namespace AsynGyanis::Net
              * @brief 排好一次「握手 → 起 h3 → 带接收口提请求 → 再提一条普通请求」
              * @param port 目标端口
              * @param stopAfterBatchCount 交够这么多批就返回 false 主动收口；0 表示交完整个流
+             * @note 两次请求各给 15 秒、整趟等 25 秒：这条链路上搬的是几百 KiB 的 UDP 报文，回环在负载下
+             *       会丢报文，一次丢包就是几轮 PTO 退避。判据本身与快慢无关（多次交付由窗口算术保证），
+             *       所以时限只要长到「真没走通」而不是「走得慢」才报红——实测整跑一轮 270 ms 上下
              */
             Http3DeliveryAttempt(const std::uint16_t port, const std::size_t stopAfterBatchCount) : m_port(port), m_stopAfterBatchCount(stopAfterBatchCount)
             {
@@ -733,10 +759,16 @@ namespace AsynGyanis::Net
             {
                 return m_inFlightAfterFollowUp;
             }
+            /// 跑到了哪一步：整趟挂住时用它指认哪一问没回来。原子量，因为挂住时循环线程还在写它
+            [[nodiscard]] const char *stage() const noexcept
+            {
+                return m_stage.load(std::memory_order_acquire);
+            }
 
         private:
             Core::Task<> run()
             {
+                m_stage.store("connecting", std::memory_order_release);
                 const std::string authority = "127.0.0.1:" + std::to_string(m_port);
                 const auto        address   = Core::InetAddress::resolve("127.0.0.1", m_port).value();
                 auto              link      = std::make_shared<Http3OutboundLink>(m_loop, makeLinkConfiguration(m_port));
@@ -752,13 +784,16 @@ namespace AsynGyanis::Net
                     m_lastBatchFlags.push_back(isLastBatch);
                     co_return m_stopAfterBatchCount == 0U || m_batches.size() < m_stopAfterBatchCount;
                 };
-                m_first = co_await link->http3().request("https", authority, "GET", "/large", {}, {}, std::chrono::milliseconds{6000}, receiver);
+                m_stage.store("first-request", std::memory_order_release);
+                m_first = co_await link->http3().request("https", authority, "GET", "/large", {}, {}, std::chrono::milliseconds{15000}, receiver);
                 // 收口之后同一条链路还要能接着服务：h3 的正文是分流的，结掉这一条就够
                 m_isHealthyAfterRun = link->isHealthy();
-                m_followUp          = co_await link->http3().request("https", authority, "GET", "/probe", {}, {}, std::chrono::milliseconds{6000});
+                m_stage.store("follow-up", std::memory_order_release);
+                m_followUp = co_await link->http3().request("https", authority, "GET", "/probe", {}, {}, std::chrono::milliseconds{15000});
                 // 在途数要回得到 0：本端结掉一条流之后还有晚到的字节，那一段若被当成「一条新的在途请求」
                 // 立账，就再也没有人来摘它，链路会一直看着被人用着
                 m_inFlightAfterFollowUp = link->inFlightStreamCount();
+                m_stage.store("done", std::memory_order_release);
                 m_isFinished.store(true, std::memory_order_release);
                 co_return;
             }
@@ -775,6 +810,7 @@ namespace AsynGyanis::Net
             bool                        m_isHealthyAfterRun{false};
             std::size_t                 m_inFlightAfterFollowUp{0U};
             std::atomic<bool>           m_isFinished{false};
+            std::atomic<const char *>   m_stage{"init"}; ///< 进展到哪一步（指字符串字面量，不持有内存）
         };
 
 
@@ -1012,7 +1048,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：挂着接收口时 h3 的响应正文一批一批交出去
      * @details 判据为什么不会靠调度运气：本端给每条流的接收额度按消耗归还，而对端要把一帧（拆帧之后
-     *          16 KiB）发完才轮得到下一帧，交付又排在每一轮推动通路之前——600 KiB 的正文必然落成多次
+     *          16 KiB）发完才轮得到下一帧，交付又排在每一轮推动通路之前——三百 KiB 的正文必然落成多次
      *          交付。拼接起来逐字节等于服务端答出去的那一份，才算既没交重也没漏交。
      * @note 证伪：把 `noteBodyBytes` 里「挂了接收口就攒着待交」改回直接进 body 并当场还额度 → 本条红
      *       （响应里留着整份正文、批数为 1）；只把 `deliverReceivedBody` 里的额度归还摘掉 → 也红
@@ -1024,7 +1060,7 @@ namespace AsynGyanis::Net
         ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
 
         Http3DeliveryAttempt attempt{server.listeningPort(), 0U};
-        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这条带接收口的请求既没成也没败，挂在那里";
+        ASSERT_TRUE(attempt.awaitFinished(kDeliveryWaitTimeout)) << "这条带接收口的请求既没成也没败，挂在「" << attempt.stage() << "」这一步";
         ASSERT_TRUE(attempt.first().isOk()) << "大正文没整个收下：" << attempt.first().errorMessage;
         EXPECT_TRUE(attempt.first().body.empty()) << "挂了接收口还把整份正文留在响应里：白攒一份内存";
         ASSERT_FALSE(attempt.batches().empty()) << "一批都没交出去";
@@ -1069,7 +1105,7 @@ namespace AsynGyanis::Net
         ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
 
         Http3DeliveryAttempt attempt{server.listeningPort(), 2U};
-        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这条收口的请求既没成也没败，挂在那里";
+        ASSERT_TRUE(attempt.awaitFinished(kDeliveryWaitTimeout)) << "这条收口的请求既没成也没败，挂在「" << attempt.stage() << "」这一步";
         EXPECT_EQ(attempt.batches().size(), 2U) << "接收口说的「不要了」没被当数";
         EXPECT_TRUE(attempt.first().isOk()) << "主动收口是一次成功的交换：" << attempt.first().errorMessage;
         EXPECT_TRUE(attempt.first().body.empty());
@@ -1077,6 +1113,27 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(attempt.followUp().isOk()) << "收口之后同一条链路上的下一条请求没答上来：" << attempt.followUp().errorMessage;
         EXPECT_EQ(attempt.followUp().body, std::string{kServedBody});
         EXPECT_EQ(attempt.inFlightAfterFollowUp(), 0U) << "晚到的字节给已收口的流重立了账：在途数再也回不到 0";
+    }
+
+    /**
+     * @brief 钉住：对端收了请求不答话时，本端的时限必须能把等待收回来
+     * @details 这条量的不是「等不等得到答案」，而是「等不到答案时这条请求还算不算数」：出站 h3 的
+     *          等待挂在「读到下一条报文」上，对端握住请求不答就没有答案可等。两条判据各指一处：
+     *          结论得是失败而不是成功（半路放弃不能报 200）；整趟耗时得贴着时限而不是贴着等待上限
+     *          （否则就是「碰巧又来了一条报文」，不是时限起作用）。此前这条通路对「请求时限到点」
+     *          零直测。
+     * @note 证伪：摘掉 `request()` 里那把 `DeadlineGuard` → 本条挂在 awaitFinished 上红（一秒二的时限，
+     *       等满 8 秒也没收场）。
+     */
+    TEST(Http3ClientConnection, ReclaimsTheRequestWhenTheDeadlinePassesWhileThePeerIsSilent)
+    {
+        RunningHttp3Server server;
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        Http3RequestAttempt attempt{server.listeningPort(), {}, {}, "/stall", std::chrono::milliseconds{1200}};
+        ASSERT_TRUE(attempt.awaitFinished(std::chrono::seconds{8})) << "时限早就掐断了，这条请求还没收场：等待没被收回来";
+        EXPECT_FALSE(attempt.response().isOk()) << "对端一个字都没答，本端不该报成功：" << attempt.response().errorMessage;
+        EXPECT_LT(attempt.elapsed(), std::chrono::seconds{5}) << "收场用了 " << attempt.elapsed().count() << " 毫秒，不像时限起作用的样子";
     }
 
 } // namespace AsynGyanis::Net
