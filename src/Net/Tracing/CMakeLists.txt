@@ -9,4 +9,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/OtlpTraceJson.cpp
         ${CMAKE_CURRENT_LIST_DIR}/FileSpanExporter.h
         ${CMAKE_CURRENT_LIST_DIR}/FileSpanExporter.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/OtlpHttpSpanExporter.h
+        ${CMAKE_CURRENT_LIST_DIR}/OtlpHttpSpanExporter.cpp
 )

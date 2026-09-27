@@ -78,6 +78,7 @@ add_executable(TestNet
         Tracing/TestTracer.cpp
         Tracing/TestOtlpTraceJson.cpp
         Tracing/TestFileSpanExporter.cpp
+        Tracing/TestOtlpHttpSpanExporter.cpp
         WebSocket/TestPerMessageDeflate.cpp
         Http/TestCompressionMiddleware.cpp
         Http/TestHttpAcceptDispatch.cpp

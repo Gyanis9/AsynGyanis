@@ -875,9 +875,19 @@
   `droppedSpanCount()` / `exportFailureCount()` 与守恒式「交出 + 丢弃 == 受理」一起看，出口整批拒收只算一次失败
   （按批计不按条），一个出口都没挂时攒到的节照样丢掉并计数而不是白占缓冲。出口两种：`FileSpanExporter` 一节一行
   JSON（自描述、`jq` 直接读，行尾恒为 LF 不翻 CRLF）；`formatOtlpTracesJson()` 交出一份 OTLP/HTTP 的 JSON 正文
-  （64 位时间写成字符串、枚举按 OTLP 的编号发、根节省略 `parentSpanId`），发它的传输是下一步。一节的标识沿用
+  （64 位时间写成字符串、枚举按 OTLP 的编号发、根节省略 `parentSpanId`）。一节的标识沿用
   `Net::Traceparent` 那套定长小写十六进制，另给了 `generateSpanIdentifier()`：新开一节只要一个新段标识，
   不该再白造一个用不上的 trace-id。
+
+- **OTLP/HTTP 的传输那一半：`Net::OtlpHttpSpanExporter`**。`POST <endpoint>` 发 `application/json`，
+  对端是自家 HTTP 服务器扮的假采集端逐字段验的（正文、媒体类型、鉴权头部、非 2xx 怎么算账）。交付是
+  **异步**的：`exportSpans()` 只把渲染好的正文放进本出口自己的有界队列就算收下，真正的请求由出口自带的
+  一条事件循环线程发出去——否则采集端一慢，Tracer 的出口线程就整个排在一次网络往返后面。代价写进契约里：
+  「收下」只到投递为止，网络层的损失看出口自己的 `deliveredBatchCount()`/`failedBatchCount()`/
+  `droppedBatchCount()`，不体现在 Tracer 那三个数上。收尾（`shutdown()` 与析构）先把队列发完再走，期限
+  `shutdownTimeout` 到点还压着的按丢弃计数——进程退出时既不该丢最后那批链路，也不该永远等下去。
+  两处刻意的当场拒绝：地址为空或不成形、附加头部占用了 `Host`/`Content-Length`/`Connection`/`Content-Type`
+  这些本出口自己会写的名字（含 CR/LF/NUL 的值同样），都在构造期抛出而不是留到运行期默默变形。
 
 ### 变更
 
