@@ -14,9 +14,10 @@ set -euo pipefail
 #   build/release/samples/echo_server --port 18081 --threads 2 --metrics &
 #   scripts/websocket_autobahn.sh 18081
 #
-# 镜像：默认用官方 crossbario/autobahn-testsuite。取不到 Docker Hub 的环境（本机就是）可以用
+# 镜像：默认用官方 crossbario/autobahn-testsuite。取不到 Docker Hub 的环境（本机过去就是）可以用
 # 自备镜像：按官方 docker/Dockerfile 里的 py2.7 依赖装一份，再 AUTOBAHN_IMAGE=... 指过来。
-# 两个镜像的调用面相同（/usr/local/bin/wstest -m fuzzingclient -s <spec>）。
+# 两侧都按镜像自己的 PATH 解析 wstest（不在命令行里写死它的安装路径）：官方 latest 在 2025-10
+# 那次重建里把 wstest 从 /usr/local/bin 挪到了 /opt/pypy/bin，写死路径的调用当场就起不来。
 #
 # 可选项：
 #   AUTOBAHN_IMAGE      镜像名（默认 crossbario/autobahn-testsuite:latest）
@@ -71,12 +72,17 @@ mount_source() {
     (cd "$1" && pwd -W 2>/dev/null) || (cd "$1" && pwd)
 }
 
-# MSYS_NO_PATHCONV：Git Bash 会把以 / 开头的参数（这里是 --entrypoint 的容器内路径）换算成
-# Windows 路径，换算完容器里就没有这个文件了。挂载源已用 pwd -W 写成 Windows 形式，无需再换算
-MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker run --rm -i --entrypoint /usr/local/bin/wstest \
+# MSYS_NO_PATHCONV：Git Bash 会把以 / 开头的参数（这里是容器内路径）换算成 Windows 路径，
+# 换算完容器里就没有这个文件了。挂载源已用 pwd -W 写成 Windows 形式，无需再换算。
+# 不再写 --entrypoint /usr/local/bin/wstest：官方 latest 镜像把它从 /usr/local/bin 搬到了
+# /opt/pypy/bin（镜像的 CMD 用的是裸名 wstest，说明它在 PATH 里），猜安装路径不如让镜像自己解析。
+# --add-host 是给 Linux 侧（CI runner）用的：那里默认没有 host.docker.internal 这一条，
+# 不加就是「裁判起来了但连不上服务端」，一条用例都跑不完
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker run --rm -i \
+    --add-host=host.docker.internal:host-gateway \
     -v "$(mount_source "${work_dir}")/fuzzingclient.json:/fuzzingclient.json:ro" \
     -v "$(mount_source "${report_dir}"):/reports" \
-    "${image}" -m fuzzingclient -s /fuzzingclient.json > "${work_dir}/wstest.log" 2>&1 || true
+    "${image}" wstest -m fuzzingclient -s /fuzzingclient.json > "${work_dir}/wstest.log" 2>&1 || true
 
 failed_count="$(grep -l '"behavior": "FAILED"' "${report_dir}"/*case_*.json 2>/dev/null | wc -l | tr -d ' ' || true)"
 case_count="$(find "${report_dir}" -name '*case_*.json' | wc -l | tr -d ' ')"
