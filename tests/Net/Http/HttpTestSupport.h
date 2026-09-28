@@ -620,6 +620,34 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief 把一段动作投到指定事件循环上执行，并等它做完
+         * @details 服务器、会话、集线器这类对象只归它们的循环，读它们的内部状态也必须在那条循环上做
+         *          （在测试线程直接读就是与循环抢同一批字段，TSan 的并发用例集报的正是这一类）。
+         *          动作写完载荷之后再用 release 置就绪标记，等待侧以 acquire 配对
+         * @param loop 目标事件循环
+         * @param action 要在该循环上执行的动作
+         * @param timeout 等待上限；到点没执行即返回 false，调用方据此把「循环没跑」报成失败而不是挂住
+         * @return true 动作已在目标循环上执行完
+         */
+        inline bool runOnLoopAndWait(Core::EventLoop &loop, const std::function<void()> &action, const std::chrono::milliseconds timeout = kWaitTimeout)
+        {
+            std::atomic<bool> isFinished{false};
+            loop.scheduler().postRemote(
+                    [&action, &isFinished]
+                    {
+                        action();
+                        isFinished.store(true, std::memory_order_release);
+                    });
+
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (!isFinished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            return isFinished.load(std::memory_order_acquire);
+        }
+
+        /**
          * @brief 附加路由注册动作
          * @details 由用例提供、在投递 start() 之前执行一次，参数依次为路由器与承载它的事件循环
          *          （处理函数需要内建定时器时用它）。用它注册的路由与内置路由同批落定，

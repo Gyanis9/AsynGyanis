@@ -1350,8 +1350,12 @@ namespace AsynGyanis::Net
         // 一定打在一个还活着的集线器上（反过来就是往已析构的对象里摘成员）
         WebSocketHub hub;
 
-        const HttpTestSupport::RouteRegistrar registrar = [&hub](Router &router, Core::EventLoop &)
+        // 注册动作会把承载服务器的那条循环交给我们，借它把稍后的读数也放回同一条循环上算
+        Core::EventLoop *serverLoop = nullptr;
+
+        const HttpTestSupport::RouteRegistrar registrar = [&hub, &serverLoop](Router &router, Core::EventLoop &loop)
         {
+            serverLoop = &loop;
             router.any(std::string(kHandshakePath),
                        [&hub](HttpRequest &, HttpResponse &response) -> Core::Task<>
                        {
@@ -1401,8 +1405,21 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(readUntilLength(speaker, speakerBytes, handshake.size() + expectedFrame.size(), kWaitTimeout)) << "发起者自己也是成员，不该被排除在扇出之外";
         EXPECT_EQ(speakerBytes.substr(handshake.size()), expectedFrame);
 
-        EXPECT_EQ(hub.memberCount("lobby"), 2U);
-        EXPECT_EQ(hub.droppedMessageCount(), 0U) << "两条都跟得上：不该有任何一条被丢掉";
+        // 集线器的成员表与丢弃计数都只归服务端那条循环（本类文档写明「所有方法只在所属循环上调用、
+        // 内部不加锁」）：在测试线程里读它们就是与循环抢同一批字段，TSan 实测一边在读表、
+        // 一边会话协程收尾时除名改写同一处。两个读数因此取回循环上算再带出来比
+        std::size_t lobbyMemberCount = 0;
+        std::size_t droppedMessages  = 0;
+        ASSERT_TRUE(serverLoop != nullptr);
+        ASSERT_TRUE(HttpTestSupport::runOnLoopAndWait(*serverLoop,
+                                                      [&]
+                                                      {
+                                                          lobbyMemberCount = hub.memberCount("lobby");
+                                                          droppedMessages  = hub.droppedMessageCount();
+                                                      }))
+                << "服务端循环没执行这次观察，下面的读数都是空的";
+        EXPECT_EQ(lobbyMemberCount, 2U);
+        EXPECT_EQ(droppedMessages, 0U) << "两条都跟得上：不该有任何一条被丢掉";
     }
 
 } // namespace AsynGyanis::Net
