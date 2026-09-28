@@ -117,6 +117,10 @@ namespace AsynGyanis::Core
          *          标记是 mutable 且不改任何 I/O 行为，因此 listen() 与本方法都保持 const。
          * @note 只对确实处于监听态的描述符调用：给一条已建立的连接打标记，收口时就不会发出 FIN，
          *       对端要把连接读完才收得到 EOF 的那半轴也一起没了
+         * @note 上面那条失效只在 POSIX 上观测得到：实测（同端点第二份引用经移交取回，摘掉标记后收口）
+         *       容器侧用例红、Windows 侧不红——本平台对副本句柄做 shutdown 影响不到原句柄的监听。
+         *       标记两侧都要打：除少几次系统调用外，它挡住的是那一侧的空窗，而 Windows 的换代还有
+         *       两进程端到端那一半在守着（见 WorkerSupervisor 的移交用例）
          */
         void markAsListening() const noexcept;
 

@@ -15,6 +15,7 @@
 #include "Platform/IO/MemoryMappedFile.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/System/PlatformError.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include "CoreTestSupport.h"
 #include "PlatformTestSupport.h"
@@ -26,6 +27,7 @@
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -70,6 +72,79 @@ namespace AsynGyanis::Core
 
         /// 灌满对端接收队列的单轮负载长度
         constexpr std::size_t kInboundFillChunkLength = 16 * 1024;
+
+        /**
+         * @brief 经一次「交给本进程的移交」拿到同一端点的第二份监听引用
+         * @details 通道两端都在本进程里：开通道 → 连上它（连接先排在 backlog，于是 accept 不必等）→
+         *          交出那一头写出移交 → 从连上的那一头读回。一条移交消息远小于通道缓冲（POSIX 是 8 字节的
+         *          头 + 随控制消息走的描述符，Windows 是头 + 协议信息表），所以同一线程上先写后读不会堵。
+         *          与跨进程那一格的唯一差别是通道另一头在别的进程号上，那条链路另有端到端用例管着。
+         * @param listeningDescriptor 交出方的监听描述符：本函数不接管也不关闭它
+         * @return std::expected<int, std::string> 同一端点的第二份引用；失败交中文原因
+         */
+        [[nodiscard]] std::expected<int, std::string> secondReferenceViaHandoff(const int listeningDescriptor)
+        {
+            auto channel = Platform::Socket::openHandoffChannel();
+            if (!channel.has_value())
+            {
+                return std::unexpected("开不出交接通道，错误码 " + std::to_string(channel.error().value()));
+            }
+
+            const int connector = Platform::Socket::connectHandoffChannel(channel->address);
+            if (connector < 0)
+            {
+                Platform::Socket::closeHandoffChannel(*channel);
+                return std::unexpected("连不上自己刚开的交接通道，错误码 " + std::to_string(Platform::PlatformError::lastSocketErrorCode()));
+            }
+
+            const int peer = Platform::Socket::acceptHandoffPeer(channel->listener);
+            if (peer < 0)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(connector));
+                Platform::Socket::closeHandoffChannel(*channel);
+                return std::unexpected("accept 不出通道对端，错误码 " + std::to_string(Platform::PlatformError::lastSocketErrorCode()));
+            }
+
+            // 写与读配对本函数的一对原语：交出侧写向 accept 出来的那一头，接手侧从自己连上的那一头读回
+            const bool isHandedOff =
+                Platform::Socket::writeListeningSocketHandoff(peer, listeningDescriptor, static_cast<std::uint64_t>(Platform::ProcessInfo::currentProcessId()));
+            const int adoptedDescriptor = isHandedOff ? Platform::Socket::readListeningSocketHandoff(connector) : -1;
+
+            static_cast<void>(Platform::FileDescriptor::close(peer));
+            static_cast<void>(Platform::FileDescriptor::close(connector));
+            Platform::Socket::closeHandoffChannel(*channel);
+
+            if (!isHandedOff)
+            {
+                return std::unexpected("写出移交失败，错误码 " + std::to_string(Platform::PlatformError::lastErrorCode()));
+            }
+            if (adoptedDescriptor < 0)
+            {
+                return std::unexpected("读回移交失败，错误码 " + std::to_string(Platform::PlatformError::lastSocketErrorCode()));
+            }
+            return adoptedDescriptor;
+        }
+
+        /**
+         * @brief 探一次「这个端口还接不接受连接」：连得上交回 true，被拒或抛错交回 false
+         * @details 「另一份引用还在监听」这件事只通过一次真实连接才看得见。异常本身就是「不接受」的
+         *          一种表现，因此在这里就地收成布尔值，不把 asyncConnect 的异常带进用例主体。
+         * @param loop 驱动连接的循环（用例自己在同一线程上泵）
+         * @param port 目标回环端口
+         * @return Task<bool> 探测结果
+         */
+        Task<bool> probeAcceptsConnection(EventLoop &loop, const std::uint16_t port)
+        {
+            AsyncSocket client = AsyncSocket::create(loop);
+            try
+            {
+                co_await client.asyncConnect(InetAddress::localhost(port));
+                co_return true;
+            } catch (const Base::Exception &)
+            {
+                co_return false;
+            }
+        }
 
         /**
          * @brief 把调用方给出的套接字连到回环上的临时端口，并交出它的对端描述符
@@ -390,8 +465,8 @@ namespace AsynGyanis::Core
      *          与 POSIX 上 dup() 出来的这一份同性质（指向同一个开放文件描述）。收口若照已建立连接的
      *          流程去 shutdown(SHUT_RDWR)，停的是**端点**而不是本端引用，另一份就再也接不到连接
      *          （父代收口后子代十次连接全失败的实测就是这么来的）。
-     *          只在 POSIX 上断言：Windows 上 dup 不出「同一端点的第二份引用」，那句柄移交要跨进程
-     *          才成立，那条链由 samples/core_upgrade 在真机上验。
+     * @note 只用 dup 造第二份引用，因此只在 POSIX 上断言；Windows 上 dup 不出同一端点的第二份引用，
+     *       那条引用要走移交才拿得到——由下面那条用例在本进程内造出来，两侧判据同一条。
      */
     TEST(AsyncSocket, CloseOfListeningSocketLeavesDuplicatedDescriptorAccepting)
     {
@@ -430,6 +505,58 @@ namespace AsynGyanis::Core
 #else
         GTEST_SKIP() << "Windows 上 dup 不出同一端点的第二份引用，这条判据在 POSIX 侧实测";
 #endif
+    }
+
+    /**
+     * @brief 接手来的那份监听引用收口时不许停掉端点——两条平台都判
+     * @details 上一那条用 dup 造第二份引用，Windows 造不出来；但「同一端点的第二份引用」在本平台
+     *          本来就有正规的来路：**交给本进程的那一次移交**（`writeListeningSocketHandoff` 按进程号
+     *          认目标，交给自己与交给另一个进程走的是同一条路，重建出来的句柄与原监听句柄指向同一个
+     *          端点）。零停机换代里新一代拿到的就是这一份，而本条判的是它的收口纪律：打了
+     *          `markAsListening()` 的那一份关掉后，端点上原来的那一份必须还能接客——少了这个标记，
+     *          收口会照已建立连接那一路去 `shutdown(SHUT_RDWR)`，换代当场变空窗。
+     * @note 证伪按平台分两半（实测）：把 `markAsListening()` 改成不置标记，**POSIX 侧本条红**——收口照
+     *       已建立连接那一路对副本句柄 `shutdown(SHUT_RDWR)`，端点一起停掉，原引用不再接客；**Windows 侧
+     *       本条不红**（30 例全绿），因为本平台对副本句柄做 shutdown 观测不到地影响不到原句柄的监听。
+     *       所以 Windows 那一侧的守护不在这条用例里，而在两进程端到端（`WorkerSupervisor` 的移交那组）；
+     *       本条在两平台上都跑通并断同一件事，图的是「接手这份的收口纪律不把端口带走」这个结果本身。
+     */
+    TEST(AsyncSocket, ClosingAHandedOverListenerLeavesTheOriginalEndpointAccepting)
+    {
+        EventLoop   loop;
+        AsyncSocket listener = AsyncSocket::create(loop);
+        ASSERT_TRUE(listener.bind(InetAddress::localhost(0)));
+        ASSERT_TRUE(listener.listen(4));
+        const std::uint16_t port = listener.localAddress().port();
+        ASSERT_NE(port, 0U);
+
+        const auto handedOverDescriptor = secondReferenceViaHandoff(listener.fileDescriptor());
+        ASSERT_TRUE(handedOverDescriptor.has_value()) << "造不出同一端点的第二份引用：" << handedOverDescriptor.error();
+
+        {
+            AsyncSocket handedOver(loop, *handedOverDescriptor);
+            handedOver.markAsListening();
+            handedOver.close();
+        }
+
+        // 端点上原来那份引用必须还在接活：连进去，再在它上面 accept 出来
+        std::optional<bool>   connectOutcome;
+        std::exception_ptr    probeError;
+        std::atomic<bool>     probeFinished{false};
+        Task<void>            probeDriver = TestSupport::collectTask(probeAcceptsConnection(loop, port), connectOutcome, probeError, probeFinished);
+        probeDriver.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&probeFinished]() { return probeFinished.load(std::memory_order_acquire); })) << "探测连接没有出结果";
+        ASSERT_FALSE(probeError) << "探测本身抛了";
+        EXPECT_TRUE(connectOutcome.value_or(false)) << "接手那份收口时把端点停了：原引用不再接客，换代当场变空窗";
+
+        const int accepted = Platform::Socket::accept(listener.fileDescriptor(), nullptr, nullptr);
+        EXPECT_GE(accepted, 0) << "连接已在队列里，原引用却 accept 不出来";
+        if (accepted >= 0)
+        {
+            static_cast<void>(Platform::FileDescriptor::close(accepted));
+        }
+
+        listener.close();
     }
 
     /**
