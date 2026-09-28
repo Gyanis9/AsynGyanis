@@ -621,6 +621,45 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：还回来的正文片段向量只被接走容量；本端已另攒出新片段时那份缓冲丢弃而不覆盖
+     * @details 与上面那条请求向量是同一条契约、同一个失效形状：漏了这道判断会把「已交出去还没处理完
+     *          的旧片段」换进本端——旧片段被二次交付、刚到的那片直接消失，两头都不报错。
+     * @note 证伪：把 `recycleReceivedData` 改成不经闸门直接换，本条红。做这一步之前，同一处缺陷在
+     *       523 例（WebSocket|Http2|Http3|HttpSession|StreamingBody|HotPath）里全绿——请求向量那侧
+     *       有姊妹用例管着，正文这侧原本没有人认领
+     */
+    TEST(Http2Connection, RecycledBodyBufferNeverOverwritesNewerPendingData)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(connection.takeRequests().size(), 1U) << "POST 的 HEADERS 没解出请求，正文没有可挂的流";
+
+        const auto feedBody = [&connection](const std::string_view chunk)
+        { return feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, chunk)); };
+
+        // 正常路径：取空、还空，本端只留那份容量
+        ASSERT_EQ(feedBody("abc"), Http2ConnectionFeedStatus::NeedMore);
+        std::vector<Http2ReceivedData> firstTake = connection.takeReceivedData();
+        ASSERT_EQ(firstTake.size(), 1U);
+        firstTake.clear();
+        connection.recycleReceivedData(std::move(firstTake));
+        ASSERT_EQ(feedBody("def"), Http2ConnectionFeedStatus::NeedMore);
+        std::vector<Http2ReceivedData> secondTake = connection.takeReceivedData();
+        ASSERT_EQ(secondTake.size(), 1U) << "还回来的空向量上追加新片段时把新的弄丢了";
+        EXPECT_EQ(secondTake[0].data, "def");
+
+        // 手里那份还带着没处理完的旧片段，此时本端又解出一片新的：回收只能丢弃
+        std::vector<Http2ReceivedData> staleBuffer = std::move(secondTake);
+        ASSERT_EQ(feedBody("ghi"), Http2ConnectionFeedStatus::NeedMore);
+        connection.recycleReceivedData(std::move(staleBuffer));
+
+        const std::vector<Http2ReceivedData> thirdTake = connection.takeReceivedData();
+        ASSERT_EQ(thirdTake.size(), 1U) << "回收覆盖了本端刚解出的正文片段，或对旧片段做了二次交付";
+        EXPECT_EQ(thirdTake[0].data, "ghi");
+    }
+
+    /**
      * @brief 钉住：RFC 7541 C.4.1 的 Huffman 版请求头块（黄金字节）解出同一个 :authority
      */
     TEST(Http2Connection, DeliversRequestFromRfc7541HuffmanSample)
