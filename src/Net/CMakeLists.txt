@@ -6,6 +6,7 @@
 # WebSocket  RFC 6455 握手计算/校验、帧编解码与升级后的对端收发对象
 # Http2  RFC 7540/7541 帧编解码、HPACK 头块压缩、连接层状态机与会话（ALPN 协商出 h2 时使用）
 # Tracing 链路节与编排器：采样、攒批、经 OTLP/HTTP 或文件出口送出去
+# Acme   证书自动化：RFC 8555 客户端、HTTP-01 自证与续期循环
 # 分层构建：叶子目录只登记本层源文件，逐层汇总后产出一个静态库
 # ============================================================================
 
@@ -21,6 +22,7 @@ add_subdirectory(Http2)
 add_subdirectory(Quic)
 add_subdirectory(Http3)
 add_subdirectory(Tracing)
+add_subdirectory(Acme)
 
 get_property(NET_SOURCES GLOBAL PROPERTY AsynGyanisNetSources)
 

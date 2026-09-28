@@ -120,6 +120,11 @@ add_executable(TestNet
         Http2/TestHttp2Session.cpp
         Http2/TestHttp2CleartextSession.cpp
         Http2/TestHttp2FuzzSmoke.cpp
+
+        # 证书自动化（Acme）：密钥与 JWS 的规范形态、协议状态机、续期循环与落地
+        Acme/AcmeTestSupport.h
+        Acme/AcmeTestSupport.cpp
+        Acme/TestAcmeKeyPair.cpp
 )
 
 # 压缩用例直接调用三种库的解码器做往返自检：目标由 src/Net 里 find_package 得到，
@@ -150,6 +155,7 @@ target_include_directories(TestNet PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Http2
         ${CMAKE_CURRENT_SOURCE_DIR}/Tracing
         ${CMAKE_CURRENT_SOURCE_DIR}/Quic
+        ${CMAKE_CURRENT_SOURCE_DIR}/Acme
         ${CMAKE_SOURCE_DIR}/tests/Core
         ${CMAKE_SOURCE_DIR}/tests/TestSupport
 )
