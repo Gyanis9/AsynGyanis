@@ -129,6 +129,8 @@ add_executable(TestNet
         Acme/TestAcmeKeyPair.cpp
         Acme/TestAcmeClient.cpp
         Acme/TestAcmeCertificateManager.cpp
+        # 真机构那一条路：三个环境变量门控，缺任一即 SKIP，因此默认不联网也不建号
+        Acme/TestAcmeLiveAuthority.cpp
 )
 
 # 压缩用例直接调用三种库的解码器做往返自检：目标由 src/Net 里 find_package 得到，
