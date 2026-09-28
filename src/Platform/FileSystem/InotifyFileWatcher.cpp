@@ -18,6 +18,10 @@ namespace AsynGyanis::Platform
         m_inotifyFileDescriptor = ::inotify_init1(IN_CLOEXEC);
         if (m_inotifyFileDescriptor < 0)
         {
+            // 这里刻意用裸 std::runtime_error 而**不是** Base 的框架异常：Platform 在 Base 之下
+            // （Base 依赖 Platform），把 Base/Exception 拉进来就是循环依赖。构造期失败按本层
+            // 的既有形状交给调用方；要改成正按 Platform 风格的错误码出口，得连着
+            // FileWatcher::create() 的签名一起动，属另一笔改造
             throw std::runtime_error("inotify 初始化失败");
         }
     }
