@@ -210,6 +210,60 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 引号包起来的取值要按 RFC 6265 §5.1.2 的 quoted-string 解开，而不是当成非法字符丢掉
+     * @details 服务端确实用这种写法（值里带分隔符时整段包引号是 §4.1.1 允许的第二种形状，Jetty 与
+     *          一些 CDN 就这么发）。收端不解开就等于**整条 Cookie 不见了**，而它对调用方一声不响：
+     *          客户端侧的样子是「Set-Cookie 收到了、jar 里却没有」，宿主看到的是登录态反复失效。
+     * @note 解开之后**仍按裸取值的字符规则**过一遍：本层不保存需要转义才发得出去的值（那要求渲染侧
+     *       再包一层引号，而多数对端不解），所以 `"a b"`、`"a\"b"` 这类仍然整条不收——写明白的拒绝面
+     */
+    TEST(HttpCookie, UnwrapsQuotedStringValueAndKeepsBackslashEscapes)
+    {
+        const auto quoted = HttpCookie::parseSetCookie("sid=\"abc123\"; Path=/");
+        ASSERT_TRUE(quoted.has_value()) << "引号包起来的取值被当成非法字符整条丢掉了";
+        EXPECT_EQ(quoted->name(), "sid");
+        EXPECT_EQ(quoted->value(), "abc123") << "引号没解开：存下来的值带引号，比对的宿主永远对不上";
+        ASSERT_TRUE(quoted->path().has_value());
+        EXPECT_EQ(*quoted->path(), "/") << "解开取值不该影响后面的属性段";
+
+        // §5.1.2 的 cookie-escape 是「'\' + 任意一个字符」：反斜杠本身不留在值里。
+        // 两种写法都要钉—— '\\\\'（线上是一枚转义反斜杠）读回一个 '\'，'\b'（线上是反斜杠加 b）读回 'b'
+        const auto escapedBackslash = HttpCookie::parseSetCookie("tok=\"a\\\\b\"");
+        ASSERT_TRUE(escapedBackslash.has_value()) << "带转义反斜杠的 quoted-string 没收下";
+        EXPECT_EQ(escapedBackslash->value(), "a\\b") << "线上的 \\\\ 应读成一枚字面反斜杠";
+
+        const auto escapedLetter = HttpCookie::parseSetCookie("tok=\"a\\b\"");
+        ASSERT_TRUE(escapedLetter.has_value()) << "带字母转义的 quoted-string 没收下";
+        EXPECT_EQ(escapedLetter->value(), "ab") << "转义没按 §5.1.2 还原（'\\b' 应读成 'b'）";
+
+        // 只有一侧引号不算 quoted-string：引号此时就是普通字符，而它不是合法的裸取值字符
+        EXPECT_FALSE(HttpCookie::parseSetCookie("tok=abc\"").has_value());
+        EXPECT_FALSE(HttpCookie::parseSetCookie("tok=\"abc").has_value());
+        // 内层没转义的引号不是一个自洽的 quoted-string：猜着解会静默吞掉后半段
+        EXPECT_FALSE(HttpCookie::parseSetCookie("tok=\"a\"b\"").has_value());
+        // 引号里装的是裸写法容不下的字符：按上面 @note 的拒绝面处理，整条不收
+        EXPECT_FALSE(HttpCookie::parseSetCookie("tok=\"a b\"").has_value());
+        EXPECT_FALSE(HttpCookie::parseSetCookie("tok=\"a\\\"b\"").has_value());
+        // 引号里是空的：RFC 允许空取值，解开之后就是空串
+        const auto emptyQuoted = HttpCookie::parseSetCookie("tok=\"\"");
+        ASSERT_TRUE(emptyQuoted.has_value());
+        EXPECT_TRUE(emptyQuoted->value().empty());
+    }
+
+    /**
+     * @brief 请求侧的 Cookie 头走同一套 quoted-string 处理（两条入口对同一形状要给同一个答案）
+     */
+    TEST(HttpCookie, UnwrapsQuotedValuesInRequestCookieHeader)
+    {
+        const std::vector<HttpCookie> cookies = HttpCookie::parseCookieHeader("sid=\"abc123\"; tok=\"a\\\\b\"; sp=a b");
+        ASSERT_EQ(cookies.size(), 2U) << "带引号的与带转义的那两条都要收下，裸写法带空格的只丢它自己";
+        EXPECT_EQ(cookies[0].name(), "sid");
+        EXPECT_EQ(cookies[0].value(), "abc123") << "请求侧没解开引号";
+        EXPECT_EQ(cookies[1].name(), "tok");
+        EXPECT_EQ(cookies[1].value(), "a\\b") << "请求侧没按 §5.1.2 还原转义";
+    }
+
+    /**
      * @brief 请求侧 Cookie 头：按顺序取全部项，单项畸形只跳自己不跳整条头
      * @details 浏览器与代理拼出的 Cookie 头里混一个怪项是常见的（早年跨版本 Cookie 尤其如此），
      *          判整条失败会让其余会话信息一起读不到，症状是「登录态莫名掉了」。

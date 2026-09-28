@@ -52,6 +52,37 @@ namespace AsynGyanis::Net
             return code == 0x21 || (code >= 0x23 && code <= 0x2B) || (code >= 0x2D && code <= 0x3A) || (code >= 0x3C && code <= 0x7E);
         }
 
+        /**
+         * @brief 把 quoted-string 包起来的取值还原成裸值（RFC 6265 §5.1.2 与 §5.2）
+         * @param rawValue 按第一个 '=' 切出来、两侧空白已去的原样文本
+         * @return std::string 还原后的取值；不是 quoted-string 时就是原样文本
+         * @details 只认「首尾各一枚引号」这一形，内层的 '\' 按 §5.1.2 去掉反斜杠、后一个字符照字面收。
+         *          单侧引号不当这里是 quoted-string：那时引号就是普通字符。内层没转义的引号不在这里
+         *          特判——它解开之后仍然含一枚裸写法容不下的 '"'，调用方那道字符闸门自然会把整条拒掉。
+         */
+        [[nodiscard]] std::string unwrapQuotedValue(const std::string_view rawValue)
+        {
+            if (rawValue.size() < 2U || rawValue.front() != '"' || rawValue.back() != '"')
+            {
+                return std::string(rawValue);
+            }
+
+            std::string unwrapped;
+            unwrapped.reserve(rawValue.size() - 2U);
+            for (std::size_t index = 1; index + 1 < rawValue.size(); ++index)
+            {
+                const char character = rawValue[index];
+                // 反斜杠只在后面确实还有一个「非收尾引号」的字符时才算转义，孤零零的一个 '\' 按字面留
+                if (character == '\\' && index + 2 < rawValue.size())
+                {
+                    unwrapped.push_back(rawValue[++index]);
+                    continue;
+                }
+                unwrapped.push_back(character);
+            }
+            return unwrapped;
+        }
+
         /// 去掉两侧的空白
         [[nodiscard]] std::string_view trimSpaces(const std::string_view text) noexcept
         {
@@ -231,8 +262,10 @@ namespace AsynGyanis::Net
         {
             return std::nullopt;
         }
-        const std::string_view name  = trimSpaces(nameValuePair.substr(0, equalsPosition));
-        const std::string_view value = trimSpaces(nameValuePair.substr(equalsPosition + 1));
+        const std::string_view name = trimSpaces(nameValuePair.substr(0, equalsPosition));
+        // 先解 quoted-string 再验字符：服务端包引号正是为了让值里的字符能发出来，反过来先验字符
+        // 会把「带引号的一条合法 Cookie」整条判死（实测：sid="abc123" 过去直接返回空）
+        const std::string value = unwrapQuotedValue(trimSpaces(nameValuePair.substr(equalsPosition + 1)));
         if (!isValidName(name) || !isValidValue(value))
         {
             return std::nullopt;
@@ -240,7 +273,7 @@ namespace AsynGyanis::Net
 
         HttpCookie cookie;
         cookie.m_name.assign(name);
-        cookie.m_value.assign(value);
+        cookie.m_value = std::move(value);
 
         std::size_t cursor = nameValueEnd;
         while (cursor != std::string_view::npos && cursor < headerValue.size())
@@ -328,8 +361,9 @@ namespace AsynGyanis::Net
             {
                 continue;
             }
-            const std::string_view name  = trimSpaces(pair.substr(0, equalsPosition));
-            const std::string_view value = trimSpaces(pair.substr(equalsPosition + 1));
+            const std::string_view name = trimSpaces(pair.substr(0, equalsPosition));
+            // 与 parseSetCookie 同一套：quoted-string 先解开再验字符，两条入口对同一种线上形状要给同一个答案
+            const std::string value = unwrapQuotedValue(trimSpaces(pair.substr(equalsPosition + 1)));
             if (!isValidName(name) || !isValidValue(value))
             {
                 // 单条畸形不判整条头失败：浏览器与代理拼出的 Cookie 头里混一个怪项不该让其余读不到
@@ -338,7 +372,7 @@ namespace AsynGyanis::Net
 
             HttpCookie cookie;
             cookie.m_name.assign(name);
-            cookie.m_value.assign(value);
+            cookie.m_value = std::move(value);
             cookies.push_back(std::move(cookie));
         }
 

@@ -193,16 +193,20 @@ namespace AsynGyanis::Net
          * @brief 解析一条 Set-Cookie 头部取值
          * @details 服务端给的 Cookie 属性名大小写不敏感（'PATH'、'samesite' 都要认）；
          *          无法识别的属性段整段跳过（RFC 6265 §5.2 要求收端忽略未知属性），不判整条失败。
+         *          取值按 RFC 6265 §5.1.2 认两种形状：裸的 cookie-octet 串，或首尾各一枚引号的
+         *          quoted-string（内层 '\' 是转义，解开后按字面收）；引号本身不进存下来的值。
          * @param headerValue 头部取值
-         * @return std::optional<HttpCookie> 解析结果；名字非法或首段缺 '=' 时返回空
+         * @return std::optional<HttpCookie> 解析结果；名字非法、首段缺 '='，或取值不是合法 cookie-octet
+         *         （含 quoted-string 没闭合、解开后仍带空格）时返回空
          */
         [[nodiscard]] static std::optional<HttpCookie> parseSetCookie(std::string_view headerValue);
 
         /**
          * @brief 解析一条（或多条同名头合并成的）Cookie 请求头
          * @details 请求侧的 Cookie 头只带名字与取值，没有属性。'=' 之后到下一个 ';' 之前全算取值，
-         *          取值里再出现的 '=' 原样保留；两侧空白被去掉，而**中间**带空格的取值不算合法
-         *          cookie-octet，那**一条**会被跳过（其余各条照常交出来，判据见 isValidValue）。
+         *          取值里再出现的 '=' 原样保留；两侧空白被去掉，引号包起来的取值按 §5.1.2 解开。
+         *          中间带空格的裸取值不算合法 cookie-octet，那**一条**会被跳过（其余各条照常交出来，
+         *          判据见 isValidValue）。
          * @param headerValue 一个 Cookie 头的完整取值
          * @return std::vector<HttpCookie> 按出现顺序给出的 Cookie 列表，属性一律为未设
          * @note 跳过而不是收下再报错：Cookie 头是浏览器与各级代理拼出来的，混一条怪的就让整条头读不出
