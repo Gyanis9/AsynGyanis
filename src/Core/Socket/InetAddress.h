@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
 #include <cstdint>
@@ -151,6 +152,15 @@ namespace AsynGyanis::Core
          * @return 地址结构的字节长度，若地址未初始化则返回 0
          */
         [[nodiscard]] socklen_t nativeAddressLength() const noexcept;
+
+        /**
+         * @brief 取可直接交给平台层套接字收发的地址
+         * @details 本类内部就是 `sockaddr_storage`，而平台层的收发入口收的是「存储 + 长度」成对的
+         *          `Platform::SocketAddress`。这层换算只有本类知道长度该取多少，调用方各自 memcpy
+         *          出来的版本一旦漏了长度就会把半个结构交给内核。
+         * @return Platform::SocketAddress 地址与长度成对；未初始化的地址给出 length 为 0 的空地址
+         */
+        [[nodiscard]] Platform::SocketAddress platformAddress() const noexcept;
 
         /**
          * @brief 将地址转换为可读字符串（"IP:Port" 格式）

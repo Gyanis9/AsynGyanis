@@ -104,6 +104,7 @@ add_executable(TestNet
         Tcp/TestSocketTuning.cpp
         Tcp/TestTcpServer.cpp
         Tcp/TestPerIpConnectionLimiter.cpp
+        Udp/TestUdpServer.cpp
         Proxy/TestProxyProtocol.cpp
 
         WebSocket/TestWebSocketHandshake.cpp

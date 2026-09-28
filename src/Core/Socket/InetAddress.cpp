@@ -321,6 +321,15 @@ namespace AsynGyanis::Core
         return m_addressLength;
     }
 
+    Platform::SocketAddress InetAddress::platformAddress() const noexcept
+    {
+        Platform::SocketAddress converted;
+        // 长度就是本类记着的那一份：构造时已判过它不超过 sockaddr_storage，因此这里不会越界写
+        converted.length = m_addressLength;
+        std::memcpy(&converted.storage, &m_address, static_cast<std::size_t>(m_addressLength));
+        return converted;
+    }
+
     std::string InetAddress::toString() const
     {
         std::string result;

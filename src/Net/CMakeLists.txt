@@ -14,6 +14,7 @@ set_property(GLOBAL PROPERTY AsynGyanisNetSources "")
 
 add_subdirectory(Http)
 add_subdirectory(Tcp)
+add_subdirectory(Udp)
 add_subdirectory(Proxy)
 add_subdirectory(WebSocket)
 add_subdirectory(Http2)

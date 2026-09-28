@@ -4,6 +4,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Platform/IO/NetworkInterface.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
@@ -140,6 +141,29 @@ namespace AsynGyanis::Core
         const InetAddress address(7777, "1.2.3.4");
         EXPECT_NE(address.nativeAddress(), nullptr);
         EXPECT_EQ(address.nativeAddressLength(), sizeof(sockaddr_in));
+    }
+
+    /**
+     * @brief platformAddress() 交出的「存储 + 长度」必须成对，且换回来还是同一个地址
+     * @details 这层换算的失败形状是静默的：长度少给一字节，内核就把半个地址当成完整地址用，
+     *          绑定与比对都看不出错，因此互指认要按 IPv4、IPv6 各钉一次。
+     */
+    TEST(InetAddress, PlatformAddressCarriesTheSameStorageAndLength)
+    {
+        const InetAddress             addressV4(7777, "1.2.3.4");
+        const Platform::SocketAddress platformAddressV4 = addressV4.platformAddress();
+        EXPECT_EQ(platformAddressV4.length, sizeof(sockaddr_in));
+        EXPECT_EQ(InetAddress(platformAddressV4.storage, platformAddressV4.length), addressV4) << "换算过去再换算回来，地址不是同一个";
+
+        // 作用域号是 IPv6 地址的一部分：漏在换算之外，两块网卡上的同名链路本地地址就会撞成同一个键
+        const InetAddress             addressV6(8080, "fe80::1%3");
+        const Platform::SocketAddress platformAddressV6 = addressV6.platformAddress();
+        EXPECT_EQ(platformAddressV6.length, sizeof(sockaddr_in6));
+        EXPECT_EQ(InetAddress(platformAddressV6.storage, platformAddressV6.length), addressV6) << "IPv6 的作用域号在换算里丢了";
+
+        // 默认构造的 0.0.0.0:0 也带着成对的长度：长度为 0 的地址交给平台层会被判成
+        // 「地址没给」，而不是「绑到任意地址」，这两种含义不能混
+        EXPECT_EQ(InetAddress().platformAddress().length, sizeof(sockaddr_in));
     }
 
     /**

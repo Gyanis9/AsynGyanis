@@ -1,0 +1,238 @@
+#include "Net/Udp/UdpServer.h"
+
+#include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/SystemException.h"
+#include "Base/Log/LogMacros.h"
+#include "Base/Log/LogThrottle.h"
+#include "Platform/System/PlatformError.h"
+
+#include <chrono>
+#include <exception>
+#include <memory>
+#include <string>
+#include <utility>
+
+namespace AsynGyanis::Net
+{
+    namespace
+    {
+        /// 读数报错的放行间隔：这类码是 ICMP 替某个已消失的对端捎回来的回声，发生率由对端控制，
+        /// 逐条落盘会把日志刷满（与 QUIC 侧同一口径）
+        constexpr std::chrono::seconds kReceiveErrorLogWindow{10};
+
+        /// 处理器抛异常的放行间隔：起因在业务处理器那一侧，一次故障风暴会把它刷成万条
+        constexpr std::chrono::seconds kHandlerFailureLogWindow{10};
+
+        /// 报文发不出去时的放行间隔
+        constexpr std::chrono::seconds kSendFailureLogWindow{10};
+    } // namespace
+
+    UdpServer::UdpServer(Core::EventLoop &eventLoop, Configuration configuration) : m_eventLoop(eventLoop), m_configuration(std::move(configuration))
+    {
+        // 缓冲容量必须放得下一条合法报文、又不超出单条报文上限：0 连空报文都放不下，
+        // 超过上限则收得到却答不出去（发送侧按同一个常量整条拒发），两侧不对称只会留下
+        // 「一条永远无法应答的报文」
+        if (m_configuration.maximumDatagramByteCount == 0 || m_configuration.maximumDatagramByteCount > Platform::DatagramSocket::kMaximumDatagramBytes)
+        {
+            throw Base::InvalidArgumentException("UDP 服务端配置无效：收包缓冲容量 " + std::to_string(m_configuration.maximumDatagramByteCount) + " 字节不在 1.." +
+                                                 std::to_string(Platform::DatagramSocket::kMaximumDatagramBytes) +
+                                                 " 之间：0 连一条空报文都放不下，"
+                                                 "超过上限则收到的报文无法整条应答");
+        }
+    }
+
+    UdpServer::~UdpServer()
+    {
+        // 这里不主动收套接字：析构可能发生在非循环线程上，而那份注册对象只归所属循环销毁。
+        // 调用方纪律与 QuicServer 相同——先让收循环退出（stop() 投递到循环线程），再销毁本对象
+    }
+
+    Core::Task<> UdpServer::listen(Core::InetAddress localAddress)
+    {
+        // 没有处理器就别把端口开着：收了没人处理等于把每条报文丢掉，不如在启动时就点名
+        if (!m_configuration.onMessage)
+        {
+            throw Base::InvalidArgumentException("UDP 服务端启动失败：没有设置报文处理器（Configuration::onMessage）：收了报文没人处理，"
+                                                 "这台监听器只会把每一条都丢掉；请给出处理器再 listen()");
+        }
+
+        Platform::DatagramSocket boundSocket = Platform::DatagramSocket::bindTo(localAddress.platformAddress());
+        if (!boundSocket.isValid())
+        {
+            throw Base::SystemException("UDP 服务端启动失败：绑定 UDP 端口 " + std::to_string(localAddress.port()) + " 失败（套接字错误码 " +
+                                        std::to_string(Platform::PlatformError::lastSocketErrorCode()) + "）");
+        }
+
+        // 本端地址取绑定后的那份：端口给 0 时只有内核知道实际端口
+        const Platform::SocketAddress boundAddress = boundSocket.localAddress();
+        m_socket                                   = std::make_unique<Core::AsyncUdpSocket>(m_eventLoop, std::move(boundSocket));
+
+        // 端口最后发布：非 0 值就是「已在监听」的唯一凭据，读到它时必须连带上面的套接字已就位
+        // （release 与外部线程读侧的 acquire 配对）
+        m_listeningPort.store(Core::InetAddress(boundAddress.storage, boundAddress.length).port(), std::memory_order_release);
+        LOG_INFO_FMT("UdpServer: 已在 UDP 端口 {} 上监听", m_listeningPort.load(std::memory_order_relaxed));
+
+        // 缓冲在循环外一次分配：每条报文都新建会把「一条报文一次堆分配」塞进热路径
+        std::vector<std::uint8_t> receiveBuffer(m_configuration.maximumDatagramByteCount);
+        while (!m_isStopped.load(std::memory_order_acquire))
+        {
+            // 结果按值回来：惰性协程不往调用方的引用里写，实参可能比 await 先亡
+            const Core::AsyncUdpSocket::DatagramReceiveResult received = co_await m_socket->asyncReceiveFrom(receiveBuffer.data(), receiveBuffer.size());
+            if (received.receivedByteCount < 0)
+            {
+                if (continuesAfterReceiveFailure(received.socketErrorCode, m_socket->isValid(), m_isStopped.load(std::memory_order_acquire)))
+                {
+                    if (auto &throttle = ASYN_LOG_THROTTLED(kReceiveErrorLogWindow); throttle.acquire())
+                    {
+                        LOG_WARN_FMT("UdpServer: 数据报读数报错（错误码 {}），已跳过这一次读数并继续监听"
+                                     "（过去 {} 秒内另有 {} 条同类被压掉）",
+                                     received.socketErrorCode, kReceiveErrorLogWindow.count(), throttle.droppedCount());
+                    }
+                    continue;
+                }
+                // 到这里就是「只是没数据且套接字已不可用」：stop() 关掉了本端，或本端故障，收手
+                break;
+            }
+
+            static_cast<void>(m_receivedDatagramCount.fetch_add(1, std::memory_order_relaxed));
+            // 视图指向 receiveBuffer：串行派发保证本条处理期间不会有下一条覆盖它
+            co_await serveOne(received.peerAddress, std::span<const std::uint8_t>(receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)));
+        }
+
+        // 三条出口都落到这里（stop() 关掉的、读数发现套接字没的、循环自己跑完的）：把收口做全，
+        // 别留一枚还开着的描述符给析构
+        stop();
+        co_return;
+    }
+
+    void UdpServer::stop() noexcept
+    {
+        // 先置标记再关套接字：挂在读数上的协程醒来要能从循环条件读出「该收手」，
+        // 否则它会把这次唤醒当成一次普通就绪接着去收
+        m_isStopped.store(true, std::memory_order_release);
+        if (m_socket != nullptr)
+        {
+            // 关掉套接字才是叫醒动作：AsyncUdpSocket::close() 先销毁注册对象（唤醒等待者）
+            // 再关描述符，只翻标记的话这条协程会一直停在读上
+            m_socket->close();
+        }
+    }
+
+    Core::Task<bool> UdpServer::sendTo(Core::InetAddress targetAddress, const std::span<const std::uint8_t> payload)
+    {
+        co_return co_await sendDatagram(targetAddress.platformAddress(), payload);
+    }
+
+    std::uint16_t UdpServer::listeningPort() const noexcept
+    {
+        return m_listeningPort.load(std::memory_order_acquire);
+    }
+
+    UdpServer::Stats UdpServer::stats() const noexcept
+    {
+        return Stats{
+                .receivedDatagramCount = m_receivedDatagramCount.load(std::memory_order_relaxed),
+                .sentDatagramCount     = m_sentDatagramCount.load(std::memory_order_relaxed),
+                .unsentDatagramCount   = m_unsentDatagramCount.load(std::memory_order_relaxed),
+                .failedHandlerCount    = m_failedHandlerCount.load(std::memory_order_relaxed),
+        };
+    }
+
+    bool UdpServer::continuesAfterReceiveFailure(const int socketErrorCode, const bool isSocketValid, const bool isStopped) noexcept
+    {
+        // 有码的失败都是「对端已经不在了」那一类回声（Windows 的 WSAECONNRESET、Linux 的
+        // EHOSTUNREACH/ECONNREFUSED）：报文层面没改变本端任何状态，套接字还能用，必须继续读。
+        // 走到「不继续」的只有两种：没码（套接字已不可用），或已经请求停止
+        return socketErrorCode != 0 && isSocketValid && !isStopped;
+    }
+
+    Core::Task<> UdpServer::serveOne(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> payload)
+    {
+        std::vector<std::uint8_t> reply;
+        bool                      isHandlerFailed = false;
+        std::string               failureReason;
+        try
+        {
+            reply = co_await m_configuration.onMessage(Core::InetAddress(peerAddress.storage, peerAddress.length), payload);
+        } catch (const std::exception &failure)
+        {
+            isHandlerFailed = true;
+            failureReason   = failure.what();
+        } catch (...)
+        {
+            // 非标准异常没有 what()：给一句中文占位，好过把它当成「没有异常」
+            isHandlerFailed = true;
+            failureReason   = "非标准异常（无 what() 描述）";
+        }
+
+        if (isHandlerFailed)
+        {
+            // 接住它、丢掉这一条、继续服务：让一条报文里的业务异常穿出收循环，等于把整台服务
+            // 交给对端——与「读数报错不能退出循环」是同一条判据的两侧
+            static_cast<void>(m_failedHandlerCount.fetch_add(1, std::memory_order_relaxed));
+            if (auto &throttle = ASYN_LOG_THROTTLED(kHandlerFailureLogWindow); throttle.acquire())
+            {
+                LOG_WARN_FMT("UdpServer: 报文处理器抛出异常，已丢弃这一条报文并继续监听（原因：{}；过去 {} 秒内另有 {} 条同类被压掉）", failureReason,
+                             kHandlerFailureLogWindow.count(), throttle.droppedCount());
+            }
+            co_return;
+        }
+
+        // 不作答：处理器交回空字节就是「这一条不用回」。这与输入侧的零长报文是两件事——
+        // 后者是一条合法的报文，前者是一种应答选择
+        if (reply.empty())
+        {
+            co_return;
+        }
+
+        static_cast<void>(co_await sendDatagram(peerAddress, std::span<const std::uint8_t>(reply)));
+        co_return;
+    }
+
+    Core::Task<bool> UdpServer::sendDatagram(const Platform::SocketAddress targetAddress, const std::span<const std::uint8_t> payload)
+    {
+        if (m_socket == nullptr || !m_socket->isValid())
+        {
+            // 未监听或已收口：这一条没发出去，说清是哪种
+            static_cast<void>(m_unsentDatagramCount.fetch_add(1, std::memory_order_relaxed));
+            LOG_WARN("UdpServer: 本端没有可用的套接字（还没 listen()，或已经 stop()），这一条报文没发出去");
+            co_return false;
+        }
+
+        // 零长报文合法，而平台层的发送入口即便长度为 0 也拒绝空指针缓冲，因此给它一个一字节占位：
+        // 交出去的仍是那条空报文，而不是被判成「调用方写错了」
+        const std::uint8_t emptyDatagramPlaceholder{0};
+        const void *const  data = payload.empty() ? std::addressof(emptyDatagramPlaceholder) : payload.data();
+
+        bool        isWholeDatagramSent = false;
+        std::string failureReason;
+        try
+        {
+            const ssize_t sentByteCount = co_await m_socket->asyncSendTo(targetAddress, data, payload.size());
+            // 负值只有一种来路：等可写期间套接字被关掉，本端正在收手
+            isWholeDatagramSent = sentByteCount >= 0;
+            if (!isWholeDatagramSent)
+            {
+                failureReason = "发送期间套接字被关闭";
+            }
+        } catch (const std::exception &failure)
+        {
+            // 超限（不会被内核切开，因此整条拒发）与平台报错都走这一支：一条报文的失败不能
+            // 把收循环带走，而截断交出一半比一条也不交更坏
+            failureReason = failure.what();
+        }
+
+        if (isWholeDatagramSent)
+        {
+            static_cast<void>(m_sentDatagramCount.fetch_add(1, std::memory_order_relaxed));
+            co_return true;
+        }
+
+        static_cast<void>(m_unsentDatagramCount.fetch_add(1, std::memory_order_relaxed));
+        if (auto &throttle = ASYN_LOG_THROTTLED(kSendFailureLogWindow); throttle.acquire())
+        {
+            LOG_WARN_FMT("UdpServer: 报文没发出去（原因：{}；过去 {} 秒内另有 {} 条同类被压掉）", failureReason, kSendFailureLogWindow.count(), throttle.droppedCount());
+        }
+        co_return false;
+    }
+} // namespace AsynGyanis::Net
