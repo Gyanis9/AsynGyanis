@@ -17,6 +17,23 @@
 
 ### 新增
 
+- **语句被拒时带出驱动原生码与可重试判定**（`Database::QueryExecutionException::nativeErrorCode()` /
+  `isRetryable()`，`Database::DatabaseConnection::lastNativeErrorCode()`）：本框架把
+  `QueryExecutionException` 拆成独立类型的全部理由就是「重试语义不同」，可原生码此前只拼在消息
+  文本末尾的「（错误码 N）」里——调用方要区分 MySQL 的 1213 死锁（服务端已回滚本事务、就等你重放）
+  与 1062 唯一键冲突（重试一万次也不会变好），只能去匹配中文。文本与码现在存在同一个
+  `ErrorRecord` 里成对更新，并且**任何只写文本的赋值与 `clear()` 都会把码重置为 -1**，
+  因此码永远不会配到上一条错误的文本上。刻意不在读取时现取句柄错误码：MySQL 的语句错误挂在
+  *语句*句柄上，连接级 `mysql_errno` 此时读到的可能还是上一条的陈旧码，配错的码比没有码更危险。
+  `isRetryable()` 取保守白名单（1205/1213/5/6），默认 false：少重试一次只是一趟往返，
+  多重试一条已生效的写语句是二次写入。旧签名保留、消息文本逐字不变。
+- **事件循环的自观测快照补两条口径**（`Core::EventLoopSnapshot` 的 `stoppedByFailure` 与
+  `failedDispatchCount`，`Core::Scheduler::failedDispatchCount()`）：回答「这条循环是被 `stop()`
+  干净停下的，还是被一次逃逸的抛出带走的」，以及「这条循环上有多少次投递抛出被就地收下」。
+- **文件变更监听的用户回调失败计数**（`Platform::FileWatcher::failedCallbackCount()`）：回调是
+  消费方注册的代码（配置热加载就走这条路），它抛出既不该带走监听线程也不该丢掉同批其余通知；
+  Platform 在 Base 之下、没有日志通路可用，因此把「报过」做成调用方主动读的计数。
+
 - **证书自动化（ACME / RFC 8555）落成三层可用的实现**：换证书此前是一件人做的事——到期前登机器、手工交
   CSR、把新链放回原位、重载服务。Let's Encrypt 那张是 90 天寿命，节奏下忘记一次就是一次线上证书告警，
   而「装了 `/metrics` 却没人看」是常态。现在：
@@ -1353,6 +1370,41 @@
   逐个移交那份套接字的原语已在库里（零停机换代在用），按这个形状编排 worker 还需另设计，本类未实现。
 
 ### 修复
+
+- **一条坏投递不再打死整条事件循环**（`Core::Scheduler` / `Core::EventLoop::run()` /
+  工作线程与若干后台线程入口）：抛出处在派发层、兜底却在循环层——`run()` 的 try 罩住整轮迭代，
+  捕获后重抛；`ThreadPool` 的线程体接住、记一条 ERROR、然后返回。jthread 没有重启函数，于是
+  `threadCount()` 照样报原数而那条循环再也不驱动任何东西：连接仍挂在活的 epoll 里、没人读，
+  连负责收空闲连接的清扫协程也在同一条死循环上。`run()` 的注释说这是「快速失败，由
+  WorkerSupervisor 重启 worker」，但那台 supervisor 编排的是 worker **进程**（fork+exec），
+  线程池的工作线程不在它监管里——设计假设与部署形态不一致。现在守卫下移到派发单元
+  （`Scheduler` 12 处「执行别人投进来的东西」统一到同一个 `runGuarded`，全部跑完不丢同批其余；
+  `IoWatcher::handleEvents` 逐侧兜住），`run()` 不再向调用方抛——它 global 有 20 多处直接跑在
+  裸 `std::thread` 入口上（含 samples 与测试夹具），让异常从那里穿出去就是 `std::terminate`。
+  顺带修掉同函数内的自我矛盾：`runAll()` 第一阶段的本地排空完全没守卫，而第二趟同一份本地排空
+  是守卫住的——同一条循环因此对本地投递与跨线程投递有两种失败语义。
+- **异常不再穿过 C 边界与 `noexcept` 边界**：OpenSSL 的 SNI 回调（按 ClientHello 里的
+  server_name 换站点上下文）此前非 `noexcept`、体内既分配站点键字符串又构造 `shared_lock`，
+  而输入是远端可控的——栈从那里展开要穿过 C 帧，是未定义行为而不是「异常被上层接住」；现在整份
+  实现按 `noexcept` 写死并自带兜底，失败时交回默认证书（与「没带 SNI」两条出口同一语义）。
+  同形的三处 `noexcept` 边界（`IoWatcher::handleEvents` 的裸 `resume()`、连接池
+  `expireTimedOutWaiters`/`ResumeTicket::resumeOnce` 的裸恢复、MySQL 语句缓存的 `try_emplace`）
+  各自补上守卫；其中 `cacheStatement` 没接管时原先会漏掉那条已 prepare 的语句句柄，改为回报接管
+  结果并由调用方的作用域兜底收尾（在函数内直接 close 就是用后释放——调用方手里那份还要继续绑定执行）。
+  另外修掉两处随行的形状问题：`expireTimedOutWaiters` 用两条平行向量分次 `push_back`，中间一次
+  分配失败会让长度错位、而投递按 tickets.size() 索引 loops 是越界读；`AsyncResolver` 的分离线程体
+  原先 `freeaddrinfo` 与唤醒都在抛出点之后，漏唤醒就是等待方永久挂起。
+- **业务处理器抛异常时三条协议都不再静默**：`HttpSession`/`Http2Session`/`Http3Session` 里
+  「头部已上线改不了状态码」那条流式分支一直有日志，而最常走的**非流式**分支是
+  `response.reset()` + 500 之后直接往下走，服务端一句成因都不留——对端只该看到 500（不外泄内部
+  原因是对的），但运维侧连「是哪一句抛了、抛在哪」都查不到，异常携带的抛出点调用栈也就白采。
+  现在同一行带上 request-id、trace id、路径与原因，出错的一行能翻回那条链路。响应行为一字未改。
+- **三处丢原因的静默吞补上告状**：连接池创建连接失败原先 `catch(...)` 直接 `return nullptr`
+  （驱动报的鉴权失败/主机不可达/URL 写错是这里唯一持有过原因的地方）、探活查询抛出无声按
+  不可用处理、TLS 建虚拟主机上下文失败丢掉具体成因。
+- **日志文件打开失败改走框架捕获面**（`Base::Log::FileSink` 构造）：此前抛裸
+  `std::runtime_error`，恰好从框架对外承诺的 `catch (const Base::Exception &)` 那个面上漏出去，
+  调用方按承诺写的一句 catch 接不到；改抛 `Base::SystemException` 并带上 errno。
 
 - **h3 的在线连接数拿到循环外面来读是一次数据竞争**（`Net::QuicServer::connectionCount()` 与走它的
   `stats()`）：那张连接表只归事件循环线程，而采集端与探活工具都在别的线程上读这个数——外部裁判实测到

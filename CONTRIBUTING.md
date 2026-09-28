@@ -90,7 +90,37 @@ ctest --test-dir build/debug --output-on-failure
 - 子类每个 `override` 必须独立书写完整中文注释，`@details` 说明与父类的行为差异，禁止「同上/继承自父类」占位
 - 优先使用 RAII 管理资源
 - 协程接口使用 `AsynGyanis::Core::Task<T>` 返回类型
-- 异常使用 `AsynGyanis::Base` 下的异常体系（`Base/Exception/`）
+- 错误处理按**失败形态**分通道，不按模块各造一套（下表是唯一的归属定案处）：
+
+  | 失败形态 | 走哪条通道 | 具体类型 |
+  |---|---|---|
+  | 对端可控：坏报文/坏帧/超限 | `std::expected<T, E>`，E 为 `{kind enum, message}` | `QuicDecodeError`、`Http3FrameError`、`QpackError`、`Http2FrameErrorKind`、`HttpParseErrorKind`；h1 解析另有 `ParseStatus` |
+  | 系统调用失败 | 异常 + OS 码 | `Base::SystemException`（带 `std::error_code`）、`Core::CoreException` |
+  | 调用方把接口用错（值非法/状态不允许） | 异常，落在 `std::logic_error` 分支 | `Base::InvalidArgumentException`、`Base::LogicException` |
+  | 初始化/配置/不可恢复故障 | 异常，落在 `std::runtime_error` 分支 | `Base::Exception` 家族、`Base::ConfigValidationException`、`Database::DatabaseException` 家族 |
+  | 语句被驱动拒绝 | 异常 + **驱动原生码** | `Database::QueryExecutionException::nativeErrorCode()` / `isRetryable()` |
+  | 平台层可恢复失败 | `std::expected<T, std::error_code>` | `Platform::IO` 各接口 |
+
+  两条根（`std::runtime_error` 与 `std::logic_error`）**刻意不合并**：`catch (const Base::Exception &)`
+  是「可恢复故障」的捕获面，把调用方的 bug 一起吞掉更糟。三条链分属标准库两条分支、共享不了异常
+  基类，但抛出点快照与调用栈共享同一个非异常基类 `Base::Detail::ExceptionPayload`——新增第四条链
+  不必再改 `tryStackTrace()`，而漏改原本的后果是**静默丢栈**（日志照出，只是不带栈，不报错）。
+  也不设统一的大 `ErrorCode` 枚举：协议层按 RFC 上线码切分、OS 层按 `std::error_code`、驱动层按
+  原生码，三套语义空间强行合并只会造出一个没人能用的中间枚举；统一的是**形状与命名规则**。
+- 异常**不得跨线程/跨回调传播**：事件循环的派发单元（`Scheduler` 的每处投递与恢复、
+  `IoWatcher::handleEvents` 的每次 `resume`）、会话回调、线程池任务都必须就地收下抛出的
+  异常，转成日志 + 计数（`Scheduler::failedDispatchCount()`、`FileWatcher::failedCallbackCount()`）
+  或连接收口，不能让它沿调用点逃到线程入口。`EventLoop::run()` 因此**不向调用方抛**
+  （它的调用点大多是裸 `std::thread` 入口）；被收下的失败要可观测，故有
+  `EventLoopSnapshot::stoppedByFailure`。
+- 析构函数、`noexcept` 函数、C 回调（含挂进 OpenSSL 的函数指针）**禁止抛**：C++ 异常穿过
+  C 帧是未定义行为。`noexcept` 函数内部捕获不违反本条，恰是实现它的手段。
+  注意 MSVC 的 C4297 会让 `noexcept` 函数里出现显式 `throw` 时直接编译失败（`/W4 /WX` 下即门禁红）。
+- 第三方原生库（yaml-cpp / nlohmann_json）的异常只在配置加载边界捕获并汇入
+  `ConfigLoadResult::errors`；驱动侧（SQLite/MySQL/Redis 均为 C API）不抛，失败一律转成
+  `expected`/错误文本 + 配对的原生码。
+- 热路径（事件循环 pump、协议解码、定时器、日志格式化、每请求派发）**不靠抛异常报错**——
+  这些位置本来就应当没有 throw 点，改动前后都按这条审
 - 日志使用 `LOG_*_FMT` 宏（`Base/Log/LogMacros.h`）
 - 平台相关操作一律封装在 `AsynGyanis::Platform`，Base 及以上模块不出现平台宏与系统 API
 
