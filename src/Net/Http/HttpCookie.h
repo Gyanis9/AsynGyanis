@@ -201,9 +201,12 @@ namespace AsynGyanis::Net
         /**
          * @brief 解析一条（或多条同名头合并成的）Cookie 请求头
          * @details 请求侧的 Cookie 头只带名字与取值，没有属性。'=' 之后到下一个 ';' 之前全算取值，
-         *          因此带空格的取值按原样收下（那是浏览器发来的形状）；名字两侧空白被去掉。
+         *          取值里再出现的 '=' 原样保留；两侧空白被去掉，而**中间**带空格的取值不算合法
+         *          cookie-octet，那**一条**会被跳过（其余各条照常交出来，判据见 isValidValue）。
          * @param headerValue 一个 Cookie 头的完整取值
          * @return std::vector<HttpCookie> 按出现顺序给出的 Cookie 列表，属性一律为未设
+         * @note 跳过而不是收下再报错：Cookie 头是浏览器与各级代理拼出来的，混一条怪的就让整条头读不出
+         *       等于把会话弄丢；要查「为什么少了一条」时看的是这里的判据，不是异常
          */
         [[nodiscard]] static std::vector<HttpCookie> parseCookieHeader(std::string_view headerValue);
 

@@ -38,8 +38,11 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 判断字符能否作为 Cookie 取值的一部分
-         * @details 按 RFC 6265 §4.1.1：允许 0x21、0x23..0x2B、0x2D..0x3A、0x3C..0x7E。
-         *          被排除的正是会破坏头部结构的几个：空格、'"'、';'、'='、','、控制符与 DEL。
+         * @details 按 RFC 6265 §4.1.1 的 cookie-octet：0x21、0x23..0x2B、0x2D..0x3A、0x3C..0x7E。
+         *          挡在外面的是会破坏头部结构的几个：空格、'"'、';'、','、控制符与 DEL；'=' 与 '/'
+         *          这类是允许的（两条解析入口只按**第一个** '=' 切分，取值里再出现的 '=' 原样保留）。
+         *          0x5C（反斜杠）是规范不让而本层放行的唯一一格：它不动任何头部结构，而真实取值里确实
+         *          会出现它，挡下来只会把一条能用的 Cookie 变成存不进来。
          * @param character 待判字符
          * @return true 允许
          */
@@ -117,12 +120,12 @@ namespace AsynGyanis::Net
         if (!isValidName(cookieName))
         {
             throw Base::InvalidArgumentException("HttpCookie: Cookie 名字必须是 RFC 7230 的 token，收到的是「" + std::string(cookieName) +
-                                                 "」（不能含空格、控制符与 \" ; = , 等分隔符）");
+                                                 "」（不能含空格、控制符与 \" ; , 等分隔符）");
         }
         if (!isValidValue(cookieValue))
         {
             throw Base::InvalidArgumentException("HttpCookie: Cookie 取值含非法字符，名字「" + std::string(cookieName) + "」的取值是「" + std::string(cookieValue) +
-                                                 "」（不能含空格、控制符与 \" ; = , ）");
+                                                 "」（不能含空格、控制符与 \" ; , ；'=' 是允许的）");
         }
         m_name.assign(cookieName);
         m_value.assign(cookieValue);

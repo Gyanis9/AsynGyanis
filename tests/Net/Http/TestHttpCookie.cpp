@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -68,6 +69,70 @@ namespace AsynGyanis::Net
         EXPECT_NO_THROW(cookie.setValue(""));
         EXPECT_EQ(cookie.value(), "") << "空取值是 RFC 6265 允许的";
         EXPECT_THROW(cookie.setValue("bad\r\nvalue"), Base::InvalidArgumentException);
+    }
+
+    /**
+     * @brief 名字字符集逐字节钉成 RFC 7230 的 tchar 全集：多一个少一个都算错
+     * @details 这两个方向都会出错而且都不报错：分隔符被放行等于给响应留拆分口（空格让名字与属性段
+     *          粘连、'"' 与 ';' 直接截断），而合法字符被误拒会让真实存在的 Cookie 名存不进来。
+     *          逐字节过一遍比三五个样本强——进制边界（0x21、0x22、0x2C）就是这么被抓出来的。
+     * @note 证伪：往实现里的特殊字符表加 ';'，本条红在「非 token 字符被放了进来」那句
+     */
+    TEST(HttpCookie, NameCharsetIsExactlyTheRfc7230TokenSet)
+    {
+        static constexpr std::string_view kTokenSpecials{"!#$%&'*+-.^_`|~"};
+        std::string                       rejectedLegalNames;
+        std::string                       acceptedIllegalNames;
+        for (int code = 0; code < 0x80; ++code)
+        {
+            const char character     = static_cast<char>(code);
+            const bool isTokenChar   = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') ||
+                                       kTokenSpecials.find(character) != std::string_view::npos;
+            const bool reportedValid = HttpCookie::isValidName(std::string(1, character));
+            if (reportedValid != isTokenChar)
+            {
+                (isTokenChar ? rejectedLegalNames : acceptedIllegalNames) += character;
+            }
+        }
+        EXPECT_TRUE(rejectedLegalNames.empty()) << "这些合法的 token 字符被拒了：" << rejectedLegalNames;
+        EXPECT_TRUE(acceptedIllegalNames.empty()) << "这些非 token 字符被当成了合法名字（会破坏头部结构）：" << acceptedIllegalNames;
+
+        EXPECT_FALSE(HttpCookie::isValidName("")) << "空名字必须拒：RFC 6265 要求名字至少一个字符";
+        EXPECT_FALSE(HttpCookie::isValidName("名")) << "非 ASCII 的每一个字节都不算 token";
+    }
+
+    /**
+     * @brief 取值字符集：把每个会破坏头部结构的字符挡在外面，并记下一处刻意的放宽
+     * @details 必须挡的是 CR/LF（头部注入）、';'（截断属性段）、'"'（提前闭合 quoted-string）、
+     *          ','（多值头部粘连）、空格（名字与取值粘连）、控制符、DEL 与 0x80 以上。
+     *          '=' 放行是规范的：RFC 6265 §4.1.1 的 cookie-octet 覆盖 0x2D..0x3A，而两条解析入口都只按
+     *          **第一个** '=' 切分，取值里再出现的 '=' 原样保留。
+     * @note 反斜杠是一处刻意的放宽：RFC 的 cookie-octet 不含 0x5C，本层放行它——它不破坏任何头部结构，
+     *       而挡下来只会把一条本来能用的 Cookie 变成存不进来（真实取值里确实会出现它）
+     * @note 证伪：把 0x5C 排掉、或把任何一段范围放宽到含 ';'/'"/','/0x7F，本条红
+     */
+    TEST(HttpCookie, ValueCharsetBlocksEveryHeaderBreakingCharacter)
+    {
+        EXPECT_TRUE(HttpCookie::isValidValue("")) << "空取值合法（RFC 6265 允许）";
+
+        for (int code = 0x20; code <= 0x7E; ++code)
+        {
+            // RFC 6265 §4.1.1 的 cookie-octet 四段，外加本层刻意放行的 0x5C
+            const bool shouldBeAllowed = code == 0x21 || (code >= 0x23 && code <= 0x2B) || (code >= 0x2D && code <= 0x3A) || (code >= 0x3C && code <= 0x7E);
+            EXPECT_EQ(HttpCookie::isValidValue(std::string(1, static_cast<char>(code))), shouldBeAllowed) << "可打印字节 0x" << std::hex << code;
+        }
+        for (int code = 0x7F; code < 0x100; code += 1)
+        {
+            EXPECT_FALSE(HttpCookie::isValidValue(std::string(1, static_cast<char>(code)))) << "0x7F 以上不算取值字符：0x" << std::hex << code;
+        }
+
+        // 报错文案承诺的那几个分隔符逐个点名，别让文案与判据各说一套
+        for (const char breaker: {' ', '\t', '"', ',', ';', '\r', '\n', '\x01'})
+        {
+            EXPECT_FALSE(HttpCookie::isValidValue(std::string(1, breaker))) << "这个字符必须挡在取值外：" << static_cast<int>(breaker);
+        }
+        // 带结构的整串也要拒：一条含 CRLF 的取值就是响应拆分
+        EXPECT_FALSE(HttpCookie::isValidValue("a\r\nSet-Cookie: evil=1"));
     }
 
     /**
@@ -159,6 +224,14 @@ namespace AsynGyanis::Net
         EXPECT_EQ(cookies[2].name(), "c");
         EXPECT_EQ(cookies[3].name(), "d");
         EXPECT_FALSE(cookies[0].domain().has_value()) << "请求侧没有属性可言";
+
+        // 取值里的 '=' 原样保留（只按第一个 '=' 切分），而中间带空格的那一条按 isValidValue 判不合格、
+        // 只丢它自己：Cookie 头是各级代理拼出来的，混一条怪的不该让其余的读不到
+        const std::vector<HttpCookie> mixed = HttpCookie::parseCookieHeader("tok=abc=def; sp=a b; q=1");
+        ASSERT_EQ(mixed.size(), 2U) << "带空格的取值该只丢它自己，其余两条都要在";
+        EXPECT_EQ(mixed[0].name(), "tok");
+        EXPECT_EQ(mixed[0].value(), "abc=def") << "取值里后续的 '=' 被切掉了：那是按第一个 '=' 切分的语义";
+        EXPECT_EQ(mixed[1].name(), "q");
     }
 
     /**
