@@ -29,7 +29,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <expected>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -205,6 +207,22 @@ namespace AsynGyanis::Net
          *       不接路由器时服务端只做传输层，流数据交给 setStreamDataHandler() 的直通出口
          */
         void setRouter(Router &router) noexcept;
+
+        /**
+         * @brief 用配置里记下的路径重载证书，成功则整台换用新的 TLS 上下文
+         * @return true 新证书已生效（此后新建的 h3 连接用它）；false 表示证书或私钥读不出来、
+         *         不配对，此时旧上下文原样继续服务
+         * @details 存在的理由与 `Core::TlsContext::reloadCertificate()` 同一条：证书自动化的标准动作是
+         *          「新证书覆盖到原路径」，路径就是身份。h3 一侧此前只能重启进程才换证书，于是同一份
+         *          自动化能喂饱 443 上的 TCP 与 UDP，却单缺 h3 那一条通道。
+         * @note 在途连接不受影响：OpenSSL 的 SSL 对象持有自己那份上下文引用，最后一个引用消失前不会
+         *       释放，因此换下来的旧上下文会活到最后一条用它建起来的连接收尾
+         * @note 本方法可从运维线程调用（它与 routeDatagram 的读点之间由一把锁定序）；新建 SSL 只发生在
+         *       循环线程上，因此锁的持有时长只是取一份 shared_ptr 拷贝
+         * @see Core::TlsContext::reloadCertificate(), HttpsServer::reloadCertificate()
+         */
+        bool reloadCertificate();
+
 
         /**
          * @brief 换一份连接级限额：与两条 TCP 监听器同一个形状，取值 0 的字段表示关闭对应保护
@@ -442,15 +460,30 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<> pumpHttp3For(QuicConnection &connection);
 
+        /**
+         * @brief 按配置建一份加固过、装上证书与服务参数的 SSL_CTX（构造与热轮换共用同一份判据）
+         * @param configuration 服务端配置：策略、证书与私钥路径、mTLS 开关、票据密钥路径都从这份取
+         * @return std::expected<std::shared_ptr<SSL_CTX>, std::string> 建好的上下文；失败值是中文原因
+         * @details 只留一份实现是刻意的：这里的每一项在缺掉时都不报错，而是「这条通道悄悄少了保护」——
+         *          少了票据密钥会让跨进程会话恢复率归零，少了 TLS 1.3 下限与 ALPN 回调会让 h3 握手
+         *          整片失败，而那些都只在运行期才看得见。
+         */
+        [[nodiscard]] static std::expected<std::shared_ptr<SSL_CTX>, std::string> buildTlsContext(const Configuration &configuration);
+
         Core::EventLoop &m_eventLoop;     ///< 所属事件循环
         Configuration    m_configuration; ///< 服务端配置
         /// 连接级限额的生效份：构造时取 `Configuration::serverLimits`（没给就用默认档那份），
         /// `setLimits()` 整体换掉它。会话只读这一份而不是 `m_configuration` 里那份——两处都读就会
         /// 出现「setter 改了其中一处」的分叉，静态目录的映射条数上限与在途预算都从这一份取
-        std::shared_ptr<const HttpServerLimits> m_serverLimits;        ///< 交给此后每条连接上新建会话的那份限额
-        HttpParserLimits                        m_parserLimits{};      ///< 同上，解析上限的生效份（按值：会话构造时取走副本，之后没有读者）
-        SSL_CTX                                *m_tlsContext{nullptr}; ///< QUIC 用的 SSL_CTX（含证书与 ALPN）
-        Platform::DatagramSocket                m_datagramSocket;      ///< 绑定的 UDP 套接字
+        std::shared_ptr<const HttpServerLimits> m_serverLimits;   ///< 交给此后每条连接上新建会话的那份限额
+        HttpParserLimits                        m_parserLimits{}; ///< 同上，解析上限的生效份（按值：会话构造时取走副本，之后没有读者）
+        /// QUIC 用的 SSL_CTX（含证书与 ALPN）。按 shared_ptr 持有：reloadCertificate() 换掉的就是这一份，
+        /// 而在途连接的 SSL 各自持有 OpenSSL 内部的引用，旧上下文活到它们收尾才释放
+        std::shared_ptr<SSL_CTX> m_tlsContext;
+        /// 上面那份的读写锁。读点是「新连接首包要 SSL_new」那一下，写点是 reloadCertificate()；
+        /// 已经建好的连接不再读它，因此这把锁不参与任何在途数据的收发路径
+        std::mutex               m_tlsContextMutex;
+        Platform::DatagramSocket m_datagramSocket; ///< 绑定的 UDP 套接字
         /// 接手来的平台套接字：有值即「接手模式」，无参的 listen() 认它，带地址的 listen() 拒绝。
         /// 被 listen() 转交给 m_datagramSocket 之后本项转为空
         std::optional<Platform::DatagramSocket> m_adoptedSocket; ///< 尚未装进本端的那份已绑好的套接字

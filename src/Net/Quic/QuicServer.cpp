@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <expected>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <openssl/err.h>
@@ -132,54 +133,14 @@ namespace AsynGyanis::Net
                                                  "它会区分「描述符无效」「不是套接字」「不是 SOCK_DGRAM」「还没 bind」四种不合格");
         }
 
-        // 构造期任一检查都要抛，而抛出去之后析构函数不会跑——成员那份裸指针就此无人认领。
-        // 所以先让局部守卫持有，只有全部检查过了才交接给成员（一份 SSL_CTX 连带证书与私钥约 35 KiB）
-        std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> ownedTlsContext(SSL_CTX_new(TLS_server_method()), &SSL_CTX_free);
-        if (ownedTlsContext == nullptr)
+        // 上下文（连带证书、策略、ALPN 与票据密钥）由那一份唯一的构建函数交出。失败仍然当场抛：
+        // 构造没有错误通道，而「在监听却谁也不应答」比启动失败难查得多
+        auto built = buildTlsContext(m_configuration);
+        if (!built.has_value())
         {
-            throw Base::SystemException("QUIC 服务端启动失败：TLS 上下文创建失败（" + quicOpenSslErrorText() + "）");
+            throw Base::SystemException("QUIC 服务端启动失败：" + built.error());
         }
-        SSL_CTX *const tlsContext = ownedTlsContext.get();
-
-        // TLS 策略与「QUIC 只用 TLS 1.3」这一条钉在一起施加：低版本没有 QUIC 需要的握手接口
-        applyTlsPolicyToQuicContext(tlsContext, m_configuration.tlsPolicy);
-        if (SSL_CTX_use_certificate_chain_file(tlsContext, m_configuration.certificateFile.c_str()) != 1)
-        {
-            throw Base::SystemException("QUIC 服务端启动失败：证书加载失败（" + m_configuration.certificateFile + "）：" + quicOpenSslErrorText());
-        }
-        if (SSL_CTX_use_PrivateKey_file(tlsContext, m_configuration.privateKeyFile.c_str(), SSL_FILETYPE_PEM) != 1)
-        {
-            throw Base::SystemException("QUIC 服务端启动失败：私钥加载失败（" + m_configuration.privateKeyFile + "）：" + quicOpenSslErrorText());
-        }
-        if (SSL_CTX_check_private_key(tlsContext) != 1)
-        {
-            throw Base::SystemException("QUIC 服务端启动失败：私钥与证书不匹配：" + quicOpenSslErrorText());
-        }
-        SSL_CTX_set_alpn_select_cb(tlsContext, selectApplicationProtocol, nullptr);
-
-        // 校验模式落在 SSL_CTX 上：h3 的连接是数据报路由命中时才 SSL_new 出来的，没有「先建好连接再改
-        // 校验模式」的位置，而 Configuration 本身就是构造期一次定（要改只能整台换）
-        if (m_configuration.requireClientCertificates)
-        {
-            if (m_configuration.tlsPolicy.certificateAuthorityFile.empty() && m_configuration.tlsPolicy.certificateAuthorityPath.empty())
-            {
-                throw Base::SystemException("QUIC 服务端启动失败：requireClientCertificates 开着，却没有给校验客户端证书用的 CA"
-                                            "（tlsPolicy.certificateAuthorityFile 或 certificateAuthorityPath 至少要一项）");
-            }
-            // FAIL_IF_NO_PEER_CERT：对端不出示证书时立即终止握手，而不是退化成「可选校验」
-            SSL_CTX_set_verify(tlsContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
-        }
-
-        // 票据密钥与证书一样在构造期就位：装不上就是配置错误，当场抛（消息点名是哪一份文件），
-        // 而不是悄悄退回「每个上下文一份随机密钥」——那种形态的代价只在恢复命中率上体现，查起来最费时间
-        if (!m_configuration.sessionTicketKeyFiles.empty())
-        {
-            std::vector<std::string> ticketKeys;
-            Core::SessionTicketKeyRing::readKeyFiles(m_configuration.sessionTicketKeyFiles, ticketKeys);
-            Core::SessionTicketKeyRing::install(tlsContext, std::move(ticketKeys));
-        }
-        // 到这里才算构造成功：所有权交给成员，由析构函数释放，守卫不再重复 free
-        m_tlsContext = ownedTlsContext.release();
+        m_tlsContext = std::move(*built);
     }
 
     QuicServer::~QuicServer()
@@ -189,11 +150,80 @@ namespace AsynGyanis::Net
         m_http3Sessions.clear();
         m_connectionsByAliasConnectionId.clear();
         m_connections.clear();
-        if (m_tlsContext != nullptr)
+        // 这里只是放下本类那一份引用：在途连接的 SSL 各持一份 OpenSSL 内部的引用，
+        // 最后一批收尾时这份上下文才真正被释放
+        m_tlsContext.reset();
+    }
+
+    std::expected<std::shared_ptr<SSL_CTX>, std::string> QuicServer::buildTlsContext(const Configuration &configuration)
+    {
+        // 构造期任一检查都要抛，而抛出去之后析构函数不会跑——调用方那份成员就此无人认领。
+        // 所以先让局部守卫持有，只有全部检查过了才交接给成员（一份 SSL_CTX 连带证书与私钥约 35 KiB）
+        // 一份 SSL_CTX 连带证书与私钥约 35 KiB：守卫换成 shared_ptr，失败值同样由它带走
+        const std::shared_ptr<SSL_CTX> ownedTlsContext(SSL_CTX_new(TLS_server_method()), &SSL_CTX_free);
+        if (ownedTlsContext == nullptr)
         {
-            SSL_CTX_free(m_tlsContext);
-            m_tlsContext = nullptr;
+            return std::unexpected("TLS 上下文创建失败（" + quicOpenSslErrorText() + "）");
         }
+        SSL_CTX *const tlsContext = ownedTlsContext.get();
+
+        // TLS 策略与「QUIC 只用 TLS 1.3」这一条钉在一起施加：低版本没有 QUIC 需要的握手接口
+        applyTlsPolicyToQuicContext(tlsContext, configuration.tlsPolicy);
+        if (SSL_CTX_use_certificate_chain_file(tlsContext, configuration.certificateFile.c_str()) != 1)
+        {
+            return std::unexpected("证书加载失败（" + configuration.certificateFile + "）：" + quicOpenSslErrorText());
+        }
+        if (SSL_CTX_use_PrivateKey_file(tlsContext, configuration.privateKeyFile.c_str(), SSL_FILETYPE_PEM) != 1)
+        {
+            return std::unexpected("私钥加载失败（" + configuration.privateKeyFile + "）：" + quicOpenSslErrorText());
+        }
+        if (SSL_CTX_check_private_key(tlsContext) != 1)
+        {
+            return std::unexpected("私钥与证书不匹配：" + quicOpenSslErrorText());
+        }
+        SSL_CTX_set_alpn_select_cb(tlsContext, selectApplicationProtocol, nullptr);
+
+        // 校验模式落在 SSL_CTX 上：h3 的连接是数据报路由命中时才 SSL_new 出来的，没有「先建好连接再改
+        // 校验模式」的位置，而 Configuration 本身就是构造期一次定（要改只能整台换）
+        if (configuration.requireClientCertificates)
+        {
+            if (configuration.tlsPolicy.certificateAuthorityFile.empty() && configuration.tlsPolicy.certificateAuthorityPath.empty())
+            {
+                return std::unexpected("requireClientCertificates 开着，却没有给校验客户端证书用的 CA"
+                                       "（tlsPolicy.certificateAuthorityFile 或 certificateAuthorityPath 至少要一项）");
+            }
+            // FAIL_IF_NO_PEER_CERT：对端不出示证书时立即终止握手，而不是退化成「可选校验」
+            SSL_CTX_set_verify(tlsContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+        }
+
+        // 票据密钥与证书一样在构造期就位：装不上就是配置错误，当场抛（消息点名是哪一份文件），
+        // 而不是悄悄退回「每个上下文一份随机密钥」——那种形态的代价只在恢复命中率上体现，查起来最费时间
+        if (!configuration.sessionTicketKeyFiles.empty())
+        {
+            std::vector<std::string> ticketKeys;
+            Core::SessionTicketKeyRing::readKeyFiles(configuration.sessionTicketKeyFiles, ticketKeys);
+            Core::SessionTicketKeyRing::install(tlsContext, std::move(ticketKeys));
+        }
+        return ownedTlsContext;
+    }
+
+    bool QuicServer::reloadCertificate()
+    {
+        // 与构造期同一份装配判据：换上去的那份上下文必须照样带着策略、ALPN 与票据密钥，
+        // 否则一次续期就把 h3 悄悄降级——少了票据密钥是恢复率归零，少了 ALPN 是整片握手失败
+        auto rebuilt = buildTlsContext(m_configuration);
+        if (!rebuilt.has_value())
+        {
+            LOG_ERROR_FMT("QuicServer: 证书重载失败，旧证书继续服务。原因：{}", rebuilt.error());
+            return false;
+        }
+
+        {
+            std::lock_guard guard(m_tlsContextMutex);
+            m_tlsContext = std::move(*rebuilt);
+        }
+        LOG_INFO_FMT("QuicServer: 已换用 {} 与 {} 里的新证书，此后新建的 h3 连接用它", m_configuration.certificateFile, m_configuration.privateKeyFile);
+        return true;
     }
 
     Core::Task<> QuicServer::listen(Core::InetAddress localAddress)
@@ -666,7 +696,13 @@ namespace AsynGyanis::Net
         }
 
         QuicConnection::Configuration connectionConfiguration;
-        connectionConfiguration.tlsContext  = m_tlsContext;
+        // 与 reloadCertificate() 定序：取一份快照再往外传，连接建好之后它自己持有 OpenSSL 的引用
+        SSL_CTX *tlsContextSnapshot = nullptr;
+        {
+            std::lock_guard guard(m_tlsContextMutex);
+            tlsContextSnapshot = m_tlsContext.get();
+        }
+        connectionConfiguration.tlsContext  = tlsContextSnapshot;
         connectionConfiguration.idleTimeout = std::chrono::duration_cast<std::chrono::milliseconds>(m_configuration.idleTimeout);
         // 接上路由器就让 HTTP/3 接管：这时流里的字节是 h3 的帧，直通出口拿到的只会是看不懂的裸字节
         connectionConfiguration.onStreamData = [this](QuicConnection &connection, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)

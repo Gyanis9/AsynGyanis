@@ -19,12 +19,15 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <future>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -49,6 +52,12 @@ namespace AsynGyanis::Net
         /// 回环 IP 专用的证书对：CN=127.0.0.1 且 SAN=IP:127.0.0.1，出站侧要它才验得过
         const std::filesystem::path kIpCertificatePath = fixturePath("test_ip_cert.pem");
         const std::filesystem::path kIpPrivateKeyPath  = fixturePath("test_ip_key.pem");
+
+        // 两处简写要先声明再定义：它们互相引用夹具与配置构造函数
+        class RunningServerPeer;
+        class ConnectAttempt;
+        QuicClientConnection::Configuration makeConfiguration(const std::string &hostName, const std::filesystem::path &certificateAuthorityFile,
+                                                              const std::chrono::milliseconds handshakeTimeout);
 
         /**
          * @brief 起一个真在服务端：给本文件当对面那一方
@@ -77,7 +86,9 @@ namespace AsynGyanis::Net
                 {
                     configurationTweak(configuration);
                 }
-                m_server = std::make_unique<QuicServer>(m_loop, configuration);
+                m_certificateFile = configuration.certificateFile;
+                m_privateKeyFile  = configuration.privateKeyFile;
+                m_server          = std::make_unique<QuicServer>(m_loop, configuration);
                 m_server->setRouter(m_router);
                 m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
                 m_loop.scheduler().schedule(m_listenTask->handle());
@@ -106,13 +117,35 @@ namespace AsynGyanis::Net
                 return m_server->listeningPort();
             }
 
+            /// 本端证书文件路径（用例要把新身份覆盖到同一批路径上， reloadCertificate() 按原路径重读）
+            [[nodiscard]] const std::string &certificateFile() const noexcept
+            {
+                return m_certificateFile;
+            }
+
+            /**
+             * @brief 在服务端所属的循环线程上做一次证书热重载
+             * @return true 新身份已生效
+             * @details 走 postRemote 而不是直接调：h3 的连接是在循环线程上 SSL_new 出来的，
+             *          重载的提交点要与它定序（本类的锁只保证快照一致，不保证顺序）
+             */
+            bool reloadCertificate()
+            {
+                std::promise<bool> finished;
+                auto               outcome = finished.get_future();
+                m_loop.scheduler().postRemote([this, &finished] { finished.set_value(m_server->reloadCertificate()); });
+                return outcome.get();
+            }
+
 
         private:
-            Core::EventLoop             m_loop;         ///< 服务端所属循环
-            Router                      m_router;       ///< 空路由器，只为让会话建得起来
-            std::unique_ptr<QuicServer> m_server{};     ///< 对面那一方
-            std::optional<Core::Task<>> m_listenTask{}; ///< 监听协程
-            std::thread                 m_loopThread{}; ///< 跑循环的线程
+            std::string                 m_certificateFile{}; ///< 起服务端时用的证书路径（重载按它重读）
+            std::string                 m_privateKeyFile{};  ///< 配套的私钥路径
+            Core::EventLoop             m_loop;              ///< 服务端所属循环
+            Router                      m_router;            ///< 空路由器，只为让会话建得起来
+            std::unique_ptr<QuicServer> m_server{};          ///< 对面那一方
+            std::optional<Core::Task<>> m_listenTask{};      ///< 监听协程
+            std::thread                 m_loopThread{};      ///< 跑循环的线程
         };
 
         /**
@@ -207,6 +240,60 @@ namespace AsynGyanis::Net
          * @param handshakeTimeout 握手时限
          * @return QuicClientConnection::Configuration 配好的配置
          */
+        /**
+         * @brief 把一份夹具文件原样复制到目标路径
+         */
+        void copyFixtureFile(const std::filesystem::path &source, const std::filesystem::path &destination)
+        {
+            std::error_code failure;
+            std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, failure);
+            ASSERT_FALSE(failure) << "复制 " << source.string() << " 到 " << destination.string() << " 失败：" << failure.message();
+        }
+
+        /**
+         * @brief 往路径里写一段文本（用来摆「证书文件坏了」这类现场）
+         */
+        void writeTextFile(const std::filesystem::path &path, const std::string_view contents)
+        {
+            std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+            stream.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+            ASSERT_TRUE(stream.good()) << "写 " << path.string() << " 没成功";
+        }
+
+        /**
+         * @brief 读一份文件的全文
+         */
+        [[nodiscard]] std::string readWholeFile(const std::filesystem::path &path)
+        {
+            std::ifstream stream(path, std::ios::binary);
+            return std::string{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+        }
+
+        /**
+         * @brief 把两份自签证书并成一份信任锚文件
+         * @details 信任对两种身份都成立，才能保证「连不上」的唯一解释是**身份本身变了**，
+         *          而不是新那张不在信任库里——否则这条判据是空的
+         */
+        void writeCombinedTrustAnchors(const std::filesystem::path &destination, const std::vector<std::filesystem::path> &certificates)
+        {
+            std::string combined;
+            for (const std::filesystem::path &certificate: certificates)
+            {
+                combined += readWholeFile(certificate);
+            }
+            writeTextFile(destination, combined);
+        }
+
+        /**
+         * @brief 与给定端口上的服务端握一次手，交回成没成
+         */
+        [[nodiscard]] bool handshakeSucceeded(const std::uint16_t port, const std::string &hostName, const std::filesystem::path &trustAnchors)
+        {
+            ConnectAttempt attempt{makeConfiguration(hostName, trustAnchors, std::chrono::milliseconds{4000}), Core::InetAddress::resolve("127.0.0.1", port).value()};
+            EXPECT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这次握手连结果都没交回来";
+            return attempt.isSuccessful();
+        }
+
         QuicClientConnection::Configuration makeConfiguration(const std::string &hostName, const std::filesystem::path &certificateAuthorityFile,
                                                               const std::chrono::milliseconds handshakeTimeout)
         {
@@ -354,4 +441,58 @@ namespace AsynGyanis::Net
         }
     }
 
+    /**
+     * @brief 钉住：证书热重载之后，握手看到的就是新身份，而且新身份确实在正常服务
+     * @details 两种身份只差 SAN（一张 IP、一张 DNS），信任锚却同时装着两张：于是「按 IP 连不上、
+     *          按 localhost 连得上」这一对读数的唯一解释是服务端出示的证书换了。撤掉
+     *          reloadCertificate() 的换指针对调，或者换上去却没读新文件，本条立刻红在一侧。
+     */
+    TEST(QuicClientConnection, HandshakeSeesTheNewCertificateAfterTheServerReloadsIt)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory temporaryDirectory("QuicCertificateReload");
+        const std::filesystem::path                 servedCertificate = temporaryDirectory.path() / "served-cert.pem";
+        const std::filesystem::path                 servedPrivateKey  = temporaryDirectory.path() / "served-key.pem";
+        const std::filesystem::path                 trustAnchors      = temporaryDirectory.path() / "anchors.pem";
+
+        // 第一份身份：只认 127.0.0.1 那张。路径必须是本用例自己的复制件——夹具是共享的，不能覆写
+        copyFixtureFile(kIpCertificatePath, servedCertificate);
+        copyFixtureFile(kIpPrivateKeyPath, servedPrivateKey);
+        writeCombinedTrustAnchors(trustAnchors, {kIpCertificatePath, fixturePath("test_localhost_cert.pem")});
+
+        RunningServerPeer server{servedCertificate, servedPrivateKey};
+        ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
+        ASSERT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", trustAnchors)) << "换之前连不上，本条用例的基线就不成立";
+
+        // 证书自动化的标准动作：新证书覆盖到同一条路径，然后叫服务重载
+        copyFixtureFile(fixturePath("test_localhost_cert.pem"), servedCertificate);
+        copyFixtureFile(fixturePath("test_localhost_key.pem"), servedPrivateKey);
+        ASSERT_TRUE(server.reloadCertificate()) << "重载报了失败，可路径上明明是一张合法的证书";
+
+        EXPECT_FALSE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", trustAnchors)) << "旧身份还在服务：热重载没换上新证书";
+        EXPECT_TRUE(handshakeSucceeded(server.listeningPort(), "localhost", trustAnchors)) << "新身份连不上：换是换了，却没在正常服务";
+    }
+
+    /**
+     * @brief 钉住：重载失败时旧证书原样继续服务，而不是先把线上身份拆了再报错
+     */
+    TEST(QuicClientConnection, KeepsServingTheOldCertificateWhenReloadFails)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory temporaryDirectory("QuicCertificateReloadFailure");
+        const std::filesystem::path                 servedCertificate = temporaryDirectory.path() / "served-cert.pem";
+        const std::filesystem::path                 servedPrivateKey  = temporaryDirectory.path() / "served-key.pem";
+        const std::filesystem::path                 trustAnchors      = temporaryDirectory.path() / "anchors.pem";
+
+        copyFixtureFile(kIpCertificatePath, servedCertificate);
+        copyFixtureFile(kIpPrivateKeyPath, servedPrivateKey);
+        writeCombinedTrustAnchors(trustAnchors, {kIpCertificatePath, fixturePath("test_localhost_cert.pem")});
+
+        RunningServerPeer server{servedCertificate, servedPrivateKey};
+        ASSERT_NE(server.listeningPort(), 0U);
+        ASSERT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", trustAnchors));
+
+        // 新证书坏了（续期最常见的现场：下载到一半断电，磁盘上是半个文件）
+        writeTextFile(servedCertificate, "这不是 PEM，只是半份被截断的证书\n");
+        EXPECT_FALSE(server.reloadCertificate()) << "读不出证书却报了成功";
+        EXPECT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", trustAnchors)) << "重载失败就把线上身份弄没了：旧上下文该原样继续服务";
+    }
 } // namespace AsynGyanis::Net
