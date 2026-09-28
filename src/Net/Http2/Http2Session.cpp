@@ -1339,6 +1339,9 @@ namespace AsynGyanis::Net
                 receivedLength = co_await transportReceive(receiveBuffer.data(), receiveBuffer.size());
             } catch (const std::exception &)
             {
+                // 传输层读失败（对端 RST、描述符被清扫协程关掉、等可写期间被关闭）：字节流已断，
+                // 按收口处理，与 HttpSession 的 h1 隧道同一口径。刻意不落逐条日志：这类失败
+                // 由对端可控，逐条打等于把日志交给远端刷
                 break;
             }
             if (receivedLength <= 0)

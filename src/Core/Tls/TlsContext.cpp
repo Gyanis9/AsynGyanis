@@ -525,8 +525,12 @@ namespace AsynGyanis::Core
             // 按与主上下文同一份策略与角色建：漏掉策略，登记的站点就会用默认档跑，
             // 主上下文挡掉的弱套件换个域名照样能谈成
             context = createHardenedContext(role, policy);
-        } catch (const CoreException &)
+        } catch (const CoreException &failure)
         {
+            // 建站点上下文失败的原因（策略参数、算法不被支持）只有这一处持有：调用方
+            // loadCertificateForHost 只能回报「这个站点没装上」。虚拟主机登记发生在
+            // 配置装载与证书续期，不在握手热路径上，逐条告警不会淹
+            LOG_ERROR_EXCEPTION(failure, "TlsContext: 建立虚拟主机上下文失败，该站点不会进登记表（原因：{}）", failure.what());
             return nullptr;
         }
 

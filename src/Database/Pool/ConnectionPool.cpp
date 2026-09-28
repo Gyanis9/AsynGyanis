@@ -594,9 +594,16 @@ namespace AsynGyanis::Database
             connection->markEstablishedAt(std::chrono::steady_clock::now());
 
             return connection;
+        } catch (const std::exception &failure)
+        {
+            // 工厂或 connect 抛异常时返回空指针。原因必须出声：调用方从 nullptr 只能知道
+            // 「拿不到连接」，而真正的原因（驱动报的鉴权失败、主机不可达、URL 写错）在这里
+            // 是唯一持有过它的地方，丢了就查不到。建连接不在请求热路径上，逐条打不会淹
+            LOG_ERROR_EXCEPTION(failure, "ConnectionPool: 创建连接失败，本次获取按「无连接可用」收场（原因：{}）", failure.what());
+            return nullptr;
         } catch (...)
         {
-            // 工厂或 connect 抛异常时返回空指针
+            LOG_ERROR("ConnectionPool: 创建连接失败（非标准异常），本次获取按「无连接可用」收场");
             return nullptr;
         }
     }
@@ -647,8 +654,15 @@ namespace AsynGyanis::Database
         try
         {
             return connection->isConnected();
+        } catch (const std::exception &failure)
+        {
+            // 各驱动的 isConnected() 按约定是纯状态查询、不该抛；真抛了说明驱动内部失序，
+            // 这里按「不可用」处理是对的，但原因必须留痕，否则下一次排查只能从头猜
+            LOG_ERROR_EXCEPTION(failure, "ConnectionPool: 探活查询抛出异常，本条连接按不可用处理（原因：{}）", failure.what());
+            return false;
         } catch (...)
         {
+            LOG_ERROR("ConnectionPool: 探活查询抛出异常（非标准异常），本条连接按不可用处理");
             return false;
         }
     }
