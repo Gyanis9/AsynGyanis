@@ -6,10 +6,6 @@
 #include "CoreTestSupport.h"
 #include "Platform/System/CpuAffinity.h"
 
-#if ASYN_WITH_IO_URING
-#include "Core/EventLoop/Uring.h"
-#endif
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -31,17 +27,18 @@ namespace AsynGyanis::Core
         constexpr const char *kNoIoUringRingReason = "本环境起不出 io_uring 环（内核禁用或被沙箱挡下），IoContext 在这一档下无从构造";
 
         /**
-         * @brief 本环境到底起不起得出 io_uring 环
-         * @details 判据取「真的建得出来」本身：内核开关为 0 不等于放行——沙箱常在 io_uring_setup
-         *          上直接回 EPERM/ENOMEM（CI runner 与本机容器两种环境都实测过），只看 /proc 那个
-         *          开关会误判成可用
-         * @return true 能建环，本文件的断言才有可判的对象
+         * @brief 本环境能不能建出「用例真正要建的那个」IoContext 后端
+         * @details 判据取实际构造本身，且形状要与用例一致：只探一个环是不够的——CI runner 上一个环给
+         *          得起、两条循环就回 ENOMEM（实测），内核开关与 /proc 那些信号都读不出这种「够用但不
+         *          够这一档」。0 表示按默认档自动定线程数，与 `IoContext{}` 同形
+         * @param threadCount 本用例要起的循环条数，0 为默认档
+         * @return true 建得出来，本用例的断言才有可判的对象
          */
-        [[nodiscard]] bool canCreateIoUringRing()
+        [[nodiscard]] bool canCreateIoUringBackend(const std::size_t threadCount)
         {
             try
             {
-                static_cast<void>(Uring{});
+                static_cast<void>(IoContext{threadCount});
                 return true;
             } catch (const std::exception &)
             {
@@ -68,7 +65,7 @@ namespace AsynGyanis::Core
     TEST(IoContext, ConstructionCreatesConfiguredThreadPool)
     {
 #if ASYN_WITH_IO_URING
-        if (!canCreateIoUringRing())
+        if (!canCreateIoUringBackend(2U))
         {
             GTEST_SKIP() << kNoIoUringRingReason;
         }
@@ -84,7 +81,7 @@ namespace AsynGyanis::Core
     TEST(IoContext, ThreadPoolAccessorReturnsConfiguredPool)
     {
 #if ASYN_WITH_IO_URING
-        if (!canCreateIoUringRing())
+        if (!canCreateIoUringBackend(2U))
         {
             GTEST_SKIP() << kNoIoUringRingReason;
         }
@@ -101,7 +98,7 @@ namespace AsynGyanis::Core
     TEST(IoContext, MainSchedulerReturnsFirstWorkerScheduler)
     {
 #if ASYN_WITH_IO_URING
-        if (!canCreateIoUringRing())
+        if (!canCreateIoUringBackend(2U))
         {
             GTEST_SKIP() << kNoIoUringRingReason;
         }
@@ -119,7 +116,7 @@ namespace AsynGyanis::Core
     TEST(IoContext, StopWithoutRunDoesNotDeadlock)
     {
 #if ASYN_WITH_IO_URING
-        if (!canCreateIoUringRing())
+        if (!canCreateIoUringBackend(1U))
         {
             GTEST_SKIP() << kNoIoUringRingReason;
         }
@@ -136,7 +133,7 @@ namespace AsynGyanis::Core
     TEST(IoContext, RunBlocksUntilStopIsRequested)
     {
 #if ASYN_WITH_IO_URING
-        if (!canCreateIoUringRing())
+        if (!canCreateIoUringBackend(1U))
         {
             GTEST_SKIP() << kNoIoUringRingReason;
         }
@@ -164,7 +161,7 @@ namespace AsynGyanis::Core
     TEST(IoContext, TaskScheduledBeforeRunExecutesAfterRun)
     {
 #if ASYN_WITH_IO_URING
-        if (!canCreateIoUringRing())
+        if (!canCreateIoUringBackend(1U))
         {
             GTEST_SKIP() << kNoIoUringRingReason;
         }
@@ -196,7 +193,7 @@ namespace AsynGyanis::Core
     TEST(IoContext, DefaultConstructorUsesPermittedCoreCount)
     {
 #if ASYN_WITH_IO_URING
-        if (!canCreateIoUringRing())
+        if (!canCreateIoUringBackend(0U))
         {
             GTEST_SKIP() << kNoIoUringRingReason;
         }
@@ -216,7 +213,7 @@ namespace AsynGyanis::Core
     TEST(IoContext, ConcurrentRunAndStopNeverLeavesARunningPool)
     {
 #if ASYN_WITH_IO_URING
-        if (!canCreateIoUringRing())
+        if (!canCreateIoUringBackend(2U))
         {
             GTEST_SKIP() << kNoIoUringRingReason;
         }
