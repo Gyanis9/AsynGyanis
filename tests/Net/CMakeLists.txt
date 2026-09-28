@@ -124,7 +124,10 @@ add_executable(TestNet
         # 证书自动化（Acme）：密钥与 JWS 的规范形态、协议状态机、续期循环与落地
         Acme/AcmeTestSupport.h
         Acme/AcmeTestSupport.cpp
+        Acme/AcmeStubAuthority.h
+        Acme/AcmeStubAuthority.cpp
         Acme/TestAcmeKeyPair.cpp
+        Acme/TestAcmeClient.cpp
 )
 
 # 压缩用例直接调用三种库的解码器做往返自检：目标由 src/Net 里 find_package 得到，

@@ -4,4 +4,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/AcmeError.cpp
         ${CMAKE_CURRENT_LIST_DIR}/AcmeKeyPair.h
         ${CMAKE_CURRENT_LIST_DIR}/AcmeKeyPair.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/AcmeClient.h
+        ${CMAKE_CURRENT_LIST_DIR}/AcmeClient.cpp
 )
