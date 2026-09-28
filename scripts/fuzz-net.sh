@@ -6,14 +6,18 @@
 # `/failifmismatch: RuntimeLibrary` 直接拒绝混链。所以这里只编「模糊内核 + 四个解码器 + 它们的
 # 真实依赖闭包」这一小组翻译单元，整份产物自洽为 /MT，不碰项目里任何一份现成库。
 # 闭包是一项一项按链接器报的未定义符号补齐的（最后一项是 HttpDate 需要的 PlatformTime::utcTime），
-# 因此这份清单本身就是「模糊目标到底依赖哪些代码」的答案。Linux 侧没有 /MT 这层约束（CI runner 自带
-# 带 fuzzer 运行时的 clang），但沿用同一份清单：两侧模糊的是同一批代码，换编译器不该换覆盖面。
+# 因此这份清单本身就是「模糊目标到底依赖哪些代码」的答案。Linux 侧没有 /MT 这层约束，但沿用同一份
+# 清单：两侧模糊的是同一批代码，换编译器不该换覆盖面。那一侧的约束换成了 clang 的版本号（libstdc++
+# 的 <expected> 要 __cpp_concepts >= 202002L，clang 19 起才给；fuzzer 运行时又只按 libstdc++ 编，
+# 换 libc++ 会在链接期炸），所以脚本按候选编译器挨个探，一个都不成时直接说出要装什么。
 #
 # 跑法：
 #   scripts/fuzz-net.sh                 # 默认 60 秒
 #   scripts/fuzz-net.sh 600             # 十分钟一轮
 #   CLANG_CL=D:/llvm/bin/clang-cl.exe scripts/fuzz-net.sh 300   # Windows 侧自己指路
-#   CXX=clang++-18 scripts/fuzz-net.sh 300                       # Linux 侧换一个 clang
+#   CXX=clang++-19 scripts/fuzz-net.sh 300                       # Linux 侧换一个 clang（要 19 以上）
+#   ASYN_FUZZ_INCLUDE_DIRS="D:/conan/p/nlohma.../p/include"  scripts/fuzz-net.sh 300
+#       # nlohmann/json 的头目录不在本仓里，Conan 环境没进 INCLUDE 时用它指路（Windows 侧尤其）
 # 额外的 libFuzzer 参数按位置透传，例如 -jobs=4 -workers=4。
 #
 # 违例（不变量被破坏、崩溃、越界写）会以 abort 收场，并把输入写成 .fuzz/artifacts/crash-*；
@@ -37,6 +41,10 @@ sources=(
     "src/Net/Quic/Codec/QuicVariableLengthInteger.cpp"
     "src/Net/Http/HttpHeaderFieldStore.cpp"
     "src/Net/Http/HttpRequest.cpp"
+    # 请求对象的两条成员函数各自落在自己的文件里：cookies() 要 HttpCookie.cpp、multipartForm()
+    # 要 MultipartForm.cpp，少哪一个都在链接期报未定义（清单本身就是按链接器的报错补齐的）
+    "src/Net/Http/HttpCookie.cpp"
+    "src/Net/Http/MultipartForm.cpp"
     "src/Net/Http/HttpDate.cpp"
     "src/Base/Exception/Exception.cpp"
     "src/Base/Exception/InvalidArgumentException.cpp"
@@ -46,18 +54,66 @@ sources=(
 )
 
 if [[ "$(uname -s)" == Linux* ]]; then
-    compiler="${CXX:-clang++}"
-    if ! command -v "${compiler}" >/dev/null 2>&1; then
-        echo "找不到 ${compiler}：Linux 侧要一份带 compiler-rt fuzzer 库的 clang（apt install clang 即可）" >&2
-        exit 1
-    fi
     objDir="${projectRoot}/.fuzz/obj"
     binary="${projectRoot}/.fuzz/netfuzz"
     artifacts="${projectRoot}/.fuzz/artifacts"
+    # 编译器与语言档要探出来，不能写死。两处都是实测出来的坑：
+    #   · std::expected：libstdc++ 的那份头文件守卫要求 __cpp_concepts >= 202002L，clang 18 把它定在
+    #     201907L，于是 clang 18 + libstdc++ 在任何 -std 下都看不见这个类型（报错落在各个头文件里，
+    #     读起来像代码坏了）；clang 19 起才满足。
+    #   · compiler-rt 的 fuzzer 运行时是按 libstdc++ 编的：想用 -stdlib=libc++ 绕开上一条，链接期会
+    #     报一串 std::__cxx11 未定义（实测），所以标准库不能换，只能换 clang 的版本。
+    # 各台机器与 runner 上默认的 clang++ 是哪一档不可预知，就按候选挨个试到「编得过也链得上」为止
+    if [[ -n "${CXX:-}" ]]; then
+        compilerCandidates=("${CXX}")
+    else
+        compilerCandidates=(clang++ clang++-21 clang++-20 clang++-19)
+    fi
+    probeSource="$(mktemp "${TMPDIR:-/tmp}/asyn-fuzz-probe-XXXXXX.cpp")"
+    probeBinary="$(mktemp "${TMPDIR:-/tmp}/asyn-fuzz-probe-XXXXXX")"
+    # 探针取 libFuzzer 的入口形状：它自己不带 main，链接阶段才真的把 runtime 拽进来验 ABI 是否同侧
+    printf '#include <cstddef>\n#include <cstdint>\n#include <expected>\n#include <stop_token>\n\nextern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *const data, const std::size_t size)\n{\n    std::expected<int, int> value{1};\n    std::stop_source          source;\n    return value.has_value() && source.stop_possible() && size > 0U && data != nullptr ? 0 : 1;\n}\n' >"${probeSource}"
+    compiler=""
+    chosenFlags=""
+    for candidateCompiler in "${compilerCandidates[@]}"; do
+        command -v "${candidateCompiler}" >/dev/null 2>&1 || continue
+        for standard in -std=c++2b -std=c++23; do
+            if "${candidateCompiler}" "${standard}" -fsanitize=fuzzer,address "${probeSource}" -o "${probeBinary}" >/dev/null 2>&1; then
+                compiler="${candidateCompiler}"
+                chosenFlags="${standard}"
+                break 2
+            fi
+        done
+    done
+    rm -f "${probeSource}" "${probeBinary}"
+    if [[ -z "${compiler}" ]]; then
+        echo "没有一档 clang 能同时给出 std::expected 与 std::stop_source 并链上 compiler-rt 的 fuzzer" >&2
+        echo "运行时，而本仓四类解码器的接口两头都靠它们。libstdc++ 的 <expected> 要求 clang 报" >&2
+        echo "__cpp_concepts >= 202002L，clang 18 及以下不满足：apt install clang-19 libfuzzer-19-dev，" >&2
+        echo "或用 CXX=<路径> 指一份 clang 19 以上的编译器" >&2
+        exit 1
+    fi
+    echo "编译器 ${compiler}，编译档 ${chosenFlags}（实测能编能链 std::expected 与 std::stop_source）"
+    # 闭包里有一处仓外头文件：HttpRequest::jsonBody() 的返回类型就是 Base::ConfigValue，而那个类型
+    # 包着 nlohmann::json。目录从 ASYN_FUZZ_INCLUDE_DIRS 给（空格分隔），Linux 侧装了
+    # nlohmann-json3-dev 就不用给（它在默认搜索路径里）。先探一次再开编：缺头文件会在第十几个
+    # 翻译单元上才报「file not found」，读起来像清单写错了
+    read -ra nlohmannIncludeDirs <<<"${ASYN_FUZZ_INCLUDE_DIRS:-}"
+    nlohmannIncludes=()
+    for includeDir in "${nlohmannIncludeDirs[@]}"; do
+        nlohmannIncludes+=("-I${includeDir}")
+    done
+    if ! printf '#include <nlohmann/json.hpp>\n\nint main()\n{\n    return 0;\n}\n' |
+        "${compiler}" "${chosenFlags}" "${nlohmannIncludes[@]}" -fsyntax-only -x c++ - >/dev/null 2>&1; then
+        echo "看不见 <nlohmann/json.hpp>，而 Base::ConfigValue 就建在它上面。Linux 侧 apt install" >&2
+        echo "nlohmann-json3-dev；否则用 ASYN_FUZZ_INCLUDE_DIRS 把它的 include 目录传进来" >&2
+        exit 1
+    fi
     # address 与 fuzzer 同时开：这批解码器的历史缺陷全是越界与释放后读，光靠 libFuzzer 自己看不出来。
-    # 帧指针留着，崩溃栈才带得出行号
-    compileFlags=(-std=c++2b -O1 -g -fno-omit-frame-pointer -fsanitize=fuzzer,address -Isrc -Itests/Net)
-    linkFlags=(-fsanitize=fuzzer,address)
+    # 帧指针留着，崩溃栈才带得出行号。编译与链接用同一个 ${chosenFlags}：标准库两侧必须同一条，
+    # 上面那次「能编也能链」的探针判的就是这一条
+    compileFlags=("${chosenFlags}" -O1 -g -fno-omit-frame-pointer -fsanitize=fuzzer,address -Isrc -Itests/Net "${nlohmannIncludes[@]}")
+    linkFlags=("${chosenFlags}" -fsanitize=fuzzer,address)
     objectSuffix="o"
 
     mkdir -p "${objDir}" "${artifacts}"
@@ -109,7 +165,15 @@ fi
 mkdir -p "${objDir}" "${artifacts}"
 
 # 以 '/' 开头的参数会被 MSYS 改写，因此每次调用都显式关掉路径转换；/MT 的理由见文件头
-compileFlags=(/std:c++latest /O1 /MT /DNDEBUG /EHsc -fsanitize=fuzzer /Isrc /Itests/Net)
+# nlohmann/json.hpp 不在本仓里（Base::ConfigValue 包着它，而 HttpRequest.cpp 用到那个类型）。
+# Windows 侧没有系统级的 include 路径可退，用 ASYN_FUZZ_INCLUDE_DIRS 把 Conan 包好的那份目录传进来，
+# 空格分隔，例如 ASYN_FUZZ_INCLUDE_DIRS="$CONAN_HOME/p/nlohmd<哈希>/p/include"
+read -ra nlohmannIncludeDirs <<<"${ASYN_FUZZ_INCLUDE_DIRS:-}"
+nlohmannIncludes=()
+for includeDir in "${nlohmannIncludeDirs[@]}"; do
+    nlohmannIncludes+=("/I${includeDir}")
+done
+compileFlags=(/std:c++latest /O1 /MT /DNDEBUG /EHsc -fsanitize=fuzzer /Isrc /Itests/Net "${nlohmannIncludes[@]}")
 objects=()
 for source in "${sources[@]}"; do
     objectName="$(basename "${source}" .cpp).obj"
