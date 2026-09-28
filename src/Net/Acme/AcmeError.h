@@ -32,6 +32,7 @@ namespace AsynGyanis::Net
         RateLimited,          ///< 429 或带 Retry-After 的 503：该退避而不是改配置
         ChallengeNotAnswered, ///< 让机构去取自证挑战时本地没能应答（多半是路由没注册或端口不可达）
         FileSystem,           ///< 证书、私钥或账户状态落盘失败
+        ReloadRejected,       ///< 新证书已落到磁盘，但把它装回服务的这一步失败了
     };
 
     /**

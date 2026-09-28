@@ -128,6 +128,7 @@ add_executable(TestNet
         Acme/AcmeStubAuthority.cpp
         Acme/TestAcmeKeyPair.cpp
         Acme/TestAcmeClient.cpp
+        Acme/TestAcmeCertificateManager.cpp
 )
 
 # 压缩用例直接调用三种库的解码器做往返自检：目标由 src/Net 里 find_package 得到，

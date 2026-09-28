@@ -6,4 +6,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/AcmeKeyPair.cpp
         ${CMAKE_CURRENT_LIST_DIR}/AcmeClient.h
         ${CMAKE_CURRENT_LIST_DIR}/AcmeClient.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/AcmeHttp01ChallengeStore.h
+        ${CMAKE_CURRENT_LIST_DIR}/AcmeHttp01ChallengeStore.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/AcmeCertificateManager.h
+        ${CMAKE_CURRENT_LIST_DIR}/AcmeCertificateManager.cpp
 )

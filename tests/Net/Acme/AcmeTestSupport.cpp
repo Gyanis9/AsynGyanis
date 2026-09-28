@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <ctime>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -111,19 +110,6 @@ namespace AsynGyanis::Net::TestSupport
 
         /// ES256 的 R 与 S 各自的定长字节数（与实现侧同一个数，这里独立写一遍：切法是 JWA 的规定）
         constexpr std::size_t kSignatureIntegerLength = 32U;
-
-        /**
-         * @brief 把 tm 按 UTC 折成秒
-         * @details 两侧的函数名不同（MSVC 是 _mkgmtime），证书到期时刻的比对要的却是同一个数
-         */
-        [[nodiscard]] long long toUtcSeconds(struct tm &broken) noexcept
-        {
-#ifdef _WIN32
-            return static_cast<long long>(_mkgmtime(&broken));
-#else
-            return static_cast<long long>(timegm(&broken));
-#endif
-        }
 
         /**
          * @brief 把 JWA 的裸 R‖S 签名段组回 OpenSSL 认的 DER 序列
@@ -296,38 +282,6 @@ namespace AsynGyanis::Net::TestSupport
     {
         std::ofstream stream(path, std::ios::binary | std::ios::trunc);
         stream.write(text.data(), static_cast<std::streamsize>(text.size()));
-    }
-
-    bool readCertificateValidityWindow(const std::filesystem::path &path, long long &notBeforeSeconds, long long &notAfterSeconds)
-    {
-        std::ifstream stream(path, std::ios::binary);
-        if (!stream.is_open())
-        {
-            return false;
-        }
-        const std::string contents((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-
-        const std::unique_ptr<BIO, BioDeleter> memory(BIO_new_mem_buf(contents.data(), static_cast<int>(contents.size())));
-        if (!memory)
-        {
-            return false;
-        }
-        // 读第一张：链文件里首张就是本机叶证书（与 TlsContext 的读法同一口径）
-        const std::unique_ptr<X509, CertificateDeleter> certificate(PEM_read_bio_X509(memory.get(), nullptr, nullptr, nullptr));
-        if (!certificate)
-        {
-            return false;
-        }
-
-        struct tm notBeforeTime{};
-        struct tm notAfterTime{};
-        if (ASN1_TIME_to_tm(X509_get0_notBefore(certificate.get()), &notBeforeTime) != 1 || ASN1_TIME_to_tm(X509_get0_notAfter(certificate.get()), &notAfterTime) != 1)
-        {
-            return false;
-        }
-        notBeforeSeconds = toUtcSeconds(notBeforeTime);
-        notAfterSeconds  = toUtcSeconds(notAfterTime);
-        return true;
     }
 
     void X509Deleter::operator()(X509 *certificate) const noexcept

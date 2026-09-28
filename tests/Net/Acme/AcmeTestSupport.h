@@ -126,12 +126,4 @@ namespace AsynGyanis::Net::TestSupport
      */
     void writeTextFile(const std::filesystem::path &path, std::string_view text);
 
-    /**
-     * @brief 读出 PEM 证书并取它的不早于/不晚于时刻（Unix 秒）
-     * @param path PEM 证书链文件路径（读第一张，即叶证书）
-     * @param[out] notBeforeSeconds 生效时刻；读不出来时不写
-     * @param[out] notAfterSeconds 到期时刻；读不出来时不写
-     * @return true 文件可读且第一张是合法 X509
-     */
-    bool readCertificateValidityWindow(const std::filesystem::path &path, long long &notBeforeSeconds, long long &notAfterSeconds);
 } // namespace AsynGyanis::Net::TestSupport
