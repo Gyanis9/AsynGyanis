@@ -601,7 +601,9 @@ namespace AsynGyanis::Database
         const char        *rawMessage  = mysql_error(m_mysqlHandle);
 
         // 带上错误码：只留一句中文 + 服务端英文原文时，排查 1045 / CR_* 之类问题仍需原始数字
-        m_lastError = composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber);
+        // 文本与码成对写入，见 ErrorRecord
+        m_lastError.assignNative(composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber),
+                                 static_cast<std::int64_t>(errorNumber));
     }
 
     void MySqlConnection::captureStatementError(MYSQL_STMT *const statement, const std::string_view description)
@@ -619,7 +621,10 @@ namespace AsynGyanis::Database
         const char        *rawMessage  = mysql_stmt_error(statement);
 
         // 文本同样必须先拷贝再让调用方关闭语句：mysql_stmt_close 会释放该缓冲
-        m_lastError = composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber);
+        // 成对写入：这条码来自**语句**句柄，与下面这句文本讲的是同一次失败；调用方据此
+        // 才能判「1213 死锁可重试 / 1062 唯一键冲突不可重试」，而不是去匹配中文
+        m_lastError.assignNative(composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber),
+                                 static_cast<std::int64_t>(errorNumber));
     }
 
     MYSQL_STMT *MySqlConnection::findCachedStatement(const std::string_view statementText) noexcept

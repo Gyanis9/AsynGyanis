@@ -13,6 +13,7 @@
 #include "Database/Common/DatabaseType.h"
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -31,6 +32,101 @@ namespace AsynGyanis::Database
     class DatabaseConnection
     {
     public:
+        /**
+         * @brief 一次失败的记录：中文文本 + 与之配对的驱动原生错误码
+         *
+         * @details 驱动一直把原生码拼在文本末尾（见 composeNativeErrorText），于是调用方要判
+         *          「这条语句该不该重试」就只能去匹配中文——而 QueryExecutionException 拆成独立
+         *          类型的全部理由就是重试语义不同。这里把码单独存一份，并用一条规则防住最容易
+         *          犯的错：**任何只写文本的赋值与 clear() 都会把码重置为「未知」**，因此码永远不会
+         *          配到上一条错误的文本上（各驱动的失败路径里既有带码的 capture*，也有只写文本的
+         *          分支，混用是常态而不是边角情况）。
+         * @note 之所以不在读取时现取句柄的错误码：MySQL 的语句错误挂在**语句**句柄上，连接级
+         *       mysql_errno 此刻读到的可能还是上一条命令的码——该驱动自己的注释就写着这条。
+         */
+        class ErrorRecord
+        {
+        public:
+            /// 驱动没有给出可与本条文本对应的错误码时的取值
+            static constexpr std::int64_t kUnknownNativeCode = -1;
+
+            /**
+             * @brief 只写文本：把原生码一并重置为「未知」
+             * @param text 中文错误文本
+             * @return ErrorRecord& 自身引用
+             */
+            ErrorRecord &operator=(std::string text) noexcept
+            {
+                m_text       = std::move(text);
+                m_nativeCode = kUnknownNativeCode;
+                return *this;
+            }
+
+            /**
+             * @brief 在既有文本尾部追加一段说明，原生码**保持**不变
+             * @details 追加句是对同一次失败的补充说明（例如「只读语句时限未能下发」），
+             *          换掉码反而会让它配到别的文本上去
+             * @param extra 追加的文本
+             * @return ErrorRecord& 自身引用
+             */
+            ErrorRecord &operator+=(std::string_view extra)
+            {
+                m_text.append(extra);
+                return *this;
+            }
+
+            /**
+             * @brief 记录一次带驱动原生码的失败：文本与码成对写入
+             * @param text 中文错误文本
+             * @param nativeCode 驱动给出的原生错误码
+             */
+            void assignNative(std::string text, std::int64_t nativeCode) noexcept
+            {
+                m_text       = std::move(text);
+                m_nativeCode = nativeCode;
+            }
+
+            /**
+             * @brief 清空文本，并把原生码重置为「未知」
+             */
+            void clear() noexcept
+            {
+                m_text.clear();
+                m_nativeCode = kUnknownNativeCode;
+            }
+
+            /**
+             * @brief 是否还没有记录任何错误文本
+             * @return true 文本为空（此时原生码同为「未知」）
+             */
+            [[nodiscard]] bool empty() const noexcept
+            {
+                return m_text.empty();
+            }
+
+            /**
+             * @brief 取错误文本
+             * @return const std::string& 中文错误文本，无错误时为空串
+             */
+            [[nodiscard]] const std::string &text() const noexcept
+            {
+                return m_text;
+            }
+
+            /**
+             * @brief 取与本条文本配对的驱动原生码
+             * @return std::int64_t 原生码；驱动未给码时为 kUnknownNativeCode
+             */
+            [[nodiscard]] std::int64_t nativeCode() const noexcept
+            {
+                return m_nativeCode;
+            }
+
+        private:
+            std::string  m_text{};                             ///< 中文错误文本
+            std::int64_t m_nativeCode{kUnknownNativeCode};     ///< 与 m_text 配对的原生码
+        };
+
         /**
          * @brief 默认构造函数
          */
@@ -147,7 +243,20 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] virtual std::string lastError() const
         {
-            return m_lastError;
+            return m_lastError.text();
+        }
+
+        /**
+         * @brief 取最近一次失败的驱动原生错误码
+         * @details 与 lastError() 出自同一条记录，因此这个码一定对应那句文本：只写文本的
+         *          赋值会把码重置为 -1（见 ErrorRecord）。有了它，调用方才能按「该不该重试」
+         *          分支——MySQL 的 1213 死锁与 1062 唯一键冲突在文本上都是「执行失败」，
+         *          处置却相反。
+         * @return std::int64_t 驱动原生码；驱动未给码或本条文本没带码时为 -1
+         */
+        [[nodiscard]] std::int64_t lastNativeErrorCode() const noexcept
+        {
+            return m_lastError.nativeCode();
         }
 
         /**
@@ -213,7 +322,7 @@ namespace AsynGyanis::Database
         }
 
         ConnectionConfig                      m_configuration;                                     ///< 连接配置
-        std::string                           m_lastError;                                         ///< 最后一次错误信息
+        ErrorRecord                           m_lastError;                                         ///< 最后一次失败：文本与配对的驱动原生码
         int                                   m_connectTimeout = 5000;                             ///< 连接超时毫秒数
         int                                   m_queryTimeout   = 30000;                            ///< 单条命令执行超时毫秒数
         bool                                  m_isConnected    = false;                            ///< 连接状态，由派生类同步维护

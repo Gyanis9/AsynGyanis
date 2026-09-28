@@ -11,6 +11,7 @@
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
+#include "Database/Common/QueryExecutionException.h"
 #include "Database/Sqlite/SqliteConnection.h"
 #include "DatabaseTestSupport.h"
 
@@ -1178,6 +1179,39 @@ namespace AsynGyanis::Database
         const std::unique_ptr<DatabaseResult> missingUpdate = connection.execute("UPDATE keep SET name = ? WHERE id = ?", std::span<const DatabaseValue>(missingParameters));
         ASSERT_NE(missingUpdate, nullptr) << connection.lastError();
         EXPECT_EQ(missingUpdate->affectedRowCount(), 0);
+    }
+
+    /**
+     * @brief 驱动原生码与错误文本必须成对可取，而只写文本的失败路径要把码清回未知
+     * @details 有了配对的码，调用方才不必去匹配中文判「该不该重试」——QueryExecutionException
+     *          拆成独立类型的全部理由就是重试语义不同。反过来的坑更要紧：上一条的原生码
+     *          若留着不清，就会配到下一条完全不同的文本上，「可重试」于是变成重放一条
+     *          注定失败的语句。
+     */
+    TEST(SqliteConnection, NativeErrorCodePairsWithLastErrorAndResetsOnPlainTextWrites)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect());
+
+        // 表不存在：SQLITE_ERROR(1)，文本与码讲的是同一次失败
+        EXPECT_EQ(connection.execute("SELECT * FROM 这张表不存在"), nullptr) << "查询本应失败";
+        EXPECT_EQ(connection.lastNativeErrorCode(), 1) << "原生码没跟上当前的错误文本";
+        EXPECT_FALSE(QueryExecutionException(connection.lastError(), connection.lastNativeErrorCode()).isRetryable());
+
+        // 约束冲突：主码 SQLITE_CONSTRAINT(19)（启用扩展结果码时是 2067，按主码判两者都落 19）
+        ASSERT_NE(connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY UNIQUE)"), nullptr);
+        ASSERT_NE(connection.execute("INSERT INTO t (id) VALUES (1)"), nullptr);
+        EXPECT_EQ(connection.execute("INSERT INTO t (id) VALUES (1)"), nullptr) << "重复的 UNIQUE 值本应被拒";
+        EXPECT_EQ(connection.lastNativeErrorCode() & 0xFF, 19) << "约束冲突的主码应是 19";
+        EXPECT_FALSE(QueryExecutionException(connection.lastError(), connection.lastNativeErrorCode()).isRetryable())
+                << "重插同一个唯一值，重试一万次也不会变好";
+
+        // 未连接时的拒绝走的是「只写文本」那条分支：上一条的原生码必须被清掉
+        connection.disconnect();
+        EXPECT_EQ(connection.execute("SELECT 1"), nullptr);
+        EXPECT_FALSE(connection.lastError().empty()) << "未连接应给出可读原因";
+        EXPECT_EQ(connection.lastNativeErrorCode(), DatabaseConnection::ErrorRecord::kUnknownNativeCode)
+                << "只写文本的失败路径没清掉上一条的原生码：码与文本就不再配对了";
     }
 
 } // namespace AsynGyanis::Database

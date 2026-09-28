@@ -626,7 +626,10 @@ namespace AsynGyanis::Database
         const char *rawMessage = (m_database != nullptr) ? sqlite3_errmsg(m_database) : sqlite3_errstr(errorCode);
 
         // errmsg 可能给出空串，errstr 只需错误码且恒有文案，作为兜底
-        m_lastError = composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", sqlite3_errstr(errorCode), errorCode);
+        // 文本与码成对写入（见 ErrorRecord）：5=SQLITE_BUSY、6=SQLITE_LOCKED 这类是可重试的，
+        // 而 1=SQLITE_ERROR（语法/表不存在）重试无用，调用方要能分开这两种
+        m_lastError.assignNative(composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", sqlite3_errstr(errorCode), errorCode),
+                                 static_cast<std::int64_t>(errorCode));
     }
 
     void SqliteConnection::applyStartupPragma(const std::string_view pragmaText, const std::string_view description)

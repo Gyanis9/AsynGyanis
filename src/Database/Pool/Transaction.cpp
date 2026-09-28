@@ -30,7 +30,9 @@ namespace AsynGyanis::Database
         // 实际没有事务」的对象，会让后续每一条语句都静默运行在自动提交模式下
         if (!executeControlStatement(m_dialect->beginTransactionStatement()))
         {
-            throw QueryExecutionException(m_lastError);
+            // 带上连接的原生码：m_lastError 这段文本正是从这条连接抄来的（见
+            // executeControlStatement），因此两者的配对关系成立
+            throw QueryExecutionException(m_lastError, m_connection->lastNativeErrorCode());
         }
 
         // 走到这里数据库确实进入了事务，标记为活动；析构时会据此决定是否回滚

@@ -981,7 +981,9 @@ namespace AsynGyanis::Database::Queryable
             const std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{sql}, parameters);
             if (result == nullptr)
             {
-                throw QueryExecutionException("Queryable: 查询执行失败：" + connection.lastError());
+                // 带上驱动原生码：死锁/锁等待与约束冲突在文本上都是「执行失败」，
+                // 而重试语义相反，调用方需要能分开判（见 QueryExecutionException::isRetryable）
+                throw QueryExecutionException("Queryable: 查询执行失败：" + connection.lastError(), connection.lastNativeErrorCode());
             }
 
             return mapResultRows<T>(*result);
@@ -1009,7 +1011,9 @@ namespace AsynGyanis::Database::Queryable
             const std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{sql}, parameters);
             if (result == nullptr)
             {
-                throw QueryExecutionException("Queryable: 查询执行失败：" + connection.lastError());
+                // 带上驱动原生码：死锁/锁等待与约束冲突在文本上都是「执行失败」，
+                // 而重试语义相反，调用方需要能分开判（见 QueryExecutionException::isRetryable）
+                throw QueryExecutionException("Queryable: 查询执行失败：" + connection.lastError(), connection.lastNativeErrorCode());
             }
 
             // mapResultRow 的契约要求游标已停在有效行上；0 行是「没有匹配」而不是映射失败
@@ -1036,7 +1040,7 @@ namespace AsynGyanis::Database::Queryable
             const std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{sql}, parameters);
             if (result == nullptr)
             {
-                throw QueryExecutionException("Queryable: 统计行数失败：" + connection.lastError());
+                throw QueryExecutionException("Queryable: 统计行数失败：" + connection.lastError(), connection.lastNativeErrorCode());
             }
 
             // COUNT(*) 恒返回一行一列；游标推进失败说明语句没有产出任何行，按 0 计
@@ -1102,7 +1106,7 @@ namespace AsynGyanis::Database::Queryable
             std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{statement.sql}, statement.parameters);
             if (result == nullptr)
             {
-                throw QueryExecutionException("Queryable: 语句执行失败：" + connection.lastError());
+                throw QueryExecutionException("Queryable: 语句执行失败：" + connection.lastError(), connection.lastNativeErrorCode());
             }
             return result;
         }

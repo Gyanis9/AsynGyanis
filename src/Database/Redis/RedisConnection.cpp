@@ -410,7 +410,10 @@ namespace AsynGyanis::Database
             {
                 // executeArguments 已把服务端原文或传输层原因写进 m_lastError，
                 // 这里只补一句上下文，说明失败发生在连接初始化阶段
-                m_lastError = "选择 Redis 键空间 " + keySpaceText + " 失败：" + m_lastError;
+                // 取 .text() 拼一份新文本再赋回：这条重新赋值会把原生码清成「未知」，
+                // 而 Redis 一侧没有按码分支的调用方（Redis 的失败不走 QueryExecutionException），
+                // 因此宁可标为未知，也不让上一条的码配到这句加了前缀的文本上
+                m_lastError = "选择 Redis 键空间 " + keySpaceText + " 失败：" + m_lastError.text();
                 disconnect();
                 return false;
             }

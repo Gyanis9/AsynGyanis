@@ -134,4 +134,54 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(exception.location().file_name(), throwSite.file_name());
     }
 
+    /**
+     * @brief 原生码进出一致；不带码的旧签名退化为「未知」
+     * @details 旧签名必须继续可用且把码标成未知——那 6 处既有抛出点与它们的断言都不该被改动。
+     */
+    TEST(QueryExecutionNativeCode, NativeCodeRoundTripsAndDefaultsToUnknown)
+    {
+        const QueryExecutionException withCode("语句被拒", 1213);
+        EXPECT_EQ(withCode.nativeErrorCode(), 1213);
+
+        const QueryExecutionException withoutCode("语句被拒");
+        EXPECT_EQ(withoutCode.nativeErrorCode(), QueryExecutionException::kUnknownNativeErrorCode)
+                << "旧签名的码必须显式标为未知，不能留 0——0 在两个驱动里都是「成功」的意思";
+    }
+
+    /**
+     * @brief 可重试判定表：只收「服务端明确让这条语句重来」的冲突类
+     * @details 判错的代价不对称：少重试一次只是一趟往返，多重试一条注定的失败写语句则是二次写入，
+     *          因此默认答案是 false，表里只列白名单。
+     */
+    TEST(QueryExecutionNativeCode, RetryabilityWhitelist)
+    {
+        // MySQL ER_LOCK_WAIT_TIMEOUT(1205) / ER_LOCK_DEADLOCK(1213)；SQLite BUSY(5) / LOCKED(6)
+        for (const std::int64_t retryableCode: {1205LL, 1213LL, 5LL, 6LL})
+        {
+            const QueryExecutionException exception("语句被拒", retryableCode);
+            EXPECT_TRUE(exception.isRetryable()) << "码 " << retryableCode << " 应判可重试";
+        }
+
+        // 约束冲突（MySQL 1062 / SQLite 19）、语法与对象不存在（SQLite 1）、权限不足（MySQL 1142）、
+        // 连接类（2002/2003/2005）、超时打断（MySQL 3024 / SQLite 9 INTERRUPT）、
+        // 连接中断（2006/2013，语句可能已在服务端生效，跨连接重放不是本函数能替调用方拍的）
+        for (const std::int64_t nonRetryableCode: {1062LL, 19LL, 1LL, 1142LL, 2002LL, 2003LL, 2005LL, 3024LL, 9LL, 2006LL, 2013LL})
+        {
+            const QueryExecutionException exception("语句被拒", nonRetryableCode);
+            EXPECT_FALSE(exception.isRetryable()) << "码 " << nonRetryableCode << " 不该判可重试";
+        }
+
+        EXPECT_FALSE(QueryExecutionException("语句被拒").isRetryable()) << "码未知时必须判不可重试";
+    }
+
+    /**
+     * @brief 码不改变消息文本：既有断言的比对对象仍是原文
+     */
+    TEST(QueryExecutionNativeCode, NativeCodeDoesNotAlterMessageText)
+    {
+        const QueryExecutionException withCode("Queryable: 语句执行失败：死锁", 1213);
+        EXPECT_NE(std::string(withCode.what()).find("Queryable: 语句执行失败：死锁"), std::string::npos)
+                << "带上原生码不得改写消息文本——那是三条链共用的对外契约";
+    }
+
 } // namespace AsynGyanis::Database
