@@ -15,7 +15,6 @@
 #include "Platform/System/PlatformError.h"
 
 #include <algorithm>
-#include <cstring>
 #include <expected>
 #include <memory>
 #include <string>
@@ -179,20 +178,16 @@ namespace AsynGyanis::Net
 
     Core::Task<> QuicServer::listen(Core::InetAddress localAddress)
     {
-        Platform::SocketAddress localSocketAddress;
-        localSocketAddress.length = localAddress.nativeAddressLength();
-        std::memcpy(&localSocketAddress.storage, localAddress.nativeAddress(), localAddress.nativeAddressLength());
-
-        m_datagramSocket = Platform::DatagramSocket::bindTo(localSocketAddress);
+        m_datagramSocket = Platform::DatagramSocket::bindTo(localAddress.platformAddress());
         if (!m_datagramSocket.isValid())
         {
             throw Base::SystemException("QUIC 服务端启动失败：UDP 端口绑定失败（套接字错误码 " + std::to_string(Platform::PlatformError::lastSocketErrorCode()) + "）");
         }
 
         const Platform::SocketAddress boundAddress = m_datagramSocket.localAddress();
-        sockaddr_in                   boundAddressV4{};
-        std::memcpy(&boundAddressV4, &boundAddress.storage, sizeof(boundAddressV4));
-        const std::uint16_t boundPort = ntohs(boundAddressV4.sin_port);
+        // 端口从绑定后的地址里取：按 sockaddr_in 硬读只认得 IPv4 那种布局，而地址族跟着调用方给的
+        // 地址走，IPv6 监听要按 sockaddr_in6 读
+        const std::uint16_t boundPort = Core::InetAddress(boundAddress.storage, boundAddress.length).port();
 
         // 建连接时要拿本端地址写进回包，必须用**绑定后**的地址（端口给 0 时只有内核知道
         // 实际端口）。漏掉这一步日志与诊断里看到的就是一条全零地址

@@ -11,8 +11,6 @@
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
 
-#include <cstring>
-#include <utility>
 #include <utility>
 
 namespace AsynGyanis::Net
@@ -33,19 +31,6 @@ namespace AsynGyanis::Net
             bindAddress.storage.ss_family = serverAddress.storage.ss_family;
             bindAddress.length            = serverAddress.storage.ss_family == AF_INET ? static_cast<socklen_t>(sizeof(sockaddr_in)) : static_cast<socklen_t>(sizeof(sockaddr_in6));
             return bindAddress;
-        }
-
-        /**
-         * @brief 把框架的地址换成平台层的数据报地址
-         * @param address 框架地址（`InetAddress::resolve` 的产出）
-         * @return Platform::SocketAddress 直接可交给 `asyncSendTo` 的形状
-         */
-        Platform::SocketAddress toPlatformAddress(const Core::InetAddress &address)
-        {
-            Platform::SocketAddress platformAddress{};
-            platformAddress.length = address.nativeAddressLength();
-            std::memcpy(&platformAddress.storage, address.nativeAddress(), address.nativeAddressLength());
-            return platformAddress;
         }
     } // namespace
 
@@ -78,7 +63,7 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> QuicClientConnection::connect(const Core::InetAddress &serverAddress)
     {
-        const Platform::SocketAddress destination = toPlatformAddress(serverAddress);
+        const Platform::SocketAddress destination = serverAddress.platformAddress();
         m_serverAddress                           = destination;
 
         Platform::DatagramSocket datagramSocket = Platform::DatagramSocket::bindTo(makeEphemeralBindAddress(destination));
