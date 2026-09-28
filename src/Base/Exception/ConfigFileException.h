@@ -20,6 +20,10 @@ namespace AsynGyanis::Base
      * @brief 配置文件读写失败异常
      *
      * @details 用于文件不存在、无权限、无法打开等 IO 层面的配置错误。
+     * @note 本仓库自身的配置加载路径**不走这个类型**：那一条把错误汇进
+     *       ConfigLoadResult::errors（见 ConfigManager::loadConfigFile）。本类是留给
+     *       调用方按异常形状处理配置 IO 错误的公开出口，不是内部通道的残留，
+     *       因此「src 里没人抛」不等于可以删——删它是砍公开 API。
      */
     class ConfigFileException : public ConfigException
     {

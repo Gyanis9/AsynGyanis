@@ -21,6 +21,8 @@ namespace AsynGyanis::Base
      *
      * @details 文件可打开但内容不符合 YAML/JSON 语法时抛出，
      *          与 ConfigFileException（IO 层失败）区分开。
+     * @note 同 ConfigFileException：本仓库的配置加载把这类错误汇进
+     *       ConfigLoadResult::errors，本类型是给调用方按异常形状处理的公开出口。
      */
     class ConfigParseException : public ConfigException
     {

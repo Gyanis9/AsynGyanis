@@ -684,6 +684,11 @@ namespace AsynGyanis::Base
          * @brief 读取或转换配置文档时的失败（嵌套超限、不支持的标签、数值越界等）
          * @details 只在本翻译单元内抛出并被 loadConfigFile 捕获后转成中文错误文案，
          *          模块对外从不暴露该类型，因此刻意不并入 Base 的异常层次。
+         * @note 本文件里那两处裸 `throw std::runtime_error`（含点号的键、空键段）是同一条通道：
+         *       它们同样只走到 loadConfigFile 的 `catch (const std::runtime_error &)` 就被折进
+         *       ConfigLoadResult::errors，从不交给调用方。把它们换成 Base:: 家族反而会改坏文案——
+         *       框架异常的 what() 自带「[异常] … [文件:行 in 函数]」包装，那层包装会被当作
+         *       「解析原因」拼进 errors。对外抛的那批（ConfigValidationException 等）才走框架层次。
          */
         class DocumentConversionException : public std::runtime_error
         {

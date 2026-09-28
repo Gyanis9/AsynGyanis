@@ -1,4 +1,5 @@
 #include "Base/Log/Sinks/FileSink.h"
+#include "Base/Exception/SystemException.h"
 #include "Platform/FileSystem/FileSystem.h"
 #include "Platform/Platform.h"
 
@@ -100,7 +101,12 @@ namespace AsynGyanis::Base
         {
             // 路径按 UTF-8 拼进异常文本：`path::string()` 走本地代码页，代码页外的字符会直接抛出，
             // 那时逃出去的是「无法转码」而不是真正的打开失败，定位信息反而丢了
-            throw std::runtime_error("无法打开日志文件：" + AsynGyanis::Platform::FileSystem::utf8FromPath(m_filePath) + directoryError);
+            //
+            // 取框架的 SystemException 而不是裸 std::runtime_error：这是一条会交给调用方的构造期
+            // 失败，而框架对外承诺「一句 catch (const Base::Exception &) 兜住所有运行期错误」——
+            // 裸 std::runtime_error 恰好从那个捕获面上漏出去。errno 由失败的 ofstream::open 置好，
+            // 正是本类「无法显式取得错误码的 CRT/文件类调用」那条通道的适用场景
+            throw Base::SystemException("无法打开日志文件：" + AsynGyanis::Platform::FileSystem::utf8FromPath(m_filePath) + directoryError);
         }
     }
 

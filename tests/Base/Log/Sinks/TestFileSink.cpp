@@ -2,6 +2,8 @@
 
 #include "Base/Log/Sinks/FileSink.h"
 
+#include "Base/Exception/Exception.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -164,6 +166,34 @@ namespace AsynGyanis::Base
             EXPECT_NE(message.find("无法打开日志文件"), std::string::npos) << message;
             EXPECT_NE(message.find("创建目录失败"), std::string::npos) << message;
         }
+    }
+
+    /**
+     * @brief 打开日志文件失败的构造期异常，必须落在框架的统一捕获面上
+     * @details 框架对外的承诺是「一句 catch (const Base::Exception &) 兜住所有运行期错误」。
+     *          这一处此前抛的是裸 std::runtime_error：它是 std::exception 家族的一员，
+     *          因而恰好从那个捕获面上漏出去——调用方按承诺写的一句 catch 接不到，
+     *          退化成一串必须逐个写出来的 std:: 捕获。本用例钉的就是那句 catch。
+     */
+    TEST(FileSink, OpenFailureIsCatchableAsFrameworkException)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileSink_FrameworkCatch");
+        ASSERT_TRUE(temporaryDirectory.writeFile("blocker", "not a directory"));
+
+        bool caughtAsFrameworkException = false;
+        try
+        {
+            FileSink sink(temporaryDirectory.path() / "blocker" / "app.log");
+            FAIL() << "父目录被普通文件占住时构造必须失败";
+        } catch (const AsynGyanis::Base::Exception &)
+        {
+            caughtAsFrameworkException = true;
+        } catch (const std::exception &)
+        {
+            FAIL() << "抛的是框架层次之外的异常，catch (const Base::Exception &) 接不住";
+        }
+
+        EXPECT_TRUE(caughtAsFrameworkException);
     }
 
     TEST(FileSink, Utf8FileNameIsAccepted)

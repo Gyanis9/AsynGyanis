@@ -22,6 +22,9 @@ namespace AsynGyanis::Base
      *
      * @details 在系统异常之上附加远端地址，用于 connect/send/recv 等
      *          需要区分对端的场景。
+     * @note 本仓库的 socket 路径目前统一抛 Base::SystemException（远端地址由调用方
+     *       拼进 context），本类型没有内部抛出点；它是 v1.x 起就导出的公开类型，
+     *       删除属于砍 API，故保留并在此说明其定位。
      */
     class NetworkException : public SystemException
     {
