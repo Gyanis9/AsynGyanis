@@ -188,12 +188,16 @@ jobs:
             ccache-${{ runner.os }}-conformance-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-
             ccache-${{ runner.os }}-
 
-      # websockets 与 Conan 同放一个 venv：ubuntu-latest 的系统 pip 受 PEP 668 限制不能直接装包
-      - name: 安装 Conan 与独立 WebSocket 实现
+      # websockets 与 Conan 同放一个 venv：ubuntu-latest 的系统 pip 受 PEP 668 限制不能直接装包。
+      # ccache 必须在这里装上：下面配置传了 COMPILER_LAUNCHER=ccache，CMake 不校验它存不存在，
+      # 缺了就变成每条编译命令 /bin/sh: ccache: not found（构建以 127 退出，整条裁判链跑不起来）
+      - name: 安装 Conan、ccache 与独立 WebSocket 实现
         run: |
           python3 -m venv "$HOME/conan-venv"
           "$HOME/conan-venv/bin/pip" install "conan>=2.25" websockets
           echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y ccache
 
       - name: 探测 Conan profile
         run: conan profile detect --force
@@ -620,8 +624,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # runner 镜像自带带 compiler-rt fuzzer 运行时的 clang：这里不再 apt 装东西，
-      # 免得这条作业的红来自装包失败而不是解码器有问题
+      # runner 默认的 clang++ 是 18 档，而 libstdc++ 的 <expected> 守卫要求 __cpp_concepts >=
+      # 202002L —— clang 19 起才满足（实测 18 在任何 -std 下都看不见 std::expected，报错落在各个
+      # 头文件里）。fuzzer 运行时是按 libstdc++ 编的，换 libc++ 会在链接期报一串 std::__cxx11 未定义，
+      # 所以这里装的是 clang-19 加它自己那份 fuzzer 运行时。nlohmann-json3-dev 是闭包里那处仓外
+      # 头文件（Base::ConfigValue 包着它）。装包失败也会让这条作业红，但那是「拿不到裁判」，
+      # 与「解码器有问题」同样需要被人看见
+      - name: 装 clang-19 与它的 fuzzer 运行时（外加 nlohmann-json）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-19 libfuzzer-19-dev nlohmann-json3-dev
+
       - name: 模糊四类协议解码器（300 秒）
         run: bash scripts/fuzz-net.sh 300 -error_exitcode=1 -workers=2 -jobs=2
 
