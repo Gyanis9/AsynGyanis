@@ -1,0 +1,73 @@
+{
+  "说明": "第三方依赖的安全公告台账。conandata.yml 是「装哪个版本」，本文件是「这个依赖的公告在哪、我们核对到哪一步」。",
+  "核对口径": "pinnedVersion 必须与 conandata.yml 一致（漂移即红，说明升级没走复核）；每条依赖必须有 advisories 入口，否则新增依赖绕过了登记。公告正文由人读，脚本只保证「入口在、版本对、链接没死」，不假装能自动判定有没有命中 CVE。",
+  "dependencies": {
+    "openssl": {
+      "upstream": "OpenSSL",
+      "pinnedVersion": "3.6.2",
+      "advisories": ["https://openssl-library.org/news/secadv/"],
+      "备注": "TLS 与 QUIC 的密钥编排都走它；本仓库另有一层自研 QUIC 栈，OpenSSL 出问题时要同时核对我们的扩展名/回调用法。"
+    },
+    "zlib": {
+      "upstream": "zlib",
+      "pinnedVersion": "1.3.1",
+      "advisories": ["https://github.com/madler/zlib/security/advisories"],
+      "备注": "gzip 编解码在 HTTP 压缩路径上被远程输入直接驱动。"
+    },
+    "zstd": {
+      "upstream": "zstd",
+      "pinnedVersion": "1.5.7",
+      "advisories": ["https://github.com/facebook/zstd/security/advisories"],
+      "备注": "Accept-Encoding 带 zstd 时解码入口直接吃对端字节。"
+    },
+    "brotli": {
+      "upstream": "brotli",
+      "pinnedVersion": "1.1.0",
+      "advisories": ["https://github.com/google/brotli/security/advisories"],
+      "备注": "同上；Brotli quality 参数由我们固定，不受对端控制。"
+    },
+    "sqlite3": {
+      "upstream": "SQLite",
+      "pinnedVersion": "3.51.3",
+      "advisories": ["https://www.sqlite.org/sqlevs.html"],
+      "备注": "SQL 全部由方言层加引号/参数化生成；ORM 侧的标识符渲染缺陷另按本仓库的缺陷流程处理。"
+    },
+    "hiredis": {
+      "upstream": "hiredis",
+      "pinnedVersion": "1.3.0",
+      "advisories": ["https://github.com/redis/hiredis/security/advisories"],
+      "备注": "回复解析吃 Redis 服务端字节；订阅与会话状态由本仓库自己实现。"
+    },
+    "libmysqlclient": {
+      "upstream": "MySQL Connector/C",
+      "pinnedVersion": "8.1.0",
+      "advisories": ["https://dev.mysql.com/doc/relnotes/c/connector-c/en/"],
+      "备注": "Oracle 的安全公告随 CPU 补丁发布，入口是版本说明页而非 GHSA。"
+    },
+    "nlohmann_json": {
+      "upstream": "JSON for Modern C++",
+      "pinnedVersion": "3.12.0",
+      "advisories": ["https://github.com/nlohmann/json/security/advisories"],
+      "备注": "配置与 OTLP 请求体的解析；入站 JSON 由中间件层限长后再交它。"
+    },
+    "yaml-cpp": {
+      "upstream": "yaml-cpp",
+      "pinnedVersion": "0.9.0",
+      "advisories": ["https://github.com/jbeder/yaml-cpp/security/advisories"],
+      "备注": "只解析运维自己放的配置文件，不接公网输入。"
+    },
+    "mimalloc": {
+      "upstream": "mimalloc",
+      "pinnedVersion": "3.5.1",
+      "advisories": ["https://github.com/microsoft/mimalloc/security/advisories"],
+      "备注": "默认关（ASYN_WITH_MIMALLOC）；开它属于性能调优选择。"
+    },
+    "gtest": {
+      "upstream": "GoogleTest",
+      "pinnedVersion": "1.17.0",
+      "advisories": ["https://github.com/google/googletest/security/advisories"],
+      "备注": "只在测试构建里出现，不进交付物。"
+    }
+  },
+  "已确认不修的条目": []
+}

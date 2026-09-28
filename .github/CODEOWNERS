@@ -1,0 +1,45 @@
+# 代码所有权：谁能审、谁必须批。评审与合并的门槛由仓库设置里的 branch protection 决定，
+# 本文件只负责「改了这里就自动找这些人」。
+
+# 整个仓库的兜底 owner：新加的顶层目录不需要先改这个文件就有人审
+@Gyanis9
+
+# 引擎本体。Platform 是唯一允许直接调操作系统接口的层（OS 调用不外溢），
+# Core 的事件循环/协程帧有跨线程销毁纪律，改动要连 sanitizer 结论一起看
+/src/Platform/ @Gyanis9
+/src/Core/ @Gyanis9
+
+# 协议实现：HTTP/1.1、HTTP/2、HTTP/3、自研 QUIC 传输层与 QPACK/HPACK、WebSocket 帧。
+# 这些文件的输入直接来自公网，改动必须带证伪用例或外部裁判（h2spec/Autobahn/aioquic）的读数
+/src/Net/ @Gyanis9
+
+# 数据库驱动与 ORM：方言渲染、连接池与会话状态。真机用例靠环境变量门控，
+# 改动要在容器里带 ASan/LSan 跑一遍再说
+/src/Database/ @Gyanis9
+
+# 基础设施层：日志、配置、异常与文本编解码
+/src/Base/ @Gyanis9
+
+# 构建与打包：CMake 分层聚合、Conan 配方与安装包。装包类改动必须在**全新构建树**验，
+# 本地旧目录会让 install 假绿
+/CMakeLists.txt @Gyanis9
+/cmake/ @Gyanis9
+/CMakePresets.json @Gyanis9
+/conanfile.py @Gyanis9
+/conandata.yml @Gyanis9
+/packaging/ @Gyanis9
+
+# 依赖公告台账与 SBOM 生成：改 conandata.yml 的固定版本必须同时改台账的 pinnedVersion，
+# 否则 scripts/check-dependency-advisories.py 当场红
+/packaging/dependency-watch.json @Gyanis9
+
+# 门禁与裁判：CI 作业、跨实现验收脚本、压测与微基准
+/.github/ @Gyanis9
+/scripts/ @Gyanis9
+/benchmarks/ @Gyanis9
+
+# 测试树与 src 逐级对齐（tests/** 镜像 src/**）；夹具与助手在 tests/TestSupport
+/tests/ @Gyanis9
+
+# 示例矩阵也是门禁：公开契约变了要同步改 samples，run_samples.py 的每条 check 都得能红
+/samples/ @Gyanis9

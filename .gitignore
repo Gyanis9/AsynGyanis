@@ -16,3 +16,6 @@ __pycache__/
 # 不该进仓库；消费方冒烟测试的构建目录同理
 /vcpkg_installed/
 /packaging/vcpkg/smoke/build/
+
+# SBOM 生成产物（scripts/generate-sbom.py 的输出目录）：每次构建可重生成，不进仓库
+/sbom/

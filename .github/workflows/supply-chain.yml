@@ -1,0 +1,78 @@
+# 供应链门禁：生成可交付的 SBOM，并核对「每条第三方依赖都有公告入口、且台账版本与固定版本同解」。
+#
+# 这条作业刻意做得很轻（不装编译器、不构建，几十秒），所以它可以按周跑：
+# 依赖公告与 SBOM 的有效性来自「每次都在跑」，而不是「发版前想起来跑一次」。
+# 与两条重型工作流一样在 main 推送与手动触发上跑，另加每周一的定时；develop 上的日常改动不消耗分钟数。
+
+name: 供应链
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    # 每周一 03:17 UTC：整点附近 runner 紧张，错开十几分钟
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    name: 生成并校验 SBOM（CycloneDX 1.6）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 生成 SBOM
+        run: python3 scripts/generate-sbom.py --out sbom
+
+      - name: 校验产物与清单（脚本自检之外的独立一道）
+        run: |
+          # 脚本自身已经过一遍「能解析、组件数与清单条数一致」的自检；这里再用 shell 判据复核一遍：
+          # 文件存在、大小非零、组件数与 conandata.yml 的 requirements 行数一致
+          set -euo pipefail
+          test -s sbom/AsynGyanis-*.cdx.json
+          test -s sbom/SHA256SUMS
+          componentCount=$(python3 -c "import glob,json;print(len(json.load(open(glob.glob('sbom/*.cdx.json')[0]))['components']))")
+          requirementCount=$(grep -cE '^[[:space:]]*-[[:space:]]*["'"'"']?[A-Za-z0-9_.+-]+/[0-9]' conandata.yml)
+          if [ "$componentCount" != "$requirementCount" ]; then
+            echo "SBOM 组件数 $componentCount 与依赖清单条数 $requirementCount 不一致" >&2
+            exit 1
+          fi
+          echo "SBOM 组件数与依赖清单同解：$componentCount"
+          (cd sbom && sha256sum -c SHA256SUMS)
+
+      # 制品保留 90 天：交付方审计通常要回看最近几个版本，默认 90 天足够，也不要无限堆存储
+      - name: 上传 SBOM 制品
+        uses: actions/upload-artifact@v4
+        with:
+          name: asyngyanis-sbom
+          path: |
+            sbom/*.cdx.json
+            sbom/SHA256SUMS
+          retention-days: 90
+          if-no-files-found: error
+
+  dependency-advisories:
+    name: 依赖公告台账与固定版本同解
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 核对台账（含公告入口可达性）
+        # 脚本只在「台账缺登记 / 版本漂移 / 残留已删依赖」时返回非 0；
+        # 上游页面取不到只打提示，不判红——上游临时不可用不是本仓库的缺陷
+        run: python3 scripts/check-dependency-advisories.py --fetch

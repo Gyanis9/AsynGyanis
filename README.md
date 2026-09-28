@@ -473,6 +473,15 @@ AsynGyanis/
 - 当前规模（2026-09-28 实测）：**Windows Debug（含 ASan）3456 例全绿、72 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3471 例全绿、68 例 SKIP、零告警、零泄漏、零未定义行为**。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递、多进程编排里 shell 假 worker 那几条行为、以及换代交接通道那两条只可能在本机判的（套接字文件所在目录的权限、装进来又被退回的描述符）；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按平台或内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
+- **CI 触发面**：三条工作流（Linux CI / Windows CI / 发布门禁）只在 `main` 推送与手动触发上跑，`develop` 不消耗
+  分钟数——要看某个提交就 `gh workflow run "Linux CI" --ref develop`。每条作业覆盖什么、最近一次真实运行，
+  记在 `.github/SECURITY.md` 的「我们靠哪些持续验证」表里（含 h2spec、Autobahn、libFuzzer、TSan、aioquic 互操作）
+- **供应链**：`scripts/generate-sbom.py` 出 CycloneDX 1.6 清单（含 `SHA256SUMS`），
+  `scripts/check-dependency-advisories.py` 钉「`conandata.yml` 的固定版本与 `packaging/dependency-watch.json`
+  的公告台账同解」；两者由 `supply-chain.yml` 作业跑（`main` 推送、手动触发、每周一凌晨），SBOM 作为制品保留
+  90 天。它交的是**依赖清单与来源**，不是签名后的二进制——要制品级 provenance 需另配签名构建
+- 代码所有权见 `.github/CODEOWNERS`（按目录路由，协议层与平台层的改动自动点名）；漏洞响应时限与披露节奏见
+  `.github/SECURITY.md`
 
 ## 性能
 

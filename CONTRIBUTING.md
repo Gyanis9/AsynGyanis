@@ -38,7 +38,9 @@ ctest --test-dir build/debug --output-on-failure
 ## 开发流程
 
 1. **Fork & Clone**: 从 `main` 分支创建功能分支
-2. **编码**: 新增代码对齐 `.clang-format` 与周围既有风格。仓库从未整体格式化过，**别对既有文件整文件跑 `clang-format -i`**：一刀切会改出几百个文件的无关 diff，把真正的改动淹掉
+2. **编码**: 新增代码对齐 `.clang-format` 与周围既有风格。全仓已按该配置排过一遍，CI 有**格式门禁**
+   （clang-format 版本钉到 23.1.1）：改动过的文件提交前跑 `clang-format --dry-run --Werror <文件>`，
+   有差异就 `-i` 排齐再提。判据以 CI 同版为准——版本不同折行结果就变，那种红与你的改动无关
 3. **静态检查**: 运行 `clang-tidy -p build/debug src/<changed-file>`
 4. **测试**: 确保 `ctest --output-on-failure` 全部通过
 5. **提交**: 约定式提交，类型英文小写、描述与正文中文（见下文「提交规范」）
@@ -61,6 +63,26 @@ ctest --test-dir build/debug --output-on-failure
 - `revert`: 回滚某次提交（正文须引用被回滚的提交）
 
 破坏性变更二选一（也可并用）：类型后加 `!`（如 `feat!:`），或正文写 `BREAKING CHANGE: <说明>` 脚注；两者都会涨主版本。版本号与 CHANGELOG 的一致性由 `scripts/check-release-version.py` 把关。
+
+## 评审与代码所有权
+
+`.github/CODEOWNERS` 按目录标了 owner：改动 `src/Net/`（协议实现，输入直接来自公网）、`src/Platform/`+`src/Core/`
+（事件循环与协程帧的跨线程销毁纪律）、`packaging/`（打包与依赖）时，评审要求由仓库设置里的 branch protection
+决定，本文件只负责「改了这里就自动找谁」。新增顶层目录不必先改 CODEOWNERS——兜底 owner 覆盖全仓。
+
+## 依赖、SBOM 与安全公告
+
+- **加/升第三方依赖要走三处**：`conandata.yml` 的固定版本、`packaging/dependency-watch.json` 的公告入口与
+  `pinnedVersion`、以及 `conanfile.py` 的选项（可选依赖要给降级路径）。只改前两处之外的一处会被当场判红：
+  `python scripts/check-dependency-advisories.py` 钉的是「台账与清单同解」——缺登记、版本漂移、台账里残留
+  已删依赖都算。这条不与构建混跑，所以几秒钟就能暴露问题。
+- **SBOM**：`python scripts/generate-sbom.py --out sbom` 产出 CycloneDX 1.6（组件按 purl 排序、
+  不带构建时刻，所以两次生成可逐字节比对）与 `SHA256SUMS`。它记的是**清单与来源**，不是哈希后的二进制；
+  需要制品级 provenance/签名时另配，别把这份 SBOM 当成那一层证据。
+- **供应链作业**：`.github/workflows/supply-chain.yml`（`main` 推送、手动触发、每周一凌晨定时）跑上面两件事，
+  并把 SBOM 作为制品上传（保留 90 天）。
+- **漏洞响应**：见 `.github/SECURITY.md` 的严重度时限表与披露节奏；「我们靠哪些持续验证」那张表列了每条门禁
+  覆盖什么、在哪个作业里跑——新加门禁时要一并更新它，否则「最近一次真实运行」又要靠人记。
 
 ## 代码风格
 
