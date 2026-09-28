@@ -295,20 +295,21 @@ namespace AsynGyanis::Platform
         /**
          * @brief 开一条一次性的换代交接通道（交棒方）
          * @details POSIX 用 AF_UNIX 流套接字——内核只在 unix 域里随 SCM_RIGHTS 送描述符（见
-         *          writeListeningSocketHandoff 的那条 @note）。套接字文件的权限按 0700 那档落定：
-         *          这条通道交出去的是**监听套接字的一份引用**，任何本机进程都能连上来取的话，
-         *          那道门就由文件权限把守。用 umask 而不是 bind 之后再 chmod，因为文件一建出来
-         *          就允许别人连，那个窗口关不掉。
+         *          writeListeningSocketHandoff 的那条 @note）。套接字文件建在一个刚 mkdtemp 出来的
+         *          私有目录里（0700）：这条通道交出去的是**监听套接字的一份引用**，任何本机进程都能
+         *          连上来取的话，那道门就由目录权限把守。放在新目录里而不是直接写进临时目录，是因为
+         *          「先建出来再收紧」的窗口关不掉，而 umask 会在同一时刻把**别的线程**新建的文件
+         *          权限一并改掉。
          *          Windows 上没有描述符随字节流走的机制，改走 loopback TCP：交出去的载荷是
          *          WSADuplicateSocketW 换出来的协议信息，那是普通字节，任何字节流通道都行，
          *          而本机可连的范围就是回环。
          * @return std::expected<HandoffChannelEndpoint, std::error_code> 开好的通道；失败给出错误码
-         * @note 路径长度受 sun_path 上限约束（POSIX），临时目录本身太长就会失败——失败文案由调用方给出
+         * @note 路径长度受 sun_path 上限约束（POSIX），临时目录本身太长就当场报 filename_too_long
          */
         [[nodiscard]] static std::expected<HandoffChannelEndpoint, std::error_code> openHandoffChannel() noexcept;
 
         /**
-         * @brief 收掉交接通道的监听端，并删掉 POSIX 上留下的套接字文件
+         * @brief 收掉交接通道的监听端，并删掉 POSIX 上留下的套接字文件与它所在的私有目录
          * @param endpoint 要收尾的通道；返回后 listener 置为无效、路径清空
          * @note 幂等；删除失败不报（文件不在就是已达目的，也恢复不了什么结论）
          */

@@ -1,11 +1,5 @@
-/**
- * @file TestSocketHandoff.cpp
- * @brief 监听套接字跨通道移交的用例：交出的一定要能在收端接着 accept，坏消息必须整体作废
- * @author Gyanis
- * @date 2026-09-24
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
+// 本文件覆盖监听套接字跨通道移交的线路语义：交出的一定要能在收端接着 accept（流套接字与数据报
+// 各一条）、坏消息必须整体作废并回收已装进来的描述符、以及通道本身的有界等待与失败成因读数。
 
 #include "Platform/IO/Socket.h"
 
@@ -379,6 +373,8 @@ namespace AsynGyanis::Platform
      * @brief 已排队的连接要报得出「有」，而且紧接着的 accept 真拿得到它
      * @details 只报「有」而 accept 落空，等于把一次就绪读成一次失败；反过来 accept 能成而等待报
      *          「没有」，编排层就会把一个正常连上来的 worker 判死。
+     * @note 零预算那一次先跑：0 预算的语义是「只取当前状态」，队列里已有一条连接时它必须报「有」。
+     *       把「预算用尽」的判定排在取样之前，或干脆当成恒报「没有」，都只在这一句上红
      */
     TEST(SocketHandoff, WaitForAcceptReadyReportsAPendingConnection)
     {
@@ -396,6 +392,10 @@ namespace AsynGyanis::Platform
         sockaddr_in endpoint = loopbackAddress(port);
         // connect() 在回环上返回成功就意味着三次握手已落进接受队列，等待不必再赌时序
         ASSERT_EQ(::connect(client, reinterpret_cast<const sockaddr *>(&endpoint), sizeof(endpoint)), 0) << "回环上连自己的监听口都连不上";
+
+        const auto sampled = Socket::waitForAcceptReady(listener, std::chrono::milliseconds::zero());
+        ASSERT_TRUE(sampled.has_value()) << "零预算的一次取样被报成失败，错误码 " << sampled.error().value();
+        EXPECT_TRUE(*sampled) << "队列里明明已有一条连接，零预算取样却报「没人来连」";
 
         const auto pending = Socket::waitForAcceptReady(listener, std::chrono::milliseconds{3000});
         ASSERT_TRUE(pending.has_value()) << "等待本身失败，错误码 " << pending.error().value();
@@ -590,11 +590,11 @@ namespace AsynGyanis::Platform
         iovec  dataVector{&header, sizeof(header)};
         char   control[CMSG_SPACE(sizeof(int))] = {};
         msghdr message{};
-        message.msg_iov        = &dataVector;
-        message.msg_iovlen     = 1;
-        message.msg_control    = control;
-        message.msg_controllen = sizeof(control);
-        cmsghdr *controlHeader = CMSG_FIRSTHDR(&message);
+        message.msg_iov           = &dataVector;
+        message.msg_iovlen        = 1;
+        message.msg_control       = control;
+        message.msg_controllen    = sizeof(control);
+        cmsghdr *controlHeader    = CMSG_FIRSTHDR(&message);
         controlHeader->cmsg_level = SOL_SOCKET;
         controlHeader->cmsg_type  = SCM_RIGHTS;
         controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
@@ -606,6 +606,78 @@ namespace AsynGyanis::Platform
 
         EXPECT_EQ(Socket::readListeningSocketHandoff(pair[1]), -1) << "格式不对的移交被当成了成功";
         EXPECT_EQ(openDescriptorCount(), descriptorsBefore) << "拒了一条移交，却把已经装进来的描述符留在了本进程里";
+#endif
+    }
+
+    /**
+     * @brief 通道在交出任何字节之前就被对端关掉时，报的必须是「连接被复位」，不能是槽位里的残值
+     * @details 两侧的读法不同但都得给同一个成因：Windows 用 recv 逐段读满，返回 0 是一次**成功**的
+     *          调用，实测它会把 last-error 清成 0，照抄槽位就是拿「没有错误」当成失败原因；POSIX 用
+     *          recvmsg，0 会落进「头没收全」那一档，报出来像格式错。
+     * @note 读这一侧的是换代时的编排线程，它照报出的码选下一步：看成格式错会重发一条永远收不到的
+     *       消息，看成连接被复位才知道新一代根本没起来
+     * @note 先污染槽位再制造 EOF：不污染的话槽位里可能恰好就是同一个值，断言就成了自我实现
+     * @note 证伪（Windows 实测）：把那两处 0 字节的出口改回「照抄槽位」，本条红在错误码那句——
+     *       读出来的是 0 而期望是 10054，正是「没有错误却失败」那种读数
+     * @note 证伪（POSIX 实测）：删掉 `recvmsg` 返回 0 那一支，本条红在同一句上——读出来的是 22
+     *       （EINVAL，「不像移交消息」）而期望 104（ECONNRESET）
+     */
+    TEST(SocketHandoff, ReportsConnectionResetWhenTheChannelClosesBeforeAnyBytes)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        int               channelWriter = -1;
+        int               channelReader = -1;
+        ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelReader);
+
+        // 先放一个绝不该在这里出现的成因进槽位：读端若把它交出去，就是拿残值当失败原因
+        PlatformError::setLastErrorCode(PlatformError::kNoBufferSpace);
+
+        // 关掉写端就是给这条流发出 FIN：读端此后不会再拿到任何字节
+        static_cast<void>(FileDescriptor::close(channelWriter));
+
+        EXPECT_EQ(Socket::readListeningSocketHandoff(channelReader), -1) << "通道已经关了，读端却报出成功";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kConnectionReset) << "通道被关报成了别的原因：运维据此会去查消息写法，而不是查对端进程有没有起来";
+    }
+
+    /**
+     * @brief 通道的访问范围由它所在目录的权限把守，收尾时目录要跟着一起删掉
+     * @details 这条通道交出去的载荷是「监听套接字的一份引用」：本机任何进程连得上，就等于能拿走一个
+     *          端口的引用。目录由 mkdtemp 建出来就是 0700，所以不必再动进程级 umask——那会在同一时刻
+     *          把**别的线程**新建的文件（日志、临时文件、票据密钥）权限一并改掉。
+     * @note 只在 POSIX 上判：Windows 侧通道是 loopback TCP，可连范围由回环地址本身决定
+     * @note 证伪（容器实测）：把目录换成临时目录里一个固定名字并用默认方式建出来，前半红——组内与
+     *       其他人的位读出 45（0o55），而 `UpgradeChannel.ChannelAddressesDoNotCollideAndFilesAreRemovedOnClose`
+     *       同时红（两条通道撞在同一个名字上）；收尾只删文件、把空目录留下，后半红
+     */
+    TEST(SocketHandoff, KeepsTheChannelInAnOwnerOnlyDirectoryAndRemovesItOnClose)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 侧通道是 loopback TCP，访问范围由回环本身决定";
+#else
+        ASSERT_TRUE(Socket::initialize());
+
+        auto opened = Socket::openHandoffChannel();
+        ASSERT_TRUE(opened.has_value()) << "开不出交接通道，错误码 " << opened.error().value();
+        ASSERT_FALSE(opened->socketFilePath.empty()) << "POSIX 上开出的通道没有套接字文件路径";
+
+        const std::filesystem::path directory = std::filesystem::path(opened->socketFilePath).parent_path();
+        std::error_code             statusError;
+        const auto                  permissions = std::filesystem::status(directory, statusError).permissions();
+        ASSERT_FALSE(static_cast<bool>(statusError)) << "读不到通道目录的权限：" << directory.string();
+        // 组内与其他人的读/写/执行三位全空：别人连不进来，靠的是进不了这个目录
+        EXPECT_EQ(static_cast<int>(permissions & (std::filesystem::perms::group_all | std::filesystem::perms::others_all)), 0)
+                << "通道目录让别人也进得去：那任何本机进程都能取走一份监听套接字";
+
+        Socket::closeHandoffChannel(*opened);
+        std::error_code probeError;
+        EXPECT_FALSE(std::filesystem::exists(directory, probeError)) << "通道收掉了，它那个私有目录还留在临时目录里";
+
+        // 兜底：断言红了也不能把目录留在本机，用例自建自清
+        std::error_code ignored;
+        static_cast<void>(std::filesystem::remove(directory, ignored));
 #endif
     }
 } // namespace AsynGyanis::Platform

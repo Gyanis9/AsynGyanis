@@ -156,9 +156,9 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 钉住通道文件的收尾：同一进程内两条通道的地址互不相同，收口之后不留残文件
-     * @details 套接字文件不在原地，下一次 bind 就不会以 EADDRINUSE 失败——换过几次代的机器上，
-     *          这些残文件是「换代突然开不出通道」最常见的原因。Windows 上通道是回环端口，没有文件，
-     *          那条判据不适用，本例在 Windows 上跳过。
+     * @details 每条通道开在自己那个新建的私有目录里，因此本机别处的残留不会让本次开通道失败；这条判的是
+     *          卫生——换代按次数重复，收口不把文件与目录带走，临时目录里就会一代堆一份没人认领的东西。
+     *          Windows 上通道是回环端口，没有文件，本例在 Windows 上跳过。
      */
     TEST(UpgradeChannel, ChannelAddressesDoNotCollideAndFilesAreRemovedOnClose)
     {
@@ -175,7 +175,7 @@ namespace AsynGyanis::Core
 
         const std::string firstAddress = first->address();
         first->closeChannel();
-        EXPECT_FALSE(std::filesystem::exists(firstAddress)) << "收口没把套接字文件带走：下一次换代会在 bind 上撞 EADDRINUSE";
+        EXPECT_FALSE(std::filesystem::exists(firstAddress)) << "收口没把套接字文件带走：临时目录里会一代堆一份残留";
 #endif
     }
     /**

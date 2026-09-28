@@ -62,6 +62,14 @@ namespace AsynGyanis::Platform
 #endif
                 ; ///< 连接被本地中止
 
+        static constexpr int kConnectionReset =
+#if ASYN_PLATFORM_WIN32
+                WSAECONNRESET
+#else
+                ECONNRESET
+#endif
+                ; ///< 连接被复位：对端已关闭，流里不会再有字节
+
         static constexpr int kTooManyOpenFiles =
 #if ASYN_PLATFORM_WIN32
                 WSAEMFILE

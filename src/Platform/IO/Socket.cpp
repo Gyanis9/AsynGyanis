@@ -3,7 +3,6 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
-#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -14,11 +13,13 @@
 #include <system_error>
 
 #if !ASYN_PLATFORM_WIN32
+#include <cerrno>
 #include <csignal>
+#include <cstdlib>
 #include <sys/select.h>
 #include <sys/sendfile.h>
-#include <sys/stat.h>
 #include <sys/un.h>
+#include <vector>
 #endif
 
 namespace AsynGyanis::Platform
@@ -332,8 +333,16 @@ namespace AsynGyanis::Platform
             while (written < length)
             {
                 const int pieceLength = ::send(descriptor, bytes + written, static_cast<int>(length - written), 0);
-                if (pieceLength <= 0)
+                if (pieceLength == 0)
                 {
+                    // 成功返回却一个字节没写：这条通道已经不被读了。实测 Winsock 在调用成功时把
+                    // last-error 清成 0，照抄槽位就是把「没有错误」当成失败原因交出去，运维据此判方向必错
+                    PlatformError::setLastErrorCode(PlatformError::kConnectionReset);
+                    return false;
+                }
+                if (pieceLength < 0)
+                {
+                    PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
                     return false;
                 }
                 written += static_cast<std::size_t>(pieceLength);
@@ -348,6 +357,8 @@ namespace AsynGyanis::Platform
          * @param length 期望字节数
          * @return true 读满；通道提前关闭或读坏返回 false
          * @note 读不满就是「消息不完整」，调用方必须整体作废而不是拿半截载荷去重建套接字
+         * @note 两条失败出口都显式写错误码：`recv` 返回 0（对端已关）是一次**成功**的调用，实测它会把
+         *       last-error 清成 0，照抄槽位就等于把「没有错误」当成失败原因交出去
          */
         bool readAll(int descriptor, char *bytes, std::size_t length)
         {
@@ -355,8 +366,14 @@ namespace AsynGyanis::Platform
             while (read < length)
             {
                 const int pieceLength = ::recv(descriptor, bytes + read, static_cast<int>(length - read), 0);
-                if (pieceLength <= 0)
+                if (pieceLength == 0)
                 {
+                    PlatformError::setLastErrorCode(PlatformError::kConnectionReset);
+                    return false;
+                }
+                if (pieceLength < 0)
+                {
+                    PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
                     return false;
                 }
                 read += static_cast<std::size_t>(pieceLength);
@@ -575,6 +592,13 @@ namespace AsynGyanis::Platform
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
             return -1;
         }
+        if (receivedLength == 0)
+        {
+            // 0 是「调用成功、流里一个字节都没有」= 对端已经把这条通道关掉。让它落到下面那条
+            // 「头没收全」的判定也会拒，但报出来的是「不像移交消息」，运维会去查消息写法而不是查对端进程
+            PlatformError::setLastErrorCode(PlatformError::kConnectionReset);
+            return -1;
+        }
 
         // 先把描述符从控制消息里摘出来：recvmsg 一成功返回，内核就已经把随消息装填的那枚描述符放进
         // 本进程了，此后**每一条**失败出口都得关掉它——拒掉一条不可信的移交却留下一枚活描述符，
@@ -663,45 +687,56 @@ namespace AsynGyanis::Platform
         endpoint.address  = "127.0.0.1:" + std::to_string(ntohs(address.sin_port));
         return endpoint;
 #else
-        // 同一进程可能开多条通道（换代演练与用例都会），光靠进程号不够，再加一个进程内序号
-        static std::atomic<unsigned> sequence{0U};
-        std::error_code              pathError;
-        const std::filesystem::path  directory = std::filesystem::temp_directory_path(pathError);
+        std::error_code             pathError;
+        const std::filesystem::path temporaryRoot = std::filesystem::temp_directory_path(pathError);
         if (pathError)
         {
             return std::unexpected(pathError);
         }
-        const std::filesystem::path path = directory / ("asyn-handoff-" + std::to_string(static_cast<long long>(::getpid())) + "-" +
-                                                        std::to_string(sequence.fetch_add(1U, std::memory_order_relaxed)) + ".sock");
+
+        // 套接字文件放在一个刚 `mkdtemp` 出来的私有目录里：目录建出来就是 0700，没有「先建出来再收紧」
+        // 的窗口，因此不必再动进程级 umask——那会在同一时刻把**别的线程**创建的文件（日志、临时文件、
+        // 票据密钥）权限一并收紧。别人既进不去这个目录，也就连不上这条通道，而它交出去的是监听套接字
+        // 的一份引用
+        const std::string templateText = (temporaryRoot / "asyn-handoff-XXXXXX").string();
+        std::vector<char> templateBytes(templateText.begin(), templateText.end());
+        templateBytes.push_back('\0');
+        const char *createdDirectory = ::mkdtemp(templateBytes.data());
+        if (createdDirectory == nullptr)
+        {
+            return std::unexpected(std::error_code(errno, std::system_category()));
+        }
+
+        const std::filesystem::path directory(createdDirectory);
+        const std::filesystem::path path = directory / "listener.sock";
         const std::string           text = path.string();
-        if (text.empty() || text.size() > sizeof(sockaddr_un::sun_path) - 1U)
+        if (text.size() > sizeof(sockaddr_un::sun_path) - 1U)
         {
             // 路径长度超上限时 bind 会失败在别处，症状是「通道开不出来」而看不出为什么；这里当场说明
+            std::error_code ignored;
+            static_cast<void>(std::filesystem::remove(directory, ignored));
             return std::unexpected(std::make_error_code(std::errc::filename_too_long));
         }
 
         const int descriptor = static_cast<int>(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
         if (descriptor < 0)
         {
-            return std::unexpected(lastSocketError());
+            const std::error_code failure = lastSocketError();
+            std::error_code       ignored;
+            static_cast<void>(std::filesystem::remove(directory, ignored));
+            return std::unexpected(failure);
         }
-        // umask 而不是 bind 之后 chmod：套接字文件一建出来就允许别人连，而它交出去的是监听套接字
-        // 的一份引用——那个窗口里任何本机进程连上来都能拿走一份
-        const mode_t previousMask = ::umask(S_IRWXG | S_IRWXO);
-        sockaddr_un  address{};
+        sockaddr_un address{};
         address.sun_family = AF_UNIX;
         std::strncpy(address.sun_path, text.c_str(), sizeof(address.sun_path) - 1U);
-        // 上一次运行被强杀时这个文件会留在原地，bind 于是以 EADDRINUSE 失败：先 unlink，
-        // 「本来就没有」算成功，别的失败原因照原样交出去
-        const bool isPathClear = ::unlink(text.c_str()) == 0 || errno == ENOENT;
-        const bool isBound     = isPathClear && ::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0 && ::listen(descriptor, 1) == 0;
-        ::umask(previousMask);
+        // 目录是新建的，不会撞上上一次运行留下的同名文件（原先那句「先 unlink 再 bind」随之作废）
+        const bool isBound = ::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0 && ::listen(descriptor, 1) == 0;
         if (!isBound)
         {
-            const std::error_code failure = isPathClear ? lastSocketError() : std::error_code(errno, std::system_category());
+            const std::error_code failure = lastSocketError();
             static_cast<void>(FileDescriptor::close(descriptor));
             std::error_code ignored;
-            std::filesystem::remove(path, ignored);
+            static_cast<void>(std::filesystem::remove(directory, ignored));
             return std::unexpected(failure);
         }
         endpoint.listener       = descriptor;
@@ -723,6 +758,9 @@ namespace AsynGyanis::Platform
             // 删除失败不报：文件不在就是已达目的，路径也不可恢复什么结论
             std::error_code ignored;
             std::filesystem::remove(endpoint.socketFilePath, ignored);
+            // 套接字文件所在的私有目录一并删掉：那个目录是 openHandoffChannel 为这一条通道新建的，
+            // 只删文件会把空目录留在临时目录里，一代堆积一个
+            static_cast<void>(std::filesystem::remove(std::filesystem::path(endpoint.socketFilePath).parent_path(), ignored));
             endpoint.socketFilePath.clear();
         }
         endpoint.address.clear();
@@ -744,16 +782,24 @@ namespace AsynGyanis::Platform
         // 按绝对期限自己扣剩余预算：POSIX 的 select 在被信号打断时带着「已经睡掉的那段」返回 EINTR，
         // 直接照原预算再等一次会把等待拉长，而一次都不重试又把「收到一个信号」读成「对端没来」——
         // 编排线程本身就挂着 SIGTERM/SIGINT 的处理函数，这两种错都会传下去
-        const auto deadline = std::chrono::steady_clock::now() + budget;
+        const auto deadline   = std::chrono::steady_clock::now() + budget;
+        bool       hasSampled = false;
         while (true)
         {
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-            if (remaining < std::chrono::milliseconds::zero())
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+            // 「预算用尽」的判定排在**至少 poll 过一次**之后：0 预算的用法就是「只取当前状态」，那需要
+            // 真去 select 一次（零超时）。拿两次 now() 的差当依据时，只要这两句之间被抢占满一毫秒，
+            // 截断出来的 remaining 就是负数，于是队列里明明已有一条连接等着 accept 却报「没人来连」
+            if (hasSampled && remaining < std::chrono::milliseconds::zero())
             {
-                // 预算用尽不是失败：这一条通路的答案本来就是「有没有人来连」。恰好等于 0 时不走这一支，
-                // 因为 0 预算的用法就是「只取当前状态」——那需要真去 select 一次（零超时），而不是跳过
+                // 预算用尽不是失败：这一条通路的答案本来就是「有没有人来连」
                 return false;
             }
+            if (remaining < std::chrono::milliseconds::zero())
+            {
+                remaining = std::chrono::milliseconds::zero();
+            }
+            hasSampled = true;
 
             fd_set readSet;
             FD_ZERO(&readSet);
