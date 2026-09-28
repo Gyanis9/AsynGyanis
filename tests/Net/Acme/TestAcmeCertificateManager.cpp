@@ -139,8 +139,8 @@ namespace AsynGyanis::Net
             return std::move(m_runs);
         }
 
-        /// 单轮的简写
-        Run driveIssue(const Round &round = {})
+        /// 单轮的简写。默认实参用不上 Round 的默认成员初始化（GCC 要到本类闭合才认），故要调用方自己写出来
+        Run driveIssue(const Round &round)
         {
             auto runs = driveRounds({round});
             return runs.empty() ? Run{} : std::move(runs.front());
@@ -328,7 +328,7 @@ namespace AsynGyanis::Net
     TEST_F(AcmeCertificateManagerTest, IssuesAndPersistsACertificateOnFirstRun)
     {
         startServers({});
-        const auto run = driveIssue();
+        const auto run = driveIssue(Round{});
 
         ASSERT_TRUE(run.result.has_value()) << "驱动没跑到签发这一步";
         ASSERT_TRUE(run.result->has_value()) << run.result->error().message;
@@ -486,7 +486,7 @@ namespace AsynGyanis::Net
         AcmeStubAuthority::Settings settings;
         settings.rejectedDomainNames = {"auto-second.example.com"};
         startServers(settings);
-        const auto run = driveIssue();
+        const auto run = driveIssue(Round{});
 
         ASSERT_TRUE(run.result.has_value());
         ASSERT_FALSE(run.result->has_value());

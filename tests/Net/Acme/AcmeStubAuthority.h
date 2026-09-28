@@ -104,9 +104,11 @@ namespace AsynGyanis::Net::TestSupport
         /**
          * @brief 构造桩机构
          * @param loop 承载它的那条事件循环
-         * @param settings 行为开关
+         * @param settings 行为开关；要哪一档默认行为就逐字段写出来
+         * @note 此处刻意不给默认实参：嵌套聚合体的默认成员初始化要到本类闭合后才就绪，
+         *       默认实参里用到它时 GCC 直接拒绝编译（MSVC 却放行）
          */
-        explicit AcmeStubAuthority(Core::EventLoop &loop, Settings settings = {});
+        explicit AcmeStubAuthority(Core::EventLoop &loop, Settings settings);
 
         ~AcmeStubAuthority();
 
