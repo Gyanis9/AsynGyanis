@@ -69,15 +69,13 @@ namespace AsynGyanis::Net
              * @brief 起一台服务端
              * @param requireClientCertificates 为真时打开双向 TLS：要求并校验客户端证书，信任锚就用
              *        下面那张自签夹具（它既是服务端身份又是它自己的根，因此同一份文件两头通用）
-             */
-            /**
-             * @brief 起一台服务端
-             * @param requireClientCertificates 为真时打开双向 TLS：要求并校验客户端证书，信任锚就用
-             *        下面那张自签夹具（它既是服务端身份又是它自己的根，因此同一份文件两头通用）
              * @param configureServer 造好服务端、进入监听之前对它做的追加改动（换限额这类只能在这
              *        个窗口做：限额按连接建立那一刻交给会话）
+             * @param idleTimeout 传输层的空闲收口时刻：判「对端下线之后服务端会把连接摘掉」的用例
+             *        要把它调到秒级，否则归零只能等夹具默认的 30 秒
              */
-            explicit RunningHttp3Server(const bool requireClientCertificates = false, const std::function<void(QuicServer &)> &configureServer = {})
+            explicit RunningHttp3Server(const bool requireClientCertificates = false, const std::function<void(QuicServer &)> &configureServer = {},
+                                        const std::chrono::seconds idleTimeout = std::chrono::seconds{30})
             {
                 m_router.get("/probe",
                              [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
@@ -92,7 +90,7 @@ namespace AsynGyanis::Net
                 QuicServer::Configuration configuration;
                 configuration.certificateFile = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_cert.pem").string();
                 configuration.privateKeyFile  = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_key.pem").string();
-                configuration.idleTimeout     = std::chrono::seconds{30};
+                configuration.idleTimeout     = idleTimeout;
                 // 采集端要显式配：QuicServer 不替本服务端建一份（它的设计是与 HttpServer 共用同一端，
                 // 三条通道并到一处计数）。没配时 stats() 除在线连接数外恒为零，那条请求计数判据就成了
                 // 空判据——所以这里给一份自己的，而不是把判据换成更弱的
@@ -124,6 +122,20 @@ namespace AsynGyanis::Net
                                  co_await silence.waitFor(std::chrono::seconds{30});
                                  response.setStatus(200);
                                  response.setBody("eventually");
+                                 co_return;
+                             });
+
+                // 只沉默 200 毫秒就答的路由：给「在册连接数」那类判据留一个既能被外部线程读到非零、
+                // 又不会把在途动作留到用例结束的窗口——摘除要等这条流上的处理器跑完，/stall 那 30 秒
+                // 等不到（会话有未收尾的工作时，收口的连接会被推迟摘除）
+                m_router.get("/brief",
+                             [this](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 static_cast<void>(request);
+                                 Core::Timer brief(m_loop);
+                                 co_await brief.waitFor(std::chrono::milliseconds{200});
+                                 response.setStatus(200);
+                                 response.setBody(kServedBody);
                                  co_return;
                              });
 
@@ -176,6 +188,13 @@ namespace AsynGyanis::Net
             [[nodiscard]] std::size_t servedRequestCount() const noexcept
             {
                 return m_server->stats().totalRequestCount;
+            }
+
+            /// 测试线程直接读服务端的在线连接数：这条通道本来就是给循环外的线程用的（采集端、
+            /// 探活工具都这么读），因此读它的用例也必须从测试线程读，而不是绕回循环里读
+            [[nodiscard]] std::size_t connectionCount() const noexcept
+            {
+                return m_server->connectionCount();
             }
 
         private:
@@ -1134,6 +1153,34 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(attempt.awaitFinished(std::chrono::seconds{8})) << "时限早就掐断了，这条请求还没收场：等待没被收回来";
         EXPECT_FALSE(attempt.response().isOk()) << "对端一个字都没答，本端不该报成功：" << attempt.response().errorMessage;
         EXPECT_LT(attempt.elapsed(), std::chrono::seconds{5}) << "收场用了 " << attempt.elapsed().count() << " 毫秒，不像时限起作用的样子";
+    }
+
+    /**
+     * @brief 在线连接数必须能被循环外的线程读到，且增删两侧都反映
+     * @details 采集端与探活工具都在外部线程上读这个数，而连接表只归事件循环线程：读侧不经过原子
+     *          镜像就是一次数据竞争（一边读红黑树的计数，一边收包路径摘连接写同一处）。
+     *          这里两侧各等一次条件成立，不赌「线程恰好重叠」：漏刷登记侧第一条等待就超时，
+     *          漏刷摘除侧第二条超时。
+     */
+    TEST(Http3ClientConnection, ReportsTheOnlineConnectionCountToOtherThreadsOnBothSides)
+    {
+        // 空闲收口给到一秒档：客户端那条请求收场后就不再发包，服务端只能靠空闲超时判它收口。
+        // 留夹具默认的 30 秒，「归零」就落在等待预算之外，等于把判据交给调度
+        RunningHttp3Server server{false, {}, std::chrono::seconds{1}};
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+        EXPECT_EQ(server.connectionCount(), 0U) << "还没人来连就该是零，否则增长侧读到的数认不出是谁加的";
+
+        // /brief 只沉默 200 毫秒：这段就是在册窗口，够外部线程按毫秒级节拍读到一次非零；它一定会答完，
+        // 流上不留在途动作，摘除侧随后能真的把这条摘掉（用 /stall 的话处理器要等 30 秒，摘除被推迟）
+        Http3RequestAttempt attempt{server.listeningPort(), {}, {}, "/brief", std::chrono::milliseconds{4000}};
+        ASSERT_TRUE(waitForCondition([&server] { return server.connectionCount() > 0U; }, std::chrono::seconds{5}))
+            << "一次真实握手之后外部线程读不到在册连接，说明登记侧没把计数刷上去";
+        ASSERT_TRUE(attempt.awaitFinished(std::chrono::seconds{5})) << "那条请求没在时限内收场，后面的归零判据就是空的";
+
+        // 客户端在协程末尾自己收口；服务端要么在最后一个报文里见到收口，要么在一秒的空闲超时后
+        // 自己判死，而清扫节拍是 10 毫秒一档，因此 8 秒预算内必然归零
+        ASSERT_TRUE(waitForCondition([&server] { return server.connectionCount() == 0U; }, kWaitTimeout))
+            << "对端下线之后读数没归零，说明摘除侧漏了减一，那个数会一直虚高到进程结束";
     }
 
 } // namespace AsynGyanis::Net

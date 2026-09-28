@@ -269,7 +269,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 当前在线连接数
-         * @return std::size_t 连接数
+         * @details 读的是连接表的原子镜像：表本体只归事件循环线程，外部线程直接取它的 size()
+         *          就是数据竞争（采集端与探活工具都在循环外读这个数）
+         * @return std::size_t 这一刻的在册连接数；增删由循环线程刷新，读数最多滞后一次变更
          */
         [[nodiscard]] std::size_t connectionCount() const noexcept;
 
@@ -279,7 +281,7 @@ namespace AsynGyanis::Net
          *          请求数、状态码类与耗时直方图都由各会话累加（h3 的耗时起点是会话收下这条请求的
          *          那一刻，详见 Http3Session 构造函数的说明）；本服务端额外就地补上在线连接数
          * @return HttpServerStats 快照；未配置采集端时除在线连接数外各计数为零
-         * @note 可从任意线程调用（计数是原子量、连接数是加锁读的近似值）
+         * @note 可从任意线程调用（各项计数都是原子量，在线连接数取自连接表的原子镜像）
          */
         [[nodiscard]] HttpServerStats stats() const;
 
@@ -473,6 +475,11 @@ namespace AsynGyanis::Net
 
         /// 连接标识 → 连接。键是本端生成的 SCID（对端的 DCID）
         std::map<std::string, std::unique_ptr<QuicConnection>, std::less<>> m_connections;
+
+        /// 上面那张表的在册条数的跨线程镜像：只在表增删的那两处随表刷新（各一条 relaxed 加减），
+        /// 供 connectionCount() 在循环外的线程上读——表本体只归循环线程，外部线程读它即为数据竞争。
+        /// 每条连接建立与摘除才各动一次，不值得为它做缓存行填充
+        std::atomic<std::size_t> m_connectionCountMirror{0}; ///< 在册连接数（与连接表同步维护）
 
         /// 别名索引：除本端 SCID 之外**可以寻址到本连接的目的连接标识** → 连接
         /// （存裸指针，所有权仍在上面那张表里）。目前只有一类来源：客户端最初选的 DCID——

@@ -582,7 +582,10 @@ namespace AsynGyanis::Net
 
     std::size_t QuicServer::connectionCount() const noexcept
     {
-        return m_connections.size();
+        // 读镜像而不是 m_connections.size()：那张表只归事件循环线程，采集端与探活工具在循环外读它
+        // 就是数据竞争。这里用 relaxed：这个数只报「这一刻大约有多少条在册」，不承担「读到非零就
+        // 确信别的东西也已就位」这类发布语义（那是 listeningPort() 的 acquire/release 配对）
+        return m_connectionCountMirror.load(std::memory_order_relaxed);
     }
 
     std::uint16_t QuicServer::listeningPort() const noexcept
@@ -714,6 +717,9 @@ namespace AsynGyanis::Net
         const std::string sourceConnectionId = connection->sourceConnectionId();
         QuicConnection   *rawConnection      = connection.get();
         m_connections.emplace(sourceConnectionId, std::move(connection));
+        // 键是本端刚生成的 SCID，走到这里必然真的插进去一条（同一报文在更上面就按已有连接认走了），
+        // 因此这一侧无条件 +1，与摘除侧的 -1 成对；镜像与表的偏差只会来自漏掉一处，不会来自重复计数
+        m_connectionCountMirror.fetch_add(1, std::memory_order_relaxed);
         // 名额凭据与连接同寿命：摘连接时必须一起摘，否则那个来源的计数只增不减（等价于把
         // 限额变成了一次性配额）
         if (perIpLease.has_value())
@@ -767,6 +773,8 @@ namespace AsynGyanis::Net
                 m_perIpConnectionLeases.erase(iterator->first);
                 std::erase_if(m_connectionsByAliasConnectionId, [closedConnection](const auto &entry) { return entry.second == closedConnection; });
                 iterator = m_connections.erase(iterator);
+                // 与登记侧的 +1 成对：每次循环体真的摘掉一条才减一次（推迟摘除的那两条 continue 不动镜像）
+                m_connectionCountMirror.fetch_sub(1, std::memory_order_relaxed);
                 continue;
             }
             ++iterator;
