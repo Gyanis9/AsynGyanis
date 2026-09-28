@@ -1,6 +1,6 @@
 /**
  * @file CoreTestSupport.h
- * @brief Core 模块单元测试辅助：有界等待、事件泵推进、就绪分发与后台事件循环运行器
+ * @brief Core 模块单元测试辅助：有界等待、事件泵推进、就绪分发、协程结果与异常取回、后台事件循环运行器
  * @author Gyanis
  * @date 2026-09-18
  * @version 1.0.0
@@ -27,6 +27,7 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -134,6 +135,33 @@ namespace AsynGyanis::Core::TestSupport
         }
 
         // release 语义：保证上面的写入对读取到本标记的线程可见
+        finished.store(true, std::memory_order_release);
+    }
+
+    /**
+     * @brief 驱动协程：跑完一条不带返回值的任务，把它抛出的异常文本取回调用方给的变量
+     *
+     * @details 惰性协程的抛出点在**首次恢复**时，`EXPECT_THROW(obj.listen(...))` 只构造了协程帧、
+     *          什么都测不到。要判「这条出口会抛」必须把帧投给循环真跑一遍再接住异常。
+     * @param inner 待驱动的任务（按值接收，帧内持有它的生命周期）
+     * @param reason 出参：异常文本；任务没抛则为空串
+     * @param finished 出参：完成标记，写于 reason 之后
+     * @return Task<void> 驱动协程
+     */
+    inline Task<void> captureCoroutineFailure(Task<> inner, std::string &reason, std::atomic<bool> &finished)
+    {
+        try
+        {
+            co_await std::move(inner);
+        } catch (const std::exception &failure)
+        {
+            reason = failure.what();
+        } catch (...)
+        {
+            reason = "非标准异常（无 what() 描述）";
+        }
+
+        // 文本先写、标记后发：读侧看到标记时那份文本一定已经就位
         finished.store(true, std::memory_order_release);
     }
 

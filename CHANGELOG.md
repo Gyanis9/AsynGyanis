@@ -17,6 +17,26 @@
 
 ### 新增
 
+- **h3 的监听器也能接手了（`Net::QuicServer` 的接手构造与不带地址的 `listen()`）**：上一格补的是数据报
+  这一侧的接手动作，而 QUIC 服务端只有「按地址 bind」一种起步方式，于是 Windows 上多进程跑 h3 仍然走不通
+  （多个进程各自 bind 同一端口时内核把全部报文交给最后绑上的那一个），零停机换代里新一代也接不了已绑好的
+  数据报口。现在 `QuicServer` 收一份 `Platform::DatagramSocket`（自己绑的或 `DatagramSocket::adopt` 交来的），
+  端口从交来的那份套接字问回来、本端不再 bind。与 `UdpServer` 同一条纪律：**两种启动顺序不许混用**，
+  接手来的调带地址的 `listen()` 会把那份套接字静默闲置，症状与「移交没做成」一模一样，故当场拒。
+  接手来的套接字不合格也在构造期拒，且判据排在创建 `SSL_CTX` **之前**——构造期抛出后析构不会跑，
+  而那份上下文一旦 `release()` 交接给成员就无人认领（实测把判据挪到那句交接之后，容器 LSan 报出
+  `SSL_CTX_new` 那一块 1784 字节的直接泄漏）。
+  对外行为由进程外的裁判验：`tests/Tools/QuicProbeServer.cpp` 新增 `--adopt-through-self-channel`，
+  它把一份已绑好的数据报套接字沿 `Core::UpgradeChannel` 交回本进程再接手起服务，
+  `scripts/quic_cross_check.sh` 的场景三让 aioquic 打同一套判据（握手 + 回显）过去。
+  用例三条：接手来的服务端发布出的端口就是交过来那一个（而不是自己再绑的）；混用两种启动顺序两侧都被拒；
+  空对象当接手来源被拒。四处证伪各自只红自己那条（把接手那条路改成本端再绑一个端口 → 端口那条红；
+  两处拒绝改成放行 → 混用那条红；构造期判据摘掉 → 空对象那条红；把那条判据挪到上下文交接给成员之后 →
+  容器 LSan 报泄漏）。
+  顺手把两处文档与实现对齐：`Core::UpgradeChannel` 那两条「必须已经 listen() 过」「取回的是已在监听的描述符」
+  在数据报走上这条通道后已不成立，改成按类型分别写清。测试侧把 `listen()` 异常取回的驱动协程上收进
+  `CoreTestSupport`（`captureCoroutineFailure`），第二处用到它时不再复制一份。
+
 - **一条 UDP 端口可以交给多个进程了（`Platform::DatagramSocket::adopt` + `Net::UdpServer` 的接手构造）**：
   跨进程移交那对函数（`Socket::writeListeningSocketHandoff` / `readListeningSocketHandoff`）的机制本身
   不限套接字类型——Windows 靠 `WSADuplicateSocketW` 换协议信息表、POSIX 靠 `SCM_RIGHTS` 送描述符——

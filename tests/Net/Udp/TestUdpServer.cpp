@@ -34,6 +34,7 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using AsynGyanis::Core::TestSupport::captureCoroutineFailure;
         using AsynGyanis::Core::TestSupport::EventLoopThread;
         using AsynGyanis::Core::TestSupport::waitForCondition;
 
@@ -88,32 +89,6 @@ namespace AsynGyanis::Net
         {
             co_await std::move(listenTask);
             isListenFinished.store(true, std::memory_order_release);
-        }
-
-        /**
-         * @brief 把一条 listen() 跑起来，取回它抛出的原因文本（没抛则空串）
-         * @param loop 承载它的循环
-         * @param listenTask 待驱动的服务协程
-         * @param reason 出参：异常文本，由循环线程写、标记之后才让测试线程读
-         * @param isDone 出参：完成标记，最后发布
-         * @return Core::Task<void> 驱动结束时完成
-         * @details listen() 是**惰性**协程：抛出点在首次恢复时，所以 `EXPECT_THROW(server.listen(...))`
-         *          测不到任何东西——那句只构造了协程帧就跑。必须把帧投给循环真跑一遍，再接住异常。
-         */
-        Core::Task<void> captureListenFailure(Core::Task<> listenTask, std::string &reason, std::atomic<bool> &isDone)
-        {
-            try
-            {
-                co_await std::move(listenTask);
-            } catch (const std::exception &failure)
-            {
-                reason = failure.what();
-            } catch (...)
-            {
-                reason = "非标准异常（无 what() 描述）";
-            }
-            // 文本先写、标记后发：测试线程读到标记时那份文本一定已经就位
-            isDone.store(true, std::memory_order_release);
         }
 
         /**
@@ -594,8 +569,8 @@ namespace AsynGyanis::Net
         std::atomic<bool> isAdoptingRejected{false};
         std::atomic<bool> isBindingRejected{false};
 
-        adoptingWithAddress.emplace(captureListenFailure(adopting.listen(Core::InetAddress("127.0.0.1", 0)), adoptingReason, isAdoptingRejected));
-        bindingWithoutAddress.emplace(captureListenFailure(binding.listen(), bindingReason, isBindingRejected));
+        adoptingWithAddress.emplace(captureCoroutineFailure(adopting.listen(Core::InetAddress("127.0.0.1", 0)), adoptingReason, isAdoptingRejected));
+        bindingWithoutAddress.emplace(captureCoroutineFailure(binding.listen(), bindingReason, isBindingRejected));
         loopThread.loop().scheduler().scheduleRemote(adoptingWithAddress->handle());
         loopThread.loop().scheduler().scheduleRemote(bindingWithoutAddress->handle());
 
@@ -622,7 +597,7 @@ namespace AsynGyanis::Net
         std::string       reason;
         std::atomic<bool> isRejected{false};
 
-        driver.emplace(captureListenFailure(server.listen(Core::InetAddress("127.0.0.1", 0)), reason, isRejected));
+        driver.emplace(captureCoroutineFailure(server.listen(Core::InetAddress("127.0.0.1", 0)), reason, isRejected));
         loopThread.loop().scheduler().scheduleRemote(driver->handle());
 
         ASSERT_TRUE(waitForCondition([&] { return isRejected.load(std::memory_order_acquire); }, kPeerWaitTimeout));

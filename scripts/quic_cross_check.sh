@@ -175,6 +175,17 @@ portB="$(startServer miss-b)" || exit 2
 runCase resume-miss miss-a resume-miss "$portA" "$portB"
 stopServer
 
+echo "== 场景三：接手档（端口由别人 bind、服务端只接手，判据与场景一的基本行为同一条）"
+# 跨进程共享一条 UDP 端口在 worker 侧就是这一形状（Windows 没有 SO_REUSEPORT，多个进程各自 bind
+# 只会让最后绑上的那个收到全部报文）。这一档判的是「对外行为不许因为套接字是交来的而有差别」，
+# 交接与接管本身由 tests/Platform 的交接用例钉住
+port="$(startServer adopted --adopt-through-self-channel --abort-on abort --abort-code 0x010b --large-reply-on block)" || exit 2
+# 先确认这一档真的走了接手路径（否则等于把场景一又跑一遍）
+expectLog adopted-path adopted '^ADOPTED$'
+runCase adopted-handshake adopted handshake-echo "$port"
+expectLog adopted-handshake adopted 'ECHOED [0-9]+ 9'
+stopServer
+
 echo "== 汇总"
 if [ "$failures" -eq 0 ]; then
     echo "全部场景通过（$("$python" -c 'import aioquic, sys; print(getattr(aioquic, "__version__", "unknown"))' 2>/dev/null || echo "?")）"

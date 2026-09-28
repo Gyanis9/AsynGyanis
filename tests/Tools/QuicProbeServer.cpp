@@ -7,6 +7,7 @@
 //
 // 输出协议（每行一条，立即 flush，供探针与运行脚本读取）：
 //   PORT <n>                     实际绑定端口
+//   ADOPTED                      接手档标记：这台服务端的端口由别人 bind、本端只接手
 //   READY                        可以开始连接
 //   CONNECTIONS <n>              在线连接数变化（「握手做不完的连接被收掉」就靠这条判）
 //   STREAM <id> BYTES <n>        收到一条流数据
@@ -20,18 +21,26 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Core/Process/UpgradeChannel.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
+#include "Platform/IO/DatagramSocket.h"
+#include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
+#include "Platform/System/PlatformError.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -56,6 +65,10 @@ namespace
         long                     drainAfterRequestMs{-1}; ///< 答完第一条请求后多久收口；负数表示不
         bool                     drainImmediately{false}; ///< 启动即收口：新连接不该握手完成
         std::vector<std::string> ticketKeyFiles{};        ///< 会话票据密钥文件，可重复
+
+        /// 接手档：服务端不自己 bind，而是用「交回本进程的一份已绑好的数据报套接字」起服务。
+        /// 判的是跨进程共享端口在 worker 侧那一格——h3 的对外行为在接手来的口上不许有差别
+        bool adoptThroughSelfChannel{false};
     };
 
     void printUsage(const char *programName)
@@ -71,7 +84,9 @@ namespace
                      "  --abort-on <文本> --abort-code <数>   命中正文即按该错误码收口这条流\n"
                      "  --large-reply-on <文本> [--large-reply-bytes <n>]  回一大块不收口的数据\n"
                      "  --drain-after-request <毫秒> 答完第一条请求后收口全部连接\n"
-                     "  --drain-immediately          启动即收口\n",
+                     "  --drain-immediately          启动即收口\n"
+                     "  --adopt-through-self-channel 起服务前把已绑好的数据报套接字沿一条通道交回本进程，"
+                     "服务端只接手（跨进程共享端口那一格的形状）\n",
                      programName);
     }
 
@@ -160,6 +175,9 @@ namespace
             } else if (flag == "--drain-immediately")
             {
                 options.drainImmediately = true;
+            } else if (flag == "--adopt-through-self-channel")
+            {
+                options.adoptThroughSelfChannel = true;
             } else
             {
                 printUsage(argv[0]);
@@ -269,6 +287,76 @@ namespace
         }
         co_return;
     }
+
+    /**
+     * @brief 接手档的准备动作：bind 一份数据报套接字，沿一条交接通道交回本进程，再把它接回来
+     * @details 交与接用的是平台层那对函数的同一形状（Windows 换协议信息表、POSIX 走 SCM_RIGHTS），
+     *          只是两端碰巧落在同一个进程里——跨进程投递本身由 tests/Platform 的交接用例钉住，
+     *          这一档要判的是「h3 在接手来的口上对外行为不许变」。
+     * @param port 要绑的端口，0 表示由内核分配（实际端口由服务端的 PORT 行打出来）
+     * @return std::expected<DatagramSocket, std::string> 接手来的套接字；失败交中文原因
+     */
+    std::expected<AsynGyanis::Platform::DatagramSocket, std::string> handBackDatagramSocket(const std::uint16_t port)
+    {
+        using AsynGyanis::Core::InetAddress;
+        using AsynGyanis::Core::UpgradeChannel;
+        using AsynGyanis::Platform::DatagramSocket;
+        using AsynGyanis::Platform::FileDescriptor;
+        using AsynGyanis::Platform::PlatformError;
+        using AsynGyanis::Platform::ProcessInfo;
+
+        auto channel = UpgradeChannel::open();
+        if (!channel.has_value())
+        {
+            return std::unexpected("接手档建不出交接通道：" + channel.error());
+        }
+
+        DatagramSocket boundSocket = DatagramSocket::bindTo(InetAddress("127.0.0.1", port).platformAddress());
+        if (!boundSocket.isValid())
+        {
+            return std::unexpected("接手档绑定数据报端口失败，套接字错误码 " + std::to_string(PlatformError::lastSocketErrorCode()));
+        }
+
+        // 交与接必须分在两条线程上：接的那一方要「连上通道 → 等对方写出」，而这条顺序里的每一步
+        // 都要有人先动。本端交出的一侧仍留在主线程上，join 之后两份说法才合并
+        const std::string channelAddress = channel->address();
+        std::expected<int, std::string> adoption{};
+        std::jthread reader(
+                [&adoption, channelAddress]
+                {
+                    adoption = AsynGyanis::Core::adoptHandedOverListener(channelAddress, std::chrono::milliseconds{5000});
+                });
+
+        auto peer = channel->waitForPeer(std::chrono::milliseconds{5000});
+        if (!peer.has_value())
+        {
+            return std::unexpected("接手档等不到连上交接通道的那一方：" + peer.error());
+        }
+
+        auto handed = channel->handOffListener(*peer, boundSocket.fileDescriptor(), static_cast<std::uint64_t>(ProcessInfo::currentProcessId()));
+        static_cast<void>(FileDescriptor::close(*peer));
+        if (!handed.has_value())
+        {
+            return std::unexpected("接手档交出套接字失败：" + handed.error());
+        }
+
+        // jthread 析构会 join：join 给出 happens-before，adoption 那份载荷才敢在主线程上读
+        reader.join();
+        if (!adoption.has_value())
+        {
+            return std::unexpected("接手档取回套接字失败：" + adoption.error());
+        }
+
+        // 交回来的是一枚裸描述符：接管动作（判类型、判已 bind、置非阻塞）在平台层那一格做
+        auto adopted = DatagramSocket::adopt(*adoption);
+        if (!adopted.has_value())
+        {
+            static_cast<void>(FileDescriptor::close(*adoption));
+            // adopt 把三种不合格分成错误码，这里翻成中文：工具的报错也要让人知道下一步查什么
+            return std::unexpected("接手档接管交来的描述符失败（错误值 " + std::to_string(adopted.error().value()) + "）：那枚描述符必须是已经 bind 过的 SOCK_DGRAM");
+        }
+        return std::expected<AsynGyanis::Platform::DatagramSocket, std::string>{std::move(*adopted)};
+    }
 } // namespace
 
 int main(const int argc, char **argv)
@@ -292,12 +380,32 @@ int main(const int argc, char **argv)
         configuration.perIpConnectionLimiter = std::make_shared<AsynGyanis::Net::PerIpConnectionLimiter>(options.perIpLimit);
     }
 
-    AsynGyanis::Net::QuicServer server(loop, configuration);
+    // 接手档：先把一份自己绑好的数据报套接字沿通道交回本进程、再接手，服务端这一侧不再 bind。
+    // 其余档位照旧按 --port 自己绑（那一格判的是「交来的口上对外行为不变」，跨进程投递本身在
+    // tests/Platform 的交接用例里钉着）
+    std::optional<AsynGyanis::Platform::DatagramSocket> adoptedSocket;
+    if (options.adoptThroughSelfChannel)
+    {
+        auto handed = handBackDatagramSocket(options.port);
+        if (!handed.has_value())
+        {
+            std::fprintf(stderr, "接手档准备失败：%s\n", handed.error().c_str());
+            return 3;
+        }
+        adoptedSocket.emplace(std::move(*handed));
+        // 宣告「这一台是按接手起的」：脚本要能区分「档位没被消费」与「消费了但对外行为正常」，
+        // 否则这一档只是场景一的重复
+        emit("ADOPTED");
+    }
+
+    std::unique_ptr<AsynGyanis::Net::QuicServer> server = adoptedSocket.has_value()
+                                                                ? std::make_unique<AsynGyanis::Net::QuicServer>(loop, configuration, std::move(*adoptedSocket))
+                                                                : std::make_unique<AsynGyanis::Net::QuicServer>(loop, configuration);
     // 大块正文只准备一份：每条命中探针的流都指向同一段字节，不做逐次拷贝
     const std::vector<std::uint8_t> largeReply(options.largeReplyBytes, static_cast<std::uint8_t>('x'));
     std::atomic<bool>               hasAnsweredFirstRequest{false};
 
-    server.setStreamDataHandler(
+    server->setStreamDataHandler(
             [&](AsynGyanis::Net::QuicConnection &connection, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool /*isEndStream*/)
             {
                 emit("STREAM " + std::to_string(streamId) + " BYTES " + std::to_string(data.size()));
@@ -321,13 +429,21 @@ int main(const int argc, char **argv)
                 emit("ECHOED " + std::to_string(streamId) + " " + std::to_string(reply.size()));
                 if (!hasAnsweredFirstRequest.exchange(true) && options.drainAfterRequestMs >= 0)
                 {
-                    TaskKeeper::spawn(loop, drainLater(loop, server, options.drainAfterRequestMs));
+                    TaskKeeper::spawn(loop, drainLater(loop, *server, options.drainAfterRequestMs));
                 }
             });
 
-    TaskKeeper::spawn(loop, server.listen(AsynGyanis::Core::InetAddress::resolve("127.0.0.1", options.port).value()));
-    TaskKeeper::spawn(loop, watchConnections(loop, server));
-    TaskKeeper::spawn(loop, announceReady(loop, server, options.drainImmediately));
+    // 接手档没有地址可给（端口已经定在交过来那份套接字上），其余档位按 --port 自己绑
+    if (options.adoptThroughSelfChannel)
+    {
+        TaskKeeper::spawn(loop, server->listen());
+    }
+    else
+    {
+        TaskKeeper::spawn(loop, server->listen(AsynGyanis::Core::InetAddress::resolve("127.0.0.1", options.port).value()));
+    }
+    TaskKeeper::spawn(loop, watchConnections(loop, *server));
+    TaskKeeper::spawn(loop, announceReady(loop, *server, options.drainImmediately));
 
     loop.run();
     emit("STOPPED");

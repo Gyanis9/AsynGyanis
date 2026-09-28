@@ -22,12 +22,15 @@
 #include "Net/Quic/QuicConnection.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
+#include "Platform/IO/DatagramSocket.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -128,6 +131,24 @@ namespace AsynGyanis::Net
 
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration);
 
+        /**
+         * @brief 建一台**接手别人已经绑好的数据报套接字**的服务端（一条 UDP 端口交多个进程的那一步）
+         * @param eventLoop 所属事件循环
+         * @param configuration 配置（按值收：此后不再读调用方那份）
+         * @param adoptedBoundSocket 已经 bind 过的数据报套接字，所有权随之转移；本对象析构或 stop()
+         *        会关掉它——交出去的那一方此后不该再碰它
+         * @throws Base::InvalidArgumentException 交来的套接字无效（`bindTo` 失败或已被移走的那份空对象）
+         * @throws Base::SystemException 证书/私钥那几项加载失败（与按地址构造同一条口径）
+         * @details 存在的理由：Windows 没有 `SO_REUSEPORT` 的等价物，多个进程各自 bind 同一端口时内核
+         *          把全部报文交给最后绑上的那一个，其余进程一个错都不报却永远收不到报文；零停机换代里
+         *          新一代也要在同一端口上接手已绑的口。两条路都缺这一格，因为按地址构造只会自己 bind。
+         * @note 套接字从哪来由调用方决定：`Platform::DatagramSocket::adopt` 把别的进程交过来的描述符
+         *       包成本层的持有者语义，它会区分「不是 SOCK_DGRAM」「还没 bind」「描述符无效」三种不合格
+         * @note 与按地址构造的差别只在端口从哪来：本构造**不会去 bind**，端口从交来的套接字问，
+         *       `listeningPort()` 报的是真值
+         */
+        QuicServer(Core::EventLoop &eventLoop, Configuration configuration, Platform::DatagramSocket adoptedBoundSocket);
+
         ~QuicServer();
 
         QuicServer(const QuicServer &) = delete;
@@ -140,9 +161,22 @@ namespace AsynGyanis::Net
          *        收引用会把「调用方传的临时量」留到协程恢复时再用，那是悬空引用（实测 ASan 报过
          *        stack-use-after-scope）
          * @return Core::Task<> 停止时完成
+         * @throws Base::InvalidArgumentException 本对象是接手构造出来的（端口已经定在交过来的套接字上，
+         *         那种情形请调不带地址的 listen()）
          * @throws Base::Exception 证书/私钥加载失败、套接字绑定失败等启动期就该拦住的问题
          */
         [[nodiscard]] Core::Task<> listen(Core::InetAddress localAddress);
+
+        /**
+         * @brief 在接手来的套接字上开始服务（在所属事件循环上跑，直到 stop()）
+         * @return Core::Task<> 停止时完成
+         * @throws Base::InvalidArgumentException 本对象不是接手构造出来的：那种情形要调
+         *         listen(地址)，由本端自己 bind
+         * @note 交付口径与 listen(地址) 完全一致，差别只在端口与套接字都不是本端建的，因此这里
+         *       不会有「绑定失败」那一类出口
+         * @warning 本协程的帧必须活到 `stop()` 之后（与其它循环对象同一条销毁纪律）
+         */
+        [[nodiscard]] Core::Task<> listen();
 
         /**
          * @brief 请求停止：关掉套接字让收循环退出，随后由析构把连接送走
@@ -266,6 +300,26 @@ namespace AsynGyanis::Net
         static constexpr std::chrono::milliseconds kDrainPollInterval{50};
 
         /**
+         * @brief 两条公开构造的共同实现：先判接手来的套接字，再建 TLS 上下文
+         * @param eventLoop 所属事件循环
+         * @param configuration 配置（按值收：此后不再读调用方那份）
+         * @param adoptedBoundSocket 接手模式给那份已绑好的套接字，按地址模式给 `std::nullopt`
+         * @throws Base::InvalidArgumentException 接手来的套接字无效——这一判据排在创建 TLS 上下文之前，
+         *         抛出去时手上还没有需要归还的资源（构造期抛出后析构不会跑，而上下文一旦交接给成员就无人认领）
+         * @throws Base::SystemException 证书/私钥那几项加载失败
+         */
+        QuicServer(Core::EventLoop &eventLoop, Configuration configuration, std::optional<Platform::DatagramSocket> adoptedBoundSocket);
+
+        /**
+         * @brief 两条 listen 的共用主体：在已就绪的套接字上问回端口、建封装并跑收循环
+         * @details 端口与本地地址都从套接字问回来（接手来的口没有别的来源），把「端口从哪来」与
+         *          「收到报文后做什么」分开，才不会出现两种形状各有一份派发的分叉。
+         * @pre `m_datagramSocket` 有效且已 bind（由两条 listen 入口各自保证）
+         * @return Core::Task<> 收循环退出（stop() 之后）时完成
+         */
+        [[nodiscard]] Core::Task<> serveOnBoundSocket();
+
+        /**
          * @brief 定时器驱动：按「下一次真正有东西可查的时刻」检查各连接的到期
          * @details QUIC 的 PTO/空闲超时/握手超时都要在「没有报文到达」时也准时触发，因此不能只靠
          *          收到报文时顺手处理。原来是一律按固定节拍（默认 10ms）轮询——简单可预期，代价是
@@ -381,6 +435,9 @@ namespace AsynGyanis::Net
         HttpParserLimits                        m_parserLimits{};      ///< 同上，解析上限的生效份（按值：会话构造时取走副本，之后没有读者）
         SSL_CTX                                *m_tlsContext{nullptr}; ///< QUIC 用的 SSL_CTX（含证书与 ALPN）
         Platform::DatagramSocket                m_datagramSocket;      ///< 绑定的 UDP 套接字
+        /// 接手来的平台套接字：有值即「接手模式」，无参的 listen() 认它，带地址的 listen() 拒绝。
+        /// 被 listen() 转交给 m_datagramSocket 之后本项转为空
+        std::optional<Platform::DatagramSocket> m_adoptedSocket;       ///< 尚未装进本端的那份已绑好的套接字
         std::unique_ptr<Core::AsyncUdpSocket>   m_socket;              ///< 套接字的事件循环封装
         Core::Timer                             m_expiryTicker;        ///< 定时驱动的节拍定时器
         /// 实际绑定的端口：绑定成功才写入，故非 0 即「已在监听」。原子量是为了让外部线程能读这个

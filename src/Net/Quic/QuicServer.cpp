@@ -106,13 +106,33 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration) :
+    QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration) : QuicServer(eventLoop, std::move(configuration), std::nullopt)
+    {
+    }
+
+    QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration, Platform::DatagramSocket adoptedBoundSocket) :
+        QuicServer(eventLoop, std::move(configuration), std::optional<Platform::DatagramSocket>{std::move(adoptedBoundSocket)})
+    {
+    }
+
+    QuicServer::QuicServer(Core::EventLoop &eventLoop, Configuration configuration, std::optional<Platform::DatagramSocket> adoptedBoundSocket) :
         m_eventLoop(eventLoop), m_configuration(std::move(configuration)),
         // 限额的生效份在这里定一次：没给就用默认档那份 shared_ptr，此后 setLimits() 整体换掉它
         m_serverLimits(m_configuration.serverLimits == nullptr ? std::make_shared<const HttpServerLimits>() : m_configuration.serverLimits),
-        m_parserLimits(m_configuration.parserLimits), m_expiryTicker(eventLoop)
+        m_parserLimits(m_configuration.parserLimits), m_adoptedSocket(std::move(adoptedBoundSocket)), m_expiryTicker(eventLoop)
     {
-        // 构造期任一检查不过都要抛，而抛出去之后析构函数不会跑——成员那份裸指针就此无人认领。
+        // 不合格就抛，且这一判据排在**创建 TLS 上下文之前**：构造期抛出之后析构不会跑，而这份上下文
+        // 一旦 release() 交接给成员就没人认领了（实测把本判据挪到那句交接之后，容器 LSan 报出
+        // SSL_CTX_new 那一块 1784 字节的直接泄漏）。空对象的两种来历指向同一件事——调用方手里的
+        // bindTo 或 adopt 已经失败
+        if (m_adoptedSocket.has_value() && !m_adoptedSocket->isValid())
+        {
+            throw Base::InvalidArgumentException("QUIC 服务端接手数据报套接字失败：交来的套接字无效。自己绑的那一份大概是绑定就失败了"
+                                                 "（bindTo 交回空对象），跨进程接手的那一份要走 Platform::DatagramSocket::adopt，"
+                                                 "它会区分「不是 SOCK_DGRAM」「还没 bind」「描述符无效」三种不合格");
+        }
+
+        // 构造期任一检查都要抛，而抛出去之后析构函数不会跑——成员那份裸指针就此无人认领。
         // 所以先让局部守卫持有，只有全部检查过了才交接给成员（一份 SSL_CTX 连带证书与私钥约 35 KiB）
         std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> ownedTlsContext(SSL_CTX_new(TLS_server_method()), &SSL_CTX_free);
         if (ownedTlsContext == nullptr)
@@ -178,12 +198,41 @@ namespace AsynGyanis::Net
 
     Core::Task<> QuicServer::listen(Core::InetAddress localAddress)
     {
+        // 接手来的服务端不该再去 bind 一个端口：那会把交过来的套接字静默闲置，发往那个端口的报文一条
+        // 也到不了，症状与「移交没做成」一模一样。两种顺序都说不通，当场指出来
+        if (m_adoptedSocket.has_value())
+        {
+            throw Base::InvalidArgumentException("QUIC 服务端启动失败：这台服务端是接手构造出来的，端口已经定在交过来的那个套接字上；"
+                                                 "请调用不带地址的 listen()，不要再让它自己绑定端口");
+        }
+
         m_datagramSocket = Platform::DatagramSocket::bindTo(localAddress.platformAddress());
         if (!m_datagramSocket.isValid())
         {
             throw Base::SystemException("QUIC 服务端启动失败：UDP 端口绑定失败（套接字错误码 " + std::to_string(Platform::PlatformError::lastSocketErrorCode()) + "）");
         }
 
+        co_await serveOnBoundSocket();
+        co_return;
+    }
+
+    Core::Task<> QuicServer::listen()
+    {
+        // 与带地址的那条互斥：无参的 listen() 没有地址可问，而按地址构造的对象也没有别人交过来的套接字
+        if (!m_adoptedSocket.has_value())
+        {
+            throw Base::InvalidArgumentException("QUIC 服务端启动失败：这台服务端不是接手构造出来的，没有可服务的套接字；"
+                                                 "请按地址调用 listen(地址)，或在构造时把已 bind 的数据报套接字交进来");
+        }
+
+        m_datagramSocket = std::move(*m_adoptedSocket);
+        m_adoptedSocket.reset();
+        co_await serveOnBoundSocket();
+        co_return;
+    }
+
+    Core::Task<> QuicServer::serveOnBoundSocket()
+    {
         const Platform::SocketAddress boundAddress = m_datagramSocket.localAddress();
         // 端口从绑定后的地址里取：按 sockaddr_in 硬读只认得 IPv4 那种布局，而地址族跟着调用方给的
         // 地址走，IPv6 监听要按 sockaddr_in6 读

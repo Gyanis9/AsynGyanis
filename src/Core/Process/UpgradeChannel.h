@@ -73,9 +73,10 @@ namespace AsynGyanis::Core
         [[nodiscard]] std::expected<int, std::string> waitForPeer(std::chrono::milliseconds budget = std::chrono::milliseconds::zero()) noexcept;
 
         /**
-         * @brief 把已在监听的套接字交给 waitForPeer() 交回的那条通道
+         * @brief 把已 bind 的套接字交给 waitForPeer() 交回的那条通道
          * @param peerDescriptor 已连通的通道描述符（本函数不关它，交完由调用方收）
-         * @param listenDescriptor 要移交的监听套接字，必须已经 listen() 过
+         * @param listenDescriptor 要移交的套接字：TCP 侧要已 bind + listen（backlog 与已排队连接跟着走），
+         *        UDP 侧要已 bind（机制本身不限类型，交过去的类型由接收侧按头核对）
          * @param targetProcessId 接收方的进程号（Windows 按进程号认目标；POSIX 上内核自己处理，可填 0）
          * @return std::expected<void, std::string> 已完整写出；失败交中文原因
          */
@@ -91,13 +92,16 @@ namespace AsynGyanis::Core
     };
 
     /**
-     * @brief 新一代这一侧：连上交接通道并取回移交来的监听套接字
-     * @details 取回的描述符是**已在监听**的，backlog 与已排队的连接一并跟过来，因此接手方直接
-     *          用它起服务即可（Net 侧各服务器都有「接管已监听描述符」的构造入口）。
+     * @brief 新一代这一侧：连上交接通道并取回移交来的套接字
+     * @details 取回的描述符带着交出方的状态：TCP 侧**已在监听**（backlog 与已排队的连接一并跟过来），
+     *          UDP 侧**已经 bind**。Net 侧各服务器都有接手的构造入口——TCP 那几台收裸描述符
+     *          （TcpServer/HttpServer/HttpsServer），数据报那两台收 `Platform::DatagramSocket`
+     *          （先过 Platform::DatagramSocket::adopt），因此取回之后直接起服务即可。
      * @param address UpgradeChannel::address() 给出的地址文本
      * @param connectBudget 连不上时的重试预算：交棒方可能还在准备通道，一次失败不算问题。
      *        预算用完即失败，不无限期等下去
-     * @return std::expected<int, std::string> 可直接 accept() 的监听描述符；失败交中文原因
+     * @return std::expected<int, std::string> 接手方可直接 accept()（TCP）或 recvfrom()（UDP）的描述符；
+     *         失败交中文原因
      */
     [[nodiscard]] std::expected<int, std::string> adoptHandedOverListener(std::string_view address, std::chrono::milliseconds connectBudget);
 } // namespace AsynGyanis::Core

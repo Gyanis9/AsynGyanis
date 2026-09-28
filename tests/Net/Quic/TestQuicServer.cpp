@@ -10,6 +10,7 @@
 #include "Net/Quic/QuicServer.h"
 
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
@@ -18,6 +19,9 @@
 #include "Core/Tls/TlsPolicy.h"
 #include "Net/Http/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
+#include "Platform/IO/DatagramSocket.h"
+#include "Platform/IO/Socket.h"
+#include "Platform/System/PlatformError.h"
 
 #include "CoreTestSupport.h"
 
@@ -37,8 +41,15 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using AsynGyanis::Core::TestSupport::captureCoroutineFailure;
+        using AsynGyanis::Core::TestSupport::EventLoopThread;
+        using AsynGyanis::Core::TestSupport::waitForCondition;
+
         /// 夹具等待上限
         constexpr std::chrono::milliseconds kWaitTimeout{8000};
+
+        /// 对端等一条报文/一个结果的有界上限：回环上本该在毫秒级完成，超了就是没回来
+        constexpr std::chrono::milliseconds kPeerWaitTimeout{5000};
 
         /// 服务器证书与私钥（与 TLS 用例共用同一份夹具）
         std::string certificatePath()
@@ -49,6 +60,18 @@ namespace AsynGyanis::Net
         std::string privateKeyPath()
         {
             return std::string(TEST_FIXTURES_DIR) + "/test_key.pem";
+        }
+
+        /**
+         * @brief 造一份只填了证书与私钥的配置：接手那几条用例不关心其余档位
+         * @return QuicServer::Configuration 可直接交给构造的配置
+         */
+        QuicServer::Configuration makeServerConfiguration()
+        {
+            QuicServer::Configuration configuration;
+            configuration.certificateFile = certificatePath();
+            configuration.privateKeyFile  = privateKeyPath();
+            return configuration;
         }
 
         /**
@@ -65,9 +88,11 @@ namespace AsynGyanis::Net
              * @param idleTimeout 空闲/握手超时
              * @param perIpConnectionLimiter 单来源并发上限的限额器；空表示不按来源限制
              * @param sessionTicketKeyFiles 会话票据密钥文件列表；空表示按 OpenSSL 默认
+             * @param adoptedBoundSocket 接手模式：给一份别人已经绑好的数据报套接字，本夹具改用
+             *        不带地址的 listen()；给空则按老写法自己绑一个端口
              */
             explicit RunningQuicServer(const std::chrono::seconds idleTimeout = std::chrono::seconds{30}, std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter = nullptr,
-                                       std::vector<std::string> sessionTicketKeyFiles = {})
+                                       std::vector<std::string> sessionTicketKeyFiles = {}, std::optional<Platform::DatagramSocket> adoptedBoundSocket = std::nullopt)
             {
                 QuicServer::Configuration configuration;
                 configuration.certificateFile        = certificatePath();
@@ -76,8 +101,16 @@ namespace AsynGyanis::Net
                 configuration.perIpConnectionLimiter = std::move(perIpConnectionLimiter);
                 configuration.sessionTicketKeyFiles  = std::move(sessionTicketKeyFiles);
 
-                m_server = std::make_unique<QuicServer>(m_loop, configuration);
-                m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
+                if (adoptedBoundSocket.has_value())
+                {
+                    m_server = std::make_unique<QuicServer>(m_loop, configuration, std::move(*adoptedBoundSocket));
+                    m_listenTask.emplace(m_server->listen());
+                }
+                else
+                {
+                    m_server = std::make_unique<QuicServer>(m_loop, configuration);
+                    m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
+                }
                 // 在起线程之前把自己排进所属循环的就绪队列：调度器只在循环线程上跑，
                 // 这里还在创建者线程上，于是这一次排入是「归属线程内」的合法调用
                 m_loop.scheduler().schedule(m_listenTask->handle());
@@ -104,6 +137,12 @@ namespace AsynGyanis::Net
             RunningQuicServer(const RunningQuicServer &) = delete;
 
             RunningQuicServer &operator=(const RunningQuicServer &) = delete;
+
+            /// 循环线程发布出来的本端端口（构造期已等到非 0；这里读的是那一份快照）
+            [[nodiscard]] std::uint16_t listeningPort() const noexcept
+            {
+                return m_listeningPort.load(std::memory_order_acquire);
+            }
 
         private:
             /**
@@ -426,6 +465,85 @@ namespace AsynGyanis::Net
         replacementParser.maximumHeaderCount = 5;
         server.setParserLimits(replacementParser);
         EXPECT_EQ(server.parserLimits().maximumHeaderCount, 5U);
+    }
+
+    /**
+     * @brief 端口由别人 bind、服务端只接手：h3 监听器在接手来的那条端口上就位
+     * @details 跨进程共享一条 UDP 端口在 worker 侧就是这一形状（Windows 上多个进程各自 bind 同一端口
+     *          不分摊，只能这么交）。判据落在「发布出来的端口就是交过来那一个」：接手那条路若偷偷
+     *          自己再绑一次，端口必然对不上，那种服务端看着在监听、对端往原端口发的报文却一条也进不来。
+     * @note 「能不能真做成一次握手」不在这里判——本文件的规矩是不把自家客户端当裁判。那一格由
+     *       scripts/quic_cross_check.sh 的 --adopt-through-self-channel 档对着 aioquic 验
+     */
+    TEST(QuicServer, ServesThePortOfTheSocketSomeoneElseBound)
+    {
+        // 用例自己初始化套接字库：ctest 逐用例起进程，绑定的动作不能指望别的用例顺带做过
+        const Platform::Socket::Initialization network;
+        Platform::DatagramSocket               boundSocket = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(boundSocket.isValid()) << "夹具绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        const Platform::SocketAddress boundAddress = boundSocket.localAddress();
+        const std::uint16_t           boundPort    = Core::InetAddress(boundAddress.storage, boundAddress.length).port();
+        ASSERT_NE(boundPort, 0U);
+
+        RunningQuicServer serving(std::chrono::seconds{30}, nullptr, {}, std::move(boundSocket));
+
+        EXPECT_EQ(serving.listeningPort(), boundPort) << "接手模式下端口该来自交来的那份套接字，而不是自己再绑一个";
+    }
+
+    /**
+     * @brief 两种启动顺序不许混用：接手来的不许再 bind，按地址来的不许无参启动
+     * @details 混用的后果都是静默的：接手来的服务端再去 bind 会把交过来的套接字闲置，对端往那个端口
+     *          发的报文一条也到不了，症状与「移交没做成」一模一样；反过来无参的 listen() 落在按地址
+     *          构造的对象上没有套接字可服务。两种都只可能出自调用方写错，所以当场点名而不是挑一种继续。
+     * @note listen() 是惰性协程：抛出点在首次恢复时，`EXPECT_THROW(server.listen(...))` 只构造了协程帧、
+     *       什么都测不到，因此两条帧都要投给循环真跑一遍再接异常
+     */
+    TEST(QuicServer, RejectsMixingTheAdoptedSocketWithAnAddress)
+    {
+        // 声明顺序就是销毁顺序的反面：循环最先声明（最后销毁），服务端在它之后、驱动帧再后，
+        // 后台循环包装器最后声明（最先销毁、析构里 join）——服务端持有套接字，必须晚于循环停止才销毁
+        Core::EventLoop                        loop;
+        const Platform::Socket::Initialization network;
+        QuicServer::Configuration              configuration = makeServerConfiguration();
+        Platform::DatagramSocket               boundSocket   = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(boundSocket.isValid()) << "夹具绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+
+        QuicServer adopting(loop, configuration, std::move(boundSocket));
+        QuicServer binding(loop, makeServerConfiguration());
+        std::optional<Core::Task<void>> adoptingWithAddress;
+        std::optional<Core::Task<void>> bindingWithoutAddress;
+        EventLoopThread                 loopThread{loop};
+
+        std::string       adoptingReason;
+        std::string       bindingReason;
+        std::atomic<bool> isAdoptingRejected{false};
+        std::atomic<bool> isBindingRejected{false};
+
+        adoptingWithAddress.emplace(captureCoroutineFailure(adopting.listen(Core::InetAddress("127.0.0.1", 0)), adoptingReason, isAdoptingRejected));
+        bindingWithoutAddress.emplace(captureCoroutineFailure(binding.listen(), bindingReason, isBindingRejected));
+        loopThread.loop().scheduler().scheduleRemote(adoptingWithAddress->handle());
+        loopThread.loop().scheduler().scheduleRemote(bindingWithoutAddress->handle());
+
+        EXPECT_TRUE(waitForCondition([&] { return isAdoptingRejected.load(std::memory_order_acquire); }, kPeerWaitTimeout))
+                << "接手来的服务端调带地址的 listen() 没被拒：那份套接字会被静默闲置";
+        EXPECT_NE(adoptingReason.find("接手"), std::string::npos) << adoptingReason;
+        EXPECT_TRUE(waitForCondition([&] { return isBindingRejected.load(std::memory_order_acquire); }, kPeerWaitTimeout))
+                << "按地址构造的服务端调不带地址的 listen() 没被拒：没有可服务的套接字";
+        EXPECT_NE(bindingReason.find("接手"), std::string::npos) << bindingReason;
+    }
+
+    /**
+     * @brief 空对象（绑定失败或已被移走的那一份）不许当成接手来的一格：构造当场拒
+     * @details 那种服务端跑起来是「一条报文也收不到的空壳」，而原因在调用方手里——自己 bind 的那份
+     *          大概绑定就失败了，跨进程接手的那份没走 DatagramSocket::adopt。判据排在创建 TLS 上下文
+     *          之前：构造期抛出之后析构不会跑，而上下文一旦 `release()` 交接给成员就无人认领（实测把
+     *          本判据挪到那句交接之后，容器 LSan 报出 SSL_CTX_new 那一块 1784 字节的直接泄漏）
+     */
+    TEST(QuicServer, RejectsAnAdoptedSocketThatIsNotUsable)
+    {
+        Core::EventLoop           loop;
+        QuicServer::Configuration configuration = makeServerConfiguration();
+        EXPECT_THROW(QuicServer server(loop, configuration, Platform::DatagramSocket{}), Base::InvalidArgumentException);
     }
 
 
