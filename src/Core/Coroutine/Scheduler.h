@@ -30,8 +30,8 @@ namespace AsynGyanis::Core
      *          偷到别的循环执行会破坏亲和性并引入数据竞争；跨循环的负载均衡发生在接受层
      *          （每循环一个监听器 + SO_REUSEPORT），不发生在就绪队列层。
      * @note 本类非线程安全，除 scheduleRemote() 与 postRemote() 这两个投递入口、以及只读原子计数的
-     *       remotePendingCount() 之外，其他成员函数（含 hasWork() 与 runOne()/runAll()）都应由所属
-     *       EventLoop 线程调用。
+     *       remotePendingCount() 与 failedDispatchCount() 之外，其他成员函数（含 hasWork() 与 runOne()/runAll()）
+     *       都应由所属 EventLoop 线程调用。
      */
     class Scheduler
     {
@@ -87,7 +87,9 @@ namespace AsynGyanis::Core
          * @details 用于「动作不属于任何协程帧」的跨循环移交（如把刚接受的连接交给另一个循环接手）：
          *          它必须在目标循环的线程上创建对象并挂进那边的在途表，语义与 scheduleRemote() 一致。
          * @param callable 待执行的可调用对象；空对象（未绑定任何函数）会被忽略
-         * @note **异常会向目标循环传播**（与 resume() 抛出相同），投递方应保证自己不抛：需要兜住的错误在可调用对象内部处理
+         * @note **可调用对象抛出的异常不会传到投递方，也不会穿出目标循环**：它在所属循环的派发级
+         *       守卫里被就地收下（计入 failedDispatchCount()，首条告警）。此前这里是「异常向目标循环
+         *       传播」，而那条传播链的终点是线程入口——一条坏投递会带走整条循环和它上面的全部连接。
          * @note 目标循环若在轮到它之前就退出，队列里尚未执行的对象会被丢弃——持有系统资源的投递方应包在 RAII 句柄里
          */
         void postRemote(std::function<void()> callable);
@@ -95,12 +97,16 @@ namespace AsynGyanis::Core
         /**
          * @brief 执行一个就绪协程
          * @return true 表示成功执行了一个协程，false 表示无任务可执行
+         * @note 被执行的协程或可调用对象抛出时就地收下并计数，不向调用方传播（与 runAll() 同一口径）
          */
         bool runOne();
 
         /**
          * @brief 执行所有就绪协程：本地队列清空，跨线程队列每趟最多取 kMaximumRemoteItemsPerPass 件就返回
          * @note 返回时若跨线程队列还有剩余，hasWork() 仍为真，调用方下一趟接着取（不会丢也不会误判空闲）
+         * @note 每一批**全部跑完**，单条抛出既不丢掉同批其余、也不向调用方传播：计入
+         *       failedDispatchCount() 并在首条告警。早先是「跑完整批再把首个异常重抛」，
+         *       而 runAll() 的调用点是事件循环的泵——那等于让一条坏投递停掉整条循环
          */
         void runAll();
 
@@ -125,7 +131,44 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] std::size_t remotePendingCount() const noexcept;
 
+        /**
+         * @brief 被派发级守卫就地收下的抛出条数（协程恢复与投递的可调用对象合并计数）
+         * @details 这是一条「循环还活着、但有人在里面抛」的判据：此前抛出会沿传播链停掉整条循环，
+         *          于是「一条坏投递」与「整个 worker 不再服务」之间没有任何可观测的中间态。
+         *          与 remotePendingCount() 同理，本函数只读原子计数，因此任意线程可调。
+         * @return std::size_t 累计条数
+         */
+        [[nodiscard]] std::size_t failedDispatchCount() const noexcept;
+
     private:
+        /**
+         * @brief 记下一条被派发级守卫收下的抛出：先计数，再在首条时告警
+         * @note 必须在 catch 块内调用（要取 std::current_exception() 的原文）。告警自身失败时
+         *       只吞掉告警：计数已经落定，不能让日志通路反过来把异常重新放出去
+         */
+        void noteDispatchFailure();
+
+        /**
+         * @brief 执行一条派发体，把它抛出的异常就地收下并计数
+         * @tparam Work 无参可调用体（std::function 或捕获式 lambda）
+         *
+         * @details 派发点的兜底要逐处写就会漂移：本类有 12 处「执行别人投进来的东西」，
+         *          其中几处原先漏了守卫，同一条循环因此对本地投递和跨线程投递给出两种失败语义。
+         *          收成一处之后，新增派发点只需包一层。
+         * @param work 待执行的派发体
+         */
+        template<typename Work>
+        void runGuarded(Work &&work)
+        {
+            try
+            {
+                work();
+            } catch (...)
+            {
+                noteDispatchFailure();
+            }
+        }
+
         std::vector<std::coroutine_handle<>> m_localQueue;             ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
         std::deque<std::function<void()>>    m_localCallables;         ///< 本地待执行代码（同上无锁，先进先出）
         std::deque<std::coroutine_handle<>>  m_globalQueue;            ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
@@ -133,6 +176,7 @@ namespace AsynGyanis::Core
         std::mutex                           m_globalMutex;            ///< 保护全局队列与跨线程回调队列的互斥锁
         std::atomic<size_t>                  m_globalCount{0};         ///< 全局队列长度（原子变量，用于快速判空）
         std::atomic<size_t>                  m_remoteCallableCount{0}; ///< 跨线程回调条数（同上，用于快速判空）
+        std::atomic<std::size_t>             m_failedDispatchCount{0}; ///< 被派发级守卫就地收下的抛出条数（任意线程可读，见 failedDispatchCount()）
         Platform::EventNotifier             *m_wakeup{nullptr};        ///< 唤醒器指针，nullptr 表示未启用唤醒
     };
 } // namespace AsynGyanis::Core

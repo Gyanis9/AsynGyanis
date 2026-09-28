@@ -44,6 +44,9 @@ namespace AsynGyanis::Core
      *          ——被怀疑卡住的循环恰恰没法应答，能隔着线程读才有诊断价值。
      * @note 循环停下之后相位与相位起点都停在最后一次记账的值上，判「还在不在跑」要读 isRunning()，
      *       不能只看相位已经持续多久
+     * @note stoppedByFailure 与 failedDispatchCount 一起回答「这条循环是干净停的还是被一次抛出
+     *       带走的」：只读 isRunning() 看不出这两种的区别，而后者意味着还有别的循环在跑、
+     *       threadCount() 照样报原数
      */
     struct EventLoopSnapshot
     {
@@ -54,6 +57,8 @@ namespace AsynGyanis::Core
         std::uint64_t                         completedWorkingSegments{};   ///< 已跑完的工作段条数，一条等于「一轮里不含等待的那段」
         std::chrono::microseconds             slowestWorkingSegment{};      ///< 历史最慢的一条工作段（高水位，只升不降）
         std::size_t                           remotePendingCount{};         ///< 跨线程投递里还没被取走的件数（本地就绪队列不在内）
+        bool                                  stoppedByFailure{};             ///< run() 是否因逃逸到循环层的异常而收口（区别于 stop() 的正常停止）
+        std::size_t                           failedDispatchCount{};          ///< 本循环派发时被守卫就地收下的抛出条数（见 Scheduler::failedDispatchCount）
     };
 
     /**
@@ -120,7 +125,12 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 启动事件循环（阻塞当前线程）
-         * @note 持续处理就绪事件与协程任务，直到 stop() 被调用或发生未捕获的错误
+         * @note 持续处理就绪事件与协程任务，直到 stop() 被调用或发生逃逸到循环层的异常
+         * @note **本函数不向调用方抛异常**：它的调用点绝大多数是裸线程入口（线程池的工作线程、
+         *       遥测导出线程、示例与测试夹具里的 std::thread），让异常从那里穿出去就是
+         *       std::terminate，整个进程连同在途请求一起没。逃逸到这一层的异常就地收下、
+         *       置 stoppedByFailure 后正常返回；派发级的异常更早就被 Scheduler 与 IoWatcher
+         *       逐条收下了，走到这里说明是循环自身的设施出问题（例如后端 wait 失败）。
          */
         void run();
 
@@ -211,6 +221,7 @@ namespace AsynGyanis::Core
         int                     m_wakeupSentinel; ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）
         std::atomic<bool>       m_running;        ///< 循环是否正在运行中（原子标记）
         std::atomic<bool>       m_stopRequested;  ///< 是否已请求停止（原子标记，线程安全）
+        std::atomic<bool>       m_stoppedByFailure{false}; ///< run() 是否被逃逸到循环层的异常带走（任意线程可读，进快照）
         /// 自观测那一组量：只有本循环的线程写，任意线程读，因此全是原子量且不需要与登记表配合
         std::atomic<LoopPhase>       m_phase{LoopPhase::NotStarted};   ///< 当前相，最后发布（见 enterPhase）
         std::atomic<std::int64_t>    m_phaseStartedAtNanos{0};         ///< 当前相的起点：steady 纪元的纳秒

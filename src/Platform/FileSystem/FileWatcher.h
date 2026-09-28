@@ -131,6 +131,17 @@ namespace AsynGyanis::Platform
          */
         void setDebounceInterval(std::chrono::milliseconds interval) noexcept;
 
+        /**
+         * @brief 用户回调抛出后，被监听侧就地收下的条数
+         *
+         * @details 回调是消费方注册的代码（配置热加载就走这条路），它抛出既不该带走监听线程
+         *          ——线程体抛穿就是 std::terminate——也不该丢掉同一批里其余的通知。
+         *          计数是这里唯一可用的上报出口：Platform 在 Base 之下（Base 依赖 Platform），
+         *          监听侧没有日志通路可调用，所以「报过」这件事只能由调用方主动读。
+         * @return std::uint64_t 累计条数
+         */
+        [[nodiscard]] std::uint64_t failedCallbackCount() const noexcept;
+
     protected:
         /**
          * @brief 构造函数仅供平台实现类调用
@@ -147,6 +158,21 @@ namespace AsynGyanis::Platform
          * @note 仅供监听线程调用：防抖表不做并发保护，各实现只在自己的读取线程内调用本方法
          */
         [[nodiscard]] bool shouldDispatchChange(const std::string &filePath);
+
+        /**
+         * @brief 调用一次用户回调，把它的抛出就地收下并计数
+         *
+         * @details 两侧平台实现共用这一份兜底：回调调用点各自写 try 就会漂移，
+         *          而漏掉的那处不是「少一条日志」——监听线程是 jthread 的线程体，
+         *          抛穿出去整个进程没。空回调按「未注册」处理，不算失败。
+         * @param callback 待调用的回调快照（调用方在自己的锁里取好，本函数不再取锁）
+         * @param filePath 变更路径；changeType 为 NeedsRescan 时是被监视的目录
+         * @param changeType 变更事件类型
+         */
+        void notifyChange(const FileChangeCallback &callback, std::string_view filePath, FileChangeType changeType) noexcept;
+
+        /// 用户回调抛出的累计条数，见 failedCallbackCount()
+        std::atomic<std::uint64_t> m_failedCallbackCount{0};
 
         /// 防抖间隔（毫秒）。用原子量存取：setDebounceInterval() 允许在监听运行期间调用，
         /// 而读它的监听线程与写它的调用线程之间没有任何锁（防抖表本身只归监听线程）

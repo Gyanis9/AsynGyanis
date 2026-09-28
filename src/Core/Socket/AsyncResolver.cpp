@@ -209,6 +209,11 @@ namespace AsynGyanis::Core
         /**
          * @brief 在后台线程执行阻塞的 getaddrinfo，完成后通过 postRemote 唤醒调用方协程
          * @details 本次解析占住的名额挂在 state->slot 上，由这份状态负责归还，本函数不另设计数
+         * @note 本函数跑在**分离线程**上且体内不抛：分离线程没人 join，异常穿出线程体就是
+         *       std::terminate；而更坏的后果是漏掉末尾那两次收尾——等待方是挂在 postRemote 上的
+         *       协程，本函数一退出就再没人有第二次机会叫它，漏投递就是永久挂起。
+         *       因此收集阶段的分配失败（vector 增长、InetAddress 里的字符串）就地收下，
+         *       按「已收集到的地址」这一份不完整结果照常交付。
          */
         void blockingResolve(const std::string host, const uint16_t port, EventLoop *targetLoop, std::shared_ptr<ResolveState> state)
         {
@@ -225,34 +230,43 @@ namespace AsynGyanis::Core
             hints.ai_socktype = SOCK_STREAM;
             hints.ai_flags    = AI_ADDRCONFIG;
 
-            const std::string portString = std::to_string(port);
-
             addrinfo *result = nullptr;
-            if (getaddrinfo(host.c_str(), portString.c_str(), &hints, &result) != 0)
+            try
             {
-                // 解析失败：返回空列表
-                deliverResult(targetLoop, state);
-                return;
-            }
-
-            // 两趟收集把 IPv6 挪到末尾：返回列表按「IPv4 在前、IPv6 在后」的契约排列
-            std::vector<InetAddress> v6Addresses;
-            for (auto *rp = result; rp != nullptr; rp = rp->ai_next)
-            {
-                if (rp->ai_addr->sa_family == AF_INET6)
+                const std::string portString = std::to_string(port);
+                if (getaddrinfo(host.c_str(), portString.c_str(), &hints, &result) == 0)
                 {
-                    v6Addresses.emplace_back(*reinterpret_cast<sockaddr_in6 *>(rp->ai_addr));
-                } else if (rp->ai_addr->sa_family == AF_INET)
-                {
-                    state->addresses.emplace_back(*reinterpret_cast<sockaddr_in *>(rp->ai_addr));
+                    // 两趟收集把 IPv6 挪到末尾：返回列表按「IPv4 在前、IPv6 在后」的契约排列
+                    std::vector<InetAddress> v6Addresses;
+                    for (auto *rp = result; rp != nullptr; rp = rp->ai_next)
+                    {
+                        if (rp->ai_addr->sa_family == AF_INET6)
+                        {
+                            v6Addresses.emplace_back(*reinterpret_cast<sockaddr_in6 *>(rp->ai_addr));
+                        } else if (rp->ai_addr->sa_family == AF_INET)
+                        {
+                            state->addresses.emplace_back(*reinterpret_cast<sockaddr_in *>(rp->ai_addr));
+                        }
+                    }
+                    for (auto &address: v6Addresses)
+                    {
+                        state->addresses.push_back(std::move(address));
+                    }
                 }
-            }
-            for (auto &address: v6Addresses)
+                // getaddrinfo 非 0 不是异常路径：它按文档就是「解析失败、返回空列表」
+            } catch (const std::exception &failure)
             {
-                state->addresses.push_back(std::move(address));
+                LOG_ERROR_EXCEPTION(failure, "AsyncResolver: 后台解析线程抛出异常，本次解析按已收集到的地址收尾（原因：{}）", failure.what());
+            } catch (...)
+            {
+                LOG_ERROR("AsyncResolver: 后台解析线程抛出异常，本次解析按已收集到的地址收尾（非标准异常）");
             }
-            freeaddrinfo(result);
 
+            // 释放与唤醒排在兜底之外，任何一条出口都必须走到
+            if (result != nullptr)
+            {
+                freeaddrinfo(result);
+            }
             deliverResult(targetLoop, state);
         }
     } // namespace

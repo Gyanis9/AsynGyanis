@@ -1,6 +1,7 @@
 #include "Net/Tracing/Tracer.h"
 
 #include "Base/Exception/LogicException.h"
+#include "Base/Log/LogMacros.h"
 
 #include <algorithm>
 #include <cmath>
@@ -307,53 +308,77 @@ namespace AsynGyanis::Net
 
     void Tracer::workerLoop(const std::stop_token &stopToken)
     {
-        // 下一次按时出口的时刻：每交付一次就重新计，于是「攒够一批」的快节奏不会把时限一路推后
-        auto nextDeadline = std::chrono::steady_clock::now() + m_configuration.exportInterval;
-
-        // 可以交付的三种时机：攒够一批、有人在等 flush()、被要求停止。到点另判（见下面那句）
-        const auto isDeliveryRequested = [this, &stopToken]
-        { return m_pending.size() >= m_configuration.exportBatchSpanCount || m_flushRequestCount > 0U || stopToken.stop_requested(); };
-
-        while (!stopToken.stop_requested())
+        // 本函数是 jthread 的线程体：抛穿出去就是 std::terminate，一整条业务进程不该因为
+        // 遥测导出器里的一次分配失败而没。异常之后不再回到导出循环（继续转可能是在一个坏掉的
+        // 缓冲状态上热转），但残留那一批仍要交出去——理由见下面收尾段的原注释。
+        try
         {
-            std::vector<SpanRecord> batch;
-            {
-                std::unique_lock lock(m_stateMutex);
-                // 三个出口：攒够一批、到一个时限、被要求停止。时限那条是给低频进程留的——
-                // 没有它，一两条节会一直躺在缓冲里等到进程退出
-                m_workCondition.wait_until(lock, nextDeadline, isDeliveryRequested);
+            // 下一次按时出口的时刻：每交付一次就重新计，于是「攒够一批」的快节奏不会把时限一路推后
+            auto nextDeadline = std::chrono::steady_clock::now() + m_configuration.exportInterval;
 
-                // 白叫一次不算条件：既没攒够、没人等、也没到点也没要停，就接着睡。标准允许条件变量
-                // 在无通知时提前返回，把「取走全部残留」这一步交给这种返回，用例里「一批一次交付」
-                // 的计数就会随机器快慢漂移
-                const bool isDeadlineReached = std::chrono::steady_clock::now() >= nextDeadline;
-                if (!isDeliveryRequested() && !isDeadlineReached)
-                {
-                    continue;
-                }
-                batch        = takeBatchLocked(m_configuration.exportBatchSpanCount);
-                nextDeadline = std::chrono::steady_clock::now() + m_configuration.exportInterval;
-            }
-            if (!batch.empty())
+            // 可以交付的三种时机：攒够一批、有人在等 flush()、被要求停止。到点另判（见下面那句）
+            const auto isDeliveryRequested = [this, &stopToken]
+            { return m_pending.size() >= m_configuration.exportBatchSpanCount || m_flushRequestCount > 0U || stopToken.stop_requested(); };
+
+            while (!stopToken.stop_requested())
             {
-                static_cast<void>(dispatchBatch(std::move(batch)));
+                std::vector<SpanRecord> batch;
+                {
+                    std::unique_lock lock(m_stateMutex);
+                    // 三个出口：攒够一批、到一个时限、被要求停止。时限那条是给低频进程留的——
+                    // 没有它，一两条节会一直躺在缓冲里等到进程退出
+                    m_workCondition.wait_until(lock, nextDeadline, isDeliveryRequested);
+
+                    // 白叫一次不算条件：既没攒够、没人等、也没到点也没要停，就接着睡。标准允许条件变量
+                    // 在无通知时提前返回，把「取走全部残留」这一步交给这种返回，用例里「一批一次交付」
+                    // 的计数就会随机器快慢漂移
+                    const bool isDeadlineReached = std::chrono::steady_clock::now() >= nextDeadline;
+                    if (!isDeliveryRequested() && !isDeadlineReached)
+                    {
+                        continue;
+                    }
+                    batch        = takeBatchLocked(m_configuration.exportBatchSpanCount);
+                    nextDeadline = std::chrono::steady_clock::now() + m_configuration.exportInterval;
+                }
+                if (!batch.empty())
+                {
+                    static_cast<void>(dispatchBatch(std::move(batch)));
+                }
             }
+        } catch (const std::exception &failure)
+        {
+            LOG_ERROR_EXCEPTION(failure, "Tracer: 链路导出线程抛出异常，本进程不再主动导出节（原因：{}）。退出前仍会把已缓冲的节交出去", failure.what());
+        } catch (...)
+        {
+            LOG_ERROR("Tracer: 链路导出线程抛出异常（非标准异常），本进程不再主动导出节。退出前仍会把已缓冲的节交出去");
         }
 
         // 停止之后仍要把残留送出去：正常退出时最后那一批里有正在处理的请求的链路，
         // 那恰好是最需要看的一段。accept() 在停止后不再收新的，因此这个循环一定结束
-        for (;;)
+        //
+        // 这一段单独兜住：上面那条出口路径可能就是异常来的地方，收尾再抛一次就不该把
+        // 线程体带走（它是 jthread 的线程体，抛穿即 terminate）
+        try
         {
-            std::vector<SpanRecord> batch;
+            for (;;)
             {
-                const std::lock_guard lock(m_stateMutex);
-                batch = takeBatchLocked(m_configuration.exportBatchSpanCount);
+                std::vector<SpanRecord> batch;
+                {
+                    const std::lock_guard lock(m_stateMutex);
+                    batch = takeBatchLocked(m_configuration.exportBatchSpanCount);
+                }
+                if (batch.empty())
+                {
+                    break;
+                }
+                static_cast<void>(dispatchBatch(std::move(batch)));
             }
-            if (batch.empty())
-            {
-                break;
-            }
-            static_cast<void>(dispatchBatch(std::move(batch)));
+        } catch (const std::exception &failure)
+        {
+            LOG_ERROR_EXCEPTION(failure, "Tracer: 收尾导出残留节时抛出异常，未交出的那部分已丢弃（原因：{}）", failure.what());
+        } catch (...)
+        {
+            LOG_ERROR("Tracer: 收尾导出残留节时抛出异常（非标准异常），未交出的那部分已丢弃");
         }
     }
 

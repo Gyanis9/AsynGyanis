@@ -19,6 +19,7 @@
 #include <chrono>
 #include <coroutine>
 #include <cstdio>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -436,6 +437,94 @@ namespace AsynGyanis::Core
         EXPECT_LE(single.totalAllocations, kMaximumBlocksPerThousandPosts) << "孤立投递的堆块数越界：队列快退化成每投一条各要一块了";
         EXPECT_LE(batch.totalAllocations, kMaximumBlocksPerThousandPosts * kBatchSize) << "成批投递的堆块数越界：同上，这条量的是六万四千条投递摊到多少块上";
 #endif
+    }
+
+    /**
+     * @brief 本地投递抛出时：就地收下、同批其余照跑、计数落账，且不向调用方传播
+     * @details 钉住的是「派发级守卫」这条契约。改回旧写法有两红路：第一阶段完全没有守卫
+     *          （异常穿出 runAll，同批剩下的本地投递连同持有物被静默析构），或跑完整批后
+     *          把首个异常重抛出去（旧的第二阶段就是这样）——后者的调用点是事件循环的泵，
+     *          等于让一条坏投递停掉整条循环
+     */
+    TEST(Scheduler, ThrowingLocalDispatchIsContainedAndCounted)
+    {
+        Scheduler scheduler;
+
+        std::atomic<bool> siblingRan{false};
+        scheduler.postLocal([]() { throw std::runtime_error("用例造的本地投递抛出"); });
+        scheduler.postLocal([&siblingRan]() { siblingRan.store(true, std::memory_order_release); });
+
+        EXPECT_NO_THROW(scheduler.runAll()) << "一次本地投递的抛出被传播给调用方，而调用方通常是事件循环的泵";
+
+        EXPECT_TRUE(siblingRan.load(std::memory_order_acquire)) << "同批其余投递被一次抛出带走：调用方是按「投了就一定会跑」写代码的";
+        EXPECT_EQ(scheduler.failedDispatchCount(), 1U) << "被收下的抛出没有记账：「循环还活着、但有人在里面抛」重新变成不可观测";
+
+        // 计数只在真抛时抬：正常投递不得把账带歪
+        std::atomic<bool> laterRan{false};
+        scheduler.postLocal([&laterRan]() { laterRan.store(true, std::memory_order_release); });
+        EXPECT_NO_THROW(scheduler.runAll());
+        EXPECT_TRUE(laterRan.load(std::memory_order_acquire));
+        EXPECT_EQ(scheduler.failedDispatchCount(), 1U) << "正常投递也被计入失败数：这条计数不能再用来判有没有真出过事";
+    }
+
+    /**
+     * @brief 跨线程投递抛出时：同前一条口径（两条队列不得有两种失败语义）
+     */
+    TEST(Scheduler, ThrowingRemoteDispatchIsContainedAndCounted)
+    {
+        Scheduler scheduler;
+
+        std::atomic<bool> siblingRan{false};
+        scheduler.postRemote([]() { throw std::runtime_error("用例造的跨线程投递抛出"); });
+        scheduler.postRemote([&siblingRan]() { siblingRan.store(true, std::memory_order_release); });
+
+        EXPECT_NO_THROW(scheduler.runAll()) << "旧写法会在跑完整批之后把首个异常重抛给调用方";
+        EXPECT_TRUE(siblingRan.load(std::memory_order_acquire)) << "同批其余投递被一次抛出带走";
+        EXPECT_EQ(scheduler.failedDispatchCount(), 1U);
+
+        // runOne() 那条路径同样要有守卫：它是「每次只取一件」的入口，漏兜时异常一样穿到泵上
+        std::atomic<bool> oneOffRan{false};
+        scheduler.postRemote([]() { throw std::runtime_error("用例造的 runOne 路径抛出"); });
+        scheduler.postRemote([&oneOffRan]() { oneOffRan.store(true, std::memory_order_release); });
+        EXPECT_NO_THROW(static_cast<void>(scheduler.runOne())) << "runOne() 没兜住派发体的抛出";
+        EXPECT_NO_THROW(static_cast<void>(scheduler.runOne()));
+        EXPECT_TRUE(oneOffRan.load(std::memory_order_acquire)) << "runOne() 路径上同批其余投递被丢掉";
+        EXPECT_EQ(scheduler.failedDispatchCount(), 2U) << "runOne() 路径的抛出没计入同一张账";
+    }
+
+    /**
+     * @brief 一条会抛的投递不得让正在跑的循环停下来：之后的投递仍要被执行
+     * @details 这是本轮改造的正主。旧形状下，抛出沿 runAll() → EventLoop::run() 的泵传到
+     *          线程入口，线程池那条 jthread 接住后只让线程体返回——没有东西重启它，
+     *          于是 threadCount() 照样报原数，而这条循环再也不驱动任何东西。
+     */
+    TEST(Scheduler, ThrowingDispatchLeavesRunningLoopServing)
+    {
+        TestSupport::EventLoopThread runner;
+        ASSERT_TRUE(runner.waitUntilRunning());
+
+        std::atomic<bool> badRan{false};
+        std::atomic<bool> laterRan{false};
+
+        runner.loop().scheduler().postRemote(
+                [&badRan]()
+                {
+                    badRan.store(true, std::memory_order_release);
+                    throw std::runtime_error("用例造的抛出：由真在跑的循环执行");
+                });
+
+        // 等到那条坏投递确实跑过——判据是可观测的完成点，不是睡一个固定时长
+        ASSERT_TRUE(TestSupport::waitForCondition([&badRan] { return badRan.load(std::memory_order_acquire); }))
+                << "坏投递没被跑到，后面「循环仍在服务」的断言全是假绿";
+
+        runner.loop().scheduler().postRemote([&laterRan]() { laterRan.store(true, std::memory_order_release); });
+        EXPECT_TRUE(TestSupport::waitForCondition([&laterRan] { return laterRan.load(std::memory_order_acquire); }))
+                << "一次抛出的投递带走了整条循环：之后的投递再没人执行";
+
+        const auto snapshot = runner.loop().snapshot();
+        EXPECT_FALSE(snapshot.stoppedByFailure) << "循环被一次派发级抛出停掉（stoppedByFailure 置上了）";
+        EXPECT_TRUE(snapshot.isRunning) << "抛出之后循环不再运行";
+        EXPECT_GE(snapshot.failedDispatchCount, 1U) << "快照里的失败计数没跟上";
     }
 
 } // namespace AsynGyanis::Core

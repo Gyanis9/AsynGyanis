@@ -120,9 +120,17 @@ namespace AsynGyanis::Platform
         };
 
         /**
-         * @brief 监听线程主循环，等待停止事件与各目录的完成事件
+         * @brief 监听线程主循环的线程体兜底：跑 watchLoopBody()，抛出的异常就地收下并置停止标志
+         * @details 拆成两层是为了让那圈 try 只包住调用点：正文有一百多行，就地套 try 会把
+         *          整段重缩进，读起来反而更难。抛穿出去是 std::terminate，所以这里不能指望调用方。
          */
         void watchLoop();
+
+        /**
+         * @brief 监听线程主循环，等待停止事件与各目录的完成事件
+         * @note 允许抛出：唯一的调用方 watchLoop() 兜住它，并把停止标志落到 isRunning() 的口径上
+         */
+        void watchLoopBody();
 
         /**
          * @brief 解析某个目录已完成的变更通知批次

@@ -224,34 +224,46 @@ namespace AsynGyanis::Platform
     {
         while (!stopToken.stop_requested())
         {
-            pollfd descriptor{};
-            descriptor.fd     = m_inotifyFileDescriptor;
-            descriptor.events = POLLIN;
-
-            // 100ms 超时轮询，保证 stop() 请求后即使无事件也能及时退出
-            const int pollResult = ::poll(&descriptor, 1, 100);
-
-            if (pollResult < 0)
+            // 整圈兜住：本函数是 jthread 的线程体，抛穿出去就是 std::terminate。
+            // 用户回调那一层已由 FileWatcher::notifyChange 逐条兜住并计数，走到这里的只能是
+            // 监听侧自己的分配失败（读缓冲、路径拼装、重挂监视）。Platform 在 Base 之下没有
+            // 日志通路，因此把「本监听器已经停了」如实落到 isRunning() 上再收线程——
+            // 那比留一个「看着在跑、其实不再上报」的监听器可诊断
+            try
             {
-                if (PlatformError::lastErrorCode() == PlatformError::kInterrupted)
+                pollfd descriptor{};
+                descriptor.fd     = m_inotifyFileDescriptor;
+                descriptor.events = POLLIN;
+
+                // 100ms 超时轮询，保证 stop() 请求后即使无事件也能及时退出
+                const int pollResult = ::poll(&descriptor, 1, 100);
+
+                if (pollResult < 0)
                 {
+                    if (PlatformError::lastErrorCode() == PlatformError::kInterrupted)
+                    {
+                        continue;
+                    }
+                    break;
+                }
+
+                if (pollResult == 0)
+                {
+                    // 没有事件也走一遍自愈复查（下面在循环末尾统一做），这里只是别提前 continue 掉
+                    rearmMissingWatchesIfDue();
                     continue;
                 }
+
+                if ((descriptor.revents & POLLIN) != 0)
+                {
+                    processEvents();
+                }
+                rearmMissingWatchesIfDue();
+            } catch (...)
+            {
+                m_isRunning.store(false, std::memory_order_release);
                 break;
             }
-
-            if (pollResult == 0)
-            {
-                // 没有事件也走一遍自愈复查（下面在循环末尾统一做），这里只是别提前 continue 掉
-                rearmMissingWatchesIfDue();
-                continue;
-            }
-
-            if ((descriptor.revents & POLLIN) != 0)
-            {
-                processEvents();
-            }
-            rearmMissingWatchesIfDue();
         }
     }
 
@@ -381,10 +393,9 @@ namespace AsynGyanis::Platform
                 }
             }
 
-            if (callbackSnapshot)
-            {
-                callbackSnapshot(changedPath, changeType);
-            }
+            // 回调抛出的兜底与计数在基类那一侧（FileWatcher::notifyChange）：这里漏一处，
+            // 异常就会沿监听线程的线程体穿出去变成 std::terminate
+            notifyChange(callbackSnapshot, changedPath, changeType);
         }
     }
 
@@ -434,10 +445,8 @@ namespace AsynGyanis::Platform
 
         for (const auto &[callback, watchedPath]: notifications)
         {
-            if (callback)
-            {
-                callback(watchedPath, FileChangeType::NeedsRescan);
-            }
+            // 逐条兜住：一条回调抛出不该让同批其余目录收不到「该重扫」的通知
+            notifyChange(callback, watchedPath, FileChangeType::NeedsRescan);
         }
     }
 } // namespace AsynGyanis::Platform

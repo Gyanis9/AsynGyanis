@@ -367,6 +367,24 @@ namespace AsynGyanis::Platform
 
     void Win32FileWatcher::watchLoop()
     {
+        // 本函数是 jthread 的线程体：抛穿出去就是 std::terminate，整个进程连同在途请求一起没。
+        // 用户回调那一层已由 FileWatcher::notifyChange 逐条兜住并计数，走到这里的只能是监听侧
+        // 自己的分配失败（收集等待集、路径拼装、补挂监视）。Platform 在 Base 之下没有日志通路，
+        // 因此把「本监听器已停」如实落到停止标志上——isRunning() 随即报假，比留一个
+        // 「看着在跑、其实不再上报」的监听器可诊断。
+        // 实现体留在 watchLoopBody()：这一圈兜底要包住整条循环，就地套 try 会把 150 行正文
+        // 全部重缩进，抽一层反而没有可读性代价
+        try
+        {
+            watchLoopBody();
+        } catch (...)
+        {
+            m_shouldStop.store(true, std::memory_order_release);
+        }
+    }
+
+    void Win32FileWatcher::watchLoopBody()
+    {
         // 提到循环外并预留到系统上限：clear() 不回收容量，之后每轮收集不再产生堆分配。
         // 两组容器分工：all* 是本轮全部待等待的条目，eventHandles/pendingPaths 是真正交给
         // WaitForMultipleObjects 的那一批（最多 63 个目录 + 停止事件）
@@ -529,12 +547,11 @@ namespace AsynGyanis::Platform
             watchNewSubdirectories(pendingCallbacks);
 
             // 锁外批量触发回调，防止回调中增删监听路径造成死锁
-            if (callbackSnapshot)
+            // 抛出兜底与计数在基类那一侧（FileWatcher::notifyChange）：监听线程是 jthread 的
+            // 线程体，一处漏兜不是少一条日志，而是整个进程没
+            for (const auto &[changedPath, changeType]: pendingCallbacks)
             {
-                for (const auto &[changedPath, changeType]: pendingCallbacks)
-                {
-                    callbackSnapshot(changedPath, changeType);
-                }
+                notifyChange(callbackSnapshot, changedPath, changeType);
             }
         }
     }

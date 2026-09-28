@@ -1,4 +1,5 @@
 #include "Core/Coroutine/Scheduler.h"
+#include "Base/Log/LogMacros.h"
 #include "Platform/IO/EventNotifier.h"
 
 #include <exception>
@@ -85,7 +86,7 @@ namespace AsynGyanis::Core
             }
             if (callable)
             {
-                callable();
+                runGuarded(callable);
                 return true;
             }
         }
@@ -96,7 +97,7 @@ namespace AsynGyanis::Core
         {
             std::function<void()> callable = std::move(m_localCallables.front());
             m_localCallables.pop_front();
-            callable();
+            runGuarded(callable);
             return true;
         }
 
@@ -105,7 +106,7 @@ namespace AsynGyanis::Core
         {
             const auto handle = m_localQueue.back();
             m_localQueue.pop_back();
-            handle.resume();
+            runGuarded([handle] { handle.resume(); });
             return true;
         }
 
@@ -123,7 +124,7 @@ namespace AsynGyanis::Core
 
         if (globalHandle)
         {
-            globalHandle.resume();
+            runGuarded([globalHandle] { globalHandle.resume(); });
             return true;
         }
 
@@ -134,13 +135,18 @@ namespace AsynGyanis::Core
     {
         // 第一阶段：排空本地待执行代码与本地队列。两段都反复回到开头，因为前一段执行期间
         // 可能又投来新的代码（例如定时器在恢复途中又判出新的到期项）
+        //
+        // 逐条兜住：这一段原先没有守卫，而同函数里第二趟的同一份本地排空（见下面「批量处理期间
+        // 可能重新产生本地任务」那段）是兜住的——同一条循环因此对本地投递与跨线程投递给出两种
+        // 失败语义。少兜的那一种会让一条抛出的本地投递直接穿出 runAll，落到事件循环的泵上，
+        // 而剩余尚未执行的本地代码会连同其持有物一起被静默析构。
         while (true)
         {
             while (!m_localCallables.empty())
             {
                 std::function<void()> callable = std::move(m_localCallables.front());
                 m_localCallables.pop_front();
-                callable();
+                runGuarded(callable);
             }
             if (m_localQueue.empty())
             {
@@ -148,7 +154,7 @@ namespace AsynGyanis::Core
             }
             const auto handle = m_localQueue.back();
             m_localQueue.pop_back();
-            handle.resume();
+            runGuarded([handle] { handle.resume(); });
         }
 
         // 第二阶段：分批取用全局队列，防止本地任务持续产生导致全局饥饿；每批不超过
@@ -196,31 +202,22 @@ namespace AsynGyanis::Core
             if (batch.empty() && callableBatch.empty())
                 break;
 
-            // 单个回调/协程抛出不能把整批剩下的丢掉：先都跑完（只记住第一个异常），
-            // 末尾再把异常传播出去。直接让异常穿透循环的话，未执行的投递会被静默销毁、
-            // 那些协程帧永远不会被恢复（调用方按「投了就一定会跑」写代码）
-            std::exception_ptr firstException;
+            // 单个回调/协程抛出不能把整批剩下的丢掉：全部跑完，抛出的那几条就地收下并计数。
+            // 直接让异常穿透循环的话，未执行的投递会被静默销毁、那些协程帧永远不会被恢复
+            // （调用方按「投了就一定会跑」写代码）。
+            //
+            // 末尾不再把首个异常重抛出去：runAll() 的调用点是事件循环的泵，重抛等于让一条坏投递
+            // 停掉整条循环——与上面第一阶段修掉的是同一个形状。失败的可观测性改由
+            // failedDispatchCount() 与首条告警承担，「哪一条投递交了」的语义不受影响
             for (const auto &callable: callableBatch)
             {
-                try
-                {
-                    callable();
-                } catch (...)
-                {
-                    firstException = firstException ? firstException : std::current_exception();
-                }
+                runGuarded(callable);
             }
             callableBatch.clear();
 
             for (const auto &handle: batch)
             {
-                try
-                {
-                    handle.resume();
-                } catch (...)
-                {
-                    firstException = firstException ? firstException : std::current_exception();
-                }
+                runGuarded([handle] { handle.resume(); });
             }
 
             // 批量处理期间可能重新产生本地任务，再次排空（含新投来的本地代码，同一处理口径）
@@ -230,13 +227,7 @@ namespace AsynGyanis::Core
                 {
                     std::function<void()> callable = std::move(m_localCallables.front());
                     m_localCallables.pop_front();
-                    try
-                    {
-                        callable();
-                    } catch (...)
-                    {
-                        firstException = firstException ? firstException : std::current_exception();
-                    }
+                    runGuarded(callable);
                 }
                 if (m_localQueue.empty())
                 {
@@ -244,19 +235,7 @@ namespace AsynGyanis::Core
                 }
                 const auto handle = m_localQueue.back();
                 m_localQueue.pop_back();
-                try
-                {
-                    handle.resume();
-                } catch (...)
-                {
-                    firstException = firstException ? firstException : std::current_exception();
-                }
-            }
-
-            // 全部跑完之后再传播：异常语义不变（仍向目标循环抛出），但没有任何一条投递被丢掉
-            if (firstException)
-            {
-                std::rethrow_exception(firstException);
+                runGuarded([handle] { handle.resume(); });
             }
 
             // 这一批已做满上限：把控制权交回调用方，让它有机会去取 IO 事件，剩下的下一趟再取
@@ -289,6 +268,39 @@ namespace AsynGyanis::Core
         // 只读两条跨线程队列各自的原子计数：这两笔是投递方在锁外也维护着的，因此本函数不需要
         // m_globalMutex，也就不会与循环取活儿的那一趟抢锁（读到的和至差一件，观测口径可接受）
         return m_globalCount.load(std::memory_order_relaxed) + m_remoteCallableCount.load(std::memory_order_relaxed);
+    }
+
+    std::size_t Scheduler::failedDispatchCount() const noexcept
+    {
+        return m_failedDispatchCount.load(std::memory_order_relaxed);
+    }
+
+    void Scheduler::noteDispatchFailure()
+    {
+        // 计数排在告警之前：一条每次都抛的投递不该因为日志通路出问题而丢账
+        const std::size_t ordinal = m_failedDispatchCount.fetch_add(1, std::memory_order_relaxed);
+        if (ordinal != 0)
+        {
+            // 只取上升沿：抛出源可能每批都命中，逐条打等于把日志交给那个坏投递方刷
+            return;
+        }
+
+        // 本函数只在 catch 块里被调用，因此 current_exception() 就是刚被收下的那一条
+        try
+        {
+            if (const std::exception_ptr failure = std::current_exception(); failure != nullptr)
+            {
+                std::rethrow_exception(failure);
+            }
+            LOG_ERROR("Scheduler: 一条投递在执行中抛出异常，已被派发级守卫就地收下、循环继续（非标准异常）。此后同类失败只计数不再逐条告警");
+        } catch (const std::exception &failure)
+        {
+            LOG_ERROR_FMT("Scheduler: 一条投递在执行中抛出异常，已被派发级守卫就地收下、循环继续（首个原因：{}）。此后同类失败只计数不再逐条告警", failure.what());
+        } catch (...)
+        {
+            // 日志通路自己失败时只吞掉这条告警：计数已经落定，把异常重新放回调用栈反而会让它
+            // 沿 runAll() 穿到循环的泵上，正是本函数要消灭的那条路径
+        }
     }
 
 } // namespace AsynGyanis::Core

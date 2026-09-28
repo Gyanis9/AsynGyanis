@@ -66,4 +66,27 @@ namespace AsynGyanis::Platform
 
         return true;
     }
+    std::uint64_t FileWatcher::failedCallbackCount() const noexcept
+    {
+        return m_failedCallbackCount.load(std::memory_order_relaxed);
+    }
+
+    void FileWatcher::notifyChange(const FileChangeCallback &callback, const std::string_view filePath, const FileChangeType changeType) noexcept
+    {
+        if (!callback)
+        {
+            // 未注册回调不算一次失败：这条通知本来就没人要
+            return;
+        }
+
+        try
+        {
+            callback(filePath, changeType);
+        } catch (...)
+        {
+            // 不重抛也不分类型：Platform 之下没有可上报的通路，而让异常接着走就是 terminate
+            // （监听线程是 jthread 的线程体）。计数留给调用方——配置热加载那一侧——自己判读
+            static_cast<void>(m_failedCallbackCount.fetch_add(1, std::memory_order_relaxed));
+        }
+    }
 } // namespace AsynGyanis::Platform

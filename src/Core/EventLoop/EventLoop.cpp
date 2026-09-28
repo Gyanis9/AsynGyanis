@@ -142,9 +142,17 @@ namespace AsynGyanis::Core
         {
             // 投进来的可调用体/协程抛异常时不能让异常无声地逃出去：本函数通常跑在线程入口上，
             // 逃出去就是 std::terminate（整个进程带走），而且末尾的 m_running 复位会被跳过，
-            // isRunning() 永远停在 true。这里就地记一条 ERROR 并复位状态，然后**照旧重抛**——
-            // 失败语义不变（快速失败，由 WorkerSupervisor 重启 worker），但现场有据可查；
-            // 自行捕获 run() 的调用方也不会再看到一个「仍在运行」的假状态
+            // isRunning() 永远停在 true。
+            //
+            // 这里就地收下、复位状态、置 stoppedByFailure 后**正常返回**，不再重抛。重抛的旧写法
+            // 指望「由 WorkerSupervisor 重启 worker」来兜，但那台 supervisor 编排的是 worker **进程**
+            // （fork+exec、盯进程退出），而 ThreadPool 的工作线程是一条没有重启函数的 jthread：
+            // 它接住重抛后只是记一条日志再让线程体返回，于是 threadCount() 照样报原数、而那条循环
+            // 再也不驱动任何东西——它上面的连接仍挂在活的 epoll 里，连收空闲连接的清扫协程也在同一条
+            // 死循环上。那是「看着在跑其实已经停」的形态，比崩溃更难查。
+            //
+            // 走到这一层意味着是循环自身的设施出问题（后端 wait 失败这类），停是停对了；
+            // 派发级的异常更早就被 Scheduler::runGuarded 与 IoWatcher 逐条收下了。
             try
             {
                 m_scheduler.runAll();
@@ -192,14 +200,14 @@ namespace AsynGyanis::Core
                 m_scheduler.runAll();
             } catch (const std::exception &loopError)
             {
-                LOG_ERROR_EXCEPTION(loopError, "EventLoop: 事件循环里逃出的异常已就地收口（循环停止）：{}", loopError.what());
+                LOG_ERROR_EXCEPTION(loopError, "EventLoop: 事件循环里逃出的异常已就地收口（本条循环停止，进程继续）：{}", loopError.what());
+                m_stoppedByFailure.store(true, std::memory_order_release);
                 m_running.store(false, std::memory_order_release);
-                throw;
             } catch (...)
             {
-                LOG_ERROR_FMT("EventLoop: 事件循环里逃出的非标准异常已就地收口（循环停止）");
+                LOG_ERROR_FMT("EventLoop: 事件循环里逃出的非标准异常已就地收口（本条循环停止，进程继续）");
+                m_stoppedByFailure.store(true, std::memory_order_release);
                 m_running.store(false, std::memory_order_release);
-                throw;
             }
         }
 
@@ -304,6 +312,8 @@ namespace AsynGyanis::Core
                 .completedWorkingSegments = m_completedWorkingSegments.load(std::memory_order_relaxed),
                 .slowestWorkingSegment    = std::chrono::microseconds{m_slowestWorkingSegmentMicros.load(std::memory_order_relaxed)},
                 .remotePendingCount       = m_scheduler.remotePendingCount(),
+                .stoppedByFailure         = m_stoppedByFailure.load(std::memory_order_acquire),
+                .failedDispatchCount      = m_scheduler.failedDispatchCount(),
         };
     }
 
