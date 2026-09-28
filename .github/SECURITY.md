@@ -67,16 +67,20 @@ WebSocket、TLS，以及 MySQL / SQLite / Redis 驱动。**其中 QUIC、QPACK�
 安全面不是靠人工审出来的，靠下面这些会红的门禁。「最近一次真实运行」一栏是为了避免把
 「作业存在」当成「门禁跑过」——只在 `main` 推送与手动触发上跑，`develop` 不消耗分钟数。
 
-| 门禁 | 覆盖什么 | 位置 |
-|------|----------|------|
-| 全量用例 + ASan/LSan/UBSan（Linux） | 内存安全、泄漏、未定义行为；协议解码器的对抗输入 | `linux-ci.yml` 的 `build-and-test` |
-| 全量用例 + ASan（Windows/MSVC） | 完成端口、ConnectEx、多进程移交等平台特有路径 | `windows-ci.yml` |
-| h2spec / Autobahn | HTTP/2 与 WebSocket 的规范一致性（第三方裁判逐条判据） | `protocol-conformance` 作业 |
-| libFuzzer 四类解码器 | h1/h2/h3/WS 帧解析器的崩溃与越界 | `protocol-fuzz` 作业（300 秒一轮） |
-| ThreadSanitizer | 事件循环与协程唤醒的跨线程契约 | `thread-sanitizer` 作业 |
-| aioquic 跨实现验收 | 自研 QUIC 栈与另一套实现的互操作 | `http3-acceptance` 作业 |
-| 依赖公告台账与 SBOM | 每条第三方依赖的公告入口、固定版本、可交付清单 | `supply-chain.yml` |
-| 示例矩阵 + 容器侧 LSan | 公开契约的真实使用路径（库外消费者的形状） | `scripts/run_samples.py`（本地与容器） |
+| 门禁 | 覆盖什么 | 位置 | 最近一次真实运行（2026-09-28） |
+|------|----------|------|--------------------------------|
+| 全量用例 + ASan/LSan/UBSan（Linux） | 内存安全、泄漏、未定义行为；协议解码器的对抗输入 | `linux-ci.yml` 的 `build-and-test` | 三分片全绿；本机容器同档 3540 例全绿、70 例按门控 SKIP、零告警、零 sanitizer 命中 |
+| 全量用例 + ASan（Windows/MSVC） | 完成端口、ConnectEx、多进程移交等平台特有路径 | `windows-ci.yml` | 全绿：3529 例、72 例 SKIP、零告警 |
+| h2spec / Autobahn | HTTP/2 与 WebSocket 的规范一致性（第三方裁判逐条判据） | `protocol-conformance` 作业 | h2spec 常规 146/146、`--strict` 147/147（明文与 TLS 各一轮）；Autobahn 515 条、FAILED 0 |
+| libFuzzer 四类解码器 | h1/h2/h3/WS 帧解析器的崩溃与越界 | `protocol-fuzz` 作业（300 秒一轮） | 两个 worker 各 2,333,134 / 2,775,489 次执行、301 秒，新增覆盖单元 3,982，零崩溃；本机另有一轮 3,747,877 次 |
+| ThreadSanitizer | 事件循环与协程唤醒的跨线程契约 | `thread-sanitizer` 作业 | 首跑 1300 例报出 1 处真竞争（h3 在线连接数的跨线程读），修后复跑全绿；第二处（WS 集线器）由同一条作业浮出、按用例违反线程契约收掉 |
+| aioquic 跨实现验收 | 自研 QUIC 栈与另一套实现的互操作 | `http3-acceptance` 作业 | 全绿 |
+| 依赖公告台账与 SBOM | 每条第三方依赖的公告入口、固定版本、可交付清单 | `supply-chain.yml` | 两个作业 9 + 7 步全绿，SBOM 制品随 `main` 推送上传（保留 90 天） |
+| 示例矩阵 + 容器侧 LSan | 公开契约的真实使用路径（库外消费者的形状） | `scripts/run_samples.py`（本地与容器） | Windows 12 个示例各跑两遍 24/24 通过；容器同档 13/13 通过（LSan 在这一档跟着跑） |
+
+「最近一次真实运行」这一栏是硬要求，不是装饰：上面这几条里有五条（h2spec、Autobahn、libFuzzer、
+TSan 的复跑、格式门）在 2026-09-28 之前**只是存在过、从没真的跑完过**——红的都是工具链缺件，
+而被"作业存在"掩盖着。补这一栏就是为了让这种状态一眼可见。
 
 ## 不在漏洞范围内的事
 
