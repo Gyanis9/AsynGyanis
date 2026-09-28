@@ -774,9 +774,18 @@ namespace AsynGyanis::Database
 
     void ConnectionPool::expireTimedOutWaiters() noexcept
     {
-        const auto                                                 now = std::chrono::steady_clock::now();
-        std::vector<std::shared_ptr<AcquireAwaiter::ResumeTicket>> timedOutTickets;
-        std::vector<Core::EventLoop *>                             completionLoops;
+        // 一条到期等待就是「票据 + 要投回哪个循环」这一对，两者必须同生同灭。原先用两条平行向量
+        // 分两次 push_back：中间那次分配失败会让两条向量长度错位，而下面的投递按 tickets.size()
+        // 去索引 loops，那是越界读。合成一对之后，分配失败要么整条收不下、要么收全。
+        struct ExpiredWaiter
+        {
+            std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket;          ///< 唤醒票据（取走即失效，重复投递安全）
+            Core::EventLoop                              *completionLoop;  ///< 这次唤醒要投回的事件循环
+        };
+
+        const auto           now           = std::chrono::steady_clock::now();
+        std::vector<ExpiredWaiter> expiredWaiters;
+        try
         {
             std::lock_guard               lock(m_asyncMutex);
             std::vector<AcquireAwaiter *> timedOutWaiters;
@@ -793,22 +802,45 @@ namespace AsynGyanis::Database
                           });
             for (AcquireAwaiter *const waiter: timedOutWaiters)
             {
-                waiter->m_inList = false;
-                if (waiter->m_resumeTicket != nullptr)
+                if (waiter->m_resumeTicket == nullptr)
                 {
-                    timedOutTickets.push_back(waiter->m_resumeTicket);
-                    completionLoops.push_back(waiter->m_completionLoop);
+                    waiter->m_inList = false;
+                    continue;
                 }
+
+                // 先把这一对完整收下，再改 m_inList：顺序反过来，一次分配失败就会留下一个
+                // 「已从链表摘出、m_inList 已清、却没人唤醒」的等待器，那条协程便永远睡着
+                expiredWaiters.push_back(ExpiredWaiter{waiter->m_resumeTicket, waiter->m_completionLoop});
+                waiter->m_inList = false;
             }
+        } catch (const std::exception &failure)
+        {
+            LOG_ERROR_FMT("ConnectionPool: 驱逐超时等待者时分配失败，已收下的 {} 条照常唤醒，其余留到下一轮（原因：{}）", expiredWaiters.size(), failure.what());
+        } catch (...)
+        {
+            LOG_ERROR_FMT("ConnectionPool: 驱逐超时等待者时分配失败（非标准异常），已收下的 {} 条照常唤醒，其余留到下一轮", expiredWaiters.size());
         }
 
         // 恢复投回各自的事件循环：本函数跑在后台线程上，就地恢复会把协程的后续代码
         // 跑到这个线程上，而调用方是按「回调都在自己的事件循环线程上」写代码的。
         // 与交接路径同样经票据投递：投出去之后调用方可能立刻销毁 Task，裸句柄会 resume 已释放的帧
-        for (std::size_t index = 0; index < timedOutTickets.size(); ++index)
+        //
+        // 逐条投递并各自兜底：postRemote 自己要分配队列结点与 std::function 包装，
+        // 一批里某一条失败只该丢那一条的唤醒，不该让其余的停在半途。
+        // 本函数是 noexcept，抛穿出去就是 terminate，而这里已经退出临界区、不留锁
+        for (const ExpiredWaiter &expired: expiredWaiters)
         {
-            const std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket = timedOutTickets[index];
-            completionLoops[index]->scheduler().postRemote([ticket]() { ticket->resumeOnce(); });
+            const std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket = expired.ticket;
+            try
+            {
+                expired.completionLoop->scheduler().postRemote([ticket]() { ticket->resumeOnce(); });
+            } catch (const std::exception &failure)
+            {
+                LOG_ERROR_FMT("ConnectionPool: 唤醒超时等待者的投递未能入队，这条等待将落空（原因：{}）", failure.what());
+            } catch (...)
+            {
+                LOG_ERROR("ConnectionPool: 唤醒超时等待者的投递未能入队，这条等待将落空（非标准异常）");
+            }
         }
     }
 

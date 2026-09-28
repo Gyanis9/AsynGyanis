@@ -319,13 +319,17 @@ namespace AsynGyanis::Database
         [[nodiscard]] MYSQL_STMT *findCachedStatement(std::string_view statementText) noexcept;
 
         /**
-         * @brief 把一条刚预处理成功的语句放进缓存，从此表接管它的所有权
+         * @brief 把一条刚预处理成功的语句放进缓存，成功即由表接管它的所有权
          * @details 表满时逐出最久没被读到的一条（见 evictLeastRecentlyUsedStatement()）：条数与内存
          *          仍有常数上界，而热语句不会被一批一次性语句整批挤掉。
          * @param statementText 语句文本，接管其内容作键
          * @param statement 已 prepare 的语句句柄
+         * @return true 表已接管该句柄，后续由各条失败路径的 discardCachedStatement() 按键关闭
+         * @return false 未接管（插入语句结点或键字符串时分配失败）：本函数是 noexcept，
+         *         不能让它抛穿成 terminate；而调用方手里那份句柄还要继续绑定与执行，
+         *         因此这里**不**替调用方关闭它，只回报「表外」这一事实，由调用方的作用域兜底收尾
          */
-        void cacheStatement(std::string statementText, MYSQL_STMT *statement) noexcept;
+        [[nodiscard]] bool cacheStatement(std::string statementText, MYSQL_STMT *statement) noexcept;
 
         /**
          * @brief 逐出使用戳记最小的一条语句并关闭它

@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Task.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PoolLiveness.h"
@@ -280,12 +281,27 @@ namespace AsynGyanis::Database
                  * @note 三处投递点（交接、超时、池停摆）共用这一份「取走再恢复」，
                  *       任何一处改成先判后取都会退化成两次恢复同一个帧
                  * @note 非 const：exchange 会改原子本身，GCC 下 const 版本编不过（MSVC 放行）
+                 * @note noexcept 是这里的对外契约而不是修饰：本函数由池投回事件循环执行，
+                 *       抛穿出去就是 terminate，而它跑在别人的循环线程上、带不走一次日志。
+                 *       协程体的异常按惯例由 Task 的 promise 存住、穿不出 resume()，剩下的窗口是
+                 *       帧分配失败与非 Task 的协程——那两种就地丢弃这一次唤醒并出声，
+                 *       不让它带走进程。此处不再给日志通路套兜底：能走到这里就是分配已失败，
+                 *       那时连告警本身都未必发得出去，与 C 边界上「展开即未定义行为」不同。
                  */
                 void resumeOnce() noexcept
                 {
                     if (const std::coroutine_handle<> resumeHandle = handle.exchange(nullptr); resumeHandle != nullptr)
                     {
-                        resumeHandle.resume();
+                        try
+                        {
+                            resumeHandle.resume();
+                        } catch (const std::exception &failure)
+                        {
+                            LOG_ERROR_FMT("ConnectionPool: 取还票据恢复等待方协程时抛穿了 noexcept 边界，本次唤醒已丢弃（原因：{}）", failure.what());
+                        } catch (...)
+                        {
+                            LOG_ERROR("ConnectionPool: 取还票据恢复等待方协程时抛穿了 noexcept 边界，本次唤醒已丢弃（非标准异常）");
+                        }
                     }
                 }
             };

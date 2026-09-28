@@ -2,14 +2,46 @@
 
 #include "Base/Exception/LogicException.h"
 #include "Base/Exception/SystemException.h"
+#include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/EventLoop.h"
 
+#include <atomic>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <system_error>
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /**
+         * @brief 协程恢复抛穿 noexcept 边界时的告警：只在首次出声
+         *
+         * @details 本函数的调用点拿不到 this（恢复动作可能已经把注册对象连同连接销毁），
+         *          因此告警不带连接标识，只说清是哪一侧、以及「这条事件已被丢弃、循环继续」。
+         *          不逐条告警的理由：触发源可能是一个远端可复现的坏帧，逐条打等于把日志
+         *          交给对端刷；计数仍留在原子里，上升沿之后不再出声。
+         * @note 告警通路自身在内存耗尽时会抛，而这里正是那条展开要防的路径，故再套一层。
+         */
+        void reportResumedCoroutineFailure(const std::string_view side, const std::string_view reason) noexcept
+        {
+            static std::atomic<std::uint64_t> failureCount{0};
+            if (failureCount.fetch_add(1, std::memory_order_relaxed) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                LOG_ERROR_FMT("IoWatcher: {}等待者的协程恢复抛穿了 noexcept 边界，本次事件已就地丢弃、循环继续（原因：{}）。此后同类失败只计数不再逐条告警", side, reason);
+            } catch (...)
+            {
+                // 见 @note：日志自身失败已无处可报，绝不能让它穿出 noexcept 边界变成 terminate
+            }
+        }
+    } // namespace
+
     IoWatcher::Awaiter::Awaiter(IoWatcher &watcher, const std::uint32_t event) noexcept : m_watcher(&watcher), m_event(event)
     {
     }
@@ -222,13 +254,37 @@ namespace AsynGyanis::Core
         // 写侧必须先于读侧：两侧的等待者可能属于不同的协程帧，而读侧的协议收口会把自己那条
         // 协程链（含仍挂在写等待上的协程帧）一并销毁——先走读侧，写侧那个刚被取出的句柄就指向
         // 已析构的帧，再 resume 是释放后使用
+        //
+        // 两处 resume 各自兜底：本函数挂在 noexcept 边界上（调用点是 EventLoop 的派发循环）。
+        // 协程体抛出的异常按惯例由 Task 的 promise 存住、穿不出 resume()，剩下的窗口是帧分配失败
+        // 与非 Task 的协程——那会在这里直接 std::terminate，连循环级的 catch 都到不了。
+        // 就地丢弃这一侧、继续派发另一侧：一条连接的坏帧不该带走整条循环。
+        // catch 体内只碰局部量与日志，因为本对象此刻可能已经析构。
         if (resumableWrite)
         {
-            resumableWrite.resume();
+            try
+            {
+                resumableWrite.resume();
+            } catch (const std::exception &failure)
+            {
+                reportResumedCoroutineFailure("写侧", failure.what());
+            } catch (...)
+            {
+                reportResumedCoroutineFailure("写侧", "非标准异常");
+            }
         }
         if (resumableRead)
         {
-            resumableRead.resume();
+            try
+            {
+                resumableRead.resume();
+            } catch (const std::exception &failure)
+            {
+                reportResumedCoroutineFailure("读侧", failure.what());
+            } catch (...)
+            {
+                reportResumedCoroutineFailure("读侧", "非标准异常");
+            }
         }
     }
 

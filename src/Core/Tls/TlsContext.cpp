@@ -1,5 +1,6 @@
 #include "Core/Tls/TlsContext.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Log/LogMacros.h"
 #include "Core/Exception/CoreException.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
 
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <csignal>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -212,6 +214,31 @@ namespace AsynGyanis::Core
             // set0 语义：SSL 接管整个对象栈（替换时连旧栈一起释放），此后不要再引用 responses
             SSL_set0_tlsext_status_ocsp_resp_ex(ssl, responses);
             return SSL_TLSEXT_ERR_OK;
+        }
+
+        /**
+         * @brief SNI 换站点上下文失败的告警：只在首次失败时出声
+         *
+         * @details 触发输入是对端 ClientHello 里的 server_name，逐条告警等于把日志交给远端刷，
+         *          因此取上升沿（与武装失败告警同一口径）。计数留在原子里供趋势取用。
+         * @note 兜底告警自己也不许穿出去：内存耗尽时日志通路会抛，而那正是本函数要防的展开源，
+         *          所以这里再套一层——此时只剩「不出声」这一条出路。
+         */
+        void reportServerNameSelectionFailure(const std::string_view reason) noexcept
+        {
+            static std::atomic<std::uint64_t> failureCount{0};
+            if (failureCount.fetch_add(1, std::memory_order_relaxed) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                LOG_ERROR_FMT("TlsContext: 按 SNI 换站点上下文失败，本次握手交回默认证书（原因：{}）。同类失败此后不再逐条告警，仅在此出声一次", reason);
+            } catch (...)
+            {
+                // 见 @note：日志通路自身失败已无处可报，绝不能让它穿过 C 帧
+            }
         }
 
     } // namespace
@@ -434,44 +461,60 @@ namespace AsynGyanis::Core
         return key;
     }
 
-    int TlsContext::selectContextByServerName(SSL *ssl, int *, void *)
+    int TlsContext::selectContextByServerName(SSL *ssl, int *, void *) noexcept
     {
-        const char *serverName = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
-        if (serverName == nullptr || *serverName == '\0')
+        // 本函数由 OpenSSL 经 C 函数指针回调（注册点见上文 SSL_CTX_set_tlsext_servername_callback），
+        // 而输入是远端 ClientHello 里的 server_name。栈从这里展开要穿过 C 帧，那是未定义行为而不是
+        // 「异常被某个上层接住」，因此整份实现按 noexcept 写死，兜底的 catch 只能留在这里。
+        // 失败时交回默认证书：与下面「没带 SNI」「名字没登记过」两条同一语义，握手照常继续。
+        try
         {
-            // 客户端没带 SNI（老客户端、直连 IP 的探活）：交回默认证书，与 nginx 的 default server 同形
-            return SSL_TLSEXT_ERR_OK;
-        }
-
-        VirtualHostRegistry *registry = registryOf(SSL_get_SSL_CTX(ssl));
-        if (registry == nullptr)
-        {
-            return SSL_TLSEXT_ERR_OK;
-        }
-
-        const std::string        key = serverNameKey(serverName);
-        std::shared_ptr<SSL_CTX> target;
-        {
-            const std::shared_lock<std::shared_mutex> guard(registry->mutex);
-            if (const auto found = registry->contexts.find(key); found != registry->contexts.end())
+            const char *serverName = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+            if (serverName == nullptr || *serverName == '\0')
             {
-                target = found->second;
+                // 客户端没带 SNI（老客户端、直连 IP 的探活）：交回默认证书，与 nginx 的 default server 同形
+                return SSL_TLSEXT_ERR_OK;
             }
-        }
-        if (target == nullptr)
+
+            VirtualHostRegistry *registry = registryOf(SSL_get_SSL_CTX(ssl));
+            if (registry == nullptr)
+            {
+                return SSL_TLSEXT_ERR_OK;
+            }
+
+            const std::string        key = serverNameKey(serverName);
+            std::shared_ptr<SSL_CTX> target;
+            {
+                const std::shared_lock<std::shared_mutex> guard(registry->mutex);
+                if (const auto found = registry->contexts.find(key); found != registry->contexts.end())
+                {
+                    target = found->second;
+                }
+            }
+            if (target == nullptr)
+            {
+                // 名字没登记过同样不是错误：这类客户端要的就是那个「什么特别站点都不是」的默认身份
+                return SSL_TLSEXT_ERR_OK;
+            }
+
+            // SSL_set_SSL_CTX 只改 ssl->ctx、不给新上下文加引用（它的返回值是换上去的那个上下文，不是成败码）：
+            // 这条引用链由「SSL 持有主上下文、主上下文持有登记表、登记表持有站点上下文」三段共同保证，
+            // 只要这条连接还认着主上下文，站点上下文就不会先被释放
+            if (SSL_set_SSL_CTX(ssl, target.get()) == nullptr)
+            {
+                return SSL_TLSEXT_ERR_ALERT_FATAL;
+            }
+            return SSL_TLSEXT_ERR_OK;
+        } catch (const std::exception &failure)
         {
-            // 名字没登记过同样不是错误：这类客户端要的就是那个「什么特别站点都不是」的默认身份
+            // 能走到这里的现实原因是分配失败（站点键的字符串、shared_lock 都要分配），不是配置错
+            reportServerNameSelectionFailure(failure.what());
+            return SSL_TLSEXT_ERR_OK;
+        } catch (...)
+        {
+            reportServerNameSelectionFailure("非标准异常");
             return SSL_TLSEXT_ERR_OK;
         }
-
-        // SSL_set_SSL_CTX 只改 ssl->ctx、不给新上下文加引用（它的返回值是换上去的那个上下文，不是成败码）：
-        // 这条引用链由「SSL 持有主上下文、主上下文持有登记表、登记表持有站点上下文」三段共同保证，
-        // 只要这条连接还认着主上下文，站点上下文就不会先被释放
-        if (SSL_set_SSL_CTX(ssl, target.get()) == nullptr)
-        {
-            return SSL_TLSEXT_ERR_ALERT_FATAL;
-        }
-        return SSL_TLSEXT_ERR_OK;
     }
 
     std::shared_ptr<SSL_CTX> TlsContext::buildHostContext(const TlsPolicy &policy, const Role role, const std::string &certificateFile, const std::string &keyFile)

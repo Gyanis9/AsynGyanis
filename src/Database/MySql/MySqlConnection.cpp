@@ -8,6 +8,7 @@
 
 #include "Database/MySql/MySqlConnection.h"
 
+#include "Base/Log/LogMacros.h"
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ErrorText.h"
 #include "Database/Dialect/MySqlDialect.h"
@@ -387,6 +388,8 @@ namespace AsynGyanis::Database
         // mysql_stmt_close 又是一趟（COM_STMT_CLOSE）。真机实测同一条主键查询「每次重编」414 µs、
         // 「备好复用」197 µs，省掉的正是这两趟。
         MYSQL_STMT *rawStatement = findCachedStatement(command);
+        // 命中缓存时所有权本就在表里；新建的那条要等 cacheStatement 回报接管结果
+        bool takenByCache = true;
         if (rawStatement == nullptr)
         {
             // 句柄刚创建时尚未入表，本函数负责把它收干净：init 只有内存不足才会返回空，
@@ -421,8 +424,29 @@ namespace AsynGyanis::Database
             }
 
             // 编译成功即由表接管所有权：此后任何失败路径都不得 close 本地这份指针，只能 discard
-            cacheStatement(std::string{command}, rawStatement);
+            takenByCache = cacheStatement(std::string{command}, rawStatement);
         }
+
+        // 表没收下的那一条得有收尾：下面每一条出口都靠 discardCachedStatement(command) 按键关闭，
+        // 而它对「表里没有这个键」是空操作——缓存插入因分配失败没接管时，句柄既没人关也没人记。
+        // 一枚作用域兜底把表外的那条接走，各条出口就不必逐个改动，也不与表内的那条抢所有权
+        struct UnclaimedStatement
+        {
+            MYSQL_STMT *statement; ///< 待收尾的语句句柄
+            bool        unclaimed; ///< 语句缓存未接管本条时为真
+
+            /**
+             * @brief 离开作用域时关掉表外的那条语句；已被表接管时空操作
+             */
+            ~UnclaimedStatement()
+            {
+                // mysql_stmt_close 是 C 调用、不抛，因此在析构里收尾安全
+                if (unclaimed && statement != nullptr)
+                {
+                    mysql_stmt_close(statement);
+                }
+            }
+        } unclaimedStatement{rawStatement, !takenByCache};
 
         // 绑定与执行必须成对完成：绑定缓冲区是 bindAndExecuteStatement 的局部变量，
         // 只有在该函数内部（mysql_stmt_execute 期间）才是有效的
@@ -613,7 +637,7 @@ namespace AsynGyanis::Database
         return entry->second.statement;
     }
 
-    void MySqlConnection::cacheStatement(std::string statementText, MYSQL_STMT *statement) noexcept
+    bool MySqlConnection::cacheStatement(std::string statementText, MYSQL_STMT *statement) noexcept
     {
         // 命中过的那条本来就在表里，此时表满也不该逐出——那会把一条正被反复使用的语句为一件
         // 本来就不必做的事扔掉，所以先用一次查找把它排除掉；只有真正新增一条键才可能触到上限
@@ -623,7 +647,24 @@ namespace AsynGyanis::Database
         }
 
         // try_emplace 对已存在的键是空操作：既不会把表里那份换成同一个指针，也不会漏关谁
-        static_cast<void>(m_statementCache.try_emplace(std::move(statementText), CachedStatement{statement, ++m_statementCacheUseStamp}));
+        //
+        // 兜底 catch 是必须的：插入要分配树结点与键字符串，而本函数标着 noexcept，
+        // 让它抛穿出去就是 terminate。这里刻意不当场 mysql_stmt_close——调用方手里同一份句柄
+        // 还要继续绑定与执行，当场关就是用后释放；只回报「表未接管」，收尾交给调用方的作用域兜底。
+        // 返回值取 inserted 而非「没抛就算接管」：键已存在时表里挂着的是另一条句柄，本条仍在表外
+        try
+        {
+            const auto insertion = m_statementCache.try_emplace(std::move(statementText), CachedStatement{statement, ++m_statementCacheUseStamp});
+            return insertion.second;
+        } catch (const std::exception &failure)
+        {
+            LOG_ERROR_FMT("MySqlConnection: 语句缓存未能收下这条预处理语句（原因：{}），本条按未缓存处理并在用完后关闭", failure.what());
+            return false;
+        } catch (...)
+        {
+            LOG_ERROR("MySqlConnection: 语句缓存未能收下这条预处理语句（非标准异常），本条按未缓存处理并在用完后关闭");
+            return false;
+        }
     }
 
     void MySqlConnection::evictLeastRecentlyUsedStatement() noexcept

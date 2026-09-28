@@ -289,10 +289,13 @@ namespace AsynGyanis::Core
          * @param ssl 当前握手对象
          * @param alert 出参：要送出的告警码（本实现不填，交给 OpenSSL 的默认告警）
          * @param arg 回调参数（未使用：登记表从上下文自己的 ex_data 取）
-         * @return int SSL_TLSEXT_ERR_OK 继续握手（含「没带 SNI」「名字没登记过」两条，都用默认证书）；
+         * @return int SSL_TLSEXT_ERR_OK 继续握手（含「没带 SNI」「名字没登记过」「本端分配失败」三条，都用默认证书）；
          *         SSL_TLSEXT_ERR_ALERT_FATAL 只在换上下文本身失败时给
+         * @note 标记 noexcept 是这里的外部契约而不是优化提示：本函数经 C 函数指针挂进 OpenSSL，
+         *       栈展开要穿过 C 帧（未定义行为），所以实现内必须自带兜底 catch，且告警通路自身
+         *       失败也不许穿出去。
          */
-        static int selectContextByServerName(SSL *ssl, int *alert, void *arg);
+        static int selectContextByServerName(SSL *ssl, int *alert, void *arg) noexcept;
 
         /**
          * @brief 新建一份加固过的站点上下文并装上证书

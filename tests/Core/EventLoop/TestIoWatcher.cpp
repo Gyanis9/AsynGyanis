@@ -13,6 +13,8 @@
 // 4、同一方向的第二个等待者当场抛错，而不是静默让其中一个永远等不到；
 // 5、注册对象销毁后会从「存活登记表」里单独摘掉（同批里剩下的事件不得再派发给它，
 //    也不得牵连别的注册对象）。
+// 6、协程恢复抛出的异常不得穿出 handleEvents 这道 noexcept 边界：兜不住就是 terminate，
+//    而一条连接的坏帧也不该带走整条循环。
 
 #include "Core/EventLoop/IoWatcher.h"
 
@@ -26,8 +28,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <coroutine>
+#include <exception>
 #include <memory>
+#include <stdexcept>
 #include <system_error>
 
 namespace AsynGyanis::Core
@@ -465,6 +470,116 @@ namespace AsynGyanis::Core
         makeReadable(peerDescriptor);
         EXPECT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "第二轮等待没被新事件唤醒：常驻注册的关注位没有重新武装，「注册一次即可反复等待」不成立";
         EXPECT_TRUE(secondWait.isReady()) << "第二轮等待没被新事件唤醒";
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    namespace
+    {
+        /**
+         * @brief 恢复后必然抛出、且**不**把异常收进 promise 的协程替身
+         *
+         * @details Task 的 promise 会把协程体内的异常存进 m_exception，异常因此穿不出 resume()，
+         *          用它测不到 handleEvents 那圈兜底。真实会穿出的窗口是帧分配失败与非 Task 的
+         *          协程类型，本替身取后一形：unhandled_exception 就地重抛，异常遂从 resume() 逃出。
+         */
+        struct ThrowOnResume
+        {
+            /// 协程机制要求的成员名固定为 promise_type，实现体仍按仓库命名规范取名
+            struct Promise
+            {
+                std::suspend_always initial_suspend() noexcept
+                {
+                    return {};
+                }
+
+                std::suspend_always final_suspend() noexcept
+                {
+                    return {};
+                }
+
+                void return_void() const noexcept
+                {
+                }
+
+                /// 关键一处：不 current_exception() 存下来，而是就地重抛，异常因此穿出 resume()
+                void unhandled_exception()
+                {
+                    std::rethrow_exception(std::current_exception());
+                }
+
+                ThrowOnResume get_return_object() noexcept
+                {
+                    return ThrowOnResume{std::coroutine_handle<Promise>::from_promise(*this)};
+                }
+            };
+
+            using promise_type = Promise; ///< 供 std::coroutine_traits 查找
+
+            std::coroutine_handle<Promise> handle; ///< 协程帧句柄
+
+            /**
+             * @brief 销毁帧：抛穿之后帧仍停在挂起点，不收就是用例自己造的泄漏（LSan 会报）
+             */
+            ~ThrowOnResume()
+            {
+                if (handle)
+                {
+                    handle.destroy();
+                }
+            }
+        };
+
+        /**
+         * @brief 等一次可读，醒来后当场抛出
+         * @param watcher 目标注册对象
+         * @param resumedFlag 进入等待之后的代码时置真，用来证明兜底接到的是真实抛出而非空转
+         */
+        ThrowOnResume waitThenThrow(IoWatcher &watcher, std::atomic_flag &resumedFlag)
+        {
+            static_cast<void>(co_await watcher.waitReadable());
+            resumedFlag.test_and_set(std::memory_order_release);
+            throw std::runtime_error("用例造的异常：恢复即抛，模拟会穿到 handleEvents 的那一类");
+        }
+    } // namespace
+
+    TEST(IoWatcher, ThrowingResumptionIsContainedByNoexceptBoundary)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        IoWatcher watcher(loop, localDescriptor);
+        ASSERT_TRUE(watcher.isValid());
+
+        std::atomic_flag resumedFlag = ATOMIC_FLAG_INIT;
+        ThrowOnResume throwing       = waitThenThrow(watcher, resumedFlag);
+        throwing.handle.resume();
+
+        // 前置自检：协程必须已挂起在等待里、且尚未执行抛出那一步
+        ASSERT_FALSE(resumedFlag.test()) << "协程在首次恢复时就跑到了等待之后：等待没生效，本用例判据是假的";
+
+        // 事件到达并分发：恢复会走进协程体并抛出。handleEvents 是 noexcept，
+        // 兜底缺失时异常会当场变成 std::terminate（进程没了，用例以崩溃记红）
+        makeReadable(peerDescriptor);
+        EXPECT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "事件没被分发，抛出根本没发生";
+        EXPECT_TRUE(resumedFlag.test()) << "分发没有恢复等待中的协程：抛出没发生，兜底也就没被验到";
+
+        // 取走字节，第二轮不得靠残留的可读状态立即完成
+        consumeReadable(localDescriptor);
+
+        // 一条连接的坏帧不该带走整条循环：换一条正常的等待，仍要被下一次事件唤醒
+        Task<WaitOutcome> nextWait = waitReadableOnce(watcher);
+        nextWait.handle().resume();
+        ASSERT_FALSE(nextWait.isReady()) << "描述符已空时第二轮应当挂起";
+
+        makeReadable(peerDescriptor);
+        EXPECT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "一次抛出带走了整条循环：后续等待再也收不到事件";
+        ASSERT_TRUE(nextWait.isReady());
+        EXPECT_TRUE(nextWait.handle().promise().result());
 
         Platform::FileDescriptor::close(localDescriptor);
         Platform::FileDescriptor::close(peerDescriptor);
