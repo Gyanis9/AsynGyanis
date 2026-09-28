@@ -48,6 +48,10 @@ asyn_add_sample(net_https_h2_demo net_https_h2_demo/main.cpp)
 # Net HTTP/3：QUIC 服务端的配置校验、UDP 端口起停、畸形报文容错、定时驱动与排空
 asyn_add_sample(net_http3_demo net_http3_demo/main.cpp)
 
+# Net UDP：UdpServer 的两种起步方式（按地址 bind / 接手别人绑好的口）、逐条交付、主动下发、统计与收口
+asyn_add_sample(net_udp_demo net_udp_demo/main.cpp)
+target_link_libraries(net_udp_demo PRIVATE Platform)
+
 # Database：SQLite 文件库/内存库、ORM 与查询构造、事务、二进制列、参数绑定、连接池；MySQL/Redis 按环境变量门控
 asyn_add_sample(database_demo database_demo/main.cpp)
 target_link_libraries(database_demo PRIVATE Database)

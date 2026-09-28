@@ -178,6 +178,7 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 | `net_http_demo` | HTTP/1.1 路由与中间件、静态文件目录、解析上限、分块与 SSE、WebSocket、四类限额、接受分发、指标与健康端点、优雅收口 | 45 |
 | `net_https_h2_demo` | 证书受信与不受信的对照、ALPN 协商 h2、h2c 明文、多路复用、GOAWAY 排空、解析上限 | 29 |
 | `net_http3_demo` | QUIC 服务端的证书校验、UDP 起停与指定端口、乱码与畸形长头容错、定时驱动、统计、排空 | 14 |
+| `net_udp_demo` | UdpServer 的两种起步方式（按地址 bind / 接手别人绑好的口）、逐条交付与零长报文、主动下发、统计、处理器抛异常后的存活、两种顺序混用被拒、收口叫醒挂着的协程 | 13 |
 | `database_demo` | SQLite 文件库/内存库、方言、ORM、事务、blob、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 72 + 2 门控（无凭据）/ 82（连上 MySQL 与 Redis） |
 
 表内步数是两侧各自实测：Windows 一轮 `run_samples.py --repeat 2` 逐对一致，POSIX 侧在容器
