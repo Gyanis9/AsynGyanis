@@ -71,8 +71,9 @@ namespace AsynGyanis::Platform
          * @return std::expected<DatagramSocket, std::error_code> 接管好的套接字；失败给出这三类原因之一：
          *         `bad_file_descriptor` 描述符无效、`not_supported` 类型不是 SOCK_DGRAM、
          *         `invalid_argument` 还没 bind（本地端口为 0，「谁往这个端口发报文」这回事不存在）
-         * @note 接手方一律被置为**非阻塞**：交过来的套接字通常是阻塞态（Windows 按协议信息重建出来的
-         *       就是阻塞的），不改会把事件循环卡在 recvfrom 上
+         * @note 接手方一律被置为**非阻塞**：不置会把事件循环卡在 recvfrom 上。POSIX 上文件状态位由同一个
+         *       开放文件描述共享，而本层的交出方本来就非阻塞（`bindTo` 置过），这里补置不会把对方改坏；
+         *       Windows 侧重建出的句柄形态随协议信息，可能带着阻塞位
          * @note 也会被取消「随子进程继承」：本层交出去的套接字都不该随 spawn 漏给下一个进程，
          *       与 bindTo 同一条口径
          */

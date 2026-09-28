@@ -21,6 +21,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 #include <vector>
 
 namespace AsynGyanis::Platform
@@ -77,6 +79,24 @@ namespace AsynGyanis::Platform
                 std::this_thread::sleep_for(std::chrono::milliseconds{2});
             }
             return -1;
+        }
+
+        /**
+         * @brief 数一遍本进程当前打开的描述符（POSIX 的数法：/proc/self/fd 的条目数）
+         * @return std::size_t 条目数；读不到目录时返回 0，由调用方按「没法判」跳过
+         * @details 只用来判「拒一条移交时有没有留下活描述符」这种前后差值，绝对值不参与断言
+         *          （本函数自己开的那份目录句柄在两侧计数里都在）。
+         */
+        std::size_t openDescriptorCount()
+        {
+            std::error_code error;
+            std::size_t     entryCount = 0;
+            for (const auto &entry: std::filesystem::directory_iterator("/proc/self/fd", error))
+            {
+                static_cast<void>(entry);
+                ++entryCount;
+            }
+            return error ? 0 : entryCount;
         }
 
         /**
@@ -416,10 +436,19 @@ namespace AsynGyanis::Platform
 
         const int adoptedDescriptor = Socket::readListeningSocketHandoff(channelReader);
         ASSERT_GE(adoptedDescriptor, 0) << "收端没能重建数据报套接字，错误码 " << PlatformError::lastSocketErrorCode();
+        // 接手侧要自己把继承位清掉：交出方的标志位传不过来（两侧都是新建的一份引用，POSIX 上内核
+        // 给新描述符时把 FD_CLOEXEC 清成 0），不补就等于让新一代此后派生的每个子进程都替这个端口
+        // 留一份持有
+        EXPECT_TRUE(TestSupport::isNotInheritable(adoptedDescriptor)) << "接手来的套接字仍可随进程创建继承，端口关不干净";
         // 交接交回来的是一枚裸描述符：接管动作（判类型、判已 bind、置非阻塞）在 DatagramSocket 那侧
         auto adopted = DatagramSocket::adopt(adoptedDescriptor);
+        if (!adopted.has_value())
+        {
+            // 接管失败时描述符仍归调用方，这时才需要夹具兜底；成功后它已由 adopted 的析构负责，
+            // 再登记一份就是同枚描述符关两次（第二次会打到别人刚拿到的同号描述符上）
+            cleanup.add(adoptedDescriptor);
+        }
         ASSERT_TRUE(adopted.has_value()) << "接管失败，错误码 " << adopted.error().value();
-        cleanup.add(adoptedDescriptor);
 
         // 端口跟着过来：接手方问出来的端口就是交出方当初绑的那个
         sockaddr_in adoptedLocal{};
@@ -519,5 +548,64 @@ namespace AsynGyanis::Platform
         // 读端报原因走的是 setLastErrorCode（Windows 上 socket 错误码是另一个槽位，只有系统调用
         // 自己写它），所以这里取 lastErrorCode 而不是 lastSocketErrorCode
         EXPECT_EQ(PlatformError::lastErrorCode(), EINVAL);
+    }
+
+    /**
+     * @brief 拒掉一条不可信的移交时，也要把**已经装进本进程**的描述符关掉
+     * @details recvmsg 一成功返回，内核就把 SCM_RIGHTS 里那枚描述符交到了本进程手上；此后每一条
+     *          失败出口都得关它。换代是旧进程交给新进程，还要按 worker 补位重复许多轮，漏下来的就是
+     *          每个槽位一枚永不回收的描述符——症状要等长跑撞到上限才看得见。
+     * @note 只在 POSIX 上判：Windows 的载荷是普通字节，重建发生在所有格式判定之后，本就没有
+     *       「先装进来再退回」这一步
+     * @note 证伪：把顺序改回「先判格式、不过就 return -1」（描述符留在那儿没人关），本条红
+     */
+    TEST(SocketHandoff, ClosesTheInstalledDescriptorWhenTheHandoffFormatIsRejected)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 侧失败都在重建之前，没有需要回滚的描述符";
+#else
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        const int         datagram = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+        ASSERT_GE(datagram, 0);
+        cleanup.add(datagram);
+        sockaddr_in bound = loopbackAddress(0);
+        ASSERT_EQ(::bind(datagram, reinterpret_cast<const sockaddr *>(&bound), sizeof(bound)), 0);
+
+        int pair[2] = {-1, -1};
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, pair), 0) << "造不出 unix 通道";
+        cleanup.add(pair[0]);
+        cleanup.add(pair[1]);
+
+        // 头里写着一个不属于本平台的载荷长度（POSIX 上恒为 0）：字节与描述符都会正常到达，
+        // 判据仍该整条作废——而作废就得把收到的那枚退回去
+        struct
+        {
+            std::uint16_t family;
+            std::uint16_t socketType;
+            std::uint32_t blobByteCount;
+        } header{AF_INET, SOCK_DGRAM, 4096U};
+
+        iovec  dataVector{&header, sizeof(header)};
+        char   control[CMSG_SPACE(sizeof(int))] = {};
+        msghdr message{};
+        message.msg_iov        = &dataVector;
+        message.msg_iovlen     = 1;
+        message.msg_control    = control;
+        message.msg_controllen = sizeof(control);
+        cmsghdr *controlHeader = CMSG_FIRSTHDR(&message);
+        controlHeader->cmsg_level = SOL_SOCKET;
+        controlHeader->cmsg_type  = SCM_RIGHTS;
+        controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
+        std::memcpy(CMSG_DATA(controlHeader), &datagram, sizeof(datagram));
+        ASSERT_EQ(::sendmsg(pair[0], &message, 0), static_cast<ssize_t>(sizeof(header))) << "伪造的移交消息没写进通道";
+
+        const std::size_t descriptorsBefore = openDescriptorCount();
+        ASSERT_NE(descriptorsBefore, 0U) << "读不到 /proc/self/fd，这条判据没法成立";
+
+        EXPECT_EQ(Socket::readListeningSocketHandoff(pair[1]), -1) << "格式不对的移交被当成了成功";
+        EXPECT_EQ(openDescriptorCount(), descriptorsBefore) << "拒了一条移交，却把已经装进来的描述符留在了本进程里";
+#endif
     }
 } // namespace AsynGyanis::Platform

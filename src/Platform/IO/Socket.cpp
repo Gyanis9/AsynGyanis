@@ -492,9 +492,13 @@ namespace AsynGyanis::Platform
         controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
         std::memcpy(CMSG_DATA(controlHeader), &listenDescriptor, sizeof(listenDescriptor));
 
-        if (::sendmsg(channelDescriptor, &message, 0) < 0)
+        const ssize_t writtenByteCount = ::sendmsg(channelDescriptor, &message, 0);
+        // 契约是「true 等于完整交出一条消息」：部分写（被信号打断那一类，socket 调用不因
+        // SA_RESTART 自动重启）会把半条头留在流里，对端只能读成「不像移交消息」；交出方若记成
+        // 成功就会白等一次接手。通道本来就是一次性的，整条判失败最诚实
+        if (writtenByteCount != static_cast<ssize_t>(sizeof(header)))
         {
-            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            PlatformError::setLastErrorCode(writtenByteCount < 0 ? PlatformError::lastSocketErrorCode() : EPIPE);
             return false;
         }
         return true;
@@ -550,6 +554,10 @@ namespace AsynGyanis::Platform
             static_cast<void>(::closesocket(receivedSocket));
             return -1;
         }
+        // 接手来的句柄一律取消「随进程创建继承」：新一代再往下派生任何进程时，那枚监听句柄不该跟着
+        // 过去——端口只要还有一个持有者就永远关不掉。交出方的标志位传不过来（两侧都是新建的一份引用），
+        // 所以这一格必须由接手侧补
+        static_cast<void>(FileDescriptor::markNonInheritable(static_cast<int>(receivedSocket)));
         return static_cast<int>(receivedSocket);
 #else
         HandoffHeader header{};
@@ -567,14 +575,10 @@ namespace AsynGyanis::Platform
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
             return -1;
         }
-        if (static_cast<std::size_t>(receivedLength) < sizeof(header) || (message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || header.blobByteCount != 0U)
-        {
-            // 头没收全、或控制消息被截断，都等于「这份移交不可信」：整体作废，
-            // 不要拿半个描述符去 accept——那比失败更难查
-            PlatformError::setLastErrorCode(EINVAL);
-            return -1;
-        }
 
+        // 先把描述符从控制消息里摘出来：recvmsg 一成功返回，内核就已经把随消息装填的那枚描述符放进
+        // 本进程了，此后**每一条**失败出口都得关掉它——拒掉一条不可信的移交却留下一枚活描述符，
+        // 比不拒更糟（换代是旧进程交给新进程，交完还要按补位次数重复许多轮）
         int receivedDescriptor = -1;
         for (const cmsghdr *controlHeader = CMSG_FIRSTHDR(&message); controlHeader != nullptr; controlHeader = CMSG_NXTHDR(&message, const_cast<cmsghdr *>(controlHeader)))
         {
@@ -583,6 +587,18 @@ namespace AsynGyanis::Platform
                 std::memcpy(&receivedDescriptor, CMSG_DATA(controlHeader), sizeof(receivedDescriptor));
                 break;
             }
+        }
+
+        if (static_cast<std::size_t>(receivedLength) < sizeof(header) || (message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || header.blobByteCount != 0U)
+        {
+            // 头没收全、或控制消息被截断，都等于「这份移交不可信」：整体作废，
+            // 不要拿半个描述符去 accept——那比失败更难查
+            PlatformError::setLastErrorCode(EINVAL);
+            if (receivedDescriptor >= 0)
+            {
+                static_cast<void>(FileDescriptor::close(receivedDescriptor));
+            }
+            return -1;
         }
         if (receivedDescriptor < 0)
         {
@@ -597,6 +613,9 @@ namespace AsynGyanis::Platform
             static_cast<void>(FileDescriptor::close(receivedDescriptor));
             return -1;
         }
+        // 与 Windows 侧同一件事：内核给新描述符时把 FD_CLOEXEC 清掉了（实测 flags 为 0x0），不补就等于
+        // 让接手方此后派生的任何子进程都替这个端口留一份持有
+        static_cast<void>(FileDescriptor::markNonInheritable(receivedDescriptor));
         return receivedDescriptor;
 #endif
     }
