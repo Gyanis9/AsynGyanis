@@ -16,7 +16,10 @@
 - **每线程一个事件循环** — `IoContext` 持有 `ThreadPool`，每个工作线程绑定独立的 `EventLoop`
 - **两级就绪队列调度** — `Scheduler` 本地队列 + 全局队列，跨线程投递按归属循环投递
 - **协作式取消与优雅启停** — `std::stop_token` 贯穿，`stop()` 后各线程收敛退出
-- **多进程 worker** — `WorkerSupervisor` 拉起 N 个 worker 同端口服务、崩溃即补位；进程间不共享状态
+- **多进程 worker** — `WorkerSupervisor` 拉起 N 个 worker 同端口服务、崩溃即补位；进程间不共享状态。
+  分摊形状按平台分叉：POSIX 上每个 worker 自己 bind 同一端口（`SO_REUSEPORT`），Windows 上没有那个
+  选项、多个进程各自绑只会让最后绑上的一个收到全部连接，于是改由 master bind 一次、把监听套接字
+  逐个复制给 worker（每次补位重新移交一条一次性通道）
 - **TLS** — 基于 OpenSSL 的非阻塞 `SSL_read` / `SSL_write` 与事件循环集成
 - **自研内存与缓冲** — 协程帧内存池（`CoroutinePool`，重载 `operator new` 接入 `Task`）；可选 mimalloc 接管全局分配（`ASYN_WITH_MIMALLOC`）
 
@@ -463,7 +466,7 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模（2026-09-27 实测）：**Windows Debug（含 ASan）3476 例全绿、69 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3486 例全绿、68 例 SKIP、零告警、零泄漏、零未定义行为**。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、`Process` 与多进程 worker 的真实行为、停机信号的实投递；Windows 独有完成端口相关与「本机不支持多进程」那几条。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。68 例 SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言）
+- 当前规模（2026-09-28 实测）：**Windows Debug（含 ASan）3434 例全绿、69 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3446 例全绿、68 例 SKIP、零告警、零泄漏、零未定义行为**。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递与多进程编排里 shell 假 worker 那几条行为；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。68 例 SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 

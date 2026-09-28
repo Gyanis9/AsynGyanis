@@ -4,6 +4,7 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/LogicException.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
 #include "CommonTestSupport.h"
@@ -13,10 +14,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace AsynGyanis::Core
 {
@@ -107,8 +110,9 @@ namespace AsynGyanis::Core
 
             WorkerSupervisor::Configuration configuration;
 #if ASYN_PLATFORM_WIN32
-            // Windows 上本类在构造时就拒绝多进程（没有 SO_REUSEPORT 共享端口），因此这些配置只用于
-            // 「构造即拒绝」那条用例，脚本不会被执行
+            // 移交模式要求 worker 自己连回通道，shell 脚本不会做这件事，因此这份假 worker 在 Windows
+            // 上只服务「构造期就拒绝」那几条用例，脚本不会被执行；真的跨进程编排由下面那条用例拿
+            // tests/Tools 的夹具（handoff_worker）跑
             configuration.executablePath  = "cmd.exe";
             configuration.workerArguments = {"/c", script};
 #else
@@ -123,6 +127,52 @@ namespace AsynGyanis::Core
             configuration.crashLoopLimit  = 3;
             return configuration;
         }
+
+#if ASYN_PLATFORM_WIN32
+        /**
+         * @brief 连一次端口，把夹具写回的那行文本读回来
+         * @param port master 那边监听的实际端口
+         * @return std::string 读到的内容（去掉行尾换行）；连不上或读不到时为空串
+         * @details 判据必须落在「读到内容」上：回环上 connect 能建立只说明 backlog 收了这条请求，
+         *          并不证明真有人在 accept——移交只做到「端口还听着」而 worker 没接手时，
+         *          只看连接成功的用例会是假绿。读操作带期限，超时就交回空串由用例判红。
+         */
+        std::string askWorker(const std::uint16_t port)
+        {
+            const int client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (client < 0)
+            {
+                return {};
+            }
+
+            sockaddr_in address{};
+            address.sin_family      = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address.sin_port        = htons(port);
+            if (::connect(client, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0)
+            {
+                static_cast<void>(::closesocket(client));
+                return {};
+            }
+
+            DWORD receiveTimeout{5000U};
+            static_cast<void>(::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&receiveTimeout), sizeof(receiveTimeout)));
+            char      buffer[32]{};
+            const int received = ::recv(client, buffer, static_cast<int>(sizeof(buffer)) - 1, 0);
+            static_cast<void>(::closesocket(client));
+            if (received <= 0)
+            {
+                return {};
+            }
+
+            std::string text(buffer, static_cast<std::size_t>(received));
+            while (!text.empty() && (text.back() == '\r' || text.back() == '\n'))
+            {
+                text.pop_back();
+            }
+            return text;
+        }
+#endif
     } // namespace
 
     /**
@@ -154,8 +204,8 @@ namespace AsynGyanis::Core
      *          走的是「稳定运行后退出」那条清零分支：既不涨计数也就永不放弃、永不退避，秒退型
      *          worker 会被按轮询间隔满速 fork/exec，run() 永不返回。上限取 0 是反方向的写错：
      *          崩一次就放弃整池。
-     *          断言盯的是异常文本而不是异常类型：Windows 上本类对任何配置都抛 LogicException
-     *          （没有 SO_REUSEPORT），只判类型在这台机器上恒真，看不出这条校验有没有生效。
+     *          断言盯的是异常文本而不是异常类型：两个平台的构造期校验条数不同（Windows 还多一条
+     *          「必须给移交配置」），只判异常类型会看不出这条校验到底有没有生效。
      */
     TEST(WorkerSupervisor, RejectsNonPositiveCrashLoopJudgement)
     {
@@ -199,10 +249,13 @@ namespace AsynGyanis::Core
 
 #if ASYN_PLATFORM_WIN32
     /**
-     * @brief Windows 上多进程被明确拒绝：没有 SO_REUSEPORT，多个进程绑不上同一个端口
-     * @details 拒绝而不是静默降级成单进程：静默降级会让「配了 4 个 worker 却只有一个在干活」无从察觉
+     * @brief Windows 上没有移交配置就拒绝：多个进程各自 bind 同一端口不分摊
+     * @details 拒绝而不是静默降级成单进程：静默降级会让「配了 4 个 worker 却只有一个在干活」无从
+     *          察觉——Windows 的内核把全部连接交给最后绑上的那一个，其余进程一个错都不报却永远
+     *          收不到连接。替代形状现在有两个，拒绝文案都要点名：要么把 workers 设为 1（单进程 +
+     *          多工作循环 + 接受分发），要么把 master 已监听的描述符交进 handoff 走移交。
      */
-    TEST(WorkerSupervisor, RejectsMultiProcessOnWindows)
+    TEST(WorkerSupervisor, RequiresHandoffConfigurationOnWindows)
     {
         WorkerSupervisor::Configuration configuration;
         configuration.executablePath = "some-server";
@@ -211,16 +264,135 @@ namespace AsynGyanis::Core
         try
         {
             const WorkerSupervisor supervisor(configuration);
-            FAIL() << "Windows 上构造多进程编排应当被拒绝";
+            FAIL() << "Windows 上没给移交配置的多进程编排应当被拒绝";
         } catch (const Base::LogicException &exception)
         {
             const std::string text{exception.what()};
             EXPECT_NE(text.find("SO_REUSEPORT"), std::string::npos) << "拒绝原因应当说清缺的是端口共享能力：" << text;
             // 光说「不支持」不够：拒绝的同时要把当下能用的形状交出来，否则调用方只能去翻代码
             EXPECT_NE(text.find("workers 设为 1"), std::string::npos) << "拒绝信息应当给出可落地的替代配置：" << text;
+            EXPECT_NE(text.find("handoff"), std::string::npos) << "拒绝信息应当指出移交那条形状叫什么：" << text;
         }
+
+        // 移交配置的每一句都得自己站得住：描述符负数与预算非正都会把编排变成看不出来的等待
+        WorkerSupervisor::Configuration badDescriptor = configuration;
+        badDescriptor.handoff                         = WorkerSupervisor::Handoff{};
+        badDescriptor.handoff->listeningDescriptor    = -1;
+        EXPECT_THROW(static_cast<void>(WorkerSupervisor(badDescriptor)), Base::LogicException);
+
+        WorkerSupervisor::Configuration badBudget = configuration;
+        badBudget.handoff                         = WorkerSupervisor::Handoff{1, std::chrono::milliseconds::zero()};
+        EXPECT_THROW(static_cast<void>(WorkerSupervisor(badBudget)), Base::LogicException) << "预算 0 意味着等 worker 连上通道没有期限";
+    }
+
+    /**
+     * @brief Windows 的移交编排：master 绑一次，两个 worker 各自接手同一份监听并真的应答
+     * @details 这条路只能这样钉：WSADuplicateSocketW 按**目标进程号**发凭证，同一个进程里试不出
+     *          「另一个进程拿到监听引用后能不能替这个端口接活」。判据也不留在被测类里——连接由本
+     *          用例发起、回话由 tests/Tools 的夹具写，两边都不读编排器的内部状态。
+     * @note run() 放在一条独立线程上：Windows 的派生是 CreateProcess，没有 POSIX 那套 fork 前必须
+     *       单线程的约束（夹具也不碰 SIGTERM 之外的信号）。
+     */
+    TEST(WorkerSupervisor, HandsTheListeningSocketToEachWorker)
+    {
+        const Platform::Socket::Initialization network;
+
+        // master 侧的监听套接字：端口交给内核挑，本用例只按拿到的端口去连
+        const int listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_GE(listener, 0) << "造不出监听套接字，错误码 " << WSAGetLastError();
+        sockaddr_in address{};
+        address.sin_family      = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port        = 0;
+        ASSERT_EQ(::bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)), 0) << "绑定失败，错误码 " << WSAGetLastError();
+        ASSERT_EQ(::listen(listener, 16), 0) << "进入监听失败，错误码 " << WSAGetLastError();
+        socklen_t addressLength = static_cast<socklen_t>(sizeof(address));
+        ASSERT_EQ(::getsockname(listener, reinterpret_cast<sockaddr *>(&address), &addressLength), 0) << "取不回实际端口";
+        const std::uint16_t port = ntohs(address.sin_port);
+
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath  = ASYN_HANDOFF_WORKER_TOOL;
+        configuration.workerCount     = 2;
+        configuration.handoff         = WorkerSupervisor::Handoff{listener, std::chrono::seconds{10}};
+        configuration.pollInterval    = std::chrono::milliseconds{20};
+        configuration.restartBackoff  = std::chrono::milliseconds{50};
+        configuration.shutdownTimeout = std::chrono::seconds{5};
+        WorkerSupervisor supervisor(configuration);
+
+        std::atomic<bool> isRunFinished{false};
+        std::atomic<bool> isStoppedAsRequested{false};
+        std::thread       supervisorThread(
+                [&supervisor, &isRunFinished, &isStoppedAsRequested]
+                {
+                    isStoppedAsRequested.store(supervisor.run(), std::memory_order_release);
+                    isRunFinished.store(true, std::memory_order_release);
+                });
+
+        // 移交没做成的槽位会被收掉重开，因此「两个都在跑」这个数字本身就说明两条通道都交到了对方手里
+        const bool isPoolUp = waitForCondition([&supervisor] { return supervisor.runningWorkerCount() == 2U; }, kWaitTimeout);
+
+        // 两次独立的问答：落哪个 worker 上都算，两次都拿到回话就证明接手过移交的进程真在服务这个端口
+        std::vector<std::string> answers;
+        if (isPoolUp)
+        {
+            for (int attempt = 0; attempt < 2; ++attempt)
+            {
+                answers.push_back(askWorker(port));
+            }
+        }
+
+        supervisor.requestStop();
+        const bool isThreadFinished = waitForCondition([&isRunFinished] { return isRunFinished.load(std::memory_order_acquire); }, kWaitTimeout);
+        if (isThreadFinished)
+        {
+            supervisorThread.join();
+        }
+        static_cast<void>(::closesocket(listener));
+
+        ASSERT_TRUE(isThreadFinished) << "请求停止后编排没有返回";
+        EXPECT_TRUE(isStoppedAsRequested.load(std::memory_order_acquire)) << "按请求收口却报了「整池被放弃」";
+        ASSERT_TRUE(isPoolUp) << "两个 worker 没在预算内都接手监听套接字";
+        ASSERT_EQ(answers.size(), 2U);
+        EXPECT_EQ(answers[0], "handoff-ok") << "第一次问答没拿到夹具的回话：那份监听引用在 worker 手里不可用";
+        EXPECT_EQ(answers[1], "handoff-ok") << "第二次问答没拿到回话";
     }
 #else
+
+    /**
+     * @brief POSIX 上给了移交配置就拒绝：那边的 worker 各自 bind，这份描述符没有使用方
+     * @details 留着一个「填了却不生效」的档位，症状是调用方以为走了共享监听、实际什么都没变。
+     *          拒绝比忽略好：本平台的分摊靠 SO_REUSEPORT，本类不需要也不该需要那份描述符。
+     */
+    TEST(WorkerSupervisor, RejectsHandoffConfigurationOnPosix)
+    {
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath = "some-server";
+        configuration.workerCount    = 2;
+        configuration.handoff        = WorkerSupervisor::Handoff{5};
+
+        try
+        {
+            const WorkerSupervisor supervisor(configuration);
+            FAIL() << "POSIX 上不该接受移交配置";
+        } catch (const Base::LogicException &exception)
+        {
+            const std::string text{exception.what()};
+            EXPECT_NE(text.find("SO_REUSEPORT"), std::string::npos) << "要说清本平台用的是哪种分摊：" << text;
+        }
+    }
+
+    /**
+     * @brief 移交配置在 POSIX 上留空时，编排照常构造（拒绝面不许顺手把合法配置一起挡下）
+     */
+    TEST(WorkerSupervisor, AcceptsEmptyHandoffConfigurationOnPosix)
+    {
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath = "some-server";
+        configuration.workerCount    = 2;
+
+        EXPECT_NO_THROW(static_cast<void>(WorkerSupervisor(configuration)));
+    }
+
     /**
      * @brief 起来就崩的 worker 会被补若干次，超过上限后放弃并让编排结束（不空转刷日志）
      */

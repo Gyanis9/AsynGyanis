@@ -16,3 +16,11 @@ add_executable(quic_probe_client
         QuicProbeClient.cpp)
 
 target_link_libraries(quic_probe_client PRIVATE Net Core Base Platform)
+
+# 监听套接字跨进程移交的 worker 侧夹具：认编排器追加的 --handed-over-listener，取回移交来的监听引用
+# 后接受连接并回一行文本。由 tests/Core/Process/TestWorkerSupervisor.cpp 当子进程派生——Windows 的
+# 多进程编排只有真的另起一个进程才测得到，WSADuplicateSocketW 是按目标进程号发凭证的
+add_executable(handoff_worker
+        HandoffWorker.cpp)
+
+target_link_libraries(handoff_worker PRIVATE Core Base Platform)

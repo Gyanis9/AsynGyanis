@@ -2,6 +2,8 @@
 
 #include "Base/Log/LogMacros.h"
 #include "Core/Exception/CoreException.h"
+#include "Core/Process/UpgradeChannel.h"
+#include "Platform/IO/FileDescriptor.h"
 #include "Platform/Platform.h"
 #include "Platform/System/PlatformError.h"
 
@@ -75,15 +77,37 @@ namespace AsynGyanis::Core
                                        "crashLoopLimit 至少为 1（连续崩这么多次就停止补那个 worker）");
         }
 #if ASYN_PLATFORM_WIN32
-        // Windows 上没有 SO_REUSEPORT 的等价物，本类「每 worker 各自 bind 同一端口」的分摊无从谈起：
-        // 这里当场拒绝，而不是让调用方拿到一个「启动了多个进程但只有一个能绑定端口」的假成功。
-        // 缺的是这套编排而不是交接通道（master 持有监听、逐个移交那条路的原语已在 Platform::Socket 与
-        // UpgradeChannel 里），要按那个形状做 worker 编排得单独设计，见类文档的 @note
-        throw Base::LogicException("Windows 上本类的多进程模型无法成立：每个 worker 各自绑定同一端口要靠 SO_REUSEPORT，"
-                                   "而 Windows 没有等价物。请把 workers 设为 1（单进程 + 多工作循环 + 接受分发），或改在 Linux 上部署");
+        // Windows 上没有 SO_REUSEPORT 的等价物：多个进程各自 bind 同一端口时内核把全部连接交给
+        // 最后绑上的那一个，前面的进程一个错都不报却永远收不到连接——那是「起了 N 个进程、只有 1 个
+        // 在干活」的假成功。因此这边只认移交模式：master bind 一次，本类把那份监听引用逐个复制过去
+        if (!m_configuration.handoff)
+        {
+            throw Base::LogicException("Windows 上多进程必须走监听套接字移交：那边没有 SO_REUSEPORT 的等价物，多个进程各自绑同一端口时"
+                                       "内核把全部连接交给最后绑上的那一个，请把 master 已经 bind + listen 的描述符填进 "
+                                       "Configuration::handoff（listeningDescriptor）。只想跑单进程时把 workers 设为 1"
+                                       "（单进程 + 多工作循环 + 接受分发），不要构造本类");
+        }
+        if (m_configuration.handoff->listeningDescriptor < 0)
+        {
+            throw Base::LogicException("Windows 上多进程的移交配置不合格：handoff.listeningDescriptor 是 " + std::to_string(m_configuration.handoff->listeningDescriptor) +
+                                       "，不是一个已 bind + listen 的套接字描述符");
+        }
+        // 预算非正时「等不到对端」这件事就没有期限：一次 accept 的无限阻塞会把整池的补位与收尾冻住
+        if (m_configuration.handoff->waitBudget <= std::chrono::milliseconds::zero())
+        {
+            throw Base::LogicException("Windows 上多进程的移交预算必须大于 0：handoff.waitBudget 是 " + std::to_string(m_configuration.handoff->waitBudget.count()) +
+                                       " 毫秒，非正数意味着等 worker 连上通道没有期限");
+        }
 #else
-        m_workers.resize(m_configuration.workerCount);
+        // POSIX 上每个 worker 自己 bind 同一个端口（SO_REUSEPORT 由内核分摊），移交那套在本平台
+        // 没有使用方：填了它就是一条「填了却不生效」的路，当场拒而不是静默忽略
+        if (m_configuration.handoff)
+        {
+            throw Base::LogicException("POSIX 上不需要移交配置：这里的每个 worker 都自己 bind 同一个端口（SO_REUSEPORT 分摊）。"
+                                       "请把 Configuration::handoff 留空；要跨进程共享一份监听套接字是 Windows 那条形状");
+        }
 #endif
+        m_workers.resize(m_configuration.workerCount);
     }
 
     WorkerSupervisor::~WorkerSupervisor()
@@ -237,24 +261,76 @@ namespace AsynGyanis::Core
         launchOptions.executablePath = m_configuration.executablePath;
         launchOptions.arguments      = m_configuration.workerArguments;
 
+#if ASYN_PLATFORM_WIN32
+        // 移交模式：通道要先开好——对方进程靠参数里那个地址连回来，而它连回来之后才谈得上按它的
+        // 进程号复制一份监听引用过去。每次（重）起都开一条新的，因为一条通道只交给一个对端
+        auto handoffChannel = UpgradeChannel::open();
+        if (!handoffChannel)
+        {
+            noteFailedStart(worker, workerIndex, "开不出交接通道：" + handoffChannel.error());
+            return false;
+        }
+        launchOptions.arguments.push_back(std::string{kHandedOverListenerArgument});
+        launchOptions.arguments.push_back(handoffChannel->address());
+
+        // 起来了却拿不到监听引用的进程不会服务任何连接：收掉它、把这个槽位按一次「起来就崩」记上。
+        // 留着它等于占着一个名额却谁也不接，收尾时还要多等一轮
+        const auto retireWithoutListener = [&](const std::string &failureReason)
+        {
+            static_cast<void>(Platform::Process::forceTermination(worker.handle));
+            // 强杀的投递与调度有个短窗口：等到它真的结束再丢句柄，否则没有任何人收这个尸
+            // （isRunning() 观察时顺手回收，这一轮询同时完成「等结束」与「收尸」）
+            const auto reapDeadline = std::chrono::steady_clock::now() + kForcedReapWait;
+            while (std::chrono::steady_clock::now() < reapDeadline && Platform::Process::isRunning(worker.handle))
+            {
+                std::this_thread::sleep_for(kReapPollInterval);
+            }
+            worker.handle = Platform::Process::Handle{};
+            noteFailedStart(worker, workerIndex, failureReason);
+            return false;
+        };
+#endif
+
         worker.handle    = Platform::Process::spawn(launchOptions);
         worker.startTime = std::chrono::steady_clock::now();
         if (!worker.handle.isValid())
         {
             // 起不来不重试：把该槽位按「起来就崩」记一次，连续到上限就放弃，免得把日志刷满
-            ++worker.crashCount;
-            LOG_ERROR_FMT("WorkerSupervisor: worker {} 起不来（平台错误码 {}），这是连续第 {} 次。路径 {}", workerIndex, Platform::PlatformError::lastErrorCode(),
-                          worker.crashCount, m_configuration.executablePath);
-            if (worker.crashCount >= m_configuration.crashLoopLimit)
-            {
-                worker.isGivenUp = true;
-                LOG_ERROR_FMT("WorkerSupervisor: worker {} 连续 {} 次起不来，放弃补它", workerIndex, worker.crashCount);
-            }
+            noteFailedStart(worker, workerIndex, "平台错误码 " + std::to_string(Platform::PlatformError::lastErrorCode()));
             return false;
         }
 
         LOG_INFO_FMT("WorkerSupervisor: worker {} 已启动，进程号 {}", workerIndex, worker.handle.processId());
+
+#if ASYN_PLATFORM_WIN32
+        const std::chrono::milliseconds handoffBudget = m_configuration.handoff->waitBudget;
+        const auto                      peer          = handoffChannel->waitForPeer(handoffBudget);
+        if (!peer)
+        {
+            return retireWithoutListener("等 worker 连上交接通道：" + peer.error());
+        }
+        const auto isHandedOver = handoffChannel->handOffListener(*peer, m_configuration.handoff->listeningDescriptor, static_cast<std::uint64_t>(worker.handle.processId()));
+        // 通道交完就没用了：本函数不关它由调用方收，这里显式收口，别留一条还能连的通道
+        static_cast<void>(Platform::FileDescriptor::close(*peer));
+        if (!isHandedOver)
+        {
+            return retireWithoutListener("交出监听套接字：" + isHandedOver.error());
+        }
+        LOG_INFO_FMT("WorkerSupervisor: worker {} 已接手监听套接字（进程号 {}）", workerIndex, worker.handle.processId());
+#endif
+
         return true;
+    }
+
+    void WorkerSupervisor::noteFailedStart(Worker &worker, const std::size_t workerIndex, const std::string &failureReason)
+    {
+        ++worker.crashCount;
+        LOG_ERROR_FMT("WorkerSupervisor: worker {} 起不来（{}），这是连续第 {} 次。路径 {}", workerIndex, failureReason, worker.crashCount, m_configuration.executablePath);
+        if (worker.crashCount >= m_configuration.crashLoopLimit)
+        {
+            worker.isGivenUp = true;
+            LOG_ERROR_FMT("WorkerSupervisor: worker {} 连续 {} 次起不来，放弃补它", workerIndex, worker.crashCount);
+        }
     }
 
     bool WorkerSupervisor::reapWorker(Worker &worker, const std::size_t workerIndex)

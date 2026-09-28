@@ -17,6 +17,24 @@
 
 ### 新增
 
+- **Windows 上的多进程 worker 现在能编排了（`WorkerSupervisor` 的移交模式）**：端口分摊在 POSIX 上靠
+  `SO_REUSEPORT`，而 Windows 没有等价物——多个进程各自 bind 同一端口时内核把全部连接交给最后绑上的
+  那一个，前面的进程一个错都不报却永远收不到连接，因此本类此前在 Windows 上构造即拒绝。现在换成
+  master bind 一次、把那份监听引用逐个复制给 worker：`Configuration::handoff` 给出已经 `listen()` 的
+  描述符与「等 worker 连上通道」的预算；每次（重）起都开一条一次性通道，把它的地址追加进 worker
+  参数（参数名是公开常量 `Core::kHandedOverListenerArgument`），再按对方进程号交出监听引用；worker 侧
+  用 `Core::adoptHandedOverListener()` 取回，然后按各服务器「接管已监听描述符」的构造入口起服务。
+  崩一次补一次也就得重新移交一次——这是这套形状比 `SO_REUSEPORT` 多出来的那道账，也是预算必须存在
+  的原因（见上一条）。**起来了却没能接手监听的进程不算在线**：收掉它并按一次「起来就崩」记数，
+  否则那个名额被一个谁也不服务的进程占着。POSIX 一侧的形状不变，而把 `handoff` 填上会被构造拒掉——
+  那边每个 worker 自己 bind，这份描述符没有使用方，留着一个「填了却不生效」的档位比拒绝更坏。
+  用例：`tests/Tools/HandoffWorker.cpp` 是 worker 侧夹具（取回监听引用、接受连接、回一行文本），
+  Windows 那条端到端用例真的起两个进程、问两次并核回话。判据落在**读到内容**而不是「connect 成功」
+  上——回环上连接能建立只说明 backlog 收了这条请求，并不证明真有人在 accept，只判连接成功的用例
+  会在「端口还听着而没人接手」时假绿。证伪四处：整段移交不发 → 端到端红（进程都报「在线」却没人
+  应答）；通道地址不追加 → 端到端红；交付时目标进程号写错 → 端到端红；去掉 Windows 的构造期拒绝 →
+  校验那条红。POSIX 的两条校验用例照常「给了就拒、留空就放行」。
+
 - **交接通道现在能按期报「没人来连」（`Core::UpgradeChannel::waitForPeer(预算)` 与
   `Platform::Socket::waitForAcceptReady`）**：交棒方原来只有一种等法——无限阻塞的 accept。对端是
   **另一个进程**时那一句「阻塞调用」并不无害：worker 起来就崩、参数给错、还没走到连通道那一步，

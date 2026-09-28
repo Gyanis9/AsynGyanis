@@ -14,22 +14,36 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace AsynGyanis::Core
 {
     /**
+     * @brief 编排器交给 worker 的那个参数名（移交模式下自动追加，值就是交接通道地址）
+     * @details worker 侧要认它：拿到地址后用 Core::adoptHandedOverListener(值, 预算) 取回一份
+     *          已在监听的套接字，再按各服务器「接管已监听描述符」的构造入口起服务。
+     *          调用方把自己那份 listen() 之后就没本类的事了——本层只负责送，不负责收。
+     */
+    inline constexpr std::string_view kHandedOverListenerArgument = "--handed-over-listener";
+
+    /**
      * @brief 多进程 worker 的编排器（master 侧）：起进程、盯退出、按需重启、收尾送走；worker 参数全部由调用方给
      * @warning run() 必须在**进程还是单线程**时调用：worker 由 fork + exec 起（见 Platform::Process），
      *          多线程下 fork 出的子进程只带调用线程，锁与运行库状态都可能不自洽。
-     * @warning Windows 上本类的共享端口模型（每个 worker 各自 bind 同一端口）不成立：端口分摊依赖
-     *          SO_REUSEPORT，而 Windows 没有等价物，因此 workerCount > 1 在构造时直接拒绝，
-     *          而不是跑起来才发现只有一个进程能绑上端口。
-     * @note Windows 上缺的是这一套编排而不是交接通道：master 绑定并 listen、自己不收连接，
-     *       改用 @c UpgradeChannel 把 Platform::Socket 复制出的那份监听套接字逐个交给 worker，
-     *       已排队的连接会随描述符一并过去（零停机换代走的就是这条路）。按这个形状编排 worker
-     *       还要处理「监听套接字由 master 独占、worker 崩了得重新移交」，本类未实现。
+     * @note 两个平台的分摊形状不同，配置因此分叉：
+     *        @li POSIX 给 @c handoff 留空——每个 worker 自己 bind 同一个端口，靠 SO_REUSEPORT 由内核
+     *            分摊连接；
+     *        @li Windows 必须给 @c handoff——那边没有 SO_REUSEPORT 的等价物，多个进程各自 bind 同一
+     *            端口时内核只会把全部连接交给最后绑上的那一个（其余的一个错都不报，永远收不到连接），
+     *            所以改由 master bind 一次、把这份监听套接字逐个复制给 worker。
+     * @note 移交模式下每次（重）起 worker 都开一条一次性通道：worker 崩了要重新移交，而通道交完
+     *       一个对端就作废（留着只会有第三个进程挤进一次已经谈定的交接）。
+     * @warning 移交模式下的补位是有界阻塞：起一个 worker 最多占用 @c handoff.waitBudget 等它连上
+     *          通道，期限内没连上就按一次「起来就崩」记数并杀掉那个进程。整池都起不来时编排照常
+     *          放弃并返回 false，不会卡在通道上。
      * @note 进程之间**不共享任何状态**：按来源 IP 的并发限额、限流桶、指标计数都是各进程一份。
      *       多进程下这意味着「单来源上限 × N、请求速率上限 × N、指标要按进程分别采集」——
      *       要真正的全局口径就得引入进程间共享（或改用单进程多工作循环 + 接受分发）。
@@ -37,6 +51,19 @@ namespace AsynGyanis::Core
     class WorkerSupervisor
     {
     public:
+        /**
+         * @brief Windows 的移交配置：master 已经把监听套接字攥在手里，本类负责逐个复制给 worker
+         * @details 存在的理由是「Windows 上多个进程绑同一端口不分摊」这一条平台事实：不换形状就没法
+         *          横向扩进程，而换了形状就要有人把监听引用送过去。
+         * @note 本结构只在 Windows 上有效：POSIX 上填了它会被构造函数拒掉——那边的 worker 各自 bind，
+         *       这份描述符交出去没有使用方，留着一个「填了却不生效」的档位比拒绝更坏。
+         */
+        struct Handoff
+        {
+            int                       listeningDescriptor{-1}; ///< master 已 bind + listen 的套接字描述符；所有权仍在调用方，本类不在它上面收连接
+            std::chrono::milliseconds waitBudget{5000};        ///< 等一个 worker 连上交接通道的预算；期限内没连上就按一次「起来就崩」处理
+        };
+
         /**
          * @brief 编排参数
          */
@@ -50,14 +77,19 @@ namespace AsynGyanis::Core
             std::chrono::milliseconds shutdownTimeout{10000}; ///< 收尾期限：请求退出后等到这个点就强杀
             std::chrono::milliseconds crashLoopWindow{3000};  ///< 存活不足这个时长就退出，算一次「起来就崩」；必须大于 0
             std::size_t               crashLoopLimit{5};      ///< 连续「起来就崩」达到这个次数就停止补该 worker；至少为 1
+            /// 移交配置（Windows 必填、POSIX 必须留空，见类注释与 Handoff 的 @note）：
+            /// 有值即启用「master 送监听套接字」那套编排，本类会往 worker 参数尾部追加
+            /// kHandedOverListenerArgument 与那条一次性通道的地址
+            std::optional<Handoff> handoff;
         };
 
         /**
          * @brief 校验配置并构造
          * @param configuration 编排参数
          * @throws Base::LogicException 配置不成立（可执行文件为空、workerCount 小于 2、崩溃判据
-         *         非正）或本平台跑不了这套模型（Windows 没有 SO_REUSEPORT，多个进程绑不上同一个端口；
-         *         提示改用 workers=1）
+         *         非正），或本平台的移交配置给得不对：Windows 缺 @c handoff（各自 bind 同一端口
+         *         不分摊，跑起来只有一个进程收得到连接），POSIX 给了 @c handoff（那边每个 worker
+         *         自己 bind，这份描述符没有使用方）
          */
         explicit WorkerSupervisor(Configuration configuration);
 
@@ -114,11 +146,25 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 在指定槽位上起一个 worker，失败时按一次「起来就崩」记数
+         * @details 移交模式下多三步：开一条一次性通道、把它的地址追加进 worker 参数、等对方连上后
+         *          按对方进程号交出监听套接字。这三步里任何一步不成都算该槽位崩一次——起来却拿不到
+         *          监听引用的进程不会服务任何连接，留着它只是占一个名额。
          * @param worker 目标槽位
          * @param workerIndex 槽位序号，仅用于日志
-         * @return true 起来了
+         * @return true 起来了（移交模式下还包含「监听套接字已经交到手」）
          */
         [[nodiscard]] bool startWorker(Worker &worker, std::size_t workerIndex);
+
+        /**
+         * @brief 给某个槽位记一次「没起来」，连续到上限就放弃补它
+         * @details 起不来、开不出通道、等不到对方连上、交付失败四类出口都走这一处：它们的后果相同——
+         *          这个槽位上现在没有一个能服务连接的进程。记数与日志只留一份，免得四条出口各自
+         *          漂移出不同的「放弃」判据。
+         * @param worker 目标槽位
+         * @param workerIndex 槽位序号，仅用于日志
+         * @param failureReason 一句中文原因（平台错误码，或通道报回的那句）
+         */
+        void noteFailedStart(Worker &worker, std::size_t workerIndex, const std::string &failureReason);
 
         /**
          * @brief 收掉一个已退出的 worker，并决定这个槽位接下来怎么办

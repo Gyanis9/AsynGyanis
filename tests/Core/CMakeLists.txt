@@ -54,7 +54,14 @@ target_link_libraries(TestCore PRIVATE
 # TLS 测试使用的仓库内证书目录（tests/Core/fixtures）
 target_compile_definitions(TestCore PRIVATE
         TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+        # 多进程编排用例要派生的 worker 侧夹具（tests/Tools/HandoffWorker.cpp）：用例只拿到路径，
+        # 判定留在自己这一侧，避免「同一个进程里自己测自己」把跨进程那条路径测成同进程
+        ASYN_HANDOFF_WORKER_TOOL="$<TARGET_FILE:handoff_worker>"
 )
+
+# 夹具必须在 TestCore 之前建出来：上面那条定义按生成期展开，路径指向的产物不存在时用例会在
+# 派生子进程那一步红，红成「编排坏了」而不是「没构建齐」
+add_dependencies(TestCore handoff_worker)
 
 target_include_directories(TestCore PRIVATE
         ${CMAKE_SOURCE_DIR}/src
