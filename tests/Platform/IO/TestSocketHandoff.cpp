@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -279,5 +280,69 @@ namespace AsynGyanis::Platform
         EXPECT_FALSE(Socket::writeListeningSocketHandoff(-1, channelReader, 1U));
         EXPECT_FALSE(Socket::writeListeningSocketHandoff(channelWriter, -1, 1U));
         EXPECT_EQ(Socket::readListeningSocketHandoff(-1), -1);
+    }
+    /**
+     * @brief 有界等待：没人来连时必须在预算内报「没有」，而不是停在 accept 上不返回
+     * @details 编排层拿它判「worker 起来了却没连通道」那条出口。写成无限阻塞的话，一个连不上
+     *          通道的子进程会冻住整池的补位与收尾——而那正是这套编排要处理的场景。
+     */
+    TEST(SocketHandoff, WaitForAcceptReadyTimesOutWhenNobodyConnects)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        std::uint16_t     port     = 0U;
+        const int         listener = makeLoopbackListener(port);
+        ASSERT_GE(listener, 0) << "没造出监听套接字，错误码 " << PlatformError::lastErrorCode();
+
+        const auto started = std::chrono::steady_clock::now();
+        const auto pending = Socket::waitForAcceptReady(listener, std::chrono::milliseconds{200});
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+        ASSERT_TRUE(pending.has_value()) << "等待本身失败，错误码 " << pending.error().value();
+        EXPECT_FALSE(*pending) << "没人连这条通道，却报成有连接 pending";
+        // 上界给到 5 秒只用来分辨「按期返回」与「根本没返回」：这条要抓的是无限阻塞那种形状，
+        // 不是替 200 毫秒计时
+        EXPECT_LT(elapsed, std::chrono::seconds{5}) << "预算 200 毫秒却没按期返回：那是一次无限阻塞";
+
+        // 0 预算是「只取当前状态」，同样不该被读成一次失败
+        const auto sampled = Socket::waitForAcceptReady(listener, std::chrono::milliseconds::zero());
+        ASSERT_TRUE(sampled.has_value()) << "零预算的一次取样被报成失败：它要的答案只是有没有";
+        EXPECT_FALSE(*sampled);
+
+        // 负数是写错了预算：不静默当成「无限等」，也不当成「零取样」，直接点名
+        const auto invalid = Socket::waitForAcceptReady(listener, std::chrono::milliseconds{-1});
+        ASSERT_FALSE(invalid.has_value());
+        EXPECT_EQ(invalid.error().value(), static_cast<int>(std::errc::invalid_argument));
+    }
+
+    /**
+     * @brief 已排队的连接要报得出「有」，而且紧接着的 accept 真拿得到它
+     * @details 只报「有」而 accept 落空，等于把一次就绪读成一次失败；反过来 accept 能成而等待报
+     *          「没有」，编排层就会把一个正常连上来的 worker 判死。
+     */
+    TEST(SocketHandoff, WaitForAcceptReadyReportsAPendingConnection)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        std::uint16_t     port     = 0U;
+        const int         listener = makeLoopbackListener(port);
+        ASSERT_GE(listener, 0) << "没造出监听套接字，错误码 " << PlatformError::lastErrorCode();
+        cleanup.add(listener);
+
+        const int client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_GE(client, 0);
+        cleanup.add(client);
+        sockaddr_in endpoint = loopbackAddress(port);
+        // connect() 在回环上返回成功就意味着三次握手已落进接受队列，等待不必再赌时序
+        ASSERT_EQ(::connect(client, reinterpret_cast<const sockaddr *>(&endpoint), sizeof(endpoint)), 0) << "回环上连自己的监听口都连不上";
+
+        const auto pending = Socket::waitForAcceptReady(listener, std::chrono::milliseconds{3000});
+        ASSERT_TRUE(pending.has_value()) << "等待本身失败，错误码 " << pending.error().value();
+        EXPECT_TRUE(*pending) << "已经排好队的连接没被报出来";
+
+        const int accepted = Socket::acceptHandoffPeer(listener);
+        ASSERT_GE(accepted, 0) << "报「有」之后 accept 拿不到东西，那次报读等于没报";
+        cleanup.add(accepted);
     }
 } // namespace AsynGyanis::Platform

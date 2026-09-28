@@ -28,8 +28,9 @@ namespace AsynGyanis::Core
      *          Platform::Socket::writeListeningSocketHandoff）。
      * @note 通道不带鉴权：本层不校验「对面就是我要交给的那个进程」。POSIX 上那道门是套接字文件的
      *       权限（开出来就是 0700 那一档），Windows 上通道只绑回环，本机可连的范围就是本机。
-     * @warning 全部入口都是阻塞调用：请在起事件循环线程之前用（交棒方通常先建通道、派生新一代，
-     *          再开循环服务）。把它们放到循环线程上会让那条循环停在那儿等。
+     * @warning 入口都会阻塞：waitForPeer() 给出正数预算时最多阻塞到那个上限，其余情况请只在
+     *          起事件循环线程之前用（交棒方通常先建通道、派生新一代，再开循环服务）。
+     *          把它们放到循环线程上会让那条循环停在那儿等。
      */
     class UpgradeChannel
     {
@@ -59,12 +60,17 @@ namespace AsynGyanis::Core
         [[nodiscard]] const std::string &address() const noexcept;
 
         /**
-         * @brief 阻塞等新一代连上，交回那条已连通的通道
+         * @brief 等新一代连上，交回那条已连通的通道
          * @details 拿到对端之后监听端就没用了，本函数顺手把它收掉（一条通道只交给一个新一代）：
          *          此后再有进程连这个地址只会失败，而不是插进一次已经谈定的交接。
+         * @param budget 等待上限；**非正数表示无限等**（本方法原有的阻塞语义，交棒方还没派生
+         *        新一代时就要这种等法）。给出正数时，期限内没人连就收掉通道并报超时——
+         *        对端是别的进程，它完全可能起崩后再也不连，无限等会把调用方的编排循环冻住
          * @return std::expected<int, std::string> 通道描述符；失败交中文原因
+         * @note 与 Platform::Socket::waitForAcceptReady() 的 0 含义不同，那边是「只取当前状态」：
+         *       本层不暴露那种读法，正数预算之外的取值一律按无限等处理
          */
-        [[nodiscard]] std::expected<int, std::string> waitForPeer() noexcept;
+        [[nodiscard]] std::expected<int, std::string> waitForPeer(std::chrono::milliseconds budget = std::chrono::milliseconds::zero()) noexcept;
 
         /**
          * @brief 把已在监听的套接字交给 waitForPeer() 交回的那条通道

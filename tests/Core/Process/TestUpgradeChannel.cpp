@@ -178,4 +178,48 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(std::filesystem::exists(firstAddress)) << "收口没把套接字文件带走：下一次换代会在 bind 上撞 EADDRINUSE";
 #endif
     }
+    /**
+     * @brief 有预算的 waitForPeer：没人来连时按期报超时，并把这条一次性通道作废
+     * @details 交棒方的编排循环要靠这条出口判「worker 起来了却没连上通道」。只有无限等的那一版时，
+     *          一个起崩的 worker 会把整池的补位与收尾冻在那里——多进程编排必须能报出这一笔。
+     */
+    TEST(UpgradeChannel, WaitForPeerGivesUpWithinItsBudgetWhenNobodyConnects)
+    {
+        const Platform::Socket::Initialization network;
+        auto                                   channel = UpgradeChannel::open();
+        ASSERT_TRUE(channel.has_value()) << "开不出交接通道：" << channel.error();
+
+        const auto started = std::chrono::steady_clock::now();
+        const auto peer    = channel->waitForPeer(300ms);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+        ASSERT_FALSE(peer.has_value()) << "没人连这条通道却报成交接对象拿到了";
+        EXPECT_NE(peer.error().find("毫秒内连上交接通道"), std::string::npos) << "超时那句没点名预算与地址：看不出是哪一次交接作废";
+        // 上界给到 5 秒只用来分辨「按期返回」与「根本没返回」，不是替 300 毫秒计时
+        EXPECT_LT(elapsed, 5s) << "给了 300 毫秒的预算却没按期返回：那仍然是无限阻塞";
+
+        // 一次性通道在超时那一刻就作废：第二次等直接报「已经收口」，不再占第二个等待窗口
+        const auto secondAttempt = channel->waitForPeer(300ms);
+        ASSERT_FALSE(secondAttempt.has_value());
+        EXPECT_NE(secondAttempt.error().find("已经收口"), std::string::npos) << "超时之后通道没作废：那还会有第三个进程挤进一次作废的交接";
+    }
+
+    /**
+     * @brief 预算内的等待不改变正常交接：对端在期限内连上，交接照旧走完
+     * @details 有界等待是加在原语义上的一层，加错了会让「本来能成的交接」变成超时——这条按既有用法
+     *          跑一遍完整配对，钉住它没有把成功路径改坏。
+     */
+    TEST(UpgradeChannel, WaitForPeerWithBudgetStillHandsOverToAConnectingPeer)
+    {
+        const Platform::Socket::Initialization network;
+        auto                                   channel = UpgradeChannel::open();
+        ASSERT_TRUE(channel.has_value()) << "开不出交接通道：" << channel.error();
+
+        const int client = Platform::Socket::connectHandoffChannel(channel->address());
+        ASSERT_GE(client, 0) << "按通道地址连不过去：夹具自己没连上";
+
+        const auto peer = channel->waitForPeer(kAdoptBudget);
+        ASSERT_TRUE(peer.has_value()) << peer.error();
+        static_cast<void>(Platform::FileDescriptor::close(*peer));
+        static_cast<void>(Platform::FileDescriptor::close(client));
+    }
 } // namespace AsynGyanis::Core

@@ -11,6 +11,7 @@
 
 #include "Platform/Platform.h"
 
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <string>
@@ -314,9 +315,26 @@ namespace AsynGyanis::Platform
         static void closeHandoffChannel(HandoffChannelEndpoint &endpoint) noexcept;
 
         /**
+         * @brief 有界地等一次「监听端上有连接 pending」，不取走它
+         * @details 存在的理由是 acceptHandoffPeer() 只会无限等：交接通道的对端是**另一个进程**，
+         *          它可能压根没连上来（起崩了、参数给错了、还没走到连的那一步）。把无限阻塞放进
+         *          编排循环，一个连不上通道的子进程就会冻住整池的补位与收尾。
+         * @param listenerDescriptor openHandoffChannel 交出的监听端
+         * @param budget 等待上限；**0 表示只取一次当前状态**（立刻返回有没有），不是「无限等」；
+         *        负数是参数错误，当场报 invalid_argument 而不是当成前两种读法
+         * @return std::expected<bool, std::error_code> true 有连接 pending，紧接着 accept 拿得到；
+         *         false 期限内没有；unexpected 是等待本身失败（描述符无效、预算为负、select 报错）
+         * @note 被信号中断（EINTR/WSAEINTR）时按剩余预算接着等，不算失败也不算没等到：编排线程
+         *       自己就挂着 SIGTERM/SIGINT 的处理函数，一次停止请求不该被读成「对端没来」
+         */
+        [[nodiscard]] static std::expected<bool, std::error_code> waitForAcceptReady(int listenerDescriptor, std::chrono::milliseconds budget) noexcept;
+
+        /**
          * @brief 阻塞等新一代连上这条通道
          * @param listenerDescriptor openHandoffChannel 交出的监听端
          * @return int 已连通的通道描述符；负值表示没等到（失败原因见 PlatformError::lastSocketErrorCode()）
+         * @warning 无限阻塞：对端是另一个进程时，先用 waitForAcceptReady() 判有没有，别直接把这条
+         *          放进任何需要按期返回的循环里
          */
         [[nodiscard]] static int acceptHandoffPeer(int listenerDescriptor) noexcept;
 

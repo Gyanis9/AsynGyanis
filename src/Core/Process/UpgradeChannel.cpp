@@ -82,12 +82,35 @@ namespace AsynGyanis::Core
         Platform::Socket::closeHandoffChannel(m_endpoint);
     }
 
-    std::expected<int, std::string> UpgradeChannel::waitForPeer() noexcept
+    std::expected<int, std::string> UpgradeChannel::waitForPeer(const std::chrono::milliseconds budget) noexcept
     {
         if (m_endpoint.listener < 0)
         {
             return std::unexpected("交接通道已经收口，等不到新一代连上来");
         }
+
+        // 地址要在收口之前取走：closeChannel() 会把通道文件删掉并清空这份文本，
+        // 而超时那句必须报出「哪个地址没人连」——那是排查时唯一还指向这次交接的信息
+        const std::string channelAddress = m_endpoint.address;
+
+        // 给出正数预算时先问「有没有」，再走 accept：acceptHandoffPeer 只会无限等，而这条通道的
+        // 对端是另一个进程，它可能起崩后再也不连。预算内没人连就把通道收掉——通道是一次性的，
+        // 留着它只会有第二个进程挤进一次已经作废的交接
+        if (budget > std::chrono::milliseconds::zero())
+        {
+            const auto isPeerPending = Platform::Socket::waitForAcceptReady(m_endpoint.listener, budget);
+            if (!isPeerPending)
+            {
+                closeChannel();
+                return std::unexpected("等待新一代连上交接通道失败：" + Platform::PlatformError::message(isPeerPending.error().value()));
+            }
+            if (!*isPeerPending)
+            {
+                closeChannel();
+                return std::unexpected("新一代没在 " + std::to_string(budget.count()) + " 毫秒内连上交接通道（地址 " + channelAddress + "），这次交接作废");
+            }
+        }
+
         const int peerDescriptor = Platform::Socket::acceptHandoffPeer(m_endpoint.listener);
         // 监听端到此为止：这条通道只交给一个新一代，留着它只会让第三个进程挤进一次已经谈定的交接
         closeChannel();

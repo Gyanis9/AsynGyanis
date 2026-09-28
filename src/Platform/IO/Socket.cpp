@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -14,6 +15,7 @@
 
 #if !ASYN_PLATFORM_WIN32
 #include <csignal>
+#include <sys/select.h>
 #include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -658,6 +660,65 @@ namespace AsynGyanis::Platform
             endpoint.socketFilePath.clear();
         }
         endpoint.address.clear();
+    }
+
+    std::expected<bool, std::error_code> Socket::waitForAcceptReady(const int listenerDescriptor, const std::chrono::milliseconds budget) noexcept
+    {
+        if (listenerDescriptor < 0)
+        {
+            return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+        }
+        if (budget < std::chrono::milliseconds::zero())
+        {
+            // 负预算不是「零」也不是「无限」，它是调用方写错了：当成任何一种都会把一次参数错误
+            // 变成一条看不出来的「没人来连」
+            return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+        }
+
+        // 按绝对期限自己扣剩余预算：POSIX 的 select 在被信号打断时带着「已经睡掉的那段」返回 EINTR，
+        // 直接照原预算再等一次会把等待拉长，而一次都不重试又把「收到一个信号」读成「对端没来」——
+        // 编排线程本身就挂着 SIGTERM/SIGINT 的处理函数，这两种错都会传下去
+        const auto deadline = std::chrono::steady_clock::now() + budget;
+        while (true)
+        {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+            if (remaining < std::chrono::milliseconds::zero())
+            {
+                // 预算用尽不是失败：这一条通路的答案本来就是「有没有人来连」。恰好等于 0 时不走这一支，
+                // 因为 0 预算的用法就是「只取当前状态」——那需要真去 select 一次（零超时），而不是跳过
+                return false;
+            }
+
+            fd_set readSet;
+            FD_ZERO(&readSet);
+#if ASYN_PLATFORM_WIN32
+            FD_SET(static_cast<SOCKET>(listenerDescriptor), &readSet);
+#else
+            FD_SET(listenerDescriptor, &readSet);
+#endif
+            timeval timeout{};
+            timeout.tv_sec  = static_cast<decltype(timeout.tv_sec)>(remaining.count() / 1000);
+            timeout.tv_usec = static_cast<decltype(timeout.tv_usec)>(remaining.count() % 1000 * 1000);
+
+            // Windows 的第一个形参被忽略（它按 fd_set 里的句柄自己找），POSIX 要传「最大描述符 + 1」
+#if ASYN_PLATFORM_WIN32
+            const int readyCount = ::select(0, &readSet, nullptr, nullptr, &timeout);
+#else
+            const int readyCount = ::select(listenerDescriptor + 1, &readSet, nullptr, nullptr, &timeout);
+#endif
+            if (readyCount > 0)
+            {
+                return true;
+            }
+            if (readyCount == 0)
+            {
+                return false;
+            }
+            if (PlatformError::lastSocketErrorCode() != PlatformError::kInterrupted)
+            {
+                return std::unexpected(lastSocketError());
+            }
+        }
     }
 
     int Socket::acceptHandoffPeer(const int listenerDescriptor) noexcept
