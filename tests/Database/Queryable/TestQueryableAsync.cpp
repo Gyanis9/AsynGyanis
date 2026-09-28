@@ -64,6 +64,15 @@ namespace
         std::int64_t id; ///< 唯一一列
     };
 
+    /**
+     * @brief 自增主键行：id 由数据库生成，钉「异步插入取回生成标识」那条入口
+     */
+    struct AsyncTicketRow
+    {
+        std::int64_t id    = 0;  ///< 由数据库生成的自增主键
+        std::string  title = ""; ///< 标题列
+    };
+
 } // namespace
 
 template<>
@@ -87,6 +96,18 @@ struct AsynGyanis::Database::Queryable::TableSchema<AsyncMissingTableRow>
             Column(&AsyncMissingTableRow::id, "id"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<AsyncTicketRow>
+{
+    static constexpr std::string_view kTableName = "async generated tickets";
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&AsyncTicketRow::id, "id"),
+            Column(&AsyncTicketRow::title, "title"),
+    };
+    static constexpr std::string_view kPrimaryKey                = "id";
+    static constexpr bool             kIsAutoIncrementPrimaryKey = true;
 };
 
 // ========================================================================
@@ -358,6 +379,45 @@ TEST_F(QueryableAsyncTest, AsyncInsertWritesRowReadableBySyncQuery)
     EXPECT_EQ(readBackThird->name, "无备注");
     // 写入时是 nullopt，读回必须仍是空 optional（NULL 不会被折成空串）
     EXPECT_FALSE(readBackThird->note.has_value());
+}
+
+/**
+ * @brief 异步插入取回的自增标识要与同步那条给同一个值（该入口此前零直测）
+ * @details 异步版的承诺是「取连接 → 执行 → 读写回执上的自增标识」整段都在工作线程上跑，标识是在
+ *          **同一条租约**上读回来的。把读标识那一步挪回事件循环线程、或顺手改成读受影响行数，
+ *          第二条插入拿到的就不再紧接第一条——那是「不报错的错误答案」，只有把号读回来对答案才看得见。
+ *          自增主键被省略这条也在这里重复钉一次：语句生成与同步共用一份实现，但异步入口此前没有用例守。
+ * @note 证伪：把工作线程 lambda 里的 `lastInsertRowId()` 换成 `affectedRows()`，本条红在第二条标识
+ */
+TEST_F(QueryableAsyncTest, AsyncInsertAndGetGeneratedIdMatchesSyncSemantics)
+{
+    std::string errorText;
+    ASSERT_TRUE(SchemaMigrator::createTable<AsyncTicketRow>(*m_pool, true, &errorText)) << errorText;
+
+    Queryable<AsyncTicketRow> asyncQuery(*m_pool);
+    asyncQuery.useAsyncExecutor(m_executor);
+
+    const CompletedTask<std::int64_t> first = m_loopRunner.runToCompletion(asyncQuery.insertAndGetGeneratedIdAsync(AsyncTicketRow{.id = 0, .title = "第一张"}, eventLoop()));
+    ASSERT_TRUE(first.finished) << "异步取回自增标识未在时限内完成";
+    ASSERT_EQ(first.error, nullptr);
+    ASSERT_TRUE(first.value.has_value());
+    EXPECT_EQ(first.value.value(), 1);
+
+    // 主键字段被忽略：填了 7 也要拿紧接着的下一个号，而不是把 7 写进列清单
+    const CompletedTask<std::int64_t> second = m_loopRunner.runToCompletion(asyncQuery.insertAndGetGeneratedIdAsync(AsyncTicketRow{.id = 7, .title = "第二张"}, eventLoop()));
+    ASSERT_TRUE(second.finished);
+    ASSERT_EQ(second.error, nullptr);
+    ASSERT_TRUE(second.value.has_value());
+    EXPECT_EQ(second.value.value(), 2) << "读回来的不是这条连接上刚生成的标识";
+
+    // 读回侧核对：返回的标识必须就是落在行上的那个主键
+    Queryable<AsyncTicketRow>         readQuery(*m_pool);
+    const std::vector<AsyncTicketRow> rows = readQuery.orderBy(asc("id")).toList();
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[0].id, 1);
+    EXPECT_EQ(rows[0].title, "第一张");
+    EXPECT_EQ(rows[1].id, 2);
+    EXPECT_EQ(rows[1].title, "第二张");
 }
 
 /**
