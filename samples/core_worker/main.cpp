@@ -1,7 +1,10 @@
 // Core 多进程示例：WorkerSupervisor 的补位、崩溃上限与停止路径，以及各平台的构造期拒因
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/EventLoop/EventLoop.h"
 #include "Core/Process/WorkerSupervisor.h"
+#include "Core/Socket/AsyncSocket.h"
+#include "Core/Socket/InetAddress.h"
 #include "Platform/Platform.h"
 #include "Platform/System/ProcessInfo.h"
 #include "common/SampleSupport.h"
@@ -213,10 +216,38 @@ int main(const int argc, char **argv)
                   "轮询间隔为 0 在构造期就被拒，否则循环会空转");
 
 #if ASYN_PLATFORM_WIN32
-    // Windows 上没有 SO_REUSEPORT：本类「每 worker 各自 bind 同一端口」的分摊无从谈起，构造当场拒绝而不是留下「只有一个能绑上」的假成功
-    samples.check(
-            constructionRejects("Windows 上的多进程编排", Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 2}, "本类的多进程模型无法成立"),
-            "Windows 构造多进程编排在当场被拒，改指 workers=1 或 Linux 部署");
+    // 本平台没有 SO_REUSEPORT：每 worker 各自 bind 同一端口时内核把全部连接交给最后绑上的那一个，
+    // 于是形状改成「master bind 一次、把监听套接字逐个交给 worker」。不给移交档位就构造即拒，而拒的
+    // 文案必须点名那个字段——只说「本平台不支持多进程」会把人支去换平台，而不是补上缺的那一项配置。
+    samples.check(constructionRejects("Windows 上没给移交档位", Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 2}, "Configuration::handoff"),
+                  "Windows 上不给移交档位就在构造期被拒，且拒因点名叫 handoff");
+
+    // 填上已 bind + listen 的描述符之后构造应当放行——「本平台一律不做多进程」这句已经作废。
+    // 真的起两个进程并问一遍回话由 TestWorkerSupervisor 的端到端用例钉，这里只判构造不再挡路。
+    // 监听套接字仍归本端（master）持有：编排器每次补位都要重新移交一次，它只是借看，不接管收口
+    {
+        Core::EventLoop   listenerLoop;
+        Core::AsyncSocket listener = Core::AsyncSocket::create(listenerLoop);
+        const bool        isListening = listener.bind(Core::InetAddress::localhost(0)) && listener.listen(8);
+        samples.check(isListening, "夹具起得出一个回环监听口（移交档位的输入）");
+        if (isListening)
+        {
+            Core::WorkerSupervisor::Configuration handedOver;
+            handedOver.executablePath = executablePath;
+            handedOver.workerCount    = 2;
+            handedOver.handoff        = Core::WorkerSupervisor::Handoff{listener.fileDescriptor(), std::chrono::milliseconds{500}};
+            try
+            {
+                const Core::WorkerSupervisor supervisor(std::move(handedOver)); // 构造不 spawn：起进程发生在 run()
+                static_cast<void>(supervisor);
+                samples.check(true, "填了移交档位时构造放行（Windows 的多进程不再被平台挡死）");
+            } catch (const Base::Exception &failure)
+            {
+                LOG_ERROR_FMT("给了 handoff 仍被拒：{}", failure.what());
+                samples.check(false, "填了移交档位时构造放行（Windows 的多进程不再被平台挡死）");
+            }
+        }
+    }
     return Samples::finishSample("core_worker");
 #else
     // —— 以下只在 POSIX 上跑：worker 真的被起起来、真的被补位、真的按时刻表收手 ——
