@@ -43,6 +43,11 @@
 - **接受分发（跨平台多核扩展）** — 一个监听器接受、按轮转把连接交给 N 个工作循环，不依赖
   `SO_REUSEPORT`；Windows 上这是唯一可用的多核形态（`ConnectionDistributor` + `TcpServer::startAccepting()`）
 - **静态文件服务** — `staticFileDir()` 一行接入
+- **证书自动化（ACME / RFC 8555）** — `AcmeCertificateManager` 走完目录、账户、下单、HTTP-01 自证、定稿与
+  取证这一整台状态机：私钥与证书原子落盘（私钥 0600），到期前自主续，签好后经回调装回服务；
+  协议层（`AcmeClient`）与密钥层（`AcmeKeyPair`：JWK、RFC 7638 指纹、JWS、CSR）都能单独用。
+  h3 那一侧由 `QuicServer::reloadCertificate()` 承接同一个轮换动作，443/TCP 与同一端口的 UDP 不会一张新一张旧。
+  只实现 HTTP-01：机构的目录里只有 tls-alpn-01 或 dns-01 时当场判失败并说明要哪一种，不会挑一条答不了的挑战去 POST
 
 **数据（Database）**
 
@@ -131,7 +136,7 @@ target_link_libraries(app PRIVATE AsynGyanis::Net)
 Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费方链接后**运行需要 ASan 运行库 DLL**；
 不想带这些依赖就用 `release` 预设产出的包。
 
-### 真机用例（数据库）
+### 真机用例（数据库与证书机构）
 
 依赖真实服务端的用例一律**环境变量门控**，口令无默认值、缺失即整组 `GTEST_SKIP`（不是失败），因此没有服务端的机器上仍然全绿：
 
@@ -139,6 +144,12 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 |------|---------|---------|
 | MySQL | `ASYN_MYSQL_TEST_HOST/PORT/USER/PASSWORD/DATABASE` | `tests/Database/MySql/TestMySqlIntegration.cpp` |
 | Redis | `ASYN_REDIS_TEST_HOST/PORT/USER/PASSWORD/DATABASE` | `tests/Database/Redis/TestRedisIntegration.cpp` |
+| ACME 机构 | `ASYN_ACME_TEST_DIRECTORY_URL` / `ASYN_ACME_TEST_CONTACT_EMAIL` / `ASYN_ACME_TEST_ACCOUNT_STATE_DIR` | `tests/Net/Acme/TestAcmeLiveAuthority.cpp` |
+
+ACME 那一条只走「取目录 + 建号 / 复用账户」，不签发证书（真签发要一台公网可达且解析到本机的域名，
+回归环境给不了）。三条变量缺一不可，其中 `..._ACCOUNT_STATE_DIR` 是**账户材料的持久目录**：账户建在机构侧
+是有速率配额的公开动作，没有跨轮次持久的地方就把指针写进环境变量，一次回归多出一个真账户。
+填 staging 端点（`https://acme-staging-v02.api.letsencrypt.org/directory`）不计入生产配额。
 
 ## 运行示例
 
@@ -369,6 +380,79 @@ rootLogger.setLevel(AsynGyanis::Base::LogLevel::Debug);
 LOG_INFO_FMT("listening on port {}", port);
 ```
 
+### 证书自动化（ACME）
+
+```cpp
+#include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/Socket/InetAddress.h"
+#include "Net/Acme/AcmeCertificateManager.h"
+#include "Net/Http/HttpServer.h"
+#include "Net/Http/HttpsServer.h"
+#include "Net/Quic/QuicServer.h"
+
+#include <expected>
+#include <string>
+#include <utility>
+
+using namespace AsynGyanis;
+
+/// 证书与私钥的落点：三台服务与自动化共用这两条路径，轮换按路径重读所以不必重启
+constexpr const char *kCertificateFile = "certs/fullchain.pem";
+constexpr const char *kPrivateKeyFile  = "certs/privkey.pem";
+
+Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
+{
+    const auto httpAddress  = Core::InetAddress::resolve("0.0.0.0", 80);
+    const auto httpsAddress = Core::InetAddress::resolve("0.0.0.0", 443);
+
+    Net::HttpServer  http(loop, *httpAddress);
+    Net::HttpsServer https(loop, *httpsAddress, kCertificateFile, kPrivateKeyFile);
+
+    Net::QuicServer::Configuration quicConfiguration;
+    quicConfiguration.certificateFile = kCertificateFile;
+    quicConfiguration.privateKeyFile  = kPrivateKeyFile;
+    Net::QuicServer h3(loop, std::move(quicConfiguration));
+
+    Net::AcmeCertificateManager::Configuration acme;
+    acme.domainNames              = {"shop.example.com"};
+    acme.certificateFile          = kCertificateFile;
+    acme.privateKeyFile           = kPrivateKeyFile;
+    acme.accountKeyFile           = "certs/acme-account-key.pem";   // 不存在则新生成并写为 0600
+    acme.accountStateFile         = "certs/acme-account.json";      // 记账户 URL，续期沿用同一个账户
+    acme.directoryUrl             = "https://acme-v02.api.letsencrypt.org/directory";
+    acme.contactEmailAddress      = "mailto:ops@example.com";
+    acme.isTermsOfServiceAccepted = true;   // 接受条款是有法律含义的动作，库不替调用方默认
+
+    // 签好之后装回服务：443/TCP 与同一端口的 UDP 各轮换一次，两条都成功才算装上
+    Net::AcmeCertificateManager automation(loop, acme, [&] {
+        const bool isTlsReloaded  = https.reloadCertificate();
+        const bool isQuicReloaded = h3.reloadCertificate();
+        return (isTlsReloaded && isQuicReloaded) ? std::expected<void, std::string>{}
+                                                 : std::unexpected(std::string{"新证书没装回服务"});
+    });
+
+    // HTTP-01 的自证路由挂在明文 80 上（机构按域名解析到这台机器取令牌），须在 start() 之前注册
+    automation.registerChallengeRoutes(http.router());
+
+    auto httpAccept = http.start();
+    loop.scheduler().schedule(httpAccept.handle());
+    co_await h3.listen(*httpsAddress);
+
+    // 首轮：磁盘上那张还够用就不去打扰机构，只把它的落点与到期时刻交回来
+    auto issued = co_await automation.issueIfRequired();
+
+    // 常驻续期：协程帧交给调用方持有到退出，退出前先 stopRenewalLoop()
+    auto renewal = automation.runRenewalLoop();
+    loop.scheduler().schedule(renewal.handle());
+    co_return;
+}
+```
+
+`status()` 是跨线程可读的运维读数（上次签发结果、失败原因、到期时刻、当前暂存的令牌数），可以直接接到
+`/healthz` 或 `/metrics` 上；`runRenewalLoop()` 在没有装回服务动作时**拒绝启动并把原因记进 `status()`**，
+不会静默地只往磁盘上写——磁盘上的证书每月在换、线上身份永远是那张旧的，是这类自动化最坏的失败形状。
+
 ## 模块概览
 
 **支持范围与交付形态**：目前只支持 Linux 与 Windows——顶层 `CMakeLists.txt` 对其他系统（含 macOS/BSD）在
@@ -415,6 +499,7 @@ LOG_INFO_FMT("listening on port {}", port);
 | `Http3/` | `Http3Session` + 自研帧层 / QPACK / `Http3Connection`（含 RFC 9220 隧道） |
 | `Quic/` | 自研 QUIC 传输层：`Codec/`（变长整数、报文头、帧、传输参数）、`Crypto/`（密钥调度、头/包保护、TLS 胶水）、`Recovery/`（RFC 9002 丢包恢复与 NewReno）、`Streams/`（流与流量控制）、`QuicConnectionCore`（状态机）、`QuicPacketBuilder`、`QuicServer` / `QuicConnection`（数据报路由与外壳） |
 | `WebSocket/` | `WebSocketHandshake` / `WebSocketFrame` / `WebSocketPeer`、`WebSocketUtf8`、`PerMessageDeflate` |
+| `Acme/` | `AcmeKeyPair`（账户与域名密钥、JWK 与 RFC 7638 指纹、RS256/ES256 的 JWS 签名、CSR）、`AcmeClient`（RFC 8555 状态机：目录 / 账户 / 下单 / 自证 / 定稿 / 取证）、`AcmeHttp01ChallengeStore`（令牌暂存与路由注册）、`AcmeCertificateManager`（到期判定、原子落盘、常驻续期循环与装回服务的回调） |
 
 ### Database — 数据访问（`libDatabase.a`）
 
@@ -443,7 +528,7 @@ AsynGyanis/
 │   ├── Platform/           # 平台底层（OS 调用的唯一出处）：IO / FileSystem / System
 │   ├── Base/               # Config / Exception / Log
 │   ├── Core/               # Coroutine / EventLoop / Socket / Tls / Process / Exception
-│   ├── Net/                # Tcp / Http / Http2 / Http3 / Quic / WebSocket
+│   ├── Net/                # Tcp / Udp / Http / Http2 / Http3 / Quic / WebSocket / Acme
 │   └── Database/           # Common / Dialect / Pool / Queryable / Sqlite / MySql / Redis
 └── tests/                  # 与 src 逐级对齐的 GoogleTest 测试
 ```
@@ -470,7 +555,7 @@ AsynGyanis/
 ## 测试与验证
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模（2026-09-28 实测）：**Windows Debug（含 ASan）3457 例全绿、72 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3470 例全绿、70 例 SKIP、零告警、零泄漏、零未定义行为**（这一轮容器侧没注入真库凭据，MySQL 与 Redis 那几条按门控 SKIP）。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递、多进程编排里 shell 假 worker 那几条行为、以及换代交接通道那两条只可能在本机判的（套接字文件所在目录的权限、装进来又被退回的描述符）；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按平台或内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言；`io_uring` 那一档要先探得出环，沙箱不给环时 `IoContext` 的八条按能力 SKIP 而不是失败）
+- 当前规模（2026-09-28 实测）：**Windows Debug（含 ASan）3574 例全绿、73 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3594 例全绿、70 例 SKIP、零告警、零泄漏、零未定义行为**（这一轮容器侧没注入真库凭据，MySQL 与 Redis 那几条按门控 SKIP；ACME 那一族 39 例在两侧都跑，其中真机构那条按环境变量门控）。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递、多进程编排里 shell 假 worker 那几条行为、以及换代交接通道那两条只可能在本机判的（套接字文件所在目录的权限、装进来又被退回的描述符）；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按平台或内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言；`io_uring` 那一档要先探得出环，沙箱不给环时 `IoContext` 的八条按能力 SKIP 而不是失败）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 - **CI 触发面**：三条工作流（Linux CI / Windows CI / 发布门禁）只在 `main` 推送与手动触发上跑，`develop` 不消耗
