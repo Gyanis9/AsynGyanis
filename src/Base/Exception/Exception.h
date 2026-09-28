@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include "Base/Exception/StackTrace.h"
+#include "Base/Exception/ExceptionPayload.h"
 
 #include <source_location>
 #include <stdexcept>
@@ -22,11 +22,13 @@ namespace AsynGyanis::Base
      *
      * @details 继承 std::runtime_error，把消息包成「[异常] 消息 [文件:行 in 函数]」——抛出点
      *          （文件、行号、函数名）附在消息**之后**而不是之前，见 Detail::formatExceptionMessage。
-     *          同时捕获抛出点调用栈（原始帧，解析时机见 StackTrace.h）。运行期故障都归入本类家族，
+     *          抛出点快照与调用栈由 Detail::ExceptionPayload 提供，与 LogicException、
+     *          InvalidArgumentException 共享同一份实现（三条链分属标准库的两条分支，共享不了
+     *          异常基类，但都继承这一个非异常基类）。运行期故障都归入本类家族，
      *          使上层能用一条 catch 兜住框架错误。
      * @note 消息格式化在构造期完成，抛出后不依赖任何外部状态。
      */
-    class Exception : public std::runtime_error
+    class Exception : public std::runtime_error, public Detail::ExceptionPayload
     {
     public:
         /**
@@ -36,20 +38,6 @@ namespace AsynGyanis::Base
          */
         explicit Exception(const std::string &message, const std::source_location &sourceLocation = std::source_location::current());
 
-        /**
-         * @brief 获取异常抛出位置
-         * @return const std::source_location& 构造时捕获的源位置快照
-         */
-        [[nodiscard]] const std::source_location &location() const noexcept;
-
-        /**
-         * @brief 获取抛出点的调用栈（原始帧，未解析符号）
-         * @return const CapturedStackTrace& 构造时捕获的调用栈；降级平台恒为空
-         */
-        [[nodiscard]] const CapturedStackTrace &stackTrace() const noexcept;
-
-    private:
-        std::source_location m_location;   ///< 异常抛出时的源码位置快照
-        CapturedStackTrace   m_stackTrace; ///< 异常抛出时的调用栈（原始帧，解析推迟到输出时）
+        // location() 与 stackTrace() 继承自 Detail::ExceptionPayload：三条链不再各抄一份
     };
 } // namespace AsynGyanis::Base

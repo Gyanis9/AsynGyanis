@@ -1,5 +1,6 @@
 #include "Core/Process/WorkerSupervisor.h"
 
+#include "Base/Exception/LogicException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Exception/CoreException.h"
 #include "Core/Process/UpgradeChannel.h"
