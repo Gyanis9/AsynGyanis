@@ -241,9 +241,6 @@ namespace AsynGyanis::Net
         /// 「够小、压得动、但不到外派门槛」的正文大小：默认门槛是 8 KiB，这里取 2 KiB
         constexpr std::size_t kMidBodyBytes = 2U * 1024U;
 
-        /// 压缩期间第二条请求允许的最长等待：明显小于大正文的压缩耗时，又容得下建连与调度
-        constexpr auto kLoopMustStayFreeBudget = std::chrono::milliseconds{50};
-
         /**
          * @brief 构造一条词序被打乱的大正文，全进程只造一次
          * @details 周期重复的词表会被压缩器当成一次超长匹配，每字节成本低报好几倍，
@@ -325,6 +322,76 @@ namespace AsynGyanis::Net
                                                                       [](TestHttpServer &) {});
             EXPECT_TRUE(fixture->awaitRunning(kCompressionTestTimeout));
             return fixture;
+        }
+
+        /// 一次「大正文与第二条请求重叠」的测量结果：两条各自的耗时与完整响应
+        struct LoopOverlapMeasurement
+        {
+            long long                     secondElapsedMilliseconds{0}; ///< 第二条从发出到读完的耗时
+            long long                     hugeElapsedMilliseconds{0};   ///< 大正文那条从发出到读完的耗时
+            std::optional<ParsedResponse> secondResponse{};             ///< 第二条的完整响应（读不到则为空）
+            std::optional<ParsedResponse> hugeResponse{};               ///< 大正文那条的完整响应
+        };
+
+        /**
+         * @brief 起一台探针服务器，让一条 4 MiB 大正文与第二条请求重叠，量第二条等了多久
+         * @details 判据一律走**两次测量之比**而不是绝对毫秒线：CI 实测满载并行时同一条循环上的
+         *          第二条请求光调度就等到 69ms，任何写死的毫秒线都会假红；而「第二条回来时第一条
+         *          还没答完」这种先后也判不出来（大正文的传输远长于压缩，分块写出的间隙循环照样
+         *          能接第二条，实测就地版的先后与外置版一致）。本机同一次运行的实测是外置 30ms、
+         *          就地 153ms，比值约 5 倍，两个数出自同一台机器同一份负载，比值的量纲与噪声同向
+         * @param offload 压缩是否交给工作线程（false 即就地压，走的是同一个中间件的另一条分支）
+         * @param secondPath 第二条请求打的路径：/quick 连压缩门槛都不到，/mid 在门槛之下
+         * @param options 挂上去的压缩选项（含外派门槛那道）
+         * @param workerCount 外派用的工作线程数：要造「排在长任务后面」必须给 1 条
+         * @return LoopOverlapMeasurement 两条各自的耗时与响应；服务端没起来时全为空
+         */
+        [[nodiscard]] LoopOverlapMeasurement measureLoopOverlap(const bool offload, const std::string &secondPath, const CompressionOptions options,
+                                                                const std::size_t workerCount)
+        {
+            Core::AsyncExecutor                             executor{workerCount};
+            std::atomic<bool>                               isHugeHandled{false};
+            const std::unique_ptr<RunningHttpServerFixture> fixture =
+                    makeCompressionProbeFixture(
+                            [&](Core::EventLoop &loop) -> MiddlewareFunc
+                            {
+                                if (offload)
+                                {
+                                    return compressionMiddleware(loop, executor, options);
+                                }
+                                return compressionMiddleware(options);
+                            },
+                            isHugeHandled);
+
+            LoopOverlapMeasurement measurement;
+            const std::uint16_t    port = fixture->listeningPort();
+            if (port == 0U)
+            {
+                return measurement;
+            }
+
+            std::thread hugeReader(
+                    [&]
+                    {
+                        const auto began = std::chrono::steady_clock::now();
+                        measurement.hugeResponse = sendAndReadResponse(port, makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
+                        measurement.hugeElapsedMilliseconds =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
+                    });
+
+            // 重叠窗口由 /huge 路由自己亮旗构造：它一进处理器就说明服务端正要开始压，不靠睡眠猜调度
+            const auto deadline = std::chrono::steady_clock::now() + kCompressionTestTimeout;
+            while (!isHugeHandled.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+
+            const auto beganSecond = std::chrono::steady_clock::now();
+            measurement.secondResponse = sendAndReadResponse(port, makeRequestText("GET " + secondPath + " HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
+            measurement.secondElapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - beganSecond).count();
+
+            hugeReader.join();
+            return measurement;
         }
     } // namespace
 
@@ -616,94 +683,51 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 压缩在干活时，同一条循环必须还能服务别的连接
-     * @details 这是外置的全部目的，因此判据要能报红：把中间件换成就地版，第二条请求就得等完
-     *          整段压缩（4 MiB 打乱词序的正文至少几十毫秒），必然越过 50ms 这条线。
-     *          重叠由 /huge 路由自己亮旗构造，不靠睡眠时间猜调度
+     * @details 这是外置的全部目的，因此判据要能报红：换成就地版，第二条请求就得排在整段压缩之后。
+     *          判据取两次测量之比：本机同一次运行实测外置 30ms、就地 153ms。绝对毫秒线在满载的
+     *          runner 上站不住（CI 实测第二条请求光调度就等到 69ms），而「先后」也判不出来——
+     *          大正文的传输远长于压缩，分块写出的间隙循环照样接得到第二条，就地版与外置版同序
      */
     TEST(CompressionMiddleware, OffloadedCompressionLeavesTheLoopFreeWhileCompressing)
     {
-        Core::AsyncExecutor                             executor{2};
-        std::atomic<bool>                               isHugeHandled{false};
-        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionProbeFixture(
-                [&executor](Core::EventLoop &loop) { return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes}); }, isHugeHandled);
-        const std::uint16_t port = fixture->listeningPort();
-        ASSERT_NE(port, 0U);
+        const CompressionOptions options{.minimumBodySize = kTestThresholdBytes};
+        const LoopOverlapMeasurement offloaded = measureLoopOverlap(true, "/quick", options, 2);
+        const LoopOverlapMeasurement inLoop    = measureLoopOverlap(false, "/quick", options, 2);
 
-        std::optional<ParsedResponse> hugeResponse;
-        const std::string             hugeRequestText = makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"});
-        std::thread                   hugeReader([&] { hugeResponse = sendAndReadResponse(port, hugeRequestText, kCompressionTestTimeout); });
+        ASSERT_TRUE(offloaded.secondResponse.has_value() && offloaded.hugeResponse.has_value()) << "外置档有请求没读到完整响应";
+        ASSERT_TRUE(inLoop.secondResponse.has_value() && inLoop.hugeResponse.has_value()) << "就地档有请求没读到完整响应";
+        EXPECT_EQ(offloaded.secondResponse->body, "ok");
+        ASSERT_GT(inLoop.secondElapsedMilliseconds, 0) << "就地档的第二条请求没量到耗时，比值判据是空的";
 
-        const auto deadline = std::chrono::steady_clock::now() + kCompressionTestTimeout;
-        while (!isHugeHandled.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds{1});
-        }
-        ASSERT_TRUE(isHugeHandled.load(std::memory_order_acquire)) << "大正文请求没有在时限内进到服务端";
-
-        const auto                          quickBegin    = std::chrono::steady_clock::now();
-        const std::optional<ParsedResponse> quickResponse = sendAndReadResponse(port, makeRequestText("GET /quick HTTP/1.1"), kCompressionTestTimeout);
-        const auto                          quickElapsed  = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - quickBegin);
-
-        hugeReader.join();
-        ASSERT_TRUE(quickResponse.has_value()) << "压缩期间第二条请求没读到响应";
-        EXPECT_EQ(quickResponse->body, "ok");
-        EXPECT_LT(quickElapsed, kLoopMustStayFreeBudget) << "压缩期间同一条循环上的其他请求被堵了 " << quickElapsed.count() << "ms：压缩没真的挪出循环线程";
-
-        ASSERT_TRUE(hugeResponse.has_value()) << "大正文那条没读到完整响应";
-        const std::optional<std::string> restored = gunzip(hugeResponse->body);
-        ASSERT_TRUE(restored.has_value()) << "大正文压出来的响应解不开";
-        EXPECT_EQ(*restored, wordyLargeBody());
+        // 两倍余量：就地档里第二条至少等完一整段压缩，外置档只等一次建连与调度；比值的噪声与
+        // 机器快慢同向进两边， runner 快慢翻不了盘
+        EXPECT_LT(offloaded.secondElapsedMilliseconds * 2, inLoop.secondElapsedMilliseconds)
+                << "外置只降到 " << offloaded.secondElapsedMilliseconds << "ms，而就地是 " << inLoop.secondElapsedMilliseconds << "ms：差距不足以说明压缩真的挪出了循环线程";
     }
 
     /**
-     * @brief 门槛之下的正文不外派：那一跳比压一次更贵，外派会同时拖慢响应与循环
-     * @details 判据要能报红：把外派门槛降到 0（等于没有这道门槛），这条 2 KiB 正文就得排在
-     *          4 MiB 那份后面等唯一的那条工作线程，必然越过 50ms 线。前置条件同样做成断言：
-     *          大正文那条要真的占住工作线程（耗时 ≥ 50ms），否则「小正文很快」说明不了任何事。
-     *          门槛改变的只是执行位置，不是压不压——所以这里仍然核对小正文被压过且能解回原样
+     * @brief 没到外派门槛的正文留在循环上：那一跳比压一次更贵，外派会同时拖慢响应与循环
+     * @details 外派有独立的一道门槛 `offloadMinimumBodySize`（默认 8 KiB），2 KiB 的 /mid 因此按默认
+     *          就不该被交出去。对照档是把那道门槛配成 0（所有正文都外派），工作线程只给一条，于是
+     *          这条小正文必然排在 4 MiB 那份后面。判据同样是两次测量之比，不设绝对毫秒线
      */
     TEST(CompressionMiddleware, SmallBodiesStayOnTheLoopWhenOffloading)
     {
-        Core::AsyncExecutor                             executor{1};
-        std::atomic<bool>                               isHugeHandled{false};
-        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionProbeFixture(
-                [&executor](Core::EventLoop &loop) { return compressionMiddleware(loop, executor, {.minimumBodySize = kTestThresholdBytes}); }, isHugeHandled);
-        const std::uint16_t port = fixture->listeningPort();
-        ASSERT_NE(port, 0U);
+        const LoopOverlapMeasurement gated   = measureLoopOverlap(true, "/mid", CompressionOptions{.minimumBodySize = kTestThresholdBytes}, 1);
+        const LoopOverlapMeasurement ungated = measureLoopOverlap(true, "/mid", CompressionOptions{.minimumBodySize = kTestThresholdBytes, .offloadMinimumBodySize = 0}, 1);
 
-        std::optional<ParsedResponse> hugeResponse;
-        std::atomic<long long>        hugeElapsedMilliseconds{0};
-        const std::string             hugeRequestText = makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"});
-        std::thread                   hugeReader(
-                [&]
-                {
-                    const auto began = std::chrono::steady_clock::now();
-                    hugeResponse     = sendAndReadResponse(port, hugeRequestText, kCompressionTestTimeout);
-                    hugeElapsedMilliseconds.store(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count(),
-                                                  std::memory_order_release);
-                });
+        ASSERT_TRUE(gated.secondResponse.has_value() && gated.hugeResponse.has_value()) << "默认门槛那一档有请求没读到完整响应";
+        ASSERT_TRUE(ungated.secondResponse.has_value() && ungated.hugeResponse.has_value()) << "全外派那一档有请求没读到完整响应";
+        ASSERT_GT(ungated.secondElapsedMilliseconds, 0) << "全外派档没量到耗时，比值判据是空的";
+        EXPECT_LT(gated.secondElapsedMilliseconds * 2, ungated.secondElapsedMilliseconds)
+                << "默认门槛下这条 " << kMidBodyBytes << " 字节正文等了 " << gated.secondElapsedMilliseconds << "ms，而全外派只等 " << ungated.secondElapsedMilliseconds
+                << "ms：这道门槛没起作用";
 
-        const auto deadline = std::chrono::steady_clock::now() + kCompressionTestTimeout;
-        while (!isHugeHandled.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds{1});
-        }
-        ASSERT_TRUE(isHugeHandled.load(std::memory_order_acquire)) << "大正文请求没有在时限内进到服务端";
-
-        const auto                          midBegin    = std::chrono::steady_clock::now();
-        const std::optional<ParsedResponse> midResponse = sendAndReadResponse(port, makeRequestText("GET /mid HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
-        const auto                          midElapsed  = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - midBegin);
-
-        hugeReader.join();
-        ASSERT_TRUE(midResponse.has_value()) << "小正文那条没读到响应";
-        ASSERT_TRUE(hugeResponse.has_value()) << "大正文那条没读到完整响应";
-        EXPECT_GE(hugeElapsedMilliseconds.load(std::memory_order_acquire), kLoopMustStayFreeBudget.count())
-                << "大正文没占住工作线程（只耗时 " << hugeElapsedMilliseconds.load() << "ms），前置条件不成立，本用例说明不了排队";
-
-        EXPECT_LT(midElapsed, kLoopMustStayFreeBudget) << "门槛之下的 " << kMidBodyBytes << " 字节正文被外派后排在长任务后面等了 " << midElapsed.count() << "ms：这道门槛没生效";
-        EXPECT_TRUE(hasHeaderLine(midResponse->headers, "content-encoding: gzip")) << "小正文压根没被压缩：\n" << midResponse->headers;
-        const std::optional<std::string> restoredMid = gunzip(midResponse->body);
+        // 门槛改变的只是执行位置，不是压不压：默认档仍要真的压过，而且能解回原样
+        EXPECT_TRUE(hasHeaderLine(gated.secondResponse->headers, "content-encoding: gzip")) << "小正文压根没被压缩：\n" << gated.secondResponse->headers;
+        const std::optional<std::string> restoredMid = gunzip(gated.secondResponse->body);
         ASSERT_TRUE(restoredMid.has_value()) << "小正文压出来的响应解不开";
         EXPECT_EQ(*restoredMid, midBody());
     }
+
 } // namespace AsynGyanis::Net
