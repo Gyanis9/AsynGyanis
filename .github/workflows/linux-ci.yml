@@ -245,7 +245,10 @@ jobs:
           # 同一端口不再服务 HTTP/1.1，所以下面的 WebSocket 探针必须另开一台明文 h1 的服务端
           build/debug/samples/echo_server --port 18080 --threads 2 --metrics --h2c > /tmp/h2c.log 2>&1 &
           h2c_pid=$!
-          build/debug/samples/echo_server --port 18081 --threads 2 --metrics > /tmp/plain.log 2>&1 &
+          # 18081 这台要能被容器访问到：Autobahn 跑在另一个网络命名空间里，经 host-gateway 回到宿主，
+          # 而 echo_server 默认只听 localhost（Docker Desktop 的代理能进宿主回环，Linux 不能 →
+          # 表现就是 wstest 起来了却「Connection refused」，一条用例都跑不完）
+          build/debug/samples/echo_server --host 0.0.0.0 --port 18081 --threads 2 --metrics > /tmp/plain.log 2>&1 &
           plain_pid=$!
           # 18443：TLS。wss 走 TCP+ALPN，对端只报 http/1.1 时就按 h1 服务（这正是它要协商到的形态）
           build/debug/samples/echo_server --port 18443 --threads 1 --https \
