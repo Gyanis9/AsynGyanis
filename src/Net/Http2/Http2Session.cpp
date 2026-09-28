@@ -1116,6 +1116,22 @@ namespace AsynGyanis::Net
                 response.setStatus(500);
                 response.setBody("Internal Server Error");
                 static_cast<void>(response.setHeader("content-type", "text/plain"));
+
+                // 成因要落日志，并与 h1 同一口径：上面那条流式分支一直有日志，缺的是这条
+                // 最常走的非流式分支。响应只回 500 是对的（不把内部原因交给对端），
+                // 但服务端这边不记就等于这次故障凭空消失，异常携带的抛出点栈也白采
+                try
+                {
+                    std::rethrow_exception(handlerException);
+                } catch (const std::exception &failure)
+                {
+                    LOG_ERROR_EXCEPTION(failure, "Http2Session: 业务处理函数抛出异常，已整体重置响应并按 500 收口。request-id {}，路径 {}，流 {}，原因：{}",
+                                        request.requestId(), request.uri(), streamId, failure.what());
+                } catch (...)
+                {
+                    LOG_ERROR_FMT("Http2Session: 业务处理函数抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口。request-id {}，路径 {}，流 {}",
+                                  request.requestId(), request.uri(), streamId);
+                }
             }
         }
 
