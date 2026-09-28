@@ -68,9 +68,11 @@ namespace AsynGyanis::Platform
          *          的机制本身不限套接字类型），数据报这一侧的接手动作就是本函数。
          * @param descriptor 已经 bind 过的数据报描述符；**所有权随之转移**，本对象析构或 close() 会关掉它。
          *        失败时不接管也不关闭——那枚描述符还是调用方的
-         * @return std::expected<DatagramSocket, std::error_code> 接管好的套接字；失败给出这三类原因之一：
-         *         `bad_file_descriptor` 描述符无效、`not_supported` 类型不是 SOCK_DGRAM、
+         * @return std::expected<DatagramSocket, std::error_code> 接管好的套接字；失败给出这四类原因之一：
+         *         `bad_file_descriptor` 描述符无效、`not_a_socket` 句柄有效但根本不是套接字（普通文件、
+         *         目录、管道）、`not_supported` 是套接字但类型不是 SOCK_DGRAM、
          *         `invalid_argument` 还没 bind（本地端口为 0，「谁往这个端口发报文」这回事不存在）
+         * @note 「不是套接字」与「不是数据报」分开报：前者要换的是传进来的东西，后者是交出方送错了类型
          * @note 接手方一律被置为**非阻塞**：不置会把事件循环卡在 recvfrom 上。POSIX 上文件状态位由同一个
          *       开放文件描述共享，而本层的交出方本来就非阻塞（`bindTo` 置过），这里补置不会把对方改坏；
          *       Windows 侧重建出的句柄形态随协议信息，可能带着阻塞位

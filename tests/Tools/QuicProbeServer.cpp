@@ -319,13 +319,9 @@ namespace
 
         // 交与接必须分在两条线程上：接的那一方要「连上通道 → 等对方写出」，而这条顺序里的每一步
         // 都要有人先动。本端交出的一侧仍留在主线程上，join 之后两份说法才合并
-        const std::string channelAddress = channel->address();
+        const std::string               channelAddress = channel->address();
         std::expected<int, std::string> adoption{};
-        std::jthread reader(
-                [&adoption, channelAddress]
-                {
-                    adoption = AsynGyanis::Core::adoptHandedOverListener(channelAddress, std::chrono::milliseconds{5000});
-                });
+        std::jthread reader([&adoption, channelAddress] { adoption = AsynGyanis::Core::adoptHandedOverListener(channelAddress, std::chrono::milliseconds{5000}); });
 
         auto peer = channel->waitForPeer(std::chrono::milliseconds{5000});
         if (!peer.has_value())
@@ -352,7 +348,7 @@ namespace
         if (!adopted.has_value())
         {
             static_cast<void>(FileDescriptor::close(*adoption));
-            // adopt 把三种不合格分成错误码，这里翻成中文：工具的报错也要让人知道下一步查什么
+            // adopt 把四类不合格分成不同的错误码，这里翻成中文：工具的报错也要让人知道下一步查什么
             return std::unexpected("接手档接管交来的描述符失败（错误值 " + std::to_string(adopted.error().value()) + "）：那枚描述符必须是已经 bind 过的 SOCK_DGRAM");
         }
         return std::expected<AsynGyanis::Platform::DatagramSocket, std::string>{std::move(*adopted)};
@@ -398,9 +394,8 @@ int main(const int argc, char **argv)
         emit("ADOPTED");
     }
 
-    std::unique_ptr<AsynGyanis::Net::QuicServer> server = adoptedSocket.has_value()
-                                                                ? std::make_unique<AsynGyanis::Net::QuicServer>(loop, configuration, std::move(*adoptedSocket))
-                                                                : std::make_unique<AsynGyanis::Net::QuicServer>(loop, configuration);
+    std::unique_ptr<AsynGyanis::Net::QuicServer> server = adoptedSocket.has_value() ? std::make_unique<AsynGyanis::Net::QuicServer>(loop, configuration, std::move(*adoptedSocket))
+                                                                                    : std::make_unique<AsynGyanis::Net::QuicServer>(loop, configuration);
     // 大块正文只准备一份：每条命中探针的流都指向同一段字节，不做逐次拷贝
     const std::vector<std::uint8_t> largeReply(options.largeReplyBytes, static_cast<std::uint8_t>('x'));
     std::atomic<bool>               hasAnsweredFirstRequest{false};
@@ -437,8 +432,7 @@ int main(const int argc, char **argv)
     if (options.adoptThroughSelfChannel)
     {
         TaskKeeper::spawn(loop, server->listen());
-    }
-    else
+    } else
     {
         TaskKeeper::spawn(loop, server->listen(AsynGyanis::Core::InetAddress::resolve("127.0.0.1", options.port).value()));
     }

@@ -105,8 +105,7 @@ namespace AsynGyanis::Net
                 {
                     m_server = std::make_unique<QuicServer>(m_loop, configuration, std::move(*adoptedBoundSocket));
                     m_listenTask.emplace(m_server->listen());
-                }
-                else
+                } else
                 {
                     m_server = std::make_unique<QuicServer>(m_loop, configuration);
                     m_listenTask.emplace(m_server->listen(Core::InetAddress::resolve("127.0.0.1", 0).value()));
@@ -508,8 +507,8 @@ namespace AsynGyanis::Net
         Platform::DatagramSocket               boundSocket   = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
         ASSERT_TRUE(boundSocket.isValid()) << "夹具绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
 
-        QuicServer adopting(loop, configuration, std::move(boundSocket));
-        QuicServer binding(loop, makeServerConfiguration());
+        QuicServer                      adopting(loop, configuration, std::move(boundSocket));
+        QuicServer                      binding(loop, makeServerConfiguration());
         std::optional<Core::Task<void>> adoptingWithAddress;
         std::optional<Core::Task<void>> bindingWithoutAddress;
         EventLoopThread                 loopThread{loop};
@@ -546,5 +545,42 @@ namespace AsynGyanis::Net
         EXPECT_THROW(QuicServer server(loop, configuration, Platform::DatagramSocket{}), Base::InvalidArgumentException);
     }
 
+    /**
+     * @brief 已经在监听的 QUIC 服务端不许再 listen() 一次
+     * @details 第二次启动会把 m_socket 换成新的一份，而收报文协程与定时器协程都还挂在旧的那份上（事件循环
+     *          里的注册对象归它）：旧对象一被销毁，那个端口就再没人读。两侧实测的形态都是「端口换了、
+     *          原服务不再应答」，Windows 与容器 ASan 下都没报出 use-after-free——坏的是这台服务端看起来
+     *          还在服务。换端口没有原地重来的用法，新建一台即可。
+     * @note 第一条要先真跑进监听（等端口发布出来）再投第二条，否则测的是「两条一起投」那种次序
+     * @note 证伪（两侧实测）：摘掉两条 listen() 入口上的 requireFreshStart()，本条红在「没被拒」与
+     *       「换了端口」两句上
+     */
+    TEST(QuicServer, RejectsASecondListenWhileAlreadyServing)
+    {
+        // 声明顺序照本文件其它用例：循环最先（最后销毁），服务端、驱动帧随后，后台循环包装器最后
+        // （最先销毁、析构里 join）——服务端持有套接字，必须晚于循环停止才销毁
+        Core::EventLoop                        loop;
+        const Platform::Socket::Initialization network;
+        QuicServer::Configuration              configuration = makeServerConfiguration();
+        QuicServer                             server(loop, configuration);
+        std::optional<Core::Task<void>>        firstDriver;
+        std::optional<Core::Task<void>>        secondDriver;
+        EventLoopThread                        loopThread{loop};
+
+        firstDriver.emplace(server.listen(Core::InetAddress("127.0.0.1", 0)));
+        loopThread.loop().scheduler().scheduleRemote(firstDriver->handle());
+        ASSERT_TRUE(waitForCondition([&] { return server.listeningPort() != 0U; }, kPeerWaitTimeout)) << "第一条 listen() 没进入监听，后面的判据无从成立";
+
+        const std::uint16_t servingPort = server.listeningPort();
+        std::string         reason;
+        std::atomic<bool>   isRejected{false};
+        secondDriver.emplace(captureCoroutineFailure(server.listen(Core::InetAddress("127.0.0.1", 0)), reason, isRejected));
+        loopThread.loop().scheduler().scheduleRemote(secondDriver->handle());
+
+        EXPECT_TRUE(waitForCondition([&] { return isRejected.load(std::memory_order_acquire); }, kPeerWaitTimeout))
+                << "第二次 listen() 没被拒：它会换掉正在服务的那份套接字，收报文与定时器两条协程都挂在已销毁的对象上";
+        EXPECT_NE(reason.find("已经在 UDP 端口"), std::string::npos) << "文案没点名「重复启动」这个成因：" << reason;
+        EXPECT_EQ(server.listeningPort(), servingPort) << "被拒的第二次启动换了端口：那次启动并非无害";
+    }
 
 } // namespace AsynGyanis::Net

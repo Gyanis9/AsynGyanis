@@ -128,11 +128,23 @@ namespace AsynGyanis::Platform
             return std::unexpected(std::make_error_code(std::errc::bad_file_descriptor));
         }
 
-        // 类型必须是 SOCK_DGRAM：数据报的口径（一条报文自带来源、不会被内核切开续读）在流套接字上
-        // 不成立。接过来才发现的话，症状是「收报文永远收不到东西」，比在这里点名难查得多
+        // 类型必须是 SOCK_DGRAM。这一步拆成两档报：问不出类型说明这枚句柄根本不是一个套接字（普通文件、
+        // 目录、管道都算），调用方要换的是传进来的东西；问得出但不是数据报则是交出方的问题（交了一枚流
+        // 套接字过来）。两者合成一个 not_supported 的话，前一种会被当成「本平台不支持」而去换平台——
+        // 而数据报的口径（一条报文自带来源、不会被内核切开续读）在流套接字上不成立，接过来才发现的
+        // 症状是「收报文永远收不到东西」，比在这里点名难查得多
         int       type       = 0;
         socklen_t typeLength = static_cast<socklen_t>(sizeof(type));
-        if (::getsockopt(descriptor, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&type), &typeLength) != 0 || type != SOCK_DGRAM)
+        if (::getsockopt(descriptor, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&type), &typeLength) != 0)
+        {
+            const int platformCode = PlatformError::lastSocketErrorCode();
+            if (platformCode == PlatformError::kNotASocket)
+            {
+                return std::unexpected(std::make_error_code(std::errc::not_a_socket));
+            }
+            return std::unexpected(std::error_code(platformCode, std::system_category()));
+        }
+        if (type != SOCK_DGRAM)
         {
             return std::unexpected(std::make_error_code(std::errc::not_supported));
         }

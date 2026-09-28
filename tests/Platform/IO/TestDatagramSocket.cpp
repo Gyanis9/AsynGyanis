@@ -110,7 +110,7 @@ namespace AsynGyanis::Platform
          */
         int rawBoundUdpSocket(std::uint16_t &port)
         {
-            port                 = 0U;
+            port                  = 0U;
             const int  descriptor = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
             const auto address    = makeLoopbackAddress(0);
             if (descriptor < 0 || ::bind(descriptor, reinterpret_cast<const sockaddr *>(&address.storage), address.length) != 0)
@@ -156,6 +156,21 @@ namespace AsynGyanis::Platform
             port = ntohs(local.sin_port);
             return descriptor;
         }
+
+        /**
+         * @brief 打开一个**有效但根本不是套接字**的句柄（设备文件），当接管拒绝面的输入
+         * @return int 描述符；负值表示没打开成
+         * @details 接管第一步问的是 SO_TYPE，问不出来的那一档与「是套接字但不是数据报」是两回事：
+         *          前者要换传进来的东西，后者是交出方送错了类型，混成一档就把两条不同的下一步并成了
+         *          一条。只在 POSIX 上判：Windows 的整数句柄空间里，普通文件的 CRT 描述符与 SOCKET
+         *          不同域，而本层的 close() 走 closesocket——夹具要另配一套收口才不至于误关。
+         */
+#if !ASYN_PLATFORM_WIN32
+        int plainFileHandle()
+        {
+            return ::open("/dev/null", O_RDONLY);
+        }
+#endif
     } // namespace
 
     /**
@@ -525,8 +540,8 @@ namespace AsynGyanis::Platform
     {
         ASSERT_TRUE(Socket::initialize());
 
-        std::uint16_t port       = 0U;
-        const int     rawSocket  = rawBoundUdpSocket(port);
+        std::uint16_t port      = 0U;
+        const int     rawSocket = rawBoundUdpSocket(port);
         ASSERT_GE(rawSocket, 0) << "夹具没能绑出端口，错误码 " << PlatformError::lastSocketErrorCode();
 
         auto adopted = DatagramSocket::adopt(rawSocket);
@@ -556,9 +571,11 @@ namespace AsynGyanis::Platform
     }
 
     /**
-     * @brief 拒绝面：无效描述符、流套接字、还没 bind 的都当场拒，且拒的时候不动调用方的句柄
+     * @brief 拒绝面：描述符无效、类型不是数据报、还没 bind 三档分开拒，且拒的时候不动调用方的句柄
      * @details 静默接下来各自的代价：流套接字上「收数据报」永远收不到东西；没 bind 的套接字没有端口，
-     *          接过来只是一台谁也不认识的服务器。不关描述符是所有权约定——**只在成功时**接管。
+     *          接过来只是一台谁也不认识的服务器。第四档「句柄有效但不是套接字」只在 POSIX 上造得出输入，
+     *          由 ReportsADistinctCauseWhenTheHandleIsNotASocket 判。
+     *          不关描述符是所有权约定——**只在成功时**接管。
      */
     TEST(DatagramSocket, RejectsDescriptorsItCannotAdopt)
     {
@@ -568,8 +585,8 @@ namespace AsynGyanis::Platform
         ASSERT_FALSE(invalid.has_value());
         EXPECT_EQ(invalid.error(), std::make_error_code(std::errc::bad_file_descriptor));
 
-        std::uint16_t tcpPort  = 0U;
-        const int     stream   = rawListeningTcpSocket(tcpPort);
+        std::uint16_t tcpPort = 0U;
+        const int     stream  = rawListeningTcpSocket(tcpPort);
         ASSERT_GE(stream, 0) << "夹具没能造出监听套接字";
         const auto wrongType = DatagramSocket::adopt(stream);
         ASSERT_FALSE(wrongType.has_value());
@@ -580,11 +597,37 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(::getsockopt(stream, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&stillThereType), &typeLength), 0) << "接管失败却把调用方的描述符关掉了";
         static_cast<void>(FileDescriptor::close(stream));
 
-        const int   unbound   = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+        const int unbound = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
         ASSERT_GE(unbound, 0);
         const auto notBound = DatagramSocket::adopt(unbound);
         ASSERT_FALSE(notBound.has_value());
         EXPECT_EQ(notBound.error(), std::make_error_code(std::errc::invalid_argument));
         static_cast<void>(FileDescriptor::close(unbound));
+    }
+
+    /**
+     * @brief 「句柄有效但根本不是套接字」单独占一档，不许并到「类型不是数据报」里去
+     * @details 两档的下一步完全不同：前者要换传进来的东西（多半是把文件描述符当移交结果用了），后者要
+     *          查交出方送过来的类型。合成 `not_supported` 的话，前者会被读成「本平台不支持接管」而去换
+     *          平台——那正是这条并档最贵的一种误读。
+     * @note 只在 POSIX 上判（理由写在 plainFileHandle 的说明里）
+     * @note 证伪：把这两档合回一个分支（问不出类型也报 not_supported），本条红
+     */
+    TEST(DatagramSocket, ReportsADistinctCauseWhenTheHandleIsNotASocket)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 的整数句柄空间里造不出这一档：普通文件的 CRT 描述符与 SOCKET 不同域，且本层 close() 走 closesocket";
+#else
+        ASSERT_TRUE(Socket::initialize());
+
+        const int fileHandle = plainFileHandle();
+        ASSERT_GE(fileHandle, 0) << "夹具没能打开一个非套接字的句柄";
+
+        const auto adopted = DatagramSocket::adopt(fileHandle);
+        ASSERT_FALSE(adopted.has_value()) << "一枚普通文件句柄被当成数据报套接字接管了";
+        EXPECT_EQ(adopted.error(), std::make_error_code(std::errc::not_a_socket)) << "报成了「类型不是数据报」：那是另一档成因，下一步要查的不是同一个地方";
+        // 拒的时候仍然不动调用方的句柄：这条与上一档共用同一条所有权纪律
+        static_cast<void>(FileDescriptor::close(fileHandle));
+#endif
     }
 } // namespace AsynGyanis::Platform

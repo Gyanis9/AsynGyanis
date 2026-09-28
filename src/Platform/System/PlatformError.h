@@ -70,6 +70,14 @@ namespace AsynGyanis::Platform
 #endif
                 ; ///< 连接被复位：对端已关闭，流里不会再有字节
 
+        static constexpr int kNotASocket =
+#if ASYN_PLATFORM_WIN32
+                WSAENOTSOCK
+#else
+                ENOTSOCK
+#endif
+                ; ///< 句柄有效但不是套接字（普通文件、目录、管道这一类）
+
         static constexpr int kTooManyOpenFiles =
 #if ASYN_PLATFORM_WIN32
                 WSAEMFILE

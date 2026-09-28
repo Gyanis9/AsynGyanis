@@ -1272,6 +1272,31 @@
 
 ### 修复
 
+- **一台监听器只能启动一次（`Net::UdpServer` 与 `Net::QuicServer` 的重复 `listen()` 现在会被拒）**：过去
+  对一台已在监听的服务端再调一次 `listen(地址)`，它会安静地再绑一个端口并把 `m_socket` 换成新的一份，而
+  收循环（QUIC 还有一条定时器协程）仍挂在旧的那份上——旧对象一被销毁，原先那个端口就再没人读。两侧实测
+  的形态都是「端口换了、原服务不再应答」，Windows 与容器 ASan 下都没有报 use-after-free，也就是说这台
+  监听器看起来还在服务。现在两条 `listen()` 入口共用一份 `requireFreshStart()`：端口非 0 就抛出并点名
+  是哪个端口，要换端口请新建一台。接手模式下那一次重复的无参 `listen()` 也归这条判据管——它过去的报错是
+  「这台服务端不是接手构造出来的」，把调用方的重复启动说成了配置错误。
+  用例两条（`UdpServer.RejectsASecondListenWhileAlreadyServing`、
+  `QuicServer.RejectsASecondListenWhileAlreadyServing`）各钉两侧：第二次启动必须被拒、端口不许变、
+  原服务照常应答。证伪（两侧都跑过）：摘掉那四处 `requireFreshStart()` 调用，UDP 那条红在三处（没被拒、
+  端口从 56714 变成新绑的一个、随后的往返拿不到应答），QUIC 那条红在两处。
+  顺带把两处文档按实现改齐：`QuicServer::stop()` **不**关套接字，只置停止标记（它可能从别的线程被调用，
+  而套接字与注册对象只归所属循环线程），要真正把服务停下来得停止循环或在循环线程上销毁本服务端——旧文档
+  写着「关掉套接字让收循环退出」，照着写的调用方会以为调一次 `stop()` 端口就释放了；`UdpServer` 那两条
+  `listen()` 的说明也注明「抛出发生在协程首次恢复时」，惰性协程不是调用当场。
+
+- **数据报接管把「句柄不是套接字」单列一档**（`Platform::DatagramSocket::adopt`）：过去问不出 `SO_TYPE`
+  与问出来不是 `SOCK_DGRAM` 合成同一个 `not_supported`。前者多半是调用方把一枚文件描述符当成移交结果
+  用了，下一步要换传进来的东西；后者是交出方送错了类型，下一步要查对面那一格。并档还会把前者读成「本平台
+  不支持接管」而去换平台。现在前者报 `std::errc::not_a_socket`（新增判据常量 `PlatformError::kNotASocket`
+  负责跨平台的错误码比对），问不出别的成因时照原样交出平台码。
+  用例一条（`DatagramSocket.ReportsADistinctCauseWhenTheHandleIsNotASocket`，只在 POSIX 上判：Windows 的
+  整数句柄空间里造不出这一档，普通文件的 CRT 描述符与 SOCKET 不同域，而本层 `close()` 走 `closesocket`）。
+  证伪：把两档并回一个分支，本条红（读出 `not_supported` 而期望 `not_a_socket`）。
+
 - **换代交接通道的三处失败读数不再拿残值**（`Platform::Socket` 的移交读写与有界等待）：
   ①「对端把通道关了」过去会被报成任意别的成因——Windows 侧的逐段读写把 `recv`/`send` 返回 0 当成失败
   直接交出槽位里的值，而 0 是一次**成功**的调用，实测它会把 last-error 清成 0，于是交出去的原因是

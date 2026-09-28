@@ -143,7 +143,7 @@ namespace AsynGyanis::Net
          *          把全部报文交给最后绑上的那一个，其余进程一个错都不报却永远收不到报文；零停机换代里
          *          新一代也要在同一端口上接手已绑的口。两条路都缺这一格，因为按地址构造只会自己 bind。
          * @note 套接字从哪来由调用方决定：`Platform::DatagramSocket::adopt` 把别的进程交过来的描述符
-         *       包成本层的持有者语义，它会区分「不是 SOCK_DGRAM」「还没 bind」「描述符无效」三种不合格
+         *       包成本层的持有者语义，它会区分「描述符无效」「不是套接字」「不是 SOCK_DGRAM」「还没 bind」四种不合格
          * @note 与按地址构造的差别只在端口从哪来：本构造**不会去 bind**，端口从交来的套接字问，
          *       `listeningPort()` 报的是真值
          */
@@ -162,8 +162,9 @@ namespace AsynGyanis::Net
          *        stack-use-after-scope）
          * @return Core::Task<> 停止时完成
          * @throws Base::InvalidArgumentException 本对象是接手构造出来的（端口已经定在交过来的套接字上，
-         *         那种情形请调不带地址的 listen()）
+         *         那种情形请调不带地址的 listen()）、或这台服务端已经在某个端口上监听（一台只能启动一次）
          * @throws Base::Exception 证书/私钥加载失败、套接字绑定失败等启动期就该拦住的问题
+         * @note 本方法是惰性协程：抛出发生在**首次恢复**（await 或投递给循环）那一刻，不在调用处
          */
         [[nodiscard]] Core::Task<> listen(Core::InetAddress localAddress);
 
@@ -171,7 +172,8 @@ namespace AsynGyanis::Net
          * @brief 在接手来的套接字上开始服务（在所属事件循环上跑，直到 stop()）
          * @return Core::Task<> 停止时完成
          * @throws Base::InvalidArgumentException 本对象不是接手构造出来的：那种情形要调
-         *         listen(地址)，由本端自己 bind
+         *         listen(地址)，由本端自己 bind；或这台服务端已经在某个端口上监听（一台只能启动一次）
+         * @note 本方法是惰性协程：抛出发生在**首次恢复**（await 或投递给循环）那一刻，不在调用处
          * @note 交付口径与 listen(地址) 完全一致，差别只在端口与套接字都不是本端建的，因此这里
          *       不会有「绑定失败」那一类出口
          * @warning 本协程的帧必须活到 `stop()` 之后（与其它循环对象同一条销毁纪律）
@@ -179,7 +181,13 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<> listen();
 
         /**
-         * @brief 请求停止：关掉套接字让收循环退出，随后由析构把连接送走
+         * @brief 请求停止：只置停止标记，收循环与定时器在下一次醒来时据此退出
+         * @details 不在这里关套接字、也不销毁注册对象：本方法可能从别的线程调用，而那两者只归所属事件
+         *          循环线程——在途探针还没收回来时销毁注册对象，循环会踩到已释放的对象。因此要真正把服务
+         *          停下来，得停止事件循环或在循环线程上销毁本服务端，那两条路径都会关掉描述符，挂在读数
+         *          上的协程于是收回。
+         * @note 与 `UdpServer::stop()` 的差别就在这一格：那一台的 stop() 会顺手关掉套接字并叫醒等待者，
+         *       所以它要求在所属循环线程上调用（或把调用投递过去）
          */
         void stop() noexcept;
 
@@ -311,6 +319,12 @@ namespace AsynGyanis::Net
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration, std::optional<Platform::DatagramSocket> adoptedBoundSocket);
 
         /**
+         * @brief 已经在监听就拒绝再一次启动（两条 listen 入口共用同一条判据）
+         * @throws Base::InvalidArgumentException 本服务端已经在某个 UDP 端口上服务
+         */
+        void requireFreshStart() const;
+
+        /**
          * @brief 两条 listen 的共用主体：在已就绪的套接字上问回端口、建封装并跑收循环
          * @details 端口与本地地址都从套接字问回来（接手来的口没有别的来源），把「端口从哪来」与
          *          「收到报文后做什么」分开，才不会出现两种形状各有一份派发的分叉。
@@ -437,9 +451,9 @@ namespace AsynGyanis::Net
         Platform::DatagramSocket                m_datagramSocket;      ///< 绑定的 UDP 套接字
         /// 接手来的平台套接字：有值即「接手模式」，无参的 listen() 认它，带地址的 listen() 拒绝。
         /// 被 listen() 转交给 m_datagramSocket 之后本项转为空
-        std::optional<Platform::DatagramSocket> m_adoptedSocket;       ///< 尚未装进本端的那份已绑好的套接字
-        std::unique_ptr<Core::AsyncUdpSocket>   m_socket;              ///< 套接字的事件循环封装
-        Core::Timer                             m_expiryTicker;        ///< 定时驱动的节拍定时器
+        std::optional<Platform::DatagramSocket> m_adoptedSocket; ///< 尚未装进本端的那份已绑好的套接字
+        std::unique_ptr<Core::AsyncUdpSocket>   m_socket;        ///< 套接字的事件循环封装
+        Core::Timer                             m_expiryTicker;  ///< 定时驱动的节拍定时器
         /// 实际绑定的端口：绑定成功才写入，故非 0 即「已在监听」。原子量是为了让外部线程能读这个
         /// 启动凭据（写侧在循环线程、读侧只观察它），不是允许跨线程碰本类的其他成员
         std::atomic<std::uint16_t> m_listeningPort{0};

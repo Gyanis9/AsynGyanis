@@ -604,4 +604,45 @@ namespace AsynGyanis::Net
         EXPECT_NE(reason.find("onMessage"), std::string::npos) << "文案没点名缺的是哪个字段：" << reason;
         EXPECT_EQ(server.listeningPort(), 0U) << "被拒之后端口不该已经开着";
     }
+
+    /**
+     * @brief 已在监听的服务端不许再 listen() 一次，而且被拒的那一次不许动到正在跑的服务
+     * @details 第二次启动的真实代价不是「多一条错误」：那条路会把 m_socket 换成新的一份，而收循环还挂在
+     *          旧的那份上（接收缓冲与事件循环里的注册对象都归它），旧对象一被销毁，原端口就没人读了。
+     *          两侧实测的形态都是「端口换了、原服务不再应答」，Windows 与容器 ASan 下都没报出
+     *          use-after-free——坏的是这台监听器看起来还在服务。
+     * @note listen() 是惰性协程，判据排在首次恢复时，因此这里驱动帧而不是 EXPECT_THROW
+     * @note 证伪（两侧实测）：摘掉两条 listen 入口上的 requireFreshStart()，本条红在三处——「没被拒」、
+     *       端口从 56714 变成新绑的那一个、随后的往返拿不到应答
+     */
+    TEST(UdpServer, RejectsASecondListenWhileAlreadyServing)
+    {
+        std::atomic<std::uint16_t> seenSourcePort{0};
+        std::atomic<std::size_t>   seenPayloadLength{0};
+
+        // 驱动帧先声明、因而在夹具（含后台循环）之后销毁：帧要在循环停止之后才回收
+        std::optional<Core::Task<void>> secondListenDriver;
+        UdpServerFixture                fixture(makeEchoHandler(seenSourcePort, seenPayloadLength));
+
+        const std::uint16_t servingPort = fixture.serverAddress().port();
+        ASSERT_NE(servingPort, 0U) << "夹具没把服务起起来";
+        ASSERT_TRUE(fixture.sendToServer(toBytes("first")));
+        ASSERT_TRUE(fixture.receiveFromServer().has_value()) << "夹具的服务没有应答，后面的断言无从判起";
+
+        std::string       reason;
+        std::atomic<bool> isRejected{false};
+        secondListenDriver.emplace(captureCoroutineFailure(fixture.server().listen(Core::InetAddress("127.0.0.1", 0)), reason, isRejected));
+        fixture.loopThread().loop().scheduler().scheduleRemote(secondListenDriver->handle());
+
+        EXPECT_TRUE(waitForCondition([&] { return isRejected.load(std::memory_order_acquire); }, kPeerWaitTimeout))
+                << "第二次 listen() 没被拒：它会换掉正在服务的那份套接字，收循环就挂在已销毁的对象上";
+        EXPECT_NE(reason.find("已经在 UDP 端口"), std::string::npos) << "文案没点名「重复启动」这个成因：" << reason;
+
+        // 被拒的那一次不该留下任何痕迹：端口还是那一个，服务照常应答
+        EXPECT_EQ(fixture.serverAddress().port(), servingPort) << "被拒的第二次启动换了端口";
+        ASSERT_TRUE(fixture.sendToServer(toBytes("second")));
+        const std::optional<std::vector<std::uint8_t>> reply = fixture.receiveFromServer();
+        ASSERT_TRUE(reply.has_value()) << "第二次 listen() 被拒之后原来的服务不再应答：那次启动并非无害";
+        EXPECT_EQ(toText(*reply), "second");
+    }
 } // namespace AsynGyanis::Net

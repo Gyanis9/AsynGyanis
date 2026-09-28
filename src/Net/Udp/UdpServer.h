@@ -66,7 +66,7 @@ namespace AsynGyanis::Net
              *       缓冲换个尺寸
              */
             std::size_t    maximumDatagramByteCount{Platform::DatagramSocket::kMaximumDatagramBytes};
-            MessageHandler onMessage; ///< 报文处理器；没有它这台监听器只会把每条报文丢掉，故 listen() 当场拒绝
+            MessageHandler onMessage; ///< 报文处理器；没有它这台监听器只会把每条报文丢掉，故 listen() 被驱动时拒绝
         };
 
         /**
@@ -104,7 +104,7 @@ namespace AsynGyanis::Net
          *          的机制本身不限套接字类型），worker 这一侧的接手动作就是这个构造 + 不带地址的 listen()。
          * @note 套接字从哪来由调用方决定：`Platform::DatagramSocket::bindTo`（自己绑）或
          *       `Platform::DatagramSocket::adopt`（把别的进程交过来的描述符包成本层的持有者语义，
-         *       它会区分「不是 SOCK_DGRAM」「还没 bind」「描述符无效」三种不合格）
+         *       它会区分「描述符无效」「不是套接字」「不是 SOCK_DGRAM」「还没 bind」四种不合格）
          * @note 与按地址构造的差别只在端口从哪来：本构造**不会去 bind**，端口从交来的套接字问，
          *       `listeningPort()` 报的是真值
          */
@@ -120,9 +120,11 @@ namespace AsynGyanis::Net
          * @brief 绑定端口并逐条交付报文，直到 stop()
          * @param localAddress 本地地址；端口给 0 表示由内核分配，实际端口读 listeningPort()
          * @return Core::Task<> 收循环退出时完成
-         * @throws Base::InvalidArgumentException 没有设置处理器，或本服务端是接手构造出来的
-         *         （端口已经定在交过来的套接字上，那种情形请调不带地址的 listen()）
+         * @throws Base::InvalidArgumentException 没有设置处理器、本服务端是接手构造出来的
+         *         （端口已经定在交过来的套接字上，那种情形请调不带地址的 listen()）、或这台服务端
+         *         已经在某个端口上监听（一台只能启动一次）
          * @throws Base::SystemException 绑定失败
+         * @note 本方法是惰性协程：抛出发生在**首次恢复**（await 或投递给循环）那一刻，不在调用处
          * @note 零长报文**照样交付**（payload 为空）：无连接协议里「一条不带内容的报文」常常就是
          *       全部输入（唤醒信号、探测），把它当「没收到」等于把这类协议判死
          * @note 读数报回的平台错误（ICMP 替一个已消失的对端捎回来的那类）只跳过这一次读数，
@@ -135,7 +137,8 @@ namespace AsynGyanis::Net
          * @brief 在接手来的套接字上逐条交付报文，直到 stop()
          * @return Core::Task<> 收循环退出时完成
          * @throws Base::InvalidArgumentException 本对象不是接手构造出来的：那种情形要调
-         *         listen(地址)，由本端自己 bind
+         *         listen(地址)，由本端自己 bind；或这台服务端已经在某个端口上监听（一台只能启动一次）
+         * @note 本方法是惰性协程：抛出发生在**首次恢复**（await 或投递给循环）那一刻，不在调用处
          * @note 交付口径与 listen(地址) 完全一致（零长报文照交付、读数报错不带走循环），差别只在
          *       端口与套接字都不是本端建的，因此这里也不会有「绑定失败」那一类出口
          * @warning 本协程的帧必须活到 `stop()` 之后（与其它循环对象同一条销毁纪律）
@@ -192,6 +195,12 @@ namespace AsynGyanis::Net
          * @throws Base::InvalidArgumentException 处理器为空
          */
         void requireMessageHandler() const;
+
+        /**
+         * @brief 已经在监听就拒绝再一次启动（两条 listen 入口共用同一条判据）
+         * @throws Base::InvalidArgumentException 本服务端已经在某个端口上服务
+         */
+        void requireFreshStart() const;
 
         /**
          * @brief 两条 listen 的共用主体：在已就绪的套接字上逐条交付报文

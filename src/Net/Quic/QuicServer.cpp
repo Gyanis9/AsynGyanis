@@ -129,7 +129,7 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("QUIC 服务端接手数据报套接字失败：交来的套接字无效。自己绑的那一份大概是绑定就失败了"
                                                  "（bindTo 交回空对象），跨进程接手的那一份要走 Platform::DatagramSocket::adopt，"
-                                                 "它会区分「不是 SOCK_DGRAM」「还没 bind」「描述符无效」三种不合格");
+                                                 "它会区分「描述符无效」「不是套接字」「不是 SOCK_DGRAM」「还没 bind」四种不合格");
         }
 
         // 构造期任一检查都要抛，而抛出去之后析构函数不会跑——成员那份裸指针就此无人认领。
@@ -198,8 +198,9 @@ namespace AsynGyanis::Net
 
     Core::Task<> QuicServer::listen(Core::InetAddress localAddress)
     {
+        requireFreshStart();
         // 接手来的服务端不该再去 bind 一个端口：那会把交过来的套接字静默闲置，发往那个端口的报文一条
-        // 也到不了，症状与「移交没做成」一模一样。两种顺序都说不通，当场指出来
+        // 也到不了，症状与「移交没做成」一模一样。两种顺序都说不通，协程一被驱动就指出来
         if (m_adoptedSocket.has_value())
         {
             throw Base::InvalidArgumentException("QUIC 服务端启动失败：这台服务端是接手构造出来的，端口已经定在交过来的那个套接字上；"
@@ -218,6 +219,7 @@ namespace AsynGyanis::Net
 
     Core::Task<> QuicServer::listen()
     {
+        requireFreshStart();
         // 与带地址的那条互斥：无参的 listen() 没有地址可问，而按地址构造的对象也没有别人交过来的套接字
         if (!m_adoptedSocket.has_value())
         {
@@ -229,6 +231,19 @@ namespace AsynGyanis::Net
         m_adoptedSocket.reset();
         co_await serveOnBoundSocket();
         co_return;
+    }
+
+    void QuicServer::requireFreshStart() const
+    {
+        // 已在监听的服务端不许再启动一次：第二次 listen() 会把 m_socket 换成新的一份，而收报文协程与
+        // 定时器协程都还挂在旧的那份上（事件循环里的注册对象归它），旧对象一被销毁，原先那个端口就再无
+        // 人读——实测两侧都是「端口换了、原服务不再应答」。换端口没有「原地重来」的用法：新建一台即可
+        const std::uint16_t currentPort = m_listeningPort.load(std::memory_order_acquire);
+        if (currentPort != 0U)
+        {
+            throw Base::InvalidArgumentException("QUIC 服务端启动失败：这台服务端已经在 UDP 端口 " + std::to_string(currentPort) +
+                                                 " 上监听，不能再次 listen()；要换个端口请新建一台服务端");
+        }
     }
 
     Core::Task<> QuicServer::serveOnBoundSocket()
@@ -277,8 +292,8 @@ namespace AsynGyanis::Net
                     }
                     continue;
                 }
-                // 到这里就是「只是没数据且套接字已不可用」：stop() 关掉本端，或本端故障，退出收循环，
-                // 收尾交给析构
+                // 到这里就是「只是没数据且套接字已不可用」：描述符随事件循环停止或本对象析构一起被关掉，
+                // 退出收循环，收尾交给析构
                 break;
             }
             if (receivedLength == 0)
