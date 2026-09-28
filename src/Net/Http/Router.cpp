@@ -376,7 +376,7 @@ namespace AsynGyanis::Net
         //
         // HEAD 刻意不在这里处理：它的正文要留到序列化时才用得上——会话按完整正文序列化头部，
         // 才能得到与同一路径 GET 逐字节一致的一份头部（含自动补齐的 content-length 与
-        // content-type），随后在发送时把正文换成空（见 detail::httpKeepAliveLoop）。
+        // content-type），随后在发送时把正文换成空（见 Detail::httpKeepAliveLoop）。
         //
         // 流式响应不做任何正文收尾：它的正文由分块帧逐段写出、长度对路由层未知，既不补
         // content-length 也不清整块正文（setBody() 在流式模式下会报错）。HEAD 上使用流式模式

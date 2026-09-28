@@ -28,7 +28,7 @@ namespace AsynGyanis::Net
     /// 采信客户端自带 request-id 的最大长度，单位字节；更长的取值一律按「客户端没给」处理
     inline constexpr std::size_t kMaximumRequestIdLength = 64;
 
-    namespace detail
+    namespace Detail
     {
         /// request-id 里序号的十六进制位数：定长是「按长度与分隔符就能从日志里截出 id」的前提
         inline constexpr std::size_t kRequestIdSequenceDigitCount = 16;
@@ -76,7 +76,7 @@ namespace AsynGyanis::Net
             formatRequestIdTextInto(requestIdText, prefix, sequenceNumber);
             return requestIdText;
         }
-    } // namespace detail
+    } // namespace Detail
 
     /**
      * @brief request-id 生成器：每台服务器一个进程内唯一前缀 + 递增序号
@@ -88,7 +88,7 @@ namespace AsynGyanis::Net
      *          客户端自带的取值原样采信（只做形态校验），因此不要用它推断请求的真实来源，
      *          也不要把它当作不可猜测的凭据。
      * @note 序号是 std::atomic：多个循环线程上的会话可能并发向同一台服务器要 id。
-     * @see HttpRequest::requestId(), detail::httpKeepAliveLoop()
+     * @see HttpRequest::requestId(), Detail::httpKeepAliveLoop()
      */
     class HttpRequestIdGenerator
     {
@@ -185,7 +185,7 @@ namespace AsynGyanis::Net
         void nextInto(std::string &target) const
         {
             const std::uint64_t sequenceNumber = m_sequence.fetch_add(1, std::memory_order_relaxed);
-            detail::formatRequestIdTextInto(target, m_prefix, sequenceNumber);
+            Detail::formatRequestIdTextInto(target, m_prefix, sequenceNumber);
         }
 
     private:

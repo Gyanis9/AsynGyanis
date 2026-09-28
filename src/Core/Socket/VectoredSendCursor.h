@@ -15,7 +15,7 @@
 
 namespace AsynGyanis::Core
 {
-    namespace detail
+    namespace Detail
     {
         /**
          * @brief 聚合发送的段游标
@@ -81,5 +81,5 @@ namespace AsynGyanis::Core
             std::size_t                          m_pendingIndex{0};    ///< 下一个待发段的下标
             std::size_t                          m_offsetInPending{0}; ///< 该段内已发出的字节数
         };
-    } // namespace detail
+    } // namespace Detail
 } // namespace AsynGyanis::Core

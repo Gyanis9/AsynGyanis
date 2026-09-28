@@ -49,11 +49,11 @@ namespace AsynGyanis::Net
      *
      * @details start() 协程在连接上循环「读字节 → 定界 → 增量解析 → 路由分发 → 写响应」，
      *          直到对端关闭、报文出错、或按 Keep-Alive 判定应当收口。协议细节全部下沉到
-     *          detail::httpKeepAliveLoop()，明文与 TLS 两类会话共用同一份实现，只差传输层类型。
+     *          Detail::httpKeepAliveLoop()，明文与 TLS 两类会话共用同一份实现，只差传输层类型。
      *
      * @note 接收缓冲**跨次读取存续**：一个 TCP 包里粘着两条请求时，第一条应答完剩下的字节留在
      *       缓冲区里，下一轮先喂进解析器；不留存就会每次从缓冲区开头重读，把第二条请求静默丢掉。
-     * @see detail::httpKeepAliveLoop(), shouldKeepAlive()
+     * @see Detail::httpKeepAliveLoop(), shouldKeepAlive()
      */
     class HttpSession : public Core::Connection
     {
@@ -87,11 +87,11 @@ namespace AsynGyanis::Net
         /**
          * @brief 启动会话主协程：跑完整条保持活跃循环后关闭连接。
          *
-         * @details 重写基类空实现，换成完整的 HTTP 事务循环：转入 detail::httpKeepAliveLoop() 处理读、解析、
+         * @details 重写基类空实现，换成完整的 HTTP 事务循环：转入 Detail::httpKeepAliveLoop() 处理读、解析、
          *          路由与应答，循环退出后无条件 close() 归还描述符——不会因退出路径不同而漏关 socket。
          *          异常不在此吞掉，原样抛给 TcpServer::handleConnection()。
          * @return Core::Task<> 协程任务，连接结束（自然关闭或出错收口）时完成
-         * @see Core::Connection::start(), detail::httpKeepAliveLoop()
+         * @see Core::Connection::start(), Detail::httpKeepAliveLoop()
          */
         Core::Task<> start() override;
 
@@ -137,7 +137,7 @@ namespace AsynGyanis::Net
     // 会话共享实现：报文定界 + Keep-Alive 事务循环（明文与 TLS 两类会话共用）
     // ============================================================================
 
-    namespace detail
+    namespace Detail
     {
         /// 接收窗口的上限档，单位字节：只用来接住「刚到的字节」，正文与跨读的半行都由解析器自己存，
         /// 因此这一块固定大小就够——窗口永远是「开头一段未解析字节」，不需要按报文体量增长
@@ -1335,7 +1335,7 @@ namespace AsynGyanis::Net
                     // windowLength 是 101 之前就到达的剩余字节（升级请求之后的那一部分），
                     // 客户端可能已经在里面发了第一帧，必须一并交给解码器。
                     // 整段 WebSocket 通话都算在途工作（上面的 BusyScope 覆盖到这里）：优雅关闭会等它结束
-                    co_return co_await detail::webSocketSessionStage(socket, connection, limits, metrics, response.webSocketHandler(), receiveBuffer, windowLength,
+                    co_return co_await Detail::webSocketSessionStage(socket, connection, limits, metrics, response.webSocketHandler(), receiveBuffer, windowLength,
                                                                      deflateNegotiation.accepted);
                 }
 
@@ -1346,5 +1346,5 @@ namespace AsynGyanis::Net
                 }
             }
         }
-    } // namespace detail
+    } // namespace Detail
 } // namespace AsynGyanis::Net

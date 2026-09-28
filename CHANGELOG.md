@@ -1138,6 +1138,16 @@
 
 ### 变更
 
+- **实现细节命名空间统一成 `Detail`**：同一层此前有两种写法——Base/Database 与三个同名目录写 `Detail`，
+  Base/Core/Net 的 12 个文件写 `detail`。往大写收而不是往小写收，理由有两条：`.clang-tidy` 里
+  `readability-identifier-naming.NamespaceCase` 早已钉成 CamelCase，而本仓的规矩是「文件夹名与命名空间对应」
+  （`src/Base/Log/Sinks/Detail/` 就是这么来的）。改动是纯改名（29 个文件、110 行），不动任何行为；
+  `nlohmann::detail::` 那处第三方引用原样保留，名为 `detail` 的形参、局部量与 ACME problem document 里的
+  `"detail"` 字段都不在改动范围内。
+  **对消费者的影响**：这些命名空间按设计不属于公开 API，但确实出现在安装出去的头文件里（例如
+  `std::unique_ptr<EVP_PKEY, Detail::EvpKeyDeleter>` 这样的删除器类型）。若有人直接用过
+  `Core::detail::`、`Net::detail::` 或 `Base::detail::`，要改成大写形式。
+
 - **HTTP/3 上被挡下的请求不再计入 `requests_total` 与状态码类**（`Http3Session`）。旧行为：h3 把 431/414/413/503
   这四条「没交给业务」的收口既记进 `bad_requests_total`，也记进请求数与 `responses_total{status_class}`；
   而 HTTP/1.1 与 HTTP/2 那两路只记前一笔。后果是同一个客户端同样的越界请求，抓一次 `/metrics` 看到的

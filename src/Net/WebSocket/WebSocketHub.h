@@ -42,7 +42,7 @@ namespace AsynGyanis::Net
      */
     using WebSocketSubscriptionId = std::uint64_t;
 
-    namespace detail
+    namespace Detail
     {
         /**
          * @brief 集线器的一个成员：对端指针、待发队列、与「谁在替它写」的闩
@@ -57,7 +57,7 @@ namespace AsynGyanis::Net
             std::size_t             pendingByteCount{0}; ///< pendingTexts 的负载总字节数（入队上界据此判定）
             bool                    isDraining{false};   ///< 是否已有一个发布协程正在替它写（一条连接一个写者）
         };
-    } // namespace detail
+    } // namespace Detail
 
     class WebSocketHub;
 
@@ -110,10 +110,10 @@ namespace AsynGyanis::Net
          * @param member 集线器里的成员
          * @param identifier 本次订阅的标识
          */
-        WebSocketSubscription(WebSocketHub &hub, std::shared_ptr<detail::WebSocketHubMember> member, WebSocketSubscriptionId identifier);
+        WebSocketSubscription(WebSocketHub &hub, std::shared_ptr<Detail::WebSocketHubMember> member, WebSocketSubscriptionId identifier);
 
         WebSocketHub                               *m_hub{nullptr}; ///< 所属集线器；空句柄为 nullptr
-        std::shared_ptr<detail::WebSocketHubMember> m_member{};     ///< 成员（与集线器共持）
+        std::shared_ptr<Detail::WebSocketHubMember> m_member{};     ///< 成员（与集线器共持）
         WebSocketSubscriptionId                     m_id{0};        ///< 订阅标识，除名按它定位
     };
 
@@ -188,7 +188,7 @@ namespace AsynGyanis::Net
         struct Registration
         {
             std::string                                 topic;         ///< 主题名
-            std::shared_ptr<detail::WebSocketHubMember> member{};      ///< 成员
+            std::shared_ptr<Detail::WebSocketHubMember> member{};      ///< 成员
             WebSocketSubscriptionId                     identifier{0}; ///< 订阅标识
         };
 
@@ -203,7 +203,7 @@ namespace AsynGyanis::Net
          * @param member 目标成员（按值持 shared_ptr：挂起期间表可能已经把它摘掉）
          * @return Core::Task<void> 队列空、或对端不可再用时返回
          */
-        Core::Task<void> drainMember(std::shared_ptr<detail::WebSocketHubMember> member);
+        Core::Task<void> drainMember(std::shared_ptr<Detail::WebSocketHubMember> member);
 
         std::vector<Registration> m_registrations;           ///< 全部成员，按订阅顺序
         std::size_t               m_maximumPendingByteCount; ///< 单成员待发队列字节上界

@@ -8,7 +8,7 @@
 
 namespace AsynGyanis::Net
 {
-    WebSocketSubscription::WebSocketSubscription(WebSocketHub &hub, std::shared_ptr<detail::WebSocketHubMember> member, const WebSocketSubscriptionId identifier) :
+    WebSocketSubscription::WebSocketSubscription(WebSocketHub &hub, std::shared_ptr<Detail::WebSocketHubMember> member, const WebSocketSubscriptionId identifier) :
         m_hub(&hub), m_member(std::move(member)), m_id(identifier)
     {
     }
@@ -74,7 +74,7 @@ namespace AsynGyanis::Net
 
     WebSocketSubscription WebSocketHub::subscribe(const std::string_view topic, WebSocketPeer &peer)
     {
-        auto member                              = std::make_shared<detail::WebSocketHubMember>();
+        auto member                              = std::make_shared<Detail::WebSocketHubMember>();
         member->peer                             = &peer;
         const WebSocketSubscriptionId identifier = m_nextIdentifier++;
         m_registrations.push_back(Registration{std::string(topic), member, identifier});
@@ -85,7 +85,7 @@ namespace AsynGyanis::Net
     {
         // 先取一份成员快照再逐个处理：入队与写出都会挂起，这期间表会被别的连接订阅/除名改写，
         // 拿着迭代器遍历就是未定义行为。shared_ptr 保证快照里的成员即使被摘掉也还活着
-        std::vector<std::shared_ptr<detail::WebSocketHubMember>> targets;
+        std::vector<std::shared_ptr<Detail::WebSocketHubMember>> targets;
         for (const Registration &registration: m_registrations)
         {
             if (registration.topic == topic && registration.member->peer != nullptr)
@@ -94,7 +94,7 @@ namespace AsynGyanis::Net
             }
         }
 
-        for (const std::shared_ptr<detail::WebSocketHubMember> &member: targets)
+        for (const std::shared_ptr<Detail::WebSocketHubMember> &member: targets)
         {
             if (member->peer == nullptr)
             {
@@ -152,7 +152,7 @@ namespace AsynGyanis::Net
         m_registrations.erase(found);
     }
 
-    Core::Task<void> WebSocketHub::drainMember(std::shared_ptr<detail::WebSocketHubMember> member)
+    Core::Task<void> WebSocketHub::drainMember(std::shared_ptr<Detail::WebSocketHubMember> member)
     {
         while (!member->pendingTexts.empty())
         {

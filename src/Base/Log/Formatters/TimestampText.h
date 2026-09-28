@@ -32,7 +32,7 @@ namespace AsynGyanis::Base
     /// 渲染缓冲的字节数：前缀上限再加尾部 ".mmm" 四位，与上面那条上限成套
     inline constexpr std::size_t kTimestampTextBufferSize = kTimestampPrefixCapacity + 4U;
 
-    namespace detail
+    namespace Detail
     {
         /**
          * @brief 历法换算的按秒缓存，挂在调用线程上
@@ -46,7 +46,7 @@ namespace AsynGyanis::Base
             std::size_t                                prefixLength = 0;      ///< 前缀的有效字节数
             bool                                       hasValue     = false;  ///< 本线程是否已经折算过至少一条
         };
-    } // namespace detail
+    } // namespace Detail
 
     /**
      * @brief 把一个时刻渲染成 `YYYY-MM-DD HH:MM:SS.mmm`（本地时间）
@@ -73,7 +73,7 @@ namespace AsynGyanis::Base
         const std::int64_t     millisecondCount       = std::chrono::floor<std::chrono::milliseconds>(moment.time_since_epoch()).count();
         const std::int64_t     millisecondValue       = millisecondCount - secondValue * kMillisecondsPerSecond;
 
-        thread_local detail::TimestampPrefixCache prefixCache;
+        thread_local Detail::TimestampPrefixCache prefixCache;
 
         // 一秒内的事件共用同一份日历换算；跨秒（含时钟回拨）才重折一次
         if (!prefixCache.hasValue || prefixCache.cachedSecondValue != secondValue)

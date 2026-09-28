@@ -362,7 +362,7 @@ namespace AsynGyanis::Net
          * @brief 路由后的响应收尾：按 HTTP 语义对 204/304 清空正文
          * @param response 响应对象；204 与 304 的正文在此被清空
          * @note HEAD 的正文刻意保留：会话要按完整正文序列化头部才能拿到与 GET 一致的一份头部，
-         *       剥正文由发送路径负责（见 detail::httpKeepAliveLoop）
+         *       剥正文由发送路径负责（见 Detail::httpKeepAliveLoop）
          */
         static void finalizeResponse(HttpResponse &response);
 

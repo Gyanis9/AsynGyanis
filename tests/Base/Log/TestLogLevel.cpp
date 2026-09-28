@@ -158,17 +158,17 @@ namespace AsynGyanis::Base
         // 折叠按码位区间做而不是查 std::tolower 的 C locale 表：后者在土耳其语环境下把 'I' 折成
         // 非 ASCII 字符，"INFO" 就会在那样的进程里解不出来。这里钉住折叠的边界——非字母字节原样
         // 比较，因此长度相同但内容不同的标签一律配不上
-        static_assert(detail::toAsciiLowercase('I') == 'i');
-        static_assert(detail::toAsciiLowercase('i') == 'i');
-        static_assert(detail::toAsciiLowercase('0') == '0');
-        static_assert(detail::toAsciiLowercase('\x00') == '\x00');
+        static_assert(Detail::toAsciiLowercase('I') == 'i');
+        static_assert(Detail::toAsciiLowercase('i') == 'i');
+        static_assert(Detail::toAsciiLowercase('0') == '0');
+        static_assert(Detail::toAsciiLowercase('\x00') == '\x00');
         // 高位字节（UTF-8 续字节）不被折叠成 ASCII 字母，也就不会误配成已知标签
-        static_assert(detail::toAsciiLowercase('\xC1') == '\xC1');
+        static_assert(Detail::toAsciiLowercase('\xC1') == '\xC1');
 
-        static_assert(detail::logLevelLabelEquals("info", "INFO"));
-        static_assert(detail::logLevelLabelEquals("INF", "INFO") == false);
-        static_assert(detail::logLevelLabelEquals("\xC1NFO", "INFO") == false);
-        static_assert(detail::logLevelLabelEquals("", "") == true);
+        static_assert(Detail::logLevelLabelEquals("info", "INFO"));
+        static_assert(Detail::logLevelLabelEquals("INF", "INFO") == false);
+        static_assert(Detail::logLevelLabelEquals("\xC1NFO", "INFO") == false);
+        static_assert(Detail::logLevelLabelEquals("", "") == true);
     }
 
     TEST(LogLevel, NonAsciiAndWrongLengthLabelsStillFallBack)

@@ -381,7 +381,7 @@ namespace AsynGyanis::Net
         // 已经到期：不早于 now（睡过头就等于把这条截止丢到下下拍）
         EXPECT_EQ(TickerWakePointProbe::nextTickerWakePoint(true, now - std::chrono::milliseconds{1}, now, tick), now);
         // 换算成立：0 会被定时器当成解除武装，因此已到期的那一拍必须折成最近的一次唤醒
-        EXPECT_EQ(Core::detail::armedDurationFor(TickerWakePointProbe::nextTickerWakePoint(true, now - std::chrono::milliseconds{1}, now, tick), now),
+        EXPECT_EQ(Core::Detail::armedDurationFor(TickerWakePointProbe::nextTickerWakePoint(true, now - std::chrono::milliseconds{1}, now, tick), now),
                   std::chrono::milliseconds{1});
 
         // 节拍配成非正数＝不设上限，只按各连接自己的截止时刻睡

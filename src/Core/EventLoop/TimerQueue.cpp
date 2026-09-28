@@ -277,7 +277,7 @@ namespace AsynGyanis::Core
         {
             return true;
         }
-        const auto armedDuration = detail::armedDurationFor(nearest, std::chrono::steady_clock::now());
+        const auto armedDuration = Detail::armedDurationFor(nearest, std::chrono::steady_clock::now());
         if (!m_timer.arm(armedDuration))
         {
             // 失败时不能记账：记成「已武装」会让同一截止时间从此不再重试，

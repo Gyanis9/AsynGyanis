@@ -339,7 +339,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置本次请求的 request-id
          *
-         * @details 由会话在请求收齐、进入业务之前落定（见 detail::httpKeepAliveLoop()）：
+         * @details 由会话在请求收齐、进入业务之前落定（见 Detail::httpKeepAliveLoop()）：
          *          客户端自带合法的 x-request-id 就沿用，否则用服务器侧生成器发一个。
          *          业务、中间件与日志因此都从一处读到同一个值。
          *

@@ -255,7 +255,7 @@ namespace AsynGyanis::Net::TestSupport
         const std::string kind     = std::string(keyTypeSpecification.substr(0, separatorIndex));
         const std::string argument = std::string(keyTypeSpecification.substr(separatorIndex + 1));
 
-        std::unique_ptr<EVP_PKEY, Net::detail::EvpKeyDeleter> key(kind == "RSA" ? EVP_RSA_gen(static_cast<unsigned int>(std::stoul(argument))) : EVP_EC_gen(argument.c_str()));
+        std::unique_ptr<EVP_PKEY, Net::Detail::EvpKeyDeleter> key(kind == "RSA" ? EVP_RSA_gen(static_cast<unsigned int>(std::stoul(argument))) : EVP_EC_gen(argument.c_str()));
         if (!key)
         {
             return false;
@@ -289,9 +289,9 @@ namespace AsynGyanis::Net::TestSupport
         X509_free(certificate);
     }
 
-    std::unique_ptr<EVP_PKEY, Net::detail::EvpKeyDeleter> publicKeyFromJsonWebKeyText(const std::string_view jwkText)
+    std::unique_ptr<EVP_PKEY, Net::Detail::EvpKeyDeleter> publicKeyFromJsonWebKeyText(const std::string_view jwkText)
     {
-        std::unique_ptr<EVP_PKEY, Net::detail::EvpKeyDeleter> rebuilt;
+        std::unique_ptr<EVP_PKEY, Net::Detail::EvpKeyDeleter> rebuilt;
         const auto                                            parsed = Base::parseConfigValue(jwkText);
         if (!parsed.has_value() || !parsed->is_object())
         {

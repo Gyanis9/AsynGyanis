@@ -34,7 +34,7 @@ namespace AsynGyanis::Core
      *          堆操作；驱动协程按堆顶截止时间武装描述符（空队列不武装），到期项投回调度器而非
      *          就地恢复，避免嵌套恢复别的协程。
      */
-    namespace detail
+    namespace Detail
     {
         /**
          * @brief 把绝对截止时间换算成描述符要武装的时长
@@ -56,7 +56,7 @@ namespace AsynGyanis::Core
             const auto roundedUp = floored + (truncated > decltype(truncated)::zero() ? std::chrono::milliseconds(1) : std::chrono::milliseconds(0));
             return roundedUp > std::chrono::milliseconds(0) ? roundedUp : std::chrono::milliseconds(1);
         }
-    } // namespace detail
+    } // namespace Detail
 
     class TimerQueue
     {

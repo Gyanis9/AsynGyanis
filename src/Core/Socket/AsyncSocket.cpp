@@ -343,7 +343,7 @@ namespace AsynGyanis::Core
 
         // 游标负责「部分写之后从哪继续、跨段怎么推进」这段最容易出错的账目；
         // 它单独成类并被用例直接覆盖——回环上很难自然触发部分写，可它一旦写错是静默的数据错位
-        detail::VectoredSendCursor cursor(buffers, bufferCount);
+        Detail::VectoredSendCursor cursor(buffers, bufferCount);
 
         while (!cursor.isFinished())
         {

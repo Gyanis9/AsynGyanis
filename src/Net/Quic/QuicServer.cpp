@@ -869,7 +869,7 @@ namespace AsynGyanis::Net
             // 先按当前状态算出这一觉睡到什么时候，再挂上去：唤醒点要么是所有连接里最早的交易截止，
             // 要么是配置的节拍（先到为准），零连接时退到空闲上界
             const std::chrono::steady_clock::time_point planningNow   = std::chrono::steady_clock::now();
-            const std::chrono::milliseconds             sleepDuration = Core::detail::armedDurationFor(
+            const std::chrono::milliseconds             sleepDuration = Core::Detail::armedDurationFor(
                     nextTickerWakePoint(!m_connections.empty(), earliestConnectionExpiry(), planningNow, m_configuration.expiryTickInterval), planningNow);
             co_await m_expiryTicker.waitFor(sleepDuration);
             if (m_isStopped.load(std::memory_order_acquire))

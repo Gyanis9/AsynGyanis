@@ -300,7 +300,7 @@ namespace AsynGyanis::Net::TestSupport
 
         // 公钥来源：jwk（只有注册那次）或 kid 指向的账户记录。两条都是**从 JWK 重建**，
         // 与被测实现写出 JWK 的那条路是两份代码
-        std::unique_ptr<EVP_PKEY, Net::detail::EvpKeyDeleter> publicKey;
+        std::unique_ptr<EVP_PKEY, Net::Detail::EvpKeyDeleter> publicKey;
         Account                                               account;
         if (!jws.jwkText.empty())
         {

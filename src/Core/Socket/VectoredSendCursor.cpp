@@ -2,7 +2,7 @@
 
 namespace AsynGyanis::Core
 {
-    namespace detail
+    namespace Detail
     {
         VectoredSendCursor::VectoredSendCursor(const Platform::Socket::WriteBuffer *const buffers, const std::size_t bufferCount) noexcept :
             m_buffers(buffers), m_bufferCount(bufferCount)
@@ -97,5 +97,5 @@ namespace AsynGyanis::Core
                 m_offsetInPending = 0;
             }
         }
-    } // namespace detail
+    } // namespace Detail
 } // namespace AsynGyanis::Core

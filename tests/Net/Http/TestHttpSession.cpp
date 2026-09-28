@@ -934,7 +934,7 @@ namespace AsynGyanis::Net
         HttpSessionFixture fixture;
         ASSERT_TRUE(fixture.isValid());
 
-        // 连接的停止请求要经 detail::ConnectionCancelForwarder 转成本次请求的协作式取消，
+        // 连接的停止请求要经 Detail::ConnectionCancelForwarder 转成本次请求的协作式取消，
         // 业务侧只认 request.cancelToken() 一处出口
         std::atomic<bool> handlerEntered{false};
         std::atomic<bool> cancelObserved{false};

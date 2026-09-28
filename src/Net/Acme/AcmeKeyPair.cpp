@@ -28,13 +28,13 @@
 
 namespace AsynGyanis::Net
 {
-    namespace detail
+    namespace Detail
     {
         void EvpKeyDeleter::operator()(EVP_PKEY *key) const noexcept
         {
             EVP_PKEY_free(key);
         }
-    } // namespace detail
+    } // namespace Detail
 
     namespace
     {
@@ -114,7 +114,7 @@ namespace AsynGyanis::Net
         };
         using SignatureValueHandle = std::unique_ptr<ECDSA_SIG, SignatureValueDeleter>;
 
-        using KeyHandle = std::unique_ptr<EVP_PKEY, detail::EvpKeyDeleter>;
+        using KeyHandle = std::unique_ptr<EVP_PKEY, Detail::EvpKeyDeleter>;
 
         /**
          * @brief 拼一条「哪一步失败 + OpenSSL 的原话」的 KeyMaterial 档错误
@@ -183,7 +183,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 取 RSA 密钥的 n 与 e 并拼成 JWK
          */
-        [[nodiscard]] std::expected<detail::PublicIdentity, AcmeError> buildRsaIdentity(const EVP_PKEY &key)
+        [[nodiscard]] std::expected<Detail::PublicIdentity, AcmeError> buildRsaIdentity(const EVP_PKEY &key)
         {
             auto modulus = readBignumParameter(key, OSSL_PKEY_PARAM_RSA_N, "读取 RSA 模数");
             if (!modulus.has_value())
@@ -209,7 +209,7 @@ namespace AsynGyanis::Net
 
             // 成员按 ASCII 键的字典序写死（e < kty < n）：这就是 RFC 7638 要的规范化输入。
             // 交给通用 JSON 序列化去排序，等于把「顺序即凭据」寄在库的默认行为上
-            detail::PublicIdentity identity;
+            Detail::PublicIdentity identity;
             identity.jsonWebKeyText       = std::format(R"({{"e":"{}","kty":"RSA","n":"{}"}})", *encodedExponent, *encodedModulus);
             identity.jsonWebKeyThumbprint = AcmeKeyPair::computeJsonWebKeyThumbprint(identity.jsonWebKeyText);
             return identity;
@@ -218,7 +218,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 取 P-256 密钥的 crv、x 与 y 并拼成 JWK
          */
-        [[nodiscard]] std::expected<detail::PublicIdentity, AcmeError> buildEllipticCurveIdentity(const EVP_PKEY &key)
+        [[nodiscard]] std::expected<Detail::PublicIdentity, AcmeError> buildEllipticCurveIdentity(const EVP_PKEY &key)
         {
             char        groupName[64]{};
             std::size_t groupNameLength = 0;
@@ -256,7 +256,7 @@ namespace AsynGyanis::Net
                 return std::unexpected(encodedOrdinate.error());
             }
 
-            detail::PublicIdentity identity;
+            Detail::PublicIdentity identity;
             identity.jsonWebKeyText       = std::format(R"({{"crv":"{}","kty":"EC","x":"{}","y":"{}"}})", kJwaP256CurveName, *encodedAbscissa, *encodedOrdinate);
             identity.jsonWebKeyThumbprint = AcmeKeyPair::computeJsonWebKeyThumbprint(identity.jsonWebKeyText);
             return identity;
@@ -265,7 +265,7 @@ namespace AsynGyanis::Net
         /// 一把密钥的算法与其公开表示
         struct DescribedKey
         {
-            detail::PublicIdentity identity;  ///< 公钥的 JWK 文本与指纹
+            Detail::PublicIdentity identity;  ///< 公钥的 JWK 文本与指纹
             AcmeKeyAlgorithm       algorithm; ///< 由密钥内容推出来的算法
         };
 
@@ -371,7 +371,7 @@ namespace AsynGyanis::Net
 
     AcmeKeyPair &AcmeKeyPair::operator=(AcmeKeyPair &&) noexcept = default;
 
-    AcmeKeyPair::AcmeKeyPair(std::unique_ptr<EVP_PKEY, detail::EvpKeyDeleter> key, const AcmeKeyAlgorithm algorithm, detail::PublicIdentity identity) :
+    AcmeKeyPair::AcmeKeyPair(std::unique_ptr<EVP_PKEY, Detail::EvpKeyDeleter> key, const AcmeKeyAlgorithm algorithm, Detail::PublicIdentity identity) :
         m_key(std::move(key)), m_algorithm(algorithm), m_jsonWebKeyThumbprint(std::move(identity.jsonWebKeyThumbprint)), m_publicJsonWebKeyText(std::move(identity.jsonWebKeyText))
     {
     }

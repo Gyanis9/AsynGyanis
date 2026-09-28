@@ -42,7 +42,7 @@ namespace AsynGyanis::Net
                                                       std::uint64_t{0x1'0000'0000}, std::numeric_limits<std::uint64_t>::max()})
             {
                 const std::string expected = std::format("{}-{:016x}", prefix, sequenceNumber);
-                EXPECT_EQ(detail::formatRequestIdText(prefix, sequenceNumber), expected) << "前缀 " << prefix << " 序号 " << sequenceNumber;
+                EXPECT_EQ(Detail::formatRequestIdText(prefix, sequenceNumber), expected) << "前缀 " << prefix << " 序号 " << sequenceNumber;
             }
         }
     }
@@ -168,7 +168,7 @@ namespace AsynGyanis::Net
             for (const std::uint64_t sequenceNumber: {std::uint64_t{0}, std::uint64_t{0x10}, std::uint64_t{0xFFFF'FFFF'FFFF'FFFE}})
             {
                 const std::string expected = std::format("{}-{:016x}", prefix, sequenceNumber);
-                detail::formatRequestIdTextInto(scratch, prefix, sequenceNumber);
+                Detail::formatRequestIdTextInto(scratch, prefix, sequenceNumber);
                 EXPECT_EQ(scratch, expected) << "前缀 " << prefix << " 序号 " << sequenceNumber;
             }
         }

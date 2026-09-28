@@ -77,7 +77,7 @@ namespace AsynGyanis::Base
         }
     }
 
-    namespace detail
+    namespace Detail
     {
         /**
          * @brief 把一个字节折成 ASCII 小写，非大写字母原样交回
@@ -115,7 +115,7 @@ namespace AsynGyanis::Base
             }
             return true;
         }
-    } // namespace detail
+    } // namespace Detail
 
     /**
      * @brief 将字符串解析为日志等级（不区分 ASCII 大小写）
@@ -129,7 +129,7 @@ namespace AsynGyanis::Base
      */
     inline LogLevel logLevelFromString(const std::string_view levelString)
     {
-        using detail::logLevelLabelEquals;
+        using Detail::logLevelLabelEquals;
 
         if (logLevelLabelEquals(levelString, "TRACE"))
             return LogLevel::Trace;

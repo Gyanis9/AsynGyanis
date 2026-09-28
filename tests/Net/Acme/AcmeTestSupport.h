@@ -34,7 +34,7 @@ namespace AsynGyanis::Net::TestSupport
     /// 一份已解开的 PKCS#10 请求：公钥、SAN 里的 DNS 名，以及它自己签得对不对
     struct ParsedCertificateRequest
     {
-        std::unique_ptr<EVP_PKEY, Net::detail::EvpKeyDeleter> publicKey;                ///< 请求里带着的公钥（SPKI 那条解码路）
+        std::unique_ptr<EVP_PKEY, Net::Detail::EvpKeyDeleter> publicKey;                ///< 请求里带着的公钥（SPKI 那条解码路）
         std::vector<std::string>                              dnsNames;                 ///< subjectAltName 里 DNS 类型的条目，按出现顺序
         bool                                                  isSelfSignedValid{false}; ///< 请求自带的签名能否用上面的公钥验过
     };
@@ -67,14 +67,14 @@ namespace AsynGyanis::Net::TestSupport
      * @param jwkText JWK 的紧凑 JSON 文本
      * @return 重建出的公钥；kty 不认识、成员缺失或 OpenSSL 拒绝时为空
      */
-    [[nodiscard]] std::unique_ptr<EVP_PKEY, Net::detail::EvpKeyDeleter> publicKeyFromJsonWebKeyText(std::string_view jwkText);
+    [[nodiscard]] std::unique_ptr<EVP_PKEY, Net::Detail::EvpKeyDeleter> publicKeyFromJsonWebKeyText(std::string_view jwkText);
 
     /**
      * @brief 一份测试用的证书颁发机构：一把私钥加一张自签根
      */
     struct TestCertificateAuthority
     {
-        std::unique_ptr<EVP_PKEY, Net::detail::EvpKeyDeleter> privateKey;  ///< 签发用的密钥
+        std::unique_ptr<EVP_PKEY, Net::Detail::EvpKeyDeleter> privateKey;  ///< 签发用的密钥
         CertificateHandle                                     certificate; ///< 自签根，签出来的证书以它为 issuer
     };
 

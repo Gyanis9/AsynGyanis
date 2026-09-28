@@ -53,7 +53,7 @@ namespace AsynGyanis::Net
 
         // 事务循环与 HTTPS 共用同一份模板实现，差别只在传输层对象、「连接是否存活」的谓词、
         // 限额配置与可选的采集端；把 *this 传进去是为了让循环按相位刷新本连接的空闲截止时间
-        co_await detail::httpKeepAliveLoop(socket(), cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate, *this, *m_limits, m_metrics.get(),
+        co_await Detail::httpKeepAliveLoop(socket(), cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate, *this, *m_limits, m_metrics.get(),
                                            m_requestIdGenerator.get(), m_memoryBudget.get());
 
         // 不再在此处 close()：统一交给上面的守卫，正常路径与异常路径只有一处收口
@@ -99,7 +99,7 @@ namespace AsynGyanis::Net
         return !isHttp10OrOlder;
     }
 
-    namespace detail
+    namespace Detail
     {
         ConnectionCancelForwarder::ConnectionCancelForwarder(Core::Cancelable &cancelable, HttpRequest &request) :
             m_stopCallback(cancelable.stopToken(), RequestCancelForwarder{&request})
@@ -137,5 +137,5 @@ namespace AsynGyanis::Net
             response.setHeader("connection", "close");
         }
 
-    } // namespace detail
+    } // namespace Detail
 } // namespace AsynGyanis::Net

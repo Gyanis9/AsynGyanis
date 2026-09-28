@@ -155,7 +155,7 @@ namespace AsynGyanis::Net
     // 常用中间件工厂
     // ============================================================================
 
-    namespace detail
+    namespace Detail
     {
         /// 看门狗首个睡眠分片，单位毫秒：短请求只多等一个分片就能被回收，量级取「人眼不可察」的 1ms
         inline constexpr std::chrono::milliseconds::rep kTimeoutWatchdogInitialSliceMs = 1;
@@ -231,7 +231,7 @@ namespace AsynGyanis::Net
                 co_return;
             }
         }
-    } // namespace detail
+    } // namespace Detail
 
     /**
      * @brief 创建一个日志中间件，记录请求 URI、响应状态码与处理耗时。
@@ -503,13 +503,13 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            auto state = std::make_shared<detail::TimeoutGuardState>();
+            auto state = std::make_shared<Detail::TimeoutGuardState>();
 
             // 业务链的起始时刻：正常路径由看门狗判到期，这里只给「定时器不可用」的退化路径兜底
             const auto chainStartTimePoint = std::chrono::steady_clock::now();
 
             // 用 optional 持有：业务跑完之后直接销毁它（见下方收尾处），不必等它按分片醒来
-            std::optional<Core::Task<>> watchdogTask = detail::timeoutWatchdog(loop, request, timeout, state);
+            std::optional<Core::Task<>> watchdogTask = Detail::timeoutWatchdog(loop, request, timeout, state);
             // Core::Task 是惰性协程：只构造不会开跑，必须把句柄显式投给调度器
             loop.scheduler().schedule(watchdogTask->handle());
 
@@ -812,7 +812,7 @@ namespace AsynGyanis::Net
         };
     }
 
-    namespace detail
+    namespace Detail
     {
         /**
          * @brief 判断 Accept-Encoding 是否接受某个编码（含 q 值语义）
@@ -1039,7 +1039,7 @@ namespace AsynGyanis::Net
             }
             appendVaryAcceptEncoding(response);
         }
-    } // namespace detail
+    } // namespace Detail
 
     /**
      * @brief 响应压缩选项
@@ -1058,7 +1058,7 @@ namespace AsynGyanis::Net
         int         zstdLevel              = kDefaultZstdLevel;     ///< zstd 压缩级别，1..22
     };
 
-    namespace detail
+    namespace Detail
     {
         /**
          * @brief 按选定编码压一次正文，没压成或压完不更短都返回空
@@ -1092,9 +1092,9 @@ namespace AsynGyanis::Net
             }
             return compressed;
         }
-    } // namespace detail
+    } // namespace Detail
 
-    namespace detail
+    namespace Detail
     {
         /**
          * @brief 响应压缩中间件的实现体：就地压与外置到工作线程压共用同一套判断与头部改写
@@ -1127,9 +1127,9 @@ namespace AsynGyanis::Net
                 // 一次——弱校验器不会把两个变体并成一份，强校验器却会，所以宁可往这个方向偏
                 if (response.carriesNoContent())
                 {
-                    if (response.status() == 304 && !detail::selectPreferredEncoding(request.getHeader("accept-encoding").value_or(std::string{})).empty())
+                    if (response.status() == 304 && !Detail::selectPreferredEncoding(request.getHeader("accept-encoding").value_or(std::string{})).empty())
                     {
-                        detail::markTransformedRepresentationValidators(response);
+                        Detail::markTransformedRepresentationValidators(response);
                     }
                     co_return;
                 }
@@ -1141,9 +1141,9 @@ namespace AsynGyanis::Net
                 }
 
                 // 协商：按偏好顺序（zstd > br > gzip）挑第一个被对端接受的编码；
-                // q=0 视为明确拒绝，`*` 视为接受（语义见 detail::acceptsEncoding）
+                // q=0 视为明确拒绝，`*` 视为接受（语义见 Detail::acceptsEncoding）
                 const std::string      acceptEncodingHeader = request.getHeader("accept-encoding").value_or(std::string{});
-                const std::string_view selectedEncoding     = detail::selectPreferredEncoding(acceptEncodingHeader);
+                const std::string_view selectedEncoding     = Detail::selectPreferredEncoding(acceptEncodingHeader);
                 if (selectedEncoding.empty())
                 {
                     co_return;
@@ -1155,7 +1155,7 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                if (const std::optional<std::string> contentType = response.getHeader("content-type"); contentType.has_value() && detail::isIncompressibleContentType(*contentType))
+                if (const std::optional<std::string> contentType = response.getHeader("content-type"); contentType.has_value() && Detail::isIncompressibleContentType(*contentType))
                 {
                     co_return;
                 }
@@ -1180,7 +1180,7 @@ namespace AsynGyanis::Net
                 }
 
                 // 正文表示变了：强 ETag 降级为弱校验器并补上 Vary（与 304 那条路径共用同一份改写）
-                detail::markTransformedRepresentationValidators(response);
+                Detail::markTransformedRepresentationValidators(response);
                 response.setHeader("content-encoding", std::string(selectedEncoding));
                 // 正文表示变了，业务此前显式声明过的 content-length（如静态文件对 HEAD 用的
                 // 「先声明长度、不读正文」）此刻描述的是未压缩正文的字节数，必须按压缩后的
@@ -1194,7 +1194,7 @@ namespace AsynGyanis::Net
                 co_return;
             };
         }
-    } // namespace detail
+    } // namespace Detail
 
     /**
      * @brief 响应压缩中间件（zstd / brotli / gzip），压缩在调用协程所在线程上做完
@@ -1218,7 +1218,7 @@ namespace AsynGyanis::Net
      */
     inline MiddlewareFunc compressionMiddleware(const CompressionOptions options = {})
     {
-        return detail::compressionMiddlewareImplementation(nullptr, nullptr, options);
+        return Detail::compressionMiddlewareImplementation(nullptr, nullptr, options);
     }
 
     /**
@@ -1241,7 +1241,7 @@ namespace AsynGyanis::Net
      */
     inline MiddlewareFunc compressionMiddleware(Core::EventLoop &completionLoop, Core::AsyncExecutor &offloadExecutor, const CompressionOptions options = {})
     {
-        return detail::compressionMiddlewareImplementation(&offloadExecutor, &completionLoop, options);
+        return Detail::compressionMiddlewareImplementation(&offloadExecutor, &completionLoop, options);
     }
 
 } // namespace AsynGyanis::Net

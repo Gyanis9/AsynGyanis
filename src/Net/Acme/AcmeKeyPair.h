@@ -25,7 +25,7 @@ namespace AsynGyanis::Net
 {
     /// 本模块内部的 OpenSSL 句柄处置器（放在头文件里是因为 AcmeKeyPair 的成员类型要用它，
     /// 而实现里的自由函数也要用同一份——私有嵌套类型两边都够不着）
-    namespace detail
+    namespace Detail
     {
         /**
          * @brief EVP_PKEY 的归还动作
@@ -45,7 +45,7 @@ namespace AsynGyanis::Net
             std::string jsonWebKeyText;       ///< 只含公开成员、按键字典序排列的紧凑 JSON
             std::string jsonWebKeyThumbprint; ///< 上面那份文本的 SHA-256 指纹（base64url 无填充）
         };
-    } // namespace detail
+    } // namespace Detail
 
     /**
      * @brief 一把 ACME 密钥用哪种 JWA 算法签名（RFC 7518）
@@ -188,9 +188,9 @@ namespace AsynGyanis::Net
          *          （曲线、位数）才算出公开表示，因此本对象一旦存在，`jsonWebAlgorithmName()` 与
          *          手里的密钥必然对得上
          */
-        AcmeKeyPair(std::unique_ptr<EVP_PKEY, detail::EvpKeyDeleter> key, AcmeKeyAlgorithm algorithm, detail::PublicIdentity identity);
+        AcmeKeyPair(std::unique_ptr<EVP_PKEY, Detail::EvpKeyDeleter> key, AcmeKeyAlgorithm algorithm, Detail::PublicIdentity identity);
 
-        std::unique_ptr<EVP_PKEY, detail::EvpKeyDeleter> m_key;                  ///< 密钥本体，含私钥材料
+        std::unique_ptr<EVP_PKEY, Detail::EvpKeyDeleter> m_key;                  ///< 密钥本体，含私钥材料
         AcmeKeyAlgorithm                                 m_algorithm;            ///< 签名算法，与 m_key 的内容一致
         std::string                                      m_jsonWebKeyThumbprint; ///< 公钥指纹，构造时算好（RFC 7638）
         std::string                                      m_publicJsonWebKeyText; ///< 公钥 JWK 紧凑文本，构造时算好

@@ -429,14 +429,14 @@ namespace AsynGyanis::Core
         const Clock::time_point origin{};
 
         // 差 4 毫秒 700 微秒：武装 5 毫秒。武装 4 毫秒就是那记提前且空转的唤醒
-        EXPECT_EQ(detail::armedDurationFor(origin + std::chrono::microseconds{4700}, origin), std::chrono::milliseconds{5}) << "向下取整会让定时器提前醒，之后还要再武装一次";
+        EXPECT_EQ(Detail::armedDurationFor(origin + std::chrono::microseconds{4700}, origin), std::chrono::milliseconds{5}) << "向下取整会让定时器提前醒，之后还要再武装一次";
         // 正好整毫秒：不该多送一毫秒
-        EXPECT_EQ(detail::armedDurationFor(origin + std::chrono::milliseconds{5}, origin), std::chrono::milliseconds{5});
+        EXPECT_EQ(Detail::armedDurationFor(origin + std::chrono::milliseconds{5}, origin), std::chrono::milliseconds{5});
         // 差不足 1 毫秒：仍给 1 毫秒，0 会被描述符当成「解除武装」
-        EXPECT_EQ(detail::armedDurationFor(origin + std::chrono::microseconds{300}, origin), std::chrono::milliseconds{1});
+        EXPECT_EQ(Detail::armedDurationFor(origin + std::chrono::microseconds{300}, origin), std::chrono::milliseconds{1});
         // 已经到期：给 1 毫秒，让驱动下一拍把它收掉
-        EXPECT_EQ(detail::armedDurationFor(origin - std::chrono::milliseconds{3}, origin), std::chrono::milliseconds{1});
+        EXPECT_EQ(Detail::armedDurationFor(origin - std::chrono::milliseconds{3}, origin), std::chrono::milliseconds{1});
         // 截止时间允许饱和到 time_point::max()：补一毫秒不得把它加溢出
-        EXPECT_GT(detail::armedDurationFor(Clock::time_point::max(), Clock::now()), std::chrono::milliseconds{0});
+        EXPECT_GT(Detail::armedDurationFor(Clock::time_point::max(), Clock::now()), std::chrono::milliseconds{0});
     }
 } // namespace AsynGyanis::Core
