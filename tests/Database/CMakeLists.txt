@@ -59,7 +59,18 @@ target_include_directories(TestDatabase PRIVATE
 target_compile_features(TestDatabase PRIVATE cxx_std_23)
 
 include(GoogleTest)
-gtest_discover_tests(TestDatabase)
+# RedisSubscriptionIntegration 这一族要改**服务端全局**配置（notify-keyspace-events），
+# 而 ctest 是逐用例起进程的：一条还在等推送，另一条的 TearDown 就把全局值还原成原样，
+# 于是前者再也收不到键空间事件（CI 实测会间歇红；本机 12 轮 × 4 并发红过 2 次）。
+# 资源锁把这一族串行化，其余用例照旧并行。第二次发现调用要另给 POST_FILE，否则两份
+# 收尾脚本互相覆盖。
+gtest_discover_tests(TestDatabase
+        TEST_FILTER "RedisSubscriptionIntegration.*"
+        PROPERTIES RESOURCE_LOCK asyn-redis-server-config
+        POST_FILE TestDatabase-subscription)
+gtest_discover_tests(TestDatabase
+        TEST_FILTER "-RedisSubscriptionIntegration.*"
+        POST_FILE TestDatabase-rest)
 
 # ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
 asyn_copy_sanitizer_runtime(TestDatabase)
