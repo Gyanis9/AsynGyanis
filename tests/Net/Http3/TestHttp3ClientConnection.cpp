@@ -1174,13 +1174,13 @@ namespace AsynGyanis::Net
         // 流上不留在途动作，摘除侧随后能真的把这条摘掉（用 /stall 的话处理器要等 30 秒，摘除被推迟）
         Http3RequestAttempt attempt{server.listeningPort(), {}, {}, "/brief", std::chrono::milliseconds{4000}};
         ASSERT_TRUE(waitForCondition([&server] { return server.connectionCount() > 0U; }, std::chrono::seconds{5}))
-            << "一次真实握手之后外部线程读不到在册连接，说明登记侧没把计数刷上去";
+                << "一次真实握手之后外部线程读不到在册连接，说明登记侧没把计数刷上去";
         ASSERT_TRUE(attempt.awaitFinished(std::chrono::seconds{5})) << "那条请求没在时限内收场，后面的归零判据就是空的";
 
         // 客户端在协程末尾自己收口；服务端要么在最后一个报文里见到收口，要么在一秒的空闲超时后
         // 自己判死，而清扫节拍是 10 毫秒一档，因此 8 秒预算内必然归零
         ASSERT_TRUE(waitForCondition([&server] { return server.connectionCount() == 0U; }, kWaitTimeout))
-            << "对端下线之后读数没归零，说明摘除侧漏了减一，那个数会一直虚高到进程结束";
+                << "对端下线之后读数没归零，说明摘除侧漏了减一，那个数会一直虚高到进程结束";
     }
 
 } // namespace AsynGyanis::Net

@@ -346,22 +346,20 @@ namespace AsynGyanis::Net
          * @param workerCount 外派用的工作线程数：要造「排在长任务后面」必须给 1 条
          * @return LoopOverlapMeasurement 两条各自的耗时与响应；服务端没起来时全为空
          */
-        [[nodiscard]] LoopOverlapMeasurement measureLoopOverlap(const bool offload, const std::string &secondPath, const CompressionOptions options,
-                                                                const std::size_t workerCount)
+        [[nodiscard]] LoopOverlapMeasurement measureLoopOverlap(const bool offload, const std::string &secondPath, const CompressionOptions options, const std::size_t workerCount)
         {
             Core::AsyncExecutor                             executor{workerCount};
             std::atomic<bool>                               isHugeHandled{false};
-            const std::unique_ptr<RunningHttpServerFixture> fixture =
-                    makeCompressionProbeFixture(
-                            [&](Core::EventLoop &loop) -> MiddlewareFunc
-                            {
-                                if (offload)
-                                {
-                                    return compressionMiddleware(loop, executor, options);
-                                }
-                                return compressionMiddleware(options);
-                            },
-                            isHugeHandled);
+            const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionProbeFixture(
+                    [&](Core::EventLoop &loop) -> MiddlewareFunc
+                    {
+                        if (offload)
+                        {
+                            return compressionMiddleware(loop, executor, options);
+                        }
+                        return compressionMiddleware(options);
+                    },
+                    isHugeHandled);
 
             LoopOverlapMeasurement measurement;
             const std::uint16_t    port = fixture->listeningPort();
@@ -373,10 +371,9 @@ namespace AsynGyanis::Net
             std::thread hugeReader(
                     [&]
                     {
-                        const auto began = std::chrono::steady_clock::now();
-                        measurement.hugeResponse = sendAndReadResponse(port, makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
-                        measurement.hugeElapsedMilliseconds =
-                                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
+                        const auto began                    = std::chrono::steady_clock::now();
+                        measurement.hugeResponse            = sendAndReadResponse(port, makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
+                        measurement.hugeElapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
                     });
 
             // 重叠窗口由 /huge 路由自己亮旗构造：它一进处理器就说明服务端正要开始压，不靠睡眠猜调度
@@ -386,7 +383,7 @@ namespace AsynGyanis::Net
                 std::this_thread::sleep_for(std::chrono::milliseconds{1});
             }
 
-            const auto beganSecond = std::chrono::steady_clock::now();
+            const auto beganSecond     = std::chrono::steady_clock::now();
             measurement.secondResponse = sendAndReadResponse(port, makeRequestText("GET " + secondPath + " HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
             measurement.secondElapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - beganSecond).count();
 
@@ -690,7 +687,7 @@ namespace AsynGyanis::Net
      */
     TEST(CompressionMiddleware, OffloadedCompressionLeavesTheLoopFreeWhileCompressing)
     {
-        const CompressionOptions options{.minimumBodySize = kTestThresholdBytes};
+        const CompressionOptions     options{.minimumBodySize = kTestThresholdBytes};
         const LoopOverlapMeasurement offloaded = measureLoopOverlap(true, "/quick", options, 2);
         const LoopOverlapMeasurement inLoop    = measureLoopOverlap(false, "/quick", options, 2);
 
