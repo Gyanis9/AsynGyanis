@@ -6,12 +6,17 @@
 #include "CoreTestSupport.h"
 #include "Platform/System/CpuAffinity.h"
 
+#if ASYN_WITH_IO_URING
+#include "Core/EventLoop/Uring.h"
+#endif
+
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <barrier>
 #include <chrono>
 #include <cstddef>
+#include <exception>
 #include <thread>
 
 namespace AsynGyanis::Core
@@ -19,6 +24,31 @@ namespace AsynGyanis::Core
     namespace
     {
         using TestSupport::waitForCondition;
+
+#if ASYN_WITH_IO_URING
+        /// 拿不到环时写进 SKIP 说明的那句话：本文件每条用例都要构造 IoContext，而它按档建出后端，
+        /// 环起不出来时这些断言判的都不是实现而是环境
+        constexpr const char *kNoIoUringRingReason = "本环境起不出 io_uring 环（内核禁用或被沙箱挡下），IoContext 在这一档下无从构造";
+
+        /**
+         * @brief 本环境到底起不起得出 io_uring 环
+         * @details 判据取「真的建得出来」本身：内核开关为 0 不等于放行——沙箱常在 io_uring_setup
+         *          上直接回 EPERM/ENOMEM（CI runner 与本机容器两种环境都实测过），只看 /proc 那个
+         *          开关会误判成可用
+         * @return true 能建环，本文件的断言才有可判的对象
+         */
+        [[nodiscard]] bool canCreateIoUringRing()
+        {
+            try
+            {
+                static_cast<void>(Uring{});
+                return true;
+            } catch (const std::exception &)
+            {
+                return false;
+            }
+        }
+#endif
 
         /**
          * @brief 测试协程：向原子变量写入标记值
@@ -37,6 +67,12 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, ConstructionCreatesConfiguredThreadPool)
     {
+#if ASYN_WITH_IO_URING
+        if (!canCreateIoUringRing())
+        {
+            GTEST_SKIP() << kNoIoUringRingReason;
+        }
+#endif
         IoContext context(2);
 
         EXPECT_EQ(context.threadPool().threadCount(), 2u);
@@ -47,6 +83,12 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, ThreadPoolAccessorReturnsConfiguredPool)
     {
+#if ASYN_WITH_IO_URING
+        if (!canCreateIoUringRing())
+        {
+            GTEST_SKIP() << kNoIoUringRingReason;
+        }
+#endif
         IoContext context(2);
 
         auto &pool = context.threadPool();
@@ -58,6 +100,12 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, MainSchedulerReturnsFirstWorkerScheduler)
     {
+#if ASYN_WITH_IO_URING
+        if (!canCreateIoUringRing())
+        {
+            GTEST_SKIP() << kNoIoUringRingReason;
+        }
+#endif
         IoContext context(2);
 
         auto &scheduler = context.mainScheduler();
@@ -70,6 +118,12 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, StopWithoutRunDoesNotDeadlock)
     {
+#if ASYN_WITH_IO_URING
+        if (!canCreateIoUringRing())
+        {
+            GTEST_SKIP() << kNoIoUringRingReason;
+        }
+#endif
         IoContext context(1);
 
         // 未调用 run() 时停止应当是安全的空操作
@@ -81,6 +135,12 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, RunBlocksUntilStopIsRequested)
     {
+#if ASYN_WITH_IO_URING
+        if (!canCreateIoUringRing())
+        {
+            GTEST_SKIP() << kNoIoUringRingReason;
+        }
+#endif
         IoContext         context(1);
         std::atomic<bool> workerStarted{false};
 
@@ -103,6 +163,12 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, TaskScheduledBeforeRunExecutesAfterRun)
     {
+#if ASYN_WITH_IO_URING
+        if (!canCreateIoUringRing())
+        {
+            GTEST_SKIP() << kNoIoUringRingReason;
+        }
+#endif
         IoContext        context(1);
         std::atomic<int> value{0};
 
@@ -129,6 +195,12 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, DefaultConstructorUsesPermittedCoreCount)
     {
+#if ASYN_WITH_IO_URING
+        if (!canCreateIoUringRing())
+        {
+            GTEST_SKIP() << kNoIoUringRingReason;
+        }
+#endif
         IoContext context;
 
         EXPECT_EQ(context.threadPool().threadCount(), Platform::CpuAffinity::recommendedWorkerCount()) << "自动档没有走进程可用核数的统一口径";
@@ -143,6 +215,12 @@ namespace AsynGyanis::Core
      */
     TEST(IoContext, ConcurrentRunAndStopNeverLeavesARunningPool)
     {
+#if ASYN_WITH_IO_URING
+        if (!canCreateIoUringRing())
+        {
+            GTEST_SKIP() << kNoIoUringRingReason;
+        }
+#endif
         constexpr int kRoundCount = 200;
         for (int round = 0; round < kRoundCount; ++round)
         {
