@@ -3711,4 +3711,33 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(response.isComplete) << "这条流没有收尾";
     }
 
+    /**
+     * @brief 开始优雅收口时，GOAWAY 通告在这一趟就送到出口，而不是停在待发队列里等下一次泵
+     * @details 连接层把 GOAWAY 排进的是自己的待发缓冲，只有会话刷一次才交得出出口；而收口路径上
+     *          这是最后一次「还能往外写字节」的时机——此后不再有报文来驱动刷写，通告留在内部
+     *          就等于没发：对端继续往这条连接发新请求，本端却已在排空。
+     * @note 证伪：摘掉 `beginGracefulShutdown()` 里那次 `flushPendingStreamData()`，本条红
+     *       （实测：收口之后出口没有任何新段）
+     */
+    TEST(Http3Session, FlushesGoAwayAnnouncementWhenGracefulShutdownBegins)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        // 先把建流时的 SETTINGS 交出去，之后出口上出现的每一段都能归到某一次显式刷写
+        session.flushPendingStreamData();
+        const std::size_t segmentsBeforeShutdown = sentStreamData.size();
+        ASSERT_GT(segmentsBeforeShutdown, 0U) << "夹具没产出任何字节，这条用例没测到东西";
+
+        ASSERT_TRUE(session.beginGracefulShutdown()) << "会话没把排空通告交出去";
+        ASSERT_GT(sentStreamData.size(), segmentsBeforeShutdown) << "收口这一趟没有新字节交给出口：GOAWAY 还停在待发队列里";
+
+        const CapturedStreamData &announcement = sentStreamData.back();
+        EXPECT_EQ(announcement.streamId, opener.openedStreamIds().front()) << "GOAWAY 应当产在控制流上";
+        ASSERT_FALSE(announcement.bytes.empty());
+        EXPECT_EQ(announcement.bytes.front(), static_cast<std::uint8_t>(Http3FrameType::GoAway)) << "交给出口的那段不是 GOAWAY";
+        EXPECT_FALSE(announcement.isEndStream) << "控制流不该被这次通告收尾：本端不主动结束它";
+    }
+
 } // namespace AsynGyanis::Net

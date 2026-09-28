@@ -2378,4 +2378,47 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
     }
 
+    /**
+     * @brief 回收待发缓冲是两个方向：内部已攒出新帧时不许覆盖，内部空着时要把那份收下并清空
+     * @details 会话的节奏是「取走 → 交套接字 → 还回来复用容量」。写侧挂起期间连接完全可能又产出
+     *          帧（PING 的 ACK、下一条响应的头块），此时把那份**取走之前的旧缓冲**整块换过去，
+     *          新帧就被覆盖成空串——对端从此等不到那段字节，而本地一句错误都不会有。
+     * @note 证伪两头各摘一处：撤掉「非空即不回收」那道闸门 → 第一段红（ACK 消失，实测）；
+     *       撤掉回收时的清空 → 第二段红（上一轮的旧字节被发出去）
+     */
+    TEST(Http2Connection, RecyclesOutgoingBufferOnlyWhenNothingNewIsPending)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+
+        // 造一段待发并取走：会话此刻正把它往套接字上写
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Ping, 0, 0, std::string(8, 'Q'))), Http2ConnectionFeedStatus::NeedMore);
+        std::string takenBuffer = connection.takeOutgoingBytes();
+        ASSERT_FALSE(takenBuffer.empty()) << "夹具没造出待发字节，这条用例没测到东西";
+
+        // 取走之后连接又产出了新帧：对端再发一条 PING，本端又欠一条 ACK
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Ping, 0, 0, std::string(8, 'S'))), Http2ConnectionFeedStatus::NeedMore);
+
+        // 会话把早先取走的那份还回来——它不知道内部已经攒了新字节
+        connection.recycleOutgoingBytes(std::move(takenBuffer));
+
+        const std::vector<Http2Frame> survivingFrames = parseFrames(connection.takeOutgoingBytes());
+        ASSERT_EQ(survivingFrames.size(), 1U) << "第二条 PING 的 ACK 被覆盖掉了：回收撞掉了在途的新帧";
+        EXPECT_EQ(survivingFrames[0].header.type, Http2FrameType::Ping);
+
+        // 另一头：内部空着时那份缓冲要真被收下并清空，否则上一轮的旧字节会跟着下一条帧一起发出去
+        Http2Connection reusable;
+        completeHandshake(reusable);
+        ASSERT_EQ(feed(reusable, makeFrame(Http2FrameType::Ping, 0, 0, std::string(8, 'T'))), Http2ConnectionFeedStatus::NeedMore);
+        std::string reusableBuffer = reusable.takeOutgoingBytes();
+        ASSERT_FALSE(reusableBuffer.empty());
+        reusableBuffer.assign("stale");
+        reusable.recycleOutgoingBytes(std::move(reusableBuffer));
+
+        ASSERT_EQ(feed(reusable, makeFrame(Http2FrameType::Ping, 0, 0, std::string(8, 'R'))), Http2ConnectionFeedStatus::NeedMore);
+        const std::string outgoing = reusable.takeOutgoingBytes();
+        EXPECT_EQ(outgoing.find("stale"), std::string::npos) << "回收没清空就收下：上一轮的旧字节被排进了待发";
+        EXPECT_EQ(outgoing, makeFrame(Http2FrameType::Ping, kHttp2FlagAcknowledge, 0, std::string(8, 'R'))) << "回收后的缓冲没接着装新帧，或多了别的内容";
+    }
+
 } // namespace AsynGyanis::Net
