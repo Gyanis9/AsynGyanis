@@ -219,15 +219,16 @@ int main(const int argc, char **argv)
     // 本平台没有 SO_REUSEPORT：每 worker 各自 bind 同一端口时内核把全部连接交给最后绑上的那一个，
     // 于是形状改成「master bind 一次、把监听套接字逐个交给 worker」。不给移交档位就构造即拒，而拒的
     // 文案必须点名那个字段——只说「本平台不支持多进程」会把人支去换平台，而不是补上缺的那一项配置。
-    samples.check(constructionRejects("Windows 上没给移交档位", Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 2}, "Configuration::handoff"),
-                  "Windows 上不给移交档位就在构造期被拒，且拒因点名叫 handoff");
+    samples.check(
+            constructionRejects("Windows 上没给移交档位", Core::WorkerSupervisor::Configuration{.executablePath = executablePath, .workerCount = 2}, "Configuration::handoff"),
+            "Windows 上不给移交档位就在构造期被拒，且拒因点名叫 handoff");
 
     // 填上已 bind + listen 的描述符之后构造应当放行——「本平台一律不做多进程」这句已经作废。
     // 真的起两个进程并问一遍回话由 TestWorkerSupervisor 的端到端用例钉，这里只判构造不再挡路。
     // 监听套接字仍归本端（master）持有：编排器每次补位都要重新移交一次，它只是借看，不接管收口
     {
         Core::EventLoop   listenerLoop;
-        Core::AsyncSocket listener = Core::AsyncSocket::create(listenerLoop);
+        Core::AsyncSocket listener    = Core::AsyncSocket::create(listenerLoop);
         const bool        isListening = listener.bind(Core::InetAddress::localhost(0)) && listener.listen(8);
         samples.check(isListening, "夹具起得出一个回环监听口（移交档位的输入）");
         if (isListening)

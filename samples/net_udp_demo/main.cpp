@@ -50,20 +50,20 @@ namespace
     /// 自检攒下来的观测：全部在循环线程上写，主线程等标记置起后再读
     struct Observations
     {
-        bool          bindsEphemeralPort{false};         ///< 按地址起监听时端口 0 能问回内核分配的实际端口
-        bool          echoesPayloadByteForByte{false};   ///< 回显的字节与送来的一字不差，且按来源回包
-        bool          deliversZeroLengthDatagram{false}; ///< 零长报文照交付（不当成「没收到」）
-        bool          pushesUnsolicitedDatagram{false};  ///< sendTo 的主动下发能落到对端
-        bool          countsInStats{false};              ///< received/sent/failed 三笔账与实际操作对得上
-        bool          survivesThrowingHandler{false};    ///< 处理器抛异常后被接住，服务照常接下一条
-        bool          rejectsZeroBufferCapacity{false};  ///< 缓冲容量为 0 在构造期就被拒
-        bool          adoptsHandedOverSocket{false};     ///< 接手来的套接字上端口照旧、报文有回话
-        bool          adoptedPortFollowsSocket{false};   ///< 接手模式下端口来自交来的那份套接字
-        bool          rejectsMixingStartupModes{false};  ///< 接手的调带地址 listen() 被当场拒
+        bool          bindsEphemeralPort{false};               ///< 按地址起监听时端口 0 能问回内核分配的实际端口
+        bool          echoesPayloadByteForByte{false};         ///< 回显的字节与送来的一字不差，且按来源回包
+        bool          deliversZeroLengthDatagram{false};       ///< 零长报文照交付（不当成「没收到」）
+        bool          pushesUnsolicitedDatagram{false};        ///< sendTo 的主动下发能落到对端
+        bool          countsInStats{false};                    ///< received/sent/failed 三笔账与实际操作对得上
+        bool          survivesThrowingHandler{false};          ///< 处理器抛异常后被接住，服务照常接下一条
+        bool          rejectsZeroBufferCapacity{false};        ///< 缓冲容量为 0 在构造期就被拒
+        bool          adoptsHandedOverSocket{false};           ///< 接手来的套接字上端口照旧、报文有回话
+        bool          adoptedPortFollowsSocket{false};         ///< 接手模式下端口来自交来的那份套接字
+        bool          rejectsMixingStartupModes{false};        ///< 接手的调带地址 listen() 被当场拒
         bool          rejectsAddressModeWithoutAddress{false}; ///< 按地址构造的调无参 listen() 同样被拒
-        bool          stopReleasesServeLoop{false};      ///< stop() 之后收循环退出、端口能再被起用
-        std::uint16_t ephemeralPort{0};                  ///< 端口 0 实际拿到的端口号
-        std::uint16_t adoptedPort{0};                    ///< 接手档里那份套接字原本绑着的端口
+        bool          stopReleasesServeLoop{false};            ///< stop() 之后收循环退出、端口能再被起用
+        std::uint16_t ephemeralPort{0};                        ///< 端口 0 实际拿到的端口号
+        std::uint16_t adoptedPort{0};                          ///< 接手档里那份套接字原本绑着的端口
     };
 
     Observations g_observations;
@@ -172,7 +172,7 @@ namespace
     {
         Net::UdpServer::Configuration configuration;
         configuration.maximumDatagramByteCount = 2048U;
-        configuration.onMessage = [](const Core::InetAddress sourceAddress, const std::span<const std::uint8_t> payload) -> Core::Task<std::vector<std::uint8_t>>
+        configuration.onMessage                = [](const Core::InetAddress sourceAddress, const std::span<const std::uint8_t> payload) -> Core::Task<std::vector<std::uint8_t>>
         {
             g_seenSourcePort.store(sourceAddress.port(), std::memory_order_release);
             g_seenPayloadLength.store(payload.size(), std::memory_order_release);
@@ -219,7 +219,7 @@ namespace
         }
 
         const bool isHandedOff =
-            Platform::Socket::writeListeningSocketHandoff(peer, boundDatagramDescriptor, static_cast<std::uint64_t>(Platform::ProcessInfo::currentProcessId()));
+                Platform::Socket::writeListeningSocketHandoff(peer, boundDatagramDescriptor, static_cast<std::uint64_t>(Platform::ProcessInfo::currentProcessId()));
         const int adoptedDescriptor = isHandedOff ? Platform::Socket::readListeningSocketHandoff(connector) : -1;
 
         static_cast<void>(Platform::FileDescriptor::close(peer));
@@ -258,11 +258,11 @@ namespace
 
         // —— 1. 按地址起监听：端口 0 要问回内核分配的实际端口，回显按来源回去 ——
         {
-            Net::UdpServer        server(loop, makeConfiguration());
+            Net::UdpServer server(loop, makeConfiguration());
             listenTasks.push_back(server.listen(Core::InetAddress::localhost(0)));
             loop.scheduler().schedule(listenTasks.back().handle());
 
-            const std::uint16_t port = co_await waitForPort(loop, server);
+            const std::uint16_t port          = co_await waitForPort(loop, server);
             g_observations.bindsEphemeralPort = port != 0U;
             g_observations.ephemeralPort      = port;
 
@@ -274,9 +274,9 @@ namespace
                 std::vector<std::uint8_t> buffer;
                 ssize_t                   receivedLength = -1;
                 const bool                echoed         = co_await receiveDatagram(loop, client, buffer, receivedLength);
-                g_observations.echoesPayloadByteForByte =
-                    echoed && receivedLength == static_cast<ssize_t>(text.size()) && std::string_view(reinterpret_cast<const char *>(buffer.data()), static_cast<std::size_t>(receivedLength)) == text &&
-                    g_seenSourcePort.load(std::memory_order_acquire) == clientPort;
+                g_observations.echoesPayloadByteForByte  = echoed && receivedLength == static_cast<ssize_t>(text.size()) &&
+                                                           std::string_view(reinterpret_cast<const char *>(buffer.data()), static_cast<std::size_t>(receivedLength)) == text &&
+                                                           g_seenSourcePort.load(std::memory_order_acquire) == clientPort;
 
                 // —— 2. 零长报文照交付：无连接协议里「一条不带内容的报文」常常就是全部输入。
                 //        处理器回空正文＝不作答（那是另一条口径），所以这里判的是「交付没交付」，
@@ -292,22 +292,22 @@ namespace
                 co_await yieldFor(loop, std::chrono::milliseconds{60});
                 const std::string after = "still-here";
                 static_cast<void>(client.send(loopbackSocketAddress(port), after.data(), after.size()));
-                const bool stillAlive = co_await receiveDatagram(loop, client, buffer, receivedLength);
-                g_observations.survivesThrowingHandler =
-                    stillAlive && receivedLength == static_cast<ssize_t>(after.size()) && server.stats().failedHandlerCount == 1U;
+                const bool stillAlive                  = co_await receiveDatagram(loop, client, buffer, receivedLength);
+                g_observations.survivesThrowingHandler = stillAlive && receivedLength == static_cast<ssize_t>(after.size()) && server.stats().failedHandlerCount == 1U;
 
                 // —— 4. 主动下发：服务端往指定来源推一条不等来的报文 ——
-                const std::string pushed = "push-from-server";
-                const bool        isPushed = co_await server.sendTo(Core::InetAddress::localhost(clientPort), std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(pushed.data()), pushed.size()));
+                const std::string pushed      = "push-from-server";
+                const bool        isPushed    = co_await server.sendTo(Core::InetAddress::localhost(clientPort),
+                                                                       std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(pushed.data()), pushed.size()));
                 const bool        pushArrived = co_await receiveDatagram(loop, client, buffer, receivedLength);
-                g_observations.pushesUnsolicitedDatagram =
-                    isPushed && pushArrived && receivedLength == static_cast<ssize_t>(pushed.size()) &&
-                    std::string_view(reinterpret_cast<const char *>(buffer.data()), static_cast<std::size_t>(receivedLength)) == pushed;
+                g_observations.pushesUnsolicitedDatagram = isPushed && pushArrived && receivedLength == static_cast<ssize_t>(pushed.size()) &&
+                                                           std::string_view(reinterpret_cast<const char *>(buffer.data()), static_cast<std::size_t>(receivedLength)) == pushed;
 
                 // —— 5. 统计：交付 4 条（问答、零长、抛异常、问答），发出 3 条（两次回显 + 一次下发，
                 //        零长那条处理器回的是空正文＝不作答），未送出 0 条 ——
                 const Net::UdpServer::Stats stats = server.stats();
-                g_observations.countsInStats = stats.receivedDatagramCount == 4U && stats.sentDatagramCount == 3U && stats.unsentDatagramCount == 0U && stats.failedHandlerCount == 1U;
+                g_observations.countsInStats =
+                        stats.receivedDatagramCount == 4U && stats.sentDatagramCount == 3U && stats.unsentDatagramCount == 0U && stats.failedHandlerCount == 1U;
             }
 
             // —— 6. 收口：stop() 置标记并关掉套接字，叫醒挂在读数上的协程。判据是那条 listen 协程
@@ -360,7 +360,7 @@ namespace
                     listenTasks.push_back(adoptingServer.listen());
                     loop.scheduler().schedule(listenTasks.back().handle());
 
-                    const std::uint16_t servingPort = co_await waitForPort(loop, adoptingServer);
+                    const std::uint16_t servingPort         = co_await waitForPort(loop, adoptingServer);
                     g_observations.adoptedPortFollowsSocket = servingPort == boundPort;
                     g_observations.adoptedPort              = servingPort;
 
@@ -371,10 +371,9 @@ namespace
 
                         std::vector<std::uint8_t> buffer;
                         ssize_t                   receivedLength = -1;
-                        const bool              echoed = co_await receiveDatagram(loop, client, buffer, receivedLength);
-                        g_observations.adoptsHandedOverSocket =
-                            echoed && receivedLength == static_cast<ssize_t>(text.size()) &&
-                            std::string_view(reinterpret_cast<const char *>(buffer.data()), static_cast<std::size_t>(receivedLength)) == text;
+                        const bool                echoed         = co_await receiveDatagram(loop, client, buffer, receivedLength);
+                        g_observations.adoptsHandedOverSocket = echoed && receivedLength == static_cast<ssize_t>(text.size()) &&
+                                                                std::string_view(reinterpret_cast<const char *>(buffer.data()), static_cast<std::size_t>(receivedLength)) == text;
                     }
 
                     adoptingServer.stop();

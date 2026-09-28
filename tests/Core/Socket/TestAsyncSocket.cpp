@@ -107,7 +107,7 @@ namespace AsynGyanis::Core
 
             // 写与读配对本函数的一对原语：交出侧写向 accept 出来的那一头，接手侧从自己连上的那一头读回
             const bool isHandedOff =
-                Platform::Socket::writeListeningSocketHandoff(peer, listeningDescriptor, static_cast<std::uint64_t>(Platform::ProcessInfo::currentProcessId()));
+                    Platform::Socket::writeListeningSocketHandoff(peer, listeningDescriptor, static_cast<std::uint64_t>(Platform::ProcessInfo::currentProcessId()));
             const int adoptedDescriptor = isHandedOff ? Platform::Socket::readListeningSocketHandoff(connector) : -1;
 
             static_cast<void>(Platform::FileDescriptor::close(peer));
@@ -540,10 +540,10 @@ namespace AsynGyanis::Core
         }
 
         // 端点上原来那份引用必须还在接活：连进去，再在它上面 accept 出来
-        std::optional<bool>   connectOutcome;
-        std::exception_ptr    probeError;
-        std::atomic<bool>     probeFinished{false};
-        Task<void>            probeDriver = TestSupport::collectTask(probeAcceptsConnection(loop, port), connectOutcome, probeError, probeFinished);
+        std::optional<bool> connectOutcome;
+        std::exception_ptr  probeError;
+        std::atomic<bool>   probeFinished{false};
+        Task<void>          probeDriver = TestSupport::collectTask(probeAcceptsConnection(loop, port), connectOutcome, probeError, probeFinished);
         probeDriver.handle().resume();
         ASSERT_TRUE(advanceUntil(loop, [&probeFinished]() { return probeFinished.load(std::memory_order_acquire); })) << "探测连接没有出结果";
         ASSERT_FALSE(probeError) << "探测本身抛了";

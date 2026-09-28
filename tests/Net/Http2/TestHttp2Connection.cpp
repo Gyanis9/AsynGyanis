@@ -635,8 +635,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         ASSERT_EQ(connection.takeRequests().size(), 1U) << "POST 的 HEADERS 没解出请求，正文没有可挂的流";
 
-        const auto feedBody = [&connection](const std::string_view chunk)
-        { return feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, chunk)); };
+        const auto feedBody = [&connection](const std::string_view chunk) { return feed(connection, makeFrame(Http2FrameType::Data, 0, 1U, chunk)); };
 
         // 正常路径：取空、还空，本端只留那份容量
         ASSERT_EQ(feedBody("abc"), Http2ConnectionFeedStatus::NeedMore);
