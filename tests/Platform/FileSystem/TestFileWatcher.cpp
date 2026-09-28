@@ -1307,6 +1307,8 @@ namespace AsynGyanis::Platform
      *          而实测常见的是后者（裸 API 探针：消费侧每批停 50 ms、并发写 1200 个文件，零字节完成
      *          出现 3 次、`ERROR_NOTIFY_ENUM_DIR` 一次没报，上千个文件名再也不出现）。两条出口都要
      *          落到 NeedsRescan，否则「要么收齐、要么告状」的契约两头都不成立。
+     *          停摆的时长取「灌完那 2000 个文件为止」：溢出要的是停摆期间堆够一个读缓冲，写成固定
+     *          毫秒数就是在赌生产比消费快，CI 的负载会把这种赌注变成红（实测见过一次）。
      * @note 严格那一支只在 Windows 断言：inotify 的队列上限以万条计，同样的停摆丢不出溢出，
      *       Linux 侧走「收齐」那一支。
      */
@@ -1321,16 +1323,23 @@ namespace AsynGyanis::Platform
 
         FileWatchRecorder recorder;
         std::atomic_flag  hasStalled = ATOMIC_FLAG_INIT;
+        std::atomic<bool> isFloodFinished{false};
         watcher->setDebounceInterval(std::chrono::milliseconds(0));
         watcher->setCallback(
-                [&recorder, &hasStalled](const std::string_view filePath, const FileChangeType changeType)
+                [&recorder, &hasStalled, &isFloodFinished](const std::string_view filePath, const FileChangeType changeType)
                 {
                     recorder.record(filePath, changeType);
-                    // 只停这一次，且停在第一批刚被取走的时候：停摆期间挂着的读会被灌满，之后的变更
-                    // 只能靠内核自己那份内部队列顶着——要构造的就是「消费比生产慢」这个溢出条件
+                    // 只停这一次，且停在第一批刚被取走的时候。停到「灌完」为止而不是赌一个固定毫秒数：
+                    // 挂着的读要被灌满才谈得上溢出，而写线程在满载 runner 上能多慢是没准的——实测 CI 上
+                    // 停 200 毫秒一条都没丢，于是下面那两条「必须溢出」的判据双双落空（用例红，红的还是
+                    // 构造而不是实现）。等到灌完，这个溢出条件就是造出来的，不是等出来的
                     if (!hasStalled.test_and_set())
                     {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                        const auto stallDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+                        while (!isFloodFinished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < stallDeadline)
+                        {
+                            std::this_thread::sleep_for(std::chrono::milliseconds{2});
+                        }
                     }
                 });
 
@@ -1339,6 +1348,7 @@ namespace AsynGyanis::Platform
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
         const std::vector<std::string> writtenNames = floodDirectory(temporaryDirectory, kFloodFileCount, kFloodThreadCount);
+        isFloodFinished.store(true, std::memory_order_release);
         ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4) << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
 
         const bool everythingArrived =
@@ -1349,8 +1359,9 @@ namespace AsynGyanis::Platform
         watcher->stop();
         EXPECT_TRUE(everythingArrived || rescanned) << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
 #ifdef _WIN32
-        // 这个停摆量必然丢出溢出（探针读数见 @details），所以 Windows 侧再钉两条：一条没丢就是构造
-        // 失效（用例白跑而报告全绿）；丢了却没告状就是那条「成功、零字节」的溢出告状被当成没事发生
+        // 停摆覆盖整个灌入过程，因此这一档必然丢出溢出（探针读数见 @details），Windows 侧再钉两条：
+        // 一条没丢就是构造失效（用例白跑而报告全绿）；丢了却没告状就是那条「成功、零字节」的溢出
+        // 告状被当成没事发生
         EXPECT_GT(missingCount, 0U) << "消费方停摆 200 ms 也一条都没丢掉：这个构造已不触溢出路径，用例需要加强";
         EXPECT_TRUE(rescanned) << "丢了 " << missingCount << " 个文件的事件却没告状：零字节完成被当成「没事发生」";
 #endif
