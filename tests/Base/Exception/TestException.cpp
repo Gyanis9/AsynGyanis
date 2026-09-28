@@ -1,15 +1,12 @@
 // Base/Exception 全模块单元测试：各异常类的构造、属性、继承关系与压力场景。
 
 #include "Base/Exception/ConfigException.h"
-#include "Base/Exception/ConfigFileException.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"
-#include "Base/Exception/ConfigParseException.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/ExceptionStackTrace.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
-#include "Base/Exception/NetworkException.h"
 #include "Base/Exception/StackTrace.h"
 #include "Base/Exception/SystemException.h"
 
@@ -216,77 +213,6 @@ namespace AsynGyanis::Base
     }
 
     // ============================================================================
-    // ConfigFileException
-    // ============================================================================
-
-    TEST(ConfigFileException, InheritsFromConfigException)
-    {
-        const ConfigFileException exception("/path/to/file", "permission denied");
-
-        EXPECT_THROW(throw exception, ConfigException);
-        EXPECT_THROW(throw exception, std::runtime_error);
-    }
-
-    TEST(ConfigFileException, ExposesPathAndMentionsBothFields)
-    {
-        const ConfigFileException exception("/etc/config.yaml", "permission denied");
-        const std::string         message(exception.what());
-
-        EXPECT_EQ(exception.filePath(), "/etc/config.yaml");
-        EXPECT_TRUE(contains(message, "/etc/config.yaml"));
-        EXPECT_TRUE(contains(message, "permission denied"));
-    }
-
-    TEST(ConfigFileException, AcceptsEmptyPathAndEmptyReason)
-    {
-        const ConfigFileException emptyPath("", "reason");
-        const ConfigFileException emptyReason("file.yaml", "");
-
-        EXPECT_TRUE(emptyPath.filePath().empty());
-        EXPECT_EQ(emptyReason.filePath(), "file.yaml");
-    }
-
-    TEST(ConfigFileException, KeepsNonAsciiPathIntact)
-    {
-        const ConfigFileException exception("/配置/文件.yaml", "错误");
-
-        EXPECT_EQ(exception.filePath(), "/配置/文件.yaml");
-    }
-
-    // ============================================================================
-    // ConfigParseException
-    // ============================================================================
-
-    TEST(ConfigParseException, InheritsFromConfigException)
-    {
-        const ConfigParseException exception("config.yaml", "invalid syntax");
-
-        EXPECT_THROW(throw exception, ConfigException);
-        EXPECT_THROW(throw exception, std::runtime_error);
-    }
-
-    TEST(ConfigParseException, MessageDescribesParseFailure)
-    {
-        const ConfigParseException exception("config.yaml", "unexpected token at line 42");
-        const std::string          message(exception.what());
-
-        EXPECT_EQ(exception.filePath(), "config.yaml");
-        EXPECT_TRUE(contains(message, "config.yaml"));
-        EXPECT_TRUE(contains(message, "unexpected token"));
-        EXPECT_TRUE(contains(message, "解析错误"));
-    }
-
-    TEST(ConfigParseException, HandlesLongReasonAndEmptyFields)
-    {
-        const std::string          longReason(5000, 'e');
-        const ConfigParseException longException("f.yaml", longReason);
-        const ConfigParseException emptyException("", "");
-
-        EXPECT_EQ(longException.filePath(), "f.yaml");
-        EXPECT_TRUE(emptyException.filePath().empty());
-    }
-
-    // ============================================================================
     // ConfigKeyNotFoundException
     // ============================================================================
 
@@ -358,7 +284,7 @@ namespace AsynGyanis::Base
     }
 
     // ============================================================================
-    // SystemException 与 NetworkException
+    // SystemException
     // ============================================================================
 
     TEST(SystemException, InheritsFromExceptionBase)
@@ -390,34 +316,6 @@ namespace AsynGyanis::Base
         errno = 0;
     }
 
-    TEST(NetworkException, InheritsFromSystemException)
-    {
-        const NetworkException exception("connect failed", std::error_code(111, std::system_category()), "127.0.0.1:8080");
-
-        EXPECT_THROW(throw exception, SystemException);
-        EXPECT_THROW(throw exception, Exception);
-    }
-
-    TEST(NetworkException, ExposesRemoteAddressInMessage)
-    {
-        const NetworkException exception("handshake", std::error_code(1, std::system_category()), "10.0.0.1:443");
-        const std::string      message(exception.what());
-
-        EXPECT_EQ(exception.remoteAddress(), "10.0.0.1:443");
-        EXPECT_TRUE(contains(message, "10.0.0.1:443"));
-        EXPECT_EQ(exception.nativeError(), 1);
-    }
-
-    TEST(NetworkException, FallsBackToErrnoWithoutExplicitCode)
-    {
-        errno = 111;
-        const NetworkException exception("accept", "192.168.0.1:9000");
-
-        EXPECT_EQ(exception.remoteAddress(), "192.168.0.1:9000");
-        EXPECT_EQ(exception.nativeError(), 111);
-        errno = 0;
-    }
-
     /**
      * @brief 隐式错误码必须按 errno 语义解释：数值与描述得来自同一个错误码空间
      * @details Windows 上 `std::system_category()` 把数值当成 **Win32 码**查表，而 kernel32/winsock
@@ -437,22 +335,6 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(contains(message, errnoSemantics.message())) << "消息里的描述与 errno 语义不符（多半是按 Win32 码查的表）：" << message;
     }
 
-    /**
-     * @brief 两个 NetworkException 重载都得把对端地址写进消息
-     * @details 旧写法只有「显式传码」那条拼 "(remote: X)"，同一次失败因调用方手上有没有错误码
-     *          而给出两种文本，而带不带对端的判断恰恰是这个类存在的理由。
-     */
-    TEST(NetworkException, IncludesRemoteAddressInBothOverloads)
-    {
-        errno = ECONNABORTED;
-        const NetworkException withoutCode("accept", "192.168.1.2:7001");
-        const std::string      message(withoutCode.what());
-        errno = 0;
-
-        EXPECT_TRUE(contains(message, "192.168.1.2:7001")) << "不显式传码的那条重载把对端丢了：" << message;
-        EXPECT_EQ(withoutCode.remoteAddress(), "192.168.1.2:7001");
-    }
-
     // ============================================================================
     // 层次结构与拷贝语义
     // ============================================================================
@@ -462,8 +344,6 @@ namespace AsynGyanis::Base
         // unique_ptr 不可拷贝，故保存工厂而不是实例列表
         const std::vector<std::function<std::unique_ptr<std::exception>()>> factories = {
                 [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigException>("test")); },
-                [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigFileException>("f", "r")); },
-                [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigParseException>("f", "r")); },
                 [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigKeyNotFoundException>("k")); },
                 [] { return std::unique_ptr<std::exception>(std::make_unique<ConfigValidationException>("k", "r")); },
         };
@@ -479,10 +359,12 @@ namespace AsynGyanis::Base
 
     TEST(ExceptionHierarchy, CopyPreservesMessageAndFields)
     {
-        const ConfigFileException  original("/path/file.yaml", "test reason");
-        const ConfigFileException &copy(original);
+        // 这条例用例原先挂在已删除的 ConfigFileException 上；换到仍有两个字段（键与原因）的
+        // ConfigValidationException，「按引用拷贝后消息与字段都保真」这条覆盖不因此消失
+        const ConfigValidationException  original("server.port", "test reason");
+        const ConfigValidationException &copy(original);
 
-        EXPECT_EQ(copy.filePath(), original.filePath());
+        EXPECT_EQ(copy.key(), original.key());
         EXPECT_STREQ(copy.what(), original.what());
     }
 

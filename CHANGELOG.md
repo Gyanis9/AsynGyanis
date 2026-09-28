@@ -1155,6 +1155,17 @@
 
 ### 变更
 
+- **删除三个 src 内零抛出点的公开异常类**（`Base::NetworkException`、`Base::ConfigFileException`、
+  `Base::ConfigParseException`，连带安装出去的三个头）：判定依据是「全仓 `src/` 内既不被抛也不被
+  捕」——`SystemException` 已覆盖带 `std::error_code` 的系统失败并按需携带上下文，socket 侧实际
+  抛的就是它；配置侧的文件读写与 YAML/JSON 语法错误从一开始就走 `ConfigLoadResult::errors`
+  （一次加载收集全部错误，而不是撞到第一条就抛出），那两个类型从未成为任何路径的出口。
+  它们各有完整的实现与钉行为的用例，所以删之前把这些覆盖点逐条对账：拷贝语义与「消息+字段保真」
+  的用例改挂到仍有两个字段的 `ConfigValidationException` 上（覆盖不消失），层次可捕获性列表里
+  去掉两项。**这是移除已导出的公开类型**：外部代码若曾 `catch (const Base::NetworkException &)`
+  或构造它们，需改捕 `Base::SystemException` / `Base::Exception`（后两者一直是这些类型的基类，
+  所以「一句 catch 兜住框架错误」的既有写法不受影响）。
+
 - **实现细节命名空间统一成 `Detail`**：同一层此前有两种写法——Base/Database 与三个同名目录写 `Detail`，
   Base/Core/Net 的 12 个文件写 `detail`。往大写收而不是往小写收，理由有两条：`.clang-tidy` 里
   `readability-identifier-naming.NamespaceCase` 早已钉成 CamelCase，而本仓的规矩是「文件夹名与命名空间对应」

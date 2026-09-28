@@ -19,8 +19,10 @@ namespace AsynGyanis::Base
     /**
      * @brief 配置模块异常基类
      *
-     * @details 所有配置相关异常（文件读取、解析、键缺失、类型不符、校验失败）
-     *          都派生自本类，便于上层一次性捕获配置错误。
+     * @details 配置模块**以异常上报**的那批失败（键缺失、类型不符、校验失败）都派生自本类，
+     *          便于上层一次性捕获配置错误。文件读写失败与 YAML/JSON 语法错误**不走异常**：
+     *          那两类的出口是 ConfigLoadResult::errors（一次加载收集全部错误，而不是撞到第一条
+     *          就抛出），因此曾为它们准备的 ConfigFileException / ConfigParseException 已删除。
      */
     class ConfigException : public Exception
     {
