@@ -12,6 +12,8 @@
 #include "Platform/IO/Socket.h"
 
 #include <cstddef>
+#include <expected>
+#include <system_error>
 
 namespace AsynGyanis::Platform
 {
@@ -56,6 +58,25 @@ namespace AsynGyanis::Platform
          *         PlatformError::lastErrorCode()
          */
         [[nodiscard]] static DatagramSocket bindTo(const SocketAddress &localAddress) noexcept;
+
+        /**
+         * @brief 接管一个**别人已经绑好**的数据报套接字（跨进程共享一条 UDP 端口的那一步）
+         *
+         * @details 存在的理由：Windows 没有 `SO_REUSEPORT` 的等价物，多个进程各自 bind 同一端口时内核把
+         *          全部报文交给最后绑上的那一个，其余进程一个错都不报却永远收不到报文。于是「一条端口、
+         *          多个进程」只能由一方 bind、把套接字交给别的进程（`Socket::writeListeningSocketHandoff`
+         *          的机制本身不限套接字类型），数据报这一侧的接手动作就是本函数。
+         * @param descriptor 已经 bind 过的数据报描述符；**所有权随之转移**，本对象析构或 close() 会关掉它。
+         *        失败时不接管也不关闭——那枚描述符还是调用方的
+         * @return std::expected<DatagramSocket, std::error_code> 接管好的套接字；失败给出这三类原因之一：
+         *         `bad_file_descriptor` 描述符无效、`not_supported` 类型不是 SOCK_DGRAM、
+         *         `invalid_argument` 还没 bind（本地端口为 0，「谁往这个端口发报文」这回事不存在）
+         * @note 接手方一律被置为**非阻塞**：交过来的套接字通常是阻塞态（Windows 按协议信息重建出来的
+         *       就是阻塞的），不改会把事件循环卡在 recvfrom 上
+         * @note 也会被取消「随子进程继承」：本层交出去的套接字都不该随 spawn 漏给下一个进程，
+         *       与 bindTo 同一条口径
+         */
+        [[nodiscard]] static std::expected<DatagramSocket, std::error_code> adopt(int descriptor) noexcept;
 
         /**
          * @brief 套接字是否可用（建成功、绑定成功、未被移动走或关闭）

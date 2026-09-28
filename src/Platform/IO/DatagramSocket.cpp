@@ -19,6 +19,24 @@ namespace AsynGyanis::Platform
         {
             return address.length > 0 && (address.storage.ss_family == AF_INET || address.storage.ss_family == AF_INET6);
         }
+
+        /**
+         * @brief 按地址族读一个本地地址上的端口号
+         * @param address 内核回填的地址
+         * @return std::uint16_t 端口；地址族认不出来时返回 0（调用方按「不合格」处理）
+         */
+        std::uint16_t portOf(const sockaddr_storage &address) noexcept
+        {
+            if (address.ss_family == AF_INET)
+            {
+                return ntohs(reinterpret_cast<const sockaddr_in *>(&address)->sin_port);
+            }
+            if (address.ss_family == AF_INET6)
+            {
+                return ntohs(reinterpret_cast<const sockaddr_in6 *>(&address)->sin6_port);
+            }
+            return 0U;
+        }
     } // namespace
 
     DatagramSocket::~DatagramSocket()
@@ -100,6 +118,51 @@ namespace AsynGyanis::Platform
             socket.m_fileDescriptor = -1;
             return socket;
         }
+        return socket;
+    }
+
+    std::expected<DatagramSocket, std::error_code> DatagramSocket::adopt(const int descriptor) noexcept
+    {
+        if (!FileDescriptor::isValid(descriptor))
+        {
+            return std::unexpected(std::make_error_code(std::errc::bad_file_descriptor));
+        }
+
+        // 类型必须是 SOCK_DGRAM：数据报的口径（一条报文自带来源、不会被内核切开续读）在流套接字上
+        // 不成立。接过来才发现的话，症状是「收报文永远收不到东西」，比在这里点名难查得多
+        int       type       = 0;
+        socklen_t typeLength = static_cast<socklen_t>(sizeof(type));
+        if (::getsockopt(descriptor, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&type), &typeLength) != 0 || type != SOCK_DGRAM)
+        {
+            return std::unexpected(std::make_error_code(std::errc::not_supported));
+        }
+
+        // 没 bind 过的套接字没有本地端口，也就没有「谁往这个端口发报文」这回事：接手的意义不存在。
+        // 端口为 0 就是未绑定——bind(port 0) 之后内核一定给出非 0 端口
+        sockaddr_storage localAddress{};
+        socklen_t        localAddressLength = static_cast<socklen_t>(sizeof(localAddress));
+        if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&localAddress), &localAddressLength) != 0)
+        {
+            return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+        }
+        if (portOf(localAddress) == 0U)
+        {
+            // 地址族认不出来时 portOf 也返回 0，一并走这一支：本层的「数据报服务端」语义只覆盖 IP
+            return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+        }
+
+        // 交过来的套接字通常是阻塞态（Windows 按协议信息重建出来的就是阻塞的），而非阻塞是本层
+        // 所有收发接口的前提
+        if (!FileDescriptor::setNonBlocking(descriptor))
+        {
+            return std::unexpected(std::error_code(PlatformError::lastSocketErrorCode(), std::system_category()));
+        }
+        // 与 bindTo 同一条口径：别让这枚句柄随 spawn 漏给下一个进程
+        static_cast<void>(FileDescriptor::markNonInheritable(descriptor));
+
+        // 到这里才接管所有权：上面任何一步失败都原样把描述符留在调用方手里，不关也不接管
+        DatagramSocket socket;
+        socket.m_fileDescriptor = descriptor;
         return socket;
     }
 

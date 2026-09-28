@@ -349,7 +349,7 @@ namespace AsynGyanis::Platform
         [[nodiscard]] static int connectHandoffChannel(std::string_view address) noexcept;
 
         /**
-         * @brief 通过一条已连通的字节通道，把一个监听套接字交给另一个进程
+         * @brief 通过一条已连通的字节通道，把一个已 bind 的套接字交给另一个进程
          *
          * @details 两个平台走各自的系统机制，线路格式统一成「定长头 + 平台特定的载体」，
          *          因此两侧的收发必须配对本层的这一对函数：
@@ -360,7 +360,9 @@ namespace AsynGyanis::Platform
          *              与类型（内核会在目标进程里重装这个描述符）。
          *          头一份都收不全（通道被关）与平台不支持都按失败报告，不返回「半个套接字」。
          * @param channelDescriptor 已连通的通道套接字（本函数按阻塞语义收发完整一条消息）
-         * @param listenDescriptor 要移交的监听套接字；必须已经 listen() 过
+         * @param listenDescriptor 要移交的套接字：TCP 侧必须已经 bind + listen（backlog 与已排队
+         *        连接跟着走），UDP 侧必须已经 bind——机制本身不限套接字类型，头里带的地址族与类型
+         *        由接收侧核对。还没 bind 的套接字交过去没有意义：那个端口上没人，报文到不了
          * @param targetProcessId 接收方进程号（Windows 按进程号认目标；POSIX 上内核自己处理）
          * @return true 已完整写出
          * @return false 平台不支持、参数非法或通道写坏，原因见 PlatformError::lastErrorCode()
@@ -375,15 +377,17 @@ namespace AsynGyanis::Platform
         static bool writeListeningSocketHandoff(int channelDescriptor, int listenDescriptor, std::uint64_t targetProcessId) noexcept;
 
         /**
-         * @brief 从通道里收下对端移交来的监听套接字
+         * @brief 从通道里收下对端移交来的套接字（TCP 监听口或已 bind 的数据报口）
          * @details 与 writeListeningSocketHandoff 成对：读出头与载体，在本进程里重建一个可直接
-         *          accept() 的监听套接字。Windows 走 WSASocketW(FROM_PROTOCOL_INFO)，
+         *          accept()（TCP）或 recvfrom()（UDP）的套接字。Windows 走 WSASocketW(FROM_PROTOCOL_INFO)，
          *          POSIX 直接取 SCM_RIGHTS 里重装好的描述符。
          * @param channelDescriptor 已连通的通道套接字（按阻塞语义收完整一条消息；POSIX 上必须是
          *        AF_UNIX 流套接字，见 writeListeningSocketHandoff 的那条 @note）
-         * @return int 新描述符（监听态与 backlog 都跟着过来，已排队连接也一并继承）；失败返回 -1
-         *         并置错误码——不会返回「半个套接字」
-         * @note 错误码的读法：EINVAL 表示「收到的不像本平台的移交消息」（长度不对或载荷被截断），
+         * @return int 新描述符（TCP 的监听态与 backlog、UDP 的绑定都跟着过来，已排队连接也一并继承）；
+         *         失败返回 -1 并置错误码——不会返回「半个套接字」
+         * @note 错误码的读法：EINVAL 表示「收到的不像本平台的移交消息」（长度不对、载荷被截断，
+         *       或重建出来的套接字与头里写的类型/地址族对不上——头里的两项是交出方从同一个套接字
+         *       问出来的，对不上就只能说明消息不可信，本层当场把它作废并关掉重建出来的句柄）；
          *       EBADF 表示「字节收齐了但里面没有描述符」——POSIX 上这一条几乎都是通道用错了类型
          * @note 换代的关键性质在这里：本端 accept 到的是**上一代进程还在服务时**就已排队的连接，
          *       因此新进程接手期间监听端口不曾关闭，也就没有 ECONNREFUSED 的空窗

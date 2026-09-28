@@ -9,6 +9,7 @@
 
 #include "Platform/IO/Socket.h"
 
+#include "Platform/IO/DatagramSocket.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 #include "Platform/System/ProcessInfo.h"
@@ -37,6 +38,45 @@ namespace AsynGyanis::Platform
             address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
             address.sin_port        = htons(port);
             return address;
+        }
+
+        /**
+         * @brief 把 sockaddr_in 包成本层的地址对（存储 + 长度）
+         * @param address IPv4 端点
+         * @return SocketAddress 可直接交给套接字接口的地址
+         */
+        SocketAddress socketAddressOf(const sockaddr_in &address)
+        {
+            SocketAddress wrapped;
+            std::memcpy(&wrapped.storage, &address, sizeof(address));
+            wrapped.length = static_cast<socklen_t>(sizeof(address));
+            return wrapped;
+        }
+
+        /**
+         * @brief 有界等到一条报文（数据报侧的收法：非阻塞描述符要轮询）
+         * @param descriptor 已绑定的数据报描述符
+         * @param buffer 接收缓冲
+         * @param capacity 缓冲容量
+         * @return ssize_t 收到的字节数；期限到了仍没有报文则 -1
+         */
+        ssize_t receiveDatagramWithDeadline(const int descriptor, void *buffer, const std::size_t capacity)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kChannelWaitMilliseconds);
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                const ssize_t received = ::recvfrom(descriptor, static_cast<char *>(buffer), static_cast<int>(capacity), 0, nullptr, nullptr);
+                if (received >= 0)
+                {
+                    return received;
+                }
+                if (PlatformError::lastSocketErrorCode() != PlatformError::kWouldBlock)
+                {
+                    return -1;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{2});
+            }
+            return -1;
         }
 
         /**
@@ -344,5 +384,140 @@ namespace AsynGyanis::Platform
         const int accepted = Socket::acceptHandoffPeer(listener);
         ASSERT_GE(accepted, 0) << "报「有」之后 accept 拿不到东西，那次报读等于没报";
         cleanup.add(accepted);
+    }
+    /**
+     * @brief 数据报套接字也走得通这条路：交出去的那一份仍替那个端口收报文
+     * @details 移交机制本身不限套接字类型，Windows 的多进程 UDP 服务靠的就是这一点（那边没有
+     *          SO_REUSEPORT，多个进程各自 bind 同一端口时内核只把报文给最后绑上的那个）。这条把
+     *          「交出 → 收下 → 接管」三段串起来，判据是真发一条报文给那个端口、在接手方读到它。
+     */
+    TEST(SocketHandoff, DeliversAWorkingDatagramSocketThroughTheChannel)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        const int         receiver = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+        ASSERT_GE(receiver, 0);
+        cleanup.add(receiver);
+        sockaddr_in bound = loopbackAddress(0);
+        ASSERT_EQ(::bind(receiver, reinterpret_cast<const sockaddr *>(&bound), sizeof(bound)), 0);
+        socklen_t boundLength = static_cast<socklen_t>(sizeof(bound));
+        ASSERT_EQ(::getsockname(receiver, reinterpret_cast<sockaddr *>(&bound), &boundLength), 0);
+        const std::uint16_t port = ntohs(bound.sin_port);
+
+        int channelWriter = -1;
+        int channelReader = -1;
+        ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelWriter);
+        cleanup.add(channelReader);
+
+        const auto selfProcessId = static_cast<std::uint64_t>(ProcessInfo::currentProcessId());
+        ASSERT_TRUE(Socket::writeListeningSocketHandoff(channelWriter, receiver, selfProcessId)) << "交出数据报套接字失败，错误码 " << PlatformError::lastErrorCode();
+
+        const int adoptedDescriptor = Socket::readListeningSocketHandoff(channelReader);
+        ASSERT_GE(adoptedDescriptor, 0) << "收端没能重建数据报套接字，错误码 " << PlatformError::lastSocketErrorCode();
+        // 交接交回来的是一枚裸描述符：接管动作（判类型、判已 bind、置非阻塞）在 DatagramSocket 那侧
+        auto adopted = DatagramSocket::adopt(adoptedDescriptor);
+        ASSERT_TRUE(adopted.has_value()) << "接管失败，错误码 " << adopted.error().value();
+        cleanup.add(adoptedDescriptor);
+
+        // 端口跟着过来：接手方问出来的端口就是交出方当初绑的那个
+        sockaddr_in adoptedLocal{};
+        socklen_t   adoptedLocalLength = static_cast<socklen_t>(sizeof(adoptedLocal));
+        ASSERT_EQ(::getsockname(adoptedDescriptor, reinterpret_cast<sockaddr *>(&adoptedLocal), &adoptedLocalLength), 0);
+        EXPECT_EQ(ntohs(adoptedLocal.sin_port), port) << "接手方的端口与交出方的不是一回事";
+
+        const DatagramSocket sender = DatagramSocket::bindTo(socketAddressOf(loopbackAddress(0U)));
+        ASSERT_TRUE(sender.isValid());
+        constexpr std::string_view kMessage = "to-adopted";
+        ASSERT_EQ(sender.send(socketAddressOf(loopbackAddress(port)), kMessage.data(), kMessage.size()), static_cast<ssize_t>(kMessage.size()));
+
+        std::array<char, 32> buffer{};
+        const ssize_t        arrived = receiveDatagramWithDeadline(adoptedDescriptor, buffer.data(), buffer.size());
+        ASSERT_EQ(arrived, static_cast<ssize_t>(kMessage.size())) << "发往那个端口的报文没落到接手方手里：交过来的那份不收报文";
+        EXPECT_EQ(std::string_view(buffer.data(), static_cast<std::size_t>(arrived)), kMessage);
+    }
+
+    /**
+     * @brief 头里写的类型与实际交过来的套接字对不上时整体作废，而不是照建一个用
+     * @details 头那两项是交出方从**同一个套接字**问出来的，所以对不上只可能是消息被写坏、版本不对
+     *          或通道上跑的根本不是移交载荷。那种情况下重建出来的套接字收不到任何报文（数据报的口径
+     *          与流的口径不是一回事），而调用方以为接手成功了。
+     * @note 伪造方式按平台分两条：Windows 的载荷是普通字节，先做一次真移交、把协议信息原样搬过来
+     *       再改头里的类型；POSIX 的描述符走控制消息，只能自己写头并随 SCM_RIGHTS 送一枚数据报
+     *       描述符过去。两条都判同一件事：读端报 EINVAL 且不交回任何描述符。
+     */
+    TEST(SocketHandoff, RejectsAHandoffWhoseHeaderDisagreesWithTheSocket)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        const int         datagram = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+        ASSERT_GE(datagram, 0);
+        cleanup.add(datagram);
+        sockaddr_in bound = loopbackAddress(0);
+        ASSERT_EQ(::bind(datagram, reinterpret_cast<const sockaddr *>(&bound), sizeof(bound)), 0);
+
+        struct
+        {
+            std::uint16_t family;
+            std::uint16_t socketType;
+            std::uint32_t blobByteCount;
+        } header{AF_INET, SOCK_STREAM, 0U};
+
+        int channelWriter = -1;
+        int channelReader = -1;
+#if ASYN_PLATFORM_WIN32
+        // 先取一份**真的**协议信息：它只能由交出方生成，伪造不了，所以伪造的只有头
+        int realWriter = -1;
+        int realReader = -1;
+        ASSERT_TRUE(makeBlockingChannel(realWriter, realReader));
+        cleanup.add(realWriter);
+        cleanup.add(realReader);
+        ASSERT_TRUE(Socket::writeListeningSocketHandoff(realWriter, datagram, static_cast<std::uint64_t>(ProcessInfo::currentProcessId())));
+        std::array<char, sizeof(header)> realHeader{};
+        ASSERT_EQ(::recv(realReader, realHeader.data(), static_cast<int>(realHeader.size()), 0), static_cast<int>(realHeader.size()));
+        std::memcpy(&header, realHeader.data(), sizeof(header));
+        std::vector<char> blob(header.blobByteCount);
+        ASSERT_GT(blob.size(), 0U);
+        ASSERT_EQ(::recv(realReader, blob.data(), static_cast<int>(blob.size()), 0), static_cast<int>(blob.size()));
+        header.socketType = static_cast<std::uint16_t>(SOCK_STREAM) == header.socketType ? static_cast<std::uint16_t>(SOCK_DGRAM) : static_cast<std::uint16_t>(SOCK_STREAM);
+
+        ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelWriter);
+        cleanup.add(channelReader);
+        ASSERT_EQ(::send(channelWriter, reinterpret_cast<const char *>(&header), static_cast<int>(sizeof(header)), 0), static_cast<int>(sizeof(header)));
+        ASSERT_EQ(::send(channelWriter, blob.data(), static_cast<int>(blob.size()), 0), static_cast<int>(blob.size()));
+#else
+        int pair[2] = {-1, -1};
+        // unix 流套接字才是这条通道能送描述符的形状（见 makeBlockingChannel 的那条 @details）
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, pair), 0) << "造不出 unix 通道";
+        channelWriter = pair[0];
+        channelReader = pair[1];
+        cleanup.add(channelWriter);
+        cleanup.add(channelReader);
+
+        header.socketType    = SOCK_STREAM;
+        header.blobByteCount = 0U;
+        iovec  dataVector{&header, sizeof(header)};
+        char   control[CMSG_SPACE(sizeof(int))] = {};
+        msghdr message{};
+        message.msg_iov           = &dataVector;
+        message.msg_iovlen        = 1;
+        message.msg_control       = control;
+        message.msg_controllen    = sizeof(control);
+        cmsghdr *controlHeader    = CMSG_FIRSTHDR(&message);
+        controlHeader->cmsg_level = SOL_SOCKET;
+        controlHeader->cmsg_type  = SCM_RIGHTS;
+        controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
+        std::memcpy(CMSG_DATA(controlHeader), &datagram, sizeof(datagram));
+        ASSERT_GE(::sendmsg(channelWriter, &message, 0), 0) << "伪造的移交消息没写进通道";
+#endif
+
+        const int rejected = Socket::readListeningSocketHandoff(channelReader);
+        EXPECT_EQ(rejected, -1) << "头里写着流套接字、交过来的却是数据报，这样一份不可信的消息被当成了成功";
+        // 读端报原因走的是 setLastErrorCode（Windows 上 socket 错误码是另一个槽位，只有系统调用
+        // 自己写它），所以这里取 lastErrorCode 而不是 lastSocketErrorCode
+        EXPECT_EQ(PlatformError::lastErrorCode(), EINVAL);
     }
 } // namespace AsynGyanis::Platform

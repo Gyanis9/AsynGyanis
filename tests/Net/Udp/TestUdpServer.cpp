@@ -91,6 +91,32 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 把一条 listen() 跑起来，取回它抛出的原因文本（没抛则空串）
+         * @param loop 承载它的循环
+         * @param listenTask 待驱动的服务协程
+         * @param reason 出参：异常文本，由循环线程写、标记之后才让测试线程读
+         * @param isDone 出参：完成标记，最后发布
+         * @return Core::Task<void> 驱动结束时完成
+         * @details listen() 是**惰性**协程：抛出点在首次恢复时，所以 `EXPECT_THROW(server.listen(...))`
+         *          测不到任何东西——那句只构造了协程帧就跑。必须把帧投给循环真跑一遍，再接住异常。
+         */
+        Core::Task<void> captureListenFailure(Core::Task<> listenTask, std::string &reason, std::atomic<bool> &isDone)
+        {
+            try
+            {
+                co_await std::move(listenTask);
+            } catch (const std::exception &failure)
+            {
+                reason = failure.what();
+            } catch (...)
+            {
+                reason = "非标准异常（无 what() 描述）";
+            }
+            // 文本先写、标记后发：测试线程读到标记时那份文本一定已经就位
+            isDone.store(true, std::memory_order_release);
+        }
+
+        /**
          * @brief 后台循环线程上的一台 UdpServer，加上本线程一条真实 UDP 套接字当对端
          */
         class UdpServerFixture
@@ -100,22 +126,27 @@ namespace AsynGyanis::Net
              * @brief 起服务端并等到它进入监听
              * @param handler 报文处理器
              * @param maximumDatagramByteCount 收包缓冲容量
+             * @param adoptedBoundSocket 给出时走「接手别人已绑好的套接字」那条路：服务端不再自己 bind，
+             *        端口由这份套接字给出（所有权归服务端）
              */
-            UdpServerFixture(UdpServer::MessageHandler handler, std::size_t maximumDatagramByteCount = Platform::DatagramSocket::kMaximumDatagramBytes)
+            UdpServerFixture(UdpServer::MessageHandler handler, std::size_t maximumDatagramByteCount = Platform::DatagramSocket::kMaximumDatagramBytes,
+                             std::optional<Platform::DatagramSocket> adoptedBoundSocket = std::nullopt)
             {
                 UdpServer::Configuration configuration;
                 configuration.maximumDatagramByteCount = maximumDatagramByteCount;
                 configuration.onMessage                = std::move(handler);
 
-                m_server = std::make_unique<UdpServer>(m_loop, std::move(configuration));
-                m_peer   = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+                const bool isAdopting = adoptedBoundSocket.has_value();
+                m_server              = isAdopting ? std::make_unique<UdpServer>(m_loop, std::move(configuration), std::move(*adoptedBoundSocket))
+                                                   : std::make_unique<UdpServer>(m_loop, std::move(configuration));
+                m_peer                = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
                 // 夹具里一律用 EXPECT_ 而不是 ASSERT_：构造函数返回不了值，ASSERT 宏展开成的
                 // `return;` 在这里直接编不过（C2534）。没起来的话后面每条断言都会红，
                 // 而红的位置已经带上了「应答没到」这句原因
                 EXPECT_TRUE(m_peer.isValid()) << "对端套接字绑定失败（错误码 " << Platform::PlatformError::lastSocketErrorCode() << "）";
 
                 // 首次恢复交给循环线程：收循环会在第一次读数时就地注册观察者
-                m_listenDriver.emplace(driveListenTask(m_server->listen(Core::InetAddress("127.0.0.1", 0)), m_isListenFinished));
+                m_listenDriver.emplace(driveListenTask(isAdopting ? m_server->listen() : m_server->listen(Core::InetAddress("127.0.0.1", 0)), m_isListenFinished));
                 m_loop.scheduler().scheduleRemote(m_listenDriver->handle());
                 EXPECT_TRUE(waitForCondition([this] { return m_server->listeningPort() != 0U; })) << "服务端没在时限内进入监听";
             }
@@ -511,5 +542,91 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(UdpServerProbe::continuesAfterReceiveFailure(0, true, false)) << "套接字已不可用（无码收场）时还在继续读：那是 stop() 之后的空转";
         EXPECT_FALSE(UdpServerProbe::continuesAfterReceiveFailure(kPeerGoneErrorCode, false, false)) << "套接字已失效还在继续读";
         EXPECT_FALSE(UdpServerProbe::continuesAfterReceiveFailure(kPeerGoneErrorCode, true, true)) << "已经请求停止还在继续读";
+    }
+    TEST(UdpServer, ServesThePortOfASocketSomeoneElseBound)
+    {
+        // 端口由别人 bind、服务端只接手：跨进程共享一条 UDP 端口在 worker 侧就是这一形状（Windows 上
+        // 多个进程各自 bind 同一端口不分摊，只能这么交）。判据落在「发往那个端口的报文有回话」上，
+        // 端口对不对则由 listeningPort 与交来的那份套接字互相指认
+        std::atomic<std::uint16_t> seenSourcePort{0};
+        std::atomic<std::size_t>   seenPayloadLength{0};
+
+        // 夹具之外自己 bind 的套接字要自己负责网络库初始化：Windows 上没有 WSAStartup 之前 bind 直接
+        // 报 WSAEINVAL，而本条单独跑（ctest 一用例一进程）时没有别的用例替它初始化过
+        const Platform::Socket::Initialization network;
+
+        Platform::DatagramSocket boundSocket = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(boundSocket.isValid()) << "夹具绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        const Platform::SocketAddress boundAddress = boundSocket.localAddress();
+        const std::uint16_t           boundPort    = Core::InetAddress(boundAddress.storage, boundAddress.length).port();
+        ASSERT_NE(boundPort, 0U);
+
+        UdpServerFixture fixture(makeEchoHandler(seenSourcePort, seenPayloadLength), Platform::DatagramSocket::kMaximumDatagramBytes, std::move(boundSocket));
+
+        EXPECT_EQ(fixture.serverAddress().port(), boundPort) << "接手模式下端口该来自交来的那份套接字，而不是自己再绑一个";
+        ASSERT_TRUE(fixture.sendToServer(toBytes("taken")));
+
+        const std::optional<std::vector<std::uint8_t>> reply = fixture.receiveFromServer();
+        ASSERT_TRUE(reply.has_value()) << "在接手来的套接字上没有应答";
+        EXPECT_EQ(toText(*reply), "taken");
+        ASSERT_TRUE(fixture.waitUntil([&fixture] { return fixture.server().stats().receivedDatagramCount == 1U; }));
+    }
+
+    TEST(UdpServer, RejectsMixingTheAdoptedSocketWithAnAddress)
+    {
+        // 两种启动顺序各自只认一种来源。混用的后果是静默的：接手来的套接字被闲置，对端往那个端口发的
+        // 报文一条也到不了，症状与「移交没做成」一模一样，因此这里必须抛出而不是挑一种继续
+        //
+        // 声明顺序就是销毁顺序的反面：循环最先声明（最后销毁），服务端在它之后、驱动帧再后，
+        // 后台循环包装器最后声明（最先销毁、析构里 join）——服务端持有套接字，必须晚于循环停止
+        // 才销毁，否则就是在本线程上销毁仍归循环线程的那份注册对象
+        Core::EventLoop                        loop;
+        const Platform::Socket::Initialization network;
+        UdpServer::Configuration               configuration = makeSilentConfiguration();
+        UdpServer                              adopting(loop, configuration, Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress()));
+        UdpServer                              binding(loop, makeSilentConfiguration());
+        std::optional<Core::Task<void>>        adoptingWithAddress;
+        std::optional<Core::Task<void>>        bindingWithoutAddress;
+        EventLoopThread                        loopThread{loop};
+
+        std::string       adoptingReason;
+        std::string       bindingReason;
+        std::atomic<bool> isAdoptingRejected{false};
+        std::atomic<bool> isBindingRejected{false};
+
+        adoptingWithAddress.emplace(captureListenFailure(adopting.listen(Core::InetAddress("127.0.0.1", 0)), adoptingReason, isAdoptingRejected));
+        bindingWithoutAddress.emplace(captureListenFailure(binding.listen(), bindingReason, isBindingRejected));
+        loopThread.loop().scheduler().scheduleRemote(adoptingWithAddress->handle());
+        loopThread.loop().scheduler().scheduleRemote(bindingWithoutAddress->handle());
+
+        EXPECT_TRUE(waitForCondition([&] { return isAdoptingRejected.load(std::memory_order_acquire); }, kPeerWaitTimeout))
+                << "接手来的服务端调带地址的 listen() 没被拒：那份套接字会被静默闲置";
+        EXPECT_NE(adoptingReason.find("接手"), std::string::npos) << adoptingReason;
+        EXPECT_TRUE(waitForCondition([&] { return isBindingRejected.load(std::memory_order_acquire); }, kPeerWaitTimeout))
+                << "按地址构造的服务端调不带地址的 listen() 没被拒：没有可服务的套接字";
+        EXPECT_NE(bindingReason.find("接手"), std::string::npos) << bindingReason;
+    }
+
+    TEST(UdpServer, RefusesToOpenThePortWithoutAHandler)
+    {
+        // 「收了报文没人处理」等于把每一条都丢掉，所以端口压根不该开起来。listen() 是惰性协程，
+        // 抛出点在首次恢复时——直接 EXPECT_THROW(server.listen(...)) 只构造了协程帧，测不到任何东西。
+        // 声明顺序同上：循环最先、后台驱动最后，被拒的服务端要在循环停止之后才销毁
+        Core::EventLoop          loop;
+        UdpServer::Configuration configuration;
+        configuration.maximumDatagramByteCount = Platform::DatagramSocket::kMaximumDatagramBytes;
+        UdpServer                       server(loop, configuration);
+        std::optional<Core::Task<void>> driver;
+        EventLoopThread                 loopThread{loop};
+
+        std::string       reason;
+        std::atomic<bool> isRejected{false};
+
+        driver.emplace(captureListenFailure(server.listen(Core::InetAddress("127.0.0.1", 0)), reason, isRejected));
+        loopThread.loop().scheduler().scheduleRemote(driver->handle());
+
+        ASSERT_TRUE(waitForCondition([&] { return isRejected.load(std::memory_order_acquire); }, kPeerWaitTimeout));
+        EXPECT_NE(reason.find("onMessage"), std::string::npos) << "文案没点名缺的是哪个字段：" << reason;
+        EXPECT_EQ(server.listeningPort(), 0U) << "被拒之后端口不该已经开着";
     }
 } // namespace AsynGyanis::Net

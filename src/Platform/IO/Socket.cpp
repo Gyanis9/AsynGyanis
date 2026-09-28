@@ -404,6 +404,35 @@ namespace AsynGyanis::Platform
             header.family = static_cast<std::uint16_t>(family);
             return true;
         }
+
+        /**
+         * @brief 核对重建出来的套接字与移交头里写的是同一类
+         * @details 头里的地址族与类型是交出方从**同一个套接字**问出来的，因此这里对不上只可能是
+         *          消息被写坏、版本或平台不对，或通道上跑的压根不是移交消息——那三种情况下交出去
+         *          的套接字都不能用：宁可报「不像本平台的移交消息」，也不把一枚认不出来的描述符交给
+         *          调用方去 accept 或 recvfrom。
+         * @param descriptor 本进程重建出的描述符
+         * @param header 收到的移交头
+         * @return true 类型与地址族都对得上
+         */
+        bool handoffHeaderMatchesSocket(const int descriptor, const HandoffHeader &header) noexcept
+        {
+            int       type       = 0;
+            socklen_t typeLength = static_cast<socklen_t>(sizeof(type));
+            if (::getsockopt(descriptor, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&type), &typeLength) != 0 || static_cast<std::uint16_t>(type) != header.socketType)
+            {
+                return false;
+            }
+
+            sockaddr_storage localAddress{};
+            socklen_t        localAddressLength = static_cast<socklen_t>(sizeof(localAddress));
+            if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&localAddress), &localAddressLength) != 0 ||
+                static_cast<std::uint16_t>(localAddress.ss_family) != header.family)
+            {
+                return false;
+            }
+            return true;
+        }
     } // namespace
 
     bool Socket::writeListeningSocketHandoff(const int channelDescriptor, const int listenDescriptor, const std::uint64_t targetProcessId) noexcept
@@ -504,11 +533,21 @@ namespace AsynGyanis::Platform
 
         // FROM_PROTOCOL_INFO 是交给 af/type/protocol 这三个参数的哨兵，意思是「三项都按协议信息里
         // 带的来」；交 0 会被当成「地址族 AF_UNSPEC 的空套接字」而建不出对端那个监听口。
-        // dwFlags 交 0：重建出的套接字与交出方同一形态（阻塞），要挂进完成端口的调用方自己改重叠
+        // dwFlags 同样按协议信息里的来（FROM_PROTOCOL_INFO 时这个参数被忽略），所以交出方是重叠
+        // 套接字时接手方也是——实测判据：Windows 的多进程编排里 worker 接手监听口后照常挂在完成
+        // 端口上接受连接
         const SOCKET receivedSocket = ::WSASocketW(FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, &protocolInfo, 0, 0);
         if (receivedSocket == INVALID_SOCKET)
         {
             PlatformError::setLastErrorCode(::WSAGetLastError());
+            return -1;
+        }
+        // 重建出来的套接字必须与头里写的是同一类：对不上说明这条消息不可信（被写坏、版本或平台不对，
+        // 或通道上跑的根本不是移交消息）。交一枚认不出来的句柄出去，比在这里报失败难查得多
+        if (!handoffHeaderMatchesSocket(static_cast<int>(receivedSocket), header))
+        {
+            PlatformError::setLastErrorCode(EINVAL);
+            static_cast<void>(::closesocket(receivedSocket));
             return -1;
         }
         return static_cast<int>(receivedSocket);
@@ -548,6 +587,14 @@ namespace AsynGyanis::Platform
         if (receivedDescriptor < 0)
         {
             PlatformError::setLastErrorCode(EBADF);
+            return -1;
+        }
+        // 与 Windows 侧同一道核对：内核重装好的那枚描述符必须与头里写的类型、地址族一致，
+        // 不一致就是这条消息不可信，关掉它而不是交给调用方
+        if (!handoffHeaderMatchesSocket(receivedDescriptor, header))
+        {
+            PlatformError::setLastErrorCode(EINVAL);
+            static_cast<void>(FileDescriptor::close(receivedDescriptor));
             return -1;
         }
         return receivedDescriptor;

@@ -47,14 +47,29 @@ namespace AsynGyanis::Net
         // 调用方纪律与 QuicServer 相同——先让收循环退出（stop() 投递到循环线程），再销毁本对象
     }
 
+    UdpServer::UdpServer(Core::EventLoop &eventLoop, Configuration configuration, Platform::DatagramSocket adoptedBoundSocket) : UdpServer(eventLoop, std::move(configuration))
+    {
+        // 「是不是数据报」「绑过没有」都在平台层的 DatagramSocket::adopt 里判过了，这里只挡下
+        // 「交来一枚空对象」：那种服务端跑起来就是一条报文也收不到的空壳，而原因在调用方手里
+        if (!adoptedBoundSocket.isValid())
+        {
+            throw Base::InvalidArgumentException("UDP 服务端接手数据报套接字失败：交来的套接字无效。自己绑的那一份大概是绑定就失败了"
+                                                 "（bindTo 交回空对象），跨进程接手的那一份要走 Platform::DatagramSocket::adopt，"
+                                                 "它会区分「不是 SOCK_DGRAM」「还没 bind」「描述符无效」三种不合格");
+        }
+        m_adoptedSocket = std::move(adoptedBoundSocket);
+    }
+
     Core::Task<> UdpServer::listen(Core::InetAddress localAddress)
     {
-        // 没有处理器就别把端口开着：收了没人处理等于把每条报文丢掉，不如在启动时就点名
-        if (!m_configuration.onMessage)
+        // 接手来的服务端不该再去 bind 一个端口：那会让交过来的套接字被静默闲置，对端往那个端口发的
+        // 报文一条也到不了，症状与「移交没做成」一模一样。两种顺序都说不通，当场指出来
+        if (m_adoptedSocket)
         {
-            throw Base::InvalidArgumentException("UDP 服务端启动失败：没有设置报文处理器（Configuration::onMessage）：收了报文没人处理，"
-                                                 "这台监听器只会把每一条都丢掉；请给出处理器再 listen()");
+            throw Base::InvalidArgumentException("UDP 服务端启动失败：这台服务端是接手构造出来的，端口已经定在交过来的那个套接字上；"
+                                                 "请调用不带地址的 listen()，不要再让它自己绑定端口");
         }
+        requireMessageHandler();
 
         Platform::DatagramSocket boundSocket = Platform::DatagramSocket::bindTo(localAddress.platformAddress());
         if (!boundSocket.isValid())
@@ -63,9 +78,43 @@ namespace AsynGyanis::Net
                                         std::to_string(Platform::PlatformError::lastSocketErrorCode()) + "）");
         }
 
-        // 本端地址取绑定后的那份：端口给 0 时只有内核知道实际端口
-        const Platform::SocketAddress boundAddress = boundSocket.localAddress();
-        m_socket                                   = std::make_unique<Core::AsyncUdpSocket>(m_eventLoop, std::move(boundSocket));
+        m_socket = std::make_unique<Core::AsyncUdpSocket>(m_eventLoop, std::move(boundSocket));
+        co_await serveOnBoundSocket();
+        co_return;
+    }
+
+    Core::Task<> UdpServer::listen()
+    {
+        // 接手模式与按地址模式不能混着用：无参的 listen() 没有地址可问，而带地址的那条会去 bind
+        // 一个本对象已经不拥有的端口——两种顺序都说不通，当场指出来
+        if (!m_adoptedSocket)
+        {
+            throw Base::InvalidArgumentException("UDP 服务端启动失败：这台服务端不是接手构造出来的，没有可服务的套接字；"
+                                                 "请按地址调用 listen(地址)，或在构造时把已 bind 的数据报描述符交进来");
+        }
+        requireMessageHandler();
+
+        m_socket = std::make_unique<Core::AsyncUdpSocket>(m_eventLoop, std::move(*m_adoptedSocket));
+        m_adoptedSocket.reset();
+        co_await serveOnBoundSocket();
+        co_return;
+    }
+
+    void UdpServer::requireMessageHandler() const
+    {
+        // 没有处理器就别把端口开着：收了没人处理等于把每条报文丢掉，不如在启动时就点名。
+        // 放在动套接字之前，是为了不让一次配置错误顺手占住一个端口
+        if (!m_configuration.onMessage)
+        {
+            throw Base::InvalidArgumentException("UDP 服务端启动失败：没有设置报文处理器（Configuration::onMessage）：收了报文没人处理，"
+                                                 "这台监听器只会把每一条都丢掉；请给出处理器再 listen()");
+        }
+    }
+
+    Core::Task<> UdpServer::serveOnBoundSocket()
+    {
+        // 端口从套接字问回来：按地址绑的与接手来的都只有这一个来源（端口给 0 时只有内核知道实际端口）
+        const Platform::SocketAddress boundAddress = m_socket->localAddress();
 
         // 端口最后发布：非 0 值就是「已在监听」的唯一凭据，读到它时必须连带上面的套接字已就位
         // （release 与外部线程读侧的 acquire 配对）

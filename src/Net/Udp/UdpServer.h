@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -90,6 +91,25 @@ namespace AsynGyanis::Net
          */
         UdpServer(Core::EventLoop &eventLoop, Configuration configuration);
 
+        /**
+         * @brief 建一台**接手别人已经绑好的数据报套接字**的服务端（跨进程共享一条 UDP 端口那一步）
+         * @param eventLoop 所属事件循环
+         * @param configuration 配置（按值收：此后不再读调用方那份）
+         * @param adoptedBoundSocket 已经 bind 过的数据报套接字，所有权随之转移；本对象析构或 stop()
+         *        会关掉它——交出去的那一方此后不该再碰它
+         * @throws Base::InvalidArgumentException 交来的套接字无效（`bindTo` 失败或已被移走的那份空对象）
+         * @details 存在的理由：Windows 没有 `SO_REUSEPORT` 的等价物，多个 worker 各自 bind 同一端口时内核
+         *          把全部报文交给最后绑上的那一个，其余进程一个错都不报却永远收不到报文。于是「一条端口、
+         *          多个进程」只能由一方 bind、把套接字交给别人（`Platform::Socket::writeListeningSocketHandoff`
+         *          的机制本身不限套接字类型），worker 这一侧的接手动作就是这个构造 + 不带地址的 listen()。
+         * @note 套接字从哪来由调用方决定：`Platform::DatagramSocket::bindTo`（自己绑）或
+         *       `Platform::DatagramSocket::adopt`（把别的进程交过来的描述符包成本层的持有者语义，
+         *       它会区分「不是 SOCK_DGRAM」「还没 bind」「描述符无效」三种不合格）
+         * @note 与按地址构造的差别只在端口从哪来：本构造**不会去 bind**，端口从交来的套接字问，
+         *       `listeningPort()` 报的是真值
+         */
+        UdpServer(Core::EventLoop &eventLoop, Configuration configuration, Platform::DatagramSocket adoptedBoundSocket);
+
         ~UdpServer();
 
         UdpServer(const UdpServer &) = delete;
@@ -100,7 +120,8 @@ namespace AsynGyanis::Net
          * @brief 绑定端口并逐条交付报文，直到 stop()
          * @param localAddress 本地地址；端口给 0 表示由内核分配，实际端口读 listeningPort()
          * @return Core::Task<> 收循环退出时完成
-         * @throws Base::InvalidArgumentException 没有设置处理器
+         * @throws Base::InvalidArgumentException 没有设置处理器，或本服务端是接手构造出来的
+         *         （端口已经定在交过来的套接字上，那种情形请调不带地址的 listen()）
          * @throws Base::SystemException 绑定失败
          * @note 零长报文**照样交付**（payload 为空）：无连接协议里「一条不带内容的报文」常常就是
          *       全部输入（唤醒信号、探测），把它当「没收到」等于把这类协议判死
@@ -109,6 +130,17 @@ namespace AsynGyanis::Net
          * @warning 本协程的帧必须活到 `stop()` 之后（与其它循环对象同一条销毁纪律）
          */
         [[nodiscard]] Core::Task<> listen(Core::InetAddress localAddress);
+
+        /**
+         * @brief 在接手来的套接字上逐条交付报文，直到 stop()
+         * @return Core::Task<> 收循环退出时完成
+         * @throws Base::InvalidArgumentException 本对象不是接手构造出来的：那种情形要调
+         *         listen(地址)，由本端自己 bind
+         * @note 交付口径与 listen(地址) 完全一致（零长报文照交付、读数报错不带走循环），差别只在
+         *       端口与套接字都不是本端建的，因此这里也不会有「绑定失败」那一类出口
+         * @warning 本协程的帧必须活到 `stop()` 之后（与其它循环对象同一条销毁纪律）
+         */
+        [[nodiscard]] Core::Task<> listen();
 
         /**
          * @brief 收口：置停止标记并关掉套接字，让挂在读数上的协程醒过来退出循环
@@ -156,6 +188,21 @@ namespace AsynGyanis::Net
 
     private:
         /**
+         * @brief 没给处理器就拒绝开始服务（两条 listen 入口共用同一条判据）
+         * @throws Base::InvalidArgumentException 处理器为空
+         */
+        void requireMessageHandler() const;
+
+        /**
+         * @brief 两条 listen 的共用主体：在已就绪的套接字上逐条交付报文
+         * @details 端口在这里从套接字问回来（接手来的口没有别的来源），发布之后两条路共用同一段
+         *          收循环——把「端口从哪来」与「收到报文后做什么」分开，才不会出现两种形状各有一份
+         *          交付逻辑、日后只改一处的分叉
+         * @return Core::Task<> 收循环退出时完成
+         */
+        [[nodiscard]] Core::Task<> serveOnBoundSocket();
+
+        /**
          * @brief 交付一条报文：处理器算完就按来源把应答发出去
          * @param peerAddress 来源地址（原始平台地址：回包直接用它，省一次换算）
          * @param payload 报文净字节，指向收包缓冲
@@ -173,6 +220,9 @@ namespace AsynGyanis::Net
         Core::EventLoop                      &m_eventLoop;     ///< 所属事件循环
         Configuration                         m_configuration; ///< 配置（构造时定，此后不再改）
         std::unique_ptr<Core::AsyncUdpSocket> m_socket;        ///< 套接字的事件循环封装；未监听时为空
+        /// 接手来的平台套接字：有值即「接手模式」，无参的 listen() 认它，带地址的 listen() 拒绝。
+        /// 被 listen() 移交给 m_socket 之后本项转为空
+        std::optional<Platform::DatagramSocket> m_adoptedSocket;
 
         /// 实际绑定的端口：绑定成功才写入非 0 值，因此外部线程读它就等于问「监听起来了吗」
         /// （release 与读侧 acquire 配对；它不代表允许跨线程碰本类的其它成员）

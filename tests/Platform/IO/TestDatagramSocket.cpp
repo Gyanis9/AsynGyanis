@@ -100,6 +100,62 @@ namespace AsynGyanis::Platform
             }
             return -1;
         }
+
+        /**
+         * @brief 造一个已绑定的回环数据报套接字，交回来的是**裸描述符**
+         * @param port 输出：内核分配的端口
+         * @return int 描述符；负值表示没造出来
+         * @details 接管接口的输入是别人已经绑好的描述符，而 DatagramSocket 没有「交出所有权」的
+         *          出口（析构必关），所以夹具只能自己按平台方式建
+         */
+        int rawBoundUdpSocket(std::uint16_t &port)
+        {
+            port                 = 0U;
+            const int  descriptor = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+            const auto address    = makeLoopbackAddress(0);
+            if (descriptor < 0 || ::bind(descriptor, reinterpret_cast<const sockaddr *>(&address.storage), address.length) != 0)
+            {
+                if (descriptor >= 0)
+                {
+                    static_cast<void>(FileDescriptor::close(descriptor));
+                }
+                return -1;
+            }
+            sockaddr_in local{};
+            socklen_t   length = static_cast<socklen_t>(sizeof(local));
+            if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&local), &length) != 0)
+            {
+                static_cast<void>(FileDescriptor::close(descriptor));
+                return -1;
+            }
+            port = ntohs(local.sin_port);
+            return descriptor;
+        }
+
+        /**
+         * @brief 造一个已在监听的回环流套接字（用来验「接管会拒掉非数据报的描述符」）
+         * @param port 输出：内核分配的端口
+         * @return int 描述符；负值表示没造出来
+         */
+        int rawListeningTcpSocket(std::uint16_t &port)
+        {
+            port                  = 0U;
+            const int  descriptor = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            const auto address    = makeLoopbackAddress(0);
+            if (descriptor < 0 || ::bind(descriptor, reinterpret_cast<const sockaddr *>(&address.storage), address.length) != 0 || ::listen(descriptor, 4) != 0)
+            {
+                if (descriptor >= 0)
+                {
+                    static_cast<void>(FileDescriptor::close(descriptor));
+                }
+                return -1;
+            }
+            sockaddr_in local{};
+            socklen_t   length = static_cast<socklen_t>(sizeof(local));
+            static_cast<void>(::getsockname(descriptor, reinterpret_cast<sockaddr *>(&local), &length));
+            port = ntohs(local.sin_port);
+            return descriptor;
+        }
     } // namespace
 
     /**
@@ -457,5 +513,78 @@ namespace AsynGyanis::Platform
         const ssize_t                    leftoverByteCount = receiver.receive(leftover.data(), leftover.size(), leftoverPeer);
         EXPECT_EQ(leftoverByteCount, -1) << "截断之后套接字里还剩 " << leftoverByteCount << " 字节：UDP 该丢掉整条报文而不是留半截";
         EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kWouldBlock) << "截断后没有回到「无数据可读」态，错误码也不可信";
+    }
+
+    /**
+     * @brief 接管已绑定的数据报套接字：端口跟着过来、报文收得到，而且接手方是非阻塞的
+     * @details 这条钉的是「一条 UDP 端口给多个进程用」在数据报侧的落点：接手方拿到的不只是一个端口号，
+     *          而是「往这个端口发的报文会落在我这里」。非阻塞单独判一次——交过来的套接字通常是阻塞态
+     *          （Windows 按协议信息重建出来就是阻塞的），不改会把事件循环卡在 recvfrom 上。
+     */
+    TEST(DatagramSocket, AdoptsBoundDatagramSocketAndStillReceives)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        std::uint16_t port       = 0U;
+        const int     rawSocket  = rawBoundUdpSocket(port);
+        ASSERT_GE(rawSocket, 0) << "夹具没能绑出端口，错误码 " << PlatformError::lastSocketErrorCode();
+
+        auto adopted = DatagramSocket::adopt(rawSocket);
+        ASSERT_TRUE(adopted.has_value()) << "接管失败，错误码 " << adopted.error().value();
+        ASSERT_TRUE(adopted->isValid());
+
+        // 端口是从那枚描述符问回来的：接手方不该知道调用方当初绑的是哪个端口
+        EXPECT_EQ(portOf(adopted->localAddress()), port);
+
+        // 此刻还没有人发过报文：阻塞的话这一步就不会返回，所以这条判据不靠调度时序
+        std::array<char, 16> probe{};
+        SocketAddress        probePeer{};
+        EXPECT_EQ(adopted->receive(probe.data(), probe.size(), probePeer), -1);
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kWouldBlock) << "接手方没被置成非阻塞";
+
+        const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid()) << "发送侧绑定失败，错误码 " << PlatformError::lastSocketErrorCode();
+        constexpr std::string_view kMessage = "take-me";
+        ASSERT_EQ(sender.send(makeLoopbackAddress(port), kMessage.data(), kMessage.size()), static_cast<ssize_t>(kMessage.size()));
+
+        std::array<char, 16> buffer{};
+        SocketAddress        peer{};
+        const ssize_t        receivedByteCount = receiveWithTimeout(*adopted, buffer.data(), buffer.size(), peer);
+        ASSERT_EQ(receivedByteCount, static_cast<ssize_t>(kMessage.size())) << "发往该端口的报文没落到接手方手里";
+        EXPECT_EQ(std::string_view(buffer.data(), static_cast<std::size_t>(receivedByteCount)), kMessage);
+        EXPECT_TRUE(isSameIpv4Endpoint(peer, sender.localAddress())) << "接手方收到的报文没带上来源";
+    }
+
+    /**
+     * @brief 拒绝面：无效描述符、流套接字、还没 bind 的都当场拒，且拒的时候不动调用方的句柄
+     * @details 静默接下来各自的代价：流套接字上「收数据报」永远收不到东西；没 bind 的套接字没有端口，
+     *          接过来只是一台谁也不认识的服务器。不关描述符是所有权约定——**只在成功时**接管。
+     */
+    TEST(DatagramSocket, RejectsDescriptorsItCannotAdopt)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const auto invalid = DatagramSocket::adopt(-1);
+        ASSERT_FALSE(invalid.has_value());
+        EXPECT_EQ(invalid.error(), std::make_error_code(std::errc::bad_file_descriptor));
+
+        std::uint16_t tcpPort  = 0U;
+        const int     stream   = rawListeningTcpSocket(tcpPort);
+        ASSERT_GE(stream, 0) << "夹具没能造出监听套接字";
+        const auto wrongType = DatagramSocket::adopt(stream);
+        ASSERT_FALSE(wrongType.has_value());
+        EXPECT_EQ(wrongType.error(), std::make_error_code(std::errc::not_supported));
+        // 被拒之后描述符还得能用：问得出类型就说明它仍然归调用方，接管方没有顺手关掉它
+        int       stillThereType = 0;
+        socklen_t typeLength     = static_cast<socklen_t>(sizeof(stillThereType));
+        EXPECT_EQ(::getsockopt(stream, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&stillThereType), &typeLength), 0) << "接管失败却把调用方的描述符关掉了";
+        static_cast<void>(FileDescriptor::close(stream));
+
+        const int   unbound   = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+        ASSERT_GE(unbound, 0);
+        const auto notBound = DatagramSocket::adopt(unbound);
+        ASSERT_FALSE(notBound.has_value());
+        EXPECT_EQ(notBound.error(), std::make_error_code(std::errc::invalid_argument));
+        static_cast<void>(FileDescriptor::close(unbound));
     }
 } // namespace AsynGyanis::Platform
