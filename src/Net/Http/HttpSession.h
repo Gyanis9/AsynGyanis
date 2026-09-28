@@ -22,6 +22,7 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
+#include "Net/Http/TraceContext.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
 #include "Net/WebSocket/WebSocketPeer.h"
@@ -894,6 +895,32 @@ namespace AsynGyanis::Net
                         if (!requestVersion.empty())
                         {
                             response.setHttpVersion(requestVersion);
+                        }
+
+                        // 成因必须落这一条：响应里只回 500 是对的（不把内部原因泄漏给对端），
+                        // 但服务端这边此前一句都不记——同一函数里流式那一路（见上面 isChunkedHeadSent
+                        // 分支）与 WebSocket 那一路都有日志，缺的正是这条最常走的路。
+                        // 用 LOG_ERROR_EXCEPTION 而不是只拼 what()：框架异常携带的抛出点调用栈
+                        // 要随这条记录交给 Sink，那是本框架异常可观测性的主要用途。
+                        // request-id 与 trace id 一起带上：只看 /metrics 上多出来的一个 500，
+                        // 没有这两个标识就翻不回是那一条请求。
+                        std::string traceIdText = "无";
+                        if (const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request); identifiers.has_value())
+                        {
+                            traceIdText.assign(identifiers->traceIdText());
+                        }
+
+                        try
+                        {
+                            std::rethrow_exception(handlerException);
+                        } catch (const std::exception &failure)
+                        {
+                            LOG_ERROR_EXCEPTION(failure, "HttpSession: 业务处理函数抛出异常，已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}，原因：{}",
+                                                requestIdView, traceIdText, request.uri(), failure.what());
+                        } catch (...)
+                        {
+                            LOG_ERROR_FMT("HttpSession: 业务处理函数抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}",
+                                          requestIdView, traceIdText, request.uri());
                         }
                     }
 

@@ -13,6 +13,8 @@
 #include "Net/Http/Router.h"
 #include "Platform/IO/FileDescriptor.h"
 
+#include "HttpTestSupport.h"
+
 #include "CoreTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -900,6 +902,9 @@ namespace AsynGyanis::Net
 
     TEST(HttpSession, Returns500AfterResettingResponseWhenHandlerThrows)
     {
+        // 挂在根日志器上：会话跑在事件循环线程里，被测代码走的是全局根日志器
+        const HttpTestSupport::LogCapture logCapture;
+
         HttpSessionFixture fixture;
         ASSERT_TRUE(fixture.isValid());
         fixture.router().get("/boom",
@@ -913,7 +918,10 @@ namespace AsynGyanis::Net
                                  co_return;
                              });
 
-        ASSERT_TRUE(fixture.writeRequest(makeRequestText("GET /boom HTTP/1.1", {"host: test"})));
+        // 带一条合法的 traceparent：出错那一行要把 trace id 一起记出来，运维才能从
+        // 「/metrics 上多出来的那个 500」翻回这条链路
+        ASSERT_TRUE(fixture.writeRequest(makeRequestText("GET /boom HTTP/1.1",
+                                                         {"host: test", "traceparent: 00-12345678901234567890123456789012-1234567890123456-01"})));
         fixture.start();
 
         std::string responseText;
@@ -925,6 +933,14 @@ namespace AsynGyanis::Net
         EXPECT_EQ(responseText.find("half-written-body"), std::string::npos);
         // 500 之后仍按 keep-alive 判定：HTTP/1.1 且没人要求 close，连接可以继续用
         EXPECT_FALSE(fixture.isFinished());
+
+        // 成因必须落到服务端日志：响应里只回 500 是对的（不外泄内部原因），但这边一句都不记
+        // 就等于这次故障凭空消失——此前最常走的这条路径恰恰没有日志
+        EXPECT_EQ(logCapture.countContaining("测试用：业务处理函数抛出异常"), 1U) << "业务异常的成因没记进日志";
+        EXPECT_EQ(logCapture.countContaining("已整体重置响应并按 500 收口"), 1U) << "500 收口这条没有可定位的日志";
+        // 关联标识：trace id 要出现在同一行，否则这条日志与那条链路之间没有桥
+        EXPECT_EQ(logCapture.countContaining("12345678901234567890123456789012"), 1U) << "trace id 没进这条错误日志";
+        EXPECT_EQ(logCapture.countContaining("路径 /boom"), 1U) << "出错的路径没进这条错误日志";
 
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
     }
