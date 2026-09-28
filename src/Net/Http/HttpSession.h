@@ -919,8 +919,8 @@ namespace AsynGyanis::Net
                                                 requestIdView, traceIdText, request.uri(), failure.what());
                         } catch (...)
                         {
-                            LOG_ERROR_FMT("HttpSession: 业务处理函数抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}",
-                                          requestIdView, traceIdText, request.uri());
+                            LOG_ERROR_FMT("HttpSession: 业务处理函数抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}", requestIdView,
+                                          traceIdText, request.uri());
                         }
                     }
 

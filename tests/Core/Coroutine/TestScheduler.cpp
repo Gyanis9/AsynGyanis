@@ -514,12 +514,10 @@ namespace AsynGyanis::Core
                 });
 
         // 等到那条坏投递确实跑过——判据是可观测的完成点，不是睡一个固定时长
-        ASSERT_TRUE(TestSupport::waitForCondition([&badRan] { return badRan.load(std::memory_order_acquire); }))
-                << "坏投递没被跑到，后面「循环仍在服务」的断言全是假绿";
+        ASSERT_TRUE(TestSupport::waitForCondition([&badRan] { return badRan.load(std::memory_order_acquire); })) << "坏投递没被跑到，后面「循环仍在服务」的断言全是假绿";
 
         runner.loop().scheduler().postRemote([&laterRan]() { laterRan.store(true, std::memory_order_release); });
-        EXPECT_TRUE(TestSupport::waitForCondition([&laterRan] { return laterRan.load(std::memory_order_acquire); }))
-                << "一次抛出的投递带走了整条循环：之后的投递再没人执行";
+        EXPECT_TRUE(TestSupport::waitForCondition([&laterRan] { return laterRan.load(std::memory_order_acquire); })) << "一次抛出的投递带走了整条循环：之后的投递再没人执行";
 
         const auto snapshot = runner.loop().snapshot();
         EXPECT_FALSE(snapshot.stoppedByFailure) << "循环被一次派发级抛出停掉（stoppedByFailure 置上了）";

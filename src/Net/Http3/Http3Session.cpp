@@ -556,12 +556,12 @@ namespace AsynGyanis::Net
                             std::rethrow_exception(handlerException);
                         } catch (const std::exception &failure)
                         {
-                            LOG_ERROR_EXCEPTION(failure, "Http3Session: 流 {} 的业务处理函数抛出异常，已整体重置响应并按 500 收口。request-id {}，路径 {}，原因：{}",
-                                                streamId, request.requestId(), request.uri(), failure.what());
+                            LOG_ERROR_EXCEPTION(failure, "Http3Session: 流 {} 的业务处理函数抛出异常，已整体重置响应并按 500 收口。request-id {}，路径 {}，原因：{}", streamId,
+                                                request.requestId(), request.uri(), failure.what());
                         } catch (...)
                         {
-                            LOG_ERROR_FMT("Http3Session: 流 {} 的业务处理函数抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口。request-id {}，路径 {}",
-                                          streamId, request.requestId(), request.uri());
+                            LOG_ERROR_FMT("Http3Session: 流 {} 的业务处理函数抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口。request-id {}，路径 {}", streamId,
+                                          request.requestId(), request.uri());
                         }
                     }
                 }
@@ -1313,8 +1313,7 @@ namespace AsynGyanis::Net
                     std::rethrow_exception(handlerException);
                 } catch (const std::exception &failure)
                 {
-                    LOG_ERROR_EXCEPTION(failure, "Http3Session: 流 {} 的流式业务处理抛出异常，已整体重置响应并按 500 收口。原因：{}",
-                                        streamId, failure.what());
+                    LOG_ERROR_EXCEPTION(failure, "Http3Session: 流 {} 的流式业务处理抛出异常，已整体重置响应并按 500 收口。原因：{}", streamId, failure.what());
                 } catch (...)
                 {
                     LOG_ERROR_FMT("Http3Session: 流 {} 的流式业务处理抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口", streamId);

@@ -123,8 +123,8 @@ namespace AsynGyanis::Database
             }
 
         private:
-            std::string  m_text{};                             ///< 中文错误文本
-            std::int64_t m_nativeCode{kUnknownNativeCode};     ///< 与 m_text 配对的原生码
+            std::string  m_text{};                         ///< 中文错误文本
+            std::int64_t m_nativeCode{kUnknownNativeCode}; ///< 与 m_text 配对的原生码
         };
 
         /**

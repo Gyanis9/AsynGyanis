@@ -920,8 +920,7 @@ namespace AsynGyanis::Net
 
         // 带一条合法的 traceparent：出错那一行要把 trace id 一起记出来，运维才能从
         // 「/metrics 上多出来的那个 500」翻回这条链路
-        ASSERT_TRUE(fixture.writeRequest(makeRequestText("GET /boom HTTP/1.1",
-                                                         {"host: test", "traceparent: 00-12345678901234567890123456789012-1234567890123456-01"})));
+        ASSERT_TRUE(fixture.writeRequest(makeRequestText("GET /boom HTTP/1.1", {"host: test", "traceparent: 00-12345678901234567890123456789012-1234567890123456-01"})));
         fixture.start();
 
         std::string responseText;

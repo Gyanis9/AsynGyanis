@@ -144,8 +144,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(withCode.nativeErrorCode(), 1213);
 
         const QueryExecutionException withoutCode("语句被拒");
-        EXPECT_EQ(withoutCode.nativeErrorCode(), QueryExecutionException::kUnknownNativeErrorCode)
-                << "旧签名的码必须显式标为未知，不能留 0——0 在两个驱动里都是「成功」的意思";
+        EXPECT_EQ(withoutCode.nativeErrorCode(), QueryExecutionException::kUnknownNativeErrorCode) << "旧签名的码必须显式标为未知，不能留 0——0 在两个驱动里都是「成功」的意思";
     }
 
     /**
@@ -180,8 +179,7 @@ namespace AsynGyanis::Database
     TEST(QueryExecutionNativeCode, NativeCodeDoesNotAlterMessageText)
     {
         const QueryExecutionException withCode("Queryable: 语句执行失败：死锁", 1213);
-        EXPECT_NE(std::string(withCode.what()).find("Queryable: 语句执行失败：死锁"), std::string::npos)
-                << "带上原生码不得改写消息文本——那是三条链共用的对外契约";
+        EXPECT_NE(std::string(withCode.what()).find("Queryable: 语句执行失败：死锁"), std::string::npos) << "带上原生码不得改写消息文本——那是三条链共用的对外契约";
     }
 
 } // namespace AsynGyanis::Database

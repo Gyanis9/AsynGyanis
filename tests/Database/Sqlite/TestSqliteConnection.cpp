@@ -1203,15 +1203,13 @@ namespace AsynGyanis::Database
         ASSERT_NE(connection.execute("INSERT INTO t (id) VALUES (1)"), nullptr);
         EXPECT_EQ(connection.execute("INSERT INTO t (id) VALUES (1)"), nullptr) << "重复的 UNIQUE 值本应被拒";
         EXPECT_EQ(connection.lastNativeErrorCode() & 0xFF, 19) << "约束冲突的主码应是 19";
-        EXPECT_FALSE(QueryExecutionException(connection.lastError(), connection.lastNativeErrorCode()).isRetryable())
-                << "重插同一个唯一值，重试一万次也不会变好";
+        EXPECT_FALSE(QueryExecutionException(connection.lastError(), connection.lastNativeErrorCode()).isRetryable()) << "重插同一个唯一值，重试一万次也不会变好";
 
         // 未连接时的拒绝走的是「只写文本」那条分支：上一条的原生码必须被清掉
         connection.disconnect();
         EXPECT_EQ(connection.execute("SELECT 1"), nullptr);
         EXPECT_FALSE(connection.lastError().empty()) << "未连接应给出可读原因";
-        EXPECT_EQ(connection.lastNativeErrorCode(), DatabaseConnection::ErrorRecord::kUnknownNativeCode)
-                << "只写文本的失败路径没清掉上一条的原生码：码与文本就不再配对了";
+        EXPECT_EQ(connection.lastNativeErrorCode(), DatabaseConnection::ErrorRecord::kUnknownNativeCode) << "只写文本的失败路径没清掉上一条的原生码：码与文本就不再配对了";
     }
 
 } // namespace AsynGyanis::Database

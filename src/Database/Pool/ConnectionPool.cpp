@@ -793,11 +793,11 @@ namespace AsynGyanis::Database
         // 去索引 loops，那是越界读。合成一对之后，分配失败要么整条收不下、要么收全。
         struct ExpiredWaiter
         {
-            std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket;          ///< 唤醒票据（取走即失效，重复投递安全）
-            Core::EventLoop                              *completionLoop;  ///< 这次唤醒要投回的事件循环
+            std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket;         ///< 唤醒票据（取走即失效，重复投递安全）
+            Core::EventLoop                              *completionLoop; ///< 这次唤醒要投回的事件循环
         };
 
-        const auto           now           = std::chrono::steady_clock::now();
+        const auto                 now = std::chrono::steady_clock::now();
         std::vector<ExpiredWaiter> expiredWaiters;
         try
         {

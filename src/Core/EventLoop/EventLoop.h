@@ -57,8 +57,8 @@ namespace AsynGyanis::Core
         std::uint64_t                         completedWorkingSegments{};   ///< 已跑完的工作段条数，一条等于「一轮里不含等待的那段」
         std::chrono::microseconds             slowestWorkingSegment{};      ///< 历史最慢的一条工作段（高水位，只升不降）
         std::size_t                           remotePendingCount{};         ///< 跨线程投递里还没被取走的件数（本地就绪队列不在内）
-        bool                                  stoppedByFailure{};             ///< run() 是否因逃逸到循环层的异常而收口（区别于 stop() 的正常停止）
-        std::size_t                           failedDispatchCount{};          ///< 本循环派发时被守卫就地收下的抛出条数（见 Scheduler::failedDispatchCount）
+        bool                                  stoppedByFailure{};           ///< run() 是否因逃逸到循环层的异常而收口（区别于 stop() 的正常停止）
+        std::size_t                           failedDispatchCount{};        ///< 本循环派发时被守卫就地收下的抛出条数（见 Scheduler::failedDispatchCount）
     };
 
     /**
@@ -215,12 +215,12 @@ namespace AsynGyanis::Core
         mutable std::mutex                    m_liveWatcherMutex; ///< 保护下面那张表的锁，跨线程注销也要用
         std::unordered_set<const IoWatcher *> m_liveWatchers;     ///< 当前还活着的 IoWatcher
 
-        Epoll                   m_epoll;          ///< epoll 事件管理器
-        Scheduler               m_scheduler;      ///< 协程调度器，管理待运行的任务队列
-        Platform::EventNotifier m_wakeup;         ///< 跨线程唤醒器
-        int                     m_wakeupSentinel; ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）
-        std::atomic<bool>       m_running;        ///< 循环是否正在运行中（原子标记）
-        std::atomic<bool>       m_stopRequested;  ///< 是否已请求停止（原子标记，线程安全）
+        Epoll                   m_epoll;                   ///< epoll 事件管理器
+        Scheduler               m_scheduler;               ///< 协程调度器，管理待运行的任务队列
+        Platform::EventNotifier m_wakeup;                  ///< 跨线程唤醒器
+        int                     m_wakeupSentinel;          ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）
+        std::atomic<bool>       m_running;                 ///< 循环是否正在运行中（原子标记）
+        std::atomic<bool>       m_stopRequested;           ///< 是否已请求停止（原子标记，线程安全）
         std::atomic<bool>       m_stoppedByFailure{false}; ///< run() 是否被逃逸到循环层的异常带走（任意线程可读，进快照）
         /// 自观测那一组量：只有本循环的线程写，任意线程读，因此全是原子量且不需要与登记表配合
         std::atomic<LoopPhase>       m_phase{LoopPhase::NotStarted};   ///< 当前相，最后发布（见 enterPhase）

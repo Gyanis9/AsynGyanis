@@ -556,7 +556,7 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(watcher.isValid());
 
         std::atomic_flag resumedFlag = ATOMIC_FLAG_INIT;
-        ThrowOnResume throwing       = waitThenThrow(watcher, resumedFlag);
+        ThrowOnResume    throwing    = waitThenThrow(watcher, resumedFlag);
         throwing.handle.resume();
 
         // 前置自检：协程必须已挂起在等待里、且尚未执行抛出那一步
