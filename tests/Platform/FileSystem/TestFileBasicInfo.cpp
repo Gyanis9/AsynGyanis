@@ -1,5 +1,6 @@
 // FileBasicInfo 单元测试：普通文件、目录、缺失路径，修改时间的取整方向与「现读不缓存」，
-// 以及身份标记的三件事——POSIX 认得出同名重建、同一文件对象反复查要稳、Windows 认不出（记档）
+// 以及身份标记的四件事——POSIX 认得出同名重建、两条查询口同刻度、同一文件对象反复查要稳、
+// Windows 认不出（记档）
 #include "Platform/FileSystem/FileBasicInfo.h"
 
 #include "Platform/Platform.h"
@@ -13,6 +14,11 @@
 #include <string>
 #include <system_error>
 #include <vector>
+
+#if !ASYN_PLATFORM_WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include "PlatformTestSupport.h"
 
@@ -274,6 +280,36 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(secondQuery.has_value());
         EXPECT_EQ(firstQuery->identityTag, secondQuery->identityTag) << "同一个文件对象的身份标记不稳定，缓存无从命中";
     }
+
+#if !ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住（POSIX）：按路径查与按已打开句柄查必须给出同一个身份标记
+     * @details 静态文件服务每请求都要比这两个数：`HttpServer` 拿它判「发出去的正文与写下的验证器是否
+     *          同一版本」，`StaticFileMappingCache` 拿它判「缓存条目还作不作数」。两条查询口一旦分叉，
+     *          每个请求都会被误判成正文过期——正文照样发得出去、用例照样全绿，只是缓存永远命中不上。
+     *          句柄版走 `AT_EMPTY_PATH` 问同一个对象，与路径版必须逐位同折值；文件系统不支持句柄时
+     *          （overlayfs 实测回 EOPNOTSUPP）两条路一起退回三项折法，因此这条对拉在两种文件系统上都成立。
+     */
+    TEST(FileBasicInfo, GivesTheSameIdentityTagByPathAndByOpenedHandle)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileBasicInfo_IdentityParity");
+        const std::filesystem::path           targetPath = temporaryDirectory.path() / "parity.txt";
+        writeTemporaryFile(targetPath, "same-object");
+
+        const int descriptor = ::open(targetPath.c_str(), O_RDONLY);
+        ASSERT_GE(descriptor, 0) << "连自己刚写的临时文件都打不开，这条用例就没有被测对象";
+
+        const std::optional<FileBasicInfo> byPath   = queryFileBasicInfo(targetPath);
+        const std::optional<FileBasicInfo> byHandle = queryOpenedFileBasicInfo(descriptor);
+        ::close(descriptor);
+
+        ASSERT_TRUE(byPath.has_value());
+        ASSERT_TRUE(byHandle.has_value());
+        EXPECT_EQ(byPath->identityTag, byHandle->identityTag) << "两条查询口的身份标记分叉，映射缓存每请求都会被误判成正文已过期";
+        EXPECT_EQ(byPath->sizeBytes, byHandle->sizeBytes);
+        EXPECT_EQ(byPath->lastWriteSeconds, byHandle->lastWriteSeconds);
+    }
+#endif
 
 #if ASYN_PLATFORM_WIN32
     /**

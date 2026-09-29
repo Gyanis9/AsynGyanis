@@ -1,3 +1,8 @@
+// name_to_handle_at 只在 GNU 扩展下可见，特性宏必须先于本 TU 的第一个系统头。
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "Platform/FileSystem/FileBasicInfo.h"
 
 #include "Platform/Platform.h"
@@ -7,6 +12,10 @@
 #if ASYN_PLATFORM_WIN32
 #include <windows.h>
 #else
+#include <array>
+#include <atomic>
+#include <cerrno>
+#include <fcntl.h>
 #include <sys/stat.h>
 #endif
 
@@ -115,6 +124,105 @@ namespace AsynGyanis::Platform
         return info;
     }
 #else
+    namespace
+    {
+        /// name_to_handle_at 的句柄字节缓冲上限；ext4 与 tmpfs 实际只用 8~16 字节，128 足够全在栈上
+        constexpr int kFileHandleBytes = 128;
+
+        /// 「这个设备上的文件系统给不出句柄」的判定表容量：一台机器上同时在服务的文件系统远少于 8 个
+        constexpr std::size_t kUnsupportedDeviceSlots = 8;
+
+        /// 记「不支持」那一侧的设备号，存 `设备号 + 1`，0 当空槽（设备号取不到 0）
+        std::array<std::atomic<std::uint64_t>, kUnsupportedDeviceSlots> unsupportedHandleDevices{};
+
+        /**
+         * @brief 这个设备是否已被记下「给不出文件句柄」
+         * @param device 来自 `stat` 的设备号
+         * @return bool 已记过为真
+         */
+        [[nodiscard]] bool isHandleUnsupportedOn(const std::uint64_t device) noexcept
+        {
+            const std::uint64_t marker = device + 1U;
+            for (const auto &slot: unsupportedHandleDevices)
+            {
+                if (slot.load(std::memory_order_relaxed) == marker)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * @brief 记下这个设备给不出文件句柄，之后同设备不再白付一次必失败的系统调用
+         * @param device 来自 `stat` 的设备号
+         * @details overlayfs 与 NFS 上 `name_to_handle_at` 恒回 EOPNOTSUPP（容器实测 20000/20000 全失败，
+         *          单次均摊 283 纳秒），而静态文件服务每请求都要问一次身份。这里只记「不支持」这一侧：
+         *          记错或槽位挤满的代价是多付一次调用，绝不会把两个文件对象判成同一个。设备号在同一
+         *          进程的生存期内对同一挂载是稳定属性，卸载后同号码换挂到别的文件系统属于可容忍的
+         *          保守一侧。
+         */
+        void markHandleUnsupportedOn(const std::uint64_t device) noexcept
+        {
+            const std::uint64_t marker = device + 1U;
+            for (auto &slot: unsupportedHandleDevices)
+            {
+                std::uint64_t expected = 0;
+                const bool    claimed  = slot.compare_exchange_strong(expected, marker, std::memory_order_relaxed);
+                if (claimed || slot.load(std::memory_order_relaxed) == marker)
+                {
+                    return;
+                }
+            }
+        }
+
+        /**
+         * @brief 取文件系统给这个文件对象记的身份句柄，折成一个可混入的 64 位数
+         * @details ext4 与 tmpfs 的句柄字节里除了 inode 号还带**世代号**，inode 被回收再发给新文件时世代
+         *          必变；而 ctime 由 `current_time()` 取粗粒度时钟，HZ=1000 时同一毫秒内的「删掉再同名
+         *          重建」会给出逐位相同的 ctime（原生 ext4 实测 50 次里 16 次相同，本用例因此稳定变红）。
+         *          overlayfs 则直接回 EOPNOTSUPP（容器实测），此时给空，由调用方退回原来的三项折法。
+         * @param dirfd 按路径查时传 `AT_FDCWD`；按已打开句柄查时传那个文件描述符
+         * @param name 按路径查时传路径；按句柄查时传空串并配 `AT_EMPTY_PATH`
+         * @param flags 按句柄查时传 `AT_EMPTY_PATH`，按路径查时传 0
+         * @param device 同一次 `stat`/`fstat` 给出的设备号，用于跳过已知不支持句柄的文件系统
+         * @return std::optional<std::uint64_t> 句柄可用时给出折好的数；不支持或失败时为空
+         * @note 两条查询口都用本函数，实测同一文件的路径版与句柄版给出逐位相同的折值，因此
+         *       「按路径查」与「按句柄查」的身份标记仍然同刻度可比。
+         */
+        [[nodiscard]] std::optional<std::uint64_t> queryFileIdentityHandle(const int dirfd, const char *name, const int flags, const std::uint64_t device) noexcept
+        {
+            if (isHandleUnsupportedOn(device))
+            {
+                return std::nullopt;
+            }
+
+            alignas(struct ::file_handle) char storage[sizeof(struct ::file_handle) + kFileHandleBytes];
+            auto *const                        handle  = reinterpret_cast<struct ::file_handle *>(storage);
+            int                                mountId = 0;
+            handle->handle_bytes                       = kFileHandleBytes;
+
+            if (::name_to_handle_at(dirfd, name, handle, &mountId, flags) != 0)
+            {
+                // 只有「这个文件系统压根不支持」才值得记住；权限与路径竞态一类每次都该重新问
+                if (errno == EOPNOTSUPP || errno == ENOSYS || errno == ENOTTY || errno == EPERM)
+                {
+                    markHandleUnsupportedOn(device);
+                }
+                return std::nullopt;
+            }
+
+            // FNV-1a：把变长句柄字节折成 64 位；装载点一并折进去，换挂载时句柄字节可能照抄旧值
+            std::uint64_t folded = 1469598103934665603ULL;
+            for (unsigned int index = 0; index < handle->handle_bytes; ++index)
+            {
+                folded = (folded ^ static_cast<std::uint64_t>(handle->f_handle[index])) * 1099511628211ULL;
+            }
+            folded ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(mountId)) * 0x9E3779B97F4A7C15ULL;
+            return folded;
+        }
+    } // namespace
+
     std::optional<FileBasicInfo> queryFileBasicInfo(const std::filesystem::path &path) noexcept
     {
         struct ::stat status{};
@@ -131,13 +239,15 @@ namespace AsynGyanis::Platform
         // 同一口径折算。ETag 与 Last-Modified 用的都是这一个整秒值，两处必须看到同一个数
         info.lastWriteSeconds = static_cast<std::int64_t>(status.st_mtime);
         // inode 号会被回收：删掉再同名重建时，文件系统往往把刚释放的那个号原样发给新文件（容器内
-        // overlayfs 实测两次同为 245657），所以光看 inode 认不出这种替换。再把设备号与 ctime 折进来：
-        // 设备号让「同一条路径换挂到另一个文件系统」不被当成同一个文件，ctime 则任何用户态 API 都
-        // 设不了（只能由内核在 inode 变更时刷新），回收来的 inode 必然带一个新的
+        // overlayfs 实测两次同为 245657），所以光看 inode 认不出这种替换。设备号让「同一条路径换挂到
+        // 另一个文件系统」不被当成同一个文件；ctime 虽然任何用户态 API 都设不了，但它取自内核的粗粒度
+        // 时钟（HZ=1000 即 1 毫秒一粒），同一粒之内完成的删建会给出逐位相同的值——原生 ext4 实测 50 次
+        // 里 16 次相同，因此它只能当兜底，真认出替换要靠文件系统给这个对象记的世代号。
         const std::uint64_t inodeTag  = static_cast<std::uint64_t>(status.st_ino);
         const std::uint64_t deviceTag = static_cast<std::uint64_t>(status.st_dev);
         const std::uint64_t changeTag = static_cast<std::uint64_t>(status.st_ctim.tv_sec) * 1000000000ULL + static_cast<std::uint64_t>(status.st_ctim.tv_nsec);
-        info.identityTag              = (inodeTag * 0x9E3779B97F4A7C15ULL) ^ (deviceTag * 0xC2B2AE3D27D4EB4FULL) ^ changeTag;
+        info.identityTag =
+                (inodeTag * 0x9E3779B97F4A7C15ULL) ^ (deviceTag * 0xC2B2AE3D27D4EB4FULL) ^ changeTag ^ queryFileIdentityHandle(AT_FDCWD, path.c_str(), 0, deviceTag).value_or(0);
         return info;
     }
 
@@ -160,11 +270,13 @@ namespace AsynGyanis::Platform
         info.sizeBytes        = static_cast<std::uintmax_t>(status.st_size);
         info.lastWriteSeconds = static_cast<std::int64_t>(status.st_mtime);
         // 与上面按路径查的那一段必须逐位同算法（同一条用例钉着这个不等就会响）：两条路的取值一旦分叉，
-        // 调用方比「是不是同一个版本」就永远得到「不是」
+        // 调用方比「是不是同一个版本」就永远得到「不是」。句柄版用 AT_EMPTY_PATH 问同一个对象，实测
+        // 折值与路径版相同；文件系统不支持句柄时两条路一起退回三项折法，也就一起保持可比。
         const std::uint64_t inodeTag  = static_cast<std::uint64_t>(status.st_ino);
         const std::uint64_t deviceTag = static_cast<std::uint64_t>(status.st_dev);
         const std::uint64_t changeTag = static_cast<std::uint64_t>(status.st_ctim.tv_sec) * 1000000000ULL + static_cast<std::uint64_t>(status.st_ctim.tv_nsec);
-        info.identityTag              = (inodeTag * 0x9E3779B97F4A7C15ULL) ^ (deviceTag * 0xC2B2AE3D27D4EB4FULL) ^ changeTag;
+        info.identityTag =
+                (inodeTag * 0x9E3779B97F4A7C15ULL) ^ (deviceTag * 0xC2B2AE3D27D4EB4FULL) ^ changeTag ^ queryFileIdentityHandle(handle, "", AT_EMPTY_PATH, deviceTag).value_or(0);
         return info;
     }
 #endif
