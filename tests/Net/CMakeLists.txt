@@ -89,6 +89,7 @@ add_executable(TestNet
         Http/TestHttpAcceptDispatch.cpp
         Http/TestHttpMemoryBudget.cpp
         Http/TestHttpServerConfig.cpp
+        Http/TestHttpServerAssembly.cpp
         Http/TestHttpServerParserLimits.cpp
         Http/TestHttpObservability.cpp
         Http/TestHttpMetricsEndpoint.cpp

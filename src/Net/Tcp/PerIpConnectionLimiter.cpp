@@ -180,6 +180,12 @@ namespace AsynGyanis::Net
         return m_state->rejectedConnectionCount.load(std::memory_order_relaxed);
     }
 
+    std::size_t PerIpConnectionLimiter::maximumConnectionsPerIp() const noexcept
+    {
+        // 构造后不再改，因此直接读成员：装配处拿它和配置里的数对一遍
+        return m_maximumConnectionsPerIp;
+    }
+
     void PerIpConnectionLimiter::release(State &state, const std::string &ipKey)
     {
         std::lock_guard<std::mutex> guard(state.mutex);

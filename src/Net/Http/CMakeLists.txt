@@ -14,6 +14,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Compression.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerConfig.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerConfig.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpServerAssembly.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpServerAssembly.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerStats.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerStats.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpMetricsEndpoint.h

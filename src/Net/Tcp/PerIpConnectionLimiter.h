@@ -147,6 +147,15 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::uint64_t rejectedConnectionCount() const noexcept;
 
+        /**
+         * @brief 这道闸门配的单来源上限是多少（0 表示保护关闭）
+         * @details 限额器可以被多台服务器共用一份，而配置里的数是一台一份的：两边不一致时
+         *          「配置写了 16、实际跑的是 64」这种事实从外部完全看不出来，装配处需要一个
+         *          能读到实际值的口子把它判出来（见 applyHttpServerConfiguration）
+         * @return std::size_t 构造时给定的上限
+         */
+        [[nodiscard]] std::size_t maximumConnectionsPerIp() const noexcept;
+
     private:
         /**
          * @brief 归还一个名额（只由 Lease 调用）
