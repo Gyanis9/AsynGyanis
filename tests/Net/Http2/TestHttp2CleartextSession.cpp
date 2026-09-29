@@ -650,6 +650,27 @@ namespace AsynGyanis::Net
         badPush.enablePush = 2;
         EXPECT_THROW(server.setHttp2Configuration(badPush), Base::InvalidArgumentException);
 
+        // INITIAL_WINDOW_SIZE 线上是有符号 32 位，越过 2^31-1 的写法要么被对端按连接错误收场，
+        // 要么在本端参与流控算式时变成负数——两种都比「当场拒」难查得多
+        Http2ConnectionConfiguration tooLargeWindow;
+        tooLargeWindow.initialWindowSize = 2147483648U;
+        EXPECT_THROW(server.setHttp2Configuration(tooLargeWindow), Base::InvalidArgumentException);
+
+        // 这两项取 0 的语义是「一律拒绝」，正是把它们误当成「0 = 不限」时会写下的值
+        Http2ConnectionConfiguration zeroHeaderList;
+        zeroHeaderList.maximumHeaderListSize = 0;
+        EXPECT_THROW(server.setHttp2Configuration(zeroHeaderList), Base::InvalidArgumentException);
+
+        Http2ConnectionConfiguration zeroHeaderBlock;
+        zeroHeaderBlock.maximumHeaderBlockByteCount = 0;
+        EXPECT_THROW(server.setHttp2Configuration(zeroHeaderBlock), Base::InvalidArgumentException);
+
+        // 合法边界值必须仍然收得下：上界本身（2^31-1）与 RFC 允许的最小窗口 0 之外，
+        // 窗口取 1 是合法配置，不能被新判据误伤
+        Http2ConnectionConfiguration tinyButLegalWindow;
+        tinyButLegalWindow.initialWindowSize = 1;
+        EXPECT_NO_THROW(server.setHttp2Configuration(tinyButLegalWindow));
+
         // 被拒绝的设置不能留下半成品：当前生效的仍是那一份合法配置
         Http2ConnectionConfiguration legal;
         legal.maximumConcurrentStreams = 7;

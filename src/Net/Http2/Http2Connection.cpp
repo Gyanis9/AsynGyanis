@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -169,6 +170,28 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 MAX_FRAME_SIZE 收到 {}：合法区间是 [{}, {}]（RFC 7540 §6.5.2），"
                                                              "越界的值发出去对端会按连接错误收场",
                                                              configuration.maximumFrameSize, kHttp2DefaultMaximumFrameSize, kHttp2MaximumMaximumFrameSize));
+        }
+
+        // INITIAL_WINDOW_SIZE 在线上是 32 位有符号数，RFC 把上界定在 2^31-1（§6.5.2）：越界的值
+        // 发出去对端按连接错误收场，而不发出去时本端自己会把「窗口」按负数参与流控算式
+        if (configuration.initialWindowSize > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
+        {
+            throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 INITIAL_WINDOW_SIZE 收到 {}：上界是 {}（RFC 7540 §6.5.2，"
+                                                             "线上为有符号 32 位）。要大窗口请分次发 WINDOW_UPDATE（§6.9.2），不要越过这个编码上限",
+                                                             configuration.initialWindowSize, std::numeric_limits<std::int32_t>::max()));
+        }
+
+        // 这两项是「本端策略上限」而不是线上字段，取 0 的语义是每条流的头一律拒绝——
+        // 那正是把它当成「0 = 不限」的写法会产生的后果，且要等到第一个真实请求才暴露
+        if (configuration.maximumHeaderListSize == 0)
+        {
+            throw Base::InvalidArgumentException("HTTP/2 连接配置的 maximumHeaderListSize 为 0：这等于拒绝每一条请求的头，"
+                                                 "而不是「不限大小」（不限请给一个足够大的值，例如 16 MiB）");
+        }
+        if (configuration.maximumHeaderBlockByteCount == 0)
+        {
+            throw Base::InvalidArgumentException("HTTP/2 连接配置的 maximumHeaderBlockByteCount 为 0：这等于拒绝每一个头块，"
+                                                 "CONTINUATION 判定会在第一帧就判超限（不限请给一个足够大的值）");
         }
     }
 
