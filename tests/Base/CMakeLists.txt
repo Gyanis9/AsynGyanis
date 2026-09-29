@@ -9,6 +9,7 @@ add_executable(TestBase
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
 
         Coding/TestBase64.cpp
+        Coding/TestSecureCompare.cpp
         Config/TestConfigValue.cpp
         Config/TestConfigValueType.cpp
         Config/TestConfigSchema.cpp

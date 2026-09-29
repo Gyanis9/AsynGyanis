@@ -22,8 +22,13 @@ namespace AsynGyanis::Net
 
         constexpr std::chrono::milliseconds kEndpointTimeout{2000};
 
-        /// 抓一次指定路径，回响应首行与已到达的正文（连接用完即关）
-        [[nodiscard]] std::string fetchPath(const std::uint16_t port, const std::string_view path)
+        /**
+         * @brief 抓一次指定路径，回响应首行与已到达的正文（连接用完即关）
+         * @param port 目标端口
+         * @param path 请求路径
+         * @param extraHeaderLine 额外的一条请求头（空串表示不加），用于带 Authorization 这类判定
+         */
+        [[nodiscard]] std::string fetchPath(const std::uint16_t port, const std::string_view path, const std::string_view extraHeaderLine = {})
         {
             LoopbackClient client(port);
             if (!client.isValid())
@@ -31,7 +36,9 @@ namespace AsynGyanis::Net
                 return {};
             }
             std::string receivedText;
-            if (!client.sendText(std::format("GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", path), kEndpointTimeout))
+            if (!client.sendText(
+                    std::format("GET {} HTTP/1.1\r\nHost: localhost\r\n{}\r\nConnection: close\r\n\r\n", path, extraHeaderLine.empty() ? "" : std::string(extraHeaderLine) + "\r\n"),
+                    kEndpointTimeout))
             {
                 return receivedText;
             }
@@ -106,6 +113,43 @@ namespace AsynGyanis::Net
 
         const std::string loopsText = fetchPath(fixture.listeningPort(), "/debug/loops");
         EXPECT_NE(loopsText.find("HTTP/1.1 200"), std::string::npos) << loopsText;
+    }
+
+    /**
+     * @brief 钉住：配了令牌的运维端点，没带对凭据进不来，而 /healthz 仍不查
+     * @details /metrics 与 /debug/loops 各钉「缺凭据 401」「带错 401」「带对 200」，/healthz 钉「无凭据仍 200」——
+     *          这条不对称是刻意的：进程存活探针要能被编排器无凭据访问，给它加令牌只会让人把探针关掉
+     */
+    TEST(HttpServerAssembly, GuardsOperationEndpointsWithBearerToken)
+    {
+        const ServerConfigurator configureServer = [](TestHttpServer &server)
+        {
+            HttpServerConfiguration configuration;
+            configuration.exposeMetrics  = true;
+            configuration.opsBearerToken = "assemble-test-token";
+            const auto outcome           = applyHttpServerConfiguration(server, configuration);
+            ASSERT_TRUE(outcome.has_value()) << outcome.error();
+        };
+
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+        const std::string withoutToken = fetchPath(fixture.listeningPort(), "/metrics");
+        EXPECT_NE(withoutToken.find("HTTP/1.1 401"), std::string::npos) << withoutToken;
+        EXPECT_NE(withoutToken.find("www-authenticate"), std::string::npos) << "401 要一并给出怎么带凭据：" << withoutToken;
+
+        const std::string wrongToken = fetchPath(fixture.listeningPort(), "/metrics", "Authorization: Bearer 另一个令牌");
+        EXPECT_NE(wrongToken.find("HTTP/1.1 401"), std::string::npos) << wrongToken;
+
+        // 方案名大小写不敏感（RFC 9110 §11.2）：只认 "Bearer" 的写法会把合规客户端拒在门外
+        const std::string lowerCaseScheme = fetchPath(fixture.listeningPort(), "/metrics", "Authorization: bearer assemble-test-token");
+        EXPECT_NE(lowerCaseScheme.find("HTTP/1.1 200"), std::string::npos) << lowerCaseScheme;
+
+        const std::string loopsWithoutToken = fetchPath(fixture.listeningPort(), "/debug/loops");
+        EXPECT_NE(loopsWithoutToken.find("HTTP/1.1 401"), std::string::npos) << loopsWithoutToken;
+
+        const std::string healthWithoutToken = fetchPath(fixture.listeningPort(), "/healthz");
+        EXPECT_NE(healthWithoutToken.find("HTTP/1.1 200"), std::string::npos) << "存活探针不该被鉴权挡住：" << healthWithoutToken;
     }
 
     /**

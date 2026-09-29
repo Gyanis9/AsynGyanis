@@ -23,11 +23,13 @@
 #include "Net/Http/TraceContext.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Coding/SecureCompare.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/SourceLocation.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -35,7 +37,10 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <ranges>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -1244,6 +1249,95 @@ namespace AsynGyanis::Net
     inline MiddlewareFunc compressionMiddleware(Core::EventLoop &completionLoop, Core::AsyncExecutor &offloadExecutor, const CompressionOptions options = {})
     {
         return Detail::compressionMiddlewareImplementation(&offloadExecutor, &completionLoop, options);
+    }
+
+    /**
+     * @brief 运维端点的访问策略
+     * @details 给 `opsAccessMiddleware()` 用。默认只保护 `/metrics` 与 `/debug/loops`：前者是内部计数与
+     *          循环状态，后者直接暴露每条事件循环的相位与计数。`/healthz` 不在名单里是刻意的——进程存活
+     *          探针要能被编排器无凭据访问（正文固定、不含任何业务数据），给它加令牌会让探针长期失败而被
+     *          人关掉，比暴露几个计数更糟。
+     */
+    struct ASYN_NET_API OpsAccessOptions
+    {
+        std::string bearerToken{};                                   ///< 要求的 Bearer 令牌；空是用法错误（等于挂一道永远放行的闸）
+        std::vector<std::string> protectedPaths{"/metrics", "/debug/loops"}; ///< 需要令牌的路径，逐条精确匹配
+    };
+
+    namespace Detail
+    {
+        /**
+         * @brief 从 Authorization 头里取出 Bearer 凭据
+         * @details auth-scheme 大小写不敏感（RFC 9110 §11.2）；方案不是 Bearer 时视为「没给凭据」，
+         *          不顺着别的方案去解释那段字符串
+         * @param headerValue 头取值原文
+         * @return std::string_view 凭据部分；不是 Bearer 方案时为空
+         */
+        [[nodiscard]] inline std::string_view extractBearerCredential(const std::string_view headerValue) noexcept
+        {
+            constexpr std::string_view kBearerScheme = "bearer ";
+            if (headerValue.size() < kBearerScheme.size())
+            {
+                return {};
+            }
+            for (std::size_t index = 0; index < kBearerScheme.size(); ++index)
+            {
+                const char left  = headerValue[index];
+                const char right = kBearerScheme[index];
+                if (std::tolower(static_cast<unsigned char>(left)) != right)
+                {
+                    return {};
+                }
+            }
+            return headerValue.substr(kBearerScheme.size());
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 给运维端点挂一道 Bearer 令牌闸门
+     * @details 指标与循环诊断端点原本谁都能抓：开到 0.0.0.0 上等于把内部计数、连接数与每条循环的相位
+     *          公开。令牌为空时**抛**而不是放行——那正是「配了闸却没关」最难发现的一种。
+     *          比较走 Base::constantTimeEquals，避免把「前几位猜对了」泄漏进响应耗时里。
+     * @param options 访问策略（令牌与受保护路径），按值捕获进中间件
+     * @return MiddlewareFunc 中间件；未授权时回 401 且不调用下游
+     * @throws Base::InvalidArgumentException bearerToken 为空
+     * @note 同名多条 Authorization 一律按未授权处理：只取第一条来解释，会让「塞一条对的再塞一条错的」
+     *       随头部顺序时通时不通，那种不稳定比直接拒更难查
+     */
+    inline MiddlewareFunc opsAccessMiddleware(OpsAccessOptions options)
+    {
+        if (options.bearerToken.empty())
+        {
+            throw Base::InvalidArgumentException("opsAccessMiddleware: 没有令牌就等于挂一道永远放行的闸；不需要鉴权就不要注册本中间件");
+        }
+
+        return [options = std::move(options)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const std::string_view path = request.path();
+            const bool isProtected = std::ranges::find(options.protectedPaths, path) != options.protectedPaths.end();
+            if (!isProtected)
+            {
+                co_await next();
+                co_return;
+            }
+
+            // 出现多条就当没有凭据：取值原文取第一条，但「有几条」这件事必须先问，否则歧义会被静默挑一边
+            const bool   isSingleCredential = request.headerFieldCount("authorization") <= 1;
+            const auto   presented          = isSingleCredential ? request.firstHeaderValueView("authorization") : std::optional<std::string_view>{};
+            const bool   isAuthorized       = presented.has_value() && Base::constantTimeEquals(Detail::extractBearerCredential(*presented), options.bearerToken);
+            if (isAuthorized)
+            {
+                co_await next();
+                co_return;
+            }
+
+            response.setStatus(401);
+            response.setHeader("www-authenticate", "Bearer realm=\"ops\", error=\"invalid_token\"");
+            response.setHeader("content-type", "text/plain");
+            // 不回显「你差在哪一位」也不区分「没给/给错/给了多条」之外的细节：这些差别只帮攻击者缩小搜索面
+            response.setBody("运维端点需要 Bearer 令牌（Authorization: Bearer <token>）");
+            co_return;
+        };
     }
 
 } // namespace AsynGyanis::Net

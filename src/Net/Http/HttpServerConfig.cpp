@@ -16,8 +16,8 @@ namespace AsynGyanis::Net
     namespace
     {
         /// server 段直接支持的键
-        constexpr std::array<std::string_view, 6> kServerKeys{
-                "maximum_connections", "maximum_connections_per_ip", "expose_metrics", "limits", "parser_limits", "rate_limit",
+        constexpr std::array<std::string_view, 7> kServerKeys{
+                "maximum_connections", "maximum_connections_per_ip", "expose_metrics", "ops_bearer_token", "limits", "parser_limits", "rate_limit",
         };
 
         /// limits 子段支持的键
@@ -289,6 +289,21 @@ namespace AsynGyanis::Net
             }
             configuration.exposeMetrics = value.get<bool>();
         }
+        if (section.contains("ops_bearer_token"))
+        {
+            const Base::ConfigValue &value = section.at("ops_bearer_token");
+            if (!value.is_string())
+            {
+                throw Base::ConfigValidationException(sectionPath + ".ops_bearer_token", "必须是字符串；不想要鉴权就把这一项整个删掉，写 null 或空串都不是「删掉」");
+            }
+            configuration.opsBearerToken = value.get<std::string>();
+            // 空串是最坏的一种写法：中间件会因「没令牌」而抛，或者被当成不鉴权——两种都比「你没配」更难读。
+            // 要取消鉴权就不写这一项，要写就得写一个真的值
+            if (configuration.opsBearerToken.empty())
+            {
+                throw Base::ConfigValidationException(sectionPath + ".ops_bearer_token", "不能是空串：空串等于挂一道永远放行的闸。不需要鉴权就删掉这一项");
+            }
+        }
         // 有意不暴露空闲清扫节拍：它是超时误差的唯一来源（最坏误差 = 节拍 + 各连接自己的超时），
         // 手调它只会把超时语义调坏；需要更细的节拍应当在代码里改而不是配置里拧
 
@@ -310,6 +325,13 @@ namespace AsynGyanis::Net
         if (configuration.requestsPerSecond > 0.0 && configuration.rateLimitBurstCapacity < 1.0)
         {
             throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".rate_limit.burst_capacity", "启用限流时容量必须不小于 1，否则任何请求都放行不了");
+        }
+        // 同一条理由的另一面：配了运维端点令牌却没开那三个端点，闸门就保护不到任何东西——
+        // 看起来像「已配鉴权」而实际无人在用它，是最难发现的一类死配置
+        if (!configuration.opsBearerToken.empty() && !configuration.exposeMetrics)
+        {
+            throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".ops_bearer_token",
+                                                  "配了令牌但没有 expose_metrics：闸门保护不到任何端点。要么两处都开，要么把令牌这一项删掉");
         }
         return configuration;
     }

@@ -52,9 +52,16 @@ namespace AsynGyanis::Net
                         tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity)));
             }
 
-            // 运维面三件套同开：它们都不做鉴权，只开其一会让「抓不到数」与「以为没暴露」互相伪装
+            // 运维面三件套同开：只开其一会让「抓不到数」与「以为没暴露」互相伪装
             if (configuration.exposeMetrics)
             {
+                // 令牌闸门只拦 /metrics 与 /debug/loops：那两个读得到连接数、速率与每条循环的状态，
+                // 而 /healthz 要能被编排器无凭据访问（正文固定、不含业务数据）。
+                // 刻意不把它做成「所有路由都要令牌」：那会让业务侧自己注册的公开端点也一起被挡
+                if (!configuration.opsBearerToken.empty())
+                {
+                    server.router().addMiddleware(opsAccessMiddleware(OpsAccessOptions{.bearerToken = configuration.opsBearerToken}));
+                }
                 server.enableMetricsEndpoint();
                 server.enableHealthEndpoint();
                 server.enableLoopDiagnosticsEndpoint();

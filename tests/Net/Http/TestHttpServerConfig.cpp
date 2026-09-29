@@ -108,6 +108,7 @@ namespace AsynGyanis::Net
         serverMembers.emplace("maximum_connections", integer(2048));
         serverMembers.emplace("maximum_connections_per_ip", integer(16));
         serverMembers.emplace("expose_metrics", boolean(true));
+        serverMembers.emplace("ops_bearer_token", Base::ConfigValue("assemble-test-token"));
         serverMembers.emplace("limits", object(Base::ConfigObject{
                                                 {"idle_timeout_ms", integer(30000)},
                                                 {"read_timeout_ms", integer(15000)},
@@ -134,6 +135,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.maximumConnections, 2048u);
         EXPECT_EQ(configuration.maximumConnectionsPerIp, 16u);
         EXPECT_TRUE(configuration.exposeMetrics);
+        EXPECT_EQ(configuration.opsBearerToken, "assemble-test-token");
         EXPECT_EQ(configuration.limits.idleTimeout, std::chrono::milliseconds(30000));
         EXPECT_EQ(configuration.limits.readTimeout, std::chrono::milliseconds(15000));
         EXPECT_EQ(configuration.limits.writeTimeout, std::chrono::milliseconds(20000));
@@ -261,6 +263,32 @@ namespace AsynGyanis::Net
                 {"rate_limit", object(Base::ConfigObject{{"requests_per_second", floating(0.0)}, {"burst_capacity", floating(0.0)}})},
         };
         EXPECT_DOUBLE_EQ(readHttpServerConfiguration(makeRootDocument(unlimitedRequests)).requestsPerSecond, 0.0);
+    }
+
+    /**
+     * @brief 钉住：运维端点令牌的两种「看着像配了其实没配」都当场拒
+     * @details 空串会让闸门变成一道永远放行的门；只配令牌不开 expose_metrics 则保护不到任何端点——
+     *          两者都比「没配」更糟，因为配置文件上看着都像已加固
+     */
+    TEST(HttpServerConfig, RejectsUselessBearerTokenConfiguration)
+    {
+        const Base::ConfigObject emptyToken{
+                {"expose_metrics", boolean(true)},
+                {"ops_bearer_token", Base::ConfigValue("")},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(emptyToken)), Base::ConfigValidationException);
+
+        const Base::ConfigObject tokenWithoutEndpoints{
+                {"ops_bearer_token", Base::ConfigValue("a-real-token")},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(tokenWithoutEndpoints)), Base::ConfigValidationException);
+
+        // 非字符串的令牌也是拒：把令牌写成数字会静默变成「有值」的假象
+        const Base::ConfigObject tokenIsNumber{
+                {"expose_metrics", boolean(true)},
+                {"ops_bearer_token", integer(42)},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(tokenIsNumber)), Base::ConfigValidationException);
     }
 
     /**

@@ -459,9 +459,10 @@ int main(int argc, char **argv)
 #endif
         LOG_INFO("            注意进程间不共享状态：单来源限额、限流上限与指标计数都是每进程一份");
         LOG_INFO("  --worker 内部开关：由 master 传给 worker，用户不必手写");
-        LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）与 logging 段");
-        LOG_INFO("            （root 与各日志器的等级、控制台/文件/滚动 Sink）；");
-        LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明");
+        LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关、运维端点令牌）");
+        LOG_INFO("            与 logging 段（root 与各日志器的等级、控制台/文件/滚动 Sink）；");
+        LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明；");
+        LOG_INFO("            运维令牌只能写在文件里：命令行上的令牌会进 shell 历史与进程列表");
         return 0;
     }
 

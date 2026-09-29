@@ -17,6 +17,12 @@
 
 ### 新增
 
+- **运维端点可以要令牌了**：`server.ops_bearer_token` 给 `/metrics` 与 `/debug/loops` 挂一道 Bearer 闸门
+  （`Net::opsAccessMiddleware`），未授权回 401 并带 `WWW-Authenticate`。`/healthz` 刻意不在保护名单里：
+  存活探针要能被编排器无凭据访问，给它加令牌的结局通常是探针长期失败后被人体谅性地关掉，那比暴露几个计数更糟。
+  这条只能写在配置文件里（命令行上的令牌会进 shell 历史与进程列表）；比较走新的 `Base::constantTimeEquals`，
+  逐字节短路的比法会把「前几位猜对了」泄漏进耗时。空串令牌、非字符串令牌、以及「配了令牌却没开
+  `expose_metrics`」都在读配置时当场拒——三者都长得像已加固而实际保护不到任何东西。
 - **Windows 上的 worker 会随 master 一起消失**：`Process::spawn` 新增 `LaunchOptions::killWithParent`
   （把子进程挂进一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业，作业句柄随 `Process::Handle` 活着），
   `WorkerSupervisor` 给每个 worker 默认挂上。此前 master 被硬杀（`Taskkill /F`、OOM、容器被删）后，
