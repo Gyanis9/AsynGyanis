@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 
@@ -29,7 +31,7 @@ namespace AsynGyanis::Net
      *          `packet.sourceConnectionId = makeBytesFromHex(...)` 这种从临时量取视图的形式，
      *          语句结束即悬空。先把字节落到具名容器里再取视图。
      */
-    struct QuicOutboundPacket
+    struct ASYN_NET_API QuicOutboundPacket
     {
         bool                          isLongHeader{true};                          ///< 握手期用长头，1-RTT 用短头
         QuicLongPacketType            longPacketType{QuicLongPacketType::Initial}; ///< 仅长头有意义
@@ -56,5 +58,5 @@ namespace AsynGyanis::Net
      *         1..4、连接标识超过 v1 的 20 字节、长头里给非 Initial 带了 Token、或套件取值未定义
      * @throws Base::Exception 运行期故障：OpenSSL 侧的加密或掩码计算失败
      */
-    void appendQuicPacket(std::string &datagram, const QuicOutboundPacket &packet, const QuicPacketKeys &keys);
+    ASYN_NET_API void appendQuicPacket(std::string &datagram, const QuicOutboundPacket &packet, const QuicPacketKeys &keys);
 } // namespace AsynGyanis::Net

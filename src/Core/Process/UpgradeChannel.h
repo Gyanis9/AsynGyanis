@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/IO/Socket.h"
 
 #include <chrono>
@@ -32,7 +34,7 @@ namespace AsynGyanis::Core
      *          起事件循环线程之前用（交棒方通常先建通道、派生新一代，再开循环服务）。
      *          把它们放到循环线程上会让那条循环停在那儿等。
      */
-    class UpgradeChannel
+    class ASYN_CORE_API UpgradeChannel
     {
     public:
         /**
@@ -103,5 +105,5 @@ namespace AsynGyanis::Core
      * @return std::expected<int, std::string> 接手方可直接 accept()（TCP）或 recvfrom()（UDP）的描述符；
      *         失败交中文原因
      */
-    [[nodiscard]] std::expected<int, std::string> adoptHandedOverListener(std::string_view address, std::chrono::milliseconds connectBudget);
+    [[nodiscard]] ASYN_CORE_API std::expected<int, std::string> adoptHandedOverListener(std::string_view address, std::chrono::milliseconds connectBudget);
 } // namespace AsynGyanis::Core

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/Formatters/LogFormatter.h"
 
 #include <string>
@@ -21,7 +23,7 @@ namespace AsynGyanis::Base
      * @details 在等级字段前后插入 LogColor 提供的 ANSI 转义序列，并按等级着色；
      *          仅在确认输出目标支持 ANSI 序列时启用，否则应改用 DefaultFormatter。
      */
-    class ColorFormatter : public LogFormatter
+    class ASYN_BASE_API ColorFormatter : public LogFormatter
     {
     public:
         /**

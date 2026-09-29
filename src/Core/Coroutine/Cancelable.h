@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <stop_token>
 
 namespace AsynGyanis::Core
@@ -15,7 +17,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 可取消混入类，提供标准的协作取消机制。
      */
-    class Cancelable
+    class ASYN_CORE_API Cancelable
     {
     public:
         /**

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/Exception.h"
 
 #include <source_location>
@@ -25,7 +27,7 @@ namespace AsynGyanis::Core
      * @note 用错接口（参数非法等）抛的是 `Base::InvalidArgumentException`，它**不在**本类继承链上：那是用法的 bug，不该被「可恢复的运行期故障」这一捕获面吞掉。
      * @note 消息一律中文，且写清「原因 + 替代做法」；`what()` 的文本格式与 `Base::Exception` 一致（共用同一份格式化实现）。
      */
-    class CoreException : public Base::Exception
+    class ASYN_CORE_API CoreException : public Base::Exception
     {
     public:
         /**

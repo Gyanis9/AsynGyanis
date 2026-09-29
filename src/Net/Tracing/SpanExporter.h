@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Tracing/Span.h"
 
 #include <cstddef>
@@ -23,7 +25,7 @@ namespace AsynGyanis::Net
      * @details 刻意由 Tracer 交出来而不是让每个出口自己配一份：出口与编排器的服务名对不上时，
      *          报上去的链路会指向一个不存在的进程，而这在任何检索侧都看不出来。
      */
-    struct TraceResource
+    struct ASYN_NET_API TraceResource
     {
         std::string serviceName{};    ///< 服务名（OTLP 的 service.name），非空
         std::string serviceVersion{}; ///< 版本，空串表示未配置
@@ -40,7 +42,7 @@ namespace AsynGyanis::Net
      *       自己知道丢了哪几条，而计数在 Tracer 这一侧，拿不到那份明细就只能整批算丢。
      *       失败的批次不重试——「什么时候再试」是出口自己的状态，编排器这边只把失败计一次数。
      */
-    class SpanExporter
+    class ASYN_NET_API SpanExporter
     {
     public:
         SpanExporter()                                = default;

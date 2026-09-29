@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/FileSystem/FileBasicInfo.h"
 
 #include <cstddef>
@@ -35,8 +37,8 @@ namespace AsynGyanis::Platform
      *         以小于 length 的返回值表达，不报错也不补零
      * @note 本层不抛异常（与 Platform 其它封装一致）：失败只以错误码表达，文案与分支由上层决定。
      */
-    [[nodiscard]] std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath, std::size_t offset, std::size_t length,
-                                                                                   std::string &target, FileBasicInfo *openedAs = nullptr) noexcept;
+    [[nodiscard]] ASYN_PLATFORM_API std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath, std::size_t offset, std::size_t length,
+                                                                                                     std::string &target, FileBasicInfo *openedAs = nullptr) noexcept;
 
     /**
      * @brief 读出文件中 [offset, offset + length) 这段字节，交出一份新的字符串
@@ -50,5 +52,6 @@ namespace AsynGyanis::Platform
      *         打不开或读失败时给出错误码
      * @see readFileContentsInto
      */
-    [[nodiscard]] std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath, std::size_t offset, std::size_t length) noexcept;
+    [[nodiscard]] ASYN_PLATFORM_API std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath, std::size_t offset,
+                                                                                                 std::size_t length) noexcept;
 } // namespace AsynGyanis::Platform

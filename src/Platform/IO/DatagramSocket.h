@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/IO/Socket.h"
 
 #include <cstddef>
@@ -29,7 +31,7 @@ namespace AsynGyanis::Platform
      * @note 本类不做 WSAStartup：与其它套接字一样，调用方须先完成网络库初始化
      *       （Core::IoContext 在构造时负责，析构时回收）。
      */
-    class DatagramSocket
+    class ASYN_PLATFORM_API DatagramSocket
     {
     public:
         /// 单条报文可携带的最大字节数：UDP 上限 65535 减 IPv4 头(20)与 UDP 头(8)。

@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 namespace AsynGyanis::Database
 {
     /**
@@ -32,6 +34,6 @@ namespace AsynGyanis::Database
      * @param type 数据库类型枚举值
      * @return const char* 类型名称字面量，未知取值返回 "Unknown"
      */
-    const char *databaseTypeName(DatabaseType type) noexcept;
+    ASYN_DATABASE_API const char *databaseTypeName(DatabaseType type) noexcept;
 
 } // namespace AsynGyanis::Database

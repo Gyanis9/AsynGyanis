@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 namespace AsynGyanis::Platform
@@ -21,7 +23,7 @@ namespace AsynGyanis::Platform
      *          ANSI 转义序列，只需判断输出是否真的连着终端。
      * @note 两个方法都可重复调用，内部保证幂等。
      */
-    class Console
+    class ASYN_PLATFORM_API Console
     {
     public:
         /**

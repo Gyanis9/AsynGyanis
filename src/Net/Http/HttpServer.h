@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/EventLoop/EventLoop.h"
 
 #include "Net/Http/HttpMemoryBudget.h"
@@ -42,7 +44,7 @@ namespace AsynGyanis::Net
      *       需要目录服务时再 `server.staticFileDir("./web")`；两者都必须在 start() 之前完成。
      * @see HttpSession, Router, staticFileDir()
      */
-    class HttpServer : public TcpServer
+    class ASYN_NET_API HttpServer : public TcpServer
     {
     public:
         /**

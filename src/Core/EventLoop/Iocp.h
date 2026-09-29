@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 // 只借 wepoll 的 epoll_event 与 epoll 事件位定义：本后端不经过它的 AFD 轮询，
@@ -44,7 +46,7 @@ namespace AsynGyanis::Core
      *          写方向是零字节 WSASend、监听用 AcceptEx；水平触发由下一次 wait() 重新武装。
      * @see Epoll, IoWatcher, EventLoop
      */
-    class Iocp
+    class ASYN_CORE_API Iocp
     {
     public:
         /**

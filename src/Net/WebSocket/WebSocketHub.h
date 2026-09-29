@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
@@ -50,7 +52,7 @@ namespace AsynGyanis::Net
          *          挂起期间被除名，那份队列与闩也还活着， drain 能干净收尾而不是踩在被删对象上。
          *          对端指针则由除名时清空——它才是那个会悬垂的东西。
          */
-        struct WebSocketHubMember
+        struct ASYN_NET_API WebSocketHubMember
         {
             WebSocketPeer          *peer{nullptr};       ///< 空表示已除名或已收口：此后不再碰这条连接
             std::deque<std::string> pendingTexts;        ///< 已入队、尚未写出的消息，按到达顺序
@@ -68,7 +70,7 @@ namespace AsynGyanis::Net
      * @warning 句柄必须比它的对端连接活得短。会话侧的构造顺序本就满足这件事（对端对象在业务
      *          协程帧之外构造、之内销毁），把句柄放在处理器自己的栈上即可，不要把它存到别处。
      */
-    class WebSocketSubscription
+    class ASYN_NET_API WebSocketSubscription
     {
     public:
         /**
@@ -120,7 +122,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 按主题扇出的集线器（单条事件循环内使用，见文件说明的线程口径）
      */
-    class WebSocketHub
+    class ASYN_NET_API WebSocketHub
     {
     public:
         /// 单个成员待发队列的默认字节上界：1 MiB 足够盖住一次突发，又远小于可疑慢连接的无界增长

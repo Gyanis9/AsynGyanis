@@ -7,6 +7,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http/HttpBodyChunk.h"
@@ -26,7 +28,7 @@
 namespace AsynGyanis::Net
 {
     /// HTTP/2 客户端收到的响应：伪头与普通头分开留，正文按 DATA 拼回
-    struct Http2ClientResponse
+    struct ASYN_NET_API Http2ClientResponse
     {
         int                                              statusCode{0}; ///< :status 的值；0 表示没拿到响应
         std::vector<std::pair<std::string, std::string>> headers;       ///< 除伪头之外的响应字段，按收到的顺序留着
@@ -69,7 +71,7 @@ namespace AsynGyanis::Net
      * @warning 与所有连接一样，本对象只在自己的事件循环上用；传输通路（HttpOutboundConnection）由调用方
      *          建好并交出所有权，明文 h2c 与 ALPN 协商出 h2 的 TLS 两条都走得通。
      */
-    class Http2ClientConnection
+    class ASYN_NET_API Http2ClientConnection
     {
     public:
         /// 一条连接最多能开几条流的上界：客户端流号取 1、3、5…，且不得越过 2^31-1（RFC 7540 §5.1.1）

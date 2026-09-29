@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/Timer.h"
@@ -74,7 +76,7 @@ namespace AsynGyanis::Net
      *
      * @see Http2Connection, HttpSession, Core::TlsSocket
      */
-    class Http2Session final : public HttpSession
+    class ASYN_NET_API Http2Session final : public HttpSession
     {
     public:
         /**

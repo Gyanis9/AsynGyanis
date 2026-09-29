@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
@@ -26,7 +28,7 @@ namespace AsynGyanis::Core
      *       sockaddr_in6::sin6_scope_id；链路本地地址（fe80::/10）不带作用域时无法确定是哪块网卡，
      *       绑定或连接会失败，这类地址要写成 `fe80::1%eth0` 的形状
      */
-    class InetAddress
+    class ASYN_CORE_API InetAddress
     {
     public:
         /**

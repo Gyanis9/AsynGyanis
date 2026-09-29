@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/CoroutinePool.h"
@@ -59,7 +61,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 协程最终挂起点：返回 continuation 句柄实现对称转移，避免递归恢复
      */
-    struct FinalAwaiter
+    struct ASYN_CORE_API FinalAwaiter
     {
         /**
          * @brief 永远返回 false，协程终结点必须挂起。
@@ -111,7 +113,7 @@ namespace AsynGyanis::Core
      *          的唯一依据：只靠协程句柄无法区分「停在初始挂起点的惰性协程」与「已经在跑、
      *          只是挂在内部某个等待上的协程」，而两者要采取的动作正好相反。
      */
-    struct InitialSuspendAwaiter
+    struct ASYN_CORE_API InitialSuspendAwaiter
     {
         /**
          * @brief 异步起点必须挂起（惰性启动）。

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Config/ConfigKeyValueMap.h"
 #include "Base/Config/ConfigLoadResult.h"
 #include "Base/Config/ConfigSchema.h"
@@ -44,7 +46,7 @@ namespace AsynGyanis::Base
      * @note 单例（Meyers' Singleton）。数值与布尔取值遵循严格口径（见 configValueAs），
      *       不做取整、回绕与跨类型转换。
      */
-    class ConfigManager
+    class ASYN_BASE_API ConfigManager
     {
     public:
         /**

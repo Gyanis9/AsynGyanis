@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 #include <string>
@@ -27,7 +29,7 @@ namespace AsynGyanis::Platform
      *       kTooManyOpenFiles 同值；判定时把它们整组写成 OR 即可，
      *       不要假设两两不同。
      */
-    class PlatformError
+    class ASYN_PLATFORM_API PlatformError
     {
     public:
         static constexpr int kInterrupted =

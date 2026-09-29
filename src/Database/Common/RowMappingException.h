@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseException.h"
 
 #include <source_location>
@@ -24,7 +26,7 @@ namespace AsynGyanis::Database
      *          声明已经不一致**（schema 漂移），是契约问题而不是容量或语句问题——
      *          重试、换连接、改 SQL 都不会好，只能对齐表结构与结构体定义。
      */
-    class RowMappingException : public DatabaseException
+    class ASYN_DATABASE_API RowMappingException : public DatabaseException
     {
     public:
         /**

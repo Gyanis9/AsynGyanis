@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 
 #include <functional>
@@ -37,7 +39,7 @@ namespace AsynGyanis::Net
      *       不会按可复用连接继续服务。
      * @see HttpRequest::bodyStream(), HttpBodySource, Router::postStreaming()
      */
-    class HttpRequestBody
+    class ASYN_NET_API HttpRequestBody
     {
     public:
         /// 拉取一批字节的泵：返回 false 表示连接已不可用（读失败或对端断开）

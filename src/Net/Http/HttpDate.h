@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -28,7 +30,7 @@ namespace AsynGyanis::Net
      * @param time 待格式化的时间点，按 UTC 解释
      * @return IMF-fixdate 文本
      */
-    [[nodiscard]] std::string formatHttpDate(std::chrono::system_clock::time_point time);
+    [[nodiscard]] ASYN_NET_API std::string formatHttpDate(std::chrono::system_clock::time_point time);
 
     /**
      * @brief 把时间点写成 HTTP 日期，产物落在调用方给的定长缓冲里
@@ -40,7 +42,7 @@ namespace AsynGyanis::Net
      * @param buffer 恰好 29 字节的输出缓冲
      * @return 指向 buffer 的定长视图，生命周期由调用方的缓冲决定
      */
-    [[nodiscard]] std::string_view formatHttpDate(std::chrono::system_clock::time_point time, std::span<char, kHttpDateTextLength> buffer) noexcept;
+    [[nodiscard]] ASYN_NET_API std::string_view formatHttpDate(std::chrono::system_clock::time_point time, std::span<char, kHttpDateTextLength> buffer) noexcept;
 
     /**
      * @brief 取「此刻」的 HTTP 日期文本，按整秒缓存
@@ -50,7 +52,7 @@ namespace AsynGyanis::Net
      * @warning 返回的视图指向本线程内部缓冲，下一次调用即失效——要跨调用持有必须立刻拷走
      * @return 定长 29 字节的 IMF-fixdate 文本
      */
-    [[nodiscard]] std::string_view currentHttpDateText();
+    [[nodiscard]] ASYN_NET_API std::string_view currentHttpDateText();
 
     /**
      * @brief 解析 HTTP 日期文本
@@ -66,5 +68,5 @@ namespace AsynGyanis::Net
      *       RFC 850 的星期全称与三字母缩写都收
      * @note 名称逐字区分大小写：HTTP 日期的 ABNF 已把大小写固定下来，放宽只会放过真正畸形的头
      */
-    [[nodiscard]] std::optional<std::chrono::system_clock::time_point> parseHttpDate(std::string_view text);
+    [[nodiscard]] ASYN_NET_API std::optional<std::chrono::system_clock::time_point> parseHttpDate(std::string_view text);
 } // namespace AsynGyanis::Net

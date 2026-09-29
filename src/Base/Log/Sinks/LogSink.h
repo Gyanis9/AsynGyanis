@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/Formatters/LogFormatter.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
@@ -26,7 +28,7 @@ namespace AsynGyanis::Base
      *          可在运行期安全替换；落地方式由派生类（控制台/文件/滚动文件/异步包装）实现。
      * @note Logger 会持有多个 Sink 并在每次写日志前调用 shouldLog() 预筛。
      */
-    class LogSink
+    class ASYN_BASE_API LogSink
     {
     public:
         /**

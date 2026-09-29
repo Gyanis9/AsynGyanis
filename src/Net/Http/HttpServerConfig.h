@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Config/ConfigValue.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpServerLimits.h"
@@ -29,7 +31,7 @@ namespace AsynGyanis::Net
      * @note 这里只放「启动时定一次」的项：限额与开关都在 start() 之前落定，运行期不再变。
      * @see readHttpServerConfiguration(), HttpServerLimits, HttpParserLimits
      */
-    struct HttpServerConfiguration
+    struct ASYN_NET_API HttpServerConfiguration
     {
         HttpServerLimits limits{};                    ///< 连接级限额：超时与单连接请求数上限
         HttpParserLimits parserLimits{};              ///< 单条报文的内存上限
@@ -58,6 +60,6 @@ namespace AsynGyanis::Net
      * @note 只读不写，线程安全取决于调用方传入的值树是否可变（本函数不做任何修改）
      * @see HttpServerConfiguration, Base::ConfigManager
      */
-    [[nodiscard]] HttpServerConfiguration readHttpServerConfiguration(const Base::ConfigValue &configurationRoot);
+    [[nodiscard]] ASYN_NET_API HttpServerConfiguration readHttpServerConfiguration(const Base::ConfigValue &configurationRoot);
 
 } // namespace AsynGyanis::Net

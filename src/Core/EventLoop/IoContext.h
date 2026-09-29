@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 
 #include "Core/Coroutine/ThreadPool.h"
 
@@ -19,7 +21,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 异步运行时主入口，组合 ThreadPool 并管理全局生命周期
      */
-    class IoContext
+    class ASYN_CORE_API IoContext
     {
     public:
         /**

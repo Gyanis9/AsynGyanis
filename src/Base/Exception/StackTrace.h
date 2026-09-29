@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <string>
 
@@ -34,7 +36,7 @@ namespace AsynGyanis::Base
     /**
      * @brief 无 std::stacktrace 时的降级替身：永远为空栈
      */
-    class CapturedStackTrace
+    class ASYN_BASE_API CapturedStackTrace
     {
     public:
         [[nodiscard]] bool empty() const noexcept
@@ -56,7 +58,7 @@ namespace AsynGyanis::Base
      * @param maximumDepth 最多保留的帧数
      * @return CapturedStackTrace 原始帧集合
      */
-    [[nodiscard]] CapturedStackTrace captureStackTrace(std::size_t framesToSkip = 0, std::size_t maximumDepth = kMaximumStackTraceDepth);
+    [[nodiscard]] ASYN_BASE_API CapturedStackTrace captureStackTrace(std::size_t framesToSkip = 0, std::size_t maximumDepth = kMaximumStackTraceDepth);
 
     /**
      * @brief 把原始帧解析成多行文本
@@ -64,7 +66,7 @@ namespace AsynGyanis::Base
      * @param stackTrace 待解析的调用栈
      * @return std::string 每帧一行；空栈返回空串
      */
-    [[nodiscard]] std::string formatStackTrace(const CapturedStackTrace &stackTrace);
+    [[nodiscard]] ASYN_BASE_API std::string formatStackTrace(const CapturedStackTrace &stackTrace);
 #else
     /// 降级：不捕获任何帧
     [[nodiscard]] inline CapturedStackTrace captureStackTrace(const std::size_t = 0, const std::size_t = kMaximumStackTraceDepth) noexcept

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <openssl/ssl.h>
 
 #include <string>
@@ -31,7 +33,7 @@ namespace AsynGyanis::Core
      *       窗口内旧密钥签发的票据（解旧票据时返回「需换发」，OpenSSL 顺手给对端一张新票据）。
      * @see readKeyFiles(), install()
      */
-    class SessionTicketKeyRing
+    class ASYN_CORE_API SessionTicketKeyRing
     {
     public:
         /**

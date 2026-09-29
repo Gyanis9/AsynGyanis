@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Tls/TlsPolicy.h"
 
 #include <openssl/err.h>
@@ -36,7 +38,7 @@ namespace AsynGyanis::Core
      * @note 证书换代不中断服务：reloadCertificate() 用同一套加固配置新建 SSL_CTX 整台换掉，
      *       已建立的连接仍绑在旧上下文上（OpenSSL 引用计数保证最后一个引用消失前不释放它）
      */
-    class TlsContext
+    class ASYN_CORE_API TlsContext
     {
     public:
         /**

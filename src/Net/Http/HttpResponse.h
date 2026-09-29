@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Config/ConfigValue.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
@@ -51,7 +53,7 @@ namespace AsynGyanis::Net
      *       头部不在 startChunkedResponse() 里发出（那是同步接口，发不出去字节），而是随首段正文
      *       一起上线，因此状态码与头部必须在首次 writeChunk() 之前定稿。
      */
-    class HttpResponse
+    class ASYN_NET_API HttpResponse
     {
     public:
         /**

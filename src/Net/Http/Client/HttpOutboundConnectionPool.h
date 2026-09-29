@@ -7,6 +7,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpOutboundEstablishment.h"
 #include "Net/Http/Client/HttpResponseParser.h"
@@ -36,7 +38,7 @@ namespace AsynGyanis::Net
      * @details 三者缺一都不能复用：换了主机要重做 DNS 与 TLS（SNI 与证书校验的主机名也跟着换），
      *          换了 TLS 与否更是把明文写进对端的 TLS 会话。池按这个键归组。
      */
-    struct HttpOutboundEndpointKey
+    struct ASYN_NET_API HttpOutboundEndpointKey
     {
         std::string   host;         ///< 主机名或 IP 字面量，按 URL 给出的原文存（不做大小写归一）
         std::uint16_t port{0};      ///< 端口
@@ -66,7 +68,7 @@ namespace AsynGyanis::Net
      * @warning 只能在自己的事件循环上收发（协程挂起期间被别的线程驱动会踩坏套接字状态），因此本对象
      *          连同所在池都不跨线程共享。
      */
-    class HttpOutboundConnection
+    class ASYN_NET_API HttpOutboundConnection
     {
     public:
         /**
@@ -162,7 +164,7 @@ namespace AsynGyanis::Net
      *          管两种状态等于把「一条连接同时被两个请求写」的窗口开回来（HTTP/1.1 没有流的概念，响应
      *          严格按请求顺序回来，混写会让两条响应串到彼此身上）。
      */
-    class HttpOutboundConnectionPool
+    class ASYN_NET_API HttpOutboundConnectionPool
     {
     public:
         /// 空闲连接的默认保留时长：对端大多在 30–60 秒之间收掉闲置连接，留到这儿既省重连又不至于

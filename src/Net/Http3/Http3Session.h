@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpParserLimits.h"
@@ -55,7 +57,7 @@ namespace AsynGyanis::Net
      *       SETTINGS 并接上 QPACK 两侧（RFC 9114 §6.2.1），流号由传输层给（`StreamOpener`），本类不碰。
      * @warning 线程契约与连接一致：本对象只在其所属事件循环线程上使用。
      */
-    class Http3Session
+    class ASYN_NET_API Http3Session
     {
     public:
         /// 开一条本端发起的单向流并返回流号（由 QuicConnection 提供；失败返回 -1）

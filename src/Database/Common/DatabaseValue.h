@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -35,6 +37,6 @@ namespace AsynGyanis::Database
      * @param value 数据库统一值
      * @return const char* 类型名称字面量，例如 "Int64"、"Hash"
      */
-    const char *databaseValueTypeName(const DatabaseValue &value) noexcept;
+    ASYN_DATABASE_API const char *databaseValueTypeName(const DatabaseValue &value) noexcept;
 
 } // namespace AsynGyanis::Database

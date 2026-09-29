@@ -5,6 +5,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisBaseSources
         ${CMAKE_CURRENT_LIST_DIR}/LogColor.h
         ${CMAKE_CURRENT_LIST_DIR}/SourceLocation.h
         ${CMAKE_CURRENT_LIST_DIR}/LogEvent.h
+        ${CMAKE_CURRENT_LIST_DIR}/LogEvent.cpp
         ${CMAKE_CURRENT_LIST_DIR}/LogMacros.h
         ${CMAKE_CURRENT_LIST_DIR}/LogThrottle.h
         ${CMAKE_CURRENT_LIST_DIR}/LogThrottle.cpp

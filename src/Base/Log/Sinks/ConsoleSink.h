@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/Sinks/LogSink.h"
 
 #include <mutex>
@@ -23,7 +25,7 @@ namespace AsynGyanis::Base
      * @details 构造时即选定格式化器：警告及以上等级走 std::cerr，其余走 std::cout。
      *          启用彩色但输出目标不支持 ANSI 序列时自动退回 DefaultFormatter，避免打印乱码。
      */
-    class ConsoleSink : public LogSink
+    class ASYN_BASE_API ConsoleSink : public LogSink
     {
     public:
         /**

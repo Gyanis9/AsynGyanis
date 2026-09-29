@@ -12,6 +12,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -82,7 +84,7 @@ namespace AsynGyanis::Database::Queryable
      *          用于 WHERE、ORDER BY、GROUP BY 等子句。作为 distinct type
      *          避免与 ParameterValue 中的 std::string 在 variant 中产生歧义。
      */
-    struct FieldReference
+    struct ASYN_DATABASE_API FieldReference
     {
         std::string name; ///< 列名或表达式文本
     };
@@ -112,7 +114,7 @@ namespace AsynGyanis::Database::Queryable
      * @details 表示一个比较条件 left op right；right 为 FieldReference 时即列-列比较，
      *          children 承载 AND/OR/NOT 的子条件，inValues 为 IN/NOT IN 提供值列表。
      */
-    struct WhereCondition
+    struct ASYN_DATABASE_API WhereCondition
     {
         FieldReference                               left;     ///< 左操作数：字段列名或表达式
         SqlOperator                                  op;       ///< 操作符
@@ -145,7 +147,7 @@ namespace AsynGyanis::Database::Queryable
      *
      * @details 描述一个表连接操作，包含连接类型、目标表、别名和 ON 条件。
      */
-    struct JoinClause
+    struct ASYN_DATABASE_API JoinClause
     {
         JoinType                    type;       ///< 连接类型
         std::string                 tableName;  ///< 被连接的表名，引用规则与主表同源（表名位置没有表达式，一律加引用）
@@ -162,7 +164,7 @@ namespace AsynGyanis::Database::Queryable
      *
      * @details 指定排序字段与方向。
      */
-    struct OrderByClause
+    struct ASYN_DATABASE_API OrderByClause
     {
         FieldReference field;              ///< 排序字段
         bool           descending = false; ///< 是否降序排列，默认为升序
@@ -179,7 +181,7 @@ namespace AsynGyanis::Database::Queryable
      *          连接、分组、排序和分页信息。所有字段均为值语义，支持移动。
      *          方言层接收此节点并翻译为具体 SQL 方言。
      */
-    struct QueryNode
+    struct ASYN_DATABASE_API QueryNode
     {
         std::string              tableName;  ///< 主表名：所有方向（含 INSERT 与 DDL
                                              ///< 侧）都按「库.表」逐段引用，其余字节由引用字符兜住；为空或点号留空即被拒。注意迁移器只在连接的默认库内建表，带前缀的表名会被它拒掉

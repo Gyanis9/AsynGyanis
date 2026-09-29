@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
@@ -29,7 +31,7 @@ namespace AsynGyanis::Database
      *          连接状态的唯一真值来源，派生类必须在 connect()/disconnect() 里同步维护它；
      *          isConnected() 必须是纯状态查询（各驱动均刻意不发网络探活），池在获取/归还热路径上调用它。
      */
-    class DatabaseConnection
+    class ASYN_DATABASE_API DatabaseConnection
     {
     public:
         /**

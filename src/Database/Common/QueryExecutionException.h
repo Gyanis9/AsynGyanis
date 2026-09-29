@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseException.h"
 
 #include <cstdint>
@@ -28,7 +30,7 @@ namespace AsynGyanis::Database
      *       该重试的形状——所以本类额外带出驱动原生码与 isRetryable()，让调用方能分开判。
      *       在这之前原生码只拼在消息文本末尾（见 ErrorText.h），要判就得匹配中文。
      */
-    class QueryExecutionException : public DatabaseException
+    class ASYN_DATABASE_API QueryExecutionException : public DatabaseException
     {
     public:
         /// 驱动未给出可与本次失败配对的错误码时的取值

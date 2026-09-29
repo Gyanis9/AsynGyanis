@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Tracing/Span.h"
 #include "Net/Tracing/SpanExporter.h"
 
@@ -40,7 +42,7 @@ namespace AsynGyanis::Net
      *       出口的那一批的开头，比让新请求没有链路更难查。
      * @see Span, SpanExporter, Traceparent
      */
-    class Tracer : public std::enable_shared_from_this<Tracer>
+    class ASYN_NET_API Tracer : public std::enable_shared_from_this<Tracer>
     {
     public:
         /// @brief 节的收口要往本类的缓冲里放，那条通道不对外公开

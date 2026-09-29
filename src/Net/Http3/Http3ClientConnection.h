@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Http3/Http3Connection.h"
 #include "Net/Quic/QuicClientConnection.h"
@@ -43,7 +45,7 @@ namespace AsynGyanis::Net
      *          在两协议之间不用写两套判断。两份结构体没有合成一份：那份是 Http2 模块的公开类型，
      *          要合得先决定把它上收到哪一层——那是另一件事的范围。
      */
-    struct Http3ClientResponse
+    struct ASYN_NET_API Http3ClientResponse
     {
         int                                              statusCode{0};  ///< :status 的值；0 表示没拿到响应
         std::vector<std::pair<std::string, std::string>> headers;        ///< 除伪头之外的响应字段，按收到的顺序留着（含尾段字段）
@@ -78,7 +80,7 @@ namespace AsynGyanis::Net
     /**
      * @brief HTTP/3 的客户端连接
      */
-    class Http3ClientConnection
+    class ASYN_NET_API Http3ClientConnection
     {
     public:
         /**
@@ -230,7 +232,7 @@ namespace AsynGyanis::Net
      *       引用），而成员是按声明逆序销毁的，所以会话排在后面。改动这两个成员的次序是会崩的。
      * @warning 只能在所属事件循环线程上用（与 `Http3ClientConnection` 同一份线程契约）。
      */
-    class Http3OutboundLink
+    class ASYN_NET_API Http3OutboundLink
     {
     public:
         /**

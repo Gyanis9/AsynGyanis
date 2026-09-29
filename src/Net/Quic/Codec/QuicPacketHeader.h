@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Quic/Codec/QuicDecodeError.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
@@ -74,7 +76,7 @@ namespace AsynGyanis::Net
      *
      * @note 所有连接标识与 Token 都是指向原数据报的视图，不拷贝：调用方必须让数据报活过对这些字段的读取。
      */
-    struct QuicPacketHeader
+    struct ASYN_NET_API QuicPacketHeader
     {
         std::uint8_t                  firstByte{0};                                ///< 首字节原文；去保护后由 refresh 换成掩回来的值
         bool                          isLongHeader{false};                         ///< 长头为 true，短头（1-RTT）为 false
@@ -120,8 +122,8 @@ namespace AsynGyanis::Net
      * @return 成功返回只填了明文部分的 `QuicPacketHeader`，包号相关字段要等 refresh
      * @return 失败返回 `QuicDecodeError`：字节不足为 `Truncated`，字段违反 v1 规则为 `Malformed`
      */
-    [[nodiscard]] std::expected<QuicPacketHeader, QuicDecodeError> decodeQuicPacketHeader(std::span<const std::uint8_t> datagram,
-                                                                                          std::size_t                   shortHeaderDestinationConnectionIdLength);
+    [[nodiscard]] ASYN_NET_API std::expected<QuicPacketHeader, QuicDecodeError> decodeQuicPacketHeader(std::span<const std::uint8_t> datagram,
+                                                                                                       std::size_t                   shortHeaderDestinationConnectionIdLength);
 
     /**
      * @brief 去掉头部保护后把首字节换回真值，并补齐包号长度、包号与短头标志位
@@ -133,7 +135,8 @@ namespace AsynGyanis::Net
      * @return 成功返回 void
      * @return 失败返回 `QuicDecodeError`：包号字段越出数据报末尾，或 Length 域容不下真实包号长度
      */
-    [[nodiscard]] std::expected<void, QuicDecodeError> refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte, std::span<const std::uint8_t> datagram);
+    [[nodiscard]] ASYN_NET_API std::expected<void, QuicDecodeError> refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte,
+                                                                                            std::span<const std::uint8_t> datagram);
 
     /**
      * @brief 按线格式写出截断包号（RFC 9000 §17.1）
@@ -145,7 +148,7 @@ namespace AsynGyanis::Net
      * @param packetNumberByteCount 写出的字节数，1 到 4
      * @throws Base::InvalidArgumentException 用法错误：字节数不在 1..4 内
      */
-    void appendQuicTruncatedPacketNumber(std::string &bytes, std::uint64_t packetNumber, std::size_t packetNumberByteCount);
+    ASYN_NET_API void appendQuicTruncatedPacketNumber(std::string &bytes, std::uint64_t packetNumber, std::size_t packetNumberByteCount);
 
     /**
      * @brief 还原截断包号（RFC 9000 §A.3 的 DecodePacketNumber）
@@ -157,5 +160,6 @@ namespace AsynGyanis::Net
      * @return std::uint64_t 还原后的完整包号
      * @throws Base::InvalidArgumentException 用法错误：packetNumberByteCount 不在 1..4 内
      */
-    [[nodiscard]] std::uint64_t restoreQuicPacketNumber(std::uint64_t largestReceivedPacketNumber, std::uint64_t truncatedPacketNumber, std::size_t packetNumberByteCount);
+    [[nodiscard]] ASYN_NET_API std::uint64_t restoreQuicPacketNumber(std::uint64_t largestReceivedPacketNumber, std::uint64_t truncatedPacketNumber,
+                                                                     std::size_t packetNumberByteCount);
 } // namespace AsynGyanis::Net

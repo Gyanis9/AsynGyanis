@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -29,7 +31,7 @@ namespace AsynGyanis::Net
      * @note 文本按对端送来的原样字节保存（通常是 UTF-8），不做百分号解码也不做字符集转换：
      *       替调用方猜编码会猜错，且猜错的结果看起来完全正常。
      */
-    struct MultipartPart
+    struct ASYN_NET_API MultipartPart
     {
         std::string      name;        ///< Content-Disposition 的 name 参数，必非空
         std::string      fileName;    ///< filename 参数；普通字段与 `filename=""` 都为空。已剥掉目录部分
@@ -67,7 +69,7 @@ namespace AsynGyanis::Net
      *       路径。落盘时仍须自己决定目录、并对重名做处理，不要直接拼接这个值。
      * @see HttpRequest::multipartForm()
      */
-    class MultipartFormData
+    class ASYN_NET_API MultipartFormData
     {
     public:
         /**

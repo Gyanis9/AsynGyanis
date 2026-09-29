@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
@@ -35,7 +37,7 @@ namespace AsynGyanis::Net
      * @note 可跨线程使用：一个服务器的多个事件循环会读到同一份缓存。锁内只做查表与链表搬动，
      *       建立映射这类系统调用一律留在锁外，避免在循环线程上互相等待。
      */
-    class StaticFileMappingCache
+    class ASYN_NET_API StaticFileMappingCache
     {
     public:
         /**

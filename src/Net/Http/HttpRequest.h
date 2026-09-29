@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Config/ConfigValue.h"
 #include "Net/Http/HttpCookie.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
@@ -35,7 +37,7 @@ namespace AsynGyanis::Net
      * @param expectHeaderValue Expect 头部的值；对端没给这个头时传空串
      * @return true 对端声明了 100-continue：本端应在读正文之前先回一个 100（或不等正文就回最终状态）
      */
-    [[nodiscard]] bool isContinueExpected(std::string_view expectHeaderValue) noexcept;
+    [[nodiscard]] ASYN_NET_API bool isContinueExpected(std::string_view expectHeaderValue) noexcept;
 
     class HttpRequestBody;
 
@@ -49,7 +51,7 @@ namespace AsynGyanis::Net
      *       （普通头部按 RFC 7230 §3.2.2 用 ", " 合并、可重复头部保留首条）。
      *       头部名一律转小写存储（RFC 9110 §5.1 大小写不敏感），查询侧同样归一化。
      */
-    class HttpRequest
+    class ASYN_NET_API HttpRequest
     {
     public:
         /**

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Acme/AcmeError.h"
 #include "Net/Acme/AcmeKeyPair.h"
@@ -31,7 +33,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一段 ACME 应答：正文原文加上本通路还要读的两个响应头
      */
-    struct AcmeReply
+    struct ASYN_NET_API AcmeReply
     {
         std::string bodyText;      ///< 响应正文原文（证书那一步是 PEM 而不是 JSON，故正文一并留着）
         std::string locationUrl;   ///< Location 头，无则为空
@@ -42,7 +44,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一份 ACME 订单（RFC 8555 §7.4）
      */
-    struct AcmeOrder
+    struct ASYN_NET_API AcmeOrder
     {
         std::string              orderUrl;          ///< 订单自身的 URL，轮询状态就读它
         std::string              finalizeUrl;       ///< 交 CSR 的 URL
@@ -54,7 +56,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一条 HTTP-01 挑战（RFC 8555 §8.3）
      */
-    struct AcmeChallenge
+    struct ASYN_NET_API AcmeChallenge
     {
         std::string challengeUrl; ///< 让机构开始校验时 POST 的 URL
         std::string token;        ///< 要发布到 /.well-known/acme-challenge/<token> 的那段串
@@ -66,7 +68,7 @@ namespace AsynGyanis::Net
      *          装配是两套；dns-01 要接每一家 DNS 厂商的接口。两类都不是本类能自己完成的，
      *          做成通用形状只会有一档永远没人填。
      */
-    struct AcmeAuthorization
+    struct ASYN_NET_API AcmeAuthorization
     {
         std::string                  identifier; ///< 这条授权对应的域名
         std::string                  status;     ///< pending / valid / invalid / deactivated / expired / revoked
@@ -86,7 +88,7 @@ namespace AsynGyanis::Net
      * @warning 只实现 HTTP-01。机构的目录里若只有 tls-alpn-01 或 dns-01（有些内部 CA 确实如此），
      *          本类会在读授权时判失败并说明要哪一种，不会挑一条它答不了的挑战去 POST
      */
-    class AcmeClient
+    class ASYN_NET_API AcmeClient
     {
     public:
         /**

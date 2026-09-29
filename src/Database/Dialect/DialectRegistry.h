@@ -13,6 +13,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseType.h"
 #include "Database/Dialect/SqlDialect.h"
 
@@ -25,7 +27,7 @@ namespace AsynGyanis::Database
      *
      * @details 纯静态类，不允许实例化。当前注册的方言有 SQLite 与 MySQL。
      */
-    class DialectRegistry
+    class ASYN_DATABASE_API DialectRegistry
     {
     public:
         DialectRegistry() = delete;

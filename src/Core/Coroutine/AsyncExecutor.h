@@ -23,6 +23,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
@@ -55,7 +57,7 @@ namespace AsynGyanis::Core
      * @note 本类的线程安全由互斥锁与原子计数保证，submit() 可从任意线程调用；
      *       工作线程之间互不共享状态（每个任务自带它的全部输入与输出）。
      */
-    class AsyncExecutor
+    class ASYN_CORE_API AsyncExecutor
     {
     public:
         /**

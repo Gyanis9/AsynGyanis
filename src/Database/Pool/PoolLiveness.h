@@ -13,6 +13,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <mutex>
 
 namespace AsynGyanis::Database
@@ -20,7 +22,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 池的存活令牌：一个互斥量加一个标志位
      */
-    struct PoolLiveness
+    struct ASYN_DATABASE_API PoolLiveness
     {
         std::mutex mutex;         ///< 同步「池正在收尾」与「某连接正在归还」
         bool       isAlive{true}; ///< 池是否仍在服务

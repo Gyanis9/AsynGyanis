@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -28,7 +30,7 @@ namespace AsynGyanis::Net
      *          按值捕获一份共享指针比捕获 `this` 更安全——处理函数可能在服务器之后才被销毁。
      * @note 只在事件循环线程（或启动前的配置期）读写：静态服务开关与目录的变更不会与在途请求交错。
      */
-    struct StaticFileSettings
+    struct ASYN_NET_API StaticFileSettings
     {
         bool                       isEnabled{false}; ///< 是否启用静态文件服务；根目录规范化失败即为 false
         std::filesystem::path      rootDirectory;    ///< 规范化（weakly_canonical）之后的静态根目录，绝对路径
@@ -59,7 +61,7 @@ namespace AsynGyanis::Net
      * @warning install() 之前不能调其余配置方法（那是各服务器的 ensure 转发负责的事）。
      * @see StaticFileSettings, HttpServer::staticFileDir()
      */
-    class StaticFileService
+    class ASYN_NET_API StaticFileService
     {
     public:
         /**

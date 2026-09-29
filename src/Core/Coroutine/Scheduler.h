@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <atomic>
 #include <coroutine>
 #include <cstddef>
@@ -33,7 +35,7 @@ namespace AsynGyanis::Core
      *       remotePendingCount() 与 failedDispatchCount() 之外，其他成员函数（含 hasWork() 与 runOne()/runAll()）
      *       都应由所属 EventLoop 线程调用。
      */
-    class Scheduler
+    class ASYN_CORE_API Scheduler
     {
     public:
         /**

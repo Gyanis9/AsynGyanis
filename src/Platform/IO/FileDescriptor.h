@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 namespace AsynGyanis::Platform
@@ -21,7 +23,7 @@ namespace AsynGyanis::Platform
      *          因此本类在 Windows 上的实现全部走 Winsock API。
      * @note 所有方法为无状态静态调用，不接管描述符所有权，关闭责任在调用方。
      */
-    class FileDescriptor
+    class ASYN_PLATFORM_API FileDescriptor
     {
     public:
         static constexpr int kInvalid = -1; ///< 无效描述符哨兵值

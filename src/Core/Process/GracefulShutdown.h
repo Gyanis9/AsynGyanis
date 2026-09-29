@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -49,7 +51,7 @@ namespace AsynGyanis::Core
      * @note 目标循环如果已经退出，投回去的动作会被丢弃（`Scheduler::postRemote` 的既有语义）：
      *       收尾动作不该依赖一个已经不在跑的循环。
      */
-    class GracefulShutdown
+    class ASYN_CORE_API GracefulShutdown
     {
     public:
         /// 这次停机是被什么引发的

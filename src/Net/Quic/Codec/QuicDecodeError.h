@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <string>
 
 namespace AsynGyanis::Net
@@ -32,7 +34,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一次解码失败的完整说明
      */
-    struct QuicDecodeError
+    struct ASYN_NET_API QuicDecodeError
     {
         QuicDecodeErrorKind kind{QuicDecodeErrorKind::Malformed}; ///< 失败类别：上层据此选上线错误码，不去匹配文案
         std::string         message;                              ///< 中文原因，含实际取值与对应的 RFC 章节

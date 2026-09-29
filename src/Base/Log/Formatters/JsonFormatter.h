@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/Formatters/LogFormatter.h"
 
 #include <string>
@@ -27,7 +29,7 @@ namespace AsynGyanis::Base
      *       代价是每线程留着一份小对象与「历史上最长那条消息」的缓冲容量。
      * @see LogFormatter
      */
-    class JsonFormatter : public LogFormatter
+    class ASYN_BASE_API JsonFormatter : public LogFormatter
     {
     public:
         /**

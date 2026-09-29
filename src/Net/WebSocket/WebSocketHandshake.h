@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/Exception.h"
 #include "Net/Http/HttpRequest.h"
 
@@ -34,7 +36,7 @@ namespace AsynGyanis::Net
      * @throws Base::Exception OpenSSL 摘要接口不可用（库未正确初始化或内存不足）
      * @note 本函数不校验 clientKey 的形态：先用 isWebSocketUpgradeRequest() 判定，再用它算应答
      */
-    [[nodiscard]] std::string computeWebSocketAcceptValue(std::string_view clientKey);
+    [[nodiscard]] ASYN_NET_API std::string computeWebSocketAcceptValue(std::string_view clientKey);
 
     /**
      * @brief 判定一条 HTTP 请求是否构成合法的 WebSocket 升级请求
@@ -49,7 +51,7 @@ namespace AsynGyanis::Net
      * @note token 比对大小写不敏感并按逗号拆分，因此 "Upgrade: WebSocket, foo" 这类写法同样被接受
      * @note 只做「是不是升级请求」的判定，不涉及鉴权：Origin、子协议与自定义头部留给上层
      */
-    [[nodiscard]] bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *failureReason);
+    [[nodiscard]] ASYN_NET_API bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *failureReason);
 
     /**
      * @brief 校验两种握手形态共用的两项：Sec-WebSocket-Version 恰为 13、Sec-WebSocket-Key 是解码后恰 16 字节的标准 base64
@@ -64,7 +66,7 @@ namespace AsynGyanis::Net
      * @return true 两项都通过，clientKey 可用
      * @return false 原因见 failureReason
      */
-    [[nodiscard]] bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *failureReason);
+    [[nodiscard]] ASYN_NET_API bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *failureReason);
 
     /**
      * @brief 构建 101 Switching Protocols 的完整应答报文
@@ -80,5 +82,5 @@ namespace AsynGyanis::Net
      * @note 本实现不协商任何子协议：报文里不含 Sec-WebSocket-Protocol。扩展只在
      *       extensionsResponseValue 非空时写一行 Sec-WebSocket-Extensions
      */
-    [[nodiscard]] std::string buildHandshakeResponse(std::string_view clientKey, std::string_view extensionsResponseValue = {});
+    [[nodiscard]] ASYN_NET_API std::string buildHandshakeResponse(std::string_view clientKey, std::string_view extensionsResponseValue = {});
 } // namespace AsynGyanis::Net

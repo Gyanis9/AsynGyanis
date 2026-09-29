@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/Socket/InetAddress.h"
@@ -34,7 +36,7 @@ namespace AsynGyanis::Core
      *       栈会改发 RST 而不是 FIN，对端连自己已收到、还没来得及读的响应一起丢掉
      * @note 所有异步操作均通过 EventLoop 中的 epoll 实例等待事件，不会阻塞线程
      */
-    class AsyncSocket
+    class ASYN_CORE_API AsyncSocket
     {
     public:
         /**

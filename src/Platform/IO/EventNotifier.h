@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <atomic>
 
 namespace AsynGyanis::Platform
@@ -21,7 +23,7 @@ namespace AsynGyanis::Platform
      * @note 用法：把 readDescriptor() 注册进 epoll 监听可读，其它线程调用 notify()，
      *       事件循环被唤醒后调用 drain() 清空累积计数。
      */
-    class EventNotifier
+    class ASYN_PLATFORM_API EventNotifier
     {
     public:
         /**

@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Task.h"
 #include "Database/Pool/PoolConfig.h"
@@ -47,7 +49,7 @@ namespace AsynGyanis::Database
      * @details 连接生命周期由池管理，调用方通过 PooledConnection RAII 包装使用。
      *          acquire() 阻塞至多 acquireTimeoutMs 毫秒，tryAcquire() 非阻塞，acquireAsync() 由归还路径唤醒。
      */
-    class ConnectionPool
+    class ASYN_DATABASE_API ConnectionPool
     {
     public:
         /**

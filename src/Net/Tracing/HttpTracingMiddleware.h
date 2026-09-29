@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Middleware.h"
 #include "Net/Tracing/Tracer.h"
@@ -39,5 +41,5 @@ namespace AsynGyanis::Net
      * @throws Base::LogicException tracer 为空
      * @see traceContextMiddleware(), Tracer::startSpan()
      */
-    [[nodiscard]] MiddlewareFunc tracingSpanMiddleware(std::shared_ptr<Tracer> tracer);
+    [[nodiscard]] ASYN_NET_API MiddlewareFunc tracingSpanMiddleware(std::shared_ptr<Tracer> tracer);
 } // namespace AsynGyanis::Net

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Config/ConfigValue.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Tracing/Tracer.h"
@@ -31,7 +33,7 @@ namespace AsynGyanis::Net
      *          是「挂哪些出口」的开关：填哪个就挂哪个，两个都填就同时挂（各自的失败各自计数）。
      * @see readTracingConfiguration(), buildTracer()
      */
-    struct TracingConfiguration
+    struct ASYN_NET_API TracingConfiguration
     {
         bool                               enabled{false};           ///< 总开关；false 时不建编排器，其余取值一概不看
         std::string                        serviceName{};            ///< enabled 时必填：出口侧的 service.name
@@ -55,7 +57,7 @@ namespace AsynGyanis::Net
      *       等于配置没生效却看不出来
      * @see readHttpServerConfiguration() —— 同一套「未知键即拒」的口径
      */
-    [[nodiscard]] TracingConfiguration readTracingConfiguration(const Base::ConfigValue &configurationRoot);
+    [[nodiscard]] ASYN_NET_API TracingConfiguration readTracingConfiguration(const Base::ConfigValue &configurationRoot);
 
     /**
      * @brief 按读出的配置装出编排器，并挂上配置点名的出口
@@ -66,5 +68,5 @@ namespace AsynGyanis::Net
      * @note 出口的所有权交给编排器：它们的存活期就是「这条进程还在记链路」，与编排器同生同死最省事
      * @see Tracer::create(), OtlpHttpSpanExporter, FileSpanExporter
      */
-    [[nodiscard]] std::shared_ptr<Tracer> buildTracer(const TracingConfiguration &configuration);
+    [[nodiscard]] ASYN_NET_API std::shared_ptr<Tracer> buildTracer(const TracingConfiguration &configuration);
 } // namespace AsynGyanis::Net

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 #include <atomic>
@@ -54,7 +56,7 @@ namespace AsynGyanis::Platform
      * @note 通过 create() 获取当前平台实例；实例不可拷贝与移动，
      *       析构前需保证已调用 stop()（各实现的析构函数会自行停止）。
      */
-    class FileWatcher
+    class ASYN_PLATFORM_API FileWatcher
     {
     public:
         /**

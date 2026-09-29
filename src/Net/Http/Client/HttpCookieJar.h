@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http/HttpCookie.h"
 
 #include <chrono>
@@ -35,7 +37,7 @@ namespace AsynGyanis::Net
      *       要跨进程保留请自行把记录序列化出去（本版本不提供该入口）
      * @note 线程安全：全部公开方法都取内部锁，可以在多个事件循环线程之间共享一整个 jar。
      */
-    class HttpCookieJar
+    class ASYN_NET_API HttpCookieJar
     {
     public:
         /**

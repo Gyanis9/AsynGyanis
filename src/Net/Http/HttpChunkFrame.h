@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -35,7 +37,7 @@ namespace AsynGyanis::Net
      *         长度行不是十六进制数、或实际字节数与声明长度对不上。此时宁可当场报错，也绝不把帧头或
      *         残缺负载当成正文发出去
      */
-    [[nodiscard]] std::string_view chunkFramePayload(std::string_view chunkFrame);
+    [[nodiscard]] ASYN_NET_API std::string_view chunkFramePayload(std::string_view chunkFrame);
 
     /**
      * @brief 把一段应用负载写成 h1 的分块帧，写进调用方持有的缓冲
@@ -46,5 +48,5 @@ namespace AsynGyanis::Net
      * @param data 本段应用负载，非空（零长度块是终止块语义，跳过空段由调用方负责）
      * @throws Base::LogicException 长度写不成十六进制文本；此时 frame 保持原样
      */
-    void appendChunkFrame(std::string &frame, std::string_view data);
+    ASYN_NET_API void appendChunkFrame(std::string &frame, std::string_view data);
 } // namespace AsynGyanis::Net

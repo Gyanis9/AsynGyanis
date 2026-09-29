@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 #include <optional>
@@ -31,7 +33,7 @@ namespace AsynGyanis::Platform
      * @note 失败不抛异常：与 Platform 层「错误码 + 返回值」的惯例一致（失败时句柄无效，
      *       原因见 PlatformError::lastErrorCode()），异常由上层折成 Base::SystemException。
      */
-    class Process
+    class ASYN_PLATFORM_API Process
     {
     public:
         /**
@@ -41,7 +43,7 @@ namespace AsynGyanis::Platform
          *          以免留下僵尸），但**不会**终止仍在运行的进程——终止是显式动作
          *          （requestTermination()/forceTermination()），不做成析构的副作用。
          */
-        class Handle
+        class ASYN_PLATFORM_API Handle
         {
         public:
             Handle() = default;

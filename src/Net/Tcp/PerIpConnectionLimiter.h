@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -38,7 +40,7 @@ namespace AsynGyanis::Net
      *          「一个来源」给，取值要按这个前提定，不要当成「每个用户」。
      * @see TcpServer::setPerIpConnectionLimiter()
      */
-    class PerIpConnectionLimiter
+    class ASYN_NET_API PerIpConnectionLimiter
     {
     private:
         /// 计数表本体。与租约共享所有权：租约可能比限额对象活得更久（收尾期的连接协程晚于服务器析构）
@@ -59,7 +61,7 @@ namespace AsynGyanis::Net
          *          每一条出口都成立；限额关闭时它是空壳（isTracking() 为 false），析构什么都不做。
          * @note 只可移动不可拷贝：拷贝会让两份凭据归还同一个名额，计数越还越少。
          */
-        class Lease
+        class ASYN_NET_API Lease
         {
         public:
             /// 构造空壳凭据（不占任何名额），用于「限额关闭」这条路径

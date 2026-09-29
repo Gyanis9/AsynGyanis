@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -52,7 +54,7 @@ namespace AsynGyanis::Net
      *       因此既不算已应答也不算坏请求；HTTP/1.1 上没有这一形态（取消即断连），该字段恒为 0。
      * @see HttpMetricsCollector, HttpServer::stats()
      */
-    struct HttpServerStats
+    struct ASYN_NET_API HttpServerStats
     {
         std::uint64_t totalRequestCount{0};     ///< 累计成功解析（ParseStatus::Done）的请求条数，不含解析失败
         std::uint64_t activeConnectionCount{0}; ///< 取快照那一刻共用本采集端的全部连接管理器在册的连接数
@@ -148,7 +150,7 @@ namespace AsynGyanis::Net
      *       同步维护（见 activeConnectionCountMirror()）。它刻意不由某台服务器自己填：同一端口
      *       常由多台服务器（每线程一个）共同监听，各自读自己的连接表只会报出 1/N 的量。
      */
-    class HttpMetricsCollector
+    class ASYN_NET_API HttpMetricsCollector
     {
     public:
         /// 构造：所有计数从零开始
@@ -396,6 +398,6 @@ namespace AsynGyanis::Net
      *          读数本身与「哪个实例在报」无关，HELP 文案里已按进程级说明。
      * @param stats 待补的快照，就地改写 blockingTaskQueueDepth 与 blockingTaskRejectedCount
      */
-    void applyRuntimeBacklogStats(HttpServerStats &stats) noexcept;
+    ASYN_NET_API void applyRuntimeBacklogStats(HttpServerStats &stats) noexcept;
 
 } // namespace AsynGyanis::Net

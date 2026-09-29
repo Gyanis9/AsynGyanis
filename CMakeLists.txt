@@ -24,6 +24,10 @@ endif()
 # 各模块用 CMAKE_INSTALL_INCLUDEDIR 描述安装后的头文件根目录，故在子目录之前引入
 include(GNUInstallDirs)
 
+# 库种类（静态 / 共享）与符号导出宏的地基：五个模块的 add_library 要用 ASYN_LIBRARY_KIND，
+# 导出宏 ASYN_<模块>_API 由 src/AsynGyanisExport.h 提供
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/AsynGyanisLibrary.cmake)
+
 # MSVC: 强制 UTF-8 源码编码，解决中文注释和字符串在 GBK 环境下编译失败的问题
 if(MSVC)
     add_compile_options(/utf-8)
@@ -170,6 +174,26 @@ endif()
 add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
 
 enable_testing()
+
+# 认 CMake 的标准开关而不是再造一个本仓专属名：Conan 的 shared 选项与 vcpkg 的 triplet 都直接映射到
+# BUILD_SHARED_LIBS，多一个同义开关只会让两边不一致。默认关，静态仍是交付形态。
+# 共享形态下公开接口里的 std::string / std::vector 会跨 ABI 边界，生产方与消费方必须是同一套
+# 编译器、同一份 CRT 与同一套标准库配置——这条约束由 C++ 动态库本身带来，不靠导出宏解决。
+#
+# 位置必须在 add_subdirectory(src) 之前：这两个变量是给五个模块的 add_library 用的，而 CMake 的
+# 普通变量只向下游子目录传播——写在 src 之后，库种类仍由命令行缓存值决定（所以 DLL 建得出来），
+# 但落点变量对 src 不可见，DLL 会留在 build/src/<模块>/ 而可执行体在别处，一启动就是 0xC0000135。
+option(BUILD_SHARED_LIBS "把五个模块产出为共享库（.so / .dll）而不是静态库" OFF)
+
+# Windows 上 DLL 的落点：.dll 属于 RUNTIME 产物，而 CMake 不给 Ninja 生成「把依赖 DLL 拷到可执行体
+# 旁边」这一步（那是 Visual Studio 生成器才有的），所以按默认落点编完后，测试可执行体与 DLL 各在
+# 一处，一启动就是 0xC0000135「找不到模块」——现象和「库写坏了」几乎一样，只有收进同一个目录才自洽。
+# Linux 侧不需要这条：.so 是 LIBRARY 产物，而构建树的 RPATH 由 CMake 自动写进可执行体。
+# 静态形态完全不进这个分支，现有落点一字未动。
+if(BUILD_SHARED_LIBS AND WIN32)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endif()
 
 add_subdirectory(src)
 

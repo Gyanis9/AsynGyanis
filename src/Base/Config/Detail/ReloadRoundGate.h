@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <atomic>
 #include <cstdint>
 
@@ -24,7 +26,7 @@ namespace AsynGyanis::Base::Detail
      *          开始时的快照比，因此谁也不能替别人把信息清掉。
      * @note 只描述时序协议，不读盘也不起线程；交错顺序可以直接按调用序列复现，便于单独验证。
      */
-    class ReloadRoundGate
+    class ASYN_BASE_API ReloadRoundGate
     {
     public:
         /**

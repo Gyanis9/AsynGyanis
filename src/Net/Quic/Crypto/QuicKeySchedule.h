@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 
@@ -48,7 +50,7 @@ namespace AsynGyanis::Net
      * @return QuicPacketKeys Initial 的密钥、IV 与头部保护密钥
      * @throws Base::Exception 运行期故障：OpenSSL 取不到 HKDF 实现或推导失败
      */
-    [[nodiscard]] QuicPacketKeys deriveQuicInitialPacketKeys(std::span<const std::uint8_t> destinationConnectionId, QuicPacketDirection direction);
+    [[nodiscard]] ASYN_NET_API QuicPacketKeys deriveQuicInitialPacketKeys(std::span<const std::uint8_t> destinationConnectionId, QuicPacketDirection direction);
 
     /**
      * @brief 由 TLS 交出的流量秘密导出一组包保护密钥
@@ -61,7 +63,7 @@ namespace AsynGyanis::Net
      * @throws Base::InvalidArgumentException 用法错误：trafficSecret 长度与套件不符
      * @throws Base::Exception 运行期故障：OpenSSL 取不到 HKDF 实现或推导失败
      */
-    [[nodiscard]] QuicPacketKeys deriveQuicPacketKeys(QuicCipherSuite cipherSuite, std::span<const std::uint8_t> trafficSecret);
+    [[nodiscard]] ASYN_NET_API QuicPacketKeys deriveQuicPacketKeys(QuicCipherSuite cipherSuite, std::span<const std::uint8_t> trafficSecret);
 
     /**
      * @brief 从一组 1-RTT 密钥推出下一代（RFC 9001 §6.1）
@@ -71,5 +73,5 @@ namespace AsynGyanis::Net
      * @return QuicPacketKeys 下一代密钥，套件与头部保护密钥与入参相同
      * @throws Base::Exception 运行期故障：OpenSSL 拒绝了对应的 HKDF 参数
      */
-    [[nodiscard]] QuicPacketKeys deriveQuicUpdatedPacketKeys(const QuicPacketKeys &current);
+    [[nodiscard]] ASYN_NET_API QuicPacketKeys deriveQuicUpdatedPacketKeys(const QuicPacketKeys &current);
 } // namespace AsynGyanis::Net

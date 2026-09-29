@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -32,7 +34,7 @@ namespace AsynGyanis::Base
      * @warning 一个实例代表**一个调用点**。跨调用点共用一份会让 A 点的洪水把 B 点也压掉。
      * @see ASYN_LOG_THROTTLED
      */
-    class LogThrottle
+    class ASYN_BASE_API LogThrottle
     {
     public:
         /**

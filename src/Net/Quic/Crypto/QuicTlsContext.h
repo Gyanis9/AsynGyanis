@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 
 #include <openssl/ssl.h>
@@ -63,7 +65,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一条待发的 TLS 记录：属于哪个级别、要作为 CRYPTO 帧的负载交出去
      */
-    struct QuicTlsRecord
+    struct ASYN_NET_API QuicTlsRecord
     {
         QuicEncryptionLevel       level{QuicEncryptionLevel::Initial}; ///< 该用哪个级别的密钥保护
         std::vector<std::uint8_t> data{};                              ///< 握手字节，交给 CRYPTO 帧
@@ -75,7 +77,7 @@ namespace AsynGyanis::Net
      * @details 都是**按连接**而非按上下文生效的：一个上下文要服务多个主机的出站连接，SNI、校验名与
      *          ALPN 列表逐条连接才可能不同。服务端一侧留空即可（那些值是listen侧配置的 ALPN 回调给的）。
      */
-    struct QuicClientTlsSettings
+    struct ASYN_NET_API QuicClientTlsSettings
     {
         std::string              hostName{};                       ///< 服务端的规范主机名：同时用作 SNI 与证书里的校验目标
         std::vector<std::string> applicationProtocolIdentifiers{}; ///< 本端能说的应用层协议，按优先级排列（如 {"h3"}）
@@ -91,7 +93,7 @@ namespace AsynGyanis::Net
      * @warning 归事件循环所有的约定由上层承担：本类不是线程安全的，只在所属循环线程上驱动。
      * @note 一个 `SSL` 对应一条连接；构造即建会话并挂好回调，析构只释放会话（释放期间不再有回调）。
      */
-    class QuicTlsContext
+    class ASYN_NET_API QuicTlsContext
     {
     public:
         /**

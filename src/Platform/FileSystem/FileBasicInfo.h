@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 #include <cstdint>
@@ -20,7 +22,7 @@ namespace AsynGyanis::Platform
     /**
      * @brief 来自同一次底层查询的文件基本信息
      */
-    struct FileBasicInfo
+    struct ASYN_PLATFORM_API FileBasicInfo
     {
         bool           isRegularFile    = false; ///< 是否普通文件；目录为 false（大小与时间照实给出，只是不代表正文长度）
         std::uintmax_t sizeBytes        = 0;     ///< 文件字节数
@@ -62,7 +64,7 @@ namespace AsynGyanis::Platform
      *       建不下去，声明之后走到 1770 字符仍能创建与读写。深目录树下的静态文件若在别处看得见、
      *       在服务端一律 404，先按这条查，不要去怀疑目录遍历或缓存。
      */
-    [[nodiscard]] std::optional<FileBasicInfo> queryFileBasicInfo(const std::filesystem::path &path) noexcept;
+    [[nodiscard]] ASYN_PLATFORM_API std::optional<FileBasicInfo> queryFileBasicInfo(const std::filesystem::path &path) noexcept;
 
     /**
      * @brief 从一个**已经打开**的文件对象读回基本信息
@@ -74,5 +76,5 @@ namespace AsynGyanis::Platform
      * @param handle 已打开的文件句柄（Windows 为 HANDLE，POSIX 为文件描述符）
      * @return std::optional<FileBasicInfo> 成功时给出信息；句柄无效或查询失败时为空，不抛异常
      */
-    [[nodiscard]] std::optional<FileBasicInfo> queryOpenedFileBasicInfo(const NativeFileHandle handle) noexcept;
+    [[nodiscard]] ASYN_PLATFORM_API std::optional<FileBasicInfo> queryOpenedFileBasicInfo(const NativeFileHandle handle) noexcept;
 } // namespace AsynGyanis::Platform

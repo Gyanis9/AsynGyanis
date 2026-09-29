@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <string>
 
 namespace AsynGyanis::Platform
@@ -20,7 +22,7 @@ namespace AsynGyanis::Platform
      *          而 Windows 的 W 系列 API 要求 UTF-16，因此转换集中在本类中，
      *          避免各处手写 MultiByteToWideChar / WideCharToMultiByte。
      */
-    class TextEncoding
+    class ASYN_PLATFORM_API TextEncoding
     {
     public:
         /**

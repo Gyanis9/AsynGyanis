@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Quic/Codec/QuicFrame.h"
 #include "Net/Quic/Codec/QuicTransportParameters.h"
 #include "Net/Quic/QuicConnectionRole.h"
@@ -38,7 +40,7 @@
 namespace AsynGyanis::Net
 {
     /// 交给上层的一段流数据：已经按序、也已经拷走，上层可以安心持有
-    struct QuicStreamDelivery
+    struct ASYN_NET_API QuicStreamDelivery
     {
         std::uint64_t             streamId{0};    ///< 流号
         std::vector<std::uint8_t> bytes{};        ///< 数据本体（拷贝，不指向收包缓冲）
@@ -49,7 +51,7 @@ namespace AsynGyanis::Net
      * @brief 流层报给连接核心的违规：带 §11.1 的传输错误码与可直接发出的中文文案
      * @details 本层不碰 socket，也就没法自己收口；核心拿到这个结构后调 beginClose。
      */
-    struct QuicStreamViolation
+    struct ASYN_NET_API QuicStreamViolation
     {
         std::uint64_t errorCode{0};   ///< FLOW_CONTROL_ERROR、STREAM_LIMIT_ERROR 等
         std::string   reasonPhrase{}; ///< 进 CONNECTION_CLOSE 的原因文案
@@ -62,7 +64,7 @@ namespace AsynGyanis::Net
      *          本端宣告的流数上限。上层消费多少，接收窗口才抬多少，所以 `releaseReceiveWindow` 是
      *          这条链上唯一的额度入口；不调它，对端迟早卡在 §4.1 的连接级上限上。
      */
-    class QuicStreamLayer
+    class ASYN_NET_API QuicStreamLayer
     {
     public:
         /**

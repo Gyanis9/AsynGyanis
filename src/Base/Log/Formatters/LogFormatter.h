@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/LogEvent.h"
 
 #include <string>
@@ -23,7 +25,7 @@ namespace AsynGyanis::Base
      *          以允许同一格式化器被多个 Sink 并发调用；线程局域的复用缓冲不在此列（JsonFormatter
      *          就靠它省掉每条重建字段对象的开销），但实现必须在自己的类注释里写明留了什么、代价是什么。
      */
-    class LogFormatter
+    class ASYN_BASE_API LogFormatter
     {
     public:
         /**

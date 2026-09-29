@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
@@ -69,7 +71,7 @@ namespace AsynGyanis::Net
      * @note 管道本身不做任何加锁：一条 HTTP 连接从头到尾在同一个事件循环线程上串行执行，
      *       中间件内部若要放共享状态，请自行保证与「单循环线程」假设一致（见 rateLimiterMiddleware）。
      */
-    class MiddlewarePipeline
+    class ASYN_NET_API MiddlewarePipeline
     {
     public:
         /**
@@ -170,7 +172,7 @@ namespace AsynGyanis::Net
          *          避免看门狗协程与业务协程在各自的挂起间隙交替写同一个 HttpResponse。
          *          用 shared_ptr 持有是为了让看门狗协程在任何一条退出路径上都不会读到已销毁的状态。
          */
-        struct TimeoutGuardState
+        struct ASYN_NET_API TimeoutGuardState
         {
             bool isChainFinished{false};    ///< 业务链是否已经跑完（看门狗据此提前收工）
             bool isDeadlineReached{false};  ///< 到期标志，由看门狗在超时点位置位
@@ -269,7 +271,7 @@ namespace AsynGyanis::Net
     /**
      * @brief CORS 策略，corsMiddleware 的可选项集合
      */
-    struct CorsPolicy
+    struct ASYN_NET_API CorsPolicy
     {
         std::string          allowOrigin{"*"};                                       ///< Access-Control-Allow-Origin 取值，默认放开任意来源
         std::string          allowMethods{"GET, POST, PUT, DELETE, PATCH, OPTIONS"}; ///< 预检应答里声明的方法集合，ASCII 逗号分隔
@@ -401,7 +403,7 @@ namespace AsynGyanis::Net
     /**
      * @brief traceContextMiddleware 的策略开关
      */
-    struct TraceContextOptions
+    struct ASYN_NET_API TraceContextOptions
     {
         bool        isGeneratedWhenAbsent{true}; ///< 上游没给、或给的形态不合法时，是否新起一条链路
         bool        isSampledByDefault{true};    ///< 新起链路的采样位初值；已存在的链路一律沿用上游的采样位
@@ -642,7 +644,7 @@ namespace AsynGyanis::Net
      *       共享同一实例**才能构成进程级的全局 RPS 上限——每个服务器各持一份的话，实际上限会乘上
      *       监听器数量（与 PerIpConnectionLimiter 同一类坑）。
      */
-    class TokenBucket
+    class ASYN_NET_API TokenBucket
     {
     public:
         /**
@@ -1046,7 +1048,7 @@ namespace AsynGyanis::Net
      * @details 三种算法各有自己的档位语义：gzip 级别 1..9（zlib 的 6 是折中）、brotli 质量 0..11
      *          （6 与 gzip 6 同档）、zstd 级别 1..22（3 是库自身的平衡点）。越界由各压缩构件夹取
      */
-    struct CompressionOptions
+    struct ASYN_NET_API CompressionOptions
     {
         std::size_t minimumBodySize = 1024; ///< 正文达到该字节数才压缩；小正文压缩后往往更大，白烧 CPU
         /// 外置给工作线程时要达到的正文长度（字节）：小于它就就地压。一次「工作线程 → 循环」的

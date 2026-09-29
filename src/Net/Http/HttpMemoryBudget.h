@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <atomic>
 #include <cstddef>
 
@@ -32,7 +34,7 @@ namespace AsynGyanis::Net
      *          （见 HttpServer::setMemoryBudget() 与 setMaxConnections()）。
      * @see HttpServer::setMemoryBudget()
      */
-    class HttpMemoryBudget
+    class ASYN_NET_API HttpMemoryBudget
     {
     public:
         /**

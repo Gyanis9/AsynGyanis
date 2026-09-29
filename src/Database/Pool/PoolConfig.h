@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 
 namespace AsynGyanis::Database
@@ -23,7 +25,7 @@ namespace AsynGyanis::Database
      *          后者是刻意留出来的（微基准的 churn 形态与若干用例都靠它构造「每次归还都丢弃」），
      *          想「不限存活期」请给一个足够大的值，别填 0。
      */
-    struct PoolConfig
+    struct ASYN_DATABASE_API PoolConfig
     {
         std::size_t maximumPoolSize            = 32;   ///< 连接数上限（含空闲与活跃），0 表示不允许创建任何连接
         std::size_t idleTimeoutSeconds         = 300;  ///< 空闲连接超时（秒）：取出时与后台定期检查时判定，0 表示不因空闲被驱逐

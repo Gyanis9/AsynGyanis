@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <openssl/ssl.h>
 
 #include <optional>
@@ -31,7 +33,7 @@ namespace AsynGyanis::Core
      *       自己先解析一遍只会把它支持的写法判成非法。应用失败时抛出的消息带着那份原文与出错的那一项
      * @see TlsContext, applyTlsPolicy()
      */
-    struct TlsPolicy
+    struct ASYN_CORE_API TlsPolicy
     {
         /**
          * @brief 协议版本档位，只认这两档
@@ -101,5 +103,5 @@ namespace AsynGyanis::Core
      * @throws CoreException 任一 OpenSSL 调用拒绝了这个值：消息点名是哪一项、原文是什么
      * @note 失败即抛，不做「这项没生效但其它照旧」的降级：半生效的 TLS 策略比启动失败危险得多
      */
-    void applyTlsPolicy(SSL_CTX *context, const TlsPolicy &policy, const char *builtInCipherList);
+    ASYN_CORE_API void applyTlsPolicy(SSL_CTX *context, const TlsPolicy &policy, const char *builtInCipherList);
 } // namespace AsynGyanis::Core

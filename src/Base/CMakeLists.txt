@@ -14,9 +14,11 @@ add_subdirectory(Log)
 
 get_property(BASE_SOURCES GLOBAL PROPERTY AsynGyanisBaseSources)
 
-add_library(Base STATIC
+add_library(Base ${ASYN_LIBRARY_KIND}
         ${BASE_SOURCES}
 )
+# 静态是默认形态；打开 BUILD_SHARED_LIBS 时本模块要带上自己的导出宏定义与可见性预设
+asyn_configure_module_library(Base)
 
 # 可选能力探测：std::stacktrace（异常与日志的调用栈）。GCC 13/14 的 libstdc++ 需要额外链接
 # stdc++exp，探测不过就退化为空栈（见 Exception/StackTrace.h 的降级实现），不让 configure 失败

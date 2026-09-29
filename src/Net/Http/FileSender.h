@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <string>
 
 namespace AsynGyanis::Net
@@ -21,7 +23,7 @@ namespace AsynGyanis::Net
      *          之所以写成类而不是命名空间里的自由函数：现有调用方（HttpServer 的静态路由）
      *          已按「类名限定」的形式书写，改成自由函数会连带改动其他模块负责的代码。
      */
-    class FileSender
+    class ASYN_NET_API FileSender
     {
     public:
         /**

@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Quic/Codec/QuicFrame.h"
 
 #include <array>
@@ -41,7 +43,7 @@ namespace AsynGyanis::Net
     };
 
     /// 一个包里握手字节的区间，判丢之后调用方按它重发对应的 CRYPTO 帧
-    struct QuicCryptoRange
+    struct ASYN_NET_API QuicCryptoRange
     {
         std::uint64_t beginOffset{0}; ///< 该级别握手流上的起始偏移
         std::uint64_t endOffset{0};   ///< 结束偏移（不含）
@@ -52,7 +54,7 @@ namespace AsynGyanis::Net
      * @details `byteCount` 是拥塞控制的口径：算整个 UDP 数据报载荷，不算分帧后的明文长度
      *          （RFC 9002 §6.3 与 §7 把在途字节定义为计入拥塞窗口的数据报大小）。
      */
-    struct QuicSentPacketInfo
+    struct ASYN_NET_API QuicSentPacketInfo
     {
         std::uint64_t                  packetNumber{0};       ///< 完整包号，不是线上截断的那个
         QuicTime                       timeSent{};            ///< 发出时刻，RTT 样本与时间阈值判定都靠它
@@ -69,7 +71,7 @@ namespace AsynGyanis::Net
     };
 
     /// 一次确认处理的结果
-    struct QuicAcknowledgementUpdate
+    struct ASYN_NET_API QuicAcknowledgementUpdate
     {
         std::vector<QuicSentPacketInfo> acknowledged{};            ///< 本次新确认的包，按包号递增
         std::vector<QuicSentPacketInfo> lost{};                    ///< 因此次确认而判丢的包
@@ -77,7 +79,7 @@ namespace AsynGyanis::Net
     };
 
     /// 定时器到期的处理结果
-    struct QuicRecoveryTimeoutAction
+    struct ASYN_NET_API QuicRecoveryTimeoutAction
     {
         std::vector<QuicSentPacketInfo> lost{};                                 ///< 按时间阈值新判丢的包
         QuicRecoverySpace               lostSpace{QuicRecoverySpace::Initial};  ///< 这些丢包属于哪个空间
@@ -86,7 +88,7 @@ namespace AsynGyanis::Net
     };
 
     /// RTT 估算的当前值，供用例断言与日志取用
-    struct QuicRoundTripTimeEstimate
+    struct ASYN_NET_API QuicRoundTripTimeEstimate
     {
         QuicTime minimum{};      ///< min_rtt，不含对端报告的延迟
         QuicTime smoothed{};     ///< smoothed_rtt
@@ -102,7 +104,7 @@ namespace AsynGyanis::Net
      *          外层按 `nextDeadline` 定闹钟、到点调 `onDeadlineReached`。本类不持有任何时间源。
      * @warning 不是线程安全的，且刻意不锁：一个实例属于一条连接，只在所属循环线程上驱动。
      */
-    class QuicRecovery
+    class ASYN_NET_API QuicRecovery
     {
     public:
         /// 初始估算按 §5.3 落到 kInitialRtt，第一个样本到达时才换成真实观测

@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncSocket.h"
@@ -26,7 +28,7 @@ namespace AsynGyanis::Core
      * @brief TLS socket 包装类，提供异步 SSL 握手、加密读写接口
      * @note 必须先用 handshake() 完成握手，之后才能用 asyncReceive()/asyncSend()
      */
-    class TlsSocket
+    class ASYN_CORE_API TlsSocket
     {
     public:
         /**

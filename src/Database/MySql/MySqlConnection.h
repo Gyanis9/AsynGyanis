@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseConnection.h"
 
 #include <cstddef>
@@ -45,7 +47,7 @@ namespace AsynGyanis::Database
      *          那道可以在会话存续期间改，下一条语句即生效。一条连接同一时刻只能由一个线程使用；
      *          mysql_close 之后 mysql_error() 的返回值即失效。
      */
-    class MySqlConnection : public DatabaseConnection
+    class ASYN_DATABASE_API MySqlConnection : public DatabaseConnection
     {
     public:
         /**

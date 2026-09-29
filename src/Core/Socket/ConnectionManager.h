@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -28,7 +30,7 @@ namespace AsynGyanis::Core
      *          不是原子量）。因此跨线程关闭必须把动作投递到连接所属的事件循环
      *          （EventLoop::scheduler().scheduleRemote()），不要直接调用 shutdown()
      */
-    class ConnectionManager
+    class ASYN_CORE_API ConnectionManager
     {
     public:
         /**

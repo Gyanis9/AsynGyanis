@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 
 #include "Core/EventLoop/TimerQueue.h"
 
@@ -25,7 +27,7 @@ namespace AsynGyanis::Core
      * @details 循环停止后未到期的等待不会自行触发（与「循环停了就没有事件」一致），因此必须在
      *          事件循环运行期间等待；同刻度到期的多个定时器按截止时间顺序恢复。
      */
-    class Timer
+    class ASYN_CORE_API Timer
     {
     public:
         /**

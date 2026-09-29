@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Platform/IO/Socket.h"
 
@@ -48,7 +50,7 @@ namespace AsynGyanis::Net
      *          流量控制、丢包恢复全在 `QuicConnectionCore` 里，本类只做三件事——喂报文、写数据报、
      *          把流数据与流的收口转交给应用层（HTTP/3）。
      */
-    class QuicConnection
+    class ASYN_NET_API QuicConnection
     {
     public:
         /// 本端连接标识的长度。对端报文里的目的连接标识就是这个长度——而短头报文**不携带** DCID

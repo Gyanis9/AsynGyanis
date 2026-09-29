@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Config/ConfigKeyValueMap.h"
 #include "Base/Config/ConfigValidationResult.h"
 #include "Base/Config/ConfigValue.h"
@@ -24,7 +26,7 @@ namespace AsynGyanis::Base
      * @brief 单条配置项的 schema 约束。
      * @details 用于启动与热加载时的自检：类型不符、必需键缺失、数值越界都会记入错误。
      */
-    struct ConfigSchemaEntry
+    struct ASYN_BASE_API ConfigSchemaEntry
     {
         std::string                    key;             ///< 配置键
         std::optional<ConfigValueType> expectedType;    ///< 期望类型，空表示不限制；整数族（number_integer 与 number_unsigned）互通，见 runSchemaValidation
@@ -44,5 +46,5 @@ namespace AsynGyanis::Base
      * @param schema 约束条目列表。
      * @return ConfigValidationResult 校验结果。
      */
-    ConfigValidationResult runSchemaValidation(const ConfigKeyValueMap &values, const ConfigSchema &schema);
+    ASYN_BASE_API ConfigValidationResult runSchemaValidation(const ConfigKeyValueMap &values, const ConfigSchema &schema);
 } // namespace AsynGyanis::Base

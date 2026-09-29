@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseException.h"
 
 #include <source_location>
@@ -24,7 +26,7 @@ namespace AsynGyanis::Database
      *          数据与语句本身没错，可以做退避重试、降级到只读缓存、或给上游回一个
      *          「服务繁忙」；把它和 SQL 错误混在一起会让重试逻辑去重试一条注定失败的语句。
      */
-    class ConnectionUnavailableException : public DatabaseException
+    class ASYN_DATABASE_API ConnectionUnavailableException : public DatabaseException
     {
     public:
         /**

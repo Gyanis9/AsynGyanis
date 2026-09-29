@@ -18,6 +18,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseResult.h"
 
 #include <cstdint>
@@ -36,7 +38,7 @@ namespace AsynGyanis::Database
      *          MySqlResult 持有 MYSQL_RES，本类持有已经转换好的 DatabaseValue 行。
      *          本类不接触任何 MySQL C API，因此可以在没有服务端的情况下直接构造并测试。
      */
-    class MySqlStatementResult final : public DatabaseResult
+    class ASYN_DATABASE_API MySqlStatementResult final : public DatabaseResult
     {
     public:
         /**

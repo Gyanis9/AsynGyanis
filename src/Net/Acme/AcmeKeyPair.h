@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Acme/AcmeError.h"
 
 #include <openssl/evp.h>
@@ -30,7 +32,7 @@ namespace AsynGyanis::Net
         /**
          * @brief EVP_PKEY 的归还动作
          */
-        struct EvpKeyDeleter
+        struct ASYN_NET_API EvpKeyDeleter
         {
             /**
              * @brief 放掉一把 OpenSSL 密钥的引用
@@ -40,7 +42,7 @@ namespace AsynGyanis::Net
         };
 
         /// 一把密钥的公开表示：JWK 紧凑文本与它的 RFC 7638 指纹，成对算出来以免两处漂移
-        struct PublicIdentity
+        struct ASYN_NET_API PublicIdentity
         {
             std::string jsonWebKeyText;       ///< 只含公开成员、按键字典序排列的紧凑 JSON
             std::string jsonWebKeyThumbprint; ///< 上面那份文本的 SHA-256 指纹（base64url 无填充）
@@ -74,7 +76,7 @@ namespace AsynGyanis::Net
      *       落在事件循环线程上是可接受的短时计算（不是同步 IO 等待）。要把它挪出循环请用上
      *       Core::AsyncExecutor，本类不做——那会让「谁的线程上算」这件事变成两份契约。
      */
-    class AcmeKeyPair
+    class ASYN_NET_API AcmeKeyPair
     {
     public:
         /**

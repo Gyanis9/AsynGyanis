@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/InetAddress.h"
 
@@ -32,7 +34,7 @@ namespace AsynGyanis::Core
      *       空列表，把失败缓存 60 秒等于把一次抖动放大成一分钟连不上。IP 字面量不进这套流程
      *       （见 resolve 的说明），也就谈不上缓存。
      */
-    class AsyncResolver
+    class ASYN_CORE_API AsyncResolver
     {
     public:
         /**

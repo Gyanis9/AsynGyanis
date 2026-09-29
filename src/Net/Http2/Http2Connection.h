@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
@@ -103,7 +105,7 @@ namespace AsynGyanis::Net
      * @note 构造 Http2Connection 时按值取走一份，没有运行期更换的入口：上限若中途变紧，同一条流的
      *       前后两段会按不同尺子判定。
      */
-    struct Http2ConnectionConfiguration
+    struct ASYN_NET_API Http2ConnectionConfiguration
     {
         std::uint32_t headerTableSize{kHpackDefaultDynamicTableSizeByteCount}; ///< SETTINGS_HEADER_TABLE_SIZE（§6.5.2 初值 4096），同时是本端 HPACK 解码器动态表的上限
         std::uint32_t enablePush{0};                                           ///< SETTINGS_ENABLE_PUSH（§6.5.2 初值 1）：本片不实现推送，取 0 如实告知对端不必预留
@@ -123,7 +125,7 @@ namespace AsynGyanis::Net
      *          因此未知方法原文与 :scheme 都不会在交接中丢失。接线层再用一个显式映射把它转成
      *          HttpRequest（:authority → host、:path → uri、「HTTP/2」→ 版本），两边语义都不被改写。
      */
-    struct Http2Request
+    struct ASYN_NET_API Http2Request
     {
         std::uint32_t streamId{0}; ///< 该请求所属的流号，回响应时按它定位
         std::string   method;      ///< :method 原文（未知方法原样保留）
@@ -140,7 +142,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 从对端收到的一段正文（DATA 帧的应用数据），或一枚尾部头块收尾时的那条收口信号
      */
-    struct Http2ReceivedData
+    struct ASYN_NET_API Http2ReceivedData
     {
         std::uint32_t streamId{0};             ///< 数据所属的流号
         std::string   data;                    ///< 应用数据；空串表示零长 DATA 帧（§6.1 允许，常见于带 END_STREAM 的收尾帧）
@@ -177,7 +179,7 @@ namespace AsynGyanis::Net
      *          停在半途等窗口，大请求永远收不完。本层不做尾部头块的内容解释、不建优先级树、
      *          不实现服务端推送；超过窗口的 DATA 按 §6.9.1 判连接错误 FLOW_CONTROL_ERROR。
      */
-    class Http2Connection
+    class ASYN_NET_API Http2Connection
     {
     public:
         /**

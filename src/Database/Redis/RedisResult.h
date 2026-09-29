@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Redis/RedisConnection.h" // 复用其中全局作用域的 redisReply 前置声明
 
@@ -40,7 +42,7 @@ namespace AsynGyanis::Database
      *          字符串一种，因此嵌套元素里的整数与浮点数一律按十进制文本保留（见 convertReply()），
      *          不会被静默丢弃。
      */
-    class RedisResult : public DatabaseResult
+    class ASYN_DATABASE_API RedisResult : public DatabaseResult
     {
     public:
         /**

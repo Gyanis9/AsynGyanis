@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <optional>
 #include <string>
 #include <string_view>
@@ -22,7 +24,7 @@ namespace AsynGyanis::Base
      * @param bytes 待编码字节，可为任意二进制
      * @return std::string 编码结果；输入为空时返回空串
      */
-    [[nodiscard]] std::string base64Encode(std::string_view bytes);
+    [[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes);
 
     /**
      * @brief 严格 Base64 解码（标准字母表）
@@ -34,7 +36,7 @@ namespace AsynGyanis::Base
      * @note 空串判非法：0 字节的 base64 规范上是 `""`，但本仓的调用点都是「长度固定的凭据」，
      *       交出空 vector 与「没解出来」难以区分，因此一律判否
      */
-    [[nodiscard]] std::optional<std::string> base64Decode(std::string_view text) noexcept;
+    [[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept;
 
     /**
      * @brief URL-safe 且**不带填充**的 Base64 编码（RFC 4648 §5 字母表，JWT/ACME 那一类写法）
@@ -46,7 +48,7 @@ namespace AsynGyanis::Base
      * @return std::string 编码结果；输入为空时返回空串（JWS 里「空正文」段正是这个写法，例如
      *         ACME 的 POST-as-GET，见 RFC 8555 §6.3）
      */
-    [[nodiscard]] std::string base64UrlEncode(std::string_view bytes);
+    [[nodiscard]] ASYN_BASE_API std::string base64UrlEncode(std::string_view bytes);
 
     /**
      * @brief 严格解码 URL-safe 无填充的 Base64（与 base64UrlEncode() 配对）
@@ -60,5 +62,5 @@ namespace AsynGyanis::Base
      *       「这一段是空的」这种正文（POST-as-GET 的空 payload），必须先判空再调本函数，
      *       不能把判空交给本函数的返回值
      */
-    [[nodiscard]] std::optional<std::string> base64UrlDecode(std::string_view text) noexcept;
+    [[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept;
 } // namespace AsynGyanis::Base

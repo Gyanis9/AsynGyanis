@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/AsyncSocket.h"
 
@@ -36,7 +38,7 @@ namespace AsynGyanis::Net
      * @note 缓冲区里的数据一旦读出就不再属于流：混用「直接 socket 读取」与本类会丢数据。
      * @note 本类接管传入 AsyncSocket 的所有权，析构即关闭连接。
      */
-    class TcpStream
+    class ASYN_NET_API TcpStream
     {
     public:
         /**

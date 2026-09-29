@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/LogicException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Cancelable.h"
@@ -56,7 +58,7 @@ namespace AsynGyanis::Net
      *       缓冲区里，下一轮先喂进解析器；不留存就会每次从缓冲区开头重读，把第二条请求静默丢掉。
      * @see Detail::httpKeepAliveLoop(), shouldKeepAlive()
      */
-    class HttpSession : public Core::Connection
+    class ASYN_NET_API HttpSession : public Core::Connection
     {
     public:
         /**
@@ -173,7 +175,7 @@ namespace AsynGyanis::Net
          * @param response 待填充的响应对象，进入本函数时应当是新构造的
          * @param errorKind 解析器给出的失败类别
          */
-        void writeParseErrorResponse(HttpResponse &response, HttpParseErrorKind errorKind);
+        ASYN_NET_API void writeParseErrorResponse(HttpResponse &response, HttpParseErrorKind errorKind);
 
         /**
          * @brief 停止回调实体：把连接的停止请求转发成本次请求的协作式取消
@@ -184,7 +186,7 @@ namespace AsynGyanis::Net
          * @note 标准里的 stop_callback 只接受 (stop_token, callback) 两个构造参数，
          *       早期技术规范那套「函数指针 + void* 上下文」的三参形式并不存在。
          */
-        struct RequestCancelForwarder
+        struct ASYN_NET_API RequestCancelForwarder
         {
             HttpRequest *request = nullptr; ///< 本次请求，其存活期由注册方的作用域保证
 
@@ -213,7 +215,7 @@ namespace AsynGyanis::Net
          *       于是不必跟着每条报文反复注册与注销。若按请求注册，注册动作本身（停止回调节点）
          *       就成了每请求一次的开销。
          */
-        class ConnectionCancelForwarder
+        class ASYN_NET_API ConnectionCancelForwarder
         {
         public:
             /**
@@ -235,7 +237,7 @@ namespace AsynGyanis::Net
          *          标记的存续期就是「处理中」这段作用域，因此用守卫而不是在每条出口上手工清除：
          *          提前 co_return 与异常展开都会走到析构，不会留下永远忙碌的连接。
          */
-        class BusyScope
+        class ASYN_NET_API BusyScope
         {
         public:
             /**

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/LogLevel.h"
 
 namespace AsynGyanis::Base
@@ -20,7 +22,7 @@ namespace AsynGyanis::Base
      *          输出能力探测属于操作系统交互，统一由 Platform::Console::supportsAnsiEscapeCodes()
      *          负责，调用方据此决定使用彩色还是纯文本格式化器。
      */
-    class LogColor
+    class ASYN_BASE_API LogColor
     {
     public:
         static constexpr auto kReset         = "\033[0m";  ///< 重置全部属性

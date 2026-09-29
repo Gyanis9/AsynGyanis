@@ -13,6 +13,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/LogicException.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Dialect/ColumnType.h"

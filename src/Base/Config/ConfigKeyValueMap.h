@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Config/ConfigValue.h"
 
 #include <functional>
@@ -25,7 +27,7 @@ namespace AsynGyanis::Base
      *          避免每次取值都构造临时 std::string。只暴露 string_view 一个重载，
      *          std::string 经隐式转换走同一条哈希路径，从根上杜绝两种键哈希不一致。
      */
-    struct TransparentStringHash
+    struct ASYN_BASE_API TransparentStringHash
     {
         using is_transparent = void; ///< 启用异质查找的标记类型
 

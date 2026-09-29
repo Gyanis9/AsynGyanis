@@ -12,6 +12,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/PoolLiveness.h"
 
@@ -28,7 +30,7 @@ namespace AsynGyanis::Database
      * @details 析构时自动归还连接池，手工调用 release() 可提前归还。公共路径（析构与 release）
      *          应尽可能短，归还后的过期检查与健康检查这类重活留给后台线程，不健康的连接被丢弃。
      */
-    class PooledConnection
+    class ASYN_DATABASE_API PooledConnection
     {
     public:
         /**

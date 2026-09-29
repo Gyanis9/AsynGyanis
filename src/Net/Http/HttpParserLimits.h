@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 
 namespace AsynGyanis::Net
@@ -34,7 +36,7 @@ namespace AsynGyanis::Net
      *       报文收了一半时变紧，同一个字段前后两段会按不同尺子判定，出错位置不可预期。
      * @see HttpServerLimits, HttpParser, HttpServer::setParserLimits(), HttpsServer::setParserLimits()
      */
-    struct HttpParserLimits
+    struct ASYN_NET_API HttpParserLimits
     {
         std::size_t maximumUriLength{8ull * 1024};              ///< 请求目标（URI）上限，单位字节；请求行整行上限也由它推出（见 requestLineLengthLimit()）。0 表示不限
         std::size_t maximumHeaderFieldNameLength{256};          ///< 单个头部名上限，单位字节；标准头名最长不过数十字节，留足 x-amz- 一类私有前缀。0 表示不限

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Quic/Codec/QuicDecodeError.h"
 
@@ -41,7 +43,7 @@ namespace AsynGyanis::Net
      *
      * @details 字节数必须随值一起交出：变长整数是报文里逐字段推进的起点，调用方要靠它把读位置挪到下一个字段。
      */
-    struct QuicDecodedInteger
+    struct ASYN_NET_API QuicDecodedInteger
     {
         std::uint64_t value{0};     ///< 解出的数值
         std::size_t   byteCount{0}; ///< 本数实际占用的字节数（1/2/4/8）
@@ -81,7 +83,7 @@ namespace AsynGyanis::Net
      * @param value 待写入的数值
      * @throws Base::InvalidArgumentException 用法错误：value 超过 kQuicMaximumIntegerValue
      */
-    void appendQuicVariableLengthInteger(std::string &bytes, std::uint64_t value);
+    ASYN_NET_API void appendQuicVariableLengthInteger(std::string &bytes, std::uint64_t value);
 
     /**
      * @brief 从字节序列的开头解出一个变长整数
@@ -92,5 +94,5 @@ namespace AsynGyanis::Net
      * @return 成功返回 `QuicDecodedInteger`，其 byteCount 是本数吃掉的字节数（调用方据此前移读位置）
      * @return 失败返回 `QuicDecodeError`：类别恒为 `Truncated`（首字节高 2 位声明的宽度大于剩余字节数）
      */
-    [[nodiscard]] std::expected<QuicDecodedInteger, QuicDecodeError> decodeQuicVariableLengthInteger(std::span<const std::uint8_t> bytes);
+    [[nodiscard]] ASYN_NET_API std::expected<QuicDecodedInteger, QuicDecodeError> decodeQuicVariableLengthInteger(std::span<const std::uint8_t> bytes);
 } // namespace AsynGyanis::Net

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 
 #include <cstddef>
@@ -33,7 +35,7 @@ namespace AsynGyanis::Net
      * @note 写入发生在续期循环所属的线程，读取发生在应答机构那次 GET 的线程——两者通常不是同一条
      *       循环，因此内部加锁。临界区只有查表与拼串，锁内不做任何 IO
      */
-    class AcmeHttp01ChallengeStore
+    class ASYN_NET_API AcmeHttp01ChallengeStore
     {
     public:
         AcmeHttp01ChallengeStore() = default;

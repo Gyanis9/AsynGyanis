@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 #include <cstddef>
@@ -39,7 +41,7 @@ namespace AsynGyanis::Core
      *          要实跑得在放行 io_uring 的容器里执行同一批用例：io_uring 系统调用会被 Docker 默认
      *          seccomp 挡掉（`io_uring_setup` 返回 EPERM），需 `--security-opt seccomp=unconfined`。
      */
-    class Uring
+    class ASYN_CORE_API Uring
     {
     public:
         /**

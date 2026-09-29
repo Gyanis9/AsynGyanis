@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/AsyncUdpSocket.h"
 #include "Core/Socket/InetAddress.h"
@@ -47,7 +49,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一条到服务端的 QUIC 连接
      */
-    class QuicClientConnection
+    class ASYN_NET_API QuicClientConnection
     {
     public:
         /**

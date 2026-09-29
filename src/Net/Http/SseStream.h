@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
@@ -37,7 +39,7 @@ namespace AsynGyanis::Net
      * @warning 本对象只借用 HttpResponse，不持有它：响应对象必须比本对象活得久，
      *          否则写出时会访问已销毁的响应。
      */
-    class SseStream
+    class ASYN_NET_API SseStream
     {
     public:
         /// 单帧长度上限（1 MiB = 1024 × 1024 字节），指整帧序列化后的字节数（含字段名前缀与行尾）

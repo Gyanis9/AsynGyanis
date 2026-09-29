@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <array>
 #include <cstddef>
 #include <string_view>
@@ -234,7 +236,7 @@ namespace AsynGyanis::Net
      * @param name 头名（调用方应已归一化为小写，与 HttpResponse 的存放口径一致）
      * @return true 该字段必须剥离
      */
-    [[nodiscard]] bool isConnectionSpecificHeaderName(std::string_view name) noexcept;
+    [[nodiscard]] ASYN_NET_API bool isConnectionSpecificHeaderName(std::string_view name) noexcept;
 
     /**
      * @brief 严格解析 Content-Length 的取值（RFC 9110 §8.6）
@@ -248,7 +250,7 @@ namespace AsynGyanis::Net
      * @return true 取值合法
      * @return false 取值非法（空串、含非数字字符、超出 19 位十进制）
      */
-    [[nodiscard]] bool parseContentLengthValue(std::string_view text, std::size_t &length) noexcept;
+    [[nodiscard]] ASYN_NET_API bool parseContentLengthValue(std::string_view text, std::size_t &length) noexcept;
 
     /**
      * @brief 判断内容类型头部是否指向指定的媒体类型

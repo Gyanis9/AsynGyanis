@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/System/Process.h"
 
 #include <atomic>
@@ -48,7 +50,7 @@ namespace AsynGyanis::Core
      *       多进程下这意味着「单来源上限 × N、请求速率上限 × N、指标要按进程分别采集」——
      *       要真正的全局口径就得引入进程间共享（或改用单进程多工作循环 + 接受分发）。
      */
-    class WorkerSupervisor
+    class ASYN_CORE_API WorkerSupervisor
     {
     public:
         /**

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/EventLoop/EventLoop.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Tracing/OtlpTraceJson.h"
@@ -50,7 +52,7 @@ namespace AsynGyanis::Net
      *       「一直发不出去但没人知道」；TLS 策略被 OpenSSL 拒同样是构造期抛。
      * @see formatOtlpTracesJson(), Tracer
      */
-    class OtlpHttpSpanExporter final : public SpanExporter
+    class ASYN_NET_API OtlpHttpSpanExporter final : public SpanExporter
     {
     public:
         /**

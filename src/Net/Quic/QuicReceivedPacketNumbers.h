@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -23,7 +25,7 @@ namespace AsynGyanis::Net
      *          也是每空间最多 `kQuicMaximumTrackedPacketNumbers` 个包号的滞留上界。
      * @note 包号按 RFC 9000 §17.1 不超过 2^62-1，因此相邻判断里的 +1 不会回绕。
      */
-    class QuicReceivedPacketNumbers
+    class ASYN_NET_API QuicReceivedPacketNumbers
     {
     public:
         QuicReceivedPacketNumbers() = default;

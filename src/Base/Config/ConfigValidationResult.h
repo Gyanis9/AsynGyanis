@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <string>
 #include <vector>
 
@@ -20,7 +22,7 @@ namespace AsynGyanis::Base
      * @details 一次性收集全部约束的违反情况，errors 每条对应一个键的问题，
      *          避免首个错误即中断导致排查需要反复重启。
      */
-    struct ConfigValidationResult
+    struct ASYN_BASE_API ConfigValidationResult
     {
         bool                     valid{true}; ///< 全部约束满足时为 true
         std::vector<std::string> errors;      ///< 校验失败描述列表（每条对应一个键的问题）

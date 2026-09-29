@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Quic/Codec/QuicDecodeError.h"
 
 #include <array>
@@ -65,7 +67,7 @@ namespace AsynGyanis::Net
      *          §7.3 明确要求选了零长连接标识时仍要带上零长的取值，缺 ISCID/ODCID 才是错误。
      *          成员顺序与参数标识递增一致，编码按此顺序写出，因此同一份参数编出来的字节是确定的。
      */
-    struct QuicTransportParameters
+    struct ASYN_NET_API QuicTransportParameters
     {
         /// 客户端第一个 Initial 的目的连接标识（0x00，仅服务端发）；与实际收到的值的比对归连接核心
         std::optional<std::vector<std::uint8_t>> originalDestinationConnectionId{};
@@ -102,7 +104,7 @@ namespace AsynGyanis::Net
      * @param parameters 待编码的参数
      * @throws Base::InvalidArgumentException 用法错误：整型项超过变长整数上限，或连接标识超过 20 字节
      */
-    void appendQuicTransportParameters(std::string &bytes, const QuicTransportParameters &parameters);
+    ASYN_NET_API void appendQuicTransportParameters(std::string &bytes, const QuicTransportParameters &parameters);
 
     /**
      * @brief 解出一段传输参数并做完备的自洽校验
@@ -113,6 +115,6 @@ namespace AsynGyanis::Net
      * @return 成功返回参数；`initial_source_connection_id` 缺失、重复、取值长度或范围不合、
      *         末尾余字节等一律返回 `QuicDecodeError`
      */
-    [[nodiscard]] std::expected<QuicTransportParameters, QuicDecodeError> decodeQuicTransportParameters(std::span<const std::uint8_t>    bytes,
-                                                                                                        QuicTransportParameterSenderRole senderRole);
+    [[nodiscard]] ASYN_NET_API std::expected<QuicTransportParameters, QuicDecodeError> decodeQuicTransportParameters(std::span<const std::uint8_t>    bytes,
+                                                                                                                     QuicTransportParameterSenderRole senderRole);
 } // namespace AsynGyanis::Net

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 #include <chrono>
@@ -28,7 +30,7 @@ namespace AsynGyanis::Platform
      * @note 与 Core::InetAddress 的分工：本类型是平台层的裸结构，只负责在系统调用之间搬运；
      *       IP 文本化、端口访问、解析等便利操作在 Core 层做。
      */
-    struct SocketAddress
+    struct ASYN_PLATFORM_API SocketAddress
     {
         sockaddr_storage storage{}; ///< 地址本体（放得下 IPv4/IPv6）
         socklen_t        length{0}; ///< 实际长度；0 表示未设置
@@ -42,7 +44,7 @@ namespace AsynGyanis::Platform
      * @note initialize()/finalize() 以引用计数配对：多个持有网络资源的对象可各自成对调用，
      *       Winsock 只在首个 initialize() 时启动、在最后一个 finalize() 时清理。
      */
-    class Socket
+    class ASYN_PLATFORM_API Socket
     {
     public:
         /**

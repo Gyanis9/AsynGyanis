@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <concepts>
 #include <cstddef>
 #include <optional>
@@ -31,7 +33,7 @@ namespace AsynGyanis::Net
      *          才重建——按名字取单值走 get()/values() 直接读权威记录，多数请求只读一两个头部，为它们
      *          建表等于白付若干次节点分配与字符串拷贝。
      */
-    class HttpHeaderFieldStore
+    class ASYN_NET_API HttpHeaderFieldStore
     {
     public:
         /**

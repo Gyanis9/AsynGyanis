@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/Sinks/LogSink.h"
 
@@ -33,7 +35,7 @@ namespace AsynGyanis::Base
      * @note 队列容量钳制在 [kMinimumQueueSize, kMaximumQueueSize] 之间，构造函数自己完成，
      *       调用方无需保证传入合法容量。
      */
-    class AsyncSink : public LogSink
+    class ASYN_BASE_API AsyncSink : public LogSink
     {
     public:
         /**

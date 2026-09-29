@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -39,7 +41,7 @@ namespace AsynGyanis::Net
      * @note 本类只负责一条 Cookie 的表示与文本化，跨站匹配与存储归 `HttpCookieJar`；
      *       它自己不判定「能不能发给这个主机」
      */
-    class HttpCookie
+    class ASYN_NET_API HttpCookie
     {
     public:
         /**

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <expected>
 #include <optional>
@@ -37,7 +39,7 @@ namespace AsynGyanis::Net
      *       本函数只负责压，不做策略
      * @see compressionMiddleware()
      */
-    [[nodiscard]] std::optional<std::string> gzipCompress(std::string_view input, int level = kDefaultGzipLevel);
+    [[nodiscard]] ASYN_NET_API std::optional<std::string> gzipCompress(std::string_view input, int level = kDefaultGzipLevel);
 
     /**
      * @brief 解一段 deflate 家族的压缩正文（gzip 容器或 zlib 流都认）
@@ -60,5 +62,5 @@ namespace AsynGyanis::Net
      * @return std::expected<std::string, std::string> 成功为解出的正文；失败为可直接进日志的中文原因
      * @see HttpContentCoding.h 的按 Content-Encoding 分派
      */
-    [[nodiscard]] std::expected<std::string, std::string> inflateHttpBody(std::string_view input, std::size_t maxOutputByteCount = kDefaultInflateOutputLimitBytes);
+    [[nodiscard]] ASYN_NET_API std::expected<std::string, std::string> inflateHttpBody(std::string_view input, std::size_t maxOutputByteCount = kDefaultInflateOutputLimitBytes);
 } // namespace AsynGyanis::Net

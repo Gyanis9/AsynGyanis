@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -30,7 +32,7 @@ namespace AsynGyanis::Platform
      *          落在第 1 组起时读不到可用的核，按不可用处理）。超出范围一律报错而不是静默截断。
      * @see currentThreadCoreMask() 交出的掩码只是 0-63 那一段的紧凑诊断视图，不决定可绑范围。
      */
-    class CpuAffinity
+    class ASYN_PLATFORM_API CpuAffinity
     {
     public:
         /**

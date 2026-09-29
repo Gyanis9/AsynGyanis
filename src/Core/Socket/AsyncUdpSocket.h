@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoWatcher.h"
@@ -27,7 +29,7 @@ namespace AsynGyanis::Core
      *          （内部状态没有原子保护）
      * @note 一条报文的最大长度见 Platform::DatagramSocket::kMaximumDatagramBytes
      */
-    class AsyncUdpSocket
+    class ASYN_CORE_API AsyncUdpSocket
     {
     public:
         /**

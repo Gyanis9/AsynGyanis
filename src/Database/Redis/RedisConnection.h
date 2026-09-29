@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseConnection.h"
 
 #include <chrono>
@@ -38,7 +40,7 @@ namespace AsynGyanis::Database
      *          认不出的 kind 原样留在 kind 里、不猜也不丢：服务端将来加新形态时，调用方仍然看得见，
      *          比在这里静默过滤掉要好排查。
      */
-    struct RedisPushReply
+    struct ASYN_DATABASE_API RedisPushReply
     {
         std::string  kind;                 ///< 回复类型：message / pmessage / subscribe / unsubscribe ...
         std::string  channel;              ///< 消息所在频道；pmessage 时是实际命中的那个频道
@@ -55,7 +57,7 @@ namespace AsynGyanis::Database
      *          @li `__keyevent@<库>__:<事件>` —— 正文是被改动的键。
      *          本结构按「键 / 事件」两个语义字段给出，调用方不必自己记哪种形状。
      */
-    struct RedisKeyspaceNotification
+    struct ASYN_DATABASE_API RedisKeyspaceNotification
     {
         std::int64_t database{0};       ///< 通知来自哪个键空间
         bool         isKeyEvent{false}; ///< true 表示走的是 __keyevent__（正文是键），false 是 __keyspace__（正文是事件）
@@ -80,7 +82,7 @@ namespace AsynGyanis::Database
      *          并且把这条连接标成订阅形态。发出这类命令不会被 execute() 拦下（那等于替调用方决定用途），
      *          但连接归还时会直接断开而不是带着错位的回复流回池。
      */
-    class RedisConnection : public DatabaseConnection
+    class ASYN_DATABASE_API RedisConnection : public DatabaseConnection
     {
     public:
         /**

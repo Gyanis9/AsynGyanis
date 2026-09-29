@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <chrono>
 #include <cstddef>
 
@@ -27,7 +29,7 @@ namespace AsynGyanis::Net
      *       把某一项设为 0 只关掉它自己那道保护，不会牵连另一半）。
      * @see HttpParserLimits, HttpServer::setLimits(), HttpServer::setParserLimits()
      */
-    struct HttpServerLimits
+    struct ASYN_NET_API HttpServerLimits
     {
         std::chrono::milliseconds idleTimeout{std::chrono::seconds(75)};  ///< 两次请求之间收不到新字节的容忍时长（keep-alive 空闲与 WebSocket 帧间空闲）
         std::chrono::milliseconds readTimeout{std::chrono::seconds(60)};  ///< 相邻两次成功读取之间的最长空闲（慢速攻击防线）；处理器运行期不适用，那一段按 writeTimeout 计

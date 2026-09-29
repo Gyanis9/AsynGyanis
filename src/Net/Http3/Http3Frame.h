@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 
@@ -109,7 +111,7 @@ namespace AsynGyanis::Net
      * @return std::optional<Http3SettingId> 认识的取值返回对应枚举；未知或保留取值返回 nullopt，
      *         调用方按「忽略该项」处理，不当成错误
      */
-    [[nodiscard]] std::optional<Http3SettingId> http3SettingIdFromValue(const std::uint64_t identifierValue) noexcept;
+    [[nodiscard]] ASYN_NET_API std::optional<Http3SettingId> http3SettingIdFromValue(const std::uint64_t identifierValue) noexcept;
 
     /**
      * @brief 帧解码失败的类别
@@ -126,7 +128,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一次帧编解码失败的完整说明
      */
-    struct Http3FrameError
+    struct ASYN_NET_API Http3FrameError
     {
         Http3FrameErrorKind kind{Http3FrameErrorKind::Malformed}; ///< 失败类别：上层据此选上线错误码，不去匹配文案
         std::string         message;                              ///< 中文可操作文案，含帧类型、声明长度与实收字节数和对应 RFC 章节
@@ -150,7 +152,7 @@ namespace AsynGyanis::Net
     }
 
     /// DATA 帧（§7.2.1 图 4）：Type + Length + Data
-    struct Http3DataFrame
+    struct ASYN_NET_API Http3DataFrame
     {
         std::span<const std::uint8_t> payload{}; ///< Data 字段，长度任意（含 0 长度）；不做内容解释
 
@@ -161,7 +163,7 @@ namespace AsynGyanis::Net
     };
 
     /// HEADERS 帧（§7.2.2 图 5）：Type + Length + Encoded Field Section
-    struct Http3HeadersFrame
+    struct ASYN_NET_API Http3HeadersFrame
     {
         std::span<const std::uint8_t> encodedFieldSection{}; ///< QPACK 编码后的头字段段，本层不解释语义
 
@@ -172,7 +174,7 @@ namespace AsynGyanis::Net
     };
 
     /// 一条本层不认识的设置项（§7.2.4「必须忽略不认识的参数」），原样留着以便再编出去
-    struct Http3UnknownSetting
+    struct ASYN_NET_API Http3UnknownSetting
     {
         std::uint64_t identifier{}; ///< 线上标识取值，可能是扩展定义的，也可能是 §7.2.4.1 的保留标识
         std::uint64_t value{};      ///< 线上值，含义对本层不透明
@@ -188,7 +190,7 @@ namespace AsynGyanis::Net
      *          判不判是连接层的事），也不拒绝空载荷（零个参数是合法的）。
      * @note 编码侧先写 settings 再写 unknownSettings：线上参数顺序无语义，逐字节回显对端原文不是本层职责。
      */
-    struct Http3SettingsFrame
+    struct ASYN_NET_API Http3SettingsFrame
     {
         std::vector<std::pair<Http3SettingId, std::uint64_t>> settings{};        ///< 本层认识 settings 表里的项，按线上出现顺序
         std::vector<Http3UnknownSetting>                      unknownSettings{}; ///< 其余项，一条都不丢，可原样再编出去
@@ -197,7 +199,7 @@ namespace AsynGyanis::Net
     };
 
     /// CANCEL_PUSH 帧（§7.2.3 图 6）：载荷恰好一个 Push ID 变长整数
-    struct Http3CancelPushFrame
+    struct ASYN_NET_API Http3CancelPushFrame
     {
         std::uint64_t pushId{}; ///< 被撤销的推送标识；是否「超出当前允许范围」由连接层判（§7.2.3 的 H3_ID_ERROR）
 
@@ -205,7 +207,7 @@ namespace AsynGyanis::Net
     };
 
     /// PUSH_PROMISE 帧（§7.2.5 图 8）：Type + Length + Push ID + Encoded Field Section
-    struct Http3PushPromiseFrame
+    struct ASYN_NET_API Http3PushPromiseFrame
     {
         std::uint64_t                 pushId{};              ///< 承诺的推送标识
         std::span<const std::uint8_t> encodedFieldSection{}; ///< 被承诺请求的 QPACK 头字段段
@@ -225,7 +227,7 @@ namespace AsynGyanis::Net
      * @note 取值是否属于合法流号（服务端方向必须是客户端发起的双向流）与「后发的 GOAWAY 标识不得变大」
      *       都由连接层判，违规按 §7.2.6/§5.2 回 H3_ID_ERROR。
      */
-    struct Http3GoAwayFrame
+    struct ASYN_NET_API Http3GoAwayFrame
     {
         std::uint64_t streamIdOrPushId{}; ///< 线上 Stream ID/Push ID 字段原值
 
@@ -233,7 +235,7 @@ namespace AsynGyanis::Net
     };
 
     /// MAX_PUSH_ID 帧（§7.2.7 图 10）：载荷恰好一个 Push ID 变长整数
-    struct Http3MaxPushIdFrame
+    struct ASYN_NET_API Http3MaxPushIdFrame
     {
         std::uint64_t pushId{}; ///< 服务端可用推送标识的上界；只能升不能降（§7.2.7）
 
@@ -248,7 +250,7 @@ namespace AsynGyanis::Net
      *          第三类要连接层按 §7.2.8 判 H3_FRAME_UNEXPECTED——差别只在数值落在哪个区段，
      *          用 isHttp3ReservedExtensionIdentifier() 即可区分，故不额外建类型。
      */
-    struct Http3UnknownFrame
+    struct ASYN_NET_API Http3UnknownFrame
     {
         std::uint64_t                 frameType{}; ///< 线上帧类型原值，本层不认识
         std::span<const std::uint8_t> payload{};   ///< 载荷原文，本层不解释
@@ -274,7 +276,7 @@ namespace AsynGyanis::Net
      * @param frame 帧
      * @return std::uint64_t §7.2 各小节的类型值；Http3UnknownFrame 返回它自带的原值，可直接写进错误帧或日志
      */
-    [[nodiscard]] std::uint64_t http3FrameTypeValue(const Http3Frame &frame) noexcept;
+    [[nodiscard]] ASYN_NET_API std::uint64_t http3FrameTypeValue(const Http3Frame &frame) noexcept;
 
     /**
      * @brief 取帧类型的规范标识名，用于错误文案与日志
@@ -282,7 +284,7 @@ namespace AsynGyanis::Net
      * @return std::string_view 大写下划线的规范名（如 `HEADERS`）；不认识或保留的取值返回「未知帧类型」，
      *         调用方自己把数值拼进去——对端可以发任何 62 位内的整数，照实记下比含糊带过有用
      */
-    [[nodiscard]] std::string_view http3FrameTypeName(const std::uint64_t frameTypeValue) noexcept;
+    [[nodiscard]] ASYN_NET_API std::string_view http3FrameTypeName(const std::uint64_t frameTypeValue) noexcept;
 
     /**
      * @brief 把一帧按 §7.1 的布局追写到缓冲末尾
@@ -294,7 +296,7 @@ namespace AsynGyanis::Net
      * @throws Base::InvalidArgumentException 用法错误：某个字段值超过 kQuicMaximumIntegerValue（2^62-1），
      *         在协议里没有合法编码
      */
-    void appendHttp3Frame(std::string &bytes, const Http3Frame &frame);
+    ASYN_NET_API void appendHttp3Frame(std::string &bytes, const Http3Frame &frame);
 
     /**
      * @brief 把「帧头 + 现成载荷」直接排进目标缓冲，写出的字节与 appendHttp3Frame 逐字相同
@@ -304,7 +306,7 @@ namespace AsynGyanis::Net
      * @param frameType 帧类型的线上值（§7.1）
      * @param payload 帧载荷视图，只在本调用期间被读，长度即写进 Length 的值
      */
-    void appendHttp3FrameWithPayload(std::string &bytes, Http3FrameType frameType, std::span<const std::uint8_t> payload);
+    ASYN_NET_API void appendHttp3FrameWithPayload(std::string &bytes, Http3FrameType frameType, std::span<const std::uint8_t> payload);
 
     /**
      * @brief 追写单向流开头的流类型前缀（§6.2 图 1）
@@ -314,7 +316,7 @@ namespace AsynGyanis::Net
      * @param bytes 目标缓冲，二进制安全
      * @param streamType 流类型取值
      */
-    void appendHttp3StreamTypeHeader(std::string &bytes, const Http3StreamType streamType);
+    ASYN_NET_API void appendHttp3StreamTypeHeader(std::string &bytes, const Http3StreamType streamType);
 
     /**
      * @brief HTTP/3 帧的增量解码器：喂进来的字节边界完全任意
@@ -336,7 +338,7 @@ namespace AsynGyanis::Net
      * @warning 失败是粘滞的：一旦返回过错误，缓冲里的字节已无法解释，后续调用一律重复同一个错误，
      *          直到 reset() 为止。
      */
-    class Http3FrameReader
+    class ASYN_NET_API Http3FrameReader
     {
     public:
         /**

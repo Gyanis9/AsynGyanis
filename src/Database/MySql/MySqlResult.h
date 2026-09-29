@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseResult.h"
 #include "Database/MySql/MySqlConnection.h" // 复用其中全局作用域的 MYSQL / MYSQL_RES / MYSQL_ROW 前置声明
 
@@ -36,7 +38,7 @@ namespace AsynGyanis::Database
      *       MySQL 的数据已由 mysql_store_result 完整复制进 MYSQL_RES 自有内存，本类不持有任何连接指针，
      *       因此结果集可以比连接对象活得更久（与 RedisResult 同语义）。
      */
-    class MySqlResult : public DatabaseResult
+    class ASYN_DATABASE_API MySqlResult : public DatabaseResult
     {
     public:
         /**

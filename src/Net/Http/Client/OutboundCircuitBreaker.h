@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 
 #include <chrono>
@@ -37,7 +39,7 @@ namespace AsynGyanis::Net
      *       换成一张无限大的健康表
      * @note 线程安全：所有方法都取内部锁，可以与同一个 `HttpClient` 的多条循环线程共用
      */
-    class OutboundCircuitBreaker
+    class ASYN_NET_API OutboundCircuitBreaker
     {
     public:
         /// 熔断器的三态

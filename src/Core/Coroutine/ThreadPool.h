@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/EventLoop/EventLoop.h"
 
@@ -26,7 +28,7 @@ namespace AsynGyanis::Core
      *          std::jthread 的自 join（抛 system_error 且落在析构路径上＝terminate）。
      *          工作线程要收尾整个运行时，请把它交给池外的线程。
      */
-    class ThreadPool
+    class ASYN_CORE_API ThreadPool
     {
     public:
         /**

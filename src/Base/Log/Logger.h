@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/ExceptionStackTrace.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
@@ -33,7 +35,7 @@ namespace AsynGyanis::Base
      *          LoggerRegistry 获取，由注册表保证创建过程的线程安全。
      * @note 单个 Sink 抛出的异常不会中断其余 Sink 的写入（记一行标准错误）。
      */
-    class Logger
+    class ASYN_BASE_API Logger
     {
     public:
         /**

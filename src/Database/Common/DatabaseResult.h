@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseValue.h"
 
 #include <optional>
@@ -25,7 +27,7 @@ namespace AsynGyanis::Database
      *          因此本类既禁止拷贝也禁止移动：移动一个持有数据库句柄的多态基类子对象
      *          极易留下悬垂引用，而收益为零。
      */
-    class DatabaseResult
+    class ASYN_DATABASE_API DatabaseResult
     {
     public:
         /**

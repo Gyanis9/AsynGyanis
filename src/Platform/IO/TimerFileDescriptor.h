@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 #include <chrono>
@@ -23,7 +25,7 @@ namespace AsynGyanis::Platform
      * @note 用法：把 fileDescriptor() 注册进 epoll 监听 EPOLLIN，调用 arm() 设定到期时间，
      *       被唤醒后调用 drain() 清空到期计数。
      */
-    class TimerFileDescriptor
+    class ASYN_PLATFORM_API TimerFileDescriptor
     {
     public:
         /**

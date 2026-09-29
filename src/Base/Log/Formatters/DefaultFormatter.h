@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/Formatters/LogFormatter.h"
 
 #include <string>
@@ -22,7 +24,7 @@ namespace AsynGyanis::Base
      *          Debug 构建（ASYN_DEBUG）额外输出线程号与「文件:行号」，Release 构建只保留
      *          定位问题必需的字段以压缩体积。
      */
-    class DefaultFormatter : public LogFormatter
+    class ASYN_BASE_API DefaultFormatter : public LogFormatter
     {
     public:
         /**

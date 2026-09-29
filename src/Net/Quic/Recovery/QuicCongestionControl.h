@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Quic/Recovery/QuicRecovery.h"
 
 #include <cstddef>
@@ -38,7 +40,7 @@ namespace AsynGyanis::Net
      * @details 只有一个「在途字节数 + 窗口许可」的概念，不区分包号空间：拥塞窗口按整条连接算
      *          （RFC 9002 §7 的变量都是全局的），三个空间的包都记在同一本账上。
      */
-    class QuicCongestionControl
+    class ASYN_NET_API QuicCongestionControl
     {
     public:
         /**

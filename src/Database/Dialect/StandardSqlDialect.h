@@ -13,6 +13,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqlStatement.h"
 #include "Database/Queryable/QueryNode.h"
@@ -30,7 +32,7 @@ namespace AsynGyanis::Database
      * @details 无状态实现，可被多线程并发调用。子类只需覆写引擎知识，
      *          查询树渲染与参数收集行为因此在校验层面天然一致。
      */
-    class StandardSqlDialect : public SqlDialect
+    class ASYN_DATABASE_API StandardSqlDialect : public SqlDialect
     {
     public:
         /**

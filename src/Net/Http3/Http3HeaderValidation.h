@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -68,7 +70,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一次头部判定的完整说明
      */
-    struct Http3HeaderError
+    struct ASYN_NET_API Http3HeaderError
     {
         Http3HeaderErrorKind kind{Http3HeaderErrorKind::UndefinedPseudoHeader}; ///< 失败类别：上层按 §4.1.2 一律回 H3_MESSAGE_ERROR
         std::string          message;                                           ///< 中文原因，含字段名实际值与对应的 RFC 章节
@@ -80,7 +82,7 @@ namespace AsynGyanis::Net
      * @return 恒为 H3_MESSAGE_ERROR（RFC 9114 §4.1.2 把这一类统一归到该码），留成函数是为了上层读代码时
      *         不必去猜「哪条规则该回哪个码」
      */
-    [[nodiscard]] Http3ErrorCode toHttp3ErrorCode(Http3HeaderErrorKind errorKind) noexcept;
+    [[nodiscard]] ASYN_NET_API Http3ErrorCode toHttp3ErrorCode(Http3HeaderErrorKind errorKind) noexcept;
 
     /**
      * @brief 一条消息头部的累积判定器
@@ -89,7 +91,7 @@ namespace AsynGyanis::Net
      *          调 endHeaderBlock() 补判「必填项齐不齐」。判定器不拷贝普通字段的值，只留调用方
      *          随后要用的伪头与 content-length。
      */
-    class Http3HeaderValidator
+    class ASYN_NET_API Http3HeaderValidator
     {
     public:
         /**

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 #if ASYN_PLATFORM_WIN32
@@ -33,5 +35,5 @@ namespace AsynGyanis::Platform
      *       「有没有拿到一个可用索引」，失败原因（查无此接口 / 系统调用出错）不在这里分岔，
      *       调用方要的就是这个二值判定
      */
-    [[nodiscard]] unsigned interfaceIndexOfName(std::string_view interfaceName) noexcept;
+    [[nodiscard]] ASYN_PLATFORM_API unsigned interfaceIndexOfName(std::string_view interfaceName) noexcept;
 } // namespace AsynGyanis::Platform

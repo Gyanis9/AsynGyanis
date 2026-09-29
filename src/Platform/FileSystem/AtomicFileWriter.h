@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -23,7 +25,7 @@ namespace AsynGyanis::Platform
      *          会以替换语义实现，因此两侧都不需要额外的平台分支。
      * @note 目标文件的父目录不存在时会自动创建；写失败时临时文件会被清理。
      */
-    class AtomicFileWriter
+    class ASYN_PLATFORM_API AtomicFileWriter
     {
     public:
         /**

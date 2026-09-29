@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncSocket.h"
@@ -39,7 +41,7 @@ namespace AsynGyanis::Net
      *       本类不出现任何操作系统宏形式的错误码。
      * @see TcpServer
      */
-    class TcpAcceptor
+    class ASYN_NET_API TcpAcceptor
     {
     public:
         /**

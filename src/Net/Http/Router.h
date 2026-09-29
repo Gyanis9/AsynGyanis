@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
@@ -65,7 +67,7 @@ namespace AsynGyanis::Net
     ///           把它兼任「通配方法」就等于让任何未收录方法蹭上兜底路由，405 防线随之失效。
     ///
     /// @see any(), MiddlewarePipeline
-    class Router
+    class ASYN_NET_API Router
     {
     public:
         /**
@@ -77,6 +79,17 @@ namespace AsynGyanis::Net
          * @brief 构造一个空路由器：没有路由、没有中间件。
          */
         Router() = default;
+
+        // 共享形态（dllexport）会把隐式特殊成员全部实例化一遍，而 m_virtualHosts 是
+        // unordered_map<string, unique_ptr<Router>>：它的拷贝赋值在实例化期就编不过（MSVC C2679），
+        // 静态形态下没人用拷贝所以从未暴露。显式声明拷贝为删除、移动保持可用，两形态行为一致。
+        Router(const Router &) = delete;
+
+        Router &operator=(const Router &) = delete;
+
+        Router(Router &&) = default;
+
+        Router &operator=(Router &&) = default;
 
         /**
          * @brief 注册 GET 路由。

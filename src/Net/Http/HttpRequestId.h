@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http/HttpRequest.h"
 
 #include <algorithm>
@@ -90,7 +92,7 @@ namespace AsynGyanis::Net
      * @note 序号是 std::atomic：多个循环线程上的会话可能并发向同一台服务器要 id。
      * @see HttpRequest::requestId(), Detail::httpKeepAliveLoop()
      */
-    class HttpRequestIdGenerator
+    class ASYN_NET_API HttpRequestIdGenerator
     {
     public:
         /**

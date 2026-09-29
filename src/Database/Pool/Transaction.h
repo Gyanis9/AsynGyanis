@@ -18,6 +18,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -41,7 +43,7 @@ namespace AsynGyanis::Database
      *          投到工作线程，调用方无需自己保证不并发），对象生命周期必须覆盖所有走该事务执行的
      *          查询/写语句（Queryable(Transaction&) 只保存指针）。
      */
-    class Transaction
+    class ASYN_DATABASE_API Transaction
     {
     public:
         /**

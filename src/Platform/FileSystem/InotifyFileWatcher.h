@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/FileSystem/FileWatcher.h"
 
 #if ASYN_PLATFORM_LINUX
@@ -35,7 +37,7 @@ namespace AsynGyanis::Platform
      *          jthread 承担，停止时通过 stop_token 请求退出并在 100ms 内完成 join。
      * @note 仅在 Linux 构建中参与编译。
      */
-    class InotifyFileWatcher : public FileWatcher
+    class ASYN_PLATFORM_API InotifyFileWatcher : public FileWatcher
     {
     public:
         /**

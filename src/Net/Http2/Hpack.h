@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http2/Http2Frame.h"
 
 #include <array>
@@ -48,7 +50,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一条头部的名与值
      */
-    struct HpackHeaderField
+    struct ASYN_NET_API HpackHeaderField
     {
         std::string name;  ///< 头名（低版本 HTTP 里不区分大小写，HPACK 层原样保留收到的字节）
         std::string value; ///< 头值
@@ -60,7 +62,7 @@ namespace AsynGyanis::Net
      *          调用方（h2 每条响应）为每个头各拷两个字符串，编完就扔；视图把这些拷贝全部去掉。
      * @warning 视图必须在 encode() 返回前一直有效
      */
-    struct HpackHeaderFieldView
+    struct ASYN_NET_API HpackHeaderFieldView
     {
         std::string_view name;  ///< 头名
         std::string_view value; ///< 头值
@@ -69,7 +71,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 静态表的一项（RFC 7541 Appendix A）
      */
-    struct HpackStaticTableEntry
+    struct ASYN_NET_API HpackStaticTableEntry
     {
         std::string_view name;  ///< 头名
         std::string_view value; ///< 头值；空串表示这一项只提供名字（索引表示时值必须由字面量给出）
@@ -78,7 +80,7 @@ namespace AsynGyanis::Net
     /**
      * @brief Huffman 码表的一项（RFC 7541 Appendix B）
      */
-    struct HpackHuffmanCode
+    struct ASYN_NET_API HpackHuffmanCode
     {
         std::uint32_t code;     ///< 码字，按低位对齐存放（即 Appendix B 的「code as hex」一列）
         std::uint8_t  bitCount; ///< 码字位长；写位流时从高位到低位依次写出
@@ -158,7 +160,7 @@ namespace AsynGyanis::Net
      * @details 编码器原本每写一个头要把 61 项线性扫两遍（先按「名 + 值」精确匹配、再只按名匹配），
      *          自定义头名必然扫满两遍才落空；有了区间表就只剩一次二分加区间内几项的值比较。
      */
-    struct HpackStaticNameRun
+    struct ASYN_NET_API HpackStaticNameRun
     {
         std::string_view name;                ///< 头名
         std::size_t      firstEntryIndex = 0; ///< 首个同名条目的 0 基下标
@@ -518,14 +520,14 @@ namespace AsynGyanis::Net
      * @return std::size_t 匹配到的索引（1..61）；0 表示没有精确匹配
      * @note 返回 0 既表示「没匹配上」也永远不是合法索引，调用方据此判空即可
      */
-    [[nodiscard]] std::size_t findHpackStaticTableIndex(std::string_view name, std::string_view value) noexcept;
+    [[nodiscard]] ASYN_NET_API std::size_t findHpackStaticTableIndex(std::string_view name, std::string_view value) noexcept;
 
     /**
      * @brief 在静态表里按名字匹配（编码器用）
      * @param name 头名
      * @return std::size_t 匹配到的索引（1..61）；0 表示没有同名项
      */
-    [[nodiscard]] std::size_t findHpackStaticTableNameIndex(std::string_view name) noexcept;
+    [[nodiscard]] ASYN_NET_API std::size_t findHpackStaticTableNameIndex(std::string_view name) noexcept;
 
     /**
      * @brief HPACK 解码失败的类别
@@ -549,7 +551,7 @@ namespace AsynGyanis::Net
      * @return Http2ErrorCode 对应错误码：CompressionError→COMPRESSION_ERROR、LimitExceeded→
      *         ENHANCE_YOUR_CALM、None→NO_ERROR
      */
-    [[nodiscard]] Http2ErrorCode toHttp2ErrorCode(HpackErrorKind errorKind) noexcept;
+    [[nodiscard]] ASYN_NET_API Http2ErrorCode toHttp2ErrorCode(HpackErrorKind errorKind) noexcept;
 
     // ============================================================================
     // 基本表示（RFC 7541 §5）
@@ -567,7 +569,7 @@ namespace AsynGyanis::Net
      * @throws Base::InvalidArgumentException 用法错误：prefixBitCount 不在 1..8 内，
      *         或 firstByteHighBits 占用了前缀位
      */
-    [[nodiscard]] std::string encodeHpackInteger(std::uint64_t value, std::uint8_t prefixBitCount, std::uint8_t firstByteHighBits);
+    [[nodiscard]] ASYN_NET_API std::string encodeHpackInteger(std::uint64_t value, std::uint8_t prefixBitCount, std::uint8_t firstByteHighBits);
 
     /**
      * @brief 把一个整数表示直接追加到目标串末尾
@@ -581,7 +583,7 @@ namespace AsynGyanis::Net
      * @throws Base::InvalidArgumentException 用法错误：prefixBitCount 不在 1..8 内，
      *         或 firstByteHighBits 占用了前缀位
      */
-    void appendHpackInteger(std::string &out, std::uint64_t value, std::uint8_t prefixBitCount, std::uint8_t firstByteHighBits);
+    ASYN_NET_API void appendHpackInteger(std::string &out, std::uint64_t value, std::uint8_t prefixBitCount, std::uint8_t firstByteHighBits);
 
     /**
      * @brief 解码一个整数表示（RFC 7541 §5.1）
@@ -595,8 +597,8 @@ namespace AsynGyanis::Net
      * @note 多字节溢出必须判错而不是回绕：回绕后会得到一个「看起来合法」的值，索引随即指向
      *       另一个条目，同一段字节在不同实现上解出不同结果
      */
-    [[nodiscard]] bool decodeHpackInteger(std::string_view bytes, std::uint8_t prefixBitCount, std::uint64_t &value, std::size_t &consumedByteCount,
-                                          std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool decodeHpackInteger(std::string_view bytes, std::uint8_t prefixBitCount, std::uint64_t &value, std::size_t &consumedByteCount,
+                                                       std::string *errorText = nullptr);
 
     /**
      * @brief 解码一个字符串字面量表示（RFC 7541 §5.2）
@@ -609,7 +611,7 @@ namespace AsynGyanis::Net
      * @return true 解码成功
      * @return false 长度或 H 位非法、字节数不足，或 Huffman 变体解不开
      */
-    [[nodiscard]] bool decodeHpackString(std::string_view bytes, std::string &value, std::size_t &consumedByteCount, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool decodeHpackString(std::string_view bytes, std::string &value, std::size_t &consumedByteCount, std::string *errorText = nullptr);
 
     /**
      * @brief 解码一段 Huffman 编码的字节（RFC 7541 Appendix B 的码表）
@@ -621,7 +623,7 @@ namespace AsynGyanis::Net
      * @return true 解码成功
      * @return false 出现 EOS 符号、填位超过 7 位、填位不是全 1，或结尾残留半个码字
      */
-    [[nodiscard]] bool decodeHpackHuffmanString(std::string_view encodedBytes, std::string &value, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool decodeHpackHuffmanString(std::string_view encodedBytes, std::string &value, std::string *errorText = nullptr);
 
     /**
      * @brief 追加一个字符串字面量表示（RFC 7541 §5.2，不启用 Huffman）
@@ -630,7 +632,7 @@ namespace AsynGyanis::Net
      * @param out 目标串，表示按追加方式写入
      * @param value 待编码的字节，按「指针 + 长度」取，可含任意二进制
      */
-    void appendHpackString(std::string &out, std::string_view value);
+    ASYN_NET_API void appendHpackString(std::string &out, std::string_view value);
 
     // ============================================================================
     // 动态表（RFC 7541 §2.3.2、§4）
@@ -643,7 +645,7 @@ namespace AsynGyanis::Net
      *          （名长 + 值长 + 32）。编码器与解码器各持一份、按同一规则演进，因此两边的索引
      *          指向同一条头部。
      */
-    class HpackDynamicTable
+    class ASYN_NET_API HpackDynamicTable
     {
     public:
         /**
@@ -726,7 +728,7 @@ namespace AsynGyanis::Net
      * @note 解码器在构造时按值取走一份配置，没有运行期更换的入口：上限若在头块解到一半时变紧，
      *       同一个头列表的前后两段会按不同尺子判定。
      */
-    struct HpackDecoderLimits
+    struct ASYN_NET_API HpackDecoderLimits
     {
         /// 本端通告的 SETTINGS_HEADER_TABLE_SIZE，也是动态表的初始上限；超出它的「动态表大小更新」
         /// 判错（RFC 7541 §6.3 要求新上限不得大于协议允许的限度）
@@ -759,7 +761,7 @@ namespace AsynGyanis::Net
      * @warning 头值的字节内容不做语法校验（大小写、是否含 NUL、是否合法 UTF-8 都不管）：本层只
      *          负责把压缩表示解回字节，语义由 HTTP 语义层判定。
      */
-    class HpackDecoder
+    class ASYN_NET_API HpackDecoder
     {
     public:
         /**
@@ -931,7 +933,7 @@ namespace AsynGyanis::Net
      * @warning 编码器持有动态表，必须与对端解码器成对演进：同一条连接上不要换用另一个编码器实例，
      *          否则对端的索引会指向错误的条目（RFC 7541 §2.2 要求两端用同一个上下文）。
      */
-    class HpackEncoder
+    class ASYN_NET_API HpackEncoder
     {
     public:
         /**

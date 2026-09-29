@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -45,7 +47,7 @@ namespace AsynGyanis::Core
          * @return Sha1Value 20 字节摘要
          * @throws Base::Exception 上下文创建失败或摘要接口未能算出完整结果
          */
-        [[nodiscard]] Sha1Value sha1(std::string_view data);
+        [[nodiscard]] ASYN_CORE_API Sha1Value sha1(std::string_view data);
 
         /**
          * @brief 算 SHA-256 摘要
@@ -53,7 +55,7 @@ namespace AsynGyanis::Core
          * @return Sha256Value 32 字节摘要
          * @throws Base::Exception 上下文创建失败或摘要接口未能算出完整结果
          */
-        [[nodiscard]] Sha256Value sha256(std::string_view data);
+        [[nodiscard]] ASYN_CORE_API Sha256Value sha256(std::string_view data);
 
         /**
          * @brief 算 HMAC-SHA-256
@@ -64,14 +66,14 @@ namespace AsynGyanis::Core
          * @return Sha256Value 32 字节认证码
          * @throws Base::Exception HMAC 上下文创建失败或接口未能算出完整结果
          */
-        [[nodiscard]] Sha256Value hmacSha256(std::string_view key, std::string_view data);
+        [[nodiscard]] ASYN_CORE_API Sha256Value hmacSha256(std::string_view key, std::string_view data);
 
         /**
          * @brief 把一段字节转成小写十六进制文本
          * @param bytes 待转换字节
          * @return std::string 长度是输入两倍的十六进制文本
          */
-        [[nodiscard]] std::string toHex(std::span<const std::uint8_t> bytes);
+        [[nodiscard]] ASYN_CORE_API std::string toHex(std::span<const std::uint8_t> bytes);
 
         /**
          * @brief SHA-256 摘要并直接落成十六进制文本（ETag、凭据指纹常用的形状）
@@ -79,7 +81,7 @@ namespace AsynGyanis::Core
          * @return std::string 64 字符的十六进制文本
          * @throws Base::Exception 同 sha256()
          */
-        [[nodiscard]] std::string sha256Hex(std::string_view data);
+        [[nodiscard]] ASYN_CORE_API std::string sha256Hex(std::string_view data);
 
         /**
          * @brief HMAC-SHA-256 并直接落成十六进制文本
@@ -88,6 +90,6 @@ namespace AsynGyanis::Core
          * @return std::string 64 字符的十六进制文本
          * @throws Base::Exception 同 hmacSha256()
          */
-        [[nodiscard]] std::string hmacSha256Hex(std::string_view key, std::string_view data);
+        [[nodiscard]] ASYN_CORE_API std::string hmacSha256Hex(std::string_view key, std::string_view data);
     } // namespace Digest
 } // namespace AsynGyanis::Core

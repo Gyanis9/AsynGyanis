@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstdint>
 #include <string>
 
@@ -19,7 +21,7 @@ namespace AsynGyanis::Database
      * @details 只保留各驱动确实会读取的字段。超时不在这里配置，由 DatabaseConnection 的
      *          setConnectTimeout / setQueryTimeout 管理，避免出现两处互相覆盖的真值来源。
      */
-    struct ConnectionConfig
+    struct ASYN_DATABASE_API ConnectionConfig
     {
         std::string   host;     ///< 主机地址；SQLite 忽略该字段
         std::uint16_t port = 0; ///< 端口号；0 表示未指定，SQLite 不使用端口

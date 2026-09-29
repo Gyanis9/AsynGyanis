@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/IO/Socket.h"
 
 #include <cstddef>
@@ -24,7 +26,7 @@ namespace AsynGyanis::Core
          *          少一段、多一段或顺序乱了都不会有错误返回
          * @note 只持有段数组的指针与游标，不复制数据；段数组与各段内存由调用方保证在此期间有效
          */
-        class VectoredSendCursor
+        class ASYN_CORE_API VectoredSendCursor
         {
         public:
             /**

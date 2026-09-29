@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http/HttpBodySource.h"
 
 #include <cstddef>
@@ -35,7 +37,7 @@ namespace AsynGyanis::Net
      * @note 未交付的字节数天然有上界（本流的接收窗口），因此流式路径不必再单独计入全局在途
      *       正文预算：窗口就是那道闸（非流式路径会把整份正文缓冲在请求对象里，才需要预算兜底）。
      */
-    class HttpStreamBody final : public HttpBodySource
+    class ASYN_NET_API HttpStreamBody final : public HttpBodySource
     {
     public:
         /// 消费回调：参数是本次被消费掉的**流控字节数**，会话据此归还接收窗口

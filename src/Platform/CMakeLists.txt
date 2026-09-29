@@ -9,10 +9,12 @@ add_subdirectory(FileSystem)
 
 get_property(PLATFORM_SOURCES GLOBAL PROPERTY AsynGyanisPlatformSources)
 
-add_library(Platform STATIC
+add_library(Platform ${ASYN_LIBRARY_KIND}
         ${CMAKE_CURRENT_LIST_DIR}/Platform.h
         ${PLATFORM_SOURCES}
 )
+# 静态是默认形态；打开 BUILD_SHARED_LIBS 时本模块要带上自己的导出宏定义与可见性预设
+asyn_configure_module_library(Platform)
 
 # 网络子系统仅在 Windows 需要 Winsock 库，Linux 侧由 libc 内建提供
 # iphlpapi：if_nametoindex/if_indextoname 在 Windows SDK 里由 netioapi.h 声明、iphlpapi.lib 实现

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Tracing/SpanExporter.h"
 
 #include <string>
@@ -31,5 +33,5 @@ namespace AsynGyanis::Net
      *       一份 OTLP 文档只有一个正文，坏一条就换整批是这套编码的既有形状，不去偷偷修那条坏数据
      * @see OtlpHttpSpanExporter
      */
-    [[nodiscard]] std::string formatOtlpTracesJson(const TraceResource &resource, const std::vector<SpanRecord> &spans);
+    [[nodiscard]] ASYN_NET_API std::string formatOtlpTracesJson(const TraceResource &resource, const std::vector<SpanRecord> &spans);
 } // namespace AsynGyanis::Net

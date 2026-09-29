@@ -6,6 +6,8 @@
 #ifndef ASYN_HTTP_OUTBOUND_ESTABLISHMENT_H
 #define ASYN_HTTP_OUTBOUND_ESTABLISHMENT_H
 
+#include "AsynGyanisExport.h"
+
 #include <coroutine>
 #include <memory>
 #include <mutex>
@@ -30,7 +32,7 @@ namespace AsynGyanis::Net
      * @note 表由 `shared_ptr` 持有，等待者也拿一份：池先于某个挂着的等待者销毁时，后者析构要摸的是
      *       自己手里这张表，不是已经死掉的池（连接池踩过一次这个坑，代价是一起真实 UAF）。
      */
-    class HttpEstablishmentTable
+    class ASYN_NET_API HttpEstablishmentTable
     {
     public:
         /// 挂在某个端点上的一次等待：节点由等待者的协程帧持有，摘链只动节点自己
@@ -115,7 +117,7 @@ namespace AsynGyanis::Net
      * @note 等待本身不设时限：领导者那条建连是被它自己的请求时限管着的，它一结算这里就醒。
      *       醒来之后调用方仍要自己算剩余预算——这一段等待可能已经吃掉了它的一部分。
      */
-    class HttpEstablishmentAwait
+    class ASYN_NET_API HttpEstablishmentAwait
     {
     public:
         /**

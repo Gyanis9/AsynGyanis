@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/WebSocket/WebSocketFrame.h"
@@ -64,7 +66,7 @@ namespace AsynGyanis::Net
      * @details 分片消息已在解码层重组，因此一条消息恰好对应一次 receive() 返回；
      *          opCode 只可能是 Text 或 Binary，控制帧不会走到业务手里。
      */
-    struct WebSocketMessage
+    struct ASYN_NET_API WebSocketMessage
     {
         WebSocketOpCode opCode{WebSocketOpCode::Text}; ///< 消息类型：Text 或 Binary
         std::string     payload;                       ///< 消息负载：Text 已校验为合法 UTF-8，Binary 为任意字节（两者都可含 NUL）
@@ -94,7 +96,7 @@ namespace AsynGyanis::Net
      *          返回 false（本侧已收口，不再新增日志）、receive() 一律返回空。**挂起在 receive() 上的业务协程不会被唤醒**，
      *          它的帧随会话一起销毁，因此处理器不能把「收到空结果」当作唯一的退出通知。
      */
-    class WebSocketPeer
+    class ASYN_NET_API WebSocketPeer
     {
     public:
         /**

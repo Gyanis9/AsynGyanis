@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/EventLoop/Epoll.h"
@@ -48,7 +50,7 @@ namespace AsynGyanis::Core
      *       带走的」：只读 isRunning() 看不出这两种的区别，而后者意味着还有别的循环在跑、
      *       threadCount() 照样报原数
      */
-    struct EventLoopSnapshot
+    struct ASYN_CORE_API EventLoopSnapshot
     {
         std::thread::id                       ownerThread{};                ///< run() 所在线程；未启动过则是默认值
         bool                                  isRunning{};                  ///< 是否正处于 run() 的循环体里
@@ -67,7 +69,7 @@ namespace AsynGyanis::Core
      * @details 槽位号由读表的一方按登记位置填上（不是循环自己的成员），于是构造期的发布顺序里
      *          没有「标签还没写好、指针已发布」这种半截状态。
      */
-    struct ObservedEventLoop
+    struct ASYN_CORE_API ObservedEventLoop
     {
         std::uint64_t     serialNumber{}; ///< 观测槽位号，从 1 起；循环销毁后该槽位可被后来的循环复用
         EventLoopSnapshot snapshot;       ///< 那条循环自己的快照
@@ -84,13 +86,13 @@ namespace AsynGyanis::Core
      * @return std::vector<ObservedEventLoop> 观测表；没有循环活着时为空
      * @note 任意线程可调，且不会把动作投递进被观测的那条循环
      */
-    [[nodiscard]] std::vector<ObservedEventLoop> eventLoopSnapshots();
+    [[nodiscard]] ASYN_CORE_API std::vector<ObservedEventLoop> eventLoopSnapshots();
 
     /**
      * @brief 因槽位已满而没被观测到的循环条数
      * @return std::size_t 未登记条数；非零时 eventLoopSnapshots() 只是不全，不是没有循环在跑
      */
-    [[nodiscard]] std::size_t unregisteredEventLoopCount() noexcept;
+    [[nodiscard]] ASYN_CORE_API std::size_t unregisteredEventLoopCount() noexcept;
 
     class IoWatcher;
     /**
@@ -101,7 +103,7 @@ namespace AsynGyanis::Core
      *       不丢停止请求，而 start() 之后立刻 stop() 正是常见写法；需要重新运行请新建实例。
      */
     class IoWatcher;
-    class EventLoop
+    class ASYN_CORE_API EventLoop
     {
     public:
         /**

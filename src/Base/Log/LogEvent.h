@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/StackTrace.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
@@ -39,18 +41,11 @@ namespace AsynGyanis::Base
      *          文本与调试器看到的线程号一致。线程内只构造一次，事件构造只复制指针，
      *          因此每行日志既不重复格式化、也不产生堆分配；事件若活过本线程（异步 Sink
      *          队列），快照由 shared_ptr 保活。
+     * @note 定义在 LogEvent.cpp 而不是头里：头内 inline 版本会让每个模块各持一份 thread_local
+     *       副本，共享形态下「整进程每线程一份快照」就变成「每模块每线程一份」
      * @return const std::shared_ptr<const std::string>& 本线程的 ID 快照
      */
-    inline const std::shared_ptr<const std::string> &threadIdString()
-    {
-        thread_local const std::shared_ptr<const std::string> kcachedThreadId = []
-        {
-            std::array<char, 24> buffer{};
-            const auto [out, errorCode] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), std::hash<std::thread::id>{}(std::this_thread::get_id()));
-            return std::make_shared<const std::string>(buffer.data(), static_cast<std::string::size_type>(out - buffer.data()));
-        }();
-        return kcachedThreadId;
-    }
+    [[nodiscard]] ASYN_BASE_API const std::shared_ptr<const std::string> &threadIdString();
 
     /**
      * @brief 单条日志事件的完整数据
@@ -64,7 +59,7 @@ namespace AsynGyanis::Base
      * @note 调用栈以**原始帧**随事件传递，符号解析由各 Sink 在输出时进行（见 StackTrace.h）：
      *       异步 Sink 上解析落在工作线程，事件循环线程不为它付出调试信息读取的开销。
      */
-    struct LogEvent
+    struct ASYN_BASE_API LogEvent
     {
         LogLevel                           level{};      ///< 日志等级
         TimestampMoment                    timestamp{};  ///< 事件发生的时刻；文本由格式化器就地渲染，见 TimestampText.h

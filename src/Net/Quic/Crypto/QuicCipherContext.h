@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <openssl/evp.h>
 
 namespace AsynGyanis::Net
@@ -24,5 +26,5 @@ namespace AsynGyanis::Net
      *          留给下一个包。上下文只在所在线程内使用，与「事件循环对象不跨线程碰」的契约一致。
      * @return EVP_CIPHER_CTX * 本线程的上下文；OpenSSL 创建失败时为 nullptr，由调用方按运行期故障处理
      */
-    [[nodiscard]] EVP_CIPHER_CTX *acquireQuicCipherContext() noexcept;
+    [[nodiscard]] ASYN_NET_API EVP_CIPHER_CTX *acquireQuicCipherContext() noexcept;
 } // namespace AsynGyanis::Net

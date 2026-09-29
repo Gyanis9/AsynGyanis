@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigValue.h"
 #include "Base/Log/Logger.h"
@@ -26,7 +28,7 @@ namespace AsynGyanis::Base
      * @details 从 ConfigManager 读取配置并初始化日志系统，支持配置多个日志器与 Sink。
      * @note 必须在单线程环境（通常是 main() 启动阶段）调用 loadFromConfig()。
      */
-    class LoggerConfigLoader
+    class ASYN_BASE_API LoggerConfigLoader
     {
     public:
         /**

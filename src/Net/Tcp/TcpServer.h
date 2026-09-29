@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/Timer.h"
@@ -36,7 +38,7 @@ namespace AsynGyanis::Net
      * @warning start() 与 stop() 必须在同一事件循环线程上调用；m_running 虽是原子量，
      *          但连接容器与协程调度都不做跨线程保护。
      */
-    class TcpServer
+    class ASYN_NET_API TcpServer
     {
     public:
         /**

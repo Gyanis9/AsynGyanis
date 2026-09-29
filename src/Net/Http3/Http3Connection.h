@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Quic/QuicConnectionRole.h"
 
 #include <cstddef>
@@ -48,7 +50,7 @@ namespace AsynGyanis::Net
      *          合法性、把响应编成帧与 QPACK 头块、以及把攒下的待发字节按流轮转交出去。
      * @note 所有回调都在调用方所在线程上同步触发；本类不是线程安全的，一条连接一个实例。
      */
-    class Http3Connection
+    class ASYN_NET_API Http3Connection
     {
     public:
         /// 开一条本端发起的单向流并返回流号；失败返回 -1（控制流与两条 QPACK 流在构造时各开一条）

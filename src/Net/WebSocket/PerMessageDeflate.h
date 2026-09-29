@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -19,7 +21,7 @@ namespace AsynGyanis::Net
     /**
      * @brief permessage-deflate 的协商结论
      */
-    struct PerMessageDeflateNegotiation
+    struct ASYN_NET_API PerMessageDeflateNegotiation
     {
         bool        accepted{false}; ///< 是否接受该扩展
         std::string responseValue;   ///< 接受时回给对端的 Sec-WebSocket-Extensions 取值；拒绝时为空
@@ -37,7 +39,7 @@ namespace AsynGyanis::Net
      * @note 多个扩展可以逗号分隔并存（RFC 6455 §9.1），这里只挑出 permessage-deflate 那一个，
      *       其余扩展不参与协商、也不回进响应
      */
-    [[nodiscard]] PerMessageDeflateNegotiation negotiatePerMessageDeflate(std::string_view extensionsHeader);
+    [[nodiscard]] ASYN_NET_API PerMessageDeflateNegotiation negotiatePerMessageDeflate(std::string_view extensionsHeader);
 
     /**
      * @brief 压缩一条 WebSocket 消息（RFC 7692 §7.2.1）
@@ -51,7 +53,7 @@ namespace AsynGyanis::Net
      * @note 本函数不判「压完是否更短」：空字典下短消息必然膨胀，而换不换表示是调用方的决定
      *       （RFC 7692 §7.3 把这条判据交给禁用了上下文接管的一端）
      */
-    [[nodiscard]] std::optional<std::string> deflateWebSocketMessage(std::string_view payload);
+    [[nodiscard]] ASYN_NET_API std::optional<std::string> deflateWebSocketMessage(std::string_view payload);
 
     /**
      * @brief 解压一条 WebSocket 消息
@@ -62,7 +64,7 @@ namespace AsynGyanis::Net
      * @return std::optional<std::string> 原始消息；数据非法或解压结果超过上限时为空——上限必须由
      *         调用方给出：压缩比可以做到几百倍，不设上限时一条小消息就能把内存撑爆（zip bomb）
      */
-    [[nodiscard]] std::optional<std::string> inflateWebSocketMessage(std::string_view payload, std::size_t maximumOutputBytes);
+    [[nodiscard]] ASYN_NET_API std::optional<std::string> inflateWebSocketMessage(std::string_view payload, std::size_t maximumOutputBytes);
 
     /// 每条消息的默认压缩级别：与 HTTP 响应压缩取同一档（zlib 的 6）
     inline constexpr int kWebSocketDeflateLevel = 6;

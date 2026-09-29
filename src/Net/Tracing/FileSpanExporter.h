@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Tracing/SpanExporter.h"
 
 #include <filesystem>
@@ -30,7 +32,7 @@ namespace AsynGyanis::Net
      * @note 一律以追加方式打开，且自动创建父目录：进程重启不该把上一批链路清掉。
      * @see formatOtlpTracesJson(), Tracer
      */
-    class FileSpanExporter final : public SpanExporter
+    class ASYN_NET_API FileSpanExporter final : public SpanExporter
     {
     public:
         /**

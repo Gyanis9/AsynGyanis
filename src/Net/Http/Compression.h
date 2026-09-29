@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <optional>
 #include <string>
 #include <string_view>
@@ -33,7 +35,7 @@ namespace AsynGyanis::Net
      * @note 压缩后可能比原文更大（小内容、已压缩内容）：是否值得压缩由调用方按阈值决定
      * @see compressionMiddleware()
      */
-    [[nodiscard]] std::optional<std::string> zstdCompress(std::string_view input, int level = kDefaultZstdLevel);
+    [[nodiscard]] ASYN_NET_API std::optional<std::string> zstdCompress(std::string_view input, int level = kDefaultZstdLevel);
 
     /**
      * @brief 用 brotli 压缩一段字节
@@ -44,5 +46,5 @@ namespace AsynGyanis::Net
      * @return std::optional<std::string> 压缩后的 brotli 流；压缩失败时返回空
      * @see compressionMiddleware()
      */
-    [[nodiscard]] std::optional<std::string> brotliCompress(std::string_view input, int quality = kDefaultBrotliQuality);
+    [[nodiscard]] ASYN_NET_API std::optional<std::string> brotliCompress(std::string_view input, int quality = kDefaultBrotliQuality);
 } // namespace AsynGyanis::Net

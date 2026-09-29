@@ -16,6 +16,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseValue.h"
 
 #include <string>
@@ -29,7 +31,7 @@ namespace AsynGyanis::Database
      * @details sql 中的每个占位符在 parameters 中都有一个按位置对应的取值；
      *          结构体是纯数据的值语义聚合体，供驱动参数化执行接口直接消费。
      */
-    struct SqlStatement
+    struct ASYN_DATABASE_API SqlStatement
     {
         std::string                sql;        ///< 带占位符的 SQL 文本
         std::vector<DatabaseValue> parameters; ///< 按占位符出现顺序排列的绑定参数

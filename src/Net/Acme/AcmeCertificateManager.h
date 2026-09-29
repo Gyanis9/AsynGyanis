@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Acme/AcmeError.h"
 #include "Net/Acme/AcmeHttp01ChallengeStore.h"
@@ -36,7 +38,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一次签发或续期之后的落点
      */
-    struct AcmeIssuedCertificate
+    struct ASYN_NET_API AcmeIssuedCertificate
     {
         std::filesystem::path                 certificateFile;  ///< 证书链路径（PEM，首张是叶证书）
         std::filesystem::path                 privateKeyFile;   ///< 域名私钥路径（PEM，0600）
@@ -49,7 +51,7 @@ namespace AsynGyanis::Net
      * @note 各计数是原子量、lastFailureMessage 走加锁快照：跨线程读安全，但「读到的一对数」
      *       之间不保证原子关系（要看严格配对就订阅签发完成点）
      */
-    struct AcmeManagerStatus
+    struct ASYN_NET_API AcmeManagerStatus
     {
         std::size_t issuanceCount{0};                ///< 成功签发或续期的次数
         std::size_t failureCount{0};                 ///< 失败的轮次数（含被拒绝的配置）
@@ -74,7 +76,7 @@ namespace AsynGyanis::Net
      *          令牌。registerChallengeRoutes() 要在**明文 80 端口那台服务**上调用（或让 80 重定向到
      *          本服务，Let's Encrypt 会跟随重定向），只挂在 443 上等于没答
      */
-    class AcmeCertificateManager
+    class ASYN_NET_API AcmeCertificateManager
     {
     public:
         /**
@@ -249,5 +251,5 @@ namespace AsynGyanis::Net
      * @details 单独开放这一句是因为续期判据与运维读数该用同一个数：各处自己解析一遍 X509，
      *          迟早会出现「判据认为还有三十天、面板显示已过期」这种两个解释
      */
-    [[nodiscard]] std::optional<std::chrono::system_clock::time_point> readCertificateExpiry(const std::filesystem::path &certificateFile);
+    [[nodiscard]] ASYN_NET_API std::optional<std::chrono::system_clock::time_point> readCertificateExpiry(const std::filesystem::path &certificateFile);
 } // namespace AsynGyanis::Net

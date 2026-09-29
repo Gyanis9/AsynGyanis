@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/Exception.h"
 
 #include <source_location>
@@ -24,7 +26,7 @@ namespace AsynGyanis::Base
      *          那两类的出口是 ConfigLoadResult::errors（一次加载收集全部错误，而不是撞到第一条
      *          就抛出），因此曾为它们准备的 ConfigFileException / ConfigParseException 已删除。
      */
-    class ConfigException : public Exception
+    class ASYN_BASE_API ConfigException : public Exception
     {
     public:
         /**

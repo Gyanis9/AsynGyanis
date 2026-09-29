@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <string_view>
 
 namespace AsynGyanis::Net
@@ -29,7 +31,7 @@ namespace AsynGyanis::Net
      * @note 「向连接再要一批字节」不在本接口里：那是协程，而 C++20 不允许虚函数是协程
      *       （见 [dcl.fct.def.coroutine]），因此泵由 HttpRequestBody::Pump 单独持有。
      */
-    class HttpBodySource
+    class ASYN_NET_API HttpBodySource
     {
     public:
         virtual ~HttpBodySource() = default;

@@ -13,6 +13,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Dialect/StandardSqlDialect.h"
 
 #include <string>
@@ -30,7 +32,7 @@ namespace AsynGyanis::Database
      * @note 无状态实现，可被多线程并发调用；实例由 DialectRegistry 以共享指针提供，
      *       调用方一般不需要自己构造。
      */
-    class SqliteDialect final : public StandardSqlDialect
+    class ASYN_DATABASE_API SqliteDialect final : public StandardSqlDialect
     {
     public:
         /**

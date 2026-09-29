@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 
@@ -50,7 +52,7 @@ namespace AsynGyanis::Net
      * @details 编码器的入参形态与解码器的产出形态共用同一个结构：编码时 isFinal 由调用方决定，
      *          解码时它恒为 true（见 WebSocketFrameDecoder）。
      */
-    struct WebSocketFrame
+    struct ASYN_NET_API WebSocketFrame
     {
         WebSocketOpCode opCode{WebSocketOpCode::Text}; ///< 操作码；解码器只交出数据消息与完整控制帧，不会是 Continuation
         bool            isFinal{true};                 ///< 是否消息末帧；解码器重组后才交付，因此恒为 true
@@ -76,7 +78,7 @@ namespace AsynGyanis::Net
      *         （isFinal 为 false）、opCode 不是 RFC 6455 定义过的取值，或要求压缩的不是数据消息首帧
      * @note 文本帧负载的 UTF-8 合法性不在本层校验：编码器只保证帧格式，内容语义由上层负责
      */
-    [[nodiscard]] std::string encodeWebSocketFrame(WebSocketOpCode opCode, std::string_view payload, bool isFinal = true, bool isCompressed = false);
+    [[nodiscard]] ASYN_NET_API std::string encodeWebSocketFrame(WebSocketOpCode opCode, std::string_view payload, bool isFinal = true, bool isCompressed = false);
 
     /**
      * @brief 一次 WebSocketFrameDecoder::parse() 调用的结论状态
@@ -110,7 +112,7 @@ namespace AsynGyanis::Net
      * @warning 负载按「指针 + 长度」处理，可含 NUL 与任意字节；文本帧的 UTF-8 合法性、
      *          Close 帧的状态码与原因文本都不在本层校验，由上层（会话）负责。
      */
-    class WebSocketFrameDecoder
+    class ASYN_NET_API WebSocketFrameDecoder
     {
     public:
         /// 分片消息重组后的总上限 8 MiB：与 HttpParser 的请求体上限同档，防止用无限分片撑爆内存

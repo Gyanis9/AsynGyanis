@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/EventLoop/EventLoop.h"
 
 #include <cstddef>
@@ -29,7 +31,7 @@ namespace AsynGyanis::Core
      *          或单点。取轮转而不是「挑当前连接最少的」：后者要跨循环读在途计数，引入同步还要
      *          处理陈旧值；轮转不需要任何跨循环状态，偏差由「连接被服务时才占资源」兜住。
      */
-    class ConnectionDistributor
+    class ASYN_CORE_API ConnectionDistributor
     {
     public:
         /**

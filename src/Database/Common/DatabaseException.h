@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/Exception.h"
 
 #include <source_location>
@@ -31,7 +33,7 @@ namespace AsynGyanis::Database
      *       Base::LogicException / Base::InvalidArgumentException —— 它们派生自
      *       std::logic_error 分支，刻意不被 Base::Exception 捕获，详见各自的类注释。
      */
-    class DatabaseException : public Base::Exception
+    class ASYN_DATABASE_API DatabaseException : public Base::Exception
     {
     public:
         /**

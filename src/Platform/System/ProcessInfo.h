@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -25,7 +27,7 @@ namespace AsynGyanis::Platform
      *          进程启动时的工作目录变化而漂移；环境变量读取在 MSVC 上必须使用
      *          _dupenv_s 才能避开 C4996 与内存归属问题，两者统一由本类承担。
      */
-    class ProcessInfo
+    class ASYN_PLATFORM_API ProcessInfo
     {
     public:
         /**

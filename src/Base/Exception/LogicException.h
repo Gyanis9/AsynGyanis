@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/ExceptionPayload.h"
 
 #include <source_location>
@@ -28,7 +30,7 @@ namespace AsynGyanis::Base
      * @note 抛出点快照与调用栈继承自 Detail::ExceptionPayload，与 Exception 是同一份实现，
      *       因此 what() 的文本格式与 Exception 完全一致。
      */
-    class LogicException : public std::logic_error, public Detail::ExceptionPayload
+    class ASYN_BASE_API LogicException : public std::logic_error, public Detail::ExceptionPayload
     {
     public:
         /**

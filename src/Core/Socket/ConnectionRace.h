@@ -7,6 +7,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/InetAddress.h"
@@ -24,7 +26,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 一场连接竞赛的胜者
      */
-    struct ConnectedCandidate
+    struct ASYN_CORE_API ConnectedCandidate
     {
         AsyncSocket socket;  ///< 连上的那条套接字（已建立，可直接交给上层）
         InetAddress address; ///< 连上的是哪个候选地址：调用方要按它的协议族后续处理，日志也靠它定位
@@ -40,7 +42,7 @@ namespace AsynGyanis::Core
      *          首选族取排序结果第一条所属的那一族，也就是保留 RFC 6724 的偏好；一族排空后，另一族按
      *          原序接在后面。本函数不改集合、只改顺序，且对同一输入给出同一顺序（用例可逐位比对）。
      */
-    [[nodiscard]] std::vector<InetAddress> orderForConnectionRace(const std::vector<InetAddress> &resolved);
+    [[nodiscard]] ASYN_CORE_API std::vector<InetAddress> orderForConnectionRace(const std::vector<InetAddress> &resolved);
 
     /**
      * @brief 同时在途的候选连接上限
@@ -72,5 +74,5 @@ namespace AsynGyanis::Core
      * @note 时限到点时**不会**留下半开的套接字：每条候选自己的看门狗到点就把它关掉，协程收口才计入
      *       全场结束，因此本函数返回时所有已发起的描述符都已归还
      */
-    Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, std::chrono::milliseconds deadline);
+    ASYN_CORE_API Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, std::chrono::milliseconds deadline);
 } // namespace AsynGyanis::Core

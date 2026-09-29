@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/Sinks/FileSink.h"
 #include "Base/Log/Sinks/LogSink.h"
 
@@ -39,7 +41,7 @@ namespace AsynGyanis::Base
      *          滚动时关闭活动文件、重命名为备份并新建活动文件，随后清理超出保留上限的旧备份。
      * @note 按时间滚动时文件名会插入时间后缀，备份命名规则为「主名.后缀.扩展名」。
      */
-    class RollingFileSink : public LogSink
+    class ASYN_BASE_API RollingFileSink : public LogSink
     {
     public:
         /**

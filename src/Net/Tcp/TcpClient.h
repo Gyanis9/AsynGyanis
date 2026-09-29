@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Net/Tcp/TcpStream.h"
 
@@ -30,7 +32,7 @@ namespace AsynGyanis::Net
      *          地址族优先顺序为 IPv6 > IPv4（IPv6 位于内部地址列表的尾部，
      *          见 AsyncResolver 的排序约定），每个地址依次尝试，首个成功即返回。
      */
-    class TcpClient
+    class ASYN_NET_API TcpClient
     {
     public:
         /**

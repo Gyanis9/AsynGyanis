@@ -13,6 +13,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseType.h"
 #include "Database/Common/DatabaseValue.h"
 #include "Database/Dialect/ColumnType.h"
@@ -35,7 +37,7 @@ namespace AsynGyanis::Database
      * @note 本类刻意不含任何数据成员：方言是"翻译规则"而不是"连接状态"，
      *       无状态才能被安全共享与并发调用。
      */
-    class SqlDialect
+    class ASYN_DATABASE_API SqlDialect
     {
     public:
         /**

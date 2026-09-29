@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Tls/TlsContext.h"
 
@@ -41,7 +43,7 @@ namespace AsynGyanis::Net
      *          会话本身仍全部跑在同一个事件循环线程上。
      * @see Http2Session, Core::TlsContext, HttpServer
      */
-    class HttpsServer : public TcpServer
+    class ASYN_NET_API HttpsServer : public TcpServer
     {
     public:
         /**

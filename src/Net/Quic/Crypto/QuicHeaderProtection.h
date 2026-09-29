@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 
@@ -39,7 +41,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 头部保护掩码
      */
-    struct QuicHeaderProtectionMask
+    struct ASYN_NET_API QuicHeaderProtectionMask
     {
         std::array<std::uint8_t, kQuicHeaderProtectionMaskByteLength> bytes{}; ///< 掩码字节，只用前 1+包号长度 个
 
@@ -63,8 +65,8 @@ namespace AsynGyanis::Net
      * @return 失败返回 `QuicDecodeError`：报文短到装不下完整样本，类别为 `Truncated`，
      *         按 §5.4.2 的要求整包丢弃
      */
-    [[nodiscard]] std::expected<std::span<const std::uint8_t>, QuicDecodeError> extractQuicHeaderProtectionSample(std::span<const std::uint8_t> packet,
-                                                                                                                  const QuicPacketHeader       &header);
+    [[nodiscard]] ASYN_NET_API std::expected<std::span<const std::uint8_t>, QuicDecodeError> extractQuicHeaderProtectionSample(std::span<const std::uint8_t> packet,
+                                                                                                                               const QuicPacketHeader       &header);
 
     /**
      * @brief 由头部保护密钥与样本算出掩码
@@ -75,7 +77,7 @@ namespace AsynGyanis::Net
      * @return QuicHeaderProtectionMask 5 字节掩码
      * @throws Base::Exception 运行期故障：OpenSSL 建不了密码上下文或加密失败
      */
-    [[nodiscard]] QuicHeaderProtectionMask generateQuicHeaderProtectionMask(const QuicPacketKeys &keys, std::span<const std::uint8_t> sample);
+    [[nodiscard]] ASYN_NET_API QuicHeaderProtectionMask generateQuicHeaderProtectionMask(const QuicPacketKeys &keys, std::span<const std::uint8_t> sample);
 
     /**
      * @brief 去掉报文头部保护，并把包号就地还原
@@ -88,8 +90,8 @@ namespace AsynGyanis::Net
      * @return 成功返回去掉保护后的首字节
      * @return 失败返回 `QuicDecodeError`：报文短于包号字段末尾，类别为 `Truncated`
      */
-    [[nodiscard]] std::expected<std::uint8_t, QuicDecodeError> removeQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header,
-                                                                                          const QuicHeaderProtectionMask &mask);
+    [[nodiscard]] ASYN_NET_API std::expected<std::uint8_t, QuicDecodeError> removeQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header,
+                                                                                                       const QuicHeaderProtectionMask &mask);
 
     /**
      * @brief 给明文报文加上头部保护
@@ -101,6 +103,6 @@ namespace AsynGyanis::Net
      * @return 成功返回加上保护后的首字节
      * @return 失败返回 `QuicDecodeError`：报文短于包号字段末尾，或首字节的包号长度位越界
      */
-    [[nodiscard]] std::expected<std::uint8_t, QuicDecodeError> applyQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header,
-                                                                                         const QuicHeaderProtectionMask &mask);
+    [[nodiscard]] ASYN_NET_API std::expected<std::uint8_t, QuicDecodeError> applyQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header,
+                                                                                                      const QuicHeaderProtectionMask &mask);
 } // namespace AsynGyanis::Net

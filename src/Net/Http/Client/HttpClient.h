@@ -7,6 +7,8 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 #pragma once
+
+#include "AsynGyanisExport.h"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -43,7 +45,7 @@ namespace AsynGyanis::Net
     using HttpClientHeaderField = std::pair<std::string, std::string>;
 
     /// HTTP 客户端响应
-    struct HttpClientResponse
+    struct ASYN_NET_API HttpClientResponse
     {
         int                                statusCode{0}; ///< 状态码；0 表示没拿到响应（连接或 TLS 失败）
         std::string                        reasonPhrase;  ///< 状态行里的原因短语
@@ -67,7 +69,7 @@ namespace AsynGyanis::Net
      */
     using HttpResponseBodyReceiver = std::function<Core::Task<bool>(const HttpResponseInfo &head, std::string_view batch, bool isLastBatch)>;
 
-    struct HttpClientRequest
+    struct ASYN_NET_API HttpClientRequest
     {
         std::string                        method{"GET"}; ///< 请求方法，原样写进请求行；HEAD 的应答按 RFC 9112 §6.3 在头块之后结束
         std::string_view                   body{};        ///< 正文；为空时不写 Content-Length，也不写 Content-Type
@@ -112,7 +114,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 拆开的请求 URL
      */
-    struct ParsedUrl
+    struct ASYN_NET_API ParsedUrl
     {
         std::string scheme{"http"}; ///< 协议，只有 "http" 与 "https" 两种取值（识别大小写无关，存下来已归一化成小写）
         std::string host;           ///< 主机名或 IP 字面量，不做百分号解码；IPv6 已去掉方括号（发 Host 头时按规范加回）
@@ -130,12 +132,12 @@ namespace AsynGyanis::Net
      * @throws Base::InvalidArgumentException URL 含空白或控制字符、没有协议名、协议不是 http/https、
      *         没有主机、端口不是 1..65535 的十进制数、方括号没闭合，或 IPv6 字面量没加方括号
      */
-    [[nodiscard]] ParsedUrl parseUrl(std::string_view url);
+    [[nodiscard]] ASYN_NET_API ParsedUrl parseUrl(std::string_view url);
     /**
      * @brief 出站 HTTP 客户端
      * @details 每次请求新建一条连接，完成后关闭（https 走 TLS，并校验服务端证书与主机名）。
      */
-    class HttpClient
+    class ASYN_NET_API HttpClient
     {
     public:
         /// 单次请求的默认整体时限（连接、握手、发送、收完响应四段之和）

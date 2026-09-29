@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/Platform.h"
 
 #include <ctime>
@@ -22,7 +24,7 @@ namespace AsynGyanis::Platform
      *          与 std::tm 的 tm_year（自 1900 起）和 tm_mon（自 0 起）刻意不同，
      *          避免每个调用方各自做一次偏移换算而写错。
      */
-    struct UtcTimeFields
+    struct ASYN_PLATFORM_API UtcTimeFields
     {
         int year{0};    ///< 完整年份，如 1994；转换失败时为 0
         int month{0};   ///< 月份 1~12；转换失败时为 0
@@ -41,7 +43,7 @@ namespace AsynGyanis::Platform
      *          线程安全版本。日志时间戳与滚动文件名后缀依赖本地时间，HTTP 日期头依赖 UTC，
      *          统一由此类出口。
      */
-    class PlatformTime
+    class ASYN_PLATFORM_API PlatformTime
     {
     public:
         /**

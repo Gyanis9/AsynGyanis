@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <coroutine>
 #include <cstdint>
 
@@ -31,13 +33,13 @@ namespace AsynGyanis::Core
      *          由「下一次 wait() 前对仍在掩码里的方向重投探针」等价实现。析构用 scheduleRemote()
      *          唤醒等待者：本对象正在析构，就地恢复会让协程在析构完成前回来访问成员（释放后使用）。
      */
-    class IoWatcher
+    class ASYN_CORE_API IoWatcher
     {
     public:
         /**
          * @brief 等待器：与其它 awaitable 一样直接 co_await
          */
-        class Awaiter
+        class ASYN_CORE_API Awaiter
         {
         public:
             /**

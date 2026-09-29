@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 
@@ -133,26 +135,26 @@ namespace AsynGyanis::Net
      *         LimitExceeded→ENHANCE_YOUR_CALM（RFC 7540 §7 对「对端可能造成过量负载」的建议取值）、
      *         None→NO_ERROR
      */
-    [[nodiscard]] Http2ErrorCode toHttp2ErrorCode(Http2FrameErrorKind errorKind) noexcept;
+    [[nodiscard]] ASYN_NET_API Http2ErrorCode toHttp2ErrorCode(Http2FrameErrorKind errorKind) noexcept;
 
     /**
      * @brief 取帧类型的中文名，用于错误文案与日志
      * @param frameType 帧类型
      * @return std::string_view 中文名；未定义取值返回「未知类型」
      */
-    [[nodiscard]] std::string_view http2FrameTypeName(Http2FrameType frameType) noexcept;
+    [[nodiscard]] ASYN_NET_API std::string_view http2FrameTypeName(Http2FrameType frameType) noexcept;
 
     /**
      * @brief 取错误码的中文名，用于错误文案与日志
      * @param errorCode 错误码
      * @return std::string_view 中文名；未定义取值返回「未定义错误码」
      */
-    [[nodiscard]] std::string_view http2ErrorCodeName(Http2ErrorCode errorCode) noexcept;
+    [[nodiscard]] ASYN_NET_API std::string_view http2ErrorCodeName(Http2ErrorCode errorCode) noexcept;
 
     /**
      * @brief HTTP/2 帧头（RFC 7540 §4.1）
      */
-    struct Http2FrameHeader
+    struct ASYN_NET_API Http2FrameHeader
     {
         std::uint32_t  payloadLength{0};           ///< 24 位负载长度，不含 9 字节帧头
         Http2FrameType type{Http2FrameType::Data}; ///< 帧类型
@@ -163,7 +165,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 流的优先级字段（RFC 7540 §6.3）
      */
-    struct Http2Priority
+    struct ASYN_NET_API Http2Priority
     {
         bool          isExclusive{false};  ///< E 位：独占标记（§5.3.1）
         std::uint32_t streamDependency{0}; ///< 31 位依赖的父流号；等于本帧流号即违反 §5.3.1
@@ -179,7 +181,7 @@ namespace AsynGyanis::Net
      * @note PUSH_PROMISE 本片不解释（服务端不会收到它，投递方向是服务端到客户端），其负载含 promised
      *       流号与 padding，整段原样交出；CONTINUATION 本身没有 padding，两种类型的固定字段都不由本层剥离。
      */
-    struct Http2Frame
+    struct ASYN_NET_API Http2Frame
     {
         Http2FrameHeader header;             ///< 帧头原文（payloadLength 是线上声明的长度，含 padding）
         std::string      payload;            ///< 净负载，见结构体说明
@@ -198,7 +200,7 @@ namespace AsynGyanis::Net
      * @throws Base::InvalidArgumentException 用法错误：payloadLength 超出 24 位、streamId 超出 31 位
      *         （R 位必须为 0），或 type 不是 RFC 7540 §6 定义过的取值
      */
-    [[nodiscard]] std::string encodeHttp2FrameHeader(const Http2FrameHeader &header);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2FrameHeader(const Http2FrameHeader &header);
 
     /**
      * @brief 解码 9 字节帧头（独立入口，帧解码器内部走的是同一套校验）
@@ -212,7 +214,7 @@ namespace AsynGyanis::Net
      * @warning RFC 7540 §4.1 允许接收侧忽略 R 位，本实现按要求从严判错：放行保留位会让「收到的是什么」
      *          依赖对端是否在用未定义的扩展，且这些帧在本端无法被正确解释
      */
-    [[nodiscard]] bool decodeHttp2FrameHeader(std::string_view bytes, Http2FrameHeader &header, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool decodeHttp2FrameHeader(std::string_view bytes, Http2FrameHeader &header, std::string *errorText = nullptr);
 
     /**
      * @brief 编码一帧：帧头（长度按负载实际大小重算）+ 负载
@@ -223,7 +225,7 @@ namespace AsynGyanis::Net
      * @return std::string 完整帧字节，可直接写入连接
      * @throws Base::InvalidArgumentException 用法错误：负载超过 24 位长度域、流号超出 31 位，或类型未定义
      */
-    [[nodiscard]] std::string encodeHttp2Frame(Http2FrameType type, std::uint8_t flags, std::uint32_t streamId, std::string_view payload);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2Frame(Http2FrameType type, std::uint8_t flags, std::uint32_t streamId, std::string_view payload);
 
     /**
      * @brief 把一帧直接拼进给定缓冲的末尾（载荷已在手时用它，别再造临时帧串）
@@ -236,7 +238,7 @@ namespace AsynGyanis::Net
      * @param payload 负载字节，本函数同步拷完才返回，不留视图
      * @throws Base::InvalidArgumentException 用法错误：负载超过 24 位长度域、流号超出 31 位，或类型未定义
      */
-    void appendHttp2Frame(std::string &bytes, Http2FrameType type, std::uint8_t flags, std::uint32_t streamId, std::string_view payload);
+    ASYN_NET_API void appendHttp2Frame(std::string &bytes, Http2FrameType type, std::uint8_t flags, std::uint32_t streamId, std::string_view payload);
 
     /**
      * @brief 把一帧 HEADERS 直接拼进给定缓冲末尾（头块片段已在手时用它）
@@ -250,7 +252,7 @@ namespace AsynGyanis::Net
      * @param streamId 目标流号，必须非 0
      * @throws Base::InvalidArgumentException 用法错误：流号为 0，或片段长度超出 24 位长度域
      */
-    void appendHttp2HeadersFrame(std::string &bytes, std::string_view headerBlockFragment, bool endStream, bool endHeaders, std::uint32_t streamId);
+    ASYN_NET_API void appendHttp2HeadersFrame(std::string &bytes, std::string_view headerBlockFragment, bool endStream, bool endHeaders, std::uint32_t streamId);
 
     // ============================================================================
     // 具名负载结构体（RFC 7540 §6.x）
@@ -259,7 +261,7 @@ namespace AsynGyanis::Net
     /**
      * @brief SETTINGS 的一个参数（RFC 7540 §6.5.1）
      */
-    struct Http2Setting
+    struct ASYN_NET_API Http2Setting
     {
         std::uint16_t identifier{0}; ///< 16 位参数标识，取值见 Http2SettingIdentifier
         std::uint32_t value{0};      ///< 32 位参数取值
@@ -284,7 +286,7 @@ namespace AsynGyanis::Net
     /**
      * @brief SETTINGS 帧负载（RFC 7540 §6.5）
      */
-    struct Http2SettingsPayload
+    struct ASYN_NET_API Http2SettingsPayload
     {
         bool                      isAcknowledgement{false}; ///< ACK 标志：置位时负载必须为空（§6.5）
         std::vector<Http2Setting> parameters;               ///< 参数按到达顺序排列，含未知标识（§6.5.2 要求忽略而非判错）
@@ -293,7 +295,7 @@ namespace AsynGyanis::Net
     /**
      * @brief PING 帧负载（RFC 7540 §6.7）
      */
-    struct Http2PingPayload
+    struct ASYN_NET_API Http2PingPayload
     {
         bool                        isAcknowledgement{false}; ///< ACK 标志：置位表示这是对端 PING 的回声
         std::array<std::uint8_t, 8> opaqueData{};             ///< 8 字节不透明数据，收到后必须原样回送（§6.7）
@@ -302,7 +304,7 @@ namespace AsynGyanis::Net
     /**
      * @brief GOAWAY 帧负载（RFC 7540 §6.8）
      */
-    struct Http2GoAwayPayload
+    struct ASYN_NET_API Http2GoAwayPayload
     {
         std::uint32_t  lastStreamId{0};                    ///< 31 位「最后处理的流号」，0 表示一条都没处理
         Http2ErrorCode errorCode{Http2ErrorCode::NoError}; ///< 关闭原因
@@ -312,7 +314,7 @@ namespace AsynGyanis::Net
     /**
      * @brief RST_STREAM 帧负载（RFC 7540 §6.4）
      */
-    struct Http2RstStreamPayload
+    struct ASYN_NET_API Http2RstStreamPayload
     {
         Http2ErrorCode errorCode{Http2ErrorCode::NoError}; ///< 终止流的原因
     };
@@ -320,7 +322,7 @@ namespace AsynGyanis::Net
     /**
      * @brief WINDOW_UPDATE 帧负载（RFC 7540 §6.9）
      */
-    struct Http2WindowUpdatePayload
+    struct ASYN_NET_API Http2WindowUpdatePayload
     {
         std::uint32_t windowSizeIncrement{0}; ///< 31 位窗口增量，取值必须非 0（§6.9）
     };
@@ -328,7 +330,7 @@ namespace AsynGyanis::Net
     /**
      * @brief DATA 帧负载（RFC 7540 §6.1）
      */
-    struct Http2DataPayload
+    struct ASYN_NET_API Http2DataPayload
     {
         bool        endStream{false}; ///< END_STREAM 标志：这是本流最后一个数据帧
         std::string data;             ///< 应用数据（padding 已由帧层剥掉）
@@ -337,7 +339,7 @@ namespace AsynGyanis::Net
     /**
      * @brief HEADERS 帧负载（RFC 7540 §6.2）
      */
-    struct Http2HeadersPayload
+    struct ASYN_NET_API Http2HeadersPayload
     {
         bool          endStream{false};    ///< END_STREAM 标志：头块之后的正文到此为止
         bool          endHeaders{false};   ///< END_HEADERS 标志：头块在本帧内结束，后面没有 CONTINUATION
@@ -349,7 +351,7 @@ namespace AsynGyanis::Net
     /**
      * @brief CONTINUATION 帧负载（RFC 7540 §6.10）
      */
-    struct Http2ContinuationPayload
+    struct ASYN_NET_API Http2ContinuationPayload
     {
         bool        endHeaders{false};   ///< END_HEADERS 标志：头块在本帧内结束
         std::string headerBlockFragment; ///< 头块片段，必须紧接在同一条头块的前一片段之后
@@ -365,21 +367,21 @@ namespace AsynGyanis::Net
      * @return std::string 完整帧字节
      * @throws Base::InvalidArgumentException 用法错误：ACK 置位却带参数（§6.5 要求 ACK 帧负载为空）
      */
-    [[nodiscard]] std::string encodeHttp2SettingsFrame(const Http2SettingsPayload &payload);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2SettingsFrame(const Http2SettingsPayload &payload);
 
     /**
      * @brief 编码 PING 帧（流号恒为 0）
      * @param payload 负载结构体
      * @return std::string 完整帧字节
      */
-    [[nodiscard]] std::string encodeHttp2PingFrame(const Http2PingPayload &payload);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2PingFrame(const Http2PingPayload &payload);
 
     /**
      * @brief 编码 GOAWAY 帧（流号恒为 0）
      * @param payload 负载结构体
      * @return std::string 完整帧字节
      */
-    [[nodiscard]] std::string encodeHttp2GoAwayFrame(const Http2GoAwayPayload &payload);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2GoAwayFrame(const Http2GoAwayPayload &payload);
 
     /**
      * @brief 编码 RST_STREAM 帧
@@ -388,7 +390,7 @@ namespace AsynGyanis::Net
      * @return std::string 完整帧字节
      * @throws Base::InvalidArgumentException 用法错误：streamId 为 0
      */
-    [[nodiscard]] std::string encodeHttp2RstStreamFrame(const Http2RstStreamPayload &payload, std::uint32_t streamId);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2RstStreamFrame(const Http2RstStreamPayload &payload, std::uint32_t streamId);
 
     /**
      * @brief 编码 WINDOW_UPDATE 帧
@@ -398,7 +400,7 @@ namespace AsynGyanis::Net
      * @throws Base::InvalidArgumentException 用法错误：增量为 0（§6.9 要求增量必须非 0，对端收到必然
      *         判错，与其发出去被断连不如在本地拒绝），或增量超出 31 位
      */
-    [[nodiscard]] std::string encodeHttp2WindowUpdateFrame(const Http2WindowUpdatePayload &payload, std::uint32_t streamId);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2WindowUpdateFrame(const Http2WindowUpdatePayload &payload, std::uint32_t streamId);
 
     /**
      * @brief 编码 DATA 帧（不产生 padding：服务端发出的数据帧不填充）
@@ -407,7 +409,7 @@ namespace AsynGyanis::Net
      * @return std::string 完整帧字节
      * @throws Base::InvalidArgumentException 用法错误：streamId 为 0
      */
-    [[nodiscard]] std::string encodeHttp2DataFrame(const Http2DataPayload &payload, std::uint32_t streamId);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2DataFrame(const Http2DataPayload &payload, std::uint32_t streamId);
 
     /**
      * @brief 编码 DATA 帧（负载按「指针 + 长度」取，不经过负载结构体）
@@ -419,7 +421,7 @@ namespace AsynGyanis::Net
      * @note 发送路径用这个重载：待发缓冲里的字节可以直接按视图交给编码器，
      *       不必先拷进 Http2DataPayload::data 再由编码器拷进帧缓冲（正文一大就是整段白拷一次）
      */
-    [[nodiscard]] std::string encodeHttp2DataFrame(std::string_view data, bool endStream, std::uint32_t streamId);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2DataFrame(std::string_view data, bool endStream, std::uint32_t streamId);
 
     /**
      * @brief 编码 HEADERS 帧（不产生 padding；hasPriority 为 true 时写出 5 字节优先级字段）
@@ -428,7 +430,7 @@ namespace AsynGyanis::Net
      * @return std::string 完整帧字节
      * @throws Base::InvalidArgumentException 用法错误：streamId 为 0，或优先级字段依赖自身流号（§5.3.1）
      */
-    [[nodiscard]] std::string encodeHttp2HeadersFrame(const Http2HeadersPayload &payload, std::uint32_t streamId);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2HeadersFrame(const Http2HeadersPayload &payload, std::uint32_t streamId);
 
     /**
      * @brief 编码 CONTINUATION 帧
@@ -437,7 +439,7 @@ namespace AsynGyanis::Net
      * @return std::string 完整帧字节
      * @throws Base::InvalidArgumentException 用法错误：streamId 为 0
      */
-    [[nodiscard]] std::string encodeHttp2ContinuationFrame(const Http2ContinuationPayload &payload, std::uint32_t streamId);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2ContinuationFrame(const Http2ContinuationPayload &payload, std::uint32_t streamId);
 
     /**
      * @brief 编码 PRIORITY 帧（负载固定 5 字节）
@@ -446,7 +448,7 @@ namespace AsynGyanis::Net
      * @return std::string 完整帧字节
      * @throws Base::InvalidArgumentException 用法错误：streamId 为 0，或依赖的父流号等于自身流号
      */
-    [[nodiscard]] std::string encodeHttp2PriorityFrame(const Http2Priority &priority, std::uint32_t streamId);
+    [[nodiscard]] ASYN_NET_API std::string encodeHttp2PriorityFrame(const Http2Priority &priority, std::uint32_t streamId);
 
     // ============================================================================
     // 具名负载解析：入参是帧层交出的帧，负载已是净负载（padding 与优先级字段不在里面）
@@ -462,7 +464,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 SETTINGS，或负载长度不是 6 的整数倍
      */
-    [[nodiscard]] bool parseHttp2SettingsPayload(const Http2Frame &frame, Http2SettingsPayload &payload, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool parseHttp2SettingsPayload(const Http2Frame &frame, Http2SettingsPayload &payload, std::string *errorText = nullptr);
 
     /**
      * @brief 从 SETTINGS 参数里取一个具名参数的取值
@@ -473,7 +475,7 @@ namespace AsynGyanis::Net
      * @return true 对端带了该参数
      * @return false 对端没带该参数（保持默认值），不是错误
      */
-    [[nodiscard]] bool tryGetHttp2Setting(const Http2SettingsPayload &payload, Http2SettingIdentifier identifier, std::uint32_t &value) noexcept;
+    [[nodiscard]] ASYN_NET_API bool tryGetHttp2Setting(const Http2SettingsPayload &payload, Http2SettingIdentifier identifier, std::uint32_t &value) noexcept;
 
     /**
      * @brief 解析 PING 帧
@@ -483,7 +485,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 PING，或负载不是 8 字节
      */
-    [[nodiscard]] bool parseHttp2PingPayload(const Http2Frame &frame, Http2PingPayload &payload, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool parseHttp2PingPayload(const Http2Frame &frame, Http2PingPayload &payload, std::string *errorText = nullptr);
 
     /**
      * @brief 解析 GOAWAY 帧
@@ -493,7 +495,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 GOAWAY，或负载不足 8 字节
      */
-    [[nodiscard]] bool parseHttp2GoAwayPayload(const Http2Frame &frame, Http2GoAwayPayload &payload, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool parseHttp2GoAwayPayload(const Http2Frame &frame, Http2GoAwayPayload &payload, std::string *errorText = nullptr);
 
     /**
      * @brief 解析 RST_STREAM 帧
@@ -503,7 +505,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 RST_STREAM，或负载不是 4 字节
      */
-    [[nodiscard]] bool parseHttp2RstStreamPayload(const Http2Frame &frame, Http2RstStreamPayload &payload, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool parseHttp2RstStreamPayload(const Http2Frame &frame, Http2RstStreamPayload &payload, std::string *errorText = nullptr);
 
     /**
      * @brief 解析 WINDOW_UPDATE 帧
@@ -513,7 +515,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 WINDOW_UPDATE，或负载不是 4 字节
      */
-    [[nodiscard]] bool parseHttp2WindowUpdatePayload(const Http2Frame &frame, Http2WindowUpdatePayload &payload, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool parseHttp2WindowUpdatePayload(const Http2Frame &frame, Http2WindowUpdatePayload &payload, std::string *errorText = nullptr);
 
     /**
      * @brief 解析 DATA 帧
@@ -523,7 +525,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 DATA
      */
-    [[nodiscard]] bool parseHttp2DataPayload(const Http2Frame &frame, Http2DataPayload &payload, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool parseHttp2DataPayload(const Http2Frame &frame, Http2DataPayload &payload, std::string *errorText = nullptr);
 
     /**
      * @brief 解析 HEADERS 帧
@@ -533,7 +535,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 HEADERS
      */
-    [[nodiscard]] bool parseHttp2HeadersPayload(const Http2Frame &frame, Http2HeadersPayload &payload, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool parseHttp2HeadersPayload(const Http2Frame &frame, Http2HeadersPayload &payload, std::string *errorText = nullptr);
 
     /**
      * @brief 解析 CONTINUATION 帧
@@ -543,7 +545,7 @@ namespace AsynGyanis::Net
      * @return true 解析成功
      * @return false 帧类型不是 CONTINUATION
      */
-    [[nodiscard]] bool parseHttp2ContinuationPayload(const Http2Frame &frame, Http2ContinuationPayload &payload, std::string *errorText = nullptr);
+    [[nodiscard]] ASYN_NET_API bool parseHttp2ContinuationPayload(const Http2Frame &frame, Http2ContinuationPayload &payload, std::string *errorText = nullptr);
 
     // ============================================================================
     // 增量帧解码器
@@ -552,7 +554,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 帧解码器的接收上限（本端策略，随 SETTINGS 一并通告给对端）
      */
-    struct Http2FrameLimits
+    struct ASYN_NET_API Http2FrameLimits
     {
         /// 单帧负载上限，对应本端通告的 SETTINGS_MAX_FRAME_SIZE；合法区间 [16384, 16777215]（RFC 7540 §6.5.2），
         /// 超出即长度违规（FRAME_SIZE_ERROR）。默认值即规范的初始值 16384
@@ -592,7 +594,7 @@ namespace AsynGyanis::Net
      * @warning 负载按「指针 + 长度」处理，可含 NUL 与任意二进制；GOAWAY 的调试数据、PING 的不透明
      *          数据都不在本层解释语义。
      */
-    class Http2FrameDecoder
+    class ASYN_NET_API Http2FrameDecoder
     {
     public:
         /**

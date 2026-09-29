@@ -17,9 +17,11 @@ add_subdirectory(Tls)
 
 get_property(CORE_SOURCES GLOBAL PROPERTY AsynGyanisCoreSources)
 
-add_library(Core STATIC
+add_library(Core ${ASYN_LIBRARY_KIND}
         ${CORE_SOURCES}
 )
+# 静态是默认形态；打开 BUILD_SHARED_LIBS 时本模块要带上自己的导出宏定义与可见性预设
+asyn_configure_module_library(Core)
 
 target_link_libraries(Core PUBLIC
         Base

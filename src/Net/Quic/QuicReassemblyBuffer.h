@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -27,7 +29,7 @@ namespace AsynGyanis::Net
      * @brief 一段「按偏移可乱序到达」的字节流的重组状态
      * @warning 不是线程安全的：一个实例属于一条流（或一个包号空间的握手流），只在所属循环线程上驱动。
      */
-    class QuicReassemblyBuffer
+    class ASYN_NET_API QuicReassemblyBuffer
     {
     public:
         /**

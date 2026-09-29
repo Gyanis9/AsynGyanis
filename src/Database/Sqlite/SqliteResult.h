@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Sqlite/SqliteConnection.h"
 
@@ -31,7 +33,7 @@ namespace AsynGyanis::Database
      * @warning 本类持有 sqlite3_stmt 的所有权（析构 finalize），同时持有 sqlite3 的非拥有指针；
      *          连接对象必须比结果集活得更久。基类已删除拷贝与移动，这里不再放开。
      */
-    class SqliteResult : public DatabaseResult
+    class ASYN_DATABASE_API SqliteResult : public DatabaseResult
     {
     public:
         /// 行值快照的行数上限：只读结果集不超过这个行数时整份存进内存（遍历因此不再执行第二遍），

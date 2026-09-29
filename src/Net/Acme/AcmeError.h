@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <string>
 #include <string_view>
 
@@ -42,7 +44,7 @@ namespace AsynGyanis::Net
      *          一行日志，「ACME order failed」那种原文对任何人都没有指导性。CA 回来的英文 detail
      *          原样附在文案里，作为「为什么我们判断是这一种」的证据而不是替代品。
      */
-    struct AcmeError
+    struct ASYN_NET_API AcmeError
     {
         AcmeErrorKind kind;    ///< 失败种类，调用方据此分支
         std::string   message; ///< 中文可操作文案，含必要时的机构原文
@@ -53,5 +55,5 @@ namespace AsynGyanis::Net
      * @param kind 失败种类
      * @return std::string_view 指向静态字符串的视图
      */
-    [[nodiscard]] std::string_view acmeErrorKindName(AcmeErrorKind kind) noexcept;
+    [[nodiscard]] ASYN_NET_API std::string_view acmeErrorKindName(AcmeErrorKind kind) noexcept;
 } // namespace AsynGyanis::Net

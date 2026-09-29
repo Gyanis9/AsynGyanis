@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/System/PlatformTime.h"
 
 #include <algorithm>
@@ -39,7 +41,7 @@ namespace AsynGyanis::Base
          * @details 存「到秒为止的前缀」而不是整条文本：毫秒每刻都要重写，前缀一秒内不变。
          *          前缀长度随年份位数而变，故连长度一起存，不给年份位数设上限。
          */
-        struct TimestampPrefixCache
+        struct ASYN_BASE_API TimestampPrefixCache
         {
             std::int64_t                               cachedSecondValue = 0; ///< 已折算成文本的那个整秒（epoch 起算）
             std::array<char, kTimestampPrefixCapacity> prefixText{};          ///< 「YYYY-MM-DD HH:MM:SS」形态的前缀

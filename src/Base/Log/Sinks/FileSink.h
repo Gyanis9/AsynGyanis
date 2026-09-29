@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/Sinks/LogSink.h"
 
 #include <filesystem>
@@ -27,7 +29,7 @@ namespace AsynGyanis::Base
      *          文件一律按二进制打开，Windows 上换行由本类补成 "\r\n"（文本模式的逐字符翻译路径
      *          每行多付约 110 纳秒），落盘字节与文本模式一致。
      */
-    class FileSink : public LogSink
+    class ASYN_BASE_API FileSink : public LogSink
     {
     public:
         /**

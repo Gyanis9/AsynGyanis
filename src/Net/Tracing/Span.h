@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http/TraceContext.h"
 
 #include <array>
@@ -64,7 +66,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一节上的一个附加维度（键值对）
      */
-    struct SpanAttribute
+    struct ASYN_NET_API SpanAttribute
     {
         std::string        key{};   ///< 维度名，沿用 OTel 的语义约定写法（http.request.method 之类）
         SpanAttributeValue value{}; ///< 取值：文本或整数
@@ -77,7 +79,7 @@ namespace AsynGyanis::Net
      *          parentSpanId 用「首字节是 NUL」表达「本节就是链路的根」——定长数组没有空值，
      *          而全零的段标识在 W3C 里本就是非法值，拿它当哨兵不会与真实标识相撞。
      */
-    struct SpanIdentity
+    struct ASYN_NET_API SpanIdentity
     {
         std::array<char, kTraceIdHexDigitCount + 1U> traceId{};      ///< 32 位小写十六进制
         std::array<char, kSpanIdHexDigitCount + 1U>  spanId{};       ///< 16 位：本节自己的标识
@@ -103,7 +105,7 @@ namespace AsynGyanis::Net
      *          NTP 回拨与夏令时影响。把两者合成一个结束时刻是白扔一条信息——墙钟被往回拨时
      *          「结束早于开始」的节在下游是查不出问题的，只有分开的时长能暴露它。
      */
-    struct SpanRecord
+    struct ASYN_NET_API SpanRecord
     {
         SpanIdentity                          identity{};                    ///< 在链路上的位置
         std::string                           name{};                        ///< 操作名
@@ -129,7 +131,7 @@ namespace AsynGyanis::Net
      *        而替身在这里是完全合法的上下文来源。
      * @note 只能移动、不能拷贝：一节只该被收口一次。
      */
-    class Span
+    class ASYN_NET_API Span
     {
     public:
         /**

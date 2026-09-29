@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http2/Hpack.h"
 #include "Net/Http3/Http3Error.h"
 #include "Net/Http3/QpackStaticTable.h"
@@ -79,7 +81,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一次 QPACK 失败的完整说明
      */
-    struct QpackError
+    struct ASYN_NET_API QpackError
     {
         QpackErrorKind kind{QpackErrorKind::InvalidLocalState}; ///< 失败类别：上层据此选上线错误码，不去匹配文案
         std::string    message;                                 ///< 中文原因，含可定位坐标（哪个索引、哪条指令、第几个字段行）与 RFC 章节号
@@ -91,12 +93,12 @@ namespace AsynGyanis::Net
      * @return Http3ErrorCode DecompressionFailed→DecompressionFailed、EncoderStreamError→EncoderStreamError、
      *         DecoderStreamError→DecoderStreamError、FieldSectionTooLarge→ExcessiveLoad、InvalidLocalState→InternalError
      */
-    [[nodiscard]] Http3ErrorCode toHttp3ErrorCode(QpackErrorKind errorKind) noexcept;
+    [[nodiscard]] ASYN_NET_API Http3ErrorCode toHttp3ErrorCode(QpackErrorKind errorKind) noexcept;
 
     /**
      * @brief 一条字段行（RFC 9204 §1.1 的 field line）
      */
-    struct QpackHeaderField
+    struct ASYN_NET_API QpackHeaderField
     {
         std::string name;  ///< 字段名，按字节原样存取（大小写、NUL 都不在本层解释）
         std::string value; ///< 字段值，按字节原样存取
@@ -121,7 +123,7 @@ namespace AsynGyanis::Net
      *          回退；因此「表里现在有哪些项」与「已经插入了多少项」是两条独立的线，索引换算全部走
      *          insertCount / droppedCount 两个计数。
      */
-    class QpackDynamicTable
+    class ASYN_NET_API QpackDynamicTable
     {
     public:
         /**
@@ -232,7 +234,7 @@ namespace AsynGyanis::Net
      * @warning 动态表状态是本端与对端解码器共享的上下文：同一条连接上不要换用另一个实例，容量变化也只
      *          能通过 setMaximumTableCapacityByteCount() 走，否则对端索引会指向不同项（§3.2）。
      */
-    class QpackEncoder
+    class ASYN_NET_API QpackEncoder
     {
     public:
         /**
@@ -390,7 +392,7 @@ namespace AsynGyanis::Net
      * @note maximumFieldSectionSizeByteCount 为 0 表示不限（RFC 9114 §7.2.4.1 的默认取值），与
      *       HpackDecoderLimits 里「0 表示什么都不放过」的约定相反；另两项为 0 是合法状态（禁用动态表）。
      */
-    struct QpackDecoderSettings
+    struct ASYN_NET_API QpackDecoderSettings
     {
         std::size_t maximumTableCapacityByteCount{0};    ///< 本端 SETTINGS_QPACK_MAX_TABLE_CAPACITY：对端可设的容量上限（§3.2.3）
         std::size_t maximumBlockedStreamCount{0};        ///< 本端 SETTINGS_QPACK_BLOCKED_STREAMS：本端承诺支持的阻塞流数（§2.1.2）
@@ -408,7 +410,7 @@ namespace AsynGyanis::Net
      * @warning 失败即状态不再可信：DynamicTable 与对端不一致后必须按 §6 作废连接（头块类失败可只重置该
      *          流），本类不提供 reset()，实例应随连接一起销毁。
      */
-    class QpackDecoder
+    class ASYN_NET_API QpackDecoder
     {
     public:
         /**

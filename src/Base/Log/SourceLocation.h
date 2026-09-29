@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <source_location>
 #include <string_view>
 
@@ -20,7 +22,7 @@ namespace AsynGyanis::Base
      * @details 包装 std::source_location 的文件名/行号/函数名，只存指针不存标准对象，
      *          便于放进 LogEvent 并在 Release 下退化为全空位置。
      */
-    struct SourceLocation
+    struct ASYN_BASE_API SourceLocation
     {
         const char *fileName     = nullptr; ///< 源文件名
         int         line         = 0;       ///< 行号

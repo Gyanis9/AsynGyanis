@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -29,7 +31,7 @@ namespace AsynGyanis::Net
     /**
      * @brief QPACK 静态表的一项（RFC 9204 附录 A）
      */
-    struct QpackStaticTableEntry
+    struct ASYN_NET_API QpackStaticTableEntry
     {
         std::string_view name;  ///< 字段名
         std::string_view value; ///< 字段值；空串表示这一项只提供名字（引用名字时值须由字面量给出）
@@ -149,12 +151,12 @@ namespace AsynGyanis::Net
      * @return std::size_t 命中的线上索引（0..98）；未命中返回 kQpackStaticTableNoIndex
      * @note 同名多值时返回索引最小的那一项（RFC 9204 附录 A 说明表序按常见度排列，靠前更省字节）
      */
-    [[nodiscard]] std::size_t findQpackStaticTableIndex(std::string_view name, std::string_view value) noexcept;
+    [[nodiscard]] ASYN_NET_API std::size_t findQpackStaticTableIndex(std::string_view name, std::string_view value) noexcept;
 
     /**
      * @brief 在静态表里只按字段名匹配（编码器取「带索引名的字面量」用）
      * @param name 字段名，按字节比较
      * @return std::size_t 命中的线上索引（0..98）；未命中返回 kQpackStaticTableNoIndex
      */
-    [[nodiscard]] std::size_t findQpackStaticTableNameIndex(std::string_view name) noexcept;
+    [[nodiscard]] ASYN_NET_API std::size_t findQpackStaticTableNameIndex(std::string_view name) noexcept;
 } // namespace AsynGyanis::Net

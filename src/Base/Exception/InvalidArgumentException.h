@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/ExceptionPayload.h"
 
 #include <source_location>
@@ -30,7 +32,7 @@ namespace AsynGyanis::Base
      * @note 消息格式化、抛出点快照与调用栈与 Exception 共用同一份实现（见 ExceptionMessage.h
      *       与 ExceptionPayload.h），因此 what() 的文本格式与 Exception 完全一致。
      */
-    class InvalidArgumentException : public std::invalid_argument, public Detail::ExceptionPayload
+    class ASYN_BASE_API InvalidArgumentException : public std::invalid_argument, public Detail::ExceptionPayload
     {
     public:
         /**

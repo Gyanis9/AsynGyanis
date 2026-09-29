@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http/Client/HttpClient.h"
 
 #include <cstddef>
@@ -43,7 +45,7 @@ namespace AsynGyanis::Net
      * @param headers 请求的附加头部
      * @return true 表示本端要代为声明，并据此处理响应正文
      */
-    [[nodiscard]] bool shouldAdvertiseAcceptEncoding(const std::vector<HttpClientHeaderField> &headers) noexcept;
+    [[nodiscard]] ASYN_NET_API bool shouldAdvertiseAcceptEncoding(const std::vector<HttpClientHeaderField> &headers) noexcept;
 
     /**
      * @brief 按响应的 Content-Encoding 就地解回正文
@@ -53,7 +55,8 @@ namespace AsynGyanis::Net
      * @return std::expected<bool, std::string> true=解过；false=原样交回（无编码或 identity）；
      *         失败=中文原因（对端发了本端没声明的编码、解坏了、超出上界）
      */
-    [[nodiscard]] std::expected<bool, std::string> decodeResponseBodyInPlace(HttpClientResponse &response, std::size_t maxOutputByteCount = kOutboundDecompressedBodyLimitBytes);
+    [[nodiscard]] ASYN_NET_API std::expected<bool, std::string> decodeResponseBodyInPlace(HttpClientResponse &response,
+                                                                                          std::size_t         maxOutputByteCount = kOutboundDecompressedBodyLimitBytes);
 
     /**
      * @brief 一次出站请求的收尾：本端代加过声明时按响应的 Content-Encoding 解回正文
@@ -65,6 +68,6 @@ namespace AsynGyanis::Net
      * @param failureReason 输出：失败原因（解坏、超上界、对端发了没请求的编码）
      * @return true 表示响应可以交给调用方（含「本来就没有编码要解」这一形）
      */
-    [[nodiscard]] bool applyContentEncoding(const HttpClientRequest &request, HttpClientResponse &response, std::string &failureReason);
+    [[nodiscard]] ASYN_NET_API bool applyContentEncoding(const HttpClientRequest &request, HttpClientResponse &response, std::string &failureReason);
 
 } // namespace AsynGyanis::Net

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/ConfigException.h"
 
 #include <source_location>
@@ -22,7 +24,7 @@ namespace AsynGyanis::Base
      * @details schema 校验（必需键缺失、类型不符、数值越界）以异常形式上报时使用本类，
      *          批量场景请优先使用 ConfigValidationResult 收集全部错误。
      */
-    class ConfigValidationException : public ConfigException
+    class ASYN_BASE_API ConfigValidationException : public ConfigException
     {
     public:
         /**

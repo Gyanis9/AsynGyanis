@@ -7,6 +7,8 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 #pragma once
+
+#include "AsynGyanisExport.h"
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -16,13 +18,13 @@
 namespace AsynGyanis::Net
 {
     /// 一条已解析的响应头部
-    struct ParsedStatus
+    struct ASYN_NET_API ParsedStatus
     {
         int         statusCode{0};
         std::string reasonPhrase;
     };
     /// 响应解析结果
-    struct HttpResponseInfo
+    struct ASYN_NET_API HttpResponseInfo
     {
         int                                              statusCode{0};
         std::string                                      reasonPhrase;
@@ -35,7 +37,7 @@ namespace AsynGyanis::Net
      *          时按 chunked 解读，只有 Content-Length 时按长度，两者同时出现按非法拒绝
      *          （「挑一个信」正是响应走私的入口）。
      */
-    class HttpResponseParser
+    class ASYN_NET_API HttpResponseParser
     {
     public:
         /**

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <filesystem>
 #include <string>
 
@@ -21,7 +23,7 @@ namespace AsynGyanis::Platform
      *          UTF-8 路径会被解析成乱码目录；Linux 的原生路径本身就是字节序列。
      *          std::filesystem::u8path 已在 C++20 中标记弃用，故统一走本类。
      */
-    class FileSystem
+    class ASYN_PLATFORM_API FileSystem
     {
     public:
         /**

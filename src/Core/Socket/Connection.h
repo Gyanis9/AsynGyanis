@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Cancelable.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/AsyncSocket.h"
@@ -24,7 +26,7 @@ namespace AsynGyanis::Core
     /**
      * @brief TCP 连接基类，支持协作取消
      */
-    class Connection
+    class ASYN_CORE_API Connection
     {
     public:
         /**

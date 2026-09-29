@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncUdpSocket.h"
@@ -40,7 +42,7 @@ namespace AsynGyanis::Net
      * @warning 线程契约与其它循环对象一致：本类只在**所属事件循环线程**上创建、使用与关闭。
      *          外部线程要停它，把 `stop()` 投递过去（`scheduler().postRemote()`），不要直接调。
      */
-    class UdpServer
+    class ASYN_NET_API UdpServer
     {
     public:
         /**

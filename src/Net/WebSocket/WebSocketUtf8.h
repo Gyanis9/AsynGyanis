@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstddef>
 #include <string_view>
 
@@ -27,7 +29,7 @@ namespace AsynGyanis::Net
      *       校验状态没有消费方，因此不引入有状态校验器（校验点见 WebSocketPeer::feedBytes()）
      * @see findInvalidWebSocketUtf8ByteOffset()
      */
-    [[nodiscard]] bool isValidWebSocketUtf8(std::string_view text) noexcept;
+    [[nodiscard]] ASYN_NET_API bool isValidWebSocketUtf8(std::string_view text) noexcept;
 
     /**
      * @brief 找出首个违规字节的下标
@@ -38,5 +40,5 @@ namespace AsynGyanis::Net
      * @return std::size_t 违规序列的起始字节下标
      * @return std::string_view::npos 整段合法
      */
-    [[nodiscard]] std::size_t findInvalidWebSocketUtf8ByteOffset(std::string_view text) noexcept;
+    [[nodiscard]] ASYN_NET_API std::size_t findInvalidWebSocketUtf8ByteOffset(std::string_view text) noexcept;
 } // namespace AsynGyanis::Net

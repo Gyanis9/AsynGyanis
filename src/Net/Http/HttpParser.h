@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http/HttpBodySource.h"
 #include "Net/Http/HttpParseErrorKind.h"
 #include "Net/Http/HttpParserLimits.h"
@@ -39,7 +41,7 @@ namespace AsynGyanis::Net
      * @note 本类同时是 HTTP/1.1 的 HttpBodySource：正文就落在它自己的缓冲里，读取器（HttpRequestBody）
      *       因此不必认识解析器，与 HTTP/2 上「每条流的正文缓冲」共用同一套读取语义
      */
-    class HttpParser : public HttpBodySource
+    class ASYN_NET_API HttpParser : public HttpBodySource
     {
     public:
         /**

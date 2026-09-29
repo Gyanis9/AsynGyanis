@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -49,28 +51,28 @@ namespace AsynGyanis::Net
      * @param cipherSuite 密码套件
      * @return std::size_t 16 或 32 字节
      */
-    [[nodiscard]] std::size_t quicCipherSuiteKeyByteLength(QuicCipherSuite cipherSuite) noexcept;
+    [[nodiscard]] ASYN_NET_API std::size_t quicCipherSuiteKeyByteLength(QuicCipherSuite cipherSuite) noexcept;
 
     /**
      * @brief 头部保护密钥长度（RFC 9001 §5.4.3/§5.4.4）
      * @param cipherSuite 密码套件
      * @return std::size_t AES 系列 16（AES-256-GCM 为 32），ChaCha20 为 32 字节
      */
-    [[nodiscard]] std::size_t quicCipherSuiteHeaderProtectionKeyByteLength(QuicCipherSuite cipherSuite) noexcept;
+    [[nodiscard]] ASYN_NET_API std::size_t quicCipherSuiteHeaderProtectionKeyByteLength(QuicCipherSuite cipherSuite) noexcept;
 
     /**
      * @brief 该套件的流量秘密长度，即 HKDF 所用哈希的输出长度
      * @param cipherSuite 密码套件
      * @return std::size_t SHA-256 系列 32、SHA-384 为 48 字节
      */
-    [[nodiscard]] std::size_t quicCipherSuiteSecretByteLength(QuicCipherSuite cipherSuite) noexcept;
+    [[nodiscard]] ASYN_NET_API std::size_t quicCipherSuiteSecretByteLength(QuicCipherSuite cipherSuite) noexcept;
 
     /**
      * @brief 套件的中文名，用于错误文案与日志
      * @param cipherSuite 密码套件
      * @return std::string_view TLS 里的套件名
      */
-    [[nodiscard]] std::string_view quicCipherSuiteName(QuicCipherSuite cipherSuite) noexcept;
+    [[nodiscard]] ASYN_NET_API std::string_view quicCipherSuiteName(QuicCipherSuite cipherSuite) noexcept;
 
     /**
      * @brief 一个方向、一个加密级别上的包保护密钥组
@@ -78,7 +80,7 @@ namespace AsynGyanis::Net
      * @details 三段密钥按套件的实际长度使用（数组按最大长度定死，免得每包一次堆分配）。
      *          头部保护密钥在密钥更新后**不变**（RFC 9001 §5.4），所以它和会换的 AEAD 密钥分开存。
      */
-    struct QuicPacketKeys
+    struct ASYN_NET_API QuicPacketKeys
     {
         QuicCipherSuite                                               cipherSuite{QuicCipherSuite::Aes128Gcm}; ///< 决定下面几段的实际长度
         std::array<std::uint8_t, kQuicMaximumKeyByteLength>           encryptionKey{};                         ///< AEAD 密钥（"quic key"）

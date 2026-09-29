@@ -26,9 +26,11 @@ add_subdirectory(Acme)
 
 get_property(NET_SOURCES GLOBAL PROPERTY AsynGyanisNetSources)
 
-add_library(Net STATIC
+add_library(Net ${ASYN_LIBRARY_KIND}
         ${NET_SOURCES}
 )
+# 静态是默认形态；打开 BUILD_SHARED_LIBS 时本模块要带上自己的导出宏定义与可见性预设
+asyn_configure_module_library(Net)
 
 # 响应压缩用 zlib（gzip 容器，RFC 1952）；依赖由 Conan 提供，本地缓存里已有
 find_package(ZLIB REQUIRED)

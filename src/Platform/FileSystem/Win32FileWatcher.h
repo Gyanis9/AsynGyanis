@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/FileSystem/FileWatcher.h"
 
 #include <atomic>
@@ -34,7 +36,7 @@ namespace AsynGyanis::Platform
      * @note stop() 会关闭所有目录句柄，不残留内核对象；回调统一在锁外批量触发，
      *       因此在回调中增删监听路径不会造成死锁。
      */
-    class Win32FileWatcher : public FileWatcher
+    class ASYN_PLATFORM_API Win32FileWatcher : public FileWatcher
     {
     public:
         /**

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/ConfigException.h"
 
 #include <source_location>
@@ -22,7 +24,7 @@ namespace AsynGyanis::Base
      * @details 在扁平配置字典或嵌套对象/数组中按点号路径查找失败时抛出，
      *          数组越界时下标会以 "[index]" 形式作为键记录。
      */
-    class ConfigKeyNotFoundException : public ConfigException
+    class ASYN_BASE_API ConfigKeyNotFoundException : public ConfigException
     {
     public:
         /**

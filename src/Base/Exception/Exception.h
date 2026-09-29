@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/ExceptionPayload.h"
 
 #include <source_location>
@@ -28,7 +30,7 @@ namespace AsynGyanis::Base
      *          使上层能用一条 catch 兜住框架错误。
      * @note 消息格式化在构造期完成，抛出后不依赖任何外部状态。
      */
-    class Exception : public std::runtime_error, public Detail::ExceptionPayload
+    class ASYN_BASE_API Exception : public std::runtime_error, public Detail::ExceptionPayload
     {
     public:
         /**

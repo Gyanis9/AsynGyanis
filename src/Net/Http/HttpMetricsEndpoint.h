@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/EventLoop/EventLoop.h"
 #include "Net/Http/HttpServerStats.h"
 
@@ -52,7 +54,7 @@ namespace AsynGyanis::Net
      *          采集侧汇总
      * @see HttpServer::enableMetricsEndpoint(), HttpServerStats
      */
-    [[nodiscard]] std::string formatPrometheusMetrics(const HttpServerStats &stats, std::string_view metricNamePrefix);
+    [[nodiscard]] ASYN_NET_API std::string formatPrometheusMetrics(const HttpServerStats &stats, std::string_view metricNamePrefix);
 
     /**
      * @brief 把进程内事件循环的自观测表渲染成 JSON，作为 /debug/loops 的应答正文
@@ -69,7 +71,7 @@ namespace AsynGyanis::Net
      *       两边口径不同就会一个报警一个不报，那比没有更糟
      * @see Core::eventLoopSnapshots(), HttpServer::enableLoopDiagnosticsEndpoint()
      */
-    [[nodiscard]] std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops, std::size_t unregisteredLoopCount,
-                                                        std::chrono::steady_clock::time_point nowMoment);
+    [[nodiscard]] ASYN_NET_API std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops, std::size_t unregisteredLoopCount,
+                                                                     std::chrono::steady_clock::time_point nowMoment);
 
 } // namespace AsynGyanis::Net

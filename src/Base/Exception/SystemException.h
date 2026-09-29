@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/Exception.h"
 
 #include <source_location>
@@ -25,7 +27,7 @@ namespace AsynGyanis::Base
      *          Win32/socket 码），因此「隐式取最近一次错误」只对 errno 那一类成立：
      *          kernel32 与 winsock 的失败不写 errno，调用点必须显式传码。
      */
-    class SystemException : public Exception
+    class ASYN_BASE_API SystemException : public Exception
     {
     public:
         /**

@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseType.h"
@@ -23,7 +25,7 @@ namespace AsynGyanis::Database
      * @details 按类型或配置创建具体驱动实例，调用方只依赖 DatabaseConnection 接口。
      *          工厂只负责挑选驱动，不做连接：返回的连接仍需调用方 connect()。
      */
-    class DatabaseFactory
+    class ASYN_DATABASE_API DatabaseFactory
     {
     public:
         DatabaseFactory() = delete;

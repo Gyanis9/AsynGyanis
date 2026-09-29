@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Http/HttpRequest.h"
 
 #include <array>
@@ -53,7 +55,7 @@ namespace AsynGyanis::Net
      *          用 std::string 装等于给热路径加两次分配。
      * @note 文本恒为小写：规范里 trace-id 与 parent-id 就是小写十六进制，大写一律视为非法输入。
      */
-    struct TraceIdentifiers
+    struct ASYN_NET_API TraceIdentifiers
     {
         std::array<char, kTraceIdHexDigitCount + 1U> traceId{};  ///< 32 位小写十六进制 + NUL
         std::array<char, kSpanIdHexDigitCount + 1U>  parentId{}; ///< 16 位小写十六进制 + NUL
@@ -86,7 +88,7 @@ namespace AsynGyanis::Net
      *          · 缺席或非法才生成一条新的（版本固定 0），此时才走 renderInto。
      *          因此这里不需要「保留未知字段再回写」的缓冲，也就没有为它预留的容量。
      */
-    class Traceparent
+    class ASYN_NET_API Traceparent
     {
     public:
         /**
@@ -133,12 +135,12 @@ namespace AsynGyanis::Net
      *          还会顺带造一个用不上的 trace-id。
      * @return std::array<char, kSpanIdHexDigitCount + 1U> 可直接当 traceparent 的 parent-id 段用
      */
-    [[nodiscard]] std::array<char, kSpanIdHexDigitCount + 1U> generateSpanIdentifier() noexcept;
+    [[nodiscard]] ASYN_NET_API std::array<char, kSpanIdHexDigitCount + 1U> generateSpanIdentifier() noexcept;
 
     /**
      * @brief tracestate 的一条键值（§3.2.3）
      */
-    struct TraceStateEntry
+    struct ASYN_NET_API TraceStateEntry
     {
         std::string key{};   ///< 系统名（小写字符集，可带 `租户@厂商` 形态）
         std::string value{}; ///< 该系统自己的取值，可为空串
@@ -156,7 +158,7 @@ namespace AsynGyanis::Net
      *          · 表本身按值语义，键与值各自持串：只有显式启用 tracestate 才会有分配，
      *            默认关闭（见 TraceContextOptions::vendorKey）。
      */
-    class TraceState
+    class ASYN_NET_API TraceState
     {
     public:
         /**
@@ -223,5 +225,5 @@ namespace AsynGyanis::Net
      * @return std::optional<TraceIdentifiers> 有效标识；头部缺席、形态不合、或同名出现**多条**时为空
      *         （多条是有歧义的输入，猜首条还是末条都是替上游做决定，一律按「不在任何链路里」处理）
      */
-    [[nodiscard]] std::optional<TraceIdentifiers> extractTraceContext(const HttpRequest &request);
+    [[nodiscard]] ASYN_NET_API std::optional<TraceIdentifiers> extractTraceContext(const HttpRequest &request);
 } // namespace AsynGyanis::Net

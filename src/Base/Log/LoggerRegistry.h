@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/Logger.h"
 
@@ -36,7 +38,7 @@ namespace AsynGyanis::Base
      *       因此注册表自身的读路径不会解引用已销毁对象；但调用方跨过注册表变更继续使用旧引用
      *       仍属未定义行为——这是保留 `Logger&` 返回类型所必须明示的边界。
      */
-    class LoggerRegistry
+    class ASYN_BASE_API LoggerRegistry
     {
     public:
         /**

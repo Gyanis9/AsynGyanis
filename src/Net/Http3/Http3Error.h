@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstdint>
 #include <string_view>
 
@@ -53,5 +55,5 @@ namespace AsynGyanis::Net
      * @return 大写下划线的规范名（如 `H3_FRAME_UNEXPECTED`），不含前缀之外的额外文本
      * @note 未知取值不抛异常也不返回空串：对端可以发任何 62 位内的整数，日志里要照实记下它
      */
-    [[nodiscard]] std::string_view http3ErrorCodeName(Http3ErrorCode errorCode) noexcept;
+    [[nodiscard]] ASYN_NET_API std::string_view http3ErrorCodeName(Http3ErrorCode errorCode) noexcept;
 } // namespace AsynGyanis::Net

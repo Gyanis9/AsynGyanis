@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <chrono>
 #include <functional>
 #include <string>
@@ -25,7 +27,7 @@ namespace AsynGyanis::Base
      *       （后续读回默认值）。需要「全成功才切换」语义的调用方应先检查 success 与
      *       failedFiles，再决定如何使用本次结果。
      */
-    struct ConfigLoadResult
+    struct ASYN_BASE_API ConfigLoadResult
     {
         bool                     success{false}; ///< 加载是否成功
         std::vector<std::string> loadedFiles;    ///< 成功加载的配置文件路径列表（UTF-8 文本）

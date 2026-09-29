@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Platform/FileSystem/FileBasicInfo.h"
 
 #include <optional>
@@ -36,7 +38,7 @@ namespace AsynGyanis::Platform
      * @note 本层不抛异常（与 Platform 其它封装一致）：失败时返回无效对象，
      *       错误码经 lastError() 交出，由上层决定文案与是否抛。
      */
-    class MemoryMappedFile
+    class ASYN_PLATFORM_API MemoryMappedFile
     {
     public:
         /**

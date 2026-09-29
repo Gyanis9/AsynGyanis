@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
@@ -52,7 +54,7 @@ namespace AsynGyanis::Net
      *
      * @warning 线程契约与 TCP 侧一致：本对象与它管的连接都只在所属事件循环线程上创建、使用与销毁。
      */
-    class QuicServer
+    class ASYN_NET_API QuicServer
     {
     public:
         /**

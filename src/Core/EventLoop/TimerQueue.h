@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/IoWatcher.h"
@@ -58,7 +60,7 @@ namespace AsynGyanis::Core
         }
     } // namespace Detail
 
-    class TimerQueue
+    class ASYN_CORE_API TimerQueue
     {
     public:
         /**
@@ -67,7 +69,7 @@ namespace AsynGyanis::Core
          * @details 登记项放在等待器里（即协程帧里），地址稳定，入堆的是它的地址；
          *          等待器析构即从队列摘除，因此提前销毁的等待不会留下悬空登记。
          */
-        class Awaiter
+        class ASYN_CORE_API Awaiter
         {
         public:
             /**

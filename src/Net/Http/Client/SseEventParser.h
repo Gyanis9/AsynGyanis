@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <cstdint>
 #include <deque>
 #include <optional>
@@ -23,7 +25,7 @@ namespace AsynGyanis::Net
      * @details 字段名与语义按 WHATWG HTML「服务器定义的事件」一节（§9.2.6）：`event:` 是事件类型、
      *          `data:` 是正文（多条以换行拼接）、`id:` 是最后一标识、`retry:` 是重连间隔毫秒数。
      */
-    struct SseEvent
+    struct ASYN_NET_API SseEvent
     {
         std::string   type{};               ///< 事件类型；对端没写 `event:` 时为空（那就是默认的 message）
         std::string   data{};               ///< 正文；多条 `data:` 已按换行拼好
@@ -43,7 +45,7 @@ namespace AsynGyanis::Net
      *       事件（不发）；`id` 里含 NUL 的整条忽略。
      * @see HttpClientRequest::responseBodyReceiver —— 喂进来的字节由它逐批给出
      */
-    class SseEventParser
+    class ASYN_NET_API SseEventParser
     {
     public:
         /**

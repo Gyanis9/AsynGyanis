@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Net/Quic/Codec/QuicDecodeError.h"
 #include "Net/Quic/Codec/QuicFrame.h"
 #include "Net/Quic/Codec/QuicPacketHeader.h"
@@ -64,7 +66,7 @@ namespace AsynGyanis::Net
      *          `peerConnectionId`；收到服务端自报的源标识后，本类会按 §7.2 把 `peerConnectionId` 换过去。
      * @note 各 vector 都拷进本对象，构造完成后调用方即可销毁源容器。
      */
-    struct QuicConnectionCoreConfiguration
+    struct ASYN_NET_API QuicConnectionCoreConfiguration
     {
         QuicConnectionRole                   role{QuicConnectionRole::Server};  ///< 本端角色；缺省值与既有服务端调用点一致
         SSL_CTX                             *tlsContext{nullptr};               ///< 已配好证书与 ALPN 的 TLS 上下文，生命周期须覆盖本对象
@@ -85,7 +87,7 @@ namespace AsynGyanis::Net
      * @note 包号分三个空间各算各的（Initial / Handshake / Application）：一个数据报里混放不同级别的
      *       报文是合法写法（§12.2 合包），跨空间的包号互相看不见。
      */
-    class QuicConnectionCore
+    class ASYN_NET_API QuicConnectionCore
     {
     public:
         using Timestamp = std::chrono::microseconds; ///< 注入用的时间戳，单位与 ACK 帧的延迟字段一致

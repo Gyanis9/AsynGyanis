@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Base/Exception/StackTrace.h"
 
 #include <cstddef>
@@ -29,7 +31,7 @@ namespace AsynGyanis::Base::Detail
      * @note 构造是抛出的：捕获栈要拷帧，内存不足时按异常处理——它只在异常构造路径上被调用，
      *       那条路径本来就在抛，标 noexcept 反而会把「抛出失败」升级成 terminate。
      */
-    class ExceptionPayload
+    class ASYN_BASE_API ExceptionPayload
     {
     public:
         /**

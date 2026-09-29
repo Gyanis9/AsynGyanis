@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 
 #include "Platform/Platform.h"
 
@@ -54,7 +56,7 @@ namespace AsynGyanis::Core
     /**
      * @brief epoll 实例 RAII 封装
      */
-    class Epoll
+    class ASYN_CORE_API Epoll
     {
     public:
         /**

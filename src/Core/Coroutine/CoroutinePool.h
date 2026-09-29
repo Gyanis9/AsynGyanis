@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -23,7 +25,7 @@ namespace AsynGyanis::Core
      *          释放并破坏堆；块归属按「内存段 + 段内偏移」判定，与分配线程无关。
      * @note Task::promise_type 的 operator new/delete 依赖本池，进程内所有协程帧共用它。
      */
-    class CoroutinePool
+    class ASYN_CORE_API CoroutinePool
     {
     public:
         CoroutinePool(const CoroutinePool &) = delete;

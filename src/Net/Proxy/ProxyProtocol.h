@@ -7,6 +7,8 @@
  */
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Core/Socket/InetAddress.h"
 
 #include <cstddef>
@@ -33,7 +35,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一条 PROXY 头交出的四层身份
      */
-    struct ProxyEndpoint
+    struct ASYN_NET_API ProxyEndpoint
     {
         Core::InetAddress source{};            ///< 真实客户端地址（协议里写的「源」）
         Core::InetAddress destination{};       ///< 被代理的本端地址（协议里写的「目的」）
@@ -43,7 +45,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 已读到的前缀能给读侧的答复：还需不需要继续读、这条连接是不是已经判死
      */
-    struct ProxyHeaderFraming
+    struct ASYN_NET_API ProxyHeaderFraming
     {
         bool                       isStillPlausible{true}; ///< 前缀仍可能是一条头；为 false 时读侧应立刻判死，别再等
         std::optional<std::size_t> totalLength{};          ///< 已能定出整条头的字节数；还没定出时为空
@@ -58,7 +60,7 @@ namespace AsynGyanis::Net
      *          kMaximumProxyHeaderV2Bytes 约束）。签名对不齐的两种情形：前缀太短还判不出（继续读）、
      *          已经能断定不是头（例如以 `GET /` 开头——这是直接把服务器暴露在了公网上的形状）。
      */
-    [[nodiscard]] ProxyHeaderFraming frameProxyHeader(std::string_view buffered) noexcept;
+    [[nodiscard]] ASYN_NET_API ProxyHeaderFraming frameProxyHeader(std::string_view buffered) noexcept;
 
     /**
      * @brief 解析一条**完整**的 PROXY 头
@@ -71,5 +73,5 @@ namespace AsynGyanis::Net
      * @note v1 的 `UNKNOWN` 与 v2 的 `LOCAL` 都会交出 `hasAddresses=false`：这两类头只说明
      *       「前面确实有个代理」，没有可当作客户端的身份。把它们当地址用等于用一个不存在的来源记账
      */
-    [[nodiscard]] std::optional<ProxyEndpoint> parseProxyHeader(std::string_view header, std::size_t &consumedBytes) noexcept;
+    [[nodiscard]] ASYN_NET_API std::optional<ProxyEndpoint> parseProxyHeader(std::string_view header, std::size_t &consumedBytes) noexcept;
 } // namespace AsynGyanis::Net

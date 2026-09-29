@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseConnection.h"
 
 #include <chrono>
@@ -41,7 +43,7 @@ namespace AsynGyanis::Database
      *          否则游标会访问已释放的 sqlite3*。语句时限同样只管 execute() 同步执行那一段：交出游标之后的
      *          next() 不受它约束，慢速遍历不会被当成超时打断。
      */
-    class SqliteConnection : public DatabaseConnection
+    class ASYN_DATABASE_API SqliteConnection : public DatabaseConnection
     {
     public:
         /**
