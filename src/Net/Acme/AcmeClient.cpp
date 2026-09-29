@@ -140,11 +140,12 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 按 RFC 8553 §3 核一个域名标识：字母数字、连字符与点，且不含通配
-         * @details 通配要 dns-01 才验得了（HTTP-01 没法让机构去取 *.example 的令牌），
+         * @brief 按 RFC 8553 §3 核一个域名标识：字母数字、连字符、下划线与点，通配只在 dns-01 下允许
+         * @details 通配要 dns-01 才验得了（RFC 8738；HTTP-01 没法让机构去取 `*.example` 的令牌），
+         *          因此这条判据挂在**挑了哪种挑战**上，而不是挂在配置的一个字段名上。
          *          本地直接拒并说明原因，比让机构回一条 rejectedIdentifier 更有指导性
          */
-        [[nodiscard]] std::optional<std::string> describeUnusableDomainName(const std::string &domainName)
+        [[nodiscard]] std::optional<std::string> describeUnusableDomainName(const std::string &domainName, const bool allowsWildcard)
         {
             if (domainName.empty())
             {
@@ -154,13 +155,29 @@ namespace AsynGyanis::Net
             {
                 return std::format("域名长度 {} 超过 {} 的上限（RFC 1035 §2.3.4）", domainName.size(), kMaximumDomainLength);
             }
+
+            std::string_view bareName{domainName};
             if (domainName.find('*') != std::string::npos)
             {
-                return "本通路只走 HTTP-01，它验不了通配域名。要覆盖 *.example.com 请直接申请 example.com 与所需的具名子域";
+                if (!allowsWildcard)
+                {
+                    return "本客户端按配置要的是 http-01，它验不了通配域名。要覆盖 *.example.com 就把自证种类改成 dns-01，"
+                           "或直接申请 example.com 与所需的具名子域";
+                }
+                // 机构只认「* 占满最左一段标签」这一种写法，且去掉前缀之后剩余部分仍要过下面那条 LDH 规则
+                if (!domainName.starts_with("*.") || domainName.find('*', 1U) != std::string::npos)
+                {
+                    return std::format("通配域名只接受「*.example.com」这种 * 占满最左一段标签的写法，给的是：{}", domainName);
+                }
+                bareName = std::string_view{domainName}.substr(2);
+                if (bareName.empty())
+                {
+                    return std::format("通配域名「{}」在 *. 之后没有内容", domainName);
+                }
             }
 
             std::size_t labelLength = 0;
-            for (const char character: domainName)
+            for (const char character: bareName)
             {
                 const bool isLetterOrDigit = std::isalnum(static_cast<unsigned char>(character)) != 0;
                 if (character == '.')
@@ -563,9 +580,11 @@ namespace AsynGyanis::Net
         {
             co_return std::unexpected(AcmeError{AcmeErrorKind::InvalidConfiguration, "下单至少要一个域名。请把这台服务对外的域名填进配置"});
         }
+        // 通配能不能用取决于挑的是哪种挑战：dns-01 验得了，http-01 验不了
+        const bool allowsWildcard = m_configuration.challengeKind == AcmeChallengeKind::Dns01;
         for (const std::string &domainName: domainNames)
         {
-            if (const auto complaint = describeUnusableDomainName(domainName); complaint.has_value())
+            if (const auto complaint = describeUnusableDomainName(domainName, allowsWildcard); complaint.has_value())
             {
                 co_return std::unexpected(AcmeError{AcmeErrorKind::InvalidConfiguration, std::format("ACME 下单被本地拦下：{}。", *complaint)});
             }

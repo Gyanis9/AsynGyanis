@@ -806,6 +806,47 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：换成 dns-01 之后，通配标识不再被本地拦（RFC 8738 就是为通配开的这条路）
+     * @details 判据挂在「挑了哪种挑战」上而不是配置字段名：同一份域名表，http-01 拒、dns-01 放行
+     */
+    TEST_F(AcmeClientTest, AllowsWildcardIdentifiersWhenConfiguredForDns01)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.offeredChallengeType = "dns-01";
+        startFixtures(settings);
+        m_challengeKind = AcmeChallengeKind::Dns01;
+
+        FlowRequest request;
+        request.domainNames = {"*.stub.example.com"};
+        const auto outcome  = runFlow(std::move(request));
+
+        EXPECT_EQ(this->evidence().issuedOrderCount, 1U) << "dns-01 验得了通配，本地不该拦：" << outcome.failureMessage;
+        EXPECT_EQ(outcome.failureMessage.find("通配"), std::string::npos) << outcome.failureMessage;
+    }
+
+    /**
+     * @brief 钉住：dns-01 下通配仍只认「* 占满最左一段标签」那一种写法
+     * @details 机构对 `a*b.example.com` 这类写法回的是 rejectedIdentifier，而那条原文不 telling
+     *          是形状不对还是权限不对；本地按形状拒更快也更准
+     */
+    TEST_F(AcmeClientTest, RejectsMalformedWildcardIdentifiers)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.offeredChallengeType = "dns-01";
+        startFixtures(settings);
+        m_challengeKind = AcmeChallengeKind::Dns01;
+
+        FlowRequest request;
+        request.domainNames = {"a*b.stub.example.com"};
+        const auto outcome  = runFlow(std::move(request));
+
+        EXPECT_FALSE(outcome.isSuccess);
+        EXPECT_EQ(outcome.failureKind, AcmeErrorKind::InvalidConfiguration);
+        EXPECT_NE(outcome.failureMessage.find("最左一段标签"), std::string::npos) << outcome.failureMessage;
+        EXPECT_EQ(this->evidence().issuedOrderCount, 0U) << "形状不合的通配不该发去机构";
+    }
+
+    /**
      * @brief 钉住：目录里缺必要端点时点名缺哪一个，而不是拿空 URL 继续签
      */
     TEST_F(AcmeClientTest, NamesTheMissingDirectoryEndpoint)
