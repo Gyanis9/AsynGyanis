@@ -2,6 +2,7 @@
 
 #include "Base/Coding/Base64.h"
 #include "Base/Config/ConfigValue.h"
+#include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Client/HttpClient.h"
@@ -516,6 +517,13 @@ namespace AsynGyanis::Net
         if (!m_configuration.contactEmailAddress.empty())
         {
             payload["contact"] = Base::ConfigArray{m_configuration.contactEmailAddress};
+        } else
+        {
+            // 不登记联系人在 RFC 8555 下是合法的（带 EAB 的机构往往本来就留空），因此这里不拒；
+            // 但 90 天寿命的证书一旦漏续就是线上事故，而机构唯一能主动找你的通道就是这个地址。
+            // 说一次，别让它静默
+            LOG_WARN("AcmeClient: 账户没有登记 contactEmailAddress，机构无法在证书到期或账户异常时通知你；"
+                     "请确认续期由本框架的 runRenewalLoop() 或外部监控兜住");
         }
         if (hasExternalAccountBinding)
         {

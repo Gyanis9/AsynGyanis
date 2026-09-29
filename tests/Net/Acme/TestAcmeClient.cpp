@@ -3,6 +3,9 @@
 #include "AcmeStubAuthority.h"
 #include "AcmeTestSupport.h"
 #include "Base/Coding/Base64.h"
+#include "Base/Log/LogEvent.h"
+#include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/LogSink.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Acme/AcmeClient.h"
@@ -11,9 +14,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -42,6 +47,90 @@ namespace AsynGyanis::Net
             Correct, ///< 交出 "令牌.账户公钥指纹"，即规范要求的 keyAuthorization
             Wrong,   ///< 交出别的内容
             Absent,  ///< 不注册这条路由（机构会读到 404）
+        };
+
+        /// 缺联系人那条 WARN 的识别串：取实现文案里独有的这一段，文案改了用例要点名跟着改
+        constexpr std::string_view kMissingContactWarningMarker = "账户没有登记";
+
+        /**
+         * @brief 与 Sink 共享的消息表
+         * @details 表与锁放在一起：写侧是记录日志的线程，用例只能读锁内拷出来的副本
+         */
+        struct MessageTable
+        {
+            mutable std::mutex       mutex;    ///< 保护下面那张表
+            std::vector<std::string> messages; ///< 已收到的日志原文
+        };
+
+        /**
+         * @brief 把 root 日志器收到的消息原文收进共享表，用于断言「这条提示到底报了没有」
+         */
+        class RecordingSink final : public Base::LogSink
+        {
+        public:
+            /**
+             * @brief 绑定共享表
+             * @param table 用例创建并持有的表，Sink 只借它写字
+             */
+            explicit RecordingSink(std::shared_ptr<MessageTable> table) : m_table(std::move(table))
+            {
+            }
+
+            /// @brief 记下一条消息的原文（本用例只关心 message 字段）
+            void write(const Base::LogEvent &event) override
+            {
+                const std::lock_guard lock(m_table->mutex);
+                m_table->messages.push_back(event.message);
+            }
+
+            /// 不落盘，没有缓冲需要刷新
+            void flush() override
+            {
+            }
+
+        private:
+            std::shared_ptr<MessageTable> m_table; ///< 与用例共享的消息表
+        };
+
+        /**
+         * @brief 数出含某个标记的消息条数
+         * @param table 消息表
+         * @param marker 要匹配的片段
+         * @return std::size_t 命中的条数
+         */
+        std::size_t countMessagesContaining(const MessageTable &table, const std::string_view marker)
+        {
+            const std::lock_guard lock(table.mutex);
+            return static_cast<std::size_t>(std::ranges::count_if(table.messages, [marker](const std::string &message) { return message.find(marker) != std::string::npos; }));
+        }
+
+        /**
+         * @brief 往 root 日志器挂一个记录型 Sink，交出它写的那张表
+         * @return std::shared_ptr<MessageTable> 用例侧的读取句柄，存在期独立于 Sink
+         */
+        std::shared_ptr<MessageTable> attachRecordingSink()
+        {
+            auto table = std::make_shared<MessageTable>();
+            Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<RecordingSink>(table));
+            return table;
+        }
+
+        /**
+         * @brief 作用域结束时换掉整棵 root 日志器，摘掉本用例挂上去的 Sink
+         * @details Logger 只有 clearSinks() 而没有「摘掉单个 Sink」的口，沿用仓库既有的「整份换掉 root」做法；
+         *          表由用例持有，换掉 root 之后仍读得到已收下的那些消息
+         */
+        class RootSinkScope
+        {
+        public:
+            RootSinkScope()                                 = default;
+            RootSinkScope(const RootSinkScope &)            = delete;
+            RootSinkScope &operator=(const RootSinkScope &) = delete;
+
+            ~RootSinkScope()
+            {
+                Base::LoggerRegistry::instance().clear();
+            }
         };
     } // namespace
 
@@ -182,13 +271,14 @@ namespace AsynGyanis::Net
         }
 
         /// 客户端配置的可调面：各用例只改自己那一档
-        std::unique_ptr<AcmeKeyPair> m_accountKey;                     ///< 账户密钥
-        bool                         m_isBrokenDirectory{};            ///< 把目录地址换成应答方上一个不存在的路径
-        bool                         m_isDirectoryMissingNewNonce{};   ///< 目录换成「合法 JSON 但没有 newNonce」
-        bool                         m_isPersistedAccountUnknown{};    ///< 拿一个桩没记过账的账户 URL 去复用
-        bool                         m_isTermsOfServiceAccepted{true}; ///< 是否替调用方接受条款
-        std::string                  m_externalAccountKeyId{};         ///< 客户端侧的 EAB 标识
-        std::string                  m_externalAccountKeySecret{};     ///< 客户端侧的 EAB HMAC 密钥
+        std::unique_ptr<AcmeKeyPair> m_accountKey;                                           ///< 账户密钥
+        bool                         m_isBrokenDirectory{};                                  ///< 把目录地址换成应答方上一个不存在的路径
+        bool                         m_isDirectoryMissingNewNonce{};                         ///< 目录换成「合法 JSON 但没有 newNonce」
+        bool                         m_isPersistedAccountUnknown{};                          ///< 拿一个桩没记过账的账户 URL 去复用
+        bool                         m_isTermsOfServiceAccepted{true};                       ///< 是否替调用方接受条款
+        std::string                  m_externalAccountKeyId{};                               ///< 客户端侧的 EAB 标识
+        std::string                  m_externalAccountKeySecret{};                           ///< 客户端侧的 EAB HMAC 密钥
+        std::string                  m_contactEmailAddress{"mailto:acme-tests@example.com"}; ///< 账户联系人；留空即「不登记联系人」那一档
 
     private:
         /**
@@ -201,7 +291,7 @@ namespace AsynGyanis::Net
             configuration.directoryUrl             = m_isBrokenDirectory            ? std::format("http://127.0.0.1:{}/no-such-directory", m_responder->listeningPort())
                                                      : m_isDirectoryMissingNewNonce ? std::format("http://127.0.0.1:{}/partial-directory", m_responder->listeningPort())
                                                                                     : m_authority->directoryUrl();
-            configuration.contactEmailAddress      = "mailto:acme-tests@example.com";
+            configuration.contactEmailAddress      = m_contactEmailAddress;
             configuration.isTermsOfServiceAccepted = m_isTermsOfServiceAccepted;
             configuration.requestTimeout           = kRequestTimeout;
             configuration.externalAccountKeyId     = m_externalAccountKeyId;
@@ -407,6 +497,43 @@ namespace AsynGyanis::Net
 
         // 两趟流程里 jwk 只出现在第一次：第二轮全程用 kid
         EXPECT_EQ(this->evidence().jwkBearingRequestCount, 1U) << "复用账户那一轮又在注册";
+    }
+
+    /**
+     * @brief 钉住：登记了联系人的那次注册把地址原样带上，且不报「没登记」
+     * @details 这条是下一条的对照：桩记不到 contact（字段恒空）、或「没登记」的提示见人就报时，红的只有这条。
+     *          缺联系人在 RFC 8555 下本来就合法，判据必须两半都有才分得开
+     */
+    TEST_F(AcmeClientTest, SendsTheConfiguredContactAndStaysQuietAboutIt)
+    {
+        RootSinkScope sinkScope;
+        const auto    messages = attachRecordingSink();
+        startFixtures({});
+
+        const FlowOutcome outcome = runDefaultFlow();
+        ASSERT_TRUE(outcome.isSuccess) << static_cast<int>(outcome.failureKind) << " " << outcome.failureMessage;
+
+        EXPECT_EQ(evidence().registeredAccountContactText, m_contactEmailAddress) << "配置里的联系人没有出现在注册载荷里";
+        EXPECT_EQ(countMessagesContaining(*messages, kMissingContactWarningMarker), 0U) << "登记了联系人还报「没登记」，那条提示就成了噪声";
+    }
+
+    /**
+     * @brief 钉住：不登记联系人照样能建账户（RFC 合法），但要说一次原因
+     * @details 拒掉会让「本来就留空联系人」的机构用不起来，静默放过又让 90 天寿命漏续变成无人预知的线上事故，
+     *          所以这一档的形状是「继续做 + 出声」。出声只在注册那一次，重复提醒会让日志里全是同一条
+     */
+    TEST_F(AcmeClientTest, RegistersWithoutContactButSaysSoOnce)
+    {
+        RootSinkScope sinkScope;
+        const auto    messages = attachRecordingSink();
+        startFixtures({});
+        m_contactEmailAddress.clear();
+
+        const FlowOutcome outcome = runDefaultFlow();
+        ASSERT_TRUE(outcome.isSuccess) << "缺联系人不该被拒：" << static_cast<int>(outcome.failureKind) << " " << outcome.failureMessage;
+
+        EXPECT_EQ(evidence().registeredAccountContactText, "") << "配置里没给联系人，注册载荷里却带了：那是实现自己造的默认值";
+        EXPECT_EQ(countMessagesContaining(*messages, kMissingContactWarningMarker), 1U) << "缺联系人要么没出声，要么每条请求都在重复提醒（只该在注册那一次说）";
     }
 
     /**

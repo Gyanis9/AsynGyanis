@@ -511,6 +511,13 @@ namespace AsynGyanis::Net::TestSupport
         if (payload->contains("contact"))
         {
             body["contact"] = payload->at("contact");
+            // 记下联系人原文（只取第一个）：用例要分得开「客户端按配置带上了」与「载荷里根本没有 contact」——
+            // 后者在 RFC 8555 下合法，但机构从此没法通知你，客户端会为它单独出一条 WARN
+            const Base::ConfigValue &contactList = payload->at("contact");
+            if (contactList.is_array() && !contactList.empty() && contactList.front().is_string())
+            {
+                m_evidence.registeredAccountContactText = contactList.front().get<std::string>();
+            }
         }
         writeJson(response, 201, body, created.url);
         co_return;

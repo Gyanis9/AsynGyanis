@@ -107,6 +107,7 @@ namespace AsynGyanis::Net::TestSupport
             std::string lastFetchedBody;                 ///< 最后一次取令牌读到的正文
             std::string issuedCertificatePem;            ///< 最近签出的叶证书 PEM
             std::string firstAccountUrl;                 ///< 第一个建出来的账户 URL
+            std::string registeredAccountContactText;    ///< 注册载荷里第一个 contact 的原文；空表示载荷没带联系人
         };
 
         /**
