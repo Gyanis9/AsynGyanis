@@ -43,11 +43,14 @@
 - **接受分发（跨平台多核扩展）** — 一个监听器接受、按轮转把连接交给 N 个工作循环，不依赖
   `SO_REUSEPORT`；Windows 上这是唯一可用的多核形态（`ConnectionDistributor` + `TcpServer::startAccepting()`）
 - **静态文件服务** — `staticFileDir()` 一行接入
-- **证书自动化（ACME / RFC 8555）** — `AcmeCertificateManager` 走完目录、账户、下单、HTTP-01 自证、定稿与
+- **证书自动化（ACME / RFC 8555）** — `AcmeCertificateManager` 走完目录、账户、下单、自证、定稿与
   取证这一整台状态机：私钥与证书原子落盘（私钥 0600），到期前自主续，签好后经回调装回服务；
   协议层（`AcmeClient`）与密钥层（`AcmeKeyPair`：JWK、RFC 7638 指纹、JWS、CSR）都能单独用。
   h3 那一侧由 `QuicServer::reloadCertificate()` 承接同一个轮换动作，443/TCP 与同一端口的 UDP 不会一张新一张旧。
-  只实现 HTTP-01：机构的目录里只有 tls-alpn-01 或 dns-01 时当场判失败并说明要哪一种，不会挑一条答不了的挑战去 POST
+  自证支持 HTTP-01 与 DNS-01（RFC 8738）两种，一次签发只走一条：默认 HTTP-01，构造时交来 `AcmeDns01TxtWriter`
+  就改走 DNS-01——后者**不需要任何入站通路**，被备案拦截或 80 端口不可达的部署也能自动续期，且这是通配域名
+  （`*.example.com`）唯一可行的自证方式。TXT 写入动作交给你接的那家 DNS，仓库内自带阿里云云解析的实现。
+  tls-alpn-01 仍不做：机构只给那一种时当场判失败并说明要哪一种，不会挑一条答不了的挑战去 POST
 
 **数据（Database）**
 
@@ -165,9 +168,12 @@ Debug 包的接口带着 ASan 与容器注解开关（Debug 配置）：消费�
 | ACME 机构 | `ASYN_ACME_TEST_DIRECTORY_URL` / `ASYN_ACME_TEST_CONTACT_EMAIL` / `ASYN_ACME_TEST_ACCOUNT_STATE_DIR` | `tests/Net/Acme/TestAcmeLiveAuthority.cpp` |
 
 ACME 那一条只走「取目录 + 建号 / 复用账户」，不签发证书（真签发要一台公网可达且解析到本机的域名，
-回归环境给不了）。三条变量缺一不可，其中 `..._ACCOUNT_STATE_DIR` 是**账户材料的持久目录**：账户建在机构侧
+HTTP-01 那条路在回归环境给不了）。三条变量缺一不可，其中 `..._ACCOUNT_STATE_DIR` 是**账户材料的持久目录**：账户建在机构侧
 是有速率配额的公开动作，没有跨轮次持久的地方就把指针写进环境变量，一次回归多出一个真账户。
 填 staging 端点（`https://acme-staging-v02.api.letsencrypt.org/directory`）不计入生产配额。
+真签发的证据在 `tests/Tools/AcmeIssuanceProbe`：DNS-01 档不需要入站通路，2026-09-30 用它对着 Let's Encrypt
+生产机构签出过 `gyanis.space` 与 `*.gyanis.space` 两张（`openssl verify` 对系统信任库通过），凭据走
+`ASYN_ACME_DNS_ACCESS_KEY_ID` / `ASYN_ACME_DNS_ACCESS_KEY_SECRET`。
 
 ## 运行示例
 
@@ -474,7 +480,9 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
                                                  : std::unexpected(std::string{"新证书没装回服务"});
     });
 
-    // HTTP-01 的自证路由挂在明文 80 上（机构按域名解析到这台机器取令牌），须在 start() 之前注册
+    // HTTP-01 的自证路由挂在明文 80 上（机构按域名解析到这台机器取令牌），须在 start() 之前注册。
+    // 改走 DNS-01 就不需要这一步：构造 automation 时把第四个参数交给 makeAliyunDns01TxtWriter(loop, ...)
+    // 那类动作对（发布与撤回 TXT），管理器会挑 dns-01 挑战并在每条出口之后把记录撤干净
     automation.registerChallengeRoutes(http.router());
 
     auto httpAccept = http.start();

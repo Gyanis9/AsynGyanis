@@ -17,6 +17,21 @@
 
 ### 新增
 
+- **证书自动化多了 DNS-01 这条自证通道（RFC 8738）**：`AcmeClient::Configuration::challengeKind` 决定挑哪一种挑战，
+  默认仍是 http-01（行为与加这个字段之前逐字相同）。`AcmeDns01TxtWriter` 把「发布 TXT / 撤回 TXT」两格交给调用方——
+  做成两个返回 `Core::Task` 的 `std::function` 而不是抽象基类，因为协程不能是虚函数，而各家 DNS 的差异只在
+  「调哪个 API、按什么格式签」。仓库内自带第一家实现 `makeAliyunDns01TxtWriter`（阿里云云解析 RPC 风格 OpenAPI）：
+  `publish` 报成功之前先用 `DescribeDomainRecords` 确认这条记录在权威侧查得到、再等一段结算时间，
+  `withdraw` 反查 RecordId 逐条删且查不到即成功（撤回必须幂等）。凭据只从环境变量
+  `ASYN_ACME_DNS_ACCESS_KEY_ID` / `ASYN_ACME_DNS_ACCESS_KEY_SECRET` 进，缺任一在起步时就拒。
+  `AcmeCertificateManager` 按「有没有交来动作对」选通道，一次签发只走一条，且写入之后的**每条**出口都撤——
+  含写入自己报失败那一条（控制面超时的那次可能其实已经写成了，留下的 TXT 会让下一轮在同一名字上读到两条答案）。
+  新增失败种类 `DnsRecordRejected`；`Core::Digest` 补 `hmacSha1`（签名口径规定用它，两档 HMAC 共用同一份
+  EVP_MAC 流程）。**这条不需要任何入站通路**，因此被备案拦截或 80 端口不可达的部署也能自动续期，
+  也是通配域名唯一可行的自证方式。
+  实测（2026-09-30，容器侧 GCC 13 + ASan/LSan/UBSan 的探针二进制）：对着 Let's Encrypt **生产**机构签出
+  `gyanis.space` 与 `*.gyanis.space` 两张，`openssl verify` 对系统信任库通过、有效期 90 天；staging 另签两张并
+  跑出一轮真续期（两张不同的链）。四次签发之后权威 NS 上 `_acme-challenge.gyanis.space` 查不到残留记录。
 - **整机限额现在会摊到每个 worker 进程**：`applyHttpServerConfiguration` 的 context 新增 `workerProcessCount`，
   `maximum_connections` 与 `maximum_connections_per_ip` 按进程数向上取整摊到每台（`perProcessShare`）。
   每个进程只数自己那份账，配置里的整机数起 N 个进程就是实际放行 N 倍——这一条与「多监听器各持一份限额器
@@ -54,6 +69,11 @@
 
 ### 修复
 
+- 通配域名的下单拦法改了：`createOrder` 的本地判据原文是「本通路只走 HTTP-01，它验不了通配域名」，那是
+  只支持 http-01 时留下的形状，dns-01 落地之后就变成了假限制——RFC 8738 开通配正是它的用途。判据现在挂在
+  实际挑了哪种挑战上：http-01 照旧拒并改口提示可以换 dns-01，dns-01 下放行 `*.example.com`，
+  同时把形状钉死为「`*` 占满最左一段标签」，去掉前缀之后的剩余部分照旧过 LDH 规则。
+  两次突变分别归因：把放行条件钉回永远为假时两条新用例同时变红，只撤形状判据时只有「畸形通配被拒」变红。
 - `echo_server --h3` 现在会把 `server.maximum_connections` 也交给 HTTP/3 监听器。此前只有两条 TCP
   通道吃这个值，h3 一直用 `QuicServer` 自带的 1024：同一份配置下三条通道的并发口径不一致，而本轮新增的
   h3 满载读数（`asyn_http_over_limit_rejected_connections_total` 与跳变 WARN）会对着一个没人配过的数
