@@ -15,6 +15,18 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **并发限额的默认值从「不限」改成有限值**：`server.maximum_connections` 默认每监听器 4096
+  （`kDefaultMaximumConnections`），`server.maximum_connections_per_ip` 默认 64
+  （`kDefaultMaximumConnectionsPerIp`）。「0 = 不限」这条**语义不变**——显式写 0 仍然是不限，只是默认不再
+  是 0。理由是默认值长得像「已经配好了」而实际把连接表整个交给对端，这类事故只能事后发现。方向是往安全侧挪，
+  但两处会当场改变行为，升级前要核对：① 依赖「没写就是不限」的部署会开始撞 4096/64；② 传共享限额器给
+  `applyHttpServerConfiguration` 时，装配口的「共享实例与配置标量不一致就拒绝」从此有了真实的标量可比
+  ——以前标量恒为 0 等于这条检查空转。请求速率与在途正文总量**刻意仍默认不限**：限流的错误取值会误杀真实用户，
+  与放行多一点负载不是同一种危害。`echo_server` 启动现在打一行「并发限额（每监听器）：整机 …，单来源 …」，
+  报的是生效值而不是配置里写了什么——「没写」与「写了 0」在配置文件里长得一样，只有生效值能分辨。
+
 ### 修复
 
 - `echo_server --h3` 现在会把 `server.maximum_connections` 也交给 HTTP/3 监听器。此前只有两条 TCP

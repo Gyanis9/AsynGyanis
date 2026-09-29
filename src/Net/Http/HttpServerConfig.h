@@ -31,12 +31,26 @@ namespace AsynGyanis::Net
      * @note 这里只放「启动时定一次」的项：限额与开关都在 start() 之前落定，运行期不再变。
      * @see readHttpServerConfiguration(), HttpServerLimits, HttpParserLimits
      */
+    /**
+     * @brief 每监听器并发连接上限的内置默认值
+     * @details 取有限值而不是 0：不限并发等于把连接表与每连接的缓冲交给对端，而默认值长得像「已经配好了」
+     *          是最难发现的那类配置事故。要真的不限，显式写 0（语义没变，只是不再由默认值给）。
+     */
+    inline constexpr std::size_t kDefaultMaximumConnections = 4096;
+
+    /**
+     * @brief 单个来源并发连接上限的内置默认值
+     * @details 64 对单个客户端（浏览器并行连接通常 6-16）足够宽，又能挡住一个来源吃满整机名额。
+     *          运营商级 NAT 后面是一群人共用一个地址：这类部署要按实际并发把它抬高，或显式写 0 关掉。
+     */
+    inline constexpr std::size_t kDefaultMaximumConnectionsPerIp = 64;
+
     struct ASYN_NET_API HttpServerConfiguration
     {
         HttpServerLimits limits{};                    ///< 连接级限额：超时与单连接请求数上限
         HttpParserLimits parserLimits{};              ///< 单条报文的内存上限
-        std::size_t      maximumConnections{0};       ///< 全局并发连接上限，0 = 不限
-        std::size_t      maximumConnectionsPerIp{0};  ///< 单个来源的并发连接上限，0 = 不限
+        std::size_t      maximumConnections{kDefaultMaximumConnections};       ///< 全局并发连接上限；显式写 0 = 不限
+        std::size_t      maximumConnectionsPerIp{kDefaultMaximumConnectionsPerIp}; ///< 单个来源的并发连接上限；显式写 0 = 不限
         double           requestsPerSecond{0.0};      ///< 全局请求速率上限（令牌桶速率），0 = 不限流
         double           rateLimitBurstCapacity{1.0}; ///< 令牌桶容量，即瞬时允许的突发量；速率不为 0 时必须 ≥ 1
         bool             exposeMetrics{false};        ///< 是否注册 /metrics 与 /healthz

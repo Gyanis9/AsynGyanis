@@ -41,8 +41,10 @@
 #include <cstdlib>
 
 #include <filesystem>
+#include <format>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -286,7 +288,7 @@ int main(int argc, char **argv)
     std::string host                 = "localhost";
     uint16_t    port                 = 8080;
     unsigned    threads              = 0; // 0 = auto (optimized for local benchmarks)
-    std::size_t maxConnectionsPerIp  = 0; // 0 = 不限制单个来源的并发连接数
+    std::optional<std::size_t> maxConnectionsPerIp; // 没给就走配置文件/内置默认（显式给 0 = 不限）
     bool        useHttps             = false;
     bool        useHttp2Cleartext    = false;
     bool        exposeMetrics        = false;
@@ -421,7 +423,7 @@ int main(int argc, char **argv)
         LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
         LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）；"
                  "同时让 TCP 侧响应带上 alt-svc 通告，客户端由此自己学到 h3 端口");
-        LOG_INFO("  --max-connections-per-ip 0 = 不限制单个来源的并发连接数（默认）");
+        LOG_INFO("  --max-connections-per-ip 单个来源的并发上限；不给走配置文件/内置默认 64，显式给 0 = 不限");
         LOG_INFO("  --trace-context 挂 W3C Trace Context 中间件：上游带了合法的 traceparent 就原样沿用，");
         LOG_INFO("            缺席或畸形（含同名多条）则新起一条链路并写回请求头，业务读 GET /trace 就能看到；");
         LOG_INFO("            同时把自己的条目 asyn=<span-id> 挪到 tracestate 最前（上游条目次序不动）");
@@ -534,15 +536,28 @@ int main(int argc, char **argv)
                      tracingConfiguration.serviceName.empty() ? "未配" : tracingConfiguration.serviceName);
     }
 
-    // 命令行覆盖：显式给出的开关优先于文件里的同名项
-    if (maxConnectionsPerIp > 0)
+    // 命令行覆盖：显式给出的开关优先于文件里的同名项。这里必须用「有没有给」而不是「是否 > 0」判：
+    // 0 现在是一个有意义的取值（显式不限），拿它当「没给」会让 --max-connections-per-ip 0 失效
+    if (maxConnectionsPerIp.has_value())
     {
-        configuration.maximumConnectionsPerIp = maxConnectionsPerIp;
+        configuration.maximumConnectionsPerIp = *maxConnectionsPerIp;
     }
     if (exposeMetrics)
     {
         configuration.exposeMetrics = true;
     }
+
+    // 生效值必须打出来：这几个键「配置文件里没写」与「显式写了 0」在线上长得一模一样，而前者取的是
+    // 内置有限默认、后者是真的不限。不打这一行，部署方只能等撞上限那天才知道自己跑的是哪一档
+    const auto capText = [](const std::size_t value)
+    {
+        return value == 0 ? std::string("不限（显式配 0）") : std::to_string(value);
+    };
+    LOG_INFO_FMT("并发限额（每监听器）：整机 {}，单来源 {}；请求速率 {}，在途正文总量 {}",
+                 capText(configuration.maximumConnections),
+                 capText(configuration.maximumConnectionsPerIp),
+                 configuration.requestsPerSecond > 0.0 ? std::format("{:.0f} 请求/s", configuration.requestsPerSecond) : std::string("不限（默认）"),
+                 maxInflightBodyBytes == 0 ? std::string("不限（默认）") : std::to_string(maxInflightBodyBytes) + " 字节");
 
     // 多进程：master 只做编排，自己不服务——既当 master 又当 worker 会让「谁在服务」含糊，
     // 也会让「worker 崩了补一个」这条路径多一种要处理的形态。参数原样转给 worker，

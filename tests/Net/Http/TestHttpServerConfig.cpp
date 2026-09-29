@@ -75,10 +75,28 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.limits.readTimeout, defaults.limits.readTimeout);
         EXPECT_EQ(configuration.limits.maximumRequestsPerConnection, defaults.limits.maximumRequestsPerConnection);
         EXPECT_EQ(configuration.parserLimits.maximumBodySize, defaults.parserLimits.maximumBodySize);
-        EXPECT_EQ(configuration.maximumConnections, 0u);
-        EXPECT_EQ(configuration.maximumConnectionsPerIp, 0u);
+        // 缺键取的是内置的**有限**默认，而不是「不限」：0 现在只代表调用方显式写了 0
+        EXPECT_EQ(configuration.maximumConnections, kDefaultMaximumConnections);
+        EXPECT_EQ(configuration.maximumConnectionsPerIp, kDefaultMaximumConnectionsPerIp);
         EXPECT_EQ(configuration.requestsPerSecond, 0.0);
         EXPECT_FALSE(configuration.exposeMetrics);
+    }
+
+    /**
+     * @brief 钉住：显式写 0 仍是「不限」——改默认值不能顺手改掉 0 的含义
+     * @details 默认值从 0 变成有限值是往安全方向挪，但「0 = 不限」这条语义是被现有部署依赖的：
+     *          把它悄悄改成「0 = 取内置默认」会让显式配了 0 的机器平白撞上限
+     */
+    TEST(HttpServerConfig, ExplicitZeroKeepsTheUnlimitedMeaning)
+    {
+        Base::ConfigObject serverMembers;
+        serverMembers.emplace("maximum_connections", integer(0));
+        serverMembers.emplace("maximum_connections_per_ip", integer(0));
+
+        const HttpServerConfiguration configuration = readHttpServerConfiguration(makeRootDocument(std::move(serverMembers)));
+
+        EXPECT_EQ(configuration.maximumConnections, 0u) << "写了 0 却没被当成不限，语义被默认值改动捎带了";
+        EXPECT_EQ(configuration.maximumConnectionsPerIp, 0u);
     }
 
     /**

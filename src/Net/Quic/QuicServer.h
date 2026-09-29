@@ -103,10 +103,12 @@ namespace AsynGyanis::Net
              * @note 开启后对端不出示证书即被拒（`SSL_VERIFY_FAIL_IF_NO_PEER_CERT`），不退化成「可选校验」。
              */
             bool requireClientCertificates{false};
-            /// 同时在线连接上限；**0 = 不限**，与 `HttpServerConfig::maximumConnections` 同口径
+            /// 同时在线连接上限；**显式写 0 = 不限**，与 `HttpServerConfig::maximumConnections` 同口径
             /// （那边 0 就是不限，抄过来时若把 0 当成「一个也不收」，症状是一台监听正常却谁也连不上）。
             /// 默认取 1024 而不是 0：QUIC 的每条在线连接都常驻一份 TLS 会话、流表与拥塞状态，
-            /// 而且它没有内核接受队列可挡——新连接一握手就是本端的账，所以本端自己先设一道有限值
+            /// 而且它没有内核接受队列可挡——新连接一握手就是本端的账，所以本端自己先设一道有限值。
+            /// HTTP 侧的默认值如今也是有限值（`kDefaultMaximumConnections`），两处的数不同是刻意的：
+            /// h3 的单位连接比一条 TCP 连接贵，配额不该一样
             std::size_t               maximumConnections{1024};
             std::chrono::seconds      idleTimeout{30};           ///< 空闲超时：超过即由传输层收口
             std::string               applicationProtocol{"h3"}; ///< 必须协商出的 ALPN；不是它就拒绝握手
