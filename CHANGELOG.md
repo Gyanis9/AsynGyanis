@@ -13,7 +13,16 @@
 - **一致性由脚本把关**：`scripts/check-release-version.py` 比对「CMake 版本号 / 本文件最新发布段 / 最新标签」
   三者，不一致即退出码非 0；Linux CI 已接入这一步，避免出现「打了标签但版本号没改」这类漂移。
 
-## [Unreleased]
+## [2.2.0] - 2026-09-29
+
+自 2.1.0 起的累计变化（新增 4、变更 5、修复 1）：七项投产核对逐项落地——`server` 段的配置有了
+唯一装配入口（`applyHttpServerConfiguration`）、整机满载被拒有了读数与跳变告警、HTTP/2 的
+SETTINGS 补齐合法上界与「0 一律拒绝」、ACME 缺联系人不再静默、Windows 的 worker 第一次能体面
+退出（派生时给独立进程组，停机时向该组发 `CTRL_BREAK`）、示例的 `--config` 会连同 `logging` 段
+一起装上。本版**无破坏性变更**：`requestTermination()` 在 Windows 从「一律 false」变成「给了
+独立进程组才发得出」，多出来的是成功路径，原有调用点的失败处置一字未改；静态形态的产物与符号
+不变。共享形态要注意一处：`Process::Handle` 多带一个字段，换 `.dll` 要连着换头文件并按同一套
+编译器重编消费方——这正是 README「交付形态」里那条 ABI 边界的日常形态。
 
 ### 新增
 
