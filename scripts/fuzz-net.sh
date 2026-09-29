@@ -47,6 +47,9 @@ sources=(
     "src/Net/Http/MultipartForm.cpp"
     "src/Net/Http/HttpDate.cpp"
     "src/Base/Exception/Exception.cpp"
+    # 三条异常链的抛出点与调用栈上收成一份载荷基之后，Exception.cpp 只剩转调：那份载荷的构造函数
+    # 定义在自己的 .cpp 里，不列进来链接期就报 ExceptionPayload 未定义（fuzz 作业实测红过一轮）
+    "src/Base/Exception/ExceptionPayload.cpp"
     "src/Base/Exception/InvalidArgumentException.cpp"
     "src/Base/Exception/LogicException.cpp"
     "src/Base/Exception/StackTrace.cpp"
