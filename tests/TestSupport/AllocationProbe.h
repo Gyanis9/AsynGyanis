@@ -23,6 +23,17 @@ namespace AsynGyanis::TestSupport
     /// 每个形状连跑这么多次再摊平：单次读数会被「临时串先分配后释放」这类顺序细节影响
     inline constexpr std::uint64_t kMeasurementIterations = 1000U;
 
+    /**
+     * @brief 库以共享形态提供时，本探针是否已经失去观测能力
+     * @details Windows 上「替换全局 operator new」只在替换所在的那个模块内生效：五个 DLL 里的分配走
+     *          它们各自链接进来的 CRT operator new，不进本可执行体的钩子，于是读数恒为 0——此时
+     *          「>0」的判据必红，而「==0」的判据会在真有分配时假绿。Linux 的动态链接让可执行体里的
+     *          定义覆盖整个进程，所以这条判据只对 Windows 成立。
+     * @note 判据写在 AllocationProbe.cpp 而不是头里：头里的 constexpr 值会让 MSVC 认定 GTEST_SKIP()
+     *       之后的用例体不可达（C4702），而本仓库把告警当错误。
+     */
+    extern const bool kAllocationProbeIsBlind;
+
     /// 测量窗口内累计的分配次数（relaxed，只当读数用）
     extern std::atomic<std::uint64_t> allocationCount;
 
@@ -105,3 +116,15 @@ namespace AsynGyanis::TestSupport
         return measureOperations(kMeasurementIterations, body);
     }
 } // namespace AsynGyanis::TestSupport
+
+/// 分配台账用例的开场守卫：库以共享形态提供时本探针看不见 DLL 内的分配，用例按 SKIP 报出。
+/// 写成宏是因为 GTEST_SKIP() 只能在用例函数体内展开——放进助手函数里会让用例继续跑完。
+/// 判据是运行期常量而不是 constexpr：后者会让 MSVC 把 GTEST_SKIP() 之后的用例体判成不可达代码（C4702）。
+#define ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND()                                                                                                                                   \
+    do                                                                                                                                                                             \
+    {                                                                                                                                                                              \
+        if (::AsynGyanis::TestSupport::kAllocationProbeIsBlind)                                                                                                                    \
+        {                                                                                                                                                                          \
+            GTEST_SKIP() << "库以共享形态提供：Windows 上替换全局 operator new 只覆盖本可执行体，DLL 内的分配不进钩子";                                                            \
+        }                                                                                                                                                                          \
+    } while (false)

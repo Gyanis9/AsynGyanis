@@ -298,6 +298,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketBuilderAllocations, FullSizeInitialPacketAllocationLedger)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const auto destinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
         const auto keys                    = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ClientToServer);
         const auto plaintext               = buildAppendixA2Plaintext();
@@ -347,6 +348,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicPacketBuilderAllocations, SmallAcknowledgementPacketAllocationLedger)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const auto destinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
         const auto keys                    = deriveQuicInitialPacketKeys(destinationConnectionId, QuicPacketDirection::ServerToClient);
 

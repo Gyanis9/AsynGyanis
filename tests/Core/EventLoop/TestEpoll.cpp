@@ -266,6 +266,7 @@ namespace AsynGyanis::Core
      */
     TEST(Epoll, LevelTriggeredWaitDoesNotAllocatePerRound)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         constexpr std::size_t kRegisteredDescriptorCount = 32;
 
         Epoll backend;

@@ -1738,6 +1738,7 @@ namespace AsynGyanis::Database
      */
     TEST_F(MySqlIntegrationTest, PreparedResultBuffersFollowThisExecutionDataLength)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         ASSERT_TRUE(prepareTable(kBlobSizingTableName, kBlobSizingColumns)) << m_lastSetupError;
 
         std::unique_ptr<MySqlConnection> connection = makeConnection();

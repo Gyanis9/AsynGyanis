@@ -2505,6 +2505,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicConnectionCore, ReceivePathScratchBuffersAreReusedAcrossDatagrams)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const FixtureContext serverContext = FixtureContext::server();
         const FixtureContext clientContext = FixtureContext::client();
         ASSERT_NE(serverContext.get(), nullptr);
@@ -2545,6 +2546,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicConnectionCore, FreshPacketNumberAllocationLedger)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const FixtureContext serverContext = FixtureContext::server();
         const FixtureContext clientContext = FixtureContext::client();
         ASSERT_NE(serverContext.get(), nullptr);

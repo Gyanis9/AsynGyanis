@@ -45,6 +45,7 @@ namespace AsynGyanis::Base
      */
     TEST(ConfigHotPathAllocations, GetStringReading)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::string fallback{kFallbackText};
         auto             &manager = ConfigManager::instance();
         manager.clear();
@@ -89,6 +90,7 @@ namespace AsynGyanis::Base
      */
     TEST(ConfigHotPathAllocations, SetValueWriteTransaction)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         auto &manager = ConfigManager::instance();
         manager.clear();
         for (int index = 0; index < 32; ++index)
@@ -144,6 +146,7 @@ namespace AsynGyanis::Base
      */
     TEST(ConfigHotPathAllocations, MismatchingTypedReading)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         auto &manager = ConfigManager::instance();
         manager.clear();
         ASSERT_TRUE(manager.setValue("app.flag", ConfigValue(true)));

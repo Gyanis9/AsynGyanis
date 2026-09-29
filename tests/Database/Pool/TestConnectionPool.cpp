@@ -986,6 +986,7 @@ namespace AsynGyanis::Database
          */
         TEST(ConnectionPool, SteadyBorrowAndReturnTouchNoHeap)
         {
+            ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
             ConnectionCounter counter;
             auto              factory = makeMockFactory(counter);
 

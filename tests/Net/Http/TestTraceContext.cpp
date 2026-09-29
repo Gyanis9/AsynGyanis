@@ -352,6 +352,7 @@ namespace AsynGyanis::Net
 
     TEST(TraceContextAllocations, ReadingAndRenderingStayAllocationFreeInSteadyState)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         // 生成 → 渲染 → 写回头部 → 读回上下文，正是 traceContextMiddleware 归一化一条请求要跑的形状。
         // 每轮先 reset()：保活连接上「上一条报文收完、下一条进来」才是这个形状的真实节奏，
         // 请求自己的头部缓冲与 thread_local 渲染串都跨报文留着容量

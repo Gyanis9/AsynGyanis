@@ -519,6 +519,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicFrameAllocations, FrameAssemblyIntoReusedBufferDoesNotAllocate)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::vector<std::uint8_t> body(1100U, 's');
         QuicStreamFrame                 stream;
         stream.streamId = 4ULL;
@@ -576,6 +577,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicFrameAllocations, FrameDecodingIntoReusedBufferDoesNotAllocate)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::vector<std::uint8_t> body(1100U, 's');
         QuicStreamFrame                 stream;
         stream.streamId = 4ULL;

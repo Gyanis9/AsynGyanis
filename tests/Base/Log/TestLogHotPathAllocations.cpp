@@ -200,6 +200,7 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, SingleLogLineAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         Logger          logger("hot_path");
         auto            sink         = std::make_unique<NonWritingSink>();
         NonWritingSink &observedSink = *sink;
@@ -233,6 +234,7 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, FilteredOutLineIsAllocationFree)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         Logger          logger("hot_path_filtered");
         auto            sink         = std::make_unique<NonWritingSink>();
         NonWritingSink &observedSink = *sink;
@@ -280,6 +282,7 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, RenderIntoStackBufferIsAllocationFree)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         std::array<char, kTimestampTextBufferSize> buffer{};
 
         const auto renderOnce = [&buffer] { return formatTimestampText(buffer, std::chrono::system_clock::now()).size(); };
@@ -299,6 +302,7 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, TimestampTextAsOwningStringCostsOneAllocation)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         std::array<char, kTimestampTextBufferSize> buffer{};
 
         const auto renderOwning = [&buffer] { return std::string{formatTimestampText(buffer, std::chrono::system_clock::now())}.size(); };
@@ -319,6 +323,7 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, AsyncLogLineAllocationReading)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const auto released = std::make_shared<std::atomic<bool>>(false);
 
         // 参照形状：同一个 Logger 只接一个不落地的 Sink，即同步一条。两条读数逐桶相减，
@@ -371,6 +376,7 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, ConsoleSinkLineAllocationReading)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         std::ostringstream captured;
         auto *const        originalBuffer = std::cout.rdbuf(captured.rdbuf());
 
@@ -420,6 +426,7 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, QueueContainerAllocationReading)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         // 先问容器能不能「搬」事件：不能 nothrow 移动的话，任何按几何增长的头寸都会在扩容时
         // 逐个深拷贝（std::vector 用 move_if_noexcept），这条断言把前提钉住
         static_assert(std::is_nothrow_move_constructible_v<LogEvent>, "LogEvent 的移动构造必须 nothrow，否则容器扩容会深拷贝");
@@ -473,6 +480,7 @@ namespace AsynGyanis::Base
      */
     TEST(LogHotPathAllocations, JsonFormatterLineAllocationReading)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::string threadIdSnapshot   = "tid-123456";
         const std::string loggerNameSnapshot = "json_path_logger";
         const std::string messageText(kMessageText);

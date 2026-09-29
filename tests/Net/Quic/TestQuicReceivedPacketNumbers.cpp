@@ -104,6 +104,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicReceivedPacketNumbers, ConsecutiveInsertsDoNotAllocate)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         QuicReceivedPacketNumbers tracked;
         ASSERT_TRUE(tracked.insert(0ULL));
 

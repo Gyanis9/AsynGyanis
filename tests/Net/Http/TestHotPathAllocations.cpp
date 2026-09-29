@@ -318,6 +318,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, CountingHookSeesAPlainHeapAllocation)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const AllocationProfile profile = measurePerOperation(
                 []
                 {
@@ -336,6 +337,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, MeasurementWindowHasNoBackgroundAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         std::uint64_t           sink    = 0;
         const AllocationProfile profile = measurePerOperation(
                 [&sink]
@@ -355,6 +357,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, Http1RequestParseAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::string requestText = makeRequestText();
         // 解析器按声明的 Content-Length 收正文（这份语料的正文比声明的长一字节，多出的那字节
         // 属于下一条报文），所以判据取「头部之后 64 字节」而不是整段文本长度
@@ -393,6 +396,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, HeaderStoreRefillAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::vector<std::pair<std::string, std::string>> fixtures = makeHeaderFixtures();
         HttpHeaderFieldStore                                   store;
         const auto                                             refill = [&store, &fixtures]
@@ -427,6 +431,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, HttpRequestHeaderAssemblyAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::vector<std::pair<std::string, std::string>> fixtures = makeHeaderFixtures();
         const auto                                             markOf   = [](const HttpRequest &request)
         {
@@ -478,6 +483,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, ResponseHeadSerializeAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const HttpResponse response       = makeResponseFixture();
         const auto         serializeFresh = [&response]
         {
@@ -516,6 +522,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, Http2FrameDecodeAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::string frameText = makeHeadersFrameText();
         Http2FrameDecoder decoder;
         const auto        decodeOnce = [&decoder, &frameText]
@@ -547,6 +554,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, Http2ConnectionConstructionAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const auto constructOnce = []() -> std::size_t
         {
             Http2Connection connection;
@@ -567,6 +575,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, Http2ConnectionHandshakeAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         std::string settingsFrame;
         settingsFrame.append(3, '\0'); // 帧长度 0
         settingsFrame.push_back(0x04); // SETTINGS
@@ -597,6 +606,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, Http2RequestIngestAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         std::string headerBlock;
         headerBlock += hpackUnindexedNamedField(2U, "GET");                    // :method
         headerBlock += hpackUnindexedNamedField(6U, "http");                   // :scheme
@@ -628,6 +638,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, Http2RequestIngestMarginalCostPerHeaderField)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         std::string baseBlock;
         baseBlock += hpackUnindexedNamedField(2U, "GET");
         baseBlock += hpackUnindexedNamedField(6U, "http");
@@ -686,6 +697,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, Http2ResponseSendAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const HttpResponse response    = makeResponseFixture();
         const auto         collectOnce = [&response]
         {
@@ -786,6 +798,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, ChunkFrameAppendAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::string payload(256, 'a');
 
         const auto buildFresh = [&payload]
@@ -830,6 +843,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, RouterDispatchExactPathAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         int    handlerCallCount = 0;
         Router router;
         router.get("/health", makeCountingOkHandler(handlerCallCount));
@@ -865,6 +879,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, RouterDispatchPatternScanAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         int    handlerCallCount = 0;
         Router router;
         router.get("/i/:id", makeCountingOkHandler(handlerCallCount));
@@ -905,6 +920,7 @@ namespace AsynGyanis::Net
      */
     TEST(HotPathAllocations, RequestIdResolveAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const HttpRequestIdGenerator generator;
         HttpRequest                  request;
         const auto                   resolveOnce = [&generator, &request]

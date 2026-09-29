@@ -6,6 +6,8 @@ add_executable(TestCore
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/CommonTestSupport.h
         # 分配画像探针的实体：TestScheduler 的跨线程投递读数靠它，口径与 Base/Net 两侧一致
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
+        # 交付形态守卫的实体：TlsContext 那批直连用例要靠它判「用例侧与库侧是否各持一份 OpenSSL」
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/SharedFormGuards.cpp
 
         Exception/TestCoreException.cpp
 

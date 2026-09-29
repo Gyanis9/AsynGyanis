@@ -226,6 +226,7 @@ namespace
      */
     TEST(OrmAllocations, CountingHookSeesAPlainHeapAllocation)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const AllocationProfile profile = measurePerOperation(
                 []
                 {
@@ -241,6 +242,7 @@ namespace
      */
     TEST(OrmAllocations, MeasurementWindowHasNoBackgroundAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const AllocationProfile profile = measurePerOperation([] { return std::uint64_t{1}; });
         EXPECT_EQ(profile.totalAllocations, 0U);
         EXPECT_EQ(profile.resultSum, kMeasurementIterations);
@@ -253,6 +255,7 @@ namespace
      */
     TEST_F(OrmAllocationLedger, FirstByPrimaryKeyAllocationLedger)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         for (int warmUp = 0; warmUp < 20; ++warmUp)
         {
             Queryable<LedgerRow> query(*m_pool);
@@ -278,6 +281,7 @@ namespace
      */
     TEST_F(OrmAllocationLedger, ListOfTwentyRowsAllocationLedger)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         for (int warmUp = 0; warmUp < 20; ++warmUp)
         {
             Queryable<LedgerRow> query(*m_pool);
@@ -308,6 +312,7 @@ namespace
      */
     TEST_F(OrmAllocationLedger, CountAndUpdateAllocationLedger)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const AllocationProfile countProfile = measurePerOperation(
                 [this]
                 {
@@ -355,6 +360,7 @@ namespace
      */
     TEST_F(OrmAllocationLedger, SingleStatementBatchInsertAllocationLedger)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::vector<BatchLedgerRow> batch = makeBatchRows(kSmallBatchRowCount);
 
         for (int warmUp = 0; warmUp < 10; ++warmUp)
@@ -384,6 +390,7 @@ namespace
      */
     TEST_F(OrmAllocationLedger, ChunkedBatchInsertAllocationLedger)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::vector<BatchLedgerRow> batch = makeBatchRows(kChunkedBatchRowCount);
 
         for (int warmUp = 0; warmUp < 2; ++warmUp)

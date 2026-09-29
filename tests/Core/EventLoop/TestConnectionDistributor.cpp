@@ -304,6 +304,7 @@ namespace AsynGyanis::Core
      */
     TEST(ConnectionDistributor, HandoffAllocationProfile)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         using AsynGyanis::TestSupport::kMeasurementIterations;
         using AsynGyanis::TestSupport::measurePerOperation;
 

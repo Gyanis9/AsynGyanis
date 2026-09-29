@@ -48,6 +48,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayerAllocations, ConstructionAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const auto constructOnce = []() -> std::size_t
         {
             const QuicStreamLayer layer(makeStreamLayerParameters());
@@ -67,6 +68,7 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayerAllocations, ReceiveDeliverAndReleaseAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::vector<std::uint8_t> body(16, 'r');
         const auto                      runOnce = [&body]() -> std::size_t
         {

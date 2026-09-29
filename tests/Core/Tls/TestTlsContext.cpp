@@ -9,6 +9,7 @@
 #include "Platform/IO/FileDescriptor.h"
 
 #include "CoreTestSupport.h"
+#include "SharedFormGuards.h"
 
 #include <gtest/gtest.h>
 
@@ -456,6 +457,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, HardenedContextCompletesTls12Handshake)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -478,6 +480,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, Tls10OnlyClientHandshakeIsRejected)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -502,6 +505,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, Tls13ClientHandshakeStillSucceeds)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -523,6 +527,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, AlpnNegotiatesHttp11WhenClientOffersIt)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -547,6 +552,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, AlpnIsSkippedWhenClientDoesNotOfferIt)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -622,6 +628,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, RequiredClientCertificateRejectsClientWithoutCertificate)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
         ASSERT_TRUE(tlsContext.loadClientCertificateAuthority(kTestCertificatePath.string()));
@@ -646,6 +653,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, RequiredClientCertificateAcceptsClientPresentingTrustedCertificate)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
         ASSERT_TRUE(tlsContext.loadClientCertificateAuthority(kTestCertificatePath.string()));
@@ -671,6 +679,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, DisablingClientCertificateRequirementAllowsAnonymousClient)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
         ASSERT_TRUE(tlsContext.loadClientCertificateAuthority(kTestCertificatePath.string()));
@@ -695,6 +704,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, AlpnNegotiatesH2WhenClientOnlyOffersH2)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -720,6 +730,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, AlpnPrefersH2WhenClientOffersBoth)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -753,6 +764,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, AlpnRejectsClientOfferingOnlyUnsupportedProtocols)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         TlsContext tlsContext;
         ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
 
@@ -2109,6 +2121,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, OcspStaplingIsSkippedWithoutClientRequest)
     {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
         const StaplingTestMaterial material = makeStaplingTestMaterial("ocsp_noreq", 198L);
         ASSERT_FALSE(material.responsePath.empty()) << "装订测试材料构造失败（叶证书或 OCSP 响应）";
 

@@ -1636,6 +1636,7 @@ namespace AsynGyanis::Net
      */
     TEST(QpackAllocations, EncodesResponseHeaderSectionIntoReusedBuffersWithoutAllocating)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         QpackEncoder                        encoder(0, 0, 0);
         const std::vector<QpackHeaderField> fieldLines = makeFieldList({
                 {":status", "200"},
@@ -1681,6 +1682,7 @@ namespace AsynGyanis::Net
      */
     TEST(QpackAllocations, DecodesRequestHeaderSectionIntoReusedBuffersWithoutAllocating)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         QpackEncoder                        encoder(0, 0, 0);
         QpackDecoder                        decoder(makeDecoderSettings(0, 0));
         const std::vector<QpackHeaderField> requestLines = makeFieldList({

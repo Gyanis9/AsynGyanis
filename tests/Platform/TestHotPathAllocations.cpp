@@ -60,6 +60,7 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformHotPathAllocations, CountingHookSeesAPlainHeapAllocation)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const AllocationProfile profile = measurePerOperation(
                 []
                 {
@@ -77,6 +78,7 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformHotPathAllocations, MeasurementWindowHasNoBackgroundAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         std::uint64_t           sink    = 0;
         const AllocationProfile profile = measurePerOperation(
                 [&sink]
@@ -97,6 +99,7 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformHotPathAllocations, FileBasicInfoQueryAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const TestSupport::TemporaryDirectory temporaryDirectory("HotPathAllocations_FileBasicInfo");
         ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", std::string(kLedgerFileBytes, 'x')));
         const std::filesystem::path existingPath = temporaryDirectory.path() / "asset.bin";
@@ -136,6 +139,7 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformHotPathAllocations, MappedFileOpenAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const TestSupport::TemporaryDirectory temporaryDirectory("HotPathAllocations_MappedFile");
         ASSERT_TRUE(temporaryDirectory.writeFile("mapped.bin", std::string(kLedgerFileBytes, 'y')));
         const std::filesystem::path targetPath = temporaryDirectory.path() / "mapped.bin";
@@ -164,6 +168,7 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformHotPathAllocations, OpenedFileInfoQueryAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const TestSupport::TemporaryDirectory temporaryDirectory("HotPathAllocations_OpenedFileInfo");
         ASSERT_TRUE(temporaryDirectory.writeFile("ledger.bin", std::string(kLedgerFileBytes, 'z')));
         const std::filesystem::path targetPath = temporaryDirectory.path() / "ledger.bin";
@@ -210,6 +215,7 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformHotPathAllocations, MimeTypePathTextConversionAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const TestSupport::TemporaryDirectory temporaryDirectory("HotPathAllocations_MimeTypeText");
         ASSERT_TRUE(temporaryDirectory.writeFile("app.min.js", "x"));
         const std::filesystem::path fullPath  = temporaryDirectory.path() / "app.min.js";
@@ -250,6 +256,7 @@ namespace AsynGyanis::Platform
      */
     TEST(PlatformHotPathAllocations, PathTextConversionAllocations)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         const std::string           asciiPath          = "wwwroot/assets/app.min.js";
         const std::string           nonAsciiPath       = std::string("\xE6\x96\x87") + "\xE4\xBB\xB6/assets/\xE6\x8A\xA5\xE5\x91\x8A.txt";
         const std::filesystem::path asciiPathObject    = FileSystem::pathFromUtf8(asciiPath);

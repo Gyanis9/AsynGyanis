@@ -742,6 +742,7 @@ namespace AsynGyanis::Core
      */
     TEST(TlsSocket, HandshakeAllocationProfile)
     {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         using AsynGyanis::TestSupport::measureOperations;
 
         // 一次握手要毫秒级（Debug+ASan 下 ECDSA 双端验签与密钥派生都在跑），一千次会吃掉整份用例

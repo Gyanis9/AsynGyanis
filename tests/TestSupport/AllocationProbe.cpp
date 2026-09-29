@@ -2,6 +2,19 @@
 
 #include <cstdlib>
 
+namespace AsynGyanis::TestSupport
+{
+    // 判据落在实现文件而不是头里：头里的 constexpr 值会让 MSVC 认定 GTEST_SKIP() 之后的用例体不可达
+    // （C4702，本仓库 /WX 下即错误），而运行期常量不会做那个推断。
+    // 取的是**本可执行体**链接到的模块形态：五个模块任一以共享库提供，DLL 内的分配就不进这里的钩子。
+#if defined(_WIN32) &&                                                                                                                                                             \
+        (defined(ASYN_BASE_SHARED_LIB) || defined(ASYN_CORE_SHARED_LIB) || defined(ASYN_NET_SHARED_LIB) || defined(ASYN_DATABASE_SHARED_LIB) || defined(ASYN_PLATFORM_SHARED_LIB))
+    const bool kAllocationProbeIsBlind = true;
+#else
+    const bool kAllocationProbeIsBlind = false;
+#endif
+} // namespace AsynGyanis::TestSupport
+
 namespace
 {
     /// 每桶一个原子量：替换掉的 operator new 会在任意线程被调用，普通数组会撞车
