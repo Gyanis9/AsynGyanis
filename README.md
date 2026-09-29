@@ -621,6 +621,29 @@ AsynGyanis/
   Windows 完成端口后端（`Iocp.cpp`）借用 `epoll_event` 与事件位定义；AFD 轮询实现已删除，不再参与轮询。
 - SQLite3 为必选；hiredis 与 libmysqlclient 为**可选**：探测不到时对应驱动退化为报错桩，不会让配置阶段失败。
 
+## 投产前核对
+
+这七件事是「库不会替你决定，但配错了要出事故」的那一类。每条都写了默认值与**怎么确认它真的生效**——
+静默保持默认值看起来总像是配置成功了，所以别只看配置文件，要读回来或抓一次端点。
+
+| 核对项 | 键 / 入口 | 默认值 | 怎么确认生效 | 配错的后果 |
+| --- | --- | --- | --- | --- |
+| TLS 下限 | `Core::TlsPolicy::minimumProtocolVersion`（出站走 `HttpClient(loop, poolConfig, tlsPolicy)`） | 服务端 TLS 1.2；QUIC 恒 1.3；**客户端角色不补下限**（刻意：替调用方发明下限会把本可以连上的对端拒掉） | `TlsContext` 建好后读 `SSL_CTX_get_min_proto_version`，或抓一次握手看协商版本 | TLS 1.0/1.1 没有档位可填（RFC 8996 已废弃）。要给出站也钉下限，就显式传 `minimumProtocolVersion` |
+| ACME 联系人 / 条款 | `AcmeCertificateManager::Configuration::contactEmailAddress` / `isTermsOfServiceAccepted` | 联系人为空；条款未接受时**新建账户直接拒绝** | 看 `status()` 与账户 URL 是否落盘 | 没有联系人 = 机构无法在到期或账户异常时找到你；90 天寿命的证书漏续一次就是一次线上告警 |
+| 限额与背压 | `server.parser_limits.*`、`server.limits.*`、`maximum_connections`、`maximum_connections_per_ip`、`rate_limit.*`（在途正文总量上限只有 API：`HttpServer::setMemoryBudget()`，配置里没有这一项） | 头部 100 条 / 单值 8 KiB / 头块 64 KiB / 正文 8 MiB；空闲 75s、读写各 60s；**三个 `maximum_*` 与 `requests_per_second` 默认 0 = 不限** | `/metrics` 的 `asyn_http_admission_rejected_connections_total`（按 IP 挡）与 `asyn_http_over_limit_rejected_connections_total`（整机满）；令牌桶打开后超限回 429 | 「0 = 不限」是合法取值但不是安全默认：不限正文与不限并发就是把内存和连接表交给对端 |
+| `/metrics` 接线 | `applyHttpServerConfiguration()` + `server.expose_metrics` | 关（一个端点都不注册） | 直接 `curl` 三个端点：`/metrics`、`/healthz`、`/debug/loops` | 三件套**都不做鉴权**，也不限制来源；开到 `0.0.0.0` 就是公开暴露内部计数与循环状态，通常要放在内网监听器或反代后面 |
+| 日志等级与滚动 | `Base::LoggerConfigLoader` 的 `global_level` 与 `sinks`（`rolling_file`：`directory`/`policy`/`max_size_mb`/`max_backup`） | 未配置前 root 是 Trace 且**零 sink → 全部丢弃**；`global_level` 缺失回落 INFO；滚动按 `size`、单文件 10 MiB、留 10 份 | `LoggerRegistry` 的 sink 快照；`AsyncSink::droppedEventCount()` | 越界值会被钳制并打到 `stderr`（不中断启动）；`policy` 拼错会回退成 `size` 并说明原因——启动日志要留着看；`echo_server --config` 会连同 `logging` 段一起装上（不装就只有 `server` 段生效） |
+| worker 起法 | `Core::WorkerSupervisor::Configuration` | `workerCount` 必须 ≥ 2；崩溃窗口 3s、连续 5 次「起来就崩」不再补；`shutdownTimeout` 10s | 构造期就校验：Windows 缺 `handoff`、POSIX 给了 `handoff` 都直接抛 | Windows 上 worker 靠 master 移交监听描述符（不是 `SO_REUSEPORT`），配错的表现是「只有一个进程收得到连接」；`echo_server --workers` 只走 POSIX 那条（Windows 上缺移交档位，构造即抛），移交形状见 `samples/core_worker` |
+| 优雅停机 | 各服务器的 `stop()` / `drain(timeout)`；`WorkerSupervisor` 的 `shutdownTimeout` | `drain` 的时长由调用方给（库不设默认）；到点后强关并在途请求作废 | 停机时观察：在册连接归零、`/metrics` 的丢弃计数不再涨 | 超时给小了会掐断在途长请求；worker 的体面退出在 POSIX 是 SIGTERM，Windows 没有信号——编排者给每个 worker 独立进程组再发 `CTRL_BREAK`（`Process::requestTermination()`），宿主没有控制台时发不出去，会记一条 WARN 再强杀 |
+
+配置键到服务器的对接只有一处：`applyHttpServerConfiguration(server, configuration, context)`（`Net/Http/HttpServerAssembly.h`）。
+`server` 段的键此前只能靠调用方逐台手接六七个 setter，`expose_metrics` 就是这样变成了「配置里打了勾、
+端点一个都没注册」的死键；现在装配收进这一处，并且当传入的共享限额器与配置标量不一致时**当场拒绝**
+——多条通道共用一份限额器时，静默挑一边会让「配置写 16、实际跑 64」完全看不出来。
+
+三条形态边界（无 macOS/BSD、共享库的 ABI 与 OpenSSL 双副本、CI 触发面因免费分钟数收到 `main` + 手动
+触发）分别写在上面的「交付形态」与下面的「测试与验证」里，这里不重复。
+
 ## 测试与验证
 
 一笔提交要过的闸门：本地串行四道 → CI 十条作业并行铺开 → 发布与供应链。图下的卡片写清了哪些是硬失败、哪些只是报告档、哪些按能力 SKIP。
@@ -630,11 +653,13 @@ AsynGyanis/
 > 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[verification-gate-workflow.html](assets/diagrams/verification-gate-workflow.html)
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模（2026-09-28 实测）：**Windows Debug（含 ASan）3574 例全绿、73 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3594 例全绿、70 例 SKIP、零告警、零泄漏、零未定义行为**（这一轮容器侧没注入真库凭据，MySQL 与 Redis 那几条按门控 SKIP；ACME 那一族 39 例在两侧都跑，其中真机构那条按环境变量门控）。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递、多进程编排里 shell 假 worker 那几条行为、以及换代交接通道那两条只可能在本机判的（套接字文件所在目录的权限、装进来又被退回的描述符）；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按平台或内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言；`io_uring` 那一档要先探得出环，沙箱不给环时 `IoContext` 的八条按能力 SKIP 而不是失败）
+- 当前规模（2026-09-29 实测）：**Windows Debug（含 ASan）3583 例全绿、76 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3599 例全绿、70 例 SKIP、零告警、零泄漏、零未定义行为**（这一轮容器侧没注入真库凭据。两侧共同的 66 条 SKIP 是同一批门控：MySQL 一族 35、Redis 一族 30、ACME 真机构 1；Windows 另有 10 条按平台让位——`Process` 4（含控制台探针的三条内层，见下）、多进程移交与数据报接管那五条、`AsyncSocket` 一条；容器另有 4 条（出站 h2 建连合并 2、`FileWatcher` 与 `RollingFileSink` 各 1）。ACME 那一族 42 例在两侧都跑）。控制台探针那三条内层单独跑时按 SKIP 记账，判据由它们的父侧用例承担：父侧以 `CREATE_NEW_CONSOLE` 再启一份去跑探针，并数「探针真的上场」的标记文件——所以宿主没有控制台也不会让这条路悄悄变成零覆盖。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递、多进程编排里 shell 假 worker 那几条行为、以及换代交接通道那两条只可能在本机判的（套接字文件所在目录的权限、装进来又被退回的描述符）；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按平台或内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言；`io_uring` 那一档要先探得出环，沙箱不给环时 `IoContext` 的八条按能力 SKIP 而不是失败）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
-- **CI 触发面**：三条工作流（Linux CI / Windows CI / 发布门禁）只在 `main` 推送与手动触发上跑，`develop` 不消耗
-  分钟数——要看某个提交就 `gh workflow run "Linux CI" --ref develop`。每条作业覆盖什么、最近一次真实运行，
+- **CI 触发面**：四条工作流（Linux CI / Windows CI / 发布门禁 / 供应链）都只在 `main` 推送与手动触发上跑，
+  `develop` 不消耗分钟数——要看某个提交就 `gh workflow run "Linux CI" --ref develop`。两条构建作业还带
+  `paths-ignore: '**.md'`：纯文档改动不会拉起一次几十个 runner 分钟的构建（所以改版本号那一笔必须动到
+  `CMakeLists.txt`，否则它会跟着文档一起被跳过）。每条作业覆盖什么、最近一次真实运行，
   记在 `.github/SECURITY.md` 的「我们靠哪些持续验证」表里（含 h2spec、Autobahn、libFuzzer、TSan、aioquic 互操作、Pebble 的 ACME 跨实现验收）
 - **ACME 的跨实现验收怎么跑**：`scripts/acme_pebble_cross_check.sh`，对面换成 Pebble（Let's Encrypt 官方
   那套 ACME 测试服务端，Go 实现，与本仓不同源代码）。它不需要公网机器：把镜像里的 `app` 与 `test/` 取到

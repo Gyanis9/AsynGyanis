@@ -15,9 +15,58 @@
 
 ## [Unreleased]
 
-（暂无）
+### 新增
+
+- **`server` 段的配置现在只有一个对接点**：`Net::applyHttpServerConfiguration(server, configuration, context)`
+  （`Net/Http/HttpServerAssembly.h`）。此前 `HttpServerConfiguration` 的七个字段在库内没有任何消费方，全靠
+  调用方逐台手接六七个 setter——`expose_metrics` 就是这么变成「配置里打了勾、`/metrics` 一个都没注册」的死键。
+  收进一处之后，`expose_metrics=true` 会真的注册 `/metrics`、`/healthz` 与 `/debug/loops`（三件套同开同关：
+  它们都不做鉴权，只开其一会让「抓不到数」与「以为没暴露」互相伪装）。跨监听器共用同一份限额器/限流桶时由
+  调用方经 `context` 传入，而**传入的共享限额器与配置标量不一致时当场拒绝**——静默挑一边就是
+  「配置写 16、实际跑 64」且完全看不出来那一类事故。示例 `echo_server` 已改走这条路。
+- **整机满载第一次有了自己的读数**：`/metrics` 新增 `asyn_http_over_limit_rejected_connections_total`。
+  它与既有的 `asyn_http_admission_rejected_connections_total`（按来源 IP 那道闸门）刻意分成两条——
+  「某个来源在刷」要收紧限额、「整机容量到顶」要加 worker 或抬上限，处置正好相反，合成一条就分不出该做哪件。
+  过去 TCP 侧撞 `maximum_connections` 既无日志也无计数，运维看到的只是「连上就被关」。
+- **README 新增「投产前核对」一节**：TLS 下限、ACME 联系人与条款、限额与背压、`/metrics` 接线、日志等级与
+  滚动、worker 起法、优雅停机这七项，逐项写清键名、内置默认值、怎么确认它真的生效、以及配错的后果。
+  这些位置的共同点是「库不替你决定，但默认值看起来很像已经配好了」——只看配置文件不足以发现，
+  所以每条都给了可自己验一遍的读法。
+- **Windows 上的 worker 现在能体面退出**：`Process::requestTermination()` 此前在 Windows 一律返回 `false`
+  （那边没有信号），编排者只能直接强杀。现在 `LaunchOptions::ownProcessGroup` 让子进程进**自己名下**的进程组，
+  停机时向那个组发 `CTRL_BREAK`，装了 `Core::GracefulShutdown` 的 worker 便照常走完 `stop()` / `drain()`。
+  `WorkerSupervisor` 派生 worker 时默认就给独立组；宿主没有控制台（服务、被 `DETACHED_PROCESS` 派出来的进程）
+  时事件无处投递，会落一条 WARN 再强杀——「优雅」落空这件事不出声，与静默把它换成强杀是同一类事故。
+  刻意不给独立组时本方法仍返回 `false`：控制台事件的投递单位是进程组，此时唯一的目标就是宿主自己所在的组。
+  突变验证（三条各钉一头）：退回「Windows 一律返回 false」→ 探针外层红；去掉进程组判据 → 外层红，且红的原因是
+  探针子进程被自己广播出去的 CTRL_BREAK 带走，正是这道判据要防的那件事；移动构造不带进程组归属权 → 外层红，
+  而三条内层探针里只有「移动后仍叫得停」那条红，另两条照旧绿。
+
+### 变更
+
+- 撞并发连接上限而新连接被拒时，TCP 与 h3 两侧都改成**只在跳变上报一条** ERROR/WARN（名额空出来再撞满
+  才算新一次），h3 原先每条被拒的 Initial 都报一行，满载时会把日志刷满而那条信息一句没多。
+- HTTP/2 的连接层配置校验补齐：`INITIAL_WINDOW_SIZE` 不得超过 2^31-1（线上是有符号 32 位，越界值要么被
+  对端按连接错误收场、要么本端把窗口算成负数）；`maximumHeaderListSize` 与 `maximumHeaderBlockByteCount`
+  取 0 一律拒绝——0 的语义是「一律拒绝」，而这正是把它误当成「0 = 不限」时会写下的值。
+- ACME 新建账户时若 `contactEmailAddress` 为空，现在会落一条 WARN 说明「机构无法在证书到期或账户异常时找到
+  你」。仍然放行：不带联系人是 RFC 8555 允许的（带 EAB 的机构常常本来就留空），拒绝会把合法部署挡在门外。
+- `echo_server --config` 现在会连同 `logging` 段一起装上（`Base::LoggerConfigLoader`，相对路径按配置文件所在
+  目录解析）。此前只有 `server` 段有消费方：部署方在同一份文件里写的日志等级与滚动参数只有 ConfigManager
+  知道，症状是「配置写了没生效」而不是报错。
+- `echo_server --workers` 的帮助文本按平台改准。Windows 上本示例确实起不了多进程（那边要靠 master 移交监听
+  套接字，而示例的 worker 分支没有接管入口），文本却仍写着「靠 SO_REUSEPORT 分摊、SIGTERM 体面退出」——
+  现在明说这一档只有 POSIX 有，并把移交形状指向 `samples/core_worker`。
+
+### 修复
+
+- 共享形态之外也暴露的一处运维盲区：`AsyncSink` 的构造/析构回归用例原先靠「30 秒内跑完 2000 次」这条
+  绝对时限判定，满载机器上量的是负载而不是「停止请求的唤醒会不会被丢」；改成**停摆检测**（每 5 秒必须
+  推进至少一步，另设一条不参与判定的兜底上限）。突变验证：把等待谓词改成读不到停止标记，用例在
+  5112 毫秒即红并报出停在第几步；还原后全绿。
 
 ## [2.1.0] - 2026-09-29
+
 
 自 2.0.0 起的累计变化（新增 1、修复 1）：五个模块补上共享库交付形态——一个 CMake 标准开关出
 `.so`/`.dll`，导出面按逐类标注决定而不是按公共头全集决定；顺带修掉日志线程 ID 快照在跨模块时被复制成
