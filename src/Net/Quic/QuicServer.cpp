@@ -551,6 +551,8 @@ namespace AsynGyanis::Net
         // 准入闸门：限额器可以与两条 TCP 通道共用同一份，因此这里报的同样是那道闸门的总量，
         // 而不是「h3 这一侧挡了多少」——采集端合并出来的数与 h1/h2 侧同源，不会重复计数
         snapshot.admissionRejectedConnectionCount = m_configuration.perIpConnectionLimiter == nullptr ? 0U : m_configuration.perIpConnectionLimiter->rejectedConnectionCount();
+        // 本监听器自身上限的满载：与 h1/h2 侧同一条读数，跨协议的容量告警不该分两种口径
+        snapshot.overLimitRejectedConnectionCount = m_overLimitRejectedConnections.load(std::memory_order_relaxed);
         return snapshot;
     }
 
@@ -668,9 +670,21 @@ namespace AsynGyanis::Net
 
         if (!admitsNewConnection(m_connections.size(), m_configuration.maximumConnections))
         {
-            LOG_WARN_FMT("QuicServer: 在线连接已达上限 {}，新连接被拒绝", m_configuration.maximumConnections);
+            // 满载按跳变报（每空出一次名额再撞满各一条），并留一条累计读数进 /metrics：
+            // 只对 Initial 报一次的语义在握手重传场景下会把同一条连接报成多条
+            m_overLimitRejectedConnections.fetch_add(1U, std::memory_order_relaxed);
+            if (!m_overLimitAlerted)
+            {
+                m_overLimitAlerted = true;
+                LOG_WARN_FMT("QuicServer: 在线连接已达上限 {}，新连接被拒绝（累计 {} 条）：这是整机容量到顶，"
+                             "要扩容量请加 worker 进程或抬 maximum_connections",
+                             m_configuration.maximumConnections, m_overLimitRejectedConnections.load(std::memory_order_relaxed));
+            }
             co_return;
         }
+
+        // 还有名额：让下一次撞满重新报一条
+        m_overLimitAlerted = false;
 
         // 排空期间不再接手新连接：对端会按 GOAWAY 或握手失败另找一台。这里只丢弃，
         // 不回 CONNECTION_CLOSE——本端还不认识这条连接，回什么都得先造一套密钥

@@ -177,8 +177,21 @@ namespace AsynGyanis::Net
         // 选择立即拒绝而不是暂存等待，是为了不把已握手的连接压在服务器手里占对端资源
         if (m_maxConnections > 0 && inFlightConnectionCount() >= m_maxConnections)
         {
+            // 满载这件事必须留下痕迹：过去它既无日志也无计数，运维侧看到的只是「连上就被关」，
+            // 而任何既有指标都不动。告警按跳变报（每次名额空出来再撞满各一条），计数累计供 /metrics
+            m_overLimitRejectedConnections.fetch_add(1U, std::memory_order_relaxed);
+            if (!m_overLimitAlerted)
+            {
+                m_overLimitAlerted = true;
+                LOG_WARN_FMT("TcpServer: 并发连接已达上限 {}，新连接被拒绝（累计 {} 条）：这是整机容量到顶，"
+                             "不是某个来源在刷——要扩容量请加 worker 进程或抬 maximum_connections",
+                             m_maxConnections, m_overLimitRejectedConnections.load(std::memory_order_relaxed));
+            }
             return false;
         }
+
+        // 接到活了说明名额空出来：给下一次撞满留一条新的告警
+        m_overLimitAlerted = false;
 
         if (!m_proxyProtocolRequired)
         {
@@ -585,6 +598,11 @@ namespace AsynGyanis::Net
     std::uint64_t TcpServer::perIpRejectedConnectionCount() const noexcept
     {
         return m_perIpConnectionLimiter == nullptr ? 0U : m_perIpConnectionLimiter->rejectedConnectionCount();
+    }
+
+    std::uint64_t TcpServer::overLimitRejectedConnectionCount() const noexcept
+    {
+        return m_overLimitRejectedConnections.load(std::memory_order_relaxed);
     }
 
     void TcpServer::setSocketTuning(const TcpAcceptor::SocketTuning &tuning)

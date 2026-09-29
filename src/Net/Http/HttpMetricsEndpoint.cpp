@@ -142,6 +142,10 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "admission_rejected_connections_total"), "被按来源 IP 的并发限额挡掉的连接条数（限额器可在多条通道间共用，报的是总量）",
                       stats.admissionRejectedConnectionCount);
 
+        // 整机满载与「某个来源在刷」处置相反（前者加容量、后者收紧限额），因此分成两条读数
+        appendCounter(out, makeMetricName(metricNamePrefix, "over_limit_rejected_connections_total"), "因本监听器并发连接上限到顶而被拒的连接条数（未设上限时恒为 0）",
+                      stats.overLimitRejectedConnectionCount);
+
         // 运行期积压：阻塞任务队列是进程级共享的，多条通道报的是同一份读数（不是各自的份额）
         const std::string queueDepthName = makeMetricName(metricNamePrefix, "blocking_task_queue_depth");
         out += std::format("# HELP {} 取快照那一刻排在阻塞任务执行器队列里的任务条数（进程级，多条通道报同一份）\n"

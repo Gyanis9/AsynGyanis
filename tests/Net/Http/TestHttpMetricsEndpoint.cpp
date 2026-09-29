@@ -119,6 +119,7 @@ namespace AsynGyanis::Net
             stats.blockingTaskQueueDepth           = 16;
             stats.blockingTaskRejectedCount        = 17;
             stats.residentMemoryBytes              = 18;
+            stats.overLimitRejectedConnectionCount = 19;
             return stats;
         }
     } // namespace
@@ -143,6 +144,8 @@ namespace AsynGyanis::Net
         EXPECT_NE(text.find("asyn_http_http2_stream_cancelled_total 12\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_zerocopy_sends_total 13\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_admission_rejected_connections_total 15\n"), std::string::npos);
+        // 整机满载与按 IP 的拒绝分成两条：合并成一条就分不出「加容量」还是「收紧限额」
+        EXPECT_NE(text.find("asyn_http_over_limit_rejected_connections_total 19\n"), std::string::npos);
         // 队列深度是瞬时量（gauge），被拒条数是累计量（counter）——两族语义不同，报错了采集侧会算增长率
         EXPECT_NE(text.find("# TYPE asyn_http_blocking_task_queue_depth gauge\nasyn_http_blocking_task_queue_depth 16\n"), std::string::npos);
         EXPECT_NE(text.find("# TYPE asyn_http_blocking_task_rejected_total counter\nasyn_http_blocking_task_rejected_total 17\n"), std::string::npos);

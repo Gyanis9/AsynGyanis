@@ -516,6 +516,13 @@ namespace AsynGyanis::Net
         /// 每条连接建立与摘除才各动一次，不值得为它做缓存行填充
         std::atomic<std::size_t> m_connectionCountMirror{0}; ///< 在册连接数（与连接表同步维护）
 
+        /// 撞本监听器并发上限而被拒的新连接累计数：与 h1/h2 侧同一口径进 /metrics
+        /// （`over_limit_rejected_connections_total`），原子量因为 stats() 允许从别的线程读
+        std::atomic<std::uint64_t> m_overLimitRejectedConnections{0};
+        /// 上限告警是否已经报过（只由循环线程读写）：满载时每条 Initial 都报一条会把日志刷满，
+        /// 一条都不报又看不见满载，因此按「空出名额 → 再次撞满」的跳变各报一条
+        bool m_overLimitAlerted{false}; ///< 仅由所属循环线程读写
+
         /// 别名索引：除本端 SCID 之外**可以寻址到本连接的目的连接标识** → 连接
         /// （存裸指针，所有权仍在上面那张表里）。目前只有一类来源：客户端最初选的 DCID——
         /// 客户端重传 Initial 时报文里的 DCID 仍是它最初选的那个（RFC 9000 §7.2 首包连接标识

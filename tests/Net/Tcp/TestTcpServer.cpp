@@ -708,6 +708,8 @@ namespace AsynGyanis::Net
         const LoopbackClient firstClient(listeningPort);
         ASSERT_TRUE(firstClient.isValid());
         ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() >= 1u; }, kWaitTimeout)) << "首条连接未在时限内挂上管理器：上界 kWaitTimeout";
+        // 钉住「读数不是恒 0」的反面：还没撞上限时这条必须是 0，否则它证明不了任何事
+        EXPECT_EQ(fixture.server().overLimitRejectedConnectionCount(), 0u) << "还没到上限就有拒绝读数：这条判据是恒真的";
 
         // 第二条连接在达到上限后到达：过载保护在钩子之前生效，直接丢弃新连接，
         // 连 createConnection 都不必调用。
@@ -718,6 +720,9 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 2u; }, kNegativeCheckTimeout));
         EXPECT_EQ(fixture.server().createConnectionCalls(), 1u);
         EXPECT_EQ(fixture.server().activeConnectionCount(), 1u);
+        // 满载这件事要留下读数：运维侧看到的只是「连上就被关」，任何协议计数都不动，
+        // 少了这条就分不出「容量到顶」与「某个来源在刷」，而两者的处置正好相反
+        EXPECT_EQ(fixture.server().overLimitRejectedConnectionCount(), 1u) << "超限被拒的连接没有计数";
 
         fixture.runOnLoopAndWait([&fixture] { fixture.server().close(); });
         EXPECT_TRUE(fixture.awaitStopObserved(kWaitTimeout));

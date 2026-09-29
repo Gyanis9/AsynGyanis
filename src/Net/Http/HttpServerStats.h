@@ -106,6 +106,15 @@ namespace AsynGyanis::Net
         std::uint64_t admissionRejectedConnectionCount{0};
 
         /**
+         * @brief 因**本服务器自身**并发连接上限（`maximum_connections`）而被拒的连接条数
+         * @details 与上面那道按来源 IP 的闸门分开计数：限额器可以多台共用、报的是闸门总量，而这个数
+         *          是「这台服务器已经满载」。两者混在一个读数里就分不出「某个来源在刷」与「整体容量到顶」，
+         *          而这两种情况的处置完全相反（前者收紧按 IP 的限额，后者加 worker 或抬上限）。
+         * @note 为零同样分不开「没设上限」与「设了但没满过」——要确认上限装上了，看得是取值本身而不是这条计数
+         */
+        std::uint64_t overLimitRejectedConnectionCount{0};
+
+        /**
          * @brief 取快照这一刻排在阻塞任务执行器队列里的任务条数（进程级，0 表示没有积压）
          * @details 这是「事件循环有没有被拖住」最早的信号：队列开始涨，说明下游变慢或工作线程不够，
          *          而请求侧此时往往还只是延迟，看不出问题。

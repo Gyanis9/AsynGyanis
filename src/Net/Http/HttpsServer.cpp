@@ -240,6 +240,7 @@ namespace AsynGyanis::Net
         HttpServerStats snapshot = m_metrics->snapshot();
         // 准入闸门的计数住在限额器自己身上（多条通道可以共用一份），采集端不知道它，故在这里并入
         snapshot.admissionRejectedConnectionCount = perIpRejectedConnectionCount();
+        snapshot.overLimitRejectedConnectionCount = overLimitRejectedConnectionCount();
         return snapshot;
     }
 

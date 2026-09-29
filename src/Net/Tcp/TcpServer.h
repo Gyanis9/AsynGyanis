@@ -195,6 +195,17 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::uint64_t perIpRejectedConnectionCount() const noexcept;
 
         /**
+         * @brief 因本服务器并发连接上限而被拒的连接条数（累计，不清零）
+         * @details 上限判定过去只有 `QuicServer` 报一条 WARN、`TcpServer` 连日志都没有：满载时表现成
+         *          「能连上、立刻被关」，抓取端在任何既有计数里都看不到痕迹。这条读数与按 IP 的
+         *          `admission_rejected_connections_total` 分开放，是为了让「某个来源在刷」与
+         *          「整机容量到顶」这两种相反的处置能分开判。
+         * @return std::uint64_t 累计拒绝条数；未设上限时恒为 0
+         * @see HttpServerStats::overLimitRejectedConnectionCount
+         */
+        [[nodiscard]] std::uint64_t overLimitRejectedConnectionCount() const noexcept;
+
+        /**
          * @brief 要求每条新连接以一个 PROXY 协议头开头（负载均衡器交来的真实客户端身份）
          * @param required true 表示必须带头，没带头的连接当场收口；false（默认）不读任何头
          * @details 服务器坐在代理后面时，`getpeername` 只能看到代理：按来源 IP 的并发限额会把一整个
@@ -350,8 +361,13 @@ namespace AsynGyanis::Net
         /// 代价是等待期间在事件循环上多几次空转唤醒
         static constexpr std::chrono::milliseconds kDrainPollInterval{50};
 
-        std::atomic<bool>                       m_running{false};               ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
-        std::size_t                             m_maxConnections{0};            ///< 最大并发连接数，0 表示无限制
+        std::atomic<bool> m_running{false};    ///< 运行标志，控制 accept 循环（原子量以便跨线程 stop() 可见）
+        std::size_t       m_maxConnections{0}; ///< 最大并发连接数，0 表示无限制
+        /// 撞本身上限而被拒的连接累计数；原子量因为 stats() 允许从别的线程读
+        std::atomic<std::uint64_t> m_overLimitRejectedConnections{0};
+        /// 上限告警是否已经报过：只在「空出名额 → 再次撞满」的跳变上各报一条，
+        /// 满载期间每条被拒的连接都报一遍会把日志刷满，而一条都不报就是过去那种看不见的满载
+        bool                                    m_overLimitAlerted{false};      ///< 仅由所属循环线程读写
         std::shared_ptr<PerIpConnectionLimiter> m_perIpConnectionLimiter;       ///< 按来源 IP 的并发限额；空指针表示不作该限制
         bool                                    m_proxyProtocolRequired{false}; ///< 是否要求每条新连接以 PROXY 协议头开头（见 setProxyProtocolRequired()）
         /// 正在读 PROXY 头的连接数：还没进连接表，但已占着描述符与缓冲，并发上限要把它们算进去
