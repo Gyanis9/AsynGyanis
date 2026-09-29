@@ -41,6 +41,51 @@ namespace AsynGyanis::Core::Digest
                 throw Base::Exception("Core::Digest: " + std::string(algorithmName) + " 摘要未能算出完整结果（OpenSSL 摘要接口返回失败）");
             }
         }
+
+        /**
+         * @brief 用 EVP_MAC 的 HMAC 提供方一次算完带密钥的认证码
+         * @details 走 EVP_MAC 的显式流程而不是 HMAC()/EVP_Q_mac 一次性接口：前者在 OpenSSL 3.x 里被标弃用，
+         *          后者的参数形状在 3.x 各小版本之间漂过（本机这份的第 5 参已是 OSSL_PARAM*），
+         *          而摘要名一类的东西按参数交进去才是稳定契约。
+         *          上下文无论成败都要释放：这条路径会抛出，漏掉就是每次调用泄一个句柄
+         * @param key 密钥（按「指针 + 长度」取，允许含 NUL）
+         * @param data 待认证数据
+         * @param digestName OpenSSL 的摘要名（OSSL_DIGEST_NAME_* 那一族）
+         * @param out 输出缓冲，其长度就是期望的认证码长度，用于核对返回值
+         * @param algorithmName 报错文案里用的算法名
+         */
+        void runHmac(std::string_view key, std::string_view data, std::string_view digestName, std::span<std::uint8_t> out, std::string_view algorithmName)
+        {
+            EVP_MAC *const algorithm = EVP_MAC_fetch(nullptr, OSSL_MAC_NAME_HMAC, nullptr);
+            if (algorithm == nullptr)
+            {
+                throw Base::Exception("Core::Digest: 无法加载 HMAC MAC 提供方（OpenSSL 未正确初始化或默认提供方未载入）");
+            }
+            EVP_MAC_CTX *const context = EVP_MAC_CTX_new(algorithm);
+            EVP_MAC_free(algorithm); // 上下文自带一份引用：先建上下文再放算法，抛出时也不会漏句柄
+            if (context == nullptr)
+            {
+                throw Base::Exception("Core::Digest: 无法创建 HMAC 上下文（OpenSSL 内存不足）");
+            }
+
+            // 摘要名必须落在自己持有的**可写**缓冲里：OSSL_PARAM_construct_utf8_string 收的是 char*，
+            // 而 OpenSSL 不承诺绝不回写这段参数
+            std::string digestNameOwner(digestName);
+            OSSL_PARAM  parameters[2];
+            parameters[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, digestNameOwner.data(), 0);
+            parameters[1] = OSSL_PARAM_construct_end();
+
+            size_t     producedLength = 0;
+            const bool isSucceeded    = EVP_MAC_init(context, reinterpret_cast<const unsigned char *>(key.data()), key.size(), parameters) == 1 &&
+                                        EVP_MAC_update(context, reinterpret_cast<const unsigned char *>(data.data()), data.size()) == 1 &&
+                                        EVP_MAC_final(context, out.data(), &producedLength, out.size()) == 1;
+            EVP_MAC_CTX_free(context);
+
+            if (!isSucceeded || producedLength != out.size())
+            {
+                throw Base::Exception("Core::Digest: " + std::string(algorithmName) + " 未能算出完整结果（OpenSSL MAC 接口返回失败，可能是密钥长度非法或提供方拒绝该摘要）");
+            }
+        }
     } // namespace
 
     Sha1Value sha1(const std::string_view data)
@@ -57,40 +102,17 @@ namespace AsynGyanis::Core::Digest
         return digest;
     }
 
+    Sha1Value hmacSha1(const std::string_view key, const std::string_view data)
+    {
+        Sha1Value mac{};
+        runHmac(key, data, OSSL_DIGEST_NAME_SHA1, std::span<std::uint8_t>{mac}, "HMAC-SHA-1");
+        return mac;
+    }
+
     Sha256Value hmacSha256(const std::string_view key, const std::string_view data)
     {
         Sha256Value mac{};
-
-        // 走 EVP_MAC 的显式流程而不是 HMAC()/EVP_Q_mac 一次性接口：前者在 OpenSSL 3.x 里被标弃用，
-        // 后者的参数形状在 3.x 各小版本之间漂过（本机这份的第 5 参已是 OSSL_PARAM*），
-        // 而摘要名一类的东西按参数交进去才是稳定契约
-        EVP_MAC *const algorithm = EVP_MAC_fetch(nullptr, OSSL_MAC_NAME_HMAC, nullptr);
-        if (algorithm == nullptr)
-        {
-            throw Base::Exception("Core::Digest: 无法加载 HMAC MAC 提供方（OpenSSL 未正确初始化或默认提供方未载入）");
-        }
-        EVP_MAC_CTX *const context = EVP_MAC_CTX_new(algorithm);
-        EVP_MAC_free(algorithm); // 上下文自带一份引用：先建上下文再放算法，抛出时也不会漏句柄
-        if (context == nullptr)
-        {
-            throw Base::Exception("Core::Digest: 无法创建 HMAC 上下文（OpenSSL 内存不足）");
-        }
-
-        char       digestName[] = OSSL_DIGEST_NAME_SHA2_256;
-        OSSL_PARAM parameters[2];
-        parameters[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, digestName, 0);
-        parameters[1] = OSSL_PARAM_construct_end();
-
-        size_t     producedLength = 0;
-        const bool isSucceeded    = EVP_MAC_init(context, reinterpret_cast<const unsigned char *>(key.data()), key.size(), parameters) == 1 &&
-                                    EVP_MAC_update(context, reinterpret_cast<const unsigned char *>(data.data()), data.size()) == 1 &&
-                                    EVP_MAC_final(context, mac.data(), &producedLength, mac.size()) == 1;
-        EVP_MAC_CTX_free(context);
-
-        if (!isSucceeded || producedLength != mac.size())
-        {
-            throw Base::Exception("Core::Digest: HMAC-SHA-256 未能算出完整结果（OpenSSL MAC 接口返回失败，可能是密钥长度非法或提供方拒绝该摘要）");
-        }
+        runHmac(key, data, OSSL_DIGEST_NAME_SHA2_256, std::span<std::uint8_t>{mac}, "HMAC-SHA-256");
         return mac;
     }
 
