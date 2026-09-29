@@ -1,0 +1,293 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "多进程 worker 的启停、补位与监听移交",
+    "locale": "zh-CN",
+    "output": "assets/diagrams/worker-handoff-workflow.html",
+    "quality_profile": "standard",
+    "repository": {
+      "url": "https://github.com/Gyanis9/AsynGyanis.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+    },
+    "views": [
+      {
+        "id": "supervise",
+        "label": "看护循环",
+        "focus": ["cfg", "spawn", "waitpeer", "reap", "backoff", "stopall"],
+        "note": "快退计数只在稳定跑过之后清零，补位前先退避"
+      },
+      {
+        "id": "channel",
+        "label": "移交通道",
+        "focus": ["open", "header", "rights", "retire"],
+        "note": "通道必须 AF_UNIX：TCP 上 sendmsg/recvmsg 都成功而 controllen 归 0"
+      },
+      {
+        "id": "child",
+        "label": "worker 侧",
+        "focus": ["adopt", "mark", "serve", "drain"],
+        "note": "接手后必须补 markAsListening，否则收口会把端点一起关掉"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "supervisor", "label": "WorkerSupervisor（父代）" },
+    { "id": "channel", "label": "UpgradeChannel 一次性通道" },
+    { "id": "child", "label": "worker 进程（子代）" }
+  ],
+  "phases": [
+    { "id": "start", "label": "起与交", "fromCol": 0, "toCol": 3 },
+    { "id": "run", "label": "跑与收", "fromCol": 4, "toCol": 5, "variant": "emphasis" }
+  ],
+  "groups": [
+    { "id": "handoffgroup", "label": "每次（重）起都新开一条通道", "lane": "channel", "fromCol": 1, "toCol": 3, "variant": "dashed" }
+  ],
+  "mainPath": ["cfg", "spawn", "waitpeer", "reap", "backoff", "stopall"],
+  "nodes": [
+    {
+      "id": "cfg",
+      "lane": "supervisor",
+      "col": 0,
+      "width": 140,
+      "type": "security",
+      "label": "配置校验",
+      "sublabel": "方向填反即拒",
+      "tag": "构造期",
+      "sources": [
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 83, "label": "Windows 必须有 handoff" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 104, "label": "POSIX 不该有 handoff" }
+      ]
+    },
+    {
+      "id": "spawn",
+      "lane": "supervisor",
+      "col": 1,
+      "width": 140,
+      "type": "backend",
+      "label": "起进程",
+      "sublabel": "fork+exec / CreateProcessW",
+      "sources": [
+        { "path": "src/Platform/System/Process.cpp", "line": 275, "label": "fork" },
+        { "path": "src/Platform/System/Process.cpp", "line": 288, "label": "PR_SET_PDEATHSIG" },
+        { "path": "src/Platform/System/Process.cpp", "line": 242, "label": "Windows 侧" }
+      ]
+    },
+    {
+      "id": "waitpeer",
+      "lane": "supervisor",
+      "col": 2,
+      "width": 140,
+      "type": "messagebus",
+      "label": "等对端",
+      "sublabel": "waitForPeer 预算",
+      "tag": "拿到就关通道",
+      "sources": [
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 307, "label": "waitForPeer" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 314, "label": "peer 立即 close" }
+      ]
+    },
+    {
+      "id": "reap",
+      "lane": "supervisor",
+      "col": 3,
+      "width": 140,
+      "type": "backend",
+      "label": "收尸",
+      "sublabel": "存活 < 3s 算快退",
+      "sources": [
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 339, "label": "isFastExit" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 359, "label": "跑稳则清零" }
+      ]
+    },
+    {
+      "id": "backoff",
+      "lane": "supervisor",
+      "col": 4,
+      "width": 140,
+      "type": "security",
+      "label": "退避补位",
+      "sublabel": "500ms 后重交",
+      "tag": "满 5 次放弃",
+      "sources": [
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 192, "end_line": 199, "label": "首轮不退避" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 348, "label": "crashLoopLimit" }
+      ]
+    },
+    {
+      "id": "stopall",
+      "lane": "supervisor",
+      "col": 5,
+      "width": 140,
+      "type": "external",
+      "label": "停机",
+      "sublabel": "SIGTERM 再强杀",
+      "sources": [
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 363, "label": "stopAllWorkers" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 439, "label": "等强杀落地" }
+      ]
+    },
+    {
+      "id": "open",
+      "lane": "channel",
+      "col": 1,
+      "width": 140,
+      "type": "messagebus",
+      "label": "开通道",
+      "sublabel": "mkdtemp 0700 + sock",
+      "sources": [
+        { "path": "src/Platform/IO/Socket.cpp", "line": 701, "end_line": 711, "label": "通道文件与权限" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 267, "label": "UpgradeChannel::open" }
+      ]
+    },
+    {
+      "id": "header",
+      "lane": "channel",
+      "col": 2,
+      "width": 140,
+      "type": "external",
+      "label": "定长头",
+      "sublabel": "family/type/blob 8B",
+      "sources": [
+        { "path": "src/Platform/IO/Socket.cpp", "line": 313, "label": "HandoffHeader" },
+        { "path": "src/Platform/IO/Socket.cpp", "line": 481, "label": "Windows blob 长度" }
+      ]
+    },
+    {
+      "id": "rights",
+      "lane": "channel",
+      "col": 3,
+      "width": 140,
+      "type": "security",
+      "label": "SCM_RIGHTS",
+      "sublabel": "POSIX 传描述符",
+      "tag": "blob 归 0",
+      "sources": [
+        { "path": "src/Platform/IO/Socket.cpp", "line": 497, "end_line": 510, "label": "控制数据装载" },
+        { "path": "src/Platform/IO/Socket.cpp", "line": 642, "label": "接手后置不可继承" }
+      ]
+    },
+    {
+      "id": "retire",
+      "lane": "channel",
+      "col": 4,
+      "width": 140,
+      "type": "security",
+      "label": "交砸了就退",
+      "sublabel": "强杀 + 等收尸",
+      "sources": [
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 278, "end_line": 291, "label": "retireWithoutListener" }
+      ]
+    },
+    {
+      "id": "adopt",
+      "lane": "child",
+      "col": 2,
+      "width": 140,
+      "type": "backend",
+      "label": "接手监听",
+      "sublabel": "50ms 重试 connect",
+      "sources": [
+        { "path": "src/Core/Process/UpgradeChannel.cpp", "line": 137, "label": "adoptHandedOverListener" },
+        { "path": "src/Core/Process/UpgradeChannel.cpp", "line": 163, "label": "非 AF_UNIX 的文案" }
+      ]
+    },
+    {
+      "id": "mark",
+      "lane": "child",
+      "col": 3,
+      "width": 140,
+      "type": "security",
+      "label": "标记监听",
+      "sublabel": "close 不 shutdown",
+      "sources": [
+        { "path": "src/Core/Socket/AsyncSocket.h", "line": 112, "end_line": 123, "label": "markAsListening" },
+        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 496, "end_line": 510, "label": "仅非监听才 shutdown" }
+      ]
+    },
+    {
+      "id": "serve",
+      "lane": "child",
+      "col": 4,
+      "width": 140,
+      "type": "frontend",
+      "label": "各自服务",
+      "sublabel": "不共享状态",
+      "tag": "指标 ×N",
+      "sources": [
+        { "path": "src/Core/Process/WorkerSupervisor.h", "line": 47, "label": "进程间不共享" },
+        { "path": "src/Net/Tcp/TcpAcceptor.cpp", "line": 102, "label": "POSIX 自 bind + REUSEPORT" }
+      ]
+    },
+    {
+      "id": "drain",
+      "lane": "child",
+      "col": 5,
+      "width": 140,
+      "type": "external",
+      "label": "换代收口",
+      "sublabel": "先 drain 后关",
+      "sources": [
+        { "path": "samples/core_upgrade/main.cpp", "line": 372, "label": "全程探测零失败" }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "w-cfg-spawn", "from": "cfg", "to": "spawn", "role": "main" },
+    { "id": "w-spawn-peer", "from": "spawn", "to": "waitpeer", "label": "追加交接参数", "variant": "emphasis", "role": "main" },
+    { "id": "w-peer-reap", "from": "waitpeer", "to": "reap", "role": "main" },
+    { "id": "w-reap-back", "from": "reap", "to": "backoff", "label": "崩过才退避", "role": "main" },
+    { "id": "w-back-stop", "from": "backoff", "to": "stopall", "variant": "dashed", "role": "branch" },
+    { "id": "w-spawn-open", "from": "spawn", "to": "open", "role": "main" },
+    { "id": "w-open-header", "from": "open", "to": "header", "role": "main" },
+    { "id": "w-header-rights", "from": "header", "to": "rights", "label": "校验同解", "role": "main" },
+    { "id": "w-rights-retire", "from": "rights", "to": "retire", "label": "任一步不成", "variant": "security", "role": "error" },
+    { "id": "w-retire-back", "from": "retire", "to": "backoff", "variant": "dashed", "role": "return" },
+    { "id": "w-header-adopt", "from": "header", "to": "adopt", "role": "main" },
+    { "id": "w-adopt-mark", "from": "adopt", "to": "mark", "role": "main" },
+    { "id": "w-mark-serve", "from": "mark", "to": "serve", "label": "进接受循环", "variant": "emphasis", "role": "main" },
+    { "id": "w-serve-drain", "from": "serve", "to": "drain", "variant": "dashed", "role": "branch" },
+    { "id": "w-back-open", "from": "backoff", "to": "open", "label": "重新移交", "variant": "dashed", "role": "return" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "端口共享二选一",
+      "items": [
+        "POSIX：每个 worker 自己 bind 同一端口 + SO_REUSEPORT，由内核分摊；此时不该给 handoff，填了构造期就拒",
+        "Windows：master 只 bind 一次，靠移交一份监听引用（WSAPROTOCOL_INFOW blob）分给子代；没有 handoff 配置直接拒",
+        "进程间不共享状态：IP 限额、限流与指标每进程各算一份，多 worker 时对外报的是 1/N"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "通道的一次性",
+      "items": [
+        "每次（重）起都新开一条通道：waitForPeer 一拿到对端就关通道，waitBudget 期限就是「一次起来就崩」的判据",
+        "载体必须是 AF_UNIX——TCP 上 sendmsg/recvmsg 都成功而 controllen 归 0，描述符根本过不去",
+        "两条「装进来又退回」的出口：MSG_CTRUNC 或头不全、以及头与套接字属性不符，都先关掉已装入的描述符再报错；接手后一律置不可继承"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "补位与放弃",
+      "items": [
+        "存活小于 crashLoopWindow（默认 3000ms）算快退，快退才加计数；跑稳一轮后清零",
+        "补位前先退避 500ms，首轮崩溃不退避；计满 5 次置 isGivenUp",
+        "全部 worker 都 isGivenUp 时 run() 返回 false，这与「按请求收口」的 true 是两种结局",
+        "停机顺序固定：SIGTERM → 等 shutdownTimeout → 强杀 → 等强杀真正落地"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "验收与相邻的两件事",
+      "items": [
+        "端到端判据：真起两个进程问一遍回话（TestWorkerSupervisor.cpp:296 答 handoff-ok），加上 samples/core_upgrade 的全程探测零失败",
+        "WebSocket 一条连接一个写者，peer 只在会话协程帧与单循环线程上存活；收尾顺序是 markClosed → 唤醒投递方 → 关套接字 → 等业务任务",
+        "内存是两套账：接收窗口固定 2 KiB 起、读满才翻倍到 8 KiB 上限，不随报文增长；HttpMemoryBudget 只管在途正文且 0 表示不限——公网暴露前要显式 setMemoryBudget + setMaxConnections"
+      ]
+    }
+  ]
+}

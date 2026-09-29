@@ -1,0 +1,295 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "AsynGyanis 模块分层、挂载点与后端选择",
+    "locale": "zh-CN",
+    "output": "assets/diagrams/layered-architecture.html",
+    "quality_profile": "standard",
+    "repository": {
+      "url": "https://github.com/Gyanis9/AsynGyanis.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+    },
+    "views": [
+      {
+        "id": "layers",
+        "label": "五层依赖",
+        "focus": ["app", "net", "database", "core", "base", "platform", "os"],
+        "note": "箭头即依赖方向：上层链下层，Platform 独占全部 OS 调用"
+      },
+      {
+        "id": "kernel",
+        "label": "内核与后端",
+        "focus": ["core", "backends", "opt-mimalloc", "third-crypto"],
+        "note": "后端编译期三选一，成员集合一致故上层没有平台分支"
+      },
+      {
+        "id": "consumers",
+        "label": "消费面",
+        "focus": ["app", "samples", "tests", "net", "database"],
+        "note": "应用、按模块自检示例与对齐测试共用同一份库目标"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "app",
+      "type": "frontend",
+      "label": "应用代码",
+      "sublabel": "find_package(AsynGyanis)",
+      "pos": [320, 40],
+      "size": [190, 60],
+      "sources": [
+        { "path": "CMakeLists.txt", "line": 245, "label": "ASYN_ENABLE_INSTALL 出包配置" },
+        { "path": "packaging/conan/test_package/CMakeLists.txt", "line": 5, "end_line": 8, "label": "消费方只需 find_package" }
+      ]
+    },
+    {
+      "id": "samples",
+      "type": "external",
+      "label": "自检示例",
+      "sublabel": "samples/ 按模块",
+      "pos": [560, 40],
+      "size": [170, 60],
+      "sources": [
+        { "path": "CMakeLists.txt", "line": 180, "label": "ASYN_BUILD_SAMPLES" },
+        { "path": "CMakeLists.txt", "line": 191, "end_line": 193, "label": "示例进构建" }
+      ]
+    },
+    {
+      "id": "tests",
+      "type": "external",
+      "label": "测试与微基准",
+      "sublabel": "tests/ 与 src 对齐",
+      "pos": [40, 40],
+      "size": [190, 60],
+      "sources": [
+        { "path": "CMakeLists.txt", "line": 179, "label": "ASYN_BUILD_TESTS" },
+        { "path": "CMakeLists.txt", "line": 182, "end_line": 187, "label": "tests 与 microbench" }
+      ]
+    },
+    {
+      "id": "net",
+      "type": "backend",
+      "label": "Net",
+      "sublabel": "HTTP · QUIC · WebSocket · ACME",
+      "tag": "libNet.a",
+      "pos": [320, 170],
+      "size": [190, 60],
+      "sources": [
+        { "path": "src/Net/CMakeLists.txt", "line": 29, "label": "STATIC" },
+        { "path": "src/Net/CMakeLists.txt", "line": 45, "end_line": 48, "label": "只 PUBLIC 链 Core" }
+      ]
+    },
+    {
+      "id": "database",
+      "type": "database",
+      "label": "Database",
+      "sublabel": "连接池 · 方言 · ORM · 迁移",
+      "tag": "libDatabase.a",
+      "pos": [560, 170],
+      "size": [170, 60],
+      "sources": [
+        { "path": "src/Database/CMakeLists.txt", "line": 36, "label": "STATIC" },
+        { "path": "src/Database/CMakeLists.txt", "line": 40, "end_line": 47, "label": "直接声明 Base/Platform/Core" }
+      ]
+    },
+    {
+      "id": "third-compress",
+      "type": "external",
+      "label": "zlib / zstd / brotli",
+      "sublabel": "正文与 WS 压缩",
+      "tag": "PRIVATE",
+      "pos": [40, 170],
+      "size": [190, 60],
+      "sources": [
+        { "path": "src/Net/CMakeLists.txt", "line": 50, "end_line": 52, "label": "PRIVATE 即可" },
+        { "path": "src/Net/CMakeLists.txt", "line": 40, "end_line": 43, "label": "仍要登记导出" }
+      ]
+    },
+    {
+      "id": "third-db",
+      "type": "external",
+      "label": "SQLite3 / MySQL / Redis",
+      "sublabel": "探测不到即报错桩",
+      "tag": "可选退化",
+      "pos": [810, 170],
+      "size": [190, 60],
+      "sources": [
+        { "path": "src/Database/CMakeLists.txt", "line": 46, "label": "SQLite 必选" },
+        { "path": "src/Database/CMakeLists.txt", "line": 51, "end_line": 72, "label": "可选驱动与报错桩" }
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "Core",
+      "sublabel": "事件循环 · 协程 · TLS · 多进程",
+      "tag": "libCore.a",
+      "pos": [320, 300],
+      "size": [410, 60],
+      "sources": [
+        { "path": "src/Core/CMakeLists.txt", "line": 20, "end_line": 22, "label": "STATIC" },
+        { "path": "src/Core/CMakeLists.txt", "line": 24, "end_line": 29, "label": "PUBLIC Base/Platform/OpenSSL" }
+      ]
+    },
+    {
+      "id": "backends",
+      "type": "backend",
+      "label": "epoll / IOCP / io_uring",
+      "sublabel": "编译期三选一",
+      "pos": [40, 300],
+      "size": [190, 60],
+      "sources": [
+        { "path": "src/Core/EventLoop/Epoll.h", "line": 32, "label": "Windows 别名到 Iocp" },
+        { "path": "src/Core/EventLoop/Epoll.h", "line": 35, "end_line": 47, "label": "开 io_uring 别名到 Uring" }
+      ]
+    },
+    {
+      "id": "opt-mimalloc",
+      "type": "cloud",
+      "label": "mimalloc",
+      "sublabel": "进程级分配器接管",
+      "tag": "默认关",
+      "pos": [40, 370],
+      "size": [190, 60],
+      "sources": [
+        { "path": "src/Core/CMakeLists.txt", "line": 31, "end_line": 39, "label": "开关内链入" },
+        { "path": "CMakeLists.txt", "line": 73, "end_line": 77, "label": "与 sanitizer 互斥" }
+      ]
+    },
+    {
+      "id": "third-crypto",
+      "type": "security",
+      "label": "OpenSSL",
+      "sublabel": "TLS 与 QUIC 胶水",
+      "pos": [810, 300],
+      "size": [190, 60],
+      "sources": [
+        { "path": "src/Core/CMakeLists.txt", "line": 27, "end_line": 28, "label": "Core 链入" },
+        { "path": "src/Net/CMakeLists.txt", "line": 56, "end_line": 60, "label": "Net 显式声明" }
+      ]
+    },
+    {
+      "id": "base",
+      "type": "backend",
+      "label": "Base",
+      "sublabel": "日志 6 级 4 Sink · 配置 · 异常层次",
+      "tag": "libBase.a",
+      "pos": [320, 430],
+      "size": [410, 60],
+      "sources": [
+        { "path": "src/Base/CMakeLists.txt", "line": 17, "label": "STATIC" },
+        { "path": "src/Base/CMakeLists.txt", "line": 35, "end_line": 43, "label": "有 std::stacktrace 才带调用栈" }
+      ]
+    },
+    {
+      "id": "third-format",
+      "type": "external",
+      "label": "nlohmann / yaml-cpp",
+      "sublabel": "原生接口，不自研值模型",
+      "pos": [810, 430],
+      "size": [190, 60],
+      "sources": [
+        { "path": "src/Base/CMakeLists.txt", "line": 47, "end_line": 48, "label": "Base 公开传递" }
+      ]
+    },
+    {
+      "id": "platform",
+      "type": "backend",
+      "label": "Platform",
+      "sublabel": "描述符 · socket · 事件通知 · 文件监听 · 原子写 · 编码",
+      "tag": "libPlatform.a",
+      "pos": [320, 560],
+      "size": [410, 60],
+      "sources": [
+        { "path": "src/Platform/CMakeLists.txt", "line": 12, "label": "STATIC" },
+        { "path": "src/Platform/CMakeLists.txt", "line": 20, "end_line": 26, "label": "Windows 网络库" }
+      ]
+    },
+    {
+      "id": "third-sys",
+      "type": "external",
+      "label": "Threads / ws2_32",
+      "sublabel": "Mswsock · iphlpapi",
+      "pos": [810, 560],
+      "size": [190, 60],
+      "sources": [
+        { "path": "src/Platform/CMakeLists.txt", "line": 21, "end_line": 25, "label": "仅 Windows" },
+        { "path": "src/Platform/CMakeLists.txt", "line": 30, "end_line": 34, "label": "Threads 登记导出" }
+      ]
+    },
+    {
+      "id": "os",
+      "type": "external",
+      "label": "Windows / Linux",
+      "sublabel": "IOCP · epoll · io_uring · eventfd / socketpair · inotify",
+      "pos": [320, 690],
+      "size": [410, 60],
+      "sources": [
+        { "path": "CMakeLists.txt", "line": 17, "end_line": 20, "label": "其他系统配置期拒绝" },
+        { "path": "src/Core/EventLoop/Epoll.h", "line": 25, "end_line": 31, "label": "AcceptEx 只能由 Iocp 取走" }
+      ]
+    }
+  ],
+  "connections": [
+    { "id": "app-to-net", "from": "app", "to": "net", "variant": "emphasis" },
+    { "id": "app-to-database", "from": "app", "to": "database" },
+    { "id": "samples-to-database", "from": "samples", "to": "database" },
+    { "id": "tests-to-net", "from": "tests", "to": "net", "variant": "dashed" },
+    { "id": "net-to-core", "from": "net", "to": "core", "variant": "emphasis" },
+    { "id": "database-to-core", "from": "database", "to": "core" },
+    { "id": "core-to-base", "from": "core", "to": "base", "variant": "emphasis" },
+    { "id": "base-to-platform", "from": "base", "to": "platform", "variant": "emphasis" },
+    { "id": "platform-to-os", "from": "platform", "to": "os", "label": "系统调用", "labelAt": [525, 634], "variant": "emphasis" },
+    { "id": "net-to-compress", "from": "net", "to": "third-compress", "label": "PRIVATE", "variant": "dashed" },
+    { "id": "database-to-sqlite", "from": "database", "to": "third-db", "label": "SQL" },
+    { "id": "core-to-backends", "from": "core", "to": "backends", "label": "后端选择" },
+    { "id": "core-to-mimalloc", "from": "core", "to": "opt-mimalloc", "label": "开关", "variant": "dashed" },
+    { "id": "core-to-crypto", "from": "core", "to": "third-crypto", "label": "PUBLIC", "variant": "security" },
+    { "id": "base-to-format", "from": "base", "to": "third-format", "label": "PUBLIC" },
+    { "id": "platform-to-sys", "from": "platform", "to": "third-sys", "label": "PUBLIC" }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "交付形态",
+      "items": [
+        "五个模块都只出静态库：没有 BUILD_SHARED_LIBS 开关，公开头无符号可见性标注",
+        "只支持 Linux 与 Windows：其他系统在配置阶段 FATAL_ERROR，事件后端没有 kqueue",
+        "命名空间到模块名为止（AsynGyanis::Core 等），子目录不引入新命名空间，include 从 src/ 起算"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "构建装配与打包",
+      "items": [
+        "add_subdirectory(src) 恒开；tests 与 benchmarks/microbench 同挂 ASYN_BUILD_TESTS（CMakeLists.txt:179-187），samples 挂 ASYN_BUILD_SAMPLES（:191-193）",
+        "关掉这两个开发者开关，库本身与安装规则完全不受影响：包配置由 ASYN_ENABLE_INSTALL 生成（:245）",
+        "第三方一律由 Conan 在配置期自动安装，conandata.yml 是唯一依赖事实；曾加过的第二份 vcpkg 清单已删除"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "后端三选一的真实差异",
+      "items": [
+        "Epoll.h 用别名选后端：Windows 是 using Epoll = Iocp（:32），开 ASYN_WITH_IO_URING 是 using Epoll = Uring（:47），成员集合一致故 EventLoop/IoWatcher 没有平台分支",
+        "IOCP 有一条别的后端没有的出口：AcceptEx 接进来的连接只能由 Iocp::takeAcceptedSocket() 取走（Epoll.h:25-31）",
+        "io_uring 只改后端选择，需要内核 5.6+；沙箱挡 io_uring_setup 时相关用例按能力 SKIP 而不是失败（根 CMakeLists.txt:83-85）"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "依赖可见性口径",
+      "items": [
+        "Net 只 PUBLIC 链 Core：Platform 与 Base 由 Core 传递而来（src/Net/CMakeLists.txt:45-48）",
+        "Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:40-47）",
+        "压缩库 PRIVATE 够用，但静态库以 LINK_ONLY 传给最终可执行体，包导出清单仍要登记 ZLIB/zstd/brotli",
+        "QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3，跨实现验收走进程外裁判",
+        "ASYN_WITH_MIMALLOC 与 sanitizer 互斥，同开在配置阶段 FATAL_ERROR；接管是进程级的"
+      ]
+    }
+  ]
+}

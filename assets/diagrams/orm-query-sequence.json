@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "一次 ORM 查询从表达式到行对象",
+    "locale": "zh-CN",
+    "output": "assets/diagrams/orm-query-sequence.html",
+    "viewBox": [1080, 690],
+    "column_fit": "spread",
+    "quality_profile": "standard",
+    "repository": {
+      "url": "https://github.com/Gyanis9/AsynGyanis.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+    },
+    "views": [
+      {
+        "id": "plan",
+        "label": "建树与选方言",
+        "focus": ["caller", "qnode", "dialect"],
+        "note": "方言优先级：显式类型 > 事务连接 > 借池探测"
+      },
+      {
+        "id": "lease",
+        "label": "租约与语句锁",
+        "focus": ["caller", "pool", "lease"],
+        "note": "池耗尽给空租约不抛，抛点在调用方"
+      },
+      {
+        "id": "exec",
+        "label": "执行与映射",
+        "focus": ["dialect", "driver", "mapper"],
+        "note": "缓存键是 SQL 全文；命中就整趟跳过编译与边界探测"
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "caller",
+      "type": "frontend",
+      "label": "Queryable",
+      "sublabel": "toList/first/count",
+      "sources": [
+        { "path": "src/Database/Queryable/Queryable.h", "line": 279, "label": "toList" },
+        { "path": "src/Database/Queryable/Queryable.h", "line": 322, "label": "count 清排序分页" }
+      ]
+    },
+    {
+      "id": "qnode",
+      "type": "backend",
+      "label": "QueryNode",
+      "sublabel": "表达式树",
+      "sources": [
+        { "path": "src/Database/Queryable/Expression.h", "line": 157, "label": "运算符建树" },
+        { "path": "src/Database/Queryable/QueryNode.h", "line": 115, "label": "WhereCondition" }
+      ]
+    },
+    {
+      "id": "dialect",
+      "type": "backend",
+      "label": "SqlDialect",
+      "sublabel": "渲染与占位符",
+      "sources": [
+        { "path": "src/Database/Dialect/StandardSqlDialect.cpp", "line": 420, "label": "translate" },
+        { "path": "src/Database/Dialect/SqliteDialect.cpp", "line": 14, "label": "LIMIT -1 内联" },
+        { "path": "src/Database/Dialect/DialectRegistry.cpp", "line": 11, "label": "dialectFor" }
+      ]
+    },
+    {
+      "id": "pool",
+      "type": "messagebus",
+      "label": "ConnectionPool",
+      "sublabel": "空闲栈 LIFO",
+      "sources": [
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 103, "label": "acquire 三段" },
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 130, "label": "acquireTimeout" },
+        { "path": "src/Database/Pool/PoolConfig.h", "line": 28, "end_line": 32, "label": "32 / 5000ms / 两个 0" }
+      ]
+    },
+    {
+      "id": "lease",
+      "type": "security",
+      "label": "PooledConnection",
+      "sublabel": "RAII 租约",
+      "sources": [
+        { "path": "src/Database/Queryable/Queryable.h", "line": 904, "label": "事务里持语句锁" },
+        { "path": "src/Database/Pool/PooledConnection.cpp", "line": 62, "label": "doReturnToPool" }
+      ]
+    },
+    {
+      "id": "driver",
+      "type": "database",
+      "label": "驱动连接",
+      "sublabel": "Sqlite / MySQL",
+      "sources": [
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 189, "label": "未命中才 prepare" },
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 394, "label": "findCachedStatement" },
+        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 429, "label": "命中直 bindAndExecute" }
+      ]
+    },
+    {
+      "id": "mapper",
+      "type": "backend",
+      "label": "RowMapper",
+      "sublabel": "值到字段",
+      "sources": [
+        { "path": "src/Database/Queryable/RowMapper.h", "line": 560, "label": "mapResultRows" },
+        { "path": "src/Database/Queryable/RowMapper.h", "line": 239, "label": "bool 只认 0/1" }
+      ]
+    }
+  ],
+  "segments": [
+    { "from": 165, "to": 240, "label": "建树与选方言" },
+    { "from": 240, "to": 330, "label": "借连接与锁" },
+    { "from": 330, "to": 470, "label": "渲染与执行" },
+    { "from": 470, "to": 580, "label": "映射与归还" }
+  ],
+  "messages": [
+    { "id": "o-build", "from": "caller", "to": "qnode", "y": 175, "label": "where/orderBy/limit", "variant": "emphasis" },
+    { "id": "o-dialect", "from": "caller", "to": "dialect", "y": 203, "label": "resolveDialect", "variant": "default", "note": "显式类型 > 事务连接 > 借池探测" },
+    { "id": "o-dialect-back", "from": "dialect", "to": "caller", "y": 231, "label": "方言单例", "variant": "return" },
+    { "id": "o-acquire", "from": "caller", "to": "pool", "y": 259, "label": "acquire()", "variant": "emphasis" },
+    { "id": "o-empty", "from": "pool", "to": "caller", "y": 287, "label": "空租约或连接", "variant": "return", "note": "等到 acquireTimeout 给空对象，抛点在调用方" },
+    { "id": "o-lock", "from": "caller", "to": "lease", "y": 315, "label": "租约持语句锁", "variant": "default" },
+    { "id": "o-translate", "from": "caller", "to": "dialect", "y": 343, "label": "translate(QueryNode)", "variant": "default" },
+    { "id": "o-stmt", "from": "dialect", "to": "caller", "y": 371, "label": "SqlStatement", "variant": "return", "note": "分页与参数预算在这里落定" },
+    { "id": "o-execute", "from": "caller", "to": "driver", "y": 399, "label": "execute(sql, params)", "variant": "emphasis" },
+    { "id": "o-hit", "from": "driver", "to": "caller", "y": 427, "label": "命中：跳编译", "variant": "dashed" },
+    { "id": "o-miss", "from": "driver", "to": "caller", "y": 455, "label": "未命中：prepare 入表", "variant": "dashed" },
+    { "id": "o-result", "from": "driver", "to": "mapper", "y": 483, "label": "DatabaseResult", "variant": "default" },
+    { "id": "o-rows", "from": "mapper", "to": "caller", "y": 511, "label": "vector<T>", "variant": "return" },
+    { "id": "o-return", "from": "caller", "to": "lease", "y": 539, "label": "作用域结束归还", "variant": "dashed" },
+    { "id": "o-topool", "from": "lease", "to": "pool", "y": 567, "label": "先复位再入栈", "variant": "dashed" }
+  ],
+  "activations": [
+    { "participant": "caller", "from": 175, "to": 539, "type": "frontend" },
+    { "participant": "qnode", "from": 175, "to": 203, "type": "backend" },
+    { "participant": "dialect", "from": 203, "to": 371, "type": "backend" },
+    { "participant": "pool", "from": 259, "to": 567, "type": "messagebus" },
+    { "participant": "lease", "from": 315, "to": 539, "type": "security" },
+    { "participant": "driver", "from": 399, "to": 483, "type": "database" },
+    { "participant": "mapper", "from": 483, "to": 511, "type": "backend" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "预算与分块",
+      "items": [
+        "参数上限按方言实际产出的占位符数判：SQLite 999、MySQL 65535；批量写取 rowsPerStatement = 上限 / 列数，分块必须同连接同事务（Queryable.h:1290、1312）",
+        "IS NULL、列-列比较不占参数；IN 展开才按元素个数计（StandardSqlDialect.cpp:320、713）",
+        "分页钩子在渲染里落：SQLite 内联十进制并补 LIMIT -1，MySQL 用 ?（StandardSqlDialect.cpp:400、SqliteDialect.cpp:14）"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "语句缓存的两条分支",
+      "items": [
+        "缓存键是 SQL 全文，容量 64 条按 LRU 逐出（SqliteConnection.h:371 / MySqlConnection.h:351）",
+        "SQLite 命中刷 stamp 并整趟跳过编译与边界探测；行没跑完先 detachCachedStatement，超 256 行快照界退回游标即不回缓存",
+        "MySQL 任何失败一律 discardCachedStatement，刻意不做重编重试——写语句重试就是二次写入"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "事务与串行的真因",
+      "items": [
+        "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:904、ConnectionPool 的 acquireStatementLock）",
+        "commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:40、56、76）",
+        "池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 的两个 0 含义相反（0=不限制 / 0=立即）"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Redis 借这张图的会话位",
+      "items": [
+        "argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:199、520、574）",
+        "归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（.cpp:946）",
+        "订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（.cpp:1150）；发布/订阅与命令共用同一个池，但订阅连接不可归还",
+        "可选依赖缺失时是报错桩：六个入口写「缺少 hiredis」，isConnected 恒 false，RedisResult 给 0 列与 monostate"
+      ]
+    }
+  ]
+}

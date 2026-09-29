@@ -1,0 +1,269 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "一笔提交要过的验证闸门",
+    "locale": "zh-CN",
+    "output": "assets/diagrams/verification-gate-workflow.html",
+    "quality_profile": "standard",
+    "repository": {
+      "url": "https://github.com/Gyanis9/AsynGyanis.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+    },
+    "views": [
+      {
+        "id": "local-chain",
+        "label": "本地串行",
+        "focus": ["commit", "fmt", "tidy", "dual", "samples"],
+        "note": "格式 → 静态检查 → 双端构建与全量测试 → 示例矩阵"
+      },
+      {
+        "id": "parallel",
+        "label": "CI 并行铺开",
+        "focus": ["dispatch", "build", "conform", "harden"],
+        "note": "作业之间没有 needs：各自 checkout、各自构建、各自判定"
+      },
+      {
+        "id": "release",
+        "label": "发布",
+        "focus": ["gates", "publish"],
+        "note": "版本三处同解是硬判据，Advisory 只在打了 v* 标签之后发"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "local", "label": "本地每笔提交（串行）" },
+    { "id": "ci", "label": "CI（main 推送或手动触发）" },
+    { "id": "release", "label": "发布与供应链" }
+  ],
+  "phases": [
+    { "id": "precheck", "label": "本地串行", "fromCol": 0, "toCol": 4 },
+    { "id": "fanout", "label": "并行铺开与放行", "fromCol": 5, "toCol": 5, "variant": "emphasis" }
+  ],
+  "groups": [
+    { "id": "paralleljobs", "label": "作业间零 needs：全平铺", "lane": "ci", "fromCol": 2, "toCol": 5, "variant": "emphasis" }
+  ],
+  "mainPath": ["commit", "fmt", "tidy", "dual", "samples", "dispatch", "build"],
+  "nodes": [
+    {
+      "id": "commit",
+      "lane": "local",
+      "col": 0,
+      "width": 140,
+      "type": "external",
+      "label": "工作树改动",
+      "sublabel": "逐文件暂存",
+      "sources": [
+        { "path": "CONTRIBUTING.md", "line": 46, "end_line": 47, "label": "测试与提交约定" }
+      ]
+    },
+    {
+      "id": "fmt",
+      "lane": "local",
+      "col": 1,
+      "width": 140,
+      "type": "security",
+      "label": "clang-format",
+      "sublabel": "有差异即红",
+      "tag": "钉 23.1.1",
+      "sources": [
+        { "path": "CONTRIBUTING.md", "line": 42, "end_line": 44, "label": "版本与判据" }
+      ]
+    },
+    {
+      "id": "tidy",
+      "lane": "local",
+      "col": 2,
+      "width": 140,
+      "type": "external",
+      "label": "clang-tidy",
+      "sublabel": "只报告不阻塞",
+      "sources": [
+        { "path": "CONTRIBUTING.md", "line": 45, "label": "静态检查一步" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 539, "label": "CI 侧同为报告档" }
+      ]
+    },
+    {
+      "id": "dual",
+      "lane": "local",
+      "col": 3,
+      "width": 140,
+      "type": "backend",
+      "label": "双端门禁",
+      "sublabel": "MSVC + 容器 GCC",
+      "tag": "零告警/零泄漏",
+      "sources": [
+        { "path": "CMakeLists.txt", "line": 207, "label": "/W4 /WX" },
+        { "path": "CMakeLists.txt", "line": 136, "label": "ASan + UBSan" },
+        { "path": "CMakePresets.json", "line": 10, "label": "debug 预设" }
+      ]
+    },
+    {
+      "id": "samples",
+      "lane": "local",
+      "col": 4,
+      "width": 140,
+      "type": "backend",
+      "label": "示例矩阵",
+      "sublabel": "run_samples.py",
+      "tag": "CI 不跑它",
+      "sources": [
+        { "path": "scripts/run_samples.py", "line": 182, "end_line": 194, "label": "缺产出也计失败" },
+        { "path": "scripts/run_samples.py", "line": 219, "label": "有失败即 return 1" }
+      ]
+    },
+    {
+      "id": "dispatch",
+      "lane": "local",
+      "col": 5,
+      "width": 140,
+      "type": "messagebus",
+      "label": "进主干",
+      "sublabel": "main 或手动跑",
+      "tag": "develop 是空档",
+      "sources": [
+        { "path": ".github/SECURITY.md", "line": 68, "label": "别把作业存在当跑过" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 32, "label": "分片与 fail-fast" }
+      ]
+    },
+    {
+      "id": "build",
+      "lane": "ci",
+      "col": 5,
+      "width": 140,
+      "type": "backend",
+      "label": "构建 + 全量 ctest",
+      "sublabel": "三分片 + Windows",
+      "tag": "-k 0 收全告警",
+      "sources": [
+        { "path": ".github/workflows/linux-ci.yml", "line": 102, "label": "分片构建" },
+        { "path": ".github/workflows/windows-ci.yml", "line": 74, "label": "Windows 构建" }
+      ]
+    },
+    {
+      "id": "conform",
+      "lane": "ci",
+      "col": 4,
+      "width": 140,
+      "type": "external",
+      "label": "进程外裁判",
+      "sublabel": "h2spec · Autobahn",
+      "tag": "另起对端",
+      "sources": [
+        { "path": ".github/workflows/linux-ci.yml", "line": 217, "label": "h2spec 步骤" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 270, "label": "WS 互操作探针" }
+      ]
+    },
+    {
+      "id": "harden",
+      "lane": "ci",
+      "col": 3,
+      "width": 140,
+      "type": "security",
+      "label": "加固档",
+      "sublabel": "TSan · libFuzzer",
+      "tag": "覆盖率 ≥60%",
+      "sources": [
+        { "path": ".github/workflows/linux-ci.yml", "line": 452, "label": "TSan 另起构建树" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 642, "label": "模糊 300 秒" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 705, "label": "gcovr 门槛" }
+      ]
+    },
+    {
+      "id": "gates",
+      "lane": "release",
+      "col": 3,
+      "width": 140,
+      "type": "security",
+      "label": "发布门禁",
+      "sublabel": "三处版本同解",
+      "tag": "读不到算 2",
+      "sources": [
+        { "path": "scripts/check-release-version.py", "line": 8, "label": "退出码口径" },
+        { "path": ".github/workflows/release-gate.yml", "line": 17, "label": "版本一致性作业" }
+      ]
+    },
+    {
+      "id": "supply",
+      "lane": "release",
+      "col": 2,
+      "width": 140,
+      "type": "database",
+      "label": "供应链",
+      "sublabel": "SBOM + 公告台账",
+      "tag": "组件数须同解",
+      "sources": [
+        { "path": ".github/workflows/supply-chain.yml", "line": 12, "label": "cron 与手动" },
+        { "path": "scripts/check-dependency-advisories.py", "line": 77, "label": "台账同解判据" }
+      ]
+    },
+    {
+      "id": "publish",
+      "lane": "release",
+      "col": 4,
+      "width": 140,
+      "type": "cloud",
+      "label": "打 v* 标签",
+      "sublabel": "才发 Advisory",
+      "sources": [
+        { "path": ".github/SECURITY.md", "line": 58, "end_line": 61, "label": "披露节奏" }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "e-fmt", "from": "commit", "to": "fmt", "role": "main" },
+    { "id": "e-tidy", "from": "fmt", "to": "tidy", "label": "零差异", "variant": "emphasis", "role": "main" },
+    { "id": "e-dual", "from": "tidy", "to": "dual", "role": "main" },
+    { "id": "e-samples", "from": "dual", "to": "samples", "label": "两侧全绿", "role": "main" },
+    { "id": "e-dispatch", "from": "samples", "to": "dispatch", "role": "main" },
+    { "id": "e-ci", "from": "dispatch", "to": "build", "label": "无 needs", "variant": "emphasis", "role": "main" },
+    { "id": "e-conform", "from": "dispatch", "to": "conform", "label": "各起对端", "variant": "dashed", "role": "branch" },
+    { "id": "e-harden", "from": "dispatch", "to": "harden", "variant": "dashed", "role": "branch" },
+    { "id": "e-gates", "from": "build", "to": "gates", "role": "main" },
+    { "id": "e-supply", "from": "harden", "to": "supply", "variant": "dashed", "role": "branch" },
+    { "id": "e-tag", "from": "gates", "to": "publish", "label": "同解才放行", "variant": "security", "role": "main" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Linux CI 的作业清单",
+      "items": [
+        "build-and-test：platform-base-core / net / database 三分片并行，fail-fast: false，一个红不掩盖其它（linux-ci.yml:32-48）",
+        "protocol-conformance：h2spec v2.6.0 明文 + TLS + --strict、WS 互操作探针、Autobahn 判 behavior=FAILED 必须为 0",
+        "http3-acceptance：h3_cross_check、quic_cross_check、quic_outbound_cross_check（Release 构建）",
+        "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 跑 300 秒且 -error_exitcode=1",
+        "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连，io-uring-compile 编 + 跑"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "并行、空档与人工闸",
+      "items": [
+        "四条工作流的作业之间零 needs：全部平铺并行，串行只发生在作业内部（checkout → 配置 → 构建 → ctest）",
+        "develop 与 PR 不消耗分钟数：要看某个提交就 gh workflow run \"Linux CI\" --ref develop；三条流还 paths-ignore 掉纯文档改动",
+        "run_samples.py 在任何 yml 里零引用，它是本地与容器里的人工闸；示例每条 check 都要能红",
+        "外部裁判要另起进程或容器：Autobahn 在另一网络命名空间经 host-gateway 回宿主，服务端须绑 0.0.0.0 另开端口"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "只 SKIP 不算红",
+      "items": [
+        "真机凭据走环境变量：ASYN_MYSQL_TEST_*、ASYN_REDIS_TEST_HOST/PASSWORD、ASYN_ACME_TEST_DIRECTORY_URL/_CONTACT_EMAIL/_ACCOUNT_STATE_DIR，缺任一即跳过",
+        "按能力门控：Windows 没有 SO_REUSEPORT 就跳过共享端口；内核挡 io_uring_setup 时打警告后退化为只编译",
+        "Redis 只在 database 分片真起；MySQL 侧用 ASYN_SKIP_MYSQL_DEPS=1 走驱动编译档"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "发布与供应链",
+      "items": [
+        "版本一致性判据是三处必须同解：CMake project VERSION、CHANGELOG 最新段、最新 v* 标签；不一致退 1，读不到退 2",
+        "SBOM 出 CycloneDX 1.6 + SHA256SUMS，组件数与 conandata 条数不同解即红；公告台账钉「固定版本与台账同解」，--fetch 不可达只提示",
+        "修复走 develop，补丁进 main、打上 v* 标签后才发 Advisory：交的是依赖清单与来源，不是签名后的二进制"
+      ]
+    }
+  ]
+}

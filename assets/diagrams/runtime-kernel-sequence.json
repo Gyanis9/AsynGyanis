@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "事件循环一轮与协程调度归属",
+    "locale": "zh-CN",
+    "output": "assets/diagrams/runtime-kernel-sequence.html",
+    "viewBox": [1080, 620],
+    "column_fit": "spread",
+    "quality_profile": "standard",
+    "repository": {
+      "url": "https://github.com/Gyanis9/AsynGyanis.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+    },
+    "views": [
+      {
+        "id": "harvest",
+        "label": "取事件与派发",
+        "focus": ["loop", "backend", "watcher", "task"],
+        "note": "就绪表先排空，哨兵优先于 watcher 消费"
+      },
+      {
+        "id": "timers",
+        "label": "定时器与本地队列",
+        "focus": ["timer", "sched", "task"],
+        "note": "到期恢复走 postLocal，不在驱动协程里就地 resume"
+      },
+      {
+        "id": "offload",
+        "label": "外派与回环",
+        "focus": ["task", "exec", "sched", "loop"],
+        "note": "工作线程只跑活，结果回到 completionLoop 消费"
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "task",
+      "type": "frontend",
+      "label": "Task 协程",
+      "sublabel": "惰性启动",
+      "sources": [
+        { "path": "src/Core/Coroutine/Task.h", "line": 256, "label": "initial_suspend" }
+      ]
+    },
+    {
+      "id": "watcher",
+      "type": "backend",
+      "label": "IoWatcher",
+      "sublabel": "就绪派发",
+      "sources": [
+        { "path": "src/Core/EventLoop/IoWatcher.cpp", "line": 227, "label": "写侧先 resume" },
+        { "path": "src/Core/EventLoop/IoWatcher.cpp", "line": 165, "label": "handleEvents" }
+      ]
+    },
+    {
+      "id": "loop",
+      "type": "backend",
+      "label": "EventLoop",
+      "sublabel": "run 的一轮",
+      "sources": [
+        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 150, "end_line": 161, "label": "先排空再取事件" },
+        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 129, "label": "停止粘性不清标志" }
+      ]
+    },
+    {
+      "id": "backend",
+      "type": "cloud",
+      "label": "事件后端",
+      "sublabel": "epoll/IOCP/uring",
+      "sources": [
+        { "path": "src/Core/EventLoop/Epoll.cpp", "line": 84, "label": "epoll_wait" },
+        { "path": "src/Core/EventLoop/Iocp.cpp", "line": 824, "label": "GetQueuedCompletionStatusEx" },
+        { "path": "src/Core/EventLoop/Uring.cpp", "line": 758, "label": "超时是一条 ring 操作" }
+      ]
+    },
+    {
+      "id": "timer",
+      "type": "backend",
+      "label": "TimerQueue",
+      "sublabel": "驱动协程",
+      "sources": [
+        { "path": "src/Core/EventLoop/TimerQueue.cpp", "line": 188, "label": "waitReadable" },
+        { "path": "src/Core/EventLoop/TimerQueue.cpp", "line": 316, "label": "postLocal 转恢复" }
+      ]
+    },
+    {
+      "id": "sched",
+      "type": "messagebus",
+      "label": "Scheduler",
+      "sublabel": "本地 + 全局队列",
+      "sources": [
+        { "path": "src/Core/Coroutine/Scheduler.cpp", "line": 137, "label": "先本地" },
+        { "path": "src/Core/Coroutine/Scheduler.cpp", "line": 157, "label": "全局按批 ≤256" },
+        { "path": "src/Core/Coroutine/Scheduler.h", "line": 27, "end_line": 31, "label": "无工作窃取" }
+      ]
+    },
+    {
+      "id": "exec",
+      "type": "external",
+      "label": "AsyncExecutor",
+      "sublabel": "工作线程",
+      "sources": [
+        { "path": "src/Core/Coroutine/AsyncExecutor.h", "line": 272, "label": "completionLoop 上回投" },
+        { "path": "src/Core/Coroutine/ThreadPool.cpp", "line": 90, "label": "一线程一循环" }
+      ]
+    }
+  ],
+  "segments": [
+    { "from": 165, "to": 270, "label": "取事件与派发" },
+    { "from": 270, "to": 350, "label": "定时器与本地队列" },
+    { "from": 350, "to": 435, "label": "外派与回环" },
+    { "from": 435, "to": 500, "label": "跨线程唤醒与停机" }
+  ],
+  "messages": [
+    { "id": "k-wait", "from": "loop", "to": "backend", "y": 175, "label": "wait(有活?0:-1)", "variant": "emphasis" },
+    { "id": "k-events", "from": "backend", "to": "loop", "y": 203, "label": "就绪事件表", "variant": "return" },
+    { "id": "k-dispatch", "from": "loop", "to": "watcher", "y": 231, "label": "handleEvents", "variant": "emphasis", "note": "先判 isWatcherAlive 再派发" },
+    { "id": "k-resume", "from": "watcher", "to": "task", "y": 259, "label": "写侧先于读侧恢复", "variant": "default" },
+    { "id": "k-drive", "from": "loop", "to": "timer", "y": 287, "label": "drive()", "variant": "default" },
+    { "id": "k-post", "from": "timer", "to": "sched", "y": 315, "label": "postLocal 转恢复", "variant": "dashed" },
+    { "id": "k-runall", "from": "loop", "to": "sched", "y": 343, "label": "尾部 runAll", "variant": "return" },
+    { "id": "k-await", "from": "sched", "to": "task", "y": 371, "label": "在循环线程恢复", "variant": "return" },
+    { "id": "k-offload", "from": "task", "to": "exec", "y": 399, "label": "外派阻塞/CPU 活", "variant": "dashed" },
+    { "id": "k-remote", "from": "exec", "to": "sched", "y": 427, "label": "scheduleRemote", "variant": "dashed" },
+    { "id": "k-back", "from": "sched", "to": "task", "y": 455, "label": "结果回原循环", "variant": "return" },
+    { "id": "k-wake", "from": "sched", "to": "loop", "y": 483, "label": "notify 唤醒 wait", "variant": "emphasis", "note": "Linux eventfd，其余 socketpair" }
+  ],
+  "activations": [
+    { "participant": "loop", "from": 175, "to": 483, "type": "backend" },
+    { "participant": "backend", "from": 175, "to": 203, "type": "cloud" },
+    { "participant": "watcher", "from": 231, "to": 259, "type": "backend" },
+    { "participant": "task", "from": 259, "to": 455, "type": "frontend" },
+    { "participant": "timer", "from": 287, "to": 315, "type": "backend" },
+    { "participant": "sched", "from": 315, "to": 483, "type": "messagebus" },
+    { "participant": "exec", "from": 399, "to": 427, "type": "external" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "一轮的九步（EventLoop::run）",
+      "items": [
+        "先 runAll() 排空就绪（:150）→ 判 m_stopRequested（:152）→ 有活则超时取 0 否则 -1（:158）→ 进 WaitingForEvents 相位 → wait()（:161）",
+        "进 Working 相位（:163）→ 哨兵优先 drain，否则判 isWatcherAlive 再 handleEvents（:166-187）",
+        "定时器同一路唤醒驱动 TimerQueue::drive → 到期项走 postLocal；尾部再 runAll() 消费（:192）"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "三后端的差别只在第 5 步",
+      "items": [
+        "epoll 水平触发直接返回就绪表（Epoll.cpp:84），没有重武装这一步",
+        "IOCP 要重投探针模拟水平触发，另有待重投/待合成两张表与 ConnectEx、takeAcceptedSocket 专属出口（Iocp.cpp:800-838）",
+        "io_uring 的一次性 POLL_ADD 要补投，且超时本身是一条 ring 操作（Uring.cpp:734-771）；三后端稳态「每轮 wait() 0 分配」由同一条用例钉住（tests/Core/EventLoop/TestEpoll.cpp:267）"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "线程与生命周期契约",
+      "items": [
+        "没有工作窃取：全局队列里的条目必须回到它原来的循环执行（Scheduler.h:27-31），负载均衡只发生在接受层",
+        "Task 是惰性的：启动点在 await_suspend 返回句柄那一刻，帧走进程级 CoroutinePool",
+        "Cancelable 自己不 resume 任何东西，真打断靠 requestStop + 关闭套接字让 ~IoWatcher 唤醒等待者",
+        "停止是粘的：stop() 先置位再 wake，run() 刻意不清 m_stopRequested（EventLoop.cpp:129），一个 EventLoop 实例只有一回 run"
+      ]
+    }
+  ]
+}

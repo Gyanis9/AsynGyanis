@@ -1,0 +1,283 @@
+{
+  "schema_version": 2,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "ACME 证书从下单到续期的生命周期",
+    "locale": "zh-CN",
+    "output": "assets/diagrams/acme-certificate-lifecycle.html",
+    "quality_profile": "standard",
+    "repository": {
+      "url": "https://github.com/Gyanis9/AsynGyanis.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+    },
+    "views": [
+      {
+        "id": "issuance",
+        "label": "签发主路径",
+        "focus": ["judge", "account", "order", "prove", "finalize", "installed"],
+        "note": "代码里没有状态枚举：状态只是函数序列与机构回文 status 的标签"
+      },
+      {
+        "id": "loopback",
+        "label": "暂存与节拍",
+        "focus": ["reuse", "present", "poll", "sleep"],
+        "note": "令牌由 RAII 守卫挂着，每条出口都会摘"
+      },
+      {
+        "id": "exits",
+        "label": "失败与终态",
+        "focus": ["noted", "unanswered", "installed", "rejected", "nohandler"],
+        "note": "装回被拒是唯一「磁盘已换、内存未换」的终态"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "main", "label": "签发主路径" },
+    { "id": "hold", "label": "暂存与等待" },
+    { "id": "fault", "label": "退避与失败" },
+    { "id": "terminal", "label": "本轮出口" }
+  ],
+  "states": [
+    {
+      "id": "judge",
+      "type": "start",
+      "label": "判到期",
+      "sublabel": "issueIfRequired",
+      "tag": "剩 30 天",
+      "lane": "main",
+      "col": 0,
+      "step": "01",
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 257, "label": "入口" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 121, "label": "renewBeforeExpiry" }
+      ]
+    },
+    {
+      "id": "account",
+      "type": "active",
+      "label": "账户就绪",
+      "sublabel": "目录 + nonce + JWS",
+      "lane": "main",
+      "col": 1,
+      "step": "02",
+      "sources": [
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 459, "label": "有持久 URL 先探针" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 513, "label": "否则新建账户" },
+        { "path": "src/Net/Acme/AcmeClient.h", "line": 112, "label": "badNonce 重发上限 3" }
+      ]
+    },
+    {
+      "id": "order",
+      "type": "active",
+      "label": "下单",
+      "sublabel": "newOrder + 授权",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "sources": [
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 558, "label": "提交标识符" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 592, "label": "取 authorization" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 642, "label": "没有 http-01 即失败" }
+      ]
+    },
+    {
+      "id": "prove",
+      "type": "decision",
+      "label": "自证验证",
+      "sublabel": "触发验证",
+      "lane": "main",
+      "col": 3,
+      "step": "04",
+      "sources": [
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 659, "label": "POST 空体触发" }
+      ]
+    },
+    {
+      "id": "finalize",
+      "type": "active",
+      "label": "定稿取证",
+      "sublabel": "CSR + 轮询订单",
+      "lane": "main",
+      "col": 4,
+      "step": "05",
+      "sources": [
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 734, "label": "提交 CSR" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 784, "label": "轮询订单" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 798, "label": "取证书链" }
+      ]
+    },
+    {
+      "id": "sleep",
+      "type": "waiting",
+      "label": "睡到下一检查点",
+      "sublabel": "Core::Timer",
+      "tag": "12h 节拍",
+      "lane": "hold",
+      "col": 0,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 438, "end_line": 450, "label": "循环与等待" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 119, "label": "renewalCheckInterval" }
+      ]
+    },
+    {
+      "id": "reuse",
+      "type": "waiting",
+      "label": "沿用磁盘证书",
+      "sublabel": "私钥在位",
+      "lane": "hold",
+      "col": 1,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 282, "end_line": 288, "label": "按绝对剩余天数判" }
+      ]
+    },
+    {
+      "id": "present",
+      "type": "waiting",
+      "label": "挂 http-01 令牌",
+      "sublabel": "RAII 出口必摘",
+      "lane": "hold",
+      "col": 2,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 351, "label": "PresentedToken 守卫" },
+        { "path": "src/Net/Acme/AcmeHttp01ChallengeStore.cpp", "line": 18, "label": "present" },
+        { "path": "src/Net/Acme/AcmeHttp01ChallengeStore.cpp", "line": 71, "label": "只注册 GET" }
+      ]
+    },
+    {
+      "id": "poll",
+      "type": "waiting",
+      "label": "等机构验证",
+      "sublabel": "500ms 轮询",
+      "tag": "180s 上限",
+      "lane": "hold",
+      "col": 3,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 708, "label": "轮询挑战" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 123, "label": "issuanceTimeout 兼单次 HTTP 超时" }
+      ]
+    },
+    {
+      "id": "unanswered",
+      "type": "failure",
+      "label": "挑战没答上",
+      "sublabel": "查路由与端口",
+      "lane": "fault",
+      "col": 2,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 681, "end_line": 698, "label": "invalid/expired/revoked" },
+        { "path": "src/Net/Acme/AcmeError.h", "line": 34, "label": "ChallengeNotAnswered" }
+      ]
+    },
+    {
+      "id": "noted",
+      "type": "failure",
+      "label": "记失败退避",
+      "sublabel": "不抛出给调用方",
+      "lane": "fault",
+      "col": 3,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 152, "label": "recordFailure" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 363, "end_line": 369, "label": "429/503 归 RateLimited" }
+      ]
+    },
+    {
+      "id": "nohandler",
+      "type": "failure",
+      "label": "循环拒启动",
+      "sublabel": "没给回调就不跑",
+      "lane": "terminal",
+      "col": 0,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 430, "label": "无 handler 即记失败" }
+      ]
+    },
+    {
+      "id": "rejected",
+      "type": "failure",
+      "label": "装回被拒",
+      "sublabel": "磁盘已新内存旧",
+      "lane": "terminal",
+      "col": 3,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 405, "label": "ReloadRejected" }
+      ]
+    },
+    {
+      "id": "installed",
+      "type": "success",
+      "label": "装回服务",
+      "sublabel": "Https + Quic",
+      "lane": "terminal",
+      "col": 4,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 386, "label": "原子落盘" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 402, "label": "reloadHandler" },
+        { "path": "src/Net/Quic/QuicServer.cpp", "line": 210, "label": "锁内换 SSL_CTX" }
+      ]
+    }
+  ],
+  "transitions": [
+    { "id": "t-due", "from": "judge", "to": "account", "label": "寿命不足", "variant": "emphasis" },
+    { "id": "t-order", "from": "account", "to": "order", "label": "账户可用" },
+    { "id": "t-prove", "from": "order", "to": "prove", "label": "拿到挑战" },
+    { "id": "t-ready", "from": "prove", "to": "finalize", "label": "valid", "variant": "emphasis" },
+    { "id": "t-install", "from": "finalize", "to": "installed", "label": "落盘后装回", "labelDy": 25, "variant": "emphasis" },
+    { "id": "t-keep", "from": "judge", "to": "reuse", "label": "仍可用", "labelDy": 25, "variant": "dashed" },
+    { "id": "t-present", "from": "order", "to": "present", "label": "挂令牌", "labelDy": 25 },
+    { "id": "t-trigger", "from": "present", "to": "prove", "label": "触发自证" },
+    { "id": "t-poll", "from": "prove", "to": "poll", "label": "等验证", "labelDy": 25, "variant": "dashed" },
+    { "id": "t-back-prove", "from": "poll", "to": "prove", "label": "还没收口", "variant": "dashed" },
+    { "id": "t-keep-sleep", "from": "reuse", "to": "sleep", "label": "不签发" },
+    { "id": "t-next-round", "from": "sleep", "to": "judge", "label": "下一轮", "variant": "dashed", "route": "left-channel" },
+    { "id": "t-no-handler", "from": "judge", "to": "nohandler", "label": "没装回调", "variant": "security", "route": "left-channel" },
+    { "id": "t-not-answered", "from": "poll", "to": "unanswered", "label": "invalid/超时", "variant": "security" },
+    { "id": "t-note", "from": "present", "to": "noted", "label": "其余失败", "variant": "security" },
+    { "id": "t-backoff", "from": "noted", "to": "sleep", "label": "退避重来", "variant": "dashed" },
+    { "id": "t-fix", "from": "unanswered", "to": "sleep", "label": "人改完再来", "variant": "dashed" },
+    { "id": "t-reload-fail", "from": "installed", "to": "rejected", "label": "回调报错", "variant": "security" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "节拍与阈值",
+      "items": [
+        "判据是绝对剩余天数，不是比例：默认剩不到 30 天就签（AcmeCertificateManager.h:121、.cpp:282）",
+        "检查节拍 12h、挑战轮询 500ms、issuanceTimeout 180s——后者同时充当轮询总时限与单次 HTTP 超时",
+        "实际唤醒取 max(now+12h, 上次失败秒+1)；配置项 minimumRetryInterval 目前没有任何消费点，别当已生效",
+        "badNonce 是唯一原样重发点，上限 3 次（AcmeClient.h:112）"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "九种失败，处置分三档",
+      "items": [
+        "要人动手：InvalidConfiguration（域名空/没接受条款/路径不合法）、KeyMaterial（生成加载签名 CSR 这一带）、FileSystem（证书私钥或账户状态落盘失败）",
+        "整条重试：Transport（DNS/TLS/时限/对端收线）、UnexpectedResponse（有响应却不是 ACME 的形状）、RateLimited（429 或带 Retry-After 的 503）",
+        "查部署：ChallengeNotAnswered——机构去取自证时本地没答上，多半是路由或端口",
+        "判死：RejectedByAuthority（带 ACME 错误类型与 detail）；ReloadRejected 是唯一「磁盘已换、内存未换」的终态",
+        "每一种都必须有真实产出点：加一个没人产生的种类，等于让调用方以为那种失败已被区分过（AcmeError.h:23-24 注）"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "令牌与停机",
+      "items": [
+        "令牌路由只注册 GET、只答已挂出的令牌，未挂或已撤一律 404（AcmeHttp01ChallengeStore.cpp:52-59、71）",
+        "PresentedToken 由析构负责摘除，每条出口（含失败）都执行，不会把令牌留在公网路由上",
+        "stopRenewalLoop 只在下一个检查点生效：既不打断在跑的一轮，也打不断那次睡眠（.cpp:147、438）",
+        "没提供 reloadHandler 时续期循环直接拒启动并记失败，不会静默签发到磁盘（.cpp:430）"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "验收的两条腿",
+      "items": [
+        "默认跑进程内桩机构：按 JWK 重算指纹、逐字节比 keyAuthorization，不符就把挑战判 invalid",
+        "真机构那条要 ASYN_ACME_TEST_DIRECTORY_URL、_CONTACT_EMAIL、_ACCOUNT_STATE_DIR 三条都给才不 SKIP，且只走目录 + 建号/复用，不签发",
+        "装回要两侧都算：HTTPS 走 TlsContext::reloadCertificate，QUIC 在锁内换 SSL_CTX，且只影响新连接"
+      ]
+    }
+  ]
+}

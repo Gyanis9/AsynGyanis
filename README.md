@@ -67,15 +67,33 @@
 
 ## 架构
 
-模块分层与依赖方向（箭头表示「依赖」）：
+模块分层与依赖方向（箭头表示「依赖」；依赖可见性 PUBLIC/PRIVATE 与可选开关都标在边上）：
 
-| 模块 | 库 | 依赖 | 职责 |
-|------|----|------|------|
-| `Platform` | `libPlatform.a` | Threads（Windows 另加 ws2_32 / Mswsock） | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 |
-| `Base` | `libBase.a` | Platform, nlohmann_json, yaml-cpp | 日志、配置、异常层次、JSON/YAML 原生库的传递依赖 |
-| `Core` | `libCore.a` | Platform, Base, OpenSSL（可选 mimalloc） | 事件循环、协程运行时、socket、TLS、多进程编排 |
-| `Net` | `libNet.a` | Core, OpenSSL；私有 zlib / zstd / brotli | TCP 服务基类、HTTP/1.1/2/3、WebSocket、QUIC、路由与中间件 |
-| `Database` | `libDatabase.a` | Core, Base, Platform, sqlite3；可选 libmysqlclient / hiredis | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
+![AsynGyanis 模块分层、挂载点与后端选择](assets/diagrams/png/layered-architecture-light.png)
+
+> 下面这张是总览，其余八张按主题拆开画在各小节里；点链接看交互版。 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[layered-architecture.html](assets/diagrams/layered-architecture.html)
+
+| 模块 | 库 | 职责 |
+|------|----|------|
+| `Platform` | `libPlatform.a` | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 |
+| `Base` | `libBase.a` | 日志、配置、异常层次、JSON/YAML 原生库的传递依赖 |
+| `Core` | `libCore.a` | 事件循环、协程运行时、socket、TLS、多进程编排 |
+| `Net` | `libNet.a` | TCP 服务基类、HTTP/1.1/2/3、WebSocket、QUIC、路由与中间件、ACME |
+| `Database` | `libDatabase.a` | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
+
+### 图解索引
+
+| 图 | 类型 | 讲什么 |
+|----|------|--------|
+| [模块分层与后端选择](assets/diagrams/layered-architecture.html) | 架构 | 五层依赖方向、第三方挂载点、epoll/IOCP/io_uring 三选一、两个默认关的开关 |
+| [一次请求的调用链](assets/diagrams/http-request-sequence.html) | 时序 | accept → TLS/ALPN 分岔 → 增量解析 → 路由与中间件 → 向量写与背压 → 五种错误出口 |
+| [事件循环一轮](assets/diagrams/runtime-kernel-sequence.html) | 时序 | 九步循环、三后端在第 5 步的分岔、协程与线程的归属契约 |
+| [配置/日志/指标/追踪](assets/diagrams/config-log-dataflow.html) | 数据流 | 四条数据面各自的闸门、快照与缓冲、落点 |
+| [QUIC 连接生命周期](assets/diagrams/quic-connection-lifecycle.html) | 状态机 | 三相位与三包号空间、NewReno 恢复、反放大与常量、没实现的能力 |
+| [ACME 证书生命周期](assets/diagrams/acme-certificate-lifecycle.html) | 状态机 | 下单到装回、12h 节拍与 30 天阈值、九种失败与三档处置 |
+| [ORM 查询链](assets/diagrams/orm-query-sequence.html) | 时序 | 表达式树 → 方言渲染 → 租约与语句锁 → 缓存两分支 → 行映射 |
+| [多进程移交与换代](assets/diagrams/worker-handoff-workflow.html) | 流程 | 启停补位、AF_UNIX 描述符移交、监听收口禁 shutdown、换代 drain |
+| [验证闸门](assets/diagrams/verification-gate-workflow.html) | 流程 | 本地串行四道 → CI 十条并行 → 发布与供应链，以及哪些只是 SKIP |
 
 模块内的子目录（如 `Base/Log/Sinks`、`Core/EventLoop`）**不引入新的命名空间**：命名空间一律到模块名为止（`AsynGyanis::Base`、`AsynGyanis::Core` …），include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`）。
 
@@ -152,6 +170,12 @@ ACME 那一条只走「取目录 + 建号 / 复用账户」，不签发证书（
 填 staging 端点（`https://acme-staging-v02.api.letsencrypt.org/directory`）不计入生产配额。
 
 ## 运行示例
+
+多 worker 的启停、崩溃补位与监听套接字移交（POSIX 走 SO_REUSEPORT，Windows 走描述符移交）：
+
+![多进程 worker 的启停、补位与监听移交](assets/diagrams/png/worker-handoff-workflow-light.png)
+
+> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[worker-handoff-workflow.html](assets/diagrams/worker-handoff-workflow.html)
 
 `samples/echo_server` 随构建一起编译（默认每线程一个监听 socket）：
 
@@ -232,6 +256,12 @@ Release 编进 3 条 `ReleaseBuild*`，跨配置比数量前先看清是哪一�
 ## 代码示例
 
 以下示例均取自 `samples/main.cpp` 与 `tests/`，是当前代码里真实可编译的用法。
+
+一次请求在库里的实际走法（含 TLS/ALPN 分岔与背压挂起点）：
+
+![一次请求从 accept、TLS/ALPN 到响应写出](assets/diagrams/png/http-request-sequence-light.png)
+
+> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[http-request-sequence.html](assets/diagrams/http-request-sequence.html)
 
 ### HTTP 服务（多线程，每线程一个监听 socket）
 
@@ -363,6 +393,12 @@ const std::string yamlText = YAML::Dump(configuration);
 
 ### 配置与日志
 
+配置、日志、指标、追踪这四条数据面的闸门与落点（哪些拒绝发生在装载期、等级过滤在哪三处生效）：
+
+![配置、日志、指标与追踪四条数据流](assets/diagrams/png/config-log-dataflow-light.png)
+
+> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[config-log-dataflow.html](assets/diagrams/config-log-dataflow.html)
+
 ```cpp
 #include "Base/Config/ConfigManager.h"
 #include "Base/Log/LogMacros.h"
@@ -381,6 +417,12 @@ LOG_INFO_FMT("listening on port {}", port);
 ```
 
 ### 证书自动化（ACME）
+
+一张证书从判到期到装回服务的完整状态机（含每条失败出口）：
+
+![ACME 证书从下单到续期的生命周期](assets/diagrams/png/acme-certificate-lifecycle-light.png)
+
+> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[acme-certificate-lifecycle.html](assets/diagrams/acme-certificate-lifecycle.html)
 
 ```cpp
 #include "Core/Coroutine/Task.h"
@@ -479,6 +521,12 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 
 ### Core — 异步运行时（`libCore.a`）
 
+一轮事件循环的内部步骤，以及协程/线程池/外派执行器之间的归属契约：
+
+![事件循环一轮与协程调度归属](assets/diagrams/png/runtime-kernel-sequence-light.png)
+
+> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[runtime-kernel-sequence.html](assets/diagrams/runtime-kernel-sequence.html)
+
 | 子目录 | 内容 |
 |--------|------|
 | `EventLoop/` | `IoContext`（运行时入口）、`EventLoop`、`IoWatcher`、`TimerQueue` / `Timer`、三后端 `Epoll`（Linux）/ `Iocp`（Windows）/ `Uring`（可选）、`ConnectionDistributor`（接受分发） |
@@ -489,6 +537,12 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 | `Exception/` | Core 侧异常类型 |
 
 ### Net — 网络应用层（`libNet.a`）
+
+自研 QUIC 传输层的相位、包号空间与恢复路径：
+
+![自研 QUIC 连接的相位、空间与恢复](assets/diagrams/png/quic-connection-lifecycle-light.png)
+
+> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[quic-connection-lifecycle.html](assets/diagrams/quic-connection-lifecycle.html)
 
 | 子目录 | 内容 |
 |--------|------|
@@ -502,6 +556,12 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 | `Acme/` | `AcmeKeyPair`（账户与域名密钥、JWK 与 RFC 7638 指纹、RS256/ES256 的 JWS 签名、CSR）、`AcmeClient`（RFC 8555 状态机：目录 / 账户 / 下单 / 自证 / 定稿 / 取证）、`AcmeHttp01ChallengeStore`（令牌暂存与路由注册）、`AcmeCertificateManager`（到期判定、原子落盘、常驻续期循环与装回服务的回调） |
 
 ### Database — 数据访问（`libDatabase.a`）
+
+一次 ORM 查询从表达式树到行对象的链路（含语句缓存命中与未命中两条分支）：
+
+![一次 ORM 查询从表达式到行对象](assets/diagrams/png/orm-query-sequence-light.png)
+
+> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[orm-query-sequence.html](assets/diagrams/orm-query-sequence.html)
 
 | 子目录 | 内容 |
 |--------|------|
@@ -523,7 +583,7 @@ AsynGyanis/
 ├── samples/                # 按模块拆开的自检示例 + echo_server（部署形态），总跑见 scripts/run_samples.py
 ├── benchmarks/             # 性能基线与门禁脚本、热路径微基准、进程外压测脚本
 ├── packaging/conan/        # Conan 库包配方与消费方冒烟测试
-├── scripts/                # 发布版本一致性门禁、示例总跑、跨实现验收探针（QUIC/h3/WS/h2）
+├── scripts/                # 发布版本一致性门禁、示例总跑、跨实现验收探针（QUIC/h3/WS/h2/ACME）
 ├── src/
 │   ├── Platform/           # 平台底层（OS 调用的唯一出处）：IO / FileSystem / System
 │   ├── Base/               # Config / Exception / Log
@@ -554,13 +614,27 @@ AsynGyanis/
 
 ## 测试与验证
 
+一笔提交要过的闸门：本地串行四道 → CI 十条作业并行铺开 → 发布与供应链。图下的卡片写清了哪些是硬失败、哪些只是报告档、哪些按能力 SKIP。
+
+![一笔提交要过的验证闸门](assets/diagrams/png/verification-gate-workflow-light.png)
+
+> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[verification-gate-workflow.html](assets/diagrams/verification-gate-workflow.html)
+
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
 - 当前规模（2026-09-28 实测）：**Windows Debug（含 ASan）3574 例全绿、73 例 SKIP**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3594 例全绿、70 例 SKIP、零告警、零泄漏、零未定义行为**（这一轮容器侧没注入真库凭据，MySQL 与 Redis 那几条按门控 SKIP；ACME 那一族 39 例在两侧都跑，其中真机构那条按环境变量门控）。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递、多进程编排里 shell 假 worker 那几条行为、以及换代交接通道那两条只可能在本机判的（套接字文件所在目录的权限、装进来又被退回的描述符）；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按平台或内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言；`io_uring` 那一档要先探得出环，沙箱不给环时 `IoContext` 的八条按能力 SKIP 而不是失败）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 - **CI 触发面**：三条工作流（Linux CI / Windows CI / 发布门禁）只在 `main` 推送与手动触发上跑，`develop` 不消耗
   分钟数——要看某个提交就 `gh workflow run "Linux CI" --ref develop`。每条作业覆盖什么、最近一次真实运行，
-  记在 `.github/SECURITY.md` 的「我们靠哪些持续验证」表里（含 h2spec、Autobahn、libFuzzer、TSan、aioquic 互操作）
+  记在 `.github/SECURITY.md` 的「我们靠哪些持续验证」表里（含 h2spec、Autobahn、libFuzzer、TSan、aioquic 互操作、Pebble 的 ACME 跨实现验收）
+- **ACME 的跨实现验收怎么跑**：`scripts/acme_pebble_cross_check.sh`，对面换成 Pebble（Let's Encrypt 官方
+  那套 ACME 测试服务端，Go 实现，与本仓不同源代码）。它不需要公网机器：把镜像里的 `app` 与 `test/` 取到
+  一处目录（`docker create ghcr.io/letsencrypt/pebble:latest` 再 `docker export` 解包即可），脚本会用
+  自己的端口（默认 24000/25000，令牌端口 15002，都能用环境变量覆盖）现造一份配置起对面，域名用
+  `127.0.0.1.sslip.io` 这类通配解析——对面按它解析回来就是本机，于是整条 HTTP-01 在回环上走通，
+  签出的链还要拿对面**本次启动**的根（管理接口 `/roots/0`）用 openssl 验一遍。
+  为什么值得跑：进程内的桩与实现同源、一起被改，两边错在同一种理解上时会一起绿；这一轮它就抓出了两个
+  桩不会拒的缺陷（请求缺 `User-Agent`、机构复用已 valid 的授权时又被触发一次挑战）
 - **供应链**：`scripts/generate-sbom.py` 出 CycloneDX 1.6 清单（含 `SHA256SUMS`），
   `scripts/check-dependency-advisories.py` 钉「`conandata.yml` 的固定版本与 `packaging/dependency-watch.json`
   的公告台账同解」；两者由 `supply-chain.yml` 作业跑（`main` 推送、手动触发、每周一凌晨），SBOM 作为制品保留

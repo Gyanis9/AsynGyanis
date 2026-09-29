@@ -19,3 +19,11 @@ __pycache__/
 
 # SBOM 生成产物（scripts/generate-sbom.py 的输出目录）：每次构建可重生成，不进仓库
 /sbom/
+
+# archify 的工作目录：候选变体、finalize 收据、浏览器证据与视口截图。
+# 交付物在 assets/diagrams/（HTML 正文 + candidate JSON + 目检过的浅色 PNG），这里只留下可重生成的本机证据
+/.archify/
+
+# finalize/deliver 落在交付物旁边的收据：内容带着本机绝对路径（输入输出都是绝对路径），
+# 属于本机产物；图的溯源已经写进 HTML 自身，不需要再提交一份
+assets/diagrams/*.delivery.json
