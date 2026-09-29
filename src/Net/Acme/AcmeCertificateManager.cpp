@@ -118,8 +118,8 @@ namespace AsynGyanis::Net
         return std::chrono::system_clock::from_time_t(static_cast<std::time_t>(toUtcUnixSeconds(notAfterTime)));
     }
 
-    AcmeCertificateManager::AcmeCertificateManager(Core::EventLoop &loop, Configuration configuration, ReloadHandler reloadHandler) :
-        m_loop(loop), m_configuration(std::move(configuration)), m_reloadHandler(std::move(reloadHandler))
+    AcmeCertificateManager::AcmeCertificateManager(Core::EventLoop &loop, Configuration configuration, ReloadHandler reloadHandler, AcmeDns01TxtWriter dns01TxtWriter) :
+        m_loop(loop), m_configuration(std::move(configuration)), m_reloadHandler(std::move(reloadHandler)), m_dns01TxtWriter(std::move(dns01TxtWriter))
     {
     }
 
@@ -254,6 +254,46 @@ namespace AsynGyanis::Net
         return &*m_accountKey;
     }
 
+    Core::Task<std::optional<AcmeError>> AcmeCertificateManager::authorizeDns01(AcmeClient &client, const AcmeAuthorization &authorization)
+    {
+        const std::string recordName       = dns01RecordName(authorization.identifier);
+        const std::string keyAuthorization = authorization.dns01->token + "." + m_accountKey->jsonWebKeyThumbprint();
+        const std::string recordValue      = dns01ValidationText(keyAuthorization);
+
+        if (auto published = co_await m_dns01TxtWriter.publish(recordName, recordValue); !published.has_value())
+        {
+            // 写失败也要撤：「控制面收下之后才失败」那一类（确认阶段超时）其实已经写成了，
+            // 留下的那条 TXT 会让下一轮签发在同一名字上读到两条不同答案，而机构的原文不会说这一点
+            if (auto rollback = co_await m_dns01TxtWriter.withdraw(recordName, recordValue); !rollback.has_value())
+            {
+                LOG_WARN_FMT("AcmeCertificateManager: 域名 {} 的 dns-01 记录 {} 写入失败之后的撤回也没成功：{}。"
+                             "请手工到 DNS 控制台删掉这条 TXT，否则下一轮签发会在同一个名字上看到两条答案",
+                             authorization.identifier, recordName, rollback.error());
+            }
+            co_return failWith(AcmeErrorKind::DnsRecordRejected, std::format("域名 {} 的 dns-01 记录 {} 没能写入：{}", authorization.identifier, recordName, published.error()));
+        }
+
+        std::optional<AcmeError> solveFailure;
+        if (auto solved = co_await client.solveChallenge(authorization.dns01->challengeUrl, m_configuration.challengePollInterval, m_configuration.issuanceTimeout);
+            !solved.has_value())
+        {
+            solveFailure = notedFailure(solved.error());
+        }
+
+        // 撤这一步在任何一条自证出口之后都要跑到：先跑完再决定报哪条失败
+        auto withdrawn = co_await m_dns01TxtWriter.withdraw(recordName, recordValue);
+        if (solveFailure.has_value())
+        {
+            co_return *solveFailure;
+        }
+        if (!withdrawn.has_value())
+        {
+            co_return failWith(AcmeErrorKind::DnsRecordRejected, std::format("域名 {} 的 dns-01 记录 {} 没能撤掉：{}。自证已经过了，但那条 TXT 会留在同一个名字上，请尽快手工删掉",
+                                                                             authorization.identifier, recordName, withdrawn.error()));
+        }
+        co_return std::nullopt;
+    }
+
     Core::Task<std::expected<AcmeIssuedCertificate, AcmeError>> AcmeCertificateManager::issueIfRequired()
     {
         // 配置判据排在最前：这一层最常见的失败是路径或域名没填，而它比任何网络错误都更该先说
@@ -326,6 +366,10 @@ namespace AsynGyanis::Net
         clientConfiguration.externalAccountKeyId     = m_configuration.externalAccountKeyId;
         clientConfiguration.externalAccountKeySecret = m_configuration.externalAccountKeySecret;
         clientConfiguration.requestTimeout           = m_configuration.issuanceTimeout;
+        // 通道由「有没有 TXT 写入动作」定，一次签发只走一条：挑了 dns-01 就得有撤的能力，
+        // 而只填了一格的动作对按「没有 DNS-01 能力」处置，不会因为 publish 在而 withdraw 不在就跑一半
+        const bool isDns01Channel         = m_dns01TxtWriter.isUsable();
+        clientConfiguration.challengeKind = isDns01Channel ? AcmeChallengeKind::Dns01 : AcmeChallengeKind::Http01;
 
         AcmeClient client(m_loop, std::move(clientConfiguration), *accountKey.value());
 
@@ -352,6 +396,14 @@ namespace AsynGyanis::Net
             // 是 Boulder 系的原文，所以授权本身已经 valid 就等于这一格自证完成，直接进下一条
             if (authorization->status == "valid")
             {
+                continue;
+            }
+            if (isDns01Channel)
+            {
+                if (const auto failure = co_await authorizeDns01(client, *authorization); failure.has_value())
+                {
+                    co_return std::unexpected(*failure);
+                }
                 continue;
             }
             // 令牌挂出与撤走成对：PresentedToken 的析构负责每条提前返回的出口

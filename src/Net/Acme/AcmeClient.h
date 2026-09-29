@@ -82,6 +82,16 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API std::string dns01ValidationText(std::string_view keyAuthorization);
 
     /**
+     * @brief 算 dns-01 要挂 TXT 记录的那个完整域名
+     * @details 名字是 `_acme-challenge.<域名>`；通配符 `*.example.com` 要先去掉 `*.`，
+     *          于是它与 `example.com` 落在同一条记录上（RFC 8738 §3）。一张证书覆盖多个域名时
+     *          每个授权各一条，谁都不能替谁答。
+     * @param domainName 授权里的 identifier 原文（可能是 `*.` 开头的通配符）
+     * @return std::string 交给 DNS 提供方的记录名，形如 `_acme-challenge.gyanis.space`
+     */
+    [[nodiscard]] ASYN_NET_API std::string dns01RecordName(std::string_view domainName);
+
+    /**
      * @brief 一个域名的授权记录，带着「本客户端按配置挑中的那一种」挑战
      * @details 解析时只挑 `AcmeClient::Configuration::challengeKind` 要的那一种，另一条留空——
      *          刻意不把两种都填上：调用方一旦拿到两条，就得自己决定发哪条给机构，而「发了一条、

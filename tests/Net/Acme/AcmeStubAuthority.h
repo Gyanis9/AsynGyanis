@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -69,7 +70,7 @@ namespace AsynGyanis::Net::TestSupport
             std::string externalAccountKeyId;
             /// 桩核对 EAB 用的 HMAC 密钥（base64url 文本）
             std::string externalAccountKeySecret;
-            /// 只给这一种挑战类型；写成 "dns-01" 就能测「机构不给 http-01」那条拒绝面
+            /// 只给这一种挑战类型；写成 "dns-01" 既能测「机构不给 http-01」那条拒绝面，也能测 DNS-01 的整条通路
             std::string offeredChallengeType{"http-01"};
             /// 触发校验之后前 N 次轮询仍报 processing：测客户端真在轮询，而不是赌一次就 valid
             std::size_t challengeProcessingPolls{0};
@@ -101,6 +102,7 @@ namespace AsynGyanis::Net::TestSupport
             std::size_t missingUserAgentRequestCount{0}; ///< 缺 User-Agent 的请求条数：真机构（Boulder/Pebble）对这种请求直接 400
             std::size_t revalidatedChallengeCount{0};    ///< 对已 valid 的挑战再触发校验的条数：真机构对此回 400
             std::size_t challengeFetchCount{0};          ///< 取自证令牌的次数
+            std::size_t dns01ValidationCount{0};         ///< 按 dns-01 口径核过一次 TXT 的次数
             std::size_t issuedOrderCount{0};             ///< 建出的订单条数
             std::size_t issuedCertificateCount{0};       ///< 签出的证书条数
             std::string lastChallengeFetchPath;          ///< 最后一次取令牌用的路径，用于断言 well-known 位置
@@ -160,6 +162,15 @@ namespace AsynGyanis::Net::TestSupport
          *          在循环上告诉桩。只在所属循环的线程上调用。
          */
         void setValidationAuthority(std::string authority);
+
+        /**
+         * @brief 交给桩一条「现在权威侧答得出的 TXT 是什么」的读法，dns-01 校验靠它
+         * @param reader 返回当前已发布的那条 TXT 正文；没有就返回空
+         * @details 桩不接真 DNS，所以由用例把被测方那副假 DNS 的记录口递进来。桩要核的是
+         *          `base64url(SHA-256(令牌.指纹))`，其中**指纹用桩自己那份独立实现算**——
+         *          被测实现若把令牌或指纹接错，这里就会判 invalid 而不是跟着一起错
+         */
+        void setPublishedTxtReader(std::function<std::optional<std::string>()> reader);
 
         /**
          * @brief 一个不存在账户的 URL，形状合法但桩没记过账
@@ -258,6 +269,12 @@ namespace AsynGyanis::Net::TestSupport
          */
         Core::Task<void> validateHttp01(Challenge &challenge, const Account &account);
 
+        /**
+         * @brief 按 dns-01 的口径核一次已发布的 TXT，并按结果定挑战状态
+         * @details 不去取 HTTP 令牌：这条通路上「答案在 DNS 里」，而桩读的是用例给的那个记录口
+         */
+        Core::Task<void> validateDns01(Challenge &challenge, const Account &account);
+
         /// 发一条 RFC 8555 §6.7 的问题文档
         void writeProblem(HttpResponse &response, int statusCode, std::string_view problemType, std::string_view detail);
 
@@ -278,6 +295,7 @@ namespace AsynGyanis::Net::TestSupport
         std::unique_ptr<HttpServer>                    m_server;                      ///< 承载这些端点的明文 HTTP 服务（端口由它现报，见 port()）
         std::optional<Core::Task<void>>                m_startTask;                   ///< 接受循环的协程帧：start() 只把它交出来，得有人持有到循环停下
         std::string                                    m_validationAuthority;         ///< 取自证令牌要去的那台机器（由用例在循环上填）
+        std::function<std::optional<std::string>()>    m_publishedTxtReader{};        ///< dns-01 时读「已发布的 TXT」的那只口
         TestCertificateAuthority                       m_authority;                   ///< 签证书用的测试 CA
         std::vector<Account>                           m_accounts;                    ///< 已注册账户，URL 是键
         std::unordered_map<std::string, Authorization> m_authorizations;              ///< 授权 URL → 记录

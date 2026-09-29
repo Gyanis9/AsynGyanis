@@ -9,6 +9,8 @@
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsContext.h"
 #include "Net/Acme/AcmeCertificateManager.h"
+#include "Net/Acme/AcmeClient.h"
+#include "Net/Acme/AcmeDns01TxtWriter.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/Router.h"
@@ -48,6 +50,10 @@ namespace AsynGyanis::Net
 
         /// 装回服务的动作里那条固定失败文案
         constexpr std::string_view kInstallFailureText = "监听器拒绝了这份新证书";
+
+        /// 假 DNS 那两格里失败时要交回的固定文案
+        constexpr std::string_view kDnsPublishFailureText  = "假 DNS 拒绝写入这条 TXT";
+        constexpr std::string_view kDnsWithdrawFailureText = "假 DNS 拒绝撤回这条 TXT";
     } // namespace
 
     /**
@@ -71,6 +77,10 @@ namespace AsynGyanis::Net
             bool                      probesTokenAfterwards{false};                ///< 之后再回取一次令牌，看撤没撤
             bool                      usesFreshPaths{false};                       ///< 换一批落点：同一台机器上的另一张证书
             bool                      runsRenewalLoop{false};                      ///< 这一轮跑常驻循环而不是单次签发
+            bool                      usesDns01{false};                            ///< 这一轮走 DNS-01：交一副记着发布与撤回的假 DNS
+            bool                      dnsPublishFails{false};                      ///< 让写入那一步失败，看撤有没有照跑
+            bool                      dnsWithdrawFails{false};                     ///< 让撤回那一步失败
+            bool                      dnsPublishesWrongValue{false};               ///< 写入成功但正文算错，机构会把挑战判 invalid
         };
 
         /**
@@ -82,6 +92,10 @@ namespace AsynGyanis::Net
             std::size_t                                                    installCalls{0};        ///< 这一轮里装回动作被调了几次
             std::optional<int>                                             tokenProbeStatusCode{}; ///< 事后回取令牌的状态码
             std::string                                                    tokenProbeBody;         ///< 事后回取到的正文
+            std::size_t                                                    dnsPublishCalls{0};     ///< 这一轮里 TXT 被写入几次
+            std::size_t                                                    dnsWithdrawCalls{0};    ///< 这一轮里 TXT 被撤回几次
+            std::vector<std::string>                                       dnsPublishedNames;      ///< 每次写入用的记录名，按调用顺序
+            std::vector<std::string>                                       dnsPublishedValues;     ///< 每次写入的正文，按调用顺序
         };
 
     protected:
@@ -217,6 +231,45 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 一副记着发布与撤回的假 DNS：dns-01 通路用它替掉真提供方
+         * @details 「权威侧现在答得出什么」就存在夹具那一格里，桩机构取答案时读它。
+         *          两格都按夹具上的开关决定成败，于是「写失败之后的撤」「自证失败之后的撤」
+         *          这些出口都出得来 —— 它们正是手写 withdraw 最容易漏的那几条
+         */
+        [[nodiscard]] AcmeDns01TxtWriter makeFakeDnsWriter()
+        {
+            AcmeDns01TxtWriter writer;
+            // 协程形参按值取：管理器持有的这个 std::function 会被复制进签发协程的帧里
+            writer.publish = [this](std::string fqdn, std::string value) -> Core::Task<std::expected<void, std::string>>
+            {
+                ++m_dnsPublishCalls;
+                m_dnsPublishedNames.push_back(fqdn);
+                if (m_dnsPublishesWrongValue)
+                {
+                    value = "这一条正文是错的";
+                }
+                m_dnsPublishedValues.push_back(value);
+                if (m_dnsPublishFails)
+                {
+                    co_return std::unexpected(std::string(kDnsPublishFailureText));
+                }
+                m_publishedTxt = value;
+                co_return std::expected<void, std::string>{};
+            };
+            writer.withdraw = [this](std::string, std::string) -> Core::Task<std::expected<void, std::string>>
+            {
+                ++m_dnsWithdrawCalls;
+                m_publishedTxt.reset();
+                if (m_dnsWithdrawFails)
+                {
+                    co_return std::unexpected(std::string(kDnsWithdrawFailureText));
+                }
+                co_return std::expected<void, std::string>{};
+            };
+            return writer;
+        }
+
+        /**
          * @brief 按当前这轮的参数造管理器，并把自证路由挂上
          */
         std::unique_ptr<AcmeCertificateManager> buildManager(const Round &round)
@@ -241,8 +294,9 @@ namespace AsynGyanis::Net
             configuration.accountKeyAlgorithm = AcmeKeyAlgorithm::Es256;
             configuration.domainKeyAlgorithm  = AcmeKeyAlgorithm::Es256;
 
-            auto manager = std::make_unique<AcmeCertificateManager>(*m_loop, std::move(configuration),
-                                                                    round.withInstallStep ? makeInstallStep() : AcmeCertificateManager::ReloadHandler{});
+            auto manager =
+                    std::make_unique<AcmeCertificateManager>(*m_loop, std::move(configuration), round.withInstallStep ? makeInstallStep() : AcmeCertificateManager::ReloadHandler{},
+                                                             round.usesDns01 ? makeFakeDnsWriter() : AcmeDns01TxtWriter{});
             manager->registerChallengeRoutes(m_challengeServer->router());
             return manager;
         }
@@ -263,7 +317,20 @@ namespace AsynGyanis::Net
 
             for (const Round &round: m_rounds)
             {
-                m_installStepFails = round.installStepFails;
+                m_installStepFails       = round.installStepFails;
+                m_dnsPublishFails        = round.dnsPublishFails;
+                m_dnsWithdrawFails       = round.dnsWithdrawFails;
+                m_dnsPublishesWrongValue = round.dnsPublishesWrongValue;
+                if (round.usesDns01)
+                {
+                    m_dnsPublishCalls  = 0;
+                    m_dnsWithdrawCalls = 0;
+                    m_dnsPublishedNames.clear();
+                    m_dnsPublishedValues.clear();
+                    m_publishedTxt.reset();
+                    // 桩取 dns-01 答案的那只口要在循环上交给它（同 setValidationAuthority 的理由）
+                    m_authority->setPublishedTxtReader([this]() -> std::optional<std::string> { return m_publishedTxt; });
+                }
                 if (round.usesFreshPaths)
                 {
                     m_certificatePath = m_paths->path() / "second-cert.pem";
@@ -283,7 +350,11 @@ namespace AsynGyanis::Net
                 {
                     run.result = co_await m_manager->issueIfRequired();
                 }
-                run.installCalls = m_installCalls.load(std::memory_order_relaxed) - installCallsBefore;
+                run.installCalls       = m_installCalls.load(std::memory_order_relaxed) - installCallsBefore;
+                run.dnsPublishCalls    = m_dnsPublishCalls;
+                run.dnsWithdrawCalls   = m_dnsWithdrawCalls;
+                run.dnsPublishedNames  = m_dnsPublishedNames;
+                run.dnsPublishedValues = m_dnsPublishedValues;
 
                 if (round.probesTokenAfterwards)
                 {
@@ -320,6 +391,16 @@ namespace AsynGyanis::Net
         std::vector<Run>         m_runs{};
         std::atomic<std::size_t> m_installCalls{0};
         bool                     m_installStepFails{false};
+
+        /// dns-01 那副假 DNS 的状态：m_publishedTxt 就是「权威侧现在答得出什么」
+        std::optional<std::string> m_publishedTxt{};                ///< 当前已发布的那条 TXT 正文；空表示没发布或已撤回
+        std::vector<std::string>   m_dnsPublishedNames{};           ///< 每次写入要求的记录名，按调用顺序
+        std::vector<std::string>   m_dnsPublishedValues{};          ///< 每次写入的正文，按调用顺序
+        std::size_t                m_dnsPublishCalls{0};            ///< 写入被调了几次
+        std::size_t                m_dnsWithdrawCalls{0};           ///< 撤回被调了几次
+        bool                       m_dnsPublishFails{false};        ///< 让写入那一步交回失败
+        bool                       m_dnsWithdrawFails{false};       ///< 让撤回那一步交回失败
+        bool                       m_dnsPublishesWrongValue{false}; ///< 写入算错正文，机构会判 invalid
     };
 
     /**
@@ -557,5 +638,111 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(run.tokenProbeStatusCode.has_value()) << "回取令牌没拿到应答";
         EXPECT_EQ(*run.tokenProbeStatusCode, 404) << "撤令牌之后那条路径还在答话：" << run.tokenProbeBody;
         EXPECT_EQ(manager().challengeStore().presentedCount(), 0U);
+    }
+
+    /**
+     * @brief 钉住：dns-01 通路按名字发布**摘要后**的正文，机构取到过答案之后每条都撤
+     * @details 这条同时管着三件事：走的是 dns-01 挑战、交出去的是 43 字符的 base64url 摘要而不是
+     *          HTTP-01 那份 keyAuthorization 原文、以及每条授权各一次写各一次撤。
+     *          桩机构那侧的期望值是拿它自己那份指纹算的，所以「名字与令牌对不上」也会在这里变红
+     */
+    TEST_F(AcmeCertificateManagerTest, PublishesTheDigestedTxtAndWithdrawsItAfterDns01Validation)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.offeredChallengeType = "dns-01";
+        startServers(settings);
+
+        Round round;
+        round.usesDns01 = true;
+        const auto run  = driveIssue(round);
+
+        ASSERT_TRUE(run.result.has_value()) << "签发没跑到出口";
+        ASSERT_TRUE(run.result->has_value()) << run.result->error().message;
+        EXPECT_EQ(run.dnsPublishCalls, kDomainNames.size()) << "每条域名都要各写一次 TXT";
+        EXPECT_EQ(run.dnsWithdrawCalls, kDomainNames.size()) << "写了几次就要撤几次，留下的一条会把下一轮堵死";
+
+        for (std::size_t index = 0; index < kDomainNames.size(); ++index)
+        {
+            EXPECT_EQ(run.dnsPublishedNames[index], dns01RecordName(kDomainNames[index])) << "第 " << index << " 条记录名不对";
+            ASSERT_LT(index, run.dnsPublishedValues.size());
+            const std::string &value = run.dnsPublishedValues[index];
+            // base64url 无填充的 SHA-256：43 个字符，且不含 HTTP-01 那个把 keyAuthorization 原样发出去的点号
+            EXPECT_EQ(value.size(), 43U) << "正文不是 43 字符的无填充摘要：" << value;
+            EXPECT_EQ(value.find('.'), std::string::npos) << "正文里出现了点号，看着像把 keyAuthorization 原文发出去了：" << value;
+            EXPECT_EQ(value.find('='), std::string::npos) << "摘要带了 Base64 填充，机构会判 invalid";
+        }
+        EXPECT_EQ(stubEvidence().dns01ValidationCount, kDomainNames.size());
+        EXPECT_EQ(stubEvidence().challengeFetchCount, 0U) << "走 dns-01 却去取了 HTTP 令牌";
+    }
+
+    /**
+     * @brief 钉住：写入这一步就失败时，撤回照样要跑一次
+     * @details 「报失败的写入其实已经落到权威侧」是这类控制面 API 的真实形状（响应超时的那一次最典型），
+     *          留下的那条 TXT 会在下一轮与新的答案并存，而机构的原文只会说 DNS 校验失败
+     */
+    TEST_F(AcmeCertificateManagerTest, WithdrawsTheTxtWhenThePublishStepReportsFailure)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.offeredChallengeType = "dns-01";
+        startServers(settings);
+
+        Round round;
+        round.usesDns01       = true;
+        round.dnsPublishFails = true;
+        const auto run        = driveIssue(round);
+
+        ASSERT_TRUE(run.result.has_value());
+        ASSERT_FALSE(run.result->has_value());
+        EXPECT_EQ(run.result->error().kind, AcmeErrorKind::DnsRecordRejected) << run.result->error().message;
+        EXPECT_NE(run.result->error().message.find(kDnsPublishFailureText), std::string::npos) << run.result->error().message;
+        EXPECT_EQ(run.dnsPublishCalls, 1U);
+        EXPECT_EQ(run.dnsWithdrawCalls, 1U) << "写入失败之后的那次撤回没跑：这是这条通路上最容易漏的出口";
+        EXPECT_EQ(stubEvidence().dns01ValidationCount, 0U) << "写入都失败了，机构那边却已经来取过答案";
+    }
+
+    /**
+     * @brief 钉住：机构判挑战失败之后，写进去的那条仍然被撤掉
+     */
+    TEST_F(AcmeCertificateManagerTest, WithdrawsTheTxtWhenTheAuthorityRejectsTheChallenge)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.offeredChallengeType = "dns-01";
+        startServers(settings);
+
+        Round round;
+        round.usesDns01              = true;
+        round.dnsPublishesWrongValue = true;
+        const auto run               = driveIssue(round);
+
+        ASSERT_TRUE(run.result.has_value());
+        ASSERT_FALSE(run.result->has_value());
+        EXPECT_EQ(run.result->error().kind, AcmeErrorKind::ChallengeNotAnswered) << run.result->error().message;
+        EXPECT_EQ(run.dnsPublishCalls, 1U);
+        EXPECT_EQ(run.dnsWithdrawCalls, 1U) << "自证失败之后没撤 TXT，那条错误正文会一直留在域名上";
+        EXPECT_EQ(stubEvidence().dns01ValidationCount, 1U);
+    }
+
+    /**
+     * @brief 钉住：撤回自己失败时要把这条报出来，而不是当成签发成功
+     * @details 撤不干净的那条记录不影响这一张证书，但会影响下一轮 —— 只在日志里说一句等于让运维
+     *          在三十天后撞上「同一个名字两条 TXT」时再来查一次现场
+     */
+    TEST_F(AcmeCertificateManagerTest, ReportsTheFailureWhenTheTxtCannotBeWithdrawn)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.offeredChallengeType = "dns-01";
+        startServers(settings);
+
+        Round round;
+        round.usesDns01        = true;
+        round.dnsWithdrawFails = true;
+        const auto run         = driveIssue(round);
+
+        ASSERT_TRUE(run.result.has_value());
+        ASSERT_FALSE(run.result->has_value());
+        EXPECT_EQ(run.result->error().kind, AcmeErrorKind::DnsRecordRejected) << run.result->error().message;
+        EXPECT_NE(run.result->error().message.find(kDnsWithdrawFailureText), std::string::npos) << run.result->error().message;
+        EXPECT_EQ(run.dnsPublishCalls, 1U);
+        EXPECT_EQ(run.dnsWithdrawCalls, 1U);
     }
 } // namespace AsynGyanis::Net

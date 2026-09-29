@@ -627,6 +627,13 @@ namespace AsynGyanis::Net
         return Base::base64UrlEncode(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
     }
 
+    std::string dns01RecordName(const std::string_view domainName)
+    {
+        // 通配符要把 "*." 去掉：*.example.com 与 example.com 是同一条 TXT，挂着 "*." 前缀去查只会查一条不存在的名字
+        const std::string_view bareName = domainName.starts_with("*.") ? domainName.substr(2) : domainName;
+        return "_acme-challenge." + std::string(bareName);
+    }
+
     Core::Task<std::expected<AcmeAuthorization, AcmeError>> AcmeClient::fetchAuthorization(const std::string &authorizationUrl)
     {
         auto reply = co_await postSignedRequest(authorizationUrl, {}, false);

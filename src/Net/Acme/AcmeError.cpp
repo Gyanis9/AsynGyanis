@@ -20,6 +20,8 @@ namespace AsynGyanis::Net
                 return "RateLimited";
             case AcmeErrorKind::ChallengeNotAnswered:
                 return "ChallengeNotAnswered";
+            case AcmeErrorKind::DnsRecordRejected:
+                return "DnsRecordRejected";
             case AcmeErrorKind::FileSystem:
                 return "FileSystem";
             case AcmeErrorKind::ReloadRejected:

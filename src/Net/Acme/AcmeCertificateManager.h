@@ -12,6 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Acme/AcmeDns01TxtWriter.h"
 #include "Net/Acme/AcmeError.h"
 #include "Net/Acme/AcmeHttp01ChallengeStore.h"
 #include "Net/Acme/AcmeKeyPair.h"
@@ -34,6 +35,8 @@ namespace AsynGyanis::Core
 namespace AsynGyanis::Net
 {
     class Router;
+    class AcmeClient;
+    struct AcmeAuthorization;
 
     /**
      * @brief 一次签发或续期之后的落点
@@ -72,9 +75,12 @@ namespace AsynGyanis::Net
      *
      * @note 绑定在构造时给的事件循环上：签发流程里的每一次出站请求与每一段等待都在那条线程上跑。
      *       runRenewalLoop() 交回的协程帧要由调用方持有到循环停下（与 TcpServer 的清扫协程同一形状）
-     * @warning 自证走 HTTP-01：必须让机构能从公网按 80 端口取到 `/.well-known/acme-challenge/` 下的
-     *          令牌。registerChallengeRoutes() 要在**明文 80 端口那台服务**上调用（或让 80 重定向到
-     *          本服务，Let's Encrypt 会跟随重定向），只挂在 443 上等于没答
+     * @warning 自证走哪一条由「有没有交来 DNS-01 的 TXT 写入动作」决定，两条的前提不同：
+     *          HTTP-01（默认）要机构能从公网按 80 端口取到 `/.well-known/acme-challenge/` 下的令牌，
+     *          registerChallengeRoutes() 必须在**明文 80 端口那台服务**上调用（或让 80 重定向到本服务，
+     *          Let's Encrypt 会跟随重定向），只挂在 443 上等于没答；
+     *          DNS-01 不需要任何入站通路，但要求那对凭据真的能改域名记录，且这台机器能出公网 443。
+     *          被备案拦截、80 端口拿不到的部署（国内云上常见）只能走后者
      */
     class ASYN_NET_API AcmeCertificateManager
     {
@@ -136,8 +142,11 @@ namespace AsynGyanis::Net
          *        好让配置错误与其他失败从同一条 expected 通道交回
          * @param reloadHandler 装回服务的动作；可先不设（首签时服务往往还没起来，拿到路径再构造），
          *        但**不设就跑续期循环会被拒绝**：那只等于把证书下到磁盘却没人装
+         * @param dns01TxtWriter 发布与撤回 TXT 的动作对。给了它就走 DNS-01（机构侧挑 dns-01 挑战，
+         *        且只在这条通道上应答），不给就走 HTTP-01；两档之间没有回落——一次签发中途换通道
+         *        只会让机构拿着另一条挑战的答案判 invalid
          */
-        AcmeCertificateManager(Core::EventLoop &loop, Configuration configuration, ReloadHandler reloadHandler = {});
+        AcmeCertificateManager(Core::EventLoop &loop, Configuration configuration, ReloadHandler reloadHandler = {}, AcmeDns01TxtWriter dns01TxtWriter = {});
 
         AcmeCertificateManager(const AcmeCertificateManager &) = delete;
 
@@ -208,6 +217,17 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::expected<AcmeKeyPair *, AcmeError> ensureAccountKey();
 
+        /**
+         * @brief 走完一条 dns-01 授权：写 TXT → 叫机构校验 → 撤 TXT
+         * @details 撤这一步排在「无论前面成没成」的那条出口上，而不是每条提前返回里手写一次：
+         *          漏掉一条就留下一条永久有效的 TXT，下一轮签发的机构在同一名字上看到两条不同答案，
+         *          它的答复只会是 DNS 校验失败，而真正的原因在上一次
+         * @param client 协议层客户端（已按 DNS-01 配置）
+         * @param authorization 本条授权，其 dns01 挑战必须已经填好
+         * @return Core::Task<std::optional<AcmeError>> 成功时为空；失败时是第一条要报的失败
+         */
+        Core::Task<std::optional<AcmeError>> authorizeDns01(AcmeClient &client, const AcmeAuthorization &authorization);
+
         /// 记一次失败：计数加一、文案留下、日志说出来（三种渠道都写，免得只在一处可见）
         void recordFailure(std::string message) noexcept;
 
@@ -241,6 +261,7 @@ namespace AsynGyanis::Net
         std::atomic<long long>   m_notBeforeNextAttemptUnix{0}; ///< 失败退避：早于这个时刻不再尝试
 
         AcmeHttp01ChallengeStore m_challengeStore; ///< 自证令牌的暂存处
+        AcmeDns01TxtWriter       m_dns01TxtWriter; ///< TXT 的发布与撤回动作；两格都空就按 HTTP-01 走
     };
 
     /**

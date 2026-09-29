@@ -3,6 +3,7 @@
 #include "Base/Coding/Base64.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
+#include "Net/Acme/AcmeClient.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/Router.h"
@@ -167,6 +168,11 @@ namespace AsynGyanis::Net::TestSupport
     void AcmeStubAuthority::setValidationAuthority(std::string authority)
     {
         m_validationAuthority = std::move(authority);
+    }
+
+    void AcmeStubAuthority::setPublishedTxtReader(std::function<std::optional<std::string>()> reader)
+    {
+        m_publishedTxtReader = std::move(reader);
     }
 
     std::string AcmeStubAuthority::unknownAccountUrl() const
@@ -672,8 +678,9 @@ namespace AsynGyanis::Net::TestSupport
         Base::ConfigValue challengeJson = Base::ConfigValue::object();
         challengeJson["type"]           = m_settings.offeredChallengeType;
         challengeJson["url"]            = challenge->second.url;
-        // http-01 才有 token；别的类型给 token 反而会把客户端引到一条它答不了的挑战上
-        if (m_settings.offeredChallengeType == "http-01")
+        // http-01 与 dns-01 都要带 token：前者是发布的正文，后者是算 TXT 摘要的那半段输入。
+        // 别的类型给了 token 反而会把客户端引到一条它答不了的挑战上
+        if (m_settings.offeredChallengeType == "http-01" || m_settings.offeredChallengeType == "dns-01")
         {
             challengeJson["token"] = challenge->second.token;
         }
@@ -726,7 +733,13 @@ namespace AsynGyanis::Net::TestSupport
                 challenge.status = "processing";
             } else
             {
-                co_await validateHttp01(challenge, auth->account);
+                if (m_settings.offeredChallengeType == "dns-01")
+                {
+                    co_await validateDns01(challenge, auth->account);
+                } else
+                {
+                    co_await validateHttp01(challenge, auth->account);
+                }
             }
         } else if (challenge.status == "processing")
         {
@@ -735,7 +748,13 @@ namespace AsynGyanis::Net::TestSupport
                 --challenge.remainingProcessingPolls;
             } else
             {
-                co_await validateHttp01(challenge, auth->account);
+                if (m_settings.offeredChallengeType == "dns-01")
+                {
+                    co_await validateDns01(challenge, auth->account);
+                } else
+                {
+                    co_await validateHttp01(challenge, auth->account);
+                }
             }
         }
 
@@ -799,6 +818,31 @@ namespace AsynGyanis::Net::TestSupport
         {
             challenge.status = "invalid";
             challenge.detail = std::format("令牌正文与期望的 keyAuthorization 不符。桩期望 {}，读到的是 {}", expectedKeyAuthorization, fetched->body);
+            co_return;
+        }
+        challenge.status = "valid";
+        challenge.detail.clear();
+        co_return;
+    }
+
+    Core::Task<void> AcmeStubAuthority::validateDns01(Challenge &challenge, const Account &account)
+    {
+        challenge.isValidated = true;
+        ++m_evidence.dns01ValidationCount;
+
+        // 期望正文由桩自己那份指纹算：被测实现把令牌或指纹接错时，这里判 invalid 而不是跟着一起错
+        const std::string expectedText = dns01ValidationText(challenge.token + "." + account.thumbprint);
+        const auto        published    = m_publishedTxtReader ? m_publishedTxtReader() : std::nullopt;
+        if (!published.has_value())
+        {
+            challenge.status = "invalid";
+            challenge.detail = std::format("桩没能读到任何已发布的 TXT：DNS-01 的写入动作没被调用，或在机构取答案之前就撤掉了。期望正文：{}", expectedText);
+            co_return;
+        }
+        if (*published != expectedText)
+        {
+            challenge.status = "invalid";
+            challenge.detail = std::format("已发布的 TXT 与期望值不符。桩期望 {}，读到的是 {}", expectedText, *published);
             co_return;
         }
         challenge.status = "valid";
