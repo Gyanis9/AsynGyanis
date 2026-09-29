@@ -4,6 +4,7 @@
 #include "Base/Log/Formatters/JsonFormatter.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
+#include "Base/Log/LoggerConfigLoader.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/ConsoleSink.h"
 #include "Base/Log/Sinks/LogSink.h"
@@ -20,6 +21,7 @@
 #include "Core/Tls/SessionTicketKeyRing.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServer.h"
+#include "Net/Http/HttpServerAssembly.h"
 #include "Net/Http/HttpServerConfig.h"
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/Middleware.h"
@@ -36,6 +38,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 
 #include <filesystem>
 #include <limits>
@@ -441,11 +444,21 @@ int main(int argc, char **argv)
         LOG_INFO("  --max-inflight-body 在途正文总量上限（字节，0 = 不限）：挡住多条连接同时压着大正文；");
         LOG_INFO("            超出的请求回 503，明文、HTTPS 与 h3 三端共用同一份账");
         LOG_INFO("  --workers N 用 N 个 worker 进程服务同一个端口（默认 1 = 单进程）：");
+#ifdef _WIN32
+        // 本示例在 Windows 上起不了多进程：那边没有 SO_REUSEPORT，多个进程各自 bind 同端口只会有一条
+        // 监听器收到连接，要靠 master 移交监听套接字——那是 samples/core_worker 演示的形状，
+        // 本示例的 worker 分支没有接管移交描述字的入口。宁可这里说清、启动即失败并报原因，
+        // 也不让「--workers 4」看起来跑起了四路服务
+        LOG_INFO("            本示例仅 POSIX 支持（靠 SO_REUSEPORT 分摊）；Windows 上会在构造编排者时");
+        LOG_INFO("            报错退出，要多进程请看 samples/core_worker；");
+#else
         LOG_INFO("            master 只做编排不服务，各 worker 靠 SO_REUSEPORT 分别监听同一端口，");
         LOG_INFO("            SIGTERM/SIGINT 会让 worker 各自体面退出；");
+#endif
         LOG_INFO("            注意进程间不共享状态：单来源限额、限流上限与指标计数都是每进程一份");
         LOG_INFO("  --worker 内部开关：由 master 传给 worker，用户不必手写");
-        LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）；");
+        LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关）与 logging 段");
+        LOG_INFO("            （root 与各日志器的等级、控制台/文件/滚动 Sink）；");
         LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明");
         return 0;
     }
@@ -466,6 +479,11 @@ int main(int argc, char **argv)
                 return 1;
             }
 
+            // logging 段与 server 段读自同一份文件，就得在这里一起装好：不装的话部署方写的等级与
+            // 滚动参数只有 ConfigManager 知道，症状是「配置写了没生效」而不是报错。基准目录取配置文件
+            // 所在目录，让配置里的相对路径（logs/app.log）落在部署者预期的位置而不是当前工作目录。
+            // 装完之后 root 只剩配置里那些 Sink：控制台安静下来是这份配置的本意，不是示例坏了
+            Base::LoggerConfigLoader::loadFromConfig("logging", std::filesystem::path(configFile).parent_path());
             // ConfigManager 内部按键的点分路径扁平存放，get() 取不到任何中间层节点，
             // getSection() 才把 server 段还原成嵌套对象。读取器要的是「以 server 为根的文档」，
             // 这里补上段名这一层外壳：它只认文档结构，不关心配置来自文件还是内存
@@ -721,6 +739,24 @@ int main(int argc, char **argv)
         return Net::compressionMiddleware();
     };
 
+    // 配置键到 setter 的对接只有一处实现（见 Net/Http/HttpServerAssembly.h）：这里只交进
+    // 「跨监听器共用的那几份对象」。在途正文预算不在 server 段里，仍由调用方给
+    const auto assembleServer = [&](auto &server)
+    {
+        Net::HttpServerAssemblyContext assemblyContext;
+        assemblyContext.sharedPerIpLimiter    = perIpConnectionLimiter;
+        assemblyContext.sharedRateLimitBucket = rateLimitBucket;
+        if (const auto outcome = Net::applyHttpServerConfiguration(*server, configuration, assemblyContext); !outcome)
+        {
+            // 只可能来自「共享限额器与配置标量不一致」这一种自相矛盾的配置。装配发生在起服务之前，
+            // 两个构造循环里都没有能把错误带回 main 的通道，因此在此处打印原因并退出（退出码与
+            // 其余「配置不成立」的出口一致），而不是静默按其中一份生效
+            LOG_ERROR_FMT("服务器装配被拒：{}", outcome.error());
+            std::exit(1);
+        }
+        server->setMemoryBudget(inflightBodyBudget);
+    };
+
     // --h3 与 TCP 监听在同一个端口号的 UDP 上（见下面 h3 启动那段），所以通告值能直接推出来：
     // 不必让部署方再报一次端口（报错了客户端会一直撞一个没人听的端口），也不需要新开关。
     // 只在 TCP 侧的路由器上挂——已经在 h3 上的请求不需要被告知怎么切到 h3，中间件自己也按协议版本跳过
@@ -758,19 +794,11 @@ int main(int argc, char **argv)
         setupRoutes(server->router());
         advertiseHttp3IfEnabled(server->router());
         enableTraceContextIfRequested(server->router());
-        server->setPerIpConnectionLimiter(perIpConnectionLimiter);
-        server->setMaxConnections(configuration.maximumConnections);
-        server->setLimits(configuration.limits);
-        server->setParserLimits(configuration.parserLimits);
-        server->setMemoryBudget(inflightBodyBudget);
+        assembleServer(server);
         // 静态目录要在 start() 之前登记：它往本监听器的路由器上挂兜底路由
         if (!staticDirectory.empty())
         {
             server->staticFileDir(staticDirectory);
-        }
-        if (rateLimitBucket != nullptr)
-        {
-            server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
         }
 
         if (compressResponses)
@@ -789,16 +817,10 @@ int main(int argc, char **argv)
             http3RequestIdGenerator = server->requestIdGenerator();
         }
 
-        // 指标与健康检查端点是显式开关：不打开就完全没有暴露面
+        // 端点的注册在装配那一步按 expose_metrics 做掉了；这里只把它接到全进程共用的采集端上
         if (configuration.exposeMetrics)
         {
-            // 先接上共用的采集端再开端点：端点读的是 stats()，接线早于晚于它都不影响，
-            // 但顺序固定下来能让「抓到的数是谁的」这件事一眼可读
             joinSharedMetricsCollector(server);
-            server->enableMetricsEndpoint();
-            server->enableHealthEndpoint();
-            // 循环观测与它们同开同关：都是运维面，且都不做鉴权
-            server->enableLoopDiagnosticsEndpoint();
         }
         return server;
     };
@@ -818,19 +840,11 @@ int main(int argc, char **argv)
         {
             server->router().addMiddleware(makeCompressionMiddleware(loop));
         }
-        server->setPerIpConnectionLimiter(perIpConnectionLimiter);
-        server->setMaxConnections(configuration.maximumConnections);
-        server->setLimits(configuration.limits);
-        server->setParserLimits(configuration.parserLimits);
-        server->setMemoryBudget(inflightBodyBudget);
+        assembleServer(server);
         // 静态目录要在 start() 之前登记：它往本监听器的路由器上挂兜底路由
         if (!staticDirectory.empty())
         {
             server->staticFileDir(staticDirectory);
-        }
-        if (rateLimitBucket != nullptr)
-        {
-            server->router().addMiddleware(Net::tokenBucketRateLimiterMiddleware(rateLimitBucket));
         }
 
         if (http3RequestIdGenerator == nullptr)
@@ -838,14 +852,10 @@ int main(int argc, char **argv)
             http3RequestIdGenerator = server->requestIdGenerator();
         }
 
-        // 指标与健康检查端点同样是显式开关；与明文侧同一形态（HttpsServer 自己的实现）
+        // 端点注册同样交给装配那一步；这里只接共用采集端（明文与 TLS 两侧抓哪一侧都是全量）
         if (configuration.exposeMetrics)
         {
-            // 明文与 TLS 两侧共用那一份采集端：同一个端口号上开着两种协议时，抓哪一侧都是全量
             joinSharedMetricsCollector(server);
-            server->enableMetricsEndpoint();
-            server->enableHealthEndpoint();
-            server->enableLoopDiagnosticsEndpoint();
         }
         return server;
     };
