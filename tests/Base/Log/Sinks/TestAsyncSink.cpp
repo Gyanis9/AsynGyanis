@@ -846,22 +846,48 @@ namespace AsynGyanis::Base
      */
     TEST(AsyncSink, RepeatedConstructionAndDestructionAlwaysCompletes)
     {
-        constexpr int     kIterationCount         = 2000;
-        constexpr int     kCompletionMilliseconds = 30000;
+        constexpr int kIterationCount = 2000;
+        /// 一次建/拆是毫秒级：停摆预算给到 5 秒，等不到推进就只可能是唤醒被丢了，与机器多忙无关。
+        /// 旧判据是「30 秒内跑完 2000 次」这条总时限，满载 runner 上它能合法地超过——那时用例量的
+        /// 是机器忙不忙，而不是「停止请求的唤醒会不会被丢」这条性质
+        constexpr std::chrono::milliseconds kStallBudget{5000};
+        /// 兜底总上限：实现真坏了也不能把作业挂到超时（停摆判据才是本用例的结论，这条只是安全网）
+        constexpr std::chrono::milliseconds kOverallCeiling{240000};
+
         std::atomic<bool> finished{false};
+        std::atomic<int>  progress{0};
 
         std::thread cycle(
-                [&finished]
+                [&finished, &progress]
                 {
                     for (int index = 0; index < kIterationCount; ++index)
                     {
                         const AsyncSink sink(std::make_unique<RecordingSink>());
+                        progress.store(index + 1, std::memory_order_release);
                     }
                     finished.store(true, std::memory_order_release);
                 });
 
-        const bool completed = TestSupport::waitForCondition([&finished] { return finished.load(std::memory_order_acquire); }, kCompletionMilliseconds);
+        const auto startedAt = std::chrono::steady_clock::now();
+        const auto deadline  = startedAt + kOverallCeiling;
+        int        seenStep  = 0;
+        while (!finished.load(std::memory_order_acquire))
+        {
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
+                break; // 兜底：不让一次回归把整趟作业挂住
+            }
+            // 有界地等「比上次多走一步」：等到就继续复查，等不到就是卡在同一处——
+            // 这一条才是本用例的判据（唤醒被丢时进度会停住，而机器慢只会让每步多花几毫秒）
+            const bool advanced = TestSupport::waitForCondition([&progress, seenStep] { return progress.load(std::memory_order_acquire) != seenStep; }, kStallBudget);
+            if (!advanced)
+            {
+                break; // 停摆：交给下面的断言报出停在第几步
+            }
+            seenStep = progress.load(std::memory_order_acquire);
+        }
 
+        const bool completed = finished.load(std::memory_order_acquire);
         if (completed)
         {
             cycle.join();
@@ -870,7 +896,8 @@ namespace AsynGyanis::Base
             // 已卡在停止路径上（join 不会回来）：留着它等进程退出，让断言报失败而不是挂住进程
             cycle.detach();
         }
-        EXPECT_TRUE(completed) << "构造/析构循环未在时限内完成：停止请求的唤醒可能被丢弃（worker 永久睡在条件变量上）";
+        EXPECT_TRUE(completed) << "构造/析构循环在 " << kStallBudget.count() << "ms 内没有推进（停在第 " << progress.load(std::memory_order_acquire)
+                               << " 次）：停止请求的唤醒可能被丢弃，worker 永久睡在条件变量上";
     }
 
     /**
