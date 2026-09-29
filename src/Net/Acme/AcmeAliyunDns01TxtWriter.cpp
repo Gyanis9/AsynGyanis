@@ -50,7 +50,7 @@ namespace AsynGyanis::Net
     {
         // 参数表按名字的 ASCII 序拼串：map 本身就是这个序，不需要再排一次
         std::string canonicalQuery;
-        for (const std::pair<std::string, std::string> &field: parameters)
+        for (const auto &field: parameters)
         {
             if (!canonicalQuery.empty())
             {
@@ -385,7 +385,7 @@ namespace AsynGyanis::Net
                 parameters["Signature"]     = signature;
 
                 std::string query;
-                for (const std::pair<std::string, std::string> &field: parameters)
+                for (const auto &field: parameters)
                 {
                     if (!query.empty())
                     {
