@@ -630,7 +630,7 @@ AsynGyanis/
 | --- | --- | --- | --- | --- |
 | TLS 下限 | `Core::TlsPolicy::minimumProtocolVersion`（出站走 `HttpClient(loop, poolConfig, tlsPolicy)`） | 服务端 TLS 1.2；QUIC 恒 1.3；**客户端角色不补下限**（刻意：替调用方发明下限会把本可以连上的对端拒掉） | `TlsContext` 建好后读 `SSL_CTX_get_min_proto_version`，或抓一次握手看协商版本 | TLS 1.0/1.1 没有档位可填（RFC 8996 已废弃）。要给出站也钉下限，就显式传 `minimumProtocolVersion` |
 | ACME 联系人 / 条款 | `AcmeCertificateManager::Configuration::contactEmailAddress` / `isTermsOfServiceAccepted` | 联系人为空；条款未接受时**新建账户直接拒绝** | 看 `status()` 与账户 URL 是否落盘 | 没有联系人 = 机构无法在到期或账户异常时找到你；90 天寿命的证书漏续一次就是一次线上告警 |
-| 限额与背压 | `server.parser_limits.*`、`server.limits.*`、`maximum_connections`、`maximum_connections_per_ip`、`rate_limit.*`（在途正文总量上限只有 API：`HttpServer::setMemoryBudget()`，配置里没有这一项） | 头部 100 条 / 单值 8 KiB / 头块 64 KiB / 正文 8 MiB；空闲 75s、读写各 60s；**三个 `maximum_*` 与 `requests_per_second` 默认 0 = 不限** | `/metrics` 的 `asyn_http_admission_rejected_connections_total`（按 IP 挡）与 `asyn_http_over_limit_rejected_connections_total`（整机满）；令牌桶打开后超限回 429 | 「0 = 不限」是合法取值但不是安全默认：不限正文与不限并发就是把内存和连接表交给对端 |
+| 限额与背压 | `server.parser_limits.*`、`server.limits.*`、`maximum_connections`、`maximum_connections_per_ip`、`rate_limit.*`（在途正文总量上限只有 API：`HttpServer::setMemoryBudget()`，配置里没有这一项） | 头部 100 条 / 单值 8 KiB / 头块 64 KiB / 正文 8 MiB；空闲 75s、读写各 60s；**三个 `maximum_*` 与 `requests_per_second` 默认 0 = 不限** | `/metrics` 的 `asyn_http_admission_rejected_connections_total`（按 IP 挡）与 `asyn_http_over_limit_rejected_connections_total`（整机满）；令牌桶打开后超限回 429 | 「0 = 不限」是合法取值但不是安全默认：不限正文与不限并发就是把内存和连接表交给对端；`--h3` 那侧的并发上限另有 `QuicServer` 自带的默认 1024，示例只在 `maximum_connections` 为正时覆盖它，生效值会随启动打出一行「HTTP/3 的并发连接上限 N」 |
 | `/metrics` 接线 | `applyHttpServerConfiguration()` + `server.expose_metrics` | 关（一个端点都不注册） | 直接 `curl` 三个端点：`/metrics`、`/healthz`、`/debug/loops` | 三件套**都不做鉴权**，也不限制来源；开到 `0.0.0.0` 就是公开暴露内部计数与循环状态，通常要放在内网监听器或反代后面 |
 | 日志等级与滚动 | `Base::LoggerConfigLoader` 的 `global_level` 与 `sinks`（`rolling_file`：`directory`/`policy`/`max_size_mb`/`max_backup`） | 未配置前 root 是 Trace 且**零 sink → 全部丢弃**；`global_level` 缺失回落 INFO；滚动按 `size`、单文件 10 MiB、留 10 份 | `LoggerRegistry` 的 sink 快照；`AsyncSink::droppedEventCount()` | 越界值会被钳制并打到 `stderr`（不中断启动）；`policy` 拼错会回退成 `size` 并说明原因——启动日志要留着看；`echo_server --config` 会连同 `logging` 段一起装上（不装就只有 `server` 段生效） |
 | worker 起法 | `Core::WorkerSupervisor::Configuration` | `workerCount` 必须 ≥ 2；崩溃窗口 3s、连续 5 次「起来就崩」不再补；`shutdownTimeout` 10s | 构造期就校验：Windows 缺 `handoff`、POSIX 给了 `handoff` 都直接抛 | Windows 上 worker 靠 master 移交监听描述符（不是 `SO_REUSEPORT`），配错的表现是「只有一个进程收得到连接」；`echo_server --workers` 只走 POSIX 那条（Windows 上缺移交档位，构造即抛），移交形状见 `samples/core_worker` |
@@ -640,6 +640,10 @@ AsynGyanis/
 `server` 段的键此前只能靠调用方逐台手接六七个 setter，`expose_metrics` 就是这样变成了「配置里打了勾、
 端点一个都没注册」的死键；现在装配收进这一处，并且当传入的共享限额器与配置标量不一致时**当场拒绝**
 ——多条通道共用一份限额器时，静默挑一边会让「配置写 16、实际跑 64」完全看不出来。
+
+装配入口覆盖的是明文与 TLS 两条 TCP 通道；**HTTP/3 不在它里面**（`QuicServer` 用的是自己那份
+`Configuration`）。示例侧仍逐项接同一份配置——解析上限、连接级限额、单来源限额、限流桶、在途正文
+预算与并发上限，生效值随启动打出，免得「同一份配置在 h3 上是另一个数」只能靠线上反推。
 
 三条形态边界（无 macOS/BSD、共享库的 ABI 与 OpenSSL 双副本、CI 触发面因免费分钟数收到 `main` + 手动
 触发）分别写在上面的「交付形态」与下面的「测试与验证」里，这里不重复。
