@@ -15,6 +15,26 @@
 
 ## [Unreleased]
 
+（暂无）
+
+## [2.0.0] - 2026-09-29
+
+自 1.1.0 起的累计变化（326 条：新增 89、变更 27、修复 154、性能 56）：HTTP/3 与 QUIC 的连接外壳改由
+自研状态机驱动，ngtcp2 退为测试裁判；证书自动化整层落地（RFC 8555 三层 + h3 证书热轮换 + 拿 Pebble
+做的跨实现验收）；Windows 侧补上多进程 worker 的监听套接字移交、零停机换代通道与数据报接管；新增对外的
+`UdpServer`、出站 HTTP/2 与 HTTP/3 客户端及三条通路的逐批交付；路由开始按 Host 分站点；配置接环境变量
+覆盖；观测面补链路追踪与 `/debug/loops`，三条 HTTP 协议的指标与限额口径对齐；交付形态上补 SBOM、
+依赖公告台账、CODEOWNERS 与漏洞响应时限，并把 libFuzzer、ThreadSanitizer、h2spec、Autobahn、aioquic
+接成会红的作业。
+
+**本版含破坏性变更**（16 笔带 `!` 的提交，逐条见「变更」段）。对外部代码有直接影响的几处：删掉已随安装
+导出的公开类型 `Base::NetworkException`、`Base::ConfigFileException`、`Base::ConfigParseException`，以及
+`Config` 侧无调用方的 `getRequired`、`splitKey` 与 `loadTime` 死字段；出站 URL 缺协议名不再静默按 http
+发出；MySQL 写语句的行数改报「匹配数」，与 SQLite 同口径；ORM 的引用表名规则收到一处，插入方向不再整块
+引用；多处参数误用从「静默容忍」改走用法错误异常（`addWorker`、`WorkerSupervisor` 的配置、传输层参数）；
+阻塞任务执行器从 `Database` 上收到 `Core`；日志事件改带时刻、时间戳文本推迟到格式化器；区间约束不再把
+「比不出来」当成校验通过。从 1.1.0 升级前请先读「变更」段。
+
 ### 新增
 
 - **语句被拒时带出驱动原生码与可重试判定**（`Database::QueryExecutionException::nativeErrorCode()` /
@@ -3291,6 +3311,7 @@
 - 单请求分配画像压到 33 次 / 816 B（起点 48 次 / 4228 B）。
 - Linux CI（GCC + ASan/UBSan + Redis 真机）与 Windows CI（MSVC + ASan）；解析器模糊冒烟测试。
 
-[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/Gyanis9/AsynGyanis/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/Gyanis9/AsynGyanis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Gyanis9/AsynGyanis/releases/tag/v1.0.0
