@@ -3,6 +3,7 @@
 #include "Base/Coding/Base64.h"
 #include "Base/Config/ConfigValue.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/Crypto/Digest.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Client/HttpClient.h"
@@ -619,6 +620,13 @@ namespace AsynGyanis::Net
         co_return parsedOrder;
     }
 
+    std::string dns01ValidationText(const std::string_view keyAuthorization)
+    {
+        // 与 HTTP-01 唯一的差别就是这一层摘要：SHA-256 后按 URL-safe 无填充 Base64 表示（RFC 8738 §3）
+        const Core::Digest::Sha256Value digest = Core::Digest::sha256(keyAuthorization);
+        return Base::base64UrlEncode(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
+    }
+
     Core::Task<std::expected<AcmeAuthorization, AcmeError>> AcmeClient::fetchAuthorization(const std::string &authorizationUrl)
     {
         auto reply = co_await postSignedRequest(authorizationUrl, {}, false);
@@ -646,7 +654,12 @@ namespace AsynGyanis::Net
 
         if (authorization->contains("challenges") && (*authorization)["challenges"].is_array())
         {
-            std::string offeredTypes;
+            // 只挑配置要的那一种：两种都填会让调用方自己决定发哪条给机构，而「挑了一条、答的却是
+            // 另一条」机构只回一个 invalid，落到日志上看不出差在哪
+            const bool                   wantsDns01 = (m_configuration.challengeKind == AcmeChallengeKind::Dns01);
+            const std::string            wantedType = wantsDns01 ? "dns-01" : "http-01";
+            std::string                  offeredTypes;
+            std::optional<AcmeChallenge> picked;
             for (const Base::ConfigValue &challenge: (*authorization)["challenges"])
             {
                 const auto type = readStringMember(challenge, "type");
@@ -655,7 +668,7 @@ namespace AsynGyanis::Net
                     continue;
                 }
                 offeredTypes += offeredTypes.empty() ? *type : ", " + *type;
-                if (*type != "http-01")
+                if (*type != wantedType)
                 {
                     continue;
                 }
@@ -663,17 +676,25 @@ namespace AsynGyanis::Net
                 const auto challengeUrl = readStringMember(challenge, "url");
                 if (!token.has_value() || !challengeUrl.has_value())
                 {
-                    co_return std::unexpected(AcmeError{AcmeErrorKind::UnexpectedResponse,
-                                                        std::format("域名 {} 的 http-01 挑战缺 token 或 url，无法自证（机构给的类型：{}）", parsed.identifier, offeredTypes)});
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::UnexpectedResponse, std::format("域名 {} 的 {} 挑战缺 token 或 url，无法自证（机构给的类型：{}）",
+                                                                                                       parsed.identifier, wantedType, offeredTypes)});
                 }
-                parsed.http01 = AcmeChallenge{*challengeUrl, *token};
+                picked = AcmeChallenge{*challengeUrl, *token};
                 break;
             }
-            if (!parsed.http01.has_value())
+            if (!picked.has_value())
             {
-                co_return std::unexpected(AcmeError{AcmeErrorKind::UnexpectedResponse, std::format("机构为域名 {} 只提供了这些挑战类型：{}。本通路只实现 http-01，"
-                                                                                                   "请换一家支持 http-01 的机构，或改用能答其它挑战的客户端",
-                                                                                                   parsed.identifier, offeredTypes.empty() ? "（一个都没给）" : offeredTypes)});
+                co_return std::unexpected(
+                        AcmeError{AcmeErrorKind::UnexpectedResponse, std::format("机构为域名 {} 只提供了这些挑战类型：{}。本客户端按配置要的是 {}，"
+                                                                                 "请换一家支持它的机构，或改配置要机构实际给的那一种",
+                                                                                 parsed.identifier, offeredTypes.empty() ? "（一个都没给）" : offeredTypes, wantedType)});
+            }
+            if (wantsDns01)
+            {
+                parsed.dns01 = picked;
+            } else
+            {
+                parsed.http01 = picked;
             }
         } else
         {

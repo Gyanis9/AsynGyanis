@@ -54,25 +54,46 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief 一条 HTTP-01 挑战（RFC 8555 §8.3）
+     * @brief 自证挑战的种类（RFC 8555 §7.1.6 与 RFC 8738 §3）
+     */
+    enum class AcmeChallengeKind
+    {
+        Http01, ///< HTTP-01：把 keyAuthorization 原文发布到 `/.well-known/acme-challenge/<token>`
+        Dns01,  ///< DNS-01：把 keyAuthorization 的摘要发布到 `_acme-challenge.<域名>` 的 TXT
+    };
+
+    /**
+     * @brief 一条自证挑战（HTTP-01 与 DNS-01 共用同一对字段）
      */
     struct ASYN_NET_API AcmeChallenge
     {
         std::string challengeUrl; ///< 让机构开始校验时 POST 的 URL
-        std::string token;        ///< 要发布到 /.well-known/acme-challenge/<token> 的那段串
+        std::string token;        ///< HTTP-01 要发布的那段串；DNS-01 是参与算 TXT 值的那段串
     };
 
     /**
-     * @brief 一个域名的授权记录，带着本通路认的那一种挑战
-     * @details 只留 http-01：tls-alpn-01 要在握手里交出带 acme-tls/1 的自签证书，与本服务的 ALPN
-     *          装配是两套；dns-01 要接每一家 DNS 厂商的接口。两类都不是本类能自己完成的，
-     *          做成通用形状只会有一档永远没人填。
+     * @brief 算 DNS-01 要发布到 `_acme-challenge.<域名>` 的 TXT 正文
+     * @details 值是 `base64url(SHA-256(keyAuthorization))`（RFC 8738 §3，URL-safe 字母表且**不带填充**），
+     *          与 HTTP-01 直接发布 keyAuthorization 原文只差这一层哈希；少一位或留了 `=` 填充，机构就判
+     *          invalid，而它给的原文里往往不会说差在哪，所以这一处只留一份实现。
+     * @param keyAuthorization `token` + `.` + 账户密钥指纹，即 HTTP-01 要发布的那整串
+     * @return std::string 43 字符的 URL-safe 无填充 Base64 摘要文本
+     */
+    [[nodiscard]] ASYN_NET_API std::string dns01ValidationText(std::string_view keyAuthorization);
+
+    /**
+     * @brief 一个域名的授权记录，带着「本客户端按配置挑中的那一种」挑战
+     * @details 解析时只挑 `AcmeClient::Configuration::challengeKind` 要的那一种，另一条留空——
+     *          刻意不把两种都填上：调用方一旦拿到两条，就得自己决定发哪条给机构，而「发了一条、
+     *          答的却是另一条」正是最难查的那种错。tls-alpn-01 仍然不做：它要在握手里交出带
+     *          `acme-tls/1` 的自签证书，与本服务的 ALPN 装配是两套。
      */
     struct ASYN_NET_API AcmeAuthorization
     {
         std::string                  identifier; ///< 这条授权对应的域名
         std::string                  status;     ///< pending / valid / invalid / deactivated / expired / revoked
-        std::optional<AcmeChallenge> http01;     ///< 本通路唯一会用的那一种挑战；机构没给就是空
+        std::optional<AcmeChallenge> http01;     ///< 配置要 HTTP-01 且机构给了才有值
+        std::optional<AcmeChallenge> dns01;      ///< 配置要 DNS-01 且机构给了才有值
     };
 
     /**
@@ -85,8 +106,10 @@ namespace AsynGyanis::Net
      * @note 绑定在构造时给的那个事件循环上，只能在循环所属线程调用（出站请求与定时器都在那条线程上跑）
      * @note 账户密钥按引用持有：它必须活得比本对象久——签名发生在协程挂起之后，
      *       调用方交来一个临时对象会静默读到已释放的密钥材料
-     * @warning 只实现 HTTP-01。机构的目录里若只有 tls-alpn-01 或 dns-01（有些内部 CA 确实如此），
-     *          本类会在读授权时判失败并说明要哪一种，不会挑一条它答不了的挑战去 POST
+     * @warning 支持 HTTP-01 与 DNS-01 两种自证的**协议侧**：挑挑战、算校验值、按机构的答复轮询。
+     *          「把答案放出去」不在本类职责内——HTTP-01 要靠已注册的路由，DNS-01 要靠 DNS 提供方；
+     *          配置要的那一种机构没给时，本类在读授权时就判失败并列出机构实际给了哪些类型，
+     *          不会挑一条自己答不了的挑战去 POST（tls-alpn-01 一律不支持）
      */
     class ASYN_NET_API AcmeClient
     {
@@ -109,6 +132,9 @@ namespace AsynGyanis::Net
             std::string externalAccountKeySecret;
             /// 单次出站请求的时限
             std::chrono::milliseconds requestTimeout{std::chrono::milliseconds{10000}};
+            /// 要答哪一种自证挑战。默认 HTTP-01（与加这个字段之前的行为逐字相同）；选 DNS-01 时
+            /// 调用方必须另外具备发布 TXT 记录的能力，本客户端只负责挑对挑战与算对 TXT 值
+            AcmeChallengeKind challengeKind{AcmeChallengeKind::Http01};
             /// 撞上 badNonce 时的自动重试上限：nonce 由机构发、一次性，用坏了重取就行，
             /// 但无限重试会把一次网络抖动变成永久卡住
             std::size_t maximumNonceRetries{3};

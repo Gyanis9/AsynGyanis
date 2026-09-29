@@ -279,6 +279,9 @@ namespace AsynGyanis::Net
         std::string                  m_externalAccountKeyId{};                               ///< 客户端侧的 EAB 标识
         std::string                  m_externalAccountKeySecret{};                           ///< 客户端侧的 EAB HMAC 密钥
         std::string                  m_contactEmailAddress{"mailto:acme-tests@example.com"}; ///< 账户联系人；留空即「不登记联系人」那一档
+        /// 客户端要答哪一种自证挑战；默认 HTTP-01（与加这个字段之前的行为逐字相同），只有那两条
+        /// 「配置与机构实际给的对不上」的用例改它
+        AcmeChallengeKind m_challengeKind{AcmeChallengeKind::Http01};
 
     private:
         /**
@@ -296,6 +299,7 @@ namespace AsynGyanis::Net
             configuration.requestTimeout           = kRequestTimeout;
             configuration.externalAccountKeyId     = m_externalAccountKeyId;
             configuration.externalAccountKeySecret = m_externalAccountKeySecret;
+            configuration.challengeKind            = m_challengeKind;
             return configuration;
         }
 
@@ -347,8 +351,9 @@ namespace AsynGyanis::Net
                     {
                         co_return recordFailure(index, authorization, std::move(outcome));
                     }
-                    // http01 一定存在：fetchAuthorization 里没有它就返回失败而不是交回空
-                    auto solved = co_await client.solveChallenge(authorization->http01->challengeUrl, kPollInterval, kPollTimeout);
+                    // 被挑中的那一种一定存在：fetchAuthorization 里两种都没挑到就返回失败而不是交回空
+                    const AcmeChallenge &challenge = authorization->http01.has_value() ? *authorization->http01 : *authorization->dns01;
+                    auto                 solved    = co_await client.solveChallenge(challenge.challengeUrl, kPollInterval, kPollTimeout);
                     if (!solved.has_value())
                     {
                         co_return recordFailure(index, solved, std::move(outcome));
@@ -639,7 +644,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：机构只给非 http-01 的挑战时拒绝，而不是挑一条答不了的去做
+     * @brief 钉住：机构只给非「配置要的那一种」时拒绝，而不是挑一条答不了的去做
      */
     TEST_F(AcmeClientTest, RefusesAChallengeItCannotAnswer)
     {
@@ -650,10 +655,63 @@ namespace AsynGyanis::Net
         const auto outcome = runDefaultFlow();
         EXPECT_FALSE(outcome.isSuccess);
         EXPECT_EQ(outcome.failureKind, AcmeErrorKind::UnexpectedResponse);
-        // 要的是「本通路只实现 http-01」这条拒绝：挑了 dns-01 再去报缺 token，是同一种退化却被
+        // 要的是「按配置要的是 http-01」这条拒绝：挑了 dns-01 再去报缺 token，是同一种退化却被
         // 说成机构的毛病，判据不能允许
-        EXPECT_NE(outcome.failureMessage.find("只实现 http-01"), std::string::npos) << outcome.failureMessage;
+        EXPECT_NE(outcome.failureMessage.find("要的是 http-01"), std::string::npos) << outcome.failureMessage;
         EXPECT_EQ(this->evidence().challengeFetchCount, 0U) << "拒了就不该再去答任何一条挑战";
+    }
+
+    /**
+     * @brief 钉住：配置切到 DNS-01 而机构只给 http-01 时，拒绝话术点名的是 dns-01
+     * @details 与上一条凑成一对反向判据：文案跟着配置走，才说明「要哪一种」真被消费了，
+     *          而不是写死在实现里的一句老话
+     */
+    TEST_F(AcmeClientTest, RefusesHttp01OnlyAuthorityWhenConfiguredForDns01)
+    {
+        AcmeStubAuthority::Settings settings;
+        startFixtures(settings);
+        m_challengeKind = AcmeChallengeKind::Dns01;
+
+        const auto outcome = runDefaultFlow();
+        EXPECT_FALSE(outcome.isSuccess);
+        EXPECT_EQ(outcome.failureKind, AcmeErrorKind::UnexpectedResponse) << outcome.failureMessage;
+        EXPECT_NE(outcome.failureMessage.find("要的是 dns-01"), std::string::npos) << outcome.failureMessage;
+        EXPECT_NE(outcome.failureMessage.find("http-01"), std::string::npos) << "拒绝话术要列出机构实际给了哪几种";
+        EXPECT_EQ(this->evidence().challengeFetchCount, 0U) << "没挑到挑战就不该去答";
+    }
+
+    /**
+     * @brief 钉住：配置与机构对得上时不再走「挑不到挑战」那条拒绝
+     * @details 这条只判「没被拒绝」，不判整单走通——桩机构答不了 DNS-01 的校验（它按取令牌那条路
+     *          判 valid），把 TXT 那条路真接上是 DNS 提供方那一轮的事。放在这里是因为少了它，
+     *          上一条与「选择永远失败」那种实现就分不开
+     */
+    TEST_F(AcmeClientTest, SelectsDns01WhenBothSidesAgreeOnIt)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.offeredChallengeType = "dns-01";
+        startFixtures(settings);
+        m_challengeKind = AcmeChallengeKind::Dns01;
+
+        const auto outcome = runDefaultFlow();
+        EXPECT_EQ(outcome.failureMessage.find("只提供了这些挑战类型"), std::string::npos) << outcome.failureMessage;
+    }
+
+    /**
+     * @brief 钉住：DNS-01 的 TXT 正文等于独立实现算出的 base64url(SHA-256(keyAuthorization))
+     * @details 期望值来自 Node 的 crypto（与 OpenSSL/base64 通路都不同源），写死成字面量：
+     *          用被测同一个 helper 算期望，等于「规范怎么改都绿」。第三个向量是空串，钉的是
+     *          「无填充」这条——带 `=` 的写法机构直接判 invalid
+     */
+    TEST(AcmeDns01ValidationText, MatchesIndependentlyComputedDigests)
+    {
+        EXPECT_EQ(dns01ValidationText("EVstcErua-a8EKJvihxZd1nbLFiqsFf7.wwdt6DDcpLZcmWN7ZU8hgpjPvjz3w24xpXDWYA7BA8U"), "xUlhfYWyr3ScAdMmWf7gs_oiljhsvAxhGEi45qQiz8o");
+        EXPECT_EQ(dns01ValidationText("token.thumbprint"), "61rBZ_4knHblO0MNoxFsXZ_eTFUHum0B6IVRbhvUn5I");
+        EXPECT_EQ(dns01ValidationText(""), "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU");
+
+        const std::string text = dns01ValidationText("token.thumbprint");
+        EXPECT_EQ(text.size(), 43U) << "SHA-256 的 URL-safe 无填充 Base64 恒为 43 字符";
+        EXPECT_EQ(text.find('='), std::string::npos) << "带填充的 TXT 值机构不认";
     }
 
     /**
