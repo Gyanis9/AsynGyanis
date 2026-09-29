@@ -3,6 +3,8 @@
 
 #include "Base/Config/Detail/ReloadRoundGate.h"
 
+#include "BaseTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -202,7 +204,14 @@ namespace AsynGyanis::Base::Detail
         {
             workers.emplace_back(worker);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+        // 「至少跑过一轮」由用例自己等到，而不是赌 30 毫秒内恰好轮到四个线程：满载 runner 上它们
+        // 可能一次都没进过测量区，那时 maximumRoundsInFlight 恒为 0，红的就不是被测的互斥性
+        const bool anyRoundMeasured = TestSupport::waitForCondition([&maximumRoundsInFlight] { return maximumRoundsInFlight.load(std::memory_order_relaxed) > 0U; });
+        ASSERT_TRUE(anyRoundMeasured) << "四个工作线程在时限内一次都没进到测量区，互斥性无从判起";
+
+        // 起跑之后再多跑一段：抢权/接力的交错要真发生几次才有区分度，单次进区证明不了不重叠
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
         keepGoing.store(false, std::memory_order_relaxed);
         for (auto &workerThread: workers)
         {

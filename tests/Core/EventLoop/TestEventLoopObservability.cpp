@@ -214,13 +214,10 @@ namespace AsynGyanis::Core
 
         const auto segmentsBefore = driver.loop().snapshot().completedWorkingSegments;
         driver.loop().scheduler().postRemote([] { std::this_thread::sleep_for(kBlockedWorkingSegment); });
-        ASSERT_TRUE(waitForCondition([&driver, segmentsBefore] { return driver.loop().snapshot().completedWorkingSegments > segmentsBefore; }))
-                << "睡了一觉的活儿没能让工作段计数加一";
 
-        const EventLoopSnapshot snapshot = driver.loop().snapshot();
-        EXPECT_GE(snapshot.slowestWorkingSegment, kBlockedWorkingSegment) << "最慢工作段的高水位没记下这一段";
-
-        // 告警与高水位写在同一处，但不保证用例这边已经读到：按有界轮询等它出现
+        // 完成点取「告警落地」而不是「工作段计数加一」：唤醒哨兵、定时器这类活儿同样会让计数加一，
+        // 按旧判据往下读高水位量到的可能不是被睡住的那一段。高水位与告警在同一段测量里写出，
+        // 且写在前、报在后（EventLoop::run 的收尾），因此等到告警即等到高水位
         const auto alertArrived = waitForCondition(
                 [messages]
                 {
@@ -228,6 +225,10 @@ namespace AsynGyanis::Core
                     return std::ranges::any_of(snapshotOfMessages, [](const std::string &message) { return message.find("工作段耗时") != std::string::npos; });
                 });
         ASSERT_TRUE(alertArrived) << "超阈值的工作段没有落 ERROR";
+        EXPECT_GT(driver.loop().snapshot().completedWorkingSegments, segmentsBefore) << "睡了一觉的活儿没能让工作段计数加一";
+
+        const EventLoopSnapshot snapshot = driver.loop().snapshot();
+        EXPECT_GE(snapshot.slowestWorkingSegment, kBlockedWorkingSegment) << "最慢工作段的高水位没记下这一段";
     }
 
 } // namespace AsynGyanis::Core
