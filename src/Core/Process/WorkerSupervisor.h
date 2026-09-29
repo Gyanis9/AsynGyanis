@@ -195,6 +195,10 @@ namespace AsynGyanis::Core
         std::atomic<bool> m_isStopRequested{false};
 
         /// 在运行的 worker 数：只由编排线程在每轮扫描末尾与收尾末尾发布，观察者线程只读它
+        /// 「随父终止」保护缺席只报一次：挂不上作业是宿主性质（每个 worker 都会失败），
+        /// 按 worker 报会在补位循环里把日志刷满而信息一句没多
+        bool m_killGuardAbsenceReported{false};
+
         std::atomic<std::size_t> m_runningWorkerCount{0};
     };
 } // namespace AsynGyanis::Core

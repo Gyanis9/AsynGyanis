@@ -15,6 +15,16 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **Windows 上的 worker 会随 master 一起消失**：`Process::spawn` 新增 `LaunchOptions::killWithParent`
+  （把子进程挂进一个带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业，作业句柄随 `Process::Handle` 活着），
+  `WorkerSupervisor` 给每个 worker 默认挂上。此前 master 被硬杀（`Taskkill /F`、OOM、容器被删）后，
+  worker 会继续占着端口而无人编排——Linux 侧有 `PR_SET_PDEATHSIG` 兜住，Windows 一直没有等价物。
+  主机已处在一个禁止嵌套的作业里时（某些容器与 CI）挂不上：此时**派生照常成功**（「服务起不来」比「保护缺席」
+  更糟），但保护缺席会被点名一次（`Handle::killWithParentGuardActive()` 报 false，编排者落一条 WARN）。
+  开关刻意默认关：换代交棒要的正是相反的形状——新一代必须活过交棒的那一代，默认打开会把它做成静默自杀。
+
 ### 变更
 
 - **并发限额的默认值从「不限」改成有限值**：`server.maximum_connections` 默认每监听器 4096

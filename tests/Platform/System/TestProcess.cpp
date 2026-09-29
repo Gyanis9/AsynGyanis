@@ -3,10 +3,12 @@
 
 #include "Platform/System/PlatformError.h"
 #include "Platform/System/ProcessInfo.h"
+#include "Platform/System/TextEncoding.h"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -16,6 +18,7 @@
 #include <vector>
 
 #if !ASYN_PLATFORM_WIN32
+#include <cerrno>
 #include <csignal>
 #include <sys/wait.h>
 #endif
@@ -596,6 +599,313 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(exitCode.has_value()) << "被强杀的进程没有退出";
         EXPECT_EQ(*exitCode, 128 + SIGKILL);
         EXPECT_FALSE(Process::isRunning(handle));
+    }
+#endif
+
+    // ---------------------------------------------------------------- 随父终止（killWithParent）
+    //
+    // 这条保护要三个进程才判得了：父侧（用例）→ 中间层（同一枚二进制的探针角色）→ 孙进程。
+    // 中间层必须「不退干净」地结束（ExitProcess / _exit），因为正常析构会由 Handle 关掉作业句柄，
+    // 那就测的是主动收口而不是被硬杀。孙进程的存在与消失由父侧独立核对，判据不靠句柄。
+
+    namespace
+    {
+        /// 探针的角色标记：父侧据此把同一枚二进制启成中间层；中间层没有它就按普通用例走（不递归）
+        constexpr const char *kKillProbeRoleVariable = "ASYN_KILL_PROBE";
+
+        /// 中间层把孙进程号与保护状态写进这个文件，父侧按它判
+        constexpr const char *kKillProbeReportVariable = "ASYN_KILL_PROBE_FILE";
+
+        /// 探针报告的落地文件名（临时目录里）
+        constexpr const char *kKillProbeReportName = "asyn-kill-probe.report";
+
+        /// 父侧等孙进程消失的窗口：保护生效时是毫秒级，给到 4 秒已经把「要睡满 60 秒」的靶子区分开了
+        constexpr int kKillProbeWaitMilliseconds = 4000;
+
+        /// 对照组里「保护没开时孙进程该活着」的观察窗口
+        constexpr int kKillProbeSurvivalWindowMilliseconds = 1000;
+
+        /**
+         * @brief 探针用的长睡靶子：两端都要睡到远超观察窗口
+         * @details Windows 走 ping（无外部依赖），POSIX 走 sleep；刻意不用 makeSleepCommand()——
+         *          它 POSIX 侧只睡 5 秒，与这里的 4 秒窗口挨得太近，会留下「自己睡醒了」的假绿空间
+         * @return ExitCommand 可执行文件与参数
+         */
+        ExitCommand makeGuardProbeTargetCommand()
+        {
+#if ASYN_PLATFORM_WIN32
+            return ExitCommand{"cmd.exe", std::vector<std::string>{"/c", "ping -n 60 127.0.0.1 > nul"}};
+#else
+            return ExitCommand{"/bin/sh", std::vector<std::string>{"-c", "sleep 60"}};
+#endif
+        }
+
+        /// 中间层的「被硬杀」：跳过析构与 atexit，句柄交还给系统，这正是 master 被 Taskkill /F 带走的形状
+        void exitTheProbeProcessAbruptly()
+        {
+#if ASYN_PLATFORM_WIN32
+            static_cast<void>(::ExitProcess(0));
+#else
+            ::_exit(0);
+#endif
+        }
+
+        /**
+         * @brief 给探针子进程设/清环境变量（两端的调用形状不同，收在一处）
+         * @param name 变量名
+         * @param value 空指针表示清掉这个变量
+         */
+        void setProbeEnvironmentVariable(const char *const name, const char *const value)
+        {
+#if ASYN_PLATFORM_WIN32
+            static_cast<void>(::SetEnvironmentVariableA(name, value));
+#else
+            if (value != nullptr)
+            {
+                static_cast<void>(::setenv(name, value, 1));
+            }
+            else
+            {
+                static_cast<void>(::unsetenv(name));
+            }
+#endif
+        }
+
+        /**
+         * @brief 取本测试二进制自己的路径，父侧用它把中间层启起来
+         * @return std::string 可直接交给 spawn 的可执行文件路径；取不到时为空
+         */
+        std::string currentExecutablePath()
+        {
+#if ASYN_PLATFORM_WIN32
+            std::vector<wchar_t> buffer(4 * MAX_PATH);
+            const DWORD          length = ::GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (length == 0 || length >= buffer.size())
+            {
+                return {};
+            }
+            return TextEncoding::toUtf8String(std::wstring(buffer.data(), length));
+#else
+            std::vector<char> buffer(4096);
+            const ssize_t     length = ::readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
+            if (length <= 0)
+            {
+                return {};
+            }
+            return std::string(buffer.data(), static_cast<std::size_t>(length));
+#endif
+        }
+
+        /**
+         * @brief 进程号此刻是否还活着（父侧手里没有它的句柄，只能这样问）
+         * @param processId 目标进程号
+         * @return true 还在
+         */
+        bool isProcessAlive(const long processId)
+        {
+            if (processId <= 0)
+            {
+                return false;
+            }
+#if ASYN_PLATFORM_WIN32
+            const HANDLE handle = ::OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(processId));
+            if (handle == nullptr)
+            {
+                return false;
+            }
+            const DWORD  waitResult = ::WaitForSingleObject(handle, 0);
+            static_cast<void>(::CloseHandle(handle));
+            return waitResult == WAIT_TIMEOUT;
+#else
+            if (::kill(static_cast<pid_t>(processId), 0) == 0)
+            {
+                return true;
+            }
+            // 存在但不属于我：EPERM 仍算活着，ESRCH 才是「没了」
+            return errno == EPERM;
+#endif
+        }
+
+        /**
+         * @brief 收尾：把探针留下的孙进程收掉，绝不让它带着 60 秒的睡眠跑进别的用例
+         * @param processId 目标进程号
+         */
+        void terminateProbeTarget(const long processId)
+        {
+            if (processId <= 0)
+            {
+                return;
+            }
+#if ASYN_PLATFORM_WIN32
+            const HANDLE handle = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, static_cast<DWORD>(processId));
+            if (handle != nullptr)
+            {
+                static_cast<void>(::TerminateProcess(handle, 2));
+                static_cast<void>(::WaitForSingleObject(handle, kWaitTimeoutMilliseconds));
+                static_cast<void>(::CloseHandle(handle));
+            }
+#else
+            static_cast<void>(::kill(static_cast<pid_t>(processId), SIGKILL));
+#endif
+        }
+
+        /// 中间层报回来的三件事：孙进程号、保护是否真挂上、它在中间层还活着时是否确实在跑
+        struct KillProbeReport
+        {
+            long processId{0};     ///< 孙进程号
+            bool isGuardActive{false}; ///< 作业是否真挂上了（本进程已在禁止嵌套的作业里时为 false）
+            bool wasRunning{false};    ///< 中间层退出前它确实在运行，排除「根本没起来」这种假绿
+        };
+
+        /**
+         * @brief 父侧：按角色启一个中间层，等它硬退，再把探针报告读回来
+         * @param role "on" 表示中间层要带保护起孙进程，"off" 表示不带
+         * @return std::optional<KillProbeReport> 探针留下的事实；没留证据时为空
+         */
+        std::optional<KillProbeReport> runKillProbeAndReadReport(const std::string_view role)
+        {
+            const std::filesystem::path reportPath = std::filesystem::temp_directory_path() / kKillProbeReportName;
+            std::error_code             ignored;
+            static_cast<void>(std::filesystem::remove(reportPath, ignored));
+
+            setProbeEnvironmentVariable(kKillProbeRoleVariable, std::string(role).c_str());
+            setProbeEnvironmentVariable(kKillProbeReportVariable, reportPath.string().c_str());
+
+            const std::string executablePath = currentExecutablePath();
+            EXPECT_FALSE(executablePath.empty()) << "取不到自身路径，中间层启不起来";
+
+            const Process::Handle middleHandle = Process::spawn(Process::LaunchOptions{
+                .executablePath = executablePath,
+                .arguments      = std::vector<std::string>{"--gtest_filter=Process.KillWithParentProbeMiddle", "--gtest_brief=1"},
+            });
+            setProbeEnvironmentVariable(kKillProbeRoleVariable, nullptr);
+            setProbeEnvironmentVariable(kKillProbeReportVariable, nullptr);
+            if (!middleHandle.isValid())
+            {
+                ADD_FAILURE() << "中间层探针没起来，平台错误码 " << PlatformError::lastErrorCode();
+                return std::nullopt;
+            }
+
+            // 中间层写完报告就硬退，因此这里只等有界时限内的退出码；等不到说明探针卡在别处，判据不成立
+            if (!waitForExit(middleHandle, kWaitTimeoutMilliseconds).has_value())
+            {
+                static_cast<void>(Process::forceTermination(middleHandle));
+                ADD_FAILURE() << "中间层探针没在时限内退出";
+                return std::nullopt;
+            }
+
+            std::ifstream report(reportPath);
+            if (!report)
+            {
+                ADD_FAILURE() << "探针没留下报告文件：" << reportPath.string() << "（中间层可能在写下孙进程号之前就死了）";
+                return std::nullopt;
+            }
+            long processId        = 0;
+            int  guardAsDigit     = 0;
+            int  wasRunningAsDigit = 0;
+            report >> processId >> guardAsDigit >> wasRunningAsDigit;
+            if (!report || processId <= 0)
+            {
+                ADD_FAILURE() << "探针报告读不成形，内容不可信";
+                return std::nullopt;
+            }
+            return KillProbeReport{processId, guardAsDigit != 0, wasRunningAsDigit != 0};
+        }
+    } // namespace
+
+    /**
+     * @brief 中间层角色：起一个（按要求带或不带「随父终止」的）孙进程，报下进程号与保护状态后硬退
+     * @details 报告必须先落盘再硬退：父侧看不到报告就当场红，而不是把「孙进程不见了」当成保护生效的证据
+     */
+    TEST(Process, KillWithParentProbeMiddle)
+    {
+        const auto role = ProcessInfo::environmentVariable(kKillProbeRoleVariable);
+        if (!role.has_value())
+        {
+            GTEST_SKIP() << "本用例只在被父侧以探针角色启起来时执行";
+        }
+        const auto reportPathText = ProcessInfo::environmentVariable(kKillProbeReportVariable);
+        ASSERT_TRUE(reportPathText.has_value()) << "父侧没交代报告落在哪";
+
+        const ExitCommand     command = makeGuardProbeTargetCommand();
+        const Process::Handle grandChild = Process::spawn(Process::LaunchOptions{
+            .executablePath   = command.executablePath,
+            .arguments        = command.arguments,
+            .ownProcessGroup  = false,
+            .killWithParent   = *role == "on",
+        });
+        ASSERT_TRUE(grandChild.isValid()) << "孙进程起不来，平台错误码 " << PlatformError::lastErrorCode();
+
+        // 保护状态与「此刻它确实在跑」都要报回来：父侧看到孙进程不见了，得能分清那是保护带走的，
+        // 还是它根本没起来
+        const bool isGuardActive = grandChild.killWithParentGuardActive();
+        const bool wasRunning    = Process::isRunning(grandChild);
+        std::ofstream report(reportPathText->c_str());
+        report << grandChild.processId() << ' ' << (isGuardActive ? 1 : 0) << ' ' << (wasRunning ? 1 : 0) << '\n';
+        ASSERT_TRUE(static_cast<bool>(report)) << "探针报告写不出去，父侧的判据会失去前提";
+        report.flush();
+
+        // 硬退：正常返回会走 Handle 析构关作业句柄，那测的是「主动收口」而不是「被硬杀」
+        exitTheProbeProcessAbruptly();
+    }
+
+    /**
+     * @brief 钉住：给了 killWithParent 时，父侧被硬杀后子进程一并消失（不留占着端口的孤儿）
+     * @details POSIX 靠 spawn 里那条 prctl(PR_SET_PDEATHSIG)（这条是它第一次被直接判），
+     *          Windows 靠作业句柄。主机不给嵌套作业时保护挂不上，探针会把这件事写进报告，
+     *          父侧据此 SKIP——那条路在这台机器上本来就测不到，而不是实现有问题
+     */
+    TEST(Process, KillWithParentGuardTakesTheChildDown)
+    {
+        const auto probe = runKillProbeAndReadReport("on");
+        ASSERT_TRUE(probe.has_value());
+        const long childProcessId = probe->processId;
+        if (!probe->isGuardActive)
+        {
+            terminateProbeTarget(childProcessId);
+            GTEST_SKIP() << "这台主机不给子进程挂作业（多为已处在一个禁止嵌套的作业里），保护本来就不可用";
+        }
+        // 「起来过」由中间层在退出前确认：父侧看到它不见了，得能分清那是保护带走的还是它根本没起来
+        ASSERT_TRUE(probe->wasRunning) << "孙进程在中间层手里就没跑起来，后面的判定没有对象";
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{kKillProbeWaitMilliseconds};
+        while (std::chrono::steady_clock::now() < deadline && isProcessAlive(childProcessId))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+        const bool isGone = !isProcessAlive(childProcessId);
+        terminateProbeTarget(childProcessId);
+        EXPECT_TRUE(isGone) << "父进程硬退后，带保护的子进程还在跑：它正占着端口却没有编排者";
+    }
+
+    /**
+     * @brief 钉住（Windows）：没给 killWithParent 时，父侧硬杀不该带走子进程
+     * @details 换代交棒要的正是这一侧——新一代必须活过交棒的那一代，默认开保护会把它做成静默自杀。
+     *          POSIX 没有「不要这条保护」的形状（spawn 一律装 PDEATHSIG），因此对照组只在 Windows 跑
+     */
+#if ASYN_PLATFORM_WIN32
+    TEST(Process, WithoutKillWithParentTheChildOutlivesTheProbe)
+    {
+        const auto probe = runKillProbeAndReadReport("off");
+        ASSERT_TRUE(probe.has_value());
+        const long childProcessId = probe->processId;
+        EXPECT_FALSE(probe->isGuardActive) << "没要保护却挂上了作业，说明开关没被消费";
+        ASSERT_TRUE(probe->wasRunning) << "对照组里孙进程也没起来，那「它活着」这条判据就是空的";
+
+        // 保护生效时消失是毫秒级，这一秒里还活着就等于「没被带走」
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{kKillProbeSurvivalWindowMilliseconds};
+        bool       isAlive  = true;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            isAlive = isProcessAlive(childProcessId);
+            if (!isAlive)
+            {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+        EXPECT_TRUE(isAlive) << "没给 killWithParent 的子进程也被带走了，交棒那条路会被做成静默自杀";
+        terminateProbeTarget(childProcessId);
     }
 #endif
 } // namespace AsynGyanis::Platform

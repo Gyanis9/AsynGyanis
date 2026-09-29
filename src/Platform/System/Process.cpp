@@ -66,8 +66,8 @@ namespace AsynGyanis::Platform
     } // namespace
 
 #if ASYN_PLATFORM_WIN32
-    Process::Handle::Handle(void *const processHandle, const unsigned long processId, const bool ownConsoleGroup) noexcept :
-        m_processHandle(processHandle), m_processId(processId), m_ownsConsoleGroup(ownConsoleGroup)
+    Process::Handle::Handle(void *const processHandle, const unsigned long processId, const bool ownConsoleGroup, void *const jobHandle) noexcept :
+        m_processHandle(processHandle), m_processId(processId), m_ownsConsoleGroup(ownConsoleGroup), m_jobHandle(jobHandle)
     {
     }
 #else
@@ -87,7 +87,10 @@ namespace AsynGyanis::Platform
         m_processHandle(std::exchange(other.m_processHandle, nullptr)), m_processId(std::exchange(other.m_processId, 0)),
         // 进程组归属权跟着句柄一起走：丢了它，移过来的句柄就再也发不出 CTRL_BREAK，
         // 而「有没有独立进程组」只有派生那一次知道，事后无从向平台追问
-        m_ownsConsoleGroup(std::exchange(other.m_ownsConsoleGroup, false)), m_exitCode(other.m_exitCode)
+        m_ownsConsoleGroup(std::exchange(other.m_ownsConsoleGroup, false)),
+        // 作业句柄也只能在派生那一次拿到：移动时丢了它，「随父终止」就变成了「随那个被丢弃的句柄终止」，
+        // 而新句柄的主人以为保护还在
+        m_jobHandle(std::exchange(other.m_jobHandle, nullptr)), m_exitCode(other.m_exitCode)
 #else
         : m_processId(std::exchange(other.m_processId, -1)), m_exitCode(other.m_exitCode)
 #endif
@@ -103,6 +106,7 @@ namespace AsynGyanis::Platform
             m_processHandle    = std::exchange(other.m_processHandle, nullptr);
             m_processId        = std::exchange(other.m_processId, 0);
             m_ownsConsoleGroup = std::exchange(other.m_ownsConsoleGroup, false);
+            m_jobHandle        = std::exchange(other.m_jobHandle, nullptr);
 #else
             m_processId = std::exchange(other.m_processId, -1);
 #endif
@@ -129,6 +133,18 @@ namespace AsynGyanis::Platform
 #endif
     }
 
+    bool Process::Handle::killWithParentGuardActive() const noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        // 只有真挂上作业才算有保护：挂不上时句柄已在 spawn 里关掉，这里自然给 false
+        return m_jobHandle != nullptr;
+#else
+        // POSIX 的保护在 exec 之前就写进子进程了（prctl(PR_SET_PDEATHSIG)），成功派生即带着它，
+        // 因此没有一个「要了却没生效」的中间态；句柄无效时没什么可保护的
+        return isValid();
+#endif
+    }
+
     void Process::Handle::close() noexcept
     {
         if (!isValid())
@@ -147,6 +163,13 @@ namespace AsynGyanis::Platform
         {
             ::CloseHandle(static_cast<HANDLE>(m_processHandle));
             m_processHandle = nullptr;
+        }
+        // 关作业句柄正是「随父终止」的实施点：作业里还在跑的进程此刻被系统终止。放在关进程句柄之后，
+        // 让「先观察到退出码、再收句柄」这条顺序在本进程主动 close 时也成立
+        if (m_jobHandle != nullptr)
+        {
+            ::CloseHandle(static_cast<HANDLE>(m_jobHandle));
+            m_jobHandle = nullptr;
         }
         m_processId = 0;
 #else
@@ -242,6 +265,12 @@ namespace AsynGyanis::Platform
         {
             creationFlags |= CREATE_NEW_PROCESS_GROUP;
         }
+        // 要随父终止时先以挂起态创建：挂作业必须赶在子进程跑起来之前完成，否则它可能在被挂进作业之前
+        // 先派出自己的进程，那一批就永远躲开了 KILL_ON_JOB_CLOSE
+        if (options.killWithParent)
+        {
+            creationFlags |= CREATE_SUSPENDED;
+        }
         std::wstring wideCommandLine = TextEncoding::toWideString(commandLine);
 
         // 可执行文件只走命令行那一路，lpApplicationName 传空：CreateProcessW 对 lpApplicationName
@@ -264,8 +293,34 @@ namespace AsynGyanis::Platform
             return Handle{};
         }
 
+        void *jobHandle = nullptr;
+        if (options.killWithParent)
+        {
+            jobHandle = ::CreateJobObjectW(nullptr, nullptr);
+            bool isGuardInPlace = false;
+            if (jobHandle != nullptr)
+            {
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobLimits{};
+                // 「最后一个作业句柄关闭即终止作业内全部进程」这条限值要在挂进程之前写进去：
+                // 反了的话，两步之间本进程被杀就留下一个不在任何作业里的孤儿
+                jobLimits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                const BOOL isLimited = ::SetInformationJobObject(static_cast<HANDLE>(jobHandle), JobObjectExtendedLimitInformation, &jobLimits, sizeof(jobLimits));
+                isGuardInPlace       = isLimited != 0 && ::AssignProcessToJobObject(static_cast<HANDLE>(jobHandle), processInformation.hProcess) != 0;
+                if (!isGuardInPlace)
+                {
+                    // 本进程已在一个禁止嵌套的作业里时挂不上（某些容器与 CI 环境就是这样）。刻意不因此
+                    // 让派生失败——「服务起不来」比「保护缺席」更糟——但把作业句柄关掉，
+                    // 由 Handle::killWithParentGuardActive() 让调用方看出保护没生效并出声
+                    ::CloseHandle(static_cast<HANDLE>(jobHandle));
+                    jobHandle = nullptr;
+                }
+            }
+            // 挂没挂上都放行主线程：以挂起态创建是实现细节，不能泄漏成「子进程停在挂起点」
+            static_cast<void>(::ResumeThread(processInformation.hThread));
+        }
+
         ::CloseHandle(processInformation.hThread);
-        return Handle(processInformation.hProcess, processInformation.dwProcessId, options.ownProcessGroup);
+        return Handle(processInformation.hProcess, processInformation.dwProcessId, options.ownProcessGroup, jobHandle);
 #else
         // fork 之前先记下本进程号：子进程要靠它判断「生我的那个进程是否还在」（见下面的自查）
         const pid_t parentProcessId = ::getpid();

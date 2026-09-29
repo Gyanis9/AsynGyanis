@@ -265,6 +265,9 @@ namespace AsynGyanis::Core
         // （组是控制台事件的投递单位，不给独立组就只能整组广播，那会打断 master 自己）。
         // POSIX 上这个字段无效果——那边的体面退出走 SIGTERM
         launchOptions.ownProcessGroup = true;
+        // 子进程随 master 消失：master 被硬杀（Taskkill /F、OOM killer、容器被删）时不留一群还在占端口
+        // 却没人编排的 worker。POSIX 侧这条由 spawn 内装的 PDEATHSIG 兜住，Windows 靠作业句柄
+        launchOptions.killWithParent = true;
 
 #if ASYN_PLATFORM_WIN32
         // 移交模式：通道要先开好——对方进程靠参数里那个地址连回来，而它连回来之后才谈得上按它的
@@ -306,6 +309,16 @@ namespace AsynGyanis::Core
         }
 
         LOG_INFO_FMT("WorkerSupervisor: worker {} 已启动，进程号 {}", workerIndex, worker.handle.processId());
+
+        // 保护缺席必须点名：本主机挂不上作业时（多为已处在一个禁止嵌套的作业里，某些容器与 CI 就这样），
+        // master 被硬杀后 worker 会留着占端口而没人编排——这与「随父终止」的承诺只差一层嵌套作业权限，
+        // 事后没人想得起来是这里缺的。只报第一次，因为挂不上是宿主性质，每个 worker 都会一样
+        if (!worker.handle.killWithParentGuardActive() && !m_killGuardAbsenceReported)
+        {
+            m_killGuardAbsenceReported = true;
+            LOG_WARN("WorkerSupervisor: 本主机不给子进程挂作业（常见于已处在禁止嵌套的作业里，如某些容器与 CI），"
+                     "「master 被硬杀时 worker 一并退出」这条保护不可用；worker 会留着占住端口，收口只能交给进程管理器");
+        }
 
 #if ASYN_PLATFORM_WIN32
         const std::chrono::milliseconds handoffBudget = m_configuration.handoff->waitBudget;
