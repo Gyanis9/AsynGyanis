@@ -11,6 +11,7 @@
 //
 // 输出协议（每行一条，无缓冲立即落盘，供脚本读取）：
 //   DIRECTORY <url>              实际用的机构目录
+//   BINDING <ip>:<port>          令牌服务真正绑上的地址（默认 127.0.0.1；打真机构时必须看到 0.0.0.0）
 //   LISTENING <port>             自证令牌服务的实际端口（内核发布之后才打）
 //   ISSUED <到期epoch> IDENTITY <链的sha256前12位>
 //   RENEWED <到期epoch> IDENTITY <...>   第二轮真的重签了（续期路径通）
@@ -51,10 +52,11 @@ namespace
      */
     struct Options
     {
-        std::string   directoryUrl;    ///< 机构目录（Pebble 是 https://127.0.0.1:14000/dir）
-        std::string   domain;          ///< 要覆盖的域名（回环跑法是 127.0.0.1.sslip.io）
-        std::uint16_t challengePort{}; ///< 自证令牌的明文端口，必须与机构配置里的 httpPort 一致
-        std::string   stateDirectory;  ///< 密钥、证书与账户状态的落点
+        std::string   directoryUrl;               ///< 机构目录（Pebble 是 https://127.0.0.1:14000/dir）
+        std::string   domain;                     ///< 要覆盖的域名（回环跑法是 127.0.0.1.sslip.io）
+        std::uint16_t challengePort{};            ///< 自证令牌的明文端口，必须与机构配置里的 httpPort 一致
+        std::string   challengeBind{"127.0.0.1"}; ///< 令牌服务的绑定地址：回环跑法保持默认，真机构从公网来取得填 0.0.0.0
+        std::string   stateDirectory;             ///< 密钥、证书与账户状态的落点
         std::string   contact{"mailto:acme-probe@example.com"};
         bool          forceRenewal{false}; ///< 把续期窗口撑到十年，逼出第二轮的真重签
     };
@@ -99,6 +101,9 @@ namespace
             } else if (flag == "--challenge-port")
             {
                 options.challengePort = static_cast<std::uint16_t>(std::stoi(needValue(argc, argv, index, flag)));
+            } else if (flag == "--challenge-bind")
+            {
+                options.challengeBind = needValue(argc, argv, index, flag);
             } else if (flag == "--state-dir")
             {
                 options.stateDirectory = needValue(argc, argv, index, flag);
@@ -112,7 +117,7 @@ namespace
             {
                 std::cerr << "未知参数：" << flag
                           << "\n用法：acme_issuance_probe --directory-url <url> --domain <name> --challenge-port <n> "
-                             "--state-dir <dir> [--contact mailto:...] [--renew]\n";
+                             "--state-dir <dir> [--challenge-bind <ip，默认 127.0.0.1>] [--contact mailto:...] [--renew]\n";
                 std::exit(2);
             }
         }
@@ -248,7 +253,17 @@ int main(const int argc, char **argv)
                                        return {};
                                    });
 
-    HttpServer challengeServer(loop, AsynGyanis::Core::InetAddress::localhost(options.challengePort));
+    // 绑定地址只接受 IP 字面量：解析失败若悄悄退回默认值，就会把「只想绑回环」变成「绑到全网卡」，
+    // 那是比失败更糟的结果，所以这里直接拒掉退出。
+    const std::optional<AsynGyanis::Core::InetAddress> challengeAddress = AsynGyanis::Core::InetAddress::parseLiteral(options.challengeBind, options.challengePort);
+    if (!challengeAddress.has_value())
+    {
+        std::cerr << "--challenge-bind 不是可解析的 IP 字面量：" << options.challengeBind << "\n";
+        std::exit(2);
+    }
+    emit(std::format("BINDING {}:{}", options.challengeBind, options.challengePort));
+
+    HttpServer challengeServer(loop, *challengeAddress);
     manager.registerChallengeRoutes(challengeServer.router());
 
     // 协程帧由本函数持有到 loop.run() 之后：Task 的析构是无条件 destroy()，帧提前析构等于在跑的时候抽走它
