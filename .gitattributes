@@ -1,0 +1,5 @@
+# 图解资产关掉行尾转换：archify 的 finalize/deliver 收据记的是交付时文件的 sha256，
+# 而 core.autocrlf=true 会让新克隆把这些文本文件检出成 CRLF，字节一变 sha 就对不上，
+# 按收据复核（archify check / browser-check --require-provenance）会误报。
+# 只圈定这一个目录，不影响 src/ 与脚本既有的行尾策略。
+assets/diagrams/** -text
