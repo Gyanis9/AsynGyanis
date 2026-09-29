@@ -79,6 +79,12 @@ namespace AsynGyanis::Net::TestSupport
             std::vector<std::string> rejectedDomainNames;
             /// 下一个 newOrder 直接 429 带 Retry-After：测限流这一档被折成 RateLimited
             bool isOrderRateLimited{false};
+            /**
+             * @brief 同一域名的下一张订单直接复用上一轮已 valid 的授权
+             * @details Boulder 与 Pebble 都会复用（Pebble 默认按概率复用）。开这一档是为了钉住
+             *          「客户端对着已 valid 的授权又去触发挑战」那条出口——真机构对此回 400，不是幂等
+             */
+            bool reusesValidAuthorizations{false};
             /// 签出的叶证书有效期天数
             long certificateValidDays{90};
         };
@@ -88,17 +94,19 @@ namespace AsynGyanis::Net::TestSupport
          */
         struct Evidence
         {
-            std::size_t verifiedSignatureCount{0}; ///< 验过的 JWS 条数
-            std::size_t rejectedSignatureCount{0}; ///< 验不过而拒掉的 JWS 条数
-            std::size_t jwkBearingRequestCount{0}; ///< 头部带 jwk 的请求条数：只有账户注册那一次该带
-            std::size_t badNonceReplyCount{0};     ///< 桩回出 badNonce 的条数
-            std::size_t challengeFetchCount{0};    ///< 取自证令牌的次数
-            std::size_t issuedOrderCount{0};       ///< 建出的订单条数
-            std::size_t issuedCertificateCount{0}; ///< 签出的证书条数
-            std::string lastChallengeFetchPath;    ///< 最后一次取令牌用的路径，用于断言 well-known 位置
-            std::string lastFetchedBody;           ///< 最后一次取令牌读到的正文
-            std::string issuedCertificatePem;      ///< 最近签出的叶证书 PEM
-            std::string firstAccountUrl;           ///< 第一个建出来的账户 URL
+            std::size_t verifiedSignatureCount{0};       ///< 验过的 JWS 条数
+            std::size_t rejectedSignatureCount{0};       ///< 验不过而拒掉的 JWS 条数
+            std::size_t jwkBearingRequestCount{0};       ///< 头部带 jwk 的请求条数：只有账户注册那一次该带
+            std::size_t badNonceReplyCount{0};           ///< 桩回出 badNonce 的条数
+            std::size_t missingUserAgentRequestCount{0}; ///< 缺 User-Agent 的请求条数：真机构（Boulder/Pebble）对这种请求直接 400
+            std::size_t revalidatedChallengeCount{0};    ///< 对已 valid 的挑战再触发校验的条数：真机构对此回 400
+            std::size_t challengeFetchCount{0};          ///< 取自证令牌的次数
+            std::size_t issuedOrderCount{0};             ///< 建出的订单条数
+            std::size_t issuedCertificateCount{0};       ///< 签出的证书条数
+            std::string lastChallengeFetchPath;          ///< 最后一次取令牌用的路径，用于断言 well-known 位置
+            std::string lastFetchedBody;                 ///< 最后一次取令牌读到的正文
+            std::string issuedCertificatePem;            ///< 最近签出的叶证书 PEM
+            std::string firstAccountUrl;                 ///< 第一个建出来的账户 URL
         };
 
         /**
@@ -265,19 +273,20 @@ namespace AsynGyanis::Net::TestSupport
         [[nodiscard]] Base::ConfigValue orderBody(const Order &order) const;
 
         Core::EventLoop                               &m_loop;
-        Settings                                       m_settings;                ///< 行为开关
-        std::unique_ptr<HttpServer>                    m_server;                  ///< 承载这些端点的明文 HTTP 服务（端口由它现报，见 port()）
-        std::optional<Core::Task<void>>                m_startTask;               ///< 接受循环的协程帧：start() 只把它交出来，得有人持有到循环停下
-        std::string                                    m_validationAuthority;     ///< 取自证令牌要去的那台机器（由用例在循环上填）
-        TestCertificateAuthority                       m_authority;               ///< 签证书用的测试 CA
-        std::vector<Account>                           m_accounts;                ///< 已注册账户，URL 是键
-        std::unordered_map<std::string, Authorization> m_authorizations;          ///< 授权 URL → 记录
-        std::unordered_map<std::string, Challenge>     m_challenges;              ///< 挑战 URL → 记录
-        std::unordered_map<std::string, Order>         m_orders;                  ///< 订单 URL → 记录
-        std::unordered_map<std::string, std::string>   m_certificates;            ///< 证书 URL → PEM
-        std::set<std::string>                          m_outstandingNonces;       ///< 发过、还没用掉的 nonce
-        std::size_t                                    m_sequence{0};             ///< 各类资源编号的来源
-        long                                           m_certificateSerial{1000}; ///< 每次签发换一个序列号，用例靠它区分新旧证书
-        Evidence                                       m_evidence;                ///< 累计证据
+        Settings                                       m_settings;                    ///< 行为开关
+        std::unique_ptr<HttpServer>                    m_server;                      ///< 承载这些端点的明文 HTTP 服务（端口由它现报，见 port()）
+        std::optional<Core::Task<void>>                m_startTask;                   ///< 接受循环的协程帧：start() 只把它交出来，得有人持有到循环停下
+        std::string                                    m_validationAuthority;         ///< 取自证令牌要去的那台机器（由用例在循环上填）
+        TestCertificateAuthority                       m_authority;                   ///< 签证书用的测试 CA
+        std::vector<Account>                           m_accounts;                    ///< 已注册账户，URL 是键
+        std::unordered_map<std::string, Authorization> m_authorizations;              ///< 授权 URL → 记录
+        std::unordered_map<std::string, Challenge>     m_challenges;                  ///< 挑战 URL → 记录
+        std::unordered_map<std::string, Order>         m_orders;                      ///< 订单 URL → 记录
+        std::unordered_map<std::string, std::string>   m_validAuthorizationsByDomain; ///< 域名 → 已 valid 的授权 URL，复用档按它找回
+        std::unordered_map<std::string, std::string>   m_certificates;                ///< 证书 URL → PEM
+        std::set<std::string>                          m_outstandingNonces;           ///< 发过、还没用掉的 nonce
+        std::size_t                                    m_sequence{0};                 ///< 各类资源编号的来源
+        long                                           m_certificateSerial{1000};     ///< 每次签发换一个序列号，用例靠它区分新旧证书
+        Evidence                                       m_evidence;                    ///< 累计证据
     };
 } // namespace AsynGyanis::Net::TestSupport

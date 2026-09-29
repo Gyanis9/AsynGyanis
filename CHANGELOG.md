@@ -1382,6 +1382,21 @@
 
 ### 修复
 
+- **ACME 的每条请求都带上客户端标识**（`Net::Acme::AcmeClient`）：RFC 8555 §6.1 要求每条请求带
+  `User-Agent`，Boulder 与 Pebble 对缺它的请求一律回 400 `malformed`（Pebble 的原文是 "All requests MUST
+  include a User-Agent header"）。此前取目录那一步就没带，等于这台客户端对着真机构**第一步就断**；
+  而进程内的桩不看这条头，所以自研那一侧一路全绿——这是跨实现验收才浮得出来的形状。现在目录 GET、
+  newNonce 的 HEAD 与每一条签名 POST 都过同一个入口补上（漏一处就等于那条通路用不了，故不各处写一遍）；
+  桩搬来同一条判据，用例钉住「一轮完整流程里没有任何一条请求缺标识」。
+  发现途径是 `scripts/acme_pebble_cross_check.sh`（对面换成 Pebble，另一套独立实现）。
+
+- **机构复用已 valid 的授权时，不再去触发那条挑战**（`Net::Acme::AcmeCertificateManager`）：续期时机构常
+  把上一轮做好的授权直接挂进新订单（Boulder 会，Pebble 默认按概率会），而对状态已是 valid 的挑战再发一次
+  触发不是幂等，是 400「Cannot update challenge with status valid, only status pending」。原实现每一轮都
+  无条件挂令牌并 POST，于是续期会稳定失败在自证那一步——同一份发现来自上面那条 Pebble 验收的第二轮。
+  现在授权本身是 valid 就跳过这一格自证（不挂令牌也不 POST），桩补上「复用授权 + 拒绝对 valid 挑战再触发」
+  两档把这条出口钉住：用例断言复用那一轮令牌一次都没被再取走、也没有一条对 valid 挑战的触发。
+
 - **一条坏投递不再打死整条事件循环**（`Core::Scheduler` / `Core::EventLoop::run()` /
   工作线程与若干后台线程入口）：抛出处在派发层、兜底却在循环层——`run()` 的 try 罩住整轮迭代，
   捕获后重抛；`ThreadPool` 的线程体接住、记一条 ERROR、然后返回。jthread 没有重启函数，于是

@@ -28,6 +28,27 @@ namespace AsynGyanis::Net
         /// RFC 8555 §6.7 里问题类型的固定前缀，机构交回的 "type" 一定带着它
         constexpr std::string_view kProblemTypePrefix = "urn:ietf:params:acme:error:";
 
+        /// 客户端标识的头部名（RFC 8555 §6.1 要求每条请求都带）
+        constexpr std::string_view kUserAgentHeaderName = "User-Agent";
+
+        /**
+         * @brief 本框架 ACME 客户端的标识串
+         * @details 不只是礼貌：Boulder 与 Pebble 对缺这条头的请求一律回 400 malformed
+         *          （Pebble 的原文是 "All requests MUST include a User-Agent header"），
+         *          连取目录这一步都过不去，整台状态机第一步就断。它因此必须挂在**每一条**请求上，
+         *          包括不带签名的目录 GET 与 newNonce 的 HEAD。
+         */
+        constexpr std::string_view kAcmeUserAgentValue = "AsynGyanis ACME client (+https://github.com/Gyanis9/AsynGyanis)";
+
+        /**
+         * @brief 给一份出站请求补上客户端标识
+         * @details 三处请求构造都走这里，而不是各自记得加：漏一处就等于那条通路对着 Boulder 直接 400
+         */
+        void applyClientIdentification(HttpClientRequest &request)
+        {
+            request.headers.emplace_back(std::string(kUserAgentHeaderName), std::string(kAcmeUserAgentValue));
+        }
+
         /// 机构发的新 nonce 与新建资源的地址都在响应头里
         constexpr std::string_view kReplayNonceHeader = "Replay-Nonce";
         constexpr std::string_view kLocationHeader    = "Location";
@@ -222,6 +243,7 @@ namespace AsynGyanis::Net
     {
         HttpClientRequest request;
         request.method = "HEAD";
+        applyClientIdentification(request);
         // 取 nonce 用 HEAD 而不是 GET：RFC 8555 §6.5 明说这一步不需要正文，GET 会让机构多送一份 JSON
         auto sent = co_await HttpClient::send(m_loop, m_newNonceUrl, request, m_configuration.requestTimeout);
         if (!sent.has_value())
@@ -313,6 +335,7 @@ namespace AsynGyanis::Net
             HttpClientRequest request;
             request.method      = "POST";
             request.contentType = kJoseContentType;
+            applyClientIdentification(request);
             // body 是视图：这份局部串活在本协程帧里，直到 co_await 返回才析构
             request.body = *envelopeText;
 
@@ -387,7 +410,8 @@ namespace AsynGyanis::Net
 
         HttpClientRequest directoryRequest;
         directoryRequest.method = "GET";
-        auto sent               = co_await HttpClient::send(m_loop, m_configuration.directoryUrl, directoryRequest, m_configuration.requestTimeout);
+        applyClientIdentification(directoryRequest);
+        auto sent = co_await HttpClient::send(m_loop, m_configuration.directoryUrl, directoryRequest, m_configuration.requestTimeout);
         if (!sent.has_value())
         {
             co_return std::unexpected(AcmeError{AcmeErrorKind::Transport, std::format("取 ACME 目录 {} 失败：{}", m_configuration.directoryUrl, sent.error())});

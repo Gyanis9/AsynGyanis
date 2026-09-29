@@ -102,6 +102,21 @@ namespace AsynGyanis::Net::TestSupport
 
         m_server       = std::make_unique<HttpServer>(m_loop, Core::InetAddress::localhost(port));
         Router &router = m_server->router();
+        // 真机构（Boulder 与 Pebble）对缺 User-Agent 的请求一律回 400 malformed，连目录都取不到，
+        // 这条判据来自 RFC 8555 §6.1。桩把它搬进来，客户端标识就不再是「实现里写了但没人要求」：
+        // 任何一条 ACME 通路漏了它，用例立刻红
+        router.addMiddleware(
+                [this](HttpRequest &request, HttpResponse &response, std::function<Core::Task<void>()> next) -> Core::Task<void>
+                {
+                    if (!request.hasHeader("User-Agent"))
+                    {
+                        ++m_evidence.missingUserAgentRequestCount;
+                        writeProblem(response, 400, "malformed", "All requests MUST include a User-Agent header");
+                        co_return;
+                    }
+                    co_await next();
+                    co_return;
+                });
         router.get("/directory", [this](HttpRequest &request, HttpResponse &response) { return handleDirectory(request, response); });
         router.get(kNewNoncePath.data(), [this](HttpRequest &request, HttpResponse &response) { return handleNewNonce(request, response); });
         router.post(kNewAccountPath.data(), [this](HttpRequest &request, HttpResponse &response) { return handleNewAccount(request, response); });
@@ -544,6 +559,17 @@ namespace AsynGyanis::Net::TestSupport
                 writeProblem(response, 400, "rejectedIdentifier", std::format("桩按故障注入拒绝域名 {}", domainName));
                 co_return;
             }
+            // 复用档：这一格上一轮已经自证过，就直接把那条已 valid 的授权挂进新订单——真机构是这么做的，
+            // 客户端要是照旧去触发挑战，会吃到一条 400
+            if (m_settings.reusesValidAuthorizations)
+            {
+                const auto reusable = m_validAuthorizationsByDomain.find(domainName);
+                if (reusable != m_validAuthorizationsByDomain.end())
+                {
+                    order.authorizationUrls.push_back(reusable->second);
+                    continue;
+                }
+            }
 
             const std::size_t authorizationSequence = ++m_sequence;
             Authorization     authorization;
@@ -676,6 +702,14 @@ namespace AsynGyanis::Net::TestSupport
 
         Challenge &challenge = found->second;
         const bool isTrigger = !auth->payloadText.empty();
+        if (isTrigger && challenge.status == "valid")
+        {
+            // 照抄 Boulder/Pebble 的原文：对已 valid 的挑战再触发一次校验不是幂等，是 400。
+            // 复用已 valid 授权的现实让这条出口真会被踩到，桩不拒就等于把这一类缺陷留在暗处
+            ++m_evidence.revalidatedChallengeCount;
+            writeProblem(response, 400, "malformed", "Cannot update challenge with status valid, only status pending");
+            co_return;
+        }
         if (isTrigger)
         {
             if (challenge.remainingProcessingPolls > 0)
@@ -705,6 +739,11 @@ namespace AsynGyanis::Net::TestSupport
             if (authorization.challengeUrl == challenge.url)
             {
                 authorization.status = challenge.status;
+                if (authorization.status == "valid")
+                {
+                    // 记下「这个域名已经自证过」，复用档的下一张订单要按它找回
+                    m_validAuthorizationsByDomain[authorization.identifier] = authorization.url;
+                }
             }
         }
 

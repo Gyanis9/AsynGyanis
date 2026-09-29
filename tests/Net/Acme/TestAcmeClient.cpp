@@ -376,6 +376,9 @@ namespace AsynGyanis::Net
         EXPECT_GE(evidence.verifiedSignatureCount, 6U) << "整单至少要签六次";
         EXPECT_EQ(evidence.rejectedSignatureCount, 0U) << "桩验不过的签名一条都不该有：那说明实现侧的 JWS 写错了";
         EXPECT_EQ(evidence.jwkBearingRequestCount, 1U) << "只有账户注册那一次能带 jwk";
+        // 真机构（Boulder 与 Pebble）对缺 User-Agent 的请求一律 400 malformed，取目录那一步就过不去；
+        // 这条判据把「每条 ACME 请求都带客户端标识」钉住，而不是让它靠实现里记得加
+        EXPECT_EQ(evidence.missingUserAgentRequestCount, 0U) << "有 ACME 请求没带客户端标识：换到真机构那侧会第一步就断";
         EXPECT_EQ(evidence.challengeFetchCount, 2U) << "每个域名各取一次自证令牌";
         EXPECT_EQ(evidence.issuedCertificateCount, 1U);
         EXPECT_NE(evidence.lastChallengeFetchPath.find("/.well-known/acme-challenge/"), std::string::npos);

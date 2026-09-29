@@ -479,6 +479,35 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：机构复用上一轮已 valid 的授权时，第二轮不得再去触发那条挑战
+     * @details Boulder 与 Pebble 都会复用授权（Pebble 默认按概率复用），而对已 valid 的挑战再触发一次
+     *          校验不是幂等而是 400「Cannot update challenge with status valid, only status pending」——
+     *          这是 Pebble 真跑出来的失败形状（见 scripts/acme_pebble_cross_check.sh），桩这一侧把同一条
+     *          判据搬进来，才不至于每次回归都要靠一台真机构才能发现。
+     */
+    TEST_F(AcmeCertificateManagerTest, LeavesAReusedAuthorizationUntouchedOnTheNextOrder)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.reusesValidAuthorizations = true;
+        startServers(settings);
+
+        const Round firstRound; // 域名全新的：必须走完整自证
+        Round       secondRound;
+        secondRound.usesFreshPaths = true; // 换落点，逼第二轮真的再下一张订单
+        secondRound.renewThreshold = std::chrono::hours{24 * 365};
+        const auto runs            = driveRounds({firstRound, secondRound});
+
+        ASSERT_EQ(runs.size(), 2U);
+        ASSERT_TRUE(runs[0].result.has_value() && runs[0].result->has_value()) << runs[0].result->error().message;
+        ASSERT_TRUE(runs[1].result.has_value() && runs[1].result->has_value()) << runs[1].result->error().message;
+
+        EXPECT_EQ(stubEvidence().revalidatedChallengeCount, 0U) << "对着已 valid 的授权又触发了一次挑战：真机构对此回 400";
+        // 取令牌只该发生在第一轮：域名有 kDomainNames.size() 个，第二轮全部走复用，一次都不该再取
+        EXPECT_EQ(stubEvidence().challengeFetchCount, kDomainNames.size()) << "第二轮把自证重做了一遍：本该复用上一轮已 valid 的授权";
+        EXPECT_EQ(stubEvidence().issuedCertificateCount, 2U) << "两轮各签一张，复用授权不该少签一张";
+    }
+
+    /**
      * @brief 钉住：中途失败时磁盘上不留半张证书，也不叫装回动作
      */
     TEST_F(AcmeCertificateManagerTest, LeavesNoPartialCertificateWhenIssuanceFails)

@@ -347,6 +347,13 @@ namespace AsynGyanis::Net
             {
                 co_return std::unexpected(notedFailure(authorization.error()));
             }
+            // 机构会复用已经 valid 的授权（Boulder 与 Pebble 都会，Pebble 默认按概率复用）。
+            // 这时候挂令牌再 POST 会被拒 ——「Cannot update challenge with status valid, only status pending」
+            // 是 Boulder 系的原文，所以授权本身已经 valid 就等于这一格自证完成，直接进下一条
+            if (authorization->status == "valid")
+            {
+                continue;
+            }
             // 令牌挂出与撤走成对：PresentedToken 的析构负责每条提前返回的出口
             [[maybe_unused]] const PresentedToken guard(m_challengeStore, authorization->http01->token, m_accountKey->jsonWebKeyThumbprint());
             auto solved = co_await client.solveChallenge(authorization->http01->challengeUrl, m_configuration.challengePollInterval, m_configuration.issuanceTimeout);
