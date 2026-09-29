@@ -7,6 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <thread>
@@ -291,6 +293,229 @@ namespace AsynGyanis::Platform
         const std::optional<int> exitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
         ASSERT_TRUE(exitCode.has_value()) << "子进程没在时限内退出";
         EXPECT_EQ(*exitCode, 3);
+    }
+
+    namespace
+    {
+        /// 标记「这一份是被父侧以带控制台方式启出来的探针」：内层用例据此区分角色
+        constexpr const char *kConsoleProbeEnvironmentVariable = "ASYN_CONSOLE_PROBE";
+
+        /// 内层探针跑的三条用例，父侧按这个前缀一次选中。刻意不与外层用例名同前缀，否则子进程会再启一份自己
+        constexpr const wchar_t *kConsoleProbeFilter = L"Process.GracefulStopInConsoleChild*";
+
+        /**
+         * @brief 拼一条「睡到被人叫醒」的子进程命令，给请求退出类用例当靶子
+         * @details 睡足 60 秒而不是 makeSleepCommand() 的 6 秒：用例只在 2 秒的窗口里等它消失，
+         *          睡得过短会让「信号没到、自己到点退了」冒充成功
+         * @return ExitCommand 可执行文件与参数
+         */
+        ExitCommand makeLongSleepCommand()
+        {
+            return ExitCommand{"cmd.exe", std::vector<std::string>{"/c", "ping -n 60 127.0.0.1 > nul"}};
+        }
+
+        /// 请求体面退出后等子进程消失的窗口：远小于 makeLongSleepCommand() 的 60 秒，短到不可能是自己睡醒
+        constexpr int kTerminationWaitMilliseconds = 2000;
+
+        /// 等探针子进程跑完的时限：它自己只跑到秒级，这里给的是「它挂了/没人收」的兜底
+        constexpr DWORD kConsoleProbeWaitMilliseconds = 60000;
+
+        /// 内层探针「这条真的跑过」的标记文件名
+        constexpr const wchar_t *kConsoleProbeMarkerStopsTarget = L"asyn-console-probe-stops-target.mark";
+        constexpr const wchar_t *kConsoleProbeMarkerKeepsGroup  = L"asyn-console-probe-keeps-group.mark";
+        constexpr const wchar_t *kConsoleProbeMarkerRefuses     = L"asyn-console-probe-refuses-without-group.mark";
+
+        /**
+         * @brief 拼出标记文件在临时目录里的完整路径
+         * @param markerName 标记文件名
+         * @return std::filesystem::path 可直接用于写与读
+         */
+        std::filesystem::path consoleProbeMarkerPath(const wchar_t *const markerName)
+        {
+            return std::filesystem::temp_directory_path() / markerName;
+        }
+
+        /**
+         * @brief 由内层探针写下「我跑过」的标记
+         * @param markerName 标记文件名
+         */
+        void writeConsoleProbeMarker(const wchar_t *const markerName)
+        {
+            // 用 ofstream 而不是 std::filesystem::write_file：后者是 C++23 设施，本机 MSVC 的 <filesystem>
+            // 里还没有它（实测 C2039），而这份标记要的只是「文件确实存在」
+            std::ofstream markerFile(consoleProbeMarkerPath(markerName));
+            markerFile << "ran";
+        }
+
+        /**
+         * @brief 父侧用：标记是否存在
+         * @param markerName 标记文件名
+         * @return true 内层探针写过这一条
+         */
+        bool consoleProbeMarkerExists(const wchar_t *const markerName)
+        {
+            std::error_code ignored;
+            return std::filesystem::exists(consoleProbeMarkerPath(markerName), ignored);
+        }
+
+        /**
+         * @brief 父侧用：清掉上一次留下的标记，免得把旧证据当成本轮的
+         * @param markerName 标记文件名
+         */
+        void removeConsoleProbeMarker(const wchar_t *const markerName)
+        {
+            std::error_code ignored;
+            static_cast<void>(std::filesystem::remove(consoleProbeMarkerPath(markerName), ignored));
+        }
+    } // namespace
+
+    /**
+     * @brief 内层探针之一：不给独立进程组就不许发控制台事件
+     * @details CTRL_BREAK 的投递单位是「进程组」，没有独立组时唯一的目标就是本进程所在的组——
+     *          那一下会打断宿主自己的键盘输入与服务循环（探针没装控制台处理函数，会被系统直接终止）。
+     *          本用例因此钉的是「不发」：返回 false，且靶子进程照旧在跑，随后由用例自己收掉。
+     *          必须在带控制台的宿主里测：没有控制台时事件本来就发不出去，去掉实现里那道进程组判据也照样
+     *          返回 false，用例就变成一条恒真的空判——所以它跟着另外两条一起进控制台探针。
+     */
+    TEST(Process, GracefulStopInConsoleChildRefusesWithoutGroup)
+    {
+        const auto probeMark = ProcessInfo::environmentVariable(kConsoleProbeEnvironmentVariable);
+        if (!probeMark.has_value())
+        {
+            GTEST_SKIP() << "本用例只在由控制台探针的父侧启起来时才有意义";
+        }
+        ASSERT_NE(::GetConsoleWindow(), nullptr) << "探针本该带着控制台起来，没有就测不到这条路";
+        writeConsoleProbeMarker(kConsoleProbeMarkerRefuses);
+
+        const ExitCommand     command = makeLongSleepCommand();
+        const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments});
+        ASSERT_TRUE(handle.isValid()) << "子进程没起来，错误码 " << PlatformError::lastErrorCode();
+
+        EXPECT_FALSE(Process::requestTermination(handle)) << "没给独立进程组却发了控制台事件，那会打断本进程所在的组";
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kInvalidArgument);
+        EXPECT_TRUE(Process::isRunning(handle)) << "请求被拒的同时子进程也不该消失";
+
+        static_cast<void>(Process::forceTermination(handle));
+        static_cast<void>(waitForExit(handle, kWaitTimeoutMilliseconds));
+    }
+
+    /**
+     * @brief 钉住（Windows）：控制台事件这条收尾通道真的叫得停子进程——前提由本用例自己造
+     * @details 宿主没有控制台时（stdout 被管道接管的服务、非交互拉起的测试进程）CTRL_BREAK 无处投递，
+     *          三条内层探针在有控制台的宿主里才测得到。本进程不 AllocConsole：那会把三个标准句柄换成控制台
+     *          缓冲区，同一进程里其余用例的输出就漂了。做法沿用本文件的探针形状——把同一枚二进制以
+     *          CREATE_NEW_CONSOLE 再启一份，由那一份跑三条内层探针，父侧既等退出码也数标记文件。
+     *          父侧这条在任意宿主下都会跑，因此「跳过」不会把结论冒充成通过。
+     */
+    TEST(Process, RequestTerminationStopsChildViaConsoleHarness)
+    {
+        wchar_t     executablePathText[kExecutablePathBufferLength] = {};
+        const DWORD pathLength                                      = ::GetModuleFileNameW(nullptr, executablePathText, kExecutablePathBufferLength);
+        ASSERT_GT(pathLength, 0U) << "取不到自身路径，错误码 " << ::GetLastError();
+        ASSERT_LT(pathLength, kExecutablePathBufferLength) << "自身路径被截断，本用例失去前提";
+
+        static_cast<void>(::SetEnvironmentVariableA(kConsoleProbeEnvironmentVariable, "1"));
+
+        // 先把标记清掉：父侧要靠它们确认「探针真的上场了」——过滤器一条也没选中时 gtest 同样回 0，
+        // 只看退出码会把「裁判没上场」读成「裁判判了通过」
+        removeConsoleProbeMarker(kConsoleProbeMarkerStopsTarget);
+        removeConsoleProbeMarker(kConsoleProbeMarkerKeepsGroup);
+        removeConsoleProbeMarker(kConsoleProbeMarkerRefuses);
+
+        std::wstring commandLine;
+        commandLine += L'"';
+        commandLine += executablePathText;
+        commandLine += L"\" --gtest_filter=";
+        commandLine += kConsoleProbeFilter;
+
+        STARTUPINFOW startupInfo{};
+        startupInfo.cb = sizeof(startupInfo);
+        // 控制台窗口藏起来：这条路径一轮门禁要跑好几次，弹一个黑窗出来只是干扰
+        startupInfo.dwFlags |= STARTF_USESHOWWINDOW;
+        startupInfo.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION processInformation{};
+        const BOOL isCreated = ::CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, nullptr, &startupInfo, &processInformation);
+        static_cast<void>(::SetEnvironmentVariableA(kConsoleProbeEnvironmentVariable, nullptr));
+        ASSERT_TRUE(isCreated != 0) << "带控制台的探针子进程没起来，错误码 " << ::GetLastError();
+
+        // 句柄在断言之前统一释放：中途一律用 EXPECT 而不是 ASSERT，免得提前返回把句柄漏在那里
+        const DWORD waitResult    = ::WaitForSingleObject(processInformation.hProcess, kConsoleProbeWaitMilliseconds);
+        DWORD       childExitCode = 0;
+        static_cast<void>(::GetExitCodeProcess(processInformation.hProcess, &childExitCode));
+        ::CloseHandle(processInformation.hProcess);
+        ::CloseHandle(processInformation.hThread);
+
+        EXPECT_EQ(waitResult, WAIT_OBJECT_0) << "带控制台的探针子进程没在时限内退出";
+        EXPECT_EQ(static_cast<int>(childExitCode), 0) << "探针子进程非零退出：CTRL_BREAK 没能叫停子进程，或移动后进程组归属权丢了。"
+                                                         "想看细节就在一个控制台窗口里跑：TestPlatform.exe --gtest_filter=Process.GracefulStopInConsoleChild*";
+        // 退出码之外还要问「这两条到底跑没跑」：0 也可能是过滤器没选中任何东西
+        EXPECT_TRUE(consoleProbeMarkerExists(kConsoleProbeMarkerRefuses)) << "探针没跑「无组不发」那条，本用例因此没有证据";
+        EXPECT_TRUE(consoleProbeMarkerExists(kConsoleProbeMarkerStopsTarget)) << "探针没跑「叫得停」那条，本用例因此没有证据";
+        EXPECT_TRUE(consoleProbeMarkerExists(kConsoleProbeMarkerKeepsGroup)) << "探针没跑「移动后仍叫得停」那条，本用例因此没有证据";
+    }
+
+    /**
+     * @brief 内层探针之一：给了独立进程组，请求体面退出就真的能把子进程叫停
+     * @details 这是 worker 在 Windows 上的收尾通道：编排者派生时给每个 worker 一份独立进程组，停机时
+     *          逐个发 CTRL_BREAK，装了控制台处理函数的 worker 就能自己走完 stop()/drain()，而不是被强杀。
+     *          靶子进程要睡 60 秒，而这里只等 2 秒——它消失了只能是事件到了，不可能是自己睡醒。
+     *          角色靠环境变量区分：单独跑这一条时（全量清单会选到它）按 SKIP 处理，因为前提由父侧负责构造
+     */
+    TEST(Process, GracefulStopInConsoleChildStopsTarget)
+    {
+        const auto probeMark = ProcessInfo::environmentVariable(kConsoleProbeEnvironmentVariable);
+        if (!probeMark.has_value())
+        {
+            GTEST_SKIP() << "本用例只在由上一条用例以 CREATE_NEW_CONSOLE 启起来时才有意义";
+        }
+        ASSERT_NE(::GetConsoleWindow(), nullptr) << "探针本该带着控制台起来，没有就测不到这条路";
+        writeConsoleProbeMarker(kConsoleProbeMarkerStopsTarget);
+
+        const ExitCommand     command = makeLongSleepCommand();
+        const Process::Handle handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments, true});
+        ASSERT_TRUE(handle.isValid()) << "子进程没起来，错误码 " << PlatformError::lastErrorCode();
+
+        ASSERT_TRUE(Process::requestTermination(handle)) << "事件没发出去，错误码 " << PlatformError::lastErrorCode();
+
+        const std::optional<int> exitCode = waitForExit(handle, kTerminationWaitMilliseconds);
+        if (!exitCode.has_value())
+        {
+            static_cast<void>(Process::forceTermination(handle));
+            FAIL() << "子进程在 " << kTerminationWaitMilliseconds << " 毫秒内没退出：CTRL_BREAK 没落到它名下的进程组（它本来要睡 60 秒）";
+        }
+        EXPECT_FALSE(Process::isRunning(handle));
+    }
+
+    /**
+     * @brief 内层探针之二：进程组归属权跟着句柄一起移动
+     * @details 「有没有独立进程组」只有派生那一次知道，事后无从向平台追问，所以它是句柄状态的一部分：
+     *          移动时丢了它，新句柄就再也发不出 CTRL_BREAK，而表现是「worker 每次都被强杀」——
+     *          看着像超时给短了，没人会往移动构造上查。源句柄同时作废，两侧各钉一次
+     */
+    TEST(Process, GracefulStopInConsoleChildKeepsGroupOwnershipAfterMove)
+    {
+        const auto probeMark = ProcessInfo::environmentVariable(kConsoleProbeEnvironmentVariable);
+        if (!probeMark.has_value())
+        {
+            GTEST_SKIP() << "本用例只在由控制台探针的父侧启起来时才有意义";
+        }
+        ASSERT_NE(::GetConsoleWindow(), nullptr) << "探针本该带着控制台起来，没有就测不到这条路";
+        writeConsoleProbeMarker(kConsoleProbeMarkerKeepsGroup);
+
+        const ExitCommand command = makeLongSleepCommand();
+        Process::Handle   handle  = Process::spawn(Process::LaunchOptions{command.executablePath, command.arguments, true});
+        ASSERT_TRUE(handle.isValid()) << "子进程没起来，错误码 " << PlatformError::lastErrorCode();
+
+        const Process::Handle movedHandle = std::move(handle);
+        EXPECT_FALSE(Process::requestTermination(handle)) << "移空的源句柄仍能发事件，说明移动后留下了两个主人";
+        ASSERT_TRUE(Process::requestTermination(movedHandle)) << "移动后进程组归属权没了，新句柄发不出 CTRL_BREAK，错误码 " << PlatformError::lastErrorCode();
+
+        const std::optional<int> exitCode = waitForExit(movedHandle, kTerminationWaitMilliseconds);
+        if (!exitCode.has_value())
+        {
+            static_cast<void>(Process::forceTermination(movedHandle));
+            FAIL() << "移动后的句柄没能叫停子进程";
+        }
     }
 #endif
 

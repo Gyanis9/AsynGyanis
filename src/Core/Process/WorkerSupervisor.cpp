@@ -261,6 +261,10 @@ namespace AsynGyanis::Core
         Platform::Process::LaunchOptions launchOptions;
         launchOptions.executablePath = m_configuration.executablePath;
         launchOptions.arguments      = m_configuration.workerArguments;
+        // 每个 worker 进自己名下的进程组：这是 Windows 上 requestTermination() 发得出 CTRL_BREAK 的前提
+        // （组是控制台事件的投递单位，不给独立组就只能整组广播，那会打断 master 自己）。
+        // POSIX 上这个字段无效果——那边的体面退出走 SIGTERM
+        launchOptions.ownProcessGroup = true;
 
 #if ASYN_PLATFORM_WIN32
         // 移交模式：通道要先开好——对方进程靠参数里那个地址连回来，而它连回来之后才谈得上按它的
@@ -376,7 +380,9 @@ namespace AsynGyanis::Core
                 ++runningCount;
                 continue;
             }
-            // 平台不支持（Windows）或请求发不出去时直接强杀，避免收尾卡在这里
+            // 发不出去才强杀：Windows 上宿主没有控制台（服务、被 DETACHED_PROCESS 派出来的进程）时
+            // 控制台事件无处投递。此时宁可强杀也不能把收尾卡死——但这条路径是有代价的，出声记下
+            LOG_WARN_FMT("WorkerSupervisor: 无法请求进程号 {} 体面退出，直接强杀", worker.handle.processId());
             static_cast<void>(Platform::Process::forceTermination(worker.handle));
         }
 

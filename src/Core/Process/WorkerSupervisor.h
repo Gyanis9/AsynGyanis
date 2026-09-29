@@ -109,8 +109,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 起 worker 并进入编排循环（阻塞）
          * @details 循环里做三件事：把该在的 worker 补齐、收掉已退出的并决定是否补、检查停止请求。
-         *          停止请求到达后先对全部 worker 发 SIGTERM，等到 shutdownTimeout 仍未退出的强杀，
-         *          然后返回。
+         *          停止请求到达后先请求每个 worker 体面退出（POSIX 发 SIGTERM，Windows 向它名下的进程组
+         *          发 CTRL_BREAK），等到 shutdownTimeout 仍未退出的强杀，然后返回。
          * @return bool true 表示是按请求收口；false 表示全部 worker 都因「起来就崩」被放弃而提前退出
          * @note 返回值就是「这次编排算不算成了」：调用方要据此决定退出码，否则进程管理器与脚本
          *       看到的是「服务退出码 0」，分不清是被停掉的还是整池子都起不来

@@ -23,8 +23,9 @@ namespace AsynGyanis::Platform
      * @brief 子进程的启动、观察与终止
      *
      * @details 只提供进程编排放得下的那几件事：起一个进程、问它是否还在、取它的退出码、
-     *          请求它退出或强杀。请求退出在 POSIX 上走 SIGTERM，Windows 没有信号，
-     *          因此该方法在 Windows 上返回 false（调用方据此改用强杀或自行约定退出机制）。
+     *          请求它退出或强杀。请求退出在 POSIX 上走 SIGTERM；Windows 没有信号，走控制台事件
+     *          （CTRL_BREAK），因此要求派生时给出 `LaunchOptions::ownProcessGroup`，否则本方法返回
+     *          false，调用方据此改用强杀或自行约定退出机制。
      *
      * @warning spawn() 在 POSIX 上是 fork + exec：fork 之后、exec 之前子进程只能调用
      *          async-signal-safe 的函数，且**父进程此刻不能有其它线程**（多线程下 fork 出的子进程
@@ -83,9 +84,10 @@ namespace AsynGyanis::Platform
         private:
             friend class Process;
 
-            /// 直接构造：只允许 Process 产生有效句柄
+            /// 直接构造：只允许 Process 产生有效句柄。ownConsoleGroup 只在 Windows 有意义，
+            /// 见 LaunchOptions::ownProcessGroup 与 Handle 里那个字段的说明
 #if ASYN_PLATFORM_WIN32
-            explicit Handle(void *processHandle, unsigned long processId) noexcept;
+            explicit Handle(void *processHandle, unsigned long processId, bool ownConsoleGroup = false) noexcept;
 #else
             explicit Handle(int processId) noexcept;
 #endif
@@ -93,6 +95,9 @@ namespace AsynGyanis::Platform
 #if ASYN_PLATFORM_WIN32
             void         *m_processHandle{nullptr}; ///< 进程句柄；空表示无效
             unsigned long m_processId{0};           ///< 进程号，仅用于日志
+            /// 本次派生有没有给子进程独立的可控台进程组。只有它成立才允许发 CTRL_BREAK：
+            /// 否则「目标进程组」就是我们自己所在的组，那一下会打断宿主自己的键盘输入与服务循环
+            bool m_ownsConsoleGroup{false};
 #else
             /// 进程号；负数表示无效。
             /// **mutable**：观察类接口（pollExitCode）收的是 const 引用，而「子进程已被回收」
@@ -113,6 +118,10 @@ namespace AsynGyanis::Platform
         {
             std::string              executablePath; ///< 可执行文件路径：不含目录时按 PATH 查找
             std::vector<std::string> arguments;      ///< 参数表（不含 argv[0]；本层按平台补上）
+            /// Windows 专用：给子进程独立的可控台进程组，这是 `requestTermination()` 能发
+            /// CTRL_BREAK 的前提（不发就只能在「等一等」与「直接强杀」之间二选一）。
+            /// POSIX 上无效果——那边的体面退出走 SIGTERM。默认 false：不给就仍只能强杀
+            bool ownProcessGroup{false};
         };
 
         /**
@@ -128,6 +137,10 @@ namespace AsynGyanis::Platform
          *       这条兜底，只能靠编排者主动收口
          * @warning 该信号的实际触发点是**调用 fork 的那个线程**退出（Linux 语义），不是整个进程：
          *          多线程程序要在还单线程时启动编排，否则线程池收工会提前把子进程带走
+         * @warning 「在还单线程时派生」这条还有一层原因：`executablePath` 不含目录时走的是
+         *          `execvp`，它要在 PATH 里搜可执行文件，那条路径上可能碰分配器——多线程下 fork 之后
+         *          子进程只带着调用线程，父进程此刻若有人握着分配器锁，子进程就会在 exec 之前死等。
+         *          给全路径可以绕开这条，但那是调用方的选择，本层不替他改行为
          */
         [[nodiscard]] static Handle spawn(const LaunchOptions &options) noexcept;
 
@@ -154,10 +167,13 @@ namespace AsynGyanis::Platform
         /**
          * @brief 请求子进程体面退出
          * @details POSIX 上发 SIGTERM，由子进程自己把退出做干净（本框架的服务器据此走
-         *          stop()/drain()）。
+         *          stop()/drain()）。Windows 没有信号，走控制台事件：向子进程**自己名下**的进程组发
+         *          CTRL_BREAK，装了控制台处理函数的子进程会收到——前提是派生时给了
+         *          `LaunchOptions::ownProcessGroup`。
          * @param handle 目标句柄
-         * @return true 已发出请求
-         * @return false 平台不支持（Windows 没有信号）或句柄无效——调用方应改用 forceTermination()
+         * @return true 已发出请求（不代表子进程已经退出，退出与否要观察到退出码才算）
+         * @return false 发不出去：Windows 上句柄没带独立进程组、或宿主没有控制台；调用方据此
+         *         决定是继续等还是改用 forceTermination()。这里不会静默升级成强杀
          */
         [[nodiscard]] static bool requestTermination(const Handle &handle) noexcept;
 

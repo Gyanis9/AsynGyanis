@@ -66,7 +66,8 @@ namespace AsynGyanis::Platform
     } // namespace
 
 #if ASYN_PLATFORM_WIN32
-    Process::Handle::Handle(void *const processHandle, const unsigned long processId) noexcept : m_processHandle(processHandle), m_processId(processId)
+    Process::Handle::Handle(void *const processHandle, const unsigned long processId, const bool ownConsoleGroup) noexcept :
+        m_processHandle(processHandle), m_processId(processId), m_ownsConsoleGroup(ownConsoleGroup)
     {
     }
 #else
@@ -82,7 +83,11 @@ namespace AsynGyanis::Platform
 
     Process::Handle::Handle(Handle &&other) noexcept
 #if ASYN_PLATFORM_WIN32
-        : m_processHandle(std::exchange(other.m_processHandle, nullptr)), m_processId(std::exchange(other.m_processId, 0)), m_exitCode(other.m_exitCode)
+        :
+        m_processHandle(std::exchange(other.m_processHandle, nullptr)), m_processId(std::exchange(other.m_processId, 0)),
+        // 进程组归属权跟着句柄一起走：丢了它，移过来的句柄就再也发不出 CTRL_BREAK，
+        // 而「有没有独立进程组」只有派生那一次知道，事后无从向平台追问
+        m_ownsConsoleGroup(std::exchange(other.m_ownsConsoleGroup, false)), m_exitCode(other.m_exitCode)
 #else
         : m_processId(std::exchange(other.m_processId, -1)), m_exitCode(other.m_exitCode)
 #endif
@@ -95,8 +100,9 @@ namespace AsynGyanis::Platform
         {
             close();
 #if ASYN_PLATFORM_WIN32
-            m_processHandle = std::exchange(other.m_processHandle, nullptr);
-            m_processId     = std::exchange(other.m_processId, 0);
+            m_processHandle    = std::exchange(other.m_processHandle, nullptr);
+            m_processId        = std::exchange(other.m_processId, 0);
+            m_ownsConsoleGroup = std::exchange(other.m_ownsConsoleGroup, false);
 #else
             m_processId = std::exchange(other.m_processId, -1);
 #endif
@@ -230,7 +236,13 @@ namespace AsynGyanis::Platform
         }
 
         PROCESS_INFORMATION processInformation{};
-        std::wstring        wideCommandLine = TextEncoding::toWideString(commandLine);
+        // 独立进程组是 requestTermination() 能发 CTRL_BREAK 的前提。刻意不默认打开：进了新组的子进程
+        // 默认不再理 CTRL_C，而控制台事件的投递范围也跟着变，只有确实需要「请它自己收尾」的调用方才付这个代价
+        if (options.ownProcessGroup)
+        {
+            creationFlags |= CREATE_NEW_PROCESS_GROUP;
+        }
+        std::wstring wideCommandLine = TextEncoding::toWideString(commandLine);
 
         // 可执行文件只走命令行那一路，lpApplicationName 传空：CreateProcessW 对 lpApplicationName
         // **不搜 PATH**（只按当前目录/系统目录补全），只给个「cmd.exe」这种名字会直接失败；
@@ -253,7 +265,7 @@ namespace AsynGyanis::Platform
         }
 
         ::CloseHandle(processInformation.hThread);
-        return Handle(processInformation.hProcess, processInformation.dwProcessId);
+        return Handle(processInformation.hProcess, processInformation.dwProcessId, options.ownProcessGroup);
 #else
         // fork 之前先记下本进程号：子进程要靠它判断「生我的那个进程是否还在」（见下面的自查）
         const pid_t parentProcessId = ::getpid();
@@ -379,11 +391,24 @@ namespace AsynGyanis::Platform
     bool Process::requestTermination(const Handle &handle) noexcept
     {
 #if ASYN_PLATFORM_WIN32
-        // Windows 没有信号：要么自己有退出机制（控制台事件、管道、事件对象），要么强杀。
-        // 返回 false 而不是强杀：静默升级成强杀会让调用方的「优雅」意图落空且无从察觉
-        static_cast<void>(handle);
-        PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
-        return false;
+        // Windows 没有信号，体面退出的通道是控制台事件，而它有两个前提：
+        // ① 子进程有自己名下的进程组 —— CTRL_BREAK 的投递对象是「进程组」，缺这一条就只能填 0，
+        //    那指向的正是本进程所在的组，一下打断宿主自己的键盘输入与服务循环，绝不能发；
+        // ② 本进程挂着控制台（服务、被 DETACHED_PROCESS 派出来的宿主没有），否则系统无处投递。
+        // 任一不成立就返回 false，由调用方决定继续等还是改用强杀：静默升级成强杀会让「优雅」落空且无从察觉
+        // 已退出的子进程也不发：进程组随最后一个成员结束而解散，此时发过去只会得到一个失败码，
+        // 与「本该成功却被平台挡下」混在同一档里，调用方分不清是没控制台还是根本没等到
+        if (!handle.isValid() || !handle.m_ownsConsoleGroup || pollExitCode(handle).has_value())
+        {
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+            return false;
+        }
+        if (::GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, static_cast<DWORD>(handle.m_processId)) == 0)
+        {
+            PlatformError::setLastErrorCode(static_cast<int>(::GetLastError()));
+            return false;
+        }
+        return true;
 #else
         // 已经退出并被回收的进程不能再发信号：回收那一刻 pid 就交还系统了，此后拿它去 kill
         // 可能落到复用了同一 pid 的无关进程上。pollExitCode 顺带完成回收并把退出码记在句柄上，
