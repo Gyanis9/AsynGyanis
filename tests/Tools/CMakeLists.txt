@@ -24,3 +24,11 @@ add_executable(handoff_worker
         HandoffWorker.cpp)
 
 target_link_libraries(handoff_worker PRIVATE Core Base Platform)
+
+# ACME 真签发探针的被测端：对着 Pebble（Let's Encrypt 官方那套 ACME 测试服务端，Go 写的独立实现）
+# 把整台状态机走到「签出一张链」，只把每步结果打成 stdout 事件行。判据刻意不在本仓库这一侧：
+# 接受不接受我们的 JWS 与 CSR、签不签得出证书，都由对面说了算
+add_executable(acme_issuance_probe
+        AcmeIssuanceProbe.cpp)
+
+target_link_libraries(acme_issuance_probe PRIVATE Net Core Base Platform)
