@@ -497,10 +497,19 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 
 ## 模块概览
 
-**支持范围与交付形态**：目前只支持 Linux 与 Windows——顶层 `CMakeLists.txt` 对其他系统（含 macOS/BSD）在
+**支持范围**：目前只支持 Linux 与 Windows——顶层 `CMakeLists.txt` 对其他系统（含 macOS/BSD）在
 配置阶段直接 `FATAL_ERROR`，`Core` 的事件后端只有 epoll、io_uring（编译期可选）与 IOCP，没有 kqueue。
-五个模块**都只出静态库**（`add_library(... STATIC)`）：没有 `BUILD_SHARED_LIBS` 开关，公开头也没有符号可见性
-标注，因此想以 `.so`/`.dll` 分发需要先补导出宏与逐个类的标注——本期不支持，Conan 与 vcpkg 两条路给的都是静态库。
+
+**交付形态**：默认静态库，`-DBUILD_SHARED_LIBS=ON` 让五个模块各出一份 `.so`/`.dll`（同时认 Conan 的
+`shared` 选项与 vcpkg 的 triplet）。导出面由 `src/AsynGyanisExport.h` 的 `ASYN_<模块>_API` 逐类标注决定，
+配合隐藏可见性预设——没标注的符号出不去，所以下一次重构不会不知不觉换掉线上符号。三条边界要知道：
+
+- 接口上的 `std::string` / `std::vector` 跨 ABI 边界，生产方与消费方必须是同一套编译器、同一份 CRT
+  与同一套标准库配置；要一份能被别的工具链装载的二进制，得先把接口上的标准库类型换掉。
+- OpenSSL 静态链接在库与消费方两侧各有一份，**别把 `TlsContext::nativeHandle()` 交给消费方自己的
+  OpenSSL 代码**——两份实例各有错误队列，跨实例的 `SSL_CTX`/`SSL` 用法不是可依赖的接口。
+- Windows 上共享形态把 DLL 与可执行体一起收在 `build/bin/`（Ninja 生成器不替你做这一步，缺了就是
+  启动即 `0xC0000135`）；静态形态的落点一字未动。
 
 ### Platform — 平台底层（`libPlatform.a`）
 
