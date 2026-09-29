@@ -153,6 +153,67 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：整机上限按 worker 进程数摊到每台，且共享限额器要按摊后的数比对
+     * @details 每个进程只数自己那份账，配置里的整机数起 N 个进程就是 N 倍放行——这条钉的是
+     *          「摊分真的发生」：100 摊给 4 个进程 → 本台 25；共享限额器给 100 要被拒，
+     *          给 25 要接受（拿整机数比对的话，正确的 25 反而会被拒）
+     */
+    TEST(HttpServerAssembly, SplitsWholeMachineCapsAcrossWorkerProcesses)
+    {
+        Core::EventLoop loop;
+        TestHttpServer  server(loop, Core::InetAddress::localhost(0));
+
+        HttpServerConfiguration configuration;
+        configuration.maximumConnections      = 100;
+        configuration.maximumConnectionsPerIp = 100;
+
+        HttpServerAssemblyContext matchingContext;
+        matchingContext.workerProcessCount = 4;
+        matchingContext.sharedPerIpLimiter = std::make_shared<PerIpConnectionLimiter>(25);
+        ASSERT_TRUE(applyHttpServerConfiguration(server, configuration, matchingContext).has_value()) << "与摊分一致的共享限额器被误拒";
+        EXPECT_EQ(server.maximumConnections(), 25u) << "整机 100 摊给 4 个进程，本台真正卡的应是 25";
+
+        Core::EventLoop rejectingLoop;
+        TestHttpServer  rejectingServer(rejectingLoop, Core::InetAddress::localhost(0));
+        HttpServerAssemblyContext mismatchedContext;
+        mismatchedContext.workerProcessCount = 4;
+        mismatchedContext.sharedPerIpLimiter = std::make_shared<PerIpConnectionLimiter>(100);
+        const auto outcome                   = applyHttpServerConfiguration(rejectingServer, configuration, mismatchedContext);
+        ASSERT_FALSE(outcome.has_value()) << "共享限额器还是整机数就直接收下了：那等于放行四倍";
+        EXPECT_NE(outcome.error().find("25"), std::string::npos) << "拒因要点名摊后的数：「" << outcome.error() << "」";
+    }
+
+    /**
+     * @brief 钉住：workerProcessCount=0 被拒，而不是悄悄当成「不摊」
+     */
+    TEST(HttpServerAssembly, RejectsZeroWorkerProcessCount)
+    {
+        Core::EventLoop loop;
+        TestHttpServer  server(loop, Core::InetAddress::localhost(0));
+
+        HttpServerAssemblyContext context;
+        context.workerProcessCount = 0;
+
+        const auto outcome = applyHttpServerConfiguration(server, HttpServerConfiguration{}, context);
+        ASSERT_FALSE(outcome.has_value());
+        EXPECT_NE(outcome.error().find("workerProcessCount"), std::string::npos) << outcome.error();
+    }
+
+    /**
+     * @brief 钉住：摊分的取整与两个直通档
+     * @details 向上取整（101/4=26）钉的是「余数不能凭空消失」；0 直通钉的是「显式不限不能被摊成 1」；
+     *          count=1 直通钉的是单进程不做除法
+     */
+    TEST(HttpServerAssembly, SharesRoundUpAndPassThroughSpecialValues)
+    {
+        EXPECT_EQ(perProcessShare(100, 4), 25u);
+        EXPECT_EQ(perProcessShare(101, 4), 26u) << "向下取整会让整机上限永远达不到，而差多少没人去算";
+        EXPECT_EQ(perProcessShare(0, 4), 0u) << "0 是显式不限，摊成 1 就是把服务关掉";
+        EXPECT_EQ(perProcessShare(100, 1), 100u);
+        EXPECT_EQ(perProcessShare(100, 0), 100u) << "count=0 在这里按不摊处理，拒绝由装配出口负责";
+    }
+
+    /**
      * @brief 钉住：默认（expose_metrics=false）不注册任何运维端点，仍然走兜底 404
      * @details 与上一条成对：只钉「开了有」会放过「不开也有」，那只说明键没被消费而不是说明默认安全
      */

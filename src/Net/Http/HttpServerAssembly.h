@@ -41,7 +41,26 @@ namespace AsynGyanis::Net
     {
         std::shared_ptr<PerIpConnectionLimiter> sharedPerIpLimiter;    ///< 跨监听器共用的按来源 IP 限额器
         std::shared_ptr<TokenBucket>            sharedRateLimitBucket; ///< 跨监听器共用的限流桶
+        /**
+         * @brief 整机限额要摊到几个 worker 进程上（默认 1 = 单进程，不做摊分）
+         * @details 每个进程只看得见自己这份账：`maximum_connections` 与 `maximum_connections_per_ip`
+         *          配成整机的数、又起 N 个进程，实际放行的是 N 倍。这里按进程数向上取整摊到每台，
+         *          使「配置里写的是整机口径」这件事真的成立。0 是用法错误（当场拒，不当「不限」）。
+         * @note 摊分是近似：POSIX 侧内核按连接把新连接分散给各进程，长连接偏斜时某一台的瞬时并发仍可能
+         *       高于份额。要精确的跨进程全局闸需要共享内存或外部存储，本层没做，别把这里当成那个东西
+         */
+        std::size_t workerProcessCount{1};
     };
+
+    /**
+     * @brief 把整机口径的限额摊到每个 worker 进程上（向上取整）
+     * @details 摊分规则只有这一处实现：装配出口用它，示例报生效值时也要用它，否则「打印的数」与
+     *          「真正下发的数」会各说一套——那正是这一轮要消灭的那类问题
+     * @param wholeMachineValue 配置里写的整机上限；0 表示显式不限，原样返回
+     * @param workerProcessCount 摊给几个进程，必须 ≥ 1；填 1 即不摊
+     * @return std::size_t 每进程上限
+     */
+    [[nodiscard]] ASYN_NET_API std::size_t perProcessShare(std::size_t wholeMachineValue, std::size_t workerProcessCount) noexcept;
 
     /**
      * @brief 把 server 段的配置落到一台明文 HTTP 服务器上

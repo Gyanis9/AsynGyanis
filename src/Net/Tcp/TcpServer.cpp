@@ -590,6 +590,13 @@ namespace AsynGyanis::Net
         m_maxConnections = maximumConnectionCount;
     }
 
+    std::size_t TcpServer::maximumConnections() const noexcept
+    {
+        // 与 setMaxConnections 同一个字段：调用方要核对的是「本台真正卡住多少条」，
+        // 而配置里的整机数在摊分之后与它可能差好几倍
+        return m_maxConnections;
+    }
+
     void TcpServer::setPerIpConnectionLimiter(std::shared_ptr<PerIpConnectionLimiter> limiter)
     {
         m_perIpConnectionLimiter = std::move(limiter);

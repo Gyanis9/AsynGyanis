@@ -17,6 +17,14 @@
 
 ### 新增
 
+- **整机限额现在会摊到每个 worker 进程**：`applyHttpServerConfiguration` 的 context 新增 `workerProcessCount`，
+  `maximum_connections` 与 `maximum_connections_per_ip` 按进程数向上取整摊到每台（`perProcessShare`）。
+  每个进程只数自己那份账，配置里的整机数起 N 个进程就是实际放行 N 倍——这一条与「多监听器各持一份限额器
+  等于上限乘以监听器数」是同一个坑的另一半。摊分规则只有一处实现，示例报生效值时用的也是它：
+  实测 `--workers 2` 配 100 打出「整机 100 摊给 2 个进程 → 每台 50」。
+  共享限额器与配置的比对改用摊后的份额，`workerProcessCount=0` 当场拒。
+  摊分是近似（内核按连接分散，长连接偏斜时某台瞬时仍可能高于份额），要精确的全局闸需要共享内存或外部存储，
+  本版没做，配置文档里也这么写。`TcpServer` 补了 `maximumConnections()` 读数，运维能核对到本台真正卡多少。
 - **运维端点可以要令牌了**：`server.ops_bearer_token` 给 `/metrics` 与 `/debug/loops` 挂一道 Bearer 闸门
   （`Net::opsAccessMiddleware`），未授权回 401 并带 `WWW-Authenticate`。`/healthz` 刻意不在保护名单里：
   存活探针要能被编排器无凭据访问，给它加令牌的结局通常是探针长期失败后被人体谅性地关掉，那比暴露几个计数更糟。

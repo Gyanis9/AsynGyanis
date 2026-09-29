@@ -549,14 +549,18 @@ int main(int argc, char **argv)
     }
 
     // 生效值必须打出来：这几个键「配置文件里没写」与「显式写了 0」在线上长得一模一样，而前者取的是
-    // 内置有限默认、后者是真的不限。不打这一行，部署方只能等撞上限那天才知道自己跑的是哪一档
-    const auto capText = [](const std::size_t value)
+    // 内置有限默认、后者是真的不限。不打这一行，部署方只能等撞上限那天才知道自己跑的是哪一档。
+    // 摊分规则不在这里重写——装配出口用的是同一个 perProcessShare，两边各算一套就会印出一个假数
+    const std::size_t workerProcessTotal         = std::max<std::size_t>(1, workerProcessCount);
+    const std::size_t perProcessMaximumConnections = Net::perProcessShare(configuration.maximumConnections, workerProcessTotal);
+    const std::size_t perProcessMaximumPerIp       = Net::perProcessShare(configuration.maximumConnectionsPerIp, workerProcessTotal);
+    const auto        capText                    = [](const std::size_t value)
     {
         return value == 0 ? std::string("不限（显式配 0）") : std::to_string(value);
     };
-    LOG_INFO_FMT("并发限额（每监听器）：整机 {}，单来源 {}；请求速率 {}，在途正文总量 {}",
-                 capText(configuration.maximumConnections),
-                 capText(configuration.maximumConnectionsPerIp),
+    LOG_INFO_FMT("并发限额：整机 {} 摊给 {} 个进程 → 每台 {}；单来源 {} → 每台 {}；请求速率 {}，在途正文总量 {}",
+                 capText(configuration.maximumConnections), workerProcessTotal, capText(perProcessMaximumConnections),
+                 capText(configuration.maximumConnectionsPerIp), capText(perProcessMaximumPerIp),
                  configuration.requestsPerSecond > 0.0 ? std::format("{:.0f} 请求/s", configuration.requestsPerSecond) : std::string("不限（默认）"),
                  maxInflightBodyBytes == 0 ? std::string("不限（默认）") : std::to_string(maxInflightBodyBytes) + " 字节");
 
@@ -698,10 +702,13 @@ int main(int argc, char **argv)
     // 监听器，若每个服务器各持一份计数，单个来源的实际上限会乘上监听器数量，限额等于失效。
     // 未配置时留空指针，setPerIpConnectionLimiter(nullptr) 表示不作该限制
     std::shared_ptr<Net::PerIpConnectionLimiter> perIpConnectionLimiter;
-    if (configuration.maximumConnectionsPerIp > 0)
+    if (perProcessMaximumPerIp > 0)
     {
-        perIpConnectionLimiter = std::make_shared<Net::PerIpConnectionLimiter>(configuration.maximumConnectionsPerIp);
-        LOG_INFO_FMT("单来源并发上限 {}（所有 {} 个监听器共享同一份计数）", configuration.maximumConnectionsPerIp, actualThreads);
+        // 建的是「本进程这一份」的限额器，与装配出口摊出来的数必须同源，否则会被出口的
+        // 「共享实例与配置不一致」判据当场拒——那条拒正是为了让这种偏差不能静默存在
+        perIpConnectionLimiter = std::make_shared<Net::PerIpConnectionLimiter>(perProcessMaximumPerIp);
+        LOG_INFO_FMT("单来源并发上限 {}（本进程内 {} 个监听器共享同一份计数；整机口径 {} 已按 {} 个进程摊过）",
+                     perProcessMaximumPerIp, actualThreads, configuration.maximumConnectionsPerIp, workerProcessTotal);
     }
 
     // h3 的统计要并进哪一份采集端：全进程共用一份，抓任意一个监听器的 /metrics 都能同时看到
@@ -756,12 +763,14 @@ int main(int argc, char **argv)
     };
 
     // 配置键到 setter 的对接只有一处实现（见 Net/Http/HttpServerAssembly.h）：这里只交进
-    // 「跨监听器共用的那几份对象」。在途正文预算不在 server 段里，仍由调用方给
+    // 「跨监听器共用的那几份对象」与「整机限额要摊给几个进程」。在途正文预算不在 server 段里，
+    // 仍由调用方给
     const auto assembleServer = [&](auto &server)
     {
         Net::HttpServerAssemblyContext assemblyContext;
         assemblyContext.sharedPerIpLimiter    = perIpConnectionLimiter;
         assemblyContext.sharedRateLimitBucket = rateLimitBucket;
+        assemblyContext.workerProcessCount    = workerProcessTotal;
         if (const auto outcome = Net::applyHttpServerConfiguration(*server, configuration, assemblyContext); !outcome)
         {
             // 只可能来自「共享限额器与配置标量不一致」这一种自相矛盾的配置。装配发生在起服务之前，
@@ -975,11 +984,12 @@ int main(int argc, char **argv)
         http3Configuration.perIpConnectionLimiter = perIpConnectionLimiter;
         // 整机并发上限同样要给 h3，否则配置里的 maximum_connections 只管两条 TCP 通道，而 h3 守着
         // QuicServer 自带的默认档：同一份配置下三条通道的口径不一致，本轮新增的 h3 满载读数也会
-        // 对着一个没人配过的数跳变。刻意不覆盖 0：0 是「配置里没写」，此时保留 h3 自己的默认上限
+        // 对着一个没人配过的数跳变。给的是**摊到本进程**的那一份（与 TCP 侧同源），否则 --workers 4
+        // 就是四倍放行。刻意不覆盖 0：0 是「配置里没写」，此时保留 h3 自己的默认上限
         // 比把它变成不限更安全（与上面单来源限额的 `> 0` 判据同一条理由）
-        if (configuration.maximumConnections > 0)
+        if (perProcessMaximumConnections > 0)
         {
-            http3Configuration.maximumConnections = configuration.maximumConnections;
+            http3Configuration.maximumConnections = perProcessMaximumConnections;
         }
 
         try

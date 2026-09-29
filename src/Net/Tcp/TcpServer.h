@@ -174,6 +174,14 @@ namespace AsynGyanis::Net
         void setMaxConnections(std::size_t maximumConnectionCount);
 
         /**
+         * @brief 取本台实际生效的最大并发连接数
+         * @details 报的是**下发到本台的值**而不是配置里的数：多进程下整机上限会摊到每个进程，
+         *          运维要靠这一句区分「配了 100」与「本台真正卡的是 25」。0 表示本台不设这道限
+         * @return std::size_t 最大并发连接数
+         */
+        [[nodiscard]] std::size_t maximumConnections() const noexcept;
+
+        /**
          * @brief 设置按来源 IP 的并发连接限额
          * @param limiter 限额对象；**多个监听器（每循环一个）必须共享同一份**，否则单个来源的实际上限
          *        会乘上监听器数量，限额等于失效。传空指针表示不作按 IP 的限制（默认）
