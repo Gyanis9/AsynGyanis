@@ -423,7 +423,7 @@ int main(int argc, char **argv)
         LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
         LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）；"
                  "同时让 TCP 侧响应带上 alt-svc 通告，客户端由此自己学到 h3 端口");
-        LOG_INFO("  --max-connections-per-ip 单个来源的并发上限；不给走配置文件/内置默认 64，显式给 0 = 不限");
+        LOG_INFO("  --max-connections-per-ip 单个来源的并发上限；不给走配置文件/内置默认 256，显式给 0 = 不限");
         LOG_INFO("  --trace-context 挂 W3C Trace Context 中间件：上游带了合法的 traceparent 就原样沿用，");
         LOG_INFO("            缺席或畸形（含同名多条）则新起一条链路并写回请求头，业务读 GET /trace 就能看到；");
         LOG_INFO("            同时把自己的条目 asyn=<span-id> 挪到 tracestate 最前（上游条目次序不动）");

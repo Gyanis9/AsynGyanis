@@ -40,10 +40,11 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 单个来源并发连接上限的内置默认值
-     * @details 64 对单个客户端（浏览器并行连接通常 6-16）足够宽，又能挡住一个来源吃满整机名额。
-     *          运营商级 NAT 后面是一群人共用一个地址：这类部署要按实际并发把它抬高，或显式写 0 关掉。
+     * @details 取 256 而不是更小的数：一条默认值会误杀真实客户——运营商级 NAT 与企业出口让一群人共用一个地址，
+     *          上限压到几十就会把其中一部分拒在门外。256 足够容纳这类共享出口，同时仍挡住「一个来源吃满整机名额」
+     *          （每监听器总额 4096，即单来源最多占 1/16）。要真的不限，显式写 0。
      */
-    inline constexpr std::size_t kDefaultMaximumConnectionsPerIp = 64;
+    inline constexpr std::size_t kDefaultMaximumConnectionsPerIp = 256;
 
     struct ASYN_NET_API HttpServerConfiguration
     {
