@@ -13,6 +13,61 @@
 - **一致性由脚本把关**：`scripts/check-release-version.py` 比对「CMake 版本号 / 本文件最新发布段 / 最新标签」
   三者，不一致即退出码非 0；Linux CI 已接入这一步，避免出现「打了标签但版本号没改」这类漂移。
 
+## [Unreleased]
+
+自 2.3.0 起的累计变化（新增 4、变更 1、修复 1）：非 HTTP 那几台通道第一次有自己的对外读数出口——
+`Core::ProcessMetricsRegistry` 把六处「账在本进程里、面板上看不见」的计数（证书自动化、dns-01 写入、
+UDP 数据报、worker 崩溃、数据库连接池、TLS 握手）登记成 19 条 Prometheus 读数，随 `/metrics` 一起导出，
+应用不需要接线。本版**无破坏性变更**。
+
+### 新增
+
+- **进程级指标注册表**（`Core/Metrics/ProcessMetricsRegistry.h`，`Core::ProcessMetricsRegistry`）：
+  `registerMetric(name, help, kind, merge, provider)` 交回一个 RAII 把手（析构或移动赋值即注销，
+  赋值时先放掉自己原来那条再接过来者的，反过来写就变成「丢一条读数」），`samples()` 按登记先后交回合并后的读数。
+  四条登记时的规矩，都在登记那一刻当场拒（`std::invalid_argument`）而不是留到抓取时才看出不对：
+  名字必须匹配 `[a-zA-Z_:][a-zA-Z0-9_:]*`（Prometheus 的合法形状，带空格的名字采集侧会整行丢掉）、
+  取值回调不能为空（登记了名字却没有读数可取，导出里就留下一条恒为 0 的假读数）、
+  help 里的换行按空白折叠（说明会原样进 `# HELP` 一行，带换行会把导出格式切开）、
+  同名重复登记只在**种类与并法与说明三项都一致**时才允许（多台同类对象各登记一份是支持的，
+  不一致就是两处代码在抢一个名字——同名会把两条读数并成一个数，悄悄把两个不相干的东西加成一条）。
+  并法只有两种：`Sum`（计数与在借数这类可加的量）与 `Min`（到期时刻这类「取最先出事的那个」）。
+  注册表用**故意不析构的单例**：把手可能持有在静态存储期的对象里，那些对象析构时若注册表已销毁，
+  注销就打在死对象上。
+- **证书自动化的三条读数**（`asyn_acme_certificate_expiry_seconds` / `asyn_acme_issuances_total` /
+  `asyn_acme_failures_total`）：在 `AcmeCertificateManager` 构造时登记，不等第一次签发——常驻进程里这几条
+  长期为 0 就是要报的事，而「自动化没跑成」与「自动化还没跑」在面板上是同一个形状，得让「有没有登记过」
+  这一格可分辨。到期时刻那条按 `Min` 并（多个管理器取最早那张，因为它会先出事），其余两条按 `Sum`。
+  `AcmeManagerStatus` 同步补 `backoffUntilUnixSeconds`：失败退避的门槛时刻，0 表示没在退避中。
+  它和续期循环用的是同一个算式（`backoffGateUnixSeconds()`），少了这一步就会出现「判据已经排到两小时之后、
+  面板上说下次尝试是马上」——值班据此判断这条自动化是不是躺平了，两个解释比没有解释更糟。
+- **dns-01 写入的耗时读数**（`asyn_acme_dns01_records_published_total` / `asyn_acme_dns01_publish_seconds_total` /
+  `asyn_acme_dns01_quiet_waits_total` / `asyn_acme_dns01_quiet_wait_seconds_total`）：阿里云云解析的写入器
+  自己记录调用条数、花掉的秒数，以及「同名重写前先等机构缓存过期」等掉了多少次与多少秒。
+  这一台值得单独记账是因为它的一段等待是**功能而不是停顿**：一张同时含基础域名与通配符的单里两个名字撞
+  同一条 `_acme-challenge`，等不满记录的 TTL 就去自证，机构读到的还是上一条答案。没有这两条读数，
+  「一次签发跑了十一分钟」看上去像卡住了，实际是等了两个 600 秒。
+- **四处「有账没出口」接通**：`UdpServer` 的四条计数（交付给处理器的数据报、发出的、该发没发出去的、
+  处理器抛出异常被接住的）、`WorkerSupervisor` 的两条（worker「起来就崩」的累计次数、已放弃补位的槽位数）、
+  `ConnectionPool` 的四条（此刻在借的、正在等空闲连接的、历史上创建过的、借出等到截止仍未拿到的）、
+  `Core::TlsSocket` 的两条（完成的握手条数、其中按会话恢复完成的条数——两条相除就是本端复用率）。
+  四类里每一处都早就在自己的对象里记着账，只是没有一个出口：`asyn_udp_datagrams_unsent_total` 那种
+  「该发没发」的数只有在出问题时才需要看，而那时最不该做的事是重启成一个带打印的版本。
+
+### 变更
+
+- `/metrics` 的输出末尾多出注册表那一段，按登记的**完整名字**原样导出、**不套**监听器的 `metric_name_prefix`
+  （这些是进程量，加监听器前缀会让同一个数在两个抓取点上长得不一样）。没登记过就没有那一行，而不是一行 0。
+  两类读数刻意不接：跨线程不安全的对象（出站连接池明写「协程挂起期间被别的线程驱动会踩坏套接字状态」，
+  而抓取跑在另一条线程上）与「读口本身带副作用」的（`WorkerSupervisor::runningWorkerCount()` 会顺手回收子进程）。
+
+### 修复
+
+- **证书自动化的到期读数不再在重启后报一段假的「没有证书」**：`AcmeCertificateManager` 构造时先按磁盘上
+  那张证书把到期时刻填进内部状态，不必等第一次 `issueIfRequired()`。此前构造完还没跑一轮的窗口里读数是 0，
+  而这条读数的报警口径正是「长期为 0」——于是每次计划内重启都会先打一次「证书没了」，而那个文件一直在那里。
+  多管理器场景里这一格还会把 `Min` 并出来的整条读数压成 0，盖掉另一张还有八十天的证书。
+
 ## [2.3.0] - 2026-09-30
 
 自 2.2.0 起的累计变化（新增 7、变更 1、修复 5）：证书自动化补齐第二条自证通道并第一次可整份写进配置
@@ -3557,7 +3612,7 @@ DLL 落点）写在 README 的「交付形态」一节。
 - 单请求分配画像压到 33 次 / 816 B（起点 48 次 / 4228 B）。
 - Linux CI（GCC + ASan/UBSan + Redis 真机）与 Windows CI（MSVC + ASan）；解析器模糊冒烟测试。
 
-[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.3.0...HEAD
 [2.0.0]: https://github.com/Gyanis9/AsynGyanis/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/Gyanis9/AsynGyanis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Gyanis9/AsynGyanis/releases/tag/v1.0.0
