@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <optional>
 #include <string>
@@ -698,6 +699,8 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 进程号此刻是否还活着（父侧手里没有它的句柄，只能这样问）
+         * @details POSIX 上「僵尸态」按不在处理算：它不占端口、不占描述符也不占内存，而容器里
+         *          PID 1 不带 reap 时，被 PDEATHSIG 打死的那个孩子会一直以 Z 态挂在那里
          * @param processId 目标进程号
          * @return true 还在
          */
@@ -717,6 +720,23 @@ namespace AsynGyanis::Platform
             static_cast<void>(::CloseHandle(handle));
             return waitResult == WAIT_TIMEOUT;
 #else
+            // kill(pid, 0) 对僵尸进程也回成功，直接拿它当「还在跑」会把「保护没生效」与
+            // 「保护生效了但没人收尸」判成同一件事。孙进程不是本进程的 child（waitpid 只回 ECHILD），
+            // 所以只能读 /proc 里的状态字段
+            if (std::ifstream statFile{std::format("/proc/{}/stat", processId)}; statFile)
+            {
+                std::string statLine;
+                if (std::getline(statFile, statLine))
+                {
+                    // comm 里可以有空格与括号，状态字段必须按最后一个 ')' 之后定位，不能按空白切列
+                    const std::size_t statePosition = statLine.rfind(')');
+                    if (statePosition != std::string::npos && statePosition + 2U < statLine.size())
+                    {
+                        return statLine[statePosition + 2U] != 'Z';
+                    }
+                }
+            }
+            // 读不到 /proc（非 Linux 的 POSIX 环境、或那条进程属于别人）才退回信号判据
             if (::kill(static_cast<pid_t>(processId), 0) == 0)
             {
                 return true;
