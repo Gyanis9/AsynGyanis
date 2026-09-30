@@ -664,8 +664,7 @@ namespace AsynGyanis::Platform
             if (value != nullptr)
             {
                 static_cast<void>(::setenv(name, value, 1));
-            }
-            else
+            } else
             {
                 static_cast<void>(::unsetenv(name));
             }
@@ -716,7 +715,7 @@ namespace AsynGyanis::Platform
             {
                 return false;
             }
-            const DWORD  waitResult = ::WaitForSingleObject(handle, 0);
+            const DWORD waitResult = ::WaitForSingleObject(handle, 0);
             static_cast<void>(::CloseHandle(handle));
             return waitResult == WAIT_TIMEOUT;
 #else
@@ -772,7 +771,7 @@ namespace AsynGyanis::Platform
         /// 中间层报回来的三件事：孙进程号、保护是否真挂上、它在中间层还活着时是否确实在跑
         struct KillProbeReport
         {
-            long processId{0};     ///< 孙进程号
+            long processId{0};         ///< 孙进程号
             bool isGuardActive{false}; ///< 作业是否真挂上了（本进程已在禁止嵌套的作业里时为 false）
             bool wasRunning{false};    ///< 中间层退出前它确实在运行，排除「根本没起来」这种假绿
         };
@@ -795,8 +794,8 @@ namespace AsynGyanis::Platform
             EXPECT_FALSE(executablePath.empty()) << "取不到自身路径，中间层启不起来";
 
             const Process::Handle middleHandle = Process::spawn(Process::LaunchOptions{
-                .executablePath = executablePath,
-                .arguments      = std::vector<std::string>{"--gtest_filter=Process.KillWithParentProbeMiddle", "--gtest_brief=1"},
+                    .executablePath = executablePath,
+                    .arguments      = std::vector<std::string>{"--gtest_filter=Process.KillWithParentProbeMiddle", "--gtest_brief=1"},
             });
             setProbeEnvironmentVariable(kKillProbeRoleVariable, nullptr);
             setProbeEnvironmentVariable(kKillProbeReportVariable, nullptr);
@@ -820,8 +819,8 @@ namespace AsynGyanis::Platform
                 ADD_FAILURE() << "探针没留下报告文件：" << reportPath.string() << "（中间层可能在写下孙进程号之前就死了）";
                 return std::nullopt;
             }
-            long processId        = 0;
-            int  guardAsDigit     = 0;
+            long processId         = 0;
+            int  guardAsDigit      = 0;
             int  wasRunningAsDigit = 0;
             report >> processId >> guardAsDigit >> wasRunningAsDigit;
             if (!report || processId <= 0)
@@ -847,19 +846,19 @@ namespace AsynGyanis::Platform
         const auto reportPathText = ProcessInfo::environmentVariable(kKillProbeReportVariable);
         ASSERT_TRUE(reportPathText.has_value()) << "父侧没交代报告落在哪";
 
-        const ExitCommand     command = makeGuardProbeTargetCommand();
+        const ExitCommand     command    = makeGuardProbeTargetCommand();
         const Process::Handle grandChild = Process::spawn(Process::LaunchOptions{
-            .executablePath   = command.executablePath,
-            .arguments        = command.arguments,
-            .ownProcessGroup  = false,
-            .killWithParent   = *role == "on",
+                .executablePath  = command.executablePath,
+                .arguments       = command.arguments,
+                .ownProcessGroup = false,
+                .killWithParent  = *role == "on",
         });
         ASSERT_TRUE(grandChild.isValid()) << "孙进程起不来，平台错误码 " << PlatformError::lastErrorCode();
 
         // 保护状态与「此刻它确实在跑」都要报回来：父侧看到孙进程不见了，得能分清那是保护带走的，
         // 还是它根本没起来
-        const bool isGuardActive = grandChild.killWithParentGuardActive();
-        const bool wasRunning    = Process::isRunning(grandChild);
+        const bool    isGuardActive = grandChild.killWithParentGuardActive();
+        const bool    wasRunning    = Process::isRunning(grandChild);
         std::ofstream report(reportPathText->c_str());
         report << grandChild.processId() << ' ' << (isGuardActive ? 1 : 0) << ' ' << (wasRunning ? 1 : 0) << '\n';
         ASSERT_TRUE(static_cast<bool>(report)) << "探针报告写不出去，父侧的判据会失去前提";

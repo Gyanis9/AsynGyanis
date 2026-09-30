@@ -296,7 +296,7 @@ namespace AsynGyanis::Platform
         void *jobHandle = nullptr;
         if (options.killWithParent)
         {
-            jobHandle = ::CreateJobObjectW(nullptr, nullptr);
+            jobHandle           = ::CreateJobObjectW(nullptr, nullptr);
             bool isGuardInPlace = false;
             if (jobHandle != nullptr)
             {

@@ -701,13 +701,19 @@ namespace AsynGyanis::Net
          * @note 给装配出口的「共享桶与整机配置是否对得上」判据用：桶的速率在构造时定死，
          *       传进来一份与配置摊分结果不一致的桶就等于配置没生效，而这类偏差只能问桶
          */
-        [[nodiscard]] double tokensPerSecond() const noexcept { return m_tokensPerSecond; }
+        [[nodiscard]] double tokensPerSecond() const noexcept
+        {
+            return m_tokensPerSecond;
+        }
 
         /**
          * @brief 桶容量（观测用，不参与判定）
          * @return double 瞬时允许突发多少枚
          */
-        [[nodiscard]] double burstCapacity() const noexcept { return m_burstCapacity; }
+        [[nodiscard]] double burstCapacity() const noexcept
+        {
+            return m_burstCapacity;
+        }
 
         /**
          * @brief 当前桶里的令牌数（观测用，不参与判定）
@@ -1274,7 +1280,7 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API OpsAccessOptions
     {
-        std::string bearerToken{};                                   ///< 要求的 Bearer 令牌；空是用法错误（等于挂一道永远放行的闸）
+        std::string              bearerToken{};                              ///< 要求的 Bearer 令牌；空是用法错误（等于挂一道永远放行的闸）
         std::vector<std::string> protectedPaths{"/metrics", "/debug/loops"}; ///< 需要令牌的路径，逐条精确匹配
     };
 
@@ -1327,8 +1333,8 @@ namespace AsynGyanis::Net
 
         return [options = std::move(options)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
-            const std::string_view path = request.path();
-            const bool isProtected = std::ranges::find(options.protectedPaths, path) != options.protectedPaths.end();
+            const std::string_view path        = request.path();
+            const bool             isProtected = std::ranges::find(options.protectedPaths, path) != options.protectedPaths.end();
             if (!isProtected)
             {
                 co_await next();
@@ -1336,9 +1342,9 @@ namespace AsynGyanis::Net
             }
 
             // 出现多条就当没有凭据：取值原文取第一条，但「有几条」这件事必须先问，否则歧义会被静默挑一边
-            const bool   isSingleCredential = request.headerFieldCount("authorization") <= 1;
-            const auto   presented          = isSingleCredential ? request.firstHeaderValueView("authorization") : std::optional<std::string_view>{};
-            const bool   isAuthorized       = presented.has_value() && Base::constantTimeEquals(Detail::extractBearerCredential(*presented), options.bearerToken);
+            const bool isSingleCredential = request.headerFieldCount("authorization") <= 1;
+            const auto presented          = isSingleCredential ? request.firstHeaderValueView("authorization") : std::optional<std::string_view>{};
+            const bool isAuthorized       = presented.has_value() && Base::constantTimeEquals(Detail::extractBearerCredential(*presented), options.bearerToken);
             if (isAuthorized)
             {
                 co_await next();

@@ -36,9 +36,9 @@ namespace AsynGyanis::Net
                 return {};
             }
             std::string receivedText;
-            if (!client.sendText(
-                    std::format("GET {} HTTP/1.1\r\nHost: localhost\r\n{}\r\nConnection: close\r\n\r\n", path, extraHeaderLine.empty() ? "" : std::string(extraHeaderLine) + "\r\n"),
-                    kEndpointTimeout))
+            if (!client.sendText(std::format("GET {} HTTP/1.1\r\nHost: localhost\r\n{}\r\nConnection: close\r\n\r\n", path,
+                                             extraHeaderLine.empty() ? "" : std::string(extraHeaderLine) + "\r\n"),
+                                 kEndpointTimeout))
             {
                 return receivedText;
             }
@@ -172,7 +172,7 @@ namespace AsynGyanis::Net
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
 
-        for (const std::string_view path : {"/metrics", "/healthz", "/debug/loops"})
+        for (const std::string_view path: {"/metrics", "/healthz", "/debug/loops"})
         {
             const std::string text = fetchPath(fixture.listeningPort(), path);
             EXPECT_NE(text.find("HTTP/1.1 404"), std::string::npos) << path << " 仍挂在业务口上：" << text;
@@ -196,16 +196,16 @@ namespace AsynGyanis::Net
         configuration.maximumConnectionsPerIp = 0;
 
         HttpServerAssemblyContext matchingContext;
-        matchingContext.workerProcessCount   = 4;
+        matchingContext.workerProcessCount    = 4;
         matchingContext.sharedRateLimitBucket = std::make_shared<TokenBucket>(25.0, 2.0);
         ASSERT_TRUE(applyHttpServerConfiguration(server, configuration, matchingContext).has_value()) << "与摊分一致的共享桶被误拒";
 
-        Core::EventLoop rejectingLoop;
-        TestHttpServer  rejectingServer(rejectingLoop, Core::InetAddress::localhost(0));
+        Core::EventLoop           rejectingLoop;
+        TestHttpServer            rejectingServer(rejectingLoop, Core::InetAddress::localhost(0));
         HttpServerAssemblyContext mismatchedContext;
-        mismatchedContext.workerProcessCount   = 4;
+        mismatchedContext.workerProcessCount    = 4;
         mismatchedContext.sharedRateLimitBucket = std::make_shared<TokenBucket>(100.0, 8.0);
-        const auto outcome                       = applyHttpServerConfiguration(rejectingServer, configuration, mismatchedContext);
+        const auto outcome                      = applyHttpServerConfiguration(rejectingServer, configuration, mismatchedContext);
         ASSERT_FALSE(outcome.has_value()) << "共享桶还是整机速率就直接收下了：那等于放行四倍";
         EXPECT_NE(outcome.error().find("25"), std::string::npos) << "拒因要点名摊后的速率：「" << outcome.error() << "」";
     }
@@ -248,8 +248,8 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(applyHttpServerConfiguration(server, configuration, matchingContext).has_value()) << "与摊分一致的共享限额器被误拒";
         EXPECT_EQ(server.maximumConnections(), 25u) << "整机 100 摊给 4 个进程，本台真正卡的应是 25";
 
-        Core::EventLoop rejectingLoop;
-        TestHttpServer  rejectingServer(rejectingLoop, Core::InetAddress::localhost(0));
+        Core::EventLoop           rejectingLoop;
+        TestHttpServer            rejectingServer(rejectingLoop, Core::InetAddress::localhost(0));
         HttpServerAssemblyContext mismatchedContext;
         mismatchedContext.workerProcessCount = 4;
         mismatchedContext.sharedPerIpLimiter = std::make_shared<PerIpConnectionLimiter>(100);

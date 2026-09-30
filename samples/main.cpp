@@ -285,26 +285,26 @@ namespace
 
 int main(int argc, char **argv)
 {
-    std::string host                 = "localhost";
-    uint16_t    port                 = 8080;
-    unsigned    threads              = 0; // 0 = auto (optimized for local benchmarks)
+    std::string                host    = "localhost";
+    uint16_t                   port    = 8080;
+    unsigned                   threads = 0;         // 0 = auto (optimized for local benchmarks)
     std::optional<std::size_t> maxConnectionsPerIp; // 没给就走配置文件/内置默认（显式给 0 = 不限）
-    bool        useHttps             = false;
-    bool        useHttp2Cleartext    = false;
-    bool        exposeMetrics        = false;
-    bool        logJson              = false; // 日志按 JSON Lines 输出，供采集端解析
-    bool        dispatchAccept       = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
-    bool        pinThreadsToCores    = false; // 启动时把每个工作循环线程绑到一枚逻辑核上
-    bool        compressResponses    = false; // 按 Accept-Encoding 协商压缩响应（zstd/br/gzip）
-    bool        compressInLoop       = false; // --compress-sync：压缩留在循环线程上做完，只作对照用
-    std::size_t maxInflightBodyBytes = 0;     // 0 = 不限制在途正文字节总量
-    std::size_t workerProcessCount   = 1;     // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
-    bool        isWorkerProcess      = false; // 由 master 起的 worker 进程（内部开关，用户不必手写）
-    bool        useHttp3             = false; // 额外在同一个端口号的 UDP 上提供 HTTP/3（QUIC，需要证书）
-    bool        useTraceContext      = false; // 挂 W3C Trace Context 中间件，把链路上下文归一化到请求头上
-    bool        showUsage            = false;
-    std::string certificateFile      = "cert.pem";
-    std::string keyFile              = "key.pem";
+    bool                       useHttps             = false;
+    bool                       useHttp2Cleartext    = false;
+    bool                       exposeMetrics        = false;
+    bool                       logJson              = false; // 日志按 JSON Lines 输出，供采集端解析
+    bool                       dispatchAccept       = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
+    bool                       pinThreadsToCores    = false; // 启动时把每个工作循环线程绑到一枚逻辑核上
+    bool                       compressResponses    = false; // 按 Accept-Encoding 协商压缩响应（zstd/br/gzip）
+    bool                       compressInLoop       = false; // --compress-sync：压缩留在循环线程上做完，只作对照用
+    std::size_t                maxInflightBodyBytes = 0;     // 0 = 不限制在途正文字节总量
+    std::size_t                workerProcessCount   = 1;     // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
+    bool                       isWorkerProcess      = false; // 由 master 起的 worker 进程（内部开关，用户不必手写）
+    bool                       useHttp3             = false; // 额外在同一个端口号的 UDP 上提供 HTTP/3（QUIC，需要证书）
+    bool                       useTraceContext      = false; // 挂 W3C Trace Context 中间件，把链路上下文归一化到请求头上
+    bool                       showUsage            = false;
+    std::string                certificateFile      = "cert.pem";
+    std::string                keyFile              = "key.pem";
     /// 会话票据密钥文件，可重复给（首份签发、其余只解开旧票据）；空 = 按 OpenSSL 默认随机密钥
     std::vector<std::string> ticketKeyFiles;
     std::string              configFile;
@@ -398,8 +398,7 @@ int main(int argc, char **argv)
             // 所以它的管理口号也不变，采集端抓到的始终是同一个进程
             workerIndex = static_cast<unsigned>(Samples::readNumericOption(argc, argv, i, "--worker-index", 0U, 4095U));
             ++i;
-        }
-        else if (arg == "--help")
+        } else if (arg == "--help")
         {
             // 只记下意图、就地不输出：用法说明要走日志器，而日志器取决于 --log-json，此刻还没装配
             showUsage = true;
@@ -563,16 +562,12 @@ int main(int argc, char **argv)
     // 生效值必须打出来：这几个键「配置文件里没写」与「显式写了 0」在线上长得一模一样，而前者取的是
     // 内置有限默认、后者是真的不限。不打这一行，部署方只能等撞上限那天才知道自己跑的是哪一档。
     // 摊分规则不在这里重写——装配出口用的是同一个 perProcessShare，两边各算一套就会印出一个假数
-    const std::size_t workerProcessTotal         = std::max<std::size_t>(1, workerProcessCount);
+    const std::size_t workerProcessTotal           = std::max<std::size_t>(1, workerProcessCount);
     const std::size_t perProcessMaximumConnections = Net::perProcessShare(configuration.maximumConnections, workerProcessTotal);
     const std::size_t perProcessMaximumPerIp       = Net::perProcessShare(configuration.maximumConnectionsPerIp, workerProcessTotal);
-    const auto        capText                    = [](const std::size_t value)
-    {
-        return value == 0 ? std::string("不限（显式配 0）") : std::to_string(value);
-    };
-    LOG_INFO_FMT("并发限额：整机 {} 摊给 {} 个进程 → 每台 {}；单来源 {} → 每台 {}；请求速率 {}，在途正文总量 {}",
-                 capText(configuration.maximumConnections), workerProcessTotal, capText(perProcessMaximumConnections),
-                 capText(configuration.maximumConnectionsPerIp), capText(perProcessMaximumPerIp),
+    const auto        capText                      = [](const std::size_t value) { return value == 0 ? std::string("不限（显式配 0）") : std::to_string(value); };
+    LOG_INFO_FMT("并发限额：整机 {} 摊给 {} 个进程 → 每台 {}；单来源 {} → 每台 {}；请求速率 {}，在途正文总量 {}", capText(configuration.maximumConnections), workerProcessTotal,
+                 capText(perProcessMaximumConnections), capText(configuration.maximumConnectionsPerIp), capText(perProcessMaximumPerIp),
                  configuration.requestsPerSecond > 0.0 ? std::format("{:.0f} 请求/s", configuration.requestsPerSecond) : std::string("不限（默认）"),
                  maxInflightBodyBytes == 0 ? std::string("不限（默认）") : std::to_string(maxInflightBodyBytes) + " 字节");
 
@@ -590,7 +585,7 @@ int main(int argc, char **argv)
             // 每个 worker 拿到自己那一份槽位号：管理口按「metrics_port + 序号」错开，采集端才能
             // 一次抓一个进程并把各进程的数加总，而不是随机命中某一台
             supervisorConfiguration.workerIndexArgument = "--worker-index";
-            supervisorConfiguration.workerCount = workerProcessCount;
+            supervisorConfiguration.workerCount         = workerProcessCount;
 
             Core::WorkerSupervisor supervisor(std::move(supervisorConfiguration));
             LOG_INFO_FMT("多进程模式：{} 个 worker（master 进程号 {} 只做编排；Ctrl+C 或 SIGTERM 会让 worker 各自体面退出）", workerProcessCount,
@@ -722,8 +717,8 @@ int main(int argc, char **argv)
         // 建的是「本进程这一份」的限额器，与装配出口摊出来的数必须同源，否则会被出口的
         // 「共享实例与配置不一致」判据当场拒——那条拒正是为了让这种偏差不能静默存在
         perIpConnectionLimiter = std::make_shared<Net::PerIpConnectionLimiter>(perProcessMaximumPerIp);
-        LOG_INFO_FMT("单来源并发上限 {}（本进程内 {} 个监听器共享同一份计数；整机口径 {} 已按 {} 个进程摊过）",
-                     perProcessMaximumPerIp, actualThreads, configuration.maximumConnectionsPerIp, workerProcessTotal);
+        LOG_INFO_FMT("单来源并发上限 {}（本进程内 {} 个监听器共享同一份计数；整机口径 {} 已按 {} 个进程摊过）", perProcessMaximumPerIp, actualThreads,
+                     configuration.maximumConnectionsPerIp, workerProcessTotal);
     }
 
     // h3 的统计要并进哪一份采集端：全进程共用一份，抓任意一个监听器的 /metrics 都能同时看到
@@ -753,14 +748,12 @@ int main(int argc, char **argv)
     // 限流桶同样只有一份：它要的是「本进程这一份的全局 RPS 上限」，各持一份等于上限乘以监听器数。
     // 桶里的数必须由摊分出口给：装配出口会拿桶上的速率与容量比对摊分结果，不一致就拒绝装配
     std::shared_ptr<Net::TokenBucket> rateLimitBucket;
-    const Net::PerProcessRateLimit    rateShare = Net::perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity,
-                                                                          workerProcessTotal);
+    const Net::PerProcessRateLimit    rateShare = Net::perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, workerProcessTotal);
     if (rateShare.requestsPerSecond > 0.0)
     {
         rateLimitBucket = std::make_shared<Net::TokenBucket>(rateShare.requestsPerSecond, rateShare.burstCapacity);
-        LOG_INFO_FMT("全局限流：整机 {} 请求/s（桶容量 {}）摊给 {} 个进程 → 每台 {:.4g} 请求/s（桶容量 {:.4g}），本进程内所有监听器共享同一个桶",
-                     configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, workerProcessTotal, rateShare.requestsPerSecond,
-                     rateShare.burstCapacity);
+        LOG_INFO_FMT("全局限流：整机 {} 请求/s（桶容量 {}）摊给 {} 个进程 → 每台 {:.4g} 请求/s（桶容量 {:.4g}），本进程内所有监听器共享同一个桶", configuration.requestsPerSecond,
+                     configuration.rateLimitBurstCapacity, workerProcessTotal, rateShare.requestsPerSecond, rateShare.burstCapacity);
     }
 
     // 在途正文预算同样只有一份：它要的是「整个进程的正文占用上限」，各监听器各持一份等于上限乘以监听器数

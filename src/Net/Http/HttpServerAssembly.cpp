@@ -23,9 +23,7 @@ namespace AsynGyanis::Net
         return (wholeMachineValue + workerProcessCount - 1) / workerProcessCount;
     }
 
-    PerProcessRateLimit perProcessRateLimit(const double wholeMachineRequestsPerSecond,
-                                            const double wholeMachineBurstCapacity,
-                                            const std::size_t workerProcessCount) noexcept
+    PerProcessRateLimit perProcessRateLimit(const double wholeMachineRequestsPerSecond, const double wholeMachineBurstCapacity, const std::size_t workerProcessCount) noexcept
     {
         if (wholeMachineRequestsPerSecond <= 0.0)
         {
@@ -38,8 +36,7 @@ namespace AsynGyanis::Net
         const double processCount = static_cast<double>(workerProcessCount);
         // 容量兜在 1.0：整机突发量小于进程数时（例如桶容量 2 摊给 4 个进程），整除会给出一个
         // 攒不满一枚令牌的桶——TokenBucket 的构造直接拒绝容量小于 1，宁可每台各留一个突发名额
-        return PerProcessRateLimit{.requestsPerSecond = wholeMachineRequestsPerSecond / processCount,
-                                   .burstCapacity     = std::max(1.0, wholeMachineBurstCapacity / processCount)};
+        return PerProcessRateLimit{.requestsPerSecond = wholeMachineRequestsPerSecond / processCount, .burstCapacity = std::max(1.0, wholeMachineBurstCapacity / processCount)};
     }
 
     namespace
@@ -58,21 +55,18 @@ namespace AsynGyanis::Net
             }
             // 每个进程只看得见自己这份账，所以配置里的整机上限要摊下来才真是那个数——否则起 N 个进程
             // 就等于放行 N 倍，而配置文件上写的仍是整机的那个数
-            const std::size_t perProcessMaximumConnections  = perProcessShare(configuration.maximumConnections, context.workerProcessCount);
-            const std::size_t perProcessMaximumPerIp        = perProcessShare(configuration.maximumConnectionsPerIp, context.workerProcessCount);
+            const std::size_t perProcessMaximumConnections = perProcessShare(configuration.maximumConnections, context.workerProcessCount);
+            const std::size_t perProcessMaximumPerIp       = perProcessShare(configuration.maximumConnectionsPerIp, context.workerProcessCount);
 
             // 共享限额器是多台的共用对象，它的上限在构造时就定死了；配置里那个标量只对「本台新建一份」
             // 才有意义，且要多进程时是摊过的一份。两处都给又不相等时，静默挑一边就是
             // 「配置写了 16、实际跑的是 64」这类看不出后果的错
-            if (context.sharedPerIpLimiter != nullptr && perProcessMaximumPerIp > 0 &&
-                context.sharedPerIpLimiter->maximumConnectionsPerIp() != perProcessMaximumPerIp)
+            if (context.sharedPerIpLimiter != nullptr && perProcessMaximumPerIp > 0 && context.sharedPerIpLimiter->maximumConnectionsPerIp() != perProcessMaximumPerIp)
             {
                 return std::unexpected(std::format("装配冲突：传入的共享限额器上限是 {}，而配置摊到本进程后应是 {}"
                                                    "（maximum_connections_per_ip={} 摊给 {} 个进程）。"
                                                    "多条通道共用一份限额器时，请让那一份与整机配置对得上（或对不上时把标量设为 0）",
-                                                   context.sharedPerIpLimiter->maximumConnectionsPerIp(),
-                                                   perProcessMaximumPerIp,
-                                                   configuration.maximumConnectionsPerIp,
+                                                   context.sharedPerIpLimiter->maximumConnectionsPerIp(), perProcessMaximumPerIp, configuration.maximumConnectionsPerIp,
                                                    context.workerProcessCount));
             }
 
@@ -92,28 +86,22 @@ namespace AsynGyanis::Net
             // 限流桶同理：多台共用一份时由调用方传入，否则本台按配置建一份（0 表示不设这道闸门，保持不动）
             // 传入的那一份必须与摊分结果一致——桶的速率在构造时就定死，配置写着整机 100 而桶跑的是
             // 100/进程，四个进程就放行 400，与连接数那条被拒的偏差长得一模一样，不该只有一处出声
-            const PerProcessRateLimit rateShare = perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity,
-                                                                     context.workerProcessCount);
+            const PerProcessRateLimit rateShare = perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, context.workerProcessCount);
             if (context.sharedRateLimitBucket != nullptr)
             {
-                if (rateShare.requestsPerSecond > 0.0 && (context.sharedRateLimitBucket->tokensPerSecond() != rateShare.requestsPerSecond ||
-                                                           context.sharedRateLimitBucket->burstCapacity() != rateShare.burstCapacity))
+                if (rateShare.requestsPerSecond > 0.0 &&
+                    (context.sharedRateLimitBucket->tokensPerSecond() != rateShare.requestsPerSecond || context.sharedRateLimitBucket->burstCapacity() != rateShare.burstCapacity))
                 {
                     return std::unexpected(std::format("装配冲突：传入的共享限流桶是 {} 请求/s（桶容量 {}），而配置摊到本进程后应是 {} 请求/s（桶容量 {}）"
                                                        "（rate_limit.rate={} 摊给 {} 个进程）。"
                                                        "多条通道共用一个桶时，请让那一个与整机配置对得上（或对不上时把速率设为 0）",
-                                                       context.sharedRateLimitBucket->tokensPerSecond(),
-                                                       context.sharedRateLimitBucket->burstCapacity(),
-                                                       rateShare.requestsPerSecond,
-                                                       rateShare.burstCapacity,
-                                                       configuration.requestsPerSecond,
-                                                       context.workerProcessCount));
+                                                       context.sharedRateLimitBucket->tokensPerSecond(), context.sharedRateLimitBucket->burstCapacity(),
+                                                       rateShare.requestsPerSecond, rateShare.burstCapacity, configuration.requestsPerSecond, context.workerProcessCount));
                 }
                 server.router().addMiddleware(tokenBucketRateLimiterMiddleware(context.sharedRateLimitBucket));
             } else if (rateShare.requestsPerSecond > 0.0)
             {
-                server.router().addMiddleware(
-                        tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(rateShare.requestsPerSecond, rateShare.burstCapacity)));
+                server.router().addMiddleware(tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(rateShare.requestsPerSecond, rateShare.burstCapacity)));
             }
 
             // 运维面三件套同开：只开其一会让「抓不到数」与「以为没暴露」互相伪装。

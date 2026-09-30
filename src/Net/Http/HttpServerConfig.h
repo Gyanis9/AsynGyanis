@@ -48,13 +48,13 @@ namespace AsynGyanis::Net
 
     struct ASYN_NET_API HttpServerConfiguration
     {
-        HttpServerLimits limits{};                    ///< 连接级限额：超时与单连接请求数上限
-        HttpParserLimits parserLimits{};              ///< 单条报文的内存上限
-        std::size_t      maximumConnections{kDefaultMaximumConnections};       ///< 全局并发连接上限；显式写 0 = 不限
+        HttpServerLimits limits{};                                                 ///< 连接级限额：超时与单连接请求数上限
+        HttpParserLimits parserLimits{};                                           ///< 单条报文的内存上限
+        std::size_t      maximumConnections{kDefaultMaximumConnections};           ///< 全局并发连接上限；显式写 0 = 不限
         std::size_t      maximumConnectionsPerIp{kDefaultMaximumConnectionsPerIp}; ///< 单个来源的并发连接上限；显式写 0 = 不限
-        double           requestsPerSecond{0.0};      ///< 全局请求速率上限（令牌桶速率），0 = 不限流
-        double           rateLimitBurstCapacity{1.0}; ///< 令牌桶容量，即瞬时允许的突发量；速率不为 0 时必须 ≥ 1
-        bool             exposeMetrics{false};        ///< 是否注册 /metrics 与 /healthz
+        double           requestsPerSecond{0.0};                                   ///< 全局请求速率上限（令牌桶速率），0 = 不限流
+        double           rateLimitBurstCapacity{1.0};                              ///< 令牌桶容量，即瞬时允许的突发量；速率不为 0 时必须 ≥ 1
+        bool             exposeMetrics{false};                                     ///< 是否注册 /metrics 与 /healthz
         /**
          * @brief 运维端点的 Bearer 令牌；空 = 不鉴权
          * @details 只保护 `/metrics` 与 `/debug/loops`（内部计数与循环状态），`/healthz` 刻意不管：
