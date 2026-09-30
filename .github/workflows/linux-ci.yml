@@ -622,7 +622,12 @@ jobs:
   # 的种子用例即可常驻。
   protocol-fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 上限要按 apt 慢的那次量：v2.4.0 那次运行里，「装 clang-19 与它的 fuzzer 运行时」一步从 16:26:30
+    # 拖到 16:54:57 才结束（llvm-19 / -tools / -dev 几百 MB，镜像吞吐看运气），模糊步骤只跑了 1 分多钟
+    # 就被 30 分钟上限切断；同一份作业在缓存热、镜像快的运行里全程只用 6 分半。
+    # 选 60 而不是 45：慢镜像那一段本身就没有上界可依赖。另外要知道**超时判成 cancelled 而不是 failed**
+    # ——既不是绿也不是红，比红更难被发现，所以宁可用不完也别擦线。
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -635,8 +640,10 @@ jobs:
       # 与「解码器有问题」同样需要被人看见
       - name: 装 clang-19 与它的 fuzzer 运行时（外加 nlohmann-json）
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-19 libfuzzer-19-dev nlohmann-json3-dev
+          # 那 28 分钟里连接是「卡住但没报错」那种慢：给 apt 设重试与单次超时，让它断掉重连而不是
+          # 抱着一条死连接磨到作业上限
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 update
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 install -y clang-19 libfuzzer-19-dev nlohmann-json3-dev
 
       - name: 模糊四类协议解码器（300 秒）
         run: bash scripts/fuzz-net.sh 300 -error_exitcode=1 -workers=2 -jobs=2
