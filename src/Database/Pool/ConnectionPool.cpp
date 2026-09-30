@@ -15,6 +15,21 @@ namespace AsynGyanis::Database
     ConnectionPool::ConnectionPool(std::function<std::unique_ptr<DatabaseConnection>()> factory, const PoolConfig &config) :
         m_factory(std::move(factory)), m_config(config), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
+        // 登记的四条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）
+        m_metricHandles = {
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_active_connections", "此刻被取出未归还的数据库连接数（进程内各池相加）", Core::ProcessMetricKind::Gauge,
+                                                             Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_activeCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_waiting_requests", "正在等一条空闲连接的同步取出请求数", Core::ProcessMetricKind::Gauge,
+                                                             Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_syncWaitingCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connections_created_total", "池历史上创建过的连接总数（含之后被丢弃的）：一直涨而活跃数不涨就是建了就丢",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_totalCreated.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_borrow_timeouts_total", "等到截止时刻仍没拿到连接的次数（停摆期与不等待的取用不计）",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_borrowTimeoutCount.load(std::memory_order_relaxed)); }),
+        };
     }
 
     ConnectionPool::~ConnectionPool()

@@ -17,6 +17,7 @@
 // - BorrowedConnectionSurvivesTheBackgroundSweep：后台只碰空闲栈，正被借用的连接活到释放那一刻
 // - SteadyBorrowAndReturnTouchNoHeap：稳态下的借出与归还一次都不碰堆（热路径分配台账）
 // - BorrowTimeoutIsCountedOnlyWhenTheWaitEndsEmptyHanded：累计创建数与借出超时数各自只在该长的时候长
+// - ConnectionPoolMetrics.RegistersPoolCountersAndTracksTheSameReadouts：四条原子读数进进程级导出，池析构即注销
 
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -27,6 +28,7 @@
 
 #include "AllocationProbe.h"
 #include "CommonTestSupport.h"
+#include "MetricsTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -45,8 +47,10 @@ namespace AsynGyanis::Database
         using namespace TestPoolSupport;
 
         using AsynGyanis::TestSupport::AllocationProfile;
+        using AsynGyanis::TestSupport::hasRegistrySample;
         using AsynGyanis::TestSupport::kMeasurementIterations;
         using AsynGyanis::TestSupport::measurePerOperation;
+        using AsynGyanis::TestSupport::registryValue;
 
         // ========================================================================
         // AcquireReleaseReusesConnection
@@ -1065,4 +1069,35 @@ namespace AsynGyanis::Database
         }
 
     } // namespace
+
+    /**
+     * @brief 钉住：池的四条原子读数进导出，且与池自己的读口报同一个数
+     * @details 只登记原子量那四条（空闲数与异步等待数要拿池锁，抓取去拿就等于把 /metrics 变成池的
+     *          延迟来源）。在借数与 `activeCount()` 钉成同一个数，是为了挡住「两处各读各的」
+     */
+    TEST(ConnectionPoolMetrics, RegistersPoolCountersAndTracksTheSameReadouts)
+    {
+        ConnectionCounter counter;
+        auto              factory = makeMockFactory(counter);
+        PoolConfig        configuration;
+        configuration.maximumPoolSize = 2;
+
+        ASSERT_FALSE(hasRegistrySample("asyn_db_pool_borrow_timeouts_total"));
+        {
+            ConnectionPool pool(factory, configuration);
+            EXPECT_EQ(registryValue("asyn_db_pool_active_connections"), 0U);
+            EXPECT_TRUE(hasRegistrySample("asyn_db_pool_connections_created_total"));
+
+            {
+                const PooledConnection borrowed = pool.acquire();
+                ASSERT_TRUE(borrowed);
+                EXPECT_EQ(registryValue("asyn_db_pool_active_connections"), static_cast<std::uint64_t>(pool.activeCount())) << "导出的在借数与池的读口不是一致的来源";
+                EXPECT_GE(registryValue("asyn_db_pool_connections_created_total"), 1U);
+            }
+
+            EXPECT_EQ(registryValue("asyn_db_pool_active_connections"), 0U) << "归还之后还记着在借，等于报出一份不存在的占用";
+        }
+        EXPECT_FALSE(hasRegistrySample("asyn_db_pool_active_connections")) << "池析构后这四条还挂在导出里";
+    }
+
 } // namespace AsynGyanis::Database

@@ -109,6 +109,15 @@ namespace AsynGyanis::Core
         }
 #endif
         m_workers.resize(m_configuration.workerCount);
+
+        m_metricHandles = {
+                Core::ProcessMetricsRegistry::registerMetric("asyn_worker_crashes_total", "worker「起来就崩」的累计次数（含补上去的那几轮）", Core::ProcessMetricKind::Counter,
+                                                             Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_totalCrashCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_worker_slots_given_up", "已放弃补位的 worker 槽位数：每槽满编时少一个进程就少一份容量，且这一格不会自己退回去",
+                                                             Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_givenUpWorkerCount.load(std::memory_order_relaxed)); }),
+        };
     }
 
     WorkerSupervisor::~WorkerSupervisor()
@@ -350,11 +359,11 @@ namespace AsynGyanis::Core
 
     void WorkerSupervisor::noteFailedStart(Worker &worker, const std::size_t workerIndex, const std::string &failureReason)
     {
-        ++worker.crashCount;
+        noteWorkerCrash(worker);
         LOG_ERROR_FMT("WorkerSupervisor: worker {} 起不来（{}），这是连续第 {} 次。路径 {}", workerIndex, failureReason, worker.crashCount, m_configuration.executablePath);
         if (worker.crashCount >= m_configuration.crashLoopLimit)
         {
-            worker.isGivenUp = true;
+            noteWorkerGivenUp(worker);
             LOG_ERROR_FMT("WorkerSupervisor: worker {} 连续 {} 次起不来，放弃补它", workerIndex, worker.crashCount);
         }
     }
@@ -370,10 +379,10 @@ namespace AsynGyanis::Core
 
         if (isFastExit)
         {
-            ++worker.crashCount;
+            noteWorkerCrash(worker);
             if (worker.crashCount >= m_configuration.crashLoopLimit)
             {
-                worker.isGivenUp = true;
+                noteWorkerGivenUp(worker);
                 LOG_ERROR_FMT("WorkerSupervisor: worker {} 连续 {} 次存活不足 {} 毫秒就退出，放弃补它（请检查它的启动日志）", workerIndex, worker.crashCount,
                               m_configuration.crashLoopWindow.count());
                 return true;

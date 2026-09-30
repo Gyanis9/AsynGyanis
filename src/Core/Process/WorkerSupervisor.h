@@ -11,8 +11,10 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Platform/System/Process.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -198,6 +200,39 @@ namespace AsynGyanis::Core
 
         Configuration       m_configuration; ///< 编排参数（构造时已校验）
         std::vector<Worker> m_workers;       ///< worker 槽位；下标即序号，槽位固定不搬
+
+        /**
+         * @brief 全进程口径的崩溃计数与「已放弃补位」的槽位数
+         * @details 本体是原子量而不是去扫槽位：槽位表由编排线程改，抓取发生在另一条线程上，
+         *          扫表就要引入一把新锁。两处崩溃记账各加一次，读的人只看到「一共崩了几次」
+         */
+        std::atomic<std::size_t> m_totalCrashCount{0};    ///< 连续「起来就崩」的累计次数（含补位那几轮）
+        std::atomic<std::size_t> m_givenUpWorkerCount{0}; ///< 已放弃补位的槽位数：涨一个就等于少一份容量，且不会自愈
+
+        /**
+         * @brief 上面两条挂在进程级指标注册表上的把手
+         * @details 刻意**不导出** `runningWorkerCount()`：那个读口会顺手回收子进程并改写退出码，
+         *          从抓取线程调用等于与编排线程抢回收（见其注释）。进程里有几份容量，看这条自动化
+         *          的计数与日志更稳妥
+         */
+        std::array<Core::ProcessMetricHandle, 2> m_metricHandles{};
+
+        /**
+         * @brief 记一次「起来就崩」：槽位计数与进程级累计各加一
+         * @details 两处崩溃点（起不来、存活不足窗口就退出）都走这里，避免只有一处记得抬累计
+         */
+        void noteWorkerCrash(Worker &worker) noexcept
+        {
+            ++worker.crashCount;
+            m_totalCrashCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /// 记下某个槽位已被放弃补位（连续崩到上限）
+        void noteWorkerGivenUp(Worker &worker) noexcept
+        {
+            worker.isGivenUp = true;
+            m_givenUpWorkerCount.fetch_add(1, std::memory_order_relaxed);
+        }
 
         /// 停止请求：只置一个无锁原子，因此信号处理函数里调用 requestStop() 是安全的
         /// （.cpp 里对 is_always_lock_free 做了断言，平台不满足会在编译期就拦住）

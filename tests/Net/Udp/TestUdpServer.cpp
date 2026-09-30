@@ -12,6 +12,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "CoreTestSupport.h"
+#include "MetricsTestSupport.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
 
@@ -37,6 +38,8 @@ namespace AsynGyanis::Net
         using AsynGyanis::Core::TestSupport::captureCoroutineFailure;
         using AsynGyanis::Core::TestSupport::EventLoopThread;
         using AsynGyanis::Core::TestSupport::waitForCondition;
+        using AsynGyanis::TestSupport::hasRegistrySample;
+        using AsynGyanis::TestSupport::registryValue;
 
         /// 对端等一条报文的有界上限：回环上的应答本该在毫秒级到达，超了这个上限就是没回来
         constexpr std::chrono::milliseconds kPeerWaitTimeout{5000};
@@ -645,4 +648,35 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(reply.has_value()) << "第二次 listen() 被拒之后原来的服务不再应答：那次启动并非无害";
         EXPECT_EQ(toText(*reply), "second");
     }
+
+    /**
+     * @brief 钉住：数据报服务端的四份计数在构造时挂上导出、析构时注销
+     * @details 数据报这条通路没有 HTTP 那侧的请求账，「收到没有 / 答出去没有 / 该答没答上多少」
+     *          只能靠这几条读数说话；漏注销会留下一条谁也不持有的读数
+     */
+    TEST(UdpServerMetrics, RegistersCountersOnConstructionAndReleasesOnDestruction)
+    {
+        const char *const kNames[] = {"asyn_udp_datagrams_received_total", "asyn_udp_datagrams_sent_total", "asyn_udp_datagrams_unsent_total", "asyn_udp_handler_failures_total"};
+        for (const char *const name: kNames)
+        {
+            ASSERT_FALSE(hasRegistrySample(name)) << name << " 还没建服务端就先出现在导出里";
+        }
+
+        {
+            EventLoopThread          loopThread;
+            UdpServer::Configuration configuration;
+            const UdpServer          server(loopThread.loop(), configuration);
+            for (const char *const name: kNames)
+            {
+                EXPECT_TRUE(hasRegistrySample(name)) << name;
+                EXPECT_EQ(registryValue(name), 0U) << name << " 刚登记就带着一个来路不明的数";
+            }
+        }
+
+        for (const char *const name: kNames)
+        {
+            EXPECT_FALSE(hasRegistrySample(name)) << name << " 服务端析构后还挂在导出里";
+        }
+    }
+
 } // namespace AsynGyanis::Net

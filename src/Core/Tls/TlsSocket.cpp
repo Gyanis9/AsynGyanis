@@ -3,9 +3,12 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/Exception/CoreException.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Core/Socket/InetAddress.h"
 #include "Platform/System/PlatformError.h"
 
+#include <array>
+#include <atomic>
 #include <limits>
 #include <openssl/err.h>
 #include <string>
@@ -56,6 +59,43 @@ namespace AsynGyanis::Core
             }
 
             return "TLS 层报出未知错误（SSL_get_error=" + std::to_string(sslErrorCode) + "，OpenSSL 错误队列为空）：按会话已失效处理，关闭本端连接";
+        }
+
+        /// 本进程完成的 TLS 握手条数与会话恢复条数（TCP 侧；QUIC 走 Net 里另一条通路，不计在这里）
+        std::atomic<std::uint64_t> g_handshakeCount{0};
+        std::atomic<std::uint64_t> g_reusedHandshakeCount{0};
+
+        /**
+         * @brief 把上面两条登记到进程级指标注册表，全流程只登记一次
+         * @details 只登记一份是必需的：这两条读数是**文件级**的进程总量，若每个 TlsSocket 各登记一次，
+         *          Sum 会把同一份数乘上连接数。放在首次握手时而不是静态初始化期，是为了不依赖
+         *          注册表与翻译单元的构造顺序
+         */
+        void ensureHandshakeMetricsRegistered()
+        {
+            static const std::array<ProcessMetricHandle, 2> handles = []
+            {
+                return std::array<ProcessMetricHandle, 2>{
+                        ProcessMetricsRegistry::registerMetric("asyn_tls_handshakes_total", "本进程完成的 TLS 握手条数（服务端与客户端两种角色都算，仅 TCP 侧）",
+                                                               ProcessMetricKind::Counter, ProcessMetricMerge::Sum,
+                                                               [] { return g_handshakeCount.load(std::memory_order_relaxed); }),
+                        ProcessMetricsRegistry::registerMetric("asyn_tls_session_reused_total", "其中按会话恢复完成的条数：与上一条相除就是本端的会话复用率",
+                                                               ProcessMetricKind::Counter, ProcessMetricMerge::Sum,
+                                                               [] { return g_reusedHandshakeCount.load(std::memory_order_relaxed); }),
+                };
+            }();
+            static_cast<void>(handles);
+        }
+
+        /// 握手成功那一刻记一笔：先数总量再判复用，两条读数才不会互相错开
+        void noteHandshakeCompleted(const SSL *const ssl) noexcept
+        {
+            ensureHandshakeMetricsRegistered();
+            g_handshakeCount.fetch_add(1, std::memory_order_relaxed);
+            if (::SSL_session_reused(ssl) == 1)
+            {
+                g_reusedHandshakeCount.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     } // namespace
 
@@ -122,6 +162,7 @@ namespace AsynGyanis::Core
             if (ret == 1)
             {
                 m_handshakeDone = true;
+                noteHandshakeCompleted(m_ssl.get());
                 co_return;
             }
 

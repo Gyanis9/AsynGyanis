@@ -13,10 +13,12 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Core/Socket/AsyncUdpSocket.h"
 #include "Core/Socket/InetAddress.h"
 #include "Platform/IO/DatagramSocket.h"
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -244,5 +246,12 @@ namespace AsynGyanis::Net
         std::atomic<std::uint64_t> m_sentDatagramCount{0};     ///< 见 Stats
         std::atomic<std::uint64_t> m_unsentDatagramCount{0};   ///< 见 Stats
         std::atomic<std::uint64_t> m_failedHandlerCount{0};    ///< 见 Stats
+
+        /**
+         * @brief 四份计数挂在进程级指标注册表上的把手
+         * @details 构造即登记（两个构造函数都汇到同一个本体，登记只在一处）：数据报服务没有 HTTP
+         *          那侧的请求账，「收到没有 / 答出去没有 / 该答没答上多少」只能靠这几条读数说话
+         */
+        std::array<Core::ProcessMetricHandle, 4> m_metricHandles{};
     };
 } // namespace AsynGyanis::Net

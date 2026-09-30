@@ -23,6 +23,8 @@
 
 #include "AllocationProbe.h"
 #include "CoreTestSupport.h"
+#include "MetricsTestSupport.h"
+#include "MetricsTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -38,6 +40,7 @@ namespace AsynGyanis::Core
 {
     namespace
     {
+        using AsynGyanis::TestSupport::registryValue;
         using TestSupport::advanceUntil;
 
         /// 仓库内预生成的自签测试证书（CN=asyngyanis-test，有效期至 2036）
@@ -825,6 +828,61 @@ namespace AsynGyanis::Core
         EXPECT_EQ(frames.totalAllocations, 0U) << "协程帧没有从帧池拿到：池的接线被改坏了";
         EXPECT_LE(profile.totalAllocations, kMeasurementRounds * 16ULL) << "每次握手的堆块数越界：TLS 这条路上多半又多了一次分配";
 #endif
+    }
+
+    /**
+     * @brief 钉住：TLS 握手计数与「这一条到底是不是复用」都由 OpenSSL 的同一判据钉牢
+     * @details 一条读数在两端各加一次（数的是握手事件），因此期望是「轮数 × 2」而不是「轮数」
+     * @details 判据不能是「期望第二次一定复用」——那取决于会话票据、缓存与协商到的版本，
+     *          会变，而且红了也说不清是谁错了。改法：测试自己按 `SSL_session_reused()` 数一遍
+     *          两次握手各有几条算复用，再要求导出读数的**增量**与它相等。这样既钉住了接线，
+     *          也不把外部条件写死成断言
+     */
+    TEST(TlsSocket, CountsCompletedHandshakesAndSessionReuse)
+    {
+        EventLoop  loop;
+        TlsContext serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        auto clientContext = makeClientContext(kTestCertificatePath);
+        ASSERT_NE(clientContext, nullptr);
+
+        const std::uint64_t handshakesBefore = registryValue("asyn_tls_handshakes_total");
+        const std::uint64_t reusedBefore     = registryValue("asyn_tls_session_reused_total");
+        std::uint64_t       reusedByOpenssl  = 0;
+
+        // 两次「服务端 ↔ 客户端」握手都走同一个客户端上下文：第二次才有机会带会话票来复用
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            int serverDescriptor = -1;
+            int clientDescriptor = -1;
+            ASSERT_TRUE(Platform::FileDescriptor::createPair(serverDescriptor, clientDescriptor));
+
+            SSL *serverHandle = serverContext.createSSL(serverDescriptor);
+            ASSERT_NE(serverHandle, nullptr);
+            TlsSocket serverSocket(serverHandle, loop, AsyncSocket(loop, serverDescriptor));
+
+            SSL *clientHandle = SSL_new(clientContext.get());
+            ASSERT_NE(clientHandle, nullptr);
+            ASSERT_NE(SSL_set_fd(clientHandle, clientDescriptor), 0);
+            TlsSocket clientSocket(clientHandle, loop, AsyncSocket(loop, clientDescriptor), TlsSocket::Role::Client);
+
+            Task<> serverHandshake = serverSocket.handshake();
+            Task<> clientHandshake = clientSocket.handshake();
+            serverHandshake.handle().resume();
+            clientHandshake.handle().resume();
+            ASSERT_TRUE(TestSupport::advanceUntil(loop, [&serverHandshake, &clientHandshake] { return serverHandshake.isReady() && clientHandshake.isReady(); }))
+                    << "第 " << attempt + 1 << " 次握手没在时限内完成，后面的读数说明不了任何问题";
+
+            // 两端的判定都要数：任何一侧按会话恢复完成，计数就该走一格
+            reusedByOpenssl +=
+                    static_cast<std::uint64_t>(SSL_session_reused(clientHandle) == 1 ? 1 : 0) + static_cast<std::uint64_t>(SSL_session_reused(serverHandle) == 1 ? 1 : 0);
+            clientSocket.close();
+            serverSocket.close();
+        }
+
+        // 一轮里两端各算一次「握手完成」：这一条数的是握手事件而不是连接条数（指标说明里写的是这个口径）
+        EXPECT_EQ(registryValue("asyn_tls_handshakes_total") - handshakesBefore, 4U) << "两轮两端共四次握手完成，导出的总量却没有走四次";
+        EXPECT_EQ(registryValue("asyn_tls_session_reused_total") - reusedBefore, reusedByOpenssl) << "复用计数与 OpenSSL 自己报的判定不一致";
     }
 
 } // namespace AsynGyanis::Core

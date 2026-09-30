@@ -9,6 +9,7 @@
 
 #include "CommonTestSupport.h"
 #include "CoreTestSupport.h"
+#include "MetricsTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -25,6 +26,8 @@ namespace AsynGyanis::Core
 {
     namespace
     {
+        using AsynGyanis::TestSupport::hasRegistrySample;
+        using AsynGyanis::TestSupport::registryValue;
         using TestSupport::kWaitTimeout;
         using TestSupport::waitForCondition;
 
@@ -514,4 +517,38 @@ namespace AsynGyanis::Core
         EXPECT_EQ(supervisor.runningWorkerCount(), 0U);
     }
 #endif
+
+    /**
+     * @brief 钉住：编排器的崩溃计数与「放弃补位」槽位数进导出，析构即注销
+     * @details 刻意不导出 `runningWorkerCount()`：那个读口会顺手回收子进程并改写退出码，
+     *          从抓取线程调它就是与编排线程抢回收。本用例只验登记与生命周期，不起真进程
+     */
+    TEST(WorkerSupervisorMetrics, RegistersCrashReadoutsAndReleasesThemOnDestruction)
+    {
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath  = "unused-by-this-case";
+        configuration.workerCount     = 2;
+        configuration.pollInterval    = std::chrono::milliseconds{20};
+        configuration.shutdownTimeout = std::chrono::seconds{5};
+#if ASYN_PLATFORM_WIN32
+        const Platform::Socket::Initialization network;
+        const int                              listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_GE(listener, 0) << "造不出套接字，本用例的移交档位就没法填";
+        configuration.handoff = WorkerSupervisor::Handoff{listener, std::chrono::seconds{10}};
+#endif
+
+        ASSERT_FALSE(hasRegistrySample("asyn_worker_crashes_total"));
+        {
+            WorkerSupervisor supervisor(configuration);
+            EXPECT_TRUE(hasRegistrySample("asyn_worker_crashes_total"));
+            EXPECT_TRUE(hasRegistrySample("asyn_worker_slots_given_up"));
+            EXPECT_EQ(registryValue("asyn_worker_crashes_total"), 0U);
+            EXPECT_EQ(registryValue("asyn_worker_slots_given_up"), 0U);
+        }
+        EXPECT_FALSE(hasRegistrySample("asyn_worker_crashes_total")) << "编排器析构后这条读数还挂在导出里";
+#if ASYN_PLATFORM_WIN32
+        ::closesocket(listener);
+#endif
+    }
+
 } // namespace AsynGyanis::Core

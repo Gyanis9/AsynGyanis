@@ -19,10 +19,12 @@
 
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PoolLiveness.h"
 #include "Database/Pool/PooledConnection.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -468,6 +470,14 @@ namespace AsynGyanis::Database
         std::condition_variable m_healthWakeCondition; ///< 停止请求的落点：让健康线程不必睡满一个分片
 
         std::jthread m_healthThread; ///< 后台健康检查线程
+
+        /**
+         * @brief 四条池内读数挂在进程级指标注册表上的把手
+         * @details 只登记**原子量**那四条（在借、同步等待、累计创建、借出超时）。空闲条数与异步等待数
+         *          要拿池自己的那两把锁，抓取线程去拿就等于与借出路径抢锁——那会把一次 `/metrics`
+         *          抓取变成池的延迟来源，宁可少报两格
+         */
+        std::array<Core::ProcessMetricHandle, 4> m_metricHandles{};
     };
 
 } // namespace AsynGyanis::Database

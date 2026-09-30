@@ -39,6 +39,20 @@ namespace AsynGyanis::Net
                                                  " 之间：0 连一条空报文都放不下，"
                                                  "超过上限则收到的报文无法整条应答");
         }
+
+        m_metricHandles = {
+                Core::ProcessMetricsRegistry::registerMetric("asyn_udp_datagrams_received_total", "交付给处理器的数据报条数（读数失败的空转不计）",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_receivedDatagramCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_udp_datagrams_sent_total", "本端发出的数据报条数（应答与主动下发都算）", Core::ProcessMetricKind::Counter,
+                                                             Core::ProcessMetricMerge::Sum, [this] { return m_sentDatagramCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_udp_datagrams_unsent_total", "该发却没发出去的条数：超限、发送中套接字被关、平台报错",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_unsentDatagramCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_udp_handler_failures_total", "处理器抛出异常而被服务端接住的条数（不接就会打死收循环，但它必须可见）",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_failedHandlerCount.load(std::memory_order_relaxed); }),
+        };
     }
 
     UdpServer::~UdpServer()
