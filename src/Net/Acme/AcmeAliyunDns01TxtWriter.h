@@ -29,10 +29,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 接阿里云云解析所需的凭据与口径
      *
-     * @details 这两条值由**调用方**交给本结构：引擎侧没有 acme.* 服务端配置段，凭据不该由库去猜配置文件，
-     *          而签发探针（`tests/Tools/AcmeIssuanceProbe`）按 `ASYN_ACME_DNS_ACCESS_KEY_ID` /
-     *          `ASYN_ACME_DNS_ACCESS_KEY_SECRET` 两条环境变量的约定读进来。刻意的约定是**别让密钥进版本库**：
-     *          一把能改域名记录的钥匙落在配置文件里，等于把域名交出去。
+     * @details 这两条值由**调用方**交给本结构：凭据不该由库去猜配置文件，而服务端配置段的读法在
+     *          `Net/Acme/AcmeAutomationConfig.h`（`acme.dns` 那一格），签发探针按
+     *          `ASYN_ACME_DNS_ACCESS_KEY_ID` / `ASYN_ACME_DNS_ACCESS_KEY_SECRET` 两条环境变量的约定读进来。
+     *          刻意的约定是**别让密钥进版本库**：一把能改域名记录的钥匙落在配置文件里，等于把域名交出去。
      */
     struct ASYN_NET_API AliyunDns01Configuration
     {
@@ -72,6 +72,28 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API std::string aliyunRpcSignature(std::string_view httpMethod, const std::map<std::string, std::string> &parameters, std::string_view accessKeySecret);
 
     /**
+     * @brief 同名重写之前，静默期的上限
+     * @details TTL 再长也不等到那儿以外：把 `record_ttl_seconds` 配成一天这类手误，不该把一次签发挂在那儿
+     */
+    inline constexpr std::chrono::milliseconds kAliyunMaximumRewriteQuiet{std::chrono::minutes{15}};
+
+    /**
+     * @brief 算「刚撤掉某个名字的 TXT，同名重写之前还要等多久」
+     *
+     * @details 机构按**这条记录自己的 TTL** 缓存答案。一张单里同时写 `example.com` 与 `*.example.com` 时，
+     *          两条自证按 RFC 8738 映射到**同一个**名字 `_acme-challenge.example.com`，而两条的 token 不同、
+     *          答案也不同；先撤后写之间若没等满旧记录的 TTL，机构读到的仍是上一条答案，
+     *          原文是 `Incorrect TXT record "…" found at _acme-challenge.example.com`。
+     *          实测阿里云这个区的地板是 600 秒（写 60 直接被 `The specified TTL is invalid` 拒，300 也一样），
+     *          所以这条等待不能靠「把 TTL 调小」绕开。
+     *
+     * @param sinceWithdrawal 距上次撤掉这个名字的记录过了多久；已经过满静默期时返回 0
+     * @param recordTtlSeconds 当初写进去那条记录的 TTL（秒）
+     * @return std::chrono::milliseconds 还要等的时长，落在 `[0, kAliyunMaximumRewriteQuiet]`
+     */
+    [[nodiscard]] ASYN_NET_API std::chrono::milliseconds aliyunRewriteQuietPeriod(std::chrono::milliseconds sinceWithdrawal, std::uint32_t recordTtlSeconds);
+
+    /**
      * @brief 造一份接阿里云云解析的 dns-01 TXT 写入动作
      *
      * @details publish 的「成功」口径是两步：`AddDomainRecord` 被控制面接受，然后
@@ -80,6 +102,8 @@ namespace AsynGyanis::Net
      *          而机构那侧只会回「查不到 TXT」。
      *          withdraw 按 (RR, TXT, Value) 反查 RecordId 再逐条 `DeleteDomainRecord`，
      *          查不到就当成功：撤回要幂等，否则一次超时的写入会把下一轮签发堵死。
+     *          真删掉过记录的名字会被记住，下一次**同名重写**先等满那条记录的 TTL（见
+     *          `aliyunRewriteQuietPeriod`），这段等待只在进程内记，所以接连重跑两次签发也要隔过 TTL。
      *
      * @note 两个动作都在给定循环线程上跑（出站请求与定时器都在那里），只能在循环所属线程调用
      * @param loop 承载出站请求与等待的事件循环

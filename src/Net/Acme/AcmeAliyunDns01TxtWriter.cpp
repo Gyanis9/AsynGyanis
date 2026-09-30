@@ -2,6 +2,7 @@
 
 #include "Base/Coding/Base64.h"
 #include "Base/Config/ConfigValue.h"
+#include "Base/Log/LogMacros.h"
 #include "Core/Crypto/Digest.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
@@ -67,6 +68,20 @@ namespace AsynGyanis::Net
         const std::string             signingKey = std::string(accessKeySecret) + "&";
         const Core::Digest::Sha1Value digest     = Core::Digest::hmacSha1(signingKey, stringToSign);
         return Base::base64Encode(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
+    }
+
+    std::chrono::milliseconds aliyunRewriteQuietPeriod(const std::chrono::milliseconds sinceWithdrawal, const std::uint32_t recordTtlSeconds)
+    {
+        // 负数（调用方把时钟读反了）按「刚撤完」处置：这里的下限是宁可多等，不要让同名重写抢跑
+        const std::chrono::milliseconds elapsed = std::max(sinceWithdrawal, std::chrono::milliseconds::zero());
+        if (elapsed >= kAliyunMaximumRewriteQuiet)
+        {
+            return std::chrono::milliseconds::zero();
+        }
+        const std::chrono::milliseconds ttl{std::chrono::seconds{recordTtlSeconds}};
+        // 等满是「旧答案过期」的最低要求，上限只是挡住配错的天量 TTL
+        const std::chrono::milliseconds remaining = std::max(ttl - elapsed, std::chrono::milliseconds::zero());
+        return std::min(remaining, kAliyunMaximumRewriteQuiet - elapsed);
     }
 
     namespace
@@ -203,6 +218,16 @@ namespace AsynGyanis::Net
                     co_return std::unexpected(zoneSplitFailure(recordName));
                 }
 
+                // 同一个名字刚撤过就要重写：机构那侧还按旧记录的 TTL 缓存着上一条答案，等不满就去自证，
+                // 读到的还是上一条——一张单里基础域名与它的通配符正是这种「同名两个答案」的形状
+                if (const std::chrono::milliseconds quiet = quietPeriodFor(recordName); quiet > std::chrono::milliseconds::zero())
+                {
+                    LOG_INFO_FMT("AcmeAliyunDns01: {} 刚撤过一条 TXT，同名重写之前先等 {} 秒让机构的缓存过期（记录 TTL {} 秒）", recordName,
+                                 std::chrono::duration_cast<std::chrono::seconds>(quiet).count(), m_configuration.recordTtlSeconds);
+                    Core::Timer quietTimer(m_loop);
+                    co_await quietTimer.waitFor(quiet);
+                }
+
                 // 先查再写：Add 成功但确认阶段超时的上一次，记录其实已经在区里了，
                 // 再 Add 一次会被判重复，而重复的答复里没有我们需要的信息
                 auto existing = co_await findRecordIds(*target, value);
@@ -293,20 +318,41 @@ namespace AsynGyanis::Net
                 {
                     co_return std::unexpected(deletionFailures);
                 }
+                if (!found->empty())
+                {
+                    // 真删掉过才记这一笔：下一次同名重写要按这条记录的 TTL 等机构的缓存过期
+                    m_recentWithdrawals[recordName] = std::chrono::steady_clock::now();
+                }
                 co_return std::expected<void, std::string>{};
             }
 
         private:
             /**
+             * @brief 这个名字距上次撤掉记录，还要等多久才该重写
+             * @details 只在进程内记：接连两次签发之间没等满 TTL，机构仍可能答旧值，那一段要靠重跑之间隔开，
+             *          库替不了（记到磁盘上就要碰凭据与区文件之外的状态，那是另一件事）
+             */
+            [[nodiscard]] std::chrono::milliseconds quietPeriodFor(const std::string &recordName) const
+            {
+                const auto withdrawn = m_recentWithdrawals.find(recordName);
+                if (withdrawn == m_recentWithdrawals.end())
+                {
+                    return std::chrono::milliseconds::zero();
+                }
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - withdrawn->second);
+                return aliyunRewriteQuietPeriod(elapsed, m_configuration.recordTtlSeconds);
+            }
+
+            /**
              * @brief 名字推不出主域名时那条可操作的文案
-             * @details 要点名的是**真存在的那个开关**：本引擎没有 acme.* 服务端配置段，主域名是
-             *          `AliyunDns01Configuration::zoneDomainName` 这个字段（探针上对应 `--dns-zone`），
+             * @details 要点名的是**真存在的那几个开关**：配置里是 `acme.dns.domain`，直接构造写入器时是
+             *          `AliyunDns01Configuration::zoneDomainName`（探针上对应 `--dns-zone`），
              *          写成一个不存在的配置键会把运维引到一条找不到的路上
              */
             [[nodiscard]] std::string zoneSplitFailure(const std::string_view recordName) const
             {
                 return std::format("从记录名 {} 推不出云解析里的主域名：主域名不是「域名最后两段」那种形状时（例如整条主域名本身就是三级域名），"
-                                   "把云解析控制台里那条主域名原样交给 zoneDomainName（用签发探针时是 --dns-zone）",
+                                   "把云解析控制台里那条主域名原样交给 acme.dns.domain（直接构造写入器时是 zoneDomainName，探针上是 --dns-zone）",
                                    recordName);
             }
 
@@ -449,6 +495,8 @@ namespace AsynGyanis::Net
 
             Core::EventLoop         &m_loop;          ///< 承载出站请求与等待的循环
             AliyunDns01Configuration m_configuration; ///< 凭据与口径
+            /// 本进程内真撤过记录的名字与时刻：同名重写之前要按 TTL 等机构的缓存过期
+            std::map<std::string, std::chrono::steady_clock::time_point> m_recentWithdrawals;
         };
     } // namespace
 

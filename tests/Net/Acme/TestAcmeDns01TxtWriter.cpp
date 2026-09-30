@@ -118,6 +118,39 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：同名重写的静默期按「旧记录的 TTL 等满」算，两端都夹住
+     * @details 这条时长是「机构读到上一条答案」与「读到这一条」的分界：少等就红，
+     *          多等到天量 TTL 又把一次签发挂死
+     */
+    TEST(AliyunDns01RewriteQuiet, WaitsOutTheRecordTtlAndStopsAtTheCap)
+    {
+        using namespace std::chrono_literals;
+
+        // 刚撤完：等满整条 TTL
+        EXPECT_EQ(aliyunRewriteQuietPeriod(0ms, 600U), 600s);
+        // 等了一半：只剩一半
+        EXPECT_EQ(aliyunRewriteQuietPeriod(240s, 600U), 360s);
+        // 已经等过：不再等
+        EXPECT_EQ(aliyunRewriteQuietPeriod(600s, 600U), 0ms);
+        EXPECT_EQ(aliyunRewriteQuietPeriod(900s, 600U), 0ms);
+        // 配成一天的 TTL 不该把签发挂在那儿，落在上限
+        EXPECT_EQ(aliyunRewriteQuietPeriod(0ms, 86400U), kAliyunMaximumRewriteQuiet);
+        // 时钟读反了按「刚撤完」处置：这里的偏差方向取宁可多等
+        EXPECT_EQ(aliyunRewriteQuietPeriod(-30s, 600U), 600s);
+    }
+
+    /**
+     * @brief 钉住：静默期不会超过上限本身，而不是「上限减已过时间」算成负数
+     */
+    TEST(AliyunDns01RewriteQuiet, RemainingNeverGoesNegativeNearTheCap)
+    {
+        using namespace std::chrono_literals;
+
+        EXPECT_EQ(aliyunRewriteQuietPeriod(kAliyunMaximumRewriteQuiet - 1s, 86400U), 1s);
+        EXPECT_EQ(aliyunRewriteQuietPeriod(kAliyunMaximumRewriteQuiet - 1s, 60U), 0ms);
+    }
+
+    /**
      * @brief 夹具：在一条真循环上跑一次动作，把成败与失败文案交回来
      * @details 这两条出口都在**任何网络动作之前**，因此不需要桩服务端：主域名解析排第一，
      *          凭据校验排第二，谁先红就说明走的是哪一道门

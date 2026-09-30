@@ -32,6 +32,10 @@ namespace AsynGyanis::Net
      *       只说 "NXDOMAIN"，看不出「我们问早了」
      * @note withdraw 在 publish 失败时也会被调用一次：重复 TXT 会让机构的校验直接失败，
      *       而「publish 到底有没有落到权威侧」从返回值上并不能完全确定（超时的那一次可能已经写成了）
+     * @note 同一个 fqdn 在一张单里可能出现两次，且两次的 value 不同——`example.com` 与 `*.example.com`
+     *       按 RFC 8738 映射到同一个 `_acme-challenge.example.com`。机构按记录的 TTL 缓存答案，
+     *       所以实现要在「刚撤过同名记录」时把 publish 阻塞到那份缓存过期为止（见各实现自己的说明），
+     *       否则第二次自证读到的是第一条的答案，机构只回一句 "Incorrect TXT record … found"
      */
     struct ASYN_NET_API AcmeDns01TxtWriter
     {
