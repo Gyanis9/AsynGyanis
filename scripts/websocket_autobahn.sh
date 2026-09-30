@@ -78,16 +78,31 @@ mount_source() {
 # /opt/pypy/bin（镜像的 CMD 用的是裸名 wstest，说明它在 PATH 里），猜安装路径不如让镜像自己解析。
 # --add-host 是给 Linux 侧（CI runner）用的：那里默认没有 host.docker.internal 这一条，
 # 不加就是「裁判起来了但连不上服务端」，一条用例都跑不完
+wstest_rc=0
 MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker run --rm -i \
     --add-host=host.docker.internal:host-gateway \
     -v "$(mount_source "${work_dir}")/fuzzingclient.json:/fuzzingclient.json:ro" \
     -v "$(mount_source "${report_dir}"):/reports" \
-    "${image}" wstest -m fuzzingclient -s /fuzzingclient.json > "${work_dir}/wstest.log" 2>&1 || true
+    "${image}" wstest -m fuzzingclient -s /fuzzingclient.json > "${work_dir}/wstest.log" 2>&1 || wstest_rc=$?
 
 failed_count="$(grep -l '"behavior": "FAILED"' "${report_dir}"/*case_*.json 2>/dev/null | wc -l | tr -d ' ' || true)"
 case_count="$(find "${report_dir}" -name '*case_*.json' | wc -l | tr -d ' ')"
 if [ "${case_count}" = "0" ]; then
-    echo "一条用例都没跑完，看 wstest 的输出：" >&2
+    # 「报告目录里一条判据都没有」有两种完全不同的成因，混成一句红会让人去查根本没问题的一侧：
+    #   ① 裁判容器没跑起来或中途被打断（镜像拉不到、docker 掉线、runner 掉线）——
+    #      特征是 wstest 退出码非 0，或退出码 0 但日志里出现过分派行（跑过却没落盘）；
+    #   ② 裁判起来了却一条都没分派——这才是「服务端没接上/路径不对」，要查被测面。
+    # 只贴日志尾巴分不出这两档，所以先把退出码与「分派过多少条」数出来，再两头各贴一段。
+    attempted="$(grep -ac 'Running test case ID' "${work_dir}/wstest.log" 2>/dev/null || true)"
+    echo "一条用例都没跑完：wstest 退出码 ${wstest_rc}、日志里出现过的分派行 ${attempted:-0} 条" >&2
+    if [ "${wstest_rc}" != "0" ] || [ "${attempted:-0}" != "0" ]; then
+        echo "判据按「裁判没执行完」处理（退出码非 0 或跑过却被中断），不当成服务端的规范失败；重跑这一作业即可复核" >&2
+    else
+        echo "wstest 退出码 0 且一条都没分派：这才像裁判连不上服务端" >&2
+    fi
+    echo "---- wstest.log 开头 12 行（镜像与连接问题在这）----" >&2
+    head -12 "${work_dir}/wstest.log" >&2
+    echo "---- wstest.log 结尾 20 行 ----" >&2
     tail -20 "${work_dir}/wstest.log" >&2
     exit 1
 fi
