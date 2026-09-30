@@ -17,6 +17,22 @@
 
 ### 新增
 
+- **证书自动化的设置第一次可以整份写进配置文件**：新增 `Net/Acme/AcmeAutomationConfig.{h,cpp}`——
+  `readAcmeConfiguration(root)` 读 `acme` 段（13 个键加 `dns` 那 3 个，**段内未知键即拒**，与 `server` 段同一套口径），
+  交回 `AcmeAutomationConfiguration`：管理器那一整份设置（目录、域名列表、证书/私钥/账户密钥/账户状态四个落点、
+  联系人、条款、续期窗口，以及 `renewal_check_interval_minutes` 那档节拍）、自证通道种类、DNS 提供方 / 主域名 / 记录 TTL，
+  外加 `buildDns01TxtWriter(loop, cfg)` 按 `dns.provider` 造那对 TXT 动作。**AccessKey 刻意不给配置文件留位置**：
+  只从 `ASYN_ACME_DNS_ACCESS_KEY_ID` / `ASYN_ACME_DNS_ACCESS_KEY_SECRET` 读，缺任何一条就在建写入器时拒——
+  一把能改域名记录的钥匙进了版本库等于把域名交出去。`dns` 段与 `challenge` 互为条件、两个方向都拒：
+  只改其中一格忘了另一格时，机构的答复只会是「查不到/判 invalid」，看不出是配错了。第一个消费方是签发探针
+  （`acme_issuance_probe --config <file>`）：文件那份是默认，命令行上**显式给出**的 `--domain` / `--contact` /
+  `--challenge` / `--state-dir` / `--dns-zone` / `--dns-ttl` 才覆盖它，并打一行 `CHALLENGE … FROM cli|config`
+  说明这次是哪份在生效。
+  顺带修掉这条接线引出的判据错位：`--config` 写 `challenge: dns-01` 时，原先排在命令行解析阶段的
+  「走 http-01 必须给端口」会先看到默认的 http-01，把一份合法配置挡在门外——判据已挪到通道定下来之后。
+  新增 16 例钉取值、边界与全部拒绝面；对着 Let's Encrypt staging 用**纯配置文件**（域名、四个落点、通道全在文件里）
+  签出过 `gyanis.space` + `*.gyanis.space` 一张单。**服务端还没吃这一段**（`echo_server` 与装配出口都不读 `acme`）：
+  缺的是「换完新证书把那张装回运行中的监听器」那条通路，没接之前把 `acme` 写进部署配置不会让证书自己续。
 - **限流的整机口径现在也真的摊到每个 worker 进程**：新增 `perProcessRateLimit(整机速率, 整机突发量, 进程数)`，
   与上一轮的连接数摊分补成同一套规则，但**取整方向刻意相反**——速率按精确除法（0.5 请求/s 不能向上取整成 1，
   那等于让一台进程放行两倍），桶容量向下除后**兜在 1.0**（容量不足一枚令牌的桶一个请求都放不出，
@@ -85,6 +101,20 @@
 
 ### 修复
 
+- **dns-01 在「基础域名 + 它的通配符」同一张单里不再抢跑**：RFC 8738 把 `example.com` 与 `*.example.com`
+  两条自证映射到**同一个**名字 `_acme-challenge.example.com`，而两条的答案不同（token 各自一条）。原流程逐条
+  「写 → 自证 → 撤」，撤完立刻为下一条写同名记录，而机构按**那条记录自己的 TTL** 缓存上一条答案，于是第二次自证
+  读到的是第一条的值，原文只回 `During secondary validation: Incorrect TXT record "…" found at …`。
+  实测这个区上 **3/3 全红**（每轮新建账户，两条自证都必须真走一遍），不是抖动；「把 TTL 调小」这条路在这家走不通——
+  阿里云这个区的地板是 600 秒：写 60 秒时 `AddDomainRecord` 六次全回 `The specified TTL is invalid`，写 300 秒同样被
+  `QuotaExceeded.TTL` 拒（失败原文带得出 HTTP 400 与那个 Code，配置读的一侧没法预先知道别家的地板，所以照原样交回）。
+  同一次跑留下一份对照读数：撤掉之后权威侧（`ns1.alidns.com`）已经答不出这条，递归解析器（`223.5.5.5`）
+  在 25 秒之后**仍在答那条已删的 TXT**——缓存确实不在我们这一侧。
+  现在写入器记住本进程内真删过记录的名字，`publish` 在同名重写之前先等满那条记录的 TTL
+  （`aliyunRewriteQuietPeriod`，上限 15 分钟，免得 `record_ttl_seconds: 86400` 这类手误把一次签发挂死），
+  并打一条 INFO 说明在等什么；`AcmeDns01TxtWriter` 的公开契约里补上了这条要求，接别家 DNS 的照做。
+  这段等待刻意**不跨进程**，所以接连重跑两次签发之间也要隔过 TTL 才读得到新答案。
+  新增两条用例钉算术（刚撤完等满整条 TTL、过一半只剩一半、等过了不再等、天量 TTL 落在上限、时钟读反按 0 处置）。
 - 通配域名的下单拦法改了：`createOrder` 的本地判据原文是「本通路只走 HTTP-01，它验不了通配域名」，那是
   只支持 http-01 时留下的形状，dns-01 落地之后就变成了假限制——RFC 8738 开通配正是它的用途。判据现在挂在
   实际挑了哪种挑战上：http-01 照旧拒并改口提示可以换 dns-01，dns-01 下放行 `*.example.com`，

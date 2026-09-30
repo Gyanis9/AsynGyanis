@@ -503,6 +503,52 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 `/healthz` 或 `/metrics` 上；`runRenewalLoop()` 在没有装回服务动作时**拒绝启动并把原因记进 `status()`**，
 不会静默地只往磁盘上写——磁盘上的证书每月在换、线上身份永远是那张旧的，是这类自动化最坏的失败形状。
 
+### 证书自动化的配置段（acme）
+
+上面那七八个字段此前只能逐台手接，现在 `acme` 段可以整份交给 `Net::readAcmeConfiguration(root)`：
+
+```json
+{
+  "acme": {
+    "enabled": true,
+    "directory_url": "https://acme-v02.api.letsencrypt.org/directory",
+    "domains": ["shop.example.com", "*.shop.example.com"],
+    "certificate_file": "certs/chain.pem",
+    "private_key_file": "certs/domain-key.pem",
+    "account_key_file": "certs/acme-account-key.pem",
+    "account_state_file": "certs/acme-account.json",
+    "contact_email": "ops@example.com",
+    "tos_accepted": true,
+    "challenge": "dns-01",
+    "renew_before_expiry_days": 21,
+    "dns": { "provider": "aliyun", "domain": "shop.example.com", "record_ttl_seconds": 600 }
+  }
+}
+```
+
+三条口径值得单独说：
+
+- **凭据不认配置文件**。`dns.provider` 只说明用哪一家的动作，AccessKey 一律从
+  `ASYN_ACME_DNS_ACCESS_KEY_ID` / `ASYN_ACME_DNS_ACCESS_KEY_SECRET` 读，缺任何一条就在
+  `buildDns01TxtWriter()` 当场拒——一把能改域名记录的钥匙进了版本库，等于把域名交出去。
+- **`dns` 段与 `challenge` 互为条件**，两个方向都拒：写了 `dns` 却没走 dns-01 是有人改了其中一格忘了另一格，
+  按字面继续跑会让人以为 TXT 在写。
+- **段内未知键即拒**（13 个键 + `dns` 那 3 个），与 `server` 段同一套规矩；键名打错不该安静地按默认跑。
+
+消费方目前是签发探针：`acme_issuance_probe --config <file>` 以文件那份为默认，命令行上**显式给出**的
+`--domain` / `--contact` / `--challenge` / `--state-dir` / `--dns-zone` / `--dns-ttl` 才覆盖它，并打一行
+`CHALLENGE … FROM cli|config` 说明这次是哪份在生效。服务侧（`echo_server` 与装配出口）**还没吃这一段**，
+把 `acme` 写进部署配置不会让证书自己续——缺的是「签完新证书之后把那张装回运行中的监听器」这条通路，
+它还没接。
+
+> **一份单里同时写 `example.com` 与 `*.example.com` 时，第二次自证会先等满记录 TTL。**
+> RFC 8738 让这两条自证落在**同一个**名字 `_acme-challenge.example.com` 上，而两条的答案不同；机构按
+> 那条记录的 TTL 缓存答案，先撤后写之间没等满就会读到上一条，原文只回
+> `Incorrect TXT record "…" found at _acme-challenge.example.com`。实测这个区把 TTL 压到 60 或 300 秒都会被 API
+> 直接拒（`QuotaExceeded.TTL`，地板是 600 秒），所以「调小 TTL」这条路在免费区上不成立——
+> 写入器改成记住刚撤过的名字、同名重写之前等满 TTL（上限 15 分钟）。这段等待只在进程内记，
+> 所以**接连重跑两次签发之间也要隔过 TTL**，否则机构缓存的还是上一轮那条。
+
 ## 模块概览
 
 **支持范围**：目前只支持 Linux 与 Windows——顶层 `CMakeLists.txt` 对其他系统（含 macOS/BSD）在
@@ -638,6 +684,7 @@ AsynGyanis/
 | --- | --- | --- | --- | --- |
 | TLS 下限 | `Core::TlsPolicy::minimumProtocolVersion`（出站走 `HttpClient(loop, poolConfig, tlsPolicy)`） | 服务端 TLS 1.2；QUIC 恒 1.3；**客户端角色不补下限**（刻意：替调用方发明下限会把本可以连上的对端拒掉） | `TlsContext` 建好后读 `SSL_CTX_get_min_proto_version`，或抓一次握手看协商版本 | TLS 1.0/1.1 没有档位可填（RFC 8996 已废弃）。要给出站也钉下限，就显式传 `minimumProtocolVersion` |
 | ACME 联系人 / 条款 | `AcmeCertificateManager::Configuration::contactEmailAddress` / `isTermsOfServiceAccepted` | 联系人为空；条款未接受时**新建账户直接拒绝** | 看 `status()` 与账户 URL 是否落盘 | 没有联系人 = 机构无法在到期或账户异常时找到你；90 天寿命的证书漏续一次就是一次线上告警 |
+| `acme` 配置段 | `Net::readAcmeConfiguration(root)` + `Net::buildDns01TxtWriter(loop, cfg)`；消费方目前是签发探针 `acme_issuance_probe --config <file>` | 整段缺失 = `enabled` 为 false，谁都不去签；`challenge` 默认 `http-01`、`dns.record_ttl_seconds` 默认 600、`renew_before_expiry_days` 30、`renewal_check_interval_minutes` 720 | 探针打一行 `CHALLENGE <种类> PROVIDER … ZONE … TTL … FROM cli\|config`，`FROM config` 才说明文件里那份在生效；`--domain` / `--contact` / `--challenge` 显式给出时才覆盖文件 | 段内未知键当场拒（13 键 + `dns` 那 3 键）；`dns` 段与 `challenge: http-01` 同时出现两边都拒；**AccessKey 刻意不认配置文件**，只从 `ASYN_ACME_DNS_ACCESS_KEY_ID` / `_SECRET` 读，缺一条就在建写入器时拒——能改域名记录的钥匙进版本库等于把域名交出去；**服务端还没吃这一段**（`echo_server` 与装配出口都不读 `acme`），写进部署配置不会让证书自己续，缺的是「装回运行中的监听器」那条通路 |
 | 限额与背压 | `server.parser_limits.*`、`server.limits.*`、`maximum_connections`、`maximum_connections_per_ip`、`rate_limit.*`（在途正文总量上限只有 API：`HttpServer::setMemoryBudget()`，配置里没有这一项） | 头部 100 条 / 单值 8 KiB / 头块 64 KiB / 正文 8 MiB；空闲 75s、读写各 60s；**并发默认是有限值**：每监听器 4096、单来源 256（写 0 才是显式不限）；`requests_per_second` 与在途正文总量仍默认 0 = 不限——限流给默认值会误杀真实用户，方向不对 | `/metrics` 的 `asyn_http_admission_rejected_connections_total`（按 IP 挡）与 `asyn_http_over_limit_rejected_connections_total`（整机满）；令牌桶打开后超限回 429；`echo_server` 启动打一行「并发限额（每监听器）：整机 …，单来源 …」报的是生效值 | 显式写 0 = 不限是把内存和连接表交给对端，要写就得写下理由；单来源那道 256 是给共享出口（运营商级 NAT、企业代理）留的余量——真被撞到的部署应按实测并发抬高它，而不是把闸门关掉；`--h3` 那侧另有一份 `QuicServer` 自带的默认 1024（单位连接更贵，配额刻意不同），示例只在摊后的份额为正时覆盖它。**多进程时配置写的是整机口径**：装配出口按 `workerProcessCount` 向上取整摊到每台（`perProcessShare`），本台真正卡多少可问 `TcpServer::maximumConnections()`，启动时也打一行为「整机 100 摊给 2 个进程 → 每台 50」这样的读数；`rate_limit` 走同一套摊分但**取整方向相反**——速率精确除（0.5 请求/s 不能被抬成 1），桶容量向下除后兜在 1.0（容量不足一枚令牌的桶一个请求都放不出），而递进装配出口的桶若不是摊后那一份会当场拒 |
 | `/metrics` 接线 | `applyHttpServerConfiguration()` + `server.expose_metrics`（令牌：`server.ops_bearer_token`） | 关（一个端点都不注册）；不开令牌时三面都不鉴权 | 直接 `curl` 三个端点：`/metrics`、`/healthz`、`/debug/loops`；配了令牌后要带 `Authorization: Bearer <token>` 才回 200 | `/metrics` 与 `/debug/loops` 读得到内部计数与每条循环的状态，开到 `0.0.0.0` 就是公开暴露；`ops_bearer_token` 给这两个加 Bearer 闸门（`/healthz` 刻意不挡——存活探针要能被编排器无凭据访问，给它加令牌只会让人把探针关掉）。令牌只能写在配置文件里：命令行上的令牌会进 shell 历史与进程列表。来源本身的收口要靠只听回环的管理口（见下一行） |
 | 运维端点的监听面 | `server.metrics_port`（0 = 端点留在业务口上）+ `server.metrics_address`（默认 `127.0.0.1`） | `metrics_port` 为 0（不另起管理口，行为与加这两项之前逐字相同）；`metrics_address` 只听回环 | `metrics_port` 非 0 时业务口**不再注册** `/metrics` 与 `/debug/loops`（打过去回 404，这是刻意的反向断言），要抓数得打 `metrics_port + 本进程序号`；多进程下 `echo_server` 由 master 用 `--worker-index` 把序号传下去，逐台各听一个口 | 只配 `metrics_address` 而 `metrics_port` 仍为 0 = 什么都没挪；把 `metrics_address` 写成 `0.0.0.0` 又不配令牌，等于把内部计数与每条循环的状态公开到所有网卡；`metrics_port` 越界（含加序号后超 65535）在读配置与启动两处都当场拒——端口静默回绕会去听一个谁也没配的号，症状只是「Prometheus 抓不到数」 |
