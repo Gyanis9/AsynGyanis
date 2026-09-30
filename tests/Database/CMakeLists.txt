@@ -67,10 +67,12 @@ include(GoogleTest)
 gtest_discover_tests(TestDatabase
         TEST_FILTER "RedisSubscriptionIntegration.*"
         PROPERTIES RESOURCE_LOCK asyn-redis-server-config
-        POST_FILE TestDatabase-subscription)
+        POST_FILE TestDatabase-subscription
+        DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 gtest_discover_tests(TestDatabase
         TEST_FILTER "-RedisSubscriptionIntegration.*"
-        POST_FILE TestDatabase-rest)
+        POST_FILE TestDatabase-rest
+        DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 
 # ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
 asyn_copy_sanitizer_runtime(TestDatabase)

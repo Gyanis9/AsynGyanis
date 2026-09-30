@@ -50,7 +50,8 @@ target_include_directories(TestPlatform PRIVATE
 target_compile_features(TestPlatform PRIVATE cxx_std_23)
 
 include(GoogleTest)
-gtest_discover_tests(TestPlatform)
+gtest_discover_tests(TestPlatform
+        DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 
 # ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
 asyn_copy_sanitizer_runtime(TestPlatform)
