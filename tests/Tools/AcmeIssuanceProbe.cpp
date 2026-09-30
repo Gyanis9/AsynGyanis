@@ -296,11 +296,11 @@ int main(const int argc, char **argv)
             std::exit(2);
         }
         AliyunDns01Configuration dns;
-        dns.accessKeyId       = keyId;
-        dns.accessKeySecret   = keySecret;
-        dns.zoneDomainName    = options.dnsZone;
-        dns.recordTtlSeconds  = options.dnsTtl;
-        dnsWriter             = AsynGyanis::Net::makeAliyunDns01TxtWriter(loop, std::move(dns));
+        dns.accessKeyId      = keyId;
+        dns.accessKeySecret  = keySecret;
+        dns.zoneDomainName   = options.dnsZone;
+        dns.recordTtlSeconds = options.dnsTtl;
+        dnsWriter            = AsynGyanis::Net::makeAliyunDns01TxtWriter(loop, std::move(dns));
     }
     // 这行是「新档位真的被消费了」的标记：脚本先断言它再去判结果，
     // 否则一个没被读到的 --challenge 会按默认的 http-01 跑完全程并交出看起来正确的证据
@@ -309,23 +309,23 @@ int main(const int argc, char **argv)
 
     int reloadCalls = 0;
     // 装回服务的动作在这里是记账：签发成功后回调必须被调到，否则「磁盘新、线上旧」这条失败模式没人拦
-    AcmeCertificateManager manager(loop, configuration,
-                                   [&reloadCalls]() -> std::expected<void, std::string>
-                                   {
-                                       ++reloadCalls;
-                                       return {};
-                                   },
-                                   std::move(dnsWriter));
+    AcmeCertificateManager manager(
+            loop, configuration,
+            [&reloadCalls]() -> std::expected<void, std::string>
+            {
+                ++reloadCalls;
+                return {};
+            },
+            std::move(dnsWriter));
 
     // dns-01 不需要任何入站通路；http-01 才起那台明文服务
-    std::optional<HttpServer>              challengeServer;
+    std::optional<HttpServer>                   challengeServer;
     std::optional<AsynGyanis::Core::Task<void>> acceptTask;
     if (!isDns01)
     {
         // 绑定地址只接受 IP 字面量：解析失败若悄悄退回默认值，就会把「只想绑回环」变成「绑到全网卡」，
         // 那是比失败更糟的结果，所以这里直接拒掉退出。
-        const std::optional<AsynGyanis::Core::InetAddress> challengeAddress =
-                AsynGyanis::Core::InetAddress::parseLiteral(options.challengeBind, options.challengePort);
+        const std::optional<AsynGyanis::Core::InetAddress> challengeAddress = AsynGyanis::Core::InetAddress::parseLiteral(options.challengeBind, options.challengePort);
         if (!challengeAddress.has_value())
         {
             std::cerr << "--challenge-bind 不是可解析的 IP 字面量：" << options.challengeBind << "\n";
