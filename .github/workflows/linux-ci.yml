@@ -716,11 +716,12 @@ jobs:
             exit "$gcovr_rc"
           fi
           # 「这道门跑过」的判据是**真出了一行带百分比的 TOTAL**：少了它，即使退出码是 0 也只是一张空表，
-          # 而空表会被读成「覆盖率没问题」
-          grep -qE "TOTAL.*[0-9]+\.[0-9]+%" /tmp/gcovr.txt || {
+          # 而空表会被读成「覆盖率没问题」。百分比的**位数不写死**——gcovr 8.6 的 --txt 打的是整数
+          # （实测 `TOTAL  38230  29453  77%`），要求「数字.数字%」会把一份合格读数判成没跑成（本轮 CI 就红过一次）
+          grep -qE "TOTAL.*[0-9]+%" /tmp/gcovr.txt || {
             echo "gcovr 没有交出行覆盖率汇总（上面是它的诊断），这道门按未跑成处理"
             exit 1
           }
           # 把实测数字打进作业摘要：对外那句覆盖率要有可点开的真源，不能只活在 README 的一句话里
           echo "### 行覆盖率（阈值 ${COVERAGE_LINE_FLOOR}%）" >> "$GITHUB_STEP_SUMMARY"
-          grep -E "TOTAL.*[0-9]+\.[0-9]+%" /tmp/gcovr.txt | tail -1 >> "$GITHUB_STEP_SUMMARY"
+          grep -E "TOTAL.*[0-9]+%" /tmp/gcovr.txt | tail -1 >> "$GITHUB_STEP_SUMMARY"
