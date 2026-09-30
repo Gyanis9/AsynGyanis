@@ -617,8 +617,8 @@ namespace AsynGyanis::Platform
         /// 中间层把孙进程号与保护状态写进这个文件，父侧按它判
         constexpr const char *kKillProbeReportVariable = "ASYN_KILL_PROBE_FILE";
 
-        /// 探针报告的落地文件名（临时目录里）
-        constexpr const char *kKillProbeReportName = "asyn-kill-probe.report";
+        /// 探针报告的落地文件名前缀（临时目录里，后面接**本测试进程的进程号**）
+        constexpr const char *kKillProbeReportPrefix = "asyn-kill-probe-";
 
         /// 父侧等孙进程消失的窗口：保护生效时是毫秒级，给到 4 秒已经把「要睡满 60 秒」的靶子区分开了
         constexpr int kKillProbeWaitMilliseconds = 4000;
@@ -783,7 +783,11 @@ namespace AsynGyanis::Platform
          */
         std::optional<KillProbeReport> runKillProbeAndReadReport(const std::string_view role)
         {
-            const std::filesystem::path reportPath = std::filesystem::temp_directory_path() / kKillProbeReportName;
+            // 名字必须按进程唯一：`KillWithParentGuardTakesTheChildDown` 与本条对照组是两个 ctest 进程，
+            // 并发跑时共用同一个文件会让父侧读到**别人家**那个孙进程的号——带保护那家的收尾会把它的子进程
+            // 一起带走，于是对照组看到的「1 秒内消失」是别人的清理，不是本平台语义。实测在全并行 runner 上
+            // 就是这么红的（本地 -j8 撞不上，所以一直没暴露）
+            const std::filesystem::path reportPath = std::filesystem::temp_directory_path() / std::format("{}{}.report", kKillProbeReportPrefix, ProcessInfo::currentProcessId());
             std::error_code             ignored;
             static_cast<void>(std::filesystem::remove(reportPath, ignored));
 
@@ -828,6 +832,8 @@ namespace AsynGyanis::Platform
                 ADD_FAILURE() << "探针报告读不成形，内容不可信";
                 return std::nullopt;
             }
+            // 读完就收掉：名字带进程号，不删的话每次跑都在临时目录里留一份
+            static_cast<void>(std::filesystem::remove(reportPath, ignored));
             return KillProbeReport{processId, guardAsDigit != 0, wasRunningAsDigit != 0};
         }
     } // namespace
