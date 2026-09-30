@@ -21,9 +21,9 @@ class ConanApplication(ConanFile):
     def generate(self):
         tc = CMakeToolchain(self)
         tc.user_presets_path = False
-        tc.cache_variables["CMAKE_CXX_STANDARD"] = "20"
-        tc.cache_variables["CMAKE_CXX_STANDARD_REQUIRED"] = "ON"
-        tc.cache_variables["CMAKE_CXX_EXTENSIONS"] = "OFF"
+        # C++ 标准不在这里再说一遍：根 CMakeLists.txt 的 set(CMAKE_CXX_STANDARD 23 / REQUIRED / EXTENSIONS)
+        # 是唯一那一份，而它写的是普通变量，会盖掉这里传进去的缓存值——留着只会得到「配方说 20、
+        # 实际编 23」这种两个答案
         tc.generate()
 
     def requirements(self):

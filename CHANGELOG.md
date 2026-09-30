@@ -15,10 +15,11 @@
 
 ## [Unreleased]
 
-自 2.3.0 起的累计变化（新增 4、变更 1、修复 1）：非 HTTP 那几台通道第一次有自己的对外读数出口——
+自 2.3.0 起的累计变化（新增 4、变更 2、修复 2）：非 HTTP 那几台通道第一次有自己的对外读数出口——
 `Core::ProcessMetricsRegistry` 把六处「账在本进程里、面板上看不见」的计数（证书自动化、dns-01 写入、
 UDP 数据报、worker 崩溃、数据库连接池、TLS 握手）登记成 19 条 Prometheus 读数，随 `/metrics` 一起导出，
-应用不需要接线。本版**无破坏性变更**。
+应用不需要接线。另一半是把 Conan 那条包路线「对外说的一套」与「仓库里做的一套」对上。
+本版**无破坏性变更**。
 
 ### 新增
 
@@ -60,6 +61,16 @@ UDP 数据报、worker 崩溃、数据库连接池、TLS 握手）登记成 19 �
   （这些是进程量，加监听器前缀会让同一个数在两个抓取点上长得不一样）。没登记过就没有那一行，而不是一行 0。
   两类读数刻意不接：跨线程不安全的对象（出站连接池明写「协程挂起期间被别的线程驱动会踩坏套接字状态」，
   而抓取跑在另一条线程上）与「读口本身带副作用」的（`WorkerSupervisor::runningWorkerCount()` 会顺手回收子进程）。
+- **Conan 那条包路线的自述改成与实际一致**（`packaging/conan/conanfile.py`，四处都不是推测）：
+  `license` 从 `"Proprietary"` 改成 `"MIT"` 并把 `LICENSE` 随包交付（`licenses/`）——仓库根那份文本一直是
+  MIT；包版本不再写死 `1.0.0`，改由 `set_version()` 现读根 `CMakeLists.txt` 的 `project(VERSION ...)`，
+  因为 `scripts/check-release-version.py` 只管「CMake / 更新日志 / 标签」三处，包版本从来不在它范围内，
+  「一致性由脚本把关」那句话对这一处并不成立；`description` 去掉早已删除的 wepoll、补上 HTTP/3(自研 QUIC)、
+  ACME 与 ORM；C++ 标准不再在两个配方里各重复一份 `"20"`（根 CMakeLists 的 `set(CMAKE_CXX_STANDARD 23)`
+  是普通变量，本来就把缓存值盖掉——留着只是第二个答案）。
+  README「交付形态」那句「同时认 Conan 的 `shared` 选项」按现实改掉：包路线只出静态
+  （`package_type = "static-library"`，配方不提供 `shared` 选项——包这一侧没有会跑共享档的作业，
+  加一个没人验过的开关等于造死配置），共享形态走 `-DBUILD_SHARED_LIBS=ON` 直接配 CMake，那条有双端双档门禁。
 
 ### 修复
 
@@ -67,7 +78,13 @@ UDP 数据报、worker 崩溃、数据库连接池、TLS 握手）登记成 19 �
   那张证书把到期时刻填进内部状态，不必等第一次 `issueIfRequired()`。此前构造完还没跑一轮的窗口里读数是 0，
   而这条读数的报警口径正是「长期为 0」——于是每次计划内重启都会先打一次「证书没了」，而那个文件一直在那里。
   多管理器场景里这一格还会把 `Min` 并出来的整条读数压成 0，盖掉另一张还有八十天的证书。
-
+- **Conan 包消费者链不上**：调用栈这条能力在 CMake 侧是 PUBLIC 的——探测通过后同时给 `Base` 挂
+  `ASYN_HAS_STACKTRACE=1` 编译宏与 `stdc++exp` 链接（`src/Base/CMakeLists.txt:25-42`），库内的使用者靠
+  传递性自动拿到。包这一侧两遍都没说：少 `defines` 让消费方按「没有栈」的那一份头去编
+  （`Exception/StackTrace.h:23/32/54` 三处按这个宏分叉），而 `libBase.a` 里编进去的是另一份形状；
+  少 `system_libs` 就是链接期 `undefined reference to __glibcxx_backtrace_simple`。
+  这不是推演：本轮按 `conan create packaging/conan` 真跑，消费方冒烟正是挂在链接那一步。
+  修好后同一命令全绿——导出为 `asyngyanis/2.3.0`、包内带 `licenses/LICENSE`、冒烟程序链上并跑出读数。
 ## [2.3.0] - 2026-09-30
 
 自 2.2.0 起的累计变化（新增 7、变更 1、修复 5）：证书自动化补齐第二条自证通道并第一次可整份写进配置
