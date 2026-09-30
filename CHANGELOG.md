@@ -101,6 +101,15 @@
 
 ### 修复
 
+- **GCC 的 Release 档不再在文件身份那一段编译失败**：`Platform::queryFileBasicInfo` 折文件句柄时读的是
+  `struct file_handle::f_handle`——glibc 把它声明成长度 0 的数组（容量由调用方在结构体后面另备），
+  于是 `-O3` 这一档 GCC 能「证明」按下标读它越界，`-Werror` 直接建不过：
+  `error: array subscript index is outside array bounds of 'unsigned char [0]' [-Werror=array-bounds=]`。
+  Debug+ASan 那档优化不出这条，所以只有走 Release 的作业（HTTP/3 验收那条）会红。改成一份逐字段对齐的
+  镜像结构（`uint32` 容量 + `int32` 类型 + 定长 128 字节数组）：交给系统调用的还是同一个对象，
+  而读句柄字节那一侧的下标落在编译器证得出的范围内；`offsetof` 把两边的句柄起始位置钉死，
+  ABI 一旦漂移就在编译期红。内核改写过的那个长度按容量钳一道再进下标。
+  判据：容器 GCC 13.3.0 以 CI 同一条命令行编 HEAD 那份复现出同一处报错，编新这份 0 诊断 0 告警通过。
 - **dns-01 在「基础域名 + 它的通配符」同一张单里不再抢跑**：RFC 8738 把 `example.com` 与 `*.example.com`
   两条自证映射到**同一个**名字 `_acme-challenge.example.com`，而两条的答案不同（token 各自一条）。原流程逐条
   「写 → 自证 → 撤」，撤完立刻为下一条写同名记录，而机构按**那条记录自己的 TTL** 缓存上一条答案，于是第二次自证

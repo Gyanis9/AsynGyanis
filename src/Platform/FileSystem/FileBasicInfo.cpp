@@ -14,7 +14,9 @@
 #else
 #include <array>
 #include <atomic>
+#include <algorithm>
 #include <cerrno>
+#include <cstddef>
 #include <fcntl.h>
 #include <sys/stat.h>
 #endif
@@ -197,12 +199,23 @@ namespace AsynGyanis::Platform
                 return std::nullopt;
             }
 
-            alignas(struct ::file_handle) char storage[sizeof(struct ::file_handle) + kFileHandleBytes];
-            auto *const                        handle  = reinterpret_cast<struct ::file_handle *>(storage);
-            int                                mountId = 0;
-            handle->handle_bytes                       = kFileHandleBytes;
+            // glibc 把 `f_handle` 声明成长度 0 的数组（真正的容量由调用方在结构体后面另备），于是 -O3 这一档
+            // GCC 能「证明」按下标读它是 `unsigned char [0]` 越界并报 -Werror=array-bounds（Debug+ASan 那档
+            // 优化不出这条，所以只有 Release 作业会红）。这里换成一份逐字段对齐的镜像结构：交给系统调用的
+            // 还是同一个对象，而读句柄字节那一侧的下标落在编译器证得出的范围内。
+            struct HandleBuffer
+            {
+                std::uint32_t                               handleBytes{0U}; ///< 进去是容量，回来是内核实际写的字节数
+                std::int32_t                                handleType{0};   ///< 内核给的句柄类型
+                std::array<unsigned char, kFileHandleBytes> bytes{};         ///< 句柄本体
+            };
+            static_assert(offsetof(struct ::file_handle, f_handle) == offsetof(HandleBuffer, bytes), "镜像结构与 name_to_handle_at 的 ABI 不再同位，句柄字节会读错位置");
 
-            if (::name_to_handle_at(dirfd, name, handle, &mountId, flags) != 0)
+            HandleBuffer buffer;
+            buffer.handleBytes = static_cast<std::uint32_t>(kFileHandleBytes);
+            int mountId        = 0;
+
+            if (::name_to_handle_at(dirfd, name, reinterpret_cast<struct ::file_handle *>(&buffer), &mountId, flags) != 0)
             {
                 // 只有「这个文件系统压根不支持」才值得记住；权限与路径竞态一类每次都该重新问
                 if (errno == EOPNOTSUPP || errno == ENOSYS || errno == ENOTTY || errno == EPERM)
@@ -212,11 +225,13 @@ namespace AsynGyanis::Platform
                 return std::nullopt;
             }
 
-            // FNV-1a：把变长句柄字节折成 64 位；装载点一并折进去，换挂载时句柄字节可能照抄旧值
-            std::uint64_t folded = 1469598103934665603ULL;
-            for (unsigned int index = 0; index < handle->handle_bytes; ++index)
+            // FNV-1a：把变长句柄字节折成 64 位；装载点一并折进去，换挂载时句柄字节可能照抄旧值。
+            // handleBytes 回来时已被内核改写过，它是外部输入，所以按容量钳一道再进下标
+            const std::size_t usableBytes = std::min<std::size_t>(static_cast<std::size_t>(buffer.handleBytes), buffer.bytes.size());
+            std::uint64_t     folded      = 1469598103934665603ULL;
+            for (std::size_t index = 0; index < usableBytes; ++index)
             {
-                folded = (folded ^ static_cast<std::uint64_t>(handle->f_handle[index])) * 1099511628211ULL;
+                folded = (folded ^ static_cast<std::uint64_t>(buffer.bytes[index])) * 1099511628211ULL;
             }
             folded ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(mountId)) * 0x9E3779B97F4A7C15ULL;
             return folded;
