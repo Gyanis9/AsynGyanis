@@ -13,7 +13,7 @@
 - **一致性由脚本把关**：`scripts/check-release-version.py` 比对「CMake 版本号 / 本文件最新发布段 / 最新标签」
   三者，不一致即退出码非 0；Linux CI 已接入这一步，避免出现「打了标签但版本号没改」这类漂移。
 
-## [Unreleased]
+## [2.4.0] - 2026-10-01
 
 自 2.3.0 起的累计变化（新增 4、变更 2、修复 3）：非 HTTP 那几台通道第一次有自己的对外读数出口——
 `Core::ProcessMetricsRegistry` 把六处「账在本进程里、面板上看不见」的计数（证书自动化、dns-01 写入、
@@ -3637,7 +3637,11 @@ DLL 落点）写在 README 的「交付形态」一节。
 - 单请求分配画像压到 33 次 / 816 B（起点 48 次 / 4228 B）。
 - Linux CI（GCC + ASan/UBSan + Redis 真机）与 Windows CI（MSVC + ASan）；解析器模糊冒烟测试。
 
-[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.3.0...v2.4.0
+[2.3.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.2.0...v2.3.0
+[2.2.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Gyanis9/AsynGyanis/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/Gyanis9/AsynGyanis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Gyanis9/AsynGyanis/releases/tag/v1.0.0
