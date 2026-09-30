@@ -5,6 +5,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/AsyncExecutor.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "HttpTestSupport.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
@@ -379,6 +380,29 @@ namespace AsynGyanis::Net
         parkedTasks.push_back(std::move(queuedTask));
 
         runner.join();
+    }
+
+    /**
+     * @brief 钉住：进程级登记的读数原样进导出，且**不套**本监听器的名字前缀
+     * @details 这类读数的口径是「全进程一份」。套上前缀会让采集侧以为它属于某台服务器，
+     *          多监听器部署下同一份数还会被冠上两个名字，报出两条互相矛盾的进程量
+     */
+    TEST(HttpMetricsEndpoint, ExportsProcessRegistryReadingsVerbatim)
+    {
+        std::atomic<std::uint64_t> value{17};
+        auto                       handle = Core::ProcessMetricsRegistry::registerMetric("asyn_test_endpoint_probe_total", "端到端注册测试", Core::ProcessMetricKind::Counter,
+                                                                                         Core::ProcessMetricMerge::Sum, [&value] { return value.load(); });
+
+        const std::string text = formatPrometheusMetrics(HttpServerStats{}, "asyn_http");
+        EXPECT_NE(text.find("# HELP asyn_test_endpoint_probe_total 端到端注册测试\n"), std::string::npos) << "登记的读数没有进导出";
+        EXPECT_NE(text.find("# TYPE asyn_test_endpoint_probe_total counter\n"), std::string::npos) << "TYPE 没有按登记的类型给出";
+        EXPECT_NE(text.find("\nasyn_test_endpoint_probe_total 17\n"), std::string::npos) << "值是登记那一刻定死的，不是抓取时现取的";
+        EXPECT_EQ(text.find("asyn_http_asyn_test_endpoint_probe_total"), std::string::npos) << "进程级读数被套上了监听器前缀";
+
+        // 注销之后必须从导出里消失：留着就是一条谁也不持有的假读数
+        handle                         = Core::ProcessMetricHandle{};
+        const std::string afterRelease = formatPrometheusMetrics(HttpServerStats{}, "asyn_http");
+        EXPECT_EQ(afterRelease.find("asyn_test_endpoint_probe_total"), std::string::npos) << "把手析构后这条读数还留在导出里";
     }
 
 } // namespace AsynGyanis::Net

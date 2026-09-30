@@ -1,5 +1,7 @@
 #include "Net/Http/HttpMetricsEndpoint.h"
 
+#include "Core/Metrics/ProcessMetricsRegistry.h"
+
 #include <array>
 #include <cstddef>
 #include <format>
@@ -159,6 +161,14 @@ namespace AsynGyanis::Net
         out += std::format("# HELP {} 本进程此刻占住的常驻字节数（进程级；0 表示平台读不出，不代表没有内存）\n"
                            "# TYPE {} gauge\n{} {}\n",
                            residentMemoryName, residentMemoryName, residentMemoryName, stats.residentMemoryBytes);
+
+        // 进程级登记的读数：名字是登记时给的**完整名字**，不套本监听器的业务前缀——
+        // 这些数不属于某台 HTTP 服务器，抓哪台监听器都该是同一份（口径与上面那几条进程级读数一致）
+        for (const Core::ProcessMetricSample &sample: Core::ProcessMetricsRegistry::samples())
+        {
+            const char *const typeName = sample.kind == Core::ProcessMetricKind::Counter ? "counter" : "gauge";
+            out += std::format("# HELP {} {}\n# TYPE {} {}\n{} {}\n", sample.name, sample.help, sample.name, typeName, sample.name, sample.value);
+        }
 
         return out;
     }

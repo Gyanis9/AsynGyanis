@@ -1,9 +1,10 @@
 find_package(GTest REQUIRED)
 
-# 测试目录结构与 src/Core 的四个子目录逐级对应，全部链接进同一个 TestCore 可执行文件
+# 测试目录结构与 src/Core 的各子目录逐级对应，全部链接进同一个 TestCore 可执行文件
 add_executable(TestCore
         CoreTestSupport.h
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/CommonTestSupport.h
+        ${CMAKE_SOURCE_DIR}/tests/TestSupport/MetricsTestSupport.h
         # 分配画像探针的实体：TestScheduler 的跨线程投递读数靠它，口径与 Base/Net 两侧一致
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
         # 交付形态守卫的实体：TlsContext 那批直连用例要靠它判「用例侧与库侧是否各持一份 OpenSSL」
@@ -20,6 +21,8 @@ add_executable(TestCore
         EventLoop/TestTimer.cpp
 
         Crypto/TestDigest.cpp
+
+        Metrics/TestProcessMetricsRegistry.cpp
 
         Coroutine/TestScheduler.cpp
         Coroutine/TestTask.cpp

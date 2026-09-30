@@ -9,6 +9,7 @@ set_property(GLOBAL PROPERTY AsynGyanisCoreSources "")
 
 add_subdirectory(Exception)
 add_subdirectory(Crypto)
+add_subdirectory(Metrics)
 add_subdirectory(EventLoop)
 add_subdirectory(Coroutine)
 add_subdirectory(Socket)
