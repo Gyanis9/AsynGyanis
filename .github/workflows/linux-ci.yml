@@ -674,7 +674,9 @@ jobs:
       - name: 安装 Conan 与 gcovr
         run: |
           python3 -m venv "$HOME/cov-venv"
-          "$HOME/cov-venv/bin/pip" install "conan>=2.25" gcovr
+          # gcovr 要钉版：这道门的判据是「TOTAL 行里有没有百分比」与 `--gcov-ignore-parse-errors`
+          # 的取值集合，两者都随 gcovr 的格式与选项漂移。容器里按同一件 8.6 复核过。
+          "$HOME/cov-venv/bin/pip" install "conan>=2.25" "gcovr==8.6"
           echo "$HOME/cov-venv/bin" >> "$GITHUB_PATH"
 
       - name: 探测 Conan profile
@@ -700,7 +702,25 @@ jobs:
 
       - name: 汇总行覆盖率并按下限把关
         run: |
-          # 阈值判断交给 gcovr 自己（--fail-under-line 直接决定退出码）：自己 grep + 截取
-          # 百分比字符串会随输出格式漂移，宁可让工具负责
+          # 退出码要能穿过管道活下来：上一次发布的这轮运行里 gcovr 已经抛了 traceback，作业却照样报绿。
+          # 判据不靠 runner 给不给 pipefail/-e（那是它会变的实现细节），显式取 PIPESTATUS[0]。
+          # GCC 11+ 会把分支命中数报成负数（那次 traceback 指的是 Base/Log/LoggerRegistry.cpp:95 的
+          # branch 2 taken -1992），gcovr 默认遇负即崩。按它自己提示的口径降级成「每文件告警一次」，
+          # 而不是放弃整份读数——没有读数比带着噪声出数更糟，那正是这道门上次绿着的原因。
           gcovr --root "$PWD" --filter 'src/' --exclude-unreachable-branches \
+            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
             --fail-under-line "$COVERAGE_LINE_FLOOR" --txt | tee /tmp/gcovr.txt
+          gcovr_rc=${PIPESTATUS[0]}
+          if [ "$gcovr_rc" -ne 0 ]; then
+            echo "gcovr 退出码 $gcovr_rc：要么低于阈值 ${COVERAGE_LINE_FLOOR}%，要么根本没跑成"
+            exit "$gcovr_rc"
+          fi
+          # 「这道门跑过」的判据是**真出了一行带百分比的 TOTAL**：少了它，即使退出码是 0 也只是一张空表，
+          # 而空表会被读成「覆盖率没问题」
+          grep -qE "TOTAL.*[0-9]+\.[0-9]+%" /tmp/gcovr.txt || {
+            echo "gcovr 没有交出行覆盖率汇总（上面是它的诊断），这道门按未跑成处理"
+            exit 1
+          }
+          # 把实测数字打进作业摘要：对外那句覆盖率要有可点开的真源，不能只活在 README 的一句话里
+          echo "### 行覆盖率（阈值 ${COVERAGE_LINE_FLOOR}%）" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "TOTAL.*[0-9]+\.[0-9]+%" /tmp/gcovr.txt | tail -1 >> "$GITHUB_STEP_SUMMARY"
