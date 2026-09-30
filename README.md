@@ -5,7 +5,7 @@
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](https://en.cppreference.com/w/cpp/23)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://kernel.org)
 [![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://microsoft.com/windows)
-[![Tests](https://img.shields.io/badge/tests-2491-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-3652-brightgreen)]()
 
 ## 特性
 
@@ -206,7 +206,7 @@ HTTP-01 那条路在回归环境给不了）。三条变量缺一不可，其中
 
 ### 按模块的自检示例
 
-`echo_server` 是部署形态；能力按模块拆成了 10 个各自自检的程序，每个程序逐步打印 `✓`/`✗`，
+`echo_server` 是部署形态；能力按模块拆成了 12 个各自自检的程序（下面这张表就是那 12 行），每个程序逐步打印 `✓`/`✗`，
 并在 stdout 上留一行 `RESULT <名字> PASS|FAIL <步数> gated <跳过数>` 供脚本判定（退出码 0 表示全绿）：
 `<步数>` 只算真正执行过的步，`gated` 单列因环境不齐备（真机凭据缺席这类）而跳过的步——
 两者分开，「真机跑过」与「真机没跑」才不会给出同一条结论：
@@ -258,9 +258,10 @@ pip install gcovr && gcovr --root . --filter 'src/' --print-summary
 Platform 86.2%、Base 71.9%、Database 54.2%。完全没被执行的只有 2 个文件——`MySqlResult.cpp`
 （那个镜像里没有 MySQL 客户端库，驱动整块没进编译）与一个异常类的头；Database 偏低是两处门控
 （MySQL/Redis 真机）与 ORM 模板未实例化的组合。也就是说：**能被从库外驱动到的公开面，示例现在都能触达**。
-（同一份代码在本机 Windows 侧 `ctest` 为 Debug（含 ASan）2491/2491、Release 2486/2486 全绿；
-两侧差 5 条是因为日志格式化的布局用例按 `NDEBUG` 分支编译——Debug 编进 8 条 `DebugBuild*`、
-Release 编进 3 条 `ReleaseBuild*`，跨配置比数量前先看清是哪一种构建类型。）
+（用例条数只在下文「测试与验证」那一节按 ctest 名单现数一次，这里不再复写一份：写死的数会在下一次加用例那天
+变成假话，而顶部徽章上那个总数就是那一行的 Windows 侧条数。要知道 Debug 与 Release 的条数本来就不同——
+日志格式化的布局用例按 `NDEBUG` 分支编译，Debug 编进 8 条 `DebugBuild*`、Release 编进 3 条 `ReleaseBuild*`，
+跨配置比数量前先看清是哪一种构建类型。）
 
 ## 代码示例
 
@@ -559,8 +560,10 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 **支持范围**：目前只支持 Linux 与 Windows——顶层 `CMakeLists.txt` 对其他系统（含 macOS/BSD）在
 配置阶段直接 `FATAL_ERROR`，`Core` 的事件后端只有 epoll、io_uring（编译期可选）与 IOCP，没有 kqueue。
 
-**交付形态**：默认静态库，`-DBUILD_SHARED_LIBS=ON` 让五个模块各出一份 `.so`/`.dll`（同时认 Conan 的
-`shared` 选项）。导出面由 `src/AsynGyanisExport.h` 的 `ASYN_<模块>_API` 逐类标注决定，
+**交付形态**：默认静态库，`-DBUILD_SHARED_LIBS=ON` 让五个模块各出一份 `.so`/`.dll`。这条开关是 CMake
+直接配的（双端、静态与共享两档都有门禁）；**Conan 那条包路线目前只出静态包**——配方写着
+`package_type = "static-library"` 且不提供 `shared` 选项，因为包这一侧没有会跑共享档的作业，加一个
+没人验过的开关等于造死配置。导出面由 `src/AsynGyanisExport.h` 的 `ASYN_<模块>_API` 逐类标注决定，
 配合隐藏可见性预设——没标注的符号出不去，所以下一次重构不会不知不觉换掉线上符号。三条边界要知道：
 
 - 接口上的 `std::string` / `std::vector` 跨 ABI 边界，生产方与消费方必须是同一套编译器、同一份 CRT
@@ -603,6 +606,8 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 | `Tls/` | `TlsContext`、`TlsSocket` |
 | `Process/` | `WorkerSupervisor`（多进程 worker 的启停与看护） |
 | `Exception/` | Core 侧异常类型 |
+| `Crypto/` | 摘要与 HMAC（`Digest`/`Hmac`：ACME JWS 与云解析签名用的那层 OpenSSL 胶水） |
+| `Metrics/` | `ProcessMetricsRegistry`（进程级读数的登记处：RAII 把手 + 同名并法，由 Net 的 `/metrics` 渲染点按完整名字导出） |
 
 ### Net — 网络应用层（`libNet.a`）
 
@@ -654,9 +659,9 @@ AsynGyanis/
 ├── scripts/                # 发布版本一致性门禁、示例总跑、跨实现验收探针（QUIC/h3/WS/h2/ACME）
 ├── src/
 │   ├── Platform/           # 平台底层（OS 调用的唯一出处）：IO / FileSystem / System
-│   ├── Base/               # Config / Exception / Log
-│   ├── Core/               # Coroutine / EventLoop / Socket / Tls / Process / Metrics / Exception
-│   ├── Net/                # Tcp / Udp / Http / Http2 / Http3 / Quic / WebSocket / Acme
+│   ├── Base/               # Coding / Config / Exception / Log
+│   ├── Core/               # Coroutine / Crypto / EventLoop / Exception / Metrics / Process / Socket / Tls
+│   ├── Net/                # Acme / Http / Http2 / Http3 / Proxy / Quic / Tcp / Tracing / Udp / WebSocket
 │   └── Database/           # Common / Dialect / Pool / Queryable / Sqlite / MySql / Redis
 └── tests/                  # 与 src 逐级对齐的 GoogleTest 测试
 ```
@@ -682,7 +687,7 @@ AsynGyanis/
 
 ## 投产前核对
 
-这七件事是「库不会替你决定，但配错了要出事故」的那一类。每条都写了默认值与**怎么确认它真的生效**——
+这十一件事是「库不会替你决定，但配错了要出事故」的那一类。每条都写了默认值与**怎么确认它真的生效**——
 静默保持默认值看起来总像是配置成功了，所以别只看配置文件，要读回来或抓一次端点。
 
 | 核对项 | 键 / 入口 | 默认值 | 怎么确认生效 | 配错的后果 |
@@ -721,7 +726,7 @@ AsynGyanis/
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
 - 当前规模（2026-09-30 实测，进程级读数出口那一轮之后）：**Windows Debug（含 ASan）3575 例通过、77 例 SKIP（共 3652 条）全绿**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3597 例通过、71 例 SKIP（共 3668 条）全绿、零告警、零泄漏、零未定义行为**。这一轮容器侧没注入真库凭据。本轮新增 18 例：7 条钉注册表本身的规矩（把手的登记与注销、每次抓取现取、同名求和、同名取最早、移动赋值只留一份注销责任、三种非法登记在登记那一刻就拒、help 里的换行折叠），1 条钉 `/metrics` 末尾的导出形状，6 条钉证书自动化的读数（构造即登记、与 `status()` 同一个数、退避门槛的置与清、到期时刻按磁盘上那张填、dns-01 四条读数的登记与注销），4 条钉 UDP、连接池、worker、TLS 四面的接线。两侧共同的 67 条 SKIP 是同一批门控：MySQL 一族 35、Redis 两族 30、`Process` 1、ACME 真机构 1；Windows 另有 10 条按平台让位——`Process` 4（含控制台探针的三条内层，见下）、多进程移交与数据报接管那四条、`AsyncSocket` 与 `UpgradeChannel` 各一条；容器另有 4 条（`ConnectionRace` 2、`FileWatcher` 与 `RollingFileSink` 各 1）。ACME 那一族 76 例在两侧都跑。控制台探针那三条内层单独跑时按 SKIP 记账，判据由它们的父侧用例承担：父侧以 `CREATE_NEW_CONSOLE` 再启一份去跑探针，并数「探针真的上场」的标记文件——所以宿主没有控制台也不会让这条路悄悄变成零覆盖。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递、多进程编排里 shell 假 worker 那几条行为、以及换代交接通道那两条只可能在本机判的（套接字文件所在目录的权限、装进来又被退回的描述符）；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按平台或内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言；`io_uring` 那一档要先探得出环，沙箱不给环时 `IoContext` 的八条按能力 SKIP 而不是失败）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
-- 真机套件：MySQL 22 例、Redis 14 例（覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
+- 真机套件：MySQL 35 例、Redis 30 例（两族都按 ctest 名单现数；覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 - **CI 触发面**：四条工作流（Linux CI / Windows CI / 发布门禁 / 供应链）都只在 `main` 推送与手动触发上跑，
   `develop` 不消耗分钟数——要看某个提交就 `gh workflow run "Linux CI" --ref develop`。两条构建作业还带
   `paths-ignore: '**.md'`：纯文档改动不会拉起一次几十个 runner 分钟的构建（所以改版本号那一笔必须动到
@@ -795,8 +800,9 @@ set ASYN_SOAK_BUILD=release && benchmarks\run-soak.bat
 | 命名 | 类/文件/目录 PascalCase，函数与参数 camelCase，成员 `m_` / 静态 `s_`，常量 `kPascalCase` |
 | 注释 | 全中文 Doxygen；`override` 方法必须独立完整注释；实现体关键位置写「为什么」 |
 | 错误 | 报错文案全中文且写清「原因 + 替代做法」；禁止静默失败与静默变形 |
-| 测试 | 每个功能都有用例；依赖外部服务的用例一律环境变量门控、仓库零明文凭据 |
+| 测试 | 每个功能都有用例；依赖外部服务的用例一律环境变量门控，凭据只从 `ASYN_*_TEST_*` 环境变量进——仓库里出现的口令全是写死的假口令，没有一把能打开真服务 |
 | 目录 | `tests` 逐级镜像 `src`；CMakeLists 分层聚合（叶子目录 append 到 `GLOBAL PROPERTY`） |
+| 文件头 | Doxygen 块里的 `@version` 是**这一份头/类自己的版本**，与根 `CMakeLists.txt` 的 `project(VERSION ...)` 无关：所以绝大多数是 1.0.0，被破坏性改过的那份会看到 2.0.0（`HttpParser.h`）。`@copyright Copyright (c) .` 那行的年份是模板留下的空位，持有者与年份只在 `LICENSE` 里写一次（2026 Gyanis），不在每个头里重复一份真源 |
 | 提交 | 中文提交信息讲清「为什么」，一次提交只讲一件事 |
 
 ## 版权
