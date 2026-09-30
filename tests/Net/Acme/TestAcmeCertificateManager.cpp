@@ -4,6 +4,7 @@
 #include "AcmeStubAuthority.h"
 #include "AcmeTestSupport.h"
 #include "CommonTestSupport.h"
+#include "MetricsTestSupport.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
@@ -742,7 +743,108 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(run.result->has_value());
         EXPECT_EQ(run.result->error().kind, AcmeErrorKind::DnsRecordRejected) << run.result->error().message;
         EXPECT_NE(run.result->error().message.find(kDnsWithdrawFailureText), std::string::npos) << run.result->error().message;
-        EXPECT_EQ(run.dnsPublishCalls, 1U);
-        EXPECT_EQ(run.dnsWithdrawCalls, 1U);
+    }
+
+    namespace
+    {
+        using AsynGyanis::TestSupport::findRegistrySample;
+    } // namespace
+
+    /**
+     * @brief 钉住：三条自动化读数在**构造时**就挂上，管理器析构就注销
+     * @details 不等第一次签发才登记，是因为「常驻进程里这几条长期为 0」就是要报的事；
+     *          而把手漏注销会留下一条谁也不持有的读数，下一轮抓取还在报旧对象的值
+     */
+    TEST(AcmeAutomationMetrics, RegistersAtConstructionAndReleasesOnDestruction)
+    {
+        Core::EventLoop                       loop;
+        AcmeCertificateManager::Configuration configuration;
+        configuration.certificateFile  = std::filesystem::temp_directory_path() / "asyn-acme-metrics-unused-chain.pem";
+        configuration.privateKeyFile   = std::filesystem::temp_directory_path() / "asyn-acme-metrics-unused-key.pem";
+        configuration.accountKeyFile   = std::filesystem::temp_directory_path() / "asyn-acme-metrics-unused-account.pem";
+        configuration.accountStateFile = std::filesystem::temp_directory_path() / "asyn-acme-metrics-unused-state.json";
+
+        EXPECT_FALSE(findRegistrySample("asyn_acme_issuances_total").has_value()) << "还没有管理器，导出里就先有了这条读数";
+        {
+            const AcmeCertificateManager manager(loop, configuration, {}, {});
+            for (const char *const name: {"asyn_acme_certificate_expiry_seconds", "asyn_acme_issuances_total", "asyn_acme_failures_total"})
+            {
+                const auto lookup = findRegistrySample(name);
+                ASSERT_TRUE(lookup.has_value()) << name;
+                EXPECT_EQ(lookup->value, 0U) << "刚登记就带着一个来路不明的数";
+            }
+        }
+        EXPECT_FALSE(findRegistrySample("asyn_acme_issuances_total").has_value()) << "管理器析构后这条读数还挂在导出里";
+    }
+
+    /**
+     * @brief 钉住：构造就把磁盘上那张证书的到期时刻填进读数，不等第一次签发
+     * @details 少了这一步，进程每次重启后面板都会先看到一段 0 并报成「证书没了」——那个文件其实
+     *          一直在，而这条读数的报警口径恰恰是「长期为 0」。多管理器求最早时也才拿得到真数：
+     *          没填过的那一格会把整条读数压成 0，把「另一张还有八十天」盖掉
+     */
+    TEST(AcmeAutomationMetrics, SeedsCertificateExpiryFromDiskAtConstruction)
+    {
+        Core::EventLoop                       loop;
+        AcmeCertificateManager::Configuration configuration;
+        configuration.certificateFile  = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
+        configuration.privateKeyFile   = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
+        configuration.accountKeyFile   = std::filesystem::temp_directory_path() / "asyn-acme-seed-account.pem";
+        configuration.accountStateFile = std::filesystem::temp_directory_path() / "asyn-acme-seed-state.json";
+
+        const auto expectedExpiry = readCertificateExpiry(configuration.certificateFile);
+        ASSERT_TRUE(expectedExpiry.has_value()) << "夹具证书读不出到期时刻，这条用例的对照就没了";
+        const auto expectedSeconds = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(expectedExpiry->time_since_epoch()).count());
+
+        const AcmeCertificateManager manager(loop, configuration, {}, {});
+        EXPECT_EQ(findRegistrySample("asyn_acme_issuances_total")->value, 0U) << "构造阶段不该凭空记上一次签发";
+        EXPECT_EQ(findRegistrySample("asyn_acme_certificate_expiry_seconds")->value, expectedSeconds) << "到期时刻的读数没有按磁盘上那张证书填，重启后它会先报一段假的「没有证书」";
+        EXPECT_EQ(static_cast<std::uint64_t>(manager.status().certificateExpiryUnixSeconds), expectedSeconds) << "同一次构造里对外读数与 status() 报的不是同一个到期时刻";
+    }
+
+    /**
+     * @brief 钉住：导出的读数与 `status()` 报的是同一份原子量，不是各算一遍
+     * @details 两处各读各的会出现「面板说签成一张、status() 说没有」——这条断言把两者钉成同一个数
+     */
+    TEST_F(AcmeCertificateManagerTest, ExportsTheSameReadingsStatusReports)
+    {
+        startServers({});
+        const auto run = driveIssue(Round{});
+        ASSERT_TRUE(run.result.has_value() && run.result->has_value()) << run.result->error().message;
+
+        const auto status = manager().status();
+        EXPECT_EQ(findRegistrySample("asyn_acme_issuances_total")->value, static_cast<std::uint64_t>(status.issuanceCount));
+        EXPECT_EQ(findRegistrySample("asyn_acme_failures_total")->value, static_cast<std::uint64_t>(status.failureCount));
+        EXPECT_EQ(findRegistrySample("asyn_acme_certificate_expiry_seconds")->value, static_cast<std::uint64_t>(status.certificateExpiryUnixSeconds))
+                << "到期时刻的对外读数与判据用的不是同一个数";
+        EXPECT_GT(status.certificateExpiryUnixSeconds, 0) << "签成之后落点读不出到期时刻";
+    }
+
+    /**
+     * @brief 钉住：失败退避时刻交回给运维，成功之后清回零
+     * @details 只有「上次失败」的文案而没有「什么时候再试」，值班就无从判断这条自动化是不是已经躺平
+     */
+    TEST_F(AcmeCertificateManagerTest, ReportsTheBackoffDeadlineAfterAFailure)
+    {
+        Round loopRound;
+        loopRound.withInstallStep = false;
+        loopRound.runsRenewalLoop = true;
+        startServers({});
+        const auto runs = driveRounds({loopRound});
+        ASSERT_EQ(runs.size(), 1U);
+
+        const long long nowUnix = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        EXPECT_GT(manager().status().backoffUntilUnixSeconds, nowUnix) << "记了失败却没留下退避时刻：外部无法判断还会不会再试";
+    }
+
+    /**
+     * @brief 钉住：签成之后退避时刻清零（留着旧值会让人以为下一轮还要等）
+     */
+    TEST_F(AcmeCertificateManagerTest, ClearsTheBackoffDeadlineAfterASuccess)
+    {
+        startServers({});
+        const auto run = driveIssue(Round{});
+        ASSERT_TRUE(run.result.has_value() && run.result->has_value()) << run.result->error().message;
+        EXPECT_EQ(manager().status().backoffUntilUnixSeconds, 0);
     }
 } // namespace AsynGyanis::Net

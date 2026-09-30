@@ -12,11 +12,13 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Net/Acme/AcmeDns01TxtWriter.h"
 #include "Net/Acme/AcmeError.h"
 #include "Net/Acme/AcmeHttp01ChallengeStore.h"
 #include "Net/Acme/AcmeKeyPair.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <expected>
@@ -53,12 +55,16 @@ namespace AsynGyanis::Net
      * @brief 证书自动化的可读状态，供健康端点与运维读数
      * @note 各计数是原子量、lastFailureMessage 走加锁快照：跨线程读安全，但「读到的一对数」
      *       之间不保证原子关系（要看严格配对就订阅签发完成点）
+     * @note 这三条计数同时挂在 `Core::ProcessMetricsRegistry` 上，抓 `/metrics` 就能看见
+     *       （名字是 `asyn_acme_*`，进程级，不随监听器前缀变）；本结构是给应用自己读的，
+     *       两条通道报的是同一份原子量，不会各算一遍
      */
     struct ASYN_NET_API AcmeManagerStatus
     {
         std::size_t issuanceCount{0};                ///< 成功签发或续期的次数
         std::size_t failureCount{0};                 ///< 失败的轮次数（含被拒绝的配置）
-        long long   certificateExpiryUnixSeconds{0}; ///< 当前磁盘上那张证书的到期时刻；0 表示还没有
+        long long   certificateExpiryUnixSeconds{0}; ///< 磁盘上那张证书的到期时刻（构造即按文件填）；0 表示读不出
+        long long   backoffUntilUnixSeconds{0};      ///< 失败退避门槛：早于这个时刻不会再试；0 表示没在退避中
         std::string lastFailureMessage;              ///< 最近一次失败的中文文案；没有失败时为空
     };
 
@@ -232,6 +238,13 @@ namespace AsynGyanis::Net
         void recordFailure(std::string message) noexcept;
 
         /**
+         * @brief 失败退避的门槛时刻：早于它不再试；0 表示没在退避中
+         * @details 这条算式只留一份：常驻循环用它决定下一轮什么时候醒，`status()` 用同一份回答运维
+         *          「还会不会再试」。两处各写一遍就会出现「循环其实还会来，面板说没在退避」这类拆脸
+         */
+        [[nodiscard]] long long backoffGateUnixSeconds() const noexcept;
+
+        /**
          * @brief 把下层交回的失败记下来再原样交回
          * @param error 协议层或密钥层交回的失败
          * @return AcmeError 同一条失败
@@ -262,6 +275,13 @@ namespace AsynGyanis::Net
 
         AcmeHttp01ChallengeStore m_challengeStore; ///< 自证令牌的暂存处
         AcmeDns01TxtWriter       m_dns01TxtWriter; ///< TXT 的发布与撤回动作；两格都空就按 HTTP-01 走
+
+        /**
+         * @brief 挂在进程级指标注册表上的把手：到期时刻、签发次数、失败次数
+         * @details 构造时就登记，而不是等第一次签发：常驻进程里这三条**长期为 0** 本身就是最要紧的
+         *          信号——自动化没跑成与自动化还没跑，从外面看得是同一个形状
+         */
+        std::array<Core::ProcessMetricHandle, 3> m_metricHandles{};
     };
 
     /**

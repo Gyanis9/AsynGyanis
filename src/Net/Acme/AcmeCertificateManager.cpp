@@ -121,6 +121,27 @@ namespace AsynGyanis::Net
     AcmeCertificateManager::AcmeCertificateManager(Core::EventLoop &loop, Configuration configuration, ReloadHandler reloadHandler, AcmeDns01TxtWriter dns01TxtWriter) :
         m_loop(loop), m_configuration(std::move(configuration)), m_reloadHandler(std::move(reloadHandler)), m_dns01TxtWriter(std::move(dns01TxtWriter))
     {
+        // 三条读数在构造时就挂上，不等第一次签发：常驻进程里它们长期为 0 就是要报的事——
+        // 「自动化没跑成」与「自动化还没跑」从外面看得是同一个形状，得让面板能分辨有没有登记过
+        m_metricHandles = {
+                Core::ProcessMetricsRegistry::registerMetric("asyn_acme_certificate_expiry_seconds",
+                                                             "磁盘上那张证书的到期时刻（Unix 秒，进程内多个管理器取最早的那张）；0 表示那条路径上没有读得出的证书",
+                                                             Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Min, [this]
+                                                             { return static_cast<std::uint64_t>(std::max<long long>(0, m_expiryUnixSeconds.load(std::memory_order_relaxed))); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_acme_issuances_total", "成功签发或续期并原子落盘的轮次数（进程累计）", Core::ProcessMetricKind::Counter,
+                                                             Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_issuanceCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_acme_failures_total", "证书自动化失败的轮次数：含被拒的配置、机构判 invalid、装回动作失败",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_failureCount.load(std::memory_order_relaxed)); }),
+        };
+
+        // 到期时刻先按磁盘上那张现有证书填一次，不等第一次签发。少了这一步，每次重启后面板都会读到
+        // 一段 0 并且报成「证书没了」，而那个文件其实一直在那里
+        if (const auto expiryOnDisk = readExpiryFromDisk(); expiryOnDisk.has_value())
+        {
+            m_expiryUnixSeconds.store(std::chrono::duration_cast<std::chrono::seconds>(expiryOnDisk->time_since_epoch()).count(), std::memory_order_relaxed);
+        }
     }
 
     AcmeManagerStatus AcmeCertificateManager::status() const
@@ -129,6 +150,7 @@ namespace AsynGyanis::Net
         snapshot.issuanceCount                = m_issuanceCount.load(std::memory_order_relaxed);
         snapshot.failureCount                 = m_failureCount.load(std::memory_order_relaxed);
         snapshot.certificateExpiryUnixSeconds = m_expiryUnixSeconds.load(std::memory_order_relaxed);
+        snapshot.backoffUntilUnixSeconds      = backoffGateUnixSeconds();
         std::lock_guard guard(m_lastFailureMutex);
         snapshot.lastFailureMessage = m_lastFailureMessage;
         return snapshot;
@@ -159,6 +181,13 @@ namespace AsynGyanis::Net
         // 三条渠道都写：日志给半夜只看得到一行的人，计数给面板，expected 给就在等的调用方
         LOG_ERROR_FMT("AcmeCertificateManager: {}", message);
         m_notBeforeNextAttemptUnix.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
+    }
+
+    long long AcmeCertificateManager::backoffGateUnixSeconds() const noexcept
+    {
+        // 记的是「失败那一刻」，门槛取它的下一秒：同一秒内再进来一次不该被放行两次
+        const long long failedAt = m_notBeforeNextAttemptUnix.load(std::memory_order_relaxed);
+        return failedAt == 0 ? 0 : failedAt + 1;
     }
 
     AcmeError AcmeCertificateManager::failWith(const AcmeErrorKind kind, std::string message)
@@ -504,7 +533,7 @@ namespace AsynGyanis::Net
             const long long intervalUnix = std::chrono::duration_cast<std::chrono::seconds>(m_configuration.renewalCheckInterval).count();
             // 失败退避与查到期节拍取更晚的那个：机构侧按「每域名每周几张」限流，
             // 把检查间隔调得很小不会更快拿到证书，只会把额度耗光
-            const long long wakeAtUnix = std::max(nowUnix + intervalUnix, m_notBeforeNextAttemptUnix.load(std::memory_order_relaxed) + 1);
+            const long long wakeAtUnix = std::max(nowUnix + intervalUnix, backoffGateUnixSeconds());
             const auto      delay      = std::chrono::seconds(std::max<long long>(1, wakeAtUnix - nowUnix));
             co_await timer.waitFor(std::chrono::duration_cast<std::chrono::milliseconds>(delay));
         }

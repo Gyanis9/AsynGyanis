@@ -6,9 +6,12 @@
 #include "Net/Acme/AcmeClient.h"
 #include "Net/Acme/AcmeDns01TxtWriter.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
+#include "MetricsTestSupport.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <expected>
@@ -115,6 +118,45 @@ namespace AsynGyanis::Net
         Core::EventLoop loop;
         const auto      writer = makeAliyunDns01TxtWriter(loop, AliyunDns01Configuration{});
         EXPECT_TRUE(writer.isUsable());
+    }
+
+    namespace
+    {
+        using AsynGyanis::TestSupport::findRegistrySample;
+    } // namespace
+
+    /**
+     * @brief 钉住：dns-01 的四条耗时读数在写入器构造时登记、析构时注销
+     * @details 这四条读数是给「一次续期花掉十分钟」那种现场看的：没有出口时它和「卡住了」长得一样。
+     *          用例只能钉住登记与注销这一段——publish 的自增要打到真的云解析控制面上，
+     *          那不在回环上测得到的范围（凭据与 endpoint 都不在这份配置里可换）
+     */
+    TEST(AliyunDns01TxtWriterMetrics, RegistersFourCountersAndReleasesThemOnDestruction)
+    {
+        constexpr std::array<const char *, 4> kMetricNames = {"asyn_acme_dns01_records_published_total", "asyn_acme_dns01_publish_seconds_total",
+                                                              "asyn_acme_dns01_quiet_waits_total", "asyn_acme_dns01_quiet_wait_seconds_total"};
+
+        Core::EventLoop loop;
+        for (const char *const name: kMetricNames)
+        {
+            ASSERT_FALSE(findRegistrySample(name).has_value()) << name << "：还没有写入器，导出里就先有这条读数";
+        }
+
+        {
+            const auto writer = makeAliyunDns01TxtWriter(loop, AliyunDns01Configuration{});
+            for (const char *const name: kMetricNames)
+            {
+                const auto lookup = findRegistrySample(name);
+                ASSERT_TRUE(lookup.has_value()) << name;
+                EXPECT_EQ(lookup->kind, Core::ProcessMetricKind::Counter) << name << "：这类量要做 rate()，登记成 gauge 就用错了";
+                EXPECT_EQ(lookup->value, 0U) << name << "：一次 publish 都没发过就该是 0，带上一个来路不明的数是假读数";
+            }
+        }
+
+        for (const char *const name: kMetricNames)
+        {
+            EXPECT_FALSE(findRegistrySample(name).has_value()) << name << "：写入器已析构，这条读数还挂在导出里";
+        }
     }
 
     /**

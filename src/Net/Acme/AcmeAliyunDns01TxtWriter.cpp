@@ -6,6 +6,7 @@
 #include "Core/Crypto/Digest.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Platform/System/PlatformTime.h"
 
@@ -202,8 +203,47 @@ namespace AsynGyanis::Net
         public:
             AlidnsClient(Core::EventLoop &loop, AliyunDns01Configuration configuration) : m_loop(loop), m_configuration(std::move(configuration))
             {
+                // 四条读数按**实例**登记（多次签发就多份），抓取时按 Sum 并成进程量。
+                // 为什么值得挂：dns-01 这一条通路上有三段等待（同名重写的静默期、控制面可见性轮询、
+                // 结算延迟），一次续期花掉十分钟是正常而不是卡死——没有读数就会被当成故障去查
+                m_metricHandles = {
+                        Core::ProcessMetricsRegistry::registerMetric("asyn_acme_dns01_records_published_total", "向云解析控制面成功写入 TXT 的次数（进程累计）",
+                                                                     Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                                     [this] { return m_publishedCount.load(std::memory_order_relaxed); }),
+                        Core::ProcessMetricsRegistry::registerMetric("asyn_acme_dns01_publish_seconds_total", "publish 累计花掉的秒数：含同名重写的静默期、可见性轮询与结算等待",
+                                                                     Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                                     [this] { return m_publishSecondsTotal.load(std::memory_order_relaxed); }),
+                        Core::ProcessMetricsRegistry::registerMetric("asyn_acme_dns01_quiet_waits_total",
+                                                                     "同名重写前等机构缓存过期的次数（一张单里基础域名与通配符会撞同一个名字）", Core::ProcessMetricKind::Counter,
+                                                                     Core::ProcessMetricMerge::Sum, [this] { return m_quietWaitCount.load(std::memory_order_relaxed); }),
+                        Core::ProcessMetricsRegistry::registerMetric("asyn_acme_dns01_quiet_wait_seconds_total", "同名重写前累计等掉的秒数", Core::ProcessMetricKind::Counter,
+                                                                     Core::ProcessMetricMerge::Sum, [this] { return m_quietWaitSecondsTotal.load(std::memory_order_relaxed); }),
+                };
             }
 
+        private:
+            /**
+             * @brief publish 的耗时记账：帧上这个局部对象析构那一刻结算
+             * @details 放在局部而不是每条 return 前手写一遍：publish 有多条提前出口（域名推不出、
+             *          控制面拒写、轮询超时），漏一条就是把慢的那段全记丢了
+             */
+            struct PublishTimingGuard
+            {
+                explicit PublishTimingGuard(AlidnsClient &owner) : m_owner(owner), m_startedAt(std::chrono::steady_clock::now())
+                {
+                }
+
+                ~PublishTimingGuard()
+                {
+                    const long long seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - m_startedAt).count();
+                    m_owner.m_publishSecondsTotal.fetch_add(static_cast<std::uint64_t>(std::max(0LL, seconds)), std::memory_order_relaxed);
+                }
+
+                AlidnsClient                         &m_owner;
+                std::chrono::steady_clock::time_point m_startedAt;
+            };
+
+        public:
             /**
              * @brief 写入这条 TXT，并确认控制面已经查得到它
              * @param recordName `_acme-challenge.<域名>` 的完整名字
@@ -212,6 +252,8 @@ namespace AsynGyanis::Net
              */
             Core::Task<std::expected<void, std::string>> publish(std::string recordName, std::string value)
             {
+                [[maybe_unused]] const PublishTimingGuard timing{*this};
+
                 const std::optional<DnsRecordTarget> target = splitRecordName(recordName, m_configuration.zoneDomainName);
                 if (!target.has_value())
                 {
@@ -226,6 +268,8 @@ namespace AsynGyanis::Net
                                  std::chrono::duration_cast<std::chrono::seconds>(quiet).count(), m_configuration.recordTtlSeconds);
                     Core::Timer quietTimer(m_loop);
                     co_await quietTimer.waitFor(quiet);
+                    m_quietWaitCount.fetch_add(1, std::memory_order_relaxed);
+                    m_quietWaitSecondsTotal.fetch_add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(quiet).count()), std::memory_order_relaxed);
                 }
 
                 // 先查再写：Add 成功但确认阶段超时的上一次，记录其实已经在区里了，
@@ -279,6 +323,8 @@ namespace AsynGyanis::Net
                 {
                     co_await timer.waitFor(m_configuration.publishSettleDelay);
                 }
+                // 只在「控制面查到 + 结算等完」这条出口上计数：Add 被接受但确认超时的上一次不该算写入成功
+                m_publishedCount.fetch_add(1, std::memory_order_relaxed);
                 co_return std::expected<void, std::string>{};
             }
 
@@ -497,6 +543,13 @@ namespace AsynGyanis::Net
             AliyunDns01Configuration m_configuration; ///< 凭据与口径
             /// 本进程内真撤过记录的名字与时刻：同名重写之前要按 TTL 等机构的缓存过期
             std::map<std::string, std::chrono::steady_clock::time_point> m_recentWithdrawals;
+
+            std::atomic<std::uint64_t> m_publishedCount{0};        ///< 走通「写入 + 查到 + 结算」的次数
+            std::atomic<std::uint64_t> m_publishSecondsTotal{0};   ///< 上述过程累计花掉的秒数
+            std::atomic<std::uint64_t> m_quietWaitCount{0};        ///< 同名重写前等缓存过期的次数
+            std::atomic<std::uint64_t> m_quietWaitSecondsTotal{0}; ///< 等掉的累计秒数
+            /// 四条读数挂在进程级注册表上的把手：本实例析构即注销，不留一条没人持有的假数
+            std::array<Core::ProcessMetricHandle, 4> m_metricHandles{};
         };
     } // namespace
 
