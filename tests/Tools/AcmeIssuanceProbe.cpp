@@ -27,6 +27,9 @@
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Acme/AcmeAliyunDns01TxtWriter.h"
+#include "Base/Config/ConfigValue.h"
+#include "Base/Exception/ConfigValidationException.h"
+#include "Net/Acme/AcmeAutomationConfig.h"
 #include "Net/Acme/AcmeCertificateManager.h"
 #include "Net/Acme/AcmeDns01TxtWriter.h"
 #include "Net/Http/HttpServer.h"
@@ -63,11 +66,17 @@ namespace
         std::string   domain;                     ///< 要覆盖的域名（回环跑法是 127.0.0.1.sslip.io，`*.` 开头就是通配符）
         std::uint16_t challengePort{};            ///< 自证令牌的明文端口，必须与机构配置里的 httpPort 一致
         std::string   challengeBind{"127.0.0.1"}; ///< 令牌服务的绑定地址：回环跑法保持默认，真机构从公网来取得填 0.0.0.0
-        std::string   stateDirectory;             ///< 密钥、证书与账户状态的落点
+        std::string   stateDirectory;             ///< 密钥、证书与账户状态的落点；给了 --config 时可以省略
+        std::string   configPath;                 ///< 配置文件：acme 段那套值就是默认，命令行上显式给的逐项覆盖它
         std::string   contact{"mailto:acme-probe@example.com"};
         std::string   challengeKind{"http-01"}; ///< 走哪一种自证：dns-01 时不需要任何入站通路
         std::string   dnsZone;                  ///< 云解析里的主域名；留空由实现按「域名最后两段」推
         std::uint32_t dnsTtl{600U};             ///< 写进去那条 TXT 的 TTL（秒）
+        bool          hasDomain{false};         ///< --domain 显式给过才覆盖文件里的域名列表
+        bool          hasContact{false};        ///< 同上：那条默认联系邮箱只对 Pebble 成立，真机构会按 invalidContact 拒
+        bool          hasChallenge{false};      ///< 同上：自证通道以文件里的 challenge 为准，除非命令行显式指定
+        bool          hasDnsZone{false};        ///< --dns-zone 给过才覆盖文件里的 acme.dns.domain
+        bool          hasDnsTtl{false};         ///< 同上，对应 acme.dns.record_ttl_seconds（600 与文件默认同值，只能靠「给没给过」区分）
         bool          forceRenewal{false};      ///< 把续期窗口撑到十年，逼出第二轮的真重签
     };
 
@@ -105,9 +114,13 @@ namespace
             if (flag == "--directory-url")
             {
                 options.directoryUrl = needValue(argc, argv, index, flag);
+            } else if (flag == "--config")
+            {
+                options.configPath = needValue(argc, argv, index, flag);
             } else if (flag == "--domain")
             {
-                options.domain = needValue(argc, argv, index, flag);
+                options.domain    = needValue(argc, argv, index, flag);
+                options.hasDomain = true;
             } else if (flag == "--challenge-port")
             {
                 options.challengePort = static_cast<std::uint16_t>(std::stoi(needValue(argc, argv, index, flag)));
@@ -119,31 +132,36 @@ namespace
                 options.stateDirectory = needValue(argc, argv, index, flag);
             } else if (flag == "--contact")
             {
-                options.contact = needValue(argc, argv, index, flag);
+                options.contact    = needValue(argc, argv, index, flag);
+                options.hasContact = true;
             } else if (flag == "--challenge")
             {
                 options.challengeKind = needValue(argc, argv, index, flag);
+                options.hasChallenge  = true;
             } else if (flag == "--dns-zone")
             {
-                options.dnsZone = needValue(argc, argv, index, flag);
+                options.dnsZone    = needValue(argc, argv, index, flag);
+                options.hasDnsZone = true;
             } else if (flag == "--dns-ttl")
             {
-                options.dnsTtl = static_cast<std::uint32_t>(std::stoul(needValue(argc, argv, index, flag)));
+                options.dnsTtl    = static_cast<std::uint32_t>(std::stoul(needValue(argc, argv, index, flag)));
+                options.hasDnsTtl = true;
             } else if (flag == "--renew")
             {
                 options.forceRenewal = true;
             } else
             {
                 std::cerr << "未知参数：" << flag
-                          << "\n用法：acme_issuance_probe --directory-url <url> --domain <name> --state-dir <dir> "
+                          << "\n用法：acme_issuance_probe [--config <文件>] [--directory-url <url> --domain <name> --state-dir <dir>] "
                              "[--challenge http-01|dns-01] [--challenge-port <n>] [--challenge-bind <ip，默认 127.0.0.1>] "
-                             "[--dns-zone <主域名>] [--dns-ttl <秒>] [--contact mailto:...] [--renew]\n";
+                             "[--dns-zone <主域名>] [--dns-ttl <秒>] [--contact mailto:...] [--renew]\n"
+                             "     给了 --config 时，acme 段里那套值就是默认，命令行上显式给的逐项覆盖它\n";
                 std::exit(2);
             }
         }
-        if (options.directoryUrl.empty() || options.domain.empty() || options.stateDirectory.empty())
+        if (options.configPath.empty() && (options.directoryUrl.empty() || options.domain.empty() || options.stateDirectory.empty()))
         {
-            std::cerr << "--directory-url / --domain / --state-dir 三个都必须给\n";
+            std::cerr << "要么给 --config（acme 段里带 directory_url / domains / 四个落点），要么把 --directory-url / --domain / --state-dir 三个都写全\n";
             std::exit(2);
         }
         // 自证种类只认这两个值：拼错的第三种不能悄悄按默认跑，那样「以为在测 dns-01、实际测的是 http-01」
@@ -151,11 +169,6 @@ namespace
         if (options.challengeKind != "http-01" && options.challengeKind != "dns-01")
         {
             std::cerr << "--challenge 只接受 http-01 或 dns-01，给的是：" << options.challengeKind << "\n";
-            std::exit(2);
-        }
-        if (options.challengeKind == "http-01" && options.challengePort == 0U)
-        {
-            std::cerr << "走 http-01 时 --challenge-port 必须给（机构按那个端口取令牌）， dns-01 才不需要入站通路\n";
             std::exit(2);
         }
         return options;
@@ -257,35 +270,139 @@ int main(const int argc, char **argv)
 
     const Options options = parseArguments(argc, argv);
 
-    std::error_code ignore;
-    std::filesystem::create_directories(options.stateDirectory, ignore);
+    // 配置文件里的 acme 段是默认值，命令行上显式给的逐项覆盖它：同一份部署配置要能临时改一个
+    // 域名再跑一次，而不必先编辑文件。读不出、解析不动、段不合法、开关没开——四种都当场退出，
+    // 别带着半份配置去签
+    std::optional<AsynGyanis::Net::AcmeAutomationConfiguration> fromFile;
+    if (!options.configPath.empty())
+    {
+        std::error_code      sizeFailure;
+        const std::uintmax_t fileSize = std::filesystem::file_size(options.configPath, sizeFailure);
+        if (static_cast<bool>(sizeFailure))
+        {
+            std::cerr << "取不到配置文件 " << options.configPath << " 的大小：" << sizeFailure.message() << '\n';
+            std::exit(2);
+        }
+        const auto contents = AsynGyanis::Platform::readFileContents(options.configPath, 0U, static_cast<std::size_t>(fileSize));
+        if (!contents.has_value())
+        {
+            std::cerr << "读不到配置文件 " << options.configPath << "：" << contents.error().message() << '\n';
+            std::exit(2);
+        }
+        const auto parsed = AsynGyanis::Base::parseConfigValue(*contents);
+        if (!parsed.has_value())
+        {
+            std::cerr << "配置文件 " << options.configPath << " 不是可解析的配置文档\n";
+            std::exit(2);
+        }
+        try
+        {
+            fromFile = AsynGyanis::Net::readAcmeConfiguration(*parsed);
+        } catch (const AsynGyanis::Base::ConfigValidationException &failure)
+        {
+            std::cerr << "配置文件的 acme 段不合法：" << failure.what() << '\n';
+            std::exit(2);
+        }
+        if (!fromFile->isEnabled)
+        {
+            std::cerr << "配置文件的 acme.enabled 不是 true：这份配置没打算让谁去签发\n";
+            std::exit(2);
+        }
+    }
 
-    AcmeCertificateManager::Configuration configuration;
-    configuration.domainNames         = {options.domain};
-    configuration.certificateFile     = std::filesystem::path(options.stateDirectory) / "chain.pem";
-    configuration.privateKeyFile      = std::filesystem::path(options.stateDirectory) / "domain-key.pem";
-    configuration.accountKeyFile      = std::filesystem::path(options.stateDirectory) / "account-key.pem";
-    configuration.accountStateFile    = std::filesystem::path(options.stateDirectory) / "account.json";
-    configuration.directoryUrl        = options.directoryUrl;
-    configuration.contactEmailAddress = options.contact;
+    // DNS 那两格也按「显式给出的才覆盖」处置，与 --domain / --contact 同一套约定：
+    // --config 与 --dns-zone 同时给而后者不生效，就是白写一个参数
+    if (fromFile.has_value())
+    {
+        if (options.hasDnsZone)
+        {
+            fromFile->dnsZoneDomainName = options.dnsZone;
+        }
+        if (options.hasDnsTtl)
+        {
+            fromFile->dnsRecordTtlSeconds = options.dnsTtl;
+        }
+    }
+
+    if (!options.stateDirectory.empty())
+    {
+        std::error_code ignore;
+        std::filesystem::create_directories(options.stateDirectory, ignore);
+    }
+
+    AcmeCertificateManager::Configuration configuration = fromFile.has_value() ? fromFile->manager : AcmeCertificateManager::Configuration{};
+    if (options.hasDomain)
+    {
+        configuration.domainNames = {options.domain};
+    }
+    if (!options.directoryUrl.empty())
+    {
+        configuration.directoryUrl = options.directoryUrl;
+    }
+    if (options.hasContact)
+    {
+        configuration.contactEmailAddress = options.contact;
+    }
+    if (!options.stateDirectory.empty())
+    {
+        configuration.certificateFile  = std::filesystem::path(options.stateDirectory) / "chain.pem";
+        configuration.privateKeyFile   = std::filesystem::path(options.stateDirectory) / "domain-key.pem";
+        configuration.accountKeyFile   = std::filesystem::path(options.stateDirectory) / "account-key.pem";
+        configuration.accountStateFile = std::filesystem::path(options.stateDirectory) / "account.json";
+    }
     // 探针是操作者显式启动的，接受条款这个动作由启动它的人完成；这里不替谁默认同意
+    // （走 --config 时 readAcmeConfiguration 已经要求文件里显式写了 tos_accepted）
     configuration.isTermsOfServiceAccepted = true;
     configuration.issuanceTimeout          = std::chrono::seconds{120};
     configuration.challengePollInterval    = std::chrono::milliseconds{500};
     configuration.minimumRetryInterval     = std::chrono::seconds{1};
-    // 续期窗口决定第二轮签不签：宽到十年就一定签得出第二张，窄到一天则第一张还剩有效期、不该再打扰机构
-    configuration.renewBeforeExpiry = options.forceRenewal ? std::chrono::hours{24 * 3650} : std::chrono::hours{24};
+    // 续期窗口决定第二轮签不签：--renew 把窗口撑到十年逼出真重签；否则用文件里的值，没配则 24 小时
+    configuration.renewBeforeExpiry = options.forceRenewal ? std::chrono::hours{24 * 3650} : (fromFile.has_value() ? configuration.renewBeforeExpiry : std::chrono::hours{24});
 
-    emit(std::format("DIRECTORY {}", options.directoryUrl));
+    emit(std::format("DIRECTORY {}", configuration.directoryUrl));
+    // 域名列表单独打一行：--domain 覆盖文件里的 domains 这条判据否则看不出来，
+    // 而「以为在测覆盖、实际两个域名都在申请」正是最难事后发现的那类错读
+    std::string domainText;
+    for (const std::string &domainName: configuration.domainNames)
+    {
+        domainText += domainText.empty() ? "" : ",";
+        domainText += domainName;
+    }
+    emit(std::format("DOMAINS {}", domainText));
 
     EventLoop loop;
 
-    const bool isDns01 = options.challengeKind == "dns-01";
+    // 自证通道：命令行显式指定优先，否则跟文件里那段配置
+    const bool        isDns01       = options.hasChallenge ? options.challengeKind == "dns-01" : fromFile.has_value() ? fromFile->usesDns01() : options.challengeKind == "dns-01";
+    const char *const challengeText = isDns01 ? "dns-01" : "http-01";
+    if (!isDns01 && options.challengePort == 0U)
+    {
+        // 这条判据排在「通道定下来」之后而不是命令行解析里：--config 写了 dns-01 时，
+        // 解析阶段看到的还是默认的 http-01，会把一份合法配置挡在门外
+        std::cerr << "走 http-01 时 --challenge-port 必须给（机构按那个端口取令牌）；dns-01 才不需要入站通路\n";
+        std::exit(2);
+    }
 
     // DNS-01 的动作对：凭据只从环境读。命令行上的参数会进 ps 与 shell 历史，配置文件会进版本库，
     // 而这对钥匙能改域名记录，等于把域名交出去
     AcmeDns01TxtWriter dnsWriter;
-    if (isDns01)
+    std::string        providerText = "-";
+    std::string        zoneText     = "-";
+    std::string        ttlText      = "-";
+    if (isDns01 && fromFile.has_value())
+    {
+        try
+        {
+            dnsWriter    = AsynGyanis::Net::buildDns01TxtWriter(loop, *fromFile);
+            providerText = fromFile->dnsProvider;
+            zoneText     = fromFile->dnsZoneDomainName.empty() ? "derived" : fromFile->dnsZoneDomainName;
+            ttlText      = std::to_string(fromFile->dnsRecordTtlSeconds);
+        } catch (const AsynGyanis::Base::ConfigValidationException &failure)
+        {
+            std::cerr << failure.what() << '\n';
+            std::exit(2);
+        }
+    } else if (isDns01)
     {
         const char *const keyId     = std::getenv("ASYN_ACME_DNS_ACCESS_KEY_ID");
         const char *const keySecret = std::getenv("ASYN_ACME_DNS_ACCESS_KEY_SECRET");
@@ -301,11 +418,13 @@ int main(const int argc, char **argv)
         dns.zoneDomainName   = options.dnsZone;
         dns.recordTtlSeconds = options.dnsTtl;
         dnsWriter            = AsynGyanis::Net::makeAliyunDns01TxtWriter(loop, std::move(dns));
+        providerText         = "aliyun";
+        zoneText             = options.dnsZone.empty() ? "derived" : options.dnsZone;
+        ttlText              = std::to_string(options.dnsTtl);
     }
     // 这行是「新档位真的被消费了」的标记：脚本先断言它再去判结果，
     // 否则一个没被读到的 --challenge 会按默认的 http-01 跑完全程并交出看起来正确的证据
-    emit(std::format("CHALLENGE {} PROVIDER {} ZONE {} TTL {}", options.challengeKind, isDns01 ? "aliyun" : "-",
-                     isDns01 ? (options.dnsZone.empty() ? "derived" : options.dnsZone) : "-", isDns01 ? std::to_string(options.dnsTtl) : "-"));
+    emit(std::format("CHALLENGE {} PROVIDER {} ZONE {} TTL {} FROM {}", challengeText, providerText, zoneText, ttlText, options.configPath.empty() ? "cli" : "config"));
 
     int reloadCalls = 0;
     // 装回服务的动作在这里是记账：签发成功后回调必须被调到，否则「磁盘新、线上旧」这条失败模式没人拦
