@@ -253,6 +253,9 @@ python scripts/run_samples.py --build build/debug --timeout 300
 pip install gcovr && gcovr --root . --filter 'src/' --print-summary
 ```
 
+每次 `linux-ci.yml` 的 `coverage` 作业跑完都会把**当轮实测**打进作业摘要（阈值 60%，判据是 gcovr 自己的
+`--fail-under-line`）；2026-09-30 在 `develop` 上的一次读数是**行覆盖 77%（29453/38230）**——这一档不带
+MySQL/Redis 真库分支，也不跑示例，所以它与下面那次手工全量的口径不同，两个数都别拿去替对方说话。
 2026-09-20 在 ubuntu24（GCC 13，ASan/UBSan 与 gcov 同开）跑完整套测试与全部示例后的实测：
 **行 76.2%（19828/26034）、函数 83.9%、分支 44.6%**；分模块行覆盖 Net 89.2%、Core 86.4%、
 Platform 86.2%、Base 71.9%、Database 54.2%。完全没被执行的只有 2 个文件——`MySqlResult.cpp`
