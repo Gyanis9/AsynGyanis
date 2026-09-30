@@ -29,8 +29,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 接阿里云云解析所需的凭据与口径
      *
-     * @details 凭据**只能**从环境变量进来（见 HttpServerConfig 的 ASYN_ACME_DNS_* 两条），
-     *          落到配置文件就等于把「能给域名改记录」的钥匙交进了版本库。
+     * @details 这两条值由**调用方**交给本结构：引擎侧没有 acme.* 服务端配置段，凭据不该由库去猜配置文件，
+     *          而签发探针（`tests/Tools/AcmeIssuanceProbe`）按 `ASYN_ACME_DNS_ACCESS_KEY_ID` /
+     *          `ASYN_ACME_DNS_ACCESS_KEY_SECRET` 两条环境变量的约定读进来。刻意的约定是**别让密钥进版本库**：
+     *          一把能改域名记录的钥匙落在配置文件里，等于把域名交出去。
      */
     struct ASYN_NET_API AliyunDns01Configuration
     {

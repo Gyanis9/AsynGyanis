@@ -203,7 +203,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：主域名推不出时报的是「去配 acme.dns.domain」，而不是凭据缺失那条
+     * @brief 钉住：主域名推不出时报的是「去配 zoneDomainName」，而不是凭据缺失那条
      */
     TEST_F(AliyunDns01TxtWriterTest, RefusesWhenTheZoneCannotBeDerived)
     {
@@ -215,26 +215,26 @@ namespace AsynGyanis::Net
         const auto noDots = publish(configuration, "_acme-challenge");
         ASSERT_FALSE(noDots.succeeded);
         ASSERT_TRUE(noDots.failureMessage.has_value());
-        EXPECT_NE(noDots.failureMessage->find("acme.dns.domain"), std::string::npos) << *noDots.failureMessage;
+        EXPECT_NE(noDots.failureMessage->find("zoneDomainName"), std::string::npos) << *noDots.failureMessage;
 
         // 只有一段的情况同样推不出（域名至少要有两截）
         const auto singleLabel = publish(configuration, "_acme-challenge.local");
         ASSERT_FALSE(singleLabel.succeeded);
         ASSERT_TRUE(singleLabel.failureMessage.has_value());
-        EXPECT_NE(singleLabel.failureMessage->find("acme.dns.domain"), std::string::npos) << *singleLabel.failureMessage;
+        EXPECT_NE(singleLabel.failureMessage->find("zoneDomainName"), std::string::npos) << *singleLabel.failureMessage;
 
         // 配了主域名而记录名不在它下面：不能静默写到别的区里去
         configuration.zoneDomainName = "other.example.com";
         const auto outsideTheZone    = publish(configuration, "_acme-challenge.gyanis.space");
         ASSERT_FALSE(outsideTheZone.succeeded);
         ASSERT_TRUE(outsideTheZone.failureMessage.has_value());
-        EXPECT_NE(outsideTheZone.failureMessage->find("acme.dns.domain"), std::string::npos) << *outsideTheZone.failureMessage;
+        EXPECT_NE(outsideTheZone.failureMessage->find("zoneDomainName"), std::string::npos) << *outsideTheZone.failureMessage;
 
         // 撤回走同一条判据：撤不干净的那条也要说清是没配主域名
         const auto withdrawn = withdraw(configuration, "_acme-challenge.gyanis.space");
         ASSERT_FALSE(withdrawn.succeeded);
         ASSERT_TRUE(withdrawn.failureMessage.has_value());
-        EXPECT_NE(withdrawn.failureMessage->find("acme.dns.domain"), std::string::npos) << *withdrawn.failureMessage;
+        EXPECT_NE(withdrawn.failureMessage->find("zoneDomainName"), std::string::npos) << *withdrawn.failureMessage;
 
         // 配了主域名且名字在它下面：这一关过了。凭据仍是空的，于是它停在「真发请求之前」那道门上——
         // 这里要的判据是「不再提主域名」，而不是去打一次云端的真接口
@@ -243,7 +243,7 @@ namespace AsynGyanis::Net
         const auto insideTheZone = publish(matched, "_acme-challenge.gyanis.space");
         ASSERT_FALSE(insideTheZone.succeeded);
         ASSERT_TRUE(insideTheZone.failureMessage.has_value());
-        EXPECT_EQ(insideTheZone.failureMessage->find("acme.dns.domain"), std::string::npos) << *insideTheZone.failureMessage;
+        EXPECT_EQ(insideTheZone.failureMessage->find("zoneDomainName"), std::string::npos) << *insideTheZone.failureMessage;
         EXPECT_NE(insideTheZone.failureMessage->find("凭据是空的"), std::string::npos) << *insideTheZone.failureMessage;
     }
 } // namespace AsynGyanis::Net

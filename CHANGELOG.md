@@ -22,8 +22,8 @@
   做成两个返回 `Core::Task` 的 `std::function` 而不是抽象基类，因为协程不能是虚函数，而各家 DNS 的差异只在
   「调哪个 API、按什么格式签」。仓库内自带第一家实现 `makeAliyunDns01TxtWriter`（阿里云云解析 RPC 风格 OpenAPI）：
   `publish` 报成功之前先用 `DescribeDomainRecords` 确认这条记录在权威侧查得到、再等一段结算时间，
-  `withdraw` 反查 RecordId 逐条删且查不到即成功（撤回必须幂等）。凭据只从环境变量
-  `ASYN_ACME_DNS_ACCESS_KEY_ID` / `ASYN_ACME_DNS_ACCESS_KEY_SECRET` 进，缺任一在起步时就拒。
+  `withdraw` 反查 RecordId 逐条删且查不到即成功（撤回必须幂等）。凭据由调用方交给 `AliyunDns01Configuration`（引擎侧没有 acme.* 服务端配置段；
+  签发探针那两个值走环境变量 `ASYN_ACME_DNS_ACCESS_KEY_ID` / `ASYN_ACME_DNS_ACCESS_KEY_SECRET`，缺任一起在起步时就拒）。
   `AcmeCertificateManager` 按「有没有交来动作对」选通道，一次签发只走一条，且写入之后的**每条**出口都撤——
   含写入自己报失败那一条（控制面超时的那次可能其实已经写成了，留下的 TXT 会让下一轮在同一名字上读到两条答案）。
   新增失败种类 `DnsRecordRejected`；`Core::Digest` 补 `hmacSha1`（签名口径规定用它，两档 HMAC 共用同一份

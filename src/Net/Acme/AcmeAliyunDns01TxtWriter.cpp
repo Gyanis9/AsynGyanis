@@ -299,11 +299,14 @@ namespace AsynGyanis::Net
         private:
             /**
              * @brief 名字推不出主域名时那条可操作的文案
+             * @details 要点名的是**真存在的那个开关**：本引擎没有 acme.* 服务端配置段，主域名是
+             *          `AliyunDns01Configuration::zoneDomainName` 这个字段（探针上对应 `--dns-zone`），
+             *          写成一个不存在的配置键会把运维引到一条找不到的路上
              */
             [[nodiscard]] std::string zoneSplitFailure(const std::string_view recordName) const
             {
                 return std::format("从记录名 {} 推不出云解析里的主域名：主域名不是「域名最后两段」那种形状时（例如整条主域名本身就是三级域名），"
-                                   "把云解析控制台里那条主域名原样填进 acme.dns.domain",
+                                   "把云解析控制台里那条主域名原样交给 zoneDomainName（用签发探针时是 --dns-zone）",
                                    recordName);
             }
 
@@ -368,9 +371,10 @@ namespace AsynGyanis::Net
             {
                 if (m_configuration.accessKeyId.empty() || m_configuration.accessKeySecret.empty())
                 {
-                    co_return std::unexpected("DNS-01 要用阿里云云解析，但凭据是空的：AccessKey 只走环境变量 "
-                                              "ASYN_ACME_DNS_ACCESS_KEY_ID 与 ASYN_ACME_DNS_ACCESS_KEY_SECRET，"
-                                              "不要把密钥写进配置文件（给它一个能改域名记录的钥匙，等同于把域名交出去）");
+                    co_return std::unexpected("DNS-01 要用阿里云云解析，但凭据是空的：把两条值填进 "
+                                              "AliyunDns01Configuration::accessKeyId 与 accessKeySecret"
+                                              "（签发探针那两个值从环境变量 ASYN_ACME_DNS_ACCESS_KEY_ID 与 ASYN_ACME_DNS_ACCESS_KEY_SECRET 读）；"
+                                              "不要让密钥进配置文件——一份能改域名记录的钥匙进了版本库，等于把域名交出去");
                 }
 
                 parameters["Format"]           = "JSON";
