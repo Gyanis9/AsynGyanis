@@ -40,7 +40,7 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API HttpServerAssemblyContext
     {
-        std::shared_ptr<PerIpConnectionLimiter> sharedPerIpLimiter;    ///< 跨监听器共用的按来源 IP 限额器
+        std::shared_ptr<PerIpConnectionLimiter> sharedPerIpLimiter; ///< 跨监听器共用的按来源 IP 限额器
         /**
          * @brief 跨监听器共用的限流桶
          * @details 传了它就必须是按 @c perProcessRateLimit 摊过的那一份：限流的整机口径与连接数同属
@@ -89,9 +89,8 @@ namespace AsynGyanis::Net
      * @param workerProcessCount 摊给几个进程，必须 ≥ 1；填 1 即不摊
      * @return PerProcessRateLimit 本进程应使用的速率与容量
      */
-    [[nodiscard]] ASYN_NET_API PerProcessRateLimit perProcessRateLimit(double wholeMachineRequestsPerSecond,
-                                                                      double wholeMachineBurstCapacity,
-                                                                      std::size_t workerProcessCount) noexcept;
+    [[nodiscard]] ASYN_NET_API PerProcessRateLimit perProcessRateLimit(double wholeMachineRequestsPerSecond, double wholeMachineBurstCapacity,
+                                                                       std::size_t workerProcessCount) noexcept;
 
     /**
      * @brief 把运维端点（连同令牌闸门）挂到一台服务器上

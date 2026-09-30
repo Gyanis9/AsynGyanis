@@ -19,8 +19,8 @@ namespace AsynGyanis::Net
     {
         /// server 段直接支持的键
         constexpr std::array<std::string_view, 9> kServerKeys{
-                "maximum_connections", "maximum_connections_per_ip", "expose_metrics", "ops_bearer_token", "metrics_port", "metrics_address",
-                "limits", "parser_limits", "rate_limit",
+                "maximum_connections", "maximum_connections_per_ip", "expose_metrics", "ops_bearer_token", "metrics_port", "metrics_address", "limits", "parser_limits",
+                "rate_limit",
         };
 
         /// limits 子段支持的键
@@ -331,9 +331,9 @@ namespace AsynGyanis::Net
             // 读的人得先懂 EADDRNOTAVAIL 才知道是「metrics_address 写错了」
             if (!Core::InetAddress::parseLiteral(configuration.metricsAddress, 0).has_value())
             {
-                throw Base::ConfigValidationException(sectionPath + ".metrics_address",
-                                                      std::format("不是可解析的 IP 字面量：「{}」。管理口要只听本机写 127.0.0.1（IPv6 用 ::1），要对外监听才写 0.0.0.0",
-                                                                  configuration.metricsAddress));
+                throw Base::ConfigValidationException(
+                        sectionPath + ".metrics_address",
+                        std::format("不是可解析的 IP 字面量：「{}」。管理口要只听本机写 127.0.0.1（IPv6 用 ::1），要对外监听才写 0.0.0.0", configuration.metricsAddress));
             }
         }
         // 有意不暴露空闲清扫节拍：它是超时误差的唯一来源（最坏误差 = 节拍 + 各连接自己的超时），
