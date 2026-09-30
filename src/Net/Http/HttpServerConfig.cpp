@@ -1,12 +1,14 @@
 #include "Net/Http/HttpServerConfig.h"
 
 #include "Base/Exception/ConfigValidationException.h"
+#include "Core/Socket/InetAddress.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -16,8 +18,9 @@ namespace AsynGyanis::Net
     namespace
     {
         /// server 段直接支持的键
-        constexpr std::array<std::string_view, 7> kServerKeys{
-                "maximum_connections", "maximum_connections_per_ip", "expose_metrics", "ops_bearer_token", "limits", "parser_limits", "rate_limit",
+        constexpr std::array<std::string_view, 9> kServerKeys{
+                "maximum_connections", "maximum_connections_per_ip", "expose_metrics", "ops_bearer_token", "metrics_port", "metrics_address",
+                "limits", "parser_limits", "rate_limit",
         };
 
         /// limits 子段支持的键
@@ -304,6 +307,35 @@ namespace AsynGyanis::Net
                 throw Base::ConfigValidationException(sectionPath + ".ops_bearer_token", "不能是空串：空串等于挂一道永远放行的闸。不需要鉴权就删掉这一项");
             }
         }
+        if (section.contains("metrics_port"))
+        {
+            const std::int64_t portValue = requireNonNegativeInteger(section.at("metrics_port"), sectionPath + ".metrics_port");
+            // 端口要装得进 uint16_t：静默取模会让进程去听一个谁也没配的端口，症状是「指标抓不到」
+            // 而配置文件看着完全正确——这类数一旦越界只能拒，不能折
+            if (portValue > std::numeric_limits<std::uint16_t>::max())
+            {
+                throw Base::ConfigValidationException(sectionPath + ".metrics_port",
+                                                      std::format("必须在 0-{} 之间（0 = 运维端点留在业务口上），当前是 {}", std::numeric_limits<std::uint16_t>::max(), portValue));
+            }
+            configuration.metricsPort = static_cast<std::uint16_t>(portValue);
+        }
+        if (section.contains("metrics_address"))
+        {
+            const Base::ConfigValue &value = section.at("metrics_address");
+            if (!value.is_string())
+            {
+                throw Base::ConfigValidationException(sectionPath + ".metrics_address", "必须是 IP 文本字符串（如 \"127.0.0.1\" 或 \"::1\"）");
+            }
+            configuration.metricsAddress = value.get<std::string>();
+            // 地址在读配置时就判能不能解析：留到 bind 那一刻失败，报出来的是平台错误码，
+            // 读的人得先懂 EADDRNOTAVAIL 才知道是「metrics_address 写错了」
+            if (!Core::InetAddress::parseLiteral(configuration.metricsAddress, 0).has_value())
+            {
+                throw Base::ConfigValidationException(sectionPath + ".metrics_address",
+                                                      std::format("不是可解析的 IP 字面量：「{}」。管理口要只听本机写 127.0.0.1（IPv6 用 ::1），要对外监听才写 0.0.0.0",
+                                                                  configuration.metricsAddress));
+            }
+        }
         // 有意不暴露空闲清扫节拍：它是超时误差的唯一来源（最坏误差 = 节拍 + 各连接自己的超时），
         // 手调它只会把超时语义调坏；需要更细的节拍应当在代码里改而不是配置里拧
 
@@ -332,6 +364,20 @@ namespace AsynGyanis::Net
         {
             throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".ops_bearer_token",
                                                   "配了令牌但没有 expose_metrics：闸门保护不到任何端点。要么两处都开，要么把令牌这一项删掉");
+        }
+        // 同理：单独一个管理口端口号没有任何端点可听，或者只改了监听地址却没开管理口——
+        // 这两种都让「来源收口」这件事看起来做了而实际没做
+        if (configuration.metricsPort != 0 && !configuration.exposeMetrics)
+        {
+            throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".metrics_port",
+                                                  "配了管理口端口却没有 expose_metrics：这个口上不会有任何端点。要么两处都开，要么把 metrics_port 设回 0");
+        }
+        if (configuration.metricsPort == 0 && configuration.metricsAddress != "127.0.0.1")
+        {
+            throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".metrics_address",
+                                                  std::format("metrics_port 是 0（端点留在业务口上），此时 metrics_address=「{}」不会被任何人使用。"
+                                                              "要给运维端点单独收口就同时设 metrics_port；只想公开到所有网卡就别写这一项",
+                                                              configuration.metricsAddress));
         }
         return configuration;
     }

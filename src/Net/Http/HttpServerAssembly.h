@@ -19,6 +19,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Net/Http/HttpServerConfig.h"
+#include "Net/Http/Middleware.h"
 
 #include <expected>
 #include <memory>
@@ -40,12 +41,19 @@ namespace AsynGyanis::Net
     struct ASYN_NET_API HttpServerAssemblyContext
     {
         std::shared_ptr<PerIpConnectionLimiter> sharedPerIpLimiter;    ///< 跨监听器共用的按来源 IP 限额器
-        std::shared_ptr<TokenBucket>            sharedRateLimitBucket; ///< 跨监听器共用的限流桶
+        /**
+         * @brief 跨监听器共用的限流桶
+         * @details 传了它就必须是按 @c perProcessRateLimit 摊过的那一份：限流的整机口径与连接数同属
+         *          「每进程只看得见自己这份账」，直接拿配置里的速率建桶，起 N 个进程就放行 N 倍。
+         *          装配出口会把桶上的两个数与摊分结果比对，不一致当场拒。
+         */
+        std::shared_ptr<TokenBucket> sharedRateLimitBucket;
         /**
          * @brief 整机限额要摊到几个 worker 进程上（默认 1 = 单进程，不做摊分）
-         * @details 每个进程只看得见自己这份账：`maximum_connections` 与 `maximum_connections_per_ip`
-         *          配成整机的数、又起 N 个进程，实际放行的是 N 倍。这里按进程数向上取整摊到每台，
-         *          使「配置里写的是整机口径」这件事真的成立。0 是用法错误（当场拒，不当「不限」）。
+         * @details 每个进程只看得见自己这份账：`maximum_connections`、`maximum_connections_per_ip`
+         *          与 `rate_limit.rate` 配成整机的数、又起 N 个进程，实际放行的是 N 倍。连接数按进程数
+         *          向上取整摊到每台，速率按精确除法摊（速率可以是小数，取整会把 0.5 请求/s 抬成 1）。
+         *          0 是用法错误（当场拒，不当「不限」）。
          * @note 摊分是近似：POSIX 侧内核按连接把新连接分散给各进程，长连接偏斜时某一台的瞬时并发仍可能
          *       高于份额。要精确的跨进程全局闸需要共享内存或外部存储，本层没做，别把这里当成那个东西
          */
@@ -63,12 +71,61 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API std::size_t perProcessShare(std::size_t wholeMachineValue, std::size_t workerProcessCount) noexcept;
 
     /**
+     * @brief 摊到本进程的一份限流口径
+     */
+    struct ASYN_NET_API PerProcessRateLimit
+    {
+        double requestsPerSecond{0.0}; ///< 本进程的补令牌速率；0 = 不限流
+        double burstCapacity{1.0};     ///< 本进程的桶容量；最低 1.0，容量小于 1 的桶一个请求都放不出
+    };
+
+    /**
+     * @brief 把整机口径的限流摊到每个 worker 进程上
+     * @details 与连接数的摊分同属一条规则，单列一处是因为两个量的取整方向相反：速率可以是小数，
+     *          向上取整会把 0.5 请求/s 抬成 1（一台进程被放行两倍）；而桶容量必须留够 1 枚令牌，
+     *          整除到 0.25 会让桶永远攒不满一个令牌，TokenBucket 直接构造失败。
+     * @param wholeMachineRequestsPerSecond 配置里的整机速率；0 表示不限流，原样返回 0
+     * @param wholeMachineBurstCapacity 配置里的整机突发量，仅在速率非 0 时有意义
+     * @param workerProcessCount 摊给几个进程，必须 ≥ 1；填 1 即不摊
+     * @return PerProcessRateLimit 本进程应使用的速率与容量
+     */
+    [[nodiscard]] ASYN_NET_API PerProcessRateLimit perProcessRateLimit(double wholeMachineRequestsPerSecond,
+                                                                      double wholeMachineBurstCapacity,
+                                                                      std::size_t workerProcessCount) noexcept;
+
+    /**
+     * @brief 把运维端点（连同令牌闸门）挂到一台服务器上
+     * @tparam ServerType HttpServer 或 HttpsServer（两者都有同名注册接口）
+     * @details 这是那份注册逻辑的**唯一**实现：装配出口在 `metrics_port = 0` 时用它挂到业务口上，
+     *          另起管理监听器的调用方用它挂到管理口上。分两处写的后果是「业务口撤了端点、管理口忘了加闸」，
+     *          而那正是这一轮要消灭的形状。`exposeMetrics` 关掉时什么都不做。
+     * @param host 目标服务器，必须尚未 start()
+     * @param configuration 已读出的配置（起作用的是 `exposeMetrics` 与 `opsBearerToken`）
+     */
+    template<typename ServerType>
+    void registerOperationEndpoints(ServerType &host, const HttpServerConfiguration &configuration)
+    {
+        if (!configuration.exposeMetrics)
+        {
+            return;
+        }
+        // 闸门与端点必须同进同出：只挂端点等于公开，只挂闸门等于保护不存在的东西
+        if (!configuration.opsBearerToken.empty())
+        {
+            host.router().addMiddleware(opsAccessMiddleware(OpsAccessOptions{.bearerToken = configuration.opsBearerToken}));
+        }
+        host.enableMetricsEndpoint();
+        host.enableHealthEndpoint();
+        host.enableLoopDiagnosticsEndpoint();
+    }
+
+    /**
      * @brief 把 server 段的配置落到一台明文 HTTP 服务器上
      * @param server 目标服务器，尚未 start()
      * @param configuration 由 readHttpServerConfiguration() 读出来的配置
      * @param context 跨监听器共享的对象（可留空，见 HttpServerAssemblyContext）
-     * @return std::expected<void, std::string> 成功为空；失败给出中文原因（当前只有一种：
-     *         传进来的共享限额器与 `maximum_connections_per_ip` 不一致）
+     * @return std::expected<void, std::string> 成功为空；失败给出中文原因（两种：传进来的共享限额器
+     *         与 @c maximum_connections_per_ip 不一致，或共享限流桶与 @c rate_limit 摊分结果不一致）
      */
     [[nodiscard]] ASYN_NET_API std::expected<void, std::string> applyHttpServerConfiguration(HttpServer &server, const HttpServerConfiguration &configuration,
                                                                                              const HttpServerAssemblyContext &context = {});

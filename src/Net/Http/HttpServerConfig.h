@@ -63,6 +63,16 @@ namespace AsynGyanis::Net
          * @note 这条只能写在配置文件里：命令行上的令牌会进 shell 历史与进程列表，等于把秘密交给运维通道
          */
         std::string opsBearerToken{};
+        /**
+         * @brief 运维端点单独听在哪个端口；0 = 端点仍留在业务口上
+         * @details 两个用处：① 来源收口——管理口默认只听回环（`metricsAddress`），业务口可以继续开
+         *          在 0.0.0.0；② 多进程部署时每个进程各听一个端口（调用方按进程序号错开），
+         *          采集端就能按进程聚合而不是随机命中某一台。
+         * @note 只在 `exposeMetrics` 打开时有意义，两者都不开等于配了个没人听的端口
+         */
+        std::uint16_t metricsPort{0};
+        /// 管理口的监听地址，默认只听回环。写成 `0.0.0.0` 就是把指标公开到所有网卡上，请连同令牌一起想清楚
+        std::string metricsAddress{"127.0.0.1"};
     };
 
     /**

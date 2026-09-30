@@ -308,6 +308,8 @@ int main(int argc, char **argv)
     /// 会话票据密钥文件，可重复给（首份签发、其余只解开旧票据）；空 = 按 OpenSSL 默认随机密钥
     std::vector<std::string> ticketKeyFiles;
     std::string              configFile;
+    /// 本进程在 worker 池里的序号：由 master 逐份传下来（见 WorkerSupervisor），用来给管理口错开端口
+    unsigned workerIndex = 0;
     /// 静态目录（--static）：空表示不提供服务。三条通道（h1/h2/h3）共用同一个目录，与 --metrics、
     /// --compress 一样是「一份配置喂三个监听器」，不给某一条留后门
     std::string staticDirectory;
@@ -390,6 +392,13 @@ int main(int argc, char **argv)
             ++i;
         } else if (arg == "--worker")
             isWorkerProcess = true;
+        else if (arg == "--worker-index")
+        {
+            // 由 master 逐份传下来的槽位序号（内部开关，用户不必手写）：worker 补起时序号不变，
+            // 所以它的管理口号也不变，采集端抓到的始终是同一个进程
+            workerIndex = static_cast<unsigned>(Samples::readNumericOption(argc, argv, i, "--worker-index", 0U, 4095U));
+            ++i;
+        }
         else if (arg == "--help")
         {
             // 只记下意图、就地不输出：用法说明要走日志器，而日志器取决于 --log-json，此刻还没装配
@@ -432,7 +441,10 @@ int main(int argc, char **argv)
         LOG_INFO("            比例、批量与时限分别是 sample_ratio / batch_span_count / export_interval_ms");
         LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）、GET /healthz 与 GET /debug/loops（进程内每条事件循环一行的 JSON，");
         LOG_INFO("          看哪条循环被处理器占住）；开了 --h3 时 h3 的请求数/状态码类一并计入");
-        LOG_INFO("            本框架不做鉴权，公网可达时请自行加中间件或交给反向代理屏蔽");
+        LOG_INFO("          这三项的收口只能写在 --config 的 server 段里：ops_bearer_token 给 /metrics 与 /debug/loops");
+        LOG_INFO("          挂一道 Bearer 闸门（/healthz 刻意不挡，存活探针要能被编排器无凭据访问）；");
+        LOG_INFO("          metrics_port + metrics_address 让运维端点另起一台只听指定地址的服务器（默认回环），");
+        LOG_INFO("          多进程 --workers 下每个进程各听 metrics_port+序号，采集端按进程抓");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
         LOG_INFO("  --pin-threads 启动时把每条工作循环线程绑到一枚逻辑核上（按线程池下标顺序占核，");
         LOG_INFO("            线程数多于可用核数时多出来的线程保持可迁移；容器里按 cpuset 放行的核算）");
@@ -566,7 +578,7 @@ int main(int argc, char **argv)
 
     // 多进程：master 只做编排，自己不服务——既当 master 又当 worker 会让「谁在服务」含糊，
     // 也会让「worker 崩了补一个」这条路径多一种要处理的形态。参数原样转给 worker，
-    // 只多一个 --worker（worker 据此跳过这一段，直接去跑服务器）
+    // 多两个内部开关：--worker（据此跳过这一段，直接去跑服务器）与 --worker-index（本进程的槽位号）
     if (workerProcessCount > 1 && !isWorkerProcess)
     {
         try
@@ -575,6 +587,9 @@ int main(int argc, char **argv)
             supervisorConfiguration.executablePath = argv[0];
             supervisorConfiguration.workerArguments.assign(argv + 1, argv + argc);
             supervisorConfiguration.workerArguments.emplace_back("--worker");
+            // 每个 worker 拿到自己那一份槽位号：管理口按「metrics_port + 序号」错开，采集端才能
+            // 一次抓一个进程并把各进程的数加总，而不是随机命中某一台
+            supervisorConfiguration.workerIndexArgument = "--worker-index";
             supervisorConfiguration.workerCount = workerProcessCount;
 
             Core::WorkerSupervisor supervisor(std::move(supervisorConfiguration));
@@ -735,12 +750,17 @@ int main(int argc, char **argv)
     // 与 --metrics 无关（request-id 不是指标端点的一部分，一直开着）
     std::shared_ptr<Net::HttpRequestIdGenerator> http3RequestIdGenerator;
 
-    // 限流桶同样只有一份：它要的正是「进程级全局 RPS 上限」，各持一份等于上限乘以监听器数
+    // 限流桶同样只有一份：它要的是「本进程这一份的全局 RPS 上限」，各持一份等于上限乘以监听器数。
+    // 桶里的数必须由摊分出口给：装配出口会拿桶上的速率与容量比对摊分结果，不一致就拒绝装配
     std::shared_ptr<Net::TokenBucket> rateLimitBucket;
-    if (configuration.requestsPerSecond > 0.0)
+    const Net::PerProcessRateLimit    rateShare = Net::perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity,
+                                                                          workerProcessTotal);
+    if (rateShare.requestsPerSecond > 0.0)
     {
-        rateLimitBucket = std::make_shared<Net::TokenBucket>(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity);
-        LOG_INFO_FMT("全局限流 {} 请求/s（桶容量 {}，所有监听器共享同一个桶）", configuration.requestsPerSecond, configuration.rateLimitBurstCapacity);
+        rateLimitBucket = std::make_shared<Net::TokenBucket>(rateShare.requestsPerSecond, rateShare.burstCapacity);
+        LOG_INFO_FMT("全局限流：整机 {} 请求/s（桶容量 {}）摊给 {} 个进程 → 每台 {:.4g} 请求/s（桶容量 {:.4g}），本进程内所有监听器共享同一个桶",
+                     configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, workerProcessTotal, rateShare.requestsPerSecond,
+                     rateShare.burstCapacity);
     }
 
     // 在途正文预算同样只有一份：它要的是「整个进程的正文占用上限」，各监听器各持一份等于上限乘以监听器数
@@ -943,6 +963,40 @@ int main(int argc, char **argv)
 
     LOG_INFO_FMT("{} {}Server instances created, all accept tasks scheduled", actualThreads, useHttps ? "Https" : "Http");
 
+    // 运维端点另起一台只听管理口的服务器：两件事一次解决——① 来源收口（业务口可以开在 0.0.0.0，
+    // 管理口默认只听回环）；② 多进程时每个进程一个端口（base + 本进程序号），采集端按进程聚合，
+    // 不再出现「一次抓取随机命中某个 worker、计数器在两次抓取之间回落」。
+    // 端点与闸门通过 registerOperationEndpoints 挂，与装配出口那条路径同一份实现
+    std::unique_ptr<Net::HttpServer> adminServer;
+    std::optional<Core::Task<>>      adminListenTask;
+    if (configuration.exposeMetrics && configuration.metricsPort != 0)
+    {
+        const std::uint32_t adminPort = static_cast<std::uint32_t>(configuration.metricsPort) + workerIndex;
+        if (adminPort > std::numeric_limits<std::uint16_t>::max())
+        {
+            // 端口回绕会去听一个谁也没配的号（比如 base=65534、index=3 → 1），Prometheus 抓不到数
+            // 还以为是服务的问题，因此宁可直接不起
+            LOG_ERROR_FMT("管理口端口算不出合法值：metrics_port={} 加上进程序号 {} 超出 65535，服务未启动", configuration.metricsPort, workerIndex);
+            return 1;
+        }
+        const auto adminAddress = Core::InetAddress::parseLiteral(configuration.metricsAddress, static_cast<std::uint16_t>(adminPort));
+        if (!adminAddress.has_value())
+        {
+            LOG_ERROR_FMT("metrics_address「{}」解析不出来，服务未启动", configuration.metricsAddress);
+            return 1;
+        }
+        adminServer = std::make_unique<Net::HttpServer>(pool.eventLoop(0), *adminAddress);
+        // 共用那份采集端：管理口要报的是整进程的数，不是它自己那台服务器的零
+        joinSharedMetricsCollector(adminServer);
+        Net::registerOperationEndpoints(*adminServer, configuration);
+        adminListenTask = adminServer->start();
+        pool.eventLoop(0).scheduler().schedule(adminListenTask->handle());
+        listeningServers.push_back(adminServer.get());
+        servers.push_back(std::move(adminServer));
+        serverLoopIndexes.push_back(0);
+        LOG_INFO_FMT("运维端点单独听在 {}:{}（业务口上不注册这三个端点）", configuration.metricsAddress, adminPort);
+    }
+
     // HTTP/3 与 h1/h2 共存：它走 UDP，与上面的 TCP 端用同一个端口号互不干扰。
     // 只起一台而不做多监听器分发：QuicServer 内部已经按连接标识把报文分派到各自的连接，
     // 再叠一层 SO_REUSEPORT 只会把同一条连接的报文散到互不相识的监听器上
@@ -1034,11 +1088,12 @@ int main(int argc, char **argv)
 
         // 指标端点是进程内的口径：多 worker 进程共用同一个监听端口时，一次抓取只命中其中一个进程，
         // 计数器会在两次抓取之间回落（同一进程内的多个监听器已在装配时共用一份采集端，跨进程没有
-        // 这条通道）。不写出来的话，运维看到的就是「流量忽大忽小」而不是「这里少了一份进程」
-        if (configuration.exposeMetrics && workerProcessCount > 1)
+        // 这条通道）。不写出来的话，运维看到的就是「流量忽大忽小」而不是「这里少了一份进程」。
+        // 配了 metrics_port 就不提醒：每台各听一个端口（base + 槽位号），抓取本来就是按进程来的
+        if (configuration.exposeMetrics && workerProcessCount > 1 && configuration.metricsPort == 0)
         {
             LOG_WARN_FMT("--metrics 与 --workers {} 一起用：每条抓取只命中一个 worker 进程的口径，"
-                         "计数器会在两次抓取之间变小；要按进程聚合请让每个进程各自暴露一个抓取端点，或按单进程跑",
+                         "计数器会在两次抓取之间变小；要按进程聚合请配 server.metrics_port（每个进程各听 base+序号 一个口），或按单进程跑",
                          workerProcessCount);
         }
     }

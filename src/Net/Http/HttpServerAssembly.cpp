@@ -5,6 +5,7 @@
 #include "Net/Http/Middleware.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
+#include <algorithm>
 #include <format>
 #include <utility>
 
@@ -20,6 +21,25 @@ namespace AsynGyanis::Net
         // 向上取整：宁可每台多几个名额，也不要「整机 100 摊成 4×25=100 但被向下取整吃掉余数」，
         // 那种情况下配置写的整机上限永远达不到，而差多少没人去算
         return (wholeMachineValue + workerProcessCount - 1) / workerProcessCount;
+    }
+
+    PerProcessRateLimit perProcessRateLimit(const double wholeMachineRequestsPerSecond,
+                                            const double wholeMachineBurstCapacity,
+                                            const std::size_t workerProcessCount) noexcept
+    {
+        if (wholeMachineRequestsPerSecond <= 0.0)
+        {
+            return PerProcessRateLimit{};
+        }
+        if (workerProcessCount <= 1)
+        {
+            return PerProcessRateLimit{.requestsPerSecond = wholeMachineRequestsPerSecond, .burstCapacity = wholeMachineBurstCapacity};
+        }
+        const double processCount = static_cast<double>(workerProcessCount);
+        // 容量兜在 1.0：整机突发量小于进程数时（例如桶容量 2 摊给 4 个进程），整除会给出一个
+        // 攒不满一枚令牌的桶——TokenBucket 的构造直接拒绝容量小于 1，宁可每台各留一个突发名额
+        return PerProcessRateLimit{.requestsPerSecond = wholeMachineRequestsPerSecond / processCount,
+                                   .burstCapacity     = std::max(1.0, wholeMachineBurstCapacity / processCount)};
     }
 
     namespace
@@ -69,29 +89,39 @@ namespace AsynGyanis::Net
                 server.setPerIpConnectionLimiter(std::make_shared<PerIpConnectionLimiter>(perProcessMaximumPerIp));
             }
 
-            // 限流桶同理：多台共用一份时由调用方传入，否则本台按配置建一份
+            // 限流桶同理：多台共用一份时由调用方传入，否则本台按配置建一份（0 表示不设这道闸门，保持不动）
+            // 传入的那一份必须与摊分结果一致——桶的速率在构造时就定死，配置写着整机 100 而桶跑的是
+            // 100/进程，四个进程就放行 400，与连接数那条被拒的偏差长得一模一样，不该只有一处出声
+            const PerProcessRateLimit rateShare = perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity,
+                                                                     context.workerProcessCount);
             if (context.sharedRateLimitBucket != nullptr)
             {
+                if (rateShare.requestsPerSecond > 0.0 && (context.sharedRateLimitBucket->tokensPerSecond() != rateShare.requestsPerSecond ||
+                                                           context.sharedRateLimitBucket->burstCapacity() != rateShare.burstCapacity))
+                {
+                    return std::unexpected(std::format("装配冲突：传入的共享限流桶是 {} 请求/s（桶容量 {}），而配置摊到本进程后应是 {} 请求/s（桶容量 {}）"
+                                                       "（rate_limit.rate={} 摊给 {} 个进程）。"
+                                                       "多条通道共用一个桶时，请让那一个与整机配置对得上（或对不上时把速率设为 0）",
+                                                       context.sharedRateLimitBucket->tokensPerSecond(),
+                                                       context.sharedRateLimitBucket->burstCapacity(),
+                                                       rateShare.requestsPerSecond,
+                                                       rateShare.burstCapacity,
+                                                       configuration.requestsPerSecond,
+                                                       context.workerProcessCount));
+                }
                 server.router().addMiddleware(tokenBucketRateLimiterMiddleware(context.sharedRateLimitBucket));
-            } else if (configuration.requestsPerSecond > 0.0)
+            } else if (rateShare.requestsPerSecond > 0.0)
             {
                 server.router().addMiddleware(
-                        tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity)));
+                        tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(rateShare.requestsPerSecond, rateShare.burstCapacity)));
             }
 
-            // 运维面三件套同开：只开其一会让「抓不到数」与「以为没暴露」互相伪装
-            if (configuration.exposeMetrics)
+            // 运维面三件套同开：只开其一会让「抓不到数」与「以为没暴露」互相伪装。
+            // metrics_port 非 0 时这里什么都不挂：端点归调用方另起的那台管理监听器（默认只听回环，
+            // 多进程时每个进程一个端口）——留在业务口上就等于跟着业务口一起公开出去
+            if (configuration.metricsPort == 0)
             {
-                // 令牌闸门只拦 /metrics 与 /debug/loops：那两个读得到连接数、速率与每条循环的状态，
-                // 而 /healthz 要能被编排器无凭据访问（正文固定、不含业务数据）。
-                // 刻意不把它做成「所有路由都要令牌」：那会让业务侧自己注册的公开端点也一起被挡
-                if (!configuration.opsBearerToken.empty())
-                {
-                    server.router().addMiddleware(opsAccessMiddleware(OpsAccessOptions{.bearerToken = configuration.opsBearerToken}));
-                }
-                server.enableMetricsEndpoint();
-                server.enableHealthEndpoint();
-                server.enableLoopDiagnosticsEndpoint();
+                registerOperationEndpoints(server, configuration);
             }
             return {};
         }

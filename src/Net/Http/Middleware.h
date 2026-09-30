@@ -696,6 +696,20 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 补令牌速率（观测用，不参与判定）
+         * @return double 每秒补多少枚令牌
+         * @note 给装配出口的「共享桶与整机配置是否对得上」判据用：桶的速率在构造时定死，
+         *       传进来一份与配置摊分结果不一致的桶就等于配置没生效，而这类偏差只能问桶
+         */
+        [[nodiscard]] double tokensPerSecond() const noexcept { return m_tokensPerSecond; }
+
+        /**
+         * @brief 桶容量（观测用，不参与判定）
+         * @return double 瞬时允许突发多少枚
+         */
+        [[nodiscard]] double burstCapacity() const noexcept { return m_burstCapacity; }
+
+        /**
          * @brief 当前桶里的令牌数（观测用，不参与判定）
          * @return double 令牌数，取值在 [0, 桶容量] 内
          */

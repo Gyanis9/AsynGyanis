@@ -261,6 +261,14 @@ namespace AsynGyanis::Core
         Platform::Process::LaunchOptions launchOptions;
         launchOptions.executablePath = m_configuration.executablePath;
         launchOptions.arguments      = m_configuration.workerArguments;
+        // 槽位序号按进程错开东西的调用方需要它（补起的 worker 沿用同一号，所以号与端口是一一对得上的）。
+        // 追加在固定参数之后、移交参数之前：两者都在尾部，先后无所谓，但序号必须在移交之前落定，
+        // 否则读参数的那一侧看到的位置会随平台变
+        if (!m_configuration.workerIndexArgument.empty())
+        {
+            launchOptions.arguments.push_back(m_configuration.workerIndexArgument);
+            launchOptions.arguments.push_back(std::to_string(workerIndex));
+        }
         // 每个 worker 进自己名下的进程组：这是 Windows 上 requestTermination() 发得出 CTRL_BREAK 的前提
         // （组是控制台事件的投递单位，不给独立组就只能整组广播，那会打断 master 自己）。
         // POSIX 上这个字段无效果——那边的体面退出走 SIGTERM

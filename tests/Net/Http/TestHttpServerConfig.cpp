@@ -109,6 +109,8 @@ namespace AsynGyanis::Net
         serverMembers.emplace("maximum_connections_per_ip", integer(16));
         serverMembers.emplace("expose_metrics", boolean(true));
         serverMembers.emplace("ops_bearer_token", Base::ConfigValue("assemble-test-token"));
+        serverMembers.emplace("metrics_port", integer(9101));
+        serverMembers.emplace("metrics_address", text("127.0.0.2"));
         serverMembers.emplace("limits", object(Base::ConfigObject{
                                                 {"idle_timeout_ms", integer(30000)},
                                                 {"read_timeout_ms", integer(15000)},
@@ -136,6 +138,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.maximumConnectionsPerIp, 16u);
         EXPECT_TRUE(configuration.exposeMetrics);
         EXPECT_EQ(configuration.opsBearerToken, "assemble-test-token");
+        EXPECT_EQ(configuration.metricsPort, 9101U);
+        EXPECT_EQ(configuration.metricsAddress, "127.0.0.2");
         EXPECT_EQ(configuration.limits.idleTimeout, std::chrono::milliseconds(30000));
         EXPECT_EQ(configuration.limits.readTimeout, std::chrono::milliseconds(15000));
         EXPECT_EQ(configuration.limits.writeTimeout, std::chrono::milliseconds(20000));
@@ -165,6 +169,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.maximumConnections, 64u);
         EXPECT_EQ(configuration.limits.readTimeout, defaults.limits.readTimeout);
         EXPECT_EQ(configuration.parserLimits.maximumHeaderCount, defaults.parserLimits.maximumHeaderCount);
+        // 管理口默认「不另起」且只听回环：这两条默认值就是这一项的安全档，旧配置上不必改一个字
+        EXPECT_EQ(configuration.metricsPort, defaults.metricsPort);
+        EXPECT_EQ(configuration.metricsAddress, "127.0.0.1");
     }
 
     /**
@@ -289,6 +296,72 @@ namespace AsynGyanis::Net
                 {"ops_bearer_token", integer(42)},
         };
         EXPECT_THROW(expectConfigurationRejected(makeRootDocument(tokenIsNumber)), Base::ConfigValidationException);
+    }
+
+    /**
+     * @brief 钉住：管理口的四种「配了等于没配」与两种会静默变形的写法都当场拒
+     * @details 端口越界静默取模会让进程去听一个谁也没配的号（症状是指标抓不到而配置看着正确）；
+     *          地址解析留到 bind 那一刻只能报平台错误码；只配端口不开端点、只配地址而端口是 0，
+     *          两种都让「来源收口」看起来做了而实际没做
+     */
+    TEST(HttpServerConfig, RejectsUnusableAdminListenerConfiguration)
+    {
+        // 端口超出 uint16_t：宁可拒，不折回
+        const Base::ConfigObject portTooLarge{
+                {"expose_metrics", boolean(true)},
+                {"metrics_port", integer(70000)},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(portTooLarge)), Base::ConfigValidationException);
+
+        // 负数端口：取模后会去听一个高位端口，而配置文件上写的是「-1」
+        const Base::ConfigObject portNegative{
+                {"expose_metrics", boolean(true)},
+                {"metrics_port", integer(-1)},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(portNegative)), Base::ConfigValidationException);
+
+        // 地址不是可解析的 IP 字面量：写成主机名要的是 DNS，而这里只收字面量
+        const Base::ConfigObject addressIsHostname{
+                {"expose_metrics", boolean(true)},
+                {"metrics_port", integer(9101)},
+                {"metrics_address", text("localhost")},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(addressIsHostname)), Base::ConfigValidationException);
+
+        // 地址写成数字类型
+        const Base::ConfigObject addressIsNumber{
+                {"expose_metrics", boolean(true)},
+                {"metrics_port", integer(9101)},
+                {"metrics_address", integer(1)},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(addressIsNumber)), Base::ConfigValidationException);
+
+        // 配了管理口却没开端点：这个口上什么都听不到
+        const Base::ConfigObject portWithoutEndpoints{
+                {"metrics_port", integer(9101)},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(portWithoutEndpoints)), Base::ConfigValidationException);
+
+        // 只改监听地址而端口是 0：端点还挂在业务口上，这个地址没人用
+        const Base::ConfigObject addressWithoutPort{
+                {"expose_metrics", boolean(true)},
+                {"metrics_address", text("0.0.0.0")},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(addressWithoutPort)), Base::ConfigValidationException);
+
+        // 正向对照：三项齐配才收，且默认地址（回环）在端口为 0 时不算冲突
+        const Base::ConfigObject wellFormed{
+                {"expose_metrics", boolean(true)},
+                {"metrics_port", integer(9101)},
+                {"metrics_address", text("::1")},
+        };
+        EXPECT_EQ(readHttpServerConfiguration(makeRootDocument(wellFormed)).metricsPort, 9101U);
+
+        const Base::ConfigObject endpointsOnly{
+                {"expose_metrics", boolean(true)},
+        };
+        // 不写管理口的两项就是「端点仍留在业务口上」：这是旧配置的形状，必须照收
+        EXPECT_EQ(readHttpServerConfiguration(makeRootDocument(endpointsOnly)).metricsPort, 0U);
     }
 
     /**

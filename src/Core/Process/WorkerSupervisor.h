@@ -83,6 +83,15 @@ namespace AsynGyanis::Core
             /// 有值即启用「master 送监听套接字」那套编排，本类会往 worker 参数尾部追加
             /// kHandedOverListenerArgument 与那条一次性通道的地址
             std::optional<Handoff> handoff;
+            /**
+             * @brief 给每个 worker 传槽位序号用的参数名；空 = 不传
+             * @details 序号是「本进程在池子里排第几」，master 补起一个崩掉的 worker 时沿用同一个槽位号，
+             *          因此它每次拿到的号也不变。调用方需要按进程错开什么东西（比如每进程一个指标抓取端口）
+             *          才用得着它；本类只负责把 `<参数名> <十进制序号>` 追加到该 worker 的参数尾部，
+             *          不认识这个约定的子进程会照常忽略它。
+             * @note 名字由调用方定：参数约定属于应用，不属于编排层
+             */
+            std::string workerIndexArgument{};
         };
 
         /**
