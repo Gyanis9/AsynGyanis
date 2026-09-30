@@ -48,6 +48,10 @@ namespace AsynGyanis::Net
         /// 每个用法它的用例仍会在自己的断言上红，只是从「夹具没起来」变成「请求全拿不到响应」。
         constexpr std::chrono::milliseconds kPeerReadyTimeout{30000};
 
+        /// 黑洞那把 UDP 占号的尝试次数与间隔：撞的是别的进程刚放掉的号，等得起一小会儿
+        constexpr int                       kUdpHoldAttempts = 10;
+        constexpr std::chrono::milliseconds kUdpHoldRetryDelay{100};
+
         /// 既是服务端身份又是它自己的信任锚，因此同一份文件两头通用（SAN 里有 IP:127.0.0.1）
         const std::filesystem::path kLoopbackCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_cert.pem";
         const std::filesystem::path kLoopbackKeyPath         = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_key.pem";
@@ -154,6 +158,16 @@ namespace AsynGyanis::Net
                 return m_isReady.load(std::memory_order_acquire);
             }
 
+            /**
+             * @brief 黑洞形态那把 UDP 有没有真占住号
+             * @details 单独问而不是并进 `awaitRunning()`：占不住是「本例的前提没构造出来」，
+             *          报成「对端没起来」会把人引去查服务端，而该查的是这台机上谁的 UDP 号撞上了。
+             */
+            [[nodiscard]] bool udpHeld() const noexcept
+            {
+                return m_udpHeld;
+            }
+
         private:
             /**
              * @brief 起 QUIC 服务端并把 listen 协程投进循环（端口由内核挑，落定之后才有号）
@@ -186,16 +200,30 @@ namespace AsynGyanis::Net
              * @brief 占住这个 UDP 端口但永不应答：客户端的 Initial 发出去就石沉大海
              * @details 描述符持到析构，端口因此一直被占着——这正是「黑洞」与「没人听」（立刻吃一个
              *          ICMP 端口不可达）的分别，两条用例判的是两件不同的事。
+             * @param port 刚才那台 HTTPS 监听拿到的号，黑洞要占的是**同一个号**
+             * @return bool 有没有真占住；占不住时调用方按「前提没构造出来」处置，不能报成「对端没起来」
+             * @note 重试是因为这个号是内核刚发给 TCP 的，而 UDP 那张协议控制块可能与**别的进程**刚放掉
+             *       的那个号撞车（并发跑整册用例时实测撞到过）；这不是产品问题，是本例的前提。
              */
-            void holdUdpPortSilently(const std::uint16_t port)
+            [[nodiscard]] bool holdUdpPortSilently(const std::uint16_t port)
             {
-                Platform::SocketAddress requested{};
-                requested.length           = sizeof(sockaddr_in);
-                auto *addressIn            = reinterpret_cast<sockaddr_in *>(&requested.storage);
-                addressIn->sin_family      = AF_INET;
-                addressIn->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-                addressIn->sin_port        = htons(port);
-                m_silentUdp.emplace(Platform::DatagramSocket::bindTo(requested));
+                for (int attempt = 0; attempt < kUdpHoldAttempts; ++attempt)
+                {
+                    Platform::SocketAddress requested{};
+                    requested.length           = sizeof(sockaddr_in);
+                    auto *addressIn            = reinterpret_cast<sockaddr_in *>(&requested.storage);
+                    addressIn->sin_family      = AF_INET;
+                    addressIn->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                    addressIn->sin_port        = htons(port);
+                    m_silentUdp.emplace(Platform::DatagramSocket::bindTo(requested));
+                    if (m_silentUdp->isValid())
+                    {
+                        return true;
+                    }
+                    m_silentUdp.reset();
+                    std::this_thread::sleep_for(kUdpHoldRetryDelay);
+                }
+                return false;
             }
 
             /// 等对端进入服务循环；黑洞形态还要那把 UDP 确实占住了号
@@ -223,9 +251,8 @@ namespace AsynGyanis::Net
                 if (shape == PeerShape::UdpBlackHole)
                 {
                     // 这个号此刻已被上面的 TCP 监听握着自己占，不会有别的进程把它顺走；
-                    // 两个协议族各一张协议控制块，自己占自己不冲突
-                    holdUdpPortSilently(m_port);
-                    return m_silentUdp.has_value() && m_silentUdp->isValid();
+                    // 两个协议族各一张协议控制块，自己占自己不冲突——撞的是**别的进程**留下的 UDP 号
+                    m_udpHeld = holdUdpPortSilently(m_port);
                 }
                 return true;
             }
@@ -240,6 +267,7 @@ namespace AsynGyanis::Net
             std::optional<Core::Task<>>             m_httpsListenTask{};
             std::optional<Core::Task<>>             m_quicListenTask{};
             std::atomic<bool>                       m_isReady{false};
+            bool                                    m_udpHeld{false};
             std::uint16_t                           m_port{0};
             std::thread                             m_loopThread;
         };
@@ -479,7 +507,13 @@ namespace AsynGyanis::Net
     TEST(HttpClientHttp3, ProbesHttp3OnlyOncePerEndpoint)
     {
         RunningPeer peer(PeerShape::UdpBlackHole);
-        ASSERT_TRUE(peer.awaitRunning()) << "黑洞形态的对端没起来（HTTPS 没进循环，或 UDP 端口没占住）";
+        ASSERT_TRUE(peer.awaitRunning()) << "黑洞形态的对端没进服务循环（UDP 占不住号是另一回事，走下面的 SKIP）";
+        if (!peer.udpHeld())
+        {
+            GTEST_SKIP() << "同端口的 UDP 占不住：重试 " << kUdpHoldAttempts
+                         << " 次之后仍绑不上，"
+                            "说明这台机上那个号被别的进程的 UDP 控制块占着——黑洞前提构造不出来，与本引擎的实现对不对无关";
+        }
         const std::string url = probeUrl(peer.port());
 
         const Http3ClientRunOutcome outcome = runClientRequests({url, url}, true, {}, std::chrono::seconds{30}, false, true);
