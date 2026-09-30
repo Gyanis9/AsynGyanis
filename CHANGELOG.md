@@ -17,6 +17,22 @@
 
 ### 新增
 
+- **限流的整机口径现在也真的摊到每个 worker 进程**：新增 `perProcessRateLimit(整机速率, 整机突发量, 进程数)`，
+  与上一轮的连接数摊分补成同一套规则，但**取整方向刻意相反**——速率按精确除法（0.5 请求/s 不能向上取整成 1，
+  那等于让一台进程放行两倍），桶容量向下除后**兜在 1.0**（容量不足一枚令牌的桶一个请求都放不出，
+  `TokenBucket` 会直接构造失败）。`rate_limit.requests_per_second` 与 `burst_capacity` 配的是整机的数、
+  又起 N 个进程，此前实际放行的是 N 倍。`HttpServerAssemblyContext` 的注释现在写明「传桶就必须是摊后那份」，
+  装配出口拿 `TokenBucket` 新增的两个观测读数（`tokensPerSecond()` / `burstCapacity()`，不参与判定）
+  与摊分结果比对，不一致当场拒——配置没生效必须响，而不是安静地多放行。
+- **运维端点可以只听一个管理口**：`server.metrics_port`（0 = 端点仍留在业务口上，行为与加这两项之前逐字相同）
+  与 `server.metrics_address`（默认只听回环 `127.0.0.1`）。非 0 时业务口**不再注册**
+  `/metrics` 与 `/debug/loops`，端点归调用方另起的那台监听器——业务口可以继续开 `0.0.0.0`，而内部计数与
+  每条循环的状态只听回环。注册逻辑收成唯一一份实现（`registerOperationEndpoints` 模板），因为分两处写
+  迟早出现「业务口撤了端点、管理口忘了加闸」那一半。多进程部署配 `WorkerSupervisor::Configuration::workerIndexArgument`：
+  master 给每个 worker 传槽位序号（补起崩掉的 worker 沿用同一个号），管理口按「base + 序号」错开，采集端才能
+  按进程聚合，不再出现「一次抓取随机命中某台、计数器在两次抓取之间回落」。端口加法走 uint32 再判 65535，
+  越界当场拒（回绕会去听一个谁也没配的号）；`metrics_address` 在读配置时就判能否解析成 IP 字面量，
+  不留到 bind 那一刻只剩一个平台错误码。
 - **证书自动化多了 DNS-01 这条自证通道（RFC 8738）**：`AcmeClient::Configuration::challengeKind` 决定挑哪一种挑战，
   默认仍是 http-01（行为与加这个字段之前逐字相同）。`AcmeDns01TxtWriter` 把「发布 TXT / 撤回 TXT」两格交给调用方——
   做成两个返回 `Core::Task` 的 `std::function` 而不是抽象基类，因为协程不能是虚函数，而各家 DNS 的差异只在
