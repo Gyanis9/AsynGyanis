@@ -131,6 +131,7 @@ add_executable(TestNet
         Acme/TestAcmeClient.cpp
         Acme/TestAcmeCertificateManager.cpp
         Acme/TestAcmeDns01TxtWriter.cpp
+        Acme/TestAcmeAutomationConfig.cpp
         # 真机构那一条路：三个环境变量门控，缺任一即 SKIP，因此默认不联网也不建号
         Acme/TestAcmeLiveAuthority.cpp
 )

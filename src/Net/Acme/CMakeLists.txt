@@ -11,6 +11,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/AcmeDns01TxtWriter.h
         ${CMAKE_CURRENT_LIST_DIR}/AcmeAliyunDns01TxtWriter.h
         ${CMAKE_CURRENT_LIST_DIR}/AcmeAliyunDns01TxtWriter.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/AcmeAutomationConfig.h
+        ${CMAKE_CURRENT_LIST_DIR}/AcmeAutomationConfig.cpp
         ${CMAKE_CURRENT_LIST_DIR}/AcmeCertificateManager.h
         ${CMAKE_CURRENT_LIST_DIR}/AcmeCertificateManager.cpp
 )
