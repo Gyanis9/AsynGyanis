@@ -162,14 +162,13 @@ jobs:
             echo "runner 上没有 clang-tidy：这道门按没跑成处理，不当成通过"
             exit 1
           fi
-          "$clangTidy" --version | sed -n '1,2p'
+          "$clangTidy" --version | sed -n '1,4p'
           # 逐翻译单元跑、每个留一条 TIDY-PROCESSED 标记，而不是 xargs -n 8 批量跑完只看报告有没有行：
           # 批量那版里「一条诊断都没有」「一个都没跑成」「xargs 被信号打断只剩半截」在报告里长得一模一样
-          # 必须显式给 --driver-mode=cl：编译数据库里的命令是 cl.exe 的，runner 那件 clang-tidy 不去嗅探
-          # 驱动模式，于是 /external:I 这类 MSVC 开关它不认、第三方包含目录一个都没吃进去。实测后果是
-          # 依赖头找不到——Gzip.cpp 与 PerMessageDeflate.cpp 报到 zlib 的 zconf.h:486 `'unistd.h' file
-          # not found`（那份头在没有 _WIN32 的假设下走了 POSIX 分支），本仓代码里根本没有这行 include。
-          # 本机那件 clang-tidy 会自己认 cl.exe 并切到 cl 模式，所以本地复现不出来，只能显式传
+          # 驱动模式保持默认，实测两档都不完美：加 --extra-arg=--driver-mode=cl 会让 191 个里 190 个报
+          # clang-diagnostic-error（runner 那件 clang 认不出这台 VS 的运行库位置，连 std::optional、
+          # std::string_view 都找不到，5059 行诊断）；默认档只有 2 个栽在第三方头里（下面按位置分档）。
+          # 版本连 Target 行一起打出来（sed 取 4 行而不是 head -2）：驱动模式与目标三元组是这条门的前提
           tidyDir="$RUNNER_TEMP/tidy"
           rm -rf "$tidyDir"
           mkdir -p "$tidyDir"
@@ -177,7 +176,7 @@ jobs:
             '#!/usr/bin/env bash' \
             'file="$1"' \
             'slug=${file//[!A-Za-z0-9]/_}' \
-            '"$TIDY_BIN" -p build/release --extra-arg=--driver-mode=cl --quiet "$file" > "$TIDY_DIR/${slug}.log" 2>&1 && rc=0 || rc=$?' \
+            '"$TIDY_BIN" -p build/release --quiet "$file" > "$TIDY_DIR/${slug}.log" 2>&1 && rc=0 || rc=$?' \
             'printf "TIDY-PROCESSED %s rc=%s\n" "$file" "$rc" > "$TIDY_DIR/${slug}.mark"' \
             'exit 0' > "$RUNNER_TEMP/tidy-one.sh"
 
@@ -203,27 +202,44 @@ jobs:
           # /WX，clang 把它读成 -Werror，于是 clang 独有的几类（unused-const-variable、
           # unused-lambda-capture、unused-private-field）以 error 的面目出现、退出码非 0——那是**发现项**，
           # 拿它判红会让这道门常红；真正解析不了的形状另有标签
-          parseFailures=$(grep -l "clang-diagnostic-error" "$tidyDir"/*.log 2>/dev/null | wc -l)
           nonzeroCount=$(grep -l " rc=[1-9]" "$tidyDir"/*.mark 2>/dev/null | wc -l)
           findingCount=$(grep -cE "warning:|error:" "$RUNNER_TEMP/clang-tidy.log" 2>/dev/null || true)
-          echo "标记 ${markCount}/${tuCount}，解析失败 ${parseFailures} 个，非零退出 ${nonzeroCount} 个，诊断 ${findingCount} 行"
+          # 解析失败按首条错误**落在哪个文件**分两档：落在本仓 src/ 里的必须为零，那是真没分析成；
+          # 落在第三方头里的（默认档下实测有 2 件栽在 zlib 的 zconf.h：'unistd.h' file not found——
+          # 那份头在没有 _WIN32 的假设下走了 POSIX 分支，而本仓代码里没有这行 include）属工具吃不了
+          # 那份依赖头，Windows 侧改不动它；这两个翻译单元在 Linux 那条 clang-tidy 作业里照常分析。
+          # 分档而不是取消判据：混在一起时，本仓代码真坏了与依赖头不兼容都长得一样，前一种会一直隐身
+          ourFailures=0
+          vendorFailures=0
+          vendorNames=""
+          for badLog in $(grep -l "clang-diagnostic-error" "$tidyDir"/*.log 2>/dev/null); do
+            badName=$(cut -d' ' -f2 "${badLog%.log}.mark" 2>/dev/null || basename "$badLog" .log)
+            firstError=$(grep -m1 "clang-diagnostic-error" "$badLog" 2>/dev/null || true)
+            case "$firstError" in
+              *conan* | *Conan*)
+                vendorFailures=$((vendorFailures + 1))
+                vendorNames="${vendorNames} ${badName}" ;;
+              *)
+                ourFailures=$((ourFailures + 1))
+                echo "--- ${badName}"
+                echo "${firstError}" | sed 's/^/    /' ;;
+            esac
+          done
+          echo "标记 ${markCount}/${tuCount}，本仓解析失败 ${ourFailures} 个，依赖头解析失败 ${vendorFailures} 个，非零退出 ${nonzeroCount} 个，诊断 ${findingCount} 行"
           if [ "${markCount}" -lt "${tuCount}" ]; then
             echo "少了 $((tuCount - markCount)) 条处理标记：xargs 被打断或工具崩了，这道门按没跑成处理"
             exit 1
           fi
-          if [ "${parseFailures}" -gt 0 ]; then
-            for badLog in $(grep -l "clang-diagnostic-error" "$tidyDir"/*.log 2>/dev/null); do
-              # 名字从标记里取（标记存的是原始路径），log 的文件名是打过标的、读不出来
-              badName=$(cut -d' ' -f2 "${badLog%.log}.mark" 2>/dev/null || true)
-              echo "--- ${badName:-$(basename "$badLog" .log)}"
-              grep -m1 "clang-diagnostic-error" "$badLog" | sed 's/^/    /'
-            done
-            echo "${parseFailures} 个翻译单元根本没解析成功：编译数据库没命中或头文件读不了，这不等于「检查通过」"
+          if [ "${ourFailures}" -gt 0 ]; then
+            echo "${ourFailures} 个翻译单元在本仓代码里就没解析成功（编译数据库没命中或头文件读不了）：这不等于「检查通过」"
             exit 1
           fi
           {
             echo "## clang-tidy 摘要（Windows，逐翻译单元自证；发现项当前不阻塞）"
-            echo "- 本档编译数据库里的 ${tuCount} 个翻译单元全部处理完，解析失败 ${parseFailures} 个"
+            echo "- 本档编译数据库里的 ${tuCount} 个翻译单元全部处理完；本仓代码解析失败 ${ourFailures} 个"
+            if [ "${vendorFailures}" -gt 0 ]; then
+              echo "- 依赖头解析失败 ${vendorFailures} 个（clang 吃不了那份第三方头，不判红）：${vendorNames}"
+            fi
             echo "- 诊断行数（warning/error）：${findingCount}；其中非零退出 ${nonzeroCount} 个（/WX 把 clang 的发现项升成 error，属发现项不是没跑成）"
           } >> "$GITHUB_STEP_SUMMARY"
 
