@@ -13,8 +13,8 @@
 // 与 gtest 那套的分工：gtest 用例是常驻防线（固定种子、每次全量跑、判同一批不变量），
 // 这里是持续探索（输入由模糊器按覆盖率反馈生成，撞出来的语料落盘后可回填进 gtest 的种子用例）。
 //
-// 每类解码器要单独预算时设 `ASYN_FUZZ_TARGET=<targetName>`（WebSocketFrame / Http2Frame /
-// Http3Frame / HpackBlock）：本进程只喂那一个目标，语料目录也各自一份。不设就是四类轮转共享一次运行。
+// 每类解码器要单独预算时设 `ASYN_FUZZ_TARGET=<targetName>`（名字与 `targetName()` 一一对应：
+// Http3Frame / HpackBlock / QuicPacket / QuicFrameSequence / QuicParameters）：本进程只喂那一个目标，语料目录也各自一份。不设就是全部轮转共享一次运行。
 // 退出前打一行 `FUZZ-TARGET-CALLS 名字=次数 …`，CI 用它判「是不是四类都在推进」——光看总执行次数，
 // 某一类根本没被走到是看不出来的。
 #include "Fuzz/ProtocolFuzzKernel.h"
@@ -30,7 +30,7 @@ namespace
 {
     using AsynGyanis::Net::Fuzz::Target;
 
-    /// libFuzzer 每次给出的字节按 256 种取值轮转分配给四类解码器，一次运行即可同时推进四个目标
+    /// libFuzzer 每次给出的字节按 256 种取值轮转分配给各档解码器，一次运行即可同时推进全部目标
     constexpr std::size_t kTargetCount = static_cast<std::size_t>(Target::Count);
 
     /**

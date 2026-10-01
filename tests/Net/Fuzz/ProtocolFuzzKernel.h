@@ -25,17 +25,20 @@ namespace AsynGyanis::Net::Fuzz
      */
     enum class Target : std::uint8_t
     {
-        WebSocketFrame, ///< WebSocket 增量帧解码器（RFC 6455 + 服务端侧的掩码/控制帧约束）
-        Http2Frame,     ///< HTTP/2 增量帧解码器（RFC 7540 §4 + 本端上限）
-        Http3Frame,     ///< HTTP/3 帧读取器（RFC 9114 §7 + varint 帧头 + 单帧上限）
-        HpackBlock,     ///< HPACK 头块解码器（RFC 7541 + 动态表与头列表上限）
-        Count,          ///< 哨兵：目标总数，用于遍历，不是可解码的目标
+        WebSocketFrame,    ///< WebSocket 增量帧解码器（RFC 6455 + 服务端侧的掩码/控制帧约束）
+        Http2Frame,        ///< HTTP/2 增量帧解码器（RFC 7540 §4 + 本端上限）
+        Http3Frame,        ///< HTTP/3 帧读取器（RFC 9114 §7 + varint 帧头 + 单帧上限）
+        HpackBlock,        ///< HPACK 头块解码器（RFC 7541 + 动态表与头列表上限）
+        QuicPacket,        ///< QUIC 报文头解码器（RFC 9000 §17；UDP 上最先被外部打到的一段，不需要任何密钥）
+        QuicFrameSequence, ///< QUIC 帧序列解码器（§12.4/§19；解出的帧持有指向载荷的视图，视图越界即野指针）
+        QuicParameters,    ///< QUIC 传输参数解码器（§7.3；来自对端 TLS 扩展，未识别项必须忽略）
+        Count,             ///< 哨兵：目标总数，用于遍历，不是可解码的目标
     };
 
     /**
      * @brief 自带种子的线性同余发生器：固定种子保证失败可复现
      * @details 不用 std::random_device / std::mt19937：前者的输出不可复现（失败无法重放），后者状态大、
-     *          播种成本高，而这里要的只是「同一种子 → 同一串字节」。四条 gtest 用例与 libFuzzer 入口
+     *          播种成本高，而这里要的只是「同一种子 → 同一串字节」。各档的 gtest 用例与 libFuzzer 入口
      *          共用本类，避免各写一份而某天行为不一致。
      */
     class DeterministicRandom
@@ -111,12 +114,17 @@ namespace AsynGyanis::Net::Fuzz
      *            （新建一个对象会恰好绕过「粘滞没清干净」这一类缺陷，所以这里刻意复用）；
      *          - I6 不越权产出：错误态下不得交出任何帧，失败也不得把半截产出留在调用方的输出参数里。
      *
-     *          四条目标的适用面不同，按接口形状各自取用（这一列就是「哪条判据真的在跑」的清单）：
+     *          各目标的适用面不同，按接口形状各自取用（这一列就是「哪条判据真的在跑」的清单）：
      *          WebSocket 与 HTTP/2 是 parse/takeFrame 形状的增量解码器，I1～I6 全查；
      *          HTTP/3 的读取器是 feed/nextFrame 形状，没有「本次消费多少」的出口，故 I2 退成
      *          「步数上限 + 帧序不变」、I4 退成「判错之后的复查仍须报错」；
      *          HPACK 是一次性整块解码，没有分片语义，因此 I3 换成**确定性**（同一输入两个独立
-     *          解码器必须给出逐个字段相同的结果），I4 落在 decode 的粘滞入口上，I6 是「失败必须清空输出」。
+     *          解码器必须给出逐个字段相同的结果），I4 落在 decode 的粘滞入口上，I6 是「失败必须清空输出」；
+     *          QUIC 那三档（报文头 / 帧序列 / 传输参数）都是一次性 `std::expected` 出口的自由函数，
+     *          没有分片与复位可言，因此 I3 同样换成确定性双跑，另外钉三条它们特有的：
+     *          **成功产物的自洽**（长头标志与首字节高位一致、连接标识不超 20 字节、保留位确被挡下、
+     *          帧序列两路口径逐帧相同）、**视图不越出载荷**（解出的帧指向载荷内部，指到外面就是野指针，
+     *          ASan 只在真去读时才报，所以这里当场核偏移与长度）、**失败不交半截产出**（出参版必须清空）。
      */
     [[nodiscard]] std::string checkInvariants(Target target, const std::string &input, RunStats *stats = nullptr);
 

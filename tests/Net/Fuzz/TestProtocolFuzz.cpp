@@ -29,14 +29,14 @@ namespace AsynGyanis::Net::Fuzz
     namespace
     {
         /// 每个目标的随机轮数默认值。每轮都含「整体喂 + 逐字节喂」两路驱动与一次复位探针。
-        /// 实测（Debug+ASan，本机）：400 轮时四条用例合计 0.84 秒，2 万轮合计 15 秒——
+        /// 实测（Debug+ASan，本机）：400 轮时各档合计 0.84 秒，2 万轮合计 15 秒（目标数会变，条数不写死）——
         /// 常驻防线取 400 轮图的是「每次都跑得完」，要加压就设 ASYN_FUZZ_ROUNDS（判同一批不变量，
         /// 且输入序列是默认跑的前缀）。上限 20 万轮：再多是 CI 超时而不是模糊。
         /// 另一条来自这里的教训：驱动不推进时，2 万轮能把进程撑到 4.49 GB 常驻（同一段字节被反复重喂），
         /// maximumDriveSteps 那道闸就是为这种「模糊器比被测物先垮」而加的
         constexpr int kDefaultRandomRoundCount = 400;
 
-        /// 轮数上限：按 2 万轮 15 秒实测，20 万轮约 2.5 分钟（四条合计），够一次深度跑；
+        /// 轮数上限：按 2 万轮 15 秒实测，20 万轮约 2.5 分钟（全部目标合计），够一次深度跑；
         /// 再多就是把作业变成超时，而不是把覆盖变深
         constexpr int kMaximumRandomRoundCount = 200000;
 
@@ -81,10 +81,13 @@ namespace AsynGyanis::Net::Fuzz
         /// 各目标的固定种子：失败信息里带轮次与轮数，凭种子就能在同一台机器上重放同一串输入。
         /// 随机源是单调流，因此加压跑（ASYN_FUZZ_ROUNDS 调大）的前 N 轮与默认跑完全同序——
         /// 默认跑绿而加压跑红的轮次，把前面的输入原样搬进用例即可常驻
-        constexpr std::uint64_t kSeedWebSocket = 20260924ULL;
-        constexpr std::uint64_t kSeedHttp2     = 20260925ULL;
-        constexpr std::uint64_t kSeedHttp3     = 20260926ULL;
-        constexpr std::uint64_t kSeedHpack     = 20260927ULL;
+        constexpr std::uint64_t kSeedWebSocket      = 20260924ULL;
+        constexpr std::uint64_t kSeedHttp2          = 20260925ULL;
+        constexpr std::uint64_t kSeedHttp3          = 20260926ULL;
+        constexpr std::uint64_t kSeedHpack          = 20260927ULL;
+        constexpr std::uint64_t kSeedQuicPacket     = 20261001ULL;
+        constexpr std::uint64_t kSeedQuicFrames     = 20261002ULL;
+        constexpr std::uint64_t kSeedQuicParameters = 20261003ULL;
 
         /**
          * @brief 对某个目标跑一轮随机模糊
@@ -165,10 +168,28 @@ namespace AsynGyanis::Net::Fuzz
         runTruncationMatrix(Target::HpackBlock);
     }
 
+    TEST(ProtocolFuzz, QuicPacketHeaderDecoderKeepsInvariants)
+    {
+        runRandomRounds(Target::QuicPacket, kSeedQuicPacket);
+        runTruncationMatrix(Target::QuicPacket);
+    }
+
+    TEST(ProtocolFuzz, QuicFrameDecoderKeepsInvariants)
+    {
+        runRandomRounds(Target::QuicFrameSequence, kSeedQuicFrames);
+        runTruncationMatrix(Target::QuicFrameSequence);
+    }
+
+    TEST(ProtocolFuzz, QuicTransportParametersDecoderKeepsInvariants)
+    {
+        runRandomRounds(Target::QuicParameters, kSeedQuicParameters);
+        runTruncationMatrix(Target::QuicParameters);
+    }
+
     /**
      * @brief 钉住：枚举里每一个目标都真的被解码到，且各自的账都记上了
-     * @details 现有四条用例是「一个目标一条」的手写清单——`Target` 加了第五项而没人给它写分支时，
-     *          那四项照旧全绿，新目标却在暗处一条都不跑（`Target` 的注释担心的正是这种错位）。
+     * @details 上面那批用例是「一个目标一条」的手写清单——`Target` 加了新项而没人给它写分支时，
+     *          其余各条照旧全绿，新目标却在暗处一条都不跑（`Target` 的注释担心的正是这种错位）。
      *          这条用例按枚举遍历，因此新增目标会自动被纳入：合法输入必须解出东西
      *          （`producedFrameCount > 0`；HPACK 记的是字段数），否则就是「走通了却没解码」。
      *          同时核对进程内计数：漏 `default` 分支时会返回「无违例」，只看返回值发现不了

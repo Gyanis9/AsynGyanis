@@ -12,6 +12,9 @@
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http3/Http3Frame.h"
+#include "Net/Quic/Codec/QuicFrame.h"
+#include "Net/Quic/Codec/QuicPacketHeader.h"
+#include "Net/Quic/Codec/QuicTransportParameters.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 
 #include <algorithm>
@@ -19,9 +22,12 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <variant>
 #include <vector>
 
 namespace AsynGyanis::Net::Fuzz
@@ -265,6 +271,219 @@ namespace AsynGyanis::Net::Fuzz
             return input;
         }
 
+        /// 按 RFC 9000 §16 的最短编码写一个变长整数（只给生成器用，取值压在三字节档内）
+        void appendFuzzVarint(std::string &bytes, const std::uint64_t value)
+        {
+            if (value < 64U)
+            {
+                bytes.push_back(static_cast<char>(static_cast<unsigned char>(value)));
+            } else if (value < 16384U)
+            {
+                bytes.push_back(static_cast<char>(static_cast<unsigned char>(0x40U | (value >> 8U))));
+                bytes.push_back(static_cast<char>(static_cast<unsigned char>(value & 0xFFU)));
+            } else
+            {
+                bytes.push_back(static_cast<char>(static_cast<unsigned char>(0x80U | (value >> 24U))));
+                bytes.push_back(static_cast<char>(static_cast<unsigned char>((value >> 16U) & 0xFFU)));
+                bytes.push_back(static_cast<char>(static_cast<unsigned char>((value >> 8U) & 0xFFU)));
+                bytes.push_back(static_cast<char>(static_cast<unsigned char>(value & 0xFFU)));
+            }
+        }
+
+        /// 往串尾拍 n 个随机字节
+        void appendFuzzRandomBytes(std::string &bytes, DeterministicRandom &random, const std::size_t count)
+        {
+            for (std::size_t index = 0; index < count; ++index)
+            {
+                bytes.push_back(static_cast<char>(static_cast<unsigned char>(random.next())));
+            }
+        }
+
+        /**
+         * @brief 为 QUIC 报文头目标造输入：长头与短头两形轮转，Length 域多数轮按真实剩余自洽
+         * @details 这段解码器是 UDP 上最先被外部打到的，且**不需要任何密钥**就能走进去：首字节、版本、
+         *          两条连接标识的长度、Token 长度、Length 域、包号长度位全是发包方可控的字段。
+         *          纯随机字节多半停在「首字节最高位不是 1」那一层，因此先拼自洽骨架再变异：多数轮 Length
+         *          与剩余一致（走通成功路径），少数轮故意偏大 / 清零 / 差一，版本偶尔换成 0 或 2——
+         *          这些正是 §17.2/§17.3 拒绝面的形状。
+         */
+        std::string makeQuicPacketInput(DeterministicRandom &random)
+        {
+            std::string       input;
+            const std::size_t destinationLength = random.nextBelow(9U);
+            const std::size_t sourceLength      = random.nextBelow(9U);
+            const std::size_t tokenLength       = random.nextBelow(2) == 0U ? 0U : 1U + random.nextBelow(7U);
+            const std::size_t payloadLength     = 1U + random.nextBelow(24U);
+            const std::size_t packetNumberBytes = 1U + random.nextBelow(4U);
+
+            if (random.nextBelow(3U) == 0U)
+            {
+                // 短头（1-RTT）：线上既没有长度字段也没有连接标识长度，后者只能由调用方按本端签发的那个传
+                input.push_back(static_cast<char>(static_cast<unsigned char>(0x40U | random.nextBelow(16U))));
+                appendFuzzRandomBytes(input, random, destinationLength);
+                appendFuzzRandomBytes(input, random, packetNumberBytes + payloadLength);
+                return input;
+            }
+
+            const std::size_t typeBits = random.nextBelow(4U);
+            input.push_back(static_cast<char>(static_cast<unsigned char>(0xC0U | (typeBits << 4U) | (packetNumberBytes - 1U))));
+            // 版本：大多种子是 1，少量换成 0（版本协商）或 2（本层按 Malformed 拒）
+            const std::uint64_t version = random.nextBelow(8U) == 0U ? random.nextBelow(3U) : 1U;
+            input.push_back(static_cast<char>(static_cast<unsigned char>((version >> 24U) & 0xFFU)));
+            input.push_back(static_cast<char>(static_cast<unsigned char>((version >> 16U) & 0xFFU)));
+            input.push_back(static_cast<char>(static_cast<unsigned char>((version >> 8U) & 0xFFU)));
+            input.push_back(static_cast<char>(static_cast<unsigned char>(version & 0xFFU)));
+
+            input.push_back(static_cast<char>(static_cast<unsigned char>(destinationLength)));
+            appendFuzzRandomBytes(input, random, destinationLength);
+            input.push_back(static_cast<char>(static_cast<unsigned char>(sourceLength)));
+            appendFuzzRandomBytes(input, random, sourceLength);
+
+            appendFuzzVarint(input, tokenLength);
+            appendFuzzRandomBytes(input, random, tokenLength);
+
+            const std::uint64_t declaredLength = packetNumberBytes + payloadLength;
+            switch (random.nextBelow(6U))
+            {
+                case 0U:
+                    appendFuzzVarint(input, random.nextBelow(1U << 17U)); // 偏大：字段越出数据报末尾
+                    break;
+                case 1U:
+                    appendFuzzVarint(input, 0U); // 零长：§17.2 明文禁止
+                    break;
+                case 2U:
+                    appendFuzzVarint(input, declaredLength - 1U); // 差一：正好切在包号或载荷中间
+                    break;
+                default:
+                    appendFuzzVarint(input, declaredLength); // 自洽：成功路径的参照
+                    break;
+            }
+            appendFuzzRandomBytes(input, random, packetNumberBytes + payloadLength);
+            return input;
+        }
+
+        /**
+         * @brief 为 QUIC 帧序列目标造输入：先用**生产编码器**拍 1～3 帧，再按轮次变异
+         * @details 与 HPACK 那一档同理——编解码互逆本就是契约，手写帧头一旦与编码器口径有差，
+         *          判的就是「我自己的假设」而不是解码器。变异集中在三处：截掉尾部（打 Truncated）、
+         *          改首字节类型位（打未定义类型）、尾部补一段（打「解完仍有剩余」）。
+         */
+        std::string makeQuicFrameInput(DeterministicRandom &random)
+        {
+            std::string input;
+
+            // 每帧现拍现编：解出的帧持的是**指向载荷的视图**，先把几帧攒进一个 vector 再统一编码，
+            // 那些视图会随缓冲重新分配或复用而失效——生成器自己就成了野指针来源
+            const std::size_t frameCount = 1U + random.nextBelow(3U);
+            for (std::size_t index = 0; index < frameCount; ++index)
+            {
+                std::vector<std::uint8_t> payloadBytes;
+
+                switch (random.nextBelow(5U))
+                {
+                    case 0U:
+                        appendQuicFrame(input, QuicPingFrame{});
+                        break;
+                    case 1U:
+                        appendQuicFrame(input, QuicPaddingFrame{});
+                        break;
+                    case 2U:
+                    {
+                        const std::size_t dataLength = random.nextBelow(12U);
+                        for (std::size_t byte = 0; byte < dataLength; ++byte)
+                        {
+                            payloadBytes.push_back(static_cast<std::uint8_t>(random.next()));
+                        }
+                        QuicStreamFrame stream;
+                        stream.streamId = random.nextBelow(64U);
+                        stream.offset   = random.nextBelow(2U) == 0U ? 0U : random.nextBelow(1024U);
+                        stream.isFinal  = random.nextBelow(2U) == 0U;
+                        stream.data     = std::span<const std::uint8_t>(payloadBytes);
+                        appendQuicFrame(input, stream);
+                        break;
+                    }
+                    case 3U:
+                    {
+                        QuicCryptoFrame crypto;
+                        crypto.offset = random.nextBelow(4U) == 0U ? 0U : random.nextBelow(256U);
+                        appendQuicFrame(input, crypto);
+                        break;
+                    }
+                    default:
+                    {
+                        QuicAcknowledgementFrame acknowledgement;
+                        acknowledgement.largestAcknowledgedPacketNumber = random.nextBelow(1U << 20U);
+                        acknowledgement.acknowledgementDelay            = random.nextBelow(1U << 14U);
+                        // 编码器要求至少一个区间（线格式的 First ACK Range 恒描述含最大包号那一段），
+                        // 给一个「只认最大包号」的最小区间：这是可编码形态，不是生成器偷懒
+                        acknowledgement.ranges.push_back(
+                                QuicAcknowledgementRange{acknowledgement.largestAcknowledgedPacketNumber, acknowledgement.largestAcknowledgedPacketNumber});
+                        appendQuicFrame(input, acknowledgement);
+                        break;
+                    }
+                }
+            }
+
+            if (input.empty())
+            {
+                appendFuzzRandomBytes(input, random, 1U + random.nextBelow(8U));
+            }
+            switch (random.nextBelow(4U))
+            {
+                case 0U:
+                    input.resize(input.size() / 2U); // 切在半帧中间
+                    break;
+                case 1U:
+                    input[0] = static_cast<char>(static_cast<unsigned char>(random.next())); // 类型域换成未知值
+                    break;
+                case 2U:
+                    appendFuzzRandomBytes(input, random, 1U + random.nextBelow(5U)); // 解完仍有剩余
+                    break;
+                default:
+                    break;
+            }
+            return input;
+        }
+
+        /**
+         * @brief 为 QUIC 传输参数目标造输入：编码器产出的合法块 + 四档变异
+         * @details §7.3 的完备性校验（`initial_source_connection_id` 必须在、不得重复、取值长度与范围要合、
+         *          末尾不得有余）是一段一段边界逻辑，纯随机字节一条都碰不到，所以骨架必须真解得开。
+         */
+        std::string makeQuicParametersInput(DeterministicRandom &random)
+        {
+            QuicTransportParameters parameters;
+            parameters.initialSourceConnectionId      = std::vector<std::uint8_t>(4U, static_cast<std::uint8_t>(random.next()));
+            parameters.maximumIdleTimeoutMilliseconds = random.nextBelow(1U << 15U);
+            parameters.initialMaximumData             = random.nextBelow(1U << 16U);
+            parameters.maximumUdpPayloadSize          = 1200U + random.nextBelow(64U);
+
+            std::string input;
+            appendQuicTransportParameters(input, parameters);
+
+            switch (random.nextBelow(5U))
+            {
+                case 0U:
+                    input.resize(input.size() / 2U); // 切在参数值中间
+                    break;
+                case 1U:
+                    input.push_back(static_cast<char>(static_cast<unsigned char>(random.next()))); // 末尾余一个字节
+                    break;
+                case 2U:
+                    if (!input.empty())
+                    {
+                        input[0] = static_cast<char>(static_cast<unsigned char>(random.next())); // 首个标识符换成未知项或非法长度
+                    }
+                    break;
+                case 3U:
+                    input.clear(); // 空参数串：缺 initial_source_connection_id，必须被拒
+                    break;
+                default:
+                    break;
+            }
+            return input;
+        }
+
         /**
          * @brief 用 feed + nextFrame 形状的 h3 解码器把 input 跑一遍
          * @details h3 侧没有「本次消费多少」的出口，因此推进判据是喂入偏移、卡死判据是步数上限：
@@ -366,6 +585,117 @@ namespace AsynGyanis::Net::Fuzz
         }
     } // namespace
 
+    /**
+     * @brief 把解出的帧里所有指向载荷的视图逐个核一遍「落在载荷之内」
+     * @details 载荷视图是这一层的交付形状（CRYPTO/STREAM/NEW_TOKEN/NEW_CONNECTION_ID/CONNECTION_CLOSE
+     *          各持有一段），帧结构本身不拥有字节。视图指到段外就是野指针，而 ASan 只在**真去读**时才报——
+     *          模糊器解完就丢、未必读那段，所以这里当场按地址区间核，不等 sanitizer。
+     * @param payload 载荷原文（视图必须整个落在它的范围内）
+     * @param frames 解出来的帧序列
+     * @return std::string 空串表示全部在界内；否则第一条越界说明
+     */
+    std::string quicFrameViewsInsidePayload(const std::span<const std::uint8_t> payload, const std::vector<QuicFrame> &frames)
+    {
+        const std::uintptr_t payloadBegin = reinterpret_cast<std::uintptr_t>(payload.data());
+        const std::uintptr_t payloadEnd   = payloadBegin + payload.size();
+
+        const auto checkSpan = [&](const std::string_view field, const std::span<const std::uint8_t> view) -> std::string
+        {
+            if (view.empty())
+            {
+                return {};
+            }
+            const std::uintptr_t viewBegin = reinterpret_cast<std::uintptr_t>(view.data());
+            const std::uintptr_t viewEnd   = viewBegin + view.size();
+            if (viewBegin < payloadBegin || viewEnd > payloadEnd)
+            {
+                return std::format("{} 的视图越出载荷：载荷 [{}, {})，视图 [{}, {})", field, payloadBegin, payloadEnd, viewBegin, viewEnd);
+            }
+            return {};
+        };
+
+        for (const QuicFrame &frame: frames)
+        {
+            std::string violation;
+            if (const auto *stream = std::get_if<QuicStreamFrame>(&frame); stream != nullptr)
+            {
+                violation = checkSpan("STREAM", stream->data);
+            } else if (const auto *crypto = std::get_if<QuicCryptoFrame>(&frame); crypto != nullptr)
+            {
+                violation = checkSpan("CRYPTO", crypto->data);
+            } else if (const auto *token = std::get_if<QuicNewTokenFrame>(&frame); token != nullptr)
+            {
+                violation = checkSpan("NEW_TOKEN", token->token);
+            } else if (const auto *identifier = std::get_if<QuicNewConnectionIdFrame>(&frame); identifier != nullptr)
+            {
+                violation = checkSpan("NEW_CONNECTION_ID 的连接标识", identifier->connectionId);
+                if (violation.empty())
+                {
+                    violation = checkSpan("NEW_CONNECTION_ID 的无状态重置令牌", identifier->statelessResetToken);
+                }
+            } else if (const auto *closure = std::get_if<QuicConnectionCloseFrame>(&frame); closure != nullptr)
+            {
+                violation = checkSpan("CONNECTION_CLOSE 的原因短语", closure->reasonPhrase);
+            }
+            if (!violation.empty())
+            {
+                return violation;
+            }
+        }
+        return {};
+    }
+
+    /**
+     * @brief 把帧解码的两个出口（按值返回与写进调用方缓冲）跑一遍并核一致
+     * @details 文档承诺两者「语义完全一致」，但它们是两条代码路径——一致就得当场核，不一致就得看得见。
+     *          顺带在这里查出失败路径把半截产出留在调用方缓冲里（I6）与视图越界两类形状。
+     * @param payload 载荷原文
+     * @param errorText 输出：违例文案（空表示没违例）
+     * @return std::size_t 成功时解出的帧数（失败返回 0，由 errorText 区分是拒绝还是违例）
+     */
+    std::size_t driveQuicFrames(const std::span<const std::uint8_t> payload, std::string &errorText)
+    {
+        const auto byValue = decodeQuicFrames(payload);
+
+        std::vector<QuicFrame> reused;
+        reused.reserve(4U); // 先占容量：出参那一份要证明「清空但不重建缓冲」这条路也不越界
+        const auto byReference = decodeQuicFrames(payload, reused);
+
+        if (byValue.has_value() != byReference.has_value())
+        {
+            errorText = "同一个载荷，按值出口与出参出口一个成功一个失败";
+            return 0U;
+        }
+        if (!byValue.has_value())
+        {
+            if (!reused.empty())
+            {
+                errorText = "解码失败却把半截帧留在调用方的缓冲里（I6）";
+            }
+            return 0U;
+        }
+        if (byValue->size() != reused.size())
+        {
+            errorText = std::format("两路出口帧数不同：按值 {} 帧，出参 {} 帧", byValue->size(), reused.size());
+            return 0U;
+        }
+        // 逐帧比类型值：不比字段里的字节视图，两路各自指向自己的缓冲来源
+        for (std::size_t index = 0; index < byValue->size(); ++index)
+        {
+            if (quicFrameTypeValue((*byValue)[index]) != quicFrameTypeValue(reused[index]))
+            {
+                errorText = std::format("第 {} 帧的类型在两路出口间不同", index);
+                return 0U;
+            }
+        }
+        if (const std::string violation = quicFrameViewsInsidePayload(payload, reused); !violation.empty())
+        {
+            errorText = violation;
+            return 0U;
+        }
+        return reused.size();
+    }
+
     std::string toEscapedText(const std::string_view text)
     {
         std::string escaped;
@@ -397,6 +727,12 @@ namespace AsynGyanis::Net::Fuzz
                 return "Http3Frame";
             case Target::HpackBlock:
                 return "HpackBlock";
+            case Target::QuicPacket:
+                return "QuicPacket";
+            case Target::QuicFrameSequence:
+                return "QuicFrameSequence";
+            case Target::QuicParameters:
+                return "QuicParameters";
             case Target::Count:
                 break;
         }
@@ -419,6 +755,15 @@ namespace AsynGyanis::Net::Fuzz
                 break;
             case Target::HpackBlock:
                 input = makeHpackInput(random);
+                break;
+            case Target::QuicPacket:
+                input = makeQuicPacketInput(random);
+                break;
+            case Target::QuicFrameSequence:
+                input = makeQuicFrameInput(random);
+                break;
+            case Target::QuicParameters:
+                input = makeQuicParametersInput(random);
                 break;
             case Target::Count:
                 break;
@@ -453,6 +798,39 @@ namespace AsynGyanis::Net::Fuzz
                 HpackEncoder                        encoder;
                 const std::vector<HpackHeaderField> fields{{HpackHeaderField{.name = ":status", .value = "200"}, HpackHeaderField{.name = "content-type", .value = "text/plain"}}};
                 return encoder.encode(fields);
+            }
+            case Target::QuicPacket:
+            {
+                // 一个自洽的最小 Initial：版本 1、8 字节目的标识、空源标识、无 Token、Length = 包号 4 + 载荷 1。
+                // 直接拿 RFC 9001 A.2 那条 1200 字节的向量当样本也行，但截断矩阵要为此白跑 1200 轮，形态一样
+                const std::string     destinationConnectionId = "\x83\x94\xc8\xf0\x3e\x51\x57\x08";
+                static constexpr char kVersionBytes[]         = {'\x00', '\x00', '\x00', '\x01'}; // 版本 1：串里有空字节，只能按长度附加
+                static constexpr char kPacketNumber[]         = {'\x00', '\x00', '\x00', '\x02'}; // 包号 2，同上
+                std::string           packet;
+                packet.push_back(static_cast<char>(0xC3)); // 长头 1|1 + Initial(00) + 保留位 0 + 包号长度 4
+                packet.append(kVersionBytes, sizeof(kVersionBytes));
+                packet.push_back(static_cast<char>(destinationConnectionId.size()));
+                packet.append(destinationConnectionId);
+                packet.push_back(static_cast<char>(0)); // 源标识长度 0
+                packet.push_back(static_cast<char>(0)); // Token 长度 0
+                packet.push_back(static_cast<char>(5)); // Length = 包号 4 + 载荷 1
+                packet.append(kPacketNumber, sizeof(kPacketNumber));
+                packet.push_back('x');
+                return packet;
+            }
+            case Target::QuicFrameSequence:
+            {
+                std::string payload;
+                appendQuicFrame(payload, QuicPingFrame{});
+                return payload;
+            }
+            case Target::QuicParameters:
+            {
+                QuicTransportParameters parameters;
+                parameters.initialSourceConnectionId = std::vector<std::uint8_t>(8U, 0x5aU); // 这一项缺失是硬错误，样本必须带上
+                std::string bytes;
+                appendQuicTransportParameters(bytes, parameters);
+                return bytes;
             }
             case Target::Count:
                 break;
@@ -657,6 +1035,107 @@ namespace AsynGyanis::Net::Fuzz
                 }
                 return {};
             }
+            case Target::QuicPacket:
+            {
+                const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t *>(input.data()), input.size());
+
+                // 短头线上既不带长度字段也不带连接标识长度，只能由调用方按本端签发的那个传（§17.3.1）——
+                // 「传大了读进包号、传小了标识不完整」是这条参数独有的两类错，所以同一份字节按几个候选长度各解一遍
+                const std::size_t candidates[] = {0U, 4U, 8U, 12U, 16U, 20U, input.size() % (kQuicMaximumConnectionIdLength + 1U)};
+                RunTrace          trace;
+                for (const std::size_t destinationLength: candidates)
+                {
+                    const auto first  = decodeQuicPacketHeader(bytes, destinationLength);
+                    const auto second = decodeQuicPacketHeader(bytes, destinationLength);
+                    if (first.has_value() != second.has_value() || (!first.has_value() && first.error().kind != second.error().kind))
+                    {
+                        return "同一份字节两遍解码结论不同（确定性）";
+                    }
+                    if (!first.has_value())
+                    {
+                        continue;
+                    }
+                    if (first->isLongHeader != ((bytes[0] & kQuicLongHeaderFlagBit) != 0U))
+                    {
+                        return "解出的长头标志与首字节高位不一致（§17.2）";
+                    }
+                    if (first->isLongHeader && first->version != kQuicVersion1)
+                    {
+                        return "长头却带非 v1 版本还解成功：本层只认 v1，其余一律按 Malformed 拒";
+                    }
+                    if (first->destinationConnectionId.size() > kQuicMaximumConnectionIdLength || first->sourceConnectionId.size() > kQuicMaximumConnectionIdLength)
+                    {
+                        return "连接标识超过 20 字节却解成功（§17.2 的 v1 上限）";
+                    }
+                    if (!first->isLongHeader && first->destinationConnectionId.size() != destinationLength)
+                    {
+                        return "短头解出的目的标识长度与调用方给的那个不一致：路由表从此命不中";
+                    }
+                    trace.frameKeys.push_back(first->isLongHeader ? "long" : "short");
+                }
+                trace.isEndedInError = trace.frameKeys.empty();
+                collect(trace);
+                return {};
+            }
+
+            case Target::QuicFrameSequence:
+            {
+                const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t *>(input.data()), input.size());
+
+                std::string       violation;
+                const std::size_t firstCount = driveQuicFrames(bytes, violation);
+                if (!violation.empty())
+                {
+                    return violation;
+                }
+                std::string       secondViolation;
+                const std::size_t secondCount = driveQuicFrames(bytes, secondViolation);
+                if (!secondViolation.empty() || firstCount != secondCount)
+                {
+                    return "同一载荷两遍解码结论不同（确定性）";
+                }
+
+                const auto outcome = decodeQuicFrames(bytes);
+                RunTrace   trace;
+                trace.frameKeys.assign(firstCount, "frame");
+                trace.isEndedInError = !outcome.has_value();
+                collect(trace);
+                return {};
+            }
+
+            case Target::QuicParameters:
+            {
+                const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t *>(input.data()), input.size());
+
+                // 两个角色各过一遍：专属项的完备性判据按发送方分叉，只跑一边就有一半分支从没被喂过
+                RunTrace trace;
+                for (const QuicTransportParameterSenderRole role: {QuicTransportParameterSenderRole::Client, QuicTransportParameterSenderRole::Server})
+                {
+                    const auto first  = decodeQuicTransportParameters(bytes, role);
+                    const auto second = decodeQuicTransportParameters(bytes, role);
+                    if (first.has_value() != second.has_value() || (!first.has_value() && first.error().kind != second.error().kind))
+                    {
+                        return "同一参数串两遍解码结论不同（确定性）";
+                    }
+                    if (!first.has_value())
+                    {
+                        continue;
+                    }
+                    if (!first->initialSourceConnectionId.has_value())
+                    {
+                        return "解成功却缺 initial_source_connection_id（§7.3 的硬性要求）";
+                    }
+                    if (first->initialSourceConnectionId->size() > kQuicMaximumConnectionIdLength)
+                    {
+                        return "initial_source_connection_id 超过 20 字节却解成功（§7.3）";
+                    }
+                    trace.frameKeys.push_back(role == QuicTransportParameterSenderRole::Client ? "client" : "server");
+                }
+                trace.isEndedInError = trace.frameKeys.empty();
+                collect(trace);
+                return {};
+            }
+
 
             case Target::Count:
                 break;

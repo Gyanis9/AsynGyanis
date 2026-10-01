@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核对模糊测试这一轮的读数：四类解码器是不是**每类都被推到**、执行量够不够、有没有真跑完。
+"""核对模糊测试这一轮的读数：各档解码器是不是**每档都被推到**、执行量够不够、有没有真跑完。
 
 总执行数回答不了「其中一类根本没被走到」——混合跑里那类可能一条都没进。本脚本按
 `scripts/fuzz-net.sh` 每类一份的日志逐类判，并把结果写成一张表进作业摘要。
@@ -44,7 +44,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("logDirectory", help="fuzz-net.sh 写日志的目录（.fuzz/log）")
     parser.add_argument("--targets", nargs="+",
-                        default=["WebSocketFrame", "Http2Frame", "Http3Frame", "HpackBlock"],
+                        default=["WebSocketFrame", "Http2Frame", "Http3Frame", "HpackBlock",
+                                   "QuicPacket", "QuicFrameSequence", "QuicParameters"],
                         help="必须都被推到的目标名（与 ProtocolFuzzKernel.h 的 Target 同名）")
     parser.add_argument("--min-executions", type=int, default=1000,
                         help="每类的执行次数下限；只用来抓「根本没跑起来」，不拿机器快慢当回归判据")
@@ -57,6 +58,7 @@ def main() -> int:
 
     rows = []
     failures = []
+    seenNames: set[str] = set()
     for target in arguments.targets:
         path = logDirectory / (target + ".log")
         if not path.is_file():
@@ -65,6 +67,7 @@ def main() -> int:
             continue
 
         executions, counts, crashed, finished = parseLog(path)
+        seenNames.update(counts)
         ownCount = counts.get(target, 0)
         others = {name: value for name, value in counts.items() if name != target}
         othersCalled = sum(others.values())
@@ -87,6 +90,12 @@ def main() -> int:
             failures.append(f"{target}：执行 {executions} 次，低于下限 {arguments.min_executions}")
             verdict = "量不足"
         rows.append((target, f"{executions:,}", f"{ownCount:,}", f"{othersCalled:,}", verdict))
+
+    # 每一档的账都列全（含零调用的那些），所以「二进制里有、清单里没列」会在这里露头：
+    # Target 加了新项而 CI 的默认清单没跟上时会判红，而不是让新目标静静没预算
+    undeclared = sorted(seenNames - set(arguments.targets))
+    if undeclared:
+        failures.append("账上出现这些目标而 --targets 没列它们（Target 加了项、CI 清单没跟上）：" + " ".join(undeclared))
 
     total = sum(int(row[1].replace(",", "")) if row[1].replace(",", "").isdigit() else 0 for row in rows)
     # 「执行次数」取的是这一类里计数最大的那个 worker：-jobs=2 时它是总量的一半上下，

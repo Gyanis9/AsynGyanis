@@ -12,18 +12,18 @@
 # 换 libc++ 会在链接期炸），所以脚本按候选编译器挨个探，一个都不成时直接说出要装什么。
 #
 # 跑法：
-#   scripts/fuzz-net.sh                 # 默认：四类目标各跑 60 秒（各一份语料与日志）
+#   scripts/fuzz-net.sh                 # 默认：每一档目标各跑 60 秒（各一份语料与日志）
 #   scripts/fuzz-net.sh 600             # 每类十分钟
-#   ASYN_FUZZ_TARGETS=combined scripts/fuzz-net.sh 60       # 回到单次混合跑（四类轮转共用预算）
-#   ASYN_FUZZ_TARGETS="HpackBlock Http3Frame" scripts/fuzz-net.sh 120   # 只跑其中两类
+#   ASYN_FUZZ_TARGETS=combined scripts/fuzz-net.sh 60       # 回到单次混合跑（各档轮转共用预算）
+#   ASYN_FUZZ_TARGETS="HpackBlock Http3Frame" scripts/fuzz-net.sh 120   # 只跑其中两档
 #   CLANG_CL=D:/llvm/bin/clang-cl.exe scripts/fuzz-net.sh 300   # Windows 侧自己指路
 #   CXX=clang++-19 scripts/fuzz-net.sh 300                       # Linux 侧换一个 clang（要 19 以上）
 #   ASYN_FUZZ_INCLUDE_DIRS="D:/conan/p/nlohma.../p/include"  scripts/fuzz-net.sh 300
 #       # nlohmann/json 的头目录不在本仓里，Conan 环境没进 INCLUDE 时用它指路（Windows 侧尤其）
 # 额外的 libFuzzer 参数按位置透传，例如 -jobs=4 -workers=4。
 #
-# 为什么默认按目标拆开跑：混合跑只有一份总预算，四类分摊下来每类实际只拿到四分之一，
-# 而且「其中一类根本没被推到」从总执行数上完全看不出来。拆开后每类的账落在
+# 为什么默认按目标拆开跑：混合跑只有一份总预算，摊到每档的目标只剩几分之一，
+# 而且「其中一档根本没被推到」从总执行数上完全看不出来。拆开后每档的账落在
 # `.fuzz/log/<目标>.log` 末尾那行 `FUZZ-TARGET-CALLS …`，语料各自存进 `.fuzz/corpus/<目标>/`
 # 语料只有在这台机器上接着跑才会长——CI 每次都是干净工作区，从空语料开始；它留 14 天制品是给「把撞出来的形状喂回本地继续挖」和「搬进 gtest 种子」用的，不是增量缓存。
 #
@@ -37,10 +37,10 @@ cd "${projectRoot}" || exit 1
 durationSeconds="${1:-60}"
 shift || true
 
-# 目标清单：默认四类各跑一整轮（每类预算都是 durationSeconds），这样「哪一类在推进」看得见。
-# 传 ASYN_FUZZ_TARGETS=combined 退回单次混合跑（一次进程轮转四类），本机快速冒烟用得上。
-# 每类的语料与日志各落一份：语料是「下次能接着挖」的起点，日志是给 CI 数执行次数用的。
-targetSelection="${ASYN_FUZZ_TARGETS:-WebSocketFrame Http2Frame Http3Frame HpackBlock}"
+# 目标清单：默认每档各跑一整轮（每档预算都是 durationSeconds），这样「哪档在推进」看得见。
+# 传 ASYN_FUZZ_TARGETS=combined 退回单次混合跑（一个进程轮转全部目标），本机快速冒烟用得上。
+# 每档的语料与日志各落一份：语料是「下次能接着挖」的起点，日志是给 CI 数执行次数用的。
+targetSelection="${ASYN_FUZZ_TARGETS:-WebSocketFrame Http2Frame Http3Frame HpackBlock QuicPacket QuicFrameSequence QuicParameters}"
 corpusRoot="${ASYN_FUZZ_CORPUS_DIR:-${projectRoot}/.fuzz/corpus}"
 logRoot="${projectRoot}/.fuzz/log"
 
@@ -50,7 +50,7 @@ if [[ "${targetSelection}" != "combined" ]]; then
     read -ra runTargets <<<"${targetSelection}"
 fi
 
-# 单轮跑法：指定目标时把选择钉死（其余三类必须零调用，这条判据在 CI 侧核），并各自留语料与日志
+# 单轮跑法：指定目标时把选择钉死（其余各档必须零调用，这条判据在 CI 侧核），并各自留语料与日志
 runOneTarget() {
     local binary="$1" artifacts="$2" targetName="$3"
     shift 3
@@ -80,7 +80,7 @@ runOneTarget() {
     return "${PIPESTATUS[0]}"
 }
 
-# 跑完清单上的每一类：任何一类判失败就整体失败，但其余几类照样跑完（一次红要看全四类）
+# 跑完清单上的每一档：任何一档判失败就整体失败，但其余各档照样跑完（一次红要看全每一档）
 runAllTargets() {
     local binary="$1" artifacts="$2" status=0
     shift 2
