@@ -95,7 +95,7 @@ runAllTargets() {
     return "${status}"
 }
 
-# 模糊入口 + 四个解码器 + 依赖闭包（少一项就链不出来）
+# 模糊入口 + 七档解码器 + 依赖闭包（少一项就链不出来）
 sources=(
     "tests/Net/Fuzz/FuzzTargets.cpp"
     "tests/Net/Fuzz/ProtocolFuzzKernel.cpp"
@@ -104,6 +104,11 @@ sources=(
     "src/Net/Http2/Hpack.cpp"
     "src/Net/Http3/Http3Frame.cpp"
     "src/Net/Quic/Codec/QuicVariableLengthInteger.cpp"
+    # QUIC 那三档解码器各自一个 .cpp：本闭包不链 Net 库，漏一项就在链接期报未定义符号
+    # （Windows 侧编不出 libFuzzer 目标，所以这种缺失只有 Linux 跑批或 CI 会暴露）
+    "src/Net/Quic/Codec/QuicPacketHeader.cpp"
+    "src/Net/Quic/Codec/QuicFrame.cpp"
+    "src/Net/Quic/Codec/QuicTransportParameters.cpp"
     "src/Net/Http/HttpHeaderFieldStore.cpp"
     "src/Net/Http/HttpRequest.cpp"
     # 请求对象的两条成员函数各自落在自己的文件里：cookies() 要 HttpCookie.cpp、multipartForm()
