@@ -16,11 +16,13 @@ on:
   # 一次全量构建+用例要几十个 runner 分钟）。要验证某个提交就手动 dispatch，或者合进 main。
   push:
     branches: [ main ]
-    # 纯文档改动与工作流自身的改动不值得等构建；版本号门禁在 release-gate.yml，那条不受这里影响
+    # 纯文档改动不值得等构建；版本号门禁在 release-gate.yml，那条不受这里影响。
+    # 这里**不再**忽略 .github/workflows/**：门禁表里的读数只认「push 到默认分支那一轮」跑出来的结果，
+    # 而改门禁恰恰就改在这个文件里——一旦忽略它，新增或修好的门就只能靠手动触发验证，永远进不了台账。
+    # 本工作流只有两条作业（Linux 侧十四条那条仍按原样忽略），代价可控
     paths-ignore:
       - '**.md'
       - 'LICENSE'
-      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
