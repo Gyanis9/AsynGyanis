@@ -67,18 +67,19 @@ WebSocket、TLS，以及 MySQL / SQLite / Redis 驱动。**其中 QUIC、QPACK�
 安全面不是靠人工审出来的，靠下面这些会红的门禁。「最近一次真实运行」一栏是为了避免把
 「作业存在」当成「门禁跑过」——只在 `main` 推送与手动触发上跑，`develop` 不消耗分钟数。
 
-| 门禁 | 覆盖什么 | 位置 | 最近一次真实运行（2026-10-01：`main` 上的 **v2.4.0 `75930f7`** 四条作业全绿——Linux CI 的 `protocol-fuzz` 是第 2 次 attempt 才过的，原因见那一格；GitHub Release 已建并置为 Latest） |
+| 门禁 | 覆盖什么 | 位置 | 最近一次真实运行（2026-10-01：`develop` @ `2fcbf6a` 的手动触发**十二条作业全绿**——本轮新加的覆盖率分模块门与四类各跑一轮的模糊门就是在这次上第一次真实跑完；`main` 上的 **v2.4.0 `75930f7`** 四条也全绿，GitHub Release 已建并置为 Latest。作业在界面里已改成中文名，本表仍按 job id 引用它们） |
 |------|----------|------|--------------------------------|
-| 全量用例 + ASan/LSan/UBSan（Linux） | 内存安全、泄漏、未定义行为；协议解码器的对抗输入 | `linux-ci.yml` 的 `build-and-test` | `main` 上三分片全绿；本机容器同档 3597 例通过、71 例按门控 SKIP（共 3668 条）、零告警、零 sanitizer 命中 |
-| 全量用例 + ASan（Windows/MSVC） | 完成端口、ConnectEx、多进程移交等平台特有路径 | `windows-ci.yml` | `main` 上全绿（这一条是第 3 次 attempt 才过的）；本机 Debug（含 ASan）3575 例通过、77 例 SKIP（共 3652 条）、零告警 |
-| h2spec / Autobahn | HTTP/2 与 WebSocket 的规范一致性（第三方裁判逐条判据） | `protocol-conformance` 作业 | h2spec 常规 146/146、`--strict` 147/147（明文与 TLS 各一轮）；Autobahn 515 条、FAILED 0。`03c5bf5` 复测：那一段实际跑 8 分半，`跑了 515 条，FAILED 0 条` 是裁判脚本自己数出来的 |
-| libFuzzer 四类解码器 | h1/h2/h3/WS 帧解析器的崩溃与越界 | `protocol-fuzz` 作业（300 秒一轮） | `v2.4.0` @ `75930f7`：两个 worker 各 2,869,402 / 3,204,907 次执行、301 秒，零崩溃。**这一格 2026-09-30 曾被判 `cancelled`**：30 分钟作业上限里将近 28 分钟耗在 runner 装 clang-19 的 apt 下载上（慢是「连接卡住但没报错」那种），与代码无关；上限已放宽到 60 分钟并给 apt 加了重试与单次超时 |
+| 全量用例 + ASan/LSan/UBSan（Linux） | 内存安全、泄漏、未定义行为；协议解码器的对抗输入 | `linux-ci.yml` 的 `build-and-test` | `2fcbf6a` 三分片全绿；本机容器同档 3598 例通过、71 例按门控 SKIP（共 3669 条）、零告警、零 sanitizer 命中 |
+| 全量用例 + ASan（Windows/MSVC） | 完成端口、ConnectEx、多进程移交等平台特有路径 | `windows-ci.yml` | `main` 上全绿（这一条是第 3 次 attempt 才过的）；本机 Debug（含 ASan）3576 例通过、77 例 SKIP（共 3653 条）、零告警——这一轮容器侧多出的那 1 条在 Windows 上也同样在场 |
+| h2spec / Autobahn | HTTP/2 与 WebSocket 的规范一致性（第三方裁判逐条判据） | `protocol-conformance` 作业 | `2fcbf6a`：h2spec 常规 146/146、`--strict` 147/147（明文与 TLS 各一轮）；Autobahn 跑了 515 条、FAILED 0（这条计数是裁判脚本自己数出来的） |
+| libFuzzer 四类解码器 | h1/h2/h3/WS 帧解析器的崩溃与越界；每类是否**真的在被推** | `protocol-fuzz` 作业（四类各 90 秒一轮，`scripts/check-fuzz-report.py` 按类核对） | `2fcbf6a`：单类计数最大的 worker 分别 1,322,015 / 1,965,731 / 642,775 / 798,430 次执行（合计 4,728,951），四类**串到别类都是 0**——这行读数同时证明「每类独立预算」真生效；零崩溃，语料制品留 14 天。混合跑时代那一份总预算里「某类一条都没走到」从总数上看不出来。**这一格 2026-09-30 曾被判 `cancelled`**：30 分钟上限里将近 28 分钟耗在 runner 装 clang-19 的 apt 下载上（慢是「连接卡住但没报错」那种），与代码无关；上限已放宽到 60 分钟并给 apt 加了重试与单次超时 |
 | ThreadSanitizer | 事件循环与协程唤醒的跨线程契约 | `thread-sanitizer` 作业 | 首跑 1300 例报出 1 处真竞争（h3 在线连接数的跨线程读），修后复跑全绿；第二处（WS 集线器）由同一条作业浮出、按用例违反线程契约收掉 |
 | aioquic 跨实现验收 | 自研 QUIC 栈与另一套实现的互操作 | `http3-acceptance` 作业 | 全绿 |
 | 依赖公告台账与 SBOM | 每条第三方依赖的公告入口、固定版本、可交付清单 | `supply-chain.yml` | 两个作业（5 步 + 3 步）全绿，SBOM 制品随 `main` 推送上传（保留 90 天） |
 | 示例矩阵 + 容器侧 LSan | 公开契约的真实使用路径（库外消费者的形状） | `scripts/run_samples.py`（本地与容器） | Windows 12 个示例各跑两遍 24/24 通过；容器同档 13/13 通过（LSan 在这一档跟着跑） |
 | 格式门禁（钉版 clang-format 23.1.1） | 新增或改动的代码不符合基线即红 | `formatting` 作业 | `03c5bf5` 全绿；本机复核用容器里同一件 23.1.1，输入当场从工作树展开（长期镜像树会拿旧副本判绿） |
-| 行覆盖率下限 | 库本体（`src/`）的行覆盖率不得低于 60% | `coverage` 作业（`gcovr --fail-under-line`） | `03c5bf5`：`TOTAL 38230 29460 77%`。**这道门 2026-09-30 之前不会红**——步骤吃的是管道末端 `tee` 的退出码；现在显式取 `PIPESTATUS[0]` 并要求真出 TOTAL 行 |
+| 覆盖率门禁（分模块 + 函数 + 分支） | 库本体（`src/`）的行覆盖**按模块各钉一条下限**，另判总函数与总分枝——只看总数时 Database 这种低档会一直隐身 | `coverage` 作业（gcovr 出数 + `scripts/check-coverage-gate.py` 判线） | `2fcbf6a`：Net 89.91（下限 85）、Platform 86.25（80）、Core 85.04（80）、Base 75.86（70）、Database 50.50（45）；总行 77.05（60）、总函数 85.35（75）、总分枝 62.43（50）。**这道门 2026-09-30 之前不会红**——步骤吃的是管道末端 `tee` 的退出码；现在显式取 `PIPESTATUS[0]`，并对四种情形退 2 而不是交出一张空表被读成「覆盖率没问题」：CSV 空表、`src/` 下一条记录都没有（filter 漂移）、可执行行总数低于 20000、声明了下限却在 CSV 里查无此模块 |
+| 性能基线（同机前后对比，不进 CI） | 吞吐与 p50/p95/p99 四档的比值线；`maximum` 只录不判；基线里缺哪一档判据就报红，防的是「测量侧已经产出、门禁却看不见」 | `benchmarks/check-baseline.py` 配 `baseline.json`（Windows）与 `baseline-linux.json`（容器，入口是 `benchmarks/run-soak.sh`） | 2026-10-01 两份基线各自重录（每项三次取中位数、离散范围如实记下）并跑通：Windows 五项、Linux 五项，违规 0。判据本身用突变验过——从基线里删掉 `p99Microseconds` 会让这道门立刻报红；两边绝不互比，绝对读数差四五倍是虚拟机回路与宿主状态，不是代码 |
 | clang-tidy | 命名与静态检查 | `clang-tidy` 作业 | 跑过且当前绿，但**按设计不阻塞**（存量告警未清零前转阻断只会淹掉真信号）；命名类那条判据的生效性见 `docs` 与提交历史 |
 | 可选档专项编译 | MySQL 驱动能编（`-DDATABASE_WITH_MYSQL=ON`）、`io_uring` 后端能编 | `mysql-driver-compile`、`io-uring-compile` 作业 | `03c5bf5` 全绿；这两档不在主构建里，缺了就只能等发布后才知编不过 |
 | 版本三处同解 | 根 `CMakeLists.txt` 的版本 / 更新日志最新发布段 / 最新标签必须一致 | `release-gate.yml` 的 `scripts/check-release-version.py` | 每次 `main` 推送都跑；不一致即红（包版本自 2.4.0 起由 Conan 配方的 `set_version()` 现读 CMake，不再写死第二份） |
