@@ -130,6 +130,11 @@ namespace AsynGyanis::Core
             {
                 LOG_ERROR_FMT("AsyncExecutor: 工作线程的任务闭包抛出非标准异常，本次提交的协程不会被恢复");
             }
+
+            // 抬完成计数排在 task() 之后：任务体里那句「把恢复投回 completionLoop」已经发生
+            // （或以异常收场、从此不再碰循环），所以调用方等到本计数对齐提交数之后，
+            // 才可以安全拆掉它的事件循环——等 pendingTaskCount()==0 不够，那个在出队时就减了
+            m_completedCount.fetch_add(1, std::memory_order_relaxed);
         }
     }
 

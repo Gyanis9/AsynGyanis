@@ -323,8 +323,12 @@ namespace AsynGyanis::Net
      * @brief 钉住：快照里的运行期积压读数确实来自共享执行器，不是恒为零的摆设
      * @details 判据要能被证伪：把共享执行器的工作线程逐个占住（卡在条件变量上，不烧 CPU），
      *          再投一条——那条只能排在队列里，于是「深度」有了一个非零的真值可比。
-     *          收尾次序按「放行 → 等队列排空 → join 循环线程 → 协程帧出作用域」，
-     *          反过来的话恢复会打到已经消亡的帧上。
+     *          收尾次序按「放行 → 等任务全部跑完并把恢复投回循环 → join 循环线程 → 协程帧出作用域」。
+     *          这里刻意等 completedTaskCount() 而不是只看 pendingTaskCount()：队列长度在任务**出队**
+     *          那一刻就减了，而任务体跑完之后还要解引用 completionLoop 把恢复投回去——容器 ASan 实测
+     *          过按队列判的写法，命中 heap-use-after-free（读落在 Scheduler::scheduleRemote 的
+     *          push_back，释放点在 EventLoopThread 的析构）。本执行器是进程级共享的，
+     *          它文档里就写明「先拆循环再析构执行器」是在解引用一个已销毁的循环。
      */
     TEST(HttpMetricsEndpoint, RuntimeBacklogReadingsMirrorTheSharedExecutorQueue)
     {
@@ -332,6 +336,10 @@ namespace AsynGyanis::Net
         Core::AsyncExecutor &executor    = Core::AsyncExecutor::shared();
         const std::size_t    workerCount = executor.workerCount();
         ASSERT_GT(workerCount, 0U);
+
+        // 基线：本进程里这个执行器可能已经服务过别的提交，收尾要等的是「本次这批」跑完
+        const std::size_t completedBefore = executor.completedTaskCount();
+        const std::size_t submittedCount  = workerCount + 1U;
 
         std::mutex               gateMutex;
         std::condition_variable  gateCondition;
@@ -378,6 +386,11 @@ namespace AsynGyanis::Net
         gateCondition.notify_all();
         ASSERT_TRUE(waitForCondition([&executor] { return executor.pendingTaskCount() == 0; })) << "放行之后排队的任务没有做完";
         parkedTasks.push_back(std::move(queuedTask));
+
+        // 拆循环之前的最后一道闸：等这批任务全部**执行完**（恢复也已投回循环），
+        // 否则工作线程还会来解引用这个已经没了的循环——这一条是容器 ASan 实测出来的形状
+        ASSERT_TRUE(waitForCondition([&executor, completedBefore, submittedCount] { return executor.completedTaskCount() >= completedBefore + submittedCount; }))
+                << "有任务还没跑完就要拆循环：完成计数停在 " << executor.completedTaskCount() - completedBefore << " / " << submittedCount;
 
         runner.join();
     }
