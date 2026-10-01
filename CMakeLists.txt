@@ -249,7 +249,7 @@ if(ASYN_BUILD_TESTS)
 endif()
 
 if(ASYN_BUILD_SAMPLES)
-    list(APPEND asynStrictWarningTargets echo_server)
+    list(APPEND asynStrictWarningTargets reference_server)
 endif()
 
 foreach(asynWarningTarget IN LISTS asynStrictWarningTargets)

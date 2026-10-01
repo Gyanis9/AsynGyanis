@@ -3,7 +3,7 @@
 
 示例自己报告结论：stdout 上打印 `RESULT <name> PASS|FAIL <步数> gated <跳过数>`，退出码 0 表示全绿。
 本脚本不假设示例清单——它扫构建目录里现成的可执行文件，所以新增示例不需要改这里。
-echo_server 是部署形态的服务器（不作自检），只按 --help 做一次冒烟运行。
+reference_server 是部署形态的服务器（不作自检），只按 --help 做一次冒烟运行。
 
     python scripts/run_samples.py                  # 跑全部
     python scripts/run_samples.py --only net_http_demo --repeat 3
@@ -34,14 +34,14 @@ MODULE_BY_PREFIX = {
     "core": "Core",
     "net": "Net",
     "database": "Database",
-    # echo_server 是 Net 的部署形态示例，归到 Net 比落到 other 更看得出覆盖面
-    "echo": "Net",
+    # reference_server 是 Net 的部署形态示例，归到 Net 比落到 other 更看得出覆盖面
+    "reference": "Net",
 }
 
 RESULT_LINE = re.compile(r"^RESULT\s+(\S+)\s+(PASS|FAIL)\s+(\d+)(?:\s+gated\s+(\d+))?\s*$", re.MULTILINE)
 
 # 部署形态的服务器：它不是自检程序（直接跑会一直服务下去），只按 --help 冒烟一次
-SMOKE_ONLY = {"echo_server"}
+SMOKE_ONLY = {"reference_server"}
 
 
 def infer_module(name: str) -> str:

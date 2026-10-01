@@ -704,7 +704,7 @@ def main() -> int:
                 measurements["connection-sweep"] = sweepSummary
         except (OSError, ValueError) as probeError:
             # 探针跑不通要报成「一条失败」并给出下一步，不能让 Python 回溯把结论糊掉：
-            # 最常见的原因是这个端口按 h2c 专用启动（echo_server --h2c），HTTP/1.1 探针被
+            # 最常见的原因是这个端口按 h2c 专用启动（reference_server --h2c），HTTP/1.1 探针被
             # 当成 HTTP/2 前导，收到的第一帧是 GOAWAY；h2c 那一档本来就该由 soak_h2c.py 采
             failures += 1
             print(f"  探针中断：{probeError}")

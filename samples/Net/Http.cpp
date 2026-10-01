@@ -297,7 +297,7 @@ namespace
 
     /**
      * @brief 示例自己的 HTTP/1.1 路由
-     * @details 挂法照抄 samples/Net/EchoServer.cpp（那是部署形态），这里只放自检要的端点。
+     * @details 挂法照抄 samples/Net/ReferenceServer.cpp（那是部署形态），这里只放自检要的端点。
      */
     void setupRoutes(Net::Router &router)
     {
@@ -841,7 +841,7 @@ int main(const int argc, char **argv)
     auto distributor = std::make_shared<Core::ConnectionDistributor>();
     // worker 侧的服务器必须挂在 worker 自己那条循环上：addWorker 的回调是在 probeLoop 的线程上
     // 执行的，而 adoptConnection 会改这台服务器的连接表、并把会话协程排进它所属循环的本地队列——
-    // 两处都不加锁。挂在 serverLoop 上就等于从 probeLoop 去动别人的循环内结构（与 echo_server 里
+    // 两处都不加锁。挂在 serverLoop 上就等于从 probeLoop 去动别人的循环内结构（与 reference_server 里
     // 「第 i 个 worker 用 eventLoop(i)」的写法同一纪律）
     auto             dispatchServer    = buildServer(probeLoop, dispatchWorkerPort, defaultLimits, false);
     auto             acceptorServer    = buildServer(serverLoop, dispatchPort, defaultLimits, false);

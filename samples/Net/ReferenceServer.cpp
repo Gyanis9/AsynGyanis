@@ -421,7 +421,7 @@ int main(int argc, char **argv)
 
     if (showUsage)
     {
-        LOG_INFO("Usage: echo_server [--host localhost] [--port 8080] [--threads N]");
+        LOG_INFO("Usage: reference_server [--host localhost] [--port 8080] [--threads N]");
         LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c] [--h3] [--static <目录>]");
         LOG_INFO("                  [--ticket-key <文件>] [--max-connections-per-ip N] [--metrics] [--config <文件>]");
         LOG_INFO("  --ticket-key TLS 会话票据密钥文件（48 或 80 字节二进制，openssl rand 48 > ticket.key）：");
@@ -643,7 +643,7 @@ int main(int argc, char **argv)
             Core::SessionTicketKeyRing::readKeyFiles(ticketKeyFiles, validatedKeys);
         } catch (const Base::Exception &keyFailure)
         {
-            LOG_ERROR_FMT("echo_server 启动失败：{}", keyFailure.what());
+            LOG_ERROR_FMT("reference_server 启动失败：{}", keyFailure.what());
             return 1;
         }
     }
@@ -664,7 +664,7 @@ int main(int argc, char **argv)
 #endif
 
     const char *proto = useHttps ? "https" : "http";
-    LOG_INFO_FMT("echo_server starting — {}://{}:{} threads={} pid={}{}", proto, host, port, threads, Platform::ProcessInfo::currentProcessId(),
+    LOG_INFO_FMT("reference_server starting — {}://{}:{} threads={} pid={}{}", proto, host, port, threads, Platform::ProcessInfo::currentProcessId(),
                  isWorkerProcess ? " (worker)" : "");
 
     // 多线程运行时

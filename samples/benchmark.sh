@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-BINARY="$(dirname "$0")/../build/debug/samples/echo_server"
+BINARY="$(dirname "$0")/../build/debug/samples/reference_server"
 PORT="${PORT:-8080}"
 
 if [ ! -x "$BINARY" ]; then

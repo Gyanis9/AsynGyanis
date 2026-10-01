@@ -1,14 +1,17 @@
 # 示例程序：每个子系统一个可独立运行的程序，各自自检并以退出码报告结果
 #
-# echo_server 是「部署形态」的服务器示例（多协议、多进程、配置文件），保留用于压测与上手；
+# reference_server 是「部署形态」的参考服务端（h1/h2/h2c/h3/WS/SSE 全开，带中间件、追踪、静态文件、
+# 指标、限流、多进程与优雅停机），保留用于压测、上手，以及当作业务服务的起步形状；
 # 其余按模块拆开的示例承担「把每一块单独跑通」的职责，脚本 scripts/run_samples.py 会把它们
 # 全部跑一遍并按退出码判定系统完整性。
 
 # 一个示例一个目标。目录按**模块**分（Base / Platform / Core / Net / Database，与 src/ 与 tests/ 同一套名字），
-# 文件名就是这个示例讲的那件事（EchoServer.cpp、Loop.cpp、Upgrade.cpp…）——不再用 main.cpp：
+# 文件名就是这个示例讲的那件事（ReferenceServer.cpp、Loop.cpp、Upgrade.cpp…）——不再用 main.cpp：
 # 一排同名文件在编辑器标签页与调用栈里分不出谁是谁，而「哪个模块的哪个面」本该从路径上一眼读得出来。
-# 目标名保持原样（echo_server、core_loop、net_http_demo…）：那是对外的程序名，文档、脚本与压测
-# 都按它引用，改它属于换接口而不是改布局。common/ 统一挂作头文件搜索路径。
+# 目标名一般不动（core_loop、net_http_demo…）：那是对外的程序名，文档、脚本、压测与 CI 都按它引用，
+# 改它属于换接口而不是改布局。唯一的例外是 reference_server（原名 echo_server）：那名字不准——它一个
+# echo 端点都没有，挂的是 /json /trace /bench /big /sse /ws，所以连程序名一起换，全仓引用同日跟上。
+# common/ 统一挂作头文件搜索路径。
 function(asyn_add_sample sample_name)
         add_executable(${sample_name} ${ARGN})
         target_link_libraries(${sample_name} PRIVATE Base Core Net)
@@ -21,8 +24,8 @@ function(asyn_add_sample sample_name)
         asyn_copy_sanitizer_runtime(${sample_name})
 endfunction()
 
-# 部署形态的 HTTP/HTTPS/HTTP2/HTTP3 服务器
-asyn_add_sample(echo_server Net/EchoServer.cpp)
+# 部署形态的参考服务端（原名 echo_server：它没有 echo 端点，见上面第 10 行的例外说明）
+asyn_add_sample(reference_server Net/ReferenceServer.cpp)
 
 # Base：日志子系统（Sink、格式化器、注册表、配置驱动装配、异常带栈）
 asyn_add_sample(base_log Base/Log.cpp)

@@ -4,7 +4,7 @@
     python benchmarks/soak_h2c.py --port 18080 [--host 127.0.0.1] [--requests N]
                                   [--connections C] [--pipeline P] [--path /bench|/big] [--json-out <结果文件>]
 
-服务端要求：`echo_server --h2c`（明文连接按先验知识说 h2；TLS 上的 h2 由 ALPN 协商，与本脚本无关）。
+服务端要求：`reference_server --h2c`（明文连接按先验知识说 h2；TLS 上的 h2 由 ALPN 协商，与本脚本无关）。
 `--json-out` 把本次结果写成 JSON（结构见 benchmarks/baseline.json 的 note 字段），供 check-baseline.py 比对。
 本脚本自带一个最小 h2 客户端：不依赖任何第三方库，直接拼帧——前言 + SETTINGS、请求头块用 HPACK
 静态表索引（:method GET / :scheme http / :path），响应只按「DATA/HEADERS 上的 END_STREAM」判定完成，
@@ -25,7 +25,7 @@
       32 条一批时单条延迟随排在前面的流数增长，因为服务端**先把一轮里收齐的请求全部服务完再一次性写出**
       ——多路复用省连接数，不省排队延迟。
     · 两种构建下都累计 3400+ 条请求零失败：无 GOAWAY/RST_STREAM、每条流都收到 END_STREAM 且状态 200。
-    · 归还窗口这一档实测（2026-09-23，容器 ubuntu24 / GCC 13.3 / `echo_server` 的 ASan 构建）：
+    · 归还窗口这一档实测（2026-09-23，容器 ubuntu24 / GCC 13.3 / `reference_server` 的 ASan 构建）：
       `/big` 4 连接 × 20 条 = 80 条流全部收完 262147 字节（单流最多 20 帧 DATA，本端共发出 1266 帧
       WINDOW_UPDATE），零 GOAWAY/RST_STREAM、p50 9.5ms。同一份服务端上把客户端换回「不还窗口」的旧版，
       第一批就在 10s 时限上超时——这一对照就是新代码的证据。

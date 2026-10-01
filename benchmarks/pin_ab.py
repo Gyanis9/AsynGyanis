@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """绑核 A/B：在负载下统计每条工作循环线程的跨核迁移次数，用来判 --pin-threads 值不值。
 
-用法：pin_ab.py <echo_server 路径> <端口> <线程数> <绑核 0/1> <负载秒数> <并发连接数>
+用法：pin_ab.py <reference_server 路径> <端口> <线程数> <绑核 0/1> <负载秒数> <并发连接数>
 输出：单行 CSV —— pinned,threads,migrations,requests
 
 口径与坑（都是实测出来的，别绕过）：

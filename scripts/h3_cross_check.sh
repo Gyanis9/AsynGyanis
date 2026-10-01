@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HTTP/3 的对外一致性验收：起一份 echo_server --h3，再用 aioquic（独立实现）按场景逐条打它。
+# HTTP/3 的对外一致性验收：起一份 reference_server --h3，再用 aioquic（独立实现）按场景逐条打它。
 #
 # 为什么需要这份脚本：h3 会话用例的对端是测试自己按 RFC 9114/9204 排字节的（第三方实现已移出
 # 构建），它对「字节合不合规范」只算自证。跨实现的判定必须在**进程外**做——aioquic 不认识本仓的
@@ -13,7 +13,7 @@ set -uo pipefail
 
 build_dir="${1:-build/release}"
 python_binary="${2:-python3}"
-server_binary="$build_dir/samples/echo_server"
+server_binary="$build_dir/samples/reference_server"
 port="${ASYN_H3_CROSS_PORT:-18493}"
 # 仓库内的自签夹具：探针以 CERT_NONE 连接，CN 与 SAN 不参与校验
 certificate="tests/Core/fixtures/test_cert.pem"
@@ -27,7 +27,7 @@ printf '%s' "$static_body" > "$static_dir/greeting.txt"
 static_bytes=$(wc -c < "$static_dir/greeting.txt" | tr -d ' ')
 
 if [[ ! -x "$server_binary" ]]; then
-    echo "找不到可执行体 $server_binary（先 cmake --build $build_dir --target echo_server）" >&2
+    echo "找不到可执行体 $server_binary（先 cmake --build $build_dir --target reference_server）" >&2
     exit 1
 fi
 if ! command -v "$python_binary" >/dev/null 2>&1; then
