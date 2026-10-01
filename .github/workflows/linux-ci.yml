@@ -943,14 +943,15 @@ jobs:
 
       - name: ACME 跨实现验收（状态机、续期、链与 SAN；场景数由脚本现数）
         run: |
-          # 脚本的退出码分三档：0 全过、1 某场景没过（这才是被测面的问题）、2 前置缺件（拿不到裁判）。
-          # 2 也判红，但消息要说清是哪一档——「裁判没起来」不能读成「ACME 没问题」
+          # 脚本的退出码分三档：0 全过、1 某场景没过（这才是被测面的问题）、2 前置缺件（拿不到裁判：
+          # 镜像没拉到、探针没编出来、 openssl 缺、端口被占、通配解析没通）。2 也判红，但消息要说清是哪
+          # 一档——「裁判没起来」不能读成「ACME 没问题」；具体缺哪件由脚本自己打在那一行
           bash scripts/acme_pebble_cross_check.sh build/debug /tmp/pebble-lab > /tmp/acme-pebble.log 2>&1 && rc=0 || rc=$?
           tail -20 /tmp/acme-pebble.log
           case "$rc" in
             0) echo "Pebble 验收全过" ;;
             1) echo "有场景没过：看上面的场景编号，那是被测面的问题" ;;
-            *) echo "前置缺件（rc=$rc）：镜像拉不到或探针没编出来，属「拿不到裁判」，重跑这条作业即可复核" ;;
+            *) echo "前置缺件（rc=$rc）：缺哪件见上面最后一条 [acme-cross]，属「拿不到裁判」，重跑这条作业即可复核" ;;
           esac
           {
             echo "### ACME 真机构验收（Pebble）"

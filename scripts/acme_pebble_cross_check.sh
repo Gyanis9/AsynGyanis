@@ -54,6 +54,12 @@ if [[ ! -f "$pebble_dir/test/certs/pebble.minica.pem" ]]; then
     note "缺 pebble.minica.pem：连不上对面的 HTTPS 目录"
     exit 2
 fi
+# 域名解析不出来不是实现的问题：HTTP-01 是**对面**按这个名字回来取令牌的，
+# 公共通配解析（sslip.io）挂了或这台机出不去 DNS，都属「拿不到裁判」，与「场景没过」必须分开
+if ! getent hosts "$domain" >/dev/null 2>&1; then
+    note "域名 $domain 解析不出来：对面没法回来取令牌，这一轮的判据不属于本次实现——属前置缺件"
+    exit 2
+fi
 
 # ---- 起对面 ----
 # 配置按本次端口现造一份：直接复用镜像里那份会撞上一个还没退干净的实例——那时判的是别人的进程，
