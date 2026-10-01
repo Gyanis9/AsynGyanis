@@ -64,6 +64,7 @@ until "$python_binary" scripts/h3_acceptance.py 127.0.0.1 "$port" /bench 200 >/d
 done
 
 failures=0
+scenarioCount=0
 
 # runScenario <标签> <探针参数...>：一条不过就把标签记下来，最后统一报（中途退出会漏掉后面的场景）
 runScenario() {
@@ -76,6 +77,7 @@ runScenario() {
         printf 'FAIL\n'
         failures=$((failures + 1))
     fi
+    scenarioCount=$((scenarioCount + 1))
 }
 
 # 普通 GET：状态码、正文，以及由独立实现解出来的响应头。content-length 与正文长度必须同源，
@@ -103,6 +105,18 @@ runScenario static-get /greeting.txt 200 "$static_body" \
 runScenario static-head /greeting.txt --head --expect-header "content-length=$static_bytes" --expect-header etag
 # 目录里没有的名字：兜底路由要把请求让给 404，而不是回一份空正文当作命中
 runScenario static-missing /no-such-file.txt 404
+# 取消通路：h3_acceptance.py 判的是「答得对不对」，这一支判的是「被对端半路掐掉的流会不会把整条
+# 连接带走」——RESET_STREAM 与 STOP_SENDING 两侧同时收口时，服务端要在业务协程还挂着的时候把流记录
+# 摘掉：摘早了把合法重传判成越界，摘漏了记账一直涨。两种错在自家按 RFC 排字节的对端里都看不全，
+# 所以换 aioquic 当真对端。它的参数形状与 h3_acceptance.py 不同，因此不复用 runScenario
+printf '%-22s ' "cancel-streams"
+if "$python_binary" scripts/h3_cancellation_probe.py 127.0.0.1 "$port" /bench 8; then
+    printf 'PASS\n'
+else
+    printf 'FAIL\n'
+    failures=$((failures + 1))
+fi
+scenarioCount=$((scenarioCount + 1))
 
 if [[ $failures -ne 0 ]]; then
     echo "HTTP/3 跨实现验收失败 $failures 条" >&2
@@ -111,4 +125,4 @@ if [[ $failures -ne 0 ]]; then
     exit 1
 fi
 
-echo "HTTP/3 跨实现验收全部通过（11 条场景）"
+echo "HTTP/3 跨实现验收全部通过（${scenarioCount} 条场景）"
