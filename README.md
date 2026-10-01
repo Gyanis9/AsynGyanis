@@ -269,7 +269,7 @@ Platform 86.2%、Base 71.9%、Database 54.2%。完全没被执行的只有 2 个
 
 ## 代码示例
 
-以下示例均取自 `samples/main.cpp` 与 `tests/`，是当前代码里真实可编译的用法。
+以下示例均取自 `samples/Net/EchoServer.cpp` 与 `tests/`，是当前代码里真实可编译的用法。
 
 一次请求在库里的实际走法（含 TLS/ALPN 分岔与背压挂起点）：
 

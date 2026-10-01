@@ -81,7 +81,7 @@
 #include <utility>
 #include <vector>
 
-// 与 samples/main.cpp 同一处理：本文件只碰库自身的类型，全写根命名空间会把每行都拉长一倍
+// 与 samples/Net/EchoServer.cpp 同一处理：本文件只碰库自身的类型，全写根命名空间会把每行都拉长一倍
 using namespace AsynGyanis;
 
 namespace

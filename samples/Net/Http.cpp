@@ -297,7 +297,7 @@ namespace
 
     /**
      * @brief 示例自己的 HTTP/1.1 路由
-     * @details 挂法照抄 samples/main.cpp（那是部署形态），这里只放自检要的端点。
+     * @details 挂法照抄 samples/Net/EchoServer.cpp（那是部署形态），这里只放自检要的端点。
      */
     void setupRoutes(Net::Router &router)
     {

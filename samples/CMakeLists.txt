@@ -4,7 +4,11 @@
 # 其余按模块拆开的示例承担「把每一块单独跑通」的职责，脚本 scripts/run_samples.py 会把它们
 # 全部跑一遍并按退出码判定系统完整性。
 
-# 一个示例一个目标：源码放同名子目录，统一挂 common/ 作为头文件搜索路径
+# 一个示例一个目标。目录按**模块**分（Base / Platform / Core / Net / Database，与 src/ 与 tests/ 同一套名字），
+# 文件名就是这个示例讲的那件事（EchoServer.cpp、Loop.cpp、Upgrade.cpp…）——不再用 main.cpp：
+# 一排同名文件在编辑器标签页与调用栈里分不出谁是谁，而「哪个模块的哪个面」本该从路径上一眼读得出来。
+# 目标名保持原样（echo_server、core_loop、net_http_demo…）：那是对外的程序名，文档、脚本与压测
+# 都按它引用，改它属于换接口而不是改布局。common/ 统一挂作头文件搜索路径。
 function(asyn_add_sample sample_name)
         add_executable(${sample_name} ${ARGN})
         target_link_libraries(${sample_name} PRIVATE Base Core Net)
@@ -18,42 +22,42 @@ function(asyn_add_sample sample_name)
 endfunction()
 
 # 部署形态的 HTTP/HTTPS/HTTP2/HTTP3 服务器
-asyn_add_sample(echo_server main.cpp)
+asyn_add_sample(echo_server Net/EchoServer.cpp)
 
 # Base：日志子系统（Sink、格式化器、注册表、配置驱动装配、异常带栈）
-asyn_add_sample(base_log base_log/main.cpp)
+asyn_add_sample(base_log Base/Log.cpp)
 
 # Base：配置子系统（多文件加载、点分路径取值、模式校验、热重载）
-asyn_add_sample(base_config base_config/main.cpp)
+asyn_add_sample(base_config Base/Config.cpp)
 
 # Platform：套接字工具、描述符、通知器、定时器、内存映射、数据报、进程起停与平台杂项
-asyn_add_sample(platform platform/main.cpp)
+asyn_add_sample(platform Platform/Primitives.cpp)
 target_link_libraries(platform PRIVATE Platform)
 
 # Core：事件循环与线程池、调度器、定时器、IO 监听器、帧池、取消令牌、解析与 UDP/TCP 协程收发
-asyn_add_sample(core_loop core_loop/main.cpp)
+asyn_add_sample(core_loop Core/Loop.cpp)
 
 # Core TLS：加固上下文、证书装载与热替换、OCSP、私有 CA 与双向 TLS 的回环握手
-asyn_add_sample(core_tls core_tls/main.cpp)
+asyn_add_sample(core_tls Core/Tls.cpp)
 
 # Core 多进程：WorkerSupervisor 的起停、崩溃补位与「起来就崩」的次数上限
-asyn_add_sample(core_worker core_worker/main.cpp)
+asyn_add_sample(core_worker Core/Worker.cpp)
 
 # Net HTTP/1.1：路由与中间件、解析上限、分块与 SSE、WebSocket、限额、观测端点、优雅收口
-asyn_add_sample(net_http_demo net_http_demo/main.cpp)
+asyn_add_sample(net_http_demo Net/Http.cpp)
 
 # Net TLS 与 HTTP/2：ALPN 协商、h2c 明文、多路复用、GOAWAY 排空与解析上限
-asyn_add_sample(net_https_h2_demo net_https_h2_demo/main.cpp)
+asyn_add_sample(net_https_h2_demo Net/HttpsH2.cpp)
 
 # Net HTTP/3：QUIC 服务端的配置校验、UDP 端口起停、畸形报文容错、定时驱动与排空
-asyn_add_sample(net_http3_demo net_http3_demo/main.cpp)
+asyn_add_sample(net_http3_demo Net/Http3.cpp)
 
 # Net UDP：UdpServer 的两种起步方式（按地址 bind / 接手别人绑好的口）、逐条交付、主动下发、统计与收口
-asyn_add_sample(net_udp_demo net_udp_demo/main.cpp)
+asyn_add_sample(net_udp_demo Net/Udp.cpp)
 target_link_libraries(net_udp_demo PRIVATE Platform)
 
 # Database：SQLite 文件库/内存库、ORM 与查询构造、事务、二进制列、参数绑定、连接池；MySQL/Redis 按环境变量门控
-asyn_add_sample(database_demo database_demo/main.cpp)
+asyn_add_sample(database_demo Database/OrmAndPool.cpp)
 target_link_libraries(database_demo PRIVATE Database)
 
 # Core 零停机换代：把正在监听的套接字交给新一代进程，端口全程不关（POSIX 才构建，理由见下）
@@ -68,6 +72,6 @@ target_link_libraries(database_demo PRIVATE Database)
 # POSIX 侧成立的前提有两条，两条都是实测换来的：通道必须 AF_UNIX（TCP 通道上内核静默丢描述符），
 # 以及交棒方收口时不对端点做 shutdown（见 AsyncSocket::markAsListening()）。
 if (NOT WIN32)
-        asyn_add_sample(core_upgrade core_upgrade/main.cpp)
+        asyn_add_sample(core_upgrade Core/Upgrade.cpp)
         target_link_libraries(core_upgrade PRIVATE Platform)
 endif()
