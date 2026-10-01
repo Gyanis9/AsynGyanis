@@ -683,10 +683,12 @@ jobs:
           path: .fuzz/artifacts/
           if-no-files-found: ignore
 
-  # 行覆盖率：此前「覆盖率只能手工量」（本机全量含真库用例 76.2% 行覆盖），CI 里没有任何数字，
-  # 也没有门禁。这里补上：跑一遍全量用例收 .gcda，用 gcovr 汇总，按行覆盖率下限把关。
-  # 阈值故意取在实测下游——本作业不带 MySQL/Redis 真库分支，天然比手工基线低一截；首日就红的
-  # 门禁只会教会人忽略红。要提阈值，请实测之后连同 COVERAGE_LINE_FLOOR 一起改，两处必须同解。
+  # 覆盖率：先补上「CI 里根本没有数字」这件事——跑一遍全量用例收 .gcda，gcovr 出行/函数/分支三份读数，
+  # 再由 scripts/check-coverage-gate.py 把关：总行下限取在这里的 COVERAGE_LINE_FLOOR，
+  # **逐模块**行下限与函数/分支下限取在那个脚本里（默认值按 2026-10-01 实测往下留一档：
+  # 总行 77.08 / 函数 85.44 / 分支 62.38；Net 89.94、Platform 87.08、Core 84.98、Base 75.74、Database 50.50）。
+  # 分模块这条是重点：本作业不带 MySQL/Redis 真库分支，Database 天然低一截，只看总数它会一直隐身。
+  # 阈值故意取在实测下游——首日就红的门禁只会教会人忽略红；要提阈值，先实测，两处（env 与脚本默认值）必须同解。
   coverage:
     name: 覆盖率门禁
     runs-on: ubuntu-latest
@@ -735,28 +737,31 @@ jobs:
       - name: 跑用例生成 .gcda
         run: ctest --test-dir build/coverage -j 4
 
-      - name: 汇总行覆盖率并按下限把关
+      - name: 汇总覆盖率并按模块与总数把关
         run: |
-          # 退出码要能穿过管道活下来：上一次发布的这轮运行里 gcovr 已经抛了 traceback，作业却照样报绿。
-          # 判据不靠 runner 给不给 pipefail/-e（那是它会变的实现细节），显式取 PIPESTATUS[0]。
-          # GCC 11+ 会把分支命中数报成负数（那次 traceback 指的是 Base/Log/LoggerRegistry.cpp:95 的
-          # branch 2 taken -1992），gcovr 默认遇负即崩。按它自己提示的口径降级成「每文件告警一次」，
-          # 而不是放弃整份读数——没有读数比带着噪声出数更糟，那正是这道门上次绿着的原因。
-          gcovr --root "$PWD" --filter 'src/' --exclude-unreachable-branches \
+          # gcovr 8.6 的两处坑：`--csv`/`--txt` 的取值是可选位置参数，写成 `--csv 路径` 会被后面的词吃掉
+          # （实测报 OSError: Unknown directory 'n'），必须用 `--csv=路径`；`--branches`/`--txt-branches`
+          # 已废弃，换成 `--txt-metric branch`。GCC 会把分支命中数报成负数（实测
+          # Base/Log/LoggerRegistry.cpp:95 的 branch 2 taken -463），默认遇负即崩——崩掉就没有读数，
+          # 比带着噪声出数更糟，故按 gcovr 自己提示的口径降级成每文件告警一次。
+          gcovr --root "$PWD" --filter 'src/' --exclude-unreachable-branches --exclude-throw-branches \
             --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
-            --fail-under-line "$COVERAGE_LINE_FLOOR" --txt | tee /tmp/gcovr.txt
+            --txt-metric branch --csv=/tmp/gcovr.csv --txt=/tmp/gcovr.txt | tee /tmp/gcovr-console.txt
+          # 退出码要能穿过管道活下来：判据不押在 runner 给不给 pipefail/-e 上，显式取 PIPESTATUS[0]
           gcovr_rc=${PIPESTATUS[0]}
           if [ "$gcovr_rc" -ne 0 ]; then
-            echo "gcovr 退出码 $gcovr_rc：要么低于阈值 ${COVERAGE_LINE_FLOOR}%，要么根本没跑成"
+            echo "gcovr 退出码 $gcovr_rc：这道门按没跑成处理，不当成「覆盖率没问题」"
             exit "$gcovr_rc"
           fi
-          # 「这道门跑过」的判据是**真出了一行带百分比的 TOTAL**：少了它，即使退出码是 0 也只是一张空表，
-          # 而空表会被读成「覆盖率没问题」。百分比的**位数不写死**——gcovr 8.6 的 --txt 打的是整数
-          # （实测 `TOTAL  38230  29453  77%`），要求「数字.数字%」会把一份合格读数判成没跑成（本轮 CI 就红过一次）
+          # 「跑过」的判据是真出一行带百分比的 TOTAL；位数不写死（8.6 打整数、旧版打小数，
+          # 写死小数那一档时本作业把一份合格读数判成没跑成，红过一次）
           grep -qE "TOTAL.*[0-9]+%" /tmp/gcovr.txt || {
-            echo "gcovr 没有交出行覆盖率汇总（上面是它的诊断），这道门按未跑成处理"
+            echo "gcovr 没有交出汇总行（上面是它的诊断）"
             exit 1
           }
-          # 把实测数字打进作业摘要：对外那句覆盖率要有可点开的真源，不能只活在 README 的一句话里
-          echo "### 行覆盖率（阈值 ${COVERAGE_LINE_FLOOR}%）" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 行覆盖率（本轮实测）" >> "$GITHUB_STEP_SUMMARY"
           grep -E "TOTAL.*[0-9]+%" /tmp/gcovr.txt | tail -1 >> "$GITHUB_STEP_SUMMARY"
+          # 阈值只在这一处判：gcovr 自己的 --fail-under-line 撤了，改由脚本吃同一个环境变量把关，
+          # 另加函数/分支两条与**逐模块**下限——总数 77% 达标时 Database 只有 50.5%，
+          # 聚合数会替死角掩护（本轮实测 Net 89.94 / Platform 87.08 / Core 84.98 / Base 75.74 / Database 50.50）
+          python3 scripts/check-coverage-gate.py --csv /tmp/gcovr.csv --line-floor "$COVERAGE_LINE_FLOOR"
