@@ -1309,23 +1309,34 @@ namespace AsynGyanis::Net
                 // 升级意图一并清掉，因此下面只在业务正常返回时才认这个标记
                 if (handlerException == nullptr && response.isWebSocketUpgradeRequested())
                 {
-                    std::string upgradeFailureReason;
-                    if (!isWebSocketUpgradeRequest(request, &upgradeFailureReason))
+                    std::string                 upgradeFailureReason;
+                    WebSocketHandshakeRejection upgradeRejection{WebSocketHandshakeRejection::Other};
+                    if (!isWebSocketUpgradeRequest(request, &upgradeFailureReason, &upgradeRejection))
                     {
-                        // 登记了升级但请求并不构成合法握手：回 400 让对端知道原因，随后按 close 收口。
-                        // 中文原因同时进正文与日志——正文对端未必有人看，日志才是排查入口
-                        LOG_ERROR_FMT("HttpSession: WebSocket 升级请求不合法，已回 400 并收口连接。request-id {}，路径 {}，原因：{}", request.requestId(), request.uri(),
-                                      upgradeFailureReason);
+                        // 登记了升级但请求并不构成合法握手：回错误应答让对端知道原因，随后按 close 收口。
+                        // 中文原因同时进正文与日志——正文对端未必有人看，日志才是排查入口。
+                        // 版本类失败另走一档：RFC 6455 §4.2.2 要求这种应答带一条 Sec-WebSocket-Version
+                        // 指明本端支持的版本（客户端靠这一行决定要不要换版本重试），并给的示例状态码就是
+                        // 426 Upgrade Required。缺了那条头部，一个版本不合的客户端只会看到一个无声的 400
+                        const bool isVersionRejection = upgradeRejection == WebSocketHandshakeRejection::UnsupportedVersion;
+                        const int  rejectionStatus    = isVersionRejection ? 426 : 400;
+
+                        LOG_ERROR_FMT("HttpSession: WebSocket 升级请求不合法，已回 {} 并收口连接。request-id {}，路径 {}，原因：{}", rejectionStatus, request.requestId(),
+                                      request.uri(), upgradeFailureReason);
                         if (metrics != nullptr)
                         {
                             metrics->countBadRequest();
                         }
 
                         response.reset();
-                        response.setStatus(400);
+                        response.setStatus(rejectionStatus);
                         response.setBody(upgradeFailureReason);
                         response.setHeader("content-type", "text/plain; charset=utf-8");
                         response.setHeader("connection", "close");
+                        if (isVersionRejection)
+                        {
+                            response.setHeader(kWebSocketVersionHeaderName, std::string(kSupportedWebSocketVersion));
+                        }
                         [[maybe_unused]] const bool isRejectionSent = co_await sendResponse(response.serializeHead(), response.body());
                         co_return;
                     }

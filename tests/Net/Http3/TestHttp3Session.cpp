@@ -271,9 +271,10 @@ namespace AsynGyanis::Net
              *       到达」正是这条路径
              */
             std::vector<CapturedStreamData> submitEndedWebSocketTunnel(const std::string &path, const std::string &authority,
-                                                                       const std::vector<std::pair<std::string, std::string>> &extraHeaders = {})
+                                                                       const std::vector<std::pair<std::string, std::string>> &extraHeaders         = {},
+                                                                       const bool                                              addHandshakeDefaults = true)
             {
-                queueRequestHead("CONNECT", path, authority, "websocket", extraHeaders, kFirstRequestStreamId, true);
+                queueRequestHead("CONNECT", path, authority, "websocket", addHandshakeDefaults ? withHandshakeFields(extraHeaders) : extraHeaders, kFirstRequestStreamId, true);
                 return drainPendingWrites();
             }
 
@@ -288,9 +289,36 @@ namespace AsynGyanis::Net
              */
             std::vector<CapturedStreamData> submitWebSocketTunnel(const std::string &path, const std::string &authority, const std::string &firstWebSocketFrame)
             {
-                queueRequestHead("CONNECT", path, authority, "websocket", {}, kFirstRequestStreamId, false);
+                queueRequestHead("CONNECT", path, authority, "websocket", withHandshakeFields({}), kFirstRequestStreamId, false);
                 queueDataFrame(kFirstRequestStreamId, firstWebSocketFrame, false);
                 return drainPendingWrites();
+            }
+
+            /// 扩展 CONNECT 的握手必填两项（RFC 9220 §3）的示例值：RFC 6455 §1.3 的 key（解码后恰 16 字节）与版本 13
+            static constexpr std::string_view kExampleWebSocketClientKey = "dGhlIHNhbXBsZSBub25jZQ==";
+
+            /**
+             * @brief 给扩展 CONNECT 补上 RFC 9220 §3 必填的两条握手头
+             * @details 按名字逐条判：调用方自己写了 key 或版本就完全按它给的来（拒绝面的用例要发的
+             *          正是「版本 12」或「缺 key」这种不成形的握手，不能被默认值盖掉），而
+             *          sec-websocket-extensions 这类其它握手头不该连累这两条必填项。
+             * @param extraHeaders 调用方给的头部
+             * @return std::vector<std::pair<std::string, std::string>> 合并后的头部
+             */
+            static std::vector<std::pair<std::string, std::string>> withHandshakeFields(const std::vector<std::pair<std::string, std::string>> &extraHeaders)
+            {
+                std::vector<std::pair<std::string, std::string>> merged   = extraHeaders;
+                const auto                                       hasField = [&merged](std::string_view name)
+                { return std::any_of(merged.begin(), merged.end(), [name](const std::pair<std::string, std::string> &field) { return field.first == name; }); };
+                if (!hasField("sec-websocket-key"))
+                {
+                    merged.emplace_back("sec-websocket-key", std::string(kExampleWebSocketClientKey));
+                }
+                if (!hasField("sec-websocket-version"))
+                {
+                    merged.emplace_back("sec-websocket-version", "13");
+                }
+                return merged;
             }
 
             /**
@@ -2770,6 +2798,66 @@ namespace AsynGyanis::Net
         const std::string_view bothEchoes = peer.response().body;
         ASSERT_EQ(bothEchoes.size(), (2U + payload.size()) + (2U + secondPayload.size())) << "第二条帧没有回显：首条交付完之后的出向帧没发出去";
         EXPECT_EQ(bothEchoes.substr(2U + payload.size() + 2U, secondPayload.size()), secondPayload) << "第二帧的回显负载与发出去的不一致";
+    }
+
+    /**
+     * @brief 扩展 CONNECT 的握手必填项不齐时不建隧道：按 400 应答，版本类失败补一条本端支持的版本
+     * @details RFC 9220 §3 把 Sec-WebSocket-Key 与 Sec-WebSocket-Version 列为 CONNECT-WS 的必填项，而这条
+     *          路径过去只看「业务有没有登记升级」——一个既没给 key、又声明了版本 12 的对端照样能把隧道拉起来，
+     *          之后收发帧的两侧都建立在没有协商结果的前提上。
+     *          两个形状分开判：版本不对的应答里必须能看见 Sec-WebSocket-Version: 13（RFC 6455 §4.2.2 的
+     *          应答义务，客户端靠这一行决定换版本重试）；缺 key 的应答里**不得**出现这条头部，否则一个
+     *          「你的 key 不成形」的应答会伪装成版本问题。隧道没建成的反向断言是 peer 没收到 2xx。
+     */
+    TEST(Http3Session, RejectsWebSocketTunnelWhenHandshakeFieldsMissingOrWrong)
+    {
+        const auto serve = [](const std::vector<std::pair<std::string, std::string>> &handshakeFields, int &status, std::map<std::string, std::string> &headers)
+        {
+            FakeStreamOpener                opener;
+            std::vector<CapturedStreamData> sentStreamData;
+            Http3Session                    session = makeSession(opener, sentStreamData);
+
+            Router router;
+            router.get("/chat",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.upgradeToWebSocket([](WebSocketPeer &) -> Core::Task<> { co_return; });
+                           co_return;
+                       });
+            session.attachRouter(router);
+
+            Http3ClientPeer peer;
+            // 拒绝面的用例自己写握手头，默认值必须关掉：否则「缺 key」这一档会被补全成合法请求
+            const std::vector<CapturedStreamData> requestChunks = peer.submitEndedWebSocketTunnel("/chat", "example.com", handshakeFields, false);
+            for (const CapturedStreamData &chunk: requestChunks)
+            {
+                session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+
+            Core::Task<> pumpTask = session.pump();
+            resumeUntilReady(pumpTask);
+            for (const CapturedStreamData &chunk: sentStreamData)
+            {
+                peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+            status  = peer.response().status;
+            headers = peer.response().headers;
+        };
+
+        int                                status = 0;
+        std::map<std::string, std::string> headers;
+
+        // 版本 12：本端只认 13，拒绝应答要指明这一点
+        serve({{"sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="}, {"sec-websocket-version", "12"}}, status, headers);
+        EXPECT_EQ(status, 400) << "版本不合的扩展 CONNECT 应当被拒";
+        EXPECT_EQ(headers["sec-websocket-version"], "13") << "版本类拒绝没回本端支持的版本，客户端无从重试";
+
+        // 缺 key（版本 13 齐）：同样拒，但不该带上版本头部——那不是这次失败的原因
+        status = 0;
+        headers.clear();
+        serve({{"sec-websocket-version", "13"}}, status, headers);
+        EXPECT_EQ(status, 400) << "缺 Sec-WebSocket-Key 的扩展 CONNECT 应当被拒";
+        EXPECT_EQ(headers.find("sec-websocket-version"), headers.end()) << "缺 key 的拒绝伪装成了版本问题";
     }
 
     /**

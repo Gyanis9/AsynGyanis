@@ -75,12 +75,18 @@ namespace AsynGyanis::Net
         return Base::base64Encode(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
     }
 
-    bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *const failureReason)
+    bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *const failureReason, WebSocketHandshakeRejection *const rejection)
     {
         // 出参进入调用即清空：调用方靠「非空」判断本次失败，残留上一次的原因会误导它
         if (failureReason != nullptr)
         {
             failureReason->clear();
+        }
+        // 分类先按「其余缺陷」起笔：只有版本那两条出口会改成 UnsupportedVersion。
+        // 反过来写（默认 None、命中才置位）会让以后新增的拒绝口静默留在 None 上
+        if (rejection != nullptr)
+        {
+            *rejection = WebSocketHandshakeRejection::Other;
         }
 
         const auto reject = [failureReason](std::string reason)
@@ -122,17 +128,22 @@ namespace AsynGyanis::Net
             return reject("WebSocket 握手要求 Connection 头包含 Upgrade，请补上 Connection: Upgrade");
         }
 
-        // 第 5、6 条（版本与 key）与 h2 的扩展 CONNECT 完全一致，出处收在 validateWebSocketKeyAndVersion() 里
+        // 第 5、6 条（版本与 key）与 h2/h3 的扩展 CONNECT 完全一致，出处收在 validateWebSocketKeyAndVersion() 里，
+        // 失败分类也从那里透传——版本类失败要不要补一条 Sec-WebSocket-Version 只能有一个判据
         std::string clientKey;
-        return validateWebSocketKeyAndVersion(request, clientKey, failureReason);
+        return validateWebSocketKeyAndVersion(request, clientKey, failureReason, rejection);
     }
 
-    bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *const failureReason)
+    bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *const failureReason, WebSocketHandshakeRejection *const rejection)
     {
         clientKey.clear();
         if (failureReason != nullptr)
         {
             failureReason->clear();
+        }
+        if (rejection != nullptr)
+        {
+            *rejection = WebSocketHandshakeRejection::Other;
         }
 
         const auto reject = [failureReason](std::string reason)
@@ -144,15 +155,27 @@ namespace AsynGyanis::Net
             return false;
         };
 
-        // RFC 6455 §4.1：本实现只认版本 13
-        const std::optional<std::string> versionValue = request.getHeader("sec-websocket-version");
+        const auto rejectVersion = [rejection, &reject](std::string reason)
+        {
+            if (rejection != nullptr)
+            {
+                *rejection = WebSocketHandshakeRejection::UnsupportedVersion;
+            }
+            return reject(std::move(reason));
+        };
+
+        // RFC 6455 §4.1：本实现只认版本 13。这两条是 RFC 6455 §4.2.2 里唯一要求应答补一条
+        // Sec-WebSocket-Version 的失败形状，故走 rejectVersion
+        const std::optional<std::string> versionValue = request.getHeader(kWebSocketVersionHeaderName);
         if (!versionValue.has_value())
         {
-            return reject("WebSocket 握手缺少 Sec-WebSocket-Version 头：本实现只支持版本 13，请补上 Sec-WebSocket-Version: 13");
+            return rejectVersion(std::format("WebSocket 握手缺少 Sec-WebSocket-Version 头：本实现只支持版本 {}，请补上 Sec-WebSocket-Version: {}", kSupportedWebSocketVersion,
+                                             kSupportedWebSocketVersion));
         }
-        if (trimOptionalWhitespace(*versionValue) != "13")
+        if (trimOptionalWhitespace(*versionValue) != kSupportedWebSocketVersion)
         {
-            return reject(std::format("WebSocket 只支持协议版本 13（RFC 6455），收到 Sec-WebSocket-Version: {}，请改用 13", *versionValue));
+            return rejectVersion(std::format("WebSocket 只支持协议版本 {}（RFC 6455），收到 Sec-WebSocket-Version: {}，请改用 {}", kSupportedWebSocketVersion, *versionValue,
+                                             kSupportedWebSocketVersion));
         }
 
         // RFC 6455 §4.1：key 必须是 base64 且解码后恰 16 字节
@@ -177,6 +200,10 @@ namespace AsynGyanis::Net
         }
 
         clientKey = trimOptionalWhitespace(*keyValue);
+        if (rejection != nullptr)
+        {
+            *rejection = WebSocketHandshakeRejection::None;
+        }
         return true;
     }
 

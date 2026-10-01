@@ -304,19 +304,24 @@ namespace AsynGyanis::Net
          * @param expectedReasonFragment 期望出现在响应正文里的原因片段
          * @param record 消息记录槽（拒绝面不应交付任何消息）
          */
-        void expectUpgradeRejected(const std::uint16_t port, const std::string &requestText, const std::string_view expectedReasonFragment,
-                                   const std::shared_ptr<MessageRecord> &record)
+        void expectUpgradeRejected(const std::uint16_t port, const std::string &requestText, std::string_view expectedStatusLine, std::string_view expectedReasonFragment,
+                                   const std::shared_ptr<MessageRecord> &record, bool expectVersionHeader)
         {
             LoopbackClient client(port);
             ASSERT_TRUE(client.isValid());
             ASSERT_TRUE(client.sendText(requestText, kWaitTimeout));
 
             std::string accumulated;
-            ASSERT_TRUE(client.waitForText(accumulated, "HTTP/1.1 400 ", kWaitTimeout)) << "响应：" << accumulated;
+            ASSERT_TRUE(client.waitForText(accumulated, expectedStatusLine, kWaitTimeout)) << "响应：" << accumulated;
 
             // 渐进性断言只用子串：状态行与头部行可能分属两个 TCP 段，逐字节比对要等连接关闭
             EXPECT_NE(accumulated.find(expectedReasonFragment), std::string::npos) << "响应：" << accumulated;
             EXPECT_EQ(accumulated.find("Sec-WebSocket-Accept"), std::string::npos) << "被拒的请求不应升级";
+            // RFC 6455 §4.2.2 只给「版本不被理解」这一类失败派了应答义务：带一条本端支持的版本。
+            // 其余拒绝不得带上它——否则一个「你的 key 不成形」的应答会伪装成版本问题。
+            // 头部名按本端写进去的原样比对（响应序列化不改写大小写，同 content-type 那一条）
+            const bool hasVersionHeader = accumulated.find("sec-websocket-version: 13") != std::string::npos;
+            EXPECT_EQ(hasVersionHeader, expectVersionHeader) << "响应：" << accumulated;
 
             // 拒绝之后按 close 收口：先等对端读到 EOF，再断定这次连接确实结束了
             ASSERT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "被拒的升级请求应随后断开连接";
@@ -646,10 +651,12 @@ namespace AsynGyanis::Net
     // ============================================================================
 
     /**
-     * @brief 钉住拒绝面：登记了升级但请求不构成合法握手时回 400、给中文原因、不升级也不交付业务
-     * @details 四种情况各改一处：非 GET、缺 Upgrade、版本 12、key 解码后不是 16 字节。
+     * @brief 钉住拒绝面：登记了升级但请求不构成合法握手时回错误应答、给中文原因、不升级也不交付业务
+     * @details 四种情况各改一处：非 GET、缺 Upgrade、版本 12、key 解码后不是 16 字节。前三条里
+     *          版本那条按 RFC 6455 §4.2.2 单独走一档：状态码 426 Upgrade Required 且必须带
+     *          Sec-WebSocket-Version: 13；其余三条是 400 且**不得**带那条头部。
      */
-    TEST(WebSocketSession, RejectsInvalidUpgradeRequestsWith400)
+    TEST(WebSocketSession, RejectsInvalidUpgradeRequests)
     {
         const auto                                      record = std::make_shared<MessageRecord>();
         const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
@@ -661,27 +668,27 @@ namespace AsynGyanis::Net
                                           "sec-websocket-key: " +
                                           std::string(kRfcClientKey) + "\r\nsec-websocket-version: 13\r\n\r\n";
         SCOPED_TRACE("非 GET 方法");
-        expectUpgradeRejected(port, nonGetRequest, "GET", record);
+        expectUpgradeRejected(port, nonGetRequest, "HTTP/1.1 400 ", "GET", record, false);
 
         // 缺 Upgrade 头
         const std::string missingUpgradeRequest = "GET /ws HTTP/1.1\r\nhost: test\r\nconnection: Upgrade\r\n"
                                                   "sec-websocket-key: " +
                                                   std::string(kRfcClientKey) + "\r\nsec-websocket-version: 13\r\n\r\n";
         SCOPED_TRACE("缺 Upgrade 头");
-        expectUpgradeRejected(port, missingUpgradeRequest, "Upgrade", record);
+        expectUpgradeRejected(port, missingUpgradeRequest, "HTTP/1.1 400 ", "Upgrade", record, false);
 
-        // 协议版本 12：本实现只认 13
+        // 协议版本 12：本实现只认 13，拒绝应答要指明支持的版本（客户端据此重试）
         const std::string wrongVersionRequest = "GET /ws HTTP/1.1\r\nhost: test\r\nupgrade: websocket\r\nconnection: Upgrade\r\n"
                                                 "sec-websocket-key: " +
                                                 std::string(kRfcClientKey) + "\r\nsec-websocket-version: 12\r\n\r\n";
         SCOPED_TRACE("协议版本 12");
-        expectUpgradeRejected(port, wrongVersionRequest, "13", record);
+        expectUpgradeRejected(port, wrongVersionRequest, "HTTP/1.1 426 ", "13", record, true);
 
         // key 是合法 base64 但解码后不是 16 字节（这里 15 字节）
         const std::string shortKeyRequest = "GET /ws HTTP/1.1\r\nhost: test\r\nupgrade: websocket\r\nconnection: Upgrade\r\n"
                                             "sec-websocket-key: MDEyMzQ1Njc4OWFiY2Rl\r\nsec-websocket-version: 13\r\n\r\n";
         SCOPED_TRACE("key 解码后 15 字节");
-        expectUpgradeRejected(port, shortKeyRequest, "16", record);
+        expectUpgradeRejected(port, shortKeyRequest, "HTTP/1.1 400 ", "16", record, false);
     }
 
     /**

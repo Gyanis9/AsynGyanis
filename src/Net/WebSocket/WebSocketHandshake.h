@@ -27,6 +27,28 @@ namespace AsynGyanis::Net
     // ============================================================================
 
     /**
+     * @brief 握手失败的分类
+     *
+     * @details 只有一类失败带着一份额外的应答义务：版本不被理解时，应答**必须**带
+     *          Sec-WebSocket-Version 指明本端支持的版本（RFC 6455 §4.2.2），客户端正是靠这一行
+     *          决定换一个版本重试。其余缺陷（缺 key、base64 形态不对、不是 GET）没有这条义务，
+     *          带上反而会把一个「你发的 key 不对」的应答伪装成「版本不对」。分类由校验函数
+     *          就地给出，判据只有一个出处，三个协议的会话不许各自再判一遍。
+     */
+    enum class WebSocketHandshakeRejection
+    {
+        None,               ///< 校验通过
+        UnsupportedVersion, ///< 版本缺失或不是本端支持的那一档：应答要带 Sec-WebSocket-Version
+        Other,              ///< 其余握手缺陷：没有那条头部义务
+    };
+
+    /// 本实现支持的 WebSocket 协议版本（RFC 6455）：校验判的那个数与拒绝应答里回的那个数为同一出处
+    inline constexpr std::string_view kSupportedWebSocketVersion = "13";
+
+    /// 拒绝版本不合的握手时必须带的那条头部名（RFC 6455 §4.2.2）
+    inline constexpr std::string_view kWebSocketVersionHeaderName = "sec-websocket-version";
+
+    /**
      * @brief 计算握手应答里的 Sec-WebSocket-Accept 值
      *
      * @details 结果是 base64(SHA-1(clientKey + 固定 GUID))，GUID 为 "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -46,27 +68,30 @@ namespace AsynGyanis::Net
      *          Sec-WebSocket-Key 是解码后恰 16 字节的标准 base64。任一条不满足即返回 false。
      * @param request 已解析完成的请求
      * @param failureReason 失败原因出参；进入调用时先清空，仅失败时写入中文原因，成功时保持为空
+     * @param rejection 失败分类出参，可传空指针：版本类失败要据此在拒绝应答里补一条 Sec-WebSocket-Version
      * @return true 是合法的升级请求，可调用 buildHandshakeResponse() 回 101
      * @return false 不是升级请求，原因见 failureReason（传空指针则只要结论，不要原因）
      * @note token 比对大小写不敏感并按逗号拆分，因此 "Upgrade: WebSocket, foo" 这类写法同样被接受
      * @note 只做「是不是升级请求」的判定，不涉及鉴权：Origin、子协议与自定义头部留给上层
      */
-    [[nodiscard]] ASYN_NET_API bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *failureReason);
+    [[nodiscard]] ASYN_NET_API bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *failureReason, WebSocketHandshakeRejection *rejection = nullptr);
 
     /**
      * @brief 校验两种握手形态共用的两项：Sec-WebSocket-Version 恰为 13、Sec-WebSocket-Key 是解码后恰 16 字节的标准 base64
      *
-     * @details h1 的升级握手（RFC 6455 §4.1）与 h2 的扩展 CONNECT 隧道（RFC 8441 §5）在这一点上完全一致，
-     *          差别只在承载方式：前者靠 Upgrade/Connection 头，后者靠 :protocol=websocket。把这两项单独提出来，
-     *          同一条规范要求就只有一个出处，两处不会各自漂移。
-     * @param request 已解析完成的请求（h2 侧同样是已映射好的请求对象）
+     * @details h1 的升级握手（RFC 6455 §4.1）与 h2/h3 的扩展 CONNECT 隧道（RFC 8441 §5、RFC 9220 §3）在这一点上
+     *          完全一致，差别只在承载方式：前者靠 Upgrade/Connection 头，后两者靠 :protocol=websocket。把这两项
+     *          单独提出来，同一条规范要求就只有一个出处，三处不会各自漂移。
+     * @param request 已解析完成的请求（h2/h3 侧同样是已映射好的请求对象）
      * @param clientKey 输出参数：通过校验的 key 原文（已去掉首尾空白），可直接交给 computeWebSocketAcceptValue()；
      *        进入调用时先清空，仅成功时写入
      * @param failureReason 失败原因出参；进入调用时先清空，仅失败时写入中文原因
+     * @param rejection 失败分类出参，可传空指针：版本类失败要据此在拒绝应答里补一条 Sec-WebSocket-Version
      * @return true 两项都通过，clientKey 可用
      * @return false 原因见 failureReason
      */
-    [[nodiscard]] ASYN_NET_API bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *failureReason);
+    [[nodiscard]] ASYN_NET_API bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *failureReason,
+                                                                   WebSocketHandshakeRejection *rejection = nullptr);
 
     /**
      * @brief 构建 101 Switching Protocols 的完整应答报文

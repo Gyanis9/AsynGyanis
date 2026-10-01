@@ -237,17 +237,41 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief Sec-WebSocket-Version 缺失或不是 13 时被拒，原因里要指出只支持 13
+     * @brief Sec-WebSocket-Version 缺失或不是 13 时被拒，原因里要指出只支持 13，分类要落在版本那一档
+     * @details 分类是会话侧决定「要不要补一条 Sec-WebSocket-Version: 13」的唯一依据（RFC 6455 §4.2.2），
+     *          所以版本这两条出口必须判成 UnsupportedVersion，而 key 那类失败必须判成 Other——
+     *          混在一起就会出现「key 不对却回答版本问题」这种把客户端引偏的应答。
      */
     TEST(WebSocketHandshake, RejectsWebSocketVersionOtherThanThirteen)
     {
         for (const std::string_view versionValue: {"", "8", "12", "14"})
         {
-            const std::string reason = rejectionReasonFor(makeUpgradeRequestWith("websocket", "Upgrade", versionValue, kRfcExampleClientKey));
+            const HttpRequest           request = makeUpgradeRequestWith("websocket", "Upgrade", versionValue, kRfcExampleClientKey);
+            std::string                 reason;
+            WebSocketHandshakeRejection rejection{WebSocketHandshakeRejection::None};
+            EXPECT_FALSE(isWebSocketUpgradeRequest(request, &reason, &rejection)) << "版本取值：" << versionValue;
+            EXPECT_EQ(rejection, WebSocketHandshakeRejection::UnsupportedVersion) << "版本取值：" << versionValue << "，分类错了会话就不会回那条版本头部";
 
             EXPECT_TRUE(containsText(reason, "Sec-WebSocket-Version")) << "版本取值：" << versionValue;
             EXPECT_TRUE(containsText(reason, "13")) << "原因里必须写清只支持 13，版本取值：" << versionValue;
         }
+    }
+
+    /**
+     * @brief 缺 key 的拒绝不得判成版本类：那条 Sec-WebSocket-Version 头部不是它的义务
+     */
+    TEST(WebSocketHandshake, ClassifiesMissingKeyRejectionAsOtherThanVersion)
+    {
+        const HttpRequest           request = makeUpgradeRequestWith("websocket", "Upgrade", "13", "");
+        std::string                 reason;
+        WebSocketHandshakeRejection rejection{WebSocketHandshakeRejection::None};
+        EXPECT_FALSE(isWebSocketUpgradeRequest(request, &reason, &rejection));
+        EXPECT_EQ(rejection, WebSocketHandshakeRejection::Other) << "缺 key 被判成版本类，应答会伪装成版本问题";
+
+        // 反向对照：同一份请求把 key 补上就应当通过，且分类落回 None——否则上面的 Other 可能只是「恒不通过」
+        const HttpRequest good = makeUpgradeRequestWith("websocket", "Upgrade", "13", kRfcExampleClientKey);
+        EXPECT_TRUE(isWebSocketUpgradeRequest(good, nullptr, &rejection));
+        EXPECT_EQ(rejection, WebSocketHandshakeRejection::None);
     }
 
     /**

@@ -1237,16 +1237,24 @@ namespace AsynGyanis::Net
         const std::chrono::steady_clock::time_point tunnelStartTime = std::chrono::steady_clock::now();
 
         // 握手校验：h2 用扩展 CONNECT 代替 Upgrade 头，但版本与 key 两项与 h1 完全一致（同一份实现）
-        std::string clientKey;
-        std::string handshakeFailureReason;
-        if (!validateWebSocketKeyAndVersion(request, clientKey, &handshakeFailureReason))
+        std::string                 clientKey;
+        std::string                 handshakeFailureReason;
+        WebSocketHandshakeRejection handshakeRejection{WebSocketHandshakeRejection::Other};
+        if (!validateWebSocketKeyAndVersion(request, clientKey, &handshakeFailureReason, &handshakeRejection))
         {
+            // 版本类失败要按 RFC 6455 §4.2.2 补一条 Sec-WebSocket-Version 指明本端支持的版本。
+            // 状态码留 400 而不是 h1 那侧的 426：426 说的是「请改用 Upgrade」，而 h2 里根本没有
+            // Upgrade 这套机制（切换靠 :protocol=websocket），对端没有可改的东西
             LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答。request-id {}，路径 {}，原因：{}", request.requestId(), request.uri(),
                           handshakeFailureReason);
             response.reset();
             response.setStatus(400);
             response.setBody("Bad WebSocket Handshake");
             static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            if (handshakeRejection == WebSocketHandshakeRejection::UnsupportedVersion)
+            {
+                static_cast<void>(response.setHeader(kWebSocketVersionHeaderName, std::string(kSupportedWebSocketVersion)));
+            }
             const RequestServeOutcome handshakeOutcome = toRequestServeOutcome(co_await sendResponse(streamId, response, false));
             co_return handshakeOutcome;
         }

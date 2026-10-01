@@ -8,6 +8,7 @@
 #include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Qpack.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
+#include "Net/WebSocket/WebSocketHandshake.h"
 
 namespace AsynGyanis::Net
 {
@@ -572,6 +573,37 @@ namespace AsynGyanis::Net
                 if (isTunnelStream)
                 {
                     m_pendingTunnelStreams.erase(streamId);
+
+                    // 拉起隧道之前先过握手校验，判据与 h1/h2 同一份实现：RFC 9220 §3 要求 CONNECT-WS 请求带
+                    // sec-websocket-key 与 sec-websocket-version，而这条路径过去只看「业务有没有登记升级」，
+                    // 一个没声明版本、没给 key 的对端也能把隧道拉起来。校验排在这里而不是隧道协程里：隧道会在
+                    // 处理器上挂起，届时请求记录可能已被回收（见 serveWebSocketTunnel 按值取参那条注释）。
+                    // 业务没登记升级时不判——那是一条合法的普通 CONNECT 应答，不该被握手规则挡成 400
+                    std::string                 tunnelClientKey;
+                    std::string                 handshakeFailureReason;
+                    WebSocketHandshakeRejection handshakeRejection{WebSocketHandshakeRejection::Other};
+                    if (response.isWebSocketUpgradeRequested() && !validateWebSocketKeyAndVersion(request, tunnelClientKey, &handshakeFailureReason, &handshakeRejection))
+                    {
+                        LOG_ERROR_FMT("Http3Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答、不建隧道。流 {}，原因：{}", streamId, handshakeFailureReason);
+                        if (m_metrics != nullptr)
+                        {
+                            m_metrics->countBadRequest();
+                        }
+                        response.reset();
+                        response.setStatus(400);
+                        response.setBody("Bad WebSocket Handshake");
+                        static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                        if (handshakeRejection == WebSocketHandshakeRejection::UnsupportedVersion)
+                        {
+                            // 版本类失败补一条本端支持的版本（RFC 6455 §4.2.2）；状态码同 h2 留 400，
+                            // h3 里没有 Upgrade 这套机制可让对端改
+                            static_cast<void>(response.setHeader(kWebSocketVersionHeaderName, std::string(kSupportedWebSocketVersion)));
+                        }
+                        finalizeResponseForHttp3(streamId, response);
+                        submitResponse(streamId, response, false);
+                        continue;
+                    }
+
                     // 扩展协商要看请求里的原文：这里按值取出去，协程随后会在处理器上挂起
                     co_await serveWebSocketTunnel(streamId, request.getHeader(kWebSocketExtensionsHeaderName).value_or(std::string{}), response);
                     // 隧道跑到一半被产出预算收口时（对端只连不读），这条应答跟流式半成品同一处置：

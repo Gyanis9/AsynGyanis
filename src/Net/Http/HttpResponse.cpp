@@ -690,6 +690,9 @@ namespace AsynGyanis::Net
                 return "Range Not Satisfiable";
             case 422:
                 return "Unprocessable Content";
+            case 426:
+                // WebSocket 握手版本不合的拒绝应答用得上它（RFC 6455 §4.2.2 给的示例状态码）
+                return "Upgrade Required";
             case 429:
                 return "Too Many Requests";
             case 451:
