@@ -26,6 +26,9 @@ endfunction()
 
 # 部署形态的参考服务端（原名 echo_server：它没有 echo 端点，见上面第 10 行的例外说明）
 asyn_add_sample(reference_server Net/ReferenceServer.cpp)
+# /json 里那个 version 只能取 CMake 的项目版本号（根 CMakeLists 的 project(... VERSION ...)）。
+# 原先写死 "1.0.0"，在项目已到 2.4.0 之后是一份假读数——而这份正文正是「照它起业务」的人第一眼要抄的
+target_compile_definitions(reference_server PRIVATE ASYN_PROJECT_VERSION="${PROJECT_VERSION}")
 
 # Base：日志子系统（Sink、格式化器、注册表、配置驱动装配、异常带栈）
 asyn_add_sample(base_log Base/Log.cpp)

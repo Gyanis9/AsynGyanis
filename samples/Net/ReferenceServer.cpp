@@ -108,7 +108,11 @@ namespace
                        response.setHeader("Content-Type", "application/json");
                        // pid 一并给出：多进程模式下它同时是「这条请求落到哪个 worker」的答案，
                        // 部署排查与压测都靠它对上号（不必再去翻进程表）
-                       response.setBody(R"({"status":"ok","version":"1.0.0","server":"AsynGyanis","pid":)" + std::to_string(Platform::ProcessInfo::currentProcessId()) + "}");
+                       // version 取 CMake 的 project(... VERSION ...)（由 samples/CMakeLists.txt 那条
+                       // target_compile_definitions 递进来）：这里曾写死一份 1.0.0，项目到 2.4.0 之后
+                       // 它就成了假读数——而这段正文正是别人起业务时第一眼要抄的形状
+                       response.setBody(std::string{R"({"status":"ok","version":")" ASYN_PROJECT_VERSION R"(","server":"AsynGyanis","pid":)"} +
+                                        std::to_string(Platform::ProcessInfo::currentProcessId()) + "}");
                        co_return;
                    });
 
