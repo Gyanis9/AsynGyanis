@@ -9,7 +9,7 @@
 # 这个变量受策略 CMP0141 管辖，而本工程的 cmake_minimum_required 是 3.20（策略默认 OLD，
 # 于是变量会被静默忽略）——因此配置行里还要把 CMP0141 显式置 NEW。只影响 CI 的构建目录。
 
-name: Windows CI
+name: Windows 门禁
 
 on:
   # 只在 main 的推送与手动触发上跑：日常开发在 develop 上，PR 不再触发任何 CI（免费分钟数有限，
@@ -25,6 +25,7 @@ on:
 
 jobs:
   build-and-test:
+    name: 构建与全量用例（MSVC + ASan）
     runs-on: windows-latest
     timeout-minutes: 120
 

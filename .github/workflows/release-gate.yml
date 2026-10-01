@@ -15,6 +15,7 @@ on:
 
 jobs:
   version-consistency:
+    name: 版本与交付物一致性
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

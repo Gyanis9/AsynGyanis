@@ -10,7 +10,7 @@
 # Platform/Base/Core 这些公共依赖被重复编译，命中缓存之后这份重复就不再花时间。
 # Redis 只在 database 分片里起；版本号门禁在 release-gate.yml（那条工作流不被路径过滤跳过）。
 
-name: Linux CI
+name: Linux 门禁
 
 on:
   # 只在 main 的推送与手动触发上跑：日常开发在 develop 上，PR 不再触发任何 CI（免费分钟数有限，
@@ -26,6 +26,7 @@ on:
 
 jobs:
   build-and-test:
+    name: 构建与全量用例 · ${{ matrix.shard.label }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -35,14 +36,17 @@ jobs:
       matrix:
         shard:
           - name: platform-base-core
+            label: 平台·基础·核心
             targets: "TestPlatform TestBase TestCore"
             testDirectories: "tests/Platform tests/Base tests/Core"
             redis: "0"
           - name: net
+            label: 网络
             targets: "TestNet echo_server"
             testDirectories: "tests/Net"
             redis: "0"
           - name: database
+            label: 数据库
             targets: "TestDatabase"
             testDirectories: "tests/Database"
             redis: "1"
@@ -160,6 +164,7 @@ jobs:
   # 计时余量给的是 Autobahn：517 条用例里有 4 MiB / 8 MiB 的大消息往返与 permessage-deflate 的
   # 各形分片，而这里跑的是 Debug + ASan 那台服务端（release 侧本机实测整轮约 13 分钟）。
   protocol-conformance:
+    name: 规范裁判：h2spec 与 Autobahn
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -296,6 +301,7 @@ jobs:
   # 成本：libmysqlclient 在 ConanCenter 上只有源码包，第一次跑要现场编译十几分钟；之后
   # CONAN_HOME 被 actions/cache 缓存（key 与其它作业相同），后续运行几乎是白拿。
   mysql-driver-compile:
+    name: MySQL 驱动的编译档
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -345,6 +351,7 @@ jobs:
   # mimalloc 分支不在其中：它要先在 conanfile 里声明依赖（find_package(mimalloc REQUIRED)），
   # 而本仓库的 Conan 依赖清单里没有它——加作业之前得先补依赖，见 PR 说明。
   io-uring-compile:
+    name: io_uring 的编译档
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -405,6 +412,7 @@ jobs:
   # 用例集，把 CI 时间压在可接受范围（本机 Linux 上可以直接跑全量）。事件循环、线程池与跨循环
   # 投递（scheduleRemote / 全局队列 / TimerQueue 唤醒）此前只有注释级约定，这里是唯一的自动兜底。
   thread-sanitizer:
+    name: ThreadSanitizer：线程契约
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -483,6 +491,7 @@ jobs:
   # 立这条之前先实测过：全仓 605 个跟踪的 C++ 源文件在本版下 0 违规（当初那次全量格式化漏了三个文件，
   # 它们的注释在对齐组里放不下 ColumnLimit，需要人把它们挪到声明上方才能收敛）。
   formatting:
+    name: 格式门禁：clang-format
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -502,6 +511,7 @@ jobs:
             | xargs -0 "$HOME/fmt-venv/bin/clang-format" --style=file --dry-run -Werror
 
   clang-tidy:
+    name: 静态检查：clang-tidy
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -560,6 +570,7 @@ jobs:
   # 它对「字节合不合规范」只算自证，这份判定必须由不认识本仓代码的实现来出。
   # 用 Release 构建：验收量的是协议能否互通，插桩只会拖慢握手。
   http3-acceptance:
+    name: HTTP/3 跨实现验收：aioquic
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -621,6 +632,7 @@ jobs:
   # 违例样本落进 .fuzz/artifacts/，失败时作为工件取出，原样搬进 tests/Net/Fuzz/TestProtocolFuzz.cpp
   # 的种子用例即可常驻。
   protocol-fuzz:
+    name: 四类解码器模糊测试
     runs-on: ubuntu-latest
     # 上限要按 apt 慢的那次量：v2.4.0 那次运行里，「装 clang-19 与它的 fuzzer 运行时」一步从 16:26:30
     # 拖到 16:54:57 才结束（llvm-19 / -tools / -dev 几百 MB，镜像吞吐看运气），模糊步骤只跑了 1 分多钟
@@ -661,6 +673,7 @@ jobs:
   # 阈值故意取在实测下游——本作业不带 MySQL/Redis 真库分支，天然比手工基线低一截；首日就红的
   # 门禁只会教会人忽略红。要提阈值，请实测之后连同 COVERAGE_LINE_FLOOR 一起改，两处必须同解。
   coverage:
+    name: 覆盖率门禁
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
