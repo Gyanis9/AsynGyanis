@@ -732,7 +732,8 @@ AsynGyanis/
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 35 例、Redis 30 例（两族都按 ctest 名单现数；覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 - **CI 触发面**：四条工作流（Linux CI / Windows CI / 发布门禁 / 供应链）都只在 `main` 推送与手动触发上跑，
-  `develop` 不消耗分钟数——要看某个提交就 `gh workflow run "Linux CI" --ref develop`。两条构建作业还带
+  `develop` 不消耗分钟数——要看某个提交就 `gh workflow run linux-ci.yml --ref develop`（按**文件名**触发，
+  作业名已是中文；`--ref` 只认分支/标签，直接给提交号会报 `No ref found`）。两条构建作业还带
   `paths-ignore: '**.md'`：纯文档改动不会拉起一次几十个 runner 分钟的构建（所以改版本号那一笔必须动到
   `CMakeLists.txt`，否则它会跟着文档一起被跳过）。每条作业覆盖什么、最近一次真实运行，
   记在 `.github/SECURITY.md` 的「我们靠哪些持续验证」表里（含 h2spec、Autobahn、libFuzzer、TSan、aioquic 互操作、Pebble 的 ACME 跨实现验收）
