@@ -207,7 +207,9 @@ HTTP-01 那条路在回归环境给不了）。三条变量缺一不可，其中
 
 ### 按模块的自检示例
 
-`reference_server` 是部署形态；能力按模块拆成了 12 个各自自检的程序（下面这张表就是那 12 行），每个程序逐步打印 `✓`/`✗`，
+`reference_server` 是部署形态；能力按模块拆成了 12 个各自自检的程序（下面这张表就是那 12 行；条数以
+`python scripts/run_samples.py --build build/debug --list` 现枚举为准——Windows 这一档只有 11 条自检程序
+加 `reference_server`，`core_upgrade` 只在 POSIX 构建），每个程序逐步打印 `✓`/`✗`，
 并在 stdout 上留一行 `RESULT <名字> PASS|FAIL <步数> gated <跳过数>` 供脚本判定（退出码 0 表示全绿）：
 `<步数>` 只算真正执行过的步，`gated` 单列因环境不齐备（真机凭据缺席这类）而跳过的步——
 两者分开，「真机跑过」与「真机没跑」才不会给出同一条结论：
@@ -721,7 +723,7 @@ AsynGyanis/
 
 ## 测试与验证
 
-一笔提交要过的闸门：本地串行四道 → CI 十条作业并行铺开 → 发布与供应链。图下的卡片写清了哪些是硬失败、哪些只是报告档、哪些按能力 SKIP。
+一笔提交要过的闸门：本地串行四道 → CI 十六条作业并行铺开（Linux 十四条 + Windows 二条）→ 发布与供应链。图下的卡片写清了哪些是硬失败、哪些只是报告档、哪些按能力 SKIP。
 
 ![一笔提交要过的验证闸门](assets/diagrams/png/verification-gate-workflow-light.png)
 
