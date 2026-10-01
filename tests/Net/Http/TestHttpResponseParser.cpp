@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -435,5 +436,63 @@ namespace AsynGyanis::Net
         parser.reset();
         EXPECT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));
         EXPECT_EQ(parser.result().body, "ok") << "reset() 没清掉 HEAD 标记：下一条带长度的响应被按 HEAD 收口了";
+    }
+
+    /**
+     * @brief 钉住出站方向也拒绝折行与非法头名——过去这三条只有入站有
+     * @details 旧实现缺冒号时把**整行**当成头名塞进结果，上层按名字取头就可能读到一个对端根本没发过的
+     *          字段；折行（obs-fold）与冒号前带空白的名字同样照收。同一串字节在入站解析里是明确拒绝的，
+     *          两个方向给出不同结论就是中转分歧的入口（缓存投毒、请求走私都从这里进去）。
+     */
+    TEST(HttpResponseParser, RejectsFoldedAndMalformedHeaderLines)
+    {
+        struct MalformedCase
+        {
+            const char *text;
+            const char *why;
+        };
+        const MalformedCase cases[] = {
+                {"HTTP/1.1 200 OK\r\nX-A: 1\r\n continuation\r\n\r\n", "折行（obs-fold）头部"},
+                {"HTTP/1.1 200 OK\r\nno-colon-line\r\n\r\n", "缺冒号的头部行"},
+                {"HTTP/1.1 200 OK\r\n: v\r\n\r\n", "冒号在首位（空名）"},
+                {"HTTP/1.1 200 OK\r\nBad Name: v\r\n\r\n", "冒号前带空白"},
+        };
+        for (const MalformedCase &item: cases)
+        {
+            HttpResponseParser parser;
+            feedAll(parser, item.text);
+            EXPECT_TRUE(parser.hasFailed()) << item.why;
+        }
+
+        // 正向对照：合法的行照收，值的前导空白按 RFC 9112 去掉
+        HttpResponseParser ok;
+        EXPECT_TRUE(feedAll(ok, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-A:    spaced-value\r\n\r\n"));
+        EXPECT_FALSE(ok.hasFailed());
+        const bool found =
+                std::any_of(ok.result().headers.begin(), ok.result().headers.end(), [](const auto &field) { return field.first == "X-A" && field.second == "spaced-value"; });
+        EXPECT_TRUE(found) << "值的前导空白没被去掉，或头部没收到";
+    }
+
+    /**
+     * @brief 钉住 trailer 段与头部共用同一套判据
+     * @details trailer 在报文 framing 之内：折行或缺冒号的 trailer 行说明这条流已经错位，
+     *          不能因为「反正要丢掉」就放过——放过等于让对端用一段 trailer 决定本端在哪里收口。
+     */
+    TEST(HttpResponseParser, RejectsMalformedTrailerLines)
+    {
+        HttpResponseParser folded;
+        feedAll(folded, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\n continuation\r\n\r\n");
+        EXPECT_TRUE(folded.hasFailed()) << "trailer 段的折行被放过了";
+
+        // 这一条才是「trailer 与头部共用判据」的钉子：它有冒号、也不是折行，旧判据（只看有没有冒号）
+        // 会放过，收紧后必须拒——否则对端可以用一段非法头名的 trailer 影响本端的收口判断
+        HttpResponseParser badName;
+        feedAll(badName, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\nBad Name: v\r\n\r\n");
+        EXPECT_TRUE(badName.hasFailed()) << "trailer 段没校验头名字符集，冒号前带空白的行被放过了";
+
+        HttpResponseParser wellFormed;
+        EXPECT_TRUE(feedAll(wellFormed, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\nX-Trailer: v\r\n\r\n"));
+        EXPECT_TRUE(wellFormed.isComplete());
+        EXPECT_EQ(wellFormed.result().body, "a") << "trailer 段之后的正文被改写了";
     }
 } // namespace AsynGyanis::Net

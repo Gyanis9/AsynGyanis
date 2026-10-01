@@ -134,6 +134,23 @@ namespace AsynGyanis::Net
         {
             return statusCode == 204 || statusCode == 304;
         }
+
+        /// 头部行与 trailer 行的共同形态判据，规则与入站那一份对齐（HttpParser::parseFieldLine）：
+        /// 不得以空白开头（obs-fold 已废）、必须有冒号且冒号不在首位、冒号前必须是 token 字符集。
+        /// 两处共用一个实现，免得头部收紧了而 trailer 段还留着旧口子
+        bool headerLineIsWellFormed(const std::string_view line)
+        {
+            if (line.empty() || line.front() == ' ' || line.front() == '\t')
+            {
+                return false;
+            }
+            const std::size_t colonPosition = line.find(':');
+            if (colonPosition == std::string_view::npos || colonPosition == 0)
+            {
+                return false;
+            }
+            return isValidHeaderFieldName(line.substr(0, colonPosition));
+        }
     } // namespace
 
     std::size_t HttpResponseParser::feed(const std::string_view raw)
@@ -293,20 +310,20 @@ namespace AsynGyanis::Net
                         }
                         break;
                     }
-                    // 解析头部行 "Name: Value"
-                    const auto  colon = line.find(':');
-                    std::string name, value;
-                    if (colon != std::string_view::npos)
+                    // 解析头部行 "Name: Value"：三条判据收在 headerLineIsWellFormed 一处（与入站同规则）。
+                    // 旧写法最要命的是缺冒号那支——整行被当成头名塞进结果，上层按名字取头就可能读到
+                    // 对端根本没发过的字段；折行与冒号前带空白/控制字符的头名则是中转分歧的入口
+                    if (!headerLineIsWellFormed(line))
                     {
-                        name  = std::string(line.substr(0, colon));
-                        value = std::string(line.substr(colon + 1));
-                        // 去掉值前导空白
-                        while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
-                            value.erase(0, 1);
-                    } else
-                    {
-                        name = std::string(line);
+                        m_stage = Stage::Failed;
+                        break;
                     }
+                    const std::size_t colon = line.find(':');
+                    std::string       name  = std::string(line.substr(0, colon));
+                    std::string       value = std::string(line.substr(colon + 1));
+                    // 去掉值前导空白
+                    while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+                        value.erase(0, 1);
                     m_headerBlockByteCount += name.size() + value.size();
                     if ((kDefaultMaximumHeaderCount != 0 && m_result.headers.size() >= kDefaultMaximumHeaderCount) ||
                         (kDefaultMaximumHeaderBlockByteCount != 0 && m_headerBlockByteCount > kDefaultMaximumHeaderBlockByteCount))
@@ -379,13 +396,15 @@ namespace AsynGyanis::Net
                                 m_chunkPhase = ChunkPhase::SizeLine;
                                 continue;
                             }
-                            // Trailer 段：空行表示报文完整；其余行按头字段形态校验后忽略
+                            // Trailer 段：空行表示报文完整；其余行按**与头部同一套**形态判据校验后忽略
+                            // （trailer 也在报文 framing 之内，折行或缺冒号的行说明这一条流已经不对了，
+                            //   不能因为「反正要丢掉」就放过）
                             if (line.empty())
                             {
                                 m_stage = Stage::Complete;
                                 break;
                             }
-                            if (line.find(':') == std::string_view::npos)
+                            if (!headerLineIsWellFormed(line))
                             {
                                 m_stage = Stage::Failed;
                                 break;
