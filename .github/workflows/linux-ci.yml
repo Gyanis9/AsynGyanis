@@ -800,3 +800,162 @@ jobs:
           # 另加函数/分支两条与**逐模块**下限——总数 77% 达标时 Database 只有 50.5%，
           # 聚合数会替死角掩护（本轮实测 Net 89.94 / Platform 87.08 / Core 84.98 / Base 75.74 / Database 50.50）
           python3 scripts/check-coverage-gate.py --csv /tmp/gcovr.csv --line-floor "$COVERAGE_LINE_FLOOR"
+
+  # 示例矩阵：把 samples/ 下每个自检程序各跑一遍、按退出码判——它们是「库外消费者」形状的用例，
+  # 公开契约好不好用、中间件挂法对不对，只有把这些当程序跑一遍才知道。此前 .github 里一条引用都没有，
+  # 改坏一个示例不会有任何作业变红。用 Debug 档：它带 ASan + UBSan（Linux 上 ASan 默认开泄漏检测），
+  # 示例自己漏的资源只有跟着这一档跑才看得见。假绿由 run_samples.py 自己兜：一个可执行体都没找到退 2；
+  # ninja 清单里有这个示例、构建目录里却没有产物，也当场报「它这一次根本没跑」。
+  samples:
+    name: 示例矩阵：各模块自检程序（Linux）
+    runs-on: ubuntu-latest
+    # 这一条要全量构建（含测试与示例），冷缓存时按 coverage 那条同量级估；60 分钟留给冷启动太紧
+    timeout-minutes: 90
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      # ccache 的 restore-keys 退到「本机任意一份」：本作业的源码与 build-and-test 完全同源，
+      # 只有 ccache 参数前缀不同，冷启动时借那份缓存能省掉十几分钟
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-samples-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-samples-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-
+            ccache-${{ runner.os }}-
+
+      - name: 安装 Conan 与 ccache
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25"
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y ccache
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置（Debug + sanitizers + ccache）
+        run: |
+          cmake --preset debug -DDATABASE_WITH_MYSQL=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: 构建（全部目标，含示例）
+        run: cmake --build build/debug -- -k 0
+
+      - name: 降低 ASLR 熵（稳定 AddressSanitizer）
+        run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
+
+      - name: 跑示例矩阵（MySQL/Redis 无凭据即按门控 SKIP）
+        run: |
+          # 退出码不押在 runner 给不给 pipefail 上：先收进变量，摘要打完了再照它退
+          python3 scripts/run_samples.py --build build/debug --timeout 400 > /tmp/samples.log 2>&1 && rc=0 || rc=$?
+          tail -24 /tmp/samples.log
+          {
+            echo "### 示例矩阵（Linux）"
+            echo '```'
+            tail -20 /tmp/samples.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+  # ACME 的跨实现验收：进程内那台桩机构与本仓同源、跟着一起被改，真机构那条用例又只走到「取目录 + 建号」。
+  # Pebble 是 Let's Encrypt 官方那套 ACME 测试服务端（Go 写的独立实现），它把 HTTP-01 的取令牌端口配成
+  # 回环可达，于是 CI 里就能走完整台 RFC 8555 状态机并把签出的链验到对面本次生成的根。
+  # 这一步抓到过两个「桩不会拒」的线上不兼容：请求漏 User-Agent（Boulder/Pebble 一律 400 malformed）、
+  # 机构复用已 valid 的授权时客户端又去触发那条挑战。此前它只在本地与容器跑，.github 零引用。
+  acme-pebble:
+    name: ACME 真机构验收：Pebble
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-acme-pebble-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-acme-pebble-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-
+            ccache-${{ runner.os }}-
+
+      - name: 安装 Conan 与 ccache
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25"
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y ccache
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置（Debug + sanitizers + ccache）
+        run: |
+          cmake --preset debug -DDATABASE_WITH_MYSQL=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      # 只编签发探针这一个目标：它把整台状态机跑通，不需要测试二进制——省掉十几分钟
+      - name: 构建签发探针
+        run: cmake --build build/debug --target acme_issuance_probe
+
+      - name: 取出 Pebble（镜像里的 app 与 test/）
+        run: |
+          image="ghcr.io/letsencrypt/pebble:latest"
+          docker pull "$image"
+          cid="$(docker create "$image")"
+          mkdir -p /tmp/pebble-lab
+          docker cp "$cid:/app" /tmp/pebble-lab/app
+          docker cp "$cid:/test" /tmp/pebble-lab/test
+          docker rm "$cid" >/dev/null
+          chmod +x /tmp/pebble-lab/app
+          ls -l /tmp/pebble-lab/app /tmp/pebble-lab/test/config/pebble-config.json
+
+      - name: ACME 跨实现验收（状态机、续期、链与 SAN；场景数由脚本现数）
+        run: |
+          # 脚本的退出码分三档：0 全过、1 某场景没过（这才是被测面的问题）、2 前置缺件（拿不到裁判）。
+          # 2 也判红，但消息要说清是哪一档——「裁判没起来」不能读成「ACME 没问题」
+          bash scripts/acme_pebble_cross_check.sh build/debug /tmp/pebble-lab > /tmp/acme-pebble.log 2>&1 && rc=0 || rc=$?
+          tail -20 /tmp/acme-pebble.log
+          case "$rc" in
+            0) echo "Pebble 验收全过" ;;
+            1) echo "有场景没过：看上面的场景编号，那是被测面的问题" ;;
+            *) echo "前置缺件（rc=$rc）：镜像拉不到或探针没编出来，属「拿不到裁判」，重跑这条作业即可复核" ;;
+          esac
+          {
+            echo "### ACME 真机构验收（Pebble）"
+            echo '```'
+            tail -12 /tmp/acme-pebble.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"

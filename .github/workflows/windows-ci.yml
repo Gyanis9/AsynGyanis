@@ -81,6 +81,21 @@ jobs:
       - name: 全量用例
         run: ctest --test-dir build/debug --output-on-failure --parallel
 
+      # 示例目标在这条作业里本来就编（--build 全目标），跑一遍只要几十秒，
+      # 而它是「库外消费者形状」在 Windows 上的唯一覆盖
+      - name: 示例矩阵（各模块自检程序）
+        shell: bash
+        run: |
+          python scripts/run_samples.py --build build/debug --timeout 600 > "$RUNNER_TEMP/samples.log" 2>&1 && rc=0 || rc=$?
+          tail -24 "$RUNNER_TEMP/samples.log"
+          {
+            echo "### 示例矩阵（Windows）"
+            echo '```'
+            tail -20 "$RUNNER_TEMP/samples.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
       - name: 失败时上传用例日志
         if: failure()
         uses: actions/upload-artifact@v4
@@ -88,3 +103,87 @@ jobs:
           name: ctest-logs
           path: build/debug/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
+
+  # Windows 侧此前只有「用例」这一层：格式与静态检查在 Windows 档完全没有，改坏了要等 Linux 那条作业
+  # 才报。这一条把两道补上，用的是与 Linux 同一件 clang-format（钉版 23.1.1）与同一份 .clang-tidy。
+  static-analysis:
+    name: Windows 静态档：格式与 clang-tidy
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装与 Linux 同版的 clang-format
+        shell: bash
+        run: python -m pip install "clang-format==23.1.1"
+
+      - name: 全仓格式检查（先自证清单非空；有差异即失败）
+        shell: bash
+        run: |
+          # 与 Linux 那一步同一个判据：`xargs -0` 拿到空清单会用零参数调用 clang-format，
+          # 它读空 stdin 退出 0——glob 失配会把这道门变成「什么都没查还报绿」
+          fileCount="$(git ls-files '*.h' '*.hpp' '*.cpp' '*.cc' | wc -l)"
+          echo "参与格式检查的跟踪源文件：${fileCount} 个"
+          if [ "${fileCount}" -lt 500 ]; then
+            echo "清单只有 ${fileCount} 条，不像全仓——按「没跑成」处理"
+            exit 1
+          fi
+          git ls-files -z '*.h' '*.hpp' '*.cpp' '*.cc' \
+            | xargs -0 clang-format --style=file --dry-run -Werror
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 安装 Conan
+        run: python -m pip install "conan>=2.25"
+
+      - name: 探测 Conan profile
+        shell: bash
+        run: conan profile detect --force
+
+      # 编译数据库取 Release 档：Debug 那一份带 /MDd 与 -fsanitize=address，clang 不接受这两个同时给
+      # （实测报 invalid argument '-MDd' not allowed with '-fsanitize=address'），而命名类检查与优化档无关
+      - name: 配置（Release，只为出编译数据库）
+        run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: clang-tidy（报告形式，当前不阻塞）
+        shell: bash
+        run: |
+          clangTidy="$(command -v clang-tidy || echo '/c/Program Files/LLVM/bin/clang-tidy.exe')"
+          if [ ! -x "$clangTidy" ]; then
+            echo "runner 上没有 clang-tidy：这道门按没跑成处理，不当成通过"
+            exit 1
+          fi
+          "$clangTidy" --version | head -2
+          # 判据与 Linux 那一步同口径：只看 src/ 下的翻译单元，报告先落盘再数
+          find src -name '*.cpp' > "$RUNNER_TEMP/tu.txt"
+          tr '\n' '\0' < "$RUNNER_TEMP/tu.txt" \
+            | xargs -0 -n 8 "$clangTidy" -p build/release --quiet > "$RUNNER_TEMP/clang-tidy.log" 2>&1 || true
+          reportLines=$(wc -l < "$RUNNER_TEMP/clang-tidy.log")
+          echo "翻译单元 $(wc -l < "$RUNNER_TEMP/tu.txt") 个，报告 ${reportLines} 行"
+          if [ "${reportLines}" -eq 0 ]; then
+            echo "报告一行都没有：要么根本没解析成功，要么 xargs 一条都没跑——按没跑成处理"
+            exit 1
+          fi
+          {
+            echo "## clang-tidy 摘要（Windows，报告形式，当前不阻塞）"
+            echo '```'
+            grep -cE "warning:|error:" "$RUNNER_TEMP/clang-tidy.log" || echo 0
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传 clang-tidy 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-tidy-report-windows
+          path: ${{ runner.temp }}/clang-tidy.log
+          if-no-files-found: warn
