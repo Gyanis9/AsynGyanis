@@ -162,9 +162,14 @@ jobs:
             echo "runner 上没有 clang-tidy：这道门按没跑成处理，不当成通过"
             exit 1
           fi
-          "$clangTidy" --version | head -2
+          "$clangTidy" --version | sed -n '1,2p'
           # 逐翻译单元跑、每个留一条 TIDY-PROCESSED 标记，而不是 xargs -n 8 批量跑完只看报告有没有行：
           # 批量那版里「一条诊断都没有」「一个都没跑成」「xargs 被信号打断只剩半截」在报告里长得一模一样
+          # 必须显式给 --driver-mode=cl：编译数据库里的命令是 cl.exe 的，runner 那件 clang-tidy 不去嗅探
+          # 驱动模式，于是 /external:I 这类 MSVC 开关它不认、第三方包含目录一个都没吃进去。实测后果是
+          # 依赖头找不到——Gzip.cpp 与 PerMessageDeflate.cpp 报到 zlib 的 zconf.h:486 `'unistd.h' file
+          # not found`（那份头在没有 _WIN32 的假设下走了 POSIX 分支），本仓代码里根本没有这行 include。
+          # 本机那件 clang-tidy 会自己认 cl.exe 并切到 cl 模式，所以本地复现不出来，只能显式传
           tidyDir="$RUNNER_TEMP/tidy"
           rm -rf "$tidyDir"
           mkdir -p "$tidyDir"
@@ -172,7 +177,7 @@ jobs:
             '#!/usr/bin/env bash' \
             'file="$1"' \
             'slug=${file//[!A-Za-z0-9]/_}' \
-            '"$TIDY_BIN" -p build/release --quiet "$file" > "$TIDY_DIR/${slug}.log" 2>&1 && rc=0 || rc=$?' \
+            '"$TIDY_BIN" -p build/release --extra-arg=--driver-mode=cl --quiet "$file" > "$TIDY_DIR/${slug}.log" 2>&1 && rc=0 || rc=$?' \
             'printf "TIDY-PROCESSED %s rc=%s\n" "$file" "$rc" > "$TIDY_DIR/${slug}.mark"' \
             'exit 0' > "$RUNNER_TEMP/tidy-one.sh"
 
