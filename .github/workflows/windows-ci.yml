@@ -166,9 +166,11 @@ jobs:
           # 逐翻译单元跑、每个留一条 TIDY-PROCESSED 标记，而不是 xargs -n 8 批量跑完只看报告有没有行：
           # 批量那版里「一条诊断都没有」「一个都没跑成」「xargs 被信号打断只剩半截」在报告里长得一模一样
           # 驱动模式保持默认，实测两档都不完美：加 --extra-arg=--driver-mode=cl 会让 191 个里 190 个报
-          # clang-diagnostic-error（runner 那件 clang 认不出这台 VS 的运行库位置，连 std::optional、
-          # std::string_view 都找不到，5059 行诊断）；默认档只有 2 个栽在第三方头里（下面按位置分档）。
-          # 版本连 Target 行一起打出来（sed 取 4 行而不是 head -2）：驱动模式与目标三元组是这条门的前提
+          # clang-diagnostic-error、诊断 5059 行，错文是 `no type named 'string_view' in namespace 'std'`、
+          # `no template named 'optional'`、`'openssl/ssl.h' file not found`——那是 cl 风格参数没被吃全
+          # （-std 与 /external:I 一起落空），既不是代码问题也不是运行库缺失；默认档只有 2 个栽在第三方头
+          # 里（下面按位置分档）。版本行连 Target 一起打出来（sed 取 4 行而不是 head -2）：驱动模式与
+          # 目标三元组是这条门的前提，得留在日志里
           tidyDir="$RUNNER_TEMP/tidy"
           rm -rf "$tidyDir"
           mkdir -p "$tidyDir"
