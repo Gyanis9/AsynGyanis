@@ -6,6 +6,7 @@
                                     [--minimum-throughput-ratio 0.6]
                                     [--maximum-p50-ratio 1.5]
                                     [--maximum-p95-ratio 2.0]
+                                    [--maximum-p99-ratio 2.5]
 
 判定口径：
     · 实测 JSON 里的 failures 必须为 0（协议不变式与负载失败都算）——先修正确性，再看性能；
@@ -14,7 +15,9 @@
       于是噪声直接进判定——实测里 h2c 32 条一批的 p50 在三次之间是 362/735/778us，按最优比会把
       一次正常发挥判成 2.03 倍退化。）**建议每次传 3 份以上的实测**，只有 1 份时中位数就是那一次。
     · 吞吐：不得低于基线的 --minimum-throughput-ratio 倍（默认 0.6）；
-    · p50 / p95：不得高于基线的 --maximum-p50-ratio（默认 1.5）/ --maximum-p95-ratio（默认 2.0）倍；
+    · 每一档分位（p50 / p95 / p99）：不得高于基线的对应 `--maximum-<档>-ratio` 倍，默认 1.5 / 2.0 / 2.5；
+      倍数按「分位越靠后越抖」递增。`maximumMicroseconds` 只录不判——单次调度抖动就能让它翻倍，
+      判它等于判机器状态；
     · 基线里有、实测里没有的项判失败（漏测等于没测）；实测里多出来的项只提示。
 
 **这道门禁能抓什么、不能抓什么**：它抓的是量级回归；抓不住 10% 级的漂移——那需要更严谨的测量方法
@@ -32,9 +35,14 @@ import sys
 
 DEFAULT_BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline.json")
 
-LATENCY_KEYS = ("p50Microseconds", "p95Microseconds", "maximumMicroseconds")
-GAUGED_KEYS = ("throughputPerSecond",) + LATENCY_KEYS
+LATENCY_KEYS = ("p50Microseconds", "p95Microseconds", "p99Microseconds", "maximumMicroseconds")
+# `maximumMicroseconds` 在 LATENCY_KEYS 里但**不判**：它是整段最坏的一次，单次调度抖动就能翻倍，
+# 判它等于判机器状态。分位这条线判到 p99 为止，max 只作描述性读数
+GAUGED_KEYS = ("throughputPerSecond", "p50Microseconds", "p95Microseconds", "p99Microseconds")
 DESCRIPTIVE_KEYS = ("connections", "pipeline", "requests", "throughputUnit")
+# 每个受判定分位的默认上限倍数。新增一档只要在这里加一行，参数与循环都跟着长——
+# 避免出现「测量脚本已经产出 p99，而门禁只认 p50/p95」这种两头各写一份的漂移
+LATENCY_RATIO_DEFAULTS = {"p50Microseconds": 1.5, "p95Microseconds": 2.0, "p99Microseconds": 2.5}
 
 
 def loadJson(path: str) -> dict:
@@ -111,11 +119,15 @@ def compareMeasurement(name: str, expected: dict, samples: dict, arguments) -> l
             violations.append(f"{name}：吞吐 {actualThroughput:.0f} 低于基线的 {arguments.minimum_throughput_ratio:.2f} 倍"
                               f"（下限 {minimum:.0f}）")
 
-    for key, ratioLimit, label in (("p50Microseconds", arguments.maximum_p50_ratio, "p50"),
-                                   ("p95Microseconds", arguments.maximum_p95_ratio, "p95")):
+    for key, ratioLimit, label in ((key, getattr(arguments, f"maximum_{key[:-len('Microseconds')].lower()}_ratio"),
+                                    key[:-len('Microseconds')]) for key in LATENCY_RATIO_DEFAULTS):
         expectedValue = expected.get(key)
         latencySamples = samples.get(key)
         if not expectedValue:
+            # 基线里缺这一档＝这道判据从未生效，得当场上报而不是静默跳过：
+            # p99 刚加进测量侧时，基线还没录它，「门禁判 p99」那句话就是空的
+            print(f"     [FAIL] 基线里没有 {key}：这一档没人判，得补录")
+            violations.append(f"{name}：基线缺少 {key}，这道门对该档从未生效")
             continue
         if not latencySamples:
             print(f"     [FAIL] 基线要求判定 {label}，实测里没有 {key}")
@@ -145,8 +157,11 @@ def main() -> int:
     parser.add_argument("measured", nargs="+", help="soak*.py --json-out 产出的 JSON（可多份，按 measurements 的键取中位数）")
     parser.add_argument("--baseline", default=DEFAULT_BASELINE, help=f"基线文件，默认 {DEFAULT_BASELINE}")
     parser.add_argument("--minimum-throughput-ratio", type=float, default=0.6, help="吞吐下限倍数，默认 0.6")
-    parser.add_argument("--maximum-p50-ratio", type=float, default=1.5, help="p50 上限倍数，默认 1.5")
-    parser.add_argument("--maximum-p95-ratio", type=float, default=2.0, help="p95 上限倍数，默认 2.0")
+    # 每一档分位一个上限倍数参数，默认值取自 LATENCY_RATIO_DEFAULTS（同一处真源）
+    for latencyKey, defaultRatio in LATENCY_RATIO_DEFAULTS.items():
+        parser.add_argument(f"--maximum-{latencyKey[:-len('Microseconds')].lower()}-ratio", type=float, default=defaultRatio,
+                            dest=f"maximum_{latencyKey[:-len('Microseconds')].lower()}_ratio",
+                            help=f"{latencyKey[:-len('Microseconds')]} 上限倍数，默认 {defaultRatio}")
     arguments = parser.parse_args()
 
     baseline = loadJson(arguments.baseline)

@@ -47,12 +47,16 @@
 import argparse
 import json
 import socket
-import statistics
 import struct
 import sys
 import threading
 import time
 import traceback
+from pathlib import Path
+
+# 分位换算只留一处定义：与 soak.py 共用同一份，省得「一边已经产出 p99、另一边还按老口径写文件」
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from soak import latencySummary  # noqa: E402
 
 CONNECTION_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 
@@ -352,13 +356,13 @@ def main() -> int:
     }
     if all_latencies:
         all_latencies.sort()
-        p50Milliseconds = statistics.median(all_latencies)
-        p95Milliseconds = all_latencies[int(len(all_latencies) * 0.95)]
-        print(f"  延迟 p50 {p50Milliseconds:.2f}ms，p95 {p95Milliseconds:.2f}ms，"
-              f"max {all_latencies[-1]:.2f}ms（样本 {len(all_latencies)}）")
-        measurement["p50Microseconds"] = p50Milliseconds * 1000.0
-        measurement["p95Microseconds"] = p95Milliseconds * 1000.0
-        measurement["maximumMicroseconds"] = all_latencies[-1] * 1000.0
+        # 本脚本的样本以毫秒计，先归一到共用的秒口径再取分位
+        percentiles = latencySummary([value / 1000.0 for value in all_latencies])
+        measurement.update(percentiles)
+        print(f"  延迟 p50 {percentiles['p50Microseconds'] / 1000.0:.2f}ms，"
+              f"p95 {percentiles['p95Microseconds'] / 1000.0:.2f}ms，"
+              f"p99 {percentiles['p99Microseconds'] / 1000.0:.2f}ms，"
+              f"max {percentiles['maximumMicroseconds'] / 1000.0:.2f}ms（样本 {len(all_latencies)}）")
 
     print(f"== 汇总：失败项 {len(failures)} 条 ==")
     for failure in failures:

@@ -141,6 +141,23 @@ class ServerMonitor(threading.Thread):
         self._stopRequested = True
 
 
+def latencySummary(sortedSeconds: list) -> dict:
+    """把排好序的秒级延迟折算成门禁认的那几档分位（单位 us）。
+
+    两处生产者（本文件的 `Statistics` 与 `soak_h2c.py`）共用这一个换算：分位只在这里定义，
+    新增一档不会变成「一边已经产出、另一边还按老口径写文件」——那正是 p99 这一档差点摊上的。
+    p95 到 max 之间是整段最坏的一小撮，量的是「有没有偶发的几十毫秒尾巴」，排队与调度都影响它，
+    所以单独钉一条 p99；max 太抖，只当描述性读数用（`check-baseline.py` 里也不判它）。
+    """
+    count = len(sortedSeconds)
+    return {
+        "p50Microseconds": sortedSeconds[count // 2] * 1e6,
+        "p95Microseconds": sortedSeconds[int(count * 0.95)] * 1e6,
+        "p99Microseconds": sortedSeconds[min(int(count * 0.99), count - 1)] * 1e6,
+        "maximumMicroseconds": sortedSeconds[-1] * 1e6,
+    }
+
+
 class Statistics:
     """一路负载的统计：成功数、失败分类与耗时分布。"""
 
@@ -159,10 +176,7 @@ class Statistics:
         """把本路结果压成 JSON 友好的字典（门禁比对只认其中的吞吐与分位）。"""
         result = {"ok": self.ok, "errors": self.errors, "errorKinds": dict(self.errorKinds)}
         if self.latencies:
-            ordered = sorted(self.latencies)
-            result["p50Microseconds"] = ordered[len(ordered) // 2] * 1e6
-            result["p95Microseconds"] = ordered[int(len(ordered) * 0.95)] * 1e6
-            result["maximumMicroseconds"] = ordered[-1] * 1e6
+            result.update(latencySummary(sorted(self.latencies)))
         return result
 
     def report(self) -> None:
@@ -174,6 +188,7 @@ class Statistics:
             line += (
                 f"，耗时 us: p50={jsonSummary['p50Microseconds']:.0f}"
                 f" p95={jsonSummary['p95Microseconds']:.0f}"
+                f" p99={jsonSummary['p99Microseconds']:.0f}"
                 f" max={jsonSummary['maximumMicroseconds']:.0f}"
             )
         print(line)

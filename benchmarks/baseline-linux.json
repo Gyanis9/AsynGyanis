@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-01",
+  "machine": "Ubuntu 24.04 容器（Docker Desktop，宿主为 Windows 11 26200 / 20 逻辑核）",
+  "build": "Release（GCC 13.3，-O3 -DNDEBUG，无插桩、无 LTO）",
+  "serverCommand": "ASYN_SOAK_BUILD=linux-release benchmarks/run-soak.sh <端口> 4 --json-out ...；h2c 那一组加 ASYN_SOAK_STAGE=h2c，h3 那一组加 ASYN_SOAK_STAGE=h3 并用 ASYN_SOAK_PYTHON 指向装了 aioquic 的解释器",
+  "note": [
+    "本文件是**这台容器**的性能基线快照：只与同一容器、同一构建配置的前后运行相比。",
+    "绝对读数对不上 Windows 那份（benchmarks/baseline.json），也别去对：本机 keepalive 的 p50 是 582.0us，而 Windows 那台是 106.0us。差的是虚拟机回路、Python 解释器与宿主后台状态，不是代码——两边各自与自己那份比，check-baseline.py 用 --baseline 显式指文件。",
+    "跑法是 benchmarks/run-soak.sh（Windows 侧的对应件是 run-soak.bat）。没有它之前，Linux 上根本没有跑得起这套门禁的入口，基线也就只能在一台机器上录。",
+    "每个数是同一份代码 3 次运行的中位数；observedRange 如实记下离散范围。本轮离散最大的四格：http2-h2c-pipeline32 p95 2.06x、http2-h2c-pipeline32 p99 1.86x、http1-churn p99 1.38x、http1-keepalive p99 1.33x。默认阈值（吞吐 ≥0.6x、p50 ≤1.5x、p95 ≤2.0x、p99 ≤2.5x）逐项核对过「拿本轮最慢/最快的那一次当实测去比会不会自己报警」：全部安全。",
+    "http2-h2c-pipeline32 的第一批三次被丢开重录：那三次的 p99 是 [147.4, 289.7, 1074.5]us（最慢/最快 7.29x）、吞吐 [132308, 126200, 106445]，同一项的离散比第二批大一个量级。为什么那一批抖，本轮没查出来（重录的三次自己就紧了），所以这里只记现象、不编成因；丢开的判据与数字都留在这段话里，基线取的是重录的三次。",
+    "分位换算只在 soak.py 的 latencySummary 里定义一次，soak_h2c.py 与 h3_soak.py 共用它；maximumMicroseconds 只录不判（单次调度抖动就能让它翻倍）。",
+    "http3-load 那一档的对端是 Python 的 aioquic，读的是「客户端 + QUIC 栈 + 服务端」一整圈：它按 24 条连接 × 每条 20 个请求跑完就收，p50 七毫秒级里绝大部分在 Python 侧。它抓的是「h3 通路整体慢了一档」，抓不住 10% 级的漂移。",
+    "churn 的 p95/p99 受本机临时端口与 TIME_WAIT 支配，与代码关系很弱，别拿它判断改动好坏。",
+    "这一档是在 ubuntu24 容器里录的，与 Linux 门禁（ASan/LSan/UBSan 那几条作业）同一台机器但不同构建树：压测树用 Release 且 -DASYN_BUILD_TESTS=OFF，不带插桩。"
+  ],
+  "benchmarks": {
+    "http1-keepalive": {
+      "throughputPerSecond": 12485,
+      "observedThroughputRange": [
+        11725,
+        13580
+      ],
+      "runsMeasured": 3,
+      "p50Microseconds": 582.0,
+      "observedLatencyRange": {
+        "p50Microseconds": [
+          538.1,
+          601.6
+        ],
+        "p95Microseconds": [
+          1034.1,
+          1311.6
+        ],
+        "p99Microseconds": [
+          1332.6,
+          1772.8
+        ]
+      },
+      "p95Microseconds": 1176.0,
+      "p99Microseconds": 1515.3
+    },
+    "http1-churn": {
+      "throughputPerSecond": 4606,
+      "observedThroughputRange": [
+        4223,
+        4941
+      ],
+      "runsMeasured": 3,
+      "p50Microseconds": 1688.0,
+      "observedLatencyRange": {
+        "p50Microseconds": [
+          1576.7,
+          1794.3
+        ],
+        "p95Microseconds": [
+          2329.5,
+          3011.7
+        ],
+        "p99Microseconds": [
+          2757.0,
+          3800.4
+        ]
+      },
+      "p95Microseconds": 2577.4,
+      "p99Microseconds": 3062.5
+    },
+    "http2-h2c-pipeline1": {
+      "throughputPerSecond": 20287,
+      "observedThroughputRange": [
+        19497,
+        21098
+      ],
+      "runsMeasured": 3,
+      "p50Microseconds": 25.8,
+      "observedLatencyRange": {
+        "p50Microseconds": [
+          25.7,
+          26.0
+        ],
+        "p95Microseconds": [
+          47.5,
+          59.6
+        ],
+        "p99Microseconds": [
+          112.4,
+          134.8
+        ]
+      },
+      "p95Microseconds": 56.2,
+      "p99Microseconds": 129.8
+    },
+    "http2-h2c-pipeline32": {
+      "throughputPerSecond": 126424,
+      "observedThroughputRange": [
+        119689,
+        129893
+      ],
+      "runsMeasured": 3,
+      "p50Microseconds": 89.6,
+      "observedLatencyRange": {
+        "p50Microseconds": [
+          88.3,
+          96.9
+        ],
+        "p95Microseconds": [
+          112.4,
+          231.2
+        ],
+        "p99Microseconds": [
+          134.4,
+          250.4
+        ]
+      },
+      "p95Microseconds": 127.9,
+      "p99Microseconds": 212.9
+    },
+    "http3-load": {
+      "throughputPerSecond": 593,
+      "observedThroughputRange": [
+        585,
+        596
+      ],
+      "runsMeasured": 3,
+      "p50Microseconds": 7347.0,
+      "observedLatencyRange": {
+        "p50Microseconds": [
+          7101.1,
+          7551.0
+        ],
+        "p95Microseconds": [
+          7624.9,
+          9610.0
+        ],
+        "p99Microseconds": [
+          8845.5,
+          10872.4
+        ]
+      },
+      "p95Microseconds": 8453.0,
+      "p99Microseconds": 10219.5
+    }
+  }
+}

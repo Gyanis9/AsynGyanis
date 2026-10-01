@@ -1,99 +1,146 @@
 {
   "schemaVersion": 1,
-  "recordedAt": "2026-09-21",
+  "recordedAt": "2026-10-01",
   "machine": "Intel64 Family 6 Model 183 Stepping 1（20 逻辑核）",
   "build": "Release（MSVC /O2 + LTO，无插桩）",
-  "serverCommand": "samples/echo_server.exe --port <端口> --threads 4（h2c 那一组另加 --h2c）",
+  "serverCommand": "samples/echo_server.exe --port <端口> --threads 4（h2c 那一组另加 --h2c；h3 那一组是 --https --h3 --compress --cert tests/Core/fixtures/test_cert.pem --key tests/Core/fixtures/test_key.pem）",
   "note": [
     "本文件是**本机**的性能基线快照，只用于同机同构建下的前后对比：改动前跑出基线，改动后重跑并跑 check-baseline.py 比对。",
-    "跨机器比较没有意义（CPU 型号/频率/电源策略/邻居负载都盖过代码差异），所以这里不写绝对阈值、也不进 CI 门禁。",
-    "每个数是同一份代码多次运行的中位数，与 check-baseline.py 的口径一致；observedRange 如实记下当时的离散范围——本次 3 轮：h1 保持连接吞吐 53.8k~62.1k（1.16 倍）、h1 churn 2.3k~3.4k（1.45 倍，最散的一项）、h2c 两项都在 1.05 倍内。默认阈值（吞吐 ≥0.60x、p50 ≤1.50x、p95 ≤2.00x）逐项核对过「拿本次最慢/最快的一次去比会不会自己报警」，四项全部安全。",
-    "runsMeasured 是参与取中位数的运行次数；只有 1 次的项（若有）说明当时的运行数不够，重跑一次再更新。",
-    "http1-* 由 soak.py 产出（echo_server 默认 h1），http2-h2c-pipeline* 由 soak_h2c.py 对着 echo_server --h2c 产出；键名必须与 --json-out 的输出一致。",
-    "2026-09-21 这次重录相对 09-13 的快照全线变好（keepalive 吞吐 30.3k→61.4k、p50 241.8→96.9us；h2c pipeline1 10.7k→25.5k、p50 58.5→19.0us；pipeline32 p50 735.1→158.6us），来自静态文件元数据三次并一次、h1/h2/h3 组头块与日期/request-id 的分配削减。旧快照把 p50 门禁放在 363us 上，这个量级以下的退化本来就报不出来，重录是为了收紧而不是记录成绩。",
-    "churn 的 p95（约 14.7ms）受本机临时端口与 2MSL 支配，与代码关系很弱：它是四项里最宽的，别拿它判断改动好坏。",
-    "门禁只对同一构建配置有意义：同一台机器同一份脚本，Debug+ASan 服务端跑 keepalive 只有约 7.4k 请求/s、p50 约 1.0ms，照本快照比会虚报三条违例——那是配置差不是回归。"
+    "跨机器比较没有意义（CPU 型号/频率/电源策略/邻居负载都盖过代码差异），所以这里不写绝对阈值、也不进 CI 门禁；Linux 侧另有一份同形状的快照 benchmarks/baseline-linux.json，跑法是 benchmarks/run-soak.sh，两边各自与自己那份比。",
+    "每个数是同一份代码 3 次运行的中位数，与 check-baseline.py 的口径一致；observedRange 如实记下当时的离散范围。本轮离散最大的四格：http2-h2c-pipeline1 p99 1.55x、http1-keepalive p50 1.53x、http1-churn p99 1.41x、http1-keepalive p99 1.36x。默认阈值（吞吐 ≥0.6x、p50 ≤1.5x、p95 ≤2.0x、p99 ≤2.5x）逐项核对过「拿本轮最慢/最快的那一次当实测去比会不会自己报警」：全部安全。",
+    "runsMeasured 是参与取中位数的运行次数；本轮五项都是 3。",
+    "http1-* 由 soak.py 产出（echo_server 默认 h1），http2-h2c-pipeline* 由 soak_h2c.py 对着 echo_server --h2c 产出，http3-load 由 h3_soak.py 对着 echo_server --h3 产出（对端是 aioquic）；键名必须与 --json-out 的输出一致。分位换算只在 soak.py 的 latencySummary 里定义一次，两个生产者共用——p99 这一档差点在两处各写一份。",
+    "本轮重录新增 p99Microseconds 这一档，同时 check-baseline.py 改成「基线里缺哪一档判据就当场报红」——上一版把 p99 加进测量侧却没加进基线，那句「门禁判 p99」是空的，这种隐身正是这次要堵的。maximumMicroseconds 仍然只录不判：它是整段最坏的一次，单次调度抖动就能翻倍。",
+    "h3 这一档的量是「Python 客户端 + QUIC 栈 + 服务端」一整圈：它按 24 条连接 × 每条 20 个请求跑完就收，读的是量级与失败数，不是服务端延迟上限；p50 七毫秒级里绝大部分在 Python 侧。它能抓住的是「h3 通路整体慢了一档」这种量级的回归，抓不住 10% 级的漂移。",
+    "churn 的 p95/p99 受本机临时端口与 2MSL 支配，与代码关系很弱：它是五项里最宽的，别拿它判断改动好坏。",
+    "门禁只对同一构建配置有意义：同一台机器同一份脚本，Debug+ASan 服务端跑 keepalive 只有约 7.4k 请求/s、p50 约 1.0ms，照本快照比会虚报违例——那是配置差不是回归。",
+    "2026-10-01 这次重录相对 09-21 的快照：keepalive 吞吐 61.4k→56.2k、p50 96.9→106.0us；h2c pipeline1 25.5k→25.6k、p50 19.0→19.1us；pipeline32 72.3k→59.0k、p50 158.6→188.3us。两次之间落进代码的是零拷贝与分配削减那几轮，读数却整体偏低——这台机器今天的后台状态比当时更吵（同一项内部的最大离散就是证据），所以这次重录的意义是「把当前状态钉成新的对照点」，不能读成「性能退化了」。要判回归得用同批交替的 A/B。"
   ],
   "benchmarks": {
     "http1-keepalive": {
-      "throughputPerSecond": 61396,
+      "throughputPerSecond": 56183,
       "observedThroughputRange": [
-        53756,
-        62133
+        46677,
+        63610
       ],
       "runsMeasured": 3,
-      "p50Microseconds": 96.9,
+      "p50Microseconds": 106.0,
       "observedLatencyRange": {
         "p50Microseconds": [
-          94.1,
-          104.5
+          89.2,
+          136.5
         ],
         "p95Microseconds": [
-          213.5,
-          257.1
+          202.6,
+          251.7
+        ],
+        "p99Microseconds": [
+          283.0,
+          386.0
         ]
       },
-      "p95Microseconds": 215.5
+      "p95Microseconds": 219.7,
+      "p99Microseconds": 296.7
     },
     "http1-churn": {
-      "throughputPerSecond": 2816,
+      "throughputPerSecond": 2242,
       "observedThroughputRange": [
-        2341,
-        3390
+        2168,
+        2642
       ],
       "runsMeasured": 3,
-      "p50Microseconds": 376.0,
+      "p50Microseconds": 388.2,
       "observedLatencyRange": {
         "p50Microseconds": [
-          342.2,
-          400.0
+          347.4,
+          418.3
         ],
         "p95Microseconds": [
-          14693.8,
-          14804.3
+          15036.3,
+          15249.0
+        ],
+        "p99Microseconds": [
+          15998.4,
+          22622.0
         ]
       },
-      "p95Microseconds": 14744.7
+      "p95Microseconds": 15065.0,
+      "p99Microseconds": 16099.1
     },
     "http2-h2c-pipeline1": {
-      "throughputPerSecond": 25542,
+      "throughputPerSecond": 25679,
       "observedThroughputRange": [
-        25318,
-        26328
+        24775,
+        25755
       ],
       "runsMeasured": 3,
-      "p50Microseconds": 19.0,
+      "p50Microseconds": 19.1,
       "observedLatencyRange": {
         "p50Microseconds": [
-          18.8,
-          19.2
+          19.1,
+          19.3
         ],
         "p95Microseconds": [
-          32.6,
-          42.1
+          40.7,
+          44.1
+        ],
+        "p99Microseconds": [
+          62.3,
+          96.7
         ]
       },
-      "p95Microseconds": 36.0
+      "p95Microseconds": 41.6,
+      "p99Microseconds": 87.6
     },
     "http2-h2c-pipeline32": {
-      "throughputPerSecond": 72346,
+      "throughputPerSecond": 59036,
       "observedThroughputRange": [
-        71061,
-        74618
+        56967,
+        60325
       ],
       "runsMeasured": 3,
-      "p50Microseconds": 158.6,
+      "p50Microseconds": 188.3,
       "observedLatencyRange": {
         "p50Microseconds": [
-          157.9,
-          161.0
+          185.3,
+          198.9
         ],
         "p95Microseconds": [
-          245.3,
-          258.0
+          359.5,
+          360.2
+        ],
+        "p99Microseconds": [
+          436.4,
+          574.9
         ]
       },
-      "p95Microseconds": 252.5
+      "p95Microseconds": 360.1,
+      "p99Microseconds": 511.1
+    },
+    "http3-load": {
+      "throughputPerSecond": 571,
+      "observedThroughputRange": [
+        563,
+        572
+      ],
+      "runsMeasured": 3,
+      "p50Microseconds": 7351.4,
+      "observedLatencyRange": {
+        "p50Microseconds": [
+          7187.1,
+          7464.1
+        ],
+        "p95Microseconds": [
+          7961.4,
+          8133.3
+        ],
+        "p99Microseconds": [
+          8116.8,
+          8842.4
+        ]
+      },
+      "p95Microseconds": 7987.6,
+      "p99Microseconds": 8205.8
     }
   }
 }

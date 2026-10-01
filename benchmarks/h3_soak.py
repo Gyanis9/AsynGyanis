@@ -29,6 +29,7 @@
 import argparse
 import asyncio
 import gzip
+import json
 import sys
 import time
 from pathlib import Path
@@ -246,6 +247,8 @@ def main():
     parser.add_argument("--path", default="/bench")
     parser.add_argument("--expect", default="OK", help="正文里应出现的片段（/bench 的正文就是 OK）；给空串则只核状态码")
     parser.add_argument("--skip-compression", action="store_true", help="服务端没起 --compress 时跳过阶段二")
+    parser.add_argument("--json-out", default="",
+                        help="把阶段一的负载读数写成与 soak.py 同形的 JSON，供 check-baseline.py 比对")
     arguments = parser.parse_args()
 
     monitor = ServerMonitor(arguments.pid)
@@ -258,9 +261,15 @@ def main():
     recheckStats = Statistics("h3-收口后复查")
     exitCode = 0
 
+    # 先给个零值：万一阶段一抛异常，收尾的 JSON 也不该因为变量没绑而再炸一次
+    loadStartedAt = 0.0
+    loadElapsedSeconds = 0.0
     try:
+        # 计时只圈阶段一：后面的隧道与收口阶段刻意晾几十秒，把它们算进吞吐会把读数压成噪声
+        loadStartedAt = time.perf_counter()
         asyncio.run(runLoad(arguments.host, arguments.port, arguments.connections, arguments.requests_per_connection,
                             loadStats, arguments.path, arguments.expect))
+        loadElapsedSeconds = time.perf_counter() - loadStartedAt
         loadStats.report()
 
         if not arguments.skip_compression:
@@ -283,6 +292,40 @@ def main():
     finally:
         monitor.stop()
         print(describeDrift(monitor))
+
+    failures = (loadStats.errors + compressStats.errors + closeTunnelStats.errors + silentTunnelStats.errors
+                + recheckStats.errors)
+
+    if arguments.json_out:
+        # 只把阶段一写进 measurements：门禁判的是「同一负载形状前后有没有退化」，
+        # 而阶段二/三的量取决于晾了多久，形状与阶段一不同，混进去只会让基线失去可比性。
+        # 键名与 soak.py 的 http1-*/http2-* 同一命名法（协议-形状）
+        loadSummary = loadStats.summary()
+        loadSummary["throughputPerSecond"] = loadStats.ok / loadElapsedSeconds if loadElapsedSeconds > 0 else 0.0
+        loadSummary["throughputUnit"] = "请求/s"
+        loadSummary["connections"] = arguments.connections
+        loadSummary["requests"] = arguments.connections * arguments.requests_per_connection
+        processSamples = {}
+        if monitor.available and monitor.samples:
+            first, last = monitor.samples[0], monitor.samples[-1]
+            processSamples = {
+                "handleCountFirst": first[0],
+                "handleCountLast": last[0],
+                "handleCountPeak": max(sample[0] for sample in monitor.samples),
+                "workingSetFirstKib": first[2] // 1024,
+                "workingSetLastKib": last[2] // 1024,
+            }
+        document = {
+            "benchmark": "http3",
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "target": f"{arguments.host}:{arguments.port}",
+            "failures": failures,
+            "measurements": {"http3-load": loadSummary},
+            "processSamples": processSamples,
+        }
+        with open(arguments.json_out, "w", encoding="utf-8") as stream:
+            json.dump(document, stream, ensure_ascii=False, indent=2)
+        print(f"  结果已写入 {arguments.json_out}")
 
     if exitCode == 0:
         print("HTTP/3 压测通过")

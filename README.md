@@ -790,10 +790,15 @@ set ASYN_SOAK_BUILD=release && benchmarks\run-soak.bat
 ```
 
 机器可读基线与各阶段的离散范围在 `benchmarks/baseline.json`；改动前后各跑一次再用
-`benchmarks/check-baseline.py` 比对——吞吐劣化超过 0.60×、p50 劣于 1.50×、p95 劣于 2.00× 判回归。
+`benchmarks/check-baseline.py` 比对——吞吐劣化超过 0.60×、p50 劣于 1.50×、p95 劣于 2.00×、p99 劣于 2.50×
+判回归（`maximum` 只录不判：单次调度抖动就能让它翻倍）。基线里缺哪一档判据会当场报红而不是静默跳过——
+「测量脚本已经产出 p99、门禁还只判 p50/p95」这种两头各写一份的漂移就是这么堵住的。
+Linux 侧的同一件事走 `benchmarks/run-soak.sh`，比对它自己的 `benchmarks/baseline-linux.json`；
+两边绝不互比：同一份代码在容器里的 keepalive p50 差着四五倍，差的是虚拟机回路与宿主后台状态，不是代码。
 基准不进 CI（同机压测会把 CI 机器自己变成噪声源）。
 
-测试硬件：Intel i5-14600KF（20 逻辑核）、32 GB 内存、Windows 11（10.0.26200）、NVMe。
+测试硬件：Intel i5-14600KF（20 逻辑核）、32 GB 内存、Windows 11（10.0.26200）、NVMe；
+Linux 那一档在同一台机器的 ubuntu24 容器里录（GCC 13.3，`-O3 -DNDEBUG`，不带插桩）。
 
 ## 编码规范
 
