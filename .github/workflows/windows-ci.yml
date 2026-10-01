@@ -163,21 +163,39 @@ jobs:
             exit 1
           fi
           "$clangTidy" --version | head -2
-          # 判据与 Linux 那一步同口径：只看 src/ 下的翻译单元，报告先落盘再数
-          find src -name '*.cpp' > "$RUNNER_TEMP/tu.txt"
-          tr '\n' '\0' < "$RUNNER_TEMP/tu.txt" \
-            | xargs -0 -n 8 "$clangTidy" -p build/release --quiet > "$RUNNER_TEMP/clang-tidy.log" 2>&1 || true
-          reportLines=$(wc -l < "$RUNNER_TEMP/clang-tidy.log")
-          echo "翻译单元 $(wc -l < "$RUNNER_TEMP/tu.txt") 个，报告 ${reportLines} 行"
-          if [ "${reportLines}" -eq 0 ]; then
-            echo "报告一行都没有：要么根本没解析成功，要么 xargs 一条都没跑——按没跑成处理"
+          # 逐翻译单元跑、每个留一条标记，而不是 xargs -n 8 批量跑完只看报告有没有行：批量那版里
+          # 「一条诊断都没有」「一个都没跑成」「xargs 被信号打断只剩半截」三种情形在报告里长得一模一样，
+          # 前一种还会被读成通过。标记数必须等于翻译单元数，非零退出必须是 0——这两条才是「真跑过」。
+          tidyDir="$RUNNER_TEMP/tidy"
+          rm -rf "$tidyDir"
+          mkdir -p "$tidyDir"
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'file="$1"' \
+            'slug=${file//[!A-Za-z0-9]/_}' \
+            '"$TIDY_BIN" -p build/release --quiet "$file" > "$TIDY_DIR/${slug}.log" 2>&1 && rc=0 || rc=$?' \
+            'printf "TIDY-PROCESSED %s rc=%s\n" "$file" "$rc" > "$TIDY_DIR/${slug}.mark"' \
+            'exit 0' > "$RUNNER_TEMP/tidy-one.sh"
+          export TIDY_BIN="$clangTidy" TIDY_DIR="$tidyDir"
+          find src -name '*.cpp' | tr '\n' '\0' | xargs -0 -n 1 -P 4 bash "$RUNNER_TEMP/tidy-one.sh"
+          cat "$tidyDir"/*.log > "$RUNNER_TEMP/clang-tidy.log" 2>/dev/null || true
+          tuCount=$(find src -name '*.cpp' | wc -l)
+          markCount=$(ls "$tidyDir"/*.mark 2>/dev/null | wc -l)
+          failedCount=$(grep -l " rc=[1-9]" "$tidyDir"/*.mark 2>/dev/null | wc -l)
+          warningCount=$(grep -cE "warning:|error:" "$RUNNER_TEMP/clang-tidy.log" 2>/dev/null || true)
+          echo "翻译单元 ${tuCount} 个，实际处理 ${markCount} 个，非零退出 ${failedCount} 个，诊断 ${warningCount} 行"
+          if [ "${markCount}" -lt "${tuCount}" ]; then
+            echo "少了 $((tuCount - markCount)) 条处理标记：xargs 被打断或工具崩了，这道门按没跑成处理"
+            exit 1
+          fi
+          if [ "${failedCount}" -gt 0 ]; then
+            echo "${failedCount} 个翻译单元里 clang-tidy 非零退出（多半是编译数据库没命中或头文件解析不了）：这不等于「检查通过」"
             exit 1
           fi
           {
-            echo "## clang-tidy 摘要（Windows，报告形式，当前不阻塞）"
-            echo '```'
-            grep -cE "warning:|error:" "$RUNNER_TEMP/clang-tidy.log" || echo 0
-            echo '```'
+            echo "## clang-tidy 摘要（Windows，逐翻译单元自证；发现项当前不阻塞）"
+            echo "- 翻译单元 ${tuCount} 个全部处理完，非零退出 ${failedCount} 个"
+            echo "- 诊断行数（warning/error）：${warningCount}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 上传 clang-tidy 报告
