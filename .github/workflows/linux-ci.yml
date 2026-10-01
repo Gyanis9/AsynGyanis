@@ -424,6 +424,12 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
       CCACHE_COMPRESS: "true"
+      # 筛面只在这一处定义：数命中的条数与真正跑它用的是同一个串，两处不会各说一套
+      TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config|WorkerSupervisor"
+      # 筛面下限：2026-10-01 实测命中 1325 / 全量 3669，往下留一档。
+      # 掉到这条线以下有两种真相：类名改了，或新增的跨线程面根本不在这 21 个词里——
+      # 两者的外观都与「TSan 全绿」同形，所以判据必须钉在条数上而不是只跑一次
+      TSAN_MIN_MATCHED: "1200"
 
     steps:
       - uses: actions/checkout@v4
@@ -466,10 +472,24 @@ jobs:
       - name: 降低 ASLR 熵（稳定 Sanitizer）
         run: sudo sysctl -w vm.mmap_rnd_bits=28 || true
 
-      - name: 并发相关用例集（TSan）
+      - name: 并发相关用例集（TSan，先报筛面再跑）
         # WorkerSupervisor 在列：它是 Core 里唯一「另一个线程可以来读」的进程编排——观察线程
         # 与编排线程碰同一批 worker 句柄。这类竞态只有 TSan 看得见，MSVC 侧根本不编这个用例
-        run: ctest --test-dir build/tsan --output-on-failure -j"$(nproc)" -R "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config|WorkerSupervisor"
+        run: |
+          # 先数「这条正则实际筛到多少条」：TSan 是按类名筛的，一个新增的跨线程面只要名字里
+          # 不含那 21 个词就一条都不跑，而作业照样全绿。把条数打进摘要并钉下限，才有东西可红。
+          # 条数取 ctest 自己那行 Total Tests：按 grep -c "Test #" 数会漏掉编号不足四位的那些
+          # （ctest 给 #1..#999 打两个空格、#1000 起打一个空格），本机实测两种数法差 999 条
+          totalCount="$(ctest --test-dir build/tsan -N | sed -n 's/^Total Tests: //p')"
+          matchedCount="$(ctest --test-dir build/tsan -N -R "${TSAN_TEST_FILTER}" | sed -n 's/^Total Tests: //p')"
+          echo "TSan 筛面：命中 ${matchedCount} / 全量 ${totalCount} 条（下限 ${TSAN_MIN_MATCHED}）"
+          echo "### TSan 的覆盖面" >> "$GITHUB_STEP_SUMMARY"
+          echo "命中 ${matchedCount} / 全量 ${totalCount} 条，下限 ${TSAN_MIN_MATCHED}（其余用例不在 TSan 档跑）" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${matchedCount}" -lt "${TSAN_MIN_MATCHED}" ]; then
+            echo "筛面只剩 ${matchedCount} 条：要么类名改了，要么这份构建根本没生成用例——都不算「TSan 通过」"
+            exit 1
+          fi
+          ctest --test-dir build/tsan --output-on-failure -j"$(nproc)" -R "${TSAN_TEST_FILTER}"
 
       - name: 失败时上传用例日志
         if: failure()
@@ -488,7 +508,8 @@ jobs:
   # 格式门禁：仓库已按 clang-format 23.1.1 全量排过一遍（配置见 .clang-format），这里保证不再漂。
   # 版本必须钉死到与本地同一版：换版本折行结果就变，门禁会红成一堆与改动无关的差异，那种红只会教人
   # 忽略它。检查只喂 git ls-files 的产出——即被跟踪的文件，构建产物与未跟踪的第三方落点自然排除。
-  # 立这条之前先实测过：全仓 605 个跟踪的 C++ 源文件在本版下 0 违规（当初那次全量格式化漏了三个文件，
+  # 立这条之前先实测过：全仓跟踪的 C++ 源文件（条数由作业自己现数并打进摘要，不写死在这里）在本版下 0 违规
+  # （当初那次全量格式化漏了三个文件，
   # 它们的注释在对齐组里放不下 ColumnLimit，需要人把它们挪到声明上方才能收敛）。
   formatting:
     name: 格式门禁：clang-format
@@ -504,8 +525,20 @@ jobs:
           "$HOME/fmt-venv/bin/pip" install "clang-format==23.1.1"
           "$HOME/fmt-venv/bin/clang-format" --version
 
-      - name: 全仓格式检查（只报差异，不改文件；有差异即失败）
+      - name: 全仓格式检查（先自证清单非空，再报差异；有差异即失败）
         run: |
+          # 先数条数再检：`xargs -0` 拿到空输入会用**零参数**调用 clang-format，而它读空 stdin 退出 0——
+          # glob 一旦失配（改扩展名、加 pathspec、checkout 出问题），这道门就从「全仓检查」变成
+          # 「什么都没查还报绿」。2026-10-01 实测参与检查的是 707 个跟踪文件，下限取 500：
+          # 它不是用来卡新增文件的，是用来卡「一条都没有」的
+          fileCount="$(git ls-files '*.h' '*.hpp' '*.cpp' '*.cc' | wc -l)"
+          echo "参与格式检查的跟踪源文件：${fileCount} 个"
+          echo "### 格式门禁的输入面" >> "$GITHUB_STEP_SUMMARY"
+          echo "参与检查的跟踪源文件 ${fileCount} 个（下限 500）" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${fileCount}" -lt 500 ]; then
+            echo "清单只有 ${fileCount} 条，不像全仓——按「没跑成」处理，不把空表读成通过"
+            exit 1
+          fi
           # -z/-0 配对：文件名里出现空格也不会被拆开
           git ls-files -z '*.h' '*.hpp' '*.cpp' '*.cc' \
             | xargs -0 "$HOME/fmt-venv/bin/clang-format" --style=file --dry-run -Werror
@@ -625,14 +658,15 @@ jobs:
           path: /tmp/echo-h3.log
           if-no-files-found: ignore
 
-  # 协议解码器的持续模糊：四类解码器（WebSocket 帧、h2 帧与 HPACK、h3 帧、QUIC 变长整数）连同它们的
+  # 协议解码器的持续模糊：七档目标（WebSocket 帧、h2 帧、h3 帧、HPACK/QPACK 头块、QUIC 报文头、
+  # QUIC 帧序列、QUIC 传输参数）连同它们的
   # 依赖闭包自成一组翻译单元，不需要 Conan、不需要配置构建——脚本自己用 clang 的 libFuzzer 编一份独立
   # 产物。此前这一步只有本机手工跑（`scripts/fuzz-net.sh` 当初是为 Windows 侧写的，一轮 60 秒），
   # 回归时没有任何流水线会替我们喂随机字节，而这类解码器的历史缺陷全是越界与释放后读。
   # 违例样本落进 .fuzz/artifacts/，失败时作为工件取出，原样搬进 tests/Net/Fuzz/TestProtocolFuzz.cpp
   # 的种子用例即可常驻。
   protocol-fuzz:
-    name: 四类解码器模糊测试
+    name: 七档解码器模糊测试
     runs-on: ubuntu-latest
     # 上限要按 apt 慢的那次量：v2.4.0 那次运行里，「装 clang-19 与它的 fuzzer 运行时」一步从 16:26:30
     # 拖到 16:54:57 才结束（llvm-19 / -tools / -dev 几百 MB，镜像吞吐看运气），模糊步骤只跑了 1 分多钟
@@ -657,11 +691,12 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 update
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 install -y clang-19 libfuzzer-19-dev nlohmann-json3-dev
 
-      - name: 四类解码器各跑一轮（每类 90 秒）
+      - name: 七档解码器各跑一轮（每档 90 秒）
         run: bash scripts/fuzz-net.sh 90 -error_exitcode=1 -workers=2 -jobs=2
 
-      # 崩溃只说明「撞坏了」，不说明「四类都在被推」：混合跑里某一类零调用也能总计数百万次。
-      # 这一步按目标逐个核对读数，并顺手验「指定单目标时没串到别类」——独立预算真生效的证据
+      # 崩溃只说明「撞坏了」，不说明「每档都在被推」：混合跑里某一档零调用也能总计数百万次。
+      # 这一步按目标逐个核对读数（含「账上出现的目标必须都在清单里」那条漏配判据），
+      # 并顺手验「指定单目标时没串到别类」——独立预算真生效的证据
       - name: 核对分目标读数与产量
         run: python3 scripts/check-fuzz-report.py .fuzz/log --min-executions 2000
 
