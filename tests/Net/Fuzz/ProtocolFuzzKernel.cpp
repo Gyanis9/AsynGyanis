@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -459,9 +460,32 @@ namespace AsynGyanis::Net::Fuzz
         return {};
     }
 
+    namespace
+    {
+        /// 各目标被真正解码过多少次（进程内累计）。模糊器多 worker 时每个 worker 一份，读的人按行聚合
+        std::array<std::atomic<std::uint64_t>, static_cast<std::size_t>(Target::Count)> g_targetCallCounts{};
+    } // namespace
+
+    std::array<std::uint64_t, static_cast<std::size_t>(Target::Count)> targetCallCounts()
+    {
+        std::array<std::uint64_t, static_cast<std::size_t>(Target::Count)> snapshot{};
+        for (std::size_t index = 0; index < snapshot.size(); ++index)
+        {
+            snapshot[index] = g_targetCallCounts[index].load(std::memory_order_relaxed);
+        }
+        return snapshot;
+    }
+
     std::string checkInvariants(const Target target, const std::string &input, RunStats *stats)
     {
         std::string errorText;
+
+        // 记账排在一切之前：CI 判「四类是不是都在被推」只认这一处计数。
+        // Target 是公开枚举、调用方可以把它 cast 成越界值，所以这里按下标兜一层而不是假定它合法
+        if (const auto index = static_cast<std::size_t>(target); index < g_targetCallCounts.size())
+        {
+            g_targetCallCounts[index].fetch_add(1, std::memory_order_relaxed);
+        }
 
         // 把「本轮产出了什么」回填给调用方，供其累计成防空转的断言
         const auto collect = [&stats](const RunTrace &trace)

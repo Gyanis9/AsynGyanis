@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -118,6 +119,16 @@ namespace AsynGyanis::Net::Fuzz
      *          解码器必须给出逐个字段相同的结果），I4 落在 decode 的粘滞入口上，I6 是「失败必须清空输出」。
      */
     [[nodiscard]] std::string checkInvariants(Target target, const std::string &input, RunStats *stats = nullptr);
+
+    /**
+     * @brief 各目标在**本进程内**被真正解码过多少次
+     * @details 计数点在 `checkInvariants` 里，因此 libFuzzer 入口与 gtest 的随机驱动共用同一份账：
+     *          这份账回答的是「四类解码器是不是都在被推」——`Target` 加了新项而没人走到它，
+     *          外面完全看不出来（作业照常绿）。模糊侧在退出时把它打成一行机器可读的读数，
+     *          gtest 侧有一条用例按目标逐个走一遍并核对增量
+     * @return std::array<std::uint64_t, Target::Count> 下标即 `Target` 的序号
+     */
+    [[nodiscard]] std::array<std::uint64_t, static_cast<std::size_t>(Target::Count)> targetCallCounts();
 
     /**
      * @brief 该目标的「合法输入」样本，用于 I5（复位后可用）

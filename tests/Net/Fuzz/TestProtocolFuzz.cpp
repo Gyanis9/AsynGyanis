@@ -164,4 +164,28 @@ namespace AsynGyanis::Net::Fuzz
         runRandomRounds(Target::HpackBlock, kSeedHpack);
         runTruncationMatrix(Target::HpackBlock);
     }
+
+    /**
+     * @brief 钉住：枚举里每一个目标都真的被解码到，且各自的账都记上了
+     * @details 现有四条用例是「一个目标一条」的手写清单——`Target` 加了第五项而没人给它写分支时，
+     *          那四项照旧全绿，新目标却在暗处一条都不跑（`Target` 的注释担心的正是这种错位）。
+     *          这条用例按枚举遍历，因此新增目标会自动被纳入：合法输入必须解出东西
+     *          （`producedFrameCount > 0`；HPACK 记的是字段数），否则就是「走通了却没解码」。
+     *          同时核对进程内计数：漏 `default` 分支时会返回「无违例」，只看返回值发现不了
+     */
+    TEST(ProtocolFuzz, EveryTargetDecodesAndIsCounted)
+    {
+        for (std::size_t index = 0; index < static_cast<std::size_t>(Target::Count); ++index)
+        {
+            const auto target = static_cast<Target>(index);
+            const auto name   = std::string(targetName(target));
+            const auto before = targetCallCounts()[index];
+
+            RunStats          stats;
+            const std::string violation = checkInvariants(target, validInput(target), &stats);
+            EXPECT_TRUE(violation.empty()) << name << "：合法输入被判违例：" << violation;
+            EXPECT_GT(stats.producedFrameCount, 0U) << name << "：合法输入什么都没解出来——这个目标多半没有实现分支";
+            EXPECT_EQ(targetCallCounts()[index], before + 1U) << name << "：调用没记进分目标的账，CI 那行读数会漏掉它";
+        }
+    }
 } // namespace AsynGyanis::Net::Fuzz

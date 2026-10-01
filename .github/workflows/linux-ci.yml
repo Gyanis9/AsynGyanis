@@ -657,8 +657,23 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 update
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 install -y clang-19 libfuzzer-19-dev nlohmann-json3-dev
 
-      - name: 模糊四类协议解码器（300 秒）
-        run: bash scripts/fuzz-net.sh 300 -error_exitcode=1 -workers=2 -jobs=2
+      - name: 四类解码器各跑一轮（每类 90 秒）
+        run: bash scripts/fuzz-net.sh 90 -error_exitcode=1 -workers=2 -jobs=2
+
+      # 崩溃只说明「撞坏了」，不说明「四类都在被推」：混合跑里某一类零调用也能总计数百万次。
+      # 这一步按目标逐个核对读数，并顺手验「指定单目标时没串到别类」——独立预算真生效的证据
+      - name: 核对分目标读数与产量
+        run: python3 scripts/check-fuzz-report.py .fuzz/log --min-executions 2000
+
+      # 语料留 14 天：撞出来的形状要能喂回本地继续挖，也能直接搬进 gtest 的种子用例
+      - name: 保留语料
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: .fuzz/corpus/
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: 失败时取出崩溃样本
         if: failure()

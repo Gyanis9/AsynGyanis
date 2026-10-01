@@ -12,17 +12,80 @@
 //
 // 与 gtest 那套的分工：gtest 用例是常驻防线（固定种子、每次全量跑、判同一批不变量），
 // 这里是持续探索（输入由模糊器按覆盖率反馈生成，撞出来的语料落盘后可回填进 gtest 的种子用例）。
+//
+// 每类解码器要单独预算时设 `ASYN_FUZZ_TARGET=<targetName>`（WebSocketFrame / Http2Frame /
+// Http3Frame / HpackBlock）：本进程只喂那一个目标，语料目录也各自一份。不设就是四类轮转共享一次运行。
+// 退出前打一行 `FUZZ-TARGET-CALLS 名字=次数 …`，CI 用它判「是不是四类都在推进」——光看总执行次数，
+// 某一类根本没被走到是看不出来的。
 #include "Fuzz/ProtocolFuzzKernel.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <string>
 
 namespace
 {
+    using AsynGyanis::Net::Fuzz::Target;
+
     /// libFuzzer 每次给出的字节按 256 种取值轮转分配给四类解码器，一次运行即可同时推进四个目标
-    constexpr std::size_t kTargetCount = static_cast<std::size_t>(AsynGyanis::Net::Fuzz::Target::Count);
+    constexpr std::size_t kTargetCount = static_cast<std::size_t>(Target::Count);
+
+    /**
+     * @brief 本轮只打某一个目标（`ASYN_FUZZ_TARGET=Http2Frame`），用来给每类解码器单独预算
+     * @details 名字取自 `targetName`，拼错时当场退出而不是静默回到轮转模式——静默退化会让人以为
+     *          「四类各跑了 300 秒」，实际是四个进程都在轮转、每类只分到四分之一的量
+     */
+    [[nodiscard]] std::optional<std::size_t> forcedTargetIndex()
+    {
+        static const std::optional<std::size_t> resolved = []() -> std::optional<std::size_t>
+        {
+            const char *const requested = std::getenv("ASYN_FUZZ_TARGET");
+            if (requested == nullptr || *requested == '\0')
+            {
+                return std::nullopt;
+            }
+            for (std::size_t index = 0; index < kTargetCount; ++index)
+            {
+                if (AsynGyanis::Net::Fuzz::targetName(static_cast<Target>(index)) == requested)
+                {
+                    return index;
+                }
+            }
+            std::fprintf(stderr, "ASYN_FUZZ_TARGET=「%s」不是已知的目标名\n", requested);
+            std::fflush(stderr);
+            std::abort();
+        }();
+        return resolved;
+    }
+
+    /// 退出时打一行机器可读的分目标调用数，供 CI 判「四类是不是都在推进」
+    void printTargetCallCounts()
+    {
+        std::string line   = "FUZZ-TARGET-CALLS";
+        const auto  counts = AsynGyanis::Net::Fuzz::targetCallCounts();
+        for (std::size_t index = 0; index < counts.size(); ++index)
+        {
+            line += " ";
+            line += AsynGyanis::Net::Fuzz::targetName(static_cast<Target>(index));
+            line += "=";
+            line += std::to_string(counts[index]);
+        }
+        std::fprintf(stdout, "%s\n", line.c_str());
+        std::fflush(stdout);
+    }
+
+    struct TargetCallReporter
+    {
+        TargetCallReporter()
+        {
+            std::atexit(&printTargetCallCounts);
+        }
+    };
+
+    TargetCallReporter g_targetCallReporter;
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
@@ -34,12 +97,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     // 用输入自身的第一字节选目标：语料最小化时每个目标都会各自被保留一份代表输入。
     // 注意规模差异——模糊器一次运行能跑到百万级输入，正是 gtest 那套在插桩构建里跑不动的量
-    const std::size_t targetIndex = static_cast<std::size_t>(data[0]) % kTargetCount;
+    const std::size_t targetIndex = forcedTargetIndex().value_or(static_cast<std::size_t>(data[0]) % kTargetCount);
     const std::string input(reinterpret_cast<const char *>(data) + 1U, size - 1U);
 
     // 违例就主动 abort：模糊器只对崩溃/异常做最小化与存证，把它当「返回了但没通过」是看不见的。
     // abort 之后 libFuzzer 会把这份输入写成 crash 用例，回填进 gtest 侧的种子即可常驻
-    if (const std::string violation = AsynGyanis::Net::Fuzz::checkInvariants(static_cast<AsynGyanis::Net::Fuzz::Target>(targetIndex), input); !violation.empty())
+    if (const std::string violation = AsynGyanis::Net::Fuzz::checkInvariants(static_cast<Target>(targetIndex), input); !violation.empty())
     {
         std::abort();
     }
