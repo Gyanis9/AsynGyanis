@@ -537,6 +537,23 @@ namespace AsynGyanis::Net
     {
         // 进出自明：容量留下、内容清空，调用方才敢把同一块缓冲一包接一包地交回来
         frames.clear();
+
+        // 失败不交半截产出：收包路径复用的是同一块 scratch 缓冲，残帧留在里面，
+        // 下一包就可能把上一包的帧当成自己刚解出来的。用守卫而不是在每个失败出口各写一遍
+        // clear——将来多加一条 return 就会漏一处
+        struct FailureGuard
+        {
+            std::vector<QuicFrame> &frames;
+            bool                    isSuccessful{false};
+
+            ~FailureGuard()
+            {
+                if (!isSuccessful)
+                {
+                    frames.clear();
+                }
+            }
+        } guard{frames};
         std::size_t readOffset = 0;
         while (readOffset < payload.size())
         {
@@ -884,6 +901,7 @@ namespace AsynGyanis::Net
             frames.push_back(std::move(frame));
             readOffset = payload.size() - reader.remainingByteCount();
         }
+        guard.isSuccessful = true;
         return {};
     }
 
