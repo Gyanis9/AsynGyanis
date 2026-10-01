@@ -288,12 +288,12 @@ namespace AsynGyanis::Net
          * @param receiveBuffer 会话的接收窗口，本阶段按窗口长度整块读取
          * @param pendingLength 升级请求之后窗口里剩余的字节数：客户端可能在 101 之前就把第一帧
          *        发了过来，这些字节必须先喂给解码器
-         * @param isPerMessageDeflateEnabled 本次升级是否协商了 permessage-deflate（RFC 7692）：打开后
-         *       本阶段的收发按压缩走。取值必须与 101 里回给对端的那一行一致，否则对端按明文解压缩帧
+         * @param deflateWindow 本次升级的 permessage-deflate 协商结论（RFC 7692）：有值即本阶段收发按压缩走，
+         *        并按其中两侧的窗口位数压/解。取值必须与 101 里回给对端的那一行一致，否则对端按明文解压缩帧
          */
         template<typename Socket>
         Core::Task<> webSocketSessionStage(Socket &socket, Core::Connection &connection, const HttpServerLimits &limits, HttpMetricsCollector *metrics, WebSocketHandler handler,
-                                           std::vector<char> &receiveBuffer, std::size_t pendingLength, bool isPerMessageDeflateEnabled)
+                                           std::vector<char> &receiveBuffer, std::size_t pendingLength, std::optional<PerMessageDeflateWindow> deflateWindow)
         {
             // 帧发送路径：把一整帧按写超时约束写出去。写之前刷新截止时间的依据与 HTTP 阶段发送响应
             // 一致（HttpServerLimits::writeTimeout 约束的是「等待可写的最长空闲」，慢消费者防线）；
@@ -346,7 +346,7 @@ namespace AsynGyanis::Net
             };
 
             WebSocketPeer peer(sendFrameBytes, metrics);
-            peer.setPerMessageDeflateEnabled(isPerMessageDeflateEnabled);
+            peer.setPerMessageDeflate(deflateWindow);
 
             bool isBusinessFinished = false;
 
@@ -1365,7 +1365,7 @@ namespace AsynGyanis::Net
                     // 客户端可能已经在里面发了第一帧，必须一并交给解码器。
                     // 整段 WebSocket 通话都算在途工作（上面的 BusyScope 覆盖到这里）：优雅关闭会等它结束
                     co_return co_await Detail::webSocketSessionStage(socket, connection, limits, metrics, response.webSocketHandler(), receiveBuffer, windowLength,
-                                                                     deflateNegotiation.accepted);
+                                                                     deflateNegotiation.window);
                 }
 
                 if (!co_await respondAndFinish(request, response, handlerException, requestReceivedTime, false))

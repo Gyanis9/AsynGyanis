@@ -1312,7 +1312,7 @@ namespace AsynGyanis::Net
         };
 
         WebSocketPeer peer(sendFrameBytes, m_metrics.get());
-        peer.setPerMessageDeflateEnabled(deflateNegotiation.accepted);
+        peer.setPerMessageDeflate(deflateNegotiation.window);
 
         bool       isBusinessFinished = false;
         const auto runBusiness        = [&isBusinessFinished](WebSocketHandler businessHandler, WebSocketPeer &businessPeer) -> Core::Task<>

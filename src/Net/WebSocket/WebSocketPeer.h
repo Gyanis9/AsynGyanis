@@ -13,6 +13,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 
 #include <coroutine>
@@ -201,14 +202,17 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isOpen() const noexcept;
 
         /**
-         * @brief 会话侧：打开/关闭 permessage-deflate（RFC 7692）
+         * @brief 会话侧：交出 permessage-deflate 的协商结论（RFC 7692）
          *
-         * @details 打开后 sendText()/sendBinary() 自动压缩负载并置 RSV1，收到的压缩消息自动解压；
-         *          控制帧从不参与压缩（§6.1）。**必须在喂入任何字节之前调用**：解码器已开始工作时
+         * @details 有值即启用：sendText()/sendBinary() 自动压缩负载并置 RSV1，收到的压缩消息自动解压；
+         *          控制帧从不参与压缩（§6.1）。空表示本端没接受这个扩展，此时 RSV1 是保留位、
+         *          出现即按协议错误收口。**必须在喂入任何字节之前调用**：解码器已开始工作时
          *          改这个开关，会让同一条消息的前后判断不一致。
-         * @param enabled 是否已就该扩展与对端达成一致
+         *          窗口位数随结论一起交回而不是让本端自己挑一个：那两位是对端声明的能力，
+         *          压缩位数超出它会让对端解不开（协商那侧已经钳好了，这里只负责把它带到收发点上）。
+         * @param window 协商出来的两侧窗口位数；nullopt 表示未就该扩展与对端达成一致
          */
-        void setPerMessageDeflateEnabled(bool enabled) noexcept;
+        void setPerMessageDeflate(std::optional<PerMessageDeflateWindow> window) noexcept;
 
         /**
          * @brief 会话侧：把一段网络字节喂进解码器
@@ -329,13 +333,13 @@ namespace AsynGyanis::Net
         WebSocketFrameDecoder      m_decoder;          ///< 帧解码器：掩码校验、分片重组都在它内部完成
         std::deque<WebSocketFrame> m_incomingFrames;   ///< 已解出、等待业务取走的帧（FIFO）
         /// 待交付帧的积压计数：enqueueFrame() 累加、出队处扣减，两处必须配对
-        std::size_t             m_queuedPayloadByteCount{0};                               ///< 队列里待交付帧的负载总字节数
-        std::coroutine_handle<> m_deliveryWaiter{};                                        ///< 业务正挂在 receive() 上的句柄，空表示无人等待
-        bool                    m_isOpen{true};                                            ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
-        bool                    m_isWriteInFlight{false};                                  ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）
-        std::string             m_payloadErrorMessage;                                     ///< 负载层失败的中文原因（文本非法含违规字节位置）；空表示最近一次失败不在负载层
-        std::uint16_t           m_payloadErrorCloseCode{kWebSocketInvalidPayloadDataCode}; ///< 负载层失败对应的关闭状态码
-        bool                    m_isPerMessageDeflateEnabled{false};                       ///< 是否已协商 permessage-deflate：决定收发两侧是否压缩
+        std::size_t                            m_queuedPayloadByteCount{0}; ///< 队列里待交付帧的负载总字节数
+        std::coroutine_handle<>                m_deliveryWaiter{};          ///< 业务正挂在 receive() 上的句柄，空表示无人等待
+        bool                                   m_isOpen{true};              ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
+        bool                                   m_isWriteInFlight{false};    ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）
+        std::string                            m_payloadErrorMessage;       ///< 负载层失败的中文原因（文本非法含违规字节位置）；空表示最近一次失败不在负载层
+        std::uint16_t                          m_payloadErrorCloseCode{kWebSocketInvalidPayloadDataCode}; ///< 负载层失败对应的关闭状态码
+        std::optional<PerMessageDeflateWindow> m_deflateWindow{}; ///< 协商出的两侧窗口位数；空表示未协商 permessage-deflate，决定收发两侧是否压缩
 
         /// 本次关闭是对端 Close 的应答：一次对端发起的关闭只记在对端一侧，
         /// 回帧不再重复记成本侧发起。粘性标记——对端关闭后本对象即收口，不存在需要复位的下一轮

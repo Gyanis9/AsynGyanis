@@ -2,6 +2,7 @@
 
 #include <zlib.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 
@@ -11,9 +12,6 @@ namespace AsynGyanis::Net
     {
         /// 每条压缩消息末尾的固定四字节空块尾（RFC 7692 §7.2.1）：线上负载不含它，收发两侧各自增删
         constexpr std::array<char, 4> kDeflateTail{'\x00', '\x00', '\xFF', '\xFF'};
-
-        /// 裸 deflate 的 windowBits 取负值：不带 zlib 头尾，直接产 RFC 1951 字节流
-        constexpr int kRawDeflateWindowBits = -15;
 
         /// 逐块解压时的块大小
         constexpr std::size_t kInflateChunkBytes = 16 * 1024;
@@ -29,11 +27,15 @@ namespace AsynGyanis::Net
          *          逐字节一致，却免去每次 deflateInit2/End 重建约 200KB 内部状态（短消息上那比压缩本身还贵）。
          *          thread_local 让每条事件循环线程各持一份，天然无跨线程共享；出错路径就地 End 并标记关闭，
          *          下一次调用重新 init，绝不在可疑状态上继续复用。
+         *          窗口位数是**按连接**协商出来的，而同一条线程会服务多条连接，所以复用的前提加上
+         *          「位数与上次 init 的一致」：不一致就先 End 再按新位数 init，绝不能沿用上一条连接的窗口
+         *          压这一条的连接（那等于把本端声明过的上限作废）。
          */
         struct ReusableDeflateStream
         {
             z_stream stream{};      ///< 复用的 deflate 流
             bool     isOpen{false}; ///< 是否已 init 且可复用（false 表示下次调用需重新 init）
+            int      windowBits{0}; ///< 本流 init 时用的窗口位数（正数口径，init 时取负）
 
             ~ReusableDeflateStream()
             {
@@ -47,12 +49,14 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 本线程复用的解压流与 16KiB 输出块缓冲，理由同 ReusableDeflateStream
+         *        （含「位数变了必须重新 init」那一条）
          */
         struct ReusableInflateStream
         {
             z_stream    stream{};      ///< 复用的 inflate 流
             std::string chunk;         ///< 逐块解压用的暂存缓冲，容量跨消息保留
             bool        isOpen{false}; ///< 是否已 init 且可复用
+            int         windowBits{0}; ///< 本流 init 时用的窗口位数
 
             ~ReusableInflateStream()
             {
@@ -88,27 +92,111 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 取扩展参数列表里的下一项（参数之间以分号分隔，见 RFC 6455 §9.1 的扩展语法）
+         * @param text 某个扩展名之后的参数文本
+         * @param offset 输入输出：当前游标
+         * @return std::string_view 本参数（已去首尾空白）
+         */
+        [[nodiscard]] std::string_view takeNextParameter(const std::string_view text, std::size_t &offset)
+        {
+            const std::size_t semicolonPosition = text.find(';', offset);
+            const std::size_t parameterEnd      = semicolonPosition == std::string_view::npos ? text.size() : semicolonPosition;
+            std::string_view  parameter         = text.substr(offset, parameterEnd - offset);
+            offset                              = parameterEnd + 1;
+
+            while (!parameter.empty() && (parameter.front() == ' ' || parameter.front() == '\t'))
+            {
+                parameter.remove_prefix(1);
+            }
+            while (!parameter.empty() && (parameter.back() == ' ' || parameter.back() == '\t'))
+            {
+                parameter.remove_suffix(1);
+            }
+            return parameter;
+        }
+
+        /**
+         * @brief token 语义的相等判断（大小写不敏感、长度必须一致）
+         * @param actual 收到的 token
+         * @param expected 期望的 token（本身已是小写）
+         * @return true 相等
+         */
+        [[nodiscard]] bool tokenEqualsIgnoringCase(const std::string_view actual, const std::string_view expected)
+        {
+            if (actual.size() != expected.size())
+            {
+                return false;
+            }
+            for (std::size_t index = 0; index < expected.size(); ++index)
+            {
+                const char character = actual[index];
+                const char lowered   = (character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a') : character;
+                if (lowered != expected[index])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
          * @brief 判断一个扩展名是不是 permessage-deflate（token 语义，大小写不敏感）
          * @param extensionName 扩展名
          * @return true 是 permessage-deflate
          */
         [[nodiscard]] bool isPerMessageDeflateName(const std::string_view extensionName)
         {
-            constexpr std::string_view kExpectedName = "permessage-deflate";
-            if (extensionName.size() != kExpectedName.size())
+            return tokenEqualsIgnoringCase(extensionName, "permessage-deflate");
+        }
+
+        /**
+         * @brief 去掉参数值外围的双引号（扩展语法允许 quoted-string，见 RFC 6455 §9.1）
+         * @param value 等号右侧的原始文本
+         * @return std::string_view 去引号后的值；不成对的引号原样交回，交给下一步的数字判定
+         */
+        [[nodiscard]] std::string_view unquote(const std::string_view value)
+        {
+            if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
             {
-                return false;
+                return value.substr(1, value.size() - 2);
             }
-            for (std::size_t index = 0; index < kExpectedName.size(); ++index)
+            return value;
+        }
+
+        /**
+         * @brief 解析窗口位数参数
+         *
+         * @details 只接受纯十进制且落在 RFC 7692 §7.1.1/§7.1.2 允许的那八档。带符号、带小数、
+         *          非数字、越界一律判为「无法履约」：这些形状说明对端要么实现不对、要么在探本端，
+         *          按缺省窗口继续开连接会把一条解不开的流发到线上。
+         * @param rawValue 等号右侧已去引号的文本；空表示参数不带值（本端按 15 处理，另判）
+         * @return std::optional<int> 合法位数；非法时为空
+         */
+        [[nodiscard]] std::optional<int> parseWindowBits(const std::string_view rawValue)
+        {
+            if (rawValue.empty())
             {
-                const char actual  = extensionName[index];
-                const char lowered = (actual >= 'A' && actual <= 'Z') ? static_cast<char>(actual - 'A' + 'a') : actual;
-                if (lowered != kExpectedName[index])
+                return std::nullopt;
+            }
+            int value = 0;
+            for (const char character: rawValue)
+            {
+                if (character < '0' || character > '9')
                 {
-                    return false;
+                    return std::nullopt;
+                }
+                // 位数上限只有两位十进制，累加不会溢出；出现更多位就直接判越界
+                value = value * 10 + (character - '0');
+                if (value > kWebSocketDefaultWindowBits)
+                {
+                    return std::nullopt;
                 }
             }
-            return true;
+            if (value < kWebSocketMinimumWindowBits)
+            {
+                return std::nullopt;
+            }
+            return value;
         }
     } // namespace
 
@@ -133,28 +221,108 @@ namespace AsynGyanis::Net
                 continue;
             }
 
+            // 参数扫描：两个窗口位数按对端的声明钳本端，其余参数（含 *_no_context_takeover 与本端不认识的）
+            // 忽略——前者本端本来就按「每条消息重置上下文」实现，后者不属于本端要履约的量
+            int  compressBits    = kWebSocketDefaultWindowBits; // 本端压缩位数：受对端 server_max_window_bits 约束
+            int  decompressBits  = kWebSocketDefaultWindowBits; // 本端解压位数：按对端 client_max_window_bits 收小
+            bool hasServerWindow = false;                       ///< 对端是否提到了 server_max_window_bits（决定是否要回显）
+            bool unusable        = false;                       ///< 遇到本端无法履约的取值：整条扩展不接受
+
+            std::size_t parameterOffset = semicolonPosition == std::string_view::npos ? item.size() : semicolonPosition + 1;
+            while (parameterOffset < item.size() && !unusable)
+            {
+                const std::string_view parameter      = takeNextParameter(item, parameterOffset);
+                const std::size_t      equalsPosition = parameter.find('=');
+                const std::string_view parameterName  = parameter.substr(0, equalsPosition);
+                const bool             hasValue       = equalsPosition != std::string_view::npos;
+                const std::string_view rawValue       = hasValue ? unquote(parameter.substr(equalsPosition + 1)) : std::string_view{};
+
+                // 两个参数同名重复出现时取最严（最小）的那个：后写的更大不能让本端越过后写的更小声明，
+                // 而「重复即拒绝」会把一个只是写重了的对端整个丢掉
+                if (tokenEqualsIgnoringCase(parameterName, "server_max_window_bits"))
+                {
+                    hasServerWindow = true;
+                    if (hasValue)
+                    {
+                        const std::optional<int> requested = parseWindowBits(rawValue);
+                        if (!requested.has_value())
+                        {
+                            unusable = true;
+                            break;
+                        }
+                        compressBits = std::min(compressBits, *requested);
+                    }
+                    // 不带值的形态（RFC 7692 §7.1.2）只表示「对端能开满 15」，本端无需收小
+                } else if (tokenEqualsIgnoringCase(parameterName, "client_max_window_bits"))
+                {
+                    if (hasValue)
+                    {
+                        const std::optional<int> requested = parseWindowBits(rawValue);
+                        if (!requested.has_value())
+                        {
+                            unusable = true;
+                            break;
+                        }
+                        decompressBits = std::min(decompressBits, *requested);
+                    }
+                    // 本端不回显这一条：回显一个更低的值等于要求对端改小它的压缩窗口，而那要求
+                    // 需要本端的实现来兜住对端不遵守的情形，收益只是内存——留给真有需求的一端
+                }
+            }
+
+            if (unusable)
+            {
+                // 无法履约就整条扩展不接受：101 里不回 Sec-WebSocket-Extensions，对端按明文收发，
+                // 连接照常可用。带着一个对端解不开的窗口把连接开起来才是最坏的一种「看起来成功了」
+                return negotiation;
+            }
+
             // 接受并回本端选定的参数：两条 no_context_takeover 都要求「每条消息重置上下文」，
             // 于是收发两侧都不必保存跨消息的 z_stream（本端实现细节里写明这笔取舍）
-            negotiation.accepted      = true;
-            negotiation.responseValue = "permessage-deflate; server_no_context_takeover; client_no_context_takeover";
+            negotiation.accepted = true;
+            negotiation.window   = PerMessageDeflateWindow{.compressBits = compressBits, .decompressBits = decompressBits};
+
+            std::string responseValue = "permessage-deflate; server_no_context_takeover; client_no_context_takeover";
+            if (hasServerWindow)
+            {
+                // 对端提过这个参数就把它选定的位数回过去（RFC 7692 §7.1.2 的应答形态）：
+                // 对端据此分配自己的解压窗口，本端随后确实按这个数压
+                responseValue += "; server_max_window_bits=" + std::to_string(compressBits);
+            }
+            negotiation.responseValue = std::move(responseValue);
             return negotiation;
         }
 
         return negotiation;
     }
 
-    std::optional<std::string> deflateWebSocketMessage(const std::string_view payload)
+    std::optional<std::string> deflateWebSocketMessage(const std::string_view payload, const int windowBits)
     {
+        if (windowBits < kWebSocketMinimumWindowBits || windowBits > kWebSocketDefaultWindowBits)
+        {
+            return std::nullopt;
+        }
+
         // 复用本线程的 deflate 流：见 ReusableDeflateStream 注释——no_context_takeover 下每条消息独立，
         // deflateReset 即等价于「新建一条流」，却免去约 200KB 内部状态的反复重建
         thread_local ReusableDeflateStream context;
-        if (!context.isOpen)
+        if (!context.isOpen || context.windowBits != windowBits)
         {
-            if (::deflateInit2(&context.stream, kWebSocketDeflateLevel, Z_DEFLATED, kRawDeflateWindowBits, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+            // 位数与上次 init 的不同：这条线程正在换一条连接服务，窗口必须跟着新连接的协商走
+            if (context.isOpen)
             {
+                ::deflateEnd(&context.stream);
+                context.isOpen = false;
+                context.stream = z_stream{};
+            }
+            // 裸 deflate 的 windowBits 取负值：不带 zlib 头尾，直接产 RFC 1951 字节流
+            if (::deflateInit2(&context.stream, kWebSocketDeflateLevel, Z_DEFLATED, -windowBits, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+            {
+                context.windowBits = 0;
                 return std::nullopt;
             }
-            context.isOpen = true;
+            context.isOpen     = true;
+            context.windowBits = windowBits;
         }
 
         z_stream &stream = context.stream;
@@ -223,17 +391,31 @@ namespace AsynGyanis::Net
         return output;
     }
 
-    std::optional<std::string> inflateWebSocketMessage(const std::string_view payload, const std::size_t maximumOutputBytes)
+    std::optional<std::string> inflateWebSocketMessage(const std::string_view payload, const std::size_t maximumOutputBytes, const int windowBits)
     {
-        // 与压缩侧对称：复用本线程的 inflate 流与块缓冲，每条消息前 inflateReset
-        thread_local ReusableInflateStream context;
-        if (!context.isOpen)
+        if (windowBits < kWebSocketMinimumWindowBits || windowBits > kWebSocketDefaultWindowBits)
         {
-            if (::inflateInit2(&context.stream, kRawDeflateWindowBits) != Z_OK)
+            return std::nullopt;
+        }
+
+        // 与压缩侧对称：复用本线程的 inflate 流与块缓冲，每条消息前 inflateReset；
+        // 位数变了同样要重新 init（见 ReusableInflateStream 注释）
+        thread_local ReusableInflateStream context;
+        if (!context.isOpen || context.windowBits != windowBits)
+        {
+            if (context.isOpen)
             {
+                ::inflateEnd(&context.stream);
+                context.isOpen = false;
+                context.stream = z_stream{};
+            }
+            if (::inflateInit2(&context.stream, -windowBits) != Z_OK)
+            {
+                context.windowBits = 0;
                 return std::nullopt;
             }
-            context.isOpen = true;
+            context.isOpen     = true;
+            context.windowBits = windowBits;
         }
 
         z_stream &stream = context.stream;

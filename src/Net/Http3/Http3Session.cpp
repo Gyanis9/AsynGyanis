@@ -1530,7 +1530,7 @@ namespace AsynGyanis::Net
         tunnel->peer    = std::make_unique<WebSocketPeer>([this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
                                                           { co_return co_await sendTunnelBytes(streamId, frameBytes); }, m_metrics.get());
         // 协商结论交给对端对象：决定收发两侧是否用 RSV1 压缩帧
-        tunnel->peer->setPerMessageDeflateEnabled(deflateNegotiation.accepted);
+        tunnel->peer->setPerMessageDeflate(deflateNegotiation.window);
 
         WebSocketTunnel &created = *tunnel;
         m_webSocketTunnels.emplace(streamId, std::move(tunnel));

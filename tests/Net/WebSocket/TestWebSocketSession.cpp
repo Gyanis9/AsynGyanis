@@ -1308,6 +1308,86 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(server->awaitConnectionsDrained(kWaitTimeout));
     }
 
+    /// 对端把本端的压缩窗口要到 8 位（256 字节）的提供头，以及本端必须回显的选定位数
+    constexpr std::string_view kSmallPeerWindowOfferHeader = "sec-websocket-extensions: permessage-deflate; server_max_window_bits=8\r\n";
+    constexpr std::string_view kSmallPeerWindowResponseLine =
+            "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=8\r\n";
+
+    /**
+     * @brief 会话侧钉住「对端声明的小窗口一路走到压缩调用」
+     * @details 单元侧那条只证明位数会改变字节，而协商结果若不交给对端对象，线上就是带着 32 KiB 窗口的
+     *          字节发给一个只开了 256 字节的解压器——严格执行的对端当场报错收线（RFC 7692 §7.1.2），
+     *          而本端什么都看不见。正文取「2048 字节压不动的伪随机段重复两次」：满档窗口能回溯 2048
+     *          字节、把后半几乎吃掉，8 位窗口够不着（只能整段重发，压不出收益）。
+     *          判据因此只看线上长度是否大于正文的四分之三，不去赌「压得动压不动」那一侧的符号：
+     *          明文与压不动两种正确形状都在阈值之上，只有没钳制的满档输出会掉到阈值之下。
+     */
+    TEST(WebSocketSession, HonorsPeerDeclaredWindowWhenCompressingEchoes)
+    {
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        const std::string block = []
+        {
+            std::string bytes;
+            bytes.reserve(2048);
+            unsigned int state = 0x9E3779B9U;
+            for (int index = 0; index < 2048; ++index)
+            {
+                state = state * 1664525U + 1013904223U;
+                bytes.push_back(static_cast<char>((state >> 16) & 0xFF));
+            }
+            return bytes;
+        }();
+        const std::string payload = block + block; // 周期 2048 字节，远超 8 位窗口的 256
+
+        // 按 Binary 发：伪随机字节不是合法 UTF-8，走 Text 会被服务端的整条消息校验当场以 1007 收口——
+        // 那条校验本身是对的，只是会把这条用例的证据换成一个与窗口无关的 close 帧
+        std::string request = upgradeRequestText();
+        request.insert(request.size() - 2, std::string(kSmallPeerWindowOfferHeader));
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(request + maskedClientFrame(0x2, payload), kWaitTimeout));
+
+        std::string expectedHandshake = expectedHandshakeResponseText();
+        expectedHandshake.insert(expectedHandshake.size() - 2, std::string(kSmallPeerWindowResponseLine));
+
+        std::string       accumulated;
+        const std::size_t frameOffset = expectedHandshake.size();
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 4U, kWaitTimeout)) << "101 之后没有收到回帧头，只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, frameOffset), expectedHandshake) << "101 没回显本端选定的窗口位数，或对端声明没被接受";
+
+        // 两种正确形状（明文 4096 与压不动的 4100）都超过 125，因此长度一定走 16 位扩展档
+        const std::size_t secondByte = static_cast<std::uint8_t>(accumulated[frameOffset + 1U]);
+        ASSERT_EQ(secondByte & 0x7FU, 126U) << "回帧长度不在预期的 16 位档，拿到的是 " << secondByte << "，首字节 "
+                                            << static_cast<int>(static_cast<std::uint8_t>(accumulated[frameOffset])) << "，总长 " << accumulated.size();
+        const std::size_t wireLength = (static_cast<std::size_t>(static_cast<std::uint8_t>(accumulated[frameOffset + 2U])) << 8U) |
+                                       static_cast<std::size_t>(static_cast<std::uint8_t>(accumulated[frameOffset + 3U]));
+        ASSERT_TRUE(readUntilLength(client, accumulated, frameOffset + 4U + wireLength, kWaitTimeout)) << "回帧正文没有到齐：只收到 " << accumulated.size() << " 字节";
+        ASSERT_EQ(accumulated.size(), frameOffset + 4U + wireLength) << "除 101 与一条回帧外不该有别的字节";
+
+        EXPECT_GT(wireLength, payload.size() * 3 / 4) << "线上长度掉到满档窗口的量级：本端没把协商到的 8 位窗口交给压缩";
+
+        const std::string_view frameBytes(accumulated.data() + frameOffset, accumulated.size() - frameOffset);
+        const bool             isCompressed = (static_cast<std::uint8_t>(frameBytes[0]) & 0x40U) != 0U;
+        if (isCompressed)
+        {
+            // 按对端声明的那一位解：解不开就说明本端发的是超出该窗口的字节，而那正是对端会当场报错的形状
+            const std::string_view           wirePayload(frameBytes.data() + 4U, wireLength);
+            const std::optional<std::string> inflated = inflateWebSocketMessage(wirePayload, payload.size() + 1024, 8);
+            ASSERT_TRUE(inflated.has_value()) << "置了 RSV1 却按协商窗口解不开";
+            EXPECT_EQ(*inflated, payload);
+        } else
+        {
+            EXPECT_EQ(frameBytes.substr(4U), payload) << "明文回帧的负载必须原样是消息本身";
+        }
+
+        client.closeNow();
+        EXPECT_TRUE(server->awaitConnectionsDrained(kWaitTimeout));
+    }
+
     /**
      * @brief 钉住对端不提供扩展时服务端不声明扩展、也不压缩回帧（回归：协商开关不能被默认打开）
      */

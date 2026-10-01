@@ -114,11 +114,12 @@ namespace AsynGyanis::Net
         return m_decoder.isLimitExceeded() ? kWebSocketMessageTooBigCode : kWebSocketProtocolErrorCode;
     }
 
-    void WebSocketPeer::setPerMessageDeflateEnabled(const bool enabled) noexcept
+    void WebSocketPeer::setPerMessageDeflate(const std::optional<PerMessageDeflateWindow> window) noexcept
     {
-        // 收发两侧一起开关：只开一半会让本端按压缩发、按明文收（或反之），线上必然对不上
-        m_isPerMessageDeflateEnabled = enabled;
-        m_decoder.setPerMessageDeflateEnabled(enabled);
+        // 收发两侧一起开关：只开一半会让本端按压缩发、按明文收（或反之），线上必然对不上。
+        // 解码器只需要「RSV1 能不能出现」这一位，窗口位数留在本对象供收发点取用
+        m_deflateWindow = window;
+        m_decoder.setPerMessageDeflateEnabled(window.has_value());
     }
 
     std::string WebSocketPeer::decodeErrorText() const
@@ -287,9 +288,9 @@ namespace AsynGyanis::Net
         // 压缩是带宽优化，而发一条对端解不开的帧比不压严重得多
         const bool                 isDataMessage = opCode == WebSocketOpCode::Text || opCode == WebSocketOpCode::Binary;
         std::optional<std::string> compressedPayload;
-        if (m_isPerMessageDeflateEnabled && isDataMessage)
+        if (m_deflateWindow.has_value() && isDataMessage)
         {
-            compressedPayload = deflateWebSocketMessage(payload);
+            compressedPayload = deflateWebSocketMessage(payload, m_deflateWindow->compressBits);
             // 每条消息都从空字典开始（本端协商了两条 no_context_takeover），因此这条判据零成本可得：
             // 压完不比原文短就按未压缩帧发。RFC 7692 §7.3 正是这样要求禁用上下文接管的一端的——
             // 短消息（"hello" 压成 7 字节）在空字典下几乎必然膨胀，而 RSV1 一置位就把 inflate 摊给了对端
@@ -406,7 +407,10 @@ namespace AsynGyanis::Net
                 // 字节流本端解不了，留在连接上只会越走越偏
                 if (frame.isCompressed)
                 {
-                    std::optional<std::string> inflatedPayload = inflateWebSocketMessage(frame.payload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
+                    // 窗口位数按协商走（对端声明它按多大压缩）：没协商就不可能解出压缩帧，
+                    // 这里按满窗口兜底只是不让一个不可能的组合变成崩溃点
+                    const int                  decompressBits  = m_deflateWindow.has_value() ? m_deflateWindow->decompressBits : kWebSocketDefaultWindowBits;
+                    std::optional<std::string> inflatedPayload = inflateWebSocketMessage(frame.payload, WebSocketFrameDecoder::kMaximumMessagePayloadLength, decompressBits);
                     if (!inflatedPayload.has_value())
                     {
                         m_payloadErrorMessage   = std::format("压缩消息解压失败，或解压结果超过上限 {} 字节（RFC 7692 §7.2.2）："

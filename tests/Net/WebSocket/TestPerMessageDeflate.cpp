@@ -80,6 +80,101 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 两个窗口参数按对端的声明钳本端，而不是读完就丢
+     * @details 旧实现只看扩展名、`;` 之后的参数一个都不解析：对端说「我的解压器只能开 9 位」，
+     *          本端照样按 15 位压，线上就是一帧发得出去、对端当场解不开报错收线。
+     */
+    TEST(PerMessageDeflate, ClampsLocalWindowsToPeerDeclarations)
+    {
+        // server_max_window_bits = 对端解压器的能力 → 本端压缩位数
+        const PerMessageDeflateNegotiation narrowerPeerWindow = negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=10");
+        ASSERT_TRUE(narrowerPeerWindow.accepted);
+        ASSERT_TRUE(narrowerPeerWindow.window.has_value());
+        EXPECT_EQ(narrowerPeerWindow.window->compressBits, 10);
+        EXPECT_EQ(narrowerPeerWindow.window->decompressBits, 15) << "对端没提 client_max_window_bits，本端解压窗口按满档";
+        EXPECT_NE(narrowerPeerWindow.responseValue.find("server_max_window_bits=10"), std::string::npos) << "选定的位数要回显，对端据此分配它自己的解压窗口";
+
+        // client_max_window_bits = 对端压缩时用的位数 → 本端解压位数（按连接收小窗口就是收小内存）
+        const PerMessageDeflateNegotiation narrowerClientWindow = negotiatePerMessageDeflate("permessage-deflate; client_max_window_bits=9");
+        ASSERT_TRUE(narrowerClientWindow.window.has_value());
+        EXPECT_EQ(narrowerClientWindow.window->decompressBits, 9);
+        EXPECT_EQ(narrowerClientWindow.window->compressBits, 15);
+        EXPECT_EQ(narrowerClientWindow.responseValue.find("client_max_window_bits"), std::string::npos)
+                << "这条不回显：回显一个更低的值等于要求对端改小压缩窗口，而本端不需要那个收益";
+
+        // 不带值的形态（RFC 7692 §7.1.1/§7.1.2）只表示对端能开满 15：不钳也不产生回显
+        const PerMessageDeflateNegotiation valuelessOffer = negotiatePerMessageDeflate("permessage-deflate; client_max_window_bits");
+        ASSERT_TRUE(valuelessOffer.window.has_value());
+        EXPECT_EQ(valuelessOffer.window->decompressBits, 15);
+        EXPECT_EQ(valuelessOffer.responseValue.find("server_max_window_bits"), std::string::npos);
+
+        // 同名参数重复出现取最严的那个：后写的更大不该越过先写的小声明
+        const PerMessageDeflateNegotiation duplicated = negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=9; server_max_window_bits=15");
+        ASSERT_TRUE(duplicated.window.has_value());
+        EXPECT_EQ(duplicated.window->compressBits, 9);
+
+        // 引号形态与大小写：参数名是 token 语义，值可以是 quoted-string（RFC 6455 §9.1 的扩展语法）
+        const PerMessageDeflateNegotiation quoted = negotiatePerMessageDeflate("permessage-deflate; SERVER_MAX_WINDOW_BITS=\"12\"");
+        ASSERT_TRUE(quoted.window.has_value());
+        EXPECT_EQ(quoted.window->compressBits, 12);
+    }
+
+    /**
+     * @brief 窗口参数无法履约时整条扩展不接受，而不是带着一个对端解不开的窗口开连接
+     */
+    TEST(PerMessageDeflate, DeclinesUnusableWindowParameters)
+    {
+        // RFC 7692 只承认 8..15 这八档；越界、带符号、非数字、长到该溢出的都算无法履约
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=7").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=16").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; client_max_window_bits=0").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=-1").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=abc").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=999999999999").accepted) << "位数超长要在累加过程中就判越界，不能让它先溢出";
+
+        const PerMessageDeflateNegotiation declined = negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=7");
+        EXPECT_TRUE(declined.responseValue.empty()) << "不接受就不该回任何取值";
+        EXPECT_FALSE(declined.window.has_value()) << "不接受就不该留下一份窗口给收发点";
+
+        // 两个端点各自合法
+        EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=8").accepted);
+        EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=15").accepted);
+    }
+
+    /**
+     * @brief 协商出来的窗口位数必须真的落到压缩参数上，而不是读完就丢
+     * @details 正文取「4096 字节压不动的伪随机段重复两次」：满档窗口（32 KiB）能回溯 4096 字节、
+     *          把后半几乎吃掉（实测 8192 → 4191），9 位窗口只有 512 字节、够不着那个距离，只能整段重发
+     *          （实测 → 8230）。两者差出大半个正文，所以「位数没吃到」等于两个尺寸一样、这条就红。
+     *          两次压缩在同一线程上连着做，因此这条同时钉住「复用流遇到位数不同必须重新 init」——
+     *          沿用上一条连接的窗口，第二档会退回满档，尺寸差就消失了。
+     *          没有把判据写成「越界就解不开」：本机 zlib 的裸 inflate 对更远的回溯是宽容的
+     *          （实测窗口 9 也解得开 15 位产出的字节，8192 字节逐字节对得上），而按 RFC 7692 §7.1.2
+     *          严格执行的对端会当场报错收线——那一半只有对端测得出，本端只能钉住自己这半。
+     */
+    TEST(PerMessageDeflate, CompressionWindowChangesTheEmittedBytes)
+    {
+        const std::string block   = makeIncompressiblePayload(); // 4096 字节、几乎压不动
+        const std::string payload = block + block;               // 周期 4096 字节，远超 9 位窗口的 512
+
+        const std::optional<std::string> wide   = deflateWebSocketMessage(payload, kWebSocketDefaultWindowBits);
+        const std::optional<std::string> narrow = deflateWebSocketMessage(payload, 9);
+        ASSERT_TRUE(wide.has_value()) << "满档压缩失败";
+        ASSERT_TRUE(narrow.has_value()) << "9 位窗口压缩失败";
+        EXPECT_GT(narrow->size(), wide->size() + payload.size() / 4) << "窗口位数没进到压缩参数里：两条流应当差出整个后半段";
+
+        // 窄窗口产出的字节必须能被同档的解压器逐字节还原（协商两端同档时自洽）
+        const std::optional<std::string> restored = inflateWebSocketMessage(*narrow, payload.size() + 1024, 9);
+        ASSERT_TRUE(restored.has_value()) << "按对端声明的窗口压完，同档解压却解不开";
+        EXPECT_EQ(*restored, payload);
+
+        // 位数越界一律不出字节：宁可这一条不发压缩帧，也不发一段可能没人解得开的字节
+        EXPECT_FALSE(deflateWebSocketMessage(payload, 16).has_value());
+        EXPECT_FALSE(deflateWebSocketMessage(payload, 7).has_value());
+        EXPECT_FALSE(inflateWebSocketMessage(*narrow, payload.size() + 1024, 16).has_value());
+    }
+
+    /**
      * @brief 压缩后再解压必须与原消息逐字节一致
      */
     TEST(PerMessageDeflate, RoundTripsMessages)
