@@ -163,9 +163,8 @@ jobs:
             exit 1
           fi
           "$clangTidy" --version | head -2
-          # 逐翻译单元跑、每个留一条标记，而不是 xargs -n 8 批量跑完只看报告有没有行：批量那版里
-          # 「一条诊断都没有」「一个都没跑成」「xargs 被信号打断只剩半截」三种情形在报告里长得一模一样，
-          # 前一种还会被读成通过。标记数必须等于翻译单元数，非零退出必须是 0——这两条才是「真跑过」。
+          # 逐翻译单元跑、每个留一条 TIDY-PROCESSED 标记，而不是 xargs -n 8 批量跑完只看报告有没有行：
+          # 批量那版里「一条诊断都没有」「一个都没跑成」「xargs 被信号打断只剩半截」在报告里长得一模一样
           tidyDir="$RUNNER_TEMP/tidy"
           rm -rf "$tidyDir"
           mkdir -p "$tidyDir"
@@ -176,26 +175,51 @@ jobs:
             '"$TIDY_BIN" -p build/release --quiet "$file" > "$TIDY_DIR/${slug}.log" 2>&1 && rc=0 || rc=$?' \
             'printf "TIDY-PROCESSED %s rc=%s\n" "$file" "$rc" > "$TIDY_DIR/${slug}.mark"' \
             'exit 0' > "$RUNNER_TEMP/tidy-one.sh"
+
+          # 范围只取「这份编译数据库里有的」，不是 src/ 下全部 .cpp：Epoll / Uring / InotifyFileWatcher
+          # 是 POSIX 专有的翻译单元，Windows 档根本不编、数据库里没有它们，clang 拿不到编译参数就报一片
+          # clang-diagnostic-error（实测把 194 个里的这 3 个算成失败），看着像代码有问题，其实是范围搞错。
+          # 那三个由 Linux 的 clang-tidy 作业覆盖。本地核对过这条抽取：194 个里 191 个在库内
+          sed -n 's/.*"file": "\(.*\)",\{0,1\}.*/\1/p' build/release/compile_commands.json \
+            | tr '\\' '/' | sed -n 's|.*\(src/.*\)|\1|p' | sort -u > "$RUNNER_TEMP/db-tails.txt"
+          : > "$RUNNER_TEMP/tu.txt"
+          while IFS= read -r tu; do
+            grep -qxF "$tu" "$RUNNER_TEMP/db-tails.txt" && printf '%s\n' "$tu" >> "$RUNNER_TEMP/tu.txt"
+          done < <(find src -name '*.cpp' | sort)
+          tuCount=$(wc -l < "$RUNNER_TEMP/tu.txt")
+          allCount=$(find src -name '*.cpp' | wc -l)
+          echo "src 下 ${allCount} 个翻译单元，本档编译数据库里有 ${tuCount} 个（不在的 $((allCount - tuCount)) 个由 Linux 那条作业覆盖）"
+
           export TIDY_BIN="$clangTidy" TIDY_DIR="$tidyDir"
-          find src -name '*.cpp' | tr '\n' '\0' | xargs -0 -n 1 -P 4 bash "$RUNNER_TEMP/tidy-one.sh"
+          tr '\n' '\0' < "$RUNNER_TEMP/tu.txt" | xargs -0 -n 1 -P 4 bash "$RUNNER_TEMP/tidy-one.sh"
           cat "$tidyDir"/*.log > "$RUNNER_TEMP/clang-tidy.log" 2>/dev/null || true
-          tuCount=$(find src -name '*.cpp' | wc -l)
           markCount=$(ls "$tidyDir"/*.mark 2>/dev/null | wc -l)
-          failedCount=$(grep -l " rc=[1-9]" "$tidyDir"/*.mark 2>/dev/null | wc -l)
-          warningCount=$(grep -cE "warning:|error:" "$RUNNER_TEMP/clang-tidy.log" 2>/dev/null || true)
-          echo "翻译单元 ${tuCount} 个，实际处理 ${markCount} 个，非零退出 ${failedCount} 个，诊断 ${warningCount} 行"
+          # 判「有没有真解析成功」用 [clang-diagnostic-error] 这个标签，而不是退出码：本仓给 MSVC 开了
+          # /WX，clang 把它读成 -Werror，于是 clang 独有的几类（unused-const-variable、
+          # unused-lambda-capture、unused-private-field）以 error 的面目出现、退出码非 0——那是**发现项**，
+          # 拿它判红会让这道门常红；真正解析不了的形状另有标签
+          parseFailures=$(grep -l "clang-diagnostic-error" "$tidyDir"/*.log 2>/dev/null | wc -l)
+          nonzeroCount=$(grep -l " rc=[1-9]" "$tidyDir"/*.mark 2>/dev/null | wc -l)
+          findingCount=$(grep -cE "warning:|error:" "$RUNNER_TEMP/clang-tidy.log" 2>/dev/null || true)
+          echo "标记 ${markCount}/${tuCount}，解析失败 ${parseFailures} 个，非零退出 ${nonzeroCount} 个，诊断 ${findingCount} 行"
           if [ "${markCount}" -lt "${tuCount}" ]; then
             echo "少了 $((tuCount - markCount)) 条处理标记：xargs 被打断或工具崩了，这道门按没跑成处理"
             exit 1
           fi
-          if [ "${failedCount}" -gt 0 ]; then
-            echo "${failedCount} 个翻译单元里 clang-tidy 非零退出（多半是编译数据库没命中或头文件解析不了）：这不等于「检查通过」"
+          if [ "${parseFailures}" -gt 0 ]; then
+            for badLog in $(grep -l "clang-diagnostic-error" "$tidyDir"/*.log 2>/dev/null); do
+              # 名字从标记里取（标记存的是原始路径），log 的文件名是打过标的、读不出来
+              badName=$(cut -d' ' -f2 "${badLog%.log}.mark" 2>/dev/null || true)
+              echo "--- ${badName:-$(basename "$badLog" .log)}"
+              grep -m1 "clang-diagnostic-error" "$badLog" | sed 's/^/    /'
+            done
+            echo "${parseFailures} 个翻译单元根本没解析成功：编译数据库没命中或头文件读不了，这不等于「检查通过」"
             exit 1
           fi
           {
             echo "## clang-tidy 摘要（Windows，逐翻译单元自证；发现项当前不阻塞）"
-            echo "- 翻译单元 ${tuCount} 个全部处理完，非零退出 ${failedCount} 个"
-            echo "- 诊断行数（warning/error）：${warningCount}"
+            echo "- 本档编译数据库里的 ${tuCount} 个翻译单元全部处理完，解析失败 ${parseFailures} 个"
+            echo "- 诊断行数（warning/error）：${findingCount}；其中非零退出 ${nonzeroCount} 个（/WX 把 clang 的发现项升成 error，属发现项不是没跑成）"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 上传 clang-tidy 报告
