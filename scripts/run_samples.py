@@ -19,6 +19,12 @@ import sys
 import time
 from pathlib import Path
 
+# 两个流固定按 UTF-8 写：这张矩阵的表头与提示都是中文，而 Windows 侧的默认编码可能是 cp1252
+# （GitHub 的 runner 实测就是，本机是 936 所以看不见）。按默认编码走，会在**跑完全部示例之后**
+# 当场抛 UnicodeEncodeError 退 1——看上去像「有示例失败」，实际只是汇总没打印出来，整条判据废掉。
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # 示例名前缀 → 所属模块；用于矩阵左侧的分组
