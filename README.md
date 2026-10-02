@@ -38,13 +38,17 @@
   协商到 h2 时多条请求并发复用同一条连接（头块按最大帧负载切片、按流发送窗口、见顶前主动换连接），
   已经写上通路而没等到答完的请求**不重发**（非幂等请求做两遍比失败更坏）；`send()` 接受任意方法与
   附加头部，失败交回一句点明断在哪一段的中文原因（`std::expected`）；`HttpClientResponse::retryAfter()` 把 `Retry-After` 的两种写法（相对秒数与绝对的
-  HTTP-date）折成「还要等多久」，读不懂交回空而不是 0 秒
+  HTTP-date）折成「还要等多久」，读不懂交回空而不是 0 秒；`resolveUrlReference()` 把 `Location` 的相对写法（`/login`、`../x`、`?page=2`、
+  `//cdn/x`）按 RFC 9110 §5.3 折成绝对 URL，非 http(s) 协议名、URL 内嵌凭据与含空白/控制字符的引用一律交回空而不是编造一个下一跳
 - **HTTP/3 + QUIC** — 自研 QUIC 传输层（RFC 9000/9001：握手、流与流量控制、丢包恢复与 NewReno 拥塞控制、1-RTT 密钥更新）+ 自研 HTTP/3 会话（帧层、QPACK 含动态表、流式正文、GOAWAY 优雅排空、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3
 - **WebSocket** — RFC 6455 握手与帧编解码、UTF-8 校验、分片重组、有界收帧队列、permessage-deflate（RFC 7692，
   按对端声明的窗口位数协商，本端无法履约就不接受该扩展而不是带着解不开的窗口开连接；要约里出现没定义的
   参数名或同名参数重复也按 §9.1 婉拒）；对端为什么关掉这条连接交回业务——`remoteCloseCode()` 读出对端 Close
   帧里的状态码原值、`remoteCloseReason()` 读出它给的原因文本（非法 UTF-8 的原因不外交给业务）；
-  h1 升级与 h2/h3 隧道共用协商，版本不合按 §4.2.2 回 426 并指明本端支持的版本
+  h1 升级与 h2/h3 隧道共用协商，版本不合按 §4.2.2 回 426 并指明本端支持的版本；主题扇出归 `WebSocketHub`——订阅是
+  RAII 句柄（析构即除名，不留悬垂对端指针）、一条连接同一时刻只有一个写者、每个成员自带待发队列的字节上界，
+  越界丢**最新**的一条并从 `droppedMessageCount()` 读得到；文本与二进制两种帧各走各的通道（`publish()` /
+  `publishBinary()`），队列里每条自带帧类型
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型；命中的模式原文经 `HttpRequest::matchedRoute()` 交回业务与中间件，按路由分组打点不必自己再拼一遍
 - **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）、`/healthz` 与 `/debug/loops`（进程内每条事件循环一行的 JSON，看哪条被处理器占住）内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
 - **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate）
@@ -763,7 +767,7 @@ AsynGyanis/
 > 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[verification-gate-workflow.html](assets/diagrams/verification-gate-workflow.html)
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模（2026-10-03 实测，「证书自动化的服务端消费方」这一轮之后）：**Windows Debug（含 ASan）3698 例通过、80 例 SKIP（共 3778 条）全绿**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3711 例通过、74 例 SKIP（共 3785 条）全绿、零告警、零泄漏、零未定义行为**。这一轮容器侧没注入真库凭据。上批新增 11 例：2 条钉日志文件重开失败的出声与丢弃行数（上升沿只报一次、没打开与流失效两条出口各计一笔），1 条钉 h2 把对端的头名折开之后才进本端日志，2 条钉 h2 被拒的畸形请求头计入 `asyn_http_bad_requests_total`（连接层按累计数交、会话层按差额入账），1 条端到端钉 h2 的 500 日志带上 trace id，2 条给只有间接覆盖的公开面补直测（域谓词只判字符形状、trace id 文本缺失时写「无」），1 条钉连接池健康检查间隔折不成毫秒时在构造那一刻就拒，1 条钉远处的 HTTP-date 折进本时钟可表达的两端，1 条钉对端给的巨值 `max_idle_timeout` 按不启用处置。共同的 69 条 SKIP 是同一批门控：MySQL 一族 36、Redis 两族 31、`Process` 1、ACME 真机构 1；Windows 另有 11 条按平台或环境让位——`Process` 4（含控制台探针的三条内层，见下）、多进程移交与数据报接管那四条、`AsyncSocket` 与 `UpgradeChannel` 各一条；其中第 11 条是 `HttpClientHttp3` 的黑洞那条：它按「同端口的 UDP 占不住」的能力判据 SKIP，本轮在 -j 14 满载下跳过、单独复跑该族 8 条全过，属环境条件而不是本批改出来的缺陷；容器另有 5 条（`ConnectionRace` 2、`FileWatcher`、`RollingFileSink` 与 `MySqlValueConversion` 各 1）。ACME 那一族今日按 `ctest -N -R Acme` 现数 79 例（Windows 档实跑 100% 通过、其中 1 例按门控 SKIP——真机构那条要公网域名）。控制台探针那三条内层单独跑时按 SKIP 记账，判据由它们的父侧用例承担：父侧以 `CREATE_NEW_CONSOLE` 再启一份去跑探针，并数「探针真的上场」的标记文件——所以宿主没有控制台也不会让这条路悄悄变成零覆盖。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递、多进程编排里 shell 假 worker 那几条行为、以及换代交接通道那两条只可能在本机判的（套接字文件所在目录的权限、装进来又被退回的描述符）；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按平台或内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言；`io_uring` 那一档要先探得出环，沙箱不给环时 `IoContext` 的八条按能力 SKIP 而不是失败）
+- 当前规模（2026-10-03 实测，「下一跳地址的解析原语与集线器的二进制扇出」这一轮之后）：**Windows Debug（含 ASan）3713 例通过、79 例 SKIP（共 3792 条）全绿**；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3725 例通过、74 例 SKIP（共 3799 条）全绿、零告警、零泄漏、零未定义行为**。这一轮容器侧没注入真库凭据。本批新增 14 例（`acme` 段的服务端接线、跨进程证书跟盘、装回欠账的读数与重试、`Retry-After` 读口、集线器的二进制扇出、`Location` 的相对引用解析）。共同的 69 条 SKIP 是同一批门控：MySQL 一族 36、Redis 两族 31、`Process` 1、ACME 真机构 1；Windows 另有 10 条按平台或环境让位——`Process` 4（含控制台探针的三条内层，见下）、多进程移交与数据报接管那四条、`AsyncSocket` 与 `UpgradeChannel` 各一条；`HttpClientHttp3` 的黑洞那条本轮按判据实跑通过，而上一轮它在 -j 14 满载下按「同端口 UDP 占不住」跳过——这类读数每次以本轮为准，别沿用上一批的条数；容器另有 5 条（`ConnectionRace` 2、`FileWatcher`、`RollingFileSink` 与 `MySqlValueConversion` 各 1）。ACME 那一族今日按 `ctest -N -R Acme` 现数 79 例（Windows 档实跑 100% 通过、其中 1 例按门控 SKIP——真机构那条要公网域名）。控制台探针那三条内层单独跑时按 SKIP 记账，判据由它们的父侧用例承担：父侧以 `CREATE_NEW_CONSOLE` 再启一份去跑探针，并数「探针真的上场」的标记文件——所以宿主没有控制台也不会让这条路悄悄变成零覆盖。两侧条数之差来自按平台编译的用例：POSIX 独有 epoll 描述符重注册、inotify 的自愈族、`sendfile` 零拷贝、停机信号的实投递、多进程编排里 shell 假 worker 那几条行为、以及换代交接通道那两条只可能在本机判的（套接字文件所在目录的权限、装进来又被退回的描述符）；Windows 独有完成端口相关、以及多进程移交那两条（构造期校验 + 真的起两个进程问一遍回话的端到端）。要比对差异请按用例名逐行 diff，并先把参数化标签的写法归一化（Linux 写 `/stride1`、Windows 写 `/1`）。SKIP 是真机门控（MySQL/Redis 无凭据即跳）与按平台或内核能力门控的那几条（例如 UDP 共享端口要内核有 `SO_REUSEPORT` 才断言；`io_uring` 那一档要先探得出环，沙箱不给环时 `IoContext` 的八条按能力 SKIP 而不是失败）
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 35 例、Redis 31 例（两族都按 ctest 名单现数；覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 - **CI 触发面**：四条工作流（Linux CI / Windows CI / 发布门禁 / 供应链）都只在 `main` 推送与手动触发上跑，
