@@ -39,7 +39,9 @@
   已经写上通路而没等到答完的请求**不重发**（非幂等请求做两遍比失败更坏）；`send()` 接受任意方法与
   附加头部，失败交回一句点明断在哪一段的中文原因（`std::expected`）
 - **HTTP/3 + QUIC** — 自研 QUIC 传输层（RFC 9000/9001：握手、流与流量控制、丢包恢复与 NewReno 拥塞控制、1-RTT 密钥更新）+ 自研 HTTP/3 会话（帧层、QPACK 含动态表、流式正文、GOAWAY 优雅排空、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3
-- **WebSocket** — RFC 6455 握手与帧编解码、UTF-8 校验、分片重组、有界收帧队列、permessage-deflate（RFC 7692）；h1 升级与 h2/h3 隧道共用协商
+- **WebSocket** — RFC 6455 握手与帧编解码、UTF-8 校验、分片重组、有界收帧队列、permessage-deflate（RFC 7692，
+  按对端声明的窗口位数协商，本端无法履约就不接受该扩展而不是带着解不开的窗口开连接）；h1 升级与 h2/h3 隧道
+  共用协商，版本不合按 §4.2.2 回 426 并指明本端支持的版本
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型
 - **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）、`/healthz` 与 `/debug/loops`（进程内每条事件循环一行的 JSON，看哪条被处理器占住）内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
 - **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate）
@@ -693,7 +695,7 @@ AsynGyanis/
 
 ## 投产前核对
 
-这十一件事是「库不会替你决定，但配错了要出事故」的那一类。每条都写了默认值与**怎么确认它真的生效**——
+下面这些项都是「库不会替你决定，但配错了要出事故」的那一类。每条都写了默认值与**怎么确认它真的生效**——
 静默保持默认值看起来总像是配置成功了，所以别只看配置文件，要读回来或抓一次端点。
 
 | 核对项 | 键 / 入口 | 默认值 | 怎么确认生效 | 配错的后果 |
@@ -705,7 +707,7 @@ AsynGyanis/
 | `/metrics` 接线 | `applyHttpServerConfiguration()` + `server.expose_metrics`（令牌：`server.ops_bearer_token`） | 关（一个端点都不注册）；不开令牌时三面都不鉴权 | 直接 `curl` 三个端点：`/metrics`、`/healthz`、`/debug/loops`；配了令牌后要带 `Authorization: Bearer <token>` 才回 200 | `/metrics` 与 `/debug/loops` 读得到内部计数与每条循环的状态，开到 `0.0.0.0` 就是公开暴露；`ops_bearer_token` 给这两个加 Bearer 闸门（`/healthz` 刻意不挡——存活探针要能被编排器无凭据访问，给它加令牌只会让人把探针关掉）。令牌只能写在配置文件里：命令行上的令牌会进 shell 历史与进程列表。来源本身的收口要靠只听回环的管理口（见下一行） |
 | 非 HTTP 那侧的读数出口 | `Core::ProcessMetricsRegistry::registerMetric(...)`（RAII 把手，析构即注销），渲染点在 `/metrics` 末尾按登记的**完整名字**原样导出 | 各模块的对象构造时就登记，不需要应用接线；没有登记过就没有那一行（不是 0） | 抓一次 `/metrics` 看名字在不在：`asyn_acme_certificate_expiry_seconds` / `asyn_acme_issuances_total` / `asyn_acme_failures_total`（证书自动化）、`asyn_acme_dns01_*`（dns-01 写入的条数与花掉的秒数）、`asyn_udp_*`（数据报四条计数）、`asyn_worker_crashes_total` / `asyn_worker_slots_given_up`、`asyn_db_pool_*`（在借 / 等待 / 累计创建 / 借出超时）、`asyn_tls_handshakes_total` / `asyn_tls_session_reused_total` | 三条口径容易读错：① 这些名字**不套**监听器的 `metric_name_prefix`，抓哪台都是同一份进程量；② 同名多实例按登记时给的并法合（计数求和；到期时刻取**最早**那张，因为它是会先出事的那个）；③ 长期为 0 就是要报的事——证书自动化没跑成与还没跑，从面板上看是同一个形状；到期时刻那条在构造时就按磁盘上现有那张填过了，所以计划内重启不会先报一段假的 0，它读出 0 就是那条路径上真没有读得出的证书。**有两类读数刻意不接**：跨线程不安全的对象（出站连接池明写「协程挂起期间被别的线程驱动会踩坏套接字状态」，抓取在另一条线程上）与「读口本身带副作用」的（`WorkerSupervisor::runningWorkerCount()` 会顺手回收子进程）——接出口之前先问这两条 |
 | 运维端点的监听面 | `server.metrics_port`（0 = 端点留在业务口上）+ `server.metrics_address`（默认 `127.0.0.1`） | `metrics_port` 为 0（不另起管理口，行为与加这两项之前逐字相同）；`metrics_address` 只听回环 | `metrics_port` 非 0 时业务口**不再注册** `/metrics` 与 `/debug/loops`（打过去回 404，这是刻意的反向断言），要抓数得打 `metrics_port + 本进程序号`；多进程下 `reference_server` 由 master 用 `--worker-index` 把序号传下去，逐台各听一个口 | 只配 `metrics_address` 而 `metrics_port` 仍为 0 = 什么都没挪；把 `metrics_address` 写成 `0.0.0.0` 又不配令牌，等于把内部计数与每条循环的状态公开到所有网卡；`metrics_port` 越界（含加序号后超 65535）在读配置与启动两处都当场拒——端口静默回绕会去听一个谁也没配的号，症状只是「Prometheus 抓不到数」 |
-| 日志等级与滚动 | `Base::LoggerConfigLoader` 的 `global_level` 与 `sinks`（`rolling_file`：`directory`/`policy`/`max_size_mb`/`max_backup`） | 未配置前 root 是 Trace 且**零 sink → 全部丢弃**；`global_level` 缺失回落 INFO；滚动按 `size`、单文件 10 MiB、留 10 份 | `LoggerRegistry` 的 sink 快照；`AsyncSink::droppedEventCount()` | 越界值会被钳制并打到 `stderr`（不中断启动）；`policy` 拼错会回退成 `size` 并说明原因——启动日志要留着看；`reference_server --config` 会连同 `logging` 段一起装上（不装就只有 `server` 段生效） |
+| 日志等级与滚动 | `Base::LoggerConfigLoader` 的 `global_level` 与 `sinks`（`rolling_file`：`directory`/`policy`/`max_size_mb`/`max_backup`） | 未配置前 root 是 Trace 且**零 sink → 全部丢弃**；`global_level` 缺失回落 INFO；滚动按 `size`、单文件 10 MiB、留 10 份 | `LoggerRegistry` 的 sink 快照；`AsyncSink::droppedEventCount()` | 越界值会被钳制并打到 `stderr`（不中断启动）；`policy` 拼错会回退成 `size` 并说明原因——启动日志要留着看；**本实现不认识的字段（含 `max_backups` 这类拼错的键）同样打一行 `stderr`，并报出这一层认识哪些字段**：`server` / `acme` 段是未知键当场拒，`logging` 这一段刻意只报不拒（sink 的字段集按类型多态，因一个多余字段就丢掉整条 sink 比现状更伤）；`reference_server --config` 会连同 `logging` 段一起装上（不装就只有 `server` 段生效） |
 | worker 起法 | `Core::WorkerSupervisor::Configuration` | `workerCount` 必须 ≥ 2；崩溃窗口 3s、连续 5 次「起来就崩」不再补；`shutdownTimeout` 10s | 构造期就校验：Windows 缺 `handoff`、POSIX 给了 `handoff` 都直接抛 | Windows 上 worker 靠 master 移交监听描述符（不是 `SO_REUSEPORT`），配错的表现是「只有一个进程收得到连接」；`reference_server --workers` 只走 POSIX 那条（Windows 上缺移交档位，构造即抛），移交形状见 `samples/Core/Worker.cpp`（目标名仍是 `core_worker`）；master 被硬杀时 worker 随作业对象一起被终止（Windows `killWithParent`、POSIX `PDEATHSIG`），主机不让挂作业时保护缺席会落一条 WARN |
 | 优雅停机 | 各服务器的 `stop()` / `drain(timeout)`；`WorkerSupervisor` 的 `shutdownTimeout` | `drain` 的时长由调用方给（库不设默认）；到点后强关并在途请求作废 | 停机时观察：在册连接归零、`/metrics` 的丢弃计数不再涨 | 超时给小了会掐断在途长请求；worker 的体面退出在 POSIX 是 SIGTERM，Windows 没有信号——编排者给每个 worker 独立进程组再发 `CTRL_BREAK`（`Process::requestTermination()`），宿主没有控制台时发不出去，会记一条 WARN 再强杀 |
 

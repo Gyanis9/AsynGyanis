@@ -13,6 +13,60 @@
 - **一致性由脚本把关**：`scripts/check-release-version.py` 比对「CMake 版本号 / 本文件最新发布段 / 最新标签」
   三者，不一致即退出码非 0；Linux CI 已接入这一步，避免出现「打了标签但版本号没改」这类漂移。
 
+## [Unreleased]
+
+自 2.4.0 起的累计变化（新增 2、变更 2、修复 2、破坏性变更 1）：把协议正确性上「标准说有、实现没有」的
+几格补上，并让 `logging` 配置里拼错的键第一次出得了声。**含一处公开 API 改名**，见最后一条。
+
+### 新增
+
+- **`OPTIONS *`（asterisk-form）有去处了**：语法层只把 `*` 这个请求目标放给 OPTIONS（RFC 9112 §3.2.3
+  只把它派给 OPTIONS 与 CONNECT，本服务器不代理 CONNECT，所以别的方法带 `*` 当场判畸形请求，
+  而不是让它一路走到「没有路由匹配」被报成 404）；路由层把 OPTIONS 的 `*` 按根路径派发——asterisk-form
+  说的是「整台服务器」而不是某个资源，站点级注册的 `options("/")` 就是回答 `Allow` 的位置。
+- **`logging` 配置段对不认识的字段出声**：`server` / `tracing` / `acme` 三段早就在做未知键拒绝，
+  唯独 `logging` 只有逐字段的形态诊断——`max_backups`（正确写法 `max_backup`）、`globl_level`、
+  `filename`（正确写法 `base_filename`）这类拼错会整块消失、日志照写旧值，「配置里明明写了保留 30 份、
+  目录里却留着 10 份」没有任何一处会说不认识这个键。现在三段位置各自报（`logging` 段、每个 logger、
+  每条 sink 按 `console`/`file`/`rolling_file`/`async` 的字段集，`async` 的 `wrapped` 递归判），
+  诊断里直接列出这一层认识哪些键。口径是**报而不拒**：sink 的字段集按类型多态，因一个多余字段
+  就丢掉整条 sink 比现状更伤。
+
+### 变更
+
+- **版本不合的 WebSocket 握手按 RFC 6455 §4.2.2 应答**：h1 从一律 400 改为 **426 Upgrade Required**
+  并带一条 `Sec-WebSocket-Version: 13`（客户端靠这一行决定换一个版本重试，过去它只看到一个与版本无关的
+  无声拒绝）；h2 的扩展 CONNECT 仍回 400——426 说的是「请改用 Upgrade」，而 h2 里没有 Upgrade 这套机制可改
+  ——但同样补上那条头部。**h3 的扩展 CONNECT 现在开始校验 `sec-websocket-key` 与 `sec-websocket-version`**
+  （RFC 9220 §3 的必填两项）：过去这条路径只看「业务有没有登记升级」，一个既没给 key 又声明了版本 12 的
+  对端也能把隧道拉起来。
+- **permessage-deflate 的窗口位数按 RFC 7692 协商**：过去只认扩展名、`;` 之后的参数一个都不解析，
+  所以对端声明 `server_max_window_bits=9`（它的解压器只开得到 9 位）时本端仍按满档 15 位压缩——
+  严格执行的对端会在远距离回溯上当场报错收线。现在两个窗口参数都吃进语义并钳本端两侧的位数，
+  提过的在 101 里回显选定位数；取值不在 8..15、带符号、非数字或长到该溢出的，**整条扩展不接受**
+  （101 不回扩展头，对端退回明文，连接照常可用），而不是带着一个无法履约的窗口把连接开起来。
+  位数从协商结果一路走到 zlib 的 init，复用 `thread_local` 压缩/解压流时发现位数与上次不同会先 End 再重建。
+
+### 修复
+
+- **出站 HTTP 响应解析不再把畸形行当头部收下**：客户端侧的 `HttpResponseParser` 缺冒号时把**整行**当成
+  头名塞进结果，上层按名字取头就可能读到一个对端根本没发过的字段；折行（obs-fold，RFC 9112 已废）与
+  冒号前带空白/控制字符的头名同样照收。三条判据收进一处 `headerLineIsWellFormed`，并与入站
+  `HttpParser::parseFieldLine` 同规则；trailer 段过去只查「有没有冒号」，比头部还宽，现在两处共用同一判据。
+- **h3 的 WebSocket 隧道在业务收工时先发一条 Close(1000)**：h1 与 h2 两路都先 `peer.close(1000)` 再收口，
+  h3 直接交出 END_STREAM，对端的 WebSocket 层只能报「连接被凭空切断」（按 RFC 9220 §6 属异常断开），
+  拿不到本端给的状态码，也分不清「服务器收工」与「中间把连接掐了」。顺序也是语义的一部分：
+  收口会把对端对象标记为已闭合，之后那条帧就永远发不出去了。
+
+### 破坏性变更
+
+- `WebSocketPeer::setPerMessageDeflateEnabled(bool)` → **`setPerMessageDeflate(std::optional<PerMessageDeflateWindow>)`**。
+  迁移：`peer.setPerMessageDeflateEnabled(negotiation.accepted)` 改成 `peer.setPerMessageDeflate(negotiation.window)`
+  ——「是否启用」与「两侧窗口位数」本来就是同一个协商结论的两半，分成两个开关就会出现只开一半的形状
+  （按压缩发、按明文收），而旧签名也无处携带位数。旧写法之所以不可用：它对协商结果只做了一个布尔，
+  无论对端声明多大的窗口都只能按满档压缩。`deflateWebSocketMessage()` 与 `inflateWebSocketMessage()`
+  各多一个带缺省值的窗口位数参数（源码兼容，二进制不兼容）。
+
 ## [2.4.0] - 2026-10-01
 
 自 2.3.0 起的累计变化（新增 4、变更 2、修复 3）：非 HTTP 那几台通道第一次有自己的对外读数出口——
