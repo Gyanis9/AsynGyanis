@@ -69,26 +69,17 @@ namespace AsynGyanis::Net
         constexpr std::string_view kAccountDoesNotExistProblem = "accountDoesNotExist";
 
         /**
-         * @brief 折成小写 ASCII 用于头部名比对
-         * @details HTTP 头部名大小写不敏感，而本框架的客户端按收到什么留什么（不做折叠），
-         *          因此读 Replay-Nonce 与 Location 必须自己按大小写不敏感找
+         * @brief 取一条响应头的副本（比对规则交给 HttpClientResponse::headerValue）
+         * @details 这里只留「拷一份」这一步：ACME 要把值存进自己持有的串里，而大小写不敏感的
+         *          折法必须只有一处实现——此前本文件自己写了一份 `std::tolower` 版，
+         *          那是按 locale 折的，头部名里的非 ASCII 字节在不同机器上会折成不同结果
+         * @param response 已经拿到的应答
+         * @param name 头部名，大小写任意
+         * @return std::string 头值；没有该头时为空串
          */
-        [[nodiscard]] std::string toLowerCaseAscii(const std::string_view text)
+        [[nodiscard]] std::string headerCopy(const HttpClientResponse &response, const std::string_view name)
         {
-            std::string lowered;
-            lowered.reserve(text.size());
-            for (const char character: text)
-            {
-                lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
-            }
-            return lowered;
-        }
-
-        [[nodiscard]] std::string findHeader(const std::vector<std::pair<std::string, std::string>> &headers, const std::string_view name)
-        {
-            const std::string wanted = toLowerCaseAscii(name);
-            const auto        found  = std::ranges::find_if(headers, [&wanted](const auto &field) { return toLowerCaseAscii(field.first) == wanted; });
-            return found == headers.end() ? std::string{} : found->second;
+            return std::string(response.headerValue(name).value_or(std::string_view{}));
         }
 
         /**
@@ -272,7 +263,7 @@ namespace AsynGyanis::Net
         {
             co_return std::unexpected(AcmeError{AcmeErrorKind::Transport, std::format("向 ACME 的 newNonce 端点 {} 取 nonce 失败：{}", m_newNonceUrl, sent.error())});
         }
-        std::string nonce = findHeader(sent->headers, kReplayNonceHeader);
+        std::string nonce = headerCopy(*sent, kReplayNonceHeader);
         if (nonce.empty())
         {
             co_return std::unexpected(
@@ -369,12 +360,12 @@ namespace AsynGyanis::Net
 
             AcmeReply reply;
             reply.statusCode  = sent->statusCode;
-            reply.locationUrl = findHeader(sent->headers, kLocationHeader);
-            reply.replayNonce = findHeader(sent->headers, kReplayNonceHeader);
+            reply.locationUrl = headerCopy(*sent, kLocationHeader);
+            reply.replayNonce = headerCopy(*sent, kReplayNonceHeader);
             reply.bodyText    = std::move(sent->body);
             // RFC 8555 §6.8 要求机构回 429 时必须带 Retry-After，并且客户端必须照办：这一项以前
             // 被解析出来又当场丢掉，退避完全由本地的 renewalCheckInterval 决定，等于对端的说法不进账
-            if (const auto retryAfterText = findHeader(sent->headers, kRetryAfterHeader); !retryAfterText.empty())
+            if (const auto retryAfterText = headerCopy(*sent, kRetryAfterHeader); !retryAfterText.empty())
             {
                 reply.retryAfter = parseRetryAfter(retryAfterText, std::chrono::system_clock::now());
             }
@@ -498,7 +489,7 @@ namespace AsynGyanis::Net
             }
         }
         // 目录应答里就带一个可用 nonce，先收下：省掉第一次的 HEAD
-        if (const auto seededNonce = findHeader(sent->headers, kReplayNonceHeader); !seededNonce.empty())
+        if (const auto seededNonce = headerCopy(*sent, kReplayNonceHeader); !seededNonce.empty())
         {
             m_noncePool.push_back(seededNonce);
         }

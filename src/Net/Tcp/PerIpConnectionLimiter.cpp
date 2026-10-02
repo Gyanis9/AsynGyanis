@@ -1,4 +1,5 @@
 #include "Net/Tcp/PerIpConnectionLimiter.h"
+#include "Net/Http/HttpHeaderRules.h"
 
 #include <cstddef>
 #include <string_view>
@@ -10,16 +11,6 @@ namespace AsynGyanis::Net
     {
         /// IPv4 映射地址的文本前缀：glibc 与 Windows 的 inet_ntop 都按 `::ffff:a.b.c.d` 打印
         constexpr std::string_view mappedIpv4Prefix = "::ffff:";
-
-        /**
-         * @brief 只看 ASCII 字母的大小写归一（不动其余字节，也不引入 locale）
-         * @param value 待比较的字节
-         * @return char 小写形式
-         */
-        constexpr char toLowerAscii(const char value) noexcept
-        {
-            return (value >= 'A' && value <= 'Z') ? static_cast<char>(value - 'A' + 'a') : value;
-        }
 
         /**
          * @brief 判断是不是「四段 1~3 位十进制、每段不超过 255」的点分 IPv4 文本

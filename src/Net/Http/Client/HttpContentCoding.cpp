@@ -1,4 +1,5 @@
 #include "Net/Http/Client/HttpContentCoding.h"
+#include "Net/Http/HttpHeaderRules.h"
 
 #include "Net/Http/Gzip.h"
 
@@ -19,22 +20,7 @@ namespace AsynGyanis::Net
          * @param right 右侧文本（必须是已经小写的形式）
          * @return true 相等
          */
-        bool equalsFoldedAscii(const std::string_view left, const std::string_view right)
-        {
-            if (left.size() != right.size())
-            {
-                return false;
-            }
-            for (std::size_t index = 0; index < left.size(); ++index)
-            {
-                const unsigned char character = static_cast<unsigned char>(left[index]);
-                if (std::tolower(character) != static_cast<unsigned char>(right[index]))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
+
 
         /**
          * @brief 裁掉首尾空白（RFC 9110 §5.5 的 OWS）
@@ -66,7 +52,7 @@ namespace AsynGyanis::Net
         {
             for (const HttpClientHeaderField &field: headers)
             {
-                if (equalsFoldedAscii(field.first, name))
+                if (equalsIgnoringCase(field.first, name))
                 {
                     return trimOptionalWhitespace(field.second);
                 }
@@ -81,19 +67,19 @@ namespace AsynGyanis::Net
          */
         void eraseHeaderFields(std::vector<HttpClientHeaderField> &headers, const std::string_view name)
         {
-            std::erase_if(headers, [name](const HttpClientHeaderField &field) { return equalsFoldedAscii(field.first, name); });
+            std::erase_if(headers, [name](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, name); });
         }
     } // namespace
 
     bool shouldAdvertiseAcceptEncoding(const std::vector<HttpClientHeaderField> &headers) noexcept
     {
-        return !std::any_of(headers.begin(), headers.end(), [](const HttpClientHeaderField &field) { return equalsFoldedAscii(field.first, "accept-encoding"); });
+        return !std::any_of(headers.begin(), headers.end(), [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "accept-encoding"); });
     }
 
     std::expected<bool, std::string> decodeResponseBodyInPlace(HttpClientResponse &response, const std::size_t maxOutputByteCount)
     {
         const std::string_view encoding = findHeaderValue(response.headers, "content-encoding");
-        if (encoding.empty() || equalsFoldedAscii(encoding, "identity"))
+        if (encoding.empty() || equalsIgnoringCase(encoding, "identity"))
         {
             // 没声明编码与声明 identity 是同一件事：正文原样就是最终内容
             return false;
@@ -111,7 +97,7 @@ namespace AsynGyanis::Net
             return std::unexpected("不支持链式 Content-Encoding（\"" + std::string(encoding) + "\"）：本端只处理单层编码");
         }
 
-        if (!equalsFoldedAscii(encoding, "gzip") && !equalsFoldedAscii(encoding, "deflate") && !equalsFoldedAscii(encoding, "x-gzip"))
+        if (!equalsIgnoringCase(encoding, "gzip") && !equalsIgnoringCase(encoding, "deflate") && !equalsIgnoringCase(encoding, "x-gzip"))
         {
             // 本端只在没被调用方接管时才对编码有主张：收到没声明过的编码说明对端不按回答办事，
             // 原样交回等于把「业务以为拿到文本、其实是压缩字节」这一坑埋到更深处

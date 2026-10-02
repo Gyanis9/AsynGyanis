@@ -215,6 +215,61 @@ namespace AsynGyanis::Net
         ASSERT_THROW(static_cast<void>(parseUrl("ftp://example.com/x")), std::invalid_argument);
     }
 
+    /**
+     * @brief 钉住：响应头能按大小写不敏感读出来，读不到时是空而不是猜
+     * @details `headers` 按对端给什么留什么（不折叠、不重排），而 RFC 9110 §5.1 规定头部名
+     *          大小写不敏感。此前消费方要么自己写一份折小写的循环（本仓写过三份），要么
+     *          按字面名比——比不中的那次就是静默漏读：拿不到 `Set-Cookie`、拿不到限流答复。
+     *          服务端在这里刻意用混合大小写写下头部名，正向对照与反向缺席都要断到。
+     */
+    TEST(HttpClient, ReadsResponseHeadersIgnoringNameCase)
+    {
+        auto fixture = std::make_unique<RunningHttpServerFixture>(
+                HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/hdr",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.setStatus(200);
+                                   static_cast<void>(response.setHeader("X-RateLimit-Limit", "7"));
+                                   response.setBody("ok");
+                                   co_return;
+                               });
+                });
+        ASSERT_TRUE(fixture->awaitRunning(kTimeout));
+
+        const auto response = doGet("http://127.0.0.1:" + std::to_string(fixture->listeningPort()) + "/hdr");
+        ASSERT_NE(response, nullptr) << "请求失败";
+        for (const std::string_view spelling: {std::string_view{"x-ratelimit-limit"}, std::string_view{"X-RateLimit-Limit"}, std::string_view{"X-RATELIMIT-LIMIT"}})
+        {
+            const auto value = response->headerValue(spelling);
+            ASSERT_TRUE(value.has_value()) << "按这个写法没读到：" << spelling;
+            EXPECT_EQ(value.value(), "7");
+        }
+        EXPECT_FALSE(response->headerValue("x-ratelimit-remaining").has_value()) << "缺的字段要读成空，不能读成空串冒充「有但为空」";
+    }
+
+    /**
+     * @brief 钉住：对端按什么大小写写来都能读到，同名多条取第一条
+     * @details 本框架的服务端把头部名归一化成小写再发出去，所以端到端那一条测不出「对端混合大小写」
+     *          这一档——而线上拿到的应答正是那种形状。这里直接按消费方会看到的形态造响应：
+     *          名字原样留着（`headers` 的契约就是不折叠不重排），读口才负责按 ASCII 折叠比对。
+     *          同名多条取第一条是刻意口径：`Set-Cookie` 那种要靠遍历，读单值时给一个确定的答案
+     *          比给最后一个（取决于对端顺序）更好解释。
+     */
+    TEST(HttpClient, MatchesHeaderNamesByAsciiCaseInsensitiveRule)
+    {
+        HttpClientResponse peerResponse;
+        peerResponse.statusCode = 429;
+        peerResponse.headers    = {{"Retry-AFTER", "3600"}, {"X-Trace", "one"}, {"x-trace", "two"}};
+
+        EXPECT_EQ(peerResponse.headerValue("retry-after").value_or(std::string_view{}), "3600");
+        EXPECT_EQ(peerResponse.headerValue("RETRY-AFTER").value_or(std::string_view{}), "3600");
+        EXPECT_EQ(peerResponse.headerValue("x-trace").value_or(std::string_view{}), "one") << "同名多条应当读到第一条，且读数确定";
+        EXPECT_FALSE(peerResponse.headerValue("x-trac").has_value()) << "前缀不算命中";
+        EXPECT_FALSE(peerResponse.headerValue("").has_value()) << "空名字不该匹配到任何东西";
+    }
     TEST(HttpClient, GetsLocalhostAndReceives200)
     {
         auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100});

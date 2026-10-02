@@ -1,7 +1,8 @@
 #include "Net/Http/FileSender.h"
 
+#include "Net/Http/HttpHeaderRules.h"
+
 #include <algorithm>
-#include <cctype>
 #include <cstddef>
 #include <ranges>
 #include <string>
@@ -59,11 +60,11 @@ namespace AsynGyanis::Net
         // 因此必须先归一化成小写再查表，否则 IMG.JPG 会落到兜底的二进制流
         std::string lowerCaseExtension(filePath.begin() + static_cast<std::ptrdiff_t>(dotPosition), filePath.end());
         std::ranges::transform(lowerCaseExtension, lowerCaseExtension.begin(),
-                               [](const unsigned char character)
+                               [](const char character)
                                {
-                                   // std::tolower 只接受 unsigned char 或 EOF：
-                                   // 直接传可能为负的 char 是未定义行为，故入参按 unsigned char 收
-                                   return static_cast<char>(std::tolower(character));
+                                   // 按 ASCII 表折，不交给 std::tolower：后者按 locale 折，同一份文件名
+                                   // 在不同机器上会查出不同的 MIME 类型。折法与头部名共用同一处
+                                   return toLowerAscii(character);
                                });
 
         if (const auto iterator = kMimeTypesByExtension.find(std::string_view(lowerCaseExtension)); iterator != kMimeTypesByExtension.end())

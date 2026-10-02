@@ -1,4 +1,5 @@
 #include "Net/Acme/AcmeAliyunDns01TxtWriter.h"
+#include "Net/Http/HttpHeaderRules.h"
 
 #include "Base/Coding/Base64.h"
 #include "Base/Config/ConfigValue.h"
@@ -109,11 +110,6 @@ namespace AsynGyanis::Net
             std::string zone; ///< 云解析里那条主域名，如 `gyanis.space`
             std::string rr;   ///< 主机记录（相对主域名的那一段），如 `_acme-challenge`
         };
-
-        [[nodiscard]] char toLowerAscii(const char character) noexcept
-        {
-            return (character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a') : character;
-        }
 
         /**
          * @brief 判断 recordName 是否落在 zone 里（DNS 的名字不区分大小写）

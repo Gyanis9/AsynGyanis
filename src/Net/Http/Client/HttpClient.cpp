@@ -12,6 +12,7 @@
 #include "Core/Tls/TlsPolicy.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/Client/HttpContentCoding.h"
+#include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http2/Http2ClientConnection.h"
@@ -41,33 +42,6 @@ namespace AsynGyanis::Net
     namespace
     {
         /**
-         * @brief 把 left 按 ASCII 折成小写后与 right 比
-         * @details right 必须已是小写字面量（本文件里只用来认 "http"/"https" 两个常量）。URL 的协议名与
-         *          主机名都是 ASCII（RFC 3986 §6.1），因此只做 ASCII 折叠，不走 locale 的 tolower——
-         *          那会让同一份 URL 在不同机器上得出不同结论
-         */
-        [[nodiscard]] bool equalsIgnoreAsciiCase(const std::string_view left, const std::string_view right)
-        {
-            if (left.size() != right.size())
-            {
-                return false;
-            }
-            for (std::size_t index = 0; index < left.size(); ++index)
-            {
-                char foldedLeft = left[index];
-                if (foldedLeft >= 'A' && foldedLeft <= 'Z')
-                {
-                    foldedLeft = static_cast<char>(foldedLeft - 'A' + 'a');
-                }
-                if (foldedLeft != right[index])
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        /**
          * @brief 把冒号之后的端口文本读成一个可用的端口
          * @param text 端口文本，必须全为十进制数字
          * @param port 输出端口
@@ -84,6 +58,21 @@ namespace AsynGyanis::Net
             return converted.ec == std::errc{} && converted.ptr == text.data() + text.size() && port >= 1U && port <= 65535U;
         }
     } // namespace
+
+    std::optional<std::string_view> HttpClientResponse::headerValue(const std::string_view name) const
+    {
+        // 比对走 Net::equalsIgnoringCase（只折 A-Z/a-z）：头部名大小写不敏感是 RFC 9110 §5.1 的规定，
+        // 而 headers 按对端给什么留什么，因此这里必须折叠两侧。不用 std::tolower：它按 locale 折，
+        // 同一份应答在不同机器上会比出不同结果——那正是本仓各处折叠都避开它的原因
+        for (const HttpClientHeaderField &field: headers)
+        {
+            if (equalsIgnoringCase(field.first, name))
+            {
+                return std::string_view(field.second);
+            }
+        }
+        return std::nullopt;
+    }
 
     ParsedUrl parseUrl(const std::string_view url)
     {
@@ -106,10 +95,10 @@ namespace AsynGyanis::Net
         }
         const std::string_view schemeText = remainder.substr(0, schemeSeparator);
         // 协议名大小写无关（RFC 3986 §6.2.3）：HTTPS:// 悄悄当成 http 就是把 TLS 整段降级
-        if (equalsIgnoreAsciiCase(schemeText, "https"))
+        if (equalsIgnoringCase(schemeText, "https"))
         {
             parsed.scheme = "https";
-        } else if (equalsIgnoreAsciiCase(schemeText, "http"))
+        } else if (equalsIgnoringCase(schemeText, "http"))
         {
             parsed.scheme = "http";
         } else
@@ -291,7 +280,7 @@ namespace AsynGyanis::Net
          */
         void appendTraceparentHeader(std::vector<HttpClientHeaderField> &headers, const TraceIdentifiers &context)
         {
-            const bool callerWroteIt = std::ranges::any_of(headers, [](const HttpClientHeaderField &field) { return equalsIgnoreAsciiCase(field.first, kTraceparentHeaderName); });
+            const bool callerWroteIt = std::ranges::any_of(headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, kTraceparentHeaderName); });
             if (callerWroteIt)
             {
                 throw Base::InvalidArgumentException("HttpClient：请求的 traceContext 与 headers 里手写的 traceparent 同时给了："
@@ -361,7 +350,7 @@ namespace AsynGyanis::Net
         /// 这三个头部由客户端按本次请求的实际情况写，调用方给了就拒收而不是覆盖或并存
         bool isClientOwnedHeaderName(const std::string_view name)
         {
-            return equalsIgnoreAsciiCase(name, "host") || equalsIgnoreAsciiCase(name, "content-length") || equalsIgnoreAsciiCase(name, "connection");
+            return equalsIgnoringCase(name, "host") || equalsIgnoringCase(name, "content-length") || equalsIgnoringCase(name, "connection");
         }
 
         /**
@@ -1630,7 +1619,7 @@ namespace AsynGyanis::Net
         {
             // 调用方自己写了 cookie 头就以他为准：替他改成罐子里的那份，等于静默覆盖明确给出的头部
             const bool callerHasCookieHeader =
-                    std::ranges::any_of(request.headers, [](const HttpClientHeaderField &field) { return equalsIgnoreAsciiCase(field.first, "cookie"); });
+                    std::ranges::any_of(request.headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "cookie"); });
             if (!callerHasCookieHeader)
             {
                 if (const auto cookieHeader = m_cookieJar->buildRequestHeader(parsed.host, parsed.scheme == "https", parsed.path); cookieHeader.has_value())
@@ -1708,7 +1697,7 @@ namespace AsynGyanis::Net
             std::vector<std::string> setCookieValues;
             for (const HttpClientHeaderField &field: response->headers)
             {
-                if (equalsIgnoreAsciiCase(field.first, "set-cookie"))
+                if (equalsIgnoringCase(field.first, "set-cookie"))
                 {
                     setCookieValues.push_back(field.second);
                 }

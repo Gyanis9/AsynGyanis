@@ -51,6 +51,20 @@ namespace AsynGyanis::Net
         std::string                        reasonPhrase;  ///< 状态行里的原因短语
         std::vector<HttpClientHeaderField> headers;       ///< 头部字段，按收到的顺序原样留着
         std::string                        body;          ///< 正文；chunked 已按块拼回原样
+
+        /**
+         * @brief 按名字取一条响应头，**名字大小写不敏感**
+         * @details 存在的理由：`headers` 按对端给什么留什么（不折叠、不重排，便于原样诊断），
+         *          而 RFC 9110 §5.1 规定头部名大小写不敏感。没有这一句时每个消费方都得自己重写一遍
+         *          「折小写再比对」的循环——本仓已经各写三份：ACME 用 `std::tolower`（跟着 C locale 走，
+         *          非 ASCII 字节的折法不可控）、gzip 通路用 ASCII 区间判断、测试夹具里又一份。
+         *          折法只留一处，并按 ASCII 折。
+         * @param name 头部名，大小写任意
+         * @return std::optional<std::string_view> 第一条同名字段的值；没有则为空。
+         *         交回的是指向 `headers` 内部的视图，本响应析构后失效
+         * @note 同名多条时交回**第一条**；要拿全部（如 `Set-Cookie`）请自己遍历 `headers`
+         */
+        [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view name) const;
     };
     /**
      * @brief 一次出站请求的参数

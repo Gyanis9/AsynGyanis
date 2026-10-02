@@ -15,10 +15,15 @@
 
 ## [Unreleased]
 
-自 2.5.0 起的累计变化（新增 10、变更 1、修复 8）：把已经建好的那道总量防线接到配置文件上并让它对外可读，把命中的路由模式交回业务，给 ORM 补上唯一键冲突的处置档位，让被丢的日志第一次有对外可读的总数，给「不是自己写的文本」一条统一的日志折法，给 `Retry-After` 一个统一的读法，把并发上限与按来源限额的读口在 h3 上补齐，并补上七处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步、503 在三条通道上带的响应头不一致、时钟被往回改之后按日期滚动的日志一直写进旧日期的文件、QUIC 的空闲超时配成负数会把事件循环打崩、机构的自由文本能把日志行伪造进本进程，另加 ACME 的退避既不听机构也不听自己配置这一处。
+自 2.5.0 起的累计变化（新增 11、变更 1、修复 9）：把已经建好的那道总量防线接到配置文件上并让它对外可读，把命中的路由模式交回业务，给 ORM 补上唯一键冲突的处置档位，让被丢的日志第一次有对外可读的总数，给「不是自己写的文本」一条统一的日志折法，给 `Retry-After` 一个统一的读法，把并发上限与按来源限额的读口在 h3 上补齐，让出站响应能按名字读到头部，并补上九处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步、503 在三条通道上带的响应头不一致、时钟被往回改之后按日期滚动的日志一直写进旧日期的文件、QUIC 的空闲超时配成负数会把事件循环打崩、机构的自由文本能把日志行伪造进本进程、ACME 的退避既不听机构也不听自己的配置、ASCII 大小写折叠有六份实现而其中三份跟着 locale 走。
 
 ### 新增
 
+- **出站响应能按名字读头了**：`HttpClientResponse::headerValue(name)` 按 ASCII 折叠比对头部名
+  （RFC 9110 §5.1 规定名字大小写不敏感），交回 `std::optional<std::string_view>`，同名多条取第一条。
+  此前 `headers` 只留给调用方一个「按收到的顺序原样留着」的数组，谁读谁自己写一遍折小写的循环——
+  本仓已经写了三份（ACME 一份、内容编码通路一份、测试夹具一份），其中两份用 `std::tolower`。
+  有了这一句，ACME 那两份本地实现被删掉，改读同一个入口。
 - **并发上限与按来源的限额都有读口了**：`QuicServer::maximumConnections()`、
   `QuicServer::perIpConnectionLimiter()`、`TcpServer::perIpConnectionLimiter()`。此前
   `connectionCount()` 读得出分子，而 h3 那侧读不出分母，同一台机器上三条通道对「这台卡在哪」给出
@@ -119,6 +124,16 @@
 
 ### 修复
 
+- **ASCII 大小写折叠只剩一处，且不再跟着 locale 走**：本仓的规范写法早就定在
+  `Net::toLowerAscii` / `Net::equalsIgnoringCase`（`HttpHeaderRules.h` 的注释写明不用 `std::tolower`
+  是因为它按 locale 折，土耳其语环境下 `I` 会折成非 ASCII 字节），但这句话当时只有三处在守，另外
+  四处在各自写：`AcmeClient`（`toLowerCaseAscii`）、`HttpContentCoding`（`equalsFoldedAscii`）、
+  `FileSender`（扩展名折小写查 MIME 表）都用的是 `std::tolower`，`PerIpConnectionLimiter` 与
+  `AcmeAliyunDns01TxtWriter` 各留了一份同型私有实现。后果不是崩溃而是**静默换答案**：宿主进程一旦
+  调用过 `setlocale`，同一份文件名会查出不同的 MIME 类型、同一个头部名会比成不相等、按来源限额的
+  `::ffff:` 前缀判定可能不命中。现在六处全部改共用那一份。
+  一条诚实的限度：这条性质在测试里只能用「高位字节原样交回」的形状钉住（`TestHttpHeaderRules.FoldsOnlyAsciiLetters`），
+  本机没有装非 C locale，跑不出「换个 locale 就会变」的正向对照。
 - **ACME 的退避开始听机构的，也终于听自己的配置**：两处都在「看着配好了其实没生效」这一族里。
   ① 机构的 `Retry-After` 被解析出来又当场丢掉——`AcmeErrorKind::RateLimited` 的注释一直写着
   「429 或带 Retry-After 的 503：该退避而不是改配置」，而代码只按状态码分支，`AcmeReply` 里连装它的

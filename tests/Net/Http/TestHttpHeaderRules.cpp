@@ -231,4 +231,31 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(parseStatusCodeText(" 200").has_value()) << "前导空白要在上层就剥掉，这里不代替它";
     }
 
+    /**
+     * @brief 钉住：ASCII 折叠只动 A-Z，其余字节原样交回
+     * @details 本仓的头部名、编码名、扩展名与域名比对全靠这一处折叠（此前有四份本地实现，
+     *          其中三份用 `std::tolower`——它按 locale 折，同一份输入在不同机器上会比出不同
+     *          结果，而 HTTP 的名称与 token 都是按 ASCII 定义的）。既然只剩这一处，它本身的
+     *          边界就得钉住：高位字节不许被「折」成别的东西，非字母必须逐位不变。
+     */
+    TEST(HttpHeaderRules, FoldsOnlyAsciiLetters)
+    {
+        EXPECT_EQ(toLowerAscii('A'), 'a');
+        EXPECT_EQ(toLowerAscii('Z'), 'z');
+        EXPECT_EQ(toLowerAscii('a'), 'a') << "已是小写的必须原样交回";
+        EXPECT_EQ(toLowerAscii('0'), '0');
+        EXPECT_EQ(toLowerAscii('_'), '_');
+        EXPECT_EQ(toLowerAscii(static_cast<char>(0xDD)), static_cast<char>(0xDD)) << "高位字节不该被折叠：那是 locale 版 tolower 的把戏";
+        EXPECT_EQ(toLowerAscii(static_cast<char>(0x80)), static_cast<char>(0x80));
+
+        EXPECT_TRUE(equalsIgnoringCase("Retry-After", "retry-after"));
+        EXPECT_TRUE(equalsIgnoringCase("CONTENT-TYPE", "content-type"));
+        EXPECT_TRUE(equalsIgnoringCase("", "")) << "两条都空是相等，不是缺字段";
+        EXPECT_FALSE(equalsIgnoringCase("retry-after", "retry-afterx")) << "长度不同要先否掉，别越界读";
+        EXPECT_FALSE(equalsIgnoringCase("retry-aftex", "retry-after"));
+        const std::string highByteName = std::string(1, 'a') + static_cast<char>(0xDD);
+        const std::string otherByteName = std::string(1, 'a') + static_cast<char>(0x9D);
+        EXPECT_FALSE(equalsIgnoringCase(highByteName, otherByteName))
+                << "非 ASCII 字节必须逐位相等才算同一条头部名";
+    }
 } // namespace AsynGyanis::Net
