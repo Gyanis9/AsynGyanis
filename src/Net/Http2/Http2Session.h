@@ -87,8 +87,10 @@ namespace AsynGyanis::Net
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
          * @param metrics 统计采集端；传空指针表示本会话不采集统计
          * @param requestIdGenerator request-id 生成器；传空指针表示不为请求落定 request-id
-         * @param parserLimits 解析上限；HTTP/2 路径只用其中的 maximumBodySize（头块上限由
-         *        Http2ConnectionConfiguration 管），语义与 HTTP 侧一致
+         * @param parserLimits 解析上限；HTTP/2 路径吃其中三项——maximumBodySize（正文）、
+         *        maximumHeaderCount（一场请求头部的字段条数）与 maximumUriLength（:path 的长度）。
+         *        后两项交给连接层判，与 h1/h3 同一个键同一把尺；头块字节上限另由
+         *        Http2ConnectionConfiguration 管，语义与 HTTP 侧一致
          * @param memoryBudget 在途正文字节的全局预算，与服务器共享；传空指针表示不受该预算约束
          * @param http2Configuration HTTP/2 连接层配置（SETTINGS 通告值、头块与流控上限等）；
          *        留默认值即按 Http2ConnectionConfiguration 的缺省跑
@@ -110,7 +112,8 @@ namespace AsynGyanis::Net
          * @param limits 连接级限额的共享只读配置；传空指针表示按 HttpServerLimits 的默认值执行
          * @param metrics 统计采集端；传空指针表示本会话不采集统计
          * @param requestIdGenerator request-id 生成器；传空指针表示不为请求落定 request-id
-         * @param parserLimits 解析上限；HTTP/2 路径只用其中的 maximumBodySize，语义与上一个构造函数一致
+         * @param parserLimits 解析上限；HTTP/2 路径用其中的 maximumBodySize、maximumHeaderCount
+         *        与 maximumUriLength，含义与上一个构造函数一致
          * @param memoryBudget 在途正文字节的全局预算，与服务器共享；传空指针表示不受该预算约束
          * @param http2Configuration HTTP/2 连接层配置，含义与上一个构造函数同名参数一致
          */
@@ -216,11 +219,24 @@ namespace AsynGyanis::Net
             std::uint32_t streamId{0};                 ///< 请求所属的流号，回响应时按它定位
             bool          isRemoteEndStream{false};    ///< 对端是否已 END_STREAM：正文收齐，可以路由
             bool          isBodyTooLarge{false};       ///< 正文超过 maximumBodySize：不再缓冲，回 413
-            bool          isHeaderListTooLarge{false}; ///< 头块超出本端上限：字段全为空，不派发也不缓冲正文，回 431
+            bool          isHeaderListTooLarge{false}; ///< 头块超出本端上限（字节越限时字段全为空）：不派发也不缓冲正文，回 431
+            bool          isUriTooLong{false};         ///< 请求目标超出 parser_limits.maximum_uri_length：同样不派发，回 414（RFC 9110 §15.5.18）
             bool          isBudgetExceeded{false};     ///< 正文超出全局在途预算：不再缓冲，回 503；额度由 bodyBudget 在记录销毁时归还
             bool          isExtendedConnect{false};    ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
             bool          isWebSocketTunnel{false};    ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501
             bool          isStreamingBody{false};      ///< 命中流式路由：头部收齐即派发，正文经 request.bodyStream() 边收边读，不必等 END_STREAM
+
+            /**
+             * @brief 这条流是否在 intake 阶段就被判「本端不收」，只欠一个收口响应
+             * @details 头块过大（431）与请求目标过长（414）的处置动作完全一样：不派发路由、
+             *          不再缓冲正文、不等 100-continue。写成一个判据而不是四处各判两个标志，
+             *          是为了让以后再加一道 intake 闸门时不会漏掉其中某处。
+             * @return true 该请求只会收到一个收口响应
+             */
+            [[nodiscard]] bool isIntakeRejected() const noexcept
+            {
+                return isHeaderListTooLarge || isUriTooLong;
+            }
             /// 本条流的全局正文额度：随记录一起析构，流被摘掉（服务完/被取消/连接关闭）即归还
             HttpMemoryBudget::Reservation bodyBudget;
 
@@ -727,7 +743,7 @@ namespace AsynGyanis::Net
         Core::EventLoop                        &m_loop;               ///< 本会话所在的事件循环：收口时要在它上面拍一小段（见 drainInFlightServes）
         Core::Scheduler                        &m_scheduler;          ///< 本会话所在事件循环的调度器
         Router                                 &m_router;             ///< 路由器引用（与基类指向同一对象）
-        HttpParserLimits                        m_parserLimits{};     ///< HTTP/2 路径只用 maximumBodySize，其余字段不适用
+        HttpParserLimits                        m_parserLimits{};     ///< 本会话落定的解析上限；正文一项由本类判，字段条数与请求目标长度交给连接层判
         std::shared_ptr<const HttpServerLimits> m_limits;             ///< 连接级限额，与服务器共享、只读（构造时保证非空）
         std::shared_ptr<HttpMetricsCollector>   m_metrics;            ///< 统计采集端；空指针表示不采集
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器；空指针表示不落定

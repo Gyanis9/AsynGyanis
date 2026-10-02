@@ -142,9 +142,10 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    Http2Connection::Http2Connection(Http2ConnectionConfiguration configuration) :
-        m_configuration(std::move(configuration)), m_frameDecoder(Http2FrameLimits{.maximumFrameSizeByteCount     = m_configuration.maximumFrameSize,
-                                                                                   .maximumTotalConsumedByteCount = m_configuration.maximumTotalConsumedByteCount}),
+    Http2Connection::Http2Connection(Http2ConnectionConfiguration configuration, HttpParserLimits parserLimits) :
+        m_configuration(std::move(configuration)), m_parserLimits(parserLimits),
+        m_frameDecoder(
+                Http2FrameLimits{.maximumFrameSizeByteCount = m_configuration.maximumFrameSize, .maximumTotalConsumedByteCount = m_configuration.maximumTotalConsumedByteCount}),
         m_hpackDecoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = m_configuration.headerTableSize, .maximumHeaderListByteCount = m_configuration.maximumHeaderListSize})
     {
         validateConfiguration(m_configuration);
@@ -1383,6 +1384,15 @@ namespace AsynGyanis::Net
         }
         request.headerFields.reserve(regularFieldCount + 1U, headerByteCount + 32U);
 
+        // 字段条数的闸门：配置键是 parser_limits.maximum_header_count，h1 与 h3 一直在判，h2 此前只判
+        // 头块的字节数——同一个键在三条通道上给出三种强度，运维照 h1 那个数调整台机器，h2 上却是另一回事。
+        // 计数口径照 h3：这一场请求头部里的字段数，伪头也算一条。越限不是协议错误（报文本身合法，
+        // 只是本端不收这么多），标成「头块过大」交给上层按 431 应答
+        if (m_parserLimits.maximumHeaderCount != 0 && headerFields.size() > m_parserLimits.maximumHeaderCount)
+        {
+            request.isHeaderListTooLarge = true;
+        }
+
         bool        hasSeenRegularHeader  = false;
         bool        hasMethodField        = false;
         bool        hasSchemeField        = false;
@@ -1442,6 +1452,13 @@ namespace AsynGyanis::Net
                     }
                     hasPathField = true;
                     request.path = field.value;
+                    // 请求目标的闸门与 h1/h3 同一个配置键（parser_limits.maximum_uri_length）：
+                    // 太长不是协议错误而是本端不收，按 414 应答（RFC 9110 §15.5.18）而不是 431——
+                    // 两者的处置动作不同：431 让客户端去减头部，而这里要缩的是 URL
+                    if (m_parserLimits.maximumUriLength != 0 && request.path.size() > m_parserLimits.maximumUriLength)
+                    {
+                        request.isUriTooLong = true;
+                    }
                 } else if (field.name == ":authority")
                 {
                     if (hasAuthorityField)

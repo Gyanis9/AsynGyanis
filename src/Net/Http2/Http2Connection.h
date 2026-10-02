@@ -12,6 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Net/Http/HttpHeaderFieldStore.h"
+#include "Net/Http/HttpParserLimits.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 
@@ -135,8 +136,12 @@ namespace AsynGyanis::Net
         /// 普通头部，按到达顺序，名已校验为小写。与 HttpRequest 同一套存储，接线层整块换走、不逐字段抄
         HttpHeaderFieldStore headerFields;
         bool                 hasBody{false};              ///< 请求头未带 END_STREAM：正文会随 takeReceivedData() 交出
-        bool                 isHeaderListTooLarge{false}; ///< 头块超出本端上限：各字段全为空，上层应按 431 应答而不是派发路由
-        std::string          protocol;                    ///< :protocol 原文（RFC 8441 的扩展 CONNECT）；普通请求为空
+        bool                 isHeaderListTooLarge{false}; ///< 本端不收这一场请求头部（字节越限时各字段全为空、条数越限时字段仍在）：上层按 431 应答而不是派发路由
+        /// 请求目标（:path）超出 parser_limits.maximum_uri_length：字段照常交出，
+        /// 上层按 414 应答（RFC 9110 §15.5.18），与 431 那条分开是因为病因不同——
+        /// 431 让客户端去减头部，而这里要缩的是 URL
+        bool        isUriTooLong{false};
+        std::string protocol; ///< :protocol 原文（RFC 8441 的扩展 CONNECT）；普通请求为空
     };
 
     /**
@@ -185,10 +190,13 @@ namespace AsynGyanis::Net
         /**
          * @brief 构造连接状态机：本端取一份配置，协议状态回到「等前奏」
          * @param configuration 连接层配置；默认值对应规范的初始 SETTINGS 取值与本端策略上限
+         * @param parserLimits 请求 intake 的资源上限，与 h1/h3 共用同一份配置：本层据此判
+         *        `maximumHeaderCount`（一场请求头部的字段条数）与 `maximumUriLength`（`:path` 的长度）。
+         *        缺省值就是 HttpParserLimits 的出厂值，因此只想要协议层的对端不接它也一样跑。
          * @throws Base::InvalidArgumentException 配置错误：enablePush 不是 0/1，或 maximumFrameSize
          *         不在 [16384, 16777215] 内——后者会被本端通告成一个非法的 SETTINGS_MAX_FRAME_SIZE
          */
-        explicit Http2Connection(Http2ConnectionConfiguration configuration = {});
+        explicit Http2Connection(Http2ConnectionConfiguration configuration = {}, HttpParserLimits parserLimits = {});
 
         /**
          * @brief 校验一份连接配置是否可用，不可用即抛出并说清是哪一项
@@ -645,13 +653,19 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool finishHeaderBlock();
 
         /**
-         * @brief 校验并落定一个请求：伪头齐全、顺序、重复、未知伪头、连接特定头、头名全小写
+         * @brief 校验并落定一个请求：伪头齐全、顺序、重复、未知伪头、连接特定头、头名全小写，
+         *        以及请求目标的长度与这一场头部的字段条数
          * @param headerFields 解码后的头列表（按到达顺序）
          * @param request 输出参数：通过校验的请求对象（进入调用时先清空）
          * @param errorText 输出参数：失败时的中文原因（进入调用时先清空）
          * @return true 头列表是一个合法的请求
+         * @details 不再是 static：它要读本端落定的 `HttpParserLimits`（`maximumHeaderCount` 与
+         *          `maximumUriLength`），而这两个闸门在 h1/h3 上一直是按配置生效的——h2 此前只判
+         *          头块字节数，同一个配置键在三条通道上给出三种强度。越限的两种形态都**不算协议错误**：
+         *          字段条数超上限把请求标成「头块过大」（上层 431），`:path` 太长标成 `isUriTooLong`
+         *          （上层 414），两者都只作废那一条流。
          */
-        [[nodiscard]] static bool acceptRequestHeaderFields(const std::vector<HpackHeaderField> &headerFields, Http2Request &request, std::string *errorText);
+        [[nodiscard]] bool acceptRequestHeaderFields(const std::vector<HpackHeaderField> &headerFields, Http2Request &request, std::string *errorText);
 
         /**
          * @brief 校验尾部头块的语法：禁止伪头与连接特定头、头名必须全小写
@@ -862,7 +876,9 @@ namespace AsynGyanis::Net
          */
         void failStream(StreamRecord &stream, Http2ErrorCode errorCode, std::string reason);
 
-        Http2ConnectionConfiguration          m_configuration{};                              ///< 构造时按值落定的配置，没有运行期更换的入口
+        Http2ConnectionConfiguration m_configuration{}; ///< 构造时按值落定的配置，没有运行期更换的入口
+        /// 请求 intake 的资源上限（字段条数与请求目标长度），与 h1/h3 同一份配置、同一把尺
+        HttpParserLimits                      m_parserLimits{};
         Http2ConnectionState                  m_state{Http2ConnectionState::AwaitingPreface}; ///< 连接状态
         std::size_t                           m_prefaceByteCount{0};                          ///< 已收到的前奏字节数
         std::size_t                           m_outstandingSettingsCount{0};                  ///< 本端已发出、还没被 ACK 的 SETTINGS 数（ACK 只允许匹配一次）

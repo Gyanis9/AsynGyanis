@@ -862,6 +862,80 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：parser_limits 的「字段条数」闸门在 h2 上同样生效
+     * @details 这个配置键此前只有 h1 与 h3 在判：h2 只判头块的**字节数**，于是同一个键在三条通道上
+     *          给出三种强度——运维照 h1 那个数调整台机器，h2 上一条 16 KiB 的头块可以塞进上千条
+     *          一次性头部，全部原样交给业务去遍历。计数口径照 h3：这一场请求头部里的字段数，伪头也算一条。
+     */
+    TEST(Http2Connection, RejectsRequestWithMoreHeaderFieldsThanParserLimitAllows)
+    {
+        HttpParserLimits parserLimits;
+        parserLimits.maximumHeaderCount = 4;
+        Http2Connection connection(Http2ConnectionConfiguration{}, parserLimits);
+        completeHandshake(connection);
+
+        // 最小 GET 请求块正好是 4 条（:method/:scheme/:path/:authority）：等于上限要放行
+        const std::string atLimitBlock = makeMinimalGetRequestBlock();
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, atLimitBlock)), Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> atLimitRequests = connection.takeRequests();
+        ASSERT_EQ(atLimitRequests.size(), 1U);
+        EXPECT_FALSE(atLimitRequests.front().isHeaderListTooLarge) << "恰好等于上限的请求不该被判越限";
+
+        // 再多一条就超上限：仍交给上层（由它按 431 收口），而不是把连接判死
+        const std::string aboveLimitBlock = atLimitBlock + hpackLiteralField("x-extra", "1");
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, aboveLimitBlock)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+        const std::vector<Http2Request> aboveLimitRequests = connection.takeRequests();
+        ASSERT_EQ(aboveLimitRequests.size(), 1U) << "越限的字段条数仍要交给上层，由它按 431 应答";
+        EXPECT_TRUE(aboveLimitRequests.front().isHeaderListTooLarge);
+        EXPECT_EQ(aboveLimitRequests.front().streamId, 3U);
+        for (const Http2Frame &frame: parseFrames(connection.takeOutgoingBytes()))
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "条数越限不该把整条连接判死";
+        }
+
+        // 缺省上限（100 条）下同一块请求照常通过：这条闸门只在配置收紧时出现
+        Http2Connection defaults;
+        completeHandshake(defaults);
+        EXPECT_EQ(feed(defaults, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, aboveLimitBlock)), Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> defaultRequests = defaults.takeRequests();
+        ASSERT_EQ(defaultRequests.size(), 1U);
+        EXPECT_FALSE(defaultRequests.front().isHeaderListTooLarge) << "缺省上限（100 条）下这条 5 字段的请求不该被判越限";
+    }
+
+    /**
+     * @brief 钉住：`:path` 超出 parser_limits.maximum_uri_length 时标成 414 那一类，而不是 431
+     * @details h1 与 h3 都按这个键判请求目标，h2 此前完全不判（HPACK 的单值字节上限是另一把尺，
+     *          与配置键无关）。状态码要分开的理由见 RFC 9110 §15.5.18：431 让客户端去减头部，
+     *          而这里要缩的是 URL。
+     */
+    TEST(Http2Connection, MarksRequestTargetOverParserUriLimitAsUriTooLong)
+    {
+        HttpParserLimits parserLimits;
+        parserLimits.maximumUriLength = 8;
+        Http2Connection connection(Http2ConnectionConfiguration{}, parserLimits);
+        completeHandshake(connection);
+
+        // 恰好 8 字节的路径放行（:path 的索引号是 4，值按字面量给）
+        const std::string atLimitBlock = hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, "/1234567") + hpackLiteralField(1, "example.com");
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, atLimitBlock)), Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> atLimitRequests = connection.takeRequests();
+        ASSERT_EQ(atLimitRequests.size(), 1U);
+        EXPECT_FALSE(atLimitRequests.front().isUriTooLong) << "恰好等于上限的请求目标不该被判越限";
+        EXPECT_EQ(atLimitRequests.front().path, "/1234567");
+
+        // 多一个字节：交出的请求带 isUriTooLong，字段本身照常交出（上层要按 414 而不是 431 收口）
+        const std::string aboveLimitBlock = hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, "/12345678") + hpackLiteralField(1, "example.com");
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, aboveLimitBlock)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+        const std::vector<Http2Request> aboveLimitRequests = connection.takeRequests();
+        ASSERT_EQ(aboveLimitRequests.size(), 1U);
+        EXPECT_TRUE(aboveLimitRequests.front().isUriTooLong);
+        EXPECT_FALSE(aboveLimitRequests.front().isHeaderListTooLarge) << "请求目标太长是 414 那一类，不该混进 431";
+        EXPECT_EQ(aboveLimitRequests.front().path, "/12345678");
+    }
+
+    /**
      * @brief 钉住：单个头块（HEADERS 与 CONTINUATION 之和）超过本端字节上限即判 ENHANCE_YOUR_CALM
      */
     TEST(Http2Connection, RejectsHeaderBlockOverTheLocalAssemblyLimit)
