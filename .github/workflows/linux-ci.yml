@@ -36,17 +36,17 @@ jobs:
       matrix:
         shard:
           - name: platform-base-core
-            label: 平台·基础·核心
+            label: Platform / Base / Core
             targets: "TestPlatform TestBase TestCore"
             testDirectories: "tests/Platform tests/Base tests/Core"
             redis: "0"
           - name: net
-            label: 网络
+            label: Net
             targets: "TestNet reference_server"
             testDirectories: "tests/Net"
             redis: "0"
           - name: database
-            label: 数据库
+            label: Database
             targets: "TestDatabase"
             testDirectories: "tests/Database"
             redis: "1"
