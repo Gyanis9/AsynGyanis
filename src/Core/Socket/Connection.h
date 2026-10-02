@@ -123,6 +123,8 @@ namespace AsynGyanis::Core
          *          成功与失败都就地缓存下来，此后整条连接复用同一份文本
          * @note 失败被缓存成「空」而不是重试：一条取不到地址的连接不会因为多问一次就取得到
          * @note 视图指向本对象持有的缓冲，因此它的有效期就是这条连接
+         * @note 线程约束同 refreshIdleDeadline()：只在所属事件循环线程上调用。缓存是一份普通
+         *       `std::optional<std::string>`，没有原子量——派发路径上的调用方本来就该在那条线程上
          */
         [[nodiscard]] std::string_view cachedRemoteAddress() noexcept;
 
