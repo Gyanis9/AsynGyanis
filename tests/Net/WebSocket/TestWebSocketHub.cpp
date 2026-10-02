@@ -33,6 +33,18 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 取一帧首字节里的操作码位（低 4 位）
+         * @details 服务端发出的帧不带掩码，首字节就是 FIN + 保留位 + 操作码，因此这一位直接区分
+         *          「按文本帧发的」与「按二进制帧发的」——扇出的类型判据只能落在这里，负载文本本身看不出来
+         * @param frame 已交出的整帧字节
+         * @return std::uint8_t 操作码
+         */
+        [[nodiscard]] std::uint8_t frameOpCode(const std::string &frame)
+        {
+            return static_cast<std::uint8_t>(static_cast<std::uint8_t>(frame.at(0)) & 0x0FU);
+        }
+
+        /**
          * @brief 可停可放的发送回调：既是记录槽，也是「让一帧停在挂起点」的闸门
          * @details 置 isGated 后，新的写出会停在 await_suspend 里并把句柄交回测试；测试据此能造出
          *          「某个成员正有一帧在写」这个状态，再观察第二路发布会不会另起一条写路径。
@@ -149,6 +161,59 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(frameCarriesText(lobbyFirst.sentFrames[0], "hello room"));
         EXPECT_TRUE(frameCarriesText(lobbySecond.sentFrames[0], "hello room"));
         EXPECT_TRUE(otherRoom.sentFrames.empty()) << "别的主题的成员不该收到这条";
+    }
+
+    /**
+     * @brief 钉住：二进制扇出走的是二进制帧，且字节原样上线
+     * @details 文本帧的负载按 RFC 6455 §5.6 必须是合法 UTF-8，对端的接收校验会因非法序列直接关连接
+     *          （1007）。protobuf、图片这类字节唯一的活路是二进制帧，所以这条通道必须真的存在并且
+     *          不改写负载——把 0xFF 塞进 publish() 是会被对端打回来的
+     */
+    TEST(WebSocketHub, BinaryPublishGoesOutAsABinaryFrameWithUntouchedBytes)
+    {
+        GatedSendPath path;
+        WebSocketPeer peer{makeFrameSender(path)};
+        WebSocketHub  hub;
+        auto          subscription = hub.subscribe("lobby", peer);
+
+        const std::string rawPayload("\xFF\xFE"
+                                     "tail");
+        drivePublish(hub.publishBinary("lobby", rawPayload));
+
+        ASSERT_EQ(path.sentFrames.size(), 1U);
+        EXPECT_EQ(frameOpCode(path.sentFrames[0]), static_cast<std::uint8_t>(WebSocketOpCode::Binary)) << "扇出把二进制当文本发：对端按 UTF-8 校验就会断开";
+        EXPECT_TRUE(frameCarriesText(path.sentFrames[0], "tail"));
+        EXPECT_NE(path.sentFrames[0].find('\xFF'), std::string::npos) << "负载被改写过了，不是原样上线的那串字节";
+    }
+
+    /**
+     * @brief 钉住：帧类型跟着队列里的那一条走，而不是跟着正在写的发布者走
+     * @details 一条连接同一时刻只有一个写者，所以文本发布者会替排在后面的二进制发布收尾。若类型记在
+     *          发布者身上（或记在成员上），这条被合并的二进制就会以文本帧上线——上一用例看不出来，
+     *          因为它没有并发发布者
+     */
+    TEST(WebSocketHub, QueuedBinaryKeepsItsFrameTypeWhenATextPublisherDrainsIt)
+    {
+        GatedSendPath path;
+        path.isGated = true; // 第一帧停在闸门上：此后入队的都由这个文本发布协程带走
+        WebSocketPeer peer{makeFrameSender(path)};
+        WebSocketHub  hub;
+        auto          subscription = hub.subscribe("lobby", peer);
+
+        Core::Task<void> textPublish = hub.publish("lobby", "alpha");
+        textPublish.handle().resume();
+        ASSERT_TRUE(static_cast<bool>(path.parkedWriter)) << "闸门没起作用：第一帧根本没挂起";
+
+        drivePublish(hub.publishBinary("lobby", std::string("\xEE\x80"
+                                                            "blob")));
+
+        path.release();
+        textPublish.handle().promise().result();
+
+        ASSERT_EQ(path.sentFrames.size(), 2U) << "合并后应当按序发出两条";
+        EXPECT_EQ(frameOpCode(path.sentFrames[0]), static_cast<std::uint8_t>(WebSocketOpCode::Text));
+        EXPECT_EQ(frameOpCode(path.sentFrames[1]), static_cast<std::uint8_t>(WebSocketOpCode::Binary)) << "替它收尾的写者是文本发布者，就按文本发了——类型必须跟每条走";
+        EXPECT_TRUE(frameCarriesText(path.sentFrames[1], "blob"));
     }
 
     TEST(WebSocketHub, SubscriptionHandleRemovesTheMemberOnDestruction)

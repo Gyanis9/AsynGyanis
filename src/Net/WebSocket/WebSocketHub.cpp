@@ -83,6 +83,16 @@ namespace AsynGyanis::Net
 
     Core::Task<void> WebSocketHub::publish(const std::string_view topic, const std::string_view text)
     {
+        co_return co_await publishFrame(topic, text, WebSocketOpCode::Text);
+    }
+
+    Core::Task<void> WebSocketHub::publishBinary(const std::string_view topic, const std::string_view payload)
+    {
+        co_return co_await publishFrame(topic, payload, WebSocketOpCode::Binary);
+    }
+
+    Core::Task<void> WebSocketHub::publishFrame(const std::string_view topic, const std::string_view payload, const WebSocketOpCode opCode)
+    {
         // 先取一份成员快照再逐个处理：入队与写出都会挂起，这期间表会被别的连接订阅/除名改写，
         // 拿着迭代器遍历就是未定义行为。shared_ptr 保证快照里的成员即使被摘掉也还活着
         std::vector<std::shared_ptr<Detail::WebSocketHubMember>> targets;
@@ -101,13 +111,13 @@ namespace AsynGyanis::Net
                 continue; // 快照之后才被除名（句柄析构或连接收口）：不再往它身上写
             }
             // 一条比整个上界还大的消息永远也放不下：分开判，避免「上界减去长度」在 size_t 上回绕成巨值
-            if (text.size() > m_maximumPendingByteCount || member->pendingByteCount + text.size() > m_maximumPendingByteCount)
+            if (payload.size() > m_maximumPendingByteCount || member->pendingByteCount + payload.size() > m_maximumPendingByteCount)
             {
                 ++m_droppedMessageCount; // 丢**最新**的一条并计数：已入队的顺序不被插队打乱
                 continue;
             }
-            member->pendingTexts.emplace_back(text);
-            member->pendingByteCount += text.size();
+            member->pendingMessages.push_back(Detail::WebSocketHubPendingMessage{.opCode = opCode, .payload = std::string(payload)});
+            member->pendingByteCount += payload.size();
 
             if (member->isDraining)
             {
@@ -154,27 +164,35 @@ namespace AsynGyanis::Net
 
     Core::Task<void> WebSocketHub::drainMember(std::shared_ptr<Detail::WebSocketHubMember> member)
     {
-        while (!member->pendingTexts.empty())
+        while (!member->pendingMessages.empty())
         {
             WebSocketPeer *const peer = member->peer;
             if (peer == nullptr || !peer->isOpen())
             {
                 // 对端已收口或已被除名：剩下的没有接收者，整队丢掉而不是留在原地长内存
-                member->pendingTexts.clear();
+                member->pendingMessages.clear();
                 member->pendingByteCount = 0U;
                 break;
             }
 
-            std::string text = std::move(member->pendingTexts.front());
-            member->pendingTexts.pop_front();
-            member->pendingByteCount -= text.size();
+            Detail::WebSocketHubPendingMessage message = std::move(member->pendingMessages.front());
+            member->pendingMessages.pop_front();
+            member->pendingByteCount -= message.payload.size();
 
-            // text 是本地串且在 co_await 期间存活：sendText 收的是视图，
-            // 而协程要到首次 resume 之后才读入参，交出去之前不能让它失效
-            const bool isSent = co_await peer->sendText(text);
+            // 负载是本地串且在 co_await 期间存活：send* 收的是视图，
+            // 而协程要到首次 resume 之后才读入参，交出去之前不能让它失效。
+            // 帧类型取自这一条本身：同一条队列里文本与二进制可以交错，取发布者的类型就会发错帧
+            bool isSent = false;
+            if (message.opCode == WebSocketOpCode::Binary)
+            {
+                isSent = co_await peer->sendBinary(message.payload);
+            } else
+            {
+                isSent = co_await peer->sendText(message.payload);
+            }
             if (!isSent)
             {
-                member->pendingTexts.clear();
+                member->pendingMessages.clear();
                 member->pendingByteCount = 0U;
                 break;
             }

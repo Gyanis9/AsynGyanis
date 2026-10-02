@@ -1,6 +1,6 @@
 /**
  * @file WebSocketHub.h
- * @brief WebSocket 扇出集线器：按主题登记成员，一条消息发给全员，慢成员有界而不打爆内存
+ * @brief WebSocket 扇出集线器：按主题登记成员，一条消息（文本或二进制）发给全员，慢成员有界而不打爆内存
  * @author Gyanis
  * @date 2026-09-24
  * @version 1.0.0
@@ -47,6 +47,17 @@ namespace AsynGyanis::Net
     namespace Detail
     {
         /**
+         * @brief 队列里的一条待发消息：负载 + 它该以哪种帧上线
+         * @details 类型必须跟到队列里而不是记在成员或集线器上：一个成员的同一条队列可以
+         *          同时排着文本与二进制（两路发布者交错），按成员记类型会把后到的那种发错帧。
+         */
+        struct WebSocketHubPendingMessage
+        {
+            WebSocketOpCode opCode{WebSocketOpCode::Text}; ///< 帧类型：文本扇出为 Text，二进制扇出为 Binary
+            std::string     payload;                       ///< 负载字节，原样写出
+        };
+
+        /**
          * @brief 集线器的一个成员：对端指针、待发队列、与「谁在替它写」的闩
          * @details 生存期由集线器与订阅句柄共持 shared_ptr：这样即使成员在某个 publish 协程
          *          挂起期间被除名，那份队列与闩也还活着， drain 能干净收尾而不是踩在被删对象上。
@@ -54,10 +65,10 @@ namespace AsynGyanis::Net
          */
         struct ASYN_NET_API WebSocketHubMember
         {
-            WebSocketPeer          *peer{nullptr};       ///< 空表示已除名或已收口：此后不再碰这条连接
-            std::deque<std::string> pendingTexts;        ///< 已入队、尚未写出的消息，按到达顺序
-            std::size_t             pendingByteCount{0}; ///< pendingTexts 的负载总字节数（入队上界据此判定）
-            bool                    isDraining{false};   ///< 是否已有一个发布协程正在替它写（一条连接一个写者）
+            WebSocketPeer                         *peer{nullptr};       ///< 空表示已除名或已收口：此后不再碰这条连接
+            std::deque<WebSocketHubPendingMessage> pendingMessages;     ///< 已入队、尚未写出的消息，按到达顺序
+            std::size_t                            pendingByteCount{0}; ///< pendingMessages 的负载总字节数（入队上界据此判定）
+            bool                                   isDraining{false};   ///< 是否已有一个发布协程正在替它写（一条连接一个写者）
         };
     } // namespace Detail
 
@@ -168,6 +179,19 @@ namespace AsynGyanis::Net
         Core::Task<void> publish(std::string_view topic, std::string_view text);
 
         /**
+         * @brief 把一条二进制消息发给该主题的全体成员
+         *
+         * @details 送达语义与 `publish()` 完全一致（尽力达、队列越界丢最新的一条并计数），区别只在帧类型：
+         *          负载按**二进制帧**（RFC 6455 §5.6）写出，不做任何字符集解释。这条通道存在的原因是
+         *          文本帧的负载必须是一段合法 UTF-8——把 protobuf、图片这类字节塞进 `publish()`，
+         *          对端的接收校验会按协议违规把连接关掉（1007），而这正是集线器这里唯一拦得住的误用。
+         * @param topic 主题名
+         * @param payload 负载字节，原样写出（长度不受文本帧的 UTF-8 约束）
+         * @return Core::Task<void> 排完本次扇出即返回
+         */
+        Core::Task<void> publishBinary(std::string_view topic, std::string_view payload);
+
+        /**
          * @brief 该主题当前的成员数
          * @param topic 主题名
          * @return std::size_t 成员条数
@@ -199,6 +223,15 @@ namespace AsynGyanis::Net
          * @param identifier 订阅标识
          */
         void unsubscribe(WebSocketSubscriptionId identifier);
+
+        /**
+         * @brief 两种扇出的共用实现：按主题排队并尽量当场写出
+         * @param topic 主题名
+         * @param payload 负载字节
+         * @param opCode 该负载要以哪种帧上线（Text 或 Binary）
+         * @return Core::Task<void> 排完本次扇出即返回
+         */
+        Core::Task<void> publishFrame(std::string_view topic, std::string_view payload, WebSocketOpCode opCode);
 
         /**
          * @brief 替一个成员把队列里的消息写完：一条连接同一时刻只有这一个写者
