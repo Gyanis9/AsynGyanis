@@ -23,6 +23,7 @@ add_executable(TestBase
         Log/TestLogColor.cpp
         Log/TestSourceLocation.cpp
         Log/TestLogEvent.cpp
+        Log/TestLogEscaping.cpp
         Log/TestLogMacros.cpp
         Log/TestLogThrottle.cpp
         Log/TestLogger.cpp

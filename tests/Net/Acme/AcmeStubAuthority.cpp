@@ -569,7 +569,9 @@ namespace AsynGyanis::Net::TestSupport
             const std::string domainName = textOf(identifier, "value");
             if (std::ranges::find(m_settings.rejectedDomainNames, domainName) != m_settings.rejectedDomainNames.end())
             {
-                writeProblem(response, 400, "rejectedIdentifier", std::format("桩按故障注入拒绝域名 {}", domainName));
+                // 注入档优先：客户端要把机构的自由文本折过才能进日志，测试得能送进一条带换行的原文
+                writeProblem(response, 400, "rejectedIdentifier",
+                             m_settings.injectedProblemDetail.empty() ? std::format("桩按故障注入拒绝域名 {}", domainName) : m_settings.injectedProblemDetail);
                 co_return;
             }
             // 复用档：这一格上一轮已经自证过，就直接把那条已 valid 的授权挂进新订单——真机构是这么做的，

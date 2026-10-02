@@ -81,6 +81,13 @@ namespace AsynGyanis::Net::TestSupport
             /// 下一个 newOrder 直接 429 带 Retry-After：测限流这一档被折成 RateLimited
             bool isOrderRateLimited{false};
             /**
+             * @brief 非空时，被拒域名那条 problem document 的 `detail` 原样用这一段文本
+             * @details 存在的理由：机构的 `detail` 是**自由文本**，JSON 里合法地可以带 `\n`（写成 `\\n`），
+             *          解析回来就是真换行，而这条文本会被拼进错误消息、最终由续期管理器记成一行日志。
+             *          桩要能造出这种形状，才测得出客户端有没有把它折过再交出去。
+             */
+            std::string injectedProblemDetail{};
+            /**
              * @brief 同一域名的下一张订单直接复用上一轮已 valid 的授权
              * @details Boulder 与 Pebble 都会复用（Pebble 默认按概率复用）。开这一档是为了钉住
              *          「客户端对着已 valid 的授权又去触发挑战」那条出口——真机构对此回 400，不是幂等

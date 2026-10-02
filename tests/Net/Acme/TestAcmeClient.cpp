@@ -615,6 +615,29 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：机构 problem document 里的自由文本被折过才交出去
+     * @details `detail` 是**远程自由文本**，JSON 里合法地可以携带换行（那边写成转义形式），解析回来
+     *          就是真换行；而这条消息最终由续期管理器以 `LOG_ERROR_FMT("AcmeCertificateManager: {}", ...)`
+     *          落成一行日志。原样带过去，就等于让一个不守规矩（或被劫持）的机构在本进程的日志里
+     *          伪造记录——伪造的那半行可以顶着别的时间戳与级别。两条断言各管一头：消息里不许出现
+     *          真换行（这是目的），且必须出现可见转义（这证明是「折起来」而不是「整段丢掉」）。
+     */
+    TEST_F(AcmeClientTest, EscapesControlCharactersComingFromTheAuthority)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.rejectedDomainNames   = {"stub-first.example.com"};
+        settings.injectedProblemDetail = std::string{"机构说明里的\n换行与"} + static_cast<char>(0x1B) + "这段 ESC";
+        startFixtures(settings);
+
+        const auto outcome = runDefaultFlow();
+        EXPECT_FALSE(outcome.isSuccess);
+        EXPECT_EQ(outcome.failureKind, AcmeErrorKind::RejectedByAuthority) << outcome.failureMessage;
+        EXPECT_EQ(outcome.failureMessage.find('\n'), std::string::npos) << "机构 detail 里的真换行原样进了消息：落到日志就是两条记录";
+        EXPECT_NE(outcome.failureMessage.find("\\x0A"), std::string::npos) << "换行没被折成可见转义";
+        EXPECT_NE(outcome.failureMessage.find("\\x1B"), std::string::npos) << "ESC 没被折掉：原样打出来会污染终端";
+    }
+
+    /**
      * @brief 钉住：nonce 被机构判坏时客户端重取再发，而不是就此失败
      */
     TEST_F(AcmeClientTest, RetriesWhenTheAuthorityReportsBadNonce)

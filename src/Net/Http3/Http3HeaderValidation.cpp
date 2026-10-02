@@ -1,5 +1,6 @@
 #include "Net/Http3/Http3HeaderValidation.h"
 
+#include "Base/Log/LogEscaping.h"
 #include "Net/Http/HttpHeaderRules.h"
 
 #include <cstddef>
@@ -23,31 +24,11 @@ namespace AsynGyanis::Net
                    character == '-' || character == '.';
         }
 
-        /// 把字节写成可读文本再进日志：控制字符与高位字节原样打出来会污染终端，看不出问题在哪
-        std::string printableFieldText(std::string_view text, const std::size_t maximumDisplayByteCount = 48)
+        /// 把字节写成可读文本再进日志与错误串：转义与截断的词表住在 `Base::escapeForLog`，这里只留
+        /// 本层的默认长度与名字（同一套折法在两处各写一遍，迟早会分叉成「一条挡得住 NUL、另一条挡不住」）
+        std::string printableFieldText(const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
         {
-            const std::string_view excerpt = text.substr(0, maximumDisplayByteCount < text.size() ? maximumDisplayByteCount : text.size());
-            std::string            result;
-            result.reserve(excerpt.size() + 8);
-            for (const char character: excerpt)
-            {
-                const auto byte = static_cast<unsigned char>(character);
-                if (byte >= 0x20 && byte < 0x7F)
-                {
-                    result.push_back(character);
-                    continue;
-                }
-                // 不可打印字节写成 \xNN：否则「值里夹了个 NUL」这类缺陷在日志里看着与正常值一模一样
-                static constexpr char kHexDigits[] = "0123456789ABCDEF";
-                result.append("\\x");
-                result.push_back(kHexDigits[(byte >> 4) & 0x0FU]);
-                result.push_back(kHexDigits[byte & 0x0FU]);
-            }
-            if (excerpt.size() < text.size())
-            {
-                result.append("…（已截断）");
-            }
-            return result;
+            return Base::escapeForLog(text, maximumDisplayByteCount);
         }
     } // namespace
 

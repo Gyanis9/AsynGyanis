@@ -2,6 +2,7 @@
 
 #include "Base/Coding/Base64.h"
 #include "Base/Config/ConfigValue.h"
+#include "Base/Log/LogEscaping.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Crypto/Digest.h"
 #include "Core/EventLoop/EventLoop.h"
@@ -395,7 +396,10 @@ namespace AsynGyanis::Net
             }
             if (const auto detail = readStringMember(*parsed, "detail"); detail.has_value())
             {
-                message += std::format("机构原文：{}。", *detail);
+                // 机构给的自由文本要折过再进消息：这条消息最终由 `LOG_ERROR_FMT("AcmeCertificateManager: {}", ...)`
+                // 落到日志行上，而 problem document 里的 detail 合法地可以带 `\n`（JSON 里写成 `\\n`，解析回来就是
+                // 真换行）——一个不守规矩或被劫持的机构因此能在本进程的日志里伪造记录。折法与 h3 的错误串同源
+                message += std::format("机构原文：{}。", Base::escapeForLog(*detail, 512));
             }
         } else if (!reply.bodyText.empty())
         {
@@ -765,8 +769,10 @@ namespace AsynGyanis::Net
                 std::string complaintType;
                 if (const auto body = Base::parseConfigValue(lastBodyText); body.has_value() && body->is_object() && body->contains("error") && (*body)["error"].is_object())
                 {
-                    complaint     = readStringMember((*body)["error"], "detail").value_or(std::string{});
-                    complaintType = readStringMember((*body)["error"], "type").value_or(std::string{});
+                    // 同一条判据：机构留下的自由文本最终会被记进日志行，折过再拼（type 是 URN，
+                    // 但它是同一批远程字节，没有理由单独信任）
+                    complaint     = Base::escapeForLog(readStringMember((*body)["error"], "detail").value_or(std::string{}), 512);
+                    complaintType = Base::escapeForLog(readStringMember((*body)["error"], "type").value_or(std::string{}), 128);
                 }
                 co_return std::unexpected(
                         AcmeError{AcmeErrorKind::ChallengeNotAnswered,
