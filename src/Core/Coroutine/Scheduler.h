@@ -34,6 +34,17 @@ namespace AsynGyanis::Core
      * @note 本类非线程安全，除 scheduleRemote() 与 postRemote() 这两个投递入口、以及只读原子计数的
      *       remotePendingCount() 与 failedDispatchCount() 之外，其他成员函数（含 hasWork() 与 runOne()/runAll()）
      *       都应由所属 EventLoop 线程调用。
+     * @note **协程帧的归属：调度器从不拥有、也从不销毁任何帧。** 队列里存的是裸
+     *       `std::coroutine_handle<>`，它只表示「这一拍要 resume 谁」，不带来任何所有权。因此一条
+     *       句柄在**被派发之前**必须一直有人持有它所属的帧，否则派发时 resume 的就是已经被销毁的内存。
+     *       持有者只能是两类：还在 `co_await` 它的父协程（帧由父侧的 Task 拿着），或者一个活到派发之后的
+     *       `Task` 对象（本仓库的写法是把 Task 存进服务器的在途表，见 TcpServer::m_connectionTasks）。
+     * @warning 由此有两条容易写错的地方：①**不要把 owning Task 放在会先于派发析构的作用域里**——
+     *          `Task` 的析构与移动赋值都无条件 `destroy()`（见 Task.h 那条「帧不会自行释放」的注释），
+     *          局部 Task 出作用域就把还在队列里的帧一起销毁了；②**先入表、后排度**，反过来的话入表那一步
+     *          抛 bad_alloc 就留下一个没人持有、却已经能被打发的句柄。这两条都不是推演：本仓库曾在
+     *          「隧道随帧销毁」上真出过一次业务帧丢失（收口改成先唤醒再销毁的那一轮）。
+     * @see schedule(), scheduleRemote()
      */
     class ASYN_CORE_API Scheduler
     {
@@ -59,13 +70,15 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 将协程加入本地就绪队列（本线程调用）
-         * @param handle 准备调度的协程句柄（必须非空）
+         * @param handle 准备调度的协程句柄；**空句柄被就地忽略**（不丢任何东西：本来就没有要恢复的帧）
+         * @note 帧的归属见类注释那条 @note：本方法只借这个句柄用一拍，既不拥有也不销毁它
          */
         void schedule(std::coroutine_handle<> handle);
 
         /**
          * @brief 跨线程调度：将协程推入全局队列（线程安全）
-         * @param handle 准备调度的协程句柄（必须非空）
+         * @param handle 准备调度的协程句柄；空句柄同样被就地忽略
+         * @note 帧的归属与 schedule() 同一条：跨线程排队的这一拍里，帧必须仍由它的持有者管着
          * @note 本函数解引用调度器自身：调用方（执行器工作线程、解析线程等）必须在整个投递期间
          *       保证目标循环还活着。要么按「先拆执行器再拆循环」的顺序释放资源，要么先判
          *       「等待方还在不在」再投（AsyncResolver 就是这么收口窗口的）

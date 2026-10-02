@@ -202,8 +202,10 @@ namespace AsynGyanis::Net
         // （一个只握手不发数据的对端就能让整台服务器停止接受）。改成一路独立协程，名额判定也随之
         // 挪到读完之后——那时对端身份才是真实来源，按来源限额才不是「一整个代理共享一个名额」
         Core::Task<void> headerTask = admitAfterProxyHeader(std::move(socket));
-        m_loop.scheduler().schedule(headerTask.handle());
+        // 先入表、后排度，并且排的是表里那一份的句柄：反过来的话入表抛 bad_alloc，队列里就留下一个
+        // 没人持有、却随时可能被打发的帧（归属契约见 Scheduler 的类注释）
         m_connectionTasks.push_back(std::move(headerTask));
+        m_loop.scheduler().schedule(m_connectionTasks.back().handle());
         return true;
     }
 
@@ -383,10 +385,12 @@ namespace AsynGyanis::Net
 
         m_connectionManager.add(connection);
         // 任务句柄必须存进 m_connectionTasks 才有人持有协程帧：局部 task 被移动进容器，
-        // 之后每轮清扫只回收已完成的帧，未完成的由收尾阶段统一等待
+        // 之后每轮清扫只回收已完成的帧，未完成的由收尾阶段统一等待。
+        // 入表排在排度之前：倒过来时入表那一步抛 bad_alloc 就会留下一个没人持有、却已经能被打发的
+        // 句柄（归属契约见 Scheduler 的类注释）
         Core::Task<void> connectionTask = handleConnectionWithLease(std::move(connection), std::move(perIpLease));
-        m_loop.scheduler().schedule(connectionTask.handle());
         m_connectionTasks.push_back(std::move(connectionTask));
+        m_loop.scheduler().schedule(m_connectionTasks.back().handle());
 
         // 到达阈值才清扫：把 O(n) 的全表扫描摊到每 64 条连接一次，并把阈值推到「当前长度 + 一轮」
         if (m_connectionTasks.size() > m_nextTaskCleanupThreshold)
