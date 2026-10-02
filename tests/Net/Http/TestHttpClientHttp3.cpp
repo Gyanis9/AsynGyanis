@@ -292,11 +292,13 @@ namespace AsynGyanis::Net
          * @param streamedUpload 为真时把每条请求换成带 bodySource 的 POST 上传
          * @param closeIdleBetweenRequests 为真时在两条请求之间收一次口：把第二条逼回「建连」那一路。
          *        不这么做它会直接复用第一条留下的连接、走不到探测那一步，判据就成了空判据
+         * @param perRequestTimeouts 非空时按条给每条请求自己的整体时限（长度与 urls 一致）：
+         *        「这次的时限付不付得起一次探测」是按条判的，整串共用一个数就摆不出这条门槛
          * @return Http3ClientRunOutcome 状态码、正文、耗时与收尾时的链路计数
          */
         Http3ClientRunOutcome runClientRequests(const std::vector<std::string> &urls, const bool isEnabled, const HttpOutboundConnectionPool::Config &poolConfig = {},
                                                 const std::chrono::milliseconds requestTimeout = std::chrono::seconds{20}, const bool streamedUpload = false,
-                                                const bool closeIdleBetweenRequests = false)
+                                                const bool closeIdleBetweenRequests = false, const std::vector<std::chrono::milliseconds> &perRequestTimeouts = {})
         {
             Core::EventLoop loop;
             Core::TlsPolicy policy;
@@ -306,12 +308,15 @@ namespace AsynGyanis::Net
             // 那些东西只能在所属循环上销毁（见本框架的事件循环线程契约）
             std::optional<HttpClient> client;
 
-            auto drive = [&loop, &client, &urls, &outcome, &policy, poolConfig, isEnabled, requestTimeout, streamedUpload, closeIdleBetweenRequests]() -> Core::Task<>
+            auto drive = [&loop, &client, &urls, &outcome, &policy, &perRequestTimeouts, poolConfig, isEnabled, requestTimeout, streamedUpload,
+                          closeIdleBetweenRequests]() -> Core::Task<>
             {
                 client.emplace(loop, poolConfig, policy);
                 client->setHttp3Enabled(isEnabled);
-                for (const std::string &url: urls)
+                for (std::size_t index = 0; index < urls.size(); ++index)
                 {
+                    const std::string              &url     = urls[index];
+                    const std::chrono::milliseconds timeout = perRequestTimeouts.empty() ? requestTimeout : perRequestTimeouts.at(index);
                     if (closeIdleBetweenRequests && !outcome.statusCodes.empty())
                     {
                         client->closeIdleConnections();
@@ -327,7 +332,7 @@ namespace AsynGyanis::Net
                         request.bodySource = []() -> Core::Task<std::optional<std::string>> { co_return std::nullopt; };
                     }
                     const auto                                started  = std::chrono::steady_clock::now();
-                    const std::unique_ptr<HttpClientResponse> response = co_await client->send(url, request, requestTimeout);
+                    const std::unique_ptr<HttpClientResponse> response = co_await client->send(url, request, timeout);
                     outcome.elapsed.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started));
                     outcome.statusCodes.push_back(response ? response->statusCode : 0);
                     outcome.bodies.push_back(response ? response->body : std::string{});
@@ -528,6 +533,37 @@ namespace AsynGyanis::Net
 
         EXPECT_GE(outcome.elapsed[0], 1500ms) << "第一条没等满探测时限：那条通路可能根本没被探（" << outcome.elapsed[0].count() << " ms）";
         EXPECT_LE(outcome.elapsed[1], 1500ms) << "第二条又付了一次探测时限：这个端点该记下「探败过」（" << outcome.elapsed[1].count() << " ms）";
+    }
+
+    /**
+     * @brief 钉住「探测那 3 秒要这次请求的时限付得起才去付」：小时限的请求不被撑破，也不替端点留下假证据
+     * @details 两条请求共用一个客户端、各给不同的整体时限。第一条只给 2000 毫秒——比探测的 3 秒小，
+     *          于是它根本不该去探：直接走 TCP 并在时限内答完。少了这道门槛，它会等满探测时限再发现
+     *          预算已尽，那次真正的 TCP 请求连一次都没试（状态码从 200 变 0、耗时从约 0.1 秒变 3 秒，
+     *          两条判据同时会红）。
+     * @details 第二条给足时限，它必须照常去探一次——第一条只是**没去探**，不是探败了，因此不该替这个
+     *          端点记下「没有 h3」。判据取耗时读数（探测必然等满黑洞时限），且写成「不小于」：满载的
+     *          runner 只会让它更大而不会让它变小。
+     */
+    TEST(HttpClientHttp3, SkipsHttp3ProbeWhenTheDeadlineCannotAffordIt)
+    {
+        RunningPeer peer(PeerShape::UdpBlackHole);
+        ASSERT_TRUE(peer.awaitRunning()) << "黑洞形态的对端没进服务循环（UDP 占不住号是另一回事，走下面的 SKIP）";
+        if (!peer.udpHeld())
+        {
+            GTEST_SKIP() << "同端口的 UDP 占不住：重试 " << kUdpHoldAttempts << " 次之后仍绑不上，黑洞前提构造不出来，与本引擎的实现对不对无关";
+        }
+        const std::string url = probeUrl(peer.port());
+
+        const Http3ClientRunOutcome outcome =
+                runClientRequests({url, url}, true, {}, std::chrono::seconds{30}, false, true, {std::chrono::milliseconds{2000}, std::chrono::seconds{30}});
+        ASSERT_EQ(outcome.statusCodes.size(), 2U);
+        EXPECT_EQ(outcome.statusCodes[0], 200) << "探测吃掉了整条时限，那次真正的 TCP 请求一次都没试";
+        EXPECT_LT(outcome.elapsed[0], std::chrono::milliseconds{2500}) << "只给 2000 毫秒的请求被一次探测撑破了时限（" << outcome.elapsed[0].count() << " ms）";
+        EXPECT_GE(outcome.elapsed[1], 1500ms) << "给足时限的第二条没再探一次：没发生过的探测不该替端点记下结论（" << outcome.elapsed[1].count() << " ms）";
+        EXPECT_EQ(outcome.statusCodes[1], 200) << "探败之后 TCP 那侧仍该答话";
+        EXPECT_EQ(outcome.bodies[1], kTcpServedBody);
+        EXPECT_EQ(outcome.http3LinkCount, 0U) << "黑洞的 UDP 不该留下链路";
     }
 
     /**

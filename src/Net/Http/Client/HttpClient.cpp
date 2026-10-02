@@ -1345,6 +1345,23 @@ namespace AsynGyanis::Net
         constexpr std::chrono::milliseconds kHttp3ProbeTimeout{3000};
 
         /**
+         * @brief 这次请求的剩余预算付不付得起一次 h3 探测的固定开销
+         * @details 探测那 3 秒是这条通路上唯一由本端定的开销，而 `requestTimeout` 的契约是「握手、发送、
+         *          收完响应三段之和」（见 remainingBudget）：只给 300 毫秒的请求原本会被一次探测撑到 3 秒，
+         *          探测回来时预算已尽，那次真正的 TCP 请求连一次都不试就判失败。付不起就**跳过探测**，
+         *          直接走 TCP——而不是把探测截短成 300 毫秒：截短的那次一定失败，而失败会被记成
+         *          「这个端点没有 h3」，于是一条小时限的健康检查就能把这个端点的 h3 永久关掉。
+         * @param startedAt 本次请求的开始时刻
+         * @param requestTimeout 调用方给的整体时限
+         * @return true 还剩至少一次探测的时限，可以去探
+         */
+        bool canAffordHttp3Probe(const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout)
+        {
+            const std::optional<std::chrono::milliseconds> remaining = remainingBudget(startedAt, requestTimeout);
+            return remaining.has_value() && *remaining >= kHttp3ProbeTimeout;
+        }
+
+        /**
          * @brief 这次请求能不能走 h3：三个条件各挡一件事
          * @param u 已拆开的 URL
          * @param request 方法、正文与流式来源
@@ -1604,8 +1621,10 @@ namespace AsynGyanis::Net
 
                 // 占到建连资格的人先探 h3：探成就用这条通路，探不通再落到下面的 TCP。
                 // 探测的时限单独设上界（kHttp3ProbeTimeout），UDP 被黑洞时也只吃掉这一小段，
-                // 剩下的预算仍归那次真正的 TCP 请求用——这是「失败回落」这条承诺能成立的地方
-                if (isHttp3Eligible)
+                // 剩下的预算仍归那次真正的 TCP 请求用——这是「失败回落」这条承诺能成立的地方。
+                // 前提调用方的时限付得起这一段（判据见 canAffordHttp3Probe）：付不起就不探，
+                // 也不替这个端点记下「没有 h3」
+                if (isHttp3Eligible && canAffordHttp3Probe(startedAt, requestTimeout))
                 {
                     std::shared_ptr<Http3OutboundLink> link = co_await establishHttp3Link(loop, u, *pool, *http3, failureReason);
                     if (link == nullptr)
