@@ -1163,6 +1163,16 @@ namespace
                                    "池的两本账各说各的事：createdCount() 是「当下持有」（丢弃会减回去，它同时是上限的占位分母），discardedCount() 才是历史上丢过几条——"
                                    "「建了就丢」要读后者，别拿两者的差当判据");
 
+        // 脏连接的正确出口：业务判定这条不该再被人复用时用 discard()，而不是 release() 把它交回池
+        {
+            Database::PooledConnection dirty  = resetPool.acquire();
+            const bool                 isHeld = static_cast<bool>(dirty);
+            dirty.discard();
+            Samples::checklist().check(isHeld && !static_cast<bool>(dirty) && resetPool.discardedCount() == 1U && resetPool.idleCount() == 0U && resetPool.activeCount() == 0U,
+                                       "PooledConnection::discard() 关掉这条连接并腾出借出的名额：脏会话不经空闲栈传给下一个借用者，"
+                                       "且包装器当场为空（析构不会二次归还，那个活跃计数多减一回池就会长期超发）");
+        }
+
         // 上限被占满时另起线程阻塞等待；归还动作必须把它叫醒并把手里的连接直接交给它
         Database::PooledConnection held = resetPool.acquire();
         std::atomic<bool>          isWaiterServed{false};
