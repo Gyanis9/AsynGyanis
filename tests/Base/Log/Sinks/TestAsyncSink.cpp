@@ -586,6 +586,29 @@ namespace AsynGyanis::Base
         EXPECT_EQ(sink.droppedEventCount(), 1u) << "被下游等级挡下的事件应计入丢弃";
     }
 
+    /**
+     * @brief 钉住进程级那份丢弃数：两个 sink 各丢一条要合计加二
+     * @details 单个 sink 的 droppedEventCount() 只有持有者读得到，而「日志在偷偷丢」通常是运维先看出来
+     *          （某段审计记录不见了）。取增量而不是绝对值：同一进程里别的用例也可能丢过。
+     *          跨两个 sink 求和这一半是有意的——把总量记在「最后一个 sink」上的实现在这里会少算一条
+     */
+    TEST(AsyncSink, PublishesAProcessWideDroppedEventTotal)
+    {
+        const std::uint64_t before = droppedAsyncLogEventCount();
+
+        AsyncSink firstSink(std::make_unique<ThrowingSink>(), 8);
+        AsyncSink secondSink(std::make_unique<ThrowingSink>(), 8);
+
+        firstSink.write(makeEvent(LogLevel::Info, "lost-first"));
+        secondSink.write(makeEvent(LogLevel::Info, "lost-second"));
+        firstSink.flush();
+        secondSink.flush();
+
+        EXPECT_EQ(firstSink.droppedEventCount(), 1u);
+        EXPECT_EQ(secondSink.droppedEventCount(), 1u);
+        EXPECT_EQ(droppedAsyncLogEventCount() - before, 2u) << "进程级的丢弃数没有跨 sink 合计";
+    }
+
     TEST(AsyncSink, EventsLostToAThrowingDownstreamAreCountedAsDropped)
     {
         AsyncSink sink(std::make_unique<ThrowingSink>(), 8);

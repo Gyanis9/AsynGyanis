@@ -1,5 +1,6 @@
 #include "Net/Http/HttpMetricsEndpoint.h"
 
+#include "Base/Log/Sinks/AsyncSink.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 
 #include <array>
@@ -155,6 +156,12 @@ namespace AsynGyanis::Net
                            queueDepthName, queueDepthName, queueDepthName, stats.blockingTaskQueueDepth);
         appendCounter(out, makeMetricName(metricNamePrefix, "blocking_task_rejected_total"),
                       "因排队已满被拒的阻塞任务条数（进程级累计；提交方当场收到异常，涨了就说明该降并发或加工作线程）", stats.blockingTaskRejectedCount);
+
+        // 日志被丢的规模是进程级的，而且**有一条对端可驱动的路**：JSON 版式对非法 UTF-8 整条失败，
+        // 请求目标里送原始 Latin-1 字节的客户端因此能把自己在访问日志里的那行消音。没有这条读数，
+        // 「审计记录被消音」与「这段时间没人写日志」在面板上是同一个形状
+        appendCounter(out, makeMetricName(metricNamePrefix, "log_dropped_events_total"),
+                      "异步日志出口累计丢掉的事件数（队列满按策略丢、下游卡住等位超时、落地时抛异常都算；进程级，多条通道报同一份）", Base::droppedAsyncLogEventCount());
 
         // 常驻内存：进程级读数，抓哪台都是同一份。名字跟着 Prometheus 的既成约定走（process_*）
         const std::string residentMemoryName = makeMetricName(metricNamePrefix, "process_resident_memory_bytes");

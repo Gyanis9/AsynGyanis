@@ -1,6 +1,7 @@
 #include "Base/Log/Sinks/AsyncSink.h"
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -19,7 +20,24 @@ namespace AsynGyanis::Base
 
         /// 槽位数组的起始规模：一次配置成百上千条日志的 Sink 不少，起步太小会让头几次入队各扩一次
         constexpr std::size_t kInitialSlotCapacity = 8U;
+
+        /// 进程内所有异步出口合计丢掉的事件数：单个 sink 的计数只有持有者读得到，而「在丢日志」
+        /// 通常是运维先看出的（某段审计记录不见了）。见 droppedAsyncLogEventCount()
+        std::atomic<std::uint64_t> g_droppedEventTotal{0};
     } // namespace
+
+    std::uint64_t droppedAsyncLogEventCount() noexcept
+    {
+        return g_droppedEventTotal.load(std::memory_order_relaxed);
+    }
+
+    void AsyncSink::countDroppedEvent() noexcept
+    {
+        // 一处加账、两份记录：本 sink 的那份给持有者做精细诊断，进程那份给 /metrics 用。
+        // 分两处各写一遍就会出现「sink 数在涨而总量不动」这类对不上的账
+        m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
+        g_droppedEventTotal.fetch_add(1, std::memory_order_relaxed);
+    }
     AsyncSink::AsyncSink(std::unique_ptr<LogSink> wrappedSink, const size_t queueSize, const OverflowPolicy policy) :
         m_wrappedSink(std::move(wrappedSink))
         // 容量两端都要钳。下界：0 容量不是「不限量」而是三种策略各自的错误语义——Drop 全丢、
@@ -56,7 +74,7 @@ namespace AsynGyanis::Base
         // 这条路径同样计入丢弃数，否则停止窗口内的日志会静默消失
         if (m_stopToken.stop_requested())
         {
-            m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
+            countDroppedEvent();
             return;
         }
 
@@ -66,7 +84,7 @@ namespace AsynGyanis::Base
             {
                 // 丢弃新到事件并计数，供运维监控日志丢失规模
                 // 事件从未入队，不计入待落地计数，否则 flush() 会等到永远无法满足的条件
-                m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
+                countDroppedEvent();
                 return;
             }
             appendSlot(std::move(event));
@@ -81,7 +99,7 @@ namespace AsynGyanis::Base
                 discardFrontSlot();
                 // 被淘汰的事件不再有人等它，当场了结；新进来的才是本次受理的那条
                 settleAcceptedEvent();
-                m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
+                countDroppedEvent();
             }
             appendSlot(std::move(event));
             ++m_acceptedCount;
@@ -95,7 +113,7 @@ namespace AsynGyanis::Base
             if (!hasSpace || m_stopToken.stop_requested())
             {
                 // 事件不会入队，与其它策略一样计入丢弃数
-                m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
+                countDroppedEvent();
                 return;
             }
             appendSlot(std::move(event));
@@ -234,7 +252,7 @@ namespace AsynGyanis::Base
                         m_wrappedSink->write(event);
                     } else
                     {
-                        m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
+                        countDroppedEvent();
                     }
                 }
             } catch (...)
@@ -242,7 +260,7 @@ namespace AsynGyanis::Base
                 // 防止单个 Sink 异常拖垮整个 worker 线程。刻意不在这里再打日志：本类正是日志出口，
                 // 报错会递归回自己。但这条事件确实没了，因此计入丢弃数——另外三种「worker 侧没能
                 // 落地」的情形都走这一个出口，漏计会让丢失规模在 droppedEventCount() 上完全看不见
-                m_droppedEventCount.fetch_add(1, std::memory_order_relaxed);
+                countDroppedEvent();
             }
             lock.lock();
             // 队列腾出空间，只叫因队列满而阻塞的写入者（消费者此刻不需要被叫）

@@ -15,10 +15,18 @@
 
 ## [Unreleased]
 
-自 2.5.0 起的累计变化（新增 6、变更 1、修复 3）：把已经建好的那道总量防线接到配置文件上并让它对外可读，把命中的路由模式交回业务，给 ORM 补上唯一键冲突的处置档位，并补上三处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步。
+自 2.5.0 起的累计变化（新增 7、变更 1、修复 3）：把已经建好的那道总量防线接到配置文件上并让它对外可读，把命中的路由模式交回业务，给 ORM 补上唯一键冲突的处置档位，让被丢的日志第一次有对外可读的总数，并补上三处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步。
 
 ### 新增
 
+- **日志被丢多少，第一次有了对外读数**：`Base::droppedAsyncLogEventCount()`（进程内**所有**
+  `AsyncSink` 合计）与 `/metrics` 上的 `asyn_http_log_dropped_events_total`（counter，进程级）。
+  此前每个 sink 自己有 `droppedEventCount()`，但只有拿着那个对象的应用代码读得到——而「日志在偷偷丢」
+  通常是运维先发现（某段时间的审计记录不见了）。六个丢弃出口里有一条是**对端可驱动**的：JSON 版式对
+  非法 UTF-8 整条失败（有人在请求目标里送原始 Latin-1 字节时，访问日志的那一行就没了），worker 咽下
+  异常后只记在本 sink 的账上；没有进程级读数，「审计记录被远端消音」与「这段时间根本没人写日志」
+  在面板上是同一个形状。六个出口现在都走同一个 `countDroppedEvent()`，两份账（本 sink 与进程）
+  不可能分叉。刻意不做成 `ProcessMetricsRegistry` 的登记项：那张表住 Core，而 Base 不依赖 Core。
 - **已有的表能按结构体补列了**：`SchemaMigrator::addMissingColumns<T>(pool, &addedCount, &errorText)`
   与纯函数档 `addColumnStatement<T>(dialect, columnName)`。此前本类只会建表与删表——结构体加一个成员，
   已有的表不会跟着变，第一次读就报「列不存在」，而唯一的绕开办法是手写 `ALTER TABLE` 的原语 SQL

@@ -153,6 +153,22 @@ namespace AsynGyanis::Net
         // 常驻内存是进程级的瞬时量：名字要跟着 process_* 的既成约定，类型必须是 gauge
         EXPECT_NE(text.find("# TYPE asyn_http_process_resident_memory_bytes gauge\nasyn_http_process_resident_memory_bytes 18\n"), std::string::npos);
 
+        // 日志被丢的规模也是进程级读数，取值不由本夹具决定（别的用例可能丢过），因此钉「三处都在」：
+        // HELP、TYPE 与样本行各一次。少任一处，采集端就用不了这条读数
+        {
+            const std::string viewName   = "asyn_http_log_dropped_events_total";
+            const std::string sampleLine = viewName + " ";
+            EXPECT_NE(text.find("# TYPE " + viewName + " counter\n"), std::string::npos) << "少了 TYPE 行，采集端会按 untyped 处理";
+
+            std::size_t occurrences = 0;
+            for (std::size_t at = text.find(viewName); at != std::string::npos; at = text.find(viewName, at + 1U))
+            {
+                ++occurrences;
+            }
+            EXPECT_EQ(occurrences, 3U) << "HELP/TYPE/样本三处应当各出现一次";
+            EXPECT_NE(text.find(sampleLine), std::string::npos);
+        }
+
         // 活跃连接数是瞬时量，必须是 gauge——报成 counter 采集侧会去算增长率
         EXPECT_NE(text.find("# TYPE asyn_http_active_connections gauge\nasyn_http_active_connections 2\n"), std::string::npos);
 

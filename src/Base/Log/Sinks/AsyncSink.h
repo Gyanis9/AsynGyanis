@@ -170,6 +170,13 @@ namespace AsynGyanis::Base
         [[nodiscard]] std::size_t queuedEventCount() const noexcept;
 
         /**
+         * @brief 记下一条被丢掉的事件：本 sink 的计数与进程总量各加一
+         * @details 六个丢弃出口（停止窗口、Drop 满、DropOldest 淘汰、Block 等位超时/停止、
+         *          下游等级过滤、worker 落地时抛异常）都走这里，两处账目因此不可能分叉
+         */
+        void countDroppedEvent() noexcept;
+
+        /**
          * @brief 核销一条已受理事件的落地义务，并在有人等待时唤醒 flush 等待者
          * @details 事件离开队列的每一条路都要走这里一次：worker 写出后、被下游等级过滤丢掉时、
          *          被 DropOldest 淘汰时。少一次就有 flush() 永远等不到的账，多一次则让 flush()
@@ -201,4 +208,18 @@ namespace AsynGyanis::Base
         std::once_flag        m_stopOnce;             ///< 保证停止动作只执行一次，并让并发调用者都等到 join 完成
         std::atomic<uint64_t> m_droppedEventCount{0}; ///< 溢出与停止丢弃事件累计计数
     };
+
+    /**
+     * @brief 进程内**所有**异步日志出口累计丢掉的事件数
+     *
+     * @details 单个 sink 的 droppedEventCount() 只有拿着那个对象的人能读到，而「日志在偷偷丢」这件事
+     *          通常是运维先发现（某段时间的审计记录不见了），不是应用代码。六个丢弃出口里有一条是
+     *          **对端可驱动**的：JSON 版式对非法 UTF-8 会整条失败（例如有人在请求目标里送原始
+     *          Latin-1 字节，而访问日志把那个目标记进 message），worker 抓住异常后把该条计入丢弃数——
+     *          没有这个数，「审计记录被远端消音」在面板上与「没人写日志」长得一模一样。
+     * @note 刻意留在 Base 里而不是往进程指标登记表上挂：登记表住 Core，而 Base 不依赖 Core
+     *       （分层红线）。/metrics 那一侧由 Net 在渲染端点时读这个数（见 HttpMetricsEndpoint）
+     * @return std::uint64_t 进程累计丢弃的事件数
+     */
+    [[nodiscard]] ASYN_BASE_API std::uint64_t droppedAsyncLogEventCount() noexcept;
 } // namespace AsynGyanis::Base
