@@ -7,6 +7,7 @@
 // - CommitMakesChangesVisibleToOtherConnections
 // - RollbackDiscardsChanges / DestructorRollsBackUncommittedWork
 // - DestructorRollsBackEvenWhenPoolResetDoesNot（回滚归属：池的会话复位会替事务析构擦屁股）
+// - PoolResetRollsBackTransactionOpenedByRawSql（绕过 beginTransaction() 的手工 BEGIN 也按引擎真值滚掉）
 // - ExceptionPathRollsBackAndKeepsDatabaseClean
 // - RepeatedCommitAndRollbackAreIdempotent / CommitThenRollbackKeepsCommittedData
 // - TransactionHoldsItsConnectionUntilItEnds
@@ -309,6 +310,38 @@ TEST_F(TransactionTest, DestructorRollsBackEvenWhenPoolResetDoesNot)
     // 若析构漏掉 ROLLBACK，这里会成功回滚并把别人的未结束事务交到手上传给下一个借用者
     EXPECT_FALSE(borrowedSqliteConnection->rollback()) << "析构没有补上 ROLLBACK：未结束的事务串给了下一个借用者";
     EXPECT_EQ(countCommittedRows(), 0);
+}
+
+/**
+ * @brief 验证归还路径按引擎自报认得出「手工开启的事务」，并把它滚掉
+ * @details 上面两条钉住的是事务析构这一来源；本条钉住调用方绕过 `beginTransaction()`、直接
+ *          `execute("BEGIN")` 这一来源。SQLite 的复位判据取自 `sqlite3_get_autocommit`（引擎真值）
+ *          而不是本类记账，因此这条也滚得掉；MySQL 侧的同一判据由真机用例
+ *          `ResetSessionStateRollsBackTransactionOpenedByRawSql` 钉住。池上限取 1，
+ *          于是「下一个借用者」必然就是同一条连接，判据不靠调度运气。
+ */
+TEST_F(TransactionTest, PoolResetRollsBackTransactionOpenedByRawSql)
+{
+    ConnectionPool singleConnectionPool(
+            [this]() -> std::unique_ptr<DatabaseConnection>
+            {
+                auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(m_databaseFile.utf8Path()));
+                // 连接池的工厂契约要求交出「已经 connect() 完成」的连接
+                static_cast<void>(connection->connect());
+                return connection;
+            },
+            makePoolConfiguration(1));
+
+    {
+        PooledConnection borrowed = singleConnectionPool.acquire();
+        ASSERT_TRUE(borrowed);
+        ASSERT_TRUE(borrowed->execute("BEGIN") != nullptr) << borrowed->lastError();
+        ASSERT_TRUE(borrowed->execute("INSERT INTO ledger (id, name, amount) VALUES (1, '手工开启的事务', 1.0)") != nullptr) << borrowed->lastError();
+    }
+
+    // 归还时读引擎真值的那道判据把事务滚掉了：同一连接现在看不到那一行
+    Queryable<LedgerRow> observer(singleConnectionPool);
+    EXPECT_EQ(observer.count(), 0) << "手工 BEGIN 开出的事务没有滚掉，它正串给下一个借用者";
 }
 
 /**

@@ -8,6 +8,7 @@
 // - 自增标识挂在写回执上：两条协议路径同口径、非插入语句与无自增列都回 0、宽不进 int64 时如实报 0 并写明原因
 // - 自增主键端到端：SchemaMigrator 生成的 DDL 被 InnoDB 接受，单条与批量两条写入路径都省略主键、标识连着排成 1..N
 // - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
+//   （复位按服务端自报的状态位判事务，因此绕过 beginTransaction() 手工 START TRANSACTION 也滚得掉）
 // - 多语句文本在两条协议路径上都整次拒绝且首条不落库（这是「握手不开 CLIENT_MULTI_STATEMENTS」的可证形式）
 // - 语句表到顶时逐出最久没被读到的那一条：条数停在上界、热语句第二轮仍逐条命中
 // - 预处理结果的取值缓冲区跟着「本次数据长度」走：先读 1 MiB 再读 20 字节，同一句缓存语句的读数要收缩回百字节级
@@ -144,7 +145,9 @@ namespace AsynGyanis::Database
         constexpr std::string_view kTransactionResetTableName      = "Asyn_Mysql_Tx_Reset";
         constexpr std::string_view kTransactionDestructorTableName = "Asyn_Mysql_Tx_Destructor";
         constexpr std::string_view kTransactionExceptionTableName  = "Asyn_Mysql_Tx_Exception";
-        constexpr std::string_view kTransactionColumns             = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
+        // 「绕过本类入口手工开启的事务」那条用例另起一张表，理由与上面那条注释相同（并行不得共用）
+        constexpr std::string_view kTransactionRawBeginTableName = "Asyn_Mysql_Tx_RawBegin";
+        constexpr std::string_view kTransactionColumns           = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
 
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
         constexpr std::string_view kMigratedTableName = "Asyn_Mysql_Migrated";
@@ -2153,6 +2156,33 @@ namespace AsynGyanis::Database
         EXPECT_EQ(countRows(*connection, kTransactionResetTableName), 0) << "归还时没有滚掉未提交的事务";
         // 幂等：没有活动事务时再调一次什么都不做
         EXPECT_NO_THROW(connection->resetSessionState());
+    }
+
+    /**
+     * @brief 验证会话复位认得出「绕过连接对象手工开启的事务」，并按服务端的自报把它滚掉
+     *
+     * @details 上一条用例走的是 `beginTransaction()`，那份事务开着的信息是本类自己记的账。
+     *          本条刻意绕开本类入口、直接执行 `START TRANSACTION`：只有服务端在应答里带回的
+     *          SERVER_STATUS_IN_TRANS 认得出它，而下一个借用者接手的后果完全一样——语句悄悄并进
+     *          上一笔事务，行锁一直握到那笔事务结束为止。SQLite 侧的同一判据由
+     *          Pool/TestTransaction.cpp 的 `PoolResetRollsBackTransactionOpenedByRawSql` 钉住。
+     */
+    TEST_F(MySqlIntegrationTest, ResetSessionStateRollsBackTransactionOpenedByRawSql)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionRawBeginTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<MySqlConnection> connection = makeConnection();
+        ASSERT_TRUE(connection->connect()) << connection->lastError();
+
+        ASSERT_TRUE(connection->execute("START TRANSACTION") != nullptr) << connection->lastError();
+        ASSERT_TRUE(insertTransactionRow(*connection, kTransactionRawBeginTableName, 1, "手工开启的事务", 2.5)) << connection->lastError();
+        // 未提交的行在这条连接上自己看得见：证明写确实发生了，复位要撤销的是真实存在的数据
+        ASSERT_EQ(countRows(*connection, kTransactionRawBeginTableName), 1) << "行没写进去，后面的判据就没意义了";
+
+        connection->resetSessionState();
+
+        // 同一连接读回 0 行：未提交的那一行被滚掉，而不是留着串给下一个借用者
+        EXPECT_EQ(countRows(*connection, kTransactionRawBeginTableName), 0) << "复位只认本类记下的事务：手工 START TRANSACTION 串给了下一个借用者";
     }
 
     /**

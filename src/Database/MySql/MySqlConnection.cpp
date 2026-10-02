@@ -1106,8 +1106,22 @@ namespace AsynGyanis::Database
 
     void MySqlConnection::resetSessionState() noexcept
     {
-        // 未连接，或本类没开过事务：没有要复位的东西（记账范围见头文件说明）
-        if (m_mysqlHandle == nullptr || !m_isTransactionOpen)
+        // 未连接：没有会话可复位
+        if (m_mysqlHandle == nullptr)
+        {
+            return;
+        }
+
+        // 两种「事务开着」都要滚：① 本类 beginTransaction() 的记账；② 服务端在上一条应答里自报的
+        // SERVER_STATUS_IN_TRANS。后者认得出上一个借用者绕过本类入口手工执行的 "START TRANSACTION"，
+        // 也认得出把 autocommit 关掉之后被语句隐式带出来的事务——这两类都不在本类的记账里，而它们同样
+        // 会跟着连接串给下一个借用者（对方的语句悄悄并进上一笔，行锁握到事务结束为止）。
+        // SQLite 侧早就按引擎自报判（sqlite3_get_autocommit），两边同一判据才不会出现「只有 MySQL
+        // 会把未提交事务传下去」这种跨驱动的漂移。
+        // 读字段而不是另发一条查询：server_status 是客户端库为上一条应答记下的真值，
+        // C API 里那些取状态位的访问器（历史版本中的 mysql_get_server_status）读的就是它
+        const bool isTransactionOpen = m_isTransactionOpen || (m_mysqlHandle->server_status & SERVER_STATUS_IN_TRANS) != 0;
+        if (!isTransactionOpen)
         {
             return;
         }

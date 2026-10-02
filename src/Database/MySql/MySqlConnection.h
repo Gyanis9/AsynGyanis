@@ -166,15 +166,17 @@ namespace AsynGyanis::Database
         bool rollback();
 
         /**
-         * @brief 归还连接池时复位会话状态：把本类开着的事务滚掉
+         * @brief 归还连接池时复位会话状态：把当前活动的事务滚掉
          * @details 残留的事务会跟着连接串给下一个借用者：对方的语句悄悄并进上一笔事务，
          *          行锁与元数据锁也一直被握到事务结束（可能永远不结束）为止。
-         *          判定用本类记下的「事务是否开着」（beginTransaction 置位、commit/rollback
-         *          清零）：MySQL 8 起 `struct MYSQL` 对使用方是不完整类型，读不到客户端库
-         *          记录的服务端状态位，公共 C API 也没有对应的取值函数。
-         * @note 与基类契约一致：不抛异常、幂等；未连接或本类没开过事务时不做任何事
-         * @note **记账范围**是本类的事务入口：手工执行的 "START TRANSACTION"、把 autocommit
-         *       关掉的会话不在这份记账里——那些是绕过连接对象自管的用法，本方法看不出它们
+         *          判定取两条：本类 beginTransaction() 的记账，加上服务端在上一条应答里自报的
+         *          SERVER_STATUS_IN_TRANS——只有后者认得出绕过本类入口手工执行的 "START TRANSACTION"
+         *          与关掉 autocommit 之后被语句隐式带出来的事务。SQLite 侧按 sqlite3_get_autocommit
+         *          判，两边同一判据：读引擎真值，而不是只读本类记了多少账。
+         * @note 与基类契约一致：不抛异常、幂等；未连接、且两条判据都说没有活动事务时不做任何事
+         * @note **复位范围只有事务**：会话变量、临时表与本类的语句缓存不在这条路径上。
+         *       COM_RESET_CONNECTION 能一次清掉它们，但它同时作废服务端全部预编译语句，而语句缓存里
+         *       留着的是 MYSQL_STMT 裸句柄——要走到那一步，得先让缓存与那次重置同生共死
          */
         void resetSessionState() noexcept override;
 
@@ -372,7 +374,7 @@ namespace AsynGyanis::Database
         /// 缓存命中累计次数：命中一次即少一趟 COM_STMT_PREPARE 往返，供用例判定逐出策略是否留住了热语句
         std::uint64_t m_statementCacheHits{0};
         /// 本类开着的事务（beginTransaction 置位，commit/rollback 与连接生命周期重置清零）：
-        /// 归还路径据此决定要不要滚，见 resetSessionState 的记账范围说明
+        /// 归还路径的判据之一，另一半是服务端自报的 SERVER_STATUS_IN_TRANS，见 resetSessionState
         bool m_isTransactionOpen{false};
     };
 
