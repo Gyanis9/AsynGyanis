@@ -241,8 +241,19 @@ namespace AsynGyanis::Net
          */
         Core::Task<std::optional<AcmeError>> authorizeDns01(AcmeClient &client, const AcmeAuthorization &authorization);
 
-        /// 记一次失败：计数加一、文案留下、日志说出来（三种渠道都写，免得只在一处可见）
-        void recordFailure(std::string message) noexcept;
+        /// 记一次失败：计数加一、文案留下、日志说出来（三种渠道都写，免得只在一处可见），并按本地的
+        /// 最小重试间隔与机构给的 `Retry-After` 设退避门槛（见 remoteOrLocalDelaySeconds）
+        void recordFailure(std::string message, std::optional<std::chrono::seconds> remoteRetryAfter = {}) noexcept;
+
+        /**
+         * @brief 这一次失败该退避多久（秒）
+         * @details 本地的 `minimumRetryInterval` 与机构的 `Retry-After` 取较大者：前者是我们对速率
+         *          限制的估计，后者是机构明说的答复，两者都不该被对方覆盖。机构的说法另外夹在 24 小时
+         *          之内——胡乱答复的邻居不该能把续期推到证书过期。
+         * @param remoteRetryAfter 机构在 429/503 上给的等待时长，没有则为空
+         * @return long long 至少 1 秒
+         */
+        [[nodiscard]] long long remoteOrLocalDelaySeconds(std::optional<std::chrono::seconds> remoteRetryAfter) const noexcept;
 
         /**
          * @brief 失败退避的门槛时刻：早于它不再试；0 表示没在退避中

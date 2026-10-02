@@ -161,6 +161,8 @@ namespace AsynGyanis::Net
             bool          isSuccess{false};                                 ///< 是否拿到证书
             AcmeErrorKind failureKind{AcmeErrorKind::InvalidConfiguration}; ///< 失败种类
             std::string   failureMessage;                                   ///< 失败文案
+            /// 失败时机构给的 `Retry-After`（限流一档才有值，其余为空）
+            std::optional<std::chrono::seconds> failureRetryAfter{};
             std::string   certificatePem;                                   ///< 成功时拿到的证书链
             std::string   accountUrl;                                       ///< 本轮生效的账户 URL，供下一轮复用
         };
@@ -307,9 +309,10 @@ namespace AsynGyanis::Net
         template<typename Expected>
         bool recordFailure(const std::size_t index, const Expected &result, FlowOutcome outcome)
         {
-            outcome.failureKind    = result.error().kind;
-            outcome.failureMessage = result.error().message;
-            m_outcomes[index]      = std::move(outcome);
+            outcome.failureKind        = result.error().kind;
+            outcome.failureMessage     = result.error().message;
+            outcome.failureRetryAfter  = result.error().retryAfter;
+            m_outcomes[index]          = std::move(outcome);
             return false;
         }
 
@@ -776,6 +779,10 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(outcome.isSuccess);
         EXPECT_EQ(outcome.failureKind, AcmeErrorKind::RateLimited) << outcome.failureMessage;
         EXPECT_NE(outcome.failureMessage.find("退避"), std::string::npos) << outcome.failureMessage;
+        // 桩在 429 上带的是 `Retry-After: 3600`（RFC 8555 §6.8 要求机构必须带、客户端必须照办）。
+        // 这一项以前被解析出来又当场丢掉，于是「该退避」只写在注释里
+        ASSERT_TRUE(outcome.failureRetryAfter.has_value()) << "机构的 Retry-After 没有交回给调用方：退避只能靠猜";
+        EXPECT_EQ(outcome.failureRetryAfter->count(), 3600) << "Retry-After 的秒数应当原样交回，不夹本地默认";
     }
 
     /**

@@ -316,4 +316,42 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(parseHttpDate(text).has_value()) << "这条本该判不可解析：" << text;
         }
     }
+
+    /**
+     * @brief `Retry-After` 的两种写法都要认，且读不懂时交回空而不是 0
+     * @details RFC 9110 §10.2.3 允许相对秒数与绝对的 HTTP-date 两种形状，本框架自己在 429/503 上发的
+     *          是前者，而机构可能回后者。把「读不懂」折成 0 秒是最坏的一种省事：0 的含义是「现在就再
+     *          试一次」，那等于在限流现场把对端的警告丢掉并加速撞上去，所以判据是空 optional。
+     *          绝对的过去折成 0 是对的——那正是「等待已经结束」的意思。
+     */
+    TEST(HttpDate, ParsesRetryAfterInBothForms)
+    {
+        const std::chrono::system_clock::time_point now = instantFromSeconds(2'000'000'000);
+
+        EXPECT_EQ(parseRetryAfter("3600", now), std::optional{std::chrono::seconds{3600}});
+        EXPECT_EQ(parseRetryAfter("0", now), std::optional{std::chrono::seconds{0}}) << "0 是合法写法：机构说的是现在就能再试";
+        EXPECT_EQ(parseRetryAfter("  42  ", now), std::optional{std::chrono::seconds{42}}) << "首尾空白是头部取值的一部分";
+
+        // 绝对时刻：未来按差值交回，过去一律 0
+        std::array<char, kHttpDateTextLength> futureBuffer{};
+        const std::string_view futureText = formatHttpDate(instantFromSeconds(2'000'000'000 + 120), futureBuffer);
+        EXPECT_EQ(parseRetryAfter(futureText, now), std::optional{std::chrono::seconds{120}});
+
+        std::array<char, kHttpDateTextLength> pastBuffer{};
+        const std::string_view pastText = formatHttpDate(instantFromSeconds(2'000'000'000 - 999), pastBuffer);
+        EXPECT_EQ(parseRetryAfter(pastText, now), std::optional{std::chrono::seconds{0}}) << "已经过去的时刻应当读成「现在就能再试」，而不是负数或空";
+
+        // 拒绝面：形状不对就不给数，宁缺毋造
+        for (const std::string_view rejectedText: {std::string_view{""},
+                                                   std::string_view{"abc"},
+                                                   std::string_view{"-5"},
+                                                   std::string_view{"1.5"},
+                                                   std::string_view{"1e3"},
+                                                   std::string_view{"12x"},
+                                                   std::string_view{"99999999999999999999999"},
+                                                   std::string_view{"Wed, 33 Xyz 2026 00:00:00 GMT"}})
+        {
+            EXPECT_FALSE(parseRetryAfter(rejectedText, now).has_value()) << "这条本该判读不懂：" << rejectedText;
+        }
+    }
 } // namespace AsynGyanis::Net

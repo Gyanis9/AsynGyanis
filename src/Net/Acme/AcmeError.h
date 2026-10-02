@@ -11,6 +11,8 @@
 
 #include "AsynGyanisExport.h"
 
+#include <chrono>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -49,6 +51,14 @@ namespace AsynGyanis::Net
     {
         AcmeErrorKind kind;    ///< 失败种类，调用方据此分支
         std::string   message; ///< 中文可操作文案，含必要时的机构原文
+
+        /**
+         * @brief 机构在 429/503 上给的 `Retry-After`（ RFC 8555 §6.8 要求客户端必须照办）
+         * @details 只有 `RateLimited` 这一档会填它，其余种类保持为空。此前这个头被解析出来又当场丢掉，
+         *          于是 `RateLimited` 的注释承诺（「该退避而不是改配置」）与实现不符：管理器拿着一个
+         *          本地配置的间隔，而机构明明说了要等多久。
+         */
+        std::optional<std::chrono::seconds> retryAfter{};
     };
 
     /**

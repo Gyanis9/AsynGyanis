@@ -31,7 +31,7 @@ namespace AsynGyanis::Core
 namespace AsynGyanis::Net
 {
     /**
-     * @brief 一段 ACME 应答：正文原文加上本通路还要读的两个响应头
+     * @brief 一段 ACME 应答：正文原文加上本通路还要读的响应头
      */
     struct ASYN_NET_API AcmeReply
     {
@@ -39,6 +39,9 @@ namespace AsynGyanis::Net
         std::string locationUrl;   ///< Location 头，无则为空
         std::string replayNonce;   ///< Replay-Nonce 头，无则为空
         int         statusCode{0}; ///< HTTP 状态码
+
+        /// 机构给的 `Retry-After`（两种写法都认，见 `parseRetryAfter`）；没有或读不懂时为空
+        std::optional<std::chrono::seconds> retryAfter{};
     };
 
     /**

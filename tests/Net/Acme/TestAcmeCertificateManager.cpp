@@ -82,6 +82,7 @@ namespace AsynGyanis::Net
             bool                      dnsPublishFails{false};                      ///< 让写入那一步失败，看撤有没有照跑
             bool                      dnsWithdrawFails{false};                     ///< 让撤回那一步失败
             bool                      dnsPublishesWrongValue{false};               ///< 写入成功但正文算错，机构会把挑战判 invalid
+            std::chrono::milliseconds minimumRetryInterval{std::chrono::hours{1}}; ///< 失败后的最小重试间隔；默认与管理器一致
         };
 
         /**
@@ -291,6 +292,7 @@ namespace AsynGyanis::Net
             configuration.challengePollInterval    = kPollInterval;
             configuration.renewalCheckInterval     = std::chrono::milliseconds{60};
             configuration.renewBeforeExpiry        = round.renewThreshold;
+            configuration.minimumRetryInterval     = round.minimumRetryInterval;
             // 用例统一用 EC：RSA 2048 每把都要几百毫秒，全跑完会把用例时长抬高一个量级
             configuration.accountKeyAlgorithm = AcmeKeyAlgorithm::Es256;
             configuration.domainKeyAlgorithm  = AcmeKeyAlgorithm::Es256;
@@ -926,5 +928,53 @@ namespace AsynGyanis::Net
         const auto run = driveIssue(Round{});
         ASSERT_TRUE(run.result.has_value() && run.result->has_value()) << run.result->error().message;
         EXPECT_EQ(manager().status().backoffUntilUnixSeconds, 0);
+    }
+
+    /**
+     * @brief 钉住：机构在 429 上给的 `Retry-After` 决定退避门槛（RFC 8555 §6.8 要求客户端照办）
+     * @details 本地最小重试间隔在这里刻意调成 60 秒，而桩回的是 3600 秒——两个数不同才分得清门槛
+     *          到底听的是谁。这一项以前被解析出来又当场丢掉，门槛实际是「下一秒」，于是
+     *          `RateLimited` 注释里那句「该退避」与实现无关。
+     */
+    TEST_F(AcmeCertificateManagerTest, BacksOffForTheDelayTheAuthorityAskedFor)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.isOrderRateLimited = true;
+        startServers(settings);
+
+        Round round;
+        round.minimumRetryInterval = std::chrono::seconds{60};
+        const auto run             = driveIssue(round);
+        ASSERT_TRUE(run.result.has_value()) << "管理器没有把这轮的结果交回来";
+        ASSERT_FALSE(run.result->has_value()) << "桩在限流档位，这轮本该失败";
+        EXPECT_EQ(run.result->error().retryAfter, std::optional<std::chrono::seconds>{std::chrono::seconds{3600}}) << "这条失败没带上机构给的等待时长";
+        EXPECT_NE(manager().status().lastFailureMessage.find("3600"), std::string::npos) << manager().status().lastFailureMessage;
+
+        const long long nowUnix = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        const long long waiting = manager().status().backoffUntilUnixSeconds - nowUnix;
+        EXPECT_GE(waiting, 3000) << "机构的 3600 秒没有进退避门槛，实际只等到 " << waiting << " 秒";
+        EXPECT_LE(waiting, 3660) << "门槛超出机构给的那一段：等待时长不该被本地放大";
+    }
+
+    /**
+     * @brief 钉住：机构没说话时，退避门槛按本地 `minimumRetryInterval` 算
+     * @details 这个配置项此前**从来没有被读过**（探针与用例都能配它，行为却恒为「下一秒再试」）。
+     *          这一条把它接上：60 秒的门槛要看得见，而 1 秒就是原来那个从未生效的形状。
+     */
+    TEST_F(AcmeCertificateManagerTest, UsesTheLocalMinimumWhenTheAuthoritySaysNothing)
+    {
+        startServers({});
+
+        Round round;
+        round.sendsEmptyDomainList = true; // 本地判据先拒：这条失败不带机构的答复
+        round.minimumRetryInterval = std::chrono::seconds{60};
+        const auto run             = driveIssue(round);
+        ASSERT_TRUE(run.result.has_value()) << "管理器没有把这轮的结果交回来";
+        ASSERT_FALSE(run.result->has_value()) << "空域名列表本该被本地拒掉";
+
+        const long long nowUnix = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        const long long waiting = manager().status().backoffUntilUnixSeconds - nowUnix;
+        EXPECT_GE(waiting, 30) << "本地的最小重试间隔没生效，实际只等到 " << waiting << " 秒";
+        EXPECT_LE(waiting, 120) << "没有机构答复时不该把门槛拉到本地间隔之外";
     }
 } // namespace AsynGyanis::Net

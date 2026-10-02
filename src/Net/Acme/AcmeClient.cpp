@@ -8,6 +8,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/HttpDate.h"
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -55,6 +56,7 @@ namespace AsynGyanis::Net
         /// 机构发的新 nonce 与新建资源的地址都在响应头里
         constexpr std::string_view kReplayNonceHeader = "Replay-Nonce";
         constexpr std::string_view kLocationHeader    = "Location";
+        constexpr std::string_view kRetryAfterHeader  = "Retry-After";
 
         /// jose+json 是 ACME 唯一的请求正文类型（RFC 8555 §6.3），且机构会按它拒收别的写法
         constexpr std::string_view kJoseContentType = "application/jose+json";
@@ -370,6 +372,12 @@ namespace AsynGyanis::Net
             reply.locationUrl = findHeader(sent->headers, kLocationHeader);
             reply.replayNonce = findHeader(sent->headers, kReplayNonceHeader);
             reply.bodyText    = std::move(sent->body);
+            // RFC 8555 §6.8 要求机构回 429 时必须带 Retry-After，并且客户端必须照办：这一项以前
+            // 被解析出来又当场丢掉，退避完全由本地的 renewalCheckInterval 决定，等于对端的说法不进账
+            if (const auto retryAfterText = findHeader(sent->headers, kRetryAfterHeader); !retryAfterText.empty())
+            {
+                reply.retryAfter = parseRetryAfter(retryAfterText, std::chrono::system_clock::now());
+            }
             // 每次应答都换发一个新 nonce，留着下一次用（用坏的就撞上 badNonce）
             if (!reply.replayNonce.empty())
             {
@@ -409,7 +417,12 @@ namespace AsynGyanis::Net
         if (reply.statusCode == 429 || reply.statusCode == 503)
         {
             message += "这一档要退避后再试而不是改配置：先查这一小时内的下单次数与并发数。";
-            return AcmeError{AcmeErrorKind::RateLimited, std::move(message)};
+            if (reply.retryAfter.has_value())
+            {
+                message += std::format("机构要求的等待时间是 {} 秒，已按它设置下一次尝试。", reply.retryAfter->count());
+            }
+            // 把机构的说法带上去：管理器据此决定退避门槛，而 RateLimited 的注释一直承诺的是这一档
+            return AcmeError{AcmeErrorKind::RateLimited, std::move(message), reply.retryAfter};
         }
         message += "按上面的类型改对应的那一项（域名、联系邮箱、服务条款或账户状态）；原样重试只会再吃一次同样的失败。";
         return AcmeError{AcmeErrorKind::RejectedByAuthority, std::move(message)};

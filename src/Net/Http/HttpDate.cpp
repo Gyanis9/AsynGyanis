@@ -443,4 +443,40 @@ namespace AsynGyanis::Net
         // 逐字段范围检查与折算同另外两种格式共用一份（含闰秒那一条）
         return makeUtcTimePoint(year, month, day, hour, minute, second);
     }
+
+    std::optional<std::chrono::seconds> parseRetryAfter(std::string_view text, const std::chrono::system_clock::time_point now)
+    {
+        const std::string_view trimmed = trimOptionalWhitespace(text);
+        if (trimmed.empty())
+        {
+            return std::nullopt;
+        }
+
+        // 第一种写法：delay-seconds（RFC 9110 §10.1.2 的 HTTP-Seconds，就是若干个十进制数字）。
+        // 首字符不是数字就不可能是这一种，直接去认绝对日期
+        if (const char firstCharacter = trimmed.front(); firstCharacter >= '0' && firstCharacter <= '9')
+        {
+            long long secondsValue = 0;
+            const auto parseResult = std::from_chars(trimmed.data(), trimmed.data() + trimmed.size(), secondsValue);
+            // 必须看 ec 而不是只看停下来的位置：取值大到装不进 long long 时标准规定 ptr 指向末尾而
+            // errc 是 result_out_of_range——只看 ptr 会把这种「读不懂」当成 0 交回，而 0 的含义是
+            // 「现在就再试一次」，等于对着一台明确说了要限流的机器加速撞上去
+            if (parseResult.ec == std::errc{} && parseResult.ptr == trimmed.data() + trimmed.size() && secondsValue >= 0)
+            {
+                return std::chrono::seconds{secondsValue};
+            }
+            // 混进非数字、或大到没有合法含义：宁可不认，也不编造一个对方没给过的等待时长
+            return std::nullopt;
+        }
+
+        // 第二种写法：绝对的 HTTP-date，换算成还要等多久。已经过去的按 0 交回——调用方要的是一个能直接
+        // 喂给定时器的正数，而「已经过去」的真实处置就是现在就能重试
+        const std::optional<std::chrono::system_clock::time_point> moment = parseHttpDate(trimmed);
+        if (!moment.has_value())
+        {
+            return std::nullopt;
+        }
+        const auto remainingSeconds = std::chrono::duration_cast<std::chrono::seconds>(moment.value() - now).count();
+        return remainingSeconds > 0 ? std::optional{std::chrono::seconds{remainingSeconds}} : std::optional{std::chrono::seconds{0}};
+    }
 } // namespace AsynGyanis::Net

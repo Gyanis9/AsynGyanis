@@ -25,6 +25,15 @@ namespace AsynGyanis::Net
     namespace
     {
         /**
+         * @brief 机构给的 `Retry-After` 的上限（秒）
+         * @details 刻意的不信任：RFC 8555 §6.8 要求客户端照办，但没说可以照办到多久。一个坏掉、
+         *          被换掉或胡乱答复的机构如果能把门槛推到一年，续期就永远不会再发生，而证书到期
+         *          是几周之后才暴露的事。夹在 24 小时：足以躲过机构常见的「每小时/每分钟」窗口，
+         *          又保证一天之内一定再试一次。
+         */
+        constexpr long long kMaximumRemoteRetryAfterSeconds = 24 * 60 * 60;
+
+        /**
          * @brief 续期循环一次停放的分片长度
          * @details 取 1 秒：相对默认 12 小时的检查间隔，每进程一次的这一拍唤醒成本可以忽略，
          *          而它把「叫停到退出」的延迟从一整拍压成不超过这一片。要比这更快只有让叫停去
@@ -179,7 +188,7 @@ namespace AsynGyanis::Net
         m_isStopping.store(true, std::memory_order_release);
     }
 
-    void AcmeCertificateManager::recordFailure(std::string message) noexcept
+    void AcmeCertificateManager::recordFailure(std::string message, const std::optional<std::chrono::seconds> remoteRetryAfter) noexcept
     {
         m_failureCount.fetch_add(1, std::memory_order_relaxed);
         {
@@ -188,7 +197,25 @@ namespace AsynGyanis::Net
         }
         // 三条渠道都写：日志给半夜只看得到一行的人，计数给面板，expected 给就在等的调用方
         LOG_ERROR_FMT("AcmeCertificateManager: {}", message);
-        m_notBeforeNextAttemptUnix.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
+        m_notBeforeNextAttemptUnix.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() + remoteOrLocalDelaySeconds(remoteRetryAfter) - 1,
+                                         std::memory_order_relaxed);
+    }
+
+    long long AcmeCertificateManager::remoteOrLocalDelaySeconds(const std::optional<std::chrono::seconds> remoteRetryAfter) const noexcept
+    {
+        // 退避门槛有两个来源，合成一个正数：本地的最小重试间隔（机构按「每域名每周几张」限流，
+        // 一小时都不该再撞一次——这一项以前虽然写着，却从没被读过，配成 5 分钟和配成一天是同一个行为），
+        // 以及机构在 429/503 上明说的秒数（RFC 8555 §6.8 要求客户端必须照办）。
+        // 机构的说法只被 24 小时这个上限夹住：那是刻意的不信任——一个坏掉、被换掉或胡乱答复的机构
+        // 不该能把续期一推再推，推到证书真的过期。取两者中较大的，谁也不覆盖谁
+        const long long localMinimumSeconds = std::chrono::duration_cast<std::chrono::seconds>(m_configuration.minimumRetryInterval).count();
+        const long long configuredSeconds   = std::max<long long>(1, localMinimumSeconds);
+        if (!remoteRetryAfter.has_value())
+        {
+            return configuredSeconds;
+        }
+        const long long cappedRemoteSeconds = std::clamp<long long>(remoteRetryAfter->count(), 0, kMaximumRemoteRetryAfterSeconds);
+        return std::max(configuredSeconds, cappedRemoteSeconds);
     }
 
     long long AcmeCertificateManager::backoffGateUnixSeconds() const noexcept
@@ -206,7 +233,8 @@ namespace AsynGyanis::Net
 
     AcmeError AcmeCertificateManager::notedFailure(AcmeError error)
     {
-        recordFailure(error.message);
+        // 机构的 Retry-After 只有经这条路才进得了退避门槛：RateLimited 那一档带着它，其余档为空
+        recordFailure(error.message, error.retryAfter);
         return error;
     }
 

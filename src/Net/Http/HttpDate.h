@@ -69,4 +69,21 @@ namespace AsynGyanis::Net
      * @note 名称逐字区分大小写：HTTP 日期的 ABNF 已把大小写固定下来，放宽只会放过真正畸形的头
      */
     [[nodiscard]] ASYN_NET_API std::optional<std::chrono::system_clock::time_point> parseHttpDate(std::string_view text);
+
+    /**
+     * @brief 解析 `Retry-After` 的取值，统一折成「还要等多久」
+     *
+     * @details RFC 9110 §10.2.3 允许这个头写成两种形状：秒数的相对延迟（`Retry-After: 3600`），
+     *          或一个绝对的 HTTP-date（`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`）。本框架的
+     *          服务端在 429 与 503 上发的是前者（限流中间件按窗口算、在途预算按一秒算），而机构的
+     *          应答两种都可能出现——只认一种就等于在对端说实话时装作没听见。
+     * @details 绝对时刻按「与 `now` 的差」交回，已经过去的折成 0 秒（= 立刻可重试），不做「负数」
+     *          这种第三种状态：调用方要的是一个可用于定时器的正数。
+     * @details 解析不出来时返回空 optional 而不是 0：**0 的含义是「现在就再试一次」**，把一条读不懂
+     *          的头折成 0 等于在限流现场把对端的警告丢掉并加速撞上去。
+     * @param text 头部原文，允许首尾空白
+     * @param now 换算绝对日期时的参照时刻（由调用方给，便于直测）
+     * @return std::optional<std::chrono::seconds> 要等待的秒数；无法解析时为空
+     */
+    [[nodiscard]] ASYN_NET_API std::optional<std::chrono::seconds> parseRetryAfter(std::string_view text, std::chrono::system_clock::time_point now);
 } // namespace AsynGyanis::Net
