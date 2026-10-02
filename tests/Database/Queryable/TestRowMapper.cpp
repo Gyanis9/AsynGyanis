@@ -617,17 +617,63 @@ namespace AsynGyanis::Database::Queryable
     }
 
     /**
-     * @brief 验证文本与二进制载荷不会为了「跑通」而被当成浮点收下
+     * @brief 验证二进制载荷与「不是十进制小数」的文本不会被为了「跑通」而当成浮点收下
      *
-     * @details 与整型一侧不同：浮点没有「引擎给不出该取值只能以文本返回」的必需支路，
-     *          文本落到浮点成员说明列声明与成员声明已经不符，一律按列类型错误报告。
+     * @details 旧断言是「文本一律拒」，理由是「浮点没有引擎给不出该取值只能以文本返回的必需支路」——
+     *          这条理由对 MySQL 不成立：DECIMAL/NEWDECIMAL 列就是按文本交回的
+     *          （MySql/MySqlValueConversion.h），而 DECIMAL 正是金额与精确量的常用列型。按旧断言，
+     *          同一个结构体在 SQLite 上读得动、在 MySQL 上逐行报「列声明与成员声明不符」。
+     *          现在十进制文本按形状与位数收下，其余形状仍然拒。
      */
-    TEST(RowMapperFloating, RejectsTextAndBinaryForFloatingMember)
+    TEST(RowMapperFloating, RejectsBinaryButAcceptsWellFormedDecimalText)
     {
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1.5"), kColumnName)), RowMappingException);
+        EXPECT_DOUBLE_EQ(1.5, Detail::convertDatabaseValue<double>(textValue("1.5"), kColumnName));
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(booleanValue(true), kColumnName)), RowMappingException);
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(DatabaseValue{BinaryBytes{0x01}}, kColumnName)), RowMappingException);
         EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(DatabaseValue{}, kColumnName)), RowMappingException);
+    }
+
+    /**
+     * @brief 钉住十进制文本这一支的位数判据、形状判据与上下界
+     * @details 位数按「第一个非零数字到最后一个非零数字」计：前后置零不携带信息，`"0.0012"` 是 2 位、
+     *          `"10000000000000000"` 是 1 位，都该收；超过 `digits10`（double 15、float 6）会静默改值，
+     *          必须拒——这与整型一侧「越界报错而不是取整」是同一条判据
+     */
+    TEST(RowMapperFloating, DecimalTextFollowsTheLosslessDigitRule)
+    {
+        EXPECT_DOUBLE_EQ(0.0012, Detail::convertDatabaseValue<double>(textValue("0.0012"), kColumnName));
+        EXPECT_DOUBLE_EQ(1e16, Detail::convertDatabaseValue<double>(textValue("10000000000000000"), kColumnName));
+        EXPECT_DOUBLE_EQ(1500.0, Detail::convertDatabaseValue<double>(textValue("1.5e3"), kColumnName));
+        EXPECT_DOUBLE_EQ(-2.25, Detail::convertDatabaseValue<double>(textValue("-2.25"), kColumnName));
+        EXPECT_DOUBLE_EQ(0.0, Detail::convertDatabaseValue<double>(textValue("0.000"), kColumnName));
+        EXPECT_DOUBLE_EQ(123456789012345.0, Detail::convertDatabaseValue<double>(textValue("123456789012345"), kColumnName))
+                << "15 位（double 的 digits10）应当收：这是无损上限之内";
+
+        // 第 16 位有效数字起，十进制转二进制浮点已经在改值
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1234567890123456"), kColumnName)), RowMappingException);
+        // float 的无损位数是 6 位：同一个取值给 float 就要被拒
+        EXPECT_FLOAT_EQ(1.23456F, Detail::convertDatabaseValue<float>(textValue("1.23456"), kColumnName));
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(textValue("1.234567"), kColumnName)), RowMappingException);
+
+        // 上下界：溢出与下溢都按 ERANGE 或收窄越界报出，而不是给出 inf/0
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(textValue("1e300"), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1e309"), kColumnName)), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1e-330"), kColumnName)), RowMappingException);
+    }
+
+    /**
+     * @brief 钉住形状判据：只有十进制小数的文法能通过，strtod 放宽的那些形状一律拒
+     * @details 直接交 strtod 会放前导空白、认 inf/nan 字面量、还支持十六进制与二进制指数
+     *          （"0x1p3"）——这些都不是引擎交回的十进制列值，收下等于把别的类型伪装成浮点
+     */
+    TEST(RowMapperFloating, RejectsMalformedDecimalTextShapes)
+    {
+        for (const char *malformedText: {"", " ", " 1.5", "1.5 ", "1.5abc", "1.2.3", ".", "-", "+", "e5", "1.5e", "1.5e+",
+                                         "inf", "-inf", "nan", "0x1p3", "1.5f"})
+        {
+            EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue(malformedText), kColumnName)), RowMappingException)
+                    << "形状「" << malformedText << "」不该被当成十进制小数";
+        }
     }
 
 } // namespace AsynGyanis::Database::Queryable

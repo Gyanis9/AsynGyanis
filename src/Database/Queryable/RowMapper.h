@@ -20,8 +20,10 @@
 
 #include <array>
 #include <charconv>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <string>
@@ -202,10 +204,124 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 把一段十进制小数文本严格解析成目标浮点类型
+         *
+         * @details MySQL 的 DECIMAL/NEWDECIMAL 列按**文本**交回（见 MySql/MySqlValueConversion.h：
+         *          「DECIMAL 与其余类型→std::string」），而 DECIMAL 正是金额与精确量的常用列型——
+         *          少了这一支，同一个结构体在 SQLite 上读得动、在 MySQL 上逐行报列类型错误，
+         *          报的还是「列声明与成员声明不符」。整型一侧早就收十进制文本，理由同一条。
+         * @details 收下之前先判**有效位数**：超过 `digits10`（double 15 位、float 6 位）的十进制转成
+         *          二进制浮点会静默改值，而本层对「静默改值」的一贯处置是报错而不是取整。
+         *          位数按「第一个非零数字到最后一个非零数字」计——前后置零不携带信息：
+         *          `"0.0012"` 算 2 位、`"10000000000000000"` 算 1 位，两者都收。
+         *
+         * @tparam FundamentalType 目标浮点类型（已剥掉 optional / cv 限定）
+         * @param textValue 列值文本
+         * @param columnName 列名，仅用于错误信息
+         * @return FundamentalType 解析结果
+         * @throws RowMappingException 文本不是十进制小数文法（前导空白、`inf`/`nan`、十六进制、
+         *         尾随余文都算「不是」），有效位数超出无损上限，或取值超出目标类型的上下界
+         */
+        template<typename FundamentalType>
+        [[nodiscard]] FundamentalType parseDecimalText(const std::string &textValue, const std::string_view columnName)
+        {
+            const std::size_t textLength = textValue.size();
+            std::size_t       cursor     = 0;
+            if (cursor < textLength && (textValue[cursor] == '+' || textValue[cursor] == '-'))
+            {
+                ++cursor;
+            }
+
+            // 形状自己扫，不直接交给 strtod：它放宽前导空白、认 inf/nan 这类字面量、还支持十六进制
+            // 与二进制指数（"0x1p3"），而这些形状都不该从「引擎交回的十进制列值」里通过
+            std::size_t firstNonZeroDigit = std::string::npos;
+            std::size_t lastNonZeroDigit  = 0;
+            std::size_t digitIndex        = 0;
+            const auto  scanDigitRun      = [&]() -> std::size_t
+            {
+                const std::size_t runBegin = cursor;
+                while (cursor < textLength && textValue[cursor] >= '0' && textValue[cursor] <= '9')
+                {
+                    if (textValue[cursor] != '0')
+                    {
+                        if (firstNonZeroDigit == std::string::npos)
+                        {
+                            firstNonZeroDigit = digitIndex;
+                        }
+                        lastNonZeroDigit = digitIndex;
+                    }
+                    ++digitIndex;
+                    ++cursor;
+                }
+                return cursor - runBegin;
+            };
+
+            const auto rejectShape = [&textValue, columnName]() -> RowMappingException
+            {
+                return RowMappingException(std::string("ORM 行映射失败：列 \"") + std::string(columnName) + "\" 的文本 \"" + textValue +
+                                           "\" 不是十进制小数（只接受可选正负号、数字与一个小数点、可选的 e 指数）");
+            };
+
+            const std::size_t integerDigitCount = scanDigitRun();
+            std::size_t       fractionDigitCount = 0;
+            if (cursor < textLength && textValue[cursor] == '.')
+            {
+                ++cursor;
+                fractionDigitCount = scanDigitRun();
+                if (fractionDigitCount == 0)
+                {
+                    throw rejectShape();
+                }
+            }
+            if (integerDigitCount + fractionDigitCount == 0)
+            {
+                throw rejectShape();
+            }
+            if (cursor < textLength && (textValue[cursor] == 'e' || textValue[cursor] == 'E'))
+            {
+                ++cursor;
+                if (cursor < textLength && (textValue[cursor] == '+' || textValue[cursor] == '-'))
+                {
+                    ++cursor;
+                }
+                if (scanDigitRun() == 0)
+                {
+                    throw rejectShape();
+                }
+            }
+            if (cursor != textLength)
+            {
+                throw rejectShape();
+            }
+
+            // 有效位数：整串都是零时按 1 位算（"0.000" 是零，任何浮点类型都装得下）
+            const std::size_t significantDigits = firstNonZeroDigit == std::string::npos ? 1U : lastNonZeroDigit - firstNonZeroDigit + 1U;
+            if (significantDigits > static_cast<std::size_t>(std::numeric_limits<FundamentalType>::digits10))
+            {
+                throw RowMappingException(std::string("ORM 行映射失败：列 \"") + std::string(columnName) + "\" 的值 " + textValue + " 有 " +
+                                          std::to_string(significantDigits) + " 位有效数字，超出 " + std::string(floatingTypeName<FundamentalType>()) +
+                                          " 能无损表示的 " + std::to_string(std::numeric_limits<FundamentalType>::digits10) +
+                                          " 位。换成文本成员自己解析，别让它静默改值");
+            }
+
+            errno         = 0;
+            const double  parsedValue = std::strtod(textValue.c_str(), nullptr);
+            const bool    outOfRange  = (errno == ERANGE);
+            constexpr bool canNarrow   = std::numeric_limits<FundamentalType>::max() < std::numeric_limits<double>::max();
+            if (outOfRange || (canNarrow && std::isfinite(parsedValue) && std::abs(parsedValue) > std::numeric_limits<FundamentalType>::max()))
+            {
+                throw RowMappingException(std::string("ORM 行映射失败：列 \"") + std::string(columnName) + "\" 的值 " + textValue + " 超出 " +
+                                          std::string(floatingTypeName<FundamentalType>()) + " 的上下界");
+            }
+            return static_cast<FundamentalType>(parsedValue);
+        }
+
+        /**
          * @brief 把一个单元格的值转换成目标成员类型
          * @details 整型接受 std::int64_t 或严格十进制文本（引擎存得下却给不出 int64 的整数只能以文本
-         *          返回），越界即报错而不是取整、截断。bool 只认 0 与 1；浮点只接受能无损表示的取值
-         *          （整数的连续精确区间是 ±2^digits，收窄到 float 时不得跨出其上下界）。
+         *          返回），越界即报错而不是取整、截断。bool 只认 0 与 1；浮点接受 Double、能逐位精确
+         *          表示的 Int64，以及**十进制小数文本**（MySQL 的 DECIMAL 列走的就是文本，见
+         *          parseDecimalText()），收窄会改变数值时一律报错。
          * @tparam MemberType 目标成员类型（可为 std::optional 包装）
          * @param cellValue 结果集当前行的单元格值
          * @param columnName 列名，仅用于错误信息
@@ -309,7 +425,13 @@ namespace AsynGyanis::Database::Queryable
                     }
                     return static_cast<BareType>(*integerValue);
                 }
-                throwColumnTypeError(columnName, "浮点（Double）", cellValue);
+                // 十进制小数文本：MySQL 的 DECIMAL/NEWDECIMAL 列按文本交回，而它是金额与精确量的
+                // 常用列型。少了这一支，同一个结构体在 SQLite 上读得动、在 MySQL 上逐行报错
+                if (const auto *textValue = std::get_if<std::string>(&cellValue))
+                {
+                    return parseDecimalText<BareType>(*textValue, columnName);
+                }
+                throwColumnTypeError(columnName, "浮点（Double、Int64 或十进制文本）", cellValue);
             } else if constexpr (std::is_same_v<BareType, std::string>)
             {
                 if (const auto *textValue = std::get_if<std::string>(&cellValue))
