@@ -407,11 +407,11 @@ namespace AsynGyanis::Net
             return {};
         }
 
-        if (facts.runsMultipleWorkerProcesses)
+        if (facts.runsMultipleWorkerProcesses && !facts.picksUpCertificateFromDisk)
         {
-            return std::unexpected(std::format("{} 与多 worker 进程不能同时用：每个 worker 会各建一份管理器去撞同一个机构（速率限制按账户计，不按进程），"
-                                               "而任何一次续期只装回它自己进程里的监听器，其余进程仍是那张旧的。请改为单进程跑，或先用 acme_issuance_probe "
-                                               "签一张、续期后由编排方重启各进程",
+            return std::unexpected(std::format("{} 在多 worker 进程里落不下去：签发只该归一个进程做（N 份管理器会各撞一次机构，速率限制按账户计，不按进程），"
+                                               "而签发的那个进程改的是磁盘——本进程既不会装回自己签的那张，也不会盯住那张文件的变化，线上身份永远是旧的那份。"
+                                               "给本进程装上跟随通道（Net::followCertificateRotation，按文件身份变化重装）或改为单进程跑",
                                                kAcmeConfigSection));
         }
         if (!facts.hasTlsListener)

@@ -212,11 +212,14 @@ namespace
     /// 启动确认的等待上限：绑定与监听都在协程的第一步做完，正常只需毫秒级；给足余量但不许无界等待
     constexpr std::chrono::milliseconds kStartupConfirmTimeout{2000};
 
-    /// 叫停证书续期循环后每轮重试的间隔（等的是那块「帧已退出」的原子牌子，不是循环对象本身）
+    /// 叫停 ACME 常驻协程后每轮重试的间隔（等的是「帧已退出」的计数，不是循环对象本身）
     constexpr std::chrono::milliseconds kAcmeRenewalLoopWaitSlice{50};
 
-    /// 续期循环的收口等待上限：停放一片是 1 秒，所以 100 轮（5 秒）给到两倍余量；到点打 WARN 继续收尾
+    /// ACME 常驻协程的收口等待上限：停放一片是 1 秒，所以 100 轮（5 秒）给到两倍余量；到点打 WARN 继续收尾
     constexpr int kAcmeRenewalLoopWaitRoundLimit = 100;
+
+    /// 非签发进程盯盘的节拍：证书按月才换一次，15 秒的取新延迟摆在 30 天的续期窗口前面无关紧要
+    constexpr std::chrono::milliseconds kCertificateRotationPollInterval{15000};
 
     /**
      * @brief 等到所有监听器进入监听态，或时限到点
@@ -297,19 +300,20 @@ namespace
     }
 
     /**
-     * @brief 承载证书自动化的常驻续期循环，并在它收口之后立一块主线程读得到的牌子
-     * @details 管理器交回的帧要由调用方投进循环并持有到退出（见 `AcmeCertificateManager` 的 @note）。
-     *          这里套一层协程做两件事：① `co_await` 它，帧归这条协程管，退出点变得可判定；② 退出
-     *          时刻写进一块 `std::atomic<bool>`——循环对象与协程句柄都不能从主线程碰（循环的线程契约），
-     *          而一块原子标志可以，于是收尾能等到「真的退出了」再停循环，而不是猜一段睡眠够不够长。
-     * @param manager 证书自动化管理器；本协程持有其引用，管理器必须比这条帧活得久
-     * @param hasExited 输入输出：续期循环收口时置真，收尾方按它做有界等待
-     * @return Core::Task<> 协程，续期循环退出后立即完成
+     * @brief 承载一条 ACME 常驻协程，并在它收口时把「还在跑的条数」减一
+     * @details 管理器交回的帧要由调用方投进循环并持有到退出（见 `AcmeCertificateManager` 的 @note，
+     *          跟随协程同一形状）。这里套一层协程做两件事：① `co_await` 它，帧归这条协程管，退出点
+     *          变得可判定；② 退出时刻反映到一块 `std::atomic<int>` 上——循环对象与协程句柄都不能从
+     *          主线程碰（循环的线程契约），而一个原子计数可以，于是收尾能等到「真的都退出了」再停循环，
+     *          而不是猜一段睡眠够不够长。计数而不是布尔量：本进程可能同时在跑续期循环与跟盘协程两条。
+     * @param loopTask 被承载的那条协程（按值收下，帧在协程帧销毁前一直持有它）
+     * @param pendingLoopCount 输入输出：在跑的常驻协程条数，收口一条减一
+     * @return Core::Task<> 协程，被承载的那条退出后立即完成
      */
-    Core::Task<> runAcmeRenewalLoopTask(Net::AcmeCertificateManager &manager, std::atomic<bool> &hasExited)
+    Core::Task<> runAcmeResidentLoopTask(Core::Task<void> loopTask, std::atomic<int> &pendingLoopCount)
     {
-        co_await manager.runRenewalLoop();
-        hasExited.store(true, std::memory_order_release);
+        co_await std::move(loopTask);
+        pendingLoopCount.fetch_sub(1, std::memory_order_acq_rel);
         co_return;
     }
 } // namespace
@@ -1151,9 +1155,15 @@ int main(int argc, char **argv)
     // （「调用方等到帧退出再销毁本对象」）那条寿命关系对得上；池与循环声明得更早，因此拆得更晚，
     // 帧被销毁时循环已经停手，不会有人再去 resume 一条已经拆掉的帧
     std::optional<Core::Task<>> acmeRenewalLoopTask;
-    std::atomic<bool>           acmeRenewalLoopExited{false};
+    std::optional<Core::Task<>> acmeRotationFollowTask;
+    std::atomic<bool>           acmeFollowStopRequested{false};
+    std::atomic<int>            acmePendingLoopCount{0};
     if (acmeConfiguration.isEnabled)
     {
+        // 签发只归一个进程做：机构的速率限制按账户计而不是按进程计，N 个进程各建一份管理器等于 N 倍
+        // 撞同一个额度，而它们签出来的每张都要各自落盘互踩。多 worker 形态下由槽位 0 持管理器，
+        // 其余进程改成跟盘；单进程形态（不是 master 拉起来的 worker）自然就是签发方
+        const bool             runsCertificateAutomation = !isWorkerProcess || workerIndex == 0;
         Net::AcmeAssemblyFacts facts;
         // 「有几台可装回」按真的能转成 HttpsServer 的那几台数，而不是按 --https/--h3 两个开关猜：
         // 开关说了而对象不在（或类型不对），装回动作就会遍历到一个都不改，而磁盘月月换——
@@ -1171,8 +1181,11 @@ int main(int argc, char **argv)
         facts.hasTlsListener              = tlsServerCount > 0 || http3Server != nullptr;
         facts.hasPublicPlaintextListener  = !useHttps;
         facts.runsMultipleWorkerProcesses = workerProcessCount > 1;
-        facts.listenerCertificateFile     = certificateFile;
-        facts.listenerPrivateKeyFile      = keyFile;
+        // 本进程一定拿得到新身份：签发方就地装回，非签发方跑跟盘协程——两条机制在下面按上面那个
+        // 布尔量各装其一，所以这条事实是分支结构的读数，不是自我声明
+        facts.picksUpCertificateFromDisk = true;
+        facts.listenerCertificateFile    = certificateFile;
+        facts.listenerPrivateKeyFile     = keyFile;
 
         const auto assembly = Net::validateAcmeAssembly(acmeConfiguration, facts);
         if (!assembly.has_value())
@@ -1182,10 +1195,12 @@ int main(int argc, char **argv)
         }
 
         Core::EventLoop &acmeLoop = pool.eventLoop(0);
-        // DNS-01 的动作对只在这一档构造：提供方不认识、凭据两条环境变量缺失都在 buildDns01TxtWriter
-        // 里当场抛，报出来的是「缺哪两条」，而不是几天之后第一次续期失败的那句机构错误
+        // DNS-01 的动作对只在**签发方**这一档构造：提供方不认识、凭据两条环境变量缺失都在
+        // buildDns01TxtWriter 里当场抛，报出来的是「缺哪两条」，而不是几天之后第一次续期失败的那句机构错误。
+        // 跟盘的进程什么都不签，因此也不该被要求握着能改域名记录的那对凭据——把凭据发给每一个进程
+        // 只会成倍扩大暴露面
         Net::AcmeDns01TxtWriter dns01TxtWriter;
-        if (acmeConfiguration.usesDns01())
+        if (acmeConfiguration.usesDns01() && runsCertificateAutomation)
         {
             try
             {
@@ -1238,9 +1253,6 @@ int main(int argc, char **argv)
             return {};
         };
 
-        acmeManager = std::make_unique<Net::AcmeCertificateManager>(acmeLoop, acmeConfiguration.manager, reloadIntoListeners, std::move(dns01TxtWriter));
-        acmeRenewalLoopTask.emplace(runAcmeRenewalLoopTask(*acmeManager, acmeRenewalLoopExited));
-        acmeLoop.scheduler().schedule(acmeRenewalLoopTask->handle());
         // 域名列表逐条打出来：多域名是本层的支持面，日志里只写第一条会让人以为其余几条没配上
         std::string domainText;
         for (const std::string &domainName: acmeConfiguration.manager.domainNames)
@@ -1248,10 +1260,31 @@ int main(int argc, char **argv)
             domainText += domainText.empty() ? "" : ",";
             domainText += domainName;
         }
-        LOG_INFO_FMT("证书自动化：开（机构 {}，域名 {}，落点 {}，通道 {}，每 {} 分钟查一次到期、到期前 {} 天内就该续；装回目标 {} 台 HTTPS 监听器 + HTTP/3 {}）",
-                     acmeConfiguration.manager.directoryUrl, domainText, acmeConfiguration.manager.certificateFile.string(), acmeConfiguration.usesDns01() ? "dns-01" : "http-01",
-                     std::chrono::duration_cast<std::chrono::minutes>(acmeConfiguration.manager.renewalCheckInterval).count(),
-                     std::chrono::duration_cast<std::chrono::days>(acmeConfiguration.manager.renewBeforeExpiry).count(), tlsServerCount, http3Server != nullptr ? "在" : "不在");
+
+        if (runsCertificateAutomation)
+        {
+            acmeManager = std::make_unique<Net::AcmeCertificateManager>(acmeLoop, acmeConfiguration.manager, reloadIntoListeners, std::move(dns01TxtWriter));
+            ++acmePendingLoopCount;
+            acmeRenewalLoopTask.emplace(runAcmeResidentLoopTask(acmeManager->runRenewalLoop(), acmePendingLoopCount));
+            acmeLoop.scheduler().schedule(acmeRenewalLoopTask->handle());
+            LOG_INFO_FMT(
+                    "证书自动化：开（机构 {}，域名 {}，落点 {}，通道 {}，每 {} 分钟查一次到期、到期前 {} 天内就该续；装回目标 {} 台 HTTPS 监听器 + HTTP/3 {}）",
+                    acmeConfiguration.manager.directoryUrl, domainText, acmeConfiguration.manager.certificateFile.string(), acmeConfiguration.usesDns01() ? "dns-01" : "http-01",
+                    std::chrono::duration_cast<std::chrono::minutes>(acmeConfiguration.manager.renewalCheckInterval).count(),
+                    std::chrono::duration_cast<std::chrono::days>(acmeConfiguration.manager.renewBeforeExpiry).count(), tlsServerCount, http3Server != nullptr ? "在" : "不在");
+        } else
+        {
+            // 非签发进程：磁盘上那张文件一换就重装本进程的 TLS 监听器。签发方是**先写私钥再写证书链**、
+            // 两张各一次原子替换，所以中间必然有一瞬间是「新私钥 + 旧证书」——那一次装回会被配对校验挡下，
+            // 而跟随协程刻意不把没装上的变化认下，下一拍再试就撞上两张都到位的那一刻
+            ++acmePendingLoopCount;
+            acmeRotationFollowTask.emplace(runAcmeResidentLoopTask(
+                    Net::followCertificateRotation(acmeLoop, certificateFile, keyFile, kCertificateRotationPollInterval, reloadIntoListeners, acmeFollowStopRequested),
+                    acmePendingLoopCount));
+            acmeLoop.scheduler().schedule(acmeRotationFollowTask->handle());
+            LOG_INFO_FMT("证书自动化：本进程不签发（签发归槽位 0 那个进程），改为每 {} 秒跟一次盘；装回目标 {} 台 HTTPS 监听器 + HTTP/3 {}",
+                         std::chrono::duration_cast<std::chrono::seconds>(kCertificateRotationPollInterval).count(), tlsServerCount, http3Server != nullptr ? "在" : "不在");
+        }
     }
 
     pool.start();
@@ -1296,17 +1329,22 @@ int main(int argc, char **argv)
     // 证书自动化排在停服务器之前叫停：续期帧归循环 0，而那条循环要到下面停运行时才停，先叫停再等它
     // 真的退出，帧就不会带着一个已被销毁的管理器被丢下（这正是「收口丢弃挂起协程」那类缺陷的形状）。
     // 等待是有界的——停放被切成 1 秒一片；正在进行的那一轮签发刻意不打断，等满上限就打一行 WARN 继续收尾
-    if (acmeManager != nullptr)
+    if (acmePendingLoopCount.load(std::memory_order_acquire) > 0)
     {
-        acmeManager->stopRenewalLoop();
-        for (int waitRoundCount = 0; waitRoundCount < kAcmeRenewalLoopWaitRoundLimit && !acmeRenewalLoopExited.load(std::memory_order_acquire); ++waitRoundCount)
+        if (acmeManager != nullptr)
+        {
+            acmeManager->stopRenewalLoop();
+        }
+        acmeFollowStopRequested.store(true, std::memory_order_release);
+        for (int waitRoundCount = 0; waitRoundCount < kAcmeRenewalLoopWaitRoundLimit && acmePendingLoopCount.load(std::memory_order_acquire) > 0; ++waitRoundCount)
         {
             std::this_thread::sleep_for(kAcmeRenewalLoopWaitSlice);
         }
-        if (!acmeRenewalLoopExited.load(std::memory_order_acquire))
+        if (acmePendingLoopCount.load(std::memory_order_acquire) > 0)
         {
-            LOG_WARN_FMT("证书自动化：续期循环在 {}ms 内没有收口（正在进行的那一轮签发不打断，半途掐掉会留下半个订单状态），"
+            LOG_WARN_FMT("证书自动化：{} 条常驻协程在 {}ms 内没有收口（正在进行的那一轮签发不打断，半途掐掉会留下半个订单状态），"
                          "仍按既有顺序停服务；停机期间不会再有装回动作",
+                         acmePendingLoopCount.load(std::memory_order_acquire),
                          std::chrono::duration_cast<std::chrono::milliseconds>(kAcmeRenewalLoopWaitSlice * kAcmeRenewalLoopWaitRoundLimit).count());
         }
     }

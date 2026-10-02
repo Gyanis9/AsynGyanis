@@ -108,7 +108,8 @@ namespace AsynGyanis::Net
     {
         bool                  hasTlsListener{false};              ///< 本进程里有没有会因这次续期而重装的 TLS 监听器（HTTPS 与 h3 都算）
         bool                  hasPublicPlaintextListener{false};  ///< 有没有公网可达的明文监听器：http-01 的令牌要从那里被机构取走
-        bool                  runsMultipleWorkerProcesses{false}; ///< 是不是多 worker 进程形态：每个进程会各建一份管理器、各装各的监听器
+        bool                  runsMultipleWorkerProcesses{false}; ///< 是不是多 worker 进程形态：签发只归一个进程做，其余进程得自己跟盘
+        bool                  picksUpCertificateFromDisk{false};  ///< 本进程会不会在证书文件被别的进程换掉之后自己重装（跟随协程在跑，或本进程就是签发方且就地装回）
         std::filesystem::path listenerCertificateFile{};          ///< 监听器实际加载的证书链路径（reload 按这条原路径重读）
         std::filesystem::path listenerPrivateKeyFile{};           ///< 监听器实际加载的私钥路径
     };
@@ -118,8 +119,9 @@ namespace AsynGyanis::Net
      * @details 判据全部是「配了但不生效」那一类形状，而不是配置文件的写法：证书自动化最坏的失败不是
      *          报错，而是磁盘上的证书每月都在换、服务却永远用着那张旧的，而面板上看不出来。因此这四处
      *          一律在启动那一刻拒，交回一句「该改哪里」：
-     *          ① 多 worker 进程——N 份管理器会各撞一次机构（速率限制按账户计，不是按进程），而任一次
-     *             续期只装回它自己进程里的监听器；
+     *          ① 多 worker 进程而本进程不跟盘——签发只该有一个进程做（N 份管理器会各撞一次机构，
+     *             速率限制按账户计，不是按进程），而签发进程改的是磁盘：其余进程要靠自己盯住那张文件
+     *             的变化才会换身份，没这条通道时它们会永远用着旧的那张；
      *          ② 没有任何 TLS 监听器——续期循环自己也拒绝启动（没有装回的对象），但那一档要到第一次
      *             查到期才出声，太晚；
      *          ③ 走 http-01 却没有公网可达的明文口——机构取不到令牌，每次下单都撞在自证上；

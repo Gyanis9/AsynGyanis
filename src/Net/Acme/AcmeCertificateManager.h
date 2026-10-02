@@ -311,4 +311,29 @@ namespace AsynGyanis::Net
      *          迟早会出现「判据认为还有三十天、面板显示已过期」这种两个解释
      */
     [[nodiscard]] ASYN_NET_API std::optional<std::chrono::system_clock::time_point> readCertificateExpiry(const std::filesystem::path &certificateFile);
+
+    /**
+     * @brief 跟着磁盘上那张证书走的常驻协程：身份变了就叫本进程重装一次
+     * @details 存在的理由是「一张单签完、多个进程都要用」那一档部署。签发只需要一个进程去做（机构的
+     *          速率限制按账户计，不是按进程），可 TLS 身份是每个进程各自握着的 SSL_CTX，而签发进程
+     *          写完那两张文件之后没有任何通知别人的通道——**原子替换本身就是通知**：本协程按
+     *          `pollInterval` 用 `Platform::queryFileBasicInfo` 读回 (字节数, 修改秒, 身份标记) 三元组，
+     *          任一与上次不同就调用 `reloadHandler` 一次。三元组与静态文件缓存用的是同一处口径，
+     *          不在这里另造一份「怎么算换了」。
+     *
+     * @details 装回失败时**不把新身份认下**，下一拍再试：线上还在用旧证书，放过一次就是永远放过。
+     *          同一次变化只报一条 ERROR（重试静默），否则 15 秒一次的节拍会把日志刷成一堵墙。
+     *
+     * @param loop 承载本协程定时器的事件循环（循环对象只在它所属的那条线程上碰）
+     * @param certificateFile 证书链路径，必须与签发方的落点同一条
+     * @param privateKeyFile 私钥路径，同上
+     * @param pollInterval 查一次的间隔；停放按 1 秒切片，叫停因此是有界的
+     * @param reloadHandler 装回动作，与 `AcmeCertificateManager` 用的是同一个形状；为空时本协程当场退出
+     *        并留一条 ERROR（跑一条永远什么都做不了的协程比不跑更糟）
+     * @param isStopping 叫停标志：置真后本协程最多再等一片就退出
+     * @return Core::Task<void> 协程帧，调用方投进循环并持有到退出（与 `runRenewalLoop()` 同一形状）
+     */
+    ASYN_NET_API Core::Task<void> followCertificateRotation(Core::EventLoop &loop, std::filesystem::path certificateFile, std::filesystem::path privateKeyFile,
+                                                            std::chrono::milliseconds pollInterval, AcmeCertificateManager::ReloadHandler reloadHandler,
+                                                            const std::atomic<bool> &isStopping);
 } // namespace AsynGyanis::Net

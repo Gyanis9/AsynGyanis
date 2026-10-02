@@ -346,18 +346,24 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 多 worker 进程形态下拒：N 份管理器各撞一次机构，而每次续期只装回自己进程
+     * @brief 多 worker 进程且本进程不跟盘时拒，装上跟随通道就放行（配对判据）
+     * @details 判据挂在能力上而不是进程数上：签发只该有一个进程做（N 份管理器各撞一次机构，速率限制按
+     *          账户计），而签发进程改的是磁盘——其余进程要么自己盯住那张文件的变化，要么永远用旧身份。
+     *          旧断言写的是「多 worker 进程不能同时用」（那时还没有跟随通道），新语义是「不跟盘才拒」。
      */
-    TEST(AcmeAssembly, RefusesMultipleWorkerProcesses)
+    TEST(AcmeAssembly, RefusesMultipleWorkerProcessesWithoutADiskFollower)
     {
         const auto        configuration   = readAcmeConfiguration(documentWith(dns01Section()));
         AcmeAssemblyFacts facts           = matchingFacts();
         facts.runsMultipleWorkerProcesses = true;
 
         const auto refused = validateAcmeAssembly(configuration, facts);
-        ASSERT_FALSE(refused.has_value()) << "多进程跑自动化是两处都错的形状，不该放行";
-        EXPECT_NE(refused.error().find("多 worker 进程不能同时用"), std::string::npos) << refused.error();
-        EXPECT_NE(refused.error().find("acme_issuance_probe"), std::string::npos) << "拒绝要给出现场能走的另一条路：" << refused.error();
+        ASSERT_FALSE(refused.has_value()) << "多进程而本进程不跟盘，等于让这台进程永远用旧身份";
+        EXPECT_NE(refused.error().find("在多 worker 进程里落不下去"), std::string::npos) << refused.error();
+        EXPECT_NE(refused.error().find("followCertificateRotation"), std::string::npos) << "拒绝要给出现场能走的另一条路：" << refused.error();
+
+        facts.picksUpCertificateFromDisk = true;
+        EXPECT_TRUE(validateAcmeAssembly(configuration, facts).has_value()) << "补上跟随通道就该放行，否则拒的是进程数而不是能力";
     }
 
     /**

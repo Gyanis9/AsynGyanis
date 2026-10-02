@@ -4,6 +4,7 @@
 #include "AcmeStubAuthority.h"
 #include "AcmeTestSupport.h"
 #include "CommonTestSupport.h"
+#include "CoreTestSupport.h"
 #include "MetricsTestSupport.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
@@ -24,9 +25,11 @@
 #include <cstddef>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -976,5 +979,123 @@ namespace AsynGyanis::Net
         const long long waiting = manager().status().backoffUntilUnixSeconds - nowUnix;
         EXPECT_GE(waiting, 30) << "本地的最小重试间隔没生效，实际只等到 " << waiting << " 秒";
         EXPECT_LE(waiting, 120) << "没有机构答复时不该把门槛拉到本地间隔之外";
+    }
+
+    namespace
+    {
+        /**
+         * @brief 等到条件成立或时限到点
+         * @details 用例自己构造成立条件、自己等到它，不赌调度时序；到点仍不成立时返回假，由调用方的
+         *          断言把「等了多少」说出来。
+         */
+        [[nodiscard]] bool waitUntil(const std::function<bool()> &condition, const std::chrono::milliseconds timeout)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (condition())
+                {
+                    return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            return condition();
+        }
+    } // namespace
+
+    /**
+     * @brief 跟随协程：磁盘上那张证书换了就叫装回一次，没变就一次都不叫
+     * @details 钉的是多进程部署里除签发方之外那些进程的取新路径：签发进程改的是磁盘，别的进程要么跟住
+     *          这次变化，要么永远用旧身份。「每拍都叫」和「从不叫」都是这台机器的故障，所以两头都判。
+     */
+    TEST(CertificateRotationFollower, ReloadsOncePerCertificateChange)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory paths("CertificateRotationFollower");
+        ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v1"));
+        ASSERT_TRUE(paths.writeBinaryFile("key.pem", "key-v1"));
+
+        std::atomic<bool>                  isStopping{false};
+        std::atomic<int>                   reloadCalls{0};
+        Core::EventLoop                    loop;
+        Core::TestSupport::EventLoopThread loopThread(loop);
+        std::optional<Core::Task<>>        follower;
+        follower.emplace(followCertificateRotation(
+                loop, paths.path() / "chain.pem", paths.path() / "key.pem", std::chrono::milliseconds{20},
+                [&reloadCalls]() -> std::expected<void, std::string>
+                {
+                    ++reloadCalls;
+                    return {};
+                },
+                isStopping));
+        loop.scheduler().schedule(follower->handle());
+
+        // 什么也没改的一段时间里不该叫过一次：把「每次轮询都重装」这种形状挡在门外
+        static_cast<void>(waitUntil([&loopThread] { return loopThread.isRunning(); }, std::chrono::seconds{2}));
+        std::this_thread::sleep_for(std::chrono::milliseconds{150});
+        EXPECT_EQ(reloadCalls.load(), 0) << "文件没变就叫了装回，跟随协程成了每拍重装";
+
+        ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v2-longer"));
+        EXPECT_TRUE(waitUntil([&reloadCalls] { return reloadCalls.load() >= 1; }, std::chrono::seconds{5})) << "换了证书之后 5 秒内没有触发装回";
+        EXPECT_EQ(reloadCalls.load(), 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds{150});
+        EXPECT_EQ(reloadCalls.load(), 1) << "同一次变化被按拍重复装回，等于身份每 20ms 重装一遍";
+
+        isStopping.store(true);
+        loopThread.join();
+    }
+
+    /**
+     * @brief 装回失败时不认下新身份，下一拍再试
+     * @details 线上还在用旧证书，放过一次就是永远放过；而重试不能每拍都喊，那会把日志刷成一堵墙。
+     */
+    TEST(CertificateRotationFollower, KeepsRetryingWhileTheReloadKeepsFailing)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory paths("CertificateRotationFollowerRetry");
+        ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v1"));
+        ASSERT_TRUE(paths.writeBinaryFile("key.pem", "key-v1"));
+
+        std::atomic<bool>                  isStopping{false};
+        std::atomic<int>                   reloadCalls{0};
+        Core::EventLoop                    loop;
+        Core::TestSupport::EventLoopThread loopThread(loop);
+        std::optional<Core::Task<>>        follower;
+        follower.emplace(followCertificateRotation(
+                loop, paths.path() / "chain.pem", paths.path() / "key.pem", std::chrono::milliseconds{20},
+                [&reloadCalls]() -> std::expected<void, std::string>
+                {
+                    ++reloadCalls;
+                    return std::unexpected("用例里的装回总是失败");
+                },
+                isStopping));
+        loopThread.loop().scheduler().schedule(follower->handle());
+        static_cast<void>(waitUntil([&loopThread] { return loopThread.isRunning(); }, std::chrono::seconds{2}));
+
+        ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v2-longer"));
+        EXPECT_TRUE(waitUntil([&reloadCalls] { return reloadCalls.load() >= 2; }, std::chrono::seconds{5})) << "装回失败一次就不再重试，等于承认了没装上的新身份";
+
+        isStopping.store(true);
+        loopThread.join();
+    }
+
+    /**
+     * @brief 没交装回动作时跟随协程当场退出，不跑成一条什么都做不了的常驻协程
+     */
+    TEST(CertificateRotationFollower, ExitsImmediatelyWithoutAReloadAction)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory paths("CertificateRotationFollowerNoHandler");
+        ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v1"));
+        ASSERT_TRUE(paths.writeBinaryFile("key.pem", "key-v1"));
+
+        std::atomic<bool>                  isStopping{false};
+        Core::EventLoop                    loop;
+        Core::TestSupport::EventLoopThread loopThread(loop);
+        std::optional<Core::Task<>>        follower;
+        follower.emplace(followCertificateRotation(loop, paths.path() / "chain.pem", paths.path() / "key.pem", std::chrono::milliseconds{20}, {}, isStopping));
+        loopThread.loop().scheduler().schedule(follower->handle());
+
+        EXPECT_TRUE(waitUntil([&follower] { return follower->isReady(); }, std::chrono::seconds{2})) << "空的装回动作本该让这条协程立刻收口，而不是挂在那儿";
+
+        isStopping.store(true);
+        loopThread.join();
     }
 } // namespace AsynGyanis::Net

@@ -6,6 +6,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Net/Acme/AcmeClient.h"
 #include "Platform/FileSystem/AtomicFileWriter.h"
+#include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/IO/FileContents.h"
 
 #include <openssl/bio.h>
@@ -580,6 +581,92 @@ namespace AsynGyanis::Net
             {
                 co_await timer.waitFor(std::min(kStopNoticeSlice, delay - elapsed));
             }
+        }
+    }
+
+    namespace
+    {
+        /**
+         * @brief 一条路径的可观察身份：字节数、修改秒与「同一路径现在指向哪个文件」的标记
+         * @details 三项都取自 Platform 那一次底层查询，与静态文件缓存同一个出处——「怎么算换了」这种
+         *          事写两处就会有一处漏抄，而漏抄的那处看着仍然正常
+         */
+        struct RotationStamp
+        {
+            std::uintmax_t sizeBytes        = 0; ///< 正文字节数
+            std::int64_t   lastWriteSeconds = 0; ///< 最后修改的 Unix 秒
+            std::uint64_t  identityTag      = 0; ///< 同路径现在指向哪个对象；原子替换必变
+
+            [[nodiscard]] bool operator==(const RotationStamp &) const = default;
+        };
+
+        /**
+         * @brief 读回一条路径的可观察身份
+         * @details 读不到就是「这里现在没有文件」，用零值表达：证书可能还没被签发方落过盘，
+         *          从「无」到「有」同样是一次要装回的变化，不能当成没变
+         */
+        [[nodiscard]] RotationStamp readRotationStamp(const std::filesystem::path &path)
+        {
+            const std::optional<Platform::FileBasicInfo> info = Platform::queryFileBasicInfo(path);
+            if (!info.has_value())
+            {
+                return {};
+            }
+            return RotationStamp{.sizeBytes = info->sizeBytes, .lastWriteSeconds = info->lastWriteSeconds, .identityTag = info->identityTag};
+        }
+    } // namespace
+
+    Core::Task<void> followCertificateRotation(Core::EventLoop &loop, std::filesystem::path certificateFile, std::filesystem::path privateKeyFile,
+                                               const std::chrono::milliseconds pollInterval, AcmeCertificateManager::ReloadHandler reloadHandler,
+                                               const std::atomic<bool> &isStopping)
+    {
+        if (!reloadHandler)
+        {
+            LOG_ERROR("followCertificateRotation: 没有交来装回动作，跟随协程当场退出。跑一条永远什么都做不了的协程，比不跑更容易让人以为线上身份会自己换新");
+            co_return;
+        }
+
+        Core::Timer   timer(loop);
+        RotationStamp certificateStamp = readRotationStamp(certificateFile);
+        RotationStamp keyStamp         = readRotationStamp(privateKeyFile);
+        // 同一次变化只报一条 ERROR：装回失败要每拍重试（线上还在用旧证书，放过一次就是永远放过），
+        // 而把同一件事按节拍重复喊出去就成了一堵墙
+        bool reportedFailureForCurrentChange = false;
+        // 停放的切片不超过一秒：叫停是落一个标志，能叫醒这条帧的只有它自己醒来那一刻
+        const std::chrono::milliseconds slice = std::min(std::max(pollInterval, std::chrono::milliseconds{1}), kStopNoticeSlice);
+        while (!isStopping.load(std::memory_order_acquire))
+        {
+            for (std::chrono::milliseconds elapsed{0}; elapsed < pollInterval && !isStopping.load(std::memory_order_acquire); elapsed += slice)
+            {
+                co_await timer.waitFor(std::min(slice, pollInterval - elapsed));
+            }
+            if (isStopping.load(std::memory_order_acquire))
+            {
+                co_return;
+            }
+
+            const RotationStamp currentCertificateStamp = readRotationStamp(certificateFile);
+            const RotationStamp currentKeyStamp         = readRotationStamp(privateKeyFile);
+            if (currentCertificateStamp == certificateStamp && currentKeyStamp == keyStamp)
+            {
+                continue;
+            }
+
+            const auto outcome = reloadHandler();
+            if (!outcome.has_value())
+            {
+                if (!reportedFailureForCurrentChange)
+                {
+                    LOG_ERROR_FMT("followCertificateRotation: 磁盘上的证书已经换了，但装回本进程失败，线上仍在用旧身份。原因：{}（下一拍仍会再试一次）", outcome.error());
+                    reportedFailureForCurrentChange = true;
+                }
+                // 新身份不认下：认下了就等于宣布这次变化已处置完，而它并没有
+                continue;
+            }
+            certificateStamp                = currentCertificateStamp;
+            keyStamp                        = currentKeyStamp;
+            reportedFailureForCurrentChange = false;
+            LOG_INFO_FMT("followCertificateRotation: 磁盘上的证书换了（证书字节数 {}、私钥字节数 {}），已装回本进程", certificateStamp.sizeBytes, keyStamp.sizeBytes);
         }
     }
 } // namespace AsynGyanis::Net
