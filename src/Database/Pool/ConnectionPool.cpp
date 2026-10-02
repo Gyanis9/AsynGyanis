@@ -1,8 +1,11 @@
 #include "Database/Pool/ConnectionPool.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Core/EventLoop/EventLoop.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <string>
 #include <utility>
 
 namespace AsynGyanis::Database
@@ -13,7 +16,10 @@ namespace AsynGyanis::Database
     // ========================================================================
 
     ConnectionPool::ConnectionPool(std::function<std::unique_ptr<DatabaseConnection>()> factory, const PoolConfig &config) :
-        m_factory(std::move(factory)), m_config(config), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
+        // 配置先在**线程起来之前**过一遍判据：m_config 与 m_healthThread 按声明顺序初始化，
+        // 把校验放在这一段里就等于「要么先拒、要么根本还没启动」，不会出现抛出去之后
+        // 留下一条已经在跑的后台线程
+        m_factory(std::move(factory)), m_config(validateConfiguration(config)), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
         // 登记的四条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）
         m_metricHandles = {
@@ -682,8 +688,22 @@ namespace AsynGyanis::Database
         }
     }
 
+    PoolConfig ConnectionPool::validateConfiguration(const PoolConfig &config)
+    {
+        // 只判「换算得过来」这一件事：健康检查间隔要乘 1000 变成毫秒片长，
+        // 超过 7 天的取值乘完会越过 int64 之外，负数喂给 wait_for 就是每秒空转一轮
+        if (config.healthCheckIntervalSeconds > kMaximumHealthCheckIntervalSeconds)
+        {
+            throw Base::InvalidArgumentException("ConnectionPool: healthCheckIntervalSeconds 不能超过 " + std::to_string(kMaximumHealthCheckIntervalSeconds) +
+                                                 " 秒（7 天），当前 " + std::to_string(config.healthCheckIntervalSeconds) + " 秒；换算成毫秒会溢出，那条后台线程会退化成空转");
+        }
+        return config;
+    }
+
     void ConnectionPool::healthCheckLoop(const std::stop_token &stopToken)
     {
+        // 下限压到 1 秒（0 会让那条线程按秒自旋）；上限由构造时的 validateConfiguration 兜住，
+        // 因此下面的换算不会溢出
         const auto interval = std::max(m_config.healthCheckIntervalSeconds, std::size_t{1});
 
         // 停止请求直接把本线程从等待里叫醒：jthread 的 join 因此不必等满当前那个 1 秒分片。
@@ -693,10 +713,10 @@ namespace AsynGyanis::Database
         while (!stopToken.stop_requested())
         {
             // 分段睡眠，每 1 秒醒一次：既检查停止标志，也推进异步等待者的截止时刻
-            const auto            totalSleepMilliseconds  = interval * 1000;
+            const auto            totalSleepMilliseconds  = static_cast<std::int64_t>(interval) * 1000;
             constexpr std::size_t kSleepChunkMilliseconds = 1000;
 
-            auto remainingMilliseconds = static_cast<int64_t>(totalSleepMilliseconds);
+            auto remainingMilliseconds = totalSleepMilliseconds;
             while (remainingMilliseconds > 0 && !stopToken.stop_requested())
             {
                 const auto chunk = std::min(static_cast<int64_t>(kSleepChunkMilliseconds), remainingMilliseconds);

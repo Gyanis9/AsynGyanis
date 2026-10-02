@@ -35,6 +35,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <string>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -1098,6 +1100,41 @@ namespace AsynGyanis::Database
             EXPECT_EQ(registryValue("asyn_db_pool_active_connections"), 0U) << "归还之后还记着在借，等于报出一份不存在的占用";
         }
         EXPECT_FALSE(hasRegistrySample("asyn_db_pool_active_connections")) << "池析构后这四条还挂在导出里";
+    }
+
+    /**
+     * @brief 钉住：荒谬的健康检查间隔在构造时就被拒，而不是让那条线程空转
+     * @details 后台把「间隔秒数」换算成毫秒当睡眠片长：不设上限时一个过大的取值先溢出成负数，
+     *          wait_for 对负时长立即返回，于是那条线程每秒空转一轮——既不睡觉，也不按配置的节奏
+     *          干活，而现场只看得到 CPU 在动。判据放在构造时、线程启动之前：换个时机的表现是
+     *          「线程已经跑起来了才炸」。
+     */
+    TEST(ConnectionPool, RejectsHealthCheckIntervalThatCannotBeConvertedToMilliseconds)
+    {
+        ConnectionCounter counter;
+        auto              factory = makeMockFactory(counter);
+
+        PoolConfig absurd;
+        absurd.healthCheckIntervalSeconds = std::numeric_limits<std::size_t>::max() / 2;
+        try
+        {
+            static_cast<void>(ConnectionPool::validateConfiguration(absurd));
+            FAIL() << "换算不过来毫秒的间隔本该在构造那一刻就被拒";
+        } catch (const Base::InvalidArgumentException &failure)
+        {
+            // 文案点名是哪个键、允许到多少，只回一句「参数非法」等于把排查推回调用方
+            EXPECT_NE(std::string(failure.what()).find("healthCheckIntervalSeconds"), std::string::npos) << failure.what();
+            EXPECT_NE(std::string(failure.what()).find(std::to_string(kMaximumHealthCheckIntervalSeconds)), std::string::npos) << failure.what();
+        }
+
+        // 池构造走同一条判据：拒在线程启动之前，不留一条已经在跑的后台线程
+        EXPECT_THROW(static_cast<void>(ConnectionPool(factory, absurd)), Base::InvalidArgumentException);
+        EXPECT_EQ(counter.totalCreated.load(), 0) << "被拒的构造仍然建了连接";
+
+        // 上限本身可用（正向对照，判据不能宽到把合法的长间隔也拒掉）
+        PoolConfig atLimit;
+        atLimit.healthCheckIntervalSeconds = kMaximumHealthCheckIntervalSeconds;
+        EXPECT_NO_THROW(static_cast<void>(ConnectionPool(factory, atLimit)));
     }
 
 } // namespace AsynGyanis::Database

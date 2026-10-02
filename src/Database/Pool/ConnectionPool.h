@@ -66,6 +66,18 @@ namespace AsynGyanis::Database
         explicit ConnectionPool(std::function<std::unique_ptr<DatabaseConnection>()> factory, const PoolConfig &config = PoolConfig{});
 
         /**
+         * @brief 校验一份池配置，不可用即抛出并说清是哪一项
+         * @param config 待校验的配置
+         * @return PoolConfig 原样交回（便于在成员初始化列表里直接套一层）
+         * @throws Base::InvalidArgumentException healthCheckIntervalSeconds 超过 7 天
+         *         （见 kMaximumHealthCheckIntervalSeconds：那条后台线程按毫秒睡觉，那个量换算成毫秒
+         *          会溢出成负数，wait_for 对负时长立即返回，线程于是每秒空转一轮）
+         * @details 构造函数调它，且调在健康检查线程启动**之前**：换个时机拒就是「线程已经跑起来了才炸」，
+         *          抛出去之后还要等成员析构把那条线程收掉
+         */
+        [[nodiscard]] static PoolConfig validateConfiguration(const PoolConfig &config);
+
+        /**
          * @brief 析构连接池
          *
          * @details 请求后台线程停止，等待其退出，然后关闭所有空闲连接。
