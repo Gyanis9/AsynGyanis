@@ -21,7 +21,10 @@ namespace AsynGyanis::Database
         // 留下一条已经在跑的后台线程
         m_factory(std::move(factory)), m_config(validateConfiguration(config)), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
-        // 登记的五条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）
+        // 登记的六条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
+        // `connections_created_total` 是 `connections_held` 的**旧名别名**：那个名字随 v2.4.0 发布过，
+        // 而它其实不是历史累计（丢弃会减回去，它同时是上限的占位分母）——改名等于掐断既有面板，
+        // 所以旧名留着、值与 help 都按真实语义走，新面板取 held
         m_metricHandles = {
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_active_connections", "此刻被取出未归还的数据库连接数（进程内各池相加）", Core::ProcessMetricKind::Gauge,
                                                              Core::ProcessMetricMerge::Sum,
@@ -29,8 +32,11 @@ namespace AsynGyanis::Database
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_waiting_requests", "正在等一条空闲连接的同步取出请求数", Core::ProcessMetricKind::Gauge,
                                                              Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_syncWaitingCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connections_held", "池当下记在账上的连接数（创建 +，丢弃或建连回退 −）：与 maximumPoolSize 同一本账",
+                                                             Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_totalCreated.load(std::memory_order_relaxed)); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connections_created_total",
-                                                             "池当下记在账上的连接数（创建 +，丢弃或建连回退 −）：与 maximumPoolSize 同一本账，不是历史累计",
+                                                             "同 asyn_db_pool_connections_held（旧名，随 v2.4.0 发布过：留着不让既有面板断线，新面板请取 held）",
                                                              Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_totalCreated.load(std::memory_order_relaxed)); }),
                 Core::ProcessMetricsRegistry::registerMetric(

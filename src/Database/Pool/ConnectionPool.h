@@ -500,7 +500,7 @@ namespace AsynGyanis::Database
          *          要拿池自己的那两把锁，抓取线程去拿就等于与借出路径抢锁——那会把一次 `/metrics`
          *          抓取变成池的延迟来源，宁可少报两格
          */
-        std::array<Core::ProcessMetricHandle, 5> m_metricHandles{};
+        std::array<Core::ProcessMetricHandle, 6> m_metricHandles{};
     };
 
 } // namespace AsynGyanis::Database

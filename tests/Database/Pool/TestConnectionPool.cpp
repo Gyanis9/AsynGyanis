@@ -1179,4 +1179,30 @@ namespace AsynGyanis::Database
         EXPECT_EQ(pool.discardedCount(), 1U) << "这次归还的复位是干净的，不该再多记一笔丢弃";
     }
 
+    /**
+     * @brief 钉住：`connections_held` 与它的旧名别名导出的是同一个数
+     * @details 旧名 `..._created_total` 随 v2.4.0 发布过，直接改名会掐断既有面板，因此留着；
+     *          留着的前提是「两份名字读数必须一致」，否则同名不同值比少一个名字更难查
+     */
+    TEST(ConnectionPool, ExposesHeldConnectionCountUnderBothNames)
+    {
+        ConnectionCounter counter;
+        auto              factory = makeMockFactory(counter);
+
+        PoolConfig configuration;
+        configuration.maximumPoolSize = 2;
+
+        ConnectionPool pool(factory, configuration);
+
+        PooledConnection connection = pool.acquire();
+        ASSERT_TRUE(connection);
+
+        const auto held   = AsynGyanis::TestSupport::findRegistrySample("asyn_db_pool_connections_held");
+        const auto legacy = AsynGyanis::TestSupport::findRegistrySample("asyn_db_pool_connections_created_total");
+        ASSERT_TRUE(held.has_value()) << "新名字没挂上：按文档取 held 的面板读到的是空";
+        ASSERT_TRUE(legacy.has_value()) << "旧名字被摘掉：等于掐断随 v2.4.0 发布过的那张面板";
+        EXPECT_EQ(held->value, static_cast<std::uint64_t>(pool.createdCount()));
+        EXPECT_EQ(legacy->value, held->value) << "两个名字报的不是同一个数——这比只留一个更难查";
+    }
+
 } // namespace AsynGyanis::Database
