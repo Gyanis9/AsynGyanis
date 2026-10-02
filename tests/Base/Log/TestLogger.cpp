@@ -115,6 +115,7 @@ namespace AsynGyanis::Base
              */
             void write(const LogEvent &event) override
             {
+                m_writtenCount.fetch_add(1, std::memory_order_relaxed);
                 m_ledger->record(event);
             }
 
@@ -126,8 +127,18 @@ namespace AsynGyanis::Base
                 m_ledger->countFlush();
             }
 
+            /**
+             * @brief 本 Sink 自己收到的事件条数
+             * @details Sink 侧的读数：调用方交出句柄之后还想读它，只有共享所有权这一条路走得通
+             */
+            [[nodiscard]] int writtenCount() const noexcept
+            {
+                return m_writtenCount.load(std::memory_order_relaxed);
+            }
+
         private:
-            std::shared_ptr<SinkLedger> m_ledger; ///< 事件账本
+            std::shared_ptr<SinkLedger> m_ledger;          ///< 事件账本
+            std::atomic<int>            m_writtenCount{0}; ///< 本 Sink 被写入的条数
         };
 
         /**
@@ -367,6 +378,25 @@ namespace AsynGyanis::Base
         EXPECT_EQ(event.message, "hello sink");
         EXPECT_EQ(event.level, LogLevel::Info);
         EXPECT_EQ(event.loggerNameView(), "dispatch");
+    }
+
+    TEST_F(LoggerTest, SinkAddedBySharedHandleStaysReachableAndSharable)
+    {
+        auto sink = std::make_shared<RecordingSink>(m_ledger);
+
+        Logger first("shared-first");
+        first.addSink(sink);
+        // 登记之后调用方手里那份句柄还能读出 Sink 自己的读数：只收 unique_ptr 时读不到，
+        // 只能靠账本反推，而自定义 Sink 的水位与失败计数本来就长在它自己的接口上
+        first.log(LogLevel::Info, "第一条");
+        EXPECT_EQ(sink->writtenCount(), 1);
+
+        // 同一个 Sink 登记给两个 Logger：一份输出面、两处采集，那是只交得出所有权时做不到的第二件事
+        Logger second("shared-second");
+        second.addSink(sink);
+        second.log(LogLevel::Info, "第二条");
+        EXPECT_EQ(sink->writtenCount(), 2);
+        EXPECT_EQ(m_ledger->eventCount(), 2u);
     }
 
     TEST_F(LoggerTest, OffLevelMessageIsNotDeliveredToSink)

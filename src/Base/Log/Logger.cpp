@@ -77,7 +77,7 @@ namespace AsynGyanis::Base
         return std::make_shared<const SinkSnapshot>();
     }
 
-    void Logger::addSink(std::unique_ptr<LogSink> sink)
+    void Logger::addSink(std::shared_ptr<LogSink> sink)
     {
         if (!sink)
         {
@@ -89,7 +89,7 @@ namespace AsynGyanis::Base
 
         auto next   = std::make_shared<SinkSnapshot>();
         next->sinks = m_sinksSnapshot.load(std::memory_order_acquire)->sinks;
-        next->sinks.push_back(std::shared_ptr<LogSink>(std::move(sink)));
+        next->sinks.push_back(std::move(sink));
         m_sinksSnapshot.store(std::move(next), std::memory_order_release);
     }
 

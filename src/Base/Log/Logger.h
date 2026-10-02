@@ -136,9 +136,17 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 向日志器追加一个输出 Sink
-         * @param sink 待接管所有权的 Sink
+         * @param sink 待登记的 Sink；传入空指针（含 `nullptr`）是空操作
+         * @details 形参取 `std::shared_ptr` 而不是 `unique_ptr`：内部本来就是按 shared_ptr 的快照持有
+         *          （SinkSnapshot::sinks），只收 unique_ptr 等于在门口把所有权换掉却不把句柄交回去——
+         *          调用方因此既不能把同一个 Sink 登记给两个 Logger，也不能在登记之后读它自己的读数
+         *          （自定义 Sink 的计数、队列水位、落盘失败次数）。
+         * @note 传 `std::unique_ptr` 的旧写法照旧编得过：shared_ptr 有从 unique_ptr 的隐式转换，
+         *       转换发生在这一层的形参上而不是重载决议里，因此不会出现两个重载争一个 `nullptr` 的歧义
+         * @note 留下句柄意味着可以在运行期继续用它。Sink 的 write() 由**任意打日志的线程**调用，
+         *       自定义 Sink 自己的状态本来就必须线程安全，这条不因本接口而放松
          */
-        void addSink(std::unique_ptr<LogSink> sink);
+        void addSink(std::shared_ptr<LogSink> sink);
 
         /**
          * @brief 清空所有已注册 Sink
