@@ -114,9 +114,10 @@ namespace AsynGyanis::Core
                 Core::ProcessMetricsRegistry::registerMetric("asyn_worker_crashes_total", "worker「起来就崩」的累计次数（含补上去的那几轮）", Core::ProcessMetricKind::Counter,
                                                              Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_totalCrashCount.load(std::memory_order_relaxed)); }),
-                Core::ProcessMetricsRegistry::registerMetric("asyn_worker_slots_given_up", "已放弃补位的 worker 槽位数：每槽满编时少一个进程就少一份容量，且这一格不会自己退回去",
-                                                             Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
-                                                             [this] { return static_cast<std::uint64_t>(m_givenUpWorkerCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric(
+                        "asyn_worker_slots_given_up", "已放弃补位的 worker 槽位累计数：每槽满编时少一个进程就少一份容量，只增不减（放弃这件事不会自愈，所以它也不是一个瞬时量）",
+                        Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                        [this] { return static_cast<std::uint64_t>(m_givenUpWorkerCount.load(std::memory_order_relaxed)); }),
         };
     }
 
