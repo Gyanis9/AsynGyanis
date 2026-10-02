@@ -4,8 +4,8 @@
 // - SqliteParameterizedSelectReturnsRows
 // - SqliteRejectsParameterCountMismatch（少给 / 多给参数都失败）
 // - SqliteRejectsContainerParameter
-// - UnsupportedDriversRejectParameterizedExecute（MySQL 已实现绑定：离线时以「未连接」拒绝；
-//   Redis 尚无绑定实现：给中文错误而不是静默忽略）
+// - EveryDriverAnswersParameterizedExecuteWithoutDroppingArguments（MySQL 已实现绑定：离线时以「未连接」
+//   拒绝；Redis 已接通 argv 通道：离线时走到发送判定，而 SQL 式 "?" 占位符被单独拒）
 // - PooledConnectionForwardsParameterizedExecute（经池与基类指针的虚派发）
 
 #include "Database/Common/ConnectionConfig.h"
@@ -188,7 +188,14 @@ TEST(ParameterizedExecution, SqliteRejectsContainerParameter)
 /**
  * @brief 验证各驱动在无可用连接/无绑定实现时给出中文错误，而不是静默忽略参数
  */
-TEST(ParameterizedExecution, UnsupportedDriversRejectParameterizedExecute)
+/**
+ * @brief 验证三个驱动都不把参数化调用当成死路，也绝不静默丢掉参数
+ * @details Redis 那一档旧断言是「走基类默认实现，报『暂不支持参数化查询（Redis）』」——本轮把它接通了
+ *          （Redis 的命令行本来就是参数数组），旧语义作废：现在未连接时看到的是发送路径的「未连接到 Redis」，
+ *          而 SQL 习惯写下的 `?` 占位符被单独拒（Redis 没有这个语法，静默发出去会写成一个名叫 "?" 的键）。
+ *          MySQL 那条判据不变：已实现绑定，未连接时以「未连接」拒绝。
+ */
+TEST(ParameterizedExecution, EveryDriverAnswersParameterizedExecuteWithoutDroppingArguments)
 {
     const std::vector<DatabaseValue> parameters{std::int64_t{1}};
 
@@ -199,12 +206,18 @@ TEST(ParameterizedExecution, UnsupportedDriversRejectParameterizedExecute)
     EXPECT_TRUE(mySqlResult == nullptr);
     EXPECT_NE(mySqlConnection.lastError().find("MySQL"), std::string::npos) << mySqlConnection.lastError();
 
-    // Redis 仍无绑定实现：走基类默认实现，明确报「暂不支持参数化查询」并带上驱动名
+    // Redis：正常形状走到发送那一步（本用例没连接，因此报的是连接状态而不是「不支持」）
     RedisConnection redisConnection(ConnectionConfig::redisDefault());
-    const auto      redisResult = redisConnection.execute("GET ?", parameters);
+    const auto      redisResult = redisConnection.execute("GET", parameters);
     EXPECT_TRUE(redisResult == nullptr);
-    EXPECT_NE(redisConnection.lastError().find("暂不支持参数化查询"), std::string::npos);
-    EXPECT_NE(redisConnection.lastError().find("Redis"), std::string::npos);
+    EXPECT_EQ(redisConnection.lastError(), "未连接到 Redis，命令未执行")
+            << "参数化调用没有到达发送那一步：「" << redisConnection.lastError() << "」";
+
+    // 占位符形状仍然被拒，且给的是本层的新判据而不是基类那句通用拒绝
+    const auto redisPlaceholderResult = redisConnection.execute("GET ?", parameters);
+    EXPECT_TRUE(redisPlaceholderResult == nullptr);
+    EXPECT_NE(redisConnection.lastError().find("Redis 没有占位符语法"), std::string::npos) << redisConnection.lastError();
+    EXPECT_EQ(redisConnection.lastError().find("暂不支持"), std::string::npos) << redisConnection.lastError();
 }
 
 // ========================================================================
