@@ -282,6 +282,18 @@ namespace AsynGyanis::Net
         return std::string(m_remoteAddress);
     }
 
+    void HttpRequest::setMatchedRoute(const std::string_view routePattern) noexcept
+    {
+        // 只记一个视图：模式原文住在路由表里，比本请求活得久（路由器不被改的前提下），
+        // 而按连接复用的请求对象每条都新建一份 std::string 就是每请求一次堆分配
+        m_matchedRoute = routePattern;
+    }
+
+    std::string_view HttpRequest::matchedRoute() const noexcept
+    {
+        return m_matchedRoute;
+    }
+
     std::string HttpRequest::remoteIp() const
     {
         // 只认本框架 InetAddress::toString() 产出的三种形状，理由见头文件那条 @note：
@@ -502,6 +514,8 @@ namespace AsynGyanis::Net
         m_requestId.clear();
         // 来源地址同理：它是会话为「这一条」落定的事实。清的是视图，指向的那份文本归会话按连接持有
         m_remoteAddress = {};
+        // 命中的路由也一样：上一条命中的模式不能冒到这一条上，否则按路由打点会把两条混进同一个桶
+        m_matchedRoute = {};
         m_params.clear();
 
         // trailer 那一档整份撤走而不是清空：hasTrailerFields() 读的就是「有没有这一档」，

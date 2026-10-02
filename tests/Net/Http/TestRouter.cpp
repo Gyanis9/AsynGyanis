@@ -350,6 +350,112 @@ namespace AsynGyanis::Net
     }
 
     // ============================================================================
+    // 命中的路由模式（按路由打点的键）
+    // ============================================================================
+
+    /**
+     * @brief 钉住：命中的路由模式原文进了请求，且中间件在管道里读得到同一份
+     * @details 只有 `path()` 时，按路由分组的键基数等于访问过的 URL 数——一轮 404 扫描就能把采集端撑爆。
+     *          模式原文是有限集合（注册多少条就有多少个值）。中间件那一半单独钉：横切逻辑（访问日志、
+     *          打点）只在管道里跑，模式落晚一步它们就什么都读不到
+     */
+    TEST(Router, MatchedRouteIsVisibleToMiddlewareAndHandler)
+    {
+        std::vector<std::string> seenByHandler;
+        std::vector<std::string> seenByMiddleware;
+        const auto recordPattern = [&seenByHandler](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+        {
+            seenByHandler.emplace_back(request.matchedRoute());
+            response.setBody("ok");
+            co_return;
+        };
+
+        Router router;
+        router.addMiddleware(
+                [&seenByMiddleware](HttpRequest &request, HttpResponse &, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    seenByMiddleware.emplace_back(request.matchedRoute());
+                    co_await next();
+                });
+        router.get("/hello", recordPattern);
+
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/hello");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        ASSERT_EQ(response.status(), 200);
+        ASSERT_EQ(seenByHandler.size(), 1U);
+        EXPECT_EQ(seenByHandler[0], "/hello") << "精确路由交回的应是注册原文";
+        ASSERT_EQ(seenByMiddleware.size(), 1U);
+        EXPECT_EQ(seenByMiddleware[0], "/hello") << "中间件跑在处理器之前，读到的必须已是这一条的命中";
+    }
+
+    /**
+     * @brief 钉住：三条通路的模式各回各的注册原文，未命中回空
+     */
+    TEST(Router, MatchedRouteDistinguishesPatternWildcardAndNoMatch)
+    {
+        std::vector<std::string> seenByHandler;
+        const auto               recordPattern = [&seenByHandler](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+        {
+            seenByHandler.emplace_back(request.matchedRoute());
+            response.setBody("ok");
+            co_return;
+        };
+
+        Router router;
+        router.get("/user/:id", recordPattern);
+        router.get("/static/*", recordPattern);
+        router.get("/registered", textHandler("never", nullptr));
+
+        for (const std::string_view path: {"/user/42", "/static/a/b.png"})
+        {
+            HttpRequest  request = makeRequest(HttpMethod::GET, std::string(path));
+            HttpResponse response;
+            routeRequest(router, request, response);
+            EXPECT_EQ(response.status(), 200) << path;
+        }
+        // HEAD 复用 GET 时键仍是那条 GET 注册的模式——打点分组不该因为方法换了就多出一个桶
+        HttpRequest  headRequest = makeRequest(HttpMethod::HEAD, "/user/7");
+        HttpResponse headResponse;
+        routeRequest(router, headRequest, headResponse);
+        // 未命中：模式这一档必须是空，404 不能冒进任何注册路由的桶
+        HttpRequest  missingRequest = makeRequest(HttpMethod::GET, "/missing");
+        HttpResponse missingResponse;
+        routeRequest(router, missingRequest, missingResponse);
+
+        ASSERT_EQ(seenByHandler.size(), 3U);
+        EXPECT_EQ(seenByHandler[0], "/user/:id") << "命中的是模式路由，交回的必须是模式而不是实际路径";
+        EXPECT_EQ(seenByHandler[1], "/static/*") << "通配路由的键应含结尾的星号，与实际子路径区分开";
+        EXPECT_EQ(seenByHandler[2], "/user/:id") << "HEAD 复用 GET 时键应仍是那条 GET 的模式";
+        EXPECT_TRUE(missingRequest.matchedRoute().empty()) << "404 那一档带着上一条的模式，未命中就被打进了命中桶";
+    }
+
+    /**
+     * @brief 钉住：请求对象跨报文复用时命中的模式必须跟着换
+     * @details 会话按连接复用同一个请求对象；模式不清回去，下一条报文会冒用上一条的分组键，
+     *          而 404 留着上一条的模式会把未命中打进命中路由的桶里——两头都得钉
+     */
+    TEST(Router, ClearsMatchedRouteAcrossRequestsOnOneConnection)
+    {
+        Router router;
+        router.get("/hello", textHandler("world"));
+
+        HttpRequest  request  = makeRequest(HttpMethod::GET, "/hello");
+        HttpResponse response{};
+        routeRequest(router, request, response);
+        EXPECT_EQ(request.matchedRoute(), "/hello");
+
+        request.reset();
+        EXPECT_TRUE(request.matchedRoute().empty()) << "reset() 没清命中的模式：下一条报文会冒用上一条的分组键";
+
+        request = makeRequest(HttpMethod::GET, "/missing");
+        routeRequest(router, request, response);
+        EXPECT_EQ(response.status(), 404);
+        EXPECT_TRUE(request.matchedRoute().empty()) << "未命中却留着上一条的模式：404 会被打进命中路由的桶里";
+    }
+
+    // ============================================================================
     // 方法判定：UNKNOWN 不按通配处理
     // ============================================================================
 

@@ -461,6 +461,9 @@ namespace AsynGyanis::Net
         // 一次拷贝意味着把大 lambda 的捕获（正则、模板、配置表）按请求复制一遍，
         // 那是纯粹的每请求堆分配，而容器在整段 co_await 期间都不会被改动，引用始终有效。
         const Handler *selectedHandler = nullptr;
+        // 命中那条路由的模式原文：交给请求当「按路由打点」的键（见 HttpRequest::matchedRoute()）。
+        // 存视图不存副本——它指向路由表自己的存储，而每请求再抄一份就是一笔新的堆分配
+        std::string_view selectedPattern;
 
         // HEAD 复用 GET（RFC 9110 §9.1：通用服务器必须同时支持 GET 与 HEAD）的判据落在「同一级之内
         // 先严格匹配、这一级全都没中才按 GET 复用」，而不是「整张表先按 HEAD 跑一遍、没中再按 GET
@@ -494,7 +497,8 @@ namespace AsynGyanis::Net
                         const bool isGetReuse    = pass == 1 && candidate.method == HttpMethod::GET;
                         if (isStrictMatch || isGetReuse)
                         {
-                            selectedHandler = &candidate.handler;
+                            selectedHandler   = &candidate.handler;
+                            selectedPattern   = exactIterator->first;
                             return true;
                         }
                     }
@@ -526,6 +530,7 @@ namespace AsynGyanis::Net
                     if (isRequestMethodRecognized && (isStrictMatch || isGetReuse))
                     {
                         selectedHandler = &route.handler;
+                        selectedPattern = route.pattern;
                         // 命中即刻提交：这张表之后还要给别的候选复用，不能留到扫完再取
                         commitPathParameters(request, candidateParameters);
                         return true;
@@ -542,6 +547,11 @@ namespace AsynGyanis::Net
 
         if (selectedHandler != nullptr)
         {
+            // 模式原文在跑管道**之前**落进请求：访问日志、指标打点这些横切逻辑只在管道里跑，
+            // 而它们要按路由分组。未命中（404/405）那条路不设，读回来是空视图——聚合时它就是
+            // 「没匹配到」那一档，不会与任何注册过的模式撞名
+            request.setMatchedRoute(selectedPattern);
+
             // 终点回调把「请求 + 响应 + 命中的 handler」绑成管道要求的无参可调用对象。
             // 它只在下面这次 co_await 期间存在，故引用捕获即可，无需 shared_ptr 续命。
             const TerminalHandler terminalHandler = [&request, &response, selectedHandler]() -> Core::Task<void> { co_await (*selectedHandler)(request, response); };

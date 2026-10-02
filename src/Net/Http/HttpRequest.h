@@ -397,6 +397,24 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string remoteIp() const;
 
         /**
+         * @brief 记下本次派发命中的路由模式原文
+         * @param routePattern 注册时给出的路径模式原文（如 "/users/:id"）；空视图表示没有命中任何路由
+         * @details 由路由器在跑中间件管道**之前**落定，因此访问日志、指标打点这类横切逻辑也读得到。
+         * @note 存的是**视图**：文本指向路由表里那条模式自己那份存储，路由器在 start() 之后仍增删条目时
+         *       这块内存可能被搬走。要跨请求留存（存进队列、异步落库）请自己抄一份
+         */
+        void setMatchedRoute(std::string_view routePattern) noexcept;
+
+        /**
+         * @brief 本次派发命中的路由模式原文，未命中（404/405）时为空
+         * @return std::string_view 注册时的模式原文，如 "/users/:id"；不是请求的实际路径
+         * @details 分组用的键应当是这里而不是 `path()`：按实际 URI 打指标会让标签基数等于访问过的 URL
+         *          数，一轮 404 扫描就能把采集端撑爆；而模式原文是有限集合（注册了多少条就有多少个值）
+         * @see setMatchedRoute(), path()
+         */
+        [[nodiscard]] std::string_view matchedRoute() const noexcept;
+
+        /**
          * @brief 从 URI 中提取路径部分（'?' 之前的内容，不含查询参数）。
          * @return 路径视图；URI 为空时返回空视图
          * @note 返回的是原始文本，未做百分号解码
@@ -533,6 +551,9 @@ namespace AsynGyanis::Net
         /// 对端地址文本，指向**会话按连接缓存的那一份**（见 setRemoteAddress()）：按连接复用的请求对象
         /// 因此不为它付一次堆分配，reset() 只把视图清回去
         std::string_view                             m_remoteAddress; ///< 发起方地址，由会话在业务之前落定（见 setRemoteAddress()）
+        /// 命中的路由模式原文，指向路由表里那条模式自己的存储（见 setMatchedRoute()）：按连接复用的
+        /// 请求对象不为它付一次堆分配，reset() 只把视图清回去
+        std::string_view                             m_matchedRoute;  ///< 本次派发命中的路由模式，由路由器在管道之前落定
         std::unordered_map<std::string, std::string> m_params;        ///< 路由参数
         mutable std::stop_source                     m_cancelSource;  ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
     };
