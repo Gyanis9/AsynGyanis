@@ -350,6 +350,10 @@ namespace AsynGyanis::Net
         std::string receivedText;
         ASSERT_TRUE(client.sendText(request, kWaitTimeout)) << "请求未能写入";
         ASSERT_TRUE(waitForTextOccurrence(client, receivedText, "503", kWaitTimeout)) << "超预算的请求未得到 503，实际收到：" << receivedText;
+        // 再等到 Retry-After 真的落地才判：状态行先于头部到齐，按「读到的文本里有没有」当场断会随调度翻脸
+        ASSERT_TRUE(waitForTextOccurrence(client, receivedText, "retry-after", kWaitTimeout))
+                << "超预算的 503 没带 Retry-After——全局预算用尽是本端此刻没余量，对端需要知道该等多久（h2/h3 同一出口都带）"
+                << "，实际收到：" << receivedText;
 
         EXPECT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout)) << "连接收口后额度仍未归还，当前占用 " << budget->reservedByteCount();
     }

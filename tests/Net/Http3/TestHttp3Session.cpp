@@ -2634,6 +2634,11 @@ namespace AsynGyanis::Net
 
         EXPECT_FALSE(isHandlerEntered) << "超出全局预算的请求不该交给业务";
         EXPECT_EQ(peer.response().status, 503) << "全局在途预算不足必须回 503（与 h1/h2 同一口径）";
+        // Retry-After 是三通道同一出口的既有口径（h1 在 HttpSession.h、h2 在 overloadedResponse 上都带 "1"）：
+        // h3 曾漏掉它，同一台服务器换一条协议，对端就拿不到「该等多久」
+        const auto retryAfterHeader = peer.response().headers.find("retry-after");
+        EXPECT_NE(retryAfterHeader, peer.response().headers.end()) << "预算用尽的 503 没带 Retry-After";
+        EXPECT_EQ(retryAfterHeader == peer.response().headers.end() ? std::string{} : retryAfterHeader->second, "1") << "Retry-After 的取值要与 h1/h2 同为一秒";
         EXPECT_EQ(budget->reservedByteCount(), 0U) << "被拒的请求不该占着额度（记录析构即归还）";
     }
 

@@ -489,6 +489,10 @@ namespace AsynGyanis::Net
                 response.setStatus(503);
                 response.setBody("Service Unavailable");
                 static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                // Retry-After 与 h1/h2 的同一出口同值：全局预算是本端此刻没余量，一秒后重试是真实预期。
+                // 少了它，同一台服务器换一条协议就对端就只能自己猜退避多久（h1 在 HttpSession.h、
+                // h2 在 Http2Session.cpp 的 overloadedResponse 上都带着这一项）
+                static_cast<void>(response.setHeader("retry-after", "1"));
             } else if (isBodyTooLarge)
             {
                 // 正文越界：不派发，直接回 413（与 h1/h2 同一口径与文案）

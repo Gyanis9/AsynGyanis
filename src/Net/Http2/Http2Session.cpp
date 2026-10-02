@@ -1495,8 +1495,12 @@ namespace AsynGyanis::Net
             // 明确回 503 而不是把它晾着
             if (pending.isWebSocketTunnel)
             {
-                std::string                   errorText;
-                const Http2ResponseSendStatus sendStatus = m_connection.sendResponseHeaders(pending.streamId, 503U, {}, true, &errorText);
+                std::string errorText;
+                // 这条 503 手上没有 HttpResponse，走的是裸字段表出口，因此 RFC 9110 §10.1.4 要求 5xx
+                // 带的 Date 得自己补：少了它，对端既估不出时钟偏差也无从判新鲜度。刻意不带 Retry-After——
+                // 「请另开一条连接」不是「稍后重试」，叫对端原地重发只会再撞一次
+                const std::vector<HpackHeaderField> tunnelRejectFields{HpackHeaderField{.name = std::string(kDateHeaderName), .value = std::string(currentHttpDateText())}};
+                const Http2ResponseSendStatus       sendStatus        = m_connection.sendResponseHeaders(pending.streamId, 503U, tunnelRejectFields, true, &errorText);
                 LOG_INFO_FMT("Http2Session: WebSocket 隧道（流 {}）期间收到流 {} 的扩展 CONNECT，已回 503：一条连接上"
                              "同时跑两条隧道需要嵌套驱动循环，本片不做，请对端另开连接",
                              tunnelStreamId, pending.streamId);

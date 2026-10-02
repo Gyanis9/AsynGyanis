@@ -393,6 +393,37 @@ namespace AsynGyanis::Net
             return statusByStream;
         }
 
+        /**
+         * @brief 按帧到达顺序解出每条流的**全部**响应头字段（同名只留最后一条）
+         * @details HPACK 的编码上下文按连接推进，所以这里必须一个解码器顺着帧走到底；
+         *          只取单个字段的助手在同一条连接上判第二项时会踩到自己刚建起来的动态表
+         * @param frames 已解出的帧
+         * @return std::map<std::uint32_t, std::map<std::string, std::string>> 流号 → 头名 → 头值
+         */
+        std::map<std::uint32_t, std::map<std::string, std::string>> collectResponseFieldsPerStream(const std::vector<Http2Frame> &frames)
+        {
+            std::map<std::uint32_t, std::map<std::string, std::string>> fieldsByStream;
+            HpackDecoder                                                decoder;
+            for (const Http2Frame &frame: frames)
+            {
+                if (frame.header.type != Http2FrameType::Headers || frame.header.streamId == 0U)
+                {
+                    continue;
+                }
+                std::vector<HpackHeaderField> headerFields;
+                std::string                   errorText;
+                if (!decoder.decode(frame.payload, headerFields, &errorText))
+                {
+                    continue;
+                }
+                for (const HpackHeaderField &field: headerFields)
+                {
+                    fieldsByStream[frame.header.streamId][field.name] = field.value;
+                }
+            }
+            return fieldsByStream;
+        }
+
         /// GOAWAY 帧里带的错误码：负载是「4 字节最后流号 + 4 字节错误码」（RFC 9113 §6.8）
         Http2ErrorCode readGoAwayErrorCode(const std::string &payload)
         {
@@ -1306,8 +1337,24 @@ namespace AsynGyanis::Net
                 kWaitTimeout))
                 << "超出全局预算的请求没有收到应答";
 
-        HpackDecoder responseDecoder;
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "503") << "全局预算用尽应当是 503（本端没余量），不是 413（对端报文越界）";
+        // 一次解出这条响应的全部头字段再逐条判：同一个解码器解第二遍会踩到自己刚建起来的动态表
+        HpackDecoder                 responseDecoder;
+        std::vector<HpackHeaderField> responseFields;
+        std::string                  decodeError;
+        ASSERT_TRUE(responseDecoder.decode(responseHeaderBlock(frames, 1U, 0), responseFields, &decodeError)) << "流 1 的响应头块解不开：" << decodeError;
+        const auto findField = [&responseFields](const std::string_view name) -> std::string
+        {
+            for (const HpackHeaderField &field: responseFields)
+            {
+                if (field.name == name)
+                {
+                    return field.value;
+                }
+            }
+            return {};
+        };
+        EXPECT_EQ(findField(":status"), "503") << "全局预算用尽应当是 503（本端没余量），不是 413（对端报文越界）";
+        EXPECT_EQ(findField("retry-after"), "1") << "预算用尽的 503 少了 Retry-After：h1 与 h3 的同一出口都带着，缺一项就等于让对端自己猜退避时长";
 
         // 额度随流的记录一起归还：轮询等一小会儿，因为「客户端读到 503」与「记录被摘掉」之间没有严格顺序
         const auto quotaDeadline = std::chrono::steady_clock::now() + kWaitTimeout;
@@ -1884,6 +1931,97 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.pumpUntil(
                 frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
                 << "隧道没有按 Close 收尾";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：隧道期间同连接上的第二条扩展 CONNECT 回 503，且那是一条带 Date 的完整应答
+     * @details 这条 503 手上没有 HttpResponse——它走的是裸 HPACK 字段表出口，因此响应头自动补齐
+     *          Date 的那一段不经过它。RFC 9110 §10.1.4 要求 5xx 一律带 Date：缺了它，对端既估不出
+     *          时钟偏差也无从判这条应答的新鲜度。刻意**不**带 Retry-After——「请另开一条连接」
+     *          不是「稍后重试」，叫对端原地重发只会再撞一次同一道闸。
+     */
+    TEST(Http2CleartextSession, AnswersSecondTunnelWith503CarryingDateHeader)
+    {
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/chat",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                       [](WebSocketPeer &peer) -> Core::Task<>
+                                       {
+                                           while (true)
+                                           {
+                                               const std::optional<WebSocketMessage> message = co_await peer.receive();
+                                               if (!message.has_value())
+                                               {
+                                                   co_return;
+                                               }
+                                               if (!co_await peer.sendText(message->payload))
+                                               {
+                                                   co_return;
+                                               }
+                                           }
+                                       });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 第一条隧道立起来，第二条才可能被「一条连接只跑一条隧道」这道闸挡下
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "第一条隧道没有建立";
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "隧道期间的第二条扩展 CONNECT 没有得到应答";
+
+        const auto fieldsByStream = collectResponseFieldsPerStream(frames);
+        const auto fieldValue     = [&fieldsByStream](const std::uint32_t streamId, const std::string_view name) -> std::string
+        {
+            const auto streamIt = fieldsByStream.find(streamId);
+            if (streamIt == fieldsByStream.end())
+            {
+                return {};
+            }
+            const auto fieldIt = streamIt->second.find(std::string(name));
+            return fieldIt == streamIt->second.end() ? std::string{} : fieldIt->second;
+        };
+
+        EXPECT_EQ(fieldValue(3U, ":status"), "503") << "一条连接上的第二条隧道应当被拒成 503";
+        EXPECT_FALSE(fieldValue(3U, "date").empty()) << "隧道期间的 503 少了 Date：这条出口不经响应头自动补齐，而 5xx 带 Date 是 RFC 9110 §10.1.4 的硬要求";
+        EXPECT_TRUE(fieldValue(3U, "retry-after").empty()) << "这条 503 让对端另开连接，不该同时劝它原地重试";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
