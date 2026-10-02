@@ -54,6 +54,17 @@ namespace AsynGyanis::Net
         std::size_t      maximumConnectionsPerIp{kDefaultMaximumConnectionsPerIp}; ///< 单个来源的并发连接上限；显式写 0 = 不限
         double           requestsPerSecond{0.0};                                   ///< 全局请求速率上限（令牌桶速率），0 = 不限流
         double           rateLimitBurstCapacity{1.0};                              ///< 令牌桶容量，即瞬时允许的突发量；速率不为 0 时必须 ≥ 1
+        /**
+         * @brief 在途请求正文的总量上限，单位字节（整机口径，装配时摊到每个 worker 进程）
+         * @details 补的是「单条报文的上限挡不住很多条连接」这一格：`parser_limits.maximum_body_size`
+         *          限的是**一条**请求的正文，N 条连接各压着一条大正文时总占用与连接数同增，而每个
+         *          分量看着都合规。超出本预算的新请求回 503 并收口，把额度留给已收下正文的连接。
+         * @note 默认 0 = 不设这道账。刻意不给有限默认值：一个有限数会在「升级后什么都没改」的部署上
+         *       突然开始回 503，而配置文件的每一行看着都对——这类默认值只能由部署方自己选
+         * @note 账只覆盖三条 HTTP 通道（h1/h2/h3）的**请求正文**；WebSocket 帧缓冲、每连接接收窗口
+         *       与响应正文都不在本预算之内
+         */
+        std::size_t memoryBudgetBytes{0};
         bool             exposeMetrics{false};                                     ///< 是否注册 /metrics 与 /healthz
         /**
          * @brief 运维端点的 Bearer 令牌；空 = 不鉴权

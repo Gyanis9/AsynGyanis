@@ -329,6 +329,13 @@ namespace AsynGyanis::Net
          */
         void setMemoryBudget(std::shared_ptr<HttpMemoryBudget> memoryBudget);
 
+        /**
+         * @brief 取当前生效的在途正文预算
+         * @return const std::shared_ptr<HttpMemoryBudget>& 最后一次 setMemoryBudget() 的对象，未设置则为空
+         * @note 空指针是「没有这道账」，与「有一道账但当前占用为 0」是两件事，读的人要分开处理
+         */
+        [[nodiscard]] const std::shared_ptr<HttpMemoryBudget> &memoryBudget() const noexcept;
+
     private:
         /**
          * @brief 确保静态文件配置本体与 "*" 兜底路由已就绪（幂等）

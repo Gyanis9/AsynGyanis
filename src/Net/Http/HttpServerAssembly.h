@@ -29,6 +29,7 @@ namespace AsynGyanis::Net
 {
     class HttpServer;
     class HttpsServer;
+    class HttpMemoryBudget;
     class PerIpConnectionLimiter;
     class TokenBucket;
 
@@ -49,11 +50,19 @@ namespace AsynGyanis::Net
          */
         std::shared_ptr<TokenBucket> sharedRateLimitBucket;
         /**
+         * @brief 跨监听器共用的在途正文字节预算
+         * @details 与限额器、限流桶同理：这台服务器上的 h1/h2 会话（以及调用方另起的 h3 服务端）要共用
+         *          同一份账。传了它，其上限必须等于 @c perProcessShare 摊到本进程的那一份，否则当场拒——
+         *          「配置写着 512 MiB、实际放行 512 MiB × 进程数」正是这一类看不出的偏差。
+         *          只想让 h3 也吃到同一份账时，把本对象原样填进 `QuicServer::Configuration::memoryBudget`。
+         */
+        std::shared_ptr<HttpMemoryBudget> sharedMemoryBudget;
+        /**
          * @brief 整机限额要摊到几个 worker 进程上（默认 1 = 单进程，不做摊分）
-         * @details 每个进程只看得见自己这份账：`maximum_connections`、`maximum_connections_per_ip`
-         *          与 `rate_limit.rate` 配成整机的数、又起 N 个进程，实际放行的是 N 倍。连接数按进程数
-         *          向上取整摊到每台，速率按精确除法摊（速率可以是小数，取整会把 0.5 请求/s 抬成 1）。
-         *          0 是用法错误（当场拒，不当「不限」）。
+         * @details 每个进程只看得见自己这份账：`maximum_connections`、`maximum_connections_per_ip`、
+         *          `memory_budget_bytes` 与 `rate_limit.rate` 配成整机的数、又起 N 个进程，实际放行的是
+         *          N 倍。连接数与字节数按进程数向上取整摊到每台，速率按精确除法摊（速率可以是小数，
+         *          取整会把 0.5 请求/s 抬成 1）。0 是用法错误（当场拒，不当「不限」）。
          * @note 摊分是近似：POSIX 侧内核按连接把新连接分散给各进程，长连接偏斜时某一台的瞬时并发仍可能
          *       高于份额。要精确的跨进程全局闸需要共享内存或外部存储，本层没做，别把这里当成那个东西
          */

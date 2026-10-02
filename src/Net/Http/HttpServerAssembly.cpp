@@ -1,5 +1,6 @@
 #include "Net/Http/HttpServerAssembly.h"
 
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/Middleware.h"
@@ -102,6 +103,26 @@ namespace AsynGyanis::Net
             } else if (rateShare.requestsPerSecond > 0.0)
             {
                 server.router().addMiddleware(tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(rateShare.requestsPerSecond, rateShare.burstCapacity)));
+            }
+
+            // 在途正文预算是跨连接的一份账，且账目只在进程内可见：整机口径同样要摊到本进程。
+            // 传进来的那一份必须与摊分结果一致——预算的上限在构造时就定死了，配置写 512 MiB
+            // 而对象各持整机那份，N 个进程就放行 N×512 MiB，而配置文件看着仍是 512 MiB
+            const std::size_t perProcessMemoryBudget = perProcessShare(configuration.memoryBudgetBytes, context.workerProcessCount);
+            if (context.sharedMemoryBudget != nullptr)
+            {
+                if (perProcessMemoryBudget > 0 && context.sharedMemoryBudget->maximumTotalBytes() != perProcessMemoryBudget)
+                {
+                    return std::unexpected(std::format("装配冲突：传入的共享预算上限是 {} 字节，而配置摊到本进程后应是 {} 字节"
+                                                       "（memory_budget_bytes={} 摊给 {} 个进程）。"
+                                                       "多条通道共用一份账时，请让那一份与整机配置对得上（或对不上时把 memory_budget_bytes 设为 0）",
+                                                       context.sharedMemoryBudget->maximumTotalBytes(), perProcessMemoryBudget, configuration.memoryBudgetBytes,
+                                                       context.workerProcessCount));
+                }
+                server.setMemoryBudget(context.sharedMemoryBudget);
+            } else if (perProcessMemoryBudget > 0)
+            {
+                server.setMemoryBudget(std::make_shared<HttpMemoryBudget>(perProcessMemoryBudget));
             }
 
             // 运维面三件套同开：只开其一会让「抓不到数」与「以为没暴露」互相伪装。

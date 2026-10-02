@@ -1,6 +1,7 @@
 // server 段配置的装配入口：配置里的键要真的落到服务器上，特别是 expose_metrics——
 // 它此前在库内没有任何消费方，写了也不注册端点，是最典型的「静默不生效」。
 
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerAssembly.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
@@ -256,6 +257,44 @@ namespace AsynGyanis::Net
         const auto outcome                   = applyHttpServerConfiguration(rejectingServer, configuration, mismatchedContext);
         ASSERT_FALSE(outcome.has_value()) << "共享限额器还是整机数就直接收下了：那等于放行四倍";
         EXPECT_NE(outcome.error().find("25"), std::string::npos) << "拒因要点名摊后的数：「" << outcome.error() << "」";
+    }
+
+    /**
+     * @brief 钉住：server 段的 memory_budget_bytes 真的落到服务器上，且落的是摊到本进程那一份
+     * @details 预算对象此前只能由调用方手递（库内无人构造），配置里写字节数没有任何人读——键存在而
+     *          生效点缺失，正是「配了不生效却不出声」那一类。四档一起钉：默认不建账、标量建摊后的账、
+     *          共享对象与摊分一致时收且收的就是那一份、不一致时当场拒并点名摊后的数
+     */
+    TEST(HttpServerAssembly, AppliesMemoryBudgetFromConfiguration)
+    {
+        Core::EventLoop loop;
+        TestHttpServer  server(loop, Core::InetAddress::localhost(0));
+
+        // 没配就是不建账：空指针（没有这道账）与「有一份上限为 0 的账」读法不同，不能混
+        ASSERT_TRUE(applyHttpServerConfiguration(server, HttpServerConfiguration{}).has_value());
+        EXPECT_EQ(server.memoryBudget().get(), nullptr) << "没配 memory_budget_bytes 却建了一份账";
+
+        HttpServerConfiguration configuration;
+        configuration.memoryBudgetBytes = 1000;
+        HttpServerAssemblyContext context;
+        context.workerProcessCount      = 4;
+        ASSERT_TRUE(applyHttpServerConfiguration(server, configuration, context).has_value());
+        ASSERT_NE(server.memoryBudget().get(), nullptr) << "配了字节数而服务器上仍是空指针：键没接到 setter";
+        EXPECT_EQ(server.memoryBudget()->maximumTotalBytes(), 250u) << "整机 1000 摊给 4 个进程，本台真正卡的应是 250";
+
+        const auto sharedBudget = std::make_shared<HttpMemoryBudget>(250);
+        context.sharedMemoryBudget = sharedBudget;
+        ASSERT_TRUE(applyHttpServerConfiguration(server, configuration, context).has_value()) << "与摊分一致的共享预算被误拒";
+        EXPECT_EQ(server.memoryBudget().get(), sharedBudget.get()) << "服务器上的账应当就是传进来的那一份，而不是另起的新账";
+
+        Core::EventLoop           rejectingLoop;
+        TestHttpServer            rejectingServer(rejectingLoop, Core::InetAddress::localhost(0));
+        HttpServerAssemblyContext mismatchedContext;
+        mismatchedContext.workerProcessCount = 4;
+        mismatchedContext.sharedMemoryBudget = std::make_shared<HttpMemoryBudget>(1000);
+        const auto outcome                   = applyHttpServerConfiguration(rejectingServer, configuration, mismatchedContext);
+        ASSERT_FALSE(outcome.has_value()) << "共享预算还是整机数就直接收下了：四个进程合计放行四倍";
+        EXPECT_NE(outcome.error().find("250"), std::string::npos) << "拒因要点名摊后的数：「" << outcome.error() << "」";
     }
 
     /**

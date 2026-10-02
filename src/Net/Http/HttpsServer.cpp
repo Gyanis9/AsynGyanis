@@ -222,6 +222,11 @@ namespace AsynGyanis::Net
         m_memoryBudget = std::move(memoryBudget);
     }
 
+    const std::shared_ptr<HttpMemoryBudget> &HttpsServer::memoryBudget() const noexcept
+    {
+        return m_memoryBudget;
+    }
+
     void HttpsServer::setParserLimits(HttpParserLimits limits)
     {
         // 按值保存，理由同 HttpServer::setParserLimits()：解析器在会话构造时取走一份副本，之后没有读者

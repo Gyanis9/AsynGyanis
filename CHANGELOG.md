@@ -13,6 +13,31 @@
 - **一致性由脚本把关**：`scripts/check-release-version.py` 比对「CMake 版本号 / 本文件最新发布段 / 最新标签」
   三者，不一致即退出码非 0；Linux CI 已接入这一步，避免出现「打了标签但版本号没改」这类漂移。
 
+## [Unreleased]
+
+自 2.5.0 起的累计变化（新增 1、变更 1）：把已经建好的那道总量防线接到配置文件上。
+
+### 新增
+
+- **在途正文总量上限进了 `server` 段**：`memory_budget_bytes`（整机字节数，0 = 不设这道账）。
+  `HttpMemoryBudget` 早在三条通道上被消费（预留不上的新请求回 503），但**库内没有任何人构造它**——
+  唯一入口是 `HttpServer::setMemoryBudget()`，配置文件里想配也没有键。一道已建好的防线只能靠调用方
+  手递，等于按配置文件部署的机器全部跑在「无总量上限」上：`parser_limits.maximum_body_size`（8 MiB）
+  限的是**一条**正文，N 条连接各压一条就是 8N MiB 且与连接数同增，而每个分量看着都合规。
+  现在装配出口按 `perProcessShare` 把整机数摊到每个 worker 进程（与连接数同向、向上取整），
+  新增的 `HttpServerAssemblyContext::sharedMemoryBudget` 让 h1/h2 与调用方另起的 h3 共用同一份账，
+  传进来的对象若不是摊后那一份会当场拒（与限额器、限流桶同一条判据）；`HttpServer`/`HttpsServer`
+  各补 `memoryBudget()` 读口，生效值能从服务器上问回来。默认值刻意留在 0 = 不限：一个有限的默认值会在
+  「升级后什么都没改」的部署上突然开始回 503，而这种默认值最难发现。
+  `HttpMemoryBudget::maximumTotalBytes()` 此前无人可读，现在它是那条一致性判据的读口。
+
+### 变更
+
+- **`reference_server` 的 `--max-inflight-body` 口径由「每进程」改成「整机」**：与本仓库其余限额键一致
+  （`maximum_connections` 等同样是整机数、按 `--workers` 摊），命令行与 `server.memory_budget_bytes`
+  现在是同一个量的两个来源，命令行优先；启动那行读数改成「整机 X 摊给 N 个进程 → 每台 Y」。
+  单进程部署（默认）取值不变。
+
 ## [2.5.0] - 2026-10-02
 
 自 2.4.0 起的累计变化（新增 5、变更 4、修复 7、破坏性变更 1）：把协议正确性上「标准说有、实现没有」的

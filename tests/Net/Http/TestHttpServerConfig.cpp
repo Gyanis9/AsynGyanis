@@ -107,6 +107,7 @@ namespace AsynGyanis::Net
         Base::ConfigObject serverMembers;
         serverMembers.emplace("maximum_connections", integer(2048));
         serverMembers.emplace("maximum_connections_per_ip", integer(16));
+        serverMembers.emplace("memory_budget_bytes", integer(4194304));
         serverMembers.emplace("expose_metrics", boolean(true));
         serverMembers.emplace("ops_bearer_token", Base::ConfigValue("assemble-test-token"));
         serverMembers.emplace("metrics_port", integer(9101));
@@ -136,6 +137,7 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(configuration.maximumConnections, 2048u);
         EXPECT_EQ(configuration.maximumConnectionsPerIp, 16u);
+        EXPECT_EQ(configuration.memoryBudgetBytes, 4194304u);
         EXPECT_TRUE(configuration.exposeMetrics);
         EXPECT_EQ(configuration.opsBearerToken, "assemble-test-token");
         EXPECT_EQ(configuration.metricsPort, 9101U);
@@ -239,6 +241,12 @@ namespace AsynGyanis::Net
                 {"rate_limit", object(Base::ConfigObject{{"requests_per_second", floating(-2.0)}})},
         };
         EXPECT_THROW(expectConfigurationRejected(makeRootDocument(negativeRate)), Base::ConfigValidationException);
+
+        // 字节数这道账同族：负数折成 size_t 是一个天文数字，等于「配了限制而它永远不生效」
+        const Base::ConfigObject negativeMemoryBudget{
+                {"memory_budget_bytes", integer(-1)},
+        };
+        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(negativeMemoryBudget)), Base::ConfigValidationException);
     }
 
     /**

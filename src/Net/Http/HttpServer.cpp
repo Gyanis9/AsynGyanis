@@ -1638,6 +1638,11 @@ namespace AsynGyanis::Net
         m_memoryBudget = std::move(memoryBudget);
     }
 
+    const std::shared_ptr<HttpMemoryBudget> &HttpServer::memoryBudget() const noexcept
+    {
+        return m_memoryBudget;
+    }
+
     void HttpServer::setParserLimits(HttpParserLimits limits)
     {
         // 按值保存而不是共享指针：解析上限只在会话构造那一刻被解析器取走一份副本，

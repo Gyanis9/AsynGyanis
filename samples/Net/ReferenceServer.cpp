@@ -458,8 +458,9 @@ int main(int argc, char **argv)
         LOG_INFO("            压缩交给工作线程做，完成后回到本连接的循环线程续上，循环不会为一次压缩停摆");
         LOG_INFO("  --compress-sync 同样开压缩，但留在事件循环线程上同步做完（只作对照：实测一条 256 KiB");
         LOG_INFO("            正文的 gzip 会把同循环小请求的 p50 从 37us 顶到 5.9ms）");
-        LOG_INFO("  --max-inflight-body 在途正文总量上限（字节，0 = 不限）：挡住多条连接同时压着大正文；");
-        LOG_INFO("            超出的请求回 503，明文、HTTPS 与 h3 三端共用同一份账");
+        LOG_INFO("  --max-inflight-body 在途正文总量上限（整机字节数，0 = 不限；配置里对应 server.memory_budget_bytes，");
+        LOG_INFO("            本开关是它的命令行覆盖）：挡住多条连接同时压着大正文，超出的请求回 503；");
+        LOG_INFO("            按 --workers 摊到每个进程，明文、HTTPS 与 h3 三端共用同一份账");
         LOG_INFO("  --workers N 用 N 个 worker 进程服务同一个端口（默认 1 = 单进程）：");
 #ifdef _WIN32
         // 本示例在 Windows 上起不了多进程：那边没有 SO_REUSEPORT，多个进程各自 bind 同端口只会有一条
@@ -569,11 +570,14 @@ int main(int argc, char **argv)
     const std::size_t workerProcessTotal           = std::max<std::size_t>(1, workerProcessCount);
     const std::size_t perProcessMaximumConnections = Net::perProcessShare(configuration.maximumConnections, workerProcessTotal);
     const std::size_t perProcessMaximumPerIp       = Net::perProcessShare(configuration.maximumConnectionsPerIp, workerProcessTotal);
-    const auto        capText                      = [](const std::size_t value) { return value == 0 ? std::string("不限（显式配 0）") : std::to_string(value); };
+    // 在途正文预算的口径与连接数一致：配置与 --max-inflight-body 都是整机的数，摊到本进程才是账
+    const std::size_t wholeMachineInflightBodyBytes = maxInflightBodyBytes > 0 ? maxInflightBodyBytes : configuration.memoryBudgetBytes;
+    const std::size_t perProcessInflightBodyBytes   = Net::perProcessShare(wholeMachineInflightBodyBytes, workerProcessTotal);
+    const auto        capText                       = [](const std::size_t value) { return value == 0 ? std::string("不限（显式配 0）") : std::to_string(value); };
     LOG_INFO_FMT("并发限额：整机 {} 摊给 {} 个进程 → 每台 {}；单来源 {} → 每台 {}；请求速率 {}，在途正文总量 {}", capText(configuration.maximumConnections), workerProcessTotal,
                  capText(perProcessMaximumConnections), capText(configuration.maximumConnectionsPerIp), capText(perProcessMaximumPerIp),
                  configuration.requestsPerSecond > 0.0 ? std::format("{:.0f} 请求/s", configuration.requestsPerSecond) : std::string("不限（默认）"),
-                 maxInflightBodyBytes == 0 ? std::string("不限（默认）") : std::to_string(maxInflightBodyBytes) + " 字节");
+                 wholeMachineInflightBodyBytes == 0 ? std::string("不限（默认）") : std::to_string(wholeMachineInflightBodyBytes) + " 字节");
 
     // 多进程：master 只做编排，自己不服务——既当 master 又当 worker 会让「谁在服务」含糊，
     // 也会让「worker 崩了补一个」这条路径多一种要处理的形态。参数原样转给 worker，
@@ -760,12 +764,14 @@ int main(int argc, char **argv)
                      configuration.rateLimitBurstCapacity, workerProcessTotal, rateShare.requestsPerSecond, rateShare.burstCapacity);
     }
 
-    // 在途正文预算同样只有一份：它要的是「整个进程的正文占用上限」，各监听器各持一份等于上限乘以监听器数
+    // 在途正文预算同样只有一份：它要的是「本进程的正文占用上限」，各监听器各持一份等于上限乘以监听器数。
+    // 数值口径与限额器、限流桶一致（整机摊到每台），装配入口会拿对象上的上限与摊分结果比对，不一致就拒
     std::shared_ptr<Net::HttpMemoryBudget> inflightBodyBudget;
-    if (maxInflightBodyBytes > 0)
+    if (perProcessInflightBodyBytes > 0)
     {
-        inflightBodyBudget = std::make_shared<Net::HttpMemoryBudget>(maxInflightBodyBytes);
-        LOG_INFO_FMT("在途正文总量上限 {} 字节（所有 {} 个监听器共享同一份账）", maxInflightBodyBytes, actualThreads);
+        inflightBodyBudget = std::make_shared<Net::HttpMemoryBudget>(perProcessInflightBodyBytes);
+        LOG_INFO_FMT("在途正文总量：整机 {} 字节摊给 {} 个进程 → 每台 {} 字节（本进程内所有监听器与 h3 共享同一份账）", wholeMachineInflightBodyBytes, workerProcessTotal,
+                     perProcessInflightBodyBytes);
     }
 
     // 压缩中间件的两种落点：默认交给工作线程（一次 gzip 大正文要占住循环线程几毫秒，
@@ -780,23 +786,22 @@ int main(int argc, char **argv)
     };
 
     // 配置键到 setter 的对接只有一处实现（见 Net/Http/HttpServerAssembly.h）：这里只交进
-    // 「跨监听器共用的那几份对象」与「整机限额要摊给几个进程」。在途正文预算不在 server 段里，
-    // 仍由调用方给
+    // 「跨监听器共用的那几份对象」与「整机限额要摊给几个进程」，其余键（含在途正文预算）由装配出口落
     const auto assembleServer = [&](auto &server)
     {
         Net::HttpServerAssemblyContext assemblyContext;
         assemblyContext.sharedPerIpLimiter    = perIpConnectionLimiter;
         assemblyContext.sharedRateLimitBucket = rateLimitBucket;
+        assemblyContext.sharedMemoryBudget    = inflightBodyBudget;
         assemblyContext.workerProcessCount    = workerProcessTotal;
         if (const auto outcome = Net::applyHttpServerConfiguration(*server, configuration, assemblyContext); !outcome)
         {
-            // 只可能来自「共享限额器与配置标量不一致」这一种自相矛盾的配置。装配发生在起服务之前，
+            // 只可能来自「共享对象与配置标量不一致」这一种自相矛盾的配置。装配发生在起服务之前，
             // 两个构造循环里都没有能把错误带回 main 的通道，因此在此处打印原因并退出（退出码与
             // 其余「配置不成立」的出口一致），而不是静默按其中一份生效
             LOG_ERROR_FMT("服务器装配被拒：{}", outcome.error());
             std::exit(1);
         }
-        server->setMemoryBudget(inflightBodyBudget);
     };
 
     // --h3 与 TCP 监听在同一个端口号的 UDP 上（见下面 h3 启动那段），所以通告值能直接推出来：
