@@ -395,8 +395,8 @@ namespace AsynGyanis::Net
         using AsynGyanis::TestSupport::hasRegistrySample;
         using AsynGyanis::TestSupport::registryValue;
 
-        constexpr std::string_view kReservedName = "asyn_http_inflight_body_bytes";
-        constexpr std::string_view kRejectedName = "asyn_http_memory_budget_rejections_total";
+        constexpr std::string_view kReservedName  = "asyn_http_inflight_body_bytes";
+        constexpr std::string_view kRejectedName  = "asyn_http_memory_budget_rejections_total";
         const std::uint64_t        reservedBefore = registryValue(kReservedName);
         const std::uint64_t        rejectedBefore = registryValue(kRejectedName);
 

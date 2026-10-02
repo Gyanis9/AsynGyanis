@@ -237,11 +237,11 @@ namespace AsynGyanis::Database
     {
         const std::string awkwardKey = makeKey("参数 化\n键");
 
-        const std::vector<DatabaseValue> setArguments{DatabaseValue(awkwardKey), DatabaseValue(std::string("value with spaces"))};
+        const std::vector<DatabaseValue>      setArguments{DatabaseValue(awkwardKey), DatabaseValue(std::string("value with spaces"))};
         const std::unique_ptr<DatabaseResult> setResult = m_connection->execute("SET", setArguments);
         ASSERT_NE(setResult, nullptr) << m_connection->lastError();
 
-        const std::vector<DatabaseValue> getArguments{DatabaseValue(awkwardKey)};
+        const std::vector<DatabaseValue>      getArguments{DatabaseValue(awkwardKey)};
         const std::unique_ptr<DatabaseResult> getResult = m_connection->execute("GET", getArguments);
         ASSERT_NE(getResult, nullptr) << m_connection->lastError();
 

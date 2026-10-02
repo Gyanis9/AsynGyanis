@@ -892,9 +892,8 @@ namespace AsynGyanis::Database::Queryable
                 if (!probeConnection)
                 {
                     // 同 acquireConnectionLease 那条：把池的读数报出来，而不是只留一句「请检查配置」
-                    throw ConnectionUnavailableException(std::string("Queryable: 无法从连接池获取连接以推导数据库类型。当前池内 ") +
-                                                         std::to_string(m_pool->totalCount()) + " 条、活跃 " + std::to_string(m_pool->activeCount()) +
-                                                         " 条、排队等待 " + std::to_string(m_pool->waitingCount()) +
+                    throw ConnectionUnavailableException(std::string("Queryable: 无法从连接池获取连接以推导数据库类型。当前池内 ") + std::to_string(m_pool->totalCount()) +
+                                                         " 条、活跃 " + std::to_string(m_pool->activeCount()) + " 条、排队等待 " + std::to_string(m_pool->waitingCount()) +
                                                          " 条，累计借出等待超时 " + std::to_string(m_pool->borrowTimeoutCount()) + " 次");
                 }
                 resolvedType = probeConnection->databaseType();
@@ -954,14 +953,13 @@ namespace AsynGyanis::Database::Queryable
             }
 
             const std::size_t borrowTimeoutsBefore = pool->borrowTimeoutCount();
-            lease.pooled = pool->acquire();
+            lease.pooled                           = pool->acquire();
             if (!lease.pooled)
             {
                 // 「可能是池已达上限或连接创建失败」是把两种处置完全不同的失败合成一句猜话：
                 // 前者要抬上限或减少并发借用，后者要查连接参数与服务可达性。池自己已经把这两件事
                 // 分开计了（借出等待超时计数只在等满截止时刻那一路增加），所以这里报数而不是猜
-                throw ConnectionUnavailableException(std::string("Queryable: 从连接池借不到连接。借出等待超时计数从 ") +
-                                                     std::to_string(borrowTimeoutsBefore) + " 变成 " +
+                throw ConnectionUnavailableException(std::string("Queryable: 从连接池借不到连接。借出等待超时计数从 ") + std::to_string(borrowTimeoutsBefore) + " 变成 " +
                                                      std::to_string(pool->borrowTimeoutCount()) +
                                                      "（增加了就是等满了截止时刻——池被借干；没增加就是新建连接失败）；"
                                                      "当前池内 " +
@@ -1343,10 +1341,10 @@ namespace AsynGyanis::Database::Queryable
          * @throws DatabaseException 取连接失败、任意一块执行失败，或本地事务提交失败
          */
         [[nodiscard]] static std::int64_t insertBatchOn(ConnectionPool *pool, const Transaction *transaction, const SqlDialect &dialect, const std::span<const T> rows,
-                                                       const InsertConflict conflict = InsertConflict::Fail)
+                                                        const InsertConflict conflict = InsertConflict::Fail)
         {
-            QueryNode batchNode     = makeWriteQueryNode();
-            batchNode.selectColumns = insertColumnNames();
+            QueryNode batchNode      = makeWriteQueryNode();
+            batchNode.selectColumns  = insertColumnNames();
             batchNode.insertConflict = conflict;
 
             // 每行的参数个数就是待写列数（自增主键不进 INSERT，因此这里必须用写入侧的列数）；

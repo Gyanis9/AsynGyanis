@@ -19,8 +19,11 @@ namespace AsynGyanis::Net
     {
         /// server 段直接支持的键
         constexpr std::array<std::string_view, 10> kServerKeys{
-                "maximum_connections", "maximum_connections_per_ip", "memory_budget_bytes", "expose_metrics", "ops_bearer_token", "metrics_port", "metrics_address", "limits",
-                "parser_limits", "rate_limit",
+                "maximum_connections", "maximum_connections_per_ip",
+                "memory_budget_bytes", "expose_metrics",
+                "ops_bearer_token",    "metrics_port",
+                "metrics_address",     "limits",
+                "parser_limits",       "rate_limit",
         };
 
         /// limits 子段支持的键
@@ -285,8 +288,7 @@ namespace AsynGyanis::Net
         }
         if (section.contains("memory_budget_bytes"))
         {
-            configuration.memoryBudgetBytes =
-                    static_cast<std::size_t>(requireNonNegativeInteger(section.at("memory_budget_bytes"), sectionPath + ".memory_budget_bytes"));
+            configuration.memoryBudgetBytes = static_cast<std::size_t>(requireNonNegativeInteger(section.at("memory_budget_bytes"), sectionPath + ".memory_budget_bytes"));
         }
         if (section.contains("expose_metrics"))
         {

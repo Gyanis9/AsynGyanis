@@ -296,8 +296,7 @@ namespace AsynGyanis::Base
         LogThrottleRegistry &registry = LogThrottleRegistry::instance();
         const std::string    key      = "first-interval-wins";
         EXPECT_TRUE(registry.acquire(key, kHugeInterval).isPassed) << "建目那一次应当放行";
-        EXPECT_FALSE(registry.acquire(key, std::chrono::milliseconds{1}).isPassed)
-                << "窗口被第二次传入的窄间隔改写了：同 key 应以建目时的 interval 为准";
+        EXPECT_FALSE(registry.acquire(key, std::chrono::milliseconds{1}).isPassed) << "窗口被第二次传入的窄间隔改写了：同 key 应以建目时的 interval 为准";
     }
 
     TEST(LogThrottleRegistry, BoundsTheTableAndEvictsTheLeastRecentlyTouchedKey)

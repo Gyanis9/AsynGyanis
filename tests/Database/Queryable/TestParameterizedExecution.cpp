@@ -210,8 +210,7 @@ TEST(ParameterizedExecution, EveryDriverAnswersParameterizedExecuteWithoutDroppi
     RedisConnection redisConnection(ConnectionConfig::redisDefault());
     const auto      redisResult = redisConnection.execute("GET", parameters);
     EXPECT_TRUE(redisResult == nullptr);
-    EXPECT_EQ(redisConnection.lastError(), "未连接到 Redis，命令未执行")
-            << "参数化调用没有到达发送那一步：「" << redisConnection.lastError() << "」";
+    EXPECT_EQ(redisConnection.lastError(), "未连接到 Redis，命令未执行") << "参数化调用没有到达发送那一步：「" << redisConnection.lastError() << "」";
 
     // 占位符形状仍然被拒，且给的是本层的新判据而不是基类那句通用拒绝
     const auto redisPlaceholderResult = redisConnection.execute("GET ?", parameters);

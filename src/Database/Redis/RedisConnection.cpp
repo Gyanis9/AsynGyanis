@@ -530,7 +530,7 @@ namespace AsynGyanis::Database
         {
             // m_lastError 是带原生码的那份记录（ErrorRecord），不能按 std::string& 交出去，
             // 因此这里用一个本地串接原因，拒发时再整体交给它
-            std::string rejectionText;
+            std::string                rejectionText;
             std::optional<std::string> parameterText = argumentText(parameter, rejectionText);
             if (!parameterText.has_value())
             {
@@ -1101,7 +1101,7 @@ namespace AsynGyanis::Database
                 return std::nullopt;
             }
             // 最短可往返表示：1.5 就写 "1.5"，而不是 std::to_string(double) 那套固定六位小数
-            //（"1.500000" 会把一个键写成另一个字面，服务端那条路径也会换结果）
+            // （"1.500000" 会把一个键写成另一个字面，服务端那条路径也会换结果）
             return std::format("{}", *real);
         }
 

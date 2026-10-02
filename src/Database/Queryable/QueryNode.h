@@ -213,7 +213,7 @@ namespace AsynGyanis::Database::Queryable
         std::optional<std::size_t>    offset;          ///< OFFSET 偏移量
         /// 唯一键冲突的处置，只在 INSERT 方向参与渲染（SELECT/UPDATE/DELETE 一侧读完即弃）；
         /// 刻意不放进「查询树必须有默认值才好用」的其它档：默认 Fail 与标准 SQL 完全等价
-        InsertConflict           insertConflict{InsertConflict::Fail}; ///< 冲突处置，默认按标准 SQL 报错
+        InsertConflict insertConflict{InsertConflict::Fail}; ///< 冲突处置，默认按标准 SQL 报错
     };
 
 } // namespace AsynGyanis::Database::Queryable

@@ -65,7 +65,7 @@ namespace AsynGyanis::Net
          *       与响应正文都不在本预算之内
          */
         std::size_t memoryBudgetBytes{0};
-        bool             exposeMetrics{false};                                     ///< 是否注册 /metrics 与 /healthz
+        bool        exposeMetrics{false}; ///< 是否注册 /metrics 与 /healthz
         /**
          * @brief 运维端点的 Bearer 令牌；空 = 不鉴权
          * @details 只保护 `/metrics` 与 `/debug/loops`（内部计数与循环状态），`/healthz` 刻意不管：

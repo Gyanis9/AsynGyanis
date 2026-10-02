@@ -51,10 +51,10 @@ namespace AsynGyanis::Net
          * @details 本对象按 shared_ptr 在服务器与会话之间共享（类注释的口径），值语义从来不是它的用法；
          *          允许拷贝会让副本带着指向原件的读回调，面板上就会多出一条永远不再变化的账
          */
-        HttpMemoryBudget(const HttpMemoryBudget &) = delete;
+        HttpMemoryBudget(const HttpMemoryBudget &)            = delete;
         HttpMemoryBudget &operator=(const HttpMemoryBudget &) = delete;
-        HttpMemoryBudget(HttpMemoryBudget &&) = delete;
-        HttpMemoryBudget &operator=(HttpMemoryBudget &&) = delete;
+        HttpMemoryBudget(HttpMemoryBudget &&)                 = delete;
+        HttpMemoryBudget &operator=(HttpMemoryBudget &&)      = delete;
 
         /**
          * @brief 尝试预留一段字节

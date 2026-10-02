@@ -813,20 +813,20 @@ namespace AsynGyanis::Net
      */
     TEST(AcmeCertificateManagerLoop, StopWakesTheParkedRenewalLoopInsideOneSlice)
     {
-        Core::EventLoop                     loop;
+        Core::EventLoop                       loop;
         AcmeCertificateManager::Configuration configuration;
-        configuration.certificateFile    = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
-        configuration.privateKeyFile     = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
-        configuration.accountKeyFile     = std::filesystem::temp_directory_path() / "asyn-acme-loop-account.pem";
-        configuration.accountStateFile   = std::filesystem::temp_directory_path() / "asyn-acme-loop-state.json";
-        configuration.domainNames        = {"loop.example"};
-        configuration.directoryUrl       = "https://127.0.0.1:1/directory"; // 这一轮不打扰机构，这只口不会被碰
-        configuration.renewBeforeExpiry  = std::chrono::hours{24};
+        configuration.certificateFile      = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
+        configuration.privateKeyFile       = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
+        configuration.accountKeyFile       = std::filesystem::temp_directory_path() / "asyn-acme-loop-account.pem";
+        configuration.accountStateFile     = std::filesystem::temp_directory_path() / "asyn-acme-loop-state.json";
+        configuration.domainNames          = {"loop.example"};
+        configuration.directoryUrl         = "https://127.0.0.1:1/directory"; // 这一轮不打扰机构，这只口不会被碰
+        configuration.renewBeforeExpiry    = std::chrono::hours{24};
         configuration.renewalCheckInterval = std::chrono::seconds{30};
         configuration.accountKeyAlgorithm  = AcmeKeyAlgorithm::Es256;
         configuration.domainKeyAlgorithm   = AcmeKeyAlgorithm::Es256;
 
-        std::atomic<int> reloadCalls{0};
+        std::atomic<int>       reloadCalls{0};
         AcmeCertificateManager manager(loop, configuration,
                                        [&reloadCalls]() -> std::expected<void, std::string>
                                        {
@@ -866,8 +866,7 @@ namespace AsynGyanis::Net
         }
 
         EXPECT_TRUE(wasParkedWhenStopped.load(std::memory_order_relaxed)) << "叫停之前这条帧就已经退了：判据落不到停放上";
-        EXPECT_TRUE(exitedWithinBound.load(std::memory_order_relaxed))
-                << "叫停之后 5 秒内这条帧没退出：停放没切片，停机要等到下一拍（这一轮设的是 30 秒）";
+        EXPECT_TRUE(exitedWithinBound.load(std::memory_order_relaxed)) << "叫停之后 5 秒内这条帧没退出：停放没切片，停机要等到下一拍（这一轮设的是 30 秒）";
         EXPECT_EQ(reloadCalls.load(std::memory_order_relaxed), 0) << "这一轮证书还有富余，不该把装回动作碰一次";
     }
 

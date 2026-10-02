@@ -363,7 +363,7 @@ namespace AsynGyanis::Net
     {
         std::vector<std::string> seenByHandler;
         std::vector<std::string> seenByMiddleware;
-        const auto recordPattern = [&seenByHandler](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+        const auto               recordPattern = [&seenByHandler](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
         {
             seenByHandler.emplace_back(request.matchedRoute());
             response.setBody("ok");
@@ -441,7 +441,7 @@ namespace AsynGyanis::Net
         Router router;
         router.get("/hello", textHandler("world"));
 
-        HttpRequest  request  = makeRequest(HttpMethod::GET, "/hello");
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/hello");
         HttpResponse response{};
         routeRequest(router, request, response);
         EXPECT_EQ(request.matchedRoute(), "/hello");

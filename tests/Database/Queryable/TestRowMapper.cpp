@@ -668,8 +668,7 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperFloating, RejectsMalformedDecimalTextShapes)
     {
-        for (const char *malformedText: {"", " ", " 1.5", "1.5 ", "1.5abc", "1.2.3", ".", "-", "+", "e5", "1.5e", "1.5e+",
-                                         "inf", "-inf", "nan", "0x1p3", "1.5f"})
+        for (const char *malformedText: {"", " ", " 1.5", "1.5 ", "1.5abc", "1.2.3", ".", "-", "+", "e5", "1.5e", "1.5e+", "inf", "-inf", "nan", "0x1p3", "1.5f"})
         {
             EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue(malformedText), kColumnName)), RowMappingException)
                     << "形状「" << malformedText << "」不该被当成十进制小数";

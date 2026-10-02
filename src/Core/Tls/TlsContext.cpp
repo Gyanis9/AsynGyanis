@@ -387,8 +387,7 @@ namespace AsynGyanis::Core
 
         if (SSL_CTX_check_private_key(context) != 1)
         {
-            LOG_ERROR_FMT("TlsContext: 证书与私钥不配对——证书来自「{}」而私钥来自「{}」。OpenSSL 报的是：{}",
-                          certificateFile, keyFile, openSslReasonText());
+            LOG_ERROR_FMT("TlsContext: 证书与私钥不配对——证书来自「{}」而私钥来自「{}」。OpenSSL 报的是：{}", certificateFile, keyFile, openSslReasonText());
             return false;
         }
         return true;

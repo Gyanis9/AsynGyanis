@@ -78,8 +78,7 @@ namespace AsynGyanis::Net
         {
             // 点名缺的是哪一件：原先「缺 SSL_CTX 或报文出口」这种写法等于把两种完全不同的
             // 装配错误合成一条看不出名目的告警
-            LOG_ERROR_FMT("QuicConnection: 连接配置不完整（缺{}），连接未建立",
-                          configuration.tlsContext == nullptr ? " TLS 上下文" : " 报文出口（sendDatagram）");
+            LOG_ERROR_FMT("QuicConnection: 连接配置不完整（缺{}），连接未建立", configuration.tlsContext == nullptr ? " TLS 上下文" : " 报文出口（sendDatagram）");
             return nullptr;
         }
 

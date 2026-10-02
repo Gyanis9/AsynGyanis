@@ -497,8 +497,8 @@ namespace AsynGyanis::Net
                         const bool isGetReuse    = pass == 1 && candidate.method == HttpMethod::GET;
                         if (isStrictMatch || isGetReuse)
                         {
-                            selectedHandler   = &candidate.handler;
-                            selectedPattern   = exactIterator->first;
+                            selectedHandler = &candidate.handler;
+                            selectedPattern = exactIterator->first;
                             return true;
                         }
                     }

@@ -262,7 +262,7 @@ namespace AsynGyanis::Database::Queryable
                                            "\" 不是十进制小数（只接受可选正负号、数字与一个小数点、可选的 e 指数）");
             };
 
-            const std::size_t integerDigitCount = scanDigitRun();
+            const std::size_t integerDigitCount  = scanDigitRun();
             std::size_t       fractionDigitCount = 0;
             if (cursor < textLength && textValue[cursor] == '.')
             {
@@ -298,15 +298,14 @@ namespace AsynGyanis::Database::Queryable
             const std::size_t significantDigits = firstNonZeroDigit == std::string::npos ? 1U : lastNonZeroDigit - firstNonZeroDigit + 1U;
             if (significantDigits > static_cast<std::size_t>(std::numeric_limits<FundamentalType>::digits10))
             {
-                throw RowMappingException(std::string("ORM 行映射失败：列 \"") + std::string(columnName) + "\" 的值 " + textValue + " 有 " +
-                                          std::to_string(significantDigits) + " 位有效数字，超出 " + std::string(floatingTypeName<FundamentalType>()) +
-                                          " 能无损表示的 " + std::to_string(std::numeric_limits<FundamentalType>::digits10) +
-                                          " 位。换成文本成员自己解析，别让它静默改值");
+                throw RowMappingException(std::string("ORM 行映射失败：列 \"") + std::string(columnName) + "\" 的值 " + textValue + " 有 " + std::to_string(significantDigits) +
+                                          " 位有效数字，超出 " + std::string(floatingTypeName<FundamentalType>()) + " 能无损表示的 " +
+                                          std::to_string(std::numeric_limits<FundamentalType>::digits10) + " 位。换成文本成员自己解析，别让它静默改值");
             }
 
-            errno         = 0;
-            const double  parsedValue = std::strtod(textValue.c_str(), nullptr);
-            const bool    outOfRange  = (errno == ERANGE);
+            errno                      = 0;
+            const double   parsedValue = std::strtod(textValue.c_str(), nullptr);
+            const bool     outOfRange  = (errno == ERANGE);
             constexpr bool canNarrow   = std::numeric_limits<FundamentalType>::max() < std::numeric_limits<double>::max();
             if (outOfRange || (canNarrow && std::isfinite(parsedValue) && std::abs(parsedValue) > std::numeric_limits<FundamentalType>::max()))
             {

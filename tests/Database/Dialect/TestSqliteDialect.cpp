@@ -1127,10 +1127,10 @@ TEST(SqliteDialectWrite, InsertConflictPoliciesChangeOnlyTheKeywordPhrase)
     node.selectColumns = {"id", "name"};
     const std::vector<DatabaseValue> values{std::int64_t{7}, std::string("ada")};
 
-    const SqlStatement failed  = dialect.translateInsert(node, values);
-    node.insertConflict        = Conflict::Ignore;
-    const SqlStatement ignored = dialect.translateInsert(node, values);
-    node.insertConflict        = Conflict::Replace;
+    const SqlStatement failed   = dialect.translateInsert(node, values);
+    node.insertConflict         = Conflict::Ignore;
+    const SqlStatement ignored  = dialect.translateInsert(node, values);
+    node.insertConflict         = Conflict::Replace;
     const SqlStatement replaced = dialect.translateInsert(node, values);
 
     EXPECT_EQ(failed.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?)");
@@ -1142,7 +1142,7 @@ TEST(SqliteDialectWrite, InsertConflictPoliciesChangeOnlyTheKeywordPhrase)
 
     // 批量方向共用同一份关键词出口：少了这一格就是「单行认冲突、批量静默按默认档写」
     const std::vector<std::vector<DatabaseValue>> rows{values, values};
-    node.insertConflict = Conflict::Ignore;
+    node.insertConflict      = Conflict::Ignore;
     const SqlStatement batch = dialect.translateInsertBatch(node, rows);
     EXPECT_EQ(batch.sql, "INSERT OR IGNORE INTO \"users\" (\"id\", \"name\") VALUES (?, ?), (?, ?)");
 }

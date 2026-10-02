@@ -489,8 +489,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(false), errorText).value_or(""), "0");
         // 双精度走最短可往返表示：不是 std::to_string(double) 那种固定六位小数
         EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(1.5), errorText).value_or(""), "1.5");
-        EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(std::vector<std::uint8_t>{0x00, 0xFF, 0x10}), errorText).value_or(""),
-                  std::string("\0\377\020", 3));
+        EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(std::vector<std::uint8_t>{0x00, 0xFF, 0x10}), errorText).value_or(""), std::string("\0\377\020", 3));
 
         // NULL：Redis 没有「一个 NULL 参数」这回事
         errorText.clear();
@@ -516,13 +515,12 @@ namespace AsynGyanis::Database
      */
     TEST(RedisConnection, ParameterizedExecuteReachesTheSendPathInsteadOfRefusing)
     {
-        RedisConnection connection(ConnectionConfig::redisDefault());
+        RedisConnection                  connection(ConnectionConfig::redisDefault());
         const std::vector<DatabaseValue> scalarParameters{DatabaseValue(std::string("k")), DatabaseValue(std::string("v"))};
         const std::vector<DatabaseValue> nullParameter{DatabaseValue{}};
 
         static_cast<void>(connection.execute("SET", scalarParameters));
-        EXPECT_EQ(connection.lastError(), "未连接到 Redis，命令未执行")
-                << "参数化入口没有走到发送那一步：它还是基类那句「该驱动暂不支持参数化查询」吗？";
+        EXPECT_EQ(connection.lastError(), "未连接到 Redis，命令未执行") << "参数化入口没有走到发送那一步：它还是基类那句「该驱动暂不支持参数化查询」吗？";
 
         // 占位符：Redis 没有这个语法，静默发出去会写成一个名叫 "?" 的键
         static_cast<void>(connection.execute("SET ? ?", scalarParameters));

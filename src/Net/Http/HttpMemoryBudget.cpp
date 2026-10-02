@@ -19,13 +19,11 @@ namespace AsynGyanis::Net
         try
         {
             m_metricHandles.push_back(Core::ProcessMetricsRegistry::registerMetric(
-                    "asyn_http_inflight_body_bytes", "当前预留的在途请求正文字节（所有预算对象相加；上限为 0 的那份不占额度）",
-                    Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
-                    [this] { return static_cast<std::uint64_t>(reservedByteCount()); }));
-            m_metricHandles.push_back(Core::ProcessMetricsRegistry::registerMetric(
-                    "asyn_http_memory_budget_rejections_total", "因超出在途正文预算而被拒（回 503）的次数（进程累计）",
-                    Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
-                    [this] { return static_cast<std::uint64_t>(rejectionCount()); }));
+                    "asyn_http_inflight_body_bytes", "当前预留的在途请求正文字节（所有预算对象相加；上限为 0 的那份不占额度）", Core::ProcessMetricKind::Gauge,
+                    Core::ProcessMetricMerge::Sum, [this] { return static_cast<std::uint64_t>(reservedByteCount()); }));
+            m_metricHandles.push_back(Core::ProcessMetricsRegistry::registerMetric("asyn_http_memory_budget_rejections_total",
+                                                                                   "因超出在途正文预算而被拒（回 503）的次数（进程累计）", Core::ProcessMetricKind::Counter,
+                                                                                   Core::ProcessMetricMerge::Sum, [this] { return static_cast<std::uint64_t>(rejectionCount()); }));
         } catch (const std::exception &exception)
         {
             LOG_WARN_FMT("HttpMemoryBudget: 进程指标登记失败，预算照常生效但面板上看不到这两条读数。原因：{}", exception.what());

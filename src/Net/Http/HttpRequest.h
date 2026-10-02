@@ -550,11 +550,11 @@ namespace AsynGyanis::Net
         std::string                         m_requestId;           ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）
         /// 对端地址文本，指向**会话按连接缓存的那一份**（见 setRemoteAddress()）：按连接复用的请求对象
         /// 因此不为它付一次堆分配，reset() 只把视图清回去
-        std::string_view                             m_remoteAddress; ///< 发起方地址，由会话在业务之前落定（见 setRemoteAddress()）
+        std::string_view m_remoteAddress; ///< 发起方地址，由会话在业务之前落定（见 setRemoteAddress()）
         /// 命中的路由模式原文，指向路由表里那条模式自己的存储（见 setMatchedRoute()）：按连接复用的
         /// 请求对象不为它付一次堆分配，reset() 只把视图清回去
-        std::string_view                             m_matchedRoute;  ///< 本次派发命中的路由模式，由路由器在管道之前落定
-        std::unordered_map<std::string, std::string> m_params;        ///< 路由参数
-        mutable std::stop_source                     m_cancelSource;  ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
+        std::string_view                             m_matchedRoute; ///< 本次派发命中的路由模式，由路由器在管道之前落定
+        std::unordered_map<std::string, std::string> m_params;       ///< 路由参数
+        mutable std::stop_source                     m_cancelSource; ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
     };
 } // namespace AsynGyanis::Net

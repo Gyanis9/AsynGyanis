@@ -277,12 +277,12 @@ namespace AsynGyanis::Net
         HttpServerConfiguration configuration;
         configuration.memoryBudgetBytes = 1000;
         HttpServerAssemblyContext context;
-        context.workerProcessCount      = 4;
+        context.workerProcessCount = 4;
         ASSERT_TRUE(applyHttpServerConfiguration(server, configuration, context).has_value());
         ASSERT_NE(server.memoryBudget().get(), nullptr) << "配了字节数而服务器上仍是空指针：键没接到 setter";
         EXPECT_EQ(server.memoryBudget()->maximumTotalBytes(), 250u) << "整机 1000 摊给 4 个进程，本台真正卡的应是 250";
 
-        const auto sharedBudget = std::make_shared<HttpMemoryBudget>(250);
+        const auto sharedBudget    = std::make_shared<HttpMemoryBudget>(250);
         context.sharedMemoryBudget = sharedBudget;
         ASSERT_TRUE(applyHttpServerConfiguration(server, configuration, context).has_value()) << "与摊分一致的共享预算被误拒";
         EXPECT_EQ(server.memoryBudget().get(), sharedBudget.get()) << "服务器上的账应当就是传进来的那一份，而不是另起的新账";

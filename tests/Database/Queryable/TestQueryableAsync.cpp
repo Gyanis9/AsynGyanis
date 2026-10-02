@@ -665,67 +665,64 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchWithEmptyCollectionNeedsNoConnection)
     EXPECT_LT(elapsedMilliseconds, 1000) << "耗时 " << elapsedMilliseconds << " 毫秒，像是先等满了 acquireTimeout";
 }
 
-    /**
-     * @brief 钉住：借不到连接时把「是哪一种失败」报出来，而不是留一句「可能是」
-     * @details 池饱和（该抬上限或减少并发借用）与建不出连接（该查连接参数与服务可达性）处置完全不同，
-     *          而池早就把这两条分开计了——`borrowTimeoutCount` 只在等满截止时刻那一路增加。旧文本
-     *          「可能是池已达上限或连接创建失败」把两种可能并成一句猜话，读了等于没读。
-     *          先跑一次 count() 让方言探测把类型缓存下来（那次借行走的是另一条出口），再占住唯一额度
-     *          跑第二次，这次撞的就是租约出口
-     */
-    TEST_F(QueryableAsyncTest, ReportsWhichPoolFailureItWasWhenTheLeaseCannotBeAcquired)
+/**
+ * @brief 钉住：借不到连接时把「是哪一种失败」报出来，而不是留一句「可能是」
+ * @details 池饱和（该抬上限或减少并发借用）与建不出连接（该查连接参数与服务可达性）处置完全不同，
+ *          而池早就把这两条分开计了——`borrowTimeoutCount` 只在等满截止时刻那一路增加。旧文本
+ *          「可能是池已达上限或连接创建失败」把两种可能并成一句猜话，读了等于没读。
+ *          先跑一次 count() 让方言探测把类型缓存下来（那次借行走的是另一条出口），再占住唯一额度
+ *          跑第二次，这次撞的就是租约出口
+ */
+TEST_F(QueryableAsyncTest, ReportsWhichPoolFailureItWasWhenTheLeaseCannotBeAcquired)
+{
+    Queryable<AsyncAccountRow> query(*m_pool);
+    EXPECT_EQ(query.count(), 0) << "前提不成立：方言探测没跑成，后面撞不到租约出口";
+
+    const PooledConnection occupancy = m_pool->acquire();
+    ASSERT_TRUE(static_cast<bool>(occupancy)) << "前提不成立：占位连接没拿到";
+
+    std::string failureText;
+    try
     {
-        Queryable<AsyncAccountRow> query(*m_pool);
-        EXPECT_EQ(query.count(), 0) << "前提不成立：方言探测没跑成，后面撞不到租约出口";
-
-        const PooledConnection occupancy = m_pool->acquire();
-        ASSERT_TRUE(static_cast<bool>(occupancy)) << "前提不成立：占位连接没拿到";
-
-        std::string failureText;
-        try
-        {
-            static_cast<void>(query.count());
-        } catch (const AsynGyanis::Database::ConnectionUnavailableException &exception)
-        {
-            // 当场抄成副本：what() 指向异常对象自己的缓冲，出了 catch 它就没了
-            failureText = exception.what();
-        }
-        ASSERT_FALSE(failureText.empty()) << "池被占满时该抛 ConnectionUnavailableException";
-
-        const std::string text{failureText};
-        EXPECT_NE(text.find("借出等待超时计数从 0 变成 1"), std::string::npos) << "文本要点名这次是不是等满了截止时刻：「" << text << "」";
-        EXPECT_NE(text.find("池内 1 条、活跃 1 条"), std::string::npos) << "文本要给出池的现况读数：「" << text << "」";
-        EXPECT_EQ(text.find("可能是"), std::string::npos) << "不该再把两种失败并成一句猜话：「" << text << "」";
-    }
-
-    /**
-     * @brief 钉住：三种冲突处置在真实引擎上给出三种不同结果，而不只是三种文本
-     * @details 方言那两条测的是渲染，这条测的是行为——同一主键写第二次时 `Fail` 抛、`Ignore` 跳过且
-     *          旧值留着、`Replace` 换掉那一行而不新增一行。少了这一格，「关键词拼对了但引擎按别的
-     *          意思解释」这类错就没人管
-     */
-    TEST_F(QueryableAsyncTest, InsertConflictPoliciesBehaveDifferentlyOnARealEngine)
+        static_cast<void>(query.count());
+    } catch (const AsynGyanis::Database::ConnectionUnavailableException &exception)
     {
-        using AsynGyanis::Database::Queryable::InsertConflict;
-
-        Queryable<AsyncAccountRow> query(*m_pool);
-        ASSERT_EQ(query.insert(AsyncAccountRow{7, "first", std::nullopt}), 1);
-
-        // Fail：与不带该参数的版本同形，冲突就抛
-        EXPECT_THROW(static_cast<void>(query.insert(AsyncAccountRow{7, "second", std::nullopt}, InsertConflict::Fail)),
-                     AsynGyanis::Database::DatabaseException);
-
-        // Ignore：不抛也不写——SQLite 对跳过的行不计入 changes()
-        EXPECT_EQ(query.insert(AsyncAccountRow{7, "ignored", std::nullopt}, InsertConflict::Ignore), 0) << "跳过的行被计成写入了";
-        EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{7}).first()->name, "first")
-                << "IGNORE 把旧行的值改掉了：那不是「跳过」";
-
-        // Replace：换掉那一行，而且不新增行
-        EXPECT_EQ(query.insert(AsyncAccountRow{7, "replaced", std::nullopt}, InsertConflict::Replace), 1);
-        EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{7}).first()->name, "replaced")
-                << "REPLACE 之后读回来的还是旧值";
-        EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).count(), 1) << "同一主键出现了两行：Replace 变成了又一次插入";
+        // 当场抄成副本：what() 指向异常对象自己的缓冲，出了 catch 它就没了
+        failureText = exception.what();
     }
+    ASSERT_FALSE(failureText.empty()) << "池被占满时该抛 ConnectionUnavailableException";
+
+    const std::string text{failureText};
+    EXPECT_NE(text.find("借出等待超时计数从 0 变成 1"), std::string::npos) << "文本要点名这次是不是等满了截止时刻：「" << text << "」";
+    EXPECT_NE(text.find("池内 1 条、活跃 1 条"), std::string::npos) << "文本要给出池的现况读数：「" << text << "」";
+    EXPECT_EQ(text.find("可能是"), std::string::npos) << "不该再把两种失败并成一句猜话：「" << text << "」";
+}
+
+/**
+ * @brief 钉住：三种冲突处置在真实引擎上给出三种不同结果，而不只是三种文本
+ * @details 方言那两条测的是渲染，这条测的是行为——同一主键写第二次时 `Fail` 抛、`Ignore` 跳过且
+ *          旧值留着、`Replace` 换掉那一行而不新增一行。少了这一格，「关键词拼对了但引擎按别的
+ *          意思解释」这类错就没人管
+ */
+TEST_F(QueryableAsyncTest, InsertConflictPoliciesBehaveDifferentlyOnARealEngine)
+{
+    using AsynGyanis::Database::Queryable::InsertConflict;
+
+    Queryable<AsyncAccountRow> query(*m_pool);
+    ASSERT_EQ(query.insert(AsyncAccountRow{7, "first", std::nullopt}), 1);
+
+    // Fail：与不带该参数的版本同形，冲突就抛
+    EXPECT_THROW(static_cast<void>(query.insert(AsyncAccountRow{7, "second", std::nullopt}, InsertConflict::Fail)), AsynGyanis::Database::DatabaseException);
+
+    // Ignore：不抛也不写——SQLite 对跳过的行不计入 changes()
+    EXPECT_EQ(query.insert(AsyncAccountRow{7, "ignored", std::nullopt}, InsertConflict::Ignore), 0) << "跳过的行被计成写入了";
+    EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{7}).first()->name, "first") << "IGNORE 把旧行的值改掉了：那不是「跳过」";
+
+    // Replace：换掉那一行，而且不新增行
+    EXPECT_EQ(query.insert(AsyncAccountRow{7, "replaced", std::nullopt}, InsertConflict::Replace), 1);
+    EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{7}).first()->name, "replaced") << "REPLACE 之后读回来的还是旧值";
+    EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).count(), 1) << "同一主键出现了两行：Replace 变成了又一次插入";
+}
 
 // ========================================================================
 // 不阻塞调用线程
