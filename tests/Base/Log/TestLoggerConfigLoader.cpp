@@ -2037,4 +2037,87 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(contains(diagnostic, "已按 INFO 处理")) << diagnostic;
         EXPECT_TRUE(contains(diagnostic, "global_level_fallback_line")) << diagnostic;
     }
+
+    /**
+     * @brief 钉住「配了不生效」必须出声：logging 段、logger 层、sink 层各报不认识字段的那几条
+     * @details server / tracing / acme 三段配置在读之前都做未知键拒绝，唯独 logging 历史上只有
+     *          逐字段的形态诊断：`max_backups`（正确写法 max_backup）这类拼错会整块消失而日志照写，
+     *          运维只能靠猜。本口径是「报而不拒」——因为一个多余字段就丢掉整条 sink 比现状更伤。
+     *          条数一并钉住：多报会把认识字段也喊出来（下面的正向对照防的就是这个）。
+     */
+    TEST_F(LoggerConfigLoaderTest, ReportsUnknownFieldsAtEveryLoggingLevel)
+    {
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            loadConfiguration(R"(logging:
+  globl_level: INFO
+  loggers:
+    root:
+      log_level: WARN
+      sinks:
+        - type: rolling_file
+          base_filename: app.log
+          max_backups: 7
+          queue_sizes: 4096
+)");
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        EXPECT_TRUE(contains(diagnostic, "'globl_level'")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "'log_level'")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "'max_backups'")) << diagnostic;
+        EXPECT_TRUE(contains(diagnostic, "'queue_sizes'")) << diagnostic;
+        // 条数钉死：多报就是「把认识的字段也喊出来」，那种实现会在这条变红而不是悄悄更响
+        std::size_t reportCount = 0;
+        for (std::size_t position = diagnostic.find("不认识的字段"); position != std::string::npos; position = diagnostic.find("不认识的字段", position + 1))
+        {
+            ++reportCount;
+        }
+        EXPECT_EQ(reportCount, 4U) << diagnostic;
+    }
+
+    /**
+     * @brief 正向对照：一份完全认识的配置不得冒出任何「不认识的字段」
+     * @details 只留上一条会把判据写成「恒出声」——真那样就没人能配日志了。这一条覆盖四种 sink
+     *          类型各自的字段集（含 async 的 wrapped 嵌套），漏掉任何一个认识字段都会在这里变红。
+     */
+    TEST_F(LoggerConfigLoaderTest, StaysSilentWhenEveryLoggingFieldIsKnown)
+    {
+        std::string diagnostic;
+        {
+            const ConsoleCapture capture;
+            loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: WARN
+      sinks:
+        - type: console
+          color: false
+          formatter: json
+          level: ERROR
+        - type: file
+          path: plain.log
+          truncate: true
+        - type: rolling_file
+          base_filename: app.log
+          directory: rolling
+          policy: size
+          max_size_mb: 2
+          max_backup: 4
+        - type: async
+          wrapped:
+            type: console
+            color: true
+          queue_size: 512
+          overflow_policy: drop
+)");
+            applyLogging();
+            diagnostic = capture.text();
+        }
+
+        EXPECT_EQ(diagnostic.find("不认识的字段"), std::string::npos) << diagnostic;
+    }
 } // namespace AsynGyanis::Base

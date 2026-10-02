@@ -25,11 +25,76 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Base
 {
     namespace
     {
+        /**
+         * @brief 把「本实现不认识的字段」报出来，让「配了不生效」至少出得了声
+         *
+         * @details logging 这一段与 server / tracing / acme 三段的历史口径不同：那三段在读配置前
+         *          做未知键拒绝（抛），这一段只有逐字段的形态诊断。结果是 `max_backups`（正确写法
+         *          max_backup）、`globl_level`（正确写法 global_level）这类拼错的字段整块消失而
+         *          一声不吭——运维看到的是「配置里明明写了保留 30 份，日志目录却留着 10 份」。
+         *          这里只报不拒：本文件的既有口径是「容错必须可见」，而 sink 的字段集按 type 多态，
+         *          因为一个多余字段就把整条 sink 丢掉会比现状更伤（业务可能因此完全没有文件日志）。
+         *
+         * @param node 该层配置节点；不是对象时不判（上层已有形态诊断）
+         * @param knownKeys 这一层认识的字段名，含公共字段
+         * @param where 诊断文本里的定位，例如「rolling_file sink 配置」
+         */
+        void reportUnknownFields(const ConfigValue &node, const std::vector<std::string_view> &knownKeys, const std::string_view where)
+        {
+            if (!node.is_object())
+            {
+                return;
+            }
+            for (auto iterator = node.begin(); iterator != node.end(); ++iterator)
+            {
+                const std::string_view name(iterator.key());
+                if (std::find(knownKeys.begin(), knownKeys.end(), name) == knownKeys.end())
+                {
+                    std::string knownText;
+                    for (const std::string_view key: knownKeys)
+                    {
+                        knownText += knownText.empty() ? "'" : ", '";
+                        knownText += key;
+                        knownText += '\'';
+                    }
+                    std::cerr << "LoggerConfig：" << where << " 有本实现不认识的字段 '" << name << "'，该字段不生效（这一层认识的是：" << knownText
+                              << "）；请核对键名，或把业务自己的配置挪到别的段里" << '\n';
+                }
+            }
+        }
+
+        /**
+         * @brief 某个 sink 类型认识的字段集（含所有类型共用的 type / formatter / level）
+         * @param type sink 类型文本
+         * @return std::vector<std::string_view> 认识的字段名；未知类型返回空集
+         */
+        [[nodiscard]] std::vector<std::string_view> sinkKnownFields(const std::string_view type)
+        {
+            if (type == "console")
+            {
+                return {"type", "color", "formatter", "level"};
+            }
+            if (type == "file")
+            {
+                return {"type", "path", "truncate", "formatter", "level"};
+            }
+            if (type == "rolling_file")
+            {
+                return {"type", "base_filename", "directory", "policy", "max_size_mb", "max_backup", "formatter", "level"};
+            }
+            if (type == "async")
+            {
+                return {"type", "wrapped", "queue_size", "overflow_policy", "formatter", "level"};
+            }
+            return {};
+        }
+
         /**
          * @brief 按键取配置值，键缺失或类型不符时返回空
          * @details 与 configValueAs 同一口径：不做跨类型转换，"true" 不会当布尔用、数字不会当字符串取。
@@ -167,6 +232,9 @@ namespace AsynGyanis::Base
             return;
         }
 
+        // 段这一层的未知键也要出声：`globl_level` 这类拼错过去会整字段消失、按 INFO 生效
+        reportUnknownFields(loggingSection, {"global_level", "loggers"}, "logging 段");
+
         // 键不存在时按 INFO 是正常路径；存在但不是字符串（YAML 里写成不带引号的数字、或整段漏了
         // 缩进被解析成列表）原先会静默按 INFO 生效——「明明配了等级却没生效」是这里最难查的一类
         // 现场，因此按 sinks 各字段的同一口径报出实际类型再回落
@@ -225,6 +293,9 @@ namespace AsynGyanis::Base
 
     void LoggerConfigLoader::applyLoggerConfig(Logger &logger, const ConfigValue &loggerConfiguration, const std::filesystem::path &baseDirectory)
     {
+        // 这一层只认 level 与 sinks：多出来的字段（`log_level`、`sinjs`）过去会整块消失不出声
+        reportUnknownFields(loggerConfiguration, {"level", "sinks"}, "logger 配置");
+
         // 先校验完取值形态再动 sink：类型不符时当场诊断并保留原有 sink（清空后才发现不符
         // 会让该 logger 此后静默丢日志）
         const auto levelText     = configValueAt<std::string>(loggerConfiguration, "level");
@@ -420,6 +491,14 @@ namespace AsynGyanis::Base
             // 模块初始化阶段日志系统可能尚未就绪，使用 std::cerr
             std::cerr << "LoggerConfig：未知的 sink 类型 '" << type << "'，已跳过" << '\n';
             return nullptr;
+        }
+
+        // sink 这一层按类型认识字段：`max_backups`（正确写法 max_backup）、`filename`（正确写法
+        // base_filename）这类拼错过去会让字段整块消失而日志照写，运维只能靠猜。
+        // 排在类型分支之后：未知类型上面已经单独报过「未知的 sink 类型」，那里不该把每个字段都再报一遍
+        if (sink)
+        {
+            reportUnknownFields(sinkConfiguration, sinkKnownFields(type), type + " sink 配置");
         }
 
         if (sink && sinkConfiguration.contains("formatter"))
