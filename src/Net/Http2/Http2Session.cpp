@@ -878,6 +878,8 @@ namespace AsynGyanis::Net
         {
             m_requestIdGenerator->resolveInto(request);
         }
+        // 来源地址与 h1 排在同一处：h2 一条连接上并发跑多条流，取址只按连接做一次，逐流只指过去
+        request.setRemoteAddress(cachedRemoteAddress());
 
         // HEAD 只发头部，一个正文字节都不发（RFC 9110 §9.1）：抑制放在这里而不是响应层——
         // 响应层的「无正文」语义只由状态码决定，与请求方法无关

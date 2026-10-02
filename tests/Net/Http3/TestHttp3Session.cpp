@@ -776,6 +776,69 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：h3 的业务读到的来源地址来自承载层交下来的出口，而且一条连接只问一次
+     * @details h3 的会话没有套接字可问（字节走承载层的 UDP 通道），来源只能由 QuicServer 在建会话时
+     *          交一个出口下来。这条既钉「出口的值真的到了请求里」，也钉「每条请求都重新问一次承载层」
+     *          那个退化——那会把一次换算变成每请求一次，而且 QUIC 允许来源随 NAT 重绑，逐条重问会让
+     *          一批请求里出现两个来源
+     */
+    TEST(Http3Session, HandsTheTransportPeerAddressToBusinessAndAsksTheProviderOnce)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::size_t                     providerCalls = 0;
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                {}, nullptr, nullptr, nullptr, {},
+                [&providerCalls]
+                {
+                    ++providerCalls;
+                    return std::string("203.0.113.9:44000");
+                });
+
+        std::vector<std::string> observedPeers;
+        Router                   router;
+        router.get("/hello",
+                   [&observedPeers](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                   {
+                       observedPeers.push_back(request.remoteAddress());
+                       response.setStatus(200);
+                       response.setBody("hi");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        for (const std::int64_t requestStreamId: {kFirstRequestStreamId, kFirstRequestStreamId + 4})
+        {
+            const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/hello", "example.com", requestStreamId);
+            ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
+            for (const CapturedStreamData &chunk: requestChunks)
+            {
+                session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+            Core::Task<> pumpTask = session.pump();
+            resumeUntilReady(pumpTask);
+            for (const CapturedStreamData &chunk: sentStreamData)
+            {
+                peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+            sentStreamData.clear();
+        }
+
+        ASSERT_EQ(observedPeers.size(), 2U) << "两条请求没有都走到业务";
+        EXPECT_EQ(observedPeers[0], "203.0.113.9:44000") << "承载层给的来源没有落到请求里";
+        EXPECT_EQ(observedPeers[1], observedPeers[0]) << "同一条连接上两条请求读到了不同来源";
+        EXPECT_EQ(providerCalls, 1U) << "每条请求都重新问了一次承载层：这条缓存没生效";
+    }
+
+    /**
      * @brief 畸形请求头：回 400 而不是作废整条连接，也不把请求交给业务
      * @details RFC 9114 §4.1.2 允许服务端在重置之前先答一个错。这条把「连接层判定 → 会话作答」
      *          这一段接起来测——连接层已单测过会发通知，此处钉的是通知真的变成了一个能解开的响应。

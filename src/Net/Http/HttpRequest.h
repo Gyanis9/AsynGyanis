@@ -360,6 +360,28 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string_view requestId() const noexcept;
 
         /**
+         * @brief 记下发起这条请求的对端地址
+         * @param address 地址文本，形如 "IP:Port"（IPv6 侧带方括号）；传空串表示本条给不出来源
+         * @details 与 setRequestId() 排在同一处（派发之前）：这类「这条请求从哪来」的事实只有会话知道，
+         *          而业务处理器的签名里只有请求与响应两个对象，没有第三条通道把连接身份带过去。
+         * @note 存的是**视图**：文本由会话按连接缓存一份（见 Core::Connection::cachedRemoteAddress()），
+         *       请求对象只指过去。因此调用方给的这块内存必须活得比本会话的连接久
+         */
+        void setRemoteAddress(std::string_view address) noexcept;
+
+        /**
+         * @brief 发起这条请求的对端地址，形如 "IP:Port"（IPv6 侧为 "[::1]:8080" 这种带方括号的写法）
+         * @return std::string 地址副本；会话没能取到地址时为空串
+         * @details 业务侧做「按来源限流、按地区放行、审计里落的是谁」这一类判定就读这里。开启 PROXY
+         *          协议时它已经是代理交来的**真实来源**而不是代理记账
+         *          （见 TcpServer::setProxyProtocolRequired()，三条协议通道同一份来源）。
+         * @note 交回副本而不是视图：这条文本指向的是会话那一份按连接缓存的缓冲，连接一收口它就没了，
+         *       而把它抄进审计队列正是本接口最常见的用法。requestId() 交视图是因为它指向本请求自己的
+         *       缓冲，两处形状不同是有意的
+         */
+        [[nodiscard]] std::string remoteAddress() const;
+
+        /**
          * @brief 从 URI 中提取路径部分（'?' 之前的内容，不含查询参数）。
          * @return 路径视图；URI 为空时返回空视图
          * @note 返回的是原始文本，未做百分号解码
@@ -489,11 +511,14 @@ namespace AsynGyanis::Net
         /// trailer 字段的存储：与头部同一套存储与查找语义，但单独一档，永不与头部互相覆盖。
         /// 按需创建——绝大多数请求不带 trailer，而一份 HttpHeaderFieldStore 在 MSVC 上光是构造
         /// 就要两次堆分配（内部那张单值视图的哈希表），直接当成员会把这两个字节成本摊给每条请求
-        std::optional<HttpHeaderFieldStore>          m_trailerStore;
-        std::string                                  m_body;                ///< 消息正文
-        HttpRequestBody                             *m_bodyStream{nullptr}; ///< 正文流（按连接装配，见 bodyStream()；不随 reset() 清除）
-        std::string                                  m_requestId;           ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）
-        std::unordered_map<std::string, std::string> m_params;              ///< 路由参数
-        mutable std::stop_source                     m_cancelSource;        ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
+        std::optional<HttpHeaderFieldStore> m_trailerStore;
+        std::string                         m_body;                ///< 消息正文
+        HttpRequestBody                    *m_bodyStream{nullptr}; ///< 正文流（按连接装配，见 bodyStream()；不随 reset() 清除）
+        std::string                         m_requestId;           ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）
+        /// 对端地址文本，指向**会话按连接缓存的那一份**（见 setRemoteAddress()）：按连接复用的请求对象
+        /// 因此不为它付一次堆分配，reset() 只把视图清回去
+        std::string_view                             m_remoteAddress; ///< 发起方地址，由会话在业务之前落定（见 setRemoteAddress()）
+        std::unordered_map<std::string, std::string> m_params;        ///< 路由参数
+        mutable std::stop_source                     m_cancelSource;  ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
     };
 } // namespace AsynGyanis::Net

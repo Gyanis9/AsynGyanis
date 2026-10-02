@@ -776,6 +776,10 @@ namespace AsynGyanis::Net
                 {
                     requestIdGenerator->resolveInto(request);
                 }
+                // 来源地址与 request-id 排在同一处落定：业务处理器的签名里只有请求与响应两个对象，
+                // 而「这条请求从哪来」只有会话知道。取的是按连接缓存的那一份（每连接一次取址、一次格式化），
+                // 派发路径上因此一次堆分配也不付。开了 PROXY 协议时这里就是代理交来的真实来源
+                request.setRemoteAddress(connection.cachedRemoteAddress());
                 response.reset();
                 response.setHttpVersion(request.httpVersion()); // 状态行版本跟随请求，不硬编码 1.1
                 // HEAD 的响应只有头部、没有正文（RFC 9112 §6.1）：流式路径下分块帧与终止块都算正文，

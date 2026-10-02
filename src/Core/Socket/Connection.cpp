@@ -65,6 +65,25 @@ namespace AsynGyanis::Core
         return m_socket.remoteAddress().toString();
     }
 
+    std::string_view Connection::cachedRemoteAddress() noexcept
+    {
+        if (!m_cachedRemoteAddress.has_value())
+        {
+            try
+            {
+                // 走虚函数那份：持有自有传输层的派生类（TLS、h2 的那条）重写的是 remoteAddress()，
+                // 缓存这一层不认得传输层，只负责「问一次、留下答案」
+                m_cachedRemoteAddress = remoteAddress();
+            } catch (const std::exception &)
+            {
+                // 描述符已失效或从未建立：这份答案缓存成空。派发路径不该因为读不到来源而中断，
+                // 而业务侧读到一个空串就是「本连接给不出来源」的如实表达
+                m_cachedRemoteAddress.emplace();
+            }
+        }
+        return *m_cachedRemoteAddress;
+    }
+
     std::string Connection::localAddress() const
     {
         return m_socket.localAddress().toString();

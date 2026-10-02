@@ -73,6 +73,9 @@ namespace AsynGyanis::Net
         /// 收口一条流：本端不再发、也请对端别再发（参数：流号、RFC 9114 §8.1 那一档的应用错误码）
         using StreamAborter = std::function<void(std::int64_t streamId, std::uint64_t applicationErrorCode)>;
 
+        /// 对端地址文本的出口（"IP:Port"，给不出来源时回空串）：由承载层从那条 QUIC 连接上读
+        using PeerAddressProvider = std::function<std::string()>;
+
         /// 时限判定用的时刻：与承载层节拍循环同一个时钟（steady_clock），用例因此能精确复现「过点」
         using Deadline = std::chrono::steady_clock::time_point;
 
@@ -100,6 +103,9 @@ namespace AsynGyanis::Net
          *        （与 h1/h2 同一取舍：id 由服务器持有、按 shared_ptr 共享，前缀标识服务器实例）
          * @param aborter 收口一条流的出口（可空：为空时本会话只丢掉自己的记账，对端收不到任何信号，
          *        只能等那条流随连接一起没掉。GOAWAY 之后拒收与越界请求回完响应后的「别再发了」都靠它落实）
+         * @param peerAddressProvider 对端地址文本的出口（可空：为空时业务读到的 `HttpRequest::remoteAddress()`
+         *        是空串）。本会话没有套接字可问——h3 的字节走的是承载层的 UDP 通道，来源只有那条 QUIC
+         *        连接认得，因此由 QuicServer 在建会话时把它交下来。取值只在首次需要时问一次并缓存
          * @note 构造里就把 HTTP/3 连接层建起来：三条本端单向流、SETTINGS 与 QPACK 两侧都在那时接上。
          *       开流失败只记日志并让会话保持不可用（`isUsable()` 为假），不抛异常：
          *       一条连接建不起 h3 不该把服务端拖垮
@@ -111,7 +117,8 @@ namespace AsynGyanis::Net
          *        与 h2 的 `requestReceivedTime` 同一相对位置，不含传输层的排队与重传
          */
         Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {}, std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
-                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr, StreamAborter aborter = {});
+                     std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr, StreamAborter aborter = {},
+                     PeerAddressProvider peerAddressProvider = {});
 
         /**
          * @brief 析构会话：连接层与它持有的 QPACK 两侧动态表随本类一并释放
@@ -734,10 +741,20 @@ namespace AsynGyanis::Net
         void noteRequestServed();
 
         /**
-         * @brief 给请求落定 request-id（可采信就沿用客户端给的，否则新生成一个）
+         * @brief 派发前把「这条请求从哪来、是哪一条」落定到请求对象上：request-id 与来源地址
          * @param request 已收齐、正要交给路由的请求
+         * @details 与 h1 的 prepareRequestDispatch、h2 的同一处排在一起：三条协议通道的业务处理器
+         *          因此读到同样两个字段，不需要按协议分叉写法
          */
-        void noteRequestId(HttpRequest &request) const;
+        void prepareRequestForDispatch(HttpRequest &request);
+
+        /**
+         * @brief 取本会话的对端地址文本，按会话缓存（只问承载层一次）
+         * @return 地址视图；没有出口或出口给不出时为空视图
+         * @details 与 Core::Connection::cachedRemoteAddress() 同一形状，只是 h3 的会话不是 Connection
+         *          （字节从承载层的 UDP 通道走），所以这份缓存留在本类里
+         */
+        [[nodiscard]] std::string_view cachedRemoteAddress();
 
         /**
          * @brief 请求带着 Expect: 100-continue 时，先交一个 :status 100 的头块
@@ -811,6 +828,10 @@ namespace AsynGyanis::Net
         std::set<std::int64_t> m_pendingTunnelStreamsEnded;
 
         std::shared_ptr<HttpMemoryBudget> m_memoryBudget; ///< 在途正文字节的全局预算，与服务端共享；空表示不受约束
+        PeerAddressProvider               m_peerAddressProvider;
+        ///< 对端地址文本的出口（可空，见构造函数的 @param peerAddressProvider）
+        /// 那份地址的按会话缓存：只在第一条请求派发前问承载层一次（见 cachedRemoteAddress()）
+        std::optional<std::string> m_cachedPeerAddress;
         /// 流式请求的本地状态：键是流号。用 unique_ptr 持有是为了地址稳定——里面存着等待者的
         /// 协程句柄，而记录本身会被移进移出（头收齐那一刻从 m_incomingRequests 转过来）
         std::map<std::int64_t, std::unique_ptr<StreamingRequest>> m_streamingRequests;

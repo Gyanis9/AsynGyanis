@@ -128,6 +128,17 @@ namespace AsynGyanis::Net
         [[nodiscard]] const std::string &sourceConnectionId() const noexcept;
 
         /**
+         * @brief 取对端地址文本，形如 "IP:Port"（IPv6 侧带方括号）
+         * @return std::string 地址文本；本连接还没收到过任何带来源的报文时为空串
+         * @details 与其它传输层的 `Connection::remoteAddress()` 同一形状、同一取值口径，因此 h1/h2/h3
+         *          三条通道交给业务的来源地址不需要按协议分叉（见 HttpRequest::remoteAddress()）。
+         * @note 读的是**当前**那份对端地址：QUIC 允许来源随 NAT 重绑而变化（handleDatagram 会跟随更新），
+         *       所以两次调用之间取值可能不同。HTTP/3 会话按连接缓存一次，业务因此在一批请求里读到的是
+         *       同一个来源，不会半批换 IP
+         */
+        [[nodiscard]] std::string remoteAddress() const;
+
+        /**
          * @brief 开一条本端发起的单向流并返回流号
          * @details HTTP/3 的控制流与两条 QPACK 流都是本端发起的单向流，写之前必须先开出来。
          * @return std::int64_t 新流号；连接已收口或对端的单向流额度用尽时为 -1

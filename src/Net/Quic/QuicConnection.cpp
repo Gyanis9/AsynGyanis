@@ -2,6 +2,7 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/Socket/InetAddress.h"
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 #include "Net/Quic/QuicConnectionCore.h"
 #include "Net/Quic/Streams/QuicStreamLayer.h"
@@ -184,6 +185,16 @@ namespace AsynGyanis::Net
     const std::string &QuicConnection::sourceConnectionId() const noexcept
     {
         return m_sourceConnectionId;
+    }
+
+    std::string QuicConnection::remoteAddress() const
+    {
+        if (m_peerAddress.length == 0)
+        {
+            // 还没有任何带来源的报文落到本连接上：给空串而不是一个半截地址
+            return {};
+        }
+        return Core::InetAddress(m_peerAddress.storage, m_peerAddress.length).toString();
     }
 
     std::int64_t QuicConnection::openUnidirectionalStream()

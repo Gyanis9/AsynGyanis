@@ -270,6 +270,18 @@ namespace AsynGyanis::Net
         return m_requestId;
     }
 
+    void HttpRequest::setRemoteAddress(const std::string_view address) noexcept
+    {
+        // 只记一个视图：这条文本由会话按连接缓存，请求对象按连接复用，两侧都不为它付堆分配
+        m_remoteAddress = address;
+    }
+
+    std::string HttpRequest::remoteAddress() const
+    {
+        // 交副本：视图指向的是会话那份按连接缓存的文本，连接收口后就没了
+        return std::string(m_remoteAddress);
+    }
+
     std::string_view HttpRequest::path() const
     {
         // 路径与查询串以第一个 '?' 为界；'?' 之前一律算路径，即使里面还有 '?' 也不切开。
@@ -451,6 +463,8 @@ namespace AsynGyanis::Net
         m_body.clear();
         // request-id 必须跟着清：它是上一条报文的身份，留着会让下一条报文冒用别人的标识
         m_requestId.clear();
+        // 来源地址同理：它是会话为「这一条」落定的事实。清的是视图，指向的那份文本归会话按连接持有
+        m_remoteAddress = {};
         m_params.clear();
 
         // trailer 那一档整份撤走而不是清空：hasTrailerFields() 读的就是「有没有这一档」，

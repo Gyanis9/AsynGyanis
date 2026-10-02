@@ -605,6 +605,54 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：h2 的业务读到的来源地址是这条连接的对端，不是空、也不是别的连接的值
+     * @details 三条协议通道的处理器只拿到请求与响应两个对象，来源地址必须由会话在派发前落进请求里
+     *          （见 HttpRequest::remoteAddress()）。h1 那侧的回环用例已经钉过真地址的形状，这里钉的是
+     *          h2 的落定动作确实排在了派发之前——h2 一条连接上并发跑多条流，取址按连接做一次、逐流指过去
+     */
+    TEST(Http2CleartextSession, HandsTheConnectionPeerAddressToBusiness)
+    {
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    static_cast<void>(router.get("/who",
+                                                 [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                 {
+                                                     response.setBody("peer=" + request.remoteAddress());
+                                                     co_return;
+                                                 }));
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/who"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "没有在时限内拿到流 1 的完整响应";
+
+        const std::string payload = responseDataPayload(frames, 1U);
+        // 回环上客户端的地址是确定的，端口由内核分配，因此判「带端口且不是 0」
+        EXPECT_NE(payload.find("peer=127.0.0.1:"), std::string::npos) << "业务没读到这条连接的对端：" << payload;
+        EXPECT_NE(payload, "peer=127.0.0.1:0") << "端口没带上来：" << payload;
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+    }
+
+    /**
      * @brief 钉住：服务器改了 h2 连接层配置，SETTINGS 通告与各项上限随之改变
      * @details 此前 h2 的限额只能在服务端 SETTINGS 里**观测**、改不动（配置一路按缺省值构造）。
      *          三项取值都故意偏离缺省（100 / 16384 / 16 KiB），因此这条断言不是恒等的：

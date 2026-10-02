@@ -165,9 +165,10 @@ namespace AsynGyanis::Net
     } // namespace
 
     Http3Session::Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, std::shared_ptr<HttpMetricsCollector> metrics,
-                               std::shared_ptr<HttpMemoryBudget> memoryBudget, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, StreamAborter aborter) :
+                               std::shared_ptr<HttpMemoryBudget> memoryBudget, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, StreamAborter aborter,
+                               PeerAddressProvider peerAddressProvider) :
         m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_aborter(std::move(aborter)), m_metrics(std::move(metrics)),
-        m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget))
+        m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget)), m_peerAddressProvider(std::move(peerAddressProvider))
     {
         if (!opener || !m_writer)
         {
@@ -1188,7 +1189,7 @@ namespace AsynGyanis::Net
         {
             request.addHeader("host", incoming.authority);
         }
-        noteRequestId(request);
+        prepareRequestForDispatch(request);
 
         m_readyRequests.push_back(ReadyRequest{.streamId = streamId,
                                                .request  = std::move(request),
@@ -1257,8 +1258,8 @@ namespace AsynGyanis::Net
         {
             streamingRequest->request.addHeader("host", authorityText);
         }
-        // 流式路径同样要落定 request-id：业务与中间件在两条路径上读到的必须是同一份
-        noteRequestId(streamingRequest->request);
+        // 流式路径同样要落定 request-id 与来源地址：业务与中间件在两条路径上读到的必须是同一份
+        prepareRequestForDispatch(streamingRequest->request);
         m_incomingRequests.erase(found);
 
         StreamingRequest &created = *streamingRequest;
@@ -1941,7 +1942,18 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Http3Session::noteRequestId(HttpRequest &request) const
+    std::string_view Http3Session::cachedRemoteAddress()
+    {
+        if (!m_cachedPeerAddress.has_value())
+        {
+            // 只问承载层一次：h3 的会话没有套接字可问，来源只有那条 QUIC 连接认得（见构造里那条 @param）。
+            // 出口缺席时缓存成空——业务读到空串就是「本会话给不出来源」的如实表达
+            m_cachedPeerAddress = m_peerAddressProvider ? m_peerAddressProvider() : std::string{};
+        }
+        return *m_cachedPeerAddress;
+    }
+
+    void Http3Session::prepareRequestForDispatch(HttpRequest &request)
     {
         // 与 h1/h2 同一处落定：中间件、业务与日志读到的必须是同一个值。生成器缺席时保持空 id，
         // 业务侧读 requestId() 就知道这台服务器没开这个功能
@@ -1949,6 +1961,8 @@ namespace AsynGyanis::Net
         {
             m_requestIdGenerator->resolveInto(request);
         }
+        // 来源地址与它排在一起，三条协议通道的业务因此不需要按协议分叉写法
+        request.setRemoteAddress(cachedRemoteAddress());
     }
 
     bool Http3Session::sendInformationalResponse(const std::int64_t streamId, const int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields)

@@ -115,6 +115,18 @@ namespace AsynGyanis::Core
         [[nodiscard]] virtual std::string localAddress() const;
 
         /**
+         * @brief 与 remoteAddress() 同一个值，但**按连接只取一次**且**不抛**
+         * @return 对端地址文本的视图，形如 "IP:Port"；取不到地址时为空视图
+         * @details 给「每条请求都要带上来源」这一路用（HttpRequest::setRemoteAddress()）：那条路上
+         *          既不能每条请求付一次 getpeername 与一次格式化，也不能让一次取址失败打断业务派发。
+         *          首次调用时问一次 remoteAddress()（含派生类重写的那份，TLS 自有传输层因此也对），
+         *          成功与失败都就地缓存下来，此后整条连接复用同一份文本
+         * @note 失败被缓存成「空」而不是重试：一条取不到地址的连接不会因为多问一次就取得到
+         * @note 视图指向本对象持有的缓冲，因此它的有效期就是这条连接
+         */
+        [[nodiscard]] std::string_view cachedRemoteAddress() noexcept;
+
+        /**
          * @brief 刷新空闲截止时间，把「多久没动静算超期」重新计时
          * @param timeout 容忍时长；非正数表示清除截止时间，即关闭本项超时保护
          * @note 到点之后由服务器上的清扫协程负责关闭连接，连接自身**不做任何定时等待**：
@@ -188,6 +200,9 @@ namespace AsynGyanis::Core
 
         /// 空闲截止时间；未设置表示这条连接不参与超时清扫。只由所属事件循环线程访问（见 refreshIdleDeadline()）
         std::optional<std::chrono::steady_clock::time_point> m_idleDeadline;
+
+        /// 对端地址文本的那一份缓存（见 cachedRemoteAddress()）。线程约束同 m_idleDeadline：只在循环线程读写
+        std::optional<std::string> m_cachedRemoteAddress;
     };
 
 } // namespace AsynGyanis::Core
