@@ -314,4 +314,123 @@ namespace AsynGyanis::Net
             EXPECT_NE(std::string(failure.what()).find("http-01"), std::string::npos) << failure.what();
         }
     }
+
+    namespace
+    {
+        /// 一份「开了、走 dns-01 且合法」的段（dns 子段不配提供方，读侧就拒）
+        [[nodiscard]] Base::ConfigValue dns01Section()
+        {
+            return validSection({{"challenge", "dns-01"}, {"dns", object({{"provider", "aliyun"}})}});
+        }
+
+        /// 与 dns01Section 的落点逐字对齐的装配事实：下面每条用例只改它一处
+        [[nodiscard]] AcmeAssemblyFacts matchingFacts()
+        {
+            AcmeAssemblyFacts facts;
+            facts.hasTlsListener          = true;
+            facts.listenerCertificateFile = "/etc/certs/chain.pem";
+            facts.listenerPrivateKeyFile  = "/etc/certs/domain-key.pem";
+            return facts;
+        }
+    } // namespace
+
+    /**
+     * @brief 正向对照：dns-01、有 TLS 监听器、路径同解——这一种必须放行
+     * @details 没有这条正向判据，任何一处过严都会伪装成「本轮的修复生效了」。
+     */
+    TEST(AcmeAssembly, AcceptsDns01WithAListenerThatLoadsTheSamePaths)
+    {
+        const auto configuration = readAcmeConfiguration(documentWith(dns01Section()));
+        ASSERT_TRUE(configuration.isEnabled) << "段没读开，后面判的都是关闭分支";
+        EXPECT_TRUE(validateAcmeAssembly(configuration, matchingFacts()).has_value()) << "这条组合是有意支持的，拒了就说明判据过严";
+    }
+
+    /**
+     * @brief 多 worker 进程形态下拒：N 份管理器各撞一次机构，而每次续期只装回自己进程
+     */
+    TEST(AcmeAssembly, RefusesMultipleWorkerProcesses)
+    {
+        const auto        configuration   = readAcmeConfiguration(documentWith(dns01Section()));
+        AcmeAssemblyFacts facts           = matchingFacts();
+        facts.runsMultipleWorkerProcesses = true;
+
+        const auto refused = validateAcmeAssembly(configuration, facts);
+        ASSERT_FALSE(refused.has_value()) << "多进程跑自动化是两处都错的形状，不该放行";
+        EXPECT_NE(refused.error().find("多 worker 进程不能同时用"), std::string::npos) << refused.error();
+        EXPECT_NE(refused.error().find("acme_issuance_probe"), std::string::npos) << "拒绝要给出现场能走的另一条路：" << refused.error();
+    }
+
+    /**
+     * @brief 本进程没有 TLS 监听器时拒：续期循环会自己收口，但那要等到第一次查到期，太晚
+     */
+    TEST(AcmeAssembly, RefusesWithoutAnyTlsListener)
+    {
+        const auto        configuration = readAcmeConfiguration(documentWith(dns01Section()));
+        AcmeAssemblyFacts facts         = matchingFacts();
+        facts.hasTlsListener            = false;
+
+        const auto refused = validateAcmeAssembly(configuration, facts);
+        ASSERT_FALSE(refused.has_value());
+        EXPECT_NE(refused.error().find("没有 TLS 监听器可装回"), std::string::npos) << refused.error();
+    }
+
+    /**
+     * @brief http-01 没有公网明文口时拒，补上那台口就放行（配对判据）
+     * @details 不配这一对就说不清拒的是「入站通路」还是别的原因；机构按 80 端口取令牌，
+     *          只挂在 443 上等于没答（见 AcmeCertificateManager 的 @warning）。
+     */
+    TEST(AcmeAssembly, RefusesHttp01WithoutAPublicPlaintextListener)
+    {
+        const auto configuration = readAcmeConfiguration(documentWith(validSection())); // 默认就是 http-01
+        ASSERT_FALSE(configuration.usesDns01());
+        AcmeAssemblyFacts facts = matchingFacts();
+
+        const auto refused = validateAcmeAssembly(configuration, facts);
+        ASSERT_FALSE(refused.has_value()) << "没有公网可达的明文口，这次自证根本答不上来";
+        EXPECT_NE(refused.error().find("公网可达的明文监听器"), std::string::npos) << refused.error();
+
+        facts.hasPublicPlaintextListener = true;
+        EXPECT_TRUE(validateAcmeAssembly(configuration, facts).has_value()) << "补上那台口就该放行，否则拒的是别的东西";
+    }
+
+    /**
+     * @brief 监听器加载的路径与 acme 的落点不是同一条时拒，并把两条都点名
+     * @details `reloadCertificate()` 按监听器原来那条路径重读，路径不一致就等于签完的新那张永远装不
+     *          上去——磁盘月月换、线上身份一动不动，正是最难查的那类静默。
+     */
+    TEST(AcmeAssembly, RefusesWhenTheListenerLoadsDifferentPaths)
+    {
+        const auto        configuration = readAcmeConfiguration(documentWith(dns01Section()));
+        AcmeAssemblyFacts facts         = matchingFacts();
+        facts.listenerCertificateFile   = "/etc/certs/live/chain.pem";
+
+        const auto refused = validateAcmeAssembly(configuration, facts);
+        ASSERT_FALSE(refused.has_value()) << "两侧路径不同时放行，等于装配一个永远不生效的装回动作";
+        EXPECT_NE(refused.error().find("reloadCertificate"), std::string::npos) << refused.error();
+        EXPECT_NE(refused.error().find("/etc/certs/live/chain.pem"), std::string::npos) << "要让人看见监听器读的是哪条：" << refused.error();
+        EXPECT_NE(refused.error().find("/etc/certs/chain.pem"), std::string::npos) << "也要看见 acme 写的是哪条：" << refused.error();
+    }
+
+    /**
+     * @brief 同一条路径的两种写法不算不一致
+     * @details 逐字比会把一次合法启动挡在门外，而挡住合法启动的判据最后都会被绕过。
+     */
+    TEST(AcmeAssembly, AcceptsTheSamePathSpelledDifferently)
+    {
+        const auto        configuration = readAcmeConfiguration(documentWith(dns01Section()));
+        AcmeAssemblyFacts facts         = matchingFacts();
+        facts.listenerCertificateFile   = "/etc/certs/./chain.pem";
+        facts.listenerPrivateKeyFile    = "/etc/certs/../certs/domain-key.pem";
+
+        EXPECT_TRUE(validateAcmeAssembly(configuration, facts).has_value());
+    }
+
+    /**
+     * @brief 关着的段没有可判的装配：一条判据都不许挡路
+     */
+    TEST(AcmeAssembly, SkipsEveryCheckWhenAutomationIsOff)
+    {
+        const auto configuration = readAcmeConfiguration(documentWith(object({{"enabled", false}})));
+        EXPECT_TRUE(validateAcmeAssembly(configuration, AcmeAssemblyFacts{}).has_value()) << "没开证书自动化的进程不该被这些判据挡住";
+    }
 } // namespace AsynGyanis::Net

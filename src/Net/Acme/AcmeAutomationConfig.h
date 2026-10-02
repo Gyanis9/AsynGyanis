@@ -16,7 +16,10 @@
 #include "Net/Acme/AcmeClient.h"
 #include "Net/Acme/AcmeDns01TxtWriter.h"
 
+#include <chrono>
 #include <cstdint>
+#include <expected>
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -93,4 +96,40 @@ namespace AsynGyanis::Net
      * @throws Base::ConfigValidationException 没走 dns-01、提供方不认识、或凭据缺失
      */
     [[nodiscard]] ASYN_NET_API AcmeDns01TxtWriter buildDns01TxtWriter(Core::EventLoop &loop, const AcmeAutomationConfiguration &configuration);
+
+    /**
+     * @brief 装配现场才知道的几件事实
+     *
+     * @details 读取器只回答「这一段写得对不对」，而证书自动化最难查的事故出在两段之间：配置合法、
+     *          监听器也在跑，只是签完的那张没人装回线上，或装的时候读的是另一个路径。这几件事只有
+     *          把监听器建起来的一方知道，所以交回给调用方填——读取器不该去猜本进程有没有 TLS 口。
+     */
+    struct ASYN_NET_API AcmeAssemblyFacts
+    {
+        bool                  hasTlsListener{false};              ///< 本进程里有没有会因这次续期而重装的 TLS 监听器（HTTPS 与 h3 都算）
+        bool                  hasPublicPlaintextListener{false};  ///< 有没有公网可达的明文监听器：http-01 的令牌要从那里被机构取走
+        bool                  runsMultipleWorkerProcesses{false}; ///< 是不是多 worker 进程形态：每个进程会各建一份管理器、各装各的监听器
+        std::filesystem::path listenerCertificateFile{};          ///< 监听器实际加载的证书链路径（reload 按这条原路径重读）
+        std::filesystem::path listenerPrivateKeyFile{};           ///< 监听器实际加载的私钥路径
+    };
+
+    /**
+     * @brief 判一段 acme 配置装配下去之后，线上身份会不会真的跟着换新
+     * @details 判据全部是「配了但不生效」那一类形状，而不是配置文件的写法：证书自动化最坏的失败不是
+     *          报错，而是磁盘上的证书每月都在换、服务却永远用着那张旧的，而面板上看不出来。因此这四处
+     *          一律在启动那一刻拒，交回一句「该改哪里」：
+     *          ① 多 worker 进程——N 份管理器会各撞一次机构（速率限制按账户计，不是按进程），而任一次
+     *             续期只装回它自己进程里的监听器；
+     *          ② 没有任何 TLS 监听器——续期循环自己也拒绝启动（没有装回的对象），但那一档要到第一次
+     *             查到期才出声，太晚；
+     *          ③ 走 http-01 却没有公网可达的明文口——机构取不到令牌，每次下单都撞在自证上；
+     *          ④ 监听器加载的路径与 acme 的落点不是同一条——`reloadCertificate()` 按原路径重读，
+     *             签完的新那张永远装不上去。路径按规范式比对（`./cert.pem` 与 `cert.pem` 是同一条），
+     *             规范化做不到时退回逐字比对。
+     * @param configuration `readAcmeConfiguration` 的结果
+     * @param facts 装配现场的事实
+     * @return std::expected<void, std::string> 装得回去时成立；失败值是给人读的一句原因与出路。
+     *         `isEnabled=false` 直接成立——没开这一项就没有可判的装配
+     */
+    [[nodiscard]] ASYN_NET_API std::expected<void, std::string> validateAcmeAssembly(const AcmeAutomationConfiguration &configuration, const AcmeAssemblyFacts &facts);
 } // namespace AsynGyanis::Net

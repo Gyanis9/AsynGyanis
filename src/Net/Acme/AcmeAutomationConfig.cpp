@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -375,5 +376,66 @@ namespace AsynGyanis::Net
         dns.zoneDomainName   = configuration.dnsZoneDomainName;
         dns.recordTtlSeconds = configuration.dnsRecordTtlSeconds;
         return makeAliyunDns01TxtWriter(loop, std::move(dns));
+    }
+
+    namespace
+    {
+        /**
+         * @brief 把两条路径折成可比的形式
+         * @details 逐字比会把「同一条路径的两种写法」判成不一致，从而挡下一次合法启动（配置里写
+         *          `./certs/chain.pem`、命令行给 `certs/chain.pem` 是同一张）。规范化失败时退回原值：
+         *          那种情况下逐字一致仍是充分的放行证据，不一致就照常报出来让人看真实的两条路径。
+         */
+        [[nodiscard]] std::filesystem::path comparablePath(const std::filesystem::path &candidate)
+        {
+            std::error_code             ignore;
+            const std::filesystem::path normalized = std::filesystem::weakly_canonical(candidate, ignore);
+            return ignore ? candidate : normalized;
+        }
+
+        /// 路径的给人读写法：空值要说清是「没给」而不是一条空路径
+        [[nodiscard]] std::string describePath(const std::filesystem::path &candidate)
+        {
+            return candidate.empty() ? std::string{"（没给）"} : candidate.string();
+        }
+    } // namespace
+
+    std::expected<void, std::string> validateAcmeAssembly(const AcmeAutomationConfiguration &configuration, const AcmeAssemblyFacts &facts)
+    {
+        if (!configuration.isEnabled)
+        {
+            return {};
+        }
+
+        if (facts.runsMultipleWorkerProcesses)
+        {
+            return std::unexpected(std::format("{} 与多 worker 进程不能同时用：每个 worker 会各建一份管理器去撞同一个机构（速率限制按账户计，不按进程），"
+                                               "而任何一次续期只装回它自己进程里的监听器，其余进程仍是那张旧的。请改为单进程跑，或先用 acme_issuance_probe "
+                                               "签一张、续期后由编排方重启各进程",
+                                               kAcmeConfigSection));
+        }
+        if (!facts.hasTlsListener)
+        {
+            return std::unexpected(std::format("{} 开了但本进程没有 TLS 监听器可装回：续期循环会因为「没有装回的对象」而自己收口，磁盘上换多少张都与线上身份无关。"
+                                               "要么给这台服务配上 HTTPS（或 h3）监听器，要么把 {}.enabled 改回 false",
+                                               kAcmeConfigSection, kAcmeConfigSection));
+        }
+        if (!configuration.usesDns01() && !facts.hasPublicPlaintextListener)
+        {
+            return std::unexpected(std::format("走 {} 需要一台公网可达的明文监听器（机构按 80 端口取 /.well-known/acme-challenge/ 下的令牌，只挂在 443 上等于没答）。"
+                                               "本进程没有这样一台口：把 {}.challenge 改成 {}（不需要任何入站通路），或让明文 80 口与这台服务同处一个进程",
+                                               kAcmeChallengeHttp01, kAcmeConfigSection, kAcmeChallengeDns01));
+        }
+
+        // 这条排在最后：前三条拒的是「根本没有可装回的对象」，那比路径写歪更要紧，报出来也更该先看见
+        if (comparablePath(facts.listenerCertificateFile) != comparablePath(configuration.manager.certificateFile) ||
+            comparablePath(facts.listenerPrivateKeyFile) != comparablePath(configuration.manager.privateKeyFile))
+        {
+            return std::unexpected(std::format("监听器加载的证书/私钥是 {} / {}，而 {} 把新证书写到 {} / {}：`reloadCertificate()` 按监听器原来那条路径重读，"
+                                               "签完的那张永远装不上去。两边必须写成同一条路径（开了证书自动化之后，服务端证书路径应由 acme 的落点决定）",
+                                               describePath(facts.listenerCertificateFile), describePath(facts.listenerPrivateKeyFile), kAcmeConfigSection,
+                                               describePath(configuration.manager.certificateFile), describePath(configuration.manager.privateKeyFile)));
+        }
+        return {};
     }
 } // namespace AsynGyanis::Net
