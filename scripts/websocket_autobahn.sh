@@ -36,6 +36,13 @@ cases="${AUTOBAHN_CASES:-[\"*\"]}"
 exclude="${AUTOBAHN_EXCLUDE-9.1.6,9.2.6}"
 
 if ! curl -s -o /dev/null --max-time 3 "http://127.0.0.1:${port}/json"; then
+    # 这条探测在 MSYS 下有两种失败原因，把它们分开说：`-o /dev/null` 依赖 MSYS 的路径换算，
+    # 而 MSYS_NO_PATHCONV=1 会把换算关掉——native curl.exe 于是把 /dev/null 当成一个真文件去建，
+    # 建不出来就退 23，看起来却像「服务端没起」。本脚本的 docker 调用自己带了需要的开关，
+    # 不要从外面设 MSYS_NO_PATHCONV 跑它。
+    if [ -n "${MSYS_NO_PATHCONV:-}" ]; then
+        echo "提示：别用 MSYS_NO_PATHCONV=1 跑本脚本——那样 native curl 写不了 /dev/null，这条探测必然假失败" >&2
+    fi
     echo "没人在 ${port} 上应答：先把 reference_server 起起来（--port ${port} --metrics），再来跑本脚本" >&2
     exit 2
 fi
