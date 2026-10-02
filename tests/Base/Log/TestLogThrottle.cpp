@@ -1,5 +1,6 @@
-// LogThrottle 单元测试：首条即时放行、窗口内只压条数、下一窗口带出被压计数、
-// 零间隔退回不压、多线程抢同一拍只放行一条、每个调用点各一份状态
+// LogThrottle 单元测试：首条即时放行、窗口内只压条数、下一窗口带出被压计数、零间隔退回不压、
+// 多线程抢同一拍只放行一条、每个调用点各一份状态；
+// 以及 LogThrottleRegistry 的按 key 分档、计数互不串、上界与最久未触碰淘汰
 
 #include "Base/Log/LogThrottle.h"
 
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -241,6 +243,97 @@ namespace AsynGyanis::Base
         const CallSiteOutcome outcome = pressFourthCallSite();
         EXPECT_TRUE(outcome.passed);
         EXPECT_EQ(outcome.droppedCount, 3U) << "宏这一侧读不到被压掉的条数：放行的那条日志带不出量级";
+    }
+
+    // ============================================================================
+    // 按 key 分档的那份表
+    // ============================================================================
+
+    TEST(LogThrottleRegistry, GivesEachKeyItsOwnWindowAtOneCallSite)
+    {
+        // 同一个调用点、两个 key：第二个 key 若与第一个共用窗口，就被误压掉——那正是调用点闸门给不了的形状
+        EXPECT_TRUE(LogThrottleRegistry::instance().acquire("per-key-first", kHugeInterval).isPassed);
+        EXPECT_FALSE(LogThrottleRegistry::instance().acquire("per-key-first", kHugeInterval).isPassed);
+        EXPECT_TRUE(LogThrottleRegistry::instance().acquire("per-key-second", kHugeInterval).isPassed) << "按 key 分档没分：另一个 key 的洪水把这个 key 也压掉了";
+    }
+
+    TEST(LogThrottleRegistry, ReportsTheSuppressedCountPerKeyThroughTheMacro)
+    {
+        ASSERT_TRUE(ASYN_LOG_THROTTLED_KEYED("macro-counted", kShortInterval).isPassed);
+        for (std::size_t attemptIndex = 0; attemptIndex < 3U; ++attemptIndex)
+        {
+            EXPECT_FALSE(ASYN_LOG_THROTTLED_KEYED("macro-counted", kShortInterval).isPassed);
+        }
+        std::this_thread::sleep_for(kWindowSleep);
+        const LogThrottleDecision decision = ASYN_LOG_THROTTLED_KEYED("macro-counted", kShortInterval);
+        EXPECT_TRUE(decision.isPassed);
+        // 计数只归这个 key：另一条被压掉的「别家」条数不该混进来
+        EXPECT_EQ(decision.droppedCount, 3U) << "按 key 放行时带不出这一段的量级";
+    }
+
+    TEST(LogThrottleRegistry, KeepsDifferentKeysCountsApart)
+    {
+        ASSERT_TRUE(LogThrottleRegistry::instance().acquire("counted-a", kShortInterval).isPassed);
+        static_cast<void>(LogThrottleRegistry::instance().acquire("counted-a", kShortInterval));
+        // b 的首条放行时，a 已经压掉一条：那份计数不能跟着过来
+        const LogThrottleDecision firstB = LogThrottleRegistry::instance().acquire("counted-b", kShortInterval);
+        EXPECT_TRUE(firstB.isPassed);
+        EXPECT_EQ(firstB.droppedCount, 0U) << "新 key 的放行条带上了别的 key 被压掉的条数";
+    }
+
+    TEST(LogThrottleRegistry, TreatsNonPositiveIntervalAsNoSuppressionPerKey)
+    {
+        for (std::size_t attemptIndex = 0; attemptIndex < 4U; ++attemptIndex)
+        {
+            EXPECT_TRUE(LogThrottleRegistry::instance().acquire("zero-interval", std::chrono::milliseconds{0}).isPassed) << "该 key 被压掉了：非正间隔应按「不压」处理";
+        }
+    }
+
+    TEST(LogThrottleRegistry, BoundsTheTableAndEvictsTheLeastRecentlyTouchedKey)
+    {
+        LogThrottleRegistry  &registry = LogThrottleRegistry::instance();
+        constexpr std::size_t kBound   = LogThrottleRegistry::kMaximumTrackedKeys;
+        ASSERT_GT(kBound, 2U) << "上界太小则淘汰次序测不出来";
+
+        for (std::size_t keyIndex = 0; keyIndex < kBound; ++keyIndex)
+        {
+            EXPECT_TRUE(registry.acquire("evict-" + std::to_string(keyIndex), kHugeInterval).isPassed);
+        }
+        EXPECT_EQ(registry.trackedKeyCount(), kBound) << "表里的条数没有停在上界：key 由对端驱动时这就是一个内存增长点";
+
+        // 把最老的那条（evict-0）重新碰一下，它就不该再是淘汰候选；候选落到 evict-1
+        EXPECT_FALSE(registry.acquire("evict-0", kHugeInterval).isPassed);
+        EXPECT_TRUE(registry.acquire("evict-overbook", kHugeInterval).isPassed);
+        EXPECT_EQ(registry.trackedKeyCount(), kBound) << "到界之后还在长";
+
+        // 被淘掉的那条窗口随之作废：它回来时以「新 key」身份放行一次
+        EXPECT_TRUE(registry.acquire("evict-1", kHugeInterval).isPassed) << "淘汰没有把窗口一起丢掉：内存封了顶却仍然压着";
+        // 活下来的那条仍在压制稳态里，说明淘汰挑的是最久未触碰的那头
+        EXPECT_FALSE(registry.acquire("evict-0", kHugeInterval).isPassed) << "淘汰挑错了方向：刚碰过的 key 被踢，没人碰的留下了";
+    }
+
+    TEST(LogThrottleRegistry, HandsTheWindowToOneThreadPerKeyWhenTheyRace)
+    {
+        constexpr std::size_t    kRacerCount = 8U;
+        std::barrier             releaseAll{kRacerCount};
+        std::vector<std::thread> racers;
+        racers.reserve(kRacerCount);
+        std::atomic<std::size_t> passedCount{0U};
+        for (std::size_t racerIndex = 0; racerIndex < kRacerCount; ++racerIndex)
+        {
+            racers.emplace_back(
+                    [&registry = LogThrottleRegistry::instance(), &releaseAll, &passedCount]
+                    {
+                        static_cast<void>(releaseAll.arrive_and_wait());
+                        passedCount.fetch_add(registry.acquire("raced-key", kHugeInterval).isPassed ? 1U : 0U, std::memory_order_relaxed);
+                    });
+        }
+        for (std::thread &racer: racers)
+        {
+            racer.join();
+        }
+        // 一个 key 的第一条必然放行，其余七条都落在压制窗口里
+        EXPECT_EQ(passedCount.load(std::memory_order_relaxed), 1U) << "同一个 key 被多份窗口放行，或者表里的状态被写坏了";
     }
 
 } // namespace AsynGyanis::Base
