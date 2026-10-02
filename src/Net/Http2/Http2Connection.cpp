@@ -1,5 +1,6 @@
 #include "Net/Http2/Http2Connection.h"
 
+#include "Base/Log/LogEscaping.h"
 #include "Net/Http/HttpHeaderRules.h"
 
 #include <algorithm>
@@ -22,6 +23,14 @@ namespace AsynGyanis::Net
 
     namespace
     {
+        /// 把对端交来的字节折成单行可打印文本再写进错误串：这些串会经 lastStreamErrorMessage() 落进日志，
+        /// 而一个带 CR/LF 的头名原样进去，就等于对端能往本进程的日志里塞第二行（或改写行首）。
+        /// 折法本体只有一份（`Base::escapeForLog`），这里只留本层的默认长度与名字——h3 侧也是这个形状
+        [[nodiscard]] std::string printableFieldText(const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
+        {
+            return Base::escapeForLog(text, maximumDisplayByteCount);
+        }
+
         /// RFC 7540 §6 定义过的帧类型取值上界（CONTINUATION = 0x9）：大于它的按 §4.1 忽略
         constexpr std::uint8_t kLastKnownFrameTypeValue = 0x9;
 
@@ -1413,7 +1422,7 @@ namespace AsynGyanis::Net
             {
                 writeError(errorText, std::format("请求头名 \"{}\" 含大写字母：RFC 7540 §8.1.2 要求 HTTP/2 的头部名必须全小写，"
                                                   "请让对端改成小写",
-                                                  field.name));
+                                                  printableFieldText(field.name)));
                 return false;
             }
 
@@ -1422,7 +1431,7 @@ namespace AsynGyanis::Net
                 // 伪头必须全部出现在普通头部之前（§8.1.2.1）
                 if (hasSeenRegularHeader)
                 {
-                    writeError(errorText, std::format("伪头 \"{}\" 出现在普通头部之后：RFC 7540 §8.1.2.1 要求所有伪头必须排在普通头部之前", field.name));
+                    writeError(errorText, std::format("伪头 \"{}\" 出现在普通头部之后：RFC 7540 §8.1.2.1 要求所有伪头必须排在普通头部之前", printableFieldText(field.name)));
                     return false;
                 }
                 if (field.name == ":method")
@@ -1481,14 +1490,14 @@ namespace AsynGyanis::Net
                 {
                     writeError(errorText, std::format("出现未知伪头 \"{}\"：RFC 7540 §8.1.2.1 只定义了 :method/:scheme/:path/:authority 四个"
                                                       "（:protocol 见 RFC 8441）",
-                                                      field.name));
+                                                      printableFieldText(field.name)));
                     return false;
                 }
                 if (!isHeaderValueBytes(field.value))
                 {
                     writeError(errorText, std::format("伪头 \"{}\" 的值含 CR/LF/NUL 之类的控制字符：这类字节既不是合法头值，"
                                                       "又是注入的经典入口，请让对端改用百分号编码",
-                                                      field.name));
+                                                      printableFieldText(field.name)));
                     return false;
                 }
                 continue;
@@ -1500,27 +1509,27 @@ namespace AsynGyanis::Net
             {
                 writeError(errorText, std::format("请求头里出现连接特定头 \"{}\"：RFC 7540 §8.1.2.2 禁止 connection/keep-alive/"
                                                   "proxy-connection/transfer-encoding/upgrade 出现在 HTTP/2 报文里",
-                                                  field.name));
+                                                  printableFieldText(field.name)));
                 return false;
             }
             // te 是唯一的例外：只允许取值 trailers（§8.1.2.2）
             if (field.name == "te" && field.value != "trailers")
             {
-                writeError(errorText, std::format("请求头 te 的取值是 \"{}\"：RFC 7540 §8.1.2.2 只允许 te: trailers，请让对端改掉", field.value));
+                writeError(errorText, std::format("请求头 te 的取值是 \"{}\"：RFC 7540 §8.1.2.2 只允许 te: trailers，请让对端改掉", printableFieldText(field.value)));
                 return false;
             }
             if (!isTokenName(field.name))
             {
                 writeError(errorText, std::format("请求头名 \"{}\" 含 token 之外的字符（空白、冒号前空白等）：RFC 7540 §8.1.2 要求头部名"
                                                   "符合字段名语法，请让对端按 token 字符集拼头名",
-                                                  field.name));
+                                                  printableFieldText(field.name)));
                 return false;
             }
             if (!isHeaderValueBytes(field.value))
             {
                 writeError(errorText, std::format("请求头 \"{}\" 的值含 CR/LF/NUL 之类的控制字符：这类字节既不是合法头值，"
                                                   "又是注入的经典入口，请让对端改用百分号编码",
-                                                  field.name));
+                                                  printableFieldText(field.name)));
                 return false;
             }
             // content-length 与 h1 侧同一口径：取值必须是单个十进制数字，重复出现必须完全一致。
@@ -1532,7 +1541,7 @@ namespace AsynGyanis::Net
                 {
                     writeError(errorText, std::format("请求头 content-length 的取值 \"{}\" 非法或前后冲突：RFC 9110 §8.6 要求它是"
                                                       "单个十进制数字，重复出现时必须完全一致",
-                                                      field.value));
+                                                      printableFieldText(field.value)));
                     return false;
                 }
                 hasContentLengthField = true;
@@ -1665,29 +1674,29 @@ namespace AsynGyanis::Net
             }
             if (containsUppercaseAscii(field.name))
             {
-                writeError(errorText, std::format("尾部头块的头名 \"{}\" 含大写字母：RFC 7540 §8.1.2 要求 HTTP/2 的头部名必须全小写", field.name));
+                writeError(errorText, std::format("尾部头块的头名 \"{}\" 含大写字母：RFC 7540 §8.1.2 要求 HTTP/2 的头部名必须全小写", printableFieldText(field.name)));
                 return false;
             }
             if (field.name.front() == ':')
             {
-                writeError(errorText, std::format("尾部头块里出现伪头 \"{}\"：RFC 7540 §8.1.2.1 要求尾部头块不得包含伪头", field.name));
+                writeError(errorText, std::format("尾部头块里出现伪头 \"{}\"：RFC 7540 §8.1.2.1 要求尾部头块不得包含伪头", printableFieldText(field.name)));
                 return false;
             }
             if (isConnectionSpecificHeaderName(field.name))
             {
-                writeError(errorText, std::format("尾部头块里出现连接特定头 \"{}\"：RFC 7540 §8.1.2.2 禁止这类头部出现在 HTTP/2 报文里", field.name));
+                writeError(errorText, std::format("尾部头块里出现连接特定头 \"{}\"：RFC 7540 §8.1.2.2 禁止这类头部出现在 HTTP/2 报文里", printableFieldText(field.name)));
                 return false;
             }
             if (field.name == "te" && field.value != "trailers")
             {
-                writeError(errorText, std::format("尾部头块里 te 的取值是 \"{}\"：RFC 7540 §8.1.2.2 只允许 te: trailers", field.value));
+                writeError(errorText, std::format("尾部头块里 te 的取值是 \"{}\"：RFC 7540 §8.1.2.2 只允许 te: trailers", printableFieldText(field.value)));
                 return false;
             }
             if (!isTokenName(field.name) || !isHeaderValueBytes(field.value))
             {
                 writeError(errorText, std::format("尾部头块的头 \"{}\" 含 token 之外的头名或 CR/LF/NUL 之类的头值控制字符，"
                                                   "请让对端按字段语法重新拼",
-                                                  field.name));
+                                                  printableFieldText(field.name)));
                 return false;
             }
         }

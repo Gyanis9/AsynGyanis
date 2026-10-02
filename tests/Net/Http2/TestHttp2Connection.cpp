@@ -954,6 +954,55 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：对端交来的头名与头值不会把控制字节原样带进本端的错误串
+     *
+     * @details 这些原因串会经 `lastStreamErrorMessage()` 落进 `LOG_ERROR` 那一行，而日志的一条记录
+     *          对应一行：带 CR/LF 的头名原样进去，对端就能往本进程的日志里塞第二行（伪造的那半行
+     *          可以顶着别的时间戳与级别），或用一个回车改写行首。h3 那侧早就过 `Base::escapeForLog`，
+     *          h2 此前是把 `field.name` 直接 format 进去——同一套折法在两处各写一遍，迟早分叉成
+     *          「一条挡得住 NUL、另一条挡不住」，这条把两边钉成同一个形状。
+     */
+    TEST(Http2Connection, EscapesPeerHeaderTextBeforeItReachesTheReasonString)
+    {
+        struct EscapeSample
+        {
+            std::string description;    ///< 样本说明（诊断输出用）
+            std::string headerBlock;    ///< 请求头块字节
+            std::string expectedEscape; ///< 折好之后必须出现在原因里的片段
+        };
+
+        const std::string               validPseudoFields = hpackIndexedField(2) + hpackIndexedField(6) + hpackIndexedField(4);
+        const std::vector<EscapeSample> samples           = {
+                // 普通头名里塞 CRLF：这里正是「非 token 字符」被拒的那一步，名字本身还没经过任何字符集校验
+                {"头名含 CRLF", validPseudoFields + hpackLiteralField("x\r\ny", "1"), R"(x\x0D\x0Ay)"},
+                // 未知伪头同理：伪头分支不看 token 性，名字可以是任意字节
+                {"未知伪头含 LF", validPseudoFields + hpackLiteralField(":\nbad", "1"), R"(:\x0Abad)"},
+                // te 的取值在对端声明的白名单比对里就被写进文案，那时它还没过值字符集校验
+                {"te 取值含 CR 与伪造行", validPseudoFields + hpackLiteralField("te", "gzip\r\nINJECTED 1"), R"(gzip\x0D\x0AINJECTED 1)"},
+                // NUL：按 C 字符串取日志的采集器会把后半截静默丢掉，所以也必须折开
+                {"头名含 NUL", validPseudoFields + hpackLiteralField(std::string("x\0y", 3), "1"), R"(x\x00y)"},
+        };
+
+        for (const EscapeSample &sample: samples)
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+            // 伪头补齐 authority，让请求只在这一个畸形字段上失败
+            const std::string headerBlock = sample.headerBlock + hpackLiteralField(1, "example.com");
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore)
+                    << "样本「" << sample.description << "」不该判连接错误";
+            EXPECT_TRUE(connection.takeRequests().empty()) << "样本「" << sample.description << "」不该交出请求";
+
+            const std::string reason = expectStreamRejected(connection, 1U);
+            EXPECT_NE(reason.find(sample.expectedEscape), std::string::npos) << "样本「" << sample.description << "」的原因里没看到折开的形态：" << reason;
+            // 反向判据：原始控制字节一个都不许留着，否则这行日志仍可被对端续写
+            EXPECT_EQ(reason.find('\r'), std::string::npos) << "原因里带着原始回车：" << reason;
+            EXPECT_EQ(reason.find('\n'), std::string::npos) << "原因里带着原始换行：" << reason;
+            EXPECT_EQ(reason.find('\0'), std::string::npos) << "原因里带着原始 NUL：" << reason;
+        }
+    }
+
+    /**
      * @brief 钉住请求头 content-length 的取值口径：非十进制取值、重复且冲突都按流错误拒绝
      * @details 与 h1 侧同一口径（RFC 9110 §8.6）：长度有歧义时中间设备与业务可能各按一种读法理解
      *          正文边界，正是请求走私的形态。这是**流**错误而不是连接错误：RST_STREAM 这条流，
