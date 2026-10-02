@@ -15,6 +15,7 @@
 //   跨出 float 上下界要报错（会变成无穷大），而本就是 inf/NaN 的取值逐值保真予以接受；
 //   文本/布尔/二进制落到浮点成员一律拒绝；digits 达到 int64 宽度的成员（x86 的 long double）
 //   整个 int64 区间都精确，窄尾数那一侧仍拒（同一判据、两种结论，MSVC 与 GCC 各取一侧）
+// - 写侧对非有限值：toDatabaseValue 把 NaN 与 ±Infinity 在绑定前拒掉并点名列名，空 optional 仍走 NULL
 // 这些形态在真机上难以稳定构造（后端私自改写的列类型、越界或带余文的数字文本、二进制成员）；整型「十进制文本」
 // 支路（引擎存得下、却给不出 int64 的取值只能以文本返回）也靠这里覆盖，真机侧由 MySQL 集成用例验证。
 
@@ -672,6 +673,37 @@ namespace AsynGyanis::Database::Queryable
         {
             EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue(malformedText), kColumnName)), RowMappingException)
                     << "形状「" << malformedText << "」不该被当成十进制小数";
+        }
+    }
+
+    /**
+     * @brief 钉住：写侧不接受 NaN 与 ±Infinity
+     * @details 这类值落库之后是哪个数由引擎决定（记成 NULL、截断成极值、或直接报错，本仓不承诺），
+     *          而 `insert()`/`update()` 会照样报成功——静默改值最难查。空值有正当表达
+     *          （`std::optional` 的空值绑成 SQL NULL），非有限值没有，所以必须在绑定前出声并点名是哪一列。
+     */
+    TEST(RowMapperWrite, RejectsNonFiniteFloatingValues)
+    {
+        EXPECT_TRUE(std::holds_alternative<double>(Detail::toDatabaseValue(1.5, "balance"))) << "正常值照常绑定";
+        EXPECT_TRUE(std::holds_alternative<double>(Detail::toDatabaseValue(0.0, "balance")));
+
+        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(std::numeric_limits<double>::quiet_NaN(), "balance")), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(std::numeric_limits<double>::infinity(), "balance")), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(-std::numeric_limits<double>::infinity(), "balance")), RowMappingException);
+        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(std::numeric_limits<float>::infinity(), "ratio")), RowMappingException) << "float 成员同样要挡（收窄时它就是 ±inf）";
+
+        // 可选量里的非有限值也要挡：解包之后走的是同一条判据
+        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(std::optional<double>{std::numeric_limits<double>::quiet_NaN()}, "balance")), RowMappingException);
+        EXPECT_NO_THROW(static_cast<void>(Detail::toDatabaseValue(std::optional<double>{std::nullopt}, "balance"))) << "空 optional 是 SQL NULL，正当写法";
+
+        try
+        {
+            static_cast<void>(Detail::toDatabaseValue(std::numeric_limits<double>::infinity(), "balance"));
+            FAIL() << "正无穷本该被拒";
+        } catch (const RowMappingException &failure)
+        {
+            EXPECT_NE(std::string{failure.what()}.find("balance"), std::string::npos) << "消息要点名是哪一列：" << failure.what();
+            EXPECT_NE(std::string{failure.what()}.find("正无穷"), std::string::npos) << failure.what();
         }
     }
 

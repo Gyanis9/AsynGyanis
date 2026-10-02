@@ -730,10 +730,12 @@ namespace AsynGyanis::Database::Queryable
          *          sqlite3_bind_blob / MYSQL_TYPE_BLOB——按文本绑定会被 MySQL 按连接字符集重新解释载荷。
          * @tparam MemberType 成员类型（可为 std::optional 包装）
          * @param value 成员值
+         * @param columnName 列名，只用于失败消息里点名是哪一列；调用方应当交回真实列名
          * @return DatabaseValue 可直接作为绑定参数的统一值
+         * @throws RowMappingException 浮点成员是 NaN 或 ±Infinity 时（见下面那一段的理由）
          */
         template<typename MemberType>
-        [[nodiscard]] DatabaseValue toDatabaseValue(const MemberType &value)
+        [[nodiscard]] DatabaseValue toDatabaseValue(const MemberType &value, const std::string_view columnName = {})
         {
             using BareType = std::remove_cvref_t<MemberType>;
 
@@ -744,7 +746,7 @@ namespace AsynGyanis::Database::Queryable
                 {
                     return std::monostate{};
                 }
-                return toDatabaseValue(value.value());
+                return toDatabaseValue(value.value(), columnName);
             } else if constexpr (std::is_same_v<BareType, bool>)
             {
                 // 用 in_place_type 显式指定备选：DatabaseValue 里 bool 可隐式转成 int64_t/double，
@@ -765,7 +767,21 @@ namespace AsynGyanis::Database::Queryable
                 return DatabaseValue{static_cast<std::int64_t>(value)};
             } else if constexpr (std::is_floating_point_v<BareType>)
             {
-                return DatabaseValue{static_cast<double>(value)};
+                // 非有限值不写：NaN 与 ±Infinity 落库之后是什么，由引擎说了算而不是由调用方说了算，
+                // 于是 insert()/update() 报「写成了」、回来的却未必是内存里那个数，而这类静默改值最难查。
+                // 空值在本仓有正当表达（std::optional 的空值绑成 SQL NULL），非有限值没有，所以只能在绑定前出声。
+                // 读侧对已经躺在库里的这类值按类型逐值保真地交回——那是对既成事实的忠实，不是对写入的承诺。
+                const double asDouble = static_cast<double>(value);
+                if (!std::isfinite(asDouble))
+                {
+                    const std::string_view columnText = columnName.empty() ? std::string_view{"<未具名列>"} : columnName;
+                    throw RowMappingException("ORM 写入失败：列 \"" + std::string(columnText) + "\" 的浮点成员是 " +
+                                              (std::isnan(asDouble) ? "NaN" : (asDouble > 0 ? "正无穷" : "负无穷")) +
+                                              "，落库之后是哪个数由引擎决定（可能记成 NULL、截断成极值、或直接报错），"
+                                              "而 insert()/update() 会照样报成功。请先在业务侧把它判掉再写："
+                                              "空值请用 std::optional<double>（空值会绑成 SQL NULL），溢出请用某个显式的哨兵取值");
+                }
+                return DatabaseValue{asDouble};
             } else if constexpr (std::is_same_v<BareType, std::string>)
             {
                 return DatabaseValue{std::in_place_type<std::string>, value};

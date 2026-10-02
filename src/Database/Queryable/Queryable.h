@@ -1317,7 +1317,7 @@ namespace AsynGyanis::Database::Queryable
             {
                 if (columnDescriptor.columnName != autoIncrementName)
                 {
-                    rowValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer)));
+                    rowValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName));
                 }
             };
 
@@ -1450,7 +1450,7 @@ namespace AsynGyanis::Database::Queryable
             }
 
             assignmentColumns.emplace_back(columnDescriptor.columnName);
-            assignmentValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer)));
+            assignmentValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName));
         }
 
         /**

@@ -2,6 +2,7 @@
 // - ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
 // - OrmInsertThenQueryWithWhereOrderAndLimit
 // - HostileTextRoundTripsThroughParameterBinding
+// - NonFiniteDoubleIsRejectedBeforeBinding（NaN/±Infinity 在绑定前被拒且消息点名是哪一列，插入与更新两个入口各自钉）
 // - NullColumnMapsToEmptyOptional / EmptyStringStaysDistinctFromNull
 // - FirstReturnsEmptyWhenNoRowMatches
 // - CountMatchesFilteredRows
@@ -23,6 +24,7 @@
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Common/DatabaseResult.h"
+#include "Database/Common/RowMappingException.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
@@ -242,6 +244,7 @@ namespace
     using AsynGyanis::Database::DatabaseFactory;
     using AsynGyanis::Database::PoolConfig;
     using AsynGyanis::Database::PooledConnection;
+    using AsynGyanis::Database::RowMappingException;
     using AsynGyanis::Database::Queryable::asc;
     using AsynGyanis::Database::Queryable::Column;
     using AsynGyanis::Database::Queryable::contains;
@@ -407,6 +410,49 @@ TEST_F(QueryableExecutionTest, OrmInsertThenQueryWithWhereOrderAndLimit)
         ASSERT_EQ(rows.size(), 1U);
         EXPECT_EQ(rows[0].id, 1);
     }
+}
+
+/**
+ * @brief 钉住：ORM 插入路径在绑定前拒掉非有限浮点值，并点名是哪一列
+ * @details 单元层那条只证明判据存在；这一条证明**调用方把列名传进来了**——否则运维看到的
+ *          是一句「某列写不进」而不知道是哪一列。`balance` 是本夹具里的 REAL 列。
+ */
+TEST_F(QueryableExecutionTest, NonFiniteDoubleIsRejectedBeforeBinding)
+{
+    Queryable<AccountRow> insertQuery = newQuery();
+    AccountRow            row         = makeRow(4, "非有限", 1.0, std::nullopt, true);
+    row.balance                       = std::numeric_limits<double>::quiet_NaN();
+
+    std::string rejectionMessage;
+    try
+    {
+        static_cast<void>(insertQuery.insert(row));
+        FAIL() << "NaN 写进 REAL 列会被引擎各自解释，不该静默落库";
+    } catch (const RowMappingException &exception)
+    {
+        rejectionMessage = exception.what();
+    }
+
+    // 消息要点名是哪一列：只回一句「浮点值非法」等于把排查推回调用方
+    EXPECT_NE(rejectionMessage.find("balance"), std::string::npos) << rejectionMessage;
+
+    // 同一张表的正常值仍然写得进：判据不能宽到把普通写入一起挡掉
+    ASSERT_EQ(1, insertQuery.insert(makeRow(5, "正常", -2.5, std::nullopt, true)));
+
+    // 更新入口也得吃到同一条判据：两个调用点只接一个，另一条通路就还是静默改值
+    std::string updateRejectionMessage;
+    try
+    {
+        AccountRow overflowing            = makeRow(5, "正常", 1.0, std::nullopt, true);
+        overflowing.balance               = std::numeric_limits<double>::infinity();
+        Queryable<AccountRow> updateQuery = newQuery();
+        static_cast<void>(updateQuery.update(overflowing));
+        FAIL() << "正无穷经更新路径写进 REAL 列同样不该静默落库";
+    } catch (const RowMappingException &exception)
+    {
+        updateRejectionMessage = exception.what();
+    }
+    EXPECT_NE(updateRejectionMessage.find("balance"), std::string::npos) << updateRejectionMessage;
 }
 
 /**
