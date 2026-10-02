@@ -121,10 +121,14 @@ namespace AsynGyanis::Core
             const auto        segmentsBefore = driver.loop().snapshot().completedWorkingSegments;
             std::atomic<bool> ran{false};
             driver.loop().scheduler().postRemote([&ran] { ran.store(true); });
-            // 等到计数落下而不是等到 ran：计数是在工作段收尾时才写的，早于它就只能断言「代码跑过了」
+            // 完成点先取「这一笔活儿跑了」，再取「工作段计数加一」。反过来的话判据是错的：
+            // 计数加一并不证明是这一笔活儿造成的——唤醒哨兵、定时器、以及上一段之后才排进来的别的活儿
+            // 同样会让它加一，那时读到的 `ran` 还是假的（本文件 BlockedWorkingSegmentRaisesHighWaterAndLogsAnAlert
+            // 那条记着同一条教训，只是当时没把这条辅助函数一起改）。
+            // 顺序必须是 ran → 计数：计数写在同一个工作段的收尾，等到 ran 再等计数，等的就是同一段
+            ASSERT_TRUE(waitForCondition([&ran] { return ran.load(); })) << "投递的活儿没有在这一轮被执行";
             ASSERT_TRUE(waitForCondition([&driver, segmentsBefore] { return driver.loop().snapshot().completedWorkingSegments > segmentsBefore; }))
-                    << "投递的活儿没能让工作段计数加一";
-            EXPECT_TRUE(ran.load());
+                    << "活儿被执行了却没落下工作段计数";
         }
     } // namespace
 
