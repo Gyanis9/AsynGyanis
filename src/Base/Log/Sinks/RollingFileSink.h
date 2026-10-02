@@ -151,6 +151,10 @@ namespace AsynGyanis::Base
         /// 每行只做一次 time_t 比较，跨过边界才做本地时间转换与后缀格式化
         std::time_t m_nextPeriodBoundary = 0;
 
+        /// 上一次写入时取到的墙上时钟（epoch 秒）：只用来发现「时钟被往回改」——
+        /// 那种情况下上面那个边界会跑到未来最多一整个周期，判据见 Detail::shouldRecheckRollingPeriod
+        std::time_t m_lastObservedPeriodSeconds = 0;
+
         /// 下一次允许重试重开活动文件的时刻（steady_clock）：
         /// 取默认构造值即「无冷却」，因此首次重开失败后下一行就立刻再试，不必等一个间隔
         std::chrono::steady_clock::time_point m_nextReopenAttempt{};

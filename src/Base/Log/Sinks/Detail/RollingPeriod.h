@@ -67,4 +67,23 @@ namespace AsynGyanis::Base::Detail
         // elapsedSeconds 最大为 periodSeconds - 1，因此结果恒落在 (moment, moment + periodSeconds] 内
         return moment + static_cast<std::time_t>(periodSeconds - elapsedSeconds);
     }
+
+    /**
+     * @brief 这一行日志要不要重新核对一次周期边界
+     * @details 「前进」只靠边界估算，而墙上时钟被**往回**改（NTP 阶跃、手工调表、虚拟机恢复）时，
+     *          上一次算好的边界会跑到未来最多一整个周期：这期间新日期的记录一直续写在旧日期的文件里，
+     *          文件名与每行自己的时间戳从此对不上，按日期找日志的人会找错文件。
+     *          `now < lastObserved` 就是「时钟往回跳过」的直接证据，撞上它无条件重算一次。
+     *          重算之后仍由「后缀是否变化」决定要不要真的换文件，所以往回跳既不会造出重复的备份名，
+     *          也不会覆盖已有的那一份——这一判据只负责把边界拉回当前周期。
+     * @param now 本次写入取到的 epoch 秒
+     * @param lastObservedSeconds 上一次写入取到的 epoch 秒；0（默认构造值）表示还没有过一次，
+     *        此时 `now < 0` 对任何现实时刻都不成立，因此不需要额外的「首次」分支
+     * @param nextBoundary 上一次算出的周期边界
+     * @return true 需要重算边界并顺带核对后缀
+     */
+    [[nodiscard]] inline bool shouldRecheckRollingPeriod(const std::time_t now, const std::time_t lastObservedSeconds, const std::time_t nextBoundary) noexcept
+    {
+        return now >= nextBoundary || now < lastObservedSeconds;
+    }
 } // namespace AsynGyanis::Base::Detail

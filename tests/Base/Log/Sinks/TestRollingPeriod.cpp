@@ -114,4 +114,33 @@ namespace AsynGyanis::Base
         EXPECT_EQ(Detail::rollingPeriodSuffix(moment, RollingPolicy::Daily), "2027-01-05");
         EXPECT_EQ(Detail::rollingPeriodSuffix(moment, RollingPolicy::Hourly), "2027-01-05_03");
     }
+
+    /**
+     * @brief 重算边界的判据：前进跨界要重算、周期内不重算、**时钟往回跳也要重算**
+     * @details 第三条是这轮补的那格：墙上时钟被往回改（NTP 阶跃、手工调表、虚拟机恢复）之后，
+     *          上一次算好的边界会跑到未来最多一整个周期，期间新日期的记录一直续写在旧日期的文件里，
+     *          文件名与每行自己的时间戳从此对不上。第二条钉的是性能契约——每行只做一次 time_t 比较，
+     *          周期内绝不能返航去做本地时间转换与后缀格式化。
+     */
+    TEST(RollingPeriod, RechecksBoundaryOnForwardCrossingAndBackwardClockStep)
+    {
+        const std::time_t now           = localSeconds(2027, 1, 5, 12, 0, 0);
+        const std::time_t boundary      = localSeconds(2027, 1, 6, 0, 0, 0);
+        const std::time_t onePeriodBack = localSeconds(2027, 1, 4, 23, 0, 0);
+
+        // 跨过边界：重算
+        EXPECT_TRUE(Detail::shouldRecheckRollingPeriod(boundary, now, boundary)) << "到了边界却不重算，按日期滚动就永远不发生";
+
+        // 周期内且时钟在前进：不重算（这是每行一次比较那条性能契约的全部内容）
+        EXPECT_FALSE(Detail::shouldRecheckRollingPeriod(now + std::time_t{60}, now, boundary)) << "周期内每行都去换算本地时间，热路径白付一次转换";
+
+        // 时钟往回跳了一格（新读数比上一次读到的小）：必须重算，否则旧边界还要挡最多一整个周期
+        EXPECT_TRUE(Detail::shouldRecheckRollingPeriod(now - std::time_t{1}, now, boundary)) << "时钟回拨被当成「还没到边界」，新日期的记录会继续写进旧日期的文件";
+
+        // 同一时刻又回拨又跨界：两个条件任一成立都要重算
+        EXPECT_TRUE(Detail::shouldRecheckRollingPeriod(onePeriodBack, now, boundary)) << "回拨与跨界同时成立时判据漏掉了回拨";
+
+        // 首行（还没有过一次读数，lastObserved 是默认构造的 0）：只由边界决定，现实时刻不会误触发回拨分支
+        EXPECT_FALSE(Detail::shouldRecheckRollingPeriod(now, 0, boundary)) << "首次写入被误判成时钟回拨";
+    }
 } // namespace AsynGyanis::Base

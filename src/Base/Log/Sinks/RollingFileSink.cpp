@@ -191,9 +191,10 @@ namespace AsynGyanis::Base
             // 每行只做一次 time_t 比较；只有跨过周期边界才做本地时间转换与后缀格式化。
             // 用后缀字符串是否变化作为二次判据：夏令时切换等情况下边界可能估算偏差一小时，
             // 此时后缀不变即不滚动，并把边界推到下一个周期，自然收敛
-            if (const std::time_t now = std::time(nullptr); now >= m_nextPeriodBoundary)
+            if (const std::time_t now = std::time(nullptr); Detail::shouldRecheckRollingPeriod(now, m_lastObservedPeriodSeconds, m_nextPeriodBoundary))
             {
-                m_nextPeriodBoundary = nextPeriodBoundary(now);
+                m_lastObservedPeriodSeconds = now;
+                m_nextPeriodBoundary        = nextPeriodBoundary(now);
                 if (const std::string newSuffix = generateTimestampSuffix(); newSuffix != m_currentSuffix)
                 {
                     shouldRoll      = true;
