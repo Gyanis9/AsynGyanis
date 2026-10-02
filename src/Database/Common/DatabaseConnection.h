@@ -16,10 +16,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace AsynGyanis::Database
 {
@@ -262,6 +264,48 @@ namespace AsynGyanis::Database
         }
 
         /**
+         * @brief 一次没执行成功的命令：中文原因 + 与之配对的驱动原生码
+         */
+        struct ExecutionFailure
+        {
+            std::string  message;                                     ///< 失败原因（来自驱动那侧的中文文本）
+            std::int64_t nativeCode{ErrorRecord::kUnknownNativeCode}; ///< 驱动原生码；-1＝本条原因没有配到码（与 lastNativeErrorCode() 同一取值）
+        };
+
+        /**
+         * @brief 执行数据库命令，并把失败原因随结果一起交回来
+         * @param command 命令文本
+         * @return std::expected<std::unique_ptr<DatabaseResult>, ExecutionFailure> 成功为结果集，失败为原因
+         * @details 这是 execute() 的「带成因」版本：后者失败只回一个空指针，原因留在连接对象里等
+         *          lastError() 去读，于是每处调用都要自己写「判空 + 抄文本」，而**这份原因是长在连接
+         *          对象上的**——连接归还池之后再读，读到的是下一个借用者那条命令的失败。本包装在
+         *          execute() 返回的那一刻就把文本与原生码抄进返回值，调用方拿到的错误与那条命令一一对应，
+         *          也因此可以在把连接还回去之后再处置失败（重试、降级、落日志）。
+         * @note 不改 execute() 的签名：那三个驱动的实现、ORM 层与全部用例都按「空指针 + lastError()」
+         *        这一约定写着，动它是把一层便利改成一次全仓重写
+         * @note 驱动没留下任何文本时（已知退化情形）交回一句明确的「未给出原因」，而不是空字符串——
+         *        空错误的失败比错误本身更难查
+         */
+        [[nodiscard]] std::expected<std::unique_ptr<DatabaseResult>, ExecutionFailure> executeChecked(const std::string_view command)
+        {
+            return wrapExecutionResult(execute(command));
+        }
+
+        /**
+         * @brief 执行带位置参数的数据库命令，并把失败原因随结果一起交回来
+         * @param command 带占位符的命令文本
+         * @param parameters 按占位符出现顺序排列的绑定参数
+         * @return std::expected<std::unique_ptr<DatabaseResult>, ExecutionFailure> 成功为结果集，失败为原因
+         * @details 判据与包装形状同上一个重载：驱动不支持参数化查询时那条中文提示也照样从 lastError()
+         *          抄回来（基类的默认实现就是写这条文本再回空指针），调用方不必各自认得这一情形
+         */
+        [[nodiscard]] std::expected<std::unique_ptr<DatabaseResult>, ExecutionFailure> executeChecked(const std::string_view               command,
+                                                                                                      const std::span<const DatabaseValue> parameters)
+        {
+            return wrapExecutionResult(execute(command, parameters));
+        }
+
+        /**
          * @brief 获取连接配置的只读引用
          * @return const ConnectionConfig& 当前配置
          */
@@ -313,6 +357,29 @@ namespace AsynGyanis::Database
         }
 
     protected:
+        /**
+         * @brief 把「空指针 + lastError()」这一形状换成带着成因的返回值
+         * @param result execute() 的原始返回值；非空即算成功
+         * @return std::expected<std::unique_ptr<DatabaseResult>, ExecutionFailure> 结果或失败原因
+         * @details 只在上面两个 executeChecked 重载之间共享这一份：抄文本必须发生在 execute() 刚返回、
+         *        本连接还没接下一条命令的那一刻。写成两处就会有一处漏抄，而漏抄的那处看着仍然正常
+         *        ——只是失败原因变成了别的命令的
+         */
+        [[nodiscard]] std::expected<std::unique_ptr<DatabaseResult>, ExecutionFailure> wrapExecutionResult(std::unique_ptr<DatabaseResult> result)
+        {
+            if (result != nullptr)
+            {
+                // 命名后再返回：`return std::move(result);` 在 GCC 上是 -Werror=redundant-move
+                // （返回语句里的局部对象本来就按右值参与重载决议），而这里的移动要穿过
+                // expected 的转换构造，写清楚比依赖隐式规则更容易读
+                std::expected<std::unique_ptr<DatabaseResult>, ExecutionFailure> outcome{std::in_place, std::move(result)};
+                return outcome;
+            }
+            const std::string reason = lastError();
+            return std::unexpected(ExecutionFailure{.message    = reason.empty() ? std::string("驱动未给出失败原因（执行返回空结果，且错误文本为空）") : reason,
+                                                    .nativeCode = lastNativeErrorCode()});
+        }
+
         /**
          * @brief 把当前的 queryTimeout() 落到已建立的底层句柄上
          * @details 默认空实现：没有「存续期间可改」这一能力的驱动不必重写。重写它即表示本驱动能在连接
