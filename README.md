@@ -518,11 +518,14 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 }
 ```
 
-`status()` 是跨线程可读的运维读数（上次签发结果、失败原因、到期时刻、失败退避门槛、当前暂存的令牌数），
+`status()` 是跨线程可读的运维读数（上次签发结果、失败原因、到期时刻、失败退避门槛、当前暂存的令牌数，
+以及 `isReloadPending`——「盘上已是新的一张、线上还没换上」这一格单独有出口，因为到期判据看不见它），
 适合按实例查的口；三条计数（`asyn_acme_certificate_expiry_seconds` / `asyn_acme_issuances_total` /
 `asyn_acme_failures_total`）则在构造时就登记进 `Core::ProcessMetricsRegistry`，`/metrics` 末尾自动带出、
 不需要应用接线，两条通道读的是同一份原子量。`runRenewalLoop()` 在没有装回服务动作时**拒绝启动并把原因记进 `status()`**，
 不会静默地只往磁盘上写——磁盘上的证书每月在换、线上身份永远是那张旧的，是这类自动化最坏的失败形状。
+下一轮什么时候再试由 `nextRenewalDelay()` 一处算出（取「查到期节拍」与「失败退避」里更晚的那个，
+但欠着一次装回时压回短片：那种情况下等到 12 小时不是保守而是漏掉），循环自己与运维读数读的是同一个出口。
 
 ### 证书自动化的配置段（acme）
 

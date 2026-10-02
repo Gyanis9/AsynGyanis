@@ -78,6 +78,7 @@ namespace AsynGyanis::Net
             bool                      sendsEmptyDomainList{false};                 ///< 域名列表交空，测本地判据排在前面
             bool                      withInstallStep{true};                       ///< 要不要给「装回服务」的动作
             bool                      installStepFails{false};                     ///< 有动作，但让它失败
+            bool                      retriesReloadAfterFailure{false};            ///< 失败后把装回翻回成功，再走一次入口（同一个管理器）
             bool                      probesTokenAfterwards{false};                ///< 之后再回取一次令牌，看撤没撤
             bool                      usesFreshPaths{false};                       ///< 换一批落点：同一台机器上的另一张证书
             bool                      runsRenewalLoop{false};                      ///< 这一轮跑常驻循环而不是单次签发
@@ -93,14 +94,19 @@ namespace AsynGyanis::Net
          */
         struct Run
         {
-            std::optional<std::expected<AcmeIssuedCertificate, AcmeError>> result{};               ///< 签发出口；空表示这一轮没跑到
-            std::size_t                                                    installCalls{0};        ///< 这一轮里装回动作被调了几次
-            std::optional<int>                                             tokenProbeStatusCode{}; ///< 事后回取令牌的状态码
-            std::string                                                    tokenProbeBody;         ///< 事后回取到的正文
-            std::size_t                                                    dnsPublishCalls{0};     ///< 这一轮里 TXT 被写入几次
-            std::size_t                                                    dnsWithdrawCalls{0};    ///< 这一轮里 TXT 被撤回几次
-            std::vector<std::string>                                       dnsPublishedNames;      ///< 每次写入用的记录名，按调用顺序
-            std::vector<std::string>                                       dnsPublishedValues;     ///< 每次写入的正文，按调用顺序
+            std::optional<std::expected<AcmeIssuedCertificate, AcmeError>> result{};                         ///< 签发出口；空表示这一轮没跑到
+            std::optional<std::expected<AcmeIssuedCertificate, AcmeError>> retryResult{};                    ///< 装回翻回成功后再走一次入口的出口
+            bool                                                           pendingReloadAfterFailure{false}; ///< 第一次失败之后，管理器记不记得这笔欠账
+            bool                                                           pendingReloadAfterRetry{false};   ///< 补装成功之后，这笔欠账结没结清
+            std::size_t                                                    ordersAfterFailure{0};            ///< 第一次失败时机构建出的订单条数
+            std::size_t                                                    ordersAfterRetry{0};              ///< 补装之后机构建出的订单条数
+            std::size_t                                                    installCalls{0};                  ///< 这一轮里装回动作被调了几次
+            std::optional<int>                                             tokenProbeStatusCode{};           ///< 事后回取令牌的状态码
+            std::string                                                    tokenProbeBody;                   ///< 事后回取到的正文
+            std::size_t                                                    dnsPublishCalls{0};               ///< 这一轮里 TXT 被写入几次
+            std::size_t                                                    dnsWithdrawCalls{0};              ///< 这一轮里 TXT 被撤回几次
+            std::vector<std::string>                                       dnsPublishedNames;                ///< 每次写入用的记录名，按调用顺序
+            std::vector<std::string>                                       dnsPublishedValues;               ///< 每次写入的正文，按调用顺序
         };
 
     protected:
@@ -355,6 +361,16 @@ namespace AsynGyanis::Net
                 } else
                 {
                     run.result = co_await m_manager->issueIfRequired();
+                    if (round.retriesReloadAfterFailure)
+                    {
+                        // 同一个管理器再走一次入口：装回翻回成功，看它是不是只补装而不重新下单
+                        run.pendingReloadAfterFailure = m_manager->status().isReloadPending;
+                        run.ordersAfterFailure        = m_authority->evidence().issuedOrderCount;
+                        m_installStepFails            = false;
+                        run.retryResult               = co_await m_manager->issueIfRequired();
+                        run.pendingReloadAfterRetry   = m_manager->status().isReloadPending;
+                        run.ordersAfterRetry          = m_authority->evidence().issuedOrderCount;
+                    }
                 }
                 run.installCalls       = m_installCalls.load(std::memory_order_relaxed) - installCallsBefore;
                 run.dnsPublishCalls    = m_dnsPublishCalls;
@@ -511,6 +527,57 @@ namespace AsynGyanis::Net
         EXPECT_EQ(manager().status().issuanceCount, 0U);
         EXPECT_EQ(manager().status().failureCount, 1U);
         EXPECT_NE(manager().status().lastFailureMessage.find(kInstallFailureText), std::string::npos);
+    }
+
+    /**
+     * @brief 钉住：装回失败之后下一拍只补装，不重新下单
+     * @details 磁盘上那张已经是新的了，到期判据因此会判「还够用」而一次都不再试——不记这笔欠账，
+     *          这个进程会带着旧身份一路跑到下一个续期窗口。补装成功要把欠账结清，否则之后每次调用
+     *          都会多装一次；而结清的判据不能靠「再过 30 天看看」那种口头承诺。
+     */
+    TEST_F(AcmeCertificateManagerTest, RetriesOnlyTheReloadAfterTheFirstInstallFailed)
+    {
+        Round round;
+        round.installStepFails          = true;
+        round.retriesReloadAfterFailure = true;
+        startServers({});
+        const auto run = driveIssue(round);
+
+        ASSERT_TRUE(run.result.has_value()) << "驱动没跑到签发这一步";
+        ASSERT_FALSE(run.result->has_value()) << "装回失败本该按失败交回";
+        EXPECT_EQ(run.result->error().kind, AcmeErrorKind::ReloadRejected);
+        EXPECT_TRUE(run.pendingReloadAfterFailure) << "欠账没记下来，下一拍没人再试";
+
+        ASSERT_TRUE(run.retryResult.has_value());
+        ASSERT_TRUE(run.retryResult->has_value()) << "补装这一步没成功：" << run.retryResult->error().message;
+        EXPECT_FALSE(run.retryResult->value().wasIssued) << "补装不该重新下单：机构那张单已经用掉了";
+        EXPECT_EQ(run.ordersAfterRetry, run.ordersAfterFailure) << "第二次调用向机构多下了一张单";
+        EXPECT_FALSE(run.pendingReloadAfterRetry) << "已经装上了还记着欠账，之后每次调用都会多装一次";
+        EXPECT_EQ(run.installCalls, 2U) << "两次入口各该叫一次装回：一次失败、一次补装";
+    }
+
+    /**
+     * @brief 钉住：欠着装回时下一拍压到短片，而不是等到失败退避那一小时之后
+     * @details 退避门槛管的是「别再撞机构」，与「把已经在盘上的那张装上去」是两件事；把后者也交给
+     *          前者，等于让线上身份多等一小时——而这一轮根本没有下单的必要。
+     */
+    TEST_F(AcmeCertificateManagerTest, ShortensTheNextWakeWhileTheReloadIsPending)
+    {
+        Round round;
+        round.installStepFails = true;
+        startServers({});
+        const auto run = driveIssue(round);
+
+        ASSERT_TRUE(run.result.has_value());
+        ASSERT_FALSE(run.result->has_value());
+        ASSERT_TRUE(manager().status().isReloadPending);
+        const long long nowUnix                 = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        const long long backoffRemainingSeconds = manager().status().backoffUntilUnixSeconds - nowUnix;
+        EXPECT_GT(backoffRemainingSeconds, 60) << "这一轮的前置没搭对：退避门槛本该还在一小时附近";
+
+        const auto delay = manager().nextRenewalDelay();
+        EXPECT_LE(delay, std::chrono::seconds{30}) << "欠着装回却按退避那一小时等，旧身份会被一路用下去";
+        EXPECT_GE(delay, std::chrono::milliseconds{1}) << "延迟为 0 会让这条循环空转";
     }
 
     /**

@@ -42,6 +42,13 @@ namespace AsynGyanis::Net
          */
         constexpr std::chrono::milliseconds kStopNoticeSlice{1000};
 
+        /**
+         * @brief 「证书已在盘上、没能装上线上」时的重试节拍上限
+         * @details 与跟盘协程同一档：这类失败的典型原因是私钥与证书分两次落盘时撞上了中间态，
+         *          秒级就能自愈；等到默认的 12 小时不是谨慎而是漏掉，因为到期判据根本不会再走到这里
+         */
+        constexpr std::chrono::milliseconds kReloadRetryInterval{15000};
+
         /// X509 与 BIO 的归还动作
         struct X509Deleter
         {
@@ -169,6 +176,7 @@ namespace AsynGyanis::Net
         snapshot.failureCount                 = m_failureCount.load(std::memory_order_relaxed);
         snapshot.certificateExpiryUnixSeconds = m_expiryUnixSeconds.load(std::memory_order_relaxed);
         snapshot.backoffUntilUnixSeconds      = backoffGateUnixSeconds();
+        snapshot.isReloadPending              = m_reloadPending.load(std::memory_order_relaxed);
         std::lock_guard guard(m_lastFailureMutex);
         snapshot.lastFailureMessage = m_lastFailureMessage;
         return snapshot;
@@ -225,6 +233,23 @@ namespace AsynGyanis::Net
         // 记的是「失败那一刻」，门槛取它的下一秒：同一秒内再进来一次不该被放行两次
         const long long failedAt = m_notBeforeNextAttemptUnix.load(std::memory_order_relaxed);
         return failedAt == 0 ? 0 : failedAt + 1;
+    }
+
+    std::chrono::milliseconds AcmeCertificateManager::nextRenewalDelay() const noexcept
+    {
+        const long long nowUnix      = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        const long long intervalUnix = std::chrono::duration_cast<std::chrono::seconds>(m_configuration.renewalCheckInterval).count();
+        // 失败退避与查到期节拍取更晚的那个：机构侧按「每域名每周几张」限流，
+        // 把检查间隔调得很小不会更快拿到证书，只会把额度耗光
+        const long long wakeAtUnix = std::max(nowUnix + intervalUnix, backoffGateUnixSeconds());
+        auto            delay      = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::seconds(std::max<long long>(1, wakeAtUnix - nowUnix)));
+        // 装回还欠着的时候压回一个短片：磁盘上那张是新的，到期判据下一拍会判「还够用」而一次都不再试，
+        // 于是这个进程会带着旧身份跑到下一个续期窗口——那不等于退避，等于漏掉
+        if (m_reloadPending.load(std::memory_order_relaxed))
+        {
+            delay = std::min(delay, kReloadRetryInterval);
+        }
+        return delay;
     }
 
     AcmeError AcmeCertificateManager::failWith(const AcmeErrorKind kind, std::string message)
@@ -391,6 +416,23 @@ namespace AsynGyanis::Net
             // 还有富余：一次请求都不发。读不出到期时刻（文件坏或不是 X509）不进这一支,
             // 于是坏文件会被新签的那张覆盖掉
             m_expiryUnixSeconds.store(std::chrono::duration_cast<std::chrono::seconds>(existing->time_since_epoch()).count(), std::memory_order_relaxed);
+            // 「还够用」判的是磁盘，而线上有没有在用这张要看装回成没成。上一次装回失败过就这一拍补装一次
+            // ——不补的话这个判据会把「装回」这件事永久吞掉：盘上是新的一张，于是每次调用都判「够用」，
+            // 而这个进程从始至终握着旧身份
+            if (m_reloadPending.load(std::memory_order_acquire) && m_reloadHandler)
+            {
+                if (const auto retried = m_reloadHandler(); retried.has_value())
+                {
+                    m_reloadPending.store(false, std::memory_order_release);
+                    LOG_INFO_FMT("AcmeCertificateManager: 磁盘上那张证书此前没装上线上，这一次补装成功，落点 {}", m_configuration.certificateFile.string());
+                } else
+                {
+                    co_return std::unexpected(
+                            failWith(AcmeErrorKind::ReloadRejected, std::format("磁盘上那张证书还够用（不必重新下单），但它此前没装上线上、这一次补装仍然失败：{}。"
+                                                                                "线上仍在用旧的那张",
+                                                                                retried.error())));
+                }
+            }
             co_return AcmeIssuedCertificate{m_configuration.certificateFile, m_configuration.privateKeyFile, *existing, false};
         }
 
@@ -528,6 +570,8 @@ namespace AsynGyanis::Net
             const auto applied = m_reloadHandler();
             if (!applied.has_value())
             {
+                // 记下这笔欠账：下一拍到期判据会看磁盘说「还够用」，不靠它兜底
+                m_reloadPending.store(true, std::memory_order_release);
                 co_return std::unexpected(failWith(AcmeErrorKind::ReloadRejected, std::format("证书已写到 {}，但装回服务这一步失败了：{}。线上仍在用旧的那张",
                                                                                               m_configuration.certificateFile.string(), applied.error())));
             }
@@ -539,6 +583,8 @@ namespace AsynGyanis::Net
         }
 
         m_issuanceCount.fetch_add(1, std::memory_order_relaxed);
+        // 这一轮落盘与装回都做完了：此前那笔「写过但没装上」的欠账到此结清（新的一张已经在线上了）
+        m_reloadPending.store(false, std::memory_order_release);
         m_notBeforeNextAttemptUnix.store(0, std::memory_order_relaxed);
         std::string joinedDomainNames;
         for (const std::string &domainName: m_configuration.domainNames)
@@ -567,12 +613,7 @@ namespace AsynGyanis::Net
             // 失败已在 expected 通道里报过、也记进 status()：这里只决定下一轮什么时候再来
             static_cast<void>(issued);
 
-            const long long nowUnix      = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            const long long intervalUnix = std::chrono::duration_cast<std::chrono::seconds>(m_configuration.renewalCheckInterval).count();
-            // 失败退避与查到期节拍取更晚的那个：机构侧按「每域名每周几张」限流，
-            // 把检查间隔调得很小不会更快拿到证书，只会把额度耗光
-            const long long wakeAtUnix = std::max(nowUnix + intervalUnix, backoffGateUnixSeconds());
-            const auto      delay      = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::seconds(std::max<long long>(1, wakeAtUnix - nowUnix)));
+            const auto delay = nextRenewalDelay();
             // 停放按 kStopNoticeSlice 切片：叫醒这条帧的唯一办法是让它自己醒来，而 stopRenewalLoop()
             // 只落一个标志——整段睡下去时「叫停」要等到下一拍（默认可长达 12 小时）。这期间按文档
             // 等循环停下再拆对象的调用方会一直等（停机挂住），不等就拆对象的调用方会在几小时后被一条

@@ -66,6 +66,14 @@ namespace AsynGyanis::Net
         long long   certificateExpiryUnixSeconds{0}; ///< 磁盘上那张证书的到期时刻（构造即按文件填）；0 表示读不出
         long long   backoffUntilUnixSeconds{0};      ///< 失败退避门槛：早于这个时刻不会再试；0 表示没在退避中
         std::string lastFailureMessage;              ///< 最近一次失败的中文文案；没有失败时为空
+        /**
+         * @brief 磁盘上那张已经写好、但没能装回线上
+         * @details 这一格与 `backoffUntilUnixSeconds` 不是一回事：退避说的是「别再下单撞机构」，
+         *          而这里是「单已经下成、证书已经在盘上，只差把线上身份换上」。到期判据看不到这件事
+         *          ——它看磁盘，而磁盘是新的一张，于是会判「还够用」并一次都不再试。这个标志就是让
+         *          那一件事不再依赖到期判据。
+         */
+        bool isReloadPending{false};
     };
 
     /**
@@ -199,6 +207,16 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] AcmeManagerStatus status() const;
 
+        /**
+         * @brief 下一轮续期检查该在多久之后醒来
+         * @details 一处算式：常驻循环按它决定停放时长，运维要显示「下一次什么时候再试」读的也是它，
+         *          两份各写一遍迟早会漂（`backoffGateUnixSeconds()` 同一族）。取「查到期节拍」与
+         *          「失败退避门槛」里更晚的那个，但**装回还欠着时压回一个短片**——磁盘上的证书是新的，
+         *          到期判据会判「还够用」而一次都不再试，那种情况下等到 12 小时之后不是保守而是漏掉。
+         * @return std::chrono::milliseconds 至少 1 毫秒
+         */
+        [[nodiscard]] std::chrono::milliseconds nextRenewalDelay() const noexcept;
+
         /// 自证令牌的暂存处（观测与用例读它，写入由签发流程负责）
         [[nodiscard]] const AcmeHttp01ChallengeStore &challengeStore() const noexcept;
 
@@ -289,6 +307,7 @@ namespace AsynGyanis::Net
         std::atomic<std::size_t> m_failureCount{0};             ///< 失败轮次数
         std::atomic<long long>   m_expiryUnixSeconds{0};        ///< 磁盘上那张证书的到期时刻；0 表示还没有
         std::atomic<bool>        m_isStopping{false};           ///< 续期循环的停位
+        std::atomic<bool>        m_reloadPending{false};        ///< 证书已落盘但没装回线上：这一件事不能交给到期判据
         std::atomic<long long>   m_notBeforeNextAttemptUnix{0}; ///< 失败退避：早于这个时刻不再尝试
 
         AcmeHttp01ChallengeStore m_challengeStore; ///< 自证令牌的暂存处
