@@ -602,6 +602,18 @@ namespace AsynGyanis::Net
             }
         }
 
+        // asterisk-form（请求目标就是一个 "*"）只属于 OPTIONS 与 CONNECT，见 RFC 9112 §3.2.3：
+        // 它说的不是某个资源而是整台服务器。本服务器不代理 CONNECT，所以除 OPTIONS 之外收到 "*"
+        // 就是请求目标不成形，按语法错误当场判掉——留给它一路走到「没有路由匹配」会把一个语法错误
+        // 报成 404，告诉客户端「这个资源不存在」，而事实是这条请求根本没指明资源
+        if (targetText == "*" && methodText != "OPTIONS")
+        {
+            failMalformed(std::format("HTTP 报文解析失败：请求目标 \"*\"（asterisk-form）只用于 OPTIONS，收到的是 {}；"
+                                      "请给出 origin-form 的路径（以 / 开头）",
+                                      methodText));
+            return false;
+        }
+
         // 版本：HTTP/主.次，主版本只认 0 与 1、次版本一位十进制数字。这条不是保守取值而是
         // 协议事实：HTTP/2 及以上走完全不同的帧格式（二进制、不同握手），把它当 1.x 继续按
         // 文本解析等于用错误的语法去猜边界，因此这里当场判错，而不是收下版本号再装作能处理

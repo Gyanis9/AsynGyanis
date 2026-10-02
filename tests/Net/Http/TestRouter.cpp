@@ -130,6 +130,36 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.body(), "root");
     }
 
+    /**
+     * @brief OPTIONS 的 asterisk-form 按根路径派发——服务器级的应答就住在 options("/") 上
+     * @details RFC 9112 §3.2.3 里 "*" 指的不是某个资源而是整台服务器。本路由器没有「服务器整体」这一层：
+     *          不映射就是 404（旧行为，也是 Router::matchesPattern 那条注释曾经声称「通配路由整体吃掉」
+     *          却并不存在的路径）；映射错方向更糟——把 "*" 当成一段通配去匹配模式路由，等于让
+     *          options("*") 这种「任意一段」的注册冒充服务器级应答。
+     *          反向对照取一条单段路由：GET 的 "*" 落到哪儿都不该是它。
+     */
+    TEST(Router, RoutesAsteriskFormOptionsRequestToTheRootPath)
+    {
+        Router           router;
+        std::atomic<int> serverOptionsCount{0};
+        std::atomic<int> helloCount{0};
+        router.options("/", textHandler("allow", &serverOptionsCount));
+        router.get("/hello", textHandler("world", &helloCount));
+
+        HttpRequest  optionsRequest = makeRequest(HttpMethod::OPTIONS, "*");
+        HttpResponse optionsResponse;
+        routeRequest(router, optionsRequest, optionsResponse);
+        EXPECT_EQ(serverOptionsCount.load(), 1) << "OPTIONS * 没有落到服务器级的 options(\"/\") 处理器";
+        EXPECT_EQ(optionsResponse.body(), "allow");
+
+        // 反向对照：语法层之外的第二道闸——路由器被直接调用时，非 OPTIONS 的 "*" 不得匹配任何资源路由
+        HttpRequest  getRequest = makeRequest(HttpMethod::GET, "*");
+        HttpResponse getResponse;
+        routeRequest(router, getRequest, getResponse);
+        EXPECT_EQ(helloCount.load(), 0) << "单段路由被 asterisk-form 冒充命中";
+        EXPECT_EQ(getResponse.status(), 404);
+    }
+
     TEST(Router, WritesNotFoundWhenNoRouteMatchesPath)
     {
         Router router;

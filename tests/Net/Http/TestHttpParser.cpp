@@ -85,6 +85,28 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(parser.errorMessage().empty());
     }
 
+    /**
+     * @brief asterisk-form 的请求目标只认给 OPTIONS，别的方法带 "*" 是语法错误
+     * @details RFC 9112 §3.2.3 把 "*" 定义为「作用于整台服务器」的请求目标，仅用于 OPTIONS 与 CONNECT。
+     *          不判掉会有一串下游歧义：路由按「没有这个资源」回 404，把一个语法错误说成资源不存在，
+     *          而客户端下一次重试可能照旧。两条判据一起写：OPTIONS 的 "*" 必须收得下（原文留档，
+     *          上层要按 asterisk-form 特判），GET 的 "*" 必须当场拒。
+     */
+    TEST(HttpParser, AcceptsAsteriskTargetOnlyForOptions)
+    {
+        HttpParser        optionsParser;
+        const std::string optionsMessage = "OPTIONS * HTTP/1.1\r\nHost: example.test\r\n\r\n";
+        EXPECT_EQ(optionsParser.parse(optionsMessage.data(), optionsMessage.size()), ParseStatus::Done);
+        EXPECT_EQ(optionsParser.request().method(), HttpMethod::OPTIONS);
+        EXPECT_EQ(optionsParser.request().uri(), "*") << "asterisk-form 的原文应当原样留档，由路由那层特判";
+        EXPECT_FALSE(optionsParser.hasError());
+
+        HttpParser        getParser;
+        const std::string getMessage = "GET * HTTP/1.1\r\nHost: example.test\r\n\r\n";
+        EXPECT_EQ(getParser.parse(getMessage.data(), getMessage.size()), ParseStatus::Error);
+        EXPECT_NE(getParser.errorMessage().find("OPTIONS"), std::string::npos) << "拒绝原因要指认 asterisk-form 只用于 OPTIONS，实际是：" << getParser.errorMessage();
+    }
+
     TEST(HttpParser, ParsesBodyDelimitedByContentLength)
     {
         HttpParser parser;

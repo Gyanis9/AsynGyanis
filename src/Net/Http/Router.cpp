@@ -263,8 +263,10 @@ namespace AsynGyanis::Net
 
     bool Router::matchesPattern(const PatternRoute &route, const std::string_view requestPath, PathParameters *const collectedParameters)
     {
-        // 请求路径不以 '/' 开头就不是合法Origin-form（OPTIONS 的 "*" 除外，它由通配路由整体吃掉），
-        // 这里直接判不匹配，避免把 "etc/passwd" 这类畸形路径与 "/etc/passwd" 当成同一条
+        // 请求路径不以 '/' 开头就不是 origin-form，这里直接判不匹配，避免把 "etc/passwd" 这类畸形
+        // 路径与 "/etc/passwd" 当成同一条。OPTIONS 的 asterisk-form（"*"）不走这条路：它在 route()
+        // 入口就按根路径派发（见那里的注释），模式段里的 '*' 是「一段通配」而不是 asterisk-form，
+        // 两者撞字符不撞语义——放进来会让一个注册成 options("*") 的一段通配路由冒充服务器级应答
         if (requestPath.empty() || requestPath.front() != '/')
         {
             return false;
@@ -405,8 +407,12 @@ namespace AsynGyanis::Net
     {
         // 路径取视图而不是副本：request.path() 返回指向请求对象的视图，路由这里只读不改，
         // 每请求因此省掉一次路径串拷贝（精确路由的查找靠下面的透明哈希做到零分配）
-        const std::string_view requestPath   = request.path();
-        const HttpMethod       requestMethod = request.method();
+        const HttpMethod       requestMethod  = request.method();
+        const std::string_view rawRequestPath = request.path();
+        // OPTIONS 的 asterisk-form（RFC 9112 §3.2.3）说的不是某个资源，而是「整台服务器」。本路由器没有
+        // 服务器整体这一层，按根路径派发——站点级注册的 options("/") 就是回答 Allow 的位置。
+        // 语法侧已把非 OPTIONS 的 "*" 判成畸形请求目标，这里再判一次是因为路由器也能被直接调用
+        const std::string_view requestPath = rawRequestPath == "*" && requestMethod == HttpMethod::OPTIONS ? std::string_view{"/"} : rawRequestPath;
 
         // 选站：没登记虚拟主机时这里就是空转，单站点一条请求都不多付主机归一化。
         // 匹配读哪张表与中间件套几层都由它决定，但不额外开一层协程——派发是每条请求的热路径，
