@@ -1992,6 +1992,42 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 对端宣告一个折不进计时器的 max_idle_timeout 时按「不启用」处置，而不是溢出成乱值
+     * @details 变长整数能表达到 2^62-1 毫秒（约 1.46 亿年），而本层的空闲额度是按微秒计的 Timestamp：
+     *          毫秒折微秒要乘 1000，天文数字乘完直接越过 int64（有符号溢出，Linux 侧 UBSan 报的就是这一
+     *          步）。溢出后的数值带着随机的符号，最坏那一种是「额度跑到过去」——下一次 drive 就把刚建好的
+     *          连接判空闲收口，等于对端只发一个传输参数就能按自己的意愿掐断连接。§18.2 里 0 的含义是
+     *          「没设这一项」，一个表达不了的巨大值说的也是同一件事，因此两者走同一条出口。
+     */
+    TEST(QuicConnectionCore, IgnoresAnIdleTimeoutTooLargeToRepresent)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        // 本端不宣告（0），让那个天文数字成为唯一来源，免得「两端取小」先把它挡在闸门外
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get(), kClientConnectionId));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId, false, kQuicMaximumIntegerValue);
+        for (int round = 0; round < 4; ++round)
+        {
+            exchange(core, client, Timestamp{10000 * round});
+        }
+        ASSERT_TRUE(client.isHandshakeCompleted());
+        ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
+
+        const Timestamp lastActivity{50000};
+        ASSERT_TRUE(core.onDatagramReceived(client.buildPing(QuicEncryptionLevel::Application), lastActivity).has_value());
+        core.drive(lastActivity + Timestamp{1000});
+        drain(core);
+
+        EXPECT_FALSE(core.nextTimeout().has_value()) << "握手已收清、又不启用空闲超时，这里就不该有任何到期时刻，更不该是一个溢出折出来的乱值";
+        // 再往远处驱动一轮：不启用就是永不因空闲收口，这一条把「乱值恰好落在很远的将来」也算进去
+        core.drive(lastActivity + Timestamp{2'000'000'000'000'000LL});
+        EXPECT_EQ(core.phase(), QuicConnectionPhase::Established) << "对端给的天文数字被折成了一个会到期的空闲定时器";
+    }
+
+    /**
      * @brief 一路探测期间不该把自己判空闲：本端发起的触发确认的包也算活动（§10.1）
      * @details 对端一条确认都不发时，「最后一次收到包」的时刻永远不动；只看它的实现会在第 30 秒
      *          把还在努力恢复的连接关掉

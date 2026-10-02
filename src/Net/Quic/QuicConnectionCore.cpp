@@ -1164,6 +1164,16 @@ namespace AsynGyanis::Net
         {
             return std::nullopt;
         }
+        // 变长整数的上界（2^62-1 毫秒 ≈ 1.46 亿年）远超计时器能表达的跨度：Timestamp 是微秒，毫秒折成
+        // 微秒要乘 1000，乘完的数还得留得下「最后一次活动的时刻」本身。因此取可表达范围的一半，另一半
+        // 让给 now——按 µs 计的纪元值约 1.8×10^15，连这半数的十亿分之一都不到。越界的取值走与 0 同一条
+        // 出口（不启用）：RFC 9000 §18.2 里 0 的含义就是「没设这一项」，而一个折不进计时器的天文数字说的
+        // 也是同一件事。两端里较小的那个才会到这里，所以本端自己配得过大也一样收在这道闸上
+        constexpr std::uint64_t kMaximumUsableIdleTimeoutMilliseconds = static_cast<std::uint64_t>(Timestamp::max().count()) / 2000ULL;
+        if (effectiveMilliseconds > kMaximumUsableIdleTimeoutMilliseconds)
+        {
+            return std::nullopt;
+        }
         // §10.1 的硬要求：至少留够 3 倍当前 PTO，否则一次抖动就把好端端的连接判死。
         // 这个下限只在重算截止时刻时取一次，之后 PTO 因退避翻倍不再往后推它
         const Timestamp probePeriod = m_recovery.roundTripTimeEstimate().probeTimeout;
