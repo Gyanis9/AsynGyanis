@@ -9,6 +9,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
+#include "MetricsTestSupport.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
 #include "gtest/gtest.h"
@@ -315,6 +316,41 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(frameCarriesText(path.sentFrames[0], "1234567890"));
         EXPECT_TRUE(frameCarriesText(path.sentFrames[1], "abcdefghij"));
         EXPECT_EQ(path.sentFrames[1].find("klmnopqrst"), std::string::npos);
+    }
+
+    /**
+     * @brief 钉住：丢弃计数在构造时就挂进进程读数表、导出的与 `droppedMessageCount()` 是同一个数、析构即注销
+     * @details 只留在实例里的读数等于只有拿得到那个对象的人才知道在丢消息，而「扇出正在被慢读者拖累」
+     *          正是需要在外面板上看见的那一格；把手漏注销会留下一条谁也不持有的读数，下一轮抓取还在报旧对象的值
+     */
+    TEST(WebSocketHubMetrics, ExportsDropsFromConstructionAndReleasesOnDestruction)
+    {
+        using AsynGyanis::TestSupport::findRegistrySample;
+
+        EXPECT_FALSE(findRegistrySample("asyn_websocket_hub_dropped_messages_total").has_value()) << "还没有集线器，导出里就先有了这条读数";
+
+        {
+            GatedSendPath path;
+            path.isGated = true;
+            WebSocketPeer peer{makeFrameSender(path)};
+            WebSocketHub  hub(16U);
+
+            const auto registered = findRegistrySample("asyn_websocket_hub_dropped_messages_total");
+            ASSERT_TRUE(registered.has_value()) << "构造时没挂上读数，运维面就看不见丢弃";
+            EXPECT_EQ(registered->value, 0U) << "新登记的读数应当是 0，而不是上一位使用者的残留";
+
+            auto subscription = hub.subscribe("lobby", peer);
+
+            Core::Task<void> oversized = hub.publish("lobby", "0123456789abcdefghij"); // 20 字节 > 16 的上界
+            oversized.handle().resume();
+            EXPECT_EQ(hub.droppedMessageCount(), 1U);
+
+            const auto sample = findRegistrySample("asyn_websocket_hub_dropped_messages_total");
+            ASSERT_TRUE(sample.has_value());
+            EXPECT_EQ(sample->value, static_cast<std::uint64_t>(hub.droppedMessageCount())) << "对外读数与判据用的不是同一个数";
+        }
+
+        EXPECT_FALSE(findRegistrySample("asyn_websocket_hub_dropped_messages_total").has_value()) << "集线器析构之后读数还挂在表上，就会报一个不存在的对象";
     }
 
     TEST(WebSocketHub, ClosedPeerIsNotTouchedAndItsQueueIsEmptyd)

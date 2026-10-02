@@ -70,6 +70,11 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("WebSocketHub: 单成员待发队列的字节上界不能为 0，那样一条消息也进不去");
         }
+        // 构造时就挂上读数，不等第一次丢弃：面板上「一条没丢」与「这条读数不存在」长得一模一样，
+        // 而后者会让运维以为扇出没人盯着
+        m_droppedMetric = Core::ProcessMetricsRegistry::registerMetric(
+                "asyn_websocket_hub_dropped_messages_total", "因成员待发队列越界而被丢掉的最新消息累计条数（进程内多个集线器求和）", Core::ProcessMetricKind::Counter,
+                Core::ProcessMetricMerge::Sum, [this] { return static_cast<std::uint64_t>(m_droppedMessageCount.load(std::memory_order_relaxed)); });
     }
 
     WebSocketSubscription WebSocketHub::subscribe(const std::string_view topic, WebSocketPeer &peer)
@@ -113,7 +118,7 @@ namespace AsynGyanis::Net
             // 一条比整个上界还大的消息永远也放不下：分开判，避免「上界减去长度」在 size_t 上回绕成巨值
             if (payload.size() > m_maximumPendingByteCount || member->pendingByteCount + payload.size() > m_maximumPendingByteCount)
             {
-                ++m_droppedMessageCount; // 丢**最新**的一条并计数：已入队的顺序不被插队打乱
+                m_droppedMessageCount.fetch_add(1, std::memory_order_relaxed); // 丢**最新**的一条并计数：已入队的顺序不被插队打乱
                 continue;
             }
             member->pendingMessages.push_back(Detail::WebSocketHubPendingMessage{.opCode = opCode, .payload = std::string(payload)});
@@ -141,7 +146,7 @@ namespace AsynGyanis::Net
 
     std::size_t WebSocketHub::droppedMessageCount() const noexcept
     {
-        return m_droppedMessageCount;
+        return m_droppedMessageCount.load(std::memory_order_relaxed);
     }
 
     std::size_t WebSocketHub::maximumPendingByteCount() const noexcept

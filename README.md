@@ -48,7 +48,8 @@
   h1 升级与 h2/h3 隧道共用协商，版本不合按 §4.2.2 回 426 并指明本端支持的版本；主题扇出归 `WebSocketHub`——订阅是
   RAII 句柄（析构即除名，不留悬垂对端指针）、一条连接同一时刻只有一个写者、每个成员自带待发队列的字节上界，
   越界丢**最新**的一条并从 `droppedMessageCount()` 读得到；文本与二进制两种帧各走各的通道（`publish()` /
-  `publishBinary()`），队列里每条自带帧类型
+  `publishBinary()`），队列里每条自带帧类型；被队满挡下的条数挂在 `/metrics` 的 `asyn_websocket_hub_dropped_messages_total`
+  上（进程内多个集线器求和），构造时就登记，不等第一次丢弃才出现
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型；命中的模式原文经 `HttpRequest::matchedRoute()` 交回业务与中间件，按路由分组打点不必自己再拼一遍
 - **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）、`/healthz` 与 `/debug/loops`（进程内每条事件循环一行的 JSON，看哪条被处理器占住）内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
 - **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate）

@@ -25,8 +25,10 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -202,6 +204,8 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t subscriptionCount() const noexcept;
 
         /// @brief 因队列越界而被丢掉的**新**消息累计条数（慢读者的可见证据，不做静默丢弃）
+        /// @details 同一份计数也挂在 `/metrics` 的 `asyn_websocket_hub_dropped_messages_total` 上（进程内多个集线器求和）：
+        ///          只留在实例里的读数等于只有拿得到那个对象的人才知道在丢消息，而扇出被慢读者拖累正是需要报警的那一类
         [[nodiscard]] std::size_t droppedMessageCount() const noexcept;
 
         /// @brief 单成员待发队列的字节上界
@@ -242,7 +246,9 @@ namespace AsynGyanis::Net
 
         std::vector<Registration> m_registrations;           ///< 全部成员，按订阅顺序
         std::size_t               m_maximumPendingByteCount; ///< 单成员待发队列字节上界
-        std::size_t               m_droppedMessageCount{0};  ///< 队满丢弃的累计条数
         WebSocketSubscriptionId   m_nextIdentifier{1U};      ///< 下一个订阅标识：从 1 起，0 留给「空句柄」
+        /// 队满丢弃的累计条数：原子量只为让 `/metrics` 的抓取读得到，递增仍在本对象的循环线程上
+        std::atomic<std::size_t>  m_droppedMessageCount{0};
+        Core::ProcessMetricHandle m_droppedMetric{}; ///< 挂到进程读数表上的那条丢弃计数，析构即注销
     };
 } // namespace AsynGyanis::Net
