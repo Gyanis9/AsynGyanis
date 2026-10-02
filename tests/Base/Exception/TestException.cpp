@@ -4,6 +4,7 @@
 #include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/Exception.h"
+#include "Base/Exception/ExceptionMessage.h"
 #include "Base/Exception/ExceptionStackTrace.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
@@ -38,6 +39,25 @@ namespace AsynGyanis::Base
         }
 
         /**
+         * @brief 从「[异常] 消息 [文件:行 in 函数]」的外壳里取出文件段
+         * @param message 异常 what() 原文
+         * @return std::string 外壳里冒号之前的那一段；外壳不在时返回空串
+         * @details 按位置切而不是拿整个字符串去比对：函数名各编译器写法不同（模板与 lambda 尤甚），
+         *          拼一整句会让用例把编译器的格式当成契约
+         */
+        [[nodiscard]] std::string fileSegmentOf(const std::string &message)
+        {
+            const std::size_t shellStart = message.rfind(" [");
+            if (shellStart == std::string::npos)
+            {
+                return {};
+            }
+            const std::size_t fileStart = shellStart + 2U;
+            const std::size_t colon     = message.find(':', fileStart);
+            return colon == std::string::npos ? std::string{} : message.substr(fileStart, colon - fileStart);
+        }
+
+        /**
          * @brief 在独立函数里构造异常：调用栈用例靠它确认「捕获到的是抛出点，不是打印点」
          */
         [[nodiscard]] Exception makeExceptionFromDeepFrame()
@@ -67,8 +87,30 @@ namespace AsynGyanis::Base
         const std::string message(exception.what());
         EXPECT_TRUE(contains(message, "[异常]"));
         EXPECT_TRUE(contains(message, "whereami"));
-        EXPECT_TRUE(contains(message, sourceLocation.file_name()));
+        EXPECT_TRUE(contains(message, "TestException.cpp")) << message;
         EXPECT_TRUE(contains(message, std::to_string(sourceLocation.line())));
+    }
+
+    TEST(Exception, MessageCarriesBareFileNameAndNoBuildPath)
+    {
+        const auto      sourceLocation = std::source_location::current();
+        const Exception exception("whereami", sourceLocation);
+
+        // 绝对路径是编译期烘进二进制的：本机的 G:\Codes\... 或容器里的 /... 一旦进了 what()，
+        // 抄进日志就跨机器对不上，回给对端就是白送一份构建目录。这里要的是末段，一个字不多
+        EXPECT_EQ(fileSegmentOf(exception.what()), "TestException.cpp");
+    }
+
+    TEST(ExceptionMessage, LastPathSegmentKeepsOnlyTheLeaf)
+    {
+        // 两条分隔符都要认：MSVC 展开的是反斜杠路径，GCC 是正斜杠
+        EXPECT_EQ(Detail::lastPathSegment(R"(G:\Codes\AsynGyanis\src\Base\Exception\Exception.cpp)"), "Exception.cpp");
+        EXPECT_EQ(Detail::lastPathSegment("/home/build/src/Base/LogicException.cpp"), "LogicException.cpp");
+        // 没有分隔符与空串是真实形状：某些构建下 file_name() 本来就是裸文件名
+        EXPECT_EQ(Detail::lastPathSegment("Socket.cpp"), "Socket.cpp");
+        EXPECT_EQ(Detail::lastPathSegment(""), "");
+        // 结尾带分隔符时给出空串：那说明整条路径没有末段，硬撑一个「最后一个目录名」会读成假文件名
+        EXPECT_EQ(Detail::lastPathSegment("/var/log/"), "");
     }
 
     TEST(Exception, LocationAccessorMatchesConstructorArgument)
