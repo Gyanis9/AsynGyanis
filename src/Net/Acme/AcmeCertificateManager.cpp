@@ -146,7 +146,7 @@ namespace AsynGyanis::Net
     AcmeCertificateManager::AcmeCertificateManager(Core::EventLoop &loop, Configuration configuration, ReloadHandler reloadHandler, AcmeDns01TxtWriter dns01TxtWriter) :
         m_loop(loop), m_configuration(std::move(configuration)), m_reloadHandler(std::move(reloadHandler)), m_dns01TxtWriter(std::move(dns01TxtWriter))
     {
-        // 三条读数在构造时就挂上，不等第一次签发：常驻进程里它们长期为 0 就是要报的事——
+        // 四条读数在构造时就挂上，不等第一次签发：常驻进程里它们长期为 0 就是要报的事——
         // 「自动化没跑成」与「自动化还没跑」从外面看得是同一个形状，得让面板能分辨有没有登记过
         m_metricHandles = {
                 Core::ProcessMetricsRegistry::registerMetric("asyn_acme_certificate_expiry_seconds",
@@ -159,6 +159,9 @@ namespace AsynGyanis::Net
                 Core::ProcessMetricsRegistry::registerMetric("asyn_acme_failures_total", "证书自动化失败的轮次数：含被拒的配置、机构判 invalid、装回动作失败",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_failureCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric(
+                        "asyn_acme_reload_pending", "1 = 磁盘上已经是新的一张但还没装回线上（下一拍会只重试装回、不再重新下单）；0 = 没有这笔欠账", Core::ProcessMetricKind::Gauge,
+                        Core::ProcessMetricMerge::Sum, [this] { return static_cast<std::uint64_t>(m_reloadPending.load(std::memory_order_relaxed) ? 1U : 0U); }),
         };
 
         // 到期时刻先按磁盘上那张现有证书填一次，不等第一次签发。少了这一步，每次重启后面板都会读到

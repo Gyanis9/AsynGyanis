@@ -839,7 +839,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(findRegistrySample("asyn_acme_issuances_total").has_value()) << "还没有管理器，导出里就先有了这条读数";
         {
             const AcmeCertificateManager manager(loop, configuration, {}, {});
-            for (const char *const name: {"asyn_acme_certificate_expiry_seconds", "asyn_acme_issuances_total", "asyn_acme_failures_total"})
+            for (const char *const name: {"asyn_acme_certificate_expiry_seconds", "asyn_acme_issuances_total", "asyn_acme_failures_total", "asyn_acme_reload_pending"})
             {
                 const auto lookup = findRegistrySample(name);
                 ASSERT_TRUE(lookup.has_value()) << name;
@@ -970,6 +970,26 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findRegistrySample("asyn_acme_certificate_expiry_seconds")->value, static_cast<std::uint64_t>(status.certificateExpiryUnixSeconds))
                 << "到期时刻的对外读数与判据用的不是同一个数";
         EXPECT_GT(status.certificateExpiryUnixSeconds, 0) << "签成之后落点读不出到期时刻";
+        EXPECT_EQ(findRegistrySample("asyn_acme_reload_pending")->value, static_cast<std::uint64_t>(status.isReloadPending ? 1U : 0U))
+                << "装回欠账的对外读数与判据用的不是同一个数";
+    }
+
+    /**
+     * @brief 钉住：「盘上已是新的、线上还没换上」这一格在导出里有形状
+     * @details 面板上「自动化没跑成」与「还没跑」本来就长一个样，而这一种最该报警：证书每月在换、
+     *          线上身份一动不动。只放在 status() 里就得有人去翻进程内对象，翻日志不算对外可读。
+     */
+    TEST_F(AcmeCertificateManagerTest, ExportsTheReloadDebtAsAGauge)
+    {
+        Round round;
+        round.installStepFails = true;
+        startServers({});
+        const auto run = driveIssue(round);
+        ASSERT_TRUE(run.result.has_value());
+        ASSERT_FALSE(run.result->has_value());
+        ASSERT_TRUE(manager().status().isReloadPending);
+
+        EXPECT_EQ(findRegistrySample("asyn_acme_reload_pending")->value, 1U) << "装回欠账没有对外读数，只能靠翻日志发现";
     }
 
     /**
@@ -1158,11 +1178,16 @@ namespace AsynGyanis::Net
         Core::TestSupport::EventLoopThread loopThread(loop);
         std::optional<Core::Task<>>        follower;
         follower.emplace(followCertificateRotation(loop, paths.path() / "chain.pem", paths.path() / "key.pem", std::chrono::milliseconds{20}, {}, isStopping));
+        // 先把「循环已经在跑」这个前提造出来再投递：向一条尚未进入 run() 的循环投递这条帧，
+        // 它可能永远没人唤醒——那是用例在赌调度，不是被测代码的问题
+        ASSERT_TRUE(waitUntil([&loopThread] { return loopThread.isRunning(); }, std::chrono::seconds{2})) << "后台循环没起来，环境异常";
         loopThread.loop().scheduler().schedule(follower->handle());
 
-        EXPECT_TRUE(waitUntil([&follower] { return follower->isReady(); }, std::chrono::seconds{2})) << "空的装回动作本该让这条协程立刻收口，而不是挂在那儿";
-
+        // 收口判据改到循环停干净之后单线程读：在主线程上轮询协程句柄本身就是跨线程碰循环对象。
+        // 先叫停再等 200 ms（够这条帧被投出去跑完），循环一停就没人再动它
         isStopping.store(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
         loopThread.join();
+        EXPECT_TRUE(follower->isReady()) << "空的装回动作本该让这条协程当场收口，而不是挂在定时器上";
     }
 } // namespace AsynGyanis::Net

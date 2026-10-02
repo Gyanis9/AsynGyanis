@@ -318,7 +318,7 @@ namespace AsynGyanis::Net
          * @details 构造时就登记，而不是等第一次签发：常驻进程里这三条**长期为 0** 本身就是最要紧的
          *          信号——自动化没跑成与自动化还没跑，从外面看得是同一个形状
          */
-        std::array<Core::ProcessMetricHandle, 3> m_metricHandles{};
+        std::array<Core::ProcessMetricHandle, 4> m_metricHandles{};
     };
 
     /**
