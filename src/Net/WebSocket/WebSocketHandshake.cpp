@@ -167,8 +167,11 @@ namespace AsynGyanis::Net
             return reject("WebSocket 握手要求 Connection 头包含 Upgrade，请补上 Connection: Upgrade");
         }
 
-        // 第 5、6 条（版本与 key）与 h2/h3 的扩展 CONNECT 完全一致，出处收在 validateWebSocketKeyAndVersion() 里，
-        // 失败分类也从那里透传——版本类失败要不要补一条 Sec-WebSocket-Version 只能有一个判据
+        // 第 5、6 条（版本与 key）：101 这一条通路两样都要，出处收在 validateWebSocketKeyAndVersion() 里，
+        // 失败分类也从那里透传——版本类失败要不要补一条 Sec-WebSocket-Version 只能有一个判据。
+        // h2/h3 的扩展 CONNECT 走的是另一份判据 validateWebSocketTunnelVersion()：隧道里 key 被
+        // :protocol 伪头取代（RFC 8441 §5 明写不处理 Sec-WebSocket-Key/Accept），只有写了的版本才参与
+        // 判定。两处对「版本」的算法仍是同一份实现，只差 requireVersion 这个开关
         std::string clientKey;
         return validateWebSocketKeyAndVersion(request, clientKey, failureReason, rejection);
     }
