@@ -26,6 +26,9 @@
 #include "Database/Queryable/RowMapper.h"
 #include "Database/Queryable/TableSchema.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <exception>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -33,6 +36,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace AsynGyanis::Database::Queryable
 {
@@ -285,7 +289,237 @@ namespace AsynGyanis::Database::Queryable
             return false;
         }
 
+        /**
+         * @brief 生成「给已有的表补一列」的 ALTER 语句（纯文本，不接触数据库）
+         *
+         * @details 补的是「结构体加了一个成员，已有的表却不会跟着变」这一格：此前本类只能建表与删表，
+         *          成员加完后第一次读就报「列不存在」，而唯一的绕开办法是手写 `ALTER TABLE` 的原语 SQL——
+         *          那句是方言专有的，还得自己对齐列名引用与类型映射。本方法把同一份 TableSchema 用到
+         *          加列上：列名引用、类型映射、可空规则全部复用建表那条出口（appendColumnDefinition）。
+         *
+         * @tparam T 已特化 TableSchema 的聚合类型
+         * @param dialect 目标引擎的方言
+         * @param columnName kColumns 里要补的那一列的列名（原文，不含引用字符）
+         * @return SqlStatement 完整 ALTER 语句；DDL 不含值，parameters 恒为空
+         * @throws Base::LogicException kColumns 里没有这个名字的列；或该列是主键；或该列不可空——
+         *         后两条是刻意的拒绝面：往已有的表上加一个 NOT NULL 且没有默认值的列，已有行没有值可填，
+         *         两个引擎都会当场拒（SQLite 直接报 NOT NULL constraint failed）。把成员声明成
+         *         std::optional<X> 就是「可空、允许旧行为 NULL」的正确表达；确认表为空又确实要
+         *         NOT NULL 的调用方，可以自己执行带 DEFAULT 的原语 SQL
+         */
+        template<RowMappable T>
+        [[nodiscard]] static SqlStatement addColumnStatement(const SqlDialect &dialect, const std::string_view columnName)
+        {
+            const std::string_view tableName = TableSchema<T>::kTableName;
+            requireMigratableTableName(tableName);
+
+            bool        matchedColumn    = false;
+            bool        isPrimaryKey     = false;
+            bool        isNullable       = false;
+            bool        primaryKeyMarked = false;
+            std::string columnDefinition;
+
+            std::apply(
+                    [&](const auto &...columnDescriptors)
+                    {
+                        (
+                                [&](const auto &columnDescriptor)
+                                {
+                                    // 只认第一个同名条目：kColumns 里重名本身是结构体写错了，
+                                    // 而那由 RowMapper 一侧的读写路径负责报，这里不重复判
+                                    if (matchedColumn || columnDescriptor.columnName != columnName)
+                                    {
+                                        return;
+                                    }
+                                    matchedColumn        = true;
+                                    isPrimaryKey         = columnDescriptor.columnName == TableSchema<T>::kPrimaryKey;
+                                    using BareMemberType = std::remove_cv_t<typename std::remove_cvref_t<decltype(columnDescriptor)>::MemberType>;
+                                    isNullable           = Detail::IsOptional<BareMemberType>::value;
+                                    appendColumnDefinition(columnDefinition, primaryKeyMarked, dialect, columnDescriptor, TableSchema<T>::kPrimaryKey,
+                                                           Detail::declaresAutoIncrementPrimaryKey<T>(), tableName);
+                                }(columnDescriptors),
+                                ...);
+                    },
+                    TableSchema<T>::kColumns);
+
+            if (!matchedColumn)
+            {
+                throw Base::LogicException("SchemaMigrator: 表 " + std::string(tableName) + " 的 kColumns 里没有列 \"" + std::string(columnName) + "\"，无法生成加列语句");
+            }
+            if (isPrimaryKey)
+            {
+                throw Base::LogicException("SchemaMigrator: 主键列 \"" + std::string(columnName) + "\" 不能后补到已有的表上：已有行拿不出可填的键值");
+            }
+            if (!isNullable)
+            {
+                throw Base::LogicException("SchemaMigrator: 列 \"" + std::string(columnName) +
+                                           "\" 不可空，补到已有的表上时已有行没有值可填；"
+                                           "请把该成员声明成 std::optional<...>，或在确认表为空时自己执行带 DEFAULT 的原语 SQL");
+            }
+
+            SqlStatement statement;
+            statement.sql = "ALTER TABLE ";
+            statement.sql += dialect.quoteIdentifier(tableName);
+            statement.sql += " ADD COLUMN ";
+            statement.sql += columnDefinition;
+            return statement;
+        }
+
+        /**
+         * @brief 按结构体把表里缺的列补上（ALTER TABLE ADD COLUMN，逐列执行）
+         *
+         * @details 判据来自引擎本身：先问「这张表现在有哪些列」（`SqlDialect::columnListingStatement()`），
+         *          结构体里有而表里没有的每一列各发一条 ALTER。也就是说**不需要一份「上次建了什么」的账**，
+         *          重复调用是幂等的（已存在的列被跳过），换机器、换库、手工加过列都不需要额外状态。
+         * @details 列名比对按小写：MySQL 的列名不区分大小写，而 SQLite 按声明原样给出，不折一次就会把
+         *          同一个列看成两个。
+         *
+         * @tparam T 已特化 TableSchema 的聚合类型
+         * @param pool 目标库的连接池
+         * @param addedCount 可空出参：本次真正补了几列（全都在时是 0）
+         * @param errorText 可空出参：失败原因（中文）。加列规则本身不成立（不可空列、主键列）也从这里出声，
+         *        而不是把 SchemaMigrator 内部的抛异常语义漏给布尔出口的调用方
+         * @return true 表存在且缺的列都补上了（含「一列都不缺」）
+         * @return false 表不存在、取不到连接、查询或 ALTER 失败、或结构体要求补一个不可空列
+         * @note 只在表已有列的基础上加列，不改、不删、不收窄任何已有列——那些都是需要数据搬迁的
+         *       决定，本层没有等价物（改类型请走原语 SQL 前先想清楚旧数据怎么迁）
+         */
+        template<RowMappable T>
+        [[nodiscard]] static bool addMissingColumns(ConnectionPool &pool, std::size_t *addedCount = nullptr, std::string *errorText = nullptr)
+        {
+            clearError(errorText);
+            if (addedCount != nullptr)
+            {
+                *addedCount = 0;
+            }
+
+            if (!tableExists<T>(pool, errorText))
+            {
+                // tableExists 只在「查询失败」时写原因；「表不存在」是空手返回，这里补一句指引，
+                // 免得调用方拿到一个 false 而读不出是哪种
+                if (errorText != nullptr && errorText->empty())
+                {
+                    writeError(errorText, "SchemaMigrator: 表 " + std::string(TableSchema<T>::kTableName) + " 不存在，补列没有对象；请先用 createTable<T>() 建表");
+                }
+                return false;
+            }
+
+            const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
+            if (dialect == nullptr)
+            {
+                return false;
+            }
+
+            std::vector<std::string> existingColumns;
+            {
+                PooledConnection connection = pool.acquire();
+                if (!connection)
+                {
+                    writeError(errorText, "SchemaMigrator: 从连接池获取连接失败（池已达上限或连接创建失败）");
+                    return false;
+                }
+
+                const SqlStatement              listing       = dialect->columnListingStatement(TableSchema<T>::kTableName);
+                std::unique_ptr<DatabaseResult> listingResult = connection->execute(std::string_view{listing.sql}, listing.parameters);
+                if (listingResult == nullptr)
+                {
+                    writeError(errorText, "SchemaMigrator: 查询表当前的列清单失败：" + connection->lastError());
+                    return false;
+                }
+                while (listingResult->next())
+                {
+                    // getValue 交的是值而不是结果集内部的引用，先落到局部再取地址（与表存在性查询同一写法）
+                    const DatabaseValue columnNameValue = listingResult->getValue(0);
+                    const auto         *existingName    = std::get_if<std::string>(&columnNameValue);
+                    if (existingName == nullptr)
+                    {
+                        writeError(errorText, "SchemaMigrator: 列清单查询的第一列不是文本，无法与结构体的列名比对");
+                        return false;
+                    }
+                    existingColumns.push_back(toLowerAscii(*existingName));
+                }
+            }
+
+            bool isAborted = false;
+            std::apply(
+                    [&](const auto &...columnDescriptors)
+                    {
+                        (
+                                [&](const auto &columnDescriptor)
+                                {
+                                    if (isAborted)
+                                    {
+                                        return;
+                                    }
+
+                                    const std::string columnName(columnDescriptor.columnName);
+                                    if (std::find(existingColumns.begin(), existingColumns.end(), toLowerAscii(columnName)) != existingColumns.end())
+                                    {
+                                        return;
+                                    }
+
+                                    SqlStatement alterStatement;
+                                    try
+                                    {
+                                        alterStatement = addColumnStatement<T>(*dialect, columnName);
+                                    } catch (const std::exception &exception)
+                                    {
+                                        // 规则只有一处实现（上面那个纯函数），这里只换出口：布尔语义的
+                                        // 调用方不该收到异常。基类要抓 std::exception —— 本仓的异常体系有
+                                        // 两根（LogicException 走 std::logic_error、Exception 走
+                                        // std::runtime_error），只抓 Base::Exception 会漏掉 LogicException
+                                        writeError(errorText, std::string{exception.what()});
+                                        isAborted = true;
+                                        return;
+                                    }
+
+                                    PooledConnection connection = pool.acquire();
+                                    if (!connection)
+                                    {
+                                        writeError(errorText, "SchemaMigrator: 补列 \"" + columnName + "\" 时取不到连接（池已达上限或连接创建失败）");
+                                        isAborted = true;
+                                        return;
+                                    }
+                                    if (connection->execute(std::string_view{alterStatement.sql}, alterStatement.parameters) == nullptr)
+                                    {
+                                        writeError(errorText, "SchemaMigrator: 补列 \"" + columnName + "\" 失败：" + connection->lastError());
+                                        isAborted = true;
+                                        return;
+                                    }
+                                    if (addedCount != nullptr)
+                                    {
+                                        ++(*addedCount);
+                                    }
+                                }(columnDescriptors),
+                                ...);
+                    },
+                    TableSchema<T>::kColumns);
+
+            return !isAborted;
+        }
+
     private:
+        /**
+         * @brief 把标识符折成小写用于比对（只折 ASCII 大写）
+         * @details MySQL 的列名不区分大小写，SQLite 按声明原样给出；不折一次就会把同一个列看成两个，
+         *          结果是重复加列（引擎报错）或漏判已有列。非 ASCII 部分原样保留，两侧折法一致，
+         *          比较仍然成立
+         * @param text 原始文本
+         * @return std::string 折过小写后的副本
+         */
+        [[nodiscard]] static std::string toLowerAscii(const std::string_view text)
+        {
+            std::string lowered(text);
+            for (char &character: lowered)
+            {
+                if (character >= 'A' && character <= 'Z')
+                {
+                    character = static_cast<char>(character - 'A' + 'a');
+                }
+            }
+            return lowered;
+        }
+
         /**
          * @brief 把成员类型映射成逻辑列类型
          *

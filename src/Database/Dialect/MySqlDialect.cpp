@@ -119,6 +119,22 @@ namespace AsynGyanis::Database
         return statement;
     }
 
+    SqlStatement MySqlDialect::columnListingStatement(const std::string_view tableName) const
+    {
+        SqlStatement statement;
+
+        // 与 tableExistsStatement() 同一套限定：information_schema 是全实例共享的元数据，
+        // 不限定库名就会把别的库里的同名表算进来，那份「本表已有列」的清单是假的——而它接下来
+        // 决定哪些列要补，错了就是重复加列（引擎报错）或该补的列没补（读写随后报列不存在）
+        statement.sql = "SELECT column_name FROM information_schema.COLUMNS "
+                        "WHERE table_schema = DATABASE() AND table_name = ";
+        statement.sql += placeholder();
+        statement.sql += " ORDER BY ordinal_position";
+        statement.parameters.emplace_back(std::string(tableName));
+
+        return statement;
+    }
+
     std::size_t MySqlDialect::maximumStatementParameters() const noexcept
     {
         // 常量取值的依据（预处理协议 2 字节的参数个数字段）见头文件说明。

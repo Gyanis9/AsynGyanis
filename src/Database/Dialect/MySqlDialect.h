@@ -129,6 +129,19 @@ namespace AsynGyanis::Database
         [[nodiscard]] SqlStatement tableExistsStatement(std::string_view tableName) const override;
 
         /**
+         * @brief 列出 MySQL 一张表当前的列名
+         * @details 重写 SqlDialect::columnListingStatement()：查 information_schema.COLUMNS，
+         *          与 tableExistsStatement() 同理由当前会话的库名限定（`DATABASE()`）——不限定库名时
+         *          别的库里的同名表会被算进来，给出一份「本表已有列」的假清单。
+         *          列序按 ORDINAL_POSITION，与表里的定义顺序一致。
+         * @param tableName 目标表名（以绑定参数送出）
+         * @return SqlStatement "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE
+         *         table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position"；
+         *         表不存在时结果集为空
+         */
+        [[nodiscard]] SqlStatement columnListingStatement(std::string_view tableName) const override;
+
+        /**
          * @brief 获取 MySQL 单条语句的参数个数上限
          * @details 重写 SqlDialect::maximumStatementParameters()：返回 65535——COM_STMT_PREPARE 应答
          *          报文里「参数个数」字段只有 2 字节，这是协议层能表达的上限（不同于 SQLite 那种

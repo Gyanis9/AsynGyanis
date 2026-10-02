@@ -113,6 +113,21 @@ namespace AsynGyanis::Database
         return statement;
     }
 
+    SqlStatement SqliteDialect::columnListingStatement(const std::string_view tableName) const
+    {
+        SqlStatement statement;
+
+        // pragma_table_info 是内核提供的表值函数：cid 就是列的定义顺序，name 是列名。
+        // 表名以绑定参数送入，因此带引号或分号的表名只被当成一次查询目标，不改变语句结构；
+        // 表不存在时结果集为空（SQLite 不会为不存在的表报错），调用方据此先判表在不在
+        statement.sql = "SELECT name FROM pragma_table_info(";
+        statement.sql += placeholder();
+        statement.sql += ") ORDER BY cid";
+        statement.parameters.emplace_back(std::string(tableName));
+
+        return statement;
+    }
+
     std::size_t SqliteDialect::maximumStatementParameters() const noexcept
     {
         // 常量 kMaximumStatementParameters 的取值来源见头文件说明：SQLITE_MAX_VARIABLE_NUMBER 的默认值。

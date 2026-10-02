@@ -112,6 +112,16 @@ namespace AsynGyanis::Database
         [[nodiscard]] SqlStatement tableExistsStatement(std::string_view tableName) const override;
 
         /**
+         * @brief 列出 SQLite 一张表当前的列名
+         * @details 重写 SqlDialect::columnListingStatement()：走 `pragma_table_info(表名)` 这张表值函数。
+         *          它比直接查 sqlite_master 里那份 SQL 原文再解析列名要稳——前者由内核给出真实列序，
+         *          后者得把建表语句重新解析一遍，遇到引号里的逗号就会数错。
+         * @param tableName 目标表名（以绑定参数送出）
+         * @return SqlStatement "SELECT name FROM pragma_table_info(?) ORDER BY cid"；表不存在时结果集为空
+         */
+        [[nodiscard]] SqlStatement columnListingStatement(std::string_view tableName) const override;
+
+        /**
          * @brief 获取 SQLite 单条语句的参数个数上限
          * @details 重写 SqlDialect::maximumStatementParameters()：返回常量 kMaximumStatementParameters。
          *          该值来自 SQLite 的编译期宏 SQLITE_MAX_VARIABLE_NUMBER，官方默认值是 999

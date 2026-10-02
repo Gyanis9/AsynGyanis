@@ -682,3 +682,152 @@ TEST_F(SchemaMigratorSqliteTest, AutoIncrementPrimaryKeyIsGeneratedAndReadBack)
     EXPECT_EQ(rows[2].id, 3);
     EXPECT_EQ(rows[2].title, "第三张");
 }
+
+// ========================================================================
+// 端到端：按结构体补列（addMissingColumns）
+// ========================================================================
+
+namespace
+{
+    /**
+     * @brief 表结构的第一版：只有两列
+     */
+    struct EvolvedAccountV1
+    {
+        std::int64_t id;   ///< 主键
+        std::string  name; ///< 户名
+    };
+
+    /**
+     * @brief 表结构的第二版：多出一个可空列（新增成员按 std::optional 声明）
+     */
+    struct EvolvedAccountV2
+    {
+        std::int64_t               id;       ///< 主键
+        std::string                name;     ///< 户名
+        std::optional<std::string> nickname; ///< 本次新增的列：可空，旧行留 NULL
+    };
+
+    /**
+     * @brief 第二版的另一种写法：新增列不可空（必须被拒）
+     */
+    struct EvolvedAccountV2NotNull
+    {
+        std::int64_t id;     ///< 主键
+        std::string  name;   ///< 户名
+        std::int64_t visits; ///< 本次新增的列：不可空，已有行拿不出值可填
+    };
+} // namespace
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<EvolvedAccountV1>
+{
+    static constexpr std::string_view kTableName = "evolved accounts";
+    static constexpr auto             kColumns   = std::tuple{
+            AsynGyanis::Database::Queryable::Column(&EvolvedAccountV1::id, "id"),
+            AsynGyanis::Database::Queryable::Column(&EvolvedAccountV1::name, "name"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<EvolvedAccountV2>
+{
+    // 与 V1 同一张表：这条判据要的就是「表已存在、结构体多了一列」那个场景
+    static constexpr std::string_view kTableName = "evolved accounts";
+    static constexpr auto             kColumns   = std::tuple{
+            AsynGyanis::Database::Queryable::Column(&EvolvedAccountV2::id, "id"),
+            AsynGyanis::Database::Queryable::Column(&EvolvedAccountV2::name, "name"),
+            AsynGyanis::Database::Queryable::Column(&EvolvedAccountV2::nickname, "nickname"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<EvolvedAccountV2NotNull>
+{
+    static constexpr std::string_view kTableName = "evolved accounts";
+    static constexpr auto             kColumns   = std::tuple{
+            AsynGyanis::Database::Queryable::Column(&EvolvedAccountV2NotNull::id, "id"),
+            AsynGyanis::Database::Queryable::Column(&EvolvedAccountV2NotNull::name, "name"),
+            AsynGyanis::Database::Queryable::Column(&EvolvedAccountV2NotNull::visits, "visits"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+/**
+ * @brief 钉住加列语句的文本与三档拒绝面
+ * @details 期望文本写死（不复用被测拼接）：加列与建表共用同一份列定义出口，
+ *          引用符与类型映射因此不可能分叉，而文本一漂移这里就红
+ */
+TEST(SchemaMigratorOffline, AddColumnStatementRendersTheEngineOwnAlter)
+{
+    const SqliteDialect sqlite;
+    const MySqlDialect  mysql;
+
+    const SqlStatement sqliteAlter = SchemaMigrator::addColumnStatement<EvolvedAccountV2>(sqlite, "nickname");
+    EXPECT_EQ(sqliteAlter.sql, "ALTER TABLE \"evolved accounts\" ADD COLUMN \"nickname\" TEXT");
+    EXPECT_TRUE(sqliteAlter.parameters.empty()) << "DDL 里没有字段值，不该带参数";
+
+    const SqlStatement mysqlAlter = SchemaMigrator::addColumnStatement<EvolvedAccountV2>(mysql, "nickname");
+    EXPECT_EQ(mysqlAlter.sql, "ALTER TABLE `evolved accounts` ADD COLUMN `nickname` TEXT");
+
+    using AsynGyanis::Base::LogicException;
+
+    // 不可空的新列：已有行没有值可填，两个引擎都会拒，这里在生成语句时就拒
+    EXPECT_THROW(static_cast<void>(SchemaMigrator::addColumnStatement<EvolvedAccountV2NotNull>(sqlite, "visits")), LogicException);
+    // 主键列不能后补
+    EXPECT_THROW(static_cast<void>(SchemaMigrator::addColumnStatement<EvolvedAccountV2>(sqlite, "id")), LogicException);
+    // kColumns 里没有这个名字
+    EXPECT_THROW(static_cast<void>(SchemaMigrator::addColumnStatement<EvolvedAccountV2>(sqlite, "nosuch")), LogicException);
+}
+
+/**
+ * @brief 端到端：给已有的表补上结构体新增的可空列，旧行读回来是 NULL
+ * @details 这条钉的是「能力真的能用」：建 V1 的表、写一行、按 V2 补列，随后按 V2 读写；
+ *          再跑一遍必须一列都不补（幂等）——不幂等就是列名比对错了，会去重复加列
+ */
+TEST_F(SchemaMigratorSqliteTest, AddMissingColumnsEvolvesAnExistingTable)
+{
+    std::string errorText;
+    ASSERT_TRUE(SchemaMigrator::createTable<EvolvedAccountV1>(*m_pool, true, &errorText)) << errorText;
+
+    Queryable<EvolvedAccountV1> legacy(*m_pool);
+    ASSERT_EQ(legacy.insert(EvolvedAccountV1{1, "甲"}), 1);
+
+    std::size_t addedCount = 99;
+    ASSERT_TRUE(SchemaMigrator::addMissingColumns<EvolvedAccountV2>(*m_pool, &addedCount, &errorText)) << errorText;
+    EXPECT_EQ(addedCount, 1U) << "结构体新增的可空列没被补上";
+
+    Queryable<EvolvedAccountV2> evolved(*m_pool);
+    const auto                  row = evolved.where(Column(&EvolvedAccountV2::id, "id") == std::int64_t{1}).first();
+    ASSERT_TRUE(row.has_value()) << "旧行没了：加列动到了已有数据";
+    EXPECT_EQ(row->name, "甲");
+    EXPECT_FALSE(row->nickname.has_value()) << "旧行的新列应当是 NULL，而不是被填成空串或 0";
+
+    addedCount = 99;
+    ASSERT_TRUE(SchemaMigrator::addMissingColumns<EvolvedAccountV2>(*m_pool, &addedCount, &errorText)) << errorText;
+    EXPECT_EQ(addedCount, 0U) << "已有的列被当成缺的列：又是一次重复加列的写法";
+}
+
+/**
+ * @brief 端到端：不可空的新列被拒并给出中文原因；表不存在时也出声
+ * @details 拒绝面要有名字：只回 false 的调用方无法知道「是哪一列、为什么」，
+ *          而这条判据最常见的触发场景就是「加了一列 int 忘了写 optional」
+ */
+TEST_F(SchemaMigratorSqliteTest, AddMissingColumnsReportsWhyItRefused)
+{
+    std::string errorText;
+    ASSERT_TRUE(SchemaMigrator::createTable<EvolvedAccountV1>(*m_pool, true, &errorText)) << errorText;
+
+    std::size_t addedCount = 99;
+    EXPECT_FALSE(SchemaMigrator::addMissingColumns<EvolvedAccountV2NotNull>(*m_pool, &addedCount, &errorText));
+    EXPECT_NE(errorText.find("visits"), std::string::npos) << errorText;
+    EXPECT_NE(errorText.find("不可空"), std::string::npos) << errorText;
+    EXPECT_EQ(addedCount, 0U) << "被拒的列不该被计成已补";
+
+    // 表不存在：布尔出口也要给出中文指引，而不是只回一个 false
+    errorText.clear();
+    EXPECT_FALSE(SchemaMigrator::addMissingColumns<MigratedUserRow>(*m_pool, nullptr, &errorText));
+    EXPECT_NE(errorText.find("不存在"), std::string::npos) << errorText;
+}

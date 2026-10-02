@@ -15,10 +15,22 @@
 
 ## [Unreleased]
 
-自 2.5.0 起的累计变化（新增 5、变更 1、修复 3）：把已经建好的那道总量防线接到配置文件上并让它对外可读，把命中的路由模式交回业务，给 ORM 补上唯一键冲突的处置档位，并补上三处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步。
+自 2.5.0 起的累计变化（新增 6、变更 1、修复 3）：把已经建好的那道总量防线接到配置文件上并让它对外可读，把命中的路由模式交回业务，给 ORM 补上唯一键冲突的处置档位，并补上三处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步。
 
 ### 新增
 
+- **已有的表能按结构体补列了**：`SchemaMigrator::addMissingColumns<T>(pool, &addedCount, &errorText)`
+  与纯函数档 `addColumnStatement<T>(dialect, columnName)`。此前本类只会建表与删表——结构体加一个成员，
+  已有的表不会跟着变，第一次读就报「列不存在」，而唯一的绕开办法是手写 `ALTER TABLE` 的原语 SQL
+  （方言专有，还得自己对齐列名引用与类型映射）。现在「表里已有哪些列」直接问引擎
+  （新增 `SqlDialect::columnListingStatement()`：SQLite 走 `pragma_table_info(?)`，MySQL 走
+  `information_schema.COLUMNS` 并按 `DATABASE()` 限定库名——不限定就会把别的库里的同名表算进来），
+  因此**不需要维护一份「上次建了什么」的账**，重复调用是幂等的。列名比对折成小写：MySQL 的列名
+  不区分大小写，而 SQLite 按声明原样给出，不折一次会把同一个列看成两个。
+  列定义（引用符、类型映射、可空规则）复用建表那一份出口，两处不可能分叉。
+  **刻意的拒绝面**：不可空的新列与主键列都拒——已有行拿不出值可填，两个引擎都会当场拒掉；
+  正确表达是把成员声明成 `std::optional<X>`（旧行为 NULL）。布尔值按本仓写侧口径成 1/0，
+  NULL 与 List/Hash 参数在 Redis 一侧同样拒发。
 - **Redis 接上了参数化执行入口**：`RedisConnection::execute(command, parameters)` 与
   `executeChecked(command, parameters)` 那层带成因的包装从此在 Redis 上不是一条死路。此前这一档由
   基类默认实现回一句「该驱动暂不支持参数化查询（Redis）」，而 Redis 的命令行**本来就是参数数组**，

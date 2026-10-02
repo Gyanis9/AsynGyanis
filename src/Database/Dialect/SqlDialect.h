@@ -223,6 +223,19 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual SqlStatement tableExistsStatement(std::string_view tableName) const = 0;
 
         /**
+         * @brief 列出一张表当前已有的列名（给「按结构体补列」用）
+         *
+         * @details 与 tableExistsStatement() 同属「引擎知识」：两家的元数据来源完全不同，
+         *          调用方只按「一行一个列名」解读结果。迁移工具靠它判断哪些列还没补上，
+         *          因此不需要调用方自己维护一份「上次建了什么」的账。
+         *
+         * @param tableName 目标表名（未加引用字符的原始名字）
+         * @return SqlStatement 「一行一列」的列名清单语句，第一列是列名文本；表名以占位符 +
+         *         绑定参数送出。表不存在时结果集为空（不报错），列序按引擎里的定义顺序
+         */
+        [[nodiscard]] virtual SqlStatement columnListingStatement(std::string_view tableName) const = 0;
+
+        /**
          * @brief 引用一个标识符
          *
          * @details SQLite 等标准方言使用双引号，MySQL 使用反引号。
