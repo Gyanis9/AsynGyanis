@@ -154,6 +154,9 @@ namespace AsynGyanis::Net
      *          写错的端口不会回落到 80、缺协议名也不会补成 http——两者都是「猜一个」，
      *          而猜错的后果是把一段本应加密的流量静默按明文发出去。
      * @param url 形如 http(s)://host[:port]/path；协议名必须写出来且大小写无关，IPv6 主机必须写成 "[::1]:8080"
+     * @details 查询串留在 `path` 里（本结构的既有口径）；authority 之后没有路径段时补成 `/`，
+     *          只带查询的 `http://host?a=1` 因此交回 `/?a=1`——origin-form 的请求目标不能是空串
+     *          （RFC 9110 §5.1.2）。片段（`#...`）按规范剥掉：它不属于一次 HTTP 请求。
      * @return ParsedUrl 拆好的协议、主机、端口与路径
      * @throws Base::InvalidArgumentException URL 含空白或控制字符、没有协议名、协议不是 http/https、
      *         没有主机、端口不是 1..65535 的十进制数、方括号没闭合，或 IPv6 字面量没加方括号

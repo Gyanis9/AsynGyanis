@@ -760,6 +760,30 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：authority 的边界认 `/`、`?`、`#` 三个，查询不被吞、片段不进请求目标
+     * @details 此前只认 `/`，于是 `http://host?a=1` 把 `?a=1` 整段当成了主机：Host 头随之畸形，
+     *          而查询静默消失——一个「看着配好了」的查询请求打到了不带参数的根上。片段按 RFC 9110
+     *          §5.1.2 剥掉（它不属于一次 HTTP 请求），空路径补成 `/`，只带查询时是 `/?a=1`。
+     */
+    TEST(HttpClientUrlParsing, SplitsAuthorityAtQueryAndFragmentNotJustSlash)
+    {
+        const ParsedUrl queryOnly = parseUrl("http://host?a=1");
+        EXPECT_EQ(queryOnly.host, "host") << "查询串被当成主机的一部分，Host 头就畸形了";
+        EXPECT_EQ(queryOnly.port, 80U);
+        EXPECT_EQ(queryOnly.path, "/?a=1") << "只带查询时请求目标是 /?a=1，不是空串";
+
+        const ParsedUrl withFragment = parseUrl("https://host:8443/x?y=1#frag");
+        EXPECT_EQ(withFragment.port, 8443U);
+        EXPECT_EQ(withFragment.path, "/x?y=1") << "片段不该被交给服务器，也不该混进请求目标";
+
+        const ParsedUrl ipv6Query = parseUrl("http://[::1]:8080?a=1");
+        EXPECT_EQ(ipv6Query.host, "::1");
+        EXPECT_EQ(ipv6Query.path, "/?a=1") << "方括号形式的主机后面直接跟查询时同样要拆对";
+
+        EXPECT_EQ(parseUrl("http://host/#frag").path, "/") << "只有片段的地址，请求目标就是根";
+    }
+
+    /**
      * @brief 钉住：绝对形式与网络路径形式自己带主机，而网络路径形式的协议跟着基准
      * @details `//cdn/x` 用基准的协议是 RFC 3986 §5.3 的写法；把它按 http 拼出去等于把一次本应加密的
      *          跳转降级成明文，而这正是「配置文件看着完全正确、线上跑明文」的那一类

@@ -120,9 +120,18 @@ namespace AsynGyanis::Net
         }
         remainder.remove_prefix(schemeSeparator + 3);
 
-        const std::size_t      pathSeparator = remainder.find('/');
-        const std::string_view authority     = pathSeparator == std::string_view::npos ? remainder : remainder.substr(0, pathSeparator);
-        const std::string_view pathPart      = pathSeparator == std::string_view::npos ? std::string_view{} : remainder.substr(pathSeparator);
+        // 主机的边界按 RFC 3986 §3.2 认 `/`、`?`、`#` 三个：此前只认 `/`，于是
+        // `http://host?a=1` 把 `?a=1` 整段当成主机——Host 头随之畸形，而查询被静吞
+        const std::size_t      pathSeparator = remainder.find_first_of("/?#");
+        const std::string_view authority     = pathSeparator == std::string_view::npos ? remainder : remainder.substr(0U, pathSeparator);
+        std::string_view       pathPart      = pathSeparator == std::string_view::npos ? std::string_view{} : remainder.substr(pathSeparator);
+
+        // 片段（`#...`）不进请求：RFC 9110 §5.1.2 的请求目标里根本没有它。这里按规范剥掉而不是
+        // 报错——那不是「替调用方猜意图」，而是明确不该交给服务器的那一段
+        if (const std::size_t fragmentOffset = pathPart.find('#'); fragmentOffset != std::string_view::npos)
+        {
+            pathPart = pathPart.substr(0U, fragmentOffset);
+        }
 
         // 方括号里的是 IP 字面量（RFC 3986 §3.2.2）：IPv6 自带冒号，不这样区分就分不清哪段是端口
         std::string_view hostText = authority;
@@ -185,7 +194,9 @@ namespace AsynGyanis::Net
         }
         if (!pathPart.empty())
         {
-            parsed.path = std::string(pathPart);
+            // 只有查询（`http://host?a=1`）：authority 之后没有路径段。origin-form 的请求目标不能是空的
+            // （RFC 9110 §5.1.2），原样交出去会变成 `GET ?a=1`，这里补成 `/?a=1`
+            parsed.path = pathPart.front() == '?' ? "/" + std::string(pathPart) : std::string(pathPart);
         }
         return parsed;
     }
@@ -233,8 +244,8 @@ namespace AsynGyanis::Net
             return std::ranges::all_of(text,
                                        [](const char character)
                                        {
-                                           return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
-                                                  (character >= '0' && character <= '9') || character == '+' || character == '-' || character == '.';
+                                           return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
+                                                  character == '+' || character == '-' || character == '.';
                                        });
         }
 
