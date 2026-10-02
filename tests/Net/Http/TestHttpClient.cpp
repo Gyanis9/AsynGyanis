@@ -224,19 +224,18 @@ namespace AsynGyanis::Net
      */
     TEST(HttpClient, ReadsResponseHeadersIgnoringNameCase)
     {
-        auto fixture = std::make_unique<RunningHttpServerFixture>(
-                HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
-                [](Router &router, Core::EventLoop &)
-                {
-                    router.get("/hdr",
-                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                               {
-                                   response.setStatus(200);
-                                   static_cast<void>(response.setHeader("X-RateLimit-Limit", "7"));
-                                   response.setBody("ok");
-                                   co_return;
-                               });
-                });
+        auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                                                  [](Router &router, Core::EventLoop &)
+                                                                  {
+                                                                      router.get("/hdr",
+                                                                                 [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                                                 {
+                                                                                     response.setStatus(200);
+                                                                                     static_cast<void>(response.setHeader("X-RateLimit-Limit", "7"));
+                                                                                     response.setBody("ok");
+                                                                                     co_return;
+                                                                                 });
+                                                                  });
         ASSERT_TRUE(fixture->awaitRunning(kTimeout));
 
         const auto response = doGet("http://127.0.0.1:" + std::to_string(fixture->listeningPort()) + "/hdr");

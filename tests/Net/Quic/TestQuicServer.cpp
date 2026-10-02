@@ -274,9 +274,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(capsSnapshot.maximumConnectionsPerIp, 3U) << "stats() 没带上单来源上限：抓到拒绝数也判断不出闸门装着没有";
 
         // 0 是显式写法「不设这道限」，读数必须原样说出 0 而不是替调用方发明一个默认值
-        QuicServer::Configuration unlimited   = makeServerConfiguration();
-        unlimited.maximumConnections          = 0;
-        const QuicServer      unlimitedServer(loop, unlimited);
+        QuicServer::Configuration unlimited = makeServerConfiguration();
+        unlimited.maximumConnections        = 0;
+        const QuicServer unlimitedServer(loop, unlimited);
         EXPECT_EQ(unlimitedServer.maximumConnections(), 0U) << "0 表示不限，读口不该把它翻成某个具体数";
         EXPECT_EQ(unlimitedServer.perIpConnectionLimiter(), nullptr);
     }

@@ -17,15 +17,9 @@ namespace AsynGyanis::Net
     {
         /// 全部失败种类，按声明顺序列出：新增一档而这里没跟上，第一条断言就会失败
         constexpr std::array<AcmeErrorKind, 10> kAllErrorKinds{
-                AcmeErrorKind::InvalidConfiguration,
-                AcmeErrorKind::KeyMaterial,
-                AcmeErrorKind::Transport,
-                AcmeErrorKind::UnexpectedResponse,
-                AcmeErrorKind::RejectedByAuthority,
-                AcmeErrorKind::RateLimited,
-                AcmeErrorKind::ChallengeNotAnswered,
-                AcmeErrorKind::DnsRecordRejected,
-                AcmeErrorKind::FileSystem,
+                AcmeErrorKind::InvalidConfiguration, AcmeErrorKind::KeyMaterial,         AcmeErrorKind::Transport,
+                AcmeErrorKind::UnexpectedResponse,   AcmeErrorKind::RejectedByAuthority, AcmeErrorKind::RateLimited,
+                AcmeErrorKind::ChallengeNotAnswered, AcmeErrorKind::DnsRecordRejected,   AcmeErrorKind::FileSystem,
                 AcmeErrorKind::ReloadRejected,
         };
     } // namespace
@@ -38,8 +32,8 @@ namespace AsynGyanis::Net
     TEST(AcmeError, EveryKindHasItsOwnShortName)
     {
         const std::array<std::string_view, kAllErrorKinds.size()> kExpectedNames{
-                "InvalidConfiguration", "KeyMaterial",          "Transport",          "UnexpectedResponse", "RejectedByAuthority",
-                "RateLimited",          "ChallengeNotAnswered", "DnsRecordRejected",  "FileSystem",         "ReloadRejected",
+                "InvalidConfiguration", "KeyMaterial",          "Transport",         "UnexpectedResponse", "RejectedByAuthority",
+                "RateLimited",          "ChallengeNotAnswered", "DnsRecordRejected", "FileSystem",         "ReloadRejected",
         };
 
         for (std::size_t index = 0; index < kAllErrorKinds.size(); ++index)

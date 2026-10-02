@@ -1317,7 +1317,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(withCaps.maximumConnections, 5u) << "并发上限没进快照：/metrics 上只有分子，预警只能等拒过连接之后";
         EXPECT_EQ(withCaps.maximumConnectionsPerIp, 2u) << "单来源上限没进快照：抓到的拒绝数没法判断是按什么挡的";
 
-        HttpServer withoutCaps(loop, Core::InetAddress::localhost(0));
+        HttpServer            withoutCaps(loop, Core::InetAddress::localhost(0));
         const HttpServerStats bare = withoutCaps.stats();
         EXPECT_EQ(bare.maximumConnectionsPerIp, 0u) << "没装闸门时分母要如实报 0，不能留一个看着像装了的数";
     }

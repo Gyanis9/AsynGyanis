@@ -1618,8 +1618,7 @@ namespace AsynGyanis::Net
         if (m_cookieJar != nullptr)
         {
             // 调用方自己写了 cookie 头就以他为准：替他改成罐子里的那份，等于静默覆盖明确给出的头部
-            const bool callerHasCookieHeader =
-                    std::ranges::any_of(request.headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "cookie"); });
+            const bool callerHasCookieHeader = std::ranges::any_of(request.headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "cookie"); });
             if (!callerHasCookieHeader)
             {
                 if (const auto cookieHeader = m_cookieJar->buildRequestHeader(parsed.host, parsed.scheme == "https", parsed.path); cookieHeader.has_value())

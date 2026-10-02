@@ -197,7 +197,8 @@ namespace AsynGyanis::Net
         }
         // 三条渠道都写：日志给半夜只看得到一行的人，计数给面板，expected 给就在等的调用方
         LOG_ERROR_FMT("AcmeCertificateManager: {}", message);
-        m_notBeforeNextAttemptUnix.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() + remoteOrLocalDelaySeconds(remoteRetryAfter) - 1,
+        m_notBeforeNextAttemptUnix.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() +
+                                                 remoteOrLocalDelaySeconds(remoteRetryAfter) - 1,
                                          std::memory_order_relaxed);
     }
 

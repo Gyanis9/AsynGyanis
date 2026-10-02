@@ -1338,9 +1338,9 @@ namespace AsynGyanis::Net
                 << "超出全局预算的请求没有收到应答";
 
         // 一次解出这条响应的全部头字段再逐条判：同一个解码器解第二遍会踩到自己刚建起来的动态表
-        HpackDecoder                 responseDecoder;
+        HpackDecoder                  responseDecoder;
         std::vector<HpackHeaderField> responseFields;
-        std::string                  decodeError;
+        std::string                   decodeError;
         ASSERT_TRUE(responseDecoder.decode(responseHeaderBlock(frames, 1U, 0), responseFields, &decodeError)) << "流 1 的响应头块解不开：" << decodeError;
         const auto findField = [&responseFields](const std::string_view name) -> std::string
         {
@@ -1954,21 +1954,21 @@ namespace AsynGyanis::Net
                                [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                                {
                                    response.upgradeToWebSocket(
-                                       [](WebSocketPeer &peer) -> Core::Task<>
-                                       {
-                                           while (true)
+                                           [](WebSocketPeer &peer) -> Core::Task<>
                                            {
-                                               const std::optional<WebSocketMessage> message = co_await peer.receive();
-                                               if (!message.has_value())
+                                               while (true)
                                                {
-                                                   co_return;
+                                                   const std::optional<WebSocketMessage> message = co_await peer.receive();
+                                                   if (!message.has_value())
+                                                   {
+                                                       co_return;
+                                                   }
+                                                   if (!co_await peer.sendText(message->payload))
+                                                   {
+                                                       co_return;
+                                                   }
                                                }
-                                               if (!co_await peer.sendText(message->payload))
-                                               {
-                                                   co_return;
-                                               }
-                                           }
-                                       });
+                                           });
                                    co_return;
                                });
                 },
@@ -2004,7 +2004,8 @@ namespace AsynGyanis::Net
                 << "第一条隧道没有建立";
 
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
-        ASSERT_TRUE(client.pumpUntil(frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
                 << "隧道期间的第二条扩展 CONNECT 没有得到应答";
 
         const auto fieldsByStream = collectResponseFieldsPerStream(frames);

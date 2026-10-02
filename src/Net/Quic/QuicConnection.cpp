@@ -74,8 +74,7 @@ namespace AsynGyanis::Net
             if (isEncodableIdleTimeout(configuration.idleTimeout))
             {
                 parameters.maximumIdleTimeoutMilliseconds = idleTimeoutParameterMilliseconds(configuration.idleTimeout);
-            }
-            else
+            } else
             {
                 if (auto &throttle = ASYN_LOG_THROTTLED(kInvalidIdleTimeoutLogWindow); throttle.acquire())
                 {

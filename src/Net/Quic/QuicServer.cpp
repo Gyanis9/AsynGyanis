@@ -554,7 +554,7 @@ namespace AsynGyanis::Net
             snapshot = m_configuration.metricsCollector->snapshot();
         }
         // 在线连接数与 h1/h2 侧同一口径：取快照这一刻的连接数（这里是近似值，不做一致性保证）
-        snapshot.activeConnectionCount = static_cast<std::uint64_t>(connectionCount());
+        snapshot.activeConnectionCount                                  = static_cast<std::uint64_t>(connectionCount());
         const std::shared_ptr<PerIpConnectionLimiter> &admissionLimiter = m_configuration.perIpConnectionLimiter;
         // 分母与闸门总量一起并入，与 h1/h2 共用同一个入口：跨协议抓出来的读数必须同形
         applyAdmissionSnapshot(snapshot, maximumConnections(), admissionLimiter == nullptr ? std::size_t{0} : admissionLimiter->maximumConnectionsPerIp(),

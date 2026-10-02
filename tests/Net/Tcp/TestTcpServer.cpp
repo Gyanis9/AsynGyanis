@@ -625,8 +625,8 @@ namespace AsynGyanis::Net
      */
     TEST(TcpServer, ExposesThePerIpLimiterItWasGiven)
     {
-        Core::EventLoop                        loop;
-        std::atomic<bool>                      stopObserved{false};
+        Core::EventLoop                               loop;
+        std::atomic<bool>                             stopObserved{false};
         const std::shared_ptr<PerIpConnectionLimiter> limiter = std::make_shared<PerIpConnectionLimiter>(2);
 
         ServerTestOptions unsetOptions;
@@ -635,7 +635,7 @@ namespace AsynGyanis::Net
 
         ServerTestOptions options;
         options.perIpLimiter = limiter;
-        TestTcpServer       server(loop, Core::InetAddress::localhost(0), options, stopObserved);
+        TestTcpServer server(loop, Core::InetAddress::localhost(0), options, stopObserved);
         EXPECT_EQ(server.perIpConnectionLimiter(), limiter) << "读口应当交回同一份对象：限额的账只记在那一份上";
         EXPECT_EQ(server.perIpConnectionLimiter()->rejectedConnectionCount(), 0U) << "读回来的对象要能用，不只是比个指针";
     }

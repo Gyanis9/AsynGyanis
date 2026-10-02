@@ -253,9 +253,8 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(equalsIgnoringCase("", "")) << "两条都空是相等，不是缺字段";
         EXPECT_FALSE(equalsIgnoringCase("retry-after", "retry-afterx")) << "长度不同要先否掉，别越界读";
         EXPECT_FALSE(equalsIgnoringCase("retry-aftex", "retry-after"));
-        const std::string highByteName = std::string(1, 'a') + static_cast<char>(0xDD);
+        const std::string highByteName  = std::string(1, 'a') + static_cast<char>(0xDD);
         const std::string otherByteName = std::string(1, 'a') + static_cast<char>(0x9D);
-        EXPECT_FALSE(equalsIgnoringCase(highByteName, otherByteName))
-                << "非 ASCII 字节必须逐位相等才算同一条头部名";
+        EXPECT_FALSE(equalsIgnoringCase(highByteName, otherByteName)) << "非 ASCII 字节必须逐位相等才算同一条头部名";
     }
 } // namespace AsynGyanis::Net

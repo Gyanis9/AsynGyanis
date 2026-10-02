@@ -163,8 +163,8 @@ namespace AsynGyanis::Net
             std::string   failureMessage;                                   ///< 失败文案
             /// 失败时机构给的 `Retry-After`（限流一档才有值，其余为空）
             std::optional<std::chrono::seconds> failureRetryAfter{};
-            std::string   certificatePem;                                   ///< 成功时拿到的证书链
-            std::string   accountUrl;                                       ///< 本轮生效的账户 URL，供下一轮复用
+            std::string                         certificatePem; ///< 成功时拿到的证书链
+            std::string                         accountUrl;     ///< 本轮生效的账户 URL，供下一轮复用
         };
 
     protected:
@@ -309,10 +309,10 @@ namespace AsynGyanis::Net
         template<typename Expected>
         bool recordFailure(const std::size_t index, const Expected &result, FlowOutcome outcome)
         {
-            outcome.failureKind        = result.error().kind;
-            outcome.failureMessage     = result.error().message;
-            outcome.failureRetryAfter  = result.error().retryAfter;
-            m_outcomes[index]          = std::move(outcome);
+            outcome.failureKind       = result.error().kind;
+            outcome.failureMessage    = result.error().message;
+            outcome.failureRetryAfter = result.error().retryAfter;
+            m_outcomes[index]         = std::move(outcome);
             return false;
         }
 

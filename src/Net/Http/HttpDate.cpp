@@ -456,8 +456,8 @@ namespace AsynGyanis::Net
         // 首字符不是数字就不可能是这一种，直接去认绝对日期
         if (const char firstCharacter = trimmed.front(); firstCharacter >= '0' && firstCharacter <= '9')
         {
-            long long secondsValue = 0;
-            const auto parseResult = std::from_chars(trimmed.data(), trimmed.data() + trimmed.size(), secondsValue);
+            long long  secondsValue = 0;
+            const auto parseResult  = std::from_chars(trimmed.data(), trimmed.data() + trimmed.size(), secondsValue);
             // 必须看 ec 而不是只看停下来的位置：取值大到装不进 long long 时标准规定 ptr 指向末尾而
             // errc 是 result_out_of_range——只看 ptr 会把这种「读不懂」当成 0 交回，而 0 的含义是
             // 「现在就再试一次」，等于对着一台明确说了要限流的机器加速撞上去

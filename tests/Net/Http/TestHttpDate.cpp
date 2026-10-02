@@ -334,22 +334,16 @@ namespace AsynGyanis::Net
 
         // 绝对时刻：未来按差值交回，过去一律 0
         std::array<char, kHttpDateTextLength> futureBuffer{};
-        const std::string_view futureText = formatHttpDate(instantFromSeconds(2'000'000'000 + 120), futureBuffer);
+        const std::string_view                futureText = formatHttpDate(instantFromSeconds(2'000'000'000 + 120), futureBuffer);
         EXPECT_EQ(parseRetryAfter(futureText, now), std::optional{std::chrono::seconds{120}});
 
         std::array<char, kHttpDateTextLength> pastBuffer{};
-        const std::string_view pastText = formatHttpDate(instantFromSeconds(2'000'000'000 - 999), pastBuffer);
+        const std::string_view                pastText = formatHttpDate(instantFromSeconds(2'000'000'000 - 999), pastBuffer);
         EXPECT_EQ(parseRetryAfter(pastText, now), std::optional{std::chrono::seconds{0}}) << "已经过去的时刻应当读成「现在就能再试」，而不是负数或空";
 
         // 拒绝面：形状不对就不给数，宁缺毋造
-        for (const std::string_view rejectedText: {std::string_view{""},
-                                                   std::string_view{"abc"},
-                                                   std::string_view{"-5"},
-                                                   std::string_view{"1.5"},
-                                                   std::string_view{"1e3"},
-                                                   std::string_view{"12x"},
-                                                   std::string_view{"99999999999999999999999"},
-                                                   std::string_view{"Wed, 33 Xyz 2026 00:00:00 GMT"}})
+        for (const std::string_view rejectedText: {std::string_view{""}, std::string_view{"abc"}, std::string_view{"-5"}, std::string_view{"1.5"}, std::string_view{"1e3"},
+                                                   std::string_view{"12x"}, std::string_view{"99999999999999999999999"}, std::string_view{"Wed, 33 Xyz 2026 00:00:00 GMT"}})
         {
             EXPECT_FALSE(parseRetryAfter(rejectedText, now).has_value()) << "这条本该判读不懂：" << rejectedText;
         }
