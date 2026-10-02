@@ -617,6 +617,29 @@ namespace AsynGyanis::Net
         EXPECT_EQ(server.createConnectionCalls(), 0u);
     }
 
+    /**
+     * @brief 钉住：按来源 IP 的限额对象有读口，且交回的就是挂上去那一份
+     * @details 限额常是多个监听器共用的一份，「这台到底卡在哪」只有问出那个对象才答得出。此前
+     *          setter 有、getter 没有，调用方只能自己留一份副本，而副本会与真源漂移——换过一次之后
+     *          旧的那份还握在手里，看着像仍在生效。
+     */
+    TEST(TcpServer, ExposesThePerIpLimiterItWasGiven)
+    {
+        Core::EventLoop                        loop;
+        std::atomic<bool>                      stopObserved{false};
+        const std::shared_ptr<PerIpConnectionLimiter> limiter = std::make_shared<PerIpConnectionLimiter>(2);
+
+        ServerTestOptions unsetOptions;
+        TestTcpServer     unsetServer(loop, Core::InetAddress::localhost(0), unsetOptions, stopObserved);
+        EXPECT_EQ(unsetServer.perIpConnectionLimiter(), nullptr) << "没挂限额时应当读出空指针，而不是一个空壳对象";
+
+        ServerTestOptions options;
+        options.perIpLimiter = limiter;
+        TestTcpServer       server(loop, Core::InetAddress::localhost(0), options, stopObserved);
+        EXPECT_EQ(server.perIpConnectionLimiter(), limiter) << "读口应当交回同一份对象：限额的账只记在那一份上";
+        EXPECT_EQ(server.perIpConnectionLimiter()->rejectedConnectionCount(), 0U) << "读回来的对象要能用，不只是比个指针";
+    }
+
     TEST(TcpServer, StartBindsListensAndEntersRunningState)
     {
         RunningServerFixture fixture;

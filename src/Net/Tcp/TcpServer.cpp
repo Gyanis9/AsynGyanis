@@ -606,6 +606,11 @@ namespace AsynGyanis::Net
         m_perIpConnectionLimiter = std::move(limiter);
     }
 
+    const std::shared_ptr<PerIpConnectionLimiter> &TcpServer::perIpConnectionLimiter() const noexcept
+    {
+        return m_perIpConnectionLimiter;
+    }
+
     std::uint64_t TcpServer::perIpRejectedConnectionCount() const noexcept
     {
         return m_perIpConnectionLimiter == nullptr ? 0U : m_perIpConnectionLimiter->rejectedConnectionCount();

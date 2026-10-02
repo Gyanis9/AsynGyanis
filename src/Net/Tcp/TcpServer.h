@@ -191,6 +191,15 @@ namespace AsynGyanis::Net
         void setPerIpConnectionLimiter(std::shared_ptr<PerIpConnectionLimiter> limiter);
 
         /**
+         * @brief 取本台挂着的按来源 IP 的限额对象
+         * @details 存在的理由与 `maximumConnections()` 同一条：运维要能问出「这台到底卡在哪」。
+         *          限额对象常是多个监听器共用的一份，因此这里交回的**就是那一份**（指针相等，不是副本），
+         *          调用方据此可以读出真正生效的每来源上限，也能把同一个对象挂到另一台上。
+         * @return std::shared_ptr<PerIpConnectionLimiter> 没设限额时为空指针
+         */
+        [[nodiscard]] const std::shared_ptr<PerIpConnectionLimiter> &perIpConnectionLimiter() const noexcept;
+
+        /**
          * @brief 按来源 IP 的准入闸门累计挡掉过多少条连接
          * @details 限额对象是可以被多台服务器共用的一份，因此这个数报的是**这道闸门**的总量而不是
          *          本实例那一份——与限额本身的口径一致。没设限额对象时返回 0。

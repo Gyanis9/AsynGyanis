@@ -298,6 +298,24 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t connectionCount() const noexcept;
 
         /**
+         * @brief 取本服务端实际生效的最大并发连接数
+         * @details 与 `TcpServer::maximumConnections()` 同一条问句：`connectionCount()` 给的是分子，
+         *          没有这一句就算不出「这台 h3 是不是已经贴着上限跑」。报的是**构造时下发到本台的值**
+         *          （h3 的整机摊分由装配方负责，与配置里的整机数可能差几倍，见 Configuration 的说明）；
+         *          0 表示本台不设这道限
+         * @return std::size_t 最大并发连接数
+         */
+        [[nodiscard]] std::size_t maximumConnections() const noexcept;
+
+        /**
+         * @brief 取本服务端挂着的按来源 IP 的限额对象（没设为空指针）
+         * @details 这条读口与 TCP 侧同名同义：限额常是多台共用的一份，交回的就是那一份，
+         *          调用方因此能问出真正生效的每来源上限，也能把它继续挂到另一台监听器上
+         * @return const std::shared_ptr<PerIpConnectionLimiter> & 持有中的那份对象
+         */
+        [[nodiscard]] const std::shared_ptr<PerIpConnectionLimiter> &perIpConnectionLimiter() const noexcept;
+
+        /**
          * @brief 取本服务端的统计快照（h3 会话的请求数、状态码类、耗时、单流取消与在线连接数）
          * @details 与 HttpServer::stats() 同一形态与同一套指标口径，只是数据来自 h3 会话：
          *          请求数、状态码类与耗时直方图都由各会话累加（h3 的耗时起点是会话收下这条请求的

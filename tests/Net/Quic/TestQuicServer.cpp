@@ -249,6 +249,35 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：h3 也能被问出「这台卡在哪」——并发上限与按来源的限额对象都有读口
+     * @details `connectionCount()` 一直能读，但没有分母就读不出「是不是贴着上限跑」；而 TCP 侧的
+     *          `TcpServer::maximumConnections()` 与限额读口早就有，同一台机器上三条通道对同一个
+     *          运维问句给出「两问答得出、一问答不出」就是漂移。限额那条还钉「交回同一份」：
+     *          多台共用一份账时，读到副本等于读到一个不会动的对象。
+     */
+    TEST(QuicServer, ReportsTheAdmissionCapsItWasConfiguredWith)
+    {
+        Core::EventLoop loop;
+
+        const std::shared_ptr<PerIpConnectionLimiter> limiter = std::make_shared<PerIpConnectionLimiter>(3);
+
+        QuicServer::Configuration configuration = makeServerConfiguration();
+        configuration.maximumConnections        = 77;
+        configuration.perIpConnectionLimiter    = limiter;
+        const QuicServer server(loop, configuration);
+
+        EXPECT_EQ(server.maximumConnections(), 77U) << "并发上限读不回来，运维只能翻配置文件猜这台卡在哪";
+        EXPECT_EQ(server.perIpConnectionLimiter(), limiter) << "限额要交回共用那一份，而不是副本或空";
+
+        // 0 是显式写法「不设这道限」，读数必须原样说出 0 而不是替调用方发明一个默认值
+        QuicServer::Configuration unlimited   = makeServerConfiguration();
+        unlimited.maximumConnections          = 0;
+        const QuicServer      unlimitedServer(loop, unlimited);
+        EXPECT_EQ(unlimitedServer.maximumConnections(), 0U) << "0 表示不限，读口不该把它翻成某个具体数";
+        EXPECT_EQ(unlimitedServer.perIpConnectionLimiter(), nullptr);
+    }
+
+    /**
      * @brief 钉住：TLS 策略真的被施加到 QUIC 这份上下文上，而不是收下就算
      * @details 三条判据挑的是「OpenSSL 会拒绝的写法」：如果本服务端只是把策略存起来却没施加，
      *          这三份配置都会构造成功，用例即红——这是「配置被静默忽略」唯一能在树内看到的形状。

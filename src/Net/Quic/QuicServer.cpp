@@ -627,6 +627,17 @@ namespace AsynGyanis::Net
         return m_connectionCountMirror.load(std::memory_order_relaxed);
     }
 
+    std::size_t QuicServer::maximumConnections() const noexcept
+    {
+        // 配置在构造后不再变（与 TcpServer 的 m_maxConnections 同一形状），读它不需要原子量
+        return m_configuration.maximumConnections;
+    }
+
+    const std::shared_ptr<PerIpConnectionLimiter> &QuicServer::perIpConnectionLimiter() const noexcept
+    {
+        return m_configuration.perIpConnectionLimiter;
+    }
+
     std::uint16_t QuicServer::listeningPort() const noexcept
     {
         // acquire 与写侧的 release 配对：读到非 0 就能确信本端地址与套接字封装都已就位
