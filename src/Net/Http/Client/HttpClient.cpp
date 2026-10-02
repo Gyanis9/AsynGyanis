@@ -226,15 +226,15 @@ namespace AsynGyanis::Net
          */
         bool isSchemeName(const std::string_view text)
         {
-            if (text.empty() || !(text.front() >= 'A' && text.front() <= 'Z' || text.front() >= 'a' && text.front() <= 'z'))
+            if (text.empty() || !((text.front() >= 'A' && text.front() <= 'Z') || (text.front() >= 'a' && text.front() <= 'z')))
             {
                 return false;
             }
             return std::ranges::all_of(text,
                                        [](const char character)
                                        {
-                                           return character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || character >= '0' && character <= '9' ||
-                                                  character == '+' || character == '-' || character == '.';
+                                           return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                                                  (character >= '0' && character <= '9') || character == '+' || character == '-' || character == '.';
                                        });
         }
 
