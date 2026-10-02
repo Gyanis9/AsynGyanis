@@ -874,6 +874,39 @@ namespace AsynGyanis::Net
         EXPECT_EQ(static_cast<std::uint64_t>(manager.status().certificateExpiryUnixSeconds), expectedSeconds) << "同一次构造里对外读数与 status() 报的不是同一个到期时刻";
     }
 
+    /**
+     * @brief 钉住：还没签出的那个管理器，不把另一张已读得出的到期时刻压成 0
+     * @details 多域名形态下进程里会有多个管理器，而「这条路径上没有读得出的证书」的对外表示就是 0。
+     *          按 Min 合并时它一定赢，面板于是报「证书没了」——那张其实还有几十天。合并规则改成跳零之后，
+     *          两边都读不出才交回 0；登记顺序的两个方向都在这一条里走一遍。
+     */
+    TEST(AcmeAutomationMetrics, UnissuedManagerDoesNotMaskTheReadExpiry)
+    {
+        Core::EventLoop loop;
+
+        AcmeCertificateManager::Configuration pending;
+        pending.certificateFile  = std::filesystem::temp_directory_path() / "asyn-acme-mask-pending-absent.pem";
+        pending.privateKeyFile   = std::filesystem::temp_directory_path() / "asyn-acme-mask-pending-absent-key.pem";
+        pending.accountKeyFile   = std::filesystem::temp_directory_path() / "asyn-acme-mask-a-key.pem";
+        pending.accountStateFile = std::filesystem::temp_directory_path() / "asyn-acme-mask-a-state.json";
+
+        AcmeCertificateManager::Configuration readable;
+        readable.certificateFile  = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
+        readable.privateKeyFile   = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
+        readable.accountKeyFile   = std::filesystem::temp_directory_path() / "asyn-acme-mask-b-key.pem";
+        readable.accountStateFile = std::filesystem::temp_directory_path() / "asyn-acme-mask-b-state.json";
+
+        const auto expectedExpiry = readCertificateExpiry(readable.certificateFile);
+        ASSERT_TRUE(expectedExpiry.has_value()) << "夹具证书读不出到期时刻，这条用例的对照就没了";
+        const auto expectedSeconds = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(expectedExpiry->time_since_epoch()).count());
+
+        const AcmeCertificateManager pendingManager(loop, pending, {}, {});
+        EXPECT_EQ(findRegistrySample("asyn_acme_certificate_expiry_seconds")->value, 0U) << "只有一格读不出时就该是 0";
+
+        const AcmeCertificateManager readableManager(loop, readable, {}, {});
+        EXPECT_EQ(findRegistrySample("asyn_acme_certificate_expiry_seconds")->value, expectedSeconds) << "已经签出的那张被还没签出的那张盖掉了";
+    }
+
     namespace
     {
         /**

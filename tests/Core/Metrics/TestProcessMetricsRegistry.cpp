@@ -117,6 +117,37 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 钉住：`MinNonZero` 里 0 不参与求早——「读不出」不是「最早」
+     * @details 证书到期时刻那一格，0 的含义是这条路径上没有读得出的证书。让它按 Min 参与合并，一个
+     *          还没签出的实例就会把另一个「还有八十天」的真值压成 0，报出一条假告警；两边都读不出时
+     *          才该交回 0。登记顺序两个方向都要试：先 0 后真值、先真值后 0。
+     */
+    TEST(ProcessMetricsRegistry, SkipsUnreadableSlotsWhenMergingWithMinNonZero)
+    {
+        const auto unknown = ProcessMetricsRegistry::registerMetric("asyn_test_probe_min_nonzero_seconds", "跳零求早", ProcessMetricKind::Gauge, ProcessMetricMerge::MinNonZero,
+                                                                    [] { return 0U; });
+        const auto known   = ProcessMetricsRegistry::registerMetric("asyn_test_probe_min_nonzero_seconds", "跳零求早", ProcessMetricKind::Gauge, ProcessMetricMerge::MinNonZero,
+                                                                    [] { return 4'200U; });
+        EXPECT_EQ(findByName("asyn_test_probe_min_nonzero_seconds").sample.value, 4'200U) << "先登记的 0 把真值盖掉了";
+
+        const auto laterUnknown = ProcessMetricsRegistry::registerMetric("asyn_test_probe_min_nonzero_seconds", "跳零求早", ProcessMetricKind::Gauge,
+                                                                         ProcessMetricMerge::MinNonZero, [] { return 0U; });
+        EXPECT_EQ(findByName("asyn_test_probe_min_nonzero_seconds").sample.value, 4'200U) << "后登记的 0 也不该改答案";
+    }
+
+    /**
+     * @brief 钉住：`MinNonZero` 两边都读不出时交回 0，而不是编出一个数
+     */
+    TEST(ProcessMetricsRegistry, KeepsZeroWhenNoInstanceCanReadAMinNonZeroMetric)
+    {
+        const auto firstUnknown  = ProcessMetricsRegistry::registerMetric("asyn_test_probe_min_nonzero_empty_seconds", "全为空", ProcessMetricKind::Gauge,
+                                                                          ProcessMetricMerge::MinNonZero, [] { return 0U; });
+        const auto secondUnknown = ProcessMetricsRegistry::registerMetric("asyn_test_probe_min_nonzero_empty_seconds", "全为空", ProcessMetricKind::Gauge,
+                                                                          ProcessMetricMerge::MinNonZero, [] { return 0U; });
+        EXPECT_EQ(findByName("asyn_test_probe_min_nonzero_empty_seconds").sample.value, 0U);
+    }
+
+    /**
      * @brief 钉住：把手被移走之后只有一份注销责任，移动赋值会先放掉原来那条
      */
     TEST(ProcessMetricsRegistry, MovingAHandleKeepsExactlyOneOwner)

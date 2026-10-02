@@ -147,6 +147,28 @@ namespace AsynGyanis::Core
         return ProcessMetricHandle(registry.entries.back().name, sequence);
     }
 
+    namespace
+    {
+        /**
+         * @brief `MinNonZero` 的并法：0 表示「这一格读不出」，不参与求早
+         * @param current 已合并出来的值
+         * @param incoming 后一个实例交回的值
+         * @return std::uint64_t 两者里更早的那个数；两边都是 0 时才是 0
+         */
+        std::uint64_t mergeIgnoringZero(const std::uint64_t current, const std::uint64_t incoming)
+        {
+            if (current == 0U)
+            {
+                return incoming;
+            }
+            if (incoming == 0U)
+            {
+                return current;
+            }
+            return std::min(current, incoming);
+        }
+    } // namespace
+
     std::vector<ProcessMetricSample> ProcessMetricsRegistry::samples()
     {
         RegistryState   &registry = state();
@@ -163,7 +185,9 @@ namespace AsynGyanis::Core
             if (const auto position = indexOfName.find(entry.name); position != indexOfName.end())
             {
                 ProcessMetricSample &existing = samples[position->second];
-                existing.value                = entry.merge == ProcessMetricMerge::Sum ? existing.value + value : std::min(existing.value, value);
+                existing.value = entry.merge == ProcessMetricMerge::Sum
+                                         ? existing.value + value
+                                         : (entry.merge == ProcessMetricMerge::MinNonZero ? mergeIgnoringZero(existing.value, value) : std::min(existing.value, value));
                 continue;
             }
 
