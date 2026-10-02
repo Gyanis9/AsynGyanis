@@ -15,10 +15,22 @@
 
 ## [Unreleased]
 
-自 2.5.0 起的累计变化（新增 4、变更 1、修复 3）：把已经建好的那道总量防线接到配置文件上并让它对外可读，把命中的路由模式交回业务，给 ORM 补上唯一键冲突的处置档位，并补上三处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步。
+自 2.5.0 起的累计变化（新增 5、变更 1、修复 3）：把已经建好的那道总量防线接到配置文件上并让它对外可读，把命中的路由模式交回业务，给 ORM 补上唯一键冲突的处置档位，并补上三处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步。
 
 ### 新增
 
+- **Redis 接上了参数化执行入口**：`RedisConnection::execute(command, parameters)` 与
+  `executeChecked(command, parameters)` 那层带成因的包装从此在 Redis 上不是一条死路。此前这一档由
+  基类默认实现回一句「该驱动暂不支持参数化查询（Redis）」，而 Redis 的命令行**本来就是参数数组**，
+  只是没有 SQL 那种占位符——按驱动通用接口写的应用（换引擎不改代码那一类）撞上的就是这句拒绝，
+  而 `executeCommand(argv)` 那条原生通道就在旁边。现在命令文本按 `execute()` 的同一套规则切词、
+  参数逐个转成文本接在后面，一起交给 argv 接口发送，内嵌 '\0' 与空白都不丢。
+  两条拒绝面排在发送之前（不需要一条连接就能判）：命令文本里出现 `?` 直接拒——Redis 没有占位符语法，
+  静默发出去等于写成一个名叫 "?" 的键。取值口径由新增的 `RedisConnection::argumentText()` 给：
+  Int64/Double 十进制文本（Double 用最短可往返表示，不是固定六位小数）、Bool 按 ORM 写侧口径成 "1"/"0"、
+  Text/Blob 原样交字节；NULL 与 List/Hash 拒发——它们没有「一个参数」的对应物，猜一个形状就是静默
+  改写调用方的意思。`argumentText()` 的定义放在驱动分支之外，与 `parseKeyspaceNotification()` 同一层：
+  它是纯字符串工作，没有 hiredis 的构建里也必须可判。
 - **唯一键冲突的处置进了 ORM**：`Queryable<T>::insert(row, InsertConflict)` 与
   `insertBatch(rows, InsertConflict)`（`Queryable::InsertConflict` 三档：`Fail` / `Ignore` / `Replace`，
   默认 `Fail` 与不带该参数的旧写法逐字同形，线上字节一分不变）。此前只有 `insert(row)`：想按业务键

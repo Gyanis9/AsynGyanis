@@ -33,6 +33,8 @@
 // 下面这几样在两种构建下都要能用：parseKeyspaceNotification() 是与驱动无关的纯字符串工作，
 // 桩构建也得有它（否则「没有 hiredis」会顺带让一个能用、能测的解析器消失）
 #include <charconv>
+#include <cmath>
+#include <format>
 #include <memory>
 #include <optional>
 #include <string>
@@ -495,6 +497,49 @@ namespace AsynGyanis::Database
         }
 
         // 切词得到的那批 std::string 才是数据的持有者；这里只叠一层视图，不再逐条复制内容
+        const std::vector<std::string_view> argumentViews(argumentValues->begin(), argumentValues->end());
+        return executeArguments(std::span<const std::string_view>(argumentViews));
+    }
+
+    std::unique_ptr<DatabaseResult> RedisConnection::execute(const std::string_view command, const std::span<const DatabaseValue> parameters)
+    {
+        m_lastError.clear();
+
+        // 形状判据排在连接检查之前：一条本来就不合法的命令不该等到网络状态才知道（也才能测出来）
+        std::optional<std::vector<std::string>> argumentValues = splitCommandLine(command);
+        if (!argumentValues.has_value())
+        {
+            m_lastError = "Redis 命令不合法（内容为空或引号未闭合）：" + std::string(command);
+            return nullptr;
+        }
+
+        // Redis 的命令行里没有占位符这回事。调用方按 SQL 习惯写下 "?" 时，静默把它当成一个键发出去
+        // 换来的是一句看不懂的服务端错误或——更坏——一次真的写了 "?" 这个键
+        for (const std::string &token: *argumentValues)
+        {
+            if (token == "?")
+            {
+                m_lastError = "Redis 没有占位符语法：命令文本里的 \"?\" 不会被参数替换。"
+                              "请把参数交给 parameters（它们会追加在命令之后），例如 execute(\"SET\", {键, 值})";
+                return nullptr;
+            }
+        }
+
+        // 命令文本切出来的词是数据的持有者，参数逐个转成文本接在后面，一起交给 argv 接口
+        for (const DatabaseValue &parameter: parameters)
+        {
+            // m_lastError 是带原生码的那份记录（ErrorRecord），不能按 std::string& 交出去，
+            // 因此这里用一个本地串接原因，拒发时再整体交给它
+            std::string rejectionText;
+            std::optional<std::string> parameterText = argumentText(parameter, rejectionText);
+            if (!parameterText.has_value())
+            {
+                m_lastError = std::move(rejectionText);
+                return nullptr;
+            }
+            argumentValues->push_back(std::move(*parameterText));
+        }
+
         const std::vector<std::string_view> argumentViews(argumentValues->begin(), argumentValues->end());
         return executeArguments(std::span<const std::string_view>(argumentViews));
     }
@@ -1023,6 +1068,50 @@ namespace AsynGyanis::Database
     // 两种构建（有 hiredis / 缺 hiredis）都要能用、也都要能测；其余四个入口需要收发回复，
     // 因此按驱动在不在分成两份实现。
     // ==========================================================================
+
+    std::optional<std::string> RedisConnection::argumentText(const DatabaseValue &value, std::string &errorText)
+    {
+        // 定义放在驱动分支之外：它是「把一个值折成一个参数文本」的纯字符串工作，与有没有 hiredis 无关，
+        // 而这条口径必须能在没有服务端的构建里被直接判定
+        //
+        // 顺序照 DatabaseValue 的备选排：文本与字节先走，它们是 Redis 参数最常见的两档
+        if (const auto *text = std::get_if<std::string>(&value))
+        {
+            return *text;
+        }
+        if (const auto *bytes = std::get_if<std::vector<std::uint8_t>>(&value))
+        {
+            // 原样交字节：argv 接口按「指针 + 长度」发送，内嵌 '\0' 不丢
+            return std::string(bytes->begin(), bytes->end());
+        }
+        if (const auto *flag = std::get_if<bool>(&value))
+        {
+            // 与 ORM 写侧同口径：Redis 没有布尔类型，只有 1 与 0 这两个字面
+            return std::string(*flag ? "1" : "0");
+        }
+        if (const auto *number = std::get_if<std::int64_t>(&value))
+        {
+            return std::to_string(*number);
+        }
+        if (const auto *real = std::get_if<double>(&value))
+        {
+            if (!std::isfinite(*real))
+            {
+                errorText = "Redis 的参数不接受无穷大或 NaN：它们没有十进制文本的对应物，交出去只会换来一句语法错误";
+                return std::nullopt;
+            }
+            // 最短可往返表示：1.5 就写 "1.5"，而不是 std::to_string(double) 那套固定六位小数
+            //（"1.500000" 会把一个键写成另一个字面，服务端那条路径也会换结果）
+            return std::format("{}", *real);
+        }
+
+        // 剩下三档：NULL 与两种复合类型。它们没有「一个参数」的对应物，
+        // 猜一个形状（把 List 拼成空格分隔、把 NULL 拼成空串）等于静默改写调用方的意思
+        errorText = std::string("Redis 的参数不接受该类型的值（") + databaseValueTypeName(value) +
+                    "）：NULL 与复合类型（List/Hash）没有一个参数对应物，请把它们表达成具体的字符串或字节，"
+                    "或按元素拆成多条命令";
+        return std::nullopt;
+    }
 
     std::optional<RedisKeyspaceNotification> RedisConnection::parseKeyspaceNotification(const std::string_view channel, const std::string_view payload)
     {

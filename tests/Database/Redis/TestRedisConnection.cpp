@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <limits>
 #include <vector>
 
 namespace AsynGyanis::Database
@@ -473,6 +474,69 @@ namespace AsynGyanis::Database
     /**
      * @brief 钉住从未连接的对象带着未发送命令析构也不抛异常、不触发 IO
      */
+    /**
+     * @brief 钉住「一个数据库值 → 一个 Redis 参数」的口径
+     * @details 期望值全部写死成字面量（不复用被测代码的算法），这样这条口径改动时必须有人
+     *          显式决定；NULL 与两种复合类型必须拒，而不是被折成一个看着能用的形状
+     */
+    TEST(RedisConnection, ArgumentTextMapsScalarTypesAndRefusesTheRest)
+    {
+        std::string errorText;
+
+        EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(std::string("a b\nc")), errorText).value_or(""), "a b\nc");
+        EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(std::int64_t{-42}), errorText).value_or(""), "-42");
+        EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(true), errorText).value_or(""), "1");
+        EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(false), errorText).value_or(""), "0");
+        // 双精度走最短可往返表示：不是 std::to_string(double) 那种固定六位小数
+        EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(1.5), errorText).value_or(""), "1.5");
+        EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(std::vector<std::uint8_t>{0x00, 0xFF, 0x10}), errorText).value_or(""),
+                  std::string("\0\377\020", 3));
+
+        // NULL：Redis 没有「一个 NULL 参数」这回事
+        errorText.clear();
+        EXPECT_FALSE(RedisConnection::argumentText(DatabaseValue{}, errorText).has_value());
+        EXPECT_NE(errorText.find("NULL"), std::string::npos) << errorText;
+
+        // 无穷大/NaN：没有十进制文本对应物
+        errorText.clear();
+        EXPECT_FALSE(RedisConnection::argumentText(DatabaseValue(std::numeric_limits<double>::infinity()), errorText).has_value());
+        EXPECT_NE(errorText.find("无穷大"), std::string::npos) << errorText;
+
+        // 复合类型（List / Hash）：按元素拆是另一件事，不能拼成一个参数
+        errorText.clear();
+        EXPECT_FALSE(RedisConnection::argumentText(DatabaseValue(std::vector<std::string>{"a", "b"}), errorText).has_value());
+        EXPECT_NE(errorText.find("复合类型"), std::string::npos) << errorText;
+    }
+
+    /**
+     * @brief 钉住参数化入口在 Redis 上不再是死路，且形状判据排在连接检查之前
+     * @details 基类那一档原来只会回「该驱动暂不支持参数化查询（Redis）」，而 Redis 的命令行本来就是
+     *          参数数组。接通之后，一条合法的调用要走到发送路径（本用例没连接，因此看到的必须是
+     *          「未连接到 Redis」而不是那句拒绝）；而写占位符、给 NULL 这两种误用在发送之前就该被挡下
+     */
+    TEST(RedisConnection, ParameterizedExecuteReachesTheSendPathInsteadOfRefusing)
+    {
+        RedisConnection connection(ConnectionConfig::redisDefault());
+        const std::vector<DatabaseValue> scalarParameters{DatabaseValue(std::string("k")), DatabaseValue(std::string("v"))};
+        const std::vector<DatabaseValue> nullParameter{DatabaseValue{}};
+
+        static_cast<void>(connection.execute("SET", scalarParameters));
+        EXPECT_EQ(connection.lastError(), "未连接到 Redis，命令未执行")
+                << "参数化入口没有走到发送那一步：它还是基类那句「该驱动暂不支持参数化查询」吗？";
+
+        // 占位符：Redis 没有这个语法，静默发出去会写成一个名叫 "?" 的键
+        static_cast<void>(connection.execute("SET ? ?", scalarParameters));
+        EXPECT_NE(connection.lastError().find("Redis 没有占位符语法"), std::string::npos) << connection.lastError();
+
+        // NULL 参数：在发送之前拒，不需要一条连接
+        static_cast<void>(connection.execute("SET k", nullParameter));
+        EXPECT_NE(connection.lastError().find("NULL"), std::string::npos) << connection.lastError();
+
+        // 命令文本本身不合法（引号未闭合）：仍是切词那一条判据先出声
+        static_cast<void>(connection.execute("SET \"unclosed", scalarParameters));
+        EXPECT_NE(connection.lastError().find("命令不合法"), std::string::npos) << connection.lastError();
+    }
+
     TEST(RedisConnection, DestroyingNeverConnectedConnectionIsSafe)
     {
         // 析构无条件调用 disconnect()：从未连接过的对象安静离场即可，不应抛任何异常。

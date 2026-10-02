@@ -226,6 +226,31 @@ namespace AsynGyanis::Database
     };
 
     /**
+     * @brief 钉住参数化入口真的把参数接到了命令之后（不只是在本地判形状）
+     * @details `execute(command, parameters)` 这一档在 Redis 上是新接通的通道：按驱动通用接口写的
+     *          应用（以及 `executeChecked()` 那层带回路的包装）从此在 Redis 上不是死路。
+     *          这里用一次 SET/GET 往返证明参数确实进了 argv——键名故意带空格与换行，
+     *          任何「把参数拼进命令文本」的写法都会在这一对上出错；而参数没接上时服务端会直接
+     *          回 wrong number of arguments
+     */
+    TEST_F(RedisIntegrationTest, ParameterizedExecuteAppendsArgumentsToTheCommand)
+    {
+        const std::string awkwardKey = makeKey("参数 化\n键");
+
+        const std::vector<DatabaseValue> setArguments{DatabaseValue(awkwardKey), DatabaseValue(std::string("value with spaces"))};
+        const std::unique_ptr<DatabaseResult> setResult = m_connection->execute("SET", setArguments);
+        ASSERT_NE(setResult, nullptr) << m_connection->lastError();
+
+        const std::vector<DatabaseValue> getArguments{DatabaseValue(awkwardKey)};
+        const std::unique_ptr<DatabaseResult> getResult = m_connection->execute("GET", getArguments);
+        ASSERT_NE(getResult, nullptr) << m_connection->lastError();
+
+        const std::optional<DatabaseValue> value = getResult->getValue(0);
+        ASSERT_TRUE(value.has_value()) << "写进去的键读不回来：参数没接上，或键名被改写过";
+        EXPECT_EQ(std::get<std::string>(value.value()), "value with spaces");
+    }
+
+    /**
      * @brief 钉住环境变量配置能完成建连与认证，且 PING 的状态回复按字符串交出
      */
     TEST_F(RedisIntegrationTest, ConnectsAndAnswersPing)

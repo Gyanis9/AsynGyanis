@@ -140,10 +140,37 @@ namespace AsynGyanis::Database
         [[nodiscard]] bool isConnected() const override;
 
         // 引入基类的全部 execute 重载：本类声明了名为 execute 的成员，按 C++ 名字查找规则
-        // 会隐藏基类的同名重载，加上这一行后通过具体对象也能调用参数化版本。
-        // Redis 不是 SQL 数据库，参数化版本由基类默认实现返回中文错误提示，
-        // 需要按参数发送命令请改用 executeCommand()
+        // 会隐藏基类的同名重载，加上这一行后通过具体对象也能调用两个 execute 与它们的包装。
         using DatabaseConnection::execute;
+
+        /**
+         * @brief 以「命令文本 + 参数」的形式执行一条 Redis 命令（参数化入口的 Redis 实现）
+         * @details 基类这一档原本只回一句「该驱动暂不支持参数化查询（Redis）」——而 Redis 的命令行
+         *          本来就是参数数组，只是没有 SQL 那种占位符。这条通道接上之后
+         *          `execute("SET", {DatabaseValue("k"), DatabaseValue("v")})` 与
+         *          `executeCommand({"SET", "k", "v"})` 是同一句话，按驱动接口写的应用（以及
+         *          `executeChecked()` 那条带回路的包装）在 Redis 上不再是死路。
+         * @param command 命令文本：命令名，可带内联参数。**文本里出现 `?` 这个记号即拒绝**——
+         *        Redis 没有占位符语法，静默把它当成一个键发出去，比当场报错难查得多
+         * @param parameters 逐个转成文本后追加在命令之后，经 argv 接口发送（内嵌 '\0' 与空白都不丢）
+         * @return std::unique_ptr<DatabaseResult> 结果集；参数不可表达、命令带占位符、未连接或
+         *        服务端报错时返回 nullptr，原因见 lastError()
+         * @note 形状判据排在连接检查**之前**：一条本来就不合法的命令不该等到网络状态才知道
+         * @see argumentText() 取值到文本的口径
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters) override;
+
+        /**
+         * @brief 把一个数据库值转成 Redis 的参数文本
+         * @details 单独交出来是为了让这条口径可被直接判定，不需要真连上一台服务端。
+         *          口径：Int64 与 Double 按十进制文本（Double 用最短可往返表示）；Bool 按本仓 ORM
+         *          写侧的口径成 "1"/"0"；Text 与 Blob 原样交字节；NULL（monostate）与复合类型
+         *          （List/Hash）拒发——它们没有「一个参数」的对应物，猜一个形状等于静默改写调用方的意思
+         * @param value 待转换的值
+         * @param errorText 不可表达时写入的中文原因（成功时不动它）
+         * @return std::optional<std::string> 参数文本；不可表达时为空
+         */
+        [[nodiscard]] static std::optional<std::string> argumentText(const DatabaseValue &value, std::string &errorText);
 
         /**
          * @brief 执行一条 Redis 命令
