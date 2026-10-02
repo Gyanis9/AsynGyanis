@@ -40,15 +40,19 @@
   附加头部，失败交回一句点明断在哪一段的中文原因（`std::expected`）
 - **HTTP/3 + QUIC** — 自研 QUIC 传输层（RFC 9000/9001：握手、流与流量控制、丢包恢复与 NewReno 拥塞控制、1-RTT 密钥更新）+ 自研 HTTP/3 会话（帧层、QPACK 含动态表、流式正文、GOAWAY 优雅排空、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3
 - **WebSocket** — RFC 6455 握手与帧编解码、UTF-8 校验、分片重组、有界收帧队列、permessage-deflate（RFC 7692，
-  按对端声明的窗口位数协商，本端无法履约就不接受该扩展而不是带着解不开的窗口开连接）；h1 升级与 h2/h3 隧道
-  共用协商，版本不合按 §4.2.2 回 426 并指明本端支持的版本
+  按对端声明的窗口位数协商，本端无法履约就不接受该扩展而不是带着解不开的窗口开连接；要约里出现没定义的
+  参数名或同名参数重复也按 §9.1 婉拒）；对端为什么关掉这条连接交回业务——`remoteCloseCode()` 读出对端 Close
+  帧里的状态码原值、`remoteCloseReason()` 读出它给的原因文本（非法 UTF-8 的原因不外交给业务）；
+  h1 升级与 h2/h3 隧道共用协商，版本不合按 §4.2.2 回 426 并指明本端支持的版本
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型；命中的模式原文经 `HttpRequest::matchedRoute()` 交回业务与中间件，按路由分组打点不必自己再拼一遍
 - **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）、`/healthz` 与 `/debug/loops`（进程内每条事件循环一行的 JSON，看哪条被处理器占住）内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
 - **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate）
 - **按线程一个监听 socket** — `SO_REUSEPORT` 由内核分摊连接，避免 accept 单点
 - **接受分发（跨平台多核扩展）** — 一个监听器接受、按轮转把连接交给 N 个工作循环，不依赖
   `SO_REUSEPORT`；Windows 上这是唯一可用的多核形态（`ConnectionDistributor` + `TcpServer::startAccepting()`）
-- **静态文件服务** — `staticFileDir()` 一行接入
+- **静态文件服务** — `staticFileDir()` 一行接入；条件请求一并给出（`ETag` + `Last-Modified`，
+  `If-None-Match`/`If-Modified-Since` 成立回 304、`If-Match` 不成立回 412，判定顺序按 RFC 9110 §13.2.4），
+  两种验证器比较规则公开在 `HttpConditionalValidators.h`，业务侧要判 PUT/PATCH 的前提读同一份
 - **证书自动化（ACME / RFC 8555）** — `AcmeCertificateManager` 走完目录、账户、下单、自证、定稿与
   取证这一整台状态机：私钥与证书原子落盘（私钥 0600），到期前自主续，签好后经回调装回服务；
   协议层（`AcmeClient`）与密钥层（`AcmeKeyPair`：JWK、RFC 7638 指纹、JWS、CSR）都能单独用。
@@ -60,7 +64,7 @@
 
 **数据（Database）**
 
-- **SqlSugar 风格 ORM** — 结构体声明即表结构，`insert` / `toList` / `first` / `count` / `update` / 删除 / 批量插入；唯一键冲突可指定跳过或覆盖（`Queryable::InsertConflict`，关键词由方言给）；已有表可按结构体补上缺的列（`SchemaMigrator::addMissingColumns`，现有列直接问引擎，重复调用幂等）
+- **SqlSugar 风格 ORM** — 结构体声明即表结构，`insert` / `toList` / `first` / `count` / `update` / 删除 / 批量插入；唯一键冲突可指定跳过或覆盖（`Queryable::InsertConflict`，关键词由方言给）；已有表可按结构体补上缺的列（`SchemaMigrator::addMissingColumns`，现有列直接问引擎，重复调用幂等）；非有限的浮点取值（NaN、±Infinity）在绑定前就拒并点名列名——它们落库之后是哪个数由引擎决定，而 `insert()` 会照样报成功，空值请写 `std::optional`（绑成 SQL NULL）
 - **SQL 方言层** — 查询树渲染与参数收集只有一份实现（`StandardSqlDialect`），SQLite 与 MySQL 各自只覆写引擎知识；写语句与事务语句一律由方言生成，ORM 不含 SQL 拼接
 - **参数化执行** — 取值一律以绑定参数送出，不拼进 SQL 文本（含引号、`--`、分号的文本只会被当作数据）
 - **高性能连接池** — LIFO 复用、惰性创建、双机制清理（空闲回收 + 上限保护）
