@@ -96,13 +96,27 @@ namespace AsynGyanis::Database
          */
         void release();
 
+        /**
+         * @brief 主动丢弃这条连接：关掉它、腾出借出名额，而不把它交回池复用
+         *
+         * @details 用在「这条连接的会话状态已经不可信」的场合：语句在驱动侧报错、事务读到一半失败、
+         *          或业务自己判断该重开一条。此时 `release()` 会把这条连接原样放回池，下一个借用者
+         *          拿到的就是同一份脏会话——而归还路径上的会话复位只对「池知道该复位的东西」有效，
+         *          它不知道连接为什么被弄脏。丢弃没有这个风险：连接直接关掉。
+         * @details 与 `release()` 一样是幂等的收口：调用后本对象为空，析构不会重复归还，也不会
+         *          重复减出借出的名额（那个计数一旦多减，池就会长期超发连接）。
+         * @note 丢弃的连接不做会话复位（没有下一个借用者要保护），因此不付那次额外的往返
+         */
+        void discard();
+
     private:
         /**
          * @brief 归还连接的内部实现
-         * @details 由析构函数和 release() 共用，确保只执行一次归还逻辑。
+         * @details 由析构函数、release() 与 discard() 共用，确保只执行一次归还逻辑。
          *          归还后清空 m_connection 与 m_pool，防止重复归还。
+         * @param isDiscard true = 丢弃这条连接而不是交回池复用
          */
-        void doReturnToPool();
+        void doReturnToPool(const bool isDiscard = false);
 
         std::unique_ptr<DatabaseConnection> m_connection;     ///< 底层数据库连接的所有权
         ConnectionPool                     *m_pool = nullptr; ///< 归属的连接池，析构时据此归还

@@ -1205,4 +1205,44 @@ namespace AsynGyanis::Database
         EXPECT_EQ(legacy->value, held->value) << "两个名字报的不是同一个数——这比只留一个更难查";
     }
 
+    /**
+     * @brief 钉住：`discard()` 关掉这条连接、腾出名额，既不交给等待者也不进空闲栈
+     * @details 会话状态被业务弄脏时（驱动侧报错、事务半路失败）把它交回池就是串给下一个借用者，
+     *          而池自己的复位只覆盖「池知道要复位的那几样」。丢弃之后包装器必须为空：
+     *          析构若再归还一次，活跃计数会被多减一回，池就长期超发连接。
+     */
+    TEST(ConnectionPool, DiscardedConnectionIsClosedAndNeverReused)
+    {
+        ConnectionCounter counter;
+        auto              factory = makeMockFactory(counter);
+
+        PoolConfig configuration;
+        configuration.maximumPoolSize = 1;
+
+        ConnectionPool pool(factory, configuration);
+
+        PooledConnection connection = pool.acquire();
+        ASSERT_TRUE(connection);
+        EXPECT_EQ(pool.activeCount(), 1U);
+
+        connection.discard();
+        EXPECT_FALSE(static_cast<bool>(connection)) << "discard() 之后包装器必须为空，否则析构会再归还一次";
+        EXPECT_EQ(pool.activeCount(), 0U) << "名额要腾出来：它不减回去，下一条就只能等或永远建不出来";
+        EXPECT_EQ(pool.idleCount(), 0U) << "丢弃的连接不该出现在空闲栈里";
+        EXPECT_EQ(pool.discardedCount(), 1U);
+        EXPECT_EQ(counter.totalDestroyed.load(), 1U) << "连接本身要被关掉，不是被谁接走";
+        EXPECT_EQ(counter.sessionResetCount.load(), 0U) << "没有下一个借用者要保护，那次复位是白付的";
+
+        connection.discard(); // 幂等：空对象上再丢一次什么都不该做
+        EXPECT_EQ(pool.discardedCount(), 1U) << "重复 discard 多记了一笔（多半也多动了一次活跃计数）";
+        EXPECT_EQ(pool.activeCount(), 0U);
+
+        {
+            const PooledConnection second = pool.acquire();
+            ASSERT_TRUE(second);
+            EXPECT_EQ(counter.totalCreated.load(), 2) << "名额腾出来之后下一条应当是另起的一条";
+        }
+        EXPECT_EQ(pool.idleCount(), 1U) << "正常归还仍走原来的路";
+    }
+
 } // namespace AsynGyanis::Database

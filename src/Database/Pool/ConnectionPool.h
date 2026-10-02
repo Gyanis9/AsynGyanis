@@ -209,8 +209,10 @@ namespace AsynGyanis::Database
          *          若存在异步等待者，直接将连接交付给等待者而不入空闲栈。
          *
          * @param connection 待归还的连接所有权
+         * @param isDiscard true = 调用方判定这条连接不该再被任何人复用：直接关掉并腾出名额，
+         *        不做会话复位、不交接给等待者也不入空闲栈（见 `PooledConnection::discard()`）
          */
-        void returnConnection(std::unique_ptr<DatabaseConnection> connection);
+        void returnConnection(std::unique_ptr<DatabaseConnection> connection, bool isDiscard = false);
 
     private:
         // ========================================================================
@@ -439,9 +441,11 @@ namespace AsynGyanis::Database
          * @param connection 待归还的连接，成功交接后被移走
          * @param liveness 池存活令牌，与池共享
          * @param countAsActive 是否先补记一次活跃取出（协程等待器交接时归还路径已减过活跃计数）
+         * @param isDiscard 透传给 `returnConnection()`：true = 丢弃而不是复用
          * @return true 已交给池；false 池已停摆，连接留在调用方手里自行关闭
          */
-        bool returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness, bool countAsActive) noexcept;
+        bool returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness, bool countAsActive,
+                                     bool isDiscard = false) noexcept;
 
         /**
          * @brief 唤醒已到截止时刻的异步等待者（以「空连接」收尾）
