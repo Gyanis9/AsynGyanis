@@ -114,9 +114,17 @@ namespace AsynGyanis::Base
                 {
                     continue;
                 }
-                // 顺移失败时保持原文件不动，后续 cleanupOldFiles 仍会按上限收敛
+                // 顺移失败必须出声：它意味着后面那步「活动文件改名为 1 号备份」会直接盖掉这份
+                // 没能移走的旧备份——那一段历史就此消失，而现场只看到「日志照常滚动了」。
+                // 「cleanupOldFiles 仍会按上限收敛」救不回内容，它只管份数。
+                // 这里的故障只能写 std::cerr：本 Sink 自己就是日志的出口，拿根日志器报等于让 write() 递归
                 const std::filesystem::path targetPath = directory / joinDottedName(namePart, std::to_string(index + 1), extensionPart);
                 std::filesystem::rename(sourcePath, targetPath, errorCode);
+                if (errorCode)
+                {
+                    std::cerr << "RollingFileSink：备份顺移失败（" << Platform::FileSystem::utf8FromPath(sourcePath) << " 改名为 " << Platform::FileSystem::utf8FromPath(targetPath)
+                              << "）：" << errorCode.message() << "；本次滚动会把这一份备份的内容直接覆盖掉，那一段日志丢失" << '\n';
+                }
             }
         }
     } // namespace
@@ -154,8 +162,10 @@ namespace AsynGyanis::Base
         std::lock_guard lock(m_mutex);
         // 活动文件为空只可能来自上一次重开失败（目标被杀软/备份代理短暂独占、磁盘写满、网络盘
         // 失联）。不在这里补一次重开就再没有触发点：按大小的滚动判据要求活动文件非空，于是本
-        // Sink 会一声不响地永久停产。限流到每秒一次；仍开不开照旧抛出，由 Logger 的 Sink
-        // 异常上报路径出声，故障期间的丢弃量因此可见而不是不可见
+        // Sink 会一声不响地永久停产。限流到每秒一次；仍开不开照旧抛出，由 Logger 的 Sink 异常
+        // 上报路径每秒留一行诊断——可见的是「每秒一次的重试还在失败」，而这段时间到底丢了多少行
+        // 只能由调用方自己按写入条数估：本 Sink 没有像 FileSink 那样给出丢弃行数，因为每次重开都
+        // 会换掉那一个 FileSink 实例，它的计数不累计到滚动这一层
         if (!m_currentSink)
         {
             const auto now = std::chrono::steady_clock::now();
@@ -288,7 +298,14 @@ namespace AsynGyanis::Base
         // 累计字节数必须从真实大小起算，否则按大小滚动会推迟到超过阈值一倍以上
         std::error_code      sizeError;
         const std::uintmax_t existingSize = std::filesystem::file_size(currentPath, sizeError);
-        m_bytesInCurrentFile              = sizeError ? 0 : existingSize;
+        if (sizeError)
+        {
+            // 问不出真实大小就按 0 起算：活动文件会在原地长到「阈值 + 它本来的体积」才滚，
+            // 磁盘占用与配置对不上而现场看不出原因
+            std::cerr << "RollingFileSink：读不到当前日志文件的大小：" << Platform::FileSystem::utf8FromPath(currentPath) << "；原因：" << sizeError.message()
+                      << "；本次按 0 起算，滚动会推迟到超过上限才发生" << '\n';
+        }
+        m_bytesInCurrentFile = sizeError ? 0 : existingSize;
     }
 
     std::filesystem::path RollingFileSink::getCurrentFilename() const
@@ -326,10 +343,14 @@ namespace AsynGyanis::Base
         const PathView backupPrefixView{backupPrefix};
         const PathView extensionView{extensionPart};
 
+        std::error_code scanError;
         for (std::error_code errorCode; const auto &entry: std::filesystem::directory_iterator(m_directory, errorCode))
         {
             if (errorCode)
             {
+                // 扫不下去就等于一份备份都不会被删：max_backup 从此形同虚设，日志目录无界增长，
+                // 而除了磁盘满之外没人会知道。这一条必须出声（本 Sink 是日志的出口，只能进标准错误）
+                scanError = errorCode;
                 break;
             }
             const PathText filename = entry.path().filename().native();
@@ -371,6 +392,11 @@ namespace AsynGyanis::Base
                 std::error_code removeErrorCode;
                 std::filesystem::remove(backupFiles[index].path, removeErrorCode);
             }
+        }
+        if (scanError)
+        {
+            std::cerr << "RollingFileSink：清理旧备份时无法读取目录：" << Platform::FileSystem::utf8FromPath(m_directory) << "；原因：" << scanError.message()
+                      << "；本次滚动没有删除任何超限备份，max_backup 暂时不再成立" << '\n';
         }
     }
 } // namespace AsynGyanis::Base

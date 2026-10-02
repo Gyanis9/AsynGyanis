@@ -234,7 +234,13 @@ namespace AsynGyanis::Base
         }
 
         EXPECT_NE(capturedText.find("滚动失败"), std::string::npos) << "改名失败一条诊断都没有：日志被清空这件事完全不可见";
-        EXPECT_NE(capturedText.find("blocked.1.log"), std::string::npos) << "诊断里没点名被占住的那个目标，运维无从知道该清哪";
+        EXPECT_NE(capturedText.find("blocked.1.log"), std::string::npos) << "诊断里没点名被占住的那个目标序号，运维无从知道该清哪";
+        // 顺移失败此前一声不响：它意味着接下来「活动文件改名为 1 号备份」会直接把那份没能移走的
+        // 旧备份盖掉——那一段历史消失，而现场只看到日志照常滚动了
+        EXPECT_NE(capturedText.find("备份顺移失败"), std::string::npos) << "顺移失败没有留下任何诊断";
+        EXPECT_NE(capturedText.find("blocked.2.log"), std::string::npos) << "顺移诊断没点名被占住的 2 号位";
+        // 顺移的 report 必须排在落位之前：先移再落，读日志的人要按因果顺序看到这两行
+        EXPECT_LT(capturedText.find("备份顺移失败"), capturedText.find("滚动失败")) << capturedText;
         // 兜底行为照旧：滚动做不成也要继续写得下去
         EXPECT_GT(countLines(temporaryDirectory.path() / "blocked.log"), 0U);
     }
