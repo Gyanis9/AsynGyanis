@@ -1,11 +1,35 @@
 #include "Net/Http/HttpMemoryBudget.h"
 
 #include "Base/Log/LogMacros.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
+
+#include <exception>
+#include <utility>
 
 namespace AsynGyanis::Net
 {
     HttpMemoryBudget::HttpMemoryBudget(const std::size_t maximumTotalBytes) noexcept : m_maximumTotalBytes(maximumTotalBytes)
     {
+        // 两条读数挂在进程指标出口上（/metrics）：预算被配起来之后，运维要能看出
+        // 「现在占了多少」与「因为超预算拒掉过多少条」。只有 503 的日志而没有读数，
+        // 面板上就看不出这道闸是在兜住峰值还是在误杀正常流量
+        //
+        // 登记本身可能因分配失败而抛：这里出声而不静默吞掉，也不让一座可选的观测桥
+        // 把服务构造打死（构造是 noexcept 的，抛出去就是 terminate）
+        try
+        {
+            m_metricHandles.push_back(Core::ProcessMetricsRegistry::registerMetric(
+                    "asyn_http_inflight_body_bytes", "当前预留的在途请求正文字节（所有预算对象相加；上限为 0 的那份不占额度）",
+                    Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
+                    [this] { return static_cast<std::uint64_t>(reservedByteCount()); }));
+            m_metricHandles.push_back(Core::ProcessMetricsRegistry::registerMetric(
+                    "asyn_http_memory_budget_rejections_total", "因超出在途正文预算而被拒（回 503）的次数（进程累计）",
+                    Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                    [this] { return static_cast<std::uint64_t>(rejectionCount()); }));
+        } catch (const std::exception &exception)
+        {
+            LOG_WARN_FMT("HttpMemoryBudget: 进程指标登记失败，预算照常生效但面板上看不到这两条读数。原因：{}", exception.what());
+        }
     }
 
     bool HttpMemoryBudget::tryReserve(const std::size_t byteCount) noexcept
@@ -19,6 +43,8 @@ namespace AsynGyanis::Net
             // 回绕后的「小值」会让一次超限预留被判成通过
             if (m_maximumTotalBytes != 0 && byteCount > m_maximumTotalBytes - currentBytes)
             {
+                // 拒一次记一次：这条计数是「这道闸到底在兜峰值还是在误杀」的唯一可直接读的判据
+                m_rejectionCount.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
 
@@ -56,6 +82,11 @@ namespace AsynGyanis::Net
     std::size_t HttpMemoryBudget::reservedByteCount() const noexcept
     {
         return m_reservedBytes.load(std::memory_order_acquire);
+    }
+
+    std::size_t HttpMemoryBudget::rejectionCount() const noexcept
+    {
+        return m_rejectionCount.load(std::memory_order_relaxed);
     }
 
     std::size_t HttpMemoryBudget::maximumTotalBytes() const noexcept

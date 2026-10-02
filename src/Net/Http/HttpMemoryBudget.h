@@ -11,8 +11,11 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Metrics/ProcessMetricsRegistry.h"
+
 #include <atomic>
 #include <cstddef>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -44,6 +47,16 @@ namespace AsynGyanis::Net
         explicit HttpMemoryBudget(std::size_t maximumTotalBytes) noexcept;
 
         /**
+         * @brief 不可拷贝也不可移动：构造时登记的进程指标回调捕获的是 `this`
+         * @details 本对象按 shared_ptr 在服务器与会话之间共享（类注释的口径），值语义从来不是它的用法；
+         *          允许拷贝会让副本带着指向原件的读回调，面板上就会多出一条永远不再变化的账
+         */
+        HttpMemoryBudget(const HttpMemoryBudget &) = delete;
+        HttpMemoryBudget &operator=(const HttpMemoryBudget &) = delete;
+        HttpMemoryBudget(HttpMemoryBudget &&) = delete;
+        HttpMemoryBudget &operator=(HttpMemoryBudget &&) = delete;
+
+        /**
          * @brief 尝试预留一段字节
          * @details 采用「读取当前值 → 比较 → CAS」的循环：竞争失败只重试而不阻塞，
          *          因此多个事件循环线程可以同时预留。
@@ -73,6 +86,14 @@ namespace AsynGyanis::Net
          * @return std::size_t 上限，0 表示不限制
          */
         [[nodiscard]] std::size_t maximumTotalBytes() const noexcept;
+
+        /**
+         * @brief 取被这道预算拒掉的次数（预留失败即计，一次请求内的多次增量预留各计一次）
+         * @return std::size_t 累计次数
+         * @note 口径要说清：这是**拒绝次数**而不是「被回 503 的请求条数」——一条请求边收边攒时
+         *       可能补几次预留，都被拒才回一条 503。要「拒了多少条请求」看会话侧的 503 计数
+         */
+        [[nodiscard]] std::size_t rejectionCount() const noexcept;
 
         /**
          * @brief 一次占用会话：构造时绑定预算，补预留用 growTo()，析构时自动归还
@@ -190,5 +211,9 @@ namespace AsynGyanis::Net
     private:
         const std::size_t        m_maximumTotalBytes; ///< 上限字节数，0 表示不限制
         std::atomic<std::size_t> m_reservedBytes{0};  ///< 已预留总量，跨线程原子累加
+        std::atomic<std::size_t> m_rejectionCount{0}; ///< 因超出上限而被拒的预留次数，见 rejectionCount()
+        /// 进程指标登记动作（两条读数：当前占用与被拒次数）；析构时把手自动注销，
+        /// 免得留下一条谁也不持有的读数被下一轮抓取继续报出去
+        std::vector<Core::ProcessMetricHandle> m_metricHandles;
     };
 } // namespace AsynGyanis::Net

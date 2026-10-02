@@ -6,6 +6,7 @@
 #include "Net/Http/HttpServerLimits.h"
 
 #include "HttpTestSupport.h"
+#include "MetricsTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -381,6 +382,42 @@ namespace AsynGyanis::Net
      * @details 这笔预算管的是「同时在途的正文总量」：额度若到应答写完都不归还，一条长连接发第二个
      *          正文就会被 503——上限会被单个连接自己吃满，与「跨连接总量」这个初衷不符
      */
+    /**
+     * @brief 钉住：预算的两条读数挂在进程指标出口上，并随动作变化
+     * @details 此前这道闸只有 503 那一行日志：面板上看不出它是在兜住峰值还是在误杀正常流量，
+     *          而它现在能从配置文件里配起来了（`server.memory_budget_bytes`），配了之后看不见
+     *          就等于不敢开。取「前后差值」而不是绝对值——同名读数按 Sum 并，进程里若还有别的
+     *          预算对象，绝对值就不是本对象那一份。析构后必须回到登记前的值：留下一条谁也不持有
+     *          的旧读数，下一轮抓取还在报它
+     */
+    TEST(HttpMemoryBudgetTest, PublishesReservedBytesAndRejectionsToTheRegistry)
+    {
+        using AsynGyanis::TestSupport::hasRegistrySample;
+        using AsynGyanis::TestSupport::registryValue;
+
+        constexpr std::string_view kReservedName = "asyn_http_inflight_body_bytes";
+        constexpr std::string_view kRejectedName = "asyn_http_memory_budget_rejections_total";
+        const std::uint64_t        reservedBefore = registryValue(kReservedName);
+        const std::uint64_t        rejectedBefore = registryValue(kRejectedName);
+
+        {
+            HttpMemoryBudget budget(10); // tryReserve 会改账，不能是 const
+            ASSERT_TRUE(hasRegistrySample(kReservedName)) << "登记动作没发生：预算建好了却没人导出它";
+            ASSERT_TRUE(hasRegistrySample(kRejectedName));
+
+            ASSERT_TRUE(budget.tryReserve(4));
+            EXPECT_EQ(registryValue(kReservedName) - reservedBefore, 4U) << "当前占用没跟着预留走";
+
+            ASSERT_FALSE(budget.tryReserve(100));
+            EXPECT_EQ(registryValue(kRejectedName) - rejectedBefore, 1U) << "拒了一次而计数没动：这道闸在面板上是哑的";
+            ASSERT_FALSE(budget.tryReserve(100));
+            EXPECT_EQ(registryValue(kRejectedName) - rejectedBefore, 2U) << "两次拒绝只记了一次";
+        }
+
+        EXPECT_EQ(registryValue(kReservedName), reservedBefore) << "预算对象已析构，占用读数却还挂在导出里";
+        EXPECT_EQ(registryValue(kRejectedName), rejectedBefore) << "预算对象已析构，拒绝计数却还挂在导出里";
+    }
+
     TEST(HttpMemoryBudgetTest, ReturnsQuotaBetweenKeepAliveRequestsOnOneConnection)
     {
         // 预算 100：装得下一条 90 字节的正文，装不下两条同时在场
