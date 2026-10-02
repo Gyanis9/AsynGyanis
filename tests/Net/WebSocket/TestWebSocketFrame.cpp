@@ -607,7 +607,9 @@ namespace AsynGyanis::Net
 
         // 中间插一条 Ping：它独立成帧交付，分片消息仍在进行中
         ASSERT_EQ(feed(decoder, makeMaskedClientFrame(WebSocketOpCode::Ping, "hi")), WebSocketDecodeStatus::Frame);
-        EXPECT_EQ(decoder.takeFrame().opCode, WebSocketOpCode::Ping);
+        const WebSocketFrame injectedPing = decoder.takeFrame();
+        EXPECT_EQ(injectedPing.opCode, WebSocketOpCode::Ping);
+        EXPECT_EQ(injectedPing.payload, "hi") << "控制帧的负载不得与分片消息串在一起：两条缓冲必须各写各的";
 
         // 末片照旧接上：重组出的仍是完整的 "Hello"
         ASSERT_EQ(feed(decoder, makeMaskedClientFrame(WebSocketOpCode::Continuation, "lo", true)), WebSocketDecodeStatus::Frame);

@@ -106,8 +106,9 @@ namespace AsynGyanis::Net
      *       中间设施按 HTTP 报文缓存并重放帧内容的唯一防线。掩码按 4 字节循环异或解除。
      * @note RSV 位的口径：RSV2/RSV3 一律必须为 0；RSV1 只有在协商过 permessage-deflate
      *       （见 setPerMessageDeflateEnabled()）且出现在数据消息首帧上时才允许。
-     * @note 从严之处：RFC 6455 §5.4 允许控制帧插在分片消息中间，本实现拒绝——消息既然在此重组，
-     *       放行插帧就会让「取帧顺序」与「消息到达顺序」不再是同一件事。
+     * @note 控制帧插在分片消息中间是允许的（RFC 6455 §5.4：control frames MAY be injected in the
+     *       middle of a fragmented message）：它单独成帧交付，分片状态与已攒下的负载都不受影响。
+     *       本层唯一的从严处是控制帧自身不得分片、也不得压缩。
      *
      * @warning 负载按「指针 + 长度」处理，可含 NUL 与任意字节；文本帧的 UTF-8 合法性、
      *          Close 帧的状态码与原因文本都不在本层校验，由上层（会话）负责。
