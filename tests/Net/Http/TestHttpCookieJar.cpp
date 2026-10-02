@@ -298,6 +298,37 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：对端给的 Max-Age 大得换算不过来时按上限收，而不是溢出成「过去」
+     * @details delta-seconds 是对端可控的 int64，而 system_clock 的周期是秒的十亿/百亿分之一：
+     *          「一千年」这种写在真实站点出现过的取值，换算之后就已经越过 int64 上界。
+     *          有符号溢出是 UB，而这里的落法是**到期时刻跑到过去**——刚存进去的 Cookie 当场被当成
+     *          过期摘掉，症状是登录态莫名其妙存不住，且只在特定时钟取值下复现。
+     *          判据用「存进去之后还在账上、且能被发送路径读出」这条正向断言：溢出成过去的实现
+     *          会当场把它摘掉。
+     */
+    TEST(HttpCookieJar, SaturatesAbsurdMaxAgeInsteadOfOverflowingToThePast)
+    {
+        HttpCookieJar jar;
+
+        // 「一千年」：真实世界写过的取值，换算 tick 已经溢出
+        storeOne(jar, "old=1; Max-Age=31536000000");
+        ASSERT_EQ(jar.cookieCount(), 1U) << "一千年的寿命被溢出成了过去";
+        ASSERT_TRUE(headerFor(jar).has_value()) << "溢出后的到期时刻落在过去，发送路径把它过滤掉了";
+        EXPECT_NE(headerFor(jar)->find("old=1"), std::string::npos);
+
+        // int64 上界：最坏的一档同样要落在「永不过期」而不是 UB
+        HttpCookieJar worstCase;
+        storeOne(worstCase, "big=2; Max-Age=9223372036854775807");
+        ASSERT_EQ(worstCase.cookieCount(), 1U) << "int64 上界的 Max-Age 溢出成了过去";
+        EXPECT_TRUE(headerFor(worstCase).has_value());
+
+        // 对照：负值是删除语义，不该被这套饱和逻辑接走
+        HttpCookieJar deleted;
+        storeOne(deleted, "gone=3; Max-Age=-1");
+        EXPECT_FALSE(headerFor(deleted).has_value()) << "Max-Age=-1 是「立即过期」，不是永不过期";
+    }
+
+    /**
      * @brief 钉住：存入时真正摘掉已过期的条目
      * @details 发送路径只**过滤**已过期的（那是 const 查询，不能因有人来查就改账），此前没有任何
      *          地方真正删除它们。僵尸条目一直占着 `maximumTotalCookies` 与单域配额，一个爱发短命
@@ -310,8 +341,10 @@ namespace AsynGyanis::Net
         storeOne(jar, "early=1; Max-Age=600");
         ASSERT_EQ(jar.cookieCount(), 1U) << "刚存入的未过期条目应在账上";
 
-        // 换到一小时后再存一条：早先那条此刻已过期，应当被真正摘掉
-        jar.storeFromResponse("example.com", false, "/", {"late=2; Max-Age=31536000000"}, kReceivedAt + std::chrono::hours{1});
+        // 换到一小时后再存一条：早先那条此刻已过期，应当被真正摘掉。
+        // 新那条给十年而不是「一千年」：寿命长到能活过发送路径按真实时钟的过滤，
+        // 又留在本时钟可表示的范围内（超出范围的形态由下面那条饱和用例专门钉）
+        jar.storeFromResponse("example.com", false, "/", {"late=2; Max-Age=315360000"}, kReceivedAt + std::chrono::hours{1});
         EXPECT_EQ(jar.cookieCount(), 1U) << "过期条目没被摘掉，会继续占着 maximumTotalCookies 与单域配额";
         const std::optional<std::string> header = headerFor(jar);
         ASSERT_TRUE(header.has_value());

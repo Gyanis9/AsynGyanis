@@ -299,7 +299,13 @@ namespace AsynGyanis::Net
                     std::erase_if(m_entries, [&entry](const Entry &stored) { return isSameScope(stored, entry); });
                     continue;
                 }
-                expiryAt = receivedAt + std::chrono::seconds(seconds);
+                // delta-seconds 是对端给的 int64，而本时钟的周期是 1 秒的十亿分之一（Linux）或
+                // 百亿分之一（MSVC）：`Max-Age=31536000000`（一千年，真实站点确实写过）换算过去就已经
+                // 越过 int64 上界，那是有符号溢出——UB，而这里的后果是**到期时刻翻成过去**：
+                // 刚存进来的 Cookie 当场被当成过期摘掉，症状是登录态莫名其妙存不住。
+                // 按「本端承认的最长寿命」收口：超出上限就当永不过期用，这正是对端写下这个数时的意图。
+                constexpr std::int64_t kMaximumLifetimeSeconds = 100LL * 365 * 24 * 3600; // ≈ 3.15e9，换算成 tick 远在可表示范围内
+                expiryAt                                       = receivedAt + std::chrono::seconds{seconds > kMaximumLifetimeSeconds ? kMaximumLifetimeSeconds : seconds};
             } else if (parsedCookie->expiresAt().has_value())
             {
                 expiryAt = *parsedCookie->expiresAt();
