@@ -1516,6 +1516,11 @@ namespace AsynGyanis::Net
             if (feedStatus == WebSocketFeedStatus::DecodeError)
             {
                 LOG_WARN_FMT("Http3Session: 流 {} 上的 WebSocket 帧解不开（{}），按 {} 收口隧道", streamId, tunnel.peer->decodeErrorText(), tunnel.peer->decodeErrorCloseCode());
+                // 与 h1/h2 的已知不对称（有意留下）：那两路在这里会先 co_await peer.close(1002/1007/1009)
+                // 再收口，而本处是直接结束流——本函数是**非协程**的安全点（由 onStreamData 调），
+                // 发一条要等产出窗口的帧要么挂起要么另搭一套延迟发送，而延迟发送会把「唤醒挂在 receive()
+                // 上的业务」推到下一次 pump，对端不再发字节时就成永久挂起。宁可让对端看到异常断开，
+                // 也不在这里造一个丢唤醒
                 closeTunnel(streamId);
             }
         }
@@ -1619,7 +1624,17 @@ namespace AsynGyanis::Net
         // 挂起期间这条隧道可能已被对端重置并回收，因此重新查一遍而不是复用 found
         if (const auto stillThere = m_webSocketTunnels.find(streamId); stillThere != m_webSocketTunnels.end())
         {
-            stillThere->second->isBusinessFinished = true;
+            WebSocketTunnel &live = *stillThere->second;
+            // 业务收工：先把一条 Close(1000) 发出去，再收尾这条流。h1/h2 两路都是这个顺序，
+            // 少了这一步对端的 WebSocket 层看到的就是「流被凭空结束」——按 RFC 9220 §6 那属于异常断开，
+            // 客户端只会报告连接被切断，拿不到本端给出的状态码。
+            // 顺序不能颠倒：closeTunnel() 里会 markClosed()，之后 peer.close() 直接短路返回 false，
+            // 那条帧就永远发不出去了。写正在飞行中时也不补（与 h1 同判据：那时发什么都已经晚了）
+            if (live.peer->isOpen() && !live.peer->isWriteInFlight())
+            {
+                [[maybe_unused]] const bool isNormalCloseSent = co_await live.peer->close(kWebSocketNormalClosureCode);
+            }
+            live.isBusinessFinished = true;
             closeTunnel(streamId);
         }
         co_return;

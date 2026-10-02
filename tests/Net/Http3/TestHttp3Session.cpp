@@ -2192,6 +2192,9 @@ namespace AsynGyanis::Net
         }
 
         EXPECT_EQ(peer.response().status, 200) << "隧道没有以 2xx 应答";
+        // 这条走的是「CONNECT 与 END_STREAM 同趟到达」那条就地收口的快路：隧道记录在业务醒来之前
+        // 就被标成已收口，因此这里刻意不断言 Close(1000)——业务自己收工那条路另有用例
+        // （SendsWebSocketCloseBeforeEndingTunnelWhenBusinessReturns）
         EXPECT_TRUE(peer.response().isComplete) << "对端已收尾的隧道没有跟着收口：响应永远收不完（业务也醒不过来）";
         EXPECT_TRUE(isBusinessFinished) << "隧道收口后业务没有醒来收尾";
         EXPECT_FALSE(session.hasOutstandingWork()) << "同趟收尾的隧道收口后仍留在账上：承载层会一直认为这条连接有在途工作";
@@ -2200,6 +2203,63 @@ namespace AsynGyanis::Net
         EXPECT_EQ(snapshot.totalRequestCount, 1U) << "隧道这条请求没计入请求数";
         EXPECT_EQ(snapshot.status2xxCount, 1U) << "隧道的 2xx 应答没落进状态码类：h3 没有 101 这一档";
         EXPECT_EQ(snapshot.latencySampleCount(), 1U) << "隧道的响应没落进耗时直方图";
+    }
+
+    /**
+     * @brief 业务自己收工时，隧道要先发一条 Close(1000) 再结束这条流（与 h1/h2 同一顺序）
+     * @details 少了这条帧，对端的 WebSocket 层只能报「连接被凭空切断」——按 RFC 9220 §6 那属异常断开，
+     *          客户端拿不到本端给出的状态码，也无法区分「服务器收工」与「中间把连接掐了」。
+     *          顺序同样钉住：closeTunnel() 里会 markClosed()，而 peer.close() 一见已闭合就短路返回
+     *          false，反过来写等于那条帧永远发不出去。
+     *          前提要走「请求头不带 END_STREAM」那条：同趟到达的那处在派发里就地收口，属另一条路
+     *          （见上一条用例的注释）。
+     */
+    TEST(Http3Session, SendsWebSocketCloseBeforeEndingTunnelWhenBusinessReturns)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.get("/chat",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket(
+                               [](WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   const std::optional<WebSocketMessage> message = co_await peer.receive();
+                                   if (message.has_value())
+                                   {
+                                       static_cast<void>(co_await peer.sendText(message->payload));
+                                   }
+                                   co_return;
+                               });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::array<std::uint8_t, 4>     mask{0x11U, 0x22U, 0x33U, 0x44U};
+        const std::vector<std::uint8_t>       frameBytes    = makeMaskedTextFrame("hi", mask);
+        const std::vector<CapturedStreamData> requestChunks = peer.submitWebSocketTunnel("/chat", "example.com", std::string(frameBytes.begin(), frameBytes.end()));
+        ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_EQ(peer.response().status, 200) << "隧道没有以 2xx 应答";
+        // 回显帧（服务端帧不掩码：0x81 长度 2 "hi"）之后必须紧跟 Close(1000)：0x88 长度 2 状态码 0x03E8
+        const std::string expectedBody = std::string("\x81\x02hi", 4) + std::string("\x88\x02\x03\xE8", 4);
+        EXPECT_EQ(peer.response().body, expectedBody) << "业务收工时没有先发 WebSocket Close 再结束这条流";
+        EXPECT_TRUE(peer.response().isComplete) << "业务收工后这条流应当收尾";
     }
 
     /**
