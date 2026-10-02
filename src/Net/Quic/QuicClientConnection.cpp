@@ -143,7 +143,10 @@ namespace AsynGyanis::Net
 
         if (!isHandshakeDone)
         {
-            LOG_DEBUG("QuicConnection: 出站握手未完成即收场（被对端拒绝、时限掐断，或本端已关）");
+            // 前缀按本件的名（原先写成 QuicConnection:，按名 grep 的人会翻到另一个文件）；
+            // 等级从 DEBUG 抬到 WARN：调用方拿到的只是一句 false，而「被对端拒绝」这条通路
+            // 是本端主动出站产生的，不该只在调试档看得见
+            LOG_WARN("QuicClientConnection: 出站握手未完成即收场（被对端拒绝、时限掐断，或本端已关）");
             co_return false;
         }
         co_return true;

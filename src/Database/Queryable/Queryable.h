@@ -848,7 +848,11 @@ namespace AsynGyanis::Database::Queryable
                 PooledConnection probeConnection = m_pool->acquire();
                 if (!probeConnection)
                 {
-                    throw ConnectionUnavailableException("Queryable: 无法从连接池获取连接以推导数据库类型，请检查连接池配置");
+                    // 同 acquireConnectionLease 那条：把池的读数报出来，而不是只留一句「请检查配置」
+                    throw ConnectionUnavailableException(std::string("Queryable: 无法从连接池获取连接以推导数据库类型。当前池内 ") +
+                                                         std::to_string(m_pool->totalCount()) + " 条、活跃 " + std::to_string(m_pool->activeCount()) +
+                                                         " 条、排队等待 " + std::to_string(m_pool->waitingCount()) +
+                                                         " 条，累计借出等待超时 " + std::to_string(m_pool->borrowTimeoutCount()) + " 次");
                 }
                 resolvedType = probeConnection->databaseType();
             }
@@ -906,10 +910,20 @@ namespace AsynGyanis::Database::Queryable
                 return lease;
             }
 
+            const std::size_t borrowTimeoutsBefore = pool->borrowTimeoutCount();
             lease.pooled = pool->acquire();
             if (!lease.pooled)
             {
-                throw ConnectionUnavailableException("Queryable: 从连接池获取连接失败，可能是池已达上限或连接创建失败");
+                // 「可能是池已达上限或连接创建失败」是把两种处置完全不同的失败合成一句猜话：
+                // 前者要抬上限或减少并发借用，后者要查连接参数与服务可达性。池自己已经把这两件事
+                // 分开计了（借出等待超时计数只在等满截止时刻那一路增加），所以这里报数而不是猜
+                throw ConnectionUnavailableException(std::string("Queryable: 从连接池借不到连接。借出等待超时计数从 ") +
+                                                     std::to_string(borrowTimeoutsBefore) + " 变成 " +
+                                                     std::to_string(pool->borrowTimeoutCount()) +
+                                                     "（增加了就是等满了截止时刻——池被借干；没增加就是新建连接失败）；"
+                                                     "当前池内 " +
+                                                     std::to_string(pool->totalCount()) + " 条、活跃 " + std::to_string(pool->activeCount()) + " 条、排队等待 " +
+                                                     std::to_string(pool->waitingCount()) + " 条");
             }
             lease.connection = lease.pooled.operator->();
             return lease;

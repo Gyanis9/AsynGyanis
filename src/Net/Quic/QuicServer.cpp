@@ -214,7 +214,11 @@ namespace AsynGyanis::Net
         auto rebuilt = buildTlsContext(m_configuration);
         if (!rebuilt.has_value())
         {
-            LOG_ERROR_FMT("QuicServer: 证书重载失败，旧证书继续服务。原因：{}", rebuilt.error());
+            // 这一条重读的是五处东西（证书、私钥、OCSP 装订、票据密钥、按名字登记的站点证书），
+            // 只报一个 std::error_code 时运维分不清是哪一处读不到，因此把本轮的落点抄进正文
+            LOG_ERROR_FMT("QuicServer: 证书重载失败，旧证书继续服务。本轮要读的证书是「{}」、私钥是「{}」，"
+                          "另外还会重读 OCSP 装订、票据密钥与站点证书（任一处读不到都算这一条）。原因：{}",
+                          m_configuration.certificateFile, m_configuration.privateKeyFile, rebuilt.error());
             return false;
         }
 

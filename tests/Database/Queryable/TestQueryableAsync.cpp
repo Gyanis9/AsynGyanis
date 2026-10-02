@@ -15,6 +15,7 @@
 
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Database/Common/ConnectionConfig.h"
+#include "Database/Common/ConnectionUnavailableException.h"
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Dialect/SqliteDialect.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -663,6 +664,39 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchWithEmptyCollectionNeedsNoConnection)
     EXPECT_EQ(asyncInserted.value.value(), 0);
     EXPECT_LT(elapsedMilliseconds, 1000) << "耗时 " << elapsedMilliseconds << " 毫秒，像是先等满了 acquireTimeout";
 }
+
+    /**
+     * @brief 钉住：借不到连接时把「是哪一种失败」报出来，而不是留一句「可能是」
+     * @details 池饱和（该抬上限或减少并发借用）与建不出连接（该查连接参数与服务可达性）处置完全不同，
+     *          而池早就把这两条分开计了——`borrowTimeoutCount` 只在等满截止时刻那一路增加。旧文本
+     *          「可能是池已达上限或连接创建失败」把两种可能并成一句猜话，读了等于没读。
+     *          先跑一次 count() 让方言探测把类型缓存下来（那次借行走的是另一条出口），再占住唯一额度
+     *          跑第二次，这次撞的就是租约出口
+     */
+    TEST_F(QueryableAsyncTest, ReportsWhichPoolFailureItWasWhenTheLeaseCannotBeAcquired)
+    {
+        Queryable<AsyncAccountRow> query(*m_pool);
+        EXPECT_EQ(query.count(), 0) << "前提不成立：方言探测没跑成，后面撞不到租约出口";
+
+        const PooledConnection occupancy = m_pool->acquire();
+        ASSERT_TRUE(static_cast<bool>(occupancy)) << "前提不成立：占位连接没拿到";
+
+        std::string failureText;
+        try
+        {
+            static_cast<void>(query.count());
+        } catch (const AsynGyanis::Database::ConnectionUnavailableException &exception)
+        {
+            // 当场抄成副本：what() 指向异常对象自己的缓冲，出了 catch 它就没了
+            failureText = exception.what();
+        }
+        ASSERT_FALSE(failureText.empty()) << "池被占满时该抛 ConnectionUnavailableException";
+
+        const std::string text{failureText};
+        EXPECT_NE(text.find("借出等待超时计数从 0 变成 1"), std::string::npos) << "文本要点名这次是不是等满了截止时刻：「" << text << "」";
+        EXPECT_NE(text.find("池内 1 条、活跃 1 条"), std::string::npos) << "文本要给出池的现况读数：「" << text << "」";
+        EXPECT_EQ(text.find("可能是"), std::string::npos) << "不该再把两种失败并成一句猜话：「" << text << "」";
+    }
 
 // ========================================================================
 // 不阻塞调用线程

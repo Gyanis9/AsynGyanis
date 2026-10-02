@@ -5,6 +5,7 @@
 #include "Core/Tls/SessionTicketKeyRing.h"
 
 #include <openssl/ocsp.h>
+#include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
 
@@ -338,6 +339,27 @@ namespace AsynGyanis::Core
         }
     }
 
+    namespace
+    {
+        /**
+         * @brief 取 OpenSSL 错误栈里最靠外那条的原因文本
+         * @details 出口只有 bool 的场合，这是唯一能把「读不到文件 / 不是合法 PEM / 密钥不配对」
+         *          分开的途径；错误栈空时如实说明，免得给出一条看不出名目的空文本
+         * @return std::string 形如 "error:02001003:system library:fopen:Permission denied"，或空栈说明
+         */
+        [[nodiscard]] std::string openSslReasonText()
+        {
+            const unsigned long queueEntry = ERR_get_error();
+            if (queueEntry == 0)
+            {
+                return "（错误栈为空，调用方未记下原因）";
+            }
+            char buffer[256];
+            ERR_error_string_n(queueEntry, buffer, sizeof(buffer));
+            return std::string(buffer);
+        }
+    } // namespace
+
     bool TlsContext::installCertificate(SSL_CTX *context, const std::string &certificateFile, const std::string &keyFile)
     {
         // 先清空错误栈：头文件承诺「失败可由 OpenSSL 错误栈取到原因」，而调用方通常只读第一条。
@@ -345,21 +367,28 @@ namespace AsynGyanis::Core
         // 「证书文件不存在」——同一份文案指向错的那个文件
         ERR_clear_error();
 
+        // 三步各自出声：本函数原先三处都只 `return false`，而这三件事对运维完全不同——
+        // 「文件读不到」「不是合法 PEM」「证书与私钥不配对」的处置手法不一样，而最常见的正是第三种。
+        // 出口是个 bool，OpenSSL 错误栈又只在同线程的下一次调用前有效，因此在这里当场抄回
         // 按「链文件」而非「单证书文件」加载：首张证书作本机证书，其余逐张进链并随握手一并出示。
         // use_certificate_file 只读第一张，链上的中间 CA 会被静默丢掉 —— 部署里全链证书
         // （fullchain.pem）是常态，缺链时对端只信任根 CA 就无法把证书串到根，握手直接失败
         if (SSL_CTX_use_certificate_chain_file(context, certificateFile.c_str()) != 1)
         {
+            LOG_ERROR_FMT("TlsContext: 证书链装载失败，文件「{}」。OpenSSL 报的是：{}", certificateFile, openSslReasonText());
             return false;
         }
 
         if (SSL_CTX_use_PrivateKey_file(context, keyFile.c_str(), SSL_FILETYPE_PEM) != 1)
         {
+            LOG_ERROR_FMT("TlsContext: 私钥装载失败，文件「{}」（证书那张已经读进来了）。OpenSSL 报的是：{}", keyFile, openSslReasonText());
             return false;
         }
 
         if (SSL_CTX_check_private_key(context) != 1)
         {
+            LOG_ERROR_FMT("TlsContext: 证书与私钥不配对——证书来自「{}」而私钥来自「{}」。OpenSSL 报的是：{}",
+                          certificateFile, keyFile, openSslReasonText());
             return false;
         }
         return true;

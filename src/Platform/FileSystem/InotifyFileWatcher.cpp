@@ -4,10 +4,12 @@
 #include "Platform/System/PlatformError.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <poll.h>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -21,8 +23,13 @@ namespace AsynGyanis::Platform
             // 这里刻意用裸 std::runtime_error 而**不是** Base 的框架异常：Platform 在 Base 之下
             // （Base 依赖 Platform），把 Base/Exception 拉进来就是循环依赖。构造期失败按本层
             // 的既有形状交给调用方；要改成正按 Platform 风格的错误码出口，得连着
-            // FileWatcher::create() 的签名一起动，属另一笔改造
-            throw std::runtime_error("inotify 初始化失败");
+            // FileWatcher::create() 的签名一起动，属另一笔改造。
+            // 但 errno 必须进文本：inotify_init1 失败最常见的原因是实例数上限（ENOSPC）或
+            // 权限（EPERM），只有内核回来的那个数能把这两种分开
+            const int failureNumber = errno;
+            throw std::runtime_error(std::string("inotify 初始化失败：errno=") + std::to_string(failureNumber) + " (" +
+                                     std::strerror(failureNumber) + "；inotify_init1(IN_CLOEXEC) 返回，ENOSPC 通常是 " +
+                                     "fs.inotify.max_user_instances 用满)");
         }
     }
 
