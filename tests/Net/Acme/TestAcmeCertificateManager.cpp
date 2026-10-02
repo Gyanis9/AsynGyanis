@@ -802,6 +802,34 @@ namespace AsynGyanis::Net
         EXPECT_EQ(static_cast<std::uint64_t>(manager.status().certificateExpiryUnixSeconds), expectedSeconds) << "同一次构造里对外读数与 status() 报的不是同一个到期时刻";
     }
 
+    namespace
+    {
+        /**
+         * @brief 常驻循环的观察协程：200 毫秒叫停，之后每 50 毫秒看一次帧有没有退，5 秒为上限
+         * @details 写成具名函数按引用收参，不写成立即调用的 lambda：协程帧里存的是**闭包对象的引用**，
+         *          立即调用的那个闭包在整条表达式结束时就销毁了，帧之后再碰它是
+         *          stack-use-after-scope（Linux 侧 ASan 实测抓到，MSVC 上恰好看不出来）
+         */
+        Core::Task<void> observeRenewalLoopStop(Core::EventLoop &loop, Core::Task<void> &loopTask, AcmeCertificateManager &manager, std::atomic<bool> &wasParkedWhenStopped,
+                                                std::atomic<bool> &exitedWithinBound)
+        {
+            Core::Timer timer(loop);
+            co_await timer.waitFor(std::chrono::milliseconds{200});
+            wasParkedWhenStopped.store(!loopTask.isReady(), std::memory_order_relaxed);
+            manager.stopRenewalLoop();
+            for (int tick = 0; tick < 100; ++tick) // 100 × 50ms：给「一片 + 调度」留出五倍余量
+            {
+                co_await timer.waitFor(std::chrono::milliseconds{50});
+                if (loopTask.isReady())
+                {
+                    exitedWithinBound.store(true, std::memory_order_relaxed);
+                    break;
+                }
+            }
+            loop.stop();
+        }
+    } // namespace
+
     /**
      * @brief 钉住：叫停真的能让睡下的续期循环退出，而不是等到下一拍
      * @details `stopRenewalLoop()` 只落一个原子标志，而这条帧唯一醒着的时刻是它自己的定时器到点——
@@ -839,23 +867,7 @@ namespace AsynGyanis::Net
 
         std::atomic<bool> wasParkedWhenStopped{false};
         std::atomic<bool> exitedWithinBound{false};
-        Core::Task<void>  observer = [&loop, &loopTask, &manager, &wasParkedWhenStopped, &exitedWithinBound]() -> Core::Task<void>
-        {
-            Core::Timer timer(loop);
-            co_await timer.waitFor(std::chrono::milliseconds{200});
-            wasParkedWhenStopped.store(!loopTask.isReady(), std::memory_order_relaxed);
-            manager.stopRenewalLoop();
-            for (int tick = 0; tick < 100; ++tick) // 100 × 50ms：给「一片 + 调度」留出五倍余量
-            {
-                co_await timer.waitFor(std::chrono::milliseconds{50});
-                if (loopTask.isReady())
-                {
-                    exitedWithinBound.store(true, std::memory_order_relaxed);
-                    break;
-                }
-            }
-            loop.stop();
-        }();
+        Core::Task<void>  observer = observeRenewalLoopStop(loop, loopTask, manager, wasParkedWhenStopped, exitedWithinBound);
         loop.scheduler().schedule(observer.handle());
 
         loop.run();
