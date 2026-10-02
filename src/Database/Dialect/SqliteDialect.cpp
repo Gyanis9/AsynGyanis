@@ -45,6 +45,22 @@ namespace AsynGyanis::Database
         return "BEGIN IMMEDIATE";
     }
 
+    std::string_view SqliteDialect::insertKeywordPhrase(const Queryable::InsertConflict conflict) const
+    {
+        // 短语含结尾空格：共用渲染层拼完它就接表名，两处的拼接形状只在这一处约定
+        switch (conflict)
+        {
+            case Queryable::InsertConflict::Fail:
+                return "INSERT INTO ";
+            case Queryable::InsertConflict::Ignore:
+                return "INSERT OR IGNORE INTO ";
+            case Queryable::InsertConflict::Replace:
+                return "INSERT OR REPLACE INTO ";
+        }
+        // 枚举将来扩到第四档时回到最保守的那一个：宁可报错，也不静默改写别人那一行
+        return "INSERT INTO ";
+    }
+
     std::string_view SqliteDialect::columnTypeName(const ColumnType type) const noexcept
     {
         // 映射依据见头文件：SQLite 只有 INTEGER / REAL / TEXT / BLOB 四个可用存储类，

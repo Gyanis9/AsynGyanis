@@ -80,6 +80,17 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view columnTypeName(ColumnType type) const noexcept override;
 
         /**
+         * @brief 冲突处置的 INSERT 关键词：MySQL 写成 `INSERT IGNORE INTO` 与 `REPLACE INTO`
+         * @details 重写 SqlDialect::insertKeywordPhrase()。`REPLACE INTO` 是**先删同键旧行再插**，
+         *          不是「按主键更新那几列」：行上的触发器会被触发、自增标识换一个新值、新行没给的列
+         *          回到默认值。要 ON DUPLICATE KEY UPDATE 那种「只改指定列」的语义，本层没有等价物，
+         *          得走原语 SQL（见 Queryable::execute）
+         * @param conflict 唯一键冲突的处置意图
+         * @return std::string_view 短语原文（含结尾的空格，可直接接表名）
+         */
+        [[nodiscard]] std::string_view insertKeywordPhrase(Queryable::InsertConflict conflict) const override;
+
+        /**
          * @brief 把逻辑列类型翻译成可作主键的 MySQL 物理类型名
          * @details 重写 SqlDialect::keyColumnTypeName()：TEXT 与 LONGBLOB 不能直接进索引
          *          （1170 号错误），而主键就是索引，因此 Text→"VARCHAR(255)"、

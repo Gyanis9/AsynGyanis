@@ -1112,6 +1112,42 @@ TEST(SqliteDialectParameter, PlaceholderCountMatchesParameterCount)
 // ========================================================================
 
 /**
+ * @brief 钉住冲突处置只改关键词短语，其余字节与默认档逐字相同
+ * @details 关键词是引擎知识（SQLite 写成 `INSERT OR <动作> INTO`），共用渲染层只负责把它拼在最前。
+ *          三档都给整句原文而不是 find()：多一个空格、少一对引号这类漂移也该红
+ */
+TEST(SqliteDialectWrite, InsertConflictPoliciesChangeOnlyTheKeywordPhrase)
+{
+    using Conflict = AsynGyanis::Database::Queryable::InsertConflict;
+
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"id", "name"};
+    const std::vector<DatabaseValue> values{std::int64_t{7}, std::string("ada")};
+
+    const SqlStatement failed  = dialect.translateInsert(node, values);
+    node.insertConflict        = Conflict::Ignore;
+    const SqlStatement ignored = dialect.translateInsert(node, values);
+    node.insertConflict        = Conflict::Replace;
+    const SqlStatement replaced = dialect.translateInsert(node, values);
+
+    EXPECT_EQ(failed.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?)");
+    EXPECT_EQ(ignored.sql, "INSERT OR IGNORE INTO \"users\" (\"id\", \"name\") VALUES (?, ?)");
+    EXPECT_EQ(replaced.sql, "INSERT OR REPLACE INTO \"users\" (\"id\", \"name\") VALUES (?, ?)");
+    // 参数与占位符不受处置档位影响：三种写法的绑定序列必须一模一样
+    EXPECT_EQ(countPlaceholders(ignored.sql), failed.parameters.size());
+    EXPECT_EQ(countPlaceholders(replaced.sql), failed.parameters.size());
+
+    // 批量方向共用同一份关键词出口：少了这一格就是「单行认冲突、批量静默按默认档写」
+    const std::vector<std::vector<DatabaseValue>> rows{values, values};
+    node.insertConflict = Conflict::Ignore;
+    const SqlStatement batch = dialect.translateInsertBatch(node, rows);
+    EXPECT_EQ(batch.sql, "INSERT OR IGNORE INTO \"users\" (\"id\", \"name\") VALUES (?, ?), (?, ?)");
+}
+
+/**
  * @brief 验证单行 INSERT 的列名引用、占位符顺序与参数绑定
  */
 TEST(SqliteDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)

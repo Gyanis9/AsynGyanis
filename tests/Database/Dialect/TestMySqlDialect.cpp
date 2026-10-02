@@ -831,6 +831,39 @@ TEST(MySqlDialectParameter, PlaceholderCountMatchesParameterCount)
 // ========================================================================
 
 /**
+ * @brief 钉住 MySQL 侧的冲突处置关键词：IGNORE 是 INSERT 的修饰，REPLACE 是另一条语句
+ * @details 两家的短语形状不同（SQLite 用 `INSERT OR <动作>`，MySQL 用 `INSERT IGNORE` 与
+ *          `REPLACE INTO`），所以这一格必须在方言自己的测试里钉原文，不能只测共用渲染层
+ */
+TEST(MySqlDialectWrite, InsertConflictPoliciesUseTheEngineOwnPhrases)
+{
+    using Conflict = AsynGyanis::Database::Queryable::InsertConflict;
+
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"id", "name"};
+    const std::vector<DatabaseValue> values{std::int64_t{7}, std::string("ada")};
+
+    const SqlStatement failed  = dialect.translateInsert(node, values);
+    node.insertConflict        = Conflict::Ignore;
+    const SqlStatement ignored = dialect.translateInsert(node, values);
+    node.insertConflict        = Conflict::Replace;
+    const SqlStatement replaced = dialect.translateInsert(node, values);
+
+    EXPECT_EQ(failed.sql, "INSERT INTO `users` (`id`, `name`) VALUES (?, ?)");
+    EXPECT_EQ(ignored.sql, "INSERT IGNORE INTO `users` (`id`, `name`) VALUES (?, ?)");
+    EXPECT_EQ(replaced.sql, "REPLACE INTO `users` (`id`, `name`) VALUES (?, ?)");
+    EXPECT_EQ(countPlaceholders(ignored.sql), failed.parameters.size());
+
+    const std::vector<std::vector<DatabaseValue>> rows{values, values};
+    node.insertConflict = Conflict::Replace;
+    const SqlStatement batch = dialect.translateInsertBatch(node, rows);
+    EXPECT_EQ(batch.sql, "REPLACE INTO `users` (`id`, `name`) VALUES (?, ?), (?, ?)");
+}
+
+/**
  * @brief 验证单行 INSERT 的列名反引号引用、占位符顺序与参数绑定
  */
 TEST(MySqlDialectWrite, InsertRendersQuotedColumnsAndBindsValuesInOrder)

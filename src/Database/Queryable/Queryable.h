@@ -380,6 +380,27 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 插入一行，并指定唯一键冲突时的处置
+         *
+         * @details 补的是「按业务键 create-or-update」这一格：只有 `insert(row)` 时，调用方要嘛
+         *          先查后插（两条语句之间别人插进来就撞唯一键），要嘛自己写 `INSERT OR REPLACE` /
+         *          `REPLACE INTO` 的原语 SQL——而那句是方言专有的，等于绕开 ORM 的参数化与取值转换。
+         *          本方法只交意图，关键词由方言给（见 `SqlDialect::insertKeywordPhrase()`）。
+         * @param row 待插入的结构体
+         * @param conflict 冲突处置：`Fail` 与单参版完全等价；`Ignore` 跳过冲突行；`Replace` 换掉那一行
+         * @return std::int64_t 受影响的行数（引擎对 IGNORE 跳过的行不计入，MySQL 的 REPLACE 计 2）
+         * @note `Replace` 在两家引擎上都是「先删同键旧行再插」而不是「只改这几列」：触发器多一次 DELETE、
+         *       自增标识可能换值、新行没给的列回默认值。要只改指定列就按主键走 `update()`
+         * @throws Base::LogicException 当前为离线模式
+         * @throws DatabaseException 取连接失败或语句执行失败（`Fail` 档的唯一约束冲突即在此列）
+         */
+        [[nodiscard]] std::int64_t insert(const T &row, const InsertConflict conflict)
+        {
+            requireOnline("insert(row, conflict)");
+            return executeStatement(buildInsertStatement(row, conflict));
+        }
+
+        /**
          * @brief 插入一行并取回数据库生成的自增标识
          *
          * @details 与 insert() 走同一份语句生成与执行路径，只是把读的是写回执上的自增标识而不是影响
@@ -437,6 +458,28 @@ namespace AsynGyanis::Database::Queryable
             // 分块判定与执行整体交给静态实现：异步版本在工作线程上调用同一份实现，
             // 两条路径的每批行数换算与事务覆盖范围因此不可能出现分歧
             return insertBatchOn(m_pool, m_transaction, requireDialect(), rows);
+        }
+
+        /**
+         * @brief 批量插入多行，并指定唯一键冲突时的处置
+         * @details 与 insertBatch(rows) 同一份分块与事务实现，只是把冲突处置写进查询树；
+         *          `Ignore` 档下「受影响行数」会小于 rows.size()（跳过的行不计），这不是失败
+         * @param rows 待插入的行集合，允许为空（空集合直接返回 0，不产生任何语句）
+         * @param conflict 冲突处置，`Fail` 与不带该参数的版本完全等价
+         * @return std::int64_t 累计受影响的行数
+         * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
+         * @throws DatabaseException 取连接失败、事务开启失败或语句执行失败
+         */
+        [[nodiscard]] std::int64_t insertBatch(const std::span<const T> rows, const InsertConflict conflict)
+        {
+            requireOnline("insertBatch(rows, conflict)");
+
+            if (rows.empty())
+            {
+                return 0;
+            }
+
+            return insertBatchOn(m_pool, m_transaction, requireDialect(), rows, conflict);
         }
 
         /**
@@ -1133,10 +1176,12 @@ namespace AsynGyanis::Database::Queryable
          * @param row 待插入的结构体
          * @return SqlStatement "INSERT INTO 表 (列…) VALUES (?, …)"；声明为自增的主键不出现在列清单里
          */
-        [[nodiscard]] SqlStatement buildInsertStatement(const T &row)
+        [[nodiscard]] SqlStatement buildInsertStatement(const T &row, const InsertConflict conflict = InsertConflict::Fail)
         {
             QueryNode insertNode     = makeWriteQueryNode();
             insertNode.selectColumns = insertColumnNames();
+            // 冲突处置只参与 INSERT 方向的渲染，默认 Fail 时关键词与改前逐字相同
+            insertNode.insertConflict = conflict;
 
             // 取值向量是临时对象，但它活到整条表达式结束，方言在本次调用内完成读取，不存在悬垂
             return requireDialect().translateInsert(insertNode, insertValuesOf(row));
@@ -1297,10 +1342,12 @@ namespace AsynGyanis::Database::Queryable
          * @return std::int64_t 累计受影响行数
          * @throws DatabaseException 取连接失败、任意一块执行失败，或本地事务提交失败
          */
-        [[nodiscard]] static std::int64_t insertBatchOn(ConnectionPool *pool, const Transaction *transaction, const SqlDialect &dialect, const std::span<const T> rows)
+        [[nodiscard]] static std::int64_t insertBatchOn(ConnectionPool *pool, const Transaction *transaction, const SqlDialect &dialect, const std::span<const T> rows,
+                                                       const InsertConflict conflict = InsertConflict::Fail)
         {
             QueryNode batchNode     = makeWriteQueryNode();
             batchNode.selectColumns = insertColumnNames();
+            batchNode.insertConflict = conflict;
 
             // 每行的参数个数就是待写列数（自增主键不进 INSERT，因此这里必须用写入侧的列数）；
             // insertColumnNames() 已经保证它非空，除法不会除零

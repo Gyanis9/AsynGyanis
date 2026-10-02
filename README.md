@@ -60,7 +60,7 @@
 
 **数据（Database）**
 
-- **SqlSugar 风格 ORM** — 结构体声明即表结构，`insert` / `toList` / `first` / `count` / `update` / 删除 / 批量插入
+- **SqlSugar 风格 ORM** — 结构体声明即表结构，`insert` / `toList` / `first` / `count` / `update` / 删除 / 批量插入；唯一键冲突可指定跳过或覆盖（`Queryable::InsertConflict`，关键词由方言给）
 - **SQL 方言层** — 查询树渲染与参数收集只有一份实现（`StandardSqlDialect`），SQLite 与 MySQL 各自只覆写引擎知识；写语句与事务语句一律由方言生成，ORM 不含 SQL 拼接
 - **参数化执行** — 取值一律以绑定参数送出，不拼进 SQL 文本（含引号、`--`、分号的文本只会被当作数据）
 - **高性能连接池** — LIFO 复用、惰性创建、双机制清理（空闲回收 + 上限保护）

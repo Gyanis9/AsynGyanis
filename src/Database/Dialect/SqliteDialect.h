@@ -78,6 +78,16 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view columnTypeName(ColumnType type) const noexcept override;
 
         /**
+         * @brief 冲突处置的 INSERT 关键词：SQLite 这一族写成 `INSERT OR <动作> INTO`
+         * @details 重写 SqlDialect::insertKeywordPhrase()。`OR IGNORE` 跳过冲突的行、其余照插；
+         *          `OR REPLACE` 先删掉同键的旧行再插新的。两者只有表上带主键或唯一约束时
+         *          才谈得上冲突，没有约束的表三条产出完全一样
+         * @param conflict 唯一键冲突的处置意图
+         * @return std::string_view 短语原文（含结尾的空格，可直接接表名）
+         */
+        [[nodiscard]] std::string_view insertKeywordPhrase(Queryable::InsertConflict conflict) const override;
+
+        /**
          * @brief 生成 SQLite 的自增主键列定义
          * @details 重写 SqlDialect::autoIncrementPrimaryKeyDefinition()：写成 "col" INTEGER PRIMARY KEY
          *          AUTOINCREMENT。类型必须是 INTEGER 且主键是单列——这是 SQLite 把该列认作 rowid 别名

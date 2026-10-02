@@ -120,6 +120,18 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual SqlStatement translateInsertBatch(const Queryable::QueryNode &query, std::span<const std::vector<DatabaseValue>> rows) const = 0;
 
         /**
+         * @brief 给定冲突处置时，INSERT 语句开头的关键词短语（含结尾的 `INTO`，不含表名）
+         *
+         * @details 这是「引擎知识」而不是标准 SQL 的一部分：标准里没有冲突处置这一档，
+         *          所以本方法由具体方言实现，共用渲染层只负责把返回的短语拼在最前面。
+         *          `Queryable::InsertConflict::Fail` 必须映射到普通的 `INSERT INTO`——它是所有既有
+         *          调用的默认，线上字节因此一分不变。
+         * @param conflict 唯一键冲突的处置意图
+         * @return std::string_view 短语原文，指向方言自己的字面量
+         */
+        [[nodiscard]] virtual std::string_view insertKeywordPhrase(Queryable::InsertConflict conflict) const = 0;
+
+        /**
          * @brief 获取开启事务的语句文本
          *
          * @details 各引擎语法不同（SQLite 用 "BEGIN IMMEDIATE" 立刻取写锁，

@@ -566,7 +566,8 @@ namespace AsynGyanis::Database
         // 表名与 SELECT / UPDATE / DELETE 共用 appendTableReference()：逐段引用、空名与空段都拒。
         // 本方向刻意不接表别名（"INSERT INTO 表 AS 别名" 是语法错误），查询树在插入方向也不带别名，
         // 传空别名只是把「这里不该有别名」写在本函数的签名上
-        sqlText += "INSERT INTO ";
+        // 冲突处置的关键词由方言给（Fail 档回的就是 "INSERT INTO"，与改前逐字相同）
+        sqlText += insertKeywordPhrase(query.insertConflict);
         appendTableReference(sqlText, query.tableName, {});
         sqlText += " (";
         appendColumnList(sqlText, query);
@@ -685,7 +686,8 @@ namespace AsynGyanis::Database
         // 文本容量 = 查询树骨架 + 每行一组占位符（", " 与括号），批量方向行数可能远大于其它子句
         sqlText.reserve(estimateSqlTextCapacity(query) + rows.size() * (query.selectColumns.size() * 3 + 2));
 
-        sqlText += "INSERT INTO ";
+        // 冲突处置的关键词由方言给（Fail 档回的就是 "INSERT INTO"，与改前逐字相同）
+        sqlText += insertKeywordPhrase(query.insertConflict);
         // 与单行插入同一套表名渲染（逐段引用 + 空名拒绝），两条方向不能一个整块引用一个分段引用
         appendTableReference(sqlText, query.tableName, {});
         sqlText += " (";

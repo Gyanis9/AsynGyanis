@@ -15,10 +15,21 @@
 
 ## [Unreleased]
 
-自 2.5.0 起的累计变化（新增 2、变更 1、修复 3）：把已经建好的那道总量防线接到配置文件上，把命中的路由模式交回业务，并补上三处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步。
+自 2.5.0 起的累计变化（新增 3、变更 1、修复 3）：把已经建好的那道总量防线接到配置文件上，把命中的路由模式交回业务，给 ORM 补上唯一键冲突的处置档位，并补上三处会咬人的行为——MySQL 的 DECIMAL 列读不进浮点成员、叫停一条睡下的续期循环要等到下一拍、一批失败出口只说「失败了」而不说哪一步。
 
 ### 新增
 
+- **唯一键冲突的处置进了 ORM**：`Queryable<T>::insert(row, InsertConflict)` 与
+  `insertBatch(rows, InsertConflict)`（`Queryable::InsertConflict` 三档：`Fail` / `Ignore` / `Replace`，
+  默认 `Fail` 与不带该参数的旧写法逐字同形，线上字节一分不变）。此前只有 `insert(row)`：想按业务键
+  create-or-update 的调用方要嘛先查后插（两条语句之间别人插进来就撞唯一键），要嘛自己写
+  `INSERT OR REPLACE` / `REPLACE INTO` 的原语 SQL——那句是方言专有的，等于绕开 ORM 的参数化、
+  取值转换与列名引用。意图交进查询树（`QueryNode::insertConflict`），关键词由方言给
+  （新增 `SqlDialect::insertKeywordPhrase()`：SQLite 写成 `INSERT OR IGNORE/REPLACE INTO`，MySQL 写成
+  `INSERT IGNORE INTO` 与 `REPLACE INTO`），共用渲染层只负责拼在最前面，单行与批量两个方向共用同一份出口。
+  **刻意的限度**：`Replace` 在两家引擎上都是「先删同键旧行再插」，不是「按主键只改新行给出的那几列」——
+  触发器会多一次 DELETE、自增标识可能换值、新行没给的列回到默认值；要 `ON DUPLICATE KEY UPDATE`
+  那种只改指定列的语义，本层没有等价物，得走原语 SQL。
 - **命中的路由模式交回了业务**：`HttpRequest::matchedRoute()`（配合 `setMatchedRoute()`，由路由器在
   跑中间件管道**之前**落定，因此访问日志与打点这类横切逻辑也读得到）。此前 `Router` 把注册原文存在
   路由条目自己身上（`PatternRoute::pattern`，注释写着「用于替换判等与诊断输出」）却没有任何出口——

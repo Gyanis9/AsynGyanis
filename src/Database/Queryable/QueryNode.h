@@ -170,6 +170,23 @@ namespace AsynGyanis::Database::Queryable
         bool           descending = false; ///< 是否降序排列，默认为升序
     };
 
+    /**
+     * @brief 唯一键（或主键）冲突时的处置意图
+     *
+     * @details 本层只表达意图，具体关键词由方言给出（`SqlDialect::insertKeywordPhrase()`）：
+     *          两家的形状不同——SQLite 是 `INSERT OR IGNORE/REPLACE INTO`，MySQL 是
+     *          `INSERT IGNORE INTO` 与 `REPLACE INTO`。
+     * @note Replace 在 MySQL 侧是**先删同键旧行再插**，不是「按主键更新」：行上的触发器会被触发、
+     *       自增标识会换一个新值、未在新行里给出的列回到默认值。要「存在就只改这几列」的语义，
+     *       本层没有等价物，得走方言自己那条 ON DUPLICATE KEY UPDATE 的原语 SQL
+     */
+    enum class InsertConflict
+    {
+        Fail,    ///< 冲突就报错：标准 SQL 唯一的形状，也是所有既有调用方的默认
+        Ignore,  ///< 冲突的行跳过、其余照插：用于「有就不动」的去重写入
+        Replace, ///< 冲突时换掉那一行：用于「按业务键覆盖」的 create-or-update
+    };
+
     // ========================================================================
     // QueryNode
     // ========================================================================
@@ -194,6 +211,9 @@ namespace AsynGyanis::Database::Queryable
         std::optional<WhereCondition> having;          ///< HAVING 条件
         std::optional<std::size_t>    limit;           ///< LIMIT 行数上限
         std::optional<std::size_t>    offset;          ///< OFFSET 偏移量
+        /// 唯一键冲突的处置，只在 INSERT 方向参与渲染（SELECT/UPDATE/DELETE 一侧读完即弃）；
+        /// 刻意不放进「查询树必须有默认值才好用」的其它档：默认 Fail 与标准 SQL 完全等价
+        InsertConflict           insertConflict{InsertConflict::Fail}; ///< 冲突处置，默认按标准 SQL 报错
     };
 
 } // namespace AsynGyanis::Database::Queryable

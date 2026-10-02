@@ -36,6 +36,22 @@ namespace AsynGyanis::Database
         return "START TRANSACTION";
     }
 
+    std::string_view MySqlDialect::insertKeywordPhrase(const Queryable::InsertConflict conflict) const
+    {
+        // REPLACE INTO 与 SQLite 的 OR REPLACE 同族（先删后插），但它是独立语句而不是 INSERT 的修饰：
+        // 表上的触发器会被多触发一次 DELETE，自增主键也会换新值——语义写进头文件的 @details
+        switch (conflict)
+        {
+            case Queryable::InsertConflict::Fail:
+                return "INSERT INTO ";
+            case Queryable::InsertConflict::Ignore:
+                return "INSERT IGNORE INTO ";
+            case Queryable::InsertConflict::Replace:
+                return "REPLACE INTO ";
+        }
+        return "INSERT INTO ";
+    }
+
     std::string_view MySqlDialect::columnTypeName(const ColumnType type) const noexcept
     {
         // 映射依据见头文件：MySQL 的整数按位宽/符号分家，因此这里选的是与 C++ 类型位宽一致的成员
