@@ -758,4 +758,83 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(response.retryAfter(now).has_value()) << "这条本该判读不懂：" << garbage;
         }
     }
+
+    /**
+     * @brief 钉住：绝对形式与网络路径形式自己带主机，而网络路径形式的协议跟着基准
+     * @details `//cdn/x` 用基准的协议是 RFC 3986 §5.3 的写法；把它按 http 拼出去等于把一次本应加密的
+     *          跳转降级成明文，而这正是「配置文件看着完全正确、线上跑明文」的那一类
+     */
+    TEST(HttpClientUrlResolution, AbsoluteAndNetworkPathReferencesCarryTheirOwnAuthority)
+    {
+        const ParsedUrl base = parseUrl("http://a.example:8080/docs/page.html?x=1");
+
+        EXPECT_EQ(resolveUrlReference(base, "https://b.example/other"), "https://b.example/other") << "443 是 https 的默认端口，不该写出来";
+        EXPECT_EQ(resolveUrlReference(base, "https://b.example:9443/a"), "https://b.example:9443/a");
+        EXPECT_EQ(resolveUrlReference(base, "//c.example/y"), "http://c.example/y") << "网络路径引用的协议必须跟基准";
+    }
+
+    /**
+     * @brief 钉住：路径引用按 RFC 9110 §5.3 合并目录并折到根为止
+     * @details 点段折叠此前没人写过：少折一步打到错的目录，多折一步跳出本站，两种都不报错
+     */
+    TEST(HttpClientUrlResolution, PathReferencesMergeWithTheBaseDirectoryAndCollapseDotSegments)
+    {
+        const ParsedUrl base = parseUrl("http://a.example/docs/page.html?x=1");
+
+        EXPECT_EQ(resolveUrlReference(base, "/login?next=%2Fhome"), "http://a.example/login?next=%2Fhome");
+        EXPECT_EQ(resolveUrlReference(base, "sub/x.png"), "http://a.example/docs/sub/x.png");
+        EXPECT_EQ(resolveUrlReference(base, "./a/../b"), "http://a.example/docs/b");
+        EXPECT_EQ(resolveUrlReference(base, "../../etc/passwd"), "http://a.example/etc/passwd") << "越根的 .. 折到根为止，不能跳出这台主机";
+        EXPECT_EQ(resolveUrlReference(base, "/docs/a/../b"), "http://a.example/docs/b") << "绝对形式的 Location 也要折：同一个文件不该有两种写法";
+    }
+
+    /**
+     * @brief 钉住：只有查询的引用换掉基准的查询、片段丢得干净、空查询与没有查询不是一回事
+     */
+    TEST(HttpClientUrlResolution, QueryOnlyAndFragmentOnlyReferencesAreToldApart)
+    {
+        const ParsedUrl base = parseUrl("http://a.example/docs/page.html?x=1");
+
+        EXPECT_EQ(resolveUrlReference(base, "?page=2"), "http://a.example/docs/page.html?page=2") << "基准的旧查询要被换掉，而不是拼成 ?x=1?page=2";
+        EXPECT_EQ(resolveUrlReference(base, "/x#frag"), "http://a.example/x") << "片段对一次 HTTP 跳转没用，留着只会让下一跳的 Origin 对不上";
+        EXPECT_FALSE(resolveUrlReference(base, "#frag").has_value()) << "去掉片段之后什么都不剩，那不构成一跳";
+        EXPECT_EQ(resolveUrlReference(base, "/x?"), "http://a.example/x?") << "空查询是引用给的原样，不该被当成「没有查询」抹掉";
+    }
+
+    /**
+     * @brief 钉住：一切可能撕裂下一跳请求行、或把流量引到 http(s) 之外的写法都在此刻拒
+     * @details 这条读的是**对端给的字节**，所以对端写歪时交回空而不是抛异常；判拒的六种形状各有一个
+     *          真实后果：换协议（ftp/data/javascript）、把口令带到另一台主机、CR/LF 注入第二条头部、
+     *          空格让请求行分成两段、空引用指向自己（一跳就是一次死循环）
+     */
+    TEST(HttpClientUrlResolution, RejectsAnythingThatCouldTearTheNextRequestLine)
+    {
+        const ParsedUrl base = parseUrl("http://a.example/docs/page.html");
+
+        for (const std::string_view rejected: {"", "   ", "/a b", "/a\tb", "/a\r\nX-Injected: 1", "ftp://h/p", "data:text/plain,x", "javascript:alert(1)",
+                                               "http://ad***@h/p", "//guest@h/p", "http://h:0/p", "http://bad host/p"})
+        {
+            EXPECT_FALSE(resolveUrlReference(base, rejected).has_value()) << "这条本该拒：" << rejected;
+        }
+    }
+
+    /**
+     * @brief 钉住：交回的串总能被 parseUrl 再拆一遍，且主机、端口、IPv6 方括号都回到原位
+     * @details 这条是整件事的闭环判据：调用方拿到结果就喂给 `send()`，拼不出可拆的 URL 就等于这条读口没用
+     */
+    TEST(HttpClientUrlResolution, ResultsAlwaysParseBackIntoTheSameAuthority)
+    {
+        const ParsedUrl ipv6Base = parseUrl("http://[::1]:8080/docs/page.html");
+        const auto      resolved = resolveUrlReference(ipv6Base, "sub/x.png");
+        ASSERT_TRUE(resolved.has_value());
+        EXPECT_EQ(*resolved, "http://[::1]:8080/docs/sub/x.png") << "IPv6 主机必须带回方括号，否则端口分隔符会糊进地址里";
+
+        const ParsedUrl reparsed = parseUrl(*resolved);
+        EXPECT_EQ(reparsed.host, "::1");
+        EXPECT_EQ(reparsed.port, 8080U);
+        EXPECT_EQ(reparsed.path, "/docs/sub/x.png");
+
+        const ParsedUrl defaultPortBase = parseUrl("https://a.example/docs/page.html");
+        EXPECT_EQ(resolveUrlReference(defaultPortBase, "/x"), "https://a.example/x") << "443 是默认端口，写出来只会让 Host 头与基准不一致";
+    }
 } // namespace AsynGyanis::Net

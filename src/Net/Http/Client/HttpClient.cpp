@@ -218,7 +218,186 @@ namespace AsynGyanis::Net
             request += authorityText(url);
             request += "\r\n";
         }
+
+        /**
+         * @brief 判一段文本是不是合法的协议名（RFC 3986 §3.1：字母打头，其后字母/数字/+/-/.）
+         * @param text 冒号之前那一段
+         * @return true 可以作为协议名
+         */
+        bool isSchemeName(const std::string_view text)
+        {
+            if (text.empty() || !(text.front() >= 'A' && text.front() <= 'Z' || text.front() >= 'a' && text.front() <= 'z'))
+            {
+                return false;
+            }
+            return std::ranges::all_of(text,
+                                       [](const char character)
+                                       {
+                                           return character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || character >= '0' && character <= '9' ||
+                                                  character == '+' || character == '-' || character == '.';
+                                       });
+        }
+
+        /**
+         * @brief 折叠路径里的 `.` 与 `..` 段（RFC 3986 §5.2.4）
+         * @param path 以 `/` 打头的路径（不含查询）
+         * @return std::string 折叠后的绝对路径，末尾斜杠按输入保留
+         * @details 按段处理而不是照抄规范那台逐字符状态机：空段只用来记「末尾有没有斜杠」，
+         *          越根的 `..`（`/../x`）折到根为止——跳出一台主机之外的路径不是合法请求目标
+         */
+        std::string collapseDotSegments(const std::string_view path)
+        {
+            std::vector<std::string> segments;
+            std::size_t              cursor           = 0U;
+            bool                     hasTrailingSlash = false;
+            while (cursor < path.size())
+            {
+                const std::size_t      slash       = path.find('/', cursor);
+                const bool             endsAtSlash = slash != std::string_view::npos;
+                const std::size_t      end         = endsAtSlash ? slash : path.size();
+                const std::string_view segment     = path.substr(cursor, end - cursor);
+                hasTrailingSlash                   = endsAtSlash; // 只有最后一段的这件事算数：它决定结果末尾有没有斜杠
+                if (segment != "." && !segment.empty())
+                {
+                    if (segment == "..")
+                    {
+                        if (!segments.empty())
+                        {
+                            segments.pop_back();
+                        }
+                    } else
+                    {
+                        segments.emplace_back(segment);
+                    }
+                }
+                cursor = end + 1U;
+            }
+
+            std::string result;
+            for (const std::string &segment: segments)
+            {
+                result += '/' + segment;
+            }
+            if (hasTrailingSlash)
+            {
+                result += '/';
+            }
+            return result.empty() ? std::string{"/"} : result;
+        }
+
+        /**
+         * @brief 取基准 URL 的目录部分（最后一个 `/` 及其之前的内容）
+         * @param path 基准路径，可能自带查询
+         * @return std::string 以 `/` 结尾的目录；路径里没有斜杠时为 "/"
+         */
+        std::string baseDirectory(std::string_view path)
+        {
+            if (const std::size_t query = path.find('?'); query != std::string_view::npos)
+            {
+                path = path.substr(0, query);
+            }
+            const std::size_t slash = path.rfind('/');
+            return slash == std::string_view::npos ? std::string{"/"} : std::string(path.substr(0, slash + 1U));
+        }
+
+        /**
+         * @brief 把 ParsedUrl 拼回一条绝对 URL
+         * @param url 已定下来的协议、主机、端口与路径
+         * @return std::string 交回的串可直接喂给 `parseUrl()`
+         * @details 端口只在不是该协议默认端口时写出来，主机含冒号时补回方括号——两件事都由
+         *          `authorityText()` 一处负责，与拼请求头那一路同一条法
+         */
+        std::string renderUrl(const ParsedUrl &url)
+        {
+            return url.scheme + "://" + authorityText(url) + url.path;
+        }
     } // namespace
+
+    std::optional<std::string> resolveUrlReference(const ParsedUrl &base, const std::string_view reference)
+    {
+        if (reference.empty())
+        {
+            return std::nullopt;
+        }
+        // 空白与控制字符会撕裂下一跳的请求行，与 parseUrl 同一口径当场拒
+        for (const char character: reference)
+        {
+            if (static_cast<unsigned char>(character) <= 0x20U || static_cast<unsigned char>(character) == 0x7FU)
+            {
+                return std::nullopt;
+            }
+        }
+
+        // 片段（`#...`）整段丢掉：一次 HTTP 跳转用不上它，留着只会让下一跳与它自己的 Origin 对不上
+        const std::string_view target = reference.substr(0U, reference.find('#'));
+        if (target.empty())
+        {
+            return std::nullopt; // 「只带片段」的引用去掉片段之后什么都不剩，那不构成一跳
+        }
+
+        const std::size_t colonOffset     = target.find(':');
+        const std::size_t delimiterOffset = target.find_first_of("/?");
+        const bool        isNetworkPath   = target.starts_with("//");
+        const bool        isAbsolute = !isNetworkPath && colonOffset != std::string_view::npos && colonOffset < delimiterOffset && isSchemeName(target.substr(0U, colonOffset));
+
+        ParsedUrl   resolved = base; // 协议、主机与端口默认全取基准，只有下面两种引用形式会换掉它们
+        std::string path;
+        std::string query; // 含前导 `?`；引用里没有查询时留空
+
+        if (isAbsolute || isNetworkPath)
+        {
+            // 这两种形式的主机由引用说了算，因此要整条重新拆；带认证信息的写法一律拒
+            // （RFC 9110 §3.2.2 早已废止 URL 内嵌凭据，而把它抄进下一跳等于把口令发给另一台主机）
+            const std::size_t authorityStart = isNetworkPath ? 2U : colonOffset + 3U; // 跳过 "//" 或 "https://"
+            const std::size_t authorityEnd   = target.find_first_of("/?", authorityStart);
+            if (target.substr(authorityStart, authorityEnd - authorityStart).find('@') != std::string_view::npos)
+            {
+                return std::nullopt;
+            }
+            try
+            {
+                resolved = parseUrl(isAbsolute ? std::string(target) : base.scheme + ":" + std::string(target));
+            } catch (const Base::InvalidArgumentException &)
+            {
+                return std::nullopt; // 对端给的绝对 URL 本身就畸形：那是网络现象，不是本进程的用法错误，别把异常穿过响应处理
+            }
+            const std::size_t absoluteQueryOffset = resolved.path.find('?');
+            path                                  = absoluteQueryOffset == std::string::npos ? resolved.path : std::string(resolved.path.substr(0U, absoluteQueryOffset));
+            query                                 = absoluteQueryOffset == std::string::npos ? std::string{} : std::string(resolved.path.substr(absoluteQueryOffset));
+        } else
+        {
+            const std::size_t      queryOffset   = target.find('?');
+            const std::string_view referencePath = target.substr(0U, queryOffset);
+            if (referencePath.starts_with('/'))
+            {
+                path = std::string(referencePath);
+            } else if (!referencePath.empty())
+            {
+                path = baseDirectory(base.path) + std::string(referencePath); // 相对路径接在基准的「目录」之后
+            } else
+            {
+                // 只有查询：路径原样留着。把基准自带的查询一起留下就会拼成 `?a=1?b=2` 那种谁也不认的串
+                path = std::string(base.path.substr(0U, base.path.find('?')));
+            }
+            if (path.empty())
+            {
+                path = "/";
+            }
+            if (queryOffset != std::string_view::npos)
+            {
+                // 空查询（`?` 后面什么都没有）与「没有查询」是两回事，按引用给的原样带上
+                query = std::string(target.substr(queryOffset));
+            }
+        }
+
+        // 点段折叠对所有分支都要做：绝对形式的 `Location` 里 `/a/../b` 与相对形式折出来的结果应当是同一个文件
+        ParsedUrl result;
+        result.scheme = std::move(resolved.scheme);
+        result.host   = std::move(resolved.host);
+        result.port   = resolved.port;
+        result.path   = collapseDotSegments(path) + std::move(query);
+        return renderUrl(result);
+    }
 
     namespace
     {

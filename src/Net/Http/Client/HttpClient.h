@@ -159,6 +159,25 @@ namespace AsynGyanis::Net
      *         没有主机、端口不是 1..65535 的十进制数、方括号没闭合，或 IPv6 字面量没加方括号
      */
     [[nodiscard]] ASYN_NET_API ParsedUrl parseUrl(std::string_view url);
+
+    /**
+     * @brief 把一份「下一跳地址」的引用解析成绝对 URL，供 `Location` 这类响应头使用
+     *
+     * @details 服务端给的 `Location` 经常是相对的：`/login`、`../files/a.png`、`?page=2`、`//cdn.example/x`
+     *          四种都在 RFC 9110 §10.2.2 的合法写法里，而 `parseUrl()` 只认绝对形式。把这件事留给每个业务
+     *          自己写，就会各写一版点段折叠——少折一步是打到错的目录上，多折一步是跳出本站，两种都不报错。
+     *          规则按 RFC 9110 §5.3 与 RFC 3986 §5.2.2：协议、主机与端口取自基准 URL，路径按引用形式合并
+     *          并折叠 `.` 与 `..`，查询按引用给出的为准；片段（`#...`）丢得干净——一次 HTTP 跳转用不上它，
+     *          留着只会让下一跳与它自己的 Origin 对不上。
+     * @param base 当前请求的 URL（已拆开的形式）
+     * @param reference 响应里的引用，通常是 `Location` 的值
+     * @return std::optional<std::string> 绝对 URL，交回的值可直接喂给 `parseUrl()`；
+     *         引用不合法（含空白或控制字符、去掉片段之后什么都不剩、协议不是 http(s)、引用本身畸形）时为空
+     * @details 交回空而不是抛异常：这条读的是**对端给的字节**，对端写歪是网络现象而不是本进程的用法错误。
+     * @note 协议名之外的引用不带认证信息：`http://user:pass@host/` 这种写法在这里一律拒（凭据走 URL 是
+     *       RFC 9110 §3.2.2 早已废止的做法，而把它抄进下一跳等于把口令发给另一个主机）。
+     */
+    [[nodiscard]] ASYN_NET_API std::optional<std::string> resolveUrlReference(const ParsedUrl &base, std::string_view reference);
     /**
      * @brief 出站 HTTP 客户端
      * @details 每次请求新建一条连接，完成后关闭（https 走 TLS，并校验服务端证书与主机名）。
