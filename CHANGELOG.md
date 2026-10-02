@@ -13,7 +13,7 @@
 - **一致性由脚本把关**：`scripts/check-release-version.py` 比对「CMake 版本号 / 本文件最新发布段 / 最新标签」
   三者，不一致即退出码非 0；Linux CI 已接入这一步，避免出现「打了标签但版本号没改」这类漂移。
 
-## [Unreleased]
+## [2.5.0] - 2026-10-02
 
 自 2.4.0 起的累计变化（新增 5、变更 4、修复 7、破坏性变更 1）：把协议正确性上「标准说有、实现没有」的
 几格补上，让 `logging` 配置里拼错的键第一次出得了声，并把下游按包消费时撞到的七处一并收口
@@ -31,7 +31,13 @@
   `Core::Connection::cachedRemoteAddress()`（按连接问一次 getpeername、失败也不抛，整条连接复用同一份文本），
   h3 没有套接字可问，改由 `QuicServer` 在建会话时交一个地址出口下来
   （`Http3Session` 构造函数末尾新增一个可空形参，`QuicConnection` 新增 `remoteAddress()`）。
-  取值是副本而不是视图：这条文本指向连接持有的缓冲，而抄进审计队列正是它最常见的用法。
+  取值是副本而不是视图：这条文本指向连接持有的缓冲，而抄进审计队列正是它最常见的用法。另配
+  **`HttpRequest::remoteIp()`**（不带端口的那一段）：按来源限流与审计要的就是这个键，而
+  `remoteAddress()` 里的端口每条连接都换，直接拿去当键会得到「每条连接一个桶」、限流形同不存在。
+  剥法只认本框架 `InetAddress::toString()` 的产出形状——点分四段 `"1.2.3.4:5678"`、带方括号的 IPv6
+  `"[fe80::1%3]:8080"`（双栈监听上映射出来的地址也带着括号：`"[::ffff:1.2.3.4]:8080"`），且
+  百分号后的作用域号**保留**——链路本地地址在不同网卡上就靠这一段区分来源，剥掉会把两块网卡的流量
+  并进同一个键。认不出来时原样交回整条文本而不是切一刀——切错给的是一个静默失效的键，比交回原样难查。
 - **日志闸门可以按运行期的 key 分档**：`Base::LogThrottleRegistry`（配套宏
   `ASYN_LOG_THROTTLED_KEYED(key, interval)`）。`ASYN_LOG_THROTTLED` 的状态长在调用点（函数局部 static），
   一个使用处一份，而有一类告警的区分单位是运行期才有的东西——哪个来源 IP、哪台设备、哪个频道——
@@ -3765,7 +3771,8 @@ DLL 落点）写在 README 的「交付形态」一节。
 - 单请求分配画像压到 33 次 / 816 B（起点 48 次 / 4228 B）。
 - Linux CI（GCC + ASan/UBSan + Redis 真机）与 Windows CI（MSVC + ASan）；解析器模糊冒烟测试。
 
-[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.1.0...v2.2.0
