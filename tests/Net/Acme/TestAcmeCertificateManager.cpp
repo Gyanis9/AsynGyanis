@@ -803,6 +803,75 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：叫停真的能让睡下的续期循环退出，而不是等到下一拍
+     * @details `stopRenewalLoop()` 只落一个原子标志，而这条帧唯一醒着的时刻是它自己的定时器到点——
+     *          检查间隔默认 12 小时。按文档办事的调用方两种都会出事：等帧退出再拆对象的一直等
+     *          （停机挂住），不等就拆对象的在几小时后被一条帧踩在已释放的对象上。
+     *          判据用比值：这一拍摄意把节拍设成 30 秒（远大于用例上限），叫停在 200ms 落，
+     *          退出必须在 5 秒内被看到——只有停放被切成不超过 1 秒一片才做得到。
+     *          反向对照一起钉：叫停那一刻帧必须还睡着，否则用例其实在测「启动即收口」
+     */
+    TEST(AcmeCertificateManagerLoop, StopWakesTheParkedRenewalLoopInsideOneSlice)
+    {
+        Core::EventLoop                     loop;
+        AcmeCertificateManager::Configuration configuration;
+        configuration.certificateFile    = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
+        configuration.privateKeyFile     = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
+        configuration.accountKeyFile     = std::filesystem::temp_directory_path() / "asyn-acme-loop-account.pem";
+        configuration.accountStateFile   = std::filesystem::temp_directory_path() / "asyn-acme-loop-state.json";
+        configuration.domainNames        = {"loop.example"};
+        configuration.directoryUrl       = "https://127.0.0.1:1/directory"; // 这一轮不打扰机构，这只口不会被碰
+        configuration.renewBeforeExpiry  = std::chrono::hours{24};
+        configuration.renewalCheckInterval = std::chrono::seconds{30};
+        configuration.accountKeyAlgorithm  = AcmeKeyAlgorithm::Es256;
+        configuration.domainKeyAlgorithm   = AcmeKeyAlgorithm::Es256;
+
+        std::atomic<int> reloadCalls{0};
+        AcmeCertificateManager manager(loop, configuration,
+                                       [&reloadCalls]() -> std::expected<void, std::string>
+                                       {
+                                           ++reloadCalls;
+                                           return {};
+                                       });
+
+        Core::Task<void> loopTask = manager.runRenewalLoop();
+        loop.scheduler().schedule(loopTask.handle());
+
+        std::atomic<bool> wasParkedWhenStopped{false};
+        std::atomic<bool> exitedWithinBound{false};
+        Core::Task<void>  observer = [&loop, &loopTask, &manager, &wasParkedWhenStopped, &exitedWithinBound]() -> Core::Task<void>
+        {
+            Core::Timer timer(loop);
+            co_await timer.waitFor(std::chrono::milliseconds{200});
+            wasParkedWhenStopped.store(!loopTask.isReady(), std::memory_order_relaxed);
+            manager.stopRenewalLoop();
+            for (int tick = 0; tick < 100; ++tick) // 100 × 50ms：给「一片 + 调度」留出五倍余量
+            {
+                co_await timer.waitFor(std::chrono::milliseconds{50});
+                if (loopTask.isReady())
+                {
+                    exitedWithinBound.store(true, std::memory_order_relaxed);
+                    break;
+                }
+            }
+            loop.stop();
+        }();
+        loop.scheduler().schedule(observer.handle());
+
+        loop.run();
+        if (loopTask.isReady())
+        {
+            // 循环协程里抛出过就要在这里冒出来，别让用例静默通过
+            loopTask.handle().promise().result();
+        }
+
+        EXPECT_TRUE(wasParkedWhenStopped.load(std::memory_order_relaxed)) << "叫停之前这条帧就已经退了：判据落不到停放上";
+        EXPECT_TRUE(exitedWithinBound.load(std::memory_order_relaxed))
+                << "叫停之后 5 秒内这条帧没退出：停放没切片，停机要等到下一拍（这一轮设的是 30 秒）";
+        EXPECT_EQ(reloadCalls.load(std::memory_order_relaxed), 0) << "这一轮证书还有富余，不该把装回动作碰一次";
+    }
+
+    /**
      * @brief 钉住：导出的读数与 `status()` 报的是同一份原子量，不是各算一遍
      * @details 两处各读各的会出现「面板说签成一张、status() 说没有」——这条断言把两者钉成同一个数
      */

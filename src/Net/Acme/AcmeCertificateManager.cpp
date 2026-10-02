@@ -24,6 +24,14 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        /**
+         * @brief 续期循环一次停放的分片长度
+         * @details 取 1 秒：相对默认 12 小时的检查间隔，每进程一次的这一拍唤醒成本可以忽略，
+         *          而它把「叫停到退出」的延迟从一整拍压成不超过这一片。要比这更快只有让叫停去
+         *          叫醒这条帧——那需要跨线程取消定时器，而定时器只能由循环线程碰（见类注释的线程契约）
+         */
+        constexpr std::chrono::milliseconds kStopNoticeSlice{1000};
+
         /// X509 与 BIO 的归还动作
         struct X509Deleter
         {
@@ -534,8 +542,15 @@ namespace AsynGyanis::Net
             // 失败退避与查到期节拍取更晚的那个：机构侧按「每域名每周几张」限流，
             // 把检查间隔调得很小不会更快拿到证书，只会把额度耗光
             const long long wakeAtUnix = std::max(nowUnix + intervalUnix, backoffGateUnixSeconds());
-            const auto      delay      = std::chrono::seconds(std::max<long long>(1, wakeAtUnix - nowUnix));
-            co_await timer.waitFor(std::chrono::duration_cast<std::chrono::milliseconds>(delay));
+            const auto      delay      = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::seconds(std::max<long long>(1, wakeAtUnix - nowUnix)));
+            // 停放按 kStopNoticeSlice 切片：叫醒这条帧的唯一办法是让它自己醒来，而 stopRenewalLoop()
+            // 只落一个标志——整段睡下去时「叫停」要等到下一拍（默认可长达 12 小时）。这期间按文档
+            // 等循环停下再拆对象的调用方会一直等（停机挂住），不等就拆对象的调用方会在几小时后被一条
+            // 帧踩在 freed memory 上。切片只改醒来频次，签发尝试的节拍仍由 renewalCheckInterval 决定
+            for (std::chrono::milliseconds elapsed{0}; elapsed < delay && !m_isStopping.load(std::memory_order_acquire); elapsed += kStopNoticeSlice)
+            {
+                co_await timer.waitFor(std::min(kStopNoticeSlice, delay - elapsed));
+            }
         }
     }
 } // namespace AsynGyanis::Net
