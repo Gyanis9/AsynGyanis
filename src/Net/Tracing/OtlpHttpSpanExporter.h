@@ -50,6 +50,9 @@ namespace AsynGyanis::Net
      *          计数报出（不看 Tracer 那三个数，它们到这里为止）。
      * @note 采集端地址写错在构造期就拒（parseUrl 抛 InvalidArgumentException），不会退化成
      *       「一直发不出去但没人知道」；TLS 策略被 OpenSSL 拒同样是构造期抛。
+     * @note 一批失败之后本出口先退避再试下一批（429/503 听响应里的 `Retry-After`，封顶 5 秒；其余按 200
+     *       毫秒），并把没发的批次留在队列里。不留这段间隔就会出现「采集端拒绝 100 毫秒、队列里 64 批
+     *       全部撞光」——那 64 批本可以在对端缓过来之后送达，却只能按失败计。
      * @see formatOtlpTracesJson(), Tracer
      */
     class ASYN_NET_API OtlpHttpSpanExporter final : public SpanExporter
@@ -184,7 +187,7 @@ namespace AsynGyanis::Net
         /// @brief 循环线程主体：在**本线程上**首次驱动发送协程，然后交给 run()
         void runLoopThread();
 
-        /// @brief 发送协程：醒了就把队列清空，之后挂起等下一次唤醒
+        /// @brief 发送协程：醒了就一批批发，失败的那一批之后定时退避并停下，剩下的留在队列里等下一次唤醒
         Core::Task<void> pumpBatches();
 
         /// @brief 非阻塞取一批；空队列交出 false

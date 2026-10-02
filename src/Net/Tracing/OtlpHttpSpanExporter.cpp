@@ -2,6 +2,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Tls/TlsPolicy.h"
 #include "Platform/IO/Socket.h"
 
@@ -24,6 +25,34 @@ namespace AsynGyanis::Net
 
         /// 本出口自己占用的头部名：调用方再给一份就会出现两条同名头部
         constexpr std::string_view kReservedHeaderNames[] = {"host", "content-length", "connection", "content-type"};
+
+        /// 一次失败之后至少要隔多久再试：连不上与被拒都不给「趁对端拒绝的当口把队列撞光」留窗口
+        constexpr std::chrono::milliseconds kFailurePauseFloor{200};
+
+        /// 对端要求等多久，本出口最多就等多久；越界的 `Retry-After` 按这个数钳住（见 retryPauseFor）
+        constexpr std::chrono::milliseconds kMaximumRetryPause{5000};
+
+        /**
+         * @brief 这一次失败之后该等多久再试下一批
+         * @details `Retry-After` 只在 429 与 503 上有定义（RFC 9110 §10.2.3），因此只在这两个状态码上读它，
+         *          读到了就照对端说的等，但封顶在 kMaximumRetryPause：那条头合法地写成「86400」时，
+         *          照单全收等于让链路在两小时里静默攒着一队列必然被丢掉的节。没有这条头、写法读不懂、
+         *          或者压根没拿到响应都退回 kFailurePauseFloor——把「读不懂」折成 0 秒是最坏的一种省事，
+         *          那正是「现在就再撞一次」的意思。
+         * @param response 这次拿到的响应；连不上或超时时为空
+         * @return std::chrono::milliseconds 退避时长
+         */
+        std::chrono::milliseconds retryPauseFor(const HttpClientResponse *response)
+        {
+            if (response != nullptr && (response->statusCode == 429 || response->statusCode == 503))
+            {
+                if (const auto retryAfter = response->retryAfter(); retryAfter.has_value())
+                {
+                    return std::clamp(std::chrono::duration_cast<std::chrono::milliseconds>(*retryAfter), kFailurePauseFloor, kMaximumRetryPause);
+                }
+            }
+            return kFailurePauseFloor;
+        }
 
         /// @brief 抛出一条配置不成立的中文原因（带字段名与替代做法）
         [[noreturn]] void rejectConfiguration(const std::string &reason)
@@ -241,6 +270,8 @@ namespace AsynGyanis::Net
     Core::Task<void> OtlpHttpSpanExporter::pumpBatches()
     {
         HttpClient &client = *m_client;
+        // 退避定时器只是本循环的定时队列上一个句柄，构造与析构都不产生系统调用，因此放在协程帧里
+        Core::Timer backoffTimer{m_loop};
         for (;;)
         {
             co_await WakeupAwaiter{*this};
@@ -286,15 +317,26 @@ namespace AsynGyanis::Net
                 } else
                 {
                     static_cast<void>(m_failedBatchCount.fetch_add(1, std::memory_order_relaxed));
-                    const std::lock_guard reasonLock(m_reasonMutex);
-                    m_lastFailureReason = failureReason;
+                    {
+                        const std::lock_guard reasonLock(m_reasonMutex);
+                        m_lastFailureReason = failureReason;
+                    }
+
+                    // 失败就停在这一次，剩下的批次留在队列里：一次网络故障后面跟着的原本是整个队列
+                    // 对着正在拒绝的采集端连环撞光，而撞光的每一批都只能按失败计——它们本可以在对端
+                    // 缓过来之后送达。退避时长见 retryPauseFor()；收尾期间照同一节奏走，整段等待仍被
+                    // shutdownTimeout 兜住，不会因此把进程退出挡在门外
+                    co_await backoffTimer.waitFor(retryPauseFor(response.get()));
+                    break;
                 }
             }
 
             {
-                // 队列排空且不再收新批：这就是 shutdown() 在等的那声「发完了」
+                // 队列排空且不再收新批：这就是 shutdown() 在等的那声「发完了」。
+                // 「排空」这一半必须自己判：失败退避那条出口离开内层循环时队列可以还有货，
+                // 只按 !m_isAccepting 就会把「还剩几条没发」报成「发完了」，那几批既不计数也没人再管
                 const std::lock_guard lock(m_stateMutex);
-                if (!m_isAccepting)
+                if (!m_isAccepting && m_queue.empty())
                 {
                     m_isDrained  = true;
                     m_parkedPump = {};

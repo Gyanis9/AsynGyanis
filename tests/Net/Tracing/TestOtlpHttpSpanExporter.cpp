@@ -52,12 +52,30 @@ namespace
     /// 采集端收到的东西，以及本台假采集端该回的状态码
     struct CollectorState
     {
-        std::mutex       m_mutex;
-        std::string      m_body{};                  ///< 收到的最后一条正文
-        std::string      m_contentType{};           ///< 收到的媒体类型
-        std::string      m_authorization{};         ///< 收到的 Authorization 头部
-        std::atomic<int> m_responseStatusCode{200}; ///< 该回的状态码
-        std::atomic<int> m_requestCount{0};         ///< 收到过几条请求
+        std::mutex                                         m_mutex;
+        std::string                                        m_body{};                  ///< 收到的最后一条正文
+        std::string                                        m_contentType{};           ///< 收到的媒体类型
+        std::string                                        m_authorization{};         ///< 收到的 Authorization 头部
+        std::atomic<int>                                   m_responseStatusCode{200}; ///< 该回的状态码
+        std::atomic<int>                                   m_retryAfterSeconds{-1};   ///< 非负时回复带上 `Retry-After: <秒>`，-1 表示不带这条头
+        std::atomic<int>                                   m_requestCount{0};         ///< 收到过几条请求
+        std::vector<std::chrono::steady_clock::time_point> m_requestTimes{};          ///< 每条请求到达的刻
+
+        /**
+         * @brief 第二条请求落在第一条之后多久（毫秒）
+         * @details 退避间隔在采集端这一侧量：两条请求到达的刻都记在同一台机器的同一根时钟上，
+         *          不经过「用例线程轮询到条件成立」那一段，因此判据不受轮询周期与调度抖动支配。
+         * @return long long 还没收到第二条时交回 -1
+         */
+        [[nodiscard]] long long secondRequestDelayMs()
+        {
+            const std::lock_guard lock(m_mutex);
+            if (m_requestTimes.size() < 2)
+            {
+                return -1;
+            }
+            return std::chrono::duration_cast<std::chrono::milliseconds>(m_requestTimes[1] - m_requestTimes[0]).count();
+        }
     };
 
     /// 装一条只吃 POST /v1/traces 的路由
@@ -71,9 +89,16 @@ namespace
                             state->m_body          = std::string{request.body()};
                             state->m_contentType   = std::string{request.firstHeaderValueView("content-type").value_or(std::string_view{})};
                             state->m_authorization = std::string{request.firstHeaderValueView("authorization").value_or(std::string_view{})};
+                            state->m_requestTimes.push_back(std::chrono::steady_clock::now());
                         }
                         static_cast<void>(state->m_requestCount.fetch_add(1, std::memory_order_relaxed));
                         response.setStatus(state->m_responseStatusCode.load(std::memory_order_relaxed));
+                        // 这条头只对 429 与 503 有定义，用例把状态码与它配着给
+                        const int retryAfterSeconds = state->m_retryAfterSeconds.load(std::memory_order_relaxed);
+                        if (retryAfterSeconds >= 0)
+                        {
+                            static_cast<void>(response.setHeader("Retry-After", std::to_string(retryAfterSeconds)));
+                        }
                         response.setBody(R"({"partialSuccess":{}})");
                         co_return;
                     });
@@ -247,6 +272,93 @@ TEST(OtlpHttpSpanExporter, CountsNonSuccessStatusAsFailure)
     ASSERT_TRUE(waitUntil([&exporter] { return exporter.failedBatchCount() == 1U; })) << "429 没被算成失败";
     EXPECT_EQ(exporter.deliveredBatchCount(), 0U);
     EXPECT_NE(exporter.lastFailureReason().find("429"), std::string::npos) << exporter.lastFailureReason();
+}
+
+/**
+ * @brief 一次失败之后停下并退避：队列里没发的那几批留在原地，等采集端缓过来再补发
+ * @details 这条判据钉的是「故障时只丢一批」而不是「把整队列撞光」。间隔取 1 秒：短到用例等得起，
+ *          又长到「停下」这件事能被确定地观察到——不退避的实现会在几毫秒内把三条全发完并全按失败计。
+ */
+TEST(OtlpHttpSpanExporter, KeepsTheQueueBackAfterAFailingCollector)
+{
+    CollectorState state;
+    state.m_responseStatusCode.store(503, std::memory_order_relaxed);
+    state.m_retryAfterSeconds.store(1, std::memory_order_relaxed);
+    const auto fixture = startCollector(&state);
+    ASSERT_TRUE(fixture != nullptr);
+
+    OtlpHttpSpanExporter exporter{makeCollectorConfiguration(fixture->listeningPort())};
+    ASSERT_TRUE(exporter.exportSpans(testResource(), makeSingleRecordBatch("first")));
+    ASSERT_TRUE(exporter.exportSpans(testResource(), makeSingleRecordBatch("second")));
+    ASSERT_TRUE(exporter.exportSpans(testResource(), makeSingleRecordBatch("third")));
+
+    ASSERT_TRUE(waitUntil([&exporter] { return exporter.failedBatchCount() == 1U; })) << "503 没被算成失败";
+    EXPECT_EQ(exporter.pendingBatchCount(), 2U) << "失败之后还在队列里等的那两条不该被撞掉";
+    EXPECT_EQ(state.m_requestCount.load(std::memory_order_relaxed), 1) << "退避期内不该有第二条请求落到采集端上";
+
+    // 采集端缓过来：留在队列里的两条接着发完，一条都不必因为故障而丢
+    state.m_retryAfterSeconds.store(-1, std::memory_order_relaxed);
+    state.m_responseStatusCode.store(200, std::memory_order_relaxed);
+    ASSERT_TRUE(waitUntil([&exporter] { return exporter.deliveredBatchCount() == 2U; })) << "采集端恢复后队列里的批次没被补发";
+    EXPECT_EQ(exporter.pendingBatchCount(), 0U);
+    EXPECT_EQ(state.m_requestCount.load(std::memory_order_relaxed), 3);
+    EXPECT_EQ(exporter.droppedBatchCount(), 0U);
+}
+
+/**
+ * @brief 退避时长取自响应里的 `Retry-After`，并且被封顶
+ * @details 两头都要钉住，缺一头都是静默的错：只钉「等了很久」看不出它是不是在照一条越界的头干等，
+ *          只钉「很快就重试」看不出这条头压根没进账。取 `Retry-After: 60` 让两个判据分开成立——
+ *          间隔必须远大于 200 毫秒的地板（否则等于没读这条头），第二条请求又必须在几秒内到达
+ *          （否则 60 秒被照单全收，链路易失静默停摆）。判据取采集端记下的到达时刻，间隔两侧各留五倍余量。
+ */
+TEST(OtlpHttpSpanExporter, PausesForTheCollectorsRetryAfterWindow)
+{
+    CollectorState state;
+    state.m_responseStatusCode.store(429, std::memory_order_relaxed);
+    state.m_retryAfterSeconds.store(60, std::memory_order_relaxed);
+    const auto fixture = startCollector(&state);
+    ASSERT_TRUE(fixture != nullptr);
+
+    auto configuration            = makeCollectorConfiguration(fixture->listeningPort());
+    configuration.shutdownTimeout = std::chrono::milliseconds{100}; ///< 收尾不必等满整个退避窗口：期限到就按丢弃计
+    OtlpHttpSpanExporter exporter{configuration};
+    ASSERT_TRUE(exporter.exportSpans(testResource(), makeSingleRecordBatch("a")));
+    ASSERT_TRUE(exporter.exportSpans(testResource(), makeSingleRecordBatch("b")));
+
+    ASSERT_TRUE(waitUntil([&state] { return state.m_requestCount.load(std::memory_order_relaxed) >= 2; }, std::chrono::milliseconds{15000}))
+            << "封顶后的退避之后必须再来一次：60 秒不该照单全收";
+    const long long delayMs = state.secondRequestDelayMs();
+    EXPECT_GE(delayMs, 1000) << "Retry-After 被当成了不存在，等于这条头没进账";
+    EXPECT_LE(delayMs, 10000) << "封顶没生效：对端写多少就干等多少";
+}
+
+/**
+ * @brief 收尾要一路发到队列真的空了才算发完：失败退避这条出口不能把「还剩几条没发」报成「发完了」
+ * @details 判据是「一条都不能凭空消失」：队列里三条全被采集端拒掉，那这三条都必须落在失败计数上。
+ *          只按「不再收新批」判定排空的话，收尾会在队列还有两条时提前返回，而那两条既不计失败也不计丢弃。
+ */
+TEST(OtlpHttpSpanExporter, ShutdownKeepsTryingUntilTheQueueIsActuallyEmpty)
+{
+    CollectorState state;
+    state.m_responseStatusCode.store(503, std::memory_order_relaxed);
+    const auto fixture = startCollector(&state);
+    ASSERT_TRUE(fixture != nullptr);
+
+    OtlpHttpSpanExporter exporter{makeCollectorConfiguration(fixture->listeningPort())};
+    for (const char *name: {"first", "second", "third"})
+    {
+        ASSERT_TRUE(exporter.exportSpans(testResource(), makeSingleRecordBatch(name)));
+    }
+    // 至少失败一条之后再叫停：这里判的是「>= 1」而不是「== 1」，因为「恰好停在第一条」是退避带来的时序，
+    // 拿它当前提会把这条用例和上面那条钉同一个性质；本用例要钉的是收尾的排空判据
+    ASSERT_TRUE(waitUntil([&exporter] { return exporter.failedBatchCount() >= 1U; })) << "503 没被算成失败";
+    exporter.shutdown();
+
+    EXPECT_EQ(exporter.failedBatchCount(), 3U) << "每条都该有一次明确的失败记账";
+    EXPECT_EQ(exporter.droppedBatchCount(), 0U) << "采集端答得上话（回 503），就没该按丢弃计的批次";
+    EXPECT_EQ(exporter.pendingBatchCount(), 0U) << "收尾返回时队列必须真的空了";
+    EXPECT_EQ(state.m_requestCount.load(std::memory_order_relaxed), 3);
 }
 
 /**
