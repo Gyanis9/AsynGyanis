@@ -23,6 +23,7 @@
 #include "Net/Http/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Net/Tcp/TcpServer.h"
+#include "Net/WebSocket/WebSocketHub.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/Platform.h"
 #include "Platform/System/ProcessInfo.h"
@@ -284,7 +285,7 @@ namespace
     }
 
     /// WebSocket 握手请求：升级三件套加上一个合法的 Sec-WebSocket-Key
-    std::string webSocketHandshake(const std::string_view extraHeader = {})
+    std::string webSocketHandshake(const std::string_view extraHeader = {}, const std::string_view path = "/ws")
     {
         std::vector<std::string> headers{std::string("Host: 127.0.0.1"), "Connection: Upgrade", "Upgrade: websocket", "Sec-WebSocket-Version: 13",
                                          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="};
@@ -292,7 +293,7 @@ namespace
         {
             headers.emplace_back(extraHeader);
         }
-        return makeRequest("GET", "/ws", headers);
+        return makeRequest("GET", path, headers);
     }
 
     /**
@@ -398,6 +399,29 @@ namespace
                                });
                        co_return;
                    });
+
+        // 主题扇出（WebSocketHub）：自己订自己的主题，再往那个主题各发一条文本与二进制。
+        // 集线器管住的三件事在这一条连接上全走完——订阅句柄随作用域析构即除名、一条连接同一时刻
+        // 只有一个写者（两条 publish 都在替它排空队列）、每成员的待发字节上界
+        router.get("/ws/hub",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       response.upgradeToWebSocket(
+                               [](Net::WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   Net::WebSocketHub hub;
+                                   auto              subscription = hub.subscribe("news", peer);
+                                   co_await hub.publish("news", "hub-text");
+                                   co_await hub.publishBinary("news", std::string("\xFF\xFE"
+                                                                                  "blob"));
+                                   // 发完等对端收口：立刻 return 会让会话在帧还在通路上时就拆掉这条连接
+                                   while (co_await peer.receive())
+                                   {
+                                   }
+                                   co_return;
+                               });
+                       co_return;
+                   });
     }
 
     /// 自检结论：全部在主线程写、主线程读，不涉及跨线程可见性
@@ -424,6 +448,7 @@ namespace
         SessionRead sse;                     ///< 分块流式响应
         SessionRead webSocket;               ///< 握手 + 回显 + 关闭
         SessionRead extension;               ///< 带 permessage-deflate 提议的握手
+        SessionRead hub;                     ///< 主题扇出：文本与二进制两种帧各一条
         SessionRead metricsFirst;            ///< 第一次 /metrics
         SessionRead metricsSecond;           ///< 第二次 /metrics
         SessionRead health;                  ///< /healthz
@@ -905,6 +930,7 @@ int main(const int argc, char **argv)
     g_observations.sse           = requestOnce(mainPort, plainRequest("GET", "/sse"));
     g_observations.webSocket     = requestChain(mainPort, {webSocketHandshake(), makeClientFrame(0x1, "ping-frame"), makeClientFrame(0x8, "")});
     g_observations.extension     = requestChain(mainPort, {webSocketHandshake("Sec-WebSocket-Extensions: permessage-deflate"), makeClientFrame(0x8, "")});
+    g_observations.hub           = requestChain(mainPort, {webSocketHandshake({}, "/ws/hub"), makeClientFrame(0x8, "")});
     g_observations.metricsFirst  = requestOnce(mainPort, plainRequest("GET", "/metrics"));
     g_observations.health        = requestOnce(mainPort, plainRequest("GET", "/healthz"));
     g_observations.metricsSecond = requestOnce(mainPort, plainRequest("GET", "/metrics"));
@@ -1019,6 +1045,13 @@ int main(const int argc, char **argv)
     samples.check(observations.webSocket.bytes.find("ping-frame") != std::string::npos, "掩码文本帧被解出并原样回显");
     samples.check(observations.webSocket.bytes.find('\x88') != std::string::npos, "客户端关闭帧得到对端的关闭帧（关闭握手）");
     samples.check(observations.extension.bytes.find("permessage-deflate") != std::string::npos, "握手带上 permessage-deflate 提议时被协商进响应头");
+    samples.check(observations.hub.bytes.find(std::string("\x81\x08"
+                                                          "hub-text",
+                                                          10)) != std::string::npos &&
+                          observations.hub.bytes.find(std::string("\x82\x06\xFF\xFE"
+                                                                  "blob",
+                                                                  8)) != std::string::npos,
+                  "集线器的两条扇出按各自那条的帧类型上线（文本 0x81、二进制 0x82），负载原样未改");
 
     const auto metricsResponses      = splitResponses(observations.metricsFirst.bytes);
     const auto laterMetricsResponses = splitResponses(observations.metricsSecond.bytes);
