@@ -292,6 +292,30 @@ namespace AsynGyanis::Net
     // 读侧与请求头部覆盖
     // ============================================================================
 
+    /**
+     * @brief 直测错误日志用的 trace id 读口：三条通道共用同一份取法与同一句「无」
+     * @details 这个读口存在的理由是「各写一遍迟早漏掉一路」（h2/h3 就是这么漏下的）。它给日志文案
+     *          用的缺省值是中文的「无」而不是空串：空值在一段日志里读起来像字段漏打了，运维会去查
+     *          是不是哪里丢了，而实际上只是这条请求本来不在任何链路里。
+     */
+    TEST(TraceContextExtraction, RendersTraceIdForErrorLogsWithoutLeavingItBlank)
+    {
+        HttpRequest request;
+        EXPECT_EQ(traceIdTextForLog(request), "无") << "没带 traceparent 时要交回那句中文的「无」，不能留空";
+
+        ASSERT_TRUE(request.setHeader(kTraceparentHeaderName, kCanonicalTraceparent));
+        EXPECT_EQ(traceIdTextForLog(request), kCanonicalTraceId);
+
+        // 多条 traceparent 是有歧义的输入：与 extractTraceContext 同一结论，按「不在任何链路里」报
+        static_cast<void>(request.addHeader(kTraceparentHeaderName, kCanonicalTraceparent));
+        EXPECT_EQ(traceIdTextForLog(request), "无") << "两条 traceparent 时不该挑一条交出去";
+
+        // 形态不合的头部同样归到「无」，而不是把原文片段带进日志
+        HttpRequest malformed;
+        static_cast<void>(malformed.setHeader(kTraceparentHeaderName, "not-a-traceparent"));
+        EXPECT_EQ(traceIdTextForLog(malformed), "无");
+    }
+
     TEST(TraceContextExtraction, ReadsTheHeaderValueAsTheSingleSourceOfTruth)
     {
         HttpRequest request;

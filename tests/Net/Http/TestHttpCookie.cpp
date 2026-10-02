@@ -322,4 +322,28 @@ namespace AsynGyanis::Net
         EXPECT_EQ(values[0], "first=1");
         EXPECT_EQ(values[1], "second=2; HttpOnly");
     }
+    /**
+     * @brief 直测 Domain 的字符集判据，并钉住它**不管**的那一半规则
+     * @details 这条判据由写侧（setDomain 的抛出条件）与收侧（解析 Set-Cookie）共用，此前只被两侧的
+     *          用例间接覆盖——判据本身没有直测，等于「两侧同严格度」这件事没有东西钉住。
+     *          另一处容易踩错的责任划分也要写在这里：**「至少含一个点」不归本判据管**，那是
+     *          `HttpCookieJar` 在收下 `Domain` 时另做的保守检查（挡单标签顶级域）。把那条塞进这里
+     *          会让写侧一起变严，`Domain=localhost` 这类本地主机名就写不出去了。
+     */
+    TEST(HttpCookie, DomainPredicateChecksCharacterShapeOnly)
+    {
+        EXPECT_TRUE(HttpCookie::isValidDomain("example.com"));
+        EXPECT_TRUE(HttpCookie::isValidDomain("sub.example.com"));
+        EXPECT_TRUE(HttpCookie::isValidDomain("localhost")) << "单标签的取舍在罐子那侧做，不归这条判据";
+
+        EXPECT_FALSE(HttpCookie::isValidDomain("")) << "空域名会让属性写成 Domain=，读起来像被截断";
+        EXPECT_FALSE(HttpCookie::isValidDomain("exa mple.com")) << "空格会终结属性值";
+        EXPECT_FALSE(HttpCookie::isValidDomain("example.com; a=b")) << "分号破坏属性切分";
+        EXPECT_FALSE(HttpCookie::isValidDomain(R"(example.com")"));
+        EXPECT_FALSE(HttpCookie::isValidDomain("a=b")) << "等号会让对端把整段重新解析成另一条属性";
+        EXPECT_FALSE(HttpCookie::isValidDomain("example.com/path")) << "斜杠会把路径写进域名里";
+        EXPECT_FALSE(HttpCookie::isValidDomain(std::string("ex") + static_cast<char>(1) + "ample.com")) << "控制字符不属于主机名";
+        EXPECT_FALSE(HttpCookie::isValidDomain(std::string("ex") + static_cast<char>(0x7F) + "ample.com")) << "0x7F 不算可打印";
+    }
+
 } // namespace AsynGyanis::Net
