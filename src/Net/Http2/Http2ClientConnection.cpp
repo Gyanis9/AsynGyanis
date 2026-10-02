@@ -4,6 +4,7 @@
 
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/DeadlineGuard.h"
+#include "Net/Http/HttpHeaderRules.h"
 
 #include <algorithm>
 #include <array>
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -518,7 +520,16 @@ namespace AsynGyanis::Net
             }
             if (field.name == ":status")
             {
-                stream.response.statusCode = static_cast<int>(std::strtoul(field.value.c_str(), nullptr, 10));
+                // 判形状而不是 strtoul 折数：非三位数字的 :status 按 RFC 7540 §8.1.2 就是「消息没法处理」，
+                // 而折成 0 或 20 会被上层当成一个真号去分支（h1 状态行与 h3 的 :status 用同一条判据）
+                const std::optional<int> parsedStatusCode = parseStatusCodeText(field.value);
+                if (!parsedStatusCode.has_value())
+                {
+                    failConnection(Http2ErrorCode::ProtocolError,
+                                   std::format("响应伪头 :status 的取值「{}」不是三位十进制状态码（RFC 7540 §8.1.2 要求按协议错误收口），本端不猜它想写什么", field.value));
+                    return false;
+                }
+                stream.response.statusCode = *parsedStatusCode;
             }
         }
         return true;

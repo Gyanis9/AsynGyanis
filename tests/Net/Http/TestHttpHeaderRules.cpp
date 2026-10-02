@@ -209,4 +209,26 @@ namespace AsynGyanis::Net
         EXPECT_EQ(serialized.find("Set-Cookie: x=1"), std::string_view::npos);
     }
 
+    /**
+     * @brief 状态码文本只认「恰好三位十进制」，形状不合一律交回空而不是折出一个数
+     * @details 三条客户端通路（h1 状态行、h2 与 h3 的 `:status` 伪头）共用这一处判据。折数的后果
+     *          不是数字差一点，而是**造出一个报文里没写过的状态码**：`atoi("abc")` 是 0、
+     *          `strtoul("20")` 是 20、`atoi("2000")` 是 2000，上层按「2xx 才算成功」分支时
+     *          假号与真号长得一模一样。这里刻意不判范围（100..999 之外仍交回数值）：
+     *          取值是否可用由各通路自己的语义判（隧道只认 2xx），本层只保证「号是报文里那个号」。
+     */
+    TEST(HttpHeaderRules, StatusCodeTextMustBeExactlyThreeDigits)
+    {
+        EXPECT_EQ(parseStatusCodeText("200").value_or(-1), 200);
+        EXPECT_EQ(parseStatusCodeText("999").value_or(-1), 999);
+
+        EXPECT_FALSE(parseStatusCodeText("abc").has_value()) << "非数字被折成了某个数";
+        EXPECT_FALSE(parseStatusCodeText("20").has_value()) << "两位不是状态码";
+        EXPECT_FALSE(parseStatusCodeText("2000").has_value()) << "四位不该被截成三位收下";
+        EXPECT_FALSE(parseStatusCodeText("").has_value());
+        EXPECT_FALSE(parseStatusCodeText("2 0").has_value()) << "数字之间夹空白也不算三位十进制";
+        EXPECT_FALSE(parseStatusCodeText("+20").has_value());
+        EXPECT_FALSE(parseStatusCodeText(" 200").has_value()) << "前导空白要在上层就剥掉，这里不代替它";
+    }
+
 } // namespace AsynGyanis::Net

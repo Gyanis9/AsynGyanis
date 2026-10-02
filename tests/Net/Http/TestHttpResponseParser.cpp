@@ -495,4 +495,33 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(wellFormed.isComplete());
         EXPECT_EQ(wellFormed.result().body, "a") << "trailer 段之后的正文被改写了";
     }
+
+    /**
+     * @brief 状态行里的状态码必须是恰好三位数字，形状不合就整条响应判失败而不是折出一个数
+     * @details 旧写法取前三字符喂 atoi：`HTTP/1.1 abc OK` 得到 0、`HTTP/1.1 2000 OK` 得到 2000、
+     *          `HTTP/1.1 20 OK` 得到 20——上层按「2xx 才算成功」分支时，这些假号与真号无法区分，
+     *          而报文里从来没写过它们。判据与 h2/h3 的 `:status` 共用 parseStatusCodeText 一处。
+     *          正向对照两则：带原因短语的常规状态行，以及**没有原因短语**的状态行
+     *          （RFC 9112 §9 里 Reason-Phrase 是可选的，收紧状态码不该把它一起挡掉）。
+     */
+    TEST(HttpResponseParser, RejectsStatusCodeTextThatIsNotThreeDigits)
+    {
+        HttpResponseParser parser;
+        EXPECT_FALSE(feedAll(parser, "HTTP/1.1 abc OK\r\nContent-Length: 0\r\n\r\n")) << "非数字状态码被折成了一个数";
+        parser.reset();
+        EXPECT_FALSE(feedAll(parser, "HTTP/1.1 2000 OK\r\nContent-Length: 0\r\n\r\n")) << "四位数字被截成 200 收下";
+        parser.reset();
+        EXPECT_FALSE(feedAll(parser, "HTTP/1.1 20 OK\r\nContent-Length: 0\r\n\r\n")) << "两位不是状态码";
+        parser.reset();
+        EXPECT_FALSE(feedAll(parser, "HTTP/1.1  200 OK\r\nContent-Length: 0\r\n\r\n")) << "状态码前多一个空格也不该被当作可忽略的空白";
+
+        parser.reset();
+        ASSERT_TRUE(feedAll(parser, "HTTP/1.1 204 No Content\r\n\r\n")) << "常规状态行被误拒";
+        EXPECT_EQ(parser.result().statusCode, 204);
+
+        parser.reset();
+        ASSERT_TRUE(feedAll(parser, "HTTP/1.1 200\r\nContent-Length: 0\r\n\r\n")) << "原因短语是可选的（RFC 9112 §9）";
+        EXPECT_EQ(parser.result().statusCode, 200);
+        EXPECT_TRUE(parser.result().reasonPhrase.empty());
+    }
 } // namespace AsynGyanis::Net

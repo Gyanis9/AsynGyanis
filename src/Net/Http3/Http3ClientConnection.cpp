@@ -2,10 +2,12 @@
 
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/DeadlineGuard.h"
+#include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http3/Qpack.h"
 
 #include <charconv>
 #include <cstdlib>
+#include <optional>
 #include <utility>
 
 namespace AsynGyanis::Net
@@ -208,7 +210,17 @@ namespace AsynGyanis::Net
         exchange->response.isAnyByteReceived = true;
         if (name == ":status")
         {
-            exchange->response.statusCode = std::atoi(std::string{value}.c_str());
+            // 与 h2 侧同一条判据（RFC 9110 §4.1 的 status-code = 3DIGITS）：atoi 会把 "abc" 折成 0、
+            // 把 "2000" 折成 2000，上层按 2xx 分支时假号与真号长得一样。h3 这侧只结当前这条流
+            // （RFC 9114 §4.1 允许按 H3_MESSAGE_ERROR 收口这条消息），连接留给别的流
+            const std::optional<int> parsedStatusCode = parseStatusCodeText(value);
+            if (!parsedStatusCode.has_value())
+            {
+                noteStreamFailed(streamId, std::format("响应伪头 :status 的取值「{}」不是三位十进制状态码（RFC 9110 §4.1），本端不猜它想写什么", value));
+                m_connection.abortStream(streamId, static_cast<std::uint64_t>(Http3ErrorCode::MessageError));
+                return;
+            }
+            exchange->response.statusCode = *parsedStatusCode;
             return;
         }
         exchange->response.headers.emplace_back(std::string{name}, std::string{value});

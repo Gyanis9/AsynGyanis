@@ -16,6 +16,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <string_view>
 
 namespace AsynGyanis::Net
@@ -268,5 +269,34 @@ namespace AsynGyanis::Net
     {
         const std::size_t parameterPosition = contentTypeHeader.find(';');
         return equalsIgnoringCase(trimOptionalWhitespace(contentTypeHeader.substr(0, parameterPosition)), expectedMediaType);
+    }
+    /**
+     * @brief 解析对端交来的状态码文本：只接受恰好三位十进制（RFC 9110 §4.1 的 status-code = 3DIGITS）
+     *
+     * @details 三条客户端通路共用这一处判据：h1 的状态行、h2 与 h3 的 `:status` 伪头。各写一份正是
+     *          本仓反复出现过的漂移源，而这里漏判的代价不是「数字差一点」，是**拿到一个报文里
+     *          从没写过的状态码**：`atoi("abc")` 交回 0、`strtoul("20")` 交回 20、`atoi("2000")` 交回 2000，
+     *          上层按「2xx 才算成功」分支时，一个把状态码写坏的响应会伪装成一次失败或一次成功。
+     *          所以这里只判形状不判范围：100..999 之外的三位数照样交回，取值是否合法由上层按自己的
+     *          语义判（比如隧道只认 2xx）。
+     * @param text 状态码文本（h1 取状态行里那一段，h2/h3 取伪头取值原文）
+     * @return std::optional<int> 解析出的状态码；形状不合（长度不是 3、含非数字）时为空
+     */
+    [[nodiscard]] inline std::optional<int> parseStatusCodeText(const std::string_view text) noexcept
+    {
+        if (text.size() != 3)
+        {
+            return std::nullopt;
+        }
+        int value = 0;
+        for (const char character: text)
+        {
+            if (character < '0' || character > '9')
+            {
+                return std::nullopt;
+            }
+            value = value * 10 + (character - '0');
+        }
+        return value;
     }
 } // namespace AsynGyanis::Net

@@ -193,8 +193,18 @@ namespace AsynGyanis::Net
                         m_stage = Stage::Failed;
                         return startSize - data.size();
                     }
-                    const auto codeEnd    = codeStr.find(' ');
-                    m_result.statusCode   = std::atoi(std::string(codeStr.substr(0, 3)).c_str());
+                    // 状态码段必须是「恰好三位数字」后面跟 SP 或行尾（RFC 9110 §4.1 的 3DIGITS）：
+                    // atoi 会把 "abc" 折成 0、把 "2000 OK" 折成 2000，那是凭空造出一个报文里
+                    // 没写过的状态码，上层按 2xx 分支时假号与真号长得一模一样
+                    const std::size_t        codeEnd          = codeStr.find(' ');
+                    const std::string_view   codeField        = codeEnd == std::string_view::npos ? codeStr : codeStr.substr(0, codeEnd);
+                    const std::optional<int> parsedStatusCode = parseStatusCodeText(codeField);
+                    if (!parsedStatusCode.has_value())
+                    {
+                        m_stage = Stage::Failed;
+                        return startSize - data.size();
+                    }
+                    m_result.statusCode   = *parsedStatusCode;
                     m_result.reasonPhrase = codeEnd != std::string_view::npos ? std::string(codeStr.substr(codeEnd + 1)) : "";
                     m_stage               = Stage::Headers;
                     break;
