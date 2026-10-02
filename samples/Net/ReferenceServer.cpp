@@ -19,6 +19,8 @@
 #include "Core/Process/WorkerSupervisor.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
+#include "Net/Acme/AcmeAutomationConfig.h"
+#include "Net/Acme/AcmeCertificateManager.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerAssembly.h"
@@ -40,12 +42,14 @@
 #include <csignal>
 #include <cstdlib>
 
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 // 示例程序以可读性为先：各模块统一挂在 AsynGyanis 之下，这里引入根命名空间，
@@ -208,6 +212,12 @@ namespace
     /// 启动确认的等待上限：绑定与监听都在协程的第一步做完，正常只需毫秒级；给足余量但不许无界等待
     constexpr std::chrono::milliseconds kStartupConfirmTimeout{2000};
 
+    /// 叫停证书续期循环后每轮重试的间隔（等的是那块「帧已退出」的原子牌子，不是循环对象本身）
+    constexpr std::chrono::milliseconds kAcmeRenewalLoopWaitSlice{50};
+
+    /// 续期循环的收口等待上限：停放一片是 1 秒，所以 100 轮（5 秒）给到两倍余量；到点打 WARN 继续收尾
+    constexpr int kAcmeRenewalLoopWaitRoundLimit = 100;
+
     /**
      * @brief 等到所有监听器进入监听态，或时限到点
      * @details start() 与 listen() 都是分离投递的常驻协程：绑定失败会在协程里抛出，服务器就停在
@@ -285,6 +295,23 @@ namespace
         remainingDrainCount.fetch_sub(1, std::memory_order_acq_rel);
         co_return;
     }
+
+    /**
+     * @brief 承载证书自动化的常驻续期循环，并在它收口之后立一块主线程读得到的牌子
+     * @details 管理器交回的帧要由调用方投进循环并持有到退出（见 `AcmeCertificateManager` 的 @note）。
+     *          这里套一层协程做两件事：① `co_await` 它，帧归这条协程管，退出点变得可判定；② 退出
+     *          时刻写进一块 `std::atomic<bool>`——循环对象与协程句柄都不能从主线程碰（循环的线程契约），
+     *          而一块原子标志可以，于是收尾能等到「真的退出了」再停循环，而不是猜一段睡眠够不够长。
+     * @param manager 证书自动化管理器；本协程持有其引用，管理器必须比这条帧活得久
+     * @param hasExited 输入输出：续期循环收口时置真，收尾方按它做有界等待
+     * @return Core::Task<> 协程，续期循环退出后立即完成
+     */
+    Core::Task<> runAcmeRenewalLoopTask(Net::AcmeCertificateManager &manager, std::atomic<bool> &hasExited)
+    {
+        co_await manager.runRenewalLoop();
+        hasExited.store(true, std::memory_order_release);
+        co_return;
+    }
 } // namespace
 
 int main(int argc, char **argv)
@@ -309,6 +336,10 @@ int main(int argc, char **argv)
     bool                       showUsage            = false;
     std::string                certificateFile      = "cert.pem";
     std::string                keyFile              = "key.pem";
+    /// 命令行有没有显式给过证书/私钥：开了 acme 之后这两条要与 acme 的落点同解，
+    /// 而「没给」（走上面那两个默认值）与「给成了别的路径」是两种处置，只能按是否给过来判
+    bool certificateFileGiven = false;
+    bool keyFileGiven         = false;
     /// 会话票据密钥文件，可重复给（首份签发、其余只解开旧票据）；空 = 按 OpenSSL 默认随机密钥
     std::vector<std::string> ticketKeyFiles;
     std::string              configFile;
@@ -374,7 +405,8 @@ int main(int argc, char **argv)
             ++i;
         } else if (arg == "--cert")
         {
-            certificateFile = Samples::readOptionValue(argc, argv, i, "--cert", "一个证书文件路径");
+            certificateFile      = Samples::readOptionValue(argc, argv, i, "--cert", "一个证书文件路径");
+            certificateFileGiven = true;
             ++i;
         } else if (arg == "--ticket-key")
         {
@@ -383,7 +415,8 @@ int main(int argc, char **argv)
             ++i;
         } else if (arg == "--key")
         {
-            keyFile = Samples::readOptionValue(argc, argv, i, "--key", "一个私钥文件路径");
+            keyFile      = Samples::readOptionValue(argc, argv, i, "--key", "一个私钥文件路径");
+            keyFileGiven = true;
             ++i;
         } else if (arg == "--config")
         {
@@ -475,8 +508,11 @@ int main(int argc, char **argv)
 #endif
         LOG_INFO("            注意进程间不共享状态：单来源限额、限流上限与指标计数都是每进程一份");
         LOG_INFO("  --worker 内部开关：由 master 传给 worker，用户不必手写");
-        LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关、运维端点令牌）");
-        LOG_INFO("            与 logging 段（root 与各日志器的等级、控制台/文件/滚动 Sink）；");
+        LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关、运维端点令牌）、");
+        LOG_INFO("            logging 段（root 与各日志器的等级、控制台/文件/滚动 Sink）与 acme 段");
+        LOG_INFO("            （证书自动化：enabled/directory_url/domains/落点四件/contact_email/tos_accepted/");
+        LOG_INFO("            challenge/两个节奏/dns 子段）——开了 acme 之后服务端证书与私钥的路径以 acme 的落点为准，");
+        LOG_INFO("            监听器与续期写盘必须是同一条路径，否则签完的新那张装不回去；");
         LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明；");
         LOG_INFO("            运维令牌只能写在文件里：命令行上的令牌会进 shell 历史与进程列表");
         return 0;
@@ -486,6 +522,8 @@ int main(int argc, char **argv)
     // 命令行是「这一次运行的临时改动」，临时改动优先
     Net::HttpServerConfiguration configuration;
     Net::TracingConfiguration    tracingConfiguration;
+    /// 证书自动化：段没写就是关着（默认值即「不建管理器」），其余一切不合法在读配置那一刻抛出
+    Net::AcmeAutomationConfiguration acmeConfiguration;
     if (!configFile.empty())
     {
         // 整块都在 try 里：读文件、取段、校验任何一步失败都只让这次启动失败并说明原因。
@@ -509,12 +547,16 @@ int main(int argc, char **argv)
             Base::ConfigObject document;
             document.emplace(std::string(Net::kHttpServerConfigSection), Base::ConfigManager::instance().getSection(Net::kHttpServerConfigSection));
             document.emplace(std::string(Net::kTracingConfigSection), Base::ConfigManager::instance().getSection(Net::kTracingConfigSection));
+            document.emplace(std::string(Net::kAcmeConfigSection), Base::ConfigManager::instance().getSection(Net::kAcmeConfigSection));
             // 这里必须用圆括号：花括号会去配 initializer_list 那个构造，整份文档就变成一个数组，
-            // 两个读取器都找不到自己的段而全部走默认值——现象只是「配置写了没生效」
+            // 各读取器都找不到自己的段而全部走默认值——现象只是「配置写了没生效」
             const Base::ConfigValue configurationDocument(std::move(document));
             configuration = Net::readHttpServerConfiguration(configurationDocument);
             // 链路段与 server 段同批读：读不出来的写法（未知键、类型不符）不该等到装配出口时才炸
             tracingConfiguration = Net::readTracingConfiguration(configurationDocument);
+            // acme 段也在这一批读：证书自动化最常见的现场是「写了但没生效」，而它的第一处出口是几天之后
+            // 第一次查到期，那时候没人还记得配置文件里写过什么。读不出、交叉判据不过都当场终止启动
+            acmeConfiguration = Net::readAcmeConfiguration(configurationDocument);
         } catch (const std::exception &configurationException)
         {
             LOG_ERROR_EXCEPTION(configurationException, "配置读取失败，服务未启动。文件：{}，原因：{}", configFile, configurationException.what());
@@ -652,6 +694,37 @@ int main(int argc, char **argv)
         } catch (const Base::Exception &keyFailure)
         {
             LOG_ERROR_FMT("reference_server 启动失败：{}", keyFailure.what());
+            return 1;
+        }
+    }
+
+    // 证书自动化开着的时候，服务端加载的证书与私钥这两条路径以 acme 段的落点为准：监听器加载与
+    // 续期写盘必须是同一条路径（`reloadCertificate()` 按监听器原来那条路径重读），否则签完的新那张
+    // 永远装不回去——磁盘月月换、线上还是旧的，而这正是面板上看不出来的那种静默。
+    // 显式给过的 --cert/--key 与 acme 落点不一致时不替谁猜意图：以 acme 为准，并把「顶掉了什么」
+    // 说成一行 WARN。这里刻意不拒：拒会把「两个写法指的是同一张证书」的部署也一并挡在门外，
+    // 而真正的同解判据在 validateAcmeAssembly 里（那边按规范式比对），装配这一处只需要把身份定下来
+    if (acmeConfiguration.isEnabled)
+    {
+        const std::filesystem::path acmeCertificateFile = acmeConfiguration.manager.certificateFile;
+        const std::filesystem::path acmePrivateKeyFile  = acmeConfiguration.manager.privateKeyFile;
+        if ((certificateFileGiven && std::filesystem::path(certificateFile) != acmeCertificateFile) || (keyFileGiven && std::filesystem::path(keyFile) != acmePrivateKeyFile))
+        {
+            LOG_WARN_FMT("acme 开着：证书身份以 acme 段的落点为准，--cert/--key 被顶掉。命令行给的是 {} / {}，本进程将按 {} / {} 加载并续期", certificateFile, keyFile,
+                         acmeCertificateFile.string(), acmePrivateKeyFile.string());
+        }
+        certificateFile = acmeCertificateFile.string();
+        keyFile         = acmePrivateKeyFile.string();
+
+        // 落点上还没有身份时 TLS 监听器根本起不来，而 OpenSSL 报回来的是一句 PEM 解析错误，不会提
+        // 「先签一张」。首次签发归 acme_issuance_probe（那是操作者显式启动的一次性动作），本进程的
+        // 常驻循环只负责此后每次到期前的续期与热装回——把这条边界在启动期说清，比留一句 OpenSSL 黑话有用
+        std::error_code existenceError;
+        if (!std::filesystem::exists(certificateFile, existenceError) || !std::filesystem::exists(keyFile, existenceError))
+        {
+            LOG_ERROR_FMT("acme 开着，但落点上还没有可加载的身份：证书 {}、私钥 {}（两者都得先存在）。首次签发请用 acme_issuance_probe 跑一次，"
+                          "此后由本进程的常驻续期循环接手",
+                          certificateFile, keyFile);
             return 1;
         }
     }
@@ -1069,6 +1142,118 @@ int main(int argc, char **argv)
         LOG_INFO_FMT("HTTP/3 已在同一个端口号的 UDP 上监听（udp/{}）", port);
     }
 
+    // 证书自动化的装配排在所有监听器建好之后：装回动作要遍历的就是这些对象，而「本进程有没有可装回的
+    // 对象」本身是启动期就该判的前提（配了 acme 却没有 TLS 口，等于让管理器每月下载一张没人读的证书）。
+    // 判据本体在库里（`Net::validateAcmeAssembly`），这里只交现场事实：TLS 口在不在、公网明文口在不在、
+    // 是不是多 worker 进程、监听器实际加载哪两条路径
+    std::unique_ptr<Net::AcmeCertificateManager> acmeManager;
+    // 帧声明在管理器之后：作用域结束时先拆帧再拆管理器，与 `AcmeCertificateManager` 的 @note
+    // （「调用方等到帧退出再销毁本对象」）那条寿命关系对得上；池与循环声明得更早，因此拆得更晚，
+    // 帧被销毁时循环已经停手，不会有人再去 resume 一条已经拆掉的帧
+    std::optional<Core::Task<>> acmeRenewalLoopTask;
+    std::atomic<bool>           acmeRenewalLoopExited{false};
+    if (acmeConfiguration.isEnabled)
+    {
+        Net::AcmeAssemblyFacts facts;
+        // 「有几台可装回」按真的能转成 HttpsServer 的那几台数，而不是按 --https/--h3 两个开关猜：
+        // 开关说了而对象不在（或类型不对），装回动作就会遍历到一个都不改，而磁盘月月换——
+        // 数出来的那几台同时打进启动日志，读日志的人当场就能核对目标数量对不对
+        std::size_t tlsServerCount = 0;
+        for (const std::unique_ptr<Net::TcpServer> &server: servers)
+        {
+            if (dynamic_cast<Net::HttpsServer *>(server.get()) != nullptr)
+            {
+                ++tlsServerCount;
+            }
+        }
+        // --h3 现在必须与 --https 同用，所以这两项看着重复；分开写是因为「h3 自己就是一台 TLS 监听器」
+        // 这件事不该靠另一条启动期校验间接成立——那条校验哪天放宽，这里就得跟着变
+        facts.hasTlsListener              = tlsServerCount > 0 || http3Server != nullptr;
+        facts.hasPublicPlaintextListener  = !useHttps;
+        facts.runsMultipleWorkerProcesses = workerProcessCount > 1;
+        facts.listenerCertificateFile     = certificateFile;
+        facts.listenerPrivateKeyFile      = keyFile;
+
+        const auto assembly = Net::validateAcmeAssembly(acmeConfiguration, facts);
+        if (!assembly.has_value())
+        {
+            LOG_ERROR_FMT("证书自动化装配不下去，服务未启动。原因：{}", assembly.error());
+            return 1;
+        }
+
+        Core::EventLoop &acmeLoop = pool.eventLoop(0);
+        // DNS-01 的动作对只在这一档构造：提供方不认识、凭据两条环境变量缺失都在 buildDns01TxtWriter
+        // 里当场抛，报出来的是「缺哪两条」，而不是几天之后第一次续期失败的那句机构错误
+        Net::AcmeDns01TxtWriter dns01TxtWriter;
+        if (acmeConfiguration.usesDns01())
+        {
+            try
+            {
+                dns01TxtWriter = Net::buildDns01TxtWriter(acmeLoop, acmeConfiguration);
+            } catch (const Base::Exception &dnsFailure)
+            {
+                LOG_ERROR_EXCEPTION(dnsFailure, "证书自动化装配不下去，服务未启动。原因：{}", dnsFailure.what());
+                return 1;
+            }
+        }
+
+        // 装回动作遍历本进程的全部 TLS 监听器：分发模式与多线程下每台都有自己的 SSL_CTX，漏一台就是
+        // 那一台继续用旧身份。逐台重装再汇总失败，第一处失败不该吞掉后面几台的处置
+        const auto reloadIntoListeners = [&servers, http3Server = http3Server.get()]() -> std::expected<void, std::string>
+        {
+            std::string failureText;
+            std::size_t reloadedTlsServerCount = 0;
+            std::size_t serverOrdinal          = 0;
+            for (const std::unique_ptr<Net::TcpServer> &server: servers)
+            {
+                ++serverOrdinal;
+                auto *tlsServer = dynamic_cast<Net::HttpsServer *>(server.get());
+                if (tlsServer == nullptr)
+                {
+                    // 明文业务口与只听回环的运维口都不终止 TLS，跳过是常态而不是异常
+                    continue;
+                }
+                if (tlsServer->reloadCertificate())
+                {
+                    ++reloadedTlsServerCount;
+                } else
+                {
+                    failureText += failureText.empty() ? "" : "；";
+                    failureText += std::format("第 {} 台 HTTPS 监听器重装失败", serverOrdinal);
+                }
+            }
+            if (http3Server != nullptr && !http3Server->reloadCertificate())
+            {
+                failureText += failureText.empty() ? "" : "；";
+                failureText += "HTTP/3 服务端重装失败";
+            }
+            if (!failureText.empty())
+            {
+                return std::unexpected(std::format("磁盘上已经是新证书，但 {}（已装回的 {} 台不受影响）——线上身份此刻是混的，"
+                                                   "请按证书自动化失败处置",
+                                                   failureText, reloadedTlsServerCount));
+            }
+            LOG_INFO_FMT("证书自动化：新证书已装回 {} 台 HTTPS 监听器{}{}，新连接立即改用", reloadedTlsServerCount, http3Server != nullptr ? "与 HTTP/3 服务端" : "",
+                         "（在手的连接沿用旧上下文，握完手才换）");
+            return {};
+        };
+
+        acmeManager = std::make_unique<Net::AcmeCertificateManager>(acmeLoop, acmeConfiguration.manager, reloadIntoListeners, std::move(dns01TxtWriter));
+        acmeRenewalLoopTask.emplace(runAcmeRenewalLoopTask(*acmeManager, acmeRenewalLoopExited));
+        acmeLoop.scheduler().schedule(acmeRenewalLoopTask->handle());
+        // 域名列表逐条打出来：多域名是本层的支持面，日志里只写第一条会让人以为其余几条没配上
+        std::string domainText;
+        for (const std::string &domainName: acmeConfiguration.manager.domainNames)
+        {
+            domainText += domainText.empty() ? "" : ",";
+            domainText += domainName;
+        }
+        LOG_INFO_FMT("证书自动化：开（机构 {}，域名 {}，落点 {}，通道 {}，每 {} 分钟查一次到期、到期前 {} 天内就该续；装回目标 {} 台 HTTPS 监听器 + HTTP/3 {}）",
+                     acmeConfiguration.manager.directoryUrl, domainText, acmeConfiguration.manager.certificateFile.string(), acmeConfiguration.usesDns01() ? "dns-01" : "http-01",
+                     std::chrono::duration_cast<std::chrono::minutes>(acmeConfiguration.manager.renewalCheckInterval).count(),
+                     std::chrono::duration_cast<std::chrono::days>(acmeConfiguration.manager.renewBeforeExpiry).count(), tlsServerCount, http3Server != nullptr ? "在" : "不在");
+    }
+
     pool.start();
 
     // 报成功之前先确认监听器真的进入了监听态：绑定失败发生在分离投递的协程里（异常由 Task 记进错误日志，
@@ -1107,6 +1292,24 @@ int main(int argc, char **argv)
     }
 
     LOG_INFO("Received shutdown signal, stopping server...");
+
+    // 证书自动化排在停服务器之前叫停：续期帧归循环 0，而那条循环要到下面停运行时才停，先叫停再等它
+    // 真的退出，帧就不会带着一个已被销毁的管理器被丢下（这正是「收口丢弃挂起协程」那类缺陷的形状）。
+    // 等待是有界的——停放被切成 1 秒一片；正在进行的那一轮签发刻意不打断，等满上限就打一行 WARN 继续收尾
+    if (acmeManager != nullptr)
+    {
+        acmeManager->stopRenewalLoop();
+        for (int waitRoundCount = 0; waitRoundCount < kAcmeRenewalLoopWaitRoundLimit && !acmeRenewalLoopExited.load(std::memory_order_acquire); ++waitRoundCount)
+        {
+            std::this_thread::sleep_for(kAcmeRenewalLoopWaitSlice);
+        }
+        if (!acmeRenewalLoopExited.load(std::memory_order_acquire))
+        {
+            LOG_WARN_FMT("证书自动化：续期循环在 {}ms 内没有收口（正在进行的那一轮签发不打断，半途掐掉会留下半个订单状态），"
+                         "仍按既有顺序停服务；停机期间不会再有装回动作",
+                         std::chrono::duration_cast<std::chrono::milliseconds>(kAcmeRenewalLoopWaitSlice * kAcmeRenewalLoopWaitRoundLimit).count());
+        }
+    }
 
     // 关停分三步：停止接受新连接 → 等在途请求做完（超时兜底强关）→ 停运行时。
     // 前两步都要在服务器所属的循环线程上执行（它们要动那个循环正在使用的监听器与套接字），

@@ -206,6 +206,9 @@ HTTP-01 那条路在回归环境给不了）。三条变量缺一不可，其中
 ./build/debug/samples/reference_server --port 8080 --threads 4 --pin-threads
 # N 个 worker 进程服务同一个端口，崩溃即补位（进程间不共享状态）
 ./build/debug/samples/reference_server --port 8080 --workers 4
+# 配置里的 acme 段开着就装常驻续期循环：签完的新证书热装回本进程每一台 TLS 监听器，
+# 证书身份以 acme 的落点为准（这一段与 --workers 不能同用，多进程请用探针先签一张）
+./build/debug/samples/reference_server --config server.yaml --https
 ./build/debug/samples/reference_server --help                                  # 全部参数
 ```
 
@@ -553,11 +556,28 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
   按字面继续跑会让人以为 TXT 在写。
 - **段内未知键即拒**（13 个键 + `dns` 那 3 个），与 `server` 段同一套规矩；键名打错不该安静地按默认跑。
 
-消费方目前是签发探针：`acme_issuance_probe --config <file>` 以文件那份为默认，命令行上**显式给出**的
+消费方有两处。签发探针 `acme_issuance_probe --config <file>` 以文件那份为默认，命令行上**显式给出**的
 `--domain` / `--contact` / `--challenge` / `--state-dir` / `--dns-zone` / `--dns-ttl` 才覆盖它，并打一行
-`CHALLENGE … FROM cli|config` 说明这次是哪份在生效。服务侧（`reference_server` 与装配出口）**还没吃这一段**，
-把 `acme` 写进部署配置不会让证书自己续——缺的是「签完新证书之后把那张装回运行中的监听器」这条通路，
-它还没接。
+`CHALLENGE … FROM cli|config` 说明这次是哪份在生效。`reference_server --config <file>` 则把这一段装成
+**常驻续期**：本进程每一台 HTTPS 监听器与 h3 都在装回名单里，签完的新证书当场 `reloadCertificate()` 换上，
+启动日志直接给出「装回目标 N 台 HTTPS 监听器 + HTTP/3 在/不在」——那个 N 按真能转成 TLS 服务器的对象数，
+不按 `--https`/`--h3` 两个开关猜，所以「开关说了而对象不在」这一格当场可见。
+
+三条边界都写成启动即拒（或启动即说清），因为它们全是「配了但不会生效」的形状：
+
+- **开着 `acme` 时证书身份以 `acme` 的落点为准**：`--cert/--key` 与它不一致会被顶掉并打一行 WARN 说明顶掉了
+  什么。两边不同解就等于签完装不回去——`reloadCertificate()` 按监听器原来那条路径重读，新那张写在别处。
+- **`http-01` 在本示例里装不下去**：它要一台公网可达的明文监听器，而这里一个端口只服务一种协议，开了
+  `--https` 就没有明文口，于是启动被拒并指回 `dns-01`；`http-01` 的一次性签发仍归探针（它自带明文对端）。
+- **多 worker 进程形态直接拒**：N 个进程会各建一份管理器去撞同一个机构（速率限制按账户计，不按进程），
+  而任一次续期只装回它自己进程里的监听器，其余进程仍是那张旧的。改单进程跑，或先用探针签一张、续期后由
+  编排方重启各进程。
+
+首次签发不在服务侧：落点上还没有可加载的身份时 `reference_server` 启动即失败并说明「先用
+`acme_issuance_probe` 跑一次」，而不是把一句 OpenSSL 的 PEM 解析错误留给人猜。停机排在停服务器之前：
+先叫停续期循环，再等它**真的**退出（有界——停放一片 1 秒，等待上限 5 秒；正在进行的那一轮签发刻意不打断，
+半途掐掉会留下半个订单状态），帧不会带着一个已销毁的管理器被丢下。判据本体在
+`Net::validateAcmeAssembly`，自己的装配出口可以直接复用它。
 
 > **一份单里同时写 `example.com` 与 `*.example.com` 时，第二次自证会先等满记录 TTL。**
 > RFC 8738 让这两条自证落在**同一个**名字 `_acme-challenge.example.com` 上，而两条的答案不同；机构按
