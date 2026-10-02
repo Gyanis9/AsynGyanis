@@ -1247,6 +1247,12 @@ namespace AsynGyanis::Net
             // Upgrade 这套机制（切换靠 :protocol=websocket），对端没有可改的东西
             LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答。request-id {}，路径 {}，原因：{}", request.requestId(), request.uri(),
                           handshakeFailureReason);
+            // 与 h1（升级被拒时）以及 h3（同一条判据）同一笔账：本段其余四条没交给业务的收口
+            // （431/414/413/预算）都只落这一笔，漏掉它会让「被闸门挡下的请求数」在 h2 的 WS 那一路少一格
+            if (m_metrics != nullptr)
+            {
+                m_metrics->countBadRequest();
+            }
             response.reset();
             response.setStatus(400);
             response.setBody("Bad WebSocket Handshake");

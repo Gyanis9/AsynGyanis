@@ -2263,6 +2263,62 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 h3 隧道上的帧错误落账：webSocketProtocolErrorCloseCount 与 h1/h2 同一口径
+     * @details 这一格过去只有 h1 与 h2 记，h3 收口了却不记账——不是数字差一点，而是面板上
+     *          「对端违反 RFC 6455」的比例在 h3 上恒为 0，看着像这条通道没人违规。
+     *          判据取「未掩码帧」这一类：客户端帧必须带掩码（RFC 6455 §5.3），服务端一侧必然判错。
+     *          帧错误刻意不并入 badRequestCount（后者是 HTTP 报文解析失败、回的是 4xx），
+     *          所以这里两条都要断：前者 +1 而后者不动。
+     */
+    TEST(Http3Session, CountsWebSocketProtocolErrorCloseOnTheTunnel)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
+
+        Router router;
+        router.get("/chat",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket(
+                               [](WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       static_cast<void>(message);
+                                   }
+                                   co_return;
+                               });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        // 未掩码的 Text 帧 "hello"：第二个字节最高位为 0，服务端必然按协议错误收口
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitWebSocketTunnel("/chat", "example.com", std::string("\x81\x05hello", 7));
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.webSocketProtocolErrorCloseCount, 1U) << "h3 隧道上的帧错误没有落账（或记了多次）";
+        EXPECT_EQ(snapshot.badRequestCount, 0U) << "帧错误不该并进 badRequestCount：那一格口径是 HTTP 报文解析失败";
+    }
+
+    /**
      * @brief 承载连接没了：还挂在 receive() 上的隧道业务要醒来收尾，会话随后才算空闲
      * @details 传输层收口不会逐条流发信号，这条流上没有「对端取消」那一路通知；少了 abandon 这一步，
      *          会话被摘掉时连着业务协程帧一起销毁，等待之后的收尾永不执行。第二次调用把「业务已跑完

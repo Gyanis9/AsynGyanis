@@ -1605,6 +1605,10 @@ namespace AsynGyanis::Net
                 << "缺 key 的扩展 CONNECT 没有应答";
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "400");
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, "sec-websocket-version"), "") << "缺 key 的拒绝伪装成了版本问题";
+
+        // 两条被挡下的握手各该落一笔 bad_requests：h1 的升级拒绝与 h3 的同判据都记，
+        // h2 这路过去只发应答不记账，面板上「被闸门挡下的请求数」就少这一格
+        EXPECT_EQ(fixture.server().stats().badRequestCount, 2U) << "被拒的扩展 CONNECT 没有逐条落账";
     }
 
     /**

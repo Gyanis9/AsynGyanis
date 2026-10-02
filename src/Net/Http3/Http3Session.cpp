@@ -1516,6 +1516,13 @@ namespace AsynGyanis::Net
             if (feedStatus == WebSocketFeedStatus::DecodeError)
             {
                 LOG_WARN_FMT("Http3Session: 流 {} 上的 WebSocket 帧解不开（{}），按 {} 收口隧道", streamId, tunnel.peer->decodeErrorText(), tunnel.peer->decodeErrorCloseCode());
+                // 与 h1/h2 同口径落一笔：那两路都在这一处记 webSocketProtocolErrorCloseCount（帧错误不并入
+                // badRequestCount，后者的口径是 HTTP 报文解析失败、回的是 4xx）。少记这一笔不是数字差一点，
+                // 而是面板上「对端违反 RFC 6455」的比例在 h3 上恒为 0，看着像这条通道没人违规
+                if (m_metrics != nullptr)
+                {
+                    m_metrics->countWebSocketProtocolErrorClose();
+                }
                 // 与 h1/h2 的已知不对称（有意留下）：那两路在这里会先 co_await peer.close(1002/1007/1009)
                 // 再收口，而本处是直接结束流——本函数是**非协程**的安全点（由 onStreamData 调），
                 // 发一条要等产出窗口的帧要么挂起要么另搭一套延迟发送，而延迟发送会把「唤醒挂在 receive()
