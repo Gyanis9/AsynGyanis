@@ -2,6 +2,7 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
+#include "Base/Log/LogThrottle.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 #include "Net/Quic/QuicConnectionCore.h"
@@ -28,6 +29,9 @@ namespace AsynGyanis::Net
 
         /// 服务端允许对端发起的流数：HTTP/3 一条连接上并发几十个请求是常态
         constexpr std::uint64_t kInitialMaximumStreams = 100;
+
+        /// 空闲超时越界的告警窗口：这条判据每建一条连接都走一次，配置错了就是每条都错，不限流会自己把日志刷爆
+        constexpr std::chrono::hours kInvalidIdleTimeoutLogWindow{1};
 
         /**
          * @brief 取一段随机字节
@@ -63,7 +67,24 @@ namespace AsynGyanis::Net
             parameters.initialMaximumStreamDataUnidirectional      = kInitialMaximumStreamData;
             parameters.initialMaximumBidirectionalStreams          = kInitialMaximumStreams;
             parameters.initialMaximumUnidirectionalStreams         = kInitialMaximumStreams;
-            parameters.maximumIdleTimeoutMilliseconds              = static_cast<std::uint64_t>(configuration.idleTimeout.count());
+            // 空闲超时必须先落在可编码域里：负值直接换算会得到约 1.8×10^19，超过 QUIC 变长整数的上限
+            // 2^62-1，而编码器在为服务端 Initial 写这份参数时抛异常——那是在事件循环线程上、连接建立的
+            // 中途，看着像「循环崩了」而不是「配置写错了」。越界时按 RFC 9000 §18.2 交 0（该参数的语义
+            // 就是「不启用空闲超时」），并出声点名；告警按小时限流，因为每条连接都会走这一判据
+            if (isEncodableIdleTimeout(configuration.idleTimeout))
+            {
+                parameters.maximumIdleTimeoutMilliseconds = idleTimeoutParameterMilliseconds(configuration.idleTimeout);
+            }
+            else
+            {
+                if (auto &throttle = ASYN_LOG_THROTTLED(kInvalidIdleTimeoutLogWindow); throttle.acquire())
+                {
+                    LOG_WARN_FMT("QuicConnection: 配置的空闲超时 {} 毫秒不在 QUIC 可编码域 [0, 2^62-1] 内，本端按 RFC 9000 §18.2 "
+                                 "宣告 0（不启用空闲超时）；负值请改成 0 或一个正数",
+                                 configuration.idleTimeout.count());
+                }
+                parameters.maximumIdleTimeoutMilliseconds = 0;
+            }
         }
 
         /// 客户端第一个 Initial 里那个自造目的标识的长度：RFC 9000 §7.2 只要求「至少 8 字节以免撞车」，

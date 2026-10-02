@@ -20,8 +20,11 @@
 #include "AsynGyanisExport.h"
 
 #include "Net/Quic/Codec/QuicDecodeError.h"
+#include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -46,6 +49,32 @@ namespace AsynGyanis::Net
 
     /// `active_connection_id_limit` 的默认值，同时是允许的最小值
     inline constexpr std::uint64_t kQuicDefaultActiveConnectionIdLimit = 2;
+
+    /**
+     * @brief 配置里给的空闲超时能否编进 `max_idle_timeout`
+     * @details 负数不是「小一点」而是**根本没有合法编码**：`std::chrono::milliseconds` 的负值直接
+     *          `static_cast<std::uint64_t>` 得到约 1.8×10^19，超过 QUIC 变长整数的上限 2^62-1，
+     *          而编码器在为服务端 Initial 写这份参数的那一刻抛异常——那发生在事件循环线程上、
+     *          在连接建立的中途，症状是「第一个 QUIC 连接把循环打崩」而不是「配置写错了」。
+     *          0 是合法的：RFC 9000 §18.2 明确「值为 0 等价于没设这一项」，即本端不启用空闲超时。
+     * @param timeout 配置里的空闲超时
+     * @return true 落在可编码域 [0, 2^62-1] 内
+     */
+    [[nodiscard]] inline constexpr bool isEncodableIdleTimeout(const std::chrono::milliseconds timeout) noexcept
+    {
+        return timeout.count() >= 0 && static_cast<std::uint64_t>(timeout.count()) <= kQuicMaximumIntegerValue;
+    }
+
+    /**
+     * @brief 把可编码的空闲超时换成 `max_idle_timeout` 的线上取值（毫秒）
+     * @pre isEncodableIdleTimeout(timeout) 为真；不满足时结果无意义（调用方应先判并出声）
+     * @param timeout 配置里的空闲超时
+     * @return std::uint64_t 传输参数的取值
+     */
+    [[nodiscard]] inline constexpr std::uint64_t idleTimeoutParameterMilliseconds(const std::chrono::milliseconds timeout) noexcept
+    {
+        return static_cast<std::uint64_t>(timeout.count());
+    }
 
     /**
      * @brief 这批参数是谁交来的，用来判定「服务端专属参数」是否违规

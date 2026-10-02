@@ -267,4 +267,26 @@ namespace AsynGyanis::Net
         // 末尾多出一个 8 字节档整数的开头，标识域读不完
         expectRejected(withMinimalParameters("c0"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Truncated);
     }
+
+    /**
+     * @brief 配置里的空闲超时能否编进 max_idle_timeout，以及可编码时的换算
+     * @details 钉住的是「负数不会变成 1.8×10^19」这一格：`static_cast<std::uint64_t>(-1)` 远超 QUIC
+     *          变长整数的上限 2^62-1，而编码器在写服务端 Initial 的那一步为它抛异常——那发生在事件
+     *          循环线程上、连接建立的中途，看着像循环崩了而不是配置写错了。0 必须是合法的：
+     *          RFC 9000 §18.2 写明「值为 0 等价于没设这一项」，调用方靠它显式关掉空闲超时。
+     */
+    TEST(QuicTransportParameters, IdleTimeoutDomainExcludesNegativesAndUnencodableMagnitudes)
+    {
+        EXPECT_TRUE(isEncodableIdleTimeout(std::chrono::milliseconds{30000}));
+        EXPECT_TRUE(isEncodableIdleTimeout(std::chrono::milliseconds{0})) << "0 是 RFC 认可写法（不启用空闲超时），不能被当成越界";
+        EXPECT_TRUE(isEncodableIdleTimeout(std::chrono::milliseconds{static_cast<std::int64_t>(kQuicMaximumIntegerValue)}))
+                << "上限本身可编码，判据写成开区间就会把合法的极大值一起挡掉";
+
+        EXPECT_FALSE(isEncodableIdleTimeout(std::chrono::milliseconds{-1})) << "负值直接换算会得到超过 2^62-1 的数，编码器会在循环线程上抛出";
+        EXPECT_FALSE(isEncodableIdleTimeout(std::chrono::milliseconds{static_cast<std::int64_t>(kQuicMaximumIntegerValue) + 1}));
+        EXPECT_FALSE(isEncodableIdleTimeout(std::chrono::milliseconds::max()));
+
+        EXPECT_EQ(idleTimeoutParameterMilliseconds(std::chrono::milliseconds{30000}), 30000U);
+        EXPECT_EQ(idleTimeoutParameterMilliseconds(std::chrono::milliseconds{0}), 0U);
+    }
 } // namespace AsynGyanis::Net
