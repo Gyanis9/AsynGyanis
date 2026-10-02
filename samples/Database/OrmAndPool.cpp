@@ -1058,11 +1058,14 @@ namespace
                                            !idleConnection.beginTransaction() && idleConnection.lastError().find("未连接") != std::string::npos,
                                    "未连接的 SQLite 连接在执行与事务入口上一律拒绝，并给出中文前置条件说明");
 
-        // 同一条参数化接口在 Redis 上由基类默认实现给出「暂不支持」的中文提示（不需要服务端即可验证）
+        // 同一条参数化接口在 Redis 上已接通 argv 通道（不需要服务端即可验证两半）：
+        // 正常形状走到发送判定（离线时是「未连接到 Redis」），而 SQL 习惯写下的 "?" 占位符被单独拒
         Database::RedisConnection redisStub(Database::ConnectionConfig::redisDefault());
-        const bool isRedisParameterizedRejected = redisStub.execute("GET ?", std::vector<Database::DatabaseValue>{std::int64_t{1}}) == nullptr &&
-                                                  redisStub.lastError().find("暂不支持参数化查询") != std::string::npos && redisStub.lastError().find("Redis") != std::string::npos;
-        Samples::checklist().check(isRedisParameterizedRejected, "Redis 没有参数绑定实现时不退化成「按 NULL 执行」，而是给出中文提示");
+        const bool                isRedisParameterizedWiredThrough = redisStub.execute("GET", std::vector<Database::DatabaseValue>{std::int64_t{1}}) == nullptr &&
+                                                                     redisStub.lastError() == "未连接到 Redis，命令未执行" &&
+                                                                     redisStub.execute("GET ?", std::vector<Database::DatabaseValue>{std::int64_t{1}}) == nullptr &&
+                                                                     redisStub.lastError().find("Redis 没有占位符语法") != std::string::npos;
+        Samples::checklist().check(isRedisParameterizedWiredThrough, "Redis 的参数化入口走到发送判定，而 \"?\" 占位符被明确拒（不退化成按 NULL 执行）");
 
         // 约束违例经 ORM 折成模块异常类型：能被 Base::Exception 一句网住，且库里一行都没多
         OrmQuery<AccountRow> beforeQuery(pool, Database::DatabaseType::Sqlite);
