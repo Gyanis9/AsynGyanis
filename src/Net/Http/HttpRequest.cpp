@@ -282,6 +282,43 @@ namespace AsynGyanis::Net
         return std::string(m_remoteAddress);
     }
 
+    std::string HttpRequest::remoteIp() const
+    {
+        // 只认本框架 InetAddress::toString() 产出的三种形状，理由见头文件那条 @note：
+        // 通用文法猜错的时候不会报错，只会安静地给出一个错到底的限额键
+        if (m_remoteAddress.empty())
+        {
+            return {};
+        }
+
+        // 带方括号的 IPv6：端口在右括号之后，取括号内的部分（作用域号 %N 一并留着）
+        if (m_remoteAddress.front() == '[')
+        {
+            const std::size_t closingBracket = m_remoteAddress.find(']');
+            if (closingBracket == std::string_view::npos)
+            {
+                return std::string(m_remoteAddress);
+            }
+            return std::string(m_remoteAddress.substr(1U, closingBracket - 1U));
+        }
+
+        const std::size_t lastColon = m_remoteAddress.rfind(':');
+        if (lastColon == std::string_view::npos)
+        {
+            return std::string(m_remoteAddress);
+        }
+        const std::string_view tail = m_remoteAddress.substr(lastColon + 1U);
+        const std::string_view head = m_remoteAddress.substr(0U, lastColon);
+        // 「末段是 1~5 位十进制」还不够：还要求前段里出现点号，这样点分四段与 ::ffff:a.b.c.d 的映射形式
+        // 都能剥，而 "::1"、"2001:db8::1" 这类没被方括号包起来的裸地址不会被切成残段
+        const bool tailLooksLikePort = !tail.empty() && tail.size() <= 5U && std::all_of(tail.begin(), tail.end(), [](const char digit) { return digit >= '0' && digit <= '9'; });
+        if (!tailLooksLikePort || head.find('.') == std::string_view::npos)
+        {
+            return std::string(m_remoteAddress);
+        }
+        return std::string(head);
+    }
+
     std::string_view HttpRequest::path() const
     {
         // 路径与查询串以第一个 '?' 为界；'?' 之前一律算路径，即使里面还有 '?' 也不切开。
