@@ -307,6 +307,12 @@ if(ASYN_ENABLE_INSTALL)
             FILES_MATCHING PATTERN "*.h"
     )
 
+    # Base 那次 std::stacktrace 现场探测的结果随包交出去（生成处见 src/Base/CMakeLists.txt）：
+    # 按 Conan 消费的包要给消费方重复同一个编译宏，而宏的真源只有这一次探测
+    install(FILES ${CMAKE_BINARY_DIR}/src/Base/AsynGyanisStacktraceSupport.txt
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/asyngyanis
+    )
+
     # 组件依赖图（谁链接谁）；外部依赖清单不在这里重复——各模块启用依赖时已按组件登记进
     # GLOBAL 属性（imported 目标只在创建它的目录及其子目录可见，根作用域 here 看不见，
     # 所以不能在本文件里用 if(TARGET ...) 反查）

@@ -44,6 +44,27 @@ else()
     message(STATUS "Base: std::stacktrace 不可用，调用栈退化为空实现")
 endif()
 
+# 把上面那次探测的结果落成一个标记文件（安装规则在根 CMakeLists 里把它随包交出去）。
+# 为什么要交：这个宏是 PUBLIC 的，`Exception/StackTrace.h` 按它换 **CapturedStackTrace 的类型**
+# （有栈时是 std::stacktrace 的别名，没栈时是一个空的替身类）。消费方拿到的必须是与 libBase.a
+# 同一份形状，而它在自己的配置阶段读不到这次探测的结果——CMake 那侧靠 INTERFACE 编译定义自动带，
+# Conan 那侧只能由配方再说一遍。以前「再说一遍」是说成一份写死的工具链矩阵（Windows 一律没有、
+# 只认 gcc>=13），而 MSVC 上这次探测其实会通过：矩阵与现场一分叉，就是悄悄发生的形状不一致。
+# 落成文件就是把那份复述删掉，只留这一处真源
+if(ASYN_HAS_STACKTRACE)
+    set(asyn_stacktrace_marker "1")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(asyn_stacktrace_link_libs "stdc++exp")
+    else()
+        set(asyn_stacktrace_link_libs "")
+    endif()
+else()
+    set(asyn_stacktrace_marker "0")
+    set(asyn_stacktrace_link_libs "")
+endif()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisStacktraceSupport.txt"
+        "has-stacktrace=${asyn_stacktrace_marker}\nlink-libs=${asyn_stacktrace_link_libs}\n")
+
 target_link_libraries(Base PUBLIC
         Platform
         nlohmann_json::nlohmann_json

@@ -137,18 +137,38 @@ class AsynGyanisLibrary(ConanFile):
         # 取的是 export_sources 导下来的那份——包在别的机器上构建时仓库根路径已经不存在
         copy(self, "LICENSE", src=self.source_folder, dst=os.path.join(self.package_folder, "licenses"))
 
-    def _hasStandardLibraryStackTraceSupport(self) -> bool:
-        """这份包是不是在有 std::stacktrace 的工具链上构建的——与 CMake 那次探测同一个条件，只留一处口径"""
-        if str(self.settings.os) == "Windows":
-            return False
-        if str(self.settings.compiler) != "gcc":
-            return False
-        try:
-            return int(str(self.settings.compiler.version).split(".")[0]) >= 13
-        except (TypeError, ValueError):
-            # 版本取不出形状时按「不支持」处理：多给一份空栈读数不伤人，多挂一个编译宏会把消费方
-            # 的编译带到另一份头文件形状上
-            return False
+    def _stacktraceSupportMarker(self) -> dict:
+        """读构建期那份 std::stacktrace 探测的结果，真源在 `src/Base/CMakeLists.txt` 的 check_cxx_source_compiles
+
+        为什么不在这里复述一遍工具链矩阵：宏是 PUBLIC 的，而 `Base/Exception/StackTrace.h` 按它换
+        `CapturedStackTrace` 的**类型**（有栈时是 std::stacktrace 的别名，没栈时是一个空的替身类）。
+        复述过一次就漂一次——本函数原先写死「Windows 一律没有、Linux 只认 gcc>=13」，而 MSVC 与 clang
+        上那次探测其实会通过：一旦通过，包里编进去的是有栈那份形状，而消费方按宏缺失拿到空替身，
+        静态链接不会报错，错的是两边对同一个类的布局。
+
+        读不到标记就拒而不是猜：这条路径上「按默认值继续」正好会重新造出上面那种分叉
+        """
+        markerName = "AsynGyanisStacktraceSupport.txt"
+        markerPath = None
+        # 它落在 <datarootdir>/asyngyanis 下，而 datarootdir 具体是 res/ 还是 share/ 由 CMake 的
+        # GNUInstallDirs 与生成器决定，所以按名字找、不拼死路径；找不到就是拒打包
+        for root, _, fileNames in os.walk(self.package_folder):
+            if markerName in fileNames:
+                markerPath = os.path.join(root, markerName)
+                break
+        if markerPath is None:
+            raise ConanException(
+                f"包里找不到 {markerName}：那份 std::stacktrace 探测结果没能随包交付，"
+                "配方无从判断消费方要不要 ASYN_HAS_STACKTRACE（宁可拒，也不要按猜出来的矩阵发一个编译宏）")
+        fields = {}
+        with open(markerPath, encoding="utf-8") as source:
+            for line in source.read().splitlines():
+                key, separator, value = line.partition("=")
+                if separator:
+                    fields[key.strip()] = value.strip()
+        if fields.get("has-stacktrace") not in ("0", "1"):
+            raise ConanException(f"包里的 std::stacktrace 标记读不出取值：{fields}")
+        return fields
 
     def package_info(self):
         self.cpp_info.set_property("cmake_file_name", "AsynGyanis")
@@ -161,8 +181,12 @@ class AsynGyanisLibrary(ConanFile):
         platform.libs = ["Platform"]
         platform.set_property("cmake_target_name", "AsynGyanis::Platform")
         if self.settings.os == "Windows":
-            # Winsock 只在 Windows 需要（Linux 侧由 libc 内建提供）；Linux 侧补 pthread
-            platform.system_libs = ["ws2_32", "Mswsock"]
+            # Winsock 只在 Windows 需要（Linux 侧由 libc 内建提供）；Linux 侧补 pthread。
+            # **这份清单与 src/Platform/CMakeLists.txt 的 target_link_libraries 必须逐项一致**：
+            # 静态库不会把外部依赖带给最终可执行文件，少一项就是消费方链接期一条未解析外部符号。
+            # iphlpapi 曾被漏掉，而 `Platform/IO/NetworkInterface.h` 是公开头、里面直接
+            # include <iphlpapi.h>（if_nametoindex/if_indextoname 在 Windows SDK 里由它实现）
+            platform.system_libs = ["ws2_32", "Mswsock", "iphlpapi"]
         else:
             platform.system_libs = ["pthread"]
 
@@ -171,19 +195,21 @@ class AsynGyanisLibrary(ConanFile):
         base.requires = ["platform", "nlohmann_json::nlohmann_json", "yaml-cpp::yaml-cpp"]
         base.set_property("cmake_target_name", "AsynGyanis::Base")
 
-        # 调用栈那条能力（std::stacktrace）在 CMake 侧是 PUBLIC 的：`src/Base/CMakeLists.txt:25-42`
-        # 探测通过后同时给 Base 挂 `ASYN_HAS_STACKTRACE=1` 编译宏与 `stdc++exp` 链接。包这一侧必须
-        # 把同一件事说两遍，且两遍都漏过：
-        #   少 defines —— `Exception/StackTrace.h:23/32/54` 三处按这个宏分叉，消费方会拿「没有栈」的
-        #                那份头去编译，而 libBase.a 里编进去的是另一份形状；
+        # 调用栈那条能力（std::stacktrace）在 CMake 侧是 PUBLIC 的：`src/Base/CMakeLists.txt` 探测通过
+        # 后同时给 Base 挂 `ASYN_HAS_STACKTRACE=1` 编译宏与 `stdc++exp` 链接。包这一侧必须把同一件事
+        # 再说一遍，而两遍都可能漏：
+        #   少 defines —— `Exception/StackTrace.h` 按这个宏换 CapturedStackTrace 的类型，消费方会拿
+        #                「没有栈」的那份头去编译，而 libBase.a 里编进去的是另一份形状；
         #   少 system_libs —— 链接期报 undefined reference to `__glibcxx_backtrace_simple`。
-        # 这条不是推演：本轮按 `conan create` 真跑过，消费方冒烟就在链接那步挂掉。
-        # 探测结果本身读不回来（它属于构建期），这里按受支持的工具链矩阵复述同一个条件：
-        # GCC 且主版本 ≥13、非 Windows；矩阵外（clang、MSVC、GCC<13）与 CMake 一样退化为空栈
-        if self._hasStandardLibraryStackTraceSupport():
+        # 这条不是推演：接上 Conan 那轮按 `conan create` 真跑过，消费方冒烟就在链接那步挂掉。
+        # 说两遍不等于各说一遍：这里的取值读的是构建期那次探测落下的标记文件（随 install 进包），
+        # 不在配方里复述工具链矩阵，缘由见 _stacktraceSupportMarker()
+        stacktraceSupport = self._stacktraceSupportMarker()
+        if stacktraceSupport["has-stacktrace"] == "1":
             base.defines = ["ASYN_HAS_STACKTRACE=1"]
-            if str(self.settings.compiler) == "gcc":
-                base.system_libs = list(base.system_libs) + ["stdc++exp"]
+            extraSystemLibs = [entry for entry in stacktraceSupport.get("link-libs", "").split(";") if entry]
+            if extraSystemLibs:
+                base.system_libs = list(base.system_libs) + extraSystemLibs
 
         core = self.cpp_info.components["core"]
         core.libs = ["Core"]

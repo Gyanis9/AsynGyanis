@@ -5,8 +5,10 @@
 // 覆盖，不在这里重复；也不碰事件循环——起服务器要跨线程驱动协程，那是集成测试的事，
 // 放在冒烟测试里只会让它因为与本任务无关的原因变红。
 
+#include "Base/Exception/StackTrace.h"
 #include "Net/Http/Gzip.h"
 #include "Net/Http/HttpResponse.h"
+#include "Platform/IO/NetworkInterface.h"
 
 #include <cstdio>
 #include <optional>
@@ -34,6 +36,23 @@ int main()
         std::printf("consumer_smoke: gzip 压缩不可用（外部依赖没链上）\n");
         return 1;
     }
+
+    // 平台模块的这条入口在 Windows SDK 里由 iphlpapi.lib 实现（if_nametoindex），在 Linux 侧在 libc。
+    // 引用它不是为了测出什么取值——静态库要把实现该符号的那个目标文件拉进最终可执行体，
+    // 少声明一个系统库就是在这里链接期报未解析外部符号；少了这一步，「包漏了 iphlpapi」这种缺陷
+    // 在本冒烟里根本走不到链接器
+    const unsigned interfaceIndex = AsynGyanis::Platform::interfaceIndexOfName("lo");
+    static_cast<void>(interfaceIndex); // 有没有这块网卡随机器而定，判据是「链得上、跑得掉」
+
+    // 调用栈那条能力的形状：包按 cpp_info 交出的宏，必须与库体里编进去的那一份是同一个答案。
+    // 宏说有栈而库给的是空栈，就是两边按 #if 分了叉（CapturedStackTrace 在两种形状下是不同类型）
+#if defined(ASYN_HAS_STACKTRACE)
+    if (AsynGyanis::Base::captureStackTrace(0, 8).empty())
+    {
+        std::printf("consumer_smoke: 宏声明有调用栈，库却交出空栈（包与库体的形状不一致）\n");
+        return 1;
+    }
+#endif
 
     std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节\n", head.size(), compressed->size());
     return 0;
