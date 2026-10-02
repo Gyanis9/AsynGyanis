@@ -1081,6 +1081,13 @@ int main(const int argc, char **argv)
                   "令牌桶耗尽后第三条回 429（桶容量 3、每秒补 1）");
 
     samples.check(observations.isHttpClientOkay, "框架自带的 Net::HttpClient 也能把这条服务打穿");
+    // 出站侧另外两条读口不依赖服务端：Retry-After 的两种写法折成「还要等多久」，
+    // 以及响应给的相对 Location 按 RFC 9110 §5.3 折成绝对 URL——业务自己拼这两件事就会各写一版
+    samples.check(Net::resolveUrlReference(Net::parseUrl("http://127.0.0.1:18080/api/ping"), "/api/pong") == "http://127.0.0.1:18080/api/pong" &&
+                          Net::resolveUrlReference(Net::parseUrl("http://127.0.0.1:18080/api/ping"), "../up") == "http://127.0.0.1:18080/up" &&
+                          !Net::resolveUrlReference(Net::parseUrl("http://127.0.0.1:18080/api/ping"), "ftp://h/x").has_value() &&
+                          !Net::resolveUrlReference(Net::parseUrl("http://127.0.0.1:18080/api/ping"), "/a b").has_value(),
+                  "下一跳地址能解析：相对与带点段的 Location 折成绝对 URL，非 http(s) 的协议名与含空白的写法交回空而不是编一个下一跳");
     samples.check(observations.statsTotalRequests > 20 && observations.statsBadRequests >= 2, "服务器统计把成功与坏请求分别计入");
 
     // 「拿不到服务」要与服务根本没起来区分开：requestOnce 在连接/发送失败时同样交出空字节，

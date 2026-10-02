@@ -1159,6 +1159,9 @@ namespace
             }
         }
         Samples::checklist().check(isReusedAcrossReturns && leftoversSeenByNextBorrower == 0, "归还时池调 resetSessionState()：未提交的事务被滚掉，半成品没有串给下一个借用者");
+        Samples::checklist().check(resetPool.createdCount() == 1U && resetPool.discardedCount() == 0U,
+                                   "池的两本账各说各的事：createdCount() 是「当下持有」（丢弃会减回去，它同时是上限的占位分母），discardedCount() 才是历史上丢过几条——"
+                                   "「建了就丢」要读后者，别拿两者的差当判据");
 
         // 上限被占满时另起线程阻塞等待；归还动作必须把它叫醒并把手里的连接直接交给它
         Database::PooledConnection held = resetPool.acquire();
