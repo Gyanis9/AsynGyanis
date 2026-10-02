@@ -8,6 +8,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <ctime>
 #include <optional>
 #include <string>
@@ -213,6 +214,23 @@ namespace AsynGyanis::Net
             const std::int64_t days = daysFromCivil(static_cast<int>(year), month, day);
             const std::int64_t seconds =
                     days * kSecondsPerDay + static_cast<std::int64_t>(hour) * 3600 + static_cast<std::int64_t>(minute) * 60 + static_cast<std::int64_t>(second);
+            // 这一步构造 time_point 会把「秒」换成时钟的周期（libstdc++ 是 1 纳秒、MSVC 是 100 纳秒），
+            // 也就是一次乘法：year 9999 的秒数乘完早已越过 int64 上界。有符号溢出是 UB，而它在
+            // 本框架里的落法很具体——**到期时刻翻到过去**：对端写一句「9999 年过期」（浏览器与
+            // 老服务器真的在写）的 Cookie 当场被当成已过期摘掉，If-Modified-Since 那侧则把一条
+            // 远期日期读成「早就过期」。按本时钟能表达的最远/最近时刻各钳一刀，方向与语义都对得上：
+            // 超出可表达范围的远期 = 不过期，超出可表达范围的远期过去 = 已过期
+            constexpr std::int64_t kTicksPerSecond = std::chrono::seconds{1} / std::chrono::system_clock::duration{1};
+            constexpr std::int64_t maximumSeconds  = std::numeric_limits<std::int64_t>::max() / kTicksPerSecond;
+            constexpr std::int64_t minimumSeconds  = std::numeric_limits<std::int64_t>::min() / kTicksPerSecond;
+            if (seconds >= maximumSeconds)
+            {
+                return std::chrono::system_clock::time_point::max();
+            }
+            if (seconds <= minimumSeconds)
+            {
+                return std::chrono::system_clock::time_point::min();
+            }
             return std::chrono::system_clock::time_point(std::chrono::seconds(seconds));
         }
 

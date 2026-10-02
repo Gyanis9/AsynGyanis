@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -315,6 +316,36 @@ namespace AsynGyanis::Net
         {
             EXPECT_FALSE(parseHttpDate(text).has_value()) << "这条本该判不可解析：" << text;
         }
+    }
+
+    /**
+     * @brief 钉住：对端写得出的最远/最近年份折进本时钟的可表达范围，不绕成另一个方向
+     * @details 年份段是四位数字，所以对端能写出的极限就是 9999 与 0001。折成 time_point 要把「秒」
+     *          乘上时钟周期，而周期是实现定义的：libstdc++ 是 1 纳秒，只表达到 2262 年；MSVC 是 100
+     *          纳秒，9999 年还在范围内。前者不钳这一刀就踩上有符号溢出（UBSan 报的正是那次乘法），
+     *          落法是「远期翻到过去」——一句 `Expires=..., 9999` 的 Cookie 当场被当成已过期摘掉。
+     *          期望值从时钟自己的两个端点现读，不写死任何一家的周期，因此两平台各自判各自的那一档。
+     */
+    TEST(HttpDate, ExtremeYearsClampIntoClockRangeInsteadOfWrapping)
+    {
+        // 9999-12-31T23:59:59Z 与 0001-01-01T00:00:00Z：四位年份能写出的两头
+        constexpr std::int64_t kFarFutureSecond = 253'402'300'799LL;
+        constexpr std::int64_t kFarPastSecond   = -62'135'596'800LL;
+
+        const std::int64_t largestExpressibleSecond  = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::time_point::max().time_since_epoch()).count();
+        const std::int64_t smallestExpressibleSecond = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::time_point::min().time_since_epoch()).count();
+
+        const std::optional<std::chrono::system_clock::time_point> farFuture = parseHttpDate("Fri, 31 Dec 9999 23:59:59 GMT");
+        const std::optional<std::chrono::system_clock::time_point> farPast   = parseHttpDate("Mon, 01 Jan 0001 00:00:00 GMT");
+
+        ASSERT_TRUE(farFuture.has_value()) << "远期日期被判不可解析：这类写法在真实服务器上一直在发";
+        ASSERT_TRUE(farPast.has_value());
+        EXPECT_EQ(secondsOf(*farFuture), std::min(kFarFutureSecond, largestExpressibleSecond)) << "远期没有钳在时钟上界，而是绕了回去";
+        EXPECT_EQ(secondsOf(*farPast), std::max(kFarPastSecond, smallestExpressibleSecond)) << "远期过去没有钳在时钟下界，而是绕到了将来";
+
+        // 方向单独再钉一刀：绕回去时这一条先红，报错信息比对着上一步的秒数好读
+        EXPECT_GT(*farFuture, std::chrono::system_clock::now() + std::chrono::years{100});
+        EXPECT_LT(*farPast, std::chrono::system_clock::now() - std::chrono::years{100});
     }
 
     /**
