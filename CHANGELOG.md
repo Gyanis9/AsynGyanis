@@ -15,10 +15,36 @@
 
 ## [Unreleased]
 
-自 2.4.0 起的累计变化（新增 2、变更 2、修复 4、破坏性变更 1）：把协议正确性上「标准说有、实现没有」的
-几格补上，并让 `logging` 配置里拼错的键第一次出得了声。**含一处公开 API 改名**，见最后一条。
+自 2.4.0 起的累计变化（新增 5、变更 4、修复 7、破坏性变更 1）：把协议正确性上「标准说有、实现没有」的
+几格补上，让 `logging` 配置里拼错的键第一次出得了声，并把下游按包消费时撞到的七处一并收口
+（对端地址进不到业务处理器、包少一个系统库、异常文本带构建绝对路径等）。**含一处公开 API 改名**，见最后一条。
 
 ### 新增
+
+- **业务处理器第一次读得到「这条请求从哪来」**：`HttpRequest::remoteAddress()` 交回对端地址（`"IP:Port"`，
+  IPv6 侧带方括号）。此前这条信息只活在传输层：`Core::Connection::remoteAddress()` 拿得到，而
+  `Router::Handler` 的签名只有 `(HttpRequest &, HttpResponse &)` 两个参数，业务侧没有任何通道把连接身份
+  带过去——按来源限流、按地区放行、审计落的是谁全做不了。更难看的是
+  `TcpServer::setProxyProtocolRequired()` 的文档一直写着「限额键、`HttpRequest::remoteAddress()`
+  与日志都跟着改」，而那个方法从来不存在：PROXY 协议换来的真实来源只有框架自己的限额键吃得到。
+  现在 h1/h2/h3 三条通道在派发之前把它落进请求（与 request-id 同一处），来源统一取自
+  `Core::Connection::cachedRemoteAddress()`（按连接问一次 getpeername、失败也不抛，整条连接复用同一份文本），
+  h3 没有套接字可问，改由 `QuicServer` 在建会话时交一个地址出口下来
+  （`Http3Session` 构造函数末尾新增一个可空形参，`QuicConnection` 新增 `remoteAddress()`）。
+  取值是副本而不是视图：这条文本指向连接持有的缓冲，而抄进审计队列正是它最常见的用法。
+- **日志闸门可以按运行期的 key 分档**：`Base::LogThrottleRegistry`（配套宏
+  `ASYN_LOG_THROTTLED_KEYED(key, interval)`）。`ASYN_LOG_THROTTLED` 的状态长在调用点（函数局部 static），
+  一个使用处一份，而有一类告警的区分单位是运行期才有的东西——哪个来源 IP、哪台设备、哪个频道——
+  它们都从同一句 `LOG_XXX` 出来：共用一份会让第一个坏来源把其余来源的告警一起压掉，各写一份又要
+  每人自己搭一遍「表 + 锁 + 上界」，而上界漏写就是一个远端可驱动的内存增长点。表有硬上界
+  （`kMaximumTrackedKeys`），满时淘汰最久未触碰的那条：内存封顶换极端基数下漏一条是有意的取舍，
+  因此 key 不要取每请求唯一量。分配失败时**放行**而不是压掉——被静默压掉的告警没有任何地方补记。
+- **驱动失败有了带成因的执行入口**：`DatabaseConnection::executeChecked()`（两个重载，
+  返回 `std::expected<std::unique_ptr<DatabaseResult>, ExecutionFailure>`）。原语一直是
+  「空指针 + 事后读 `lastError()`」，于是每处调用都要自己写判空加抄文本，而那份原因**长在连接对象上**——
+  连接归还池之后再读，读到的是下一个借用者的失败。包装在 `execute()` 返回那一刻把文本与配对的
+  驱动原生码一起抄进返回值，失败处置因此可以放到还连接之后。不改 `execute()` 的签名：三个驱动、
+  ORM 层与全部用例都按旧约定写着。
 
 - **`OPTIONS *`（asterisk-form）有去处了**：语法层只把 `*` 这个请求目标放给 OPTIONS（RFC 9112 §3.2.3
   只把它派给 OPTIONS 与 CONNECT，本服务器不代理 CONNECT，所以别的方法带 `*` 当场判畸形请求，
@@ -51,6 +77,19 @@
   提过的在 101 里回显选定位数；取值不在 8..15、带符号、非数字或长到该溢出的，**整条扩展不接受**
   （101 不回扩展头，对端退回明文，连接照常可用），而不是带着一个无法履约的窗口把连接开起来。
   位数从协商结果一路走到 zlib 的 init，复用 `thread_local` 压缩/解压流时发现位数与上次不同会先 End 再重建。
+- **`Logger::addSink()` 的形参改成 `std::shared_ptr<LogSink>`**：内部本来就按 `shared_ptr` 的不可变快照
+  持有 Sink（读侧无锁遍历的那份），只收 `unique_ptr` 等于在门口把所有权换掉却不把句柄交回去——调用方
+  登记之后既不能把同一个 Sink 挂到两个 Logger 上，也不能读它自己的读数（自定义 Sink 的队列水位、
+  落盘失败次数都长在它自己的接口上）。**传 `std::unique_ptr` 与 `nullptr` 的旧写法照旧编得过**
+  （转换发生在形参上而不是重载决议里，因此没有开两个重载去争一个 `nullptr`——那个形状已被用例钉为
+  空操作）。留下句柄意味着可以在运行期继续用它，而 Sink 的 `write()` 本来就由任意打日志的线程调用，
+  自定义 Sink 的状态必须线程安全这条不因此放松。
+- **协程帧的归属契约写进了声明处**：`Scheduler` 的类注释与 `schedule()/scheduleRemote()` 的形参注释
+  明说「调度器从不拥有、也从不销毁任何帧」，队列里那个裸句柄只表示「这一拍要 resume 谁」，因此帧必须
+  在被派发之前一直有人持有；`Task` 的析构注释同处交叉指过去（它拆的是帧本身，与停在哪个挂起点无关）。
+  本仓自己的两处也按这份契约改成**先入表、后排度**（`TcpServer` 的连接任务与 PROXY 读头任务）：
+  反过来时入表那一步抛 `bad_alloc`，队列里就留下一个没人持有、却随时可能被打发的句柄。
+  两处文档顺带更正为「空句柄被就地忽略」——旧注释写的是「必须非空」，而实现一直是静默丢掉。
 
 ### 修复
 
@@ -74,6 +113,24 @@
   结果面板上 h3 这条通道恒像「没人违规」；h2 的扩展 CONNECT 在握手不合法时只发 400 应答、
   不落 `bad_requests_total`，而同一条判据在 h1 与 h3 都记。两处都按「每类没交给业务的收口只落这一笔」
   的既有口径补上，帧错误仍不并入 `bad_requests_total`（后者是 HTTP 报文解析失败、回的是 4xx）。
+- **框架异常的 `what()` 不再带构建绝对路径**：`[异常] 消息 [文件:行 in 函数]` 那一格原先直接放
+  `source_location::file_name()`，也就是编译期展开的整条路径（`G:\Codes\...\Exception.cpp`）。
+  本仓的约定是「`what()` 带抛出点、不外回」，但这挡不住下游按自己的判断外回——构建目录就成了白送的
+  信息面；同一份日志在不同机器与 CI 之间也对不上。现在只留末段文件名，两条分隔符都认（MSVC 反斜杠、
+  GCC 正斜杠）。**完整路径没有丢**：它仍在 `location()` 里，结构化读取的口不受影响。
+- **Conan 包补上 `iphlpapi`**：`src/Platform/CMakeLists.txt` 把 `ws2_32 / Mswsock / iphlpapi` 作为
+  PUBLIC 依赖链进 Platform，而包这一侧的 `cpp_info.components["platform"].system_libs` 只写了前两项。
+  静态库不会把外部依赖带给最终可执行文件，少一项就是消费方链接期一条未解析外部符号——而
+  `Platform/IO/NetworkInterface.h` 是公开头、里面直接 `#include <iphlpapi.h>`
+  （`if_nametoindex` / `if_indextoname` 在 Windows SDK 里由 iphlpapi 实现，IPv6 的 `%接口名` 写法靠它换算）。
+- **Conan 包不再复述 `std::stacktrace` 的支持矩阵**：配方原先写死「Windows 一律没有、Linux 只认
+  gcc ≥ 13」，而真正的判据是 `src/Base/CMakeLists.txt` 里那次 `check_cxx_source_compiles`——它是现场探测，
+  而 `ASYN_HAS_STACKTRACE` 是 PUBLIC 编译宏，`Base/Exception/StackTrace.h` 按它换 `CapturedStackTrace`
+  的**类型**（有栈时是 `std::stacktrace` 的别名，没栈时是一个空的替身类）。这不是推演：本机
+  MSVC 的构建命令行里就带着 `-DASYN_HAS_STACKTRACE=1`，而按旧配方打出来的包会告诉消费方「没有栈」，
+  于是两边对同一个类拿到两份布局，静态链接还是一片绿灯。现在探测结果由 CMake 落一份标记文件随
+  `install` 进包，配方读它（连同 `stdc++exp` 这类只在特定工具链上要链的库一起），矩阵那份复述删掉；
+  标记读不出来时**拒绝打包**而不是退回猜的矩阵。
 
 ### 破坏性变更
 
