@@ -15,6 +15,7 @@
 #include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/Client/OutboundCircuitBreaker.h"
 #include "Net/Http/Gzip.h"
+#include "Net/Http/HttpDate.h"
 namespace AsynGyanis::Net
 {
     namespace
@@ -723,5 +724,38 @@ namespace AsynGyanis::Net
         EXPECT_EQ(results[1]->statusCode, 500);
         EXPECT_TRUE(results[2] == nullptr) << "阈值已过却没挡住第三次请求：熔断器没接进这条通路";
         EXPECT_EQ(openCountAtEnd, 1U);
+    }
+
+    /**
+     * @brief 钉住：出站响应的 `Retry-After` 两种写法都认，且读不懂时交回空而不是 0
+     * @details 这条读口此前没有直测（连 `headerValue` 都只在端到端用例里被顺带跑到），而它要处理
+     *          的三种形状里最危险的是「读不懂」：把它折成 0 秒等于对着一台明确说了要限流的上游
+     *          立刻再撞一次。绝对的过去折成 0 是对的——那正是「等待已结束」。
+     */
+    TEST(HttpClientResponseReads, RetryAfterHandlesBothFormsAndNeverInventsZero)
+    {
+        const auto         now = std::chrono::system_clock::time_point(std::chrono::seconds{2'000'000'000});
+        HttpClientResponse response;
+
+        EXPECT_FALSE(response.retryAfter(now).has_value()) << "没有这条头就该交回空";
+
+        response.headers.emplace_back("Retry-After", "3600");
+        EXPECT_EQ(response.retryAfter(now), std::optional{std::chrono::seconds{3600}}) << "头名按 RFC 9110 §5.1 大小写不敏感";
+
+        // 绝对的 HTTP-date：未来按差值交回，已经过去按「等待已结束」交回 0
+        response.headers.clear();
+        response.headers.emplace_back("retry-after", formatHttpDate(now + std::chrono::seconds{120}));
+        EXPECT_EQ(response.retryAfter(now), std::optional{std::chrono::seconds{120}});
+        response.headers.clear();
+        response.headers.emplace_back("retry-after", formatHttpDate(now - std::chrono::seconds{5}));
+        EXPECT_EQ(response.retryAfter(now), std::optional{std::chrono::seconds{0}}) << "已经过去的绝对时刻是「现在就能再试」，不是负数也不是空";
+
+        // 拒绝面：读不懂就不编造对方没给过的等待时长
+        for (const char *const garbage: {"soon", "-5", "1.5", "99999999999999999999999", ""})
+        {
+            response.headers.clear();
+            response.headers.emplace_back("retry-after", garbage);
+            EXPECT_FALSE(response.retryAfter(now).has_value()) << "这条本该判读不懂：" << garbage;
+        }
     }
 } // namespace AsynGyanis::Net

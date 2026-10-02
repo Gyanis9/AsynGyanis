@@ -65,6 +65,18 @@ namespace AsynGyanis::Net
          * @note 同名多条时交回**第一条**；要拿全部（如 `Set-Cookie`）请自己遍历 `headers`
          */
         [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view name) const;
+        /**
+         * @brief 读这条响应的 `Retry-After`，交回「还要等多少秒」
+         * @details 这条头有两种合法写法（相对秒数与绝对的 HTTP-date，RFC 9110 §10.2.3），自己解析要同时
+         *          处理「数字大到装不进整数」「绝对的过去」「读不懂」三种形状，而把读不懂折成 0 秒是最坏的
+         *          一种省事：0 的含义是「现在就再试」，等于对着一台明确说了要限流的机器加速撞上去。这三种
+         *          处置本仓已有一处实现（`parseRetryAfter`，ACME 通路就在用它），这里把同一个读法交给出站
+         *          响应的消费者，不必每个业务再各写一遍。
+         * @param now 绝对的 HTTP-date 折算成「还要等多久」所用的基准
+         * @return std::optional<std::chrono::seconds> 没有这条头、或写法读不懂时为空；已经过去的绝对时刻
+         *         交回 0 秒（那正是「等待已结束」的意思）
+         */
+        [[nodiscard]] std::optional<std::chrono::seconds> retryAfter(std::chrono::system_clock::time_point now = std::chrono::system_clock::now()) const;
     };
     /**
      * @brief 一次出站请求的参数

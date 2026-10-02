@@ -12,6 +12,7 @@
 #include "Core/Tls/TlsPolicy.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/Client/HttpContentCoding.h"
+#include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
@@ -58,6 +59,18 @@ namespace AsynGyanis::Net
             return converted.ec == std::errc{} && converted.ptr == text.data() + text.size() && port >= 1U && port <= 65535U;
         }
     } // namespace
+
+    std::optional<std::chrono::seconds> HttpClientResponse::retryAfter(const std::chrono::system_clock::time_point now) const
+    {
+        // 头名大小写不敏感这件事交给 headerValue 一处做（它按 ASCII 折叠两侧），这里不再自己比一遍
+        const std::optional<std::string_view> header = headerValue("retry-after");
+        if (!header.has_value())
+        {
+            return std::nullopt;
+        }
+        return parseRetryAfter(*header, now);
+    }
+
 
     std::optional<std::string_view> HttpClientResponse::headerValue(const std::string_view name) const
     {
