@@ -21,7 +21,7 @@ namespace AsynGyanis::Database
         // 留下一条已经在跑的后台线程
         m_factory(std::move(factory)), m_config(validateConfiguration(config)), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
-        // 登记的四条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）
+        // 登记的五条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）
         m_metricHandles = {
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_active_connections", "此刻被取出未归还的数据库连接数（进程内各池相加）", Core::ProcessMetricKind::Gauge,
                                                              Core::ProcessMetricMerge::Sum,
@@ -29,9 +29,15 @@ namespace AsynGyanis::Database
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_waiting_requests", "正在等一条空闲连接的同步取出请求数", Core::ProcessMetricKind::Gauge,
                                                              Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_syncWaitingCount.load(std::memory_order_relaxed)); }),
-                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connections_created_total", "池历史上创建过的连接总数（含之后被丢弃的）：一直涨而活跃数不涨就是建了就丢",
-                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connections_created_total",
+                                                             "池当下记在账上的连接数（创建 +，丢弃或建连回退 −）：与 maximumPoolSize 同一本账，不是历史累计",
+                                                             Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_totalCreated.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric(
+                        "asyn_db_pool_connections_discarded_total",
+                        "被丢弃的连接总数：失联、超过存活期、会话没复位干净三条去向都计入（只增不减）。「建了就丢」以前只能从两个数推断，现在直接读得到",
+                        Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                        [this] { return static_cast<std::uint64_t>(m_totalDiscarded.load(std::memory_order_relaxed)); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_borrow_timeouts_total", "等到截止时刻仍没拿到连接的次数（停摆期与不等待的取用不计）",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_borrowTimeoutCount.load(std::memory_order_relaxed)); }),
@@ -548,9 +554,15 @@ namespace AsynGyanis::Database
 
     std::size_t ConnectionPool::createdCount() const noexcept
     {
-        // 建连的占位与回退都记在 m_totalCreated 上（那里是唯一改它的两处），这里只给读数出口，
-        // 因此不碰 m_mutex：统计读取排在锁后会把取出路径一起堵住
+        // 建连占位、丢弃与空闲过期回收都改的是 m_totalCreated（这本账同时是 maximumPoolSize 的分母），
+        // 这里只给读数出口，因此不碰 m_mutex：统计读取排在锁后会把取出路径一起堵住
         return m_totalCreated.load(std::memory_order_relaxed);
+    }
+
+    std::size_t ConnectionPool::discardedCount() const noexcept
+    {
+        // 只增不减的历史数：与 createdCount() 那本「当下持有」的账分开，丢过多少不必再从两者的差里推
+        return m_totalDiscarded.load(std::memory_order_relaxed);
     }
 
     std::size_t ConnectionPool::borrowTimeoutCount() const noexcept
@@ -758,6 +770,7 @@ namespace AsynGyanis::Database
                                                               {
                                                                   expiredConnections.push_back(std::move(entry.connection));
                                                                   m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
+                                                                  m_totalDiscarded.fetch_add(1, std::memory_order_relaxed);
                                                                   return true;
                                                               }
                                                               return false;
@@ -798,6 +811,7 @@ namespace AsynGyanis::Database
     {
         closeTrackedConnection(std::move(connection));
         m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
+        m_totalDiscarded.fetch_add(1, std::memory_order_relaxed);
     }
 
     bool ConnectionPool::returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness, const bool countAsActive) noexcept

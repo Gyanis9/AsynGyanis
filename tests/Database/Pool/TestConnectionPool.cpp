@@ -1164,6 +1164,11 @@ namespace AsynGyanis::Database
         EXPECT_EQ(counter.sessionResetCount.load(), 1) << "归还时仍然复位一次，只是这次它报「没清干净」";
         EXPECT_EQ(pool.idleCount(), 0U) << "复位没成功的连接不该回到空闲栈";
         EXPECT_EQ(counter.totalDestroyed.load(), 1) << "既没回栈也没被交接，那就是被丢掉了";
+        EXPECT_EQ(pool.discardedCount(), 1U) << "丢弃要直接读得到，不该让人从两个数的差里推";
+
+        const auto discardedSample = AsynGyanis::TestSupport::findRegistrySample("asyn_db_pool_connections_discarded_total");
+        ASSERT_TRUE(discardedSample.has_value()) << "构造时没挂上丢弃读数，运维面就看不见这一族";
+        EXPECT_EQ(discardedSample->value, static_cast<std::uint64_t>(pool.discardedCount())) << "对外读数与判据用的不是同一个数";
 
         counter.sessionResetFails.store(false);
         {
@@ -1171,6 +1176,7 @@ namespace AsynGyanis::Database
             ASSERT_TRUE(second);
         }
         EXPECT_EQ(counter.totalCreated.load(), 2) << "下一条必须是另起的一条：复用那条脏连接正是本缺陷的现场";
+        EXPECT_EQ(pool.discardedCount(), 1U) << "这次归还的复位是干净的，不该再多记一笔丢弃";
     }
 
 } // namespace AsynGyanis::Database
