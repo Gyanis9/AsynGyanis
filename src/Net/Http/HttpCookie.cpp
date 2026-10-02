@@ -2,6 +2,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/HttpDate.h"
+#include "Net/Http/HttpHeaderRules.h"
 
 #include <algorithm>
 #include <cctype>
@@ -13,29 +14,6 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /**
-         * @brief 判断字符是否是 RFC 7230 的 token 字符（Cookie 名字用）
-         * @param character 待判字符
-         * @return true 是 token 字符
-         */
-        constexpr bool isTokenCharacter(const char character) noexcept
-        {
-            if (character >= 'a' && character <= 'z')
-            {
-                return true;
-            }
-            if (character >= 'A' && character <= 'Z')
-            {
-                return true;
-            }
-            if (character >= '0' && character <= '9')
-            {
-                return true;
-            }
-            constexpr std::string_view specials{"!#$%&'*+-.^_`|~"};
-            return specials.find(character) != std::string_view::npos;
-        }
-
         /**
          * @brief 判断字符能否作为 Cookie 取值的一部分
          * @details 按 RFC 6265 §4.1.1 的 cookie-octet：0x21、0x23..0x2B、0x2D..0x3A、0x3C..0x7E。
@@ -164,7 +142,9 @@ namespace AsynGyanis::Net
 
     bool HttpCookie::isValidName(const std::string_view text) noexcept
     {
-        return !text.empty() && std::ranges::all_of(text, isTokenCharacter);
+        // 字符集判据只留一份：Cookie 名字用的就是 RFC 9110 §5.1 的 tchar，与头部字段名、方法名
+        // 同一张表（本函数此前自带一份逐字符比较的同集合实现，两份只会在改表那天分叉）
+        return !text.empty() && containsOnlyTokenCharacters(text);
     }
 
     bool HttpCookie::isValidValue(const std::string_view text) noexcept
