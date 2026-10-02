@@ -909,12 +909,9 @@ namespace AsynGyanis::Net
                         // 用 LOG_ERROR_EXCEPTION 而不是只拼 what()：框架异常携带的抛出点调用栈
                         // 要随这条记录交给 Sink，那是本框架异常可观测性的主要用途。
                         // request-id 与 trace id 一起带上：只看 /metrics 上多出来的一个 500，
-                        // 没有这两个标识就翻不回是那一条请求。
-                        std::string traceIdText = "无";
-                        if (const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request); identifiers.has_value())
-                        {
-                            traceIdText.assign(identifiers->traceIdText());
-                        }
+                        // 没有这两个标识就翻不回是那一条请求。取法只有一份（traceIdTextForLog），
+                        // 三条通道共用——各写一遍迟早漏掉一路
+                        const std::string traceIdText = traceIdTextForLog(request);
 
                         try
                         {

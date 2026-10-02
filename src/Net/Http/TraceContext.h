@@ -226,4 +226,17 @@ namespace AsynGyanis::Net
      *         （多条是有歧义的输入，猜首条还是末条都是替上游做决定，一律按「不在任何链路里」处理）
      */
     [[nodiscard]] ASYN_NET_API std::optional<TraceIdentifiers> extractTraceContext(const HttpRequest &request);
+
+    /**
+     * @brief 取这条请求的 trace id，专门给错误日志用
+     *
+     * @details 三条通道（h1/h2/h3）的「处理器抛出 → 回 500」那行日志都要带上 trace id：响应里
+     *          只回 500 是对的，可运维手上只剩下「/metrics 上多出来的一个 500」时，没有这两个
+     *          标识（request-id 与 trace id）就翻不回是哪一条请求、哪一段链路。
+     *          这个读口存在的意义是**只有一份**取法：各通道自己写一遍，迟早有一路忘了带。
+     * @param request 已收齐的请求对象
+     * @return std::string 请求携带的有效 trace id；不在任何链路里时交回中文的「无」
+     *         （日志文案里留「无」而不是留空：空值读起来像漏打了字段）
+     */
+    [[nodiscard]] ASYN_NET_API std::string traceIdTextForLog(const HttpRequest &request);
 } // namespace AsynGyanis::Net

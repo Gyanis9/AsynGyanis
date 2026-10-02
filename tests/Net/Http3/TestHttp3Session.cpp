@@ -8,6 +8,7 @@
 #include "Platform/FileSystem/FileSystem.h"
 
 #include "CoreTestSupport.h"
+#include "HttpTestSupport.h"
 
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpRequestId.h"
@@ -1462,7 +1463,10 @@ namespace AsynGyanis::Net
         Http3ClientPeer peer;
 
         // 第一条：处理器抛异常，必须是 500（而不是没有响应、也不是异常穿出去）
-        for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/boom", "example.com"))
+        // 带一条合法 traceparent：出错那一行要把 trace id 一起记出来，否则这条日志与那段链路之间没有桥
+        const std::vector<std::pair<std::string, std::string>> traceHeaders{{"traceparent", "00-12345678901234567890123456789012-1234567890123456-01"}};
+        const HttpTestSupport::LogCapture                      logCapture;
+        for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/boom", "example.com", kFirstRequestStreamId, traceHeaders))
         {
             session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
         }
@@ -1476,6 +1480,9 @@ namespace AsynGyanis::Net
         }
         EXPECT_EQ(peer.response().status, 500) << "处理器抛异常没有回 500";
         EXPECT_FALSE(peer.response().body.empty()) << "500 应当带一条可读的正文";
+        // 成因与两个关联标识都要在同一行里：只有 request-id 的话，从链路那一侧查过来是断的
+        EXPECT_EQ(logCapture.countContaining("已整体重置响应并按 500 收口"), 1U) << "h3 的 500 收口没有留下可定位的日志";
+        EXPECT_EQ(logCapture.countContaining("12345678901234567890123456789012"), 1U) << "trace id 没进 h3 的这条 500 日志";
 
         // 第二条：会话仍然可用，正常请求照常 200（换一条请求流：0 号那条已经用过了）
         // 测试侧的 peer 只记一份响应、正文会跨请求累加，因此按「新增的那一段」核对

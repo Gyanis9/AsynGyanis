@@ -416,4 +416,14 @@ namespace AsynGyanis::Net
         }
         return Traceparent::parse(trimOptionalWhitespace(*headerValue));
     }
+
+    std::string traceIdTextForLog(const HttpRequest &request)
+    {
+        // 只有一份取法：三条通道的 500 日志都要带 trace id，各写一遍迟早漏掉一路
+        if (const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request); identifiers.has_value())
+        {
+            return std::string(identifiers->traceIdText());
+        }
+        return "无";
+    }
 } // namespace AsynGyanis::Net

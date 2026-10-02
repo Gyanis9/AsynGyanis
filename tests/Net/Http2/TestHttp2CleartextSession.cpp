@@ -684,6 +684,52 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：h2 的「处理器抛出 → 500」那行日志带上 trace id，与 h1/h3 同一口径
+     * @details 响应只回 500 是对的（不把内部原因交给对端），可服务端这边若只留 request-id，
+     *          运维从链路那一侧查过来就没有桥——三条通道里少哪一路，断的正好是那一路的现场。
+     *          h1 的同一判据在 TestHttpSession，h3 在 TestHttp3Session。
+     */
+    TEST(Http2CleartextSession, CarriesTraceIdIntoTheHandlerExceptionLog)
+    {
+        const HttpTestSupport::LogCapture logCapture;
+        RunningHttpServerFixture          fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    static_cast<void>(router.get("/boom", [](HttpRequest &, HttpResponse &) -> Core::Task<> { throw std::runtime_error("intentional handler failure"); }));
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
+
+        // 伪头在前、普通头部在后（§8.1.2.1）：traceparent 这条就是普通头部
+        const std::string headerBlock = makeGetRequestHeaderBlock("/boom") + hpackLiteralField("traceparent", "00-12345678901234567890123456789012-1234567890123456-01");
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, headerBlock, true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "处理器抛异常后没有在时限内拿到完整响应";
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "500");
+        EXPECT_EQ(logCapture.countContaining("已整体重置响应并按 500 收口"), 1U) << "h2 的 500 收口没有留下可定位的日志";
+        EXPECT_EQ(logCapture.countContaining("12345678901234567890123456789012"), 1U) << "trace id 没进 h2 的这条 500 日志";
+
+        client.closeNow();
+        static_cast<void>(fixture.awaitConnectionsDrained(kWaitTimeout));
+    }
+
+    /**
      * @brief 钉住：服务器改了 h2 连接层配置，SETTINGS 通告与各项上限随之改变
      * @details 此前 h2 的限额只能在服务端 SETTINGS 里**观测**、改不动（配置一路按缺省值构造）。
      *          三项取值都故意偏离缺省（100 / 16384 / 16 KiB），因此这条断言不是恒等的：
