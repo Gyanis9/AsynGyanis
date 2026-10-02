@@ -130,6 +130,7 @@ add_executable(TestNet
         Acme/AcmeStubAuthority.cpp
         Acme/TestAcmeKeyPair.cpp
         Acme/TestAcmeClient.cpp
+        Acme/TestAcmeError.cpp
         Acme/TestAcmeCertificateManager.cpp
         Acme/TestAcmeDns01TxtWriter.cpp
         Acme/TestAcmeAutomationConfig.cpp

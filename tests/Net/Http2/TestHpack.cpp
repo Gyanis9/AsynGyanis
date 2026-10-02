@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <deque>
 #include <initializer_list>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1214,4 +1215,36 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(decoder.decode(makeBytesFromHex("828684410f7777772e6578616d706c652e636f6d"), headerFields, &reason)) << reason;
         expectHeaderListEquals(headerFields, kFirstRequestHeaders);
     }
+    /**
+     * @brief 钉住：整数表示在「恰好等于前缀最大值」时转成续编码，而不是塞进首字节
+     * @details RFC 7541 §5.1 的判据是 `value < 2^N-1` 才留在前缀内；等于最大值时首字节填
+     *          那个最大值、再续写 `value - 最大值`（对 7 位前缀就是 `7F 00`）。把 `<` 写成 `<=`
+     *          在常见长度的头部名上看不出差别——只有取值**正好**卡在边界上才暴露，而既有用例
+     *          用的是 10 / 1337 / 42 / 2 四个数，都不落在边界上。期望值按 §5.1 手算。
+     */
+    TEST(Hpack, IntegerEncodingStaysInsidePrefixOnlyBelowItsMaximum)
+    {
+        EXPECT_EQ(encodeHpackInteger(126, 7, 0), makeBytesFromHex("7e")) << "126 还留在 7 位前缀内";
+        EXPECT_EQ(encodeHpackInteger(127, 7, 0), makeBytesFromHex("7f00")) << "恰好等于前缀最大值必须转续编码，续上去的是 0";
+        EXPECT_EQ(encodeHpackInteger(128, 7, 0), makeBytesFromHex("7f01"));
+        EXPECT_EQ(encodeHpackInteger(31, 5, 0), makeBytesFromHex("1f00")) << "5 位前缀的同一条边界";
+        EXPECT_EQ(encodeHpackInteger(255, 8, 0), makeBytesFromHex("ff00")) << "8 位前缀不留余量，255 也要走续编码";
+        EXPECT_EQ(encodeHpackInteger(400, 5, 0), makeBytesFromHex("1ff102")) << "跨两个续字节：369 = 128*2 + 113，低 7 位带续位是 0xF1，再跟 0x02";
+        EXPECT_EQ(encodeHpackInteger(133, 5, 0x20), makeBytesFromHex("3f66")) << "附录 C.1.2 的原文：模式位与 5 位前缀共用首字节";
+    }
+
+    /**
+     * @brief 钉住：非法前缀位数与「模式位压住前缀」当场拒，且不往缓冲里写过半个字节
+     * @details 这两种写法都产不出合法的整数表示：前者超出 §5.1 的 1..8，后者让模式位与整数
+     *          前缀互相覆盖，对端会把它认成另一种表示。当场抛比把畸形字节发上线好得多——
+     *          那只会以一次对端协议错误收场，成因还得人倒推
+     */
+    TEST(Hpack, RejectsIllegalPrefixWidthAndPatternOverlap)
+    {
+        EXPECT_THROW(static_cast<void>(encodeHpackInteger(10, 0, 0x00)), std::invalid_argument);
+        EXPECT_THROW(static_cast<void>(encodeHpackInteger(10, 9, 0x00)), std::invalid_argument);
+        // 5 位前缀的低 5 位归整数所有：模式位 0x01 落进了前缀区间
+        EXPECT_THROW(static_cast<void>(encodeHpackInteger(10, 5, 0x01)), std::invalid_argument);
+    }
+
 } // namespace AsynGyanis::Net
