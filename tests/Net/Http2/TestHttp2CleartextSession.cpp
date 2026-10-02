@@ -441,6 +441,28 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 拼一条扩展 CONNECT 的请求头块，但握手那两项完全按调用方给的写
+         * @details 拒绝面要用的形状（版本 12、缺 key）都不该被默认值补全，否则测的就不是那条判据。
+         * @param path 请求路径
+         * @param handshakeFields 要写进头块的握手项，顺序即写出顺序
+         * @return std::string 头块字节
+         */
+        std::string makeWebSocketTunnelHeaderBlockWithHandshake(const std::string_view path, const std::vector<std::pair<std::string, std::string>> &handshakeFields)
+        {
+            std::string headerBlock;
+            headerBlock += hpackLiteralField(2, "CONNECT");
+            headerBlock += encodeHpackInteger(6, 7, 0x80); // :scheme: http
+            headerBlock += path == "/" ? encodeHpackInteger(4, 7, 0x80) : hpackLiteralField(4, path);
+            headerBlock += hpackLiteralField(1, "localhost");
+            headerBlock += hpackLiteralField(":protocol", "websocket");
+            for (const auto &[name, value]: handshakeFields)
+            {
+                headerBlock += hpackLiteralField(name, value);
+            }
+            return headerBlock;
+        }
+
+        /**
          * @brief 拼一条客户端 WebSocket 帧（必须带掩码，RFC 6455 §5.3）：负载不超过 125 字节
          * @param opCode 操作码（1 = 文本、8 = 关闭）
          * @param payload 负载
@@ -1527,6 +1549,62 @@ namespace AsynGyanis::Net
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
         EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 扩展 CONNECT 的版本不合在 h2 侧同样要指明本端支持的版本，而别的拒绝不该带上这条头部
+     * @details RFC 6455 §4.2.2 给「版本不被理解」这一类失败派了一条 Sec-WebSocket-Version 应答义务；
+     *          h1 用 426 而这里留 400——426 说的是「请改用 Upgrade」，h2 里没有 Upgrade 这套机制可改
+     *          （协议切换靠 :protocol=websocket），但那条头部两边都得有。
+     *          反向对照走缺 key 那一档：同一个流上换一个不成形的握手，拒绝可以，
+     *          但不得把「你的 key 不对」伪装成版本问题。
+     */
+    TEST(Http2CleartextSession, RejectsExtendedConnectWithUnsupportedWebSocketVersion)
+    {
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/chat",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket([](WebSocketPeer &) -> Core::Task<> { co_return; });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 版本 12：本端只认 13
+        ASSERT_TRUE(client.sendBytes(
+                makeRequestHeadersFrame(
+                        1U, makeWebSocketTunnelHeaderBlockWithHandshake("/chat", {{"sec-websocket-version", "12"}, {"sec-websocket-key", std::string(kRfc6455SampleKey)}}), false),
+                kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseHeaderBlock(receivedFrames, 1U).empty(); }, kWaitTimeout))
+                << "版本不合的扩展 CONNECT 没有应答";
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "400");
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, "sec-websocket-version"), "13") << "h2 侧的版本类拒绝没有指明本端支持的版本";
+
+        // 反向对照：版本对、key 缺失——同样拒，但不该带上那条头部
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeWebSocketTunnelHeaderBlockWithHandshake("/chat", {{"sec-websocket-version", "13"}}), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseHeaderBlock(receivedFrames, 3U).empty(); }, kWaitTimeout))
+                << "缺 key 的扩展 CONNECT 没有应答";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "400");
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, "sec-websocket-version"), "") << "缺 key 的拒绝伪装成了版本问题";
     }
 
     /**
