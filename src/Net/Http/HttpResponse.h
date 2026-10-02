@@ -167,8 +167,13 @@ namespace AsynGyanis::Net
          * @details 与 `setHeader("set-cookie", cookie.renderAsSetCookie())` 同效，区别在属性由
          *          `HttpCookie` 拼装：手写属性串最容易漏掉 Secure/HttpOnly，或把 Expires 写成
          *          对端不认的日期格式——那种错在响应里是静默的。
+         * @details 与那条手写写法**不等效**的一处：本方法会拒掉「SameSite=None 却没设 Secure」的 Cookie。
+         *          浏览器对这种组合整条丢弃（RFC 6265bis §4.1.2.1），而字面上那条头部看不出毛病——
+         *          现场只剩「Cookie 存不住」。本类不替调用方补 Secure：那等于在明文连接上发一条它没要的
+         *          Secure Cookie（见 `HttpCookie` 的「只写显式设过的属性」口径）。
          * @details set-cookie 是可重复头部，调几次就发几条，先设先发，顺序稳定可复现。
          * @param cookie 待发出的 Cookie
+         * @throws Base::InvalidArgumentException Cookie 设了 SameSite=None 却没设 Secure
          */
         void setCookie(const HttpCookie &cookie);
 

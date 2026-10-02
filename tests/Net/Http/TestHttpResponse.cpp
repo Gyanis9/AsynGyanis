@@ -288,6 +288,64 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.headers().at("set-cookie"), "first=1");
     }
 
+    /**
+     * @brief SameSite=None 而不带 Secure 的 Cookie 当场拒，而不是发一条浏览器会整条丢掉的头部
+     * @details 判据两侧都要钉：只钉「拒了」看不出配齐 Secure 的那条也被误拒（登录态最常见的写法），
+     *          只钉「没拒」看不出它到底有没有真被发出去。
+     */
+    TEST(HttpResponse, RejectsSameSiteNoneCookieWithoutSecure)
+    {
+        HttpCookie crossSite("sid", "s3cr3t");
+        crossSite.setSameSite(CookieSameSitePolicy::None);
+
+        HttpResponse response;
+        try
+        {
+            response.setCookie(crossSite);
+            FAIL() << "SameSite=None 而不带 Secure：浏览器会把整条丢掉，这里本该拒而不是照发";
+        } catch (const AsynGyanis::Base::InvalidArgumentException &exception)
+        {
+            // 拒绝要说出是哪一条 Cookie、缺哪个属性、以及两条出路，否则现场只能看到一句「不合法」
+            const std::string message{exception.what()};
+            EXPECT_NE(message.find("sid"), std::string::npos) << message;
+            EXPECT_NE(message.find("Secure"), std::string::npos) << message;
+            EXPECT_NE(message.find("SameSite=None"), std::string::npos) << message;
+        }
+        EXPECT_EQ(response.headerValues("Set-Cookie").size(), 0U) << "被拒的 Cookie 不该有一半留在响应里";
+
+        crossSite.setSecure();
+        response.setCookie(crossSite);
+        const std::vector<std::string> values = response.headerValues("Set-Cookie");
+        ASSERT_EQ(values.size(), 1U);
+        EXPECT_EQ(values[0], "sid=s3cr3t; Secure; SameSite=None");
+    }
+
+    /**
+     * @brief 只有 None 这一档需要 Secure：Lax/Strict 与不设 SameSite 都照常发出
+     * @details 这条是上一条的反面判据——把闸门写成「凡是不带 Secure 的 Cookie 都拒」在这一条上会红，
+     *          而那种实现会把大量既有的合法 Cookie（明文站点上的 theme=dark）挡在线外。
+     */
+    TEST(HttpResponse, AcceptsCookiesWithoutSecureWhenSameSiteIsNotNone)
+    {
+        HttpResponse response;
+        HttpCookie   laxCookie("theme", "dark");
+        laxCookie.setSameSite(CookieSameSitePolicy::Lax);
+        response.setCookie(laxCookie);
+
+        HttpCookie bareCookie("lang", "zh");
+        response.setCookie(bareCookie);
+
+        HttpCookie strictCookie("csrf", "token");
+        strictCookie.setSameSite(CookieSameSitePolicy::Strict);
+        response.setCookie(strictCookie);
+
+        const std::vector<std::string> values = response.headerValues("Set-Cookie");
+        ASSERT_EQ(values.size(), 3U);
+        EXPECT_EQ(values[0], "theme=dark; SameSite=Lax");
+        EXPECT_EQ(values[1], "lang=zh");
+        EXPECT_EQ(values[2], "csrf=token; SameSite=Strict");
+    }
+
     TEST(HttpResponse, SerializesHeadersInSettingOrder)
     {
         HttpResponse response;

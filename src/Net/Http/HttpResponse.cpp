@@ -1,5 +1,6 @@
 #include "Net/Http/HttpResponse.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/HttpChunkFrame.h"
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
@@ -170,6 +171,18 @@ namespace AsynGyanis::Net
 
     void HttpResponse::setCookie(const HttpCookie &cookie)
     {
+        // SameSite=None 必须与 Secure 同现（RFC 6265bis §4.1.2.1）：浏览器把「None 而不 Secure」整条丢掉。
+        // 在这里当场拒而不是照发——发出去的那条头部字面上完全正确，业务只会看到「Cookie 存不住」，
+        // 而查不出是谁把它丢的。替调用方补一个 Secure 也不是选项：本类的口径是「只写显式设过的属性」
+        // （见 HttpCookie 的类说明），补上去等于在明文连接上发一条调用方没要的 Secure Cookie
+        if (const auto sameSite = cookie.sameSite(); sameSite.has_value() && *sameSite == CookieSameSitePolicy::None && !cookie.isSecure())
+        {
+            throw Base::InvalidArgumentException("Cookie「" + cookie.name() +
+                                                 "」设了 SameSite=None 却没设 Secure："
+                                                 "浏览器会把整条丢掉（RFC 6265bis §4.1.2.1）。请同时调用 HttpCookie::setSecure()，"
+                                                 "或改用 SameSite=Lax / Strict");
+        }
+
         // set-cookie 是可重复头部：setHeader 对它每次新增一条独立记录，先设先发
         static_cast<void>(setHeader("set-cookie", cookie.renderAsSetCookie()));
     }

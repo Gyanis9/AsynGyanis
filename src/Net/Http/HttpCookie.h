@@ -187,7 +187,13 @@ namespace AsynGyanis::Net
             return m_sameSite;
         }
 
-        /// 设 SameSite 属性
+        /**
+         * @brief 设 SameSite 属性
+         * @details 设成 `None` 时必须同时 `setSecure()`：浏览器把「None 而不 Secure」整条丢掉
+         *          （RFC 6265bis §4.1.2.1）。`HttpResponse::setCookie()` 在这种组合上直接抛，
+         *          渲染器本身不拦（它只管把显式设过的属性拼成文本）。
+         * @param policy 三档之一
+         */
         void setSameSite(CookieSameSitePolicy policy) noexcept
         {
             m_sameSite = policy;
