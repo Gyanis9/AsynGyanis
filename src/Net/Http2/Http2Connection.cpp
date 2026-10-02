@@ -664,6 +664,11 @@ namespace AsynGyanis::Net
         return m_errorMessage;
     }
 
+    std::uint64_t Http2Connection::rejectedRequestHeaderFieldCount() const noexcept
+    {
+        return m_rejectedRequestHeaderFieldCount;
+    }
+
     std::string Http2Connection::lastStreamErrorMessage() const
     {
         return m_lastStreamErrorMessage;
@@ -1360,6 +1365,9 @@ namespace AsynGyanis::Net
         if (!acceptRequestHeaderFields(headerFields, request, &errorText))
         {
             // 请求语义不合规是流错误（§8.1.2.6）：RST_STREAM 这条流，连接继续服务其它流
+            // 落一笔账给上层（h1/h3 在同一处都记 badRequest，h2 此前在指标上是零）：
+            // 这条流不交请求、不回响应，没有这一笔就没人知道对端送过多少条本端解释不了的头部
+            ++m_rejectedRequestHeaderFieldCount;
             failStream(*stream, Http2ErrorCode::ProtocolError, std::format("流 {} 的请求头不合规：{}", streamId, errorText));
             return true;
         }

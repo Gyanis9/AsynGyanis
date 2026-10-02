@@ -450,6 +450,20 @@ namespace AsynGyanis::Net
 
     void Http2Session::absorbPendingRequests()
     {
+        // 先把「请求头不合规被拒」的流逐条落进 badRequestCount：这类流不交出请求、不回响应，
+        // 因此既不进总请求数也不进状态码计数，而 h1 与 h3 在同一处都是记这笔账的——h2 此前
+        // 对端拿畸形头部连发，指标上一条曲线都不动，等于把一类远程可发的坏输入做成隐形。
+        // 连接层只给累计值（它不为记账排事件队列），这里按「比上次读到多了几条」补差
+        const std::uint64_t rejectedTotal = m_connection.rejectedRequestHeaderFieldCount();
+        if (const std::uint64_t newlyRejected = rejectedTotal - m_countedRejectedRequestHeads; newlyRejected != 0U && m_metrics != nullptr)
+        {
+            for (std::uint64_t index = 0; index < newlyRejected; ++index)
+            {
+                m_metrics->countBadRequest();
+            }
+        }
+        m_countedRejectedRequestHeads = rejectedTotal;
+
         // 向量拿到具名局部：遍历完连容量一起还回去，下一批请求不必再向堆要一块
         std::vector<Http2Request> requests = m_connection.takeRequests();
         for (Http2Request &http2Request: requests)

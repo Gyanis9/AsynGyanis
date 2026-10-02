@@ -739,15 +739,17 @@ namespace AsynGyanis::Net
         HttpParser        m_parser;        ///< HTTP/1.1 回退路径的解析器
         std::vector<char> m_receiveBuffer; ///< 回退路径自己的接收窗口
 
-        Http2Connection                         m_connection;         ///< HTTP/2 连接层状态机（协议状态、帧与窗口全在它里面）
-        Core::EventLoop                        &m_loop;               ///< 本会话所在的事件循环：收口时要在它上面拍一小段（见 drainInFlightServes）
-        Core::Scheduler                        &m_scheduler;          ///< 本会话所在事件循环的调度器
-        Router                                 &m_router;             ///< 路由器引用（与基类指向同一对象）
-        HttpParserLimits                        m_parserLimits{};     ///< 本会话落定的解析上限；正文一项由本类判，字段条数与请求目标长度交给连接层判
-        std::shared_ptr<const HttpServerLimits> m_limits;             ///< 连接级限额，与服务器共享、只读（构造时保证非空）
-        std::shared_ptr<HttpMetricsCollector>   m_metrics;            ///< 统计采集端；空指针表示不采集
-        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator; ///< request-id 生成器；空指针表示不落定
-        std::shared_ptr<HttpMemoryBudget>       m_memoryBudget;       ///< 在途正文字节的全局预算，与服务器共享；空指针表示不受该预算约束
+        Http2Connection  m_connection; ///< HTTP/2 连接层状态机（协议状态、帧与窗口全在它里面）
+        Core::EventLoop &m_loop;       ///< 本会话所在的事件循环：收口时要在它上面拍一小段（见 drainInFlightServes）
+        Core::Scheduler &m_scheduler;  ///< 本会话所在事件循环的调度器
+        Router          &m_router;     ///< 路由器引用（与基类指向同一对象）
+        HttpParserLimits m_parserLimits{};
+        /// 已经落进 badRequestCount 的「请求头不合规」条数（连接层给的是累计值，这里按差值补账）
+        std::uint64_t                           m_countedRejectedRequestHeads{0}; ///< 本会话落定的解析上限；正文一项由本类判，字段条数与请求目标长度交给连接层判
+        std::shared_ptr<const HttpServerLimits> m_limits;                         ///< 连接级限额，与服务器共享、只读（构造时保证非空）
+        std::shared_ptr<HttpMetricsCollector>   m_metrics;                        ///< 统计采集端；空指针表示不采集
+        std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator;             ///< request-id 生成器；空指针表示不落定
+        std::shared_ptr<HttpMemoryBudget>       m_memoryBudget;                   ///< 在途正文字节的全局预算，与服务器共享；空指针表示不受该预算约束
 
         /// h2 主循环的接收缓冲：提到成员上是因为流式正文的泵也要用它——泵与主循环交替驱动
         /// 同一条连接，各持一份会让「谁读到什么」变得不可推理

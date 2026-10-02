@@ -954,6 +954,35 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：被拒的请求头在连接层留一笔上层读得到的计数
+     * @details 会话按这个累计值补 `badRequestCount` 的账（h1/h3 在同一处都记，h2 此前指标为零）。
+     *          这条钉的是计数本身：只随「请求头被拒」涨，不随正常请求、正文或窗口事件涨——
+     *          多记会把好请求报成坏请求，少记就是这次要修的那个隐形。
+     */
+    TEST(Http2Connection, CountsRejectedRequestHeaderFields)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        EXPECT_EQ(connection.rejectedRequestHeaderFieldCount(), 0U);
+
+        // 只有 :method 与 :scheme 的头块：缺 :path，按 RFC 7540 §8.1.2.3 属畸形请求
+        const std::string malformedBlock = hpackIndexedField(2) + hpackIndexedField(7);
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, malformedBlock)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.takeRequests().empty()) << "畸形的头块不该交出请求";
+        EXPECT_EQ(connection.rejectedRequestHeaderFieldCount(), 1U) << "被拒的请求头没有落账";
+
+        // 第二条同样畸形：累计到 2（会话侧按差值逐条记账，靠的就是这个累计语义）
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, malformedBlock)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(connection.rejectedRequestHeaderFieldCount(), 2U);
+
+        // 正常请求不累加
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 5U, makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(connection.takeRequests().size(), 1U);
+        EXPECT_EQ(connection.rejectedRequestHeaderFieldCount(), 2U) << "好请求被记成了坏请求";
+    }
+
+    /**
      * @brief 钉住：对端交来的头名与头值不会把控制字节原样带进本端的错误串
      *
      * @details 这些原因串会经 `lastStreamErrorMessage()` 落进 `LOG_ERROR` 那一行，而日志的一条记录

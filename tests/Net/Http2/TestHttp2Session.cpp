@@ -1425,6 +1425,53 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：请求头不合规被拒时也要计入 badRequestCount（h2 此前在指标上是零）
+     * @details 这类流不交出请求、不回响应，因此既不进 totalRequestCount 也不进状态码计数。
+     *          h1 与 h3 在同一处都记 badRequestCount，只有 h2 漏了：对端拿畸形头部连发时
+     *          曲线一动不动，等于把一类远程可发的坏输入做成隐形。RFC 7540 §8.1.2.6 只规定
+     *          按流错误作废，没有说「不许记账」——回不回 400 是自由，记不记数是运维看得见看不见的问题。
+     */
+    TEST(Http2Session, CountsMalformedRequestHeadersAsBadRequest)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        RunningHttp2ServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(
+                client.pumpUntil(frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::Settings) >= 1; }, kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        // 只有 :method 与 :scheme 的头块：缺 :path，按 §8.1.2.3 属畸形请求
+        const std::string malformedHeaderBlock = hpackIndexedField(2) + hpackIndexedField(7);
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, malformedHeaderBlock, true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::RstStream) >= 1; }, kWaitTimeout))
+                << "畸形的请求头没有被作废";
+        EXPECT_EQ(countFrames(frames, Http2FrameType::GoAway), 0U) << "一条畸形请求不该把整条连接判死";
+
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().stats().badRequestCount >= 1; }, kWaitTimeout)) << "被拒的请求头没有计入 badRequestCount";
+        EXPECT_EQ(fixture.server().stats().totalRequestCount, 0u) << "没交给业务的请求不该进已处理条数";
+
+        // 连接仍然可用：随后那条正常请求照常 200，且不被上一笔多记
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "被拒之后这条连接上的后续请求没有收到响应";
+        HpackDecoder                        responseDecoder;
+        const std::vector<HpackHeaderField> responseHeaders = decodeResponseHeaderBlock(responseDecoder, responseHeaderBlock(frames, 3U));
+        EXPECT_EQ(findHeaderValue(responseHeaders, ":status"), "200");
+        EXPECT_EQ(fixture.server().stats().badRequestCount, 1u) << "正常的后续请求被误记成坏请求";
+    }
+
+    /**
      * @brief 钉住：content-length 与实收正文字节数不一致时先回 400，再以 RST_STREAM(PROTOCOL_ERROR) 作废这条流
      * @details RFC 7540 §8.1.2.6 两句要连着读：这类请求属畸形报文，「Malformed requests or responses
      *          that are detected MUST be treated as a stream error (Section 5.4.2) of type

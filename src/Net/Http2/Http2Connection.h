@@ -459,6 +459,17 @@ namespace AsynGyanis::Net
          * @details 流级错误（RST_STREAM）不回给调用方任何返回值，原因只在这里可见，供日志与排查使用
          * @return 中文原因；还没发生过流级错误时为空串
          */
+        /**
+         * @brief 累计有多少条流因「请求头不合规」被本端拒掉
+         * @details 这类流不交出请求、不回响应，因此既不进总请求数也不进状态码计数——h1 与 h3 都把它
+         *          记进 badRequestCount（对端送来一条本端无法解释的请求头，就是坏请求），h2 此前在
+         *          指标上是**零**：对端拿畸形头部连发，读到的曲线什么都没有。本读口就是给上层补这笔账的，
+         *          上层按「比上次读到的多了几条」逐条落账。
+         * @note 逐条的中文原因仍只在 lastStreamErrorMessage() 里留最近一条（本层不为记账排事件队列）
+         * @return std::uint64_t 本连接生命周期内被拒的请求头条数
+         */
+        [[nodiscard]] std::uint64_t rejectedRequestHeaderFieldCount() const noexcept;
+
         [[nodiscard]] std::string lastStreamErrorMessage() const;
 
         /**
@@ -886,6 +897,7 @@ namespace AsynGyanis::Net
         Http2ErrorCode                        m_errorCode{Http2ErrorCode::NoError};           ///< 连接级失败的错误码（也是 GOAWAY 里带上的码）
         std::string                           m_errorMessage;                                 ///< 连接级失败的中文原因
         std::string                           m_lastStreamErrorMessage;                       ///< 最近一次流级错误的中文原因
+        std::uint64_t                         m_rejectedRequestHeaderFieldCount{0};           ///< 因请求头不合规被拒的流条数，见 rejectedRequestHeaderFieldCount()
 
         Http2FrameDecoder m_frameDecoder; ///< 帧解码器：单帧合法性由它把关
         HpackDecoder      m_hpackDecoder; ///< 请求方向的头块解码器，动态表与对端编码器同步演进
