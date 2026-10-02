@@ -13,6 +13,7 @@
 
 #include "Base/Log/Sinks/LogSink.h"
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -77,8 +78,24 @@ namespace AsynGyanis::Base
         /**
          * @brief 重新打开并切换输出文件路径
          * @param newPath 新日志文件路径
+         * @details 打开失败**不抛异常**（本方法常在滚动/切换路径的运行期被调用，打断日志写入比
+         *          报不出来更糟），但会出声：失败那一刻往标准错误打一行，点名是哪个路径打不开，
+         *          并说明此后日志会被静默丢弃直到下一次成功重开。连续失败只报第一条（上升沿），
+         *          重开成功后重新武装——按大小滚动的目录被删或权限改掉时，不打这一行就等于
+         *          整条 Sink 从此失聪而现场一句诊断都没有。
+         * @note 期间被丢的行数可以经 skippedLineCount() 读到，运维不必靠肉眼翻标准错误
          */
         void reopen(const std::filesystem::path &newPath);
+
+        /**
+         * @brief 累计有多少行没能落到这个文件上
+         * @details 两种来源都算：文件没有打开（重开失败，或构造时就打不开）、流已失效
+         *          （磁盘写满或配额耗尽后 failbit 立起）。放这个读口是因为「日志在偷偷少」
+         *          通常由运维先发现而程序后发现，而异步通道的丢弃量早就有同一形状的读数
+         *          （见 `Base::droppedAsyncLogEventCount()`）。
+         * @return std::size_t 本 Sink 生命周期内被丢的行数
+         */
+        [[nodiscard]] std::size_t skippedLineCount() const noexcept;
 
     private:
         /**
@@ -97,10 +114,23 @@ namespace AsynGyanis::Base
          */
         void reportStreamFailureOnceLocked();
 
+        /**
+         * @brief 重开失败时按上升沿报一行（调用方必须已持有 m_mutex）
+         * @details 与 reportStreamFailureOnceLocked 分开是两条独立判据：那条看流状态，而**文件没打开**
+         *          的时候流没有状态可看，写路径在判空处就早退了，永远轮不到它——这正是「整条 Sink
+         *          静默失聪」的来路。
+         */
+        void reportReopenFailureOnceLocked();
+
         std::filesystem::path m_filePath;                       ///< 当前日志文件路径
         std::ofstream         m_file;                           ///< 日志文件输出流
         std::string           m_lineBuffer;                     ///< 写入用的行缓冲：拼接换行后整行一次写出，仅 write/writeLine 在互斥锁内复用
         std::mutex            m_mutex;                          ///< 保护文件写入的互斥锁
         bool                  m_hasReportedWriteFailure{false}; ///< 本轮连续写失败是否已上报（避免每条日志都写一次标准错误）
+        /// 没能落盘的行数（文件未打开或流已失效），见 skippedLineCount()。用原子而不是锁保护的普通量：
+        /// 读它的是运维/用例在**另一个线程**上问一句，而 m_mutex 不是 mutable，const 读口拿不到锁；
+        /// 写入只在故障路径上发生，热路径不碰这里
+        std::atomic<std::size_t> m_skippedLineCount{0};
+        bool                     m_hasReportedReopenFailure{false}; ///< 本轮连续重开失败是否已报过（上升沿报一次，重开成功后重新武装）
     };
 } // namespace AsynGyanis::Base

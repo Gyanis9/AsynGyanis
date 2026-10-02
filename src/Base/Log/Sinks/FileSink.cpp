@@ -136,6 +136,9 @@ namespace AsynGyanis::Base
     {
         if (!m_file.is_open())
         {
+            // 文件没打开（重开失败）时整条 Sink 不写：这一笔要留下读数，
+            // 否则「日志在偷偷少」只有人肉翻标准错误才发现得到
+            m_skippedLineCount.fetch_add(1, std::memory_order_relaxed);
             return 0;
         }
         // 换行并入缓冲后整行只做一次 <<：流插入每次都要构造 sentry 并由文件缓冲加锁，
@@ -153,6 +156,7 @@ namespace AsynGyanis::Base
         reportStreamFailureOnceLocked();
         if (!m_file.good())
         {
+            m_skippedLineCount.fetch_add(1, std::memory_order_relaxed);
             return 0;
         }
 
@@ -205,5 +209,30 @@ namespace AsynGyanis::Base
         // 文件保持关闭状态（write() 对已关闭文件静默跳过）
         static_cast<void>(createParentDirectory(m_filePath.parent_path()));
         m_file.open(m_filePath, std::ios::out | std::ios::app | std::ios::binary);
+        if (m_file.is_open())
+        {
+            // 重开成功：把上升沿重新武装，下一次失败还要再出声
+            m_hasReportedReopenFailure = false;
+            return;
+        }
+        reportReopenFailureOnceLocked();
+    }
+
+    std::size_t FileSink::skippedLineCount() const noexcept
+    {
+        return m_skippedLineCount.load(std::memory_order_relaxed);
+    }
+
+    void FileSink::reportReopenFailureOnceLocked()
+    {
+        if (m_hasReportedReopenFailure)
+        {
+            return;
+        }
+        // 与写失败那条分开是两条独立判据：文件没打开时流没有状态可判，writePreparedLineLocked 在判空处
+        // 就早退，永远轮不到那条上报——不打这一行，整条 Sink 就是从这一刻起静默失聪
+        m_hasReportedReopenFailure = true;
+        std::cerr << "FileSink：重新打开日志文件失败：" << AsynGyanis::Platform::FileSystem::utf8FromPath(m_filePath)
+                  << "；文件未能打开，后续日志一律不落盘（累计丢弃量可读：skippedLineCount），直到下一次成功 reopen" << '\n';
     }
 } // namespace AsynGyanis::Base

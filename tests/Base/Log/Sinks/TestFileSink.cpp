@@ -116,6 +116,22 @@ namespace AsynGyanis::Base
         }
 
         /**
+         * @brief 数一段文本里某个子串出现了多少次（不重叠）
+         * @param text 待数的文本
+         * @param needle 要数的子串
+         * @return std::size_t 出现次数
+         */
+        std::size_t countOccurrences(const std::string_view text, const std::string_view needle)
+        {
+            std::size_t count = 0;
+            for (std::size_t position = text.find(needle); position != std::string_view::npos; position = text.find(needle, position + needle.size()))
+            {
+                ++count;
+            }
+            return count;
+        }
+
+        /**
          * @brief 判断文件内容是否包含子串
          */
         bool fileContains(const fs::path &filePath, const std::string &needle)
@@ -402,6 +418,84 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(fileContains(logPath, "before_reopen")) << readWholeFile(logPath);
         EXPECT_TRUE(fileContains(logPath, "after_reopen")) << readWholeFile(logPath);
         EXPECT_EQ(countLines(logPath), 2u);
+    }
+
+    /**
+     * @brief 钉住：重开失败时丢弃量读得到，重开成功后不再累加
+     * @details 文件打不开时 `writePreparedLineLocked` 在「流没打开」的判空处直接返回 0，而那条
+     *          「连续写失败只报一次」的标准错误上报排在它后面——**永远轮不到**。于是整条 Sink 从这一刻
+     *          起静默失聪：程序自己一句诊断都不留，运维只能靠人肉发现日志少了。现在这一路的丢弃行数
+     *          走 `skippedLineCount()`（形状与异步通道的 droppedAsyncLogEventCount 一致），
+     *          并在失败那一刻按上升沿往标准错误打一行。
+     */
+    TEST(FileSink, SkippedLinesAreCountableWhileTheFileIsNotOpen)
+    {
+        TestSupport::TemporaryDirectory temporaryDirectory("FileSink_ReopenFailure");
+        const fs::path                  goodPath = temporaryDirectory.path() / "good.log";
+        // 拿一个「父路径是普通文件」的目标当新路径：目录建不出来，open 必然失败——
+        // 这是本平台上不需要权限玩法就能稳定构造的打不开形态
+        const fs::path blocker = temporaryDirectory.path() / "blocker";
+        const fs::path badPath = blocker / "nested" / "never.log";
+
+        FileSink sink(goodPath);
+        sink.write(makeEvent(LogLevel::Info, "before_failure"));
+        sink.flush();
+        ASSERT_TRUE(fileContains(goodPath, "before_failure")) << readWholeFile(goodPath);
+        EXPECT_EQ(sink.skippedLineCount(), 0u) << "一切正常时不该有丢弃读数";
+
+        std::ofstream(blocker).put('x'); // 先立一个同名普通文件，再让父目录建不出来
+        sink.reopen(badPath);
+
+        sink.write(makeEvent(LogLevel::Info, "dropped_one"));
+        sink.write(makeEvent(LogLevel::Info, "dropped_two"));
+        sink.flush();
+        EXPECT_EQ(sink.skippedLineCount(), 2u) << "文件没打开时丢的行必须数得出来";
+
+        // 重新开回可写路径：不仅恢复落盘，上升沿也要复位，之后的新故障才会再报一次
+        const fs::path rescuedPath = temporaryDirectory.path() / "rescued.log";
+        sink.reopen(rescuedPath);
+        sink.write(makeEvent(LogLevel::Info, "after_rescue"));
+        sink.flush();
+        EXPECT_TRUE(fileContains(rescuedPath, "after_rescue")) << readWholeFile(rescuedPath);
+        EXPECT_EQ(sink.skippedLineCount(), 2u) << "恢复之后不该再累加";
+    }
+
+    /**
+     * @brief 钉住：重开失败只按上升沿出声一次，恢复后再失败要再出声
+     * @details 日志系统自身的故障没有别的去处可报（拿根日志器报自己会让 write() 递归），只能进标准错误；
+     *          而按大小滚动的目录一旦不可写，每次滚动都会重开一次——不设上升沿就是把磁盘故障刷成一行行噪声，
+     *          设了却不重新武装，就会在恢复后的下一次真故障上哑口无言。两条都要钉住。
+     */
+    TEST(FileSink, ReportsReopenFailureOncePerRisingEdge)
+    {
+        TestSupport::TemporaryDirectory temporaryDirectory("FileSink_ReopenReport");
+        const fs::path                  goodPath = temporaryDirectory.path() / "good.log";
+        const fs::path                  blocker  = temporaryDirectory.path() / "blocker";
+        const fs::path                  badPath  = blocker / "nested" / "never.log";
+        std::ofstream(blocker).put('x');
+
+        FileSink sink(goodPath);
+
+        std::ostringstream    capturedError;
+        std::streambuf *const originalErrorBuffer = std::cerr.rdbuf(capturedError.rdbuf());
+        sink.reopen(badPath);
+        sink.reopen(badPath); // 同一轮故障里的第二次失败：不该再来一行
+        sink.reopen(badPath);
+        std::cerr.rdbuf(originalErrorBuffer);
+
+        const std::string firstOutbreak = capturedError.str();
+        EXPECT_EQ(countOccurrences(firstOutbreak, "FileSink：重新打开日志文件失败"), 1u) << firstOutbreak;
+        EXPECT_TRUE(firstOutbreak.find("never.log") != std::string::npos) << "报的哪条路径读不出来：" << firstOutbreak;
+        // 三次失败只出一行：整段捕获里只该有一个换行（那一行自己的结尾）
+        EXPECT_EQ(countOccurrences(firstOutbreak, "\n"), 1u) << firstOutbreak;
+
+        // 恢复成功后重新武装：再失败时要能再出声
+        std::ostringstream    recoveredError;
+        std::streambuf *const secondOriginalBuffer = std::cerr.rdbuf(recoveredError.rdbuf());
+        sink.reopen(temporaryDirectory.path() / "rescued.log");
+        sink.reopen(badPath);
+        std::cerr.rdbuf(secondOriginalBuffer);
+        EXPECT_EQ(countOccurrences(recoveredError.str(), "FileSink：重新打开日志文件失败"), 1u) << recoveredError.str();
     }
 
     // ============================================================================
