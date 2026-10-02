@@ -307,17 +307,6 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 去掉弱 ETag 的 "W/" 前缀
-         * @details 规则本体在 `HttpConditionalValidators.h`（业务侧要自己判条件请求时读的是同一份）
-         * @param entityTag 待处理的标签
-         * @return 去掉前缀后的标签；本来没有前缀时原样返回
-         */
-        std::string_view stripWeakPrefix(std::string_view entityTag)
-        {
-            return stripWeakValidatorPrefix(entityTag);
-        }
-
-        /**
          * @brief 判断 If-None-Match 的值是否命中本资源的 ETag
          * @details 值为 "*" 或列表里任一标签（弱比较）与本资源标签相同即命中（RFC 9110 §13.1.2）。
          * @param listValue If-None-Match 头原文
