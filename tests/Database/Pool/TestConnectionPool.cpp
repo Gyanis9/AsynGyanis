@@ -1137,4 +1137,40 @@ namespace AsynGyanis::Database
         EXPECT_NO_THROW(static_cast<void>(ConnectionPool(factory, atLimit)));
     }
 
+    /**
+     * @brief 钉住：会话复位交回「没清干净」时，池丢掉这条连接而不是把它交给下一个借用者
+     * @details 复位钩子按基类契约是 noexcept，吞掉异常不等于复位成功：MySQL 的 ROLLBACK 发不出去时
+     *          服务端还挂着别人的事务，Redis 的 DISCARD 发不出去时下一位的写命令会被排进别人的
+     *          MULTI。这种连接交出去不报错、语句照收、锁照握，是唯一「看起来正常」的串状态路径，
+     *          因此判据落在去向选择上：没复位成功的连接既不进空闲栈，也不直接交给等待者。
+     */
+    TEST(ConnectionPool, DiscardsConnectionWhenSessionResetFails)
+    {
+        ConnectionCounter counter;
+        auto              factory = makeMockFactory(counter);
+
+        PoolConfig configuration;
+        configuration.maximumPoolSize = 1;
+
+        ConnectionPool pool(factory, configuration);
+
+        counter.sessionResetFails.store(true);
+        {
+            PooledConnection connection = pool.acquire();
+            ASSERT_TRUE(connection);
+            EXPECT_EQ(counter.totalCreated.load(), 1);
+        }
+
+        EXPECT_EQ(counter.sessionResetCount.load(), 1) << "归还时仍然复位一次，只是这次它报「没清干净」";
+        EXPECT_EQ(pool.idleCount(), 0U) << "复位没成功的连接不该回到空闲栈";
+        EXPECT_EQ(counter.totalDestroyed.load(), 1) << "既没回栈也没被交接，那就是被丢掉了";
+
+        counter.sessionResetFails.store(false);
+        {
+            const PooledConnection second = pool.acquire();
+            ASSERT_TRUE(second);
+        }
+        EXPECT_EQ(counter.totalCreated.load(), 2) << "下一条必须是另起的一条：复用那条脏连接正是本缺陷的现场";
+    }
+
 } // namespace AsynGyanis::Database

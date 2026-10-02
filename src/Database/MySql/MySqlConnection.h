@@ -177,8 +177,10 @@ namespace AsynGyanis::Database
          * @note **复位范围只有事务**：会话变量、临时表与本类的语句缓存不在这条路径上。
          *       COM_RESET_CONNECTION 能一次清掉它们，但它同时作废服务端全部预编译语句，而语句缓存里
          *       留着的是 MYSQL_STMT 裸句柄——要走到那一步，得先让缓存与那次重置同生共死
+         * @return 未连接或本就没有活动事务时为 true；确实去滚了事务则按 ROLLBACK 的结果交回——
+         *         发不出去时交回 false，让池丢掉这条连接而不是把别人的事务传下去
          */
-        void resetSessionState() noexcept override;
+        bool resetSessionState() noexcept override;
 
         /**
          * @brief 获取服务端版本字符串

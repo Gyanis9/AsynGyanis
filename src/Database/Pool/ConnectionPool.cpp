@@ -425,15 +425,17 @@ namespace AsynGyanis::Database
 
         // 会话状态复位必须早于「放回空闲栈」与「直接交给等待者」两条去向：
         // 上一个借用者留下的会话级状态（Redis 的未发送管道、临时表等）不能串给下一个借用者
-        connection->resetSessionState();
+        const bool isSessionResetClean = connection->resetSessionState();
 
-        // ---- 判失联与判存活期：都排在两条去向之前 ----
-        // 两条去向（直接交给等待者 / 放回空闲栈）必须拿到同一条「还活着且还在存活期内」的连接：
+        // ---- 判复位、判失联与判存活期：都排在两条去向之前 ----
+        // 三条判据同一条去向：复位没干净意味着上一个借用者的 MULTI/事务还挂在服务端，这种连接交出去
+        // 就是「会话状态串给下一位」最贵的那一种——不报错、语句照收、锁照握。
+        // 两条去向（直接交给等待者 / 放回空闲栈）也必须拿到同一条「还活着且还在存活期内」的连接：
         // 空闲栈一侧的取出路径早就在判这两条，而直接交接此前只判了失联——把一条已过存活期的连接
         // 从后门塞给协程，等于绕过 maximumLifetimeSeconds 的轮换约定（对端已单方面掐线的连接同理）
         // 判定只读这条连接自己的建立时刻与池配置，不涉及共享状态，因此不必进 m_mutex
         const auto returnedAt = std::chrono::steady_clock::now();
-        if (!isConnectionHealthy(connection.get()) || isPastMaximumLifetime(*connection, returnedAt))
+        if (!isSessionResetClean || !isConnectionHealthy(connection.get()) || isPastMaximumLifetime(*connection, returnedAt))
         {
             // 丢弃并退还名额（断开留在锁外，与 healthCheckLoop 同一条纪律），
             // 再叫醒等待者：空闲栈没变多，但名额确实空了出来

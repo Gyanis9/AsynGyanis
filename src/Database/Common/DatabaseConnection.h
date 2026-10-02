@@ -198,9 +198,12 @@ namespace AsynGyanis::Database
          *          Redis 的管道缓冲就是活例子——残留命令会被下一个借用者的 flushPipeline() 代发，
          *          回复按下标错位且毫无报错
          * @note 不得抛异常（池的归还路径不处理异常），实现必须是幂等的
+         * @return true 会话已干净（或本来就没有要复位的东西）；false **没能**复位干净——池据此把这条
+         *         连接丢掉，而不是让它带着上一个借用者留下的事务回到空闲栈
          */
-        virtual void resetSessionState() noexcept
+        [[nodiscard]] virtual bool resetSessionState() noexcept
         {
+            return true;
         }
 
         /**

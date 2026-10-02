@@ -991,7 +991,7 @@ namespace AsynGyanis::Database
         }
     }
 
-    void RedisConnection::resetSessionState() noexcept
+    bool RedisConnection::resetSessionState() noexcept
     {
         // 管道是「登记到 flush 之间」的会话状态：这条连接要交给下一个借用者了，残留命令必须丢掉。
         // 留着的话会被下一位的 flushPipeline() 代发，回复按下标错位且毫无报错
@@ -1010,7 +1010,7 @@ namespace AsynGyanis::Database
         // 桩构建与未连接都在这里止步：没有会话可复位，也就不必为一条发不出去的命令报错
         if (!isConnected())
         {
-            return;
+            return true;
         }
 
         // MONITOR / 订阅 / HELLO 之后本类退不回「一条命令一次回复」：这条连接读到的下一段字节不属于
@@ -1018,7 +1018,7 @@ namespace AsynGyanis::Database
         if (needsFreshSession)
         {
             disconnect();
-            return;
+            return true; // 断开本身就是收口：池随后按健康判据把这条摘掉，不会交给下一位
         }
 
         try
@@ -1045,8 +1045,11 @@ namespace AsynGyanis::Database
             }
         } catch (...)
         {
-            // 归还路径绝不抛出：本方法按基类约定是 noexcept，最坏情况是连接带着未复位的会话状态回池
+            // 归还路径绝不抛出：本方法按基类约定是 noexcept。但吞掉不等于复位成功——DISCARD/UNWATCH
+            // 可能根本没发出去，服务端还留着别人的 MULTI 或 WATCH，交回 false 让池另起一条
+            return false;
         }
+        return true;
     }
 
     RedisConnection::~RedisConnection()

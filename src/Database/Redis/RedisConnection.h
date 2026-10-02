@@ -225,8 +225,10 @@ namespace AsynGyanis::Database
          * @note 只在按命令名记的账说「确有残留」时才发清理命令，干净连接不额外付一次往返
          * @note MONITOR / 订阅 / HELLO 之后本类退不回「一条命令一条回复」的形态，此时直接断开：
          *       池会丢掉这条不健康的连接并另起一条，比让它带着错位的回复流回池便宜
+         * @return 会话是否已干净：断开式收口（退不回一问一答的那几种模式）与本来就干净时为 true，
+         *         池随后按健康判据把它摘掉；清理命令发不出去又没走到断开时交回 false
          */
-        void resetSessionState() noexcept override;
+        bool resetSessionState() noexcept override;
 
         /**
          * @brief 一次性发送全部已登记的管道命令并读回回复

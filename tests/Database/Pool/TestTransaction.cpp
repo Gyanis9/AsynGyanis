@@ -125,9 +125,12 @@ namespace
          * @brief 什么都不做，把连接带着原有会话状态交还池
          * @details 重写 SqliteConnection::resetSessionState()：去掉归还路径上的兜底回滚，其余与基类一致。
          *          刻意不转发给基类——转发一次，用例就又看不到未结束事务的后果了。
+         *          交回 true 是有意为之：本用例要考的是「没人在复位事务」而不是「复位失败要丢连接」，
+         *          后者由池侧那条 sessionResetFails 的用例守着。
          */
-        void resetSessionState() noexcept override
+        bool resetSessionState() noexcept override
         {
+            return true;
         }
     };
 

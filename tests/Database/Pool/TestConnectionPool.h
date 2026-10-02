@@ -99,6 +99,7 @@ namespace AsynGyanis::Database::TestPoolSupport
         std::atomic<std::int64_t> totalDestroyed{0};        ///< 累计销毁的连接数
         std::atomic<std::int64_t> healthCheckCount{0};      ///< isConnected() 调用次数
         std::atomic<std::int64_t> sessionResetCount{0};     ///< resetSessionState() 调用次数（会话状态复位钩子）
+        std::atomic<bool>         sessionResetFails{false}; ///< 置位时复位钩子交回 false：模拟「没清干净」那条出口
         std::atomic<bool>         connectionsHealthy{true}; ///< 全体连接的存活开关：用例据此造出「入栈后失联」
         ArrivalGate              *disconnectGate{nullptr};  ///< 断开门闩，空则 disconnect() 不额外停留
     };
@@ -168,10 +169,12 @@ namespace AsynGyanis::Database::TestPoolSupport
             return m_healthOk && m_isConnected && m_counter->connectionsHealthy.load();
         }
 
-        /// 归还路径上的会话状态复位：用例据此断言池在两条去向（空闲栈/等待者）之前都调过它
-        void resetSessionState() noexcept override
+        /// 归还路径上的会话状态复位：用例据此断言池在两条去向（空闲栈/等待者）之前都调过它；
+        /// sessionResetFails 置位时交回 false，模拟「清理没成功」这条出口（池据此丢弃这条连接）
+        bool resetSessionState() noexcept override
         {
             m_counter->sessionResetCount.fetch_add(1);
+            return !m_counter->sessionResetFails.load();
         }
 
         /**

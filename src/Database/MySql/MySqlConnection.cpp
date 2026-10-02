@@ -1104,12 +1104,12 @@ namespace AsynGyanis::Database
         return isRolledBack;
     }
 
-    void MySqlConnection::resetSessionState() noexcept
+    bool MySqlConnection::resetSessionState() noexcept
     {
         // 未连接：没有会话可复位
         if (m_mysqlHandle == nullptr)
         {
-            return;
+            return true;
         }
 
         // 两种「事务开着」都要滚：① 本类 beginTransaction() 的记账；② 服务端在上一条应答里自报的
@@ -1130,21 +1130,22 @@ namespace AsynGyanis::Database
 #endif
         if (!isTransactionOpen)
         {
-            return;
+            return true;
         }
 
         // 先清标记再滚：即便这次 ROLLBACK 发不出去（链路已断），连接也不会带着「还开着事务」
-        // 的假状态回到池里。失败只记在 lastError() 里（与 rollback() 同一口径），
-        // 归还路径不看返回码——绝不在这里抛异常打断归还
+        // 的假状态回到池里。失败只记在 lastError() 里（与 rollback() 同一口径），并把 false 交回调用方
+        // ——绝不在这里抛异常打断归还
         m_isTransactionOpen = false;
         // rollback() 会构造 std::string（内存分配失败即抛），而本方法按接口约定是 noexcept：
-        // 不接住就是 terminate，因此显式吞掉，失败只留在 lastError() 里
+        // 不接住就是 terminate，因此显式吞掉，并把「没滚干净」这件事交回池（池据此丢弃这条连接，
+        // 而不是让下一个借用者接着上一笔事务执行语句、行锁握到别人收口为止）
         try
         {
-            [[maybe_unused]] const bool isRolledBack = rollback();
+            return rollback();
         } catch (...)
         {
-            // 归还路径绝不抛出：最坏情况是连接带着未复位的事务回到池里
+            return false;
         }
     }
 

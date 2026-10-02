@@ -357,24 +357,25 @@ namespace AsynGyanis::Database
         return execute(dialect.rollbackStatement()) != nullptr;
     }
 
-    void SqliteConnection::resetSessionState() noexcept
+    bool SqliteConnection::resetSessionState() noexcept
     {
         // 未连接，或引擎报告当前处于自动提交（即没有活动事务）：没有要复位的东西。
         // 判据取自 sqlite3_get_autocommit 而不是本类记账，手工执行的 "BEGIN" 也能被认出来
         if (m_database == nullptr || ::sqlite3_get_autocommit(m_database) != 0)
         {
-            return;
+            return true;
         }
 
-        // 滚掉事务：失败只记在 lastError() 里（与 rollback() 同一口径），归还路径不看返回码。
+        // 滚掉事务：失败只记在 lastError() 里（与 rollback() 同一口径），并把「没滚干净」交回池——
+        // 池据此丢弃这条连接，而不是让下一个借用者接着上一笔事务、把写锁握到那条连接被回收为止。
         // try/catch 是必需的：rollback() 会构造 std::string（内存分配失败即抛），
         // 而本方法按接口约定是 noexcept，异常穿出去就是 terminate
         try
         {
-            [[maybe_unused]] const bool isRolledBack = rollback();
+            return rollback();
         } catch (...)
         {
-            // 归还路径绝不抛出：最坏情况是连接带着未复位的事务回到池里
+            return false;
         }
     }
 

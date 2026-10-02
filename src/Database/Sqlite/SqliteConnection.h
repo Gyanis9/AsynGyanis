@@ -175,8 +175,10 @@ namespace AsynGyanis::Database
          *          （sqlite3_get_autocommit），因此手工执行的 "BEGIN" 同样能被认出，不依赖本类另记状态。
          *          其余与基类契约一致。
          * @note 与基类契约一致：不抛异常、幂等；未连接或本就没有活动事务时不做任何事
+         * @return 未连接或本就没有活动事务时为 true；确实去滚了事务则按 ROLLBACK 的结果交回——
+         *         滚不掉时交回 false，让池丢掉这条连接而不是把别人的写锁传下去
          */
-        void resetSessionState() noexcept override;
+        bool resetSessionState() noexcept override;
 
         /**
          * @brief 获取数据库版本字符串
