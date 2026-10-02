@@ -240,6 +240,11 @@ namespace AsynGyanis::Net
             return;
         }
 
+        // 先清过期：发送路径上的 buildRequestHeader 只**过滤**已过期的（它是 const，且不能因为
+        // 「有人来查」就改账），所以过期条目一直占着 `maximumTotalCookies` 与单域配额。一个爱发
+        // 短命 Cookie 的站点能靠这些僵尸把真正要用的会话 Cookie 挤出去——那是静默登录失效的形状
+        std::erase_if(m_entries, [&receivedAt](const Entry &stored) { return stored.expiresAt.has_value() && *stored.expiresAt <= receivedAt; });
+
         for (const std::string &headerValue: setCookieHeaderValues)
         {
             const std::optional<HttpCookie> parsedCookie = HttpCookie::parseSetCookie(headerValue);
@@ -262,7 +267,11 @@ namespace AsynGyanis::Net
                     continue;
                 }
                 const std::string cookieDomain = normalizeDomain(*parsedCookie->domain());
-                if (cookieDomain.empty() || !domainMatches(requestDomain, cookieDomain))
+                // 至少两段才算「能罩住别人的域」：`Domain=com` 语法上罩得住 example.com，收下它等于
+                // 把这条 Cookie 发给 .com 下的每一个站点。规范用的是公共后缀表（本框架不内置那份数据），
+                // 这里退一步用「必须含有点」这条保守判据——它挡得住最恶性的一类（单标签顶级域），
+                // 代价是 co.uk 这类两段公共后缀仍收得下，那比放宽整条规则好
+                if (cookieDomain.empty() || cookieDomain.find('.') == std::string::npos || !domainMatches(requestDomain, cookieDomain))
                 {
                     continue;
                 }
@@ -318,7 +327,8 @@ namespace AsynGyanis::Net
         {
             const auto now = std::chrono::system_clock::now();
 
-            // 顺手把已过期的摘掉：不然它们只是每请求一次都参与一次匹配判断的僵尸
+            // 已过期的不参与匹配（真正的摘除发生在存入时，见 storeFromResponse——本函数是 const，
+            // 不能因为「有人来查」就改账）
             std::vector<const Entry *> candidates;
             candidates.reserve(m_entries.size());
             for (const Entry &entry: m_entries)

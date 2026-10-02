@@ -69,6 +69,16 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] static bool isValidValue(std::string_view text) noexcept;
 
+        /**
+         * @brief 判断 Domain 属性的文本是否合法（写侧与收侧共用这一条判据）
+         * @details 这条规则以前只住在 `setDomain` 的抛出条件里，而解析 `Set-Cookie` 的那一段另写了一份
+         *          更松的（少了 `=` 与 `/`）——同一个属性在「本框架写出去」与「罐子收进来」两条路上有
+         *          两种严格度：罐子会留下永远不可能由本框架写出的形态，随后还拿它做域名匹配。
+         * @param text 待判断的域名文本
+         * @return true 非空、只含可打印 ASCII（不含 0x7F），且没有空格与控制符、`" ; = /` 任一字符
+         */
+        [[nodiscard]] static bool isValidDomain(std::string_view text) noexcept;
+
         /// Cookie 名字
         [[nodiscard]] const std::string &name() const noexcept
         {

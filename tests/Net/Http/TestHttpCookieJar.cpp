@@ -1,5 +1,6 @@
 // HttpCookieJar 单元测试：RFC 6265 的域/路径/Secure 匹配、替换与删除语义、有界存储与发送次序。
 #include "Net/Http/Client/HttpCookieJar.h"
+#include "Net/Http/HttpCookie.h"
 
 #include <gtest/gtest.h>
 
@@ -260,4 +261,62 @@ namespace AsynGyanis::Net
         EXPECT_EQ(jar.cookieCount(), 0U);
         EXPECT_FALSE(headerFor(jar).has_value());
     }
+    /**
+     * @brief 钉住：`Domain=com` 这种单标签域一律不收
+     * @details 语法上它罩得住 `example.com`，收下就等于把这条 Cookie 发给 `.com` 下的每一个站点。
+     *          规范给的答案是公共后缀表，本框架不内置那份数据，因此用「必须含点」这条保守判据：
+     *          它挡得住最恶性的一类，代价是 `co.uk` 这类两段公共后缀仍收得下。
+     */
+    TEST(HttpCookieJar, RejectsSingleLabelCookieDomain)
+    {
+        HttpCookieJar jar;
+
+        storeOne(jar, "a=1; Domain=com");
+        EXPECT_EQ(jar.cookieCount(), 0U) << "单标签域被收下，等于让这条 Cookie 跟着发往 .com 下所有站点";
+
+        storeOne(jar, "b=2; Domain=example.com");
+        EXPECT_EQ(jar.cookieCount(), 1U) << "正常的两段域要照常收下，别把判据做过头";
+    }
+
+    /**
+     * @brief 钉住：解析侧的 Domain 字符集与写侧同一条判据
+     * @details 此前解析侧只挡空格、控制符与 `;` `"`，`=` 与 `/` 能进罐子——而 `setDomain` 从不接受
+     *          它们，罐子里因此留着本框架永远写不出来的形态，还继续参与域名匹配。
+     *          合法的处理是「当这条属性没给」（RFC 6265 §5.2.3），即按主机独占收下而不是整条丢掉。
+     */
+    TEST(HttpCookieJar, RejectsCookieDomainWithReservedCharacters)
+    {
+        HttpCookieJar jar;
+
+        storeOne(jar, R"(a=1; Domain=exa/mple.com)");
+        ASSERT_EQ(jar.cookieCount(), 1U) << "无效域名的处置是忽略该属性，Cookie 本身仍按主机独占收下";
+        EXPECT_FALSE(HttpCookie::parseSetCookie("a=1; Domain=ex=a").value().domain().has_value()) << "含 = 的域名不该被当作域名";
+
+        // 主机独占的条目不跟着子域发：这正是「无效域名被放宽成子域通配」会造成外泄的那条路
+        EXPECT_FALSE(headerFor(jar, "sub.example.com").has_value()) << "被忽略的 Domain 属性不能变成子域可发送";
+        EXPECT_TRUE(headerFor(jar, "example.com").has_value());
+    }
+
+    /**
+     * @brief 钉住：存入时真正摘掉已过期的条目
+     * @details 发送路径只**过滤**已过期的（那是 const 查询，不能因有人来查就改账），此前没有任何
+     *          地方真正删除它们。僵尸条目一直占着 `maximumTotalCookies` 与单域配额，一个爱发短命
+     *          Cookie 的站点因此能把真正要用的会话 Cookie 挤出去——表现为静默登录失效。
+     */
+    TEST(HttpCookieJar, PrunesExpiredEntriesOnStore)
+    {
+        HttpCookieJar jar;
+
+        storeOne(jar, "early=1; Max-Age=600");
+        ASSERT_EQ(jar.cookieCount(), 1U) << "刚存入的未过期条目应在账上";
+
+        // 换到一小时后再存一条：早先那条此刻已过期，应当被真正摘掉
+        jar.storeFromResponse("example.com", false, "/", {"late=2; Max-Age=31536000000"}, kReceivedAt + std::chrono::hours{1});
+        EXPECT_EQ(jar.cookieCount(), 1U) << "过期条目没被摘掉，会继续占着 maximumTotalCookies 与单域配额";
+        const std::optional<std::string> header = headerFor(jar);
+        ASSERT_TRUE(header.has_value());
+        EXPECT_NE(header->find("late=2"), std::string::npos);
+        EXPECT_EQ(header->find("early=1"), std::string::npos);
+    }
+
 } // namespace AsynGyanis::Net

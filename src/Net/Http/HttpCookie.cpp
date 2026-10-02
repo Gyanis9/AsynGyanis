@@ -175,11 +175,18 @@ namespace AsynGyanis::Net
         m_path = std::string(path);
     }
 
+    bool HttpCookie::isValidDomain(const std::string_view text) noexcept
+    {
+        // 空格与控制符（含 0x7F）之外的这些字符都不属于主机名：`;` 与 `"` 会破坏属性切分，
+        // `=` 会让对端把整段重新解析成另一条属性，`/` 则会把路径写进域名里
+        constexpr std::string_view forbiddenCharacters{" ;\"=/"};
+        return !text.empty() && text.find_first_of(forbiddenCharacters) == std::string_view::npos &&
+               std::ranges::none_of(text, [](const char character) { return static_cast<unsigned char>(character) < 0x21 || static_cast<unsigned char>(character) == 0x7F; });
+    }
+
     void HttpCookie::setDomain(const std::string_view domain)
     {
-        constexpr std::string_view forbiddenCharacters{" ;\"=/"};
-        if (domain.empty() || domain.find_first_of(forbiddenCharacters) != std::string_view::npos ||
-            std::ranges::any_of(domain, [](const char character) { return static_cast<unsigned char>(character) < 0x21 || static_cast<unsigned char>(character) == 0x7F; }))
+        if (!isValidDomain(domain))
         {
             throw Base::InvalidArgumentException("HttpCookie: Domain 不能为空或含空格、控制符与 \" ; = /：「" + std::string(domain) + "」");
         }
@@ -279,10 +286,10 @@ namespace AsynGyanis::Net
                 }
             } else if (attributeNamesMatch(attributeName, "domain"))
             {
-                if (!attributeValue.empty() &&
-                    std::ranges::all_of(
-                            attributeValue, [](const char character)
-                            { return static_cast<unsigned char>(character) > 0x20 && static_cast<unsigned char>(character) != 0x7F && character != ';' && character != '"'; }))
+                // 与写侧同一判据：不合规定的 Domain 当「这一条属性没给」处理（RFC 6265 §5.2.3 对
+                // 无效域名就是忽略该属性），而不是放宽收下——放宽收下等于让罐子存下一条
+                // 本框架永远写不出来、却参与匹配的条目
+                if (isValidDomain(attributeValue))
                 {
                     cookie.m_domain = std::string(attributeValue);
                 }
