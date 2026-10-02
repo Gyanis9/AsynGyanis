@@ -1321,4 +1321,34 @@ namespace AsynGyanis::Net
         const HttpServerStats bare = withoutCaps.stats();
         EXPECT_EQ(bare.maximumConnectionsPerIp, 0u) << "没装闸门时分母要如实报 0，不能留一个看着像装了的数";
     }
+    /**
+     * @brief 钉住：If-Match 不成立时静态文件通路回 412，而不是把资源照常交出去
+     * @details RFC 9110 §13.2.2 是 MUST。此前整个 `src/` 里没有任何 If-Match 的处理点（只有
+     *          HPACK 静态表里有这个名字），412 因此永远不会产生——客户端以为自己在做乐观并发
+     *          控制，实际前提被静默忽略。顺带钉住三条相邻语义：整值 `*` 表示「只要资源还在」、
+     *          弱标签永不强匹配、两个条件同时在场时前提判定排在前面（§13.2.4 要求同时成立）。
+     */
+    TEST(HttpServer, RejectsStaleIfMatchWith412)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticIfMatch");
+        ASSERT_TRUE(tree.isReady());
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse baseline = serveRequest(server, HttpMethod::GET, "/hello.txt");
+        const std::string  etag     = headerValueOf(baseline, "etag");
+        ASSERT_FALSE(etag.empty());
+
+        EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "\"stale\""}}).status(), 412)
+                << "If-Match 的验证器与当前表示不符，前提就不成立";
+        EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", etag}}).status(), 200) << "验证器相符就照常下发";
+        EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "*"}}).status(), 200)
+                << "整值 * 表达的是「只要资源还在」";
+        EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "W/" + etag}}).status(), 412)
+                << "弱标签永不强匹配（§8.8.3.2）：拿弱比较糊过去等于放宽前提";
+        EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "W/" + etag}, {"if-none-match", etag}}).status(), 412)
+                << "两个条件同时在场时要同时成立，前提不成立就不能回 304";
+    }
 } // namespace AsynGyanis::Net

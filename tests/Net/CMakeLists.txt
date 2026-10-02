@@ -19,6 +19,7 @@ add_executable(TestNet
         Http/TestHttpParserChunked.cpp
         Http/TestHttpParserFuzzSmoke.cpp
         Http/TestHttpDate.cpp
+        Http/TestHttpConditionalValidators.cpp
         Http/TestHttpCookie.cpp
         Http/TestHttpCookieJar.cpp
         Http/TestOutboundCircuitBreaker.cpp

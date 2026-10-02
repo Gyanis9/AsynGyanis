@@ -6,6 +6,7 @@
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/FileSender.h"
+#include "Net/Http/HttpConditionalValidators.h"
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/HttpMetricsEndpoint.h"
@@ -307,45 +308,46 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 去掉弱 ETag 的 "W/" 前缀
-         * @details If-None-Match 按弱比较：W/"x" 与 "x" 视为同一标签（RFC 9110 §13.1.2）。
+         * @details 规则本体在 `HttpConditionalValidators.h`（业务侧要自己判条件请求时读的是同一份）
          * @param entityTag 待处理的标签
          * @return 去掉前缀后的标签；本来没有前缀时原样返回
          */
         std::string_view stripWeakPrefix(std::string_view entityTag)
         {
-            // "W/" 必须是大写 W，这是 RFC 9110 §8.8.3 的固定写法
-            if (entityTag.starts_with("W/"))
-            {
-                entityTag.remove_prefix(2);
-            }
-            return entityTag;
+            return stripWeakValidatorPrefix(entityTag);
         }
 
         /**
          * @brief 判断 If-None-Match 的值是否命中本资源的 ETag
-         * @details 值为 "*" 或列表里任一标签（弱比较）与本资源标签相同即命中。
+         * @details 值为 "*" 或列表里任一标签（弱比较）与本资源标签相同即命中（RFC 9110 §13.1.2）。
          * @param listValue If-None-Match 头原文
          * @param entityTag 本资源当前 ETag
          * @return true 命中
          */
         bool entityTagListMatches(const std::string_view listValue, const std::string_view entityTag)
         {
-            std::string_view remainder = listValue;
-            while (true)
+            return weakEntityTagListMatches(listValue, entityTag);
+        }
+
+        /**
+         * @brief 判断 If-Match 的前提是否**不成立**（成立时返回 false，让请求照常走）
+         * @details §13.2.2 的 MUST：所选表示与给定标签不符即回 412。这里用强比较而不是复用它上面
+         *          那句弱比较——两者区别是规范规定的：`W/"x"` 永不强匹配，而 `*` 作为列表一项时
+         *          也不代表「任意资源」，只有整值为 `*` 才表示「只要它还在」。
+         *          头场不写或写成空值时不参与判定（§13.2：空列表在语法上非法，按不带处理更安全）。
+         * @param request 请求对象
+         * @param entityTag 本资源当前 ETag
+         * @return true 条件不成立，应当回 412
+         */
+        bool preconditionFails(const HttpRequest &request, const std::string_view entityTag)
+        {
+            const std::optional<std::string> ifMatch = request.getHeader("if-match");
+            if (!ifMatch.has_value() || trimOptionalWhitespace(*ifMatch).empty())
             {
-                const std::size_t      commaPosition = remainder.find(',');
-                const std::string_view candidate     = trimOptionalWhitespace(remainder.substr(0, commaPosition));
-                if (candidate == "*" || stripWeakPrefix(candidate) == entityTag)
-                {
-                    return true;
-                }
-                if (commaPosition == std::string_view::npos)
-                {
-                    break;
-                }
-                remainder = remainder.substr(commaPosition + 1);
+                return false;
             }
-            return false;
+            // 走到这里说明文件已经打开成功（存在性成立），因此 * 命中
+            return !strongEntityTagListMatches(*ifMatch, entityTag, true);
         }
 
         /**
@@ -1111,6 +1113,16 @@ namespace AsynGyanis::Net
             };
 
             const bool isHeadRequest = (requestMethod == HttpMethod::HEAD);
+
+            // If-Match 排在「未修改」判定之前：两个条件同时在场时要**同时**成立（§13.2.4），
+            // 先判 If-Match 才能把「前提不成立」与「没变化」这两种答复分清楚
+            if (preconditionFails(request, entityTagText))
+            {
+                response.setStatus(412);
+                response.setBody("Precondition Failed");
+                static_cast<void>(response.setHeader("content-type", "text/plain"));
+                co_return;
+            }
 
             // 条件请求：命中验证器即 304，无正文，也不必打开文件映射
             if (isNotModified(request, entityTagText, lastWriteSeconds))
