@@ -786,6 +786,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(resolveUrlReference(base, "./a/../b"), "http://a.example/docs/b");
         EXPECT_EQ(resolveUrlReference(base, "../../etc/passwd"), "http://a.example/etc/passwd") << "越根的 .. 折到根为止，不能跳出这台主机";
         EXPECT_EQ(resolveUrlReference(base, "/docs/a/../b"), "http://a.example/docs/b") << "绝对形式的 Location 也要折：同一个文件不该有两种写法";
+        EXPECT_EQ(resolveUrlReference(base, "/docs//deep"), "http://a.example/docs//deep") << "中段的双斜杠是规范里的一个空段，必须原样留着：按段过滤会把下一跳指向另一个资源";
+        EXPECT_EQ(resolveUrlReference(base, "/docs/./x/"), "http://a.example/docs/x/") << "末尾斜杠按输入保留";
+        EXPECT_EQ(resolveUrlReference(base, "/docs/x/.."), "http://a.example/docs/") << "以 .. 收尾时结果是它所在的那个目录";
     }
 
     /**
@@ -811,8 +814,8 @@ namespace AsynGyanis::Net
     {
         const ParsedUrl base = parseUrl("http://a.example/docs/page.html");
 
-        for (const std::string_view rejected: {"", "   ", "/a b", "/a\tb", "/a\r\nX-Injected: 1", "ftp://h/p", "data:text/plain,x", "javascript:alert(1)",
-                                               "http://ad***@h/p", "//guest@h/p", "http://h:0/p", "http://bad host/p"})
+        for (const std::string_view rejected: {"", "   ", "/a b", "/a\tb", "/a\r\nX-Injected: 1", "ftp://h/p", "data:text/plain,x", "javascript:alert(1)", "http://ad***@h/p",
+                                               "//guest@h/p", "http://h:0/p", "http://bad host/p"})
         {
             EXPECT_FALSE(resolveUrlReference(base, rejected).has_value()) << "这条本该拒：" << rejected;
         }

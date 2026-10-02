@@ -239,50 +239,81 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 把输出里的最后一段路径摘掉（RFC 3986 §5.2.4 处理 `..` 时做的那件事）
+         * @param output 已确定的输出前缀，就地修改
+         */
+        void dropLastOutputSegment(std::string &output)
+        {
+            const std::size_t slash = output.rfind('/');
+            output                  = slash == std::string::npos ? std::string{} : output.substr(0U, slash);
+        }
+
+        /**
          * @brief 折叠路径里的 `.` 与 `..` 段（RFC 3986 §5.2.4）
          * @param path 以 `/` 打头的路径（不含查询）
-         * @return std::string 折叠后的绝对路径，末尾斜杠按输入保留
-         * @details 按段处理而不是照抄规范那台逐字符状态机：空段只用来记「末尾有没有斜杠」，
-         *          越根的 `..`（`/../x`）折到根为止——跳出一台主机之外的路径不是合法请求目标
+         * @return std::string 折叠后的绝对路径
+         * @details 照规范那台状态机逐条规则走，不按「切段—过滤—重拼」的省事写法：中段的双斜杠在规范里
+         *          是**一个空段，必须原样留着**（`/a//b` 与 `/a/b` 对按路径分派的路由是两个资源），而按段
+         *          过滤的实现会把空段一起滤掉——那种折叠等于替对端改写了下一跳指向哪个资源，且不报任何错。
+         *          越根的 `..`（`/../x`）折到根为止：跳出一台主机之外的路径不是合法请求目标。
          */
         std::string collapseDotSegments(const std::string_view path)
         {
-            std::vector<std::string> segments;
-            std::size_t              cursor           = 0U;
-            bool                     hasTrailingSlash = false;
-            while (cursor < path.size())
+            std::string output;
+            std::string remaining(path);
+            while (!remaining.empty())
             {
-                const std::size_t      slash       = path.find('/', cursor);
-                const bool             endsAtSlash = slash != std::string_view::npos;
-                const std::size_t      end         = endsAtSlash ? slash : path.size();
-                const std::string_view segment     = path.substr(cursor, end - cursor);
-                hasTrailingSlash                   = endsAtSlash; // 只有最后一段的这件事算数：它决定结果末尾有没有斜杠
-                if (segment != "." && !segment.empty())
+                if (remaining.starts_with("../"))
                 {
-                    if (segment == "..")
-                    {
-                        if (!segments.empty())
-                        {
-                            segments.pop_back();
-                        }
-                    } else
-                    {
-                        segments.emplace_back(segment);
-                    }
+                    remaining.erase(0U, 3U); // 规则 2B：相对形式的 ./ 与 ../ 直接从输入里去掉
+                    continue;
                 }
-                cursor = end + 1U;
-            }
+                if (remaining.starts_with("./"))
+                {
+                    remaining.erase(0U, 2U);
+                    continue;
+                }
+                if (remaining == "/./" || remaining.starts_with("/./"))
+                {
+                    remaining.erase(0U, 2U); // 规则 2C：把 "." 这一段删掉，其后那个 / 本来就是段分隔符，不能补两份
+                    continue;
+                }
+                if (remaining == "/.")
+                {
+                    remaining.assign(1U, '/'); // 规则 2C 的收尾形态："/." 换成 "/"，末尾那个斜杠要留住
+                    continue;
+                }
+                if (remaining == "/../" || remaining.starts_with("/../"))
+                {
+                    remaining.erase(0U, 3U); // 规则 2D：把 ".." 这一段删掉并摘掉输出的最后一段；同理不补第二份 /
+                    dropLastOutputSegment(output);
+                    continue;
+                }
+                if (remaining == "/..")
+                {
+                    remaining.assign(1U, '/');
+                    dropLastOutputSegment(output);
+                    continue;
+                }
+                if (remaining == "." || remaining == "..")
+                {
+                    remaining.clear(); // 规则 2E：孤立的一个点什么都不留
+                    continue;
+                }
 
-            std::string result;
-            for (const std::string &segment: segments)
-            {
-                result += '/' + segment;
+                // 规则 2A：把第一个路径段（连同它打头的那个 /，如果有）整段搬到输出里
+                const std::size_t nextSlash = remaining.find('/', remaining.front() == '/' ? 1U : 0U);
+                if (nextSlash == std::string::npos)
+                {
+                    output += remaining;
+                    remaining.clear();
+                } else
+                {
+                    output += remaining.substr(0U, nextSlash);
+                    remaining.erase(0U, nextSlash);
+                }
             }
-            if (hasTrailingSlash)
-            {
-                result += '/';
-            }
-            return result.empty() ? std::string{"/"} : result;
+            return output.empty() ? std::string{"/"} : output;
         }
 
         /**
