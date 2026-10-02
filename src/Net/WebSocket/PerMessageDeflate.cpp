@@ -221,12 +221,20 @@ namespace AsynGyanis::Net
                 continue;
             }
 
-            // 参数扫描：两个窗口位数按对端的声明钳本端，其余参数（含 *_no_context_takeover 与本端不认识的）
-            // 忽略——前者本端本来就按「每条消息重置上下文」实现，后者不属于本端要履约的量
+            // 参数扫描：RFC 7692 §9.1 列出了「服务器必须婉拒这条要约」的几种形态，其中三条落在这里：
+            // ① 要约里出现了本扩展没定义的参数名、② 同名参数重复出现、③ 取值不合法。
+            // 要约方向只定义了四条（§7.1.1–§7.1.4）：两个窗口位数与两条 no_context_takeover。
+            // 婉拒的形态是「101 里不回 Sec-WebSocket-Extensions」，连接照常按明文收发，因此严格化不会
+            // 打断真客户端——浏览器与 aioquic 都不发这三类形态。
             int  compressBits    = kWebSocketDefaultWindowBits; // 本端压缩位数：受对端 server_max_window_bits 约束
             int  decompressBits  = kWebSocketDefaultWindowBits; // 本端解压位数：按对端 client_max_window_bits 收小
             bool hasServerWindow = false;                       ///< 对端是否提到了 server_max_window_bits（决定是否要回显）
-            bool unusable        = false;                       ///< 遇到本端无法履约的取值：整条扩展不接受
+            bool unusable        = false;                       ///< 遇到必须婉拒的形态：整条扩展不接受
+            /// 各参数名在本次要约里出现的次数：同名重复即无从判断对端声明的到底是哪个配置
+            int serverWindowOccurrences    = 0;
+            int clientWindowOccurrences    = 0;
+            int serverNoContextOccurrences = 0;
+            int clientNoContextOccurrences = 0;
 
             std::size_t parameterOffset = semicolonPosition == std::string_view::npos ? item.size() : semicolonPosition + 1;
             while (parameterOffset < item.size() && !unusable)
@@ -237,10 +245,25 @@ namespace AsynGyanis::Net
                 const bool             hasValue       = equalsPosition != std::string_view::npos;
                 const std::string_view rawValue       = hasValue ? unquote(parameter.substr(equalsPosition + 1)) : std::string_view{};
 
-                // 两个参数同名重复出现时取最严（最小）的那个：后写的更大不能让本端越过后写的更小声明，
-                // 而「重复即拒绝」会把一个只是写重了的对端整个丢掉
-                if (tokenEqualsIgnoringCase(parameterName, "server_max_window_bits"))
+                const bool isServerWindow            = tokenEqualsIgnoringCase(parameterName, "server_max_window_bits");
+                const bool isClientWindow            = tokenEqualsIgnoringCase(parameterName, "client_max_window_bits");
+                const bool isServerNoContextTakeover = tokenEqualsIgnoringCase(parameterName, "server_no_context_takeover");
+                // ①：不认识的名字不能当「与本端无关、忽略即可」放过——§9.1 把它列在必须婉拒的清单里，
+                // 因为本端无从知道对端多出来的那条要求要不要履约
+                if (!isServerWindow && !isClientWindow && !isServerNoContextTakeover && !tokenEqualsIgnoringCase(parameterName, "client_no_context_takeover"))
                 {
+                    unusable = true;
+                    break;
+                }
+
+                if (isServerWindow)
+                {
+                    // ②：同名重复时「取最严的那个」是替对端猜，婉拒才是这条给的处置
+                    if (++serverWindowOccurrences > 1)
+                    {
+                        unusable = true;
+                        break;
+                    }
                     hasServerWindow = true;
                     if (hasValue)
                     {
@@ -253,8 +276,13 @@ namespace AsynGyanis::Net
                         compressBits = std::min(compressBits, *requested);
                     }
                     // 不带值的形态（RFC 7692 §7.1.2）只表示「对端能开满 15」，本端无需收小
-                } else if (tokenEqualsIgnoringCase(parameterName, "client_max_window_bits"))
+                } else if (isClientWindow)
                 {
+                    if (++clientWindowOccurrences > 1)
+                    {
+                        unusable = true;
+                        break;
+                    }
                     if (hasValue)
                     {
                         const std::optional<int> requested = parseWindowBits(rawValue);
@@ -267,6 +295,22 @@ namespace AsynGyanis::Net
                     }
                     // 本端不回显这一条：回显一个更低的值等于要求对端改小它的压缩窗口，而那要求
                     // 需要本端的实现来兜住对端不遵守的情形，收益只是内存——留给真有需求的一端
+                } else if (isServerNoContextTakeover)
+                {
+                    // 这两条是布尔参数：带值即取值不合法（③）。识别即可——本端本来就按
+                    // 「每条消息重置上下文」实现，而 §7.1.3/§7.1.4 明确允许回应里带它们即使对端没提
+                    if (++serverNoContextOccurrences > 1 || hasValue)
+                    {
+                        unusable = true;
+                        break;
+                    }
+                } else
+                {
+                    if (++clientNoContextOccurrences > 1 || hasValue)
+                    {
+                        unusable = true;
+                        break;
+                    }
                 }
             }
 

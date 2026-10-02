@@ -56,12 +56,16 @@ namespace AsynGyanis::Net
      *          状态及其生命周期管理的省却。
      *          两个窗口参数按 RFC 的语义吃掉而不是忽略：对端的 `server_max_window_bits` 是它解压器能开的
      *          最大窗口，本端压缩位数钳到它以下（写大了对端解不开，见 PerMessageDeflateWindow）；对端的
-     *          `client_max_window_bits` 是它压缩时用的位数，本端解压窗口按它收小。取值不在 8..15、或不是
-     *          十进制数字的，本端**不接受这个扩展**（101 里不回 Sec-WebSocket-Extensions，对端退回明文），
-     *          而不是带着一个无法履约的窗口把连接开起来。同名参数重复出现时取最严（最小）的那个。
-     *          其余不认识的参数照 RFC 允许的方式忽略。
+     *          `client_max_window_bits` 是它压缩时用的位数，本端解压窗口按它收小。
+     *          婉拒的三种形态都出自 RFC 7692 §9.1 那张「服务器必须婉拒这条要约」的清单：取值不在 8..15
+     *          或不是十进制数字、要约里出现了本扩展没定义的参数名、同名参数重复出现。前一种是无法履约，
+     *          后两种是本端**无从判断**对端声明的到底是什么配置——带着猜出来的配置把连接开起来，或把不认识
+     *          的要求当「与本端无关」放过，都是「看起来成功了」而线上未必。
+     *          两条 `*_no_context_takeover` 是被识别的（本端本来就按每条消息重置上下文实现），但它们带值
+     *          即取值不合法：那是布尔参数。
      * @param extensionsHeader Sec-WebSocket-Extensions 头部的值，缺头时传空串
-     * @return PerMessageDeflateNegotiation 协商结论；未提供、提供了本端不认识的扩展名、或窗口参数无法履约时不接受
+     * @return PerMessageDeflateNegotiation 协商结论；未提供、提供了本端不认识的扩展名、或要约命中上面
+     *         三种形态时不接受
      * @note 多个扩展可以逗号分隔并存（RFC 6455 §9.1），这里只挑出 permessage-deflate 那一个，
      *       其余扩展不参与协商、也不回进响应
      */

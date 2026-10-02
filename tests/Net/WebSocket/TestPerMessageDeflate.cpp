@@ -108,10 +108,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(valuelessOffer.window->decompressBits, 15);
         EXPECT_EQ(valuelessOffer.responseValue.find("server_max_window_bits"), std::string::npos);
 
-        // 同名参数重复出现取最严的那个：后写的更大不该越过先写的小声明
-        const PerMessageDeflateNegotiation duplicated = negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=9; server_max_window_bits=15");
-        ASSERT_TRUE(duplicated.window.has_value());
-        EXPECT_EQ(duplicated.window->compressBits, 9);
+        // 同名参数重复出现不在「钳本端」这一族里：本端无从判断对端声明的是哪个配置，
+        // RFC 7692 §9.1 给的处置是婉拒整条要约（见 DeclinesOfferWithDuplicatedParameter）
 
         // 引号形态与大小写：参数名是 token 语义，值可以是 quoted-string（RFC 6455 §9.1 的扩展语法）
         const PerMessageDeflateNegotiation quoted = negotiatePerMessageDeflate("permessage-deflate; SERVER_MAX_WINDOW_BITS=\"12\"");
@@ -139,6 +137,50 @@ namespace AsynGyanis::Net
         // 两个端点各自合法
         EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=8").accepted);
         EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=15").accepted);
+    }
+
+    /**
+     * @brief 钉住 §9.1「服务器必须婉拒」的一条：要约里出现了本扩展没定义的参数名
+     * @details 此前不认识的参数被当「与本端无关、忽略即可」放过——那不是 §9.1 给的处置：本端无从知道
+     *          对端多出来的那条要求要不要履约。婉拒不等于断连：101 里不回 Sec-WebSocket-Extensions，
+     *          对端退回明文收发，连接照常可用。两条 no_context_takeover 是布尔参数，带值即落进
+     *          「取值不合法」（§7.1.3/§7.1.4 里它们不带值）。
+     */
+    TEST(PerMessageDeflate, DeclinesOfferWithUndefinedParameter)
+    {
+        // 要约方向只定义了四条（§7.1.1–§7.1.4），第五条出现即婉拒
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=12; x_unknown").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; max_chunk_bits=8").accepted);
+        // 两条 no_context_takeover 是布尔参数：带值即取值不合法
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; client_no_context_takeover=1").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; server_no_context_takeover=\"\"").accepted);
+
+        const PerMessageDeflateNegotiation declined = negotiatePerMessageDeflate("permessage-deflate; x_unknown");
+        EXPECT_TRUE(declined.responseValue.empty()) << "婉拒就不该回任何取值";
+        EXPECT_FALSE(declined.window.has_value()) << "婉拒就不该留下一份窗口给收发点";
+
+        // 正向对照：四条参数各自与组合都收得下——本端认识它们，且本端能履约
+        EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate; server_no_context_takeover; client_no_context_takeover").accepted);
+        EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate; server_no_context_takeover; server_max_window_bits=10; client_max_window_bits").accepted);
+    }
+
+    /**
+     * @brief 钉住 §9.1「服务器必须婉拒」的另一条：同名参数重复出现
+     * @details 同名写了两个取值时「取最严的那个」是替对端猜它到底声明了哪个配置，§9.1 给的处置是婉拒；
+     *          取值相同也一样，这条要的是「只出现一次」。参数名按 token 语义比对，
+     *          因此两种大小写写法仍算同一条参数写了两遍。
+     */
+    TEST(PerMessageDeflate, DeclinesOfferWithDuplicatedParameter)
+    {
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=9; server_max_window_bits=15").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=9; server_max_window_bits=9").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; client_max_window_bits; client_max_window_bits=9").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; client_no_context_takeover; client_no_context_takeover").accepted);
+        EXPECT_FALSE(negotiatePerMessageDeflate("permessage-deflate; SERVER_MAX_WINDOW_BITS=9; server_max_window_bits=15").accepted);
+
+        // 正向对照：四条参数各出现一次时不受影响
+        EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=10; client_max_window_bits=12; server_no_context_takeover; client_no_context_takeover")
+                            .accepted);
     }
 
     /**
