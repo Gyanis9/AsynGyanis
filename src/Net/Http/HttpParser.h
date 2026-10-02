@@ -365,6 +365,15 @@ namespace AsynGyanis::Net
         void failBodyTooLarge(std::string message);
 
         /**
+         * @brief 记录一次请求目标超限（UriTooLarge，上层回 414）
+         * @details 与 failHeaderTooLarge 分开是有实质意义的：431 说的是「头部太大」，
+         *          而 URI 超限的病因是请求目标——客户端据此决定该缩短 URL 还是该减少头部。
+         *          整条请求行的上限由 maximumUriLength 推出，因此超整行上限也归这一类。
+         * @param message 中文错误详情，须含具体上限数值
+         */
+        void failUriTooLarge(std::string message);
+
+        /**
          * @brief 统一的失败记录：置粘滞错误态，并记下类别与中文详情
          * @param errorKind 失败类别
          * @param message 中文错误详情

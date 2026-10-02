@@ -349,9 +349,9 @@ namespace AsynGyanis::Net
 
     bool HttpParser::isLimitExceeded() const
     {
-        // 「超限」是失败类别的一个子集：头部越界（431）与正文越界（413）都算，
-        // 二者都说明报文形态合法、只是体量太大
-        return m_errorKind == HttpParseErrorKind::HeaderTooLarge || m_errorKind == HttpParseErrorKind::BodyTooLarge;
+        // 「超限」是失败类别的一个子集：头部越界（431）、正文越界（413）与请求目标越界（414）都算，
+        // 三者都说明报文形态合法、只是体量太大
+        return m_errorKind == HttpParseErrorKind::HeaderTooLarge || m_errorKind == HttpParseErrorKind::BodyTooLarge || m_errorKind == HttpParseErrorKind::UriTooLarge;
     }
 
     std::string HttpParser::errorMessage() const
@@ -517,7 +517,7 @@ namespace AsynGyanis::Net
             const std::size_t requestLineLimit = m_limits.requestLineLengthLimit();
             if (exceedsLimit(length, requestLineLimit))
             {
-                failHeaderTooLarge(std::format("请求行超出上限 {} 字节", requestLineLimit));
+                failUriTooLarge(std::format("请求行超出上限 {} 字节", requestLineLimit));
                 return false;
             }
             return true;
@@ -590,7 +590,9 @@ namespace AsynGyanis::Net
         }
         if (exceedsLimit(targetText.size(), m_limits.maximumUriLength))
         {
-            failHeaderTooLarge(std::format("请求 URI 超出上限 {} 字节", m_limits.maximumUriLength));
+            // 请求目标超限有自己的类别：RFC 9110 §15.5.18 为它留了 414，而 431 说的是头部太大——
+            // 客户端据此判断该缩短 URL 还是该减少头部
+            failUriTooLarge(std::format("请求 URI 超出上限 {} 字节", m_limits.maximumUriLength));
             return false;
         }
         for (const char character: targetText)
@@ -891,6 +893,11 @@ namespace AsynGyanis::Net
     void HttpParser::failBodyTooLarge(std::string message)
     {
         recordFailure(HttpParseErrorKind::BodyTooLarge, std::move(message));
+    }
+
+    void HttpParser::failUriTooLarge(std::string message)
+    {
+        recordFailure(HttpParseErrorKind::UriTooLarge, std::move(message));
     }
 
     void HttpParser::recordFailure(const HttpParseErrorKind errorKind, std::string message)

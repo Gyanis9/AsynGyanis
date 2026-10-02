@@ -102,7 +102,9 @@ namespace AsynGyanis::Net
     // ============================================================================
 
     /**
-     * @brief URI 上限：等于上限通过、超 1 字节判 431 类别
+     * @brief URI 上限：等于上限通过、超 1 字节判 414 类别
+     * @details 请求目标超限走 UriTooLarge 而不是 HeaderTooLarge：RFC 9110 §15.5.18 为它留了 414，
+     *          而 431 会让客户端误以为该减的是头部。
      */
     TEST(HttpParserLimits, SmallUriLimitAcceptsAtLimitAndRejectsOneByteAbove)
     {
@@ -118,7 +120,9 @@ namespace AsynGyanis::Net
         HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = "GET /" + std::string(8, 'a') + " HTTP/1.1\r\n\r\n";
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
-        expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::HeaderTooLarge, "URI");
+        expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::UriTooLarge, "URI");
+        // 请求目标越界属于「超限」子集（形态合法、只是太长），上层据此收口而不是当协议非法
+        EXPECT_TRUE(aboveLimitParser.isLimitExceeded());
     }
 
     /**
@@ -283,7 +287,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 请求行上限随 URI 上限推出：等于上限仍要更多字节、超 1 字节判 431
+     * @brief 请求行上限随 URI 上限推出：等于上限仍要更多字节、超 1 字节判 414（整行闸门由 URI 上限推出）
      * @details 整行上限只在「一行始终不结束」时生效（整行长度）。这里只把 URI 上限调小到 16，
      *          整行上限即 16 + 固定余量；用例按该推导值构造边界输入，因此同时钉住「推导公式」与
      *          「解析器确实按推导值判错」两件事。
@@ -303,17 +307,18 @@ namespace AsynGyanis::Net
         EXPECT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::NeedMore);
         EXPECT_FALSE(atLimitParser.hasError());
 
-        // 只多一个字节：整行上限是硬边界，多 1 字节即按 431 类别判错
+        // 只多一个字节：整行上限是硬边界，多 1 字节即按 414 类别判错
         HttpParser        aboveLimitParser(limits);
         const std::string aboveLimit = atLimit + "a";
         ASSERT_EQ(aboveLimit.size(), requestLineLimit + 1);
         ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
-        expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::HeaderTooLarge, "请求行");
+        expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::UriTooLarge, "请求行");
+        EXPECT_TRUE(aboveLimitParser.isLimitExceeded()) << "整行闸门也是由 URI 上限推出的超限";
     }
 
     /**
      * @brief 只放宽 URI 上限一项即可放行更长的请求行：整行闸门随 URI 上限自动放宽
-     * @details 同一份 12 KiB 的半行输入，在出厂限额下撞整行上限被判 431，在只放宽 maximumUriLength
+     * @details 同一份 12 KiB 的半行输入，在出厂限额下撞整行上限被判 414，在只放宽 maximumUriLength
      *          的限额下则只是「还没收齐」。两侧差异只来自这一项配置，因此这条用例就是「整行上限
      *          随 URI 上限自动放宽」的判据。
      */
@@ -324,7 +329,7 @@ namespace AsynGyanis::Net
         // 出厂限额：URI 档 8 KiB，整行上限 8 KiB + 固定余量，12 KiB 的半行先撞整行闸门
         HttpParser defaultParser;
         ASSERT_EQ(defaultParser.parse(halfRequestLine.data(), halfRequestLine.size()), ParseStatus::Error);
-        expectFailedWithKind(defaultParser, HttpParseErrorKind::HeaderTooLarge, "请求行");
+        expectFailedWithKind(defaultParser, HttpParseErrorKind::UriTooLarge, "请求行");
 
         HttpParserLimits relaxedLimits;
         relaxedLimits.maximumUriLength = 16u * 1024u; // 只放宽这一项

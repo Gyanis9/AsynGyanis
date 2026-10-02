@@ -1,5 +1,5 @@
 // TestHttpServerParserLimits.cpp —— HttpServer::setParserLimits 的系统级覆盖：
-//   一. 生效：限额调小后，越界请求按类别回 431/413（而不是笼统的 400），
+//   一. 生效：限额调小后，越界请求按类别回 414/431/413（而不是笼统的 400），
 //      且同一台服务器上未越界的请求仍被正常服务（限额只卡越界的那一条报文）；
 //   二. 访问器：parserLimits() 返回最后一次落定的配置，含 0 这类边界取值；
 //   三. 拒绝面：某项设为 0 表示关闭该项保护，超出出厂默认档口的请求照样被服务。
@@ -29,6 +29,52 @@ namespace AsynGyanis::Net
 {
     // 回环夹具与客户端集中在本头文件里，与服务端限额、观测性用例共用一份实现
     using namespace HttpTestSupport;
+
+    /**
+     * @brief 请求目标上限生效：越界的 URI 回 414（不是 431，也不是 400），同机正常请求照常拿 200
+     * @details 414 与 431 的分工是 RFC 9110 §15.5.18/§15.5.14 给的：前者说「请求目标太长」、后者说
+     *          「头部太大」。客户端据此决定该缩短 URL 还是该减少头部，把两类并成一个码等于把病因说错。
+     *          h3 那一侧早就回 414（Http3Session 的 isUriTooLong），这条把 h1 对齐过来。
+     */
+    TEST(HttpServerParserLimits, SmallUriLimitAnswers414AndKeepsServingNormalRequests)
+    {
+        HttpParserLimits parserLimits;
+        parserLimits.maximumUriLength = 64;
+
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {}, {}, parserLimits);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
+        EXPECT_EQ(fixture.server().parserLimits().maximumUriLength, 64u) << "落定的解析上限与传入值不符";
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        // 越界的那一条：请求目标 200 字节 > 64，形态完全合法、只是目标太长
+        {
+            LoopbackClient client(listeningPort);
+            ASSERT_TRUE(client.isValid()) << "回环连接失败";
+            const std::string request = makeRequestText("GET /" + std::string(200, 'a') + " HTTP/1.1", {});
+            ASSERT_TRUE(client.sendText(request, kWaitTimeout)) << "越界请求未能写入";
+
+            std::string responseText;
+            ASSERT_TRUE(client.waitForText(responseText, "URI Too Long", kWaitTimeout)) << "越界 URI 未在时限内被判 414：上界 kWaitTimeout";
+            EXPECT_NE(responseText.find("HTTP/1.1 414"), std::string::npos) << responseText;
+            // 反向对照：不能同时回成 431（头部）或 400（协议非法）——那正是本次整改要消灭的两种误诊
+            EXPECT_EQ(responseText.find("HTTP/1.1 431"), std::string::npos) << "请求目标超限被当成了头部超限：" << responseText;
+            EXPECT_EQ(responseText.find("HTTP/1.1 400"), std::string::npos) << "越界被当成了协议级非法：" << responseText;
+            EXPECT_NE(responseText.find("connection: close"), std::string::npos) << responseText;
+            EXPECT_TRUE(client.waitForClosure(responseText, kWaitTimeout)) << "回完 414 没有收口";
+        }
+
+        // 同一台服务器上的下一条连接：未越界的请求必须照常被服务
+        {
+            LoopbackClient normalClient(listeningPort);
+            ASSERT_TRUE(normalClient.isValid()) << "回环连接失败";
+            ASSERT_TRUE(normalClient.sendText(helloRequestText(), kWaitTimeout)) << "正常请求未能写入";
+
+            std::string responseText;
+            EXPECT_TRUE(normalClient.waitForText(responseText, "served-hello", kWaitTimeout)) << "越界的那一条之后正常请求没被服务";
+        }
+    }
 
     /**
      * @brief 头部值上限生效：越界的头部回 431（不是 400），同机未越界的请求照常拿到 200
