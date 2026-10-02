@@ -18,6 +18,16 @@ namespace AsynGyanis::Net
         stats.residentMemoryBytes = Platform::ProcessInfo::residentMemoryBytes();
     }
 
+    void applyAdmissionSnapshot(HttpServerStats &stats, const std::size_t maximumConnections, const std::size_t maximumConnectionsPerIp,
+                                const std::uint64_t admissionRejectedConnections) noexcept
+    {
+        // 三个数一起填：只报分子（在册数、拒过的条数）而不报分母，抓取端就画不出「离上限还有多远」
+        // 这种提前预警，只能靠人记得配置文件里写过什么——而多进程时配置是整机数、生效的是摊后的份额
+        stats.maximumConnections             = static_cast<std::uint64_t>(maximumConnections);
+        stats.maximumConnectionsPerIp        = static_cast<std::uint64_t>(maximumConnectionsPerIp);
+        stats.admissionRejectedConnectionCount = admissionRejectedConnections;
+    }
+
     HttpServerStats HttpMetricsCollector::snapshot() const noexcept
     {
         HttpServerStats stats;

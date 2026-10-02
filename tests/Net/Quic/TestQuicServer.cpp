@@ -268,6 +268,10 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(server.maximumConnections(), 77U) << "并发上限读不回来，运维只能翻配置文件猜这台卡在哪";
         EXPECT_EQ(server.perIpConnectionLimiter(), limiter) << "限额要交回共用那一份，而不是副本或空";
+        // 分母要进快照：`/metrics` 上只有分子时，「离上限还有多远」这类预警画不出来
+        const HttpServerStats capsSnapshot = server.stats();
+        EXPECT_EQ(capsSnapshot.maximumConnections, 77U) << "stats() 没带上本监听器的并发上限";
+        EXPECT_EQ(capsSnapshot.maximumConnectionsPerIp, 3U) << "stats() 没带上单来源上限：抓到拒绝数也判断不出闸门装着没有";
 
         // 0 是显式写法「不设这道限」，读数必须原样说出 0 而不是替调用方发明一个默认值
         QuicServer::Configuration unlimited   = makeServerConfiguration();

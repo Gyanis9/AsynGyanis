@@ -121,6 +121,8 @@ namespace AsynGyanis::Net
             stats.blockingTaskRejectedCount        = 17;
             stats.residentMemoryBytes              = 18;
             stats.overLimitRejectedConnectionCount = 19;
+            stats.maximumConnections               = 20;
+            stats.maximumConnectionsPerIp          = 21;
             return stats;
         }
     } // namespace
@@ -147,6 +149,11 @@ namespace AsynGyanis::Net
         EXPECT_NE(text.find("asyn_http_admission_rejected_connections_total 15\n"), std::string::npos);
         // 整机满载与按 IP 的拒绝分成两条：合并成一条就分不出「加容量」还是「收紧限额」
         EXPECT_NE(text.find("asyn_http_over_limit_rejected_connections_total 19\n"), std::string::npos);
+        // 两个分母也必须报：只有分子时采集端算不出「离上限还有多远」，预警只能靠人记得配置写过什么
+        EXPECT_NE(text.find("# TYPE asyn_http_maximum_connections gauge\nasyn_http_maximum_connections 20\n"), std::string::npos)
+                << "并发上限这个分母没进 /metrics：满载预警只能到拒了连接之后才看得见";
+        EXPECT_NE(text.find("# TYPE asyn_http_maximum_connections_per_ip gauge\nasyn_http_maximum_connections_per_ip 21\n"), std::string::npos)
+                << "单来源上限没进 /metrics：抓到的拒绝数没法判断闸门是装着还是没装";
         // 队列深度是瞬时量（gauge），被拒条数是累计量（counter）——两族语义不同，报错了采集侧会算增长率
         EXPECT_NE(text.find("# TYPE asyn_http_blocking_task_queue_depth gauge\nasyn_http_blocking_task_queue_depth 16\n"), std::string::npos);
         EXPECT_NE(text.find("# TYPE asyn_http_blocking_task_rejected_total counter\nasyn_http_blocking_task_rejected_total 17\n"), std::string::npos);

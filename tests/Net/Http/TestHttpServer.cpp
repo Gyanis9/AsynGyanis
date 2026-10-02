@@ -1,5 +1,6 @@
 // HttpServer 单元测试：静态目录配置的幂等语义、请求路径清洗的越权拦截、HEAD 收尾， 以及静态文件的条件请求（ETag / Last-Modified / 304）与单区间 Range（206/416）
 #include "Net/Http/HttpServer.h"
+#include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncSocket.h"
@@ -1296,5 +1297,28 @@ namespace AsynGyanis::Net
         server.setStaticFileCacheControl(std::nullopt);
         EXPECT_FALSE(server.staticFileCacheControl().has_value());
         EXPECT_FALSE(serveRequest(server, HttpMethod::GET, "/hello.txt").getHeader("cache-control").has_value());
+    }
+    /**
+     * @brief 钉住：`stats()` 交回的快照带着两个并发上限的分母
+     * @details `/metrics` 上一直只有分子（在册数、拒过的条数）——采集端因此画不出「离上限还有多远」
+     *          这类提前预警，满载要等到真拒了连接才看得见。这里刻意用与服务器默认值不同的两个数
+     *          （5 与 2）：拿 `maximumConnections()` 自己当期望值是自我实现，什么都没钉住。
+     *          没设按来源的限额时分母必须是 0——「闸门没装」与「装了但一条没挡」在面板上要分得开。
+     */
+    TEST(HttpServer, StatsCarryTheConnectionCapsAsDenominators)
+    {
+        Core::EventLoop loop;
+
+        HttpServer limited(loop, Core::InetAddress::localhost(0));
+        limited.setMaxConnections(5);
+        limited.setPerIpConnectionLimiter(std::make_shared<PerIpConnectionLimiter>(2));
+
+        const HttpServerStats withCaps = limited.stats();
+        EXPECT_EQ(withCaps.maximumConnections, 5u) << "并发上限没进快照：/metrics 上只有分子，预警只能等拒过连接之后";
+        EXPECT_EQ(withCaps.maximumConnectionsPerIp, 2u) << "单来源上限没进快照：抓到的拒绝数没法判断是按什么挡的";
+
+        HttpServer withoutCaps(loop, Core::InetAddress::localhost(0));
+        const HttpServerStats bare = withoutCaps.stats();
+        EXPECT_EQ(bare.maximumConnectionsPerIp, 0u) << "没装闸门时分母要如实报 0，不能留一个看着像装了的数";
     }
 } // namespace AsynGyanis::Net

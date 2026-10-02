@@ -555,9 +555,10 @@ namespace AsynGyanis::Net
         }
         // 在线连接数与 h1/h2 侧同一口径：取快照这一刻的连接数（这里是近似值，不做一致性保证）
         snapshot.activeConnectionCount = static_cast<std::uint64_t>(connectionCount());
-        // 准入闸门：限额器可以与两条 TCP 通道共用同一份，因此这里报的同样是那道闸门的总量，
-        // 而不是「h3 这一侧挡了多少」——采集端合并出来的数与 h1/h2 侧同源，不会重复计数
-        snapshot.admissionRejectedConnectionCount = m_configuration.perIpConnectionLimiter == nullptr ? 0U : m_configuration.perIpConnectionLimiter->rejectedConnectionCount();
+        const std::shared_ptr<PerIpConnectionLimiter> &admissionLimiter = m_configuration.perIpConnectionLimiter;
+        // 分母与闸门总量一起并入，与 h1/h2 共用同一个入口：跨协议抓出来的读数必须同形
+        applyAdmissionSnapshot(snapshot, maximumConnections(), admissionLimiter == nullptr ? std::size_t{0} : admissionLimiter->maximumConnectionsPerIp(),
+                               admissionLimiter == nullptr ? 0U : admissionLimiter->rejectedConnectionCount());
         // 本监听器自身上限的满载：与 h1/h2 侧同一条读数，跨协议的容量告警不该分两种口径
         snapshot.overLimitRejectedConnectionCount = m_overLimitRejectedConnections.load(std::memory_order_relaxed);
         return snapshot;

@@ -106,6 +106,24 @@ namespace AsynGyanis::Net
         std::uint64_t admissionRejectedConnectionCount{0};
 
         /**
+         * @brief 本监听器的并发连接上限（分母，瞬时量；0 = 不设这道限）
+         * @details 为什么单独记一份：`activeConnectionCount` 与 `overLimitRejectedConnectionCount`
+         *          一直在报分子和「已经撞到顶之后拒了多少」，但**上限本身**从未出现在 `/metrics` 上。
+         *          于是「还剩多少余量」「是不是该扩容了」这两条最该提前预警的判据只能靠人记得配置文件
+         *          里写过什么——而多进程部署里配置的是整机数、实际生效的是摊到本进程那一份，两边根本
+         *          对不上。报的是**下发到本监听器的实际值**，与 `TcpServer::maximumConnections()` 同一个口径
+         */
+        std::uint64_t maximumConnections{0};
+
+        /**
+         * @brief 单个来源 IP 的并发上限（分母，瞬时量；0 = 这道闸门没装）
+         * @details 与 `admissionRejectedConnectionCount` 配成一对：那个数说「挡过多少」，这个数说
+         *          「按什么挡的」。抓取端因此能算出某个来源离上限多远，也能分开「闸门没上」
+         *          （本值为 0）与「闸门上了但没挡过东西」（那个数为 0 而本值非 0）这两种全零形状
+         */
+        std::uint64_t maximumConnectionsPerIp{0};
+
+        /**
          * @brief 因**本服务器自身**并发连接上限（`maximum_connections`）而被拒的连接条数
          * @details 与上面那道按来源 IP 的闸门分开计数：限额器可以多台共用、报的是闸门总量，而这个数
          *          是「这台服务器已经满载」。两者混在一个读数里就分不出「某个来源在刷」与「整体容量到顶」，
@@ -408,5 +426,19 @@ namespace AsynGyanis::Net
      * @param stats 待补的快照，就地改写 blockingTaskQueueDepth 与 blockingTaskRejectedCount
      */
     ASYN_NET_API void applyRuntimeBacklogStats(HttpServerStats &stats) noexcept;
+
+    /**
+     * @brief 把「这台的准入分母」与闸门累计拒绝并进一份统计快照
+     * @details 三个数一向是各通道的 `stats()` 自己填的（只填了拒绝数那一个），因此 `/metrics` 上
+     *          永远只有分子没有分母。这里把三样并成一次调用，让明文 HTTP、HTTPS/HTTP2、QUIC 三条
+     *          通道对同一个问句给出同形答案：本监听器的并发上限、单个来源的上限、闸门挡过的条数。
+     *          调用方负责交回**实际生效**的那两个数（多进程部署里配置是整机数、生效的是摊后的份额）。
+     * @param stats 待补的快照
+     * @param maximumConnections 本监听器的并发连接上限，0 表示不设
+     * @param maximumConnectionsPerIp 单个来源 IP 的并发上限，0 表示这道闸门没装
+     * @param admissionRejectedConnections 闸门累计挡掉的连接条数（限额器共用一份时报的是闸门总量）
+     */
+    ASYN_NET_API void applyAdmissionSnapshot(HttpServerStats &stats, std::size_t maximumConnections, std::size_t maximumConnectionsPerIp,
+                                             std::uint64_t admissionRejectedConnections) noexcept;
 
 } // namespace AsynGyanis::Net

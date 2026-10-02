@@ -90,6 +90,18 @@ namespace AsynGyanis::Net
         out += std::format("# HELP {} 取快照那一刻的活跃连接数\n# TYPE {} gauge\n{} {}\n", activeConnectionsName, activeConnectionsName, activeConnectionsName,
                            stats.activeConnectionCount);
 
+        // 两个分母：只有分子画不出「离上限还有多远」这种提前预警，只能等人记得配置文件写过什么。
+        // 0 的含义各有一条：并发上限 0 = 本监听器不设这道限；单来源上限 0 = 那道闸门没装
+        const std::string maximumConnectionsName = makeMetricName(metricNamePrefix, "maximum_connections");
+        out += std::format("# HELP {} 本监听器的并发连接上限（下发到本监听器的实际值；0 = 不设这道限）。"
+                           "多进程部署里配置的是整机数，这里报摊到本进程那一份\n# TYPE {} gauge\n{} {}\n",
+                           maximumConnectionsName, maximumConnectionsName, maximumConnectionsName, stats.maximumConnections);
+
+        const std::string maximumPerIpName = makeMetricName(metricNamePrefix, "maximum_connections_per_ip");
+        out += std::format("# HELP {} 单个来源 IP 的并发上限（按 IP 的那道准入闸门按什么挡；0 = 这道闸门没装）。"
+                           "限额器可以被多条通道共用一份，因此抓哪台都是同一个值\n# TYPE {} gauge\n{} {}\n",
+                           maximumPerIpName, maximumPerIpName, maximumPerIpName, stats.maximumConnectionsPerIp);
+
         // 状态码分类：一族带 status_class 标签的计数器，采集侧可直接按类聚合
         const std::string responsesName = makeMetricName(metricNamePrefix, "responses_total");
         out += std::format("# HELP {} 已发出的响应条数，按状态码类聚合\n# TYPE {} counter\n", responsesName, responsesName);

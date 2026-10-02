@@ -1408,8 +1408,10 @@ namespace AsynGyanis::Net
         // 活跃连接数已经在这份快照里：它是连接管理器在增删连接的临界区内写进采集端的镜像，
         // 与在册表同时刻变化，不需要在这里再读一次本实例的连接表（那样只能报出本实例那一份）
         HttpServerStats snapshot = m_metrics->snapshot();
-        // 准入闸门的计数住在限额器自己身上（多条通道可以共用一份），采集端不知道它，故在这里并入
-        snapshot.admissionRejectedConnectionCount = perIpRejectedConnectionCount();
+        // 三个数一起并入：只报分子（在册数与拒过的条数）而不报分母，抓取端算不出「离上限还有多远」，
+        // 只能靠人记得配置文件里写过什么——而多进程时配置是整机数、生效的是摊到本进程那一份
+        applyAdmissionSnapshot(snapshot, maximumConnections(), perIpConnectionLimiter() == nullptr ? std::size_t{0} : perIpConnectionLimiter()->maximumConnectionsPerIp(),
+                               perIpRejectedConnectionCount());
         // 本身上限的满载是另一件事：它说明整机容量到顶，而不是某个来源在刷
         snapshot.overLimitRejectedConnectionCount = overLimitRejectedConnectionCount();
         return snapshot;
