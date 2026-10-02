@@ -77,11 +77,11 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *failureReason, WebSocketHandshakeRejection *rejection = nullptr);
 
     /**
-     * @brief 校验两种握手形态共用的两项：Sec-WebSocket-Version 恰为 13、Sec-WebSocket-Key 是解码后恰 16 字节的标准 base64
+     * @brief 校验 h1 升级握手共用的两项：Sec-WebSocket-Version 恰为 13、Sec-WebSocket-Key 是解码后恰 16 字节的标准 base64
      *
-     * @details h1 的升级握手（RFC 6455 §4.1）与 h2/h3 的扩展 CONNECT 隧道（RFC 8441 §5、RFC 9220 §3）在这一点上
-     *          完全一致，差别只在承载方式：前者靠 Upgrade/Connection 头，后两者靠 :protocol=websocket。把这两项
-     *          单独提出来，同一条规范要求就只有一个出处，三处不会各自漂移。
+     * @details 这一条服务的是 RFC 6455 §4.1 的 101 握手：那条路上 key 与版本都是客户端必填项，少一项就不构成
+     *          一次合法握手。扩展 CONNECT 隧道（h2/h3）**不用**本函数判——见 validateWebSocketTunnelVersion()
+     *          里引的 RFC 8441 §5。两条入口共用的那段版本判据住在同一个 .cpp 里的一份实现上，判据不会各写一遍。
      * @param request 已解析完成的请求（h2/h3 侧同样是已映射好的请求对象）
      * @param clientKey 输出参数：通过校验的 key 原文（已去掉首尾空白），可直接交给 computeWebSocketAcceptValue()；
      *        进入调用时先清空，仅成功时写入
@@ -92,6 +92,25 @@ namespace AsynGyanis::Net
      */
     [[nodiscard]] ASYN_NET_API bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *failureReason,
                                                                    WebSocketHandshakeRejection *rejection = nullptr);
+
+    /**
+     * @brief 校验扩展 CONNECT 隧道（RFC 8441 §5 / RFC 9220 §3）的握手：只判 Sec-WebSocket-Version
+     *
+     * @details 隧道形态不重做 101 那套 key/accept 处理——RFC 8441 §5 原文：「Implementations using this
+     *          extended CONNECT to bootstrap WebSockets do not do the processing of the Sec-WebSocket-Key
+     *          and Sec-WebSocket-Accept header fields of [RFC6455] as that functionality has been superseded
+     *          by the :protocol pseudo-header field」。所以这里既不要求 key，也不校验它的形状。
+     *          版本这一项按同一条 RFC 沿用 RFC 6455：**写出来却不是 13 必须拒**（并按 RFC 6455 §4.2.2 在拒绝
+     *          应答里补一条 Sec-WebSocket-Version 指明本端支持的版本）；**整条没写不在这里拒**——那是 RFC 6455
+     *          给 101 客户端派的义务，而按隧道形态实现的互操作端有两条都不带的（本仓的 aioquic 验收裁判就是），
+     *          在这里拒等于把一条能用的隧道判死。本仓上一版在 h3 上加过 key 必填，被该裁判当场抓出。
+     * @param request 已映射好的请求对象（h2/h3 侧都是同一份 HttpRequest）
+     * @param failureReason 失败原因出参；进入调用时先清空，仅失败时写入中文原因
+     * @param rejection 失败分类出参，可传空指针
+     * @return true 可以建隧道（版本缺失，或恰为本端支持的那一档）
+     * @return false 版本写了但不合，原因见 failureReason
+     */
+    [[nodiscard]] ASYN_NET_API bool validateWebSocketTunnelVersion(const HttpRequest &request, std::string *failureReason, WebSocketHandshakeRejection *rejection = nullptr);
 
     /**
      * @brief 构建 101 Switching Protocols 的完整应答报文

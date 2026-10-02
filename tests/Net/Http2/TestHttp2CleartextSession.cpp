@@ -1598,17 +1598,29 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "400");
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, "sec-websocket-version"), "13") << "h2 侧的版本类拒绝没有指明本端支持的版本";
 
-        // 反向对照：版本对、key 缺失——同样拒，但不该带上那条头部
-        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeWebSocketTunnelHeaderBlockWithHandshake("/chat", {{"sec-websocket-version", "13"}}), false), kWaitTimeout));
+        // 反向对照一：两条握手头都不带（本仓 aioquic 验收裁判的形状）——隧道形态不要求它们，
+        // 必须建成隧道而不是 400。上一版这里按 key/version 必填判死，被裁判当场抓出（见实现的注释）
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeWebSocketTunnelHeaderBlockWithHandshake("/chat", {}), false), kWaitTimeout));
         ASSERT_TRUE(client.pumpUntil(
                 frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseHeaderBlock(receivedFrames, 3U).empty(); }, kWaitTimeout))
-                << "缺 key 的扩展 CONNECT 没有应答";
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "400");
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, "sec-websocket-version"), "") << "缺 key 的拒绝伪装成了版本问题";
+                << "没带握手头的扩展 CONNECT 没有应答";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "200") << "隧道形态把缺握对手头的请求判死了（RFC 8441 §5 不要求 key）";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, "sec-websocket-version"), "") << "没拒它却回了版本头部，等于自相矛盾";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, "sec-websocket-accept"), "") << "对端没给 key，就不该凭空造一条 Accept";
 
-        // 两条被挡下的握手各该落一笔 bad_requests：h1 的升级拒绝与 h3 的同判据都记，
-        // h2 这路过去只发应答不记账，面板上「被闸门挡下的请求数」就少这一格
-        EXPECT_EQ(fixture.server().stats().badRequestCount, 2U) << "被拒的扩展 CONNECT 没有逐条落账";
+        // 反向对照二：key 给了、版本也对，就照旧回对应的 Accept（上面那条放宽不能把正常通路一起放掉）
+        ASSERT_TRUE(client.sendBytes(
+                makeRequestHeadersFrame(
+                        5U, makeWebSocketTunnelHeaderBlockWithHandshake("/chat", {{"sec-websocket-version", "13"}, {"sec-websocket-key", std::string(kRfc6455SampleKey)}}), false),
+                kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseHeaderBlock(receivedFrames, 5U).empty(); }, kWaitTimeout))
+                << "带 key 的扩展 CONNECT 没有应答";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 5U, ":status"), "200");
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 5U, "sec-websocket-accept"), kRfc6455SampleAccept) << "给了 key 却不回 Accept，客户端的握手就永远收不完";
+
+        // 只有被挡下的那一条该落 bad_requests：两条放行的隧道不占这笔账
+        EXPECT_EQ(fixture.server().stats().badRequestCount, 1U) << "被拒的扩展 CONNECT 没有逐条落账（或把放行的也记上了）";
     }
 
     /**

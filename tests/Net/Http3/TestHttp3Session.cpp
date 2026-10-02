@@ -2917,15 +2917,14 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 扩展 CONNECT 的握手必填项不齐时不建隧道：按 400 应答，版本类失败补一条本端支持的版本
-     * @details RFC 9220 §3 把 Sec-WebSocket-Key 与 Sec-WebSocket-Version 列为 CONNECT-WS 的必填项，而这条
-     *          路径过去只看「业务有没有登记升级」——一个既没给 key、又声明了版本 12 的对端照样能把隧道拉起来，
-     *          之后收发帧的两侧都建立在没有协商结果的前提上。
-     *          两个形状分开判：版本不对的应答里必须能看见 Sec-WebSocket-Version: 13（RFC 6455 §4.2.2 的
-     *          应答义务，客户端靠这一行决定换版本重试）；缺 key 的应答里**不得**出现这条头部，否则一个
-     *          「你的 key 不成形」的应答会伪装成版本问题。隧道没建成的反向断言是 peer 没收到 2xx。
+     * @brief 扩展 CONNECT 只在「版本写了却不被理解」时拒：按 400 应答并补一条本端支持的版本
+     * @details 隧道形态既不要求 sec-websocket-key 也不要求 sec-websocket-version：RFC 8441 §5 明写
+     *          key/accept 那套处理已被 `:protocol` 伪头取代，而本仓的 aioquic 验收裁判两条都不带——
+     *          按必填判就是把一条能用的隧道判死（上一版正是这么错的）。写了版本号就必须是 13，
+     *          否则按 RFC 6455 §4.2.2 拒掉并回一条 Sec-WebSocket-Version: 13 供客户端重试。
+     *          两条反向对照钉住放宽没走过头：缺手头信息的建成隧道且不带版本头部；给了 key 的照旧成功。
      */
-    TEST(Http3Session, RejectsWebSocketTunnelWhenHandshakeFieldsMissingOrWrong)
+    TEST(Http3Session, RejectsWebSocketTunnelOnlyOnUnsupportedVersion)
     {
         const auto serve = [](const std::vector<std::pair<std::string, std::string>> &handshakeFields, int &status, std::map<std::string, std::string> &headers)
         {
@@ -2968,12 +2967,18 @@ namespace AsynGyanis::Net
         EXPECT_EQ(status, 400) << "版本不合的扩展 CONNECT 应当被拒";
         EXPECT_EQ(headers["sec-websocket-version"], "13") << "版本类拒绝没回本端支持的版本，客户端无从重试";
 
-        // 缺 key（版本 13 齐）：同样拒，但不该带上版本头部——那不是这次失败的原因
+        // 反向对照一：只给了 key、没有版本（aioquic 裁判连 key 都不给）——隧道形态不要求，必须建成隧道
         status = 0;
         headers.clear();
-        serve({{"sec-websocket-version", "13"}}, status, headers);
-        EXPECT_EQ(status, 400) << "缺 Sec-WebSocket-Key 的扩展 CONNECT 应当被拒";
-        EXPECT_EQ(headers.find("sec-websocket-version"), headers.end()) << "缺 key 的拒绝伪装成了版本问题";
+        serve({{"sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="}}, status, headers);
+        EXPECT_EQ(status, 200) << "只缺 sec-websocket-version 的扩展 CONNECT 被拒了：隧道形态不把它当必填项";
+        EXPECT_EQ(headers.find("sec-websocket-version"), headers.end()) << "放行了却回一条版本头部，等于自相矛盾";
+
+        // 反向对照二：两条都齐（合法 101 形状的客户端）也照常建成隧道——放宽不能把正常通路一起放掉
+        status = 0;
+        headers.clear();
+        serve({{"sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="}, {"sec-websocket-version", "13"}}, status, headers);
+        EXPECT_EQ(status, 200) << "合法握手的扩展 CONNECT 没建成隧道";
     }
 
     /**

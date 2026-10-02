@@ -37,9 +37,14 @@
 - **版本不合的 WebSocket 握手按 RFC 6455 §4.2.2 应答**：h1 从一律 400 改为 **426 Upgrade Required**
   并带一条 `Sec-WebSocket-Version: 13`（客户端靠这一行决定换一个版本重试，过去它只看到一个与版本无关的
   无声拒绝）；h2 的扩展 CONNECT 仍回 400——426 说的是「请改用 Upgrade」，而 h2 里没有 Upgrade 这套机制可改
-  ——但同样补上那条头部。**h3 的扩展 CONNECT 现在开始校验 `sec-websocket-key` 与 `sec-websocket-version`**
-  （RFC 9220 §3 的必填两项）：过去这条路径只看「业务有没有登记升级」，一个既没给 key 又声明了版本 12 的
-  对端也能把隧道拉起来。
+  ——但同样补上那条头部。**h3 的扩展 CONNECT 从此会判 `sec-websocket-version`**：写了却不是 13 就拒掉
+  （过去这条路径只看「业务有没有登记升级」，一个声明了版本 12 的对端也能把隧道拉起来）。
+  隧道形态**不**要求 `sec-websocket-key`、也不要求版本头部存在——RFC 8441 §5 明写用扩展 CONNECT 引导
+  WebSocket 的一端「do not do the processing of the Sec-WebSocket-Key and Sec-WebSocket-Accept header fields
+  of [RFC6455]」，那套功能已被 `:protocol` 伪头取代。本仓上一版把 key 与版本都当必填加到 h3 上，
+  被自家 aioquic 跨实现验收裁判当场抓出（它两条都不带，隧道直接建不起来）：h2 侧同一条既有必填要求
+  也一并放宽，且只在对端给了 key 时才回 `Sec-WebSocket-Accept`（没给 key 却回一条由空串算出的 Accept，
+  比不回更容易让人以为握手被验证过）。
 - **permessage-deflate 的窗口位数按 RFC 7692 协商**：过去只认扩展名、`;` 之后的参数一个都不解析，
   所以对端声明 `server_max_window_bits=9`（它的解压器只开得到 9 位）时本端仍按满档 15 位压缩——
   严格执行的对端会在远距离回溯上当场报错收线。现在两个窗口参数都吃进语义并钳本端两侧的位数，

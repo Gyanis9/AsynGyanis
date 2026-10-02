@@ -574,15 +574,17 @@ namespace AsynGyanis::Net
                 {
                     m_pendingTunnelStreams.erase(streamId);
 
-                    // 拉起隧道之前先过握手校验，判据与 h1/h2 同一份实现：RFC 9220 §3 要求 CONNECT-WS 请求带
-                    // sec-websocket-key 与 sec-websocket-version，而这条路径过去只看「业务有没有登记升级」，
-                    // 一个没声明版本、没给 key 的对端也能把隧道拉起来。校验排在这里而不是隧道协程里：隧道会在
-                    // 处理器上挂起，届时请求记录可能已被回收（见 serveWebSocketTunnel 按值取参那条注释）。
-                    // 业务没登记升级时不判——那是一条合法的普通 CONNECT 应答，不该被握手规则挡成 400
-                    std::string                 tunnelClientKey;
+                    // 握手校验只判版本：写了却不是 13 就拒（并按 RFC 6455 §4.2.2 回一条本端支持的版本），
+                    // 整条没写不拒。上一版这里按「RFC 9220 §3 要求 key 与 version 必填」加过两项校验，
+                    // 被自家 aioquic 验收裁判当场抓出：RFC 8441 §5 明写隧道形态「do not do the processing of
+                    // the Sec-WebSocket-Key and Sec-WebSocket-Accept」（该功能已被 :protocol 伪头取代），
+                    // 而真实实现两条都不带——在这里拒就是把一条能用的隧道判死。判据与 h2 同一份实现。
+                    // 校验排在这里而不是隧道协程里：隧道会在处理器上挂起，届时请求记录可能已被回收
+                    // （见 serveWebSocketTunnel 按值取参那条注释）。业务没登记升级时不判——那是一条合法的
+                    // 普通 CONNECT 应答，不该被握手规则挡成 400
                     std::string                 handshakeFailureReason;
                     WebSocketHandshakeRejection handshakeRejection{WebSocketHandshakeRejection::Other};
-                    if (response.isWebSocketUpgradeRequested() && !validateWebSocketKeyAndVersion(request, tunnelClientKey, &handshakeFailureReason, &handshakeRejection))
+                    if (response.isWebSocketUpgradeRequested() && !validateWebSocketTunnelVersion(request, &handshakeFailureReason, &handshakeRejection))
                     {
                         LOG_ERROR_FMT("Http3Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答、不建隧道。流 {}，原因：{}", streamId, handshakeFailureReason);
                         if (m_metrics != nullptr)

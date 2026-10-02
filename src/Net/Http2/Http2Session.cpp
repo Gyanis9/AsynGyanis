@@ -1236,11 +1236,12 @@ namespace AsynGyanis::Net
         HttpResponse                               &response        = pending.response;
         const std::chrono::steady_clock::time_point tunnelStartTime = std::chrono::steady_clock::now();
 
-        // 握手校验：h2 用扩展 CONNECT 代替 Upgrade 头，但版本与 key 两项与 h1 完全一致（同一份实现）
+        // 握手校验：隧道形态只判版本，不要求 key（RFC 8441 §5 明写 key/accept 那套处理已被 :protocol
+        // 伪头取代）；状态码留 400 的理由同下面拒绝分支的注释
         std::string                 clientKey;
         std::string                 handshakeFailureReason;
         WebSocketHandshakeRejection handshakeRejection{WebSocketHandshakeRejection::Other};
-        if (!validateWebSocketKeyAndVersion(request, clientKey, &handshakeFailureReason, &handshakeRejection))
+        if (!validateWebSocketTunnelVersion(request, &handshakeFailureReason, &handshakeRejection))
         {
             // 版本类失败要按 RFC 6455 §4.2.2 补一条 Sec-WebSocket-Version 指明本端支持的版本。
             // 状态码留 400 而不是 h1 那侧的 426：426 说的是「请改用 Upgrade」，而 h2 里根本没有
@@ -1268,7 +1269,14 @@ namespace AsynGyanis::Net
         // 升级应答是 200 且**不带 END_STREAM**（RFC 8441 §5）：这条流接下来要承载帧，消息还没结束。
         // 因此这里不能走 sendResponse()——它按「正文是否为空」决定 END_STREAM，会把隧道当场关掉
         std::vector<HpackHeaderField> acceptFields;
-        acceptFields.push_back({.name = std::string(kWebSocketAcceptHeaderName), .value = computeWebSocketAcceptValue(clientKey)});
+        // key 在本形态下不是必填（见上面握手校验的注释），但**给了就得回对应的那条 Accept**：
+        // 现存的 h2 WebSocket 客户端里两类都有，凭空造一条空 key 的 Accept 比不回更糟——
+        // 它会让学生以为握手被验证过了，而本端其实什么都没验
+        if (const std::optional<std::string> offeredKey = request.getHeader("sec-websocket-key"); offeredKey.has_value())
+        {
+            clientKey = *offeredKey;
+            acceptFields.push_back({.name = std::string(kWebSocketAcceptHeaderName), .value = computeWebSocketAcceptValue(clientKey)});
+        }
 
         // 扩展协商（RFC 7692 §7.1）：与 h1 侧同一份协商实现，接受时把结论一并写进应答头，
         // 本端随后按同一结论收发压缩帧——回给对端的那一行与本端的收发口径必须是同一个来源

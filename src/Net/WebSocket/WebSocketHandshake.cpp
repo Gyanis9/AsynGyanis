@@ -59,6 +59,45 @@ namespace AsynGyanis::Net
         }
 
 
+        /**
+         * @brief Sec-WebSocket-Version 的判据，两条握手入口共用一份实现
+         *
+         * @details 101 握手（RFC 6455 §4.1 第 5 条）与扩展 CONNECT 隧道（RFC 8441 §5 把这条字段留给
+         *          RFC 6455 的语义，但隧道形态下实测有整条不带的互操作端）在「缺失算不算失败」上不同，
+         *          其余判据一样：写出来就必须恰是本端支持的那一档，且这类失败要按 §4.2.2 在应答里
+         *          补一条 Sec-WebSocket-Version——所以两类出口都落在 UnsupportedVersion 这个分类上。
+         *
+         * @param request 已解析/已映射好的请求
+         * @param requireVersion 头部缺失是否判失败
+         * @param failureReason 失败原因出参，可传空指针
+         * @param rejection 失败分类出参，可传空指针
+         * @return true 版本可用
+         */
+        bool versionFieldAllowsHandshake(const HttpRequest &request, const bool requireVersion, std::string *const failureReason, WebSocketHandshakeRejection *const rejection)
+        {
+            const std::optional<std::string> versionValue = request.getHeader(kWebSocketVersionHeaderName);
+            if (versionValue.has_value() && trimOptionalWhitespace(*versionValue) == kSupportedWebSocketVersion)
+            {
+                return true;
+            }
+            if (!versionValue.has_value() && !requireVersion)
+            {
+                // 隧道形态下缺失不是「版本不被理解」，也就不去占那条 Sec-WebSocket-Version 应答义务
+                return true;
+            }
+            if (rejection != nullptr)
+            {
+                *rejection = WebSocketHandshakeRejection::UnsupportedVersion;
+            }
+            if (failureReason != nullptr)
+            {
+                *failureReason = versionValue.has_value() ? std::format("WebSocket 只支持协议版本 {}（RFC 6455），收到 Sec-WebSocket-Version: {}，请改用 {}",
+                                                                        kSupportedWebSocketVersion, *versionValue, kSupportedWebSocketVersion)
+                                                          : std::format("WebSocket 握手缺少 Sec-WebSocket-Version 头：本实现只支持版本 {}，请补上 Sec-WebSocket-Version: {}",
+                                                                        kSupportedWebSocketVersion, kSupportedWebSocketVersion);
+            }
+            return false;
+        }
     } // namespace
 
     std::string computeWebSocketAcceptValue(const std::string_view clientKey)
@@ -155,27 +194,11 @@ namespace AsynGyanis::Net
             return false;
         };
 
-        const auto rejectVersion = [rejection, &reject](std::string reason)
+        // RFC 6455 §4.1：这条头部必须存在且恰为本端支持的那一档。判据与隧道那侧共用一份实现，
+        // 版本类失败要按 §4.2.2 在拒绝应答里补一条 Sec-WebSocket-Version，分类也由那份实现给
+        if (!versionFieldAllowsHandshake(request, true, failureReason, rejection))
         {
-            if (rejection != nullptr)
-            {
-                *rejection = WebSocketHandshakeRejection::UnsupportedVersion;
-            }
-            return reject(std::move(reason));
-        };
-
-        // RFC 6455 §4.1：本实现只认版本 13。这两条是 RFC 6455 §4.2.2 里唯一要求应答补一条
-        // Sec-WebSocket-Version 的失败形状，故走 rejectVersion
-        const std::optional<std::string> versionValue = request.getHeader(kWebSocketVersionHeaderName);
-        if (!versionValue.has_value())
-        {
-            return rejectVersion(std::format("WebSocket 握手缺少 Sec-WebSocket-Version 头：本实现只支持版本 {}，请补上 Sec-WebSocket-Version: {}", kSupportedWebSocketVersion,
-                                             kSupportedWebSocketVersion));
-        }
-        if (trimOptionalWhitespace(*versionValue) != kSupportedWebSocketVersion)
-        {
-            return rejectVersion(std::format("WebSocket 只支持协议版本 {}（RFC 6455），收到 Sec-WebSocket-Version: {}，请改用 {}", kSupportedWebSocketVersion, *versionValue,
-                                             kSupportedWebSocketVersion));
+            return false;
         }
 
         // RFC 6455 §4.1：key 必须是 base64 且解码后恰 16 字节
@@ -205,6 +228,21 @@ namespace AsynGyanis::Net
             *rejection = WebSocketHandshakeRejection::None;
         }
         return true;
+    }
+
+    bool validateWebSocketTunnelVersion(const HttpRequest &request, std::string *const failureReason, WebSocketHandshakeRejection *const rejection)
+    {
+        if (failureReason != nullptr)
+        {
+            failureReason->clear();
+        }
+        if (rejection != nullptr)
+        {
+            *rejection = WebSocketHandshakeRejection::None;
+        }
+        // 隧道形态不要求版本头部存在（理由见头文件里引的 RFC 8441 §5 与 aioquic 那条实测）；
+        // 写了就必须是 13。这一条路上没有别的判据，所以不出现 Other 这一类
+        return versionFieldAllowsHandshake(request, false, failureReason, rejection);
     }
 
     std::string buildHandshakeResponse(const std::string_view clientKey, const std::string_view extensionsResponseValue)
