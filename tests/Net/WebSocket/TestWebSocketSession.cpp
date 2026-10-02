@@ -6,6 +6,8 @@
 // 末节的统计用例同一条连接串起升级、消息与协议错误收口，并核对普通 HTTP 请求不污染 WebSocket 计数。
 // 发送失败类用例另在根日志器上挂记录型 Sink（HttpTestSupport::LogCapture），
 // 断言「一次失败只留一条日志」与「本侧收口的短路返回不记日志」两条口径。
+// 关闭信息分两面钉：回帧用的是本侧决定的码，业务读的是对端交来的原值与原因
+// （HandsPeerCloseCodeAndReasonToBusiness 一族四条，含「没交码」「码非法」「原因非 UTF-8」三种口径）。
 
 #include "HttpTestSupport.h"
 
@@ -225,8 +227,13 @@ namespace AsynGyanis::Net
          */
         struct MessageRecord
         {
-            std::mutex                    mutex;    ///< 保护 messages
+            std::mutex                    mutex;    ///< 保护 messages 与下面三个关闭字段
             std::vector<WebSocketMessage> messages; ///< 按到达顺序记录的数据消息
+
+            /// 处理器退出时读到的对端关闭信息（见 recordClose）：这是「处理器真的走到了收口之后」的凭据
+            std::optional<std::uint16_t> remoteCloseCode{};      ///< 对端 Close 帧交来的状态码原值
+            std::string                  remoteCloseReason{};    ///< 对端 Close 帧交来的原因文本
+            bool                         isCloseObserved{false}; ///< 处理器是否已记下关闭信息
 
             /**
              * @brief 记录一条消息
@@ -236,6 +243,40 @@ namespace AsynGyanis::Net
             {
                 const std::lock_guard<std::mutex> guard(mutex);
                 messages.push_back(message);
+            }
+
+            /**
+             * @brief 记下处理器在收口之后读到的对端关闭信息
+             * @param code 业务从 peer.remoteCloseCode() 读到的值
+             * @param reason 业务从 peer.remoteCloseReason() 读到的值
+             */
+            void recordClose(const std::optional<std::uint16_t> code, const std::string_view reason)
+            {
+                const std::lock_guard<std::mutex> guard(mutex);
+                remoteCloseCode   = code;
+                remoteCloseReason = std::string(reason);
+                isCloseObserved   = true;
+            }
+
+            /// 处理器是否已记下关闭信息（用例先等这条，再判内容）
+            [[nodiscard]] bool closeObserved()
+            {
+                const std::lock_guard<std::mutex> guard(mutex);
+                return isCloseObserved;
+            }
+
+            /// 业务读到的对端关闭码
+            [[nodiscard]] std::optional<std::uint16_t> closeCodeSnapshot()
+            {
+                const std::lock_guard<std::mutex> guard(mutex);
+                return remoteCloseCode;
+            }
+
+            /// 业务读到的对端关闭原因
+            [[nodiscard]] std::string closeReasonSnapshot()
+            {
+                const std::lock_guard<std::mutex> guard(mutex);
+                return remoteCloseReason;
             }
 
             /// 已记录的消息条数
@@ -258,6 +299,8 @@ namespace AsynGyanis::Net
          * @param record 记录槽
          * @param peer 对端对象
          * @return Core::Task<> 收到空结果（连接收口）时返回
+         * @details 退出时顺带记下 `remoteCloseCode()` / `remoteCloseReason()` 的读数：关闭信息只有在
+         *          收口之后才读得到，而用例要判的是「业务侧到底看得见什么」，不是内部字段。
          */
         Core::Task<> echoHandler(const std::shared_ptr<MessageRecord> record, WebSocketPeer &peer)
         {
@@ -272,6 +315,7 @@ namespace AsynGyanis::Net
                     [[maybe_unused]] const bool isEchoSent = co_await peer.sendBinary(message->payload);
                 }
             }
+            record->recordClose(peer.remoteCloseCode(), peer.remoteCloseReason());
             co_return;
         }
 
@@ -579,6 +623,132 @@ namespace AsynGyanis::Net
         EXPECT_EQ(closeStats.webSocketPeerCloseCount, 1u) << "一次对端 Close 只该计一次";
         EXPECT_EQ(closeStats.webSocketServerCloseCount, 0u) << "回应对端 Close 的回帧被重复记成了本侧发起关闭";
         EXPECT_EQ(closeStats.webSocketProtocolErrorCloseCount, 0u) << "正常关闭握手不是协议错误收口";
+    }
+
+    /**
+     * @brief 钉住「对端说了什么」要交回业务：收口后读得到对端的关闭码与原因
+     *
+     * @details 关闭码的存在意义就是让对端说出为什么关——1008（按策略拒绝了你）与 1000（收工）
+     *          在业务侧是两种收尾（要不要重试、要不要告警、要不要记审计全看这个号码）。
+     *          此前这些号码只用来决定本侧回什么，交回业务的只剩「连接关了」。
+     *          本条同时钉住另一面：原因只留给本进程，回帧仍只带状态码。
+     */
+    TEST(WebSocketSession, HandsPeerCloseCodeAndReasonToBusiness)
+    {
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        // 关闭帧负载 = 2 字节大端 1008（0x03F0）+ 原因文本
+        const std::string closePayload  = std::string("\x03\xF0") + "policy";
+        const std::string handshake     = expectedHandshakeResponseText();
+        const std::string expectedClose = serverFrameBytes(0x8, "\x03\xF0");
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x8, closePayload), kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "回完 Close 之后服务端应断开连接";
+        ASSERT_EQ(accumulated.size(), handshake.size() + expectedClose.size()) << "对端的原因不该被回帧带出去";
+        EXPECT_EQ(accumulated.substr(handshake.size(), expectedClose.size()), expectedClose);
+
+        ASSERT_TRUE(HttpTestSupport::waitForCondition([record] { return record->closeObserved(); }, kWaitTimeout)) << "业务处理器没走到收口之后";
+        const std::optional<std::uint16_t> observedCode = record->closeCodeSnapshot();
+        ASSERT_TRUE(observedCode.has_value()) << "对端明明交了状态码，业务却读不到";
+        EXPECT_EQ(*observedCode, kWebSocketPolicyViolationCode) << "业务读到的该是对端那个号码，而不是本侧回的";
+        EXPECT_EQ(record->closeReasonSnapshot(), "policy");
+    }
+
+    /**
+     * @brief 钉住「对端没交码」与「对端交了 1000」是两件事
+     * @details 空负载的 Close 按 RFC 6455 §7.4.1 属于「没有状态码」，本侧回帧沿用既有口径回 1000，
+     *          而交给业务的必须是空——凭空报一个 1000 会把「对方什么都没说」说成「对方说收工了」。
+     */
+    TEST(WebSocketSession, ReportsNoPeerCloseCodeWhenCloseFrameCarriesNone)
+    {
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        const std::string handshake     = expectedHandshakeResponseText();
+        const std::string expectedClose = serverFrameBytes(0x8, "\x03\xE8");
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x8, std::string_view{}), kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "回完 Close 之后服务端应断开连接";
+        EXPECT_EQ(accumulated.substr(handshake.size(), expectedClose.size()), expectedClose);
+
+        ASSERT_TRUE(HttpTestSupport::waitForCondition([record] { return record->closeObserved(); }, kWaitTimeout)) << "业务处理器没走到收口之后";
+        EXPECT_FALSE(record->closeCodeSnapshot().has_value()) << "对端没交码时不该凭空报一个 1000";
+        EXPECT_TRUE(record->closeReasonSnapshot().empty());
+    }
+
+    /**
+     * @brief 钉住交回的是对端的**原值**：禁止上线的状态码也留得住，而回帧按协议错误收口
+     * @details 1015 是保留取值、不允许出现在线上，本侧因此不能原样回送（回 1002）；但「对端到底说了什么」
+     *          正是排查要看的——把两件事合成一件，运维就只剩一个与对端说法无关的 1002。
+     */
+    TEST(WebSocketSession, KeepsRawPeerCloseCodeEvenWhenTheCodeIsIllegalOnTheWire)
+    {
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        // 关闭帧负载 = 2 字节大端 1015（0x03F7）+ 原因文本
+        const std::string closePayload  = std::string("\x03\xF7") + "reserved";
+        const std::string handshake     = expectedHandshakeResponseText();
+        const std::string expectedClose = serverFrameBytes(0x8, "\x03\xEA"); // 本侧回 1002
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x8, closePayload), kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "非法状态码的关闭仍要回一条 Close 再断开";
+        EXPECT_EQ(accumulated.substr(handshake.size(), expectedClose.size()), expectedClose) << "禁止上线的状态码不该被原样回送";
+
+        ASSERT_TRUE(HttpTestSupport::waitForCondition([record] { return record->closeObserved(); }, kWaitTimeout)) << "业务处理器没走到收口之后";
+        const std::optional<std::uint16_t> observedCode = record->closeCodeSnapshot();
+        ASSERT_TRUE(observedCode.has_value());
+        EXPECT_EQ(*observedCode, 1015) << "交回的是对端原本那个号码";
+        EXPECT_EQ(record->closeReasonSnapshot(), "reserved");
+    }
+
+    /**
+     * @brief 钉住非 UTF-8 的关闭原因不交给业务，而状态码照旧留档
+     * @details 原因不是 UTF-8 时这条关闭按负载非法收口（RFC 6455 §7.4.1 的 1007）。那串原始字节
+     *          可能带着控制码，交出去等于把「伪造本进程日志行」的原料递给业务——本仓刚给外部文本
+     *          定了统一的日志折法，前提是不要先把它当成可信文本交出去。
+     */
+    TEST(WebSocketSession, WithholdsNonUtf8PeerCloseReasonButKeepsTheCode)
+    {
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        std::string closePayload;
+        closePayload.append("\x03\xE8");                                             // 1000：状态码本身合法
+        closePayload.push_back(static_cast<char>(static_cast<unsigned char>(0xFF))); // 孤立字节：原因不是 UTF-8
+        const std::string handshake     = expectedHandshakeResponseText();
+        const std::string expectedClose = serverFrameBytes(0x8, "\x03\xEF"); // 本侧回 1007
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText() + maskedClientFrame(0x8, closePayload), kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "非法 UTF-8 的关闭原因应按负载非法收口";
+        EXPECT_EQ(accumulated.substr(handshake.size(), expectedClose.size()), expectedClose);
+
+        ASSERT_TRUE(HttpTestSupport::waitForCondition([record] { return record->closeObserved(); }, kWaitTimeout)) << "业务处理器没走到收口之后";
+        const std::optional<std::uint16_t> observedCode = record->closeCodeSnapshot();
+        ASSERT_TRUE(observedCode.has_value()) << "状态码本身合法，该交回业务";
+        EXPECT_EQ(*observedCode, kWebSocketNormalClosureCode);
+        EXPECT_TRUE(record->closeReasonSnapshot().empty()) << "非 UTF-8 的原因不该交给业务";
     }
 
     // ============================================================================

@@ -202,6 +202,33 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isOpen() const noexcept;
 
         /**
+         * @brief 对端 Close 帧交来的状态码原值
+         *
+         * @details 关闭码的存在意义就是让对端说出「为什么关」：1000 是收工、1001 是离开、
+         *          1008 是「按策略拒绝了你」、1011 是对方内部出错。此前这些号码只用来决定本侧回什么，
+         *          交回业务的只剩「连接关了」这一件事，业务无从分档收尾（该不该重试、要不要告警、
+         *          要不要记审计，全看这个号码）。
+         *          交回的是**原值**，包括本规范禁止上线的取值（1004、1005、1006、1015、5000 及以上）：
+         *          那种情况下本侧的回帧按协议错误收口（1002），而「对端到底说了什么」仍然留得住。
+         * @return std::optional<std::uint16_t> 有值＝对端交来了状态码；空＝对端没交出号码——
+         *         Close 帧只带空负载，或链路被直接切断（那样的帧根本没到过）
+         * @note 只在所属事件循环线程上调用；对端的 Close 到达之前恒为空
+         */
+        [[nodiscard]] std::optional<std::uint16_t> remoteCloseCode() const noexcept;
+
+        /**
+         * @brief 对端 Close 帧交来的原因文本
+         *
+         * @details 只有当它是合法 UTF-8 时才交回：原因不是 UTF-8 时这条关闭按负载非法收口
+         *          （RFC 6455 §7.4.1 的 1007），而那串原始字节不交给业务——否则它一旦被写进日志，
+         *          控制字节就进了本进程的行（要落日志请先过 Base::escapeForLog）。
+         * @return std::string_view 指向本对象持有的文本；对端没给原因时为空串。
+         *         有效期到本对象析构为止
+         * @note 只在所属事件循环线程上调用
+         */
+        [[nodiscard]] std::string_view remoteCloseReason() const noexcept;
+
+        /**
          * @brief 会话侧：交出 permessage-deflate 的协商结论（RFC 7692）
          *
          * @details 有值即启用：sendText()/sendBinary() 自动压缩负载并置 RSV1，收到的压缩消息自动解压；
@@ -324,7 +351,9 @@ namespace AsynGyanis::Net
          * @brief 处理一条 Close 帧：校验负载后回 Close 并让本侧关闭（RFC 6455 §5.5.1、§7.4.1）
          * @param payload 对端 Close 帧的负载，可能为空、只有状态码或带原因文本
          * @details 负载非法（1 字节、禁止上线的状态码、原因不是 UTF-8）时不回送对端的码，
-         *          改按 1002/1007 收口——原样回送会把一个非法关闭当成正常关闭放过去
+         *          改按 1002/1007 收口——原样回送会把一个非法关闭当成正常关闭放过去。
+         *          同时把对端交来的状态码原值与合法 UTF-8 的原因记下，交给 remoteCloseCode() /
+         *          remoteCloseReason() 读回业务（回帧用的是另一个码，两件事各自留档）
          */
         Core::Task<> echoCloseFrame(std::string_view payload);
 
@@ -344,5 +373,10 @@ namespace AsynGyanis::Net
         /// 本次关闭是对端 Close 的应答：一次对端发起的关闭只记在对端一侧，
         /// 回帧不再重复记成本侧发起。粘性标记——对端关闭后本对象即收口，不存在需要复位的下一轮
         bool m_isEchoingPeerClose{false};
+
+        /// 对端 Close 帧里交来的状态码原值（见 remoteCloseCode()）：对端没交码、或链路被直接切断时保持空
+        std::optional<std::uint16_t> m_remoteCloseCode{};
+        /// 对端 Close 帧里交来的原因文本，只在它是合法 UTF-8 时留下（见 remoteCloseReason()）
+        std::string m_remoteCloseReason{};
     };
 } // namespace AsynGyanis::Net

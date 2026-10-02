@@ -96,6 +96,16 @@ namespace AsynGyanis::Net
         return m_isOpen;
     }
 
+    std::optional<std::uint16_t> WebSocketPeer::remoteCloseCode() const noexcept
+    {
+        return m_remoteCloseCode;
+    }
+
+    std::string_view WebSocketPeer::remoteCloseReason() const noexcept
+    {
+        return m_remoteCloseReason;
+    }
+
     bool WebSocketPeer::isWriteInFlight() const noexcept
     {
         return m_isWriteInFlight;
@@ -332,10 +342,22 @@ namespace AsynGyanis::Net
             const std::uint16_t    receivedCode = static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(payload[0])) << 8) |
                                                                              static_cast<std::uint16_t>(static_cast<unsigned char>(payload[1])));
             const std::string_view reason       = payload.substr(kCloseCodeByteLength);
+            const bool             isReasonUtf8 = findInvalidWebSocketUtf8ByteOffset(reason) == std::string_view::npos;
+
+            // 记下「对端说了什么」，与下面决定「本侧回什么」分开：非法状态码与非 UTF-8 的原因都会让
+            // 回帧变成 1002/1007，而业务要看见的是对端原本那个号码（见 remoteCloseCode() 的口径）。
+            // 原因只在它是合法 UTF-8 时留下：非法的那串原始字节可能带着控制码，交出去等于把
+            // 日志注入的原料递给业务
+            m_remoteCloseCode = receivedCode;
+            if (isReasonUtf8)
+            {
+                m_remoteCloseReason = std::string(reason);
+            }
+
             if (!isValidReceivedCloseCode(receivedCode))
             {
                 closeCode = kWebSocketProtocolErrorCode;
-            } else if (findInvalidWebSocketUtf8ByteOffset(reason) != std::string_view::npos)
+            } else if (!isReasonUtf8)
             {
                 // 原因不是 UTF-8：按负载非法收口（RFC 6455 §7.4.1 的 1007）
                 closeCode = kWebSocketInvalidPayloadDataCode;
