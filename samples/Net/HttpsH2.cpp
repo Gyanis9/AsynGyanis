@@ -1476,7 +1476,7 @@ namespace
     }
 
     // ============================================================================
-    // 二. TLS 上可达的解析上限：h1 回落下 431，h2 路径上 413
+    // 二. TLS 上可达的解析上限：h1 回落下 431（头部）与 414（请求目标），h2 路径上 413
     // ============================================================================
 
     void demonstrateParserLimits(const TlsMaterial &material, const std::uint16_t port)
@@ -1527,11 +1527,14 @@ namespace
         static_cast<void>(longTargetClient->pumpUntil(
                 [&longTargetClient]() { return longTargetClient->receivedText().find("HTTP/1.1 4") != std::string::npos || longTargetClient->isClosedByPeer(); }, kWaitTimeout));
         const std::string &longTargetText = longTargetClient->receivedText();
-        // 本框架把「请求目标过长」归进 HeaderTooLarge 一类：回 431，没有 414 这条映射
-        samples.check(longTargetText.find("HTTP/1.1 431") != std::string::npos && longTargetText.find("HTTP/1.1 414") == std::string::npos,
-                      "请求目标越界也按 431 收口（框架不产 414：它把请求行超限归进头部过大一类）");
+        // 请求目标越界有自己的状态码：414（RFC 9110 §15.5.18），与头部越界的 431 分开——
+        // 客户端读到 431 会去减头部，而这里要缩的是 URL
+        samples.check(longTargetText.find("HTTP/1.1 414") != std::string::npos && longTargetText.find("HTTP/1.1 431") == std::string::npos,
+                      "请求目标越界按 414 收口，不与头部越界的 431 混为一类");
 
-        // h2 路径只用 maximumBodySize：越界回 413 并请对端别再传（RST_STREAM NO_ERROR），连接照旧可用
+        // h2 路径的正文上限：越界回 413 并请对端别再传（RST_STREAM NO_ERROR），连接照旧可用。
+        // 字段条数与请求目标长度这两项也归 h2 的 intake 判（431/414），判据在 ctest 的
+        // Http2CleartextSession 一族里钉，本示例不再重跑一遍
         const std::unique_ptr<Http2LoopbackClient> h2Client = Http2LoopbackClient::openOverTls(port, "h2", {});
         if (!h2Client->isHandshakeComplete() || !performHttp2Handshake(*h2Client))
         {
