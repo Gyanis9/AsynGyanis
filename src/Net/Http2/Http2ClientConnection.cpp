@@ -245,6 +245,17 @@ namespace AsynGyanis::Net
 
     bool Http2ClientConnection::handleFrame(const Http2Frame &frame)
     {
+        // 头块拼接期间只允许同流的 CONTINUATION（§6.10）：任何插入都会让拼出的头块与 HPACK 上下文错位——
+        // 对端是按「先把这一段编完」的顺序更新动态表的，本端却先解了插进来的那一段，此后每条响应都解歪
+        // （错位不报错，报出来的是别的流的字段）。服务端侧 Http2Connection::handleFrame 是同一条判据，
+        // 出站这侧此前只按流记「在等 CONTINUATION」，插入的帧照收
+        if (m_isAssemblingHeaderBlock && (frame.header.type != Http2FrameType::Continuation || frame.header.streamId != m_pendingHeaderStreamId))
+        {
+            failConnection(Http2ErrorCode::ProtocolError,
+                           std::format("流 {} 的头块还没收完（缺 END_HEADERS），此刻收到{}（流 {}）：RFC 9113 §6.10 要求 CONTINUATION 不得被任何其它帧打断",
+                                       m_pendingHeaderStreamId, http2FrameTypeName(frame.header.type), frame.header.streamId));
+            return false;
+        }
         switch (frame.header.type)
         {
             case Http2FrameType::Settings:
@@ -597,6 +608,9 @@ namespace AsynGyanis::Net
         }
         const bool hadFinalStatusBefore = stream.isFinalStatusReceived;
         stream.isAwaitingContinuation   = !payload.endHeaders;
+        // 连接级那一对门闩与按流那一位同源同刻：§6.10 的闸门在 handleFrame 顶上按它判
+        m_isAssemblingHeaderBlock = stream.isAwaitingContinuation;
+        m_pendingHeaderStreamId   = stream.isAwaitingContinuation ? frame.header.streamId : 0U;
         if (!appendHeaderBlockFragment(stream, payload.headerBlockFragment))
         {
             return false;
@@ -637,6 +651,8 @@ namespace AsynGyanis::Net
         }
         PendingStream &stream         = iterator->second;
         stream.isAwaitingContinuation = !payload.endHeaders;
+        m_isAssemblingHeaderBlock     = stream.isAwaitingContinuation;
+        m_pendingHeaderStreamId       = stream.isAwaitingContinuation ? frame.header.streamId : 0U;
         if (!appendHeaderBlockFragment(stream, payload.headerBlockFragment))
         {
             return false;

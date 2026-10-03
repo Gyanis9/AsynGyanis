@@ -556,15 +556,21 @@ namespace AsynGyanis::Net
         std::int64_t                           m_peerMaximumFrameByteSize{16384};         ///< 对端能收的最大帧负载
         std::uint32_t                          m_peerInitialStreamWindowByteCount{65535}; ///< 对端通告的流初始窗口，用于换算新流窗口
         std::map<std::uint32_t, PendingStream> m_pendingStreams;
-        bool                                   m_isPumpLeaseTaken{false};          ///< 这一轮谁在读通路并顺带回帧：同一时刻只许一个
-        std::size_t                            m_waitingStreamCount{0};            ///< 挂在 StreamAwaiter 上的请求协程数
-        bool                                   m_isFlushInProgress{false};         ///< 写权在谁手上：两个协程同时 send 会把帧撕开
-        std::vector<std::coroutine_handle<>>   m_flushWaiters;                     ///< 排队等写权的协程
-        bool                                   m_isHealthy{true};                  ///< 连接层是否还能用
-        bool                                   m_isPeerGoAway{false};              ///< 对端是否已通告收尾
-        bool                                   m_isPeerSettingsReceived{false};    ///< 是否已收到对端的 SETTINGS（能提请求的前提）
-        bool                                   m_isOwnSettingsAcknowledged{false}; ///< 对端是否已 ACK 过本端那一条 SETTINGS（只许 ACK 一次）
-        std::string                            m_errorMessage;                     ///< 最后一次失败的中文原因
+        /// 头块拼接期间的连接级门闩（RFC 9113 §6.10）：为真时只接受 `m_pendingHeaderStreamId` 上的
+        /// CONTINUATION，任何别的帧一律按连接错误 PROTOCOL_ERROR 收口。按流那一位
+        /// （`PendingStream::isAwaitingContinuation`）说不出「整条连接正卡在一段没收完的头块上」，
+        /// 而插入的帧会让本端先解了后编的那一段——HPACK 的动态表就此与对端错位，报出来的是别的流的字段
+        bool                                 m_isAssemblingHeaderBlock{false};
+        std::uint32_t                        m_pendingHeaderStreamId{0};         ///< 正在拼头块的那条流；`m_isAssemblingHeaderBlock` 为假时无意义
+        bool                                 m_isPumpLeaseTaken{false};          ///< 这一轮谁在读通路并顺带回帧：同一时刻只许一个
+        std::size_t                          m_waitingStreamCount{0};            ///< 挂在 StreamAwaiter 上的请求协程数
+        bool                                 m_isFlushInProgress{false};         ///< 写权在谁手上：两个协程同时 send 会把帧撕开
+        std::vector<std::coroutine_handle<>> m_flushWaiters;                     ///< 排队等写权的协程
+        bool                                 m_isHealthy{true};                  ///< 连接层是否还能用
+        bool                                 m_isPeerGoAway{false};              ///< 对端是否已通告收尾
+        bool                                 m_isPeerSettingsReceived{false};    ///< 是否已收到对端的 SETTINGS（能提请求的前提）
+        bool                                 m_isOwnSettingsAcknowledged{false}; ///< 对端是否已 ACK 过本端那一条 SETTINGS（只许 ACK 一次）
+        std::string                          m_errorMessage;                     ///< 最后一次失败的中文原因
 
         /// 客户端前奏的字节（RFC 9113 §3.3），本端在 start() 里第一个写出
         static constexpr std::string_view kClientPrefaceBytes = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";

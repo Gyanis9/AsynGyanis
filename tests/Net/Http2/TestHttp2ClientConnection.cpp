@@ -1873,6 +1873,86 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 头块没收完（缺 END_HEADERS）时插入的任何帧都按连接错误 PROTOCOL_ERROR 收口
+     * @details RFC 9113 §6.10 的原句是「If the END_HEADERS flag is not set, this frame MUST be followed by
+     *          another CONTINUATION frame. A receiver MUST treat the receipt of any other type of frame or a
+     *          frame on a different stream as a connection error (Section 5.4.1) of type PROTOCOL_ERROR」。
+     *          要紧的不是「多收了一帧」，而是 HPACK 的动态表是**连接级**的：对端按「先把这一段编完」的顺序
+     *          更新表，本端却先解了插进来的那一段，此后每条响应都解歪——而解歪不报错，报出来的是别的流的
+     *          字段。服务端侧（`Http2Connection::handleFrame`）早就有这道闸，出站这侧此前只按流记
+     *          「在等 CONTINUATION」，插入的帧照收。两格分别是插入一条 DATA（同流但不是 CONTINUATION）
+     *          与插入另一条流上的 HEADERS（§6.10 点名的第二种形状，也正是会让解码顺序错位的那一种）
+     * @note 证伪：摘掉 `handleFrame` 顶上那道闸，两格各红两处——格一 1940（状态码仍是 200）与 1923
+     *       （本端一条 GOAWAY 都没交代），格二 1949 与同一处 1923。闸里「必须是同一条流」那半句没有独立的
+     *       突变：放过它的形状是「别的流上的 CONTINUATION」，而那条流在本端压根不存在，会先被既有的
+     *       「没有前置 HEADERS 的 CONTINUATION」那道判据拦下，两处红的都是同一个 PROTOCOL_ERROR，分不出来；
+     *       「同流的 CONTINUATION 照常放行」这半边由 CompletesAResponseWhoseEndStreamRidesTheContinuedHeadersFrame 看着
+     */
+    TEST(Http2ClientConnection, RefusesAnyFrameInsertedIntoAnUnfinishedHeaderBlock)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-type", "text/plain"}});
+        const std::size_t splitAt     = headerBlock.size() / 2;
+        // 第一帧不带 END_HEADERS：这一段头块要到 CONTINUATION 才收得完
+        const std::string unfinishedHead = makeFrame(Http2FrameType::Headers, 0U, 1U, headerBlock.substr(0, splitAt));
+        const std::string continuation   = makeFrame(Http2FrameType::Continuation, kHttp2FlagEndHeaders, 1U, headerBlock.substr(splitAt));
+
+        const auto runScript = [](const std::string &script)
+        {
+            Core::EventLoop loop;
+            int             clientDescriptor = -1;
+            int             peerDescriptor   = -1;
+            EXPECT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+            PeerFrames            received;
+            HeaderBlockRunOutcome outcome;
+            auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+            auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+            static_cast<void>(peerWork.handle().resume());
+            static_cast<void>(clientWork.handle().resume());
+            loop.run();
+            return std::make_pair(received, outcome);
+        };
+
+        // 两格共用这一段判据。刻意用 ADD_FAILURE／EXPECT 而不是 ASSERT：第一格一红就中止整个用例的话，
+        // 第二格的红就归不出来（突变实测过一次：ASSERT 让「插入 DATA」那一格吃掉了整条用例的失败）
+        const auto expectProtocolErrorGoAway = [](const PeerFrames &peerFrames)
+        {
+            const Http2Frame *goAway = findFrame(peerFrames.frames, Http2FrameType::GoAway, false);
+            if (goAway == nullptr)
+            {
+                ADD_FAILURE() << "§6.10 要求按连接错误处置，本端却什么也没交代";
+                return;
+            }
+            Http2GoAwayPayload goAwayPayload;
+            std::string        errorText;
+            if (!parseHttp2GoAwayPayload(*goAway, goAwayPayload, &errorText))
+            {
+                ADD_FAILURE() << "本端交代的 GOAWAY 解不开：" << errorText;
+                return;
+            }
+            EXPECT_EQ(static_cast<std::uint16_t>(goAwayPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::ProtocolError));
+        };
+
+        // 格一：同一条流上插一帧 DATA
+        {
+            const auto [received, outcome] = runScript(unfinishedHead + makeFrame(Http2FrameType::Data, 0U, 1U, "x") + continuation);
+            EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+            EXPECT_NE(outcome.statusCode, 200) << "插进来的帧被放过了：这段头块与 HPACK 上下文已经错位";
+            expectProtocolErrorGoAway(received);
+        }
+
+        // 格二：插一条**别的流**上的完整 HEADERS——正是会让解码顺序与对端的编码顺序错开的那一种
+        {
+            HpackEncoder      otherEncoder;
+            const std::string otherBlock   = otherEncoder.encode({HpackHeaderField{":status", "500"}});
+            const auto [received, outcome] = runScript(unfinishedHead + makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 3U, otherBlock) + continuation);
+            EXPECT_NE(outcome.statusCode, 200) << "别的流上的头块被先解了：本端的动态表从此与对端不同步";
+            EXPECT_NE(outcome.statusCode, 500) << "那条插进来的响应压根不属于本端开过的流";
+            expectProtocolErrorGoAway(received);
+        }
+    }
+
+    /**
      * @brief 只有 §8.7 那两种形状才算「对端保证没处理过」，别的 RST 与答过话的流都不算
      * @details RFC 9113 §8.7 给了客户端两个「这条请求没被处理过」的保证：REFUSED_STREAM（§6.4：「the
      *          stream is being closed prior to any processing having occurred. Any request that was sent
