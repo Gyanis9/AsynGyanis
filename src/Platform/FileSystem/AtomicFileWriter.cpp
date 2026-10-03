@@ -48,6 +48,10 @@ namespace AsynGyanis::Platform
         }
 
         /// 目录项落盘：rename 本身的持久化要靠父目录的 fsync（Windows 需要备份语义句柄，收益有限，不做）
+        /// @details 结果不回传是本层刻意的取舍，不是漏：调到这里时替换**已经发生**、新文件对外可见，
+        ///          把 false 报给调用方等于说「这次写没成」，而调用方按写失败去清临时文件、重发一遍，
+        ///          反而把一个已经换好的状态搅得更乱。本层的失败通道只有「成 / 不成」两态，
+        ///          没有「换过来了但没落到持久存储」这一格，而断电窗口只在毫秒级
         void flushDirectoryToDisk(const std::filesystem::path &directoryPath) noexcept
         {
 #if ASYN_PLATFORM_WIN32
