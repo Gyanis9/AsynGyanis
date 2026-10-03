@@ -196,7 +196,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 把已经拆出来的六个字段折成时间点
          * @details 三条格式（IMF、RFC 850、asctime）共用这一份折算与范围检查：闰秒允许 second==60，
-         *          日必须落在该月的实际天数内（闰年 2 月 29 合法、4 月 31 不合法）。
+         *          日必须落在该月实际天数的**区间内**——下界也要判：`day` 是无符号的，只判上界时 0
+         *          一路穿到 daysFromCivil，悄悄给出上个月最后一天（对端写 `Sun Nov 00 …` 本该被拒，
+         *          却读成 10 月 31 日，条件验证器与 Cookie 的 Expires 都吃这个数）。
+         *          闰年 2 月 29 合法、4 月 31 不合法。
          * @return std::optional<std::chrono::system_clock::time_point> 字段越界时返回空
          */
         [[nodiscard]] std::optional<std::chrono::system_clock::time_point> makeUtcTimePoint(const unsigned year, const unsigned month, const unsigned day, const unsigned hour,
@@ -206,7 +209,7 @@ namespace AsynGyanis::Net
             {
                 return std::nullopt;
             }
-            if (day > daysInMonth(static_cast<int>(year), month))
+            if (day < 1 || day > daysInMonth(static_cast<int>(year), month))
             {
                 return std::nullopt;
             }
@@ -397,7 +400,9 @@ namespace AsynGyanis::Net
         }
 
         unsigned day = 0;
-        if (!parseDigits(text.substr(5, 2), day) || day < 1 || day > 31)
+        // 日的取值区间（1..该月天数）交给 makeUtcTimePoint 那一份判据：这里再写一遍 1 与 31 就是
+        // 第三条说法，而另外两种格式此前正是因为没写才把 `00` 读成了上个月最后一天
+        if (!parseDigits(text.substr(5, 2), day))
         {
             return std::nullopt;
         }

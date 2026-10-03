@@ -299,7 +299,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 过时格式的畸形写法照样拒绝：分隔符、名称、日宽、越界日期与时分秒
      * @details 放宽到「两种过时格式」不等于放宽成「什么像日期都收」：收错了会把一个不存在的
-     *          验证器当成有效，比判不出来更糟。
+     *          验证器当成有效，比判不出来更糟。三条 `00` 的日子钉的是同一件事——日的下界必须
+     *          在三种格式上一致：`day` 是无符号的，共享判据只写上界时，`00` 会一路穿到日期换算里，
+     *          悄悄给出上个月最后一天（旧实现里 `Sun Nov 00 …` 读出来是 1994-10-31，而 IMF 同样
+     *          写法的 `00` 一直是被拒的那一个）。
      */
     TEST(HttpDate, MalformedObsoleteFormatsAreRejected)
     {
@@ -311,6 +314,9 @@ namespace AsynGyanis::Net
                 "Sun Nov  6 08:49:37 199",        // 年份不足四位，整条长度也不符
                 "Sunday, 31-Apr-94 08:49:37 GMT", // 四月没有三十一日
                 "Sun Nov  6 24:49:37 1994",       // 小时越界
+                "Sunday, 00-Nov-94 08:49:37 GMT", // 日历里没有 0 日：RFC 850 那侧曾把它读成上月最后一天
+                "Sun Nov 00 08:49:37 1994",       // asctime 同一条下界
+                "Thu, 00 Nov 1994 08:49:37 GMT",  // IMF 一直判着下界，这一格钉住它没被放宽
         };
 
         for (const std::string_view text: rejectedTexts)
