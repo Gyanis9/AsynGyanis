@@ -608,6 +608,28 @@ namespace AsynGyanis::Net
                 if (receivedData.endStream)
                 {
                     pending.isRemoteEndStream = true;
+                    // 声明长度与实收不一致＝畸形请求（RFC 9113 §8.1.1）。服务阶段那条判据管不到流式派发：
+                    // 那时正文本来就没收完，比不得。于是「声明 13 字节、实收 5 字节就 END_STREAM」这一形状
+                    // 在 h2 的流式通路上一度既不比、也不出声——h1 读不满就根本收不了尾，h3 在连接层按 §4.1.2
+                    // 判死这条流，只有这一条沉默。现在收尾处补判并记一条 ERROR，指回声明值与实收值。
+                    // 只出声、不改交付：业务侧的 readNext() 分不清「读完 / 断开 / 被打断」三种终止来源
+                    // （HttpRequestBody 的既定契约），在这里把流打断会把「截断」变成「空正文」——
+                    // 那是另一种静默误读，比原来更糟。要把交付也改对，得先给那条契约补一个可问的原因
+                    if (!streamBody.isBodyTooLarge() && pending.request.method() != HttpMethod::HEAD)
+                    {
+                        const std::optional<std::string> declaredLengthText = pending.request.firstHeaderValue(kContentLengthHeaderName);
+                        std::size_t                      declaredLength     = 0;
+                        if (declaredLengthText.has_value() && parseContentLengthValue(*declaredLengthText, declaredLength) &&
+                            streamBody.totalReceivedByteCount() != declaredLength)
+                        {
+                            LOG_ERROR_FMT("Http2Session: 流 {} 的声明正文长度 {} 字节与实收 {} 字节不一致（流式正文已按到达批次交付，"
+                                          "对端在 END_STREAM 之前少发了 {} 字节）",
+                                          receivedData.streamId,
+                                          declaredLength,
+                                          streamBody.totalReceivedByteCount(),
+                                          declaredLength > streamBody.totalReceivedByteCount() ? declaredLength - streamBody.totalReceivedByteCount() : 0U);
+                        }
+                    }
                 }
                 return;
             }
