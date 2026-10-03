@@ -3285,4 +3285,80 @@ namespace AsynGyanis::Net
                 << "尾字段把净字节顶过上限之后没有收到应答：这条流被挂住了";
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "431");
     }
+    /**
+     * @brief 钉住：命中流式路由的请求，其正文**不进**「在途正文字节」这本账
+     * @details `memory_budget_bytes` 的文档说它管的是「单条报文的上限挡不住很多条连接」——那条路上
+     *          正文是服务端自己攒起来的。流式路由不是：每一批交给业务、服务端不留存，所以
+     *          `Http2Session::absorb` 在流式分支里根本不碰 `bodyBudget.growTo()`（h3 的
+     *          `addRequestBody` 同形）。这是有意的口径而不是漏账：那条路上未消费的字节由**每流接收窗口**
+     *          钉住上界——不消费就不还窗口，对端本来就发不出来；再让预算记一遍等于把「业务读得慢」
+     *          判成超限，而那时响应已经在路上，503 也回不出去。
+     *          采样的位置是关键：从处理器**内部**读 `reservedByteCount()`，手里正握着一批正文而账上是零，
+     *          才把文档那句口径变成可判的读数。缓冲路径的记账由同族的
+     *          `SharesOneBodyBudgetAcrossConcurrentStreams` 负责，两条各钉一侧。
+     */
+    TEST(Http2CleartextSession, StreamingRouteKeepsItsBytesOffTheInflightBodyLedger)
+    {
+        auto                     budget = std::make_shared<HttpMemoryBudget>(1024U * 1024U); ///< 上限宽到不会拒掉任何一条：这一条只看记账，不看拒绝
+        std::atomic<bool>        hasSampled{false};
+        std::atomic<std::size_t> reservedAtSample{1U};
+
+        HttpParserLimits parserLimits;
+
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [&hasSampled, &reservedAtSample, budget](Router &router, Core::EventLoop &)
+                {
+                    router.postStreaming("/stream",
+                                         [&hasSampled, &reservedAtSample, budget](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                         {
+                                             HttpRequestBody *const stream = request.bodyStream();
+                                             if (stream == nullptr)
+                                             {
+                                                 response.setBody("no-stream");
+                                                 co_return;
+                                             }
+                                             std::size_t totalByteCount = 0;
+                                             bool        isFirstBatch   = true;
+                                             while (co_await stream->readNext())
+                                             {
+                                                 if (isFirstBatch)
+                                                 {
+                                                     reservedAtSample.store(budget->reservedByteCount(), std::memory_order_release);
+                                                     hasSampled.store(true, std::memory_order_release);
+                                                     isFirstBatch = false;
+                                                 }
+                                                 totalByteCount += stream->chunk().size();
+                                             }
+                                             response.setBody("got=" + std::to_string(totalByteCount));
+                                             co_return;
+                                         });
+                },
+                parserLimits,
+                [budget](TestHttpServer &server)
+                {
+                    server.setHttp2CleartextEnabled(true);
+                    server.setMemoryBudget(budget);
+                });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &received) { return !received.empty() && received.front().header.type == Http2FrameType::Settings; }, kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        HpackDecoder responseDecoder;
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream"), false), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(300U, 'z')}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(frames, [](const std::vector<Http2Frame> &received) { return hasEndStream(received, 1U); }, kWaitTimeout)) << "流式请求没有收到应答";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 1U), "got=300");
+
+        ASSERT_TRUE(hasSampled.load(std::memory_order_acquire)) << "处理器没走到采样那一步，这条读数等于没测";
+        EXPECT_EQ(reservedAtSample.load(std::memory_order_acquire), 0U) << "正文此刻握在业务手里，账上却出现了预留：流式路径被算进了在途预算";
+        EXPECT_EQ(budget->reservedByteCount(), 0U) << "收口之后也不该留下没归还的预留";
+    }
 } // namespace AsynGyanis::Net

@@ -31,7 +31,9 @@ namespace AsynGyanis::Net
      * @note 上限为 0 表示不限制（仍会记账，`reservedByteCount()` 可观测）。预留与归还都是原子操作，
      *       不阻塞、不加锁，可在事件循环线程上直接用。
      * @note 只约束**请求正文**这一类可预期增长的内存：每连接的接收窗口是固定的 8 KiB，响应正文由
-     *       业务自己决定，头部（默认上限 64 KiB/请求）也不在本预算之内。
+     *       业务自己决定，头部（默认上限 64 KiB/请求）也不在本预算之内。h2/h3 的**流式路由**同样不在
+     *       账上——那条路上正文不在服务端留存，未消费的字节由每流接收窗口兜住，因此
+     *       `reservedByteCount()` 与 `asyn_http_inflight_body_bytes` 报的是「服务端替业务攒着的那部分」
      * @warning 本预算与 `TcpServer::setMaxConnections` 都是**可选开关、默认不启用**：默认配置下
      *          「头部 + 接收窗口 × N 条连接」没有总量上限，暴露在公网前应当显式配置两者
      *          （见 HttpServer::setMemoryBudget() 与 setMaxConnections()）。

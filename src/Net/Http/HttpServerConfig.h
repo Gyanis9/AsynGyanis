@@ -63,6 +63,11 @@ namespace AsynGyanis::Net
          *       突然开始回 503，而配置文件的每一行看着都对——这类默认值只能由部署方自己选
          * @note 账只覆盖三条 HTTP 通道（h1/h2/h3）的**请求正文**；WebSocket 帧缓冲、每连接接收窗口
          *       与响应正文都不在本预算之内
+         * @note h2/h3 的**流式路由**也不在这本账上：那条路上正文不在服务端留存，未消费的字节由每流
+         *       接收窗口钉住上界（不消费就不还窗口，对端本来就发不出来），再记一遍等于把「业务读得慢」
+         *       判成超限——那时响应已在路上，503 也回不出去。因此 `asyn_http_inflight_body_bytes`
+         *       报的是「服务端替业务攒着的那部分」，不是全部在途正文
+         *       （判据见 `Http2CleartextSession.StreamingRouteKeepsItsBytesOffTheInflightBodyLedger`）
          */
         std::size_t memoryBudgetBytes{0};
         bool        exposeMetrics{false}; ///< 是否注册 /metrics 与 /healthz
