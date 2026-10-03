@@ -186,6 +186,33 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：URL 里任何可能撕裂请求行的字节都被拒，而不只是原先那四个
+     * @details 头文件承诺「不接受空白与控制字符」，实现却只认 CR/LF/TAB/空格：NUL、0x01、DEL、0x0B
+     *          照样进得去，随后被原样拼成请求目标。NUL 会让按 C 字符串处理这段的接口把目标截断，
+     *          这正是请求分裂的形状。与下一跳那条引用（`resolveUrlReference()`）共用同一份判据——
+     *          两处各写一条时，注释里那句「同一口径」在收紧的那一天就会变成假话。
+     */
+    TEST(HttpClientUrl, RejectsEveryTearingCharacter)
+    {
+        const std::string nulInTarget = std::string("http://example.com/a") + '\0' + "b"; // 按字节拼：字面量会在 NUL 处被截掉
+        ASSERT_THROW(static_cast<void>(parseUrl(std::string_view(nulInTarget))), std::invalid_argument) << "NUL 混在请求目标里照样放行";
+        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com/a\x01"
+                                                "b")),
+                     std::invalid_argument);
+        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com/a\x0b"
+                                                "b")),
+                     std::invalid_argument);
+        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com/a\x7f"
+                                                "b")),
+                     std::invalid_argument)
+                << "DEL 不是可见字符，放行等于让对端自己判断这段到哪为止";
+
+        // 正向对照：百分号编码与可打印字符照常收（把合规 URL 也挡了就是自伤），片段按规范剥掉
+        const ParsedUrl encoded = parseUrl("http://example.com/a%20b?x=1#frag");
+        EXPECT_EQ(encoded.path, "/a%20b?x=1") << "百分号编码的路径被误挡，或片段没剥掉";
+    }
+
+    /**
      * @brief 钉住：带方括号的 IPv6 字面量可用，括号在拆分时被去掉
      * @details 主机自带冒号，不先按 RFC 3986 §3.2.2 认方括号就分不清哪段是端口，
      *          「Host: ::1」也会把头部与端口分隔符混成一团

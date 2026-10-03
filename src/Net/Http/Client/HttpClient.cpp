@@ -87,11 +87,33 @@ namespace AsynGyanis::Net
         return std::nullopt;
     }
 
+    namespace
+    {
+        /**
+         * @brief URL（含下一跳引用）里不许出现的字节：空白与控制字符（≤ 0x20 与 DEL 0x7F）
+         * @details 请求目标是从这段文本原样拼进请求行的：留一个 CR/LF 就是让调用方自己结束请求行、
+         *          甚至插进新的头部（请求分裂），留一个 NUL 会让后面按 C 字符串处理这段的接口截断目标。
+         *          两个入口（`parseUrl()` 与 `resolveUrlReference()`）共用这一份判据：先前各写一条，
+         *          一边收全了 ASCII 控制字符、一边只认四个，而注释还写着「同一口径」。
+         */
+        [[nodiscard]] bool urlHasTearableCharacter(const std::string_view url) noexcept
+        {
+            for (const char character: url)
+            {
+                if (static_cast<unsigned char>(character) <= 0x20U || static_cast<unsigned char>(character) == 0x7FU)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    } // namespace
+
     ParsedUrl parseUrl(const std::string_view url)
     {
         // 请求行是把 path 原样拼出来的：里面若有 CR/LF 或空白，等于让调用方自己结束请求行、
         // 甚至插进新的头部（请求分裂）。这不是「请求失败」，是用法错误，当场报出来
-        if (url.find_first_of("\r\n\t ") != std::string_view::npos)
+        if (urlHasTearableCharacter(url))
         {
             throw Base::InvalidArgumentException("HttpClient：URL 里不允许出现空白或控制字符（会撕裂请求行）：「" + std::string(url) + "」");
         }
@@ -361,13 +383,10 @@ namespace AsynGyanis::Net
         {
             return std::nullopt;
         }
-        // 空白与控制字符会撕裂下一跳的请求行，与 parseUrl 同一口径当场拒
-        for (const char character: reference)
+        // 空白与控制字符会撕裂下一跳的请求行，与 parseUrl 共用同一份判据
+        if (urlHasTearableCharacter(reference))
         {
-            if (static_cast<unsigned char>(character) <= 0x20U || static_cast<unsigned char>(character) == 0x7FU)
-            {
-                return std::nullopt;
-            }
+            return std::nullopt;
         }
 
         // 片段（`#...`）整段丢掉：一次 HTTP 跳转用不上它，留着只会让下一跳与它自己的 Origin 对不上
