@@ -180,7 +180,7 @@ namespace AsynGyanis::Net
          *
          * @param configuration 新的连接层配置
          * @throws Base::InvalidArgumentException 取值非法（ENABLE_PUSH / ENABLE_CONNECT_PROTOCOL 不是 0/1，
-         *         或 MAX_FRAME_SIZE 越出 RFC 7540 §6.5.2 的合法区间）：**设置时就拒绝**，而不是等第一条
+         *         或 MAX_FRAME_SIZE 越出 RFC 9113 §6.5.2 的合法区间）：**设置时就拒绝**，而不是等第一条
          *         连接进来才在会话构造里抛出——后者在启动日志里看不到任何异常
          * @note 明文(h2c)与 TLS 上的 h2 共用这一份配置
          * @see Http2ConnectionConfiguration, setHttp2CleartextEnabled()

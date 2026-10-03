@@ -410,7 +410,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：静态表的段索引 + 二分查找，结果与逐项线性扫表在每一项上都一致
      * @details 段表与它的排序都在编译期算出，前提「同名条目相邻」由 static_assert 把守；这个用例补上
      *          运行期的对拍：全表逐项比两种求法，再专门试前缀名与大小写——HPACK 的字符串比较是逐字节
-     *          精确的，二分边界判错会让两端压缩上下文不同步（RFC 7540 §4.3）。
+     *          精确的，二分边界判错会让两端压缩上下文不同步（RFC 9113 §4.3）。
      */
     TEST(Hpack, StaticTableIndexedLookupMatchesLinearScan)
     {
@@ -1074,7 +1074,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 头列表总大小、单个名与值的长度上限都会拒绝，并归入 LimitExceeded（对应 ENHANCE_YOUR_CALM）
-     * @details 头列表大小的算式按 RFC 7540 §6.5.2：每项名长 + 值长 + 32。上限是本端策略，
+     * @details 头列表大小的算式按 RFC 9113 §6.5.2：每项名长 + 值长 + 32。上限是本端策略，
      *          不是对端违规，因此与 CompressionError 分开。
      */
     TEST(Hpack, RejectsHeaderListAndFieldLengthLimits)
@@ -1185,7 +1185,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 失败后解码器粘滞在错误态：动态表不再改动，reset() 才能回到初态
-     * @details 头块解不开意味着压缩上下文已经与对端不同步（RFC 7540 §4.3），继续解只会解出错的头部。
+     * @details 头块解不开意味着压缩上下文已经与对端不同步（RFC 9113 §4.3），继续解只会解出错的头部。
      */
     TEST(Hpack, ErrorStateIsStickyUntilReset)
     {

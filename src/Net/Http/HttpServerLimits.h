@@ -40,7 +40,7 @@ namespace AsynGyanis::Net
         std::chrono::milliseconds writeTimeout{std::chrono::seconds(60)}; ///< 响应产出预算：处理器执行与等待可写（发送响应）的最长时长（慢消费者与长处理器防线）
 
         /// HTTP/2 握手期专项：等对端 ACK 本端 SETTINGS 的最长时长，单位毫秒，从本端发出 SETTINGS 起算
-        /// （RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）。握手期等待与业务空闲是两件事，故单列一项；0 表示不设这项保护
+        /// （RFC 9113 §6.5.3 的 SETTINGS_TIMEOUT）。握手期等待与业务空闲是两件事，故单列一项；0 表示不设这项保护
         std::chrono::milliseconds settingsAcknowledgementTimeout{std::chrono::seconds(10)};
 
         std::size_t maximumRequestsPerConnection{1000}; ///< 单连接最多处理的请求条数，达到后回完当前响应即收口；0 表示不限

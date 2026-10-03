@@ -207,7 +207,7 @@ namespace AsynGyanis::Net
             case HpackErrorKind::None:
                 return Http2ErrorCode::NoError;
             case HpackErrorKind::CompressionError:
-                // 压缩上下文已经与对端不同步，继续通信只会解出错误的头部（RFC 7540 §4.3）
+                // 压缩上下文已经与对端不同步，继续通信只会解出错误的头部（RFC 9113 §4.3）
                 return Http2ErrorCode::CompressionError;
             case HpackErrorKind::LimitExceeded:
                 return Http2ErrorCode::EnhanceYourCalm;
@@ -759,11 +759,11 @@ namespace AsynGyanis::Net
             return;
         }
 
-        // 头列表总大小按 RFC 7540 §6.5.2 的算式累计：每项名长 + 值长 + 32
+        // 头列表总大小按 RFC 9113 §6.5.2 的算式累计：每项名长 + 值长 + 32
         m_headerListByteCount += field.name.size() + field.value.size() + kHpackDynamicTableEntryOverheadBytes;
         if (m_headerListByteCount > m_limits.maximumHeaderListByteCount)
         {
-            noteHeaderLimitExceeded(std::format("本头块累计的头列表大小 {} 字节超出上限 {} 字节（RFC 7540 §6.5.2 的算式）："
+            noteHeaderLimitExceeded(std::format("本头块累计的头列表大小 {} 字节超出上限 {} 字节（RFC 9113 §6.5.2 的算式）："
                                                 "请调高 HpackDecoderLimits::maximumHeaderListByteCount，或让对端少发头部",
                                                 m_headerListByteCount, m_limits.maximumHeaderListByteCount));
             return;

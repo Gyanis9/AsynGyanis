@@ -1428,7 +1428,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：请求头不合规被拒时也要计入 badRequestCount（h2 此前在指标上是零）
      * @details 这类流不交出请求、不回响应，因此既不进 totalRequestCount 也不进状态码计数。
      *          h1 与 h3 在同一处都记 badRequestCount，只有 h2 漏了：对端拿畸形头部连发时
-     *          曲线一动不动，等于把一类远程可发的坏输入做成隐形。RFC 7540 §8.1.2.6 只规定
+     *          曲线一动不动，等于把一类远程可发的坏输入做成隐形。RFC 9113 §8.1.1 只规定
      *          按流错误作废，没有说「不许记账」——回不回 400 是自由，记不记数是运维看得见看不见的问题。
      */
     TEST(Http2Session, CountsMalformedRequestHeadersAsBadRequest)
@@ -1449,7 +1449,7 @@ namespace AsynGyanis::Net
                 client.pumpUntil(frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::Settings) >= 1; }, kWaitTimeout));
         ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
 
-        // 只有 :method 与 :scheme 的头块：缺 :path，按 §8.1.2.3 属畸形请求
+        // 只有 :method 与 :scheme 的头块：缺 :path，按 §8.3.1 属畸形请求
         const std::string malformedHeaderBlock = hpackIndexedField(2) + hpackIndexedField(7);
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, malformedHeaderBlock, true), kWaitTimeout));
         ASSERT_TRUE(client.pumpUntil(
@@ -1473,7 +1473,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：content-length 与实收正文字节数不一致时先回 400，再以 RST_STREAM(PROTOCOL_ERROR) 作废这条流
-     * @details RFC 7540 §8.1.2.6 两句要连着读：这类请求属畸形报文，「Malformed requests or responses
+     * @details RFC 9113 §8.1.1 两句要连着读：这类请求属畸形报文，「Malformed requests or responses
      *          that are detected MUST be treated as a stream error (Section 5.4.2) of type
      *          PROTOCOL_ERROR」；紧接一句「a server MAY send an HTTP response prior to closing or
      *          resetting the stream」许可先把 400 交出去。两句合起来是「响应 + 重置」两步都要做——
@@ -1519,7 +1519,7 @@ namespace AsynGyanis::Net
         const TestFrame *const resetFrame = findFrame(frames, Http2FrameType::RstStream);
         ASSERT_TRUE(resetFrame != nullptr);
         EXPECT_EQ(resetFrame->streamId, 1U) << "畸形请求的流错误只能落在这一条流上";
-        EXPECT_EQ(readRstStreamErrorCode(resetFrame->payload), Http2ErrorCode::ProtocolError) << "§8.1.2.6 指定这类畸形报文按 PROTOCOL_ERROR 处理，换别的码就是另一套语义";
+        EXPECT_EQ(readRstStreamErrorCode(resetFrame->payload), Http2ErrorCode::ProtocolError) << "§8.1.1 指定这类畸形报文按 PROTOCOL_ERROR 处理，换别的码就是另一套语义";
         EXPECT_FALSE(hasEndStream(frames, 1U)) << "400 的 DATA 不能带 END_STREAM：本端一收尾这条流就进 closed，RST 发不出去";
 
         client.closeNow();
@@ -2084,7 +2084,7 @@ namespace AsynGyanis::Net
             const TestFrame *const resetFrame = findFrame(frames, Http2FrameType::RstStream);
             ASSERT_NE(resetFrame, nullptr);
             EXPECT_EQ(resetFrame->streamId, 3U) << "被拒绝的应当是第二条请求的流";
-            EXPECT_EQ(readRstStreamErrorCode(resetFrame->payload), Http2ErrorCode::RefusedStream) << "GOAWAY 之后的新流应当被回 REFUSED_STREAM（RFC 7540 §6.8）";
+            EXPECT_EQ(readRstStreamErrorCode(resetFrame->payload), Http2ErrorCode::RefusedStream) << "GOAWAY 之后的新流应当被回 REFUSED_STREAM（RFC 9113 §6.8）";
         } else
         {
             EXPECT_EQ(responseDataPayload(frames, 3U), "served-hello") << "通告之前的第二条请求没有被服务完";
@@ -2296,7 +2296,7 @@ namespace AsynGyanis::Net
         const std::vector<HpackHeaderField> trailerFields = decodeResponseHeaderBlock(responseDecoder, blocks[1]);
         EXPECT_EQ(findHeaderValue(trailerFields, "x-checksum"), "abc123");
         EXPECT_EQ(findHeaderValue(trailerFields, "x-rows"), "2");
-        EXPECT_TRUE(findHeaderValue(trailerFields, ":status").empty()) << "尾部头块里不许有伪头（§8.1.2.1）";
+        EXPECT_TRUE(findHeaderValue(trailerFields, ":status").empty()) << "尾部头块里不许有伪头（§8.3）";
         EXPECT_EQ(responseDataPayload(frames, 1U), "trailed-body") << "正文应当完整，尾部字段排在它之后";
 
         // END_STREAM 的落点：唯一一片 DATA 不许带它，收尾由尾部头块承担（也就不需要那个零长 DATA 末片）

@@ -31,13 +31,13 @@ namespace AsynGyanis::Net
             return Base::escapeForLog(text, maximumDisplayByteCount);
         }
 
-        /// RFC 7540 §6 定义过的帧类型取值上界（CONTINUATION = 0x9）：大于它的按 §4.1 忽略
+        /// RFC 9113 §6 定义过的帧类型取值上界（CONTINUATION = 0x9）：大于它的按 §4.1 忽略
         constexpr std::uint8_t kLastKnownFrameTypeValue = 0x9;
 
         /// 已终止流的记录保留条数：记录只为区分「忽略」与「判错」而留，超上限就挤掉最旧的，账本不随连接时长增长
         constexpr std::size_t kTerminatedStreamMemoryCount = 256;
 
-        /// 连接特定头（RFC 7540 §8.1.2.2）：HTTP/2 里一律不得出现，收到即判该流不合规
+        /// 连接特定头（RFC 9113 §8.2.2）：HTTP/2 里一律不得出现，收到即判该流不合规
         constexpr std::string_view kConnectionSpecificHeaderNames[] = {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"};
 
         /**
@@ -185,7 +185,7 @@ namespace AsynGyanis::Net
         // 配置取值在本端通告出去之前就校验：非法值一旦发出去，对端只能按连接错误收场（§6.5.2）
         if (configuration.enablePush > 1)
         {
-            throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 ENABLE_PUSH 只能是 0 或 1（RFC 7540 §6.5.2），"
+            throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 ENABLE_PUSH 只能是 0 或 1（RFC 9113 §6.5.2），"
                                                              "收到 {}：请改为 0（本端不推送）或 1（允许对端期待推送）",
                                                              configuration.enablePush));
         }
@@ -197,7 +197,7 @@ namespace AsynGyanis::Net
         }
         if (configuration.maximumFrameSize < kHttp2DefaultMaximumFrameSize || configuration.maximumFrameSize > kHttp2MaximumMaximumFrameSize)
         {
-            throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 MAX_FRAME_SIZE 收到 {}：合法区间是 [{}, {}]（RFC 7540 §6.5.2），"
+            throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 MAX_FRAME_SIZE 收到 {}：合法区间是 [{}, {}]（RFC 9113 §6.5.2），"
                                                              "越界的值发出去对端会按连接错误收场",
                                                              configuration.maximumFrameSize, kHttp2DefaultMaximumFrameSize, kHttp2MaximumMaximumFrameSize));
         }
@@ -206,7 +206,7 @@ namespace AsynGyanis::Net
         // 发出去对端按连接错误收场，而不发出去时本端自己会把「窗口」按负数参与流控算式
         if (configuration.initialWindowSize > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
         {
-            throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 INITIAL_WINDOW_SIZE 收到 {}：上界是 {}（RFC 7540 §6.5.2，"
+            throw Base::InvalidArgumentException(std::format("HTTP/2 连接配置的 INITIAL_WINDOW_SIZE 收到 {}：上界是 {}（RFC 9113 §6.5.2，"
                                                              "线上为有符号 32 位）。要大窗口请分次发 WINDOW_UPDATE（§6.9.2），不要越过这个编码上限",
                                                              configuration.initialWindowSize, std::numeric_limits<std::int32_t>::max()));
         }
@@ -248,7 +248,7 @@ namespace AsynGyanis::Net
                     if (actualByte != expectedByte)
                     {
                         const std::size_t position = m_prefaceByteCount + byteIndex + 1;
-                        fail(Http2ErrorCode::ProtocolError, std::format("客户端前奏第 {} 个字节不匹配（RFC 7540 §3.5）：应当是 0x{:02X}，实际是 0x{:02X}；"
+                        fail(Http2ErrorCode::ProtocolError, std::format("客户端前奏第 {} 个字节不匹配（RFC 9113 §3.4）：应当是 0x{:02X}，实际是 0x{:02X}；"
                                                                         "前奏必须是 \"PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\"（共 24 字节）",
                                                                         position, static_cast<unsigned int>(static_cast<unsigned char>(expectedByte)),
                                                                         static_cast<unsigned int>(static_cast<unsigned char>(actualByte))));
@@ -504,7 +504,7 @@ namespace AsynGyanis::Net
             return Http2ResponseSendStatus::Rejected;
         }
 
-        // :status 必须排在最前（§8.1.2.1：伪头先于普通头部），其余按调用方给的顺序编码。
+        // :status 必须排在最前（§8.3：伪头先于普通头部），其余按调用方给的顺序编码。
         // 这里只另起一张视图表，不再把每个头的名与值各拷两份字符串：整张 owning vector 拷一遍
         // 是每条响应第二次的无谓往返，编码器读到的字节完全一样
         std::string statusCodeText = std::to_string(statusCode);
@@ -573,7 +573,7 @@ namespace AsynGyanis::Net
             if (name.empty() || name.front() == ':' || containsUppercaseAscii(name) || !isTokenName(name) || !isHeaderValueBytes(field.value))
             {
                 const std::string reason = std::format("流 {} 的尾部头块里有非法字段「{}」：尾部头块不得含伪头，头名必须是"
-                                                       "全小写合法 token，头值不许含 CR/LF/NUL（RFC 7540 §8.1.2）",
+                                                       "全小写合法 token，头值不许含 CR/LF/NUL（RFC 9113 §8.2）",
                                                        streamId, name);
                 failStream(*stream, Http2ErrorCode::InternalError, reason);
                 writeError(errorText, reason);
@@ -783,7 +783,7 @@ namespace AsynGyanis::Net
         {
             if (frameTypeValue != static_cast<std::uint8_t>(Http2FrameType::Continuation) || frame.header.streamId != m_pendingHeaderStreamId)
             {
-                fail(Http2ErrorCode::ProtocolError, std::format("流 {} 的头块还没收完（缺 END_HEADERS），此刻收到{}（流 {}）：RFC 7540 §6.10 要求 CONTINUATION "
+                fail(Http2ErrorCode::ProtocolError, std::format("流 {} 的头块还没收完（缺 END_HEADERS），此刻收到{}（流 {}）：RFC 9113 §6.10 要求 CONTINUATION "
                                                                 "不得被任何其它帧打断",
                                                                 m_pendingHeaderStreamId, http2FrameTypeName(frameType), frame.header.streamId));
                 return false;
@@ -791,12 +791,12 @@ namespace AsynGyanis::Net
             return handleContinuationFrame(frame);
         }
 
-        // 前奏之后的第一个帧必须是客户端自己的 SETTINGS（§3.5）：ACK 不是前奏的一部分
+        // 前奏之后的第一个帧必须是客户端自己的 SETTINGS（§3.4）：ACK 不是前奏的一部分
         if (m_state == Http2ConnectionState::AwaitingSettings &&
             (frameTypeValue != static_cast<std::uint8_t>(Http2FrameType::Settings) || (frame.header.flags & kHttp2FlagAcknowledge) != 0))
         {
             fail(Http2ErrorCode::ProtocolError,
-                 std::format("客户端前奏之后的第一个帧必须是 SETTINGS（RFC 7540 §3.5），收到{}（流 {}）", http2FrameTypeName(frameType), frame.header.streamId));
+                 std::format("客户端前奏之后的第一个帧必须是 SETTINGS（RFC 9113 §3.4），收到{}（流 {}）", http2FrameTypeName(frameType), frame.header.streamId));
             return false;
         }
 
@@ -820,7 +820,7 @@ namespace AsynGyanis::Net
                 return handleSettingsFrame(frame);
             case Http2FrameType::PushPromise:
                 // 本端是服务端：客户端不得发推送承诺（§8.2），收到即协议违规
-                fail(Http2ErrorCode::ProtocolError, std::format("收到流 {} 的 PUSH_PROMISE：RFC 7540 §8.2 只允许服务端发送推送承诺，客户端发送即连接错误", frame.header.streamId));
+                fail(Http2ErrorCode::ProtocolError, std::format("收到流 {} 的 PUSH_PROMISE：RFC 9113 §8.4 只允许服务端发送推送承诺，客户端发送即连接错误", frame.header.streamId));
                 return false;
             case Http2FrameType::Ping:
                 return handlePingFrame(frame);
@@ -851,13 +851,13 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        // 流控记账（RFC 7540 §6.9.1）：DATA 帧的**整段负载**都占窗口——含帧层剥掉的 padding，
+        // 流控记账（RFC 9113 §6.9.1）：DATA 帧的**整段负载**都占窗口——含帧层剥掉的 padding，
         // 也含随后会被忽略或判错的那些帧。对端已经按自己的账扣过一次，本端不记就是漏账
         const std::int64_t frameByteCount = static_cast<std::int64_t>(frame.header.payloadLength);
         m_connectionReceiveWindowByteCount -= frameByteCount;
         if (m_connectionReceiveWindowByteCount < 0)
         {
-            fail(Http2ErrorCode::FlowControlError, std::format("连接级接收窗口被突破：对端在本端通告的窗口只剩 {} 字节时又发出了 {} 字节的 DATA（RFC 7540 §6.9.1），"
+            fail(Http2ErrorCode::FlowControlError, std::format("连接级接收窗口被突破：对端在本端通告的窗口只剩 {} 字节时又发出了 {} 字节的 DATA（RFC 9113 §6.9.1），"
                                                                "请检查对端的窗口记账",
                                                                m_connectionReceiveWindowByteCount + frameByteCount, frameByteCount));
             return false;
@@ -877,7 +877,7 @@ namespace AsynGyanis::Net
             // 一条记录都没被挤掉时「流号不超过已用最大值而账本里又没有」就等于「这条流从未开过」，
             // 这种能证伪的违约帧不能替对端咽下去
             fail(Http2ErrorCode::ProtocolError,
-                 std::format("流 {} 从未开启（idle），不能在该流上发 DATA（RFC 7540 §5.1）；本端已用过的最大对端流号是 {}", streamId, m_highestPeerStreamId));
+                 std::format("流 {} 从未开启（idle），不能在该流上发 DATA（RFC 9113 §5.1）；本端已用过的最大对端流号是 {}", streamId, m_highestPeerStreamId));
             return false;
         }
         if (stream->state != Http2StreamState::Closed)
@@ -886,7 +886,7 @@ namespace AsynGyanis::Net
             stream->receiveWindowByteCount -= frameByteCount;
             if (stream->receiveWindowByteCount < 0)
             {
-                fail(Http2ErrorCode::FlowControlError, std::format("流 {} 的接收窗口被突破：对端在窗口只剩 {} 字节时又发出了 {} 字节的 DATA（RFC 7540 §6.9.1）", streamId,
+                fail(Http2ErrorCode::FlowControlError, std::format("流 {} 的接收窗口被突破：对端在窗口只剩 {} 字节时又发出了 {} 字节的 DATA（RFC 9113 §6.9.1）", streamId,
                                                                    stream->receiveWindowByteCount + frameByteCount, frameByteCount));
                 return false;
             }
@@ -908,13 +908,13 @@ namespace AsynGyanis::Net
             {
                 // 对端自己复位过这条流，其后又发 DATA：TCP 保证这片排在它那枚 RST 之后，按流错误回敬
                 failStream(*stream, Http2ErrorCode::StreamClosed,
-                           std::format("流 {} 已被对端的 RST_STREAM 终止，其后又收到 DATA：RFC 7540 §5.1「closed」段"
+                           std::format("流 {} 已被对端的 RST_STREAM 终止，其后又收到 DATA：RFC 9113 §5.1「closed」段"
                                        "要求按流错误 STREAM_CLOSED 处理",
                                        streamId));
                 return true;
             }
             fail(Http2ErrorCode::StreamClosed,
-                 std::format("流 {} 已正常终止（双向 END_STREAM），再收到 DATA：RFC 7540 §5.1「closed」段要求按连接错误 STREAM_CLOSED 处理", streamId));
+                 std::format("流 {} 已正常终止（双向 END_STREAM），再收到 DATA：RFC 9113 §5.1「closed」段要求按连接错误 STREAM_CLOSED 处理", streamId));
             return false;
         }
         if (stream->state == Http2StreamState::HalfClosedRemote)
@@ -961,7 +961,7 @@ namespace AsynGyanis::Net
             // 新流号必须严格大于所有已用过的流号（§5.1.1）：倒退或重用一律判错
             if (streamId <= m_highestPeerStreamId)
             {
-                fail(Http2ErrorCode::ProtocolError, std::format("流号 {} 不是新流（本端已用过的最大对端流号是 {}）：RFC 7540 §5.1.1 要求新流的流号严格递增，"
+                fail(Http2ErrorCode::ProtocolError, std::format("流号 {} 不是新流（本端已用过的最大对端流号是 {}）：RFC 9113 §5.1.1 要求新流的流号严格递增，"
                                                                 "请检查对端是否重用了流号",
                                                                 streamId, m_highestPeerStreamId));
                 return false;
@@ -970,14 +970,14 @@ namespace AsynGyanis::Net
             if (m_state == Http2ConnectionState::Closing)
             {
                 refuseNewStream(streamId, std::format("流 {} 是连接进入关闭中之后新开的流（本端已发收尾 GOAWAY 或已收到对端 GOAWAY，"
-                                                      "RFC 7540 §6.8：GOAWAY 之后不得再开新流）",
+                                                      "RFC 9113 §6.8：GOAWAY 之后不得再开新流）",
                                                       streamId));
                 return beginHeaderBlock(streamId, HeaderBlockPurpose::Discard, payload.endStream, payload.headerBlockFragment, payload.endHeaders);
             }
             // 并发上限（§5.1.2）：回 REFUSED_STREAM，连接继续为其它流服务
             if (m_openStreamCount >= m_configuration.maximumConcurrentStreams)
             {
-                refuseNewStream(streamId, std::format("并发流数已达上限 {}（SETTINGS_MAX_CONCURRENT_STREAMS，RFC 7540 §5.1.2）", m_configuration.maximumConcurrentStreams));
+                refuseNewStream(streamId, std::format("并发流数已达上限 {}（SETTINGS_MAX_CONCURRENT_STREAMS，RFC 9113 §5.1.2）", m_configuration.maximumConcurrentStreams));
                 return beginHeaderBlock(streamId, HeaderBlockPurpose::Discard, payload.endStream, payload.headerBlockFragment, payload.endHeaders);
             }
             openStream(streamId);
@@ -990,14 +990,14 @@ namespace AsynGyanis::Net
             if (verdict == TerminatedStreamFrameVerdict::FailConnection)
             {
                 fail(Http2ErrorCode::StreamClosed,
-                     std::format("流 {} 已正常终止（双向 END_STREAM），再收到 HEADERS：RFC 7540 §5.1「closed」段要求按连接错误 STREAM_CLOSED 处理", streamId));
+                     std::format("流 {} 已正常终止（双向 END_STREAM），再收到 HEADERS：RFC 9113 §5.1「closed」段要求按连接错误 STREAM_CLOSED 处理", streamId));
                 return false;
             }
             if (verdict == TerminatedStreamFrameVerdict::ResetStream)
             {
                 // 对端自己复位过这条流，其后又发头块：同 DATA 那一支，按流错误 STREAM_CLOSED 回敬
                 failStream(*stream, Http2ErrorCode::StreamClosed,
-                           std::format("流 {} 已被对端的 RST_STREAM 终止，其后又收到 HEADERS：RFC 7540 §5.1「closed」段"
+                           std::format("流 {} 已被对端的 RST_STREAM 终止，其后又收到 HEADERS：RFC 9113 §5.1「closed」段"
                                        "要求按流错误 STREAM_CLOSED 处理",
                                        streamId));
             }
@@ -1071,7 +1071,7 @@ namespace AsynGyanis::Net
             }
             // idle 流上只允许 HEADERS 与 PRIORITY（§5.1）：对从未开启的流发 RST_STREAM 是连接错误。
             // 账本还完整（没挤掉过记录）时这里判得准，见 handleData 同一处说明
-            fail(Http2ErrorCode::ProtocolError, std::format("收到流 {} 的 RST_STREAM，但该流从未开启（idle）：RFC 7540 §5.1 只允许在 idle 流上发 HEADERS 与 PRIORITY", streamId));
+            fail(Http2ErrorCode::ProtocolError, std::format("收到流 {} 的 RST_STREAM，但该流从未开启（idle）：RFC 9113 §5.1 只允许在 idle 流上发 HEADERS 与 PRIORITY", streamId));
             return false;
         }
         if (stream->state == Http2StreamState::Closed)
@@ -1100,7 +1100,7 @@ namespace AsynGyanis::Net
             // ACK 只允许匹配一次：没有待确认的 SETTINGS 就是多余 ACK（§6.5.3 的确认语义）
             if (m_outstandingSettingsCount == 0)
             {
-                fail(Http2ErrorCode::ProtocolError, "收到多余的 SETTINGS ACK：本端没有待确认的 SETTINGS（RFC 7540 §6.5.3 规定每个 SETTINGS 只回一个 ACK）");
+                fail(Http2ErrorCode::ProtocolError, "收到多余的 SETTINGS ACK：本端没有待确认的 SETTINGS（RFC 9113 §6.5.3 规定每个 SETTINGS 只回一个 ACK）");
                 return false;
             }
             --m_outstandingSettingsCount;
@@ -1201,7 +1201,7 @@ namespace AsynGyanis::Net
             }
             // 从未开启的流上出现 WINDOW_UPDATE：同样是 §5.1「idle」段的连接错误（与下面「已终止流要忽略」不同）
             fail(Http2ErrorCode::ProtocolError,
-                 std::format("收到流 {} 的 WINDOW_UPDATE，但该流从未开启（idle）：RFC 7540 §5.1 只允许在 idle 流上发 HEADERS 与 PRIORITY", streamId));
+                 std::format("收到流 {} 的 WINDOW_UPDATE，但该流从未开启（idle）：RFC 9113 §5.1 只允许在 idle 流上发 HEADERS 与 PRIORITY", streamId));
             return false;
         }
         if (stream->state == Http2StreamState::Closed)
@@ -1225,7 +1225,7 @@ namespace AsynGyanis::Net
         if (!m_isAssemblingHeaderBlock)
         {
             fail(Http2ErrorCode::ProtocolError,
-                 std::format("收到没有前置 HEADERS 的 CONTINUATION（流 {}）：RFC 7540 §6.10 要求它紧跟在同一个流的 HEADERS 之后", frame.header.streamId));
+                 std::format("收到没有前置 HEADERS 的 CONTINUATION（流 {}）：RFC 9113 §6.10 要求它紧跟在同一个流的 HEADERS 之后", frame.header.streamId));
             return false;
         }
         Http2ContinuationPayload payload;
@@ -1451,15 +1451,15 @@ namespace AsynGyanis::Net
         std::size_t contentLengthValue    = 0;
         for (const HpackHeaderField &field: headerFields)
         {
-            // 头名必须全小写（§8.1.2）：HTTP/2 不允许大小写折叠，大写会让同一个头部出现两种写法
+            // 头名必须全小写（§8.2）：HTTP/2 不允许大小写折叠，大写会让同一个头部出现两种写法
             if (field.name.empty())
             {
-                writeError(errorText, "请求头里出现空头名：RFC 7540 §8.1.2 要求头部名必须是非空的小写字段名");
+                writeError(errorText, "请求头里出现空头名：RFC 9113 §8.2 要求头部名必须是非空的小写字段名");
                 return false;
             }
             if (containsUppercaseAscii(field.name))
             {
-                writeError(errorText, std::format("请求头名 \"{}\" 含大写字母：RFC 7540 §8.1.2 要求 HTTP/2 的头部名必须全小写，"
+                writeError(errorText, std::format("请求头名 \"{}\" 含大写字母：RFC 9113 §8.2 要求 HTTP/2 的头部名必须全小写，"
                                                   "请让对端改成小写",
                                                   printableFieldText(field.name)));
                 return false;
@@ -1467,17 +1467,17 @@ namespace AsynGyanis::Net
 
             if (field.name.front() == ':')
             {
-                // 伪头必须全部出现在普通头部之前（§8.1.2.1）
+                // 伪头必须全部出现在普通头部之前（§8.3）
                 if (hasSeenRegularHeader)
                 {
-                    writeError(errorText, std::format("伪头 \"{}\" 出现在普通头部之后：RFC 7540 §8.1.2.1 要求所有伪头必须排在普通头部之前", printableFieldText(field.name)));
+                    writeError(errorText, std::format("伪头 \"{}\" 出现在普通头部之后：RFC 9113 §8.3 要求所有伪头必须排在普通头部之前", printableFieldText(field.name)));
                     return false;
                 }
                 if (field.name == ":method")
                 {
                     if (hasMethodField)
                     {
-                        writeError(errorText, ":method 伪头出现了两次：RFC 7540 §8.1.2.3 要求每个请求带且只带一个");
+                        writeError(errorText, ":method 伪头出现了两次：RFC 9113 §8.3.1 要求每个请求带且只带一个");
                         return false;
                     }
                     hasMethodField = true;
@@ -1486,7 +1486,7 @@ namespace AsynGyanis::Net
                 {
                     if (hasSchemeField)
                     {
-                        writeError(errorText, ":scheme 伪头出现了两次：RFC 7540 §8.1.2.3 要求每个请求带且只带一个");
+                        writeError(errorText, ":scheme 伪头出现了两次：RFC 9113 §8.3.1 要求每个请求带且只带一个");
                         return false;
                     }
                     hasSchemeField = true;
@@ -1505,7 +1505,7 @@ namespace AsynGyanis::Net
                 {
                     if (hasPathField)
                     {
-                        writeError(errorText, ":path 伪头出现了两次：RFC 7540 §8.1.2.3 要求每个请求带且只带一个");
+                        writeError(errorText, ":path 伪头出现了两次：RFC 9113 §8.3.1 要求每个请求带且只带一个");
                         return false;
                     }
                     hasPathField = true;
@@ -1533,7 +1533,7 @@ namespace AsynGyanis::Net
                 {
                     if (hasAuthorityField)
                     {
-                        writeError(errorText, ":authority 伪头出现了两次：RFC 7540 §8.1.2.3 要求每个请求最多带一个");
+                        writeError(errorText, ":authority 伪头出现了两次：RFC 9113 §8.3.1 要求每个请求最多带一个");
                         return false;
                     }
                     hasAuthorityField = true;
@@ -1549,7 +1549,7 @@ namespace AsynGyanis::Net
                     request.protocol = field.value;
                 } else
                 {
-                    writeError(errorText, std::format("出现未知伪头 \"{}\"：RFC 7540 §8.1.2.1 只定义了 :method/:scheme/:path/:authority 四个"
+                    writeError(errorText, std::format("出现未知伪头 \"{}\"：RFC 9113 §8.3 只定义了 :method/:scheme/:path/:authority 四个"
                                                       "（:protocol 见 RFC 8441）",
                                                       printableFieldText(field.name)));
                     return false;
@@ -1565,23 +1565,23 @@ namespace AsynGyanis::Net
             }
 
             hasSeenRegularHeader = true;
-            // 连接特定头在 HTTP/2 里一律不存在（§8.1.2.2）：要让中间设备改写，只能靠扩展机制
+            // 连接特定头在 HTTP/2 里一律不存在（§8.2.2）：要让中间设备改写，只能靠扩展机制
             if (isConnectionSpecificHeaderName(field.name))
             {
-                writeError(errorText, std::format("请求头里出现连接特定头 \"{}\"：RFC 7540 §8.1.2.2 禁止 connection/keep-alive/"
+                writeError(errorText, std::format("请求头里出现连接特定头 \"{}\"：RFC 9113 §8.2.2 禁止 connection/keep-alive/"
                                                   "proxy-connection/transfer-encoding/upgrade 出现在 HTTP/2 报文里",
                                                   printableFieldText(field.name)));
                 return false;
             }
-            // te 是唯一的例外：只允许取值 trailers（§8.1.2.2），比较走与 h3 同一份判据
+            // te 是唯一的例外：只允许取值 trailers（§8.2.2），比较走与 h3 同一份判据
             if (field.name == "te" && !teValueIsTrailers(field.value))
             {
-                writeError(errorText, std::format("请求头 te 的取值是 \"{}\"：RFC 7540 §8.1.2.2 只允许 te: trailers，请让对端改掉", printableFieldText(field.value)));
+                writeError(errorText, std::format("请求头 te 的取值是 \"{}\"：RFC 9113 §8.2.2 只允许 te: trailers，请让对端改掉", printableFieldText(field.value)));
                 return false;
             }
             if (!isTokenName(field.name))
             {
-                writeError(errorText, std::format("请求头名 \"{}\" 含 token 之外的字符（空白、冒号前空白等）：RFC 7540 §8.1.2 要求头部名"
+                writeError(errorText, std::format("请求头名 \"{}\" 含 token 之外的字符（空白、冒号前空白等）：RFC 9113 §8.2 要求头部名"
                                                   "符合字段名语法，请让对端按 token 字符集拼头名",
                                                   printableFieldText(field.name)));
                 return false;
@@ -1613,17 +1613,17 @@ namespace AsynGyanis::Net
 
         if (!hasMethodField)
         {
-            writeError(errorText, "请求缺少 :method 伪头：RFC 7540 §8.1.2.3 要求每个请求都必须带 :method");
+            writeError(errorText, "请求缺少 :method 伪头：RFC 9113 §8.3.1 要求每个请求都必须带 :method");
             return false;
         }
         if (request.method.empty())
         {
-            writeError(errorText, ":method 伪头的值为空：RFC 7540 §8.1.2.3 要求给出非空的方法名");
+            writeError(errorText, ":method 伪头的值为空：RFC 9113 §8.3.1 要求给出非空的方法名");
             return false;
         }
         if (!isTokenName(request.method))
         {
-            writeError(errorText, std::format(":method 取值 \"{}\" 含 token 之外的字符：RFC 7540 §8.1.2.3 要求方法名符合字段名语法", request.method));
+            writeError(errorText, std::format(":method 取值 \"{}\" 含 token 之外的字符：RFC 9113 §8.3.1 要求方法名符合字段名语法", request.method));
             return false;
         }
 
@@ -1665,30 +1665,30 @@ namespace AsynGyanis::Net
             }
             if (hasSchemeField || hasPathField)
             {
-                writeError(errorText, "CONNECT 请求带了 :scheme 或 :path：RFC 7540 §8.3 要求 CONNECT 请求省略这两个伪头，"
+                writeError(errorText, "CONNECT 请求带了 :scheme 或 :path：RFC 9113 §8.5 要求 CONNECT 请求省略这两个伪头，"
                                       "只保留 :method 与 :authority");
                 return false;
             }
             if (!hasAuthorityField || request.authority.empty())
             {
-                writeError(errorText, "CONNECT 请求缺少非空的 :authority：RFC 7540 §8.3 要求 CONNECT 必须给出目标主机与端口");
+                writeError(errorText, "CONNECT 请求缺少非空的 :authority：RFC 9113 §8.5 要求 CONNECT 必须给出目标主机与端口");
                 return false;
             }
             return true;
         }
         if (!hasSchemeField)
         {
-            writeError(errorText, "请求缺少 :scheme 伪头：RFC 7540 §8.1.2.3 要求非 CONNECT 请求必须带 :scheme");
+            writeError(errorText, "请求缺少 :scheme 伪头：RFC 9113 §8.3.1 要求非 CONNECT 请求必须带 :scheme");
             return false;
         }
         if (!hasPathField)
         {
-            writeError(errorText, "请求缺少 :path 伪头：RFC 7540 §8.1.2.3 要求非 CONNECT 请求必须带 :path");
+            writeError(errorText, "请求缺少 :path 伪头：RFC 9113 §8.3.1 要求非 CONNECT 请求必须带 :path");
             return false;
         }
         if (request.path.empty())
         {
-            writeError(errorText, ":path 伪头的值为空：RFC 7540 §8.1.2.3 要求 http/https URI 的 :path 不能为空（只有 OPTIONS 可以用 \"*\" 表示「整个服务」）");
+            writeError(errorText, ":path 伪头的值为空：RFC 9113 §8.3.1 要求 http/https URI 的 :path 不能为空（只有 OPTIONS 可以用 \"*\" 表示「整个服务」）");
             return false;
         }
         // asterisk-form 说的是整台服务器而不是某个资源，只有 OPTIONS 能用（RFC 9110 §7.4）：
@@ -1740,27 +1740,27 @@ namespace AsynGyanis::Net
         {
             if (field.name.empty())
             {
-                writeError(errorText, "尾部头块里出现空头名：RFC 7540 §8.1.2 要求头部名必须是非空的小写字段名");
+                writeError(errorText, "尾部头块里出现空头名：RFC 9113 §8.2 要求头部名必须是非空的小写字段名");
                 return false;
             }
             if (containsUppercaseAscii(field.name))
             {
-                writeError(errorText, std::format("尾部头块的头名 \"{}\" 含大写字母：RFC 7540 §8.1.2 要求 HTTP/2 的头部名必须全小写", printableFieldText(field.name)));
+                writeError(errorText, std::format("尾部头块的头名 \"{}\" 含大写字母：RFC 9113 §8.2 要求 HTTP/2 的头部名必须全小写", printableFieldText(field.name)));
                 return false;
             }
             if (field.name.front() == ':')
             {
-                writeError(errorText, std::format("尾部头块里出现伪头 \"{}\"：RFC 7540 §8.1.2.1 要求尾部头块不得包含伪头", printableFieldText(field.name)));
+                writeError(errorText, std::format("尾部头块里出现伪头 \"{}\"：RFC 9113 §8.3 要求尾部头块不得包含伪头", printableFieldText(field.name)));
                 return false;
             }
             if (isConnectionSpecificHeaderName(field.name))
             {
-                writeError(errorText, std::format("尾部头块里出现连接特定头 \"{}\"：RFC 7540 §8.1.2.2 禁止这类头部出现在 HTTP/2 报文里", printableFieldText(field.name)));
+                writeError(errorText, std::format("尾部头块里出现连接特定头 \"{}\"：RFC 9113 §8.2.2 禁止这类头部出现在 HTTP/2 报文里", printableFieldText(field.name)));
                 return false;
             }
             if (field.name == "te" && !teValueIsTrailers(field.value))
             {
-                writeError(errorText, std::format("尾部头块里 te 的取值是 \"{}\"：RFC 7540 §8.1.2.2 只允许 te: trailers", printableFieldText(field.value)));
+                writeError(errorText, std::format("尾部头块里 te 的取值是 \"{}\"：RFC 9113 §8.2.2 只允许 te: trailers", printableFieldText(field.value)));
                 return false;
             }
             if (!isTokenName(field.name) || !isHeaderValueBytes(field.value))
@@ -1784,26 +1784,26 @@ namespace AsynGyanis::Net
         }
         if (name.front() == ':')
         {
-            writeError(errorText, std::format("响应头名 \"{}\" 以 ':' 开头：伪头由本层自行拼出（:status 恒在最前，§8.1.2.1），"
+            writeError(errorText, std::format("响应头名 \"{}\" 以 ':' 开头：伪头由本层自行拼出（:status 恒在最前，§8.3），"
                                               "调用方只能给普通头部",
                                               name));
             return false;
         }
         if (containsUppercaseAscii(name))
         {
-            writeError(errorText, std::format("响应头名 \"{}\" 含大写字母：RFC 7540 §8.1.2 要求头名全小写，请改成小写后再发", name));
+            writeError(errorText, std::format("响应头名 \"{}\" 含大写字母：RFC 9113 §8.2 要求头名全小写，请改成小写后再发", name));
             return false;
         }
         if (isConnectionSpecificHeaderName(name))
         {
-            writeError(errorText, std::format("响应头名 \"{}\" 是 HTTP/1.1 的连接特定头：RFC 7540 §8.1.2.2 禁止它出现在 HTTP/2 里，"
+            writeError(errorText, std::format("响应头名 \"{}\" 是 HTTP/1.1 的连接特定头：RFC 9113 §8.2.2 禁止它出现在 HTTP/2 里，"
                                               "请删掉这一项",
                                               name));
             return false;
         }
         if (!isTokenName(name))
         {
-            writeError(errorText, std::format("响应头名 \"{}\" 含 token 之外的字符：RFC 7540 §8.1.2 要求头名符合字段名语法", name));
+            writeError(errorText, std::format("响应头名 \"{}\" 含 token 之外的字符：RFC 9113 §8.2 要求头名符合字段名语法", name));
             return false;
         }
         if (!isHeaderValueBytes(value))
@@ -1829,7 +1829,7 @@ namespace AsynGyanis::Net
                 case Http2SettingIdentifier::EnablePush:
                     if (setting.value > 1)
                     {
-                        fail(Http2ErrorCode::ProtocolError, std::format("对端 SETTINGS 的 ENABLE_PUSH 取值 {} 非法：RFC 7540 §6.5.2 只允许 0 或 1，请检查对端实现", setting.value));
+                        fail(Http2ErrorCode::ProtocolError, std::format("对端 SETTINGS 的 ENABLE_PUSH 取值 {} 非法：RFC 9113 §6.5.2 只允许 0 或 1，请检查对端实现", setting.value));
                         return false;
                     }
                     break;
@@ -1840,7 +1840,7 @@ namespace AsynGyanis::Net
                 {
                     if (setting.value > kHttp2MaximumWindowSizeByteCount)
                     {
-                        fail(Http2ErrorCode::FlowControlError, std::format("对端 SETTINGS 的 INITIAL_WINDOW_SIZE 取值 {} 超过上限 2^31-1（RFC 7540 §6.5.2）", setting.value));
+                        fail(Http2ErrorCode::FlowControlError, std::format("对端 SETTINGS 的 INITIAL_WINDOW_SIZE 取值 {} 超过上限 2^31-1（RFC 9113 §6.5.2）", setting.value));
                         return false;
                     }
                     // 新值同时改写所有活动流的窗口：按增量平移（§6.9.2），平移后超过上限即流控错误
@@ -1856,7 +1856,7 @@ namespace AsynGyanis::Net
                         if (stream.sendWindowByteCount > static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
                         {
                             fail(Http2ErrorCode::FlowControlError,
-                                 std::format("对端把 INITIAL_WINDOW_SIZE 改成 {} 后，流 {} 的发送窗口超过上限 2^31-1（RFC 7540 §6.9.2）", setting.value, stream.streamId));
+                                 std::format("对端把 INITIAL_WINDOW_SIZE 改成 {} 后，流 {} 的发送窗口超过上限 2^31-1（RFC 9113 §6.9.2）", setting.value, stream.streamId));
                             return false;
                         }
                     }
@@ -1866,7 +1866,7 @@ namespace AsynGyanis::Net
                     if (setting.value < kHttp2DefaultMaximumFrameSize || setting.value > kHttp2MaximumMaximumFrameSize)
                     {
                         fail(Http2ErrorCode::ProtocolError,
-                             std::format("对端 SETTINGS 的 MAX_FRAME_SIZE 取值 {} 越界：RFC 7540 §6.5.2 的合法区间是 [16384, 16777215]", setting.value));
+                             std::format("对端 SETTINGS 的 MAX_FRAME_SIZE 取值 {} 越界：RFC 9113 §6.5.2 的合法区间是 [16384, 16777215]", setting.value));
                         return false;
                     }
                     break;
@@ -2021,7 +2021,7 @@ namespace AsynGyanis::Net
         clearError(errorText);
         if (streamId % 2U == 0)
         {
-            writeError(errorText, std::format("流号 {} 是偶数：RFC 7540 §5.1.1 规定客户端发起的流号必须是奇数（偶数留给服务端推送，"
+            writeError(errorText, std::format("流号 {} 是偶数：RFC 9113 §5.1.1 规定客户端发起的流号必须是奇数（偶数留给服务端推送，"
                                               "本端不实现推送）",
                                               streamId));
             return false;
@@ -2033,7 +2033,7 @@ namespace AsynGyanis::Net
     {
         if (m_connectionSendWindowByteCount + static_cast<std::int64_t>(increment) > static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
         {
-            fail(Http2ErrorCode::FlowControlError, std::format("连接级发送窗口加上 WINDOW_UPDATE 的增量 {} 会超过上限 2^31-1（RFC 7540 §6.9.1）：本端无法为这么大的窗口记账，"
+            fail(Http2ErrorCode::FlowControlError, std::format("连接级发送窗口加上 WINDOW_UPDATE 的增量 {} 会超过上限 2^31-1（RFC 9113 §6.9.1）：本端无法为这么大的窗口记账，"
                                                                "请检查对端的窗口记账",
                                                                increment));
             return false;
@@ -2050,7 +2050,7 @@ namespace AsynGyanis::Net
             // FLOW_CONTROL_ERROR; for the connection, a GOAWAY frame ... is sent.」——流级溢出只结这条流，
             // 打掉整条连接会把同连接上别的在途流一起带走（一个对端就能做到的可用性缺口）
             failStream(stream, Http2ErrorCode::FlowControlError,
-                       std::format("流 {} 的发送窗口加上 WINDOW_UPDATE 的增量 {} 会超过上限 2^31-1（RFC 7540 §6.9.1）：本端无法为这么大的窗口记账", stream.streamId, increment));
+                       std::format("流 {} 的发送窗口加上 WINDOW_UPDATE 的增量 {} 会超过上限 2^31-1（RFC 9113 §6.9.1）：本端无法为这么大的窗口记账", stream.streamId, increment));
             return false;
         }
         stream.sendWindowByteCount += static_cast<std::int64_t>(increment);

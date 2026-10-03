@@ -35,7 +35,7 @@ namespace AsynGyanis::Net
         if (config.maximumOpenedStreamCount == 0U || config.maximumOpenedStreamCount > kMaximumOpenedStreamCount)
         {
             throw Base::InvalidArgumentException("Http2ClientConnection: 本端开流额度必须落在 1 到 2^30 之间：填 0 一条流都提不出，"
-                                                 "填得更大就会让流号越过 RFC 7540 §5.1.1 的 2^31-1 上界。");
+                                                 "填得更大就会让流号越过 RFC 9113 §5.1.1 的 2^31-1 上界。");
         }
     }
 
@@ -288,7 +288,7 @@ namespace AsynGyanis::Net
             // 说明对端把账记错了，留着它等于承认后面每条 SETTINGS 都可以各回一次确认
             if (m_isOwnSettingsAcknowledged)
             {
-                failConnection(Http2ErrorCode::ProtocolError, "收到多余的 SETTINGS ACK：本端只发过一次 SETTINGS（RFC 7540 §6.5.3）");
+                failConnection(Http2ErrorCode::ProtocolError, "收到多余的 SETTINGS ACK：本端只发过一次 SETTINGS（RFC 9113 §6.5.3）");
                 return false;
             }
             m_isOwnSettingsAcknowledged = true;
@@ -313,7 +313,7 @@ namespace AsynGyanis::Net
                     {
                         // 两条布尔型参数同理：0/1 之外的取值没有第三种语义可推（§6.5.2 与 RFC 8441 §3）
                         failConnection(Http2ErrorCode::ProtocolError,
-                                       std::format("对端 SETTINGS 的参数 {} 取值 {} 非法：布尔型只允许 0 或 1（RFC 7540 §6.5.2）", setting.identifier, setting.value));
+                                       std::format("对端 SETTINGS 的参数 {} 取值 {} 非法：布尔型只允许 0 或 1（RFC 9113 §6.5.2）", setting.identifier, setting.value));
                         return false;
                     }
                     break;
@@ -322,7 +322,7 @@ namespace AsynGyanis::Net
                     if (setting.value > kHttp2MaximumWindowSizeByteCount)
                     {
                         failConnection(Http2ErrorCode::FlowControlError,
-                                       std::format("对端 SETTINGS 的 INITIAL_WINDOW_SIZE 取值 {} 超过上限 2^31-1（RFC 7540 §6.5.2）", setting.value));
+                                       std::format("对端 SETTINGS 的 INITIAL_WINDOW_SIZE 取值 {} 超过上限 2^31-1（RFC 9113 §6.5.2）", setting.value));
                         return false;
                     }
                     // §6.9.2：改了初值要按差值追溯地调整**每一条在途流**的窗口，否则新旧几条流按两套账
@@ -336,7 +336,7 @@ namespace AsynGyanis::Net
                         {
                             failConnection(
                                     Http2ErrorCode::FlowControlError,
-                                    std::format("对端把 INITIAL_WINDOW_SIZE 改成 {} 之后，流 {} 的发送窗口超过上限 2^31-1（RFC 7540 §6.9.2）", setting.value, stream.streamId));
+                                    std::format("对端把 INITIAL_WINDOW_SIZE 改成 {} 之后，流 {} 的发送窗口超过上限 2^31-1（RFC 9113 §6.9.2）", setting.value, stream.streamId));
                             return false;
                         }
                     }
@@ -347,7 +347,7 @@ namespace AsynGyanis::Net
                     if (setting.value < kHttp2DefaultMaximumFrameSize || setting.value > kHttp2MaximumMaximumFrameSize)
                     {
                         // 这一条不只是合法性问题：本端按它切正文，收到 0 就是每帧 0 字节的死循环
-                        failConnection(Http2ErrorCode::ProtocolError, std::format("对端 SETTINGS 的 MAX_FRAME_SIZE 取值 {} 越界：合法区间是 [{}, {}]（RFC 7540 §6.5.2）",
+                        failConnection(Http2ErrorCode::ProtocolError, std::format("对端 SETTINGS 的 MAX_FRAME_SIZE 取值 {} 越界：合法区间是 [{}, {}]（RFC 9113 §6.5.2）",
                                                                                   setting.value, kHttp2DefaultMaximumFrameSize, kHttp2MaximumMaximumFrameSize));
                         return false;
                     }
@@ -520,13 +520,13 @@ namespace AsynGyanis::Net
             }
             if (field.name == ":status")
             {
-                // 判形状而不是 strtoul 折数：非三位数字的 :status 按 RFC 7540 §8.1.2 就是「消息没法处理」，
+                // 判形状而不是 strtoul 折数：非三位数字的 :status 按 RFC 9113 §8.2 就是「消息没法处理」，
                 // 而折成 0 或 20 会被上层当成一个真号去分支（h1 状态行与 h3 的 :status 用同一条判据）
                 const std::optional<int> parsedStatusCode = parseStatusCodeText(field.value);
                 if (!parsedStatusCode.has_value())
                 {
                     failConnection(Http2ErrorCode::ProtocolError,
-                                   std::format("响应伪头 :status 的取值「{}」不是三位十进制状态码（RFC 7540 §8.1.2 要求按协议错误收口），本端不猜它想写什么", field.value));
+                                   std::format("响应伪头 :status 的取值「{}」不是三位十进制状态码（RFC 9113 §8.2 要求按协议错误收口），本端不猜它想写什么", field.value));
                     return false;
                 }
                 stream.response.statusCode = *parsedStatusCode;
@@ -547,7 +547,7 @@ namespace AsynGyanis::Net
         const auto iterator = m_pendingStreams.find(frame.header.streamId);
         if (iterator == m_pendingStreams.end())
         {
-            // 本端没开过这条流：这不是给谁的响应（§8.1.2.6 的畸形响应）。头块仍必须解完，动态表才能与
+            // 本端没开过这条流：这不是给谁的响应（§8.1.1 的畸形响应）。头块仍必须解完，动态表才能与
             // 对端同步——但那只做得到「整段头块一次到位」：多段头块要有人替它攒片段，而为一条本端不认
             // 的流留一份连接级暂存，等于把交错的两段头块混成一团
             if (!payload.endHeaders)
@@ -565,7 +565,7 @@ namespace AsynGyanis::Net
         {
             // 与 DATA 那一支同一条法：尾部头块（trailers）必须在它自己的 END_STREAM **之前**到，
             // 收齐之后再来的头块就不是尾部，而是对一条已关闭的流动手脚（§5.1「closed」段）
-            failConnection(Http2ErrorCode::StreamClosed, std::format("流 {} 已收到 END_STREAM 又来 HEADERS：RFC 7540 §5.1「closed」段要求按连接错误 "
+            failConnection(Http2ErrorCode::StreamClosed, std::format("流 {} 已收到 END_STREAM 又来 HEADERS：RFC 9113 §5.1「closed」段要求按连接错误 "
                                                                      "STREAM_CLOSED 处理",
                                                                      frame.header.streamId));
             return false;
@@ -643,7 +643,7 @@ namespace AsynGyanis::Net
             // 双向 END_STREAM 之后这条流就是「closed」态：再来的 DATA 按连接错误 STREAM_CLOSED 收，
             // 与入站侧同一条法（§5.1「closed」段）。放任它 append 就是让对端往已收齐的正文尾巴上
             // 塞字节——调用方拿到的长度比流上宣告的多出一截，且没有任何一处会报错
-            failConnection(Http2ErrorCode::StreamClosed, std::format("流 {} 已收到 END_STREAM 又来 DATA：RFC 7540 §5.1「closed」段要求按连接错误 "
+            failConnection(Http2ErrorCode::StreamClosed, std::format("流 {} 已收到 END_STREAM 又来 DATA：RFC 9113 §5.1「closed」段要求按连接错误 "
                                                                      "STREAM_CLOSED 处理",
                                                                      streamId));
             return false;
@@ -708,7 +708,7 @@ namespace AsynGyanis::Net
             if (m_connectionSendWindowByteCount > static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
             {
                 // 连接级窗口越界是**连接**的账坏了：§6.9.1 要求按连接错误 FLOW_CONTROL_ERROR 收口
-                failConnection(Http2ErrorCode::FlowControlError, "连接级流控窗口越过 31 位上界（RFC 7540 §6.9.1）");
+                failConnection(Http2ErrorCode::FlowControlError, "连接级流控窗口越过 31 位上界（RFC 9113 §6.9.1）");
                 return false;
             }
             return true;
@@ -725,7 +725,7 @@ namespace AsynGyanis::Net
         {
             // 单流溢出只结这条流（与自家服务端同一条判据），牵连不到别的流
             stream.isReset               = true;
-            stream.response.errorMessage = "对端的流控增量越过 31 位上界（RFC 7540 §6.9.1）";
+            stream.response.errorMessage = "对端的流控增量越过 31 位上界（RFC 9113 §6.9.1）";
             appendOutgoing(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::FlowControlError}, frame.header.streamId));
         }
         return true;
@@ -914,7 +914,7 @@ namespace AsynGyanis::Net
 
         std::vector<HpackHeaderField> fields;
         fields.reserve(extraHeaders.size() + 4U);
-        // 四个伪头必须排在普通头之前（§8.1.2.1），顺序按 :method :path :scheme :authority
+        // 四个伪头必须排在普通头之前（§8.3），顺序按 :method :path :scheme :authority
         fields.push_back(HpackHeaderField{":method", std::string(method)});
         fields.push_back(HpackHeaderField{":path", std::string(path)});
         fields.push_back(HpackHeaderField{":scheme", std::string(scheme)});
@@ -1068,7 +1068,7 @@ namespace AsynGyanis::Net
 
         if (!co_await stream.responseReceiver(stream.response, std::string_view{batch}, isLastBatch))
         {
-            // 调用方主动收的口：头部仍是完整可信的响应，正文到此为止。结掉这一条流就够了（§5.3.2），
+            // 调用方主动收的口：头部仍是完整可信的响应，正文到此为止。结掉这一条流就够了（§6.4），
             // 不必像 h1 那样关整条连接——帧是分流的，剩下的字节认领得回来
             stream.isReset = true;
             appendOutgoing(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, stream.streamId));

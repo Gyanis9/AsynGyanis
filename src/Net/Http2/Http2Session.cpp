@@ -297,7 +297,7 @@ namespace AsynGyanis::Net
         // 析构保证注销后回调不再执行，于是回调看到的请求对象一定还活着
         while (isAlive() && isTransportOpen())
         {
-            // 对端一直没 ACK 本端初始 SETTINGS：按 SETTINGS_TIMEOUT 收口（RFC 7540 §6.5.3 允许服务端
+            // 对端一直没 ACK 本端初始 SETTINGS：按 SETTINGS_TIMEOUT 收口（RFC 9113 §6.5.3 允许服务端
             // 以连接错误收口）。判定放在每轮读之前：对端若只发帧却不 ACK，到期后的第一轮就能收掉
             if (isSettingsAcknowledgementExpired())
             {
@@ -1028,7 +1028,7 @@ namespace AsynGyanis::Net
         }
         const std::chrono::steady_clock::time_point requestReceivedTime = std::chrono::steady_clock::now();
 
-        // content-length 与实收正文必须一致（RFC 7540 §8.1.2.6）：不一致是畸形请求，MUST 按流错误
+        // content-length 与实收正文必须一致（RFC 9113 §8.1.1）：不一致是畸形请求，MUST 按流错误
         // PROTOCOL_ERROR 收口，收口前先把 400 交给对端。绝不把「声明一个长度、实收另一个长度」的
         // 正文交给业务——那正是走私的收益所在
         if (!pending.isStreamingBody)
@@ -1775,7 +1775,7 @@ namespace AsynGyanis::Net
         }
         // 响应先行、随后重置这条流：RST 是本条 MUST 的落点，400 只是那句 MAY
         std::string abortErrorText;
-        if (!m_connection.abortStream(streamId, std::format("请求正文实收 {} 字节，与 content-length 声明的 {} 字节不符（RFC 7540 §8.1.2.6）", receivedLength, declaredLength),
+        if (!m_connection.abortStream(streamId, std::format("请求正文实收 {} 字节，与 content-length 声明的 {} 字节不符（RFC 9113 §8.1.1）", receivedLength, declaredLength),
                                       &abortErrorText, Http2ErrorCode::ProtocolError))
         {
             // 发不出去也要把已经排好的 400 交出去：对端至少看得见原因，这条流也不会被当成已受理
@@ -2119,7 +2119,7 @@ namespace AsynGyanis::Net
 
     bool Http2Session::queueSettingsTimeoutGoAway()
     {
-        const std::string reason = std::format("对端在 {} 毫秒内没有 ACK 本端 SETTINGS（RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）：本端按该错误码收口连接，"
+        const std::string reason = std::format("对端在 {} 毫秒内没有 ACK 本端 SETTINGS（RFC 9113 §6.5.3 的 SETTINGS_TIMEOUT）：本端按该错误码收口连接，"
                                                "请对端在收到 SETTINGS 后回一个 ACK 帧",
                                                m_limits->settingsAcknowledgementTimeout.count());
         std::string       errorText;

@@ -208,7 +208,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 编一个「名与值都是字面量」的不索引字段（§6.2.2 的名字索引 0）
-         * @param name 头名，小写（本端会按 §8.1.2 拒掉大写名）
+         * @param name 头名，小写（本端会按 §8.2 拒掉大写名）
          * @param value 头值
          * @return std::string 编码后字节
          */

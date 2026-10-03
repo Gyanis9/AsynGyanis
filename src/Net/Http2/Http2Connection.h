@@ -1,6 +1,6 @@
 /**
  * @file Http2Connection.h
- * @brief HTTP/2 连接层状态机（RFC 7540 §3.5/§4/§5/§6/§8.1）：前奏与 SETTINGS 协商、头块拼接与请求语义校验、流状态与并发上限、响应发送与发送方向流控记账
+ * @brief HTTP/2 连接层状态机（RFC 9113 §3.4/§4/§5/§6/§8.1）：前奏与 SETTINGS 协商、头块拼接与请求语义校验、流状态与并发上限、响应发送与发送方向流控记账
  * @author Gyanis
  * @date 2026-09-13
  * @version 1.0.0
@@ -27,7 +27,7 @@
 namespace AsynGyanis::Net
 {
     // ============================================================================
-    // HTTP/2 连接层（RFC 7540 §3.5/§4/§5/§6/§8.1）
+    // HTTP/2 连接层（RFC 9113 §3.4/§4/§5/§6/§8.1）
     //
     // 本层是纯状态机：不绑 socket、不接 HttpServer、不碰 ALPN。字节进 feedBytes()、字节出
     // takeOutgoingBytes()，请求与正文按事件交出；所有入口都不阻塞、不 co_await——等对端的响应
@@ -35,13 +35,13 @@ namespace AsynGyanis::Net
     // 帧层与 HPACK 层各管一段（单帧合法性、头块压缩），跨帧的流状态、窗口与语义校验都在本层。
     // ============================================================================
 
-    /// 客户端前奏的 24 字节（RFC 7540 §3.5）：服务端必须先原样收到它，之后的字节才按帧解释
+    /// 客户端前奏的 24 字节（RFC 9113 §3.4）：服务端必须先原样收到它，之后的字节才按帧解释
     inline constexpr std::string_view kHttp2ConnectionPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
     // 窗口初值与上限两条常量在 Http2Frame.h：那是角色中立的协议数值，服务端与客户端两侧共用一份
 
     /**
-     * @brief 一条流的状态（RFC 7540 §5.1 的状态机，本端不实现推送故没有 reserved 两态）
+     * @brief 一条流的状态（RFC 9113 §5.1 的状态机，本端不实现推送故没有 reserved 两态）
      *
      * @note 新增取值一律追加在末尾；本枚举会出现在上层的观测与日志里。
      */
@@ -101,7 +101,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 连接层配置：本端通告的 SETTINGS 参数与几项本地资源上限
      *
-     * @details 每项后面的括号是取值来源：规范初始值取自 RFC 7540 §6.5.2，本端策略项是本实现选定的
+     * @details 每项后面的括号是取值来源：规范初始值取自 RFC 9113 §6.5.2，本端策略项是本实现选定的
      *          有限值（规范对这两项不设初值，等于「不限」，那会让对端能无限消耗本端内存）。
      * @note 构造 Http2Connection 时按值取走一份，没有运行期更换的入口：上限若中途变紧，同一条流的
      *       前后两段会按不同尺子判定。
@@ -125,7 +125,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief 连接层交出的一个请求（RFC 7540 §8.1.2）
+     * @brief 连接层交出的一个请求（RFC 9113 §8.2）
      *
      * @details 只装 HTTP/2 语义：四个伪头各自成字段、普通头部按到达顺序原样保留（可重复头部不合并），
      *          因此未知方法原文与 :scheme 都不会在交接中丢失。接线层再用一个显式映射把它转成
@@ -172,7 +172,7 @@ namespace AsynGyanis::Net
      *          takeRequests()/takeReceivedData() 交业务 → sendResponse*() → 再取字节」驱动；本层既不阻塞
      *          也不 co_await，窗口不足的数据留在发送队列，收到 WINDOW_UPDATE 后在同一入口内续发；接收方向
      *          由上层用 creditReceivedData() 回报消费量。
-     * @note 流状态判定表（RFC 7540 §5.1、§5.1.1）：从未开启（idle）的流只接受 HEADERS 与 PRIORITY，
+     * @note 流状态判定表（RFC 9113 §5.1、§5.1.1）：从未开启（idle）的流只接受 HEADERS 与 PRIORITY，
      *       其余帧（DATA/WINDOW_UPDATE/RST_STREAM/CONTINUATION）判连接错误 PROTOCOL_ERROR；新流号必须
      *       为奇数且严格大于所有已用过的流号，偶数或倒退一律连接错误 PROTOCOL_ERROR。
      * @note 已终止的流分两种处置：本端或对端 RST_STREAM 掉的流，其上的帧一律忽略（对端可能还没看到
@@ -207,7 +207,7 @@ namespace AsynGyanis::Net
          * @brief 校验一份连接配置是否可用，不可用即抛出并说清是哪一项
          * @param configuration 待校验的配置
          * @throws Base::InvalidArgumentException ENABLE_PUSH 或 ENABLE_CONNECT_PROTOCOL 不是 0/1，
-         *         或 MAX_FRAME_SIZE 落在 RFC 7540 §6.5.2 的合法区间 [16384, 16777215] 之外
+         *         或 MAX_FRAME_SIZE 落在 RFC 9113 §6.5.2 的合法区间 [16384, 16777215] 之外
          * @details 构造函数会调它，服务器侧的 setHttp2Configuration() 也调它：同一份判据只写一处。
          *          让服务器在**设置时**就拒绝，是因为按构造时机检查的表现是「第一条连接进来才炸」，
          *          部署方在启动日志里看不到任何异常
@@ -298,7 +298,7 @@ namespace AsynGyanis::Net
          * @brief 报告已消费的对端正文，按量把接收窗口还回去
          *
          * @details 调用方消费掉 takeReceivedData() 交出的片段后调用它（每片一次），本层据此把连接级
-         *          与流级接收窗口补回（RFC 7540 §6.9.1），窗口因此不会随请求体量单调耗尽。
+         *          与流级接收窗口补回（RFC 9113 §6.9.1），窗口因此不会随请求体量单调耗尽。
          *          为了不逐帧回敬，累计未还的字节达到该窗口初始值的一半才发一次 WINDOW_UPDATE。
          *
          * @param streamId 正文所属的流号，取自 Http2ReceivedData::streamId
@@ -330,7 +330,7 @@ namespace AsynGyanis::Net
          * @brief 本端主动按连接错误收口：把带 errorCode 的 GOAWAY 排进待发字节并转入失败态
          *
          * @details 用于本端判定连接不能继续的情形（例如对端在约定时限内没有 ACK 本端 SETTINGS，
-         *          RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）。与收尾通告 sendGoAway() 的区别在错误码与
+         *          RFC 9113 §6.5.3 的 SETTINGS_TIMEOUT）。与收尾通告 sendGoAway() 的区别在错误码与
          *          连接去向：本方法带非 NO_ERROR 的错误码，并把连接置为粘滞失败态（此后不再解释字节）。
          * @param errorCode 要回给对端的错误码；不能取 NoError（§7 的 NO_ERROR 属收尾通告，请改用 sendGoAway()）
          * @param reason 中文原因，同时是 GOAWAY 的调试数据
@@ -360,7 +360,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 本端初始 SETTINGS 是否还没被对端 ACK
-         * @details 对端在约定时限内一直不回 ACK 属连接错误（RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）；
+         * @details 对端在约定时限内一直不回 ACK 属连接错误（RFC 9113 §6.5.3 的 SETTINGS_TIMEOUT）；
          *          上层据此把连接的空闲截止时间切到握手期专项限额，超时即收口。
          * @return true 本端已发出 SETTINGS 且还没收到它的 ACK
          * @return false 初始 SETTINGS 还没发（未收齐前奏），或已经被 ACK
@@ -378,12 +378,12 @@ namespace AsynGyanis::Net
         /**
          * @brief 在某条流上发响应头
          *
-         * @details 头列表按「:status 在最前（§8.1.2.1 伪头必须先于普通头部）+ 调用方给的字段」交给
+         * @details 头列表按「:status 在最前（§8.3 伪头必须先于普通头部）+ 调用方给的字段」交给
          *          HpackEncoder 编码，再按对端通告的 MAX_FRAME_SIZE 切成 HEADERS 与若干 CONTINUATION
          *          （§4.3、§6.10）；endStream 置位时 END_STREAM 落在 HEADERS 上，该流随即进入半关（local）。
          * @param streamId 目标流号，必须是本连接账本里仍可发响应的流
          * @param statusCode 响应状态码，取值 100..999
-         * @param headerFields 除 :status 外的响应头，名必须全小写且不含连接特定头（§8.1.2）
+         * @param headerFields 除 :status 外的响应头，名必须全小写且不含连接特定头（§8.2）
          * @param endStream 响应是否到此结束（无正文）
          * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
          * @return Http2ResponseSendStatus Sent 已排入待发字节（窗口不影响头块，HEADERS 不受流控）；
@@ -529,7 +529,7 @@ namespace AsynGyanis::Net
     private:
         /**
          * @brief 一条流被终止的方式：之后的帧落在它上面时，判「忽略」还是「判错」全看这一个字
-         * @details RFC 7540 §5.1「closed」段把两种终止分得很清：**收到**对端的 RST_STREAM 之后再来的帧
+         * @details RFC 9113 §5.1「closed」段把两种终止分得很清：**收到**对端的 RST_STREAM 之后再来的帧
          *          按流错误 STREAM_CLOSED 处理；**发出** RST_STREAM 之后再来的帧则 MUST ignore（那些帧
          *          撤不回来）。两者共用一个布尔分不开，故按方向摊成三个取值。
          */
@@ -586,7 +586,7 @@ namespace AsynGyanis::Net
         enum class HeaderBlockPurpose
         {
             Request,  ///< 新请求：过了校验就交出请求对象
-            Trailers, ///< 尾部头块：按 §8.1.2.1 校验语法，字段随那条 END_STREAM 收口信号交出
+            Trailers, ///< 尾部头块：按 §8.3 校验语法，字段随那条 END_STREAM 收口信号交出
             Discard   ///< 已拒绝或已终止的流：解完即丢，只为让动态表与对端同步
         };
 
@@ -692,7 +692,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] static bool acceptTrailerHeaderFields(const std::vector<HpackHeaderField> &headerFields, std::string *errorText);
 
         /**
-         * @brief 按 §8.1.2 校验一条待发响应头的头名（token、全小写、非连接特定头）与头值字节
+         * @brief 按 §8.2 校验一条待发响应头的头名（token、全小写、非连接特定头）与头值字节
          * @param name 头名（调用方给的名字，不做大小写归一化）
          * @param value 头值
          * @param errorText 输出参数：失败时的中文原因（进入调用时先清空）
@@ -745,7 +745,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 判一条已终止流上的帧该忽略、该回敬流错误，还是该判连接错误
-         * @details 三条判据都出自 RFC 7540 §5.1「closed」段，区别只在终止方式（见 StreamTermination）。
+         * @details 三条判据都出自 RFC 9113 §5.1「closed」段，区别只在终止方式（见 StreamTermination）。
          *          回敬只发生一次：本端一旦发出 RST_STREAM，这条流的终止方式就转成本端复位，其后的帧
          *          一律忽略——§5.4.2 的「Normally SHOULD NOT send more than one RST_STREAM」要的正是这样。
          * @param stream 已终止的流记录（就地可把 ResetByPeer 改成 ResetByLocal）

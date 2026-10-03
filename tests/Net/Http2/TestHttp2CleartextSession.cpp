@@ -608,7 +608,7 @@ namespace AsynGyanis::Net
         std::vector<Http2Frame> frames;
         ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
 
-        // 服务端必须先用自己的 SETTINGS 起头（§3.4：服务端前奏即一个 SETTINGS 帧）
+        // 服务端必须先用自己的 SETTINGS 起头（§3.3：服务端前奏即一个 SETTINGS 帧）
         ASSERT_TRUE(client.pumpUntil(
                 frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
                 kWaitTimeout))
@@ -713,7 +713,7 @@ namespace AsynGyanis::Net
                 << "没有在时限内收到服务端的初始 SETTINGS";
         ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(Http2SettingsPayload{.isAcknowledgement = true}), kWaitTimeout));
 
-        // 伪头在前、普通头部在后（§8.1.2.1）：traceparent 这条就是普通头部
+        // 伪头在前、普通头部在后（§8.3）：traceparent 这条就是普通头部
         const std::string headerBlock = makeGetRequestHeaderBlock("/boom") + hpackLiteralField("traceparent", "00-12345678901234567890123456789012-1234567890123456-01");
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, headerBlock, true), kWaitTimeout));
         ASSERT_TRUE(client.pumpUntil(
@@ -787,7 +787,7 @@ namespace AsynGyanis::Net
         TestHttpServer  server(loop, Core::InetAddress::localhost(0));
 
         Http2ConnectionConfiguration tooSmallFrame;
-        tooSmallFrame.maximumFrameSize = 8192; // 低于 RFC 7540 §6.5.2 的下界 16384
+        tooSmallFrame.maximumFrameSize = 8192; // 低于 RFC 9113 §6.5.2 的下界 16384
         EXPECT_THROW(server.setHttp2Configuration(tooSmallFrame), Base::InvalidArgumentException);
 
         Http2ConnectionConfiguration tooLargeFrame;
@@ -1393,7 +1393,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：单条头值超出 parser_limits.maximum_header_field_value_length 时 h2 按 431 收口
      * @details 收紧方向同样要判：配置 64 字节而 HPACK 那侧默认 8 KiB 时，200 字节的头值在 h1/h3 会被拒，
      *          h2 却原样交给业务。两侧各打一次——恰好等于上限必须照常服务，否则实现写成「凡长的都拒」也绿。
-     *          越限只否这一条头块：连接必须继续可用（RFC 7540 §8.1.2.2 的头部上限是本端不收，不是协议错误）。
+     *          越限只否这一条头块：连接必须继续可用（RFC 9113 §8.2.2 的头部上限是本端不收，不是协议错误）。
      */
     TEST(Http2CleartextSession, Answers431WhenHeaderFieldValueExceedsParserLimit)
     {
@@ -2259,7 +2259,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：隧道期间本端照常归还接收窗口——累计流量超过初始窗口 65535 也不会被自己的流控账卡住
      * @details 隧道由会话协程自己驱动读循环，「消费即还窗口」这条连接层契约在那条路径上同样成立。
-     *          漏掉它时对端发到第 65535 字节之后就会撞上本端通告的窗口，连接层按 RFC 7540 §6.9.1
+     *          漏掉它时对端发到第 65535 字节之后就会撞上本端通告的窗口，连接层按 RFC 9113 §6.9.1
      *          以 FLOW_CONTROL_ERROR 收口——隧道看着能用，一上量就断。
      *          客户端逐片等回显再发下一片，因此本用例不会把「对端超发」当成失败原因。
      */
@@ -2861,7 +2861,7 @@ namespace AsynGyanis::Net
 
         // 窗口先给足再发请求：不给窗口的话服务端会停在流控上，永远不碰套接字，
         // 这条用例要钉的「写出失败」就根本不会发生（那一路另有对应用例）。
-        // 顺序有讲究（RFC 7540 §6.9）：流级 WINDOW_UPDATE 必须排在该流的 HEADERS 之后，
+        // 顺序有讲究（RFC 9113 §6.9）：流级 WINDOW_UPDATE 必须排在该流的 HEADERS 之后，
         // 给一条还不存在的流还窗口是连接级错误，服务端会直接回 GOAWAY 把连接收掉
         std::string requestWithCredits;
         requestWithCredits += encodeHttp2WindowUpdateFrame(Http2WindowUpdatePayload{.windowSizeIncrement = 4U * 1024U * 1024U}, 0U);

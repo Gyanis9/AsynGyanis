@@ -291,7 +291,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 用「最多开一条流」的配置走完「一条成功 → 连接自己退场 → 第二条被拒」
-         * @details 那条额度平时是 2^30（RFC 7540 §5.1.1 给客户端流号的上界：奇数、严格递增、不过
+         * @details 那条额度平时是 2^30（RFC 9113 §5.1.1 给客户端流号的上界：奇数、严格递增、不过
          *          2^31-1），压到 1 才测得到见顶之后的行为。真实场景并不遥远：一条待命连接按一万请求
          *          每秒约 30 小时就用完了流号。
          * @param loop 客户端事件循环
@@ -1428,7 +1428,7 @@ namespace AsynGyanis::Net
         loop.run();
 
         EXPECT_TRUE(received.errorText.empty()) << "对端解帧就失败了：" << received.errorText;
-        ASSERT_EQ(prefaceText, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") << "前奏要逐字节是这 24 个字符（RFC 7540 §3.4）";
+        ASSERT_EQ(prefaceText, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") << "前奏要逐字节是这 24 个字符（RFC 9113 §3.3）";
         EXPECT_TRUE(outcome.isStarted) << "前奏没走完，后面的帧自然无从谈起";
         EXPECT_EQ(outcome.statusCode, 200) << "失败原因：" << outcome.errorMessage;
 
@@ -1466,7 +1466,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findHeaderValue(headerFields, ":method"), "GET");
         EXPECT_EQ(findHeaderValue(headerFields, ":path"), "/tick");
         EXPECT_EQ(findHeaderValue(headerFields, ":scheme"), "http");
-        EXPECT_EQ(findHeaderValue(headerFields, ":authority"), "peer") << "四个伪头缺一不可，且必须排在普通头之前（§8.1.2.1）";
+        EXPECT_EQ(findHeaderValue(headerFields, ":authority"), "peer") << "四个伪头缺一不可，且必须排在普通头之前（§8.3）";
 
         ASSERT_NE(goAway, nullptr) << "礼貌收尾要发 GOAWAY，对端才知道这条连接不再有新流（§6.8）";
         EXPECT_EQ(goAway->header.streamId, 0U);

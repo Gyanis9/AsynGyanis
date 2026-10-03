@@ -27,7 +27,7 @@ namespace AsynGyanis::Net::Fuzz
     {
         Http1Request,      ///< HTTP/1.x 请求解析器（RFC 9112 §5/§6/§7.1：TCP 上最先被外部打到的一段，含分块正文与流水线）
         WebSocketFrame,    ///< WebSocket 增量帧解码器（RFC 6455 + 服务端侧的掩码/控制帧约束）
-        Http2Frame,        ///< HTTP/2 增量帧解码器（RFC 7540 §4 + 本端上限）
+        Http2Frame,        ///< HTTP/2 增量帧解码器（RFC 9113 §4 + 本端上限）
         Http3Frame,        ///< HTTP/3 帧读取器（RFC 9114 §7 + varint 帧头 + 单帧上限）
         HpackBlock,        ///< HPACK 头块解码器（RFC 7541 + 动态表与头列表上限）
         QuicPacket,        ///< QUIC 报文头解码器（RFC 9000 §17；UDP 上最先被外部打到的一段，不需要任何密钥）

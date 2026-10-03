@@ -39,7 +39,7 @@
 
 namespace AsynGyanis::Net
 {
-    /// ALPN 协商出 HTTP/2 时客户端与服务端一致使用的协议名（RFC 7540 §3.3）
+    /// ALPN 协商出 HTTP/2 时客户端与服务端一致使用的协议名（RFC 9113 §3.2）
     inline constexpr std::string_view kHttp2AlpnProtocolName = "h2";
 
     /**
@@ -64,7 +64,7 @@ namespace AsynGyanis::Net
      *       各发一个 DATA 帧，会话收尾补末片 DATA（END_STREAM）。SseStream 因此零改动即可工作。
      * @note HttpServerLimits::maximumRequestsPerConnection 由本类收口：达到上限即发 GOAWAY
      *       （h2 没有连接级的 close 头可用），既有流继续做完，本侧无在途请求后收口连接。
-     * @note 对端一直不回 ACK 本端 SETTINGS（RFC 7540 §6.5.3 的 SETTINGS_TIMEOUT）时，握手期按
+     * @note 对端一直不回 ACK 本端 SETTINGS（RFC 9113 §6.5.3 的 SETTINGS_TIMEOUT）时，握手期按
      *       HttpServerLimits::settingsAcknowledgementTimeout 约束空闲截止时间：清扫协程到点收口连接，
      *       会话在还能写字节时先尽力把 GOAWAY(SETTINGS_TIMEOUT) 送出去。
      * @note 响应的写出时机：一轮里收齐的请求先全部服务完（各自把响应排进待发字节），随后**一次性写出**。
@@ -472,7 +472,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 按畸形请求处置一次「声明长度 vs 实收长度」：先发 400，再发 RST_STREAM(PROTOCOL_ERROR)
-         * @details RFC 7540 §8.1.2.6 三条要连着读：「A request or response is also malformed if the
+         * @details RFC 9113 §8.1.1 三条要连着读：「A request or response is also malformed if the
          *          value of a content-length header field does not equal the sum of the DATA frame
          *          payload lengths that form the body」→「Malformed requests or responses that are
          *          detected MUST be treated as a stream error (Section 5.4.2) of type
@@ -587,7 +587,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 在某条流上发一条中间响应（1xx）：一个不带 END_STREAM 的 HEADERS 块（RFC 9113 §8.1）
          * @details 会话自己回 100-continue 与处理函数发 102/103 共用这一条出口，两处不会长出不一样。
-         *          字段名在本层折成小写（§8.1.2 要求线上全小写，而调用方习惯的是大小写随意的 HTTP/1.1）。
+         *          字段名在本层折成小写（§8.2 要求线上全小写，而调用方习惯的是大小写随意的 HTTP/1.1）。
          *          成功排入时顺带落一条状态码类计数——不落延迟样本，中间响应不是这条请求的答复。
          * @param streamId 目标流号
          * @param statusCode 中间响应状态码（调用方已保证落在 1xx）

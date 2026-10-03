@@ -16,16 +16,16 @@ namespace AsynGyanis::Net
         /// PRIORITY 依赖字段里的 E 位（§6.3，那是有定义的一段，取出来就是 isExclusive）
         constexpr std::uint32_t kStreamIdReservedBitMask = 0x80000000U;
 
-        /// SETTINGS 一个参数的线长：16 位标识 + 32 位取值（RFC 7540 §6.5.1）
+        /// SETTINGS 一个参数的线长：16 位标识 + 32 位取值（RFC 9113 §6.5.1）
         constexpr std::size_t kSettingByteCount = 6;
 
-        /// HEADERS 的优先级字段线长：4 字节（E 位 + 31 位父流号）+ 1 字节权重（RFC 7540 §6.2）
+        /// HEADERS 的优先级字段线长：4 字节（E 位 + 31 位父流号）+ 1 字节权重（RFC 9113 §6.2）
         constexpr std::size_t kPriorityFieldByteCount = 5;
 
-        /// PING 的不透明数据长度（RFC 7540 §6.7）
+        /// PING 的不透明数据长度（RFC 9113 §6.7）
         constexpr std::size_t kPingOpaqueDataByteCount = 8;
 
-        /// GOAWAY 的固定部分长度：4 字节最后流号 + 4 字节错误码（RFC 7540 §6.8）
+        /// GOAWAY 的固定部分长度：4 字节最后流号 + 4 字节错误码（RFC 9113 §6.8）
         constexpr std::size_t kGoAwayFixedByteCount = 8;
 
         /**
@@ -56,7 +56,7 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 判断帧类型取值是否落在 RFC 7540 §6 定义过的类型里
+         * @brief 判断帧类型取值是否落在 RFC 9113 §6 定义过的类型里
          * @param frameType 帧类型取值（可能来自线上的任意字节）
          * @return true 表示是已定义的类型
          */
@@ -214,7 +214,7 @@ namespace AsynGyanis::Net
         {
             if (streamId == 0)
             {
-                throw Base::InvalidArgumentException("HEADERS 必须关联到一条流（RFC 7540 §6.2 要求流号非 0）："
+                throw Base::InvalidArgumentException("HEADERS 必须关联到一条流（RFC 9113 §6.2 要求流号非 0）："
                                                      "连接级帧只能是 SETTINGS/PING/GOAWAY 这类不带头块的类型");
             }
             appendHttp2Frame(bytes, Http2FrameType::Headers, headersFrameFlags(endStream, endHeaders, hasPriority), streamId, body);
@@ -232,7 +232,7 @@ namespace AsynGyanis::Net
             case Http2FrameErrorKind::FrameSizeError:
                 return Http2ErrorCode::FrameSizeError;
             case Http2FrameErrorKind::LimitExceeded:
-                // 本端资源上限被突破不是对端违规，按 RFC 7540 §7 对「可能造成过量负载」的建议取值回
+                // 本端资源上限被突破不是对端违规，按 RFC 9113 §7 对「可能造成过量负载」的建议取值回
                 return Http2ErrorCode::EnhanceYourCalm;
         }
         return Http2ErrorCode::InternalError;
@@ -308,20 +308,20 @@ namespace AsynGyanis::Net
         // 长度域只有 24 位：超出的负载写不进帧头，静默截断会让对端按错误的边界切帧
         if (header.payloadLength > kHttp2MaximumFramePayloadByteCount)
         {
-            throw Base::InvalidArgumentException(std::format("帧负载长度 {} 字节超出 24 位长度域可表示的范围 {} 字节（RFC 7540 §4.1）："
+            throw Base::InvalidArgumentException(std::format("帧负载长度 {} 字节超出 24 位长度域可表示的范围 {} 字节（RFC 9113 §4.1）："
                                                              "请把数据拆成多条帧",
                                                              header.payloadLength, kHttp2MaximumFramePayloadByteCount));
         }
         if (header.streamId > kHttp2MaximumStreamId)
         {
-            throw Base::InvalidArgumentException(std::format("流号 {} 超出 31 位可表示的范围 {}（RFC 7540 §4.1 要求 R 位为 0）："
+            throw Base::InvalidArgumentException(std::format("流号 {} 超出 31 位可表示的范围 {}（RFC 9113 §4.1 要求 R 位为 0）："
                                                              "连接级帧请传 0，流级帧请传 1 到 {}",
                                                              header.streamId, kHttp2MaximumStreamId, kHttp2MaximumStreamId));
         }
         if (!isKnownFrameType(header.type))
         {
             throw Base::InvalidArgumentException(
-                    std::format("帧类型 0x{:X} 未定义（RFC 7540 §6 只定义了 0x0 到 0x9）：请改用已定义的类型", static_cast<unsigned int>(static_cast<std::uint8_t>(header.type))));
+                    std::format("帧类型 0x{:X} 未定义（RFC 9113 §6 只定义了 0x0 到 0x9）：请改用已定义的类型", static_cast<unsigned int>(static_cast<std::uint8_t>(header.type))));
         }
 
         std::string headerBytes;
@@ -347,7 +347,7 @@ namespace AsynGyanis::Net
                                             (static_cast<std::uint32_t>(static_cast<std::uint8_t>(bytes[1])) << 8) |
                                             static_cast<std::uint32_t>(static_cast<std::uint8_t>(bytes[2]));
         const std::uint32_t streamIdField = readBigEndian32(bytes.data() + 5);
-        // 帧头流号的最高位 R 在接收侧**忽略**（RFC 7540 §4.1 原文是「MUST remain unset when sending
+        // 帧头流号的最高位 R 在接收侧**忽略**（RFC 9113 §4.1 原文是「MUST remain unset when sending
         // and MUST be ignored when receiving」）。此前本实现按「从严」把它判成错误并断链，
         // h2spec 4.1.3 抓到：置位的那一帧本该按没置位处理，连接要继续活着（那条用例随后还发 PING
         // 探这一点）。掩码在下面那行照旧生效，不必额外分支
@@ -370,7 +370,7 @@ namespace AsynGyanis::Net
         // 先判上限再窄化：直接把 size_t 转成 24 位长度域会在超限时静默回绕
         if (payload.size() > static_cast<std::size_t>(kHttp2MaximumFramePayloadByteCount))
         {
-            throw Base::InvalidArgumentException(std::format("帧负载 {} 字节超出 24 位长度域可表示的范围 {} 字节（RFC 7540 §4.1）："
+            throw Base::InvalidArgumentException(std::format("帧负载 {} 字节超出 24 位长度域可表示的范围 {} 字节（RFC 9113 §4.1）："
                                                              "请把数据拆成多条帧",
                                                              payload.size(), kHttp2MaximumFramePayloadByteCount));
         }
@@ -392,10 +392,10 @@ namespace AsynGyanis::Net
 
     std::string encodeHttp2SettingsFrame(const Http2SettingsPayload &payload)
     {
-        // ACK 帧只是确认收到，负载必须为空（RFC 7540 §6.5）；带参数发出去对端按连接错误处理
+        // ACK 帧只是确认收到，负载必须为空（RFC 9113 §6.5）；带参数发出去对端按连接错误处理
         if (payload.isAcknowledgement && !payload.parameters.empty())
         {
-            throw Base::InvalidArgumentException(std::format("SETTINGS 的 ACK 帧负载必须为空（RFC 7540 §6.5），本次带了 {} 个参数："
+            throw Base::InvalidArgumentException(std::format("SETTINGS 的 ACK 帧负载必须为空（RFC 9113 §6.5），本次带了 {} 个参数："
                                                              "请把参数放在不带 ACK 的 SETTINGS 帧里发送",
                                                              payload.parameters.size()));
         }
@@ -410,7 +410,7 @@ namespace AsynGyanis::Net
                 appendBigEndian32(body, setting.value);
             }
         }
-        // SETTINGS 作用于整条连接：流号恒为 0（RFC 7540 §6.5）
+        // SETTINGS 作用于整条连接：流号恒为 0（RFC 9113 §6.5）
         return encodeHttp2Frame(Http2FrameType::Settings, payload.isAcknowledgement ? kHttp2FlagAcknowledge : 0U, 0, body);
     }
 
@@ -422,7 +422,7 @@ namespace AsynGyanis::Net
         {
             body.push_back(static_cast<char>(byteValue));
         }
-        // PING 同样是连接级帧，流号恒为 0（RFC 7540 §6.7）
+        // PING 同样是连接级帧，流号恒为 0（RFC 9113 §6.7）
         return encodeHttp2Frame(Http2FrameType::Ping, payload.isAcknowledgement ? kHttp2FlagAcknowledge : 0U, 0, body);
     }
 
@@ -430,7 +430,7 @@ namespace AsynGyanis::Net
     {
         if (payload.lastStreamId > kHttp2MaximumStreamId)
         {
-            throw Base::InvalidArgumentException(std::format("GOAWAY 的最后流号 {} 超出 31 位可表示的范围 {}（RFC 7540 §6.8）："
+            throw Base::InvalidArgumentException(std::format("GOAWAY 的最后流号 {} 超出 31 位可表示的范围 {}（RFC 9113 §6.8）："
                                                              "没有处理过任何流时请传 0",
                                                              payload.lastStreamId, kHttp2MaximumStreamId));
         }
@@ -447,7 +447,7 @@ namespace AsynGyanis::Net
     {
         if (streamId == 0)
         {
-            throw Base::InvalidArgumentException("RST_STREAM 必须关联到一条流（RFC 7540 §6.4 要求流号非 0）："
+            throw Base::InvalidArgumentException("RST_STREAM 必须关联到一条流（RFC 9113 §6.4 要求流号非 0）："
                                                  "流号 0 是连接级，终止整条连接请改用 GOAWAY");
         }
 
@@ -459,16 +459,16 @@ namespace AsynGyanis::Net
 
     std::string encodeHttp2WindowUpdateFrame(const Http2WindowUpdatePayload &payload, const std::uint32_t streamId)
     {
-        // 增量为 0 的 WINDOW_UPDATE 是规范明文禁止的（RFC 7540 §6.9），发出去对端必然判错
+        // 增量为 0 的 WINDOW_UPDATE 是规范明文禁止的（RFC 9113 §6.9），发出去对端必然判错
         if (payload.windowSizeIncrement == 0)
         {
-            throw Base::InvalidArgumentException("WINDOW_UPDATE 的窗口增量不得为 0（RFC 7540 §6.9）："
+            throw Base::InvalidArgumentException("WINDOW_UPDATE 的窗口增量不得为 0（RFC 9113 §6.9）："
                                                  "不需要调整窗口就别发这一帧");
         }
         if (payload.windowSizeIncrement > kHttp2MaximumStreamId)
         {
             throw Base::InvalidArgumentException(
-                    std::format("窗口增量 {} 超出 31 位可表示的范围 {}（RFC 7540 §6.9）：请减小增量", payload.windowSizeIncrement, kHttp2MaximumStreamId));
+                    std::format("窗口增量 {} 超出 31 位可表示的范围 {}（RFC 9113 §6.9）：请减小增量", payload.windowSizeIncrement, kHttp2MaximumStreamId));
         }
 
         std::string body;
@@ -486,7 +486,7 @@ namespace AsynGyanis::Net
     {
         if (streamId == 0)
         {
-            throw Base::InvalidArgumentException("DATA 必须关联到一条流（RFC 7540 §6.1 要求流号非 0）："
+            throw Base::InvalidArgumentException("DATA 必须关联到一条流（RFC 9113 §6.1 要求流号非 0）："
                                                  "连接级帧只能是 SETTINGS/PING/GOAWAY 这类不带应用数据的类型");
         }
 
@@ -525,7 +525,7 @@ namespace AsynGyanis::Net
     {
         if (streamId == 0)
         {
-            throw Base::InvalidArgumentException("CONTINUATION 必须关联到一条流（RFC 7540 §6.10 要求流号非 0）："
+            throw Base::InvalidArgumentException("CONTINUATION 必须关联到一条流（RFC 9113 §6.10 要求流号非 0）："
                                                  "它只能续在同一条流的 HEADERS 之后");
         }
 
@@ -536,7 +536,7 @@ namespace AsynGyanis::Net
     {
         if (streamId == 0)
         {
-            throw Base::InvalidArgumentException("PRIORITY 必须关联到一条流（RFC 7540 §6.3 要求流号非 0）："
+            throw Base::InvalidArgumentException("PRIORITY 必须关联到一条流（RFC 9113 §6.3 要求流号非 0）："
                                                  "流优先级只对具体的流有意义");
         }
         rejectSelfDependency(priority.streamDependency, streamId);
@@ -558,7 +558,7 @@ namespace AsynGyanis::Net
         }
         if (frame.payload.size() % kSettingByteCount != 0)
         {
-            writeError(errorText, std::format("SETTINGS 负载 {} 字节不是 {} 的整数倍（RFC 7540 §6.5）：参数是 16 位标识加 32 位取值，"
+            writeError(errorText, std::format("SETTINGS 负载 {} 字节不是 {} 的整数倍（RFC 9113 §6.5）：参数是 16 位标识加 32 位取值，"
                                               "请检查对端是否截断了帧",
                                               frame.payload.size(), kSettingByteCount));
             return false;
@@ -567,7 +567,7 @@ namespace AsynGyanis::Net
         payload                   = Http2SettingsPayload{};
         payload.isAcknowledgement = (frame.header.flags & kHttp2FlagAcknowledge) != 0;
         payload.parameters.reserve(frame.payload.size() / kSettingByteCount);
-        // 未知标识也原样收下（RFC 7540 §6.5.2 要求忽略而非判错）：不保留它，上层就无从知道对端说了什么
+        // 未知标识也原样收下（RFC 9113 §6.5.2 要求忽略而非判错）：不保留它，上层就无从知道对端说了什么
         for (std::size_t offset = 0; offset < frame.payload.size(); offset += kSettingByteCount)
         {
             Http2Setting setting;
@@ -580,7 +580,7 @@ namespace AsynGyanis::Net
 
     bool tryGetHttp2Setting(const Http2SettingsPayload &payload, const Http2SettingIdentifier identifier, std::uint32_t &value) noexcept
     {
-        // 同一标识重复出现时取最后一次（RFC 7540 §6.5：参数按顺序处理，值取最后见到的），因此倒着找
+        // 同一标识重复出现时取最后一次（RFC 9113 §6.5：参数按顺序处理，值取最后见到的），因此倒着找
         for (auto settingIterator = payload.parameters.rbegin(); settingIterator != payload.parameters.rend(); ++settingIterator)
         {
             if (static_cast<Http2SettingIdentifier>(settingIterator->identifier) == identifier)
@@ -602,7 +602,7 @@ namespace AsynGyanis::Net
         }
         if (frame.payload.size() != kPingOpaqueDataByteCount)
         {
-            writeError(errorText, std::format("PING 负载必须是 {} 字节（RFC 7540 §6.7），实际 {} 字节：请检查对端是否截断了帧", kPingOpaqueDataByteCount, frame.payload.size()));
+            writeError(errorText, std::format("PING 负载必须是 {} 字节（RFC 9113 §6.7），实际 {} 字节：请检查对端是否截断了帧", kPingOpaqueDataByteCount, frame.payload.size()));
             return false;
         }
 
@@ -625,12 +625,12 @@ namespace AsynGyanis::Net
         }
         if (frame.payload.size() < kGoAwayFixedByteCount)
         {
-            writeError(errorText, std::format("GOAWAY 负载至少 {} 字节（RFC 7540 §6.8），实际 {} 字节：请检查对端是否截断了帧", kGoAwayFixedByteCount, frame.payload.size()));
+            writeError(errorText, std::format("GOAWAY 负载至少 {} 字节（RFC 9113 §6.8），实际 {} 字节：请检查对端是否截断了帧", kGoAwayFixedByteCount, frame.payload.size()));
             return false;
         }
 
         payload = Http2GoAwayPayload{};
-        // 最后流号字段的保留位按 RFC 7540 §6.8 掩掉：该位在读取侧没有语义
+        // 最后流号字段的保留位按 RFC 9113 §6.8 掩掉：该位在读取侧没有语义
         payload.lastStreamId = readBigEndian32(frame.payload.data()) & kHttp2MaximumStreamId;
         payload.errorCode    = static_cast<Http2ErrorCode>(readBigEndian32(frame.payload.data() + 4));
         payload.debugData    = frame.payload.substr(kGoAwayFixedByteCount);
@@ -647,7 +647,7 @@ namespace AsynGyanis::Net
         }
         if (frame.payload.size() != 4)
         {
-            writeError(errorText, std::format("RST_STREAM 负载必须是 4 字节错误码（RFC 7540 §6.4），实际 {} 字节", frame.payload.size()));
+            writeError(errorText, std::format("RST_STREAM 负载必须是 4 字节错误码（RFC 9113 §6.4），实际 {} 字节", frame.payload.size()));
             return false;
         }
 
@@ -666,7 +666,7 @@ namespace AsynGyanis::Net
         }
         if (frame.payload.size() != 4)
         {
-            writeError(errorText, std::format("WINDOW_UPDATE 负载必须是 4 字节增量（RFC 7540 §6.9），实际 {} 字节", frame.payload.size()));
+            writeError(errorText, std::format("WINDOW_UPDATE 负载必须是 4 字节增量（RFC 9113 §6.9），实际 {} 字节", frame.payload.size()));
             return false;
         }
 
@@ -675,7 +675,7 @@ namespace AsynGyanis::Net
         payload.windowSizeIncrement = readBigEndian32(frame.payload.data()) & kHttp2MaximumStreamId;
         if (payload.windowSizeIncrement == 0)
         {
-            writeError(errorText, "WINDOW_UPDATE 的窗口增量不得为 0（RFC 7540 §6.9）：该帧只能用于放宽窗口，请检查对端构造");
+            writeError(errorText, "WINDOW_UPDATE 的窗口增量不得为 0（RFC 9113 §6.9）：该帧只能用于放宽窗口，请检查对端构造");
             return false;
         }
         return true;
@@ -736,7 +736,7 @@ namespace AsynGyanis::Net
         // 这个上限就是本端要通告出去的 SETTINGS_MAX_FRAME_SIZE，越界取值等于在通告一个非法设置项
         if (m_limits.maximumFrameSizeByteCount < kHttp2DefaultMaximumFrameSize || m_limits.maximumFrameSizeByteCount > kHttp2MaximumMaximumFrameSize)
         {
-            throw Base::InvalidArgumentException(std::format("Http2FrameDecoder：单帧负载上限 {} 不在 SETTINGS_MAX_FRAME_SIZE 的合法区间 [{}, {}] 内（RFC 7540 §6.5.2）："
+            throw Base::InvalidArgumentException(std::format("Http2FrameDecoder：单帧负载上限 {} 不在 SETTINGS_MAX_FRAME_SIZE 的合法区间 [{}, {}] 内（RFC 9113 §6.5.2）："
                                                              "请改用区间内的取值，缺省值 {} 即规范的初始值",
                                                              m_limits.maximumFrameSizeByteCount, kHttp2DefaultMaximumFrameSize, kHttp2MaximumMaximumFrameSize,
                                                              kHttp2DefaultMaximumFrameSize));
@@ -892,7 +892,7 @@ namespace AsynGyanis::Net
         // 超上限的帧连收都不收：对端声明一个天文数字的长度，本端就会一直等下去，内存与连接都被占着
         if (header.payloadLength > m_limits.maximumFrameSizeByteCount)
         {
-            recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("帧负载声明 {} 字节超出本端通告的 SETTINGS_MAX_FRAME_SIZE {} 字节（RFC 7540 §4.2）："
+            recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("帧负载声明 {} 字节超出本端通告的 SETTINGS_MAX_FRAME_SIZE {} 字节（RFC 9113 §4.2）："
                                                                            "请让对端把数据拆到多条帧里，或调高 Http2FrameLimits::maximumFrameSizeByteCount",
                                                                            header.payloadLength, m_limits.maximumFrameSizeByteCount));
             return false;
@@ -922,98 +922,98 @@ namespace AsynGyanis::Net
             case Http2FrameType::Data:
                 if (!isOnStream)
                 {
-                    recordFailure(Http2FrameErrorKind::ProtocolError, "DATA 帧的流号必须非 0（RFC 7540 §6.1）：流号 0 只用于连接级帧，请检查对端构造");
+                    recordFailure(Http2FrameErrorKind::ProtocolError, "DATA 帧的流号必须非 0（RFC 9113 §6.1）：流号 0 只用于连接级帧，请检查对端构造");
                     return false;
                 }
                 return true;
             case Http2FrameType::Headers:
                 if (!isOnStream)
                 {
-                    recordFailure(Http2FrameErrorKind::ProtocolError, "HEADERS 帧的流号必须非 0（RFC 7540 §6.2）：流号 0 只用于连接级帧，请检查对端构造");
+                    recordFailure(Http2FrameErrorKind::ProtocolError, "HEADERS 帧的流号必须非 0（RFC 9113 §6.2）：流号 0 只用于连接级帧，请检查对端构造");
                     return false;
                 }
                 return true;
             case Http2FrameType::Priority:
                 if (!isOnStream)
                 {
-                    recordFailure(Http2FrameErrorKind::ProtocolError, "PRIORITY 帧的流号必须非 0（RFC 7540 §6.3）");
+                    recordFailure(Http2FrameErrorKind::ProtocolError, "PRIORITY 帧的流号必须非 0（RFC 9113 §6.3）");
                     return false;
                 }
                 if (header.payloadLength != kPriorityFieldByteCount)
                 {
                     recordFailure(Http2FrameErrorKind::FrameSizeError,
-                                  std::format("PRIORITY 帧负载必须是 {} 字节（RFC 7540 §6.3），声明了 {} 字节", kPriorityFieldByteCount, header.payloadLength));
+                                  std::format("PRIORITY 帧负载必须是 {} 字节（RFC 9113 §6.3），声明了 {} 字节", kPriorityFieldByteCount, header.payloadLength));
                     return false;
                 }
                 return true;
             case Http2FrameType::RstStream:
                 if (!isOnStream)
                 {
-                    recordFailure(Http2FrameErrorKind::ProtocolError, "RST_STREAM 帧的流号必须非 0（RFC 7540 §6.4）");
+                    recordFailure(Http2FrameErrorKind::ProtocolError, "RST_STREAM 帧的流号必须非 0（RFC 9113 §6.4）");
                     return false;
                 }
                 if (header.payloadLength != 4)
                 {
-                    recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("RST_STREAM 帧负载必须是 4 字节错误码（RFC 7540 §6.4），声明了 {} 字节", header.payloadLength));
+                    recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("RST_STREAM 帧负载必须是 4 字节错误码（RFC 9113 §6.4），声明了 {} 字节", header.payloadLength));
                     return false;
                 }
                 return true;
             case Http2FrameType::Settings:
                 if (isOnStream)
                 {
-                    recordFailure(Http2FrameErrorKind::ProtocolError, std::format("SETTINGS 帧是连接级帧，流号必须为 0（RFC 7540 §6.5），收到流号 {}", header.streamId));
+                    recordFailure(Http2FrameErrorKind::ProtocolError, std::format("SETTINGS 帧是连接级帧，流号必须为 0（RFC 9113 §6.5），收到流号 {}", header.streamId));
                     return false;
                 }
-                // ACK 帧只是确认收到，负载必须为空（RFC 7540 §6.5）
+                // ACK 帧只是确认收到，负载必须为空（RFC 9113 §6.5）
                 if ((header.flags & kHttp2FlagAcknowledge) != 0 && header.payloadLength != 0)
                 {
-                    recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("带 ACK 的 SETTINGS 帧负载必须为空（RFC 7540 §6.5），声明了 {} 字节", header.payloadLength));
+                    recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("带 ACK 的 SETTINGS 帧负载必须为空（RFC 9113 §6.5），声明了 {} 字节", header.payloadLength));
                     return false;
                 }
                 if (header.payloadLength % kSettingByteCount != 0)
                 {
                     recordFailure(Http2FrameErrorKind::FrameSizeError,
-                                  std::format("SETTINGS 帧负载长度必须是 {} 的整数倍（RFC 7540 §6.5），声明了 {} 字节", kSettingByteCount, header.payloadLength));
+                                  std::format("SETTINGS 帧负载长度必须是 {} 的整数倍（RFC 9113 §6.5），声明了 {} 字节", kSettingByteCount, header.payloadLength));
                     return false;
                 }
                 return true;
             case Http2FrameType::Ping:
                 if (isOnStream)
                 {
-                    recordFailure(Http2FrameErrorKind::ProtocolError, std::format("PING 帧是连接级帧，流号必须为 0（RFC 7540 §6.7），收到流号 {}", header.streamId));
+                    recordFailure(Http2FrameErrorKind::ProtocolError, std::format("PING 帧是连接级帧，流号必须为 0（RFC 9113 §6.7），收到流号 {}", header.streamId));
                     return false;
                 }
                 if (header.payloadLength != kPingOpaqueDataByteCount)
                 {
                     recordFailure(Http2FrameErrorKind::FrameSizeError,
-                                  std::format("PING 帧负载必须是 {} 字节（RFC 7540 §6.7），声明了 {} 字节", kPingOpaqueDataByteCount, header.payloadLength));
+                                  std::format("PING 帧负载必须是 {} 字节（RFC 9113 §6.7），声明了 {} 字节", kPingOpaqueDataByteCount, header.payloadLength));
                     return false;
                 }
                 return true;
             case Http2FrameType::GoAway:
                 if (isOnStream)
                 {
-                    recordFailure(Http2FrameErrorKind::ProtocolError, std::format("GOAWAY 帧是连接级帧，流号必须为 0（RFC 7540 §6.8），收到流号 {}", header.streamId));
+                    recordFailure(Http2FrameErrorKind::ProtocolError, std::format("GOAWAY 帧是连接级帧，流号必须为 0（RFC 9113 §6.8），收到流号 {}", header.streamId));
                     return false;
                 }
                 if (header.payloadLength < kGoAwayFixedByteCount)
                 {
                     recordFailure(Http2FrameErrorKind::FrameSizeError,
-                                  std::format("GOAWAY 帧负载至少 {} 字节（RFC 7540 §6.8），声明了 {} 字节", kGoAwayFixedByteCount, header.payloadLength));
+                                  std::format("GOAWAY 帧负载至少 {} 字节（RFC 9113 §6.8），声明了 {} 字节", kGoAwayFixedByteCount, header.payloadLength));
                     return false;
                 }
                 return true;
             case Http2FrameType::WindowUpdate:
                 if (header.payloadLength != 4)
                 {
-                    recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("WINDOW_UPDATE 帧负载必须是 4 字节增量（RFC 7540 §6.9），声明了 {} 字节", header.payloadLength));
+                    recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("WINDOW_UPDATE 帧负载必须是 4 字节增量（RFC 9113 §6.9），声明了 {} 字节", header.payloadLength));
                     return false;
                 }
                 return true;
             case Http2FrameType::Continuation:
                 if (!isOnStream)
                 {
-                    recordFailure(Http2FrameErrorKind::ProtocolError, "CONTINUATION 帧的流号必须非 0（RFC 7540 §6.10）：它只能续在同一条流的 HEADERS 之后");
+                    recordFailure(Http2FrameErrorKind::ProtocolError, "CONTINUATION 帧的流号必须非 0（RFC 9113 §6.10）：它只能续在同一条流的 HEADERS 之后");
                     return false;
                 }
                 return true;
@@ -1052,16 +1052,16 @@ namespace AsynGyanis::Net
         std::size_t bodyEnd   = rawPayload.size();
         if (isPadded)
         {
-            // PADDED 帧的第一个字节是填充长度，填充在负载尾部（RFC 7540 §6.1）
+            // PADDED 帧的第一个字节是填充长度，填充在负载尾部（RFC 9113 §6.1）
             if (rawPayload.empty())
             {
-                recordFailure(Http2FrameErrorKind::ProtocolError, "置了 PADDED 位却没有填充长度字节（RFC 7540 §6.1 要求 PADDED 帧的负载至少 1 字节）：请检查对端构造");
+                recordFailure(Http2FrameErrorKind::ProtocolError, "置了 PADDED 位却没有填充长度字节（RFC 9113 §6.1 要求 PADDED 帧的负载至少 1 字节）：请检查对端构造");
                 return;
             }
             const auto paddingLength = static_cast<std::size_t>(static_cast<std::uint8_t>(rawPayload[0]));
             if (paddingLength >= rawPayload.size())
             {
-                recordFailure(Http2FrameErrorKind::ProtocolError, std::format("置了 PADDED 位的帧里，填充长度 {} 不小于负载长度 {}（RFC 7540 §6.1 要求填充短于负载）："
+                recordFailure(Http2FrameErrorKind::ProtocolError, std::format("置了 PADDED 位的帧里，填充长度 {} 不小于负载长度 {}（RFC 9113 §6.1 要求填充短于负载）："
                                                                               "请检查对端构造",
                                                                               paddingLength, rawPayload.size()));
                 return;
@@ -1074,10 +1074,10 @@ namespace AsynGyanis::Net
         Http2Priority priority{};
         if (m_isCurrentFramePriority)
         {
-            // 优先级字段紧跟填充长度字节、位于头块片段之前（RFC 7540 §6.2、§6.3）
+            // 优先级字段紧跟填充长度字节、位于头块片段之前（RFC 9113 §6.2、§6.3）
             if (bodyEnd < bodyBegin + kPriorityFieldByteCount)
             {
-                recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("{} 帧置了 PRIORITY 位，但剥掉 padding 后不足 {} 字节的优先级字段（RFC 7540 §6.2）："
+                recordFailure(Http2FrameErrorKind::FrameSizeError, std::format("{} 帧置了 PRIORITY 位，但剥掉 padding 后不足 {} 字节的优先级字段（RFC 9113 §6.2）："
                                                                                "请检查对端构造",
                                                                                http2FrameTypeName(m_currentHeader.type), kPriorityFieldByteCount));
                 return;
@@ -1091,10 +1091,10 @@ namespace AsynGyanis::Net
             priority    = m_currentPriority;
         }
 
-        // 增量为 0 的 WINDOW_UPDATE 是规范禁止的（RFC 7540 §6.9）：放行会让对端以为窗口动了
+        // 增量为 0 的 WINDOW_UPDATE 是规范禁止的（RFC 9113 §6.9）：放行会让对端以为窗口动了
         if (m_currentHeader.type == Http2FrameType::WindowUpdate && (readBigEndian32(rawPayload.data()) & kHttp2MaximumStreamId) == 0)
         {
-            recordFailure(Http2FrameErrorKind::ProtocolError, std::format("WINDOW_UPDATE 的窗口增量不得为 0（RFC 7540 §6.9）：流号 {} 上的这一帧只能放宽窗口，"
+            recordFailure(Http2FrameErrorKind::ProtocolError, std::format("WINDOW_UPDATE 的窗口增量不得为 0（RFC 9113 §6.9）：流号 {} 上的这一帧只能放宽窗口，"
                                                                           "请检查对端构造",
                                                                           m_currentHeader.streamId));
             return;

@@ -35,7 +35,7 @@ namespace AsynGyanis::Net
     /// 动态表每一项的固定开销（RFC 7541 §4.1 的算式：名长 + 值长 + 32）
     inline constexpr std::size_t kHpackDynamicTableEntryOverheadBytes = 32;
 
-    /// 动态表默认上限，等于 SETTINGS_HEADER_TABLE_SIZE 的初始值（RFC 7540 §6.5.2）
+    /// 动态表默认上限，等于 SETTINGS_HEADER_TABLE_SIZE 的初始值（RFC 9113 §6.5.2）
     inline constexpr std::size_t kHpackDefaultDynamicTableSizeByteCount = 4096;
 
     /// 静态表条目数（RFC 7541 Appendix A）
@@ -533,7 +533,7 @@ namespace AsynGyanis::Net
      * @brief HPACK 解码失败的类别
      *
      * @details 分类依据是「用哪个错误码回对端」：CompressionError 是头块本身解不开（必须按
-     *          RFC 7540 §4.3 回 COMPRESSION_ERROR 并终止连接，因为压缩上下文已经与对端不同步），
+     *          RFC 9113 §4.3 回 COMPRESSION_ERROR 并终止连接，因为压缩上下文已经与对端不同步），
      *          LimitExceeded 是本端资源上限被突破（不是对端解不开，按 §7 建议回 ENHANCE_YOUR_CALM），
      *          映射关系见 toHttp2ErrorCode()。
      * @note 上层据 kind 决定策略而不匹配文案；新增类别一律追加在末尾。
@@ -734,7 +734,7 @@ namespace AsynGyanis::Net
         /// 判错（RFC 7541 §6.3 要求新上限不得大于协议允许的限度）
         std::size_t maximumDynamicTableSizeByteCount{kHpackDefaultDynamicTableSizeByteCount};
 
-        /// 单个头块解出的头列表总大小上限，算式按 RFC 7540 §6.5.2：每项名长 + 值长 + 32
+        /// 单个头块解出的头列表总大小上限，算式按 RFC 9113 §6.5.2：每项名长 + 值长 + 32
         std::size_t maximumHeaderListByteCount{16ull * 1024};
 
         /// 单条头名字节数上限

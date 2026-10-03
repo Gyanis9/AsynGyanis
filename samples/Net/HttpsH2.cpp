@@ -211,7 +211,7 @@ namespace
 
     /**
      * @brief 名字与值都是字面量的字段（普通头部用）
-     * @param name 头名（必须全小写，RFC 7540 §8.1.2）
+     * @param name 头名（必须全小写，RFC 9113 §8.2）
      * @param value 头值
      * @return std::string 编码结果
      */
@@ -280,7 +280,7 @@ namespace
         return Net::encodeHttp2SettingsFrame(payload);
     }
 
-    /// @return std::string 空的 SETTINGS ACK 帧（RFC 7540 §6.5 要求 ACK 负载为空）
+    /// @return std::string 空的 SETTINGS ACK 帧（RFC 9113 §6.5 要求 ACK 负载为空）
     std::string makeSettingsAckFrame()
     {
         return Net::encodeHttp2SettingsFrame(Net::Http2SettingsPayload{.isAcknowledgement = true});

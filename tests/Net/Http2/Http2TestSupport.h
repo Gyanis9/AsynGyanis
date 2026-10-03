@@ -79,7 +79,7 @@ namespace AsynGyanis::Net::TestSupport
     }
 
     /**
-     * @brief 拼一个空的 SETTINGS ACK 帧（RFC 7540 §6.5 要求 ACK 负载为空）
+     * @brief 拼一个空的 SETTINGS ACK 帧（RFC 9113 §6.5 要求 ACK 负载为空）
      * @return std::string 完整帧字节
      */
     [[nodiscard]] inline std::string makeSettingsAckFrame()

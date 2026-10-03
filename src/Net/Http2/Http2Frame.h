@@ -1,6 +1,6 @@
 /**
  * @file Http2Frame.h
- * @brief HTTP/2 帧层（RFC 7540 §4 帧格式、§6 帧定义、§7 错误码）：帧头与各类型负载的编解码、增量帧解码器
+ * @brief HTTP/2 帧层（RFC 9113 §4 帧格式、§6 帧定义、§7 错误码）：帧头与各类型负载的编解码、增量帧解码器
  * @author Gyanis
  * @date 2026-09-13
  * @version 1.0.0
@@ -24,7 +24,7 @@
 namespace AsynGyanis::Net
 {
     // ============================================================================
-    // HTTP/2 帧编解码（RFC 7540 §4/§6）
+    // HTTP/2 帧编解码（RFC 9113 §4/§6）
     //
     // 本层只提供协议机制（帧头与各类型负载的编解码、增量帧解码器）：谁调用编码器、谁把解码器接到
     // 连接读取循环上由上层负责——Http2Connection 解释帧并把要回的帧交给上层写出，Http2Session 负责
@@ -33,7 +33,7 @@ namespace AsynGyanis::Net
     // ============================================================================
 
     /**
-     * @brief HTTP/2 帧类型（RFC 7540 §6）
+     * @brief HTTP/2 帧类型（RFC 9113 §6）
      *
      * @note 新增取值一律追加在末尾：这些数值直接对应线上帧头的第二个字节，改动既有取值等于
      *       改变协议本身；未定义的类型不属于本枚举（解码器按 §4.1 要求忽略并原样交出）。
@@ -53,7 +53,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief HTTP/2 错误码（RFC 7540 §7）
+     * @brief HTTP/2 错误码（RFC 9113 §7）
      *
      * @note 新增取值一律追加在末尾；GOAWAY 与 RST_STREAM 都会把这些数值带上线，改动既有取值
      *       等于改变协议本身。
@@ -76,46 +76,46 @@ namespace AsynGyanis::Net
         Http11Required     = 0xd  ///< 要求改用 HTTP/1.1 重试本次请求
     };
 
-    /// 帧头固定 9 字节：24 位长度 + 8 位类型 + 8 位标志 + 31 位流号（RFC 7540 §4.1）
+    /// 帧头固定 9 字节：24 位长度 + 8 位类型 + 8 位标志 + 31 位流号（RFC 9113 §4.1）
     inline constexpr std::size_t kHttp2FrameHeaderByteCount = 9;
 
-    /// 帧头长度域是 24 位，可表示的最大负载长度（RFC 7540 §4.1）
+    /// 帧头长度域是 24 位，可表示的最大负载长度（RFC 9113 §4.1）
     inline constexpr std::uint32_t kHttp2MaximumFramePayloadByteCount = 0xFFFFFF;
 
-    /// SETTINGS_MAX_FRAME_SIZE 的默认值，也是合法区间的下界（RFC 7540 §6.5.2）
+    /// SETTINGS_MAX_FRAME_SIZE 的默认值，也是合法区间的下界（RFC 9113 §6.5.2）
     inline constexpr std::uint32_t kHttp2DefaultMaximumFrameSize = 16384;
 
-    /// SETTINGS_MAX_FRAME_SIZE 的合法上界，等于 24 位长度域的满值（RFC 7540 §6.5.2）
+    /// SETTINGS_MAX_FRAME_SIZE 的合法上界，等于 24 位长度域的满值（RFC 9113 §6.5.2）
     inline constexpr std::uint32_t kHttp2MaximumMaximumFrameSize = kHttp2MaximumFramePayloadByteCount;
 
-    /// 流号字段是 31 位，最高位 R 必须为 0（RFC 7540 §4.1）
+    /// 流号字段是 31 位，最高位 R 必须为 0（RFC 9113 §4.1）
     inline constexpr std::uint32_t kHttp2MaximumStreamId = 0x7FFFFFFF;
 
-    /// 流控窗口的初值（RFC 7540 §6.9.2）：连接级窗口恒以它为初值，流级初值随 SETTINGS_INITIAL_WINDOW_SIZE 变化
+    /// 流控窗口的初值（RFC 9113 §6.9.2）：连接级窗口恒以它为初值，流级初值随 SETTINGS_INITIAL_WINDOW_SIZE 变化
     inline constexpr std::uint32_t kHttp2InitialWindowSizeByteCount = 65535;
 
-    /// 流控窗口的上限（RFC 7540 §6.9.2）：任何窗口超过 2^31-1 一律判 FLOW_CONTROL_ERROR，两条方向都适用
+    /// 流控窗口的上限（RFC 9113 §6.9.2）：任何窗口超过 2^31-1 一律判 FLOW_CONTROL_ERROR，两条方向都适用
     inline constexpr std::uint32_t kHttp2MaximumWindowSizeByteCount = 0x7FFFFFFFU;
 
-    /// DATA / HEADERS 的 END_STREAM 标志（RFC 7540 §6.1、§6.2）
+    /// DATA / HEADERS 的 END_STREAM 标志（RFC 9113 §6.1、§6.2）
     inline constexpr std::uint8_t kHttp2FlagEndStream = 0x1;
 
-    /// SETTINGS / PING 的 ACK 标志（RFC 7540 §6.5、§6.7）
+    /// SETTINGS / PING 的 ACK 标志（RFC 9113 §6.5、§6.7）
     inline constexpr std::uint8_t kHttp2FlagAcknowledge = 0x1;
 
-    /// HEADERS / CONTINUATION / PUSH_PROMISE 的 END_HEADERS 标志（RFC 7540 §6.2、§6.10）
+    /// HEADERS / CONTINUATION / PUSH_PROMISE 的 END_HEADERS 标志（RFC 9113 §6.2、§6.10）
     inline constexpr std::uint8_t kHttp2FlagEndHeaders = 0x4;
 
-    /// DATA / HEADERS / PUSH_PROMISE 的 PADDED 标志（RFC 7540 §6.1）
+    /// DATA / HEADERS / PUSH_PROMISE 的 PADDED 标志（RFC 9113 §6.1）
     inline constexpr std::uint8_t kHttp2FlagPadded = 0x8;
 
-    /// HEADERS 的 PRIORITY 标志：负载里多出 5 字节优先级字段（RFC 7540 §6.2）
+    /// HEADERS 的 PRIORITY 标志：负载里多出 5 字节优先级字段（RFC 9113 §6.2）
     inline constexpr std::uint8_t kHttp2FlagPriority = 0x20;
 
     /**
      * @brief 帧解码失败的类别
      *
-     * @details 分类依据是「用哪个错误码回对端」：ProtocolError 与 FrameSizeError 直接取自 RFC 7540 §7
+     * @details 分类依据是「用哪个错误码回对端」：ProtocolError 与 FrameSizeError 直接取自 RFC 9113 §7
      *          的同名错误码，LimitExceeded 是本端资源上限被突破（不是对端违规），按规范建议回
      *          ENHANCE_YOUR_CALM，映射关系见 toHttp2ErrorCode()。
      * @note 上层据 kind 决定策略而不匹配文案——文案会改，分类是契约；新增类别一律追加在末尾。
@@ -123,7 +123,7 @@ namespace AsynGyanis::Net
     enum class Http2FrameErrorKind
     {
         None,           ///< 尚未失败
-        ProtocolError,  ///< 对端违反 RFC 7540 的帧层规则（R 位非 0、padding 越界、依赖自身流号、增量 0 等）
+        ProtocolError,  ///< 对端违反 RFC 9113 的帧层规则（R 位非 0、padding 越界、依赖自身流号、增量 0 等）
         FrameSizeError, ///< 帧尺寸违规（负载超本端通告上限，或与类型要求的固定长度不符）
         LimitExceeded   ///< 本端资源上限被突破（累计读取字节数），与对端违规区分开
     };
@@ -132,7 +132,7 @@ namespace AsynGyanis::Net
      * @brief 把帧层失败类别映射成上线的 HTTP/2 错误码
      * @param errorKind 帧层失败类别
      * @return Http2ErrorCode 对应错误码：ProtocolError→PROTOCOL_ERROR、FrameSizeError→FRAME_SIZE_ERROR、
-     *         LimitExceeded→ENHANCE_YOUR_CALM（RFC 7540 §7 对「对端可能造成过量负载」的建议取值）、
+     *         LimitExceeded→ENHANCE_YOUR_CALM（RFC 9113 §7 对「对端可能造成过量负载」的建议取值）、
      *         None→NO_ERROR
      */
     [[nodiscard]] ASYN_NET_API Http2ErrorCode toHttp2ErrorCode(Http2FrameErrorKind errorKind) noexcept;
@@ -152,7 +152,7 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API std::string_view http2ErrorCodeName(Http2ErrorCode errorCode) noexcept;
 
     /**
-     * @brief HTTP/2 帧头（RFC 7540 §4.1）
+     * @brief HTTP/2 帧头（RFC 9113 §4.1）
      */
     struct ASYN_NET_API Http2FrameHeader
     {
@@ -163,13 +163,16 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief 流的优先级字段（RFC 7540 §6.3）
+     * @brief 流的优先级字段
+     * @details 帧格式（E 位 + 31 位父流号 + 8 位权重）在 RFC 9113 §6.3；而这三项的**语义**——独占位的
+     *          含义、不得依赖自身、权重按 1..256 折算——9113 §5.3.2 明说把完整描述留在 RFC 7540 §5.3，
+     *          本端照旧按那份模型解析与校验，因此下面三处的出处仍写 7540，不是漏改。
      */
     struct ASYN_NET_API Http2Priority
     {
-        bool          isExclusive{false};  ///< E 位：独占标记（§5.3.1）
-        std::uint32_t streamDependency{0}; ///< 31 位依赖的父流号；等于本帧流号即违反 §5.3.1
-        std::uint8_t  weight{0};           ///< 线上权重取值 0..255，**实际权重是它加一**（§5.3.2，区间 1..256）
+        bool          isExclusive{false};  ///< E 位：独占标记（RFC 7540 §5.3.1）
+        std::uint32_t streamDependency{0}; ///< 31 位依赖的父流号；等于本帧流号即违反 RFC 7540 §5.3.1
+        std::uint8_t  weight{0};           ///< 线上权重取值 0..255，**实际权重是它加一**（RFC 7540 §5.3.2，区间 1..256）
     };
 
     /**
@@ -198,7 +201,7 @@ namespace AsynGyanis::Net
      * @param header 帧头；payloadLength 由调用方给出（本函数不改写它）
      * @return std::string 9 字节帧头（大端序）
      * @throws Base::InvalidArgumentException 用法错误：payloadLength 超出 24 位、streamId 超出 31 位
-     *         （R 位必须为 0），或 type 不是 RFC 7540 §6 定义过的取值
+     *         （R 位必须为 0），或 type 不是 RFC 9113 §6 定义过的取值
      */
     [[nodiscard]] ASYN_NET_API std::string encodeHttp2FrameHeader(const Http2FrameHeader &header);
 
@@ -209,9 +212,9 @@ namespace AsynGyanis::Net
      * @param bytes 帧头字节，至少 kHttp2FrameHeaderByteCount 字节
      * @param header 输出参数：解析结果，仅在返回 true 时有效
      * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
-     * @return true 解析成功；未定义的类型值照样收下（RFC 7540 §4.1 要求忽略未知类型）
+     * @return true 解析成功；未定义的类型值照样收下（RFC 9113 §4.1 要求忽略未知类型）
      * @return false bytes 不足 9 字节，或 R 位非 0
-     * @warning RFC 7540 §4.1 允许接收侧忽略 R 位，本实现按要求从严判错：放行保留位会让「收到的是什么」
+     * @warning RFC 9113 §4.1 允许接收侧忽略 R 位，本实现按要求从严判错：放行保留位会让「收到的是什么」
      *          依赖对端是否在用未定义的扩展，且这些帧在本端无法被正确解释
      */
     [[nodiscard]] ASYN_NET_API bool decodeHttp2FrameHeader(std::string_view bytes, Http2FrameHeader &header, std::string *errorText = nullptr);
@@ -255,11 +258,11 @@ namespace AsynGyanis::Net
     ASYN_NET_API void appendHttp2HeadersFrame(std::string &bytes, std::string_view headerBlockFragment, bool endStream, bool endHeaders, std::uint32_t streamId);
 
     // ============================================================================
-    // 具名负载结构体（RFC 7540 §6.x）
+    // 具名负载结构体（RFC 9113 §6.x）
     // ============================================================================
 
     /**
-     * @brief SETTINGS 的一个参数（RFC 7540 §6.5.1）
+     * @brief SETTINGS 的一个参数（RFC 9113 §6.5.1）
      */
     struct ASYN_NET_API Http2Setting
     {
@@ -268,7 +271,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief SETTINGS 的 6 个具名参数标识（RFC 7540 §6.5.2）
+     * @brief SETTINGS 的 6 个具名参数标识（RFC 9113 §6.5.2）
      *
      * @note 新增取值一律追加在末尾；未知标识不判错，由上层忽略（§6.5.2 明确要求）。
      */
@@ -284,7 +287,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief SETTINGS 帧负载（RFC 7540 §6.5）
+     * @brief SETTINGS 帧负载（RFC 9113 §6.5）
      */
     struct ASYN_NET_API Http2SettingsPayload
     {
@@ -293,7 +296,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief PING 帧负载（RFC 7540 §6.7）
+     * @brief PING 帧负载（RFC 9113 §6.7）
      */
     struct ASYN_NET_API Http2PingPayload
     {
@@ -302,7 +305,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief GOAWAY 帧负载（RFC 7540 §6.8）
+     * @brief GOAWAY 帧负载（RFC 9113 §6.8）
      */
     struct ASYN_NET_API Http2GoAwayPayload
     {
@@ -312,7 +315,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief RST_STREAM 帧负载（RFC 7540 §6.4）
+     * @brief RST_STREAM 帧负载（RFC 9113 §6.4）
      */
     struct ASYN_NET_API Http2RstStreamPayload
     {
@@ -320,7 +323,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief WINDOW_UPDATE 帧负载（RFC 7540 §6.9）
+     * @brief WINDOW_UPDATE 帧负载（RFC 9113 §6.9）
      */
     struct ASYN_NET_API Http2WindowUpdatePayload
     {
@@ -328,7 +331,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief DATA 帧负载（RFC 7540 §6.1）
+     * @brief DATA 帧负载（RFC 9113 §6.1）
      */
     struct ASYN_NET_API Http2DataPayload
     {
@@ -337,7 +340,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief HEADERS 帧负载（RFC 7540 §6.2）
+     * @brief HEADERS 帧负载（RFC 9113 §6.2）
      */
     struct ASYN_NET_API Http2HeadersPayload
     {
@@ -349,7 +352,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief CONTINUATION 帧负载（RFC 7540 §6.10）
+     * @brief CONTINUATION 帧负载（RFC 9113 §6.10）
      */
     struct ASYN_NET_API Http2ContinuationPayload
     {
@@ -456,7 +459,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 解析 SETTINGS 帧
-     * @details 未知参数标识一律原样收进 parameters 而不判错（RFC 7540 §6.5.2 明确要求忽略），
+     * @details 未知参数标识一律原样收进 parameters 而不判错（RFC 9113 §6.5.2 明确要求忽略），
      *          取具名参数用 tryGetHttp2Setting()。ACK 帧的 parameters 为空。
      * @param frame 帧层交出的帧
      * @param payload 输出参数：解析结果，仅在返回 true 时有效
@@ -468,7 +471,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 从 SETTINGS 参数里取一个具名参数的取值
-     * @details 同一标识重复出现时以**最后一次**为准（RFC 7540 §6.5：参数按出现顺序处理，值取最后见到的）。
+     * @details 同一标识重复出现时以**最后一次**为准（RFC 9113 §6.5：参数按出现顺序处理，值取最后见到的）。
      * @param payload 已解析的 SETTINGS 帧
      * @param identifier 目标参数标识
      * @param value 输出参数：参数取值，仅在返回 true 时有效
@@ -556,7 +559,7 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API Http2FrameLimits
     {
-        /// 单帧负载上限，对应本端通告的 SETTINGS_MAX_FRAME_SIZE；合法区间 [16384, 16777215]（RFC 7540 §6.5.2），
+        /// 单帧负载上限，对应本端通告的 SETTINGS_MAX_FRAME_SIZE；合法区间 [16384, 16777215]（RFC 9113 §6.5.2），
         /// 超出即长度违规（FRAME_SIZE_ERROR）。默认值即规范的初始值 16384
         std::size_t maximumFrameSizeByteCount{kHttp2DefaultMaximumFrameSize};
 
@@ -577,7 +580,7 @@ namespace AsynGyanis::Net
     {
         NeedMore, ///< 数据不足，需要继续读取网络字节后再次调用 parse()
         Frame,    ///< 一帧已就绪，此刻才允许调用 takeFrame()
-        Error     ///< 对端违反 RFC 7540 或突破本端上限，解码器进入粘滞错误态，调用方应按错误码收场
+        Error     ///< 对端违反 RFC 9113 或突破本端上限，解码器进入粘滞错误态，调用方应按错误码收场
     };
 
     /**
@@ -703,7 +706,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 按帧头校验帧的形态：类型对长度与流号的固定要求
-         * @details RFC 7540 §6.x 对 SETTINGS / PING / RST_STREAM / WINDOW_UPDATE / GOAWAY / PRIORITY 的
+         * @details RFC 9113 §6.x 对 SETTINGS / PING / RST_STREAM / WINDOW_UPDATE / GOAWAY / PRIORITY 的
          *          负载长度与流号各有硬性要求，不符即 FRAME_SIZE_ERROR 或 PROTOCOL_ERROR；未定义类型按
          *          §4.1 忽略，不在这里判错。
          * @param header 已校验过帧头字段的帧头

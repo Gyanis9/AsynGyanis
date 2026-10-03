@@ -1,10 +1,10 @@
-// TestHttp2Connection.cpp —— HTTP/2 连接层状态机（RFC 7540 §3.5/§4/§5/§6/§8.1）的单元测试
+// TestHttp2Connection.cpp —— HTTP/2 连接层状态机（RFC 9113 §3.4/§4/§5/§6/§8.1）的单元测试
 //
 // 覆盖六块：
 //   1) 前奏与 SETTINGS 协商：24 字节前奏的分段喂入与不匹配判错、初始 SETTINGS 的六个字段逐项对照、
 //      首个帧必须是 SETTINGS、ACK 只能匹配一次、非法参数取值（§6.5.2）；
 //   2) 头块拼接与请求语义：CONTINUATION 续帧、中间插帧判错、伪头齐全/顺序/重复/未知、连接特定头、
-//      头名大写与非 token 字符、CONNECT 的例外规则（§8.1.2.1–§8.1.2.3、§8.3）；
+//      头名大写与非 token 字符、CONNECT 的例外规则（§8.3–§8.3.1、§8.5）；
 //   3) 流状态与并发：奇数且严格递增的流号、并发上限回 REFUSED_STREAM、RST 与双向 END_STREAM 两种终止
 //      各自的「忽略 / 判错」处置、GOAWAY 之后拒收新流（§5.1、§5.1.1、§5.1.2、§6.8）；
 //   4) 响应发送：:status 排在最前（编码字节里对应静态表索引 8）、DATA 末片带 END_STREAM、
@@ -16,7 +16,7 @@
 // 请求方向的头部字节有一部分直接取自规范：RFC 7541 C.3.1/C.4.1 的两个请求头块 dump 用作「黄金字节」，
 // 其余请求头块由用例按静态表索引手工拼出（片段与取值都标了出处）。用例不起网络、不依赖外部服务。
 //
-// 逐项对照：帧类型与标志常量、静态表索引均取自 RFC 7540 §6 与 RFC 7541 Appendix A。
+// 逐项对照：帧类型与标志常量、静态表索引均取自 RFC 9113 §6 与 RFC 7541 Appendix A。
 
 #include "Net/Http2/Http2Connection.h"
 
@@ -51,7 +51,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 手拼 9 字节帧头
-         * @details 未定义帧类型（不属于 RFC 7540 §6）的帧只能这样构造：编码器按契约拒绝产出它们。
+         * @details 未定义帧类型（不属于 RFC 9113 §6）的帧只能这样构造：编码器按契约拒绝产出它们。
          * @param payloadLength 负载长度
          * @param typeValue 帧类型取值
          * @param flags 标志位
@@ -437,7 +437,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：前奏之后的第一个帧必须是 SETTINGS（§3.5），其它类型判 PROTOCOL_ERROR
+     * @brief 钉住：前奏之后的第一个帧必须是 SETTINGS（§3.4），其它类型判 PROTOCOL_ERROR
      */
     TEST(Http2Connection, RejectsFirstFrameThatIsNotSettings)
     {
@@ -1087,7 +1087,7 @@ namespace AsynGyanis::Net
         completeHandshake(connection);
         EXPECT_EQ(connection.rejectedRequestHeaderFieldCount(), 0U);
 
-        // 只有 :method 与 :scheme 的头块：缺 :path，按 RFC 7540 §8.1.2.3 属畸形请求
+        // 只有 :method 与 :scheme 的头块：缺 :path，按 RFC 9113 §8.3.1 属畸形请求
         const std::string malformedBlock = hpackIndexedField(2) + hpackIndexedField(7);
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, malformedBlock)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeRequests().empty()) << "畸形的头块不该交出请求";
@@ -1250,7 +1250,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(frames[0].payload.front(), static_cast<char>(0x88));
         const std::vector<HpackHeaderField> responseFields = decodeResponseHeaderBlock(frames[0].payload);
         ASSERT_GE(responseFields.size(), 2U);
-        EXPECT_EQ(responseFields[0].name, ":status") << "伪头必须排在最前（§8.1.2.1）";
+        EXPECT_EQ(responseFields[0].name, ":status") << "伪头必须排在最前（§8.3）";
         EXPECT_EQ(responseFields[0].value, "200");
         EXPECT_EQ(findHeaderValue(responseFields, "content-type"), "text/plain");
 
@@ -2077,7 +2077,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(streamState, Http2StreamState::HalfClosedRemote);
         EXPECT_TRUE(connection.takeOutgoingBytes().empty());
 
-        // 尾部头块里出现伪头：流错误（§8.1.2.1 要求尾部头块不得含伪头）
+        // 尾部头块里出现伪头：流错误（§8.3 要求尾部头块不得含伪头）
         Http2Connection withPseudo;
         completeHandshake(withPseudo);
         ASSERT_EQ(feed(withPseudo, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);

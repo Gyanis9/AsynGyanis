@@ -1,8 +1,8 @@
-// TestHttp2Frame.cpp —— HTTP/2 帧层（RFC 7540 §4/§6/§7）的单元测试
+// TestHttp2Frame.cpp —— HTTP/2 帧层（RFC 9113 §4/§6/§7）的单元测试
 //
 // 覆盖四块：
 //   1) 帧头 9 字节的编解码与字段边界（24 位长度、31 位流号、R 位从严判错）；
-//   2) 各类型负载的编解码：SETTINGS/PING/GOAWAY/RST_STREAM/WINDOW_UPDATE 的字节按 RFC 7540 §6.4/
+//   2) 各类型负载的编解码：SETTINGS/PING/GOAWAY/RST_STREAM/WINDOW_UPDATE 的字节按 RFC 9113 §6.4/
 //      §6.5/§6.7/§6.8/§6.9 的字段图逐字段拼出（规范给的是字段图而不是逐字节 dump），取值全部取自
 //      §6.5.2 列出的初始值与 §7 的错误码表；DATA/HEADERS 的带 padding 与带优先级字段的形态按
 //      §6.1 图 4/5 与 §6.2 图 6/7 自造；
@@ -176,7 +176,7 @@ namespace AsynGyanis::Net
     // ============================================================================
 
     /**
-     * @brief 钉住帧类型、错误码的取值就是 RFC 7540 §6/§7 定义的那些，以及失败类别到错误码的映射
+     * @brief 钉住帧类型、错误码的取值就是 RFC 9113 §6/§7 定义的那些，以及失败类别到错误码的映射
      */
     TEST(Http2Frame, TypeAndErrorCodeValuesMatchRfc7540)
     {
@@ -214,7 +214,7 @@ namespace AsynGyanis::Net
     }
 
     // ============================================================================
-    // 帧头：9 字节布局与字段边界（RFC 7540 §4.1）
+    // 帧头：9 字节布局与字段边界（RFC 9113 §4.1）
     // ============================================================================
 
     /**
@@ -390,12 +390,12 @@ namespace AsynGyanis::Net
     }
 
     // ============================================================================
-    // RFC 7540 §6.5：SETTINGS
+    // RFC 9113 §6.5：SETTINGS
     // ============================================================================
 
     /**
      * @brief 钉住 SETTINGS 的线格式，取值取 §6.5.2 列出的初始值（连接前奏里最典型的一帧）
-     * @details RFC 7540 §3.5 要求客户端连接前奏以 SETTINGS 开帧，§6.5.3 要求收到后立刻回一个带 ACK
+     * @details RFC 9113 §3.4 要求客户端连接前奏以 SETTINGS 开帧，§6.5.3 要求收到后立刻回一个带 ACK
      *          的空 SETTINGS —— 两种形态都在这里钉住。
      */
     TEST(Http2Frame, EncodesSettingsFramesOfTheConnectionPreface)
@@ -423,7 +423,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 解码 SETTINGS：六个具名参数都能取到，未知标识原样保留而不判错
-     * @details RFC 7540 §6.5.2 要求忽略未知标识；§6.5 要求同一标识重复出现时以最后一次为准。
+     * @details RFC 9113 §6.5.2 要求忽略未知标识；§6.5 要求同一标识重复出现时以最后一次为准。
      */
     TEST(Http2Frame, DecodesSettingsWithNamedAndUnknownParameters)
     {
@@ -450,14 +450,14 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(tryGetHttp2Setting(decoded, Http2SettingIdentifier::MaxHeaderListSize, value));
         EXPECT_EQ(value, 8192U);
         EXPECT_TRUE(tryGetHttp2Setting(decoded, Http2SettingIdentifier::MaxFrameSize, value));
-        EXPECT_EQ(value, 40000U) << "同一标识重复出现时取最后一次（RFC 7540 §6.5）";
+        EXPECT_EQ(value, 40000U) << "同一标识重复出现时取最后一次（RFC 9113 §6.5）";
         EXPECT_FALSE(tryGetHttp2Setting(decoded, Http2SettingIdentifier::EnablePush, value)) << "没带的参数不是错误";
         EXPECT_EQ(static_cast<unsigned>(decoded.parameters[3].identifier), 0x1234U);
         EXPECT_EQ(decoded.parameters[3].value, 0xABCDEFU);
     }
 
     // ============================================================================
-    // RFC 7540 §6.4/§6.7/§6.8/§6.9：控制帧的线格式
+    // RFC 9113 §6.4/§6.7/§6.8/§6.9：控制帧的线格式
     // ============================================================================
 
     /**
@@ -556,7 +556,7 @@ namespace AsynGyanis::Net
     }
 
     // ============================================================================
-    // RFC 7540 §6.1/§6.2：DATA 与 HEADERS 的 padding 与优先级字段
+    // RFC 9113 §6.1/§6.2：DATA 与 HEADERS 的 padding 与优先级字段
     // ============================================================================
 
     /**
@@ -691,7 +691,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 长度超过本端通告的 SETTINGS_MAX_FRAME_SIZE 判错，错误码是 FRAME_SIZE_ERROR
-     * @details 上限必须在「声明」阶段生效（RFC 7540 §4.2）：否则对端报一个天文数字的长度，
+     * @details 上限必须在「声明」阶段生效（RFC 9113 §4.2）：否则对端报一个天文数字的长度，
      *          本端就会一直等下去，内存与连接都被一条永不完成的帧占着。
      */
     TEST(Http2Frame, RejectsFrameOverTheAdvertisedMaximumFrameSize)
@@ -714,7 +714,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 解码器的接收上限可按配置调整，非法取值在构造时就被拒
-     * @details SETTINGS_MAX_FRAME_SIZE 的合法区间是 [16384, 16777215]（RFC 7540 §6.5.2），
+     * @details SETTINGS_MAX_FRAME_SIZE 的合法区间是 [16384, 16777215]（RFC 9113 §6.5.2），
      *          越界取值等于在通告一个非法设置项。
      */
     TEST(Http2Frame, FrameSizeLimitIsConfigurableWithinTheLegalRange)
@@ -731,7 +731,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 各类型要求的固定长度不符时判 FRAME_SIZE_ERROR（RFC 7540 §6.3/§6.4/§6.5/§6.7/§6.8/§6.9）
+     * @brief 各类型要求的固定长度不符时判 FRAME_SIZE_ERROR（RFC 9113 §6.3/§6.4/§6.5/§6.7/§6.8/§6.9）
      */
     TEST(Http2Frame, RejectsPayloadLengthAgainstTypeRequirements)
     {
@@ -798,7 +798,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief padding 越界判错：填充长度必须严格小于帧负载长度（RFC 7540 §6.1）
+     * @brief padding 越界判错：填充长度必须严格小于帧负载长度（RFC 9113 §6.1）
      */
     TEST(Http2Frame, RejectsInvalidPadding)
     {
@@ -834,7 +834,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief HEADERS 置了 PRIORITY 位但剥掉 padding 后不足 5 字节判错（RFC 7540 §6.2）
+     * @brief HEADERS 置了 PRIORITY 位但剥掉 padding 后不足 5 字节判错（RFC 9113 §6.2）
      */
     TEST(Http2Frame, RejectsHeadersWithTruncatedPriorityField)
     {
@@ -876,7 +876,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief WINDOW_UPDATE 增量为 0 判错（RFC 7540 §6.9 明文禁止）
+     * @brief WINDOW_UPDATE 增量为 0 判错（RFC 9113 §6.9 明文禁止）
      */
     TEST(Http2Frame, RejectsWindowUpdateWithZeroIncrement)
     {
@@ -929,12 +929,12 @@ namespace AsynGyanis::Net
     }
 
     // ============================================================================
-    // 未知帧类型与未定义标志位：必须忽略而不是判错（RFC 7540 §4.1）
+    // 未知帧类型与未定义标志位：必须忽略而不是判错（RFC 9113 §4.1）
     // ============================================================================
 
     /**
      * @brief 未定义类型（如 0xA、0xF）原样跳过，后续帧照常解出
-     * @details RFC 7540 §4.1 要求忽略未知类型：判错会让「未来新增的帧类型」把整条连接打死。
+     * @details RFC 9113 §4.1 要求忽略未知类型：判错会让「未来新增的帧类型」把整条连接打死。
      */
     TEST(Http2Frame, SkipsUnknownFrameTypesInsteadOfFailing)
     {
@@ -954,7 +954,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 已定义类型上的未定义标志位不影响解码（RFC 7540 §4.1：未定义的标志位必须被忽略）
+     * @brief 已定义类型上的未定义标志位不影响解码（RFC 9113 §4.1：未定义的标志位必须被忽略）
      */
     TEST(Http2Frame, IgnoresUndefinedFlagsOfKnownTypes)
     {

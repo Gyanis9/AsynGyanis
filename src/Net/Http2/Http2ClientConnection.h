@@ -74,7 +74,7 @@ namespace AsynGyanis::Net
     class ASYN_NET_API Http2ClientConnection
     {
     public:
-        /// 一条连接最多能开几条流的上界：客户端流号取 1、3、5…，且不得越过 2^31-1（RFC 7540 §5.1.1）
+        /// 一条连接最多能开几条流的上界：客户端流号取 1、3、5…，且不得越过 2^31-1（RFC 9113 §5.1.1）
         static constexpr std::uint32_t kMaximumOpenedStreamCount = 1U << 30;
 
         /**
@@ -97,7 +97,7 @@ namespace AsynGyanis::Net
             /// 本端愿意收多大的响应正文；越过就把那条流判死并 RST 掉（连接留着给别人用）。
             /// 填 0 表示不限——要收大文件的使用方按这个开关放开
             std::size_t maximumResponseBodyBytes{kDefaultMaximumResponseBodyBytes};
-            /// 本端在这条连接上最多开几条流。缺省即 RFC 7540 §5.1.1 给客户端流号的上界：流号取奇数且
+            /// 本端在这条连接上最多开几条流。缺省即 RFC 9113 §5.1.1 给客户端流号的上界：流号取奇数且
             /// 严格递增、不过 2^31-1，故 (2^31-1 + 1) / 2 = 2^30 条到顶。见顶之后本端不再提新流，并在
             /// 最后一条流收齐时交代一条 NO_ERROR 的 GOAWAY 主动退场，由连接池换一条新的——长命连接的
             /// 流号会用完，这不是理论问题：一条待命连接按一万请求每秒约 30 小时就到界
@@ -510,7 +510,7 @@ namespace AsynGyanis::Net
         HpackDecoder                            m_headerDecoder;
 
         std::string                            m_outgoing;                                ///< 待写字节：本端把所有帧先攒在这里再一次写出
-        std::uint32_t                          m_nextStreamId{1};                         ///< 客户端流号：奇数且严格递增（RFC 7540 §5.1.1）
+        std::uint32_t                          m_nextStreamId{1};                         ///< 客户端流号：奇数且严格递增（RFC 9113 §5.1.1）
         std::int64_t                           m_connectionSendWindowByteCount{65535};    ///< 连接级发送窗口，初值是协议默认（§6.9.2）
         std::int64_t                           m_peerMaximumFrameByteSize{16384};         ///< 对端能收的最大帧负载
         std::uint32_t                          m_peerInitialStreamWindowByteCount{65535}; ///< 对端通告的流初始窗口，用于换算新流窗口
@@ -525,7 +525,7 @@ namespace AsynGyanis::Net
         bool                                   m_isOwnSettingsAcknowledged{false}; ///< 对端是否已 ACK 过本端那一条 SETTINGS（只许 ACK 一次）
         std::string                            m_errorMessage;                     ///< 最后一次失败的中文原因
 
-        /// 客户端前奏的字节（RFC 7540 §3.4），本端在 start() 里第一个写出
+        /// 客户端前奏的字节（RFC 9113 §3.3），本端在 start() 里第一个写出
         static constexpr std::string_view kClientPrefaceBytes = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     };
 } // namespace AsynGyanis::Net
