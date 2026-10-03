@@ -488,7 +488,7 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    bool Http2ClientConnection::finishHeaderBlock(PendingStream &stream)
+    bool Http2ClientConnection::finishHeaderBlock(PendingStream &stream, const bool recordFields)
     {
         std::vector<HpackHeaderField> headerFields;
         std::string                   errorText;
@@ -504,35 +504,54 @@ namespace AsynGyanis::Net
 
         // 收到这条流上的头块就证明对端已经接手了请求：连接复用时的「能不能重来一次」按这位判
         stream.response.isAnyByteReceived = true;
-        // 只有带 :status 的那一段才是「一个新的响应头部」，清空旧的才有意义；尾部头块（trailers）不带
-        // 伪头，它是要往已有头部后面接的——一起清掉就把真正的响应头部抹没了
-        const bool isNewResponseHead = std::any_of(headerFields.begin(), headerFields.end(), [](const HpackHeaderField &field) { return field.name == ":status"; });
-        if (isNewResponseHead)
+
+        // 先认这一段是什么：带 :status 的是响应头（其中 1xx 是过渡响应，§8.8.5），不带的是尾部头块
+        // （§8.1，它往已有头部后面接，所以不清空）。过渡响应只解不落账——RFC 9110 §15.2.1 说客户端应当
+        // 丢弃它，而它的状态码若先落进这条流的响应记录，最终响应到达之前调用方读到的就是一个 100；
+        // 解这一步本身不能省，HPACK 的动态表是连接级的，跳过就与对端错位。
+        // 101 也在 1xx 里一并按过渡响应丢弃：§8.6 明写 h2 不支持 101，收下来当最终响应更是错的
+        const auto statusIterator              = std::find_if(headerFields.begin(), headerFields.end(), [](const HpackHeaderField &field) { return field.name == ":status"; });
+        const bool carriesStatus               = statusIterator != headerFields.end();
+        stream.lastHeaderBlockWasInformational = false;
+        if (carriesStatus)
         {
-            stream.response.headers.clear();
+            // 判形状而不是 strtoul 折数：非三位数字的 :status 按 RFC 9113 §8.2 就是「消息没法处理」，
+            // 而折成 0 或 20 会被上层当成一个真号去分支（h1 状态行与 h3 的 :status 用同一条判据）
+            const std::optional<int> parsedStatusCode = parseStatusCodeText(statusIterator->value);
+            if (!parsedStatusCode.has_value())
+            {
+                failConnection(Http2ErrorCode::ProtocolError,
+                               std::format("响应伪头 :status 的取值「{}」不是三位十进制状态码（RFC 9113 §8.2 要求按协议错误收口），本端不猜它想写什么", statusIterator->value));
+                return false;
+            }
+            if (*parsedStatusCode >= 100 && *parsedStatusCode < 200)
+            {
+                stream.lastHeaderBlockWasInformational = true;
+                return true;
+            }
+            stream.isFinalStatusReceived = true;
+            if (recordFields)
+            {
+                stream.response.headers.clear();
+                stream.response.statusCode = *parsedStatusCode;
+            }
         }
+        if (!recordFields)
+        {
+            // 帧级判据已经判死这一段（见 applyHeaderBlockRules 的第二条）：解码照做以保住 HPACK 同步，
+            // 但字段一个都不落进响应记录——§8.1.1「Clients MUST NOT accept a malformed response」
+            return true;
+        }
+
         // 两段各有各的落账处：不带 :status 的那一段是正文之后的尾部头块（RFC 9113 §8.1），
         // 过去与响应头部混进同一张表，调用方读不出「这是收完正文才知道的结果」
-        std::vector<std::pair<std::string, std::string>> &destination = isNewResponseHead ? stream.response.headers : stream.response.trailers;
+        std::vector<std::pair<std::string, std::string>> &destination = carriesStatus ? stream.response.headers : stream.response.trailers;
         for (const HpackHeaderField &field: headerFields)
         {
-            if (field.name.empty() || field.name.front() != ':')
+            // 伪头一律不进业务那张表：它们已经按各自的意思处理过（:status 上面那一段），其余的在响应里不合法
+            if (!field.name.empty() && field.name.front() != ':')
             {
                 destination.emplace_back(field.name, field.value);
-                continue;
-            }
-            if (field.name == ":status")
-            {
-                // 判形状而不是 strtoul 折数：非三位数字的 :status 按 RFC 9113 §8.2 就是「消息没法处理」，
-                // 而折成 0 或 20 会被上层当成一个真号去分支（h1 状态行与 h3 的 :status 用同一条判据）
-                const std::optional<int> parsedStatusCode = parseStatusCodeText(field.value);
-                if (!parsedStatusCode.has_value())
-                {
-                    failConnection(Http2ErrorCode::ProtocolError,
-                                   std::format("响应伪头 :status 的取值「{}」不是三位十进制状态码（RFC 9113 §8.2 要求按协议错误收口），本端不猜它想写什么", field.value));
-                    return false;
-                }
-                stream.response.statusCode = *parsedStatusCode;
             }
         }
         return true;
@@ -561,7 +580,7 @@ namespace AsynGyanis::Net
             }
             PendingStream orphan;
             orphan.streamId = frame.header.streamId;
-            return appendHeaderBlockFragment(orphan, payload.headerBlockFragment) && finishHeaderBlock(orphan);
+            return appendHeaderBlockFragment(orphan, payload.headerBlockFragment) && finishHeaderBlock(orphan, true);
         }
         PendingStream &stream = iterator->second;
         if (stream.isResponseComplete)
@@ -573,23 +592,27 @@ namespace AsynGyanis::Net
                                                                      frame.header.streamId));
             return false;
         }
-        stream.isAwaitingContinuation = !payload.endHeaders;
+        const bool hadFinalStatusBefore = stream.isFinalStatusReceived;
+        stream.isAwaitingContinuation   = !payload.endHeaders;
         if (!appendHeaderBlockFragment(stream, payload.headerBlockFragment))
         {
             return false;
         }
         if (stream.isAwaitingContinuation)
         {
+            // END_STREAM 落在被续的这一帧上（§6.10、§8.8.5 的例子正是这种形状）：留到头块收完那一刻再判，
+            // 否则这条流永远等不到「收齐」，只能被时限掐死
+            stream.isPendingEndStream = payload.endStream;
             return true;
         }
-        if (!finishHeaderBlock(stream))
+        // §6.2 的第二条畸形判据是**帧级**的（最终状态码之后再来一段不带 END_STREAM 的头块），
+        // 判得出就不用把它的字段落进响应记录；解码本身照做，HPACK 的动态表是连接级的
+        if (!finishHeaderBlock(stream, !(hadFinalStatusBefore && !payload.endStream)))
         {
             return false;
         }
-        if (payload.endStream)
-        {
-            stream.isResponseComplete = true;
-        }
+        // 判死只是流级处置：连接仍可用，故这里照原样返回 true
+        static_cast<void>(applyHeaderBlockRules(stream, hadFinalStatusBefore, payload.endStream));
         return true;
     }
 
@@ -619,7 +642,14 @@ namespace AsynGyanis::Net
         {
             return true;
         }
-        return finishHeaderBlock(stream);
+        const bool hadFinalStatusBefore = stream.isFinalStatusReceived;
+        if (!finishHeaderBlock(stream, !(hadFinalStatusBefore && !stream.isPendingEndStream)))
+        {
+            return false;
+        }
+        // 这段头块的 END_STREAM 记在最初那帧 HEADERS 上（§6.10）：CONTINUATION 自己不带这一位
+        static_cast<void>(applyHeaderBlockRules(stream, hadFinalStatusBefore, stream.isPendingEndStream));
+        return true;
     }
 
     bool Http2ClientConnection::handleDataFrame(const Http2Frame &frame)
@@ -682,6 +712,16 @@ namespace AsynGyanis::Net
         }
         if (payload.endStream)
         {
+            // §8.1：「A response stream starts with zero or more interim responses in HEADERS frames,
+            // followed by a HEADERS frame containing a final status code.」只发过过渡响应（或压根没发
+            // 状态码）就收尾，等于这份响应没有最终状态码——按 §8.1.1 是畸形响应，不能把 100 交上去当答案
+            if (!stream.isFinalStatusReceived)
+            {
+                rejectStreamAsMalformedResponse(stream, std::format("流 {} 在没有最终状态码的情况下就 END_STREAM：RFC 9113 §8.1 要求响应以带最终状态码的头块收尾，"
+                                                                    "本端不接受这份响应",
+                                                                    streamId));
+                return true;
+            }
             stream.isResponseComplete = true;
         }
         return true;
@@ -694,6 +734,44 @@ namespace AsynGyanis::Net
                                                    "Config::maximumResponseBodyBytes 调高（填 0 表示不限）",
                                                    m_config.maximumResponseBodyBytes);
         appendOutgoing(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, stream.streamId));
+    }
+
+    void Http2ClientConnection::rejectStreamAsMalformedResponse(PendingStream &stream, std::string reason)
+    {
+        stream.isReset               = true;
+        stream.response.errorMessage = std::move(reason);
+        // §8.1.1：畸形响应按流错误 PROTOCOL_ERROR 处置，连接留着给别的流用
+        appendOutgoing(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::ProtocolError}, stream.streamId));
+    }
+
+    bool Http2ClientConnection::applyHeaderBlockRules(PendingStream &stream, const bool hadFinalStatusBefore, const bool isEndStream)
+    {
+        if (stream.lastHeaderBlockWasInformational)
+        {
+            // §6.2 原句：「A HEADERS frame with the END_STREAM flag set that carries an informational
+            // status code is malformed」。不带 END_STREAM 的过渡响应则是正常的一声招呼：解完就丢，
+            // 既不推进「收齐」，也不动这条流的响应记录，等最终响应来落账
+            if (isEndStream)
+            {
+                rejectStreamAsMalformedResponse(stream, std::format("流 {} 的过渡响应（1xx）带了 END_STREAM：RFC 9113 §6.2 判它畸形，本端不接受这份响应", stream.streamId));
+                return false;
+            }
+            return true;
+        }
+        if (hadFinalStatusBefore && !isEndStream)
+        {
+            // §6.2 原句：收到最终（非信息性）状态码之后再来的 HEADERS 若不带 END_STREAM，MUST 按畸形处置。
+            // 这一条同时盖住两种现场：过渡响应排在最终响应之后，以及尾部头块忘了带 END_STREAM
+            // （§8.8.5 的图里尾段那一帧是「+ END_STREAM」）
+            rejectStreamAsMalformedResponse(
+                    stream, std::format("流 {} 在最终状态码之后又收到一段不带 END_STREAM 的头块：RFC 9113 §6.2 判它畸形（尾部头块必须自带 END_STREAM）", stream.streamId));
+            return false;
+        }
+        if (isEndStream)
+        {
+            stream.isResponseComplete = true;
+        }
+        return true;
     }
 
     bool Http2ClientConnection::handleWindowUpdateFrame(const Http2Frame &frame)

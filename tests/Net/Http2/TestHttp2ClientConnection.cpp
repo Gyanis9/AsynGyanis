@@ -1667,6 +1667,203 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 过渡响应（1xx）要照收照解、但不算响应：字段丢弃，最终响应照常交付
+     * @details RFC 9110 §15.2「客户端必须能解析最终响应之前收到的一条或多条 1xx」，§15.2.1 说 100 那条
+     *          「客户端应当继续发请求并丢弃它」。h2 侧过去靠「带 :status 的那一段就清空旧头部」顺带把 1xx
+     *          盖掉，看着像是对的，但过渡响应的状态码与字段会先落进这条流的响应记录里，而 RFC 9113 §6.2
+     *          那两条畸形判据一条都没接（见后三条用例）
+     * @note 证伪：把入站的过渡响应改回「当普通响应头处理」，本条与后面三条一起红
+     */
+    TEST(Http2ClientConnection, DiscardsInterimResponseBeforeTheFinalOne)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string interimBlock = peerEncoder.encode({HpackHeaderField{":status", "103"}, HpackHeaderField{"link", "</s.css>; rel=preload"}});
+        const std::string finalBlock   = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-type", "text/plain"}});
+        const std::string script = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, interimBlock) +
+                                   makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, finalBlock) + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, "body");
+
+        Core::EventLoop loop;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames            received;
+        HeaderBlockRunOutcome outcome;
+        auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        ASSERT_EQ(outcome.statusCode, 200) << "失败原因：" << outcome.errorMessage;
+        EXPECT_EQ(outcome.body, "body");
+        ASSERT_EQ(outcome.headers.size(), 1U) << "过渡响应的字段混进了响应头部";
+        EXPECT_EQ(outcome.headers[0].first, "content-type");
+        EXPECT_TRUE(outcome.trailers.empty()) << "过渡响应的字段落进了尾字段那张表";
+        EXPECT_TRUE(outcome.errorMessage.empty()) << outcome.errorMessage;
+    }
+
+    /**
+     * @brief 带 END_STREAM 的过渡响应是畸形的：按流错误 PROTOCOL_ERROR 结掉这一条，连接留着
+     * @details RFC 9113 §6.2 原句：「A HEADERS frame with the END_STREAM flag set that carries an
+     *          informational status code is malformed」；§8.1.1 接着说畸形响应「MUST be treated as a
+     *          stream error of type PROTOCOL_ERROR」，而「Clients MUST NOT accept a malformed response」。
+     *          本端过去照收：状态码停在 100、这条流算收齐，调用方拿一个 100 当最终答案
+     * @note 证伪：摘掉「过渡响应带 END_STREAM 即畸形」这一支，本条在状态码与 RST_STREAM 两处红
+     */
+    TEST(Http2ClientConnection, RejectsInterimResponseCarryingEndStream)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string interimBlock = peerEncoder.encode({HpackHeaderField{":status", "100"}});
+        const std::string script       = makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), 1U, interimBlock);
+
+        Core::EventLoop loop;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames            received;
+        HeaderBlockRunOutcome outcome;
+        auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_NE(outcome.statusCode, 100) << "带 END_STREAM 的过渡响应被当成了最终响应";
+        EXPECT_FALSE(outcome.errorMessage.empty()) << "本端没交代这条流为什么被拒";
+        const Http2Frame *reset = findFrame(received.frames, Http2FrameType::RstStream, false);
+        ASSERT_NE(reset, nullptr) << "§8.1.1 要求按流错误处置，本端却一帧都没回";
+        Http2RstStreamPayload resetPayload;
+        std::string           errorText;
+        ASSERT_TRUE(parseHttp2RstStreamPayload(*reset, resetPayload, &errorText)) << errorText;
+        EXPECT_EQ(static_cast<std::uint16_t>(resetPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::ProtocolError))
+                << "畸形响应要报 PROTOCOL_ERROR，报成别的码会把排查带去别处";
+        EXPECT_EQ(findFrame(received.frames, Http2FrameType::GoAway, false), nullptr) << "畸形的响应只该结掉那一条流，不该牵连整条连接";
+    }
+
+    /**
+     * @brief 最终状态码之后再来一段不带 END_STREAM 的头块是畸形的
+     * @details RFC 9113 §6.2 原句：收到打开请求的那段头块、或收到最终（非信息性）状态码之后，再来一段
+     *          **不带 END_STREAM** 的 HEADERS，MUST 按畸形处置（§8.1.1）。这一条同时盖住两种现场：过渡
+     *          响应排在最终响应之后，以及尾部头块忘了带 END_STREAM（§8.8.5 的图里尾段那帧是
+     *          「+ END_STREAM」）。本端过去把它当尾字段收下
+     * @note 证伪：摘掉「最终状态码之后不带 END_STREAM 即畸形」这一支，本条在尾字段与 RST_STREAM 两处红
+     */
+    TEST(Http2ClientConnection, RejectsHeaderBlockWithoutEndStreamAfterTheFinalStatus)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string finalBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-type", "text/plain"}});
+        const std::string lateBlock  = peerEncoder.encode({HpackHeaderField{"x-late", "yes"}});
+        const std::string script     = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, finalBlock) +
+                                       makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, lateBlock) + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, "body");
+
+        Core::EventLoop loop;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames            received;
+        HeaderBlockRunOutcome outcome;
+        auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_TRUE(outcome.trailers.empty()) << "最终状态码之后不带 END_STREAM 的头块被当成了尾字段";
+        EXPECT_FALSE(outcome.errorMessage.empty()) << "本端没交代这条流为什么被拒";
+        const Http2Frame *reset = findFrame(received.frames, Http2FrameType::RstStream, false);
+        ASSERT_NE(reset, nullptr) << "§8.1.1 要求按流错误处置";
+        Http2RstStreamPayload resetPayload;
+        std::string           errorText;
+        ASSERT_TRUE(parseHttp2RstStreamPayload(*reset, resetPayload, &errorText)) << errorText;
+        EXPECT_EQ(static_cast<std::uint16_t>(resetPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::ProtocolError));
+        EXPECT_EQ(findFrame(received.frames, Http2FrameType::GoAway, false), nullptr) << "只该结掉这一条流";
+    }
+
+    /**
+     * @brief 一条只发过过渡响应就收尾的流，不能当成一份 100 的响应交上去
+     * @details RFC 9113 §8.1：「A response stream starts with zero or more interim responses in HEADERS
+     *          frames, followed by a HEADERS frame containing a final status code.」只有 1xx 就 END_STREAM
+     *          等于没有最终状态码，按 §8.1.1 是畸形响应。本端过去把 100 连同随后那段正文一起交上去，
+     *          调用方看到的是一个「状态码 100、还带正文」的响应
+     * @note 证伪：摘掉「收齐时还没有最终状态码即畸形」这一支，本条在状态码与 RST_STREAM 两处红
+     */
+    TEST(Http2ClientConnection, RejectsAStreamThatEndsWithoutAFinalStatus)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string interimBlock = peerEncoder.encode({HpackHeaderField{":status", "100"}});
+        const std::string script = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, interimBlock) + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, "late");
+
+        Core::EventLoop loop;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames            received;
+        HeaderBlockRunOutcome outcome;
+        auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_NE(outcome.statusCode, 100) << "只有过渡响应的流被当成一份 100 的响应";
+        EXPECT_FALSE(outcome.errorMessage.empty()) << "本端没交代这条流为什么被拒";
+        const Http2Frame *reset = findFrame(received.frames, Http2FrameType::RstStream, false);
+        ASSERT_NE(reset, nullptr) << "§8.1.1 要求按流错误处置";
+        Http2RstStreamPayload resetPayload;
+        std::string           errorText;
+        ASSERT_TRUE(parseHttp2RstStreamPayload(*reset, resetPayload, &errorText)) << errorText;
+        EXPECT_EQ(static_cast<std::uint16_t>(resetPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::ProtocolError));
+        EXPECT_EQ(findFrame(received.frames, Http2FrameType::GoAway, false), nullptr) << "只该结掉这一条流";
+    }
+
+    /**
+     * @brief END_STREAM 落在被 CONTINUATION 续的那帧 HEADERS 上时，这条流照样要算收齐
+     * @details RFC 9113 §6.10 与 §8.8.5 的例子正是这个形状：「a HEADERS frame with the END_STREAM flag
+     *          set can be followed by CONTINUATION frames that carry any remaining fragments of the field
+     *          block」。本端过去只在 HEADERS 那一帧就地读 END_STREAM，而那一帧没带 END_HEADERS 时它会
+     *          先去等 CONTINUATION、把这一位丢掉——头块收完也没人推进「收齐」，这条流只能被时限掐死，
+     *          调用方拿到的是一句超时而不是一份完整的响应
+     * @note 证伪：把 `isPendingEndStream` 的记账摘掉（CONTINUATION 收完时按「没有 END_STREAM」处理），
+     *       本条在状态码那处红成超时
+     */
+    TEST(Http2ClientConnection, CompletesAResponseWhoseEndStreamRidesTheContinuedHeadersFrame)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-type", "text/plain"}});
+        // 头块切成两帧：第一帧带 END_STREAM 但不带 END_HEADERS，字段块的余下部分由 CONTINUATION 补齐
+        const std::size_t splitAt = headerBlock.size() / 2;
+        const std::string script  = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream, 1U, headerBlock.substr(0, splitAt)) +
+                                    makeFrame(Http2FrameType::Continuation, kHttp2FlagEndHeaders, 1U, headerBlock.substr(splitAt));
+
+        Core::EventLoop loop;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames            received;
+        HeaderBlockRunOutcome outcome;
+        auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        ASSERT_EQ(outcome.statusCode, 200) << "失败原因：" << outcome.errorMessage;
+        ASSERT_EQ(outcome.headers.size(), 1U) << "被续的那段头块要照常解出字段";
+        EXPECT_EQ(outcome.headers[0].first, "content-type");
+        EXPECT_TRUE(outcome.errorMessage.empty()) << outcome.errorMessage;
+    }
+
+    /**
      * @brief 钉住：响应已 END_STREAM，对端又来一帧 DATA 时按连接错误 STREAM_CLOSED 收口，且不接正文
      * @details §5.1 的「closed」段：双向 END_STREAM 之后这条流不再有下一个字节，对端还发就是违规。
      *          入站侧早按这一条判死（`Http2Connection` 里同文判据），出站侧过去却把它当正文的续段

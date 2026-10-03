@@ -352,14 +352,19 @@ namespace AsynGyanis::Net
         /// 一条在途请求的收包状态。窗口与头块片段按流记：同一条连接上并发跑几条时，各自的账不能互相顶
         struct PendingStream
         {
-            std::uint32_t           streamId{0};
-            Http2ClientResponse     response;
-            std::int64_t            sendWindowByteCount{0};        ///< 这条流的发送窗口，建流时取对端通告的初值（§6.9.2）
-            std::string             pendingHeaderBlock;            ///< 头块累积字节（CONTINUATION 之前先攒着）
-            bool                    isAwaitingContinuation{false}; ///< 正在收一段头块（等 CONTINUATION）
-            bool                    isResponseComplete{false};     ///< 收到带 END_STREAM 的帧
-            bool                    isReset{false};                ///< 这条流已判死（对端 RST、本端越限或接收口收口）
-            std::coroutine_handle<> waiter{};                      ///< 挂在这条流上的请求协程；空表示没人等
+            std::uint32_t       streamId{0};
+            Http2ClientResponse response;
+            std::int64_t        sendWindowByteCount{0};        ///< 这条流的发送窗口，建流时取对端通告的初值（§6.9.2）
+            std::string         pendingHeaderBlock;            ///< 头块累积字节（CONTINUATION 之前先攒着）
+            bool                isAwaitingContinuation{false}; ///< 正在收一段头块（等 CONTINUATION）
+            /// 被续的那段头块所在帧上带着 END_STREAM：§6.10、§8.8.5 允许 END_STREAM 落在 HEADERS 上、
+            /// 字段块由随后的 CONTINUATION 补齐，所以这一位要留到头块收完那一刻再用
+            bool                    isPendingEndStream{false};
+            bool                    isResponseComplete{false};              ///< 收到带 END_STREAM 的帧
+            bool                    isFinalStatusReceived{false};           ///< 收到过最终（非 1xx）状态码：§6.2 那两条畸形判据按它判
+            bool                    lastHeaderBlockWasInformational{false}; ///< 刚解完的那段头块是过渡响应（1xx）：字段与状态码都不落账
+            bool                    isReset{false};                         ///< 这条流已判死（对端 RST、本端越限或接收口收口）
+            std::coroutine_handle<> waiter{};                               ///< 挂在这条流上的请求协程；空表示没人等
             // 响应正文的接收口；空表示整份攒进 response.body。挂了就多一条规矩：额度按交付进度归还，
             // 本端缓冲因此以一档接收窗口为上界，而不是以正文总长为上界
             Http2ResponseBodyReceiver responseReceiver{};
@@ -379,8 +384,10 @@ namespace AsynGyanis::Net
         bool handleRstStreamFrame(const Http2Frame &frame);
         bool handlePingFrame(const Http2Frame &frame);
 
-        /// 把收完的一段头块解进这条流的响应里；解码失败时把连接判死（动态表已错位）
-        bool finishHeaderBlock(PendingStream &stream);
+        /// 把收完的一段头块解进这条流的响应里；解码失败时把连接判死（动态表已错位）。
+        /// recordFields 为假表示「这段已被帧级判据判死」：解码照做（HPACK 是连接级状态，跳过就与对端
+        /// 错位），但解出的字段一个都不落进响应记录（§8.1.1：Clients MUST NOT accept a malformed response）
+        bool finishHeaderBlock(PendingStream &stream, bool recordFields);
 
         /// 把一段头块片段攒进这条流的缓冲；越过本端上限时终止连接——不肯存的片段没法交给 HPACK 解码器，两边的动态表会从此错位
         bool appendHeaderBlockFragment(PendingStream &stream, std::string_view fragment);
@@ -483,6 +490,27 @@ namespace AsynGyanis::Net
          *          errorMessage 会点名那个数与放开它的开关。
          */
         void rejectStreamForBodyLimit(PendingStream &stream);
+
+        /**
+         * @brief 把这条流的响应判成畸形：流死掉并交代一条 RST(PROTOCOL_ERROR)，连接留着
+         * @param stream 收到畸形响应的那条流
+         * @param reason 写进调用方 errorMessage 的原因（点明违反的是哪一条）
+         * @details RFC 9113 §8.1.1：「Malformed requests or responses that are detected MUST be treated as
+         *          a stream error of type PROTOCOL_ERROR」，且「Clients MUST NOT accept a malformed
+         *          response」——所以是流级而不是连接级：同一条连接上别的流没犯错，不该陪着一起死
+         */
+        void rejectStreamAsMalformedResponse(PendingStream &stream, std::string reason);
+
+        /**
+         * @brief 一段头块解完之后按 §6.2/§8.1 判它的身份与合法性，并推进「收齐」那一位
+         * @param stream 这条流
+         * @param hadFinalStatusBefore 解这段之前是否已收到过最终（非 1xx）状态码：§6.2 的第二条畸形判据按它判
+         * @param isEndStream 承载这段头块的那一帧上是否带 END_STREAM（被 CONTINUATION 续过的那一段按
+         *        PendingStream::isPendingEndStream 传进来）
+         * @return true 这段头块合法（过渡响应算合法，只是不落账）；false 表示已按流错误判死这条流，
+         *         连接仍可用，调用方照原样返回 true 即可
+         */
+        bool applyHeaderBlockRules(PendingStream &stream, bool hadFinalStatusBefore, bool isEndStream);
 
         /**
          * @brief 按 §6.5.2 与 §6.9.2 过一遍对端 SETTINGS 的取值并落进本端账本
