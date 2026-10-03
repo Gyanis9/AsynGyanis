@@ -321,7 +321,9 @@ namespace AsynGyanis::Net
             const std::uint8_t command  = static_cast<std::uint8_t>(bytes[kV2VersionCommandOffset] & 0x0FU);
             const std::uint8_t family   = static_cast<std::uint8_t>(bytes[kV2FamilyOffset] >> 4U);
             const std::size_t  declared = (bytes[kV2LengthOffset] << 8) | bytes[kV2LengthOffset + 1U];
-            if (version != 2U || declared + kV2FixedPartBytes > header.size())
+            // 长度字段的硬上界在这里也要判一次：那条上界原先只在 frameProxyHeader 里判（见其 v2 分支），
+            // 而 parseProxyHeader 是导出的公开入口，直接进这一格的调用方不必先过成帧那道闸
+            if (version != 2U || declared + kV2FixedPartBytes > header.size() || declared + kV2FixedPartBytes > kMaximumProxyHeaderV2Bytes)
             {
                 return std::nullopt;
             }
@@ -342,6 +344,11 @@ namespace AsynGyanis::Net
 
         const std::size_t lineEnd = header.find("\r\n");
         if (lineEnd == std::string_view::npos || header.substr(0U, kV1Prefix.size()) != kV1Prefix)
+        {
+            return std::nullopt;
+        }
+        // 与 v2 那一格同一口径：一条 v1 头超过 HAProxy 规定的 108 字节就不可能出自合法代理
+        if (lineEnd + 2U > kMaximumProxyHeaderV1Bytes)
         {
             return std::nullopt;
         }

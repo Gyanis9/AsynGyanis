@@ -365,6 +365,23 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 同一条长度上界在**解析**入口也要判一次：成帧那侧判了不等于公开入口判了
+     * @details parseProxyHeader 是导出的公开函数，调用方可以不经 frameProxyHeader 直接拿一段字节请它解析。
+     *          这里给一条长度字段落在 1 KiB 上界之外、但字节确实齐平的 v2 头：地址块之后那一坨按 TLV 处理
+     *          会被跳过，所以缺了这道闸它就会**解析成功**——上界于是只存在于成帧那一条路上
+     */
+    TEST(ProxyProtocol, RejectsOverlongV2HeaderAtTheParseEntryToo)
+    {
+        const std::string stuffedBlock = makeV2Ipv4Block({203, 0, 113, 9}, {198, 51, 100, 7}, 44000, 443) + std::string(2000U, 'x');
+        const std::string overlong     = makeV2Header(1, 1, stuffedBlock);
+        ASSERT_GT(overlong.size(), kMaximumProxyHeaderV2Bytes) << "用例本身要先证明这条头确实越过上界，否则这条断言是空的";
+
+        std::size_t consumed = 12345U;
+        EXPECT_FALSE(parse(overlong, consumed).has_value()) << "长度字段越过硬上界的 v2 头必须在解析入口也拦下";
+        EXPECT_EQ(consumed, 0U) << "解析失败按约定什么都没吃";
+    }
+
+    /**
      * @brief 突变自检：把 v1 的行尾判据改坏时，这条用例必须红
      * @details 直接验证 consumed 与 hasAddresses 不是恒等断言——同一份字节里换掉一个字符，
      *          结论就要翻。这里用「TCP4 但地址是 IPv6」这种必须被拒的形状做对照
