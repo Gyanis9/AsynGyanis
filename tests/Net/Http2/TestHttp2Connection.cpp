@@ -2736,4 +2736,34 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outgoing, makeFrame(Http2FrameType::Ping, kHttp2FlagAcknowledge, 0, std::string(8, 'R'))) << "回收后的缓冲没接着装新帧，或多了别的内容";
     }
 
+    /**
+     * @brief 钉住：「还没送出去的响应字节」两段都要数——待发缓冲与各条流的流控队列
+     * @details 这个读数是 h2 会话收口时判「响应没送出去」的唯一依据（`countWriteAbortedConnection()`
+     *          的触发条件），而流控队列那一段**写侧永远不会报错**：对端不再读、字节连帧都没拼出去，
+     *          只有这里看得见。所以两段各自钉一次，数字按帧开销手算：19 = 9 字节帧头 + 10 字节负载，
+     *          20 = 30 字节正文里被窗口挡住的那部分，29 = 9 字节帧头 + 20 字节负载。
+     */
+    TEST(Http2Connection, CountsUnsentResponseBytesInBothBufferAndStreamQueues)
+    {
+        Http2Connection connection;
+        completeHandshake(connection, {namedSetting(Http2SettingIdentifier::InitialWindowSize, 10U)});
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+        static_cast<void>(connection.takeOutgoingBytes());
+        EXPECT_EQ(connection.unsentResponseByteCount(), 0U) << "刚把待发缓冲取空、也没有在飞的响应，读数该归零";
+
+        std::string errorText;
+        ASSERT_EQ(connection.sendResponseData(1U, std::string(30U, 'a'), true, &errorText), Http2ResponseSendStatus::Sent) << errorText;
+
+        const std::string firstBatch = connection.takeOutgoingBytes();
+        EXPECT_EQ(firstBatch.size(), 19U) << "窗口只有 10 字节，该只拼出一帧 DATA";
+        EXPECT_EQ(connection.unsentResponseByteCount(), 20U) << "缓冲取空之后，卡在流控队列里的 20 字节必须是这个读数的全部——写侧永不报错的那一半只能在这里显形";
+
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(20U))), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(connection.unsentResponseByteCount(), 29U) << "队列排空后字节改落在待发缓冲里（9 字节帧头 + 20 字节负载），这段必须一起数进来";
+
+        static_cast<void>(connection.takeOutgoingBytes());
+        EXPECT_EQ(connection.unsentResponseByteCount(), 0U) << "字节已整批交给上层，读数不该还挂着";
+    }
 } // namespace AsynGyanis::Net
