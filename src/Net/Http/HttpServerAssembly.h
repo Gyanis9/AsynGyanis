@@ -107,6 +107,9 @@ namespace AsynGyanis::Net
      * @details 这是那份注册逻辑的**唯一**实现：装配出口在 `metrics_port = 0` 时用它挂到业务口上，
      *          另起管理监听器的调用方用它挂到管理口上。分两处写的后果是「业务口撤了端点、管理口忘了加闸」，
      *          而那正是这一轮要消灭的形状。`exposeMetrics` 关掉时什么都不做。
+     *          `QuicServer` 不在此列（它没有同名的注册接口，路由器是外部交给它的），因此 `metrics_port = 0`
+     *          那档兜底只覆盖两条 TCP 通道：h3 业务口上不会长出这三个端点。要在开着 h3 的部署上暴露运维面，
+     *          走管理监听器那一条（也是推荐形态——运维面不该跟着业务口一起公开出去）。
      * @param host 目标服务器，必须尚未 start()
      * @param configuration 已读出的配置（起作用的是 `exposeMetrics` 与 `opsBearerToken`）
      */
