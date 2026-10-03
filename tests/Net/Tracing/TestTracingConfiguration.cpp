@@ -152,6 +152,10 @@ TEST(TracingConfiguration, RejectsMalformedValues)
             {R"({"enabled": true, "service_name": "s", "batch_span_count": 0})", "tracing.batch_span_count"},
             {R"({"enabled": true, "service_name": "s", "export_interval_ms": -1})", "tracing.export_interval_ms"},
             {R"({"enabled": true, "service_name": "s", "otlp": "http://collector:4318"})", "tracing.otlp"},
+            // 写成空的那一格（`otlp:` 后面什么都没有）读出来是 null：按缺席处理就成了「看着像配了其实
+            // 没配」，而 HttpServerConfig 对同一形状一直是拒的——两条读口的口径必须一致
+            {R"({"enabled": true, "service_name": "s", "otlp": null})", "tracing.otlp"},
+            {R"({"enabled": true, "service_name": "s", "file": null})", "tracing.file"},
             {R"({"enabled": true, "service_name": "s", "otlp": {"endpoint": ""}})", "tracing.otlp.endpoint"},
             {R"({"enabled": true, "service_name": "s", "otlp": {"headers": {"X-Token": 7}}})", "tracing.otlp.headers.X-Token"},
             {R"({"enabled": true, "service_name": ""})", "tracing.service_name"},

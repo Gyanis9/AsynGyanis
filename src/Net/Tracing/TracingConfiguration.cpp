@@ -58,7 +58,9 @@ namespace AsynGyanis::Net
             }
         }
 
-        /// @brief 取一个可选对象子段；缺失交出 nullptr，不是对象则抛
+        /// @brief 取一个可选对象子段；缺失交出 nullptr，不是对象（含写成空的 null）则抛
+        /// @details 与 HttpServerConfig.cpp 里那份同名同签名的实现同口径：`otlp:` 写了却没挂上任何键，
+        ///          读出来是 null，按缺席处理就成了「看着像配了其实没配」——那正是本模块要拒的那一格
         [[nodiscard]] const Base::ConfigValue *findOptionalObject(const Base::ConfigValue &node, const std::string_view key, const std::string &pathPrefix)
         {
             if (!node.contains(key))
@@ -66,10 +68,6 @@ namespace AsynGyanis::Net
                 return nullptr;
             }
             const Base::ConfigValue &child = node.at(key);
-            if (child.is_null())
-            {
-                return nullptr;
-            }
             if (!child.is_object())
             {
                 throw Base::ConfigValidationException(pathPrefix + "." + std::string(key), "必须是一个对象");

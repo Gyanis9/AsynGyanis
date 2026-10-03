@@ -174,7 +174,9 @@ namespace AsynGyanis::Net
          * @param key 子键名
          * @param pathPrefix 出错时拼键路径的前缀
          * @return const Base::ConfigValue* 子节点；不存在时为空指针
-         * @throws Base::ConfigValidationException 子键存在但不是对象
+         * @throws Base::ConfigValidationException 子键存在但不是对象（含写成空的 null）
+         * @details 与 TracingConfiguration.cpp 里那份同名同签名的实现同口径：写成空的那一格按
+         *          「写了却没配上」拒绝，不按缺席静默回落默认值
          */
         [[nodiscard]] const Base::ConfigValue *findOptionalObject(const Base::ConfigValue &node, const std::string_view key, const std::string &pathPrefix)
         {
