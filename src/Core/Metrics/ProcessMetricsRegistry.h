@@ -20,6 +20,19 @@
 namespace AsynGyanis::Core
 {
     /**
+     * @brief 判断一段文本是否是合法的 Prometheus 指标名（或其前缀段）
+     *
+     * @details 合法形状是 `[a-zA-Z_:][a-zA-Z0-9_:]*`。登记侧（`ProcessMetricsRegistry::registerMetric`）
+     *          与渲染侧（`/metrics` 的 `metric_name_prefix`）共用这一份判据：两处各写一遍就会出现
+     *          「登记当场拒、抓取时静默产出一整片抓取端拒收的行」——后者更难查，因为端点照回 200。
+     *
+     * @param name 待判的名字，或名字的前缀段
+     * @return true 非空且每一段都符合上述字符集（首字符不许是数字）
+     * @return false 空串，或含上述集合之外的字符
+     */
+    [[nodiscard]] ASYN_CORE_API bool isLegalPrometheusMetricName(std::string_view name) noexcept;
+
+    /**
      * @brief 一条读数的类型，决定导出时的 `# TYPE` 与采集侧的用法
      */
     enum class ProcessMetricKind

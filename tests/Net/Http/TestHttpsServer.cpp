@@ -1245,6 +1245,29 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 HTTPS 那一份 enableMetricsEndpoint 也当场拒非法前缀
+     * @details 这条规则在两个服务器类上各有一个接线点（路径形状那道闸原本就各写一遍），
+     *          只钉 HTTP 那一侧的话，HTTPS 的副本随时可以漂回去——非法前缀的表现是端点回 200
+     *          而抓取端一行都不收，现场最难归因
+     */
+    TEST(HttpsServer, RejectsIllegalMetricNamePrefixAtTheSeam)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        bool isConfiguratorChecked = false;
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
+                                          [&isConfiguratorChecked](HttpsServer &server)
+                                          {
+                                              EXPECT_THROW(server.enableMetricsEndpoint("/metrics", "asyn.srv"), Base::InvalidArgumentException);
+                                              EXPECT_THROW(server.enableMetricsEndpoint("/metrics", "asyn-srv"), Base::InvalidArgumentException);
+                                              EXPECT_NO_THROW(server.enableMetricsEndpoint("/metrics", "asyn_srv")) << "合法前缀不该被这道闸挡下";
+                                              isConfiguratorChecked = true;
+                                          });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        EXPECT_TRUE(isConfiguratorChecked) << "装配钩子没跑，上面三条断言因此没有发生";
+    }
+
+    /**
      * @brief HTTPS 侧也能导出 /metrics 与 /healthz：抓一次端点就能看到 TLS 路径上的计数
      * @details 采集本来就在做（Http2Session 一直向本服务器的采集端计数），缺的只是把读数暴露出来；
      *          顺带钉住「端点自身那条请求也计入请求数」——它就是一条普通路由

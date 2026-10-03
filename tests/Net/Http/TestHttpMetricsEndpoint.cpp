@@ -248,6 +248,27 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：前缀不合 Prometheus 名字语法时当场抛出
+     * @details 非法前缀（带 `.`、`-`、空格或数字打头）会拼出 `asyn.srv_requests_total` 这类整片非法的名字：
+     *          端点照回 200、内容类型也对，而抓取端把每一行都拒掉——现场看到的是「有 /metrics 却什么都抓不到」。
+     *          登记侧（`ProcessMetricsRegistry::registerMetric`）对同一个名字是当场拒的，两条路必须同一待遇，
+     *          判据也只剩 Core 那一份。反向对照：合法前缀与空前缀（文档里的「不加前缀」）都得照过
+     */
+    TEST(HttpMetricsEndpoint, RejectsIllegalMetricNamePrefixAtTheSeam)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+
+        for (const std::string_view badPrefix: {"asyn.srv", "asyn-srv", "asyn srv", "1asyn"})
+        {
+            EXPECT_THROW(server.enableMetricsEndpoint("/metrics", badPrefix), Base::InvalidArgumentException) << "前缀「" << badPrefix << "」本该当场拒";
+        }
+
+        EXPECT_NO_THROW(server.enableMetricsEndpoint("/metrics", "asyn_srv")) << "合法前缀不该被这道闸挡下";
+        EXPECT_NO_THROW(server.enableMetricsEndpoint("/metrics-second")) << "默认前缀与空前缀是本类文档写明的用法";
+    }
+
+    /**
      * @brief 端到端：回环上真实抓一次 /metrics 与 /healthz，验状态码、内容类型与关键行
      */
     TEST(HttpMetricsEndpoint, ServesMetricsAndHealthOverLoopback)

@@ -3,6 +3,7 @@
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http2/Http2Session.h"
@@ -158,6 +159,15 @@ namespace AsynGyanis::Net
         if (path.empty() || path.front() != '/')
         {
             throw Base::InvalidArgumentException("HttpsServer: 指标端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+
+        // 前缀同样要过 Prometheus 的名字语法（判据与登记侧共用 Core 那一份）：非法前缀会拼出整片
+        // 抓取端拒收的行，而端点照回 200——「有 /metrics 却什么都抓不到」比当场拒难查得多
+        if (!metricNamePrefix.empty() && !Core::isLegalPrometheusMetricName(metricNamePrefix))
+        {
+            throw Base::InvalidArgumentException("HttpsServer: 指标名前缀「" + std::string(metricNamePrefix)
+                                                 + "」不合 Prometheus 的名字语法（[a-zA-Z_:][a-zA-Z0-9_:]*）；"
+                                                   "请只用字母数字与下划线，或留空表示不加前缀");
         }
 
         // 前缀按值捕进处理函数：字符串是调用方的，可能比服务器先走；这里只留一份拷贝

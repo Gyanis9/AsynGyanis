@@ -42,24 +42,25 @@ namespace AsynGyanis::Core
             return *instance;
         }
 
-        /// 指标名的合法形状：Prometheus 认 `[a-zA-Z_:][a-zA-Z0-9_:]*`
-        [[nodiscard]] bool isLegalMetricName(const std::string &name)
-        {
-            const auto isAllowed = [](const char character)
-            {
-                return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == ':' ||
-                       character == '_';
-            };
-            const auto isAllowedLead = [](const char character)
-            { return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || character == ':' || character == '_'; };
-
-            if (name.empty() || !isAllowedLead(name.front()))
-            {
-                return false;
-            }
-            return std::all_of(name.begin() + 1, name.end(), isAllowed);
-        }
     } // namespace
+
+    [[nodiscard]] bool isLegalPrometheusMetricName(const std::string_view name) noexcept
+    {
+        // 合法形状：Prometheus 认 `[a-zA-Z_:][a-zA-Z0-9_:]*`
+        const auto isAllowed = [](const char character)
+        {
+            return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == ':' ||
+                   character == '_';
+        };
+        const auto isAllowedLead = [](const char character)
+        { return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || character == ':' || character == '_'; };
+
+        if (name.empty() || !isAllowedLead(name.front()))
+        {
+            return false;
+        }
+        return std::all_of(name.begin() + 1, name.end(), isAllowed);
+    }
 
     ProcessMetricHandle::~ProcessMetricHandle()
     {
@@ -105,7 +106,7 @@ namespace AsynGyanis::Core
     ProcessMetricHandle ProcessMetricsRegistry::registerMetric(std::string name, std::string help, const ProcessMetricKind kind, const ProcessMetricMerge merge,
                                                                ProcessMetricProvider provider)
     {
-        if (!isLegalMetricName(name))
+        if (!isLegalPrometheusMetricName(name))
         {
             throw std::invalid_argument(std::format("进程级指标的名字不合法：「{}」。合法形状是 [a-zA-Z_:][a-zA-Z0-9_:]*，"
                                                     "建议 asyn_<面>_<指标>_[total|seconds|bytes]，计数类以 _total 结尾",
