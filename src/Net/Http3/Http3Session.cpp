@@ -780,8 +780,10 @@ namespace AsynGyanis::Net
         }
 
         // 落点二：流式路径。请求记录在头收齐那一刻就搬走了，尾字段要落到搬走后的那一份上。
-        // 这里不再记头部预算——计数器随头段一起留在了上面那份记录里，而单个字段段的体量
-        // 由 QPACK 解码侧的 maximumFieldSectionSize 兜住（超了整段判错），不会一路长下去
+        // 这里不再记头部预算——计数器随头段一起留在了上面那份记录里，而请求早已派发，此刻判越限也
+        // 回不出 431（h2 的流式路径同处境）。单个字段段的体量由 QPACK 解码侧的
+        // `maximumFieldSectionSizeByteCount` 兜住（超了整段判错，出厂 64 KiB；把它配成 0 就是不限，
+        // 这条兜底随之消失），不会一路长下去
         if (const auto streaming = m_streamingRequests.find(streamId); streaming != m_streamingRequests.end())
         {
             streaming->second->deadline = nextRequestDeadline();

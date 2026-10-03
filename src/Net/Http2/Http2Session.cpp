@@ -535,9 +535,12 @@ namespace AsynGyanis::Net
             // 业务读到「正文收齐」时 trailer 必须已经在位（h1 侧同样是解析器先提交整条报文、
             // HttpRequestBody 才以 isComplete() 收尾）
             // 条数与头块净字节两道配额都要跨头块累计：h1 的解析器整条报文共用一套计数器（那个键的文档
-            // 就写着「trailer 头部同样计入」），h3 在 accountHeaderFieldBudget 里把尾字段一起数，而 h2
-            // 此前只数头部那一场——把字段拆进尾部头块就能同时绕过 maximum_header_count 与
-            // maximum_header_block_length。越限走与头部越限同一条路径：不派发、按 431 收口，尾字段也不交给业务
+            // 就写着「trailer 头部同样计入」），h3 在非流式路径上把尾字段记进同一份预算
+            // （`accountHeaderFieldBudget()`），而 h2 此前只数头部那一场——把字段拆进尾部头块就能同时绕过
+            // `maximum_header_count` 与 `maximum_header_block_length`。越限走与头部越限同一条路径：不派发、
+            // 按 431 收口，尾字段也不交给业务。流式路由是个明写的例外：请求早在头收齐那刻派发出去，
+            // 431 已回不去，这里剩下的处置只有「不把越限的尾字段交给业务」，越限那段的体量由 HPACK
+            // 的解码上限兜住——h3 的流式路径同处境（见 `Http3Session::addTrailerFieldToStream`）
             std::size_t trailerNetByteCount = 0;
             for (const HpackHeaderField &trailerField: receivedData.trailerFields)
             {
