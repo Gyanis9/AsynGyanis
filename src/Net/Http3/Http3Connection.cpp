@@ -152,6 +152,12 @@ namespace AsynGyanis::Net
         return m_isLocalServer ? Http3MessageKind::Response : Http3MessageKind::Request;
     }
 
+    bool Http3Connection::isInboundInformationalSection(const std::vector<QpackHeaderField> &fields, const bool isTrailers) const noexcept
+    {
+        // 只有作客户端时收得到响应，而过渡响应必是头段一类（带 :status，不带它就是尾段）
+        return !isTrailers && !m_isLocalServer && isInformationalFieldSection(fields);
+    }
+
     std::expected<void, QpackError> Http3Connection::submitRequestHead(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isEndOfStream)
     {
         // 请求流是本端开出来的，协议层此前没见过它：先登记一份状态再提交。
@@ -552,7 +558,11 @@ namespace AsynGyanis::Net
             }
             if (!state.isHeaderSectionSeen)
             {
-                state.isHeaderSectionSeen = true;
+                // 「这条流已经有头段了」那一位只由**最终**响应的头段占：过渡响应是一份独立的消息
+                // （RFC 9114 §4.1、§5.1），占不掉它，否则随后那条真响应会被当成尾段判成非法序列。
+                // 还压在解码器里等指令的那一段判不出内容，照旧先占位——那种情况下随后的最终段会在续解点
+                // 按自己的内容认出「我是头段」，不会被真的降成尾段
+                state.isHeaderSectionSeen = *decoded == QpackFieldSectionDecodeStatus::Blocked || !isInboundInformationalSection(fields, isTrailers);
             }
             state.isFieldSectionBlocked = *decoded == QpackFieldSectionDecodeStatus::Blocked;
             if (*decoded == QpackFieldSectionDecodeStatus::Blocked)
@@ -649,13 +659,24 @@ namespace AsynGyanis::Net
 
     bool Http3Connection::deliverFieldSection(const std::int64_t streamId, StreamState &state, const std::vector<QpackHeaderField> &fields, const bool isTrailers)
     {
+        // 过渡响应（1xx：100 Continue、103 Early Hints）是一份**独立**的消息（RFC 9114 §4.1、§5.1，
+        // h1 那侧同一读法在 RFC 9112 §6.4）：它占不掉「这条流唯一的头段」那一位，字段也不该交给业务。
+        // 本端服务端三条通道都会发它（带 Expect: 100-continue 的请求由会话自动补一个 100，处理器还能自己
+        // 发 102/103），收侧漏了这一支就等于自家的 100 把自家的 200 打成「第二个头段」
+        const bool isInformationalInbound = isInboundInformationalSection(fields, isTrailers);
+
         // 判定器按流持有：尾段的合法性（不得有伪头、必须在头段之后）依赖头段已经收过这个事实，
-        // 每个头段新建一份就会把合法尾段判成非法序列
+        // 每个头段新建一份就会把合法尾段判成非法序列。1xx 那份走一次性判定器，不在流上留跨段状态
         if (!state.validator)
         {
             state.validator = std::make_unique<Http3HeaderValidator>(inboundMessageKind(), m_localSettings.isExtendedConnectEnabled);
         }
-        Http3HeaderValidator &validator = *state.validator;
+        std::unique_ptr<Http3HeaderValidator> oneShotValidator;
+        if (isInformationalInbound)
+        {
+            oneShotValidator = std::make_unique<Http3HeaderValidator>(Http3MessageKind::Response, m_localSettings.isExtendedConnectEnabled);
+        }
+        Http3HeaderValidator &validator = oneShotValidator != nullptr ? *oneShotValidator : *state.validator;
         if (const auto began = validator.beginHeaderBlock(isTrailers); !began)
         {
             rejectRequestHead(streamId, state, began.error().message);
@@ -673,6 +694,16 @@ namespace AsynGyanis::Net
         {
             rejectRequestHead(streamId, state, ended.error().message);
             return false;
+        }
+
+        if (isInformationalInbound)
+        {
+            // 招呼收下就好：字段逐个交出去与「头段收齐」那一下都不做，但确认照发——§4.4.1 说的是
+            // 「处理完这段就 Ack」，丢弃也是处理完；不发就等于让对端替这段一直留着动态表引用
+            std::string decoderStreamBytes;
+            static_cast<void>(m_qpackDecoder->noteFieldSectionDelivered(static_cast<std::uint64_t>(streamId), decoderStreamBytes));
+            queueQpackInstructions({}, decoderStreamBytes);
+            return true;
         }
 
         if (!isTrailers)

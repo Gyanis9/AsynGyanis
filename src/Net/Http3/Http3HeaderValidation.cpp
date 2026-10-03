@@ -39,8 +39,9 @@ namespace AsynGyanis::Net
 
     std::expected<void, Http3HeaderError> Http3HeaderValidator::beginHeaderBlock(const bool isTrailers) noexcept
     {
-        // 一条消息只有一个头段；再来的必须是尾段。本实现不建模 1xx（服务端不产、收到即按非法序列拒），
-        // 因为既有 h1/h2 路径也没有把中间响应交给业务的位置
+        // 一条消息只有一个头段；再来的必须是尾段。这份判定器只判一条消息的头段与尾段，1xx 过渡响应由
+        // 连接层拿一次性判定器单独走一份（见 Http3Connection::isInboundInformationalSection），
+        // 不在这里留跨段状态
         if (m_isHeadSectionDone && !isTrailers)
         {
             return std::unexpected(

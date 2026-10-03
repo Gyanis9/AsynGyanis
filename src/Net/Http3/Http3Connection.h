@@ -446,6 +446,16 @@ namespace AsynGyanis::Net
         /// 本端写的那种消息（服务端写响应、客户端写请求）该用哪种头段判定器
         [[nodiscard]] Http3MessageKind outboundMessageKind() const noexcept;
 
+        /**
+         * @brief 这一段是不是本端作客户端收到的过渡响应（1xx）
+         * @details 过渡响应是一份独立的消息（RFC 9114 §4.1、§5.1）：不占「这条流唯一的头段」那一位，
+         *          字段也不交给业务，只在收齐之后回一个 Section Ack。帧层与交付点共用这一句判据
+         * @param fields 该段解出来的字段行（还没解出来时传空即可判为「不是」）
+         * @param isTrailers 这一段按帧序是不是尾段
+         * @return true 表示这一份是过渡响应，按「收下但不交付」处理
+         */
+        [[nodiscard]] bool isInboundInformationalSection(const std::vector<QpackHeaderField> &fields, bool isTrailers) const noexcept;
+
         static constexpr std::size_t kMaximumFlushRounds = 64; ///< 一次 flush 最多搬多少段
 
         StreamOpener   m_streamOpener;        ///< 开本端单向流的口

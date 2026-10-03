@@ -133,8 +133,9 @@ namespace
         std::vector<std::pair<Http3ErrorCode, std::string>>  connectionClosures{};
     };
 
-    /// 建一个接好假传输层的协议层：三条本端单向流在构造里就开出来
-    std::unique_ptr<Http3Connection> makeConnection(FakeTransport &transport, EventLog &events, Http3Connection::LocalSettings settings = {})
+    /// 建一个接好假传输层的协议层：三条本端单向流在构造里就开出来。角色默认服务端，出站一侧的用例传 Client
+    std::unique_ptr<Http3Connection> makeConnection(FakeTransport &transport, EventLog &events, Http3Connection::LocalSettings settings = {},
+                                                    AsynGyanis::Net::QuicConnectionRole role = AsynGyanis::Net::QuicConnectionRole::Server)
     {
         Http3Connection::Callbacks callbacks;
         callbacks.onHeaderField = [&events](const std::int64_t streamId, const std::string_view name, const std::string_view value, const bool isTrailers)
@@ -165,7 +166,7 @@ namespace
         return std::make_unique<Http3Connection>([&transport]() { return transport.openUnidirectionalStream(); },
                                                  [&transport](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool endStream)
                                                  { return transport.write(streamId, data, endStream); }, [&transport](const std::int64_t streamId, const std::size_t byteCount)
-                                                 { transport.credit(streamId, byteCount); }, std::move(callbacks), settings);
+                                                 { transport.credit(streamId, byteCount); }, std::move(callbacks), settings, role);
     }
 
     /// 把字符串按字节交给状态机（它只认「指针 + 长度」）
@@ -837,6 +838,61 @@ TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
         connection->flush();
         EXPECT_EQ(transport.bytesOf(kLocalDecoderStreamId).find(streamCancellationForStreamZero), std::string::npos)
                 << "没有可取消的账就不该发这条指令：那会把对端这条流上照常等待确认的状态打乱";
+    }
+}
+
+/**
+ * @brief 过渡响应（1xx）占不掉「这条流唯一的头段」那一位，随后的最终响应照常交付
+ * @details 本端服务端三条通道都能发过渡响应（`HttpResponse::sendInformational`，且带
+ *          `Expect: 100-continue` 的 h2/h3 请求由会话自动补一个 100），h1 的出站解析器按 RFC 9112 §6.4
+ *          把它当「最终响应之前的一声招呼」丢掉。h3 入站此前没有这一支：第一段被交给判定器并记下
+ *          「头段已过」，于是那条真响应按 RFC 9114 §4.1 判成「同一消息里出现了第二个头段」——
+ *          一个用 Expect 的出站请求被自家服务端的 100 打死。RFC 9114 §4.1/§5.1 说清过渡响应是一份
+ *          **独立**的消息，不占最终响应的头段位，也不该把它的字段交给业务
+ * @note 证伪：摘掉入站的过渡响应分支（让 1xx 走正常头段交付），本条第一格在 `malformedRequests`
+ *       与「头段恰好一次」两处红；把这一支写成「一切头段都用一次性判定器」，第二格（两条最终响应）红
+ */
+TEST(Http3Connection, InformationalResponseSectionDoesNotTakeTheHeadSlotFromTheFinalResponse)
+{
+    // 格一：100 之后跟 200，交付的只有 200 那一份
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events, {}, AsynGyanis::Net::QuicConnectionRole::Client);
+
+        std::string       encoderBytes;
+        const std::string interimBlock = encodeSection({QpackHeaderField{":status", "100"}}, encoderBytes);
+        const std::string finalBlock   = encodeSection({QpackHeaderField{":status", "200"}, QpackHeaderField{"x-final", "yes"}}, encoderBytes);
+
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, interimBlock)), false);
+        EXPECT_TRUE(events.headerFields.empty()) << "过渡响应的字段不该交给上层";
+        EXPECT_TRUE(events.headerBlocksReceived.empty()) << "过渡响应不该被当成这条流的头段";
+
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, finalBlock)), false);
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "{}")), true);
+
+        EXPECT_TRUE(events.malformedRequests.empty()) << "最终响应被自家服务端的 100 顶成了「第二个头段」";
+        ASSERT_EQ(events.headerBlocksReceived.size(), 1u) << "最终响应要作为这条流的头段交付一次";
+        ASSERT_EQ(events.headerFields.size(), 2u) << "过渡响应的 :status 混进了业务读到的字段里";
+        EXPECT_EQ(events.headerFields[0].name, ":status");
+        EXPECT_EQ(events.headerFields[0].value, "200");
+        EXPECT_EQ(events.bodyBytes, "{}") << "正文要照常交出来：这条响应没被判死";
+        EXPECT_TRUE(events.requestsEnded.size() == 1U) << "收齐之后要把这条请求交上去";
+        EXPECT_FALSE(connection->isBroken());
+    }
+
+    // 格二：两条**最终**响应仍然非法——豁免只给 1xx，别把这道闸一并拆掉
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events, {}, AsynGyanis::Net::QuicConnectionRole::Client);
+
+        std::string       encoderBytes;
+        const std::string finalBlock = encodeSection({QpackHeaderField{":status", "200"}}, encoderBytes);
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, finalBlock)), false);
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, finalBlock)), false);
+        EXPECT_EQ(events.headerBlocksReceived.size(), 1u) << "第一条最终响应照常交付";
+        EXPECT_EQ(events.malformedRequests.size(), 1u) << "第二条最终响应仍要按「同一消息里的第二个头段」拒掉";
     }
 }
 
