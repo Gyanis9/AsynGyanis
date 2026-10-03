@@ -10,6 +10,7 @@
 #include <cmath>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 
 namespace AsynGyanis::Database
@@ -309,7 +310,10 @@ namespace AsynGyanis::Database
             return result;
         }
 
-        // 无返回列 = 写操作（INSERT/UPDATE/DELETE/DDL）：SQLite 保证一条写语句一次 step 即可跑完
+        // 无返回列 = 写操作（INSERT/UPDATE/DELETE/DDL）：SQLite 保证一条写语句一次 step 即可跑完。
+        // 行改变总数在这里取一次，用于分辨「本条语句到底改过行没有」：sqlite3_changes() 是语句级
+        // 计数器却只在 DML 上刷新，DDL 走过后它留着上一条 DML 的数；这一格增量分得出两者
+        const int totalChangesBeforeStep = sqlite3_total_changes(m_database);
         const int stepResult = sqlite3_step(statement);
         if (stepResult != SQLITE_DONE)
         {
@@ -341,9 +345,12 @@ namespace AsynGyanis::Database
         // 游标已被 reset，处于「可从头重跑」的状态，到这里才允许交给缓存
         cacheStatement(std::move(commandText), statement);
 
-        // 写操作没有游标，用空语句构造「执行成功但为空」的结果集；
-        // SqliteResult 构造时会立刻快照 sqlite3_changes()，本条语句的影响行数因此不会丢
-        return std::make_unique<SqliteResult>(nullptr, m_database);
+        // 写操作没有游标，用空语句构造「执行成功但为空」的结果集。影响行数在这里当场判好交过去，
+        // 不留给结果集自己快照：本条语句真的改过行才照抄 sqlite3_changes()，一行都没改
+        // （DDL、PRAGMA、COMMIT/ROLLBACK）就报 0——连接由池共享，不判这一格就是把另一个请求
+        // 上一条写入的行数当作这条 CREATE TABLE 的回执交出去
+        const std::optional<int> affectedRowCount = sqlite3_total_changes(m_database) == totalChangesBeforeStep ? 0 : sqlite3_changes(m_database);
+        return std::make_unique<SqliteResult>(nullptr, m_database, affectedRowCount);
     }
 
     DatabaseType SqliteConnection::databaseType() const

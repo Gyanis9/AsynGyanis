@@ -891,6 +891,26 @@ namespace AsynGyanis::Database
         EXPECT_EQ(deletionReceipt->affectedRowCount(), 4) << "结果集快照不该反映后来的写入";
     }
 
+    /** @brief 钉住 DDL 的回执不带着上一条写入的行数：连接由池共享时那个数属于另一个请求 */
+    TEST_F(SqliteUserQuery, DataDefinitionReceiptDoesNotCarryThePreviousWriteCount)
+    {
+        const std::unique_ptr<DatabaseResult> updateReceipt = query("UPDATE users SET age = age + 1");
+        ASSERT_NE(updateReceipt, nullptr);
+        ASSERT_EQ(updateReceipt->affectedRowCount(), 4) << "四行全部被写入，这条 DML 自己的计数要照旧报出";
+
+        const std::unique_ptr<DatabaseResult> createReceipt = query("CREATE TABLE scratchTable (a INTEGER)");
+        ASSERT_NE(createReceipt, nullptr);
+        // SQLite 的 sqlite3_changes() 只对 INSERT/UPDATE/DELETE 刷新，建表走过后它留着上一条 DML 的数；
+        // 连接由池共享，那个数可能来自另一个请求的一条写入，被当作这条建表语句的回执交出去
+        EXPECT_EQ(createReceipt->affectedRowCount(), 0) << "DDL 一行都没改，回执不能留着上一条 DML 的计数";
+
+        const std::unique_ptr<DatabaseResult> dropReceipt = query("DROP TABLE scratchTable");
+        ASSERT_NE(dropReceipt, nullptr);
+        EXPECT_EQ(dropReceipt->affectedRowCount(), 0);
+
+        EXPECT_EQ(updateReceipt->affectedRowCount(), 4) << "先交出去的那份快照不该被后来的语句改写";
+    }
+
     /** @brief 钉住结果集快照与连接级计数器语义不同：快照不随新写入前进 */
     TEST_F(SqliteUserQuery, LastInsertRowIdSnapshotBelongsToItsOwnStatement)
     {

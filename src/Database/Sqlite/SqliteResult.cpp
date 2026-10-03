@@ -7,13 +7,17 @@
 
 namespace AsynGyanis::Database
 {
-    SqliteResult::SqliteResult(sqlite3_stmt *const statement, sqlite3 *const database) : m_statement(statement), m_database(database)
+    SqliteResult::SqliteResult(sqlite3_stmt *const statement, sqlite3 *const database, const std::optional<int> affectedRowCountOverride) :
+        m_statement(statement), m_database(database)
     {
         // 影响行数与最近插入 rowid 都是 SQLite 的连接级计数器：必须在构造这一刻快照，
         // 否则调用方之后在本连接上再执行一条写语句，本对象读到的就是别人的计数
         if (m_database != nullptr)
         {
-            m_affectedRowCount = sqlite3_changes(m_database);
+            // 写回执那条路由调用方交来影响行数：sqlite3_changes() 只对 INSERT/UPDATE/DELETE 刷新，
+            // DDL（CREATE/DROP/ALTER、PRAGMA、COMMIT/ROLLBACK）走过后它留着上一条 DML 的数——
+            // 实测本仓依赖的这份 SQLite 上，改过 3 行之后建一张表再读它仍回 3
+            m_affectedRowCount = affectedRowCountOverride.value_or(sqlite3_changes(m_database));
             m_lastInsertRowId  = sqlite3_last_insert_rowid(m_database);
         }
 

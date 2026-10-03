@@ -27,8 +27,9 @@ namespace AsynGyanis::Database
      *
      * @details SQLite 用预编译语句（sqlite3_stmt）承载游标：构造时读取列数并对只读语句预扫描行数，
      *          构造时传入空游标表示写语句（INSERT/UPDATE/DELETE/DDL）的成功回执——列数与行数均为 0，
-     *          但仍快照连接级的影响行数与最近插入 rowid。该快照必须落在构造这一刻，否则调用方之后在
-     *          本连接上再执行一条写语句，本对象读到的就是别人的计数。
+     *          但仍快照影响行数与最近插入 rowid。影响行数默认取连接级计数器，写回执那条路必须改由
+     *          调用方交来（见构造函数的 affectedRowCountOverride）。该快照必须落在构造这一刻，否则
+     *          调用方之后在本连接上再执行一条写语句，本对象读到的就是别人的计数。
      *
      * @warning 本类持有 sqlite3_stmt 的所有权（析构 finalize），同时持有 sqlite3 的非拥有指针；
      *          连接对象必须比结果集活得更久。基类已删除拷贝与移动，这里不再放开。
@@ -42,11 +43,14 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 用已编译的预编译语句构造结果集
-         * @details statement 为空表示「写操作的成功回执」，此时不建立游标，只快照连接级计数器。
+         * @details statement 为空表示「写操作的成功回执」，此时不建立游标，只快照计数器。
          * @param statement 已 prepare 的 SQLite 语句句柄，所有权移交本对象；可为 nullptr
          * @param database  语句所属的数据库句柄，仅用于读取错误文本与连接级计数器，不接管生命周期
+         * @param affectedRowCountOverride 本条语句的影响行数，由调用方按「执行前后的行改变总数增量」判定后交来；
+         *        为空表示按连接级 `sqlite3_changes()` 快照。写回执必须交来这个值：DDL 不刷新那个计数器，
+         *        直接快照等于把上一条 DML 的行数当作这条 CREATE TABLE 的回执（连接由池共享，那个数可能来自另一个请求）
          */
-        explicit SqliteResult(sqlite3_stmt *statement, sqlite3 *database = nullptr);
+        explicit SqliteResult(sqlite3_stmt *statement, sqlite3 *database = nullptr, std::optional<int> affectedRowCountOverride = std::nullopt);
 
         /**
          * @brief 析构时 finalize 语句，释放游标占用的语句与页锁资源
