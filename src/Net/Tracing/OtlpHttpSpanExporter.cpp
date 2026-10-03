@@ -48,7 +48,12 @@ namespace AsynGyanis::Net
             {
                 if (const auto retryAfter = response->retryAfter(); retryAfter.has_value())
                 {
-                    return std::clamp(std::chrono::duration_cast<std::chrono::milliseconds>(*retryAfter), kFailurePauseFloor, kMaximumRetryPause);
+                    // 先钳「秒」这一档的数，再做秒→毫秒那次乘法：`Retry-After` 写成
+                    // `9223372036854775807` 是一条语法完全合法的头（RFC 9110 §10.1.2 只要求若干个十进制
+                    // 数字），而 duration_cast 会把它乘 1000——有符号溢出是 UB，它在本框架里的落法是折成
+                    // 一个负数，随后 clamp 取地板 200 毫秒：对端明确说了「限流」，我们反倒把重试频率抬到最高
+                    const std::int64_t cappedSeconds = std::clamp(retryAfter->count(), static_cast<std::int64_t>(0), static_cast<std::int64_t>(kMaximumRetryPause.count() / 1000));
+                    return std::clamp(std::chrono::milliseconds{cappedSeconds * 1000}, kFailurePauseFloor, kMaximumRetryPause);
                 }
             }
             return kFailurePauseFloor;

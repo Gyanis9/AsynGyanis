@@ -26,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -57,7 +58,7 @@ namespace
         std::string                                        m_contentType{};           ///< 收到的媒体类型
         std::string                                        m_authorization{};         ///< 收到的 Authorization 头部
         std::atomic<int>                                   m_responseStatusCode{200}; ///< 该回的状态码
-        std::atomic<int>                                   m_retryAfterSeconds{-1};   ///< 非负时回复带上 `Retry-After: <秒>`，-1 表示不带这条头
+        std::atomic<long long>                             m_retryAfterSeconds{-1};   ///< 非负时回复带上 `Retry-After: <秒>`，-1 表示不带这条头
         std::atomic<int>                                   m_requestCount{0};         ///< 收到过几条请求
         std::vector<std::chrono::steady_clock::time_point> m_requestTimes{};          ///< 每条请求到达的刻
 
@@ -94,7 +95,7 @@ namespace
                         static_cast<void>(state->m_requestCount.fetch_add(1, std::memory_order_relaxed));
                         response.setStatus(state->m_responseStatusCode.load(std::memory_order_relaxed));
                         // 这条头只对 429 与 503 有定义，用例把状态码与它配着给
-                        const int retryAfterSeconds = state->m_retryAfterSeconds.load(std::memory_order_relaxed);
+                        const long long retryAfterSeconds = state->m_retryAfterSeconds.load(std::memory_order_relaxed);
                         if (retryAfterSeconds >= 0)
                         {
                             static_cast<void>(response.setHeader("Retry-After", std::to_string(retryAfterSeconds)));
@@ -330,6 +331,33 @@ TEST(OtlpHttpSpanExporter, PausesForTheCollectorsRetryAfterWindow)
             << "封顶后的退避之后必须再来一次：60 秒不该照单全收";
     const long long delayMs = state.secondRequestDelayMs();
     EXPECT_GE(delayMs, 1000) << "Retry-After 被当成了不存在，等于这条头没进账";
+    EXPECT_LE(delayMs, 10000) << "封顶没生效：对端写多少就干等多少";
+}
+
+/**
+ * @brief 大到装不下的 `Retry-After` 仍然按封顶退避，而不是折成负数后立刻重撞
+ * @details `Retry-After: 9223372036854775807` 是一条语法合法的头（RFC 9110 §10.1.2 只要若干个十进制数字），
+ *          而秒折成毫秒要乘 1000：先折再钳会在 int64 上有符号溢出（UB），折出来是负数、clamp 取地板
+ *          200 毫秒——对端明确说了限流，重试频率反而抬到最高。判据与上一条同形（间隔既不能短到头没进账，
+ *          也不能长过封顶），差别只在喂进来的取值：把折算挪到钳之前，这条会在「太短」那一侧变红。
+ */
+TEST(OtlpHttpSpanExporter, CapsAnUnrepresentableRetryAfterInsteadOfRetryingImmediately)
+{
+    CollectorState state;
+    state.m_responseStatusCode.store(429, std::memory_order_relaxed);
+    state.m_retryAfterSeconds.store(std::numeric_limits<long long>::max(), std::memory_order_relaxed);
+    const auto fixture = startCollector(&state);
+    ASSERT_TRUE(fixture != nullptr);
+
+    auto configuration            = makeCollectorConfiguration(fixture->listeningPort());
+    configuration.shutdownTimeout = std::chrono::milliseconds{100}; ///< 收尾不必等满整个退避窗口
+    OtlpHttpSpanExporter exporter{configuration};
+    ASSERT_TRUE(exporter.exportSpans(testResource(), makeSingleRecordBatch("a")));
+    ASSERT_TRUE(exporter.exportSpans(testResource(), makeSingleRecordBatch("b")));
+
+    ASSERT_TRUE(waitUntil([&state] { return state.m_requestCount.load(std::memory_order_relaxed) >= 2; }, std::chrono::milliseconds{15000})) << "越界的 Retry-After 不该让出口停摆";
+    const long long delayMs = state.secondRequestDelayMs();
+    EXPECT_GE(delayMs, 1000) << "越界的取值被折成负数再钳到地板：等于对端说了限流而我们反而加速去撞";
     EXPECT_LE(delayMs, 10000) << "封顶没生效：对端写多少就干等多少";
 }
 
