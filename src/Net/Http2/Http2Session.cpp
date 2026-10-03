@@ -65,13 +65,6 @@ namespace AsynGyanis::Net
         /// 自动补出的内容类型：与 HttpResponse 的兜底选择一致（不会被浏览器当脚本执行）
         constexpr std::string_view kDefaultContentTypeValue = "text/plain";
 
-        /// 报文行的分隔符：HttpResponse::writeChunk() 交出的段落一律以它定行（RFC 9112 §2.2）
-        constexpr std::string_view kCrLf       = "\r\n";
-        constexpr std::size_t      kCrLfLength = 2;
-
-        /// 分块帧长度行的位数上限：帧长按每字节两位十六进制写出，与 HttpResponse 侧同一算法
-        constexpr std::size_t kChunkLengthLineMaximumLength = sizeof(std::size_t) * 2;
-
         /**
          * @brief 把异常的指针取成可读文本
          * @details 流式响应中途失败时头部已经上线，改状态码已不可能，日志是唯一能交代原因的地方。

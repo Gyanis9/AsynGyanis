@@ -34,12 +34,6 @@ namespace AsynGyanis::Net
 
     namespace
     {
-        /// 无状态重置令牌的密钥长度：够长即可，服务端级固定一份
-        constexpr std::size_t kStatelessResetSecretLength = 32;
-
-        /// 服务端要协商出的 ALPN：HTTP/3 约定用 h3
-        constexpr std::string_view kHttp3ApplicationProtocol = "h3";
-
         /**
          * @brief 取来源地址的纯 IP 文本（不含端口），作为单来源限额的键
          * @details 带端口就等于按连接计数，限额永远碰不到（与 TcpServer 侧同一口径）
