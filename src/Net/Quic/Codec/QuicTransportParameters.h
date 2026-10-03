@@ -20,6 +20,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Net/Quic/Codec/QuicDecodeError.h"
+#include "Net/Quic/Codec/QuicFrame.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 
 #include <algorithm>
@@ -35,8 +36,9 @@
 
 namespace AsynGyanis::Net
 {
-    /// 无状态重置令牌的固定长度（RFC 9000 §10.3：16 字节随机数）
-    inline constexpr std::size_t kQuicStatelessResetTokenLength = 16;
+    /// 无状态重置令牌的固定长度（RFC 9000 §10.3：16 字节随机数）。同一件事此前在这里与 QuicFrame.h
+    /// 各写一份字面量，两处一起改才会保持一致、单边改则编译期没有任何东西会响——这里取帧编解码那份为真源
+    inline constexpr std::size_t kQuicStatelessResetTokenLength = kQuicStatelessResetTokenByteLength;
 
     /// `max_udp_payload_size` 的默认值，也是 UDP 载荷的上限（RFC 9000 §18.2）
     inline constexpr std::uint64_t kQuicDefaultMaximumUdpPayloadSize = 65527;
