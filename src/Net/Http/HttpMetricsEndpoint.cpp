@@ -169,8 +169,8 @@ namespace AsynGyanis::Net
                            "# TYPE {} gauge\n{} {}\n",
                            queueDepthName, queueDepthName, queueDepthName, stats.blockingTaskQueueDepth);
         appendCounter(out, makeMetricName(metricNamePrefix, "blocking_task_rejected_total"),
-                      "因排队已满被拒的阻塞任务条数（只含进程级共享那台执行器，自建的不计；提交方当场收到异常，"
-                      "涨了就说明该降并发或加工作线程）",
+                      "因排队已满被拒的阻塞任务条数（只含进程级共享那台执行器，自建的不计——全部执行器的合计在 "
+                      "asyn_executor_rejected_total；提交方当场收到异常，涨了就说明该降并发或加工作线程）",
                       stats.blockingTaskRejectedCount);
 
         // 日志被丢的规模是进程级的，而且**有一条对端可驱动的路**：JSON 版式对非法 UTF-8 整条失败，
