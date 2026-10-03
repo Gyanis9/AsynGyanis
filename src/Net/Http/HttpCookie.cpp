@@ -101,21 +101,33 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 解析整段十进制数字（允许一个前导 '+'），必须整段消费
-         * @param text 待解析文本
+         * @brief 解析 `Max-Age` 的 delta-seconds：首位是数字或 '-'，其余必须全是数字
+         * @details RFC 6265 §5.2.2 第 5 步的两条判据照抄：首字符既不是数字也不是 '-' 就「ignore the
+         *          cookie-av」——`Max-Age=+3600` 正落在这一条上。看着无害（值本来就是 3600），实际是让
+         *          本端的罐子记着一条有到期时刻的条目，而浏览器把它当会话 Cookie：同一条 Set-Cookie 在
+         *          两边存成不同的东西，而这类差别只会以「Cookie 比预期早没/晚没」出现，现场查不到原因。
+         *          负数是合法的（§5.2.2 让 delta-seconds ≤ 0 折成「最早可表示时刻」= 立刻过期，本仓的
+         *          罐子按删除处理），所以这里不拦 '-'。
+         * @param text 属性取值原文
          * @param[out] value 解析结果
          * @return true 解析成功
          */
-        bool parseSignedInteger(const std::string_view text, std::int64_t &value) noexcept
+        bool parseDeltaSeconds(const std::string_view text, std::int64_t &value) noexcept
         {
-            const std::string_view digits = (text.size() > 1 && text.front() == '+') ? text.substr(1) : text;
-            if (digits.empty())
+            if (text.empty() || (text.front() != '-' && text.front() != '+' && (text.front() < '0' || text.front() > '9')))
             {
                 return false;
             }
+            for (const char character: text.substr((text.front() == '-' || text.front() == '+') ? 1U : 0U))
+            {
+                if (character < '0' || character > '9')
+                {
+                    return false;
+                }
+            }
             std::int64_t parsed                = 0;
-            const auto [endPointer, errorCode] = std::from_chars(digits.data(), digits.data() + digits.size(), parsed);
-            if (errorCode != std::errc() || endPointer != digits.data() + digits.size())
+            const auto [endPointer, errorCode] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+            if (errorCode != std::errc{} || endPointer != text.data() + text.size())
             {
                 return false;
             }
@@ -296,10 +308,12 @@ namespace AsynGyanis::Net
             } else if (attributeNamesMatch(attributeName, "max-age"))
             {
                 std::int64_t seconds = 0;
-                if (parseSignedInteger(attributeValue, seconds))
+                if (parseDeltaSeconds(attributeValue, seconds))
                 {
                     cookie.m_maxAgeSeconds = seconds;
                 }
+                // 解析不成 delta-seconds 时「这一条属性没给」处理（RFC 6265 §5.2.2 就是 ignore the
+                // cookie-av）：留着一个猜出来的 0 会把它读成「立刻过期」，那是对端没说的话
             } else if (attributeNamesMatch(attributeName, "expires"))
             {
                 if (const auto expiresAt = parseHttpDate(attributeValue); expiresAt.has_value())

@@ -157,7 +157,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpCookie, ParsesSetCookieAttributesCaseInsensitivelyAndSkipsUnknown)
     {
-        const std::optional<HttpCookie> parsed = HttpCookie::parseSetCookie("sid=42; PATH=/api; DOMAIN=Example.COM; max-age=+60; HTTPONLY; Future=1; SameSite=strict");
+        const std::optional<HttpCookie> parsed = HttpCookie::parseSetCookie("sid=42; PATH=/api; DOMAIN=Example.COM; max-age=60; HTTPONLY; Future=1; SameSite=strict");
 
         ASSERT_TRUE(parsed.has_value());
         EXPECT_EQ(parsed->name(), "sid");
@@ -167,11 +167,40 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(parsed->domain().has_value());
         EXPECT_EQ(*parsed->domain(), "Example.COM") << "域名大小写原样保留，归一化不是这一层的事";
         ASSERT_TRUE(parsed->maxAgeSeconds().has_value());
-        EXPECT_EQ(*parsed->maxAgeSeconds(), 60) << "Max-Age 允许前导 '+'";
+        EXPECT_EQ(*parsed->maxAgeSeconds(), 60);
         EXPECT_TRUE(parsed->isHttpOnly());
         EXPECT_FALSE(parsed->isSecure());
         ASSERT_TRUE(parsed->sameSite().has_value());
         EXPECT_EQ(*parsed->sameSite(), CookieSameSitePolicy::Strict);
+    }
+
+    /**
+     * @brief `Max-Age` 只认 delta-seconds：带前导 '+' 的写法整条属性作废，而不是照值收下
+     * @details RFC 6265 §5.2.2 第 5 步要求首字符是数字或 '-'，否则「ignore the cookie-av」。差别不是
+     *          纸面的：`+3600` 收下来，本端的罐子会记着一条有到期时刻的条目，而浏览器把它当会话 Cookie
+     *          ——同一条 Set-Cookie 在两边存成不同的东西，症状只会是「Cookie 比预期晚没」。
+     *          旧断言钉的是「允许前导 '+'」，与这一条相反，按规范改；负数照旧收下（§5.2.2 让 ≤ 0
+     *          折算成立刻过期，jar 按删除处理，见 RoundTripsThroughRenderAndParse 那一格）。
+     */
+    TEST(HttpCookie, IgnoresMaxAgeWithLeadingPlusOrNonDigits)
+    {
+        const std::optional<HttpCookie> plusPadded = HttpCookie::parseSetCookie("sid=42; Max-Age=+3600");
+        ASSERT_TRUE(plusPadded.has_value());
+        EXPECT_FALSE(plusPadded->maxAgeSeconds().has_value()) << "带正号的 Max-Age 该按「这条属性没给」处理";
+        EXPECT_FALSE(plusPadded->expiresAt().has_value()) << "忽略这条属性不等于猜一个到期时刻：0 的含义是立刻过期";
+
+        for (const std::string_view attribute: {"Max-Age=1x", "Max-Age=", "Max-Age=-", "Max-Age=+0"})
+        {
+            const std::optional<HttpCookie> parsed = HttpCookie::parseSetCookie(std::string("sid=42; ") + attribute.data());
+            ASSERT_TRUE(parsed.has_value()) << attribute;
+            EXPECT_FALSE(parsed->maxAgeSeconds().has_value()) << attribute << "：不是 delta-seconds 就该整条作废";
+        }
+
+        // 数字与 '-' 开头的都收（后者是删除语义，不能吞掉）
+        const std::optional<HttpCookie> negative = HttpCookie::parseSetCookie("sid=42; Max-Age=-1");
+        ASSERT_TRUE(negative.has_value());
+        ASSERT_TRUE(negative->maxAgeSeconds().has_value());
+        EXPECT_EQ(*negative->maxAgeSeconds(), -1);
     }
 
     /**
