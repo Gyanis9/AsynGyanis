@@ -1540,8 +1540,8 @@ namespace AsynGyanis::Net
                                                   printableFieldText(field.name)));
                 return false;
             }
-            // te 是唯一的例外：只允许取值 trailers（§8.1.2.2）
-            if (field.name == "te" && field.value != "trailers")
+            // te 是唯一的例外：只允许取值 trailers（§8.1.2.2），比较走与 h3 同一份判据
+            if (field.name == "te" && !teValueIsTrailers(field.value))
             {
                 writeError(errorText, std::format("请求头 te 的取值是 \"{}\"：RFC 7540 §8.1.2.2 只允许 te: trailers，请让对端改掉", printableFieldText(field.value)));
                 return false;
@@ -1725,7 +1725,7 @@ namespace AsynGyanis::Net
                 writeError(errorText, std::format("尾部头块里出现连接特定头 \"{}\"：RFC 7540 §8.1.2.2 禁止这类头部出现在 HTTP/2 报文里", printableFieldText(field.name)));
                 return false;
             }
-            if (field.name == "te" && field.value != "trailers")
+            if (field.name == "te" && !teValueIsTrailers(field.value))
             {
                 writeError(errorText, std::format("尾部头块里 te 的取值是 \"{}\"：RFC 7540 §8.1.2.2 只允许 te: trailers", printableFieldText(field.value)));
                 return false;

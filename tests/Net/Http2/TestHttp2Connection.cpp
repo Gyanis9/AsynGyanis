@@ -801,6 +801,30 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：`te` 的取值按 token 比，不按字节比
+     * @details 上一批那条「te 取值不是 trailers」样本的反面判据：把闸门写成「字节不等于小写 trailers
+     *          就拒」，这一条会在 `Trailers` 那格红。RFC 9113 §8.2.2 只放行 trailers，但比较的是
+     *          token（大小写不敏感，RFC 9110 §5.6.2），字段值两侧的 OWS 也不算内容（§5.5）——
+     *          h3 一直这么判，h2 此前按字节比，同一条请求在两条通道上一个被收、一个被 RST。
+     */
+    TEST(Http2Connection, AcceptsTeTrailersRegardlessOfCaseAndPadding)
+    {
+        for (const std::string_view teValue: {"trailers", "Trailers", "TRAILERS", " trailers "})
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+
+            const std::string headerBlock = makeMinimalGetRequestBlock() + hpackLiteralField("te", teValue);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore)
+                    << "te 取值「" << teValue << "」被判成畸形";
+
+            const std::vector<Http2Request> requests = connection.takeRequests();
+            ASSERT_EQ(requests.size(), 1U) << "te 取值「" << teValue << "」合规范却被拒了：流被打掉，请求没交出去";
+            EXPECT_EQ(requests[0].streamId, 1U);
+        }
+    }
+
+    /**
      * @brief 钉住：CONNECT 的例外规则（§8.3）——:scheme/:path 必须缺席、:authority 必须存在
      */
     TEST(Http2Connection, AcceptsConnectWithoutSchemeAndPath)

@@ -270,6 +270,23 @@ namespace AsynGyanis::Net
         const std::size_t parameterPosition = contentTypeHeader.find(';');
         return equalsIgnoringCase(trimOptionalWhitespace(contentTypeHeader.substr(0, parameterPosition)), expectedMediaType);
     }
+
+    /**
+     * @brief 判断 `te` 字段的取值是否就是 HTTP/2 与 HTTP/3 唯一放行那个 `trailers`
+     *
+     * @details 两条规范（RFC 9113 §8.2.2、RFC 9114 §4.2）都只放行这一个值，但比较的是 token 而不是
+     *          字节串：token 大小写不敏感（RFC 9110 §5.6.2），字段值两侧的 OWS 不算内容
+     *          （RFC 9110 §5.5）。按字节比会把 `te: Trailers` 这种合规范的写法判成协议错误。
+     *          h3 一直按这条判，h2 此前写的是 `value != "trailers"`——同一条请求在两条通道上
+     *          一个被收、一个被拒，而判它的那句话看起来两边都「写着 trailers」。
+     *
+     * @param value `te` 字段的原始取值（不含字段名），可为空视图
+     * @return true 去掉两侧空白、忽略大小写之后恰好是 trailers
+     */
+    [[nodiscard]] inline bool teValueIsTrailers(const std::string_view value) noexcept
+    {
+        return equalsIgnoringCase(trimOptionalWhitespace(value), "trailers");
+    }
     /**
      * @brief 解析对端交来的状态码文本：只接受恰好三位十进制（RFC 9110 §4.1 的 status-code = 3DIGITS）
      *

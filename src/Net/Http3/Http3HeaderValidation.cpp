@@ -258,7 +258,7 @@ namespace AsynGyanis::Net
         // TE 是连接特定字段规则的唯一例外，且只允许 trailers 这一个值（RFC 9114 §4.2）
         if (equalsIgnoringCase(name, "te"))
         {
-            if (!equalsIgnoringCase(trimOptionalWhitespace(value), "trailers"))
+            if (!teValueIsTrailers(value))
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::TeValueNotAllowed,
                                                        "TE 的取值 \"" + printableFieldText(value) + "\" 不是 trailers：HTTP/3 只放行这一个值（RFC 9114 §4.2）"));

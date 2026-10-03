@@ -212,6 +212,11 @@ TEST(Http3HeaderValidation, ConnectionSpecificFieldsAreRejectedButTeTrailersIsAl
 
     Http3HeaderValidator tePadded(Http3MessageKind::Request);
     EXPECT_TRUE(feedRequest(tePadded, requestWithExtraField("te", " trailers ")).has_value()) << "TE 两侧的空白按 OWS 处理";
+
+    // token 的比较不区分大小写（RFC 9110 §5.6.2）：h2 此前按字节比这条值，于是同一条请求
+    // 在两条通道上一个被收、一个被 RST——两边引的是同一句规范
+    Http3HeaderValidator teMixedCase(Http3MessageKind::Request);
+    EXPECT_TRUE(feedRequest(teMixedCase, requestWithExtraField("te", "Trailers")).has_value()) << "TE 的取值是 token，大小写不敏感";
 }
 
 TEST(Http3HeaderValidation, ContentLengthMustBeASingleConsistentNumber)
