@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <coroutine>
 #include <cstdint>
@@ -35,6 +36,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -4047,4 +4049,87 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(announcement.isEndStream) << "控制流不该被这次通告收尾：本端不主动结束它";
     }
 
+    /**
+     * @brief 钉住：h3 的尾字段与头部那场**共用同一份** parser_limits 条数预算，越限按 431 收口
+     * @details h3 侧此前只有「头部那场越限回 431」这一条直测（`Answers431ForOversizedHeaderBlockWithoutHandingItToBusiness`），
+     *          而「尾字段也记进同一份账」这一步（`addTrailerFieldToStream` 的落点一调
+     *          `accountHeaderFieldBudget()`）零直测：h1 由解析器共用一个计数器、h2 有跨头块累计的两条用例，
+     *          补上这一格三通道才都对得上 `HttpParserLimits` 的键文档。
+     *          数字：`submitRequestWithBodyAndTrailers` 带正文时交出的头块是 `:method`、`:scheme`、
+     *          `:authority`、`:path` 四条伪头再加 `content-length`，共 5 条（本对端只编显式给出的字段，
+     *          不自己补；伪头同样进这条账），上限取 7，于是 5+2 恰好放行、5+3 越限。
+     * @note 这条账只在**未派发**的记录上记（落点一）。流式路由在头收齐时就把请求搬走了，那条路径
+     *       刻意不再记预算——回不出 431，见 `addTrailerFieldToStream` 落点二的说明与
+     *       `HttpParserLimits` 的键文档。
+     */
+    TEST(Http3Session, CountsTrailerFieldsAgainstTheSameHeaderFieldBudget)
+    {
+        // 跑一遍：给 trailerCount 条尾字段、按 countLimit 判，回「状态码 / 正文 / 业务是否进去 / 指标快照」
+        const auto serveOnce = [](const std::size_t trailerCount, const std::size_t countLimit)
+        {
+            FakeStreamOpener                opener;
+            std::vector<CapturedStreamData> sentStreamData;
+            const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+            Http3Session session(
+                    std::ref(opener),
+                    [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                    {
+                        sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                        return data.size();
+                    },
+                    Http3Session::StreamCrediter{}, metrics);
+
+            HttpParserLimits limits;
+            limits.maximumHeaderCount = countLimit;
+            session.setParserLimits(limits);
+
+            std::atomic<bool> isHandlerEntered{false};
+            Router            router;
+            router.post("/tail",
+                        [&isHandlerEntered](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                        {
+                            isHandlerEntered.store(true);
+                            response.setStatus(200);
+                            response.setBody("tf=" + request.getTrailerField("x-a").value_or(std::string{}) + "+" + request.getTrailerField("x-b").value_or(std::string{}));
+                            co_return;
+                        });
+            session.attachRouter(router);
+
+            std::vector<QpackHeaderField> trailerFields;
+            for (std::size_t index = 0; index < trailerCount; ++index)
+            {
+                trailerFields.push_back(QpackHeaderField{std::string("x-") + static_cast<char>('a' + static_cast<int>(index)), "v"});
+            }
+
+            Http3ClientPeer peer;
+            for (const CapturedStreamData &step: peer.submitRequestWithBodyAndTrailers("POST", "/tail", "example.com", "abc", trailerFields))
+            {
+                session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+            }
+            Core::Task<> pumpTask = session.pump();
+            resumeUntilReady(pumpTask);
+            for (const CapturedStreamData &chunk: sentStreamData)
+            {
+                peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+            return std::make_tuple(peer.response().status, peer.response().body, isHandlerEntered.load(), metrics->snapshot());
+        };
+
+        // 对照：5 + 2 = 恰好等于上限 7，照常服务，且尾字段真真切切交到了业务手上
+        const auto [okStatus, okBody, okEntered, okStats] = serveOnce(2U, 7U);
+        EXPECT_EQ(okStatus, 200) << "累计恰好等于上限的请求不该被挡：判据不许严到把合法请求一起拦掉";
+        EXPECT_EQ(okBody, "tf=v+v") << "尾字段该落到 trailer 档存储：" << okBody;
+        EXPECT_TRUE(okEntered);
+        EXPECT_EQ(okStats.badRequestCount, 0U);
+        EXPECT_EQ(okStats.totalRequestCount, 1U);
+
+        // 判据：5 + 3 = 8 条越限。这条流不该交给业务，收口与 h1/h2 同一个状态码与同一笔账
+        const auto [rejectedStatus, rejectedBody, rejectedEntered, rejectedStats] = serveOnce(3U, 7U);
+        EXPECT_FALSE(rejectedEntered) << "越限的尾字段把整条请求顶过了上限，这条请求不该进业务";
+        EXPECT_EQ(rejectedStatus, 431) << "与 h1/h2 同一个状态码：头部越限在三条通道上是同一件事";
+        EXPECT_EQ(rejectedBody, "Request Header Fields Too Large");
+        EXPECT_EQ(rejectedStats.badRequestCount, 1U) << "越限要留下一笔坏请求，否则指标上像没发生过";
+        EXPECT_EQ(rejectedStats.totalRequestCount, 0U) << "没交给业务的收口不进请求数：三条协议同解";
+    }
 } // namespace AsynGyanis::Net
