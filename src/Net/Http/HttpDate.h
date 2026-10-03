@@ -86,4 +86,18 @@ namespace AsynGyanis::Net
      * @return std::optional<std::chrono::seconds> 要等待的秒数；无法解析时为空
      */
     [[nodiscard]] ASYN_NET_API std::optional<std::chrono::seconds> parseRetryAfter(std::string_view text, std::chrono::system_clock::time_point now);
+
+    /**
+     * @brief 把「自 epoch 起的秒数」折成 time_point，超出本时钟能表达的范围时钳到两端
+     * @details 用 `time_point(seconds(n))` 直接构造等于做了一次「秒 × 时钟周期」的乘法
+     *          （libstdc++ 的周期是 1 纳秒、MSVC 是 100 纳秒）：秒数大到越过 int64 上界就是有符号
+     *          溢出，而它的运行期落法是**远期折回过去**。凡秒数来自本框架之外都要走这里——
+     *          文件系统的 mtime（ext4/xfs 存得下 2262 年以后）、证书里的 notAfter（ASN.1 允许 9999 年）、
+     *          以及对端递来的日期。
+     * @details 钳位方向与 `parseHttpDate` 那侧同一条口径：超出可表达的远期 = 永不到期
+     *          （`time_point::max()`），超出可表达的久远过去 = 早已过期（`time_point::min()`）。
+     * @param unixSeconds 自 Unix epoch 起的秒数，允许为负
+     * @return std::chrono::system_clock::time_point 落在本时钟可表达范围内的时刻
+     */
+    [[nodiscard]] ASYN_NET_API std::chrono::system_clock::time_point timePointFromUnixSeconds(std::int64_t unixSeconds) noexcept;
 } // namespace AsynGyanis::Net

@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -346,6 +347,33 @@ namespace AsynGyanis::Net
         // 方向单独再钉一刀：绕回去时这一条先红，报错信息比对着上一步的秒数好读
         EXPECT_GT(*farFuture, std::chrono::system_clock::now() + std::chrono::years{100});
         EXPECT_LT(*farPast, std::chrono::system_clock::now() - std::chrono::years{100});
+    }
+
+    /**
+     * @brief 外来的「Unix 秒」折成 time_point 时按可表达范围钳两端，而不是让那次乘法溢出
+     * @details `time_point(seconds(n))` 是一次「秒 × 时钟周期」的乘法，n 越过 int64 上界就是 UB，
+     *          运行期的落法是远期折回过去。这条路上的秒数都不是本框架写的：文件系统的 mtime
+     *          （ext4/xfs 存得下 2262 年以后）、证书里的 notAfter（ASN.1 允许 9999 年）。
+     *          上面那条钉的是「文本解析」那一侧的钳位，这一条钉「手里已经有一个秒数」这一侧，
+     *          并且两侧各配一格可表达的值——只钳不还原会把正常值一起吃掉。
+     */
+    TEST(HttpDate, TimePointFromUnixSecondsClampsBothEnds)
+    {
+        const std::int64_t largestExpressibleSecond  = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::time_point::max().time_since_epoch()).count();
+        const std::int64_t smallestExpressibleSecond = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::time_point::min().time_since_epoch()).count();
+
+        EXPECT_EQ(timePointFromUnixSeconds(std::numeric_limits<std::int64_t>::max()), std::chrono::system_clock::time_point::max()) << "远到无法表达的秒数绕回了过去";
+        EXPECT_EQ(timePointFromUnixSeconds(std::numeric_limits<std::int64_t>::min()), std::chrono::system_clock::time_point::min()) << "久远到无法表达的秒数绕到了将来";
+
+        // 能表达的那两格要原样折过去：只看到「钳」而把正常值也压到端点上，这条先红
+        EXPECT_EQ(secondsOf(timePointFromUnixSeconds(largestExpressibleSecond)), largestExpressibleSecond);
+        EXPECT_EQ(secondsOf(timePointFromUnixSeconds(smallestExpressibleSecond)), smallestExpressibleSecond);
+        EXPECT_EQ(secondsOf(timePointFromUnixSeconds(1'700'000'000LL)), 1'700'000'000LL);
+
+        // 与文本解析那一侧同一条口径：同一年月日不论从日期串还是从秒数进来，落点必须一致
+        const std::optional<std::chrono::system_clock::time_point> farFuture = parseHttpDate("Fri, 31 Dec 9999 23:59:59 GMT");
+        ASSERT_TRUE(farFuture.has_value());
+        EXPECT_EQ(timePointFromUnixSeconds(secondsOf(*farFuture)), *farFuture);
     }
 
     /**

@@ -819,7 +819,7 @@ namespace AsynGyanis::Net
                 body.append(" B");
                 std::array<char, kHttpDateTextLength> dateBuffer{};
                 body.append(" ");
-                body.append(formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(entry.lastWriteSeconds)), dateBuffer));
+                body.append(formatHttpDate(timePointFromUnixSeconds(entry.lastWriteSeconds), dateBuffer));
                 body.append("</li>\r\n");
             }
 
@@ -1082,7 +1082,7 @@ namespace AsynGyanis::Net
             std::array<char, kMaximumEtagTextBytes> etagBuffer{};
             const std::string_view                  entityTagText = makeStrongEtag(fileSize, lastWriteSeconds, etagBuffer);
             std::array<char, kHttpDateTextLength>   lastModifiedBuffer{};
-            const std::string_view lastModifiedText = formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(lastWriteSeconds)), lastModifiedBuffer);
+            const std::string_view                  lastModifiedText = formatHttpDate(timePointFromUnixSeconds(lastWriteSeconds), lastModifiedBuffer);
             // MIME 只看最后一段扩展名，因此只把扩展名按 UTF-8 出串：整条路径的文本要一次堆分配，
             // 而扩展名短到能留在小串内联里。两条都不走 path::string()——Windows 上它按本地代码页出串，
             // 代码页装不下的名字会在这里抛出，而这条正站在每个静态请求的路上

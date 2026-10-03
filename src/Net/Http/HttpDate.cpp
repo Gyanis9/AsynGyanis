@@ -215,23 +215,9 @@ namespace AsynGyanis::Net
             const std::int64_t seconds =
                     days * kSecondsPerDay + static_cast<std::int64_t>(hour) * 3600 + static_cast<std::int64_t>(minute) * 60 + static_cast<std::int64_t>(second);
             // 这一步构造 time_point 会把「秒」换成时钟的周期（libstdc++ 是 1 纳秒、MSVC 是 100 纳秒），
-            // 也就是一次乘法：year 9999 的秒数乘完早已越过 int64 上界。有符号溢出是 UB，而它在
-            // 本框架里的落法很具体——**到期时刻翻到过去**：对端写一句「9999 年过期」（浏览器与
-            // 老服务器真的在写）的 Cookie 当场被当成已过期摘掉，If-Modified-Since 那侧则把一条
-            // 远期日期读成「早就过期」。按本时钟能表达的最远/最近时刻各钳一刀，方向与语义都对得上：
-            // 超出可表达范围的远期 = 不过期，超出可表达范围的远期过去 = 已过期
-            constexpr std::int64_t kTicksPerSecond = std::chrono::seconds{1} / std::chrono::system_clock::duration{1};
-            constexpr std::int64_t maximumSeconds  = std::numeric_limits<std::int64_t>::max() / kTicksPerSecond;
-            constexpr std::int64_t minimumSeconds  = std::numeric_limits<std::int64_t>::min() / kTicksPerSecond;
-            if (seconds >= maximumSeconds)
-            {
-                return std::chrono::system_clock::time_point::max();
-            }
-            if (seconds <= minimumSeconds)
-            {
-                return std::chrono::system_clock::time_point::min();
-            }
-            return std::chrono::system_clock::time_point(std::chrono::seconds(seconds));
+            // 也就是一次乘法：越界的秒数交给它就是把一条远期日期折回过去。折法与两端钳位都在
+            // timePointFromUnixSeconds() 里，与「文件系统 mtime」「证书 notAfter」共用同一份判据
+            return timePointFromUnixSeconds(seconds);
         }
 
         /**
@@ -496,5 +482,26 @@ namespace AsynGyanis::Net
         }
         const auto remainingSeconds = std::chrono::duration_cast<std::chrono::seconds>(moment.value() - now).count();
         return remainingSeconds > 0 ? std::optional{std::chrono::seconds{remainingSeconds}} : std::optional{std::chrono::seconds{0}};
+    }
+
+    std::chrono::system_clock::time_point timePointFromUnixSeconds(const std::int64_t unixSeconds) noexcept
+    {
+        // 「秒 × 时钟周期」这一步在本平台上是一次乘法（libstdc++ 的周期是 1 纳秒、MSVC 是 100 纳秒），
+        // 越过 int64 上界就是有符号溢出——UB。它在运行期的落法很具体：**远期折回过去**，而这条路上
+        // 走的数往往不是本框架写的：ext4/xfs 存得下 2262 年以后的 mtime，ASN.1 的 GENERALIZEDTIME
+        // 允许 9999 年。按本时钟能表达的两端各钳一刀，方向与语义都对得上：
+        // 超出可表达的远期 = 永不到期，超出可表达的久远过去 = 早已过期
+        constexpr std::int64_t kTicksPerSecond = std::chrono::seconds{1} / std::chrono::system_clock::duration{1};
+        constexpr std::int64_t maximumSeconds  = std::numeric_limits<std::int64_t>::max() / kTicksPerSecond;
+        constexpr std::int64_t minimumSeconds  = std::numeric_limits<std::int64_t>::min() / kTicksPerSecond;
+        if (unixSeconds >= maximumSeconds)
+        {
+            return std::chrono::system_clock::time_point::max();
+        }
+        if (unixSeconds <= minimumSeconds)
+        {
+            return std::chrono::system_clock::time_point::min();
+        }
+        return std::chrono::system_clock::time_point(std::chrono::seconds(unixSeconds));
     }
 } // namespace AsynGyanis::Net
