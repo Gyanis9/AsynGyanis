@@ -452,4 +452,60 @@ namespace AsynGyanis::Net
 
         expectRejected(makeChunkedMessage(payload), HttpParseErrorKind::BodyTooLarge, true, "解码后正文超上限");
     }
+    /**
+     * @brief 钉住：分块的 trailer 段与头部那场**共用**同一条报文的条数与净字节账
+     * @details `HttpParserLimits::maximumHeaderCount` 的键文档就写着「trailer 头部同样计入」。这条跨块
+     *          累计此前只在 h2/h3 有用例（`Http2CleartextSession.CountsTrailer*AgainstTheSame*Limit` 两条），
+     *          h1 侧只有「头部那场恰好等于上限通过、多一条判错」——于是「进 trailer 阶段时把计数器归零」
+     *          这种改法一条用例都不会红，而它恰好是把这条口径拆回按段判。数字按 `kChunkedHeaderBlock`
+     *          手算：头部两场为 `Host: example.test`（4+12=16）与 `Transfer-Encoding: chunked`（17+8=25），
+     *          合计 2 条、41 净字节；每条 trailer 用 "x-t"/"x-u"（名 3）+ 值 "v"（1）= 4 字节。
+     *          条数档取 3（2+1 恰好、2+2 越限），净字节档取 45（41+4 恰好、41+4+4 越限）；两档各测一次时
+     *          把另一档显式关掉（0 = 不限），免得一道守卫兜着另一道、撤掉一处看不出差别。
+     */
+    TEST(HttpParserChunked, TrailerSectionSharesTheHeaderCountAndBlockBudget)
+    {
+        HttpParserLimits countLimits;
+        countLimits.maximumHeaderCount       = 3;
+        countLimits.maximumHeaderBlockLength = 0;
+
+        {
+            // 2 条头部 + 1 条 trailer = 恰好 3 条：照常收完，trailer 落到 trailer 档
+            HttpParser        atLimitParser(countLimits);
+            const std::string atLimit = makeChunkedMessage("5\r\nhello\r\n0\r\nx-t: v\r\n\r\n");
+            ASSERT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::Done) << atLimitParser.errorMessage();
+            EXPECT_EQ(collectTrailerFields(atLimitParser.request()), (std::vector<std::string>{"x-t=v"})) << "恰好等于上限的 trailer 段不该被挡掉";
+        }
+        {
+            // 2 条头部 + 2 条 trailer = 4 条：越限，且文案要说清是 trailer 那一段把账顶过去的
+            HttpParser        aboveLimitParser(countLimits);
+            const std::string aboveLimit = makeChunkedMessage("5\r\nhello\r\n0\r\nx-t: v\r\nx-u: v\r\n\r\n");
+            ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
+            EXPECT_EQ(aboveLimitParser.errorKind(), HttpParseErrorKind::HeaderTooLarge) << aboveLimitParser.errorMessage();
+            EXPECT_TRUE(aboveLimitParser.isLimitExceeded()) << "本端不收这么多，不是对端写了畸形报文";
+            EXPECT_NE(aboveLimitParser.errorMessage().find("trailer 头部"), std::string::npos) << aboveLimitParser.errorMessage();
+            // 「3 条」是整条报文的累计口径：trailer 段自己只有 2 条
+            EXPECT_NE(aboveLimitParser.errorMessage().find("条数超出上限 3 条"), std::string::npos) << aboveLimitParser.errorMessage();
+        }
+
+        HttpParserLimits byteLimits;
+        byteLimits.maximumHeaderBlockLength = 45;
+        byteLimits.maximumHeaderCount       = 0;
+
+        {
+            // 41 + 4 = 恰好 45 净字节：收完
+            HttpParser        atLimitParser(byteLimits);
+            const std::string atLimit = makeChunkedMessage("5\r\nhello\r\n0\r\nx-t: v\r\n\r\n");
+            ASSERT_EQ(atLimitParser.parse(atLimit.data(), atLimit.size()), ParseStatus::Done) << atLimitParser.errorMessage();
+        }
+        {
+            // 41 + 4 + 4 = 49 净字节：越限，报的是累计的 45 字节这一档
+            HttpParser        aboveLimitParser(byteLimits);
+            const std::string aboveLimit = makeChunkedMessage("5\r\nhello\r\n0\r\nx-t: v\r\nx-u: v\r\n\r\n");
+            ASSERT_EQ(aboveLimitParser.parse(aboveLimit.data(), aboveLimit.size()), ParseStatus::Error);
+            EXPECT_EQ(aboveLimitParser.errorKind(), HttpParseErrorKind::HeaderTooLarge) << aboveLimitParser.errorMessage();
+            EXPECT_NE(aboveLimitParser.errorMessage().find("trailer 头部"), std::string::npos) << aboveLimitParser.errorMessage();
+            EXPECT_NE(aboveLimitParser.errorMessage().find("总长超出上限 45 字节"), std::string::npos) << aboveLimitParser.errorMessage();
+        }
+    }
 } // namespace AsynGyanis::Net
