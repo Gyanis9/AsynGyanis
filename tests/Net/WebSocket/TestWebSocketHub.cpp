@@ -1,4 +1,4 @@
-// WebSocketHub 的用例：扇出到全员、RAII 除名、单成员单写者的合并、队满丢新并计数、收口成员不再被碰。
+// WebSocketHub 的用例：扇出到全员、RAII 除名、单成员单写者的合并、队满丢新并计数、没人收的整队另记一本、收口成员不再被碰。
 // 这里用真的 WebSocketPeer，只把它的发送回调换成可停可放的记录槽——集线器管的是「谁在写、写多少、
 // 什么时候不该再写」，那三件事都不需要真 sockets 就能钉死；线上字节由对端与帧层的用例各自守着。
 //
@@ -52,20 +52,25 @@ namespace AsynGyanis::Net
          */
         struct GatedSendPath
         {
-            std::vector<std::string> sentFrames;     ///< 已交出的帧字节，按完成顺序
-            std::coroutine_handle<>  parkedWriter{}; ///< 停在闸门上的写协程句柄；空表示没人停着
-            bool                     isGated{false}; ///< 是否让写出停在闸门
+            std::vector<std::string> sentFrames;        ///< 已交出的帧字节，按完成顺序
+            std::coroutine_handle<>  parkedWriter{};    ///< 停在闸门上的写协程句柄；空表示没人停着
+            bool                     isGated{false};    ///< 是否让写出停在闸门
+            bool                     isRefusing{false}; ///< 放开闸门后是否交回 false：造一次传输失败
 
             /**
              * @brief WebSocketPeer 的 FrameSender 形状
              * @param bytes 已编码的一帧字节
-             * @return Core::Task<bool> 恒为 true（本测试不造写失败）
+             * @return Core::Task<bool> 默认 true，置 isRefusing 后交回 false
              */
             Core::Task<bool> operator()(const std::string_view bytes)
             {
                 if (isGated)
                 {
                     co_await parkHere();
+                }
+                if (isRefusing)
+                {
+                    co_return false;
                 }
                 sentFrames.push_back(std::string(bytes));
                 co_return true;
@@ -369,6 +374,81 @@ namespace AsynGyanis::Net
         drivePublish(hub.publish("lobby", "again"));
         EXPECT_TRUE(path.sentFrames.empty());
         EXPECT_EQ(hub.droppedMessageCount(), 0U) << "收口不是队满，不该记进丢弃计数";
+        EXPECT_EQ(hub.abandonedMessageCount(), 2U) << "两次扇出都整队作废却无人认领：这笔账必须落在作废那一边";
+    }
+
+    /**
+     * @brief 钉住写失败这条作废路：交出去没写成功的一条，和队列里剩下的，一起记
+     * @details 集线器的 publish 语义是「尽力达」，返回时不保证字节上线；若不记这一笔，一条正在断的连接
+     *          会让整段广播静默消失，而业务侧看到的仍是「publish 成功返回」
+     */
+    TEST(WebSocketHub, WriteFailureAbandonsTheMessageInFlightAndTheRestOfTheQueue)
+    {
+        GatedSendPath path;
+        path.isGated = true;
+        WebSocketPeer peer{makeFrameSender(path)};
+        WebSocketHub  hub;
+        auto          subscription = hub.subscribe("lobby", peer);
+
+        Core::Task<void> first = hub.publish("lobby", "alpha");
+        first.handle().resume();
+        ASSERT_TRUE(static_cast<bool>(path.parkedWriter)) << "闸门没起作用：第一帧根本没挂起";
+        drivePublish(hub.publish("lobby", "bravo")); // 排在队列里，由第一个写者带走
+
+        path.isRefusing = true; // 放开闸门后这一帧写失败：对端随即收口，队列里那条也没有了对端
+        path.release();
+        first.handle().promise().result();
+
+        EXPECT_TRUE(path.sentFrames.empty()) << "写失败的一帧不该留下上线字节";
+        EXPECT_EQ(hub.abandonedMessageCount(), 2U) << "作废数该是「在途失败的那条 + 队列里剩下的那条」，少算在途那条就等于谎报送达";
+        EXPECT_EQ(hub.droppedMessageCount(), 0U) << "这不是队满，不该挤进丢弃那本账";
+    }
+
+    /**
+     * @brief 钉住两本账的分界与导出：队满丢的进丢弃、没人收的进作废，两个读数各归各
+     * @details 两本账指向不同的处置动作（前者调上界或修慢读者，后者是断连的正常代价），合成一条数就分不出现场。
+     *          作废那条同样挂进进程读数表并构造即在：只留在实例里等于只有拿着那个对象的人才知道广播在整队消失
+     */
+    TEST(WebSocketHubMetrics, AbandonedAndDroppedLedgersStaySeparateAndBothExport)
+    {
+        using AsynGyanis::TestSupport::findRegistrySample;
+
+        EXPECT_FALSE(findRegistrySample("asyn_websocket_hub_abandoned_messages_total").has_value()) << "还没有集线器，导出里就先有了这条读数";
+
+        {
+            constexpr std::size_t kPendingByteBound = 16U;
+            GatedSendPath         path;
+            path.isGated = true;
+            WebSocketPeer peer{makeFrameSender(path)};
+            WebSocketHub  hub(kPendingByteBound);
+
+            const auto registered = findRegistrySample("asyn_websocket_hub_abandoned_messages_total");
+            ASSERT_TRUE(registered.has_value()) << "构造时没挂上读数，运维面就看不见整队作废";
+            EXPECT_EQ(registered->value, 0U) << "新登记的读数应当是 0，而不是上一位使用者的残留";
+
+            auto subscription = hub.subscribe("lobby", peer);
+
+            Core::Task<void> first = hub.publish("lobby", "1234567890"); // 出队后开写，停在闸门上
+            first.handle().resume();
+            ASSERT_TRUE(static_cast<bool>(path.parkedWriter));
+            drivePublish(hub.publish("lobby", "abcdefghij")); // 排进队列：占用 10
+            drivePublish(hub.publish("lobby", "klmnopqrst")); // 10+10 越界：丢的是这一条
+            EXPECT_EQ(hub.droppedMessageCount(), 1U);
+
+            subscription.reset(); // 这一侧先没人收了：在途那条照常写完，队列里那条随之作废
+            path.release();
+            first.handle().promise().result();
+
+            EXPECT_EQ(path.sentFrames.size(), 1U) << "在途那条是写成功的，两头都不该记";
+            EXPECT_EQ(hub.droppedMessageCount(), 1U) << "作废的这条挤进了丢弃账，两本账就合起来了";
+            EXPECT_EQ(hub.abandonedMessageCount(), 1U) << "队列里没人收的那条该记在作废";
+
+            const auto sample = findRegistrySample("asyn_websocket_hub_abandoned_messages_total");
+            ASSERT_TRUE(sample.has_value());
+            EXPECT_EQ(sample->value, static_cast<std::uint64_t>(hub.abandonedMessageCount())) << "对外读数与判据用的不是同一个数";
+        }
+
+        EXPECT_FALSE(findRegistrySample("asyn_websocket_hub_abandoned_messages_total").has_value()) << "集线器析构之后读数还挂在表上，就会报一个不存在的对象";
     }
 
     TEST(WebSocketHub, RejectsZeroQueueBoundAtConstruction)

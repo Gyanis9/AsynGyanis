@@ -75,6 +75,12 @@ namespace AsynGyanis::Net
         m_droppedMetric = Core::ProcessMetricsRegistry::registerMetric(
                 "asyn_websocket_hub_dropped_messages_total", "因成员待发队列越界而被丢掉的最新消息累计条数（进程内多个集线器求和）", Core::ProcessMetricKind::Counter,
                 Core::ProcessMetricMerge::Sum, [this] { return static_cast<std::uint64_t>(m_droppedMessageCount.load(std::memory_order_relaxed)); });
+        // 第二本账：整队作废。它与上面那条必须分开——「队列装不下」要去调上界或修慢读者，
+        // 「连接没了」是断连的正常代价，合成一条数就没法判断现场该做哪一个动作
+        m_abandonedMetric = Core::ProcessMetricsRegistry::registerMetric("asyn_websocket_hub_abandoned_messages_total",
+                                                                         "成员对端收口或写失败时，其待发队列里作废而从未上线的消息累计条数（进程内多个集线器求和）",
+                                                                         Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                                         [this] { return static_cast<std::uint64_t>(m_abandonedMessageCount.load(std::memory_order_relaxed)); });
     }
 
     WebSocketSubscription WebSocketHub::subscribe(const std::string_view topic, WebSocketPeer &peer)
@@ -149,6 +155,11 @@ namespace AsynGyanis::Net
         return m_droppedMessageCount.load(std::memory_order_relaxed);
     }
 
+    std::size_t WebSocketHub::abandonedMessageCount() const noexcept
+    {
+        return m_abandonedMessageCount.load(std::memory_order_relaxed);
+    }
+
     std::size_t WebSocketHub::maximumPendingByteCount() const noexcept
     {
         return m_maximumPendingByteCount;
@@ -175,6 +186,7 @@ namespace AsynGyanis::Net
             if (peer == nullptr || !peer->isOpen())
             {
                 // 对端已收口或已被除名：剩下的没有接收者，整队丢掉而不是留在原地长内存
+                m_abandonedMessageCount.fetch_add(member->pendingMessages.size(), std::memory_order_relaxed);
                 member->pendingMessages.clear();
                 member->pendingByteCount = 0U;
                 break;
@@ -197,6 +209,8 @@ namespace AsynGyanis::Net
             }
             if (!isSent)
             {
+                // 这一条交了出去却没写成功，队列里剩下的也没有了对端：一起计进作废，publish 的「已达」不能是假话
+                m_abandonedMessageCount.fetch_add(1U + member->pendingMessages.size(), std::memory_order_relaxed);
                 member->pendingMessages.clear();
                 member->pendingByteCount = 0U;
                 break;

@@ -12,7 +12,8 @@
  *          2. **一条连接一个写者**：两条不同的连接同时向同一个成员发，会让两帧字节在线上互相穿插。
  *             成员自带「谁在替它写」的闩：已有写者在跑时，后来者只入队，不另起一条写路径。
  *          3. **慢读者的内存**：队列有字节上界，越界丢**最新**的一条并计数——保住已入队的顺序，
- *             也不让一条不消费的连接把整机内存吃光。丢了多少条从 droppedMessageCount() 读得到。
+ *             也不让一条不消费的连接把整机内存吃光。两本账分开读：队满丢的条数在 droppedMessageCount()，
+ *             对端没了指望而整队作废的条数在 abandonedMessageCount()。
  *
  *          跨循环的部署要按「一条事件循环一个集线器」来装：本类的所有方法都只在所属循环上调用，
  *          内部不加锁（与 WebSocketPeer 同一口径）。要把消息送到别的循环上的成员，
@@ -172,7 +173,8 @@ namespace AsynGyanis::Net
          *
          * @details 语义是「尽力达」而不是「已达」：每个成员各自排进自己的队列，队列空闲时本次调用
          *          顺带替它写出去（会挂起）；队列已被别的发布协程占着，就只入队立刻返回。
-         *          因此 publish 返回时不保证字节已上线——那条连接随后被关掉，队列里的东西就随它去。
+         *          因此 publish 返回时不保证字节已上线——那条连接随后被关掉，队列里的东西就随它去，
+         *          作废的条数从 abandonedMessageCount() 读得到。
          *          需要逐成员送达确认的场合，请业务自己点对点 sendText，不要用扇出。
          * @param topic 主题名
          * @param text 消息文本，按文本帧发出（UTF-8 校验由对端发送路径负责）
@@ -207,6 +209,16 @@ namespace AsynGyanis::Net
         /// @details 同一份计数也挂在 `/metrics` 的 `asyn_websocket_hub_dropped_messages_total` 上（进程内多个集线器求和）：
         ///          只留在实例里的读数等于只有拿得到那个对象的人才知道在丢消息，而扇出被慢读者拖累正是需要报警的那一类
         [[nodiscard]] std::size_t droppedMessageCount() const noexcept;
+
+        /**
+         * @brief 已交给集线器、却因为成员这一侧没有接收者而整队作废的消息累计条数
+         * @details 与 `droppedMessageCount()` 是**两本账**，各自才回答得了各自的问题：那一条数的是
+         *          「队列装不下」（容量压力，该调上界或修慢读者），这一条数的是「连接没了/写失败了，
+         *          队列里剩下的没有人收」。合成一条会让两种现场在同一个数上分不开——而它们的处置动作不同。
+         *          同一份计数挂在 `/metrics` 的 `asyn_websocket_hub_abandoned_messages_total` 上（进程内
+         *          多个集线器求和）。写失败那一条本身也计入：它交了出去却没写成功。
+         */
+        [[nodiscard]] std::size_t abandonedMessageCount() const noexcept;
 
         /// @brief 单成员待发队列的字节上界
         [[nodiscard]] std::size_t maximumPendingByteCount() const noexcept;
@@ -250,5 +262,8 @@ namespace AsynGyanis::Net
         /// 队满丢弃的累计条数：原子量只为让 `/metrics` 的抓取读得到，递增仍在本对象的循环线程上
         std::atomic<std::size_t>  m_droppedMessageCount{0};
         Core::ProcessMetricHandle m_droppedMetric{}; ///< 挂到进程读数表上的那条丢弃计数，析构即注销
+        /// 没有接收者而整队作废的条数（与上面那条分开记，理由见 abandonedMessageCount()）
+        std::atomic<std::size_t>  m_abandonedMessageCount{0};
+        Core::ProcessMetricHandle m_abandonedMetric{}; ///< 同上：进程读数表上的那条作废计数
     };
 } // namespace AsynGyanis::Net
