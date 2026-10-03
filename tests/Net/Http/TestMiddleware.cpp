@@ -1091,6 +1091,28 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.status(), 200);
     }
 
+    /**
+     * @brief 钉住：取值一致的重复 Content-Length 不算非法
+     * @details RFC 9110 §8.6 允许同一取值重复写；h2/h3 的 framing 读的是**首条**。这道前置闸此前读的是
+     *          合并视图，两条 `content-length: 8` 会被拼成「8, 8」而 from_chars 判它非法，
+     *          于是本框架自己收得下的请求被中间件回一个 400——三层口径必须一致
+     */
+    TEST(BodySizeLimitMiddleware, AcceptsRepeatedIdenticalContentLength)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(bodySizeLimitMiddleware(10));
+
+        HttpRequest request = makeRequest(HttpMethod::POST, "/upload");
+        request.addHeader("Content-Length", "8");
+        request.addHeader("Content-Length", "8");
+        HttpResponse     response;
+        std::atomic<int> handlerCalls{0};
+        runPipeline(pipeline, request, response, terminalWriting(response, "stored", &handlerCalls));
+
+        EXPECT_EQ(handlerCalls.load(), 1) << "重复且一致的长度声明不该短路掉业务";
+        EXPECT_EQ(response.status(), 200) << response.body();
+    }
+
     TEST(BodySizeLimitMiddleware, AcceptsDeclaredLengthAtLimit)
     {
         MiddlewarePipeline pipeline;

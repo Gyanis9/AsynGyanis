@@ -807,9 +807,12 @@ namespace AsynGyanis::Net
     {
         return [maximumBodySize](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
-            if (const auto contentLengthHeader = request.getHeader("content-length"))
+            // 只看首条而不是合并视图：取值一致的 content-length 允许重复出现（RFC 9110 §8.6），
+            // 合并口径会把它拼成「17, 17」，于是这道前置闸会把一条合法请求判成 400——h3 与 h2 的
+            //  framing 读的都是首条，这里必须与它们同口径。顺带省掉每条请求一次取值拷贝
+            if (const auto declaredLengthHeader = request.firstHeaderValueView("content-length"))
             {
-                const std::string &declaredText = contentLengthHeader.value();
+                const std::string_view declaredText = *declaredLengthHeader;
 
                 // Content-Length 必须是纯十进制数字串（RFC 9110 §8.6）。不用 std::stoull：
                 // "-1" 会绕进 unsigned long long 变成 ULLONG_MAX，"12abc" 按前缀解析成 12，

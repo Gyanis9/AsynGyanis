@@ -1423,6 +1423,57 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：`content-length` 重复且取值一致时，100 照样要回
+     * @details 判定器按 RFC 9110 §8.6 只拒「取值不一致的第二个 content-length」，一致的允许存在；
+     *          而这一格此前读的是**合并视图**，两条 4 会被拼成「4, 4」→ parseContentLengthValue 判非法
+     *          → 一条 100 都不回，严格等 100 的对端只能靠自己的 expect 超时。h2 侧读的是首条，
+     *          同一份请求在两条通道上不该得到不同的对待
+     */
+    TEST(Http3Session, AnswersContinueWhenContentLengthIsRepeatedIdentically)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+
+        Router router;
+        router.post("/upload",
+                    [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                    {
+                        response.setStatus(201);
+                        response.setBody(std::string(request.body()));
+                        co_return;
+                    });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4,
+                                               {{"expect", "100-continue"}, {"content-length", "4"}, {"content-length", "4"}}))
+                << "客户端没能提交这条重复声明长度的请求";
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        const Http3ClientPeer::DecodedResponse response = peer.response();
+        ASSERT_EQ(response.statuses.size(), 2U) << "重复而一致的长度声明不该让这条请求丢掉那枚 100";
+        EXPECT_EQ(response.statuses[0], 100) << "第一条应是 100 Continue";
+        EXPECT_EQ(response.statuses[1], 201) << "最终响应要照旧给出";
+        EXPECT_TRUE(response.isComplete) << "这条流没有收尾";
+    }
+
+    /**
      * @brief 没有 Expect 的请求不会平白收到一个 100
      * @details 拒绝面：100 是给「等着被催」的对端的，给别的请求塞一条会让它多解一段头块
      */
