@@ -128,7 +128,9 @@ namespace AsynGyanis::Net
             std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator;
             /// 连接级限额（可空）：目前用到「单连接最多处理多少条请求」——达到后 h3 会话发 GOAWAY
             /// 排空，在途请求答完再由本服务端收掉这条连接。空闲时长不在此列：QUIC 自带
-            /// `idleTimeout`，那是传输层的收口时刻，与 HTTP 侧的 keep-alive 空闲不是一回事
+            /// `idleTimeout`，那是传输层的收口时刻，与 HTTP 侧的 keep-alive 空闲不是一回事——
+            /// `HttpServerLimits::idleTimeout` 承诺的「WebSocket 帧间空闲」在 h3 上也由这一把钟兜：
+            /// 隧道挂在一条双向流上，而那条流随整条连接一起收
             std::shared_ptr<const HttpServerLimits> serverLimits;
             /// 单来源并发连接上限的限额器（可空：空表示不按来源限制）。与两条 TCP 通道共用一个实例时，
             /// 同一来源不管从 TCP 还是 QUIC 进来都算在同一个名额里

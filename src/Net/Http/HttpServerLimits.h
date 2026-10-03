@@ -23,6 +23,9 @@ namespace AsynGyanis::Net
      *          「时限 + 清扫间隔」量级；取值 0 一律表示关闭该项保护。readTimeout 与 nginx 的
      *          client_body_timeout 同义：约束相邻两次成功读取的间隔而非读总时长。时限与相位的对应：等新请求
      *          与帧间用 idleTimeout、收请求头与正文用 readTimeout、处理器运行与发送响应用 writeTimeout。
+     * @note 这三项时限由两条 TCP 通道（HTTP/1 与 HTTP/2）消费。HTTP/3 的空闲不在这把钟上：那条通道
+     *       由 QUIC 传输层的 max_idle_timeout 收口（`QuicServer::Configuration::idleTimeout`），
+     *       收的是整条连接，隧道里的 WebSocket 帧间空闲也归它兜——两处默认值不同（75 秒与 30 秒）是刻意的。
      * @note 会话按 shared_ptr 只读共享一份配置；要改配置请走 HttpServer::setLimits()，
      *       它整体换代而不是就地改写，避免在途会话读到半新半旧的组合。
      * @note 本结构只管时间与请求条数，单条报文的内存占用由 HttpParserLimits 负责（两者独立生效：
@@ -31,7 +34,8 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API HttpServerLimits
     {
-        std::chrono::milliseconds idleTimeout{std::chrono::seconds(75)};  ///< 两次请求之间收不到新字节的容忍时长（keep-alive 空闲与 WebSocket 帧间空闲）
+        std::chrono::milliseconds idleTimeout{
+                std::chrono::seconds(75)}; ///< 两次请求之间收不到新字节的容忍时长（keep-alive 空闲与 WebSocket 帧间空闲；h3 走传输层那把钟，见类说明）
         std::chrono::milliseconds readTimeout{std::chrono::seconds(60)};  ///< 相邻两次成功读取之间的最长空闲（慢速攻击防线）；处理器运行期不适用，那一段按 writeTimeout 计
         std::chrono::milliseconds writeTimeout{std::chrono::seconds(60)}; ///< 响应产出预算：处理器执行与等待可写（发送响应）的最长时长（慢消费者与长处理器防线）
 
