@@ -1004,6 +1004,38 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.body(), content);
     }
 
+    /**
+     * @brief 「映射本身不可用」与「区间越界」要分开报：文案指错的那一半会把人支去查区间
+     * @details 旧文案在无效映射上说的是「区间越界……或改用整份映射的重载」，而那个重载对无效映射
+     *          算出 0/0、正好落进「归一成没有映射正文」的通路——照着建议做，这次失败就再也不出声了。
+     *          反面判据同批：offset 与 length 都是 0 的空区间仍按清正文处理，不能一并拒掉。
+     */
+    TEST(HttpResponse, DistinguishesUnusableMappingFromRangeOverflow)
+    {
+        HttpResponse sharedView;
+        try
+        {
+            sharedView.setSharedMappedBody(nullptr, 0, 5);
+            FAIL() << "没有字节的映射给不出非空区间，这里本该拒";
+        } catch (const Base::InvalidArgumentException &exception)
+        {
+            const std::string message{exception.what()};
+            EXPECT_NE(message.find("映射不可用"), std::string::npos) << message;
+            EXPECT_NE(message.find("空指针"), std::string::npos) << message;
+            // 区间没错，错的是映射：文案里再出现「区间越界」就会把人支去查一个不是原因的东西
+            EXPECT_EQ(message.find("区间越界"), std::string::npos) << message;
+        }
+
+        Platform::MemoryMappedFile movedAway;
+        EXPECT_THROW(sharedView.setSharedMappedBody(std::make_shared<Platform::MemoryMappedFile>(std::move(movedAway)), 2, 1), Base::InvalidArgumentException);
+
+        // 清正文的那条通路照旧放行：只判映射可用性会把「nullptr + 0/0」这个惯用写法一起挡掉
+        HttpResponse cleared;
+        cleared.setBody("previous body");
+        EXPECT_NO_THROW(cleared.setSharedMappedBody(nullptr, 0, 0));
+        EXPECT_EQ(cleared.body(), "") << "空区间按清正文处理，堆正文与映射都不该留着";
+    }
+
     TEST(HttpResponse, HeaderValueTokenReadsTheResponseSideOfKeepAlive)
     {
         HttpResponse response;

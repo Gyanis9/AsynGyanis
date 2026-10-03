@@ -310,6 +310,8 @@ namespace AsynGyanis::Net
          * @param mappedFile 已映射好的文件
          * @param offset 区间起始偏移，单位字节
          * @param length 区间长度，单位字节；0 表示空正文
+         * @throws Base::InvalidArgumentException 交来的映射不可用（空指针、打开失败、已关闭或已被移走）
+         *         而区间又非空：没有字节的映射给不出非空区间，这种组合按清正文处理会把失败吞掉
          * @throws Base::InvalidArgumentException 区间超出映射范围（offset 或 length 越界）。
          *         越界属于调用方的用法错误，拒绝静默钳制——那会让 content-length 与实际
          *         字节数悄悄不一致
@@ -324,10 +326,12 @@ namespace AsynGyanis::Net
          * @brief 用「多份响应共享的一份映射」里的一个区间当正文，供静态文件的映射缓存零拷贝引用
          * @details 与上面的按值重载差在所有权：本入口不接管映射，只与其余持有者共同持有一份引用。
          *          缓存因此可以在淘汰之后仍让在途响应读到完整的页——按值那份会在响应之前析构。
-         * @param mappedFile 共享的映射；空指针或指向无效映射都按「无映射正文」处理
+         * @param mappedFile 共享的映射；空指针或指向无效映射，在 offset 与 length 都是 0 时按
+         *        「无映射正文」处理，区间非空则当场拒（见下面的 @throws）
          * @param offset 区间起始偏移，单位字节
          * @param length 区间长度，单位字节；0 表示空正文
-         * @throws Base::InvalidArgumentException 区间超出映射范围（offset 或 length 越界）
+         * @throws Base::InvalidArgumentException 交来的映射不可用而区间非空，或区间超出映射范围
+         *         （offset 或 length 越界）
          * @throws Base::LogicException 响应已进入流式模式
          * @note 与 setBody() 互斥：调用本函数会丢弃已存下的堆正文
          */

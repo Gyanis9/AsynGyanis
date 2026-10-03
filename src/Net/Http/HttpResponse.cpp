@@ -405,12 +405,25 @@ namespace AsynGyanis::Net
         const bool        isUsableMapping = mappedFile != nullptr && mappedFile->isValid();
         const std::size_t availableLength = isUsableMapping ? mappedFile->bytes().size() : 0;
 
+        // 「映射本身不可用」与「区间越界」得分开报：无效映射此前也走下面那条越界文案，报出来是
+        // 「映射字节数=0，请按 bytes().size() 校验区间，或改用整份映射的重载」——前两句话把人支去查
+        // 区间（区间没错），最后一句更是反的：整份映射的重载对无效映射算出的是 0/0，正好落进下面
+        // 那条「归一成没有映射正文」的通路，照着建议做，这次失败就彻底不出声了
+        if (!isUsableMapping && (offset != 0U || length != 0U))
+        {
+            throw Base::InvalidArgumentException(std::string("HttpResponse 的映射正文入口：交来的映射不可用") +
+                                                 (mappedFile == nullptr ? "（空指针）" : "（打开失败、已关闭或已被移走）") + "，却又要求 offset=" + std::to_string(offset) +
+                                                 "、length=" + std::to_string(length) +
+                                                 "：没有字节的映射给不出非空区间。请先确认 MemoryMappedFile::isValid()；"
+                                                 "本意是清掉映射正文就按 offset=0、length=0 调用");
+        }
+
         // 越界属于调用方的用法错误（重试无用），归入 logic_error 分支；静默钳制会让
         // content-length 与实际字节数悄悄不一致，那正是收端报文边界错位的源头
         if (offset > availableLength || length > availableLength - offset)
         {
             throw Base::InvalidArgumentException("HttpResponse 的映射正文入口：区间越界，offset=" + std::to_string(offset) + "，length=" + std::to_string(length) +
-                                                 "，映射字节数=" + std::to_string(availableLength) + "；请先按 MemoryMappedFile::bytes().size() 校验区间，或改用整份映射的重载");
+                                                 "，映射字节数=" + std::to_string(availableLength) + "；区间要落在 [0, 映射字节数) 内，或改用整份映射的重载");
         }
 
         // 反向的互斥：映射正文接管后堆正文必须清空，避免 content-length 按残留字节数算错
