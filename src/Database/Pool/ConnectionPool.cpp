@@ -21,7 +21,7 @@ namespace AsynGyanis::Database
         // 留下一条已经在跑的后台线程
         m_factory(std::move(factory)), m_config(validateConfiguration(config)), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
-        // 登记的六条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
+        // 登记的七条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
         // `connections_created_total` 是 `connections_held` 的**旧名别名**：那个名字随 v2.4.0 发布过，
         // 而它其实不是历史累计（丢弃会减回去，它同时是上限的占位分母）——改名等于掐断既有面板，
         // 所以旧名留着、值与 help 都按真实语义走，新面板取 held
@@ -48,6 +48,12 @@ namespace AsynGyanis::Database
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_borrow_timeouts_total", "等到截止时刻仍没拿到连接的次数（停摆期与不等待的取用不计）",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_borrowTimeoutCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_session_reset_failures_total",
+                                                             "归还时驱动报告「会话没复位干净」而被丢弃的连接数：它是 connections_discarded_total 的一个子集，"
+                                                             "也是那三条去向里唯一的异常信号（另两条——对端掐线、到轮换期——属正常生命周期）。"
+                                                             "这条在涨说明有借用者留下了清不掉的会话状态，或那条连接已经不能对话",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_sessionResetFailures.load(std::memory_order_relaxed)); }),
         };
     }
 
@@ -464,6 +470,13 @@ namespace AsynGyanis::Database
         const auto returnedAt = std::chrono::steady_clock::now();
         if (!isSessionResetClean || !isConnectionHealthy(connection.get()) || isPastMaximumLifetime(*connection, returnedAt))
         {
+            // 「复位没干净」这一条单独记数：三条去向里只有它是异常信号，混在丢弃总数里就分不出
+            // 「轮换到了」与「有人在还脏连接」
+            if (!isSessionResetClean)
+            {
+                m_sessionResetFailures.fetch_add(1, std::memory_order_relaxed);
+            }
+
             // 丢弃并退还名额（断开留在锁外，与 healthCheckLoop 同一条纪律），
             // 再叫醒等待者：空闲栈没变多，但名额确实空了出来
             discardConnection(std::move(connection));

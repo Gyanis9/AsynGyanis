@@ -489,9 +489,13 @@ namespace AsynGyanis::Database
         std::atomic<bool> m_isShuttingDown{false};
 
         // ----- 原子统计 -----
-        std::atomic<std::size_t> m_activeCount{0};        ///< 已取出未归还的连接数
-        std::atomic<std::size_t> m_totalCreated{0};       ///< 池当下记在账上的连接数（创建 +，丢弃/建连失败 −）：占位判定看它
-        std::atomic<std::size_t> m_totalDiscarded{0};     ///< 历史丢弃总数（失联/过存活期/会话没复位干净三条去向都计入）：只增不减
+        std::atomic<std::size_t> m_activeCount{0};    ///< 已取出未归还的连接数
+        std::atomic<std::size_t> m_totalCreated{0};   ///< 池当下记在账上的连接数（创建 +，丢弃/建连失败 −）：占位判定看它
+        std::atomic<std::size_t> m_totalDiscarded{0}; ///< 历史丢弃总数（失联/过存活期/会话没复位干净三条去向都计入）：只增不减
+        /// 上面那三条去向里「会话没复位干净」这一条单独记数：只有它是异常信号（驱动报告它清不掉上一个
+        /// 借用者留下的状态，那条连接随后被关掉），另两条是正常的生命周期。混在总数里的话，
+        /// 现场只看得到「丢弃在涨」，分不清是轮换到了还是有人在还脏连接
+        std::atomic<std::size_t> m_sessionResetFailures{0};
         std::atomic<std::size_t> m_syncWaitingCount{0};   ///< 同步等待者数量
         std::atomic<std::size_t> m_borrowTimeoutCount{0}; ///< 借出超时次数：只记「等到截止时刻仍空手」，停摆与 tryAcquire 不计
 
@@ -512,12 +516,12 @@ namespace AsynGyanis::Database
         std::jthread m_healthThread; ///< 后台健康检查线程
 
         /**
-         * @brief 六条池内读数挂在进程级指标注册表上的把手
+         * @brief 七条池内读数挂在进程级指标注册表上的把手
          * @details 登记的都必须是**原子量**，抓取线程不碰池的任何一把锁（拿锁去抓就等于与借出路径抢锁，
          *          一次 `/metrics` 抓取会变成池的延迟来源）。异步等待数因此配了一份原子镜像
          *          `m_asyncWaitingCount`；空闲条数仍只在锁里，所以仍然不报。
          */
-        std::array<Core::ProcessMetricHandle, 6> m_metricHandles{};
+        std::array<Core::ProcessMetricHandle, 7> m_metricHandles{};
     };
 
 } // namespace AsynGyanis::Database
