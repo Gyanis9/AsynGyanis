@@ -976,6 +976,7 @@ namespace AsynGyanis::Net
             HpackDecoder      decoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = 128});
             const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("3fe10182"), HpackErrorKind::CompressionError);
             EXPECT_TRUE(containsText(reason, "128")) << "原因里要给本端通告的上限：" << reason;
+            EXPECT_TRUE(containsText(reason, "Http2ConnectionConfiguration::headerTableSize")) << "补救动作要点名服务端真能设的那一项：" << reason;
             EXPECT_EQ(toHttp2ErrorCode(decoder.errorKind()), Http2ErrorCode::CompressionError);
         }
         {
@@ -1076,6 +1077,10 @@ namespace AsynGyanis::Net
      * @brief 头列表总大小、单个名与值的长度上限都会拒绝，并归入 LimitExceeded（对应 ENHANCE_YOUR_CALM）
      * @details 头列表大小的算式按 RFC 9113 §6.5.2：每项名长 + 值长 + 32。上限是本端策略，
      *          不是对端违规，因此与 CompressionError 分开。
+     *          三段各钉一条「原因里点名的补救动作必须按得动」：`HpackDecoderLimits` 由
+     *          `Http2Connection` 在构造时拼出来，服务端没有任何入口改它，所以文案要报操作方真能拉的杆
+     *          （配置里的 `parser_limits.*` 与 `Http2ConnectionConfiguration::maximumHeaderListSize`），
+     *          报一个够不着的结构体名等于把人引去翻一份改不动的代码。
      */
     TEST(Hpack, RejectsHeaderListAndFieldLengthLimits)
     {
@@ -1084,17 +1089,20 @@ namespace AsynGyanis::Net
             HpackDecoder      decoder(HpackDecoderLimits{.maximumHeaderListByteCount = 100});
             const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("828684410f7777772e6578616d706c652e636f6d"), HpackErrorKind::LimitExceeded);
             EXPECT_TRUE(containsText(reason, "100")) << "原因里要给上限数值：" << reason;
+            EXPECT_TRUE(containsText(reason, "Http2ConnectionConfiguration::maximumHeaderListSize")) << "补救动作要点名服务端真能设的那一项：" << reason;
             EXPECT_EQ(toHttp2ErrorCode(decoder.errorKind()), Http2ErrorCode::EnhanceYourCalm);
         }
         {
             HpackDecoder      decoder(HpackDecoderLimits{.maximumHeaderFieldNameLength = 4});
             const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572"), HpackErrorKind::LimitExceeded);
             EXPECT_TRUE(containsText(reason, "头名")) << reason;
+            EXPECT_TRUE(containsText(reason, "parser_limits.maximum_header_field_name_length")) << "这条长度闸门服务端只有配置一个入口：" << reason;
         }
         {
             HpackDecoder      decoder(HpackDecoderLimits{.maximumHeaderFieldValueLength = 4});
             const std::string reason = expectDecodeFailure(decoder, makeBytesFromHex("400a637573746f6d2d6b65790d637573746f6d2d686561646572"), HpackErrorKind::LimitExceeded);
             EXPECT_TRUE(containsText(reason, "头值")) << reason;
+            EXPECT_TRUE(containsText(reason, "parser_limits.maximum_header_field_value_length")) << "同上，值那一档也只认配置键：" << reason;
         }
         {
             // 关闭动态表（上限 0）后，对端还发「带增量索引」也不算错：这一项进不了表，但头列表照常交出来

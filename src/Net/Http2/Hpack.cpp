@@ -655,7 +655,7 @@ namespace AsynGyanis::Net
             {
                 recordFailure(HpackErrorKind::CompressionError, std::format("动态表大小更新要求 {} 字节，超过本端通告的 SETTINGS_HEADER_TABLE_SIZE {} 字节"
                                                                             "（RFC 7541 §6.3 要求超出限度即判为解码错误）：请调高 "
-                                                                            "HpackDecoderLimits::maximumDynamicTableSizeByteCount，或让对端改用不大于该值的上限",
+                                                                            "Http2ConnectionConfiguration::headerTableSize（通告出去的就是这一项），或让对端改用不大于该值的上限",
                                                                             maximumSizeByteCount, m_limits.maximumDynamicTableSizeByteCount));
                 return false;
             }
@@ -746,15 +746,17 @@ namespace AsynGyanis::Net
         // 单条长度先卡住：单条超长即使总量没超，上层拿到它也没法安全处理
         if (field.name.size() > m_limits.maximumHeaderFieldNameLength)
         {
-            noteHeaderLimitExceeded(std::format("头名 {} 字节超出上限 {} 字节：请调高 HpackDecoderLimits::"
-                                                "maximumHeaderFieldNameLength，或让对端不要发这么长的头名",
+            noteHeaderLimitExceeded(std::format("头名 {} 字节超出上限 {} 字节：请调高配置 parser_limits."
+                                                "maximum_header_field_name_length（三条通道共用这一把尺，服务端没有改 HPACK 那侧的入口），"
+                                                "或让对端不要发这么长的头名",
                                                 field.name.size(), m_limits.maximumHeaderFieldNameLength));
             return;
         }
         if (field.value.size() > m_limits.maximumHeaderFieldValueLength)
         {
-            noteHeaderLimitExceeded(std::format("头值 {} 字节超出上限 {} 字节：请调高 HpackDecoderLimits::"
-                                                "maximumHeaderFieldValueLength，或让对端不要发这么长的头值",
+            noteHeaderLimitExceeded(std::format("头值 {} 字节超出上限 {} 字节：请调高配置 parser_limits."
+                                                "maximum_header_field_value_length（三条通道共用这一把尺，服务端没有改 HPACK 那侧的入口），"
+                                                "或让对端不要发这么长的头值",
                                                 field.value.size(), m_limits.maximumHeaderFieldValueLength));
             return;
         }
@@ -764,7 +766,8 @@ namespace AsynGyanis::Net
         if (m_headerListByteCount > m_limits.maximumHeaderListByteCount)
         {
             noteHeaderLimitExceeded(std::format("本头块累计的头列表大小 {} 字节超出上限 {} 字节（RFC 9113 §6.5.2 的算式）："
-                                                "请调高 HpackDecoderLimits::maximumHeaderListByteCount，或让对端少发头部",
+                                                "请调高 Http2ConnectionConfiguration::maximumHeaderListSize（随 "
+                                                "SETTINGS_MAX_HEADER_LIST_SIZE 通告给对端），或让对端少发头部",
                                                 m_headerListByteCount, m_limits.maximumHeaderListByteCount));
             return;
         }
