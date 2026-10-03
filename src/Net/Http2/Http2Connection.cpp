@@ -1612,6 +1612,18 @@ namespace AsynGyanis::Net
                 hasContentLengthField = true;
                 contentLengthValue    = declaredLength;
             }
+            // Host 与 :authority 同时在场时必须指向同一个实体（RFC 9113 §8.3.1：客户端不得生成两者不一致的
+            // 请求，服务端「应当」把这种请求按畸形处理；比较前先按 RFC 3986 §6.2 归一化）。本端还有一层
+            // 实害：选虚拟主机读的是 Host（Router::selectVirtualHostTable），而一个按 :authority 分诊的前端
+            // 会把请求送到另一个站点——两份说法就是请求走私的入口。归一化与选站共用同一份实现：两处各自
+            // 折一遍，就会出现「协议判据说一致、选站说不同」或反过来，那分叉本身又是一个洞
+            if (field.name == "host" && hasAuthorityField && !request.authority.empty() && normalizeHostComparisonKey(field.value) != normalizeHostComparisonKey(request.authority))
+            {
+                writeError(errorText, std::format("请求头 host 的取值 \"{}\" 与 :authority \"{}\" 不是同一个实体：RFC 9113 §8.3.1 要求两者一致"
+                                                  "（比较前按 RFC 3986 §6.2 归一化——去端口、折小写、去结尾的根点），请让对端只保留一种说法",
+                                                  printableFieldText(field.value), printableFieldText(request.authority)));
+                return false;
+            }
             request.headerFields.append(field.name, field.value);
         }
 

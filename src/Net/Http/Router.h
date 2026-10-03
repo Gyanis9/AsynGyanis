@@ -192,7 +192,7 @@ namespace AsynGyanis::Net
          * @details 名字里带 `*.` 的是通配站点：`*.example.com` 收 `a.example.com` 与 `a.b.example.com`，
          *          但**不收** `example.com` 本身。选站仲裁只有一条规则——精确名优先于通配名，
          *          通配名之间取后缀最长者（`*.co.example.com` 赢过 `*.example.com`），与注册先后无关。
-         *          比对键的归一化见 `normalizeVirtualHostKey()`：去端口、折小写、去结尾的根点，
+         *          比对键的归一化见 `normalizeHostComparisonKey()`：去端口、折小写、去结尾的根点，
          *          因此 `"API.Example.COM:443"`、`"api.example.com."` 与 `"api.example.com"` 是同一个站点。
          *
          * @param hostName 主机名，可带 `*.` 前缀；大小写与端口不参与比对
@@ -405,23 +405,13 @@ namespace AsynGyanis::Net
          * @brief 在已归一化的主机键里选一张表
          * @details const 与非 const 两个版本共用同一份判定（见 Router.cpp 的 selectVirtualHostRow）：
          *          派发与「流式派发判定」两条路必须选中同一张表，两份实现迟早会漂
-         * @param hostKey 归一化后的主机名（见 normalizeVirtualHostKey()）
+         * @param hostKey 归一化后的主机名（见 normalizeHostComparisonKey()）
          * @return 命中的主机表指针；无匹配时为空指针
          */
         Router *findHostTable(const std::string &hostKey);
 
         /// 同上，供只读路径（流式派发判定）使用
         const Router *findHostTable(const std::string &hostKey) const;
-
-        /**
-         * @brief 把 Host/authority 文本收成虚拟主机的比对键
-         * @details 去端口（IPv6 字面量连方括号一起留，`[::1]:8443` → `[::1]`）、折成小写 ASCII、
-         *          去掉结尾的根点。空文本交回空串，调用方据此走默认站点。
-         *          只在真的登记了虚拟主机时才被调用：单站点不该为一次路由多付一次字符串拷贝。
-         * @param authority 头部原文，允许带端口
-         * @return 比对键（无主机信息时为空串）
-         */
-        [[nodiscard]] static std::string normalizeVirtualHostKey(std::string_view authority);
 
         /// 一级索引：字面路径 → 该路径上的方法绑定候选（通常 1~2 条，先到先得）
         /**

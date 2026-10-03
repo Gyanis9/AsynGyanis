@@ -18,6 +18,7 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace AsynGyanis::Net
@@ -540,5 +541,54 @@ namespace AsynGyanis::Net
     [[nodiscard]] inline int normalizeWireStatusCode(const int statusCode) noexcept
     {
         return statusCode < 100 || statusCode > 999 ? 500 : statusCode;
+    }
+    /**
+     * @brief 把 Host/authority 文本收成主机比对键
+     *
+     * @details 去端口（IPv6 字面量连方括号一起留，`[::1]:8443` → `[::1]`）、折成小写 ASCII、
+     *          去掉结尾的根点（`example.com.` 与 `example.com` 是同一个站点）。空文本交回空串，
+     *          调用方据此走默认站点。
+     * @note 这份归一化只有这一处实现，因为有两件事都要拿它比对：路由器按 Host 选虚拟主机，
+     *       而 h2 要判 `Host` 与 `:authority` 指的是不是同一个实体（RFC 9113 §8.3.1 要求先按
+     *       RFC 3986 §6.2 归一化再比）。两处各自折一遍，就会出现「协议判据说一致、选站说不同」
+     *       或反过来的分叉——那种分叉本身就是请求走私的形状。
+     *
+     * @param authority 头部原文，允许带端口
+     * @return std::string 比对键（无主机信息时为空串）
+     */
+    [[nodiscard]] inline std::string normalizeHostComparisonKey(const std::string_view authority)
+    {
+        std::string_view hostPart = trimOptionalWhitespace(authority);
+        if (hostPart.empty())
+        {
+            return {};
+        }
+
+        if (hostPart.front() == '[')
+        {
+            // IPv6 字面量：方括号之内才是主机，']' 之后那段 ":端口" 不参与比对。
+            // 没闭合的括号按原文处理（那是畸形 Host，交给比对自然落空）
+            if (const std::size_t closingBracket = hostPart.find(']'); closingBracket != std::string_view::npos)
+            {
+                hostPart = hostPart.substr(0, closingBracket + 1);
+            }
+        } else if (const std::size_t colon = hostPart.find(':'); colon != std::string_view::npos)
+        {
+            hostPart = hostPart.substr(0, colon);
+        }
+
+        // 只留一个点的情形（Host 就是 "."）不去：它归一化后仍是 "."，比对必然落空
+        while (hostPart.size() > 1 && hostPart.back() == '.')
+        {
+            hostPart.remove_suffix(1);
+        }
+
+        std::string normalized;
+        normalized.reserve(hostPart.size());
+        for (const char character: hostPart)
+        {
+            normalized.push_back(toLowerAscii(character));
+        }
+        return normalized;
     }
 } // namespace AsynGyanis::Net

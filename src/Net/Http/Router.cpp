@@ -656,7 +656,7 @@ namespace AsynGyanis::Net
                                                  hostName + "」会让选站变成两层——请把这些路由挂回根路由的 virtualHost()");
         }
 
-        const std::string hostKey = normalizeVirtualHostKey(hostName);
+        const std::string hostKey = normalizeHostComparisonKey(hostName);
         // 空串、单独的 "*"、只有前缀的 "*.": 三条都不构成一个可比对的主机名，收下就等于登记一条永不命中的规则
         if (hostKey.empty() || hostKey == "*" || hostKey == kWildcardHostPrefix)
         {
@@ -685,43 +685,6 @@ namespace AsynGyanis::Net
         return !m_virtualHosts.empty();
     }
 
-    std::string Router::normalizeVirtualHostKey(const std::string_view authority)
-    {
-        std::string_view hostPart = trimOptionalWhitespace(authority);
-        if (hostPart.empty())
-        {
-            return {};
-        }
-
-        if (hostPart.front() == '[')
-        {
-            // IPv6 字面量：方括号之内才是主机，']' 之后那段 ":端口" 不参与比对。
-            // 没闭合的括号按原文处理（那是畸形 Host，交给比对自然落空）
-            if (const std::size_t closingBracket = hostPart.find(']'); closingBracket != std::string_view::npos)
-            {
-                hostPart = hostPart.substr(0, closingBracket + 1);
-            }
-        } else if (const std::size_t colon = hostPart.find(':'); colon != std::string_view::npos)
-        {
-            hostPart = hostPart.substr(0, colon);
-        }
-
-        // 去掉结尾的根点："example.com." 与 "example.com" 是同一个站点（FQDN 写法）。
-        // 只留一个点的情形（Host 就是 "."）不去：它归一化后仍是 "."，比对必然落空
-        while (hostPart.size() > 1 && hostPart.back() == '.')
-        {
-            hostPart.remove_suffix(1);
-        }
-
-        std::string normalized;
-        normalized.reserve(hostPart.size());
-        for (const char character: hostPart)
-        {
-            normalized.push_back(toLowerAscii(character));
-        }
-        return normalized;
-    }
-
     Router *Router::selectVirtualHostTable(const HttpRequest &request)
     {
         if (m_virtualHosts.empty())
@@ -736,7 +699,7 @@ namespace AsynGyanis::Net
             // 判 404 会让「先起服务再配域名」这一步的健康检查直接红
             return nullptr;
         }
-        return findHostTable(normalizeVirtualHostKey(*hostHeader));
+        return findHostTable(normalizeHostComparisonKey(*hostHeader));
     }
 
     Router *Router::findHostTable(const std::string &hostKey)
@@ -807,7 +770,7 @@ namespace AsynGyanis::Net
         const Router *table = this;
         if (!m_virtualHosts.empty())
         {
-            if (const Router *const hostTable = findHostTable(normalizeVirtualHostKey(authority)); hostTable != nullptr)
+            if (const Router *const hostTable = findHostTable(normalizeHostComparisonKey(authority)); hostTable != nullptr)
             {
                 table = hostTable;
             }

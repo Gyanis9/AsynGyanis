@@ -1188,6 +1188,49 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 Host 与 :authority 必须指向同一个实体（RFC 9113 §8.3.1）
+     * @details 不一致时按畸形中止这条流而不交给业务：本端选虚拟主机读的是 Host，而一个按 :authority
+     *          分诊的前端会把同一个请求送到另一个站点——两份说法就是请求走私的入口。
+     *          反向那一半同样要紧：归一化（去端口、折小写、去结尾根点）之后指同一实体的写法**不能**被拒，
+     *          否则 `Host: example.com.` 这类合规范的写法会被自家闸门打掉，而拒错了比不拒更难查。
+     */
+    TEST(Http2Connection, RejectsHostHeaderDisagreeingWithAuthority)
+    {
+        const auto expectStreamRejected = [](const std::string &headerBlock)
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore);
+            EXPECT_TRUE(connection.takeRequests().empty()) << "权威说法有分歧的请求不得交给业务";
+
+            const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
+            ASSERT_EQ(resetFrames.size(), 1U) << "应当中止这条流";
+            Http2RstStreamPayload payload;
+            std::string           errorText;
+            ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText)) << errorText;
+            EXPECT_EQ(payload.errorCode, Http2ErrorCode::ProtocolError);
+            EXPECT_FALSE(connection.hasFailed()) << "流错误不该终止连接：" << connection.errorMessage();
+        };
+
+        // 指向另一个实体
+        expectStreamRejected(makeMinimalGetRequestBlock() + hpackLiteralField("host", "other.example"));
+
+        const auto expectStreamAccepted = [](const std::string &headerBlock)
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore);
+            EXPECT_EQ(connection.takeRequests().size(), 1U) << "归一化之后同一个实体，不该被自家闸门拒掉";
+        };
+
+        // 大小写与结尾根点：两种 FQDN 写法指同一个站点
+        expectStreamAccepted(makeMinimalGetRequestBlock() + hpackLiteralField("host", "EXAMPLE.com."));
+        expectStreamAccepted(makeMinimalGetRequestBlock() + hpackLiteralField("host", "example.com"));
+        // 端口不参与这一判：本端把这一对只当「是不是同一个实体」，而选虚拟主机用的同一份键本来就去端口
+        expectStreamAccepted(makeMinimalGetRequestBlock() + hpackLiteralField("host", "example.com:8443"));
+    }
+
+    /**
      * @brief 钉住：正文按 DATA 帧逐片交出，末片的 END_STREAM 把对端方向半关
      */
     TEST(Http2Connection, DeliversReceivedBodyDataAsSeparateEvents)
