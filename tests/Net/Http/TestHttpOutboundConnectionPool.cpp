@@ -270,7 +270,9 @@ namespace AsynGyanis::Net
      * @brief 钉住对端声明 close 时不还回池里
      * @details 响应头里的 Connection: close 等于对端宣布这条连接到此为止（RFC 9112 §9.6）。留着它，
      *          下一条请求会写进一条正在收尾的连接；这里的判据是池里一条都不留，而第二条请求仍要成功
-     *          （换新连接）。
+     *          （换新连接）。那个 token 的大小写不算数（`Connection: Close` 同解）——这一半判不在这里：
+     *          本仓自家服务端会照自己的口径把这条连接收掉，端到端上两种写法长得一样，突变实测也证不出
+     *          这一格会红，故按 `containsIgnoringCase` 的直测判（见 TestHttpHeaderRules）
      */
     TEST(HttpOutboundConnectionPool, DoesNotPoolConnectionThatPeerDeclaresClosed)
     {

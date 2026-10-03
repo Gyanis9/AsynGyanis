@@ -195,6 +195,39 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 在一段文本里找一段子串，忽略 ASCII 字母大小写
+     * @param text 被找的文本
+     * @param needle 要找的子串；空串按「找得到」处理（与 `std::string_view::find` 同解）
+     * @return true 找得到
+     * @note 只折 ASCII 大小写：头部字段名与 token 按 RFC 9110 §5.1/§5.6.1 就是 ASCII，跟着 locale 走
+     *       会把 ≥0x80 的字节也折进去（本仓此前有六份大小写折叠实现、其中三份跟着 locale 走）
+     */
+    [[nodiscard]] inline bool containsIgnoringCase(const std::string_view text, const std::string_view needle) noexcept
+    {
+        if (needle.size() > text.size())
+        {
+            return false;
+        }
+        for (std::size_t start = 0; start + needle.size() <= text.size(); ++start)
+        {
+            bool isMatched = true;
+            for (std::size_t index = 0; index < needle.size(); ++index)
+            {
+                if (toLowerAscii(text[start + index]) != toLowerAscii(needle[index]))
+                {
+                    isMatched = false;
+                    break;
+                }
+            }
+            if (isMatched)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * @brief 把十六进制字符转成数值
      * @param character 待转换字符
      * @return int 0-15；不是十六进制字符时为 -1

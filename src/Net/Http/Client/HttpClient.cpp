@@ -582,40 +582,30 @@ namespace AsynGyanis::Net
          *          就是 HTTP/1.1 的默认，可以继续用。1.0 的对端默认收完就关，而解析器不把版本号交出
          *          来：那一档走「用了才发现对端已关」的路径——读回来的是干净的 0 字节，调用方按
          *          「一个字节都没收到」重开一条，不会把上一条的尾巴接到下一条头上。
+         *          头名与那个 token 都按大小写不敏感判（RFC 9110 §7.6.1：connection-option 是 token，
+         *          §5.1 说字段名大小写不敏感），且**每条** connection 头都要看——中转可能把它拆成两条写，
+         *          而 close 出现在任何一条里都是收尾。取值用子串找而不是按逗号切 token：找错的方向是
+         *          「把还能用的连接当成要关的」，代价只是另开一条，反过来则会把请求发进一条对端已收的通路
          * @param responseHeaders 已收齐响应的头部字段（名与值按收到的顺序原样留着）
          * @return true 这条连接还能再发一条请求
          */
         bool isResponseReusable(const std::vector<std::pair<std::string, std::string>> &responseHeaders)
         {
             constexpr std::string_view kConnectionHeaderName = "connection";
+            constexpr std::string_view kCloseOption          = "close";
             for (const auto &header: responseHeaders)
             {
-                if (header.first.size() != kConnectionHeaderName.size())
+                if (!equalsIgnoringCase(header.first, kConnectionHeaderName))
                 {
                     continue;
                 }
-                bool isConnectionHeader = true;
-                for (std::size_t index = 0; index < kConnectionHeaderName.size(); ++index)
+                if (containsIgnoringCase(header.second, kCloseOption))
                 {
-                    char folded = header.first[index];
-                    if (folded >= 'A' && folded <= 'Z')
-                    {
-                        folded = static_cast<char>(folded + ('a' - 'A'));
-                    }
-                    if (folded != kConnectionHeaderName[index])
-                    {
-                        isConnectionHeader = false;
-                        break;
-                    }
-                }
-                if (isConnectionHeader)
-                {
-                    return header.second.find("close") == std::string::npos;
+                    return false;
                 }
             }
             return true;
         }
-
         /// 这三个头部由客户端按本次请求的实际情况写，调用方给了就拒收而不是覆盖或并存
         bool isClientOwnedHeaderName(const std::string_view name)
         {

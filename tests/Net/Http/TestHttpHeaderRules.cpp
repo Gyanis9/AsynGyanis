@@ -257,4 +257,35 @@ namespace AsynGyanis::Net
         const std::string otherByteName = std::string(1, 'a') + static_cast<char>(0x9D);
         EXPECT_FALSE(equalsIgnoringCase(highByteName, otherByteName)) << "非 ASCII 字节必须逐位相等才算同一条头部名";
     }
+
+    /**
+     * @brief 忽略大小写的子串查找：只折 ASCII，且按「找得到」的方向出错
+     * @details 出站复用判据靠它认响应里的 `Connection: close`（RFC 9110 §5.1 说字段名大小写不敏感、
+     *          §7.6.1 的 connection-option 是 token，token 比较同样不看大小写）。此前那一处写的是
+     *          **大小写敏感**的 `find("close")`，于是对端或中转写 `Connection: Close` 时本端把这条已经
+     *          宣布要收的连接还回池里，下一条请求撞上去：幂等方法靠重来兜住，非幂等方法白失败一次。
+     *          端到端证不出这一格——自家服务端会照自己的口径把连接收掉，两种写法在线上长得一样，
+     *          突变实测那条端到端用例两种实现都绿——所以判据落在这个共用助手上
+     * @note 证伪：把折叠摘掉（改成逐字节相等比较），红在 275–277 三行（`Close`、`CLOSE`、`keep-alive, Close`）；
+     *       把「子串」收成「整段相等」，红在 277、278、283 三行（列表里那一项、`x-close-y`、空 needle）
+     */
+    TEST(HttpHeaderRules, FindsSubstringsIgnoringAsciiCaseOnly)
+    {
+        EXPECT_TRUE(containsIgnoringCase("close", "close"));
+        EXPECT_TRUE(containsIgnoringCase("Close", "close")) << "对端写大写 C 是合法写法，判不出来就会把要收的连接还回池里";
+        EXPECT_TRUE(containsIgnoringCase("CLOSE", "close"));
+        EXPECT_TRUE(containsIgnoringCase("keep-alive, Close", "close")) << "close 作为列表里的一项也算：中转常这么并起来写";
+        EXPECT_TRUE(containsIgnoringCase("x-close-y", "close")) << "按子串找，宁可多判一次「要收」——那个方向只是另开一条连接";
+        EXPECT_FALSE(containsIgnoringCase("keep-alive", "close"));
+        EXPECT_FALSE(containsIgnoringCase("", "close")) << "空文本里没有子串";
+        EXPECT_FALSE(containsIgnoringCase("clos", "close")) << "被找的那段更短时不许越界读";
+        EXPECT_TRUE(containsIgnoringCase("", "")) << "空 needle 与 string_view::find 同解：找得到";
+        EXPECT_TRUE(containsIgnoringCase("abc", ""));
+
+        // 只折 ASCII：高位字节必须逐位相等，跟着 locale 折就会把两个不同的非 ASCII 字节判成同一个
+        const std::string highByteText  = std::string(1, 'a') + static_cast<char>(0xDD);
+        const std::string otherByteText = std::string(1, 'a') + static_cast<char>(0x9D);
+        EXPECT_FALSE(containsIgnoringCase(highByteText, otherByteText)) << "非 ASCII 字节不该被折叠成相等";
+        EXPECT_TRUE(containsIgnoringCase(highByteText, highByteText));
+    }
 } // namespace AsynGyanis::Net
