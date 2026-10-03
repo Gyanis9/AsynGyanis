@@ -13,7 +13,9 @@
 #include <thread>
 #include <utility>
 
-#if !ASYN_PLATFORM_WIN32
+#if ASYN_PLATFORM_WIN32
+#include <windows.h>
+#else
 #include <csignal>
 #endif
 
@@ -31,13 +33,13 @@ namespace AsynGyanis::Core
         /// 停止请求的原子必须无锁，否则不能在信号处理函数里置位
         static_assert(std::atomic<bool>::is_always_lock_free, "WorkerSupervisor::requestStop() 要求无锁原子才能在信号处理函数里调用");
 
-#if !ASYN_PLATFORM_WIN32
-        /// 当前正在运行的编排器：信号处理函数只拿得到这一个入口，因此用文件级指针登记
+        /// 当前正在运行的编排器：处理器只拿得到这一个入口，因此用文件级指针登记
         /// （同一进程同时只该有一个 master，多份编排器注册后装的就只剩最后一个）。
-        /// 用原子量而不是 volatile：volatile 只保证「不被优化掉」，信号线程与主线程之间
+        /// 用原子量而不是 volatile：volatile 只保证「不被优化掉」，处理器线程与主线程之间
         /// 仍缺同步语义；is_always_lock_free 由上面的 static_assert 钉住
         std::atomic<WorkerSupervisor *> g_runningSupervisor{nullptr};
 
+#if !ASYN_PLATFORM_WIN32
         /**
          * @brief 停止信号的处理函数：只置原子标记，退出流程留给 run() 的循环
          * @param signalNumber 信号号（未使用）
@@ -49,6 +51,30 @@ namespace AsynGyanis::Core
             {
                 supervisor->requestStop();
             }
+        }
+#else
+        /**
+         * @brief 控制台停机事件的接管：Ctrl+C 与 CTRL_BREAK 转成一次「请体面停止」
+         * @details 没有这一段接管时，master 收到 Ctrl+C 走的是默认处置：进程当场没了。而每个 worker 都
+         *          挂在自己名下的作业里（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`），作业句柄随 master 一起
+         *          关闭，于是 worker 是被硬杀的——在途请求不收尾，「按进程组给每个 worker 发 CTRL_BREAK
+         *          让它自己收口」那一步根本没机会跑，而启动日志正承诺着这件事。
+         *          控制台处理器跑在系统另起的线程上（不是信号上下文），置一个无锁原子同样安全。
+         * @param controlType 控制台事件类型
+         * @return TRUE 这一类事件已接管，不要执行默认处置
+         * @return FALSE 登出／关窗口／系统关机：那不是「请停服」，交回默认处置
+         */
+        BOOL WINAPI handleConsoleStop(DWORD controlType) noexcept
+        {
+            if (controlType == CTRL_C_EVENT || controlType == CTRL_BREAK_EVENT)
+            {
+                if (WorkerSupervisor *const supervisor = g_runningSupervisor.load(std::memory_order_acquire); supervisor != nullptr)
+                {
+                    supervisor->requestStop();
+                }
+                return TRUE;
+            }
+            return FALSE;
         }
 #endif
     } // namespace
@@ -140,7 +166,47 @@ namespace AsynGyanis::Core
 
     bool WorkerSupervisor::run()
     {
-#if !ASYN_PLATFORM_WIN32
+#if ASYN_PLATFORM_WIN32
+        /**
+         * @brief 控制台事件处理器的登记与还原守卫：与下面 POSIX 那份 SignalRegistration 同一条理由
+         * @details 先发布指针再装处理器：装反的一拍里事件最多被当成「没人要停」丢掉，而不是解引用一个
+         *          还没定下来的 this。还原按「先摘处理器再收回指针」的反序做——处理器还在而指针已收回时，
+         *          事件会转达给一个正在消亡的对象。本函数从哪条路退出（含抛出）都由这个守卫收尾。
+         */
+        class ConsoleStopRegistration
+        {
+        public:
+            explicit ConsoleStopRegistration(WorkerSupervisor &supervisor) noexcept
+            {
+                g_runningSupervisor.store(&supervisor, std::memory_order_release);
+                m_isHandlerInstalled = ::SetConsoleCtrlHandler(&handleConsoleStop, TRUE) != 0;
+                if (!m_isHandlerInstalled)
+                {
+                    LOG_ERROR_FMT("WorkerSupervisor: 安装控制台事件处理器失败（GetLastError={}），Ctrl+C 这一路等于没接上："
+                                  "master 会被默认处置当场打死，worker 则随作业句柄一起被硬杀，在途请求不收尾",
+                                  static_cast<unsigned long>(::GetLastError()));
+                }
+            }
+
+            ConsoleStopRegistration(const ConsoleStopRegistration &)            = delete;
+            ConsoleStopRegistration &operator=(const ConsoleStopRegistration &) = delete;
+
+            /// 摘掉处理器并收回全局指针：之后再收到控制台事件就与本编排器无关了
+            ~ConsoleStopRegistration()
+            {
+                if (m_isHandlerInstalled)
+                {
+                    static_cast<void>(::SetConsoleCtrlHandler(&handleConsoleStop, FALSE));
+                }
+                g_runningSupervisor.store(nullptr, std::memory_order_release);
+            }
+
+        private:
+            bool m_isHandlerInstalled{false}; ///< 处理器是否真的装上了——没装上就不必去摘别人的
+        };
+
+        const ConsoleStopRegistration stopRegistration(*this);
+#else
         /**
          * @brief 信号处理登记与还原的守卫：本函数从哪条路退出都把它留下的痕迹抹平
          * @details 下面的编排循环会分配（日志、进程句柄、vector），抛出时若只靠函数末尾那三行

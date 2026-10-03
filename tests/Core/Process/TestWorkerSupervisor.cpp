@@ -6,10 +6,16 @@
 #include "Base/Exception/LogicException.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include "CommonTestSupport.h"
 #include "CoreTestSupport.h"
 #include "MetricsTestSupport.h"
+
+#if ASYN_PLATFORM_WIN32
+// 控制台事件那两条用例要的是 console/process API（winsock 的传递包含给不到）
+#include <windows.h>
+#endif
 
 #include <gtest/gtest.h>
 
@@ -358,6 +364,217 @@ namespace AsynGyanis::Core
         ASSERT_EQ(answers.size(), 2U);
         EXPECT_EQ(answers[0], "handoff-ok") << "第一次问答没拿到夹具的回话：那份监听引用在 worker 手里不可用";
         EXPECT_EQ(answers[1], "handoff-ok") << "第二次问答没拿到回话";
+    }
+
+    /// 角色标记：内层探针只在由父侧以 CREATE_NEW_CONSOLE 启起来时才有控制台前提
+    constexpr const char *kConsoleProbeEnvironmentVariable = "ASYN_WORKER_SUPERVISOR_CONSOLE_PROBE";
+
+    /// 父侧等内层探针跑完的上限：里面要起两个 worker、发事件、再走完收尾
+    constexpr DWORD kConsoleProbeWaitMilliseconds = 60000;
+
+    /// 标记文件按名字落在临时目录里：父侧靠它们把「探针上场了」与「裁判判了通过」分开
+    std::filesystem::path consoleProbeMarkerPath(const std::string &markerName)
+    {
+        return std::filesystem::temp_directory_path() / ("asyn-supervisor-console-" + markerName + ".marker");
+    }
+
+    void writeConsoleProbeMarker(const std::string &markerName)
+    {
+        std::ofstream stream(consoleProbeMarkerPath(markerName));
+        stream << "1";
+    }
+
+    bool consoleProbeMarkerExists(const std::string &markerName)
+    {
+        return std::filesystem::exists(consoleProbeMarkerPath(markerName));
+    }
+
+    void removeConsoleProbeMarker(const std::string &markerName)
+    {
+        std::error_code ignored;
+        static_cast<void>(std::filesystem::remove(consoleProbeMarkerPath(markerName), ignored));
+    }
+
+    /**
+     * @brief 内层探针逐里程碑留痕：父侧只拿得到退出码与标记文件，红一条时要看得见「走到哪一步」
+     * @param step 步骤名
+     */
+    void appendConsoleProbeTrace(const std::string &step)
+    {
+        std::ofstream stream(consoleProbeMarkerPath("trace"), std::ios::app);
+        stream << step << "\n";
+    }
+
+    /// @brief 读出探针留下的痕迹；父侧把它附在失败消息里
+    std::string readConsoleProbeTrace()
+    {
+        std::ifstream      stream(consoleProbeMarkerPath("trace"));
+        std::ostringstream buffer;
+        buffer << stream.rdbuf();
+        return buffer.str();
+    }
+
+    /**
+     * @brief 编排线程的收尾守卫：用例从任何出口离开都先把那个线程收干
+     * @details `ASSERT_*` 失败是从用例体里直接 return，此时留着一个还能 join 的 `std::thread` 走出作用域
+     *          就是 `std::terminate`（实测退出码 3）——「判据红」会变成「整个测试进程 abort」，现场与原因
+     *          都读不到。本守卫在早退路上兜一次显式叫停 + join，正常路径上那次 requestStop() 是幂等的。
+     */
+    class SupervisorThreadCleanup
+    {
+    public:
+        SupervisorThreadCleanup(WorkerSupervisor &supervisor, std::thread &thread) noexcept : m_supervisor(supervisor), m_thread(thread)
+        {
+        }
+
+        SupervisorThreadCleanup(const SupervisorThreadCleanup &)            = delete;
+        SupervisorThreadCleanup &operator=(const SupervisorThreadCleanup &) = delete;
+
+        /// 叫停并 join：run() 已返回时这一次即刻完成
+        ~SupervisorThreadCleanup()
+        {
+            m_supervisor.requestStop();
+            if (m_thread.joinable())
+            {
+                m_thread.join();
+            }
+        }
+
+    private:
+        WorkerSupervisor &m_supervisor; ///< 被收尾的编排器
+        std::thread      &m_thread;     ///< 跑 run() 的那个线程
+    };
+
+    /**
+     * @brief 内层探针：控制台停机事件落到 master 上，走的是「逐个送走 worker」而不是「当场暴死」
+     * @details 这是 Windows 上多进程停机的真实入口：宿主按 Ctrl+C 时，控制台事件只送到 master
+     *          （每个 worker 有自己的进程组，CTRL_C 对它们无效，只能由编排者按组发 CTRL_BREAK）。
+     *          没装处理函数时默认处置会直接把 master 打死，而每个 worker 都挂在带
+     *          `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业里，作业句柄随之关闭——worker 是被硬杀的，
+     *          在途请求不收尾，而启动日志正承诺着「Ctrl+C 会让 worker 各自体面退出」。
+     *          本条只有带着控制台才有前提：单独跑（全量清单会选到）按 SKIP 处理，前提由父侧构造。
+     * @note 这里不设「只记不发」的差分处理器。上一版装了这样一枚并假定它先跑，实测它一个字都没记到，
+     *       而编排却确确实实停下来了——链条里谁先跑、以及「有处理器返回 TRUE 之后还剩不剩下后面的」
+     *       都没实测过，拿未证的东西当判据就会把一次真实通过读成投递失败。两种红靠痕迹文件分：
+     *       ① 停在 `event-posted` 而用例走满 20 秒（记 `run-timeout`）⇒ 事件没送到，或送到了没人转成停止请求；
+     *       ② 停在 `event-posted` 而子进程当场没了、退出码 0xC000013A ⇒ 默认处置把 master 打死了，
+     *       也就是编排器那枚处理器没装上（把产品侧改动撤掉时应看到的正是这一类）。
+     */
+    TEST(WorkerSupervisor, ConsoleCtrlCStopsTheOrchestrationInsteadOfTheProcess)
+    {
+        if (!Platform::ProcessInfo::environmentVariable(kConsoleProbeEnvironmentVariable).has_value())
+        {
+            GTEST_SKIP() << "本用例只在由 WorkerSupervisor.ConsoleCtrlCStopsWorkersViaConsoleHarness 以 CREATE_NEW_CONSOLE 启起来时才有前提";
+        }
+        ASSERT_NE(::GetConsoleWindow(), nullptr) << "探针本该带着控制台起来，没有就测不到这条路";
+        appendConsoleProbeTrace("has-console");
+
+        const Platform::Socket::Initialization network;
+        const int                              listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_GE(listener, 0) << "造不出监听套接字，错误码 " << WSAGetLastError();
+        appendConsoleProbeTrace("listener-created");
+        sockaddr_in address{};
+        address.sin_family      = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port        = 0;
+        ASSERT_EQ(::bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)), 0) << "绑定失败，错误码 " << WSAGetLastError();
+        ASSERT_EQ(::listen(listener, 16), 0) << "进入监听失败，错误码 " << WSAGetLastError();
+
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath  = ASYN_HANDOFF_WORKER_TOOL;
+        configuration.workerCount     = 2;
+        configuration.handoff         = WorkerSupervisor::Handoff{listener, std::chrono::seconds{10}};
+        configuration.pollInterval    = std::chrono::milliseconds{20};
+        configuration.shutdownTimeout = std::chrono::seconds{5};
+        WorkerSupervisor supervisor(configuration);
+
+        std::atomic<bool> isRunFinished{false};
+        std::atomic<bool> isStoppedAsRequested{false};
+        std::thread       supervisorThread(
+                [&supervisor, &isRunFinished, &isStoppedAsRequested]
+                {
+                    isStoppedAsRequested.store(supervisor.run(), std::memory_order_release);
+                    isRunFinished.store(true, std::memory_order_release);
+                });
+        // 线程一存在就把它交出去：下面任何一条 ASSERT 早退都不能留着一个还能 join 的线程
+        const SupervisorThreadCleanup cleanup(supervisor, supervisorThread);
+
+        const bool isPoolUp = waitForCondition([&supervisor] { return supervisor.runningWorkerCount() == 2U; }, kWaitTimeout);
+        writeConsoleProbeMarker("pool-up");
+        appendConsoleProbeTrace(isPoolUp ? "workers-up" : "workers-missing");
+
+        // 按**自己这个进程组**投 CTRL_BREAK：这正是编排者送走 worker 用的那枚事件，而 master 侧的处理器
+        // 对 Ctrl+C 与 CTRL_BREAK 走同一条路。用 0 当组号会把事件打到共享这个控制台的所有进程
+        // （worker 的组也一起打到），那就不是「编排者收到停机请求」这一问了。
+        // 组号必须是「本进程自己那个组」：只有以 CREATE_NEW_PROCESS_GROUP 起来的进程才是组首，
+        // 而父侧正是这么起这份探针的（见下一条用例）——少了那个标志，这里的 pid 不是组号，
+        // 事件投不出去（2026-10-03 实测：差分探针记不到、进程在 0.3 秒内以退出码 3 消失）
+        EXPECT_TRUE(::GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, ::GetCurrentProcessId()) != 0) << "事件没发出去，错误码 " << ::GetLastError();
+        appendConsoleProbeTrace("event-posted");
+
+        // 编排线程的收尾要送走两个 worker，给的余量比 kWaitTimeout 宽：这里量的是「事件转成了停止请求」
+        // 这条链路通不通，不是毫秒级判据
+        const bool isThreadFinished = waitForCondition([&isRunFinished] { return isRunFinished.load(std::memory_order_acquire); }, std::chrono::milliseconds{20000});
+        appendConsoleProbeTrace(isThreadFinished ? "run-returned" : "run-timeout");
+        static_cast<void>(::closesocket(listener));
+
+        ASSERT_TRUE(isPoolUp) << "两个 worker 没在预算内起来，后面的事件判据就没有对象";
+        ASSERT_TRUE(isThreadFinished) << "事件送到了进程，但编排没有返回：WorkerSupervisor 的控制台处理器没装上，或装上了却没把事件转成停止请求";
+        EXPECT_TRUE(isStoppedAsRequested.load(std::memory_order_acquire)) << "按 CTRL_C 收口应当报「按请求停止」，而不是「整池被放弃」";
+        writeConsoleProbeMarker("drained");
+    }
+
+    /**
+     * @brief 钉住（Windows）：Ctrl+C 真的叫得停多进程编排——前提由本用例自己造
+     * @details 宿主没有控制台时（stdout 被管道接走的测试进程）控制台事件无处投递，内层那条只能 SKIP。
+     *          本进程不 AllocConsole：那会把三个标准句柄换成控制台缓冲区，同一进程里其余用例的输出就漂了。
+     *          做法沿用 `Process.RequestTerminationStopsChildViaConsoleHarness` 的探针形状——把同一枚二进制
+     *          以 CREATE_NEW_CONSOLE 再启一份，由那一份跑内层探针，父侧既等退出码也数标记文件。
+     */
+    TEST(WorkerSupervisor, ConsoleCtrlCStopsWorkersViaConsoleHarness)
+    {
+        wchar_t     executablePathText[32768] = {};
+        const DWORD pathLength                = ::GetModuleFileNameW(nullptr, executablePathText, static_cast<DWORD>(std::size(executablePathText)));
+        ASSERT_GT(pathLength, 0U) << "取不到自身路径，错误码 " << ::GetLastError();
+        ASSERT_LT(pathLength, std::size(executablePathText)) << "自身路径被截断，本用例失去前提";
+
+        static_cast<void>(::SetEnvironmentVariableA(kConsoleProbeEnvironmentVariable, "1"));
+        removeConsoleProbeMarker("pool-up");
+        removeConsoleProbeMarker("drained");
+        removeConsoleProbeMarker("trace");
+
+        std::wstring commandLine;
+        commandLine += L'"';
+        commandLine += executablePathText;
+        commandLine += L"\" --gtest_filter=WorkerSupervisor.ConsoleCtrlCStopsTheOrchestrationInsteadOfTheProcess";
+
+        STARTUPINFOW startupInfo{};
+        startupInfo.cb = sizeof(startupInfo);
+        startupInfo.dwFlags |= STARTF_USESHOWWINDOW;
+        startupInfo.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION processInformation{};
+        // CREATE_NEW_CONSOLE 给前提（探针要有自己的控制台才谈得上收停机事件），
+        // CREATE_NEW_PROCESS_GROUP 给投递面：只有带后者的进程才是组首，内层才可以用自己的 pid
+        // 当组号投 CTRL_BREAK。少了后者，GenerateConsoleCtrlEvent 会「调用成功而事件没人收到」
+        const BOOL isCreated = ::CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &startupInfo,
+                                                &processInformation) != 0;
+        static_cast<void>(::SetEnvironmentVariableA(kConsoleProbeEnvironmentVariable, nullptr));
+        ASSERT_TRUE(isCreated) << "带控制台的探针子进程没起来，错误码 " << ::GetLastError();
+
+        const DWORD waitResult    = ::WaitForSingleObject(processInformation.hProcess, kConsoleProbeWaitMilliseconds);
+        DWORD       childExitCode = 0;
+        static_cast<void>(::GetExitCodeProcess(processInformation.hProcess, &childExitCode));
+        ::CloseHandle(processInformation.hProcess);
+        ::CloseHandle(processInformation.hThread);
+
+        EXPECT_EQ(waitResult, WAIT_OBJECT_0) << "带控制台的探针子进程没在时限内退出";
+        // 退出码之外还要问「探针跑没跑」：过滤器一条也没选中时 gtest 同样回 0，
+        // 只看退出码会把「裁判没上场」读成「裁判判了通过」
+        EXPECT_TRUE(consoleProbeMarkerExists("pool-up")) << "探针没起到 worker，本用例因此没有证据";
+        EXPECT_TRUE(consoleProbeMarkerExists("drained")) << "探针没走完 CTRL_C 之后的收尾：要么 master 被默认处置打死了，要么收尾没完成。探针痕迹：" << readConsoleProbeTrace();
+        EXPECT_EQ(static_cast<int>(childExitCode), 0) << "探针子进程非零退出：想看细节就在一个控制台窗口里跑 "
+                                                         "TestCore.exe --gtest_filter=WorkerSupervisor.ConsoleCtrlCStopsTheOrchestration*；探针痕迹："
+                                                      << readConsoleProbeTrace();
     }
 #else
 
