@@ -192,10 +192,10 @@ namespace AsynGyanis::Net
         callbacks.onStreamClosed = [this](const std::int64_t streamId) { dropRequest(streamId); };
         // 该流已被放弃（对端重置、或本端按协议判错）：先把收口信号落到传输层——对端因此立刻知道
         // 这条流不会再有响应，而不是等连接收尾；再按「还没答完」计数、丢掉本会话的状态
-        callbacks.onStreamReset = [this](const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view /*reason*/)
+        callbacks.onStreamReset = [this](const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view /*reason*/, const bool isDecidedByPeer)
         {
             abortRequestStream(streamId, errorCode);
-            noteStreamResetByPeer(streamId);
+            noteStreamAbortedBeforeAnswer(streamId, errorCode, isDecidedByPeer);
             dropRequest(streamId);
         };
         // RFC 9114 §4.1.2 允许服务端在重置之前先答一个错误响应，回哪个状态码只有业务层知道
@@ -930,7 +930,7 @@ namespace AsynGyanis::Net
         enqueueRequest(streamId);
     }
 
-    void Http3Session::noteStreamResetByPeer(const std::int64_t streamId) noexcept
+    void Http3Session::noteStreamAbortedBeforeAnswer(const std::int64_t streamId, const Http3ErrorCode errorCode, const bool isDecidedByPeer) noexcept
     {
         if (m_metrics == nullptr)
         {
@@ -942,10 +942,23 @@ namespace AsynGyanis::Net
         const bool isStillPending = std::ranges::any_of(m_readyRequests, [streamId](const ReadyRequest &entry) { return entry.streamId == streamId; }) ||
                                     m_incomingRequests.contains(streamId) || m_streamingRequests.contains(streamId) || m_streamingResponses.contains(streamId) ||
                                     m_webSocketTunnels.contains(streamId) || m_pendingTunnelStreams.contains(streamId);
-        if (isStillPending)
+        if (!isStillPending)
+        {
+            return;
+        }
+        if (isDecidedByPeer)
         {
             m_metrics->countStreamCancelled();
+            return;
         }
+        if (errorCode == Http3ErrorCode::RequestRejected)
+        {
+            // 本端排空期（已发 GOAWAY）拒掉的新请求：不是对端的错，报文本身也没问题
+            return;
+        }
+        // 本端按规则判死了这条流（帧序列不合法、content-length 与实收不符、头块解不开…）：
+        // 那就是「对端的报文不合规、被协议层挡在业务之外」，与 h1/h2 同一条口径进 badRequestCount
+        m_metrics->countBadRequest();
     }
 
     void Http3Session::abortRequestStream(const std::int64_t streamId, const Http3ErrorCode errorCode)

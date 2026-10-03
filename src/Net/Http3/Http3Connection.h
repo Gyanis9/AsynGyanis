@@ -97,8 +97,11 @@ namespace AsynGyanis::Net
              * @param reason 中文原因，含命中的规则或对端那一帧的码。过去这一句只进日志：调用方拿到的
              *               是一句自己编的猜测，把本端判定的畸形响应说成「对端发了 RESET_STREAM」，
              *               排查的人于是去查一台没做错事的服务器
+             * @param isDecidedByPeer true 是对端复位/叫停了这条流，false 是本端按规则判死了它。落账要分开：
+             *                        「对端取消」与「本端判定报文不合规」在运维读数是两本账，混成一本
+             *                        就等于把本端判出的畸形报文记成对端取消（h2 那侧明确不这么记）
              */
-            std::function<void(std::int64_t streamId, Http3ErrorCode errorCode, std::string_view reason)> onStreamReset;
+            std::function<void(std::int64_t streamId, Http3ErrorCode errorCode, std::string_view reason, bool isDecidedByPeer)> onStreamReset;
 
             /**
              * @brief 收到的请求头部畸形（RFC 9114 §4.1.2）

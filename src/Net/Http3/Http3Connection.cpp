@@ -1046,7 +1046,7 @@ namespace AsynGyanis::Net
             const auto reason        = isResetByPeer ? std::format("对端在这条流上发了 RESET_STREAM（{}，码 0x{:x}），它不再发这条流的剩余字节", http3ErrorCodeName(peerErrorCode),
                                                                    applicationErrorCode)
                                                      : std::format("对端在这条流上发了 STOP_SENDING（要求本端用码 0x{:x} 复位），它不再收本端这条流上的字节", applicationErrorCode);
-            m_callbacks.onStreamReset(streamId, Http3ErrorCode::RequestCancelled, reason);
+            m_callbacks.onStreamReset(streamId, Http3ErrorCode::RequestCancelled, reason, /*isDecidedByPeer=*/true);
         }
         m_streams.erase(entry);
     }
@@ -1396,7 +1396,7 @@ namespace AsynGyanis::Net
         }
         if (m_callbacks.onStreamReset)
         {
-            m_callbacks.onStreamReset(streamId, errorCode, reason);
+            m_callbacks.onStreamReset(streamId, errorCode, reason, /*isDecidedByPeer=*/false);
         }
         // 这里不摘状态：调用链上到处握着 StreamState 的引用（帧循环、额度归还、收尾判定都在用），
         // 当场 erase 就是让那些引用悬空。标记已放弃后交给 pruneAbandonedStream 在安全点回收

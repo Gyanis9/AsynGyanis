@@ -146,7 +146,11 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "websocket_protocol_error_closes_total"), "因对端违反 RFC 6455 而收口的连接数", stats.webSocketProtocolErrorCloseCount);
         appendCounter(out, makeMetricName(metricNamePrefix, "websocket_peer_closes_total"), "由对端发起关闭握手的连接数", stats.webSocketPeerCloseCount);
         appendCounter(out, makeMetricName(metricNamePrefix, "websocket_server_closes_total"), "由本侧发起关闭握手的连接数", stats.webSocketServerCloseCount);
-        appendCounter(out, makeMetricName(metricNamePrefix, "http2_stream_cancelled_total"), "被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数", stats.streamCancelledCount);
+        // 名字里的 http2 是历史遗留，口径按 HttpServerStats 的类注释含 h3（RESET_STREAM/STOP_SENDING）：
+        // 改名会让既有面板与 scripts/h2_adversarial_probe.sh 里那条注释一起失配，故只把帮助文本写准
+        appendCounter(out, makeMetricName(metricNamePrefix, "http2_stream_cancelled_total"),
+                      "被对端取消单流（HTTP/2 的 RST_STREAM、HTTP/3 的 RESET_STREAM/STOP_SENDING）而本端未发响应的请求条数；名字里的 http2 是历史遗留，口径含 HTTP/3",
+                      stats.streamCancelledCount);
 
         // 发送路径：零拷贝发送只在 Linux 的明文 HTTP/1.1 上发生，其余平台恒为 0，
         // 因此它同时是「静态文件快路径是否在生效」的探针

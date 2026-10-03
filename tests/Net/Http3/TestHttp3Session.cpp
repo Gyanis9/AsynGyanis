@@ -2221,6 +2221,67 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(hasRequestStreamBytes) << "被取消的流不该再发出任何响应字节";
         const HttpServerStats snapshot = metrics->snapshot();
         EXPECT_EQ(snapshot.streamCancelledCount, 1U) << "被对端取消的流没有计入单流取消";
+        EXPECT_EQ(snapshot.badRequestCount, 0U) << "对端取消不是坏请求：那本账的口径是报文不合规";
+    }
+
+    /**
+     * @brief 本端判死一条流时记的是「坏请求」，不是「对端取消」
+     * @details 两条读数各有各的口径：`streamCancelledCount` 说的是**对端**用 RST_STREAM（h2）/
+     *          RESET_STREAM、STOP_SENDING（h3）取消了单流（`HttpServerStats` 的类注释与 `/metrics`
+     *          的帮助文本都这么写），而「对端的报文不合规、被协议层挡在业务之外」按同一份文档只进
+     *          `badRequestCount`。h3 会话过去把两种形状一律记进前者：一条 content-length 与实收字节
+     *          不符的请求（RFC 9114 §4.1.2 判畸形，本端随即以 H3_MESSAGE_ERROR 作废这条流），会让运维
+     *          在面板上看到「被对端取消了 1 条」——而对端什么也没取消，是本端判它不合规。h2 那侧对
+     *          同一处区分写得很明确（`RequestServeOutcome::StreamFailed` 的注释：「不能并到
+     *          StreamCancelled，那个取值会把它记成『对端取消了这条流』」）
+     * @note 证伪：把 `isDecidedByPeer` 那一位写死成 true（或把两本账合成一律 countStreamCancelled），
+     *       本条红在两处——坏请求为 0、单流取消为 1。本端排空期（已发 GOAWAY）拒掉新请求那一支两本账
+     *       都不进，会话层没有可触发排空的公开入口，故那一支未在此单独钉住
+     */
+    TEST(Http3Session, CountsALocallyJudgedMalformedStreamAsABadRequestNotAPeerCancellation)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
+
+        bool   isHandlerEntered = false;
+        Router router;
+        router.post("/upload",
+                    [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                    {
+                        isHandlerEntered = true;
+                        response.setStatus(200);
+                        co_return;
+                    });
+        session.attachRouter(router);
+
+        // 声明 99 字节、实发 3 字节：头段本身合规（校验器挑不出错），不符只在收尾对账那一刻暴露
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abc", 0, {{"content-length", "99"}}));
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        EXPECT_FALSE(isHandlerEntered) << "前提：这条请求根本不该派发到业务";
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.badRequestCount, 1U) << "本端判定报文不合规而作废的流没进坏请求那本账";
+        EXPECT_EQ(snapshot.streamCancelledCount, 0U) << "对端什么也没取消，却记成了「被对端取消」：这条读数从此说不清现场";
+        EXPECT_EQ(snapshot.totalRequestCount, 0U) << "被协议层挡在业务之外的请求不计入已处理请求数";
     }
 
 

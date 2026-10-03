@@ -267,12 +267,19 @@ namespace AsynGyanis::Net
         void finishRequest(std::int64_t streamId);
 
         /**
-         * @brief 对端重置了一条流：还没答完的那条计入「单流取消」
-         * @details 只把「还没答完就取消」算成取消——响应早已发完、事后被重置的流不该记进来
-         *          （与 h2 同一判据：那边只在响应发不出去、原因是流被取消时计数）
-         * @param streamId 被重置的流
+         * @brief 一条流还没答完就死了：按「谁判的」分别落账
+         * @details 只把「还没答完」的算进来——响应早已发完、事后被重置的流不该记
+         *          （与 h2 同一判据：那边只在响应发不出去、原因是流被取消时计数）。分开落账的理由：
+         *          `streamCancelledCount` 的口径写死是**对端**取消（RESET_STREAM/STOP_SENDING），
+         *          而本端按规则判死的流是「对端的报文不合规」，那一份属 `badRequestCount`
+         *          （见 HttpServerStats 的请求计数口径：被协议层挡在业务之外的只进那一笔）。
+         *          本端排空期拒掉的新请求两本都不进——那既不是对端的错，也不是坏报文，
+         *          与 h2 侧「全局预算用尽不计入 badRequestCount」同一条口径
+         * @param streamId 死掉的流
+         * @param errorCode 本端判死时命中的那条规则的码；对端打断时是 H3_REQUEST_CANCELLED
+         * @param isDecidedByPeer true 是对端复位/叫停，false 是本端判死
          */
-        void noteStreamResetByPeer(std::int64_t streamId) noexcept;
+        void noteStreamAbortedBeforeAnswer(std::int64_t streamId, Http3ErrorCode errorCode, bool isDecidedByPeer) noexcept;
 
         /**
          * @brief 把一条流的收口信号交给传输层：本端不再发、也请对端别再发

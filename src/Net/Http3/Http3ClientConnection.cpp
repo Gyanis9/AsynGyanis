@@ -30,7 +30,7 @@ namespace AsynGyanis::Net
         callbacks.onBodyBytes    = [this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes) { noteBodyBytes(streamId, bytes); };
         callbacks.onRequestEnded = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
         callbacks.onStreamClosed = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
-        callbacks.onStreamReset  = [this](const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view reason)
+        callbacks.onStreamReset  = [this](const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view reason, const bool /*isDecidedByPeer*/)
         {
             // §5.2：H3_REQUEST_REJECTED 说的是「服务端没做任何应用层处理就拒了这条请求」，客户端可以当它
             // 从没发过；这一位要交到重发闸门手上，非幂等方法才敢换条连接重来一次。别的码不带这个保证。

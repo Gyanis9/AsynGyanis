@@ -159,7 +159,7 @@ namespace
         };
         callbacks.onRequestEnded = [&events](const std::int64_t streamId) { events.requestsEnded.push_back(streamId); };
         callbacks.onStreamClosed = [&events](const std::int64_t streamId) { events.streamsClosed.push_back(streamId); };
-        callbacks.onStreamReset  = [&events](const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view reason)
+        callbacks.onStreamReset  = [&events](const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view reason, const bool /*isDecidedByPeer*/)
         {
             events.streamsReset.emplace_back(streamId, errorCode);
             events.streamResetReasons.emplace_back(streamId, std::string(reason));
