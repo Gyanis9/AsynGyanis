@@ -6,6 +6,7 @@
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpHeaderRules.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
@@ -18,6 +19,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -253,12 +255,19 @@ namespace AsynGyanis::Net
         {
             return {};
         }
-        std::string declaration;
-        // 名字长度已知却不敢预留：同名多条在权威记录里各占一项，声明里却只该出现一次，
-        // 具体条数要到遍历完才知道。让串自然增长比再造一张去重表便宜
+        std::string              declaration;
+        std::vector<std::string> declaredNames;
+        // 尾部字段是个位数量级，因此线性比对就够；名字不预留串容量，让声明随去重后的条数自然增长
         m_trailerStore->forEachField(
-                [&declaration](const std::string_view name, const std::string_view /*value*/)
+                [&declaration, &declaredNames](const std::string_view name, const std::string_view /*value*/)
                 {
+                    // 判重用整段相等而不是在声明串里 find(名字)：x-check 是 x-checksum 的子串，
+                    // 子串判重会把两个不同的字段并成一条，那比多写一次名字坏得多
+                    if (std::ranges::find(declaredNames, name) != declaredNames.end())
+                    {
+                        return;
+                    }
+                    declaredNames.emplace_back(name);
                     if (!declaration.empty())
                     {
                         declaration.append(", ");

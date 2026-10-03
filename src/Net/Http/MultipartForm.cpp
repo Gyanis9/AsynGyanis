@@ -347,8 +347,9 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<MultipartPart> parsePartHeaders(std::string_view headerBlock)
         {
             MultipartPart part;
-            bool          hasDisposition = false;
-            bool          hasContentType = false;
+            bool          hasDisposition      = false;
+            bool          hasContentType      = false;
+            bool          hasTransferEncoding = false;
 
             std::size_t lineStart = 0;
             while (lineStart < headerBlock.size())
@@ -396,10 +397,13 @@ namespace AsynGyanis::Net
                     hasContentType   = true;
                 } else if (equalsIgnoringCase(fieldName, kContentTransferEncodingHeader))
                 {
-                    if (!isIdentityTransferEncoding(fieldValue))
+                    // 重复判据与另两条同口径（RFC 2045 §3.1，本文件的类说明写着「三条头部各只能出现一次」）：
+                    // 两条编码若各自都被判成「原样字节」，段正文按哪一条解释就成了读者的猜测
+                    if (hasTransferEncoding || !isIdentityTransferEncoding(fieldValue))
                     {
                         return std::nullopt;
                     }
+                    hasTransferEncoding = true;
                 }
                 // 其余头部（Content-ID、Content-Description 一类元数据）放过，不影响取段
             }

@@ -1159,6 +1159,25 @@ namespace AsynGyanis::Net
         EXPECT_EQ(chunked.chunkedTerminatorText(), "0\r\nx-late: only-after-reset\r\n\r\n") << "reset 之后登记的要能正常写出来";
     }
     /**
+     * @brief 尾部字段声明里同一个名字只列一次，而终止块照旧把同名两条都上线
+     * @details `Trailer:` 说的是「哪些字段会出现在尾部」，同名字段出现几条都只该列一次名字。
+     *          判重必须整段相等：`x-check` 是 `x-checksum` 的子串，写成「在声明串里 find 一下」会把
+     *          两个不同字段并成一条——那比多写一次名字坏得多，因此这条用例特意同时登记这两个名字。
+     */
+    TEST(HttpResponse, ListsEachTrailerNameOnceInTheDeclaration)
+    {
+        HttpResponse chunked;
+        chunked.startChunkedResponse(200);
+        ASSERT_TRUE(chunked.addTrailerField("x-checksum", "abc"));
+        ASSERT_TRUE(chunked.addTrailerField("x-checksum", "def"));
+        ASSERT_TRUE(chunked.addTrailerField("x-check", "short"));
+
+        const std::string head = chunked.serializeHead();
+        EXPECT_TRUE(containsText(head, "trailer: x-checksum, x-check\r\n")) << head;
+        EXPECT_EQ(chunked.chunkedTerminatorText(), "0\r\nx-checksum: abc\r\nx-checksum: def\r\nx-check: short\r\n\r\n") << "声明去重不该顺带把终止块里的同名两条并成一条";
+    }
+
+    /**
      * @brief setJsonBody 一次把正文与媒体类型都设好，紧凑与缩进两种形状
      */
     TEST(HttpResponse, SetJsonBodyWritesBodyAndContentType)

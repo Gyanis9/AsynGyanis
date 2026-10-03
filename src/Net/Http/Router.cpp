@@ -392,9 +392,9 @@ namespace AsynGyanis::Net
         const bool isNotModified = response.status() == 304;
         if (isNoContent || isNotModified)
         {
-            // 只清正文。严格线上语义下这两类响应连 content-length 都不该出现（RFC 7230 §3.3.2），
-            // 但 HttpResponse::toString() 无条件补一条 content-length，抑制它需要响应层开口子，
-            // 不在本文件的职责范围内
+            // 只清正文。content-length 不用这里操心：HttpResponse 对 1xx/204/304 这三档本来就不自动补
+            // （见 mustNotDeclareContentLength，用例钉在 TestHttpResponse 的 204 那条），清完正文之后
+            // 序列化出来的就是「无正文也不报长度」的形状
             response.setBody(std::string_view{});
         }
     }

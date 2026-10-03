@@ -359,6 +359,21 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 同一段里 Content-Transfer-Encoding 出现两次即整份判失败，与另两条头部同口径
+     * @details 两条都「原样字节」时，段正文按哪一条解释就成了读者的猜测；大小写不同的重复同样算重复
+     *          （属性名按 RFC 2045 §3.1 大小写不敏感）。反面判据同批钉住：只出现一条照常接受。
+     */
+    TEST(MultipartForm, RejectsDuplicatedContentTransferEncoding)
+    {
+        EXPECT_FALSE(parseForm("--b\r\nContent-Disposition: form-data; name=\"f\"\r\nContent-Transfer-Encoding: identity\r\nContent-Transfer-Encoding: identity\r\n\r\nx\r\n--b--")
+                             .has_value());
+        EXPECT_FALSE(parseForm("--b\r\nContent-Disposition: form-data; name=\"f\"\r\nContent-Transfer-Encoding: 7bit\r\ncontent-transfer-encoding: binary\r\n\r\nx\r\n--b--")
+                             .has_value());
+        EXPECT_TRUE(parseForm("--b\r\nContent-Disposition: form-data; name=\"f\"\r\nContent-Transfer-Encoding: 7bit\r\n\r\nx\r\n--b--").has_value())
+                << "只出现一条不该被这条判据误伤";
+    }
+
+    /**
      * @brief base64 段让整份判失败，而不是把没还原的编码文本当原始字节交出去
      * @details 还原就要新造一份字节缓冲，与「段正文是请求正文的视图」冲突；form-data 里这种写法极少，
      *          宁可让调用方看见失败
