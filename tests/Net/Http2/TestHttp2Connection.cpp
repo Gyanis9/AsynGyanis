@@ -760,6 +760,7 @@ namespace AsynGyanis::Net
         samples.push_back({"连接特定头 upgrade", validPseudoFields + hpackLiteralField("upgrade", "h2c"), "连接特定头"});
         samples.push_back({"te 取值不是 trailers", validPseudoFields + hpackLiteralField("te", "gzip"), "te"});
         samples.push_back({":path 为空", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, ""), ":path"});
+        samples.push_back({"非 OPTIONS 用星号形式当目标", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, "*"), "asterisk-form"});
 
         for (const MalformedRequestSample &sample: samples)
         {
@@ -778,6 +779,25 @@ namespace AsynGyanis::Net
             ASSERT_EQ(requests.size(), 1U) << "样本「" << sample.description << "」之后其它流仍应当被服务";
             EXPECT_EQ(requests[0].streamId, 3U);
         }
+    }
+
+    /**
+     * @brief 星号形式只挡「不是 OPTIONS」：OPTIONS 自己用它当目标时必须照常交出请求
+     * @details 上一批样本里那条 GET + "*" 的反面判据。写成「凡 "*" 都拒」会让本框架没法应答
+     *          RFC 9110 §7.4 里唯一合法使用该形式的请求，而 h1 侧是同一条口径（只放行 OPTIONS）。
+     */
+    TEST(Http2Connection, AcceptsAsteriskPathForOptions)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+
+        const std::string optionsBlock = hpackLiteralField(2, "OPTIONS") + hpackIndexedField(6) + hpackLiteralField(1, "example.com") + hpackLiteralField(4, "*");
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, optionsBlock)), Http2ConnectionFeedStatus::NeedMore);
+
+        const std::vector<Http2Request> requests = connection.takeRequests();
+        ASSERT_EQ(requests.size(), 1U) << "OPTIONS 的星号目标被误拒了";
+        EXPECT_EQ(requests[0].method, "OPTIONS");
+        EXPECT_EQ(requests[0].path, "*") << "星号要原样交给上层，路由与 OPTIONS 应答看到的是同一个目标";
     }
 
     /**

@@ -199,7 +199,8 @@ namespace AsynGyanis::Net
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::EmptyPath, ":path 为空：http/https 的目标 URI 至少要带 \"/\"（RFC 9114 §4.3.1）"));
             }
-            // OPTIONS 的星号形式是唯一不以 '/' 开头的合法取值（RFC 9110 §7.1）
+            // OPTIONS 的星号形式是唯一不以 '/' 开头的合法取值（RFC 9110 §7.1）；「真的是 OPTIONS 吗」
+            // 要等 :method 也读到才判得出，那一半在头部块收口处（见本类的收口校验）
             if (value != "*" && value.front() != '/')
             {
                 return std::unexpected(
@@ -398,6 +399,15 @@ namespace AsynGyanis::Net
         if (m_pathText.empty())
         {
             return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MissingPseudoHeader, "请求缺少 :path（RFC 9114 §4.3.1）"));
+        }
+
+        // asterisk-form 说的是「整台服务器」而不是某个资源，只有 OPTIONS 能用（RFC 9110 §7.4，
+        // RFC 9114 §4.3.1 沿用同一口径）。h1 的请求行解析早就按方法判过它，这里补的是这一半：
+        // 否则同一个目标在两条通道上一个判语法错误、一个放行到「没有路由匹配」报成 404
+        if (m_pathText == "*" && m_methodText != "OPTIONS")
+        {
+            return std::unexpected(makeHeaderError(Http3HeaderErrorKind::ProhibitedPseudoForMethod,
+                                                   ":path 取值 \"*\"（asterisk-form）只用于 OPTIONS，收到的是 " + m_methodText + "（RFC 9110 §7.4）"));
         }
 
         // 权威来源的三条规则（RFC 9114 §4.3.1）：http/https 必须有其中一项；出现就必须非空；
