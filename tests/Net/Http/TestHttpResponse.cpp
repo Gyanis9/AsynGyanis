@@ -1398,4 +1398,24 @@ namespace AsynGyanis::Net
         EXPECT_THROW(static_cast<void>(driveInformationalSend(std::move(injectedValue))), Base::InvalidArgumentException);
     }
 
+    /**
+     * @brief 钉住：哪些状态码「按定义没有正文」只看 RFC 9110 §6.3 那一档，逐码判一次
+     * @details 这个判据是三处共用的真源（h1 的序列化层、h3 的 submitResponse、h2 的整块应答出口），
+     *          写错一档就是某条通道「无正文却带 DATA」或「该带正文的响应被清空」。按码逐格钉：
+     *          1xx 整段（含 199 这种边界）、204、304 为真；200/205/301/404 与越界取值均为假。
+     */
+    TEST(HttpResponse, ClassifiesBodylessStatusCodesPerRfc)
+    {
+        for (const int informational: {100, 101, 102, 103, 199})
+        {
+            EXPECT_TRUE(HttpResponse::isBodylessStatusCode(informational)) << informational << " 属 1xx，不该携带正文";
+        }
+        EXPECT_TRUE(HttpResponse::isBodylessStatusCode(204)) << "204 不该携带正文";
+        EXPECT_TRUE(HttpResponse::isBodylessStatusCode(304)) << "304 不该携带正文";
+
+        for (const int withBody: {0, 99, 200, 201, 205, 206, 301, 302, 307, 400, 404, 500, 999})
+        {
+            EXPECT_FALSE(HttpResponse::isBodylessStatusCode(withBody)) << withBody << " 被误判成无正文，响应会被清空";
+        }
+    }
 } // namespace AsynGyanis::Net

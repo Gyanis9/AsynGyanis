@@ -3147,4 +3147,54 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.waitForText(responseText, "HTTP/1.1 400", kWaitTimeout)) << "没开 h2c 的端口没有按 HTTP/1.1 拒掉这段前奏，实际拿到：\n" << responseText;
     }
 
+    /**
+     * @brief 钉住：拿 1xx 当最终状态码时，h2 也不许把正文发成 DATA 帧
+     * @details 204/304 由 `Router::finalizeResponse()` 在上游就清掉正文，所以这一格真正兜住的是 1xx：
+     *          路由层不清它，h1 的序列化层与 h3 的 submitResponse 都按 `isBodylessStatusCode()` 挡，
+     *          h2 此前只挡 HEAD。RFC 9110 §6.3 定 1xx 无正文，RFC 9113 §8.1.1 允许这类响应带非零
+     *          content-length 但正文不进 DATA——发出去就是给对端一条可以判畸形的报文。
+     */
+    TEST(Http2CleartextSession, SuppressesBodyWhenInterimStatusIsFinal)
+    {
+        const auto registerRoutes = [](Router &router, Core::EventLoop &)
+        {
+            router.get("/early-as-final",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setStatus(103);
+                           response.setBody("早期响应不该带的正文");
+                           co_return;
+                       });
+        };
+
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, HttpParserLimits{},
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/early-as-final"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &received)
+                {
+                    for (const Http2Frame &frame: received)
+                    {
+                        if (frame.header.type == Http2FrameType::Headers && (frame.header.flags & kHttp2FlagEndStream) != 0U)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "1xx 作最终状态时没等到自带 END_STREAM 的头块：这条流被挂住，正是「无正文却发 DATA」的另一半形状";
+
+        for (const Http2Frame &frame: frames)
+        {
+            EXPECT_NE(frame.header.type, Http2FrameType::Data) << "1xx 的响应把正文发成了 DATA 帧";
+        }
+    }
 } // namespace AsynGyanis::Net

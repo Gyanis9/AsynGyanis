@@ -1681,9 +1681,15 @@ namespace AsynGyanis::Net
         const std::uint32_t wireStatusCode = normalizeWireStatusCode(response.status(), streamId);
 
         const std::vector<HpackHeaderField> headerFields = collectResponseHeaderFields(response);
-        // HEAD 只发头：正文视图换成空，头部里的 content-length 仍按完整正文补齐
-        const std::string_view responseBody = isHeadRequest ? std::string_view{} : response.body();
-        const bool             isBodyEmpty  = responseBody.empty();
+        // HEAD 只发头：正文视图换成空，头部里的 content-length 仍按完整正文补齐。同一处置还要盖住
+        // 「按定义没有正文」的状态码（1xx/204/304，RFC 9110 §6.3）：RFC 9113 §8.1.1 明说这类响应可以
+        // 带着非零 content-length 而正文不进 DATA 帧。204/304 由 `Router::finalizeResponse()` 在上游
+        // 就把正文清了，所以这一格真正兜住的是**以 1xx 作最终状态**那条——Router 不清它，而 h1 的
+        // 序列化层与 h3 的 submitResponse 都按状态码挡着，h2 此前只挡 HEAD：一条流式契约之外的
+        // 合法写法就会发出「1xx 还带正文」的报文，对端按 §8.1.1 判畸形是站得住的
+        const bool             isBodylessResponse = HttpResponse::isBodylessStatusCode(static_cast<int>(wireStatusCode));
+        const std::string_view responseBody       = (isHeadRequest || isBodylessResponse) ? std::string_view{} : response.body();
+        const bool             isBodyEmpty        = responseBody.empty();
         // 尾部字段随 HEAD 一并省掉：HEAD 的响应按定义没有正文，也就没有「正文之后」（RFC 9110 §9.3.2）。
         // 头部的 trailer 声明仍保留——它描述的是同一条报文若以 GET 请求会带回什么
         const std::vector<HpackHeaderField> trailerFields = isHeadRequest ? std::vector<HpackHeaderField>{} : collectResponseTrailerFields(response);
