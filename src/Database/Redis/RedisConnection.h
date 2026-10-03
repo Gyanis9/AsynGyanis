@@ -377,9 +377,11 @@ namespace AsynGyanis::Database
          *          WATCH 报「inside MULTI」），因此记账保持原样——据此才漏不掉「被拒的 EXEC 之后仍挂着的
          *          WATCH」。HELLO / MONITOR / 订阅三类改的是回复的形态或流向，本类退不回去，只记一个标记。
          * @param commandName 命令的第一个参数（命令名），Redis 的命令名不区分大小写
+         * @param firstArgument 命令的第二个参数，没有则传空串：CLIENT 这一类要按子命令分档，
+         *        不能把 CLIENT GETNAME 与 CLIENT REPLY OFF 一并当成「退不回去的模式」
          * @param isAccepted 服务端给出了非 error 回复；false 表示这条命令被原样退回，未改变任何状态
          */
-        void noteSessionCommand(std::string_view commandName, bool isAccepted) noexcept;
+        void noteSessionCommand(std::string_view commandName, std::string_view firstArgument, bool isAccepted) noexcept;
 
         /**
          * @brief 发出 SUBSCRIBE / PSUBSCRIBE，并把服务端为每个目标回的确认证干

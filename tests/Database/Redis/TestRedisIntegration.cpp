@@ -795,6 +795,30 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief CLIENT 的回复形态类子命令同样要按「退不回去」处置，而普通子命令不该跟着一起断
+     * @details CLIENT TRACKING ON 让服务端往这条连接的回复流里插失效推送，下一个借用者按
+     *          「一条命令一条回复」读，读到的第一份可能是推送。反面判据是 CLIENT GETNAME：
+     *          它照常回一条 bulk，若实现把整条 CLIENT 一律当成模式改变，这条用例就会红——
+     *          那种写法让池白重连，而池重连一次要重发 AUTH。
+     */
+    TEST_F(RedisIntegrationTest, ClientTrackingSessionIsDroppedOnReturn)
+    {
+        ASSERT_NE(m_connection->executeCommand({"CLIENT", "TRACKING", "ON"}), nullptr) << m_connection->lastError();
+        ASSERT_TRUE(m_connection->isConnected());
+
+        m_connection->resetSessionState();
+
+        EXPECT_FALSE(m_connection->isConnected()) << "开了 TRACKING 的连接被当成健康连接交还给下一个借用者：它之后读到的第一份回复可能是失效推送";
+
+        RedisConnection nameOnly(m_configuration);
+        ASSERT_TRUE(nameOnly.connect()) << nameOnly.lastError();
+        ASSERT_NE(nameOnly.executeCommand({"CLIENT", "GETNAME"}), nullptr) << nameOnly.lastError();
+        nameOnly.resetSessionState();
+        EXPECT_TRUE(nameOnly.isConnected()) << "只问了一个名字的 CLIENT 子命令也被断开了：按子命令分档的判据没生效";
+        nameOnly.disconnect();
+    }
+
+    /**
      * @brief 守卫非正值的连接超时按「不设超时」处理，而不是被当成配置错误拒掉
      * @details setQueryTimeout() 明写「0 与负数一律按不设超时」，MySQL 驱动同口径；建连这一侧原先把
      *          -1 毫秒折算成 tv_sec=0、tv_usec=-1000 交给 select()，那是一次无效或零窗口的等待。

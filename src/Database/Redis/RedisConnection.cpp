@@ -665,7 +665,8 @@ namespace AsynGyanis::Database
             // 与单命令路径同一份记账，且同样以回复为准：管道里的 MULTI / EXEC 也会留下（或了结）连接级状态，
             // 漏记的话这条连接带着未了结的事务回池，下一个借用者的写全部被静默排队；
             // 而在 append 那一刻记账会把「被服务端退回的 EXEC」当成已了结，那句 WATCH 就跟着泄漏下去
-            noteSessionCommand(registeredCommands[round].front(), serverReply->type != REDIS_REPLY_ERROR);
+            noteSessionCommand(registeredCommands[round].front(), registeredCommands[round].size() > 1U ? std::string_view(registeredCommands[round][1]) : std::string_view{},
+                               serverReply->type != REDIS_REPLY_ERROR);
 
             // 所有权移交：此后由 RedisResult 析构释放。
             // error 类型的回复刻意保留成结果集而不是报错中断——一条命令失败不该让整批管道作废，
@@ -792,7 +793,7 @@ namespace AsynGyanis::Database
         // 记账按「服务端有没有认这条命令」更新：这六个命令的 error 回复一律表示状态未变，
         // 把它当成「已了结」就会把真实存在的 WATCH 当成已撤销，那句监视接着毒害下一个借用者。
         // 传输层失败在上面已经断开并清零，走不到这里
-        noteSessionCommand(argumentValues.front(), serverReply->type != REDIS_REPLY_ERROR);
+        noteSessionCommand(argumentValues.front(), argumentValues.size() > 1U ? argumentValues[1] : std::string_view{}, serverReply->type != REDIS_REPLY_ERROR);
 
         if (serverReply->type == REDIS_REPLY_ERROR)
         {
@@ -929,11 +930,23 @@ namespace AsynGyanis::Database
 
     } // namespace
 
-    void RedisConnection::noteSessionCommand(const std::string_view commandName, const bool isAccepted) noexcept
+    void RedisConnection::noteSessionCommand(const std::string_view commandName, const std::string_view firstArgument, const bool isAccepted) noexcept
     {
         // 只认留下连接级状态的命令名。先按首字母分叉，其余命令（GET/SET/MGET…）一次字符串比较都不做
         switch (commandName.empty() ? '\0' : foldAsciiToLower(commandName.front()))
         {
+            case 'c':
+                // CLIENT 的两条子命令改的是「本类还读不读得到一条命令一条回复」：REPLY OFF/SKIP 让之后的
+                // 命令不再回话，TRACKING ON 让服务端往回复流里插失效推送。两者都退不回去（下一个借用者并不
+                // 知道自己该先补发什么），按 MONITOR 同一档处置：记一个标记，归还时把这条连接断开。
+                // 按子命令分档而不是整条 CLIENT 一律断开：GETNAME/SETNAME/ID/INFO 这些照常回话的子命令，
+                // 没必要让池白重连一回
+                if (isAccepted && commandNameMatches(commandName, "client") && (commandNameMatches(firstArgument, "reply") || commandNameMatches(firstArgument, "tracking")))
+                {
+                    m_isSessionModeChanged = true;
+                }
+                return;
+
             case 'm':
                 // MULTI：从这一刻起本连接的命令全部排队，直到 EXEC 或 DISCARD。
                 // MONITOR 与它首字母相同，走另一条分支：那条命令把连接变成持续推送，本类读不回「一条命令一条回复」
