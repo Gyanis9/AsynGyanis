@@ -149,13 +149,33 @@ namespace AsynGyanis::Net
             buffer.clear();
             destination = std::move(buffer);
         }
+
+        /**
+         * @brief 把 parser_limits 的长度项换成 HPACK 那侧的说法
+         * @details 两边的 0 含义相反：`HttpParserLimits` 用 0 表示「关闭该项保护」，而
+         *          `HpackDecoderLimits` 的 0 是「任何头部都不许过」（见其类说明）。直接把 0 传过去会把
+         *          「我不限长度」读成「一律拒」，因此这里换成 size_t 的上界——判据是 `size() > 上限`，
+         *          取上界等于不设限。
+         * @param configuredLimit 配置里的长度上限
+         * @return std::size_t 交给 HPACK 解码器的上限
+         */
+        std::size_t parserFieldLengthLimit(const std::size_t configuredLimit) noexcept
+        {
+            return configuredLimit != 0 ? configuredLimit : std::numeric_limits<std::size_t>::max();
+        }
     } // namespace
 
     Http2Connection::Http2Connection(Http2ConnectionConfiguration configuration, HttpParserLimits parserLimits) :
         m_configuration(std::move(configuration)), m_parserLimits(parserLimits),
         m_frameDecoder(
                 Http2FrameLimits{.maximumFrameSizeByteCount = m_configuration.maximumFrameSize, .maximumTotalConsumedByteCount = m_configuration.maximumTotalConsumedByteCount}),
-        m_hpackDecoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = m_configuration.headerTableSize, .maximumHeaderListByteCount = m_configuration.maximumHeaderListSize})
+        // 单条头名/头值的长度闸门跟着 parser_limits 走（出厂值本就同为 256 与 8 KiB，见 HttpParserLimits）。
+        // 留在 HpackDecoderLimits 的默认值上不换：运维调的那两个配置键在 h1/h3 生效、在 h2 却由这一层的
+        // 常数说了算——调松了 h2 仍按 256/8 KiB 拒，调紧了 h2 反而比另外两条通道宽（越界的那一侧才是要命的）
+        m_hpackDecoder(HpackDecoderLimits{.maximumDynamicTableSizeByteCount = m_configuration.headerTableSize,
+                                          .maximumHeaderListByteCount       = m_configuration.maximumHeaderListSize,
+                                          .maximumHeaderFieldNameLength     = parserFieldLengthLimit(parserLimits.maximumHeaderFieldNameLength),
+                                          .maximumHeaderFieldValueLength    = parserFieldLengthLimit(parserLimits.maximumHeaderFieldValueLength)})
     {
         validateConfiguration(m_configuration);
     }
