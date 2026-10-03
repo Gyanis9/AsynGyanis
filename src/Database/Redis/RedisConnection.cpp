@@ -695,9 +695,8 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 服务端认了这个编号才记账：resetSessionState() 按「当前所在 ≠ 配置要求」决定要不要 SELECT 回去，
-        // 没换成功就记成换了，等于把库位不明的连接交给下一个借用者
-        m_currentKeySpaceIndex = index;
+        // 记账由 executeArguments 那条路上的 noteSessionCommand 负责（服务端认了这个编号才记），
+        // 这里只交回结果：两处各记一遍的话，裸 SELECT 与 selectDatabase() 就会各说一套
         return true;
     }
 
@@ -1003,6 +1002,25 @@ namespace AsynGyanis::Database
                                    commandNameMatches(commandName, "ssubscribe")))
                 {
                     m_isSessionModeChanged = true;
+                    return;
+                }
+
+                // SELECT 换的是**这条连接**所在的键空间，而不只是本次命令的作用域：不记账就会把库位串给
+                // 下一个借用者（对方按配置以为自己停在原库，写进去的键落在别人库里，两边都不报错）。
+                // selectDatabase() 也是走 executeCommand 发 SELECT 的，因此记账只有这一处；那边另记一遍的话，
+                // 裸 SELECT 与 selectDatabase() 就会各说一套。服务端退回的 SELECT（编号越界、集群模式不支持）
+                // 不记：记了就成了「没换成功却记成换了」，那正是归还时把库位不明的连接交出去的形状
+                if (isAccepted && commandNameMatches(commandName, "select"))
+                {
+                    int         keySpaceIndex = 0;
+                    const char *parseBegin    = firstArgument.data();
+                    const char *parseEnd      = parseBegin + firstArgument.size();
+                    // 认下服务端已经认了的编号：十进制、整段都是这个数、非负
+                    if (const std::from_chars_result parseResult = std::from_chars(parseBegin, parseEnd, keySpaceIndex);
+                        parseResult.ec == std::errc() && parseResult.ptr == parseEnd && keySpaceIndex >= 0)
+                    {
+                        m_currentKeySpaceIndex = keySpaceIndex;
+                    }
                 }
                 return;
 

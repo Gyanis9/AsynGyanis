@@ -772,6 +772,42 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 绕开 selectDatabase() 的裸 SELECT 同样要在归还时被还回配置库
+     * @details 上一条用例走的是 selectDatabase()，而借用者完全可以自己发一条 `SELECT 3`——记账此前只认
+     *          那条封装路径，裸 SELECT 换掉的库位没人记，于是归还时不补 SELECT，下一个借用者按配置以为
+     *          自己停在原库，写进去的键落在别人库里，两边都不报错。判据与上一条同形：外库键在复位后读不到，
+     *          而本库的读写照常。
+     */
+    TEST_F(RedisIntegrationTest, RawSelectCommandIsAlsoUndoneOnReturn)
+    {
+        constexpr std::string_view kForeignKeySpace = "3";
+
+        const std::string foreignKey = makeKey("raw-select-foreign");
+        const std::string homeKey    = makeKey("raw-select-home");
+
+        ASSERT_NE(m_connection->executeCommand({"SELECT", kForeignKeySpace}), nullptr) << m_connection->lastError();
+        ASSERT_NE(m_connection->executeCommand({"SET", foreignKey, "in-foreign-db"}), nullptr) << m_connection->lastError();
+        // 前提：这条连接此刻确实停在别的库上（同一个键在配置库里还不存在）
+        ASSERT_TRUE(runScalar({"GET", foreignKey}).has_value()) << "裸 SELECT 没有生效，用例没有构造出可判定的前提";
+
+        m_connection->resetSessionState();
+        ASSERT_TRUE(m_connection->isConnected()) << "复位把连接弄断了，下面的判据无从落地";
+
+        EXPECT_FALSE(runScalar({"GET", foreignKey}).has_value()) << "复位后仍停在别处：裸 SELECT 换掉的库位串给了下一个借用者";
+        ASSERT_NE(m_connection->executeCommand({"SET", homeKey, "in-configured-db"}), nullptr) << m_connection->lastError();
+        const std::optional<DatabaseValue> homeRead = runScalar({"GET", homeKey});
+        ASSERT_TRUE(homeRead.has_value()) << "回到配置库这一步没做成：连本库的写都读不到";
+        EXPECT_EQ(std::get<std::string>(*homeRead), "in-configured-db");
+
+        // 外库那个键只能由认识它的连接来删：TearDown 的清扫扫得到配置库，扫不到 3 号库
+        RedisConnection foreignCleaner(m_configuration);
+        ASSERT_TRUE(foreignCleaner.connect()) << foreignCleaner.lastError();
+        ASSERT_TRUE(foreignCleaner.selectDatabase(3)) << foreignCleaner.lastError();
+        static_cast<void>(foreignCleaner.executeCommand({"DEL", foreignKey}));
+        foreignCleaner.disconnect();
+    }
+
+    /**
      * @brief 钉住「退不回去的会话模式」在归还时被断开，而不是带着错位的回复流回池
      * @details MONITOR 之后服务端持续推送，本类按「一条命令一次回复」读，下一位借用者读到的
      *          会是别人的跟踪行。这类模式没有可靠的撤销命令（RESET 要 6.2+），因此判据就是

@@ -216,7 +216,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 归还连接池时丢掉残留的会话状态：未发送的管道命令、服务端留着的 MULTI 与 WATCH、
-         *        被 selectDatabase() 移走的键空间，以及退不出去的模式
+         *        被 SELECT 移走的键空间（无论走不走 selectDatabase()），以及退不出去的模式
          * @details 管道残留命令会被下一个借用者的 flushPipeline() 代发，回复按下标错位且毫无报错；
          *          MULTI 与 WATCH 留在服务端一侧，本地清缓冲清不掉它——留着时下一个借用者的写命令全部
          *          被排进别人的事务、服务端逐条回 +QUEUED，看着像执行成功却一条都没落库。
