@@ -3361,4 +3361,71 @@ namespace AsynGyanis::Net
         EXPECT_EQ(reservedAtSample.load(std::memory_order_acquire), 0U) << "正文此刻握在业务手里，账上却出现了预留：流式路径被算进了在途预算";
         EXPECT_EQ(budget->reservedByteCount(), 0U) << "收口之后也不该留下没归还的预留";
     }
+    /**
+     * @brief 钉住：请求**已派发**之后尾字段才越限，业务照常答完、越限的尾字段被拦下，且丢弃有一行日志
+     * @details 这是 intake 那道跨头块累计闸（`CountsTrailerFieldsAgainstTheSameHeaderFieldLimit` 与
+     *          `CountsTrailerFieldBytesAgainstTheSameHeaderBlockLimit`）剩下的最后一格：流式路由在头收齐
+     *          那刻就把请求派发了，`isIntakeRejected()` 只在 serve 协程入口读一次，此后置上的旗无人消费。
+     *          于是这一支既回不出 431、也不进 `bad_requests_total`——本端实际做的事只有「不把越限的尾字段
+     *          交给业务」。此前这件事**一行日志都不留**，运维看到的是「业务读不到 trailer」而没有任何解释。
+     *          数字：POST 头块 4 条（`:method`/`:scheme`/`:path`/`:authority`），上限取 5，
+     *          于是 4+1 恰好放行（对照组在 `CountsTrailerFieldsAgainstTheSameHeaderFieldLimit`）、
+     *          这里的 4+2 越限。
+     * @note 断言里同时要求「按 431 收口」那行 ERROR **不出现**：两支必须各说各话，
+     *       将来若有人把越限统一成一个出口，这条会红而不是留下两句互相打脸的日志。
+     */
+    TEST(Http2CleartextSession, WithholdsTrailersAndWarnsWhenQuotaBreaksAfterDispatch)
+    {
+        HttpParserLimits parserLimits;
+        parserLimits.maximumHeaderCount = 5;
+
+        LogCapture logCapture;
+
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.postStreaming("/stream",
+                                         [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                         {
+                                             std::size_t            totalByteCount = 0;
+                                             HttpRequestBody *const stream         = request.bodyStream();
+                                             if (stream != nullptr)
+                                             {
+                                                 while (co_await stream->readNext())
+                                                 {
+                                                     totalByteCount += stream->chunk().size();
+                                                 }
+                                             }
+                                             response.setStatus(200);
+                                             response.setBody("n=" + std::to_string(totalByteCount) + ",tf=" + request.getTrailerField("x-a").value_or(std::string{"-"}));
+                                             co_return;
+                                         });
+                },
+                parserLimits, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &received) { return !received.empty() && received.front().header.type == Http2FrameType::Settings; }, kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        HpackDecoder responseDecoder;
+
+        // 头块（不带 END_STREAM）→ 正文 → 两个尾字段（带 END_STREAM）：派发发生在头块收齐那刻，
+        // 越限判定落在派发之后
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream"), false), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = "abc"}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, hpackLiteralField("x-a", "1") + hpackLiteralField("x-b", "2"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &received) { return hasEndStream(received, 1U); }, kWaitTimeout))
+                << "已派发的流没有收到应答：越限判定把这条流挂住了";
+
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200") << "请求早已交给业务，越限的尾字段不该把整条响应换成 431";
+        EXPECT_EQ(responseDataPayload(frames, 1U), "n=3,tf=-") << "正文档照常交付，而越限的尾字段必须被拦下不交给业务";
+        EXPECT_EQ(logCapture.countContaining("已经派发出去"), 1U) << "这一支唯一的对外痕迹就是这行日志，缺了它这次丢弃无人出声";
+        EXPECT_EQ(logCapture.countContaining("已按 431 应答"), 0U) << "派发之后回不出 431，不该再出现 431 那条收口日志";
+    }
 } // namespace AsynGyanis::Net

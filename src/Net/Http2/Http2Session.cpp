@@ -553,6 +553,14 @@ namespace AsynGyanis::Net
             if (isFieldCountExceeded || isBlockByteExceeded)
             {
                 pending.isHeaderListTooLarge = true;
+                // 已派发的流读不到这面旗（isIntakeRejected() 只在 serve 协程入口判一次），于是这一支
+                // 既回不出 431、也不进坏请求账——不留一行日志就等于「尾字段被丢而无人出声」。
+                // 未派发那一支有日志：serve 阶段按 431 收口时记 ERROR 并计一笔 bad request
+                if (pending.isServeClaimed && !pending.isServeFinished)
+                {
+                    LOG_WARN_FMT("Http2Session: 流 {} 的尾部头块把{}累计顶过本端上限，而这条请求已经派发出去：431 回不出去，本端只把越限的尾字段拦下、不交给业务",
+                                 receivedData.streamId, isBlockByteExceeded ? "净字节" : "条数");
+                }
             } else
             {
                 for (const HpackHeaderField &trailerField: receivedData.trailerFields)
