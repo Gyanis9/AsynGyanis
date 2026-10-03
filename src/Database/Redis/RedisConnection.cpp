@@ -935,6 +935,20 @@ namespace AsynGyanis::Database
         // 只认留下连接级状态的命令名。先按首字母分叉，其余命令（GET/SET/MGET…）一次字符串比较都不做
         switch (commandName.empty() ? '\0' : foldAsciiToLower(commandName.front()))
         {
+            case 'a':
+                // AUTH 换的是**这条连接**在服务端的身份：Redis 6 起的两参数形式（AUTH 用户名 口令）能换成
+                // 另一个 ACL 用户，此后同一条连接上的每条命令都按那个用户的权限判。退不回去（没有「退回
+                // 原来那个身份」的命令，只能用配置里的口令再 AUTH 一次，而那要在归还路径上多发一趟、还要
+                // 处置它自己失败的样子），因此按 MONITOR 同一档处置：记标记，归还时断开这条连接，让下一个
+                // 借用者拿到一条按配置重新认证过的。漏判的症状是下一位在别人的权限下执行命令——被放宽了
+                // 不会报错，被收紧了报的是 NOPERM，两种都指不回真正的原因。
+                // connect() 里那次认证走的是 redisCommand 而不是本方法，因此不会自己把新连接标成要断开
+                if (isAccepted && commandNameMatches(commandName, "auth"))
+                {
+                    m_isSessionModeChanged = true;
+                }
+                return;
+
             case 'c':
                 // CLIENT 的这几条子命令改的都是**这条连接上**的会话状态，而下一个借用者并不知道自己该先
                 // 补发什么：REPLY OFF/SKIP 让之后的命令不再回话、TRACKING ON 让服务端往回复流里插失效推送

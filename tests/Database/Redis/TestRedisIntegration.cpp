@@ -878,6 +878,29 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 借用者重发过 AUTH 的连接在归还时被断开，不把身份串给下一位
+     * @details AUTH 换的是**这条连接**在服务端的身份：Redis 6 起的两参数形式能换成另一个 ACL 用户，此后
+     *          同一条连接上的每条命令都按那个用户的权限判。没有「退回原来那个身份」的命令，因此判据与
+     *          MONITOR／TRACKING 同形：复位之后 isConnected() 转假，池另起一条按配置重新认证过的连接。
+     *          本用例用配置里的口令重发一次 AUTH（服务端照样接受，身份换成默认用户），不需要另建一个
+     *          ACL 用户就能钉住这条账。
+     */
+    TEST_F(RedisIntegrationTest, AuthCommandIsDroppedOnReturn)
+    {
+        if (m_configuration.password.empty())
+        {
+            GTEST_SKIP() << "服务端没配口令：AUTH 会被服务端拒掉，构造不出「已被接受」这个前提";
+        }
+
+        ASSERT_NE(m_connection->executeCommand({"AUTH", m_configuration.password}), nullptr) << m_connection->lastError();
+        ASSERT_TRUE(m_connection->isConnected());
+
+        m_connection->resetSessionState();
+
+        EXPECT_FALSE(m_connection->isConnected()) << "重发过 AUTH 的连接被当成健康连接交还给下一个借用者：下一位就此在别人的 ACL 身份下执行命令";
+    }
+
+    /**
      * @brief 守卫非正值的连接超时按「不设超时」处理，而不是被当成配置错误拒掉
      * @details setQueryTimeout() 明写「0 与负数一律按不设超时」，MySQL 驱动同口径；建连这一侧原先把
      *          -1 毫秒折算成 tv_sec=0、tv_usec=-1000 交给 select()，那是一次无效或零窗口的等待。

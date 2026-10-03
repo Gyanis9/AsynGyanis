@@ -407,7 +407,7 @@ namespace AsynGyanis::Database
 
         int  m_configuredKeySpaceIndex{0};  ///< 配置里那个键空间编号，即一条新会话应当停在的库
         int  m_currentKeySpaceIndex{0};     ///< 本会话实际所在的键空间编号，与上面不等时归还前 SELECT 回去
-        bool m_isSessionModeChanged{false}; ///< 是否进入了退不回去的会话模式（MONITOR/订阅/HELLO）：归还时断开这条连接
+        bool m_isSessionModeChanged{false}; ///< 是否进入了退不回去的会话模式（MONITOR/订阅/HELLO/AUTH/CLIENT 的几条子命令）：归还时断开这条连接
 
         // 两类订阅各记各的条数：服务端 UNSUBSCRIBE / PUNSUBSCRIBE 的确认里那个整数是**两类合计**
         // 的剩余订阅数，光看回复分不出「这一类退完了没」，因此按类记账才知道每条命令该收几条确认。
