@@ -1129,11 +1129,15 @@
   `MySqlIntegrationTest.NestedBeginTransactionIsRejectedWithoutCommittingTheOpenOne`——它断的不是返回值，
   而是「第一笔仍然可回滚、回滚后那 0 行」。
 - **MySQL 把 NaN 与无穷大的 double 参数原样交给驱动**：SQLite 与 Redis 都在绑定前拒（REAL 装不下它，
-  `sqlite3_bind_double` 会改绑成 NULL），MySQL 这一条没有那道闸：服务端把 DOUBLE 列写成 NULL 并只留一条
-  warning，「写入一个数」静默变成「写入空值」，既不报错也读不回原值。ORM 路径早有拦截，只有裸 `execute()`
-  打得着这一格。现在文案点名是第几个参数、并给出替代做法。判据是
+  `sqlite3_bind_double` 会改绑成 NULL），MySQL 这一条没有那道闸：参数直接进 `MYSQL_TYPE_DOUBLE` 的绑定缓冲。
+  真机实测（`asyngyanis_test` 库，严格模式）服务端回的是 `Out of range value for column 'value'（错误码 1264）`，
+  也就是说失败是有的，但那条错误把「你传了一个非有限的数」说成「这一列超出取值范围」——调用方看不出真正的原因；
+  而 `sql_mode` 被放宽的部署上它会写成 NULL，一次报错都没有。两种结局都不该由驱动替调用方猜。现在绑定前拒，
+  文案点名是第几个参数。「写入一个数」静默变成「写入空值」是放宽那一档的形状。ORM 路径早有拦截，
+  只有裸 `execute()` 打得着这一格。判据是
   `MySqlIntegrationTest.NonFiniteDoubleParameterIsRejectedInsteadOfSilentlyBoundAsNull`：被判的那一列刻意
-  可空——给它加 NOT NULL，旧实现会撞约束失败而「看起来也在拒绝」，用例就失去证伪能力（与 SQLite 侧同形）。
+  可空——给它加 NOT NULL，旧实现会撞约束失败而「看起来也在拒绝」，用例就失去证伪能力（与 SQLite 侧同形）；
+  突变摘掉那道闸，它红在服务端那条 1264 而不是本地文案。
 - **SQLite 与 Redis 的连接配置里的内嵌 NUL 被静默截断**：MySQL 驱动对同一件事早就本地拦下（理由写在它的
   connect() 里：客户端库只接受零终止字符串，截断后的报错与真实原因毫无关系），另两条驱动把 `c_str()` 直接
   交出去。库路径 `prod.db\0x` 于是打开甚至新建了 `prod.db`，主机名 `127.0.0.1\0evil` 于是连到另一个主机
