@@ -65,9 +65,11 @@ namespace AsynGyanis::Net
          *       与响应正文都不在本预算之内
          * @note h2/h3 的**流式路由**也不在这本账上：那条路上正文不在服务端留存，未消费的字节由每流
          *       接收窗口钉住上界（不消费就不还窗口，对端本来就发不出来），再记一遍等于把「业务读得慢」
-         *       判成超限——那时响应已在路上，503 也回不出去。因此 `asyn_http_inflight_body_bytes`
-         *       报的是「服务端替业务攒着的那部分」，不是全部在途正文
-         *       （判据见 `Http2CleartextSession.StreamingRouteKeepsItsBytesOffTheInflightBodyLedger`）
+         *       判成超限——那时响应已在路上，503 也回不出去。h1 相反：它的预留发生在派发之前
+         *       （那时还判不出这条会不会走流式），所以流式路由照样进账。因此
+         *       `asyn_http_inflight_body_bytes` 报的是「服务端替业务攒着的那部分」，三条通道的口径
+         *       并不相同（判据：`Http2CleartextSession.StreamingRouteKeepsItsBytesOffTheInflightBodyLedger`
+         *       读 0、`HttpMemoryBudgetTest.ChargesStreamingIntakeOnTheLedgerBeforeDispatch` 读正文全长）
          */
         std::size_t memoryBudgetBytes{0};
         bool        exposeMetrics{false}; ///< 是否注册 /metrics 与 /healthz

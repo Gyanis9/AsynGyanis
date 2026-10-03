@@ -544,4 +544,76 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(waitForTextOccurrence(overBudget, rejectedText, "503", kWaitTimeout)) << "解码后超出预算的分块上传没被按 503 收口，防线等于没有，实际收到：" << rejectedText;
         EXPECT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout)) << "被拒请求收口后额度仍未归还，当前占用 " << budget->reservedByteCount();
     }
+    /**
+     * @brief 钉住：h1 的流式路由**照样进**「在途正文预算」这本账，与 h2/h3 的流式分支相反
+     * @details 同一个 `memory_budget_bytes` 在三条通道上不是同一种强度，这条差别得有读数：
+     *          h2/h3 的 `absorb`/`addRequestBody` 在流式那条分支里提前返回，从不碰 `growTo()`
+     *          （钉在 `Http2CleartextSession.StreamingRouteKeepsItsBytesOffTheInflightBodyLedger`，
+     *          读数为 0）；h1 的预留发生在共享的 keep-alive 循环里，按
+     *          `residentBodyBytes = max(解析器暂存, 请求对象正文)` 记，而**这一步跑在派发之前**——
+     *          那时会话还不知道这条请求会不会命中流式路由，所以流式与否对 h1 的账没有影响。
+     *          实测数：四块各 8 字节的分块上传（共 32 字节），首批正文握在业务手里时从处理器
+     *          **内部**采样，账上是 32。
+     * @note 差别不是漏账而是结构：h2/h3 在派发之后预留就回不出 503 了，h1 必须在派发前预留，
+     *       否则内存已经占住。口径写进 `HttpMemoryBudget` 的类注释与 `memoryBudgetBytes` 的键文档。
+     */
+    TEST(HttpMemoryBudgetTest, ChargesStreamingIntakeOnTheLedgerBeforeDispatch)
+    {
+        auto                     budget = std::make_shared<HttpMemoryBudget>(64U * 1024U);
+        std::atomic<bool>        hasSampled{false};
+        std::atomic<std::size_t> reservedAtSample{0U};
+
+        HttpParserLimits parserLimits;
+        parserLimits.maximumBodySize = 1024;
+
+        RunningHttpServerFixture fixture(
+                makeBudgetTestLimits(), std::chrono::milliseconds{100}, {},
+                [&hasSampled, &reservedAtSample, budget](Router &router, Core::EventLoop &)
+                {
+                    router.postStreaming("/upload",
+                                         [&hasSampled, &reservedAtSample, budget](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                         {
+                                             HttpRequestBody *const stream = request.bodyStream();
+                                             if (stream == nullptr)
+                                             {
+                                                 response.setBody("no-stream");
+                                                 co_return;
+                                             }
+                                             std::size_t totalByteCount = 0;
+                                             bool        isFirstBatch   = true;
+                                             while (co_await stream->readNext())
+                                             {
+                                                 if (isFirstBatch)
+                                                 {
+                                                     reservedAtSample.store(budget->reservedByteCount(), std::memory_order_release);
+                                                     hasSampled.store(true, std::memory_order_release);
+                                                     isFirstBatch = false;
+                                                 }
+                                                 totalByteCount += stream->chunk().size();
+                                             }
+                                             response.setBody("got=" + std::to_string(totalByteCount));
+                                             co_return;
+                                         });
+                },
+                parserLimits, [budget](TestHttpServer &server) { server.setMemoryBudget(budget); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+
+        std::string request = "POST /upload HTTP/1.1\r\nhost: test\r\ntransfer-encoding: chunked\r\n\r\n";
+        for (std::size_t index = 0; index < 4U; ++index)
+        {
+            request += "8\r\nzzzzzzzz\r\n";
+        }
+        request += "0\r\n\r\n";
+
+        const LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(request, kWaitTimeout)) << "分块上传没能写入";
+        std::string responseText;
+        ASSERT_TRUE(waitForTextOccurrence(client, responseText, "got=32", kWaitTimeout)) << "流式上传没有收到完整应答：" << responseText;
+
+        ASSERT_TRUE(hasSampled.load(std::memory_order_acquire)) << "处理器没走到采样那一步，这条读数等于没测";
+        // 实测数 32 = 四块各 8 字节全部到达；这一格判的是「h1 有没有把流式请求的正文记进账」
+        EXPECT_EQ(reservedAtSample.load(std::memory_order_acquire), 32U) << "h1 的账要覆盖流式路由：预留发生在派发之前，那时还判不出流式与否";
+        EXPECT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout)) << "收口后额度未归还，当前占用 " << budget->reservedByteCount();
+    }
 } // namespace AsynGyanis::Net
