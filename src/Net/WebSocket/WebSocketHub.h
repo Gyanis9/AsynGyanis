@@ -70,7 +70,7 @@ namespace AsynGyanis::Net
         {
             WebSocketPeer                         *peer{nullptr};       ///< 空表示已除名或已收口：此后不再碰这条连接
             std::deque<WebSocketHubPendingMessage> pendingMessages;     ///< 已入队、尚未写出的消息，按到达顺序
-            std::size_t                            pendingByteCount{0}; ///< pendingMessages 的负载总字节数（入队上界据此判定）
+            std::size_t                            pendingByteCount{0}; ///< pendingMessages 的占用字节数（每条按「负载 + 每帧固定开销」记，入队上界据此判定）
             bool                                   isDraining{false};   ///< 是否已有一个发布协程正在替它写（一条连接一个写者）
         };
     } // namespace Detail

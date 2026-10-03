@@ -122,13 +122,18 @@ namespace AsynGyanis::Net
                 continue; // 快照之后才被除名（句柄析构或连接收口）：不再往它身上写
             }
             // 一条比整个上界还大的消息永远也放不下：分开判，避免「上界减去长度」在 size_t 上回绕成巨值
-            if (payload.size() > m_maximumPendingByteCount || member->pendingByteCount + payload.size() > m_maximumPendingByteCount)
+            //
+            // 每条消息按「负载 + 每帧固定开销」计入上界，与入站那侧用的是同一把尺（kWebSocketFrameOverheadByteCount）：
+            // 只按负载记账时，对慢成员连发零负载或一两字节的消息就能把队列撑成上界的许多倍而计数始终不越界——
+            // 每个结点的串与 deque 块是真金白银的堆内存，不入账就等于这道闸只管得住大消息
+            const std::size_t queuedByteCharge = payload.size() + kWebSocketFrameOverheadByteCount;
+            if (queuedByteCharge > m_maximumPendingByteCount || member->pendingByteCount + queuedByteCharge > m_maximumPendingByteCount)
             {
                 m_droppedMessageCount.fetch_add(1, std::memory_order_relaxed); // 丢**最新**的一条并计数：已入队的顺序不被插队打乱
                 continue;
             }
             member->pendingMessages.push_back(Detail::WebSocketHubPendingMessage{.opCode = opCode, .payload = std::string(payload)});
-            member->pendingByteCount += payload.size();
+            member->pendingByteCount += queuedByteCharge;
 
             if (member->isDraining)
             {
@@ -216,7 +221,7 @@ namespace AsynGyanis::Net
 
             Detail::WebSocketHubPendingMessage message = std::move(member->pendingMessages.front());
             member->pendingMessages.pop_front();
-            member->pendingByteCount -= message.payload.size();
+            member->pendingByteCount -= message.payload.size() + kWebSocketFrameOverheadByteCount; // 与入队那一步同一口径，否则占用只涨不落
 
             // 负载是本地串且在 co_await 期间存活：send* 收的是视图，
             // 而协程要到首次 resume 之后才读入参，交出去之前不能让它失效。

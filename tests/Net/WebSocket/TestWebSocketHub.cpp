@@ -296,14 +296,15 @@ namespace AsynGyanis::Net
 
     TEST(WebSocketHub, QueueBoundDropsTheNewestMessageAndCountsIt)
     {
-        constexpr std::size_t kPendingByteBound = 16U;
+        // 上界按「负载 + 每帧固定开销 64」判：80 装得下 10 字节的那几条（各 74），装不下 20 字节那条（84）
+        constexpr std::size_t kPendingByteBound = 80U;
         GatedSendPath         path;
         path.isGated = true;
         WebSocketPeer peer{makeFrameSender(path)};
         WebSocketHub  hub(kPendingByteBound);
         auto          subscription = hub.subscribe("lobby", peer);
 
-        Core::Task<void> firstPublish = hub.publish("lobby", "0123456789abcdefghij"); // 20 字节，比整个上界还大
+        Core::Task<void> firstPublish = hub.publish("lobby", "0123456789abcdefghij"); // 20 字节 + 开销，比整个上界还大
         firstPublish.handle().resume();
         EXPECT_EQ(hub.droppedMessageCount(), 1U) << "单条就超过上界的消息永远放不下：必须丢掉并计数，不能悄悄超编";
 
@@ -312,7 +313,7 @@ namespace AsynGyanis::Net
         secondPublish.handle().resume();
         ASSERT_TRUE(static_cast<bool>(path.parkedWriter));
 
-        // 第三路排进队列（10 ≤ 16）；第四路会让占用变成 20，越界的是它
+        // 第三路排进队列（10 + 开销 = 74 ≤ 80）；第四路会让占用变成 148，越界的是它
         Core::Task<void> thirdPublish = hub.publish("lobby", "abcdefghij");
         thirdPublish.handle().resume();
         Core::Task<void> fourthPublish = hub.publish("lobby", "klmnopqrst");
@@ -329,6 +330,51 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(frameCarriesText(path.sentFrames[0], "1234567890"));
         EXPECT_TRUE(frameCarriesText(path.sentFrames[1], "abcdefghij"));
         EXPECT_EQ(path.sentFrames[1].find("klmnopqrst"), std::string::npos);
+    }
+
+    /**
+     * @brief 钉住：上界按「负载 + 每帧固定开销」记，连发零负载消息绕不过去
+     * @details 只按负载记账时，一条空消息占 0 字节，慢成员的队列就能无限长而计数始终不越界——
+     *          每个结点的串与 deque 块是真金白银的堆内存。入站那侧早就按同一把尺记（见
+     *          kWebSocketFrameOverheadByteCount），这条把出站扇出也钉在同一口径上。
+     *          判据写成「按上界能装几条就收下几条」而不是写死数字：换掉开销常量时它自己跟着动
+     */
+    TEST(WebSocketHub, ChargesPerMessageOverheadSoTinyMessagesCannotEvadeTheBound)
+    {
+        constexpr std::size_t kPendingByteBound = 200U;
+        // 一条 0 负载的消息也要占一份固定开销，因此队列里最多装下「上界 / 开销」条
+        constexpr std::size_t kAcceptedCount = kPendingByteBound / kWebSocketFrameOverheadByteCount;
+        ASSERT_GT(kAcceptedCount, 0U) << "用例的上界取得比一份开销还小，谁都进不去";
+        constexpr std::size_t kAttemptCount = 10U;
+        static_assert(kAttemptCount > kAcceptedCount, "发的条数必须多于装得下的条数，否则这条判据是空的");
+
+        GatedSendPath path;
+        path.isGated = true;
+        WebSocketPeer peer{makeFrameSender(path)};
+        WebSocketHub  hub(kPendingByteBound);
+        auto          subscription = hub.subscribe("lobby", peer);
+
+        // 第一路开写并停在闸门上：它那条已经出队，不占队列
+        Core::Task<void> parkingPublish = hub.publish("lobby", "");
+        parkingPublish.handle().resume();
+        ASSERT_TRUE(static_cast<bool>(path.parkedWriter));
+
+        std::vector<Core::Task<void>> publishes;
+        for (std::size_t attempt = 0U; attempt < kAttemptCount; ++attempt)
+        {
+            publishes.push_back(hub.publish("lobby", ""));
+            publishes.back().handle().resume();
+        }
+        EXPECT_EQ(hub.droppedMessageCount(), kAttemptCount - kAcceptedCount)
+            << "零负载消息同样要按每帧开销入账：越界的那几条必须丢掉并计数，而不是让队列无限长";
+
+        path.release();
+        parkingPublish.handle().promise().result();
+        for (Core::Task<void> &publish: publishes)
+        {
+            publish.handle().promise().result();
+        }
+        EXPECT_EQ(path.sentFrames.size(), kAcceptedCount + 1U) << "在途那一条之外，只有排进队列的那几条该发出去";
     }
 
     /**
@@ -490,7 +536,8 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(findRegistrySample("asyn_websocket_hub_abandoned_messages_total").has_value()) << "还没有集线器，导出里就先有了这条读数";
 
         {
-            constexpr std::size_t kPendingByteBound = 16U;
+            // 上界按「负载 + 每帧固定开销 64」判：100 装得下第二条（74），装不下第三条（148）
+            constexpr std::size_t kPendingByteBound = 100U;
             GatedSendPath         path;
             path.isGated = true;
             WebSocketPeer peer{makeFrameSender(path)};
@@ -505,8 +552,8 @@ namespace AsynGyanis::Net
             Core::Task<void> first = hub.publish("lobby", "1234567890"); // 出队后开写，停在闸门上
             first.handle().resume();
             ASSERT_TRUE(static_cast<bool>(path.parkedWriter));
-            drivePublish(hub.publish("lobby", "abcdefghij")); // 排进队列：占用 10
-            drivePublish(hub.publish("lobby", "klmnopqrst")); // 10+10 越界：丢的是这一条
+            drivePublish(hub.publish("lobby", "abcdefghij")); // 排进队列：占用 74
+            drivePublish(hub.publish("lobby", "klmnopqrst")); // 74+74 越界：丢的是这一条
             EXPECT_EQ(hub.droppedMessageCount(), 1U);
 
             subscription.reset(); // 这一侧先没人收了：在途那条照常写完，队列里那条随之作废
