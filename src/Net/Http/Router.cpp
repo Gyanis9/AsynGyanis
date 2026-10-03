@@ -343,8 +343,11 @@ namespace AsynGyanis::Net
     void Router::writeNotFoundOrNotAllowed(const HttpRequest &request, HttpResponse &response, const bool isMethodNotAllowed, const std::string &allowedMethods)
     {
         // 不重置响应：本函数现在由中间件管道的终点回调调用，而 CORS 与访问日志这类横切
-        // 中间件的头部正是在进入终点之前写下的，重置会把它们一起抹掉。响应对象在会话里
-        // 是每请求新建的局部量（见 httpKeepAliveLoop），不存在跨请求的残留需要清理。
+        // 中间件的头部正是在进入终点之前写下的，重置会把它们一起抹掉。
+        // 「进来时是干净的」这件事由调用方保证，而三条通道的保证不是同一条：h1 按连接复用同一个响应对象、
+        // 在每轮派发开头 reset()（见 HttpSession 的派发准备）；h2 每条流各持一份、路由前本来就是空的
+        // （见 Http2Session 的 PendingRequest::response）；只有 h3 是每请求一个局部量。
+        // 所以别把这句读成「响应对象都是新建的」——照那样写，将来有人据此认为 h1 那侧不必复位就错了
         // 协议版本仍显式交代一次：状态行必须跟随请求的版本
         const std::string requestVersion = request.httpVersion();
         response.setHttpVersion(requestVersion);
