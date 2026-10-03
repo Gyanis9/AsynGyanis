@@ -48,7 +48,7 @@ namespace AsynGyanis::Net
      *          本对象由 HttpParser 逐字段填充，本身不做任何 IO，也不校验报文合法性。
      *
      * @note 头部存储见 HttpHeaderFieldStore：按到达顺序的权威记录 + 按需重建的单值视图
-     *       （普通头部按 RFC 7230 §3.2.2 用 ", " 合并、可重复头部保留首条）。
+     *       （普通头部按 RFC 9110 §5.2 用 ", " 合并、可重复头部保留首条）。
      *       头部名一律转小写存储（RFC 9110 §5.1 大小写不敏感），查询侧同样归一化。
      */
     class ASYN_NET_API HttpRequest
@@ -117,7 +117,7 @@ namespace AsynGyanis::Net
          *          互不覆盖，`headerFieldCount()`、`forEachHeaderField()` 与 `headerValues()` 读到的都是
          *          这份逐条记录（因此重新转发一条请求时不会把多条 `Via` 并成一行）。
          *          以 ", " 合并只发生在**单值读口**（`headers()` / `getHeader()`）：普通头部按
-         *          RFC 7230 §3.2.2 的收件人规则把同名多条拼成一条，可重复头部（目前只有 `set-cookie`）
+         *          RFC 9110 §5.2 的收件人规则把同名多条拼成一条，可重复头部（目前只有 `set-cookie`）
          *          不合并、取首条——那种值本身可以含逗号，合并后就还原不回来。
          * @param key   头部字段名，大小写不敏感
          * @param value 头部字段值，原样保存不做裁剪

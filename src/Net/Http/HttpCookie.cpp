@@ -140,7 +140,7 @@ namespace AsynGyanis::Net
     {
         if (!isValidName(cookieName))
         {
-            throw Base::InvalidArgumentException("HttpCookie: Cookie 名字必须是 RFC 7230 的 token，收到的是「" + std::string(cookieName) +
+            throw Base::InvalidArgumentException("HttpCookie: Cookie 名字必须是 RFC 9110 §5.6.2 的 token，收到的是「" + std::string(cookieName) +
                                                  "」（不能含空格、控制符与 \" ; , 等分隔符）");
         }
         if (!isValidValue(cookieValue))

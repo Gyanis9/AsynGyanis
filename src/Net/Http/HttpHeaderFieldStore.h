@@ -87,7 +87,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 取该名对应的单值（按权威记录算，不建单值视图）
-         * @details 可重复头部取首条；普通头部同名多条按 RFC 7230 §3.2.2 以 ", " 合并，
+         * @details 可重复头部取首条；普通头部同名多条按 RFC 9110 §5.2 以 ", " 合并，
          *          与 singleValueView() 同口径。
          * @param name 头部名，大小写不敏感
          * @return std::optional<std::string> 头部值；未命中时为空
@@ -151,7 +151,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 取单值视图（名 → 合并后的值）
-         * @details 可重复头部只留首条；普通头部同名多条按 RFC 7230 §3.2.2 以 ", " 合并。
+         * @details 可重复头部只留首条；普通头部同名多条按 RFC 9110 §5.2 以 ", " 合并。
          * @return const std::unordered_map<std::string, std::string>& 视图引用
          */
         [[nodiscard]] const std::unordered_map<std::string, std::string> &singleValueView() const;

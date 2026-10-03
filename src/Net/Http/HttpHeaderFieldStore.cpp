@@ -11,7 +11,7 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        // 同名普通头部合并时的分隔符，与 RFC 7230 §3.2.2 给出的字段值列表形式一致
+        // 同名普通头部合并时的分隔符，与 RFC 9110 §5.2 给出的字段值列表形式一致
         constexpr std::string_view kMergedHeaderSeparator = ", ";
 
         // 允许在同一报文里出现多条、且不得逗号合并的头部名单（已归一化为小写）。
@@ -144,7 +144,7 @@ namespace AsynGyanis::Net
                 }
                 continue;
             }
-            // 普通头部同名多条按 RFC 7230 §3.2.2 以 ", " 合并，与 rebuildSingleValueView 同口径
+            // 普通头部同名多条按 RFC 9110 §5.2 以 ", " 合并，与 rebuildSingleValueView 同口径
             collectedValue->append(kMergedHeaderSeparator);
             collectedValue->append(valueOf(ref));
         }
@@ -314,7 +314,7 @@ namespace AsynGyanis::Net
                 continue;
             }
 
-            // 普通头部同名多条时，按 RFC 7230 §3.2.2 的收件人规则以 ", " 合并到同一条，
+            // 普通头部同名多条时，按 RFC 9110 §5.2 的收件人规则以 ", " 合并到同一条，
             // 视图里的条目位置与键都不变（可重复头部也不会派生出伪键）
             if (const auto [iterator, isInserted] = m_singleValues.try_emplace(std::string{name}, std::string{value}); !isInserted)
             {

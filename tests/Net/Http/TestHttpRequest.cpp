@@ -123,7 +123,7 @@ namespace AsynGyanis::Net
         request.addHeader("Accept-Encoding", "gzip");
         request.addHeader("accept-encoding", "br");
 
-        // 单值视图按 RFC 7230 §3.2.2 的收件人规则合并，权威记录仍逐条留档
+        // 单值视图按 RFC 9110 §5.2 的收件人规则合并，权威记录仍逐条留档
         EXPECT_EQ(request.getHeader("accept-encoding").value_or(""), "gzip, br");
 
         const std::vector<std::string> values = request.headerValues("Accept-Encoding");

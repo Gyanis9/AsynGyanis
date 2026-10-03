@@ -194,7 +194,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 判「客户端自带的 request-id 能不能采信」，两条落定入口共用
          * @details 读权威记录取首条（视图版），而不是 getHeader()：x-request-id 不在可重复头部
-         *          名单里，同名多条时 getHeader() 会按 RFC 7230 §3.2.2 以 ", " 合并，两条互不相干的
+         *          名单里，同名多条时 getHeader() 会按 RFC 9110 §5.2 以 ", " 合并，两条互不相干的
          *          上游链路 id 会被拼成一个原样回显出去；取首条才是这里要的口径。校验阶段只读不拷，
          *          需要落成字符串与否由调用方决定。
          * @param request 已收齐的请求对象
