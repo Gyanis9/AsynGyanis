@@ -633,6 +633,10 @@ namespace AsynGyanis::Net
                 LOG_WARN_FMT("Http3Session: 流 {} 上的请求没有接上路由器，回 503", streamId);
                 response.setStatus(503);
                 response.setBody("HTTP/3 会话尚未接上路由器");
+                // RFC 9110 §15.6.4 给 503 配了 Retry-After，本框架的另外两处 503（h1/h2/h3 的在途预算
+                // 出口）也都带着它。这一处此前是整条链上唯一不带的一条——「会话还没接路由器」恰恰是
+                // 启动期几百毫秒内会自己好的状态，一秒后重试就是真实预期，不写就等于让对端自己猜
+                static_cast<void>(response.setHeader("retry-after", "1"));
             }
 
             // 耗时在响应真的排进待发字节之后才取：与 h2 同一相对位置，也免得把收尾这几个调用的

@@ -1214,6 +1214,29 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 还没接上路由器的那个 503 也要带 Retry-After
+     * @details 本框架的 503 有三处出口：h1/h2/h3 的在途预算、h2 的第二条隧道（刻意不带，另有说明）、
+     *          以及 h3 的「会话没接路由器」。第一处三条通道都带 `retry-after: 1`，第二处刻意省掉，
+     *          而第三处此前是整条链上唯一漏写且没有说明的一条——它偏偏最该带：这是启动期几百毫秒内
+     *          会自己好的状态，按 Retry-After 重试就对，不写就等于让对端自己猜。RFC 9110 §15.6.4
+     *          对 503 的建议正是 Retry-After。
+     */
+    TEST(Http3Session, AnswersServiceUnavailableWithRetryAfterWhenRouterIsMissing)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData);
+        // 刻意不调 attachRouter：这就是「会话先建好、路由器晚一步接上」的那一拍
+
+        Http3ClientPeer                        peer;
+        const Http3ClientPeer::DecodedResponse response = answerOneGet(session, peer, sentStreamData, "/hello");
+        EXPECT_EQ(response.status, 503) << "没接路由器的会话该回 503，而不是把请求吞掉";
+        const auto retryAfterHeader = response.headers.find("retry-after");
+        EXPECT_NE(retryAfterHeader, response.headers.end()) << "503 没带 Retry-After：对端只能自己猜退避多久";
+        EXPECT_EQ(retryAfterHeader == response.headers.end() ? std::string{} : retryAfterHeader->second, "1") << "取值要与在途预算那处 503 同一口径";
+    }
+
+    /**
      * @brief 钉住：h3 的尾部字段发成正文之后的第二个字段段，且收尾由它带出来
      * @details RFC 9114 §4.3 与 h2 同源：尾段就是一个排在最后一个 DATA 之后的普通字段段，而它之后
      *          什么都不剩（FIN 只能跟着它）。三件事一并钉：段数、字段落在哪一段、头段带着 trailer 声明。
