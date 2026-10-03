@@ -48,6 +48,16 @@ namespace AsynGyanis::Base
         ,
         m_maximumQueueSize(std::clamp(queueSize, kMinimumQueueSize, kMaximumQueueSize)), m_overflowPolicy(policy)
     {
+        // 下游那一份阈值要在构造时就接过来当自己的：LogSink 的契约是「过滤由调用方用 shouldLog() 预筛」，
+        // 而 Logger 只看挂在它下面的这一层——被包装的那个 sink 从来不是 Logger 的子节点。不接过来，
+        // `wrapped: {type: file, level: ERROR}` 这类配置下的每一条 INFO 都要先拷好正文、排进队列、
+        // 由 worker 取出来再挡下，最后还记进「丢弃数」：一次配置选择在面板上长成「日志在偷偷丢」，
+        // 而队列与后台线程为注定丢弃的内容各付一遍钱
+        if (m_wrappedSink != nullptr)
+        {
+            setLevel(m_wrappedSink->getLevel());
+        }
+
         // jthread 在析构时会 request_stop 并 join；本类的 stop() 已负责唤醒条件变量后再 join，
         // 因此把停止状态统一收敛到 stop_token 上，不再另设 m_running 布尔量
         m_workerThread = std::jthread([this](const std::stop_token &stopToken) { workerLoop(stopToken); });

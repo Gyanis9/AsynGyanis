@@ -34,6 +34,10 @@ namespace AsynGyanis::Base
      * @note 析构或 stop() 尽力排空残留事件，不保证跨进程崩溃时的日志完整性。
      * @note 队列容量钳制在 [kMinimumQueueSize, kMaximumQueueSize] 之间，构造函数自己完成，
      *       调用方无需保证传入合法容量。
+     * @note 构造时把**被包装 sink 的等级阈值接成自己这一层的阈值**：Logger 只按挂在它下面的这一层
+     *       预筛（LogSink 的契约），接过来才能让「注定被下游挡下」的事件根本不进队列，也不去占丢弃数。
+     *       之后运行期只改这一层（`setLevel`）不会回头改下游那一份——两侧不一致时以落地侧为准，
+     *       被下游挡下的那部分会计入 droppedEventCount()，这是配置写法而不是丢日志。
      */
     class ASYN_BASE_API AsyncSink : public LogSink
     {

@@ -2,6 +2,8 @@
 
 #include "Base/Log/Sinks/AsyncSink.h"
 
+#include "Base/Log/Logger.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -584,6 +586,39 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(events->contains("at_wrapped_level")) << "达到等级的事件被误挡";
         EXPECT_EQ(events->size(), 1u);
         EXPECT_EQ(sink.droppedEventCount(), 1u) << "被下游等级挡下的事件应计入丢弃";
+    }
+
+    /**
+     * @brief 下游的等级阈值在构造时就接成自己这一层的，Logger 的预筛因此替整条异步路径挡掉注定被丢的事件
+     * @details Logger 只按挂在它下面的那一层预筛（被包装的 sink 从来不是它的子节点）。不接过来，
+     *          `wrapped: {type: file, level: ERROR}` 之下每一条 INFO 都要拷正文、排进队列、由 worker
+     *          取出来再挡下，最后还记进丢弃数——一次配置选择在面板上长成「日志在偷偷丢」，而队列与后台
+     *          线程为注定丢弃的内容各付一遍钱。上面那条走的是直接 `write()` 的入口（绕过预筛），
+     *          挡下仍记丢弃；两条合起来才把「谁负责预筛、谁负责兜底」说清。
+     */
+    TEST(AsyncSink, AdoptsWrappedLevelSoTheLoggerPrefilters)
+    {
+        auto downstream = std::make_unique<RecordingSink>(std::make_shared<RecordedEvents>());
+        auto events     = downstream->events();
+        downstream->setLevel(LogLevel::Error);
+        auto async = std::make_shared<AsyncSink>(std::move(downstream), 128);
+
+        EXPECT_EQ(async->getLevel(), LogLevel::Error) << "下游阈值没接成这一层自己的：Logger 的预筛问不到它";
+
+        Logger logger("adopts-wrapped-level");
+        logger.setLevel(LogLevel::Debug);
+        logger.addSink(async);
+
+        for (int index = 0; index < 3; ++index)
+        {
+            logger.log(LogLevel::Info, "noise");
+        }
+        logger.log(LogLevel::Error, "kept");
+        async->flush();
+
+        ASSERT_TRUE(events->contains("kept"));
+        EXPECT_EQ(events->size(), 1u) << "达到下游阈值的记录被多挡了一条";
+        EXPECT_EQ(async->droppedEventCount(), 0u) << "三条 INFO 走完了整条异步路径还被记成丢弃：配置选择冒充了丢日志";
     }
 
     /**

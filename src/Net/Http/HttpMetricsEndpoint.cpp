@@ -173,7 +173,9 @@ namespace AsynGyanis::Net
         // 请求目标里送原始 Latin-1 字节的客户端因此能把自己在访问日志里的那行消音。没有这条读数，
         // 「审计记录被消音」与「这段时间没人写日志」在面板上是同一个形状
         appendCounter(out, makeMetricName(metricNamePrefix, "log_dropped_events_total"),
-                      "异步日志出口累计丢掉的事件数（队列满按策略丢、下游卡住等位超时、落地时抛异常都算；进程级，多条通道报同一份）", Base::droppedAsyncLogEventCount());
+                      "异步日志出口累计没能落地的事件数（队列满按策略丢、Block 等位超时、已请求停止时还收下"
+                      "的、落地时抛出异常的、以及被下游等级挡下的都算；进程级，多条通道报同一份）",
+                      Base::droppedAsyncLogEventCount());
 
         // 常驻内存：进程级读数，抓哪台都是同一份。名字跟着 Prometheus 的既成约定走（process_*）
         const std::string residentMemoryName = makeMetricName(metricNamePrefix, "process_resident_memory_bytes");
