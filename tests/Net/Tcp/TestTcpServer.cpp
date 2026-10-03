@@ -1241,7 +1241,8 @@ namespace AsynGyanis::Net
         const LoopbackClient silentClient(listeningPort);
         ASSERT_TRUE(silentClient.isValid()); // 连上但不发头：它停在「等读头」这一步
 
-        // 第二条带合法的头：两条连接按到达顺序被接受循环处理，因此这里不需要额外等待条件
+        // 第二条带合法的头：名额是在收下一条连接的当口落下的（不等那条读头协程开始跑），
+        // 因此接受循环一趟收完两条也判得出满载——这里不需要、也没法用「等第一条先被处理」这种先后条件
         const LoopbackClient secondClient(listeningPort);
         ASSERT_TRUE(secondClient.isValid());
         ASSERT_TRUE(secondClient.sendAll(makeV1Header("203.0.113.5", 5, "192.0.2.1", 80)));

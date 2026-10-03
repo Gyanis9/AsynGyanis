@@ -206,13 +206,18 @@ namespace AsynGyanis::Net
         // 没人持有、却随时可能被打发的帧（归属契约见 Scheduler 的类注释）
         m_connectionTasks.push_back(std::move(headerTask));
         m_loop.scheduler().schedule(m_connectionTasks.back().handle());
+        // 名额落在这里，而不是等协程第一次被恢复时才在 admitAfterProxyHeader 里落：接受循环一趟会把
+        // 积压的连接一次收完，那一趟里每条连接判定看到的都是同一份旧计数——一批「只握手不发音节」的
+        // 对端照样能把上限绕过（Linux 侧实测到的读数：两条连接都过了判定，拒绝计数两秒内一直是零）。
+        // 排在入表与排度之后：那两步任一抛掉时协程从未开始，也就不欠一个需要归还的名额
+        ++m_pendingProxyHeaders;
         return true;
     }
 
     Core::Task<void> TcpServer::admitAfterProxyHeader(Core::AsyncSocket socket)
     {
-        // 在途的头占一个并发名额：本协程的每个出口（含异常展开）都要把它还回去
-        ++m_pendingProxyHeaders;
+        // 归还的是 takeOverConnection() 在收下列时落下的那个名额（那里落、这里还，见那里的说明）：
+        // 本协程的每个出口（含异常展开）都要还一次，且只还一次
         struct PendingHeaderGuard
         {
             std::size_t &counter;
