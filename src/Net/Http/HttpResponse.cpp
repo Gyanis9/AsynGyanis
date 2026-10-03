@@ -937,6 +937,17 @@ namespace AsynGyanis::Net
             result.append(kHeaderNameValueSeparator);
             result.append(trailerDeclarationValue());
             result.append(kCrLf);
+        } else if (m_trailerStore.has_value())
+        {
+            // 登记了尾部字段却不是分块报文：HTTP/1.1 上尾部字段只能夹在分块报文的终止块里
+            // （RFC 9112 §7.1.2），按 content-length 或「读到关闭」定界的响应没有那个位置，
+            // 而 addTrailerField 那时已经回了 true。不吭声就等于让业务以为校验和随正文发出去了——
+            // 与它「拒收而不是静默丢弃」的口径正好相反。h2/h3 不受这条限制（尾部是独立的一个头块/段，
+            // 各自会话直接读这份记录），故只在 h1 的序列化这一处告警
+            LOG_WARN_FMT("HttpResponse: 本响应登记了尾部字段（{}），但它不是分块（流式）响应：HTTP/1.1 上尾部字段只能夹在"
+                         "分块报文的终止块里（RFC 9112 §7.1.2），这些字段不会上线。要它们真的发出去，先调 "
+                         "startChunkedResponse() 再登记；这条限制只存在于 HTTP/1.1，h2/h3 照常带得动",
+                         trailerDeclarationValue());
         }
 
         result.append(kCrLf);

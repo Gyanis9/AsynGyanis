@@ -7,6 +7,7 @@
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include "NetTestSupport.h"
+#include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -1214,17 +1215,26 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：`Trailer:` 声明只随分块头部出现，且自设的那一条整体让位
+     * @brief 钉住：`Trailer:` 声明只随分块头部出现，且自设的那一条整体让位；带不动时要出声道一次
      * @details 非分块响应的头部之后没有放尾部字段的位置（正文由 content-length 定界），声明了就是骗人。
      *          分块响应里声明由已登记的字段生成：调用方自设的那一条若与它并存，对端读到的是两条互相
      *          不一致的承诺，因此整体剥掉自设的那一条。
+     *          第三件事是「不出声的丢失」：`addTrailerField` 在非分块响应上照样返回 true（它无从知道
+     *          这条响应最终走哪条通道，h2/h3 带得动），而它的文档承诺「三条出站通路都从这一份记录取值」——
+     *          于是 h1 上业务写进尾部的校验和会一个字都不上线。现在 h1 的序列化那一处会写一条 WARN
+     *          把这件事说出来（与该方法「拒收而不是静默丢弃」的口径对齐）
+     * @note 证伪：摘掉序列化里那条 WARN，本条红在 1237 与 1252 两处；把告警条件写成「登记了尾部字段就告警」
+     *       （不看是不是分块），只红在 1252（分块响应不该再告警）
      */
     TEST(HttpResponse, DeclaresTrailersOnlyForChunkedResponsesAndReplacesTheHandWrittenOne)
     {
+        HttpTestSupport::LogCapture logs;
+
         HttpResponse plain;
         plain.setBody("hi");
         ASSERT_TRUE(plain.addTrailerField("x-checksum", "abc"));
         EXPECT_EQ(plain.serializeHead().find("trailer:"), std::string::npos) << "非分块响应不补声明：" << plain.serializeHead();
+        EXPECT_EQ(logs.countContaining("不会上线"), 1U) << "非分块响应上登记的尾部字段静默消失：addTrailerField 回了 true，业务不会知道自己的校验和压根没发出去";
 
         HttpResponse chunked;
         chunked.startChunkedResponse(200);
@@ -1238,6 +1248,7 @@ namespace AsynGyanis::Net
         const std::size_t firstDeclaration = head.find("trailer:");
         ASSERT_NE(firstDeclaration, std::string::npos);
         EXPECT_EQ(head.find("trailer:", firstDeclaration + 1), std::string::npos) << "一条报文只该有一条声明";
+        EXPECT_EQ(logs.countContaining("不会上线"), 1U) << "分块响应带得动尾部字段，不该为它再告警一次";
     }
 
     /// 终止块的字节形状：裸终止块，以及「终止块 + 尾部字段段 + 空行」（RFC 9112 §7.1.2）
