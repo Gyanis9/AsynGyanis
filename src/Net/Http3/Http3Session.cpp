@@ -167,7 +167,7 @@ namespace AsynGyanis::Net
 
     Http3Session::Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, std::shared_ptr<HttpMetricsCollector> metrics,
                                std::shared_ptr<HttpMemoryBudget> memoryBudget, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, StreamAborter aborter,
-                               PeerAddressProvider peerAddressProvider) :
+                               PeerAddressProvider peerAddressProvider, Http3Connection::LocalSettings localSettings) :
         m_writer(std::move(writer)), m_crediter(std::move(crediter)), m_aborter(std::move(aborter)), m_metrics(std::move(metrics)),
         m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget)), m_peerAddressProvider(std::move(peerAddressProvider))
     {
@@ -205,7 +205,7 @@ namespace AsynGyanis::Net
 
         // 三条本端单向流由连接层自己开（流号来自传输层）、SETTINGS 由它写进控制流、QPACK 两侧由它接上；
         // 接收额度的归还口一并交给它——非 DATA 字节的额度现在在那里还
-        m_connection = std::make_unique<Http3Connection>(std::move(opener), m_writer, m_crediter, std::move(callbacks));
+        m_connection = std::make_unique<Http3Connection>(std::move(opener), m_writer, m_crediter, std::move(callbacks), localSettings);
         m_isUsable   = m_connection->isUsable();
         if (!m_isUsable)
         {

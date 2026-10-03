@@ -21,6 +21,7 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/HttpStreamBody.h"
+#include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Http3Error.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
@@ -106,6 +107,9 @@ namespace AsynGyanis::Net
          * @param peerAddressProvider 对端地址文本的出口（可空：为空时业务读到的 `HttpRequest::remoteAddress()`
          *        是空串）。本会话没有套接字可问——h3 的字节走的是承载层的 UDP 通道，来源只有那条 QUIC
          *        连接认得，因此由 QuicServer 在建会话时把它交下来。取值只在首次需要时问一次并缓存
+         * @param localSettings 本端在 SETTINGS 里公布的能力（QPACK 动态表容量与阻塞流数、可收的头段上限、
+         *        单帧上限、要不要支持 RFC 9220 的扩展 CONNECT）。默认值即此前唯一可能的那一份；
+         *        服务端一侧此前没法交进来，本文件的构造里原样转交给连接层（客户端侧一直是这么给的）
          * @note 构造里就把 HTTP/3 连接层建起来：三条本端单向流、SETTINGS 与 QPACK 两侧都在那时接上。
          *       开流失败只记日志并让会话保持不可用（`isUsable()` 为假），不抛异常：
          *       一条连接建不起 h3 不该把服务端拖垮
@@ -118,7 +122,7 @@ namespace AsynGyanis::Net
          */
         Http3Session(StreamOpener opener, StreamWriter writer, StreamCrediter crediter = {}, std::shared_ptr<HttpMetricsCollector> metrics = nullptr,
                      std::shared_ptr<HttpMemoryBudget> memoryBudget = nullptr, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr, StreamAborter aborter = {},
-                     PeerAddressProvider peerAddressProvider = {});
+                     PeerAddressProvider peerAddressProvider = {}, Http3Connection::LocalSettings localSettings = {});
 
         /**
          * @brief 析构会话：连接层与它持有的 QPACK 两侧动态表随本类一并释放

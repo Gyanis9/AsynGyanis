@@ -20,6 +20,7 @@
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/StaticFileService.h"
+#include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Http3Session.h"
 #include "Net/Quic/QuicConnection.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
@@ -116,6 +117,10 @@ namespace AsynGyanis::Net
             /// h3 会话的请求解析上限（正文总量上限等），与 h1/h2 同一套配置。
             /// 不设置时用 HttpParserLimits 的默认值——**不能没有上限**：一条 POST 就能把内存吃光
             HttpParserLimits parserLimits{};
+            /// 本端在 HTTP/3 SETTINGS 里公布的能力，也是 QPACK 两侧与单帧缓冲的实际约束
+            /// （RFC 9114 §4.2.2、RFC 9204 §5、RFC 9220 §3.1）。此前服务端一侧只能吃编译期默认值：
+            /// 连接层早就按这一份配置接 QPACK、限帧长、决定认不认扩展 CONNECT，缺的只是交进来的那道口
+            Http3Connection::LocalSettings http3Settings{};
             /// 在途正文字节的全局预算（可空：空表示不受约束）。与 HTTP 侧共用同一份账——
             /// h3 的正文同样驻留在进程内存里，只限「单条流」挡不住 100 条流各压 8 MiB
             std::shared_ptr<HttpMemoryBudget> memoryBudget;

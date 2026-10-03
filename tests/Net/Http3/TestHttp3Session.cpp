@@ -664,6 +664,67 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：交进会话的 `LocalSettings` 真的写进了本端 SETTINGS，而不是只停在参数上
+     * @details 连接层一直就是按这一份配置接 QPACK 两侧、限单帧缓冲、决定认不认扩展 CONNECT，
+     *          但服务端一侧此前只能吃编译期默认值——会话的构造把它丢掉过也没人会发现（客户端侧一直是交进来的）。
+     *          判据落在对端看得见的那一帧上：三项数值要按交进来的那份公布，关掉的那项干脆不许出现
+     *          （RFC 9114 §4.2.2、RFC 9204 §5、RFC 9220 §3.2.1：不声明就对端就不该发）
+     */
+    TEST(Http3Session, AnnouncesConfiguredLocalSettingsOnTheControlStream)
+    {
+        Http3Connection::LocalSettings settings;
+        settings.qpackMaximumTableCapacityByteCount = 512U;
+        settings.qpackMaximumBlockedStreamCount     = 7U;
+        settings.maximumFieldSectionSizeByteCount   = 4096U;
+        settings.isExtendedConnectEnabled           = false;
+
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                {}, nullptr, nullptr, nullptr, {}, {}, settings);
+        ASSERT_TRUE(session.isUsable());
+        session.flushPendingStreamData();
+
+        ASSERT_FALSE(sentStreamData.empty()) << "会话没在控制流上写出 SETTINGS";
+        const CapturedStreamData &announced = sentStreamData.front();
+        ASSERT_GE(announced.bytes.size(), 3U);
+        ASSERT_EQ(announced.bytes[0], kControlStreamType) << "单向流的第一字节应当是流类型";
+
+        // 帧读取器只吃帧，不认流类型那一字节，因此从第二字节起喂
+        Http3FrameReader frameReader(4096U);
+        const std::span<const std::uint8_t> frameBytes(announced.bytes.data() + 1, announced.bytes.size() - 1);
+        ASSERT_TRUE(frameReader.feed(frameBytes).has_value());
+        const auto nextFrame = frameReader.nextFrame();
+        ASSERT_TRUE(nextFrame.has_value()) << nextFrame.error().message;
+        ASSERT_TRUE(nextFrame->has_value()) << "控制流上第一段字节里没读出一个完整的帧";
+        const auto *settingsFrame = std::get_if<Http3SettingsFrame>(&**nextFrame);
+        ASSERT_TRUE(settingsFrame != nullptr) << "本端控制流上的第一帧不是 SETTINGS";
+
+        const auto announcedValue = [&settingsFrame](const Http3SettingId id) -> std::optional<std::uint64_t>
+        {
+            for (const auto &[settingId, value]: settingsFrame->settings)
+            {
+                if (settingId == id)
+                {
+                    return value;
+                }
+            }
+            return std::nullopt;
+        };
+
+        EXPECT_EQ(announcedValue(Http3SettingId::QpackMaxTableCapacity), 512U) << "QPACK 动态表容量没按交进来的那份公布";
+        EXPECT_EQ(announcedValue(Http3SettingId::QpackBlockedStreams), 7U) << "阻塞流上限没按交进来的那份公布";
+        EXPECT_EQ(announcedValue(Http3SettingId::MaxFieldSectionSize), 4096U) << "可收头段上限没按交进来的那份公布";
+        EXPECT_EQ(announcedValue(Http3SettingId::EnableConnectProtocol), std::nullopt) << "关掉扩展 CONNECT 时这一项不该出现";
+    }
+
+    /**
      * @brief 吃下对端控制流上的 SETTINGS 之后会话仍可用
      */
     TEST(Http3Session, ConsumesPeerSettingsAndStaysUsable)

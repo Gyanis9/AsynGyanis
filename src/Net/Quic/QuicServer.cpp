@@ -538,7 +538,9 @@ namespace AsynGyanis::Net
                 [rawConnection](const std::int64_t streamId, const std::uint64_t applicationErrorCode) { rawConnection->abortStream(streamId, applicationErrorCode); },
                 // h3 的会话没有套接字可问，来源只有这条 QUIC 连接认得：交一个出口下去，
                 // 让业务在 h1/h2/h3 三条通道上读到同一个字段（HttpRequest::remoteAddress()）
-                [rawConnection] { return rawConnection->remoteAddress(); });
+                [rawConnection] { return rawConnection->remoteAddress(); },
+                // 本端公布的能力交下去：连接层按这一份接 QPACK 两侧、限单帧缓冲、决定认不认扩展 CONNECT
+                m_configuration.http3Settings);
         if (m_router != nullptr)
         {
             session->attachRouter(*m_router);
