@@ -735,13 +735,8 @@ namespace AsynGyanis::Net
             static_cast<void>(deliverFieldSection(streamId, state, fields, !fieldSectionCarriesPseudoHeader(fields)));
         }
 
-        if (state.isHeadRejected && m_qpackDecoder->hasBlockedFieldSection(static_cast<std::uint64_t>(streamId)))
-        {
-            // 头段已被判畸形，这条消息剩下的段不再解：告诉对端其上的动态表引用一并作废（§4.4.2），
-            // 顺带清掉本端为它们留的字节——留着就要压到连接结束
-            m_qpackDecoder->noteStreamAbandoned(static_cast<std::uint64_t>(streamId), decoderStreamBytes);
-            queueQpackInstructions({}, decoderStreamBytes);
-        }
+        // 判定失败那一路由 rejectRequestHead 负责取消这条流在解码侧的账（连挂起的段一起摘），
+        // 循环条件随即退出，这里只负责把「还压着段」这个事实记回流状态
         state.isFieldSectionBlocked = m_qpackDecoder->hasBlockedFieldSection(static_cast<std::uint64_t>(streamId));
         // 对端在指令到达之前就已 END_STREAM：那一刀的收尾当时被推迟，补在这里。本函数最后一次用到
         // state 就是这一句——收尾判定会把两侧都收完的流从表里摘掉，之后再碰它就是踩已释放的对象
@@ -1260,12 +1255,27 @@ namespace AsynGyanis::Net
         }
     }
 
+    void Http3Connection::abandonInboundFieldSections(const std::int64_t streamId)
+    {
+        if (!m_qpackDecoder || !m_qpackDecoder->hasFieldSectionBookkeeping(static_cast<std::uint64_t>(streamId)))
+        {
+            // 没账可取消：这条流一个头段都没解过（或已交干净等过 Ack），平白发指令会把对端搞糊涂
+            return;
+        }
+        std::string decoderStreamBytes;
+        m_qpackDecoder->noteStreamAbandoned(static_cast<std::uint64_t>(streamId), decoderStreamBytes);
+        queueQpackInstructions({}, decoderStreamBytes);
+    }
+
     void Http3Connection::rejectRequestHead(const std::int64_t streamId, StreamState &state, const std::string_view reason)
     {
         // 不在这里重置：RFC 9114 §4.1.2 允许服务端先回一个错误响应再收流，而回哪个状态码属业务层
         // （400/431/414 的区分只有会话与 Router 知道）。会话据此作答，作答完照常结束这条流
         LOG_WARN_FMT("Http3Connection: 流 {} 的请求头部畸形（{}），已交回会话按错误响应处置", streamId, reason);
         state.isHeadRejected = true;
+        // 这条消息的字段本端不再解：先按 §4.4.2 取消它在解码侧的账，否则这段的待确认记录与挂起字节
+        // 要留到连接结束——而会话随后就把这条流收掉了，再没有别的地方会清
+        abandonInboundFieldSections(streamId);
         if (m_callbacks.onMalformedRequest)
         {
             m_callbacks.onMalformedRequest(streamId, reason);
@@ -1279,6 +1289,9 @@ namespace AsynGyanis::Net
     {
         LOG_WARN_FMT("Http3Connection: 流 {} 被判定为 {}（{}），该流作废；连接与其它流不受影响", streamId, reason, http3ErrorCodeName(errorCode));
         m_outbound.erase(streamId);
+        // 与 noteStreamCancelledByPeer 对称：对端取消时本端清两边的账，本端自己作废时解码侧那份账
+        // 也必须清，否则这条流挂起的头块字节与待确认记录一直留到连接结束（§4.4.2）
+        abandonInboundFieldSections(streamId);
 
         const auto entry = m_streams.find(streamId);
         if (entry != m_streams.end())

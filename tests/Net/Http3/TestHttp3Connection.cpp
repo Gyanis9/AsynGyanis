@@ -747,6 +747,97 @@ TEST(Http3Connection, TrailerSectionBehindABlockedHeadIsNotDeliveredOutOfOrder)
     ASSERT_EQ(events.requestsEnded.size(), 1u);
 }
 
+/**
+ * @brief 本端作废一条流时，要把该流在解码器侧的头块记账取消掉，而不是留到连接结束
+ * @details 全仓只有 `noteStreamCancelledByPeer`（对端 RESET 那条）会调解码器的收尾。本端自己判畸形
+ *          （`rejectRequestHead`）或自己重置（`failStream`）时，那条流上「已解出待确认的头块」与
+ *          「还压着的挂起段」都没人清：前者让这条流的 Section Ack 永远发不出去，后者是本端为对端
+ *          保留的原始字节——一个对端可以只发注定被判畸形的头段、或者注定被重置的流，按流号一条条把
+ *          这两张表撑下去，而它每开一条流都换一个号。按 RFC 9204 §4.4.2/§2.1.3，解码侧放弃一条流就
+ *          应当在解码器流上发 Stream Cancellation，这既清本端的账，也让对端尽早释放它那边因这条流
+ *          而拖住的动态表引用与阻塞名额
+ * @note 证伪：摘掉 `rejectRequestHead` 或 `failStream` 里新加的收尾，对应那一格红；把「有没有账」这道
+ *       判断改成无条件发，第三格（畸形但整段不含动态表引用那格）红——没账可取消的流不该多出这条指令
+ */
+TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
+{
+    // 本端发起的三条单向流里解码器流是第三个（上一条用例已钉过它的类型前缀是 0x03）
+    constexpr std::int64_t kLocalDecoderStreamId = 11;
+    // 流 0 的取消指令：'01' 加 6 位前缀的流标识，单字节档就是 0x40
+    const std::string streamCancellationForStreamZero = std::string(1, static_cast<char>(0x40));
+
+    // 格一：头段解出来了但判定不过（大写头名）——本端不再解这条消息，要留下取消指令
+    {
+        FakeTransport                  transport;
+        EventLog                       events;
+        Http3Connection::LocalSettings settings;
+        settings.qpackMaximumTableCapacityByteCount = 4096;
+        auto connection                             = makeConnection(transport, events, settings);
+
+        std::string headBlock;
+        std::string instructions;
+        {
+            QpackEncoder peerEncoder(4096, 100, 4096);
+            auto         fields = minimalRequestFields();
+            fields.back().name  = "Accept"; // 大写：RFC 9114 §4.2 判畸形
+            const auto encoded  = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(fields), headBlock, instructions);
+            ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+        }
+        ASSERT_FALSE(instructions.empty()) << "对端插了表，这段的 Required Insert Count 才非 0，本端才会留下待确认的记录";
+
+        connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+        connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02) + instructions), false);
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headBlock)), false);
+        ASSERT_EQ(events.malformedRequests.size(), 1u) << "前提：头段被判畸形交回会话";
+        connection->flush();
+        EXPECT_NE(transport.bytesOf(kLocalDecoderStreamId).find(streamCancellationForStreamZero), std::string::npos) << "本端不再解这条流，却没有在解码器流上取消它的头块";
+    }
+
+    // 格二：头段还压着而本端把这条流重置了（请求流上出现 SETTINGS 帧）
+    {
+        FakeTransport                  transport;
+        EventLog                       events;
+        Http3Connection::LocalSettings settings;
+        settings.qpackMaximumTableCapacityByteCount = 4096;
+        auto connection                             = makeConnection(transport, events, settings);
+
+        std::string headBlock;
+        std::string instructions;
+        {
+            QpackEncoder peerEncoder(4096, 100, 4096);
+            const auto   encoded = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(minimalRequestFields()), headBlock, instructions);
+            ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+        }
+        connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+        connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02)), false);
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headBlock)), false);
+        ASSERT_TRUE(events.headerFields.empty()) << "前提：头段还压在解码器里";
+
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+        ASSERT_EQ(events.streamsReset.size(), 1u) << "前提：这条流被本端重置";
+        connection->flush();
+        EXPECT_NE(transport.bytesOf(kLocalDecoderStreamId).find(streamCancellationForStreamZero), std::string::npos) << "重置一条流之后，本端仍替它留着挂起的头块字节";
+    }
+
+    // 反向格：本端确实作废了这条流，但它一个头块都没解成（Required Insert Count 为 0，也没挂起段）——
+    // 没账可取消时不该多出这条指令
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events);
+        auto          fields     = minimalRequestFields();
+        fields.back().name       = "Accept"; // 大写：RFC 9114 §4.2 判畸形，而这段不含任何动态表引用
+        std::string encoderBytes;
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(fields, encoderBytes))), false);
+
+        ASSERT_EQ(events.malformedRequests.size(), 1u) << "前提：头段被判畸形";
+        EXPECT_TRUE(encoderBytes.empty()) << "前提：这台对端不插表，本端不为这段留任何账";
+        connection->flush();
+        EXPECT_EQ(transport.bytesOf(kLocalDecoderStreamId).find(streamCancellationForStreamZero), std::string::npos)
+                << "没有可取消的账就不该发这条指令：那会把对端这条流上照常等待确认的状态打乱";
+    }
+}
+
 TEST(Http3Connection, FlushHandsEveryStreamItsOwnWriteAndDrainsTheQueue)
 {
     FakeTransport transport;

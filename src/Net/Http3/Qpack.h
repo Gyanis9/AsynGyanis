@@ -509,7 +509,15 @@ namespace AsynGyanis::Net
          * @param streamId 流标识
          * @return true 该流的挂起队列非空
          */
-        [[nodiscard]] bool                                hasBlockedFieldSection(std::uint64_t streamId) const noexcept;
+        [[nodiscard]] bool hasBlockedFieldSection(std::uint64_t streamId) const noexcept;
+        /**
+         * @brief 这条流在解码侧是否还有账：挂起的头段，或已解出、正等 Section Ack 的头块
+         * @details 本端放弃一条流（判畸形、重置）之前先问这一句：没账就不必发 Stream Cancellation，
+         *          平白多一条指令只会让对端去查一条它已经交干净的流
+         * @param streamId 流标识
+         * @return true 两张按流记账的表里至少一张为该流留着东西
+         */
+        [[nodiscard]] bool                                hasFieldSectionBookkeeping(std::uint64_t streamId) const noexcept;
         [[nodiscard]] std::size_t                         tableCapacityByteCount() const noexcept;    ///< 对端设定的当前容量，单位字节
         [[nodiscard]] std::size_t                         dynamicTableSizeByteCount() const noexcept; ///< 当前表大小，单位字节
         [[nodiscard]] std::uint64_t                       insertCount() const noexcept;               ///< 本端已处理的插入数（§2.2.1 的比较基准）

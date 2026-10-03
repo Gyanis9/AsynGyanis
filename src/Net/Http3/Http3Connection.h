@@ -409,6 +409,13 @@ namespace AsynGyanis::Net
         /// 头段畸形：交给上层决定回什么错误响应（RFC 9114 §4.1.2 允许先答再重置）
         void rejectRequestHead(std::int64_t streamId, StreamState &state, std::string_view reason);
 
+        /**
+         * @brief 本端不再解这条流的头块：在解码器流上取消它，并清掉本端替它留的账
+         * @details 判畸形与重置两条出口都要走这一句，否则该流「已解出待确认」与「挂起中的原始字节」
+         *          都没人清（RFC 9204 §4.4.2、§2.1.3）。没账可取消时不发指令，见 QpackDecoder::hasFieldSectionBookkeeping()
+         */
+        void abandonInboundFieldSections(std::int64_t streamId);
+
         /// 本端刚把某条流的收尾字节交出去：记状态并在两侧都完时发关闭通知
         void noteLocallyFinishedStream(std::int64_t streamId);
 

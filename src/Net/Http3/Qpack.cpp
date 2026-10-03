@@ -1734,6 +1734,11 @@ namespace AsynGyanis::Net
         return streamIterator != m_blockedSectionsByStreamId.end() && !streamIterator->second.empty();
     }
 
+    bool QpackDecoder::hasFieldSectionBookkeeping(const std::uint64_t streamId) const noexcept
+    {
+        return hasBlockedFieldSection(streamId) || m_unacknowledgedRequiredInsertCountsByStreamId.contains(streamId);
+    }
+
     std::size_t QpackDecoder::tableCapacityByteCount() const noexcept
     {
         return m_dynamicTable.capacityByteCount();
