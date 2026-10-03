@@ -439,12 +439,14 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住出站方向也拒绝折行与非法头名——过去这三条只有入站有
+     * @brief 钉住出站方向也拒绝折行、非法头名与非法头值——过去这几条只有入站有
      * @details 旧实现缺冒号时把**整行**当成头名塞进结果，上层按名字取头就可能读到一个对端根本没发过的
      *          字段；折行（obs-fold）与冒号前带空白的名字同样照收。同一串字节在入站解析里是明确拒绝的，
      *          两个方向给出不同结论就是中转分歧的入口（缓存投毒、请求走私都从这里进去）。
+     *          值这一半是同一处分歧的另一面：控制字符进了 headers 就再也发不出去（写头的闸门拒同一批
+     *          字节），而下游日志会把它原样打出去。
      */
-    TEST(HttpResponseParser, RejectsFoldedAndMalformedHeaderLines)
+    TEST(HttpResponseParser, RejectsFoldedMalformedHeaderLinesAndBadFieldValues)
     {
         struct MalformedCase
         {
@@ -463,6 +465,32 @@ namespace AsynGyanis::Net
             feedAll(parser, item.text);
             EXPECT_TRUE(parser.hasFailed()) << item.why;
         }
+
+        // 值里的控制字符：NUL 与 DEL 都是入站明确拒绝、出站原先照收的形态。裸 CR 单独一档——
+        // 行是按 CRLF 切的，值里剩下的那个 CR 说明对端在行内塞了控制字符
+        std::string nulInValue = "HTTP/1.1 200 OK\r\nX-A: a";
+        nulInValue.push_back('\0'); // 按字节拼：字面量直接初始化 std::string 会在 NUL 处被 strlen 截掉，那条就白喂了
+        nulInValue += "b\r\n\r\n";
+        const std::string_view bareCrInValue = "HTTP/1.1 200 OK\r\nX-A: a\rb\r\n\r\n";
+        const std::string_view delInValue    = "HTTP/1.1 200 OK\r\nX-A: a\x7f"
+                                               "b\r\n\r\n";
+        for (const std::string_view valueCase: {std::string_view(nulInValue), bareCrInValue, delInValue})
+        {
+            HttpResponseParser parser;
+            feedAll(parser, valueCase);
+            EXPECT_TRUE(parser.hasFailed()) << "值里的控制字符被照收（" << valueCase.size() << " 字节那条）";
+        }
+
+        // 反向对照：obs-text（RFC 9110 §5.5 放行 0x80-0xFF）不能被这道闸误挡——真实服务器会把
+        // 未转码的 UTF-8 直接写进值里，挡下来就等于把好好的响应判成畸形
+        HttpResponseParser obsText;
+        EXPECT_TRUE(feedAll(obsText, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-Obs: \xC3\xA9\r\n\r\n"));
+        EXPECT_FALSE(obsText.hasFailed()) << "obs-text 被当成非法值挡了";
+
+        // trailer 段与头部共用同一处判据：值里带控制字符的那条 trailer 也要拒
+        HttpResponseParser badTrailer;
+        feedAll(badTrailer, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-T: a\rb\r\n\r\n");
+        EXPECT_TRUE(badTrailer.hasFailed()) << "trailer 段的值没走同一道闸";
 
         // 正向对照：合法的行照收，值的前导空白按 RFC 9112 去掉
         HttpResponseParser ok;

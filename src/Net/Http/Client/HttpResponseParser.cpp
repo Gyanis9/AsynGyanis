@@ -136,7 +136,8 @@ namespace AsynGyanis::Net
         }
 
         /// 头部行与 trailer 行的共同形态判据，规则与入站那一份对齐（HttpParser::parseFieldLine）：
-        /// 不得以空白开头（obs-fold 已废）、必须有冒号且冒号不在首位、冒号前必须是 token 字符集。
+        /// 不得以空白开头（obs-fold 已废）、必须有冒号且冒号不在首位、冒号前必须是 token 字符集，
+        /// 冒号之后的值只能由 VCHAR/SP/HTAB/obs-text 组成（RFC 9110 §5.5）。
         /// 两处共用一个实现，免得头部收紧了而 trailer 段还留着旧口子
         bool headerLineIsWellFormed(const std::string_view line)
         {
@@ -149,7 +150,14 @@ namespace AsynGyanis::Net
             {
                 return false;
             }
-            return isValidHeaderFieldName(line.substr(0, colonPosition));
+            if (!isValidHeaderFieldName(line.substr(0, colonPosition)))
+            {
+                return false;
+            }
+            // 值这一半以前没人判：NUL、裸 CR/LF、DEL 就这么进了 headers。出去的那一路（请求侧
+            // setHeader 与响应侧同名闸门）拒的是同一批字节，于是形成「收得进来、发不出去」的分歧；
+            // 而对端写的控制字符还会被下游原样打进日志。SP/HTAB 与 obs-text（0x80-0xFF）照旧放行
+            return containsOnlyFieldValueCharacters(line.substr(colonPosition + 1));
         }
     } // namespace
 
@@ -320,7 +328,7 @@ namespace AsynGyanis::Net
                         }
                         break;
                     }
-                    // 解析头部行 "Name: Value"：三条判据收在 headerLineIsWellFormed 一处（与入站同规则）。
+                    // 解析头部行 "Name: Value"：名与值的形态判据收在 headerLineIsWellFormed 一处（与入站同规则）。
                     // 旧写法最要命的是缺冒号那支——整行被当成头名塞进结果，上层按名字取头就可能读到
                     // 对端根本没发过的字段；折行与冒号前带空白/控制字符的头名则是中转分歧的入口
                     if (!headerLineIsWellFormed(line))
