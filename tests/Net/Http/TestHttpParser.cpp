@@ -278,6 +278,36 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief HTTP/1.1 之前的请求里那条 Expect 要按没看见处理：本端一个 100 都不回
+     * @details RFC 9110 §10.1.1 的服务端要求原句：「A server that receives a 100-continue expectation in
+     *          an HTTP/1.0 request MUST ignore that expectation.」§15.2 又明写「Since HTTP/1.0 did not
+     *          define any 1xx status codes, a server MUST NOT send a 1xx response to an HTTP/1.0 client」
+     *          ——1.0 的客户端不认 1xx，回了它就把这声招呼当成最终响应，正文还没读就先拿到一个 100。
+     *          同一条判据的另一半（1.1 照给）也钉在这里，免得把闸门一并焊死
+     * @note 证伪：摘掉解析器里那道版本判断，1.0 与 0.9 两格红；写成「一律不给」，1.1 那格红
+     */
+    TEST(HttpParser, IgnoresContinueExpectationFromVersionsThatDoNotUnderstand1xx)
+    {
+        const std::string bodies = "abc";
+
+        const std::string http10Head = "POST /up HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
+        HttpParser        http10Parser;
+        EXPECT_EQ(http10Parser.parse(http10Head.data(), http10Head.size()), ParseStatus::NeedMore);
+        EXPECT_FALSE(http10Parser.takeContinueRequest()) << "HTTP/1.0 的请求不认 1xx，本端不该给出回 100 的时机";
+
+        const std::string http09Head = "POST /up HTTP/0.9\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
+        HttpParser        http09Parser;
+        EXPECT_EQ(http09Parser.parse(http09Head.data(), http09Head.size()), ParseStatus::NeedMore);
+        EXPECT_FALSE(http09Parser.takeContinueRequest()) << "HTTP/0.9 同理：那个年代连头部都没有";
+
+        const std::string http11Head = "POST /up HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
+        HttpParser        http11Parser;
+        EXPECT_EQ(http11Parser.parse(http11Head.data(), http11Head.size()), ParseStatus::NeedMore);
+        EXPECT_TRUE(http11Parser.takeContinueRequest()) << "1.1 那条照给：这道闸只关 1.1 之前的版本";
+        EXPECT_EQ(http11Parser.parse(bodies.data(), bodies.size()), ParseStatus::Done) << "前提：正文照常收完";
+    }
+
+    /**
      * @brief 钉住：100-continue 的两枚门闩都随报文一起复位，keep-alive 上每条报文各拿自己的时机
      * @details 两个方向的失效各有各的难看：「对端在等 100」不清 → 下一条不带 Expect 的报文被多回一个
      *          100，正文还没到就先冒出一句状态行；「这条已经取过」不清 → 后面真带 Expect 的报文再也

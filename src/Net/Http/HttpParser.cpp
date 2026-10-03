@@ -631,8 +631,14 @@ namespace AsynGyanis::Net
             return false;
         } else if (equalsIgnoringCase(name, "expect"))
         {
-            // 只记「对端在等 100」这一件事：头部收齐、正文未收时由 takeContinueRequest() 一次性交给上层
-            m_hasContinueExpectation = isContinueExpected(value);
+            // 只记「对端在等 100」这一件事：头部收齐、正文未收时由 takeContinueRequest() 一次性交给上层。
+            // 而 HTTP/1.1 之前的版本不认 1xx：RFC 9110 §10.1.1 要求「A server that receives a
+            // 100-continue expectation in an HTTP/1.0 request MUST ignore that expectation」，§15.2 又明写
+            // 「Since HTTP/1.0 did not define any 1xx status codes, a server MUST NOT send a 1xx response to
+            // an HTTP/1.0 client」——回了它，老客户端会把这声招呼当成最终响应，正文还没读就先拿到一个 100。
+            // 版本原文在请求行那一步已按「HTTP/主.次」验过形（见 parseRequestLine），故下标 5 与 7 就是两位数字
+            const bool understandsInterimResponses = m_httpVersion.size() == 8 && m_httpVersion[5] == '1' && m_httpVersion[7] >= '1';
+            m_hasContinueExpectation               = isContinueExpected(value) && understandsInterimResponses;
         }
 
         // 名与值就地进暂存缓冲（名字折小写也在这一趟做完）：这里不再为一条头部造两个 std::string
