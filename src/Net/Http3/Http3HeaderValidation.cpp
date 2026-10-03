@@ -136,6 +136,14 @@ namespace AsynGyanis::Net
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MissingPseudoHeader, ":method 取值为空：方法名不得为空串（RFC 9110 §9）"));
             }
+            // 空白是合法的字段值字节（上面那条取值判定挡不住），故方法名要单独过 token 这道门：
+            // 与 h1（HttpParser）和 h2（acceptRequestHeaderField）判的是同一件事，漏掉这一格就会让
+            // `:method: GET /1.1` 在 h3 上被折成 UNKNOWN 而回 404，另两条通道回语法错误
+            if (!containsOnlyTokenCharacters(value))
+            {
+                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MalformedPseudoValue,
+                                                       ":method 取值 \"" + printableFieldText(value) + "\" 含 token 之外的字符：方法名必须符合字段名语法（RFC 9110 §9）"));
+            }
             m_methodText.assign(value);
             return {};
         }
@@ -220,6 +228,13 @@ namespace AsynGyanis::Net
             if (value.empty())
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::UndefinedPseudoHeader, ":protocol 取值为空：扩展 CONNECT 必须写明协议名（RFC 9220 §3.1.1）"));
+            }
+            // 与 :method 同一格：取值必须是 token，否则 `:protocol: web socket` 会安静地变成一个
+            // 本端永远匹配不上的协议名，把隧道整条关掉而不报任何错（h2 侧判的是同一条语法）
+            if (!containsOnlyTokenCharacters(value))
+            {
+                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MalformedPseudoValue,
+                                                       ":protocol 取值 \"" + printableFieldText(value) + "\" 含 token 之外的字符：协议名必须符合字段名语法（RFC 9220 §3.1.1）"));
             }
             m_protocolText.assign(value);
             return {};

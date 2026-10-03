@@ -457,3 +457,37 @@ TEST(Http3HeaderValidation, RejectedSectionsStillLeaveNoPartialPseudoHeaders)
     EXPECT_TRUE(validator.methodText().empty()) << "取值非法的伪头不得写进归位结果";
     EXPECT_FALSE(validator.endHeaderBlock().has_value()) << "被拒的伪头没归位，收尾时必然缺必填项";
 }
+
+/**
+ * @brief 钉住：:method 与 :protocol 的取值必须是 token，空白类分隔符不算合法名字
+ * @details 字段值语法允许空格与 HTAB，所以「非空」那道门放得过 `GET /1.1`；h1（HttpParser 的方法判定）
+ *          与 h2（:method 的 token 判定）都在这一格判死，h3 此前只有「非空」——于是同一条报文在 h3 上
+ *          被折成 UNKNOWN 方法、回 404，对端从响应里看不出是自己把方法写坏了。
+ *          反向对照（合法但本端不认的方法名）必须照过：这道闸判的是语法，不是方法白名单
+ */
+TEST(Http3HeaderValidation, MethodAndProtocolMustBeTokensNotEmptyArbitraryText)
+{
+    for (const std::string_view badMethod: {"GET /1.1", "GET\textra", "GE T"})
+    {
+        Http3HeaderValidator validator(Http3MessageKind::Request);
+        ASSERT_TRUE(validator.beginHeaderBlock(false).has_value());
+        expectRejected(validator.onHeaderField(":method", badMethod), Http3HeaderErrorKind::MalformedPseudoValue, "含空白的 :method");
+        EXPECT_TRUE(validator.methodText().empty()) << "被拒的方法不得写进归位结果";
+    }
+
+    // 反向对照：本端不认的方法名只要合语法就必须收下，交给路由去回 405/404——这道闸管的是语法
+    Http3HeaderValidator unknownButLegal(Http3MessageKind::Request);
+    ASSERT_TRUE(unknownButLegal.beginHeaderBlock(false).has_value());
+    EXPECT_TRUE(unknownButLegal.onHeaderField(":method", "PROPFIND").has_value());
+
+    // :protocol 只在「本端允许扩展 CONNECT」的判定器里是已知伪头，否则它按未定义伪头拒掉
+    Http3HeaderValidator protocolValidator(Http3MessageKind::Request, true);
+    ASSERT_TRUE(protocolValidator.beginHeaderBlock(false).has_value());
+    ASSERT_TRUE(protocolValidator.onHeaderField(":method", "CONNECT").has_value());
+    expectRejected(protocolValidator.onHeaderField(":protocol", "web socket"), Http3HeaderErrorKind::MalformedPseudoValue, "含空白的 :protocol");
+
+    Http3HeaderValidator legalProtocol(Http3MessageKind::Request, true);
+    ASSERT_TRUE(legalProtocol.beginHeaderBlock(false).has_value());
+    ASSERT_TRUE(legalProtocol.onHeaderField(":method", "CONNECT").has_value());
+    EXPECT_TRUE(legalProtocol.onHeaderField(":protocol", "extended-connect").has_value()) << "合语法的协议名不该被这道闸挡下";
+}

@@ -56,6 +56,8 @@ namespace AsynGyanis::Net
         UndefinedPseudoHeader,      ///< 未定义的伪头：RFC 9114 §4.3
         DuplicatePseudoHeader,      ///< 同一伪头出现两次：RFC 9114 §4.3.1 要求「恰好一个」
         MissingPseudoHeader,        ///< 必填伪头缺失：RFC 9114 §4.3.1/§4.3.2
+        MalformedPseudoValue,       ///< 伪头的取值不合它自己的语法：:method 与 :protocol 必须是 token（RFC 9110 §9），
+                                    ///< 光判「非空」挡不住空白与分隔符，h1 与 h2 都在这一格上判死
         ProhibitedPseudoForMethod,  ///< 伪头与该方法不配：CONNECT 带上不属于它的伪头、非 CONNECT 缺 :scheme/:path、
                                     ///< asterisk-form 的 :path 配上了非 OPTIONS 的方法
         EmptyPath,                  ///< :path 为空：RFC 9114 §4.3.1 对 http/https 明确禁止
