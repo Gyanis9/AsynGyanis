@@ -734,8 +734,11 @@ namespace AsynGyanis::Net
         /// 判错（RFC 7541 §6.3 要求新上限不得大于协议允许的限度）
         std::size_t maximumDynamicTableSizeByteCount{kHpackDefaultDynamicTableSizeByteCount};
 
-        /// 单个头块解出的头列表总大小上限，算式按 RFC 9113 §6.5.2：每项名长 + 值长 + 32
-        std::size_t maximumHeaderListByteCount{16ull * 1024};
+        /// 单个头块解出的头列表总大小上限，算式按 RFC 9113 §6.5.2：每项名长 + 值长 + 32。
+        /// 出厂值与 `HttpParserLimits::maximumHeaderBlockLength`（h1 出站响应解析器与 h3 出站客户端都吃
+        /// 那一份 64 KiB）同档：出站 h2 客户端的解码器就用这里的默认值，比另两条通道小会把同一个响应
+        /// 换个协议就解不开，而这条通道上没有调它的入口
+        std::size_t maximumHeaderListByteCount{64ull * 1024};
 
         /// 单条头名字节数上限
         std::size_t maximumHeaderFieldNameLength{256};

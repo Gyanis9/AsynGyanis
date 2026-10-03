@@ -1015,14 +1015,17 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：h2 通告的 SETTINGS_MAX_HEADER_LIST_SIZE 与 parser_limits 的头块上限同数
+     * @brief 钉住：h2 这一侧的两个头列表出厂上限与 parser_limits 的同数
      * @details 三条通道对「同一个头块体量」先要给出同一个出厂数，运维才谈得上用一个键调整台机器：
      *          h1 与 h3 只吃 parser_limits，h2 多一道随 SETTINGS 宣告的闸门，两数不同就会让 h2 提前
-     *          撞墙（原先是 16 KiB 对 64 KiB）。这条用例不是格式检查——改了任一侧的默认值就要同时改另一侧。
+     *          撞墙（原先是 16 KiB 对 64 KiB）。`HpackDecoderLimits` 那份也要钉——出站 h2 客户端的
+     *          解码器就吃它的默认值，那条通道上没有调它的入口。改了任一侧的默认值这条用例就红。
      */
     TEST(Http2Connection, AdvertisesHeaderListSizeMatchingTheParserBlockLimit)
     {
         EXPECT_EQ(Http2ConnectionConfiguration{}.maximumHeaderListSize, HttpParserLimits{}.maximumHeaderBlockLength);
+        EXPECT_EQ(HpackDecoderLimits{}.maximumHeaderListByteCount, HttpParserLimits{}.maximumHeaderBlockLength)
+                << "出站 h2 客户端的解码器用的就是这份默认值，比另两条通道小会让同一个响应换个协议解不开";
     }
 
     /**

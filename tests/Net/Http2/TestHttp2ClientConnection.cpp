@@ -455,7 +455,7 @@ namespace AsynGyanis::Net
             }
 
             HpackDecoderLimits headLimits;
-            headLimits.maximumHeaderListByteCount = 64U * 1024U; // 本条要量的就是越界头块，缺省上限会先拒掉它
+            headLimits.maximumHeaderListByteCount = 64U * 1024U; // 显式写死而不靠出厂值：出厂数将来改动不该让这条用例悄悄换语义
             HpackDecoder                  headDecoder{headLimits};
             std::vector<HpackHeaderField> headFields;
             std::string                   headErrorText;
