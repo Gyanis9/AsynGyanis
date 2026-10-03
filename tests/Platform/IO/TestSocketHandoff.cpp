@@ -610,6 +610,71 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 一条移交里多带的那几枚描述符也要当场关掉
+     * @details 这条通道一次只接手一个监听口，而 SCM_RIGHTS 想搭几枚搭几枚（发送方为少跑几趟，或者
+     *          对端压根不讲这套格式）。只取第一枚、剩下的不管，就是每收一轮漏下若干枚永不回收的
+     *          描述符——换代按 worker 补位要重复许多轮，症状得等撞到上限才看得见。
+     *          失败路径早就记得「装进来的都得关」，这一半判的是成功路径上的多余那几枚。
+     * @note 只在 POSIX 上判：Windows 侧的移交载荷是普通字节，没有「内核先把描述符装进来」这一步
+     */
+    TEST(SocketHandoff, ClosesTheExtraDescriptorsCarriedByOneHandoff)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 侧的移交不携带描述符，多带的那几枚只可能来自 POSIX";
+#else
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        const int         primary = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+        ASSERT_GE(primary, 0);
+        cleanup.add(primary);
+        sockaddr_in primaryAddress = loopbackAddress(0);
+        ASSERT_EQ(::bind(primary, reinterpret_cast<const sockaddr *>(&primaryAddress), sizeof(primaryAddress)), 0);
+
+        const int extra = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+        ASSERT_GE(extra, 0);
+        cleanup.add(extra);
+
+        int pair[2] = {-1, -1};
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, pair), 0) << "造不出 unix 通道";
+        cleanup.add(pair[0]);
+        cleanup.add(pair[1]);
+
+        // 格式完全合法的移交（POSIX 上载荷长度恒为 0），只是控制消息里多搭了一枚描述符：
+        // 接手要照常成功，多出来的那枚当场退回
+        struct
+        {
+            std::uint16_t family;
+            std::uint16_t socketType;
+            std::uint32_t blobByteCount;
+        } header{AF_INET, SOCK_DGRAM, 0U};
+
+        const int descriptors[2] = {primary, extra};
+        iovec     dataVector{&header, sizeof(header)};
+        char      control[CMSG_SPACE(sizeof(descriptors))] = {};
+        msghdr    message{};
+        message.msg_iov           = &dataVector;
+        message.msg_iovlen        = 1;
+        message.msg_control       = control;
+        message.msg_controllen    = sizeof(control);
+        cmsghdr *controlHeader    = CMSG_FIRSTHDR(&message);
+        controlHeader->cmsg_level = SOL_SOCKET;
+        controlHeader->cmsg_type  = SCM_RIGHTS;
+        controlHeader->cmsg_len   = CMSG_LEN(sizeof(descriptors));
+        std::memcpy(CMSG_DATA(controlHeader), descriptors, sizeof(descriptors));
+        ASSERT_EQ(::sendmsg(pair[0], &message, 0), static_cast<ssize_t>(sizeof(header))) << "多带一枚描述符的移交没写进通道";
+
+        const std::size_t descriptorsBefore = openDescriptorCount();
+        ASSERT_NE(descriptorsBefore, 0U) << "读不到 /proc/self/fd，这条判据没法成立";
+
+        const int adopted = Socket::readListeningSocketHandoff(pair[1]);
+        ASSERT_GE(adopted, 0) << "多带一枚描述符就让合法的移交失败了，错误码 " << PlatformError::lastErrorCode();
+        cleanup.add(adopted);
+        EXPECT_EQ(openDescriptorCount(), descriptorsBefore + 1U) << "接手来的那枚之外，多带的那枚留在了本进程里";
+#endif
+    }
+
+    /**
      * @brief 通道在交出任何字节之前就被对端关掉时，报的必须是「连接被复位」，不能是槽位里的残值
      * @details 两侧的读法不同但都得给同一个成因：Windows 用 recv 逐段读满，返回 0 是一次**成功**的
      *          调用，实测它会把 last-error 清成 0，照抄槽位就是拿「没有错误」当成失败原因；POSIX 用

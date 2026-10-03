@@ -603,13 +603,30 @@ namespace AsynGyanis::Platform
         // 先把描述符从控制消息里摘出来：recvmsg 一成功返回，内核就已经把随消息装填的那枚描述符放进
         // 本进程了，此后**每一条**失败出口都得关掉它——拒掉一条不可信的移交却留下一枚活描述符，
         // 比不拒更糟（换代是旧进程交给新进程，交完还要按补位次数重复许多轮）
+        //
+        // 一条消息可以搭不止一枚描述符（发送方想少跑几趟，或对端根本不讲这套消息格式），而本通道
+        // 一次只接手一个监听口：第一枚交给调用方，多出来的本进程必须当场关掉。上面那句「每一条
+        // 失败出口都得关」若不涵盖「多带的那几枚」，漏下来的就是每轮一枚永不回收的描述符，
+        // 症状要等长跑撞到上限才看得见
         int receivedDescriptor = -1;
         for (const cmsghdr *controlHeader = CMSG_FIRSTHDR(&message); controlHeader != nullptr; controlHeader = CMSG_NXTHDR(&message, const_cast<cmsghdr *>(controlHeader)))
         {
-            if (controlHeader->cmsg_level == SOL_SOCKET && controlHeader->cmsg_type == SCM_RIGHTS && controlHeader->cmsg_len >= CMSG_LEN(sizeof(int)))
+            if (controlHeader->cmsg_level != SOL_SOCKET || controlHeader->cmsg_type != SCM_RIGHTS || controlHeader->cmsg_len < CMSG_LEN(sizeof(int)))
             {
-                std::memcpy(&receivedDescriptor, CMSG_DATA(controlHeader), sizeof(receivedDescriptor));
-                break;
+                continue;
+            }
+            const std::size_t descriptorCount = (controlHeader->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+            const auto       *descriptorBytes = static_cast<const char *>(static_cast<const void *>(CMSG_DATA(const_cast<cmsghdr *>(controlHeader))));
+            for (std::size_t index = 0; index < descriptorCount; ++index)
+            {
+                int descriptor = -1;
+                std::memcpy(&descriptor, descriptorBytes + index * sizeof(int), sizeof(descriptor));
+                if (receivedDescriptor < 0)
+                {
+                    receivedDescriptor = descriptor;
+                    continue;
+                }
+                static_cast<void>(FileDescriptor::close(descriptor));
             }
         }
 
