@@ -323,6 +323,23 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 判断 Transfer-Encoding 的取值是否恰好是唯一的 chunked
+     *
+     * @details RFC 9112 §6.1 要求 chunked 必须位于编码链的末尾，而本框架只实现 chunked 这一种
+     *          传输编码：取值里出现 gzip 之类其它编码、或 chunked 重复出现，都判非法，绝不悄悄按
+     *          identity 处理。入站（`HttpParser`）与出站（`HttpResponseParser`）共用这一份判据——
+     *          一条判死、另一条退回「读到连接关闭」，同一份字节就会在两个方向上得到两种正文
+     *          （拆不掉的那层要么留下分块框架、要么留下压缩字节，两边都不报错）。
+     *
+     * @param listValue 各条 Transfer-Encoding 取值按到达顺序以 ", " 连接后的原文
+     * @return true 只有一个取值，且忽略大小写、去掉两侧 OWS 之后恰好是 chunked
+     */
+    [[nodiscard]] inline bool isSingleChunkedEncoding(const std::string_view listValue) noexcept
+    {
+        return equalsIgnoringCase(trimOptionalWhitespace(listValue), "chunked");
+    }
+
+    /**
      * @brief 判断一个字节能否出现在请求目标（URI 的 path/query 那一段）里
      *
      * @details 三条入站通路（h1 的请求行、h2 的 `:path`、h3 的 `:path`）吃的是同一条规则，此前却

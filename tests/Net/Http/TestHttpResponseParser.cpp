@@ -94,6 +94,29 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：本端拆不掉的传输编码链按报文不合规拒绝，不再退回「读到连接关闭」
+     * @details 本框架只实现 chunked 这一种传输编码。`gzip, chunked` 拆完块还留着一层没人拆的 gzip，
+     *          `chunked, gzip` 更是连长度都定不了——两种旧行为都把一层原始字节当成正文交给调用方，
+     *          且一条错都不报。入站侧（`HttpParser`）一直按「恰好一个 chunked」判死，
+     *          现在两个方向共用那一份判据（`isSingleChunkedEncoding`）。
+     *          正向对照由 `DecodesChunkedBodyAndCompletes` 与 `AcceptsChunkedSpellingRegardlessOfCase` 把着
+     */
+    TEST(HttpResponseParser, RejectsTransferEncodingChainItCannotUndo)
+    {
+        for (const std::string_view encodingBlock:
+             {std::string_view{"Transfer-Encoding: gzip, chunked"},
+              std::string_view{"Transfer-Encoding: chunked, gzip"},
+              // 重复出现也算：这与入站对 `Transfer-Encoding: chunked` 写两次的判法一致
+              std::string_view{"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked"}})
+        {
+            HttpResponseParser parser;
+            parser.feed("HTTP/1.1 200 OK\r\n" + std::string(encodingBlock) + "\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
+            EXPECT_TRUE(parser.hasFailed()) << encodingBlock;
+            EXPECT_FALSE(parser.isComplete()) << encodingBlock;
+        }
+    }
+
+    /**
      * @brief 钉住「Transfer-Encoding 优先于 Content-Length」：两者并存按非法处理，不能挑一个信（响应走私的入口）
      */
     TEST(HttpResponseParser, RejectsContentLengthWithTransferEncoding)
@@ -233,19 +256,20 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 多字段 Transfer-Encoding 按 RFC 9112 §6.1 合并后取最后一个编码：chunked, gzip 不是分块
-     * @details 「chunked 必须在末尾」是对**合并后的列表**说的。逐条看最后一项，会把
-     *          `Transfer-Encoding: chunked` + `Transfer-Encoding: gzip` 判成分块，正文随即错位
+     * @brief 多字段 Transfer-Encoding 先按 RFC 9112 §6.1 合并，再作为一条编码链整体裁决
+     * @details 「chunked 必须在链末尾」是对**合并后的列表**说的。逐条看，
+     *          `Transfer-Encoding: chunked` + `Transfer-Encoding: gzip` 里的第一条会单独通过，
+     *          正文就被按分块解读而错位——这条测试存在的理由一直是「先合并」。
+     *          合并之后本端拆不掉这条链（只实现 chunked 这一种传输编码），因此现在判的是失败，
+     *          不再是「按读到连接关闭收下原始字节」：旧断言要求把 gzip 套 chunked 的字节当正文交出，
+     *          那与入站侧明写的「绝不悄悄按 identity 处理」相反（同一判据见 isSingleChunkedEncoding）。
      */
-    TEST(HttpResponseParser, MergesTransferEncodingFieldsBeforeCheckingChunkedIsLast)
+    TEST(HttpResponseParser, MergesTransferEncodingFieldsBeforeJudgingTheChain)
     {
         HttpResponseParser parser;
         parser.feed("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\nraw-bytes");
-        EXPECT_FALSE(parser.hasFailed()) << "合并后的末尾编码是 gzip，不该按分块解读";
+        EXPECT_TRUE(parser.hasFailed()) << "合并后的链里有本端拆不掉的编码：既不能按分块解读，也不该把原始字节当正文交出";
         EXPECT_FALSE(parser.isComplete());
-        parser.endOfStream();
-        EXPECT_TRUE(parser.isComplete());
-        EXPECT_EQ(parser.result().body, "raw-bytes");
     }
 
 

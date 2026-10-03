@@ -70,28 +70,6 @@ namespace AsynGyanis::Net
                 r.push_back(toLowerAscii(c));
             return r;
         }
-        /// 取 Transfer-Encoding 的最后一个编码（RFC 9112 §6.1：chunked 必须是最后一个编码）
-        std::string_view lastTransferEncoding(const std::string_view value) noexcept
-        {
-            std::string_view last;
-            std::size_t      start = 0;
-            while (start <= value.size())
-            {
-                const auto             comma = value.find(',', start);
-                const std::string_view entry = value.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
-                const std::string_view token = trimOptionalWhitespace(entry);
-                if (!token.empty())
-                {
-                    last = token;
-                }
-                if (comma == std::string_view::npos)
-                {
-                    break;
-                }
-                start = comma + 1;
-            }
-            return last;
-        }
         /// 严格解析十进制长度：只接受纯数字（不取整、不忽略后缀），超长按非法拒绝
         bool parseDecimalLength(const std::string_view text, std::size_t &length) noexcept
         {
@@ -334,16 +312,19 @@ namespace AsynGyanis::Net
                             m_stage             = declaredLength == 0 ? Stage::Complete : Stage::Body;
                         } else if (hasTransferEncoding)
                         {
-                            if (equalsIgnoringCase(lastTransferEncoding(combinedTransferEncoding), "chunked"))
+                            if (isSingleChunkedEncoding(combinedTransferEncoding))
                             {
                                 m_isChunked  = true;
                                 m_chunkPhase = ChunkPhase::SizeLine;
                                 m_stage      = Stage::Body;
                             } else
                             {
-                                // 末尾编码不是 chunked：长度无法自定界，只能读到连接关闭（RFC 9112 §6.3）
-                                m_isCloseDelimited = true;
-                                m_stage            = Stage::Body;
+                                // 本端只实现 chunked 这一种传输编码：链里还有别的编码（`gzip, chunked`）就有一层
+                                // 拆不掉，`chunked, gzip` 之类更是连长度都定不了。此前这一支退回「读到连接关闭」，
+                                // 于是调用方拿到的正文里留着分块大小行或压缩字节，而一条错都不报。与入站同一判据、
+                                // 同一处置：判报文不合规（RFC 9112 §6.1、§6.3）
+                                m_stage = Stage::Failed;
+                                return startSize - data.size();
                             }
                         } else
                         {

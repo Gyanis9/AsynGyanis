@@ -51,17 +51,8 @@ namespace AsynGyanis::Net
             return character >= '0' && character <= '9';
         }
 
-        /**
-         * @brief 判断 Transfer-Encoding 的取值是否恰好是唯一的 chunked
-         * @details RFC 9112 §6.1 要求 chunked 必须位于编码链末尾；本框架只实现它，因此取值里出现
-         *          gzip 之类其它编码、或 chunked 重复出现，都判非法，绝不悄悄按 identity 处理。
-         * @param listValue 各条 Transfer-Encoding 取值按到达顺序以 ", " 连接后的原文
-         * @return true 仅有一个取值且忽略大小写等于 "chunked"
-         */
-        bool isSingleChunkedEncoding(const std::string_view listValue) noexcept
-        {
-            return equalsIgnoringCase(trimOptionalWhitespace(listValue), "chunked");
-        }
+        // isSingleChunkedEncoding 的真源在 Net/Http/HttpHeaderRules.h：入站与出站两条路
+        // 必须按同一判据认 Transfer-Encoding，各写一遍就会出现「一侧判死、一侧照收」的分裂
 
     } // namespace
 
