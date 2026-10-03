@@ -5,6 +5,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Net/Acme/AcmeClient.h"
+#include "Net/Http/HttpDate.h"
 #include "Platform/FileSystem/AtomicFileWriter.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/IO/FileContents.h"
@@ -140,7 +141,10 @@ namespace AsynGyanis::Net
         {
             return std::nullopt;
         }
-        return std::chrono::system_clock::from_time_t(static_cast<std::time_t>(toUtcUnixSeconds(notAfterTime)));
+        // 折成 time_point 要走那把钳子：ASN.1 的 GENERALIZEDTIME 允许写到 9999 年，而 from_time_t
+        // 与直接构造 time_point 一样是一次「秒 × 时钟周期」的乘法，越界就是有符号溢出（UB），
+        // 它的落法是把「永不到期」折成「早就过期」——续期判据会当场开始每一拍都去签一张
+        return timePointFromUnixSeconds(static_cast<std::int64_t>(toUtcUnixSeconds(notAfterTime)));
     }
 
     AcmeCertificateManager::AcmeCertificateManager(Core::EventLoop &loop, Configuration configuration, ReloadHandler reloadHandler, AcmeDns01TxtWriter dns01TxtWriter) :
