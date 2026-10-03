@@ -487,6 +487,7 @@ namespace AsynGyanis::Net
             // 头块越限：字段是空的，既不能派发也不该再等正文，服务阶段直接按 431 收口
             pending.isHeaderListTooLarge = http2Request.isHeaderListTooLarge;
             pending.headerFieldTotal     = http2Request.headerFieldTotal;
+            pending.headerNetByteTotal   = http2Request.headerNetByteTotal;
             // 请求目标太长：与上面同一类处置（不派发、不等正文），差别只在状态码是 414
             pending.isUriTooLong = http2Request.isUriTooLong;
             // 两道闸门任一命中都不必再去判流式路由与 100-continue：这条流只会回一个收口响应
@@ -533,11 +534,20 @@ namespace AsynGyanis::Net
             // 尾部字段先落到这条流的请求对象上，再处理收尾：路由与唤醒流式正文读取器都在后面，
             // 业务读到「正文收齐」时 trailer 必须已经在位（h1 侧同样是解析器先提交整条报文、
             // HttpRequestBody 才以 isComplete() 收尾）
-            // 尾部字段同样计入 parser_limits.maximum_header_count：h1 的解析器整条报文共用一个计数器
-            // （那个键的文档就写着「trailer 头部同样计入」），h3 在 accountHeaderFieldBudget 里把尾字段
-            // 一起数，h2 此前只数头部那一场——对端把字段拆进尾部头块就能绕过这道闸。越限走与头部越限
-            // 同一条路径：不派发、按 431 收口，尾字段也不再交给业务
-            if (m_parserLimits.maximumHeaderCount != 0 && pending.headerFieldTotal + receivedData.trailerFields.size() > m_parserLimits.maximumHeaderCount)
+            // 条数与头块净字节两道配额都要跨头块累计：h1 的解析器整条报文共用一套计数器（那个键的文档
+            // 就写着「trailer 头部同样计入」），h3 在 accountHeaderFieldBudget 里把尾字段一起数，而 h2
+            // 此前只数头部那一场——把字段拆进尾部头块就能同时绕过 maximum_header_count 与
+            // maximum_header_block_length。越限走与头部越限同一条路径：不派发、按 431 收口，尾字段也不交给业务
+            std::size_t trailerNetByteCount = 0;
+            for (const HpackHeaderField &trailerField: receivedData.trailerFields)
+            {
+                trailerNetByteCount += trailerField.name.size() + trailerField.value.size();
+            }
+            const bool isFieldCountExceeded =
+                    m_parserLimits.maximumHeaderCount != 0 && pending.headerFieldTotal + receivedData.trailerFields.size() > m_parserLimits.maximumHeaderCount;
+            const bool isBlockByteExceeded =
+                    m_parserLimits.maximumHeaderBlockLength != 0 && pending.headerNetByteTotal + trailerNetByteCount > m_parserLimits.maximumHeaderBlockLength;
+            if (isFieldCountExceeded || isBlockByteExceeded)
             {
                 pending.isHeaderListTooLarge = true;
             } else

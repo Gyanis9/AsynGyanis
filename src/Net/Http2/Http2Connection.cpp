@@ -1433,7 +1433,8 @@ namespace AsynGyanis::Net
         }
         // 条数交上去留着与尾部头块累加：「整条报文一个计数器」这条口径要跨头块才成立，而这里不带走
         // 就没人在尾字段到达时判得出来
-        request.headerFieldTotal = headerFields.size();
+        request.headerFieldTotal   = headerFields.size();
+        request.headerNetByteTotal = wholeBlockByteCount;
 
         // 头块字节数是同一个键的另一半：parser_limits.maximum_header_block_length 此前在 h2 上根本没人读，
         // 运维照 h1 那个数收紧整台机器时，h2 仍按 SETTINGS 通告的那个值放行。两把尺各判各的、取更紧的一方

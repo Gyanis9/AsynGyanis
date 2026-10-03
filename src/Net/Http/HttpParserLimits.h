@@ -43,7 +43,8 @@ namespace AsynGyanis::Net
         std::size_t maximumHeaderFieldValueLength{8ull * 1024}; ///< 单个头部值上限，单位字节；与 URI 同档，覆盖超长 Cookie 的现实用量。0 表示不限
         std::size_t maximumHeaderCount{100};                    ///< 头部条数上限，单位条；trailer 头部同样计入。0 表示不限条数
         /// 头部块总长上限，单位字节，只算名与值的净字节（不含 ": " 与 CRLF）。0 表示不限。
-        /// 三条通道都判这一把尺：h1 由解析器判，h3 在会话层判，h2 在 intake 判。h2 另有
+        /// 三条通道都判这一把尺：h1 由解析器判，h3 在会话层判，h2 在 intake 判，且与 maximumHeaderCount
+        /// 同样是**整条报文累计**（h2 把尾部头块的净字节加在头部那一场之上）。h2 另有
         /// `Http2ConnectionConfiguration::maximumHeaderListSize`（按 RFC 9113 §6.5.2 的「名长 + 值长 + 32」
         /// 逐条计，且随 SETTINGS 宣告给对端）并排列着，两者取更紧的一方生效；出厂值同为 64 KiB，
         /// 要在 h2 那一侧再放宽走 `HttpServer::setHttp2Configuration()`。

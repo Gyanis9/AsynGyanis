@@ -145,7 +145,8 @@ namespace AsynGyanis::Net
         /// 请求目标（:path）超出 parser_limits.maximum_uri_length：字段照常交出，
         /// 上层按 414 应答（RFC 9110 §15.5.15），与 431 那条分开是因为病因不同——
         /// 431 让客户端去减头部，而这里要缩的是 URL
-        std::size_t headerFieldTotal{0}; ///< 这一场头部记了几条（伪头一并计入）：尾部头块要与它累加才判得出 parser_limits 的条数上限
+        std::size_t headerFieldTotal{0};   ///< 这一场头部记了几条（伪头一并计入）：尾部头块要与它累加才判得出 parser_limits 的条数上限
+        std::size_t headerNetByteTotal{0}; ///< 这一场头部的名与值净字节：同样要与尾部头块累加，否则 `maximum_header_block_length` 也能被拆开绕过
         bool        isUriTooLong{false};
         std::string protocol; ///< :protocol 原文（RFC 8441 的扩展 CONNECT）；普通请求为空
     };
