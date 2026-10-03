@@ -154,7 +154,7 @@ namespace AsynGyanis::Database
         constexpr std::string_view kTransactionNestedTableName = "Asyn_Mysql_Tx_Nested";
         // 非有限取值用例的表：DOUBLE 列必须**可空**，否则旧实现会撞 NOT NULL 约束而「看起来也在拒绝」
         constexpr std::string_view kNonFiniteTableName = "Asyn_Mysql_NonFinite_Double";
-        constexpr std::string_view kTransactionColumns           = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
+        constexpr std::string_view kTransactionColumns = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
 
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
         constexpr std::string_view kMigratedTableName = "Asyn_Mysql_Migrated";
@@ -2179,8 +2179,7 @@ namespace AsynGyanis::Database
         std::unique_ptr<MySqlConnection> connection = makeConnection();
         ASSERT_TRUE(connection->connect()) << connection->lastError();
 
-        const std::array<double, 3> nonFiniteValues{std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
-                                                    -std::numeric_limits<double>::infinity()};
+        const std::array<double, 3> nonFiniteValues{std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
         for (std::size_t valueIndex = 0; valueIndex < nonFiniteValues.size(); ++valueIndex)
         {
             const std::array<DatabaseValue, 2> parameters{static_cast<std::int64_t>(valueIndex), nonFiniteValues[valueIndex]};

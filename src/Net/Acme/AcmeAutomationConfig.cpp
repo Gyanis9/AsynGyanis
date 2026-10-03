@@ -341,10 +341,9 @@ namespace AsynGyanis::Net
             configuration.dnsRecordTtlSeconds = static_cast<std::uint32_t>(optionalInteger(*dns, "record_ttl_seconds", path + ".dns", 600U, kMaximumRecordTtlSeconds));
             if (configuration.dnsRecordTtlSeconds < kMinimumRecordTtlSeconds)
             {
-                throw Base::ConfigValidationException(path + ".dns.record_ttl_seconds",
-                                                      std::format("不得低于 {} 秒：这一档供应商实测会直接拒收更小的 TTL，"
-                                                                    "且机构要等满旧记录自己的 TTL 才保证读到新写的答案",
-                                                                    kMinimumRecordTtlSeconds));
+                throw Base::ConfigValidationException(path + ".dns.record_ttl_seconds", std::format("不得低于 {} 秒：这一档供应商实测会直接拒收更小的 TTL，"
+                                                                                                    "且机构要等满旧记录自己的 TTL 才保证读到新写的答案",
+                                                                                                    kMinimumRecordTtlSeconds));
             }
         } else if (configuration.usesDns01())
         {

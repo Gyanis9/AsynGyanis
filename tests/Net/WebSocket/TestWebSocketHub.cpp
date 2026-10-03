@@ -365,8 +365,7 @@ namespace AsynGyanis::Net
             publishes.push_back(hub.publish("lobby", ""));
             publishes.back().handle().resume();
         }
-        EXPECT_EQ(hub.droppedMessageCount(), kAttemptCount - kAcceptedCount)
-            << "零负载消息同样要按每帧开销入账：越界的那几条必须丢掉并计数，而不是让队列无限长";
+        EXPECT_EQ(hub.droppedMessageCount(), kAttemptCount - kAcceptedCount) << "零负载消息同样要按每帧开销入账：越界的那几条必须丢掉并计数，而不是让队列无限长";
 
         path.release();
         parkingPublish.handle().promise().result();

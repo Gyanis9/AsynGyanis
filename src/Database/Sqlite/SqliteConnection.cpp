@@ -282,8 +282,7 @@ namespace AsynGyanis::Database
                 if (m_statementDeadlineHit)
                 {
                     m_lastError.assignNative(statementDeadlineErrorText(), SQLITE_INTERRUPT);
-                }
-                else
+                } else
                 {
                     m_lastError = preScanError;
                 }
@@ -314,7 +313,7 @@ namespace AsynGyanis::Database
         // 行改变总数在这里取一次，用于分辨「本条语句到底改过行没有」：sqlite3_changes() 是语句级
         // 计数器却只在 DML 上刷新，DDL 走过后它留着上一条 DML 的数；这一格增量分得出两者
         const int totalChangesBeforeStep = sqlite3_total_changes(m_database);
-        const int stepResult = sqlite3_step(statement);
+        const int stepResult             = sqlite3_step(statement);
         if (stepResult != SQLITE_DONE)
         {
             // SQLITE_BUSY 表示等锁超过了 busy_timeout，SQLITE_ERROR/SQLITE_CONSTRAINT 是语句本身的问题；

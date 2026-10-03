@@ -44,7 +44,7 @@ namespace AsynGyanis::Net
          * @param predicate 收到「已裁空白的单项」，返回 true 即整表命中并停止
          * @return true 任一单项使 predicate 为真
          */
-        template <typename Predicate>
+        template<typename Predicate>
         inline constexpr bool anyValidatorInList(const std::string_view listValue, const Predicate predicate)
         {
             std::string_view remainder = listValue;
@@ -85,10 +85,7 @@ namespace AsynGyanis::Net
     [[nodiscard]] inline constexpr bool weakEntityTagListMatches(const std::string_view listValue, const std::string_view entityTag)
     {
         return Detail::anyValidatorInList(listValue,
-                                          [entityTag](const std::string_view candidate)
-                                          {
-                                              return candidate == "*" || stripWeakValidatorPrefix(candidate) == entityTag;
-                                          });
+                                          [entityTag](const std::string_view candidate) { return candidate == "*" || stripWeakValidatorPrefix(candidate) == entityTag; });
     }
 
     /**
@@ -115,11 +112,7 @@ namespace AsynGyanis::Net
         {
             return resourceExists;
         }
-        return Detail::anyValidatorInList(
-            whole,
-            [entityTag](const std::string_view candidate)
-            {
-                return !candidate.empty() && candidate != "*" && !isWeakValidator(candidate) && candidate == entityTag;
-            });
+        return Detail::anyValidatorInList(whole, [entityTag](const std::string_view candidate)
+                                          { return !candidate.empty() && candidate != "*" && !isWeakValidator(candidate) && candidate == entityTag; });
     }
 } // namespace AsynGyanis::Net

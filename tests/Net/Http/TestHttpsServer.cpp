@@ -1254,7 +1254,7 @@ namespace AsynGyanis::Net
     {
         ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
 
-        bool isConfiguratorChecked = false;
+        bool                      isConfiguratorChecked = false;
         RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
                                           [&isConfiguratorChecked](HttpsServer &server)
                                           {

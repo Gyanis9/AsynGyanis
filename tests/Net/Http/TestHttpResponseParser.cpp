@@ -103,11 +103,9 @@ namespace AsynGyanis::Net
      */
     TEST(HttpResponseParser, RejectsTransferEncodingChainItCannotUndo)
     {
-        for (const std::string_view encodingBlock:
-             {std::string_view{"Transfer-Encoding: gzip, chunked"},
-              std::string_view{"Transfer-Encoding: chunked, gzip"},
-              // 重复出现也算：这与入站对 `Transfer-Encoding: chunked` 写两次的判法一致
-              std::string_view{"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked"}})
+        for (const std::string_view encodingBlock: {std::string_view{"Transfer-Encoding: gzip, chunked"}, std::string_view{"Transfer-Encoding: chunked, gzip"},
+                                                    // 重复出现也算：这与入站对 `Transfer-Encoding: chunked` 写两次的判法一致
+                                                    std::string_view{"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked"}})
         {
             HttpResponseParser parser;
             parser.feed("HTTP/1.1 200 OK\r\n" + std::string(encodingBlock) + "\r\n\r\n5\r\nhello\r\n0\r\n\r\n");

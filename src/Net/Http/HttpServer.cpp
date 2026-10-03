@@ -1437,9 +1437,9 @@ namespace AsynGyanis::Net
         // 现场看到的是「有 /metrics 却什么都抓不到」。登记侧对同一个名字是当场拒的，两条路不能两种待遇
         if (!metricNamePrefix.empty() && !Core::isLegalPrometheusMetricName(metricNamePrefix))
         {
-            throw Base::InvalidArgumentException("HttpServer: 指标名前缀「" + std::string(metricNamePrefix)
-                                                 + "」不合 Prometheus 的名字语法（[a-zA-Z_:][a-zA-Z0-9_:]*）；"
-                                                   "请只用字母数字与下划线，或留空表示不加前缀");
+            throw Base::InvalidArgumentException("HttpServer: 指标名前缀「" + std::string(metricNamePrefix) +
+                                                 "」不合 Prometheus 的名字语法（[a-zA-Z_:][a-zA-Z0-9_:]*）；"
+                                                 "请只用字母数字与下划线，或留空表示不加前缀");
         }
 
         // 前缀按值捕进处理函数：字符串是调用方的，可能比服务器先走；这里只留一份拷贝
