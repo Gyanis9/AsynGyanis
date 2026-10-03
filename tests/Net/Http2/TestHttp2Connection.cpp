@@ -378,7 +378,7 @@ namespace AsynGyanis::Net
                 {Http2SettingIdentifier::MaxConcurrentStreams, 100U},
                 {Http2SettingIdentifier::InitialWindowSize, kHttp2InitialWindowSizeByteCount},
                 {Http2SettingIdentifier::MaxFrameSize, kHttp2DefaultMaximumFrameSize},
-                {Http2SettingIdentifier::MaxHeaderListSize, 16U * 1024U},
+                {Http2SettingIdentifier::MaxHeaderListSize, 64U * 1024U}, // 与 HttpParserLimits::maximumHeaderBlockLength 同档，两数相等的判据在下面那条用例
                 {Http2SettingIdentifier::EnableConnectProtocol, 1U}};
         ASSERT_EQ(initialSettings.parameters.size(), expectedParameters.size());
         for (std::size_t index = 0; index < expectedParameters.size(); ++index)
@@ -971,6 +971,58 @@ namespace AsynGyanis::Net
         const std::vector<Http2Request> defaultRequests = defaults.takeRequests();
         ASSERT_EQ(defaultRequests.size(), 1U);
         EXPECT_FALSE(defaultRequests.front().isHeaderListTooLarge) << "缺省上限（100 条）下这条 5 字段的请求不该被判越限";
+    }
+
+    /**
+     * @brief 钉住：parser_limits 的「头块字节数」闸门在 h2 上同样生效
+     * @details 这条配置键此前只有 h1 与 h3 在判：h2 只按 SETTINGS 通告的那个值放行，于是运维照 h1 那个
+     *          数把整台机器收紧时，h2 仍按另一把尺收——同一个键在三种通道上不同解。计数口径照 h3：名与值
+     *          的净字节，伪头一并计入（HPACK 那侧「每条 +32」是协议另给的一把尺，两者并排取更紧的一方）。
+     *          下面的字节数按块内容算：`:method: GET` 10 + `:scheme: http` 11 + `:path: /` 6 +
+     *          `:authority: example.com` 21 = 48（静态索引 6 给的是 http，不是 https）。
+     */
+    TEST(Http2Connection, RejectsRequestWithHeaderBlockOverParserByteLimit)
+    {
+        HttpParserLimits parserLimits;
+        parserLimits.maximumHeaderBlockLength = 65;
+        Http2Connection connection(Http2ConnectionConfiguration{}, parserLimits);
+        completeHandshake(connection);
+
+        // 48 + 「x-extra」的 7 + 10 = 65，恰好等于上限要放行
+        const std::string atLimitBlock = makeMinimalGetRequestBlock() + hpackLiteralField("x-extra", "0123456789");
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, atLimitBlock)), Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> atLimitRequests = connection.takeRequests();
+        ASSERT_EQ(atLimitRequests.size(), 1U);
+        EXPECT_FALSE(atLimitRequests.front().isHeaderListTooLarge) << "净字节恰好等于上限的头块不该被判越限";
+
+        // 多一个字节：仍交上层按 431 收口，连接与其余流照旧
+        const std::string aboveLimitBlock = makeMinimalGetRequestBlock() + hpackLiteralField("x-extra", "01234567890");
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, aboveLimitBlock)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+        const std::vector<Http2Request> aboveLimitRequests = connection.takeRequests();
+        ASSERT_EQ(aboveLimitRequests.size(), 1U) << "字节数越限也要把请求交给上层，由它按 431 应答";
+        EXPECT_TRUE(aboveLimitRequests.front().isHeaderListTooLarge);
+        EXPECT_EQ(aboveLimitRequests.front().streamId, 3U);
+
+        // 缺省上限（64 KiB）下同一块请求照常通过：这条闸门只在配置收紧时出现
+        Http2Connection defaults;
+        completeHandshake(defaults);
+        EXPECT_EQ(feed(defaults, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, aboveLimitBlock)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(defaults.hasFailed()) << defaults.errorMessage();
+        const std::vector<Http2Request> defaultRequests = defaults.takeRequests();
+        ASSERT_EQ(defaultRequests.size(), 1U);
+        EXPECT_FALSE(defaultRequests.front().isHeaderListTooLarge) << "缺省上限（64 KiB）下这 66 字节的头块不该被判越限";
+    }
+
+    /**
+     * @brief 钉住：h2 通告的 SETTINGS_MAX_HEADER_LIST_SIZE 与 parser_limits 的头块上限同数
+     * @details 三条通道对「同一个头块体量」先要给出同一个出厂数，运维才谈得上用一个键调整台机器：
+     *          h1 与 h3 只吃 parser_limits，h2 多一道随 SETTINGS 宣告的闸门，两数不同就会让 h2 提前
+     *          撞墙（原先是 16 KiB 对 64 KiB）。这条用例不是格式检查——改了任一侧的默认值就要同时改另一侧。
+     */
+    TEST(Http2Connection, AdvertisesHeaderListSizeMatchingTheParserBlockLimit)
+    {
+        EXPECT_EQ(Http2ConnectionConfiguration{}.maximumHeaderListSize, HttpParserLimits{}.maximumHeaderBlockLength);
     }
 
     /**

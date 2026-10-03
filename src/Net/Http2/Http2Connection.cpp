@@ -1408,10 +1408,12 @@ namespace AsynGyanis::Net
 
         // 整块头部一次留够：这里已经知道有几条、共多少字节，逐条 append 就不必让记录表与字节缓冲
         // 各自按倍扩好几轮。多留一条与 32 字节是给接线层的 host 补齐留的（对端没带 host 头时补一条）
-        std::size_t regularFieldCount = 0;
-        std::size_t headerByteCount   = 0;
+        std::size_t regularFieldCount   = 0;
+        std::size_t headerByteCount     = 0;
+        std::size_t wholeBlockByteCount = 0; ///< 含伪头的整块净字节：口径照 h3 的 accountHeaderFieldBudget
         for (const HpackHeaderField &field: headerFields)
         {
+            wholeBlockByteCount += field.name.size() + field.value.size();
             if (!field.name.empty() && field.name.front() == ':')
             {
                 continue; // 伪头不进请求的头部存储，它们各自成一个字段
@@ -1426,6 +1428,15 @@ namespace AsynGyanis::Net
         // 计数口径照 h3：这一场请求头部里的字段数，伪头也算一条。越限不是协议错误（报文本身合法，
         // 只是本端不收这么多），标成「头块过大」交给上层按 431 应答
         if (m_parserLimits.maximumHeaderCount != 0 && headerFields.size() > m_parserLimits.maximumHeaderCount)
+        {
+            request.isHeaderListTooLarge = true;
+        }
+
+        // 头块字节数是同一个键的另一半：parser_limits.maximum_header_block_length 此前在 h2 上根本没人读，
+        // 运维照 h1 那个数收紧整台机器时，h2 仍按 SETTINGS 通告的那个值放行。两把尺各判各的、取更紧的一方
+        // 生效：这里按名与值的净字节判（伪头一并计入，口径照 h3），HPACK 那侧按 §6.5.2 的「名长 + 值长 + 32」
+        // 逐条判——后者是协议给的定义，换不掉
+        if (m_parserLimits.maximumHeaderBlockLength != 0 && wholeBlockByteCount > m_parserLimits.maximumHeaderBlockLength)
         {
             request.isHeaderListTooLarge = true;
         }

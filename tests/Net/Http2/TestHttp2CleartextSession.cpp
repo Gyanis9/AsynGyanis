@@ -732,7 +732,8 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：服务器改了 h2 连接层配置，SETTINGS 通告与各项上限随之改变
      * @details 此前 h2 的限额只能在服务端 SETTINGS 里**观测**、改不动（配置一路按缺省值构造）。
-     *          三项取值都故意偏离缺省（100 / 16384 / 16 KiB），因此这条断言不是恒等的：
+     *          三项取值都故意偏离各自的缺省（缺省数由 Http2Connection.AdvertisesHeaderListSizeMatchingTheParserBlockLimit
+     *          那一类用例钉着，这里不复述），因此这条断言不是恒等的：
      *          配置没落到连接层就会退回缺省值而变红
      */
     TEST(Http2CleartextSession, AdvertisesConfiguredSettingsWhenServerOverridesThem)

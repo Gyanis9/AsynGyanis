@@ -113,7 +113,12 @@ namespace AsynGyanis::Net
         std::uint32_t maximumConcurrentStreams{100};                           ///< SETTINGS_MAX_CONCURRENT_STREAMS（§6.5.2 初值不限）：本端策略上限，超出回 REFUSED_STREAM
         std::uint32_t initialWindowSize{kHttp2InitialWindowSizeByteCount};     ///< SETTINGS_INITIAL_WINDOW_SIZE（§6.5.2 初值 65535）：本端允许对端每条流先发的字节数
         std::uint32_t maximumFrameSize{kHttp2DefaultMaximumFrameSize}; ///< SETTINGS_MAX_FRAME_SIZE（§6.5.2 初值 16384，合法区间 [16384, 16777215]）：本端可接收的单帧负载上限
-        std::uint32_t maximumHeaderListSize{16U * 1024U};              ///< SETTINGS_MAX_HEADER_LIST_SIZE（§6.5.2 初值不限）：本端策略上限，算式按 §6.5.2 的「名长 + 值长 + 32」
+        /// SETTINGS_MAX_HEADER_LIST_SIZE（§6.5.2 初值不限）：本端策略上限，算式按 §6.5.2 的「名长 + 值长 + 32」。
+        /// 出厂值与 `HttpParserLimits::maximumHeaderBlockLength` 同为 64 KiB，与 h3 的
+        /// `Http3ConnectionConfiguration::maximumFieldSectionSizeByteCount` 同档——三条通道对同一个头块体量
+        /// 先给出同一个数，运维再按哪一把尺收紧都另有一道闸门（parser_limits 那条在 h2 也判，见
+        /// Http2Connection::acceptRequestHeaderFields）
+        std::uint32_t maximumHeaderListSize{64U * 1024U};
         std::uint32_t enableConnectProtocol{1};                 ///< SETTINGS_ENABLE_CONNECT_PROTOCOL（RFC 8441 §3）：1 表示本端接受带 :protocol 的扩展 CONNECT（WebSocket over h2）
         std::size_t   maximumHeaderBlockByteCount{16U * 1024U}; ///< 本端策略：单个头块（HEADERS 与其 CONTINUATION 片段之和）的压缩后字节上限，防对端用无限 CONTINUATION 撑内存
         std::size_t   maximumTotalConsumedByteCount{0};         ///< 本端策略：本连接累计消费字节上限，0 表示不限；开着时超过即按 ENHANCE_YOUR_CALM 收场
