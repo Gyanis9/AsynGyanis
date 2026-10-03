@@ -276,6 +276,19 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.serverVersion(), versionBeforeConnect);
     }
 
+    /** @brief 钉住库路径里的内嵌 NUL 在本地就被拒：sqlite3_open 按 C 字符串读，会把路径截成前半截 */
+    TEST(SqliteConnection, ConnectWithEmbeddedNulInPathIsRejected)
+    {
+        ConnectionConfig configuration = ConnectionConfig::sqliteDefault();
+        configuration.database         = std::string(":memory:") + std::string(1U, '\0') + "other.db";
+        ASSERT_NE(configuration.database.find('\0'), std::string::npos) << "用例自己得先真的把 NUL 喂进去";
+
+        SqliteConnection connection(configuration);
+        EXPECT_FALSE(connection.connect()) << "截断后会静默打开或新建 :memory:，而调用方以为自己开的是另一个库";
+        EXPECT_FALSE(connection.isConnected());
+        EXPECT_NE(connection.lastError().find("NUL"), std::string::npos) << connection.lastError();
+    }
+
     /** @brief 钉住未连接时绝不把空句柄交给 SQLite：如实失败并给出中文前置条件说明 */
     TEST(SqliteConnection, ExecuteWithoutConnectionIsRejectedWithLocalizedReason)
     {

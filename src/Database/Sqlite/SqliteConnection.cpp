@@ -52,6 +52,15 @@ namespace AsynGyanis::Database
         // 清掉上一轮的失败文本，避免成功路径上 lastError() 仍报旧错
         m_lastError.clear();
 
+        // sqlite3_open 只接受零终止的 C 字符串：库路径里内嵌 '\0' 会让它静默截断成前半截，于是
+        // 「打开 prod.db\0x」变成在 prod.db 上开（甚至新建）一个库，一条报错都不留。
+        // MySQL 驱动对连接配置的同一件事早有这道闸，两条驱动必须同一口径
+        if (m_configuration.database.find('\0') != std::string::npos)
+        {
+            m_lastError = "打开 SQLite 库失败：配置里的库路径含内嵌 NUL 字节，客户端库只接受零终止字符串并会静默截断——请检查配置的来源";
+            return false;
+        }
+
         // 未配置库路径时按内存库处理，与 ConnectionConfig::sqliteDefault() 的默认值保持一致
         const std::string databasePath = m_configuration.database.empty() ? kInMemoryDatabasePath : m_configuration.database;
 

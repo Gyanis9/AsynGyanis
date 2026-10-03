@@ -312,6 +312,16 @@ namespace AsynGyanis::Database
             return false;
         }
 
+        // hiredis 的地址参数是零终止 C 字符串：主机名里内嵌 '\0' 会让它静默截断成前半截，于是
+        // 「连 redis.example.com」变成连上另一个主机，报错看起来像 DNS 或认证问题。
+        // MySQL 驱动对连接配置的同一件事早有这道闸，两条驱动必须同一口径
+        // （口令与用户名不走这一格：认证用 %b 带显式长度，内嵌 NUL 不丢字节）
+        if (m_configuration.host.find('\0') != std::string::npos)
+        {
+            m_lastError = "连接 Redis 服务失败：配置里的主机地址含内嵌 NUL 字节，客户端库只接受零终止字符串并会静默截断——请检查配置的来源";
+            return false;
+        }
+
         // 基类的 connectTimeout() 换算成「秒 + 微秒」交给 redisConnectWithTimeout。
         // 该接口只有内存分配失败才返回 nullptr，网络/拒绝连接类失败会返回带 err 的有效上下文，
         // 两条失败路径都必须先摘错误文本再释放上下文——顺序反了就是在读已释放内存
@@ -713,8 +723,11 @@ namespace AsynGyanis::Database
         // 少数底层错误不会填 errstr，留一个兜底文本，免得调用方只看到前缀和错误码
         const std::string_view reasonText = (m_redisContext->errstr[0] != '\0') ? std::string_view(m_redisContext->errstr) : std::string_view("未给出原因的协议或系统错误");
 
-        // 带上 hiredis 的 err 码：只有中文文本时排查具体的超时与 DNS 失败仍需要原始数字
-        m_lastError = composeNativeErrorText(description, reasonText, "未给出原因的协议或系统错误", m_redisContext->err);
+        // 带上 hiredis 的 err 码：只有中文文本时排查具体的超时与 DNS 失败仍需要原始数字。
+        // 文本与码要**成对**写入（MySQL 与 SQLite 两侧都是 assignNative）：只拼进文本而不落码，
+        // lastNativeErrorCode() 就恒为 -1，而 RetryableQueryFailure 这类按码判定的调用方读到的是「没有码」
+        m_lastError.assignNative(composeNativeErrorText(description, reasonText, "未给出原因的协议或系统错误", m_redisContext->err),
+                                 static_cast<std::int64_t>(m_redisContext->err));
     }
 
     bool RedisConnection::applyQueryTimeout()
