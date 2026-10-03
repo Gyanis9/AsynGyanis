@@ -215,7 +215,8 @@ namespace AsynGyanis::Net
          */
         void close() noexcept;
 
-        /// 通路是否还能用（没被对端收掉、也没被本端判死或关掉）
+        /// 通路是否还能用来提**新**请求：没被对端收掉、没被本端判死或关掉，且对端没通告收尾
+        /// （RFC 9113 §6.8：收到 GOAWAY 之后不得再在这条连接上开新流，故这条连接对池而言已经用完了）
         [[nodiscard]] bool isHealthy() const noexcept;
 
         /// 在途（已提出、还没收齐）的流条数：连接池据此判断这条连接是不是正被人用着

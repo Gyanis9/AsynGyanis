@@ -67,7 +67,10 @@ namespace AsynGyanis::Net
 
     bool Http2ClientConnection::isHealthy() const noexcept
     {
-        return m_isHealthy && m_transport->isOpen();
+        // 「还能不能提请求」也包含对端有没有通告收尾：RFC 9113 §6.8 要求收到 GOAWAY 之后不得再在这条
+        // 连接上开新流，而本层的 request() 正是这么拒的。健康位不认这一条，池就会一直把这条连接派出去，
+        // 每次取用都先撞一次「对端已通告收尾」再换连接重来——那份代价要一直付到这条记录被闲置淘汰为止
+        return m_isHealthy && !m_isPeerGoAway && m_transport->isOpen();
     }
 
     void Http2ClientConnection::fail(std::string reason)
@@ -989,12 +992,9 @@ namespace AsynGyanis::Net
         Http2ClientResponse response;
         if (!isHealthy())
         {
-            response.errorMessage = m_errorMessage.empty() ? "连接已不可用" : m_errorMessage;
-            co_return response;
-        }
-        if (m_isPeerGoAway)
-        {
-            response.errorMessage = "对端已通告收尾（GOAWAY），本端不再提新流";
+            // 三种「提不了新流」各说各的原因：对端通告收尾那一句要点名 GOAWAY，否则调用方只看到
+            // 「连接已不可用」，分不清是本端判死还是对端正在优雅停机（后者换条连接就好，前者要查证书/网络）
+            response.errorMessage = !m_errorMessage.empty() ? m_errorMessage : (m_isPeerGoAway ? "对端已通告收尾（GOAWAY），本端不再提新流" : "连接已不可用");
             co_return response;
         }
 

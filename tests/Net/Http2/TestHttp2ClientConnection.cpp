@@ -407,7 +407,9 @@ namespace AsynGyanis::Net
             /// RFC 9113 §8.7 那两种「保证没被处理过」的形状有没有被认出来（REFUSED_STREAM／GOAWAY 的 last-stream-id）
             bool isGuaranteedUnprocessed{false};
             /// 这条流上有没有收到过对端的任何帧：答过话就不该再重来
-            bool        isAnyByteReceived{false};
+            bool isAnyByteReceived{false};
+            /// 这一趟跑完之后连接还算不算健康：池据此决定还要不要把新请求派给它
+            bool        isHealthyAtEnd{true};
             std::string peerDecodeErrorText;      ///< 对端解帧的报错（越界的单帧会在这里露出来）
             std::size_t headersFrameCount{0};     ///< 对端看到的 HEADERS 帧数
             std::size_t continuationCount{0};     ///< CONTINUATION 帧数
@@ -567,6 +569,7 @@ namespace AsynGyanis::Net
             outcome.errorMessage            = response.errorMessage;
             outcome.isGuaranteedUnprocessed = response.isGuaranteedUnprocessed;
             outcome.isAnyByteReceived       = response.isAnyByteReceived;
+            outcome.isHealthyAtEnd          = connection->isHealthy();
             co_return;
         }
         std::string singleSettingFrameBytes(const Http2SettingIdentifier identifier, const std::uint32_t value)
@@ -1879,7 +1882,9 @@ namespace AsynGyanis::Net
      *          把任何 RST_STREAM 都记成「对端答过话」，于是服务端优雅停机时被拒的那个 POST 只会失败一次，
      *          而规范说它本该被安全重试
      * @note 证伪：把 REFUSED_STREAM 那一支改回「一律记成对端答过话」，格一红；把 GOAWAY 那一支的保证摘掉，
-     *       格三红；把「答过话就不认保证」这道防御摘掉，格四红
+     *       格三红；把「答过话就不认保证」这道防御摘掉，格四红；把健康位里「对端没通告收尾」那一项摘掉，
+     *       格三红在 isHealthyAtEnd 上（池会继续把这条正在排空的连接派出去）；把该项写成「任何 RST 都不健康」，
+     *       格一红——一条流被复位不等于整条连接用完
      */
     TEST(Http2ClientConnection, MarksOnlyTheSpecGuaranteedUnprocessedShapesAsRetryable)
     {
@@ -1905,6 +1910,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(refused.statusCode, 0);
         EXPECT_FALSE(refused.isAnyByteReceived) << "REFUSED_STREAM 的意思正是「没处理过」，不该记成对端答过话";
         EXPECT_TRUE(refused.isGuaranteedUnprocessed) << "§8.7 的保证没被认出来：优雅停机里被拒的非幂等请求会白失败一次";
+        EXPECT_TRUE(refused.isHealthyAtEnd) << "一条流被 RST 不等于整条连接用完：这条连接上别的流照旧，池不该就此丢掉它";
 
         // 格二：CANCEL 不带这个保证（对端动过手，可能已经执行过）
         const HeaderBlockRunOutcome cancelled = runScript(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, 1U));
@@ -1915,6 +1921,8 @@ namespace AsynGyanis::Net
         const HeaderBlockRunOutcome goAway = runScript(encodeHttp2GoAwayFrame(Http2GoAwayPayload{.lastStreamId = 0U, .errorCode = Http2ErrorCode::NoError}));
         EXPECT_TRUE(goAway.isGuaranteedUnprocessed) << "§8.7：last-stream-id 之上的流保证可以安全重试";
         EXPECT_FALSE(goAway.isAnyByteReceived);
+        EXPECT_FALSE(goAway.isHealthyAtEnd) << "§6.8：收到 GOAWAY 之后本端不得再在这条连接上开新流，"
+                                               "而健康位还报真就意味着池会一直把它派出去、每次取用都先撞一次失败再换连接";
 
         // 格四：对端答过话之后再来 REFUSED_STREAM——那是它违反 §8.7 的 MUST NOT，本端不认这个保证
         HpackEncoder                peerEncoder;
