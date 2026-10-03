@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 用 libFuzzer 持续模糊四类协议解码器（Windows 与 Linux 两侧的可复现跑法）。
+# 用 libFuzzer 持续模糊各档协议解码器（Windows 与 Linux 两侧的可复现跑法）。
 #
 # 为什么不是「把项目里的 Net.lib 拿来链」：LLVM 官方 Windows 包里 compiler-rt 的 fuzzer 运行时是
 # 按**静态 CRT**（/MT）编的，而本仓的 MSVC 构建一律是 /MD——lld-link 会以
@@ -40,7 +40,7 @@ shift || true
 # 目标清单：默认每档各跑一整轮（每档预算都是 durationSeconds），这样「哪档在推进」看得见。
 # 传 ASYN_FUZZ_TARGETS=combined 退回单次混合跑（一个进程轮转全部目标），本机快速冒烟用得上。
 # 每档的语料与日志各落一份：语料是「下次能接着挖」的起点，日志是给 CI 数执行次数用的。
-targetSelection="${ASYN_FUZZ_TARGETS:-WebSocketFrame Http2Frame Http3Frame HpackBlock QuicPacket QuicFrameSequence QuicParameters}"
+targetSelection="${ASYN_FUZZ_TARGETS:-Http1Request WebSocketFrame Http2Frame Http3Frame HpackBlock QuicPacket QuicFrameSequence QuicParameters}"
 corpusRoot="${ASYN_FUZZ_CORPUS_DIR:-${projectRoot}/.fuzz/corpus}"
 logRoot="${projectRoot}/.fuzz/log"
 
@@ -63,7 +63,7 @@ runOneTarget() {
         mkdir -p "${corpusDir}" "${logRoot}"
         logFile="${logRoot}/combined.log"
     fi
-    echo "开跑 ${targetName:-混合四类} ${durationSeconds} 秒（附加参数透传给 libFuzzer）"
+    echo "开跑 ${targetName:-混合全部目标} ${durationSeconds} 秒（附加参数透传给 libFuzzer）"
     (
         cd "${projectRoot}/.fuzz" || exit 1
         if [[ -n "${targetName}" ]]; then
@@ -95,7 +95,7 @@ runAllTargets() {
     return "${status}"
 }
 
-# 模糊入口 + 七档解码器 + 依赖闭包（少一项就链不出来）
+# 模糊入口 + 全部解码器档 + 依赖闭包（少一项就链不出来）
 sources=(
     "tests/Net/Fuzz/FuzzTargets.cpp"
     "tests/Net/Fuzz/ProtocolFuzzKernel.cpp"
@@ -111,6 +111,10 @@ sources=(
     "src/Net/Quic/Codec/QuicTransportParameters.cpp"
     "src/Net/Http/HttpHeaderFieldStore.cpp"
     "src/Net/Http/HttpRequest.cpp"
+    # h1 请求档的本体：本闭包不链 Net 库，构造/parse/reset/request() 全在这里，漏一项链接期就报
+    "src/Net/Http/HttpParser.cpp"
+    # 解析器直接调用的头部规则（逐跳头名判定等）也自成一份翻译单元
+    "src/Net/Http/HttpHeaderRules.cpp"
     # 请求对象的两条成员函数各自落在自己的文件里：cookies() 要 HttpCookie.cpp、multipartForm()
     # 要 MultipartForm.cpp，少哪一个都在链接期报未定义（清单本身就是按链接器的报错补齐的）
     "src/Net/Http/HttpCookie.cpp"
@@ -161,7 +165,7 @@ if [[ "$(uname -s)" == Linux* ]]; then
     rm -f "${probeSource}" "${probeBinary}"
     if [[ -z "${compiler}" ]]; then
         echo "没有一档 clang 能同时给出 std::expected 与 std::stop_source 并链上 compiler-rt 的 fuzzer" >&2
-        echo "运行时，而本仓四类解码器的接口两头都靠它们。libstdc++ 的 <expected> 要求 clang 报" >&2
+        echo "运行时，而本仓各档解码器的接口两头都靠它们。libstdc++ 的 <expected> 要求 clang 报" >&2
         echo "__cpp_concepts >= 202002L，clang 18 及以下不满足：apt install clang-19 libfuzzer-19-dev，" >&2
         echo "或用 CXX=<路径> 指一份 clang 19 以上的编译器" >&2
         exit 1

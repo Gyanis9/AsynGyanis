@@ -9,6 +9,7 @@
 
 #include "Fuzz/ProtocolFuzzKernel.h"
 
+#include "Net/Http/HttpParser.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http3/Http3Frame.h"
@@ -297,6 +298,206 @@ namespace AsynGyanis::Net::Fuzz
             {
                 bytes.push_back(static_cast<char>(static_cast<unsigned char>(random.next())));
             }
+        }
+
+        /**
+         * @brief 为 HTTP/1 请求解析器造一份输入：请求行 + 头部块 + 空行 + 正文四段各自变异
+         * @details 这段是 TCP 上最先被外部打到的解码器，而它的拒绝面还是分层的（414/431/400/413 各归一类），
+         *          纯随机字节只会停在「首行凑不齐两个空格」那一层。所以先拼自洽骨架再变异：请求目标在
+         *          普通路径、带查询、绝对形式、`*`、含空白与控制字符、超长这几档里轮转；头部条数 0..5，
+         *          名与值偶尔掺控制字符或拍一段随机字节；正文形态轮转「无 / Content-Length 相符 /
+         *          声称比实给多 / 零长 / 分块合法 / 分块大小是垃圾 / 分块永不收尾 / 分块后带 trailer」——
+         *          这几档正是历史缺陷的形状（长度域与实际字节不符、分块大小溢出、收完之后的剩余字节）。
+         */
+        std::string makeHttp1RequestInput(DeterministicRandom &random)
+        {
+            static constexpr std::array<std::string_view, 8> kMethods{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE"};
+            static constexpr std::array<std::string_view, 7> kHeaderNames{"Host", "host", "Content-Length", "content-length", "Transfer-Encoding", "X-Test", "Accept"};
+
+            std::string input;
+            if (const std::size_t methodIndex = random.nextBelow(9U); methodIndex < kMethods.size())
+            {
+                input += kMethods[methodIndex];
+            } else
+            {
+                appendFuzzRandomBytes(input, random, 1U + random.nextBelow(5U)); // 垃圾动词：token 位上的非法字符
+            }
+            input += ' ';
+
+            switch (random.nextBelow(6U))
+            {
+                case 0U:
+                    input += "/index.html";
+                    break;
+                case 1U:
+                    input += "/a?x=1&y=%20";
+                    break;
+                case 2U:
+                    input += "http://example.com/p";
+                    break;
+                case 3U:
+                    input += "*";
+                    break;
+                case 4U:
+                    input += "/a b\x01"
+                             "c";
+                    break;
+                default:
+                    input += '/';
+                    appendFuzzRandomBytes(input, random, 64U + random.nextBelow(200U)); // 超长请求目标：打 uri 那道闸
+                    break;
+            }
+
+            // 版本位绝大多数是 1.1，偶尔换一个两位数的怪版本（本层按形态判而不按语义判，值得撞一次）
+            input += random.nextBelow(8U) == 0U ? " HTTP/9.9\r\n" : " HTTP/1.1\r\n";
+
+            const std::size_t headerCount = random.nextBelow(6U);
+            bool              hasHost     = false;
+            for (std::size_t index = 0; index < headerCount; ++index)
+            {
+                const std::string_view name = kHeaderNames[index % kHeaderNames.size()];
+                if (name == "Host" || name == "host")
+                {
+                    hasHost = true;
+                }
+                input += name;
+                input += ": ";
+                switch (random.nextBelow(4U))
+                {
+                    case 0U:
+                        input += "sample-value";
+                        break;
+                    case 1U:
+                        break; // 空值：合法形态之一
+                    case 2U:
+                        input += "a\x01"
+                                 "b";
+                        break;
+                    default:
+                        appendFuzzRandomBytes(input, random, 1U + random.nextBelow(40U));
+                        break;
+                }
+                input += "\r\n";
+            }
+            if (!hasHost && random.nextBelow(4U) != 0U)
+            {
+                // HTTP/1.1 缺 Host 是有拒绝面的：四条里给三条补上，别让每轮都停在同一道闸前
+                input += "Host: example.com\r\n";
+            }
+
+            std::string body;
+            switch (const std::size_t framing = random.nextBelow(8U); framing)
+            {
+                case 1U:
+                    input += "Content-Length: 5\r\n";
+                    body = "hello";
+                    break;
+                case 2U:
+                    input += "Content-Length: 50\r\n"; // 声称的比实给的多：该停在「还要数据」
+                    body = "hello";
+                    break;
+                case 3U:
+                    input += "Content-Length: 0\r\n";
+                    break;
+                case 4U:
+                    input += "Transfer-Encoding: chunked\r\n";
+                    body = "5\r\nhello\r\n0\r\n\r\n";
+                    break;
+                case 5U:
+                    input += "Transfer-Encoding: chunked\r\n";
+                    body = "zz\r\nhello\r\n"; // 块大小行是垃圾
+                    break;
+                case 6U:
+                    input += "Transfer-Encoding: chunked\r\n";
+                    body = "5\r\nhello\r\n"; // 永不收尾的分块
+                    break;
+                case 7U:
+                    input += "Transfer-Encoding: chunked\r\n";
+                    body = "5\r\nhello\r\n0\r\nX-Trail: 1\r\n\r\n"; // 收完还带 trailer 段
+                    break;
+                default:
+                    break;
+            }
+
+            input += "\r\n"; // 头部块收尾
+            if (random.nextBelow(3U) == 0U)
+            {
+                input += "GET /next HTTP/1.1\r\nHost: example.com\r\n\r\n"; // 流水线里的下一条
+            }
+            input += body;
+            if (random.nextBelow(4U) == 0U)
+            {
+                appendFuzzRandomBytes(input, random, 1U + random.nextBelow(8U));
+            }
+            return input;
+        }
+
+        /// 一条解出的 HTTP/1 请求的可比对标识：方法、版本、路径、逐条头部与正文
+        std::string describeHttp1Request(const HttpRequest &request)
+        {
+            std::string text =
+                    std::to_string(static_cast<int>(request.method())) + '/' + request.httpVersion() + '/' + std::string(request.path()) + '/' + std::string(request.body());
+            request.forEachHeaderField([&text](const std::string_view name, const std::string_view value) { text += " {" + std::string(name) + ':' + std::string(value) + '}'; });
+            return text;
+        }
+
+        /**
+         * @brief 用 HTTP/1 请求解析器把 input 跑一遍（parse 三态 + consumedByteCount + request()）
+         * @details Done 是「解出一条报文」的边界，与 h2 的 Frame 同位；解完立刻 reset() 再喂剩余字节，
+         *          这与服务端的流水线口径一致（HttpSession 就是在 Done 之后复位）。不复位时本层是
+         *          「一字节都不吃地停在 Complete」，那是契约而不是违例，因此判据必须按流水线的走法来。
+         * @tparam Parser HttpParser
+         */
+        template<typename Parser>
+        RunTrace driveHttp1(Parser &parser, const std::string &input, const std::size_t chunkSize, std::string &errorText)
+        {
+            RunTrace    trace;
+            std::size_t offset = 0;
+
+            for (std::size_t step = 0; offset < input.size(); ++step)
+            {
+                if (step > maximumDriveSteps(input.size()))
+                {
+                    errorText = "解析器不推进，驱动被判卡死（I2）";
+                    return trace;
+                }
+
+                const std::size_t availableLength = std::min(chunkSize, input.size() - offset);
+                const ParseStatus status          = parser.parse(input.data() + offset, availableLength);
+                const std::size_t consumed        = parser.consumedByteCount();
+                if (consumed > availableLength)
+                {
+                    errorText = "单次消费超过本次喂入（I2）";
+                    return trace;
+                }
+                offset += consumed;
+                trace.consumedByteCount += consumed;
+
+                if (status == ParseStatus::Done)
+                {
+                    trace.frameKeys.push_back(describeHttp1Request(parser.request()));
+                    parser.reset(); // 流水线：一条报文解完即复位，剩余字节属于下一条
+                    continue;
+                }
+                if (status == ParseStatus::Error)
+                {
+                    trace.isEndedInError = true;
+                    return trace;
+                }
+                if (status != ParseStatus::NeedMore)
+                {
+                    errorText = "结论落在三类之外（I1）";
+                    return trace;
+                }
+                if (consumed == 0)
+                {
+                    errorText = "NeedMore 却一个字节都不消费（I2）";
+                    return trace;
+                }
+            }
+
+            trace.isEndedNeedMore = !parser.hasError();
+            return trace;
         }
 
         /**
@@ -719,6 +920,8 @@ namespace AsynGyanis::Net::Fuzz
     {
         switch (target)
         {
+            case Target::Http1Request:
+                return "Http1Request";
             case Target::WebSocketFrame:
                 return "WebSocketFrame";
             case Target::Http2Frame:
@@ -744,6 +947,9 @@ namespace AsynGyanis::Net::Fuzz
         std::string input;
         switch (target)
         {
+            case Target::Http1Request:
+                input = makeHttp1RequestInput(random);
+                break;
             case Target::WebSocketFrame:
                 input = makeWebSocketInput(random);
                 break;
@@ -779,6 +985,9 @@ namespace AsynGyanis::Net::Fuzz
     {
         switch (target)
         {
+            case Target::Http1Request:
+                // 一条自洽的完整请求：带查询的路径、定长正文，截断矩阵的每个前缀都落在「收行中」的某个相位上
+                return "POST /upload?x=1 HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello";
             case Target::WebSocketFrame:
                 return makeMaskedTextFrame("reset-probe");
             case Target::Http2Frame:
@@ -858,7 +1067,7 @@ namespace AsynGyanis::Net::Fuzz
     {
         std::string errorText;
 
-        // 记账排在一切之前：CI 判「四类是不是都在被推」只认这一处计数。
+        // 记账排在一切之前：CI 判「每一档是不是都在被推」只认这一处计数。
         // Target 是公开枚举、调用方可以把它 cast 成越界值，所以这里按下标兜一层而不是假定它合法
         if (const auto index = static_cast<std::size_t>(target); index < g_targetCallCounts.size())
         {
@@ -878,6 +1087,52 @@ namespace AsynGyanis::Net::Fuzz
 
         switch (target)
         {
+            case Target::Http1Request:
+            {
+                HttpParser     wholeParser;
+                const RunTrace whole = driveHttp1(wholeParser, input, input.size(), errorText);
+                collect(whole);
+                if (!errorText.empty())
+                {
+                    return errorText;
+                }
+
+                HttpParser     byteWiseParser;
+                const RunTrace byteWise = driveHttp1(byteWiseParser, input, 1U, errorText);
+                if (!errorText.empty())
+                {
+                    return errorText;
+                }
+                if (whole.frameKeys != byteWise.frameKeys || whole.isEndedInError != byteWise.isEndedInError)
+                {
+                    return "整体喂与逐字节喂结论不同（I3）";
+                }
+
+                // I4 粘滞 + I6 越权产出：失败之后继续喂任何字节仍判错、一字节不吃，也不交半截报文
+                if (whole.isEndedInError)
+                {
+                    const auto again = wholeParser.parse("tail-more-bytes", 15U);
+                    if (again != ParseStatus::Error || wholeParser.consumedByteCount() != 0U)
+                    {
+                        return "错误态没粘住，或还在消费字节（I4/I6）";
+                    }
+                    if (whole.frameKeys.empty() && (!wholeParser.request().path().empty() || !wholeParser.request().body().empty()))
+                    {
+                        return "失败的一路把半截产出交给了调用方（I6）";
+                    }
+                }
+
+                // I5 复位可用：同一个解析器 reset() 后必须还能解出一条完整请求（见 WebSocket 分支里同样的说明）
+                wholeParser.reset();
+                const std::string probe      = validInput(target);
+                const RunTrace    resetTrace = driveHttp1(wholeParser, probe, probe.size(), errorText);
+                if (resetTrace.isEndedInError || resetTrace.frameKeys.empty())
+                {
+                    return "reset() 后合法请求解不出报文（I5）";
+                }
+                return {};
+            }
+
             case Target::WebSocketFrame:
             {
                 WebSocketFrameDecoder wholeDecoder;

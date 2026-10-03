@@ -658,15 +658,15 @@ jobs:
           path: /tmp/echo-h3.log
           if-no-files-found: ignore
 
-  # 协议解码器的持续模糊：七档目标（WebSocket 帧、h2 帧、h3 帧、HPACK/QPACK 头块、QUIC 报文头、
-  # QUIC 帧序列、QUIC 传输参数）连同它们的
+  # 协议解码器的持续模糊：按目标分档（h1 请求、WebSocket 帧、h2 帧、h3 帧、HPACK/QPACK 头块、
+  # QUIC 报文头、QUIC 帧序列、QUIC 传输参数）连同它们的
   # 依赖闭包自成一组翻译单元，不需要 Conan、不需要配置构建——脚本自己用 clang 的 libFuzzer 编一份独立
   # 产物。此前这一步只有本机手工跑（`scripts/fuzz-net.sh` 当初是为 Windows 侧写的，一轮 60 秒），
   # 回归时没有任何流水线会替我们喂随机字节，而这类解码器的历史缺陷全是越界与释放后读。
   # 违例样本落进 .fuzz/artifacts/，失败时作为工件取出，原样搬进 tests/Net/Fuzz/TestProtocolFuzz.cpp
   # 的种子用例即可常驻。
   protocol-fuzz:
-    name: 七档解码器模糊测试
+    name: 协议解码器持续模糊
     runs-on: ubuntu-latest
     # 上限要按 apt 慢的那次量：v2.4.0 那次运行里，「装 clang-19 与它的 fuzzer 运行时」一步从 16:26:30
     # 拖到 16:54:57 才结束（llvm-19 / -tools / -dev 几百 MB，镜像吞吐看运气），模糊步骤只跑了 1 分多钟
@@ -691,7 +691,7 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 update
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 install -y clang-19 libfuzzer-19-dev nlohmann-json3-dev
 
-      - name: 七档解码器各跑一轮（每档 90 秒）
+      - name: 各档解码器各跑一轮（每档 90 秒）
         run: bash scripts/fuzz-net.sh 90 -error_exitcode=1 -workers=2 -jobs=2
 
       # 崩溃只说明「撞坏了」，不说明「每档都在被推」：混合跑里某一档零调用也能总计数百万次。

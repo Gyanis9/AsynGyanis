@@ -1,4 +1,4 @@
-// 自研协议解码器的属性化随机模糊：四类解码器 × 六条不变量，固定种子保证失败可复现。
+// 自研协议解码器的属性化随机模糊：每一档解码器 × 六条不变量，固定种子保证失败可复现。
 // 与 libFuzzer 入口（FuzzTargets.cpp）共用同一份内核，因此「本地跑绿」与「CI 持续模糊」判的是同一件事。
 //
 // 粘滞、复位与「失败不留半截产出」这几条判据已按突变法证过非恒绿（2026-09-24，各自临时改坏实现后转红、
@@ -81,6 +81,7 @@ namespace AsynGyanis::Net::Fuzz
         /// 各目标的固定种子：失败信息里带轮次与轮数，凭种子就能在同一台机器上重放同一串输入。
         /// 随机源是单调流，因此加压跑（ASYN_FUZZ_ROUNDS 调大）的前 N 轮与默认跑完全同序——
         /// 默认跑绿而加压跑红的轮次，把前面的输入原样搬进用例即可常驻
+        constexpr std::uint64_t kSeedHttp1          = 20261010ULL;
         constexpr std::uint64_t kSeedWebSocket      = 20260924ULL;
         constexpr std::uint64_t kSeedHttp2          = 20260925ULL;
         constexpr std::uint64_t kSeedHttp3          = 20260926ULL;
@@ -143,6 +144,18 @@ namespace AsynGyanis::Net::Fuzz
             }
         }
     } // namespace
+
+    /**
+     * @brief HTTP/1 请求解析器的不变量轮：TCP 上最先被外部打到的一段
+     * @details 其余几档要么是「升级之后」要么换了一套分帧，只有这一段直接吃客户端的首字节，而且它的
+     *          拒绝面是分层的（414/431/400/413 各归一类）。此前它不在模糊面里——CI 的 protocol-fuzz
+     *          作业等于把最热的攻击面只交给了人写的用例。
+     */
+    TEST(ProtocolFuzz, Http1RequestParserKeepsInvariants)
+    {
+        runRandomRounds(Target::Http1Request, kSeedHttp1);
+        runTruncationMatrix(Target::Http1Request);
+    }
 
     TEST(ProtocolFuzz, WebSocketFrameDecoderKeepsInvariants)
     {

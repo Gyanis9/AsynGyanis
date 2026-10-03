@@ -3,7 +3,7 @@
 // 工具链现状（2026-09-24 实查，别再重走）：
 //   · llvm.org 官方包（本机 G:\Tools\LLVM，clang 23.1.1 / x86_64-pc-windows-msvc）**带** fuzzer 运行时
 //     （lib/clang/23/lib/windows/clang_rt.fuzzer*.lib），这条路能跑——scripts/fuzz-net.sh 就是它：
-//     实测 61 秒 266 万次执行、新增 3263 个覆盖单元、峰值常驻 33 MB，四类解码器零违例。
+//     实测 61 秒 266 万次执行、新增 3263 个覆盖单元、峰值常驻 33 MB，各档解码器零违例。
 //     唯一的坑：那份运行时按静态 CRT 编，整产物必须 /MT，混不上项目里 /MD 的 Net.lib，
 //     所以脚本只编「内核 + 四个解码器 + 依赖闭包」，不链项目现成的库。
 //   · Qt 附带的 llvm-mingw clang 22.1.7（x86_64-w64-windows-gnu）对 -fsanitize=fuzzer 与
@@ -15,7 +15,7 @@
 //
 // 每类解码器要单独预算时设 `ASYN_FUZZ_TARGET=<targetName>`（名字与 `targetName()` 一一对应：
 // Http3Frame / HpackBlock / QuicPacket / QuicFrameSequence / QuicParameters）：本进程只喂那一个目标，语料目录也各自一份。不设就是全部轮转共享一次运行。
-// 退出前打一行 `FUZZ-TARGET-CALLS 名字=次数 …`，CI 用它判「是不是四类都在推进」——光看总执行次数，
+// 退出前打一行 `FUZZ-TARGET-CALLS 名字=次数 …`，CI 用它判「是不是每一档都在推进」——光看总执行次数，
 // 某一类根本没被走到是看不出来的。
 #include "Fuzz/ProtocolFuzzKernel.h"
 
@@ -36,7 +36,7 @@ namespace
     /**
      * @brief 本轮只打某一个目标（`ASYN_FUZZ_TARGET=Http2Frame`），用来给每类解码器单独预算
      * @details 名字取自 `targetName`，拼错时当场退出而不是静默回到轮转模式——静默退化会让人以为
-     *          「四类各跑了 300 秒」，实际是四个进程都在轮转、每类只分到四分之一的量
+     *          「每档各跑了 300 秒」，实际是几个进程都在轮转、每档只分到几分之一的量
      */
     [[nodiscard]] std::optional<std::size_t> forcedTargetIndex()
     {
@@ -61,7 +61,7 @@ namespace
         return resolved;
     }
 
-    /// 退出时打一行机器可读的分目标调用数，供 CI 判「四类是不是都在推进」
+    /// 退出时打一行机器可读的分目标调用数，供 CI 判「每一档是不是都在推进」
     void printTargetCallCounts()
     {
         std::string line   = "FUZZ-TARGET-CALLS";

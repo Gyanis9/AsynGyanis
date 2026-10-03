@@ -25,6 +25,7 @@ namespace AsynGyanis::Net::Fuzz
      */
     enum class Target : std::uint8_t
     {
+        Http1Request,      ///< HTTP/1.x 请求解析器（RFC 9112 §5/§6/§7.1：TCP 上最先被外部打到的一段，含分块正文与流水线）
         WebSocketFrame,    ///< WebSocket 增量帧解码器（RFC 6455 + 服务端侧的掩码/控制帧约束）
         Http2Frame,        ///< HTTP/2 增量帧解码器（RFC 7540 §4 + 本端上限）
         Http3Frame,        ///< HTTP/3 帧读取器（RFC 9114 §7 + varint 帧头 + 单帧上限）
@@ -115,6 +116,9 @@ namespace AsynGyanis::Net::Fuzz
      *          - I6 不越权产出：错误态下不得交出任何帧，失败也不得把半截产出留在调用方的输出参数里。
      *
      *          各目标的适用面不同，按接口形状各自取用（这一列就是「哪条判据真的在跑」的清单）：
+     *          HTTP/1 的请求解析器与 WebSocket / HTTP/2 同为 parse/takeFrame 形状的增量解码器，
+     *          I1～I6 全查；差别只在「产出一条报文」之后必须像服务端那样 reset() 再继续喂剩余字节
+     *          （流水线：一个字节都不吃地停在 Complete 是本层的契约，不是违例）；
      *          WebSocket 与 HTTP/2 是 parse/takeFrame 形状的增量解码器，I1～I6 全查；
      *          HTTP/3 的读取器是 feed/nextFrame 形状，没有「本次消费多少」的出口，故 I2 退成
      *          「步数上限 + 帧序不变」、I4 退成「判错之后的复查仍须报错」；
@@ -131,7 +135,7 @@ namespace AsynGyanis::Net::Fuzz
     /**
      * @brief 各目标在**本进程内**被真正解码过多少次
      * @details 计数点在 `checkInvariants` 里，因此 libFuzzer 入口与 gtest 的随机驱动共用同一份账：
-     *          这份账回答的是「四类解码器是不是都在被推」——`Target` 加了新项而没人走到它，
+     *          这份账回答的是「每一档解码器是不是都在被推」——`Target` 加了新项而没人走到它，
      *          外面完全看不出来（作业照常绿）。模糊侧在退出时把它打成一行机器可读的读数，
      *          gtest 侧有一条用例按目标逐个走一遍并核对增量
      * @return std::array<std::uint64_t, Target::Count> 下标即 `Target` 的序号
