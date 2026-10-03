@@ -2766,4 +2766,50 @@ namespace AsynGyanis::Net
         static_cast<void>(connection.takeOutgoingBytes());
         EXPECT_EQ(connection.unsentResponseByteCount(), 0U) << "字节已整批交给上层，读数不该还挂着";
     }
+    /**
+     * @brief 钉住：入站尾部头块越过 HPACK 的头列表上限时按**流错误** ENHANCE_YOUR_CALM 收口，连接照旧
+     * @details 与头部那场的处置分得很开是有原因的：响应此刻已经发出，没有 431 可回（RFC 9113 §10.5.1
+     *          把「头块超出本端愿意处理的量」列为流错误 ENHANCE_YOUR_CALM 而非连接错误）。这一支此前
+     *          无人直测——`Http2CleartextSession` 那两条累计用例走的是 `parser_limits` 那把尺，越限的
+     *          请求还没派发，回得出 431；这一条走的是 `maximumHeaderListSize` 那把尺，越限的是**已派发**
+     *          那条流的尾块。两把尺、两种处置，缺一条就会在「统一成 431」这类改动里被静默换掉，
+     *          把响应已发出的流改成回一个发不出去的 431。
+     *          数字：单个尾字段 `x-a` + 6000 字节值，按 §6.5.2 的「名长 + 值长 + 32」算 6035 字节，
+     *          过 4096 的上限；头部那场四个字段合计远小于 4096，因此越限的只有尾块这一场。
+     *          单条头值仍在上限之内（`parser_limits.maximum_header_field_value_length` 出厂 8 KiB），
+     *          排除掉「其实是单条长度挡的」这一误读。
+     */
+    TEST(Http2Connection, RejectsOversizedInboundTrailerBlockWithAStreamError)
+    {
+        Http2ConnectionConfiguration configuration;
+        configuration.maximumHeaderListSize = 4096U;
+        Http2Connection connection(configuration);
+        completeHandshake(connection);
+
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
+        ASSERT_EQ(connection.takeRequests().size(), 1U) << "POST 的头部那场没解出请求，尾块没有可挂的流";
+
+        // 越限的尾块：不判定为连接错误（feed 仍回 NeedMore），也不把收口信号交给上层
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, hpackLiteralField("x-a", std::string(6000U, 'v')))),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasFailed()) << "尾部头块越限是流错误，不该把整条连接带走：" << connection.errorMessage();
+        EXPECT_TRUE(connection.takeReceivedData().empty()) << "被判死的流不该再交出收尾信号";
+
+        const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
+        ASSERT_EQ(resetFrames.size(), 1U) << "越限的那条流要收到恰好一枚 RST_STREAM";
+        EXPECT_EQ(resetFrames.front().header.streamId, 1U);
+        Http2RstStreamPayload resetPayload;
+        std::string           resetErrorText;
+        ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), resetPayload, &resetErrorText)) << resetErrorText;
+        EXPECT_EQ(resetPayload.errorCode, Http2ErrorCode::EnhanceYourCalm) << "头部越限回 431、尾部越限按流收口，两者都用本端愿意处理的量这一档";
+        EXPECT_NE(connection.lastStreamErrorMessage().find("尾部头块"), std::string::npos) << connection.lastStreamErrorMessage();
+
+        // 连接仍在服务其它流：换一个流号发一条正常请求，头部那场在这把尺之下
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> laterRequests = connection.takeRequests();
+        ASSERT_EQ(laterRequests.size(), 1U) << "越限的流不该牵连其它流";
+        EXPECT_FALSE(laterRequests.front().isHeaderListTooLarge) << "对照：正常头部那场不该被同一把尺挡下";
+        EXPECT_EQ(laterRequests.front().streamId, 3U);
+    }
 } // namespace AsynGyanis::Net

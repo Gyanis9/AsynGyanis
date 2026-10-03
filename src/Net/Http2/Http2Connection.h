@@ -140,8 +140,11 @@ namespace AsynGyanis::Net
         std::string   authority;   ///< :authority 原文；对端没带时为空
         /// 普通头部，按到达顺序，名已校验为小写。与 HttpRequest 同一套存储，接线层整块换走、不逐字段抄
         HttpHeaderFieldStore headerFields;
-        bool                 hasBody{false};              ///< 请求头未带 END_STREAM：正文会随 takeReceivedData() 交出
-        bool                 isHeaderListTooLarge{false}; ///< 本端不收这一场请求头部（字节越限时各字段全为空、条数越限时字段仍在）：上层按 431 应答而不是派发路由
+        bool                 hasBody{false}; ///< 请求头未带 END_STREAM：正文会随 takeReceivedData() 交出
+        /// 本端不收这一场请求头部，上层按 431 应答而不是派发路由。两把尺交出的是两种形状：HPACK 那把
+        /// （RFC 9113 §6.5.2 的「名长 + 值长 + 32」）越限时连接层根本不解析字段，交回的请求是空的；
+        /// intake 按 parser_limits 判的两支（条数、名与值净字节）字段仍在 `headerFields` 里，只是不派发
+        bool isHeaderListTooLarge{false};
         /// 请求目标（:path）超出 parser_limits.maximum_uri_length：字段照常交出，
         /// 上层按 414 应答（RFC 9110 §15.5.15），与 431 那条分开是因为病因不同——
         /// 431 让客户端去减头部，而这里要缩的是 URL
