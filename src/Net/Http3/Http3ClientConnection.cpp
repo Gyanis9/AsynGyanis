@@ -172,7 +172,12 @@ namespace AsynGyanis::Net
     {
         if (m_protocol != nullptr && m_isHealthy)
         {
-            static_cast<void>(m_protocol->beginGracefulDrain());
+            if (const auto drainResult = m_protocol->beginGracefulDrain(); !drainResult)
+            {
+                // 通告发不出去，就只能靠关掉这条连接告诉对端「别再收新的了」。这里必须留一条账：
+                // 否则对端日志里是「客户端半途断线」，而本端一行都不说，两边看不出这是收尾还是故障
+                LOG_WARN_FMT("Http3ClientConnection: 收尾时没能发出 GOAWAY：{}；本条连接按直接关闭收口", drainResult.error().message);
+            }
             m_protocol->flush();
             co_await m_connection.sendPending();
         }
