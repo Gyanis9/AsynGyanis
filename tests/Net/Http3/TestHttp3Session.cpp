@@ -842,23 +842,28 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 畸形请求头：回 400 而不是作废整条连接，也不把请求交给业务
+     * @brief 畸形请求头：回 400 而不是作废整条连接，也不把请求交给业务，并记进坏请求那本账
      * @details RFC 9114 §4.1.2 允许服务端在重置之前先答一个错。这条把「连接层判定 → 会话作答」
      *          这一段接起来测——连接层已单测过会发通知，此处钉的是通知真的变成了一个能解开的响应。
      *          非法字节由本层自己的 QPACK 编码器直接造（对端的提交入口只编用例点名的字段，带不出畸形字段名），
-     *          作答则由测试侧的解码器解回来。
+     *          作答则由测试侧的解码器解回来。第三件事是记账：这类请求不交给业务，按 h1（解析失败一律记）
+     *          与 h2（`absorbPendingRequests` 里逐条记被拒的请求头）同一口径只进 `badRequestCount`；
+     *          h3 此前在 413/414/431/时限四处都记了，唯独这一处漏——对端拿畸形头部连发时那条曲线一动不动
      */
     TEST(Http3Session, AnswersMalformedRequestHeadWithFourHundredAndKeepsConnection)
     {
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
 
-        Http3Session session(std::ref(opener),
-                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
-                             {
-                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
-                                 return data.size();
-                             });
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
         ASSERT_TRUE(session.isUsable());
         session.flushPendingStreamData();
 
@@ -898,6 +903,10 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(sentStreamData.empty()) << "没有作答：对端只能挂到空闲超时";
         const bool isAnswerOnRequestStream = std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == 0; });
         EXPECT_TRUE(isAnswerOnRequestStream) << "作答没出现在流 0 上：一共只回了 " << sentStreamData.size() << " 段，全是别的流";
+
+        const HttpServerStats headSnapshot = metrics->snapshot();
+        EXPECT_EQ(headSnapshot.badRequestCount, 1U) << "畸形请求头没进坏请求那本账：对端连发这类字节时指标上一条曲线都不动";
+        EXPECT_EQ(headSnapshot.streamCancelledCount, 0U) << "本端作答并按规则收流，不是「对端取消了这条流」";
 
         // 作答由本层的帧读取器与 QPACK 解码器解回来：这条要钉的是「会话真的回了一份能解开、
         // 且收尾完整的 400」。这条用例没走对端（畸形字节要绕过它的提交入口），因此这里的解回

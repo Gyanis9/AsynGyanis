@@ -2066,6 +2066,13 @@ namespace AsynGyanis::Net
         }
 
         LOG_WARN_FMT("Http3Session: 流 {} 的请求头部畸形（{}），按 RFC 9114 §4.1.2 先回 400 再结束该流", streamId, reason);
+        if (m_metrics != nullptr)
+        {
+            // 与 413/414/431、读时限、以及 h1 的解析失败、h2 的「请求头不合规被拒」同一口径：这类请求
+            // 不交给业务，只进 badRequestCount。漏了它，对端拿畸形头部连发时这条曲线一动不动——
+            // 一类远程可发的坏输入在指标上就此隐形（h2 侧同一处此前也漏过，见 absorbPendingRequests）
+            m_metrics->countBadRequest();
+        }
         HttpResponse response;
         response.setStatus(400);
         response.setBody(reason);
