@@ -294,10 +294,22 @@ namespace AsynGyanis::Net
          * @brief 本端放弃了某条流：释放该流上的引用，并按 §4.4.2 产出 Stream Cancellation
          * @param streamId 被放弃的 HTTP 流标识
          * @param decoderStreamBytes 输出参数：本次要追加到解码器流的字节，进入调用时先清空
-         * @note 调用时机：本端在该流上主动 RESET、或对端 RESET 之后本端不再读它的头块。容量为 0 时按
-         *       §2.2.2.2 可以省略该指令，本实现仍照发，以便对端尽早释放引用
+         * @note 调用时机：对端 RESET 之后本端不再读它的头块。容量为 0 时按 §2.2.2.2 可以省略该指令，
+         *       本实现仍照发，以便对端尽早释放引用。本端自己收口或重置一条流时不走这里，见
+         *       noteStreamClosed()——那时本端是编码器，没有要通知对端的事
          */
         void noteStreamAbandoned(std::uint64_t streamId, std::string &decoderStreamBytes);
+
+        /**
+         * @brief 这条流在本端已经收口或作废：释放它未确认头块的引用与阻塞名额，不发任何指令
+         * @details 收口的流不会再有 Section Ack 进来，这一笔不还就等于对端只要「读完但不确认」，
+         *          §2.1.2 的阻塞名额就被永久占住，占满之后本端在所有流上都插不进动态表（附录 C 的
+         *          插入并引用全部退化成字面量），而 `m_pendingSectionsByStreamId` 按只增不减的流号
+         *          一条条攒下去。安全性：表项淘汰另有「绝对索引必须小于已知接收计数」那道闸（§2.1.1），
+         *          对端还没确认收到的项本来就不可淘汰，所以这一步不会挤掉它将来还要用的表项
+         * @param streamId 流标识
+         */
+        void noteStreamClosed(std::uint64_t streamId) noexcept;
 
         /**
          * @brief 是否有已发出、但对端可能还没解开的头块

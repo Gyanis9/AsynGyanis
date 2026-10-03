@@ -1232,6 +1232,12 @@ namespace AsynGyanis::Net
             return;
         }
         // 两侧都收尾了才摘状态并发通知：早一步摘掉就会让还在路上的正文找不到归属
+        // 摘状态即这条流到此为止：本端编码器替它记的未确认引用与阻塞名额要在这里放下——对端不会再为
+        // 一条收口的流回 Section Ack，不还就等于让它用「读完不确认」把 §2.1.2 的名额永久占住
+        if (m_qpackEncoder)
+        {
+            m_qpackEncoder->noteStreamClosed(static_cast<std::uint64_t>(streamId));
+        }
         if (m_callbacks.onStreamClosed)
         {
             m_callbacks.onStreamClosed(streamId);
@@ -1292,6 +1298,11 @@ namespace AsynGyanis::Net
         // 与 noteStreamCancelledByPeer 对称：对端取消时本端清两边的账，本端自己作废时解码侧那份账
         // 也必须清，否则这条流挂起的头块字节与待确认记录一直留到连接结束（§4.4.2）
         abandonInboundFieldSections(streamId);
+        // 编码器侧那份账同理：本端重置之后这条流不会再有对端的确认进来
+        if (m_qpackEncoder)
+        {
+            m_qpackEncoder->noteStreamClosed(static_cast<std::uint64_t>(streamId));
+        }
 
         const auto entry = m_streams.find(streamId);
         if (entry != m_streams.end())

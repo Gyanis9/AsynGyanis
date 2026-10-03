@@ -186,6 +186,8 @@ namespace
     constexpr std::int64_t kPeerEncoderStreamId = 6;
     constexpr std::int64_t kPeerDecoderStreamId = 10;
     constexpr std::int64_t kRequestStreamId     = 0;
+    /// 本端发起的三条单向流（构造顺序按 RFC 9114 §6.2.1：控制流 3、编码器流 7、解码器流 11）
+    constexpr std::int64_t kLocalEncoderStreamId = 7;
 
     /**
      * @brief 用一个独立的编码器产出头段字节
@@ -836,6 +838,100 @@ TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
         EXPECT_EQ(transport.bytesOf(kLocalDecoderStreamId).find(streamCancellationForStreamZero), std::string::npos)
                 << "没有可取消的账就不该发这条指令：那会把对端这条流上照常等待确认的状态打乱";
     }
+}
+
+/**
+ * @brief 一条流收口之后，本端编码器替它留的动态表引用与阻塞名额要还不回 Section Ack 的对端也能归还
+ * @details 本端发出去的头块引用了动态表项时，编码器替这条流记两样东西：那些表项的引用计数，和一个
+ *          「可能让对端阻塞」的名额（名额总数按对端 SETTINGS_QPACK_BLOCKED_STREAMS 封顶，RFC 9204 §2.1.2
+ *          要求「任何时刻」都不超）。平时这两样由对端的 Section Ack 或 Stream Cancellation 归还，而
+ *          `closeStreamIfDone`（两侧都收完、状态被摘掉）那条正常出口一样都不还：一个只读不回话的对端
+ *          把名额占满之后，本端此后所有流都再也插不进动态表（退化成本端不用表，且再也回不来），
+ *          而 `m_pendingSectionsByStreamId` 按只增不减的流号一条条攒下去。收口之后再没有那条流的
+ *          头块要解，引用与名额本就该放；表项淘汰另有「对端已确认收到」那道闸兜着（§2.1.1：
+ *          绝对索引不小于已知接收计数的项不可淘汰），所以这一步不会把对端还要用的表项提前挤掉
+ * @note 证伪：摘掉 `closeStreamIfDone` 里的归还，本条在「第二条流仍要插得进动态表」那处红；被重置那条
+ *       出口的另一半见 ResetStreamGivesBackItsEncoderBlockingSlot
+ */
+TEST(Http3Connection, ClosedStreamGivesBackItsEncoderBlockingSlot)
+{
+    FakeTransport                  transport;
+    EventLog                       events;
+    Http3Connection::LocalSettings settings;
+    settings.qpackMaximumTableCapacityByteCount = 4096;
+    auto connection                             = makeConnection(transport, events, settings);
+
+    // 对端通告：动态表容量 4096、最多只允许 1 条流处于可能阻塞的状态——占满一个名额就等于关掉本端的表
+    const std::string peerSettings = std::string("\x01\x50\x00", 3) + std::string("\x07\x01", 2);
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, peerSettings)), false);
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02)), false);
+    connection->consumeStreamData(kPeerDecoderStreamId, bytesOfText(streamTypePrefix(0x03)), true);
+
+    std::string       requestEncoderBytes;
+    const std::string requestBlock = encodeSection(minimalRequestFields(), requestEncoderBytes);
+
+    // 第一条流：请求收齐、本端带一条表里没有的头部作答并收尾，两侧都完之后这条流被摘掉
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, requestBlock)), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "payload")), true);
+    ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}, QpackHeaderField{"x-served-by", "first-stream"}}, true).has_value());
+    connection->flush();
+    ASSERT_EQ(events.streamsClosed.size(), 1u) << "前提：两侧都收完之后这条流要收掉";
+    const std::size_t encoderBytesAfterFirst = transport.bytesOf(kLocalEncoderStreamId).size();
+    ASSERT_GT(encoderBytesAfterFirst, std::string("\x02", 1).size()) << "前提：这段响应确实在编码器流上留下了指令";
+
+    // 第二条流：换一个响应头，按附录 C 应当再插一项。对端一条解码器流指令都不回
+    constexpr std::int64_t kSecondRequestStreamId = 4;
+    connection->consumeStreamData(kSecondRequestStreamId, bytesOfText(makeFrame(0x01, requestBlock)), false);
+    connection->consumeStreamData(kSecondRequestStreamId, bytesOfText(makeFrame(0x00, "payload")), true);
+    ASSERT_TRUE(connection->submitResponseHead(kSecondRequestStreamId, {QpackHeaderField{":status", "200"}, QpackHeaderField{"x-served-by", "second-stream"}}, true).has_value());
+    connection->flush();
+
+    EXPECT_GT(transport.bytesOf(kLocalEncoderStreamId).size(), encoderBytesAfterFirst) << "第一条流收口后没归还阻塞名额，本端从此再也插不进动态表：编码器流上第二条指令都没了";
+    EXPECT_FALSE(connection->isBroken());
+}
+
+/**
+ * @brief 本端自己重置一条流，同样要把替它记的编码器阻塞名额放回去
+ * @details 与上一条同一笔账的另一条出口：`failStream` 之前只清解码侧，不清编码器侧。这里的现场是
+ *          「声明的 content-length 与实收正文不符」——本端按 §4.1.2 重置这条流，而它此前已经在这条流上
+ *          发过一段引用动态表的响应，对端不会再来确认一条被重置的流
+ * @note 证伪：摘掉 `failStream` 里的归还，本条在「第二条流仍要插得进动态表」那处红
+ */
+TEST(Http3Connection, ResetStreamGivesBackItsEncoderBlockingSlot)
+{
+    FakeTransport                  transport;
+    EventLog                       events;
+    Http3Connection::LocalSettings settings;
+    settings.qpackMaximumTableCapacityByteCount = 4096;
+    auto connection                             = makeConnection(transport, events, settings);
+
+    const std::string peerSettings = std::string("\x01\x50\x00", 3) + std::string("\x07\x01", 2);
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, peerSettings)), false);
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02)), false);
+
+    auto lyingFields = minimalRequestFields();
+    lyingFields.push_back(QpackHeaderField{"content-length", "3"}); // 声明 3 字节
+    std::string       requestEncoderBytes;
+    const std::string requestBlock = encodeSection(lyingFields, requestEncoderBytes);
+
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, requestBlock)), false);
+    ASSERT_EQ(events.headerBlocksReceived.size(), 1u) << "前提：请求头段收下";
+    ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}, QpackHeaderField{"x-served-by", "first-stream"}}, true).has_value());
+    connection->flush();
+    const std::size_t encoderBytesAfterFirst = transport.bytesOf(kLocalEncoderStreamId).size();
+    ASSERT_GT(encoderBytesAfterFirst, std::string("\x02", 1).size()) << "前提：这段响应在编码器流上留下了指令";
+
+    // 实收 7 字节并 END_STREAM：与声明不符，本端按 §4.1.2 重置这条流
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "payload")), true);
+    ASSERT_EQ(events.streamsReset.size(), 1u) << "前提：这条流被本端重置";
+
+    constexpr std::int64_t kSecondRequestStreamId = 4;
+    connection->consumeStreamData(kSecondRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), requestEncoderBytes))), false);
+    ASSERT_TRUE(connection->submitResponseHead(kSecondRequestStreamId, {QpackHeaderField{":status", "200"}, QpackHeaderField{"x-served-by", "second-stream"}}, true).has_value());
+    connection->flush();
+
+    EXPECT_GT(transport.bytesOf(kLocalEncoderStreamId).size(), encoderBytesAfterFirst) << "被重置的流没归还阻塞名额，本端此后在所有流上都插不进动态表";
+    EXPECT_FALSE(connection->isBroken());
 }
 
 TEST(Http3Connection, FlushHandsEveryStreamItsOwnWriteAndDrainsTheQueue)

@@ -969,6 +969,13 @@ namespace AsynGyanis::Net
         cancelStreamReferences(streamId);
     }
 
+    void QpackEncoder::noteStreamClosed(const std::uint64_t streamId) noexcept
+    {
+        // 本端是编码器：这条流已经收口或作废，对端不会再为它回 Section Ack，替它记的引用与阻塞名额
+        // 就地放下。不发 Stream Cancellation——那是解码侧用来通知编码器的方向
+        cancelStreamReferences(streamId);
+    }
+
     bool QpackEncoder::hasBlockedStreams() const noexcept
     {
         return !m_blockingSectionCountByStreamId.empty();
