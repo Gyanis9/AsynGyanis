@@ -299,4 +299,109 @@ namespace AsynGyanis::Net
         }
         return value;
     }
+    /**
+     * @brief 校验块扩展（chunk-ext）的语法
+     * @details 按 RFC 9112 §7.1.1：扩展是若干「;名字[=值]」段，名字必须是 token，值可以是 token
+     *          或带引号字符串；本框架只校验语法，不解释扩展的语义。
+     *          两个方向共用这一份（先前只有入站 `HttpParser` 有一份文件内的实现，出站
+     *          `HttpResponseParser` 直接忽略扩展内容）：扩展不参与块边界计算，但一个坏对端用非法
+     *          扩展把本端一路读下去，正是缓存投毒与请求分裂的入口，所以忽略内容不等于忽略语法。
+     * @param text 从第一个 ';' 起的扩展原文
+     * @return true 语法合法
+     */
+    [[nodiscard]] inline bool areChunkExtensionsWellFormed(const std::string_view text) noexcept
+    {
+        const auto skipOptionalWhitespace = [&text](std::size_t &position) noexcept
+        {
+            while (position < text.size() && (text[position] == ' ' || text[position] == '\t'))
+            {
+                ++position;
+            }
+        };
+
+        std::size_t offset = 0;
+        while (offset < text.size())
+        {
+            // 每段都以 ';' 开头：段与段之间只允许 BWS，多出来的字节一律判非法
+            if (text[offset] != ';')
+            {
+                return false;
+            }
+            ++offset;
+            skipOptionalWhitespace(offset);
+
+            // 扩展名必须是至少一个 token 字符
+            const std::size_t nameBegin = offset;
+            while (offset < text.size() && isTokenCharacter(static_cast<unsigned char>(text[offset])))
+            {
+                ++offset;
+            }
+            if (offset == nameBegin)
+            {
+                return false;
+            }
+            skipOptionalWhitespace(offset);
+
+            if (offset < text.size() && text[offset] == '=')
+            {
+                ++offset;
+                skipOptionalWhitespace(offset);
+                if (offset < text.size() && text[offset] == '"')
+                {
+                    // 带引号字符串：内部允许 qdtext（HTAB、可见 ASCII、obs-text）与反斜杠转义
+                    ++offset;
+                    bool isClosed = false;
+                    while (offset < text.size())
+                    {
+                        const unsigned char character = static_cast<unsigned char>(text[offset]);
+                        if (character == '"')
+                        {
+                            ++offset;
+                            isClosed = true;
+                            break;
+                        }
+                        if (character == '\\')
+                        {
+                            // 引号对：反斜杠之后必须还有一个可打印字节，且不能是裸控制字符
+                            if (offset + 1 >= text.size())
+                            {
+                                return false;
+                            }
+                            const unsigned char escaped = static_cast<unsigned char>(text[offset + 1]);
+                            if (escaped < 0x20 && escaped != '\t')
+                            {
+                                return false;
+                            }
+                            offset += 2;
+                            continue;
+                        }
+                        if (character == '\t' || (character >= 0x20 && character <= 0x7E) || character >= 0x80)
+                        {
+                            ++offset;
+                            continue;
+                        }
+                        return false;
+                    }
+                    if (!isClosed)
+                    {
+                        return false;
+                    }
+                } else
+                {
+                    const std::size_t valueBegin = offset;
+                    while (offset < text.size() && isTokenCharacter(static_cast<unsigned char>(text[offset])))
+                    {
+                        ++offset;
+                    }
+                    if (offset == valueBegin)
+                    {
+                        return false;
+                    }
+                }
+                skipOptionalWhitespace(offset);
+            }
+        }
+        return true;
+    }
+
 } // namespace AsynGyanis::Net

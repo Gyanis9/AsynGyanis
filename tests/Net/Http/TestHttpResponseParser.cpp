@@ -139,6 +139,28 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住块扩展：语法要判，内容照旧忽略
+     * @details 扩展不参与块边界计算，因此忽略它的内容是对的；但 RFC 9112 §7.1.1 要求每段写成
+     *          「;名字」或「;名字=值」且名字是 token，接收方得先验语法再忽略。入站那一路一直是拒的，
+     *          出站先前直接不看——一个坏服务器就能用非法扩展把本端一路按分块读下去（缓存投毒与
+     *          请求分裂的入口）。两处现在共用同一份判据。
+     */
+    TEST(HttpResponseParser, ValidatesChunkExtensionSyntaxButIgnoresItsContent)
+    {
+        HttpResponseParser ok;
+        EXPECT_TRUE(feedAll(ok, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;a=1\r\nhello\r\n0;b=\"x y\"\r\n\r\n")) << "合法扩展（token 值与带引号值）把报文判成了失败";
+        EXPECT_EQ(ok.result().body, "hello") << "扩展的内容没被忽略，混进正文了";
+
+        HttpResponseParser noName;
+        feedAll(noName, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5; =1\r\nhello\r\n0\r\n\r\n");
+        EXPECT_TRUE(noName.hasFailed()) << "扩展没有 token 名也照样放行";
+
+        HttpResponseParser unclosedQuote;
+        feedAll(unclosedQuote, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;a=\"1\r\nhello\r\n0\r\n\r\n");
+        EXPECT_TRUE(unclosedQuote.hasFailed()) << "引号没闭合的扩展值也照样放行";
+    }
+
+    /**
      * @brief 钉住 close-delimited 定界：Connection: close 且无长度头时收到连接关闭才算完成
      */
     TEST(HttpResponseParser, CompletesCloseDelimitedOnlyAtEndOfStream)

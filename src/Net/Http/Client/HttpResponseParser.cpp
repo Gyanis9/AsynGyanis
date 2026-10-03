@@ -398,6 +398,14 @@ namespace AsynGyanis::Net
                                     m_stage = Stage::Failed;
                                     break;
                                 }
+                                // 扩展不参与块边界计算，但语法必须合法（RFC 9112 §7.1.1：每段是
+                                // 「;名字」或「;名字=值」，名字是 token）：入站那一路对同一串字节是
+                                // 按 400 拒的，这里放行等于让一个坏服务器把本端一路按分块读下去
+                                if (semicolonPosition != std::string_view::npos && !areChunkExtensionsWellFormed(line.substr(semicolonPosition)))
+                                {
+                                    m_stage = Stage::Failed;
+                                    break;
+                                }
                                 m_chunkSize = chunkSize;
                                 // 0 块 = 正文到此为止，后面只剩 trailer 段
                                 m_chunkPhase = chunkSize == 0 ? ChunkPhase::Trailer : ChunkPhase::Data;
