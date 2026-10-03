@@ -1366,11 +1366,14 @@ namespace
         const std::optional<std::uint32_t> advertisedWindow     = client->peerSetting(Net::Http2SettingIdentifier::InitialWindowSize);
         LOG_INFO_FMT("服务端通告：并发流上限={}，头列表上限={}，帧上限={}，允许推送={}，初始窗口={}", advertisedStreams.value_or(0), advertisedHeaderSize.value_or(0),
                      advertisedFrameSize.value_or(0), advertisedPush.value_or(0), advertisedWindow.value_or(0));
-        // 这些取值出自 Http2ConnectionConfiguration，公开 API 上没有改它们的入口：这里钉住「通告与实现内定值一致」
-        samples.check(advertisedStreams.has_value() && advertisedStreams.value() == 100U && advertisedHeaderSize.has_value() && advertisedHeaderSize.value() == 16U * 1024U &&
-                              advertisedFrameSize.has_value() && advertisedFrameSize.value() == Net::kHttp2DefaultMaximumFrameSize && advertisedPush.has_value() &&
-                              advertisedPush.value() == 0U && advertisedWindow.has_value() && advertisedWindow.value() == Net::kHttp2InitialWindowSizeByteCount,
-                      "服务端的 SETTINGS 如实通告了本端上限（并发 100 条流、头列表 16 KiB、帧 16 KiB、不推送）");
+        // 通告值要与服务端连接配置的出厂值一一对得上：这里比的是真源而不是字面数，改了出厂值的当天这条
+        // check 会跟着走，而把 100/16 KiB 这类数抄在这里的版本会当场变成一条假红
+        const Net::Http2ConnectionConfiguration factoryDefaults{};
+        samples.check(advertisedStreams.has_value() && advertisedStreams.value() == factoryDefaults.maximumConcurrentStreams && advertisedHeaderSize.has_value() &&
+                              advertisedHeaderSize.value() == factoryDefaults.maximumHeaderListSize && advertisedFrameSize.has_value() &&
+                              advertisedFrameSize.value() == factoryDefaults.maximumFrameSize && advertisedPush.has_value() &&
+                              advertisedPush.value() == factoryDefaults.enablePush && advertisedWindow.has_value() && advertisedWindow.value() == factoryDefaults.initialWindowSize,
+                      "服务端的 SETTINGS 如实通告了本端连接配置的出厂上限（并发流、头列表、帧、推送开关、初始窗口五项一一对得上）");
 
         // —— 4. 一条完整往返：GET /hello → 200 + 正文 + END_STREAM ——
         static_cast<void>(client->sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello", true), true)));
