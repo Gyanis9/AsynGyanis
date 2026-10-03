@@ -39,6 +39,7 @@
 // 该头必须看到真实的 mysql.h（要取 enum_field_types 常量），因此只能放在本分支内
 #include "Database/MySql/MySqlValueConversion.h"
 
+#include <cmath>
 #include <limits>
 
 #endif // DATABASE_HAS_MYSQL
@@ -765,6 +766,14 @@ namespace AsynGyanis::Database
 
             if (const auto *realValue = std::get_if<double>(&parameterValue))
             {
+                // 与 SQLite 侧同一道闸：DOUBLE 装不下 NaN 与无穷大，服务端会把它改成 NULL 并只留一条
+                // warning——「写入一个数」静默变成「写入空值」，既不报错也读不回原值，只能在绑定前拦下
+                if (!std::isfinite(*realValue))
+                {
+                    m_lastError = "MySQL 驱动：第 " + std::to_string(index + 1U) + " 个参数是" + (std::isnan(*realValue) ? " NaN" : "无穷大") +
+                                  "，而 DOUBLE 列无法保存它（服务端会把它改写成 NULL）。请先挡掉非有限取值，或改用文本列承载并写明其表示法";
+                    return false;
+                }
                 binding.buffer_type = MYSQL_TYPE_DOUBLE;
                 binding.buffer      = asBindBuffer(realValue);
                 continue;
@@ -1070,8 +1079,32 @@ namespace AsynGyanis::Database
         return DatabaseType::MySql;
     }
 
+    bool MySqlConnection::isTransactionOpenNow() const
+    {
+        // 读字段而不是另发一条查询：server_status 是客户端库为上一条应答记下的真值，
+        // C API 里那些取状态位的访问器（历史版本中的 mysql_get_server_status）读的就是它。
+        // 桩构建（CMake 没找到 libmysqlclient）里没有客户端库可依赖——那个布局下 `struct MYSQL` 只是
+        // 前置声明的不完整类型，也没有 SERVER_STATUS_IN_TRANS 这个枚举，因此那一档退回只认本类的记账：
+        // 桩里 execute() 恒失败，本来也开不出事务来，行为上没有缺口
+#ifdef DATABASE_HAS_MYSQL
+        return m_isTransactionOpen || (m_mysqlHandle != nullptr && (m_mysqlHandle->server_status & SERVER_STATUS_IN_TRANS) != 0);
+#else
+        return m_isTransactionOpen;
+#endif
+    }
+
     bool MySqlConnection::beginTransaction()
     {
+        // 已经在事务里就不再发这条语句：MySQL 的 START TRANSACTION 会先**隐式提交**上一条事务，
+        // 于是第二次 beginTransaction() 既回 true 又把没提交的工作做成了永久——SQLite 上同样这一次
+        // 调用是失败的（BEGIN 在事务中报错），两条通道对「嵌套」的答复必须一致
+        if (isTransactionOpenNow())
+        {
+            m_lastError = "开始 MySQL 事务失败：这条连接已经在一个事务里。MySQL 的 START TRANSACTION 会隐式提交"
+                          "上一笔未提交的工作，因此不会替你再开一次；请先 commit() 或 rollback()，"
+                          "或改用 Transaction/Queryable 的事务封装";
+            return false;
+        }
         // 语句文本取自方言而不是写死在这里：同一件事（开启事务）若有两份语句源，
         // 就会随方言演进而漂移，与 Transaction 走方言的路径产生行为差异
         const MySqlDialect dialect;
@@ -1112,23 +1145,13 @@ namespace AsynGyanis::Database
             return true;
         }
 
-        // 两种「事务开着」都要滚：① 本类 beginTransaction() 的记账；② 服务端在上一条应答里自报的
-        // SERVER_STATUS_IN_TRANS。后者认得出上一个借用者绕过本类入口手工执行的 "START TRANSACTION"，
-        // 也认得出把 autocommit 关掉之后被语句隐式带出来的事务——这两类都不在本类的记账里，而它们同样
-        // 会跟着连接串给下一个借用者（对方的语句悄悄并进上一笔，行锁握到事务结束为止）。
-        // SQLite 侧早就按引擎自报判（sqlite3_get_autocommit），两边同一判据才不会出现「只有 MySQL
-        // 会把未提交事务传下去」这种跨驱动的漂移。
-        // 读字段而不是另发一条查询：server_status 是客户端库为上一条应答记下的真值，
-        // C API 里那些取状态位的访问器（历史版本中的 mysql_get_server_status）读的就是它。
-        // 桩构建（CMake 没找到 libmysqlclient）里没有客户端库可依赖——那个布局下 `struct MYSQL` 只是
-        // 前置声明的不完整类型，也没有 SERVER_STATUS_IN_TRANS 这个枚举，因此那一档退回只认本类的记账：
-        // 桩里 execute() 恒失败，本来也开不出事务来，行为上没有缺口
-#ifdef DATABASE_HAS_MYSQL
-        const bool isTransactionOpen = m_isTransactionOpen || (m_mysqlHandle->server_status & SERVER_STATUS_IN_TRANS) != 0;
-#else
-        const bool isTransactionOpen = m_isTransactionOpen;
-#endif
-        if (!isTransactionOpen)
+        // 两种「事务开着」都要滚：本类的记账，加上服务端在上一条应答里自报的 SERVER_STATUS_IN_TRANS
+        // （判据收在 isTransactionOpenNow()，与 beginTransaction() 共用一份）。后者认得出上一个借用者
+        // 绕过本类入口手工执行的 "START TRANSACTION"，也认得出把 autocommit 关掉之后被语句隐式带出来
+        // 的事务——这两类都不在本类的记账里，而它们同样会跟着连接串给下一个借用者（对方的语句悄悄并进
+        // 上一笔，行锁握到事务结束为止）。SQLite 侧早就按引擎自报判（sqlite3_get_autocommit），
+        // 两边同一判据才不会出现「只有 MySQL 会把未提交事务传下去」这种跨驱动的漂移。
+        if (!isTransactionOpenNow())
         {
             return true;
         }

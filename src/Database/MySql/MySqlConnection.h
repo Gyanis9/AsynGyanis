@@ -144,7 +144,9 @@ namespace AsynGyanis::Database
          * @details 执行本方言（MySqlDialect）给出的开启语句 "START TRANSACTION"，是 MySQL 专有能力的
          *          便捷封装；语句文本以方言为唯一来源，与 Transaction 路径共用，二者不会漂移。
          * @return true 事务已开启
-         * @return false 未连接或语句被服务端拒绝，原因见 lastError()
+         * @return false 未连接、语句被服务端拒绝，或这条连接已经在一个事务里（原因见 lastError()）
+         * @note 已经在事务里时**不再发这条语句**：MySQL 的 START TRANSACTION 会隐式提交上一笔未提交的
+         *       工作，照发就等于替调用方把事情做成永久，而 SQLite 上同样的嵌套调用是失败的
          * @note 默认自动提交为 ON 时不需要显式开事务；本方法不会去改 autocommit 会话变量
          */
         bool beginTransaction();
@@ -265,6 +267,17 @@ namespace AsynGyanis::Database
          * @param description 面向使用者的中文动作说明，例如「执行 SQL 命令失败」
          */
         void captureError(std::string_view description);
+
+        /**
+         * @brief 这条连接当下是否处在一个事务里
+         * @details 两种「事务开着」都算：① 本类 beginTransaction() 的记账；② 服务端在上一条应答里
+         *          自报的 SERVER_STATUS_IN_TRANS。后者认得出绕过本类入口手工执行的 "START TRANSACTION"，
+         *          也认得出关掉 autocommit 之后被语句隐式带出来的事务。开启与复位两条路径共用这一份判据，
+         *          各写一遍就会出现「一条认得出、另一条认不出」的跨路径漂移。
+         * @return true 有事务在身
+         * @return false 没有
+         */
+        [[nodiscard]] bool isTransactionOpenNow() const;
 
         /**
          * @brief 在握手前把超时与字符集选项下发到句柄

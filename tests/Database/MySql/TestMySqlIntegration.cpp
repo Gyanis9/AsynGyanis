@@ -38,6 +38,8 @@
 #include <gtest/gtest.h>
 
 #include <charconv>
+#include <cmath>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -46,6 +48,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -147,6 +150,10 @@ namespace AsynGyanis::Database
         constexpr std::string_view kTransactionExceptionTableName  = "Asyn_Mysql_Tx_Exception";
         // 「绕过本类入口手工开启的事务」那条用例另起一张表，理由与上面那条注释相同（并行不得共用）
         constexpr std::string_view kTransactionRawBeginTableName = "Asyn_Mysql_Tx_RawBegin";
+        // 嵌套事务用例同样各持一张表：它要在第一笔里留一行未提交的记录
+        constexpr std::string_view kTransactionNestedTableName = "Asyn_Mysql_Tx_Nested";
+        // 非有限取值用例的表：DOUBLE 列必须**可空**，否则旧实现会撞 NOT NULL 约束而「看起来也在拒绝」
+        constexpr std::string_view kNonFiniteTableName = "Asyn_Mysql_NonFinite_Double";
         constexpr std::string_view kTransactionColumns           = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
 
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
@@ -2131,6 +2138,64 @@ namespace AsynGyanis::Database
         std::unique_ptr<MySqlConnection> observer = makeConnection();
         ASSERT_TRUE(observer->connect()) << observer->lastError();
         EXPECT_EQ(countRows(*observer, kTransactionRollbackTableName), 0);
+    }
+
+    /**
+     * @brief 验证嵌套的 beginTransaction() 被拒，而不是把上一笔没提交的工作隐式提交掉
+     * @details MySQL 的 START TRANSACTION 自带隐式提交：不加这道闸时第二次调用既回 true，又把前一笔
+     *          还没 commit 的写入永久落库——调用方以为自己在开第二笔事务，实际是把第一笔结了账。
+     *          SQLite 上同样这次嵌套是失败的（BEGIN 在事务中报错），两条通道对「嵌套」的答复必须一致，
+     *          所以这里判的是「第二笔没生效 + 第一笔的行仍可回滚」，而不是只看返回值
+     */
+    TEST_F(MySqlIntegrationTest, NestedBeginTransactionIsRejectedWithoutCommittingTheOpenOne)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionNestedTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<MySqlConnection> connection = makeConnection();
+        ASSERT_TRUE(connection->connect()) << connection->lastError();
+
+        ASSERT_TRUE(connection->beginTransaction()) << connection->lastError();
+        ASSERT_TRUE(insertTransactionRow(*connection, kTransactionNestedTableName, 1, "第一笔未提交", 1.5)) << connection->lastError();
+
+        EXPECT_FALSE(connection->beginTransaction()) << "嵌套的第二笔必须被拒：MySQL 会替你先隐式提交上一笔";
+        EXPECT_NE(connection->lastError().find("已经在一个事务"), std::string::npos) << connection->lastError();
+
+        // 判据落在「第一笔仍然是未提交事务」：若第二笔真的发出去了，这一行就被隐式提交，回滚之后还在
+        EXPECT_EQ(connection->rollback(), true) << connection->lastError();
+        EXPECT_EQ(countRows(*connection, kTransactionNestedTableName), 0) << "嵌套的第二笔把第一笔隐式提交了";
+    }
+
+    /**
+     * @brief 验证非有限的 double 参数在绑定前就被拒，而不是静默写成 NULL
+     * @details SQLite 与 Redis 两侧早有这道闸（sqlite3_bind_double 会把 NaN 改绑成 NULL），MySQL 的参数
+     *          绑定此前原样交出——DOUBLE 列装不下 NaN 与无穷大，服务端把它改成 NULL 并只留一条 warning，
+     *          「写入一个数」静默变成「写入空值」。被判的那一列刻意可空：给它加 NOT NULL 会让旧实现撞
+     *          约束失败而「看起来也在拒绝」，本用例就失去证伪能力
+     */
+    TEST_F(MySqlIntegrationTest, NonFiniteDoubleParameterIsRejectedInsteadOfSilentlyBoundAsNull)
+    {
+        ASSERT_TRUE(prepareTable(kNonFiniteTableName, "`id` BIGINT PRIMARY KEY, `value` DOUBLE NULL")) << m_lastSetupError;
+
+        std::unique_ptr<MySqlConnection> connection = makeConnection();
+        ASSERT_TRUE(connection->connect()) << connection->lastError();
+
+        const std::array<double, 3> nonFiniteValues{std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+                                                    -std::numeric_limits<double>::infinity()};
+        for (std::size_t valueIndex = 0; valueIndex < nonFiniteValues.size(); ++valueIndex)
+        {
+            const std::array<DatabaseValue, 2> parameters{static_cast<std::int64_t>(valueIndex), nonFiniteValues[valueIndex]};
+            EXPECT_EQ(connection->execute("INSERT INTO `" + std::string(kNonFiniteTableName) + "` VALUES (?, ?)", std::span<const DatabaseValue>(parameters)), nullptr)
+                    << "第 " << valueIndex << " 个非有限取值被当成可写入的参数放过了";
+            EXPECT_NE(connection->lastError().find("第 2 个参数"), std::string::npos) << connection->lastError();
+        }
+
+        // 三条语句都没留下任何行：留下「value IS NULL」的行正是这个缺陷的原始形态
+        EXPECT_EQ(countRows(*connection, kNonFiniteTableName), 0);
+
+        // 有限取值不受影响，含边界上的极大有限值
+        const std::array<DatabaseValue, 2> finiteParameters{std::int64_t{7}, 3.5};
+        EXPECT_NE(connection->execute("INSERT INTO `" + std::string(kNonFiniteTableName) + "` VALUES (?, ?)", std::span<const DatabaseValue>(finiteParameters)), nullptr)
+                << connection->lastError();
     }
 
     /**
