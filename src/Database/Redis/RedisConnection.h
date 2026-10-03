@@ -224,8 +224,10 @@ namespace AsynGyanis::Database
          *          下一位按配置以为自己停在 15 号库，写进去的键却在 3 号库。
          *          池在归还时统一调用本方法（见 DatabaseConnection::resetSessionState）
          * @note 只在按命令名记的账说「确有残留」时才发清理命令，干净连接不额外付一次往返
-         * @note MONITOR / 订阅 / HELLO 之后本类退不回「一条命令一条回复」的形态，此时直接断开：
-         *       池会丢掉这条不健康的连接并另起一条，比让它带着错位的回复流回池便宜
+         * @note MONITOR / 订阅 / HELLO / AUTH / CLIENT 的几条子命令（REPLY、TRACKING、NO-EVICT、NO-TOUCH）
+         *       之后本类退不回原来的会话形态，此时直接断开：池会丢掉这条不健康的连接并另起一条，
+         *       比让它带着错位的回复流、别人的 ACL 身份或别人的淘汰保护回池便宜。完整名单与分档理由
+         *       见 .cpp 里 noteSessionCommand() 那张按命令名分档的表
          * @return 会话是否已干净：断开式收口（退不回一问一答的那几种模式）与本来就干净时为 true，
          *         池随后按健康判据把它摘掉；清理命令发不出去又没走到断开时交回 false
          */
