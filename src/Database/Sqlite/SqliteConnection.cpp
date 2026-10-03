@@ -275,8 +275,17 @@ namespace AsynGyanis::Database
                 }
 
                 // 被语句时限打断时，结果集只能报出底层的 "interrupted"，看不出是谁打断的、该调哪个参数，
-                // 这里换成本驱动的中文文案；与时限无关的错误（锁超时、IO 错误）原样交给调用方
-                m_lastError = m_statementDeadlineHit ? statementDeadlineErrorText() : preScanError;
+                // 这里换成本驱动的中文文案；与时限无关的错误（锁超时、IO 错误）原样交给调用方。
+                // 打断那一支要把 SQLITE_INTERRUPT 一起配上码：文案写着「（错误码 9）」而
+                // lastNativeErrorCode() 读出 -1，就等于告诉调用方「这条原因没有码」
+                if (m_statementDeadlineHit)
+                {
+                    m_lastError.assignNative(statementDeadlineErrorText(), SQLITE_INTERRUPT);
+                }
+                else
+                {
+                    m_lastError = preScanError;
+                }
                 return nullptr;
             }
 
@@ -673,7 +682,9 @@ namespace AsynGyanis::Database
         // 而回调一旦置位本次 step 就以 SQLITE_INTERRUPT 收场，等锁超时（SQLITE_BUSY）走不到这一格
         if (m_statementDeadlineHit)
         {
-            m_lastError = statementDeadlineErrorText();
+            // 与时限无关的错误才走下面的 errmsg 路径；这一支同样要成对：只写文本会让码停在 -1，
+            // 而 QueryExecutionException 那张判定表点名的就是「SQLite 9 INTERRUPT」
+            m_lastError.assignNative(statementDeadlineErrorText(), SQLITE_INTERRUPT);
             return;
         }
 

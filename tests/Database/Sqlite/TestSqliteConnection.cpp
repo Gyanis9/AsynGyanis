@@ -770,10 +770,36 @@ namespace AsynGyanis::Database
         ASSERT_EQ(result, nullptr) << "长查询没有被语句时限打断，耗时 " << elapsedMilliseconds << " 毫秒";
         EXPECT_TRUE(containsText(connection().lastError(), "时限")) << connection().lastError();
         EXPECT_TRUE(containsText(connection().lastError(), "queryTimeout")) << connection().lastError();
+        // 文本与原生码成对：文案里写着「（错误码 9）」，读码却得到 -1 就等于宣称「这条原因没有码」，
+        // 而 QueryExecutionException 的判定表点名的正是 SQLite 9（INTERRUPT）这一格
+        EXPECT_EQ(connection().lastNativeErrorCode(), /* SQLITE_INTERRUPT */ 9) << connection().lastError();
         // 50 倍余量：打断发生在毫秒级，落到秒级说明进度回调根本没起作用（余量同时容忍机器噪声）
         EXPECT_LT(elapsedMilliseconds, 5000) << "耗时 " << elapsedMilliseconds << " 毫秒，不像是被打断的";
 
         // 被打断的语句不能把连接一起废掉：语句缓存里那条要 reset 回可用，后续照常执行
+        const std::unique_ptr<DatabaseResult> followUp = connection().execute("SELECT 1");
+        ASSERT_NE(followUp, nullptr) << "打断后连接不可用：" << connection().lastError();
+    }
+
+    /**
+     * @brief 钉住被打断的**写**语句也把原生码配上（读路径那条由上一条用例钉）
+     * @details 时限打断读语句与写语句走的是两条出口：读侧在结果集预扫描处换文案，写侧走 captureError。
+     *          只钉一条的话，另一条出口退回「只写文本」谁也不会发现——而调用方拿到的
+     *          lastNativeErrorCode() 会停在 -1，与它自己看到的「（错误码 9）」对不上。
+     */
+    TEST_F(SqliteConnectedMemoryDatabase, StatementDeadlineOnAWriteStatementAlsoPairsTheNativeCode)
+    {
+        ASSERT_NE(executeRequired(connection(), "CREATE TABLE heavy (n INTEGER)"), nullptr);
+        connection().setQueryTimeout(100);
+
+        const std::string heavyInsert = "INSERT INTO heavy "
+                                        "WITH RECURSIVE tick (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tick WHERE n < 200000000)"
+                                        " SELECT n FROM tick";
+        EXPECT_EQ(connection().execute(heavyInsert), nullptr) << "这条写入没被时限打断，下面的配对断言就没有对象";
+        EXPECT_TRUE(containsText(connection().lastError(), "时限")) << connection().lastError();
+        EXPECT_EQ(connection().lastNativeErrorCode(), /* SQLITE_INTERRUPT */ 9) << connection().lastError();
+
+        // 被打断的写入不能把连接一起废掉
         const std::unique_ptr<DatabaseResult> followUp = connection().execute("SELECT 1");
         ASSERT_NE(followUp, nullptr) << "打断后连接不可用：" << connection().lastError();
     }
