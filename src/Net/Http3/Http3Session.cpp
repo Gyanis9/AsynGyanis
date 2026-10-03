@@ -35,16 +35,16 @@ namespace AsynGyanis::Net
         constexpr std::size_t kIncomingRequestHeaderFieldGuess = 4U;
         constexpr std::size_t kIncomingRequestHeaderByteGuess  = 128U;
 
-        /// 100..999 之外（RFC 9110 §15）的状态码不得上线：连接层会拒收这个 :status，
-        /// 整条流就此发不出东西，改回 500 至少让对端拿到一份能读的响应
+        /// 越界的状态码上线时会被连接层拒收，整条流就此发不出东西：改回 500 至少让对端拿到一份能读的
+        /// 响应。判据与 h1 共用同一份（`normalizeWireStatusCode`），这里只负责本通道的那条日志
         [[nodiscard]] int normalizeWireStatusCode(const int responseStatus, const std::int64_t streamId)
         {
-            if (responseStatus < 100 || responseStatus > 999)
+            const int wireStatus = AsynGyanis::Net::normalizeWireStatusCode(responseStatus);
+            if (wireStatus != responseStatus)
             {
                 LOG_ERROR_FMT("Http3Session: 响应状态码 {} 越界（应为 100..999），流 {} 已改回 500", responseStatus, streamId);
-                return 500;
             }
-            return responseStatus;
+            return wireStatus;
         }
 
         /**

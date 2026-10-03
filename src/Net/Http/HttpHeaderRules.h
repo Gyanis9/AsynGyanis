@@ -404,4 +404,18 @@ namespace AsynGyanis::Net
         return true;
     }
 
+    /**
+     * @brief 把响应状态码折成「能上线的那一个」：越界一律按 500 发
+     * @details 状态码是 100..999 的三位数字（RFC 9110 §15）。越界在每条通道上都会出问题，但表现完全不同：
+     *          h3 的连接层直接拒收这个 `:status`，整条流发不出东西；h1 则把原值写进状态行，对端按行
+     *          解析时看到的是一行无法解释的状态字段。所以判定落在**上线之前的那一处**而不是 setter：
+     *          `HttpResponse::setStatus()` 有意保持宽松（业务写错码时原值还要能在日志与调试里看见），
+     *          各通道序列化时各自折回 500 并记一条自己的日志。两条通道共用这一份判据，别再各写一条
+     * @param statusCode 业务给的状态码原值
+     * @return int 合法值原样返回；越界返回 500
+     */
+    [[nodiscard]] inline int normalizeWireStatusCode(const int statusCode) noexcept
+    {
+        return statusCode < 100 || statusCode > 999 ? 500 : statusCode;
+    }
 } // namespace AsynGyanis::Net

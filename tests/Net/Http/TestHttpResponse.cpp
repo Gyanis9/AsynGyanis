@@ -121,6 +121,50 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(output.starts_with("HTTP/1.0 799 \r\n"));
     }
 
+    /**
+     * @brief 钉住状态行的两个入口：一个拒写、一个上线前折回，都不许把这一行撕开
+     * @details 状态行是按原文拼出去的：版本串里留一个 CR/LF 就是调用方自己结束状态行、再往本端发出的
+     *          响应里插一条头部（HTTP 响应拆分），而本类对头部名与值早就拒同一批字节——同一份报文里
+     *          两处判据不该一紧一松。版本串走「拒写且不动已有值」（本类的版本只能来自入站解析或常量，
+     *          没有「先收下再改」的合理路径）。状态码不同：h3 一直是「越界折回 500 并记日志」，
+     *          原值要留在对象里给上层日志看，所以那一半判在序列化处，两条通道共用同一份判据。
+     */
+    TEST(HttpResponse, RejectsStatusLineInputsThatWouldTearTheLine)
+    {
+        HttpResponse response;
+        response.setStatus(200);
+
+        EXPECT_FALSE(response.setHttpVersion("HTTP/1.1\r\nX-Injected: 1")) << "带 CRLF 的版本串被收下：状态行之后就是注入的头部";
+        EXPECT_FALSE(response.setHttpVersion("HTTP/1.1 1")) << "版本串里有空白也照样收下";
+        EXPECT_FALSE(response.setHttpVersion("HTTP/")) << "缺版本号的串收下会拼出 'HTTP/ 200'";
+        EXPECT_FALSE(response.setHttpVersion("HTTP/1.10")) << "次版本两位不是 HTTP 的版本写法";
+        EXPECT_FALSE(response.setHttpVersion("http/1.1")) << "版本前缀大小写要按线上形态（RFC 9112 §4）";
+
+        // 判据取线上文本而不是内部值（本类不公开版本读数）：被拒的写法要一点状态都不动，
+        // 而真正要钉住的是「那一行没被撕开」
+        const std::string text = response.toString();
+        EXPECT_EQ(text.substr(0U, text.find("\r\n")), "HTTP/1.1 200 OK") << "状态行被拒掉的写法改动了";
+        EXPECT_EQ(text.find("X-Injected"), std::string::npos) << "注入的那条头部还是上了线";
+
+        EXPECT_TRUE(response.setHttpVersion("HTTP/1.0"));
+        EXPECT_TRUE(response.setHttpVersion("HTTP/2")) << "h2/h3 沿用到响应上的写法必须存得下（它们不序列化这一行）";
+        EXPECT_TRUE(response.toString().starts_with("HTTP/2 200 OK\r\n")) << "收下的版本没参与状态行拼接";
+        EXPECT_TRUE(response.setHttpVersion("HTTP/1.1"));
+
+        // 状态码这一半与版本不同：不是「拒写」而是「上线前折回」。原值要留在对象里供日志与调试看
+        // （setStatus 有意宽松），而状态行必须是一份能读的响应——h3 早就是这个做法，现在两条通道
+        // 共用 normalizeWireStatusCode 这一份判据
+        response.setStatus(1000);
+        EXPECT_EQ(response.status(), 1000) << "对象里存的不再是业务给的原值";
+        EXPECT_TRUE(response.toString().starts_with("HTTP/1.1 500 ")) << "越界码还是原样写上了状态行";
+
+        response.setStatus(-1);
+        EXPECT_TRUE(response.toString().starts_with("HTTP/1.1 500 Internal Server Error\r\n")) << "负数状态码写成了对端无法解释的一行";
+
+        response.setStatus(204);
+        EXPECT_TRUE(response.toString().starts_with("HTTP/1.1 204 No Content\r\n")) << "合法取值被折回了：归一函数把界内的码也改写了";
+    }
+
     // ============================================================================
     // 头部写入校验：非法值一律拒写且不动已有状态
     // ============================================================================

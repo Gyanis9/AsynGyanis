@@ -71,8 +71,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置 HTTP 状态码。
          * @param code 状态码，如 200、404、500
-         * @note 本方法不校验取值范围；序列化时按十进制原样写出，
-         *       非三位数状态码会产出对 RFC 9110 而言不合规、但多数实现仍能读的状态行
+         * @note 这里有意不校验取值范围：越界的原值要能被上层日志与调试原样看到。真正不许上线的判定在
+         *       序列化那一处——状态行按 `normalizeWireStatusCode()` 折回 500（h3 早就是这个做法，
+         *       两条通道共用同一份判据），原先 h1 会把 -1 或 1000 原样写出去，对端按行解析时看到的
+         *       是一行无法解释的状态字段
          */
         void setStatus(int code);
 
@@ -535,9 +537,15 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 设置 HTTP 协议版本（默认 "HTTP/1.1"），用于状态行序列化。
-         * @param version 版本字符串，按原文写入状态行开头
+         * @param version 版本字符串，形状必须是 `HTTP/<主>[.<次>]`，主与次各一位十进制数字
+         * @return true 已记下这个版本
+         * @return false 形状不合（含 CR/LF、空白与乱写的版本号）：拒写且不改动已有值。状态行是按原文
+         *         拼出去的，留一个 CR/LF 等于让调用方提前结束状态行、再往自己发出的响应里插一条头部
+         *         （HTTP 响应拆分）——与本类 `setHeader()` 拒 CR/LF/NUL 是同一类判据，此前状态行没人判
+         * @note 主版本这里收得比入站宽（那边只认 HTTP/0.x 与 HTTP/1.x）：h2/h3 会话把请求版本记成
+         *       "HTTP/2"、"HTTP/3" 并沿用到响应上，那两路不序列化这一行，但这个值必须存得下
          */
-        void setHttpVersion(std::string version);
+        bool setHttpVersion(std::string version);
 
         /**
          * @brief 将响应序列化为 HTTP 格式的字符串。

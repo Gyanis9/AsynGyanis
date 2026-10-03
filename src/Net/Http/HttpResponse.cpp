@@ -1,6 +1,7 @@
 #include "Net/Http/HttpResponse.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Log/LogMacros.h"
 #include "Net/Http/HttpChunkFrame.h"
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
@@ -104,9 +105,25 @@ namespace AsynGyanis::Net
         m_status = code;
     }
 
-    void HttpResponse::setHttpVersion(std::string version)
+    bool HttpResponse::setHttpVersion(std::string version)
     {
+        // 版本串是状态行的开头，且按原文直接写出去：留一个 CR/LF 就是让调用方提前结束状态行、
+        // 再往自己发的响应里插一条头部（HTTP 响应拆分）。本类对头部名与值判的是同一类问题
+        // （setHeader 拒 CR/LF/NUL），状态行原先没人判
+        //
+        // 形状取 HTTP/<主>[.<次>]、主与次各一位十进制数字：与入站对请求行的要求同形（那边主版本
+        // 只认 0 与 1）。这里的主版本放宽到任意一位数字，因为 h2/h3 会话把请求版本记成
+        // "HTTP/2"、"HTTP/3" 再沿用到响应上——那两路不序列化这一行，但这个值必须存得下
+        if (version.size() != 6U && version.size() != 8U)
+        {
+            return false;
+        }
+        if (!version.starts_with("HTTP/") || version[5] < '0' || version[5] > '9' || (version.size() == 8U && (version[6] != '.' || version[7] < '0' || version[7] > '9')))
+        {
+            return false;
+        }
         m_httpVersion = std::move(version);
+        return true;
     }
 
     int HttpResponse::status() const
@@ -802,11 +819,18 @@ namespace AsynGyanis::Net
     void HttpResponse::appendHead(std::string &result) const
     {
         // ---- 状态行。版本取 setHttpVersion 传进来的值，与请求行版本保持一致 ----
+        // 越界的状态码不原样上线：写成 "HTTP/1.1 -1" 或 "HTTP/1.1 1000" 会让对端按行解析时拿到一行
+        // 无法解释的状态字段，折回 500 至少是一份能读的响应。判据与 h3 共用同一份，越界时各自记一条
+        const int wireStatus = normalizeWireStatusCode(m_status);
+        if (wireStatus != m_status)
+        {
+            LOG_ERROR_FMT("HttpResponse: 响应状态码 {} 越界（应为 100..999），状态行按 500 写出", m_status);
+        }
         result.append(m_httpVersion);
         result.push_back(' ');
-        appendDecimal(result, m_status);
+        appendDecimal(result, wireStatus);
         result.push_back(' ');
-        result.append(statusMessage(m_status));
+        result.append(statusMessage(wireStatus));
         result.append(kCrLf);
 
         // ---- 头部块。按权威记录的设置顺序逐条输出，不再遍历 unordered_map ----
