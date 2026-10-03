@@ -29,9 +29,10 @@ namespace AsynGyanis::Database
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_active_connections", "此刻被取出未归还的数据库连接数（进程内各池相加）", Core::ProcessMetricKind::Gauge,
                                                              Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_activeCount.load(std::memory_order_relaxed)); }),
-                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_waiting_requests", "正在等一条空闲连接的同步取出请求数", Core::ProcessMetricKind::Gauge,
-                                                             Core::ProcessMetricMerge::Sum,
-                                                             [this] { return static_cast<std::uint64_t>(m_syncWaitingCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric(
+                        "asyn_db_pool_waiting_requests", "正在等一条空闲连接的取出请求数（同步等待与协程等待相加，与 ConnectionPool::waitingCount() 同一个数）",
+                        Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
+                        [this] { return static_cast<std::uint64_t>(m_syncWaitingCount.load(std::memory_order_relaxed) + m_asyncWaitingCount.load(std::memory_order_relaxed)); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connections_held", "池当下记在账上的连接数（创建 +，丢弃或建连回退 −）：与 maximumPoolSize 同一本账",
                                                              Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_totalCreated.load(std::memory_order_relaxed)); }),
@@ -117,6 +118,7 @@ namespace AsynGyanis::Database
                 }
             }
             m_asyncWaiters.clear();
+            refreshAsyncWaitingCount();
         }
         for (const std::shared_ptr<AcquireAwaiter::ResumeTicket> &ticket: abandonedTickets)
         {
@@ -347,6 +349,7 @@ namespace AsynGyanis::Database
             m_resumeTicket = std::make_shared<ResumeTicket>();
             m_resumeTicket->handle.store(handle, std::memory_order_release);
             m_pool->m_asyncWaiters.push_back(this);
+            m_pool->refreshAsyncWaitingCount();
             m_inList = true;
         }
 
@@ -481,6 +484,7 @@ namespace AsynGyanis::Database
                 // 队首优先：先等的先拿到连接（FIFO 公平）
                 AcquireAwaiter *const waiter = m_asyncWaiters.front();
                 m_asyncWaiters.pop_front();
+                refreshAsyncWaitingCount();
 
                 waiter->m_result = std::move(connection);
                 waiter->m_inList = false;
@@ -521,6 +525,7 @@ namespace AsynGyanis::Database
             {
                 AcquireAwaiter *const waiter = m_asyncWaiters.front();
                 m_asyncWaiters.pop_front();
+                refreshAsyncWaitingCount();
                 waiter->m_inList = false; // 结果留空：这次叫醒只说「有名额了」，拿到拿不到由它自己再试
                 ticket           = waiter->m_resumeTicket;
                 completionLoop   = waiter->m_completionLoop;
@@ -803,12 +808,20 @@ namespace AsynGyanis::Database
         }
     }
 
+    void ConnectionPool::refreshAsyncWaitingCount() noexcept
+    {
+        // 只在持有 m_asyncMutex 的段里、改动 m_asyncWaiters 之后调用。灌的是「当下有多少」而不是增减量：
+        // 漏调一处只会让这一格少报，不会一路漂走，而用例把这份镜像与 waitingCount() 逐轮对齐
+        m_asyncWaitingCount.store(m_asyncWaiters.size(), std::memory_order_relaxed);
+    }
+
     void ConnectionPool::removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept
     {
         if (const auto it = std::ranges::find(m_asyncWaiters, waiter); it != m_asyncWaiters.end())
         {
             m_asyncWaiters.erase(it);
             waiter->m_inList = false;
+            refreshAsyncWaitingCount();
         }
     }
 
@@ -882,6 +895,7 @@ namespace AsynGyanis::Database
                               timedOutWaiters.push_back(waiter);
                               return true;
                           });
+            refreshAsyncWaitingCount();
             for (AcquireAwaiter *const waiter: timedOutWaiters)
             {
                 if (waiter->m_resumeTicket == nullptr)

@@ -12,6 +12,7 @@
 // - DiscardedTaskAfterHandoffReturnsConnectionToPool（丢弃已交接的帧要把连接与配额还回池）
 // - WaiterRebuildsInsteadOfTakingExpiredHandover（过期连接不直接交接，协程被腾出的名额救活后另建一条）
 // - AsyncBorrowTimeoutSharesTheCounter（异步空手收尾与同步共用同一份借出超时计数）
+// - WaitingMetricMatchesWaitingCountWhileCoroutinesQueue（协程排队要在 /metrics 上看得见，与 waitingCount() 同一个数）
 // - FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
 
 #include "Database/Common/DatabaseConnection.h"
@@ -19,6 +20,7 @@
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
 #include "DatabaseTestSupport.h"
+#include "MetricsTestSupport.h"
 
 #include "TestConnectionPool.h"
 
@@ -37,6 +39,7 @@ namespace AsynGyanis::Database
     namespace
     {
         using namespace TestPoolSupport;
+        using AsynGyanis::TestSupport::registryValue; // 指标助手在 AsynGyanis::TestSupport，不是本模块那一个 TestSupport
         using TestSupport::EventLoopThread;
         using TestSupport::waitForCondition;
 
@@ -205,6 +208,49 @@ namespace AsynGyanis::Database
         EXPECT_EQ(counter.totalCreated.load(), 2) << "过期那条不该被交给协程，得另建一条";
         EXPECT_EQ(counter.totalDestroyed.load(), 1) << "过期那条要被丢弃，不能留在池里";
         EXPECT_EQ(pool.totalCount(), 1U);
+
+        loopThread.parkDriver(std::move(driver));
+    }
+
+    /**
+     * @brief 钉住 /metrics 上的「正在等待的请求数」与 `waitingCount()` 是同一个数：协程排队也要看得见
+     * @details 异步取出才是服务主线（与 AsyncBorrowTimeoutSharesTheCounter 同一个理由），而这条 gauge
+     *          此前只报同步等待者：协程在等空闲连接时，`asyn_db_pool_waiting_requests` 恒为 0，按它做
+     *          排队告警的面板永远不会响。指标抓取不许去拿池的锁，所以这一格配了一份原子镜像；本用例把
+     *          「挂着一条协程等待时两处相等且不为零」与「收口之后一起归零」按两拍核对——镜像漏刷任何一处，
+     *          这两条里必有一条红。
+     */
+    TEST(ConnectionPoolAsync, WaitingMetricMatchesWaitingCountWhileCoroutinesQueue)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize            = 1;
+        configuration.maximumLifetimeSeconds     = 3600;
+        configuration.idleTimeoutSeconds         = 3600;
+        configuration.healthCheckIntervalSeconds = 3600;
+        configuration.acquireTimeoutMilliseconds = 5000;
+        ConnectionPool pool(makeMockFactory(counter), configuration);
+
+        EventLoopThread loopThread;
+        ASSERT_TRUE(loopThread.waitUntilRunning());
+
+        PooledConnection occupying = pool.acquire();
+        ASSERT_TRUE(occupying);
+
+        AcquireProbe     probe;
+        Core::Task<void> driver = probeAcquireAsync(pool, loopThread.loop(), probe);
+        driver.handle().resume(); // 池满：协程挂进等待列表
+        ASSERT_FALSE(probe.finished.load(std::memory_order_acquire));
+        ASSERT_EQ(pool.waitingCount(), 1U) << "协程没有挂起：用例前提不成立";
+
+        ASSERT_TRUE(AsynGyanis::TestSupport::hasRegistrySample("asyn_db_pool_waiting_requests")) << "这条 gauge 根本没登记";
+        EXPECT_EQ(registryValue("asyn_db_pool_waiting_requests"), static_cast<std::uint64_t>(pool.waitingCount())) << "协程在排队而 /metrics 上说没人等：这一格只数了同步等待者";
+
+        occupying.release();
+        ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); }));
+        ASSERT_TRUE(probe.connection.has_value());
+        EXPECT_EQ(pool.waitingCount(), 0U) << "等待收口之后锁内真值没归零";
+        EXPECT_EQ(registryValue("asyn_db_pool_waiting_requests"), 0U) << "等待收口之后镜像没归零：摘出等待表的那几处漏刷了";
 
         loopThread.parkDriver(std::move(driver));
     }

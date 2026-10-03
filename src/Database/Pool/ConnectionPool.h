@@ -408,6 +408,12 @@ namespace AsynGyanis::Database
         void removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept;
 
         /**
+         * @brief 把异步等待者数量灌进那份原子镜像（供指标抓取，不碰锁）
+         * @note 只在持有 m_asyncMutex 的段里、改动 m_asyncWaiters 之后调用
+         */
+        void refreshAsyncWaitingCount() noexcept;
+
+        /**
          * @brief 把连接关闭（释放 unique_ptr 即断开），不退还名额
          * @param connection 待关闭的连接；为空时空操作
          * @note 池析构与「丢弃后立刻重建」两条路径用本方法：它们的名额由后续动作接手
@@ -489,6 +495,10 @@ namespace AsynGyanis::Database
         // ----- 异步等待列表（受 m_asyncMutex 保护） -----
         mutable std::mutex           m_asyncMutex;   ///< 保护异步等待列表
         std::deque<AcquireAwaiter *> m_asyncWaiters; ///< 异步协程等待列表
+        /// 异步等待者数量：每次改动 m_asyncWaiters 时在同一段锁里按 `size()` 重灌一遍。
+        /// 存在的唯一理由是让指标抓取不碰池的锁（见 m_metricHandles 的说明）——写的是「当下有多少」
+        /// 而不是增减量，所以漏改一处只会少报一格，不会一路漂移
+        std::atomic<std::size_t> m_asyncWaitingCount{0};
 
         // ----- 后台线程 -----
         // 这两个必须声明在 m_healthThread 之前：成员按声明逆序销毁，jthread 的隐式 join 会先跑，
@@ -499,10 +509,10 @@ namespace AsynGyanis::Database
         std::jthread m_healthThread; ///< 后台健康检查线程
 
         /**
-         * @brief 四条池内读数挂在进程级指标注册表上的把手
-         * @details 只登记**原子量**那四条（在借、同步等待、累计创建、借出超时）。空闲条数与异步等待数
-         *          要拿池自己的那两把锁，抓取线程去拿就等于与借出路径抢锁——那会把一次 `/metrics`
-         *          抓取变成池的延迟来源，宁可少报两格
+         * @brief 六条池内读数挂在进程级指标注册表上的把手
+         * @details 登记的都必须是**原子量**，抓取线程不碰池的任何一把锁（拿锁去抓就等于与借出路径抢锁，
+         *          一次 `/metrics` 抓取会变成池的延迟来源）。异步等待数因此配了一份原子镜像
+         *          `m_asyncWaitingCount`；空闲条数仍只在锁里，所以仍然不报。
          */
         std::array<Core::ProcessMetricHandle, 6> m_metricHandles{};
     };
