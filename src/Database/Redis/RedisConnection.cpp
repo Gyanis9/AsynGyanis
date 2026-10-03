@@ -18,6 +18,7 @@
 
 #include "Database/Redis/RedisReplyText.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <charconv>
@@ -43,14 +44,14 @@
 
 namespace AsynGyanis::Database
 {
+    // 单位换算的出处集中在此：驱动在与不在都要被 Detail::makeTimeoutParts 用到，所以放在开关之外
+    constexpr std::int64_t kMillisecondsPerSecond      = 1000; ///< 1 秒等于 1000 毫秒
+    constexpr std::int64_t kMicrosecondsPerMillisecond = 1000; ///< 1 毫秒等于 1000 微秒
+
 #ifdef DATABASE_HAS_REDIS
 
     namespace
     {
-        // 用 constexpr 常量取代宏：单位换算的出处集中在此，类型安全且作用域受控
-        constexpr int kMillisecondsPerSecond      = 1000; ///< 1 秒等于 1000 毫秒
-        constexpr int kMicrosecondsPerMillisecond = 1000; ///< 1 毫秒等于 1000 微秒
-
         // redisCommandArgv / redisAppendCommandArgv 的 argc 是 int，超过该上限会被静默截断
         constexpr size_t kMaximumArgumentCount = static_cast<size_t>(std::numeric_limits<int>::max());
 
@@ -59,18 +60,18 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 把毫秒换算成 hiredis 需要的「秒 + 微秒」结构
-         * @param milliseconds 时长毫秒数，调用方保证为非负
+         * @param milliseconds 时长毫秒数，64 位取值在此被钳进能表达的格（见 Detail::makeTimeoutParts）
          * @return struct timeval 换算结果
          */
-        struct timeval makeTimeval(const int milliseconds)
+        struct timeval makeTimeval(const std::int64_t milliseconds)
         {
-            struct timeval timeoutValue;
+            // 换算与钳位都在 Detail::makeTimeoutParts 里；tv_sec / tv_usec 的具体类型两个平台不一样
+            // （Windows 是 LONG，POSIX 是 time_t 与 suseconds_t），拿到的已是非负整数，这里只做一次落地窄化
+            const auto [secondsPart, microsecondPart] = Detail::makeTimeoutParts(milliseconds);
 
-            // 单位换算：整秒部分 = 毫秒 / 1000，剩下的毫秒还得乘 1000 才是微秒数。
-            // tv_sec / tv_usec 的具体类型两个平台不一样（Windows 是 LONG，POSIX 是 time_t 与 suseconds_t），
-            // 先按 int 算完再 static_cast 到目标字段类型，避免窄化与符号位警告
-            timeoutValue.tv_sec  = static_cast<decltype(timeoutValue.tv_sec)>(milliseconds / kMillisecondsPerSecond);
-            timeoutValue.tv_usec = static_cast<decltype(timeoutValue.tv_usec)>((milliseconds % kMillisecondsPerSecond) * kMicrosecondsPerMillisecond);
+            struct timeval timeoutValue;
+            timeoutValue.tv_sec  = static_cast<decltype(timeoutValue.tv_sec)>(secondsPart);
+            timeoutValue.tv_usec = static_cast<decltype(timeoutValue.tv_usec)>(microsecondPart);
             return timeoutValue;
         }
 
@@ -1349,7 +1350,7 @@ namespace AsynGyanis::Database
         const bool usesOwnWait = waitTimeout.count() > 0;
         if (usesOwnWait)
         {
-            const struct timeval ownTimeout = makeTimeval(static_cast<int>(waitTimeout.count()));
+            const struct timeval ownTimeout = makeTimeval(waitTimeout.count());
             if (redisSetTimeout(m_redisContext, ownTimeout) != REDIS_OK)
             {
                 captureError("设置 Redis 推送等待时限失败");
@@ -1443,5 +1444,19 @@ namespace AsynGyanis::Database
     }
 
 #endif // DATABASE_HAS_REDIS
+
+    namespace Detail
+    {
+        std::pair<std::int64_t, std::int64_t> makeTimeoutParts(const std::int64_t milliseconds) noexcept
+        {
+            // 定义与那两个单位常量都留在驱动开关之外：这套「秒 + 微秒」的折法与本类是否编进了
+            // hiredis 无关，而两个调用点（applyQueryTimeout 与 readPushReply）拿到的都是已钳好的非负值
+            //
+            // 钳位方向：越界的等待按「这套结构能表达的最长」处理，而不是折回 0——0 在 hiredis 的约定里
+            // 是「不设超时」，那正是调用方要长等的反面
+            const std::int64_t clampedMilliseconds = std::clamp(milliseconds, static_cast<std::int64_t>(0), static_cast<std::int64_t>(std::numeric_limits<int>::max()));
+            return {clampedMilliseconds / kMillisecondsPerSecond, (clampedMilliseconds % kMillisecondsPerSecond) * kMicrosecondsPerMillisecond};
+        }
+    } // namespace Detail
 
 } // namespace AsynGyanis::Database

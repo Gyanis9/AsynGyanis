@@ -21,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // hiredis 的 redisContext 与 redisReply 都是全局作用域的 C 结构体，前置声明集中写在本头的全局作用域：
@@ -414,5 +415,22 @@ namespace AsynGyanis::Database
         std::size_t m_channelSubscriptionCount{0}; ///< 当前活跃的频道订阅条数
         std::size_t m_patternSubscriptionCount{0}; ///< 当前活跃的模式订阅条数
     };
+
+    namespace Detail
+    {
+        /**
+         * @brief 把「毫秒」折成 hiredis 超时所需的「秒 + 剩余微秒」，先钳到 int 能表达的格
+         *
+         * @details 折成 `timeval` 之前必须钳：`std::chrono::milliseconds::rep` 是 64 位，而这套
+         *          「秒 + 微秒」的换算是按 int 做的——2^31 毫秒（约 24.85 天）以上会窄化成负数。
+         *          更要紧的是调用方那句「取值大于 0 才算自定义等待」用的是**未窄化**的取值，于是
+         *          负数照样被交给 `redisSetTimeout`：把负数塞进 `tv_sec` 在各平台上的行为并不一致
+         *          （`applyQueryTimeout` 的注释里写着同一条），轻则立刻返回「超时」让消费循环空转，
+         *          重则这一次读取根本没有时限。
+         * @param milliseconds 时长毫秒数；负数按 0（= 不设超时）处理
+         * @return std::pair<std::int64_t, std::int64_t> 秒数与剩余的微秒数，两者都非负
+         */
+        [[nodiscard]] ASYN_DATABASE_API std::pair<std::int64_t, std::int64_t> makeTimeoutParts(std::int64_t milliseconds) noexcept;
+    } // namespace Detail
 
 } // namespace AsynGyanis::Database

@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace AsynGyanis::Database
@@ -543,6 +544,32 @@ namespace AsynGyanis::Database
             RedisConnection connection(ConnectionConfig::redisDefault());
             static_cast<void>(connection.pipelineCommand("GET mykey"));
         });
+    }
+
+    /**
+     * @brief 折成「秒 + 微秒」的时限先钳进 int 能表达的格，而不是窄化成负数
+     * @details `readPushReply(std::chrono::milliseconds)` 收的是 64 位毫秒，而这套换算是按 int 做的：
+     *          2^31 毫秒（约 24.85 天）以上会折成负数，而「取值大于 0 才算自定义等待」那句判据用的
+     *          是未窄化的数——负数照样进了 `redisSetTimeout`。钳位方向取「能表达的最长」：折成 0 在
+     *          hiredis 的约定里是「不设超时」，那正是调用方要长等的反面。
+     */
+    TEST(RedisConnection, TimeoutPartsClampWaitsThatDoNotFitAnInt)
+    {
+        EXPECT_EQ(Detail::makeTimeoutParts(0), (std::pair<std::int64_t, std::int64_t>{0, 0}));
+        EXPECT_EQ(Detail::makeTimeoutParts(1500), (std::pair<std::int64_t, std::int64_t>{1, 500000}));
+        EXPECT_EQ(Detail::makeTimeoutParts(-5), (std::pair<std::int64_t, std::int64_t>{0, 0})) << "负数被原样折进了 tv_sec";
+
+        const std::int64_t intMaxMilliseconds = std::numeric_limits<int>::max();
+        EXPECT_EQ(Detail::makeTimeoutParts(intMaxMilliseconds), (std::pair<std::int64_t, std::int64_t>{intMaxMilliseconds / 1000, (intMaxMilliseconds % 1000) * 1000}))
+                << "恰好能表达的那一格被钳掉了";
+
+        for (const std::int64_t beyondReach: {intMaxMilliseconds + 1, std::numeric_limits<std::int64_t>::max()})
+        {
+            const auto [secondsPart, microsecondPart] = Detail::makeTimeoutParts(beyondReach);
+            EXPECT_EQ(secondsPart, intMaxMilliseconds / 1000) << "越界的等待折成了别的长度";
+            EXPECT_GE(microsecondPart, 0) << "剩余微秒数为负：这一次读取的时限不可解释";
+            EXPECT_LT(microsecondPart, 1000000);
+        }
     }
 
 } // namespace AsynGyanis::Database
