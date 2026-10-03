@@ -1220,6 +1220,41 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住「还没读到 PROXY 头」的连接也占一个并发名额
+     * @details 上限若只按「已建成会话的连接数」判，一批只完成 TCP 握手、一个字节都不发的对端就能把
+     *          上限整个绕过：描述符与接收缓冲已经被人占满，而服务器看着还在正常接受、任何计数都不动。
+     *          判据取公开可见的那一侧：第二条明明送上了完全合法的头，却在解析之前就被满载挡掉，
+     *          而连接管理器此刻一条活跃连接都没有——这两半合起来才说明名额是被「待读头」的那条占着的。
+     */
+    TEST(TcpServer, CountsPendingProxyHeaderConnectionsAgainstMaxConnections)
+    {
+        ServerTestOptions options;
+        options.kind                  = ConnectionKind::ObservesStopRequest;
+        options.maxConnections        = 1;
+        options.proxyProtocolRequired = true;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient silentClient(listeningPort);
+        ASSERT_TRUE(silentClient.isValid()); // 连上但不发头：它停在「等读头」这一步
+
+        // 第二条带合法的头：两条连接按到达顺序被接受循环处理，因此这里不需要额外等待条件
+        const LoopbackClient secondClient(listeningPort);
+        ASSERT_TRUE(secondClient.isValid());
+        ASSERT_TRUE(secondClient.sendAll(makeV1Header("203.0.113.5", 5, "192.0.2.1", 80)));
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().overLimitRejectedConnectionCount() >= 1U; }, kWaitTimeout))
+                << "只握手不发音节的连接没被算进上限：合法的第二条照常建起了会话";
+        EXPECT_EQ(fixture.server().activeConnectionCount(), 0U) << "管理器里没有连接，说明名额是被「头还没读到」的那条占着的";
+        EXPECT_EQ(fixture.server().createConnectionCalls(), 0U) << "被满载拒掉的连接还是建了会话";
+
+        // 收尾交给夹具的析构，本条不判优雅停机：让停机被等到是本用例要造的现场本身
+        // （silentClient 停在读头上，收尾要等满那份头的时限 3 秒）
+    }
+
+    /**
      * @brief 同一个调用点的 PROXY 告警要经过闸门：三条同样不合格的连接不多落日志
      * @details 为什么断「这一批至多一条」加「全进程至少一条」这一对，而不是「恰好一条」：
      *          闸门是**进程内**的函数局部 static，本文件里另有几条用例命中同一个调用点，
