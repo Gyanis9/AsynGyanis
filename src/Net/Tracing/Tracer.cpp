@@ -88,6 +88,21 @@ namespace AsynGyanis::Net
     Tracer::Tracer(Configuration configuration) :
         m_configuration(std::move(configuration)), m_resource{.serviceName = m_configuration.serviceName, .serviceVersion = m_configuration.serviceVersion}
     {
+        // 三本账接进 /metrics：这三问此前只有攥着 Tracer 句柄的代码问得出，而句柄通常留在业务内部，
+        // 运维面上「节被丢了多少、有几批被出口拒了」是看不见的——丢节正是采样配错、缓冲配小、
+        // 出口挂掉这三种现场的共同症状，得有一条不用重启就能问的出口
+        m_metricHandles = {
+                Core::ProcessMetricsRegistry::registerMetric(
+                        "asyn_tracing_exported_spans_total", "已交给出口的节数（按条计）。这是「已提交」不是「已送达」：采集端那一段的得失看出口自己的读数",
+                        Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum, [this] { return m_exportedSpanCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_tracing_dropped_spans_total", "被丢掉的节数：缓冲满、出口整批没收、停止窗口内收下的都算在这里（按条计）",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_droppedSpanCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_tracing_export_failures_total", "出口整批没收的次数（按批计，不按条：一批里几条都算一次）",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_exportFailureCount.load(std::memory_order_relaxed); }),
+        };
+
         // 出口线程要读上面全部成员，因此它必须是最后初始化的那一个；jthread 在析构时会自行
         // request_stop + join，但那条路径叫不醒条件变量的等待谓词，~Tracer() 里按 AsyncSink
         // 的同一套规矩在锁内发布停止再叫醒

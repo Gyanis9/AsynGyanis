@@ -7,6 +7,8 @@
 #include "Net/Tracing/Tracer.h"
 
 #include "Base/Exception/LogicException.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
+#include "MetricsTestSupport.h"
 #include "Net/Http/TraceContext.h"
 #include "Net/Tracing/Span.h"
 #include "TracingTestSupport.h"
@@ -384,6 +386,56 @@ TEST(Tracer, OneFailingExporterDoesNotStopTheOther)
     EXPECT_EQ(tracer->exportedSpanCount(), 3U) << "收下这一批的那个出口计一次";
     EXPECT_EQ(tracer->droppedSpanCount(), 3U) << "拒收的那个出口把这批记成丢弃";
     EXPECT_EQ(tracer->exportFailureCount(), 1U) << "失败按批计，不按条计";
+}
+
+/**
+ * @brief 三本账同时挂在 `/metrics` 上，且与 C++ 读数是同一份增量；实例放手后把手要跟着注销
+ * @details 句柄通常攥在业务内部，运维面上原本问不出「丢了多少节、几批被出口拒了」，而丢节正是采样配错、
+ *          缓冲配小、出口挂掉这三种现场的共同症状。注册表是进程级求和，同一二进制里别的 Tracer 也在灌，
+ *          所以这里比的是**同一趟操作两侧的增量**而不是绝对值。
+ * @details 放手后名字要退回三条：把手没注销就留下一条永远读不到东西的死指标，而按名字抓的人分不出
+ *          「没发生」与「没人登记」。
+ */
+TEST(Tracer, SpanAccountingIsAlsoExposedOnMetrics)
+{
+    using AsynGyanis::Core::ProcessMetricsRegistry;
+    using AsynGyanis::TestSupport::hasRegistrySample;
+    using AsynGyanis::TestSupport::registryValue;
+
+    const std::size_t   namesBefore    = ProcessMetricsRegistry::nameCount();
+    const std::uint64_t exportedBefore = registryValue("asyn_tracing_exported_spans_total");
+    const std::uint64_t droppedBefore  = registryValue("asyn_tracing_dropped_spans_total");
+    const std::uint64_t failuresBefore = registryValue("asyn_tracing_export_failures_total");
+
+    {
+        auto configuration                 = makeConfiguration();
+        configuration.exportBatchSpanCount = 100U; ///< 三条节合成一次交付，「按批计」才是个确定的数
+        const auto good                    = std::make_shared<CapturingSpanExporter>();
+        const auto bad                     = std::make_shared<CapturingSpanExporter>();
+        const auto tracer                  = Tracer::create(configuration);
+        tracer->addExporter(good);
+        tracer->addExporter(bad);
+        bad->configureRejecting();
+
+        ASSERT_TRUE(hasRegistrySample("asyn_tracing_exported_spans_total")) << "已交付那本账没接进 /metrics";
+        ASSERT_TRUE(hasRegistrySample("asyn_tracing_dropped_spans_total")) << "丢弃那本账没接进 /metrics";
+        ASSERT_TRUE(hasRegistrySample("asyn_tracing_export_failures_total")) << "整批没收那本账没接进 /metrics";
+
+        for (int index = 0; index < 3; ++index)
+        {
+            recordOneSpan(tracer, "exposed");
+        }
+        tracer->flush();
+
+        ASSERT_EQ(tracer->exportedSpanCount(), 3U);
+        ASSERT_EQ(tracer->droppedSpanCount(), 3U);
+        ASSERT_EQ(tracer->exportFailureCount(), 1U);
+        EXPECT_EQ(registryValue("asyn_tracing_exported_spans_total") - exportedBefore, tracer->exportedSpanCount()) << "运维面读到的已交付数与业务面问到的不是同一份账";
+        EXPECT_EQ(registryValue("asyn_tracing_dropped_spans_total") - droppedBefore, tracer->droppedSpanCount()) << "丢节在 /metrics 上不涨：告警永远不会有依据";
+        EXPECT_EQ(registryValue("asyn_tracing_export_failures_total") - failuresBefore, tracer->exportFailureCount()) << "按批计的那本账没接出来";
+    }
+
+    EXPECT_EQ(ProcessMetricsRegistry::nameCount(), namesBefore) << "Tracer 放手后把手没注销，会留下三条死指标";
 }
 
 /**

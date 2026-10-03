@@ -11,9 +11,11 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Net/Tracing/Span.h"
 #include "Net/Tracing/SpanExporter.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -121,13 +123,13 @@ namespace AsynGyanis::Net
         /// @brief 缓冲里还压着多少条没交给出口
         [[nodiscard]] std::size_t pendingSpanCount() const noexcept;
 
-        /// @brief 已交给出口的条数（按每条计；一批有多个出口时也只计一次）
+        /// @brief 已交给出口的条数（按每条计；一批有多个出口时也只计一次）。同在 `/metrics` 的 `asyn_tracing_exported_spans_total`
         [[nodiscard]] std::uint64_t exportedSpanCount() const noexcept;
 
-        /// @brief 被丢掉的条数：缓冲满、出口整批没收、停止窗口内收下的，都算在这里
+        /// @brief 被丢掉的条数：缓冲满、出口整批没收、停止窗口内收下的，都算在这里。同在 `/metrics` 的 `asyn_tracing_dropped_spans_total`
         [[nodiscard]] std::uint64_t droppedSpanCount() const noexcept;
 
-        /// @brief 出口整批没收的次数（按批计，与 droppedSpanCount() 的条数口径互补）
+        /// @brief 出口整批没收的次数（按批计，与 droppedSpanCount() 的条数口径互补）。同在 `/metrics` 的 `asyn_tracing_export_failures_total`
         [[nodiscard]] std::uint64_t exportFailureCount() const noexcept;
 
     private:
@@ -170,5 +172,12 @@ namespace AsynGyanis::Net
         std::atomic<std::uint64_t>                 m_exportFailureCount{0}; ///< 出口整批没收的次数（按批计，不按条）
         std::jthread                               m_workerThread{};        ///< 出口线程
         std::stop_token                            m_stopToken{};           ///< 与出口线程同一个停止来源
+        /**
+         * @brief 三本账挂在进程级指标注册表上的把手
+         * @details 必须声明在最后：成员按声明逆序销毁，把手因此先于那三个原子计数放手，
+         *          抓取线程不会在实例半销毁之后还被叫回来读它们。计数走的是原子读，抓取不碰任何锁
+         * @see exportedSpanCount(), droppedSpanCount(), exportFailureCount()
+         */
+        std::array<Core::ProcessMetricHandle, 3> m_metricHandles{};
     };
 } // namespace AsynGyanis::Net
