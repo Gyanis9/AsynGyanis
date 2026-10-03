@@ -98,7 +98,8 @@ namespace AsynGyanis::Platform
         {
             std::lock_guard lock(m_watchMutex);
 
-            // 自愈清单只记调用方（与框架自己的补挂）给的注册，不记递归枚举出来的子目录
+            // 自愈清单只记调用方（与框架自己的补挂）给的注册，不记递归枚举出来的子目录——
+            // 唯一的例外是下面那条枚举链里**没挂上**的子目录：那种格子留在清单外就是永久失明
             if (keepForSelfHeal)
             {
                 m_selfHealPaths.insert(absolutePath);
@@ -141,7 +142,17 @@ namespace AsynGyanis::Platform
                 }
                 if (entry.is_directory())
                 {
-                    registerWatch(entry.path().string(), false, false);
+                    const std::string childPath = entry.path().string();
+                    if (!registerWatch(childPath, false, false))
+                    {
+                        // 枚举出来的子目录平时刻意不进自愈清单（每拍复查一整棵树的代价要留在设计上），
+                        // 但「这一格压根没挂上」是另一回事：除了那条节拍没有别人会再为它试一次，
+                        // 于是这一棵子树永久失明而 addWatch 照旧报成功。常见成因是
+                        // fs.inotify.max_user_watches 用尽、权限、或枚举与注册之间那条路径没了。
+                        // 整体仍报成功：一个子目录挂不上不该让调用方把整个监视撤掉
+                        std::lock_guard lock(m_watchMutex);
+                        m_selfHealPaths.insert(childPath);
+                    }
                 }
             }
         }
