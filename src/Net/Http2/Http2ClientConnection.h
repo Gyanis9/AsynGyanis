@@ -44,6 +44,15 @@ namespace AsynGyanis::Net
         /// 光看 isAnyByteReceived 不够：请求正文已整个交出去、对端还没答完时被时限掐掉，同样是
         /// 「一个字节没收到」，按那条判就会把非幂等请求悄悄做两遍
         bool isAnyByteSent{false};
+        /// 对端有没有**保证**这条请求没被处理过：只有 RFC 9113 §8.7 那两种机制能给出这个保证——
+        /// RST_STREAM 带 REFUSED_STREAM（「the stream is being closed prior to any processing having
+        /// occurred. Any request that was sent on the reset stream can be safely retried」），以及 GOAWAY
+        /// 的 last-stream-id 低于本条流号（「Requests on streams with higher numbers are therefore
+        /// guaranteed to be safe to retry」）。为真时重发对非幂等方法也安全（§8.7：「clients MAY
+        /// automatically retry them, even those with non-idempotent methods」）；本端只在**一个响应字节
+        /// 都没收到**时才认这个保证——对端已经答过话还说没处理，那是它违反 §8.7 的 MUST NOT，不能拿它的话
+        /// 把非幂等请求做两遍
+        bool isGuaranteedUnprocessed{false};
 
         /// 是否成功收齐（拿到状态码且没有被对端中止）
         [[nodiscard]] bool isOk() const noexcept

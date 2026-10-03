@@ -352,6 +352,25 @@ namespace AsynGyanis::Net
          *       因此也没有罐子可挂
          * @param cookieJar 罐子；传空指针摘掉（默认就是空，不挂罐子时行为与之前完全一致）
          */
+        /**
+         * @brief 一次出站交换失败之后，换条通路重来一遍是不是安全的
+         * @details 重发闸门只有这一份实现：三态判据（对端答过话／请求写上过通路／对端保证没处理过）
+         *          合起来决定「重来」还是「就此失败」。三条规矩各自的出处：
+         *          - 对端答过话（收到过任何响应字节）→ 不重来：那是响应本身出了问题，换条连接不会换一个答案；
+         *          - 请求已整个写上通路而对端没答话 → 只有**幂等**方法才重来（RFC 9112 §9.3.2 给的自动重试
+         *            许可只覆盖幂等方法，集合由 RFC 9110 §9.2.2 给出；表外方法一律按不幂等处理）；
+         *          - 但对端**保证**这条请求没被处理过时，非幂等方法也可以重来（RFC 9113 §8.7：「Requests
+         *            that have not been processed have not failed; clients MAY automatically retry them,
+         *            even those with non-idempotent methods」，保证只来自 REFUSED_STREAM 与 GOAWAY 的
+         *            last-stream-id 这两处）。
+         * @param method 报文里的方法原文（大小写敏感，见 RFC 9110 §9）
+         * @param isAnyByteSent 请求有没有整个写上通路
+         * @param isAnyByteReceived 这条通路上有没有收到过对端的任何响应字节
+         * @param isGuaranteedUnprocessed 对端有没有按 §8.7 保证这条请求没被处理过
+         * @return true 重来一次是安全的
+         */
+        [[nodiscard]] static bool isRetrySafeAfterFailure(std::string_view method, bool isAnyByteSent, bool isAnyByteReceived, bool isGuaranteedUnprocessed) noexcept;
+
         void setCookieJar(std::shared_ptr<HttpCookieJar> cookieJar) noexcept;
 
         /**

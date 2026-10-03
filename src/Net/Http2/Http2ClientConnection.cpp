@@ -828,6 +828,10 @@ namespace AsynGyanis::Net
             {
                 entry.second.isReset               = true;
                 entry.second.response.errorMessage = "对端收尾时没把这条流算进已受理范围（GOAWAY）";
+                // §8.7 的另一个保证：「The GOAWAY frame indicates the highest stream number that might have
+                // been processed. Requests on streams with higher numbers are therefore guaranteed to be safe
+                // to retry.」已经收到过响应字节的那条不认——对端答过话又说没处理，是它违反 §8.7 的 MUST NOT
+                entry.second.response.isGuaranteedUnprocessed = !entry.second.response.isAnyByteReceived;
             }
         }
         return true;
@@ -847,10 +851,20 @@ namespace AsynGyanis::Net
         {
             return true;
         }
-        // 对端亲手中止这条流，说明请求已被接手：这一位为真，复用侧就不该再重来一次
-        iterator->second.response.isAnyByteReceived = true;
-        iterator->second.isReset                    = true;
-        iterator->second.response.errorMessage      = std::string("对端按「") + std::string(http2ErrorCodeName(payload.errorCode)) + "」中止了这条流";
+        PendingStream &stream = iterator->second;
+        // §8.7 给客户端的两个「保证没被处理过」机制之一：REFUSED_STREAM 的原句是「the stream is being
+        // closed prior to any processing having occurred. Any request that was sent on the reset stream
+        // can be safely retried」。这一支不能把 isAnyByteReceived 置真——那一位的意思正是「对端答过话」，
+        // 置上去复用侧就再也不会重来，一次优雅停机里被拒的 POST 会白失败一次
+        const bool isRefusedBeforeProcessing = payload.errorCode == Http2ErrorCode::RefusedStream && !stream.response.isAnyByteReceived;
+        if (!isRefusedBeforeProcessing)
+        {
+            // 对端亲手中止这条流，说明请求已被接手：这一位为真，复用侧就不该再重来一次
+            stream.response.isAnyByteReceived = true;
+        }
+        stream.response.isGuaranteedUnprocessed = isRefusedBeforeProcessing;
+        stream.isReset                          = true;
+        stream.response.errorMessage            = std::string("对端按「") + std::string(http2ErrorCodeName(payload.errorCode)) + "」中止了这条流";
         return true;
     }
 

@@ -518,6 +518,9 @@ namespace AsynGyanis::Net
             /// 请求有没有被通路完整收下。写成功才算发出：通路本来就死着时 send 返回 false，
             /// 那一支仍是「对端在我们手里把连接收了」，重来不涉及重复执行
             bool isAnyByteSent{false};
+            /// 对端有没有**保证**这条请求没被处理过（RFC 9113 §8.7 的两种机制：REFUSED_STREAM 与
+            /// GOAWAY 的 last-stream-id）。为真时连非幂等方法也可以重来一次
+            bool isGuaranteedUnprocessed{false};
         };
 
         /**
@@ -1256,6 +1259,8 @@ namespace AsynGyanis::Net
                                                          : co_await client.request(scheme, authority, method, u.path, extraFields, body, *exchangeBudget, h2Receiver);
             exchange.isAnyByteReceived      = response.isAnyByteReceived;
             exchange.isAnyByteSent          = response.isAnyByteSent;
+            // h2 是三条通路里唯一能拿到「保证没处理过」这个信号的：§8.7 的两种机制都是帧级的
+            exchange.isGuaranteedUnprocessed = response.isGuaranteedUnprocessed;
             if (!response.isOk())
             {
                 // 状态码为 0（没收到响应头）或被对端中途 RST 掉：都不算一次成功的出站
@@ -1347,14 +1352,15 @@ namespace AsynGyanis::Net
             {
                 return ReuseDisposition::Serve;
             }
-            if (exchange.isAnyByteReceived)
+            // 判据只有 HttpClient::isRetrySafeAfterFailure 一份：它把「对端答过话」「请求写上过通路」
+            // 「对端保证没处理过」三态合起来判，h2 的 REFUSED_STREAM／GOAWAY 那两种保证也在那里生效
+            if (!HttpClient::isRetrySafeAfterFailure(method, exchange.isAnyByteSent, exchange.isAnyByteReceived, exchange.isGuaranteedUnprocessed))
             {
-                // 对端答过话：响应本身出了问题，换一条连接重来不会换一个答案
-                return ReuseDisposition::Fail;
-            }
-            if (exchange.isAnyByteSent && !isIdempotentRequestMethod(method))
-            {
-                failureReason = "请求已整个写上通路而对端没答话：方法 " + std::string{method} + " 不在幂等集合里，本端不重发（主机 " + host + "）";
+                if (!exchange.isAnyByteReceived)
+                {
+                    failureReason = "请求已整个写上通路而对端没答话：方法 " + std::string{method} +
+                                    " 不在幂等集合里，对端也没按 RFC 9113 §8.7 保证这条请求没被处理过，本端不重发（主机 " + host + "）";
+                }
                 return ReuseDisposition::Fail;
             }
             return ReuseDisposition::Retry;
@@ -1826,6 +1832,24 @@ namespace AsynGyanis::Net
             co_return nullptr;
         }
         co_return std::make_unique<HttpClientResponse>(std::move(*sent));
+    }
+
+    bool HttpClient::isRetrySafeAfterFailure(const std::string_view method, const bool isAnyByteSent, const bool isAnyByteReceived, const bool isGuaranteedUnprocessed) noexcept
+    {
+        if (isAnyByteReceived)
+        {
+            // 对端答过话：那是响应本身出了问题，换一条通路重来不会换一个答案
+            return false;
+        }
+        if (!isAnyByteSent)
+        {
+            // 请求压根没写上通路：对端无从执行它，重来不涉及把一件事做两遍
+            return true;
+        }
+        // 写上了通路而对端没答话：默认按「可能已经执行过」处置，重来只许幂等方法（RFC 9112 §9.3.2 给的
+        // 自动重试许可只覆盖幂等方法）；但 RFC 9113 §8.7 那两种保证是另一回事——REFUSED_STREAM 与 GOAWAY
+        // 的 last-stream-id 都说明对端**没处理过**这条请求，那时连非幂等方法也可以重来
+        return isIdempotentRequestMethod(method) || isGuaranteedUnprocessed;
     }
 
     HttpClient::HttpClient(Core::EventLoop &loop, const HttpOutboundConnectionPool::Config poolConfig) : HttpClient(loop, poolConfig, Core::TlsPolicy{})

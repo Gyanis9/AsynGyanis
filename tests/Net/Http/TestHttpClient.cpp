@@ -754,6 +754,33 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住重发闸门那一份判据：三态合起来决定「重来一次」还是「就此失败」
+     * @details 这份判据过去埋在 HttpClient.cpp 的匿名命名空间里，只有 h1 那条端到端用例
+     *          （`HttpOutboundConnectionPool.DoesNotReplayASentNonIdempotentRequestWhenThePeerTookTheConnection`）
+     *          间接压到它的一条边。RFC 9113 §8.7 的两种「保证没处理过」接进来之后判据多了一维，
+     *          八种组合各有各的答案，端到端用例铺不满，因此把它提成一处公开判据逐格钉住
+     * @note 证伪：把 `isGuaranteedUnprocessed` 那一项从判据里摘掉，「非幂等 + 有保证」两格红；
+     *       把「对端答过话」那一条挪到保证之后判，最后两格红
+     */
+    TEST(HttpClientRetryRule, OnlyRetriesWhenTheSpecSaysItIsSafe)
+    {
+        // 请求压根没写上通路：对端无从执行它，重来与幂等性无关
+        EXPECT_TRUE(HttpClient::isRetrySafeAfterFailure("POST", false, false, false));
+        // 写上了通路、对端没答话：幂等方法按 RFC 9112 §9.3.2 重来
+        EXPECT_TRUE(HttpClient::isRetrySafeAfterFailure("GET", true, false, false));
+        // 同一种形状换成非幂等方法：默认不重来（可能已经执行过）
+        EXPECT_FALSE(HttpClient::isRetrySafeAfterFailure("POST", true, false, false));
+        // 方法 token 大小写敏感（RFC 9110 §9）：小写的 post 不在幂等集合里
+        EXPECT_FALSE(HttpClient::isRetrySafeAfterFailure("post", true, false, false));
+        // RFC 9113 §8.7 的保证压倒幂等性：REFUSED_STREAM／GOAWAY 之上那条流，非幂等也能重来
+        EXPECT_TRUE(HttpClient::isRetrySafeAfterFailure("POST", true, false, true));
+        EXPECT_TRUE(HttpClient::isRetrySafeAfterFailure("PATCH", true, false, true));
+        // 对端答过话就一概不重来：换一条通路不会换一个答案，「保证」也不例外
+        EXPECT_FALSE(HttpClient::isRetrySafeAfterFailure("GET", true, true, true));
+        EXPECT_FALSE(HttpClient::isRetrySafeAfterFailure("POST", false, true, false));
+    }
+
+    /**
      * @brief 钉住：出站响应的 `Retry-After` 两种写法都认，且读不懂时交回空而不是 0
      * @details 这条读口此前没有直测（连 `headerValue` 都只在端到端用例里被顺带跑到），而它要处理
      *          的三种形状里最危险的是「读不懂」：把它折成 0 秒等于对着一台明确说了要限流的上游

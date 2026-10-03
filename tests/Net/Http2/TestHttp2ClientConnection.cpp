@@ -404,10 +404,14 @@ namespace AsynGyanis::Net
             std::vector<std::pair<std::string, std::string>> trailers;    ///< 正文之后的尾部头块字段（与头部分开留）
             std::vector<std::pair<std::string, std::string>> peerHeaders; ///< 对端把切片拼回去后解出的请求字段
             std::string                                      errorMessage;
-            std::string                                      peerDecodeErrorText;      ///< 对端解帧的报错（越界的单帧会在这里露出来）
-            std::size_t                                      headersFrameCount{0};     ///< 对端看到的 HEADERS 帧数
-            std::size_t                                      continuationCount{0};     ///< CONTINUATION 帧数
-            std::size_t                                      largestFrameByteCount{0}; ///< 对端看到的最长帧负载
+            /// RFC 9113 §8.7 那两种「保证没被处理过」的形状有没有被认出来（REFUSED_STREAM／GOAWAY 的 last-stream-id）
+            bool isGuaranteedUnprocessed{false};
+            /// 这条流上有没有收到过对端的任何帧：答过话就不该再重来
+            bool        isAnyByteReceived{false};
+            std::string peerDecodeErrorText;      ///< 对端解帧的报错（越界的单帧会在这里露出来）
+            std::size_t headersFrameCount{0};     ///< 对端看到的 HEADERS 帧数
+            std::size_t continuationCount{0};     ///< CONTINUATION 帧数
+            std::size_t largestFrameByteCount{0}; ///< 对端看到的最长帧负载
         };
 
         /**
@@ -559,8 +563,10 @@ namespace AsynGyanis::Net
             outcome.body                       = response.body;
             outcome.headers                    = response.headers;
 
-            outcome.trailers     = response.trailers;
-            outcome.errorMessage = response.errorMessage;
+            outcome.trailers                = response.trailers;
+            outcome.errorMessage            = response.errorMessage;
+            outcome.isGuaranteedUnprocessed = response.isGuaranteedUnprocessed;
+            outcome.isAnyByteReceived       = response.isAnyByteReceived;
             co_return;
         }
         std::string singleSettingFrameBytes(const Http2SettingIdentifier identifier, const std::uint32_t value)
@@ -1861,6 +1867,63 @@ namespace AsynGyanis::Net
         ASSERT_EQ(outcome.headers.size(), 1U) << "被续的那段头块要照常解出字段";
         EXPECT_EQ(outcome.headers[0].first, "content-type");
         EXPECT_TRUE(outcome.errorMessage.empty()) << outcome.errorMessage;
+    }
+
+    /**
+     * @brief 只有 §8.7 那两种形状才算「对端保证没处理过」，别的 RST 与答过话的流都不算
+     * @details RFC 9113 §8.7 给了客户端两个「这条请求没被处理过」的保证：REFUSED_STREAM（§6.4：「the
+     *          stream is being closed prior to any processing having occurred. Any request that was sent
+     *          on the reset stream can be safely retried」）与 GOAWAY 的 last-stream-id（「Requests on
+     *          streams with higher numbers are therefore guaranteed to be safe to retry」），并明写
+     *          「clients MAY automatically retry them, even those with non-idempotent methods」。本端过去
+     *          把任何 RST_STREAM 都记成「对端答过话」，于是服务端优雅停机时被拒的那个 POST 只会失败一次，
+     *          而规范说它本该被安全重试
+     * @note 证伪：把 REFUSED_STREAM 那一支改回「一律记成对端答过话」，格一红；把 GOAWAY 那一支的保证摘掉，
+     *       格三红；把「答过话就不认保证」这道防御摘掉，格四红
+     */
+    TEST(Http2ClientConnection, MarksOnlyTheSpecGuaranteedUnprocessedShapesAsRetryable)
+    {
+        const auto runScript = [](const std::string &script)
+        {
+            Core::EventLoop loop;
+            int             clientDescriptor = -1;
+            int             peerDescriptor   = -1;
+            EXPECT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+            PeerFrames            received;
+            HeaderBlockRunOutcome outcome;
+            auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+            auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+            static_cast<void>(peerWork.handle().resume());
+            static_cast<void>(clientWork.handle().resume());
+            loop.run();
+            return outcome;
+        };
+
+        // 格一：REFUSED_STREAM
+        const HeaderBlockRunOutcome refused = runScript(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::RefusedStream}, 1U));
+        EXPECT_TRUE(refused.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_EQ(refused.statusCode, 0);
+        EXPECT_FALSE(refused.isAnyByteReceived) << "REFUSED_STREAM 的意思正是「没处理过」，不该记成对端答过话";
+        EXPECT_TRUE(refused.isGuaranteedUnprocessed) << "§8.7 的保证没被认出来：优雅停机里被拒的非幂等请求会白失败一次";
+
+        // 格二：CANCEL 不带这个保证（对端动过手，可能已经执行过）
+        const HeaderBlockRunOutcome cancelled = runScript(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, 1U));
+        EXPECT_FALSE(cancelled.isGuaranteedUnprocessed) << "只有 REFUSED_STREAM 才是「没处理过」，CANCEL 不是";
+        EXPECT_TRUE(cancelled.isAnyByteReceived);
+
+        // 格三：GOAWAY 的 last-stream-id 低于本条流号
+        const HeaderBlockRunOutcome goAway = runScript(encodeHttp2GoAwayFrame(Http2GoAwayPayload{.lastStreamId = 0U, .errorCode = Http2ErrorCode::NoError}));
+        EXPECT_TRUE(goAway.isGuaranteedUnprocessed) << "§8.7：last-stream-id 之上的流保证可以安全重试";
+        EXPECT_FALSE(goAway.isAnyByteReceived);
+
+        // 格四：对端答过话之后再来 REFUSED_STREAM——那是它违反 §8.7 的 MUST NOT，本端不认这个保证
+        HpackEncoder                peerEncoder;
+        const std::string           headBlock           = peerEncoder.encode({HpackHeaderField{":status", "200"}});
+        const HeaderBlockRunOutcome answeredThenRefused = runScript(makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headBlock) +
+                                                                    encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::RefusedStream}, 1U));
+        EXPECT_EQ(answeredThenRefused.statusCode, 200) << "已经解出的响应不该被随后那帧 RST 抹掉";
+        EXPECT_TRUE(answeredThenRefused.isAnyByteReceived);
+        EXPECT_FALSE(answeredThenRefused.isGuaranteedUnprocessed) << "对端答过话又说没处理过：不能拿它的话把非幂等请求做两遍";
     }
 
     /**
