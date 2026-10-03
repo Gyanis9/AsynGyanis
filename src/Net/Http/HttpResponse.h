@@ -173,8 +173,11 @@ namespace AsynGyanis::Net
          *          浏览器对这种组合整条丢弃（RFC 6265bis §4.1.2.1），而字面上那条头部看不出毛病——
          *          现场只剩「Cookie 存不住」。本类不替调用方补 Secure：那等于在明文连接上发一条它没要的
          *          Secure Cookie（见 `HttpCookie` 的「只写显式设过的属性」口径）。
+         * @details 名字不合规（最常见的是默认构造出来的空名字）也在这里拒掉：发出去是一条 `Set-Cookie: =值`，
+         *          对端按畸形丢掉（RFC 6265 §5.2），现场同样只剩「Cookie 设了没生效」。
          * @details set-cookie 是可重复头部，调几次就发几条，先设先发，顺序稳定可复现。
          * @param cookie 待发出的 Cookie
+         * @throws Base::InvalidArgumentException Cookie 名字为空或含控制符/分隔符（RFC 6265 §4.1.1）
          * @throws Base::InvalidArgumentException Cookie 设了 SameSite=None 却没设 Secure
          */
         void setCookie(const HttpCookie &cookie);

@@ -190,6 +190,18 @@ namespace AsynGyanis::Net
 
     void HttpResponse::setCookie(const HttpCookie &cookie)
     {
+        // 名字不合规（最常见的是空）的 Cookie 发出去是一条「Set-Cookie: =值」：本仓自己的 Cookie 解析器
+        // 按畸形丢掉它（RFC 6265 §5.2 要求名字至少一个 token 字符），浏览器同样不会存——业务只看到
+        // 「Cookie 设了没生效」，查不出是谁丢的。两条构造入口都判过名字，只有默认构造那条
+        // （「先建容器再填」，名字与取值都空）能走到这里，所以在发出这一条头部之前补上同一道判据
+        if (!HttpCookie::isValidName(cookie.name()))
+        {
+            throw Base::InvalidArgumentException("Cookie 的名字「" + cookie.name() +
+                                                 "」不合规（RFC 6265 §4.1.1：至少一个字符且不得含控制符与分隔符）："
+                                                 "这样的 Set-Cookie 会被对端整条丢掉。用 HttpCookie(name, value) 构造，"
+                                                 "或先填上名字再交给 setCookie()");
+        }
+
         // SameSite=None 必须与 Secure 同现（RFC 6265bis §4.1.2.1）：浏览器把「None 而不 Secure」整条丢掉。
         // 在这里当场拒而不是照发——发出去的那条头部字面上完全正确，业务只会看到「Cookie 存不住」，
         // 而查不出是谁把它丢的。替调用方补一个 Secure 也不是选项：本类的口径是「只写显式设过的属性」

@@ -390,6 +390,25 @@ namespace AsynGyanis::Net
         EXPECT_EQ(values[2], "csrf=token; SameSite=Strict");
     }
 
+    /**
+     * @brief 名字不合规的 Cookie（默认构造那条空名字）在发出头部之前拒掉
+     * @details 名字只有两条入口：参数化构造当场判过，默认构造给的是空名字——因此空名字是唯一能走到
+     *          setCookie 的不合规形态，闸门复用 `isValidName` 而不是只写 `empty()`（将来补名字设值口时
+     *          不必再回来这里）。照发就是一条 `Set-Cookie: =`，对端按畸形丢弃（RFC 6265 §5.2），
+     *          现场只剩「Cookie 设了没生效」。反面判据同批：名字合规的那条必须照常发出。
+     */
+    TEST(HttpResponse, RejectsCookieWithInvalidName)
+    {
+        HttpResponse emptyNameResponse;
+        EXPECT_THROW(emptyNameResponse.setCookie(HttpCookie{}), AsynGyanis::Base::InvalidArgumentException);
+        EXPECT_EQ(emptyNameResponse.headerValues("Set-Cookie").size(), 0U) << "被拒的 Cookie 不该有一半留在响应里";
+
+        emptyNameResponse.setCookie(HttpCookie("sid", "42"));
+        const std::vector<std::string> values = emptyNameResponse.headerValues("Set-Cookie");
+        ASSERT_EQ(values.size(), 1U) << "被误拒的合规 Cookie 少发了一条";
+        EXPECT_EQ(values[0], "sid=42");
+    }
+
     TEST(HttpResponse, SerializesHeadersInSettingOrder)
     {
         HttpResponse response;

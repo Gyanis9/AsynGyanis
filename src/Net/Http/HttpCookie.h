@@ -52,7 +52,8 @@ namespace AsynGyanis::Net
          */
         HttpCookie(std::string_view cookieName, std::string_view cookieValue);
 
-        /// 默认构造给「先建容器再填」的写法用：名字与取值都是空串
+        /// 默认构造给「先建容器再填」的写法用：名字与取值都是空串。名字之后没有设值口，
+        /// 空名字的容器只能当占位（解析路径在类内直接填 m_name）；交给 HttpResponse::setCookie() 会当场拒
         HttpCookie() = default;
 
         /**
