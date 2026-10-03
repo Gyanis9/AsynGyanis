@@ -693,7 +693,11 @@ namespace AsynGyanis::Net
             {
                 // 对端可能已经 RST 掉了这条流（头收齐、正文没收完就取消）：那样的请求再也不会
                 // 变成「可服务」，留着它既占着请求头与已收正文，又让「有待办就不算空闲」的判据
-                // 一直为真（空闲超时随之失效）。按流已关闭清掉，并计入单流取消
+                // 一直为真（空闲超时随之失效）。按流已关闭清掉，并计入单流取消。
+                // 口径上有一处已知的粗：`Closed` 按它自己的定义是「RST_STREAM（**任一端**）或双向
+                // END_STREAM」，本层问不出是谁复位的，所以连接层自己判畸形而 RST 掉的那条（例如尾块
+                // 不合规）也会记进「对端取消」。要分清就得给 Http2Connection 的流表加一位「谁复位的」，
+                // 而这一形状只在「头已收下、正文还没收齐、本端又判了这条流畸形」时才出现，故留在此处记账
                 Http2StreamState streamState{};
                 if (!m_connection.tryGetStreamState(it->first, streamState) || streamState == Http2StreamState::Closed)
                 {
@@ -741,7 +745,9 @@ namespace AsynGyanis::Net
     {
         // 已经起过处理器的记录：对端 RST 掉这条流之后正文再也不会有字节，而业务可能正挂在
         // bodyStream()->readNext() 上等一个不来的唤醒。这里把正文标断并排进叫醒队列，让它按
-        // 「正文断了」往下走（响应还发不发得出由 serveOneRequest 的发送判据决定）
+        // 「正文断了」往下走（响应还发不发得出由 serveOneRequest 的发送判据决定）。
+        // 与 startReadyRequestTasks 里那处同一口径上的粗：判据是流状态 `Closed`，而它分不出是谁复位的
+        // （见那里的说明），故本端连接层自己 RST 掉的流也会记一笔「对端取消」
         for (auto &[streamId, pending]: m_pendingRequests)
         {
             // 隧道由自己那条就地跑的循环照看，普通记录才有协程；两条路径不重复记账
