@@ -1118,17 +1118,18 @@ int main(int argc, char **argv)
         // 整机并发上限同样要给 h3，否则配置里的 maximum_connections 只管两条 TCP 通道，而 h3 守着
         // QuicServer 自带的默认档：同一份配置下三条通道的口径不一致，本轮新增的 h3 满载读数也会
         // 对着一个没人配过的数跳变。给的是**摊到本进程**的那一份（与 TCP 侧同源），否则 --workers 4
-        // 就是四倍放行。刻意不覆盖 0：0 是「配置里没写」，此时保留 h3 自己的默认上限
-        // 比把它变成不限更安全（与上面单来源限额的 `> 0` 判据同一条理由）
-        if (perProcessMaximumConnections > 0)
-        {
-            http3Configuration.maximumConnections = perProcessMaximumConnections;
-        }
+        // 就是四倍放行。0 要原样传下去：QuicServer 与 HTTP 侧一样把 0 定为「不限」（那边的注释与
+        // 读口用例都在），而能走到这一行的 0 只可能是操作方显式写的——配置里没写时它是内置的 4096。
+        // 此前这里用 `> 0` 挡下 0，等于上面刚印出「每台 不限（显式配 0）」，h3 却仍卡在 1024
+        http3Configuration.maximumConnections = perProcessMaximumConnections;
 
         try
         {
             http3Server = std::make_unique<Net::QuicServer>(pool.eventLoop(0), http3Configuration);
-            LOG_INFO_FMT("HTTP/3 的并发连接上限 {}（配置里没写 maximum_connections 时取 QuicServer 的默认档）", http3Configuration.maximumConnections);
+            // 印的就是刚传下去那个数：0 要印成「不限」而不是 0，否则两条日志里一个写 0 一个写
+            // 「不限」，运维还是会去翻配置文件确认这台到底卡在哪
+            LOG_INFO_FMT("HTTP/3 的并发连接上限 {}（就是上面「每台」那一份，三条通道同一个数）",
+                         http3Configuration.maximumConnections == 0 ? std::string("不限（显式配 0）") : std::to_string(http3Configuration.maximumConnections));
             http3Server->setRouter(http3Router);
             // 顺序有讲究：QuicServer::staticFileDir() 要求路由器已经挂上（没挂就抛），因此排在
             // setRouter 之后；与两条 TCP 通道同一份目录，不给 h3 留一条「只能打路由」的偏路
