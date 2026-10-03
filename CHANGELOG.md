@@ -767,7 +767,11 @@
   现在补一行 WARN 说明「已经派发出去、431 回不出去，只拦尾字段」，并同时断言 431 那条收口 ERROR
   不出现（两支各说各话，将来统一出口时会红而不是留下两句互相打脸的日志）。直测
   `Http2CleartextSession.WithholdsTrailersAndWarnsWhenQuotaBreaksAfterDispatch`：正文档照常交付、
-  越限的尾字段读不到、日志恰好一行。
+  越限的尾字段读不到、日志恰好一行。h1 同一条路径的形态不同而毛病相同：整条报文一次写完时解析器在同一趟
+  里就报错，流式派发根本不发生（回 431）；分两次写时派发已经发生、越限落在业务跑完之后的**排空阶段**，
+  那时响应已按业务结果发出、不能改成 431，本端能做的只有收口连接——而这一支同样一行日志都不留。
+  现在补一行 WARN 交代原因，直测 `HttpStreaming.ExplainsWhyConnectionClosesWhenTrailerQuotaBreaksAfterDispatch`
+  两格（一条尾字段恰好放行且不出声、两条尾字段越限且恰好一行），日志计数按增量判而不是绝对数。
 
 ## [2.5.0] - 2026-10-02
 

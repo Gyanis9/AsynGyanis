@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace AsynGyanis::Net
 {
@@ -705,5 +706,109 @@ namespace AsynGyanis::Net
         // 本用例只有一条连接，因此这个读数同时是「正常写出的连接不误计」的反向证据
         EXPECT_EQ(fixture.server().stats().writeAbortedConnectionCount, 1u) << "写出失败的连接计数与日志口径不一致：同一次失败被记了多次，或一次都没记上";
         EXPECT_FALSE(fixture.startThrew()) << "一条断开的流式连接把服务器主协程带崩了";
+    }
+    /**
+     * @brief 钉住：流式派发之后 trailer 段才越限时，响应照常发出、连接收口，并留下一行原因
+     * @details 上一笔给 h2 的同一条路径补了日志（`WithholdsTrailersAndWarnsWhenQuotaBreaksAfterDispatch`），
+     *          h1 这一侧结构不同但毛病一样：流式路由在头部收齐那刻就派发了，trailer 段是在业务跑完之后
+     *          的**排空阶段**才被解析器判出来（`HttpSession.h` 的排空循环）。那时响应已经按业务结果发出，
+     *          不能再改成 431——本端实际做的事只是「收口这条连接」。此前这一支一行日志都不留，运维看到的
+     *          是「连接莫名被关」。数字：请求头部两场是 `host` 与 `transfer-encoding`（2 条），
+     *          上限取 3，于是 2+1 恰好放行（对照）、2+2 越限（判据）。
+     * @note 前提要自己构造出来：整条报文一次写完时，解析器在同一趟 parse 里就报 Error，流式派发根本
+     *       不发生，本端回的是 431（实测：一次写完只收到 `HTTP/1.1 431`，业务响应没发出来）。因此本用例
+     *       分两次写，并在发尾块之前先等「处理器已拿到首批正文」这个条件成立——不靠调度运气。
+     * @note 日志计数按**增量**判：`LogCapture` 在一个用例进程里累积，写绝对数会跟着块的先后次序变红，
+     *       那是用例的毛病而不是实现的问题。
+     */
+    TEST(HttpStreaming, ExplainsWhyConnectionClosesWhenTrailerQuotaBreaksAfterDispatch)
+    {
+        HttpParserLimits parserLimits;
+        parserLimits.maximumHeaderCount = 3;
+
+        LogCapture        logCapture;
+        std::atomic<bool> hasSeenFirstBatch{false};
+
+        RunningHttpServerFixture fixture(
+                HttpServerLimits{}, std::chrono::milliseconds{50}, {},
+                [&hasSeenFirstBatch](Router &router, Core::EventLoop &)
+                {
+                    router.postStreaming("/upload",
+                                         [&hasSeenFirstBatch](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                         {
+                                             std::size_t            totalByteCount = 0;
+                                             HttpRequestBody *const stream         = request.bodyStream();
+                                             if (stream != nullptr)
+                                             {
+                                                 while (co_await stream->readNext())
+                                                 {
+                                                     totalByteCount += stream->chunk().size();
+                                                     hasSeenFirstBatch.store(true, std::memory_order_release);
+                                                 }
+                                             }
+                                             response.setStatus(200);
+                                             response.setBody("n=" + std::to_string(totalByteCount));
+                                             co_return;
+                                         });
+                },
+                parserLimits);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+
+        const auto makeHead = [] { return std::string("POST /upload HTTP/1.1\r\nhost: test\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n"); };
+        const auto makeTail = [](const std::size_t trailerCount)
+        {
+            std::string tail = "0\r\n";
+            for (std::size_t index = 0; index < trailerCount; ++index)
+            {
+                tail += "x-t" + std::to_string(index) + ": v\r\n";
+            }
+            tail += "\r\n";
+            return tail;
+        };
+
+        {
+            // 判据：分两次写。第一次只写到正文一半，处理器必然已经派发（首批正文到手才继续），
+            // 之后的终止块 + 两条尾字段才把整条报文的头部条数顶过上限——越限发生在派发之后，
+            // 响应已经按业务结果发出，本端能做的只有收口连接，而这一支必须有原因可查
+            hasSeenFirstBatch.store(false, std::memory_order_release);
+            const LoopbackClient client(fixture.listeningPort());
+            ASSERT_TRUE(client.isValid()) << "回环连接失败";
+            ASSERT_TRUE(client.sendText(makeHead(), kWaitTimeout)) << "头部与首批正文没能写入";
+            for (int spins = 0; spins < 400 && !hasSeenFirstBatch.load(std::memory_order_acquire); ++spins)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            ASSERT_TRUE(hasSeenFirstBatch.load(std::memory_order_acquire)) << "处理器没拿到首批正文：这条用例的前提（越限发生在派发之后）没构造起来";
+
+            // 日志计数按增量判：LogCapture 在整个用例进程里累积，绝对数会跟着块的先后次序变
+            const std::size_t warnCountBefore = logCapture.countContaining("排空正文时解析器报错");
+            ASSERT_TRUE(client.sendText(makeTail(2U), kWaitTimeout)) << "终止块与两条尾字段没能写入";
+            std::string responseText;
+            ASSERT_TRUE(client.waitForText(responseText, "n=3", kWaitTimeout)) << "尾字段在派发后越限，业务响应却发不出来了：" << responseText;
+            EXPECT_NE(responseText.find("HTTP/1.1 200"), std::string::npos) << responseText;
+            EXPECT_EQ(logCapture.countContaining("排空正文时解析器报错") - warnCountBefore, 1U) << "这一支唯一的对外痕迹就是这行原因，缺了它等于「连接莫名被关」";
+        }
+
+        {
+            // 对照：同样的分两次写，但只给一条尾字段（2+1 恰好等于上限 3）——照常收尾，
+            // 不该出现「排空阶段报错」这一行
+            hasSeenFirstBatch.store(false, std::memory_order_release);
+            const LoopbackClient client(fixture.listeningPort());
+            ASSERT_TRUE(client.isValid()) << "回环连接失败";
+            ASSERT_TRUE(client.sendText(makeHead(), kWaitTimeout)) << "头部与首批正文没能写入";
+            for (int spins = 0; spins < 400 && !hasSeenFirstBatch.load(std::memory_order_acquire); ++spins)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            ASSERT_TRUE(hasSeenFirstBatch.load(std::memory_order_acquire)) << "对照组没拿到首批正文";
+
+            const std::size_t controlWarnCountBefore = logCapture.countContaining("排空正文时解析器报错");
+            ASSERT_TRUE(client.sendText(makeTail(1U), kWaitTimeout)) << "终止块与一条尾字段没能写入";
+            std::string responseText;
+            ASSERT_TRUE(client.waitForText(responseText, "n=3", kWaitTimeout)) << "恰好等于上限的请求被误拒：" << responseText;
+            EXPECT_NE(responseText.find("HTTP/1.1 200"), std::string::npos) << responseText;
+            EXPECT_EQ(logCapture.countContaining("排空正文时解析器报错") - controlWarnCountBefore, 0U) << "没越限的连接不该被记成被收口";
+        }
     }
 } // namespace AsynGyanis::Net

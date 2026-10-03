@@ -1221,6 +1221,10 @@ namespace AsynGyanis::Net
                         }
                         if (parser.hasError())
                         {
+                            // 排空阶段才判出来的越限（例如 trailer 段把整条报文的头部条数顶过上限）：
+                            // 业务已经答完，这条响应不能改成 431，只能收口连接。不留这行日志，运维看到的
+                            // 就是「连接莫名被关」而没有任何原因——与 h2 那一支同一处置口径
+                            LOG_WARN_FMT("HttpSession: 流式派发后排空正文时解析器报错（{}），响应仍按业务结果发出，本端随后收口连接", parser.errorMessage());
                             isForceClose = true;
                         }
 
