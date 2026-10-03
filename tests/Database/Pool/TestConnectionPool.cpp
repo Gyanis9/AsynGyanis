@@ -1,6 +1,7 @@
 // 连接池单元测试 —— 用 TestConnectionPool.h 里的 MockConnection 驱动，全程不触碰真实数据库。
 // 覆盖场景：
 // - AcquireReleaseReusesConnection：取一条，归还，再取，应得同一连接
+// - QueryTimeoutChangedByABorrowerDoesNotLeakToTheNextOne：借用者改过的命令超时在归还时退回基线，不串给下一位
 // - AcquireBlocksThenSucceeds / AcquireTimeoutReturnsEmpty / TryAcquireReturnsEmptyWhenExhausted：阻塞、超时与非阻塞获取
 // - ExcessLifetimeConnectionIsDiscarded / UnhealthyConnectionIsDiscarded：过期与不健康连接都在归还时丢弃
 // - ConcurrentAcquireReleaseStress：多线程并发获取/归还，统计自洽
@@ -88,6 +89,72 @@ namespace AsynGyanis::Database
             DatabaseConnection *secondPointer = second.operator->();
 
             EXPECT_EQ(firstPointer, secondPointer) << "第二次应得到与第一次相同的连接指针";
+        }
+
+        // ========================================================================
+        // QueryTimeoutChangedByABorrowerDoesNotLeakToTheNextOne
+        // ========================================================================
+
+        /**
+         * @brief 借用者改过的命令超时在归还时退回创建者留下的基线，不串给下一位
+         *
+         * @details setQueryTimeout() 明写「改完下一条命令即受新值约束」，而池借出的是同一份连接对象：
+         *          上一位把它改短，下一位的正常查询就莫名超时；改长，下一位失控的查询就失去那道界。
+         *          两边都不报错，因此判据只能是「下一位读到的仍是基线那个值」。
+         *          另两格是反面判据：没改过超时的借用者不该被这一步动到（否则「退回基线」与
+         *          「一律写死某个固定值」分不出来），以及归还后再借到的必须是同一条连接
+         *          （否则「下一位读到基线」只是因为它拿到了一条新建的连接，用例就是空的）。
+         */
+        TEST(ConnectionPool, QueryTimeoutChangedByABorrowerDoesNotLeakToTheNextOne)
+        {
+            constexpr int kCreatorTimeout  = 4321; ///< 工厂回调里设的取值，即这条连接对每位借用者的承诺
+            constexpr int kBorrowerTimeout = 17;   ///< 第一位借用者自己改成的取值
+
+            ConnectionCounter counter;
+            auto              mockFactory = makeMockFactory(counter);
+            // 创建者的意图落在工厂回调里：池随后才 connect()，也才在那一刻把当前取值记成基线
+            auto factory = [&mockFactory]()
+            {
+                std::unique_ptr<DatabaseConnection> connection = mockFactory();
+                connection->setQueryTimeout(kCreatorTimeout);
+                return connection;
+            };
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize = 1;
+
+            ConnectionPool pool(factory, configuration);
+
+            DatabaseConnection *firstPointer = nullptr;
+            {
+                PooledConnection first = pool.acquire();
+                ASSERT_TRUE(first) << "首次获取应成功";
+                ASSERT_EQ(first->queryTimeout(), kCreatorTimeout) << "工厂回调里设的取值没生效：用例前提不成立";
+                firstPointer = first.operator->();
+
+                first->setQueryTimeout(kBorrowerTimeout);
+                ASSERT_EQ(first->queryTimeout(), kBorrowerTimeout) << "借用期间改不动超时：这也是一种不生效";
+            }
+
+            {
+                PooledConnection second = pool.acquire();
+                ASSERT_TRUE(second) << "第二次获取应成功";
+                EXPECT_EQ(counter.totalCreated.load(), 1) << "借到的是新建的连接：那样就证明不了「退回基线」";
+                EXPECT_EQ(second.operator->(), firstPointer) << "第二次应得到与第一次相同的连接指针";
+                EXPECT_EQ(second->queryTimeout(), kCreatorTimeout) << "上一位改过的命令超时串给了下一位";
+            }
+
+            // 这一位不碰超时，归还之后再借一次：读数应始终是基线，而不是被退回动作改成别的值
+            {
+                PooledConnection third = pool.acquire();
+                ASSERT_TRUE(third) << "第三次获取应成功";
+                EXPECT_EQ(third->queryTimeout(), kCreatorTimeout);
+            }
+            {
+                PooledConnection fourth = pool.acquire();
+                ASSERT_TRUE(fourth) << "第四次获取应成功";
+                EXPECT_EQ(fourth->queryTimeout(), kCreatorTimeout) << "没改过超时的借用者被归还路径动到了";
+            }
         }
 
         // ========================================================================

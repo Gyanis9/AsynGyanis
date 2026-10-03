@@ -331,9 +331,12 @@ namespace AsynGyanis::Database
          * @brief 设置单条命令的执行超时时间
          * @param milliseconds 超时毫秒数，0 与负数一律按「不设超时」处理
          * @details 写入后立即调用 applyQueryTimeoutNow()，因此改值不必重连：SQLite 在每条语句入口现读
-         *          这个值，Redis 当场改已建立上下文的收发超时。MySQL 客户端库只在握手前读一次该选项，
-         *          它的实现是空操作，改完仍需重连（见 MySqlConnection 的 @warning）。
+         *          这个值，Redis 当场改已建立上下文的收发超时，MySQL 下发会话变量 max_execution_time
+         *          （改完下一条只读语句即受约束）。MySQL 那边只有客户端选项（连接超时与读写超时）必须在
+         *          握手前设，因此改这个值不会同步刷新那两道——它们仍按 connect() 时的取值守着这条会话。
          * @note 同一线程借用期间调用：连接对象不是线程安全的，本方法会与命令执行争用同一个底层句柄
+         * @note 从池里借来的连接上调用它，改的是池里那一份对象：归还时由
+         *       restoreQueryTimeoutBaseline() 退回创建时的取值，不会串给下一个借用者
          */
         void setQueryTimeout(const int milliseconds) noexcept
         {
@@ -357,6 +360,32 @@ namespace AsynGyanis::Database
         [[nodiscard]] int queryTimeout() const noexcept
         {
             return m_queryTimeout;
+        }
+
+        /**
+         * @brief 把当前的 queryTimeout() 记成这条连接的基线取值
+         * @details 由连接池在 connect() 返回 true 之后调用一次（紧挨着 markEstablishedAt）。基线记在连接
+         *          自己身上而不是池的某张表里，理由与 establishedAt 相同：借出、归还、再借出的整段途中
+         *          池拿不到一个稳定的载体，另建一张按裸指针索引的表还留下地址复用后的错配空间。
+         */
+        void markQueryTimeoutBaseline() noexcept
+        {
+            m_queryTimeoutBaseline = m_queryTimeout;
+        }
+
+        /**
+         * @brief 把 queryTimeout() 退回基线取值，基线一致时什么也不做
+         * @details 由连接池在归还路径上调用：借用者可以在借用期间改这个值（setQueryTimeout 明写「改完
+         *          下一条命令即受新值约束」），而连接对象是池里那一份，不还回去就是把上一位的超时口径
+         *          串给下一位——设短了下一位的正常查询莫名超时，设长了下一位失控的查询失去那道界，
+         *          两边都不报错。相等时不调 setter：那会白付一趟驱动往返（MySQL 要下发一条 SET SESSION）。
+         */
+        void restoreQueryTimeoutBaseline() noexcept
+        {
+            if (m_queryTimeout != m_queryTimeoutBaseline)
+            {
+                setQueryTimeout(m_queryTimeoutBaseline);
+            }
         }
 
     protected:
@@ -393,12 +422,13 @@ namespace AsynGyanis::Database
         {
         }
 
-        ConnectionConfig                      m_configuration;                                     ///< 连接配置
-        ErrorRecord                           m_lastError;                                         ///< 最后一次失败：文本与配对的驱动原生码
-        int                                   m_connectTimeout = 5000;                             ///< 连接超时毫秒数
-        int                                   m_queryTimeout   = 30000;                            ///< 单条命令执行超时毫秒数
-        bool                                  m_isConnected    = false;                            ///< 连接状态，由派生类同步维护
-        std::chrono::steady_clock::time_point m_establishedAt  = std::chrono::steady_clock::now(); ///< 最近一次建立成功的时刻，池在 connect() 成功后改写
+        ConnectionConfig                      m_configuration;                                           ///< 连接配置
+        ErrorRecord                           m_lastError;                                               ///< 最后一次失败：文本与配对的驱动原生码
+        int                                   m_connectTimeout       = 5000;                             ///< 连接超时毫秒数
+        int                                   m_queryTimeout         = 30000;                            ///< 单条命令执行超时毫秒数
+        int                                   m_queryTimeoutBaseline = m_queryTimeout;                   ///< 归还时要退回的取值：池在建连时记下，见 markQueryTimeoutBaseline()
+        bool                                  m_isConnected          = false;                            ///< 连接状态，由派生类同步维护
+        std::chrono::steady_clock::time_point m_establishedAt        = std::chrono::steady_clock::now(); ///< 最近一次建立成功的时刻，池在 connect() 成功后改写
     };
 
 } // namespace AsynGyanis::Database

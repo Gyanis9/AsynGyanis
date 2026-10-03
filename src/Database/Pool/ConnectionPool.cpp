@@ -471,6 +471,12 @@ namespace AsynGyanis::Database
             return;
         }
 
+        // 借用者可能在借用期间改过命令超时，而连接对象是池里那一份：不退回基线就是把上一位的超时口径
+        // 串给下一位——设短了下一位的正常查询莫名超时，设长了下一位失控的查询失去那道界，两边都不报错。
+        // 排在丢弃判定之后（这条连接马上要关掉就不必白付一趟驱动往返），也排在 m_asyncMutex 之前
+        // （MySQL 那一档要下发一条 SET SESSION，不能握着锁等一趟网络来回）
+        connection->restoreQueryTimeoutBaseline();
+
         // ---- 交给排队的异步等待者，没人等就入空闲栈 ----
         // 两件事必须在同一段 m_asyncMutex 之内决定：等待者的 await_suspend 是「持着这把锁先摘一次
         // 空闲栈，摘不到才把自己挂进等待表」的形状。判定与入栈若分处两段锁，「判没人等 → 等待者入表
@@ -650,6 +656,9 @@ namespace AsynGyanis::Database
             // 建立成功的时刻记在连接自己身上：池在借出/归还之间没有任何地方能存这份信息，
             // 另建一张按裸指针索引的表反而多一把锁、多一份分配，还留下地址复用后的错配空间
             connection->markEstablishedAt(std::chrono::steady_clock::now());
+            // 同时把创建者留下的命令超时记成基线：工厂回调里设的那个值就是这条连接对每一位借用者
+            // 承诺的口径，归还时按它退回（见 restoreQueryTimeoutBaseline）
+            connection->markQueryTimeoutBaseline();
 
             return connection;
         } catch (const std::exception &failure)
