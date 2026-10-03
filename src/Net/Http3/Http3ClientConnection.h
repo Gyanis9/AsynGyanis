@@ -59,6 +59,12 @@ namespace AsynGyanis::Net
         bool isAnyByteReceived{false};
         /// 这条流上有没有把字节写上过通路（只在写成功之后置位）
         bool isAnyByteSent{false};
+        /// 对端有没有**保证**这条请求没被处理过：RFC 9114 §5.2 的 H3_REQUEST_REJECTED（「The client can
+        /// treat requests rejected by the server as though they had never been sent at all, thereby allowing
+        /// them to be retried later」），以及 GOAWAY 通告值及以上的那些流（§7：「those requests will not be
+        /// processed. Clients can safely retry unprocessed requests on a different HTTP connection」）。
+        /// 与 h2 侧同名那一位同解：为真时重发对非幂等方法也安全
+        bool isGuaranteedUnprocessed{false};
 
         /// 是否成功收齐（拿到状态码且没有被对端或本端中止）
         [[nodiscard]] bool isOk() const noexcept
@@ -162,9 +168,24 @@ namespace AsynGyanis::Net
          */
         void close() noexcept;
 
-        /// 这条连接是否还能提请求：没被收口、底层 QUIC 还在，且流号仍有余量
-        /// （客户端流号严格递增、到顶就没有合法的新号可提，RFC 9000 §2.1）
+        /// 这条连接是否还能提请求：没被收口、底层 QUIC 还在、流号仍有余量
+        /// （客户端流号严格递增、到顶就没有合法的新号可提，RFC 9000 §2.1），且对端没发过 GOAWAY
+        /// （§5.2：「Endpoints MUST NOT initiate new requests … after receipt of a GOAWAY frame from the peer」）
         [[nodiscard]] bool isHealthy() const noexcept;
+
+        /**
+         * @brief 对端这条流的收法算不算「保证没处理过」，即可以当没发过重来一次
+         * @details RFC 9114 §5.2：H3_REQUEST_REJECTED 的意思是「A server rejected a request without performing
+         *          any application processing」，客户端「can treat requests rejected by the server as though
+         *          they had never been sent at all」；同节还规定服务端 MUST NOT 对已部分或全部处理过的请求
+         *          用这个码。本端再加一道自己的防御：**收到过任何响应字节就不认**——对端答过话又说没处理，
+         *          那是它违规，不能拿它的话把非幂等请求做两遍。别的码（H3_REQUEST_CANCELLED、
+         *          H3_INTERNAL_ERROR 等）都不带这个保证，按「可能已经执行过」处置
+         * @param errorCode 对端 RESET_STREAM 里带的 h3 错误码
+         * @param isAnyByteReceived 这条流上本端有没有收到过响应字节
+         * @return true 表示重来一次是安全的（连非幂等方法也算）
+         */
+        [[nodiscard]] static bool isUnprocessedRejection(Http3ErrorCode errorCode, bool isAnyByteReceived) noexcept;
 
         /// 在途（已提出、还没收齐）的请求流条数：连接池据此判断这条连接是不是正被人用着
         [[nodiscard]] std::size_t inFlightStreamCount() const noexcept;

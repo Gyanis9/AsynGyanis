@@ -27,10 +27,24 @@ namespace AsynGyanis::Net
         Http3Connection::Callbacks callbacks;
         callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value, const bool isTrailers)
         { noteHeaderField(streamId, name, value, isTrailers); };
-        callbacks.onBodyBytes        = [this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes) { noteBodyBytes(streamId, bytes); };
-        callbacks.onRequestEnded     = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
-        callbacks.onStreamClosed     = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
-        callbacks.onStreamReset      = [this](const std::int64_t streamId, const Http3ErrorCode /*errorCode*/) { noteStreamFailed(streamId, "对端在本条流上发了 RESET_STREAM"); };
+        callbacks.onBodyBytes    = [this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes) { noteBodyBytes(streamId, bytes); };
+        callbacks.onRequestEnded = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
+        callbacks.onStreamClosed = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
+        callbacks.onStreamReset  = [this](const std::int64_t streamId, const Http3ErrorCode errorCode)
+        {
+            // §5.2：H3_REQUEST_REJECTED 说的是「服务端没做任何应用层处理就拒了这条请求」，客户端可以当它
+            // 从没发过；这一位要交到重发闸门手上，非幂等方法才敢换条连接重来一次。别的码不带这个保证，
+            // 过去所有码都走同一句文案，等于把规范给的唯一一次安全重试机会丢掉了
+            PendingExchange *exchange   = liveExchange(streamId);
+            const bool       isRejected = exchange != nullptr && isUnprocessedRejection(errorCode, exchange->response.isAnyByteReceived);
+            if (isRejected)
+            {
+                exchange->response.isGuaranteedUnprocessed = true;
+                noteStreamFailed(streamId, "对端按 H3_REQUEST_REJECTED 拒了这条请求：RFC 9114 §5.2 说它没被处理过，本端可以当没发过换条连接重来");
+                return;
+            }
+            noteStreamFailed(streamId, "对端在本条流上发了 RESET_STREAM");
+        };
         callbacks.onMalformedRequest = [this](const std::int64_t streamId, const std::string_view reason) { noteStreamFailed(streamId, "响应不合规范：" + std::string{reason}); };
         callbacks.onConnectionClosed = [this](const Http3ErrorCode /*errorCode*/, const std::string_view reason)
         {
@@ -195,8 +209,18 @@ namespace AsynGyanis::Net
     bool Http3ClientConnection::isHealthy() const noexcept
     {
         // 「还能不能提请求」包含流号余量：客户端流号严格递增且到顶之后没有合法的新号可提
-        // （RFC 9000 §2.1），一条只会回「请换一条连接」的连接留在池里，等于让每次取用都先撞一次失败
-        return m_isHealthy && !m_connection.isClosed() && m_openedStreamCount < m_config.maximumOpenedStreamCount;
+        // （RFC 9000 §2.1），一条只会回「请换一条连接」的连接留在池里，等于让每次取用都先撞一次失败。
+        // 对端发过 GOAWAY 也算：§5.2 明写收到 GOAWAY 之后不得再在这条连接上发起新请求，
+        // 而 §7 说未处理的请求「can safely retry … on a different HTTP connection」——换连接才是出路
+        return m_isHealthy && !m_connection.isClosed() && m_openedStreamCount < m_config.maximumOpenedStreamCount && !m_protocol->isPeerGoAwayReceived();
+    }
+
+    bool Http3ClientConnection::isUnprocessedRejection(const Http3ErrorCode errorCode, const bool isAnyByteReceived) noexcept
+    {
+        // 只有 H3_REQUEST_REJECTED 带这个保证（§5.2／§8.1），而且本端一个响应字节都没收到时才认：
+        // 对端答过话又说没处理，那是它违反「Servers MUST NOT use the H3_REQUEST_REJECTED error code for
+        // requests that were partially or fully processed」，本端不能拿它的话把非幂等请求做两遍
+        return errorCode == Http3ErrorCode::RequestRejected && !isAnyByteReceived;
     }
 
     std::size_t Http3ClientConnection::inFlightStreamCount() const noexcept

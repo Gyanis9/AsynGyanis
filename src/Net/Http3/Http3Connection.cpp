@@ -160,6 +160,16 @@ namespace AsynGyanis::Net
 
     std::expected<void, QpackError> Http3Connection::submitRequestHead(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isEndOfStream)
     {
+        if (!m_isLocalServer && m_isPeerGoAwayReceived)
+        {
+            // RFC 9114 §5.2：「Endpoints MUST NOT initiate new requests or promise new pushes on the
+            // connection after receipt of a GOAWAY frame from the peer.」这道闸落在协议层而不是只落在调用方
+            // 的「连接还健不健康」上：健康位只是替池省一次注定失败的往返，硬要求得由本层自己守住。
+            // 服务端角色不挡——对端客户端发来的 GOAWAY 里那个标识是推送流号，而本端从不推送
+            return std::unexpected(
+                    QpackError{.kind    = QpackErrorKind::InvalidLocalState,
+                               .message = "对端已发 GOAWAY：RFC 9114 §5.2 要求收到之后不得再在这条连接上发起新请求，流 " + std::to_string(streamId) + " 未提交，请换一条连接"});
+        }
         // 请求流是本端开出来的，协议层此前没见过它：先登记一份状态再提交。
         // 这句只放在客户端的入口里——服务端那侧「不给没见过的流写响应」那道闸要留着，
         // 它挡的是「对端已重置的流上继续写响应」，放宽就等于把那份保护挪走
@@ -636,6 +646,28 @@ namespace AsynGyanis::Net
         if (const auto *goAwayFrame = std::get_if<Http3GoAwayFrame>(&frame); goAwayFrame != nullptr)
         {
             LOG_DEBUG_FMT("Http3Connection: 收到对端 GOAWAY，标识 {} 及以上的流对端不再受理", goAwayFrame->streamIdOrPushId);
+            m_isPeerGoAwayReceived = true;
+            // §5.2：「Requests or pushes with the indicated identifier or greater are rejected by the sender
+            // of the GOAWAY」，§7 接着说这些请求「will not be processed. Clients can safely retry unprocessed
+            // requests on a different HTTP connection」。把它们按 H3_REQUEST_REJECTED 交上去，上层才认得出
+            // 「这条可以当没发过、换条连接重来」——§5.2 原句是「The client can treat requests rejected by the
+            // server as though they had never been sent at all」。
+            // 只挑「本端发起的双向流」，这一条同时把角色分开：服务端角色下对端（客户端）发来的 GOAWAY 里那个
+            // 标识是**推送流号**（§5.2：the client sends a push ID），而服务端发起的只有单向流，一条请求流
+            // 都不会落进这个筛子——本端从不推送，也就不必再另判一次角色
+            std::vector<std::int64_t> rejectedStreamIds;
+            for (const auto &entry: m_streams)
+            {
+                if (!entry.second.isAbandoned && !isUnidirectionalStream(entry.first) && isLocallyInitiatedStream(entry.first) &&
+                    entry.first >= static_cast<std::int64_t>(goAwayFrame->streamIdOrPushId))
+                {
+                    rejectedStreamIds.push_back(entry.first);
+                }
+            }
+            for (const std::int64_t streamId: rejectedStreamIds)
+            {
+                failStream(streamId, Http3ErrorCode::RequestRejected, "对端已发 GOAWAY，这条流的标识不低于通告值，对端不再受理（RFC 9114 §5.2）");
+            }
             return {};
         }
         if (const auto *maxPushIdFrame = std::get_if<Http3MaxPushIdFrame>(&frame); maxPushIdFrame != nullptr)
@@ -1097,6 +1129,11 @@ namespace AsynGyanis::Net
     bool Http3Connection::isDraining() const noexcept
     {
         return m_isDraining;
+    }
+
+    bool Http3Connection::isPeerGoAwayReceived() const noexcept
+    {
+        return m_isPeerGoAwayReceived;
     }
 
     void Http3Connection::rejectStreamAfterDrain(const std::int64_t streamId, const std::span<const std::uint8_t> data)

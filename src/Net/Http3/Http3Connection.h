@@ -270,6 +270,16 @@ namespace AsynGyanis::Net
         /// 是否已发出排空通告（通告之后到达的新请求流一律拒绝）
         [[nodiscard]] bool isDraining() const noexcept;
 
+        /**
+         * @brief 对端是否已经发来 GOAWAY
+         * @details RFC 9114 §5.2 的硬要求：「Endpoints MUST NOT initiate new requests or promise new pushes
+         *          on the connection after receipt of a GOAWAY frame from the peer.」出站一侧据此把这条
+         *          连接判成「不能再提请求」，让连接池改走新连接（§7：「Clients can safely retry unprocessed
+         *          requests on a different HTTP connection」），而不是让每条新请求都去撞一次拒绝
+         * @return true 对端的 GOAWAY 已经收到
+         */
+        [[nodiscard]] bool isPeerGoAwayReceived() const noexcept;
+
         /// 对端在 SETTINGS 里公布的动态表容量，本端编码器据此决定能插多少
         [[nodiscard]] std::size_t peerTableCapacityByteCount() const noexcept;
 
@@ -489,6 +499,7 @@ namespace AsynGyanis::Net
         std::deque<std::int64_t>               m_outboundOrder; ///< 待发字节的轮转顺序，防止单条流独占一次 flush
 
         bool          m_isPeerSettingsReceived{false}; ///< 对端控制流上是否已出现过 SETTINGS 帧
+        bool          m_isPeerGoAwayReceived{false};   ///< 对端是否已发来 GOAWAY：此后本端不得再开新请求（§5.2）
         std::uint64_t m_maximumPushId{0};              ///< 对端允许的最大推送标识；本服务端不推送，只记录
         bool          m_isDraining{false};             ///< 是否已发出 GOAWAY 排空通告
         /// 排空通告里的标识：等于或高于它的请求流一律拒绝（RFC 9114 §5.2）。0 表示一条都没受理过

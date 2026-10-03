@@ -1174,6 +1174,26 @@ namespace AsynGyanis::Net
      *          这里两侧各等一次条件成立，不赌「线程恰好重叠」：漏刷登记侧第一条等待就超时，
      *          漏刷摘除侧第二条超时。
      */
+    /**
+     * @brief 只有「H3_REQUEST_REJECTED 且本端一个响应字节都没收到」才算对端保证没处理过
+     * @details RFC 9114 §5.2：H3_REQUEST_REJECTED 的意思是「A server rejected a request without performing
+     *          any application processing」，客户端「can treat requests rejected by the server as though they
+     *          had never been sent at all, thereby allowing them to be retried later」；同节还规定服务端
+     *          MUST NOT 对已部分或全部处理过的请求用这个码。本端再加一道自己的防御：收到过响应字节就不认，
+     *          因为那时对端已经违规，拿它的话把非幂等请求做两遍比失败一次更坏。这一位随后交给
+     *          `HttpClient::isRetrySafeAfterFailure` 那份共用闸门（h2 侧同一族判据由 §8.7 那两条钉住）
+     * @note 证伪：把「收到过响应字节就不认」这道防御摘掉，第二格红；把码的判断放宽成「任何 RESET_STREAM」，
+     *       后三格红
+     */
+    TEST(Http3ClientConnection, OnlyAnUnansweredRequestRejectionCountsAsUnprocessed)
+    {
+        EXPECT_TRUE(Http3ClientConnection::isUnprocessedRejection(Http3ErrorCode::RequestRejected, false)) << "§5.2 那一条保证没被认出来：优雅停机里被拒的非幂等请求会白失败一次";
+        EXPECT_FALSE(Http3ClientConnection::isUnprocessedRejection(Http3ErrorCode::RequestRejected, true)) << "对端答过话又说没处理过：不能拿它的话把非幂等请求做两遍";
+        EXPECT_FALSE(Http3ClientConnection::isUnprocessedRejection(Http3ErrorCode::RequestCancelled, false)) << "H3_REQUEST_CANCELLED 是「处理过一段之后放弃」，不带这个保证";
+        EXPECT_FALSE(Http3ClientConnection::isUnprocessedRejection(Http3ErrorCode::InternalError, false)) << "对端内部故障：请求可能已经执行过";
+        EXPECT_FALSE(Http3ClientConnection::isUnprocessedRejection(Http3ErrorCode::NoError, false)) << "正常收尾也不等于没处理过";
+    }
+
     TEST(Http3ClientConnection, ReportsTheOnlineConnectionCountToOtherThreadsOnBothSides)
     {
         // 空闲收口给到一秒档：客户端那条请求收场后就不再发包，服务端只能靠空闲超时判它收口。

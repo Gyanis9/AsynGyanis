@@ -1315,6 +1315,8 @@ namespace AsynGyanis::Net
             Http3ClientResponse response = co_await client.request("https", authority, method, u.path, extraFields, body, *exchangeBudget, h3Receiver);
             exchange.isAnyByteReceived   = response.isAnyByteReceived;
             exchange.isAnyByteSent       = response.isAnyByteSent;
+            // h3 的保证来自 §5.2 的 H3_REQUEST_REJECTED 与 GOAWAY 通告值及以上的那些流（§7）
+            exchange.isGuaranteedUnprocessed = response.isGuaranteedUnprocessed;
             if (!response.isOk())
             {
                 failureReason = response.errorMessage.empty() ? "HTTP/3 这一侧没拿到有效响应：状态码缺失或这条流被收尾（主机 " + u.host + "）" : std::move(response.errorMessage);

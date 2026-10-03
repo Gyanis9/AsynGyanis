@@ -842,6 +842,85 @@ TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
 }
 
 /**
+ * @brief 对端发来 GOAWAY：通告值及以上的本端请求流按 H3_REQUEST_REJECTED 交上去，本端也不再算健康
+ * @details RFC 9114 §5.2 的原句是「Requests or pushes with the indicated identifier or greater are
+ *          rejected by the sender of the GOAWAY」，§7 接着说这些请求「will not be processed. Clients can
+ *          safely retry unprocessed requests on a different HTTP connection」，而 §5.2 又要求
+ *          「Endpoints MUST NOT initiate new requests … after receipt of a GOAWAY frame from the peer」。
+ *          本端过去只把这个帧写进 DEBUG 日志：在途的那些流没人给结局（只能各自等时限），连接也照常算健康
+ *          被池继续派发，于是每条新请求都去撞一次拒绝。三格分别是：通告值 0 把已开的流 0 判掉、通告值 4
+ *          只判 4 而不牵连 0、以及服务端角色下一条请求流都不动（对端客户端发来的 GOAWAY 里那个标识是
+ *          **推送流号**，本端从不推送）
+ * @note 证伪：摘掉逐流处置那个循环，格一与格二红在 streamsReset 上；摘掉「只挑本端发起的双向流」那个筛子，
+ *       格三红（服务端角色会把对端的请求流当成自己被拒的流）；摘掉 `m_isPeerGoAwayReceived` 的记账，
+ *       格一红在两处（那一位本身，与「GOAWAY 之后不许再开新请求」那道闸）；只摘那道闸，格一红在
+ *       submitRequestHead 那一处
+ */
+TEST(Http3Connection, PeerGoAwayRejectsTheUnprocessedRequestStreamsAndBarsNewOnes)
+{
+    const std::vector<QpackHeaderField> requestFields{QpackHeaderField{":method", "POST"}, QpackHeaderField{":scheme", "https"}, QpackHeaderField{":authority", "example.com"},
+                                                      QpackHeaderField{":path", "/upload"}};
+    // 本端是客户端时，对端（服务端）发起的单向流号 ≡ 3 (mod 4)（RFC 9000 §2.1）；夹具那个 kPeerControlStreamId=2
+    // 是「本端是服务端」时的对端流号，用在这里会被当成字节回到了本端自己发起的流上，整段被忽略
+    constexpr std::int64_t kPeerServerControlStreamId = 3;
+
+    // 格一：GOAWAY(0) 把本端已开的那条请求流判成「对端不再受理」
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events, {}, AsynGyanis::Net::QuicConnectionRole::Client);
+        ASSERT_TRUE(connection->submitRequestHead(kRequestStreamId, requestFields, false).has_value());
+        connection->consumeStreamData(kPeerServerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "")), false);
+        EXPECT_FALSE(connection->isPeerGoAwayReceived()) << "前提：还没收到 GOAWAY";
+
+        connection->consumeStreamData(kPeerServerControlStreamId, bytesOfText(makeFrame(0x07, std::string(1, '\x00'))), false);
+
+        EXPECT_TRUE(connection->isPeerGoAwayReceived()) << "§5.2：收到 GOAWAY 之后本端不得再在这条连接上发起新请求";
+        ASSERT_EQ(events.streamsReset.size(), 1U) << "在途那条流没人给结局，它只能等自己的时限";
+        EXPECT_EQ(events.streamsReset[0].first, kRequestStreamId);
+        EXPECT_EQ(events.streamsReset[0].second, Http3ErrorCode::RequestRejected) << "§7 说这些请求不会被处理：交上去的码要让上层认得出「可以当没发过、换条连接重来」";
+        EXPECT_FALSE(connection->isBroken()) << "GOAWAY 是优雅收场，不该把整条连接判死";
+
+        // §5.2 的 MUST NOT 落在协议层自己手里：GOAWAY 之后再提新请求要当场被拒，
+        // 而不是提上去等对端再拒一次（客户端那条健康位只是替池省掉这次注定失败的往返）
+        const auto refused = connection->submitRequestHead(8, requestFields, false);
+        EXPECT_FALSE(refused.has_value()) << "收到 GOAWAY 之后本端还能在这条连接上发起新请求";
+        EXPECT_EQ(events.streamsReset.size(), 1U) << "被挡下的那次提交不该在流上留下痕迹";
+    }
+
+    // 格二：通告值之下的流不受牵连（§5.2 说的是「该标识**及以上**」）
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events, {}, AsynGyanis::Net::QuicConnectionRole::Client);
+        ASSERT_TRUE(connection->submitRequestHead(kRequestStreamId, requestFields, false).has_value());
+        ASSERT_TRUE(connection->submitRequestHead(4, requestFields, false).has_value());
+        connection->consumeStreamData(kPeerServerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "")), false);
+
+        connection->consumeStreamData(kPeerServerControlStreamId, bytesOfText(makeFrame(0x07, std::string(1, '\x04'))), false);
+
+        ASSERT_EQ(events.streamsReset.size(), 1U) << "只该判掉通告值及以上的那条";
+        EXPECT_EQ(events.streamsReset[0].first, 4) << "判错了流：通告值之下的那条可能已被处理，不能当没发过";
+    }
+
+    // 格三：服务端角色下对端的 GOAWAY 说的是推送流号，一条请求流都不该动
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events);
+        std::string   encoderBytes;
+        connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "")), false);
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
+        ASSERT_EQ(events.headerBlocksReceived.size(), 1U) << "前提：对端那条请求已经收下";
+
+        connection->consumeStreamData(kPeerControlStreamId, bytesOfText(makeFrame(0x07, std::string(1, '\x00'))), false);
+
+        EXPECT_TRUE(events.streamsReset.empty()) << "客户端发来的 GOAWAY 里那个标识是推送流号（§5.2），本端从不推送，请求流不该被牵连";
+        EXPECT_TRUE(connection->isPeerGoAwayReceived()) << "这一位照记：它说的是「对端发过 GOAWAY」这件事本身";
+    }
+}
+
+/**
  * @brief 过渡响应（1xx）占不掉「这条流唯一的头段」那一位，随后的最终响应照常交付
  * @details 本端服务端三条通道都能发过渡响应（`HttpResponse::sendInformational`，且带
  *          `Expect: 100-continue` 的 h2/h3 请求由会话自动补一个 100），h1 的出站解析器按 RFC 9112 §6.4
