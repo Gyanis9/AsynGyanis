@@ -96,7 +96,7 @@ namespace AsynGyanis::Net
         {
             const std::size_t beforeByteCount = frames.size();
             appendQuicFrame(frames, frame);
-            if (frames.size() - beforeByteCount > byteBudget - usedByteCount)
+            if (frames.size() - beforeByteCount > saturatingRoomOf(byteBudget, usedByteCount))
             {
                 frames.resize(beforeByteCount);
                 return false;
@@ -702,7 +702,7 @@ namespace AsynGyanis::Net
                 }
                 while (!stream.pendingQueue.empty())
                 {
-                    const std::size_t      remainingBudget  = byteBudget > usedByteCount ? byteBudget - usedByteCount : 0;
+                    const std::size_t      remainingBudget  = saturatingRoomOf(byteBudget, usedByteCount);
                     const QuicStreamChunk &front            = stream.pendingQueue.front();
                     const std::size_t      headerByteLength = streamFrameHeaderByteLength(streamId, front.beginOffset);
                     const std::size_t      creditByteCount  = sendCreditOf(stream);
