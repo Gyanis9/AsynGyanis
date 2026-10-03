@@ -134,8 +134,7 @@ namespace AsynGyanis::Net
             {
                 continue; // 已有别的发布协程在替它写：入队即完成，那条 drain 会把这段一起带走
             }
-            member->isDraining = true;
-            co_await drainMember(member);
+            co_await drainMember(member); // 闩由 drain 自己的作用域卫兵上下，异常展开也照样复位
         }
     }
 
@@ -180,6 +179,29 @@ namespace AsynGyanis::Net
 
     Core::Task<void> WebSocketHub::drainMember(std::shared_ptr<Detail::WebSocketHubMember> member)
     {
+        // 「谁在替它写」的闩必须覆盖栈展开这一条路：写路径是业务给的回调，契约允许它抛
+        // （WebSocketPeer 的 FrameSender 就是这么交回失败的）。少了这道卫兵，isDraining 会永远留在
+        // true——这个成员此后没人替它写，后来的发布只排队、涨到字节上界后整队被记成「队满丢弃」，
+        // 面板给出的成因是错的，而真实成因是那一次抛出。
+        struct DrainScope
+        {
+            explicit DrainScope(Detail::WebSocketHubMember &target) : m_member(target)
+            {
+                m_member.isDraining = true;
+            }
+
+            ~DrainScope()
+            {
+                m_member.isDraining = false;
+            }
+
+            DrainScope(const DrainScope &)            = delete;
+            DrainScope &operator=(const DrainScope &) = delete;
+
+            Detail::WebSocketHubMember &m_member; ///< 被看管的成员
+        };
+        const DrainScope drainScope(*member);
+
         while (!member->pendingMessages.empty())
         {
             WebSocketPeer *const peer = member->peer;
@@ -200,12 +222,21 @@ namespace AsynGyanis::Net
             // 而协程要到首次 resume 之后才读入参，交出去之前不能让它失效。
             // 帧类型取自这一条本身：同一条队列里文本与二进制可以交错，取发布者的类型就会发错帧
             bool isSent = false;
-            if (message.opCode == WebSocketOpCode::Binary)
+            try
             {
-                isSent = co_await peer->sendBinary(message.payload);
-            } else
+                if (message.opCode == WebSocketOpCode::Binary)
+                {
+                    isSent = co_await peer->sendBinary(message.payload);
+                } else
+                {
+                    isSent = co_await peer->sendText(message.payload);
+                }
+            } catch (...)
             {
-                isSent = co_await peer->sendText(message.payload);
+                // 抛出来自业务给的写回调：这一条已经出队且随展开销毁，而队列里剩下的那些还活着、
+                // 下一位写者照样能带走，所以只记这一条，再把异常原样交回正在发布的那一位
+                m_abandonedMessageCount.fetch_add(1U, std::memory_order_relaxed);
+                throw;
             }
             if (!isSent)
             {
@@ -216,6 +247,5 @@ namespace AsynGyanis::Net
                 break;
             }
         }
-        member->isDraining = false;
     }
 } // namespace AsynGyanis::Net

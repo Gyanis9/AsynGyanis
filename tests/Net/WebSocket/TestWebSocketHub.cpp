@@ -1,4 +1,5 @@
-// WebSocketHub 的用例：扇出到全员、RAII 除名、单成员单写者的合并、队满丢新并计数、没人收的整队另记一本、收口成员不再被碰。
+// WebSocketHub 的用例：扇出到全员、RAII 除名、单成员单写者的合并、队满丢新并计数、没人收的整队另记一本、
+// 写路径抛出不把成员写聋、收口成员不再被碰。
 // 这里用真的 WebSocketPeer，只把它的发送回调换成可停可放的记录槽——集线器管的是「谁在写、写多少、
 // 什么时候不该再写」，那三件事都不需要真 sockets 就能钉死；线上字节由对端与帧层的用例各自守着。
 //
@@ -18,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -52,21 +54,27 @@ namespace AsynGyanis::Net
          */
         struct GatedSendPath
         {
-            std::vector<std::string> sentFrames;        ///< 已交出的帧字节，按完成顺序
-            std::coroutine_handle<>  parkedWriter{};    ///< 停在闸门上的写协程句柄；空表示没人停着
-            bool                     isGated{false};    ///< 是否让写出停在闸门
-            bool                     isRefusing{false}; ///< 放开闸门后是否交回 false：造一次传输失败
+            std::vector<std::string> sentFrames;             ///< 已交出的帧字节，按完成顺序
+            std::coroutine_handle<>  parkedWriter{};         ///< 停在闸门上的写协程句柄；空表示没人停着
+            bool                     isGated{false};         ///< 是否让写出停在闸门
+            bool                     isRefusing{false};      ///< 放开闸门后是否交回 false：造一次传输失败
+            bool                     throwOnNextSend{false}; ///< 下一次写出是否抛出：造一次业务写回调的异常展开
 
             /**
              * @brief WebSocketPeer 的 FrameSender 形状
              * @param bytes 已编码的一帧字节
-             * @return Core::Task<bool> 默认 true，置 isRefusing 后交回 false
+             * @return Core::Task<bool> 默认 true，置 isRefusing 后交回 false，置 throwOnNextSend 时抛出
              */
             Core::Task<bool> operator()(const std::string_view bytes)
             {
                 if (isGated)
                 {
                     co_await parkHere();
+                }
+                if (throwOnNextSend)
+                {
+                    throwOnNextSend = false;
+                    throw std::runtime_error("发送回调抛出：FrameSender 的契约允许这么退出");
                 }
                 if (isRefusing)
                 {
@@ -402,6 +410,44 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(path.sentFrames.empty()) << "写失败的一帧不该留下上线字节";
         EXPECT_EQ(hub.abandonedMessageCount(), 2U) << "作废数该是「在途失败的那条 + 队列里剩下的那条」，少算在途那条就等于谎报送达";
         EXPECT_EQ(hub.droppedMessageCount(), 0U) << "这不是队满，不该挤进丢弃那本账";
+    }
+
+    /**
+     * @brief 钉住写回调抛出这一条路：闩随展开复位，队列里剩下的不被抛弃
+     * @details FrameSender 是业务给的回调，契约允许它抛（对端的写失败就是这么交回的）。原先闩只在
+     *          正常收尾时复位：抛出去之后 isDraining 永远留在 true，这个成员此后再没人替它写——
+     *          后来的发布只排队，涨到字节上界后整队被记成「队满丢弃」，面板给出的成因是错的。
+     *          抛出那一帧确实没了（它已出队且随展开销毁），因此要记进作废；而队列里那些还活着，
+     *          下一位写者照样带走，一条都不该记成没送出去。
+     */
+    TEST(WebSocketHub, ThrowingWriteReleasesTheMemberAndCountsOnlyTheFrameItConsumed)
+    {
+        GatedSendPath path;
+        path.isGated = true;
+        WebSocketPeer peer{makeFrameSender(path)};
+        WebSocketHub  hub;
+        auto          subscription = hub.subscribe("lobby", peer);
+
+        Core::Task<void> first = hub.publish("lobby", "alpha"); // 出队后开写，停在闸门上
+        first.handle().resume();
+        ASSERT_TRUE(static_cast<bool>(path.parkedWriter)) << "闸门没起作用：第一帧根本没挂起";
+        drivePublish(hub.publish("lobby", "bravo"));   // 排进队列，等第一个写者带走
+        drivePublish(hub.publish("lobby", "charlie")); // 同上
+
+        path.throwOnNextSend = true; // 放开闸门后那一帧抛出：异常该原样交回正在发布的那一位
+        path.release();
+        EXPECT_THROW(first.handle().promise().result(), std::runtime_error) << "写路径的抛出被集线器吞掉了";
+        EXPECT_EQ(hub.abandonedMessageCount(), 1U) << "随展开销毁的那一帧没记进作废账";
+
+        // 关键判据：闩已复位——下一次发布必须真的去写，并且把积压的两条按序一起带走
+        path.isGated = false;
+        drivePublish(hub.publish("lobby", "delta"));
+        ASSERT_EQ(path.sentFrames.size(), 3U) << "抛出之后这个成员再也没人替它写：新的一条只排进了队列";
+        EXPECT_TRUE(frameCarriesText(path.sentFrames[0], "bravo")) << "积压的条目没按到达顺序带走";
+        EXPECT_TRUE(frameCarriesText(path.sentFrames[1], "charlie"));
+        EXPECT_TRUE(frameCarriesText(path.sentFrames[2], "delta")) << "补写时把新的一条挤掉了：闩复位得不干净";
+        EXPECT_EQ(hub.abandonedMessageCount(), 1U) << "队列里被带走的那两条不该被记成作废";
+        EXPECT_EQ(hub.droppedMessageCount(), 0U) << "这条链路上从没发生过队满";
     }
 
     /**

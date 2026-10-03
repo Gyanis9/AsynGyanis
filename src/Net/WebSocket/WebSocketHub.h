@@ -175,6 +175,8 @@ namespace AsynGyanis::Net
          *          顺带替它写出去（会挂起）；队列已被别的发布协程占着，就只入队立刻返回。
          *          因此 publish 返回时不保证字节已上线——那条连接随后被关掉，队列里的东西就随它去，
          *          作废的条数从 abandonedMessageCount() 读得到。
+         *          写路径抛出的那一条（业务给对端的 FrameSender 允许抛）原样交回本次发布，队列里剩下的
+         *          不留 orphan：下一次发布照样把它们带走。
          *          需要逐成员送达确认的场合，请业务自己点对点 sendText，不要用扇出。
          * @param topic 主题名
          * @param text 消息文本，按文本帧发出（UTF-8 校验由对端发送路径负责）
@@ -251,8 +253,11 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 替一个成员把队列里的消息写完：一条连接同一时刻只有这一个写者
+         * @details 「谁在替它写」的闩由本协程的作用域卫兵上下，因此写回调抛出时也照样复位——
+         *          否则这个成员此后永远没人替它写，后来的发布只会排进队列、涨到上界后整队被记成队满。
+         *          抛出那一帧记进作废账（它已出队且随展开销毁），队列里剩下的留给下一位写者。
          * @param member 目标成员（按值持 shared_ptr：挂起期间表可能已经把它摘掉）
-         * @return Core::Task<void> 队列空、或对端不可再用时返回
+         * @return Core::Task<void> 队列空、或对端不可再用时返回；写回调的异常原样交回发布者
          */
         Core::Task<void> drainMember(std::shared_ptr<Detail::WebSocketHubMember> member);
 
