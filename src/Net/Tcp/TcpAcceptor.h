@@ -24,12 +24,12 @@ namespace AsynGyanis::Net
     /**
      * @brief 监听队列的默认长度，单位是「条已完成握手但尚未 accept 的连接」
      *
-     * @details 不直接采用系统的 SOMAXCONN：公开头文件里出现 OS 宏会把平台细节泄漏给所有调用方；
-     *          而且 Windows 把它解释成「允许内核自行膨胀队列」，等于关掉背压。128 与 Linux
-     *          /proc/sys/net/core/somaxconn 的默认值一致，足以吸收瞬时突发又让过载显式暴露。
+     * @details 本常量是 `Core::AsyncSocket::kDefaultListenBacklog` 的别名，不是第二个数：真正把手上的
+     *          队列长度交给 `::listen()` 的是 Core 那一层，数值与「为什么不用 SOMAXCONN、为什么是 128」
+     *          都以那边的注释为准。两处各写一个 128 时，调队列深度的人只会改到自己看得见的那一处。
      * @note 需要更深或更浅的队列时，调用方直接给 listen(backlog) 传值，本常量只是默认档位。
      */
-    inline constexpr int kDefaultListenBacklog = 128;
+    inline constexpr int kDefaultListenBacklog = Core::AsyncSocket::kDefaultListenBacklog;
 
     /**
      * @brief TCP 监听器，封装非阻塞监听套接字并提供协程式 accept。

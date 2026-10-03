@@ -99,6 +99,7 @@ namespace AsynGyanis::Core
          * @details 不用平台的 SOMAXCONN：它的语义是「内核可自行放大队列」，会让连接洪泛时
          *          失去背压；这里给一个明确的默认值，超出部分由内核按各平台策略丢包。
          *          128 与 Linux 早期 somaxconn 的默认值一致，足够覆盖常规突发
+         * @note 本常量是取值的那一处定义：`Net::kDefaultListenBacklog` 是它的别名，改动只需要在这里改
          */
         static constexpr int kDefaultListenBacklog = 128;
 
