@@ -612,14 +612,11 @@ namespace AsynGyanis::Net
                     {
                         const std::optional<std::string> declaredLengthText = pending.request.firstHeaderValue(kContentLengthHeaderName);
                         std::size_t                      declaredLength     = 0;
-                        if (declaredLengthText.has_value() && parseContentLengthValue(*declaredLengthText, declaredLength) &&
-                            streamBody.totalReceivedByteCount() != declaredLength)
+                        if (declaredLengthText.has_value() && parseContentLengthValue(*declaredLengthText, declaredLength) && streamBody.totalReceivedByteCount() != declaredLength)
                         {
                             LOG_ERROR_FMT("Http2Session: 流 {} 的声明正文长度 {} 字节与实收 {} 字节不一致（流式正文已按到达批次交付，"
                                           "对端在 END_STREAM 之前少发了 {} 字节）",
-                                          receivedData.streamId,
-                                          declaredLength,
-                                          streamBody.totalReceivedByteCount(),
+                                          receivedData.streamId, declaredLength, streamBody.totalReceivedByteCount(),
                                           declaredLength > streamBody.totalReceivedByteCount() ? declaredLength - streamBody.totalReceivedByteCount() : 0U);
                         }
                     }
@@ -1421,6 +1418,8 @@ namespace AsynGyanis::Net
 
         WebSocketPeer peer(sendFrameBytes, m_metrics.get());
         peer.setPerMessageDeflate(deflateNegotiation.window);
+        // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
+        peer.setMaximumInboundMessageBytes(m_parserLimits.maximumWebsocketMessageSize);
 
         bool       isBusinessFinished = false;
         const auto runBusiness        = [&isBusinessFinished](WebSocketHandler businessHandler, WebSocketPeer &businessPeer) -> Core::Task<>

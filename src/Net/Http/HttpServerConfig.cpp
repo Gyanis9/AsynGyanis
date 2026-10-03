@@ -32,15 +32,15 @@ namespace AsynGyanis::Net
         };
 
         /// parser_limits 子段支持的键
-        constexpr std::array<std::string_view, 7> kParserLimitsKeys{
+        constexpr std::array<std::string_view, 8> kParserLimitsKeys{
                 "maximum_uri_length", "maximum_header_field_name_length", "maximum_header_field_value_length", "maximum_header_count", "maximum_header_block_length",
-                "maximum_body_size",  "maximum_chunk_size_line_length",
+                "maximum_body_size",  "maximum_chunk_size_line_length",   "maximum_websocket_message_size",
         };
 
         /// rate_limit 子段支持的键
         constexpr std::array<std::string_view, 2> kRateLimitKeys{"requests_per_second", "burst_capacity"};
 
-        /// parser_limits 的结构体字段名与配置键一一对应，指针成员便于逐项读取时不写七遍重复代码
+        /// parser_limits 的结构体字段名与配置键一一对应，指针成员便于逐项读取时不写八遍重复代码
         struct ParserLimitBinding
         {
             std::string_view name;                 ///< 配置键名
@@ -55,6 +55,7 @@ namespace AsynGyanis::Net
                 {"maximum_header_block_length", &HttpParserLimits::maximumHeaderBlockLength},
                 {"maximum_body_size", &HttpParserLimits::maximumBodySize},
                 {"maximum_chunk_size_line_length", &HttpParserLimits::maximumChunkSizeLineLength},
+                {"maximum_websocket_message_size", &HttpParserLimits::maximumWebsocketMessageSize},
         }};
 
         /**

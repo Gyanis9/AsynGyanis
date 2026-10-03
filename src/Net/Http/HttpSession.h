@@ -283,6 +283,9 @@ namespace AsynGyanis::Net
          * @param socket 传输层 socket 引用，其生命周期覆盖整个阶段
          * @param connection 所属连接，用于刷新空闲截止时间与查询存活；其生命周期覆盖整个阶段
          * @param limits 连接级限额，取自 HttpServerLimits
+         * @param maximumInboundMessageBytes 一条入站 WebSocket 消息的字节上限，取自本会话解析器的
+         *        `HttpParserLimits::maximumWebsocketMessageSize`（0 表示不设上限）：这一阶段是自由函数，
+         *        拿不到会话的解析器，因此由调用方把那一个数交进来
          * @param metrics 统计采集端，可为空；为空时本条连接不更新 WebSocket 各项计数
          * @param handler 业务处理器；按值接收（惰性协程的入参必须由协程帧自己持有）
          * @param receiveBuffer 会话的接收窗口，本阶段按窗口长度整块读取
@@ -292,8 +295,9 @@ namespace AsynGyanis::Net
          *        并按其中两侧的窗口位数压/解。取值必须与 101 里回给对端的那一行一致，否则对端按明文解压缩帧
          */
         template<typename Socket>
-        Core::Task<> webSocketSessionStage(Socket &socket, Core::Connection &connection, const HttpServerLimits &limits, HttpMetricsCollector *metrics, WebSocketHandler handler,
-                                           std::vector<char> &receiveBuffer, std::size_t pendingLength, std::optional<PerMessageDeflateWindow> deflateWindow)
+        Core::Task<> webSocketSessionStage(Socket &socket, Core::Connection &connection, const HttpServerLimits &limits, std::size_t maximumInboundMessageBytes,
+                                           HttpMetricsCollector *metrics, WebSocketHandler handler, std::vector<char> &receiveBuffer, std::size_t pendingLength,
+                                           std::optional<PerMessageDeflateWindow> deflateWindow)
         {
             // 帧发送路径：把一整帧按写超时约束写出去。写之前刷新截止时间的依据与 HTTP 阶段发送响应
             // 一致（HttpServerLimits::writeTimeout 约束的是「等待可写的最长空闲」，慢消费者防线）；
@@ -347,6 +351,8 @@ namespace AsynGyanis::Net
 
             WebSocketPeer peer(sendFrameBytes, metrics);
             peer.setPerMessageDeflate(deflateWindow);
+            // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
+            peer.setMaximumInboundMessageBytes(maximumInboundMessageBytes);
 
             bool isBusinessFinished = false;
 
@@ -1380,8 +1386,8 @@ namespace AsynGyanis::Net
                     // windowLength 是 101 之前就到达的剩余字节（升级请求之后的那一部分），
                     // 客户端可能已经在里面发了第一帧，必须一并交给解码器。
                     // 整段 WebSocket 通话都算在途工作（上面的 BusyScope 覆盖到这里）：优雅关闭会等它结束
-                    co_return co_await Detail::webSocketSessionStage(socket, connection, limits, metrics, response.webSocketHandler(), receiveBuffer, windowLength,
-                                                                     deflateNegotiation.window);
+                    co_return co_await Detail::webSocketSessionStage(socket, connection, limits, parser.limits().maximumWebsocketMessageSize, metrics, response.webSocketHandler(),
+                                                                     receiveBuffer, windowLength, deflateNegotiation.window);
                 }
 
                 if (!co_await respondAndFinish(request, response, handlerException, requestReceivedTime, false))

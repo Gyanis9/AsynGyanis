@@ -127,6 +127,7 @@ namespace AsynGyanis::Net
                                                        {"maximum_header_block_length", integer(32768)},
                                                        {"maximum_body_size", integer(1048576)},
                                                        {"maximum_chunk_size_line_length", integer(256)},
+                                                       {"maximum_websocket_message_size", integer(4194304)},
                                                }));
         serverMembers.emplace("rate_limit", object(Base::ConfigObject{
                                                     {"requests_per_second", floating(250.0)},
@@ -154,6 +155,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.parserLimits.maximumHeaderBlockLength, 32768u);
         EXPECT_EQ(configuration.parserLimits.maximumBodySize, 1048576u);
         EXPECT_EQ(configuration.parserLimits.maximumChunkSizeLineLength, 256u);
+        EXPECT_EQ(configuration.parserLimits.maximumWebsocketMessageSize, 4194304u);
         EXPECT_DOUBLE_EQ(configuration.requestsPerSecond, 250.0);
         EXPECT_DOUBLE_EQ(configuration.rateLimitBurstCapacity, 500.0);
     }

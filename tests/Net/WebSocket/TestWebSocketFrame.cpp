@@ -658,6 +658,35 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住入站消息上限能按配置移动：调低拦得住、同一份声明放回出厂档放行、0 表示不设上限
+     * @details 三面各钉一次，缺任何一面都会有实现照样绿：只测「调低拦得住」，把闸门焊死在任何一档都过关；
+     *          只测放行面，看不出这条闸门是否真的读配置；不测 0，就越不过「0 被当成上限 0 字节」那一格
+     *          （与 HttpParserLimits 各项的 0 语义一致）。
+     */
+    TEST(WebSocketFrame, MovesInboundMessageLimitWithTheConfiguredBound)
+    {
+        constexpr std::size_t declaredLength = 100;
+
+        WebSocketFrameDecoder lowered;
+        lowered.setMaximumMessagePayloadLength(64);
+        EXPECT_EQ(lowered.maximumMessagePayloadLength(), 64U) << "设进去的数要读得回来：解压输出的那一把尺向这里取";
+
+        const std::string loweredReason = feedAndExpectError(lowered, makeMaskedFrameHead(WebSocketOpCode::Binary, declaredLength, true, kRfcExampleMaskKey));
+        EXPECT_TRUE(lowered.isLimitExceeded()) << "越过配置的那一档也必须与协议错误区分开";
+        EXPECT_TRUE(containsText(loweredReason, "64")) << "原因里要报当下生效的数，不是出厂那档：" << loweredReason;
+
+        // 同一份声明放回出厂档（8 MiB）：不该撞线，帧头之后只是等还没来的字节
+        WebSocketFrameDecoder factoryDefault;
+        EXPECT_EQ(feed(factoryDefault, makeMaskedFrameHead(WebSocketOpCode::Binary, declaredLength, true, kRfcExampleMaskKey)), WebSocketDecodeStatus::NeedMore);
+
+        // 0 = 关闭该项保护：声明多大都不按超限收口
+        WebSocketFrameDecoder unlimited;
+        unlimited.setMaximumMessagePayloadLength(0);
+        EXPECT_EQ(feed(unlimited, makeMaskedFrameHead(WebSocketOpCode::Binary, 100ull * 1024 * 1024, true, kRfcExampleMaskKey)), WebSocketDecodeStatus::NeedMore)
+                << "0 是「不设上限」，不是「上限 0 字节」";
+    }
+
+    /**
      * @brief 长度域必须用最少的字节数表示：16 位档不得小于 126（RFC 6455 §5.2）
      */
     TEST(WebSocketFrame, RejectsNonMinimalSixteenBitLength)

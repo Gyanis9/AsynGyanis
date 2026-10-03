@@ -126,6 +126,20 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kMaximumFramePayloadLength = kMaximumMessagePayloadLength;
 
         /**
+         * @brief 设定本解码器接受的一条消息（与单个帧）的字节上限
+         *
+         * @details 出厂值是上面那个类常量，运行期可换：8 MiB 是本端的胃口而不是协议约束，
+         *          业务确要收更大的消息时应当能配置（`HttpParserLimits::maximumWebsocketMessageSize`），
+         *          而不是改框架重编。设定发生在建连接对象时，不在一条消息收到一半时改——
+         *          同一条消息的前后两段会用不同尺子判定，与 HTTP 解析器「配置构造时固定」同一条理由。
+         * @param maximumMessagePayloadBytes 上限字节数；0 表示不设上限
+         */
+        void setMaximumMessagePayloadLength(std::size_t maximumMessagePayloadBytes) noexcept;
+
+        /// @brief 读回当下生效的一条消息字节上限；0 表示不设上限
+        [[nodiscard]] std::size_t maximumMessagePayloadLength() const noexcept;
+
+        /**
          * @brief 构造解码器：全部状态为初态，可直接开始解码。
          */
         WebSocketFrameDecoder() = default;
@@ -293,5 +307,9 @@ namespace AsynGyanis::Net
         bool        m_isLimitExceeded{false}; ///< 本次失败是否由资源上限触发
         std::string m_errorMessage;           ///< 面向使用者的中文错误描述
         std::size_t m_consumedByteCount{0};   ///< 最近一次 parse() 实际消费的字节数
+
+        /// 一条消息与单个帧的字节上限，出厂值是 kMaximumMessagePayloadLength，会话在建连接对象时
+        /// 按 HttpParserLimits::maximumWebsocketMessageSize 交下来；0 表示不设上限
+        std::size_t m_maximumMessagePayloadBytes{kMaximumMessagePayloadLength};
     };
 } // namespace AsynGyanis::Net

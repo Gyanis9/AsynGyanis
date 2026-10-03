@@ -697,7 +697,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(announced.bytes[0], kControlStreamType) << "单向流的第一字节应当是流类型";
 
         // 帧读取器只吃帧，不认流类型那一字节，因此从第二字节起喂
-        Http3FrameReader frameReader(4096U);
+        Http3FrameReader                    frameReader(4096U);
         const std::span<const std::uint8_t> frameBytes(announced.bytes.data() + 1, announced.bytes.size() - 1);
         ASSERT_TRUE(frameReader.feed(frameBytes).has_value());
         const auto nextFrame = frameReader.nextFrame();
@@ -1507,8 +1507,7 @@ namespace AsynGyanis::Net
         session.attachRouter(router);
 
         Http3ClientPeer peer;
-        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4,
-                                               {{"expect", "100-continue"}, {"content-length", "4"}, {"content-length", "4"}}))
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4, {{"expect", "100-continue"}, {"content-length", "4"}, {"content-length", "4"}}))
                 << "客户端没能提交这条重复声明长度的请求";
         for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
         {
@@ -2593,6 +2592,65 @@ namespace AsynGyanis::Net
         const HttpServerStats snapshot = metrics->snapshot();
         EXPECT_EQ(snapshot.webSocketProtocolErrorCloseCount, 1U) << "h3 隧道上的帧错误没有落账（或记了多次）";
         EXPECT_EQ(snapshot.badRequestCount, 0U) << "帧错误不该并进 badRequestCount：那一格口径是 HTTP 报文解析失败";
+    }
+
+    /**
+     * @brief 钉住 h3 隧道真的吃到 `parser_limits` 里的入站消息上限
+     * @details 上限压到 8 字节，交一条声明 20 字节的掩码文本帧：帧头一到就该越线，按 1009 收口并落进
+     *          `webSocketProtocolErrorCloseCount`（1002/1007/1009 合并为一类）。这条通道若没把配置交给
+     *          对端对象，它会继续按出厂那 8 MiB 放行这条帧，计数留在 0，用例据此变红。
+     */
+    TEST(Http3Session, AppliesConfiguredInboundMessageLimitToTheWebSocketTunnel)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
+
+        HttpParserLimits loweredLimits;
+        loweredLimits.maximumWebsocketMessageSize = 8;
+        session.setParserLimits(std::move(loweredLimits));
+
+        Router router;
+        router.get("/chat",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket(
+                               [](WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       static_cast<void>(message);
+                                   }
+                                   co_return;
+                               });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        // 掩码文本帧：0x81 = FIN + Text，0x94 = 掩码位 + 声明 20 字节；掩码键全 0 时负载原样即掩码后的字节。
+        // 越线判在「声明」那一刻，负载到底有多少字节与这条判据无关
+        const std::string oversizedFrame = std::string("\x81\x94", 2) + std::string("\x00\x00\x00\x00", 4) + std::string(20, '\0');
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitWebSocketTunnel("/chat", "example.com", oversizedFrame);
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        EXPECT_EQ(metrics->snapshot().webSocketProtocolErrorCloseCount, 1U) << "h3 隧道没按配置的上限拦下这条帧（或记了多次）";
     }
 
     /**

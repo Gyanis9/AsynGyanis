@@ -11,6 +11,8 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Net/WebSocket/WebSocketFrame.h"
+
 #include <cstddef>
 
 namespace AsynGyanis::Net
@@ -56,7 +58,12 @@ namespace AsynGyanis::Net
         /// 配置键因此只有一个含义
         std::size_t maximumHeaderBlockLength{64ull * 1024};
         std::size_t maximumBodySize{8ull * 1024 * 1024}; ///< 正文上限，单位字节；分块按解码后的字节数累计。0 表示不限
-        std::size_t maximumChunkSizeLineLength{1024};    ///< 分块块大小行上限，单位字节（含块扩展，不含 CRLF）。0 表示不限
+        /// WebSocket 隧道里一条入站消息的字节上限，单位字节：分片重组后与 permessage-deflate 解压后都按这一把尺
+        /// 判（单帧上限也是它——一条消息拆不拆片都不得超过）。0 表示不限，与其余各项同一口径。
+        /// 三条通道都吃到这一格：h1 的升级、h2 的升级与 h3 的 CONNECT 隧道各自在建 `WebSocketPeer` 时把本值
+        /// 交下去，因此默认值直接取解码层那个类常量（数值只在 `WebSocketFrameDecoder` 里写一次）
+        std::size_t maximumWebsocketMessageSize{WebSocketFrameDecoder::kMaximumMessagePayloadLength};
+        std::size_t maximumChunkSizeLineLength{1024}; ///< 分块块大小行上限，单位字节（含块扩展，不含 CRLF）。0 表示不限
 
         /**
          * @brief 推导请求行整行的长度上限

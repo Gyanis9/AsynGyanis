@@ -62,6 +62,20 @@ namespace AsynGyanis::Net
         HttpParser &operator=(const HttpParser &) = delete;
 
         /**
+         * @brief 读回本解析器构造时取走的那份资源上限
+         *
+         * @details 上限按值固定在本对象里且中途不换，会话层在同一条连接上还要用它一次：
+         *          WebSocket 升级成功后要按 `maximumWebsocketMessageSize` 给出站之外的入站消息定闸门，
+         *          而会话不另存一份配置——两处各存一份，就会出现「升级那条通道吃的是默认值」那一天。
+         *
+         * @return const HttpParserLimits & 与构造时交给本解析器的那一份等值
+         */
+        [[nodiscard]] const HttpParserLimits &limits() const noexcept
+        {
+            return m_limits;
+        }
+
+        /**
          * @brief 解析一段输入数据。
          *
          * @details 状态判定可推理，三步互斥且穷尽：

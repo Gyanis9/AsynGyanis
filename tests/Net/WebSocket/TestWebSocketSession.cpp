@@ -322,11 +322,13 @@ namespace AsynGyanis::Net
         /**
          * @brief 起一台注册了 /ws 升级路由的服务器
          * @param record 回显业务的消息记录槽
+         * @param parserLimits 解析器资源上限，其中 maximumWebsocketMessageSize 决定这条连接愿意收
+         *        多大的入站消息；默认那档（8 MiB）即出厂行为
          * @return std::unique_ptr<RunningHttpServerFixture> 已投递 start() 的服务器夹具
          * @note 路由用 any() 注册：拒绝面用例（非 GET、缺 Upgrade 等）也必须能走到这条路由上，
          *       否则测到的是「路由未命中」而不是「升级校验拒绝了这条请求」
          */
-        std::unique_ptr<RunningHttpServerFixture> makeWebSocketServer(const std::shared_ptr<MessageRecord> &record)
+        std::unique_ptr<RunningHttpServerFixture> makeWebSocketServer(const std::shared_ptr<MessageRecord> &record, const HttpParserLimits &parserLimits = HttpParserLimits{})
         {
             const HttpTestSupport::RouteRegistrar registrar = [record](Router &router, Core::EventLoop &)
             {
@@ -338,7 +340,7 @@ namespace AsynGyanis::Net
                            });
             };
 
-            return std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar);
+            return std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar, parserLimits);
         }
 
         /**
@@ -920,6 +922,49 @@ namespace AsynGyanis::Net
         EXPECT_EQ(accumulated.substr(handshake.size(), expectedClose.size()), expectedClose);
         EXPECT_EQ(accumulated.size(), handshake.size() + expectedClose.size()) << "1007 之后不应再补第二条 Close";
         EXPECT_EQ(record->count(), 0U) << "非法文本帧不应交付业务";
+    }
+
+    /**
+     * @brief 钉住入站消息上限真的跟着 parser_limits 走：配小的一档拦得住，出厂那一档不得拦住同一条消息
+     * @details 同一条 10 字节文本帧打两遍：`maximumWebsocketMessageSize = 8` 那台按 1009（消息过大）收口
+     *          且不交付业务，默认（8 MiB）那台正常交付并回显。只测拒绝面的话，「闸门焊死在任何一档」都会绿；
+     *          只测放行面则根本看不出这条通道有没有吃配置。1009 = 0x03F1
+     */
+    TEST(WebSocketSession, CapsInboundMessageAtTheConfiguredParserLimit)
+    {
+        const std::string oversizedPayload = "0123456789";
+        const std::string oversizedFrame   = maskedClientFrame(0x1, oversizedPayload);
+        const std::string handshake        = expectedHandshakeResponseText();
+        const std::string expectedClose    = serverFrameBytes(0x8, "\x03\xF1");
+        HttpParserLimits  loweredLimits;
+        loweredLimits.maximumWebsocketMessageSize = 8;
+
+        const auto                                      record        = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> limitedServer = makeWebSocketServer(record, loweredLimits);
+        ASSERT_TRUE(limitedServer->awaitRunning(kWaitTimeout));
+
+        LoopbackClient limitedClient(limitedServer->listeningPort());
+        ASSERT_TRUE(limitedClient.isValid());
+        ASSERT_TRUE(limitedClient.sendText(upgradeRequestText() + oversizedFrame, kWaitTimeout));
+
+        std::string limitedSide;
+        ASSERT_TRUE(limitedClient.waitForClosure(limitedSide, kWaitTimeout)) << "越过入站消息上限应关闭这条连接";
+        ASSERT_GE(limitedSide.size(), handshake.size() + expectedClose.size()) << "累计收到 " << limitedSide.size() << " 字节";
+        EXPECT_EQ(limitedSide.substr(0, handshake.size()), handshake);
+        EXPECT_EQ(limitedSide.substr(handshake.size(), expectedClose.size()), expectedClose);
+        EXPECT_EQ(record->count(), 0U) << "越限的消息不应交付业务";
+
+        const auto                                      defaultRecord = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> defaultServer = makeWebSocketServer(defaultRecord);
+        ASSERT_TRUE(defaultServer->awaitRunning(kWaitTimeout));
+
+        LoopbackClient defaultClient(defaultServer->listeningPort());
+        ASSERT_TRUE(defaultClient.isValid());
+        ASSERT_TRUE(defaultClient.sendText(upgradeRequestText() + oversizedFrame, kWaitTimeout));
+
+        std::string delivered;
+        ASSERT_TRUE(defaultClient.waitForText(delivered, serverFrameBytes(0x1, oversizedPayload), kWaitTimeout)) << "默认上限下这条消息应当正常回显：" << delivered;
+        EXPECT_EQ(defaultRecord->count(), 1U) << "放行面里业务要真的收到这一条";
     }
 
     /**

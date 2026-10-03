@@ -1874,6 +1874,83 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 h2 隧道真的吃到 `parser_limits` 里的入站消息上限
+     * @details 上限压到 8 字节，隧道里交一条声明 20 字节的掩码文本帧：本端应按下 1009（消息过大）回一条
+     *          Close 并收尾，越限的内容不得交付业务（没有回显）。这条通道若没把配置交给对端对象，它会继续
+     *          按出厂那 8 MiB 把这条帧收下来回显，用例据此变红。
+     */
+    TEST(Http2CleartextSession, CapsTunnelInboundMessageAtTheConfiguredParserLimit)
+    {
+        HttpParserLimits loweredLimits;
+        loweredLimits.maximumWebsocketMessageSize = 8;
+
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/chat",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [](WebSocketPeer &peer) -> Core::Task<>
+                                           {
+                                               while (true)
+                                               {
+                                                   const std::optional<WebSocketMessage> message = co_await peer.receive();
+                                                   if (!message.has_value())
+                                                   {
+                                                       co_return;
+                                                   }
+                                                   if (!co_await peer.sendText(message->payload))
+                                                   {
+                                                       co_return;
+                                                   }
+                                               }
+                                           });
+                                   co_return;
+                               });
+                },
+                loweredLimits, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "扩展 CONNECT 没有得到应答";
+
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x1U, "01234567890123456789")}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return responseDataPayload(receivedFrames, 1U).find(static_cast<char>(0x88U)) != std::string::npos; },
+                kWaitTimeout))
+                << "越过入站消息上限之后没有收到 Close 帧";
+
+        const std::string tunnelPayload = responseDataPayload(frames, 1U);
+        EXPECT_NE(tunnelPayload.find(std::string("\x03\xF1", 2)), std::string::npos) << "Close 的状态码应当是 1009（消息过大）";
+        EXPECT_EQ(tunnelPayload.find("01234567890123456789"), std::string::npos) << "越限的消息不得被回显给对端";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 扩展 CONNECT 的版本不合在 h2 侧同样要指明本端支持的版本，而别的拒绝不该带上这条头部
      * @details RFC 6455 §4.2.2 给「版本不被理解」这一类失败派了一条 Sec-WebSocket-Version 应答义务；
      *          h1 用 426 而这里留 400——426 说的是「请改用 Upgrade」，h2 里没有 Upgrade 这套机制可改
@@ -2579,9 +2656,7 @@ namespace AsynGyanis::Net
                 << "没有在时限内收到服务端的初始 SETTINGS";
 
         // 声明 13 字节，实际只发 5 字节就 END_STREAM
-        std::string requestBytes = makeRequestHeadersFrame(1U,
-                                                            makePostRequestHeaderBlock("/stream") + hpackLiteralField("content-length", std::to_string(kDeclared)),
-                                                            false);
+        std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream") + hpackLiteralField("content-length", std::to_string(kDeclared)), false);
         requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kSentPortion)}, 1U);
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
 

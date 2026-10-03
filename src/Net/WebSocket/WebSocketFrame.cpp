@@ -346,6 +346,16 @@ namespace AsynGyanis::Net
         m_isPerMessageDeflateEnabled = enabled;
     }
 
+    void WebSocketFrameDecoder::setMaximumMessagePayloadLength(const std::size_t maximumMessagePayloadBytes) noexcept
+    {
+        m_maximumMessagePayloadBytes = maximumMessagePayloadBytes;
+    }
+
+    std::size_t WebSocketFrameDecoder::maximumMessagePayloadLength() const noexcept
+    {
+        return m_maximumMessagePayloadBytes;
+    }
+
     bool WebSocketFrameDecoder::acceptFirstByte(const std::uint8_t firstByte)
     {
         // 首字节布局（RFC 6455 §5.2）：FIN(1) RSV1 RSV2 RSV3 操作码(4)
@@ -507,19 +517,23 @@ namespace AsynGyanis::Net
         }
 
         // 单帧上限先卡在「声明」上：否则对端只要声明一个天文数字的长度，本端就会一直等下去，
-        // 内存与连接都被一条永不完成的帧占着
-        if (payloadLength > static_cast<std::uint64_t>(kMaximumFramePayloadLength))
+        // 内存与连接都被一条永不完成的帧占着。上限为 0 表示本端关掉了这项保护
+        if (m_maximumMessagePayloadBytes != 0 && payloadLength > static_cast<std::uint64_t>(m_maximumMessagePayloadBytes))
         {
             recordFailure(true, std::format("单帧负载 {} 字节超出上限 {} 字节：本端把单条消息的总上限定在同一档，"
-                                            "分片也救不了这条消息，请缩小消息体量",
-                                            payloadLength, kMaximumFramePayloadLength));
+                                            "分片也救不了这条消息。确要收更大的消息请调高 "
+                                            "HttpParserLimits::maximumWebsocketMessageSize",
+                                            payloadLength, m_maximumMessagePayloadBytes));
             return false;
         }
 
         // 消息总上限按「已重组 + 本帧声明」判断：分片消息的体量不设防同样能撑爆内存
-        if (m_isFragmentedMessageInProgress && static_cast<std::uint64_t>(m_payloadBuffer.size()) + payloadLength > static_cast<std::uint64_t>(kMaximumMessagePayloadLength))
+        if (m_isFragmentedMessageInProgress && m_maximumMessagePayloadBytes != 0 &&
+            static_cast<std::uint64_t>(m_payloadBuffer.size()) + payloadLength > static_cast<std::uint64_t>(m_maximumMessagePayloadBytes))
         {
-            recordFailure(true, std::format("分片消息重组后超出总上限 {} 字节：请缩小消息体量或拆成多条消息发送", kMaximumMessagePayloadLength));
+            recordFailure(true, std::format("分片消息重组后超出总上限 {} 字节：请缩小消息体量、拆成多条消息发送，或调高 "
+                                            "HttpParserLimits::maximumWebsocketMessageSize",
+                                            m_maximumMessagePayloadBytes));
             return false;
         }
 

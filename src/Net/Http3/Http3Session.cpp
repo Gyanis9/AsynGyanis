@@ -1604,6 +1604,8 @@ namespace AsynGyanis::Net
                                                           { co_return co_await sendTunnelBytes(streamId, frameBytes); }, m_metrics.get());
         // 协商结论交给对端对象：决定收发两侧是否用 RSV1 压缩帧
         tunnel->peer->setPerMessageDeflate(deflateNegotiation.window);
+        // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
+        tunnel->peer->setMaximumInboundMessageBytes(m_parserLimits.maximumWebsocketMessageSize);
 
         WebSocketTunnel &created = *tunnel;
         m_webSocketTunnels.emplace(streamId, std::move(tunnel));
@@ -2046,8 +2048,7 @@ namespace AsynGyanis::Net
         // 而合并口径会把那两条拼成「17, 17」—— parseContentLengthValue 判它非法，于是这一格在
         // h3 上永远回不出 100，对端只能等自己的 expect 超时；h2 侧读的正是首条（Http2Session）
         std::size_t declaredBodyByteCount = 0;
-        if (!parseContentLengthValue(incoming.request.firstHeaderValueView("content-length").value_or(std::string_view{}), declaredBodyByteCount) ||
-            declaredBodyByteCount == 0)
+        if (!parseContentLengthValue(incoming.request.firstHeaderValueView("content-length").value_or(std::string_view{}), declaredBodyByteCount) || declaredBodyByteCount == 0)
         {
             LOG_DEBUG_FMT("Http3Session: 流 {} 带 Expect: 100-continue 却没声明正的正文长度，不回 100", streamId);
             return;

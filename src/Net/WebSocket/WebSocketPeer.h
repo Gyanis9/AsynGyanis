@@ -251,6 +251,18 @@ namespace AsynGyanis::Net
         void setPerMessageDeflate(std::optional<PerMessageDeflateWindow> window) noexcept;
 
         /**
+         * @brief 会话侧：设定本端愿意收的一条入站消息字节上限
+         *
+         * @details 会话按 `HttpParserLimits::maximumWebsocketMessageSize` 在建对端对象时交下来，
+         *          一个数管三处：单帧声明的长度、分片重组后的总长、以及 permessage-deflate 的解压输出上限
+         *          ——按不同尺子判这三处，等于给对端留了一条「换个写法就绕过闸门」的缝。
+         *          0 表示不设上限（与 HttpParserLimits 各项的 0 语义一致）。
+         *          **必须在喂入任何字节之前调用**：与压缩开关同一条理由，同一条消息的前后两段不能按两把尺子判。
+         * @param maximumInboundMessageBytes 一条消息的字节上限；0 表示不设上限
+         */
+        void setMaximumInboundMessageBytes(std::size_t maximumInboundMessageBytes) noexcept;
+
+        /**
          * @brief 会话侧：把一段网络字节喂进解码器
          *
          * @details 本段字节一定被全部消费：解码器产出一帧就取走并排队，剩下的字节接着解，

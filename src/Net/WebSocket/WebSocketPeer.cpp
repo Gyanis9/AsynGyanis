@@ -132,6 +132,12 @@ namespace AsynGyanis::Net
         m_decoder.setPerMessageDeflateEnabled(window.has_value());
     }
 
+    void WebSocketPeer::setMaximumInboundMessageBytes(const std::size_t maximumInboundMessageBytes) noexcept
+    {
+        // 上限只存解码器那一处，解压输出的那一把尺向它取：本对象留第二份数，就会出现「两个数不一样」的那一天
+        m_decoder.setMaximumMessagePayloadLength(maximumInboundMessageBytes);
+    }
+
     std::string WebSocketPeer::decodeErrorText() const
     {
         // 负载非法的原因不在解码器里，两者取其一即为「最近一次失败」的完整描述
@@ -452,12 +458,13 @@ namespace AsynGyanis::Net
                     // 窗口位数按协商走（对端声明它按多大压缩）：没协商就不可能解出压缩帧，
                     // 这里按满窗口兜底只是不让一个不可能的组合变成崩溃点
                     const int                  decompressBits  = m_deflateWindow.has_value() ? m_deflateWindow->decompressBits : kWebSocketDefaultWindowBits;
-                    std::optional<std::string> inflatedPayload = inflateWebSocketMessage(frame.payload, WebSocketFrameDecoder::kMaximumMessagePayloadLength, decompressBits);
+                    const std::size_t          maximumPayload  = m_decoder.maximumMessagePayloadLength();
+                    std::optional<std::string> inflatedPayload = inflateWebSocketMessage(frame.payload, maximumPayload, decompressBits);
                     if (!inflatedPayload.has_value())
                     {
-                        m_payloadErrorMessage   = std::format("压缩消息解压失败，或解压结果超过上限 {} 字节（RFC 7692 §7.2.2）："
+                        m_payloadErrorMessage   = std::format("压缩消息解压失败，或解压结果超过上限 {}（RFC 7692 §7.2.2）："
                                                               "请检查对端的压缩实现，或改用未压缩帧发送",
-                                                              WebSocketFrameDecoder::kMaximumMessagePayloadLength);
+                                                              maximumPayload == 0 ? std::string("不设上限") : std::format("{} 字节", maximumPayload));
                         m_payloadErrorCloseCode = kWebSocketProtocolErrorCode;
                         return WebSocketFeedStatus::DecodeError;
                     }
