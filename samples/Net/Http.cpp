@@ -1014,7 +1014,7 @@ int main(const int argc, char **argv)
 
     const int longUriStatus = firstStatusOf(observations.longUri);
     LOG_INFO_FMT("越过 maximumUriLength 的请求目标实际回 {}", longUriStatus);
-    // 只认 414：写成「414 或 431 都行」会让把病因说错的实现照样过关（RFC 9110 §15.5.18）
+    // 只认 414：写成「414 或 431 都行」会让把病因说错的实现照样过关（RFC 9110 §15.5.15）
     samples.check(longUriStatus == 414, "请求目标越界回 414（不是头部越界的 431）");
     samples.check(firstStatusOf(observations.manyHeaders) == 431, "头字段条数越上限回 431");
     samples.check(firstStatusOf(observations.malformed) == 400, "不是 HTTP 的请求行回 400 而不是直接断线");

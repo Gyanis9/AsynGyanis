@@ -33,7 +33,7 @@ namespace AsynGyanis::Net
 
         constexpr std::string_view kCrLf = "\r\n"; ///< 报文行分隔符，HTTP 固定为 CR LF
 
-        // 状态行结构：版本 SP 状态码 SP 原因短语 CRLF（RFC 9110 §3.1.2）
+        // 状态行结构：版本 SP 状态码 SP 原因短语 CRLF（RFC 9112 §4）
         constexpr std::size_t kCrLfLength                = 2;  ///< CRLF 占用字节数
         constexpr std::size_t kHttpVersionReserveLength  = 16; ///< "HTTP/1.1" 实为 8 字节，取 16 容纳自定义版本串
         constexpr std::size_t kSingleSpaceLength         = 1;  ///< 状态行里的字段分隔空格
@@ -255,7 +255,7 @@ namespace AsynGyanis::Net
         {
             return false;
         }
-        // 定界字段与连接级字段不许进尾部（RFC 9112 §7.1.1.1）：前者会给同一条报文造出两个长度
+        // 定界字段与连接级字段不许进尾部（RFC 9110 §6.5.1）：前者会给同一条报文造出两个长度
         // 解释，后者压根不该出现在正文之后的位置。这里拒收而不是静默丢弃，调用方才看得见自己写歪了
         const std::string normalizedName = HttpHeaderFieldStore::toCanonicalHeaderName(name);
         if (normalizedName.front() == ':' || normalizedName == kContentLengthHeaderName || normalizedName == kTransferEncodingHeaderName ||
@@ -695,7 +695,7 @@ namespace AsynGyanis::Net
     const char *HttpResponse::statusMessage(const int code)
     {
         // 只收录本框架会用到的状态码；未收录者给出空原因短语，
-        // RFC 9110 §3.1.2 允许 reason-phrase 为空，状态行仍然合法
+        // RFC 9112 §4 允许 reason-phrase 为空，状态行仍然合法
         switch (code)
         {
             case 100:

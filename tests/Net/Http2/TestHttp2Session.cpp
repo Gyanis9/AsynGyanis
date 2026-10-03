@@ -393,7 +393,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 按到达顺序取一条流上的每个头块（响应头部与尾部头块）
          * @details 尾部头块是这条流上的第二个 HEADERS，只取第一块的助手看不见它——而出站 trailer 的
-         *          落点正是那第二个，END_STREAM 也必须落在它上面（RFC 9113 §7.1）。
+         *          落点正是那第二个，END_STREAM 也必须落在它上面（RFC 9113 §8.1）。
          * @param frames 已收到的帧
          * @param streamId 流号
          * @return std::vector<std::string> 每个元素是一个完整头块的字节（CONTINUATION 已并回前一块）
@@ -1731,7 +1731,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findHeaderValue(streamHeaders, "content-type"), "text/event-stream") << "业务设的头部没有被保留";
         EXPECT_EQ(findHeaderValue(streamHeaders, "transfer-encoding"), "") << "HTTP/2 响应里不得出现 transfer-encoding（RFC 9113 §8.2.2 禁止连接特定头）";
         EXPECT_EQ(findHeaderValue(streamHeaders, "connection"), "") << "HTTP/2 响应里不得出现 connection";
-        EXPECT_EQ(findHeaderValue(streamHeaders, "content-length"), "") << "流式响应的正文长度由 DATA 帧给出，不得写 content-length（RFC 9113 §8.1.2.6）";
+        EXPECT_EQ(findHeaderValue(streamHeaders, "content-length"), "") << "流式响应的正文长度由 DATA 帧给出，不得写 content-length（RFC 9113 §8.1.1）";
 
         // 三个正文段各占一个 DATA 帧、按序到达，会话收尾再补一个零长 DATA 帧带 END_STREAM（允许零长，§6.1）
         const std::vector<const TestFrame *> streamDataFrames = dataFramesOfStream(frames, 1U);
@@ -2247,7 +2247,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：业务登记的尾部字段发成这条流上的第二个头块，END_STREAM 落在它身上而不是最后一片 DATA
-     * @details RFC 9113 §7.1 把两件事绑在一起：尾部头块必须自带 END_STREAM。于是最后一片 DATA 不许带它，
+     * @details RFC 9113 §8.1 把两件事绑在一起：尾部头块必须自带 END_STREAM。于是最后一片 DATA 不许带它，
      *          否则这条流在尾部字段之前就结束了，那几行字段就没有位置（本端再想发会被连接层按「本端已收尾」
      *          拒掉）。头部的 trailer 声明一并钉住：那是让对端知道「正文之后还有东西」的唯一途径
      *          （RFC 9110 §6.5.1），也是三条出站通路共用的同一份拼法。
@@ -2325,7 +2325,7 @@ namespace AsynGyanis::Net
         ASSERT_NE(lastDataFrame, nullptr);
         EXPECT_EQ((lastDataFrame->flags & kHttp2FlagEndStream), 0U) << "最后一片 DATA 带了 END_STREAM，尾部字段就没有位置了";
         ASSERT_NE(trailerFrame, nullptr);
-        EXPECT_NE((trailerFrame->flags & kHttp2FlagEndStream), 0U) << "尾部头块必须自带 END_STREAM（§7.1）";
+        EXPECT_NE((trailerFrame->flags & kHttp2FlagEndStream), 0U) << "尾部头块必须自带 END_STREAM（§8.1）";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";

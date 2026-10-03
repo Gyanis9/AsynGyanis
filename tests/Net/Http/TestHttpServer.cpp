@@ -949,7 +949,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：一条 Range 里多个区间时回 206 + multipart/byteranges，正文逐段拼装
      * @details 旧行为是「整条忽略回 200 全量」——那对下载器与图片预览器意味着为了拿两段字节而
-     *          重取整个文件。现在按 RFC 9110 §14.7 逐段带 content-type 与 content-range，
+     *          重取整个文件。现在按 RFC 9110 §14.6 逐段带 content-type 与 content-range，
      *          顶层不再写 Content-Range（那是单区间的形状），并且**正文逐字节钉住**：
      *          分隔符、空行与顺序错一处，对端就切错段
      */
@@ -1138,7 +1138,7 @@ namespace AsynGyanis::Net
      * @brief If-Range 的日期验证器要的是「相等」：比 Last-Modified 更晚的日期也不放行
      * @details 对端拿这个日期问的是「你手上那份还是不是我现在这份」。文件被换回更早的版本（恢复备份、
      *          时钟回拨）时，对端的日期反而会比当前修改时间更晚，按「不晚于」放行就会把另一份表示的
-     *          字节段拼进对端缓存——RFC 9110 §14.22 要求验证器不相等即忽略 Range、回 200 完整表示。
+     *          字节段拼进对端缓存——RFC 9110 §13.1.5 要求验证器不相等即忽略 Range、回 200 完整表示。
      */
     TEST(HttpServer, AppliesRangeOnlyWhenIfRangeDateEqualsLastModified)
     {
@@ -1326,7 +1326,7 @@ namespace AsynGyanis::Net
      * @details RFC 9110 §13.2.2 是 MUST。此前整个 `src/` 里没有任何 If-Match 的处理点（只有
      *          HPACK 静态表里有这个名字），412 因此永远不会产生——客户端以为自己在做乐观并发
      *          控制，实际前提被静默忽略。顺带钉住三条相邻语义：整值 `*` 表示「只要资源还在」、
-     *          弱标签永不强匹配、两个条件同时在场时前提判定排在前面（§13.2.4 要求同时成立）。
+     *          弱标签永不强匹配、两个条件同时在场时前提判定排在前面（§13.2.2 要求同时成立）。
      */
     TEST(HttpServer, RejectsStaleIfMatchWith412)
     {
@@ -1341,11 +1341,9 @@ namespace AsynGyanis::Net
         const std::string  etag     = headerValueOf(baseline, "etag");
         ASSERT_FALSE(etag.empty());
 
-        EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "\"stale\""}}).status(), 412)
-                << "If-Match 的验证器与当前表示不符，前提就不成立";
+        EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "\"stale\""}}).status(), 412) << "If-Match 的验证器与当前表示不符，前提就不成立";
         EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", etag}}).status(), 200) << "验证器相符就照常下发";
-        EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "*"}}).status(), 200)
-                << "整值 * 表达的是「只要资源还在」";
+        EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "*"}}).status(), 200) << "整值 * 表达的是「只要资源还在」";
         EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "W/" + etag}}).status(), 412)
                 << "弱标签永不强匹配（§8.8.3.2）：拿弱比较糊过去等于放宽前提";
         EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "W/" + etag}, {"if-none-match", etag}}).status(), 412)

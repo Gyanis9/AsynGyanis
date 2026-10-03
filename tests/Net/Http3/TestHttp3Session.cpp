@@ -1365,7 +1365,7 @@ namespace AsynGyanis::Net
      * @brief 带 Expect: 100-continue 且声明了正文长度的请求，先收到 100 再收到最终响应
      * @details h1 与 h2 都会先回一个 100 催对端把正文发完（RFC 9110 §10.1.1）；h3 此前不接这个头，
      *          严格等 100 的对端只能靠自己的 expect 超时兜底。信息性响应是一条不带 END_STREAM
-     *          的 HEADERS（RFC 9114 §5.3.2），随后才是最终响应
+     *          的 HEADERS（RFC 9114 §4.1），随后才是最终响应
      */
     TEST(Http3Session, AnswersContinueInformationallyBeforeTheFinalResponse)
     {

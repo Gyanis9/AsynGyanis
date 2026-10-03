@@ -46,9 +46,10 @@ namespace AsynGyanis::Net
         /// h1 与 h3 用这一把尺；h2 的对应上限是 `Http2ConnectionConfiguration::maximumHeaderListSize`
         /// （按 RFC 7540 §6.5.2 的「名长 + 值长 + 32」逐条计，且随 SETTINGS 宣告给对端），
         /// 要收紧 h2 走 `HttpServer::setHttp2Configuration()`。
-        /// 本结构里除 maximumHeaderBlockLength 之外每一项都在**三条通道**上生效（h1 由解析器判，h2 与 h3
-        /// 在 intake 判；两条长度项在 h2 由 HPACK 解码器按同一把尺判，见 Http2Connection 的构造），
-        /// 配置键因此只有一个含义
+        /// 除 maximumHeaderBlockLength（h2 另有一把尺，见上）与 maximumChunkSizeLineLength（分块只存在于 h1，
+        /// h2/h3 禁掉 Transfer-Encoding 就没有块大小行可判）之外，本结构每一项都在**三条通道**上生效
+        /// （h1 由解析器判，h2 与 h3 在 intake 判；两条长度项在 h2 由 HPACK 解码器按同一把尺判，
+        /// 见 Http2Connection 的构造），配置键因此只有一个含义
         std::size_t maximumHeaderBlockLength{64ull * 1024};
         std::size_t maximumBodySize{8ull * 1024 * 1024}; ///< 正文上限，单位字节；分块按解码后的字节数累计。0 表示不限
         std::size_t maximumChunkSizeLineLength{1024};    ///< 分块块大小行上限，单位字节（含块扩展，不含 CRLF）。0 表示不限

@@ -160,7 +160,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：trailer 与头部是两档存储，同名也不互相覆盖、不互相可见
-     * @details 合档会让「Content-Length 出现在正文之后」变成第二种长度解释（RFC 9112 §7.1.1.1
+     * @details 合档会让「Content-Length 出现在正文之后」变成第二种长度解释（RFC 9110 §6.5.1
      *          禁止的正是这个形状）；两档各自可读，业务问哪一档就只有哪一档的答案。
      */
     TEST(HttpRequest, KeepsTrailerFieldsInAStoreOfTheirOwn)

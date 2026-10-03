@@ -976,7 +976,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：`:path` 超出 parser_limits.maximum_uri_length 时标成 414 那一类，而不是 431
      * @details h1 与 h3 都按这个键判请求目标，h2 此前完全不判（HPACK 的单值字节上限是另一把尺，
-     *          与配置键无关）。状态码要分开的理由见 RFC 9110 §15.5.18：431 让客户端去减头部，
+     *          与配置键无关）。状态码要分开的理由见 RFC 9110 §15.5.15：431 让客户端去减头部，
      *          而这里要缩的是 URL。
      */
     TEST(Http2Connection, MarksRequestTargetOverParserUriLimitAsUriTooLong)
@@ -1993,7 +1993,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：尾部头块的字段随那条 END_STREAM 收口信号一起交出，content-length 除外（§8.1）
-     * @details 尾部头块必须自带 END_STREAM（§7.1），所以「正文收齐」与「尾部字段到齐」是同一件事，
+     * @details 尾部头块必须自带 END_STREAM（§8.1），所以「正文收齐」与「尾部字段到齐」是同一件事，
      *          本层不为它另开一条事件通道。收口信号本身仍是零长的：上层只按 endStream 判定收齐，
      *          少了它，以尾部头块收尾的请求永远进不了路由。
      */
@@ -2035,7 +2035,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：不带 END_STREAM 的第二个 HEADERS 按畸形报文作废这一条流，连接与其余流照旧（RFC 9113 §7.1）
+     * @brief 钉住：不带 END_STREAM 的第二个 HEADERS 按畸形报文作废这一条流，连接与其余流照旧（RFC 9113 §8.1）
      * @details 尾部头块的定义就是「以一枚带 END_STREAM 的 HEADERS 开始」；没带收尾的那一枚既不终结消息、
      *          也不算正文，留着不判的话这条流只会一直等一个再也不会来的 END_STREAM——h2spec 8.1/1 看到的
      *          就是对端超时。判据落在 §8.1.1：畸形报文按流错误 PROTOCOL_ERROR 处理，牵连不到整条连接。

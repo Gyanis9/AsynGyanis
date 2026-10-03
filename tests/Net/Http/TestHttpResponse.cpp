@@ -117,7 +117,7 @@ namespace AsynGyanis::Net
 
         const std::string output = response.toString();
 
-        // 未收录状态码给空原因短语，RFC 9110 §3.1.2 允许状态行以「空格 + CRLF」收尾
+        // 未收录状态码给空原因短语，RFC 9112 §4 允许状态行以「空格 + CRLF」收尾
         EXPECT_TRUE(output.starts_with("HTTP/1.0 799 \r\n"));
     }
 
@@ -1192,7 +1192,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：定界字段、连接级字段与非法字符做尾部字段一律拒收，且拒收后不留存储
-     * @details 依据 RFC 9112 §7.1.1.1（这些字段不得出现在尾部）与 §7.1（终止块形状）。
+     * @details 依据 RFC 9110 §6.5.1（这些字段不得出现在尾部）与 §7.1（终止块形状）。
      *          这里选择「返回 false 让调用方看见」而不是静默丢弃：写错字段名的业务代码若毫无察觉，
      *          它就会一直以为自己下发的校验和生效了。
      */
@@ -1337,7 +1337,7 @@ namespace AsynGyanis::Net
 
         const std::string hints = HttpResponse::informationalMessage(103, {{"link", "</style.css>; rel=preload; as=style"}});
         EXPECT_EQ(hints, "HTTP/1.1 103 Early Hints\r\nlink: </style.css>; rel=preload; as=style\r\n\r\n");
-        // 未收录原因短语的 1xx 仍要出得来（RFC 9110 §3.1.2 允许 reason-phrase 为空）
+        // 未收录原因短语的 1xx 仍要出得来（RFC 9112 §4 允许 reason-phrase 为空）
         EXPECT_EQ(HttpResponse::informationalMessage(199, {}), "HTTP/1.1 199 \r\n\r\n");
     }
 

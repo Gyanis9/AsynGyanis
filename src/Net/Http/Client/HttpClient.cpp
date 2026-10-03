@@ -148,7 +148,7 @@ namespace AsynGyanis::Net
         const std::string_view authority     = pathSeparator == std::string_view::npos ? remainder : remainder.substr(0U, pathSeparator);
         std::string_view       pathPart      = pathSeparator == std::string_view::npos ? std::string_view{} : remainder.substr(pathSeparator);
 
-        // 片段（`#...`）不进请求：RFC 9110 §5.1.2 的请求目标里根本没有它。这里按规范剥掉而不是
+        // 片段（`#...`）不进请求：RFC 9110 §7.1 的请求目标里根本没有它。这里按规范剥掉而不是
         // 报错——那不是「替调用方猜意图」，而是明确不该交给服务器的那一段
         if (const std::size_t fragmentOffset = pathPart.find('#'); fragmentOffset != std::string_view::npos)
         {
@@ -217,7 +217,7 @@ namespace AsynGyanis::Net
         if (!pathPart.empty())
         {
             // 只有查询（`http://host?a=1`）：authority 之后没有路径段。origin-form 的请求目标不能是空的
-            // （RFC 9110 §5.1.2），原样交出去会变成 `GET ?a=1`，这里补成 `/?a=1`
+            // （RFC 9112 §3.2.1），原样交出去会变成 `GET ?a=1`，这里补成 `/?a=1`
             parsed.path = pathPart.front() == '?' ? "/" + std::string(pathPart) : std::string(pathPart);
         }
         return parsed;
@@ -401,7 +401,7 @@ namespace AsynGyanis::Net
         if (isAbsolute || isNetworkPath)
         {
             // 这两种形式的主机由引用说了算，因此要整条重新拆；带认证信息的写法一律拒
-            // （RFC 9110 §3.2.2 早已废止 URL 内嵌凭据，而把它抄进下一跳等于把口令发给另一台主机）
+            // （RFC 9110 §4.2.4 早已废止 URL 内嵌凭据，而把它抄进下一跳等于把口令发给另一台主机）
             const std::size_t authorityStart = isNetworkPath ? 2U : colonOffset + 3U; // 跳过 "//" 或 "https://"
             const std::size_t authorityEnd   = target.find_first_of("/?", authorityStart);
             if (target.substr(authorityStart, authorityEnd - authorityStart).find('@') != std::string_view::npos)
@@ -1096,7 +1096,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 按复用型通路（HTTP/2 与 HTTP/3）的要求备齐附加字段
          * @details 两条通路的字段段形状一样（小写 ASCII 名 + 原文值），差别只在线上是 HPACK 还是
-         *          QPACK，因此这里只留一份。名字折小写是协议要求（RFC 9113 §8.1.2、RFC 9114 §4.2），
+         *          QPACK，因此这里只留一份。名字折小写是协议要求（RFC 9113 §8.2、RFC 9114 §4.2），
          *          值原样保留——大小写对值语义有影响。
          * @param request 方法、正文、媒体类型与附加头部
          * @param isAnyBody 这次是否带正文，整块与流式来源都算：媒体类型只随正文上线，

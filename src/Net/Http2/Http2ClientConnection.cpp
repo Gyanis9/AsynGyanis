@@ -547,7 +547,7 @@ namespace AsynGyanis::Net
         const auto iterator = m_pendingStreams.find(frame.header.streamId);
         if (iterator == m_pendingStreams.end())
         {
-            // 本端没开过这条流：这不是给谁的响应（§8.1.1 的畸形响应）。头块仍必须解完，动态表才能与
+            // 本端没开过这条流：这不是给谁的响应（§8.1.2.6 的畸形响应）。头块仍必须解完，动态表才能与
             // 对端同步——但那只做得到「整段头块一次到位」：多段头块要有人替它攒片段，而为一条本端不认
             // 的流留一份连接级暂存，等于把交错的两段头块混成一团
             if (!payload.endHeaders)

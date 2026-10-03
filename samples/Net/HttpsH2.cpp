@@ -1527,7 +1527,7 @@ namespace
         static_cast<void>(longTargetClient->pumpUntil(
                 [&longTargetClient]() { return longTargetClient->receivedText().find("HTTP/1.1 4") != std::string::npos || longTargetClient->isClosedByPeer(); }, kWaitTimeout));
         const std::string &longTargetText = longTargetClient->receivedText();
-        // 请求目标越界有自己的状态码：414（RFC 9110 §15.5.18），与头部越界的 431 分开——
+        // 请求目标越界有自己的状态码：414（RFC 9110 §15.5.15），与头部越界的 431 分开——
         // 客户端读到 431 会去减头部，而这里要缩的是 URL
         samples.check(longTargetText.find("HTTP/1.1 414") != std::string::npos && longTargetText.find("HTTP/1.1 431") == std::string::npos,
                       "请求目标越界按 414 收口，不与头部越界的 431 混为一类");

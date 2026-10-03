@@ -138,7 +138,7 @@ namespace AsynGyanis::Net
         bool                 hasBody{false};              ///< 请求头未带 END_STREAM：正文会随 takeReceivedData() 交出
         bool                 isHeaderListTooLarge{false}; ///< 本端不收这一场请求头部（字节越限时各字段全为空、条数越限时字段仍在）：上层按 431 应答而不是派发路由
         /// 请求目标（:path）超出 parser_limits.maximum_uri_length：字段照常交出，
-        /// 上层按 414 应答（RFC 9110 §15.5.18），与 431 那条分开是因为病因不同——
+        /// 上层按 414 应答（RFC 9110 §15.5.15），与 431 那条分开是因为病因不同——
         /// 431 让客户端去减头部，而这里要缩的是 URL
         bool        isUriTooLong{false};
         std::string protocol; ///< :protocol 原文（RFC 8441 的扩展 CONNECT）；普通请求为空
@@ -154,7 +154,7 @@ namespace AsynGyanis::Net
         bool          endStream{false};        ///< 对端在这片数据上置了 END_STREAM：该流的对端方向到此为止
         std::size_t   flowControlByteCount{0}; ///< 本片占用的流控字节数：DATA 帧负载原长（含 padding，§6.9.1 要求 padding 也计入）
         /// 这条流到此为止时一并交出的尾部字段（RFC 9113 §8.1 的 trailing header 块），按线上到达顺序。
-        /// 只有尾部头块造出的那条收口信号会非空——尾部头块必须自带 END_STREAM（§7.1），因此「正文收齐」
+        /// 只有尾部头块造出的那条收口信号会非空——尾部头块必须自带 END_STREAM（§8.1），因此「正文收齐」
         /// 与「尾部字段到齐」天然是同一件事，不需要另一条事件通道去排先后。
         /// 定界字段（content-length）与伪头不会出现在这里，连接层已按 h1 同一张表筛掉/判错
         std::vector<HpackHeaderField> trailerFields;
@@ -395,7 +395,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 在某条流上发尾部头块（trailing HEADERS），并以此收尾本端方向
          *
-         * @details RFC 9113 §7.1 把尾部头块的形状钉死：它**必须**自带 END_STREAM，且不得含伪头与连接
+         * @details RFC 9113 §8.1 把尾部头块的形状钉死：它**必须**自带 END_STREAM，且不得含伪头与连接
          *          特定字段。因此调用顺序是固定的——正文那一片 DATA 不许带 END_STREAM，尾部头块才是这条
          *          流的最后一个帧；没有正文时可以只有头部块加尾部头块。本方法自己置 END_STREAM，
          *          不提供开关参数：给一个能把协议写坏的开关不如不给。

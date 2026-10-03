@@ -23,7 +23,7 @@ namespace AsynGyanis::Net
                                                                    HttpMethod::DELETE, HttpMethod::PATCH, HttpMethod::OPTIONS};
 
         /**
-         * @brief 拼 Allow 头时方法之间的分隔符（ASCII，遵循 RFC 9110 §10.4 的 "#rulelist" 写法）
+         * @brief 拼 Allow 头时方法之间的分隔符（ASCII 逗号，Allow 在 RFC 9110 §10.2.1 里就是 #method 列表）
          */
         constexpr std::string_view kAllowedMethodSeparator = ", ";
 
@@ -358,7 +358,7 @@ namespace AsynGyanis::Net
             response.setBody("Not Found");
         } else
         {
-            // 405 必须带 Allow：RFC 9110 §15.5.7 要求源服务器在 405 响应里 MUST 生成 Allow 头
+            // 405 必须带 Allow：RFC 9110 §15.5.6 要求源服务器在 405 响应里 MUST 生成 Allow 头
             response.setStatus(405);
             response.setBody("Method Not Allowed");
             if (!allowedMethods.empty())
@@ -577,7 +577,7 @@ namespace AsynGyanis::Net
         // 路径压根没注册过 → 404；注册过但方法都不合 → 405 + Allow
         const bool isMethodNotAllowed = allowedMethodCount != 0;
 
-        // RFC 9110 §9.1 + §15.5.7：本框架按 GET 复用 HEAD（见上面的匹配逻辑），因此路径支持 GET 时
+        // RFC 9110 §9.3.2 + §15.5.6：本框架按 GET 复用 HEAD（见上面的匹配逻辑），因此路径支持 GET 时
         // 资源实际也支持 HEAD，Allow 必须一并列出——只回显显式注册的方法会让客户端以为 HEAD 不可用，
         // 与「HEAD 命中 GET 处理器」的实际行为自相矛盾。输出顺序由下面的固定序保证（GET 在 HEAD 前）
         if (isMethodAllowed(HttpMethod::GET) && !isMethodAllowed(HttpMethod::HEAD))

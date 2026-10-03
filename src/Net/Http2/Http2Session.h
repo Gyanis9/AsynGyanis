@@ -220,7 +220,7 @@ namespace AsynGyanis::Net
             bool          isRemoteEndStream{false};    ///< 对端是否已 END_STREAM：正文收齐，可以路由
             bool          isBodyTooLarge{false};       ///< 正文超过 maximumBodySize：不再缓冲，回 413
             bool          isHeaderListTooLarge{false}; ///< 头块超出本端上限（字节越限时字段全为空）：不派发也不缓冲正文，回 431
-            bool          isUriTooLong{false};         ///< 请求目标超出 parser_limits.maximum_uri_length：同样不派发，回 414（RFC 9110 §15.5.18）
+            bool          isUriTooLong{false};         ///< 请求目标超出 parser_limits.maximum_uri_length：同样不派发，回 414（RFC 9110 §15.5.15）
             bool          isBudgetExceeded{false};     ///< 正文超出全局在途预算：不再缓冲，回 503；额度由 bodyBudget 在记录销毁时归还
             bool          isExtendedConnect{false};    ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
             bool          isWebSocketTunnel{false};    ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501

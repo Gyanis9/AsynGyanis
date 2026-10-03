@@ -103,7 +103,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief URI 上限：等于上限通过、超 1 字节判 414 类别
-     * @details 请求目标超限走 UriTooLarge 而不是 HeaderTooLarge：RFC 9110 §15.5.18 为它留了 414，
+     * @details 请求目标超限走 UriTooLarge 而不是 HeaderTooLarge：RFC 9110 §15.5.15 为它留了 414，
      *          而 431 会让客户端误以为该减的是头部。
      */
     TEST(HttpParserLimits, SmallUriLimitAcceptsAtLimitAndRejectsOneByteAbove)

@@ -928,7 +928,7 @@ namespace AsynGyanis::Net
         {
             // RFC 9113 §10.5.1：收不下这一条头块就按 431 应答，而不是把整条连接判死——
             // 同一条连接上其它在跑的流与此无关，HPACK 上下文也已经在连接层整块解完、仍与对端同步。
-            // 请求目标太长走 414（RFC 9110 §15.5.18），与 h1/h3 同一分工：431 让客户端去减头部，
+            // 请求目标太长走 414（RFC 9110 §15.5.15），与 h1/h3 同一分工：431 让客户端去减头部，
             // 而 414 说的是 URL 本身。两条分支的处置动作相同，因此只在这里分岔状态码与文案。
             // 与 413 同一口径：只计入 badRequestCount，不计入已处理的请求条数
             const int                  rejectionStatus       = pending.isHeaderListTooLarge ? 431 : 414;
@@ -1594,7 +1594,7 @@ namespace AsynGyanis::Net
         bool hasDateHeader          = false;
 
         // 流式响应的正文由各 DATA 帧给出，长度在收尾前未知：content-length 与 DATA 负载总长必须一致
-        // （RFC 9113 §8.1.2.6），此刻算不出正确值，因此这条路径一律不写它（h1 的分块模式同样不写）
+        // （RFC 9113 §8.1.1），此刻算不出正确值，因此这条路径一律不写它（h1 的分块模式同样不写）
         const bool isStreamingResponse = response.isChunkedResponse();
 
         // 按权威记录的设置顺序逐条取，与 h1 的 appendHead 同一条路径：
@@ -1690,7 +1690,7 @@ namespace AsynGyanis::Net
         const bool                          hasTrailers   = !trailerFields.empty();
 
         std::string errorText;
-        // 有尾部头块时收尾不归这里两处：RFC 9113 §7.1 规定尾部头块必须自带 END_STREAM，那么头部与
+        // 有尾部头块时收尾不归这里两处：RFC 9113 §8.1 规定尾部头块必须自带 END_STREAM，那么头部与
         // 最后一片 DATA 就都不许带它，否则这条流在尾部字段之前就已经结束了
         const Http2ResponseSendStatus headersStatus = m_connection.sendResponseHeaders(streamId, wireStatusCode, headerFields, isBodyEmpty && !hasTrailers, &errorText);
         if (headersStatus != Http2ResponseSendStatus::Sent)
@@ -1808,7 +1808,7 @@ namespace AsynGyanis::Net
         headerFields.reserve(fields.size());
         for (const HttpResponse::InformationalHeaderField &field: fields)
         {
-            // h2 的头部名必须全小写（RFC 9113 §8.1.2）：大写名会被对端判成协议错误并 reset 这条流。
+            // h2 的头部名必须全小写（RFC 9113 §8.2）：大写名会被对端判成协议错误并 reset 这条流。
             // 调用方写的是 HTTP/1.1 那套大小写随意的习惯，归一落在这一层，而不是让每个处理器记住
             // 每种协议的规矩
             std::string lowerCaseName;

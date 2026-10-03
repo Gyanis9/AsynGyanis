@@ -205,7 +205,7 @@ namespace AsynGyanis::Net
          * @return false 参数非法，或这个名字不许出现在尾部：以 `:` 开头的伪头（h2/h3 的尾部头块里
          *         它们非法，RFC 9113 §8.1）、`content-length`、`transfer-encoding`
          *         与其余连接级字段（`Connection`/`Keep-Alive`/`Proxy-Connection`/`Upgrade`，
-         *         RFC 9112 §7.1.1.1 禁止）。拒收而不是静默丢弃——写错的业务代码需要当场知道自己没生效
+         *         RFC 9110 §6.5.1 禁止）。拒收而不是静默丢弃——写错的业务代码需要当场知道自己没生效
          * @see trailerDeclarationValue(), chunkedTerminatorText()
          */
         bool addTrailerField(std::string_view name, std::string_view value);
@@ -422,7 +422,7 @@ namespace AsynGyanis::Net
          * @details 用途两条：`103 Early Hints`（RFC 8297：最终响应还在生成时先把 `Link: rel=preload`
          *          交出去，浏览器可以据此提前取 CSS 与字体）与 `102 Processing`（长任务先表态）。
          *          三条通道同一个语义出处：h1 是一条独立的状态行报文，h2/h3 是**不带 END_STREAM 的
-         *          HEADERS 块**（RFC 9113 §8.1、RFC 9114 §5.3.2），因此处理函数换协议不必改写法。
+         *          HEADERS 块**（RFC 9113 §8.1、RFC 9114 §4.1），因此处理函数换协议不必改写法。
          *
          * @param statusCode 必须落在 1xx（100~199）。100 由会话在收到 `Expect: 100-continue` 时自动回，
          *        处理函数要的一般是 102 或 103

@@ -208,7 +208,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(callCount.load(), 0);
         EXPECT_EQ(response.status(), 405);
         EXPECT_EQ(response.body(), "Method Not Allowed");
-        // GET 被允许时 Allow 另补隐含可用的 HEAD（RFC 9110 §9.1/§15.5.7）：资源实际支持 HEAD，
+        // GET 被允许时 Allow 另补隐含可用的 HEAD（RFC 9110 §9.3.2/§15.5.6）：资源实际支持 HEAD，
         // 只列显式注册的方法会与「HEAD 命中 GET 处理器」的实际行为自相矛盾
         EXPECT_EQ(response.getHeader("allow").value_or(""), "GET, HEAD, POST");
     }

@@ -790,7 +790,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：authority 的边界认 `/`、`?`、`#` 三个，查询不被吞、片段不进请求目标
      * @details 此前只认 `/`，于是 `http://host?a=1` 把 `?a=1` 整段当成了主机：Host 头随之畸形，
      *          而查询静默消失——一个「看着配好了」的查询请求打到了不带参数的根上。片段按 RFC 9110
-     *          §5.1.2 剥掉（它不属于一次 HTTP 请求），空路径补成 `/`，只带查询时是 `/?a=1`。
+     *          §7.1 剥掉（它不属于一次 HTTP 请求），空路径按 RFC 9112 §3.2.1 补成 `/`，只带查询时是 `/?a=1`。
      */
     TEST(HttpClientUrlParsing, SplitsAuthorityAtQueryAndFragmentNotJustSlash)
     {

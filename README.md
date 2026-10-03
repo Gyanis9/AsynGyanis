@@ -59,7 +59,7 @@
 - **接受分发（跨平台多核扩展）** — 一个监听器接受、按轮转把连接交给 N 个工作循环，不依赖
   `SO_REUSEPORT`；Windows 上这是唯一可用的多核形态（`ConnectionDistributor` + `TcpServer::startAccepting()`）
 - **静态文件服务** — `staticFileDir()` 一行接入；条件请求一并给出（`ETag` + `Last-Modified`，
-  `If-None-Match`/`If-Modified-Since` 成立回 304、`If-Match` 不成立回 412，判定顺序按 RFC 9110 §13.2.4），
+  `If-None-Match`/`If-Modified-Since` 成立回 304、`If-Match` 不成立回 412，判定顺序按 RFC 9110 §13.2.2），
   两种验证器比较规则公开在 `HttpConditionalValidators.h`，业务侧要判 PUT/PATCH 的前提读同一份
 - **证书自动化（ACME / RFC 8555）** — `AcmeCertificateManager` 走完目录、账户、下单、自证、定稿与
   取证这一整台状态机：私钥与证书原子落盘（私钥 0600），到期前自主续，签好后经回调装回服务；

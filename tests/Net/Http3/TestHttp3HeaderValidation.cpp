@@ -312,7 +312,7 @@ TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
     Http3HeaderValidator root(Http3MessageKind::Request);
     EXPECT_TRUE(feedRequest(root, requestWithFieldReplaced(3, ":path", "/")).has_value()) << "只带斜杠的路径是合法的";
 
-    // 超出 ASCII 的字节要收（RFC 9110 §3.2.4.1 要求接收方按 UTF-8 解释，而不是判畸形）：这一格
+    // 超出 ASCII 的字节要收（没转换就发出来的 IRI，按 RFC 3987 §3.1 的约定就是 UTF-8）：这一格
     // 钉的是三条通路共用判据之后，h1 那侧新放宽的一半在 h3 上不能反过来变严
     Http3HeaderValidator utf8Path(Http3MessageKind::Request);
     EXPECT_TRUE(feedRequest(utf8Path, requestWithFieldReplaced(3, ":path", "/\303\251")).has_value()) << "未编码的 UTF-8 路径被判成了畸形";

@@ -156,7 +156,7 @@ namespace AsynGyanis::Net
      * @param url 形如 http(s)://host[:port]/path；协议名必须写出来且大小写无关，IPv6 主机必须写成 "[::1]:8080"
      * @details 查询串留在 `path` 里（本结构的既有口径）；authority 之后没有路径段时补成 `/`，
      *          只带查询的 `http://host?a=1` 因此交回 `/?a=1`——origin-form 的请求目标不能是空串
-     *          （RFC 9110 §5.1.2）。片段（`#...`）按规范剥掉：它不属于一次 HTTP 请求。
+     *          （RFC 9112 §3.2.1）。片段（`#...`）按 RFC 9110 §7.1 剥掉：它不属于一次 HTTP 请求。
      * @return ParsedUrl 拆好的协议、主机、端口与路径
      * @throws Base::InvalidArgumentException URL 含空白或控制字符、没有协议名、协议不是 http/https、
      *         没有主机、端口不是 1..65535 的十进制数、方括号没闭合，或 IPv6 字面量没加方括号
@@ -178,7 +178,7 @@ namespace AsynGyanis::Net
      *         引用不合法（含空白或控制字符、去掉片段之后什么都不剩、协议不是 http(s)、引用本身畸形）时为空
      * @details 交回空而不是抛异常：这条读的是**对端给的字节**，对端写歪是网络现象而不是本进程的用法错误。
      * @note 协议名之外的引用不带认证信息：`http://user:pass@host/` 这种写法在这里一律拒（凭据走 URL 是
-     *       RFC 9110 §3.2.2 早已废止的做法，而把它抄进下一跳等于把口令发给另一个主机）。
+     *       RFC 9110 §4.2.4 早已废止的做法，而把它抄进下一跳等于把口令发给另一个主机）。
      */
     [[nodiscard]] ASYN_NET_API std::optional<std::string> resolveUrlReference(const ParsedUrl &base, std::string_view reference);
     /**

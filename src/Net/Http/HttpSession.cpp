@@ -124,7 +124,7 @@ namespace AsynGyanis::Net
                     response.setBody("Payload Too Large");
                     break;
                 case HttpParseErrorKind::UriTooLarge:
-                    // 414：请求目标超出本端愿意解释的长度（RFC 9110 §15.5.18）。与 431 分开是因为
+                    // 414：请求目标超出本端愿意解释的长度（RFC 9110 §15.5.15）。与 431 分开是因为
                     // 病因不同——431 让客户端去减头部，而这里要缩的是 URL
                     response.setStatus(414);
                     response.setBody("URI Too Long");

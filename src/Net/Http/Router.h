@@ -60,7 +60,7 @@ namespace AsynGyanis::Net
     ///           get()」的路径收到 HEAD 会得到 200 而不是 405；
     ///       @li 路径命中但方法不被任何候选路由允许 → 405，并给出 Allow 头：列出显式注册的方法，
     ///           并在 GET 被允许时补上隐含可用的 HEAD（RFC 9110 §9.1 的 GET/HEAD 复用使资源实际
-    ///           支持 HEAD，§15.5.7 要求 Allow 如实交代支持集合）；
+    ///           支持 HEAD（§9.3.2），§15.5.6 要求 Allow 如实交代支持集合）；
     ///       @li 路径根本没有命中 → 404；
     ///       @li HttpMethod::UNKNOWN（CONNECT、TRACE、M-SEARCH 等未收录方法）**不参与业务匹配**，
     ///           连 any() 注册的通配方法路由也不会放行它，只按上面两条产出 404/405。

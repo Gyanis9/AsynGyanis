@@ -1258,7 +1258,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：请求目标超出 parser_limits.maximum_uri_length 时 h2 也按 414 收口
      * @details 这个键此前只有 h1/h3 判，h2 一条都不判：同一条收紧的配置在三条通道上只拦住两条。
-     *          状态码必须是 414 而不是 431（RFC 9110 §15.5.18/§15.5.14）——客户端读到 431 会去减头部，
+     *          状态码必须是 414 而不是 431（RFC 9110 §15.5.15/§15.5.14）——客户端读到 431 会去减头部，
      *          而这里要缩的是 URL。与 431 那条同一处置：只作废这一条流，连接继续服务。
      */
     TEST(Http2CleartextSession, Answers414ForOversizedRequestTargetAndKeepsConnection)

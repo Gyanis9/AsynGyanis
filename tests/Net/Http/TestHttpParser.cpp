@@ -112,9 +112,9 @@ namespace AsynGyanis::Net
      * @details 三条入站通路（h1 的请求行、h2 与 h3 的 `:path`）此前各写一份且两两不同，现在共用
      *          `isRequestTargetCharacter`。`#` 之后的片段不属于请求目标（RFC 9110 §7.1）——收下它等于
      *          让同一个资源因为「带不带 #」被路由与缓存认成两个；`\` 不在 `pchar` 里而形似 Windows 的
-     *          路径分隔符。反过来，超出 ASCII 的字节**必须**收：RFC 9110 §3.2.4.1 要求接收方按 UTF-8
-     *          解释而不是判畸形，拒掉会把真实客户端一直在发的未编码中文路径变成 400，而它与
-     *          `%C3%A9` 解码之后本来就是同一份内部表示。
+     *          路径分隔符。反过来，超出 ASCII 的字节**必须**收：拒掉会把真实客户端一直在发的未编码中文
+     *          路径变成 400，而按 IRI 转 URI 的约定（RFC 3987 §3.1）这串字节就是 UTF-8，与 `%C3%A9` 解码
+     *          之后本来就是同一份内部表示。
      */
     TEST(HttpParser, RequestTargetCharsetRejectsFragmentAndBackslashButAcceptsUtf8)
     {

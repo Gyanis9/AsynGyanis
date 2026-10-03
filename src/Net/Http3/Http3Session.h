@@ -566,7 +566,7 @@ namespace AsynGyanis::Net
         void attachChunkSender(std::int64_t streamId, HttpResponse &response);
 
         /**
-         * @brief 在某条流上发一条中间响应（1xx）：一个不收尾的头块（RFC 9114 §5.3.2）
+         * @brief 在某条流上发一条中间响应（1xx）：一个不收尾的头块（RFC 9114 §4.1）
          * @details 会话回 100-continue 与处理函数发 102/103 共用这一条出口，两处不会长出不一样。
          *          头部名在本层折成小写（§4.2 要求线上小写），成功排入时落一条状态码类计数、
          *          不落延迟样本。

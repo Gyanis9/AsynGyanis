@@ -1747,7 +1747,7 @@ namespace AsynGyanis::Net
                     co_return co_await sendStreamingChunk(streamId, streamingResponseFor(streamId), response, chunk);
                 });
 
-        // 中间响应（1xx）的出口：本流上一个不收尾的头块（RFC 9114 §5.3.2）。
+        // 中间响应（1xx）的出口：本流上一个不收尾的头块（RFC 9114 §4.1）。
         // 装配时机与流式发送口同一处，false 含义也一致：没写成、这条流已不可用
         response.setInformationalWriter([this, streamId](const int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields) -> Core::Task<bool>
                                         { co_return sendInformationalResponse(streamId, statusCode, fields); });
@@ -1998,7 +1998,7 @@ namespace AsynGyanis::Net
             fieldLines.push_back(QpackHeaderField{.name = std::move(lowerCaseName), .value = field.second});
         }
 
-        // 只交一个头块，不收尾也不带正文（RFC 9114 §5.3.2 的信息性响应）
+        // 只交一个头块，不收尾也不带正文（RFC 9114 §4.1 的信息性响应）
         if (const auto submitted = m_connection->submitResponseHead(streamId, fieldLines, false); !submitted)
         {
             LOG_ERROR_FMT("Http3Session: 流 {} 的 {} 中间响应未能排进待发字节。原因：{}", streamId, statusCode, submitted.error().message);

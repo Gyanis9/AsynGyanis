@@ -600,7 +600,7 @@ namespace AsynGyanis::Net
             fields.push_back(HpackHeaderFieldView{.name = field.name, .value = field.value});
         }
 
-        // END_STREAM 恒真：RFC 9113 §7.1 规定尾部头块必须带着它收尾，因此这里不给它留参数
+        // END_STREAM 恒真：RFC 9113 §8.1 规定尾部头块必须带着它收尾，因此这里不给它留参数
         emitHeaderBlock(streamId, m_encoder.encode(fields), true);
         noteLocalEndStream(*stream);
         return Http2ResponseSendStatus::Sent;
@@ -1011,7 +1011,7 @@ namespace AsynGyanis::Net
             failStream(*stream, Http2ErrorCode::StreamClosed, std::format("流 {} 的对端已 END_STREAM（half-closed (remote)），不能再发 HEADERS", streamId));
             return true;
         }
-        // 尾部头块必须带 END_STREAM：RFC 9113 §7.1 说得很直白——「trailer fields comprise a sequence
+        // 尾部头块必须带 END_STREAM：RFC 9113 §8.1 说得很直白——「trailer fields comprise a sequence
         // starting with a HEADERS frame, followed by zero or more CONTINUATION frames, where the
         // HEADERS frame bears an END_STREAM flag」，紧接着「An endpoint that receives a HEADERS frame
         // without the END_STREAM flag set after receiving the HEADERS frame that opens a request …
@@ -1021,7 +1021,7 @@ namespace AsynGyanis::Net
         {
             failStream(*stream, Http2ErrorCode::ProtocolError,
                        std::format("流 {} 的第二个 HEADERS 未带 END_STREAM：尾部头块必须同时终结这条流"
-                                   "（RFC 9113 §7.1，判为畸形报文）",
+                                   "（RFC 9113 §8.1，判为畸形报文）",
                                    streamId));
             // 字节照样要解码：动态表是连接级状态，跳过这一块会让后续头块的索引整体错位
             return beginHeaderBlock(streamId, HeaderBlockPurpose::Discard, payload.endStream, payload.headerBlockFragment, payload.endHeaders);
@@ -1355,7 +1355,7 @@ namespace AsynGyanis::Net
                 return true;
             }
             // 尾部字段随这条流的 END_STREAM 收口信号一起交出（业务从 HttpRequest 的 trailer 一档读到）。
-            // 它必然携带 END_STREAM（§7.1，不带的已在分发之前判成畸形报文）：上层只按
+            // 它必然携带 END_STREAM（§8.1，不带的已在分发之前判成畸形报文）：上层只按
             // Http2ReceivedData::endStream 判定正文收齐，少这一条零长片段，这条请求就会一直等下去、
             // 永远不路由
             if (endStream)
@@ -1384,7 +1384,7 @@ namespace AsynGyanis::Net
         std::string  errorText;
         if (!acceptRequestHeaderFields(headerFields, request, &errorText))
         {
-            // 请求语义不合规是流错误（§8.1.2.6）：RST_STREAM 这条流，连接继续服务其它流
+            // 请求语义不合规是流错误（§8.1.1）：RST_STREAM 这条流，连接继续服务其它流
             // 落一笔账给上层（h1/h3 在同一处都记 badRequest，h2 此前在指标上是零）：
             // 这条流不交请求、不回响应，没有这一笔就没人知道对端送过多少条本端解释不了的头部
             ++m_rejectedRequestHeaderFieldCount;
@@ -1500,7 +1500,7 @@ namespace AsynGyanis::Net
                     hasPathField = true;
                     request.path = field.value;
                     // 请求目标的闸门与 h1/h3 同一个配置键（parser_limits.maximum_uri_length）：
-                    // 太长不是协议错误而是本端不收，按 414 应答（RFC 9110 §15.5.18）而不是 431——
+                    // 太长不是协议错误而是本端不收，按 414 应答（RFC 9110 §15.5.15）而不是 431——
                     // 两者的处置动作不同：431 让客户端去减头部，而这里要缩的是 URL
                     if (m_parserLimits.maximumUriLength != 0 && request.path.size() > m_parserLimits.maximumUriLength)
                     {

@@ -31,7 +31,8 @@ namespace AsynGyanis::Net
          * @brief 判断字符是否可以出现在请求目标里
          * @details 取值范围与 h2/h3 共用一份判据（`HttpHeaderRules.h` 的 `isRequestTargetCharacter`）：
          *          空格、控制字符与 DEL 不收，裸 `#`（片段不属于请求目标）与 `\`（不在 pchar 里）不收，
-         *          超出 ASCII 的字节按 UTF-8 收下（RFC 9110 §3.2.4.1 要求接收方这么解释，而不是判畸形）。
+         *          超出 ASCII 的字节按 UTF-8 收下而不判畸形（URI 的字符集只到 ASCII，RFC 3986 §2.1；IRI 转
+         *          URI 的约定编码是 UTF-8，RFC 3987 §3.1）。
          * @param character 待判断字节
          * @return true 表示合法
          */
@@ -491,7 +492,7 @@ namespace AsynGyanis::Net
         }
         if (exceedsLimit(targetText.size(), m_limits.maximumUriLength))
         {
-            // 请求目标超限有自己的类别：RFC 9110 §15.5.18 为它留了 414，而 431 说的是头部太大——
+            // 请求目标超限有自己的类别：RFC 9110 §15.5.15 为它留了 414，而 431 说的是头部太大——
             // 客户端据此判断该缩短 URL 还是该减少头部
             failUriTooLarge(std::format("请求 URI 超出上限 {} 字节", m_limits.maximumUriLength));
             return false;
@@ -726,7 +727,7 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        // 只有「不定义报文边界、也不是连接级」的字段才交给上层。RFC 9112 §7.1.1.1 本就禁止尾部
+        // 只有「不定义报文边界、也不是连接级」的字段才交给上层。RFC 9110 §6.5.1 本就禁止尾部
         // 带这几个字段，但禁归禁，收端仍要自己守住：trailer 里的 content-length / transfer-encoding
         // 一旦被读成头部，同一份报文就有了两个长度解释（请求走私面）。名字先折小写再比对，
         // 因为对端写「Content-Length」与「content-length」是同一个字段

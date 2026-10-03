@@ -375,7 +375,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 判断本次请求是否满足「应用 Range」的前提（If-Range 校验）
          * @details If-Range 缺省即放行；在场时其值必须与本资源 ETag 逐字相同（强比较），
-         *          或解析为日期且与 Last-Modified 相等（RFC 9110 §14.22）：两者都不成立时
+         *          或解析为日期且与 Last-Modified 相等（RFC 9110 §13.1.5）：两者都不成立时
          *          忽略 Range，按 200 下发完整表示。
          * @param request 请求对象
          * @param entityTag 本资源当前 ETag
@@ -850,7 +850,7 @@ namespace AsynGyanis::Net
          * @param candidatePath 已确认落在静态根之内的文件路径
          * @param ranges 合并后的区间序列（起点升序、互不重叠也不相邻，长度 ≥ 2）
          * @param fileSize 表示的字节数，只用于每段的 Content-Range 总长
-         * @param mimeType 这份文件的媒体类型，逐段带上（RFC 9110 §14.7）
+         * @param mimeType 这份文件的媒体类型，逐段带上（RFC 9110 §14.6）
          * @param statInfo 建立验证器那次查询拿到的文件身份，逐段复核
          * @param isHeadRequest 是否为 HEAD：只报「GET 会发多大」，一段正文都不必读
          * @param response 待填的响应
@@ -1103,7 +1103,7 @@ namespace AsynGyanis::Net
 
             const bool isHeadRequest = (requestMethod == HttpMethod::HEAD);
 
-            // If-Match 排在「未修改」判定之前：两个条件同时在场时要**同时**成立（§13.2.4），
+            // If-Match 排在「未修改」判定之前：两个条件同时在场时要**同时**成立（§13.2.2），
             // 先判 If-Match 才能把「前提不成立」与「没变化」这两种答复分清楚
             if (preconditionFails(request, entityTagText))
             {
@@ -1138,7 +1138,7 @@ namespace AsynGyanis::Net
                 }
             }
 
-            // 多个区间：拼一份 multipart/byteranges 交出去（RFC 9110 §14.7）。拼不成——正文里撞上了
+            // 多个区间：拼一份 multipart/byteranges 交出去（RFC 9110 §14.6）。拼不成——正文里撞上了
             // 分隔符、文件在两次读之间换了版本、某段读失败——就把这条 Range 当没接，照常往下走回
             // 200 全量：一份自相矛盾的 206 比让对端重取整份文件糟得多
             if (rangeVerdict == RangeVerdict::MultiSatisfiable)
