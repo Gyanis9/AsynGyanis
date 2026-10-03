@@ -1065,6 +1065,8 @@ int main(int argc, char **argv)
             return 1;
         }
         adminServer = std::make_unique<Net::HttpServer>(pool.eventLoop(0), *adminAddress);
+        // 管理口刻意不调 setHttp2CleartextEnabled()：抓取端是 h1，运维面上多一条协议栈只是多一处入口。
+        // 业务口那边开没开 h2c 与这里无关（理由见 HttpServerConfiguration::metricsPort 的说明）
         // 共用那份采集端：管理口要报的是整进程的数，不是它自己那台服务器的零
         joinSharedMetricsCollector(adminServer);
         Net::registerOperationEndpoints(*adminServer, configuration);

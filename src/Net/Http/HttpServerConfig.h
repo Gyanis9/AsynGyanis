@@ -79,6 +79,11 @@ namespace AsynGyanis::Net
          * @details 两个用处：① 来源收口——管理口默认只听回环（`metricsAddress`），业务口可以继续开
          *          在 0.0.0.0；② 多进程部署时每个进程各听一个端口（调用方按进程序号错开），
          *          采集端就能按进程聚合而不是随机命中某一台。
+         * @note 管理口是**另一台服务器**，由调用方自己起：本仓的参考实现只在它上面发 HTTP/1.1，
+         *       业务口开了 h2c 也不会带过去。抓取端（Prometheus 一类）本来就是 h1，运维面上多一条
+         *       协议栈只是多一处可被打的入口。想确认这一步没走偏，看用例
+         *       `Http2CleartextSession.RefusesH2cPrefaceWhenCleartextSupportIsOff`——没开 h2c 的端口
+         *       收到 `PRI * HTTP/2.0` 前奏时按 HTTP/1.1 语法判 400，而不是发 SETTINGS 把它当 h2 接走
          * @note 只在 `exposeMetrics` 打开时有意义，两者都不开等于配了个没人听的端口
          */
         std::uint16_t metricsPort{0};

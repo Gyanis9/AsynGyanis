@@ -3125,4 +3125,26 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findResponseHeaderValue(rangeDecoder, frames, 1U, "content-range"), "bytes 0-4/18") << "206 少了正确的 Content-Range 就是让客户端猜总长";
     }
 
+
+    /**
+     * @brief 钉住：没开 h2c 的端口不会把先验知识前奏当 HTTP/2 接走
+     * @details 运维口那台监听器刻意只发 HTTP/1.1（抓取端本来就是 h1，多一条协议栈就多一处能打运维面的
+     *          入口），这条钉的是「默认档 + 前奏」这一格：客户端按 RFC 9113 §3.3 带着 `PRI * HTTP/2.0`
+     *          直连一个没开 h2c 的端口时，本端要按 HTTP/1.1 的语法把这段字节判掉——星号形式的请求目标
+     *          只有 OPTIONS 合法（RFC 9112 §3.2.3），于是回一条 4xx 而不是发出 SETTINGS 帧把它当 h2 服务。
+     */
+    TEST(Http2CleartextSession, RefusesH2cPrefaceWhenCleartextSupportIsOff)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
+        ASSERT_FALSE(fixture.server().isHttp2CleartextEnabled()) << "本条的前提是这台服务器没开 h2c";
+
+        LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", kWaitTimeout)) << "前奏未能写入";
+
+        std::string responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "HTTP/1.1 400", kWaitTimeout)) << "没开 h2c 的端口没有按 HTTP/1.1 拒掉这段前奏，实际拿到：\n" << responseText;
+    }
+
 } // namespace AsynGyanis::Net
