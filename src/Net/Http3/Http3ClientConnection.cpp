@@ -25,8 +25,8 @@ namespace AsynGyanis::Net
     Core::Task<bool> Http3ClientConnection::start()
     {
         Http3Connection::Callbacks callbacks;
-        callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value, const bool /*isTrailers*/)
-        { noteHeaderField(streamId, name, value); };
+        callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value, const bool isTrailers)
+        { noteHeaderField(streamId, name, value, isTrailers); };
         callbacks.onBodyBytes        = [this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes) { noteBodyBytes(streamId, bytes); };
         callbacks.onRequestEnded     = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
         callbacks.onStreamClosed     = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
@@ -204,7 +204,7 @@ namespace AsynGyanis::Net
         return m_pendingStreams.size();
     }
 
-    void Http3ClientConnection::noteHeaderField(const std::int64_t streamId, const std::string_view name, const std::string_view value)
+    void Http3ClientConnection::noteHeaderField(const std::int64_t streamId, const std::string_view name, const std::string_view value, const bool isTrailers)
     {
         // 本端已经不认这条流（收完或被结掉）：字段没有落账的地方，丢掉
         PendingExchange *exchange = liveExchange(streamId);
@@ -228,7 +228,15 @@ namespace AsynGyanis::Net
             exchange->response.statusCode = *parsedStatusCode;
             return;
         }
-        exchange->response.headers.emplace_back(std::string{name}, std::string{value});
+        // 尾段与头部各落各的账（与 h2 那侧同一条口径）：尾段落进 trailers，调用方才读得出
+        // 「这是正文之后才知道的结果」；伪头不会走到这里（:status 上面已 return）
+        if (isTrailers)
+        {
+            exchange->response.trailers.emplace_back(std::string{name}, std::string{value});
+        } else
+        {
+            exchange->response.headers.emplace_back(std::string{name}, std::string{value});
+        }
     }
 
     void Http3ClientConnection::noteBodyBytes(const std::int64_t streamId, const std::span<const std::uint8_t> bytes)

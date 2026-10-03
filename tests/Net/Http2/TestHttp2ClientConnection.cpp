@@ -401,6 +401,7 @@ namespace AsynGyanis::Net
             int                                              statusCode{0};
             std::string                                      body;
             std::vector<std::pair<std::string, std::string>> headers;     ///< 本端解出的响应头部
+            std::vector<std::pair<std::string, std::string>> trailers;    ///< 正文之后的尾部头块字段（与头部分开留）
             std::vector<std::pair<std::string, std::string>> peerHeaders; ///< 对端把切片拼回去后解出的请求字段
             std::string                                      errorMessage;
             std::string                                      peerDecodeErrorText;      ///< 对端解帧的报错（越界的单帧会在这里露出来）
@@ -492,7 +493,9 @@ namespace AsynGyanis::Net
             outcome.statusCode                 = response.statusCode;
             outcome.body                       = response.body;
             outcome.headers                    = response.headers;
-            outcome.errorMessage               = response.errorMessage;
+
+            outcome.trailers     = response.trailers;
+            outcome.errorMessage = response.errorMessage;
             loop.stop();
             co_return;
         }
@@ -531,7 +534,9 @@ namespace AsynGyanis::Net
             outcome.statusCode                 = response.statusCode;
             outcome.body                       = response.body;
             outcome.headers                    = response.headers;
-            outcome.errorMessage               = response.errorMessage;
+
+            outcome.trailers     = response.trailers;
+            outcome.errorMessage = response.errorMessage;
             loop.stop();
             co_return;
         }
@@ -553,7 +558,9 @@ namespace AsynGyanis::Net
             outcome.statusCode                 = response.statusCode;
             outcome.body                       = response.body;
             outcome.headers                    = response.headers;
-            outcome.errorMessage               = response.errorMessage;
+
+            outcome.trailers     = response.trailers;
+            outcome.errorMessage = response.errorMessage;
             co_return;
         }
         std::string singleSettingFrameBytes(const Http2SettingIdentifier identifier, const std::uint32_t value)
@@ -1626,12 +1633,16 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住尾部头块：它要接在响应头部之后，而不是把响应头部抹掉
+     * @brief 钉住尾部头块：响应头部不被抹掉，尾字段落在**另一张表**里
      * @details 带 :status 的那一段才算「一个新的响应头部」（含 1xx 之后真正的响应），清空旧的才有
      *          意义；正文之后那一段 trailers 不带伪头，它是往已有头部后面接的。过去每段都先 clear，
      *          gRPC 那类「正文 + trailers」的响应就只剩尾部字段，业务读 content-type 会读到空。
+     * @note 本条断言按 RFC 9113 §8.1 改了语义：旧写法把尾字段与响应头部混进同一张 `headers` 表，
+     *       「先头部后尾部」的顺序成了两段的唯一区分——而混表会让消费方把「收完正文才知道的结果」
+     *       当成请求时就定的属性（同名时还会排成一条看似被覆盖的头部）。现在两段各落各的表：
+     *       `headers` 只有响应头部，`trailers` 只有尾字段，两段的到达顺序各自保持。
      */
-    TEST(Http2ClientConnection, AppendsTrailerFieldsToTheResponseHeaders)
+    TEST(Http2ClientConnection, KeepsResponseHeadersAndSeparatesTrailerFields)
     {
         Core::EventLoop loop;
         int             clientDescriptor = -1;
@@ -1648,9 +1659,11 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(outcome.isStarted) << "前奏没走完，后面的判据无从谈起";
         ASSERT_EQ(outcome.statusCode, 200) << "失败原因：" << outcome.errorMessage;
         EXPECT_EQ(outcome.body, "body") << "正文（到 END_STREAM 为止）：" << outcome.body;
-        ASSERT_EQ(outcome.headers.size(), 2U) << "响应头部与尾部头块应当都在";
+        ASSERT_EQ(outcome.headers.size(), 1U) << "响应头部只剩 content-type，尾字段不该混进来：" << outcome.headers.size();
         EXPECT_EQ(outcome.headers[0].first, "content-type");
-        EXPECT_EQ(outcome.headers[1].first, "x-trace") << "顺序也必须是先头部后尾部：" << outcome.headers[1].first;
+        ASSERT_EQ(outcome.trailers.size(), 1U) << "尾部头块的字段要收下，只是落在另一张表里";
+        EXPECT_EQ(outcome.trailers[0].first, "x-trace");
+        EXPECT_EQ(outcome.trailers[0].second, "done") << "尾字段的值要原样交到调用方手上：" << outcome.trailers[0].second;
     }
 
     /**

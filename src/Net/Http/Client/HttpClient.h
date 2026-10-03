@@ -51,6 +51,10 @@ namespace AsynGyanis::Net
         std::string                        reasonPhrase;  ///< 状态行里的原因短语
         std::vector<HttpClientHeaderField> headers;       ///< 头部字段，按收到的顺序原样留着
         std::string                        body;          ///< 正文；chunked 已按块拼回原样
+        /// 正文之后到达的尾部字段，按到达顺序留着；三条出站通道都填这一格（h1 的 chunked trailer 段、
+        /// h2 与 h3 的尾部头块）。与 headers 分开：trailer 是收完正文才知道的结果（校验和、最终状态），
+        /// 混进头部会让消费方把它当成请求时就定的属性
+        std::vector<HttpClientHeaderField> trailers;
 
         /**
          * @brief 按名字取一条响应头，**名字大小写不敏感**
@@ -65,6 +69,14 @@ namespace AsynGyanis::Net
          * @note 同名多条时交回**第一条**；要拿全部（如 `Set-Cookie`）请自己遍历 `headers`
          */
         [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view name) const;
+        /**
+         * @brief 按名字取一条响应尾部字段，名字大小写不敏感
+         * @details 没有这条读口时 trailer 等于没收到。折叠规则与 headerValue 共用一处实现，
+         *          免得两段读出两个答案；同名多条时交回第一条，要拿全部请遍历 trailers。
+         * @param name 字段名，大小写任意
+         * @return std::optional<std::string_view> 指向 trailers 内部的视图，本响应析构后失效
+         */
+        [[nodiscard]] std::optional<std::string_view> trailerValue(std::string_view name) const;
         /**
          * @brief 读这条响应的 `Retry-After`，交回「还要等多少秒」
          * @details 这条头有两种合法写法（相对秒数与绝对的 HTTP-date，RFC 9110 §10.2.3），自己解析要同时

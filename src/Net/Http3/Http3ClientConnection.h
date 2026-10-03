@@ -47,8 +47,11 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API Http3ClientResponse
     {
-        int                                              statusCode{0};  ///< :status 的值；0 表示没拿到响应
-        std::vector<std::pair<std::string, std::string>> headers;        ///< 除伪头之外的响应字段，按收到的顺序留着（含尾段字段）
+        int                                              statusCode{0}; ///< :status 的值；0 表示没拿到响应
+        std::vector<std::pair<std::string, std::string>> headers;       ///< 除伪头之外的响应头部字段，按收到的顺序留着
+        /// 正文之后那个尾段的字段（RFC 9114 §4.3），按到达顺序留着。与 headers 分开：过去「含尾段字段」
+        /// 混在同一张表里，调用方读不出哪一条是收完正文才知道的结果
+        std::vector<std::pair<std::string, std::string>> trailers;
         std::string                                      body{};         ///< 正文（DATA 帧拼接，额度已按消耗归还）
         std::string                                      errorMessage{}; ///< 失败时的中文原因；为空表示这条响应是正常收齐的
         /// 这条流上有没有收到过对端的任何字节。复用连接时靠它区分「对端在我们手里把连接收了」（可以重来
@@ -188,7 +191,10 @@ namespace AsynGyanis::Net
         };
 
         /// h3 那组按流的回调 → 本类的响应侧说法
-        void noteHeaderField(std::int64_t streamId, std::string_view name, std::string_view value);
+        /// 收下解出的一个响应字段。伪头 :status 折成状态码后不留字段；其余按 isTrailers 分档——
+        /// 正文之后的尾段落进 response.trailers，与响应头部分开留，调用方才读得出「这是收完正文
+        /// 才知道的结果」
+        void noteHeaderField(std::int64_t streamId, std::string_view name, std::string_view value, bool isTrailers);
         void noteBodyBytes(std::int64_t streamId, std::span<const std::uint8_t> bytes);
         void noteMessageEnded(std::int64_t streamId);
         void noteStreamFailed(std::int64_t streamId, std::string_view reason);

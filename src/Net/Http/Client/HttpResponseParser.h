@@ -30,6 +30,10 @@ namespace AsynGyanis::Net
         std::string                                      reasonPhrase;
         std::vector<std::pair<std::string, std::string>> headers;
         std::string                                      body;
+        /// 正文之后到达的尾部字段（trailers），按到达顺序留着。三条出站通道都填这一格：HTTP/1.1 的
+        /// chunked trailer 段、h2 与 h3 的尾部头块。与 headers 分开是有意义的：trailer 在正文之后才到，
+        /// 混进头部就让消费方分不清「请求时就定的属性」与「收完正文才知道的结果」
+        std::vector<std::pair<std::string, std::string>> trailers;
     };
     /**
      * @brief 自顶向下解析 HTTP 响应报文

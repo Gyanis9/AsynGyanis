@@ -72,19 +72,39 @@ namespace AsynGyanis::Net
     }
 
 
+    namespace
+    {
+        /**
+         * @brief 在一组「名: 值」字段里按名字取第一条，名字大小写不敏感
+         * @details `headerValue` 与 `trailerValue` 共用一处：两段的折叠规则必须是同一份，各写一遍就会漂移
+         * @param fields 字段表（响应头部或尾部字段）
+         * @param name 待查的字段名，大小写任意
+         * @return std::optional<std::string_view> 第一条同名字段的值；没有则为空
+         */
+        std::optional<std::string_view> firstFieldValueNamed(const std::vector<HttpClientHeaderField> &fields, const std::string_view name)
+        {
+            // 比对走 Net::equalsIgnoringCase（只折 A-Z/a-z）：头部名大小写不敏感是 RFC 9110 §5.1 的规定，
+            // 而字段按对端给什么留什么，因此这里必须折叠两侧。不用 std::tolower：它按 locale 折，
+            // 同一份应答在不同机器上会比出不同结果——那正是本仓各处折叠都避开它的原因
+            for (const HttpClientHeaderField &field: fields)
+            {
+                if (equalsIgnoringCase(field.first, name))
+                {
+                    return std::string_view(field.second);
+                }
+            }
+            return std::nullopt;
+        }
+    } // namespace
+
     std::optional<std::string_view> HttpClientResponse::headerValue(const std::string_view name) const
     {
-        // 比对走 Net::equalsIgnoringCase（只折 A-Z/a-z）：头部名大小写不敏感是 RFC 9110 §5.1 的规定，
-        // 而 headers 按对端给什么留什么，因此这里必须折叠两侧。不用 std::tolower：它按 locale 折，
-        // 同一份应答在不同机器上会比出不同结果——那正是本仓各处折叠都避开它的原因
-        for (const HttpClientHeaderField &field: headers)
-        {
-            if (equalsIgnoringCase(field.first, name))
-            {
-                return std::string_view(field.second);
-            }
-        }
-        return std::nullopt;
+        return firstFieldValueNamed(headers, name);
+    }
+
+    std::optional<std::string_view> HttpClientResponse::trailerValue(const std::string_view name) const
+    {
+        return firstFieldValueNamed(trailers, name);
     }
 
     namespace
@@ -778,6 +798,7 @@ namespace AsynGyanis::Net
             response->reasonPhrase = parser.result().reasonPhrase;
             response->headers      = parser.result().headers;
             response->body         = parser.result().body;
+            response->trailers     = parser.result().trailers;
             return response;
         }
 
@@ -1136,12 +1157,14 @@ namespace AsynGyanis::Net
          * @param body 正文
          * @return std::unique_ptr<HttpClientResponse> 对外的响应
          */
-        std::unique_ptr<HttpClientResponse> makeClientResponse(const int statusCode, std::vector<std::pair<std::string, std::string>> headers, std::string body)
+        std::unique_ptr<HttpClientResponse> makeClientResponse(const int statusCode, std::vector<std::pair<std::string, std::string>> headers, std::string body,
+                                                               std::vector<std::pair<std::string, std::string>> trailers = {})
         {
             auto result        = std::make_unique<HttpClientResponse>();
             result->statusCode = statusCode;
             result->headers    = std::move(headers);
             result->body       = std::move(body);
+            result->trailers   = std::move(trailers);
             return result;
         }
 
@@ -1241,7 +1264,7 @@ namespace AsynGyanis::Net
             }
             // 主动收口那一条也走这一支：头部完整、body 为空（字节都交给了接收口），isAnyByteReceived 与
             // isAnyByteSent 两位照旧可信
-            exchange.response = makeClientResponse(response.statusCode, std::move(response.headers), std::move(response.body));
+            exchange.response = makeClientResponse(response.statusCode, std::move(response.headers), std::move(response.body), std::move(response.trailers));
             co_return exchange;
         }
 
@@ -1293,7 +1316,7 @@ namespace AsynGyanis::Net
                 co_return exchange;
             }
             // 主动收口那一条走同一支：头部完整、body 为空
-            exchange.response = makeClientResponse(response.statusCode, std::move(response.headers), std::move(response.body));
+            exchange.response = makeClientResponse(response.statusCode, std::move(response.headers), std::move(response.body), std::move(response.trailers));
             co_return exchange;
         }
 

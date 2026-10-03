@@ -31,9 +31,12 @@ namespace AsynGyanis::Net
     struct ASYN_NET_API Http2ClientResponse
     {
         int                                              statusCode{0}; ///< :status 的值；0 表示没拿到响应
-        std::vector<std::pair<std::string, std::string>> headers;       ///< 除伪头之外的响应字段，按收到的顺序留着
-        std::string                                      body;          ///< 正文（DATA 帧拼接，已按本端消耗归还流控窗口）
-        std::string                                      errorMessage;  ///< 失败时的中文原因；为空表示这条响应是正常收齐的
+        std::vector<std::pair<std::string, std::string>> headers;       ///< 除伪头之外的响应头部字段，按收到的顺序留着
+        /// 正文之后到达的尾部头块字段（RFC 9113 §8.1），按到达顺序留着。与 headers 分开：混在一起
+        /// 调用方就分不清「请求时就定的属性」与「收完正文才知道的结果」
+        std::vector<std::pair<std::string, std::string>> trailers;
+        std::string                                      body;         ///< 正文（DATA 帧拼接，已按本端消耗归还流控窗口）
+        std::string                                      errorMessage; ///< 失败时的中文原因；为空表示这条响应是正常收齐的
         /// 这条流上有没有收到过对端的任何帧。复用连接时靠它区分「对端在我们手里把连接收了」（可以重来
         /// 一次）与「响应本身出问题了」（重发会把非幂等请求做两遍）——与 HTTP/1.1 侧同一位判据
         bool isAnyByteReceived{false};

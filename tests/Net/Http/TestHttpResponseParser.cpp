@@ -574,4 +574,41 @@ namespace AsynGyanis::Net
         EXPECT_EQ(parser.result().statusCode, 200);
         EXPECT_TRUE(parser.result().reasonPhrase.empty());
     }
+    /**
+     * @brief 钉住：chunked 的 trailer 段收进 `trailers` 而不是丢掉，并与头部共用同一道配额账
+     * @details 过去这一支只校验形态就丢弃——正文之后才知道的结果（校验和、最终状态）调用方压根读不到，
+     *          而那正是 chunked trailer 存在的理由（RFC 9112 §7.1.2）。收下来就要记账：条数与净字节两道
+     *          闸门按**整条报文**累计判，与入站侧（h1 解析器、h2 会话、h3 会话）同一条口径；否则「把字段
+     *          拆进 trailer 段」就成了本端这两道闸的绕过口。
+     */
+    TEST(HttpResponseParser, CapturesTrailerFieldsAndCountsThemIntoTheHeaderBudget)
+    {
+        {
+            const std::string  message = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                         "3\r\nabc\r\n0\r\nx-checksum: 616263\r\nx-result: ok\r\n\r\n";
+            HttpResponseParser parser;
+            ASSERT_TRUE(feedAll(parser, message));
+            EXPECT_EQ(parser.result().body, "abc");
+            EXPECT_EQ(parser.result().headers.size(), 2U) << "trailer 段的字段不该混进响应头部";
+            ASSERT_EQ(parser.result().trailers.size(), 2U) << "两条尾部字段都要收下来，而不是校验完就丢";
+            EXPECT_EQ(parser.result().trailers[0].first, "x-checksum");
+            EXPECT_EQ(parser.result().trailers[0].second, "616263") << "值按到达顺序原样留着（前导 OWS 去掉）";
+            EXPECT_EQ(parser.result().trailers[1].first, "x-result") << "两条的到达顺序也要保持";
+        }
+        {
+            // 配额按整条报文累计：`Transfer-Encoding` + 98 条附加头 = 99 条头部，出厂条数上限 100，
+            // 于是第一条 trailer 恰好占满、第二条越限
+            std::string message = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n";
+            for (std::size_t index = 0; index < 98U; ++index)
+            {
+                message += "x-h" + std::to_string(index) + ": v\r\n";
+            }
+            message += "\r\n3\r\nabc\r\n0\r\nx-a: 1\r\nx-b: 2\r\n\r\n";
+
+            HttpResponseParser parser;
+            static_cast<void>(parser.feed(message));
+            EXPECT_FALSE(parser.isComplete()) << "trailer 段与头部不共用条数闸门：这道闸能被拆块绕过";
+            EXPECT_TRUE(parser.hasFailed()) << "越限要判这条流不对，而不是默默收下";
+        }
+    }
 } // namespace AsynGyanis::Net

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <optional>
 
 namespace AsynGyanis::Net
 {
@@ -158,6 +159,31 @@ namespace AsynGyanis::Net
             // setHeader 与响应侧同名闸门）拒的是同一批字节，于是形成「收得进来、发不出去」的分歧；
             // 而对端写的控制字符还会被下游原样打进日志。SP/HTAB 与 obs-text（0x80-0xFF）照旧放行
             return containsOnlyFieldValueCharacters(line.substr(colonPosition + 1));
+        }
+
+        /**
+         * @brief 拆一条「名: 值」字段行，规则与入站侧一致
+         * @details 头部行与 trailer 行共用一处拆法：过去只有头部那一支拆出名与值，trailer 那一支只校验
+         *          形态就丢掉。把 trailer 收下来时不能再造第三种拆法——去不去前导空白会让同一条字段在
+         *          两段里读出两个值。
+         * @param line 未拆的字段行
+         * @return std::optional<std::pair<std::string, std::string>> 名与值；形态不合（折行、缺冒号、
+         *         冒号前带空白、名字不是 token）时为空，调用方据此判这条流已经不对
+         */
+        std::optional<std::pair<std::string, std::string>> splitFieldLine(const std::string_view line)
+        {
+            if (!headerLineIsWellFormed(line))
+            {
+                return std::nullopt;
+            }
+            const std::size_t colon = line.find(':');
+            std::string       name  = std::string(line.substr(0, colon));
+            std::string       value = std::string(line.substr(colon + 1));
+            while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+            {
+                value.erase(0, 1);
+            }
+            return std::make_pair(std::move(name), std::move(value));
         }
     } // namespace
 
@@ -336,14 +362,16 @@ namespace AsynGyanis::Net
                         m_stage = Stage::Failed;
                         break;
                     }
-                    const std::size_t colon = line.find(':');
-                    std::string       name  = std::string(line.substr(0, colon));
-                    std::string       value = std::string(line.substr(colon + 1));
-                    // 去掉值前导空白
-                    while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
-                        value.erase(0, 1);
-                    m_headerBlockByteCount += name.size() + value.size();
-                    if ((kDefaultMaximumHeaderCount != 0 && m_result.headers.size() >= kDefaultMaximumHeaderCount) ||
+                    const std::optional<std::pair<std::string, std::string>> field = splitFieldLine(line);
+                    if (!field.has_value())
+                    {
+                        m_stage = Stage::Failed;
+                        break;
+                    }
+                    m_headerBlockByteCount += field->first.size() + field->second.size();
+                    // 条数与净字节都按**整条报文**累计：trailer 段的字段一并计入，否则「把字段拆进
+                    // trailer 段」就是这两道闸的绕过口——与入站侧（h1 解析器、h2/h3 会话）同一条口径
+                    if ((kDefaultMaximumHeaderCount != 0 && m_result.headers.size() + m_result.trailers.size() >= kDefaultMaximumHeaderCount) ||
                         (kDefaultMaximumHeaderBlockByteCount != 0 && m_headerBlockByteCount > kDefaultMaximumHeaderBlockByteCount))
                     {
                         // 与正文上限同源：头部也是「对端说了算」的字节数，没有闸门就是让对方
@@ -351,7 +379,7 @@ namespace AsynGyanis::Net
                         m_stage = Stage::Failed;
                         break;
                     }
-                    m_result.headers.emplace_back(std::move(name), std::move(value));
+                    m_result.headers.emplace_back(std::move(field->first), std::move(field->second));
                     break;
                 }
                 case Stage::Body:
@@ -422,19 +450,29 @@ namespace AsynGyanis::Net
                                 m_chunkPhase = ChunkPhase::SizeLine;
                                 continue;
                             }
-                            // Trailer 段：空行表示报文完整；其余行按**与头部同一套**形态判据校验后忽略
-                            // （trailer 也在报文 framing 之内，折行或缺冒号的行说明这一条流已经不对了，
-                            //   不能因为「反正要丢掉」就放过）
+                            // Trailer 段：空行表示报文完整；其余行按**与头部同一套**形态判据校验后
+                            // 收进 trailers（过去只校验就丢弃：正文之后才知道的结果——校验和、最终状态——
+                            // 调用方压根读不到，而这正是 chunked trailer 存在的理由）
                             if (line.empty())
                             {
                                 m_stage = Stage::Complete;
                                 break;
                             }
-                            if (!headerLineIsWellFormed(line))
+                            const std::optional<std::pair<std::string, std::string>> trailerField = splitFieldLine(line);
+                            if (!trailerField.has_value())
                             {
                                 m_stage = Stage::Failed;
                                 break;
                             }
+                            m_headerBlockByteCount += trailerField->first.size() + trailerField->second.size();
+                            if ((kDefaultMaximumHeaderCount != 0 && m_result.headers.size() + m_result.trailers.size() >= kDefaultMaximumHeaderCount) ||
+                                (kDefaultMaximumHeaderBlockByteCount != 0 && m_headerBlockByteCount > kDefaultMaximumHeaderBlockByteCount))
+                            {
+                                // 与头部同一道账：整条报文的字段条数与净字节都算在内，越限就判这条流不对
+                                m_stage = Stage::Failed;
+                                break;
+                            }
+                            m_result.trailers.emplace_back(std::move(trailerField->first), std::move(trailerField->second));
                         }
                         break;
                     }

@@ -511,11 +511,14 @@ namespace AsynGyanis::Net
         {
             stream.response.headers.clear();
         }
+        // 两段各有各的落账处：不带 :status 的那一段是正文之后的尾部头块（RFC 9113 §8.1），
+        // 过去与响应头部混进同一张表，调用方读不出「这是收完正文才知道的结果」
+        std::vector<std::pair<std::string, std::string>> &destination = isNewResponseHead ? stream.response.headers : stream.response.trailers;
         for (const HpackHeaderField &field: headerFields)
         {
             if (field.name.empty() || field.name.front() != ':')
             {
-                stream.response.headers.emplace_back(field.name, field.value);
+                destination.emplace_back(field.name, field.value);
                 continue;
             }
             if (field.name == ":status")
