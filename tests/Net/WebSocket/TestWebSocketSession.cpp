@@ -1178,11 +1178,13 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住 close() 的用法错误面：不可上线的状态码与超长原因当场抛异常，且一条帧都不写出
-     * @details 这两类都是调用方的用法错误，把坏帧发出去只会让对端按协议错误收口。
-     *          边界取两侧：123 字节原因可以发，124 字节越界；3000-4999 段可以发，1016 段不行。
+     * @brief 钉住 close() 的用法错误面：不可上线的状态码、超长原因、非 UTF-8 的原因都当场抛异常，且一条帧都不写出
+     * @details 这些都是调用方的用法错误，把坏帧发出去只会让对端按协议错误收口；而带非法原因的 Close 帧
+     *          本端自己收到时也按 1007 打死——不能只严以对端。
+     *          边界都取两侧：123 字节原因可发而 124 越界；3000 段可发而 1016 段不行；
+     *          多字节 UTF-8 的原因可发而带 0xFF 的那种不行。
      */
-    TEST(WebSocketPeerContract, RejectsUnsendableCloseCodeAndOverlongReason)
+    TEST(WebSocketPeerContract, RejectsUnsendableCloseCodeAndMalformedCloseReason)
     {
         int           sentFrameCount = 0;
         WebSocketPeer peer(
@@ -1209,11 +1211,32 @@ namespace AsynGyanis::Net
         overlongTask.handle().resume();
         EXPECT_THROW(overlongTask.await_resume(), Base::InvalidArgumentException);
 
+        // 原因前半段是合法的三字节汉字、尾随一个 0xFF：RFC 6455 §7.4 要求状态码之后的正文按 UTF-8 编码，
+        // 这样的帧发出去对端只能按 1007 收口，而本端收到同样的一帧也正是这么处置的
+        const std::string brokenUtf8Reason("\xE5\xAD\x97\xFF");
+        Core::Task<bool>  brokenUtf8Task = peer.close(kWebSocketNormalClosureCode, brokenUtf8Reason);
+        brokenUtf8Task.handle().resume();
+        EXPECT_THROW(brokenUtf8Task.await_resume(), Base::InvalidArgumentException);
+        EXPECT_TRUE(peer.isOpen()) << "被拒的关闭不该把连接记成已收口";
+
+        // 截断的多字节序列同样非法（不是「结尾多个字节」那种可以放过去的写法）
+        const std::string truncatedUtf8Reason("\xE5\xAD");
+        Core::Task<bool>  truncatedUtf8Task = peer.close(kWebSocketNormalClosureCode, truncatedUtf8Reason);
+        truncatedUtf8Task.handle().resume();
+        EXPECT_THROW(truncatedUtf8Task.await_resume(), Base::InvalidArgumentException);
+
         EXPECT_EQ(sentFrameCount, 0) << "被拒的调用一条帧都不该写出";
 
-        // 边界内：3000-4999 段可用，123 字节原因可发，两条都正常落到线上
-        const std::string maximumReason(123, 'x');
-        Core::Task<bool>  maxReasonTask = peer.close(3000, maximumReason);
+        // 边界内：3000-4999 段可用，123 字节原因可发——用 41 个三字节汉字刚好铺满，
+        // 顺带钉住「多字节 UTF-8 的原因不被误挡」（误挡会让业务连一条中文关闭原因都发不出去）
+        std::string maximumReason;
+        maximumReason.reserve(123U);
+        for (int index = 0; index < 41; ++index)
+        {
+            maximumReason += "\xE5\xAD\x97";
+        }
+        ASSERT_EQ(maximumReason.size(), 123U);
+        Core::Task<bool> maxReasonTask = peer.close(3000, maximumReason);
         maxReasonTask.handle().resume();
         EXPECT_TRUE(maxReasonTask.await_resume());
         EXPECT_EQ(sentFrameCount, 1);

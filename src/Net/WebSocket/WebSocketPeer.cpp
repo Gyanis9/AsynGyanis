@@ -264,6 +264,16 @@ namespace AsynGyanis::Net
                                                              code));
         }
 
+        // 原因必须是一段合法 UTF-8（RFC 6455 §7.4：状态码之后的正文按 UTF-8 编码）。本端的接收路径
+        // 就按 1007 打死带非法原因的 Close 帧——自己不收的帧不该发出去，那样一次正常收口会在对端变成
+        // 协议错误，而业务看到的关闭原因也丢了
+        if (const std::size_t invalidByteOffset = findInvalidWebSocketUtf8ByteOffset(reason); invalidByteOffset != std::string_view::npos)
+        {
+            throw Base::InvalidArgumentException(std::format("WebSocketPeer::close：关闭原因从第 {} 个字节起不是合法 UTF-8（RFC 6455 §7.4 要求状态码之后的正文按 UTF-8 "
+                                                             "编码）：这样的帧发出去对端只能按 1007 收口，请把原因改成合法文本或留空",
+                                                             invalidByteOffset));
+        }
+
         // 本侧已经发过 Close、或连接已不可用：不再补第二条（§5.5.1 只要求一次关闭握手），
         // 也绝不把业务给的关闭原因当成一次新的关闭请求发出去。
         // 短路返回不记日志：本侧主动关闭属预期路径，传输失败则早已在收口那一刻记过原因
