@@ -695,6 +695,30 @@ namespace AsynGyanis::Database
         }
     }
 
+    /**
+     * @brief 建连之后再改 queryTimeout，busy_timeout 也要跟着走
+     * @details 上面两条用例都是在 connect() 之前设值，钉住的是「建连时按最新值配置」；而 setter 承诺的是
+     *          「写入后立即生效，不必重连」。SQLite 上 queryTimeout() 是两道界：第二道（语句执行时限）由进度
+     *          回调现读，本来就跟着走（StatementDeadlineInterruptsAnUnboundedQuery 钉住）；第一道 busy_timeout
+     *          是存进句柄的一个数，不重新下发就仍按 connect() 时的取值守着。少了这一手，从池里借到连接再改
+     *          超时的调用方只会看到「两道界里的一道」变了，而连接池归还时退回基线同样只退得动那一道。
+     */
+    TEST(SqliteConnection, QueryTimeoutChangedAfterConnectAlsoMovesBusyTimeout)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_EQ(readScalarInteger(connection, "PRAGMA busy_timeout"), std::optional<std::int64_t>(kDefaultQueryTimeoutMilliseconds))
+                << "用例前提不成立：建连时没按 queryTimeout() 的默认值配置";
+
+        // 正值要原样落进 busy_timeout，非正值按同一条夹法落成 0（与建连那条路径一个口径）
+        for (const int changedTimeout: {4321, 0, -100})
+        {
+            connection.setQueryTimeout(changedTimeout);
+            const std::int64_t expectedBusyTimeout = changedTimeout > 0 ? changedTimeout : 0;
+            EXPECT_EQ(readScalarInteger(connection, "PRAGMA busy_timeout"), std::optional<std::int64_t>(expectedBusyTimeout)) << "queryTimeout=" << changedTimeout;
+        }
+    }
+
     /** @brief 钉住 queryTimeout 是一道真的语句时限：跑不完的查询在毫秒级被打断，且报出可操作的中文原因 */
     TEST_F(SqliteConnectedMemoryDatabase, StatementDeadlineInterruptsAnUnboundedQuery)
     {

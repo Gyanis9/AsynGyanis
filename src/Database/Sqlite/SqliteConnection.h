@@ -368,6 +368,26 @@ namespace AsynGyanis::Database
         void applyStartupPragma(std::string_view pragmaText, std::string_view description);
 
         /**
+         * @brief 把新的 queryTimeout() 落成 busy_timeout
+         * @details 重写 DatabaseConnection::applyQueryTimeoutNow()。queryTimeout() 在 SQLite 上是两道界：
+         *          第二道（语句执行时限）由进度回调在每条语句入口现读 queryTimeout()，改完本来就跟着走；
+         *          第一道 busy_timeout 则是 sqlite3_busy_timeout() 存进句柄的一个数，不重新下发就仍按
+         *          connect() 时的取值守着。缺了这一手，借用者在已建立的连接上改超时只会看到「两道界里的
+         *          一道」跟着变，而连接池归还时退回基线也只退得动那一道。未连接时空操作（没有句柄可设），
+         *          connect() 会按最新值配置。
+         */
+        void applyQueryTimeoutNow() noexcept override;
+
+        /**
+         * @brief queryTimeout() 折算成下发给 sqlite3_busy_timeout 的毫秒数
+         * @details 单位与基类一致（毫秒），非正值夹成 0（不等锁，立刻 SQLITE_BUSY）——负数交给 SQLite 属
+         *          未定义用法。connect() 与 applyQueryTimeoutNow() 共用这一份换算：两处各写一遍的话，
+         *          「改值」那条路径就会与「建连」那条路径给出不同的界。
+         * @return int 恒 ≥ 0 的毫秒数
+         */
+        [[nodiscard]] int busyTimeoutMilliseconds() const noexcept;
+
+        /**
          * @brief 语句缓存的容量上限
          * @details 到上限时逐出最久没被读到的一条（见 evictLeastRecentlyUsedStatement()），
          *          游标数与内存因此仍有常数上界，而热语句不会被一次性语句挤掉。

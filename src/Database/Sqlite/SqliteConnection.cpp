@@ -75,9 +75,8 @@ namespace AsynGyanis::Database
 
         // SQLite 是进程内引擎，没有网络握手，基类的 connectTimeout() 在这里没有对应能力；
         // queryTimeout() 则落成两道界，第一道是 busy_timeout：表被其他连接占用时最多等待这么多毫秒再报 SQLITE_BUSY。
-        // 单位与基类一致（毫秒），非正值按「不等待、立即返回 SQLITE_BUSY」处理，避免负数被底层当成特殊值
-        const int busyTimeoutMilliseconds = queryTimeout() > 0 ? queryTimeout() : 0;
-        sqlite3_busy_timeout(m_database, busyTimeoutMilliseconds);
+        // 换算与「改值」那条路径共用一份（见 busyTimeoutMilliseconds）
+        sqlite3_busy_timeout(m_database, busyTimeoutMilliseconds());
 
         // 第二道界（语句本身的执行时限）以进度回调的形式挂在句柄上，只在每条语句执行期间被装上，
         // 所以这里挂的是一次性的回调登记，不含任何时限值；disconnect() 必须在关句柄前撤掉它，
@@ -377,6 +376,24 @@ namespace AsynGyanis::Database
         {
             return false;
         }
+    }
+
+    void SqliteConnection::applyQueryTimeoutNow() noexcept
+    {
+        // 未连接时没有句柄可设：值留在基类里，connect() 会按最新值配置
+        if (m_database == nullptr)
+        {
+            return;
+        }
+
+        // 只重下第一道界；第二道（语句执行时限）由进度回调在每条语句入口现读 queryTimeout()，本就跟着走。
+        // sqlite3_busy_timeout 不返回可用的失败信息（只有句柄为空才报错，而那一格上面已经挡掉），因此不判返回值
+        sqlite3_busy_timeout(m_database, busyTimeoutMilliseconds());
+    }
+
+    int SqliteConnection::busyTimeoutMilliseconds() const noexcept
+    {
+        return queryTimeout() > 0 ? queryTimeout() : 0;
     }
 
     std::string SqliteConnection::serverVersion() const
