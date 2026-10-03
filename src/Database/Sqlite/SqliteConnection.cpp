@@ -358,24 +358,54 @@ namespace AsynGyanis::Database
 
     bool SqliteConnection::resetSessionState() noexcept
     {
-        // 未连接，或引擎报告当前处于自动提交（即没有活动事务）：没有要复位的东西。
-        // 判据取自 sqlite3_get_autocommit 而不是本类记账，手工执行的 "BEGIN" 也能被认出来
-        if (m_database == nullptr || ::sqlite3_get_autocommit(m_database) != 0)
+        // 未连接：没有会话可复位
+        if (m_database == nullptr)
         {
             return true;
         }
 
-        // 滚掉事务：失败只记在 lastError() 里（与 rollback() 同一口径），并把「没滚干净」交回池——
+        // 有未结束的事务就滚掉：失败只记在 lastError() 里（与 rollback() 同一口径），并把「没滚干净」交回池——
         // 池据此丢弃这条连接，而不是让下一个借用者接着上一笔事务、把写锁握到那条连接被回收为止。
+        // 判据取自 sqlite3_get_autocommit 而不是本类记账，手工执行的 "BEGIN" 也能被认出来。
         // try/catch 是必需的：rollback() 会构造 std::string（内存分配失败即抛），
         // 而本方法按接口约定是 noexcept，异常穿出去就是 terminate
-        try
+        bool isTransactionRolledBack = true;
+        if (::sqlite3_get_autocommit(m_database) == 0)
         {
-            return rollback();
-        } catch (...)
+            try
+            {
+                isTransactionRolledBack = rollback();
+            } catch (...)
+            {
+                isTransactionRolledBack = false;
+            }
+        }
+
+        // 事务没滚干净就别再白付一趟：这条连接马上要被池丢弃
+        if (!isTransactionRolledBack)
         {
             return false;
         }
+
+        // 外键开关是**每连接**的一位，而 connect() 承诺过它是 ON。借用者为了批量导入把它关掉
+        // （"PRAGMA foreign_keys=OFF" 是这类代码的常见写法）再归还，下一个借用者就在不知情的情况下
+        // 往库里插孤儿子行：约束在表定义里看着还在，报错却一次都没有。这里无条件重申一次。
+        // 必须排在回滚之后——那条 PRAGMA 在事务内是空操作。
+        // 日志模式（WAL）不在此列：它是**每库文件**的持久设置，改它会影响所有连接并触发检查点，
+        // 不属于「上一个借用者留下的会话状态」这一档
+        if (sqlite3_exec(m_database, kForeignKeysPragma, nullptr, nullptr, nullptr) != SQLITE_OK)
+        {
+            // 重申不上就等于这条连接交不回 connect() 承诺的那个状态：按「没清干净」交回池，让它丢弃。
+            // 抄错误文本这一步同样要接住异常——本方法按接口约定是 noexcept，而 captureError 会构造 std::string
+            try
+            {
+                captureError("归还前重申外键约束失败");
+            } catch (...)
+            {
+            }
+            return false;
+        }
+        return true;
     }
 
     void SqliteConnection::applyQueryTimeoutNow() noexcept

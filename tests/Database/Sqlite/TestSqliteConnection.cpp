@@ -666,6 +666,31 @@ namespace AsynGyanis::Database
         ASSERT_NE(executeRequired(connection(), "INSERT INTO children (parentId) VALUES (99)"), nullptr);
     }
 
+    /**
+     * @brief 借用者关掉的外键约束在归还时被重申，孤儿子行不会静默插进下一个借用者的库里
+     * @details "PRAGMA foreign_keys=OFF" 是批量导入代码的常见写法，而这一位是**每连接**的：关掉之后归还，
+     *          下一个借用者拿到的就是一条不查外键的连接——表定义里的约束看着还在，插进去的孤儿行一次报错
+     *          都没有。判据是行为而不是读数：先证明关掉之后孤儿行真的插得进去（否则「重申」那一格是空的），
+     *          复位之后同一写法必须被拒。
+     */
+    TEST_F(SqliteConnectedMemoryDatabase, ResetSessionStateReassertsForeignKeysAfterABorrowerDisabledThem)
+    {
+        ASSERT_NE(executeRequired(connection(), "CREATE TABLE parents (id INTEGER PRIMARY KEY)"), nullptr);
+        ASSERT_NE(executeRequired(connection(), "CREATE TABLE children (id INTEGER PRIMARY KEY, parentId INTEGER REFERENCES parents (id))"), nullptr);
+
+        // 借用者为了批量导入关掉约束：孤儿行此时插得进去，这一格证明「关掉」确实生效了
+        ASSERT_NE(executeRequired(connection(), "PRAGMA foreign_keys=OFF"), nullptr);
+        ASSERT_EQ(readScalarInteger(connection(), "PRAGMA foreign_keys"), std::optional<std::int64_t>(0)) << "关掉这一步没生效：用例前提不成立";
+        ASSERT_NE(executeRequired(connection(), "INSERT INTO children (parentId) VALUES (99)"), nullptr) << "关掉之后孤儿行还被拒：用例前提不成立";
+
+        ASSERT_TRUE(connection().resetSessionState()) << connection().lastError();
+
+        EXPECT_EQ(readScalarInteger(connection(), "PRAGMA foreign_keys"), std::optional<std::int64_t>(1)) << "归还时没把外键约束重申回来";
+        const std::unique_ptr<DatabaseResult> orphanInsert = connection().execute("INSERT INTO children (parentId) VALUES (99)");
+        EXPECT_EQ(orphanInsert, nullptr) << "复位之后孤儿行仍然插得进去：下一个借用者拿到的是一条不查外键的连接";
+        EXPECT_TRUE(containsText(connection().lastError(), "FOREIGN KEY")) << connection().lastError();
+    }
+
     /** @brief 钉住 queryTimeout 经 busy_timeout 零计时映射进 SQLite，含基类默认值 */
     TEST(SqliteConnection, QueryTimeoutBecomesBusyTimeoutOnConnect)
     {
