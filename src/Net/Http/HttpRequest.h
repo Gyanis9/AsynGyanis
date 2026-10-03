@@ -114,7 +114,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 追加一条 HTTP 头部字段。
          * @details 头部名折小写入库。**权威记录按到达顺序逐条留档**：同一个名字在线上出现几条就占几项，
-         *          互不覆盖，`headerFieldCount()`、`forEachHeaderField()` 与 `headerValues()` 读到的都是
+         *          互不覆盖，`headerFieldCount(key)`、`forEachHeaderField()` 与 `headerValues()` 读到的都是
          *          这份逐条记录（因此重新转发一条请求时不会把多条 `Via` 并成一行）。
          *          以 ", " 合并只发生在**单值读口**（`headers()` / `getHeader()`）：普通头部按
          *          RFC 9110 §5.2 的收件人规则把同名多条拼成一条，可重复头部（目前只有 `set-cookie`）

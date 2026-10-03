@@ -3197,4 +3197,47 @@ namespace AsynGyanis::Net
             EXPECT_NE(frame.header.type, Http2FrameType::Data) << "1xx 的响应把正文发成了 DATA 帧";
         }
     }
+    /**
+     * @brief 钉住：尾部头块里的字段与头部那一场**累加**判 parser_limits 的条数上限
+     * @details h1 的解析器整条报文共用一个计数器（`maximum_header_count` 的文档就写着「trailer 头部
+     *          同样计入」），h3 在 accountHeaderFieldBudget 里把尾字段一起数，而 h2 此前只数头部那一场：
+     *          把字段拆进尾部头块就能绕过这道闸。越限与头部越限走同一条路径（不派发、按 431 收口），
+     *          累加恰好等于上限的那一条必须照常服务——判据不许严到把合法请求一起挡掉。
+     */
+    TEST(Http2CleartextSession, CountsTrailerFieldsAgainstTheSameHeaderFieldLimit)
+    {
+        HttpParserLimits parserLimits;
+        // 正常的 GET 头块正好 4 条（:method/:scheme/:path/:authority）：尾字段给 2 条即等于上限，第 3 条越限
+        parserLimits.maximumHeaderCount = 6;
+
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, parserLimits,
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &received) { return !received.empty() && received.front().header.type == Http2FrameType::Settings; }, kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        HpackDecoder responseDecoder;
+
+        // 4 + 2 = 6 条：累加恰好等于上限，照常服务
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), false), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, hpackLiteralField("x-a", "1") + hpackLiteralField("x-b", "2"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &received) { return !responseHeaderBlock(received, 1U, 0).empty(); }, kWaitTimeout))
+                << "累加恰好等于上限的请求没有收到应答";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
+
+        // 4 + 3 = 7 条：越限，按 431 收口而不再派发，连接照旧
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), false), kWaitTimeout));
+        ASSERT_TRUE(
+                client.sendBytes(makeRequestHeadersFrame(3U, hpackLiteralField("x-a", "1") + hpackLiteralField("x-b", "2") + hpackLiteralField("x-c", "3"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &received) { return !responseHeaderBlock(received, 3U, 0).empty(); }, kWaitTimeout))
+                << "尾部字段越限的请求没有收到应答：这条流被挂住了，说明越限的判定没落到尾部头块上";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "431");
+    }
 } // namespace AsynGyanis::Net
