@@ -451,6 +451,16 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(server.staticFileDir().empty()) << "规范化失败的目录应当落为「未启用」";
         EXPECT_NO_THROW(server.setStaticFileCacheControl(std::optional<std::string>{"max-age=5"}));
         EXPECT_NO_THROW(server.staticDirectoryListing(true)) << "h3 一侧没接上目录列表开关";
+
+        // 写侧三个通道都有读口也有；此前 h3 只有写侧——运维要问「这条通道当下发的是哪条 Cache-Control」
+        // 问不出，而旁边的 staticFileDir() 就有一个读口。钉住读回来的是写进去的那一份，且关掉之后跟着关
+        ASSERT_TRUE(server.staticFileCacheControl().has_value()) << "刚设过的 Cache-Control 读不出来";
+        EXPECT_EQ(*server.staticFileCacheControl(), "max-age=5");
+        server.setStaticFileCacheControl(std::nullopt);
+        EXPECT_FALSE(server.staticFileCacheControl().has_value()) << "空 optional 是「不发这条头」，读口要如实报未设置，不能报空串";
+        server.setStaticFileCacheControl(std::optional<std::string>{"no-store"});
+        ASSERT_TRUE(server.staticFileCacheControl().has_value());
+        EXPECT_EQ(*server.staticFileCacheControl(), "no-store") << "改过一次之后读口还停在第一份上";
     }
 
 

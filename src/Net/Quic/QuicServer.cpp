@@ -511,6 +511,14 @@ namespace AsynGyanis::Net
         m_staticFiles.setCacheControl(cacheControl);
     }
 
+    std::optional<std::string> QuicServer::staticFileCacheControl() const
+    {
+        // 本体在 StaticFileService，这里与 HttpServer/HttpsServer 那两份读口取的是同一个 settings 对象：
+        // 读自己抄一份就会与写侧脱钩
+        const std::shared_ptr<StaticFileSettings> settings = m_staticFiles.settings();
+        return settings == nullptr ? std::nullopt : settings->cacheControl;
+    }
+
     Http3Session &QuicServer::http3SessionFor(QuicConnection &connection)
     {
         if (Http3Session *const existing = findHttp3Session(&connection); existing != nullptr)

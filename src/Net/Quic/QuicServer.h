@@ -278,6 +278,15 @@ namespace AsynGyanis::Net
         void setStaticFileCacheControl(std::optional<std::string> cacheControl);
 
         /**
+         * @brief 读回当前生效的静态文件 Cache-Control 值
+         * @details 与 `HttpServer::staticFileCacheControl()` / `HttpsServer::staticFileCacheControl()` 同口径：
+         *          写侧三个通道都有，读侧此前只在这两个上有——运维要问「这条通道当下发的是哪条 Cache-Control」
+         *          时在 h3 上问不出，而上面那个 `staticFileDir()` 读口就在旁边，缺这一格没有道理。
+         * @return std::optional<std::string> 已设置的值；未设置或从未配置静态目录时为空 optional
+         */
+        [[nodiscard]] std::optional<std::string> staticFileCacheControl() const;
+
+        /**
          * @brief 设置请求打到静态目录时是否生成 HTML 目录列表
          *
          * @details 默认关闭：列表会把目录结构、文件名与大小交给任何一句 `GET /assets/` 的探测者，
