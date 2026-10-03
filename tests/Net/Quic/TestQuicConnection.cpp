@@ -1,5 +1,6 @@
 // QuicConnection 外壳的直测：这条壳不含协议逻辑，但它持有服务端全部的「什么时候该再刷一次、
-// 什么时候可以摘掉」的判据——accept 的拒绝面、路由键长度、待刷标记、活动记账与到期时刻。
+// 什么时候可以摘掉」的判据——accept 的拒绝面、路由键长度、待刷标记、活动记账、到期时刻，
+// 以及两种收口的分工（requestClose 只置标志、closeNow 必须先把收口报文交出去）。
 // 报文出口用假实现，因此这些用例不碰套接字，也不依赖任何对端实现。
 #include "Net/Quic/QuicConnection.h"
 
@@ -324,6 +325,73 @@ namespace AsynGyanis::Net
         fixture.flushUntilSettled();
         EXPECT_EQ(fixture.sentDatagramCount(), datagramCountBeforeClose) << "已请求收口的连接还在往发送口交报文";
         EXPECT_EQ(connection.openUnidirectionalStream(), -1) << "已收口的连接还能开流";
+    }
+
+    /**
+     * @brief 钉住 closeNow()：收口报文先上线，本端才认自己已经收口
+     * @details 它与 requestClose() 的分工就在这条报文上——服务端的优雅收口（摘除连接、排空后关流、
+     *          h3 会话不可用）都指望远端立刻知道为什么这条连接没了，而不是等满一个空闲超时。
+     *          源码里那句「顺序不能反」就是这条通道的全部含义：先把 m_isClosed 置上再 flush，
+     *          flush 会因标志已置而一条都不交，远端什么也收不到，而本机日志与摘除判据照常——
+     *          是一处看不见的退化。上一用例恰好证明 requestClose() 那一侧一条都不发，两半合起来才钉住分工。
+     */
+    TEST(QuicConnection, CloseNowHandsWithThePeerBeforeClosingItself)
+    {
+        AcceptedConnectionFixture fixture;
+        ASSERT_TRUE(fixture.accepted());
+        QuicConnection &connection = fixture.connection();
+
+        // 反放大额度（RFC 9000 §8.1）按「收到的整条数据报」计，而收口报文自己也过这道闸：一条只被打
+        // 进三十来字节的连接装不下一条收口报文。先让远端多打几拍，判据才落在「closeNow 发不发」上
+        for (int round = 0; round < 20; ++round)
+        {
+            fixture.deliver(makeClientInitial());
+        }
+
+        // 先把接受阶段该产出的报文排干净：下面判的增量才是「收口这一次」写出去的
+        fixture.flushUntilSettled();
+        const std::size_t datagramCountBeforeClose = fixture.sentDatagramCount();
+
+        const Core::Task<> closeTask = connection.closeNow(0x100, "服务端正在收口");
+        closeTask.handle().resume();
+        ASSERT_TRUE(closeTask.handle().done()) << "closeNow 在假发送口上挂住了：它没有理由等任何东西";
+
+        EXPECT_GT(fixture.sentDatagramCount(), datagramCountBeforeClose) << "closeNow 没把收口报文交给发送口：远端只能等空闲超时，而这条通道存在的意义就是让它立刻知道";
+        EXPECT_TRUE(connection.isClosed());
+
+        const std::size_t datagramCountAfterClose = fixture.sentDatagramCount();
+        fixture.flushUntilSettled();
+        EXPECT_EQ(fixture.sentDatagramCount(), datagramCountAfterClose) << "已收口的连接还在补发报文";
+
+        // 重复收口是一条报文都不补：第二次调用连状态机都不该再进
+        const Core::Task<> secondClose = connection.closeNow(0x100, "再来一次");
+        secondClose.handle().resume();
+        ASSERT_TRUE(secondClose.handle().done());
+        EXPECT_EQ(fixture.sentDatagramCount(), datagramCountAfterClose) << "重复收口又发了一条：远端会看到两条原因冲突的收口";
+    }
+
+    /**
+     * @brief 钉住收口报文也受反放大额度约束：额度不够时宁可不发
+     * @details 这不是漏发而是 §8.1 的要求：服务端在未验证地址归属前发出的字节不得超过收到字节的三倍，
+     *          收口也不例外，否则一条只打了一个小 Initial 的伪造报文就能让我们回吐一整包。
+     *          代价写在这里：这种现场远端收不到原因，只能等空闲超时——本端日志与摘除判据照常走。
+     */
+    TEST(QuicConnection, CloseNowStaysSilentWhenTheAmplificationBudgetCannotFitIt)
+    {
+        AcceptedConnectionFixture fixture;
+        ASSERT_TRUE(fixture.accepted());
+        QuicConnection &connection = fixture.connection();
+
+        // 只打过一条 Initial 的连接：允许发出的字节比一条收口报文还少
+        fixture.flushUntilSettled();
+        ASSERT_EQ(fixture.sentDatagramCount(), 0U) << "这条连接在收口之前就已经交过报文，反放大的现场没造出来";
+
+        const Core::Task<> closeTask = connection.closeNow(0x100, "额度不够");
+        closeTask.handle().resume();
+        ASSERT_TRUE(closeTask.handle().done());
+
+        EXPECT_EQ(fixture.sentDatagramCount(), 0U) << "越过 §8.1 把收口报文发了出去：伪造一个小 Initial 就能让我们回吐一包";
+        EXPECT_TRUE(connection.isClosed()) << "报文发不出去也要认这条连接已收口，否则服务端的表项永远摘不掉";
     }
 
     TEST(QuicConnection, NextExpiryFollowsTheAdvertisedIdleTimeout)
