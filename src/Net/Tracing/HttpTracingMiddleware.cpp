@@ -26,7 +26,8 @@ namespace AsynGyanis::Net
         if (tracer == nullptr)
         {
             throw Base::LogicException("链路中间件无法创建：传进来的 tracer 是空的。"
-                                       "请先用 Tracer::create() 拿到编排器再交给本工厂；不记链路就不要挂这条中间件");
+                                       "请先用 Tracer::create(configuration) 建好编排器再交给本工厂"
+                                       "（Configuration 没有默认实参，serviceName 必填）；不记链路就不要挂这条中间件");
         }
 
         return [tracer = std::move(tracer)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<void>

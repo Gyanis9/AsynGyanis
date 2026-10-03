@@ -198,8 +198,8 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("Cookie 的名字「" + cookie.name() +
                                                  "」不合规（RFC 6265 §4.1.1：至少一个字符且不得含控制符与分隔符）："
-                                                 "这样的 Set-Cookie 会被对端整条丢掉。用 HttpCookie(name, value) 构造，"
-                                                 "或先填上名字再交给 setCookie()");
+                                                 "这样的 Set-Cookie 会被对端整条丢掉。请改用 HttpCookie(name, value) 构造——"
+                                                 "名字没有设值口，默认构造出来的那份填不上名字");
         }
 
         // SameSite=None 必须与 Secure 同现（RFC 6265bis §4.1.2.1）：浏览器把「None 而不 Secure」整条丢掉。
