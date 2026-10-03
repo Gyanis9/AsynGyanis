@@ -59,6 +59,19 @@ namespace AsynGyanis::Core
         // 与增删同一把写锁：镜像指针的读写不会被另一线程正在进行的加减夹在中间，
         // 因此换目标时既不会丢一次计数也不会多算一次
         std::unique_lock lock(m_mutex);
+        // 换目标时把「本管理器此刻在册几条」从旧镜像搬到新镜像。只换指针是不够的：
+        // HttpsServer::setMetricsCollector() 这类公开入口允许运行期重接镜像，那时手上这些连接
+        // 在新镜像里一笔都没记过，而它们将来各要 fetch_sub 一次——无符号的合并计数因此回绕成
+        // 1.8e19 量级的一格，而 /metrics 上读的正是它。摘掉镜像（传 nullptr）同样要退回去，
+        // 否则进程总量会一直虚高着这些还在跑的连接。同一个目标重复接上 = 减一次再加一次，净为零
+        if (m_sharedActiveCountMirror != nullptr)
+        {
+            m_sharedActiveCountMirror->fetch_sub(m_connections.size(), std::memory_order_relaxed);
+        }
+        if (counter != nullptr)
+        {
+            counter->fetch_add(m_connections.size(), std::memory_order_relaxed);
+        }
         m_sharedActiveCountMirror = counter;
     }
 

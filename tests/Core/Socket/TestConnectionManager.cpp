@@ -291,4 +291,51 @@ namespace AsynGyanis::Core
         EXPECT_EQ(sharedCount.load(), 0U);
         EXPECT_EQ(firstManager.activeCount(), 1U);
     }
+
+    /**
+     * @brief 在册之后再换镜像目标，要把本管理器占着的那几条一起搬过去
+     * @details 这不是假想的用法：`HttpsServer::setMetricsCollector()` 是运行期可换的公开入口，
+     *          它换采集端时连着镜像一起重接。只换指针不搬条数，新镜像从 0 起算，而这些连接
+     *          **将来每一条都要退一次**——无符号的合并计数因此回绕成 1.8e19 量级的一格，
+     *          `/metrics` 上「取快照那一刻的活跃连接数」读到的正是它。
+     * @details 四步都要钉：接上时搬进来、换目标时旧的一头退干净、逐条摘除跟着回退、
+     *          以及摘掉镜像（传 nullptr）时把在册那几条从旧镜像里退出去。
+     */
+    TEST(ConnectionManager, MovingTheMirrorCarriesTheCurrentCount)
+    {
+        EventLoop                  loop;
+        std::atomic<std::uint64_t> firstMirror{0};
+        std::atomic<std::uint64_t> secondMirror{0};
+        ConnectionManager          manager;
+
+        const auto first  = makeDummyConnection(loop);
+        const auto second = makeDummyConnection(loop);
+        manager.add(first);
+        manager.add(second);
+        ASSERT_EQ(manager.activeCount(), 2U);
+
+        manager.setSharedActiveCountMirror(&firstMirror);
+        EXPECT_EQ(firstMirror.load(), 2U) << "接上镜像时在册的那两条没搬进来：它们将来各要退一次，退在无符号数上就是回绕";
+
+        // 重复接同一个目标是幂等的：先退再加，净为零
+        manager.setSharedActiveCountMirror(&firstMirror);
+        EXPECT_EQ(firstMirror.load(), 2U) << "对着同一个镜像重接一次把条数算了两遍";
+
+        manager.setSharedActiveCountMirror(&secondMirror);
+        EXPECT_EQ(secondMirror.load(), 2U) << "换目标之后新镜像没接住在册的那两条";
+        EXPECT_EQ(firstMirror.load(), 0U) << "换目标之后旧镜像还留着本管理器那两条";
+
+        manager.remove(first.get());
+        EXPECT_EQ(secondMirror.load(), 1U) << "摘除一条之后镜像没跟着回退";
+        manager.remove(second.get());
+        EXPECT_EQ(secondMirror.load(), 0U) << "全部收口后新镜像必须正好归零，不能回绕成大数";
+
+        // 摘掉镜像时同样要把在册那几条退回去：否则进程总量一直虚高着还在跑的连接
+        manager.add(first);
+        manager.setSharedActiveCountMirror(&secondMirror);
+        ASSERT_EQ(secondMirror.load(), 1U);
+        manager.setSharedActiveCountMirror(nullptr);
+        EXPECT_EQ(secondMirror.load(), 0U) << "取掉镜像时在册的那条被永久留在了旧镜像里";
+        EXPECT_EQ(manager.activeCount(), 1U);
+    }
 } // namespace AsynGyanis::Core
