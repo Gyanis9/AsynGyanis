@@ -67,7 +67,9 @@ namespace AsynGyanis::Core
          *        临界区内完成，因此镜像与本表不会彼此漂移
          * @note 换目标随时可做：本函数在锁内把「当前在册条数」从旧镜像搬到新镜像，所以接上时
          *        已在册的连接不会漏记，摘掉时也不会把它们留在旧镜像里。重复接上同一个目标是幂等的
-         * @note 镜像对象的生存期要覆盖本管理器
+         * @note 两个镜像对象的生存期都要覆盖本管理器——**换目标时旧的那一份也必须还活着**：本函数要往
+         *        旧镜像退掉在册条数，调用方若在重接之前先放掉旧对象的最后一份引用，那次退账就写在
+         *        已释放的内存上（HttpServer/HttpsServer 换采集端时因此先把旧对象保活到重接之后）
          */
         void setSharedActiveCountMirror(std::atomic<std::uint64_t> *counter) noexcept;
 

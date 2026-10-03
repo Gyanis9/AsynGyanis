@@ -14,6 +14,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "MetricsTestSupport.h"
 #include "Platform/System/CpuAffinity.h"
 
 #include <gtest/gtest.h>
@@ -32,6 +33,8 @@ namespace AsynGyanis::Core
     {
         using AsynGyanis::Core::TestSupport::EventLoopThread;
         using AsynGyanis::Core::TestSupport::waitForCondition;
+        using AsynGyanis::TestSupport::hasRegistrySample;
+        using AsynGyanis::TestSupport::registryValue;
 
         /// 一次提交的观测结果。就绪标记最后发布：finished 为真后另两个字段才可读
         struct SubmitProbe
@@ -229,9 +232,11 @@ namespace AsynGyanis::Core
         EventLoopThread runner;
         ASSERT_TRUE(runner.waitUntilRunning());
 
-        AsyncExecutor     executor(1);
-        std::atomic<bool> isGateOpen{false};
-        std::atomic<bool> isGateKeeperRunning{false};
+        AsyncExecutor executor(1);
+        // 注册表是进程级求和，别的执行器（含 shared()）也在往里灌，因此这里取增量作基线
+        const std::uint64_t rejectedOnRegistryBefore = AsynGyanis::TestSupport::registryValue("asyn_executor_rejected_total");
+        std::atomic<bool>   isGateOpen{false};
+        std::atomic<bool>   isGateKeeperRunning{false};
 
         Task<int> gateKeeper = executor.submit<int>(runner.loop(),
                                                     [&isGateOpen, &isGateKeeperRunning]()
@@ -279,6 +284,9 @@ namespace AsynGyanis::Core
         EXPECT_EQ(executor.pendingTaskCount(), kCapacity) << "队列长度越过了每线程上限：排队仍然是无界的";
         EXPECT_EQ(rejectedCount, 8U) << "超出上限的提交数应当全部被拒";
         EXPECT_EQ(executor.saturatedRejectionCount(), rejectedCount) << "被拒条数没有在计数器上留痕：运维看趋势时这条队列是看不见的";
+        // 同一份账也要在进程级注册表上读到：/metrics 的 asyn_http_blocking_task_* 只读共享那一台执行器，
+        // 而注入自建执行器是一等用法——没有这份登记，正在拒任务的服務在面板上会是「一切正常」
+        EXPECT_EQ(registryValue("asyn_executor_rejected_total"), rejectedOnRegistryBefore + executor.saturatedRejectionCount()) << "自建执行器拒了多少没有被进程总量记下来";
         EXPECT_NE(firstRejectionText.find("排队已满"), std::string::npos) << "拒绝原因要说清是排队满了（该降并发），文案是：" + firstRejectionText;
 
         isGateOpen.store(true, std::memory_order_release);
@@ -288,5 +296,21 @@ namespace AsynGyanis::Core
         runner.join();
     }
 
+
+    /**
+     * @brief 每台执行器活着时登记两条读数，放手后把手要注销
+     * @details 名字不退就留下一条永远读不到的死指标：按名字抓的人在「没发生」与「没人登记」之间分不出来。
+     *          数值口径由上面那条饱和用例钉（那里比的是增量），这里只钉生命周期。
+     */
+    TEST(AsyncExecutor, RegistersAndUnregistersItsOwnReadouts)
+    {
+        const std::size_t namesBefore = ProcessMetricsRegistry::nameCount();
+        {
+            AsyncExecutor executor(1);
+            EXPECT_TRUE(hasRegistrySample("asyn_executor_pending_tasks")) << "队列深度没登记进进程指标";
+            EXPECT_TRUE(hasRegistrySample("asyn_executor_rejected_total")) << "被拒条数没登记进进程指标";
+        }
+        EXPECT_EQ(ProcessMetricsRegistry::nameCount(), namesBefore) << "执行器放手后两条把手没注销";
+    }
 
 } // namespace AsynGyanis::Core

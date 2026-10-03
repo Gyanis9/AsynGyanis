@@ -7,6 +7,18 @@ namespace AsynGyanis::Core
 {
     AsyncExecutor::AsyncExecutor(const std::size_t workerCount)
     {
+        // 两条读数各登记一份、在注册表里按 Sum 合并：注入自建执行器（Queryable::useAsyncExecutor）是一等
+        // 用法，而 /metrics 上那两格只读进程级共享那一台——不在这里的执行器积压与拒绝因此没人看得见。
+        // 收集器只读下面两个原子量，抓取时不碰 m_mutex
+        m_metricHandles = {
+                ProcessMetricsRegistry::registerMetric("asyn_executor_pending_tasks", "排在阻塞任务执行器队列里的条数（每台执行器各报一份，合起来才是进程总量）",
+                                                       ProcessMetricKind::Gauge, ProcessMetricMerge::Sum,
+                                                       [this] { return static_cast<std::uint64_t>(m_pendingCount.load(std::memory_order_relaxed)); }),
+                ProcessMetricsRegistry::registerMetric("asyn_executor_rejected_total", "因排队已满被拒的阻塞任务条数（每台执行器各报一份；停机期拒的不计入）",
+                                                       ProcessMetricKind::Counter, ProcessMetricMerge::Sum,
+                                                       [this] { return static_cast<std::uint64_t>(m_saturatedRejectionCount.load(std::memory_order_relaxed)); }),
+        };
+
         // 0 表示自动：按「本进程实际可用的核数」取（容器配额与 cpuset 会把它收窄）。
         // 无论如何都不允许 0 个线程：没有工作线程时提交的任务永远不会被执行，
         // 调用方会看到一个永远不完成的协程，这种错误几乎无法从现象上定位。

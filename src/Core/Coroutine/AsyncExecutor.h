@@ -28,7 +28,9 @@
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <coroutine>
@@ -363,6 +365,15 @@ namespace AsynGyanis::Core
         std::atomic<std::size_t> m_completedCount{0};
         /// 因排队已满被拒的累计条数（只算这一种拒绝：停机期的拒绝发生在进程收尾，报出来只会让告警自己响一次）
         std::atomic<std::size_t> m_saturatedRejectionCount{0};
+
+        /**
+         * @brief 本台执行器的两条读数挂在进程级指标注册表上的把手
+         * @details 每台执行器各登记一份、按 Sum 合并，所以 `Queryable::useAsyncExecutor()` 注入的自建实例
+         *          也在进程总量里——那正是 `/metrics` 上 `asyn_http_blocking_task_*` 两格看不见的部分
+         *          （它们只读进程级共享那一台）。收集器只读上面两个原子量，抓取时不碰 m_mutex
+         * @see pendingTaskCount(), saturatedRejectionCount()
+         */
+        std::array<ProcessMetricHandle, 2> m_metricHandles{};
 
         std::atomic<bool> m_isStopping{false}; ///< 是否已进入停止流程：析构一开始置真，此后 enqueue 一律拒绝——工作线程退出后没人再取队列，收下任务等于让提交方永久挂起
 

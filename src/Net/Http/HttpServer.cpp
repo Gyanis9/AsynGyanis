@@ -1394,7 +1394,11 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("HttpServer: 统计采集端不能为空，请传入一份现成的采集端或调用 metricsCollector() 取本服务器的");
         }
 
-        m_metrics = std::move(collector);
+        // 旧采集端要撑到镜像重接完为止：重接时连接管理器会把本台在册的连接数从**旧**那一份里退掉，
+        // 而 `m_metrics = ...` 一旦交回最后一份引用，旧对象连同它内嵌的那个原子量就当场没了——
+        // 那一次退账就写在已释放的内存上（ConnectionManager 的契约：镜像对象的生存期要覆盖本管理器）
+        const std::shared_ptr<HttpMetricsCollector> previous = m_metrics;
+        m_metrics                                            = std::move(collector);
         // 换采集端要连同镜像一起重接：否则新采集端上的活跃连接数永远停在旧目标上
         attachActiveConnectionMirror();
     }
