@@ -29,13 +29,15 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 判断字符是否可以出现在请求目标里
-         * @details 只接受可见 ASCII：空格是请求行的分隔符，控制字符与 DEL 都不允许。
+         * @details 取值范围与 h2/h3 共用一份判据（`HttpHeaderRules.h` 的 `isRequestTargetCharacter`）：
+         *          空格、控制字符与 DEL 不收，裸 `#`（片段不属于请求目标）与 `\`（不在 pchar 里）不收，
+         *          超出 ASCII 的字节按 UTF-8 收下（RFC 9110 §3.2.4.1 要求接收方这么解释，而不是判畸形）。
          * @param character 待判断字节
          * @return true 表示合法
          */
         bool isTargetCharacter(const unsigned char character) noexcept
         {
-            return character >= 0x21 && character <= 0x7E;
+            return isRequestTargetCharacter(static_cast<char>(character));
         }
 
         /**
@@ -498,7 +500,8 @@ namespace AsynGyanis::Net
         {
             if (!isTargetCharacter(static_cast<unsigned char>(character)))
             {
-                failMalformed("HTTP 报文解析失败：请求目标含非法字符（空格与控制字符都不允许）");
+                failMalformed("HTTP 报文解析失败：请求目标含非法字符（空格、控制字符、裸 # 与反斜杠都不允许；"
+                              "要表达字符 # 请写成 %23）");
                 return false;
             }
         }

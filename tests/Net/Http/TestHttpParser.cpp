@@ -107,6 +107,34 @@ namespace AsynGyanis::Net
         EXPECT_NE(getParser.errorMessage().find("OPTIONS"), std::string::npos) << "拒绝原因要指认 asterisk-form 只用于 OPTIONS，实际是：" << getParser.errorMessage();
     }
 
+    /**
+     * @brief 请求目标的字符集：拒裸 `#`（片段）与反斜杠，收未编码的 UTF-8
+     * @details 三条入站通路（h1 的请求行、h2 与 h3 的 `:path`）此前各写一份且两两不同，现在共用
+     *          `isRequestTargetCharacter`。`#` 之后的片段不属于请求目标（RFC 9110 §7.1）——收下它等于
+     *          让同一个资源因为「带不带 #」被路由与缓存认成两个；`\` 不在 `pchar` 里而形似 Windows 的
+     *          路径分隔符。反过来，超出 ASCII 的字节**必须**收：RFC 9110 §3.2.4.1 要求接收方按 UTF-8
+     *          解释而不是判畸形，拒掉会把真实客户端一直在发的未编码中文路径变成 400，而它与
+     *          `%C3%A9` 解码之后本来就是同一份内部表示。
+     */
+    TEST(HttpParser, RequestTargetCharsetRejectsFragmentAndBackslashButAcceptsUtf8)
+    {
+        for (const std::string_view target: {"/a#b", "/a\\b", "/a\x7f"})
+        {
+            HttpParser        parser;
+            const std::string message = std::string("GET ") + std::string(target) + " HTTP/1.1\r\nHost: example.test\r\n\r\n";
+            EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error) << "这条目标本该判畸形：" << target;
+            EXPECT_NE(parser.errorMessage().find("非法字符"), std::string::npos) << "要说是「目标里有非法字符」，实际是：" << parser.errorMessage();
+        }
+
+        for (const std::string_view target: {"/caf%C3%A9", "/caf\303\251", "/a%23b"})
+        {
+            HttpParser        parser;
+            const std::string message = std::string("GET ") + std::string(target) + " HTTP/1.1\r\nHost: example.test\r\n\r\n";
+            EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done) << "这条目标本该收下：" << target;
+            EXPECT_EQ(parser.request().uri(), target) << "收下的目标要原样留档，编码形态不该被解析器改写";
+        }
+    }
+
     TEST(HttpParser, ParsesBodyDelimitedByContentLength)
     {
         HttpParser parser;

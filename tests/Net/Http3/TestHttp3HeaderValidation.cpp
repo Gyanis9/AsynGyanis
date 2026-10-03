@@ -302,7 +302,7 @@ TEST(Http3HeaderValidation, ExtendedConnectNeedsPermissionAndKeepsSchemeAndPath)
 
 TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
 {
-    for (const std::string_view invalidPath: {"", "json", "https://example.com/json", "/json#fragment", "/json space"})
+    for (const std::string_view invalidPath: {"", "json", "https://example.com/json", "/json#fragment", "/json space", "/json\\escape"})
     {
         Http3HeaderValidator validator(Http3MessageKind::Request);
         const auto           result = feedRequest(validator, requestWithFieldReplaced(3, ":path", invalidPath));
@@ -311,6 +311,11 @@ TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
 
     Http3HeaderValidator root(Http3MessageKind::Request);
     EXPECT_TRUE(feedRequest(root, requestWithFieldReplaced(3, ":path", "/")).has_value()) << "只带斜杠的路径是合法的";
+
+    // 超出 ASCII 的字节要收（RFC 9110 §3.2.4.1 要求接收方按 UTF-8 解释，而不是判畸形）：这一格
+    // 钉的是三条通路共用判据之后，h1 那侧新放宽的一半在 h3 上不能反过来变严
+    Http3HeaderValidator utf8Path(Http3MessageKind::Request);
+    EXPECT_TRUE(feedRequest(utf8Path, requestWithFieldReplaced(3, ":path", "/\303\251")).has_value()) << "未编码的 UTF-8 路径被判成了畸形";
 
     Http3HeaderValidator optionsStar(Http3MessageKind::Request);
     const auto           starResult = feedRequest(optionsStar, {{":method", "OPTIONS"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "*"}});

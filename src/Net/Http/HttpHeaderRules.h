@@ -287,6 +287,38 @@ namespace AsynGyanis::Net
     {
         return equalsIgnoringCase(trimOptionalWhitespace(value), "trailers");
     }
+
+    /**
+     * @brief 判断一个字节能否出现在请求目标（URI 的 path/query 那一段）里
+     *
+     * @details 三条入站通路（h1 的请求行、h2 的 `:path`、h3 的 `:path`）吃的是同一条规则，此前却
+     *          各写一份且两两不同：裸 `#` 与 `\` 只有 h3 拒，非 ASCII 字节只有 h1 拒。同一份资源
+     *          因为走哪条通道而被认成两个，是路由与缓存键分家的形状。
+     *
+     * @details 现在这一份的取值范围：空格、DEL 与所有控制字符都不属于 URI 的字符集（空格还是请求行
+     *          的分隔符，留着等于让一行变两行）；`#` 之后是片段，RFC 9110 §7.1 明写片段不属于请求
+     *          目标，收到裸 `#` 就是目标畸形（要表达一个字符 `#` 得写 `%23`）；`\` 不在 `pchar` 里
+     *          （RFC 3986 §3.3），而它长得像 Windows 的路径分隔符——收下来等于替对端做路径归一化的
+     *          决定。**0x80..0xFF 是收的**：RFC 9110 §3.2.4.1 要求接收方把 URI 里超出 ASCII 的字节按
+     *          UTF-8 解释而不是判畸形，未编码的中文路径在真实客户端一直在发；且这些字节与
+     *          `%C3%A9` 解码之后是同一份内部表示，收下来并不新开任何表面。
+     *
+     * @param character 待判断的那个字节
+     * @return true 可以出现在请求目标里
+     */
+    [[nodiscard]] inline bool isRequestTargetCharacter(const char character) noexcept
+    {
+        const auto byte = static_cast<unsigned char>(character);
+        if (byte < 0x21U || byte == 0x7FU)
+        {
+            return false;
+        }
+        if (byte <= 0x7EU)
+        {
+            return character != '#' && character != '\\';
+        }
+        return true;
+    }
     /**
      * @brief 解析对端交来的状态码文本：只接受恰好三位十进制（RFC 9110 §4.1 的 status-code = 3DIGITS）
      *

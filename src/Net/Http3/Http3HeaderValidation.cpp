@@ -208,8 +208,9 @@ namespace AsynGyanis::Net
             }
             for (const char character: value)
             {
-                // 片段标识（# 之后）不得出现在请求目标里（RFC 9110 §7.1），空格与控制字符同理
-                if (character == '#' || character == ' ' || character == '\\' || static_cast<unsigned char>(character) < 0x21 || static_cast<unsigned char>(character) == 0x7F)
+                // 字符集与 h1/h2 共用一份判据（`isRequestTargetCharacter`）：裸 `#`（片段不属于请求
+                // 目标，RFC 9110 §7.1）、`\`、空格与控制字符都不收，而超出 ASCII 的字节照收
+                if (!isRequestTargetCharacter(character))
                 {
                     return std::unexpected(makeHeaderError(Http3HeaderErrorKind::EmptyPath, ":path 取值 \"" + printableFieldText(value) + "\" 含请求目标不允许的字符"));
                 }

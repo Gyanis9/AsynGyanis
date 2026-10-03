@@ -1496,6 +1496,18 @@ namespace AsynGyanis::Net
                     {
                         request.isUriTooLong = true;
                     }
+                    // 字符集与 h1/h3 共用一份判据：此前 h2 只按字段值那一套收（连空格都收），
+                    // 同一条目标会因为走哪条通道而被认成两个资源——路由与缓存键跟着分家
+                    for (const char pathCharacter: request.path)
+                    {
+                        if (!isRequestTargetCharacter(pathCharacter))
+                        {
+                            writeError(errorText, std::format(":path 取值 \"{}\" 含请求目标不允许的字符：裸 # 与反斜杠都不收"
+                                                              "（片段不属于请求目标，RFC 9110 §7.1；要表达 # 请写成 %23）",
+                                                              printableFieldText(request.path)));
+                            return false;
+                        }
+                    }
                 } else if (field.name == ":authority")
                 {
                     if (hasAuthorityField)

@@ -761,6 +761,8 @@ namespace AsynGyanis::Net
         samples.push_back({"te 取值不是 trailers", validPseudoFields + hpackLiteralField("te", "gzip"), "te"});
         samples.push_back({":path 为空", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, ""), ":path"});
         samples.push_back({"非 OPTIONS 用星号形式当目标", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, "*"), "asterisk-form"});
+        samples.push_back({":path 带裸 #（片段）", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, "/a#b"), "不允许的字符"});
+        samples.push_back({":path 带反斜杠", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, "/a\\b"), "不允许的字符"});
 
         for (const MalformedRequestSample &sample: samples)
         {
@@ -821,6 +823,28 @@ namespace AsynGyanis::Net
             const std::vector<Http2Request> requests = connection.takeRequests();
             ASSERT_EQ(requests.size(), 1U) << "te 取值「" << teValue << "」合规范却被拒了：流被打掉，请求没交出去";
             EXPECT_EQ(requests[0].streamId, 1U);
+        }
+    }
+
+    /**
+     * @brief 请求目标里的百分号编码与未编码 UTF-8 在 h2 上也照收
+     * @details 三条入站通路共用一份字符集判据，而「未编码的 UTF-8 必须收」这一半此前只有 h1 与 h3
+     *          有用例钉着：h2 这侧少了对照，将来谁把判据收紧（或把 `#` 的排除删掉），h2 一路不会红。
+     */
+    TEST(Http2Connection, AcceptsPercentEncodedAndUtf8RequestTarget)
+    {
+        for (const std::string_view path: {"/caf%C3%A9", "/caf\303\251", "/a%23b"})
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+
+            const std::string headerBlock = hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, path);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore)
+                    << "这条 :path 本该收下：" << path;
+
+            const std::vector<Http2Request> requests = connection.takeRequests();
+            ASSERT_EQ(requests.size(), 1U) << "这条 :path 被拒了：" << path;
+            EXPECT_EQ(requests[0].path, path) << "收下的目标要原样交给上层，编码形态不该被改写";
         }
     }
 
