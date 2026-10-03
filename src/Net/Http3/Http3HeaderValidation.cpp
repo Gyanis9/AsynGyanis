@@ -17,13 +17,6 @@ namespace AsynGyanis::Net
             return Http3HeaderError{.kind = errorKind, .message = std::move(messageText)};
         }
 
-        /// RFC 3986 §3.1 的 scheme：首字符必须是字母，其后只允许字母数字与 + - .
-        bool isSchemeCharacter(const char character) noexcept
-        {
-            return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '+' ||
-                   character == '-' || character == '.';
-        }
-
         /// 把字节写成可读文本再进日志与错误串：转义与截断的词表住在 `Base::escapeForLog`，这里只留
         /// 本层的默认长度与名字（同一套折法在两处各写一遍，迟早会分叉成「一条挡得住 NUL、另一条挡不住」）
         std::string printableFieldText(const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
@@ -151,17 +144,10 @@ namespace AsynGyanis::Net
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::DuplicatePseudoHeader, "请求里出现了第二个 :scheme（RFC 9114 §4.3.1）"));
             }
-            if (value.empty() || !((value.front() >= 'a' && value.front() <= 'z') || (value.front() >= 'A' && value.front() <= 'Z')))
+            if (!isUriSchemeSyntax(value))
             {
-                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MissingPseudoHeader, ":scheme 取值为空或首字符不是字母：scheme 的语法见 RFC 3986 §3.1"));
-            }
-            for (const char character: value)
-            {
-                if (!isSchemeCharacter(character))
-                {
-                    return std::unexpected(
-                            makeHeaderError(Http3HeaderErrorKind::MissingPseudoHeader, ":scheme 取值 \"" + printableFieldText(value) + "\" 含 RFC 3986 §3.1 之外的字符"));
-                }
+                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MissingPseudoHeader,
+                                                       ":scheme 取值 \"" + printableFieldText(value) + "\" 不是合法的协议名（RFC 3986 §3.1：字母打头，其后字母/数字与 + - .）"));
             }
             m_schemeText.assign(value);
             return {};

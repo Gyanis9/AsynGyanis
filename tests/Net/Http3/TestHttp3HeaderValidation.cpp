@@ -344,6 +344,28 @@ TEST(Http3HeaderValidation, AuthorityCannotCarryUserInfoOrPath)
     EXPECT_TRUE(feedRequest(ipv6, requestWithFieldReplaced(2, ":authority", "[::1]:8443")).has_value()) << "带方括号的 IPv6 权威应放行";
 }
 
+TEST(Http3HeaderValidation, SchemeMustBeAlphaFirstAndTokenCharactersOnly)
+{
+    // 协议名的语法与 h2 的 `:scheme`、出站 URL 解析共用一份判据（`isUriSchemeSyntax`）：
+    // 带冒号的值尤其要拒——冒号正是把 URI 切成协议与其余两段的那个字符
+    for (const std::string_view badScheme: {"", "1http", "ht:tp", "ht tp", "http;"})
+    {
+        Http3HeaderValidator validator(Http3MessageKind::Request);
+        expectRejected(feedRequest(validator, {{":method", "GET"}, {":scheme", badScheme}, {":authority", "example.com"}, {":path", "/"}}),
+                       Http3HeaderErrorKind::MissingPseudoHeader, badScheme);
+    }
+
+    // 能收的那一侧单独喂这一条字段：整段头块走完还要过「非 http/https 的 scheme 不许带 :authority」
+    // 那一条与本题无关的规则，混在一起就看不出红的是哪一半
+    for (const std::string_view goodScheme: {"HTTP", "my-scheme.1+2"})
+    {
+        Http3HeaderValidator validator(Http3MessageKind::Request);
+        ASSERT_TRUE(validator.beginHeaderBlock(false).has_value());
+        EXPECT_TRUE(validator.onHeaderField(":scheme", goodScheme).has_value()) << "合法的协议名被拒了：" << goodScheme;
+        EXPECT_EQ(validator.schemeText(), goodScheme) << "大小写原样留档，归一化不是这一层的事";
+    }
+}
+
 TEST(Http3HeaderValidation, SchemeDecidesWhetherAuthorityIsRequired)
 {
     // §4.3.1：http/https 必须给权威；没有权威组件的方案则不得给

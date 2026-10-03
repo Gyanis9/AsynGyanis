@@ -14,6 +14,7 @@
 
 #include "AsynGyanisExport.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <optional>
@@ -318,6 +319,28 @@ namespace AsynGyanis::Net
             return character != '#' && character != '\\';
         }
         return true;
+    }
+
+    /**
+     * @brief 判断一段文本是不是合法的 URI scheme（RFC 3986 §3.1：字母打头，其后字母/数字与 `+ - .`）
+     *
+     * @details 这条语法此前有两份各写一遍的实现（h3 的伪头校验、出站 URL 解析），而 h2 的 `:scheme`
+     *          根本没有它——`ht:tp` 这种带冒号的值在 HTTP/2 通路上会被原样收进请求，而伪头里的冒号
+     *          是把 URI 拆成两段的字符，收下来等于让下游按另一套切法理解同一个目标。判据收在这里之后
+     *          三条通路共用一份，出站 URL 解析也走它。
+     *
+     * @param scheme 待判的那一段（`:scheme` 的取值，或 URL 里冒号之前那段）
+     * @return true 可以作为协议名
+     */
+    [[nodiscard]] inline bool isUriSchemeSyntax(const std::string_view scheme) noexcept
+    {
+        const auto isAlpha = [](const char character) noexcept { return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z'); };
+        if (scheme.empty() || !isAlpha(scheme.front()))
+        {
+            return false;
+        }
+        return std::ranges::all_of(scheme, [&isAlpha](const char character) noexcept
+                                   { return isAlpha(character) || (character >= '0' && character <= '9') || character == '+' || character == '-' || character == '.'; });
     }
     /**
      * @brief 解析对端交来的状态码文本：只接受恰好三位十进制（RFC 9110 §4.1 的 status-code = 3DIGITS）

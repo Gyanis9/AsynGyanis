@@ -1480,6 +1480,16 @@ namespace AsynGyanis::Net
                     }
                     hasSchemeField = true;
                     request.scheme = field.value;
+                    // 协议名的语法与 h3、出站 URL 解析共用一份判据：h2 此前只判「非空 + 是合法字段值」，
+                    // 于是 `ht:tp` 这种带冒号的值能原样收进来——而冒号正是把 URI 切成协议与其余两段的
+                    // 字符，收下来等于让下游按另一套切法理解同一个目标
+                    if (!isUriSchemeSyntax(field.value))
+                    {
+                        writeError(errorText, std::format(":scheme 取值 \"{}\" 不是合法的协议名：RFC 3986 §3.1 要求字母打头，"
+                                                          "其后只允许字母/数字与 + - .",
+                                                          printableFieldText(field.value)));
+                        return false;
+                    }
                 } else if (field.name == ":path")
                 {
                     if (hasPathField)

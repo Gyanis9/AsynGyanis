@@ -254,21 +254,14 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 判一段文本是不是合法的协议名（RFC 3986 §3.1：字母打头，其后字母/数字/+/-/.）
+         * @details 判据住在 `HttpHeaderRules.h`，与 h3 的 `:scheme` 校验、h2 的伪头校验同一份——
+         *          三份各写一遍时，「本端发出去的 URL 能不能被本端收下来」这件事就成了运气。
          * @param text 冒号之前那一段
          * @return true 可以作为协议名
          */
         bool isSchemeName(const std::string_view text)
         {
-            if (text.empty() || !((text.front() >= 'A' && text.front() <= 'Z') || (text.front() >= 'a' && text.front() <= 'z')))
-            {
-                return false;
-            }
-            return std::ranges::all_of(text,
-                                       [](const char character)
-                                       {
-                                           return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
-                                                  character == '+' || character == '-' || character == '.';
-                                       });
+            return isUriSchemeSyntax(text);
         }
 
         /**

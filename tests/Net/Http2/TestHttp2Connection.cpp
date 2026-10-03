@@ -761,6 +761,8 @@ namespace AsynGyanis::Net
         samples.push_back({"te 取值不是 trailers", validPseudoFields + hpackLiteralField("te", "gzip"), "te"});
         samples.push_back({":path 为空", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, ""), ":path"});
         samples.push_back({"非 OPTIONS 用星号形式当目标", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, "*"), "asterisk-form"});
+        samples.push_back({":scheme 首字符不是字母", hpackIndexedField(2) + hpackLiteralField(6, "1http") + hpackIndexedField(4), "协议名"});
+        samples.push_back({":scheme 里带冒号", hpackIndexedField(2) + hpackLiteralField(6, "ht:tp") + hpackIndexedField(4), "协议名"});
         samples.push_back({":path 带裸 #（片段）", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, "/a#b"), "不允许的字符"});
         samples.push_back({":path 带反斜杠", hpackIndexedField(2) + hpackIndexedField(6) + hpackLiteralField(4, "/a\\b"), "不允许的字符"});
 
