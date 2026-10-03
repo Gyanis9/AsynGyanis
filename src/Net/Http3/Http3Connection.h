@@ -299,18 +299,13 @@ namespace AsynGyanis::Net
             bool                                  hasContentLengthDeclaration{false}; ///< 头段是否声明了 content-length
             bool                                  isHeaderSectionSeen{false};         ///< 是否已收到过头段（DATA 必须排在它之后）
             /**
-             * @brief 最近一个头段还压在解码器等编码器流的指令，尚未交付
+             * @brief 这条流上还压着未交付的头段（可能不止一段：头段加随后的尾段）
              * @details 引用动态表的头段可能先到、它要用的插入指令后到（两条流之间传输层不保证先后，
              *          RFC 9204 §2.2.1 就是让解码器等）。等期间这条流**不算收完**：按 END_STREAM 就地
-             *          收尾会把整条消息判成空——头段一个字节都没交出去，正文却已经计过数了
+             *          收尾会把整条消息判成空——头段一个字节都没交出去，正文却已经计过数了。
+             *          身份（头段还是尾段）不在这里记，按那一段自己的内容判，见 deliverResumedFieldSection()
              */
             bool isFieldSectionBlocked{false};
-            /**
-             * @brief 那个被挂起的段是头段还是尾段
-             * @details 挂起期间正文照常被收下，续解点叫醒时「是否已开始收正文」早已不说明
-             *          这一段的身份；判错会把请求头当尾段交给判定器，被按 §4.1 判成非法序列
-             */
-            bool isBlockedFieldSectionTrailers{false};
             bool isHeadRejected{false};  ///< 头段已被判畸形并交回会话作答，后续字节只看不再解释
             bool isTrailersSeen{false};  ///< 尾段只允许一个
             bool isBodyStarted{false};   ///< 是否已收到 DATA：再来的头段就是尾段
@@ -357,7 +352,7 @@ namespace AsynGyanis::Net
         /// 把一个解完的头段先整体判定、再逐字段交给上层
         [[nodiscard]] bool deliverFieldSection(std::int64_t streamId, StreamState &state, const std::vector<QpackHeaderField> &fields, bool isTrailers);
 
-        /// 编码器流补齐了内容之后续解某个挂起流上的头段
+        /// 编码器流补齐了内容之后续解该流上压着的头段：按发送序一段接一段解到队首还不够或队列空为止
         void deliverResumedFieldSection(std::int64_t streamId);
 
         /// 对端收尾之后按 content-length 与实际正文字数对账，并给出「请求收全」的通知

@@ -56,6 +56,20 @@ namespace AsynGyanis::Net
             }
             return false;
         }
+
+        /**
+         * @brief 这段字段行里是否带伪头
+         * @details 续解点交付挂起段时用它判身份：伪头只可能出现在头段里，而合法的头段必带伪头
+         *          （请求有 `:method`，响应有 `:status`，RFC 9114 §4.1、§4.3）。一条流上可以压着不止一段
+         *          挂起的头块，若在流上记一个「挂起的是哪一类」的槽，后到的尾段会把它改写，补齐时交出的
+         *          头段就被判成尾段——`:status` 撞上「伪头不得出现在尾段」，一条合法响应自己作废了自己
+         * @param fieldLines 待交付的字段行
+         * @return true 表示这段带伪头，应按头段交付
+         */
+        [[nodiscard]] bool fieldSectionCarriesPseudoHeader(const std::vector<QpackHeaderField> &fieldLines) noexcept
+        {
+            return std::any_of(fieldLines.begin(), fieldLines.end(), [](const QpackHeaderField &field) { return !field.name.empty() && field.name.front() == ':'; });
+        }
     } // namespace
 
     Http3Connection::Http3Connection(StreamOpener opener, StreamWriter writer, StreamCrediter crediter, Callbacks callbacks, const LocalSettings settings,
@@ -540,8 +554,7 @@ namespace AsynGyanis::Net
             {
                 state.isHeaderSectionSeen = true;
             }
-            state.isFieldSectionBlocked         = *decoded == QpackFieldSectionDecodeStatus::Blocked;
-            state.isBlockedFieldSectionTrailers = isTrailers;
+            state.isFieldSectionBlocked = *decoded == QpackFieldSectionDecodeStatus::Blocked;
             if (*decoded == QpackFieldSectionDecodeStatus::Blocked)
             {
                 // 声明的动态表内容还没到：整段由解码器代管，等编码器流补齐后再交（RFC 9204 §2.2.1）
@@ -702,23 +715,37 @@ namespace AsynGyanis::Net
 
         std::vector<QpackHeaderField> &fields             = m_inboundFieldLines;
         std::string                   &decoderStreamBytes = m_decoderStreamScratch;
-        const auto                     resumed            = m_qpackDecoder->resumeBlockedFieldSection(static_cast<std::uint64_t>(streamId), fields, decoderStreamBytes);
-        queueQpackInstructions({}, decoderStreamBytes);
-        if (!resumed)
+        // 一条流上可以压着不止一段（头段加随后的尾段），而 feedEncoderStream() 每条流只报一个标识：
+        // 解出一段就返回的话，后面那段再没有唤醒点，尾字段就此静默消失。故续解到「队首还差指令」或队列空为止
+        while (m_qpackDecoder->hasBlockedFieldSection(static_cast<std::uint64_t>(streamId)) && !m_isBroken && !state.isAbandoned && !state.isHeadRejected)
         {
-            failStream(streamId, toHttp3ErrorCode(resumed.error().kind), resumed.error().message);
-            return;
+            const auto resumed = m_qpackDecoder->resumeBlockedFieldSection(static_cast<std::uint64_t>(streamId), fields, decoderStreamBytes);
+            queueQpackInstructions({}, decoderStreamBytes);
+            if (!resumed)
+            {
+                failStream(streamId, toHttp3ErrorCode(resumed.error().kind), resumed.error().message);
+                return;
+            }
+            if (*resumed == QpackFieldSectionDecodeStatus::Blocked)
+            {
+                break; // 队首还差指令，后面那段按发送序也不许先走
+            }
+            // 身份按这一段自己的内容判，不按「此刻是否已收过正文」判：挂起期间正文帧照常到达会把后者翻上去，
+            // 而合法头段必带伪头、合法尾段必不带（RFC 9114 §4.1、§4.3），带不带伪头是唯一不会被别段改写的记号
+            static_cast<void>(deliverFieldSection(streamId, state, fields, !fieldSectionCarriesPseudoHeader(fields)));
         }
-        if (*resumed == QpackFieldSectionDecodeStatus::Blocked)
+
+        if (state.isHeadRejected && m_qpackDecoder->hasBlockedFieldSection(static_cast<std::uint64_t>(streamId)))
         {
-            return; // 还没补齐，继续等
+            // 头段已被判畸形，这条消息剩下的段不再解：告诉对端其上的动态表引用一并作废（§4.4.2），
+            // 顺带清掉本端为它们留的字节——留着就要压到连接结束
+            m_qpackDecoder->noteStreamAbandoned(static_cast<std::uint64_t>(streamId), decoderStreamBytes);
+            queueQpackInstructions({}, decoderStreamBytes);
         }
-        state.isFieldSectionBlocked = false;
-        // 按挂起时记下的那一类交付，而不是按「此刻是否已收过正文」：后者在挂起期间会被正文帧翻上去
-        static_cast<void>(deliverFieldSection(streamId, state, fields, state.isBlockedFieldSectionTrailers));
+        state.isFieldSectionBlocked = m_qpackDecoder->hasBlockedFieldSection(static_cast<std::uint64_t>(streamId));
         // 对端在指令到达之前就已 END_STREAM：那一刀的收尾当时被推迟，补在这里。本函数最后一次用到
         // state 就是这一句——收尾判定会把两侧都收完的流从表里摘掉，之后再碰它就是踩已释放的对象
-        if (state.isPeerFinished)
+        if (state.isPeerFinished && !state.isFieldSectionBlocked)
         {
             finishRequestStreamIfEnded(streamId, state);
         }

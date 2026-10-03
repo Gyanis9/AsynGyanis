@@ -634,6 +634,119 @@ TEST(Http3Connection, BodyArrivingWhileFieldSectionBlockedDoesNotTurnTheHeadInto
     EXPECT_TRUE(events.streamsClosed.empty()) << "本端还没作答，这条流的两侧没齐，状态不该回收";
 }
 
+/**
+ * @brief 同一条流上头段与尾段都挂起：指令补齐后两段要按序各交付一次，身份不能互换
+ * @details 现场取自自家出站 h3 客户端打自家服务端：响应头段引用动态表、尾段也插了新项，两段的指令
+ *          一起排在头段之后才到。本端只在流上记一个「挂起的是哪一类」的槽，于是尾段那一次到达把它改写，
+ *          补齐时把**头段**按尾段交出去——响应头里的 `:status` 立刻被判定器按 §4.3 判成「伪头出现在尾段」。
+ *          另一半是续解只走一段：解码器按流存的是队列，而 `feedEncoderStream` 每条流只报一个标识，
+ *          交付完队首就返回，后面那段再没有唤醒点，尾字段静默消失
+ * @note 证伪：把续解点改回「只交付一段就返回」，本条在尾段那一判据红；把交付身份改回读那个单槽，
+ *       本条在 `malformedRequests` 与头段计数处红
+ */
+TEST(Http3Connection, HeadAndTrailerSectionsBlockedOnTheSameStreamAreBothDelivered)
+{
+    FakeTransport                  transport;
+    EventLog                       events;
+    Http3Connection::LocalSettings settings;
+    settings.qpackMaximumTableCapacityByteCount = 4096;
+    auto connection                             = makeConnection(transport, events, settings);
+
+    const std::vector<QpackHeaderField> headFields = minimalRequestFields();
+    const std::vector<QpackHeaderField> trailerFields{QpackHeaderField{"x-checksum", "616263"}};
+    std::string                         headBlock;
+    std::string                         trailerBlock;
+    std::string                         instructions;
+    {
+        QpackEncoder peerEncoder(4096, 100, 4096);
+        std::string  sectionInstructions;
+        const auto   head = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(headFields), headBlock, sectionInstructions);
+        ASSERT_TRUE(head.has_value()) << head.error().message;
+        instructions += sectionInstructions;
+        sectionInstructions.clear();
+        const auto trailers = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(trailerFields), trailerBlock, sectionInstructions);
+        ASSERT_TRUE(trailers.has_value()) << trailers.error().message;
+        instructions += sectionInstructions;
+    }
+    ASSERT_FALSE(instructions.empty()) << "对端确实插了动态表，两段才会都挂起";
+
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02)), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headBlock)), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "payload")), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, trailerBlock)), true);
+    EXPECT_TRUE(events.headerFields.empty()) << "指令没齐就交出了字段";
+    EXPECT_TRUE(events.malformedRequests.empty()) << "挂起期间不该有任何判定结论";
+
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(instructions), false);
+
+    EXPECT_TRUE(events.malformedRequests.empty()) << "挂起的段被按错了身份交付";
+    ASSERT_EQ(events.headerBlocksReceived.size(), 1u) << "头段要作为头段交付一次";
+    ASSERT_EQ(events.trailerBlocksReceived.size(), 1u) << "队首之后那段尾段没被续解：尾字段静默丢了";
+    std::size_t headFieldCount    = 0;
+    std::size_t trailerFieldCount = 0;
+    for (const auto &field: events.headerFields)
+    {
+        field.isTrailers ? ++trailerFieldCount : ++headFieldCount;
+        if (field.name == "x-checksum")
+        {
+            EXPECT_TRUE(field.isTrailers) << "尾段里的字段被当作了请求头部";
+            EXPECT_EQ(field.value, "616263");
+        }
+    }
+    EXPECT_EQ(headFieldCount, headFields.size()) << "头段交出的字段数对不上";
+    EXPECT_EQ(trailerFieldCount, trailerFields.size()) << "尾段交出的字段数对不上";
+    ASSERT_EQ(events.requestsEnded.size(), 1u) << "两段都交付完才该补上被推迟的收尾";
+    EXPECT_FALSE(connection->isBroken());
+}
+
+/**
+ * @brief 尾段引用的是表里的老项（它自己不需要新指令），也不能抢在挂起的头段之前交付
+ * @details RFC 9204 §2.2.1 要求一条流上的头块按发送序解出。Required Insert Count 说的是「这段需要的
+ *          插入数」，后来那段完全可以比前一段小，于是它就绕过了挂起判定：本端把尾段先交上去，判定器
+ *          按 §4.1 报「尾段出现在头段之前」——一条合法响应被本端自己作废
+ * @note 证伪：摘掉解码器里「本流已有挂起段则后来那段一并挂起」那道闸，本条在 `malformedRequests`
+ *       与「指令到达前不交付」两处红
+ */
+TEST(Http3Connection, TrailerSectionBehindABlockedHeadIsNotDeliveredOutOfOrder)
+{
+    FakeTransport                  transport;
+    EventLog                       events;
+    Http3Connection::LocalSettings settings;
+    settings.qpackMaximumTableCapacityByteCount = 4096;
+    auto connection                             = makeConnection(transport, events, settings);
+
+    std::string headBlock;
+    std::string instructions;
+    {
+        QpackEncoder peerEncoder(4096, 100, 4096);
+        const auto   head = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(minimalRequestFields()), headBlock, instructions);
+        ASSERT_TRUE(head.has_value()) << head.error().message;
+    }
+    ASSERT_FALSE(instructions.empty()) << "头段确实引用了尚未到达的插入";
+    // 尾段由一个「不接动态表」的对端编码（encodeSection 里那台）：Required Insert Count 为 0，
+    // 本端不等任何指令就能解开它
+    std::string                         unusedInstructions;
+    const std::vector<QpackHeaderField> trailerFields{QpackHeaderField{"x-checksum", "616263"}};
+    const std::string                   trailerBlock = encodeSection(trailerFields, unusedInstructions);
+    EXPECT_TRUE(unusedInstructions.empty()) << "这台对端不插表，尾段才应当无需指令即可解开";
+
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02)), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headBlock)), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "payload")), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, trailerBlock)), true);
+    EXPECT_TRUE(events.headerFields.empty()) << "头段还压着就把尾段交了上去";
+    EXPECT_TRUE(events.malformedRequests.empty()) << "按发送序等的两段，不该被本端判成非法序列";
+
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(instructions), false);
+
+    EXPECT_TRUE(events.malformedRequests.empty()) << "补齐之后仍被判了非法序列";
+    ASSERT_EQ(events.headerBlocksReceived.size(), 1u) << "头段没在指令到达后交付";
+    ASSERT_EQ(events.trailerBlocksReceived.size(), 1u) << "尾段没在头段之后交付";
+    ASSERT_EQ(events.requestsEnded.size(), 1u);
+}
+
 TEST(Http3Connection, FlushHandsEveryStreamItsOwnWriteAndDrainsTheQueue)
 {
     FakeTransport transport;

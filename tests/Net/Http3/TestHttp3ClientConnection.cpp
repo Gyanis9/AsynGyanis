@@ -84,6 +84,9 @@ namespace AsynGyanis::Net
                                  response.setStatus(200);
                                  response.setBody(std::string{kServedBody});
                                  response.setHeader("x-served-by", "asyngyanis-h3");
+                                 // 带一条尾部字段：出站客户端的「尾字段与响应头部分表」需要一条端到端判据，
+                                 // 单元级的拼接（h2 那条）证明不了 h3 这条链路上 isTrailers 真的传到位
+                                 static_cast<void>(response.addTrailerField("x-checksum", "616263"));
                                  co_return;
                              });
 
@@ -857,6 +860,15 @@ namespace AsynGyanis::Net
                 << "响应头段里没找到路由带出的那一项";
         EXPECT_TRUE(attempt.response().isOk()) << "结论不自洽：" << attempt.response().errorMessage;
         EXPECT_EQ(server.servedRequestCount(), 1U) << "服务端没数到这条请求：本端的结论是自己拼的";
+
+        // 尾字段走的是正文之后那一段（RFC 9114 §4.3）：本端要把它落在 trailers 里，而不是与响应头部
+        // 混成一张表——混表时这条 x-checksum 看着就像一条普通头部，消费方读不出「这是收完正文才知道的结果」
+        const auto &trailers = attempt.response().trailers;
+        ASSERT_EQ(trailers.size(), 1U) << "尾部字段没端到端交回，或混进了别处：" << attempt.response().headers.size();
+        EXPECT_EQ(trailers[0].first, "x-checksum");
+        EXPECT_EQ(trailers[0].second, "616263");
+        EXPECT_FALSE(std::any_of(headers.begin(), headers.end(), [](const std::pair<std::string, std::string> &field) { return field.first == "x-checksum"; }))
+                << "尾字段漏进了响应头部那张表";
     }
 
 

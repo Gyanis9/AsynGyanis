@@ -1130,7 +1130,14 @@ namespace AsynGyanis::Net
     std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
                                                                                               std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
     {
-        const auto decoded = decodeFieldSectionIntoScratch(streamId, encodedFieldSection, decoderStreamBytes);
+        return decodeFieldSectionInto(streamId, encodedFieldSection, fields, decoderStreamBytes, false);
+    }
+
+    std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::decodeFieldSectionInto(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                                  std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes,
+                                                                                                  const bool isFrontOfPendingQueue)
+    {
+        const auto decoded = decodeFieldSectionIntoScratch(streamId, encodedFieldSection, decoderStreamBytes, isFrontOfPendingQueue);
         // 只有整段解成才交付：失败或仍被挂起时调用方看到的仍是空表，与旧写法「先清空、末尾才填满」同形
         if (decoded.has_value() && *decoded == QpackFieldSectionDecodeStatus::Decoded)
         {
@@ -1143,7 +1150,7 @@ namespace AsynGyanis::Net
     }
 
     std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
-                                                                                                         std::string &decoderStreamBytes)
+                                                                                                         std::string &decoderStreamBytes, const bool isFrontOfPendingQueue)
     {
         restartFieldLineScratch();
         decoderStreamBytes.clear();
@@ -1193,9 +1200,12 @@ namespace AsynGyanis::Net
         }
         const std::uint64_t baseValue = baseIsBelowRequiredInsertCount ? requiredInsertCount - deltaBaseValue - 1 : requiredInsertCount + deltaBaseValue;
 
-        if (requiredInsertCount > m_dynamicTable.insertCount())
+        if (requiredInsertCount > m_dynamicTable.insertCount() || (!isFrontOfPendingQueue && hasBlockedFieldSection(streamId)))
         {
-            // §2.2.1：表还没收到该段需要的插入，挂起这条流并保留原始字节，不把数据放流控窗口
+            // §2.2.1 在这里有两道闸：一是本段要的插入还没到，二是这条流上已压着更早一段没解开——一条流的
+            // 头块必须按发送序交付，而后来那段的 Required Insert Count 完全可以更小（它引用的是表里的老项），
+            // 只判第一道就会让它抢在挂起段之前交给上层，被按「尾段出现在头段之前」判成非法序列。
+            // 续解路径解的就是队首，故不受第二道约束
             if (auto blockResult = blockStream(streamId, encodedFieldSection, requiredInsertCount); !blockResult.has_value())
             {
                 return std::unexpected(blockResult.error());
@@ -1252,7 +1262,7 @@ namespace AsynGyanis::Net
 
         const std::string             encodedSection = streamIterator->second.front().encodedFieldSection;
         std::span<const std::uint8_t> retained(reinterpret_cast<const std::uint8_t *>(encodedSection.data()), encodedSection.size());
-        auto                          decodeResult = decodeFieldSection(streamId, retained, fields, decoderStreamBytes);
+        auto                          decodeResult = decodeFieldSectionInto(streamId, retained, fields, decoderStreamBytes, true);
         if (decodeResult.has_value() && *decodeResult == QpackFieldSectionDecodeStatus::Decoded)
         {
             eraseBlockedSection(streamId);
@@ -1716,6 +1726,12 @@ namespace AsynGyanis::Net
     bool QpackDecoder::hasBlockedStreams() const noexcept
     {
         return !m_blockedSectionsByStreamId.empty();
+    }
+
+    bool QpackDecoder::hasBlockedFieldSection(const std::uint64_t streamId) const noexcept
+    {
+        const auto streamIterator = m_blockedSectionsByStreamId.find(streamId);
+        return streamIterator != m_blockedSectionsByStreamId.end() && !streamIterator->second.empty();
     }
 
     std::size_t QpackDecoder::tableCapacityByteCount() const noexcept

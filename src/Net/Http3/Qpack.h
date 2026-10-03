@@ -452,6 +452,7 @@ namespace AsynGyanis::Net
          * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> Decoded 表示 fields 可用；
          *         Blocked 表示已挂起（超过本端承诺的阻塞流数则按 §2.1.2 判 DecompressionFailed）；
          *         失败时错误类别区分头块类（DecompressionFailed）与本端策略（FieldSectionTooLarge）
+         * @note 该流上已压着更早的段时，本段即便引用够用也一并挂起：一条流的头块按发送序交付（§2.2.1）
          */
         [[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
                                                                                                   std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes);
@@ -463,7 +464,9 @@ namespace AsynGyanis::Net
          * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节，同 decodeFieldSection()
          * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> Decoded 表示 fields 可用且挂起记录
          *         已消除；Blocked 表示仍不够解（挂起记录原样留着，等下一次表补齐）；引用的项在此期间被
-         *         淘汰或前缀本身非法时返回 DecompressionFailed（§2.2.3）
+         *         淘汰或前缀本身非法时返回 DecompressionFailed（§2.2.3），该流本就没有挂起记录时同样报错
+         * @note 一条流上可以压着多段，而 feedEncoderStream() 每条流只报一个标识：解出一段后要继续按
+         *       hasBlockedFieldSection() 续解到空，否则后面那段永无唤醒点
          */
         [[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> resumeBlockedFieldSection(std::uint64_t streamId, std::vector<QpackHeaderField> &fields,
                                                                                                          std::string &decoderStreamBytes);
@@ -498,8 +501,15 @@ namespace AsynGyanis::Net
          */
         void noteStreamAbandoned(std::uint64_t streamId, std::string &decoderStreamBytes);
 
-        [[nodiscard]] std::size_t                         blockedStreamCount() const noexcept;        ///< 当前挂起的流数，上界为本端公布的阻塞流数
-        [[nodiscard]] bool                                hasBlockedStreams() const noexcept;         ///< 是否有流在等编码器流补齐
+        [[nodiscard]] std::size_t blockedStreamCount() const noexcept; ///< 当前挂起的流数，上界为本端公布的阻塞流数
+        [[nodiscard]] bool        hasBlockedStreams() const noexcept;  ///< 是否有流在等编码器流补齐
+        /**
+         * @brief 这条流上是否还压着没解开的头块
+         * @details 一条流上可以压着不止一段（头段与随后的尾段各一段），续解方按此判定「还要不要继续续解」
+         * @param streamId 流标识
+         * @return true 该流的挂起队列非空
+         */
+        [[nodiscard]] bool                                hasBlockedFieldSection(std::uint64_t streamId) const noexcept;
         [[nodiscard]] std::size_t                         tableCapacityByteCount() const noexcept;    ///< 对端设定的当前容量，单位字节
         [[nodiscard]] std::size_t                         dynamicTableSizeByteCount() const noexcept; ///< 当前表大小，单位字节
         [[nodiscard]] std::uint64_t                       insertCount() const noexcept;               ///< 本端已处理的插入数（§2.2.1 的比较基准）
@@ -538,10 +548,26 @@ namespace AsynGyanis::Net
          * @param streamId 承载该头块的流标识，仅用于报错定位与挂起登记
          * @param encodedFieldSection 编码段字节
          * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节，进入调用时先清空
+         * @param isFrontOfPendingQueue 本段是否为该流挂起队列的队首（续解路径为真）：非队首的段即便引用
+         *        已经够用也要一并挂起，一条流上的头块必须按发送序解开（§2.2.1）
          * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> 与公开入口同一口径
          */
         [[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError>
-        decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::string &decoderStreamBytes);
+        decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::string &decoderStreamBytes, bool isFrontOfPendingQueue);
+
+        /**
+         * @brief 解一段头块并在解全时把字段行交给调用方的缓冲
+         * @details 公开入口与续解入口共用这一份交付口径，两者的区别只在 isFrontOfPendingQueue。
+         * @param streamId 承载该头块的流标识
+         * @param encodedFieldSection 编码段字节
+         * @param fields 输出参数：字段行落点，进入调用时先清空
+         * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节，进入调用时先清空
+         * @param isFrontOfPendingQueue 见 decodeFieldSectionIntoScratch()
+         * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> 与公开入口同一口径
+         */
+        [[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> decodeFieldSectionInto(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                                      std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes,
+                                                                                                      bool isFrontOfPendingQueue);
 
         /**
          * @brief 开始解一段头块
@@ -597,7 +623,7 @@ namespace AsynGyanis::Net
         void appendInsertCountIncrementIfPending(std::string &decoderStreamBytes);
 
         /**
-         * @brief 抹掉一条流的全部挂起记录（续解成功或流被放弃时调用）
+         * @brief 摘掉该流挂起队列的队首（续解成功那一段之后调用），队列空了才把这条流从挂起表里除去
          * @param streamId 流标识
          */
         void eraseBlockedSection(std::uint64_t streamId) noexcept;
