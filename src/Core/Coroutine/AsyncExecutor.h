@@ -359,8 +359,9 @@ namespace AsynGyanis::Core
         std::deque<std::function<void()>> m_tasks;           ///< 待执行的阻塞任务（FIFO，先到先服务）
         std::atomic<std::size_t>          m_pendingCount{0}; ///< 队列长度（原子，供监控快速读取）
 
+        /// 已跑完并把恢复投回事件循环的任务累计条数（与下面两本账同为松读，只用于收敛与观测）
+        std::atomic<std::size_t> m_completedCount{0};
         /// 因排队已满被拒的累计条数（只算这一种拒绝：停机期的拒绝发生在进程收尾，报出来只会让告警自己响一次）
-        std::atomic<std::size_t> m_completedCount{0}; ///< 已跑完并把恢复投回循环的任务数（与 m_pendingCount 同为松读，只用于收敛与观测）
         std::atomic<std::size_t> m_saturatedRejectionCount{0};
 
         std::atomic<bool> m_isStopping{false}; ///< 是否已进入停止流程：析构一开始置真，此后 enqueue 一律拒绝——工作线程退出后没人再取队列，收下任务等于让提交方永久挂起

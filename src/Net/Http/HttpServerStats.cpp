@@ -12,6 +12,8 @@ namespace AsynGyanis::Net
         // 执行器是进程级共享的一份，不住在任何采集端里，因此只能在取快照时现读——与准入闸门同一办法。
         // 放在 snapshot() 这一处而不是各通道的 stats() 里：三条通道都从这里取快照，收在一处就不存在
         // 「哪条通道忘了接」那种分叉
+        // 读的是**进程级共享的那一台**执行器：`Database::Queryable::useAsyncExecutor()` 允许注入自建实例，
+        // 那几台的队列与拒绝数不在这里（读数因此是「共享执行器」的口径，不是全进程）。help 里同句注明
         stats.blockingTaskQueueDepth    = static_cast<std::uint64_t>(Core::AsyncExecutor::shared().pendingTaskCount());
         stats.blockingTaskRejectedCount = static_cast<std::uint64_t>(Core::AsyncExecutor::shared().saturatedRejectionCount());
         // 常驻内存是同一类「进程级、不住在采集端里」的读数：三条通道共用一份，才有「抓哪台都一样」

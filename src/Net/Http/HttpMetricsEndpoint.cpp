@@ -161,13 +161,17 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "over_limit_rejected_connections_total"), "因本监听器并发连接上限到顶而被拒的连接条数（未设上限时恒为 0）",
                       stats.overLimitRejectedConnectionCount);
 
-        // 运行期积压：阻塞任务队列是进程级共享的，多条通道报的是同一份读数（不是各自的份额）
+        // 运行期积压：读的是进程级共享的那台执行器，多条通道报的是同一份读数（不是各自的份额）。
+        // 自建执行器（`Queryable::useAsyncExecutor()`）不在这份读数的口径里，见 HttpServerStats 的取数处
         const std::string queueDepthName = makeMetricName(metricNamePrefix, "blocking_task_queue_depth");
-        out += std::format("# HELP {} 取快照那一刻排在阻塞任务执行器队列里的任务条数（进程级，多条通道报同一份）\n"
+        out += std::format("# HELP {} 取快照那一刻排在共享阻塞任务执行器队列里的任务条数（只含进程级共享那台，"
+                           "自建执行器不计入；多条通道报同一份）\n"
                            "# TYPE {} gauge\n{} {}\n",
                            queueDepthName, queueDepthName, queueDepthName, stats.blockingTaskQueueDepth);
         appendCounter(out, makeMetricName(metricNamePrefix, "blocking_task_rejected_total"),
-                      "因排队已满被拒的阻塞任务条数（进程级累计；提交方当场收到异常，涨了就说明该降并发或加工作线程）", stats.blockingTaskRejectedCount);
+                      "因排队已满被拒的阻塞任务条数（只含进程级共享那台执行器，自建的不计；提交方当场收到异常，"
+                      "涨了就说明该降并发或加工作线程）",
+                      stats.blockingTaskRejectedCount);
 
         // 日志被丢的规模是进程级的，而且**有一条对端可驱动的路**：JSON 版式对非法 UTF-8 整条失败，
         // 请求目标里送原始 Latin-1 字节的客户端因此能把自己在访问日志里的那行消音。没有这条读数，

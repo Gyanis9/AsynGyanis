@@ -182,7 +182,8 @@ namespace AsynGyanis::Database
          * @brief 历史上被丢弃的连接总数（失联、超过存活期、会话没复位干净三条去向都计入）
          * @details 这条读数是 `createdCount()` 增删机制的补面：丢弃这件事此前只在日志与「创建数不涨」的
          *          推断里存在，而把推断当判据会误诊——池太小、对端掐线、会话复位失败三种现场在
-         *          `createdCount()` 上长一个样。它只增不减，与 `totalCount()` 对着读即可分诊。
+         *          `createdCount()` 上长一个样。它只增不减；与 `createdCount()`（当下记在账上几条）
+         *          对着读即可分诊「建了就丢」。
          * @return std::size_t 累计丢弃的连接数
          */
         [[nodiscard]] std::size_t discardedCount() const noexcept;
@@ -191,8 +192,10 @@ namespace AsynGyanis::Database
          * @brief 等到截止时刻仍没拿到连接的次数（同步与异步两条取出路径共用这份计数）
          * @details 借出失败原本是唯一会「无声」发生的一种：调用方只拿到一个空的 PooledConnection，
          *          不留任何异常。停摆期的空交出不计入（那是正常收尾而非容量问题），tryAcquire() 的
-         *          「此刻没有」也不计入（它本就不等）。与 `totalCount()` 对着读可分诊：本数涨而池里
-         *          一条连接都上不去是建连一直失败，本数涨且 `totalCount()` 贴着上限才是池太小。
+         *          「此刻没有」也不计入（它本就不等）。与计数对着读可分诊：本数涨而 `createdCount()`
+         *          一直上不去是建连一直失败，本数涨且 `createdCount()` 贴着 `maximumPoolSize` 才是池太小。
+         *          分诊要对的是 `createdCount()` 而不是 `totalCount()`：上限闸门判的就是前者，而在途建连
+         *          先占位再建连，`totalCount()`（在借 + 空闲）会少算那一条
          * @return std::size_t 借出超时次数
          */
         [[nodiscard]] std::size_t borrowTimeoutCount() const noexcept;

@@ -405,6 +405,8 @@ namespace AsynGyanis::Database
             {
                 return nullptr;
             }
+            // 上限闸门判的是 m_totalCreated（= createdCount()），不是 active+idle 的 totalCount()：
+            // 占位加在建连之前，所以在途那条会让两个数差一——分诊「池太小」时要对的是这一个
             if (m_totalCreated.load(std::memory_order_relaxed) >= m_config.maximumPoolSize)
             {
                 return nullptr;
