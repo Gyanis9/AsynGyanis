@@ -840,7 +840,12 @@ namespace AsynGyanis::Net
         reset.finalSize            = 12;
         EXPECT_TRUE(layer.onResetStreamFrame(reset).has_value());
         ASSERT_TRUE(layer.hasAbortedStreams());
-        EXPECT_EQ(layer.takeAbortedStream().value_or(999), 0x00U);
+        const std::optional<QuicAbortedStream> aborted = layer.takeAbortedStream();
+        ASSERT_TRUE(aborted.has_value());
+        EXPECT_EQ(aborted->streamId, 0x00U);
+        // 对端给的那个码必须原样交上去：h3 那边「服务端没做任何处理就拒了这条请求」只认它（RFC 9114 §7）
+        EXPECT_EQ(aborted->applicationErrorCode, 0x100U) << "复位帧里的应用层错误码被丢掉了";
+        EXPECT_TRUE(aborted->isResetByPeer) << "RESET_STREAM 与 STOP_SENDING 是两种形状，混成一句上层就分不出是谁不再发";
 
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 4, bytesOf("defg"))).has_value());
         EXPECT_FALSE(layer.hasDeliveries());
@@ -907,7 +912,10 @@ namespace AsynGyanis::Net
         stopSending.streamId             = 0x03;
         stopSending.applicationErrorCode = 0x200;
         EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
-        EXPECT_EQ(layer.takeAbortedStream().value_or(999), 0x03U);
+        const std::optional<QuicAbortedStream> aborted = layer.takeAbortedStream();
+        ASSERT_TRUE(aborted.has_value());
+        EXPECT_EQ(aborted->streamId, 0x03U);
+        EXPECT_FALSE(aborted->isResetByPeer) << "叫停说的是「对端不再收」，报成复位会让上层以为对端保证过什么";
         const Collected collected = collect(layer, 1200);
         EXPECT_TRUE(framesOfType<QuicStreamFrame>(collected.frames).empty()) << "叫停之后不再排数据帧";
         EXPECT_EQ(framesOfType<QuicResetStreamFrame>(collected.frames).size(), 1U);
@@ -1527,9 +1535,9 @@ namespace AsynGyanis::Net
         // 有界轮询而不是 while(还有)：取放的游标一旦错乱，队列会永远取不空，用例应当红而不是挂住
         for (std::size_t takeIndex = 0; takeIndex < abortedStreamCount && layer.hasAbortedStreams(); ++takeIndex)
         {
-            const std::optional<std::uint64_t> abortedStreamId = layer.takeAbortedStream();
-            ASSERT_TRUE(abortedStreamId.has_value());
-            EXPECT_EQ(*abortedStreamId, peerBidirectionalStreamIdOf(expectedNextIndex)) << "取回的流号顺序不对";
+            const std::optional<QuicAbortedStream> abortedStream = layer.takeAbortedStream();
+            ASSERT_TRUE(abortedStream.has_value());
+            EXPECT_EQ(abortedStream->streamId, peerBidirectionalStreamIdOf(expectedNextIndex)) << "取回的流号顺序不对";
             ++expectedNextIndex;
             // 取一个再塞一个新的：读位置因此反复过半，回收那条路才会被反复走到。塞的必须是还没用过
             // 的流号，否则这条队列里就会出现同一序号的两条记录，比对的是重复而不是顺序

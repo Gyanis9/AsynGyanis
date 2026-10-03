@@ -752,13 +752,14 @@ namespace AsynGyanis::Net
         };
         // 对端取消了一条请求流（RESET_STREAM / STOP_SENDING）或传输层把它收尾了：h3 会话据此回收
         // 该流的状态。没有这一路的话，被取消的请求正文、流式等待者与隧道记录会一直留着
-        connectionConfiguration.onPeerStreamClosed = [this](QuicConnection &connection, const std::int64_t streamId)
+        connectionConfiguration.onPeerStreamClosed =
+                [this](QuicConnection &connection, const std::int64_t streamId, const std::uint64_t applicationErrorCode, const bool isResetByPeer)
         {
             // 只查表不现建会话：连 h3 一个字节都没跑过的连接没有请求状态可回收，此刻新建会话
             // 反而会替一条正在收尾的连接开出三条单向流
             if (Http3Session *const session = findHttp3Session(&connection); session != nullptr)
             {
-                session->cancelStreamByPeer(streamId);
+                session->cancelStreamByPeer(streamId, applicationErrorCode, isResetByPeer);
             }
         };
         // 待发队列被排空一些就催一次续交：h3 连接层留着的那段字节等的是「地方」而不是「对端发数据」，

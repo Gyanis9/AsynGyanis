@@ -192,7 +192,7 @@ namespace AsynGyanis::Net
         callbacks.onStreamClosed = [this](const std::int64_t streamId) { dropRequest(streamId); };
         // 该流已被放弃（对端重置、或本端按协议判错）：先把收口信号落到传输层——对端因此立刻知道
         // 这条流不会再有响应，而不是等连接收尾；再按「还没答完」计数、丢掉本会话的状态
-        callbacks.onStreamReset = [this](const std::int64_t streamId, const Http3ErrorCode errorCode)
+        callbacks.onStreamReset = [this](const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view /*reason*/)
         {
             abortRequestStream(streamId, errorCode);
             noteStreamResetByPeer(streamId);
@@ -1129,31 +1129,31 @@ namespace AsynGyanis::Net
         found->second->body.markBroken();
     }
 
-    void Http3Session::cancelStreamByPeer(const std::int64_t streamId)
+    void Http3Session::cancelStreamByPeer(const std::int64_t streamId, const std::uint64_t applicationErrorCode, const bool isResetByPeer)
     {
-        // 只记流号：本函数由传输层的流回调调用（此刻正在读报文），而回收要动连接层并唤醒可能
+        // 只记三个值：本函数由传输层的流回调调用（此刻正在读报文），而回收要动连接层并唤醒可能
         // 立刻回写响应的业务协程——那属于「回调期间重入」。真正的处理在 drainPeerCancelledStreams()
-        m_peerCancelledStreamIds.push_back(streamId);
+        m_peerCancelledStreams.push_back(PeerCancelledStream{.streamId = streamId, .applicationErrorCode = applicationErrorCode, .isResetByPeer = isResetByPeer});
     }
 
     void Http3Session::drainPeerCancelledStreams()
     {
-        if (m_peerCancelledStreamIds.empty() || m_connection == nullptr || m_isBroken)
+        if (m_peerCancelledStreams.empty() || m_connection == nullptr || m_isBroken)
         {
             return;
         }
 
         // 整表换出来再逐条处理：回收过程会唤醒业务协程，它们可能立刻回写响应，flush 又触发新的
         // 流收尾回调往同一张表里追加——边遍历边追加会踩到迭代器失效
-        std::vector<std::int64_t> cancelledStreamIds;
-        cancelledStreamIds.swap(m_peerCancelledStreamIds);
+        std::vector<PeerCancelledStream> cancelledStreams;
+        cancelledStreams.swap(m_peerCancelledStreams);
 
-        for (const std::int64_t streamId: cancelledStreamIds)
+        for (const PeerCancelledStream &cancelled: cancelledStreams)
         {
             // 告诉连接层这条流没了：它先发出「该流已重置」的通知（回调里按「还没答完」计数、再走
             // dropRequest()），请求缓冲、流式等待者与隧道记录都跟着释放
             // （与正常收尾走同一条路，不另开清理分支，也不在这里重复计数）
-            m_connection->noteStreamCancelledByPeer(streamId);
+            m_connection->noteStreamCancelledByPeer(cancelled.streamId, cancelled.applicationErrorCode, cancelled.isResetByPeer);
         }
 
         // 唤醒被这些取消波及的处理器：等正文的那些只记了「有新进展」，真正的唤醒在这里做，

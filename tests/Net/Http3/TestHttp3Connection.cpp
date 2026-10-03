@@ -129,8 +129,10 @@ namespace
         std::vector<std::int64_t>                            requestsEnded{};
         std::vector<std::int64_t>                            streamsClosed{};
         std::vector<std::pair<std::int64_t, Http3ErrorCode>> streamsReset{};
-        std::vector<std::pair<std::int64_t, std::string>>    malformedRequests{};
-        std::vector<std::pair<Http3ErrorCode, std::string>>  connectionClosures{};
+        /// 同一次收尾交上来的原因文案：它是调用方唯一能读到「这条流为什么死」的地方
+        std::vector<std::pair<std::int64_t, std::string>>   streamResetReasons{};
+        std::vector<std::pair<std::int64_t, std::string>>   malformedRequests{};
+        std::vector<std::pair<Http3ErrorCode, std::string>> connectionClosures{};
     };
 
     /// 建一个接好假传输层的协议层：三条本端单向流在构造里就开出来。角色默认服务端，出站一侧的用例传 Client
@@ -155,9 +157,13 @@ namespace
             static_cast<void>(streamId);
             events.bodyBytes.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         };
-        callbacks.onRequestEnded     = [&events](const std::int64_t streamId) { events.requestsEnded.push_back(streamId); };
-        callbacks.onStreamClosed     = [&events](const std::int64_t streamId) { events.streamsClosed.push_back(streamId); };
-        callbacks.onStreamReset      = [&events](const std::int64_t streamId, const Http3ErrorCode errorCode) { events.streamsReset.emplace_back(streamId, errorCode); };
+        callbacks.onRequestEnded = [&events](const std::int64_t streamId) { events.requestsEnded.push_back(streamId); };
+        callbacks.onStreamClosed = [&events](const std::int64_t streamId) { events.streamsClosed.push_back(streamId); };
+        callbacks.onStreamReset  = [&events](const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view reason)
+        {
+            events.streamsReset.emplace_back(streamId, errorCode);
+            events.streamResetReasons.emplace_back(streamId, std::string(reason));
+        };
         callbacks.onMalformedRequest = [&events](const std::int64_t streamId, const std::string_view reason)
         { events.malformedRequests.emplace_back(streamId, std::string(reason)); };
         callbacks.onConnectionClosed = [&events](const Http3ErrorCode errorCode, const std::string_view reason)
@@ -406,7 +412,7 @@ TEST(Http3Connection, SubmittingToACancelledStreamOnlyVoidansThatResponse)
     std::string   encoderBytes;
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
 
-    connection->noteStreamCancelledByPeer(kRequestStreamId);
+    connection->noteStreamCancelledByPeer(kRequestStreamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled), true);
     ASSERT_EQ(events.streamsReset.size(), 1u);
     EXPECT_EQ(events.streamsReset[0].second, Http3ErrorCode::RequestCancelled);
 
@@ -976,6 +982,107 @@ TEST(Http3Connection, InformationalResponseSectionDoesNotTakeTheHeadSlotFromTheF
 }
 
 /**
+ * @brief 对端打断一条流时，交上去的原因要点名对端那一帧与它给的码
+ * @details 过去这一路交上去的只有流号：原因文案由调用方自己编一句「对端发了 RESET_STREAM」，
+ *          而对端给的应用层错误码在传输层就被丢掉了。h3 客户端认「服务端没做任何应用层处理就拒了
+ *          这条请求」靠的正是那个码（RFC 9114 §7 的 H3_REQUEST_REJECTED，认出来才敢把非幂等请求
+ *          换条连接重来），STOP_SENDING 则是另一回事——它只说「对端不再收」，不带任何保证。
+ *          交上去的 `Http3ErrorCode` 仍是 H3_REQUEST_CANCELLED：那一位是「本端据此收口这条流」的值，
+ *          服务端会把它回声进自己那一帧，而对端可以给任何 62 位整数（含 h3 码空间之外的 0）
+ * @note 证伪：把应用层错误码从流层那道队列里摘掉（只交流号），格一红在原因文案上；把复位与叫停
+ *       混成一种形状报，格二红
+ */
+TEST(Http3Connection, PeerStreamAbortNamesThePeersFrameAndErrorCode)
+{
+    const std::vector<QpackHeaderField> requestFields{QpackHeaderField{":method", "POST"}, QpackHeaderField{":scheme", "https"}, QpackHeaderField{":authority", "example.com"},
+                                                      QpackHeaderField{":path", "/upload"}};
+
+    // 格一：对端用 H3_REQUEST_REJECTED 复位——这个码要出现在调用方读得到的那句原因里
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events, {}, AsynGyanis::Net::QuicConnectionRole::Client);
+        ASSERT_TRUE(connection->submitRequestHead(kRequestStreamId, requestFields, false).has_value());
+
+        connection->noteStreamCancelledByPeer(kRequestStreamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestRejected), true);
+
+        ASSERT_EQ(events.streamResetReasons.size(), 1U);
+        EXPECT_NE(events.streamResetReasons[0].second.find("H3_REQUEST_REJECTED"), std::string::npos)
+                << "对端给的码被丢掉了：客户端再没有依据判这条请求能不能当没发过重来，实际原因：" << events.streamResetReasons[0].second;
+        EXPECT_NE(events.streamResetReasons[0].second.find("RESET_STREAM"), std::string::npos);
+        ASSERT_EQ(events.streamsReset.size(), 1U);
+        EXPECT_EQ(events.streamsReset[0].second, Http3ErrorCode::RequestCancelled) << "交上去的码是本端收口这条流用的，不该原样回声对端给的那个";
+    }
+
+    // 格二：STOP_SENDING 是「对端不再收」，不能报成复位
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events, {}, AsynGyanis::Net::QuicConnectionRole::Client);
+        ASSERT_TRUE(connection->submitRequestHead(kRequestStreamId, requestFields, false).has_value());
+
+        connection->noteStreamCancelledByPeer(kRequestStreamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestRejected), false);
+
+        ASSERT_EQ(events.streamResetReasons.size(), 1U);
+        EXPECT_NE(events.streamResetReasons[0].second.find("STOP_SENDING"), std::string::npos) << "实际原因：" << events.streamResetReasons[0].second;
+        EXPECT_EQ(events.streamResetReasons[0].second.find("RESET_STREAM"), std::string::npos) << "叫停被报成复位：那句文案会让上层以为对端保证过「没处理」";
+    }
+}
+
+/**
+ * @brief 一条流没有最终头段就收尾时，文案要分清「只收到过渡响应」与「一个段都没收到」，并按角色说流名
+ * @details 两种形状的排查方向完全不同：前者是对端发了 1xx 却没跟最终响应（RFC 9114 §4.1 要求响应以
+ *          带非 1xx 的 :status 的头段收尾），后者是对端开了流什么也没写就 FIN。过去两者共用一句
+ *          「请求流上没有头段就结束了」，而本端是客户端时这条流上装的其实是响应——排查的人被指向
+ *          一个没发生过的形状，还去查了一个不存在的请求
+ * @note 证伪：摘掉 `isInformationalSectionSeen` 那一位（两种形状合用一句话），格一红；把流名写死成
+ *       「请求流」，格一与格二红在流名上
+ */
+TEST(Http3Connection, NamesTheShapeOfAStreamThatEndedWithoutAFinalHeadSection)
+{
+    // 格一：客户端只收到 103 就 FIN（那一刀跟着这段头块一起来）
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events, {}, AsynGyanis::Net::QuicConnectionRole::Client);
+        std::string   encoderBytes;
+
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection({QpackHeaderField{":status", "103"}}, encoderBytes))), true);
+
+        ASSERT_EQ(events.streamsReset.size(), 1U);
+        EXPECT_EQ(events.streamsReset[0].second, Http3ErrorCode::MessageError);
+        ASSERT_EQ(events.streamResetReasons.size(), 1U);
+        EXPECT_NE(events.streamResetReasons[0].second.find("过渡响应"), std::string::npos) << "实际文案：" << events.streamResetReasons[0].second;
+        EXPECT_NE(events.streamResetReasons[0].second.find("响应流"), std::string::npos) << "本端是客户端，这条流上装的是响应：" << events.streamResetReasons[0].second;
+    }
+
+    // 格二：客户端一个段都没收到就 FIN —— 与格一是两种形状，文案不能是同一句
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events, {}, AsynGyanis::Net::QuicConnectionRole::Client);
+
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(std::string{}), true);
+
+        ASSERT_EQ(events.streamResetReasons.size(), 1U);
+        EXPECT_NE(events.streamResetReasons[0].second.find("没有头段"), std::string::npos) << "实际文案：" << events.streamResetReasons[0].second;
+        EXPECT_EQ(events.streamResetReasons[0].second.find("过渡响应"), std::string::npos) << "一个段都没收到，不该说成「只收到过渡响应」";
+    }
+
+    // 格三：服务端角色下仍说「请求流」（这条流上装的确实是请求）
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events);
+
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(std::string{}), true);
+
+        ASSERT_EQ(events.streamResetReasons.size(), 1U);
+        EXPECT_NE(events.streamResetReasons[0].second.find("请求流"), std::string::npos) << "实际文案：" << events.streamResetReasons[0].second;
+    }
+}
+
+/**
  * @brief 一条流收口之后，本端编码器替它留的动态表引用与阻塞名额要还不回 Section Ack 的对端也能归还
  * @details 本端发出去的头块引用了动态表项时，编码器替这条流记两样东西：那些表项的引用计数，和一个
  *          「可能让对端阻塞」的名额（名额总数按对端 SETTINGS_QPACK_BLOCKED_STREAMS 封顶，RFC 9204 §2.1.2
@@ -1276,7 +1383,7 @@ TEST(Http3Connection, CancellingAnUnknownStreamChangesNothing)
     EventLog      events;
     auto          connection = makeConnection(transport, events);
 
-    connection->noteStreamCancelledByPeer(999);
+    connection->noteStreamCancelledByPeer(999, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled), true);
 
     EXPECT_FALSE(connection->isBroken());
     EXPECT_TRUE(events.streamsReset.empty());

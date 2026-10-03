@@ -181,11 +181,25 @@ namespace AsynGyanis::Net
          *          用这个码。本端再加一道自己的防御：**收到过任何响应字节就不认**——对端答过话又说没处理，
          *          那是它违规，不能拿它的话把非幂等请求做两遍。别的码（H3_REQUEST_CANCELLED、
          *          H3_INTERNAL_ERROR 等）都不带这个保证，按「可能已经执行过」处置
-         * @param errorCode 对端 RESET_STREAM 里带的 h3 错误码
+         * @param errorCode 这条流收场时的 h3 错误码：对端复位给的那个，或本端收到 GOAWAY 后判掉在途流时用的那个
          * @param isAnyByteReceived 这条流上本端有没有收到过响应字节
          * @return true 表示重来一次是安全的（连非幂等方法也算）
          */
         [[nodiscard]] static bool isUnprocessedRejection(Http3ErrorCode errorCode, bool isAnyByteReceived) noexcept;
+
+        /**
+         * @brief 承载层报来的一次「对端打断了这条流」算不算「保证没处理过」
+         * @details 就是上面那条判据再加一道形状闸：§7 给的是「服务端**复位**这条流并带上
+         *          H3_REQUEST_REJECTED」，而 STOP_SENDING 说的是「对端不再收本端这条流上的字节」，
+         *          它带的码是「请对端在 RESET_STREAM 里用这个码」（RFC 9000 §19.5），不是对端对
+         *          「处理没处理过」的表态。把叫停也当成保证，等于让一次「服务端不想再收正文」
+         *          把一条非幂等请求做两遍
+         * @param applicationErrorCode 对端那一帧里的应用层错误码（原样的 62 位整数）
+         * @param isResetByPeer true 是 RESET_STREAM，false 是 STOP_SENDING
+         * @param isAnyByteReceived 这条流上本端有没有收到过响应字节
+         * @return true 表示重来一次是安全的
+         */
+        [[nodiscard]] static bool isUnprocessedPeerAbort(std::uint64_t applicationErrorCode, bool isResetByPeer, bool isAnyByteReceived) noexcept;
 
         /// 在途（已提出、还没收齐）的请求流条数：连接池据此判断这条连接是不是正被人用着
         [[nodiscard]] std::size_t inFlightStreamCount() const noexcept;
@@ -219,6 +233,18 @@ namespace AsynGyanis::Net
         void noteBodyBytes(std::int64_t streamId, std::span<const std::uint8_t> bytes);
         void noteMessageEnded(std::int64_t streamId);
         void noteStreamFailed(std::int64_t streamId, std::string_view reason);
+
+        /**
+         * @brief 承载层报来「对端复位或叫停了这条流」：先定能不能安全重发，再让协议层收账
+         * @details 顺序是有讲究的：协议层收尾时会顺势报出这条请求的失败原因，而那一句要不要带上
+         *          「可以当没发过重来」取决于本端此刻认不认这次拒绝——所以那一位必须先落。
+         *          RFC 9114 §7 只给 RESET_STREAM 配了 H3_REQUEST_REJECTED 这个保证，STOP_SENDING
+         *          说的是「对端不再收」，不带它
+         * @param streamId 被打断的流
+         * @param applicationErrorCode 对端给的应用层错误码
+         * @param isResetByPeer true 是 RESET_STREAM，false 是 STOP_SENDING
+         */
+        void notePeerAbortedStream(std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer);
 
         /**
          * @brief 取这条流在途的账；已经不认的流交出空条目，**不新建记录**

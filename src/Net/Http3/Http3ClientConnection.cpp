@@ -30,20 +30,29 @@ namespace AsynGyanis::Net
         callbacks.onBodyBytes    = [this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes) { noteBodyBytes(streamId, bytes); };
         callbacks.onRequestEnded = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
         callbacks.onStreamClosed = [this](const std::int64_t streamId) { noteMessageEnded(streamId); };
-        callbacks.onStreamReset  = [this](const std::int64_t streamId, const Http3ErrorCode errorCode)
+        callbacks.onStreamReset  = [this](const std::int64_t streamId, const Http3ErrorCode errorCode, const std::string_view reason)
         {
             // §5.2：H3_REQUEST_REJECTED 说的是「服务端没做任何应用层处理就拒了这条请求」，客户端可以当它
-            // 从没发过；这一位要交到重发闸门手上，非幂等方法才敢换条连接重来一次。别的码不带这个保证，
-            // 过去所有码都走同一句文案，等于把规范给的唯一一次安全重试机会丢掉了
-            PendingExchange *exchange   = liveExchange(streamId);
-            const bool       isRejected = exchange != nullptr && isUnprocessedRejection(errorCode, exchange->response.isAnyByteReceived);
-            if (isRejected)
+            // 从没发过；这一位要交到重发闸门手上，非幂等方法才敢换条连接重来一次。别的码不带这个保证。
+            // 「没处理过」有两个来源：本端收到 GOAWAY 后被判掉的那些流（码就是 H3_REQUEST_REJECTED），
+            // 以及对端自己用 H3_REQUEST_REJECTED 复位的那条——后者由 notePeerAbortedStream 先记下那一位，
+            // 因为协议层在对端复位这一路上交来的码恒为 H3_REQUEST_CANCELLED（见 Http3Connection 的说明）
+            PendingExchange *exchange = liveExchange(streamId);
+            if (exchange == nullptr)
             {
-                exchange->response.isGuaranteedUnprocessed = true;
-                noteStreamFailed(streamId, "对端按 H3_REQUEST_REJECTED 拒了这条请求：RFC 9114 §5.2 说它没被处理过，本端可以当没发过换条连接重来");
+                // 本端已经不认这条流（请求协程已收口）：失败没有落账的地方。这里**不能**顺着
+                // noteStreamFailed 里的 exchangeFor 立一条新账——那条记录不会再有人摘，在途数从此回不到 0
                 return;
             }
-            noteStreamFailed(streamId, "对端在本条流上发了 RESET_STREAM");
+            if (exchange->response.isGuaranteedUnprocessed || isUnprocessedRejection(errorCode, exchange->response.isAnyByteReceived))
+            {
+                exchange->response.isGuaranteedUnprocessed = true;
+                noteStreamFailed(streamId, std::string{reason} + "；这条请求没被处理过，本端可以当没发过换条连接重来");
+                return;
+            }
+            // 原因照协议层给的写：本端判死的流（畸形响应、长度对不上、正文出现在头段之前）过去一律被
+            // 说成「对端发了 RESET_STREAM」，排查的人于是去查一台没做错事的服务器
+            noteStreamFailed(streamId, reason);
         };
         callbacks.onMalformedRequest = [this](const std::int64_t streamId, const std::string_view reason) { noteStreamFailed(streamId, "响应不合规范：" + std::string{reason}); };
         callbacks.onConnectionClosed = [this](const Http3ErrorCode /*errorCode*/, const std::string_view reason)
@@ -63,6 +72,10 @@ namespace AsynGyanis::Net
         // 还会让 h3 看不到收尾（FIN）
         m_connection.setStreamDataSink([this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes, const bool isEndStream)
                                        { m_protocol->consumeStreamData(streamId, bytes, isEndStream); });
+        // 对端复位或叫停一条请求流：这一路不接，本端就看不见对端那次复位，那条请求只能干等到时限，
+        // 而 §7 给的「没处理过、可以重来」也随对端的错误码一起丢掉
+        m_connection.setPeerStreamAbortSink([this](const std::int64_t streamId, const std::uint64_t applicationErrorCode, const bool isResetByPeer)
+                                            { notePeerAbortedStream(streamId, applicationErrorCode, isResetByPeer); });
 
         if (!m_protocol->isUsable())
         {
@@ -363,6 +376,22 @@ namespace AsynGyanis::Net
             exchange.response.errorMessage = std::string{reason};
         }
         exchange.isComplete = true;
+    }
+
+    void Http3ClientConnection::notePeerAbortedStream(const std::int64_t streamId, const std::uint64_t applicationErrorCode, const bool isResetByPeer)
+    {
+        PendingExchange *exchange = liveExchange(streamId);
+        if (exchange != nullptr && isUnprocessedPeerAbort(applicationErrorCode, isResetByPeer, exchange->response.isAnyByteReceived))
+        {
+            exchange->response.isGuaranteedUnprocessed = true;
+        }
+        // 账由协议层收：这条流挂起的头块、待确认的动态表引用与流状态都在它手里，本端不重复那份清理
+        m_protocol->noteStreamCancelledByPeer(streamId, applicationErrorCode, isResetByPeer);
+    }
+
+    bool Http3ClientConnection::isUnprocessedPeerAbort(const std::uint64_t applicationErrorCode, const bool isResetByPeer, const bool isAnyByteReceived) noexcept
+    {
+        return isResetByPeer && isUnprocessedRejection(static_cast<Http3ErrorCode>(applicationErrorCode), isAnyByteReceived);
     }
 
     void Http3ClientConnection::failAllPending(const std::string_view reason)

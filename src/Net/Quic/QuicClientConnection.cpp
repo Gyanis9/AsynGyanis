@@ -101,6 +101,15 @@ namespace AsynGyanis::Net
         };
         connectionConfiguration.onStreamData = [this](QuicConnection &, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
         { noteStreamData(streamId, data, isEndStream); };
+        // 对端复位或叫停了某条请求流：转交给上层（h3 出站客户端据此收掉那条请求的账，并按对端给的
+        // 应用层错误码判它能不能安全重发）。没有这一路，本端只会等到请求时限
+        connectionConfiguration.onPeerStreamClosed = [this](QuicConnection &, const std::int64_t streamId, const std::uint64_t applicationErrorCode, const bool isResetByPeer)
+        {
+            if (m_peerStreamAbortSink)
+            {
+                m_peerStreamAbortSink(streamId, applicationErrorCode, isResetByPeer);
+            }
+        };
 
         QuicClientTlsSettings clientTlsSettings;
         clientTlsSettings.hostName                       = m_configuration.hostName;
@@ -292,6 +301,11 @@ namespace AsynGyanis::Net
     void QuicClientConnection::setStreamDataSink(std::function<void(std::int64_t, std::span<const std::uint8_t>, bool)> sink)
     {
         m_streamDataSink = std::move(sink);
+    }
+
+    void QuicClientConnection::setPeerStreamAbortSink(std::function<void(std::int64_t, std::uint64_t, bool)> sink)
+    {
+        m_peerStreamAbortSink = std::move(sink);
     }
 
     void QuicClientConnection::noteStreamData(const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)

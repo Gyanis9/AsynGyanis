@@ -88,8 +88,17 @@ namespace AsynGyanis::Net
             /// 一条流的两侧都已结束：上层可以丢掉该流的状态
             std::function<void(std::int64_t streamId)> onStreamClosed;
 
-            /// 本端判定该流出错并已放弃：参数为流号与线上错误码
-            std::function<void(std::int64_t streamId, Http3ErrorCode errorCode)> onStreamReset;
+            /**
+             * @brief 这条流已被放弃：本端判定它出错，或对端把它复位/叫停了
+             * @param streamId 出错的流
+             * @param errorCode 线上错误码。本端判错时是那条规则的码；对端打断时一律 H3_REQUEST_CANCELLED
+             *                  （它是「本端据此收口这条流」的值，不是对端给的那个——见
+             *                  noteStreamCancelledByPeer 的说明）
+             * @param reason 中文原因，含命中的规则或对端那一帧的码。过去这一句只进日志：调用方拿到的
+             *               是一句自己编的猜测，把本端判定的畸形响应说成「对端发了 RESET_STREAM」，
+             *               排查的人于是去查一台没做错事的服务器
+             */
+            std::function<void(std::int64_t streamId, Http3ErrorCode errorCode, std::string_view reason)> onStreamReset;
 
             /**
              * @brief 收到的请求头部畸形（RFC 9114 §4.1.2）
@@ -181,9 +190,14 @@ namespace AsynGyanis::Net
         /**
          * @brief 承载层报来「对端重置或停止了这条流」
          * @param streamId 被取消的流
-         * @note 本类看不到 QUIC 层的 RESET_STREAM/STOP_SENDING，不告知就会留下流状态与挂起的头块
+         * @param applicationErrorCode 对端那一帧里的应用层错误码，照实写进交上去的原因文案
+         * @param isResetByPeer true 是 RESET_STREAM（对端不再发），false 是 STOP_SENDING（对端不再收）
+         * @note 本类看不到 QUIC 层的 RESET_STREAM/STOP_SENDING，不告知就会留下流状态与挂起的头块。
+         *       错误码只进文案不改交上去的 `Http3ErrorCode`：那个码是「本端据此收口这条流」的值，
+         *       服务端会把它回声进自己那一帧，而对端可以给任何 62 位整数（含 h3 码空间之外的 0），
+         *       回声出去就是本端写了一个规范没定义过的码（RFC 9114 §8.1）
          */
-        void noteStreamCancelledByPeer(std::int64_t streamId);
+        void noteStreamCancelledByPeer(std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer);
 
         /**
          * @brief 提交响应头
@@ -308,6 +322,9 @@ namespace AsynGyanis::Net
             std::uint64_t                         declaredContentLengthByteCount{0};  ///< 头段声明的正文长度
             bool                                  hasContentLengthDeclaration{false}; ///< 头段是否声明了 content-length
             bool                                  isHeaderSectionSeen{false};         ///< 是否已收到过头段（DATA 必须排在它之后）
+            /// 是否只收到过过渡响应（1xx）：它占不掉头段位，收尾时要据此把「一个段都没收到」与
+            /// 「只收到招呼」分开说——两句文案指向的排查方向完全不同
+            bool isInformationalSectionSeen{false};
             /**
              * @brief 这条流上还压着未交付的头段（可能不止一段：头段加随后的尾段）
              * @details 引用动态表的头段可能先到、它要用的插入指令后到（两条流之间传输层不保证先后，

@@ -381,7 +381,7 @@ namespace AsynGyanis::Net
         stream.isReset = true;
         // 对端既然已经复位，欠着的停发请求就没有必要再发了（§3.5）
         stream.receiveStop.reset();
-        m_abortedStreams.pushBack(frame.streamId);
+        m_abortedStreams.pushBack(QuicAbortedStream{.streamId = frame.streamId, .applicationErrorCode = frame.applicationErrorCode, .isResetByPeer = true});
         return {};
     }
 
@@ -414,7 +414,7 @@ namespace AsynGyanis::Net
             stream.finalOffset = stream.sentHighWater;
             stream.inFlight.clear();
         }
-        m_abortedStreams.pushBack(frame.streamId);
+        m_abortedStreams.pushBack(QuicAbortedStream{.streamId = frame.streamId, .applicationErrorCode = frame.applicationErrorCode, .isResetByPeer = false});
         return {};
     }
 
@@ -856,7 +856,7 @@ namespace AsynGyanis::Net
         return !m_abortedStreams.empty();
     }
 
-    std::optional<std::uint64_t> QuicStreamLayer::takeAbortedStream()
+    std::optional<QuicAbortedStream> QuicStreamLayer::takeAbortedStream()
     {
         return m_abortedStreams.takeFront();
     }

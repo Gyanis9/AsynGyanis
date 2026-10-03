@@ -492,15 +492,15 @@ namespace AsynGyanis::Net
                 m_configuration.onStreamData(*this, static_cast<std::int64_t>(delivery->streamId), delivery->bytes, delivery->isFinal);
             }
         }
-        while (const std::optional<std::uint64_t> abortedStreamId = streams.takeAbortedStream())
+        while (const std::optional<QuicAbortedStream> abortedStream = streams.takeAbortedStream())
         {
-            notifyPeerStreamClosed(static_cast<std::int64_t>(*abortedStreamId));
+            notifyPeerStreamClosed(static_cast<std::int64_t>(abortedStream->streamId), abortedStream->applicationErrorCode, abortedStream->isResetByPeer);
         }
     }
 
-    void QuicConnection::notifyPeerStreamClosed(const std::int64_t streamId)
+    void QuicConnection::notifyPeerStreamClosed(const std::int64_t streamId, const std::uint64_t applicationErrorCode, const bool isResetByPeer)
     {
-        // 只转交对端发起的双向流（流号低两位为 0）：请求跑在这类流上，控制流与 QPACK 流
+        // 只转交请求流（流号低两位为 0）：两种角色的请求都跑在这类流上，控制流与 QPACK 流
         // 无论收口还是重置都有自己的规矩（RFC 9114 §6.2.1），不该被当成「请求被取消」
         if (streamId < 0 || (streamId & 0x03) != 0)
         {
@@ -508,7 +508,7 @@ namespace AsynGyanis::Net
         }
         if (m_configuration.onPeerStreamClosed)
         {
-            m_configuration.onPeerStreamClosed(*this, streamId);
+            m_configuration.onPeerStreamClosed(*this, streamId, applicationErrorCode, isResetByPeer);
         }
     }
 

@@ -186,6 +186,17 @@ namespace AsynGyanis::Net
         void setStreamDataSink(std::function<void(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream)> sink);
 
         /**
+         * @brief 接上「对端打断了某条流」的出口（RESET_STREAM / STOP_SENDING）
+         * @details 不接就等于本端看不见对端的复位：上层那条请求只能干等到自己的时限，而对端给的应用层
+         *          错误码也一并丢掉——h3 那边「服务端没做任何应用层处理就拒了这条请求」正是靠这个码认的
+         *          （RFC 9114 §7 的 H3_REQUEST_REJECTED），认出来客户端才敢把一条非幂等请求换条连接重来。
+         *          与服务端那一路是同一个通知，只是这边交给设置的出口而不是 h3 会话
+         * @param sink 出口；参数依次是流号、对端给的应用层错误码、以及是复位（true）还是叫停（false）。
+         *             交空即不再转交（默认就是这一档）
+         */
+        void setPeerStreamAbortSink(std::function<void(std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer)> sink);
+
+        /**
          * @brief 取走一条流上已收到的字节（取完即清空）
          * @param streamId 流号
          * @return std::vector<std::uint8_t> 自上次取走之后到达的字节
@@ -246,6 +257,8 @@ namespace AsynGyanis::Net
         std::vector<std::uint8_t>                                              m_receiveBuffer{};  ///< 收包缓冲，一次一条数据报
         std::map<std::int64_t, IncomingStreamState>                            m_incoming{};       ///< 按流号记的接收账
         std::function<void(std::int64_t, std::span<const std::uint8_t>, bool)> m_streamDataSink{}; ///< 已设的转交出口；空即在本对象排队
-        bool                                                                   m_isStopped{false}; ///< 本端已收口或被时限掐断
+        /// 已设的「对端打断了某条流」出口；空即不转交（上层看不到对端的复位，只能等时限）
+        std::function<void(std::int64_t, std::uint64_t, bool)> m_peerStreamAbortSink{};
+        bool                                                   m_isStopped{false}; ///< 本端已收口或被时限掐断
     };
 } // namespace AsynGyanis::Net

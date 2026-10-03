@@ -340,10 +340,12 @@ namespace AsynGyanis::Net
          *          「对端取消一条已发正文的 POST」会让请求缓冲、流式等待者与隧道记录永久驻留
          *          （传输层归还的 MAX_STREAMS 额度还允许对端反复重来）。
          * @param streamId 被对端取消的流
-         * @note 本函数只记下流号：它由传输层的流回调调用，而回调期间动连接层、唤醒业务协程都属
+         * @param applicationErrorCode 对端那一帧里的应用层错误码，随记录一起留到回收那一刻
+         * @param isResetByPeer true 是 RESET_STREAM（对端不再发），false 是 STOP_SENDING（对端不再收）
+         * @note 本函数只记下这三个值：它由传输层的流回调调用，而回调期间动连接层、唤醒业务协程都属
          *       「回调期间重入」；真正的回收在下一个安全点 pump() 里做（见 drainPeerCancelledStreams）
          */
-        void cancelStreamByPeer(std::int64_t streamId);
+        void cancelStreamByPeer(std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer);
 
         /**
          * @brief 头收齐时判一下：命中流式正文路由就提前派发（正文边收边交，不等整份收齐）
@@ -813,9 +815,16 @@ namespace AsynGyanis::Net
         bool                                    m_hasAbandonedPendingStreams{false}; ///< 承载连接的收口信号是否已交过：唤醒只做一次，之后每拍只收敛
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;
-        /// 承载层报来的「对端取消」流号：它们到的时候正在传输层的回调里，只能先记下来，
-        /// 等 pump() 这个安全点再统一回收（见 cancelStreamByPeer / drainPeerCancelledStreams）
-        std::vector<std::int64_t> m_peerCancelledStreamIds;
+        /// 承载层报来的一次「对端打断」：流号、对端给的应用层错误码、以及是复位还是叫停。
+        /// 它们到的时候正在传输层的回调里，只能先记下来，等 pump() 这个安全点再统一回收
+        /// （见 cancelStreamByPeer / drainPeerCancelledStreams）
+        struct PeerCancelledStream
+        {
+            std::int64_t  streamId{0};             ///< 被打断的流
+            std::uint64_t applicationErrorCode{0}; ///< 对端给的应用层错误码
+            bool          isResetByPeer{false};    ///< true 是 RESET_STREAM，false 是 STOP_SENDING
+        };
+        std::vector<PeerCancelledStream> m_peerCancelledStreams;
 
         /// 待唤醒的流式生产者（同上：dropRequest 在连接层回调里被调用，不能当场恢复它们）
         std::vector<std::coroutine_handle<>> m_deferredWaiterResumes;

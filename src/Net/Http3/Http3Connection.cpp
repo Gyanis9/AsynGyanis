@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <format>
 #include <ranges>
 #include <variant>
 
@@ -732,6 +733,7 @@ namespace AsynGyanis::Net
         {
             // 招呼收下就好：字段逐个交出去与「头段收齐」那一下都不做，但确认照发——§4.4.1 说的是
             // 「处理完这段就 Ack」，丢弃也是处理完；不发就等于让对端替这段一直留着动态表引用
+            state.isInformationalSectionSeen = true;
             std::string decoderStreamBytes;
             static_cast<void>(m_qpackDecoder->noteFieldSectionDelivered(static_cast<std::uint64_t>(streamId), decoderStreamBytes));
             queueQpackInstructions({}, decoderStreamBytes);
@@ -813,8 +815,16 @@ namespace AsynGyanis::Net
     {
         if (!state.isHeaderSectionSeen)
         {
-            // 一条什么都没收到的流：按非法消息序列处置，不派发业务
-            failStream(streamId, Http3ErrorCode::MessageError, "请求流上没有头段就结束了（RFC 9114 §4.1.2）");
+            // 按非法消息序列处置，不派发业务。名字与成因都按现场取：本端是客户端时这条流上装的是响应；
+            // 而「只收到过渡响应」与「一个段都没收到」是两种形状，混用一句话会让人去查没发生过的那一种
+            const std::string_view streamName = m_isLocalServer ? "请求流" : "响应流";
+            if (state.isInformationalSectionSeen)
+            {
+                failStream(streamId, Http3ErrorCode::MessageError,
+                           std::string(streamName) + "只收到过渡响应（1xx）就收尾了：RFC 9114 §4.1 要求最终响应的头段带一个不是 1xx 的 :status，本端不拿一声招呼当答案");
+                return;
+            }
+            failStream(streamId, Http3ErrorCode::MessageError, std::string(streamName) + "上没有头段就结束了（RFC 9114 §4.1.2）");
             return;
         }
         if (state.hasContentLengthDeclaration && state.declaredContentLengthByteCount != state.receivedBodyByteCount)
@@ -1001,7 +1011,7 @@ namespace AsynGyanis::Net
         return entry == m_streams.end() || entry->second.isLocalFinished || entry->second.isAbandoned;
     }
 
-    void Http3Connection::noteStreamCancelledByPeer(const std::int64_t streamId)
+    void Http3Connection::noteStreamCancelledByPeer(const std::int64_t streamId, const std::uint64_t applicationErrorCode, const bool isResetByPeer)
     {
         if (!m_isUsable)
         {
@@ -1029,7 +1039,14 @@ namespace AsynGyanis::Net
         entry->second.isAbandoned    = true;
         if (m_callbacks.onStreamReset)
         {
-            m_callbacks.onStreamReset(streamId, Http3ErrorCode::RequestCancelled);
+            // 交上去的码恒为 H3_REQUEST_CANCELLED（它是「本端据此收口」的值，见头文件里那条说明），
+            // 对端真正给的那个码写进原因里：h3 那侧「服务端没做任何应用层处理就拒了这条请求」只能靠它认
+            // （RFC 9114 §7 的 H3_REQUEST_REJECTED），而 STOP_SENDING 说的是「对端不再收」，不带这个保证
+            const auto peerErrorCode = static_cast<Http3ErrorCode>(applicationErrorCode);
+            const auto reason        = isResetByPeer ? std::format("对端在这条流上发了 RESET_STREAM（{}，码 0x{:x}），它不再发这条流的剩余字节", http3ErrorCodeName(peerErrorCode),
+                                                                   applicationErrorCode)
+                                                     : std::format("对端在这条流上发了 STOP_SENDING（要求本端用码 0x{:x} 复位），它不再收本端这条流上的字节", applicationErrorCode);
+            m_callbacks.onStreamReset(streamId, Http3ErrorCode::RequestCancelled, reason);
         }
         m_streams.erase(entry);
     }
@@ -1379,7 +1396,7 @@ namespace AsynGyanis::Net
         }
         if (m_callbacks.onStreamReset)
         {
-            m_callbacks.onStreamReset(streamId, errorCode);
+            m_callbacks.onStreamReset(streamId, errorCode, reason);
         }
         // 这里不摘状态：调用链上到处握着 StreamState 的引用（帧循环、额度归还、收尾判定都在用），
         // 当场 erase 就是让那些引用悬空。标记已放弃后交给 pruneAbandonedStream 在安全点回收

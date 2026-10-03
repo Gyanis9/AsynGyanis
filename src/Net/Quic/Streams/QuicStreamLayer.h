@@ -48,6 +48,20 @@ namespace AsynGyanis::Net
     };
 
     /**
+     * @brief 一条被打断的流：对端那一帧带来的错误码与打断的形状
+     * @details 只交流号是不够的：h3 那边「服务端在没做任何应用层处理的情况下拒了这条请求」
+     *          （RFC 9114 §7 的 H3_REQUEST_REJECTED）正是靠 RESET_STREAM 的应用层错误码认出来的，
+     *          认出来客户端才敢把一条非幂等请求换条连接重来；而 STOP_SENDING 说的是「对端不再收」，
+     *          不带任何「没处理过」的保证，两者不能混成一句「这条流没了」
+     */
+    struct ASYN_NET_API QuicAbortedStream
+    {
+        std::uint64_t streamId{0};             ///< 流号
+        std::uint64_t applicationErrorCode{0}; ///< 对端给的应用层错误码（RESET_STREAM 的 Error Code / STOP_SENDING 的 Application Protocol Error Code）
+        bool          isResetByPeer{false};    ///< true 是 RESET_STREAM（对端不再发），false 是 STOP_SENDING（对端不再收）
+    };
+
+    /**
      * @brief 流层报给连接核心的违规：带 §11.1 的传输错误码与可直接发出的中文文案
      * @details 本层不碰 socket，也就没法自己收口；核心拿到这个结构后调 beginClose。
      */
@@ -215,8 +229,8 @@ namespace AsynGyanis::Net
          */
         /// @return true 有被打断的流等着上层回收
         [[nodiscard]] bool hasAbortedStreams() const noexcept;
-        /// @return 一条被打断的流号；队列空时返回空
-        [[nodiscard]] std::optional<std::uint64_t> takeAbortedStream();
+        /// @return 一条被打断的流（含对端给的错误码与形状）；队列空时返回空
+        [[nodiscard]] std::optional<QuicAbortedStream> takeAbortedStream();
 
         /**
          * @brief 本层此刻还记着多少条流的状态（收、发两侧相加）
@@ -441,7 +455,7 @@ namespace AsynGyanis::Net
         /// 入站侧往往先结清，共用一条边界会把同一条流的响应也挡掉
         std::array<std::array<std::uint64_t, 2>, 2> m_retiredPeerStreamBoundaries{}; ///< [收/发][双向/单向] 各一条边界
         PendingQueue<QuicStreamDelivery>            m_deliveries{};                  ///< 等着交给上层的数据
-        PendingQueue<std::uint64_t>                 m_abortedStreams{};              ///< 被打断、等上层回收的流号
+        PendingQueue<QuicAbortedStream>             m_abortedStreams{};              ///< 被打断、等上层回收的流
         std::size_t                                 m_drainedSendByteCount{0};       ///< 自上层取数以来排进包的待发字节，上层据此续交留下的那段
 
         std::uint64_t m_connectionReceivedBytes{0};           ///< 各入站流最大结束偏移之和，§4.1 的连接级账

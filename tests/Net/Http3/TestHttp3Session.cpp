@@ -2212,7 +2212,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(isFirstChunkObserved) << "用例前提：处理器应当在正文收齐之前就拿到第一批";
 
         // 对端放弃这条请求：承载层把 RESET_STREAM 转成这一声通知，回收发生在下一个安全点（pump）
-        session.cancelStreamByPeer(kFirstRequestStreamId);
+        session.cancelStreamByPeer(kFirstRequestStreamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled), true);
         Core::Task<> pumpTask = session.pump();
         resumeUntilReady(pumpTask);
 

@@ -1183,7 +1183,7 @@ namespace AsynGyanis::Net
      *          因为那时对端已经违规，拿它的话把非幂等请求做两遍比失败一次更坏。这一位随后交给
      *          `HttpClient::isRetrySafeAfterFailure` 那份共用闸门（h2 侧同一族判据由 §8.7 那两条钉住）
      * @note 证伪：把「收到过响应字节就不认」这道防御摘掉，第二格红；把码的判断放宽成「任何 RESET_STREAM」，
-     *       后三格红
+     *       后三格红；把「只有复位才算」那道形状闸摘掉（叫停也当保证），第五格红
      */
     TEST(Http3ClientConnection, OnlyAnUnansweredRequestRejectionCountsAsUnprocessed)
     {
@@ -1192,6 +1192,18 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(Http3ClientConnection::isUnprocessedRejection(Http3ErrorCode::RequestCancelled, false)) << "H3_REQUEST_CANCELLED 是「处理过一段之后放弃」，不带这个保证";
         EXPECT_FALSE(Http3ClientConnection::isUnprocessedRejection(Http3ErrorCode::InternalError, false)) << "对端内部故障：请求可能已经执行过";
         EXPECT_FALSE(Http3ClientConnection::isUnprocessedRejection(Http3ErrorCode::NoError, false)) << "正常收尾也不等于没处理过";
+
+        // 承载层报上来的那次打断还多一道形状闸：§7 给的保证挂在 RESET_STREAM 上，而 STOP_SENDING 带的码
+        // 是「请对端在 RESET_STREAM 里用这个码」（RFC 9000 §19.5），不是对端对「处理没处理过」的表态
+        constexpr auto kRejected = static_cast<std::uint64_t>(Http3ErrorCode::RequestRejected);
+        EXPECT_TRUE(Http3ClientConnection::isUnprocessedPeerAbort(kRejected, /*isResetByPeer=*/true, /*isAnyByteReceived=*/false))
+                << "对端复位这条流并说没处理过：这正是 §7 允许重来的那一形状";
+        EXPECT_FALSE(Http3ClientConnection::isUnprocessedPeerAbort(kRejected, /*isResetByPeer=*/false, /*isAnyByteReceived=*/false))
+                << "叫停被当成保证：一次「服务端不想再收正文」就会把一条非幂等请求做两遍";
+        EXPECT_FALSE(Http3ClientConnection::isUnprocessedPeerAbort(kRejected, /*isResetByPeer=*/true, /*isAnyByteReceived=*/true)) << "收到过响应字节就不认，与上面同一条防御";
+        EXPECT_FALSE(
+                Http3ClientConnection::isUnprocessedPeerAbort(static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled), /*isResetByPeer=*/true, /*isAnyByteReceived=*/false))
+                << "换个码就不算：保证只挂在 H3_REQUEST_REJECTED 上";
     }
 
     TEST(Http3ClientConnection, ReportsTheOnlineConnectionCountToOtherThreadsOnBothSides)

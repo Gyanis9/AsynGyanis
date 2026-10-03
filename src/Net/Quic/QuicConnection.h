@@ -78,10 +78,19 @@ namespace AsynGyanis::Net
             SSL_CTX          *tlsContext{nullptr}; ///< 已配好证书与 ALPN 的上下文，生命周期须覆盖本连接
             DatagramSender    sendDatagram;        ///< 报文出口
             StreamDataHandler onStreamData;        ///< 流数据回调（HTTP/3 层接在这里）
-            /// 对端取消（RESET_STREAM / STOP_SENDING）了某条请求流时的通知：
-            /// 上层的 HTTP/3 会话据此回收该流的请求与响应状态。只对**对端发起的双向流**触发
-            /// （流号低两位为 0）——请求只跑在这类流上，控制流与 QPACK 流另有各自己的一套规矩
-            std::function<void(QuicConnection &connection, std::int64_t streamId)> onPeerStreamClosed;
+            /**
+             * @brief 对端打断了某条请求流（RESET_STREAM / STOP_SENDING）时的通知
+             * @details 上层的 HTTP/3 会话据此回收该流的请求与响应状态。只对**请求流**触发（流号低两位为 0，
+             *          即客户端发起的双向流，两种角色都是这一类）——控制流与 QPACK 流另有自己的一套规矩
+             *          （RFC 9114 §6.2.1）。错误码与形状一并交出去：h3 那边「服务端没做任何应用层处理就拒了
+             *          这条请求」只能靠 RESET_STREAM 的应用层错误码认（RFC 9114 §7 的 H3_REQUEST_REJECTED），
+             *          而 STOP_SENDING 说的是「对端不再收」，不带这个保证
+             * @param connection 该流所属的连接
+             * @param streamId QUIC 流号
+             * @param applicationErrorCode 对端给的应用层错误码
+             * @param isResetByPeer true 是 RESET_STREAM（对端不再发），false 是 STOP_SENDING（对端不再收）
+             */
+            std::function<void(QuicConnection &connection, std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer)> onPeerStreamClosed;
             /// 待发队列被编帧掏空一些时的通知：上层（HTTP/3）因队列到上界而留下的那段字节据此续交。
             /// 没有它，「对端只给窗口不发数据」的连接上生产者会一直挂在背压闸门上（丢唤醒）
             std::function<void(QuicConnection &connection)> onSendSpaceAvailable;
@@ -325,10 +334,12 @@ namespace AsynGyanis::Net
         void logHandshakeCompletionOnce();
 
         /**
-         * @brief 把「对端取消了这个请求流」告诉配置里的通知方
-         * @param streamId 流号（只对端发起的双向流才转交，其余流静默忽略）
+         * @brief 把「对端打断了这个请求流」告诉配置里的通知方
+         * @param streamId 流号（只有请求流——流号低两位为 0——才转交，其余流静默忽略）
+         * @param applicationErrorCode 对端给的应用层错误码
+         * @param isResetByPeer true 是 RESET_STREAM，false 是 STOP_SENDING
          */
-        void notifyPeerStreamClosed(std::int64_t streamId);
+        void notifyPeerStreamClosed(std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer);
 
         Configuration                         m_configuration;            ///< 服务端共享的那几项
         std::unique_ptr<QuicConnectionCore>   m_core{};                   ///< 协议状态机，本连接唯一一份
