@@ -41,7 +41,8 @@
   HTTP-date）折成「还要等多久」，读不懂交回空而不是 0 秒；`resolveUrlReference()` 把 `Location` 的相对写法（`/login`、`../x`、`?page=2`、
   `//cdn/x`）按 RFC 9110 §5.3 折成绝对 URL，非 http(s) 协议名、URL 内嵌凭据与含空白/控制字符的引用一律交回空而不是编造一个下一跳
 - **HTTP/3 + QUIC** — 自研 QUIC 传输层（RFC 9000/9001：握手、流与流量控制、丢包恢复与 NewReno 拥塞控制、1-RTT 密钥更新）+ 自研 HTTP/3 会话（帧层、QPACK 含动态表、流式正文、GOAWAY 优雅排空、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3
-- **WebSocket** — RFC 6455 握手与帧编解码、UTF-8 校验、分片重组、有界收帧队列、permessage-deflate（RFC 7692，
+- **WebSocket** — RFC 6455 握手与帧编解码、文本帧的 UTF-8 两个方向都把关（对端发来非法序列的按 1007 收口，
+  本端要发非法的那条当场拒——自己不收的帧不发）、分片重组、有界收帧队列、permessage-deflate（RFC 7692，
   按对端声明的窗口位数协商，本端无法履约就不接受该扩展而不是带着解不开的窗口开连接；要约里出现没定义的
   参数名或同名参数重复也按 §9.1 婉拒）；对端为什么关掉这条连接交回业务——`remoteCloseCode()` 读出对端 Close
   帧里的状态码原值、`remoteCloseReason()` 读出它给的原因文本（非法 UTF-8 的原因不外交给业务，本侧 `close()` 给出非法原因则当场拒——自己不收的帧不发）；

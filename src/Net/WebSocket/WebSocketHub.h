@@ -179,7 +179,8 @@ namespace AsynGyanis::Net
          *          不留 orphan：下一次发布照样把它们带走。
          *          需要逐成员送达确认的场合，请业务自己点对点 sendText，不要用扇出。
          * @param topic 主题名
-         * @param text 消息文本，按文本帧发出（UTF-8 校验由对端发送路径负责）
+         * @param text 消息文本，按文本帧发出（UTF-8 由发送路径当场把关：非法负载抛回发布者，见
+         *             `WebSocketPeer::sendText()`）
          * @return Core::Task<void> 排完本次扇出即返回
          */
         Core::Task<void> publish(std::string_view topic, std::string_view text);
@@ -190,7 +191,9 @@ namespace AsynGyanis::Net
          * @details 送达语义与 `publish()` 完全一致（尽力达、队列越界丢最新的一条并计数），区别只在帧类型：
          *          负载按**二进制帧**（RFC 6455 §5.6）写出，不做任何字符集解释。这条通道存在的原因是
          *          文本帧的负载必须是一段合法 UTF-8——把 protobuf、图片这类字节塞进 `publish()`，
-         *          对端的接收校验会按协议违规把连接关掉（1007），而这正是集线器这里唯一拦得住的误用。
+         *          现在会在发送路径被当场拒（非法 UTF-8 抛回发布者），而在没有这道闸之前是这样一帧
+         *          发给对端、由它的接收校验按协议违规关掉连接（1007），一条误用拖死整个主题的连接。
+         *          要发任意字节就是这条通道的用途，它不受字符集约束。
          * @param topic 主题名
          * @param payload 负载字节，原样写出（长度不受文本帧的 UTF-8 约束）
          * @return Core::Task<void> 排完本次扇出即返回

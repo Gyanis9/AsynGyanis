@@ -1243,6 +1243,43 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 sendText 的用法错误面：负载不是合法 UTF-8 时不发帧、不改变连接状态
+     * @details 本端的接收路径对带非法序列的文本帧是按 1007 打死连接的（`WebSocketPeer::feedBytes()`），
+     *          只严以对端等于把自己会拒的一帧发出去——业务把 protobuf 这类字节当文本发时，
+     *          代价不是「这一条没送到」而是整条连接（扇出时是整个主题）。
+     *          正向与反向都取边界：多字节 UTF-8 与 ASCII 照发（误挡业务文本比放行垃圾更糟），
+     *          差一截的多字节序列同样拒。
+     */
+    TEST(WebSocketPeerContract, RejectsNonUtf8TextPayloadWithoutSendingOrClosing)
+    {
+        int           sentFrameCount = 0;
+        WebSocketPeer peer(
+                [&sentFrameCount](const std::string_view) -> Core::Task<bool>
+                {
+                    ++sentFrameCount;
+                    co_return true;
+                });
+
+        const std::string brokenUtf8("\xE5\xAD\x97\xFF"); // 一个合法汉字后跟一个不属于任何序列的字节
+        Core::Task<bool>  brokenTask = peer.sendText(brokenUtf8);
+        brokenTask.handle().resume();
+        EXPECT_THROW(brokenTask.await_resume(), Base::InvalidArgumentException);
+        EXPECT_EQ(sentFrameCount, 0) << "非法 UTF-8 的文本帧还是交给了连接：对端只能按 1007 打死这条连接";
+        EXPECT_TRUE(peer.isOpen()) << "被拒的发送不该把连接记成已收口";
+
+        const std::string truncatedUtf8("\xF0\x9F\x98"); // 四字节序列差一个尾字节
+        Core::Task<bool>  truncatedTask = peer.sendText(truncatedUtf8);
+        truncatedTask.handle().resume();
+        EXPECT_THROW(truncatedTask.await_resume(), Base::InvalidArgumentException);
+
+        // 正向对照：ASCII 与多字节 UTF-8 照常发出
+        Core::Task<bool> okTask = peer.sendText("你好, world");
+        okTask.handle().resume();
+        EXPECT_TRUE(okTask.await_resume()) << "合法文本被误挡";
+        EXPECT_EQ(sentFrameCount, 1);
+    }
+
+    /**
      * @brief 钉住对端非法 Close 的对答：状态码不可上线时按 1002 回敬，而不是原样送回
      * @details 原样送回会把一次非法关闭当成正常关闭放过去（RFC 6455 §7.4.1）。
      */

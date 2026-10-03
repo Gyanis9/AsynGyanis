@@ -219,6 +219,16 @@ namespace AsynGyanis::Net
         {
             co_return false;
         }
+        // 文本帧的负载必须是一段合法 UTF-8（RFC 6455 §5.6）。这一条不能只对着对端判：本端的接收路径
+        // 遇到非法序列是按 1007 打死连接的（见 feedBytes 的负载校验），自己不收的帧不该发出去——
+        // 那样一次正常的业务发送会在对端变成协议错误，而整条连接上别人的消息也一起陪葬
+        if (const std::size_t invalidByteOffset = findInvalidWebSocketUtf8ByteOffset(text); invalidByteOffset != std::string_view::npos)
+        {
+            throw Base::InvalidArgumentException(std::format("WebSocketPeer::sendText：文本负载从第 {} 个字节起不是合法 UTF-8（RFC 6455 §5.6 要求文本帧的负载是 UTF-8 "
+                                                             "文本）：本端收到同样一帧会按 1007 收口，所以这样的帧不发出去。要发任意字节请改用 sendBinary()，"
+                                                             "它没有字符集约束",
+                                                             invalidByteOffset));
+        }
         co_return co_await sendFrame(WebSocketOpCode::Text, text);
     }
 

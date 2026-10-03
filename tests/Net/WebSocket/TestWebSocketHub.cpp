@@ -451,6 +451,34 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住扇出的文本负载非法这一格：抛回发布者，且不让成员变得不可用
+     * @details 集线器的 publish() 文档承诺「UTF-8 由发送路径把关」，把关点就是 `WebSocketPeer::sendText()`。
+     *          把关必须落在本地：把 protobuf 这类字节当文本扇出，旧行为是发出去、由每个对端各自按
+     *          1007 打死连接——一条误用拖死整个主题。现在异常交回发布者，而这一条记进作废账
+     *          （它已出队且随展开销毁），队列与闩都不受影响。
+     */
+    TEST(WebSocketHub, InvalidUtf8TextPublishThrowsBackAndKeepsTheMemberUsable)
+    {
+        GatedSendPath path;
+        WebSocketPeer peer{makeFrameSender(path)};
+        WebSocketHub  hub;
+        auto          subscription = hub.subscribe("lobby", peer);
+
+        const std::string protobufLike = std::string("\xFF\xFE") + "blob"; // 二进制负载错投了文本通道
+        Core::Task<void>  failing      = hub.publish("lobby", protobufLike);
+        failing.handle().resume();
+        EXPECT_THROW(failing.handle().promise().result(), Base::InvalidArgumentException) << "非法 UTF-8 的扇出没抛回发布者";
+
+        EXPECT_TRUE(path.sentFrames.empty()) << "这样一帧还是上线了：每个对端都会按 1007 打死这条连接";
+        EXPECT_EQ(hub.abandonedMessageCount(), 1U) << "被把关挡下的那一条没记进作废账";
+
+        // 成员照常可用：下一次合法扇出正常写出，业务不必因为一次误投重建连接
+        drivePublish(hub.publish("lobby", "still-here"));
+        ASSERT_EQ(path.sentFrames.size(), 1U) << "一次被拒的扇出把成员永久弄成只进不出了";
+        EXPECT_TRUE(frameCarriesText(path.sentFrames[0], "still-here"));
+    }
+
+    /**
      * @brief 钉住两本账的分界与导出：队满丢的进丢弃、没人收的进作废，两个读数各归各
      * @details 两本账指向不同的处置动作（前者调上界或修慢读者，后者是断连的正常代价），合成一条数就分不出现场。
      *          作废那条同样挂进进程读数表并构造即在：只留在实例里等于只有拿着那个对象的人才知道广播在整队消失

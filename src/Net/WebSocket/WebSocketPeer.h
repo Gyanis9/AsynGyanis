@@ -91,6 +91,8 @@ namespace AsynGyanis::Net
      *
      * @note 文本负载一旦判为非法就不再交付业务：feedBytes() 当场返回 DecodeError，由会话发出
      *       1007（invalid frame payload data）并收口，`WebSocketMessage` 因此不会带非法文本。
+     *       同一条规则也对着发出的一侧判：`sendText()` 对非法负载当场抛用法错误（见其 @throws），
+     *       不会把一帧本端自己会打死的东西交出去。
      *
      * @note 线程约束：全部方法都只在所属事件循环线程上调用，内部状态不加锁。
      * @warning 会话收尾（读到 EOF、解码失败、业务返回）会把本对象标记为关闭：此后 send*() 一律
@@ -144,13 +146,18 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 发送一条文本消息
-         * @param text 文本内容，按「指针 + 长度」取，UTF-8 合法性不在协议层校验
+         * @param text 文本内容，按「指针 + 长度」取，必须是一段合法 UTF-8
          * @return true 整帧已交给连接
          * @return false 本帧未发出、连接不可再用、**调用方应停止继续发送并收手**；来源有两种：
          *         **本侧已收口**（此前必已记录过收口原因，本次不新增日志）与**传输失败**（对端关闭、
          *         对端复位、描述符被关闭、等可写期间被关闭，本次记一条中文日志）。该失败不抛异常；
          *         「false 且日志里没有新记录」通常意味着本侧已收口，排查请回看收口那一刻的日志
+         * @throws Base::InvalidArgumentException 用法错误：负载不是合法 UTF-8（RFC 6455 §5.6 要求文本帧
+         *         的负载是 UTF-8 文本，报错带违规字节的下标）。本端的接收路径对带非法序列的文本帧是按
+         *         1007 打死连接的，自己不收的帧不发；要发任意字节用 `sendBinary()`。这条抛出与
+         *         `close()` 的两道用法错误检查同形，不影响上面「false」的两种来源
          * @note text 指向的字节必须活到本次 co_await 结束：协程到首次 resume 才读入参
+         * @note 被拒的调用不改变连接状态：本端仍可继续收发
          */
         Core::Task<bool> sendText(std::string_view text);
 
