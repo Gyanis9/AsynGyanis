@@ -937,12 +937,19 @@ namespace AsynGyanis::Database
         switch (commandName.empty() ? '\0' : foldAsciiToLower(commandName.front()))
         {
             case 'c':
-                // CLIENT 的两条子命令改的是「本类还读不读得到一条命令一条回复」：REPLY OFF/SKIP 让之后的
-                // 命令不再回话，TRACKING ON 让服务端往回复流里插失效推送。两者都退不回去（下一个借用者并不
-                // 知道自己该先补发什么），按 MONITOR 同一档处置：记一个标记，归还时把这条连接断开。
-                // 按子命令分档而不是整条 CLIENT 一律断开：GETNAME/SETNAME/ID/INFO 这些照常回话的子命令，
+                // CLIENT 的这几条子命令改的都是**这条连接上**的会话状态，而下一个借用者并不知道自己该先
+                // 补发什么：REPLY OFF/SKIP 让之后的命令不再回话、TRACKING ON 让服务端往回复流里插失效推送
+                // （这两条改的是「本类还读不读得到一条命令一条回复」），NO-EVICT ON 让这条连接写过的键不参与
+                // 淘汰、NO-TOUCH ON 让这条连接读到的键不再刷新 LRU/LFU（这两条不改帧的形状，改的是服务端
+                // 对后续命令的处置：漏给下一位的症状是「热点键莫名被淘汰」或「该保护的键没被保护」，
+                // 两边都不报错）。一律按 MONITOR 同一档处置：记一个标记，归还时把这条连接断开。
+                // 不替借用者补发 NO-EVICT OFF／NO-TOUCH OFF：那要按子命令各记一位、还要判借用者自己有没有
+                // 关回去，而这几条命令本来就少见，断开重连比多一套状态便宜也更不容易漏。
+                // 按子命令分档而不是整条 CLIENT 一律断开：GETNAME/SETNAME/ID/INFO 这些不留状态的子命令，
                 // 没必要让池白重连一回
-                if (isAccepted && commandNameMatches(commandName, "client") && (commandNameMatches(firstArgument, "reply") || commandNameMatches(firstArgument, "tracking")))
+                if (isAccepted && commandNameMatches(commandName, "client") &&
+                    (commandNameMatches(firstArgument, "reply") || commandNameMatches(firstArgument, "tracking") || commandNameMatches(firstArgument, "no-evict") ||
+                     commandNameMatches(firstArgument, "no-touch")))
                 {
                     m_isSessionModeChanged = true;
                 }

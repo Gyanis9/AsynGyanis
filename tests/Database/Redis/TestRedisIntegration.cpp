@@ -819,6 +819,29 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief CLIENT NO-EVICT／NO-TOUCH 也是退不回去的会话状态，归还时同样断开
+     * @details 这两条改的不是回复的形状，而是服务端对这条连接后续命令的处置：NO-EVICT ON 之后本连接
+     *          写过的键不参与淘汰，NO-TOUCH ON 之后本连接读过的键不再刷新 LRU/LFU。漏给下一个借用者
+     *          的症状是「热点键莫名被淘汰」或「该保护的键没被保护」，两边都不报错，只能靠断开重连兜住。
+     *          不替借用者补发 OFF：那要按子命令各记一位，还要判借用者自己有没有关回去，而断开更便宜。
+     */
+    TEST_F(RedisIntegrationTest, ClientEvictionProtectionSessionIsDroppedOnReturn)
+    {
+        for (const std::string_view subcommand: {"NO-EVICT", "NO-TOUCH"})
+        {
+            RedisConnection protectedConnection(m_configuration);
+            ASSERT_TRUE(protectedConnection.connect()) << protectedConnection.lastError();
+            ASSERT_NE(protectedConnection.executeCommand({"CLIENT", std::string(subcommand), "ON"}), nullptr) << subcommand << ": " << protectedConnection.lastError();
+            ASSERT_TRUE(protectedConnection.isConnected());
+
+            protectedConnection.resetSessionState();
+
+            EXPECT_FALSE(protectedConnection.isConnected()) << "开了 " << subcommand << " ON 的连接被当成健康连接交还给下一个借用者：它的淘汰保护会跟着串出去";
+            protectedConnection.disconnect();
+        }
+    }
+
+    /**
      * @brief 守卫非正值的连接超时按「不设超时」处理，而不是被当成配置错误拒掉
      * @details setQueryTimeout() 明写「0 与负数一律按不设超时」，MySQL 驱动同口径；建连这一侧原先把
      *          -1 毫秒折算成 tv_sec=0、tv_usec=-1000 交给 select()，那是一次无效或零窗口的等待。
