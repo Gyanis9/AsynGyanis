@@ -42,8 +42,11 @@ namespace AsynGyanis::Net
         /// acme.dns 子段支持的键
         constexpr std::array<std::string_view, 3> kAcmeDnsKeys{"provider", "domain", "record_ttl_seconds"};
 
-        /// TXT 记录的 TTL 合法区间：下限取 10 秒（低于这个值的记录在机构取答案之前就可能过期），上限是各家共识的一天
-        constexpr std::uint64_t kMinimumRecordTtlSeconds = 10U;
+        /// TXT 记录的 TTL 合法区间。下限取 600 而不是机构意义上的最小值：这一家唯一有实现的供应商
+        /// 实测地板就是 600 秒（写 60 与 300 都被 `The specified TTL is invalid` 拒，见
+        /// AcmeAliyunDns01TxtWriter 里那条静默期的注释），把 10 放在这里等于让配置先收下、
+        /// 到第一次签发时才在 AddDomainRecord 上炸——失败点离写错的那一格隔了一整条链路
+        constexpr std::uint64_t kMinimumRecordTtlSeconds = 600U;
         constexpr std::uint64_t kMaximumRecordTtlSeconds = 86400U;
 
         /**
@@ -339,7 +342,9 @@ namespace AsynGyanis::Net
             if (configuration.dnsRecordTtlSeconds < kMinimumRecordTtlSeconds)
             {
                 throw Base::ConfigValidationException(path + ".dns.record_ttl_seconds",
-                                                      std::format("不得低于 {} 秒：低于这个值时，机构取答案的一刻记录可能已经过期", kMinimumRecordTtlSeconds));
+                                                      std::format("不得低于 {} 秒：这一档供应商实测会直接拒收更小的 TTL，"
+                                                                    "且机构要等满旧记录自己的 TTL 才保证读到新写的答案",
+                                                                    kMinimumRecordTtlSeconds));
             }
         } else if (configuration.usesDns01())
         {

@@ -133,13 +133,13 @@ namespace AsynGyanis::Net
     {
         const auto configuration = readAcmeConfiguration(documentWith(validSection({
                 {"challenge", "dns-01"},
-                {"dns", object({{"provider", "aliyun"}, {"domain", "gyanis.space"}, {"record_ttl_seconds", 120}})},
+                {"dns", object({{"provider", "aliyun"}, {"domain", "gyanis.space"}, {"record_ttl_seconds", 900}})},
         })));
 
         EXPECT_TRUE(configuration.usesDns01());
         EXPECT_EQ(configuration.dnsProvider, "aliyun");
         EXPECT_EQ(configuration.dnsZoneDomainName, "gyanis.space");
-        EXPECT_EQ(configuration.dnsRecordTtlSeconds, 120U);
+        EXPECT_EQ(configuration.dnsRecordTtlSeconds, 900U);
     }
 
     /**
@@ -212,6 +212,9 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：TTL 的两端都判，且类型严格
+     * @details 下限按 600 而不是机构意义上的最小值：目前唯一有实现的供应商实测会直接拒掉更小的 TTL
+     *          （写 60 与 300 都返回 `The specified TTL is invalid`），把这条留在签发那一步就等于
+     *          让配置读起来没问题、到第一次签发才炸，而那时日志里只剩一条「写 TXT 记录失败」
      */
     TEST(AcmeAutomationConfig, BoundsAndTypesOnRecordTtl)
     {
@@ -219,7 +222,13 @@ namespace AsynGyanis::Net
                                {"challenge", "dns-01"},
                                {"dns", object({{"provider", "aliyun"}, {"record_ttl_seconds", 5}})},
                        })),
-                       "不得低于 10 秒");
+                       "不得低于 600 秒");
+        // 300 是「看起来完全合理」的那一档：阿里云照样拒，而这正是过去会被放行的取值
+        expectRejected(documentWith(validSection({
+                               {"challenge", "dns-01"},
+                               {"dns", object({{"provider", "aliyun"}, {"record_ttl_seconds", 300}})},
+                       })),
+                       "不得低于 600 秒");
         expectRejected(documentWith(validSection({
                                {"challenge", "dns-01"},
                                {"dns", object({{"provider", "aliyun"}, {"record_ttl_seconds", "600"}})},
