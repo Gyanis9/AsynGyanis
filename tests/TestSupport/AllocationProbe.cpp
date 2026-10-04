@@ -27,6 +27,10 @@ namespace
     thread_local std::uint64_t threadAllocationCount{0U};
     thread_local std::uint64_t threadFailureTarget{0U};
 
+    /// 「只掐某一尺寸区间」档的目标：上限 0 表示没挂（真实申请的下限是 0 字节，用上限当哨兵最省事）
+    thread_local std::size_t threadFailureSizeMinimum{0U};
+    thread_local std::size_t threadFailureSizeMaximum{0U};
+
     /// 实际被掐掉的次数：用例靠它自证注入真的发生过
     std::atomic<std::uint64_t> injectedFailureCount{0U};
 
@@ -55,6 +59,20 @@ namespace
         recordAllocationSize(size);
 
         const std::uint64_t thisThreadCount = ++threadAllocationCount;
+
+        // 尺寸档优先：挂上它时不参与序数判定，免得两档互相偷走对方的那一次
+        if (threadFailureSizeMaximum != 0U)
+        {
+            if (size < threadFailureSizeMinimum || size > threadFailureSizeMaximum)
+            {
+                return true;
+            }
+            threadFailureSizeMaximum = 0U;
+            threadFailureSizeMinimum = 0U;
+            injectedFailureCount.fetch_add(1U, std::memory_order_relaxed);
+            return false;
+        }
+
         // 用完即解：让第 N 次这一次失败，之后的分配恢复正常，
         // 被测体的兜底分支才能继续走它自己的那几步分配
         const std::uint64_t target = threadFailureTarget;
@@ -110,10 +128,30 @@ namespace AsynGyanis::TestSupport
         threadFailureTarget            = threadAllocationCount + zeroBasedN;
     }
 
+    AllocationFailureGuard AllocationFailureGuard::forNextAllocationBetween(const std::size_t minimumBytes, const std::size_t maximumBytes) noexcept
+    {
+        return AllocationFailureGuard(SizeFilterTag{}, minimumBytes, maximumBytes);
+    }
+
+    AllocationFailureGuard::AllocationFailureGuard(const SizeFilterTag, const std::size_t minimumBytes, const std::size_t maximumBytes) noexcept : m_isSizeFilter(true)
+    {
+        m_previousSizeMinimum    = threadFailureSizeMinimum;
+        m_previousSizeMaximum    = threadFailureSizeMaximum;
+        threadFailureSizeMinimum = minimumBytes;
+        threadFailureSizeMaximum = maximumBytes;
+    }
+
     AllocationFailureGuard::~AllocationFailureGuard() noexcept
     {
         // 解除本层并恢复外层：用例中途断言失败退出时，开关不能漏给后面的用例
-        threadFailureTarget = m_previousTarget;
+        if (m_isSizeFilter)
+        {
+            threadFailureSizeMinimum = m_previousSizeMinimum;
+            threadFailureSizeMaximum = m_previousSizeMaximum;
+        } else
+        {
+            threadFailureTarget = m_previousTarget;
+        }
     }
 } // namespace AsynGyanis::TestSupport
 

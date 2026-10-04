@@ -69,6 +69,18 @@ namespace AsynGyanis::TestSupport
         /// @param failureAfterAllocations 从挂上这一刻起第几次分配要失败，必须大于 0
         explicit AllocationFailureGuard(std::uint64_t failureAfterAllocations) noexcept;
 
+        /**
+         * @brief 挂上「只掐某一尺寸区间」的那一档：本线程下一次申请字节数落在 [min,max] 的分配失败
+         * @details 按次序掐命不中库里的某一步——协程帧那一步之后还有别人的分配，序号就不稳。
+         *          不同设施的一次性分配大小差得开（等待票据连控制块、deque 的分块、协程帧各不同），
+         *          所以先不带开关跑一次、用 snapshotAllocationHistogram() 量出本平台上真出现过的尺寸档位，
+         *          再逐档掐：判据落在「命中的那一档产出的是文档承诺的那条出口」上，
+         *          而不是把某个字节数硬编码进用例（两家标准库的 deque 分块大小本来就不同）。
+         * @param minimumBytes 区间下限（含），按直方图的桶给最省事
+         * @param maximumBytes 区间上限（含），不得小于下限
+         */
+        [[nodiscard]] static AllocationFailureGuard forNextAllocationBetween(std::size_t minimumBytes, std::size_t maximumBytes) noexcept;
+
         AllocationFailureGuard(const AllocationFailureGuard &) = delete;
 
         AllocationFailureGuard &operator=(const AllocationFailureGuard &) = delete;
@@ -77,7 +89,17 @@ namespace AsynGyanis::TestSupport
         ~AllocationFailureGuard() noexcept;
 
     private:
-        std::uint64_t m_previousTarget{0U}; ///< 挂上之前的目标值，0 表示外层没挂
+        /// 私有档：只给 forNextAllocationBetween 用，避免与「第 N 次」那个公开构造撞签名
+        struct SizeFilterTag
+        {
+        };
+
+        AllocationFailureGuard(SizeFilterTag, std::size_t minimumBytes, std::size_t maximumBytes) noexcept;
+
+        std::uint64_t m_previousTarget{0U};      ///< 序数档：挂上之前的目标值，0 表示外层没挂
+        std::size_t   m_previousSizeMinimum{0U}; ///< 尺寸档：挂上之前的区间下限
+        std::size_t   m_previousSizeMaximum{0U}; ///< 尺寸档：挂上之前的区间上限（0 即「没挂」）
+        bool          m_isSizeFilter{false};     ///< 本层用的是哪一档
     };
 
     /// 至今被开关实际掐掉过几次分配：用例用它自证「注入真的发生了」而不是空过

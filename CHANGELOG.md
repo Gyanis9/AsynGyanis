@@ -315,12 +315,12 @@
   而探针的读数本来就只在单线程测量窗口内取，开关跟着同一口径。只失败一次后自动解除（被测体的兜底分支
   自己也要分配内存，一直失败会把它打成另一种形状），并给出 `injectedAllocationFailureCount()` 让用例自证
   注入真的发生过——凡靠它注入的用例都必须断这一格，否则「没崩」在开关空转时也成立。
-  判据 `ConnectionPoolAsync.AllocationFailureProbeInjectsExactlyOneFailurePerArm` 钉四格：掐得到、只掐一次、
-  用完自动恢复、作用域外不漏；突变（让开关永不触发）只红这一条（`didThrow` 为假 + 注入计数 0 对 1）。
-  **仍未闭环的那一格**：想用按序掐第 N 次去命中连接池 `await_suspend` 里的票据与入表两步，实测命中不了——
-  从挂上到 `resume()` 返回，本线程前四次分配里第 1 次失败时等待表里还是空的（与协程帧那一步一致），
-  第 2~4 次失败时等待者都已入表，所以那一处兜底眼下还是只有代码没有用例。缺的不是开关而是「await_suspend 内那两次分配」的
-  可观测坐标（按大小直方图定序，或给等待体留一个测试可指的标记），已记在该函数注释里，留作单独一轮。
+  判据 `ConnectionPoolAsync.AllocationFailureProbeInjectsExactlyOneFailurePerArm` 钉两档各自的四格：序数档掐得到、
+  只掐一次、用完自动恢复、作用域外不漏；尺寸档（`forNextAllocationBetween(min, max)`）同样掐得到、只掐一次，
+  两档各自累计进 `injectedAllocationFailureCount()`。加尺寸档的理由是实测：按次序掐命不中连接池
+  `await_suspend` 里那两步（第 1 次失败时等待表还是空的、第 2~4 次失败时等待者都已入表），而按尺寸逐档掐
+  命中的档位也都在入表之后——也就是说「这两次分配 ↔ 可观测档位」的对应关系还没建立起来，那一格仍只有代码
+  没有用例，缺的不再是开关而是坐标本身，已写进该函数注释。
 
 ### 变更
 

@@ -566,6 +566,32 @@ namespace AsynGyanis::Database
             throwsAfterScope = true;
         }
         EXPECT_FALSE(throwsAfterScope) << "开关漏在作用域之外还挂着";
+
+        // 尺寸档同一套自证：挂上 16..31 这一档后，第一次落在该档的分配失败、之后恢复
+        bool threwInWindow = false;
+        {
+            const SharedTestSupport::AllocationFailureGuard sizeGuard = SharedTestSupport::AllocationFailureGuard::forNextAllocationBetween(16U, 31U);
+            try
+            {
+                const std::unique_ptr<std::array<char, 24>> inWindow = std::make_unique<std::array<char, 24>>();
+                static_cast<void>(inWindow);
+            } catch (const std::bad_alloc &)
+            {
+                threwInWindow = true;
+            }
+            bool threwAgain = false;
+            try
+            {
+                const std::unique_ptr<std::array<char, 24>> again = std::make_unique<std::array<char, 24>>();
+                static_cast<void>(again);
+            } catch (...)
+            {
+                threwAgain = true;
+            }
+            EXPECT_TRUE(threwInWindow) << "尺寸档没掐到该档的分配";
+            EXPECT_FALSE(threwAgain) << "尺寸档用完一次没解除";
+        }
+        EXPECT_EQ(SharedTestSupport::injectedAllocationFailureCount(), 2U) << "两档各掐一次应当累计到 2";
     }
 
 } // namespace AsynGyanis::Database
