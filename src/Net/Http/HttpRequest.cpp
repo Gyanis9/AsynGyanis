@@ -237,6 +237,14 @@ namespace AsynGyanis::Net
         return cookies;
     }
 
+    bool HttpRequest::hasMultipleHostHeaders() const noexcept
+    {
+        // m_hostHeaderFieldCount 由 HttpParser 在解析时计数：同一报文里有多个 host 行就累增，
+        // 这比「从存储里数几条 host」更可靠：parseRequestLine() 把整行读完就交给 this->m_requestHeaderStore，
+        // 此时「几个 host」的事实已经落定，调用方能安全依赖这个返回值做路由/拒绝等判定。
+        return m_hostHeaderFieldCount > 1;
+    }
+
     const std::unordered_map<std::string, std::string> &HttpRequest::headers() const
     {
         return m_headerStore.singleValueView();

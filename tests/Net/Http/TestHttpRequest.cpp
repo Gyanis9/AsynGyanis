@@ -718,4 +718,20 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(empty.setHeader("content-type", "application/json"));
         EXPECT_FALSE(empty.jsonBody().has_value());
     }
+
+    TEST(HttpRequest, HasMultipleHostHeadersDetectsRFC9110Violation)
+    {
+        HttpRequest request;
+        request.addHeader("host", "one.com");
+        request.addHeader("host", "two.com");  // RFC 9110 §7.1.2：多于一条 host 必须回 400
+
+        EXPECT_TRUE(request.hasMultipleHostHeaders()) << "收到多条 host 时应返回 true";
+        EXPECT_EQ(request.headerFieldCount("host"), 2UL) << "计数也应反映两条记录";
+
+        // 单条 host 不应触发
+        HttpRequest single;
+        single.addHeader("host", "single.com");
+        EXPECT_FALSE(single.hasMultipleHostHeaders()) << "仅一条 host 时不应误报";
+    }
+
 } // namespace AsynGyanis::Net

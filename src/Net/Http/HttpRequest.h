@@ -261,6 +261,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t headerFieldCount(std::string_view key) const;
 
         /**
+         * @brief host 是否收到多次（RFC 9110 §7.1.2：请求走私面，收到多于一条 host 必须回 400）
+         * @details HTTP/2/3各自有 :authority 解析器，但 H1 通路上的 HttpRequest 本身只有这份计数能直接反映「是不是多行 host」。对逐字节解析的 H1 来说，
+         *          这一格比「读出来之后再去查有多少条」更可靠：parseRequestLine() 把整行读完就交给 m_requestHeaderStore，此时「几个 host」的事实已经落定，
+         *          调用方能安全依赖这个返回值做路由或拒绝等判定。
+         * @return true 收到了多于一条 host 字段
+         */
+        [[nodiscard]] bool hasMultipleHostHeaders() const noexcept;
+
+        /**
          * @brief 判断指定名称的头部取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
          * @details 例如 `Connection: keep-alive, Upgrade` 含 "upgrade" 而不含 "close"。
          *          判定在存储内部逐段完成，既不拷贝取值也不构造值列表：Connection/Upgrade
