@@ -1155,6 +1155,14 @@ namespace AsynGyanis::Net
         EXPECT_EQ(reloadCalls.load(), 0) << "文件没变就叫了装回，跟随协程成了每拍重装";
 
         ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v2-longer"));
+        if (!waitUntil([&reloadCalls] { return reloadCalls.load() >= 1; }, std::chrono::seconds{2}))
+        {
+            // 基线是在协程第一遍 stat 那一刻定的，而「已调度」不等于「已跑过」：满载的 runner 上这次写盘
+            // 可能整个发生在定基线之前，对这条跟随通道就不算变化。换一份内容再写一次，让「有变化」由用例
+            // 自己造出来而不是赌调度时序。下面仍只断言装回被叫到一次，两次写入不会都被看见——
+            // 第一次没被看见正是因为基线里已经含着它
+            ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v3-longer-longest"));
+        }
         EXPECT_TRUE(waitUntil([&reloadCalls] { return reloadCalls.load() >= 1; }, std::chrono::seconds{5})) << "换了证书之后 5 秒内没有触发装回";
         EXPECT_EQ(reloadCalls.load(), 1);
         std::this_thread::sleep_for(std::chrono::milliseconds{150});
@@ -1191,6 +1199,13 @@ namespace AsynGyanis::Net
         static_cast<void>(waitUntil([&loopThread] { return loopThread.isRunning(); }, std::chrono::seconds{2}));
 
         ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v2-longer"));
+        if (!waitUntil([&reloadCalls] { return reloadCalls.load() >= 1; }, std::chrono::seconds{2}))
+        {
+            // 同一处调度赌注：基线可能在这一次写盘之后才定下，那这次变化对它就不存在。换内容再写一次，
+            // 让前提由用例自己造出来。**这里之后不再写盘**——「装回失败还认下新身份」那种退化要靠
+            // 「同一次未处置的变化每拍重试」来红，再多写一次就把那条性质洗掉了
+            ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v3-longer-longest"));
+        }
         EXPECT_TRUE(waitUntil([&reloadCalls] { return reloadCalls.load() >= 2; }, std::chrono::seconds{5})) << "装回失败一次就不再重试，等于承认了没装上的新身份";
 
         isStopping.store(true);
