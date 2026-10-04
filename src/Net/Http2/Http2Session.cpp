@@ -823,6 +823,11 @@ namespace AsynGyanis::Net
 
             // 摘记录必须在会话循环里做：协程跑完最后一段代码时，它的帧正站在自己那条记录的成员之上
             pending.serveTask.reset();
+            // 响应没发出去的流式请求不走 finishStreamingRequestBody（那一步排在「发送成功」之后），
+            // 而正文攥着的流控账就此没人归还：这些字节既不会再交给任何人，也永久占着**连接级**窗口，
+            // 攒够几轮就把整条连接的对端发送额度吃光。h3 侧同一件事在 reapFinishedStreamingRequests()
+            // 里做在摘记录这一处；已发出去的响应此前就把账归零了，故那条路径上这一句是空转
+            pending.streamBody.consumePending();
             const RequestServeOutcome outcome = pending.serveOutcome;
             it                                = m_pendingRequests.erase(it);
             if (outcome == RequestServeOutcome::ConnectionUnusable)

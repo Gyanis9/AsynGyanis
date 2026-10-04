@@ -2957,6 +2957,166 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：响应没能发出的流式请求，其未消费的正文仍在摘记录时归还连接级接收窗口
+     * @details 归还正文窗口那一步（finishStreamingRequestBody）排在「响应发出成功」之后，于是发送失败
+     *          这条出口整个绕过了它。要让那一刻真的有未归还的账，处理器按「取走一段就停手」的形状写：
+     *          读取器是把**上一段**的窗口在下一次 readNext 时才归还的，因此没有下一次就是一笔没人认领
+     *          的账。而这条出口绕开它之后，那批字节既不会再交给任何人，也没人替它们还窗口——被吃掉的
+     *          这一头是**连接级**窗口，一条连接上所有流共享的资产，吃掉的一块永不回来，攒够几轮就把
+     *          对端的整条发送额度耗光，此后连别人的正常请求正文都发不进来。
+     *          把响应判死的办法是让对端通告一个极小的 SETTINGS_MAX_HEADER_LIST_SIZE：§6.5.2 的算式里
+     *          ":status" 这一项就占 42 字节，再加一条 300 字节的头必然越限。选它是因为它不依赖任何时序
+     *          （不需要赌 RST 与响应发出谁先到），且只作废这一条流而连接照旧活着——归还的帧才收得到。
+     *          h3 侧摘记录前显式 consumePending()（reapFinishedStreamingRequests）早就是这个形状。
+     * @note 正文取两条帧是判据的一部分：连接级归还是「攒够半个窗口（32767）才发一帧」，凑不满就留在
+     *       累加里不上线——量不到不等于没还。两条 16384 恰好凑满一次起送，于是无论这几条赶在哪一刻
+     *       被吸收（摘记录前由本用例的归还负责、摘记录后由连接层按 §5.1「closed」段末段直接归还），
+     *       上线的总量都正好等于发出去的正文，判据不随一次 read() 把批次切在哪里而飘。
+     */
+    TEST(Http2CleartextSession, CreditsAbandonedStreamingBodyWhenTheResponseCannotBeSent)
+    {
+        // 两条 16384 字节（默认 SETTINGS_MAX_FRAME_SIZE）的 DATA = 32768，恰好越过连接级归还的起送
+        // 阈值（半个初始窗口），又远在两个初始窗口（65535）之内，因此对端不必等任何窗口更新。
+        // 取这个数而不是更大：一条都不许有「还不出去」的零头——本用例判的是「一条都不少」
+        constexpr std::size_t   kFrameByteCount           = 16384;
+        constexpr std::size_t   kBodyFrameCount           = 2U;
+        constexpr std::size_t   kBodyByteCount            = kBodyFrameCount * kFrameByteCount;
+        constexpr std::uint32_t kPeerHeaderListLimitBytes = 100U;
+        constexpr std::uint32_t kCancelledStreamId        = 1U;
+
+        const auto registerRoutes = [](Router &router, Core::EventLoop &)
+        {
+            router.postStreaming("/abandon",
+                                 [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     // 取走一段就停手：那一段占的接收窗口要到下一次 readNext 才归还，
+                                     // 而这里没有下一次——记录摘掉时它是一笔没人认领的流控账
+                                     HttpRequestBody *stream = request.bodyStream();
+                                     if (stream != nullptr)
+                                     {
+                                         static_cast<void>(co_await stream->readNext());
+                                     }
+                                     response.setStatus(200);
+                                     static_cast<void>(response.setHeader("x-pad", std::string(300U, 'v')));
+                                     response.setBody("ignored");
+                                     co_return;
+                                 });
+        };
+
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, HttpParserLimits{},
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) +
+                                             encodeHttp2SettingsFrame(Http2SettingsPayload{
+                                                     .parameters = {Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::MaxHeaderListSize),
+                                                                                 .value      = kPeerHeaderListLimitBytes}}}),
+                                     kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // HEADERS 不带 END_STREAM：正文留在流式缓冲里，处理器不读就一直是未归还的账
+        std::string requestBytes = makeRequestHeadersFrame(kCancelledStreamId, makePostRequestHeaderBlock("/abandon"), false);
+        for (std::size_t frameIndex = 0; frameIndex < kBodyFrameCount; ++frameIndex)
+        {
+            requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kFrameByteCount, 'a')}, kCancelledStreamId);
+        }
+        ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
+
+        // 越限的响应把这条流作废——它就是「记录已收尾、正文还没还窗口」那一刻的信标
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.type == Http2FrameType::RstStream && frame.header.streamId == kCancelledStreamId)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "越限的响应没有作废这条流：本用例要走的「响应发不出去」出口没有到达";
+
+        static_cast<void>(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.type == Http2FrameType::WindowUpdate && frame.header.streamId == 0U)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout));
+
+        // 两条 DATA 里有几条赶在摘记录之前被吸收（那部分由本用例要钉的归还负责）、几条落在已终止的流上
+        // 由连接层直接归还（§5.1「closed」段末段），取决于一次 read() 把批次切在哪里。这里要钉的是
+        // 「一条都不少」而不是「由哪一处还」，所以再泵一小段把迟到的帧收进来
+        const auto creditDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{300};
+        while (std::chrono::steady_clock::now() < creditDeadline)
+        {
+            static_cast<void>(client.pumpUntil(frames, [](const std::vector<Http2Frame> &) { return false; }, std::chrono::milliseconds{50}));
+        }
+
+        std::size_t connectionCreditedByteCount = 0;
+        std::size_t streamCreditedByteCount     = 0;
+        bool        hasGoAway                   = false;
+        std::string creditText;
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.type == Http2FrameType::GoAway)
+            {
+                hasGoAway = true;
+                continue;
+            }
+            if (frame.header.type != Http2FrameType::WindowUpdate)
+            {
+                continue;
+            }
+            Http2WindowUpdatePayload payload;
+            std::string              parseErrorText;
+            if (!parseHttp2WindowUpdatePayload(frame, payload, &parseErrorText))
+            {
+                ADD_FAILURE() << parseErrorText;
+                continue;
+            }
+            creditText += "[stream=" + std::to_string(frame.header.streamId) + " inc=" + std::to_string(payload.windowSizeIncrement);
+            if (frame.header.streamId == 0U)
+            {
+                connectionCreditedByteCount += payload.windowSizeIncrement;
+                creditText += " conn]";
+            } else
+            {
+                streamCreditedByteCount += payload.windowSizeIncrement;
+                creditText += " stream]";
+            }
+        }
+
+        EXPECT_FALSE(hasGoAway) << "越限的响应只该作废一条流：连接被收口就量不到窗口归还了";
+        EXPECT_EQ(connectionCreditedByteCount, kBodyByteCount)
+                << "响应没发出去的流式正文没有归还接收窗口：这 " << kBodyByteCount << " 字节永久占着连接级窗口。看见的更新：" << creditText;
+        EXPECT_EQ(streamCreditedByteCount, 0U) << "这条流已被 RST 掉，还在替它发流级 WINDOW_UPDATE（§5.1：对已关闭的流是非法动作）";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 钉住：响应写到一半被对端抽走的连接记一条 writeAbortedConnectionCount，写满收口的不误计
      *
      * @details h2 的落账点是 `flushOutgoingBytes` 里「本侧把连接判死」那一处，与 h1 的
