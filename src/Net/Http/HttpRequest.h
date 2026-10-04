@@ -179,6 +179,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool setHeader(std::string_view key, std::string_view value);
 
         /**
+         * @brief 删掉某名字的全部头部记录
+         * @details 「一条声明已经被兑现」与「这条声明是错的」都需要同一个出口：留着一行
+         *          `content-encoding: gzip` 而正文已经是明文，下游会再解一次。单值视图由存储内部
+         *          标脏，下次查询按权威记录重建，不会留下「查得到而序列化里没有」的鬼条目。
+         * @param key 头部名，大小写不敏感；不存在时是空操作
+         */
+        void removeHeader(std::string_view key);
+
+        /**
          * @brief 接手解析器暂存的头部记录，整块换下本请求当前的头部
          * @details 报文收齐那一刻由解析器调用：只做容器交换，不逐字节拷贝，也不问调用方要临时串。
          *          调用前本请求必须已经 reset()（否则上一条报文的头部会被换进解析器的暂存里，

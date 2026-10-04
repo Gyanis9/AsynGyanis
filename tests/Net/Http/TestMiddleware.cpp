@@ -8,6 +8,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Net/Http/Gzip.h"
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -1298,6 +1299,195 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(handlerCalls.load(), 0);
         EXPECT_EQ(response.status(), 400);
+    }
+
+    // ============================================================================
+    // requestDecompressionMiddleware（入站正文的 Content-Encoding）
+    // ============================================================================
+    // 出站客户端早就替调用方解响应正文，入站这一半此前一行都没有：对端 POST 一份 gzip，业务从
+    // body() 拿到压缩字节，而 jsonBody() 只回一句「解析失败」。
+
+    /**
+     * @brief gzip 的请求正文解回明文，兑现掉的声明一并撤走
+     * @details 三条都要钉：正文换成解出来的那份；content-encoding 删掉（留着下游会再解一次）；
+     *          content-length 换成解码后的字节数（旧值描述的是压缩字节，给一份新正文配一个旧长度
+     *          等于让任何按长度数正文的下游数错）
+     */
+    TEST(RequestDecompressionMiddleware, DecodesGzipBodyAndDropsFulfilledDeclaration)
+    {
+        std::string payload;
+        while (payload.size() < 4000)
+        {
+            payload += R"({"items":[1,2,3],"note":"gzip only shrinks when there is redundancy"})";
+        }
+        const std::string compressed = gzipCompress(payload).value();
+        ASSERT_LT(compressed.size(), payload.size()) << "前提：这份正文真的被压缩过，否则本用例什么都没钉住";
+
+        HttpRequest request = makeRequest(HttpMethod::POST, "/ingest");
+        request.addHeader("content-encoding", "gzip");
+        request.addHeader("content-length", std::to_string(compressed.size()));
+        request.setBody(compressed);
+
+        std::string            bodySeenByHandler;
+        const TerminalHandler  handler = [&request, &bodySeenByHandler]() -> Core::Task<void>
+        {
+            bodySeenByHandler = std::string(request.body());
+            co_return;
+        };
+
+        MiddlewarePipeline pipeline;
+        pipeline.use(requestDecompressionMiddleware());
+        HttpResponse response;
+        runPipeline(pipeline, request, response, handler);
+
+        EXPECT_EQ(bodySeenByHandler, payload) << "业务该拿到解开的正文";
+        EXPECT_FALSE(request.getHeader("content-encoding").has_value()) << "已兑现的声明要撤走";
+        EXPECT_EQ(request.getHeader("content-length").value_or(""), std::to_string(payload.size())) << "长度该指向解开的正文";
+        EXPECT_EQ(response.status(), 200);
+    }
+
+    /**
+     * @brief 标 deflate 而实际发 gzip 容器：按容器解而不按标签建流
+     * @details 线上确实有这种对端（`inflateHttpBody` 走 zlib 的自动识别档），判据不能改成
+     *          「按标签选解码器」，否则这类对端从能用变成 400
+     */
+    TEST(RequestDecompressionMiddleware, DecodesGzipContainerLabeledAsDeflate)
+    {
+        const std::string payload(2000, 'x');
+
+        HttpRequest request = makeRequest(HttpMethod::POST, "/ingest");
+        request.addHeader("content-encoding", "deflate");
+        request.setBody(gzipCompress(payload).value());
+
+        std::string           bodySeenByHandler;
+        const TerminalHandler handler = [&request, &bodySeenByHandler]() -> Core::Task<void>
+        {
+            bodySeenByHandler = std::string(request.body());
+            co_return;
+        };
+
+        MiddlewarePipeline pipeline;
+        pipeline.use(requestDecompressionMiddleware());
+        HttpResponse response;
+        runPipeline(pipeline, request, response, handler);
+
+        EXPECT_EQ(bodySeenByHandler, payload) << "标签与容器不一致时要按容器解：这类对端线上真有";
+    }
+
+    /**
+     * @brief 本端没有解码器的编码回 415，而不是把压缩字节当正文交下去
+     * @details RFC 9110 §8.4 的 MUST：源服务器不支持请求声明的编码就必须按 415 处置。
+     *          交下去的现场是业务以为拿到文本而其实是 br 字节
+     */
+    TEST(RequestDecompressionMiddleware, RejectsUnsupportedCodingWith415)
+    {
+        HttpRequest request = makeRequest(HttpMethod::POST, "/ingest");
+        request.addHeader("content-encoding", "br");
+        request.setBody("some brotli bytes");
+
+        HttpResponse     response;
+        std::atomic<int> handlerCalls{0};
+        MiddlewarePipeline pipeline;
+        pipeline.use(requestDecompressionMiddleware());
+        runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
+
+        EXPECT_EQ(handlerCalls.load(), 0) << "解不了的正文不该交给业务";
+        EXPECT_EQ(response.status(), 415);
+        EXPECT_EQ(request.body(), "some brotli bytes") << "被拒的正文不许被改写";
+    }
+
+    /**
+     * @brief 链式声明（一层以上）也判 415：半途解错一层的后果是「看着正常的坏数据」
+     */
+    TEST(RequestDecompressionMiddleware, RejectsChainedCodingWith415)
+    {
+        HttpRequest request = makeRequest(HttpMethod::POST, "/ingest");
+        request.addHeader("content-encoding", "gzip, deflate");
+        request.setBody(gzipCompress("payload").value());
+
+        HttpResponse     response;
+        std::atomic<int> handlerCalls{0};
+        MiddlewarePipeline pipeline;
+        pipeline.use(requestDecompressionMiddleware());
+        runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
+
+        EXPECT_EQ(handlerCalls.load(), 0);
+        EXPECT_EQ(response.status(), 415);
+    }
+
+    /**
+     * @brief 声明了 gzip 而字节不是合法 gzip 流：400，且不把半截正文交给业务
+     */
+    TEST(RequestDecompressionMiddleware, RejectsUndecodableBodyWith400)
+    {
+        HttpRequest request = makeRequest(HttpMethod::POST, "/ingest");
+        request.addHeader("content-encoding", "gzip");
+        request.setBody("not a gzip stream at all");
+
+        HttpResponse     response;
+        std::atomic<int> handlerCalls{0};
+        MiddlewarePipeline pipeline;
+        pipeline.use(requestDecompressionMiddleware());
+        runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
+
+        EXPECT_EQ(handlerCalls.load(), 0);
+        EXPECT_EQ(response.status(), 400);
+    }
+
+    /**
+     * @brief 解出来的长度受上界约束：到界即判失败，不交回前 N 字节
+     * @details gzip 压缩比可上千倍，不设界等于让对端用几百字节决定本进程分配多少内存；
+     *          而「交回前 N 字节」是一份长度对、内容错的数据，比失败更坏
+     */
+    TEST(RequestDecompressionMiddleware, BoundsDecompressedBodyLength)
+    {
+        RequestDecompressionOptions options;
+        options.maximumDecompressedByteCount = 1024;
+
+        HttpRequest request = makeRequest(HttpMethod::POST, "/ingest");
+        request.addHeader("content-encoding", "gzip");
+        request.setBody(gzipCompress(std::string(64U * 1024U, 'A')).value());
+
+        HttpResponse     response;
+        std::atomic<int> handlerCalls{0};
+        MiddlewarePipeline pipeline;
+        pipeline.use(requestDecompressionMiddleware(options));
+        runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
+
+        EXPECT_EQ(handlerCalls.load(), 0) << "超出上界的正文不该被当成合法请求";
+        EXPECT_EQ(response.status(), 400);
+    }
+
+    /**
+     * @brief 没声明、声明 identity、声明了编码但没有正文——三型都原样交给业务
+     * @details 反面判据：闸门不能宽到把没编码的请求也拦下，也不能在「压根没有正文」时报错
+     */
+    TEST(RequestDecompressionMiddleware, PassesThroughUnencodedAndEmptyBodies)
+    {
+        HttpRequest plain = makeRequest(HttpMethod::POST, "/ingest");
+        plain.setBody("plain text");
+
+        HttpRequest identity = makeRequest(HttpMethod::POST, "/ingest");
+        identity.addHeader("content-encoding", "identity");
+        identity.setBody("still plain");
+
+        HttpRequest emptyWithCoding = makeRequest(HttpMethod::POST, "/ingest");
+        emptyWithCoding.addHeader("content-encoding", "gzip");
+
+        for (HttpRequest *caseRequest : {&plain, &identity, &emptyWithCoding})
+        {
+            HttpResponse     response;
+            std::atomic<int> handlerCalls{0};
+            const std::string bodyBefore(caseRequest->body());
+
+            MiddlewarePipeline pipeline;
+            pipeline.use(requestDecompressionMiddleware());
+            runPipeline(pipeline, *caseRequest, response, terminalWriting(response, "handled", &handlerCalls));
+
+            EXPECT_EQ(handlerCalls.load(), 1) << "这一型没有要解的东西，业务必须照常被调用";
+            EXPECT_EQ(response.status(), 200);
+            EXPECT_EQ(caseRequest->body(), bodyBefore) << "正文字节不许被动过";
+        }
     }
 
     // ============================================================================

@@ -24,6 +24,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Coding/SecureCompare.h"
+#include "Base/Log/LogEscaping.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/SourceLocation.h"
@@ -1288,6 +1289,97 @@ namespace AsynGyanis::Net
     inline MiddlewareFunc compressionMiddleware(Core::EventLoop &completionLoop, Core::AsyncExecutor &offloadExecutor, const CompressionOptions options = {})
     {
         return Detail::compressionMiddlewareImplementation(&offloadExecutor, &completionLoop, options);
+    }
+
+    /**
+     * @brief 请求正文解压中间件的档位
+     */
+    struct ASYN_NET_API RequestDecompressionOptions
+    {
+        /**
+         * @brief 解出来的正文上界（字节）
+         * @details gzip 的压缩比可以到上千倍，不设上界等于让对端用几百字节决定本进程分配多少内存。
+         *          默认与 `inflateHttpBody` 的默认同一档（8 MiB，与 `HttpParserLimits::maximumBodySize`
+         *          同档）：解出来的东西最终也要过那一道闸，两处不同值只会让「收得下但解不出」或
+         *          「解得出但收不下」这两种半截形态出现
+         */
+        std::size_t maximumDecompressedByteCount = kDefaultInflateOutputLimitBytes;
+    };
+
+    /**
+     * @brief 请求正文解压中间件：按 `Content-Encoding` 把压缩过的正文解回来再交给业务
+     *
+     * @details 出站客户端早就替调用方解响应正文（见 `Client/HttpContentCoding`），入站这一半此前
+     *          一行都没有：对端 POST 一份 `Content-Encoding: gzip`，业务从 `body()` 拿到的是压缩字节，
+     *          而 `jsonBody()` 只会回一句「解析失败」——现场看不出生是被编码过。RFC 9110 §8.4 的口径是
+     *          「源服务器不支持请求里声明的某种编码，就必须回 415」，而不是把编码字节当正文交下去。
+     *
+     *          判据与出站那一份同源：`identity` 与没有声明都是「正文原样就是最终内容」，空正文不解也不报错；
+     *          链式声明（`gzip, deflate`）要按声明的反序逐层解，半途解错一层的后果是「看着正常的坏数据」，
+     *          因此同样拒绝；只解 deflate 家族（gzip / x-gzip / deflate），其余一律 415。
+     *          解成功之后：正文换成解出来的那份，`content-encoding` 删掉（声明已被兑现，留着会让下游
+     *          再解一次），`content-length` 按解码后的字节数改写（旧值描述的是压缩字节，留着就是给一份
+     *          新正文配一个旧长度）。
+     *
+     * @note 流式路由（`Router::postStreaming()` 那一类）在头部收齐时就派发，此刻 `body()` 只是
+     *       「已收而尚未交付」的残余字节，整份压缩流并不在这里：中间件按声明判 415/400 之外，
+     *       对这种「拿不到完整压缩流」的情形不做任何改写，交由处理器自己按段处理。
+     * @param options 解压档位
+     * @return MiddlewareFunc 中间件
+     * @see compressionMiddleware()（响应方向的那一半）
+     */
+    inline MiddlewareFunc requestDecompressionMiddleware(const RequestDecompressionOptions options = {})
+    {
+        return [options](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            // 只看首条而不是合并视图：与出站那一份、bodySizeLimitMiddleware 同一口径
+            const std::optional<std::string_view> declaredEncoding = request.firstHeaderValueView("content-encoding");
+            const std::string_view                encoding         = declaredEncoding.has_value() ? trimOptionalWhitespace(*declaredEncoding) : std::string_view{};
+
+            // 没声明、声明为空、声明 identity、没有正文——四者都是「没有要解的东西」
+            if (encoding.empty() || equalsIgnoringCase(encoding, "identity") || request.body().empty())
+            {
+                co_await next();
+                co_return;
+            }
+
+            const auto reject = [&response, encoding](const int statusCode, const std::string_view bodyText, const std::string_view reason)
+            {
+                // 对端给的编码名是不可信文本：进日志先过折法，别让一个带控制字节的名字伪造出本进程的一行
+                LOG_WARN_FMT("requestDecompressionMiddleware: {}（对端声明「{}」）", reason, Base::escapeForLog(encoding));
+                response.setStatus(statusCode);
+                response.setBody(std::string(bodyText));
+                response.setHeader("content-type", "text/plain");
+            };
+
+            if (encoding.find(',') != std::string_view::npos)
+            {
+                reject(415, "Unsupported Media Type: chained Content-Encoding", "不支持链式的 Content-Encoding，只解单一编码");
+                co_return;
+            }
+
+            if (!equalsIgnoringCase(encoding, "gzip") && !equalsIgnoringCase(encoding, "x-gzip") && !equalsIgnoringCase(encoding, "deflate"))
+            {
+                reject(415, "Unsupported Media Type: unsupported Content-Encoding", "本端没有对应的解码器（只解 gzip / x-gzip / deflate）");
+                co_return;
+            }
+
+            // 到界即判失败：交回前 N 字节等于把损坏藏起来，调用方看到的是一份长度对、内容却错了的数据
+            std::expected<std::string, std::string> decompressed = inflateHttpBody(request.body(), options.maximumDecompressedByteCount);
+            if (!decompressed.has_value())
+            {
+                reject(400, "Bad Request: malformed encoded request body", "声明的编码解不出正文");
+                co_return;
+            }
+
+            const std::size_t decodedByteCount = decompressed->size();
+            // 先换正文再改头部：decompressed 是独立缓冲，视图不指向 request.body()，两步之间没有悬垂
+            request.setBody(std::move(decompressed.value()));
+            request.removeHeader("content-encoding");
+            static_cast<void>(request.setHeader("content-length", std::to_string(decodedByteCount)));
+            co_await next();
+            co_return;
+        };
     }
 
     /**

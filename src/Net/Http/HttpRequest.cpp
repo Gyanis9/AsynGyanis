@@ -168,6 +168,13 @@ namespace AsynGyanis::Net
         return true;
     }
 
+    void HttpRequest::removeHeader(const std::string_view key)
+    {
+        // 视图不在这里维护：存储内部只标脏，下次查询按权威记录重建（否则会留下「查得到而序列化里没有」
+        // 的鬼条目），与 HttpResponse::removeHeaderField 同一条出口
+        m_headerStore.removeAll(key);
+    }
+
     void HttpRequest::adoptStagedHeaders(HttpHeaderFieldStore &stagedHeaders) noexcept
     {
         m_headerStore.adoptFrom(stagedHeaders);
