@@ -343,9 +343,34 @@ namespace AsynGyanis::Net
      *          带着 Cookie 读取你的接口（CSRF 的翻版）。因此本实现在 allowOrigin 为 `*` 时
      *          一律不输出 allow-credentials，并附一条 `Vary: Origin` 说明应答随来源而变。
      *          确实要带凭据，请把 allowOrigin 写成具体站点并且自己维护白名单。
+     * @throws Base::InvalidArgumentException `allowOrigin`/`allowMethods`/`allowHeaders` 之一含
+     *         CR/LF/NUL 一类会撕裂字段值的字节，或 `maxAge` 为负。判据排在**装配期**而不是请求期：
+     *         留到请求期只会让 `setHeader` 静默拒写，现场表现是「配了 CORS 而响应上没有头」。
      */
     inline MiddlewareFunc corsMiddleware(CorsPolicy policy = {})
     {
+        // 装得进来就一定写得出去：这三个取值都是原样上线的字段值，含 CR/LF/NUL 时
+        // `HttpResponse::setHeader` 会当场拒写（回 false 而不改任何状态），症状是「配了 CORS
+        // 而响应上一个头都没有」——浏览器只报 CORS 不通，服务端一声不响。判据与
+        // `altSvcMiddleware` 对端点主机名那条同一把尺：直接复用 `setHeader` 内部用的那一份谓词，
+        // 两处永远不会分出两套答案。
+        const auto requireWritableFieldValue = [](const std::string_view fieldName, const std::string &value)
+        {
+            if (!containsOnlyFieldValueCharacters(value))
+            {
+                throw Base::InvalidArgumentException("corsMiddleware: CORS 策略的「" + std::string(fieldName) +
+                                                     "」含 CR/LF/NUL 一类会撕裂头部字段值的字节——这样的值会被 setHeader 静默拒写，等于没配 CORS，请在装配前洗干净");
+            }
+        };
+        requireWritableFieldValue("allowOrigin", policy.allowOrigin);
+        requireWritableFieldValue("allowMethods", policy.allowMethods);
+        requireWritableFieldValue("allowHeaders", policy.allowHeaders);
+
+        if (policy.maxAge.count() < 0)
+        {
+            throw Base::InvalidArgumentException("corsMiddleware: 预检缓存秒数不能为负（负数被浏览器按「不缓存」处理，等于把 maxAge 这一格配废）；要每次都得发预检就填 0");
+        }
+
         return [policy = std::move(policy)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
             const bool isPreflightRequest = request.method() == HttpMethod::OPTIONS && request.hasHeader("access-control-request-method");

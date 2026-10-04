@@ -603,6 +603,62 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.status(), 204);
     }
 
+    /**
+     * @brief 钉住 CORS 策略在**装配期**就把「会被 setHeader 静默拒写的取值」挡下来
+     * @details 三个取值都是原样上线的字段值。含 CR/LF/NUL 时 `HttpResponse::setHeader` 拒写并回
+     *          false，而中间件不看那个 bool——留到请求期，现场表现只有「浏览器说 CORS 不通」，
+     *          服务端一句日志都没有。判据复用 `setHeader` 内部那一份谓词（与 `altSvcMiddleware`
+     *          对端点主机名那条同一把尺），所以装配期与写入期永远不会分出两套答案。
+     * @note 拒因必须点名是哪个字段：运维拿着一份配置文件看不出自己错在哪，等于没给拒因。
+     * @note 正面对照由既有的 `DeclaresConfiguredMethodsHeadersAndMaxAge` 承担（合法策略照装照写）；
+     *       本例只钉拒绝面。
+     * @note 证伪：把装配期那三行 `requireWritableFieldValue` 摘掉，本用例红在 `ADD_FAILURE`
+     *       （不抛就等于让脏值走到请求期去被静默拒写）；把三处合成一处漏判一个字段，红的是
+     *       那一格的「拒因点名」断言。
+     */
+    TEST(CorsMiddleware, RejectsPolicyValuesThatSetHeaderWouldRefuse)
+    {
+        for (const std::string_view fieldName: {"allowOrigin", "allowMethods", "allowHeaders"})
+        {
+            SCOPED_TRACE(fieldName);
+
+            CorsPolicy policy;
+            if (fieldName == "allowOrigin")
+            {
+                policy.allowOrigin = "https://a.example\r\nX-Injected: 1";
+            } else if (fieldName == "allowMethods")
+            {
+                policy.allowMethods = "GET\r\nPost: 1";
+            } else
+            {
+                policy.allowHeaders = "Content-Type\nX-Other";
+            }
+
+            try
+            {
+                static_cast<void>(corsMiddleware(policy));
+                ADD_FAILURE() << "这种值会被 setHeader 静默拒写：装配期就该拒，而不是留到请求期丢头";
+            } catch (const Base::InvalidArgumentException &failure)
+            {
+                EXPECT_NE(std::string(failure.what()).find(fieldName), std::string::npos) << "拒因没点名是哪个字段";
+            }
+        }
+    }
+
+    /**
+     * @brief 钉住 CORS 的预检缓存秒数不接受负值
+     * @details 0 是合法档位（要求每次都发预检），负数不是：浏览器按「不缓存」处理，
+     *          配的人以为自己在设一个时限而实际上把这一格配废了。与 `altSvcMiddleware` 对
+     *          `maxAge` 的那道界同一处置：装配期当场拒。
+     * @note 证伪：把 `maxAge.count() < 0` 那道判定摘掉，本用例红（不再抛）。
+     */
+    TEST(CorsMiddleware, RejectsNegativePreflightMaxAge)
+    {
+        CorsPolicy policy;
+        policy.maxAge = std::chrono::seconds{-5};
+        EXPECT_THROW(static_cast<void>(corsMiddleware(policy)), Base::InvalidArgumentException) << "负秒数等于把 maxAge 这一格配废，装配期就该拒";
+    }
+
     TEST(CorsMiddleware, DeclaresConfiguredMethodsHeadersAndMaxAge)
     {
         CorsPolicy policy;
