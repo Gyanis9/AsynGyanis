@@ -288,4 +288,28 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(containsIgnoringCase(highByteText, otherByteText)) << "非 ASCII 字节不该被折叠成相等";
         EXPECT_TRUE(containsIgnoringCase(highByteText, highByteText));
     }
+    /**
+     * @brief 钉住列表型字段值那**一份** token 扫描：切分、裁 OWS、整段全等
+     * @details 头部的 `Connection`/`Vary` 与条件请求的验证器列表现在都走 `anyTokenInList` 与它的
+     *          「相等」特化 `containsFieldValueToken`（此前是分三处各写一遍的同一件事）。判据把这类扫描
+     *          最容易分叉的几点各自钉住：逗号两侧的 SP 与 HTAB 都要裁、比较是**整段全等**而不是
+     *          前缀或子串、空段不吃掉后面的段、空 token 不算命中、只在列表里比而不是拿整值比。
+     * @note 证伪：把裁空白改成只裁空格（不裁 HTAB），红在 `\tupgrade\t` 那一格；把整段比较换成
+     *       `containsIgnoringCase`，红在「`keep` 不该命中 `keep-alive`」那一格；把空段跳过写成
+     *       遇空段即停，红在「`keep-alive, , close` 仍要能找到 close」那一格。
+     */
+    TEST(HttpHeaderRules, ScansListTokensWithOneSharedImplementation)
+    {
+        EXPECT_TRUE(containsFieldValueToken("keep-alive, Upgrade", "upgrade")) << "逗号两侧的 OWS 与 ASCII 大小写都该被处理";
+        EXPECT_TRUE(containsFieldValueToken("keep-alive,\tupgrade\t", "UPGRADE")) << "HTAB 也是可观察空白，与 SP 同裁";
+        EXPECT_TRUE(containsFieldValueToken("keep-alive, , close", "close")) << "中间那个空段不该吃掉后面的段";
+        EXPECT_FALSE(containsFieldValueToken("keep-alive", "keep")) << "整段全等才算命中：前缀匹配会把 keep 当成 keep-alive";
+        EXPECT_FALSE(containsFieldValueToken("keep-alive, upgrade", "")) << "空 token 不是列表项（RFC 9110 §5.6.1）";
+        EXPECT_FALSE(containsFieldValueToken("", "upgrade")) << "空取值里什么都找不到";
+
+        // 通用那一层：验证器列表这类「比法不是相等」的判定共用同一份切分
+        EXPECT_TRUE(anyTokenInList("a, b", [](const std::string_view item) { return item == "b"; }));
+        EXPECT_FALSE(anyTokenInList("a, b", [](const std::string_view item) { return item == "c"; }));
+    }
+
 } // namespace AsynGyanis::Net

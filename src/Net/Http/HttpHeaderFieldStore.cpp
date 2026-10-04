@@ -191,20 +191,11 @@ namespace AsynGyanis::Net
                 continue;
             }
 
-            std::string_view remainder(valueOf(ref));
-            // 同一个头名可以用逗号列多个 token（"Connection: keep-alive, Upgrade"），逐段比对
-            while (!remainder.empty())
+            // 同一个头名可以用逗号列多个 token（"Connection: keep-alive, Upgrade"）：切分、裁 OWS
+            // 与大小写不敏感比较都在 `containsFieldValueToken` 那一份实现里，这里只对每条记录问一遍
+            if (containsFieldValueToken(valueOf(ref), expectedToken))
             {
-                const std::size_t commaPosition = remainder.find(',');
-                if (equalsIgnoringCase(trimOptionalWhitespace(remainder.substr(0, commaPosition)), expectedToken))
-                {
-                    return true;
-                }
-                if (commaPosition == std::string_view::npos)
-                {
-                    break;
-                }
-                remainder = remainder.substr(commaPosition + 1);
+                return true;
             }
         }
         return false;

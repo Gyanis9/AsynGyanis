@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "Net/Http/HttpHeaderRules.h"
+
 #include <string_view>
 
 namespace AsynGyanis::Net
@@ -39,7 +41,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 逐个逗号切分验证器列表，把每一项交给判定函数
          * @details 两项判定共用这一段切分，差别只在回调里怎么比：弱比较要剥 `W/` 且允许 `*`，
-         *          强比较不剥且 `*` 只在整值时有效。切分只裁首尾的 SP/HTAB（§5.6.4 的可观察空白）。
+         *          强比较不剥且 `*` 只在整值时有效。切分本身住在 `Net::anyTokenInList`
+         *          （`HttpHeaderRules.h`）——头部的 `Connection`/`Vary` 列表走的是同一份扫描，
+         *          两处各写一份迟早会在「裁不裁 HTAB、空段算不算命中」上分叉。
          * @param listValue 头部原文
          * @param predicate 收到「已裁空白的单项」，返回 true 即整表命中并停止
          * @return true 任一单项使 predicate 为真
@@ -47,30 +51,7 @@ namespace AsynGyanis::Net
         template<typename Predicate>
         inline constexpr bool anyValidatorInList(const std::string_view listValue, const Predicate predicate)
         {
-            std::string_view remainder = listValue;
-            while (true)
-            {
-                const std::size_t commaPosition = remainder.find(',');
-                std::string_view  candidate     = remainder.substr(0, commaPosition);
-                // 首尾空白：SP 与 HTAB 两种，与 HttpHeaderRules 里的字段值可观察空白同一口径
-                while (!candidate.empty() && (candidate.front() == ' ' || candidate.front() == '\t'))
-                {
-                    candidate.remove_prefix(1);
-                }
-                while (!candidate.empty() && (candidate.back() == ' ' || candidate.back() == '\t'))
-                {
-                    candidate.remove_suffix(1);
-                }
-                if (predicate(candidate))
-                {
-                    return true;
-                }
-                if (commaPosition == std::string_view::npos)
-                {
-                    return false;
-                }
-                remainder = remainder.substr(commaPosition + 1);
-            }
+            return anyTokenInList(listValue, predicate);
         }
     } // namespace Detail
 

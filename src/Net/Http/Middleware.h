@@ -257,26 +257,11 @@ namespace AsynGyanis::Net
                 return;
             }
 
-            std::string_view remaining = *existingVary;
-            while (!remaining.empty())
+            // 切分、裁 OWS 与大小写不敏感比较都在 `containsFieldValueToken` 那一份实现里（头部的
+            // `Connection`/`TE` 判定也走它），这里不再重复一份扫描
+            if (containsFieldValueToken(*existingVary, token))
             {
-                const std::size_t commaPosition = remaining.find(',');
-                std::string_view  current       = remaining.substr(0, commaPosition);
-                remaining                       = commaPosition == std::string_view::npos ? std::string_view{} : remaining.substr(commaPosition + 1);
-
-                while (!current.empty() && (current.front() == ' ' || current.front() == '\t'))
-                {
-                    current.remove_prefix(1);
-                }
-                while (!current.empty() && (current.back() == ' ' || current.back() == '\t'))
-                {
-                    current.remove_suffix(1);
-                }
-
-                if (equalsIgnoringCase(current, token))
-                {
-                    return;
-                }
+                return;
             }
 
             response.setHeader("vary", *existingVary + ", " + std::string(token));

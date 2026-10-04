@@ -139,7 +139,7 @@ namespace AsynGyanis::Net
      * @param text 原始文本视图
      * @return std::string_view 去掉首尾 SP/HTAB 后的子视图，不复制字节
      */
-    [[nodiscard]] inline std::string_view trimOptionalWhitespace(const std::string_view text) noexcept
+    [[nodiscard]] inline constexpr std::string_view trimOptionalWhitespace(const std::string_view text) noexcept
     {
         std::size_t beginIndex = 0;
         std::size_t endIndex   = text.size();
@@ -193,6 +193,60 @@ namespace AsynGyanis::Net
             }
         }
         return true;
+    }
+
+    /**
+     * @brief 逐个逗号切分一份列表型字段值，把每一段（裁掉首尾 OWS 之后）交给判定函数
+     *
+     * @details RFC 9110 §5.6.1 允许一个头名带多个 token（`Connection: keep-alive, Upgrade`），
+     *          逗号两侧的 OWS 不算内容。本仓里所有「在这样的列表里找一段」的判定都从这里过：
+     *          头部的 `Connection`/`Vary` 与条件请求的验证器列表是同一个形状，各写一份切分
+     *          迟早会在「裁不裁 HTAB、折不折大小写、空段算不算命中」上分叉。
+     *
+     * @tparam Predicate 收到「已裁 OWS 的单段」，返回 true 即整表命中并停止
+     * @param listValue 字段原文（不含字段名）
+     * @param predicate 单段判定
+     * @return true 任一段使 predicate 为真
+     */
+    template<typename Predicate>
+    [[nodiscard]] inline constexpr bool anyTokenInList(const std::string_view listValue, const Predicate predicate)
+    {
+        std::string_view remainder = listValue;
+        while (true)
+        {
+            const std::size_t commaPosition = remainder.find(',');
+            if (predicate(trimOptionalWhitespace(remainder.substr(0, commaPosition))))
+            {
+                return true;
+            }
+            if (commaPosition == std::string_view::npos)
+            {
+                return false;
+            }
+            remainder = remainder.substr(commaPosition + 1);
+        }
+    }
+
+    /**
+     * @brief 判断一份列表型字段**取值**里是否出现了某个 token
+     * @details `anyTokenInList` 的「整段相等」特化：比较走 `equalsIgnoringCase`（只折 ASCII 大小写，
+     *          与头部 token 的规范口径一致），因此是逐段全等而非前缀匹配——`keep-alive` 不会被
+     *          `keep` 命中。段首尾的 SP/HTAB 不算内容。
+     * @note 名字刻意带 `FieldValue`：`HttpHeaderFieldStore::containsListToken` 问的是「哪个头名」，
+     *       这一份问的是「一份取值里有没有这个 token」。两个同名函数会互相遮蔽——成员里裸写
+     *       就是递归调用自己，实测会把 WebSocket 升级那一族的用例全打成超时。
+     * @param fieldValue 字段原文（不含字段名）
+     * @param expectedToken 要找的 token
+     * @return true 出现了
+     */
+    [[nodiscard]] inline bool containsFieldValueToken(const std::string_view fieldValue, const std::string_view expectedToken) noexcept
+    {
+        // 空 token 不算「在列表里」：RFC 9110 §5.6.1 的列表项必须是 token，空段不是
+        if (expectedToken.empty())
+        {
+            return false;
+        }
+        return anyTokenInList(fieldValue, [expectedToken](const std::string_view token) { return equalsIgnoringCase(token, expectedToken); });
     }
 
     /**
