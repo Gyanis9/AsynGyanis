@@ -42,7 +42,18 @@ namespace AsynGyanis::Net
         constexpr std::chrono::milliseconds kWaitTimeout{8000};
         /// 带大正文那两条的等待上限：见 `Http3DeliveryAttempt` 的说明，这里赌的是「丢报文之后
         /// 还要重传完」，不是「这条通路走不走得通」
-        constexpr std::chrono::milliseconds kDeliveryWaitTimeout{25000};
+        constexpr std::chrono::milliseconds kDeliveryWaitTimeout{60000};
+
+        /// 大正文请求自身的兜底上限：判据不押在这条线上（见 `kDeliveryStallBudget`），
+        /// 它只保证「万一进展哨兵没起作用，这一趟也不会永远挂着」
+        constexpr std::chrono::milliseconds kLargeBodyRequestTimeout{120000};
+        /// 连续这么多毫秒没有任何进展才算停住。为什么用「没有进展」而不是「总共花了多久」：
+        /// 一台被压满的机器上，300 KiB 走回环 UDP 花掉 15 秒不是缺陷而是调度——满载 `-j 8`
+        /// 实测本文件那条确实这样红过（15.32 秒 / 单独跑 0.2 秒）。而窗口归还没做时症状是
+        /// **彻底停住**，对端一个字节都不再发，按进展判既不会误杀慢的、也照样抓得住停的
+        constexpr std::chrono::milliseconds kDeliveryStallBudget{15000};
+        /// 进展哨兵的节拍：十五个静默拍子就是 `kDeliveryStallBudget`
+        constexpr std::chrono::milliseconds kDeliveryStallCheckInterval{1000};
 
         /// 服务端答出去的正文，两侧同一个字面串
         constexpr std::string_view kServedBody{"served-over-h3-client"};
@@ -842,7 +853,12 @@ namespace AsynGyanis::Net
                     co_return m_stopAfterBatchCount == 0U || m_batches.size() < m_stopAfterBatchCount;
                 };
                 m_stage.store("first-request", std::memory_order_release);
-                m_first = co_await link->http3().request("https", authority, "GET", "/large", {}, {}, std::chrono::milliseconds{15000}, receiver);
+                // 大正文这一趟的停与不停按「有没有进展」判，不押总时长：理由见 kDeliveryStallBudget
+                m_isStallWatchdogArmed.store(true, std::memory_order_release);
+                m_watchdogTask.emplace(watchForStall(link));
+                m_loop.scheduler().schedule(m_watchdogTask->handle());
+                m_first = co_await link->http3().request("https", authority, "GET", "/large", {}, {}, kLargeBodyRequestTimeout, receiver);
+                m_isStallWatchdogArmed.store(false, std::memory_order_release);
                 // 收口之后同一条链路还要能接着服务：h3 的正文是分流的，结掉这一条就够
                 m_isHealthyAfterRun = link->isHealthy();
                 m_stage.store("follow-up", std::memory_order_release);
@@ -855,10 +871,49 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
+            /**
+             * @brief 大正文那趟的「没有进展」哨兵：连续静默就掐掉链路
+             * @details 判据换成构造出来的条件而不是绝对时长：窗口归还漏做时的症状是对端**一个字节都不再发**，
+             *          而一台被压满的机器上「慢但仍在一批一批交」是常态。这里每拍看一次批次数有没有变——
+             *          变过就重新计时，连续 `kDeliveryStallBudget` 没变才把链路关掉，让请求带着原因回来。
+             *          与被判据的那个动作同在本条循环线程上，因此读 `m_batches` 不需要额外同步
+             */
+            Core::Task<> watchForStall(const std::shared_ptr<Http3OutboundLink> link)
+            {
+                constexpr std::size_t kMaximumQuietCheckCount = static_cast<std::size_t>(kDeliveryStallBudget.count() / kDeliveryStallCheckInterval.count());
+
+                Core::Timer timer(m_loop);
+                std::size_t lastBatchCount  = m_batches.size();
+                std::size_t quietCheckCount = 0;
+                while (m_isStallWatchdogArmed.load(std::memory_order_acquire))
+                {
+                    co_await timer.waitFor(kDeliveryStallCheckInterval);
+                    if (!m_isStallWatchdogArmed.load(std::memory_order_acquire))
+                    {
+                        co_return;
+                    }
+                    if (m_batches.size() != lastBatchCount)
+                    {
+                        lastBatchCount  = m_batches.size();
+                        quietCheckCount = 0;
+                        continue;
+                    }
+                    if (++quietCheckCount >= kMaximumQuietCheckCount)
+                    {
+                        // 关掉之后 await 中的请求会带着「连接已不可用」回来：判据由此拿到一个
+                        // 有原因的失败，而不是等一条总时限把慢的也一起判死
+                        link->http3().close();
+                        co_return;
+                    }
+                }
+                co_return;
+            }
+
             Core::EventLoop             m_loop;
             std::uint16_t               m_port{0U};
             std::size_t                 m_stopAfterBatchCount{0U};
             std::optional<Core::Task<>> m_task{};
+            std::optional<Core::Task<>> m_watchdogTask{}; ///< 「没有进展」哨兵那一路协程，随对象一起收（循环已停时它只是不再被驱动）
             std::thread                 m_loopThread{};
             std::vector<std::string>    m_batches{};
             std::vector<bool>           m_lastBatchFlags{};
@@ -866,6 +921,7 @@ namespace AsynGyanis::Net
             Http3ClientResponse         m_followUp{};
             bool                        m_isHealthyAfterRun{false};
             std::size_t                 m_inFlightAfterFollowUp{0U};
+            std::atomic<bool>           m_isStallWatchdogArmed{false}; ///< 哨兵只管大正文那一趟：请求一回来就撤防
             std::atomic<bool>           m_isFinished{false};
             std::atomic<const char *>   m_stage{"init"}; ///< 进展到哪一步（指字符串字面量，不持有内存）
         };
@@ -1113,15 +1169,17 @@ namespace AsynGyanis::Net
      *          只能落在 `noteBodyBytes`：不还，服务端写到窗口边缘就再也没法推进，本端只能等到时限把
      *          整条连接掐掉——症状是「小响应全通、大响应全 timeout」。
      * @note 证伪：摘掉 `noteBodyBytes` 里那句 `extendReceiveWindow` → 服务端推满 256 KiB 后停住，
-     *       本用例在 4 秒时限后拿到「响应没收齐」而红。
+     *       本用例在时限到点后拿到「响应没收齐」而红。时限给到 30 秒是**余量**而不是判据：这一条没有
+     *       逐批交付的接收口可当进展信号，只能放宽绝对时长——满载实测里 300 KiB 走过回环 UDP 用掉十几秒
+     *       是调度而不是缺陷（见 `kDeliveryStallBudget`），押 4 秒会让这一格假红。
      */
     TEST(Http3ClientConnection, CreditsTheReceiveWindowForBodyBeyondTheAdvertisedStreamWindow)
     {
         RunningHttp3Server server;
         ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
 
-        Http3RequestAttempt attempt{server.listeningPort(), {}, {}, "/large"};
-        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这条大正文请求既没成也没败，挂在那里";
+        Http3RequestAttempt attempt{server.listeningPort(), {}, {}, "/large", std::chrono::milliseconds{30000}};
+        ASSERT_TRUE(attempt.awaitFinished(std::chrono::milliseconds{40000})) << "这条大正文请求既没成也没败，挂在那里";
         ASSERT_TRUE(attempt.response().isOk()) << "大正文没整个收下：" << attempt.response().errorMessage << "（实收 " << attempt.response().body.size()
                                                << " 字节，窗口是 256 KiB）";
         ASSERT_EQ(attempt.response().body.size(), kLargeBodyByteCount) << "正文长度与服务端答出去的那一份不等";
@@ -1143,9 +1201,11 @@ namespace AsynGyanis::Net
      * @details 判据为什么不会靠调度运气：本端给每条流的接收额度按消耗归还，而对端要把一帧（拆帧之后
      *          16 KiB）发完才轮得到下一帧，交付又排在每一轮推动通路之前——三百 KiB 的正文必然落成多次
      *          交付。拼接起来逐字节等于服务端答出去的那一份，才算既没交重也没漏交。
+     *          「会不会因为机器忙而超时」这一格由 `watchForStall` 处理：停与不停看的是**批次数还在不在动**，
+     *          不是总共跑了多久（实测满载 `-j 8` 时这条曾红在 15.32 秒，单独跑 0.2 秒——那是调度不是缺陷）。
      * @note 证伪：把 `noteBodyBytes` 里「挂了接收口就攒着待交」改回直接进 body 并当场还额度 → 本条红
-     *       （响应里留着整份正文、批数为 1）；只把 `deliverReceivedBody` 里的额度归还摘掉 → 也红
-     *       （攒满一档 256 KiB 的流窗口之后对端不再发，本条等到时限）。
+     *       （响应里留着整份正文、批数为 1）；只把 `deliverReceivedBody` 里的额度归还摘掉 → 也红，
+     *       且红法是哨兵在 15 秒静默后掐掉链路（对端不再发一个字节），不是等总时限。
      */
     TEST(Http3ClientConnection, DeliversResponseBodyInBatchesAndCreditsAfterEachDelivery)
     {
