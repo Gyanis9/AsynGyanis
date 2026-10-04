@@ -121,12 +121,22 @@ namespace AsynGyanis::Net
 
     void HttpRequest::addTrailerField(const std::string_view name, const std::string_view value)
     {
+        // 尾段不得改变消息长度与权威目标（RFC 9110 §6.5.1）：h1 在解析器里就把这几类丢掉，而 h2/h3 的
+        // 尾字段是从这个入口交进来的，过滤放在这一处才对得上同一把尺——否则同一条报文只在 h2 上让业务
+        // 读到一个尾段 content-length，那就是「两个长度解释」的走私面。名字先归一化再比：
+        // 对端写「Content-Length」与「content-length」是同一个字段
+        const std::string normalizedName = HttpHeaderFieldStore::toCanonicalHeaderName(name);
+        if (normalizedName == "content-length" || normalizedName == "host" || isConnectionSpecificHeaderName(normalizedName))
+        {
+            return;
+        }
+
         // 第一条 trailer 才把存储建出来：不带尾部的请求（绝大多数）一次分配也不付
         if (!m_trailerStore.has_value())
         {
             m_trailerStore.emplace();
         }
-        m_trailerStore->append(name, value);
+        m_trailerStore->append(normalizedName, value);
     }
 
     std::optional<std::string> HttpRequest::getTrailerField(const std::string_view name) const

@@ -163,6 +163,29 @@ namespace AsynGyanis::Net
      * @details 合档会让「Content-Length 出现在正文之后」变成第二种长度解释（RFC 9110 §6.5.1
      *          禁止的正是这个形状）；两档各自可读，业务问哪一档就只有哪一档的答案。
      */
+    /**
+     * @brief 钉住：定义报文边界与权威目标的字段不会从尾段交给业务（三条通道同一把尺）
+     * @details h1 在解析器里就把这几类丢掉，而 h2/h3 的尾字段是从 `addTrailerField` 这个入口交进来的，
+     *          过滤只有落在这一处才对得上同一把尺——否则同一条报文只在 h2 上让业务读到一个尾段
+     *          content-length，那就是「两个长度解释」的走私面（RFC 9110 §6.5.1）。
+     *          名字先归一化再比：对端写「Content-Length」与「content-length」是同一个字段。
+     */
+    TEST(HttpRequest, DropsTrailerFieldsThatDefineMessageBoundaries)
+    {
+        HttpRequest request;
+        request.addTrailerField("content-length", "9999");
+        request.addTrailerField("Content-Length", "9999");
+        request.addTrailerField("host", "example.com");
+        request.addTrailerField("transfer-encoding", "chunked");
+        request.addTrailerField("connection", "close");
+        EXPECT_EQ(countTrailerFields(request), 0u) << "尾段里的长度与权威信息不该交给业务，也不该为此建出存储";
+
+        // 对照：普通尾字段照旧收下（过滤不能宽到把合法尾部一起挡掉）
+        request.addTrailerField("x-checksum", "abc");
+        EXPECT_EQ(countTrailerFields(request), 1u);
+        EXPECT_EQ(request.getTrailerField("x-checksum").value_or(""), "abc");
+    }
+
     TEST(HttpRequest, KeepsTrailerFieldsInAStoreOfTheirOwn)
     {
         HttpRequest request;

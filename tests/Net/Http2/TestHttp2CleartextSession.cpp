@@ -2443,6 +2443,78 @@ namespace AsynGyanis::Net
      * @details 与 h1 同一条规范（RFC 9110 §10.1.1），只是承载换成 HEADERS（:status 100）且不带 END_STREAM；
      *          客户端据此才肯发正文，否则要等自己的超时
      */
+    /**
+     * @brief 钉住：扩展 CONNECT 上带着 Expect: 100-continue 时，本端不先回一张 100
+     * @details 100 的前提是「还有正文要发」，而扩展 CONNECT 的「正文」是隧道里的帧（RFC 8441 §4）：
+     *          h2 把 `hasBody` 判成「还没 END_STREAM」，于是这条流上一个正文字节都不会有，
+     *          先发的 100 就成了对端没要的过渡响应（h3 侧同一判据是「:protocol 为空才回 100」）。
+     * @details 判据要一条都不落的 1xx，另配正向对照：补上 END_STREAM 的零长 DATA 之后照常拿到**唯一一个**
+     *          响应头块（200）——否则「什么都没收到」也会让前一条断言成立，那是空转。
+     */
+    TEST(Http2CleartextSession, DoesNotAnswerContinueOnAnExtendedConnect)
+    {
+        const auto registerRoutes = [](Router &router, Core::EventLoop &)
+        {
+            router.get("/tunnel",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setBody("plain-200");
+                           co_return;
+                       });
+        };
+
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, HttpParserLimits{},
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        std::string headerBlock = makeWebSocketTunnelHeaderBlockWithHandshake("/tunnel", {{"expect", "100-continue"}});
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, headerBlock, false), kWaitTimeout));
+
+        // 给「本端会先回 100」那个退化留出一段足够到达的时间：它排在 intake 那一轮，不用等正文
+        const auto absenceDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{300};
+        while (std::chrono::steady_clock::now() < absenceDeadline)
+        {
+            static_cast<void>(client.pumpUntil(frames, [](const std::vector<Http2Frame> &) { return false; }, std::chrono::milliseconds{50}));
+        }
+
+        HpackDecoder probeDecoder;
+        EXPECT_NE(findResponseHeaderValue(probeDecoder, frames, 1U, ":status", 0), "100") << "扩展 CONNECT 之前先收到了一张 100：这条流上不会有正文";
+
+        // 正向对照：收尾之后照常拿到唯一一个响应头块
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string{}}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "补上 END_STREAM 之后没有拿到响应";
+
+        std::size_t responseHeaderBlockCount = 0;
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+            {
+                ++responseHeaderBlockCount;
+            }
+        }
+        EXPECT_EQ(responseHeaderBlockCount, 1U) << "这条流上应当只有一个响应头块：多出来的那一张就是被抢先发出的 100";
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
     TEST(Http2CleartextSession, AnswersContinueBeforeTheBodyArrives)
     {
         RunningHttpServerFixture fixture(
