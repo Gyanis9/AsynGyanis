@@ -336,6 +336,11 @@ namespace AsynGyanis::Net
         m_http3ByEndpoint[endpointKey] = std::move(link);
     }
 
+    std::size_t HttpOutboundConnectionPool::idleHttp2LinkCount() const noexcept
+    {
+        return m_http2ByEndpoint.size();
+    }
+
     std::size_t HttpOutboundConnectionPool::idleHttp3LinkCount() const noexcept
     {
         return m_http3ByEndpoint.size();

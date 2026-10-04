@@ -1312,6 +1312,51 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        /// 「收进活链那一步顺手把没人再访问的死链摘掉」这一趟在 h2 侧的结论
+        struct Http2PruneRoundTripOutcome
+        {
+            bool        isOpened{false};               ///< 两条链路是否都握上手（前提，缺了后面几条都是空的）
+            std::size_t linkCountAfterDeadClosed{0};   ///< 死链关掉而没人再取用时表上的条数：应当还留着
+            std::size_t linkCountAfterPruneOnAdopt{0}; ///< 给另一个端点收进一条活链之后表上的条数
+            bool        isLiveLinkTheOneRetained{false}; ///< 表上留下的那条是不是活的那条
+        };
+
+        /**
+         * @brief 在循环线程上走完 h2 侧的死链场景：收一条 → 关掉 → 不再取用 → 给别的端点收一条活链
+         * @details 两个键只是「端点身份」的标签（h3 侧那条用例同写法）：两条通路都连到同一个服务端
+         *          端口，注册成不同的键才造得出「一台此后不再被访问」的形状。
+         * @param loop 客户端事件循环
+         * @param port h2c 服务端的端口
+         * @param pool 被测的池
+         * @param outcome 就地收集结论
+         */
+        Core::Task<void> runHttp2PruneTask(Core::EventLoop &loop, const std::uint16_t port, HttpOutboundConnectionPool &pool, Http2PruneRoundTripOutcome &outcome)
+        {
+            const HttpOutboundEndpointKey deadKey{std::string{"127.0.0.1"}, port, false};
+            const HttpOutboundEndpointKey liveKey{std::string{"127.0.0.2"}, port, false};
+
+            std::shared_ptr<Http2ClientConnection> dead{std::unique_ptr<Http2ClientConnection>(co_await openConnection(loop, port))};
+            std::shared_ptr<Http2ClientConnection> live{std::unique_ptr<Http2ClientConnection>(co_await openConnection(loop, port))};
+            outcome.isOpened = dead != nullptr && live != nullptr;
+            if (!outcome.isOpened)
+            {
+                loop.stop();
+                co_return;
+            }
+
+            pool.adoptHttp2(deadKey, dead);
+            dead->close(); // 关掉而不再取用：健康位随之转假，而没人再来这一格按它
+            outcome.linkCountAfterDeadClosed = pool.idleHttp2LinkCount();
+
+            pool.adoptHttp2(liveKey, live); // 收链那一步会扫一遍全表
+            outcome.linkCountAfterPruneOnAdopt = pool.idleHttp2LinkCount();
+            outcome.isLiveLinkTheOneRetained   = (pool.acquireHttp2(liveKey) == live);
+
+            pool.closeAll();
+            loop.stop();
+            co_return;
+        }
+
     } // namespace
 
     /**
@@ -2466,6 +2511,41 @@ namespace AsynGyanis::Net
         EXPECT_LT(resetFrameIndex, peerSaw.frames.size()) << "本端没替这条流交代 RST_STREAM(CANCEL)：对端会一直发下去。看见的帧：" << peerSawText;
         EXPECT_GE(streamWindowUpdate, 1U) << "交出去的那一批没还窗口：背压的落点没接上。看见的帧：" << peerSawText;
         EXPECT_EQ(streamCreditAfterReset, 0U) << "RST 之后还在替这条流发 WINDOW_UPDATE（§5.1：对已关闭的流是非法动作）。看见的帧：" << peerSawText;
+    }
+
+    /**
+     * @brief 钉住：池在「收进一条活链」那一步把没人再访问的 h2 死链摘掉，h3 侧那条判据在 h2 这半同样成立
+     * @details `forgetDeadLinks()` 是两段循环，此前只有 h3 那一段被端到端钉住（见
+     *          `Http3OutboundLink.IsPooledAndEvictedLikeTheHttp2Side`）——把 h2 这段循环删掉，整套用例
+     *          仍然全绿，那是一条假绿。这里的形状与那条一致：一条链收进池后关掉而不再取用，
+     *          健康位已经转假却没人来摘它；随后给另一个端点收一条活链，死链必须自己消失。
+     * @note 三条判据各自能单独失效：前提那条（关掉之后表上仍留着一条）钉的是「死链确实留得住」，
+     *       没有它下面那条可以空过；条数那条是 eviction 本身；身份那条防的是「摘错了人」——
+     *       只数条数看不出留的是死链还是活链。
+     * @note 证伪：删掉 `forgetDeadLinks()` 里 h2 的那段循环，红的应当只有条数那一条（2 对 1），
+     *       前提与身份两条仍绿。
+     */
+    TEST(Http2OutboundLink, IsPrunedWhenAnotherEndpointAdoptsALiveLink)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, RouteRegistrar{}, HttpParserLimits{},
+                                         [](TestHttpServer &server) { static_cast<void>(server.setHttp2CleartextEnabled(true)); });
+        ASSERT_TRUE(fixture.awaitRunning(kClientWaitTimeout)) << "服务端未在时限内进入接受循环";
+
+        Core::EventLoop            loop;
+        HttpOutboundConnectionPool pool;
+        Http2PruneRoundTripOutcome outcome;
+        auto                       work = runHttp2PruneTask(loop, fixture.listeningPort(), pool, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        ASSERT_TRUE(outcome.isOpened) << "两条 h2 链路没都握上手，后面的判据都是空的";
+        EXPECT_EQ(outcome.linkCountAfterDeadClosed, 1U) << "用例前提：关掉而没人再取用的那条应当还留在表上（否则下面那条判据是空的）";
+        EXPECT_EQ(outcome.linkCountAfterPruneOnAdopt, 1U) << "另一台主机收进活链之后，那台不再被访问的死链还占着表：它握着描述符与一张 HPACK 动态表，"
+                                                             "攒下去就是「再也建不出新连接」，而不是配额";
+        EXPECT_TRUE(outcome.isLiveLinkTheOneRetained) << "表上留下的不是活的那条：扫全表时摘错了端点";
     }
 
 } // namespace AsynGyanis::Net

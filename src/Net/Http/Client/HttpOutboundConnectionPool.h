@@ -270,6 +270,9 @@ namespace AsynGyanis::Net
          */
         void adoptHttp2(const HttpOutboundEndpointKey &endpointKey, std::shared_ptr<Http2ClientConnection> connection);
 
+        /// 池里留着的 h2 链路条数（测试与观测用，与 h3 那一条同口径：数的是端点表上的条目，不是连接数）
+        [[nodiscard]] std::size_t idleHttp2LinkCount() const noexcept;
+
         /**
          * @brief 取回某台主机上留着的那条 h3 链路，取用时先判一次健康
          * @details 与 h2 那一对同一形状：复用发生在流上，故不交出独占所有权、也不摘走。判死即从表里
