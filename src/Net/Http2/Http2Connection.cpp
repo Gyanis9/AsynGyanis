@@ -1899,7 +1899,9 @@ namespace AsynGyanis::Net
                     }
                     break;
                 case Http2SettingIdentifier::MaxHeaderListSize:
-                    // 对端限制的是本端发出的头列表：本片不做发送侧的头列表预算，只记账备查
+                    // 对端限制的是本端发出的头列表：这一格在发送侧真的判（oversizeAgainstPeerHeaderListLimit
+                    // 按 §6.5.2 的「名长 + 值长 + 32」逐条算，响应头部与尾部头块各判一次），这里只把值记下来
+                    // 供那一处查——对端没通告这项时不判定（初值是「不限」，且规范把它写成建议值）
                     break;
                 case Http2SettingIdentifier::EnableConnectProtocol:
                     // RFC 8441 §3：取值只能是 0 或 1，其它取值是连接错误

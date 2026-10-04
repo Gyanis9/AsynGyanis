@@ -11,6 +11,12 @@ namespace AsynGyanis::Net
 {
     std::optional<std::string> gzipCompress(const std::string_view input, const int level)
     {
+        // 质量越界由本函数夹取（与 brotli、zstd 同一口径）：deflateInit2 对 1..9 之外的入参直接返回
+        // Z_STREAM_ERROR，而调用方写 12 只是想压得更狠，不该让整个响应退回不压缩
+        constexpr int kMinimumDeflateLevel = 1;
+        constexpr int kMaximumDeflateLevel = 9; ///< zlib 的 1..9，超界即被 deflateInit2 拒
+        const int     clampedLevel         = std::clamp(level, kMinimumDeflateLevel, kMaximumDeflateLevel);
+
         // 复用 thread_local 的 deflate 流：gzipCompress 每条压缩响应都 deflateInit2/End，重建约 200KB+ 的
         // 压缩器内部状态，与 permessage-deflate 侧同源的固定开销浪费。每条前 deflateReset 复位即可复用，
         // 产出的 gzip 帧与「每条新建一条流」逐字节一致。压缩级别是运行期参数但同一服务器实际恒定，
@@ -33,7 +39,7 @@ namespace AsynGyanis::Net
 
         if (context.isOpen)
         {
-            if (context.level == level)
+            if (context.level == clampedLevel)
             {
                 // 级别不变：复位到「刚 init」状态复用。复位失败说明流不可信，关掉让下面重新 init
                 if (::deflateReset(&context.stream) != Z_OK)
@@ -51,12 +57,12 @@ namespace AsynGyanis::Net
         {
             // gzip 容器而不是裸 deflate：windowBits 加上 16 就是「输出 gzip 头与尾」（RFC 1952），
             // 这样对端拿到的是标准的 Content-Encoding: gzip 字节，curl/browser 直接能解
-            if (::deflateInit2(&context.stream, level, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+            if (::deflateInit2(&context.stream, clampedLevel, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
             {
                 return std::nullopt;
             }
             context.isOpen = true;
-            context.level  = level;
+            context.level  = clampedLevel;
         }
 
         z_stream &stream = context.stream;

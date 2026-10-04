@@ -55,6 +55,11 @@ namespace AsynGyanis::Net
             }
         }
 
+        /// 本实现唯一服务的应用层协议名（RFC 9114 §3.2 登记的 ALPN）。配置里那一项、ALPN 回调那份
+        /// 线格式列表与构造期的校验判据都取自它——三处各写一遍时，改一处就会造出「协商得出一个
+        /// 没人解析的名字」或「日志报出一个没人协商的名字」这种现场
+        constexpr std::string_view kQuicApplicationProtocolName = "h3";
+
         /**
          * @brief ALPN 选择回调：只接受 HTTP/3
          * @details 协商不出 h3 就按致命告警终止握手——放行别的协议会让后续按 h3 解析的字节流对不上，
@@ -64,8 +69,10 @@ namespace AsynGyanis::Net
          */
         int selectApplicationProtocol(SSL *, const unsigned char **out, unsigned char *outLength, const unsigned char *clientList, const unsigned int clientListLength, void *)
         {
-            // 线格式的服务端列表：{2, 'h', '3'}
-            static constexpr unsigned char kServerProtocols[] = {2, 'h', '3'};
+            // 线格式的服务端列表：{首字节＝长度, 名字逐字节}，名字取自那份唯一的常量
+            static constexpr unsigned char kServerProtocols[] = {static_cast<unsigned char>(kQuicApplicationProtocolName.size()),
+                                                                 static_cast<unsigned char>(kQuicApplicationProtocolName[0]),
+                                                                 static_cast<unsigned char>(kQuicApplicationProtocolName[1])};
             if (SSL_select_next_proto(const_cast<unsigned char **>(out), outLength, kServerProtocols, sizeof(kServerProtocols), clientList, clientListLength) !=
                 OPENSSL_NPN_NEGOTIATED)
             {
@@ -125,6 +132,16 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("QUIC 服务端接手数据报套接字失败：交来的套接字无效。自己绑的那一份大概是绑定就失败了"
                                                  "（bindTo 交回空对象），跨进程接手的那一份要走 Platform::DatagramSocket::adopt，"
                                                  "它会区分「描述符无效」「不是套接字」「不是 SOCK_DGRAM」「还没 bind」四种不合格");
+        }
+
+        // 这一项不是「可以改的口径」：ALPN 回调只认 h3（那份线格式列表就是由同一个常量铺出来的），
+        // 配成别的值不会改变协商结果，只会让启动日志报出一个没人协商的协议名——日志与现场各说一套。
+        // 判据排在 TLS 上下文建立之前，理由见上面那段（构造期抛出后析构不跑）
+        if (m_configuration.applicationProtocol != kQuicApplicationProtocolName)
+        {
+            throw Base::InvalidArgumentException("QUIC 服务端配置无效：本实现只服务 h3（RFC 9114 §3.2 登记的 ALPN），"
+                                                 "applicationProtocol 配成「" +
+                                                 m_configuration.applicationProtocol + "」不会改变协商结果，只会让启动日志说谎；请写 h3");
         }
 
         // 上下文（连带证书、策略、ALPN 与票据密钥）由那一份唯一的构建函数交出。失败仍然当场抛：

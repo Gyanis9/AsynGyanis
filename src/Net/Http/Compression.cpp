@@ -35,7 +35,9 @@ namespace AsynGyanis::Net
             return std::nullopt;
         }
 
-        std::string       output(ZSTD_compressBound(input.size()), '\0');
+        std::string output(ZSTD_compressBound(input.size()), '\0');
+        // 级别越界由库自己夹取（>ZSTD_maxCLevel 时按上限走），不因此拒绝压缩——既有用例
+        // `CompressionCodecs.OutOfRangeLevelsAreClampedInsteadOfFailing` 钉的就是这一格
         const std::size_t writtenLength = ::ZSTD_compressCCtx(holder.context, output.data(), output.size(), source, input.size(), level);
         if (ZSTD_isError(writtenLength) != 0)
         {

@@ -105,6 +105,26 @@ namespace AsynGyanis::Net
     /**
      * @brief 空输入也要产出可解开的 gzip 字节
      */
+    /**
+     * @brief 越界的压缩级别被夹取到 1..9，而不是让整次压缩失败
+     * @details zlib 的 `deflateInit2` 对 level 越界直接返回 Z_STREAM_ERROR，而那份错误在这里被译成
+     *          「不压缩」——`CompressionOptions` 的文档写着「越界由各压缩构件夹取」，brotli 自己夹、
+     *          zstd 由库夹，只有这一条漏了。症状是响应一声不响退回 identity：配置里说要压，对端拿到的
+     *          是没压的正文，中间没有任何一行日志指向级别写错
+     */
+    TEST(GzipTest, ClampsOutOfRangeLevelInsteadOfRefusingToCompress)
+    {
+        const std::string original = "压缩级别写错只应影响压缩率，不应让整次压缩失败。";
+
+        const std::optional<std::string> tooHigh = gzipCompress(original, 99);
+        ASSERT_TRUE(tooHigh.has_value()) << "级别 99 应被夹取到 9 而不是失败";
+        EXPECT_EQ(gunzip(*tooHigh), original);
+
+        const std::optional<std::string> tooLow = gzipCompress(original, -5);
+        ASSERT_TRUE(tooLow.has_value()) << "级别 -5 应被夹取到 1 而不是失败";
+        EXPECT_EQ(gunzip(*tooLow), original);
+    }
+
     TEST(GzipTest, HandlesEmptyInput)
     {
         const std::optional<std::string> compressed = gzipCompress("");

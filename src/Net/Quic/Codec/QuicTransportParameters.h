@@ -40,8 +40,12 @@ namespace AsynGyanis::Net
     /// 各写一份字面量，两处一起改才会保持一致、单边改则编译期没有任何东西会响——这里取帧编解码那份为真源
     inline constexpr std::size_t kQuicStatelessResetTokenLength = kQuicStatelessResetTokenByteLength;
 
-    /// `max_udp_payload_size` 的默认值，也是 UDP 载荷的上限（RFC 9000 §18.2）
-    inline constexpr std::uint64_t kQuicDefaultMaximumUdpPayloadSize = 65527;
+    /// `max_udp_payload_size` 的默认值：本端愿意收下的最大 UDP 载荷。RFC 9000 §18.2 的下限是 1200，
+    /// 上限则由**本端收包缓冲**决定——`Platform::DatagramSocket::kMaximumDatagramBytes`（65535 − 20 − 8
+    /// ＝ 65507）。报得比它大是自伤：对端信了这个数并照发，超出部分被 UDP 静默截断，AEAD 解不开就是
+    /// 整条连接死掉，现场只留下「对端突然断线」。两处的相等关系由 `TestQuicTransportParameters.cpp` 里一条
+    /// static_assert 钉住（测试树同时看得到这两个常量，编解码这层不必依赖 Platform）
+    inline constexpr std::uint64_t kQuicDefaultMaximumUdpPayloadSize = 65507;
 
     /// `ack_delay_exponent` 的默认值；取值上限 20 也是同一节定的
     inline constexpr std::uint64_t kQuicDefaultAcknowledgmentDelayExponent = 3;

@@ -15,6 +15,7 @@
 #include "Net/Quic/Codec/QuicTransportParameters.h"
 
 #include "NetTestSupport.h"
+#include "Platform/IO/DatagramSocket.h"
 
 #include <gtest/gtest.h>
 
@@ -24,6 +25,13 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+// 通告出去的 max_udp_payload_size 不得超过本端真的收得下的那一份：收包缓冲就是这个常量
+// （`QuicServer` 与 `QuicClientConnection` 都按它开缓冲），而 UDP 交给小缓冲的尾部字节是被**静默截断**的——
+// 对端信了我们报的数并照发，收到的就是缺尾的报文，AEAD 解不开等于整条连接死掉，现场只留下「对端突然断线」。
+// 判据放在测试树：这里同时看得到两侧常量，编解码那层不必因此依赖 Platform
+static_assert(AsynGyanis::Net::kQuicDefaultMaximumUdpPayloadSize <= static_cast<std::uint64_t>(AsynGyanis::Platform::DatagramSocket::kMaximumDatagramBytes),
+              "max_udp_payload_size 的默认值不得超过本端收包缓冲：超出的部分会被 UDP 静默截断");
 
 namespace AsynGyanis::Net
 {
@@ -162,8 +170,10 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(decoded->initialSourceConnectionId.has_value());
         EXPECT_EQ(*decoded->initialSourceConnectionId, makeBytesFromHex("8394c8f03e515708"));
         EXPECT_FALSE(decoded->disableActiveMigration);
-        // 0x20（max_datagram_frame_size）与保留标识 0x1b 都被忽略， absent 的项按 §18.2 取默认
-        EXPECT_EQ(decoded->maximumUdpPayloadSize, kQuicDefaultMaximumUdpPayloadSize);
+        // 0x20（max_datagram_frame_size）与保留标识 0x1b 都被忽略；这一项在向量里是**写出来的**：
+        // 期望值取那份独立实现自己写死的 65527，而不是本端的默认常量——此前正因为它拿本端常量当期望值，
+        // 本端把默认值改成 65507 时这条「解外部字节」的用例被一起牵动（互操作用例的期望值必须独立于被测实现）
+        EXPECT_EQ(decoded->maximumUdpPayloadSize, 65527);
     }
 
     /**

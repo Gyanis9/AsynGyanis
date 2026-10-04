@@ -259,7 +259,10 @@ namespace AsynGyanis::Database
         /**
          * @brief 获取底层 redisContext 句柄，供需要直接使用 hiredis 的高级场景使用
          * @warning 句柄所有权始终属于本连接，调用方不得 redisFree，
-         *          也不得在连接销毁后继续使用；拿它去发命令会绕过本类的错误与超时处理
+         *          也不得在连接销毁后继续使用；拿它去发命令会绕过本类的错误与超时处理，
+         *          **也绕过会话状态的记账**（`noteSessionCommand()` 只看走本类的那条路）：从这里发
+         *          `SELECT`／`AUTH`／`CLIENT REPLY OFF`／`SUBSCRIBE` 都不会被记下来，归还时因此不会
+         *          退回或断开——下一个借用者接的就是这条被改过会话的连接。要发这类命令请走本类的公开入口
          * @return redisContext* 未连接时为 nullptr；桩构建下恒为 nullptr
          */
         [[nodiscard]] redisContext *nativeHandle() const noexcept

@@ -249,6 +249,25 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：applicationProtocol 配成 h3 之外的一切都在构造期被拒
+     * @details 这一项过去只有「打进启动日志」一个消费方——ALPN 回调始终只认 h3。于是写 `h3-29` 的人
+     *          会在日志里看到「ALPN h3-29」，而协商按 h3 发生：日志与现场各说一套，排查时第一条就被引到
+     *          错的方向。既然改不动行为，就该在构造期说清楚；顺带保住「日志里那个名字就是协商用的那个」
+     */
+    TEST(QuicServer, RejectsApplicationProtocolOtherThanH3DuringConstruction)
+    {
+        Core::EventLoop loop;
+
+        QuicServer::Configuration outdatedDraft = makeServerConfiguration();
+        outdatedDraft.applicationProtocol       = "h3-29";
+        EXPECT_THROW(QuicServer server(loop, outdatedDraft), Base::InvalidArgumentException);
+
+        // 反向那一格必须放行：判据不能顺手把唯一正确的写法也拒掉
+        const QuicServer::Configuration current = makeServerConfiguration();
+        EXPECT_NO_THROW(QuicServer server(loop, current));
+    }
+
+    /**
      * @brief 钉住：h3 也能被问出「这台卡在哪」——并发上限与按来源的限额对象都有读口
      * @details `connectionCount()` 一直能读，但没有分母就读不出「是不是贴着上限跑」；而 TCP 侧的
      *          `TcpServer::maximumConnections()` 与限额读口早就有，同一台机器上三条通道对同一个
