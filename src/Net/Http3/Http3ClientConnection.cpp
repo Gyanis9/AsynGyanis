@@ -126,6 +126,13 @@ namespace AsynGyanis::Net
         fieldLines.push_back({":authority", std::string{authority}});
         for (const auto &[name, value]: extraHeaders)
         {
+            // 调用方另塞的一份 Host 不上线：本端每条请求都带 :authority，而 RFC 9114 §4.3.1 要求两者同时
+            // 在场时必须是同一个值（本端服务端正按这条拒入站请求）。与 h2 出站侧同一条形状，护的是直接用
+            // 本类的那条路——本类入参没有任何地方保证两者同源
+            if (equalsIgnoringCase(name, "host"))
+            {
+                continue;
+            }
             fieldLines.push_back({name, value});
         }
 

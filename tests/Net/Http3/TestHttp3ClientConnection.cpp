@@ -220,14 +220,19 @@ namespace AsynGyanis::Net
              * @param clientCertificateFile 客户端身份证书；与私钥同时给才出示（双向 TLS 那一侧）
              * @param clientPrivateKeyFile 配套的私钥
              * @param path 请求路径，默认打夹具里那条小正文的路由
+             * @param requestTimeout 这条请求的时限
+             * @param extraHeaders 附加普通头：先落成成员再交给协程（花括号列表直接写在 `co_await` 的
+             *        实参位上会让容器里那件 GCC 在生成协程帧时 internal compiler error）
              */
             Http3RequestAttempt(const std::uint16_t port, const std::string &clientCertificateFile = {}, const std::string &clientPrivateKeyFile = {},
-                                const std::string path = "/probe", const std::chrono::milliseconds requestTimeout = std::chrono::milliseconds{4000}) :
+                                const std::string path = "/probe", const std::chrono::milliseconds requestTimeout = std::chrono::milliseconds{4000},
+                                std::vector<std::pair<std::string, std::string>> extraHeaders = {}) :
                 m_port(port), m_clientCertificateFile(clientCertificateFile), m_clientPrivateKeyFile(clientPrivateKeyFile)
             {
                 // 路径在排协程之前落定：run() 第一次被驱动就已经在读它
                 m_path           = path;
                 m_requestTimeout = requestTimeout;
+                m_extraHeaders   = std::move(extraHeaders);
                 m_task.emplace(run());
                 m_loop.scheduler().schedule(m_task->handle());
                 m_loopThread = std::thread([this] { m_loop.run(); });
@@ -298,7 +303,7 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                m_response = co_await http3.request("https", "127.0.0.1:" + std::to_string(m_port), "GET", m_path, {}, {}, m_requestTimeout);
+                m_response = co_await http3.request("https", "127.0.0.1:" + std::to_string(m_port), "GET", m_path, m_extraHeaders, {}, m_requestTimeout);
                 co_await http3.shutdown();
                 client.reset();
                 finish();
@@ -314,17 +319,18 @@ namespace AsynGyanis::Net
             Core::EventLoop m_loop;
             std::uint16_t   m_port{0U};
             /// 下面三项在构造时定死：协程帧跑在循环线程上，测试线程之后改它们没有意义也不安全
-            std::string                           m_clientCertificateFile{};
-            std::string                           m_clientPrivateKeyFile{};
-            std::string                           m_path{};
-            std::chrono::milliseconds             m_requestTimeout{4000}; ///< 这条请求自己的时限（静默对端那条要调小）
-            std::chrono::steady_clock::time_point m_startedAt{};          ///< 整次尝试的起点
-            std::chrono::milliseconds             m_elapsed{0};           ///< finish() 时结算的耗时
-            std::optional<Core::Task<>>           m_task{};
-            std::thread                           m_loopThread{};
-            Http3ClientResponse                   m_response{};
-            bool                                  m_isStarted{false};
-            std::atomic<bool>                     m_isFinished{false};
+            std::string                                      m_clientCertificateFile{};
+            std::string                                      m_clientPrivateKeyFile{};
+            std::string                                      m_path{};
+            std::vector<std::pair<std::string, std::string>> m_extraHeaders{};       ///< 附加普通头：构造函数里落定，协程只读不写
+            std::chrono::milliseconds                        m_requestTimeout{4000}; ///< 这条请求自己的时限（静默对端那条要调小）
+            std::chrono::steady_clock::time_point            m_startedAt{};          ///< 整次尝试的起点
+            std::chrono::milliseconds                        m_elapsed{0};           ///< finish() 时结算的耗时
+            std::optional<Core::Task<>>                      m_task{};
+            std::thread                                      m_loopThread{};
+            Http3ClientResponse                              m_response{};
+            bool                                             m_isStarted{false};
+            std::atomic<bool>                                m_isFinished{false};
         };
 
         /**
@@ -869,6 +875,24 @@ namespace AsynGyanis::Net
         EXPECT_EQ(trailers[0].second, "616263");
         EXPECT_FALSE(std::any_of(headers.begin(), headers.end(), [](const std::pair<std::string, std::string> &field) { return field.first == "x-checksum"; }))
                 << "尾字段漏进了响应头部那张表";
+    }
+
+    /**
+     * @brief 钉住 h3 出站不把调用方给的 Host 与 `:authority` 一起发出去
+     * @details RFC 9114 §4.3.1 要求两者同时在场时必须是同一个值，本端服务端正按这条把不一致的请求拒成畸形。
+     *          这里打的是自家服务端：撤掉出站那一道过滤，这条请求就拿不到 200（也不是「服务端没数到」的假绿）。
+     */
+    TEST(Http3ClientConnection, DropsCallerSuppliedHostSoTheAuthorityStaysTheSingleSource)
+    {
+        RunningHttp3Server server;
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        const std::vector<std::pair<std::string, std::string>> outboundHeaders{{"host", "elsewhere.example"}};
+        Http3RequestAttempt                                    attempt{server.listeningPort(), {}, {}, "/probe", std::chrono::milliseconds{4000}, outboundHeaders};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这次请求既没成也没败";
+        EXPECT_EQ(attempt.response().statusCode, 200) << "两份权威说法让对端把这条请求按畸形拒了：" << attempt.response().errorMessage;
+        EXPECT_EQ(attempt.response().body, kServedBody) << "正文与路由所答不一致";
+        EXPECT_EQ(server.servedRequestCount(), 1U) << "服务端没数到这条请求：本端的结论是自己拼的";
     }
 
 
