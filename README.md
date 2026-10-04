@@ -675,7 +675,7 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 |--------|------|
 | `Tcp/` | `TcpAcceptor`（`SO_REUSEPORT` 监听）、`TcpStream`（`readExact` / `readUntil` / `writeAll`）、`TcpServer` |
 | `Udp/` | `UdpServer`（一条端口面对任意来源：逐条交付报文、按来源回包、主动下发） |
-| `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（手写增量解析）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`HttpsSession` / `HttpsServer`、`FileSender`（静态文件）、`SseStream`、`HttpMetricsEndpoint`、`HttpMemoryBudget`、压缩协商（`Gzip` / `Compression`）、`Client/`（`HttpClient`、`HttpOutboundConnectionPool` 与响应解析器） |
+| `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（手写增量解析）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`Http2Session` / `HttpsServer`（TLS 一侧不另设会话类：`HttpsServer` 统一建 `Http2Session`，握手完成后按 ALPN 结果跑 h2 循环或同一份 HTTP/1.1 事务循环）、`FileSender`（静态文件）、`SseStream`、`HttpMetricsEndpoint`、`HttpMemoryBudget`、压缩协商（`Gzip` / `Compression`）、`Client/`（`HttpClient`、`HttpOutboundConnectionPool` 与响应解析器） |
 | `Http2/` | `Http2Session` / `Http2Connection`、`Http2ClientConnection`（出站一侧的帧与 HPACK）、`Http2Frame`、`Hpack`（含 Huffman） |
 | `Http3/` | `Http3Session` + 自研帧层 / QPACK / `Http3Connection`（含 RFC 9220 隧道） |
 | `Quic/` | 自研 QUIC 传输层：`Codec/`（变长整数、报文头、帧、传输参数）、`Crypto/`（密钥调度、头/包保护、TLS 胶水）、`Recovery/`（RFC 9002 丢包恢复与 NewReno）、`Streams/`（流与流量控制）、`QuicConnectionCore`（状态机）、`QuicPacketBuilder`、`QuicServer` / `QuicConnection`（数据报路由与外壳） |
