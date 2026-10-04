@@ -109,6 +109,23 @@ namespace AsynGyanis::Net
                             hasDateHeader = true;
                         }
 
+                        // 自设的正文长度在这里定稿，判据与 h1 的 appendHead、h2 的采集器同一份：声明与
+                        // 真正进 DATA 的字节不符就由声明让位（RFC 9114 §4.2 与 §4.1 沿用 h2 那条判据）
+                        if (headerName == kContentLengthHeaderName)
+                        {
+                            switch (response.declaredContentLengthDisposition())
+                            {
+                                case ContentLengthSendDisposition::Omit:
+                                    LOG_DEBUG_FMT("Http3Session: 流 {} 的响应按状态码不该声明正文长度，已丢弃自设的 content-length", streamId);
+                                    return;
+                                case ContentLengthSendDisposition::UseBodyLength:
+                                    fieldLines.push_back(QpackHeaderField{.name = std::string(kContentLengthHeaderName), .value = std::to_string(response.body().size())});
+                                    return;
+                                case ContentLengthSendDisposition::KeepDeclared:
+                                    break;
+                            }
+                        }
+
                         fieldLines.push_back(QpackHeaderField{std::string(headerName), std::string(headerValue)});
                     });
 

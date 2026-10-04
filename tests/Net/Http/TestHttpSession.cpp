@@ -21,6 +21,7 @@
 
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -589,6 +590,55 @@ namespace AsynGyanis::Net
         ASSERT_NE(secondMarkerPosition, std::string::npos);
         // 第二条的应答必须排在第一条之后：顺序不对说明两条报文被喂错了批次
         EXPECT_LT(firstMarkerPosition, secondMarkerPosition);
+
+        EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
+    }
+
+    /**
+     * @brief 处理函数自设的 content-length 与正文不符时，线上给的是真实字节数，流水线里的第二条不错位
+     * @details 这条钉的是报文边界，不是「哪一条头部更礼貌」：按声明切包的对端会把第一条少报的那段
+     *          字节当成第二条响应的开头，同一条 keep-alive 连接上后面的每一条都被污染
+     *          （RFC 9112 §6.2 要求这个字段等于正文长度）。序列化层的判据见
+     *          `HttpResponse::declaredContentLengthDisposition()`
+     */
+    TEST(HttpSession, RealignsLyingContentLengthSoPipelinedResponsesStayFramed)
+    {
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid());
+        fixture.router().get("/lying",
+                             [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                             {
+                                 response.setHeader("content-length", "3");
+                                 response.setBody("0123456789");
+                                 co_return;
+                             });
+
+        const std::string packet = makeRequestText("GET /lying HTTP/1.1", {"host: test"}) + makeRequestText("GET /lying HTTP/1.1", {"host: test"});
+        ASSERT_TRUE(fixture.writeRequest(packet));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 2, kWaitTimeout)) << "第二条没得到响应：上界 kWaitTimeout";
+
+        const std::size_t firstHeadEnd = responseText.find("\r\n\r\n");
+        ASSERT_NE(firstHeadEnd, std::string::npos);
+        const std::string firstHead = responseText.substr(0, firstHeadEnd);
+        EXPECT_NE(firstHead.find("content-length: 10\r\n"), std::string::npos) << "声明没按真实正文改写：" << firstHead;
+
+        // 按对端的切法走一遍：正文从声明长度取，取完之后必须正好是第二条的状态行。
+        // 只看「两条状态行都到了」不算证据——服务器把两份报文连着写完，字节本来都在那里，
+        // 错位发生在读的那一侧，所以这里替收端切一次包
+        constexpr std::string_view lengthMarker = "content-length: ";
+        const std::size_t          lengthBegin  = firstHead.find(lengthMarker) + lengthMarker.size();
+        const std::size_t          lengthEnd    = firstHead.find("\r\n", lengthBegin);
+        ASSERT_NE(lengthEnd, std::string::npos);
+        std::size_t declaredLength = 0;
+        ASSERT_TRUE(std::from_chars(firstHead.data() + lengthBegin, firstHead.data() + lengthEnd, declaredLength).ec == std::errc{});
+
+        const std::size_t firstBodyBegin = firstHeadEnd + 4;
+        EXPECT_EQ(responseText.compare(firstBodyBegin, 10, "0123456789"), 0) << "第一条的正文不是那 10 个字节";
+        EXPECT_EQ(responseText.compare(firstBodyBegin + declaredLength, 9, "HTTP/1.1 "), 0)
+                << "收端按声明的 " << declaredLength << " 字节切包后，下一条报文的开头被错位";
 
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
     }

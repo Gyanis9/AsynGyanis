@@ -472,7 +472,15 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(containsText(response.toString(), "content-length: 2"));
     }
 
-    TEST(HttpResponse, KeepsExplicitContentLengthUntouched)
+    /**
+     * @brief 声明长度与真正上线的字节不符时，由声明让位
+     *
+     * @details 旧口径是「调用方显式设过的原样发出」，那一条把 HEAD 与 304 的省读和「正文已在手里」
+     *          这两种情形混成了一档。后者发出去的是 `content-length: 999` 加五个字节：对端按声明切包，
+     *          少读的部分让下一条响应错位，keep-alive 上这就是响应队列互相污染（RFC 9112 §6.2 要求
+     *          这个字段等于正文长度）。没有正文可发时仍原样采信，见 KeepsDeclaredContentLengthWhenNoBodyIsHeld
+     */
+    TEST(HttpResponse, AlignsDeclaredContentLengthWithBodyBytes)
     {
         HttpResponse response;
         response.setHeader("content-length", "999");
@@ -480,9 +488,47 @@ namespace AsynGyanis::Net
 
         const std::string output = response.toString();
 
-        EXPECT_TRUE(containsText(output, "content-length: 999\r\n"));
-        EXPECT_FALSE(containsText(output, "content-length: 5"));
+        EXPECT_TRUE(containsText(output, "content-length: 5\r\n")) << "声明必须给正文让位：" << output;
+        EXPECT_FALSE(containsText(output, "content-length: 999"));
     }
+
+    /**
+     * @brief 没有正文可发而调用方仍报了长度：原样发出
+     * @details 静态文件的 HEAD 与 304 就靠这一格省掉整文件读取——它们声明的是「同一请求的 200 会发出
+     *          多大」，而正文被刻意留着不读，这个长度只有生成响应的一方知道（RFC 9110 §9.3.2、RFC 9112 §6.2）
+     */
+    TEST(HttpResponse, KeepsDeclaredContentLengthWhenNoBodyIsHeld)
+    {
+        HttpResponse headStyle;
+        headStyle.setStatus(200);
+        ASSERT_TRUE(headStyle.setHeader("content-length", "1024"));
+        EXPECT_TRUE(containsText(headStyle.serializeHead(), "content-length: 1024\r\n")) << "只声明不发的情形不能被抹平";
+
+        HttpResponse zeroLength;
+        zeroLength.setStatus(200);
+        ASSERT_TRUE(zeroLength.setHeader("content-length", "0"));
+        EXPECT_TRUE(containsText(zeroLength.serializeHead(), "content-length: 0\r\n"));
+    }
+
+    /**
+     * @brief 204 与 1xx 不得带 content-length：调用方自设的那一条也不下发
+     * @details RFC 9112 §6.2 的 MUST NOT。路由器对 204 是「清正文而留着声明」走过来的
+     *          （`Router::finalizeResponse()`），留着就等于让严格收端白等一段不存在的正文
+     */
+    TEST(HttpResponse, DropsDeclaredContentLengthOnBodylessStatus)
+    {
+        HttpResponse noContent;
+        noContent.setStatus(204);
+        ASSERT_TRUE(noContent.setHeader("content-length", "0"));
+        EXPECT_FALSE(containsText(noContent.toString(), "content-length")) << "204 带长度就是把没发的正文算进去了";
+
+        HttpResponse informational;
+        informational.setStatus(105);
+        ASSERT_TRUE(informational.setHeader("content-length", "7"));
+        informational.setBody("1234567");
+        EXPECT_FALSE(containsText(informational.serializeHead(), "content-length")) << "1xx 同理";
+    }
+
 
     TEST(HttpResponse, OmitsAutoContentLengthForNoContentResponse)
     {
@@ -508,16 +554,6 @@ namespace AsynGyanis::Net
 
         EXPECT_TRUE(containsText(output, "x-custom: 1\r\n"));
         EXPECT_FALSE(containsText(output, "content-length"));
-    }
-
-    TEST(HttpResponse, KeepsExplicitContentLengthOnNoContentResponse)
-    {
-        HttpResponse response;
-        response.setStatus(204);
-        ASSERT_TRUE(response.setHeader("content-length", "0"));
-
-        // 调用方显式设置的不会被序列化时抹掉
-        EXPECT_TRUE(containsText(response.toString(), "content-length: 0\r\n"));
     }
 
     /**

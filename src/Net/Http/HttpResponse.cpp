@@ -371,9 +371,10 @@ namespace AsynGyanis::Net
         // 两条正文存储互斥：换成堆正文之前先解除映射，否则 bodyView() 会继续读旧映射
         releaseMappedBody();
 
-        // 刻意不动调用方显式设过的 content-length：HEAD 与静态文件服务靠「先声明长度、
-        // 不读正文」省一次整文件 IO（见 HttpServer 的静态文件分支与 Router 的 HEAD 用例），
-        // 这里删掉就等于把那份声明抹平。替换既有正文的中间件（如响应压缩）要自己清这条头
+        // 这里不动调用方显式设过的 content-length：静态文件的 HEAD 与 304 靠「先声明长度、不读正文」
+        // 省掉一次整文件 IO（见 HttpServer 的静态文件分支），此刻删掉就等于抹平那份声明。
+        // 线格式那一侧另有判据兜着：正文非空时声明一律按真实字节数下发
+        // （见 declaredContentLengthDisposition），所以替换正文的内置件（如响应压缩）不必记得清这条头
     }
 
     void HttpResponse::setMappedBody(Platform::MemoryMappedFile mappedFile)
@@ -428,8 +429,8 @@ namespace AsynGyanis::Net
 
         // 反向的互斥：映射正文接管后堆正文必须清空，避免 content-length 按残留字节数算错
         m_body.clear();
-        // content-length 与 setBody 同一口径：调用方显式声明的长度原样保留（区间响应
-        // 正是「先声明区间长度、再交出映射」的写法），只有替换正文的中间件需要自己清
+        // content-length 与 setBody 同一口径：显式声明留在记录里（区间响应正是「先声明区间长度、
+        // 再交出映射」的写法），而上线的那一条由序列化层按交出去的映射区间真实长度定稿
         // 无效映射（含空指针）归一成「没有映射正文」：读侧只需判一次指针，不必每次再问 isValid
         m_mappedBody       = isUsableMapping ? std::move(mappedFile) : nullptr;
         m_mappedBodyOffset = offset;
@@ -802,6 +803,26 @@ namespace AsynGyanis::Net
         return m_status == 204 || m_status == 304 || (m_status >= 100 && m_status < 200);
     }
 
+    ContentLengthSendDisposition HttpResponse::declaredContentLengthDisposition() const noexcept
+    {
+        // 分块与流式的正文边界由帧给出，这条按既有处置一律不下发（两个采集器也各自剥过一遍，
+        // 这里返回同一档是为了让「剥掉」只有一处判据）
+        if (m_isChunked)
+        {
+            return ContentLengthSendDisposition::Omit;
+        }
+
+        // 204 与 1xx 不得声明长度；304 落在例外里——它允许带，且只允许取「同一请求的 200 会发出的
+        // 正文长度」，那个长度只有生成响应的一方知道
+        if (m_status != 304 && carriesNoContent())
+        {
+            return ContentLengthSendDisposition::Omit;
+        }
+
+        // 有正文要上线就以正文为准：声明值与它不符就是声明错了，而不是正文该被截断
+        return bodyView().empty() ? ContentLengthSendDisposition::KeepDeclared : ContentLengthSendDisposition::UseBodyLength;
+    }
+
     std::size_t HttpResponse::headReserveLength() const
     {
         std::size_t reservedLength         = kStatusLineReserveLength + kHeaderBlockTerminatorReserveLength;
@@ -882,6 +903,25 @@ namespace AsynGyanis::Net
                     if (m_isChunked && name == kContentLengthHeaderName)
                     {
                         return;
+                    }
+
+                    // 自设的正文长度在这一处定稿（判据与 h2/h3 的采集器同一份）：声明与真正上线的字节
+                    // 不符时由声明让位——否则对端按声明切包，多出的字节就是这条连接上下一条响应的开头
+                    if (name == kContentLengthHeaderName)
+                    {
+                        switch (declaredContentLengthDisposition())
+                        {
+                            case ContentLengthSendDisposition::Omit:
+                                return;
+                            case ContentLengthSendDisposition::UseBodyLength:
+                                result.append(name);
+                                result.append(kHeaderNameValueSeparator);
+                                appendDecimal(result, bodyView().size());
+                                result.append(kCrLf);
+                                return;
+                            case ContentLengthSendDisposition::KeepDeclared:
+                                break;
+                        }
                     }
 
                     // 反方向同理：正文定界由本框架掌管（流式=分块，其余=content-length）。调用方自设的

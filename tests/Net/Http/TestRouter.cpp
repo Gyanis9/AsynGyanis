@@ -835,9 +835,14 @@ namespace AsynGyanis::Net
         HttpResponse response;
         routeRequest(router, request, response);
 
-        // 处理函数自己声明的 content-length 不被覆盖：静态文件服务正是靠它省掉读一遍文件
+        // 处理函数自己声明的值留在记录里（getHeader 读的是它），但上线的那一条按正文真实字节数下发：
+        // HEAD 报的该是「同一请求的 GET 会发多大」，而正文视图此刻正是 7 个字节。
+        // 「只声明不发」的那种声明才原样发出——静态文件靠那一格省掉整文件读取，见
+        // HttpResponse.KeepsDeclaredContentLengthWhenNoBodyIsHeld
         EXPECT_EQ(response.getHeader("content-length").value_or(""), "999");
         EXPECT_EQ(response.body(), "ignored");
+        EXPECT_NE(response.serializeHead().find("content-length: 7\r\n"), std::string::npos) << "HEAD 的线格式必须报真实正文长度";
+        EXPECT_EQ(response.serializeHead().find("content-length: 999"), std::string::npos);
     }
 
     TEST(Router, ClearsBodyForNoContentResponse)

@@ -32,6 +32,19 @@
 namespace AsynGyanis::Net
 {
     /**
+     * @brief 调用方自设的 content-length 在上线时的三档处置
+     * @details 三条出站通路（h1 的序列化层、h2/h3 的头块采集器）共用这一份判定。分开写三份就会
+     *          有一档漂：这一条管报文边界，错一个字节不是「某条响应不对」而是「这条连接上之后的
+     *          每一条都不对」——对端按声明切包，多出的字节就成了下一条响应的开头
+     */
+    enum class ContentLengthSendDisposition
+    {
+        KeepDeclared,  ///< 原样采信声明值：没有正文要发，而调用方仍报了长度（HEAD 与 304 的省读靠它）
+        UseBodyLength, ///< 改成正文真实字节数：声明与要上线的字节不符时，由声明给正文让位
+        Omit           ///< 整条不下发：这个状态码按定义没有正文可承诺
+    };
+
+    /**
      * @brief HTTP 响应类，用于构建并序列化 HTTP/1.1 响应消息
      *
      * @details 支持设置状态码、头部、正文，toString() 生成可直接写入 socket 的报文；
@@ -96,8 +109,9 @@ namespace AsynGyanis::Net
          * @note 值里出现 CR、LF 或 NUL 一律拒绝：头部以 CRLF 定界，放行就等于让调用方
          *       （常常是把用户输入写进 Location/X-Header 的业务代码）提前结束头部块，
          *       即 HTTP 响应拆分。非法头部名同理拒收。
-         * @note 204 与 1xx 响应不应携带 content-length：本方法不会自动补，
-         *       调用方显式设置的也不会在序列化时被抹掉，需要自行避免。
+         * @note 204 与 1xx 不得带 content-length（RFC 9112 §6.2 的 MUST NOT）：这里既不自动补，
+         *       调用方显式设置的那一条也不会上线——序列化时按 declaredContentLengthDisposition()
+         *       剥掉（`Router::finalizeResponse()` 对 204 是「清正文而留着声明」，那一份就落在这里）。
          */
         bool setHeader(std::string_view name, std::string_view value);
 
@@ -257,9 +271,10 @@ namespace AsynGyanis::Net
          * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥，
          *         正文只能由 writeChunk() 逐段写出
          * @note 与 setMappedBody() 互斥：调用本函数会丢弃已映射的文件
-         * @note 调用方已显式设过的 content-length 原样保留（HEAD 与静态文件服务靠「先声明
-         *       长度、不读正文」省一次整文件 IO）。替换既有正文的中间件要自己清这条头，
-         *       否则发出「头部说 5 字节、正文几千字节」的报文
+         * @note 记录里调用方显式设过的 content-length 原样保留（HEAD 与静态文件服务靠「先声明
+         *       长度、不读正文」省一次整文件 IO），但上线的那一条按正文真实字节数下发：
+         *       正文非空时声明必须与它同值，否则对端按声明切包会把这条连接后面的每一条都弄错位
+         *       （见 declaredContentLengthDisposition）。替换正文的中间件因此不必记得清这条头
          */
         void setBody(std::string_view body);
 
@@ -268,8 +283,8 @@ namespace AsynGyanis::Net
          *
          * @details 中间件（如响应压缩）已经构造好一整块正文 std::string，用 setBody(string_view)
          *          会把这份字节再拷一遍进响应内部缓冲；本入口直接接管调用方的缓冲。语义与不变式
-         *          与 setBody 完全一致（互斥流式模式、解除旧映射、保留调用方显式声明的 content-length），
-         *          差别只在正文按所有权移动而非复制。
+         *          与 setBody 完全一致（互斥流式模式、解除旧映射、记录里保留调用方显式声明的
+         *          content-length，而上线的那一条按正文真实字节数下发），差别只在正文按所有权移动而非复制。
          * @param body 正文字符串，内容被移入本响应
          * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥
          * @note 与 setMappedBody() 互斥：调用本函数会丢弃已映射的文件
@@ -281,8 +296,9 @@ namespace AsynGyanis::Net
          * @brief 备好一段长度为 length 的堆正文缓冲，交给调用方就地写入
          * @details 正文由「一次读取」产生的调用方（静态文件服务）走这里可以省掉每请求的堆分配：
          *          响应对象按连接复用，第一条之后缓冲的容量就在，读第二个文件只是往同一块内存里
-         *          覆写。不变式与 setOwnedBody 一致（互斥流式模式、解除旧映射、不动显式声明的
-         *          content-length），返回的引用即内部缓冲，写满 length 字节后正文就已经就位。
+         *          覆写。不变式与 setOwnedBody 一致（互斥流式模式、解除旧映射、显式声明的
+         *          content-length 留在记录里而上线时按正文真实字节数下发），返回的引用即内部缓冲，
+         *          写满 length 字节后正文就已经就位。
          * @param length 正文长度，单位字节；缓冲被调整成这一长度
          * @return std::string & 指向响应内部正文缓冲的引用，长度为 length，内容尚未定义
          * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥
@@ -636,6 +652,21 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool carriesNoContent() const noexcept;
 
         /**
+         * @brief 定下调用方自设的那条 content-length 上线时的处置（h1/h2/h3 共用）
+         * @details 这条声明只是调用方的一句话，真正上线的是 bodyView() 那些字节；两句对不上时必须
+         *          有一句让位，否则对端按声明切包：h1 上多出的字节成为同一条 keep-alive 连接上下一条
+         *          响应的开头，h2/h3 上这条流被直接判畸形（RFC 9113 §8.1.1、RFC 9114 §4.2）。三档：
+         * @li 204 与 1xx → `Omit`：RFC 9112 §6.2 的 MUST NOT。路由器正是「清掉正文而留着声明」走过来
+         *     的（见 `Router::finalizeResponse()`），留着等于让严格收端白等一段不存在的正文；
+         * @li 手里有正文要发 → `UseBodyLength`：一律按真实字节数。HEAD 也走这一档——它报的本就该是
+         *     「同一请求的 GET 会发多大」，而此刻正文视图正是那么大；
+         * @li 没有正文可发而调用方仍给了长度 → `KeepDeclared`：静态文件的 HEAD 与 304 靠这一格省掉
+         *     整文件读取，此时只有生成响应的一方知道那个长度。
+         * @return ContentLengthSendDisposition 三档之一
+         */
+        [[nodiscard]] ContentLengthSendDisposition declaredContentLengthDisposition() const noexcept;
+
+        /**
          * @brief 按设置顺序遍历响应的全部头部记录，同名多条各访问一次
          * @details h1 序列化与 h2/h3 的头块组装共用这一份权威顺序：走 headers() 单值视图既要先重建
          *          哈希表，又因 unordered_map 的遍历顺序不稳而让同一份响应两次编码给出不同的头部次序；
@@ -667,7 +698,8 @@ namespace AsynGyanis::Net
         /**
          * @brief setBody、setOwnedBody 与 prepareBodyBuffer 的共用前置：校验流式互斥并解除旧映射
          * @details 三条堆正文入口只在「复制 / 移动 / 就地写进 m_body」上不同，其余不变式集中在
-         *          这一处维护，避免三份实现各自漂移。刻意不动显式设过的 content-length。
+         *          这一处维护，避免三份实现各自漂移。刻意不动记录里显式设过的 content-length：
+         *          那份声明是 HEAD 与 304 的省读依据，线格式那一侧另有判据按正文真实字节数下发。
          * @throws Base::LogicException 响应已进入流式模式
          */
         void beginHeapBodyStorage();

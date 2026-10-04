@@ -1705,6 +1705,23 @@ namespace AsynGyanis::Net
                         hasDateHeader = true;
                     }
 
+                    // 自设的正文长度在这里定稿，判据与 h1 的 appendHead 同一份：声明与真正进 DATA 帧的
+                    // 字节不符就由声明让位，留着对端只会把这条流判成畸形（RFC 9113 §8.1.1）
+                    if (headerName == kContentLengthHeaderName)
+                    {
+                        switch (response.declaredContentLengthDisposition())
+                        {
+                            case ContentLengthSendDisposition::Omit:
+                                LOG_DEBUG_FMT("Http2Session: 流响应按状态码不该声明正文长度，已丢弃自设的 content-length");
+                                return;
+                            case ContentLengthSendDisposition::UseBodyLength:
+                                headerFields.push_back(HpackHeaderField{.name = std::string(kContentLengthHeaderName), .value = std::to_string(response.body().size())});
+                                return;
+                            case ContentLengthSendDisposition::KeepDeclared:
+                                break;
+                        }
+                    }
+
                     headerFields.push_back(HpackHeaderField{std::string(headerName), std::string(headerValue)});
                 });
 

@@ -395,9 +395,9 @@ namespace AsynGyanis::Net
         const bool isNotModified = response.status() == 304;
         if (isNoContent || isNotModified)
         {
-            // 只清正文。content-length 不用这里操心：HttpResponse 对 1xx/204/304 这三档本来就不自动补
-            // （见 mustNotDeclareContentLength，用例钉在 TestHttpResponse 的 204 那条），清完正文之后
-            // 序列化出来的就是「无正文也不报长度」的形状
+            // 只清正文。content-length 不用这里操心：1xx/204 本来就不自动补，而调用方此前自设的
+            // 那一条在序列化时也会被剥掉（见 declaredContentLengthDisposition），清完正文之后线上
+            // 就是「无正文也不报长度」的形状；304 是唯一保留声明的一档，它报的是 200 会发出的长度
             response.setBody(std::string_view{});
         }
     }
