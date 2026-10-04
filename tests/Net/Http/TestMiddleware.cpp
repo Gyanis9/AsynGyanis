@@ -518,6 +518,73 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.getHeader("vary").value_or(""), "Origin");
     }
 
+    /**
+     * @brief 钉住 CORS 补 `Vary: Origin` 时不盖掉前一条中间件已经写上的 token
+     * @details `Vary` 是列表头，而 `setHeader` 是整条换掉。外层中间件先写 `Accept-Language`、CORS 再写
+     *          `Origin`，修复前这条响应上的 Vary 只剩 `Origin`——共享缓存据此分桶，等于把
+     *          A 来源（或 A 语言）的应答发给另一个来源的请求方，而这是 CORS 与压缩串在一起时最容易
+     *          撞上的形状：两条都要动 Vary，而其中一条按「整条换掉」的写法写。
+     *          框架里动 Vary 的出口只留一份（`Detail::appendVaryToken`，压缩补 `accept-encoding` 走的
+     *          就是它），本用例钉的就是「两条中间件串起来，两个 token 都在」。
+     * @note 证伪：把 CORS 那两处换回 `response.setHeader("vary", "Origin")`，本用例红在
+     *       「前一个 token 还在」那一格（只剩 `Origin`）。
+     */
+    TEST(CorsMiddleware, AppendsOriginTokenWithoutClobberingExistingVary)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(
+                [](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    response.setHeader("vary", "Accept-Language");
+                    co_await next();
+                });
+        pipeline.use(corsMiddleware(CorsPolicy{}));
+
+        HttpRequest request = makeRequest(HttpMethod::GET, "/api/data");
+        request.addHeader("Origin", "https://client.test");
+        HttpResponse          response;
+        const TerminalHandler handler = [&response]() -> Core::Task<void>
+        {
+            response.setBody("business");
+            co_return;
+        };
+        runPipeline(pipeline, request, response, handler);
+
+        const std::string vary = response.getHeader("vary").value_or("");
+        EXPECT_NE(vary.find("Accept-Language"), std::string::npos) << "CORS 把前一条中间件写的 Vary 整条盖掉了：缓存分桶少了一个维度";
+        EXPECT_NE(vary.find("Origin"), std::string::npos) << "CORS 自己的 token 也得在";
+        EXPECT_EQ(response.body(), "business") << "短路判据的反面对照：业务应当照常跑完";
+    }
+
+    /**
+     * @brief 钉住 CORS 补 `Origin` 时按大小写不敏感去重，不把别人写过的 token 再补一遍
+     * @details 外层已经写了小写 `origin`（头部 token 大小写不敏感是 RFC 9110 §5.1 的口径），CORS 再补
+     *          一次就成了 `origin, Origin`：读的人不会多拿信息，而这条头的长度会被缓存与代理逐跳复制。
+     * @note 证伪：把 `Detail::appendVaryToken` 的命中即返回那句摘掉，本用例红在整串相等那一格。
+     */
+    TEST(CorsMiddleware, DoesNotDuplicateOriginTokenAlreadyPresentInVary)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(
+                [](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                {
+                    response.setHeader("vary", "origin");
+                    co_await next();
+                });
+        pipeline.use(corsMiddleware(CorsPolicy{}));
+
+        HttpRequest           request = makeRequest(HttpMethod::GET, "/api/data");
+        HttpResponse          response;
+        const TerminalHandler handler = [&response]() -> Core::Task<void>
+        {
+            response.setBody("business");
+            co_return;
+        };
+        runPipeline(pipeline, request, response, handler);
+
+        EXPECT_EQ(response.getHeader("vary").value_or(""), "origin") << "同一个 token 被写了两遍：去重走的是追加那一份出口";
+    }
+
     TEST(CorsMiddleware, ResetsResponseBeforeWritingPreflightAnswer)
     {
         MiddlewarePipeline pipeline;

@@ -238,6 +238,49 @@ namespace AsynGyanis::Net
                 co_return;
             }
         }
+
+        /**
+         * @brief 往 Vary 上补一个 token（已含则不重复，比对按 ASCII 大小写不敏感）
+         * @details Vary 是**列表**头，而 `setHeader` 是把整条换掉：一条先写 `accept-language` 的中间件
+         *          与一条后写 `Origin` 的 CORS 串起来，前者那个 token 就整条没了——共享缓存按剩下的
+         *          那个维度分桶，于是 A 来源的应答会被发给 B 来源，压缩副本会被发给不接受压缩的客户端。
+         *          框架里凡是要动 Vary 的都从这一个出口走，不再各写一份追加逻辑。
+         * @param response 响应
+         * @param token 要补上的字段名，如 `Origin`、`accept-encoding`
+         */
+        inline void appendVaryToken(HttpResponse &response, const std::string_view token)
+        {
+            const std::optional<std::string> existingVary = response.getHeader("vary");
+            if (!existingVary.has_value())
+            {
+                response.setHeader("vary", std::string(token));
+                return;
+            }
+
+            std::string_view remaining = *existingVary;
+            while (!remaining.empty())
+            {
+                const std::size_t commaPosition = remaining.find(',');
+                std::string_view  current       = remaining.substr(0, commaPosition);
+                remaining                       = commaPosition == std::string_view::npos ? std::string_view{} : remaining.substr(commaPosition + 1);
+
+                while (!current.empty() && (current.front() == ' ' || current.front() == '\t'))
+                {
+                    current.remove_prefix(1);
+                }
+                while (!current.empty() && (current.back() == ' ' || current.back() == '\t'))
+                {
+                    current.remove_suffix(1);
+                }
+
+                if (equalsIgnoringCase(current, token))
+                {
+                    return;
+                }
+            }
+
+            response.setHeader("vary", *existingVary + ", " + std::string(token));
+        }
     } // namespace Detail
 
     /**
@@ -317,7 +360,7 @@ namespace AsynGyanis::Net
                 response.setHeader("access-control-allow-headers", policy.allowHeaders);
                 response.setHeader("access-control-max-age", std::to_string(policy.maxAge.count()));
                 response.setHeader("access-control-allow-origin", policy.allowOrigin);
-                response.setHeader("vary", "Origin");
+                Detail::appendVaryToken(response, "Origin");
 
                 // 通配来源下不声明允许凭据，理由见 @warning
                 if (policy.allowCredentials && policy.allowOrigin != "*")
@@ -329,7 +372,7 @@ namespace AsynGyanis::Net
 
             // 实际请求分支：头要在下游之前设好，业务若自行改写 origin 也仍有机会覆盖
             response.setHeader("access-control-allow-origin", policy.allowOrigin);
-            response.setHeader("vary", "Origin");
+            Detail::appendVaryToken(response, "Origin");
             if (policy.allowCredentials && policy.allowOrigin != "*")
             {
                 response.setHeader("access-control-allow-credentials", "true");
@@ -987,58 +1030,14 @@ namespace AsynGyanis::Net
         /**
          * @brief 把 Vary 补上 accept-encoding（已含则不重复）
          * @details 压缩后的表示与 Accept-Encoding 有关，缓存必须按它分桶，否则会把压缩副本发给
-         *          不接受压缩的客户端（反之亦然）
+         *          不接受压缩的客户端（反之亦然）。追加与去重都走 Detail::appendVaryToken 那一份实现。
          * @param response 响应
          */
         inline void appendVaryAcceptEncoding(HttpResponse &response)
         {
-            const std::optional<std::string> existingVary = response.getHeader("vary");
-            if (!existingVary.has_value())
-            {
-                response.setHeader("vary", "accept-encoding");
-                return;
-            }
-
-            // 已有 Vary：逐 token 找 accept-encoding，大小写不敏感
-            std::string_view remaining = *existingVary;
-            while (!remaining.empty())
-            {
-                const std::size_t commaPosition = remaining.find(',');
-                std::string_view  token         = remaining.substr(0, commaPosition);
-                remaining                       = commaPosition == std::string_view::npos ? std::string_view{} : remaining.substr(commaPosition + 1);
-
-                while (!token.empty() && (token.front() == ' ' || token.front() == '\t'))
-                {
-                    token.remove_prefix(1);
-                }
-                while (!token.empty() && (token.back() == ' ' || token.back() == '\t'))
-                {
-                    token.remove_suffix(1);
-                }
-
-                if (token.size() == 15)
-                {
-                    bool                       isAcceptEncoding = true;
-                    constexpr std::string_view kAcceptEncoding  = "accept-encoding";
-                    for (std::size_t index = 0; index < kAcceptEncoding.size(); ++index)
-                    {
-                        const char actual  = token[index];
-                        const char lowered = (actual >= 'A' && actual <= 'Z') ? static_cast<char>(actual - 'A' + 'a') : actual;
-                        if (lowered != kAcceptEncoding[index])
-                        {
-                            isAcceptEncoding = false;
-                            break;
-                        }
-                    }
-                    if (isAcceptEncoding)
-                    {
-                        return;
-                    }
-                }
-            }
-
-            response.setHeader("vary", *existingVary + ", accept-encoding");
+            appendVaryToken(response, "accept-encoding");
         }
+
 
         /// 压缩算法偏好顺序（对端都接受时按此挑选）：zstd 压缩率与速度综合最好、brotli 次之
         /// （静态内容尤佳）、gzip 兜底兼容。加算法按偏好插进这张表即可
