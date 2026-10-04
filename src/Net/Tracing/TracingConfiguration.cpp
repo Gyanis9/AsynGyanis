@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <format>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -99,6 +101,32 @@ namespace AsynGyanis::Net
             return magnitude;
         }
 
+        /**
+         * @brief 把配置里的毫秒数折成时长，越界当场拒
+         * @details 原先直接 `static_cast<long long>`：一个超过有符号 64 位的取值折成**负数**，
+         *          随后被下游那条「必须大于 0」拦下——响亮是够响亮，但把「你写大了」报成「你写了个
+         *          不大于 0 的数」，排查的人只会回去把 0 改成 1 而不是把数改小。更近的一格是
+         *          `export_interval_ms` 与 `timeout_ms` 最终都要与当前时刻相加算截止，越过时钟可表示
+         *          范围一半的取值在相加那刻折回成过去。界取可表示范围的一半，另一半留给 now()，
+         *          按各自的 tick 周期换算（MSVC 100ns 与 libstdc++ 1ns 都自洽）——
+         *          与 `HttpServerConfig.cpp` 的 `toMilliseconds` 是同一个界、同一个理由。
+         * @param milliseconds 毫秒数（已由 `requirePositiveInteger` 确保大于 0）
+         * @param key 键路径，用于错误信息
+         * @return std::chrono::milliseconds 时长
+         * @throws Base::ConfigValidationException 超出「能与当前时刻相加」的可用上限
+         */
+        [[nodiscard]] std::chrono::milliseconds toMilliseconds(const std::uint64_t milliseconds, const std::string &key)
+        {
+            constexpr std::int64_t kMaximumUsableTimeoutMilliseconds =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()).count() / 2;
+            if (milliseconds > static_cast<std::uint64_t>(kMaximumUsableTimeoutMilliseconds))
+            {
+                throw Base::ConfigValidationException(
+                        key, std::format("超出可用的毫秒上限 {}：时限要与当前时刻相加，越过上界会折回成过去，等于「配得越大反倒立刻到期」", kMaximumUsableTimeoutMilliseconds));
+            }
+            return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(milliseconds));
+        }
+
         /// @brief 取一段非空文本（服务名与地址、路径都吃这条判据）
         [[nodiscard]] std::string requireNonEmptyString(const Base::ConfigValue &value, const std::string &key)
         {
@@ -130,7 +158,7 @@ namespace AsynGyanis::Net
             }
             if (node.contains("timeout_ms"))
             {
-                configuration.otlpRequestTimeout = std::chrono::milliseconds{static_cast<long long>(requirePositiveInteger(node.at("timeout_ms"), pathPrefix + ".timeout_ms"))};
+                configuration.otlpRequestTimeout = toMilliseconds(requirePositiveInteger(node.at("timeout_ms"), pathPrefix + ".timeout_ms"), pathPrefix + ".timeout_ms");
             }
             if (node.contains("headers"))
             {
@@ -234,7 +262,7 @@ namespace AsynGyanis::Net
         if (section.contains("export_interval_ms"))
         {
             configuration.exportInterval =
-                    std::chrono::milliseconds{static_cast<long long>(requirePositiveInteger(section.at("export_interval_ms"), sectionPath + ".export_interval_ms"))};
+                    toMilliseconds(requirePositiveInteger(section.at("export_interval_ms"), sectionPath + ".export_interval_ms"), sectionPath + ".export_interval_ms");
         }
         if (const Base::ConfigValue *otlpNode = findOptionalObject(section, "otlp", sectionPath))
         {

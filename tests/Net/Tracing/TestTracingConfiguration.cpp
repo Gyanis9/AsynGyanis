@@ -151,6 +151,9 @@ TEST(TracingConfiguration, RejectsMalformedValues)
             {R"({"enabled": true, "service_name": "s", "sample_ratio": 1.5})", "0.0 到 1.0"},
             {R"({"enabled": true, "service_name": "s", "batch_span_count": 0})", "tracing.batch_span_count"},
             {R"({"enabled": true, "service_name": "s", "export_interval_ms": -1})", "tracing.export_interval_ms"},
+            // 大得加不到当前时刻上的两个取值：也必须点名到自己那一格，而不是被下游一句「必须大于 0」收走
+            {R"({"enabled": true, "service_name": "s", "export_interval_ms": 1000000000000000})", "tracing.export_interval_ms"},
+            {R"({"enabled": true, "service_name": "s", "otlp": {"endpoint": "http://c/v1/traces", "timeout_ms": 1000000000000000}})", "tracing.otlp.timeout_ms"},
             {R"({"enabled": true, "service_name": "s", "otlp": "http://collector:4318"})", "tracing.otlp"},
             // 写成空的那一格（`otlp:` 后面什么都没有）读出来是 null：按缺席处理就成了「看着像配了其实
             // 没配」，而 HttpServerConfig 对同一形状一直是拒的——两条读口的口径必须一致
@@ -165,6 +168,36 @@ TEST(TracingConfiguration, RejectsMalformedValues)
         const auto text = rejectionText(testCase.json);
         EXPECT_NE(text.find(testCase.expectedFragment), std::string::npos) << testCase.expectedFragment << " → " << text;
     }
+}
+
+/**
+ * @brief 钉住：大得加不到当前时刻上的时限，报错说的是「超出上限」而不是「必须大于 0」
+ * @details 换算处原先直接 `static_cast<long long>`：一个超过有符号 64 位承载力的毫秒数折成**负数**，
+ *          随后被下游那条正数判据拦下。失败是响亮了，但把一个「写大了」的错报成「写了个不大于 0 的数」，
+ *          排查的人会回去把 0 改成 1 而不是把数改小——补救动作指错方向。现在界在换算那一刻就拒，
+ *          拒因点名上限。上限的具体数字随 tick 周期而变（MSVC 100ns、libstdc++ 1ns），所以只断言它
+ *          说出「上限」，不写死数字
+ * @details 反向对照给一个夸张但加得上去的取值：上界不能紧到把合法的长间隔一起拒掉
+ */
+TEST(TracingConfiguration, NamesTheUpperBoundForTimeoutsThatCannotBeAddedToTheClock)
+{
+    const std::string tooLongInterval = rejectionText(R"({"enabled": true, "service_name": "s", "export_interval_ms": 1000000000000000})");
+    EXPECT_NE(tooLongInterval.find("上限"), std::string::npos) << tooLongInterval;
+    EXPECT_EQ(tooLongInterval.find("必须大于 0"), std::string::npos) << "把「写大了」报成「不大于 0」，补救动作就指错了方向：" << tooLongInterval;
+
+    const std::string tooLongOtlpTimeout = rejectionText(R"({"enabled": true, "service_name": "s", "otlp": {"endpoint": "http://c/v1/traces", "timeout_ms": 1000000000000000}})");
+    EXPECT_NE(tooLongOtlpTimeout.find("上限"), std::string::npos) << tooLongOtlpTimeout;
+
+    // 正向对照：一万亿毫秒（约 31 年）夸张但仍在可相加范围内，必须照常读进来
+    const TracingConfiguration configuration = readTracingConfiguration(documentFromObject(
+            [](ConfigValue &section)
+            {
+                section["enabled"]            = true;
+                section["service_name"]       = "s";
+                section["export_interval_ms"] = 1000000000000LL;
+            }));
+    EXPECT_TRUE(configuration.enabled);
+    EXPECT_EQ(configuration.exportInterval, std::chrono::milliseconds{1000000000000LL});
 }
 
 /**
