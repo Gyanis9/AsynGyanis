@@ -1376,26 +1376,29 @@ int main(int argc, char **argv)
         shutdownTasks.push_back(std::move(drainTask));
     }
 
-    LOG_INFO_FMT("Draining {} server instance(s), in-flight requests get up to {}ms...", servers.size(), kShutdownDrainTimeout.count());
-    while (remainingDrainCount.load(std::memory_order_acquire) > 0)
+    // HTTP/3 与 TCP 两条路必须**同一时刻开始**排空：`QuicServer::drain()` 的第一步就是挡新连接并给每条
+    // 连接发 GOAWAY，若排在 TCP 那边等完之后才轮到它，最长 kShutdownDrainTimeout 这段时间里 h3 还在接
+    // 新连接，而业务口与管理口上的 /readyz 早已回 503——就绪那一格说的是整台进程，不是某一条通路。
+    // 它照旧投回自己那条循环（drain 要遍历连接表），到期由 drain 自己兜底强关
+    std::atomic<std::size_t>    remainingHttp3DrainCount{http3Server != nullptr ? 1U : 0U};
+    std::optional<Core::Task<>> http3DrainTask;
+    if (http3Server != nullptr)
+    {
+        http3DrainTask = drainHttp3ServerTask(*http3Server, kShutdownDrainTimeout, remainingHttp3DrainCount);
+        pool.eventLoop(0).scheduler().scheduleRemote(http3DrainTask->handle());
+    }
+
+    LOG_INFO_FMT("Draining {} server instance(s){}, in-flight requests get up to {}ms...", servers.size(), http3Server != nullptr ? " + HTTP/3" : "",
+                 kShutdownDrainTimeout.count());
+    while (remainingDrainCount.load(std::memory_order_acquire) > 0 || remainingHttp3DrainCount.load(std::memory_order_acquire) > 0)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // HTTP/3 与 TCP 侧同一形状收口：挡新连接、给每条连接发 GOAWAY、等在途请求做完，
-    // 到期由 drain 自己兜底强关。它必须投回自己那条循环（drain 要遍历连接表）
-    if (http3Server != nullptr)
+    // 与上面两条 TCP 路径一样：帧收进 shutdownTasks，别在它还被循环持有时就先离开作用域
+    if (http3DrainTask.has_value())
     {
-        std::atomic<std::size_t> remainingHttp3DrainCount{1};
-        Core::Task<>             http3DrainTask = drainHttp3ServerTask(*http3Server, kShutdownDrainTimeout, remainingHttp3DrainCount);
-        pool.eventLoop(0).scheduler().scheduleRemote(http3DrainTask.handle());
-        LOG_INFO_FMT("Draining HTTP/3 server, in-flight requests get up to {}ms...", kShutdownDrainTimeout.count());
-        while (remainingHttp3DrainCount.load(std::memory_order_acquire) > 0)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        // 与上面两条 TCP 路径一样：帧收进 shutdownTasks，别在它还被循环持有时就先离开作用域
-        shutdownTasks.push_back(std::move(http3DrainTask));
+        shutdownTasks.push_back(std::move(*http3DrainTask));
     }
 
     context.stop();
