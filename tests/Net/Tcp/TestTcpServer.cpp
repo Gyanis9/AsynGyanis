@@ -23,6 +23,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <stdexcept>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -61,8 +62,10 @@ namespace AsynGyanis::Net
         /// 交给服务器的连接对象类型
         enum class ConnectionKind
         {
-            FinishImmediately,  ///< start() 立刻完成：模拟一条转瞬即逝的连接
-            ObservesStopRequest ///< 只等停止请求、完全不读套接字：模拟一条长期活跃的连接
+            FinishImmediately,           ///< start() 立刻完成：模拟一条转瞬即逝的连接
+            ObservesStopRequest,         ///< 只等停止请求、完全不读套接字：模拟一条长期活跃的连接
+            ThrowsStdErrorFromStart,     ///< start() 抛 std::runtime_error：非协议抛出物，任何协议侧都不会替它出声
+            ThrowsProtocolErrorFromStart ///< start() 抛 Base::Exception：协议侧自己已经记过日志的那一类
         };
 
         /// 服务器夹具的构造参数
@@ -154,6 +157,40 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief start() 直接抛出指定异常的测试连接
+         * @details 协程在第一次挂起之前就抛，异常由 Task 的 promise 存下、在调用方 co_await 时重放，
+         *          因此这条路径正是「会话协程抛给 TcpServer::handleConnection」的真实形状。
+         */
+        class ThrowingStartConnection final : public Core::Connection
+        {
+        public:
+            /**
+             * @brief 构造连接
+             * @param socket 已接受的套接字
+             * @param isProtocolError true 抛 Base::Exception（协议侧已就地记日志那一类）；false 抛 std::runtime_error
+             */
+            ThrowingStartConnection(Core::AsyncSocket socket, const bool isProtocolError) : Core::Connection(std::move(socket)), m_isProtocolError(isProtocolError)
+            {
+            }
+
+            /**
+             * @brief 会话协程：一进场就抛
+             * @return Core::Task<> 永不正常完成
+             */
+            Core::Task<> start() override
+            {
+                if (m_isProtocolError)
+                {
+                    throw Base::Exception("测试用：注入的协议异常");
+                }
+                throw std::runtime_error("测试用：注入的非协议异常");
+            }
+
+        private:
+            bool m_isProtocolError{false}; ///< 抛哪一类
+        };
+
+        /**
          * @brief 最小可运行的 TcpServer 测试子类
          * @details createConnection 是纯虚钩子，不重写就无法实例化服务器；本子类把钩子的
          *          三种行为（正常/返回空指针/抛异常）做成可配置开关，并把基类 protected 成员
@@ -232,6 +269,14 @@ namespace AsynGyanis::Net
                 if (m_options.kind == ConnectionKind::ObservesStopRequest)
                 {
                     return std::make_shared<ObservingStopConnection>(m_loop, std::move(socket), *m_stopObserved, m_options.markBusy);
+                }
+                if (m_options.kind == ConnectionKind::ThrowsStdErrorFromStart)
+                {
+                    return std::make_shared<ThrowingStartConnection>(std::move(socket), false);
+                }
+                if (m_options.kind == ConnectionKind::ThrowsProtocolErrorFromStart)
+                {
+                    return std::make_shared<ThrowingStartConnection>(std::move(socket), true);
                 }
                 return std::make_shared<Core::Connection>(std::move(socket));
             }
@@ -715,6 +760,64 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(secondClient.isValid());
         EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 2u; }, kWaitTimeout)) << "一次钩子异常就让接受循环停摆：上界 kWaitTimeout";
         EXPECT_TRUE(fixture.server().isRunning());
+    }
+
+    /**
+     * @brief 钉住：会话协程抛出的**非协议**异常要留下一行日志，而协议异常不被这里重复记
+     * @details 此前 `handleConnection` 用一个 catch (...) 把所有抛出物一起吞掉，注释说「会话实现自己会留
+     *          日志」——那只对 `Base::Exception` 这一族成立。非协议抛出物（分配失败、第三方库漏出来的）
+     *          没有任何一处替它出声：本层吞掉之后连 `Task` 那份「协程有异常没人接住」的兜底日志都不会触发，
+     *          现场只看得到一条连接随机消失、activeCount 一切正常。
+     * @details 判据两条各钉一侧：非协议那一侧要求这一行出现且带着原因文本；协议那一侧要求这一行**不出现**
+     *          （证明补的不是「什么都记一遍」）。两条都断言接受循环照旧、名额已摘除。
+     */
+    TEST(TcpServer, LogsNonProtocolSessionFailureWithoutDoubleLoggingProtocolErrors)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ThrowsStdErrorFromStart;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        HttpTestSupport::LogCapture capture;
+        const std::uint16_t         listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(waitForCondition([&capture] { return capture.countContaining("非协议异常") >= 1u; }, kWaitTimeout))
+                << "会话协程抛出的非协议异常被完全吞掉：这一条连接连同原因一起消失，没有任何读数";
+        EXPECT_GE(capture.countContaining("测试用：注入的非协议异常"), 1u) << "这一行要带上能定位的原因文本，只说「出异常了」等于没记";
+
+        // 一条连接抛倒不等于接受循环停：再连一条，钩子要再被调到
+        const LoopbackClient secondClient(listeningPort);
+        ASSERT_TRUE(secondClient.isValid());
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 2u; }, kWaitTimeout)) << "一次会话异常就让接受循环停摆：上界 kWaitTimeout";
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() == 0u; }, kWaitTimeout)) << "异常出口没摘除名额：过载保护会因此永久拒绝新连接";
+        EXPECT_TRUE(fixture.server().isRunning());
+    }
+
+    /**
+     * @brief 对照：自家协议的错不在这一处重复出声（会话实现已就地记过）
+     */
+    TEST(TcpServer, DoesNotReLogProtocolErrorsFromSessionCoroutines)
+    {
+        ServerTestOptions options;
+        options.kind = ConnectionKind::ThrowsProtocolErrorFromStart;
+        RunningServerFixture fixture(options);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        HttpTestSupport::LogCapture capture;
+        const std::uint16_t         listeningPort = queryBoundPort(fixture.listenDescriptor());
+        ASSERT_NE(listeningPort, 0);
+
+        const LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().createConnectionCalls() >= 1u; }, kWaitTimeout));
+        EXPECT_TRUE(waitForCondition([&fixture] { return fixture.server().activeConnectionCount() == 0u; }, kWaitTimeout)) << "协议异常出口同样要摘除名额";
+
+        // 稍等一下再数：若这一处错误地把协议错也记一遍，此时已经能在捕获里看到
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        EXPECT_EQ(capture.countContaining("非协议异常"), 0u) << "协议异常被这一处重复记了一遍：会话侧本来就有日志";
     }
 
     TEST(TcpServer, MaxConnectionsDropsExtraConnectionBeforeCallingHook)
