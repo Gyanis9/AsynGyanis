@@ -16,6 +16,7 @@
 // - FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
 // - AllocationFailureProbeInjectsExactlyOneFailurePerArm（「第 N 次分配失败」开关自证：掐一次、随后恢复、计数可查）
 // - AllocationFailureWhileQueueingYieldsEmptyConnectionAndLeavesNoWaiter（排队途中分配失败：当场空手收尾、等待表不留半条）
+// - AllocationFailureWhileReturningDiscardsConnectionInsteadOfLosingIt（归还入栈分配失败：那条连接走丢弃那本账）
 
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -740,5 +741,85 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(settledAtLeastOnce) << "窗口里没有任何一次分配落在 await_suspend 的 try 里：本平台这一步不在本线程上，本用例钉不住东西";
     }
 
+
+    /**
+     * @brief 钉住「归还入栈那一步分配不出来」的出口：这条连接走丢弃那本账，而不是凭空少一条
+     * @details `returnConnection()` 不是 `noexcept`，但它唯一的调用形态都挂在 `noexcept` 边界上
+     *          （`~PooledConnection` 与 `PooledConnection::release()`），所以入栈那一步的 `bad_alloc`
+     *          既不能穿出去（进程带走），也不能就地吞掉（那条连接没人再持有，池的名额却还记着它——
+     *          于是 `createdCount()` 一路贴着 `maximumPoolSize` 而实际无连可用）。兜底的形状是
+     *          出锁之后按既有的「丢弃」去向结账；本例钉的就是那笔结账真的对得上。
+     * @details 坐标沿用排队那一例的配方：先用追踪档量出「挂上开关到 release 返回」这段窗口里本线程
+     *          碰了几次堆，再逐档掐。两家的标准库给的次数不同，序号与尺寸都不写死。
+     * @note 每档断的是三条与平台无关的事：① 归还之后本线程不再握着名额（`activeCount()==0`）；
+     *       ② 池的三本账自洽（`totalCount()==idleCount()`，活跃既已归零就不该再算进总数）；
+     *       ③ 掐到分配时这条连接要么确实在栈里（入栈成功），要么确实在丢弃那本账上
+     *       （`discardedCount()==1` 且 `createdCount()` 把名额还回去）——「既不在栈里也没记账」
+     *       就是凭空少一条，出现即红。收尾那一格自证真的有一档落进了那一步。
+     * @note 证伪：把出锁之后那句 `discardConnection` 摘掉（兜底只吞不还账），落在 try 里的那些档
+     *       红在「丢弃那本账没涨」与 `createdCount()` 两格；把整段 try/catch 摘掉，`release()`
+     *       带着 `bad_alloc` 穿过 `noexcept` 边界，本用例当场带走进程。
+     */
+    TEST(ConnectionPoolAsync, AllocationFailureWhileReturningDiscardsConnectionInsteadOfLosingIt)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+
+        std::uint64_t windowAllocationCount = 0U;
+        {
+            ConnectionCounter counter;
+            ConnectionPool    pool = makeSingleSlotPool(counter);
+
+            PooledConnection borrowed = pool.acquire();
+            ASSERT_TRUE(borrowed);
+
+            SharedTestSupport::beginAllocationTrace();
+            borrowed.release(); // 没人排队：这一趟走的就是「入空闲栈」那一支
+            windowAllocationCount = SharedTestSupport::endAllocationTrace().count;
+            ASSERT_GE(windowAllocationCount, 1U) << "归还窗口里本线程一次堆都不碰：那一步不在本线程上，本用例的坐标失效";
+            ASSERT_EQ(pool.idleCount(), 1U) << "量窗口这一趟没掐开关，连接本该躺在栈里";
+        }
+
+        bool discardedAtLeastOnce = false;
+        for (std::uint64_t ordinal = 1U; ordinal <= windowAllocationCount; ++ordinal)
+        {
+            SCOPED_TRACE(ordinal);
+
+            ConnectionCounter counter;
+            ConnectionPool    pool = makeSingleSlotPool(counter);
+
+            PooledConnection borrowed = pool.acquire();
+            ASSERT_TRUE(borrowed);
+
+            SharedTestSupport::resetInjectedAllocationFailureCount();
+            {
+                const SharedTestSupport::AllocationFailureGuard guard(ordinal);
+                borrowed.release();
+            }
+
+            const bool injected = SharedTestSupport::injectedAllocationFailureCount() == 1U;
+
+            EXPECT_EQ(pool.activeCount(), 0U) << "归还之后还被记成一次借出";
+            EXPECT_EQ(pool.totalCount(), pool.idleCount()) << "三本账不自洽：活跃已归零，总数却还带着那一条";
+
+            if (!injected)
+            {
+                continue;
+            }
+
+            if (pool.idleCount() == 0U)
+            {
+                // 那条连接没进栈：必须走丢弃那本账，名额一并还回去，否则池会一直以为自己满员
+                discardedAtLeastOnce = true;
+                EXPECT_EQ(pool.discardedCount(), 1U) << "入栈失败却没记进丢弃那本账：这条连接凭空少了，谁都不会再碰它";
+                EXPECT_EQ(pool.createdCount(), 0U) << "丢弃没把名额退还：createdCount 一直贴着上限而实际无连可用";
+            } else
+            {
+                EXPECT_EQ(pool.discardedCount(), 0U) << "连接既在栈里又被记成丢弃：同一笔账结了两回";
+                EXPECT_EQ(pool.createdCount(), 1U) << "连接在栈里却被减了名额";
+            }
+        }
+
+        EXPECT_TRUE(discardedAtLeastOnce) << "窗口里没有任何一档让这条连接走丢弃：本平台的入栈那一步没被掐到，本用例钉不住东西";
+    }
 
 } // namespace AsynGyanis::Database
