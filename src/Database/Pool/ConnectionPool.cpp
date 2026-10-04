@@ -363,8 +363,9 @@ namespace AsynGyanis::Database
             // 注入点：分配探针已有「第 N 次分配失败」的开关（tests/TestSupport/AllocationProbe，按线程计数）。
             // 这一格眼下仍未被钉住，缺的不是开关而是命中点：实测从挂上开关到 resume 返回，本线程的前
             // 四次分配里第 2~4 次都落在等待者入表**之后**（协程帧那一步在第 1 次），所以按次序掐还掐不到
-            // 这两步上。要钉它得先给出「await_suspend 内的分配」的可观测坐标——按大小直方图定序，
-            // 或给等待体留一条测试可指的分配标记，那是单独一轮的事。
+            // 这两步上。探针另有一档「只掐某一尺寸区间」，实测命中的档位也都是入表之后的分配——
+            // 缺的是「这两次分配与可观测档位之间的对应关系」：要么给等待体留一个测试能指的标记，
+            // 要么让探针能把每次分配的序号与大小记成可回放的序列。那是单独一轮的事。
             try
             {
                 m_resumeTicket = std::make_shared<ResumeTicket>();
@@ -374,11 +375,9 @@ namespace AsynGyanis::Database
                 m_pool->refreshAsyncWaitingCount();
             } catch (...)
             {
-                // 半途失败要退干净：表里留着一帧已经往下走的协程，唤醒方就会去 resume 它
-                if (m_inList)
-                {
-                    m_pool->removeAsyncWaiterLocked(this);
-                }
+                // 不必摘表：deque::push_back 的强保证是「分配不出来时容器不变」，而 m_inList 排在它之后
+                // 才置真，所以抛到这里时这一条根本还没进表。只把票据收回——留着会让等待体带着一张
+                // 指向自己帧的票据走出本函数
                 m_resumeTicket.reset();
                 return false;
             }
