@@ -494,8 +494,12 @@ namespace AsynGyanis::Net
      *              也会把看门狗一起饿死，因为它同样需要循环空出来才能被调度。
      *          需要「硬超时」请在业务侧使用可中断的等待，或把长任务放到 ThreadPool 并配合 Core::Cancelable。
      *
-     * @note 取消信号的落点是 HttpRequest；连接的统一取消入口是 Core::Connection::cancelable()，
-     *       会话在每次路由前注册了一次转发，两个来源到期都会体现在同一个 request.cancelToken() 上。
+     * @note 取消信号的落点是 HttpRequest；连接的统一取消入口是 Core::Connection::cancelable()。
+     *       **h1 与 h2 各自在每次路由前注册一次转发**（`HttpSession` 的 ConnectionCancelForwarder、
+     *       `Http2Session::serveOneRequest` 的 cancelForwarder），两条来源到期都体现在同一个
+     *       request.cancelToken() 上。h3 目前不注册：h3 会话没有 Core::Connection 那一层的
+     *       cancelable()（字节走 UDP 承载，收口由 QuicServer 按连接/流做），要先给会话补一个停止源
+     *       才谈得上同一条转发——在那之前，判 `request.cancelToken()` 的处理器在 h3 上不会因连接收口而停。
      * @note 每条在途请求会额外占一个定时器描述符与一个协程帧，因此本中间件是按需安装的，
      *       不作为默认管道成员。
      */
