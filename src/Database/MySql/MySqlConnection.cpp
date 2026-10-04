@@ -214,6 +214,9 @@ namespace AsynGyanis::Database
         // 事务标记随新会话一起归零：新连接上不可能开着上一次连接的事务
         m_isConnected       = true;
         m_isTransactionOpen = false;
+        // 把握手时服务端自报的自动提交模式记成这条连接的基线：归还时退回的是它，不是写死的「开」——
+        // 有的部署把服务端默认设成 off，写死退回就等于替他们改了会话（理由与 markQueryTimeoutBaseline 同一族）
+        m_autocommitBaselineOn = isAutocommitOnNow();
 
         // 只读语句的服务端时限只能在握手之后下发（它是一条普通语句）。设不上不该把一次成功的连接判成失败：
         // 没有这道界时客户端读写超时仍在守着，只是那一道会连连接一起废掉，原因由 lastError() 给出。
@@ -1099,6 +1102,19 @@ namespace AsynGyanis::Database
 #endif
     }
 
+    bool MySqlConnection::isAutocommitOnNow() const
+    {
+        // 与 isTransactionOpenNow() 读同一份 server_status：那一位是服务端在上一条应答里自报的
+        // 「本会话现在是不是自动提交」。桩构建里没有客户端库可依赖（那个布局下 struct MYSQL 只是
+        // 前置声明的不完整类型，也没有 SERVER_STATUS_AUTOCOMMIT 这个枚举），因此那一档恒回 true：
+        // 桩里 execute() 恒失败，本来也关不掉自动提交，没有缺口
+#ifdef DATABASE_HAS_MYSQL
+        return m_mysqlHandle == nullptr || (m_mysqlHandle->server_status & SERVER_STATUS_AUTOCOMMIT) != 0;
+#else
+        return true;
+#endif
+    }
+
     bool MySqlConnection::beginTransaction()
     {
         // 已经在事务里就不再发这条语句：MySQL 的 START TRANSACTION 会先**隐式提交**上一条事务，
@@ -1159,7 +1175,11 @@ namespace AsynGyanis::Database
         // 两边同一判据才不会出现「只有 MySQL 会把未提交事务传下去」这种跨驱动的漂移。
         if (!isTransactionOpenNow())
         {
-            return true;
+            // 没有事务在身仍要问第二件事：自动提交是不是被借用者关掉了。`SET autocommit = 0` 是会话级
+            // 设置，跟着连接回到池里，下一位的每条单语句都会隐式开事务并把行锁握到他归还为止，
+            // 而他自己并不知道不在自动提交模式下——上一格那句「有事务就滚」只收掉已经开出来的那笔，
+            // 不收掉这个模式本身。判据同样读服务端自报的那一位，稳态归还不额外付一趟查询
+            return restoreAutocommitBaseline();
         }
 
         // 先清标记再滚：即便这次 ROLLBACK 发不出去（链路已断），连接也不会带着「还开着事务」
@@ -1171,7 +1191,26 @@ namespace AsynGyanis::Database
         // 而不是让下一个借用者接着上一笔事务执行语句、行锁握到别人收口为止）
         try
         {
-            return rollback();
+            // 滚完再退自动提交：SET autocommit 会隐式提交当时开着的事务，顺序反了就把「该滚的」交出去了
+            return rollback() && restoreAutocommitBaseline();
+        } catch (...)
+        {
+            return false;
+        }
+    }
+
+    bool MySqlConnection::restoreAutocommitBaseline() noexcept
+    {
+        if (isAutocommitOnNow() == m_autocommitBaselineOn)
+        {
+            return true;
+        }
+
+        // 这条 SET 本身也可能失败（链路断、被服务端拒）：与命令超时那一格同一处置——把 false 交回池，
+        // 让这条「说不清在不在自动提交」的会话被丢弃，而不是赌下一位不会受影响
+        try
+        {
+            return execute(m_autocommitBaselineOn ? "SET autocommit = 1" : "SET autocommit = 0") != nullptr;
         } catch (...)
         {
             return false;

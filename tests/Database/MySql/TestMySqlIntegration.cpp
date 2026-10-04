@@ -723,6 +723,24 @@ namespace AsynGyanis::Database
             }
 
             /**
+             * @brief 读这条会话当前的自动提交开关
+             * @param connection 执行查询的连接
+             * @return std::int64_t 1 开着、0 被关掉；读不出来返回 -1（让断言直接暴露失败而不是误判成 0）
+             */
+            [[nodiscard]] static std::int64_t readAutocommitFlag(DatabaseConnection &connection)
+            {
+                const std::unique_ptr<DatabaseResult> result = connection.execute("SELECT @@autocommit");
+                if (result == nullptr || !result->next())
+                {
+                    return -1;
+                }
+
+                const DatabaseValue flagValue = result->getValue(0);
+                const auto         *flag      = std::get_if<std::int64_t>(&flagValue);
+                return flag != nullptr ? *flag : -1;
+            }
+
+            /**
              * @brief 在给定连接上按参数绑定插入一行事务用数据
              * @param connection 执行语句的连接
              * @param tableName 表名
@@ -2247,6 +2265,27 @@ namespace AsynGyanis::Database
 
         // 同一连接读回 0 行：未提交的那一行被滚掉，而不是留着串给下一个借用者
         EXPECT_EQ(countRows(*connection, kTransactionRawBeginTableName), 0) << "复位只认本类记下的事务：手工 START TRANSACTION 串给了下一个借用者";
+    }
+
+    /**
+     * @brief 钉住：归还路径把借用者裸设的 `SET autocommit = 0` 退回建连时那一份
+     * @details 上面两条钉的是「已经开出来的那笔事务」，而 `autocommit` 本身是**会话级设置**：不退回去，
+     *          下一位的每条单语句都会隐式开事务并把行锁握到他归还为止，而他自己并不知道不在自动提交模式下。
+     *          判据读的是服务端在应答里自报的那一位（与本类记账无关），因此这一格只有真服务端测得出来。
+     */
+    TEST_F(MySqlIntegrationTest, ResetSessionStateRestoresAutocommitTurnedOffByRawSql)
+    {
+        std::unique_ptr<MySqlConnection> connection = makeConnection();
+        ASSERT_TRUE(connection->connect()) << connection->lastError();
+
+        // 前提自己造，并逐格验：本来在自动提交下 → 裸设成关 → 确实关了
+        ASSERT_EQ(readAutocommitFlag(*connection), 1) << "夹具连上的服务端默认不在自动提交下，后面的判据就没意义了";
+        ASSERT_TRUE(connection->execute("SET autocommit = 0") != nullptr) << connection->lastError();
+        ASSERT_EQ(readAutocommitFlag(*connection), 0) << "那条 SET 没生效，用例的前提没立住";
+
+        ASSERT_TRUE(connection->resetSessionState()) << connection->lastError();
+
+        EXPECT_EQ(readAutocommitFlag(*connection), 1) << "复位只滚事务：借用者关掉的自动提交串给了下一个借用者";
     }
 
     /**

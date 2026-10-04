@@ -175,16 +175,21 @@ namespace AsynGyanis::Database
          *          SERVER_STATUS_IN_TRANS——只有后者认得出绕过本类入口手工执行的 "START TRANSACTION"
          *          与关掉 autocommit 之后被语句隐式带出来的事务。SQLite 侧按 sqlite3_get_autocommit
          *          判，两边同一判据：读引擎真值，而不是只读本类记了多少账。
-         * @note 与基类契约一致：不抛异常、幂等；未连接、且两条判据都说没有活动事务时不做任何事
-         * @note **复位范围只有事务**：借用者自己设的会话变量、临时表与本类的语句缓存都不在这条路径上。
+         * @note 与基类契约一致：不抛异常、幂等；未连接、且事务与自动提交两格都说「与建连时一致」时不做任何事
+         * @note **复位范围是事务 + 自动提交这两格**：借用者自己设的其他会话变量、临时表与本类的语句缓存都不在这条路径上。
          *       COM_RESET_CONNECTION 能一次清掉它们，但它同时作废服务端全部预编译语句，而语句缓存里
          *       留着的是 MYSQL_STMT 裸句柄——要走到那一步，得先让缓存与那次重置同生共死，
          *       而那会把「热语句不必重新 prepare」这份收益一并交出去
          * @note 唯一的例外是本驱动自己下发的那一条会话变量（只读语句时限 max_execution_time）：
          *       它由连接池在归还时按建连时的取值退回，走的是 DatabaseConnection::restoreQueryTimeoutBaseline()
          *       而不是本方法——命令超时是基类的账，不是驱动的会话账
-         * @return 未连接或本就没有活动事务时为 true；确实去滚了事务则按 ROLLBACK 的结果交回——
-         *         发不出去时交回 false，让池丢掉这条连接而不是把别人的事务传下去
+         * @note 自动提交那一格按**建连时服务端自报的那一位**退回（不是写死成「开」——服务端默认 off 的
+         *       部署不该被本层改掉）。漏判的症状与事务那一格同一族：下一位并不会被告知自己不在自动提交
+         *       模式下，他的每条单语句都隐式开事务，行锁握到他归还为止。判据读 server_status，
+         *       与事务那一格同一份真值，因此一致时不额外付一趟查询
+         * @return 未连接、且事务与自动提交两格都说「与建连时一致」时为 true；确实去滚了事务或退回过
+         *         自动提交则按那条语句的结果交回——发不出去时交回 false，让池丢掉这条连接而不是把
+         *         别人的事务或别人的提交模式传下去
          */
         bool resetSessionState() noexcept override;
 
@@ -278,6 +283,27 @@ namespace AsynGyanis::Database
          * @return false 没有
          */
         [[nodiscard]] bool isTransactionOpenNow() const;
+
+        /**
+         * @brief 这条连接当下是不是处于自动提交模式（服务端在上一条应答里自报的那一位）
+         * @details 读句柄上的 server_status 而不是另发一条查询：与 isTransactionOpenNow() 同一份真值、
+         *          同一处代价。借用者可以裸执行 `SET autocommit = 0`，那不是本类的记账看得见的，
+         *          而这个设置是会话级的——它跟着连接回到池里，下一位的每条单语句都会隐式开事务，
+         *          行锁握到他归还为止。桩构建里没有这个枚举，那一档恒回 true（桩里 execute 恒失败，
+         *          本来也设不上自动提交，没有缺口）。
+         * @return true 自动提交开着
+         * @return false 被某条语句关掉了
+         */
+        [[nodiscard]] bool isAutocommitOnNow() const;
+
+        /**
+         * @brief 把自动提交退回这条连接建立时的那一份基线；已经一致时什么都不发
+         * @details 由 resetSessionState() 在事务收口之后调用（SET autocommit 会隐式提交当时开着的事务，
+         *          顺序不能反）。退回方向按基线走而不是写死成「开」：服务端默认 off 的部署不该被本层改掉。
+         * @return true 无需退回，或那条 SET 被服务端接受
+         * @return false 那条 SET 失败（原因写入 lastError()），调用方应把这条连接丢弃
+         */
+        [[nodiscard]] bool restoreAutocommitBaseline() noexcept;
 
         /**
          * @brief 在握手前把超时与字符集选项下发到句柄
@@ -395,6 +421,9 @@ namespace AsynGyanis::Database
         /// 本类开着的事务（beginTransaction 置位，commit/rollback 与连接生命周期重置清零）：
         /// 归还路径的判据之一，另一半是服务端自报的 SERVER_STATUS_IN_TRANS，见 resetSessionState
         bool m_isTransactionOpen{false};
+        /// 这条连接建立时服务端自报的自动提交模式：归还路径按它退回，而不是写死成「开」。
+        /// 有的部署把服务端默认设成 off，写死退回就等于替他们改了会话（见 resetSessionState）
+        bool m_autocommitBaselineOn{true};
     };
 
 } // namespace AsynGyanis::Database
