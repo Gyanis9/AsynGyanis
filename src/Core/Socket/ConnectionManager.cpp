@@ -4,6 +4,7 @@
 #include "Base/Log/LogMacros.h"
 
 #include <chrono>
+#include <exception>
 #include <ranges>
 #include <vector>
 
@@ -111,7 +112,20 @@ namespace AsynGyanis::Core
             if (connection)
             {
                 [[maybe_unused]] auto _ = connection->cancelable().requestStop();
-                connection->close();
+                // 逐条兜住：close() 是可重写的（HTTP/2 会话在那儿补最后一张收口通告），
+                // 一条会话抛出就把剩下的连接全丢下不收口，等于让这次优雅关闭变成
+                // 「只关到第 N 条」，而随后的 waitAll() 会为剩下的那些一直等到超时；
+                // 异常本身也不是这条路径要向上交的东西——调用方拿到的是「已尽力收口」
+                try
+                {
+                    connection->close();
+                } catch (const std::exception &failure)
+                {
+                    LOG_ERROR_FMT("ConnectionManager: 收口一条连接时抛出异常，本条按已停止处理并继续收口其余连接。原因：{}", failure.what());
+                } catch (...)
+                {
+                    LOG_ERROR("ConnectionManager: 收口一条连接时抛出非 std::exception 的抛出物，本条按已停止处理并继续收口其余连接");
+                }
             }
         }
     }

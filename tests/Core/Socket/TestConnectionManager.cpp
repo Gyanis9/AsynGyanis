@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <stdexcept>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -31,6 +32,35 @@ namespace AsynGyanis::Core
         {
             return std::make_shared<Connection>(AsyncSocket(loop, -1));
         }
+        /**
+         * @brief close() 抛异常并计数的哑连接
+         * @details close() 是可重写的（HTTP/2 会话就在那里补最后一张收口通告），所以「收口时抛出」
+         *          是这条路径的真实形状，不是设想出来的分支。
+         */
+        class ThrowingCloseConnection final : public Connection
+        {
+        public:
+            /**
+             * @brief 构造哑连接
+             * @param loop 关联的事件循环（描述符 -1，只用于管理器增删）
+             * @param closeAttempts 每次进入 close() 加一次，用来数「有几条真的被走到」
+             */
+            ThrowingCloseConnection(EventLoop &loop, std::atomic<int> &closeAttempts) : Connection(AsyncSocket(loop, -1)), m_closeAttempts(&closeAttempts)
+            {
+            }
+
+            /**
+             * @brief 记一次尝试后抛出
+             */
+            void close() override
+            {
+                m_closeAttempts->fetch_add(1, std::memory_order_release);
+                throw std::runtime_error("测试用：收口这条连接时抛出");
+            }
+
+        private:
+            std::atomic<int> *m_closeAttempts{nullptr}; ///< 进入 close() 的次数
+        };
     } // namespace
 
     /**
@@ -129,6 +159,36 @@ namespace AsynGyanis::Core
 
         EXPECT_TRUE(connection1->cancelable().isStopRequested());
         EXPECT_TRUE(connection2->cancelable().isStopRequested());
+    }
+
+    /**
+     * @brief 钉住：连接在 close() 里抛出时，其余连接照旧被收口，异常也不向上逃
+     * @details 原来的写法让第一次抛出直接中止整轮关闭：排在它之后的连接连 requestStop() 都没收到，
+     *          随后 `waitAll()` 会为它们一直等到超时，而调用方（TcpServer 的几处收口）拿到的是一个
+     *          从关闭路径上抛出的异常。
+     * @details 判据把**三条连接都做成会抛**，于是「未修复」的表现必然是 closeAttempts==1，
+     *          与管理器内部 unordered_map 的遍历次序无关——只放一条会抛的连接就得赌它排在第几位。
+     */
+    TEST(ConnectionManager, ShutdownKeepsClosingTheRestWhenConnectionsThrow)
+    {
+        EventLoop         loop;
+        ConnectionManager manager;
+        std::atomic<int>  closeAttempts{0};
+
+        std::vector<std::shared_ptr<ThrowingCloseConnection>> connections;
+        for (int index = 0; index < 3; ++index)
+        {
+            auto connection = std::make_shared<ThrowingCloseConnection>(loop, closeAttempts);
+            manager.add(connection);
+            connections.push_back(std::move(connection));
+        }
+
+        EXPECT_NO_THROW(manager.shutdown());
+        EXPECT_EQ(closeAttempts.load(std::memory_order_acquire), 3) << "第一条抛出就把剩下的丢下：它们连收口都没走到，waitAll() 会替它们一直等下去";
+        for (const auto &connection: connections)
+        {
+            EXPECT_TRUE(connection->cancelable().isStopRequested()) << "被跳过的那条连接连停止请求都没收到";
+        }
     }
 
     /**
