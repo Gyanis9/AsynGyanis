@@ -172,7 +172,8 @@ namespace AsynGyanis::Net
                 }
 
                 sockaddr_in bound{};
-                int         boundLength = static_cast<int>(sizeof(bound));
+                // 长度参数的类型两家不同（Winsock 是 int*，POSIX 是 socklen_t*），一律按仓里的既有写法用 socklen_t
+                socklen_t boundLength = static_cast<socklen_t>(sizeof(bound));
                 if (::getsockname(listener, reinterpret_cast<sockaddr *>(&bound), &boundLength) != 0)
                 {
                     Platform::FileDescriptor::close(listener);
@@ -192,7 +193,7 @@ namespace AsynGyanis::Net
                     }
 
                     sockaddr_in peer{};
-                    int         peerLength = static_cast<int>(sizeof(peer));
+                    socklen_t   peerLength = static_cast<socklen_t>(sizeof(peer));
                     const int   client     = static_cast<int>(::accept(listener, reinterpret_cast<sockaddr *>(&peer), &peerLength));
                     if (!Platform::FileDescriptor::isValid(client))
                     {
