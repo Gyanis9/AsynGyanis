@@ -840,6 +840,101 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：承载连接没了要转成本条请求的协作式取消（与 h1/h2 同一处判据）
+     * @details 业务侧只认 `request.cancelToken()` 一个出口：h1 的 ConnectionCancelForwarder 与 h2 的
+     *          serveOneRequest 各自在每次路由前登记一次转发，h3 此前一次都没登记——于是同一份
+     *          「看到取消就提前收工」的处理器在 h3 上会把数据库与下游调用做完，再去等一个永不到来的
+     *          可写唤醒（承载连接已经收口，不会再有报文进来），而 `Middleware.h` 写的是三条通道同一个判据。
+     * @details 时序刻意做成确定的：由处理器自己触发收口，而不是另起线程加挂起点——转发是注册在本条
+     *          请求的协程帧里的同步回调，同一条驱动路径上就能看到效果。请求对象是 pump() 帧里的局部值、
+     *          且已从待派发队列 pop 出去，因此这次 abandonPendingStreams 动不到它。
+     */
+    TEST(Http3Session, ForwardsAbandonedConnectionIntoRequestCancelToken)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session(std::ref(opener),
+                                                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                                                {
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                                                });
+
+        std::atomic<bool> cancelObserved{false};
+        Router            router;
+        router.get("/drop-me",
+                   [&session, &cancelObserved](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                   {
+                       // 处理器就跑在会话的驱动路径里：这一步即「承载连接被收口」的那一瞬间
+                       session.abandonPendingStreams();
+                       cancelObserved.store(request.cancelToken().stop_requested(), std::memory_order_release);
+                       response.setStatus(200);
+                       response.setBody("done");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/drop-me", "example.com");
+        ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        EXPECT_TRUE(cancelObserved.load(std::memory_order_acquire)) << "承载连接收口没转成本条请求的取消：判取消的处理器在 h3 上等的是永远不会来的唤醒";
+    }
+
+    /**
+     * @brief 钉住：优雅排空**不**取消在途请求，否则 h3 比 h1/h2 少交付响应
+     * @details `QuicServer::drain` 对每条还开着的连接都调一次 beginGracefulShutdown，其中就包括正在跑
+     *          处理器的那些；而 h1/h2 的排空只对**非 busy** 的连接 requestStop（`TcpServer` 里那一步先
+     *          给协议层发 GOAWAY、再停描述符，busy 的留给它跑完），本类的文档也写着「已经受理的请求照常
+     *          处理完」。把取消顺手加进这一步是往反方向漂移：处理器半路被打断，那份本来写得出的响应没了。
+     */
+    TEST(Http3Session, GracefulDrainDoesNotCancelInFlightRequest)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session(std::ref(opener),
+                                                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                                                {
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                                                });
+
+        std::atomic<bool> cancelObserved{false};
+        Router            router;
+        router.get("/drain-me",
+                   [&session, &cancelObserved](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                   {
+                       // 同一瞬间的另一条路径：只是排空（告诉对端别开新流），连接还在、字节还写得出去
+                       static_cast<void>(session.beginGracefulShutdown());
+                       cancelObserved.store(request.cancelToken().stop_requested(), std::memory_order_release);
+                       response.setStatus(200);
+                       response.setBody("done");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitRequest("GET", "/drain-me", "example.com");
+        ASSERT_FALSE(requestChunks.empty()) << "客户端没能产出任何字节（请求根本没编出来）";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        EXPECT_FALSE(cancelObserved.load(std::memory_order_acquire)) << "排空把在途请求取消了：同一份处理器在 h3 上会比 h1/h2 早收工，响应交付不出去";
+    }
+
+    /**
      * @brief 钉住：h3 的业务读到的来源地址来自承载层交下来的出口，而且一条连接只问一次
      * @details h3 的会话没有套接字可问（字节走承载层的 UDP 通道），来源只能由 QuicServer 在建会话时
      *          交一个出口下来。这条既钉「出口的值真的到了请求里」，也钉「每条请求都重新问一次承载层」

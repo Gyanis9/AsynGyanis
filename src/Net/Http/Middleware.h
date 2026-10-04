@@ -495,11 +495,13 @@ namespace AsynGyanis::Net
      *          需要「硬超时」请在业务侧使用可中断的等待，或把长任务放到 ThreadPool 并配合 Core::Cancelable。
      *
      * @note 取消信号的落点是 HttpRequest；连接的统一取消入口是 Core::Connection::cancelable()。
-     *       **h1 与 h2 各自在每次路由前注册一次转发**（`HttpSession` 的 ConnectionCancelForwarder、
-     *       `Http2Session::serveOneRequest` 的 cancelForwarder），两条来源到期都体现在同一个
-     *       request.cancelToken() 上。h3 目前不注册：h3 会话没有 Core::Connection 那一层的
-     *       cancelable()（字节走 UDP 承载，收口由 QuicServer 按连接/流做），要先给会话补一个停止源
-     *       才谈得上同一条转发——在那之前，判 `request.cancelToken()` 的处理器在 h3 上不会因连接收口而停。
+     *       **三条通道各自在每次路由前注册一次转发**（`HttpSession` 的 ConnectionCancelForwarder、
+     *       `Http2Session::serveOneRequest` 与 `Http3Session::pump` 的 cancelForwarder），
+     *       两条来源到期都体现在同一个 request.cancelToken() 上。h3 会话没有 Core::Connection 那一层
+     *       （字节走 UDP 承载，收口由 QuicServer 按连接/流做），故由会话自己的停止源
+     *       `Http3Session::m_shutdownCancelable` 承担同一角色：只有「承载连接已经没了」那一步请求它停止，
+     *       优雅排空那一步刻意不请求——在途的已受理请求要能跑完，这一格与 h1/h2 的 drain 只停非 busy
+     *       连接是同一条判据。
      * @note 每条在途请求会额外占一个定时器描述符与一个协程帧，因此本中间件是按需安装的，
      *       不作为默认管道成员。
      */

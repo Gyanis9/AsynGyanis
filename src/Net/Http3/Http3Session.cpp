@@ -258,6 +258,10 @@ namespace AsynGyanis::Net
 
     bool Http3Session::beginGracefulShutdown()
     {
+        // 排空**不**请求取消：本方法的既定语义是「已经受理的请求照常处理完」，而 h1/h2 的排空路径
+        // （TcpServer 的 drain）也只对非 busy 的连接 requestStop——busy 的那批留给它跑完。
+        // 在这里补一次取消转发会把在途请求半路打断，反而比 h1/h2 少交付响应。真正交信号的是
+        // abandonPendingStreams()：那一步意味着承载连接已经没了，等待永不到来。
         if (m_connection == nullptr || m_isBroken)
         {
             return false;
@@ -297,6 +301,11 @@ namespace AsynGyanis::Net
             return;
         }
         m_hasAbandonedPendingStreams = true;
+
+        // 连接不会再有报文进来：正在等可写、等正文收尾的处理器等的是一个永不到来的唤醒，
+        // 这里把收口信号交给会话的停止源，让它们经 `request.cancelToken()` 按「本端已放弃」往下走
+        // 而不是吊死在流上（排空那一步不来这儿——见 beginGracefulShutdown 里那条取舍）
+        static_cast<void>(m_shutdownCancelable.requestStop());
 
         // 每条还没答完的流都走与「对端取消」同一个回收口子（dropRequest），差别只在不发
         // RESET/STOP：连接已经没了，那些帧无处可去。这里先攒齐流号再逐条摘——dropRequest 会动这些容器
@@ -525,6 +534,12 @@ namespace AsynGyanis::Net
                 // 产出预算从把请求交出去这一刻起计：处理器执行与它等可写的那些时间都算在这一段
                 // （h1/h2 在同一个位置刷 writeTimeout 的空闲截止，口径对齐）
                 armProduceDeadline(streamId);
+
+                // 会话收口转成本条请求的协作式取消：业务只认 request.cancelToken() 一处出口，
+                // 同一份处理器在三条通道上看到同一件事。注册点在本协程帧的这一段里——
+                // ~stop_callback 保证注销之后回调不再执行，于是回调绝不会碰到已析构的请求
+                // （与 h2 serveOneRequest 的 cancelForwarder 同一条括号）
+                std::stop_callback requestCancelForwarder(m_shutdownCancelable.stopToken(), [&request]() { request.requestCancel(); });
                 try
                 {
                     co_await m_router->route(request, response);

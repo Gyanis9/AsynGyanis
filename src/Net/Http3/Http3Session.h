@@ -11,6 +11,7 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Coroutine/Cancelable.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpParserLimits.h"
@@ -824,6 +825,10 @@ namespace AsynGyanis::Net
         bool                                    m_isUsable{false};                   ///< 三条本端单向流是否都开出来了
         bool                                    m_isBroken{false};                   ///< 是否已作废
         bool                                    m_hasAbandonedPendingStreams{false}; ///< 承载连接的收口信号是否已交过：唤醒只做一次，之后每拍只收敛
+        /// 会话级收口信号：承载连接已没了（abandonPendingStreams）时请求它停止，正在跑的处理器经
+        /// `HttpRequest::cancelToken()` 观察到（与 h1 的 Connection::cancelable()、h2 的同一处同一角色）。
+        /// 优雅排空那一步**不**请求它——见 beginGracefulShutdown 里那条「已受理的请求照常跑完」
+        Core::Cancelable m_shutdownCancelable{};
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;
         /// 承载层报来的一次「对端打断」：流号、对端给的应用层错误码、以及是复位还是叫停。
