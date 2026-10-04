@@ -1490,6 +1490,68 @@ namespace AsynGyanis::Net
         }
     }
 
+    /**
+     * @brief 声明长度比手上的字节大（流式派发那一型）时原样交回，不许判成解不出
+     * @details 流式路由在头部收齐时就派发，此刻 `body()` 只是已收而尚未交付的那一段。拿这一段去解整份
+     *          gzip 流必然「解不出」，于是一条合法的流式上传会被这条中间件判 400——错判比不解更坏。
+     *          判据用「声明长度 ≠ 实际字节」表达，这一层只有这一个依据
+     */
+    TEST(RequestDecompressionMiddleware, PassesThroughWhenBodyIsStillArriving)
+    {
+        const std::string wholeStream = gzipCompress(std::string(3000, 'z')).value();
+        // 取整份流的一半：保证「声明的整份长度」严格大于「手上的字节」，这正是流式早期派发的现场。
+        // gzip 的压缩比高时整份流只有几十字节，先钉住这个前提本身，别让它悄悄等于全量
+        const std::string arrivedPart = wholeStream.substr(0, wholeStream.size() / 2);
+        ASSERT_GT(wholeStream.size(), arrivedPart.size()) << "前提：这一段必须短于整份流";
+
+        HttpRequest request = makeRequest(HttpMethod::POST, "/stream");
+        request.addHeader("content-encoding", "gzip");
+        request.addHeader("content-length", std::to_string(wholeStream.size()));
+        request.setBody(arrivedPart);
+
+        HttpResponse          response;
+        std::atomic<int>      handlerCalls{0};
+        std::string           bodySeenByHandler;
+        const TerminalHandler handler = [&request, &bodySeenByHandler, &handlerCalls]() -> Core::Task<void>
+        {
+            handlerCalls.fetch_add(1);
+            bodySeenByHandler = std::string(request.body());
+            co_return;
+        };
+
+        MiddlewarePipeline pipeline;
+        pipeline.use(requestDecompressionMiddleware());
+        runPipeline(pipeline, request, response, handler);
+
+        EXPECT_EQ(handlerCalls.load(), 1) << "正文还在路上就该交给处理器，而不是回 400";
+        EXPECT_EQ(response.status(), 200) << response.body();
+        EXPECT_EQ(bodySeenByHandler, arrivedPart) << "没收到完整流时一个字节都不许动";
+        EXPECT_EQ(request.getHeader("content-length").value_or(""), std::to_string(wholeStream.size())) << "没解成的正文不许被换成半截";
+        EXPECT_TRUE(request.getHeader("content-encoding").has_value()) << "没兑现的声明不许撤";
+    }
+
+    /**
+     * @brief 编码本身不合规那两档与正文到没到齐无关：先判 415
+     * @details 这条钉的是判据的顺序——「本端解不了这种编码」是策略结论，不该被「字节还没收齐」这一格
+     *          掩护过去；否则同一条请求在流式派发下变成静默交回，处理器拿着一段 br 字节继续跑
+     */
+    TEST(RequestDecompressionMiddleware, RejectsUnsupportedCodingEvenWhileBodyIsArriving)
+    {
+        HttpRequest request = makeRequest(HttpMethod::POST, "/stream");
+        request.addHeader("content-encoding", "br");
+        request.addHeader("content-length", "4096");
+        request.setBody("only a prefix arrived");
+
+        HttpResponse       response;
+        std::atomic<int>   handlerCalls{0};
+        MiddlewarePipeline pipeline;
+        pipeline.use(requestDecompressionMiddleware());
+        runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
+
+        EXPECT_EQ(handlerCalls.load(), 0) << "解不了的编码不该因为正文没到齐就被放行";
+        EXPECT_EQ(response.status(), 415);
+    }
+
     // ============================================================================
     // rateLimiterMiddleware
     // ============================================================================

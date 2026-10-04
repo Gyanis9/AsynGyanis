@@ -1321,9 +1321,11 @@ namespace AsynGyanis::Net
      *          再解一次），`content-length` 按解码后的字节数改写（旧值描述的是压缩字节，留着就是给一份
      *          新正文配一个旧长度）。
      *
-     * @note 流式路由（`Router::postStreaming()` 那一类）在头部收齐时就派发，此刻 `body()` 只是
-     *       「已收而尚未交付」的残余字节，整份压缩流并不在这里：中间件按声明判 415/400 之外，
-     *       对这种「拿不到完整压缩流」的情形不做任何改写，交由处理器自己按段处理。
+     * @note 流式路由（`Router::postStreaming()` 那一类）在头部收齐时就派发，此刻 `body()` 只是「已收而
+     *       尚未交付」的那一段，整份压缩流不在这里。中间件这一层能依据的只有声明长度：**声明的
+     *       content-length 与实际字节不符、或压根没有声明长度（分块正文）时原样交回**，由处理器按段
+     *       自己解——把一段合法上传判成 400 比不解更坏。编码本身不合规那两档（链式、没有解码器）
+     *       与正文到没到齐无关，照旧先判 415。
      * @param options 解压档位
      * @return MiddlewareFunc 中间件
      * @see compressionMiddleware()（响应方向的那一半）
@@ -1362,6 +1364,23 @@ namespace AsynGyanis::Net
             {
                 reject(415, "Unsupported Media Type: unsupported Content-Encoding", "本端没有对应的解码器（只解 gzip / x-gzip / deflate）");
                 co_return;
+            }
+
+            // 「整份压缩流到齐了没有」在这一层只有声明长度这一个依据：流式路由（`Router::postStreaming()`
+            // 那一类）在头部收齐时就派发，此刻 body() 只是已收而尚未交付的那一段——拿一段去解整份流，
+            // 结果是「解不出」，于是这条合法的流式上传被本中间件判成 400。声明长度与实际字节不符时
+            // 原样交回，让处理器按段自己解；没有声明长度的分块正文同样交回——「收齐」的信号不在这一层，
+            // 而错判成 400 比不解更坏。长度写法本身不合法不归这里，那是 bodySizeLimitMiddleware 的活
+            if (const auto declaredLengthText = request.firstHeaderValueView("content-length"))
+            {
+                std::size_t                  declaredLength = 0;
+                const std::from_chars_result lengthParse    = std::from_chars(declaredLengthText->data(), declaredLengthText->data() + declaredLengthText->size(), declaredLength);
+
+                if (lengthParse.ec == std::errc{} && lengthParse.ptr == declaredLengthText->data() + declaredLengthText->size() && declaredLength != request.body().size())
+                {
+                    co_await next();
+                    co_return;
+                }
             }
 
             // 到界即判失败：交回前 N 字节等于把损坏藏起来，调用方看到的是一份长度对、内容却错了的数据
