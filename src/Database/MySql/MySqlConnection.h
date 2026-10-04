@@ -179,7 +179,11 @@ namespace AsynGyanis::Database
          * @note **复位范围是事务 + 自动提交这两格**：借用者自己设的其他会话变量、临时表与本类的语句缓存都不在这条路径上。
          *       COM_RESET_CONNECTION 能一次清掉它们，但它同时作废服务端全部预编译语句，而语句缓存里
          *       留着的是 MYSQL_STMT 裸句柄——要走到那一步，得先让缓存与那次重置同生共死，
-         *       而那会把「热语句不必重新 prepare」这份收益一并交出去
+         *       而那会把「热语句不必重新 prepare」这份收益一并交出去。
+         *       名单里还有两格要点名：**显式表锁 `LOCK TABLES`** 与**会话级咨询锁 `GET_LOCK`**——
+         *       前者不属于事务（ROLLBACK 不放它），后者要 `RELEASE_ALL_LOCKS()` 才收得掉，而这两格
+         *       都没有 server_status 那种「自报的位」可判；要清就得每次归还都多发一条语句，
+         *       与本方法「一致时不付往返」的口径相反。借用者若要用它们，请自己释放再归还
          * @note 唯一的例外是本驱动自己下发的那一条会话变量（只读语句时限 max_execution_time）：
          *       它由连接池在归还时按建连时的取值退回，走的是 DatabaseConnection::restoreQueryTimeoutBaseline()
          *       而不是本方法——命令超时是基类的账，不是驱动的会话账
