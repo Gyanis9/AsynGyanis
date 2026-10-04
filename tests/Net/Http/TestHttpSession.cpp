@@ -900,6 +900,28 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.awaitFinished(kWaitTimeout));
     }
 
+    /**
+     * @brief 钉住多于一条 Host 在会话层回 400（RFC 9112 §3.2 要求服务端按 400 处理）
+     * @details 与 CL/TE 并存同一类：两份说法各走各的才是走私面。这里量的是「解析器的判定真的落到
+     *          对端可见的响应上」，只在解析器层钉一条不足以证明会话没有把畸形请求交给业务。
+     */
+    TEST(HttpSession, Returns400WhenRequestCarriesTwoHostFields)
+    {
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid());
+        addPathEchoingRoute(fixture.router(), "/smuggle");
+
+        const std::string request = makeRequestText("GET /smuggle HTTP/1.1", {"host: a.example", "host: b.example"});
+        ASSERT_TRUE(fixture.writeRequest(request));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kWaitTimeout)) << "两条 Host 未在时限内被判 400：上界 kWaitTimeout";
+        EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 400"));
+        EXPECT_NE(responseText.find("Bad Request"), std::string::npos);
+        EXPECT_TRUE(fixture.awaitFinished(kWaitTimeout));
+    }
+
     TEST(HttpSession, Returns500AfterResettingResponseWhenHandlerThrows)
     {
         // 挂在根日志器上：会话跑在事件循环线程里，被测代码走的是全局根日志器

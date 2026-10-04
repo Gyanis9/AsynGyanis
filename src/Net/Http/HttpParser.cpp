@@ -632,6 +632,16 @@ namespace AsynGyanis::Net
             m_hasContinueExpectation               = isContinueExpected(value) && understandsInterimResponses;
         }
 
+        // Host 只许有一条（RFC 9112 §3.2：服务端对「多于一条 Host 头部行」的请求必须回 400）。
+        // 这一条在本端不是纸面合规：host() 只能挑一条来读，而链路上的前端与共享缓存可能按另一条分诊、
+        // 另一条记缓存键——两份说法各走各的正是把请求送到非预期站点、或给共享缓存投毒的经典形状
+        if (equalsIgnoringCase(name, "host") && ++m_hostHeaderFieldCount > 1)
+        {
+            failMalformed("HTTP 报文解析失败：请求里出现多于一条 Host 头部：RFC 9112 §3.2 要求服务端按 400 处理，"
+                          "请只保留一条 Host");
+            return false;
+        }
+
         // 名与值就地进暂存缓冲（名字折小写也在这一趟做完）：这里不再为一条头部造两个 std::string
         m_headerStaging.append(name, value);
         return true;
@@ -905,11 +915,12 @@ namespace AsynGyanis::Net
         // 残留会让下一条报文带上上一条的尾部字段（clear 保留容量，稳态下不额外分配）
         m_trailerFields.clear();
 
-        m_contentLength      = 0;
-        m_receivedBodyLength = 0;
-        m_headerFieldCount   = 0;
-        m_headerBlockLength  = 0;
-        m_hasContentLength   = false;
+        m_contentLength        = 0;
+        m_receivedBodyLength   = 0;
+        m_headerFieldCount     = 0;
+        m_headerBlockLength    = 0;
+        m_hasContentLength     = false;
+        m_hostHeaderFieldCount = 0;
 
         // 100-continue 的两项也随报文一起清：跨报文复用解析器时，上一条的「等 100」不能让
         // 下一条报文被多回一个 100

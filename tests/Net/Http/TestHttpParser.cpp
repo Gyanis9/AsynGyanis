@@ -566,6 +566,30 @@ namespace AsynGyanis::Net
         EXPECT_EQ(parser.request().getHeader(std::string(kHeaderNameLimitInBytes, 'x')).value_or(""), "v");
     }
 
+    /**
+     * @brief 钉住「多于一条 Host」判错（RFC 9112 §3.2），且与两条取值是否相同无关
+     * @details 本端读 Host 只能挑一条来读，而链路上的前端与共享缓存可能按另一条分诊、按另一条记缓存键——
+     *          「出现第二条」本身就是要拦的形状，等到两条取值不同时再拦已经晚了（同一节还要求 Host 的取值
+     *          本身不合法时也按 400 处理，这一格由头部行的语法判定覆盖）。
+     *          反向那一半同样钉住：只有一条 Host 时不得判错，否则合规请求会被整片打掉。
+     */
+    TEST(HttpParser, RejectsMoreThanOneHostHeaderField)
+    {
+        const std::vector<std::vector<std::string>> kTwoHostShapes = {{"Host: a.example", "Host: b.example"}, {"Host: a.example", "Host: a.example"}};
+        for (const std::vector<std::string> &hostLines: kTwoHostShapes)
+        {
+            HttpParser        parser;
+            const std::string message = makeRequestTextWithHeaders(hostLines);
+            EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error) << "两条 Host 必须当场判错：" << message;
+            EXPECT_FALSE(parser.isLimitExceeded()) << "两条 Host 是语法层面的畸形，不是体量越限";
+            EXPECT_TRUE(containsText(parser.errorMessage(), "Host")) << "原因里要点名 Host：" << parser.errorMessage();
+        }
+
+        HttpParser        singleHostParser;
+        const std::string singleHostMessage = makeRequestTextWithHeaders({"Host: a.example"});
+        EXPECT_EQ(singleHostParser.parse(singleHostMessage.data(), singleHostMessage.size()), ParseStatus::Done) << singleHostParser.errorMessage();
+    }
+
     TEST(HttpParser, RejectsHeaderFieldNameAboveLengthLimit)
     {
         HttpParser parser;

@@ -446,6 +446,11 @@ namespace AsynGyanis::Net
         /// 是否已见过 Transfer-Encoding：与 Content-Length 互斥，两者并存当场判错
         bool m_hasTransferEncoding{false};
 
+        /// 本条报文头部里 Host 的行数：多于一条即畸形（RFC 9112 §3.2）。同一节还要求「HTTP/1.1 请求缺 Host」也回
+        /// 400，那一半本端**有意不判**：把这条账算到存量健康检查与裸工具头上是行为变更，而两份 Host 说法的分歧
+        /// 才是被拿来走私的那一环
+        std::size_t m_hostHeaderFieldCount{0};
+
         /// 头部是否已被流式派发提前提交（见 commitHeadersForStreaming()；随报文在 clearMessageScratch 里复位）
         bool m_headersCommitted{false};
 
