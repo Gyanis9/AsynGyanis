@@ -269,10 +269,14 @@ namespace AsynGyanis::Net
             auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
 
-            // 前奏没成也要把 request 问一句：它会把连接判死的原话带回来，否则用例只剩「没走通」一个字
-            Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {{"host", "elsewhere"}, {"x-trace", "keep-me"}}, {}, kClientWaitTimeout);
-            outcome.statusCode           = response.statusCode;
-            outcome.errorMessage         = std::move(response.errorMessage);
+            // 前奏没成也要把 request 问一句：它会把连接判死的原话带回来，否则用例只剩「没走通」一个字。
+            // 附加头部先落成一份具名的量再交出去：把花括号初始化列表直接写在 co_await 的实参位上，
+            // 容器里那件与 CI 同档的 GCC 会在协程帧里当场 internal compiler error（build_special_member_call），
+            // 而 MSVC 编得过——这是一条只在 Linux 门禁才暴露的坑，本文件其余用例同样走具名变量
+            const std::vector<std::pair<std::string, std::string>> outboundHeaders{{"host", "elsewhere"}, {"x-trace", "keep-me"}};
+            Http2ClientResponse                                    response = co_await connection->request("http", "peer", "GET", "/tick", outboundHeaders, {}, kClientWaitTimeout);
+            outcome.statusCode                                              = response.statusCode;
+            outcome.errorMessage                                            = std::move(response.errorMessage);
             co_await connection->shutdown();
             co_return;
         }
