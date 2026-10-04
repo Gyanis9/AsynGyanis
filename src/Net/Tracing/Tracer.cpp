@@ -75,6 +75,17 @@ namespace AsynGyanis::Net
         {
             rejectConfiguration("出口时限必须大于 0：只按批量出口的话，低频进程的节会一直躺在缓冲里等到进程退出");
         }
+        // 同一格的另一半：时限要折进 steady_clock 的刻度再与「现在」相加（libstdc++ 的刻度是纳秒，
+        // MSVC 是 100 纳秒），配得过大就在相加时溢出，绕出来的截止时刻落在过去，出口线程就从「按时睡」
+        // 变成一轮接一轮地空转——而这正是上面那句「空转」要避免的事，只是方向反过来。上限现算并取一半，
+        // 另一半让给「现在这一刻」本身
+        static const std::chrono::milliseconds kMaximumUsableExportIntervalMilliseconds{
+                static_cast<std::chrono::milliseconds::rep>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()).count() / 2LL)};
+        if (configuration.exportInterval > kMaximumUsableExportIntervalMilliseconds)
+        {
+            rejectConfiguration("出口时限太大，折不进本平台的时钟刻度（上限 " + std::to_string(kMaximumUsableExportIntervalMilliseconds.count()) +
+                                " 毫秒）：相加之后的截止时刻会落到过去，出口线程会一直空转而不是按时出口");
+        }
 
         // 上界钳制：配错的方向是「占更多内存」，把它拉回有界即可，不必让启动失败
         configuration.maximumPendingSpanCount = std::min(configuration.maximumPendingSpanCount, kPendingSpanCountCeiling);

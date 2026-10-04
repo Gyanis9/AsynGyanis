@@ -756,6 +756,20 @@ namespace AsynGyanis::Database
             throw Base::InvalidArgumentException("ConnectionPool: healthCheckIntervalSeconds 不能超过 " + std::to_string(kMaximumHealthCheckIntervalSeconds) +
                                                  " 秒（7 天），当前 " + std::to_string(config.healthCheckIntervalSeconds) + " 秒；换算成毫秒会溢出，那条后台线程会退化成空转");
         }
+        // 借用的等待时限同属「换算得过来」这一格，此前只判了间隔没判时限。它是无符号的 std::size_t，
+        // 而 std::chrono::milliseconds 的 rep 是有符号 64 位：越过 2^63 的取值绕成负时长，截止时刻落在
+        // 「现在之前」，两条等待路径（同步 acquire 与异步 await）当场判超时——配得越大的时限反倒一条都不等，
+        // 借用者拿到空连接而队列里刚腾出的名额还没人看过；没绕过去的取值则把 now()+时限 这一步折溢出。
+        // 上限按本平台把毫秒折进时钟刻度所能表达的量现算并取一半，另一半让给「现在这一刻」本身
+        // （与 QUIC 那条 max_idle_timeout 同一手法：量不出来的那一档不是「更长」，是「没有意义」）。
+        const std::size_t maximumTimeoutMilliseconds =
+                static_cast<std::size_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()).count() / 2U);
+        if (config.acquireTimeoutMilliseconds > maximumTimeoutMilliseconds)
+        {
+            throw Base::InvalidArgumentException("ConnectionPool: acquireTimeoutMilliseconds 不能超过 " + std::to_string(maximumTimeoutMilliseconds) +
+                                                 " 毫秒（本端时钟能表达的等待上限），当前 " + std::to_string(config.acquireTimeoutMilliseconds) +
+                                                 "；越界的取值会绕成负的等待时限，借用者一条都不等就拿到空连接");
+        }
         return config;
     }
 

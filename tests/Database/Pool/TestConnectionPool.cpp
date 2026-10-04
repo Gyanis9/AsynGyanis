@@ -1228,6 +1228,49 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 钉住：折不进时钟刻度的借用等待时限在构造时被拒，而不是让借用者一条都不等
+     * @details 与上一条同一格的另一半：`acquireTimeoutMilliseconds` 是无符号的 std::size_t，而
+     *          `std::chrono::milliseconds` 的 rep 是有符号 64 位。越过 2^63 的取值绕成负时长，两条等待
+     *          路径（同步 `acquire()` 与异步 await）算出的截止时刻都落在「现在之前」，于是当场判超时、
+     *          返回空连接并记一笔 borrowTimeoutCount——**配得越大的时限反倒等得越少**，而刚腾出的名额
+     *          就摆在栈里；没绕过去的大取值则把 `now() + 时限` 这一步折溢出。判据同样放在构造时：
+     *          这一格的后果不是崩，是「看着像池子没连接可用」，现场最难往配置上想。
+     */
+    TEST(ConnectionPool, RejectsAcquireTimeoutThatCannotBeRepresentedOnTheClock)
+    {
+        ConnectionCounter counter;
+        auto              factory = makeMockFactory(counter);
+
+        const auto maximumUsableMilliseconds =
+                static_cast<std::size_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()).count() / 2LL);
+
+        PoolConfig absurd;
+        absurd.acquireTimeoutMilliseconds = std::numeric_limits<std::size_t>::max();
+        try
+        {
+            static_cast<void>(ConnectionPool::validateConfiguration(absurd));
+            FAIL() << "折不进时钟的等待时限本该在构造那一刻就被拒";
+        } catch (const Base::InvalidArgumentException &failure)
+        {
+            EXPECT_NE(std::string(failure.what()).find("acquireTimeoutMilliseconds"), std::string::npos) << failure.what();
+            EXPECT_NE(std::string(failure.what()).find(std::to_string(maximumUsableMilliseconds)), std::string::npos)
+                    << "文案要给出这一平台实际允许的上限，只说「太大」等于让人自己算：" << failure.what();
+        }
+
+        EXPECT_THROW(static_cast<void>(ConnectionPool(factory, absurd)), Base::InvalidArgumentException);
+        EXPECT_EQ(counter.totalCreated.load(), 0) << "被拒的构造仍然建了连接";
+
+        // 上限本身可用，且上限之内的「长到不现实」也不得被顺手拒掉（正向对照）
+        PoolConfig atLimit;
+        atLimit.acquireTimeoutMilliseconds = maximumUsableMilliseconds;
+        EXPECT_NO_THROW(static_cast<void>(ConnectionPool(factory, atLimit)));
+
+        PoolConfig oneDay;
+        oneDay.acquireTimeoutMilliseconds = 24ULL * 60ULL * 60ULL * 1000ULL;
+        EXPECT_NO_THROW(static_cast<void>(ConnectionPool(factory, oneDay)));
+    }
+
+    /**
      * @brief 钉住：会话复位交回「没清干净」时，池丢掉这条连接而不是把它交给下一个借用者
      * @details 复位钩子按基类契约是 noexcept，吞掉异常不等于复位成功：MySQL 的 ROLLBACK 发不出去时
      *          服务端还挂着别人的事务，Redis 的 DISCARD 发不出去时下一位的写命令会被排进别人的

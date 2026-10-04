@@ -495,6 +495,13 @@ TEST(Tracer, RejectedConfigurationNamesTheField)
                 configuration.exportInterval = std::chrono::milliseconds::zero();
                 return Case{configuration, "出口时限"};
             }(),
+            // 同一格的另一半：太大的一侧要绕进「截止时刻落在过去」，出口线程就从按时睡变成一直空转
+            []
+            {
+                auto configuration           = makeConfiguration();
+                configuration.exportInterval = std::chrono::milliseconds{std::numeric_limits<std::chrono::milliseconds::rep>::max()};
+                return Case{configuration, "出口时限"};
+            }(),
     };
 
     for (const Case &testCase: cases)
@@ -523,6 +530,12 @@ TEST(Tracer, AcceptsBoundaryConfigurations)
         configuration.maximumPendingSpanCount = 1U;
         EXPECT_NO_THROW(static_cast<void>(Tracer::create(configuration)));
     }
+
+    // 时限那一格的上限本身要建得起来（正向对照：拒绝规则不得宽到把「长到不现实但表达到过来」的取值也拒掉）
+    auto boundaryConfiguration           = makeConfiguration();
+    boundaryConfiguration.exportInterval = std::chrono::milliseconds{
+            static_cast<std::chrono::milliseconds::rep>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()).count() / 2LL)};
+    EXPECT_NO_THROW(static_cast<void>(Tracer::create(boundaryConfiguration)));
 }
 
 /**
