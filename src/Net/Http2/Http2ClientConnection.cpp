@@ -1032,6 +1032,13 @@ namespace AsynGyanis::Net
         fields.push_back(HpackHeaderField{":authority", std::string(authority)});
         for (const auto &header: extraHeaders)
         {
+            // 调用方另塞了一份 Host 时丢掉它：本端每条请求都带 :authority，而 RFC 9113 §8.3.1 要客户端
+            // 不得生成两者取值不同的请求。经 `HttpClient` 来的这一支在上层就按「保留头部」拒了，
+            // 这道闸门护的是**直接用本类**的调用方——本类的入参没有任何地方保证 host 与 authority 同源
+            if (equalsIgnoringCase(header.first, "host"))
+            {
+                continue;
+            }
             fields.push_back(HpackHeaderField{header.first, header.second});
         }
 

@@ -270,7 +270,7 @@ namespace AsynGyanis::Net
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
 
             // 前奏没成也要把 request 问一句：它会把连接判死的原话带回来，否则用例只剩「没走通」一个字
-            Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {{"host", "elsewhere"}, {"x-trace", "keep-me"}}, {}, kClientWaitTimeout);
             outcome.statusCode           = response.statusCode;
             outcome.errorMessage         = std::move(response.errorMessage);
             co_await connection->shutdown();
@@ -1483,6 +1483,10 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findHeaderValue(headerFields, ":path"), "/tick");
         EXPECT_EQ(findHeaderValue(headerFields, ":scheme"), "http");
         EXPECT_EQ(findHeaderValue(headerFields, ":authority"), "peer") << "四个伪头缺一不可，且必须排在普通头之前（§8.3）";
+        // 调用方另塞的那份 Host 不得上线：本端每条请求都带 :authority，而 §8.3.1 要客户端不得生成两者取值
+        // 不同的请求。留着就是自己撞自己的闸门——本端 intake 现在正按这一条拒入站请求
+        EXPECT_EQ(findHeaderValue(headerFields, "host"), "") << "普通头里不该再有 host，权威取值只有 :authority 那一份";
+        EXPECT_EQ(findHeaderValue(headerFields, "x-trace"), "keep-me") << "只该摘掉 Host，其余普通头原样带上";
 
         ASSERT_NE(goAway, nullptr) << "礼貌收尾要发 GOAWAY，对端才知道这条连接不再有新流（§6.8）";
         EXPECT_EQ(goAway->header.streamId, 0U);
