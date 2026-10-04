@@ -716,8 +716,18 @@ namespace AsynGyanis::Platform
         // 票据密钥）权限一并收紧。别人既进不去这个目录，也就连不上这条通道，而它交出去的是监听套接字
         // 的一份引用
         const std::string templateText = (temporaryRoot / "asyn-handoff-XXXXXX").string();
-        std::vector<char> templateBytes(templateText.begin(), templateText.end());
-        templateBytes.push_back('\0');
+        // mkdtemp 要一份可写的缓冲，而这份缓冲按路径长度分配——本函数是 noexcept 且已经带着
+        // std::expected 这条失败通道，让它抛穿出去就是把「换代通道开不出来」变成 std::terminate。
+        // 与 readFileContentsInto 同一处置：按分配不出来落成错误码，文案与分支仍由调用方定
+        std::vector<char> templateBytes;
+        try
+        {
+            templateBytes.assign(templateText.begin(), templateText.end());
+            templateBytes.push_back('\0');
+        } catch (const std::exception &)
+        {
+            return std::unexpected(std::make_error_code(std::errc::not_enough_memory));
+        }
         const char *createdDirectory = ::mkdtemp(templateBytes.data());
         if (createdDirectory == nullptr)
         {
