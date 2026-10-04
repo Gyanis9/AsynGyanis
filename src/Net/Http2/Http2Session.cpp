@@ -864,9 +864,20 @@ namespace AsynGyanis::Net
         co_return true;
     }
 
-    void Http2Session::FlushTurnAwaiter::await_suspend(const std::coroutine_handle<> waiter) const noexcept
+    bool Http2Session::FlushTurnAwaiter::await_suspend(const std::coroutine_handle<> waiter) noexcept
     {
-        m_session->m_flushWaiters.push_back(waiter);
+        // 入队这一步要分配，而协程语言规定 await_suspend 是 noexcept——让 bad_alloc 穿出去
+        // 就是把一次 flush 变成 std::terminate。处置与 AsyncResolver 的解析等待体同形：
+        // 排不上就不挂起，回 false 交调用方按「这一轮写不出去」结账
+        try
+        {
+            m_session->m_flushWaiters.push_back(waiter);
+        } catch (...)
+        {
+            m_isQueued = false;
+            return false;
+        }
+        return true;
     }
 
     void Http2Session::wakeFlushWaiters() noexcept
@@ -2087,7 +2098,11 @@ namespace AsynGyanis::Net
         // ——两条协程各写一半会把帧撕开，而且传输层一个方向只许一个等待者，抢槽会当场把连接判死
         while (m_isFlushInProgress)
         {
-            co_await FlushTurnAwaiter(*this);
+            // 排不上写队（内存吃紧）：这一轮按「写不出去」收尾，别在原地空转抢写权
+            if (!co_await FlushTurnAwaiter(*this))
+            {
+                co_return false;
+            }
             // 等写权期间连接可能已被判死（拿着上一轮写权的那条协程写失败了）：不必再去抢
             if (m_isConnectionUnusable)
             {

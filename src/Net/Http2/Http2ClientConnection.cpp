@@ -127,7 +127,11 @@ namespace AsynGyanis::Net
                 // 写权在别人手上：等它放开。同一条通路同一时刻只许一个协程在 send，否则两条各写一半
                 // 套接字缓冲，对端解出来的就是撕开的帧；更糟的是第二个等待者会撞上传输层
                 // 「一个方向只许一个等待者」的约束，当场把连接判死
-                co_await FlushTurnAwaiter(*this);
+                if (!co_await FlushTurnAwaiter(*this))
+                {
+                    // 排不上写队（内存吃紧）：这一轮不写，把待发缓冲留给下一次，别在原地空转
+                    co_return false;
+                }
                 continue;
             }
             m_isFlushInProgress = true;
@@ -481,9 +485,20 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Http2ClientConnection::FlushTurnAwaiter::await_suspend(const std::coroutine_handle<> waiter) noexcept
+    bool Http2ClientConnection::FlushTurnAwaiter::await_suspend(const std::coroutine_handle<> waiter) noexcept
     {
-        m_connection->m_flushWaiters.push_back(waiter);
+        // 入队这一步要分配，而协程语言规定 await_suspend 是 noexcept——让 bad_alloc 穿出去
+        // 就是把一次 flush 变成 std::terminate。处置沿用本文件 StreamAwaiter 那句「挂不上就不挂」
+        // 的形状：回 false 让协程继续往下走，由调用方按「这一轮写不出去」结账
+        try
+        {
+            m_connection->m_flushWaiters.push_back(waiter);
+        } catch (...)
+        {
+            m_isQueued = false;
+            return false;
+        }
+        return true;
     }
 
     bool Http2ClientConnection::appendHeaderBlockFragment(PendingStream &stream, const std::string_view fragment)

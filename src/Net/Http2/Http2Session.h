@@ -329,16 +329,20 @@ namespace AsynGyanis::Net
                 return !m_session->m_isFlushInProgress;
             }
 
-            /// 把本协程排进写队
-            void await_suspend(const std::coroutine_handle<> waiter) const noexcept;
+            /// 把本协程排进写队；排不上时回 false，调用方当轮按「写不出去」结账
+            /// @return true 已入队、将由持有写权的一方叫醒；false 排队失败（内存吃紧），不必挂起
+            bool await_suspend(const std::coroutine_handle<> waiter) noexcept;
 
             /// 醒来即完成：接下来由调用方自己再看一眼写权与待发缓冲
-            void await_resume() const noexcept
+            /// @return true 这一轮写权确实等到过；false 排不上写队，调用方应放弃本轮
+            [[nodiscard]] bool await_resume() const noexcept
             {
+                return m_isQueued;
             }
 
         private:
-            Http2Session *m_session; ///< 所属会话（非拥有）
+            Http2Session *m_session;  ///< 所属会话（非拥有）
+            bool          m_isQueued{true}; ///< 是否已排进写队（await_suspend 分配失败时置假）
         };
 
         /**

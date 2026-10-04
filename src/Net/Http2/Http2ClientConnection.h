@@ -283,7 +283,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief flushOutgoing() 的等待体：写权在别人手上时挂起来，等它放开
-         * @details 醒来不带走任何东西——它只看一眼待发缓冲还剩多少，所以等待体不额外带状态。
+         * @details 醒来不带走连接上的任何东西——它只看一眼待发缓冲还剩多少。等待体上那一个 bool
+         *          不是结果而是「这次到底排上了没」：排不上时不能谎报成等到过写权。
          */
         class FlushTurnAwaiter
         {
@@ -305,16 +306,20 @@ namespace AsynGyanis::Net
             /**
              * @brief 把本协程排进写队
              * @param waiter 当前协程句柄
+             * @return true 已入队、将由持有写权的一方叫醒；false 排队失败（内存吃紧），不必挂起
              */
-            void await_suspend(std::coroutine_handle<> waiter) noexcept;
+            bool await_suspend(std::coroutine_handle<> waiter) noexcept;
 
             /// 醒来即完成：接下来由调用方自己再看一眼写权与待发缓冲
-            void await_resume() const noexcept
+            /// @return true 这一轮写权确实等到过；false 排不上写队，调用方应放弃本轮
+            [[nodiscard]] bool await_resume() const noexcept
             {
+                return m_isQueued;
             }
 
         private:
-            Http2ClientConnection *m_connection; ///< 归属连接（非拥有）
+            Http2ClientConnection *m_connection;       ///< 归属连接（非拥有）
+            bool                   m_isQueued{true};   ///< 是否已排进写队（await_suspend 分配失败时置假）
         };
 
         /**
