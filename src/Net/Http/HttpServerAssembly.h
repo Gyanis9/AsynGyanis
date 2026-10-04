@@ -60,7 +60,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 整机限额要摊到几个 worker 进程上（默认 1 = 单进程，不做摊分）
          * @details 每个进程只看得见自己这份账：`maximum_connections`、`maximum_connections_per_ip`、
-         *          `memory_budget_bytes` 与 `rate_limit.rate` 配成整机的数、又起 N 个进程，实际放行的是
+         *          `memory_budget_bytes` 与 `rate_limit.requests_per_second` 配成整机的数、又起 N 个进程，实际放行的是
          *          N 倍。连接数与字节数按进程数向上取整摊到每台，速率按精确除法摊（速率可以是小数，
          *          取整会把 0.5 请求/s 抬成 1）。0 是用法错误（当场拒，不当「不限」）。
          * @note 摊分是近似：POSIX 侧内核按连接把新连接分散给各进程，长连接偏斜时某一台的瞬时并发仍可能

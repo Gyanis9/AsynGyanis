@@ -216,6 +216,9 @@ namespace AsynGyanis::Net
         const auto outcome                      = applyHttpServerConfiguration(rejectingServer, configuration, mismatchedContext);
         ASSERT_FALSE(outcome.has_value()) << "共享桶还是整机速率就直接收下了：那等于放行四倍";
         EXPECT_NE(outcome.error().find("25"), std::string::npos) << "拒因要点名摊后的速率：「" << outcome.error() << "」";
+        // 拒因里点名的配置键必须是**真存在的那一个**：写成 `rate_limit.rate` 这类不存在的键，
+        // 运维照着去配置文件里找会找不到，照着改还会被「未知的配置键」当场拒——补救动作按不下去
+        EXPECT_NE(outcome.error().find("rate_limit.requests_per_second"), std::string::npos) << "拒因要点名 rate_limit 那一段里真实的键名：「" << outcome.error() << "」";
     }
 
     /**

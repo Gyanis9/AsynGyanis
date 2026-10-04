@@ -94,7 +94,7 @@ namespace AsynGyanis::Net
                     (context.sharedRateLimitBucket->tokensPerSecond() != rateShare.requestsPerSecond || context.sharedRateLimitBucket->burstCapacity() != rateShare.burstCapacity))
                 {
                     return std::unexpected(std::format("装配冲突：传入的共享限流桶是 {} 请求/s（桶容量 {}），而配置摊到本进程后应是 {} 请求/s（桶容量 {}）"
-                                                       "（rate_limit.rate={} 摊给 {} 个进程）。"
+                                                       "（rate_limit.requests_per_second={} 摊给 {} 个进程）。"
                                                        "多条通道共用一个桶时，请让那一个与整机配置对得上（或对不上时把速率设为 0）",
                                                        context.sharedRateLimitBucket->tokensPerSecond(), context.sharedRateLimitBucket->burstCapacity(),
                                                        rateShare.requestsPerSecond, rateShare.burstCapacity, configuration.requestsPerSecond, context.workerProcessCount));
