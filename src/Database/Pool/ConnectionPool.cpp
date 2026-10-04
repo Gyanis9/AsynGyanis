@@ -352,11 +352,34 @@ namespace AsynGyanis::Database
             // 截止时刻不在这儿定：它由 acquireAsync() 造出本等待体时给一次，重挂的每轮共用，
             // 因此「反复失败的重试把超时无限顺延」这条路根本不存在；它在入表之前就已写好，
             // 后台线程持同一把锁读它，看见的只会是已写定的值（不是默认的时钟纪元）
-            m_resumeTicket = std::make_shared<ResumeTicket>();
-            m_resumeTicket->handle.store(handle, std::memory_order_release);
-            m_pool->m_asyncWaiters.push_back(this);
-            m_pool->refreshAsyncWaitingCount();
-            m_inList = true;
+            //
+            // 票据与入表这两步都要分配内存（make_shared 与 deque 的新块），而本函数是 noexcept——
+            // 内存吃紧时让 bad_alloc 穿出边界就是 std::terminate，进程带走整个服务的在途请求。
+            // 这里的处置与上面两条「就地放行」同一形：不挂起、调用方拿到空连接，与超时同解
+            // （拿不到连接本来就是它必须走下去的情形），也与 createNewConnection() 里那句
+            // 「工厂要分配所以整段兜住」是同一个约定。
+            // 入表半途失败时把票据一起收回：等待表里没有这条，唤醒方就永远不会读它，留着只会
+            // 让这条等待体带着一张指向自己帧的票据走出本函数。
+            // 补齐路径：本框架的分配探针（tests/TestSupport/AllocationProbe）只能数分配、不能让第 N 次
+            // 失败，而 bad_alloc 没有别的注入点，故这一格眼下给不出用例。要钉它先给探针加一个
+            // 「按次失败」开关，再断言「挂不上表时拿到空连接且不 terminate」。
+            try
+            {
+                m_resumeTicket = std::make_shared<ResumeTicket>();
+                m_resumeTicket->handle.store(handle, std::memory_order_release);
+                m_pool->m_asyncWaiters.push_back(this);
+                m_inList = true;
+                m_pool->refreshAsyncWaitingCount();
+            } catch (...)
+            {
+                // 半途失败要退干净：表里留着一帧已经往下走的协程，唤醒方就会去 resume 它
+                if (m_inList)
+                {
+                    m_pool->removeAsyncWaiterLocked(this);
+                }
+                m_resumeTicket.reset();
+                return false;
+            }
         }
 
         return true;
@@ -515,13 +538,30 @@ namespace AsynGyanis::Database
             {
                 const std::lock_guard lock(m_mutex);
 
-                IdleEntry entry;
-                entry.connection   = std::move(connection);
-                entry.returnedTime = returnedAt;
-                m_idleStack.push_back(std::move(entry));
-                // 通知留在锁内：等待侧回锁后会先复检空闲栈再睡，锁内提交保证两者之间不再插入别的归还
-                m_idleCondition.notify_one();
+                // 先把那一格分配出来、再把连接交进去：deque 的新块分配发生在 IdleEntry 被写入之前，
+                // 因此分配失败时连接还完整握在本函数手里，能按既有的「丢弃」去向结账。
+                // 本函数不是 noexcept，但它唯一的调用形态都在 noexcept 边界上：~PooledConnection
+                // （隐式）走 returnConnectionIfAlive（显式）进来，穿出去就是 std::terminate
+                try
+                {
+                    IdleEntry &slot = m_idleStack.emplace_back();
+                    slot.connection = std::move(connection);
+                    slot.returnedTime = returnedAt;
+                    // 通知留在锁内：等待侧回锁后会先复检空闲栈再睡，锁内提交保证两者之间不再插入别的归还
+                    m_idleCondition.notify_one();
+                } catch (...)
+                {
+                    // 只在分配失败时走到：连接没进栈，出锁之后按丢弃结账
+                }
             }
+        }
+
+        // 空闲栈那一格没分配出来（内存吃紧）：这条连接走「丢弃」那本账——名额退还与叫醒等待者
+        // 都在既有出口里，不另写一遍算术；断开排在两把锁之外，与其他丢弃路径同纪律
+        if (connection)
+        {
+            discardConnection(std::move(connection));
+            wakeWaitersForFreedSlot();
         }
 
         // 恢复投回等待者自己的事件循环，而不是就地跑：归还可能发生在任意线程（工作线程、
