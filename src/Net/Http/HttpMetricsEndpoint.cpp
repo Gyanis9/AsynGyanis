@@ -89,9 +89,12 @@ namespace AsynGyanis::Net
                       "本侧没能把响应完整交给传输层就收口的连接数（写出失败，或仍有字节留在待发缓冲与流控队列；仅 TCP 侧）", stats.writeAbortedConnectionCount);
 
         // 活跃连接数是瞬时量，用 gauge；取值来自连接管理器，见 HttpServer::stats()
+        // 口径要说清：多台监听器共用同一份采集端时这一条是**相加的那一份**（刻意如此，否则抓取随机
+        // 命中一台会看到 1/N 与计数器回落），而下面那条 maximum_connections 是**本监听器**的上限——
+        // 两者不同源，别直接相除当「负载率」；要负载率就按监听器条数折算，或每台各抓各的口
         const std::string activeConnectionsName = makeMetricName(metricNamePrefix, "active_connections");
-        out += std::format("# HELP {} 取快照那一刻的活跃连接数\n# TYPE {} gauge\n{} {}\n", activeConnectionsName, activeConnectionsName, activeConnectionsName,
-                           stats.activeConnectionCount);
+        out += std::format("# HELP {} 取快照那一刻的活跃连接数（多条监听器共用一份采集端时是各台相加）\n# TYPE {} gauge\n{} {}\n", activeConnectionsName, activeConnectionsName,
+                           activeConnectionsName, stats.activeConnectionCount);
 
         // 两个分母：只有分子画不出「离上限还有多远」这种提前预警，只能等人记得配置文件写过什么。
         // 0 的含义各有一条：并发上限 0 = 本监听器不设这道限；单来源上限 0 = 那道闸门没装
