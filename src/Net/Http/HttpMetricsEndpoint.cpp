@@ -2,6 +2,9 @@
 
 #include "Base/Log/Sinks/AsyncSink.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
+#include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Router.h"
 
 #include <array>
 #include <cstddef>
@@ -225,6 +228,29 @@ namespace AsynGyanis::Net
 
         out += "]}";
         return out;
+    }
+
+    void registerReadinessEndpoint(Router &router, const std::string_view path, std::function<bool()> isAccepting)
+    {
+        router.get(std::string(path),
+                   [isAccepting = std::move(isAccepting)](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.setHeader("content-type", "application/json");
+                       if (isAccepting())
+                       {
+                           response.setStatus(200);
+                           response.setBody(kReadinessReadyResponseBody);
+                       } else
+                       {
+                           // retry-after 与另两处 503 同一口径（在途预算超量、h3 还没接上路由器）：排空期
+                           // 里这台不会自己变回就绪，但探针按这个间隔再问一次的代价是零，而缺这一格的
+                           // 采集端会把它当成「服务出故障」而不是「正在收工」
+                           response.setStatus(503);
+                           response.setHeader("retry-after", "1");
+                           response.setBody(kReadinessDrainingResponseBody);
+                       }
+                       co_return;
+                   });
     }
 
 } // namespace AsynGyanis::Net

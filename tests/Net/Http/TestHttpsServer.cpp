@@ -1313,6 +1313,29 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief HTTPS 侧也挂得上就绪探针：TLS 只改「怎么连上来」，接不接新活这一格与明文同一判据
+     * @details 单独一条而不是塞进上面那条端点用例：那条钉着「第几次抓取应当有几条请求」这类手算的
+     *          绝对值，多插一条请求就要连着改几处计数——把判据挪进别人的算术里最容易改错
+     */
+    TEST(HttpsServer, ExposesReadinessEndpointOnTlsPath)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
+                                          [](HttpsServer &server) { server.enableReadinessEndpoint(); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        TlsLoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::string receivedText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /readyz HTTP/1.1"), kWaitTimeout)) << "就绪探针请求未能写入";
+        ASSERT_TRUE(client.waitForTextOccurrences(receivedText, kReadinessReadyResponseBody, 1, kWaitTimeout)) << "就绪端点没有回固定正文：「" << receivedText << "」";
+        EXPECT_NE(receivedText.find("HTTP/1.1 200"), std::string::npos) << "还在接受新连接时该回 200：" << receivedText;
+    }
+
+    /**
      * @brief 客户端校验主机名：证书名字对得上就正常握手并拿到响应
      * @details 夹具证书 test_ip_cert.pem 是仓库预生成的自签证书，SAN 只有 IP:127.0.0.1。
      *          用例把它同时当「服务端身份」与「受信根」，链校验必然通过——能过就只说明客户端走的是

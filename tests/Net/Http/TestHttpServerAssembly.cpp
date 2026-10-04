@@ -88,8 +88,8 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：expose_metrics=true 装配后，/metrics、/healthz、/debug/loops 三个运维面都能答
-     * @details 这条键此前没有任何消费方：配置里打勾、端点一个都不注册。三件套同开是因为它们都不鉴权，
+     * @brief 钉住：expose_metrics=true 装配后，/metrics、/healthz、/readyz、/debug/loops 四个运维面都能答
+     * @details 这条键此前没有任何消费方：配置里打勾、端点一个都不注册。四件套同开是因为它们都不鉴权，
      *          只开其一会让「抓不到数」与「以为没暴露」互相伪装
      */
     TEST(HttpServerAssembly, RegistersOperationEndpointsWhenConfigured)
@@ -112,14 +112,18 @@ namespace AsynGyanis::Net
         const std::string healthText = fetchPath(fixture.listeningPort(), "/healthz");
         EXPECT_NE(healthText.find("HTTP/1.1 200"), std::string::npos) << healthText;
 
+        const std::string readinessText = fetchPath(fixture.listeningPort(), "/readyz");
+        EXPECT_NE(readinessText.find("HTTP/1.1 200"), std::string::npos) << readinessText;
+
         const std::string loopsText = fetchPath(fixture.listeningPort(), "/debug/loops");
         EXPECT_NE(loopsText.find("HTTP/1.1 200"), std::string::npos) << loopsText;
     }
 
     /**
-     * @brief 钉住：配了令牌的运维端点，没带对凭据进不来，而 /healthz 仍不查
-     * @details /metrics 与 /debug/loops 各钉「缺凭据 401」「带错 401」「带对 200」，/healthz 钉「无凭据仍 200」——
-     *          这条不对称是刻意的：进程存活探针要能被编排器无凭据访问，给它加令牌只会让人把探针关掉
+     * @brief 钉住：配了令牌的运维端点，没带对凭据进不来，而 /healthz 与 /readyz 仍不查
+     * @details /metrics 与 /debug/loops 各钉「缺凭据 401」「带错 401」「带对 200」，/healthz 与 /readyz
+     *          钉「无凭据仍 200」——这条不对称是刻意的：存活探针与就绪探针都要能被编排器无凭据访问，
+     *          给探针加令牌只会让人把探针关掉
      */
     TEST(HttpServerAssembly, GuardsOperationEndpointsWithBearerToken)
     {
@@ -151,13 +155,16 @@ namespace AsynGyanis::Net
 
         const std::string healthWithoutToken = fetchPath(fixture.listeningPort(), "/healthz");
         EXPECT_NE(healthWithoutToken.find("HTTP/1.1 200"), std::string::npos) << "存活探针不该被鉴权挡住：" << healthWithoutToken;
+
+        const std::string readinessWithoutToken = fetchPath(fixture.listeningPort(), "/readyz");
+        EXPECT_NE(readinessWithoutToken.find("HTTP/1.1 200"), std::string::npos) << "就绪探针不该被鉴权挡住：" << readinessWithoutToken;
     }
 
     /**
      * @brief 钉住：配了管理口端口号时，业务口上一个运维端点都不挂
      * @details 这条钉的是「收口真的收口」：端点留在业务口上就等于跟着业务口一起公开（业务口常开在
      *          0.0.0.0），而只起一台管理监听器不算证明——必须证明业务口那边确实空了。
-     *          三个路径都钉 404：只钉 /metrics 会放过「漏挂 /debug/loops」这一半
+     *          四个路径都钉 404：只钉 /metrics 会放过「漏挂 /debug/loops」与「漏挂 /readyz」那一半
      */
     TEST(HttpServerAssembly, KeepsOperationEndpointsOffTheBusinessPortWhenAdminPortIsSet)
     {
@@ -173,7 +180,7 @@ namespace AsynGyanis::Net
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
 
-        for (const std::string_view path: {"/metrics", "/healthz", "/debug/loops"})
+        for (const std::string_view path: {"/metrics", "/healthz", "/readyz", "/debug/loops"})
         {
             const std::string text = fetchPath(fixture.listeningPort(), path);
             EXPECT_NE(text.find("HTTP/1.1 404"), std::string::npos) << path << " 仍挂在业务口上：" << text;

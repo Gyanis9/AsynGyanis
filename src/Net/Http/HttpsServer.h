@@ -246,6 +246,17 @@ namespace AsynGyanis::Net
         void enableHealthEndpoint(std::string_view path = "/healthz");
 
         /**
+         * @brief 在本服务器上注册就绪探针端点：还在接受新连接回 200，已经停了回 503
+         * @details 判据与渲染都在 `registerReadinessEndpoint()`，与明文侧共用同一份实现；它测的是
+         *          「还能不能接新活」，与测存活性的 `/healthz` 各问一格，停机排空期间这条先变。
+         * @param path 端点路径，必须以 `/` 开头；默认 `/readyz`
+         * @throws Base::InvalidArgumentException 路径不以 `/` 开头
+         * @note 必须在 start() 之前调用；与 `/healthz` 同样不查运维令牌（探针方拿不到凭据）
+         * @see HttpServer::enableReadinessEndpoint(), registerReadinessEndpoint()
+         */
+        void enableReadinessEndpoint(std::string_view path = "/readyz");
+
+        /**
          * @brief 在本服务器上注册事件循环观测端点（/debug/loops）
          * @details 与 HttpServer::enableLoopDiagnosticsEndpoint() 同一份正文：报的是**进程内**所有
          *          事件循环的画像，不分 TLS 与否，两条服务路径注册哪个都看到同一张表。

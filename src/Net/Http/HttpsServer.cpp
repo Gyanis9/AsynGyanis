@@ -200,6 +200,17 @@ namespace AsynGyanis::Net
                      });
     }
 
+    void HttpsServer::enableReadinessEndpoint(const std::string_view path)
+    {
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpsServer: 就绪探针端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+
+        // 与明文侧同一份实现、同一个判据：TLS 只是通路，「还在不在接新连接」这件事与加密无关
+        registerReadinessEndpoint(m_router, path, [this] { return isRunning(); });
+    }
+
     void HttpsServer::enableLoopDiagnosticsEndpoint(const std::string_view path)
     {
         if (path.empty() || path.front() != '/')

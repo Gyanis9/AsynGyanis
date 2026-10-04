@@ -5,8 +5,12 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/AsyncExecutor.h"
+#include "Core/Coroutine/Task.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "HttpTestSupport.h"
+#include "Net/Http/HttpRequest.h"
+#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include <gtest/gtest.h>
@@ -245,6 +249,7 @@ namespace AsynGyanis::Net
         EXPECT_THROW(server.enableMetricsEndpoint("metrics"), Base::InvalidArgumentException);
         EXPECT_THROW(server.enableMetricsEndpoint(""), Base::InvalidArgumentException);
         EXPECT_THROW(server.enableHealthEndpoint("healthz"), Base::InvalidArgumentException);
+        EXPECT_THROW(server.enableReadinessEndpoint("readyz"), Base::InvalidArgumentException);
     }
 
     /**
@@ -266,6 +271,73 @@ namespace AsynGyanis::Net
 
         EXPECT_NO_THROW(server.enableMetricsEndpoint("/metrics", "asyn_srv")) << "合法前缀不该被这道闸挡下";
         EXPECT_NO_THROW(server.enableMetricsEndpoint("/metrics-second")) << "默认前缀与空前缀是本类文档写明的用法";
+    }
+
+    /**
+     * @brief 钉住：就绪端点按「还在不在接新连接」回 200 或 503，两档各带上该带的头部
+     * @details 判据由调用方交进来（服务器侧那一份是 `TcpServer::isRunning()`），这里用一个可翻的开关
+     *          把两档都跑到。排空那段在真服务器上要把监听停下来才进得去，而停下之后新连接也进不来，
+     *          端到端反而问不到那一格——因此两档在路由器这一层钉，端到端只钉「还在接活」那一档
+     */
+    TEST(HttpReadinessEndpoint, ReportsReadyWhileAcceptingAndDrainingAfterStop)
+    {
+        Router router;
+        bool   isAcceptingNewConnections = true;
+        registerReadinessEndpoint(router, "/readyz", [&isAcceptingNewConnections] { return isAcceptingNewConnections; });
+
+        const auto drive = [](Router &target, HttpRequest &request, HttpResponse &response)
+        {
+            Core::Task<> routeTask = target.route(request, response);
+            routeTask.handle().resume();
+            EXPECT_TRUE(routeTask.isReady()) << "就绪端点的处理函数不该挂起";
+        };
+
+        {
+            HttpRequest  request;
+            HttpResponse response;
+            request.setMethod(HttpMethod::GET);
+            request.setUri("/readyz");
+            request.setHttpVersion("HTTP/1.1");
+            drive(router, request, response);
+
+            EXPECT_EQ(response.status(), 200) << "还在接受新连接时该回 200";
+            EXPECT_EQ(response.body(), kReadinessReadyResponseBody);
+            ASSERT_EQ(response.headerValues("content-type").size(), 1U);
+            EXPECT_EQ(response.headerValues("content-type").front(), "application/json");
+            EXPECT_TRUE(response.headerValues("retry-after").empty()) << "还在接活时不该给对端「稍后再试」";
+        }
+
+        isAcceptingNewConnections = false;
+        {
+            HttpRequest  request;
+            HttpResponse response;
+            request.setMethod(HttpMethod::GET);
+            request.setUri("/readyz");
+            request.setHttpVersion("HTTP/1.1");
+            drive(router, request, response);
+
+            EXPECT_EQ(response.status(), 503) << "停止接受新连接之后该回 503";
+            EXPECT_EQ(response.body(), kReadinessDrainingResponseBody);
+            ASSERT_EQ(response.headerValues("retry-after").size(), 1U) << "503 要告诉探针隔多久再问一次";
+            EXPECT_EQ(response.headerValues("retry-after").front(), "1");
+        }
+    }
+
+    /**
+     * @brief 端到端：还在接受新连接时，回环上抓 /readyz 得到 200 + ready
+     */
+    TEST(HttpReadinessEndpoint, ServesReadyOverLoopbackWhileAccepting)
+    {
+        const ServerConfigurator configureServer = [](TestHttpServer &server) { server.enableReadinessEndpoint(); };
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+        LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        std::string receivedText;
+        ASSERT_TRUE(client.sendText("GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", kEndpointTimeout));
+        ASSERT_TRUE(client.waitForText(receivedText, kReadinessReadyResponseBody, kEndpointTimeout)) << "就绪探针未得到应答";
+        EXPECT_NE(receivedText.find("HTTP/1.1 200"), std::string::npos) << receivedText;
     }
 
     /**

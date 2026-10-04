@@ -1474,6 +1474,19 @@ namespace AsynGyanis::Net
                      });
     }
 
+    void HttpServer::enableReadinessEndpoint(const std::string_view path)
+    {
+        // 与另两个端点同样的形状校验：不以 / 开头的路径永远匹配不到，静默注册就是给人一个假象
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpServer: 就绪探针端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+
+        // 判据现读 isRunning()：排空没有推送口，编排器只能靠轮询问出来，缓存一份就会把「已经停了」
+        // 晚一拍报出去
+        registerReadinessEndpoint(m_router, path, [this] { return isRunning(); });
+    }
+
     void HttpServer::enableLoopDiagnosticsEndpoint(const std::string_view path)
     {
         // 与另两个端点同样的形状校验：不以 / 开头的路径永远匹配不到，静默注册就是给人一个假象

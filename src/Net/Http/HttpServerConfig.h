@@ -72,11 +72,11 @@ namespace AsynGyanis::Net
          *       读 0、`HttpMemoryBudgetTest.ChargesStreamingIntakeOnTheLedgerBeforeDispatch` 读正文全长）
          */
         std::size_t memoryBudgetBytes{0};
-        bool        exposeMetrics{false}; ///< 是否注册 /metrics 与 /healthz
+        bool        exposeMetrics{false}; ///< 是否注册 /metrics、/healthz、/readyz、/debug/loops
         /**
          * @brief 运维端点的 Bearer 令牌；空 = 不鉴权
-         * @details 只保护 `/metrics` 与 `/debug/loops`（内部计数与循环状态），`/healthz` 刻意不管：
-         *          进程存活探针要能被编排器无凭据访问。端点开到 `0.0.0.0` 上而不给令牌，等于把
+         * @details 只保护 `/metrics` 与 `/debug/loops`（内部计数与循环状态），`/healthz` 与 `/readyz` 刻意不管：
+         *          进程存活探针与就绪探针都要能被编排器无凭据访问。端点开到 `0.0.0.0` 上而不给令牌，等于把
          *          「现在有多少连接、每条循环在干什么」公开发出去。
          * @note 这条只能写在配置文件里：命令行上的令牌会进 shell 历史与进程列表，等于把秘密交给运维通道
          */

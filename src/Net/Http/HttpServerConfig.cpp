@@ -368,7 +368,7 @@ namespace AsynGyanis::Net
         {
             throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".rate_limit.burst_capacity", "启用限流时容量必须不小于 1，否则任何请求都放行不了");
         }
-        // 同一条理由的另一面：配了运维端点令牌却没开那三个端点，闸门就保护不到任何东西——
+        // 同一条理由的另一面：配了运维端点令牌却没开 expose_metrics，闸门就保护不到任何东西——
         // 看起来像「已配鉴权」而实际无人在用它，是最难发现的一类死配置
         if (!configuration.opsBearerToken.empty() && !configuration.exposeMetrics)
         {

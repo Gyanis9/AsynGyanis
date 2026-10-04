@@ -479,10 +479,12 @@ int main(int argc, char **argv)
         LOG_INFO("  --config 的 tracing 段开链路记录：tracing.enabled + service_name 起一节 SERVER，");
         LOG_INFO("            tracing.file.path 每节一行 JSON 落盘、tracing.otlp.endpoint 按 OTLP/HTTP 发给采集端；");
         LOG_INFO("            比例、批量与时限分别是 sample_ratio / batch_span_count / export_interval_ms");
-        LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）、GET /healthz 与 GET /debug/loops（进程内每条事件循环一行的 JSON，");
+        LOG_INFO("  --metrics 暴露 GET /metrics（Prometheus 文本）、GET /healthz、GET /readyz 与 GET /debug/loops（进程内每条事件循环一行的 JSON，");
         LOG_INFO("          看哪条循环被处理器占住）；开了 --h3 时 h3 的请求数/状态码类一并计入");
-        LOG_INFO("          这三项的收口只能写在 --config 的 server 段里：ops_bearer_token 给 /metrics 与 /debug/loops");
-        LOG_INFO("          挂一道 Bearer 闸门（/healthz 刻意不挡，存活探针要能被编排器无凭据访问）；");
+        LOG_INFO("          /readyz 只问「还在不在接新连接」：stop() 或 drain() 之后回 503，正在排空在途请求的这段");
+        LOG_INFO("          时间里编排器就该把这台摘出负载，而 /healthz 仍回 200（进程还在转，杀掉它才会真丢请求）");
+        LOG_INFO("          这四项的收口只能写在 --config 的 server 段里：ops_bearer_token 给 /metrics 与 /debug/loops");
+        LOG_INFO("          挂一道 Bearer 闸门（/healthz 与 /readyz 刻意不挡，存活与就绪探针要能被编排器无凭据访问）；");
         LOG_INFO("          metrics_port + metrics_address 让运维端点另起一台只听指定地址的服务器（默认回环），");
         LOG_INFO("          多进程 --workers 下每个进程各听 metrics_port+序号，采集端按进程抓");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
@@ -1075,7 +1077,7 @@ int main(int argc, char **argv)
         listeningServers.push_back(adminServer.get());
         servers.push_back(std::move(adminServer));
         serverLoopIndexes.push_back(0);
-        LOG_INFO_FMT("运维端点单独听在 {}:{}（业务口上不注册这三个端点）", configuration.metricsAddress, adminPort);
+        LOG_INFO_FMT("运维端点单独听在 {}:{}（业务口上不注册这四个端点）", configuration.metricsAddress, adminPort);
     }
 
     // HTTP/3 与 h1/h2 共存：它走 UDP，与上面的 TCP 端用同一个端口号互不干扰。

@@ -452,6 +452,7 @@ namespace
         SessionRead metricsFirst;            ///< 第一次 /metrics
         SessionRead metricsSecond;           ///< 第二次 /metrics
         SessionRead health;                  ///< /healthz
+        SessionRead readiness;               ///< /readyz
         SessionRead pipelined;               ///< 一条连接上连发三条（限额服务器）
         SessionRead idleClosed;              ///< 空闲超时收口的连接（受护服务器）
         SessionRead rateFirst;               ///< 令牌桶第一条
@@ -837,6 +838,7 @@ int main(const int argc, char **argv)
             server->router().addMiddleware(Net::compressionMiddleware());
             server->enableMetricsEndpoint();
             server->enableHealthEndpoint();
+            server->enableReadinessEndpoint();
         }
         return server;
     };
@@ -933,6 +935,7 @@ int main(const int argc, char **argv)
     g_observations.hub           = requestChain(mainPort, {webSocketHandshake({}, "/ws/hub"), makeClientFrame(0x8, "")});
     g_observations.metricsFirst  = requestOnce(mainPort, plainRequest("GET", "/metrics"));
     g_observations.health        = requestOnce(mainPort, plainRequest("GET", "/healthz"));
+    g_observations.readiness     = requestOnce(mainPort, plainRequest("GET", "/readyz"));
     g_observations.metricsSecond = requestOnce(mainPort, plainRequest("GET", "/metrics"));
 
     // —— 静态文件：请求路径不在路由表里时，兜底路由才去磁盘上找 ——
@@ -1061,6 +1064,7 @@ int main(const int argc, char **argv)
     samples.check(!metricsResponses.empty() && !laterMetricsResponses.empty() && metricsResponses.front().body != laterMetricsResponses.front().body,
                   "两次抓取的指标正文不同（计数确实随请求推进）");
     samples.check(firstStatusOf(observations.health) == 200, "/healthz 回 200");
+    samples.check(firstStatusOf(observations.readiness) == 200, "/readyz 在接新连接期间回 200");
 
     const auto pipelinedResponses = splitResponses(observations.pipelined.bytes);
     // 留一行现场：收口形态是本步最不容易读出来的信息，光看「1 步没过」分不出探针没等够还是连接被复位

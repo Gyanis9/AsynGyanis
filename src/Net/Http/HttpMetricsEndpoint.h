@@ -16,12 +16,14 @@
 
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace AsynGyanis::Net
 {
+    class Router;
     /// /debug/loops 的 content-type：正文是 JSON
     inline constexpr std::string_view kLoopDiagnosticsContentType = "application/json";
     /// /metrics 的 content-type：Prometheus 文本展示格式 0.0.4；显式声明 UTF-8，因为 HELP 文本是中文
@@ -29,6 +31,11 @@ namespace AsynGyanis::Net
 
     /// /healthz 的应答正文：固定的最小 JSON，探针与人都能一眼看懂
     inline constexpr std::string_view kHealthCheckResponseBody = R"({"status":"ok"})";
+
+    /// /readyz 在「还在接受新连接」时的应答正文
+    inline constexpr std::string_view kReadinessReadyResponseBody = R"({"status":"ready"})";
+    /// /readyz 在「已经停止接受新连接、正在排空在途请求」时的应答正文（503）
+    inline constexpr std::string_view kReadinessDrainingResponseBody = R"({"status":"draining"})";
 
     /**
      * @brief 把一次统计快照渲染成 Prometheus 文本格式（exposition format 0.0.4）
@@ -73,5 +80,25 @@ namespace AsynGyanis::Net
      */
     [[nodiscard]] ASYN_NET_API std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops, std::size_t unregisteredLoopCount,
                                                                      std::chrono::steady_clock::time_point nowMoment);
+
+    /**
+     * @brief 注册就绪探针端点：还在接受新连接回 200，已经停了回 503
+     *
+     * @details HTTP 与 HTTPS 两台服务器共用这一份实现（两条各写一遍迟早有一处漏改）。判据只有一格：
+     *          本端此刻还在不在接受新连接——`TcpServer::stop()` 置掉运行标志并关掉监听器，而已建立的
+     *          连接继续跑到自然结束，那一段就是「排空」。编排器要在这段里把这台摘出负载，而不是等
+     *          连接被强关才发现。
+     *
+     *          它与 `/healthz` 的分工是刻意的，两条不能互相顶替：存活性问「进程还在不在转」，停机排空
+     *          期间答案仍是「在」（给探活口回 503 会让编排器直接把进程杀掉，比不报更糟）；就绪性问
+     *          「还能不能接新活」，那正是先变的那一格。两条都**不查**运维令牌，理由同 `/healthz`：
+     *          探针方拿不到凭据，加闸的结果是探针被人关掉。
+     *
+     * @param router 目标路由器；与另两个端点同样必须在 start() 之前注册
+     * @param path 端点路径，形状校验由调用方做（报错文案要点名是哪个服务器）
+     * @param isAccepting 本端此刻是否仍在接受新连接，端点在每次抓取时现读它，不做缓存
+     * @see HttpServer::enableReadinessEndpoint(), HttpsServer::enableReadinessEndpoint()
+     */
+    ASYN_NET_API void registerReadinessEndpoint(Router &router, std::string_view path, std::function<bool()> isAccepting);
 
 } // namespace AsynGyanis::Net

@@ -291,13 +291,31 @@ namespace AsynGyanis::Net
          *
          * @details 应答固定为 200 + `{"status":"ok"}`。它测的是**存活性**：这个响应由事件循环里的
          *          会话协程生成，能答出来就说明循环在转、连接还能被服务。它不表示「依赖都健康」
-         *          （本框架不掌握下游依赖），也不区分「正在 drain」——那需要暴露停机期状态，留作细化项。
+         *          （本框架不掌握下游依赖），也**不区分「正在 drain」**——那是就绪性，停机排空期间
+         *          进程还活着、连接还在服务，这一格回 503 会让编排器直接把进程杀掉。要问「还能不能
+         *          接新活」请看 enableReadinessEndpoint()。
          *
          * @param path 端点路径，必须以 `/` 开头；默认 `/healthz`
          * @note 与指标端点同样默认不开，是否需要以及暴露给谁由部署方决定
-         * @see enableMetricsEndpoint(), kHealthCheckResponseBody
+         * @see enableMetricsEndpoint(), enableReadinessEndpoint(), kHealthCheckResponseBody
          */
         void enableHealthEndpoint(std::string_view path = "/healthz");
+
+        /**
+         * @brief 在本服务器上注册就绪探针端点：还在接受新连接回 200，已经停了回 503
+         *
+         * @details 判据取自 `TcpServer::isRunning()`：`stop()`（以及 `drain()` 的第一步）关掉监听器
+         *          并把这一格置假，而已建立的连接继续服务到自然结束——那一段正是编排器要用来把这台
+         *          摘出负载的窗口。渲染与判定住在 `registerReadinessEndpoint()`，HTTPS 侧共用同一份。
+         *
+         *          与 `/healthz` 一样**不查**运维令牌：编排器的探针拿不到凭据，加闸的结局是探针被人
+         *          关掉，比暴露「这台在不在接活」更糟。
+         *
+         * @param path 端点路径，必须以 `/` 开头；默认 `/readyz`
+         * @note 默认不开，与另两个端点同一条纪律；必须在 start() 之前调用
+         * @see enableHealthEndpoint(), registerReadinessEndpoint(), TcpServer::isRunning()
+         */
+        void enableReadinessEndpoint(std::string_view path = "/readyz");
 
         /**
          * @brief 在本服务器上注册事件循环观测端点（/debug/loops）
