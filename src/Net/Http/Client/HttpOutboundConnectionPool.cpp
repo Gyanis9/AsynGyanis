@@ -311,6 +311,7 @@ namespace AsynGyanis::Net
 
     void HttpOutboundConnectionPool::adoptHttp3(const HttpOutboundEndpointKey &endpointKey, std::shared_ptr<Http3OutboundLink> link)
     {
+        forgetDeadLinks();
         if (link == nullptr || !link->isHealthy())
         {
             return; // 不可用的不收：最后一个持有者放手时通路随之关掉
@@ -379,8 +380,42 @@ namespace AsynGyanis::Net
         return HttpEstablishmentAwait(m_establishments, establishmentKeyOf(endpointKey), loop);
     }
 
+    void HttpOutboundConnectionPool::forgetDeadLinks() noexcept
+    {
+        // 死链原先只在「有人再来取那一格」时才摘（acquireHttp2/acquireHttp3 里各判一次）。于是一台
+        // 此后不再被访问的端点，会把一条已经废掉的连接一直留在表里，直到 closeAll()：池握着 shared_ptr，
+        // 而废掉不等于关掉——套接字描述符、HPACK/QPACK 动态表与收发缓冲都跟着活着。
+        // 描述符是硬资源：一个抓取多个主机的调用方（爬虫、代理、按用户给的 URL 出站的业务）
+        // 攒到上限就是「再也建不出新连接」，而这不是配额，是漏。
+        //
+        // 挂在收链这一步而不是取用/归还路径：收链每建一条新连接才走一次，不在每请求的热路径上；
+        // 扫的是全表，n = 本进程缓存过的端点数（一台一条），量级就是个位数到几十
+        for (auto entry = m_http2ByEndpoint.begin(); entry != m_http2ByEndpoint.end();)
+        {
+            if (entry->second->isHealthy())
+            {
+                ++entry;
+                continue;
+            }
+            // 只放手不关掉：在途请求还握着这条引用，关掉别人的连接不是这一层能替它做的决定
+            // （空闲的那条由最后一个持有者放手时自己关掉，与 adopt 里「不可用的不收」同一处置）
+            entry = m_http2ByEndpoint.erase(entry);
+        }
+
+        for (auto entry = m_http3ByEndpoint.begin(); entry != m_http3ByEndpoint.end();)
+        {
+            if (entry->second->isHealthy())
+            {
+                ++entry;
+                continue;
+            }
+            entry = m_http3ByEndpoint.erase(entry);
+        }
+    }
+
     void HttpOutboundConnectionPool::adoptHttp2(const HttpOutboundEndpointKey &endpointKey, std::shared_ptr<Http2ClientConnection> connection)
     {
+        forgetDeadLinks();
         if (connection == nullptr || !connection->isHealthy())
         {
             return; // 不可用的那条不收：最后一个持有者放手时通路随之关掉

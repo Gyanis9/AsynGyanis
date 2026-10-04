@@ -416,6 +416,14 @@ namespace AsynGyanis::Net
             {
                 return m_linkCountAfterEvict;
             }
+            [[nodiscard]] bool isDeadLinkStillCached() const noexcept
+            {
+                return m_isDeadLinkStillCached;
+            }
+            [[nodiscard]] std::size_t linkCountAfterPruneOnAdopt() const noexcept
+            {
+                return m_linkCountAfterPruneOnAdopt;
+            }
             [[nodiscard]] const Http3ClientResponse &response() const noexcept
             {
                 return m_response;
@@ -459,6 +467,25 @@ namespace AsynGyanis::Net
                 m_isAcquireAfterCloseNull = (m_pool.acquireHttp3(key) == nullptr);
                 m_linkCountAfterEvict     = m_pool.idleHttp3LinkCount();
 
+                // 死链原先要等「那个端点再被取用」才摘，于是一台此后不再被访问的主机，会把一条废链
+                // 连同它的 UDP 端口与 QPACK 状态一直留到 closeAll()。现在收新链那一步扫一遍全表：
+                // 这里造一条「关掉后再也没人取」的死链，再给另一个端点收一条活链，死链必须自己消失
+                const HttpOutboundEndpointKey deadKey{std::string{"127.0.0.2"}, m_port, true};
+                const HttpOutboundEndpointKey otherKey{std::string{"127.0.0.3"}, m_port, true};
+                auto                          dead  = std::make_shared<Http3OutboundLink>(m_loop, makeLinkConfiguration(m_port));
+                auto                          other = std::make_shared<Http3OutboundLink>(m_loop, makeLinkConfiguration(m_port));
+                if (co_await dead->connect(address))
+                {
+                    m_pool.adoptHttp3(deadKey, dead);
+                    dead->http3().close(); // 关掉而不再取用：它就这样留在表上，等别人来清
+                    m_isDeadLinkStillCached = (m_pool.idleHttp3LinkCount() == 1U);
+                }
+                if (co_await other->connect(address))
+                {
+                    m_pool.adoptHttp3(otherKey, other);
+                }
+                m_linkCountAfterPruneOnAdopt = m_pool.idleHttp3LinkCount();
+
                 m_pool.closeAll();
                 first.reset();
                 second.reset();
@@ -485,6 +512,8 @@ namespace AsynGyanis::Net
             bool                        m_isFirstLinkAfterSecondAdopt{false}; ///< 再塞第二条之后的链路条数（应仍为 1）
             std::size_t                 m_inFlightAfterRequest{0U};           ///< 请求收完之后的最大在途流数（应为 0）
             std::size_t                 m_linkCountAfterEvict{0U};            ///< 判死之后的链路条数（应为 0）
+            bool                        m_isDeadLinkStillCached{false};       ///< 关掉但没人再取用的那条是否仍留在表上（前提：应当留得住）
+            std::size_t                 m_linkCountAfterPruneOnAdopt{0U};     ///< 给另一个端点收进一条活链之后的条数（死链应已被清）
             std::atomic<bool>           m_isFinished{false};                  ///< 结果已就位
         };
 
@@ -961,12 +990,18 @@ namespace AsynGyanis::Net
 
 
     /**
-     * @brief 出站池按与 h2 同一形状管 h3 链路：取回同一条、一台主机只留一条、判死即抹掉
+     * @brief 出站池按与 h2 同一形状管 h3 链路：取回同一条、一台主机只留一条、判死即抹掉、废链不占位
      * @details `Http3OutboundLink` 存在的理由是**共同持有**——h3 会话只借用它的 QUIC 连接，池与调用方
-     *          各拿一半就会松开一条还在用的链路。这里连池的三条契约一起判：取回的就是放进去那条
-     *          （复用发生在流上，不摘走）、第二条链路不占位置、关掉之后取既拿到空也把表清干净。
+     *          各拿一半就会松开一条还在用的链路。这里连池的四条契约一起判：取回的就是放进去那条
+     *          （复用发生在流上，不摘走）、第二条链路不占位置、关掉之后取既拿到空也把表清干净、
+     *          以及**不再被访问的那台主机的废链要在下一次收链时被清掉**（判死原先只在取用那一格发生，
+     *          一台此后没人访问的主机就把 UDP 端口与 QPACK 状态一直占到 closeAll()）。
      * @note 证伪：把 `adoptHttp3` 的「已有货就不收」去掉 → 第二条链路那条判据红；把 `acquireHttp3`
-     *       里的健康判定删掉 → 最后两条判据一起红（把废链交回调用方）。
+     *       里的健康判定删掉 → 最后两条判据一起红（把废链交回调用方）；把 `forgetDeadLinks` 的扫描
+     *       清空 → 只红「收进活链之后死链必须消失」这一条，前提那条仍然绿（它钉的就是死链确实留得住）。
+     * @note 残余：这条端到端只钉 h3 那张表。`forgetDeadLinks` 里 h2 的循环是同一段函数的另一半，
+     *       把它删掉本文件仍然全绿——要钉住得在 h2 侧照这里搭一条「关掉后再不取用」的链路，
+     *       代价与本条相当，留作单独一轮。
      */
     TEST(Http3OutboundLink, IsPooledAndEvictedLikeTheHttp2Side)
     {
@@ -986,6 +1021,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(roundTrip.linkCountAfterSecondAdopt(), 1U) << "同一台主机留了两条 h3 链路：多占一个 UDP 端口与一份 QPACK 状态，换不来吞吐";
         EXPECT_TRUE(roundTrip.isAcquireAfterCloseNull()) << "链路已经关掉，池还把同一条交出去";
         EXPECT_EQ(roundTrip.linkCountAfterEvict(), 0U) << "判死的链路留在表上：下一次取用会拿到一条废链";
+        EXPECT_TRUE(roundTrip.isDeadLinkStillCached()) << "用例前提：关掉而没人再取用的那条应当仍然留在表上（否则下面那条判据是空的）";
+        EXPECT_EQ(roundTrip.linkCountAfterPruneOnAdopt(), 1U) << "另一台主机收进活链之后，那台不再被访问的死链还占着表：它握着 UDP 端口与 QPACK 状态，"
+                                                                 "攒下去就是「再也建不出新连接」，而不是配额";
     }
 
 

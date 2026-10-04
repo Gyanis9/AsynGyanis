@@ -303,6 +303,16 @@ namespace AsynGyanis::Net
         void closeAll() noexcept;
 
         /**
+         * @brief 把两张 h2/h3 表里已经废掉的连接摘出缓存
+         * @details 判死原先只在「有人再来取那一格」时发生，于是一台不再被访问的端点会把废链一直留到
+         *          `closeAll()`：池握着共享引用，而**废掉不等于关掉**——描述符与 HPACK/QPACK 的账都还
+         *          活着。描述符是硬资源，一个按用户给的地址出站的调用方攒到上限就是「再也建不出新连接」。
+         *          收链这一步（每建一条新连接才走一次，不在每请求的热路径上）顺手扫一遍全表；
+         *          只放手不关掉，因为在途请求还握着同一条引用，关掉别人的连接不是这一层的决定
+         */
+        void forgetDeadLinks() noexcept;
+
+        /**
          * @brief 占下这个端点的「建连」资格：占到的人负责建，没占到的人等
          * @param endpointKey 目标身份
          * @return true 本次成为领导者：去建连，每条出口都**必须** settleEstablishment()
