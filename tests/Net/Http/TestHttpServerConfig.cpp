@@ -230,6 +230,41 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：时限的上界按「能与当前时刻相加」算，而不是按「装得下」算
+     * @details 这四个 `*_timeout_ms` 都最终与 steady_clock 的当前时刻相加。只放行到
+     *          `std::chrono::milliseconds::rep` 的上限（约 9.2e18 毫秒）时，超过它一半的取值在相加
+     *          那一刻折回成过去：判据变成「已经到期」，于是每条连接在第一次空闲清扫里就被掐断，
+     *          而配置文件看着毫无问题。本仓对同族的两档都拒过（QUIC 的空闲超时、链路的导出间隔、
+     *          池的借用等待），这四键此前是漏的一格。
+     * @details 反向对照给的是一个数量级以下、仍然夸张到没人会用的取值：上界不能紧到把合法的
+     *          「几天不超时」也一起拒掉，而两侧（MSVC 100ns、libstdc++ 1ns）都要放行它。
+     */
+    TEST(HttpServerConfig, RejectsTimeoutsThatCannotBeAddedToTheCurrentClock)
+    {
+        const Base::ConfigObject overBound{
+                {"limits", object(Base::ConfigObject{{"idle_timeout_ms", integer(1000000000000000)}})},
+        };
+
+        try
+        {
+            static_cast<void>(readHttpServerConfiguration(makeRootDocument(overBound)));
+            FAIL() << "加不到当前时刻上的时限应当在读配置那一刻就被拒";
+        } catch (const Base::ConfigValidationException &exception)
+        {
+            EXPECT_EQ(exception.key(), "server.limits.idle_timeout_ms");
+            // 上限的具体数字随 tick 周期而变（两侧不同），因此只点名「是上限」而不写死数值
+            EXPECT_NE(std::string(exception.what()).find("上限"), std::string::npos) << exception.what();
+        }
+
+        // 正向对照：夸张但仍在可相加范围内的大数必须照常读进来
+        const Base::ConfigObject insideBound{
+                {"limits", object(Base::ConfigObject{{"write_timeout_ms", integer(1000000000000)}})},
+        };
+        const auto configuration = readHttpServerConfiguration(makeRootDocument(insideBound));
+        EXPECT_EQ(configuration.limits.writeTimeout, std::chrono::milliseconds{1000000000000});
+    }
+
+    /**
      * @brief 钉住：负数一律拒绝（时间与上限都没有负数的合法解释）
      */
     TEST(HttpServerConfig, RejectsNegativeValues)
