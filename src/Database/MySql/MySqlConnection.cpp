@@ -585,7 +585,13 @@ namespace AsynGyanis::Database
             return;
         }
 
-        static_cast<void>(applyStatementTimeLimit());
+        // 失败必须出声：原因写进 m_lastError 只有「紧接着问 lastError() 的调用方」看得见，而连接池
+        // 在归还路径上调用这里之后不会再问——那道时限没下发就等于下一位借用者拿到一条比配置更宽的
+        // 连接，两边都不报错。日志是这条路径上唯一还留得住的读数
+        if (!applyStatementTimeLimit())
+        {
+            LOG_WARN_FMT("MySqlConnection: 命令超时下发失败，这条连接的只读语句时限按不上（原因：{}）", lastError());
+        }
     }
 
     void MySqlConnection::captureError(const std::string_view description)

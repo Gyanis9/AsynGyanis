@@ -1,5 +1,6 @@
 #include "Database/Redis/RedisConnection.h"
 
+#include "Base/Log/LogMacros.h"
 #include "Database/Common/ErrorText.h"
 #include "Database/Redis/RedisResult.h"
 
@@ -761,8 +762,13 @@ namespace AsynGyanis::Database
         }
 
         // 中途设不上只留原因、不断开这条连接：它仍能按上一次的超时继续用，
-        // 而 connect() 那条路把「设不上超时」判成连接失败是因为那里还没有任何保护
-        static_cast<void>(applyQueryTimeout());
+        // 而 connect() 那条路把「设不上超时」判成连接失败是因为那里还没有任何保护。
+        // 但原因要出声：m_lastError 只在「紧接着问它的人」那里有效，而连接池在归还路径上用完这里
+        // 之后就不再问——那条连接带着上一位的超时口径回到池里，两边都不报错
+        if (!applyQueryTimeout())
+        {
+            LOG_WARN_FMT("RedisConnection: 命令超时未能设上，这条连接仍按上一次的时限走（原因：{}）", lastError());
+        }
     }
 
     std::unique_ptr<DatabaseResult> RedisConnection::executeArguments(const std::span<const std::string_view> argumentValues)
