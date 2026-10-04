@@ -206,8 +206,9 @@ namespace
                    });
     }
 
-    /// 优雅关闭的等待上限：给在途请求留出把响应发完的时间，超出后由 drain 内部强制收口
-    constexpr std::chrono::milliseconds kShutdownDrainTimeout{5000};
+    /// 排空预算的下限：处理器很快（演示配置里 writeTimeout 只有几秒）时也别让关停一闪而过，
+    /// 留出「编排器把这台摘出负载」的那一段。真正的排空时长在下面按配置算
+    constexpr std::chrono::milliseconds kMinimumShutdownDrainTimeout{5000};
 
     /// 启动确认的等待上限：绑定与监听都在协程的第一步做完，正常只需毫秒级；给足余量但不许无界等待
     constexpr std::chrono::milliseconds kStartupConfirmTimeout{2000};
@@ -571,6 +572,14 @@ int main(int argc, char **argv)
         LOG_INFO_FMT("已读取配置 {}：最大连接 {}，单来源 {}，限流 {} 请求/s（桶 {}），指标 {}", configFile, configuration.maximumConnections, configuration.maximumConnectionsPerIp,
                      configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, configuration.exposeMetrics ? "开" : "关");
     }
+
+    // 排空预算取「服务器自己承诺的响应产出预算」，而不是写死一个数：`write_timeout_ms` 是三条通道对
+    // 「一个处理器最多能占多久」的上限（见 HttpServerLimits.h），排空比它短就等于在每次部署时把已受理的
+    // 长处理器整批切掉。只取较大的一边：配置把它压得很小时仍留住下限，让编排有时间把这台摘出负载。
+    // 于是这台进程的关停上界等于运维给的宽限期——`write_timeout_ms` 配多大就要准备等多久
+    const std::chrono::milliseconds shutdownDrainTimeout{std::max(kMinimumShutdownDrainTimeout, configuration.limits.writeTimeout)};
+    LOG_INFO_FMT("优雅排空预算 {}ms（取 write_timeout_ms={} 与下限 {}ms 的较大一边）：在途请求超过这个数就会被强制收口", shutdownDrainTimeout.count(),
+                 configuration.limits.writeTimeout.count(), kMinimumShutdownDrainTimeout.count());
 
     // 链路装配：开关在配置里（tracing.enabled），没配就是 nullptr——后续的中间件注册与日志都按空指针走。
     // 地址写错、服务名缺失这类问题在这里当场终止启动：留着一个发不出东西的出口，比不记链路更糟
@@ -1361,6 +1370,7 @@ int main(int argc, char **argv)
     }
 
     // 关停分三步：停止接受新连接 → 等在途请求做完（超时兜底强关）→ 停运行时。
+    // 排空预算 shutdownDrainTimeout 在启动那一处算好并打了出来（理由与下限都写在那里）
     // 前两步都要在服务器所属的循环线程上执行（它们要动那个循环正在使用的监听器与套接字），
     // 因此统一按 scheduleRemote 投递；任务对象必须留到跑完，由本向量持有到 main 结束
     std::vector<Core::Task<>> shutdownTasks;
@@ -1377,25 +1387,24 @@ int main(int argc, char **argv)
     std::atomic<std::size_t> remainingDrainCount{servers.size()};
     for (std::size_t index = 0; index < servers.size(); ++index)
     {
-        Core::Task<> drainTask = drainServerTask(*servers[index], kShutdownDrainTimeout, remainingDrainCount);
+        Core::Task<> drainTask = drainServerTask(*servers[index], shutdownDrainTimeout, remainingDrainCount);
         pool.eventLoop(serverLoopIndexes[index]).scheduler().scheduleRemote(drainTask.handle());
         shutdownTasks.push_back(std::move(drainTask));
     }
 
     // HTTP/3 与 TCP 两条路必须**同一时刻开始**排空：`QuicServer::drain()` 的第一步就是挡新连接并给每条
-    // 连接发 GOAWAY，若排在 TCP 那边等完之后才轮到它，最长 kShutdownDrainTimeout 这段时间里 h3 还在接
+    // 连接发 GOAWAY，若排在 TCP 那边等完之后才轮到它，最长 shutdownDrainTimeout 这段时间里 h3 还在接
     // 新连接，而业务口与管理口上的 /readyz 早已回 503——就绪那一格说的是整台进程，不是某一条通路。
     // 它照旧投回自己那条循环（drain 要遍历连接表），到期由 drain 自己兜底强关
     std::atomic<std::size_t>    remainingHttp3DrainCount{http3Server != nullptr ? 1U : 0U};
     std::optional<Core::Task<>> http3DrainTask;
     if (http3Server != nullptr)
     {
-        http3DrainTask = drainHttp3ServerTask(*http3Server, kShutdownDrainTimeout, remainingHttp3DrainCount);
+        http3DrainTask = drainHttp3ServerTask(*http3Server, shutdownDrainTimeout, remainingHttp3DrainCount);
         pool.eventLoop(0).scheduler().scheduleRemote(http3DrainTask->handle());
     }
 
-    LOG_INFO_FMT("Draining {} server instance(s){}, in-flight requests get up to {}ms...", servers.size(), http3Server != nullptr ? " + HTTP/3" : "",
-                 kShutdownDrainTimeout.count());
+    LOG_INFO_FMT("Draining {} server instance(s){}, in-flight requests get up to {}ms...", servers.size(), http3Server != nullptr ? " + HTTP/3" : "", shutdownDrainTimeout.count());
     while (remainingDrainCount.load(std::memory_order_acquire) > 0 || remainingHttp3DrainCount.load(std::memory_order_acquire) > 0)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
