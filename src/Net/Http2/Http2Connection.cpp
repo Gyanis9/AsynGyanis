@@ -1646,6 +1646,18 @@ namespace AsynGyanis::Net
         // 带 :protocol 的请求只可能是 RFC 8441 的扩展 CONNECT：其它方法带它就是报文不合法
         if (hasProtocolField)
         {
+            // 扩展 CONNECT 是「按 SETTINGS 选配」的能力，不是无条件支持的旁路：本端把
+            // ENABLE_CONNECT_PROTOCOL 通告成 0 时，对端仍送来 :protocol 就必须拒（RFC 8441 §3
+            // 明写这条通路要靠该参数协商，未开的一侧「detect a malformed request and generate a
+            // stream error」）。此前这一格只在初始 SETTINGS 里写了那个数， intake 却照收——
+            // 通告与行为同一个开关）。此前这一格只在初始 SETTINGS 里写了那个数， intake 却照收——
+            // 两套说法各讲各的，调用方把它关掉时以为收住了面，实际什么都没挡
+            if (m_configuration.enableConnectProtocol == 0)
+            {
+                writeError(errorText, ":protocol 伪头出现在本端未开启（SETTINGS_ENABLE_CONNECT_PROTOCOL=0）的连接上：RFC 8441 §3 要求扩展 CONNECT 先由该参数选出，"
+                                      "本端没有支持，请改用 h1 的 Upgrade 握手");
+                return false;
+            }
             if (request.method != "CONNECT")
             {
                 writeError(errorText, std::format(":protocol 伪头出现在 {} 请求里：RFC 8441 §4 只把它定义给 CONNECT，"

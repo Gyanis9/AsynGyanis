@@ -2565,6 +2565,30 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：本端把 ENABLE_CONNECT_PROTOCOL 通告成 0 时，带 :protocol 的请求按流错误拒掉
+     * @details 通告与行为得是同一件事：只往初始 SETTINGS 里写那个数而 intake 不判，运维关掉它
+     *          就只是一句假话——对端的隧道照建，面板上那道能力显示为关。RFC 8441 §3 把这条通路
+     *          定义成按该参数选配，未开的一侧要按畸形请求出流错误
+     */
+    TEST(Http2Connection, RejectsExtendedConnectWhenConnectProtocolIsDisabled)
+    {
+        Http2Connection connection(Http2ConnectionConfiguration{.enableConnectProtocol = 0});
+        completeHandshake(connection);
+
+        // 伪头集合与那条放行用例逐字相同：唯一的差别就是本端没开这道能力
+        std::string headerBlock;
+        headerBlock += hpackLiteralField(2, "CONNECT");
+        headerBlock += hpackIndexedField(6);
+        headerBlock += hpackLiteralField(4, "/chat");
+        headerBlock += hpackLiteralField(1, "localhost");
+        headerBlock += hpackLiteralField(":protocol", "websocket");
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore);
+
+        EXPECT_TRUE(connection.takeRequests().empty()) << "本端未开启扩展 CONNECT，这条请求不该交给上层";
+        EXPECT_NE(expectStreamRejected(connection, 1U).find(":protocol"), std::string::npos);
+    }
+
+    /**
      * @brief 钉住：:protocol 只允许出现在 CONNECT 上，且扩展 CONNECT 的 :scheme/:path/:authority 一个都不能少
      */
     TEST(Http2Connection, RejectsMisplacedOrIncompleteProtocolPseudoHeader)
