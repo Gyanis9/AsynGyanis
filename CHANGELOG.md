@@ -747,7 +747,7 @@
   字段会出现在尾部」，列一次就够。判重按整段相等而不是在声明串里 find：`x-check` 是 `x-checksum` 的子串，
   子串判重会把两个不同字段并成一条，那比多写一次名字坏得多。
 
-- **`parser_limits` 的两条头部长度上限真的管到 HTTP/2**：`header_name_length` 与 `header_value_length`
+- **`parser_limits` 的两条头部长度上限真的管到 HTTP/2**：`maximum_header_field_name_length` 与 `maximum_header_field_value_length`
   此前在 h2 上由 HPACK 解码器自己的常数代管（256 与 8 KiB），配置键调不动它——同一个值调松了 h1/h3 放宽
   而 h2 照旧拒，调紧了 h1/h3 收紧而 h2 反而更宽（越界那一侧才是要命的：配了 64 字节，h2 却把 8 KiB 的头值
   原样交给业务）。出厂值两边同为 256/8 KiB，所以默认配置下看不出差别，这正是它能长期潜伏的原因。现在 h2 的
@@ -834,7 +834,7 @@
   现在超过 7 天（`kMaximumHealthCheckIntervalSeconds`）的取值在 `ConnectionPool` 构造那一刻就被拒，
   消息点名是哪个键、允许到多少；判据放在健康检查线程启动之前，拒了不会留下一条已经在跑的线程。
 - **h2 上「请求头不合规被拒」终于计入 `asyn_http_bad_requests_total`**：这类流不交出请求、也不回响应，
-  因此既不进 `total_request_count` 也不进状态码计数，而 h1 与 h3 在同一处都记一笔坏请求——只有 h2 在指标上
+  因此既不进 `totalRequestCount`（指标名 `requests_total`）也不进状态码计数，而 h1 与 h3 在同一处都记一笔坏请求——只有 h2 在指标上
   是零：对端拿畸形头部连发（缺 `:path`、``te` 取值非法、伪头重复……）时曲线一动不动，等于把一类远程可发的
   坏输入做成隐形。协议行为不变（RFC 7540 §8.1.2.6 只要求按流错误作废，回不回 400 是自由），补的是记账：
   连接层给一个累计读数 `rejectedRequestHeaderFieldCount()`，会话按差值逐条落账。
@@ -1216,7 +1216,7 @@
   `HttpServerStats` 的类注释与 `/metrics` 的帮助文本里都写死是**对端**取消单流（h2 的 RST_STREAM、h3 的
   RESET_STREAM/STOP_SENDING），而「对端的报文不合规、被协议层挡在业务之外」按同一份文档只进
   `badRequestCount`。h3 会话过去把两种形状一律记进前者：连接层每次 `failStream` 都走同一个
-  `onStreamReset` 回调，回调里那句 `noteStreamResetByPeer` 于是替「content-length 与实收不符」
+  `onStreamReset` 回调，回调里那句 `notePeerAbortedStream` 于是替「content-length 与实收不符」
   「正文出现在头段之前」「一条流上没有头段就收尾」这些**本端**判定，各记了一笔「对端取消」——
   运维在面板上看到的是「客户端取消了 N 条请求」，而真实发生的是本端按 RFC 9114 §4.1.2 判它畸形。
   h2 那侧对同一处区分写得很明确（`RequestServeOutcome::StreamFailed` 的注释：「不能并到 StreamCancelled，
