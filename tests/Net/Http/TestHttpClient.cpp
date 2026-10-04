@@ -372,8 +372,8 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：会撕裂请求行的头部写法一律拒绝，不转义也不静默丢掉
      * @details 值里带 CR/LF 等于自己结束这一行再插一条新字段；名字带空格或冒号会拼出第二个字段；
-     *          方法名进的是请求行开头，同样只准是 token。保留头部（Host、Content-Length、Connection）
-     *          由客户端按这次请求的实际情况写，调用方给了就拒收而不是覆盖或并存
+     *          方法名进的是请求行开头，同样只准是 token。保留头部（Host、Content-Length、Connection、
+     *          Transfer-Encoding）由客户端按这次请求的实际情况写，调用方给了就拒收而不是覆盖或并存
      */
     TEST(HttpClient, RejectsHeadersThatCouldSplitTheRequestLine)
     {
@@ -421,14 +421,14 @@ namespace AsynGyanis::Net
             EXPECT_NE(outcome.reason.find("token"), std::string::npos) << "原因要点明方法名必须是 HTTP token：" << outcome.reason;
         }
 
-        const std::array<std::string, 3> reservedNames{std::string{"host"}, std::string{"Content-Length"}, std::string{"CONNECTION"}};
+        const std::array<std::string, 4> reservedNames{std::string{"host"}, std::string{"Content-Length"}, std::string{"CONNECTION"}, std::string{"Transfer-Encoding"}};
         for (const std::string &reserved: reservedNames)
         {
             HttpClientRequest request;
             request.headers.emplace_back(reserved, "whatever");
             const SendOutcome outcome = runSend(url, request);
             EXPECT_TRUE(outcome.body.empty()) << "保留头部本该拒收：" << reserved;
-            EXPECT_NE(outcome.reason.find("由客户端"), std::string::npos) << "原因要说明这三项由客户端写：" << outcome.reason;
+            EXPECT_NE(outcome.reason.find("由客户端"), std::string::npos) << "原因要说明这几项由客户端写：" << outcome.reason;
         }
     }
 

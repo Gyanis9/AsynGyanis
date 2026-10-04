@@ -606,10 +606,14 @@ namespace AsynGyanis::Net
             }
             return true;
         }
-        /// 这三个头部由客户端按本次请求的实际情况写，调用方给了就拒收而不是覆盖或并存
+        /// 这几个头部由客户端按本次请求的实际情况写，调用方给了就拒收而不是覆盖或并存。Transfer-Encoding
+        /// 也在其中：本端对流式正文自己写 chunked、对缓冲正文自己写 Content-Length，调用方再塞一份就是
+        /// 「一条报文两个正文边界」——那正是本端 intake 要拒的那一类；而 h2 上它是 RFC 9113 §8.2.2
+        /// 禁止的连接特定头，发出去只会让对端把这条共享连接按协议错误收掉
         bool isClientOwnedHeaderName(const std::string_view name)
         {
-            return equalsIgnoringCase(name, "host") || equalsIgnoringCase(name, "content-length") || equalsIgnoringCase(name, "connection");
+            return equalsIgnoringCase(name, "host") || equalsIgnoringCase(name, "content-length") || equalsIgnoringCase(name, "connection") ||
+                   equalsIgnoringCase(name, "transfer-encoding");
         }
 
         /**
