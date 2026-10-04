@@ -234,16 +234,21 @@ namespace AsynGyanis::Net
              * @param requestTimeout 这条请求的时限
              * @param extraHeaders 附加普通头：先落成成员再交给协程（花括号列表直接写在 `co_await` 的
              *        实参位上会让容器里那件 GCC 在生成协程帧时 internal compiler error）
+             * @param judgeByProgress true = 这一趟的停与不停按「有没有进展」判，不押一条总时长：
+             *        挂上「连续静默就掐掉连接」的哨兵，并把正文逐批收进自己的缓冲（判据改用 `body()`）。
+             *        大正文那一条用它——满载时 300 KiB 走回环 UDP 可以慢到几十秒，而窗口归还漏做的症状
+             *        是**彻底停住**（理由同 `kDeliveryStallBudget`，也同 `Http3DeliveryAttempt` 那一趟）
              */
             Http3RequestAttempt(const std::uint16_t port, const std::string &clientCertificateFile = {}, const std::string &clientPrivateKeyFile = {},
                                 const std::string path = "/probe", const std::chrono::milliseconds requestTimeout = std::chrono::milliseconds{4000},
-                                std::vector<std::pair<std::string, std::string>> extraHeaders = {}) :
+                                std::vector<std::pair<std::string, std::string>> extraHeaders = {}, const bool judgeByProgress = false) :
                 m_port(port), m_clientCertificateFile(clientCertificateFile), m_clientPrivateKeyFile(clientPrivateKeyFile)
             {
                 // 路径在排协程之前落定：run() 第一次被驱动就已经在读它
-                m_path           = path;
-                m_requestTimeout = requestTimeout;
-                m_extraHeaders   = std::move(extraHeaders);
+                m_path            = path;
+                m_requestTimeout  = requestTimeout;
+                m_extraHeaders    = std::move(extraHeaders);
+                m_judgeByProgress = judgeByProgress;
                 m_task.emplace(run());
                 m_loop.scheduler().schedule(m_task->handle());
                 m_loopThread = std::thread([this] { m_loop.run(); });
@@ -283,6 +288,21 @@ namespace AsynGyanis::Net
                 return m_elapsed;
             }
 
+            /// 这一趟拿到的正文：走「按进展判停」那一支时是逐批攒出来的，否则就是响应里那份
+            [[nodiscard]] std::string body() const
+            {
+                if (!m_judgeByProgress)
+                {
+                    return m_response.body;
+                }
+                std::string assembled;
+                for (const std::string &batch: m_batches)
+                {
+                    assembled += batch;
+                }
+                return assembled;
+            }
+
         private:
             Core::Task<> run()
             {
@@ -314,10 +334,63 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                m_response = co_await http3.request("https", "127.0.0.1:" + std::to_string(m_port), "GET", m_path, m_extraHeaders, {}, m_requestTimeout);
+                const std::string authority = "127.0.0.1:" + std::to_string(m_port);
+                // 接收口先落成具名对象再交进 co_await 的实参位（与 extraHeaders 同一理由：容器里那件
+                // GCC 对写在 co_await 参数位置的花括号列表会在生成协程帧时 internal compiler error）
+                const Http3ResponseBodyReceiver receiver = [this](const Http3ClientResponse &, const std::string_view batch, const bool) -> Core::Task<bool>
+                {
+                    m_batches.emplace_back(batch);
+                    co_return true;
+                };
+                if (m_judgeByProgress)
+                {
+                    m_isStallWatchdogArmed.store(true, std::memory_order_release);
+                    m_watchdogTask.emplace(watchForStall(http3));
+                    m_loop.scheduler().schedule(m_watchdogTask->handle());
+                    m_response = co_await http3.request("https", authority, "GET", m_path, m_extraHeaders, {}, m_requestTimeout, receiver);
+                } else
+                {
+                    m_response = co_await http3.request("https", authority, "GET", m_path, m_extraHeaders, {}, m_requestTimeout);
+                }
+                m_isStallWatchdogArmed.store(false, std::memory_order_release);
                 co_await http3.shutdown();
                 client.reset();
                 finish();
+                co_return;
+            }
+
+            /**
+             * @brief 「没有进展」哨兵：连续静默就把 h3 收口，让请求带着原因回来
+             * @details 与 `Http3DeliveryAttempt` 那一路同一判据：每拍看一次批次数变没变，变过就重新计时。
+             *          慢与停在这条路上是两件事——被压满的机器上一批一批地交不是缺陷，而窗口归还漏做时
+             *          对端一个字节都不再发。放在同一条循环线程上，读 `m_batches` 不需要额外同步。
+             */
+            Core::Task<> watchForStall(Http3ClientConnection &http3)
+            {
+                constexpr std::size_t kMaximumQuietCheckCount = static_cast<std::size_t>(kDeliveryStallBudget.count() / kDeliveryStallCheckInterval.count());
+
+                Core::Timer timer(m_loop);
+                std::size_t lastBatchCount  = m_batches.size();
+                std::size_t quietCheckCount = 0;
+                while (m_isStallWatchdogArmed.load(std::memory_order_acquire))
+                {
+                    co_await timer.waitFor(kDeliveryStallCheckInterval);
+                    if (!m_isStallWatchdogArmed.load(std::memory_order_acquire))
+                    {
+                        co_return;
+                    }
+                    if (m_batches.size() != lastBatchCount)
+                    {
+                        lastBatchCount  = m_batches.size();
+                        quietCheckCount = 0;
+                        continue;
+                    }
+                    if (++quietCheckCount >= kMaximumQuietCheckCount)
+                    {
+                        http3.close();
+                        co_return;
+                    }
+                }
                 co_return;
             }
 
@@ -333,10 +406,14 @@ namespace AsynGyanis::Net
             std::string                                      m_clientCertificateFile{};
             std::string                                      m_clientPrivateKeyFile{};
             std::string                                      m_path{};
-            std::vector<std::pair<std::string, std::string>> m_extraHeaders{};       ///< 附加普通头：构造函数里落定，协程只读不写
-            std::chrono::milliseconds                        m_requestTimeout{4000}; ///< 这条请求自己的时限（静默对端那条要调小）
-            std::chrono::steady_clock::time_point            m_startedAt{};          ///< 整次尝试的起点
-            std::chrono::milliseconds                        m_elapsed{0};           ///< finish() 时结算的耗时
+            std::vector<std::pair<std::string, std::string>> m_extraHeaders{};              ///< 附加普通头：构造函数里落定，协程只读不写
+            std::chrono::milliseconds                        m_requestTimeout{4000};        ///< 这条请求自己的时限（静默对端那条要调小）
+            bool                                             m_judgeByProgress{false};      ///< 停与不停按「有没有进展」判（大正文那一条）
+            std::vector<std::string>                         m_batches{};                   ///< 逐批收到的正文，只在判进展那一支里被写
+            std::optional<Core::Task<>>                      m_watchdogTask{};              ///< 「没有进展」哨兵那一路协程
+            std::atomic<bool>                                m_isStallWatchdogArmed{false}; ///< 哨兵只管那一趟：请求一回来就撤防
+            std::chrono::steady_clock::time_point            m_startedAt{};                 ///< 整次尝试的起点
+            std::chrono::milliseconds                        m_elapsed{0};                  ///< finish() 时结算的耗时
             std::optional<Core::Task<>>                      m_task{};
             std::thread                                      m_loopThread{};
             Http3ClientResponse                              m_response{};
@@ -1169,25 +1246,27 @@ namespace AsynGyanis::Net
      *          只能落在 `noteBodyBytes`：不还，服务端写到窗口边缘就再也没法推进，本端只能等到时限把
      *          整条连接掐掉——症状是「小响应全通、大响应全 timeout」。
      * @note 证伪：摘掉 `noteBodyBytes` 里那句 `extendReceiveWindow` → 服务端推满 256 KiB 后停住，
-     *       本用例在时限到点后拿到「响应没收齐」而红。时限给到 30 秒是**余量**而不是判据：这一条没有
-     *       逐批交付的接收口可当进展信号，只能放宽绝对时长——满载实测里 300 KiB 走过回环 UDP 用掉十几秒
-     *       是调度而不是缺陷（见 `kDeliveryStallBudget`），押 4 秒会让这一格假红。
+     *       本用例由「没有进展」哨兵在静默满 15 秒时掐掉链路，请求带着「响应没收齐」回来而红。
+     *       判据不押总时长：满载实测里这条 300 KiB 走回环 UDP 用过 30 秒还没搬完（112 KiB 时到点），
+     *       那是调度不是缺陷；而窗口归还漏做的症状是**一个字节都不再发**，按进展判既不误杀慢的、
+     *       也照样抓得住停的（同一形状见 `kDeliveryStallBudget` 与 `Http3DeliveryAttempt`）。
      */
     TEST(Http3ClientConnection, CreditsTheReceiveWindowForBodyBeyondTheAdvertisedStreamWindow)
     {
         RunningHttp3Server server;
         ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
 
-        Http3RequestAttempt attempt{server.listeningPort(), {}, {}, "/large", std::chrono::milliseconds{30000}};
-        ASSERT_TRUE(attempt.awaitFinished(std::chrono::milliseconds{40000})) << "这条大正文请求既没成也没败，挂在那里";
-        ASSERT_TRUE(attempt.response().isOk()) << "大正文没整个收下：" << attempt.response().errorMessage << "（实收 " << attempt.response().body.size()
-                                               << " 字节，窗口是 256 KiB）";
-        ASSERT_EQ(attempt.response().body.size(), kLargeBodyByteCount) << "正文长度与服务端答出去的那一份不等";
+        // 最后一位挂上「按进展判停」：逐批交付既给出正文，也给出哨兵要的进展信号
+        Http3RequestAttempt attempt{server.listeningPort(), {}, {}, "/large", kLargeBodyRequestTimeout, {}, true};
+        ASSERT_TRUE(attempt.awaitFinished(kDeliveryWaitTimeout)) << "这条大正文请求既没成也没败，挂在那里";
+        const std::string body = attempt.body();
+        ASSERT_TRUE(attempt.response().isOk()) << "大正文没整个收下：" << attempt.response().errorMessage << "（实收 " << body.size() << " 字节，窗口是 256 KiB）";
+        ASSERT_EQ(body.size(), kLargeBodyByteCount) << "正文长度与服务端答出去的那一份不等";
         // 逐字节比对形状：只判长度时「攒够了但拼错位」也能绿，而窗口归还正是按累计字节数还的
         std::size_t firstMismatchOffset = kLargeBodyByteCount;
         for (std::size_t offset = 0; offset < kLargeBodyByteCount; ++offset)
         {
-            if (attempt.response().body[offset] != largeBodyByteAt(offset))
+            if (body[offset] != largeBodyByteAt(offset))
             {
                 firstMismatchOffset = offset;
                 break;
