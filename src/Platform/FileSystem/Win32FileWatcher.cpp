@@ -370,8 +370,13 @@ namespace AsynGyanis::Platform
         // 本函数是 jthread 的线程体：抛穿出去就是 std::terminate，整个进程连同在途请求一起没。
         // 用户回调那一层已由 FileWatcher::notifyChange 逐条兜住并计数，走到这里的只能是监听侧
         // 自己的分配失败（收集等待集、路径拼装、补挂监视）。Platform 在 Base 之下没有日志通路，
-        // 因此把「本监听器已停」如实落到停止标志上——isRunning() 随即报假，比留一个
-        // 「看着在跑、其实不再上报」的监听器可诊断。
+        // 因此只能把「本监听器已停」落到停止标志上。
+        // 警告：**这一格目前只落到标志上，没人读**：`isRunning()` 在 src/ 与 samples/ 里没有生产消费方
+        //          （只有 tests/Platform 的用例读它），`ConfigManager::isHotReloadEnabled()` 报的是自己那个
+        //          原子位而不是线程死活。所以真抛一次的现场表现是「热重载永久停摆而对外仍说已启用」，
+        //          既无日志也无计数。ponytail: 补法是给 ConfigManager 一个可注入的 FileWatcher 接缝，
+        //          让 isHotReloadEnabled() 变成「开关 ∧ 线程还在跑」，或把这条状态接进 /metrics 一族——
+        //          现在写不出可证伪的用例，故不动行为，只把话说准。
         // 实现体留在 watchLoopBody()：这一圈兜底要包住整条循环，就地套 try 会把 150 行正文
         // 全部重缩进，抽一层反而没有可读性代价
         try

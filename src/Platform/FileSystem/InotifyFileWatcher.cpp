@@ -248,8 +248,11 @@ namespace AsynGyanis::Platform
             // 整圈兜住：本函数是 jthread 的线程体，抛穿出去就是 std::terminate。
             // 用户回调那一层已由 FileWatcher::notifyChange 逐条兜住并计数，走到这里的只能是
             // 监听侧自己的分配失败（读缓冲、路径拼装、重挂监视）。Platform 在 Base 之下没有
-            // 日志通路，因此把「本监听器已经停了」如实落到 isRunning() 上再收线程——
-            // 那比留一个「看着在跑、其实不再上报」的监听器可诊断
+            // 日志通路，因此只能把「本监听器已经停了」落到 isRunning() 上再收线程。
+            // 警告：这一格目前**没有生产读取方**——isRunning() 只被 tests/Platform 读，
+            // ConfigManager::isHotReloadEnabled() 报的是自己那个开关位而不是线程死活，所以真抛一次的
+            // 现场是「热重载永久停摆而对外仍说已启用」（同一形状与缺的补齐路径见 Win32FileWatcher.cpp
+            // 的 watchLoop 注释）
             try
             {
                 pollfd descriptor{};

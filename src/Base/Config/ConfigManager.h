@@ -113,6 +113,9 @@ namespace AsynGyanis::Base
         /**
          * @brief 查询热重载当前是否启用。
          * @return bool 启用返回 true。
+         * @note 报的是「开关有没有被打开」，不是「监视线程还在不在跑」：那条线程若因分配失败自行收线程，
+         *       本读数照旧为 true（两侧判据不同源的原因与补齐路径写在 InotifyFileWatcher/Win32FileWatcher
+         *       的 watchLoop 注释里）。要确认热重载真的还在工作，请改一次配置文件看它是否重载，别只看本读数。
          */
         [[nodiscard]] bool isHotReloadEnabled() const noexcept;
 
