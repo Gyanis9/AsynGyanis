@@ -559,6 +559,13 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] static std::unordered_map<std::string, std::string> parseUrlEncoded(std::string_view text);
 
+        /**
+         * @brief 被 parser 调用时把 host 计数落进来
+         * @details parseRequestLine() 在解析时累增 m_hostHeaderFieldCount，此刻把它拷贝进请求对象：
+         *          这条接口只有 parser 内部能用（没有 public setter），保证「几条 host」的事实由 parser 定。
+         */
+        void setHostHeaderFieldCount(std::size_t count) noexcept;
+
         HttpMethod           m_method{HttpMethod::UNKNOWN}; ///< HTTP 方法
         std::string          m_uri;                         ///< 原始 URI，含查询串
         std::string          m_httpVersion;                 ///< HTTP 版本原文
@@ -578,5 +585,6 @@ namespace AsynGyanis::Net
         std::string_view                             m_matchedRoute; ///< 本次派发命中的路由模式，由路由器在管道之前落定
         std::unordered_map<std::string, std::string> m_params;       ///< 路由参数
         mutable std::stop_source                     m_cancelSource; ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
+        std::size_t                                  m_hostHeaderFieldCount{0}; ///< host 字段计数：同一条报文里有多个 host 行就累增，由 parseRequestLine() 填
     };
 } // namespace AsynGyanis::Net

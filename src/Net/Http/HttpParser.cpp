@@ -880,6 +880,13 @@ namespace AsynGyanis::Net
             m_currentRequest.addTrailerField(name, value);
         }
 
+        // host 字段的计数：同一报文里有多个 host 行就累增，由 parseRequestLine() 填充
+        // 此刻落进请求对象供调用方检测 RFC 9110 §7.1.2 违规
+        if (!m_headersCommitted)
+        {
+            m_currentRequest.setHostHeaderFieldCount(m_hostHeaderFieldCount);
+        }
+
         // 暂存清回初态供下一条报文复用：clear 保留容量，因此稳态下不再为它们分配内存
         clearMessageScratch();
     }

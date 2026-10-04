@@ -284,6 +284,11 @@ namespace AsynGyanis::Net
         m_bodyStream = bodyStream;
     }
 
+    void HttpRequest::setHostHeaderFieldCount(std::size_t count) noexcept
+    {
+        m_hostHeaderFieldCount = count;
+    }
+
     void HttpRequest::setRequestId(const std::string_view requestId)
     {
         // 原地写入而不是接管一个现造的串：请求对象按连接复用时容量留着，稳态一次堆分配也不碰
