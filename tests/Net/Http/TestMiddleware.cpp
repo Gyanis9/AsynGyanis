@@ -1328,8 +1328,8 @@ namespace AsynGyanis::Net
         request.addHeader("content-length", std::to_string(compressed.size()));
         request.setBody(compressed);
 
-        std::string            bodySeenByHandler;
-        const TerminalHandler  handler = [&request, &bodySeenByHandler]() -> Core::Task<void>
+        std::string           bodySeenByHandler;
+        const TerminalHandler handler = [&request, &bodySeenByHandler]() -> Core::Task<void>
         {
             bodySeenByHandler = std::string(request.body());
             co_return;
@@ -1385,8 +1385,8 @@ namespace AsynGyanis::Net
         request.addHeader("content-encoding", "br");
         request.setBody("some brotli bytes");
 
-        HttpResponse     response;
-        std::atomic<int> handlerCalls{0};
+        HttpResponse       response;
+        std::atomic<int>   handlerCalls{0};
         MiddlewarePipeline pipeline;
         pipeline.use(requestDecompressionMiddleware());
         runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
@@ -1405,8 +1405,8 @@ namespace AsynGyanis::Net
         request.addHeader("content-encoding", "gzip, deflate");
         request.setBody(gzipCompress("payload").value());
 
-        HttpResponse     response;
-        std::atomic<int> handlerCalls{0};
+        HttpResponse       response;
+        std::atomic<int>   handlerCalls{0};
         MiddlewarePipeline pipeline;
         pipeline.use(requestDecompressionMiddleware());
         runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
@@ -1424,8 +1424,8 @@ namespace AsynGyanis::Net
         request.addHeader("content-encoding", "gzip");
         request.setBody("not a gzip stream at all");
 
-        HttpResponse     response;
-        std::atomic<int> handlerCalls{0};
+        HttpResponse       response;
+        std::atomic<int>   handlerCalls{0};
         MiddlewarePipeline pipeline;
         pipeline.use(requestDecompressionMiddleware());
         runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
@@ -1448,8 +1448,8 @@ namespace AsynGyanis::Net
         request.addHeader("content-encoding", "gzip");
         request.setBody(gzipCompress(std::string(64U * 1024U, 'A')).value());
 
-        HttpResponse     response;
-        std::atomic<int> handlerCalls{0};
+        HttpResponse       response;
+        std::atomic<int>   handlerCalls{0};
         MiddlewarePipeline pipeline;
         pipeline.use(requestDecompressionMiddleware(options));
         runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
@@ -1474,10 +1474,10 @@ namespace AsynGyanis::Net
         HttpRequest emptyWithCoding = makeRequest(HttpMethod::POST, "/ingest");
         emptyWithCoding.addHeader("content-encoding", "gzip");
 
-        for (HttpRequest *caseRequest : {&plain, &identity, &emptyWithCoding})
+        for (HttpRequest *caseRequest: {&plain, &identity, &emptyWithCoding})
         {
-            HttpResponse     response;
-            std::atomic<int> handlerCalls{0};
+            HttpResponse      response;
+            std::atomic<int>  handlerCalls{0};
             const std::string bodyBefore(caseRequest->body());
 
             MiddlewarePipeline pipeline;
