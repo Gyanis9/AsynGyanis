@@ -40,17 +40,19 @@ namespace AsynGyanis::Database
                                                              "同 asyn_db_pool_connections_held（旧名，随 v2.4.0 发布过：留着不让既有面板断线，新面板请取 held）",
                                                              Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_totalCreated.load(std::memory_order_relaxed)); }),
-                Core::ProcessMetricsRegistry::registerMetric(
-                        "asyn_db_pool_connections_discarded_total",
-                        "被丢弃的连接总数：失联、超过存活期、会话没复位干净三条去向都计入（只增不减）。「建了就丢」以前只能从两个数推断，现在直接读得到",
-                        Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
-                        [this] { return static_cast<std::uint64_t>(m_totalDiscarded.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connections_discarded_total",
+                                                             "被丢弃的连接总数：凡走丢弃出口的去向都计入——失联、超过存活期、会话没复位干净、"
+                                                             "调用方判定会话状态不可信而主动丢弃，以及归还时那一格空闲栈没分配出来（只增不减）。"
+                                                             "「建了就丢」以前只能从两个数推断，现在直接读得到",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_totalDiscarded.load(std::memory_order_relaxed)); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_borrow_timeouts_total", "等到截止时刻仍没拿到连接的次数（停摆期与不等待的取用不计）",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_borrowTimeoutCount.load(std::memory_order_relaxed)); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_session_reset_failures_total",
                                                              "归还时驱动报告「会话没复位干净」而被丢弃的连接数：它是 connections_discarded_total 的一个子集，"
-                                                             "也是那三条去向里唯一的异常信号（另两条——对端掐线、到轮换期——属正常生命周期）。"
+                                                             "专指「驱动清不掉上一个借用者留下的状态」那一条去向。其余去向各有成因——对端掐线与到轮换期属正常生命周期，"
+                                                             "调用方主动丢弃说的是业务语句在驱动侧失败，而归还时那一格没分配出来说的是内存吃紧。"
                                                              "这条在涨说明有借用者留下了清不掉的会话状态，或那条连接已经不能对话",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_sessionResetFailures.load(std::memory_order_relaxed)); }),
@@ -509,8 +511,8 @@ namespace AsynGyanis::Database
         const auto returnedAt = std::chrono::steady_clock::now();
         if (!isSessionResetClean || !isConnectionHealthy(connection.get()) || isPastMaximumLifetime(*connection, returnedAt))
         {
-            // 「复位没干净」这一条单独记数：三条去向里只有它是异常信号，混在丢弃总数里就分不出
-            // 「轮换到了」与「有人在还脏连接」
+            // 「复位没干净」这一条单独记数：它说的是「驱动清不掉上一个借用者留下的状态」，
+            // 与失联、过期那两条正常生命周期不是一回事，混进丢弃总数里就分不出「轮换到了」与「有人在还脏连接」
             if (!isSessionResetClean)
             {
                 m_sessionResetFailures.fetch_add(1, std::memory_order_relaxed);

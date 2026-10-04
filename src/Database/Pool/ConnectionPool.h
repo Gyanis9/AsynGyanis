@@ -179,7 +179,14 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::size_t createdCount() const noexcept;
 
         /**
-         * @brief 历史上被丢弃的连接总数（失联、超过存活期、会话没复位干净三条去向都计入）
+         * @brief 历史上被丢弃的连接总数：凡走「丢弃」那个出口的去向都计入
+         * @details 口径按机制而不是按枚举：`discardConnection()` 是唯一把「关掉连接」与「退还名额」
+         *          绑在一起的地方，所以从这里出去的去向都记这一格——如失联（健康检查不通过）、
+         *          超过存活期或空闲过期、会话没复位干净、调用方判定会话状态不可信而主动丢弃，
+         *          以及归还时那一格空闲栈没分配出来（内存吃紧，只能就地丢弃）。
+         *          刻意不写「共几条去向」：加一条去向就得回来改这里，而写死数目的那句已经错过一次。
+         *          池析构那一段走的是 `closeTrackedConnection()`（池都要没了，退还名额没有意义），
+         *          因此不计入本数。
          * @details 这条读数是 `createdCount()` 增删机制的补面：丢弃这件事此前只在日志与「创建数不涨」的
          *          推断里存在，而把推断当判据会误诊——池太小、对端掐线、会话复位失败三种现场在
          *          `createdCount()` 上长一个样。它只增不减；与 `createdCount()`（当下记在账上几条）
@@ -498,10 +505,11 @@ namespace AsynGyanis::Database
         // ----- 原子统计 -----
         std::atomic<std::size_t> m_activeCount{0};    ///< 已取出未归还的连接数
         std::atomic<std::size_t> m_totalCreated{0};   ///< 池当下记在账上的连接数（创建 +，丢弃/建连失败 −）：占位判定看它
-        std::atomic<std::size_t> m_totalDiscarded{0}; ///< 历史丢弃总数（失联/过存活期/会话没复位干净三条去向都计入）：只增不减
-        /// 上面那三条去向里「会话没复位干净」这一条单独记数：只有它是异常信号（驱动报告它清不掉上一个
-        /// 借用者留下的状态，那条连接随后被关掉），另两条是正常的生命周期。混在总数里的话，
-        /// 现场只看得到「丢弃在涨」，分不清是轮换到了还是有人在还脏连接
+        std::atomic<std::size_t> m_totalDiscarded{0}; ///< 历史丢弃总数：凡走 `discardConnection()` 的去向都计入，只增不减
+        /// 这些去向里「会话没复位干净」这一条单独记数：只有它是异常信号（驱动报告它清不掉上一个
+        /// 借用者留下的状态，那条连接随后被关掉）。失联与超过存活期是正常的生命周期，
+        /// 归还时那一格空闲栈没分配出来则是内存吃紧——它只在丢弃这本账上留痕，别混进那两类里去读。
+        /// 混在总数里的话，现场只看得到「丢弃在涨」，分不清是轮换到了还是有人在还脏连接
         std::atomic<std::size_t> m_sessionResetFailures{0};
         std::atomic<std::size_t> m_syncWaitingCount{0};   ///< 同步等待者数量
         std::atomic<std::size_t> m_borrowTimeoutCount{0}; ///< 借出超时次数：只记「等到截止时刻仍空手」，停摆与 tryAcquire 不计

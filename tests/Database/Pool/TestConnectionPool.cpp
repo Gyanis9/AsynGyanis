@@ -1169,8 +1169,8 @@ namespace AsynGyanis::Database
 
             EXPECT_EQ(registryValue("asyn_db_pool_active_connections"), 0U) << "归还之后还记着在借，等于报出一份不存在的占用";
 
-            // 「会话没复位干净」是三条丢弃去向里唯一的异常信号，因此单开一条读数：混在
-            // connections_discarded_total 里的话，现场只看得到「丢弃在涨」，分不清是轮换到了还是有人在还脏连接
+            // 「会话没复位干净」这条读数单开着，是因为它说的不是「轮换到了」而是「有人在还脏连接」：
+            // 混进 connections_discarded_total 就分不出这两种现场
             EXPECT_EQ(registryValue("asyn_db_pool_session_reset_failures_total"), 0U) << "干净的归还不该记到这条上";
             counter.sessionResetFails.store(true);
             {
