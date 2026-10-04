@@ -1351,6 +1351,11 @@ namespace AsynGyanis::Net
         // 产出预算同样从交出去这一刻起计：处理器执行的时间、以及它写正文时挂在等缓冲空间上的
         // 时间都归这一段（慢消费者那一头就是靠这里判出来的）
         armProduceDeadline(streamId);
+        // 流式正文派发也要把会话收口转成本条请求的协作式取消：上面那条普通派发登记过一次，这一条是
+        // 另一个派发出口（`hasStreamingRoute` 命中时走这里），漏登记就等于「同一份判取消的处理器在
+        // h3 的两种路由形状上看到两件事」。回调指向记录里的请求对象，而记录要等本帧跑完才摘
+        // （reapFinishedStreamingRequests 认的是 isServeFinished），于是 ~stop_callback 必然先注销
+        std::stop_callback requestCancelForwarder(m_shutdownCancelable.stopToken(), [&streamingRequest]() { streamingRequest.request.requestCancel(); });
         try
         {
             co_await m_router->route(streamingRequest.request, response);

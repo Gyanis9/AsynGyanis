@@ -935,6 +935,70 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：流式正文那条派发路径也要转发会话收口——h3 有两个交给路由的出口，漏一个就是两种形状各看一件事
+     * @details 上面两条用例钉的是普通派发（`Http3Session::pump` 里交给路由的那一处）。命中
+     *          `postStreaming(...)` 的请求走的是另一个出口 `Http3Session::serveStreamingRequest`：头部收齐
+     *          就把请求交给业务，正文随后分批到，处理器挂在 `readNext()` 上等。这个出口此前没登记停止回调，
+     *          于是「边读正文边看取消信号」的上传处理器在承载连接被收口后仍按「没被取消」继续跑，
+     *          而 `Middleware.h` 写的是三条通道每次路由前都注册一次。
+     * @details 正文只喂第一段且不告 END_STREAM：这样处理器一定还挂在 `readNext()` 上，
+     *          `abandonPendingStreams()` 把它叫醒之后读到的取消状态就是这条请求自己的。
+     */
+    TEST(Http3Session, ForwardsAbandonedConnectionIntoStreamingRequestCancelToken)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session(std::ref(opener),
+                                                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                                                {
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                                                });
+
+        std::atomic<bool> cancelObserved{false};
+        bool              isHandlerEntered  = false;
+        bool              isHandlerFinished = false;
+        Router            router;
+        router.postStreaming("/upload",
+                             [&session, &cancelObserved, &isHandlerEntered, &isHandlerFinished](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 isHandlerEntered = true;
+                                 while (co_await request.bodyStream()->readNext())
+                                 {
+                                 }
+                                 cancelObserved.store(request.cancelToken().stop_requested(), std::memory_order_release);
+                                 isHandlerFinished = true;
+                                 response.setStatus(200);
+                                 response.setBody("uploaded");
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "streaming-upload-body", 8));
+        // 逐段喂进去，且一律不告 END_STREAM：正文因此永远收不齐，处理器只能在 readNext() 上挂着
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, false);
+        }
+        ASSERT_TRUE(session.hasOutstandingWork()) << "用例前提：这条流式请求没被收下，会话里没有可唤醒的处理器";
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        ASSERT_TRUE(isHandlerEntered) << "用例前提：流式路由没把请求交给业务";
+        ASSERT_FALSE(isHandlerFinished) << "用例前提：正文没喂完，处理器该还挂在 readNext() 上";
+
+        session.abandonPendingStreams();
+
+        EXPECT_TRUE(cancelObserved.load(std::memory_order_acquire)) << "流式派发没转发会话收口：挂在正文上的上传处理器不知道这条连接已经没了";
+    }
+
+    /**
      * @brief 钉住：h3 的业务读到的来源地址来自承载层交下来的出口，而且一条连接只问一次
      * @details h3 的会话没有套接字可问（字节走承载层的 UDP 通道），来源只能由 QuicServer 在建会话时
      *          交一个出口下来。这条既钉「出口的值真的到了请求里」，也钉「每条请求都重新问一次承载层」
