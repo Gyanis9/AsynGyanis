@@ -168,35 +168,34 @@ namespace AsynGyanis::Database
         bool rollback();
 
         /**
-         * @brief 归还连接池时复位会话状态：把当前活动的事务滚掉
+         * @brief 归还连接池时复位会话状态：滚掉活动事务，并退回自动提交、默认库、连接字符集与只读语句时限
          * @details 残留的事务会跟着连接串给下一个借用者：对方的语句悄悄并进上一笔事务，
          *          行锁与元数据锁也一直被握到事务结束（可能永远不结束）为止。
          *          判定取两条：本类 beginTransaction() 的记账，加上服务端在上一条应答里自报的
          *          SERVER_STATUS_IN_TRANS——只有后者认得出绕过本类入口手工执行的 "START TRANSACTION"
          *          与关掉 autocommit 之后被语句隐式带出来的事务。SQLite 侧按 sqlite3_get_autocommit
          *          判，两边同一判据：读引擎真值，而不是只读本类记了多少账。
-         * @note 与基类契约一致：不抛异常、幂等；未连接、且事务与自动提交两格都说「与建连时一致」时不做任何事
-         * @note **复位范围是事务 + 自动提交这两格**：借用者自己设的其他会话变量、临时表与本类的语句缓存都不在这条路径上。
+         * @note 与基类契约一致：不抛异常、幂等；未连接、且下面这几格都说「与建连时一致」时不做任何事
+         * @note **复位范围是「事务 + 自动提交 + 默认库 + 连接字符集 + 只读语句时限」这五格**：借用者自己设的其他会话变量、临时表与本类的语句缓存都不在这条路径上。
          *       COM_RESET_CONNECTION 能一次清掉它们，但它同时作废服务端全部预编译语句，而语句缓存里
          *       留着的是 MYSQL_STMT 裸句柄——要走到那一步，得先让缓存与那次重置同生共死，
          *       而那会把「热语句不必重新 prepare」这份收益一并交出去。
          *       名单里还有两格要点名：**显式表锁 `LOCK TABLES`** 与**会话级咨询锁 `GET_LOCK`**——
          *       前者不属于事务（ROLLBACK 不放它），后者要 `RELEASE_ALL_LOCKS()` 才收得掉，而这两格
-         *       都没有 server_status 那种「自报的位」可判；要清就得每次归还都多发一条语句，
-         *       与本方法「一致时不付往返」的口径相反。借用者若要用它们，请自己释放再归还。
-         *       同一族的还有一格：绕过 `setQueryTimeout()` 直接发 `SET SESSION max_execution_time=…`——
-         *       基类那份账只记自己 setter 设过的值，退回那一步因此察觉不到它（SQLite 侧
-         *       `PRAGMA busy_timeout` 是同一形状，那一格因为重装是零成本的 C API 调用而顺手堵住了）
-         * @note 唯一的例外是本驱动自己下发的那一条会话变量（只读语句时限 max_execution_time）：
-         *       它由连接池在归还时按建连时的取值退回，走的是 DatabaseConnection::restoreQueryTimeoutBaseline()
-         *       而不是本方法——命令超时是基类的账，不是驱动的会话账
+         *       都没有 server_status 那种「自报的位」可判，按文本认又太容易漏（存储过程、动态语句里都会出现）；
+         *       要清就得每次归还都多发一条语句，与本方法「一致时不付往返」的口径相反。
+         *       借用者若要用它们，请自己释放再归还。
+         * @note 只读语句时限有两条来路，各归一处：走 `setQueryTimeout()` 的那条由连接池在归还时按建连时的
+         *       取值退回（`DatabaseConnection::restoreQueryTimeoutBaseline()`，命令超时是基类的账）；
+         *       绕过 setter 直接发 `SET SESSION max_execution_time=…` 的那条由本方法按语句文本记下来并重申
+         *       基类口径——两条都堵上，才有「下一位拿到的时限与配置一致」这句话
          * @note 自动提交那一格按**建连时服务端自报的那一位**退回（不是写死成「开」——服务端默认 off 的
          *       部署不该被本层改掉）。漏判的症状与事务那一格同一族：下一位并不会被告知自己不在自动提交
          *       模式下，他的每条单语句都隐式开事务，行锁握到他归还为止。判据读 server_status，
          *       与事务那一格同一份真值，因此一致时不额外付一趟查询
-         * @return 未连接、且事务与自动提交两格都说「与建连时一致」时为 true；确实去滚了事务或退回过
-         *         自动提交则按那条语句的结果交回——发不出去时交回 false，让池丢掉这条连接而不是把
-         *         别人的事务或别人的提交模式传下去
+         * @return 未连接、且事务/自动提交/默认库/连接字符集/语句时限这几格都说「与建连时一致」时为 true；
+         *         确实去滚了事务或退回过其中任何一格则按那条语句的结果交回——发不出去时交回 false，
+         *         让池丢掉这条连接而不是把别人的事务、提交模式、库位、字符集或时限口径传下去
          */
         bool resetSessionState() noexcept override;
 
@@ -331,6 +330,33 @@ namespace AsynGyanis::Database
         bool applyStatementTimeLimit();
 
         /**
+         * @brief 从被服务端接受的原始语句里认出「改的是这条会话的状态」并记账
+         * @param command 刚刚成功交给服务端的语句原文
+         * @details 默认库（`USE …`）、连接字符集（`SET NAMES …`）与只读语句时限
+         *          （`SET [SESSION] max_execution_time=…`）都是会话级的，而本类没有对应的
+         *          setter——借用者只能发原始语句，那份改动因此不会经过任何本类的账。不记下来的后果
+         *          不是报错而是**认错对象**：方言的元数据查询按 `DATABASE()` 限定库名（见 MySqlDialect），
+         *          上一位换了库，下一位的「这张表不存在」其实是「在别人的库里不存在」，于是 migrator
+         *          在别人的库里建表，或读写落在同名而不同的那张表上；字符集那格则是中文列被读成乱码。
+         *          判据是「首词 + `SET` 之后前 80 个字符里的关键字」（与 Redis 侧 `noteSessionCommand()`
+         *          同一手法）：注释前缀、存储过程里的同名语句认不出来，误判的方向是多退一次本来就有的
+         *          基线，那一档由归还路径的「退不掉就判没干净」兜住，不假装完备。
+         */
+        void noteSessionScopedStatement(std::string_view command) noexcept;
+
+        /**
+         * @brief 把记账记到的那两格会话状态退回配置里的取值（默认库与连接字符集）
+         * @details 由 resetSessionState() 在事务与自动提交都处理完之后调用：`USE` 与 `SET NAMES` 都是
+         *          会话级设置，而本类没有对应 setter，借用者只能发原始语句——不退回就会出现
+         *          「下一位的元数据查询查的是别人的库」与「中文列被按别的字符集读」两类静默错位。
+         *          没记到改动时什么都不发，稳态归还因此不付额外往返。
+         * @return true 没有要退的，或两条都退成了
+         * @return false 退不掉（配置没有默认库、句柄已断、服务端拒绝），原因留在 lastError()，
+         *         调用方应把这条会话判成「没复位干净」
+         */
+        [[nodiscard]] bool restoreSessionScopedStatements() noexcept;
+
+        /**
          * @brief 采集预处理语句上的错误文本与错误码并写入 m_lastError
          * @details mysql_stmt_* 的错误状态挂在语句句柄上而不是连接句柄上，
          *          必须用 mysql_stmt_error / mysql_stmt_errno 取，用连接级接口会读到上一次
@@ -431,6 +457,12 @@ namespace AsynGyanis::Database
         /// 这条连接建立时服务端自报的自动提交模式：归还路径按它退回，而不是写死成「开」。
         /// 有的部署把服务端默认设成 off，写死退回就等于替他们改了会话（见 resetSessionState）
         bool m_autocommitBaselineOn{true};
+
+        /// 借用者发过「本类没有 setter、因此记在别处就看不见」的会话级语句的标记：归还路径按它们
+        /// 把默认库、连接字符集与只读语句时限退回各自的基线（见 noteSessionScopedStatement 与 resetSessionState）
+        bool m_isDefaultSchemaChanged{false};
+        bool m_isCharacterSetChanged{false};
+        bool m_isStatementTimeLimitChanged{false};
     };
 
 } // namespace AsynGyanis::Database

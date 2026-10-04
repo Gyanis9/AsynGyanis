@@ -704,6 +704,25 @@ namespace AsynGyanis::Database
             }
 
             /**
+             * @brief 读一条「只回一行一列」查询的文本值
+             * @param connection 执行查询的连接
+             * @param sql 语句原文
+             * @return std::string 首列文本；读不出或不是文本时返回空串（让断言直接暴露失败而不是误判成相等）
+             */
+            [[nodiscard]] static std::string readScalarText(DatabaseConnection &connection, const std::string_view sql)
+            {
+                const std::unique_ptr<DatabaseResult> result = connection.execute(sql);
+                if (result == nullptr || !result->next())
+                {
+                    return {};
+                }
+
+                const DatabaseValue value = result->getValue(0);
+                const auto         *text  = std::get_if<std::string>(&value);
+                return text != nullptr ? *text : std::string{};
+            }
+
+            /**
              * @brief 统计一张表的行数
              * @param connection 执行查询的连接
              * @param tableName 表名
@@ -2286,6 +2305,86 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(connection->resetSessionState()) << connection->lastError();
 
         EXPECT_EQ(readAutocommitFlag(*connection), 1) << "复位只滚事务：借用者关掉的自动提交串给了下一个借用者";
+    }
+
+    /**
+     * @brief 钉住：借用者裸发 `USE` 换掉的默认库在归还时退回配置那一份
+     * @details 本类没有「换库」的 setter（Redis 有 selectDatabase()，MySQL 侧就是发原始语句），因此这份账
+     *          只能从语句文本上记。不退回的后果不是报错而是**认错对象**：方言的元数据查询按 `DATABASE()`
+     *          限定库名，下一位的「这张表不存在」其实是「在别人的库里不存在」，于是 migrator 到别人的库里
+     *          建表，或读写落到同名而不同的那张表上。用例借用 `information_schema` 这张恒在的库做切换目标，
+     *          不新建也不触碰任何业务库
+     */
+    TEST_F(MySqlIntegrationTest, ResetSessionStateRestoresDefaultSchemaAfterARawUse)
+    {
+        std::unique_ptr<MySqlConnection> connection = makeConnection();
+        ASSERT_TRUE(connection->connect()) << connection->lastError();
+
+        const std::string configuredSchema = readScalarText(*connection, "SELECT DATABASE()");
+        ASSERT_FALSE(configuredSchema.empty()) << "夹具连上的会话没有默认库，用例前提不成立";
+
+        ASSERT_TRUE(connection->execute("USE information_schema") != nullptr) << connection->lastError();
+        ASSERT_EQ(readScalarText(*connection, "SELECT DATABASE()"), "information_schema") << "那条 USE 没换库，用例前提不成立";
+
+        ASSERT_TRUE(connection->resetSessionState()) << connection->lastError();
+
+        EXPECT_EQ(readScalarText(*connection, "SELECT DATABASE()"), configuredSchema) << "归还时没把默认库退回配置那一份：下一位的元数据查询查的是别人的库";
+    }
+
+    /**
+     * @brief 钉住：借用者裸发 `SET NAMES` 换掉的连接字符集在归还时退回 utf8mb4
+     * @details 与默认库同一族——本类只在握手期定一次字符集，之后没人重申。漏掉的形状是「中文列被读成
+     *          乱码而一句报错都没有」，比报错更难在现场归因
+     */
+    TEST_F(MySqlIntegrationTest, ResetSessionStateRestoresConnectionCharacterSetAfterARawSetNames)
+    {
+        std::unique_ptr<MySqlConnection> connection = makeConnection();
+        ASSERT_TRUE(connection->connect()) << connection->lastError();
+
+        const std::string configuredCharacterSet = readScalarText(*connection, "SELECT @@character_set_connection");
+        ASSERT_EQ(configuredCharacterSet, "utf8mb4") << "connect() 没把连接字符集定成 utf8mb4，用例前提不成立（读到「" << configuredCharacterSet << "」）";
+
+        ASSERT_TRUE(connection->execute("SET NAMES latin1") != nullptr) << connection->lastError();
+        ASSERT_EQ(readScalarText(*connection, "SELECT @@character_set_connection"), "latin1") << "那条 SET NAMES 没改动这条会话，用例前提不成立";
+
+        ASSERT_TRUE(connection->resetSessionState()) << connection->lastError();
+
+        EXPECT_EQ(readScalarText(*connection, "SELECT @@character_set_connection"), "utf8mb4") << "归还时没退回连接字符集：下一位把中文列读成乱码而没有任何报错";
+    }
+
+    /**
+     * @brief 钉住：绕过 `setQueryTimeout()` 直接发 `SET SESSION max_execution_time` 也在归还时被重申
+     * @details 基类那份账只认自己 setter 设过的值，两条来路各归一处才不漏：走 setter 的那条由池退回基线，
+     *          走原始语句的那条由 `resetSessionState()` 按文本记下来再重申一次。期望值取**改动前**的读数，
+     *          不在用例里重算毫秒→秒的换算（那是 `applyStatementTimeLimit` 自己的判据，另有直测）
+     */
+    TEST_F(MySqlIntegrationTest, ResetSessionStateReappliesStatementTimeLimitAfterARawSet)
+    {
+        std::unique_ptr<MySqlConnection> connection = makeConnection();
+        ASSERT_TRUE(connection->connect()) << connection->lastError();
+
+        // 这一格是整数，交出文本的 readScalarText 取不到值（会误判成「读不出来」），因此现读 int64
+        const auto readTimeLimit = [](DatabaseConnection &target) -> std::optional<std::int64_t>
+        {
+            const std::unique_ptr<DatabaseResult> result = target.execute("SELECT @@session.max_execution_time");
+            if (result == nullptr || !result->next())
+            {
+                return std::nullopt;
+            }
+            const DatabaseValue value = result->getValue(0);
+            const auto         *count = std::get_if<std::int64_t>(&value);
+            return count != nullptr ? std::optional<std::int64_t>(*count) : std::nullopt;
+        };
+
+        const std::optional<std::int64_t> baselineTimeLimit = readTimeLimit(*connection);
+        ASSERT_TRUE(baselineTimeLimit.has_value()) << "读不出会话级只读时限，用例前提不成立";
+
+        ASSERT_TRUE(connection->execute("SET SESSION max_execution_time = 1") != nullptr) << connection->lastError();
+        ASSERT_EQ(readTimeLimit(*connection), std::optional<std::int64_t>(1)) << "那条 SET 没改动这条会话，用例前提不成立";
+
+        ASSERT_TRUE(connection->resetSessionState()) << connection->lastError();
+
+        EXPECT_EQ(readTimeLimit(*connection), baselineTimeLimit) << "归还时没重申只读语句时限：下一位的失控查询失去那道界";
     }
 
     /**

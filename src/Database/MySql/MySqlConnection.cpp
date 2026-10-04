@@ -39,6 +39,7 @@
 // 该头必须看到真实的 mysql.h（要取 enum_field_types 常量），因此只能放在本分支内
 #include "Database/MySql/MySqlValueConversion.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -217,6 +218,11 @@ namespace AsynGyanis::Database
         // 把握手时服务端自报的自动提交模式记成这条连接的基线：归还时退回的是它，不是写死的「开」——
         // 有的部署把服务端默认设成 off，写死退回就等于替他们改了会话（理由与 markQueryTimeoutBaseline 同一族）
         m_autocommitBaselineOn = isAutocommitOnNow();
+        // 会话账本随新会话一起归零：上一条连接留下的 USE／SET NAMES／SET …max_execution_time 标记
+        // 不能算到这条新会话头上
+        m_isDefaultSchemaChanged      = false;
+        m_isCharacterSetChanged       = false;
+        m_isStatementTimeLimitChanged = false;
 
         // 只读语句的服务端时限只能在握手之后下发（它是一条普通语句）。设不上不该把一次成功的连接判成失败：
         // 没有这道界时客户端读写超时仍在守着，只是那一道会连连接一起废掉，原因由 lastError() 给出。
@@ -314,6 +320,9 @@ namespace AsynGyanis::Database
 
             return nullptr;
         }
+
+        // 语句被服务端接受了才记账：被拒的 `USE …` 等于没换库，记下来反而会让归还路径多发一条退回语句
+        noteSessionScopedStatement(command);
 
         // store_result 把整份结果（行数据 + 列元数据）一次性复制进客户端内存：
         // 之后结果集与连接再无关系，可以比连接活得更久，遍历过程中也不会再有任何网络往返。
@@ -1179,7 +1188,7 @@ namespace AsynGyanis::Database
             // 设置，跟着连接回到池里，下一位的每条单语句都会隐式开事务并把行锁握到他归还为止，
             // 而他自己并不知道不在自动提交模式下——上一格那句「有事务就滚」只收掉已经开出来的那笔，
             // 不收掉这个模式本身。判据同样读服务端自报的那一位，稳态归还不额外付一趟查询
-            return restoreAutocommitBaseline();
+            return restoreAutocommitBaseline() && restoreSessionScopedStatements();
         }
 
         // 先清标记再滚：即便这次 ROLLBACK 发不出去（链路已断），连接也不会带着「还开着事务」
@@ -1192,11 +1201,146 @@ namespace AsynGyanis::Database
         try
         {
             // 滚完再退自动提交：SET autocommit 会隐式提交当时开着的事务，顺序反了就把「该滚的」交出去了
-            return rollback() && restoreAutocommitBaseline();
+            return rollback() && restoreAutocommitBaseline() && restoreSessionScopedStatements();
         } catch (...)
         {
             return false;
         }
+    }
+
+    void MySqlConnection::noteSessionScopedStatement(const std::string_view command) noexcept
+    {
+        // 只认「首个词」这一种形状（Redis 侧 noteSessionCommand 同一手法，也带着同一条局限：
+        // 注释前缀、存储过程里的同名语句认不出来）。大小写折叠不依赖 locale，全比较都是 ASCII
+        const auto isSpace    = [](const char character) noexcept { return character == ' ' || character == '\t' || character == '\n' || character == '\r'; };
+        const auto foldEquals = [](const std::string_view text, const std::string_view keyword) noexcept
+        {
+            if (text.size() != keyword.size())
+            {
+                return false;
+            }
+            for (std::size_t index = 0; index < text.size(); ++index)
+            {
+                const char lowered = (text[index] >= 'A' && text[index] <= 'Z') ? static_cast<char>(text[index] - ('A' - 'a')) : text[index];
+                if (lowered != keyword[index])
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const auto containsIgnoringCase = [](const std::string_view text, const std::string_view keyword) noexcept
+        {
+            if (keyword.size() > text.size())
+            {
+                return false;
+            }
+            for (std::size_t offset = 0; offset + keyword.size() <= text.size(); ++offset)
+            {
+                std::size_t index = 0;
+                for (; index < keyword.size(); ++index)
+                {
+                    const char current = text[offset + index];
+                    const char lowered = (current >= 'A' && current <= 'Z') ? static_cast<char>(current - ('A' - 'a')) : current;
+                    if (lowered != keyword[index])
+                    {
+                        break;
+                    }
+                }
+                if (index == keyword.size())
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+        // 取一段连续的字母（首词与次词都这么切）：切到非字母为止，剩下的空格由 isSpace 跳
+        const std::size_t commandLength = command.size();
+        const auto        takeWord      = [command, commandLength](std::size_t &cursor) noexcept
+        {
+            const std::size_t start = cursor;
+            while (cursor < commandLength && ((command[cursor] >= 'a' && command[cursor] <= 'z') || (command[cursor] >= 'A' && command[cursor] <= 'Z')))
+            {
+                ++cursor;
+            }
+            return command.substr(start, cursor - start);
+        };
+
+        std::size_t cursor = 0;
+        while (cursor < commandLength && isSpace(command[cursor]))
+        {
+            ++cursor;
+        }
+
+        const std::string_view firstWord = takeWord(cursor);
+        if (foldEquals(firstWord, "use"))
+        {
+            m_isDefaultSchemaChanged = true;
+            return;
+        }
+        if (!foldEquals(firstWord, "set"))
+        {
+            return;
+        }
+
+        // `SET` 之后按关键字认三格：`NAMES`（连接字符集）、`max_execution_time`（只读语句时限）。
+        // 这里用「只看前 80 个字符的不区分大小写子串」而不是逐词切：`SET @@session.max_execution_time=…`
+        // 这类写法里标识符带着 @ 与 . ，按字母切词会切出空串而整个漏判。代价是极罕见的误判
+        // （把某个取值写成这些词的语句多退一次），而误判的方向是「重申一遍本来就有的基线」，无害
+        const std::size_t      tailStart = cursor < commandLength ? cursor : commandLength;
+        const std::size_t      tailEnd   = std::min(tailStart + 80U, commandLength);
+        const std::string_view tail      = command.substr(tailStart, tailEnd - tailStart);
+        if (containsIgnoringCase(tail, "names"))
+        {
+            m_isCharacterSetChanged = true;
+        }
+        if (containsIgnoringCase(tail, "max_execution_time"))
+        {
+            m_isStatementTimeLimitChanged = true;
+        }
+    }
+
+    bool MySqlConnection::restoreSessionScopedStatements() noexcept
+    {
+        // 桩构建里 execute() 恒失败，noteSessionScopedStatement 因此永不被调用，两个标记恒假：
+        // 那一档没有客户端库可退，直接放行（句柄类型也不完整，调不了那两个 C API）
+#ifdef DATABASE_HAS_MYSQL
+        if (m_isDefaultSchemaChanged)
+        {
+            m_isDefaultSchemaChanged = false;
+            if (m_configuration.database.empty())
+            {
+                // 配置本来就没选默认库：MySQL 没有「退回无库」的语句，只能把这条会话判成不干净
+                m_lastError = "归还 MySQL 连接失败：这条会话被 USE 换过库，而连接配置没有默认库可退回，请让连接池另起一条";
+                return false;
+            }
+            if (::mysql_select_db(m_mysqlHandle, m_configuration.database.c_str()) != 0)
+            {
+                captureError("归还前退回默认库失败");
+                return false;
+            }
+        }
+        if (m_isCharacterSetChanged)
+        {
+            m_isCharacterSetChanged = false;
+            if (::mysql_set_character_set(m_mysqlHandle, kConnectionCharacterSet) != 0)
+            {
+                captureError("归还前退回连接字符集失败");
+                return false;
+            }
+        }
+        if (m_isStatementTimeLimitChanged)
+        {
+            // 只读语句时限的重发走既有那一条实现（applyStatementTimeLimit），口径与 setter 路径同一份：
+            // 它按 queryTimeout() 现值下发，而那个值就是建连时记下的基线（基类的退回那一步已先跑过）
+            m_isStatementTimeLimitChanged = false;
+            if (!applyStatementTimeLimit())
+            {
+                return false;
+            }
+        }
+#endif
+        return true;
     }
 
     bool MySqlConnection::restoreAutocommitBaseline() noexcept
